@@ -9,7 +9,7 @@
 
 import type { ConsolidatedTool } from './types.js';
 import { reqStr, str, num, bool, numArray, objArray } from './types.js';
-import { resolveAgentId } from '@synapse/core';
+import { resolveAgentId, getProjectRecordById } from '@synapse/core';
 import {
   emitEventTool,
   acknowledgeEventTool,
@@ -20,13 +20,13 @@ export const eventTool: ConsolidatedTool = {
   definition: {
     name: 'event',
     description:
-      'Verwaltet Events für Agenten. Actions: emit (Sendet Event), ack (Bestätigt Event), pending (Holt unbestätigte Events).',
+      'Verwaltet Events für Agenten. Actions: emit (Sendet Event), ack (Bestätigt Event), pending (Holt unbestätigte Events), get (liest ein Event per ID).',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['emit', 'ack', 'pending'],
+          enum: ['emit', 'ack', 'pending', 'get'],
           description: 'Action: "emit", "ack", oder "pending"',
         },
         // emit-Parameter
@@ -200,6 +200,15 @@ export const eventTool: ConsolidatedTool = {
         }
         const result = await acknowledgeEventTool(eventId, agentId, reaction);
         return result;
+      }
+
+      case 'get': {
+        const project = reqStr(args, 'project');
+        const eventId = num(args, 'event_id');
+        if (eventId === undefined) throw new Error('Parameter "event_id" ist erforderlich fuer action "get"');
+        const agentId = reqStr(args, 'agent_id');
+        const event = await getProjectRecordById('event', project, eventId, agentId);
+        return { success: !!event, event, action: 'get', message: event ? 'Event geladen' : 'Event nicht gefunden' };
       }
 
       case 'pending': {

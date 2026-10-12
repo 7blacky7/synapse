@@ -26,7 +26,7 @@ import {
   postToInboxTool,
   checkInboxTool,
 } from '../index.js';
-import { resolveAgentId } from '@synapse/core';
+import { resolveAgentId, getProjectRecordById } from '@synapse/core';
 
 export const chatTool: ConsolidatedTool = {
   definition: {
@@ -84,6 +84,7 @@ export const chatTool: ConsolidatedTool = {
         agent_id: { type: 'string', description: 'Eigene Agent-ID' },
         since: { type: 'string', description: 'ISO-Timestamp fuer Polling' },
         sender_id_filter: { type: 'string', description: 'Optional: Nur Nachrichten von diesem Absender' },
+        message_id: { type: 'number', description: 'Optional fuer get: einzelne Chat-Nachricht per ID lesen' },
         limit: { type: 'number', description: 'Max. Nachrichten (Standard: 50)' },
 
         // ===== inbox_send / inbox_check =====
@@ -182,6 +183,11 @@ export const chatTool: ConsolidatedTool = {
           const getSince = str(args, 'since');
           const getSenderIdFilter = str(args, 'sender_id_filter');
           const getLimit = num(args, 'limit');
+          const messageId = num(args, 'message_id');
+          if (messageId !== undefined) {
+            const message = await getProjectRecordById('chat_message', getProject, messageId, getAgentId);
+            return { success: !!message, messages: message ? [message] : [], count: message ? 1 : 0, action: 'get' };
+          }
 
           const result = await getChatMessages(getProject, {
             agentId: getAgentId,

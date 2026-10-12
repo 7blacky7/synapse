@@ -16,7 +16,7 @@ import {
   deleteTechDocTool,
 } from '../tech-docs.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { findMemoriesForPath, getFileSteckbrief, resolveAgentId } from '@synapse/core';
+import { findMemoriesForPath, getFileSteckbrief, resolveAgentId, getProjectRecordById } from '@synapse/core';
 
 export const docsTool: ConsolidatedTool = {
   definition: {
@@ -27,8 +27,8 @@ export const docsTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'search', 'get_for_file', 'update', 'delete'],
-          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag), update (Tech-Doc aktualisieren), delete (Tech-Doc loeschen)',
+          enum: ['add', 'search', 'get_for_file', 'get', 'update', 'delete'],
+          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag), get (Tech-Doc per ID lesen), update (Tech-Doc aktualisieren), delete (Tech-Doc loeschen)',
         },
         // ===== ACTION: add =====
         framework: {
@@ -305,6 +305,13 @@ export const docsTool: ConsolidatedTool = {
         }
 
         return await einzelDatei(reqStr(args, 'file_path'));
+      }
+
+      case 'get': {
+        const id = reqStr(args, 'id');
+        const project = reqStr(args, 'project');
+        const doc = await getProjectRecordById('doc', project, id);
+        return { success: !!doc, doc, message: doc ? `Tech-Doc "${id}" geladen` : `Tech-Doc "${id}" nicht gefunden` };
       }
 
       case 'update': {

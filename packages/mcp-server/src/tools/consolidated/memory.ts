@@ -13,6 +13,7 @@
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ConsolidatedTool, str, reqStr, bool, num, strArray, objArray } from './types.js';
+import { getProjectRecordById } from '@synapse/core';
 import {
   writeMemory,
   readMemory,
@@ -28,7 +29,7 @@ import {
 const memoryTool: ConsolidatedTool = {
   definition: {
     name: 'memory',
-    description: 'Memory-Operationen: write (single oder Bulk via items[]), read, read_with_code, list, delete, update, find_for_file. write akzeptiert optional items[] (1..50) fuer Bulk-Inserts in einem Call.',
+    description: 'Memory-Operationen: write (single oder Bulk via items[]), read per Name oder ID, read_with_code, list, delete, update, find_for_file. write akzeptiert optional items[] (1..50) fuer Bulk-Inserts in einem Call.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -48,6 +49,7 @@ const memoryTool: ConsolidatedTool = {
           ],
           description: 'Memory-Name (erforderlich für read, read_with_code, delete, update). Array erlaubt fuer: read',
         },
+        id: { type: 'string', description: 'Optional fuer read: Memory-ID oder eindeutiges Praefix ab 8 Zeichen' },
         content: {
           type: 'string',
           description: 'Memory-Inhalt (erforderlich für write, optional für update)',
@@ -183,6 +185,13 @@ const memoryTool: ConsolidatedTool = {
         }
 
         case 'read': {
+          const id = str(args, 'id');
+          if (id) {
+            const memory = await getProjectRecordById('memory', project, id);
+            return memory
+              ? { success: true, memory, message: `Memory "${String(memory.name)}" geladen (${String(memory.content).length} Zeichen)` }
+              : { success: false, memory: null, message: `Memory-ID "${id}" nicht gefunden in Projekt "${project}"` };
+          }
           // Array-Support: Mehrere Memories in einem Call
           const names = strArray(args, 'name');
           if (names && names.length > 1) {

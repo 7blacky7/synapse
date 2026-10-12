@@ -332,6 +332,21 @@ export async function getMemoryByName(
   return rows.length === 0 ? null : memoryAusZeile(rows[0]);
 }
 
+/** Liest ein Memory per UUID oder eindeutigem UUID-Praefix im Projekt. */
+export async function getMemoryById(project: string, id: string): Promise<Memory | null> {
+  const prefix = id.trim();
+  if (prefix.length < 8 || !/^[0-9a-f-]+$/i.test(prefix)) {
+    throw new Error('Memory-ID muss eine UUID oder ein eindeutiger UUID-Praefix mit mindestens 8 Zeichen sein');
+  }
+
+  const { rows } = await getPool().query<MemoryZeile>(
+    'SELECT id, project, name, content, category, tags, created_at, updated_at FROM memories WHERE project = $1 AND lower(left(id, length($2))) = lower($2) ORDER BY updated_at DESC, id LIMIT 2',
+    [project, prefix],
+  );
+  if (rows.length > 1) throw new Error(`Memory-ID-Praefix ist mehrdeutig: ${prefix}`);
+  return rows.length === 0 ? null : memoryAusZeile(rows[0]);
+}
+
 /**
  * Listet alle Memories eines Projekts
  */

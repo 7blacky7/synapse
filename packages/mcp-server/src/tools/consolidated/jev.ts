@@ -22,6 +22,7 @@ import {
   JEV_TOPF_ACTIONS,
   JEV_TOPF_BESCHREIBUNG,
   JEV_TOPF_PARAMETER,
+  getProjectRecordById,
 } from '@synapse/core';
 
 /** optionen kann als Objekt oder als JSON-String ankommen (Connector-Quirk) */
@@ -68,7 +69,7 @@ export const jevTool: ConsolidatedTool = {
         seit: { type: 'string', description: 'Nur protokoll: ISO-Zeitpunkt; Standard = Beginn des Schalters' },
         nur_entschieden: { type: 'boolean', description: 'Nur protokoll: nur tatsaechlich entschiedene Eintraege' },
         limit: { type: 'number', description: 'Nur protokoll: Hoechstzahl (Standard 50, max 200)' },
-        id: { type: 'number', description: 'Nur ueberstimmen: Protokoll-Nummer' },
+        id: { type: 'number', description: 'Nur protokoll optional: einzelne Protokoll-Nummer lesen; Pflicht fuer ueberstimmen' },
         wahl: { type: 'string', description: 'Nur ueberstimmen: die richtige Entscheidung (Option, ja/nein oder Zahl)' },
         notiz: { type: 'string', description: 'Nur ueberstimmen: Begruendung' },
         // P15 E1: Entscheidungs-Topf (Definition aus core, REST identisch)
@@ -111,12 +112,18 @@ export const jevTool: ConsolidatedTool = {
           bis: str(args, 'bis'),
           stunden: num(args, 'stunden'),
         })) as Record<string, unknown>;
-      case 'protokoll':
+      case 'protokoll': {
+        const id = num(args, 'id');
+        if (id !== undefined) {
+          const eintrag = await getProjectRecordById('jev_decision', project, id);
+          return { success: !!eintrag, anzahl: eintrag ? 1 : 0, eintraege: eintrag ? [eintrag] : [], message: eintrag ? 'Jev-Protokolleintrag geladen' : 'Jev-Protokolleintrag nicht gefunden' };
+        }
         return (await holeEntscheidungsProtokoll(project, {
           seit: str(args, 'seit'),
           nur_entschieden: bool(args, 'nur_entschieden'),
           limit: num(args, 'limit'),
         })) as unknown as Record<string, unknown>;
+      }
       case 'ueberstimmen':
         return (await ueberstimmeEntscheidung(project, {
           id: num(args, 'id'),

@@ -18,6 +18,7 @@ import {
   recordChannelRead,
   markChannelRead,
   resolveAgentId,
+  getProjectRecordById,
 } from '@synapse/core';
 import {
   createChannel,
@@ -244,13 +245,13 @@ async function handleList(args: Record<string, unknown>) {
 export const channelTool: ConsolidatedTool = {
   definition: {
     name: 'channel',
-    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, list). Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. POSTS KURZ HALTEN: Ergebnisse, Befunde und laengere Berichte zuerst als thought (Zwischenstand/Befund/Uebergabe, per ID lesbar, 8 Zeichen reichen) oder memory (dauerhaftes Wissen, per Name lesbar) ablegen und im Channel nur ID bzw. Name mit einer Zeile nennen (z. B. "T2 fertig, Ergebnis: thought ab12cd34"). Ausfuehrlich nur, wenn etwas zu besprechen ist: Rueckfrage, Entscheidung, Blocker, Hinweis fuer den User.',
+    description: 'Verwaltet Channels fuer Spezialisten-Kommunikation (create, join, leave, post, feed, get, list). IDs sind einzeln abrufbar: memory(read,id), docs(get,id), channel(get,message_id), event(get,event_id), chat(get,message_id), jev(protokoll,id). Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. POSTS KURZ HALTEN: Ergebnisse, Befunde und laengere Berichte zuerst als thought (Zwischenstand/Befund/Uebergabe, per ID lesbar, 8 Zeichen reichen) oder memory (dauerhaftes Wissen, per Name lesbar) ablegen und im Channel nur ID bzw. Name mit einer Zeile nennen (z. B. "T2 fertig, Ergebnis: thought ab12cd34"). Ausfuehrlich nur, wenn etwas zu besprechen ist: Rueckfrage, Entscheidung, Blocker, Hinweis fuer den User.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read', 'sichtung_status', 'sichtung_setzen', 'archivieren'],
+          enum: ['create', 'join', 'leave', 'post', 'feed', 'get', 'list', 'mark_read', 'sichtung_status', 'sichtung_setzen', 'archivieren'],
           description: 'Die auszufuehrende Aktion. sichtung_status/sichtung_setzen (CH-3) halten fest, welche Beitraege beim Aufraeumen schon ausgewertet sind.',
         },
         // create: name, project, description, created_by
@@ -311,6 +312,7 @@ export const channelTool: ConsolidatedTool = {
           type: 'string',
           description: 'Nachrichteninhalt (fuer post). Kurz: Ergebnis vorher als thought (ID) oder memory (Name) ablegen, hier nur ID/Name mit einer Zeile; ausfuehrlich nur bei Rueckfrage, Entscheidung, Blocker oder Hinweis fuer den User.',
         },
+        message_id: { type: 'number', description: 'ID einer Channel-Nachricht (fuer get)' },
         // feed: limit, since_id, preview
         limit: {
           type: 'number',
@@ -425,6 +427,12 @@ export const channelTool: ConsolidatedTool = {
         return await handlePost(args);
       case 'feed':
         return await handleFeed(args);
+      case 'get': {
+        const message = await getProjectRecordById('channel_message', reqStr(args, 'project'), num(args, 'message_id') as number);
+        return jsonResult(message
+          ? { success: true, message, action: 'get' }
+          : { success: false, message: 'Channel-Nachricht nicht gefunden', action: 'get' });
+      }
       case 'mark_read':
         return await handleMarkRead(args);
       case 'list':

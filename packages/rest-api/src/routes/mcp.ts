@@ -8,6 +8,7 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
+import { getProjectRecordById } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import {
   // Code-Suche
@@ -365,6 +366,7 @@ export const MCP_TOOLS = [
           ],
           description: 'Memory-Name (erforderlich fuer read, read_with_code, delete, update). Array erlaubt fuer: read',
         },
+        id: { type: 'string', description: 'Optional fuer memory(read): Memory-ID oder eindeutiges Praefix ab 8 Zeichen' },
         content: { type: 'string', description: 'Memory-Inhalt (erforderlich fuer write, optional fuer update)' },
         category: {
           type: 'string',
@@ -632,6 +634,7 @@ export const MCP_TOOLS = [
         agent_id: { type: 'string', description: 'Eigene Agent-ID' },
         since: { type: 'string', description: 'ISO-Timestamp fuer Polling' },
         sender_id_filter: { type: 'string', description: 'Optional: Nur Nachrichten von diesem Absender' },
+        message_id: { type: 'number', description: 'Optional fuer get: einzelne Chat-Nachricht per ID lesen' },
         limit: { type: 'number', description: 'Max. Nachrichten (Standard: 50)' },
         from_agent: { type: 'string', description: 'Absender Agent-Name' },
         to_agent: {
@@ -649,13 +652,13 @@ export const MCP_TOOLS = [
   // 8. channel
   {
     name: 'channel',
-    description: 'Channels (Gruppen-Notizboards) zwischen Sub-Hilfsagenten im eigenen Synapse-Projekt verwalten: anlegen, beitreten, verlassen, posten, lesen, listen. Lokale Datenbank, project-scoped. Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. POSTS KURZ HALTEN: Ergebnisse, Befunde und laengere Berichte zuerst als thought (Zwischenstand/Befund/Uebergabe, per ID lesbar, 8 Zeichen reichen) oder memory (dauerhaftes Wissen, per Name lesbar) ablegen und im Channel nur ID bzw. Name mit einer Zeile nennen (z. B. "T2 fertig, Ergebnis: thought ab12cd34"). Ausfuehrlich nur, wenn etwas zu besprechen ist: Rueckfrage, Entscheidung, Blocker, Hinweis fuer den User. Keine externen Chat-Systeme.',
+    description: 'Channels (Gruppen-Notizboards) zwischen Sub-Hilfsagenten im eigenen Synapse-Projekt verwalten: anlegen, beitreten, verlassen, posten, lesen, listen. IDs sind einzeln abrufbar: memory(read,id), docs(get,id), channel(get,message_id), event(get,event_id), chat(get,message_id), jev(protokoll,id). Lokale Datenbank, project-scoped. Optionales agent_id aktiviert Attribution und einmaliges Projekt-Onboarding ueber den gemeinsamen MCP-Pfad; sender ist nur der sichtbare Nachrichten-Absender und ersetzt agent_id nicht. POSTS KURZ HALTEN: Ergebnisse, Befunde und laengere Berichte zuerst als thought (Zwischenstand/Befund/Uebergabe, per ID lesbar, 8 Zeichen reichen) oder memory (dauerhaftes Wissen, per Name lesbar) ablegen und im Channel nur ID bzw. Name mit einer Zeile nennen (z. B. "T2 fertig, Ergebnis: thought ab12cd34"). Ausfuehrlich nur, wenn etwas zu besprechen ist: Rueckfrage, Entscheidung, Blocker, Hinweis fuer den User. Keine externen Chat-Systeme.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['create', 'join', 'leave', 'post', 'feed', 'list', 'mark_read'],
+          enum: ['create', 'join', 'leave', 'post', 'feed', 'get', 'list', 'mark_read'],
           description: 'Die auszufuehrende Aktion',
         },
         name: { type: 'string', description: 'Channel-Name (fuer create)' },
@@ -670,6 +673,7 @@ export const MCP_TOOLS = [
           ],
           description: 'Channel-Name (fuer join, leave, post, feed). Array erlaubt fuer: join, leave',
         },
+        message_id: { type: 'number', description: 'ID einer Channel-Nachricht (fuer get)' },
         agent_name: {
           type: 'string',
           description: 'Agent-Name. Bei join/leave: wer beitritt/verlaesst. '
@@ -735,7 +739,7 @@ export const MCP_TOOLS = [
         seit: { type: 'string', description: 'Nur protokoll: ISO-Zeitpunkt; Standard = Beginn des Schalters' },
         nur_entschieden: { type: 'boolean', description: 'Nur protokoll: nur tatsaechlich entschiedene Eintraege' },
         limit: { type: 'number', description: 'Nur protokoll: Hoechstzahl (Standard 50, max 200)' },
-        id: { type: 'number', description: 'Nur ueberstimmen: Protokoll-Nummer' },
+        id: { type: 'number', description: 'Nur protokoll optional: einzelne Protokoll-Nummer lesen; Pflicht fuer ueberstimmen' },
         wahl: { type: 'string', description: 'Nur ueberstimmen: die richtige Entscheidung (Option, ja/nein oder Zahl)' },
         notiz: { type: 'string', description: 'Nur ueberstimmen: Begruendung' },
         // P15 E1: Entscheidungs-Topf (Definition aus core)
@@ -753,8 +757,8 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['emit', 'ack', 'pending'],
-          description: 'Action: "emit", "ack", oder "pending"',
+          enum: ['emit', 'ack', 'pending', 'get'],
+          description: 'Action: "emit", "ack", "pending" oder "get"',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer emit und pending)' },
         event_type: { type: 'string', description: 'Event-Typ fuer emit: WORK_STOP, CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT, NEW_TASK, CHECK_CHANNEL, PLAN_READY' },
@@ -865,8 +869,8 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'search', 'get_for_file', 'update', 'delete'],
-          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag), update (Tech-Doc aktualisieren), delete (Tech-Doc loeschen)',
+          enum: ['add', 'search', 'get_for_file', 'get', 'update', 'delete'],
+          description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag), get (Tech-Doc per ID lesen), update (Tech-Doc aktualisieren), delete (Tech-Doc loeschen)',
         },
         framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express); bei get_for_file: optionaler Framework-Filter' },
         framework_warnungen: { type: 'boolean', description: 'get_for_file: Framework-Warnungen abrufen (Standard true)' },
@@ -894,7 +898,7 @@ export const MCP_TOOLS = [
         },
         agent_id: { type: 'string', description: 'Agent-ID fuer Cutoff-Ermittlung' },
         project: { type: 'string', description: 'Projekt-Name (optional)' },
-        id: { type: 'string', description: 'Tech-Doc-ID (Pflicht fuer update/delete; stammt aus docs search)' },
+        id: { type: 'string', description: 'Tech-Doc-ID (Pflicht fuer get, update, delete; stammt aus docs search)' },
         docs: {
           type: 'array',
           description: 'Bulk-Mode fuer add: 1..50 Tech-Docs in einem Call. Jedes Item: { framework, version, section, content, type, category?, source? }. project gilt fuer alle. Best-effort.',
@@ -2749,6 +2753,13 @@ async function handleToolCallKern(
           };
         }
         case 'read': {
+          const memoryId = str(args, 'id');
+          if (memoryId) {
+            const memory = await getProjectRecordById('memory', project, memoryId);
+            return memory
+              ? { success: true, memory, message: `Memory "${String(memory.name)}" geladen (${String(memory.content).length} Zeichen)` }
+              : { success: false, memory: null, message: `Memory-ID "${memoryId}" nicht gefunden in Projekt "${project}"` };
+          }
           const names = strArray(args, 'name');
           if (names && names.length > 1) {
             const results = await getMemoriesByNames(project, names);
@@ -3462,8 +3473,15 @@ async function handleToolCallKern(
           return { ...result, action: 'send' };
         }
         case 'get': {
-          const messages = await getChatMessages(reqStr(args, 'project'), {
-            agentId: str(args, 'agent_id') ?? undefined, // READ-FILTER: kein resolveAgentId
+          const getProject = reqStr(args, 'project');
+          const getAgentId = str(args, 'agent_id') ?? undefined; // READ-FILTER: kein resolveAgentId
+          const messageId = num(args, 'message_id');
+          if (messageId !== undefined) {
+            const message = await getProjectRecordById('chat_message', getProject, messageId, getAgentId);
+            return { success: !!message, messages: message ? [message] : [], count: message ? 1 : 0, action: 'get' };
+          }
+          const messages = await getChatMessages(getProject, {
+            agentId: getAgentId,
             since: str(args, 'since'),
             senderId: str(args, 'sender_id_filter'),
             limit: num(args, 'limit'),
@@ -3574,6 +3592,14 @@ async function handleToolCallKern(
           const postResult = await postChannelMessage(project, chName2, sender, postContent);
           if (!postResult) return { success: false, error: `Channel "${chName2}" nicht gefunden` };
           return { success: true, messageId: postResult.id, createdAt: postResult.createdAt, action: 'post' };
+        }
+        case 'get': {
+          const messageId = num(args, 'message_id');
+          if (messageId === undefined) throw new Error('Parameter "message_id" ist erforderlich fuer channel(get)');
+          const message = await getProjectRecordById('channel_message', project, messageId);
+          return message
+            ? { success: true, message, action: 'get' }
+            : { success: false, message: 'Channel-Nachricht nicht gefunden', action: 'get' };
         }
         case 'feed': {
           const chName3 = reqStr(args, 'channel_name');
@@ -3742,12 +3768,18 @@ async function handleToolCallKern(
             bis: str(args, 'bis'),
             stunden: num(args, 'stunden'),
           });
-        case 'protokoll':
+        case 'protokoll': {
+          const id = num(args, 'id');
+          if (id !== undefined) {
+            const eintrag = await getProjectRecordById('jev_decision', project, id);
+            return { success: !!eintrag, anzahl: eintrag ? 1 : 0, eintraege: eintrag ? [eintrag] : [], message: eintrag ? 'Jev-Protokolleintrag geladen' : 'Jev-Protokolleintrag nicht gefunden' };
+          }
           return await holeEntscheidungsProtokoll(project, {
             seit: str(args, 'seit'),
             nur_entschieden: bool(args, 'nur_entschieden'),
             limit: num(args, 'limit'),
           });
+        }
         case 'ueberstimmen':
           return await ueberstimmeEntscheidung(project, {
             id: num(args, 'id'),
@@ -3842,6 +3874,12 @@ async function handleToolCallKern(
           const eventId = num(args, 'event_id');
           if (eventId === undefined) throw new Error('Parameter "event_id" ist erforderlich fuer action "ack"');
           return await acknowledgeEvent(eventId, agentId, reaction);
+        }
+        case 'get': {
+          const eventId = num(args, 'event_id');
+          if (eventId === undefined) throw new Error('Parameter "event_id" ist erforderlich fuer event(get)');
+          const event = await getProjectRecordById('event', reqStr(args, 'project'), eventId, reqStr(args, 'agent_id'));
+          return { success: !!event, event, action: 'get', message: event ? 'Event geladen' : 'Event nicht gefunden' };
         }
         case 'pending': {
           const events = await getPendingEvents(reqStr(args, 'project'), reqStr(args, 'agent_id'));
@@ -4243,6 +4281,12 @@ async function handleToolCallKern(
           }
           const result = await getForFile(reqStr(args, 'file_path'));
           return { success: true, ...result };
+        }
+        case 'get': {
+          const id = reqStr(args, 'id');
+          const project = reqStr(args, 'project');
+          const doc = await getProjectRecordById('doc', project, id);
+          return { success: !!doc, doc, message: doc ? `Tech-Doc "${id}" geladen` : `Tech-Doc "${id}" nicht gefunden` };
         }
         case 'update': {
           const id = reqStr(args, 'id');
