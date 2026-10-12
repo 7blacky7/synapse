@@ -1,4 +1,4 @@
-/** P7-T38: Rollenfilter, verlustfreies Verzeichnis und PG statt Index-Chunks. */
+/** P7-T38/P7-T49: Rollenfilter, Wissensnamen ohne Regeldubletten und PG statt Index-Chunks. */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
@@ -20,12 +20,13 @@ for(const role of ['koordinator','spezialist','subagent','channelverwalter']){
   const block=rollen.baueOnboardingRegelwerk([...memories,memories[0]],'rollen-test',role);
   const expected=['grundregel',({koordinator:'koord',spezialist:'spec',subagent:'sub',channelverwalter:'channel'})[role]].sort();
   assert.deepEqual(block.rules.map(m=>m.name).sort(),expected);
-  assert.equal(block.regel_verzeichnis.eintraege.length,7);
+  assert.deepEqual(block.regel_verzeichnis.wissen,['wissen']);
+  assert.equal(Object.hasOwn(block.regel_verzeichnis,'eintraege'),false);
   assert.equal(block.regel_verzeichnis.anzahl.wissen,1);
   assert.equal(block.regel_verzeichnis.anzahl.ueberholt,1);
   assert.equal(block.regel_verzeichnis.anzahl.nur_andere_rollen,3);
   assert.match(block.regel_verzeichnis.abruf,/memory/);
-  assert.equal(block.regel_verzeichnis.eintraege.find(m=>m.name==='alt').status,'ueberholt');
+  assert(!block.regel_verzeichnis.wissen.includes('alt'),'Überholtes wird nur gezählt');
   assert(!JSON.stringify(block.regel_verzeichnis).includes('Keine Anweisung'));
 }
 assert.equal(rollen.regelSichtbarFuer(['ueberholt','pflicht'],'koordinator'),false);
@@ -35,7 +36,7 @@ const legacy=rollen.baueOnboardingRegelwerk([{name:'ungebunden',content:'Regel',
 assert.equal(legacy.rules.length,1,'Bestand anderer Projekte bleibt sichtbar');
 const empty=rollen.baueOnboardingRegelwerk([memories[5],memories[6]],'rollen-test','subagent');
 assert.equal(empty.rules.length,0);
-assert.equal(empty.regel_verzeichnis.eintraege.length,2,'Verzeichnis auch ohne aktive Regeln');
+assert.deepEqual(empty.regel_verzeichnis.wissen,['wissen'],'Wissensnamen auch ohne aktive Regeln');
 assert.equal(new Set(fixture.memories.map(m=>m.name)).size,69);
 assert.equal(fixture.approved_assignment.length,69);
 const categories=Object.fromEntries(fixture.approved_assignment.map(m=>[m.name,m.category]));
@@ -45,7 +46,9 @@ assert.equal(categories['feedback-synapse-tools-statt-curl'],'rules');
 for(const role of ['koordinator','spezialist','subagent','channelverwalter']){
   const simulated=fixture.approved_assignment.map(m=>({...m,content:'Erhaltener Volltext'}));
   const block=rollen.baueOnboardingRegelwerk(simulated,'rollen-test',role);
-  assert.deepEqual(block.regel_verzeichnis.eintraege.map(m=>m.name).sort(),fixture.memories.map(m=>m.name).sort());
+  const expectedKnowledge=simulated.filter(m=>m.category!=='rules'&&!m.tags.some(t=>['ueberholt','überholt'].includes(t))).map(m=>m.name);
+  assert.deepEqual(block.regel_verzeichnis.wissen,expectedKnowledge);
+  assert.equal(block.regel_verzeichnis.wissen.length,15);
   assert.equal(block.regel_verzeichnis.anzahl.alle,26);
   assert.equal(block.regel_verzeichnis.anzahl.koordinator,23);
   assert.equal(block.regel_verzeichnis.anzahl.spezialist,1);
@@ -55,7 +58,7 @@ for(const role of ['koordinator','spezialist','subagent','channelverwalter']){
   assert.equal(block.regel_verzeichnis.anzahl.ueberholt,1);
   assert.equal(block.rules.length,26+({koordinator:23,spezialist:1,subagent:2,channelverwalter:1})[role]);
 }
-console.log('OK Rollenbindung, Dubletten, Sonderrolle, Verzeichnis 69/69, Wissen/überholt, leere Regeln');
+console.log('OK Rollenbindung, Dubletten, Sonderrolle, 15 Wissensnamen, Zählwerte 69/69, Wissen/überholt, leere Regeln');
 if(process.argv.includes('--db')){
   if(!/:5433\/synapse_test(?:\?|$)/.test(process.env.DATABASE_URL??''))throw Error('Nur synapse_test auf Port 5433');
   let qdrantCalls=0;
@@ -150,7 +153,7 @@ for(const name of ['initProjekt','tryReactivateProject']){
     ?await run('/test','rollen-test',false,'sol-3-init')
     :await run('/test','rollen-test','sol-3-init');
   assert.deepEqual(b.rules.map(m=>m.name).sort(),['grundregel','sub'],'init must respect roles');
-  assert.equal(b.regel_verzeichnis.eintraege.length,7,'init must retain directory');
+  assert.deepEqual(b.regel_verzeichnis.wissen,['wissen'],'init must retain knowledge names');
 }
 const initSource=readFileSync(new URL('../../mcp-server/src/tools/init.ts',import.meta.url),'utf8');
 const initAst=ts.createSourceFile('init.ts',initSource,ts.ScriptTarget.Latest,true);

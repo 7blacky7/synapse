@@ -1,0 +1,2673 @@
+{
+  "task": "P7-T49",
+  "measurement": "JSON.stringify(block).length; feste Fixture-Memories, keine Laufzeitwerte",
+  "blocks": {
+    "subagent": {
+      "rules": [
+        {
+          "name": "agent-skill-pflicht",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "commit-konventionen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "feedback-synapse-tools-statt-curl",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-direkt-edit-dann-files-doppelt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-git-stash-im-synapse-projekt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-build-exit-code-pruefen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-coedit-reservierung-und-ablauf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-entwurf-ist-offener-plan",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-plan-timeout",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-tool-dollar-falle",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-context-panik",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-festverdrahteten-modellwerte",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-keine-fremde-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-unsichtbarkeit-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-vfs-drift",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-kein-github-push-bis-projekt-steht",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-multi-file-edits-files-plan",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-nullzusagen-brauchen-anker",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-rueckbau-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-scratchpad-nur-fuer-wegwerf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-subagenten-synapse-tools-vollnutzung",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-unmarkierte-attrappen-lecken",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-wiederaufnahme-ueber-synapse-history",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "subagent-tooling-regel",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "WICHTIG-zwei-projekte-2026-05-10",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        }
+      ],
+      "regel_verzeichnis": {
+        "abruf": "memory(action:\"read\", project:\"rollen-test\", name:\"<name>\")",
+        "hinweis": "25 Regel(n) nur für andere Rollen; 15 Wissenseinträge; 1 überholt. Verzeichnis vollständig, Volltext bei Bedarf über memory(action:\"read\", project:\"rollen-test\", name:\"<name>\").",
+        "anzahl": {
+          "alle": 26,
+          "koordinator": 23,
+          "spezialist": 1,
+          "subagent": 2,
+          "channelverwalter": 1,
+          "wissen": 15,
+          "ueberholt": 1,
+          "nur_andere_rollen": 25
+        },
+        "eintraege": [
+          {
+            "name": "agenten-koennen-bilder-selbst-sehen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "agent-skill-pflicht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "arbeitsregeln-koordinator-durcharbeiten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "commit-konventionen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "context-handoff-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-intern-tool",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-projektdb-mount",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-unraid",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "falle-alter-mcp-stand-verwirft-neue-parameter",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "feedback-synapse-tools-statt-curl",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-direkt-edit-dann-files-doppelt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-git-stash-im-synapse-projekt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "handoff-cc-pid-update-reminder",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-cc-send-pid-sprecher-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-lesson-purge-vs-stop-2026-05-03",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-respawn-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-subagent-history-check-und-autoloop-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-multi-parser",
+            "status": "ueberholt",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "projekt-regeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-agenten-koennen-nicht-warten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-alte-nacht-branches-ignorieren",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-anweisungen-an-agenten-im-channel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-auto-respawn-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-branch-pro-idee",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-build-exit-code-pruefen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-channelverwalter",
+            "status": "regel",
+            "rollen": [
+              "channelverwalter"
+            ]
+          },
+          {
+            "name": "regel-coedit-reservierung-und-ablauf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-context-handoff-nur-eigenes-bash",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-rollback-staende-begrenzen",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-schema-sql-probelauf",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-entwurf-ist-offener-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-plan-timeout",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-tool-dollar-falle",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-jev-erkenntnisse-sammeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-context-panik",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-festverdrahteten-modellwerte",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-fremde-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-unsichtbarkeit-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-vfs-drift",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-github-push-bis-projekt-steht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-kontext-jammern",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-multi-file-edits-files-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-nullzusagen-brauchen-anker",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-rueckbau-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-scratchpad-nur-fuer-wegwerf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-spawn-prompt-minimal-task-id",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-spezialisten-skills-knapp",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-statt-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-synapse-tools-vollnutzung",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "regel-subagent-kontext-watch-und-uebergabe",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-testfreigabe-intern-und-testkorpus",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-tests-immer-per-task-agent",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-unmarkierte-attrappen-lecken",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-webrecherche-ueber-ki-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-wiederaufnahme-ueber-synapse-history",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "rest-api-tool-einschraenkungen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "specialist-lifecycle-rules",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "subagent-tooling-regel",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "synapse-projekt-regeln-kurzfassung",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "team-governance-architektur-quelle-codebase-guide",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "token-haengt-an-der-adresse-nicht-am-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "tray-probe-projekt-regeln-kritisch",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "webui-design-standard",
+            "status": "regel",
+            "rollen": [
+              "spezialist"
+            ]
+          },
+          {
+            "name": "WICHTIG-zwei-projekte-2026-05-10",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          }
+        ]
+      }
+    },
+    "koordinator": {
+      "rules": [
+        {
+          "name": "agent-skill-pflicht",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "arbeitsregeln-koordinator-durcharbeiten",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "commit-konventionen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "context-handoff-regeln",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "feedback-synapse-tools-statt-curl",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-direkt-edit-dann-files-doppelt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-git-stash-im-synapse-projekt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "handoff-cc-pid-update-reminder",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "koordinator-cc-send-pid-sprecher-regel",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "koordinator-lesson-purge-vs-stop-2026-05-03",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "koordinator-respawn-regel",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "koordinator-subagent-history-check-und-autoloop-regel",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "nacht-session-loop-regeln",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-agenten-koennen-nicht-warten",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-alte-nacht-branches-ignorieren",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-anweisungen-an-agenten-im-channel",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-auto-respawn-spezialisten",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-branch-pro-idee",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-build-exit-code-pruefen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-coedit-reservierung-und-ablauf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-context-handoff-nur-eigenes-bash",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-deploy-rollback-staende-begrenzen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-entwurf-ist-offener-plan",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-plan-timeout",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-tool-dollar-falle",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-context-panik",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-festverdrahteten-modellwerte",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-keine-fremde-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-unsichtbarkeit-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-vfs-drift",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-kein-github-push-bis-projekt-steht",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-kein-kontext-jammern",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-multi-file-edits-files-plan",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-nullzusagen-brauchen-anker",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-rueckbau-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-scratchpad-nur-fuer-wegwerf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-spawn-prompt-minimal-task-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-spezialisten-skills-knapp",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-subagenten-statt-spezialisten",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-subagent-kontext-watch-und-uebergabe",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-tests-immer-per-task-agent",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-unmarkierte-attrappen-lecken",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-wiederaufnahme-ueber-synapse-history",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "specialist-lifecycle-rules",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "WICHTIG-zwei-projekte-2026-05-10",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        }
+      ],
+      "regel_verzeichnis": {
+        "abruf": "memory(action:\"read\", project:\"rollen-test\", name:\"<name>\")",
+        "hinweis": "4 Regel(n) nur für andere Rollen; 15 Wissenseinträge; 1 überholt. Verzeichnis vollständig, Volltext bei Bedarf über memory(action:\"read\", project:\"rollen-test\", name:\"<name>\").",
+        "anzahl": {
+          "alle": 26,
+          "koordinator": 23,
+          "spezialist": 1,
+          "subagent": 2,
+          "channelverwalter": 1,
+          "wissen": 15,
+          "ueberholt": 1,
+          "nur_andere_rollen": 4
+        },
+        "eintraege": [
+          {
+            "name": "agenten-koennen-bilder-selbst-sehen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "agent-skill-pflicht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "arbeitsregeln-koordinator-durcharbeiten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "commit-konventionen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "context-handoff-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-intern-tool",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-projektdb-mount",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-unraid",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "falle-alter-mcp-stand-verwirft-neue-parameter",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "feedback-synapse-tools-statt-curl",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-direkt-edit-dann-files-doppelt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-git-stash-im-synapse-projekt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "handoff-cc-pid-update-reminder",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-cc-send-pid-sprecher-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-lesson-purge-vs-stop-2026-05-03",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-respawn-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-subagent-history-check-und-autoloop-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-multi-parser",
+            "status": "ueberholt",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "projekt-regeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-agenten-koennen-nicht-warten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-alte-nacht-branches-ignorieren",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-anweisungen-an-agenten-im-channel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-auto-respawn-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-branch-pro-idee",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-build-exit-code-pruefen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-channelverwalter",
+            "status": "regel",
+            "rollen": [
+              "channelverwalter"
+            ]
+          },
+          {
+            "name": "regel-coedit-reservierung-und-ablauf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-context-handoff-nur-eigenes-bash",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-rollback-staende-begrenzen",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-schema-sql-probelauf",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-entwurf-ist-offener-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-plan-timeout",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-tool-dollar-falle",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-jev-erkenntnisse-sammeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-context-panik",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-festverdrahteten-modellwerte",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-fremde-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-unsichtbarkeit-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-vfs-drift",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-github-push-bis-projekt-steht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-kontext-jammern",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-multi-file-edits-files-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-nullzusagen-brauchen-anker",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-rueckbau-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-scratchpad-nur-fuer-wegwerf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-spawn-prompt-minimal-task-id",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-spezialisten-skills-knapp",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-statt-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-synapse-tools-vollnutzung",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "regel-subagent-kontext-watch-und-uebergabe",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-testfreigabe-intern-und-testkorpus",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-tests-immer-per-task-agent",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-unmarkierte-attrappen-lecken",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-webrecherche-ueber-ki-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-wiederaufnahme-ueber-synapse-history",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "rest-api-tool-einschraenkungen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "specialist-lifecycle-rules",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "subagent-tooling-regel",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "synapse-projekt-regeln-kurzfassung",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "team-governance-architektur-quelle-codebase-guide",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "token-haengt-an-der-adresse-nicht-am-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "tray-probe-projekt-regeln-kritisch",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "webui-design-standard",
+            "status": "regel",
+            "rollen": [
+              "spezialist"
+            ]
+          },
+          {
+            "name": "WICHTIG-zwei-projekte-2026-05-10",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          }
+        ]
+      }
+    },
+    "spezialist": {
+      "rules": [
+        {
+          "name": "agent-skill-pflicht",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "commit-konventionen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "feedback-synapse-tools-statt-curl",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-direkt-edit-dann-files-doppelt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-git-stash-im-synapse-projekt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-build-exit-code-pruefen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-coedit-reservierung-und-ablauf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-entwurf-ist-offener-plan",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-plan-timeout",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-tool-dollar-falle",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-context-panik",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-festverdrahteten-modellwerte",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-keine-fremde-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-unsichtbarkeit-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-vfs-drift",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-kein-github-push-bis-projekt-steht",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-multi-file-edits-files-plan",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-nullzusagen-brauchen-anker",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-rueckbau-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-scratchpad-nur-fuer-wegwerf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-unmarkierte-attrappen-lecken",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-wiederaufnahme-ueber-synapse-history",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "webui-design-standard",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "WICHTIG-zwei-projekte-2026-05-10",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        }
+      ],
+      "regel_verzeichnis": {
+        "abruf": "memory(action:\"read\", project:\"rollen-test\", name:\"<name>\")",
+        "hinweis": "26 Regel(n) nur für andere Rollen; 15 Wissenseinträge; 1 überholt. Verzeichnis vollständig, Volltext bei Bedarf über memory(action:\"read\", project:\"rollen-test\", name:\"<name>\").",
+        "anzahl": {
+          "alle": 26,
+          "koordinator": 23,
+          "spezialist": 1,
+          "subagent": 2,
+          "channelverwalter": 1,
+          "wissen": 15,
+          "ueberholt": 1,
+          "nur_andere_rollen": 26
+        },
+        "eintraege": [
+          {
+            "name": "agenten-koennen-bilder-selbst-sehen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "agent-skill-pflicht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "arbeitsregeln-koordinator-durcharbeiten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "commit-konventionen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "context-handoff-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-intern-tool",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-projektdb-mount",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-unraid",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "falle-alter-mcp-stand-verwirft-neue-parameter",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "feedback-synapse-tools-statt-curl",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-direkt-edit-dann-files-doppelt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-git-stash-im-synapse-projekt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "handoff-cc-pid-update-reminder",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-cc-send-pid-sprecher-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-lesson-purge-vs-stop-2026-05-03",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-respawn-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-subagent-history-check-und-autoloop-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-multi-parser",
+            "status": "ueberholt",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "projekt-regeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-agenten-koennen-nicht-warten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-alte-nacht-branches-ignorieren",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-anweisungen-an-agenten-im-channel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-auto-respawn-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-branch-pro-idee",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-build-exit-code-pruefen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-channelverwalter",
+            "status": "regel",
+            "rollen": [
+              "channelverwalter"
+            ]
+          },
+          {
+            "name": "regel-coedit-reservierung-und-ablauf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-context-handoff-nur-eigenes-bash",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-rollback-staende-begrenzen",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-schema-sql-probelauf",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-entwurf-ist-offener-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-plan-timeout",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-tool-dollar-falle",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-jev-erkenntnisse-sammeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-context-panik",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-festverdrahteten-modellwerte",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-fremde-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-unsichtbarkeit-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-vfs-drift",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-github-push-bis-projekt-steht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-kontext-jammern",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-multi-file-edits-files-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-nullzusagen-brauchen-anker",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-rueckbau-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-scratchpad-nur-fuer-wegwerf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-spawn-prompt-minimal-task-id",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-spezialisten-skills-knapp",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-statt-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-synapse-tools-vollnutzung",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "regel-subagent-kontext-watch-und-uebergabe",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-testfreigabe-intern-und-testkorpus",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-tests-immer-per-task-agent",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-unmarkierte-attrappen-lecken",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-webrecherche-ueber-ki-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-wiederaufnahme-ueber-synapse-history",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "rest-api-tool-einschraenkungen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "specialist-lifecycle-rules",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "subagent-tooling-regel",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "synapse-projekt-regeln-kurzfassung",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "team-governance-architektur-quelle-codebase-guide",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "token-haengt-an-der-adresse-nicht-am-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "tray-probe-projekt-regeln-kritisch",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "webui-design-standard",
+            "status": "regel",
+            "rollen": [
+              "spezialist"
+            ]
+          },
+          {
+            "name": "WICHTIG-zwei-projekte-2026-05-10",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          }
+        ]
+      }
+    },
+    "channelverwalter": {
+      "rules": [
+        {
+          "name": "agent-skill-pflicht",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "commit-konventionen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "feedback-synapse-tools-statt-curl",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-direkt-edit-dann-files-doppelt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "fehler-git-stash-im-synapse-projekt",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-build-exit-code-pruefen",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-channelverwalter",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-coedit-reservierung-und-ablauf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-entwurf-ist-offener-plan",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-plan-timeout",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-files-tool-dollar-falle",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-context-panik",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-festverdrahteten-modellwerte",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-keine-fremde-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-unsichtbarkeit-agent-id",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-keine-vfs-drift",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-kein-github-push-bis-projekt-steht",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-multi-file-edits-files-plan",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-nullzusagen-brauchen-anker",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-rueckbau-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-scratchpad-nur-fuer-wegwerf",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        },
+        {
+          "name": "regel-unmarkierte-attrappen-lecken",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-wiederaufnahme-ueber-synapse-history",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+          "content": "Erhaltener Volltext",
+          "vollstaendig": true
+        },
+        {
+          "name": "WICHTIG-zwei-projekte-2026-05-10",
+          "auszug": "Erhaltener Volltext",
+          "vollstaendig": false
+        }
+      ],
+      "regel_verzeichnis": {
+        "abruf": "memory(action:\"read\", project:\"rollen-test\", name:\"<name>\")",
+        "hinweis": "26 Regel(n) nur für andere Rollen; 15 Wissenseinträge; 1 überholt. Verzeichnis vollständig, Volltext bei Bedarf über memory(action:\"read\", project:\"rollen-test\", name:\"<name>\").",
+        "anzahl": {
+          "alle": 26,
+          "koordinator": 23,
+          "spezialist": 1,
+          "subagent": 2,
+          "channelverwalter": 1,
+          "wissen": 15,
+          "ueberholt": 1,
+          "nur_andere_rollen": 26
+        },
+        "eintraege": [
+          {
+            "name": "agenten-koennen-bilder-selbst-sehen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "agent-skill-pflicht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "arbeitsregeln-koordinator-durcharbeiten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "commit-konventionen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "context-handoff-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-intern-tool",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-projektdb-mount",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "deploy-synapse-api-unraid",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "falle-alter-mcp-stand-verwirft-neue-parameter",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "feedback-synapse-tools-statt-curl",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-direkt-edit-dann-files-doppelt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "fehler-git-stash-im-synapse-projekt",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "handoff-cc-pid-update-reminder",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-cc-send-pid-sprecher-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-lesson-purge-vs-stop-2026-05-03",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-respawn-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "koordinator-subagent-history-check-und-autoloop-regel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-multi-parser",
+            "status": "ueberholt",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "nacht-session-loop-regeln",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "projekt-regeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-agenten-koennen-nicht-warten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-alte-nacht-branches-ignorieren",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-anweisungen-an-agenten-im-channel",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-auto-respawn-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-branch-pro-idee",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-build-exit-code-pruefen",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-channelverwalter",
+            "status": "regel",
+            "rollen": [
+              "channelverwalter"
+            ]
+          },
+          {
+            "name": "regel-coedit-reservierung-und-ablauf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-context-handoff-nur-eigenes-bash",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-rollback-staende-begrenzen",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-deploy-schema-sql-probelauf",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-entwurf-ist-offener-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-plan-timeout",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-files-tool-dollar-falle",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-jev-erkenntnisse-sammeln",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-context-panik",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-festverdrahteten-modellwerte",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-fremde-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-unsichtbarkeit-agent-id",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-keine-vfs-drift",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-github-push-bis-projekt-steht",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-kein-kontext-jammern",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-koordinator-kontextwarnung-handoff-und-cc-send-pid",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-multi-file-edits-files-plan",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-nullzusagen-brauchen-anker",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-postgres-ist-die-wahrheit-qdrant-ist-abgeleitet",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-rueckbau-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-schema-60s-und-keine-sperre-mit-client-warten",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-scratchpad-nur-fuer-wegwerf",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-spawn-prompt-minimal-task-id",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-spezialisten-skills-knapp",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-statt-spezialisten",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-subagenten-synapse-tools-vollnutzung",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "regel-subagent-kontext-watch-und-uebergabe",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-testfreigabe-intern-und-testkorpus",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-tests-immer-per-task-agent",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "regel-unmarkierte-attrappen-lecken",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-webrecherche-ueber-ki-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-wiederaufnahme-ueber-synapse-history",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "regel-zuruecksetzen-nur-ueber-files-restore",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "rest-api-tool-einschraenkungen",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "specialist-lifecycle-rules",
+            "status": "regel",
+            "rollen": [
+              "koordinator"
+            ]
+          },
+          {
+            "name": "subagent-tooling-regel",
+            "status": "regel",
+            "rollen": [
+              "subagent"
+            ]
+          },
+          {
+            "name": "synapse-projekt-regeln-kurzfassung",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "team-governance-architektur-quelle-codebase-guide",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "token-haengt-an-der-adresse-nicht-am-browser",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "tray-probe-projekt-regeln-kritisch",
+            "status": "wissen",
+            "rollen": [
+              "alle"
+            ]
+          },
+          {
+            "name": "webui-design-standard",
+            "status": "regel",
+            "rollen": [
+              "spezialist"
+            ]
+          },
+          {
+            "name": "WICHTIG-zwei-projekte-2026-05-10",
+            "status": "regel",
+            "rollen": [
+              "alle"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

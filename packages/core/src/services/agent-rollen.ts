@@ -269,11 +269,8 @@ export interface RegelVerzeichnis {
   abruf: string;
   hinweis: string;
   anzahl: Record<AgentRolle | 'alle' | 'wissen' | 'ueberholt' | 'nur_andere_rollen', number>;
-  eintraege: Array<{
-    name: string;
-    status: 'regel' | 'wissen' | 'ueberholt';
-    rollen: Array<AgentRolle | 'alle'>;
-  }>;
+  /** Nachlesbare Wissensnamen; Regeln und Überholtes werden nur gezählt. */
+  wissen: string[];
 }
 
 /** Ein gemeinsamer Block für REST und stdio, auch ohne sichtbare Regeln. */
@@ -287,7 +284,7 @@ export function baueOnboardingRegelwerk(
     alle: 0, koordinator: 0, spezialist: 0, subagent: 0, channelverwalter: 0,
     wissen: 0, ueberholt: 0, nur_andere_rollen: 0,
   };
-  const eintraege: RegelVerzeichnis['eintraege'] = [];
+  const wissen: string[] = [];
   const sichtbar: typeof katalog = [];
   for (const m of katalog) {
     const tags = m.tags ?? [];
@@ -295,7 +292,7 @@ export function baueOnboardingRegelwerk(
       ? 'ueberholt' : m.category === 'rules' ? 'regel' : 'wissen';
     const gebunden = erlaubteRollen(tags);
     const rollen: Array<AgentRolle | 'alle'> = gebunden ? [...gebunden] : ['alle'];
-    eintraege.push({ name: m.name, status, rollen });
+    if (status === 'wissen') wissen.push(m.name);
     if (status !== 'regel') { anzahl[status]++; continue; }
     for (const r of rollen) anzahl[r]++;
     if (regelSichtbarFuer(tags, rolle)) sichtbar.push(m);
@@ -306,8 +303,8 @@ export function baueOnboardingRegelwerk(
     rules: baueOnboardingRegeln(sichtbar),
     regel_verzeichnis: {
       abruf,
-      hinweis: `${anzahl.nur_andere_rollen} Regel(n) nur für andere Rollen; ${anzahl.wissen} Wissenseinträge; ${anzahl.ueberholt} überholt. Verzeichnis vollständig, Volltext bei Bedarf über ${abruf}.`,
-      anzahl, eintraege,
+      hinweis: `${anzahl.nur_andere_rollen} Regel(n) nur für andere Rollen; ${anzahl.wissen} Wissenseinträge; ${anzahl.ueberholt} überholt. Wissensnamen zum Nachlesen; Volltext bei Bedarf über ${abruf}.`,
+      anzahl, wissen,
     },
   };
 }
