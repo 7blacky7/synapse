@@ -4,24 +4,27 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
+import {createTestFixtureCleanup, trackShellStreams} from './_helfer/test-fixture-cleanup.mjs';
 const url=new URL(process.env.DATABASE_URL||'http://ungueltig');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 process.env.QDRANT_URL='http://127.0.0.1:9';process.env.OLLAMA_URL='http://127.0.0.1:9';
 const {getPool,closePool}=await import('../dist/db/client.js');
 const {execShellInProject}=await import('../dist/services/shell-exec.js');
+const cleanup=createTestFixtureCleanup(),runShell=trackShellStreams(cleanup,execShellInProject);
 const pool=getPool(), project='test-p10-t33-'+randomUUID();
 const root=path.join(process.cwd(),'coedit-test',project), fake='nur-test-geheim-'+randomUUID();
+cleanup.trackRoot(root);
 const fetchAlt=globalThis.fetch;
 globalThis.fetch=async(input,init)=>String(input).includes('/projects/'+project+'/status')?new Response('{"enabled":true}',{status:200}):fetchAlt(input,init);
 try{
  assert.equal((await pool.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');
  fs.mkdirSync(root,{recursive:true});fs.writeFileSync(path.join(root,'.env'),'UNRAID_SSH_PASSWORD='+fake+'\n');
  await pool.query('INSERT INTO projects(name,hostname,path,enabled) VALUES($1,$2,$3,true)',[project,os.hostname(),root]);
- const good=await execShellInProject({project,command:"printf 'hello shell\\n'",tail_lines:5});
+ const good=await runShell({project,command:"printf 'hello shell\\n'",tail_lines:5});
  assert.equal(good.status,'done');assert.equal(good.exit_code,0);assert.deepEqual(good.tail,['hello shell']);
  assert.equal(good.maskiert,undefined,'Golden ohne Secrets unveraendert');
  console.log('OK Golden shell: done/0, tail hello shell, kein maskiert-Feld');
- const bad=await execShellInProject({project,command:'cat .env',tail_lines:5});
+ const bad=await runShell({project,command:'cat .env',tail_lines:5});
  assert.equal(bad.status,'done');
  assert(!JSON.stringify(bad).includes(fake),'RED: cat Test-.env muss vor der Rueckgabe maskiert sein');
  console.log('OK Secret-Ausgabe maskiert');
@@ -40,9 +43,9 @@ try{
  assert(!maske.maskiereShellText('postgresql://tester:unbekanntesTestGeheimnis@host/db').text.includes('unbekanntesTestGeheimnis'));
  const json=maske.maskiereShellDaten({TOKEN:'unbekanntesTestGeheimnis',outer:{PASSWORD:'andereTestDaten'}},[]);
  assert(!JSON.stringify(json.daten).includes('unbekanntesTestGeheimnis'));assert(!JSON.stringify(json.daten).includes('andereTestDaten'));
- const bare=await execShellInProject({project,command:"cut -d= -f2 .env",tail_lines:5});
+ const bare=await runShell({project,command:"cut -d= -f2 .env",tail_lines:5});
  assert(!JSON.stringify(bare).includes(fake),'bekannter Wert ohne Schluessel');
- const chunked=await execShellInProject({project,command:"node -e 'process.stdout.write(\"TOK\");setTimeout(()=>process.stdout.write(\"EN=chunkTestSecret\\n\"),15)'",tail_lines:5});
+ const chunked=await runShell({project,command:"node -e 'process.stdout.write(\"TOK\");setTimeout(()=>process.stdout.write(\"EN=chunkTestSecret\\n\"),15)'",tail_lines:5});
  assert(!JSON.stringify(chunked).includes('chunkTestSecret'),'Chunkgrenze trennt Secret-Schluessel');
  const raw='UNRAID_SSH_PASSWORD='+fake+'\n'+fake+'\nBearer unbekanntesTestGeheimnis\n';
  const {id}=await queue.insertCompletedShellJob({project,command:'test-completion',status:'done',tail:[raw],output:raw,message:'postgresql://tester:unbekanntesTestGeheimnis@host/db',source:'mcp_local',agent_id:'sol-1-test'});
@@ -75,7 +78,7 @@ try{
  fs.writeFileSync(path.join(root,'.mcp.json'),JSON.stringify({mcpServers:{test:{env:{API_KEY:'mcpOnlyValue-98765'}}}}));
  fs.writeFileSync(path.join(root,'secrets.env'),'DEPLOY_AUTH=deployOnlyValue-98765\n');
  for(const [command,value]of [["node -e 'process.stdout.write(\"mcpOnlyValue-98765\")'",'mcpOnlyValue-98765'],["cut -d= -f2 secrets.env",'deployOnlyValue-98765']]){
-   assert(!JSON.stringify(await execShellInProject({project,command})).includes(value));
+   assert(!JSON.stringify(await runShell({project,command})).includes(value));
  }
  const pgSecret='pgOnlyValue-98765';
  await pool.query("INSERT INTO code_files(id,project,file_path,file_name,file_type,content,content_hash,file_size) VALUES($1,$2,'cfg/.env.sample','.env.sample','sample',$3,'fixture',30)",[randomUUID(),project,'HIDDEN_SECRET='+pgSecret]);
@@ -113,7 +116,6 @@ try{
  await pool.query('DELETE FROM code_files WHERE project=$1',[project]);
  await pool.query('DELETE FROM shell_jobs WHERE project=$1',[project]);
  await pool.query('DELETE FROM projects WHERE name=$1',[project]);
- fs.rmSync(root,{recursive:true,force:true});
+ await cleanup.cleanup();cleanup.dispose();
  await closePool();
 }
-process.exit(0);

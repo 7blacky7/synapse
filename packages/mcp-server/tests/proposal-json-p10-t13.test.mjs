@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {mkdtempSync, mkdirSync, writeFileSync, rmSync} from 'node:fs';
-import {homedir} from 'node:os';
+import {mkdirSync, writeFileSync} from 'node:fs';
+import {createTestFixtureCleanup} from '../../core/tests/_helfer/test-fixture-cleanup.mjs';
 import {join} from 'node:path';
 import {Client} from '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
 import {StdioClientTransport} from '../node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
@@ -20,24 +20,27 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([,v]) => type
 // Beide DB-Variablen auf dieselbe geprüfte Test-DB begrenzen.
 env.SYNAPSE_DATABASE_URL = env.DATABASE_URL;
 env.SYNAPSE_PROJECT = project;
-// Test-Home außerhalb des überwachten Repos; die echte Registry bleibt unberührt.
-const fixtureHome = mkdtempSync(join(homedir(), 'dev', '.synapse-t13-'));
-env.HOME = fixtureHome;
-mkdirSync(join(fixtureHome, '.synapse'));
-writeFileSync(join(fixtureHome, '.synapse', 'project-registry.json'), JSON.stringify({[project]: fixtureHome}));
-writeFileSync(join(fixtureHome, '.synapse', 'status.json'), JSON.stringify({project, path: fixtureHome, status: 'active', setupPhase: 'initial-done'}));
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [fileURLToPath(new URL('../dist/index.js', import.meta.url))],
-  env,
-  cwd: fixtureHome,
-  stderr: 'pipe',
-});
-transport.stderr?.resume();
+// Isoliertes Test-Home innerhalb der dedizierten Scratchpad-Wurzel.
+const cleanup = createTestFixtureCleanup();
+let fixtureHome, transport, connected = false;
 try {
+  fixtureHome = await cleanup.createRoot('.synapse-t13-');
+  env.HOME = fixtureHome;
+  mkdirSync(join(fixtureHome, '.synapse'));
+  writeFileSync(join(fixtureHome, '.synapse', 'project-registry.json'), JSON.stringify({[project]: fixtureHome}));
+  writeFileSync(join(fixtureHome, '.synapse', 'status.json'), JSON.stringify({project, path: fixtureHome, status: 'active', setupPhase: 'initial-done'}));
+  transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [fileURLToPath(new URL('../dist/index.js', import.meta.url))],
+    env,
+    cwd: fixtureHome,
+    stderr: 'pipe',
+  });
+  transport.stderr?.resume();
   // Vorhandene Regel verhindert den automatischen Handoff-Embedding-Schreibweg.
   await pool.query('INSERT INTO memories(id,project,name,content,category,tags) VALUES($1,$2,$3,$4,$5,$6)', [randomUUID(), project, 'context-handoff-regeln', 'Testregel', 'rules', ['pflicht']]);
   await client.connect(transport);
+  connected = true;
   for (const action of ['list', 'get', 'update_status', 'delete']) {
     const agent = project + '-' + action;
     const event = await emitEvent(project, 'ANNOUNCEMENT', 'normal', 'agent:' + agent, agent, 'Testhinweis', true);
@@ -64,11 +67,12 @@ try {
   console.error('stdio-Regressionslauf fehlgeschlagen: ' + error.message);
   throw error;
 } finally {
-  await client.close();
+  await cleanup.cleanup();
+  cleanup.dispose();
+  if (connected) await client.close();
   await pool.query('DELETE FROM agent_event_acks WHERE event_id IN (SELECT id FROM agent_events WHERE project=$1)', [project]);
   for (const table of ['agent_events', 'tool_calls', 'agent_onboardings', 'agent_sessions', 'memories']) {
     await pool.query('DELETE FROM ' + table + ' WHERE project=$1', [project]);
   }
   await pool.end();
-  rmSync(fixtureHome, {recursive: true, force: true});
 }

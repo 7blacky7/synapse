@@ -1,10 +1,13 @@
 /** P10-T36: Lage nur lesen, keine Katalogbefehle ausführen. */
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,symlink}from'node:fs/promises';
-import {join}from'node:path';import{homedir}from'node:os';
+import {join} from 'node:path';
+import {mkdir,writeFile,symlink}from'node:fs/promises';
+import{createTestFixtureCleanup}from'./_helfer/test-fixture-cleanup.mjs';
 const {ermittleShellLage}=await import('../dist/services/shell-lage.js');
 const {waehleShellStart}=await import('../dist/services/shell-start.js');
-const root=await mkdtemp(join(homedir(),'dev','synapse-shell-e2-'));
+const cleanup=createTestFixtureCleanup();
+const root=await cleanup.createRoot('synapse-shell-e2-');
+try{
 await mkdir(join(root,'safe'));await writeFile(join(root,'safe','x.txt'),'owned fixture');
 await symlink(join(root,'safe'),join(root,'link'),'dir');
 const opts={shell:'bash',os:'linux',cwd:root,project_root:root,env:{ROOT:root,EMPTY:''}};
@@ -72,3 +75,4 @@ assert.equal(r.sicher_aufloesbar,false);assert.ok(r.ungeklaert.includes('scope_n
 r=await read('if false; then BASE=safe; fi; rm "$BASE/x"');
 assert.equal(r.sicher_aufloesbar,false);assert.ok(r.ungeklaert.includes('kontrollfluss_nicht_statisch'));
 console.log('P10-T36 Variablen/Pfade/Links/Join/Wurzeln/UNC/Geräte/Windows-Shellwahl gruen.');
+}finally{await cleanup.cleanup();cleanup.dispose();}

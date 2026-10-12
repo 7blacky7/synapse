@@ -1,5 +1,6 @@
 /** P10-T47: echter Start nur read-only Originalskript/Build, eigene Test-DB-Zeile. */
 import assert from'node:assert/strict';import{randomUUID}from'node:crypto';
+import{createTestFixtureCleanup}from'./_helfer/test-fixture-cleanup.mjs';
 import{getPool,closePool}from'../dist/db/client.js';
 import{execShellInProject}from'../dist/services/shell-exec.js';
 import{holeShellStartKatalog}from'../dist/services/shell-sicherungs-lauf.js';
@@ -7,9 +8,11 @@ import{pruefeShellStart}from'../dist/services/shell-start-sicherung.js';
 import{ermittleShellLage}from'../dist/services/shell-lage.js';
 const u=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
 const root=process.cwd(),project='test-inline-t47-'+randomUUID();
-await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
-globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
-let started=false;
+const cleanup=createTestFixtureCleanup(),pool=getPool(),oldFetch=globalThis.fetch;let inserted=false;
+try{
+ await pool.query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);inserted=true;
+ globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
+ let started=false;
 const command="node --input-type=module <<'NODE'\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport {createHash} from 'node:crypto';\nfor(const [p,h] of [[\"packages/rest-api/src/routes/specialists.ts\",\"252ad19ec4a24ea19005b1131893062b1369cd3d87c35edba5f6f10c3b0b7dd0\"],[\"packages/rest-api/src/routes/auth.ts\",\"fe63bac6d148b714ac4de83268ff05b3433df01677cfb4dbb82cde78e7605a82\"],[\"packages/file-watcher-daemon/tray/api_client.go\",\"201444d677e8a47f630a1699ea390410158bebcd00508d252680ce5279008bfe\"],[\"packages/file-watcher-daemon/tray/tray.go\",\"800c01d14ba9198025aeca880d2c61b228523a74841ee2743050abd8952aaada\"],[\"packages/rest-api/tests/user-herkunft-p10-t41.test.mjs\",\"ecd0c745a2378fdc0793ab77b22d604d815df035d4e7eb2ca47ae9dab436853d\"],[\"packages/file-watcher-daemon/tray/user_chat_test.go\",\"3c2a33e582874dcf95929f5ef3b4789b9dce6478f2945ff69bf47f49613ac2a7\"]]) assert.equal(createHash('sha256').update(fs.readFileSync(p)).digest('hex'),h,p);\nconsole.log('PG_FS_SYNC_OK');\nNODE\nmise run build:api";
 const r=await execShellInProject({project,command,agent_id:'sol-2',hard_limit_ms:120000,tail_lines:1000,onStarted:()=>started=true});
 assert.equal(started,true,'Original89f8c63a erreicht echten Spawn');
@@ -28,8 +31,8 @@ const local={cwd:root,project_root:root,os:'linux',shell:'bash',env:{},env_volls
 const outside="node -e \"require('fs').rmSync('/outside')\"";
 const risk=pruefeShellStart({project,command:outside,lage:await ermittleShellLage(outside,local),agent_id:'sol-2'},katalog);
 assert.equal(risk.darf_starten,false,'negative Kontrolle nur statisch, nie ausführen');
-const{mkdtemp,mkdir,symlink}=await import('node:fs/promises');const{join}=await import('node:path');const{homedir}=await import('node:os');
-const owned=await mkdtemp(join(homedir(),'dev','synapse-t47-path-')),scratch=await mkdtemp(join(homedir(),'dev','synapse-t47-scratch-'));
+const{mkdir,symlink}=await import('node:fs/promises');const{join}=await import('node:path');
+const owned=await cleanup.createRoot('synapse-t47-path-'),scratch=await cleanup.createRoot('synapse-t47-scratch-');
 await mkdir(join(owned,'safe'));await symlink(scratch,join(owned,'escape'),'dir');
 const pathCtx={...local,cwd:owned,project_root:owned};
 const pathCheck=async(command,ctx=pathCtx)=>pruefeShellStart({project,command,lage:await ermittleShellLage(command,ctx),agent_id:'sol-2'},katalog);
@@ -38,4 +41,4 @@ assert.equal((await pathCheck("node -e \"require('fs').rmSync('./escape/new')\""
 assert.equal((await pathCheck("node -e "+JSON.stringify("require('fs').rmSync("+JSON.stringify(join(scratch,'owned'))+")"),{...pathCtx,scratchpad_roots:[scratch]})).darf_starten,true,'explizit bekannte Scratchpad-Wurzel');
 assert.equal((await pathCheck("cd safe && node -e \"require('fs').rmSync('../../outside')\"")).darf_starten,false,'tatsächlicher CWD nach cd');
 console.log('P10-T47 Original89f8c63a echter Spawn, PG_FS_SYNC_OK + echter API-Build grün; Risiko-Kontrolle abgewiesen.');
-await closePool();process.exit(0);
+}finally{globalThis.fetch=oldFetch;try{if(inserted)await pool.query('DELETE FROM projects WHERE name=$1',[project]);}finally{await closePool();await cleanup.cleanup();cleanup.dispose();}}

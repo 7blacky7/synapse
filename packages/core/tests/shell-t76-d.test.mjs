@@ -25,15 +25,18 @@ assert.equal((await check('git commit -m sync',customized)).darf_starten,false,'
 for(const x of historical)assert.equal((await check(x.command,oldDefaults)).darf_starten,false,'alle drei ALT-Katalogfälle reproduziert '+x.id);
 if(process.argv.includes('--native')){
  const u=new URL(process.env.DATABASE_URL);assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
+ const{createTestFixtureCleanup}=await import('./_helfer/test-fixture-cleanup.mjs');const cleanup=createTestFixtureCleanup();
  const{getPool,closePool}=await import('../dist/db/client.js');const{execShellInProject}=await import('../dist/services/shell-exec.js');
- const{mkdtemp,writeFile}=await import('node:fs/promises');const{join}=await import('node:path');const{homedir}=await import('node:os');const{randomUUID}=await import('node:crypto');
+ const{writeFile}=await import('node:fs/promises');const{join}=await import('node:path');const{randomUUID}=await import('node:crypto');
  const{execFileSync}=await import('node:child_process');
- const root=await mkdtemp(join(homedir(),'dev','synapse-t76-d-')),project='test-t76-d-'+randomUUID();
+ const root=await cleanup.createRoot('synapse-t76-d-'),project='test-t76-d-'+randomUUID(),pool=getPool();let inserted=false;const oldFetch=globalThis.fetch;
+ try{
+ globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
  const git=args=>execFileSync('git',args,{cwd:root,encoding:'utf8'});
  git(['init','--quiet']);git(['config','user.name','T76-Test']);git(['config','user.email','test@invalid']);
  git(['commit','--allow-empty','-qm','fixture','-m','Co-Authored-By: GPT-6 (Codex) <noreply@openai.com>']);
  await writeFile(join(root,'owned.txt'),'owned fixture');
- await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
+ await pool.query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);inserted=true;
  globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
  for(const command of ['git ls-tree -r HEAD | cat','git add -A -n | cat']){
   let started=false;const r=await execShellInProject({project,command,agent_id:'sol-2',onStarted:()=>started=true});
@@ -43,6 +46,7 @@ if(process.argv.includes('--native')){
  git(['add','--','owned.txt']);
  let started=false;const r=await execShellInProject({project,command:'git commit -q -m "sync reset kill" | cat',agent_id:'sol-2',onStarted:()=>started=true});
  assert.equal(started,true);assert.equal(r.exit_code,0);assert.equal(git(['log','-1','--format=%s']).trim(),'sync reset kill');
- await closePool();console.log('t76-D native Git-Probe und unveränderter Dry-run-Index grün.');
+ }finally{globalThis.fetch=oldFetch;try{if(inserted)await pool.query('DELETE FROM projects WHERE name=$1',[project]);}finally{await closePool();await cleanup.cleanup();cleanup.dispose();}}
+ console.log('t76-D native Git-Probe und unveränderter Dry-run-Index grün.');
 }
 console.log('t76-D historische Jobs/Flags/Daten/Negativkontrollen/ALT-Golden grün.');

@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
+import {createTestFixtureCleanup, trackShellStreams} from './_helfer/test-fixture-cleanup.mjs';
 const url=new URL(process.env.DATABASE_URL||'http://ungueltig');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 const {getPool,closePool}=await import('../dist/db/client.js');
 const {execShellInProject}=await import('../dist/services/shell-exec.js');
+const cleanup=createTestFixtureCleanup(),runShell=trackShellStreams(cleanup,execShellInProject);
 const {ShellAusgabePuffer,SHELL_PUFFER_GRENZE}=await import('../dist/services/shell-ausgabe-puffer.js');
 const {maskiereShellText}=await import('../dist/services/env-maske.js');
 for(const [raw,werte]of [
@@ -31,6 +33,7 @@ console.log('OK Begrenzung/Überhang, lange KV-/Bearer-/JSON-/URL-Werte und Surr
 
 const pool=getPool(),project='test-shell-puffer-'+randomUUID(),root=path.join(process.cwd(),'coedit-test',project);
 const fake='flushSecret-'+randomUUID(),limit=64*1024,plain='x'.repeat(limit-8),suffix=' END 😀';
+cleanup.trackRoot(root);
 const oldFetch=globalThis.fetch;
 globalThis.fetch=async(input,init)=>String(input).includes('/projects/'+project+'/status')?new Response('{"enabled":true}',{status:200}):oldFetch(input,init);
 try{
@@ -40,7 +43,7 @@ try{
  const script='process.stdout.write("x".repeat('+String(limit-8)+')+'+JSON.stringify(fake.slice(0,8))+');setTimeout(()=>process.stdout.write('+JSON.stringify(fake.slice(8)+suffix)+'+"y".repeat('+String(limit)+')),100);setTimeout(()=>process.exit(0),1200)';
  const command="node -e '"+script.replaceAll("'","'\\''")+"'";
  let during='';
- const result=await execShellInProject({project,command,detach_after_ms:500,onDetached:({stream_id})=>{
+ const result=await runShell({project,command,detach_after_ms:500,onDetached:({stream_id})=>{
    during=fs.readFileSync(path.join(os.homedir(),'.synapse','shell-streams',stream_id+'.log'),'utf8');
  }});
  assert.equal(result.exit_code,0);
@@ -54,6 +57,5 @@ try{
 }finally{
  globalThis.fetch=oldFetch;
  await pool.query('DELETE FROM projects WHERE name=$1',[project]);
- fs.rmSync(root,{recursive:true,force:true});await closePool();
+ await cleanup.cleanup();cleanup.dispose();await closePool();
 }
-process.exit(0);
