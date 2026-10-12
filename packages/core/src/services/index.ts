@@ -54,6 +54,7 @@ export type { AgentEvent, EventAck, EventType, EventPriority } from './events.js
 export * from './error-patterns.js';
 export * from './channels.js';
 export * from './channel-unread.js';
+export * from './chat-unread.js';
 export * from './inbox.js';
 export { claimShellJobHints, markShellJobSeenForToolCall, pruneShellJobNotices } from './shell-hints.js';
 export type { ShellJobHint } from './shell-hints.js';

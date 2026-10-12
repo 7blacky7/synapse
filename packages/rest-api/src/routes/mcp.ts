@@ -75,6 +75,7 @@ import {
   listActiveAgents,
   sendChatMessage,
   getChatMessages,
+  getUnreadChatHint,
   // JEV-10: Jev entscheidet Rueckfragen (P7-T28)
   entscheideRueckfrage,
   setzeAbwesenheit,
@@ -2021,6 +2022,8 @@ async function attachShellJobHints(
 
   // Ein Hinweis darf den eigentlichen Tool-Aufruf nie brechen.
   const extras: Record<string, unknown> = {};
+  const unreadChat = await getUnreadChatHint(project, effectiveAgentId);
+  if (unreadChat) extras.unreadChat = unreadChat;
   if (toolName !== 'shell') {
     try {
       const hints = await claimShellJobHints(project, effectiveAgentId, 3);

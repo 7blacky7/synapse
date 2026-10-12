@@ -98,6 +98,15 @@ CREATE TABLE public.chat_messages (
 );
 
 --
+-- P10-T49: Chat-Lesestand bleibt über Prozess- und Transportwechsel erhalten.
+CREATE TABLE IF NOT EXISTS public.chat_lesestand (
+  project TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  letzte_id BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (project, agent_id)
+);
+
 -- Name: chat_messages_id_seq; Type: SEQUENCE; Schema: public
 --
 

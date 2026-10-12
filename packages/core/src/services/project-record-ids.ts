@@ -1,5 +1,6 @@
 import { getPool } from '../db/client.js';
 import { getMemoryById } from './memory.js';
+import { getMessages } from './chat.js';
 
 export type ProjectRecordArt =
   | 'memory'
@@ -80,16 +81,8 @@ export async function getProjectRecordById(
   }
 
   if (art === 'chat_message') {
-    const { rows } = await pool.query(
-      `SELECT id, project, sender_id AS "senderId", recipient_id AS "recipientId",
-              content, timestamp
-         FROM chat_messages
-        WHERE project = $1 AND id = $2
-          AND (recipient_id IS NULL OR recipient_id = $3 OR sender_id = $3)
-        LIMIT 1`,
-      [project, idNum, agentId],
-    );
-    return rows[0] ?? null;
+    const messages = await getMessages(project, { agentId, messageId: idNum, limit: 1 });
+    return messages[0] ? { ...messages[0] } : null;
   }
 
   const { rows } = await pool.query(

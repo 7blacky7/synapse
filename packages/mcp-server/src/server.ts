@@ -25,6 +25,7 @@ import {
 
 import {
   claimUnreadChannelHints,
+  getUnreadChatHint,
   claimShellJobHints,
   markShellJobSeenForToolCall,
   claimOpenPlanHints,
@@ -69,9 +70,6 @@ import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core'
  *  Wird fuer Session-basiertes Onboarding verwendet: neue Instance = neues Onboarding. */
 export const SERVER_INSTANCE_ID = randomUUID();
 
-/** Tracking: Wann hat ein Agent zuletzt Chat gelesen? */
-const lastChatRead = new Map<string, string>();
-
 /** Tracking: Welche (Session, Tool)-Kombination wurde bereits mit Guide-Hint versehen?
  *  Schluessel: `${sessionKey}:${toolName}`. sessionKey = agent_id (wenn gesetzt) oder
  *  SERVER_INSTANCE_ID (Fallback fuer anonyme Calls). Lebt im RAM, wird bei Server-Restart
@@ -94,47 +92,7 @@ function buildFirstUseHint(toolName: string): Record<string, unknown> | null {
   };
 }
 
-/** Zählt ungelesene Chat-Nachrichten für einen Agenten */
-async function getUnreadChatCount(
-  agentId: string,
-  project: string
-): Promise<{ broadcasts: number; dms: Array<{ from: string; count: number }> } | null> {
-  const lastRead = lastChatRead.get(agentId);
-  if (!lastRead) return null; // Noch nie gelesen → kein Count (Onboarding zeigt Chat-Hinweis)
 
-  try {
-    const result = await getChatMessages(project, {
-      agentId,
-      since: lastRead,
-      limit: 50,
-    });
-
-    if (!result.success || result.messages.length === 0) return null;
-
-    let broadcasts = 0;
-    const dmCounts = new Map<string, number>();
-
-    for (const msg of result.messages) {
-      if (msg.senderId === agentId) continue; // Eigene Nachrichten ignorieren
-      if (msg.recipientId === agentId) {
-        // DM an mich
-        dmCounts.set(msg.senderId, (dmCounts.get(msg.senderId) || 0) + 1);
-      } else if (!msg.recipientId) {
-        // Broadcast
-        broadcasts++;
-      }
-    }
-
-    if (broadcasts === 0 && dmCounts.size === 0) return null;
-
-    return {
-      broadcasts,
-      dms: Array.from(dmCounts.entries()).map(([from, count]) => ({ from, count })),
-    };
-  } catch {
-    return null;
-  }
-}
 
 /** Prüft ausstehende Events für einen Agenten und baut Hint-Text */
 
@@ -298,6 +256,12 @@ export function createServer(): Server {
           } catch { /* Pending-Events duerfen Toolantworten nie brechen */ }
         }
 
+        const unreadChat = projectName ? await getUnreadChatHint(projectName, agentId) : null;
+        if (unreadChat) {
+          parsed.unreadChat = unreadChat;
+          first.text = JSON.stringify(parsed, null, 2);
+        }
+
         const hints = await claimUnreadChannelHints(agentId);
         if (hints.length > 0) {
           parsed.unread_channels = hints.map((hint) => ({
@@ -428,17 +392,7 @@ export function createServer(): Server {
         };
       }
 
-      // Ungelesene Chat-Nachrichten anzeigen
-      const unread = await getUnreadChatCount(agentId, projectName);
-      if (unread) {
-        const parts: string[] = [];
-        if (unread.broadcasts > 0) parts.push(`${unread.broadcasts} Broadcasts`);
-        for (const dm of unread.dms) parts.push(`${dm.count} DM von ${dm.from}`);
-        enhanced.unreadChat = {
-          ...unread,
-          hint: `📨 Ungelesene Nachrichten: ${parts.join(', ')}. Lies mit: chat(action: "get", project: "${projectName}", agent_id: "${agentId}")`,
-        };
-      }
+
 
       // Aktive Agenten anzeigen (kompakte Einblendung)
       try {
@@ -534,7 +488,7 @@ export function createServer(): Server {
         case 'chat': {
           const chatAction = (args as Record<string, unknown>)?.action as string;
 
-          // SONDER-LOGIK: "register" mit lastChatRead Tracking + Specialist-Info
+          // SONDER-LOGIK: "register" mit Specialist-Info
           if (chatAction === 'register') {
             const regId = (args as Record<string, unknown>)?.id as string;
             const regProjectPath = (args as Record<string, unknown>)?.project_path as string | undefined;
@@ -543,8 +497,6 @@ export function createServer(): Server {
             const regCutoffDate = (args as Record<string, unknown>)?.cutoff_date as string | undefined;
 
             const result = await registerChatAgent(regId, regProject, regModel, regCutoffDate);
-            // Chat-Read-Timestamp ab jetzt tracken
-            lastChatRead.set(regId, new Date().toISOString());
             // Specialist-System: Pruefen ob dieser Agent ein Spezialist ist
             const regEnriched: Record<string, unknown> = { ...result };
             if (regProjectPath) {
@@ -561,13 +513,11 @@ export function createServer(): Server {
             return { content: [{ type: 'text', text: JSON.stringify(regEnriched, null, 2) }] };
           }
 
-          // SONDER-LOGIK: "register_batch" mit lastChatRead Tracking
+          // SONDER-LOGIK: "register_batch"
           if (chatAction === 'register_batch') {
             const agentsList = (args as Record<string, unknown>)?.agents as Array<{ id: string; model?: string; cutoffDate?: string }>;
             const batchProject = (args as Record<string, unknown>)?.project as string;
             const result = await registerChatAgentsBatch(agentsList, batchProject);
-            const now = new Date().toISOString();
-            for (const a of agentsList) lastChatRead.set(a.id, now);
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
@@ -669,8 +619,11 @@ export function createServer(): Server {
             return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
           }
 
-          // SONDER-LOGIK: "get" mit lastChatRead Tracking + Specialist Inbox
+          // SONDER-LOGIK: "get" mit persistentem Core-Lesestand + Specialist Inbox
           if (chatAction === 'get') {
+            if (args?.message_id !== undefined) {
+              return withOnboarding(await chatTool.handler(args as Record<string, unknown>));
+            }
             const getMsgProjectPath = (args as Record<string, unknown>)?.project_path as string | undefined;
             const getMsgAgentId = (args as Record<string, unknown>)?.agent_id as string | undefined;
             const getMsgProject = (args as Record<string, unknown>)?.project as string;
@@ -680,10 +633,6 @@ export function createServer(): Server {
               senderId: (args as Record<string, unknown>)?.sender_id_filter as string | undefined,
               limit: (args as Record<string, unknown>)?.limit as number | undefined,
             });
-            // Timestamp aktualisieren — Agent hat Chat gelesen
-            if (agentId) {
-              lastChatRead.set(agentId, new Date().toISOString());
-            }
 
             // Dual-path: Specialist-Inbox-Nachrichten anfuegen wenn project_path vorhanden
             if (getMsgProjectPath && getMsgAgentId) {

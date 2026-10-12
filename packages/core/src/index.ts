@@ -668,6 +668,7 @@ export {
   expireIdleAgentSessions,
   sendMessage as sendChatMessage,
   getMessages as getChatMessages,
+  getUnreadChatHint,
   // P15-T32: Sitzungs-Signal (admin index_stats sitzung, Spezialisten-Spawn)
   SITZUNGS_ARTEN,
   SITZUNG_PARAMETER,

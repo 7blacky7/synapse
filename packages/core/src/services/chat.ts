@@ -439,10 +439,11 @@ export async function getMessages(
     since?: string;
     senderId?: string;
     agentId?: string;
+    messageId?: string | number;
     limit?: number;
   } = {}
 ): Promise<ChatMessage[]> {
-  const { since, senderId, agentId, limit = 50 } = options;
+  const { since, senderId, agentId, messageId, limit = 50 } = options;
   const pool = getPool();
 
   let query = `SELECT id, project, sender_id, recipient_id, content, timestamp
@@ -469,9 +470,33 @@ export async function getMessages(
     paramIdx++;
   }
 
-  query += ` ORDER BY timestamp ASC LIMIT $${paramIdx}`;
+  if (messageId !== undefined) {
+    query += ` AND id = $${paramIdx}`;
+    params.push(messageId);
+    paramIdx++;
+  }
+
+  query += ` ORDER BY timestamp ASC, id ASC LIMIT $${paramIdx}`;
   params.push(limit);
 
+  if (agentId) {
+    // Lesen und Markieren teilen denselben Snapshot. Nur ausgelieferte fremde Nachrichten
+    // verschieben den Stand; parallele oder ältere Abrufe dürfen ihn nie zurücksetzen.
+    params.push(agentId);
+    const leser = '$' + params.length;
+    query = `WITH geliefert AS MATERIALIZED (${query}),
+      markiert AS (
+        INSERT INTO chat_lesestand(project, agent_id, letzte_id)
+        SELECT $1, ${leser}, MAX(id) FROM geliefert
+        WHERE sender_id <> ${leser} AND (recipient_id IS NULL OR recipient_id = ${leser})
+        HAVING MAX(id) IS NOT NULL
+        ON CONFLICT (project, agent_id) DO UPDATE
+          SET letzte_id = GREATEST(chat_lesestand.letzte_id, EXCLUDED.letzte_id),
+              updated_at = NOW()
+        RETURNING letzte_id
+      )
+      SELECT * FROM geliefert ORDER BY timestamp ASC, id ASC`;
+  }
   const result = await pool.query(query, params);
 
   return result.rows.map(row => ({

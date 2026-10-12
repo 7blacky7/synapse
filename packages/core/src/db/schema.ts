@@ -479,6 +479,15 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- P10-T49: Chat-Lesestand bleibt über Prozess- und Transportwechsel erhalten.
+CREATE TABLE IF NOT EXISTS chat_lesestand (
+  project TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  letzte_id BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (project, agent_id)
+);
+
 CREATE TABLE IF NOT EXISTS tech_docs (
   id TEXT PRIMARY KEY,
   framework TEXT NOT NULL,
