@@ -1167,7 +1167,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ].join(' '),
     when_not_to_use: [
       'Allgemeine Code-Suche → code_intel oder search(action: "code").',
-      'Projekt-Wissen → memory.',
+      'Datei-Wissen in einem Aufruf → docs(get_for_file, memories: true); memory bleibt als separates Werkzeug verfuegbar.',
       'Ich weiss wie die API funktioniert — trotzdem get_for_file aufrufen bei Cutoff-Risiko.',
     ].join(' '),
     param_tips: [
@@ -1178,7 +1178,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'add source: "research" fuer kuratierte Docs (Koordinator-Scope), "context7" fuer Auto-Fetch.',
     ].join('\\n'),
     examples: [
-      'docs({ action: "get_for_file", file_path: "packages/rest-api/src/routes/mcp.ts", agent_id: "mein-agent", project: "synapse" })',
+      'docs({ action: "get_for_file", file_path: "packages/rest-api/src/routes/mcp.ts", agent_id: "mein-agent", project: "synapse", memories: true })',
       'docs({ action: "search", query: "breaking changes hooks", framework: "react", project: "synapse" })',
       'docs({ action: "add", framework: "fastify", version: "5.0", section: "plugin-api", content: "...", type: "breaking-change", project: "synapse" })',
     ],
@@ -1192,9 +1192,9 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     actions: {
       get_for_file: {
         description: 'Wissens-Airbag: Relevante Warnings/Docs fuer eine Datei abrufen — dedupliziert (Section + Content-Praefix) und hart limitiert pro Framework.',
-        params: 'file_path (req, String oder Array), agent_id (req), project (req); optional: limit (pro Framework, Standard 5), framework (Filter auf EIN Framework, z.B. "fastify")',
+        params: 'file_path (req, String oder Array), agent_id (req), project (req); optional: limit (pro Framework, Standard 5), framework (Filter auf EIN Framework, z.B. "fastify"), framework_warnungen (Standard true), memories (Standard false), steckbrief (Platzhalter Teil B, derzeit ohne Wirkung)',
         example: 'docs({ action: "get_for_file", file_path: "src/api.ts", agent_id: "mein-agent", project: "synapse", framework: "fastify", limit: 3 })',
-        tips: 'VOR jeder Datei-Bearbeitung aufrufen. Array fuer Multi-File. Warnings NICHT ignorieren. Framework-Zuordnung laeuft ueber die Datei-Extension (.ts matcht u.a. react UND fastify) — mit framework: "<name>" gezielt eingrenzen.',
+        tips: 'VOR jeder Datei-Bearbeitung aufrufen. memories:true fuegt kompakte Projekt-Memories hinzu; ohne neue Schalter bleibt die Ausgabe wie bisher. framework_warnungen:false blendet nur Framework-Warnungen aus (Standard true). Array fuer Multi-File. Framework-Zuordnung laeuft ueber die Datei-Extension (.ts matcht u.a. react UND fastify) — mit framework: "<name>" gezielt eingrenzen.',
       },
       search: {
         description: 'Tech-Docs semantisch durchsuchen.',

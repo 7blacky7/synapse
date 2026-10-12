@@ -863,6 +863,9 @@ export const MCP_TOOLS = [
           description: 'Aktion: add (Indexieren), search (Suchen), get_for_file (Wissens-Airbag), update (Tech-Doc aktualisieren), delete (Tech-Doc loeschen)',
         },
         framework: { type: 'string', description: 'Framework/Sprache (z.B. react, python, express); bei get_for_file: optionaler Framework-Filter' },
+        framework_warnungen: { type: 'boolean', description: 'get_for_file: Framework-Warnungen abrufen (Standard true)' },
+        memories: { type: 'boolean', description: 'get_for_file: passende Projekt-Memories kompakt hinzufuegen (Standard false)' },
+        steckbrief: { type: 'boolean', description: 'Platzhalter fuer Datei-Steckbriefe in Teil B; derzeit ohne Wirkung' },
         version: { type: 'string', description: 'Version (z.B. 19.0, 3.12)' },
         section: { type: 'string', description: 'Abschnitt (z.B. hooks, routing, breaking-changes)' },
         content: { type: 'string', description: 'Inhalt des Docs' },
@@ -4245,11 +4248,31 @@ async function handleToolCallKern(
           const agentId = resolveAgentId(rawAgentId);
           if (!agentId) throw new Error('agent_id erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
           const project = reqStr(args, 'project');
+          const opts = {
+            limit: num(args, 'limit'),
+            frameworks: str(args, 'framework') ? [str(args, 'framework') as string] : undefined,
+            frameworkWarnings: bool(args, 'framework_warnungen') !== false,
+          };
+          const getForFile = async (filePath: string) => {
+            const result = await getDocsForFile(filePath, agentId, project, opts);
+            if (bool(args, 'memories') !== true) return result;
+            let matches;
+            try {
+              matches = await findMemoriesForPath(project, filePath, 5);
+            } catch (error) {
+              if (typeof error === 'object' && error !== null && 'status' in error && error.status === 404) return { ...result, memories: [] };
+              throw error;
+            }
+            const memories = matches.map(({ memory }) => ({
+              name: memory.name,
+              kurzfassung: memory.content.trim().slice(0, 240) + (memory.content.trim().length > 240 ? '…' : ''),
+              link: { action: 'read', project, name: memory.name },
+            }));
+            return { ...result, memories };
+          };
           const filePaths = strArray(args, 'file_path');
           if (filePaths && filePaths.length > 1) {
-            const settled = await Promise.allSettled(
-              filePaths.map(fp => getDocsForFile(fp, agentId, project, { limit: num(args, 'limit'), frameworks: str(args, 'framework') ? [str(args, 'framework') as string] : undefined }))
-            );
+            const settled = await Promise.allSettled(filePaths.map(getForFile));
             const results: unknown[] = [];
             const errors: string[] = [];
             for (const r of settled) {
@@ -4258,7 +4281,7 @@ async function handleToolCallKern(
             }
             return { results, count: results.length, errors };
           }
-          const result = await getDocsForFile(reqStr(args, 'file_path'), agentId, project);
+          const result = await getForFile(reqStr(args, 'file_path'));
           return { success: true, ...result };
         }
         case 'update': {
