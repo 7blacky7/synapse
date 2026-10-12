@@ -12,7 +12,7 @@ import * as ci from './code-intel.js';
 type Row = Record<string, unknown>;
 type Plan = { id: string; project: string; ops: FileBatchOp[]; expected_hashes: Record<string,string>; status: FileBatchStatus };
 type Datei = { file_path: string; content: string; deleted: boolean; neu: boolean; drift?: string };
-type Schatten = { dateien: Datei[]; tabellen: Record<string,Row[]>; umleitung: Record<string,string>; namen: string[]; symbolFinger: string; ms: number; bytes: number; befunde: unknown[] };
+type Schatten = { dateien: Datei[]; tabellen: Record<string,Row[]>; umleitung: Record<string,string>; definitionen: Record<string,string>; namen: string[]; symbolFinger: string; ms: number; bytes: number; befunde: unknown[] };
 const cache = new Map<string,{ finger: string; bis: number; wert: Schatten }>();
 const MAX_CACHE_BYTES = 32 * 1024 * 1024;
 let bauten = 0, treffer = 0;
@@ -22,7 +22,7 @@ const s = (args: Row, key: string): string | undefined => typeof args[key] === '
 const n = (args: Row, key: string): number | undefined => typeof args[key] === 'number' ? args[key] : undefined;
 
 async function indexSymbole(pool: Pool, project: string, namen: string[], pfade: string[]): Promise<Row[]> {
-  return (await pool.query<Row>('SELECT id,file_path,name,symbol_type,is_exported,line_start FROM code_symbols WHERE project=$1 AND (name=ANY($2::text[]) OR file_path=ANY($3::text[])) ORDER BY id',[project,namen,pfade])).rows;
+  return (await pool.query<Row>('SELECT id,file_path,name,symbol_type,is_exported,line_start,value,params FROM code_symbols WHERE project=$1 AND (name=ANY($2::text[]) OR file_path=ANY($3::text[])) ORDER BY id',[project,namen,pfade])).rows;
 }
 
 async function lade(plan: Plan, nach?: number): Promise<Schatten> {
@@ -90,8 +90,25 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
     for(const imp of imports) {
       if(typeof imp.value!=='string' || !imp.value.startsWith('.')) continue;
       const quelle=quellPfad(path.posix.normalize(path.posix.join(path.posix.dirname(file),imp.value)));
-      const passend=exportiert.filter(r=>typeof r.file_path==='string' && quellPfad(r.file_path)===quelle);
-      if(passend.length) return passend.length===1?passend[0]:undefined;
+      const besucht = new Set<string>();
+      const folge = (modul: string): Row | undefined => {
+        if(besucht.has(modul)) return undefined;
+        besucht.add(modul);
+        const imModul = (r: Row) => typeof r.file_path==='string' &&
+          (quellPfad(r.file_path)===modul || quellPfad(r.file_path)===modul+'/index');
+        const passend=exportiert.filter(imModul);
+        if(passend.length) return passend.length===1?passend[0]:undefined;
+        const weiter=symbole.filter(r=>r.name===name && r.symbol_type==='export' && imModul(r));
+        const ziele=weiter.flatMap(r=>{
+          if(typeof r.value!=='string' || !r.value.startsWith('.')) return [];
+          const def=folge(quellPfad(path.posix.normalize(path.posix.join(path.posix.dirname(String(r.file_path)),r.value))));
+          return def?[def]:[];
+        });
+        const ids=new Set(ziele.map(r=>r.id));
+        return ids.size===1?ziele[0]:undefined;
+      };
+      // Ein expliziter relativer Import darf nie auf ein gleichnamiges fremdes Modul fallen.
+      return folge(quelle);
     }
     return exportiert.length===1?exportiert[0]:kandidaten.length===1?kandidaten[0]:undefined;
   };
@@ -100,15 +117,22 @@ async function lade(plan: Plan, nach?: number): Promise<Schatten> {
     const neu = tabellen.code_symbols.find(r=>r.file_path===altSym.file_path && r.name===altSym.name && r.symbol_type===altSym.symbol_type);
     if(neu) umleitung[String(altSym.id)]=String(neu.id);
   }
+  const definitionsZiele = new Map<string,Set<string>>();
   for(const [file,result] of parsen) {
     result.references.forEach((ref,i)=>{
       const def = ziel(ref.symbol_name,file,ref.nur_feld);
+      if(def && !ref.nur_feld) {
+        const ids=definitionsZiele.get(ref.symbol_name)??new Set<string>();
+        ids.add(String(def.id));definitionsZiele.set(ref.symbol_name,ids);
+      }
       if(def) tabellen.code_references.push({id:'ghost:'+plan.id+':'+file+':ref:'+i,project:plan.project,file_path:file,
         symbol_id:def.id,line_number:ref.line_number,context:ref.context ?? null});
     });
   }
   for(const call of tabellen.code_call_edges) call.target_symbol_id=ziel(String(call.callee_name),String(call.file_path))?.id ?? null;
-  const wert: Schatten = {dateien,tabellen,umleitung,namen,symbolFinger:hash(JSON.stringify(echte)),ms:Math.round((performance.now()-start)*10)/10,bytes:0,befunde:stand.nicht_anwendbar};
+  const definitionen: Record<string,string> = {};
+  for(const [name,ids] of definitionsZiele) if(ids.size===1) definitionen[name]=[...ids][0];
+  const wert: Schatten = {dateien,tabellen,umleitung,definitionen,namen,symbolFinger:hash(JSON.stringify(echte)),ms:Math.round((performance.now()-start)*10)/10,bytes:0,befunde:stand.nicht_anwendbar};
   wert.bytes=Buffer.byteLength(JSON.stringify(wert));
   bauten++;
   if(wert.bytes<=MAX_CACHE_BYTES) {
@@ -149,7 +173,11 @@ function lesePool(pool: Pool, project: string, stand: Schatten): Pool {
           return '_synapse_ghost_'+table+' AS NOT MATERIALIZED ('+real+' UNION ALL '+virt+')';
         })];
         // Nur im Schatten: die Definitionsabfrage darf keinen Import/Re-Export vorziehen.
-        const definitionSort=sql.replace("CASE WHEN symbol_type = 'string' THEN 2 WHEN symbol_type = 'field' THEN 1 ELSE 0 END",
+        const defOrder="CASE WHEN symbol_type = 'string' THEN 2 WHEN symbol_type = 'field' THEN 1 ELSE 0 END";
+        const bevorzugt=stand.definitionen[String(werte[1])];
+        const prioritaet=sql.includes(defOrder) && bevorzugt
+          ? (params.push(bevorzugt),"CASE WHEN id=$"+params.length+"::text THEN 0 ELSE 1 END, ") : '';
+        const definitionSort=sql.replace(defOrder,()=>prioritaet+
           "CASE WHEN symbol_type IN ('import','export') THEN 2 WHEN symbol_type = 'string' THEN 3 WHEN symbol_type = 'field' THEN 1 ELSE 0 END");
         const rewritten=definitionSort.replace(/\b(code_files|code_symbols|code_references|code_statements|code_call_edges)\b/g,table=>'_synapse_ghost_'+table);
         return target.query('WITH '+ctes.join(',')+' '+rewritten,params);

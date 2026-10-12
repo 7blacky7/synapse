@@ -44,13 +44,16 @@ try {
  await query("INSERT INTO code_references(id,project,file_path,symbol_id,line_number,context) VALUES($1,$2,'bulk/caller.ts',$3,1,'existingProbe()')",[project+':caller-ref',project,project+':existing']);
  await query("INSERT INTO code_call_edges(project,file_path,callee_name,target_symbol_id,line_number,call_kind) VALUES($1,'bulk/caller.ts','existingProbe',$2,1,'function')",[project,project+':existing']);
  const realText='\n'.repeat(160)+'export function realProbe(){ return 3; }\n';
- for(const [file,content]of [['module.ts',realText],['barrel.ts',"export { realProbe } from './module.js';"]]) await query(
+ for(const [file,content]of [['module.ts',realText],['barrel.ts',"export { realProbe } from './module.js';"],['barrel-outer.ts',"export { realProbe } from './barrel.js';"],['other.ts','\n'.repeat(200)+'export function realProbe(){ return 7; }']]) await query(
   'INSERT INTO code_files(id,project,file_path,file_name,file_type,content,file_size,content_hash) VALUES($1,$2,$3,$3,$4,$5,$6,$7)',
   [project+':'+file,project,file,'ts',content,Buffer.byteLength(content),createHash('sha256').update(content).digest('hex')]);
+ await query("INSERT INTO code_symbols(id,project,file_path,symbol_type,name,line_start,is_exported,value) VALUES($1,$2,'barrel-outer.ts','export','realProbe',24,true,'./barrel.js')",[project+':reexport-outer',project]);
+ await query("INSERT INTO code_symbols(id,project,file_path,symbol_type,name,line_start,is_exported) VALUES($1,$2,'other.ts','function','realProbe',201,true)",[project+':other-real',project]);
  // Re-export vor echter Definition: Reihenfolge darf Zielwahl nicht beeinflussen.
  await query("INSERT INTO code_symbols(id,project,file_path,symbol_type,name,line_start,is_exported,value) VALUES($1,$2,'barrel.ts','export','realProbe',23,true,'./module.js')",[project+':reexport',project]);
  await query("INSERT INTO code_symbols(id,project,file_path,symbol_type,name,line_start,is_exported) VALUES($1,$2,'module.ts','function','realProbe',161,true)",[project+':real',project]);
  const ops=[{action:'create',file_path:'zz-ghost/neu.ts',content:"import { realProbe } from '../module.js';\nexport function ghostProbe(x:number){ return realProbe()+existingProbe()+x; }\n"},
+ {action:'create',file_path:'zz-ghost/barrel-user.ts',content:"import { realProbe } from '../barrel-outer.js';\nexport function barrelUser(){ return realProbe(); }\n"},
  {action:'search_replace',file_path:'existing.ts',search:'return 1',replace:'return realProbe()'},
  {action:'insert_after',file_path:'existing.ts',after_line:0,content:"import { realProbe } from './module.js';",shift_mode:'absolute'}];
  const id=(await query("INSERT INTO file_batch_plans(project,owner_agent_id,ops,expected_hashes,previews,status,expires_at) VALUES($1,'sol-1-perf',$2::jsonb,$3::jsonb,'[]','open',NOW()+INTERVAL '1 day') RETURNING id::text",[project,JSON.stringify(ops),JSON.stringify({'existing.ts':hash})])).rows[0].id;
@@ -65,11 +68,22 @@ try {
   assert(ref.references.some(r=>r.file_path==='existing.ts'&&r.symbol_id===project+':real'),'neuer Aufruf in Ghost-update der bestehenden Datei');
   const changedCalls=await run('calls',{file_path:'existing.ts',callee:'realProbe'});
   assert.equal(changedCalls.calls[0].target_symbol_id,project+':real');
+  const viaBarrel=await run('calls',{file_path:'zz-ghost/barrel-user.ts',callee:'realProbe'});
+  assert.equal(viaBarrel.calls[0].target_symbol_id,project+':real','zweistufiger Re-export folgt Importpfad trotz gleichnamiger anderer Definition');
+  assert(ref.references.some(r=>r.file_path==='zz-ghost/barrel-user.ts'&&r.symbol_id===project+':real'));
   const back=await run('references',{name:'existingProbe'});
   const backCalls=await run('calls',{file_path:'bulk/caller.ts',callee:'existingProbe'});
   assert(back.definition.id.startsWith('ghost:'));
   assert(back.references.some(r=>r.file_path==='bulk/caller.ts'&&r.symbol_id===back.definition.id));
   assert.equal(backCalls.calls[0].target_symbol_id,back.definition.id,'Bestand->Ghost uses same target as definition');
+  // Die andere gleichnamige Deklaration steht nun früher: Importpfad entscheidet die Definition.
+  await query('UPDATE code_symbols SET line_start=1 WHERE id=$1',[project+':other-real']);
+  assert.equal((await run('references',{name:'realProbe'})).definition.id,project+':real');
+  // Re-export-Zyklus darf nicht auf das andere Modul oder in eine Endlosschleife fallen.
+  await query("UPDATE code_symbols SET value='./barrel-outer.js' WHERE id=$1",[project+':reexport']);
+  assert.equal((await run('calls',{file_path:'zz-ghost/barrel-user.ts',callee:'realProbe'})).calls[0].target_symbol_id,null);
+  await query("UPDATE code_symbols SET value='./module.js' WHERE id=$1",[project+':reexport']);
+  assert.equal((await run('calls',{file_path:'zz-ghost/barrel-user.ts',callee:'realProbe'})).calls[0].target_symbol_id,project+':real');
   await query('UPDATE code_symbols SET id=$2 WHERE id=$1',[project+':real',project+':real-neu']);
   const freshRef=await run('references',{name:'realProbe'});
   const freshCall=await run('calls',{file_path:'zz-ghost/neu.ts',callee:'realProbe'});
@@ -103,7 +117,7 @@ try {
   measurements.push(record);console.log('PERF '+JSON.stringify(record));
   if(!measure)assert(ms<1000,action+' Schatten muss unter 1 s bleiben, ist '+ms.toFixed(1)+' ms');
  }
- console.log('PERF_RESULT '+JSON.stringify({project,n_symbols:crossOnly?3:48003,n_references:crossOnly?1:240001,n_calls:crossOnly?1:48001,measurements}));
+ console.log('PERF_RESULT '+JSON.stringify({project,n_symbols:crossOnly?5:48005,n_references:crossOnly?1:240001,n_calls:crossOnly?1:48001,measurements}));
 } finally {
  // Nur die beiden eigenen Testprojekte; keine fremden Fixtures entfernen.
  for(const p of [project,fremd])for(const table of ['code_references','code_call_edges','code_symbols','code_files','file_batch_plans','projects']){
