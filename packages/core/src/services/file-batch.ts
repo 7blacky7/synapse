@@ -2064,12 +2064,20 @@ async function commitCoeditBatch(args: {
         [plan.project, planPaths, involvedAgents, args.plan_id],
       )).rows;
     }
+    const planlessReleased = (await client.query<{ agent_id: string; file_path: string }>(
+      `UPDATE file_reservations SET released_at = NOW()
+        WHERE project = $1 AND agent_id = $2 AND plan_id IS NULL AND released_at IS NULL
+        RETURNING agent_id, file_path`,
+      [plan.project, commitCaller],
+    )).rows.map((reservation) => ({ ...reservation, reason: 'freigegeben nach eigenem Commit' }));
+    releasedReservations.push(...planlessReleased);
     // Leere Traegerplaene schliessen, deren Waits jetzt keinen offenen Zweck mehr haben —
     // aber NICHT den Traeger eines Agenten, der noch in einem anderen offenen Plan wartet
     // (Befund 875d6a8c: ein Traeger kann Waits auf mehrere Plaene haben).
     await closeOrphanCarriers(client, plan.project, `commit von Plan ${args.plan_id}`);
     await notifyPlanCommitted(client, plan, commitCaller);
     await client.query('COMMIT'); notifyPlanChange();
+    if (planlessReleased.length > 0) await replanUnblockedReservationWaits(plan.project);
 
     for (const file of writtenFiles) {
       if (!file.deleted) enqueueParseAndEmbed(plan.project, file.file_path);
@@ -4139,6 +4147,40 @@ planWake.setMaxListeners(0);
 function notifyPlanChange(): void {
   planWake.emit('change');
 }
+
+/** Weckt Long-Polls nach Freigabe oder Ablauf einer Reservierung. */
+export function notifyReservationWaiters(): void {
+  notifyPlanChange();
+}
+
+/**
+ * Planlose Freigabe: Waits ohne Zielplan erhalten ihre gespeicherten Ops erneut über planBatch.
+ * Ein Wait wird erst fällig, wenn für keine seiner Dateien mehr eine aktive Reservierung besteht.
+ */
+export async function replanUnblockedReservationWaits(project?: string): Promise<number> {
+  const pool = getPool();
+  const { rows } = await pool.query<{ project: string; waiting_agent: string; deferred_ops: FileBatchOp[] }>(
+    `UPDATE file_batch_waits w
+        SET expires_at = NOW(), updated_at = NOW()
+      WHERE w.status = 'waiting' AND w.primary_plan_id IS NULL
+        AND w.waiting_agent IS NOT NULL AND jsonb_array_length(w.deferred_ops) > 0
+        AND ($1::text IS NULL OR w.project = $1)
+        AND NOT EXISTS (
+          SELECT 1 FROM unnest(w.shared_files) AS shared(file_path)
+          JOIN file_reservations r ON r.project = w.project AND r.file_path = shared.file_path
+            AND r.released_at IS NULL AND r.expires_at > NOW()
+        )
+      RETURNING w.project, w.waiting_agent, w.deferred_ops`,
+    [project ?? null],
+  );
+  let planned = 0;
+  for (const wait of rows) {
+    const result = await planBatch({ project: wait.project, agent_id: wait.waiting_agent, ops: wait.deferred_ops });
+    planned += result.total_ops ?? 0;
+  }
+  if (rows.length > 0) notifyPlanChange();
+  return planned;
+}
 function sleepOrWake(ms: number): Promise<void> {
   return new Promise((resolve) => {
     const done = () => { clearTimeout(timer); planWake.off('change', done); resolve(); };
@@ -4898,6 +4940,17 @@ async function commitLegacyBody(
         RETURNING agent_id, file_path`,
       [plan.project, legacyPaths, legacyParticipants, args.plan_id],
     )).rows;
+  }
+  const ownPlanlessReleased = (await pool.query<{ agent_id: string; file_path: string }>(
+    `UPDATE file_reservations SET released_at = NOW()
+      WHERE project = $1 AND agent_id = $2 AND plan_id IS NULL AND released_at IS NULL
+      RETURNING agent_id, file_path`,
+    [plan.project, resolveAgentId(args.agent_id)],
+  )).rows.map((reservation) => ({ ...reservation, reason: 'freigegeben nach eigenem Commit' }));
+  legacyReleased.push(...ownPlanlessReleased);
+  if (ownPlanlessReleased.length > 0) {
+    notifyPlanChange();
+    await replanUnblockedReservationWaits(plan.project);
   }
 
   return {

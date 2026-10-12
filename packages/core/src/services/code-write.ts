@@ -686,6 +686,7 @@ export interface EinzelSchreibOptionen {
 export interface SchreibErgebnis {
   warnings?: ErrorPatternWarning[];
   befunde?: FehlerBefund[];
+  released_reservations?: Array<{ agent_id: string; file_path: string; reason: string }>;
 }
 
 /** Syntaxpruefung vor dem Schreiben (nur Einzelweg). Wirft SyntaxfehlerAbgelehnt bei sperrendem Befund. */
@@ -802,13 +803,21 @@ export async function createFileInPg(
 
   enqueueParseAndEmbed(project, filePath);
 
+  const released_reservations = batchId === undefined && resolvedAgentId
+    ? await releasePlanlessReservationsAfterSingleWrite(project, resolvedAgentId)
+    : [];
+
   // P15-T17: Signatur-Muster (geschrieben wird trotzdem, error wird deutlich gemeldet).
   let befunde: FehlerBefund[] = [];
   if (resolvedAgentId && resolvedAgentId !== FS_AGENT_ID) {
     befunde = await befundeNachDemSchreiben(project, filePath, '', content, resolvedAgentId, null, syntax.hinweise);
   }
 
-  return { ...(warnings?.length ? { warnings } : {}), ...(befunde.length ? { befunde } : {}) };
+  return {
+    ...(warnings?.length ? { warnings } : {}),
+    ...(befunde.length ? { befunde } : {}),
+    ...(released_reservations.length ? { released_reservations } : {}),
+  };
 }
 
 /**
@@ -942,7 +951,30 @@ export async function updateFileInPg(
 
   enqueueParseAndEmbed(project, filePath);
 
-  return { ...(warnings?.length ? { warnings } : {}), ...(befunde.length ? { befunde } : {}) };
+  const released_reservations = batchId === undefined && resolvedAgentId
+    ? await releasePlanlessReservationsAfterSingleWrite(project, resolvedAgentId)
+    : [];
+  return {
+    ...(warnings?.length ? { warnings } : {}),
+    ...(befunde.length ? { befunde } : {}),
+    ...(released_reservations.length ? { released_reservations } : {}),
+  };
+}
+
+async function releasePlanlessReservationsAfterSingleWrite(project: string, agentId: string) {
+  const pool = getPool();
+  const { rows } = await pool.query<{ agent_id: string; file_path: string }>(
+    `UPDATE file_reservations SET released_at = NOW()
+      WHERE project = $1 AND agent_id = $2 AND plan_id IS NULL AND released_at IS NULL
+      RETURNING agent_id, file_path`,
+    [project, agentId],
+  );
+  if (rows.length > 0) {
+    const batch = await import('./file-batch.js');
+    batch.notifyReservationWaiters();
+    await batch.replanUnblockedReservationWaits(project);
+  }
+  return rows.map((row) => ({ ...row, reason: 'freigegeben nach eigenem Commit' }));
 }
 
 /**

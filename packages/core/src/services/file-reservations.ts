@@ -55,6 +55,7 @@ export interface ReservationTtlConfig {
   takeoverGraceMinutes: number;
   legacyFallbackMinutes: number;
   workerIntervalMs: number;
+  planlessMinutes: number;
 }
 
 const EMPTY_CONTENT_HASH = contentHash('');
@@ -75,6 +76,7 @@ export function getReservationTtlConfig(): ReservationTtlConfig {
     renewBeforeMinutes: envNonNegativeInt('SYNAPSE_RESERVATION_TTL_RENEW_BEFORE_MINUTES', 10),
     takeoverGraceMinutes: envNonNegativeInt('SYNAPSE_RESERVATION_TTL_GRACE_MINUTES', 10),
     legacyFallbackMinutes: 5,
+    planlessMinutes: Math.max(1, envNonNegativeInt('SYNAPSE_RESERVATION_TTL_PLANLESS_MINUTES', 5)),
     workerIntervalMs: Math.max(100, envNonNegativeInt('SYNAPSE_RESERVATION_TTL_WORKER_INTERVAL_MS', 60_000)),
   };
 }
@@ -297,6 +299,7 @@ export async function refreshReservationTtlsForFiles(
           SET expires_at = GREATEST(expires_at, NOW() + ($3 * INTERVAL '1 second'))
         WHERE project = $1 AND file_path = $2
           AND released_at IS NULL AND expires_at > NOW()
+          AND plan_id IS NOT NULL
           AND ($4::text IS NULL OR agent_id = $4)`,
       [args.project, filePath, scaledTtlSeconds(config, participants), args.agentId ?? null],
     );
@@ -315,6 +318,7 @@ async function renewDueWithClient(
   const values: unknown[] = [config.renewBeforeMinutes];
   const filters = [
     'r.released_at IS NULL',
+    'r.plan_id IS NOT NULL',
     'r.expires_at > NOW()',
     `r.expires_at <= NOW() + ($1 * INTERVAL '1 minute')`,
   ];
@@ -406,15 +410,18 @@ export async function releaseStaleFileReservations(
   args: { project?: string } = {},
 ): Promise<StaleReservationRelease> {
   const config = getReservationTtlConfig();
-  return inTransaction(async (client) => {
+  const result = await inTransaction(async (client) => {
     const { rows } = await client.query<{ project: string; file_path: string; grund: string }>(
       `WITH faellig AS (
          SELECT r.id,
-                CASE WHEN r.expires_at <= NOW() - ($1 * INTERVAL '1 minute') THEN 'abgelaufen' ELSE 'abgemeldet' END AS grund
+                CASE WHEN (r.plan_id IS NULL AND r.expires_at <= NOW())
+                       OR (r.plan_id IS NOT NULL AND r.expires_at <= NOW() - ($1 * INTERVAL '1 minute'))
+                     THEN 'abgelaufen' ELSE 'abgemeldet' END AS grund
            FROM file_reservations r
           WHERE r.released_at IS NULL
             AND ($2::text IS NULL OR r.project = $2)
-            AND (r.expires_at <= NOW() - ($1 * INTERVAL '1 minute')
+            AND ((r.plan_id IS NULL AND r.expires_at <= NOW())
+                 OR (r.plan_id IS NOT NULL AND r.expires_at <= NOW() - ($1 * INTERVAL '1 minute'))
                  OR EXISTS (SELECT 1 FROM agent_sessions s WHERE s.id = r.agent_id AND s.status <> 'active'))
           FOR UPDATE OF r SKIP LOCKED
        )
@@ -439,6 +446,11 @@ export async function releaseStaleFileReservations(
       abgemeldet: rows.filter((row) => row.grund === 'abgemeldet').length,
     };
   });
+  if (result.abgelaufen + result.abgemeldet > 0) {
+    const batch = await import('./file-batch.js');
+    await batch.replanUnblockedReservationWaits(args.project);
+  }
+  return result;
 }
 
 async function addWithClient(
@@ -476,7 +488,7 @@ async function addWithClient(
          last_extended_at = NOW()`,
       [
         args.project, args.agentId, filePath, args.expiresAt, args.planId,
-        scaledTtlSeconds(config, 1), baselineHash,
+        args.planId === null ? config.planlessMinutes * 60 : scaledTtlSeconds(config, 1), baselineHash,
       ],
     );
 
@@ -695,7 +707,7 @@ export async function releaseFileReservations(args: {
   filePaths: readonly string[];
 }): Promise<ReservationMutationResult> {
   const filePaths = normalizeReservationFilePaths(args.filePaths);
-  return inTransaction(async (client) => {
+  const result = await inTransaction(async (client) => {
     const released = await releaseWithClient(client, args.project, args.agentId, filePaths);
     const releasedPaths = new Set(released.map((entry) => entry.file_path));
     const notReleased = filePaths.filter((filePath) => !releasedPaths.has(filePath));
@@ -709,6 +721,11 @@ export async function releaseFileReservations(args: {
       missing_paths: notReleased.filter((filePath) => !alreadySet.has(filePath)),
     };
   });
+  if (result.released.length > 0) {
+    const batch = await import('./file-batch.js');
+    await batch.replanUnblockedReservationWaits(args.project);
+  }
+  return result;
 }
 
 function assertDisjoint(groups: Array<{ name: string; paths: readonly string[] }>): void {
