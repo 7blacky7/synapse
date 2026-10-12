@@ -383,16 +383,20 @@ export function shellGeheimWerte(envText: string, jsonText = ''): string[] {
   }
   return [...aus];
 }
-const shellLiteralMatcher = new WeakMap<readonly string[],RegExp|null>();
+const shellLiteralMatcher = new WeakMap<readonly string[],RegExp|readonly string[]|null>();
 export function maskiereShellText(text: string, bekannteWerte: readonly string[] = []): {text: string; maskiert: number} {
   let maskiert=0, aus=text;
   let matcher=shellLiteralMatcher.get(bekannteWerte);
   if(matcher===undefined){
     const werte=[...new Set(bekannteWerte)].filter(w=>w && w!==ENV_PLATZHALTER).sort((a,b)=>b.length-a.length);
-    matcher=werte.length?new RegExp('\\[WERT\\]|'+werte.map(w=>w.replace(/[.*+?^\x24{}()|[\]\\]/g,'\\$&')).join('|'),'g'):null;
+    // Sehr grosse Literale ueberschreiten die Regex-Engine-Grenze: keine Regex mit Klartext-Fehler.
+    matcher=werte.reduce((n,w)=>n+w.length,0)>32768?werte:werte.length?new RegExp('\\[WERT\\]|'+werte.map(w=>w.replace(/[.*+?^\x24{}()|[\]\\]/g,'\\$&')).join('|'),'g'):null;
     shellLiteralMatcher.set(bekannteWerte,matcher);
   }
-  if(matcher)aus=aus.replace(matcher,(wert)=>{if(wert===ENV_PLATZHALTER)return wert;maskiert++;return ENV_PLATZHALTER;});
+  if(matcher instanceof RegExp)aus=aus.replace(matcher,(wert)=>{if(wert===ENV_PLATZHALTER)return wert;maskiert++;return ENV_PLATZHALTER;});
+  else if(matcher)for(const wert of matcher){
+    aus=aus.split(ENV_PLATZHALTER).map(teil=>teil.replaceAll(wert,()=>{maskiert++;return ENV_PLATZHALTER;})).join(ENV_PLATZHALTER);
+  }
   const vorher=(aus.match(/\[WERT\]/g)??[]).length;
   if(/^\s*[\[{]/.test(aus))try {
     const original=JSON.parse(aus),strukturiert=maskiereMcpJson(aus,true);

@@ -11,6 +11,7 @@
 
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import {ShellAusgabePuffer} from './shell-ausgabe-puffer.js';
 import {ladeShellWerte,maskiereShellDaten,maskiereShellText} from './shell-maske.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -259,19 +260,11 @@ export async function execShellInProject(
 
     // P10-T33: Klartext darf nie in die Stream-Datei. UTF-8 und Geheimnisse ueber Chunk-Grenzen.
     const decoderOut=new StringDecoder('utf8'),decoderErr=new StringDecoder('utf8');
-    let pending='',maskiert=0;
-    const schreibe=(text:string)=>{
-      const safe=maskiereShellText(text,werte);maskiert+=safe.maskiert;
-      fs.writeSync(log,safe.text);
-    };
-    const empfange=(text:string)=>{
-      pending+=text;
-      const bis=pending.lastIndexOf('\n');
-      if(bis>=0){schreibe(pending.slice(0,bis+1));pending=pending.slice(bis+1);}
-    };
-    child.stdout?.on('data',(chunk:Buffer)=>empfange(decoderOut.write(chunk)));
-    child.stderr?.on('data',(chunk:Buffer)=>empfange(decoderErr.write(chunk)));
-    const flush=()=>{empfange(decoderOut.end());empfange(decoderErr.end());if(pending){schreibe(pending);pending='';}};
+    let maskiert=0;
+    const puffer=new ShellAusgabePuffer(werte,(text,anzahl)=>{maskiert+=anzahl;fs.writeSync(log,text);});
+    child.stdout?.on('data',(chunk:Buffer)=>puffer.empfange(decoderOut.write(chunk)));
+    child.stderr?.on('data',(chunk:Buffer)=>puffer.empfange(decoderErr.write(chunk)));
+    const flush=()=>{puffer.empfange(decoderOut.end());puffer.empfange(decoderErr.end());puffer.ende();};
 
     // ── Abbruch von aussen (SH-2) ──
     // Der Aufrufer bekommt eine Handhabe auf den Kindprozess. Ohne sie koennte
