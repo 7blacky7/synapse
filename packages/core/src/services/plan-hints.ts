@@ -17,14 +17,13 @@
  * stehen nur als Zahl unter "aeltere". Offene leere Traegerplaene (Wartende ohne
  * eigene Ops) werden als wartende_traeger gezaehlt statt unsichtbar zu sein.
  *
- * DROSSELUNG: Shell-Jobs haben ein Ende-Ereignis, das genau einmal gemeldet wird.
- * Plaene haben keins. Gemeldet wird deshalb je Agent+Projekt nur, wenn sich der
- * Bestand geaendert hat (Plan dazu/weg, Ops, Fehler, Autoren oder Wait-Aktivität)
- * oder ausdrücklich Onboarding ausgeliefert wird. Der Zustand liegt im
- * Prozessspeicher: ein Neustart meldet hoechstens einmal zu viel, nie zu wenig.
+ * DROSSELUNG (P10-T43): allgemeiner persistenter Claim je Sitzung/Agent/Projekt.
+ * Ersthinweis, eigener geaenderter Bestand sofort, sonst alle 30 Minuten nur bei
+ * files/plan-Nutzung. Gemeinsamer Projekt-Schalter aus P10-T40.
  */
 
 import { getPool } from '../db/index.js';
+import {claimHinweis} from './hinweis-drossel.js';
 
 /** Mehr Plaene zeigen wir nie einzeln; der Rest steht nur als Zahl da. */
 const MAX_EINTRAEGE = 5;
@@ -59,7 +58,7 @@ export interface OpenPlanHints {
   hinweis: string;
 }
 
-const zuletzt = new Map<string, { fingerprint: string; at: number }>();
+const OPEN_PLANS_INTERVALL_MS = 30 * 60_000;
 
 function alterText(ms: number): string {
   const minuten = Math.max(0, Math.floor(ms / 60000));
@@ -77,14 +76,15 @@ function dateienText(pfade: string[]): string {
 
 /**
  * Liefert den open_plans-Block fuer diesen Agenten oder null (nichts offen bzw.
- * unverändert seit der letzten Meldung; keine zeitgesteuerte Wiederholung).
+ * innerhalb des Intervalls bzw. ohne files/plan-Nutzung).
  * Darf eine Tool-Antwort nie zum Scheitern bringen.
  */
 export async function claimOpenPlanHints(
   project: string,
   agentId: string,
   jetzt: number = Date.now(),
-  onboarding = false,
+  _onboarding = false,
+  toolName?: string,
 ): Promise<OpenPlanHints | null> {
   if (!project || !agentId) return null;
   try {
@@ -124,9 +124,7 @@ export async function claimOpenPlanHints(
         WHERE project = $1 AND status = 'open' AND jsonb_array_length(ops) = 0`,
       [project],
     )).rows[0]?.n ?? 0;
-    const key = `${project}\u0000${agentId}`;
     if (rows.length === 0 && traeger === 0) {
-      zuletzt.delete(key);
       return null;
     }
     const grenze = jetzt - ALTBESTAND_TAGE * 86400000;
@@ -136,20 +134,13 @@ export async function claimOpenPlanHints(
     const sortiert = [...aktuelle.filter((r) => r.owner_agent_id === agentId), ...aktuelle.filter((r) => r.owner_agent_id !== agentId)];
     const top = sortiert.slice(0, MAX_EINTRAEGE);
     const gesamt = rows.length;
-    const fingerprint = `${gesamt}|${traeger}|${alte.length}|` + rows.map((r) => `${r.id}:${r.ops}:${r.fehler_ops}:${r.open_for_coedit}:${(r.agenten ?? []).join('/')}:${new Date(r.aktivitaet).getTime()}`).join(',');
-    const vorher = zuletzt.get(key);
-    if (!onboarding && vorher && vorher.fingerprint === fingerprint) {
-      return null;
-    }
-    zuletzt.set(key, { fingerprint, at: jetzt });
-    if (zuletzt.size > 2000) {
-      for (const [k, v] of zuletzt) {
-        if (zuletzt.size > 2000 && k !== key) zuletzt.delete(k);
-      }
-    }
-
-    // Beim bloßen Prozessneustart keine ausschließlich alten Pläne wiederholen.
-    if (!onboarding && !vorher && top.length === 0 && traeger === 0) return null;
+    // Nur eigener Bestand loest Sofortmeldungen aus; fremde Aktivitaet darf nicht fluten.
+    const eigene=rows.filter(r=>r.owner_agent_id===agentId || r.agenten?.includes(agentId));
+    const fingerprint=eigene.map(r=>`${r.id}:${r.ops}:${r.fehler_ops}`).sort().join(',');
+    if (!await claimHinweis({
+      project,agentId,art:'open_plans',fingerprint,jetzt,
+      intervallMs:OPEN_PLANS_INTERVALL_MS,wiederholen:toolName==='files'||toolName==='plan',
+    })) return null;
 
     const plaene = top.map((r) => {
       const eintrag: OpenPlanHintEntry = {

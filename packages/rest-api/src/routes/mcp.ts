@@ -1983,7 +1983,7 @@ async function attachRestChannelHints(
  *
  * Zusaetzlich open_plans (28.09.2026): offene Multi-File-Plaene des Projekts. Sie
  * laufen nicht mehr ab; wer sie sieht, committet oder verwirft sie. Gedrosselt je
- * Agent in claimOpenPlanHints (nur bei geaendertem Bestand oder alle 15 Minuten).
+ * Agent in claimOpenPlanHints (eigene Aenderungen sofort, sonst 30 Min bei files/plan).
  */
 async function attachShellJobHints(
   result: unknown,
@@ -2010,7 +2010,7 @@ async function attachShellJobHints(
     } catch { /* best effort */ }
   }
   try {
-    const plans = await claimOpenPlanHints(project, effectiveAgentId, Date.now(), 'agentOnboarding' in result);
+    const plans = await claimOpenPlanHints(project, effectiveAgentId, Date.now(), 'agentOnboarding' in result, toolName);
     if (plans) extras.open_plans = plans;
   } catch { /* best effort */ }
   // JEV-11 (P7-T30): bei aktivem jev-Schalter EINE kurze Zeile, sonst nichts. Das jev-Tool selbst

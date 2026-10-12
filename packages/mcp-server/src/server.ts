@@ -344,10 +344,10 @@ export function createServer(): Server {
         }
 
         // Offene Multi-File-Plaene (laufen seit 28.09.2026 nicht mehr ab). Gedrosselt je
-        // Agent in claimOpenPlanHints: nur bei geaendertem Bestand oder alle 15 Minuten.
+        // Agent in claimOpenPlanHints: eigene Aenderungen sofort, sonst 30 Min bei files/plan.
         if (typeof args?.project === 'string' && args.project) {
           try {
-            const planHints = await claimOpenPlanHints(args.project, agentId, Date.now(), !!parsed.agentOnboarding);
+            const planHints = await claimOpenPlanHints(args.project, agentId, Date.now(), !!parsed.agentOnboarding, name);
             if (planHints) {
               parsed.open_plans = planHints;
               first.text = JSON.stringify(parsed, null, 2);
