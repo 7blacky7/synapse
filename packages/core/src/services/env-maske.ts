@@ -24,6 +24,8 @@
 
 import { getPool } from '../db/client.js';
 import { getFileContentFromPg } from './code-write.js';
+import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL } from './mcp-json-maske.js';
+export { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, mcpJsonHinweise, mcpJsonSicht } from './mcp-json-maske.js';
 
 /** Der Platzhalter fuer jeden verborgenen Wert. */
 export const ENV_PLATZHALTER = '[WERT]';
@@ -36,6 +38,10 @@ export function istEnvDatei(pfad: string | null | undefined): boolean {
   if (typeof pfad !== 'string' || pfad === '') return false;
   const name = pfad.replace(/\\/g, '/').split('/').pop() ?? '';
   return name === '.env' || name.startsWith('.env.');
+}
+
+export function istMaskierteDatei(pfad: string | null | undefined): boolean {
+  return istEnvDatei(pfad) || istMcpJsonDatei(pfad);
 }
 
 const KV = /^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_.-]*)(\s*=\s*)(.*)$/;
@@ -107,8 +113,19 @@ export function maskiereEnv(text: string): string {
 }
 
 /** maskiereEnv nur fuer .env-Pfade, sonst unveraendert. */
+export function maskiereDatei(pfad: string | null | undefined, text: string): string {
+  if (istEnvDatei(pfad)) return maskiereEnv(text);
+  return mcpJsonSicht(pfad, text);
+}
+
+export function entmaskiereSensibleDatei(pfad: string | null | undefined, neu: string, alt: string): { inhalt: string; hinweise: string[] } {
+  if (istEnvDatei(pfad)) return entmaskiereEnv(neu, alt);
+  if (istMcpJsonDatei(pfad)) return entmaskiereMcpJson(neu, alt);
+  return { inhalt: neu, hinweise: [] };
+}
+
 export function envSicht(pfad: string | null | undefined, text: string): string {
-  return istEnvDatei(pfad) ? maskiereEnv(text) : text;
+  return maskiereDatei(pfad, text);
 }
 
 /**
@@ -198,23 +215,27 @@ export function maskiereEnvDiffText(text: string): string {
 
 /** Diff-Eintrag (text) einer .env-Datei maskieren; andere Pfade unveraendert. */
 export function maskiereEnvDiff<T extends { text?: string } | null | undefined>(pfad: string | null | undefined, diff: T): T {
-  if (!diff || !istEnvDatei(pfad) || typeof diff.text !== 'string') return diff;
-  return { ...diff, text: maskiereEnvDiffText(diff.text) };
+  if (!diff || typeof diff.text !== 'string') return diff;
+  if (istEnvDatei(pfad)) return { ...diff, text: maskiereEnvDiffText(diff.text) };
+  if (istMcpJsonDatei(pfad)) return { ...diff, text: maskiereMcpJsonDiffText(diff.text) };
+  return diff;
 }
 
 /** Op-Felder (content, search, replace, anchor_*, edits) einer Op auf eine .env-Datei maskieren. */
 export function maskiereEnvOp<T extends object>(op: T): T {
   const o = op as Record<string, unknown>;
-  if (!istEnvDatei(o.file_path as string) && !istEnvDatei(o.new_path as string)) return op;
+  const pfad = istMaskierteDatei(o.file_path as string) ? o.file_path as string : o.new_path as string;
+  if (!istMaskierteDatei(pfad)) return op;
+  const m = (text: string): string => istEnvDatei(pfad) ? maskiereEnv(text) : maskiereMcpJsonFragment(text);
   const kopie: Record<string, unknown> = { ...o };
   for (const feld of ['content', 'search', 'replace', 'anchor_text', 'anchor_contains']) {
-    if (typeof kopie[feld] === 'string') kopie[feld] = maskiereEnv(kopie[feld] as string);
+    if (typeof kopie[feld] === 'string') kopie[feld] = m(kopie[feld] as string);
   }
   if (Array.isArray(kopie.edits)) {
     kopie.edits = (kopie.edits as Array<Record<string, unknown>>).map((e) => ({
       ...e,
-      ...(typeof e.search === 'string' ? { search: maskiereEnv(e.search) } : {}),
-      ...(typeof e.replace === 'string' ? { replace: maskiereEnv(e.replace) } : {}),
+      ...(typeof e.search === 'string' ? { search: m(e.search) } : {}),
+      ...(typeof e.replace === 'string' ? { replace: m(e.replace) } : {}),
     }));
   }
   return kopie as T;
@@ -227,25 +248,29 @@ export function maskiereEnvOp<T extends object>(op: T): T {
  */
 export class EnvSchreibweg {
   readonly istEnv: boolean;
+  readonly istMaskiert: boolean;
   private real: string | null | undefined = undefined;
   hinweise: string[] = [];
 
   constructor(private readonly project: string, private readonly filePath: string) {
     this.istEnv = istEnvDatei(filePath);
+    this.istMaskiert = istMaskierteDatei(filePath);
   }
 
   async lese(): Promise<string | null> {
     this.real = await getFileContentFromPg(this.project, this.filePath);
     if (this.real === null) return null;
-    return this.istEnv ? maskiereEnv(this.real) : this.real;
+    return this.istMaskiert ? maskiereDatei(this.filePath, this.real) : this.real;
   }
 
   async schreibInhalt(neu: string): Promise<string> {
-    if (!this.istEnv) return neu;
+    if (!this.istMaskiert) return neu;
     if (this.real === undefined) this.real = await getFileContentFromPg(this.project, this.filePath);
     const alt = this.real ?? '';
-    const r = entmaskiereEnv(neu, alt);
-    this.hinweise = [...envHinweise(alt, r.inhalt, 'schreiben'), ...r.hinweise];
+    const r = entmaskiereSensibleDatei(this.filePath, neu, alt);
+    this.hinweise = this.istEnv
+      ? [...envHinweise(alt, r.inhalt, 'schreiben'), ...r.hinweise]
+      : [...mcpJsonHinweise(alt, r.inhalt, 'schreiben'), ...r.hinweise];
     return r.inhalt;
   }
 
@@ -260,14 +285,19 @@ export async function envHinweiseFuerBatch(batchId: string): Promise<string[]> {
     `SELECT DISTINCT ON (v.file_path) v.file_path, v.content AS vorher, cf.content AS nachher, (cf.deleted_at IS NOT NULL) AS weg
        FROM file_versions v
        LEFT JOIN code_files cf ON cf.project = v.project AND cf.file_path = v.file_path
-      WHERE v.batch_id = $1::bigint AND v.file_path ~ $2
+      WHERE v.batch_id = $1::bigint AND (v.file_path ~ $2 OR v.file_path ~ $3)
       ORDER BY v.file_path, v.id`,
-    [batchId, ENV_PFAD_REGEX_SQL],
+    [batchId, ENV_PFAD_REGEX_SQL, MCP_JSON_PFAD_REGEX_SQL],
   )).rows;
   const aus: string[] = [];
   for (const row of rows) {
+    if (!istMaskierteDatei(row.file_path)) continue;
     const neu = row.weg || row.nachher === null ? '' : row.nachher;
-    for (const h of envHinweise(row.vorher ?? '', neu, 'schreiben')) aus.push(rows.length > 1 ? `${row.file_path} – ${h}` : h);
+    const vorher = row.vorher ?? '';
+    const hinweise = istEnvDatei(row.file_path)
+      ? envHinweise(vorher, neu, 'schreiben')
+      : mcpJsonHinweise(vorher, neu, 'schreiben');
+    for (const h of hinweise) aus.push(rows.length > 1 ? `${row.file_path} – ${h}` : h);
   }
   return aus;
 }
@@ -290,12 +320,12 @@ function envWerteAus(text: string): string[] {
   return [...aus];
 }
 
-function envPfadeIn(wert: unknown, aus: Set<string>, tiefe = 0): void {
+function maskiertePfadeIn(wert: unknown, aus: Set<string>, tiefe = 0): void {
   if (tiefe > 12 || wert === null || typeof wert !== 'object') return;
-  if (Array.isArray(wert)) { for (const w of wert) envPfadeIn(w, aus, tiefe + 1); return; }
+  if (Array.isArray(wert)) { for (const w of wert) maskiertePfadeIn(w, aus, tiefe + 1); return; }
   for (const [k, v] of Object.entries(wert as Record<string, unknown>)) {
-    if (typeof v === 'string' && (k === 'file_path' || k === 'new_path' || k === 'datei') && istEnvDatei(v)) aus.add(v);
-    else if (typeof v === 'object') envPfadeIn(v, aus, tiefe + 1);
+    if (typeof v === 'string' && (k === 'file_path' || k === 'new_path' || k === 'datei') && istMaskierteDatei(v)) aus.add(v);
+    else if (typeof v === 'object') maskiertePfadeIn(v, aus, tiefe + 1);
   }
 }
 
@@ -323,15 +353,17 @@ function ersetzeInStrings<T>(wert: T, werte: string[]): T {
  */
 export async function schwaerzeEnvWerteInAntwort<T>(project: string | undefined, antwort: T, argPfade: Array<string | undefined> = []): Promise<T> {
   if (!project || process.env.ENV_SICHERHEITSNETZ === '0') return antwort;
-  const pfade = new Set<string>(argPfade.filter((p): p is string => istEnvDatei(p)));
-  envPfadeIn(antwort, pfade);
+  const pfade = new Set<string>(argPfade.filter((p): p is string => istMaskierteDatei(p)));
+  maskiertePfadeIn(antwort, pfade);
   if (pfade.size === 0) return antwort;
   try {
-    const rows = (await getPool().query<{ content: string | null }>(
-      'SELECT content FROM code_files WHERE project = $1 AND file_path = ANY($2::text[])',
+    const rows = (await getPool().query<{ file_path: string; content: string | null }>(
+      'SELECT file_path, content FROM code_files WHERE project = $1 AND file_path = ANY($2::text[])',
       [project, [...pfade]],
     )).rows;
-    const werte = [...new Set(rows.flatMap((r) => envWerteAus(r.content ?? '')))].sort((a, b) => b.length - a.length);
+    const werte = [...new Set(rows.flatMap((r) => istEnvDatei(r.file_path)
+      ? envWerteAus(r.content ?? '')
+      : mcpJsonWerte(r.content ?? '')))].sort((a, b) => b.length - a.length);
     if (werte.length === 0) return antwort;
     return ersetzeInStrings(antwort, werte);
   } catch (fehler) {

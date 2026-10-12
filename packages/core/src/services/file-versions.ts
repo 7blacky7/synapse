@@ -15,7 +15,7 @@
 import { getPool } from '../db/client.js';
 import { updateFileInPg, getFileContentFromPg } from './code-write.js';
 import { dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText } from './file-diff.js';
-import { envHinweise, envSicht, istEnvDatei, maskiereEnvDiff } from './env-maske.js';
+import { envHinweise, mcpJsonHinweise, envSicht, istEnvDatei, istMaskierteDatei, maskiereEnvDiff } from './env-maske.js';
 
 /**
  * P15-T22: Unified-Diff der Aenderung, die eine Version abgeloest hat. Eine Zeile in file_versions haelt
@@ -233,7 +233,7 @@ export async function getFileVersion(
   const row = result.rows[0];
   if (!row) return null;
   const fertig = mitDiff ? (await ergaenzeDiffs([row], { max: 1, kurz: false }))[0] : row;
-  if (opts.roh || !istEnvDatei(fertig.file_path)) return fertig;
+  if (opts.roh || !istMaskierteDatei(fertig.file_path)) return fertig;
   return { ...fertig, content: envSicht(fertig.file_path, fertig.content ?? ''), diff: maskiereEnvDiff(fertig.file_path, fertig.diff) };
 }
 
@@ -261,7 +261,7 @@ export async function restoreFileVersion(
     throw new Error(`Version ${versionId} nicht gefunden.`);
   }
   // P15-T36 Teil 2: kein Abbruch, aber ein Hinweis, welche .env-Variablen zurueckgesetzt werden (nur Namen).
-  const envVorher = istEnvDatei(version.file_path) ? ((await getFileContentFromPg(version.project, version.file_path)) ?? '') : null;
+  const envVorher = istMaskierteDatei(version.file_path) ? ((await getFileContentFromPg(version.project, version.file_path)) ?? '') : null;
   // reason geht als eigener Parameter in die Version, NICHT in edit_action:
   // dort steht `restore:<id>` und liefert der Anzeige Aktion und Quellversion.
   // Frueher wurde gar kein reason gesetzt — im Events-Tab war beim Zurueckrollen
@@ -276,7 +276,9 @@ export async function restoreFileVersion(
     undefined,
     reason
   );
-  const envHinweiseListe = envVorher !== null ? envHinweise(envVorher, version.content, 'restore') : [];
+  const envHinweiseListe = envVorher === null ? [] : istEnvDatei(version.file_path)
+    ? envHinweise(envVorher, version.content, 'restore')
+    : mcpJsonHinweise(envVorher, version.content, 'restore');
   return {
     project: version.project,
     file_path: version.file_path,

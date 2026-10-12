@@ -42,7 +42,7 @@ import { getPool } from '../db/client.js';
 import { rufeJev } from './jev-client.js';
 import { jevWirksam } from './jev-schalter.js';
 import { leseJevOptionen, type JevErklaerungSprachen, type JevSprache } from './jev-optionen.js';
-import { istEnvDatei, maskiereEnv, schwaerzeEnvWerteInAntwort } from './env-maske.js';
+import { istMaskierteDatei, envSicht, schwaerzeEnvWerteInAntwort } from './env-maske.js';
 import { pruefeSignaturen, pruefeSyntaxVollstaendig, type FehlerBefund } from './fehlermuster-pruefung.js';
 import { vormerkenErklaerung, type FehlermusterHinweis } from './fehlermuster-auslieferung.js';
 
@@ -274,9 +274,9 @@ export function baueSchatten(e: {
   basis: string;
   ergebnis: string;
 }): Schatten {
-  const env = istEnvDatei(e.datei);
-  const basis = env ? maskiereEnv(e.basis ?? '') : (e.basis ?? '');
-  const ergebnis = env ? maskiereEnv(e.ergebnis ?? '') : (e.ergebnis ?? '');
+  const env = istMaskierteDatei(e.datei);
+  const basis = env ? envSicht(e.datei, e.basis ?? '') : (e.basis ?? '');
+  const ergebnis = env ? envSicht(e.datei, e.ergebnis ?? '') : (e.ergebnis ?? '');
   const a = basis ? zeilenVon(basis) : [];
   const b = zeilenVon(ergebnis);
   const klemme = (z: number) => Math.min(Math.max(0, z), Math.max(0, b.length - 1));
@@ -1142,7 +1142,7 @@ export async function legeErklaerungAb(a: {
     const laenge = Object.entries(texte).filter(([, v]) => v.length < MIN_TEXT || v.length > MAX_TEXT).map(([k]) => k);
     if (laenge.length) return fehler('laenge', `Texte zwischen ${MIN_TEXT} und ${MAX_TEXT} Zeichen: ${laenge.join(', ')}.`);
     const verstoesse = pruefeGenerik(texte, { datei: f.datei, project: f.project, agent_id: f.agent_id, schatten: f.schatten });
-    if (istEnvDatei(f.datei)) {
+    if (istMaskierteDatei(f.datei)) {
       const gepr = await schwaerzeEnvWerteInAntwort(f.project, texte, [f.datei]);
       for (const k of Object.keys(texte)) if (gepr[k] !== texte[k]) verstoesse.push({ art: 'env_wert', feld: k, fund: '[WERT]' });
     }

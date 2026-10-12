@@ -1,0 +1,198 @@
+const PLATZHALTER = '[WERT]';
+export const MCP_JSON_PFAD_REGEX_SQL = '(^|/)\\.mcp\\.json(\\.[^/]*)?$';
+const SENSIBLER_SCHLUESSEL = /(?:token|key|secret|password|authorization)/i;
+const SENSIBLE_BEREICHE = new Set(['env', 'headers']);
+const URL_ZUGANGSDATEN = /([a-z][a-z0-9+.-]*:\/\/)[^/@?#:\s]+:[^/@?#\s]*@/gi;
+
+export function istMcpJsonDatei(pfad: string | null | undefined): boolean {
+  if (typeof pfad !== 'string' || pfad === '') return false;
+  const name = pfad.replace(/\\/g, '/').split('/').pop() ?? '';
+  return name === '.mcp.json' || (name.startsWith('.mcp.json.') && name !== '.mcp.json.example');
+}
+
+function maskiereUrl(wert: string): string {
+  return wert.replace(URL_ZUGANGSDATEN, '$1[WERT]@');
+}
+
+function wiederherstelleUrl(neu: string, alt: string): string {
+  const altMatch = alt.match(/^([a-z][a-z0-9+.-]*:\/\/)([^/@?#]+:[^/@?#]*@)([^/?#]+)/i);
+  const neuMatch = neu.match(/^([a-z][a-z0-9+.-]*:\/\/)\[WERT\]@([^/?#]+)/i);
+  if (!altMatch || !neuMatch || altMatch[1].toLowerCase() !== neuMatch[1].toLowerCase() || altMatch[3].toLowerCase() !== neuMatch[2].toLowerCase()) return neu;
+  const maskierterPrefix = neuMatch[1] + '[WERT]@' + neuMatch[2];
+  return neu.startsWith(maskierterPrefix) ? altMatch[0] + neu.slice(maskierterPrefix.length) : neu;
+}
+
+function maskiereWert(wert: unknown, sensibel = false, schluessel = ''): unknown {
+  const hierSensibel = sensibel || SENSIBLE_BEREICHE.has(schluessel.toLowerCase()) || SENSIBLER_SCHLUESSEL.test(schluessel);
+  if (Array.isArray(wert)) return wert.map((eintrag) => maskiereWert(eintrag, hierSensibel));
+  if (wert !== null && typeof wert === 'object') {
+    return Object.fromEntries(Object.entries(wert as Record<string, unknown>).map(([k, v]) => [k, maskiereWert(v, hierSensibel, k)]));
+  }
+  if (hierSensibel) return PLATZHALTER;
+  return typeof wert === 'string' ? maskiereUrl(wert) : wert;
+}
+
+function parse(text: string): unknown {
+  return JSON.parse(text) as unknown;
+}
+
+function einrueckung(text: string): number | string {
+  if (!text.includes('\n')) return '';
+  const match = text.match(/\n([ \t]+)["']/);
+  return match?.[1] ?? '  ';
+}
+
+function serialisiere(wert: unknown, referenz: string): string {
+  const text = JSON.stringify(wert, null, einrueckung(referenz));
+  return text + (referenz.endsWith('\n') ? '\n' : '');
+}
+
+export function maskiereMcpJson(text: string): string {
+  if (typeof text !== 'string' || text === '') return text;
+  try {
+    const original = parse(text);
+    const maskiert = maskiereWert(original);
+    if (JSON.stringify(maskiert) === JSON.stringify(original)) return text;
+    return serialisiere(maskiert, text);
+  } catch {
+    // Ungueltiges JSON bleibt nicht als moeglicher Geheimnis-Traeger sichtbar.
+    return JSON.stringify(PLATZHALTER) + (text.endsWith('\n') ? '\n' : '');
+  }
+}
+
+export function mcpJsonSicht(pfad: string | null | undefined, text: string): string {
+  return istMcpJsonDatei(pfad) ? maskiereMcpJson(text) : text;
+}
+
+function maskierbarerSchluessel(sensibel: boolean, schluessel: string): boolean {
+  return sensibel || SENSIBLE_BEREICHE.has(schluessel.toLowerCase()) || SENSIBLER_SCHLUESSEL.test(schluessel);
+}
+
+function wiederherstellen(neu: unknown, alt: unknown, sensibel: boolean, schluessel: string, pfad: string, hinweise: Set<string>): unknown {
+  const hierSensibel = maskierbarerSchluessel(sensibel, schluessel);
+  if (neu === PLATZHALTER && hierSensibel) {
+    if (alt !== undefined) return alt;
+    hinweise.add((schluessel || pfad || 'Wert') + ': Platzhalter ' + PLATZHALTER + ' ohne bekannten Wert, als Text geschrieben');
+    return neu;
+  }
+  if (typeof neu === 'string' && typeof alt === 'string') {
+    const altMaskiert = maskiereUrl(alt);
+    if (neu === altMaskiert && neu !== alt) return alt;
+    return wiederherstelleUrl(neu, alt);
+  }
+  if (Array.isArray(neu)) {
+    return neu.map((v, i) => wiederherstellen(v, Array.isArray(alt) ? alt[i] : undefined, hierSensibel, '', pfad + '[' + i + ']', hinweise));
+  }
+  if (neu !== null && typeof neu === 'object') {
+    const old = alt !== null && typeof alt === 'object' && !Array.isArray(alt) ? alt as Record<string, unknown> : {};
+    return Object.fromEntries(Object.entries(neu as Record<string, unknown>).map(([k, v]) => [
+      k,
+      wiederherstellen(v, old[k], hierSensibel, k, pfad ? pfad + '.' + k : k, hinweise),
+    ]));
+  }
+  return neu;
+}
+
+export function entmaskiereMcpJson(neu: string, alt: string): { inhalt: string; hinweise: string[] } {
+  if (typeof neu !== 'string') return { inhalt: neu, hinweise: [] };
+  if (neu === maskiereMcpJson(alt ?? '')) return { inhalt: alt, hinweise: [] };
+  try {
+    const neuObj = parse(neu);
+    const altObj = alt ? parse(alt) : undefined;
+    const hinweise = new Set<string>();
+    const inhalt = wiederherstellen(neuObj, altObj, false, '', '', hinweise);
+    return { inhalt: serialisiere(inhalt, neu), hinweise: [...hinweise] };
+  } catch {
+    return { inhalt: neu, hinweise: [] };
+  }
+}
+
+type GeheimeFelder = Map<string, { name: string; wert: string }>;
+
+function geheimeFelder(text: string): GeheimeFelder {
+  const aus: GeheimeFelder = new Map();
+  const geheRekursiv = (wert: unknown, sensibel: boolean, schluessel: string, pfad: string): void => {
+    const hierSensibel = maskierbarerSchluessel(sensibel, schluessel);
+    if (Array.isArray(wert)) {
+      wert.forEach((v, i) => geheRekursiv(v, hierSensibel, '', pfad + '[' + i + ']'));
+      return;
+    }
+    if (wert !== null && typeof wert === 'object') {
+      for (const [k, v] of Object.entries(wert as Record<string, unknown>)) {
+        geheRekursiv(v, hierSensibel, k, pfad ? pfad + '.' + k : k);
+      }
+      return;
+    }
+    const value = typeof wert === 'string' ? wert : JSON.stringify(wert);
+    if (hierSensibel || (typeof wert === 'string' && maskiereUrl(wert) !== wert)) {
+      aus.set(pfad, { name: schluessel || pfad || 'Wert', wert: value ?? '' });
+    }
+  };
+  try { geheRekursiv(parse(text), false, '', ''); } catch { /* malformed config has no parsed values */ }
+  return aus;
+}
+
+export function mcpJsonWerte(text: string): string[] {
+  return [...geheimeFelder(text).values()].map((feld) => feld.wert).filter((wert) => wert.length >= 6);
+}
+
+export function mcpJsonHinweise(alt: string, neu: string, art: 'schreiben' | 'restore'): string[] {
+  if ((alt ?? '') === (neu ?? '')) return [];
+  const vorher = geheimeFelder(alt ?? '');
+  const nachher = geheimeFelder(neu ?? '');
+  const aus: string[] = [];
+  for (const [pfad, feld] of vorher) {
+    if (JSON.stringify(nachher.get(pfad)?.wert) === JSON.stringify(feld.wert)) continue;
+    const status = art === 'restore' ? 'zurückgesetzt' : nachher.has(pfad) ? 'überschrieben' : 'entfernt';
+    aus.push(feld.name + ': Wert ' + status + ', per files(restore) wiederherstellbar');
+  }
+  return [...new Set(aus)];
+}
+
+/** Maskiert JSON-Diffzeilen unter env/headers und an sensiblen Schluesseln, Schluessel bleiben sichtbar. */
+export function maskiereMcpJsonDiffText(text: string): string {
+  if (typeof text !== 'string' || text === '') return text;
+  const bloecke: Array<{ indent: number }> = [];
+  return text.split('\n').map((zeile) => {
+    if (zeile.startsWith('@@')) { bloecke.length = 0; return zeile; }
+    const hatMarker = /^[ +\-]/.test(zeile);
+    const marker = hatMarker ? zeile[0] : '';
+    const body = hatMarker ? zeile.slice(1) : zeile;
+    const kompakt = body.trim();
+    if (kompakt.startsWith('{') || kompakt.startsWith('[')) {
+      try {
+        const wert = JSON.parse(kompakt) as unknown;
+        if (wert !== null && typeof wert === 'object') {
+          const fuehrend = body.slice(0, body.indexOf(kompakt));
+          return marker + fuehrend + maskiereMcpJson(kompakt);
+        }
+      } catch { /* einzelne Diff-Zeile statt kompletter JSON-Wert */ }
+    }
+    const indent = body.match(/^\s*/)?.[0].length ?? 0;
+    if (/^\s*[}\]]/.test(body)) while (bloecke.length && indent <= bloecke[bloecke.length - 1].indent) bloecke.pop();
+    const m = body.match(/^(\s*)("(?:\\.|[^"])*")(\s*:\s*)(.*?)(,?\s*)$/);
+    if (!m) return zeile;
+    let key = '';
+    try { key = JSON.parse(m[2]) as string; } catch { return zeile; }
+    const value = m[4];
+    const sensibel = bloecke.length > 0 || maskierbarerSchluessel(false, key);
+    const container = SENSIBLE_BEREICHE.has(key.toLowerCase()) || SENSIBLER_SCHLUESSEL.test(key);
+    let safe = value;
+    if (sensibel && value !== '{' && value !== '[' && !value.startsWith('{') && !value.startsWith('[')) {
+      safe = JSON.stringify(PLATZHALTER);
+    } else if (!sensibel && value.startsWith('"')) {
+      try { const v = JSON.parse(value) as unknown; if (typeof v === 'string') { const masked = maskiereUrl(v); if (masked !== v) safe = JSON.stringify(masked); } } catch { /* partial line */ }
+    }
+    if (container && (value.trim() === '{' || value.trim() === '[')) bloecke.push({ indent: m[1].length });
+    return marker + m[1] + m[2] + m[3] + safe + m[5];
+  }).join('\n');
+}
+
+export function maskiereMcpJsonFragment(text: string): string {
+  if (typeof text !== 'string' || text === '') return text;
+  const lines = text.split('\n').map((line) => line.replace(
+    /("(?:\\.|[^"]*(?:token|key|secret|password|authorization)[^"]*)"\s*:\s*)("(?:\\.|[^"])*"|[^,}\]]+)/gi,
+    '$1' + JSON.stringify(PLATZHALTER),
+  ));
+  return maskiereMcpJsonDiffText(lines.join('\n'));
+}

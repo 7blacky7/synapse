@@ -39,7 +39,7 @@ import {
 } from './code-write.js';
 import type { BatchEdit } from './code-write.js';
 import { enqueueParseAndEmbed } from './code.js';
-import { entmaskiereEnv, envHinweiseFuerBatch, istEnvDatei, maskiereEnv, maskiereEnvDiff, maskiereEnvOp } from './env-maske.js';
+import { entmaskiereSensibleDatei, envHinweiseFuerBatch, istMaskierteDatei, maskiereDatei, maskiereEnvDiff, maskiereEnvOp } from './env-maske.js';
 import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import {
@@ -845,14 +845,14 @@ function applyOpInMemory(
   isFirstOpOnFile: boolean,
 ): { context: string; sizeBefore: number; sizeAfter: number } {
   const src = buffers.get(op.file_path);
-  if (!src || src.deleted || !ENV_INHALTS_OPS.has(op.action) || !istEnvDatei(op.file_path)) {
+  if (!src || src.deleted || !ENV_INHALTS_OPS.has(op.action) || !istMaskierteDatei(op.file_path)) {
     return applyOpInMemoryKern(buffers, op, isFirstOpOnFile);
   }
   const real = src.finalContent;
-  const sicht = new PreparedFile(maskiereEnv(real));
+  const sicht = new PreparedFile(maskiereDatei(op.file_path, real));
   sicht.wasNewlyCreated = src.wasNewlyCreated;
   const r = applyOpInMemoryKern(new Map([[op.file_path, sicht]]), op, isFirstOpOnFile);
-  src.finalContent = entmaskiereEnv(sicht.finalContent, real).inhalt;
+  src.finalContent = entmaskiereSensibleDatei(op.file_path, sicht.finalContent, real).inhalt;
   src.wasNewlyCreated = sicht.wasNewlyCreated;
   return { ...r, sizeBefore: utf8Bytes(real), sizeAfter: src.byteSize() };
 }

@@ -72,7 +72,7 @@ import { readFileWithMetadata, getFileType, isExtractableDocument } from '../wat
 import { isMultimodalFile, getMediaMimeType, getMediaCategory, isBinaryFile, MAX_MEDIA_SIZE_MB, klassifiziereDatei, leseDateiKopf } from '../watcher/binary.js';
 import { verarbeiteAssetEreignis } from './asset-intel-sync.js';
 import { loadGitignore, shouldIgnore } from '../watcher/ignore.js';
-import { envSicht, istEnvDatei, maskiereEnv } from './env-maske.js';
+import { envSicht, istMaskierteDatei, maskiereDatei } from './env-maske.js';
 import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
 import { getPool, imHintergrund } from '../db/client.js';
@@ -3046,8 +3046,8 @@ async function ohneAusgeblendete<T extends { payload?: { file_path?: string } | 
   // P15-T36 Teil 2: Alt-Vektoren von .env-Dateien koennen Werte im Payload tragen -> nur maskiert ausliefern.
   for (const eintrag of treffer) {
     const payload = eintrag.payload as { file_path?: string; content?: unknown } | null | undefined;
-    if (payload && typeof payload.content === 'string' && istEnvDatei(payload.file_path)) {
-      (eintrag as { payload?: unknown }).payload = { ...payload, content: maskiereEnv(payload.content) };
+    if (payload && typeof payload.content === 'string' && istMaskierteDatei(payload.file_path)) {
+      (eintrag as { payload?: unknown }).payload = { ...payload, content: maskiereDatei(payload.file_path, payload.content) };
     }
   }
 
