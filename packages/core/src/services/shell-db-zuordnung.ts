@@ -35,7 +35,8 @@ function sqlBleibtInDb(sql:string,z:ShellDbZiel):boolean {
   return true;
 }
 function psqlZiel(k:ShellTextKommando,env:Record<string,string|undefined>):{ziel?:ShellDbZiel;sql:string[];ok:boolean} {
-  const a=k.argv.slice(1);let raw=env.DATABASE_URL,sql:string[]=[],ok=true;
+  // psql liest DATABASE_URL nicht als Verbindungsdefault; nur explizite URI belegt das Ziel.
+  const a=k.argv.slice(1);let raw:string|undefined,sql:string[]=[],ok=true;
   let host:string|undefined,port:string|undefined,db:string|undefined,user:string|undefined;
   for(let i=0;i<a.length;i++){
     const w=a[i];if(w.dynamisch){ok=false;continue;}
@@ -67,7 +68,12 @@ function nodeZiele(text:string,env:Record<string,string|undefined>):{ziele:Array
   const f=ts.createSourceFile('db-inline.mjs',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
   if((f as ts.SourceFile&{parseDiagnostics?:unknown[]}).parseDiagnostics?.length)return {ziele:[undefined],sql:[],ok:false};
   const decl=new Map<string,ts.Expression>(),pg=new Set<string>(),poolFns=new Set<string>(),clients=new Map<string,ShellDbZiel|undefined>();
-  const mutable=new Set<string>(),envAliases=new Set<string>();
+  const mutable=new Set<string>(),envAliases=new Set<string>(),bindungen=new Set<string>();
+  // Namenbasierte Analyse beweist keine lexikalischen Scopes: Mehrfachbindungen bleiben unklar.
+  function merkeBindung(name:ts.BindingName):void{
+    if(ts.isIdentifier(name)){if(bindungen.has(name.text))mutable.add(name.text);bindungen.add(name.text);}
+    else for(const x of name.elements)if(ts.isBindingElement(x))merkeBindung(x.name);
+  }
   let ok=true,queries=0;const ziele:Array<ShellDbZiel|undefined>=[],sql:string[]=[];
   function value(n:ts.Expression|undefined,depth=0):unknown{
     if(!n||depth>12)return undefined;
@@ -81,6 +87,10 @@ function nodeZiele(text:string,env:Record<string,string|undefined>):{ziele:Array
     return undefined;
   }
   function bind(n:ts.Node):void{
+    if(ts.isVariableDeclaration(n)||ts.isParameter(n))merkeBindung(n.name);
+    if((ts.isFunctionDeclaration(n)||ts.isClassDeclaration(n))&&n.name)merkeBindung(n.name);
+    if(ts.isImportClause(n)&&n.name)merkeBindung(n.name);
+    if(ts.isImportSpecifier(n)||ts.isNamespaceImport(n))merkeBindung(n.name);
     if(ts.isImportDeclaration(n)&&ts.isStringLiteral(n.moduleSpecifier)){
       const m=n.moduleSpecifier.text,b=n.importClause?.namedBindings;
       if(m==='pg'){if(n.importClause?.name)pg.add(n.importClause.name.text);if(b){if(ts.isNamespaceImport(b))pg.add(b.name.text);else for(const x of b.elements)if(['Client','Pool'].includes(x.propertyName?.text??x.name.text))pg.add(x.name.text);}}
@@ -122,14 +132,16 @@ function nodeZiele(text:string,env:Record<string,string|undefined>):{ziele:Array
     if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&n.initializer){
       const e=ts.isAwaitExpression(n.initializer)?n.initializer.expression:n.initializer;
       if(ts.isNewExpression(e)&&((ts.isIdentifier(e.expression)&&pg.has(e.expression.text))||(ts.isPropertyAccessExpression(e.expression)&&pg.has(e.expression.expression.getText(f))&&['Client','Pool'].includes(e.expression.name.text)))){
-        const z=e.arguments?.length===1&&!mutable.has(n.name.text)?target(e.arguments[0]):undefined;clients.set(n.name.text,z);ziele.push(z);
+        const hersteller=ts.isIdentifier(e.expression)?e.expression.text:(e.expression as ts.PropertyAccessExpression).expression.getText(f);
+        const z=e.arguments?.length===1&&!mutable.has(n.name.text)&&!mutable.has(hersteller)?target(e.arguments[0]):undefined;clients.set(n.name.text,z);ziele.push(z);
       }else if(ts.isCallExpression(e)&&ts.isIdentifier(e.expression)&&poolFns.has(e.expression.text)&&!e.arguments.length){
-        const z=dbZielAusUrl(env.DATABASE_URL);clients.set(n.name.text,z);ziele.push(z);
+        const z=!mutable.has(e.expression.text)&&!mutable.has(n.name.text)?dbZielAusUrl(env.DATABASE_URL):undefined;clients.set(n.name.text,z);ziele.push(z);
       }else if(ts.isIdentifier(e)&&clients.has(e.text))clients.set(n.name.text,clients.get(e.text));
       else if(ts.isCallExpression(e)&&ts.isPropertyAccessExpression(e.expression)&&e.expression.name.text==='connect'&&clients.has(e.expression.expression.getText(f)))clients.set(n.name.text,clients.get(e.expression.expression.getText(f)));
     }
     if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&['query','execute'].includes(n.expression.name.text)){
-      queries++;if(!clients.has(n.expression.expression.getText(f)))ziele.push(undefined);
+      queries++;const clientName=n.expression.expression.getText(f);
+      if(!clients.has(clientName)||mutable.has(clientName))ziele.push(undefined);
       const s=value(n.arguments[0]);if(typeof s==='string')sql.push(s);else ok=false;
     }
     // Stringausführung/auswertbare Codewege können weitere DB-Ziele verbergen.
