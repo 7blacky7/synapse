@@ -48,6 +48,7 @@ test('P13-T22 p13_a4: project options upsert one row, bump policy_revision, and 
 
     const coreDb = await load('packages/core/dist/db/client.js');
     db = coreDb;
+    assert.doesNotThrow(() => coreDb.getPool(), 'getPool must load default config before an optional Asset-Intel import');
     await load('packages/core/dist/asset-intel/index.js');
     const configModule = await load('packages/core/dist/config/asset-konfig.js');
     configModule.resetAssetKonfiguration();

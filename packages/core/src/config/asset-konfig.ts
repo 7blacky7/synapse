@@ -6,6 +6,8 @@
 
 import * as path from 'path';
 import { standardRegistry } from '../asset-intel/registry.js';
+import { genericBinaryInspector } from '../asset-intel/generic-binary.js';
+import { alleInspektoren } from '../asset-intel/inspectors/index.js';
 import type { AssetLimits } from '../asset-intel/types.js';
 
 const MIB = 1024 * 1024;
@@ -188,10 +190,12 @@ export function ladeAssetKonfiguration(env: NodeJS.ProcessEnv = process.env): As
     return fehler('SYNAPSE_ASSET_ASSETS_DIR/SYNAPSE_ASSET_BINARIES_DIR', 'muessen verschieden sein');
   }
 
+  // getPool()/getConfig() kann vor asset-intel/index.js geladen werden. Die Konfiguration
+  // braucht den vollständigen Built-in-Formatkatalog daher selbst, ohne den optionalen
+  // Asset-Intel-Consumer als Voraussetzung zu machen.
+  standardRegistry.register(genericBinaryInspector);
+  for (const inspector of alleInspektoren) standardRegistry.register(inspector);
   const katalog = standardRegistry.formats();
-  if (katalog.length === 0) {
-    return fehler('Asset-Inspector-Registry', 'ist leer; Asset-Intel muss vor dem Laden der Konfiguration initialisiert sein');
-  }
   const maxDateiBytes = zahl(env, 'SYNAPSE_ASSET_MAX_FILE_BYTES', 2 * GIB, 1, Number.MAX_SAFE_INTEGER);
   const maxProjektBytes = zahl(env, 'SYNAPSE_ASSET_MAX_PROJECT_BYTES', 20 * GIB, maxDateiBytes, Number.MAX_SAFE_INTEGER);
   const maxProjektDateien = zahl(env, 'SYNAPSE_ASSET_MAX_PROJECT_FILES', 100_000, 1, Number.MAX_SAFE_INTEGER);
