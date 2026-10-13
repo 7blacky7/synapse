@@ -42,9 +42,9 @@ const kern=()=>new api.AssetUploadKern({db:pool,speicher:new AssetSpeicher({konf
 const run=(name,fn)=>test(name,{skip:!api},fn);
 run('Resume über neuen Kern; zwei Finalisierer erzeugen genau eine Revision',async()=>{
   const bytes=Buffer.from('streamed-asset');const a=kern();
-  const start=await a.erstellen(ctx,input('resume.bin',bytes,'resume'));
-  assert.equal((await a.erstellen(ctx,input('resume.bin',bytes,'resume'))).id,start.id);
-  await assert.rejects(a.erstellen(ctx,input('different.bin',bytes,'resume')),e=>e.code==='idempotency_konflikt');
+  const start=await a.erstellen(ctx,input('resume.png',bytes,'resume'));
+  assert.equal((await a.erstellen(ctx,input('resume.png',bytes,'resume'))).id,start.id);
+  await assert.rejects(a.erstellen(ctx,input('different.png',bytes,'resume')),e=>e.code==='idempotency_konflikt');
   await a.teil(ctx,start.id,0,4,[bytes.subarray(0,4)]);
   const b=kern();assert.equal((await b.status(ctx,start.id)).offset,4);
   await assert.rejects(b.teil(ctx,start.id,0,4,[bytes.subarray(0,4)]),e=>e.code==='offset_konflikt');
@@ -55,20 +55,20 @@ run('Resume über neuen Kern; zwei Finalisierer erzeugen genau eine Revision',as
   assert.equal(done.status,'finalisiert');assert.equal(done.revision,'1');
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM asset_revisionen')).rows[0].n,1);
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM asset_aenderungen')).rows[0].n,1);
-  assert.equal(await fs.readFile(join(cfg.speicher.root,'p13_a6','assets','resume.bin'),'utf8'),bytes.toString());
+  assert.equal(await fs.readFile(join(cfg.speicher.root,'p13_a6','assets','resume.png'),'utf8'),bytes.toString());
   await assert.rejects(a.status({...ctx,ziel_ref:'foreign'},start.id),e=>e.code==='scope_verboten');
   await assert.rejects(a.status({...ctx,host_id:'foreign'},start.id),e=>e.code==='scope_verboten');
 });
 run('Vollhashfehler verwirft Sitzung; Abbruch lässt Offset unverändert',async()=>{
   const a=kern(),bytes=Buffer.from('right');
-  const start=await a.erstellen(ctx,input('hash.bin',bytes,'hash'));
+  const start=await a.erstellen(ctx,input('hash.png',bytes,'hash'));
   async function* broken(){yield Buffer.from('r');throw new Error('disconnect');}
   await assert.rejects(a.teil(ctx,start.id,0,5,broken()),/disconnect/);
   assert.equal((await a.status(ctx,start.id)).offset,0);
   await a.teil(ctx,start.id,0,5,[Buffer.from('wrong')]);
   await assert.rejects(a.finalisieren(ctx,start.id),e=>e.code==='hash_falsch');
   assert.equal((await a.status(ctx,start.id)).status,'fehler');
-  assert.equal((await pool.query("SELECT count(*)::int AS n FROM asset_files WHERE file_path='hash.bin'")).rows[0].n,0);
+  assert.equal((await pool.query("SELECT count(*)::int AS n FROM asset_files WHERE file_path='hash.png'")).rows[0].n,0);
 });
 run('Reverse registriert serverseitigen Finalisierer am selben Kern',async()=>{
   const a=kern(),r={bereich:'reverse',ziel_ref:'rev-test-a1b2c3',host_id:'daemon_fixture'};
@@ -78,19 +78,19 @@ run('Reverse registriert serverseitigen Finalisierer am selben Kern',async()=>{
     vorbereiten:async()=>{prepared++;},
     commit:async(_ctx,_session,op)=>{committed++;return {asset_id:'reverse-original',revision:'1',storage_key:op.storage_key};},
   });
-  const bytes=Buffer.from('iso');const start=await a.erstellen(r,input('disc.iso',bytes,'reverse'));
+  const bytes=Buffer.from('iso');const start=await a.erstellen(r,input('disc.zip',bytes,'reverse'));
   await a.teil(r,start.id,0,3,[bytes]);const done=await a.finalisieren(r,start.id);
   assert.equal(done.status,'finalisiert');assert.equal(prepared,1);assert.equal(committed,1);
-  assert.equal(await fs.readFile(join(cfg.speicher.reverseRoot,r.ziel_ref,'assets','disc.iso'),'utf8'),'iso');
+  assert.equal(await fs.readFile(join(cfg.speicher.reverseRoot,r.ziel_ref,'assets','disc.zip'),'utf8'),'iso');
 });
 
 run('Revision- und Range-Download bleibt bei neuem Publish bytegleich',async()=>{
   const a=kern(),old=Buffer.from('previous');
-  const first=await a.erstellen(ctx,input('download.bin',old,'download1'));
+  const first=await a.erstellen(ctx,input('download.png',old,'download1'));
   await a.teil(ctx,first.id,0,old.length,[old]);
   const v1=await a.finalisieren(ctx,first.id);
   const next=Buffer.from('next-bytes');
-  const second=await a.erstellen(ctx,{...input('download.bin',next,'download2'),basis_revision:'1'});
+  const second=await a.erstellen(ctx,{...input('download.png',next,'download2'),basis_revision:'1'});
   await a.teil(ctx,second.id,0,next.length,[next]);await a.finalisieren(ctx,second.id);
   const result=await a.bytes(ctx,{asset_id:v1.asset_id,revision:'1'},{offset:1,groesse:4});
   let data='';for await(const b of result.stream)data+=b;
@@ -100,7 +100,7 @@ run('Revision- und Range-Download bleibt bei neuem Publish bytegleich',async()=>
 });
 run('PG-Ausfall nach FS-Publish hält Ready zurück, explizite Recovery stellt Basis her',async()=>{
   const a=kern(),old=Buffer.from('old-recover'),next=Buffer.from('new-recover');
-  const first=await a.erstellen(ctx,input('recover.bin',old,'recover1'));
+  const first=await a.erstellen(ctx,input('recover.png',old,'recover1'));
   await a.teil(ctx,first.id,0,old.length,[old]);await a.finalisieren(ctx,first.id);
   let crash=true;
   const broken={...pool,async connect(){
@@ -110,15 +110,59 @@ run('PG-Ausfall nach FS-Publish hält Ready zurück, explizite Recovery stellt B
     }};
   }};
   const b=new api.AssetUploadKern({db:broken,speicher:new AssetSpeicher({konfiguration:cfg}),konfiguration:cfg});
-  const second=await b.erstellen(ctx,{...input('recover.bin',next,'recover2'),basis_revision:'1'});
+  const second=await b.erstellen(ctx,{...input('recover.png',next,'recover2'),basis_revision:'1'});
   await b.teil(ctx,second.id,0,next.length,[next]);
   await assert.rejects(b.finalisieren(ctx,second.id),/simulated PG commit failure/);
-  assert.equal((await pool.query("SELECT storage_status FROM asset_files WHERE project=$1 AND file_path='recover.bin'",[ctx.ziel_ref])).rows[0].storage_status,'prepared');
+  assert.equal((await pool.query("SELECT storage_status FROM asset_files WHERE project=$1 AND file_path='recover.png'",[ctx.ziel_ref])).rows[0].storage_status,'prepared');
   await pool.query("UPDATE asset_upload_sitzungen SET finalisierer_bis=clock_timestamp()-interval '1 second' WHERE id=$1",[second.id]);
   await assert.rejects(a.recovery(ctx,second.id,{istVerwaist:async()=>false}),e=>e.code==='recovery_unbestaetigt');
   await a.recovery(ctx,second.id,{istVerwaist:async()=>true});
-  const row=(await pool.query("SELECT storage_status,transport_revision FROM asset_files WHERE project=$1 AND file_path='recover.bin'",[ctx.ziel_ref])).rows[0];
+  const row=(await pool.query("SELECT storage_status,transport_revision FROM asset_files WHERE project=$1 AND file_path='recover.png'",[ctx.ziel_ref])).rows[0];
   assert.equal(row.storage_status,'ready');assert.equal(row.transport_revision,'1');
-  assert.equal(await fs.readFile(join(cfg.speicher.root,'p13_a6','assets','recover.bin'),'utf8'),old.toString());
+  assert.equal(await fs.readFile(join(cfg.speicher.root,'p13_a6','assets','recover.png'),'utf8'),old.toString());
+});
+
+
+run('Crossscope idempotency keys are serialized and conflicting ownership never accepted',async()=>{
+ const a=kern(),b=kern(),bytes=Buffer.from('one'),key=randomUUID();
+ const out=await Promise.allSettled([a.erstellen(ctx,input('cross.png',bytes,key)),b.erstellen({...ctx,ziel_ref:'p13_a6_other',host_id:'foreign'},input('cross.png',bytes,key))]);
+ assert.equal(out.filter(x=>x.status==='fulfilled').length,1);
+ assert.equal(out.filter(x=>x.status==='rejected'&&x.reason.code==='idempotency_konflikt').length,1);
+});
+run('Configured transfer concurrency across instances, stream timeout and immutable confirmed offsets',async()=>{
+ const limits=structuredClone(cfg);limits.speicher.parallelTransfers=1;limits.speicher.timeoutMs=1000;
+ const a=new api.AssetUploadKern({db:pool,konfiguration:limits}),b=new api.AssetUploadKern({db:pool,konfiguration:limits});
+ const first=await a.erstellen(ctx,input('parallel1.png',Buffer.from('x'),randomUUID()));
+ const second=await b.erstellen(ctx,input('parallel2.png',Buffer.from('y'),randomUUID()));
+ let enter,release;const entered=new Promise(r=>enter=r),held=new Promise(r=>release=r);
+ async function* slow(){enter();await held;yield Buffer.from('x');}
+ const pending=a.teil(ctx,first.id,0,1,slow());await entered;
+ await assert.rejects(b.teil(ctx,second.id,0,1,[Buffer.from('y')]),e=>e.code==='transfer_limit');
+ release();await pending;
+ await b.teil(ctx,second.id,0,1,[Buffer.from('y')]);
+ // A new independent session times out while waiting for input, then can safely resume after lease renewal.
+ const third=await a.erstellen(ctx,input('timeout.png',Buffer.from('z'),randomUUID()));
+ let abort;const blocker=new Promise(r=>abort=r);
+ async function* stuck(){await blocker;yield Buffer.from('z');}
+ const work=a.teil(ctx,third.id,0,1,stuck());
+ // Keep an explicit timer alive because production deadline timers are correctly unref'd.
+ const keep=setTimeout(()=>{},1500);
+ try{await assert.rejects(work,e=>e.code==='transfer_timeout');}finally{abort();clearTimeout(keep);}
+ assert.equal((await a.status(ctx,third.id)).offset,0);
+ await pool.query("UPDATE asset_upload_sitzungen SET lease_bis=clock_timestamp()+interval '5 seconds' WHERE id=$1",[third.id]);
+ await a.teil(ctx,third.id,0,1,[Buffer.from('z')]);assert.equal((await a.status(ctx,third.id)).offset,1);
+});
+run('Reverse adapter serves revision bytes through the same download protocol',async()=>{
+ const a=kern(),r={bereich:'reverse',ziel_ref:'rev-download',host_id:'daemon_fixture'},bytes=Buffer.from('archive');
+ let result;
+ a.registriereFinalisierer('reverse',{
+  basis:async()=>({sha256:null}),
+  vorbereiten:async()=>{},
+  commit:async(_c,_s,op)=>{result={asset_id:'original-id',revision:'1',storage_key:op.storage_key};return result;},
+  download:async(c,ref)=>{assert.equal(ref.asset_id,'original-id');return {adresse:{bereich:'reverse',ziel_ref:c.ziel_ref,storage_kind:'assets',logischer_pfad:'original.zip'},storage_key:result.storage_key,groesse:bytes.length,sha256:sha(bytes),mime_type:'application/zip'};},
+ });
+ const u=await a.erstellen(r,input('original.zip',bytes,randomUUID()));await a.teil(r,u.id,0,bytes.length,[bytes]);await a.finalisieren(r,u.id);
+ const d=await a.bytes(r,{asset_id:'original-id',revision:'1'},{offset:1,groesse:3});let out='';for await(const b of d.stream)out+=b;
+ assert.equal(out,'rch');assert.equal(d.sha256,sha(bytes));
 });
 
