@@ -32,7 +32,11 @@ async function hashFile(p:string){
  try{const s=await h.stat();if(!s.isFile())throw new Error('restore_konflikt');const hash=createHash('sha256');for await(const chunk of h.createReadStream({autoClose:false}))hash.update(chunk);return hash.digest('hex');}
  finally{await h.close();}
 }
-async function save(p:string,body:unknown){const temp=p+'.'+randomUUID();await fs.writeFile(temp,JSON.stringify(body),{flag:'wx',mode:0o600});await fs.rename(temp,p);}
+async function save(p:string,body:unknown){
+ const temp=p+'.'+randomUUID(),fd=await fs.open(temp,'wx',0o600);
+ try{await fd.writeFile(JSON.stringify(body));await fd.sync();}finally{await fd.close();}
+ await fs.rename(temp,p);
+}
 export async function restoreExistingProject(job:RestoreJob,manager:WatcherManager,api=new AssetApiTransport()){
  if(job.mode!=='restore_existing'||!isValidProjectName(job.name)||job.hostname!==os.hostname())throw new Error('restore_host_verboten');
  const root=path.resolve(getWorkspaceRoot());await fs.mkdir(root,{recursive:true});
@@ -47,6 +51,8 @@ export async function restoreExistingProject(job:RestoreJob,manager:WatcherManag
  // Existing foreign directories are never adopted, even when they happen to be empty.
  try{const s=await fs.lstat(target);if(!s.isDirectory()||s.isSymbolicLink()||!journal.created)throw new Error('restore_konflikt');}
  catch(e){if(!absent(e))throw e;}
+ // Persistent fence also protects starts from an old local config/registry during installation.
+ journal.complete=false;await save(journalPath,journal);
  const base='/api/projects/'+encodeURIComponent(job.name);
  const options=await api.json<AssetTransferOptionen&{host:string;scanMs:number}>(base+'/assets/sync-optionen');
  if(!options.host||options.richtung==='pc_to_share')throw new Error('restore_richtung_verboten');
