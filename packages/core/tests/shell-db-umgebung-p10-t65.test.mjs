@@ -73,6 +73,7 @@ test('WorkspaceOrchestrator.exec entfernt tatsächlich Docker-Config.Env vor dem
  const inherited={PATH:process.env.PATH,DATABASE_URL:live,SYNAPSE_DATABASE_URL:live,PGPASSWORD:'synthetic',PGHOST:'system.invalid'};
  let nutzerStart=0;
  const container={
+  putArchive:async stream=>{for await(const chunk of stream){void chunk;}},
   inspect:async()=>({Config:{Env:Object.entries(inherited).map(([k,v])=>k+'='+v)}}),
   exec:async o=>{
    nutzerStart++;

@@ -341,7 +341,8 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   const watcher: FSWatcher = chokidar.watch(projectPath, {
     ignored: (filePath: string) => {
       const relativePath = path.relative(projectPath, filePath);
-      const ignored = shouldIgnore(ig, relativePath);
+      const ignored = relativePath === 'pnpm-lock.yaml'
+        ? istGesperrt(relativePath, projectPath, projectName) : shouldIgnore(ig, relativePath);
       if (verboseEnabled && relativePath) {
         debugLog(ignored ? 'IGNORE' : 'ALLOW', relativePath);
       }

@@ -60,6 +60,7 @@ test('Reguläre Helfer-Freigabe gibt Servermetadaten an echten Kindprozess weite
   process.env.SYNAPSE_TEST_DATABASE_SYSTEM_ID=proof.test_system_id;
   const c=fixtures[0];
   const container={
+  putArchive:async stream=>{for await(const chunk of stream){void chunk;}},
    inspect:async()=>({Config:{Env:['DATABASE_URL='+live,'PGPASSWORD=synthetic']}}),
    exec:async o=>{
     starts++;

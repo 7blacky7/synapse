@@ -70,6 +70,8 @@ const gilt = (g: ShellGeltung, o: ShellPruefOptionen): boolean =>
   (!g.os?.length || !!o.os && g.os.includes(o.os)) &&
   (!g.rechner?.length || !!o.rechner && g.rechner.includes(o.rechner));
 export interface ShellPruefOptionen extends InlineKontext {
+  /** Ausschließlich serverseitig im Workspace setzen. */
+  workspace_testdateien?:boolean;
   /** Eindeutige Zuordnung aller DB-Ziele, vom Lage-/Starthelfer geprüft. */
   projekt_eigene_db?:boolean;
   projekt_db_geprueft?:boolean;
@@ -131,15 +133,20 @@ export function pruefeShellText(
 ): ShellTextErgebnis {
   const katalog = opts.katalog ?? SHELL_SICHERUNG_SEED;
   const tree = parseShellText(command, opts.shell ?? 'bash');
-  const commands = (opts.kommandos ?? tree.kommandos).map(normalisiere).flatMap(k=>k.inline_skript?
-    skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{...opts,testprojekt:opts.projekt_db_geprueft?opts.projekt_eigene_db===true:k.inline_skript.testprojekt??opts.testprojekt,cwd:k.inline_skript.cwd??opts.cwd}).map(normalisiere):[k]);
+  const workspaceFakten=new WeakSet<ShellTextKommando>();
+  const commands=(opts.kommandos??tree.kommandos).map(normalisiere).flatMap(k=>{
+    if(!k.inline_skript)return [k];
+    const facts=skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{...opts,testprojekt:opts.projekt_db_geprueft?opts.projekt_eigene_db===true:k.inline_skript.testprojekt??opts.testprojekt,cwd:k.inline_skript.cwd??opts.cwd}).map(normalisiere);
+    if(opts.workspace_testdateien&&k.inline_skript.workspace_testdatei)facts.forEach(f=>workspaceFakten.add(f));
+    return facts;
+  });
   const activeAnswers = new Set(katalog.antworten.filter(a => a.status === 'aktiv' && gilt(a, opts)).map(a => a.id));
   const treffer: ShellTextErgebnis['treffer'] = [];
   for (const r of katalog.regeln) {
     if (r.status !== 'aktiv' || r.art !== 'text' || !gilt(r, opts)) continue;
     // Nur SQL-Regeln ausnehmen; alle Datei-/Netz-/Prozessregeln bleiben wirksam.
     if(opts.projekt_eigene_db&&r.antwort_id==='db.sql'&&(r.muster.skript_db==='ohne_testprojekt'||r.muster.command[0]==='^(?:psql|mysql|mariadb|sqlite3)$'))continue;
-    if (commands.some(k => trifft(r.muster, k))) {
+    if (commands.some(k => !(workspaceFakten.has(k)&&(r.antwort_id.startsWith('fs.')||['inline.node','inline.python'].includes(r.antwort_id)&&r.muster.skript_ziel==='ausserhalb'))&&trifft(r.muster, k))) {
       if (!activeAnswers.has(r.antwort_id)) tree.ungeklart.push('antwort_nicht_verfuegbar:' + r.id);
       treffer.push({ regel_id: r.id, antwort_id: r.antwort_id, stufe: r.stufe });
     }

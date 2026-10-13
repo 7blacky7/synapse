@@ -120,7 +120,8 @@ const DEFAULT_IGNORES = [
  * P15-T36 Teil 2 (User 11.10.2026, 58492366): ebenso .env.sample und .env.template. Ihre Werte zeigt
  * keine Ausgabe (services/env-maske.ts, NAME=[WERT]); echte .env/.env.* bleiben gesperrt.
  */
-const SPERR_AUSNAHMEN = ['!.env.example', '!.env.sample', '!.env.template'];
+// P10-T68: Root-Lockfile bleibt ausgeblendet, läuft aber als Buildmetadatum durch den Sync.
+const SPERR_AUSNAHMEN = ['!.env.example', '!.env.sample', '!.env.template', '!/pnpm-lock.yaml'];
 
 /**
  * Laedt die geltenden Ignore-Regeln und erstellt eine Ignore-Instanz.

@@ -11,6 +11,8 @@ import {parseShellText,type SicherungsShell,type ShellWort,type ShellTextKommand
 import {probeShellLage,type ShellProbeAnfrage,type ShellProbeAntwort}from'./shell-lage-probe.js';
 
 export interface ShellLageKontext {
+  /** Nur Workspace-Orchestrator, kein Shell-Requestparameter. */
+  workspace_testdateien?:boolean;
   /** Nur vom bestehenden API/Job-Vertrag, niemals von Nutzerparametern. */
   datenbank_freigabe?:ShellDbFreigabe;
   shell?: SicherungsShell; os?: 'linux'|'windows'|'macos'|'wsl';
@@ -237,7 +239,10 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       const q=(await probe({cwd,testdatei:datei,projekt_root:ctx.project_root})).testdatei;
       if(q&&q.pfad===datei&&/^[a-f0-9]{64}$/.test(q.sha256)){
         verifizierteDatei=true;
-        projected.inline_skript={sprache:'node',text:q.text,expansion:false,testprojekt:false};
+        const rel=ctx.workspace_testdateien===true&&typeof q.kanonisch==='string'?p.relative(ctx.project_root,q.kanonisch).replace(/\\/g,'/'):undefined;
+        const workspaceTest=rel!==undefined&&!p.isAbsolute(rel)&&!rel.startsWith('../')&&
+          /^(?:packages\/[^/]+\/tests\/|scripts\/test-[^/]+(?:$|\/))/.test(rel);
+        projected.inline_skript={sprache:'node',text:q.text,expansion:false,testprojekt:false,...(workspaceTest?{workspace_testdatei:true}:{})};
       }
     }
     if(verifizierteDatei)verifizierteTestdateien++;

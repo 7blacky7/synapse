@@ -24,6 +24,8 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore, ermittleShellLage, shellLageProbeProgramm, maskiereShellAntwort } from '@synapse/core';
 import type { ShellLage,ShellBestaetigung,ShellSicherungsAntwort,SicherungsShell } from '@synapse/core';
+import {workspaceJobDatenbank} from './workspace-job-db.js';
+import {schuetzeWorkspaceWurzel} from './workspace-quellschutz.js';
 import {holeShellDbFreigabe,pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart,baueJobUmgebung}from'@synapse/core';
 import type { ShellProbeAnfrage, ShellProbeAntwort } from '@synapse/core';
 
@@ -39,7 +41,7 @@ const DEFAULT_IGNORE_PATTERNS = ['.pytest_cache/**', '*.tsbuildinfo'];
 
 /** true = Pfad bleibt draussen (Standard-Sperre oder eines der Glob-Muster). */
 export function istWorkspaceIgnoriert(dateiPfad: string, muster: string[] = DEFAULT_IGNORE_PATTERNS): boolean {
-  return shouldIgnore(STANDARD_SPERRE, dateiPfad) || muster.some((p) => minimatch(dateiPfad, p, { dot: true }));
+  return (dateiPfad!=='pnpm-lock.yaml'&&shouldIgnore(STANDARD_SPERRE, dateiPfad)) || muster.some((p) => minimatch(dateiPfad, p, { dot: true }));
 }
 
 export interface WorkspaceConfig {
@@ -507,6 +509,7 @@ export class WorkspaceOrchestrator {
     const { ws: wsName } = this.wsKey(project, opts.workspace ?? 'main');
     const containerId = await this.ensureProjectRunning(project, wsName, opts.role);
     const container = this.docker.getContainer(containerId);
+    await schuetzeWorkspaceWurzel(container);
     const workingDir = opts.workingDir ?? '/workspace';
     const names = [...command.matchAll(/\$(?:env:)?([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)/g)].map(m=>m[1]??m[2]);
     const context = await this.lageProbeImContainer(container, { variablen: [...new Set(['HOME', 'PWD', ...names])],prozesse:true }, workingDir);
@@ -514,19 +517,20 @@ export class WorkspaceOrchestrator {
     const containerInfo=await container.inspect();
     const basis=Object.fromEntries((containerInfo.Config.Env??[]).map(e=>{const i=e.indexOf('=');return [e.slice(0,i),e.slice(i+1)];}));
     const jobUmgebung=await baueJobUmgebung(project,{basis:{...basis,...context.env},home:context.env.HOME,existiert:()=>false});
+    const dbFreigabe=await holeShellDbFreigabe(project);
+    jobUmgebung.env=workspaceJobDatenbank(project,jobUmgebung.env,dbFreigabe);
     const bereinigteEnv:Record<string,string>=Object.fromEntries(Object.entries(jobUmgebung.env).filter((e):e is [string,string]=>e[1]!==undefined));
     context.env=bereinigteEnv;
     const start=waehleShellStart(opts.shell,'linux');
-    const dbFreigabe=await holeShellDbFreigabe(project);
     const ermittle=()=>ermittleShellLage(command, {
-      datenbank_freigabe:dbFreigabe,
+      datenbank_freigabe:dbFreigabe,workspace_testdateien:true,
       shell:start.shell,os:context.os,cwd:context.cwd,project_root:'/workspace',env:context.env,env_vollstaendig:true,
       probe:async(input)=>({...await this.lageProbeImContainer(container,input,workingDir),env:bereinigteEnv}),
     });
     let lage=await ermittle();
     if(opts.onLage){await opts.onLage(await maskiereShellAntwort(project,lage));lage=await ermittle();}
     const katalog=await holeShellStartKatalog();
-    const pruefung=pruefeShellStart({project,command,lage,agent_id:opts.agent_id,bestaetigt:opts.bestaetigt,
+    const pruefung=pruefeShellStart({project,command,lage,workspace_testdateien:true,agent_id:opts.agent_id,bestaetigt:opts.bestaetigt,
       rechner:context.rechner??containerId,geschuetzte_pids:context.prozesse?.pids,geschuetzte_namen:context.prozesse?.namen},katalog);
     const sicherungsJob=await beginneShellSicherungsJob({project,command,agent_id:opts.agent_id,entscheidung:pruefung,lage,
       ursprung:'workspace',rechner:context.rechner??containerId});
@@ -658,6 +662,18 @@ export class WorkspaceOrchestrator {
       files++;
       bytes += content.length;
     }
+    // Nur Build-Artefaktverzeichnisse freigeben, niemals die Quellverzeichnisse.
+    const buildDirs=new Set<string>();
+    for(const row of r.rows){
+      const fp=String(row.file_path);
+      if(!istWorkspaceIgnoriert(fp,ignore)&&/(?:^|\/)package\.json$/.test(fp)){
+        const base=fp.slice(0,-'package.json'.length);
+        buildDirs.add(base+'node_modules');buildDirs.add(base+'dist');
+      }
+    }
+    for(const dir of buildDirs)await new Promise<void>((resolve,reject)=>{
+      pack.entry({name:dir,type:'directory',mode:0o755,uid:1000,gid:1000},err=>err?reject(err):resolve());
+    });
     pack.finalize();
     await putPromise;
     await this.recordActivity(project);
