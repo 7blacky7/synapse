@@ -33,6 +33,26 @@ Dieser Ordner verbindet den React-Einstieg und die Anwendungsansichten. Die Ansi
 | [workspace-extensions.css](workspace-extensions.css) | Ergänzende Workspace-Stile. |
 | [workspace-mock.css](workspace-mock.css) | Stile für die Workspace-Demonstrationsansicht. |
 
+## Funktionsweise
+
+### Einstieg, Anmeldung und Datenquellen
+
+[main.tsx](main.tsx) erstellt den React-Einstieg und rendert [App](App.tsx). Beim Laden fragt die App über [auth.ts](api/auth.ts) den Anmeldestatus ab. Solange die Antwort aussteht, zeigt sie den Ladezustand; ohne gültige Sitzung erscheint die Anmeldung, nach erfolgreicher Anmeldung der Arbeitsbereich. Der gemeinsame **apiFetch**-Aufruf ergänzt den Bearer-Token. Bei HTTP 401 entfernt er ihn und meldet der App, dass wieder die Anmeldung angezeigt werden muss.
+
+Die Ansichten beziehen ihre Daten je nach Bereich aus unterschiedlichen Quellen. [StatusKennzeichnung](components/StatusKennzeichnung.tsx) unterscheidet **live**, **teilweise** und **demo**; der Hinweis „teilweise“ muss angeben, welche Werte echt sind. Lokale [Beispieldaten](mock/README.md) sind keine API-Antworten. Der Haupteinstieg rendert derzeit [App](App.tsx); [ControlPlaneApp.tsx](ControlPlaneApp.tsx) enthält einen eigenen Control-Plane-Ladepfad, wird aber nicht von **main.tsx** eingebunden.
+
+### Adapter und Ansichtsmodelle
+
+Ein API-Adapter übersetzt die Antwortform der Dienste in die Datentypen, die eine Ansicht rendert. Der [Control-Plane-Adapter](api/control-plane-adapter.ts) versucht Projekte, Channels und Feeds zunächst über **/watcher-api** zu laden. Er akzeptiert nur JSON-Antworten; liefert der Pfad etwa HTML statt JSON, gilt der GoTray-Zugriff als nicht verfügbar. Danach verwendet der Adapter die typisierten REST-Aufrufe aus [synapse-client.ts](api/synapse-client.ts). Die Daten werden zu Projekt-, Channel- und Nachrichten-View-Modellen zusammengeführt.
+
+Der separate [Control-Plane-Einstieg](ControlPlaneApp.tsx) lädt nach erfolgreicher Anmeldung einen Snapshot. Währenddessen bleiben die lokalen Startdaten sichtbar; Ladefehler werden als Fehlerzustand an die Ansicht gegeben. Diese Trennung verhindert, dass ein leerer oder fehlender API-Endpunkt wie eine echte leere Datenmenge aussieht. Die tatsächliche Abdeckung bleibt bereichsabhängig: ein vorhandener REST-Endpunkt bedeutet nicht automatisch, dass jede Ansicht ihn nutzt.
+
+### Hauptagenten und Wissensansichten
+
+Die [Runtime-Adapter](api/agent-runtime.ts) rufen die REST-Routen für Runtime-Status, Hauptagenten-Sitzungen, Nachrichtenaustausch und Terminalströme auf. Die Oberfläche verarbeitet Serverereignisse für Antworttext, Runtime-Status, Nutzung, Fehler und Artefakte. Die Laufzeit- und Sitzungsregeln stehen in der [Runtime-Dokumentation](../../rest-api/src/services/agent-runtime/README.md).
+
+Wissensansichten erhalten über ihre Adapter benannte Einträge oder Suchergebnisse. Ein direkt geladener Memory-, Thought- oder Plan-Eintrag stammt aus dem gespeicherten Datensatz. Eine semantische Suche gibt dagegen Kandidaten aus dem Suchindex zurück, die die Core-Dienste gegen PostgreSQL-Daten auflösen.
+
 ## Schnittstellen nach außen
 
 [App.tsx](App.tsx) ruft den Auth-Status ab und zeigt bei erfolgreicher Anmeldung [SynapseWorkspaceMock](components/README.md) als Arbeitsoberfläche. Die API-Adapter liegen getrennt in [api](api/README.md); ihre Daten werden in View-Modelle aus [control-plane](control-plane/README.md) überführt. Die Graph-Ansicht nutzt [graph](graph/README.md), die Agenten-Artefaktdarstellung [kios](kios/README.md).

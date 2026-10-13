@@ -426,6 +426,23 @@ Der Worker meldet einen der Endzustände `done`, `failed`, `rejected` oder `time
 
 Quellbelege: [project-registry.ts](project-registry.ts) (Pfadauflösung und Registry), [agent-rollen.ts](agent-rollen.ts) und [agent-onboarding.ts](agent-onboarding.ts) (Rollen- und Zustellpfad), [project-init-queue.ts](project-init-queue.ts) und [project-init-worker.ts](../../../../packages/file-watcher-daemon-ts/src/project-init-worker.ts) (Queue und Worker).
 
+### Web-Oberfläche, Hauptagenten und Wissenszugriff
+
+Die Web-Oberfläche verbindet Ansichten über typisierte Adapter mit REST-Routen. Der Auth-Adapter ergänzt API-Aufrufe um die Benutzer-Session und leitet HTTP-401-Antworten an das Login-Gate zurück. Ein Teil der Control-Plane-Daten kann zusätzlich über die lokale GoTray-API kommen; der Adapter fällt bei fehlendem JSON auf REST zurück. Ansicht und Datenquelle bleiben getrennt: View-Modelle tragen die aufbereitete Darstellung, Statuskennzeichnungen unterscheiden Live-Daten von Teilanbindungen und Demo-Werten. Die [UI-Dokumentation](../../../web-ui/src/README.md) beschreibt die sichtbare Abgrenzung; [ui.svg](../../../../docs/bilder/ui.svg) zeigt den Datenweg.
+
+Hauptagenten verwenden eine zugewiesene Runtime und eine in PostgreSQL gespeicherte Sitzung. Codex und Claude Code führen CLI-Prozesse in Containern aus; der Modell-Pool sendet HTTP-Anfragen ohne Container und speichert den Gesprächsverlauf im Sitzungskontext. Antworten, Statusmeldungen und sitzungsgebundene Artefakte laufen über einen Ereignisstrom. Die Details stehen bei den [Agent-Runtime-Diensten](../../../rest-api/src/services/agent-runtime/README.md).
+
+Wissenseinträge und ihre semantischen Indizes haben unterschiedliche Rollen:
+
+| Wissensart | Direkter Abruf | Suche und Datenhaltung |
+|---|---|---|
+| Memory | Projekt und eindeutiger Name oder UUID; Inhalt und Metadaten kommen aus PostgreSQL. | Semantische Suche über Qdrant; Treffer-IDs werden mit den PostgreSQL-Zeilen abgeglichen. |
+| Thought | Projekt und Thought-ID beziehungsweise eindeutiger Präfix; Listen und Tags lesen aus PostgreSQL. | Qdrant liefert semantische Kandidaten; Inhalte werden aus PostgreSQL ergänzt, verwaiste Vektoren verworfen. |
+| Plan und Tasks | Plan-Kurz-ID oder UUID, Task-Kurz-ID oder UUID; der direkte Planabruf liest PostgreSQL. | Qdrant ist ein abgeleiteter Planindex. Ein fehlender oder veralteter Vektor ändert nicht den maßgeblichen PG-Datensatz. |
+| Tech-Docs | Eintrag über seine ID; projektgebundene Recherche- und manuelle Docs liegen neben globalen Context7-Einträgen in PostgreSQL. | Semantische Suche erfolgt nach Scope in den passenden Qdrant-Collections. |
+
+Bei Memory, Thought und Tech-Docs wird zuerst PostgreSQL geschrieben. Einbettung und Qdrant-Nachtrag laufen danach; solange **embedded_at** leer ist, kann der Backlog den Index ergänzen. Daher kann ein frisch gespeicherter Eintrag direkt abrufbar sein, bevor er in der semantischen Suche erscheint. Qdrant dient als Suchindex, nicht als Quelle für den gespeicherten Inhalt.
+
 ## Schnittstellen nach außen
 
 Die öffentlichen Paket-Exports werden in [`../index.ts`](../index.ts) und die Service-Exports in [`index.ts`](index.ts) gebündelt. Die abschnittsbezogenen Schnittstellen stehen jeweils bei Teil A, B und C.

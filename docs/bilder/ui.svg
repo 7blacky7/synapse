@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1430" viewBox="0 0 1800 1430" role="img" aria-labelledby="title desc">
+<title id="title">Web-Oberfläche, Hauptagenten und Wissenszugriff</title>
+<desc id="desc">Datenfluss vom React-Einstieg über Authentifizierung und Adapter zu REST, Core-Diensten und PostgreSQL; getrennte Wissens- und Runtime-Pfade zeigen semantische Suche und Hauptagenten-Sitzungen. Abschnitt 3 verwendet beschriftete rechtwinklige Verbindungen; die Legende erklärt durchgezogene und gepunktete Linien.</desc>
+<defs>
+  <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M1 1 L11 6 L1 11 Z" fill="#f0883e"/></marker>
+  <style>
+    text{font-family:"DejaVu Sans",sans-serif;fill:#e6edf3}
+    .title{font-size:32px;font-weight:700;fill:#f0883e}
+    .head{font-size:21px;font-weight:700;fill:#f0883e}
+    .body{font-size:17px}
+    .minor{font-size:16px;fill:#b1bac4}
+    .box{fill:#161b22;stroke:#f0883e;stroke-width:2}
+    .soft{fill:#161b22;stroke:#30363d;stroke-width:2}
+    .optional{fill:#161b22;stroke:#f0883e;stroke-width:2;stroke-dasharray:3 4}
+    .external{fill:#161b22;stroke:#f0883e;stroke-width:2;stroke-dasharray:7 5}
+    .edge{fill:none;stroke:#f0883e;stroke-width:3;marker-end:url(#arrow)}
+    .muted-edge{fill:none;stroke:#b1bac4;stroke-width:2;stroke-dasharray:3 4;marker-end:url(#arrow)}
+  </style>
+</defs>
+<rect width="1800" height="1430" fill="#0d1117"/>
+<text class="title" x="42" y="54">Web-Oberfläche, Hauptagenten und Wissenszugriff</text>
+<text class="minor" x="42" y="82">Implementierte Datenwege · PostgreSQL ist Quelle der gespeicherten Datensätze · Qdrant hält abgeleitete Suchvektoren</text>
+
+<!-- UI Datenfluss -->
+<rect class="soft" x="38" y="112" width="1724" height="290" rx="18"/>
+<text class="head" x="62" y="148">1 · Ansicht und Datenzugriff</text>
+<rect class="box" x="64" y="177" width="300" height="192" rx="14"/>
+<text class="head" x="86" y="211">Browser · React</text>
+<text class="body" x="86" y="244">main.tsx → App</text>
+<text class="body" x="86" y="272">Auth-Gate → Ansicht</text>
+<text class="minor" x="86" y="306">live · teilweise · demo</text>
+<text class="minor" x="86" y="333">Mocks bleiben als Mocks markiert</text>
+
+<rect class="box" x="440" y="177" width="370" height="192" rx="14"/>
+<text class="head" x="462" y="211">Adapter und View-Modelle</text>
+<text class="body" x="462" y="244">Control-Plane-Adapter</text>
+<text class="body" x="462" y="272">GoTray JSON, dann REST-Fallback</text>
+<text class="minor" x="462" y="306">API-Antworten → Ansichtsformen</text>
+<text class="minor" x="462" y="333">Kontrollebenen-Einstieg separat</text>
+
+<rect class="box" x="858" y="177" width="300" height="192" rx="14"/>
+<text class="head" x="880" y="211">Auth und REST</text>
+<text class="body" x="880" y="244">apiFetch · Bearer-Session</text>
+<text class="body" x="880" y="272">401 → Login-Gate</text>
+<text class="minor" x="880" y="306">/api-Routen prüfen Zugriff</text>
+<text class="minor" x="880" y="333">Daten → Core-Dienste</text>
+
+<rect class="box" x="1238" y="177" width="480" height="192" rx="14"/>
+<text class="head" x="1260" y="211">Core und gespeicherte Daten</text>
+<text class="body" x="1260" y="244">Views nutzen passende Dienste</text>
+<text class="body" x="1260" y="272">PostgreSQL: maßgebliche Datensätze</text>
+<text class="minor" x="1260" y="306">Qdrant: abgeleitete Suchvektoren</text>
+<text class="minor" x="1260" y="333">Suchtreffer werden gegen PG aufgelöst</text>
+<path class="edge" d="M365 270 H431"/>
+<path class="edge" d="M811 270 H849"/>
+<path class="edge" d="M1159 270 H1229"/>
+
+<!-- Knowledge lane -->
+<rect class="soft" x="38" y="424" width="1724" height="256" rx="18"/>
+<text class="head" x="62" y="460">2 · Benannter Abruf und semantische Suche</text>
+<rect class="box" x="64" y="488" width="490" height="158" rx="14"/>
+<text class="head" x="86" y="522">Wissensarten</text>
+<text class="body" x="86" y="554">Memory · Name oder UUID</text>
+<text class="body" x="86" y="581">Thought · ID/Präfix · Plan · Kurz-ID</text>
+<text class="body" x="86" y="608">Tech-Docs · Eintrags-ID und Scope</text>
+<rect class="box" x="720" y="488" width="380" height="158" rx="14"/>
+<text class="head" x="742" y="522">PostgreSQL</text>
+<text class="body" x="742" y="554">Schreiben zuerst</text>
+<text class="body" x="742" y="581">Direkte Abrufe lesen den Datensatz</text>
+<text class="minor" x="742" y="608">eingebettete Inhalte können nachlaufen</text>
+<rect class="optional" x="1310" y="488" width="408" height="158" rx="14"/>
+<text class="head" x="1332" y="522">Qdrant · Suchindex</text>
+<text class="body" x="1332" y="554">Semantische Kandidaten</text>
+<text class="body" x="1332" y="581">Scope- und Projektfilter</text>
+<text class="minor" x="1332" y="608">nicht die Quelle des gespeicherten Inhalts</text>
+<path class="edge" d="M555 555 H710"/>
+<path class="muted-edge" d="M1101 555 H1300"/>
+<text class="minor" x="578" y="536">lesen / schreiben</text>
+<text class="minor" x="1200" y="536" text-anchor="middle">Embedding-Nachtrag</text>
+
+<!-- Runtime lane -->
+<rect class="soft" x="38" y="702" width="1724" height="560" rx="18"/>
+<text class="head" x="62" y="738">3 · Hauptagenten-Runtime und Streams</text>
+<rect class="box" x="64" y="768" width="330" height="170" rx="14"/>
+<text class="head" x="86" y="802">UI · Runtime-Adapter</text>
+<text class="body" x="86" y="834">Status · Sitzungen · Nachrichten</text>
+<text class="body" x="86" y="862">Terminal-Aufrufe</text>
+<text class="minor" x="86" y="898">authentifizierte REST-Routen</text>
+
+<rect class="box" x="484" y="768" width="360" height="170" rx="14"/>
+<text class="head" x="506" y="802">Runtime-Manager</text>
+<text class="body" x="506" y="834">Zuweisung und Bereitschaft</text>
+<text class="body" x="506" y="862">Sitzungsstatus in PostgreSQL</text>
+<text class="minor" x="506" y="898">ready → running → completed / error</text>
+
+<rect class="box" x="966" y="768" width="330" height="170" rx="14"/>
+<text class="head" x="988" y="802">CLI-Container</text>
+<text class="body" x="988" y="834">Codex oder Claude Code</text>
+<text class="body" x="988" y="862">Programm, Dateisystem, Terminal</text>
+<text class="minor" x="988" y="898">persistente Runtime-Umgebung</text>
+
+<rect class="box" x="1360" y="768" width="358" height="170" rx="14"/>
+<text class="head" x="1382" y="802">Modell-Pool</text>
+<text class="body" x="1382" y="834">HTTP-Aufrufe an Anbieter</text>
+<text class="body" x="1382" y="862">kein Container, kein Terminal</text>
+<text class="minor" x="1382" y="898">Externe Anbieter · Verlauf in PG</text>
+
+<path class="edge" d="M395 852 H475"/>
+<path class="edge" d="M845 820 H957"/>
+<text class="minor" x="905" y="802" text-anchor="middle">CLI-Treiber</text>
+
+<!-- Der Runtime-Manager wählt den CLI- oder Modell-Pool-Treiber. Ereignis- und Terminal-Ausgaben bleiben getrennte Wege. -->
+<path class="edge" d="M844 780 V756 H1539 V767"/>
+<text class="minor" x="1000" y="744">Manager → Modell-Pool</text>
+<path class="edge" d="M800 938 V1099"/>
+<text class="minor" x="575" y="1000">Manager → Ereignisstrom</text>
+<path class="edge" d="M1100 938 V1099"/>
+<text class="minor" x="855" y="1000">Container → Ereignisstrom</text>
+<path class="edge" d="M1718 900 H1740 V1080 H1270 V1099"/>
+<text class="minor" x="1400" y="1107">Modell-Pool → Ereignisstrom</text>
+<path class="muted-edge" d="M1296 880 H1340 V992 H1359"/>
+
+<rect class="box" x="484" y="1100" width="820" height="116" rx="14"/>
+<text class="head" x="506" y="1132">Ereignisstrom zur Sitzung</text>
+<text class="body" x="506" y="1160">ready · delta · runtime · usage · error · artifact · done</text>
+<text class="minor" x="506" y="1188">Artefakte gehen nur in den offenen Strom ihrer Sitzung</text>
+<path class="edge" d="M484 1158 H410 V852 H395"/>
+<text class="minor" x="288" y="1000">Antwort an UI</text>
+
+<rect class="box" x="1360" y="950" width="358" height="110" rx="14"/>
+<text class="head" x="1382" y="979">Terminal-Registry</text>
+<text class="minor" x="1382" y="1009">Container → Terminal-Registry</text>
+<text class="body" x="1382" y="1037">Ausgabe · Exit · Replay</text>
+
+<!-- Legende -->
+<text class="head" x="42" y="1323">Legende</text>
+<path d="M180 1317 H280" fill="none" stroke="#f0883e" stroke-width="3"/>
+<text class="minor" x="300" y="1323">Durchgezogen: direkter Aufruf oder Ereignisstrom</text>
+<path d="M820 1317 H920" fill="none" stroke="#b1bac4" stroke-width="2" stroke-dasharray="3 4"/>
+<text class="minor" x="940" y="1323">Gepunktet: separater oder abgeleiteter Pfad</text>
+</svg>
