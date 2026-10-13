@@ -16,12 +16,12 @@ grep -Fq "DRY-RUN: zfs create -o compression=zstd z/synapse-reverse" <<<"$erstla
 grep -Fq "userquota@65532=8G" <<<"$erstlauf"
 grep -Fq "/mnt/z/synapse-projekte:/srv/synapse/projekte" <<<"$erstlauf"
 grep -Fq "/mnt/z/synapse-reverse:/srv/synapse/reverse" <<<"$erstlauf"
-! grep -Fq "/mnt/user" <<<"$erstlauf"
+if grep -Fq "/mnt/user" <<<"$erstlauf"; then exit 1; fi
 
 zweitlauf="$(P13_T23_TEST_EXISTING_DATASETS="z/synapse-projekte,z/synapse-reverse" bash "$script" prepare --dry-run)"
 grep -Fq "Dataset bereits vorhanden: z/synapse-projekte" <<<"$zweitlauf"
 grep -Fq "Dataset bereits vorhanden: z/synapse-reverse" <<<"$zweitlauf"
-! grep -Fq "zfs create" <<<"$zweitlauf"
+if grep -Fq "zfs create" <<<"$zweitlauf"; then exit 1; fi
 
 verify="$(bash "$script" verify --dry-run)"
 grep -Fq 'docker exec synapse-api' <<<"$verify"
