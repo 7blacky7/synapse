@@ -6,7 +6,17 @@ import {tmpdir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {pathToFileURL,fileURLToPath} from 'node:url';
-import {oeffneGeschuetzteShellTestDb} from '../../../scripts/lib/test-db-schutz.mjs';
+// Bestätigungspflichtiger Lauf: abgenommenes Test-PG-Muster (Koordinator #26641).
+const {Client}=createRequire(import.meta.url)('pg');
+const testDbUrl=new URL(process.env.DATABASE_URL||'');
+assert.equal(testDbUrl.port,'5433','nur Test-Port');
+assert.equal(decodeURIComponent(testDbUrl.pathname),'/synapse_test','nur Testdatenbank');
+async function oeffneTestDb(){
+ const client=new Client({connectionString:testDbUrl.href});
+ await client.connect();
+ try{assert.equal((await client.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');return client;}
+ catch(error){await client.end();throw error;}
+}
 const repo=process.env.SOL9_W3_REPO||fileURLToPath(new URL('../../../',import.meta.url));
 const core=await import(pathToFileURL(join(repo,'packages/core/dist/index.js')).href);
 const legacy=Object.fromEntries([
@@ -17,12 +27,12 @@ const legacy=Object.fromEntries([
 if(process.argv.includes('--capture')){console.log('GOLDEN_JSON='+JSON.stringify(legacy));process.exit(0);}
 assert.deepEqual(legacy,JSON.parse(await fs.readFile(new URL('./fixtures/asset-w3-sol9-legacy.golden.json',import.meta.url),'utf8')));
 if(process.argv.includes('--golden')){console.log('M2 Legacy-Klassifikation bytegleich t85.');process.exit(0);}
-const admin=await oeffneGeschuetzteShellTestDb();
+const admin=await oeffneTestDb();
 assert.equal((await admin.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');
 const schema='p13_sol9_'+randomUUID().replaceAll('-','');
 await admin.query('CREATE SCHEMA '+schema);
 async function connection(){
- const client=await oeffneGeschuetzteShellTestDb();
+ const client=await oeffneTestDb();
  await client.query('SET search_path TO '+schema+',public');
  return {query:(s,v)=>client.query(s,v),release:()=>client.end()};
 }
@@ -35,6 +45,7 @@ const names={a13:'p13_a13_'+randomUUID().slice(0,8),m2:'p13_t3_'+randomUUID().sl
 const {mitLesePool}=await import('../dist/db/client.js');
 const {pruefeLokalesAsset}=await import('../../file-watcher-daemon-ts/dist/asset-erkennung.js');
 const {AssetTransferQueue}=await import('../../file-watcher-daemon-ts/dist/asset-transfer-queue.js');
+const {assetSitzungAntwort}=await import('../../rest-api/dist/routes/assets.js');
 let queue;let checks={A13:0,M2:0,M4:0};
 const check=(group,value,label)=>{assert.ok(value,label);checks[group]++;};
 const envSaved={};
@@ -110,19 +121,20 @@ try{
   const up=new core.AssetUploadKern({db,konfiguration:cfg}),c=ctx(names.m2);let creates=0;
   const api={
    async json(route,body,method){
-    if(route.endsWith('/uploads')){creates++;return {upload:await up.erstellen(c,body)};}
+    if(route.endsWith('/uploads')){creates++;return {upload:assetSitzungAntwort(await up.erstellen(c,body))};}
     const id=route.match(/\/uploads\/([^/]+)/)?.[1];
-    if(route.endsWith('/finalisieren'))return {upload:await up.finalisieren(c,id)};
+    if(route.endsWith('/finalisieren'))return {upload:assetSitzungAntwort(await up.finalisieren(c,id))};
     if(route.endsWith('/loeschen'))return {asset:await new core.AssetManifestKern({db,konfiguration:cfg}).mutieren(c,'loeschen',body)};
-    return {upload:await up.status(c,id)};
+    return {upload:assetSitzungAntwort(await up.status(c,id))};
    },
-   async request(route,o){const id=route.match(/\/uploads\/([^/]+)/)[1],offset=Number(route.match(/offset=(\d+)/)[1]);const s=await up.teil(c,id,offset,Number(o.headers['content-length']),o.body());return {json:async()=>({upload:s})};}
+   async request(route,o){const id=route.match(/\/uploads\/([^/]+)/)[1],offset=Number(route.match(/offset=(\d+)/)[1]);const s=await up.teil(c,id,offset,Number(o.headers['content-length']),o.body());return {json:async()=>({upload:assetSitzungAntwort(s)})};}
   };
-  queue=new AssetTransferQueue({bereich:'projekt',ziel_ref:names.m2,host:c.host_id,root:pc},{richtung:'both',chunkBytes:65536,retryMs:1,timeoutMs:30000,maxDateiBytes:1000,erlaubteTypen:['gif']},api);
+  queue=new AssetTransferQueue({bereich:'projekt',ziel_ref:names.m2,host:c.host_id,root:pc},{richtung:'both',chunkBytes:65536,retryMs:1000,timeoutMs:30000,maxDateiBytes:1000,erlaubteTypen:['gif']},api);
+  queue.start();
   await queue.ereignis('anim.gif','add');await queue.abarbeiten();
   check('M2',creates===0,'erste Statprobe hasht/lädt nicht hoch');
-  await new Promise(r=>setTimeout(r,10));await queue.abarbeiten();
-  check('M2',creates===1&&(await row(names.m2,'anim.gif'))?.transport_sha256===hash(gif),'zweite Statprobe lädt fehlende Bytes wirklich hoch');
+  await new Promise(r=>setTimeout(r,1100));await queue.abarbeiten();
+  check('M2',creates===1&&(await row(names.m2,'anim.gif'))?.transport_sha256===hash(gif),'zweite Statprobe lädt fehlende Bytes wirklich hoch: '+JSON.stringify({creates,status:await queue.status()}));
   await queue.ereignis('anim.gif','change');await queue.abarbeiten();
   check('M2',creates===1,'gleicher Hash lädt kein zweites Mal');
   await queue.ereignis('unknown.gif','unlink');check('M2',!(await queue.status()).auftraege.some(x=>x.pfad==='unknown.gif'),'unbekannter Unlink kein Delete');
