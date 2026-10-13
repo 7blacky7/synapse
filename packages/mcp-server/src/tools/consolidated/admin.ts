@@ -12,6 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
+import { holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from '@synapse/core';
 import { str, reqStr, bool, strArray } from './types.js';
 import {
   getIndexStats,
@@ -113,7 +114,7 @@ export const adminTool: ConsolidatedTool = {
       throw new Error('Parameter "action" ist erforderlich');
     }
     // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu REST)
-    if (istKontextprofilAdminAction(action)) return fuehreKontextprofilAdminAus(action, args, str(args, 'agent_id'));
+    if (istKontextprofilAdminAction(action)) return (await fuehreHinweisprofilAdminAus(action, args, str(args, 'agent_id'))) ?? fuehreKontextprofilAdminAus(action, args, str(args, 'agent_id'));
     if (istJevAdminAction(action)) return await fuehreJevAdminAus(action, args, str(args, 'agent_id'));
 
     switch (action) {
@@ -214,8 +215,8 @@ export const adminTool: ConsolidatedTool = {
         const project = reqStr(args, 'project');
 
         const result = await getDetailedStats(project);
-
-        return result;
+        const metriken = await holeAusloeserHinweisMetriken(project);
+        return metriken.length ? { ...result, ausloeser_hinweis_metriken: metriken } : result;
       }
 
       // ===== MIGRATE_PATHS =====

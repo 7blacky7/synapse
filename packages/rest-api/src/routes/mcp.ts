@@ -9,6 +9,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 import { getProjectRecordById } from '@synapse/core';
+import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import {
   // Code-Suche
@@ -2112,6 +2113,7 @@ async function attachWerkzeugRegeln(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
+  result = await haengeAusloeserHinweiseAn(result, toolName, args, typeof args.agent_id === 'string' ? args.agent_id : undefined);
   if (typeof result !== 'object' || result === null || Array.isArray(result)) return result;
   try {
     const { holeWerkzeugRegeln, WERKZEUG_REGEL_FELD } = await import('@synapse/core');
@@ -4290,7 +4292,7 @@ async function handleToolCallKern(
     // =================================================================
     case 'admin': {
       // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu stdio)
-      if (istKontextprofilAdminAction(action as string)) return fuehreKontextprofilAdminAus(action as string, args, effectiveAgentId);
+      if (istKontextprofilAdminAction(action as string)) return (await fuehreHinweisprofilAdminAus(action as string, args, effectiveAgentId)) ?? fuehreKontextprofilAdminAus(action as string, args, effectiveAgentId);
       if (istJevAdminAction(action)) return await fuehreJevAdminAus(action as string, args, effectiveAgentId);
       switch (action) {
         case 'migrate':
@@ -4450,6 +4452,7 @@ async function handleToolCallKern(
             thoughts: { total: totalThoughts, bySource: thoughtsBySource },
             memories: { total: totalMemories, byCategory: memoriesByCategory },
             embeddingQueue: getEmbeddingQueueStats(),
+            ...await (async () => { const metriken = await holeAusloeserHinweisMetriken(project); return metriken.length ? { ausloeser_hinweis_metriken: metriken } : {}; })(),
           };
         }
         default:

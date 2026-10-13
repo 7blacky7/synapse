@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { haengeAusloeserTextHinweiseAn } from '@synapse/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -229,6 +230,7 @@ export function createServer(): Server {
       // haengen an der HANDLUNG, nicht an einer Identitaet — von 23 gemessenen
       // specialist(purge)-Aufrufen hatten 18 keine agent_id.
       await haengeWerkzeugRegelnAn(guided);
+      await haengeAusloeserTextHinweiseAn(guided, name, (args ?? {}) as Record<string, unknown>, agentId);
       if (!agentId) return guided;
       const first = guided.content?.[0];
       if (!first || first.type !== 'text' || typeof first.text !== 'string') return guided;
