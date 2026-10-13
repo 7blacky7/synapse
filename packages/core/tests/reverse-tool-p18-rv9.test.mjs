@@ -14,7 +14,12 @@ const {REVERSE_DEFINITION,createReverseToolService,REVERSE_FEHLERCODES}=core;
 const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
 const require=createRequire(new URL('../package.json',import.meta.url));
 const {Pool}=require('pg');
-const pool=new Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'}),project='p18_rv9',agent='p18_rv9-agent',other='p18_rv9-other',rid='rev-fixture-000001',second='rev-fixture-000002';
+const pgPool=new Pool({connectionString:process.env.DATABASE_URL}),project='p18_rv9',agent='p18_rv9-agent',other='p18_rv9-other',rid='rev-fixture-000001',second='rev-fixture-000002';
+const pool={
+ async connect(){const client=await pgPool.connect();try{await client.query('SET search_path TO '+schema+',public');return client;}catch(e){client.release();throw e;}},
+ async query(...args){const client=await this.connect();try{return await client.query(...args);}finally{client.release();}},
+ end:()=>pgPool.end(),
+};
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const required=['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','status','fehlercode','werkzeug','merkmale','fortschritt','container'];
 let sequence=0;
@@ -79,15 +84,75 @@ try {
  assert.equal((await call('archivieren',{},'koordinator')).success,true);
  assert.equal((await call('eintrag')).eintrag.status,'archiviert');
  assert.equal((await call('analysieren',{datei:'cd1/game.exe',bis_schicht:'S3'})).fehlercode,'keine_berechtigung','Archiv startet keine Analyse');
- const {MCP_TOOLS}=await import('../../rest-api/dist/routes/mcp.js');
+
+ // Gruppenmutation bleibt atomar; Originale/Analysehistorie werden nicht umgeschrieben.
+ const splitRid='rev-split-fixture',mergeRid='rev-merge-fixture',lockedRid='rev-locked-fixture';
+ await pool.query("INSERT INTO reverse_eintraege(id,titel) VALUES($1,'Split'),($2,'Merge'),($3,'E fertig')",[splitRid,mergeRid,lockedRid]);
+ await pool.query("INSERT INTO reverse_medien(id,eintrag_id,position,art,satz_sha256) VALUES(4,$1,0,'iso',$4),(5,$1,1,'iso',$5),(6,$2,0,'iso',$6),(7,$3,0,'iso',$7)",[splitRid,mergeRid,lockedRid,'d'.repeat(64),'e'.repeat(64),'f'.repeat(64),'0'.repeat(64)]);
+ const invalid=await call('bestaetigen',{reverse_id:splitRid,aufteilen:[{titel:'A',medien:['4']},{titel:'B',medien:['4']}]},'koordinator');
+ assert.equal(invalid.success,false);
+ assert.equal((await call('eintrag',{reverse_id:splitRid})).eintrag.medien.length,2,'Ungültige Partition rollt zurück');
+ const split=await call('bestaetigen',{reverse_id:splitRid,aufteilen:[{titel:'A',medien:['4']},{titel:'B',medien:['5']}]},'koordinator');
+ assert.equal(split.success,true,JSON.stringify(split));assert.equal(split.aufgeteilt.length,2);
+ assert.equal((await call('eintrag',{reverse_id:splitRid})).eintrag.status,'archiviert');
+ const children=(await pool.query('SELECT id,fingerabdruck,bestaetigt_von,analyse_policy FROM reverse_eintraege WHERE id=ANY($1::text[])',[split.aufgeteilt])).rows;
+ assert(children.every(c=>c.fingerabdruck?.length===64&&c.bestaetigt_von==='koordinator'&&c.analyse_policy.bis_schicht==='S3'));
+ const merged=await call('bestaetigen',{reverse_id:mergeRid,zusammenfuehren_mit:split.aufgeteilt[0]},'koordinator');
+ assert.equal(merged.success,true,JSON.stringify(merged));assert.equal(merged.eintrag.medien.length,2);
+ assert.equal((await call('eintrag',{reverse_id:mergeRid})).eintrag.status,'archiviert');
+ await pool.query("INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,status) VALUES(7,'E','fixture-e','fertig')");
+ assert.equal((await call('bestaetigen',{reverse_id:lockedRid,zusammenfuehren_mit:split.aufgeteilt[1]},'koordinator')).fehlercode,'ziel_belegt','E-Historie schützt Gruppierung');
+ // Vier konkurrierende Analysen desselben Mediums deduplizieren; globale Queuegrenze gilt über Einträge.
+ for(const child of split.aufgeteilt)assert.equal((await call('binden',{reverse_id:child})).success,true);
+ process.env.SYNAPSE_REVERSE_QUEUE_MAX='1';
+ const raced=await Promise.all(split.aufgeteilt.map(child=>call('analysieren',{reverse_id:child,bis_schicht:'S3'})));
+ assert.equal(raced.filter(r=>r.success).length,1);assert.equal(raced.filter(r=>r.fehlercode==='warteschlange_voll').length,1);
+ delete process.env.SYNAPSE_REVERSE_QUEUE_MAX;
+ const winner=raced.find(r=>r.success),winnerRid=winner.reverse_id;
+ const dedups=await Promise.all(Array.from({length:4},()=>call('analysieren',{reverse_id:winnerRid,bis_schicht:'S3'})));
+ assert(dedups.every(r=>r.auftrag_id===winner.auftrag_id));
+ await pool.query("UPDATE reverse_auftraege SET status='fertig' WHERE id=$1",[winner.auftrag_id]);
+ assert.equal((await call('abbrechen',{auftrag_id:winner.auftrag_id})).status,'fertig','Terminalzustand bleibt fertig');
+ // Ein akzeptierter Fachschreibvorgang darf ohne durable Aktivität nicht committen.
+ await pool.query('ALTER TABLE tool_aktivitaet ADD CONSTRAINT fixture_audit_fehler CHECK(false) NOT VALID');
+ try {
+   const lost=await call('binden',{reverse_id:lockedRid});assert.equal(lost.success,false);
+   assert.equal((await pool.query('SELECT count(*)::int AS n FROM reverse_bindungen WHERE eintrag_id=$1 AND geloest_at IS NULL',[lockedRid])).rows[0].n,0,'Binding+Audit gemeinsam zurückgerollt');
+ } finally {await pool.query('ALTER TABLE tool_aktivitaet DROP CONSTRAINT fixture_audit_fehler');}
+ const connected=createReverseToolService({pool,runtime:{analysieren:async(request,db)=>{
+   assert.equal(request.project,project);assert.equal((await db.query('SELECT current_schema() AS n')).rows[0].n,schema);
+   return {auftrag_id:randomUUID(),status:'laeuft',container:{zustand:'laeuft',kaltstart_s:0},schicht_angefragt:request.bisSchicht};
+ },containerStatus:async()=>({zustand:'laeuft',kaltstart_s:0})}});
+ const rt=await connected.ausfuehren({action:'analysieren',agent_id:agent,project,reverse_id:split.aufgeteilt[1],bis_schicht:'S2'});
+ assert.equal(rt.status,'laeuft');assert.equal(rt.fehlercode,null);assert.equal(rt.container.zustand,'laeuft','RV8-Zustand wird übernommen');
+ assert.equal((await connected.ausfuehren({action:'status',agent_id:other,project,reverse_id:split.aufgeteilt[1]})).container.zustand,'laeuft','Projektbindung bleibt agentübergreifend');
+ console.log('RV9 PG boundaries PASS: Split/Rollback/Merge/Fingerprint/E-History/QueueRace/Dedup/Terminal/AuditRollback/Runtime');
+
+ const {MCP_TOOLS,handleToolCall}=await import('../../rest-api/dist/routes/mcp.js');
+ const restUnknown=check(await handleToolCall('reverse',{action:'eintrag',project,reverse_id:rid,typo:1},agent));
+ assert.deepEqual(restUnknown,unknown,'REST führt denselben Fehlervertrag aus und übernimmt effektive Agent-ID');
+ const restMissing=check(await handleToolCall('reverse',{action:'liste'}));
+ assert.equal(restMissing.fehlercode,'keine_berechtigung');
  const stdio=await import('../../mcp-server/dist/tools/consolidated/index.js');
+
+ // P16-T15 erweitert im selben W2 code_intel um genau typen. Diese neue Eigenschaft
+ // wird separat geprüft; die bereits vorhandenen Vertragsbytes bleiben gegen 7cd5ddb eingefroren.
+ const legacyDefinition=definition=>{
+   const d=structuredClone(definition);
+   if(d.name==='code_intel'){
+     assert.deepEqual(d.inputSchema.properties.typen,{type:'boolean',description:'typen:true prüft unterstützte Dateien aus PG auch ohne Schatten; mit schatten automatisch typbefunde (typen:false aus), TS und JS bei checkJs. Fehlende externe Typen: vollstaendig:false.'});
+     delete d.inputSchema.properties.typen;
+   }
+   return d;
+ };
+
  const defs=Object.entries(stdio).filter(([name,v])=>name.endsWith('Tool')&&v?.definition&&v.definition.name!=='reverse').map(([,v])=>v.definition).sort((a,b)=>a.name.localeCompare(b.name));
- assert.equal(hash(MCP_TOOLS.filter(t=>t.name!=='reverse')),'c1f8362b8f43a9e7493c1db5aab75a2c7f6b323c451950dc763ce6714dcadfcf','REST Altdefinitionen eingefroren');
- assert.equal(hash(defs),'1cada027187ec8a345e0afc3270cf5287687ace8a84b54185453e47edbb81090','stdio Altdefinitionen eingefroren');
+ assert.equal(hash(MCP_TOOLS.filter(t=>t.name!=='reverse').map(legacyDefinition)),'c1f8362b8f43a9e7493c1db5aab75a2c7f6b323c451950dc763ce6714dcadfcf','REST Altdefinitionen eingefroren');
+ assert.equal(hash(defs.map(legacyDefinition)),'1cada027187ec8a345e0afc3270cf5287687ace8a84b54185453e47edbb81090','stdio Altdefinitionen eingefroren');
  assert.deepEqual(MCP_TOOLS.find(t=>t.name==='reverse'),REVERSE_DEFINITION);
  assert.deepEqual(stdio.reverseTool.definition,REVERSE_DEFINITION);
  assert.equal(REVERSE_FEHLERCODES.length,20);
  console.log('RV9 PASS: Schema-Golden, Bibliothek/Paging, Bestätigung/Reorder, Rechte/Bindung/Race, Statusfelder, Queue/Dedup/Abbruch, Longpoll, Aktivität, unbekannte/ungenutzte Parameter, Archiv');
 } catch(error){console.error(error);process.exitCode=1;}
-finally {await pool.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await pool.end();await core.closePool();}
+finally {await pool.query('DELETE FROM public.tool_aktivitaet WHERE projekt=$1 AND agent_id IN ($2,$3)',[project,agent,other]);await pool.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await pool.end();await core.closePool();}
 process.exit(process.exitCode||0);
