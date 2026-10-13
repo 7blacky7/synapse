@@ -38,6 +38,7 @@ export class AssetUploadFehler extends Error {
 }
 const fail=(code:string,status:number,message:string):never=>{throw new AssetUploadFehler(code,status,message);};
 const REV=/^(0|[1-9][0-9]*)$/;
+const aktiveTransfers=new Map<string,number>();
 function adresse(c:AssetUploadKontext,a:AssetUploadEingang):AssetAdresse {
   if(!['projekt','reverse'].includes(c.bereich)||typeof c.host_id!=='string'||!c.host_id||c.host_id.length>200)fail('scope_verboten',403,'Vertrauenswürdiger Bereich/Host fehlt.');
   const id=normalisiereSpeicherPfad(c.ziel_ref);
@@ -67,8 +68,28 @@ export class AssetUploadKern {
     for(const key of ['basis','vorbereiten','commit'] as const)if(typeof f[key]!=='function')throw new TypeError('Finalisierer unvollständig.');
     this.finalisierer.set(bereich,f);return()=>{if(this.finalisierer.get(bereich)===f)this.finalisierer.delete(bereich);};
   }
+
+  private transferStart(ctx:AssetUploadKontext):()=>void{
+    const key=(ctx.bereich==='projekt'?this.cfg.speicher.root:this.cfg.speicher.reverseRoot)+':'+ctx.bereich+':'+ctx.ziel_ref;
+    const n=aktiveTransfers.get(key)??0;
+    if(n>=this.cfg.speicher.parallelTransfers)return fail('transfer_limit',429,'Konfigurierte Transferparallelität ausgeschöpft.');
+    aktiveTransfers.set(key,n+1);let closed=false;
+    return()=>{if(closed)return;closed=true;const left=(aktiveTransfers.get(key)??1)-1;if(left)aktiveTransfers.set(key,left);else aktiveTransfers.delete(key);};
+  }
+  private async transfer<T>(ctx:AssetUploadKontext,fn:()=>Promise<T>):Promise<T>{const release=this.transferStart(ctx);try{return await fn();}finally{release();}}
+  private async *begrenzt(quelle:AsyncIterable<Uint8Array>|Iterable<Uint8Array>):AsyncGenerator<Uint8Array>{
+    const it=Symbol.asyncIterator in quelle?(quelle as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]():(quelle as Iterable<Uint8Array>)[Symbol.iterator]();
+    const deadline=Date.now()+this.cfg.speicher.timeoutMs;
+    try{for(;;){
+      let timer:ReturnType<typeof setTimeout>|undefined;
+      const left=deadline-Date.now();if(left<=0)return fail('transfer_timeout',408,'Konfiguriertes Transferzeitbudget abgelaufen.');
+      const next=await Promise.race([Promise.resolve(it.next()),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new AssetUploadFehler('transfer_timeout',408,'Konfiguriertes Transferzeitbudget abgelaufen.')),left);timer.unref();})]).finally(()=>{if(timer)clearTimeout(timer);});
+      if(next.done)return;yield next.value;
+    }}finally{try{if(it.return)void Promise.resolve(it.return()).catch(()=>undefined);}catch{/* Quelle kann bereits abgebrochen sein. */}}
+  }
+
   private async tx<T>(fn:(db:AssetUploadDb)=>Promise<T>):Promise<T>{
-    const c=await this.db.connect();try{await c.query('BEGIN');await c.query("SET LOCAL statement_timeout='15000ms'");
+    const c=await this.db.connect();try{await c.query('BEGIN');await c.query("SELECT set_config('statement_timeout',$1,true)",[String(this.cfg.speicher.timeoutMs)]);
       const r=await fn(c);await c.query('COMMIT');return r;
     }catch(e){await c.query('ROLLBACK');throw e;}finally{await c.release();}
   }
@@ -114,6 +135,8 @@ export class AssetUploadKern {
     if(typeof eingang.idempotency_key!=='string'||!eingang.idempotency_key||eingang.idempotency_key.length>200)return fail('eingang_ungueltig',400,'Idempotenzschlüssel fehlt.');
     const auftrag={...eingang,format,logischer_pfad:a.logischer_pfad};
     await this.tx(async db=>{
+      // Der global eindeutige Schlüssel wird auch zwischen unterschiedlichen Scopes serialisiert.
+      await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['asset-idempotency:'+eingang.idempotency_key]);
       // Reservierte Uploadgrößen zählen vor Annahme; kurze scopebezogene Sperre, keine Byte-I/O.
       await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['asset-upload:'+ctx.bereich+':'+ctx.ziel_ref]);
       const existing=await db.query('SELECT * FROM asset_upload_sitzungen WHERE idempotency_key=$1',[eingang.idempotency_key]);
@@ -124,7 +147,7 @@ export class AssetUploadKern {
         return;
       }
       const pending=await db.query("SELECT COALESCE(sum(groesse),0)::text AS bytes,count(*)::int AS n FROM asset_upload_sitzungen WHERE bereich=$1 AND ziel_ref=$2 AND status IN ('offen','laeuft','vollstaendig') AND lease_bis>clock_timestamp()",[ctx.bereich,ctx.ziel_ref]);
-      const current=ctx.bereich==='projekt'?await db.query("SELECT COALESCE(sum(file_size),0)::text AS bytes,count(*)::int AS n FROM asset_files WHERE project=$1 AND deleted_at IS NULL AND storage_key IS NOT NULL",[ctx.ziel_ref]):{rows:[{bytes:'0',n:0}]};
+      const current=ctx.bereich==='projekt'?await db.query("SELECT COALESCE(sum(file_size),0)::text AS bytes,count(*)::int AS n FROM asset_files WHERE project=$1 AND file_path<>$2 AND deleted_at IS NULL AND storage_key IS NOT NULL",[ctx.ziel_ref,a.logischer_pfad]):{rows:[{bytes:'0',n:0}]};
       const limits=await this.grenzen(ctx,db);
       if(BigInt(String(pending.rows[0].bytes))+BigInt(String(current.rows[0].bytes))+BigInt(auftrag.groesse)>BigInt(limits.maxProjektBytes)
         ||Number(pending.rows[0].n)+Number(current.rows[0].n)+1>limits.maxProjektDateien)fail('quote',413,'Projekt-/Uploadquote überschritten.');
@@ -140,7 +163,7 @@ export class AssetUploadKern {
     if(s.offset!==offset||!['offen','laeuft'].includes(s.status))return fail('offset_konflikt',409,'Bestätigter Offset/Zustand abweichend.');
     if(!Number.isSafeInteger(groesse)||groesse<=0||groesse>this.cfg.speicher.chunkBytes||offset+groesse>s.groesse)return fail('groesse_falsch',400,'Ungültige Teilgröße.');
     // Eigenes unveränderliches Staging je Versuch: ein abgelaufener/konkurrierender Writer kann keine bestätigten Teile überschreiben.
-    const part=await this.speicher.stageTeil(adresse(ctx,s.auftrag),quelle,{groesse});
+    const part=await this.transfer(ctx,()=>this.speicher.stageTeil(adresse(ctx,s.auftrag),this.begrenzt(quelle),{groesse}));
     await this.tx(async db=>{
       const r=await db.query("UPDATE asset_upload_sitzungen SET bestaetigte_bytes=bestaetigte_bytes+$3,status='laeuft',updated_at=clock_timestamp(),lease_bis=clock_timestamp()+$4*interval '1 millisecond' WHERE id=$1 AND bestaetigte_bytes=$2 AND status IN ('offen','laeuft') AND lease_bis>clock_timestamp() RETURNING id",[id,offset,groesse,this.cfg.speicher.timeoutMs]);
       if(!r.rows.length)fail('offset_konflikt',409,'Teil konnte nach Streaming nicht bestätigt werden.');
@@ -164,7 +187,7 @@ export class AssetUploadKern {
     async function* stream(){for(const p of parts){const part:AssetStaging={id:String(p.staging_id),adresse:a,sha256:String(p.sha256),groesse:Number(p.groesse)};for await(const bytes of await storage.readStagingStream(part))yield bytes;}}
     let prepared=false;
     try{
-      const full=await storage.stage(a,stream(),{groesse:s.groesse,sha256:s.sha256});
+      const full=await this.transfer(ctx,()=>storage.stage(a,this.begrenzt(stream()),{groesse:s.groesse,sha256:s.sha256}));
       const basis=await f.basis(ctx,s);
       await storage.publish(full,{
         basisSha256:basis.sha256,
@@ -204,7 +227,10 @@ export class AssetUploadKern {
       if(d.adresse.bereich!==ctx.bereich||d.adresse.ziel_ref!==ctx.ziel_ref)return fail('scope_verboten',403,'Downloadadapter verlässt authentifizierten Scope.');
       const gesamt=d.groesse,selected=typeof range==='function'?range(gesamt):range,offset=selected?.offset??0,groesse=selected?.groesse??gesamt;
       if(!Number.isSafeInteger(gesamt)||gesamt<0||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(groesse)||groesse<0||offset+groesse>gesamt)return fail('range_ungueltig',416,'Range verlässt Bytesrevision.');
-      const stream=await this.speicher.readStorageStream(d.adresse,d.storage_key,offset,groesse);
+      const release=this.transferStart(ctx);let stream;
+      try{stream=await this.speicher.readStorageStream(d.adresse,d.storage_key,offset,groesse);}catch(e){release();throw e;}
+      const timer=setTimeout(()=>stream.destroy(new AssetUploadFehler('transfer_timeout',408,'Konfiguriertes Downloadzeitbudget abgelaufen.')),this.cfg.speicher.timeoutMs);timer.unref();
+      stream.once('close',()=>{clearTimeout(timer);release();});
       return {stream,gesamt,offset,groesse,sha256:d.sha256,revision:e.revision,mime_type:d.mime_type};
     });
   }
