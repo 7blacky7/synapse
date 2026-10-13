@@ -1,6 +1,7 @@
 /** A11: Share wins; full-hash PC bytes survive in retained immutable revisions. */
 import {createHash,randomUUID} from 'node:crypto';
 import {getPool} from '../db/client.js';
+import {standardRegistry} from '../asset-intel/registry.js';
 import {getAssetKonfiguration,loeseAssetProjektoptionen} from '../config/asset-konfig.js';
 import type {AssetKonfiguration} from '../config/asset-konfig.js';
 import {AssetSpeicher,normalisiereSpeicherPfad} from './asset-speicher.js';
@@ -35,6 +36,21 @@ export class AssetKonfliktKern {
  private ready(row:Row){
   if(!row.transport_revision||row.storage_status!=='ready'||!row.storage_key||!row.transport_sha256||row.prepared_upload_id||row.prepared_mutation_id||row.prepared_konflikt_id)
    return fail('revision_konflikt',409,'Share-Revision wird gerade geändert oder ist nicht bereit.');
+ }
+ private async pcPolicy(project:string,row:Row,pc:Row,db:AssetUploadDb){
+  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['asset-upload:projekt:'+project]);
+  const raw=(await db.query('SELECT * FROM asset_projekt_optionen WHERE project=$1',[project])).rows[0];
+  const num=(v:unknown)=>v===null||v===undefined?undefined:Number(v);
+  const policy=loeseAssetProjektoptionen(this.cfg,raw?{richtung:raw.richtung as 'both'|'pc_to_share'|'share_to_pc'|undefined??undefined,
+   maxDateiBytes:num(raw.max_datei_bytes),maxProjektBytes:num(raw.max_projekt_bytes),maxProjektDateien:num(raw.max_projekt_dateien),
+   erlaubteTypen:raw.erlaubte_typen as string[]|undefined??undefined}:{});
+  if(policy.richtung==='share_to_pc')return fail('richtung_verboten',403,'Projekt erlaubt keine PC-Übernahme.');
+  const format=standardRegistry.detect(String(row.file_path),new Uint8Array()).format;
+  if(!format||!policy.erlaubteTypen.includes(format))return fail('format_verboten',415,'Format nicht mehr freigegeben.');
+  const pending=(await db.query("SELECT COALESCE(sum(groesse),0)::text AS bytes,count(*)::int AS n FROM asset_upload_sitzungen WHERE bereich='projekt' AND ziel_ref=$1 AND status IN('offen','laeuft','vollstaendig') AND lease_bis>clock_timestamp()",[project])).rows[0];
+  const current=(await db.query('SELECT COALESCE(sum(file_size),0)::text AS bytes,count(*)::int AS n FROM asset_files WHERE project=$1 AND id<>$2 AND deleted_at IS NULL AND storage_key IS NOT NULL',[project,row.id])).rows[0];
+  if(Number(pc.groesse)>policy.maxDateiBytes||BigInt(String(current.bytes))+BigInt(String(pending.bytes))+BigInt(String(pc.groesse))>BigInt(policy.maxProjektBytes)||
+   Number(current.n)+Number(pending.n)+1>policy.maxProjektDateien)return fail('quote',413,'PC-Übernahme überschreitet Projektquote.');
  }
  private async fenster(project:string,db:AssetUploadDb){
   const row=(await db.query('SELECT loeschfenster_ms FROM asset_projekt_optionen WHERE project=$1',[project])).rows[0];
@@ -141,6 +157,7 @@ export class AssetKonfliktKern {
    }
    const pc=(await db.query('SELECT *,restore_until>clock_timestamp() AS gueltig FROM asset_revisionen WHERE asset_id=$1 AND revision=$2',[assetId,c.pc_revision])).rows[0];
    if(!pc?.gueltig||pc.tombstone||!pc.storage_key)return fail('revision_abgelaufen',410,'PC-Revisionsfenster abgelaufen.');
+   await this.pcPolicy(ctx.ziel_ref,row,pc,db);
    const id=randomUUID();
    await db.query("INSERT INTO asset_konflikt_loesungen(id,konflikt_id,project,agent_id,basis_revision,pc_revision,status,vorherige_datei,lease_bis) VALUES($1,$2,$3,$4,$5,$6,'offen',$7::jsonb,clock_timestamp()+$8*interval '1 millisecond')",[id,c.id,ctx.ziel_ref,agent,row.transport_revision,c.pc_revision,JSON.stringify(row),this.cfg.speicher.timeoutMs]);
    return {fertig:false,id,c,row,pc};
@@ -158,6 +175,7 @@ export class AssetKonfliktKern {
       const fresh=(await db.query('SELECT * FROM asset_files WHERE id=$1 AND project=$2 FOR UPDATE',[assetId,ctx.ziel_ref])).rows[0];this.ready(fresh);
       const owner=(await db.query("SELECT * FROM asset_konflikt_loesungen WHERE id=$1 AND status='offen' AND lease_bis>clock_timestamp() FOR UPDATE",[id])).rows[0];
       if(!owner||String(fresh.transport_revision)!==String(row.transport_revision))return fail('revision_konflikt',409,'Share-Basis/Resolver änderte sich.');
+      await this.pcPolicy(ctx.ziel_ref,fresh,pc,db);
       if(op.vorheriger_storage_key)await db.query('UPDATE asset_revisionen SET storage_key=$3 WHERE asset_id=$1 AND revision=$2 AND storage_key=$4',[assetId,row.transport_revision,op.vorheriger_storage_key,row.storage_key]);
       await db.query("UPDATE asset_files SET storage_status='prepared',prepared_konflikt_id=$2 WHERE id=$1",[assetId,id]);
       await db.query("UPDATE asset_konflikt_loesungen SET status='prepared' WHERE id=$1",[id]);
@@ -167,6 +185,7 @@ export class AssetKonfliktKern {
      const fresh=(await db.query('SELECT * FROM asset_files WHERE id=$1 AND project=$2 FOR UPDATE',[assetId,ctx.ziel_ref])).rows[0];
      const owner=(await db.query("SELECT * FROM asset_konflikt_loesungen WHERE id=$1 AND status='prepared' AND lease_bis>clock_timestamp() FOR UPDATE",[id])).rows[0];
      if(!owner||fresh?.prepared_konflikt_id!==id||String(fresh.transport_revision)!==String(row.transport_revision))return fail('revision_konflikt',409,'Resolver nicht mehr aktuell.');
+     await this.pcPolicy(ctx.ziel_ref,fresh,pc,db);
      const rev=String((await db.query('SELECT COALESCE(max(revision),0)+1 AS revision FROM asset_revisionen WHERE asset_id=$1',[assetId])).rows[0].revision);
      await db.query("UPDATE asset_files SET transport_revision=$2,transport_sha256=$3,file_size=$4,storage_key=$5,storage_status='ready',prepared_konflikt_id=NULL,deleted_at=NULL,restore_until=NULL,updated_at=clock_timestamp() WHERE id=$1",[assetId,rev,pc.sha256,pc.groesse,op.storage_key]);
      await db.query("INSERT INTO asset_revisionen(asset_id,revision,sha256,groesse,storage_key,quelle) VALUES($1,$2,$3,$4,$5,'pc')",[assetId,rev,pc.sha256,pc.groesse,op.revision_storage_key??op.storage_key]);
@@ -201,5 +220,6 @@ export class AssetKonfliktKern {
 }
 export async function holeAssetKonflikt(project:string,filePath:string):Promise<Row|null>{
  try{return (await new AssetKonfliktKern().liste(project,{file_path:filePath,limit:1})).konflikte[0]??null;}
- catch(e){if((e as {code?:string}).code==='42P01')return null;throw e;}
+ // Optional metadata must never replace a successful legacy file response with an error.
+ catch{return null;}
 }
