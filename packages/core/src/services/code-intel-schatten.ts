@@ -354,7 +354,19 @@ function keinBezugHinweis(bezug: Bezug): string {
 /** Ohne Schalter unveränderte Antwort; ausschließlich ausstehende Commits überbrücken den Parse-Lag. */
 
 export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
-  const antwort = await mitCodeIntelSchattenKern(action,args,bestand);
+  const basisAntwort = await mitCodeIntelSchattenKern(action,args,bestand);
+  let antwort = basisAntwort;
+  if (args.typen === true || (args.schatten !== undefined && args.typen !== false)) {
+    try {
+      antwort = await (await import('./code-intel-typen.js')).ergaenzeTypbefunde(action,args,basisAntwort);
+    } catch (err) {
+      // Zusätzliche Prüfung darf eine erfolgreiche Code-Intel-Leseantwort nie in einen Fehler verwandeln.
+      console.error('[code-intel] Typprüfung nicht verfügbar:', (err as Error).message);
+      const file = typeof args.file_path === 'string' ? args.file_path : '';
+      if (/\.(?:ts|tsx|mts|cts)$/.test(file)) antwort = {...basisAntwort,
+        typbefunde:{status:'nicht_verfuegbar',vollstaendig:false,fehlende_module:[],hinweis:'Typprüfung nicht verfügbar.'}};
+    }
+  }
   const project = s(args,'project');
   // Standardantworten und ungültige Optionen bleiben unverändert.
   if(!project || !['file','functions','symbols','tree'].includes(action) ||

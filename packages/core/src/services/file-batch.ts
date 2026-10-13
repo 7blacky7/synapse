@@ -6719,6 +6719,20 @@ function pruefDateienAus(stand: SchattenStand, ops: FileBatchOp[], owner: string
   return out;
 }
 
+/** P16-T15: Code-Intel und files prüfen genau denselben Schatten/Basisstand, auch nach Drift. */
+export async function getTypPruefDateienFuerPlan(project: string, planId: string, nachOp?: number): Promise<PruefDatei[]> {
+  const plan = (await getPool().query<FileBatchPlanRow>(
+    "SELECT id::text,project,ops,expected_hashes,status,owner_agent_id FROM file_batch_plans WHERE id=$1::bigint AND project=$2 AND status IN ('open','committed')",
+    [planId, project])).rows[0];
+  if (!plan) throw new Error('Plan in diesem Projekt nicht gefunden.');
+  if (nachOp !== undefined && (!Number.isInteger(nachOp) || nachOp < 0 || nachOp >= plan.ops.length))
+    throw new Error('stand_nach_op liegt außerhalb des Plans.');
+  if (nachOp !== undefined) plan.ops = plan.ops.slice(0, nachOp + 1);
+  const stand = await ladeSchattenStand(plan);
+  if ('fehler' in stand || stand.angewendet.fehler.length) throw new Error('Plan-Schatten nicht vollständig anwendbar.');
+  return pruefDateienAus(stand, plan.ops, plan.owner_agent_id);
+}
+
 /** sha256 des Endstands je (nicht geloeschter) Datei, wie PlanPruefung.ergebnis_hashes. */
 function ergebnisHashesAus(dateien: PruefDatei[]): Record<string, string> {
   return Object.fromEntries(dateien.filter((d) => !d.geloescht)
@@ -6765,7 +6779,10 @@ export async function pruefeGespeichertenPlan(
   const vorher = await ladePlanBefunde(planId);
   let pruefung: PlanPruefung;
   let neuGeprueft = false;
-  if (vorher && vorher.status === 'fertig' && Date.now() - new Date(vorher.geprueft_am).getTime() < pruefungGueltigMs()
+  // P16-T15: andere Paketdateien/Abhängigkeiten können sich trotz gleicher Plan-Hashes geändert haben.
+  // Die Typstufe nutzt ihren eigenen Paketcache; gespeicherte Gesamtbefunde niemals blind wiederverwenden.
+  if (!vorher?.typen && !dateien.some(d => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(d.file_path))
+    && vorher && vorher.status === 'fertig' && Date.now() - new Date(vorher.geprueft_am).getTime() < pruefungGueltigMs()
     && gleicheHashes(vorher.ergebnis_hashes ?? {}, ergebnisHashesAus(dateien))) {
     pruefung = vorher;
   } else {

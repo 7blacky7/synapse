@@ -22,6 +22,7 @@
 import { createHash } from 'node:crypto';
 import { getPool } from '../db/client.js';
 import { meldeFehlerfall } from './erklaerungen.js';
+import { pruefePlanTypen, type TypPruefung } from './typen-pruefung.js';
 import {
   pruefeSignaturen,
   pruefeSyntaxEinzelweg,
@@ -61,6 +62,8 @@ export interface PlanPruefung {
   altlasten: number;
   ergebnis_hashes: Record<string, string>;
   geprueft_am: string;
+  /** P16-T15: zusätzliche Stufe, nur bei TypeScript-Plänen vorhanden. */
+  typen?: Omit<TypPruefung, 'befunde'>;
 }
 
 const MIN_GRUND_ZEICHEN = 5;
@@ -148,7 +151,28 @@ export async function pruefePlanDateien(
       status = 'teilweise';
     }
   }
-  return { status, dauer_ms: Date.now() - t0, befunde, altlasten, ergebnis_hashes: ergebnisHashes, geprueft_am: new Date().toISOString() };
+  const typPruefung = await pruefePlanTypen(project, dateien);
+  if (typPruefung) {
+    if (typPruefung.status === 'zeitlimit' || typPruefung.status === 'nicht_verfuegbar') status = 'teilweise';
+    altlasten += typPruefung.altlasten;
+    for (const roh of typPruefung.befunde) {
+      // Fremddatei-Folgefehler tragen den Hash der verursachenden Plan-Datei.
+      const ursache = dateien.find(d => d.ops.some(o => o.op_index === roh.op_index));
+      const ergebnisHash = hash(ursache?.ergebnis ?? '');
+      const schluessel = befundSchluessel(roh);
+      const grund = quittiert.get(schluessel);
+      befunde.push({
+        ...roh,
+        id: hash(schluessel + '|' + roh.zeilen.join('-') + '|' + ergebnisHash).slice(0, 10),
+        status: grund ? 'quittiert' : 'offen',
+        ...(grund ? { quittiert_grund: grund } : {}),
+        ergebnis_hash: ergebnisHash,
+      });
+    }
+  }
+  const typen = typPruefung ? (({ befunde: _befunde, ...meta }) => meta)(typPruefung) : undefined;
+  return { status, dauer_ms: Date.now() - t0, befunde, altlasten, ergebnis_hashes: ergebnisHashes, geprueft_am: new Date().toISOString(),
+    ...(typen ? { typen } : {}) };
 }
 
 /** Befunde am Plan speichern (klein, ohne Schatten). Wirft nie; fehlende Spalte (alte DB) wird geloggt. */
@@ -233,6 +257,7 @@ export function befundUebersicht(pruefung: PlanPruefung | null, maxAnzeige = Num
   return {
     status: pruefung.status,
     dauer_ms: pruefung.dauer_ms,
+    ...(pruefung.typen ? { typen: pruefung.typen } : {}),
     sperre,
     anzahl: pruefung.befunde.length,
     je_op: je,

@@ -248,6 +248,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     summary: 'Strukturierte Code-Abfragen aus PostgreSQL. ERSTE WAHL fuer alles was mit Code zu tun hat.',
     when_to_use: [
       'Projektstruktur verstehen: tree.',
+      'Typfehler jederzeit aus PG prüfen: typen:true bei file/functions/symbols/references/search/tree. TS (.ts/.tsx/.mts/.cts), JS nur mit checkJs im Paket-tsconfig. Mit schatten werden typbefunde automatisch ergänzt (typen:false schaltet ab); nur neue Diagnosen gegen die Basis, samt betroffene_aufrufer und op_index. Fehlende Abhängigkeitstypen: vollstaendig:false, fehlende_module. Zeitdeckel FEHLERPRUEFUNG_TYPEN_MS und Schalter FEHLERPRUEFUNG_TYPEN=0; files(plan) verwendet denselben Prüfer.',
       'Funktionen finden: functions (gefiltert nach Datei/Name).',
       'Wo wird X verwendet: references.',
       'Interfaces/Klassen/Enums: symbols.',

@@ -42,7 +42,7 @@ export interface FehlermusterHinweis {
    * P15-T17: 'thema' = Embedding-Aehnlichkeit (kein sicherer Befund), 'muster' = Signatur-Treffer in den
    * geaenderten Zeilen, 'syntax' = Syntaxbefund (nachgeliefert oder quittiert).
    */
-  quelle?: 'thema' | 'muster' | 'syntax' | 'erklaerung';
+  quelle?: 'thema' | 'muster' | 'syntax' | 'typen' | 'erklaerung';
   /** P15-T33 E1: Erklaerung aus dem Erklaerungs-Topf (id, status, confidence, gepflegte Sprachen). */
   erklaerung?: Record<string, unknown>;
   titel?: string;
@@ -271,7 +271,7 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
           wie: a.warnung!.fix,
           quelle: 'thema' as const,
         }));
-    const sicher = treffer.filter((t) => t.quelle === 'muster' || t.quelle === 'syntax');
+    const sicher = treffer.filter((t) => t.quelle === 'muster' || t.quelle === 'syntax' || t.quelle === 'typen');
     const fehlerTreffer = sicher.filter((t) => t.severity === 'error');
     const thema = treffer.filter((t) => t.quelle === 'thema').length;
     const erklaert = treffer.filter((t) => t.quelle === 'erklaerung' && t.erklaerung).length;
