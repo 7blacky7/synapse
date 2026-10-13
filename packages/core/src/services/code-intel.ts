@@ -24,7 +24,10 @@
  *   - fullTextSearchCode ist bewusst abweichend benannt von searchCode (code.ts)
  */
 
-import { getPool } from '../db/client.js';
+import { codeBereichLeser, pruefeCodeBereich, PROJEKT_BEREICH } from './intel-bereich.js';
+import type { CodeBereich } from './intel-bereich.js';
+export { PROJEKT_BEREICH, REVERSE_BEREICH } from './intel-bereich.js';
+export type { CodeBereich } from './intel-bereich.js';
 import { assetMarker, assetSammelZeile, holeBaumAssets } from './asset-weiche.js';
 import { envSicht, istMaskierteDatei, maskiereDatei } from './env-maske.js';
 
@@ -217,9 +220,10 @@ function trefferFelder(
  */
 export async function getProjectTree(
   project: string,
-  options: TreeOptions = {}
+  options: TreeOptions = {},
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<string> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
   const {
     path: dirPath,
     recursive = true,
@@ -239,7 +243,7 @@ export async function getProjectTree(
 
   // Projekt-Root-Pfad aus projects-Tabelle holen
   let projectRoot = '';
-  try {
+  if (bereich === PROJEKT_BEREICH) try {
     const rootResult = await pool.query<{ path: string }>(
       `SELECT path FROM projects WHERE name = $1 ORDER BY last_access DESC LIMIT 1`,
       [project]
@@ -294,7 +298,7 @@ export async function getProjectTree(
   // Etappe C (Entwurf 5.5): Asset-Zeilen aus asset_files, deren Pfad nicht in code_files steht. Ohne
   // Asset-Eintraege im Projekt liefert holeBaumAssets nach EINER gecachten EXISTS-Abfrage nichts — der
   // Baum bleibt dann byte-gleich. Kommentarsuche (comment_contains) und file_type schliessen Assets aus.
-  const baumAssets = show_assets && !comment_contains?.trim() && !file_type
+  const baumAssets = bereich === PROJEKT_BEREICH && show_assets && !comment_contains?.trim() && !file_type
     ? await holeBaumAssets(project, dirPath)
     : { zeilen: [], rest: new Map<string, Array<{ format: string; n: number }>>(), total: 0 };
 
@@ -560,9 +564,10 @@ export async function getFunctions(
   filePath?: string,
   name?: string,
   exportedOnly?: boolean,
-  limit?: number
+  limit?: number,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<FunctionInfo[]> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
 
   const params: unknown[] = [project];
   const conditions: string[] = ['cs.project = $1', "cs.symbol_type = 'function'"];
@@ -640,9 +645,10 @@ export async function getVariables(
   filePath?: string,
   name?: string,
   withValues?: boolean,
-  limit?: number
+  limit?: number,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<VariableInfo[]> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
 
   const params: unknown[] = [project];
   const conditions: string[] = ['cs.project = $1', "cs.symbol_type = 'variable'"];
@@ -736,9 +742,10 @@ export async function getSymbols(
    * auf cs.name findet dort GRUNDSAETZLICH nichts — auch dann nicht, wenn der
    * gesuchte Text sichtbar im Symbol steht.
    */
-  valueContains?: string
+  valueContains?: string,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<SymbolInfo[]> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
 
   const params: unknown[] = [project, symbolType];
   const conditions: string[] = ['cs.project = $1', 'cs.symbol_type = $2'];
@@ -1040,9 +1047,10 @@ async function findeAliasVerwendungen(
   dateiPfad: string,
   spec: AliasSpecifier,
   zeilen: string[],
-  symbolId: string | null
+  symbolId: string | null,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<ReferenceInfo[]> {
-  const kanten = await getPool().query<{ line_number: number; call_kind: string | null; caller_scope: string | null }>(
+  const kanten = await codeBereichLeser(bereich).query<{ line_number: number; call_kind: string | null; caller_scope: string | null }>(
     `SELECT line_number, call_kind, caller_scope FROM code_call_edges
      WHERE project = $1 AND file_path = $2 AND callee_name = $3 AND callee_receiver IS NULL`,
     [project, dateiPfad, spec.alias]
@@ -1079,11 +1087,12 @@ async function findeAliasReferenzen(
   project: string,
   name: string,
   definitionsDateien: Set<string>,
-  symbolId: string | null
+  symbolId: string | null,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<AliasFund[]> {
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) return [];
   // Vorfilter in PG: nur Dateien, in denen "name as" ueberhaupt vorkommt.
-  const dateien = await getPool().query<{ file_path: string; content: string }>(
+  const dateien = await codeBereichLeser(bereich).query<{ file_path: string; content: string }>(
     `SELECT file_path, content FROM code_files
      WHERE project = $1 AND NOT ignored AND strpos(content, $2) > 0 AND content ~ $3`,
     [project, name, `${regexLiteral(name)}\\s+as\\s`]
@@ -1110,7 +1119,7 @@ async function findeAliasReferenzen(
       });
       // Nur ein IMPORT bindet den Alias lokal; export { X as Y } benennt nach aussen um.
       if (spec.art !== 'import') continue;
-      for (const v of await findeAliasVerwendungen(project, datei.file_path, spec, zeilen, symbolId)) {
+      for (const v of await findeAliasVerwendungen(project, datei.file_path, spec, zeilen, symbolId, bereich)) {
         funde.push({ passt, eintrag: v });
       }
     }
@@ -1150,9 +1159,10 @@ export async function getReferences(
   project: string,
   name: string,
   includeNameMatches = false,
-  limit = 200
+  limit = 200,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<ReferencesResult> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
 
   // Definition laden — non-string bevorzugen (echte Deklaration vor String-Literal).
   // field (Interface-/Klassen-Feld, TS-Parser v5) nur, wenn es sonst keine
@@ -1293,7 +1303,7 @@ export async function getReferences(
   // LOESUNG OHNE NEUINDEXIERUNG: der Specifier "X as Y" wird im Dateitext
   // gesucht. Seine Zeile zaehlt als Referenz auf X, die Verwendungen von Y in
   // derselben Datei ebenfalls — beide mit via_alias gekennzeichnet.
-  const aliasFunde = await findeAliasReferenzen(project, name, definitionsDateien, definition?.id ?? null);
+  const aliasFunde = await findeAliasReferenzen(project, name, definitionsDateien, definition?.id ?? null, bereich);
   const gleicheStelle = (r: ReferenceInfo, datei: string, zeile: number) =>
     r.file_path === datei && r.line_number === zeile;
   for (const fund of aliasFunde) {
@@ -1548,9 +1558,10 @@ export async function fullTextSearchCode(
   fileType?: string,
   limit: number = 20,
   filePath?: string,
-  zeilen: { match_limit?: number; match_skip?: number } = {}
+  zeilen: { match_limit?: number; match_skip?: number } = {},
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<FullTextSearchResult[]> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
 
   const cleanQuery = query.trim();
   if (!cleanQuery) return [];
@@ -1678,8 +1689,10 @@ export interface FileContentOptions {
  */
 export function applyContentRange(
   rawContent: string,
-  options: FileContentOptions = {}
+  options: FileContentOptions = {},
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): { content: string; total_lines: number; returned_range: { from: number; to: number; eof: boolean } } {
+  pruefeCodeBereich(bereich);
   const lines = rawContent.split('\n');
   const total_lines = lines.length;
 
@@ -1760,8 +1773,8 @@ export class CodeIntelAmbiguousFilePathError extends Error {
  * Findet den eindeutigen kanonischen Dateipfad fuer eine Einzeldatei-Abfrage.
  * Ein Vergleich per RIGHT statt LIKE behandelt %, _ und Backslash literal.
  */
-async function loeseEinzelDateipfad(project: string, filePath: string): Promise<string | null> {
-  const pool = getPool();
+async function loeseEinzelDateipfad(project: string, filePath: string, bereich: CodeBereich = PROJEKT_BEREICH): Promise<string | null> {
+  const pool = codeBereichLeser(bereich);
   const exakt = await pool.query(
     'SELECT file_path FROM code_files WHERE project = $1 AND file_path = $2 LIMIT 1',
     [project, filePath]
@@ -1805,10 +1818,11 @@ async function loeseEinzelDateipfad(project: string, filePath: string): Promise<
 export async function getFileContent(
   project: string,
   filePath: string,
-  options?: FileContentOptions
+  options?: FileContentOptions,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<FileContentResult | null> {
-  const pool = getPool();
-  const resolvedPath = await loeseEinzelDateipfad(project, filePath);
+  const pool = codeBereichLeser(bereich);
+  const resolvedPath = await loeseEinzelDateipfad(project, filePath, bereich);
   if (!resolvedPath) return null;
 
   const result = await pool.query(
@@ -1823,7 +1837,7 @@ export async function getFileContent(
   const row = result.rows[0];
 
   // P15-T36 Teil 2: .env-Dateien nur maskiert (NAME=[WERT]) ausliefern — auch ausgeblendete und Bestandszeilen.
-  const ranged = applyContentRange(envSicht(row.file_path, row.content ?? ''), options);
+  const ranged = applyContentRange(envSicht(row.file_path, row.content ?? ''), options, bereich);
 
   return {
     file_path: row.file_path,
@@ -1879,8 +1893,9 @@ export async function getStatements(
   scopeName?: string,
   topLevelOnly?: boolean,
   limit?: number,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<StatementInfo[]> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
   const params: unknown[] = [project];
   const conditions: string[] = ['project = $1'];
 
@@ -1955,9 +1970,10 @@ export async function getCallEdges(
   project: string,
   filePath?: string,
   calleeName?: string,
-  limit = 200
+  limit = 200,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<CallEdgesResult> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
   const params: unknown[] = [project];
   const conditions: string[] = ['project = $1'];
 
@@ -2021,10 +2037,11 @@ export interface ExecutionFlowResult {
 export async function getExecutionFlow(
   project: string,
   filePath: string,
-  scopeName?: string
+  scopeName?: string,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<ExecutionFlowResult> {
-  const pool = getPool();
-  const resolvedPath = await loeseEinzelDateipfad(project, filePath);
+  const pool = codeBereichLeser(bereich);
+  const resolvedPath = await loeseEinzelDateipfad(project, filePath, bereich);
   const params: unknown[] = [project, resolvedPath ?? filePath];
   let scopeCond: string;
   if (scopeName) {
@@ -2099,9 +2116,10 @@ export async function getEntrypoints(
   project: string,
   filePath?: string,
   limit: number = 200,
-  includeDeclarations = false
+  includeDeclarations = false,
+  bereich: CodeBereich = PROJEKT_BEREICH
 ): Promise<EntrypointInfo[]> {
-  const pool = getPool();
+  const pool = codeBereichLeser(bereich);
   const params: unknown[] = [project];
   // Entrypoints = echte ausfuehrende Top-Level-Statements. KEINE Imports
   // (variable+text~"import"/"require"), KEINE reine Typ-Deklarationen.

@@ -1,0 +1,1191 @@
+{
+  "core": {
+    "tree": "src/ (2 Dateien, 1fn, 1var)\n  lib.ts (2Z, 1fn)\n    fn: +build\n  main.ts (5Z, 1var)\n    /** Z4: Marker project code_files */\n---\n2 Dateien | Projekt: p18_rv2",
+    "functions": [
+      {
+        "id": "fn",
+        "file_path": "src/lib.ts",
+        "name": "build",
+        "line_start": 1,
+        "line_end": 1,
+        "params": [],
+        "return_type": "number",
+        "is_exported": true,
+        "parent_name": null,
+        "usage_count": 1
+      }
+    ],
+    "variables": [
+      {
+        "id": "var",
+        "file_path": "src/main.ts",
+        "name": "number",
+        "line_start": 3,
+        "line_end": 3,
+        "is_exported": false,
+        "value": "7"
+      }
+    ],
+    "symbols": [
+      {
+        "id": "comment",
+        "file_path": "src/main.ts",
+        "symbol_type": "comment",
+        "name": null,
+        "line_start": 4,
+        "line_end": 4,
+        "is_exported": false,
+        "value": "Marker project code_files",
+        "match_line": 4,
+        "match_lines": [
+          {
+            "line": 4,
+            "text": "Marker project code_files"
+          }
+        ]
+      }
+    ],
+    "references": {
+      "definition": {
+        "id": "fn",
+        "file_path": "src/lib.ts",
+        "symbol_type": "function",
+        "name": "build",
+        "line_start": 1,
+        "is_exported": true,
+        "parent_symbol": null
+      },
+      "references": [
+        {
+          "symbol_id": "fn",
+          "file_path": "src/main.ts",
+          "line_number": 1,
+          "context": "import { build as make } from './lib.js';",
+          "kind": "reference",
+          "via_alias": "make",
+          "alias_role": "import_specifier"
+        },
+        {
+          "kind": "call",
+          "symbol_id": "fn",
+          "file_path": "src/main.ts",
+          "line_number": 2,
+          "context": "call: make()",
+          "via_alias": "make",
+          "alias_role": "alias_usage"
+        }
+      ],
+      "total_files": 1,
+      "total_references": 2,
+      "string_occurrences": [],
+      "total_string_occurrences": 0,
+      "name_matches": [],
+      "total_name_matches": 0,
+      "gekappt": false
+    },
+    "search": [
+      {
+        "file_path": "src/main.ts",
+        "file_type": "ts",
+        "headline": "build as make } from './lib.js';\nmake();\nconst number = 7;\n// <b>Marker</b> project code_files",
+        "rank": 0.06079271,
+        "matches": [
+          {
+            "line": 4,
+            "text": "// Marker project code_files"
+          }
+        ],
+        "total_matches": 1,
+        "matches_gekappt": false
+      }
+    ],
+    "file": {
+      "file_path": "src/main.ts",
+      "file_type": "ts",
+      "file_size": 97,
+      "content": "make();\nconst number = 7;\n// Marker project code_files",
+      "total_lines": 5,
+      "returned_range": {
+        "from": 2,
+        "to": 4,
+        "eof": false
+      }
+    },
+    "statements": [
+      {
+        "id": "801",
+        "file_path": "src/main.ts",
+        "scope_type": "module",
+        "scope_name": null,
+        "statement_type": "call",
+        "node_kind": "CallExpression",
+        "line_start": 2,
+        "line_end": 2,
+        "order_index": 0,
+        "depth": 0,
+        "parent_statement_id": null,
+        "text": "make();",
+        "callee": "make",
+        "receiver": null,
+        "assigned_to": null,
+        "condition_text": null,
+        "is_top_level": true,
+        "is_awaited": false
+      }
+    ],
+    "calls": {
+      "calls": [
+        {
+          "id": "901",
+          "file_path": "src/main.ts",
+          "caller_scope": null,
+          "statement_id": "801",
+          "callee_name": "make",
+          "callee_receiver": null,
+          "target_symbol_id": "fn",
+          "line_number": 2,
+          "call_kind": "call",
+          "confidence": 1
+        }
+      ],
+      "total": 1,
+      "gekappt": false
+    },
+    "flow": {
+      "file_path": "src/main.ts",
+      "scope_name": null,
+      "statements": [
+        {
+          "id": "801",
+          "file_path": "src/main.ts",
+          "scope_type": "module",
+          "scope_name": null,
+          "statement_type": "call",
+          "node_kind": "CallExpression",
+          "line_start": 2,
+          "line_end": 2,
+          "order_index": 0,
+          "depth": 0,
+          "parent_statement_id": null,
+          "text": "make();",
+          "callee": "make",
+          "receiver": null,
+          "assigned_to": null,
+          "condition_text": null,
+          "is_top_level": true,
+          "is_awaited": false
+        }
+      ]
+    },
+    "entrypoints": [
+      {
+        "file_path": "src/main.ts",
+        "line_start": 2,
+        "order_index": 0,
+        "statement_type": "call",
+        "is_awaited": false,
+        "callee": "make",
+        "text": "make();"
+      }
+    ],
+    "assetTree": {
+      "baum": "./\n  assets/\n    image.png [png · 64 B · ok]\n    model.glb [glb · 100 B · 1 Obj · 1 Verw · ok]\n---\n2 von 2 Asset-Dateien",
+      "dateien": 2,
+      "total": 2,
+      "gekappt": false
+    },
+    "inspect": {
+      "datei": {
+        "file_path": "assets/model.glb",
+        "format": "glb",
+        "asset_type": "model3d",
+        "status": "ok",
+        "inspector": "fixture",
+        "parser_version": 1,
+        "file_size": 100,
+        "n_objects": 1,
+        "n_references": 1,
+        "objekte_gekappt": false,
+        "sha256": null,
+        "mtime": null,
+        "inspiziert_von": null,
+        "metadata": {
+          "width": 64
+        },
+        "format_specific": {},
+        "warnings": []
+      },
+      "objektarten": [
+        {
+          "kind": "mesh",
+          "n": 1
+        }
+      ],
+      "objekte": [
+        {
+          "ordnung": 0,
+          "kind": "mesh",
+          "name": "MeshMarker",
+          "data": {
+            "triangles": 12
+          }
+        }
+      ],
+      "objekte_total": 1,
+      "objekte_gekappt": false,
+      "verweise": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "aufloesung": "datei",
+          "ordnung": 0
+        }
+      ],
+      "verweise_total": 1,
+      "verweise_gekappt": false
+    },
+    "objects": {
+      "objekte": [
+        {
+          "ordnung": 0,
+          "kind": "mesh",
+          "name": "MeshMarker",
+          "data": {
+            "triangles": 12
+          },
+          "file_path": "assets/model.glb"
+        }
+      ],
+      "total": 1,
+      "gekappt": false
+    },
+    "assetRefs": {
+      "datei": "assets/model.glb",
+      "verweise": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "aufloesung": "datei",
+          "ordnung": 0
+        }
+      ],
+      "total": 1,
+      "gekappt": false,
+      "je_aufloesung": {
+        "datei": 1
+      }
+    },
+    "usedBy": {
+      "datei": "assets/image.png",
+      "im_asset_index": true,
+      "verweise": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "aufloesung": "datei",
+          "file_path": "assets/model.glb"
+        }
+      ],
+      "total": 1,
+      "gekappt": false
+    },
+    "missing": {
+      "fehlend": [],
+      "total": 0,
+      "gekappt": false,
+      "ziele_total": 0
+    },
+    "graph": {
+      "start": "assets/model.glb",
+      "richtung": "down",
+      "tiefe": 3,
+      "knoten": [
+        {
+          "pfad": "assets/model.glb",
+          "tiefe": 0,
+          "im_index": true,
+          "format": "glb",
+          "asset_type": "model3d",
+          "status": "ok"
+        },
+        {
+          "pfad": "assets/image.png",
+          "tiefe": 1,
+          "im_index": true,
+          "format": "png",
+          "asset_type": "image",
+          "status": "ok"
+        }
+      ],
+      "kanten": [
+        {
+          "von": "assets/model.glb",
+          "nach": "assets/image.png",
+          "kind": "texture"
+        }
+      ],
+      "zyklen": [],
+      "total": 1,
+      "gekappt": false
+    },
+    "roots": {
+      "dateien": [
+        {
+          "file_path": "assets/model.glb",
+          "format": "glb",
+          "asset_type": "model3d",
+          "status": "ok",
+          "n_references": 1
+        }
+      ],
+      "total": 1,
+      "gekappt": false,
+      "hinweis": "Nur Verweise zwischen Assets zaehlen; Verweise aus Quellcode (z. B. \"assets/x.png\" in .ts) sind nicht beruecksichtigt."
+    },
+    "orphans": {
+      "dateien": [],
+      "total": 0,
+      "gekappt": false,
+      "hinweis": "Nur Verweise zwischen Assets zaehlen; Verweise aus Quellcode (z. B. \"assets/x.png\" in .ts) sind nicht beruecksichtigt."
+    },
+    "assetSearch": {
+      "treffer": [
+        {
+          "file_path": "assets/model.glb",
+          "format": "glb",
+          "asset_type": "model3d",
+          "status": "ok",
+          "file_size": 100,
+          "n_objects": 1,
+          "fundstellen": [
+            "objekt|mesh: MeshMarker"
+          ],
+          "n_fund": 1
+        }
+      ],
+      "total": 1,
+      "gekappt": false
+    },
+    "batch": {
+      "ergebnisse": [
+        {
+          "query": "MeshMarker",
+          "treffer": [
+            {
+              "file_path": "assets/model.glb",
+              "format": "glb",
+              "asset_type": "model3d",
+              "status": "ok",
+              "file_size": 100,
+              "n_objects": 1,
+              "fundstellen": [
+                "objekt|mesh: MeshMarker"
+              ],
+              "n_fund": 1
+            }
+          ],
+          "total": 1,
+          "gekappt": false
+        },
+        {
+          "query": "image",
+          "treffer": [
+            {
+              "file_path": "assets/image.png",
+              "format": "png",
+              "asset_type": "image",
+              "status": "ok",
+              "file_size": 64,
+              "n_objects": 0,
+              "fundstellen": [
+                "pfad|assets/image.png"
+              ],
+              "n_fund": 1
+            },
+            {
+              "file_path": "assets/model.glb",
+              "format": "glb",
+              "asset_type": "model3d",
+              "status": "ok",
+              "file_size": 100,
+              "n_objects": 1,
+              "fundstellen": [
+                "verweis|image.png"
+              ],
+              "n_fund": 1
+            }
+          ],
+          "total": 2,
+          "gekappt": false
+        }
+      ],
+      "total": 3,
+      "gekappt": false
+    },
+    "move": {
+      "file_path": "assets/model.glb",
+      "new_path": "other/model.glb",
+      "ziel_belegt": false,
+      "brechen_eingehend": [],
+      "brechen_ausgehend": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "zeigt_dann_auf": "other/image.png",
+          "vorschlag_target": "../assets/image.png"
+        }
+      ],
+      "repariert_eingehend": [],
+      "total": 1,
+      "gekappt": false
+    },
+    "health": {
+      "dateien": 2,
+      "objekte_gemeldet": 1,
+      "objekte_gekappt_dateien": 0,
+      "aelteste_fehlend_seit": null,
+      "je_status": {
+        "ok": 2
+      },
+      "je_asset_type": {
+        "image": 1,
+        "model3d": 1
+      },
+      "je_format": {
+        "glb": 1,
+        "png": 1
+      },
+      "inspiziert_von": {
+        "(leer)": 2
+      },
+      "nicht_erkannt_je_endung": {},
+      "veraltete_inspektor_version": [],
+      "unbekannte_inspektoren": [
+        {
+          "inspector": "fixture",
+          "dateien": 2
+        }
+      ],
+      "verweise_je_aufloesung": {
+        "datei": 1
+      },
+      "total": 2,
+      "gekappt": false
+    }
+  },
+  "stdio": {
+    "code_intel:tree": {
+      "success": true,
+      "tree": "assets/ (2 Assets)\n  image.png [asset png 64 B · ok]\n  model.glb [asset glb 100 B · 1 Obj · ok]\nsrc/ (2 Dateien, 1fn, 1var)\n  lib.ts (2Z, 1fn)\n    fn: +build\n  main.ts (5Z, 1var)\n    /** Z4: Marker project code_files */\n---\n2 Dateien, 2 Assets | Projekt: p18_rv2",
+      "project": "p18_rv2",
+      "tool_guide": {
+        "message": "📚 Erste Nutzung von \"code_intel\" in dieser Session — kompakte Doku unten. Vollstaendig: guide({ tool_name: \"code_intel\" }).",
+        "summary": "Strukturierte Code-Abfragen aus PostgreSQL. ERSTE WAHL fuer alles was mit Code zu tun hat.",
+        "when_to_use": "Projektstruktur verstehen: tree. Funktionen finden: functions (gefiltert nach Datei/Name). Wo wird X verwendet: references. Interfaces/Klassen/Enums: symbols. Datei-Content lesen: file (mit Zeilenbereich bei grossen Files!). Code durchsuchen: search (lexikalisch ODER semantic: true) / search_batch (mehrere semantische Queries in einem Call). Ablauf verstehen: flow (Funktion Schritt fuer Schritt), statements (top_level_only fuer Modul-Seiteneffekte), calls (wer ruft X). Verdacht auf ein Parser-Problem (\"0 functions?!\"): health mit file_path — sagt dir, ob der Parser versagt hat oder die Datei wirklich nichts enthaelt.",
+        "when_not_to_use": "Konzeptuelle Fragen (\"wie funktioniert X?\") — bleib im Tool: search mit semantic: true, oder search_batch fuer mehrere Fragen in einem Call. Nicht-Code-Dateien wie Images/Binaerdateien — dafuer asset_intel (code_intel file auf einen Asset-Pfad antwortet selbst mit beantwortet_von asset_intel).",
+        "actions": [
+          "tree",
+          "functions",
+          "variables",
+          "symbols",
+          "references",
+          "search",
+          "search_batch",
+          "file",
+          "statements",
+          "calls",
+          "flow",
+          "entrypoints",
+          "rename_preview",
+          "health"
+        ],
+        "anti_patterns": [
+          "file-Action auf sehr grossen Dateien ohne from_line/to_line — Auto-Reduce greift, aber besser gezielt paginieren.",
+          "functions() ohne file_path-Filter im ganzen Projekt — Hunderte Ergebnisse.",
+          "search mit limit nicht gesetzt — bekommst 20 Ergebnisse, meist zu viel.",
+          "tree mit depth: 5+ — riesige Ausgabe, die meiste Info irrelevant.",
+          "Bei unerwartet 0 Treffern sofort den Parser-Quelltext lesen — erst health(file_path) fragen, das beantwortet in einem Call, ob ueberhaupt ein Parser zustaendig war."
+        ]
+      }
+    },
+    "code_intel:functions": {
+      "success": true,
+      "functions": [
+        {
+          "id": "fn",
+          "file_path": "src/lib.ts",
+          "name": "build",
+          "line_start": 1,
+          "line_end": 1,
+          "params": [],
+          "return_type": "number",
+          "is_exported": true,
+          "usage_count": 1
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "code_intel:variables": {
+      "success": true,
+      "variables": [
+        {
+          "id": "var",
+          "file_path": "src/main.ts",
+          "name": "number",
+          "line_start": 3,
+          "line_end": 3,
+          "is_exported": false,
+          "value": "7"
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "code_intel:symbols": {
+      "success": true,
+      "symbols": [
+        {
+          "id": "comment",
+          "file_path": "src/main.ts",
+          "symbol_type": "comment",
+          "line_start": 4,
+          "line_end": 4,
+          "is_exported": false,
+          "value": "Marker project code_files",
+          "match_line": 4,
+          "match_lines": [
+            {
+              "line": 4,
+              "text": "Marker project code_files"
+            }
+          ]
+        }
+      ],
+      "count": 1,
+      "symbol_type": "comment",
+      "project": "p18_rv2"
+    },
+    "code_intel:references": {
+      "success": true,
+      "definition": {
+        "id": "fn",
+        "file_path": "src/lib.ts",
+        "symbol_type": "function",
+        "name": "build",
+        "line_start": 1,
+        "is_exported": true
+      },
+      "references": [
+        {
+          "symbol_id": "fn",
+          "file_path": "src/main.ts",
+          "line_number": 1,
+          "context": "import { build as make } from './lib.js';",
+          "kind": "reference",
+          "via_alias": "make",
+          "alias_role": "import_specifier"
+        },
+        {
+          "kind": "call",
+          "symbol_id": "fn",
+          "file_path": "src/main.ts",
+          "line_number": 2,
+          "context": "call: make()",
+          "via_alias": "make",
+          "alias_role": "alias_usage"
+        }
+      ],
+      "total_files": 1,
+      "total_references": 2,
+      "string_occurrences": [],
+      "total_string_occurrences": 0,
+      "name_matches": [],
+      "total_name_matches": 0,
+      "gekappt": false,
+      "project": "p18_rv2"
+    },
+    "code_intel:search": {
+      "success": true,
+      "results": [
+        {
+          "file_path": "src/main.ts",
+          "file_type": "ts",
+          "headline": "build as make } from './lib.js';\nmake();\nconst number = 7;\n// <b>Marker</b> project code_files",
+          "rank": 0.06079271,
+          "matches": [
+            {
+              "line": 4,
+              "text": "// Marker project code_files"
+            }
+          ],
+          "total_matches": 1,
+          "matches_gekappt": false
+        }
+      ],
+      "count": 1,
+      "source": "pg-fulltext",
+      "project": "p18_rv2"
+    },
+    "code_intel:file": {
+      "success": true,
+      "file_path": "src/main.ts",
+      "file_type": "ts",
+      "file_size": 97,
+      "content": "make();\nconst number = 7;\n// Marker project code_files",
+      "total_lines": 5,
+      "returned_range": {
+        "from": 2,
+        "to": 4,
+        "eof": false
+      },
+      "project": "p18_rv2"
+    },
+    "code_intel:statements": {
+      "success": true,
+      "statements": [
+        {
+          "id": "801",
+          "file_path": "src/main.ts",
+          "scope_type": "module",
+          "statement_type": "call",
+          "node_kind": "CallExpression",
+          "line_start": 2,
+          "line_end": 2,
+          "order_index": 0,
+          "depth": 0,
+          "text": "make();",
+          "callee": "make",
+          "is_top_level": true,
+          "is_awaited": false
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "code_intel:calls": {
+      "success": true,
+      "calls": [
+        {
+          "id": "901",
+          "file_path": "src/main.ts",
+          "statement_id": "801",
+          "callee_name": "make",
+          "target_symbol_id": "fn",
+          "line_number": 2,
+          "call_kind": "call",
+          "confidence": 1
+        }
+      ],
+      "count": 1,
+      "total": 1,
+      "gekappt": false,
+      "project": "p18_rv2"
+    },
+    "code_intel:flow": {
+      "success": true,
+      "file_path": "src/main.ts",
+      "statements": [
+        {
+          "id": "801",
+          "file_path": "src/main.ts",
+          "scope_type": "module",
+          "statement_type": "call",
+          "node_kind": "CallExpression",
+          "line_start": 2,
+          "line_end": 2,
+          "order_index": 0,
+          "depth": 0,
+          "text": "make();",
+          "callee": "make",
+          "is_top_level": true,
+          "is_awaited": false
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "code_intel:entrypoints": {
+      "success": true,
+      "entrypoints": [
+        {
+          "file_path": "src/main.ts",
+          "line_start": 2,
+          "order_index": 0,
+          "statement_type": "call",
+          "is_awaited": false,
+          "callee": "make",
+          "text": "make();"
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "asset_intel:tree": {
+      "success": true,
+      "action": "tree",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "baum": "./\n  assets/\n    image.png [png · 64 B · ok]\n    model.glb [glb · 100 B · 1 Obj · 1 Verw · ok]\n---\n2 von 2 Asset-Dateien",
+      "dateien": 2,
+      "total": 2,
+      "gekappt": false,
+      "code_intel": {
+        "dateien": 2,
+        "hinweis": "2 passende Datei(en) im Code-Index -> code_intel(action:\"tree\")"
+      },
+      "tool_guide": {
+        "message": "📚 Erste Nutzung von \"asset_intel\" in dieser Session — kompakte Doku unten. Vollstaendig: guide({ tool_name: \"asset_intel\" }).",
+        "summary": "Struktur-Index fuer Dateien, die KEIN Quellcode sind: Bilder, Texturen, 3D-Modelle, Audio/Video, Archive, Executables, Unreal-Pakete, DCC-Dateien (blend, fbx ...). Liefert abgeleitete Daten der lokalen Inspektion — Metadaten, Objekte (Meshes, Materialien, Exporte ...) und Verweise zwischen Dateien. Nur lesend, ohne Embeddings, auf REST und lokal (stdio) mit DERSELBEN Definition und demselben Dispatcher.",
+        "when_to_use": "Fragen zu Assets: Welche Texturen nutzt dieses Modell (references)? Wer benutzt diese Textur (used_by)? Was bricht, wenn ich sie verschiebe (move_preview)? Welche Verweise zeigen ins Leere (missing)? Welche Bilder sind groesser als 4096 px (search mit Filter)? Wie haengen Dateien zusammen (graph)?",
+        "when_not_to_use": "Fuer Quellcode und Textdateien -> code_intel (file, functions, search). asset_intel kennt nur, was der LOKALE Watcher inspiziert hat: laeuft er nicht, ist der Index leer (health zeigt das). Verweise AUS Quellcode (z. B. \"assets/x.png\" in einer .ts-Datei) sind hier nicht enthalten.",
+        "actions": [
+          "tree",
+          "inspect",
+          "objects",
+          "references",
+          "used_by",
+          "missing",
+          "graph",
+          "roots",
+          "orphans",
+          "search",
+          "search_batch",
+          "move_preview",
+          "health"
+        ],
+        "anti_patterns": [
+          "Quellcode ueber asset_intel lesen wollen — Fehler datei_nicht_im_asset_index, richtig ist code_intel(file).",
+          "objects ohne object_type — Fehler object_type_fehlt; die Antwort nennt die vorhandenen Arten.",
+          "graph mit depth 10 auf einem grossen Projekt ohne limit — wird gekappt; erst depth 2-3.",
+          "search mit einem Begriff, der in fast jedem Pfad/Verweis steht (z. B. \"Content\", \"/Game/\") — liefert zwar (gemessen < 0,5 s bei 750.000 Verweisen), aber Tausende Treffer; mit format, asset_type oder where einengen."
+        ]
+      }
+    },
+    "asset_intel:inspect": {
+      "success": true,
+      "action": "inspect",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "datei": {
+        "file_path": "assets/model.glb",
+        "format": "glb",
+        "asset_type": "model3d",
+        "status": "ok",
+        "inspector": "fixture",
+        "parser_version": 1,
+        "file_size": 100,
+        "n_objects": 1,
+        "n_references": 1,
+        "objekte_gekappt": false,
+        "metadata": {
+          "width": 64
+        },
+        "format_specific": {},
+        "warnings": []
+      },
+      "objektarten": [
+        {
+          "kind": "mesh",
+          "n": 1
+        }
+      ],
+      "objekte": [
+        {
+          "ordnung": 0,
+          "kind": "mesh",
+          "name": "MeshMarker",
+          "data": {
+            "triangles": 12
+          }
+        }
+      ],
+      "objekte_total": 1,
+      "objekte_gekappt": false,
+      "verweise": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "aufloesung": "datei",
+          "ordnung": 0
+        }
+      ],
+      "verweise_total": 1,
+      "verweise_gekappt": false,
+      "total": 1,
+      "gekappt": false
+    },
+    "asset_intel:objects": {
+      "success": true,
+      "action": "objects",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "objekte": [
+        {
+          "ordnung": 0,
+          "kind": "mesh",
+          "name": "MeshMarker",
+          "data": {
+            "triangles": 12
+          },
+          "file_path": "assets/model.glb"
+        }
+      ],
+      "total": 1,
+      "gekappt": false
+    },
+    "asset_intel:references": {
+      "success": true,
+      "action": "references",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "datei": "assets/model.glb",
+      "verweise": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "aufloesung": "datei",
+          "ordnung": 0
+        }
+      ],
+      "total": 1,
+      "gekappt": false,
+      "je_aufloesung": {
+        "datei": 1
+      }
+    }
+  },
+  "rest": {
+    "code_intel:tree": {
+      "success": true,
+      "tree": "assets/ (2 Assets)\n  image.png [asset png 64 B · ok]\n  model.glb [asset glb 100 B · 1 Obj · ok]\nsrc/ (2 Dateien, 1fn, 1var)\n  lib.ts (2Z, 1fn)\n    fn: +build\n  main.ts (5Z, 1var)\n    /** Z4: Marker project code_files */\n---\n2 Dateien, 2 Assets | Projekt: p18_rv2",
+      "project": "p18_rv2"
+    },
+    "code_intel:functions": {
+      "success": true,
+      "functions": [
+        {
+          "id": "fn",
+          "file_path": "src/lib.ts",
+          "name": "build",
+          "line_start": 1,
+          "line_end": 1,
+          "params": [],
+          "return_type": "number",
+          "is_exported": true,
+          "usage_count": 1
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "code_intel:variables": {
+      "success": true,
+      "variables": [
+        {
+          "id": "var",
+          "file_path": "src/main.ts",
+          "name": "number",
+          "line_start": 3,
+          "line_end": 3,
+          "is_exported": false,
+          "value": "7"
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "code_intel:symbols": {
+      "success": true,
+      "symbols": [
+        {
+          "id": "comment",
+          "file_path": "src/main.ts",
+          "symbol_type": "comment",
+          "line_start": 4,
+          "line_end": 4,
+          "is_exported": false,
+          "value": "Marker project code_files",
+          "match_line": 4,
+          "match_lines": [
+            {
+              "line": 4,
+              "text": "Marker project code_files"
+            }
+          ]
+        }
+      ],
+      "count": 1,
+      "symbol_type": "comment",
+      "project": "p18_rv2"
+    },
+    "code_intel:references": {
+      "success": true,
+      "definition": {
+        "id": "fn",
+        "file_path": "src/lib.ts",
+        "symbol_type": "function",
+        "name": "build",
+        "line_start": 1,
+        "is_exported": true
+      },
+      "references": [
+        {
+          "symbol_id": "fn",
+          "file_path": "src/main.ts",
+          "line_number": 1,
+          "context": "import { build as make } from './lib.js';",
+          "kind": "reference",
+          "via_alias": "make",
+          "alias_role": "import_specifier"
+        },
+        {
+          "kind": "call",
+          "symbol_id": "fn",
+          "file_path": "src/main.ts",
+          "line_number": 2,
+          "context": "call: make()",
+          "via_alias": "make",
+          "alias_role": "alias_usage"
+        }
+      ],
+      "total_files": 1,
+      "total_references": 2,
+      "string_occurrences": [],
+      "total_string_occurrences": 0,
+      "name_matches": [],
+      "total_name_matches": 0,
+      "gekappt": false,
+      "project": "p18_rv2"
+    },
+    "code_intel:search": {
+      "success": true,
+      "results": [
+        {
+          "file_path": "src/main.ts",
+          "file_type": "ts",
+          "headline": "build as make } from './lib.js';\nmake();\nconst number = 7;\n// <b>Marker</b> project code_files",
+          "rank": 0.06079271,
+          "matches": [
+            {
+              "line": 4,
+              "text": "// Marker project code_files"
+            }
+          ],
+          "total_matches": 1,
+          "matches_gekappt": false
+        }
+      ],
+      "count": 1,
+      "mode": "fulltext",
+      "project": "p18_rv2"
+    },
+    "code_intel:file": {
+      "success": true,
+      "file_path": "src/main.ts",
+      "file_type": "ts",
+      "file_size": 97,
+      "content": "make();\nconst number = 7;\n// Marker project code_files",
+      "total_lines": 5,
+      "returned_range": {
+        "from": 2,
+        "to": 4,
+        "eof": false
+      },
+      "project": "p18_rv2"
+    },
+    "code_intel:statements": {
+      "success": true,
+      "statements": [
+        {
+          "id": "801",
+          "file_path": "src/main.ts",
+          "scope_type": "module",
+          "statement_type": "call",
+          "node_kind": "CallExpression",
+          "line_start": 2,
+          "line_end": 2,
+          "order_index": 0,
+          "depth": 0,
+          "text": "make();",
+          "callee": "make",
+          "is_top_level": true,
+          "is_awaited": false
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "code_intel:calls": {
+      "success": true,
+      "call_edges": [
+        {
+          "id": "901",
+          "file_path": "src/main.ts",
+          "statement_id": "801",
+          "callee_name": "make",
+          "target_symbol_id": "fn",
+          "line_number": 2,
+          "call_kind": "call",
+          "confidence": 1
+        }
+      ],
+      "count": 1,
+      "total": 1,
+      "gekappt": false,
+      "project": "p18_rv2"
+    },
+    "code_intel:flow": {
+      "success": true,
+      "file_path": "src/main.ts",
+      "statements": [
+        {
+          "id": "801",
+          "file_path": "src/main.ts",
+          "scope_type": "module",
+          "statement_type": "call",
+          "node_kind": "CallExpression",
+          "line_start": 2,
+          "line_end": 2,
+          "order_index": 0,
+          "depth": 0,
+          "text": "make();",
+          "callee": "make",
+          "is_top_level": true,
+          "is_awaited": false
+        }
+      ],
+      "project": "p18_rv2"
+    },
+    "code_intel:entrypoints": {
+      "success": true,
+      "entrypoints": [
+        {
+          "file_path": "src/main.ts",
+          "line_start": 2,
+          "order_index": 0,
+          "statement_type": "call",
+          "is_awaited": false,
+          "callee": "make",
+          "text": "make();"
+        }
+      ],
+      "count": 1,
+      "project": "p18_rv2"
+    },
+    "asset_intel:tree": {
+      "success": true,
+      "action": "tree",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "baum": "./\n  assets/\n    image.png [png · 64 B · ok]\n    model.glb [glb · 100 B · 1 Obj · 1 Verw · ok]\n---\n2 von 2 Asset-Dateien",
+      "dateien": 2,
+      "total": 2,
+      "gekappt": false,
+      "code_intel": {
+        "dateien": 2,
+        "hinweis": "2 passende Datei(en) im Code-Index -> code_intel(action:\"tree\")"
+      }
+    },
+    "asset_intel:inspect": {
+      "success": true,
+      "action": "inspect",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "datei": {
+        "file_path": "assets/model.glb",
+        "format": "glb",
+        "asset_type": "model3d",
+        "status": "ok",
+        "inspector": "fixture",
+        "parser_version": 1,
+        "file_size": 100,
+        "n_objects": 1,
+        "n_references": 1,
+        "objekte_gekappt": false,
+        "metadata": {
+          "width": 64
+        },
+        "format_specific": {},
+        "warnings": []
+      },
+      "objektarten": [
+        {
+          "kind": "mesh",
+          "n": 1
+        }
+      ],
+      "objekte": [
+        {
+          "ordnung": 0,
+          "kind": "mesh",
+          "name": "MeshMarker",
+          "data": {
+            "triangles": 12
+          }
+        }
+      ],
+      "objekte_total": 1,
+      "objekte_gekappt": false,
+      "verweise": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "aufloesung": "datei",
+          "ordnung": 0
+        }
+      ],
+      "verweise_total": 1,
+      "verweise_gekappt": false,
+      "total": 1,
+      "gekappt": false
+    },
+    "asset_intel:objects": {
+      "success": true,
+      "action": "objects",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "objekte": [
+        {
+          "ordnung": 0,
+          "kind": "mesh",
+          "name": "MeshMarker",
+          "data": {
+            "triangles": 12
+          },
+          "file_path": "assets/model.glb"
+        }
+      ],
+      "total": 1,
+      "gekappt": false
+    },
+    "asset_intel:references": {
+      "success": true,
+      "action": "references",
+      "project": "p18_rv2",
+      "beantwortet_von": "asset_intel",
+      "datei": "assets/model.glb",
+      "verweise": [
+        {
+          "kind": "texture",
+          "target": "image.png",
+          "ziel_pfad": "assets/image.png",
+          "aufloesung": "datei",
+          "ordnung": 0
+        }
+      ],
+      "total": 1,
+      "gekappt": false,
+      "je_aufloesung": {
+        "datei": 1
+      }
+    }
+  }
+}

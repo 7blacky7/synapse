@@ -5,11 +5,18 @@
  * @packageDocumentation
  */
 
+// P18-T12/RV2: feste interne Bereiche für Projekt- und Reverse-Abfragen.
+export { PROJEKT_BEREICH, REVERSE_BEREICH, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './services/intel-bereich.js';
+export type { CodeBereich, AssetBereich } from './services/intel-bereich.js';
+
 export { mitUserHerkunft, aktuelleUserHerkunft, userHerkunftAusMetadata } from './services/user-herkunft.js';
 
 // P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
 export type { RegelVerzeichnis } from './services/agent-rollen.js';
+// P18-T11/RV1: gemeinsame Geheimnis-Maskierung für neue API-Verbraucher.
+export { MASKEN_KATALOG, maskiereMitKatalog, zaehleMaskenTreffer } from './services/masken-katalog.js';
+export type { MaskenBereich, MaskenEintrag, MaskenErsetzer } from './services/masken-katalog.js';
 // P10-T33: gemeinsame Shell-Maske, auch fuer Lage-/Audit-Daten.
 export {maskiereShellAntwort,maskiereShellDaten,maskiereShellText,ladeShellWerte,mitShellAusgabe,shellSichtUnmaskiert} from './services/shell-maske.js';
 export {claimHinweis,projektHinweisOption,projektHauptbranchOption,projektHauptbranchStatus} from './services/hinweis-drossel.js';
@@ -468,10 +475,6 @@ export {
   SYNAPSE_DB_HINWEIS,
 } from './services/shell-job-umgebung.js';
 export type { JobUmgebung, JobUmgebungInfo, BaueJobUmgebungOptionen } from './services/shell-job-umgebung.js';
-
-// P13-T14: flüchtige Bildprobe ohne Datenbank
-export { BildprobeDienst, BILDPROBE_PARAMETER, ladeBildprobeKonfiguration, renderBildprobePng } from './services/bildprobe.js';
-export type { BildprobeErgebnis, BildprobeKonfiguration } from './services/bildprobe.js';
 
 // Migrations
 export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.js';
