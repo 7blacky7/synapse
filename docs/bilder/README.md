@@ -56,9 +56,9 @@ Die folgenden Codepfade belegen die Kanten. Die SVG-Beschreibungen enthalten zus
 
 ## Schnittstellen nach außen
 
-Die SVGs werden als relative Markdown-Bilder eingebunden. Sie enthalten keine Skripte, externen Schriftdateien oder nachgeladenen Bildressourcen. Ein fester heller Hintergrund erhält den Kontrast auch in dunklen GitHub-Themes. Die Schriftgrößen liegen zwischen 16 und 32 px; alle Bilder besitzen Titel und Beschreibung.
+Die SVGs werden als relative Markdown-Bilder eingebunden. Sie enthalten keine Skripte, externen Schriftdateien oder nachgeladenen Bildressourcen. Ein fester schwarzer Hintergrund (#0d0d0d), leicht abgesetzte Kästen (#1a1a1a), orangene Akzente (#ff8c1a) und helle Beschriftungen erhalten den Kontrast in hellen und dunklen GitHub-Themes. Der Textkontrast beträgt mindestens 14,20:1 für Fließtext, 10,30:1 für Nebentext und 7,47:1 für Orange. Die Schriftgrößen liegen zwischen 16 und 32 px; alle Bilder besitzen Titel und Beschreibung.
 
-Pfeile zeigen die jeweils beschrifteten Aufrufe oder Datenwege, keine vollständige zeitliche Ablaufspur. Doppelpfeile im Embedding-Bild fassen Arbeitsvergabe und Ergebnisrückgabe zusammen. Gestrichelte Konturen kennzeichnen externe Komponenten.
+Pfeile zeigen die jeweils beschrifteten Aufrufe oder Datenwege, keine vollständige zeitliche Ablaufspur. Doppelpfeile im Embedding-Bild fassen Arbeitsvergabe und Ergebnisrückgabe zusammen. Kurz gepunktete Konturen gruppieren Datenspeicher sowie ergänzende oder optionale Komponenten. Lange Striche kennzeichnen externe Komponenten und Wege, insbesondere den externen cc-wrap-Weg; im Web-Bild markieren sie den vorgeschalteten Cloudflare-Tunnel.
 
 ## Abhängigkeiten
 
