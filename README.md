@@ -1,1205 +1,207 @@
 # 🧠 Synapse — lokales KI-Gedächtnis, Code-Intelligence & Agenten-Orchestrierung
 
-> Synapse verwandelt lokale Softwareprojekte in eine strukturierte, durchsuchbare und automatisierbare Wissensbasis für KI-Agenten.
->
-> Es verbindet Dateisystem-Indexierung, PostgreSQL, Qdrant, Code-Parser, MCP/REST-Tools, persistente Spezialisten, Shell-Queues und isolierte Docker-Workspaces zu einem lokalen System für KI-gestützte Entwicklung. Spezialisten können je nach Provider über lokale CLI-Runtimes oder über API-Keys laufen; bei Gemini ist beides möglich: Gemini CLI oder Google/Gemini API-Key.
+Synapse verbindet lokale Projekte mit einer persistenten Wissensbasis und Werkzeugen für KI-Agenten. PostgreSQL hält Dateien, Wissen, Tasks und Jobs; Qdrant ergänzt die semantische Suche. Lokale MCP-Clients verwenden stdio, Web-Clients die REST-API mit MCP-over-HTTP.
 
----
+Stand dieser Dokumentation: 13.10.2026. Die verbindlichen Werkzeug-Parameter kommen aus `tools/list`; `guide` erklärt die Aktionen. Nicht jedes Werkzeug ist auf jedem Transport verfügbar.
 
-## Kurzfassung
-
-Synapse ist kein einzelnes Suchtool. Es ist ein lokales Betriebssystem für KI-Arbeit an Codebasen:
+## Architektur
 
 ```text
-Projektdateien
-   ↓
-FileWatcher + Parser
-   ↓
-PostgreSQL: Dateien, Symbole, Referenzen, Chunks, Wissen, Jobs
-   ↓
-Qdrant: semantische Vektorsuche
-   ↓
-MCP / REST Tools
-   ↓
-KI-Agenten, Spezialisten, Shell-Jobs, Workspaces
+Lokale KI-CLI ── MCP/stdio ──┐
+                           ├── core ── PostgreSQL (Quelle der Wahrheit)
+Web-KI / Web-UI ── REST ────┘       └── Qdrant (abgeleiteter Suchindex)
+                           │
+                           ├── lokaler TS-Daemon ── Dateisystem / Shell / Spezialisten
+                           ├── Agenten-Wrapper ── Provider-Runtime
+                           ├── Docker-Workspaces ── isolierte Builds und Tests
+                           └── Prüfcontainer ── Syntaxprüfung ohne Ausführen des Codes
 ```
 
-Die Kernidee: Eine KI soll nicht bei jeder Session wieder bei null anfangen. Code, Erkenntnisse, Regeln, Tasks, Fehler-Patterns und Agentenstatus bleiben persistent und werden über Tools abrufbar.
-
----
-
-## Was Synapse konkret macht
-
-Synapse löst mehrere Probleme gleichzeitig:
-
-| Problem | Synapse-Antwort |
+| Bestandteil | Aufgabe und Einstieg |
 |---|---|
-| KI verliert Kontext nach Session-Ende | Memories, Thoughts, Plans, Proposals und Skills bleiben in PostgreSQL/Qdrant erhalten. |
-| Code-Suche über `grep` ist flach | `code_intel` kennt Funktionen, Variablen, Symbole, Referenzen, Statements, Calls und Entrypoints. |
-| Semantische Suche findet Konzepte, aber keine Struktur | Qdrant ergänzt PostgreSQL; Struktur bleibt in PostgreSQL. |
-| Web-KIs haben keinen lokalen Dateisystemzugriff | REST-API + PG-Queues delegieren Arbeit an den lokalen FileWatcher-Daemon oder Workspaces. |
-| Agenten arbeiten unkoordiniert | Chat, Inbox, Channels, Events und Specialist-Jobs bilden einen lokalen Agentenbus. |
-| Shell-Ausführung von Web-KIs ist riskant | Shell-Jobs laufen über Queue, Daemon/Workspace-Routing, Logs und Audit-Trail. |
-| Mehrere Edits sind schwer atomar zu reviewen | `files`/`files_batch` bieten Plan/Commit, Hash-Checks, Anchors, Versionierung und Rollback. |
-| Integrationstests brauchen mehrere Dienste | Workspaces stellen benannte Docker-Instanzen mit DNS, Rollen und eigenem HOME bereit. |
+| [`packages/core`](packages/core/src/index.ts) | Gemeinsame Services, Parser, PostgreSQL-Schema, Embeddings, Qdrant, Wissens- und Dateiwerkzeuge |
+| [`packages/mcp-server`](packages/mcp-server/src/server.ts) | Lokaler MCP-Server; konsolidierte Werkzeuge über stdio |
+| [`packages/rest-api`](packages/rest-api/src/server.ts) | Fastify-API, MCP-over-HTTP/SSE, Authentifizierung, Workspace- und Runtime-Verwaltung |
+| [`packages/agents`](packages/agents/src/wrapper.ts) | Persistente Spezialisten, Wrapper, Prozessverwaltung, Heartbeat und Kontextrotation |
+| [`packages/agents-gemini`](packages/agents-gemini/src/runtime.ts) | Gemini-Runtime; CLI-/API-Konfiguration ist vom Embedding-Provider unabhängig |
+| [`packages/agents-antigravity`](packages/agents-antigravity/package.json) | Weitere Provider-Integration |
+| [`packages/file-watcher-daemon-ts`](packages/file-watcher-daemon-ts/src/main.ts) | TypeScript-Daemon: Watcher, PG↔Dateisystem-Sync, Shell-/Specialist-/Project-Init-Worker und lokale HTTP-API |
+| [`packages/file-watcher-daemon`](packages/file-watcher-daemon/README.md) | Ältere Moo-Watcher-Variante; daneben Tray-Oberflächen in Moo und Go |
+| [Tray](packages/file-watcher-daemon/tray/tray.go) | Lokale Bedienung und API-Anbindung; auch GPU-/Ollama-Helfer-Konfiguration |
+| [`packages/compute-node-agent`](packages/compute-node-agent/src/index.ts) | Zusätzliche Ollama-Rechenknoten für verteilte Embedding-Arbeit |
+| [`packages/web-ui`](packages/web-ui/src/App.tsx) | React-Oberfläche mit Anmeldung, Projekt-/Agenten-/Wissensansichten und Runtime-Bedienung; einzelne Oberflächen enthalten noch Mock-Daten |
+| [Prüfcontainer](docker/synapse-pruefcontainer/pruefserver.py) | Sprachspezifische Parse-Werkzeuge über JSON-Zeilen; Docker-Attach, kein Netzwerk im Container |
+| [Workspace-Images](docker/synapse-workspace/README.md) | Projekt-Sandboxen; [Podman-Variante](docker/synapse-workspace-podman/README.md) für Container-Builds |
 
----
+### Datenfluss und Persistenz
 
-## Architekturüberblick
-
-```text
-                            ┌──────────────────────────────┐
-                            │          KI / User            │
-                            │ Claude Code / Desktop / Web   │
-                            │ ChatGPT / Claude.ai / Gemini  │
-                            └───────────────┬──────────────┘
-                                            │
-                ┌───────────────────────────┴───────────────────────────┐
-                │                                                       │
-        ┌───────▼────────┐                                      ┌───────▼────────┐
-        │ MCP Server     │                                      │ REST API       │
-        │ stdio lokal    │                                      │ HTTP + SSE     │
-        └───────┬────────┘                                      └───────┬────────┘
-                │                                                       │
-                └───────────────────────┬───────────────────────────────┘
-                                        │
-                              ┌─────────▼─────────┐
-                              │    Synapse Core    │
-                              │  packages/core     │
-                              └─────────┬─────────┘
-                                        │
-      ┌─────────────────────┬───────────┼───────────┬─────────────────────┐
-      │                     │           │           │                     │
-┌─────▼─────┐        ┌──────▼──────┐ ┌──▼──────┐ ┌──▼────────┐    ┌──────▼──────┐
-│PostgreSQL │        │   Qdrant    │ │ Parser  │ │ FileWatch │    │ Agenten     │
-│Source of  │        │ Vektorindex │ │ 60+     │ │ Daemon    │    │ Wrapper     │
-│Truth      │        │             │ │ Sprachen│ │ + Queue   │    │ Spezialisten│
-└─────┬─────┘        └──────┬──────┘ └─────────┘ └─────┬─────┘    └──────┬──────┘
-      │                     │                          │                 │
-      │                     │                          │                 │
-      │             ┌───────▼────────┐                 │        ┌────────▼────────┐
-      │             │ Semantische    │                 │        │ Claude/Gemini    │
-      │             │ Suche          │                 │        │ Subprozesse      │
-      │             └────────────────┘                 │        └─────────────────┘
-      │                                                │
-      │                                          ┌─────▼─────┐
-      │                                          │Filesystem │
-      │                                          │Projekte   │
-      │                                          └───────────┘
-      │
-      └──────────────────────────────────────────────────────────────┐
-                                                                     │
-                                                          ┌──────────▼──────────┐
-                                                          │ Docker Workspaces   │
-                                                          │ main/app/db/qa/...  │
-                                                          └─────────────────────┘
-```
-
----
-
-## Die wichtigste Pipeline: Code-Indexierung
-
-Die zentrale Indexing-Pipeline sitzt in `packages/core/src/services/code.ts`.
-
-Die Analyse der Funktionen zeigt diesen Ablauf:
+`storeFileContent` speichert Inhalt, Hash und Metadaten zunächst in `code_files`. Parsing und Embedding laufen entkoppelt; Parser erzeugen Symbole, Referenzen, Statements und Call-Kanten. Chunks liegen in PostgreSQL und werden anschließend nach Qdrant eingebettet.
 
 ```text
-indexFile()
-   ↓
-storeFileContent()
-   ↓
-enqueueParseAndEmbed()
-   ↓
-parseAndEmbed()
-   ↓
-PostgreSQL + Qdrant
+Dateisystem → Watcher → code_files → Parser → strukturierter Code-Index
+                                    └──────→ Chunks → Embeddings → Qdrant
+files-Werkzeug → PostgreSQL + Versionen → Daemon/Workspace-Sync → Dateisystem
 ```
 
-### Stage 1: schnelle Speicherung
+Existenz, Vollständigkeit, Regeln und direkte Wissensabrufe kommen aus PostgreSQL. Beispielsweise lesen `memory(list/read)` und Namens-/ID-Abrufe direkt aus PG; `memory(search)` verwendet Qdrant für Ähnlichkeit. Ein Vektor-Nachzug darf hinterherhinken: `embeddings_pending` bedeutet keinen Verlust des gespeicherten Inhalts.
 
-`storeFileContent(filePath, projectName, projectRoot)` liest Dateiinhalt und Metadaten und schreibt sie nach PostgreSQL.
+Wichtige Tabellen sind `code_files`, `code_chunks`, `code_symbols`, `code_references`, `code_statements`, `code_call_edges`, `memories`, `thoughts`, `plans`, `proposals`, `tech_docs`, `skill_sections`, `file_versions`, `file_batch_plans`, `shell_jobs`, `specialist_jobs`, `project_init_jobs`, `agent_events`, `tool_calls` sowie Chat-/Channel-/Workspace-Tabellen. Qdrant enthält projektbezogene Collections wie `project_<name>_code` und `project_<name>_memories`.
+
+## Aktuelle MCP-Werkzeuge
+
+Die Liste ist mit [stdio-Register](packages/mcp-server/src/server.ts) und [REST-Register](packages/rest-api/src/routes/mcp.ts) abgeglichen. „Beide“ bezeichnet stdio und REST-MCP; einzelne Aktionen können trotzdem unterschiedliche Grenzen haben. Jev wird bei globaler Abschaltung aus der Werkzeugliste gefiltert.
+
+| Werkzeug | Kurzzweck | Transport |
+|---|---|---|
+| `project` | Projekte registrieren/initialisieren, Status, Setup, Aktivierung, Projekt-Datenbank | Beide |
+| `code_intel` | Baum, Funktionen, Variablen, Symbole, Referenzen, Statements, Calls, Flow, Entrypoints, Parser-Diagnose und Suche | Beide |
+| `asset_intel` | Binärdateien/Assets inspizieren, Objekte und Abhängigkeiten abfragen, fehlende Referenzen und Verschiebevorschau | Beide |
+| `search` | Semantische Suche nach Code, Wissen, Tech-Doku und Pfaden | Beide |
+| `files` | Versionierte Dateibearbeitung, Plan/Commit, Co-Edit, Reservierungen, History und Rollback | Beide |
+| `files_batch` | Separater Zugang zu denselben Batch-/Co-Edit-Aktionen für Clients mit gecachtem `files`-Schema | REST |
+| `shell` | Befehle, Einzelabruf, Logs, History, Aktivität, Abbruch und Hinweis-Sichtbarkeit | Beide |
+| `memory` | Dauerhaftes Projektwissen und Regeln; lesen, listen, schreiben, ändern, suchen, Dateibezug | Beide |
+| `thought` | Erkenntnisse, Zwischenstände und Handoffs; optional mit Task-Verknüpfung | Beide |
+| `plan` | Mehrere Projektpläne, Tasks, Prioritäten, Zuordnung und Status | Beide |
+| `proposal` | Änderungsvorschläge speichern, lesen, suchen und bewerten; keine automatische Codeänderung | Beide |
+| `chat` | Agenten-Adressbuch, Broadcasts, Direktnachrichten und Spezialisten-Inbox | Beide |
+| `channel` | Projektbezogene Team-Boards, Mitgliedschaften, Nachrichten und Lesemarken | Beide |
+| `event` | Steuersignale emittieren, offene Events lesen und bestätigen | Beide |
+| `specialist` | Persistente Spezialisten starten, wecken, konfigurieren, stoppen und entfernen | Beide |
+| `docs` | Tech-Doku und dateispezifischer Wissens-Airbag | Beide |
+| `skills` | Skills/Sections lesen, semantisch suchen und pflegen; PG zuerst, Vektor-Nachzug danach | REST |
+| `code_check` | Syntax-/Fehlermusterprüfung und generische Erklärungen/offene Fälle | Beide |
+| `ignore` | Index-Sichtbarkeit und Sperrregeln prüfen und verwalten | Beide |
+| `free_models` | Modell-Pool und verfügbare Modelle abfragen | stdio |
+| `jev` | Erlaubte Rückfragen entscheiden, Protokoll/Durchsicht sowie Entscheidungs-Topf | Beide |
+| `admin` | Statistik, Wartung und Jev-/Budget-/Kontextprofil-Steuerung | Beide |
+| `guide` | Werkzeugübersicht, Detail-Doku und einzelne Aktionen | Beide |
+| `workspace` | Sandbox-Lifecycle, benannte Instanzen, Rollen und Ressourcen-Konfiguration | REST |
+| `artefakt` | HTML-Artefakt in den Antwortstrom der Web-UI liefern | REST, Hauptagenten-Kontext |
+| `intern` | Interne Diagnose, Worker-/Warteschlangen-/Embedding-Steuerung | REST, nur mit `SYNAPSE_INTERN_TOOL=1` |
+
+Der Hauptagenten-Kontext der Web-Runtime bekommt gezielt nur `artefakt`, nicht die ganze Tool-Liste. Authentifizierung und Agenten-Kontext beeinflussen also die sichtbare Oberfläche.
+
+### Code- und Asset-Intelligence
+
+`code_intel(search)` sucht standardmäßig lexikalisch in PG und liefert Trefferzeilen. `semantic:true` nutzt Embeddings; `search_batch` bündelt mehrere semantische Anfragen. Für die Analyse: Baum → Suche → Funktionen/Referenzen → Flow → gezielter Dateiausschnitt. Die [Parser-Registry](packages/core/src/parser/index.ts) umfasst unter anderem TypeScript/JavaScript, Python, Go, Rust, Java, C/C++, SQL, Shell, YAML/TOML, PowerShell, Vue/Svelte und Shader-Sprachen. Sie liefert eine praktische Analyseebene, keine vollständige Compiler-Semantik für jede Sprache. PDF-, Word- und Excel-Inhalte werden über den [Dokument-Service](packages/core/src/services/documents.ts) extrahiert.
+
+Assets werden getrennt in `asset_files`, `asset_objects` und `asset_references` gespeichert. Inspektoren unterstützen unter anderem 3D, Bilder/Texturen, Audio/Video, Archive, SQLite, PE/ELF, DCC- und Unreal-Dateien. Es werden abgeleitete Daten gespeichert; Binärinhalt wird nicht als Quelltext in `code_files` geschrieben.
+
+`asset_intel` bietet `tree`, `inspect`, `objects`, `references`, `used_by`, `missing`, `graph`, `roots`, `orphans`, `search`, `search_batch`, `move_preview` und `health`. Asset-Pfade können von `code_intel` zu `asset_intel` weitergeleitet werden. Ohne lokalen Asset-Watcher entsteht kein neuer Inspektionsbestand; unterstützte Formate und Versionen begrenzen die Analyse.
+
+## Dateien, Co-Edit und Prüfungen
+
+Dateischreibaktionen laufen über PostgreSQL und erzeugen versionierte Snapshots. Pfade bleiben relativ zum Projekt; Ausbruch über den Root und gesperrte Ziele werden abgelehnt.
+
+1. Zieldateien mit `files(reservation_add)` koordinieren.
+2. Mit `files(plan)` einen Entwurf erstellen; Anker und erwartete Hashes schützen vor Drift.
+3. Bei gemeinsamen Plänen fremde Ops mit `plan_status(op_index)` prüfen und eigene Ops per `coedit_add` beitragen.
+4. `coedit_ready` beziehungsweise `coedit_no_changes` melden; Fehler am eigenen Entwurf mit `plan_update` korrigieren.
+5. Mit `files(commit, wait_sync:true)` materialisieren; `auf_platte`/Hash prüfen, bevor lokaler Build oder Test beginnt.
+6. `history`, `versions`, `get_version`, `restore` und `restore_batch` dienen Review und Rückbau.
+
+Reservierungen sind Koordination, keine exklusiven Schreiblocks. Pläne laufen nicht automatisch ab. Ein Cancel in einem gemeinsamen Plan zieht nur eigene Ops zurück; fremde Beiträge bleiben erhalten. Ein Commit kann auf aktive, noch nicht bereite Beteiligte warten.
+
+`task_id` akzeptiert UUID oder Kurz-ID wie `P9-T25`. Neue Schreibaufrufe ohne Task-Zuordnung erhalten eine Warnung; Altversionen ohne Task bleiben gültig und werden nicht automatisch migriert. `task_zuordnen` ordnet ausgewählte Versionen explizit und auditierbar nachträglich zu. `ohne_task:true` und `seit` begrenzen entsprechende History-Abfragen.
+
+Die Syntaxprüfung kann einen fehlerhaften Plan vor dem Schreiben sperren. Der [Prüfcontainer](docker/synapse-pruefcontainer/pruefserver.py) benutzt reine Parse-Werkzeuge mit Zeitlimits, zum Beispiel Python-AST, `bash -n`, `gofmt`, `rustfmt`, JVM-/Tree-sitter- und Build-Sprachprüfer. Er führt den eingereichten Nutzer-Code nicht aus. Bekannte Fehlermuster und generische Erklärungen ergänzen die Diagnose.
+
+## Shell, Sicherung und Logs
+
+`shell(exec)` wählt einen lokalen Daemon mit frischem Heartbeat oder einen Docker-Workspace. `target:"local"` erzwingt den Daemon, `target:"workspace"` beziehungsweise `isolated:true` die Sandbox. `executed_via` nennt den Ausführungsort. Source-Edits erfolgen in beiden Fällen über `files`.
+
+Lokale Jobs können nach dem anfänglichen Warten mit `running_background` zurückkehren und weiterlaufen. Eine neue Channel-Nachricht kann das Warten früher mit `running` und `unterbrochen_durch` beenden; sie bricht den Job nicht ab. Ergebnisse holt man mit der Job-UUID über `get`/`log`, nicht mit der `stream_id`. `get_stream` ist im REST-Werkzeug noch nicht implementiert.
+
+Die Shell-Sicherung prüft Befehlstext und aufgelöste Lage, einschließlich Inline-Skripten. Ein Ergebnis kann Hinweis, Anleitung oder Sperre sein. Eine notwendige Bestätigung nutzt die bestehende Rollen-/Namensprüfung und muss zur geprüften Lage passen. Protokolle und Antworten maskieren sensible Werte; ein berechtigter unmaskierter Anzeigeabruf braucht einen Audit-Grund.
+
+History liefert begrenzte Kommando-/Ausgabevorschauen. `get`/`log` dienen dem gezielten vollständigen Abruf; `get(detail:"full")` ergänzt die volle maskierte Sicherungsanalyse. `activity` verbindet Shell-Jobs und Tool-Aktivität.
+
+## Wissen, Jev und Agenten
+
+Memories halten dauerhaftes Projektwissen, Thoughts Zwischenstände, Plans Tasks und Proposals Vorschläge. Dokumente und Skills ergänzen Regeln und Fachwissen. UUIDs beziehungsweise unterstützte eindeutige Präfixe ermöglichen gezielte Abrufe.
+
+Jev beantwortet freigegebene Kategorien wie Variante, Reihenfolge, Umsetzungsweg und Formulierung, wenn der User-Abwesenheitsschalter aktiv ist. Entscheidungen werden protokolliert und sind als Jev-Entscheidungen erkennbar. Verbotene Kategorien wie Deploy, Git, Secrets, Live-DB oder Schema werden darüber nicht entschieden.
+
+Entscheidungs- und Erklärungs-Topf verwenden IDs statt Namen: volle UUID oder eindeutiger Präfix mit mindestens acht Zeichen. Neue Topf-Einträge benötigen keinen Namen. Gibt es für einen Erklärungsfall keine passende generische Erklärung, bleibt ein offener Fall in der bestehenden Warteschlange; es entsteht kein zweiter Erklärungsweg.
+
+Agenten werden über Chat registriert und über Channels, Inbox und Events koordiniert. Events wie `WORK_STOP`, `CRITICAL_REVIEW`, `ARCH_DECISION` und `NEW_TASK` verlangen eine explizite Bestätigung. Der Spezialisten-Wrapper verwaltet Provider-Prozesse, Heartbeat, Wake/Stop, Wissensstand und Kontextrotation. Agentenwissen kann über PG-/HTTP-Brücken geladen werden; vorhandene lokale Skill-Dateien bleiben ein eigener Weg. Runtime- und Provider-Zugangsdaten sind vom Embedding-Modell getrennt.
+
+Der [Codex-PostToolUse-Hook](scripts/codex-kontext-hook.mjs) liest Kontext-/Tokenwerte aus dem Transkript und gibt einen Handoff-Hinweis an der konfigurierten Schwelle aus. Lokale Hook-Installation und Provider-Login sind getrennte Betreiberkonfiguration.
+
+### Antwortformat und Hinweise
+
+REST und stdio verwenden den gemeinsamen Helfer [`tool-antwort.ts`](packages/core/src/services/tool-antwort.ts). Kompaktes JSON lässt bedeutungslose Nullfelder weg; `false`, `0`, leere Listen und semantisch wichtige Nullwerte wie `exit_code:null` bleiben erhalten. `shell/get` und `channel/feed` liefern im kompakten stdio-Format zusätzlich konsistentes `structuredContent`. `SYNAPSE_TOOL_ANTWORT_KOMPAKT=0` ist der Format-Rückweg; interne Skill-Telemetrie bleibt intern.
+
+Optionale Anhänge sind unter anderem `pending_events`, `unreadChat`, `unread_channels`, `shell_activity`, `open_plans`, Werkzeugregeln und Skill-Vorschläge:
+
+- Neue Chat-/Channel-Hinweise erscheinen pro Empfänger einmal je Neuigkeit. Der PG-Zustand bleibt über REST/stdio- und Prozesswechsel erhalten.
+- Benachrichtigt bedeutet nicht gelesen: tatsächliche Chat-/Channel-Lesemarken sind getrennt.
+- Shell-Hinweise erscheinen auch in Shell-Antworten; eigene laufende Jobs sind eingeschlossen. Jobs, die bereits in derselben Antwort stehen, werden nicht nochmals angehängt.
+- `get`/`log` quittieren Shell-Hinweise nur für den abholenden Empfänger. Start und Abschluss bleiben getrennte Zustellungen.
+- Ohne effektive Agent-ID entstehen keine personenbezogenen Zustellmarken. DM-Hinweise brauchen einen auflösbaren Projektkontext, Channel-Hinweise folgen den Mitgliedschaften.
+- `project(hinweise)` steuert die optionalen Hinweise eines Projekts.
+
+## Workspaces
+
+Der REST-Orchestrator verwaltet benannte Docker-Instanzen wie `main`, `app`, `db-1` und `qa`. Sie teilen die Source-Sicht `/workspace`, haben aber getrennte HOME-Volumes und konfigurierbare Ressourcen/Rollen. Source-Dateien sind schreibgeschützt; Build-Artefakte benötigen freigegebene Pfade.
+
+Container erreichen sich über DNS-Namen, etwa `synapse-ws-<projekt>-app`; Container-IPs gehören nicht in Projektkonfigurationen. Rollen können Dienste über `init_command` starten. Idle-Stop, Pinning und Limits begrenzen den Betrieb. Die [Podman-Variante](docker/synapse-workspace-podman/README.md) ermöglicht Container-Builds, ohne den Docker-Socket in die Projekt-Sandbox zu reichen.
+
+## Embeddings: Nemotron-3-Embed-1B
+
+Der aktuelle dokumentierte Modellstand verwendet Ollama mit **Nemotron-3-Embed-1B**, **1024 Dimensionen**. Das gepflegte [Modellprofil](scripts/p15-t8-modellprofile-startwerte.sql) enthält:
 
 ```text
-Datei vom FileWatcher
-   ↓
-readFileWithMetadata()
-   ↓
-content_hash berechnen
-   ↓
-upsertCodeFile()
-   ↓
-code_files
+Modell:    hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF:latest
+Dimension: 1024
+Anfrage:   query:
+Dokument:  passage:
 ```
 
-PostgreSQL enthält dadurch nicht nur Pfade, sondern auch Inhalt, Hash, Typ und später Indexierungszeitpunkte.
+Die Präfixe enthalten jeweils ein abschließendes Leerzeichen. Präfixe, Stückgrößen, Kontext-/Batchwerte und kalibrierte Score-Schwellen werden je Modell/Digest in PostgreSQL gepflegt. Fehlende Kalibrierung wird gemeldet; es gibt keinen stillen festverdrahteten Modell-Ersatz.
 
-### Stage 2: asynchrones Parsing und Embedding
+`EMBEDDING_PROVIDER` ist konfigurierbar, standardmäßig `ollama`. `OLLAMA_MODEL` muss explizit gesetzt sein; andere Provider benötigen `EMBEDDING_MODEL` und ihre Zugangskonfiguration. Ein vorhandener Google-Key wählt nicht automatisch Google als Embedding-Standard. Google, OpenAI-kompatible Provider und Cohere bleiben unterstützte Alternativen.
 
-`enqueueParseAndEmbed(project, filePath)` entkoppelt die teure Arbeit vom FileWatcher. `parseAndEmbed(project, filePath)` ist der zentrale Hotspot.
+Modell oder Dimension nicht bloß in einer bestehenden Collection umschalten: Dimension und Vektorraum müssen zum gespeicherten Bestand passen. Modellkennung, Collection-Vertrag und kontrolliertes Neu-Einbetten gehören zusammen. Zusätzliche Compute-Nodes übernehmen den Referenzvertrag des Servers.
 
-Der Flow von `parseAndEmbed` sieht, vereinfacht, so aus:
+## Setup und Entwicklung
 
-```text
-parseAndEmbed(project, filePath)
-   ↓
-getPool()
-   ↓
-Idempotenz-Check:
-  indexed_at + embedded_at + unembedded count
-   ↓
-Dateiinhalt aus code_files lesen
-   ↓
-Parser über getParserForFile(filePath) wählen
-   ↓
-bei unbekanntem Filetype: parsed_at/indexed_at setzen und beenden
-   ↓
-Parser ausführen
-   ├─ Symbole
-   ├─ Referenzen
-   ├─ Statements
-   └─ CallEdges
-   ↓
-chunkFile(content, filePath, project)
-   ↓
-code_chunks in PostgreSQL ersetzen
-   ↓
-wenn Embeddings aktiv:
-   ├─ ensureProjectCollection(project)
-   ├─ deleteByFilePath(collection, filePath, project)
-   ├─ embedBatch(chunks)
-   └─ insertVectors(...)
-   ↓
-code_files.indexed_at / parsed_at / chunk_count aktualisieren
-```
+Voraussetzungen: mise, pnpm, PostgreSQL, Qdrant und für den aktuellen Modellstand ein erreichbarer Ollama-Dienst mit installiertem Nemotron-Modell. Docker wird für API-Container, Workspaces und Prüfcontainer benötigt. Provider-CLI/Auth oder API-Keys für Agenten sind separat einzurichten.
 
-Wichtig: Synapse trennt bewusst Struktur und Semantik:
-
-```text
-PostgreSQL
-  code_files
-  code_symbols
-  code_references
-  code_statements
-  code_call_edges
-  code_chunks
-
-Qdrant
-  project_<name>_code
-  project_<name>_memories
-  project_<name>_thoughts
-  project_<name>_proposals
-  project_<name>_docs
-  project_<name>_media
-```
-
-PostgreSQL ist die Wahrheit. Qdrant ist der semantische Suchindex.
-
----
-
-## Code-Intelligence statt Grep
-
-Synapse indexiert nicht nur Text. Es erzeugt aus Code eine strukturierte Analyseebene.
-
-`packages/core/src/services/code-intel.ts` stellt u. a. bereit:
-
-```text
-getProjectTree()
-getFunctions()
-getVariables()
-getSymbols()
-getReferences()
-fullTextSearchCode()
-getFileContent()
-getStatements()
-getCallEdges()
-getExecutionFlow()
-getEntrypoints()
-```
-
-Das bedeutet: Eine KI muss nicht raten, welche Datei relevant ist. Sie kann fragen:
-
-```text
-Welche Funktionen gibt es in dieser Datei?
-Wer ruft diese Funktion?
-Wo ist dieses Symbol definiert?
-Welche Statements laufen in dieser Funktion?
-Welche Top-Level-Entrypoints gibt es?
-```
-
-### Empfohlener Analyse-Workflow
-
-```text
-1. code_intel.tree(path, depth: 1-2)
-   ↓
-2. code_intel.search_batch([...], limit_per_query: 3-5)
-   ↓
-3. code_intel.functions(file_path)
-   ↓
-4. code_intel.flow(file_path, scope)
-   ↓
-5. code_intel.file(file_path, from_line, to_line)
-```
-
-Erst Struktur, dann Flow, erst ganz zuletzt Rohtext.
-
----
-
-## Asset-Intelligence: Nicht-Quellcode lesen (`asset_intel`)
-
-Binär- und Asset-Dateien landen nicht im Code-Index (kein Byte-Salat in `code_files`). Das Tool `asset_intel` liest sie stattdessen mit 31 formatspezifischen Inspektoren (plus einem generischen Fallback für unbekannte Binärdateien) und speichert nur abgeleitete Daten. Die Originaldatei bleibt die Quelle der Wahrheit; es wird nichts verändert.
-
-| Bereich | Inspektoren (Endungen) |
-|---|---|
-| 3D (6) | `.gltf` `.glb` `.obj` `.stl` `.ply` `.dae` |
-| Texturen/Bilder (8) | `.png`/`.apng` `.jpg` `.webp` `.dds` `.ktx` `.ktx2` `.exr` `.hdr` |
-| Audio/Video (2) | `.wav` `.ogg` `.flac` `.mp3` · `.mp4` `.mkv` `.avi` |
-| Archive/Datenbanken (4) | ZIP-Familie (`.zip` `.jar` `.docx` …), TAR-Familie (`.tar` `.gz` `.xz` `.zst` …), `.7z`, SQLite |
-| Executables (2) | PE (`.exe` `.dll` …), ELF (`.so` `.o` …) |
-| DCC (4) | `.blend` `.fbx` `.usd`/`.usda`/`.usdc` `.usdz` |
-| Unreal (5) | `.uasset`/`.umap` `.uexp` `.pak` `.utoc` `.ucas` |
-
-**Actions (13):** `tree`, `inspect`, `objects`, `references`, `used_by`, `missing`, `graph`, `roots`, `orphans`, `search`, `search_batch`, `move_preview`, `health`. Das Tool ist auf dem lokalen MCP-Server und über REST identisch (eine Definition und ein Dispatcher in `@synapse/core`).
-
-**Weiche zu `code_intel`:** `code_intel(file)` auf einen Asset-Pfad antwortet selbst mit `beantwortet_von: "asset_intel"`; leere `functions`/`symbols`/… auf Asset-Pfaden tragen das Feld `weiche`; `search` hängt `asset_treffer` an; `tree` zeigt Assets mit Marker (`show_assets: false` schaltet das ab). Umgekehrt antwortet `asset_intel` auf eine Textdatei mit `beantwortet_von: "code_intel"`.
-
-### Tabellen
-
-| Tabelle | Inhalt |
-|---|---|
-| `asset_files` | eine Zeile je Datei: Format, Status, Inspektor und Version, Größe, sha256, Metadaten, Warnungen |
-| `asset_objects` | Objekte je Datei (Meshes, Materialien, Archiveinträge, Export-/Import-Tabellen …) mit Position in der Datei |
-| `asset_references` | Verweise je Datei mit aufgelöstem Zielpfad und Auflösung (`datei`, `fehlt`, `intern`, `extern`, `eingebettet`, `ausserhalb`, `unbekannt`) |
-
-Die Tabellen sind bewusst von `code_files` getrennt: Der Abgleich gegen das Dateisystem würde Asset-Zeilen in `code_files` entfernen und der PG→FS-Sync danach die Datei auf der Platte löschen. Es wird kein Rohinhalt gespeichert.
-
-### Datenfluss
-
-```text
-lokaler Watcher (file-watcher-daemon-ts / MCP-Watcher)
-   sieht die Datei, liest nur den Kopf (4096 Byte)
-   ↓
-Warteschlange → Inspektion in eigenem worker_thread (hart abbrechbar)
-   ↓
-asset_files / asset_objects / asset_references (PostgreSQL)
-   ↓
-REST-API / Container / MCP: lesen nur (asset_intel)
-```
-
-Nur der lokale Watcher inspiziert. Beim Start gleicht er den Bestand gegen die Platte ab (Größe und Änderungszeit, bei Abweichung sha256; veraltete Inspektor-Versionen werden neu gelesen). Gelöschte Dateien bleiben als `quelle_nicht_gefunden` stehen (eingehende Verweise werden `fehlt`) und werden nach 30 Tagen entfernt; eine Umbenennung wird über die sha256 erkannt.
-
-### Einstellungen
-
-| Variable | Wirkung |
-|---|---|
-| `SYNAPSE_ASSET_MAX_OBJEKTE` | höchstens so viele Objekte je Datei in PostgreSQL (Standard 2000, Rest → `objekte_gekappt`) |
-| `SYNAPSE_ASSET_LESE_TIMEOUT_MS` | Zeitgrenze je Lese-Abfrage von `asset_intel`, 1–60000 (Standard 10000) |
-| `SYNAPSE_ASSET_KONKURRENZ` | parallele Inspektionen im Watcher (Standard 1, höchstens 2) |
-| `SYNAPSE_ASSET_WEICHE_CACHE_MS` | Cache der Frage „hat das Projekt Assets?“ in der `code_intel`-Weiche (Standard 10000, 0 = aus) |
-
-### Grenzen
-
-- Ohne laufenden lokalen Watcher entstehen keine Asset-Daten. Der Go-Daemon (`/api/fs/events`) und reine Container-Projekte bleiben bis P4-T69 (Asset-Store auf dem Server) leer.
-- Zstd-komprimierte `.blend`-Dateien werden nur ab Node 22.15 (bzw. 23.8) entpackt und gelesen, sonst nur erkannt.
-- `.uasset`/`.umap` werden nur in den unterstützten Versionsbändern gelesen; andere Versionen ergeben Status `teilweise` mit der Warnung `version_nicht_unterstuetzt`. Property-Daten der Exporte werden nicht dekodiert.
-- Sehr häufige Suchbegriffe können in `search` das Zeitlimit erreichen; dann mit `format`, `asset_type` oder `where` eingrenzen. In `search_batch` trifft das nur die betroffene Anfrage.
-
----
-
-## Parser-System
-
-`packages/core/src/parser/` enthält viele spezialisierte Parser. In der analysierten Projektstruktur sind dort 72 Dateien mit über 300 Funktionen indexiert.
-
-Synapse unterstützt u. a. Parser für:
-
-```text
-TypeScript / JavaScript
-Python
-Go
-Rust
-Java
-C / C++
-C#
-PHP
-Ruby
-Kotlin
-Swift
-Dart
-SQL
-Shell
-Dockerfile
-YAML
-TOML
-GraphQL
-Elixir
-Haskell
-Zig
-Solidity
-Fortran
-Ada
-PowerShell
-Objective-C
-Nix
-Svelte
-Vue
-WGSL / GLSL
-COBOL
-CMake
-Racket
-Lean
-Dhall
-Jsonnet
-Moo
-...
-```
-
-Die Parser liefern keine vollständige Compiler-AST für jede Sprache, sondern eine praktische Analyseform für KI-Arbeit:
-
-```text
-ParsedSymbol[]
-ParsedReference[]
-ParsedStatement[]
-ParsedCallEdge[]
-```
-
-So kann Synapse auch für viele Sprachen zumindest Funktionen, Klassen, Imports, SQL, Routen, Strings, Statements und Call-Kanten extrahieren.
-
----
-
-## MCP Server: lokale Tool-Schnittstelle
-
-`@synapse/mcp-server` ist der lokale MCP-Server für Claude Code, Claude Desktop, Cline/Codex-ähnliche Clients und andere stdio-MCP-Clients.
-
-Der Server nutzt das MCP SDK und registriert konsolidierte Tools wie:
-
-```text
-project
-search
-memory
-thought
-proposal
-plan
-chat
-channel
-event
-specialist
-docs
-admin
-code_intel
-asset_intel
-code_check
-files
-shell
-guide
-```
-
-Der Startbereich von `packages/mcp-server/src/server.ts` zeigt, dass der Server Core-Services, Agenten-Services und Tool-Module zusammenführt.
-
-### Response-Enrichment
-
-Synapse ergänzt Tool-Antworten mit Kontext für Agenten:
-
-```text
-Tool Call
-   ↓
-withOnboarding / Response Enhancement
-   ↓
-optional:
-  agentOnboarding
-  pendingEvents
-  unreadChat
-  activeAgents
-```
-
-Damit sieht ein Agent beim normalen Arbeiten automatisch:
-
-- ob Projektregeln geladen werden müssen
-- ob Events zu bestätigen sind
-- ob ungelesene Chatnachrichten warten
-- welche anderen Agenten aktiv sind
-
----
-
-## REST API und MCP-over-HTTP
-
-`@synapse/rest-api` stellt dieselben Fähigkeiten für Web-KIs bereit.
-
-Wichtige Eigenschaften:
-
-```text
-Fastify Server
-   ↓
-REST-Routen für Tools
-   ↓
-MCP-over-HTTP
-   ↓
-SSE + JSON-RPC
-   ↓
-OAuth Discovery für Claude.ai Connector
-```
-
-`packages/rest-api/src/routes/mcp.ts` enthält die MCP-over-HTTP-Schicht. Dort werden u. a. verarbeitet:
-
-```text
-initialize
-tools/list
-tools/call
-```
-
-Außerdem gibt es Endpunkte für:
-
-```text
-/mcp/sse
-/mcp/messages?sessionId=...
-/.well-known/oauth-authorization-server
-/oauth/*
-```
-
-Die REST-API initialisiert zusätzlich einen Parser-Worker-Pool. Das verhindert Event-Loop-Stalls bei großen Dateien und kann serverseitig `parseUnparsedFiles` nachziehen, wenn kein lokaler FileWatcher läuft.
-
----
-
-## FileWatcher-Daemon und PG-Queues
-
-Der FileWatcher-Daemon ist die lokale Brücke zwischen Server/Web-KI und dem echten Projekt auf dem Rechner.
-
-Es gibt zwei Generationen/Varianten im Repo:
-
-```text
-packages/file-watcher-daemon/      # Moo-basierter Daemon/Tray
-packages/file-watcher-daemon-ts/   # TypeScript-Daemon mit HTTP API und Workers
-```
-
-Der Daemon übernimmt:
-
-```text
-Projekt aktivieren/deaktivieren
-Dateisystem beobachten
-Dateiänderungen an Core weitergeben
-Shell-Jobs aus PostgreSQL claimen
-eSpecialist-Jobs aus PostgreSQL claimen
-Project-Init-Jobs claimen
-Status per HTTP/SSE bereitstellen
-```
-
-### Queue-Architektur
-
-PostgreSQL ist hier nicht nur DB, sondern auch Job-Bus:
-
-```text
-REST oder MCP schreibt Job nach PostgreSQL
-   ↓
-Trigger feuert NOTIFY
-   ↓
-Daemon LISTENt auf Channel
-   ↓
-Daemon claimt Job
-   ↓
-Daemon führt lokal aus
-   ↓
-Result/Logs zurück nach PostgreSQL
-```
-
-Wichtige Queues:
-
-```text
-shell_jobs
-specialist_jobs
-project_init_jobs
-```
-
-Aus dem Schema sind NOTIFY-Trigger für u. a. diese Jobs vorhanden:
-
-```text
-notify_shell_job_created()
-notify_specialist_job_created()
-notify_project_init_job_created()
-```
-
----
-
-## Shell: lokal oder Workspace
-
-Das `shell`-Tool ist nicht einfach ein Bash-Wrapper. Es routet nach Umgebung:
-
-```text
-shell(exec)
-   ↓
-läuft lokaler Daemon mit frischem Heartbeat?
-   ├─ ja: PG-Queue → lokaler Daemon → echtes Projekt-FS
-   └─ nein: Docker Workspace → isolierte Ausführung
-```
-
-Antworten enthalten `executed_via`, damit Agenten sehen, ob der Befehl lokal oder im Workspace lief.
-
-Logs und Historie bleiben in PostgreSQL erhalten:
-
-```text
-shell.history
-shell.get
-shell.log
-shell.activity
-```
-
-`log` unterstützt Range-Reads und Regex-Suche in Job-Ausgaben.
-
----
-
-## Files-Layer: versionierte Code-Änderungen
-
-Das `files`-Tool schreibt nicht blind in Dateien. Es arbeitet über PostgreSQL und erzeugt Versionen.
-
-Typische Operationen:
-
-```text
-read
-create
-update
-search_replace
-search_replace_batch
-replace_lines
-insert_after
-delete_lines
-move
-copy
-delete
-versions
-get_version
-restore
-restore_batch
-history
-```
-
-### Dateiversionierung, History und Rollback
-
-Jede Dateiänderung über den `files`-Layer erzeugt automatisch einen Snapshot in der Versionshistorie. Dadurch kann Synapse nicht nur Dateien schreiben, sondern Änderungen nachvollziehen, vergleichen und zurückrollen.
-
-Wichtige Aktionen:
-
-```text
-files(versions)
-  listet alle Versionen einer Datei
-
-files(get_version)
-  lädt den kompletten Inhalt einer alten Version
-
-files(history)
-  zeigt projektweit, wer wann was warum geändert hat
-
-files(restore)
-  stellt eine einzelne alte Dateiversion wieder her
-
-files(restore_batch)
-  rollt eine komplette Multi-File-Batch zurück
-```
-
-Das macht den Files-Layer zu einem Audit- und Recovery-System:
-
-```text
-Änderung durch Agent
-   ↓
-file_versions Snapshot
-   ↓
-reason / agent_id / edit_action / batch_id / feature_tag
-   ↓
-history zeigt den Änderungspfad
-   ↓
-get_version lädt alte Inhalte
-   ↓
-restore oder restore_batch geht zurück
-```
-
-Bei Multi-File-Commits bekommen alle betroffenen Dateien dieselbe `batch_id`. Damit kann eine ganze Änderungseinheit später gemeinsam wiederhergestellt werden, statt Datei für Datei manuell zurückzugehen.
-
-Für Review-Workflows gibt es zwei Ebenen:
-
-```text
-Plan-Phase
-  previews zeigen, was geändert würde
-  expected_hashes schützen gegen Drift
-
-History/Versionen
-  versions + get_version zeigen alte Stände
-  history zeigt Kontext, Agent, Grund und Batch
-```
-
-So kann ein Koordinator nach einem fehlerhaften Agentenlauf nicht nur fragen „was ist passiert?“, sondern gezielt jeden betroffenen Stand inspizieren und den passenden Snapshot zurückholen.
-
-### Atomare Multi-File-Edits
-
-`packages/core/src/services/file-batch.ts` implementiert Plan/Commit für mehrere Dateien.
-
-Relevante Funktionen:
-
-```text
-prepareOpsForApply()
-verifyAnchor()
-applyOpInMemory()
-planBatch()
-commitBatch()
-cancelBatch()
-getBatchPlan()
-```
-
-Ablauf:
-
-```text
-files_batch(plan, ops[])
-   ↓
-Dateien lesen
-   ↓
-Ops im Speicher anwenden
-   ↓
-expected_hashes + previews speichern
-   ↓
-plan_id zurückgeben
-
-files_batch(commit, plan_id)
-   ↓
-Hash gegen aktuellen Stand prüfen
-   ↓
-wenn stale: Konflikte zurückgeben
-   ↓
-wenn sauber: alle Änderungen in PG-TX anwenden
-   ↓
-file_versions mit gemeinsamer batch_id schreiben
-```
-
-Zusätzliche Sicherheitsmechanismen:
-
-```text
-anchor_text / anchor_contains
-  schützt vor Drift an Zielzeilen
-
-expected_hashes
-  schützen vor Änderungen zwischen Plan und Commit
-
-restore_batch
-  rollt ganze Multi-File-Batches zurück
-
-agent_note / reason / feature_tag
-  machen Änderungen auditierbar
-```
-
----
-
-## Persistentes Wissen
-
-Synapse unterscheidet mehrere Wissensformen:
-
-| System | Zweck |
-|---|---|
-| `memory` | dauerhaftes Projektwissen: Architektur, Regeln, Entscheidungen, Gotchas |
-| `thought` | kurzfristige Erkenntnisse, Zwischenstände, Handoffs |
-| `plan` | Projektplan und Tasks |
-| `proposal` | Code- oder Architekturvorschläge |
-| `docs` | kuratierte Tech-Doku und Wissens-Airbag |
-| `code_check` | bekannte Fehler-Patterns mit Fix-Hinweisen |
-
-Diese Systeme sind nicht Markdown-Dateien, sondern Tools mit Speicherung, Suche, Tags, Versionierung und teilweise Embeddings.
-
----
-
-## Agenten, Channels, Events und Spezialisten
-
-Synapse hat ein lokales Agentenmodell.
-
-```text
-Koordinator
-   ↓
-spawn / wake / stop / purge
-   ↓
-Spezialist-Wrapper
-   ↓
-Claude/Gemini/Subprozess
-```
-
-### Chat, Inbox, Channels
-
-```text
-chat
-  Broadcasts und DMs zwischen Agenten
-
-inbox
-  1:1 Nachrichten an Spezialisten
-
-channel
-  Gruppenräume für Spezialisten-Teams
-```
-
-### Event-System
-
-Events sind verbindliche Steuersignale, keine normalen Chatnachrichten.
-
-```text
-event.emit()
-   ↓
-agent_events
-   ↓
-Agent sieht pendingEvents in Tool-Antworten
-   ↓
-event.ack()
-   ↓
-agent_event_acks
-```
-
-Typische Event-Arten:
-
-```text
-WORK_STOP
-CRITICAL_REVIEW
-ARCH_DECISION
-TEAM_DISCUSSION
-ANNOUNCEMENT
-NEW_TASK
-CHECK_CHANNEL
-```
-
----
-
-## Spezialisten-Wrapper
-
-Der Spezialisten-Wrapper liegt in `packages/agents/src/wrapper.ts` und ist einer der großen Hotspots des Projekts.
-
-Er startet als eigener Node-Prozess und steuert einen KI-CLI-Subprozess.
-
-```text
-MCP / REST / Daemon
-   ↓
-Unix Domain Socket / JSON-RPC
-   ↓
-Agent Wrapper
-   ↓
-ProcessManager
-   ↓
-Provider-Runtime
-   ├─ Claude CLI Subprozess
-   ├─ Gemini CLI Runtime
-   └─ Gemini API Runtime (`@google/genai`, GOOGLE_API_KEY)
-```
-
-Wichtige Funktionen im Wrapper:
-
-```text
-setupPgListeners()
-startSocketServer()
-handleRpcRequest()
-handleWake()
-handleStop()
-handleStatus()
-wakeAgent()
-heartbeatPoll()
-recoverStuckAgent()
-pollChannelMessages()
-pollInboxMessages()
-pollSynapseItems()
-updateStatusPg()
-rotateAgent()
-cleanup()
-main()
-```
-
-Der Wrapper pollt und verarbeitet:
-
-```text
-Channel-Nachrichten
-Inbox-Nachrichten
-Memories
-Thoughts
-Plan-Tasks
-Pending Events
-Token-/Context-Status
-Statusupdates nach PostgreSQL
-```
-
-Dadurch kann ein Spezialist über längere Zeit als persistente lokale Helferinstanz existieren.
-
----
-
-## Skills für Spezialisten
-
-Spezialisten haben ein eigenes Skill-Verzeichnis.
-
-Typische Dateien:
-
-```text
-rules.md
-errors.md
-patterns.md
-context.md
-meta.yaml
-logs/YYYY-MM-DD.md
-```
-
-Damit können Regeln, bekannte Fehler, Muster und Kontext über Wrapper-Neustarts hinweg erhalten bleiben.
-
----
-
-## Workspaces: isolierte Docker-Testumgebungen
-
-Synapse enthält einen Workspace-Orchestrator für Docker-Sandboxen.
-
-Grundidee:
-
-```text
-Projekt
-   ├─ main
-   ├─ app
-   ├─ qa
-   ├─ db-1
-   └─ db-2
-```
-
-Jeder Workspace ist ein Container mit eigenem HOME-Volume. Alle teilen `/workspace` als Source-Sicht, aber Builds und Zustände können getrennt laufen.
-
-DNS-Schema:
-
-```text
-main:     http://synapse-ws-<projekt>:<port>
-benannt:  http://synapse-ws-<projekt>-<name>:<port>
-```
-
-Beispiel für einen Integrationstest:
-
-```text
-workspace: db-1    Rolle db-postgres, Port 5432
-workspace: app     Backend, Port 3000
-workspace: qa      Testclient, curl/wine/etc.
-```
-
-Ablauf:
-
-```text
-workspace db-1 startet PostgreSQL
-   ↓
-workspace app startet Backend
-   ↓
-workspace qa testet http://synapse-ws-<projekt>-app:3000/health
-```
-
-Workspaces sind lazy gestartet, werden nach Idle-Zeit gestoppt und können per `pin` geschützt werden.
-
----
-
-## Datenmodell: wichtigste PostgreSQL-Tabellen
-
-### Grundregel: PostgreSQL ist die Wahrheit, Qdrant ist ein abgeleiteter Index
-
-**Alles landet zuerst in PostgreSQL, bevor es ueberhaupt nach Qdrant geht.** Das gilt fuer
-jeden Datentyp — Memories, Thoughts, Proposals, Code-Chunks und alles, was noch dazukommt.
-Daraus folgt in beide Richtungen:
-
-**Schreiben — erst PG, dann der Index.** Ein Schreibvorgang gilt als erfolgreich, sobald die
-Zeile in PostgreSQL steht. Das Embedding wird *nachgereicht* und darf das Schreiben nicht
-aufhalten; ein fehlgeschlagenes Embedding ist deshalb kein Datenverlust, sondern ein Nachtrag.
-Erkennbar bleibt er an einer Spalte, die genau das festhaelt (`embedded_at IS NULL`), und ein
-Backlog-Worker holt ihn nach. Vorbild ist `writeMemory` in
-`packages/core/src/services/memory.ts`: PostgreSQL fail-fast, danach `embeddeMemoryNach` ohne
-`await`.
-
-**Lesen — was *existiert*, beantwortet PG. Was *aehnlich* ist, beantwortet Qdrant.** Eine
-Existenz-, Vollstaendigkeits- oder Regelfrage darf nie gegen den Index gestellt werden: der
-kann hinterherhinken, Eintraege verloren haben oder geloeschte noch fuehren — und er sagt es
-nicht. Semantische Aehnlichkeit ist das Einzige, wofuer Qdrant zustaendig ist.
-
-> **Bekannte Verstoesse auf der Leseseite** (Stand 15.08.2026, offen): `listMemories`,
-> `getRulesForNewAgent`, `getMemoryByName` und `getMemoriesByNames` in
-> `packages/core/src/services/memory.ts` lesen aus Qdrant statt aus PostgreSQL — die
-> Projekt-Regeln werden also aus dem Index ausgeliefert. Belegte Folgen: eine Regel kann in
-> PG stehen und niemanden erreichen, eine geloeschte kann weiter zugestellt werden, und ein
-> Eintrag, den nur PG kennt, meldet über die Werkzeuge "nicht gefunden".
-
-Wichtige Tabellen/Subsysteme:
-
-```text
-code_files
-code_chunks
-code_symbols
-code_references
-code_statements
-code_call_edges
-memories
-thoughts
-plans
-proposals
-tech_docs
-agent_sessions
-chat_messages
-agent_events
-agent_event_acks
-specialist_channels
-specialist_channel_messages
-specialist_inbox
-shell_jobs
-specialist_jobs
-project_init_jobs
-wrapper_status
-project_workspaces
-workspace_roles
-file_versions
-file_batch_plans
-error_patterns
-watcher_events
-```
-
-Qdrant hält dazu die semantischen Collections, z. B.:
-
-```text
-project_<name>_code
-project_<name>_memories
-project_<name>_thoughts
-project_<name>_proposals
-project_<name>_docs
-project_<name>_media
-```
-
----
-
-## Projektstruktur
-
-Aus der analysierten Codebase:
-
-```text
-synapse/
-├── packages/
-│   ├── core/
-│   │   └── src/
-│   │       ├── services/        # Code, Files, Memory, Plans, Events, Queues, Workspaces
-│   │       ├── parser/          # 60+ Sprachparser
-│   │       ├── db/              # PostgreSQL Schema + Client
-│   │       ├── embeddings/      # Google/OpenAI/Ollama/Cohere Provider
-│   │       ├── qdrant/          # Collections + Vektoroperationen
-│   │       ├── watcher/         # Ignore/Binary/FileWatcher-Utilities
-│   │       └── guide/           # Tool-Dokumentation
-│   ├── mcp-server/
-│   │   ├── src/server.ts
-│   │   ├── src/tools/
-│   │   └── hooks/
-│   ├── rest-api/
-│   │   ├── src/server.ts
-│   │   ├── src/routes/mcp.ts
-│   │   └── src/services/workspace-orchestrator.ts
-│   ├── agents/
-│   │   ├── src/wrapper.ts
-│   │   ├── src/heartbeat.ts
-│   │   ├── src/process.ts
-│   │   └── src/skills.ts
-│   ├── agents-gemini/
-│   ├── agents-antigravity/
-│   ├── file-watcher-daemon/
-│   ├── file-watcher-daemon-ts/
-│   └── web-ui/
-├── docker/
-│   ├── synapse-workspace/
-│   └── synapse-workspace-podman/
-├── scripts/
-└── skills/
-```
-
----
-
-## Setup
-
-### Voraussetzungen
-
-```text
-Node.js >= 20
-pnpm
-PostgreSQL
-Qdrant
-Google AI API Key für Embeddings
-optional: Context7 API Key
-optional: Claude/Gemini CLI für Spezialisten
-optional: Docker für Workspaces
-```
-
-### Installation
+Die [`.mise.toml`](.mise.toml) konfiguriert lokal Node 20; [`package.json`](package.json) verlangt Node ≥20. Das [API-Dockerfile](Dockerfile) verwendet Node 22 und pnpm 10.33.0.
 
 ```bash
-pnpm install
-pnpm run build
+cd ~/dev/synapse
+mise install
+pnpm install --frozen-lockfile
+mise run build
 ```
 
-Wichtige Root-Skripte:
+Verfügbare mise-Aufgaben:
 
 ```bash
-pnpm run build        # alle Packages bauen
-pnpm run build:core   # Core
-pnpm run build:mcp    # MCP Server
-pnpm run build:api    # REST API
-pnpm run build:agents # Agenten
-pnpm run dev:mcp      # MCP Server watch/dev
-pnpm run dev:api      # REST API dev
-pnpm run lint
-pnpm run clean
+mise tasks
+mise run build:core
+mise run build:api
+mise run build:mcp
+mise run dev          # MCP-Entwicklung
+mise run dev:api
+mise run lint
+mise run clean
 ```
 
-### Datenbank-Schema aufbauen
+Weitere Paket-Skripte stehen in den jeweiligen `package.json`, etwa `pnpm run build:agents` und `pnpm --filter @synapse/file-watcher-daemon-ts run build`. Konfiguration erfolgt über Umgebung/`.env`; reale Zugangsdaten gehören weder ins Git noch in README-Beispiele.
 
-Das vollstaendige Schema liegt als SQL in **`packages/core/src/db/schema-sql/`** —
-nur Struktur, keine Daten. Die Zahlen im Dateinamen sind die Aufbaureihenfolge
-(Extensions und Typen zuerst, Fremdschluessel zuletzt), alphabetisch sortiert also
-einfach der Reihe nach einspielen.
+### Datenbank und Schema
 
-**Der einfachste Weg — Datenbank mitstarten lassen:**
+Die API initialisiert das Laufzeitschema aus [`schema.ts`](packages/core/src/db/schema.ts). `SYNAPSE_SCHEMA` kennt `ausfuehren`, `pruefen` und `aus`; MCP/Wrapper prüfen standardmäßig den Stand. **API zuerst** starten beziehungsweise aktualisieren. Eine leere Datenbank kann beim Prüfen einmal initialisiert werden.
 
-```bash
-cp .env.example .env        # POSTGRES_PASSWORD setzen, passend zu DATABASE_URL
-docker compose --profile bundled up -d
-```
+Die nummerierten SQL-Dateien sind der Kaltstart-Spiegel. Aufbau, Reihenfolge und Grenzen beschreibt die [Schema-README](packages/core/src/db/schema-sql/README.md). Für Schemaänderungen müssen Laufzeitschema und Spiegel gemeinsam geprüft werden; alte Tabellenzählungen sind kein Nachweis für den heutigen Stand.
 
-Das Profil `bundled` startet zusaetzlich Postgres und Qdrant. Postgres legt Rolle
-und Datenbank beim ersten Start selbst an (aus `POSTGRES_USER`, `POSTGRES_PASSWORD`,
-`POSTGRES_DB`) und spielt anschliessend die Dateien aus `schema-sql/` ein — die
-liegen dazu als Init-Verzeichnis eingehaengt. Es ist also nichts von Hand anzulegen.
+### MCP-Konfiguration (lokal)
 
-Zwei Dinge, an denen es sonst still schiefgeht:
-
-- Die `POSTGRES_*`-Werte muessen zu `DATABASE_URL` passen. Weichen sie ab, startet
-  die Datenbank mit anderen Zugangsdaten, als die API benutzt — und das faellt erst
-  beim ersten Zugriff auf, nicht beim Start.
-- Das Init-Verzeichnis wird **nur einmal** ausgefuehrt: beim Anlegen des leeren
-  Datenverzeichnisses. Spaetere Aenderungen an `schema-sql/` erreichen eine bereits
-  bestehende Datenbank nicht mehr, die muss man von Hand nachziehen.
-
-**Ohne Profil** (`docker compose up -d`) startet nur `synapse-api` und erwartet
-Datenbank und Qdrant ausserhalb — das ist der Betrieb bestehender Installationen,
-an dem sich nichts aendert.
-
-**Von Hand**, wenn Postgres schon laeuft:
-
-```bash
-createdb synapse
-for f in packages/core/src/db/schema-sql/*.sql; do psql -v ON_ERROR_STOP=1 -d synapse -f "$f"; done
-```
-
-Details, Fallstricke und was der Export bewusst nicht enthaelt (keine Stammdaten,
-keine Rollen/Rechte, keine Qdrant-Collections): `packages/core/src/db/schema-sql/README.md`.
-**Wer das Schema anlegt (`SYNAPSE_SCHEMA`):** `ensureSchema()` sperrt kurz alle Tabellen (~2,3 s) und laeuft
-deshalb nur im API-Start (`SYNAPSE_SCHEMA=ausfuehren`, dort fest eingestellt). MCP-stdio, `project(init)` und
-Spezialisten-Wrapper haben den Standard `pruefen`: sie lesen nur die Kennung in `schema_stand`, warnen hoechstens
-einmal je Prozessstart bei veraltetem/unbekanntem Stand und legen das Schema nur bei einer LEEREN Datenbank einmal
-an; `aus` tut nichts. Wer ohne API arbeitet, setzt `SYNAPSE_SCHEMA=ausfuehren`. Deploy-Reihenfolge: API zuerst
-(sie schreibt `schema_stand`; bis dahin melden die anderen "unbekannt" — erwartet, kein Fehler).
-
-Im laufenden Betrieb legt `ensureSchema()` in `packages/core/src/db/schema.ts` das
-Schema selbst an; die SQL-Dateien sind dessen Spiegelung fuer den Kaltstart.
-
-Zwei Dinge, die man dazu wissen muss, bevor man sich darauf verlaesst:
-
-- Der Export wurde aus der laufenden Datenbank per `pg_dump` erzeugt und danach um
-  Fremdobjekte gekuerzt, die nicht zu Synapse gehoeren. **Beide Staende sind gegen
-  eine leere Datenbank aufgebaut worden:** der Vollabzug am 02.08.2026 mit einem
-  Nulldiff gegen die Produktion (`pg_dump` gegen `pg_dump`, 2221 zu 2221 Zeilen),
-  der gekuerzte Stand am selben Tag ueber das `bundled`-Profil in einem Wegwerf-
-  Container — fehlerfrei durchgelaufen, danach 49 Tabellen, 495 Spalten, 145 Indizes
-  (91 eigene plus 49 Primaerschluessel und 5 UNIQUE), 19 Fremdschluessel, 11 Trigger,
-  4 Aufzaehlungstypen. Die Fremdobjekte sind nachweislich draussen: `agent_profiles`,
-  `agents`, `cli_agents`, `swarm_events`, Schema `drizzle` und Extension `citext`
-  ergeben in der frisch aufgebauten Datenbank jeweils 0 Treffer.
-  Die Ordner-README sagt im Einzelnen, was womit geprueft wurde.
-- Wie die Datenbank `synapse` und die gleichnamige Rolle ueberhaupt entstehen, sagt
-  das Repo an keiner Stelle. Das muss man vorher selbst einrichten; die SQL-Dateien
-  setzen eine leere, bereits existierende Datenbank voraus.
-
-
-### Google API Key: Embeddings und Gemini-Spezialisten
-
-Synapse kann denselben `GOOGLE_API_KEY` an zwei Stellen nutzen:
-
-```text
-1. Embeddings
-   → Google Embedding Provider für semantische Suche
-
-2. Gemini-Spezialisten
-   → optional API-basierte Specialist-Runtime über @google/genai
-```
-
-Bei Gemini gibt es zwei Betriebsarten:
-
-```text
-Gemini CLI
-  → nutzt lokale CLI/Auth auf dem Zielsystem
-
-Google/Gemini API-Key
-  → nutzt @google/genai + GOOGLE_API_KEY
-```
-
-Das ist eine bewusste Entscheidung pro Setup: Wer seine Gemini CLI verwenden will, kann das tun. Wer lieber über den API-Key geht, kann die API-basierte Runtime verwenden. `packages/agents-gemini/src/runtime.ts` enthält dafür eine eigene Google/Gemini-Runtime. Sie kann standalone laufen oder im `SYNAPSE_WRAPPER_MODE=1` vom Synapse-Wrapper gespawnt werden.
-
-```text
-GOOGLE_API_KEY=...
-   ↓
-Synapse Embeddings
-   ↓
-Qdrant Vektoren
-
-GOOGLE_API_KEY=...
-   ↓
-Gemini Specialist Runtime
-   ↓
-Spezialist läuft über Google API statt lokale Claude CLI
-```
-
-Standardmäßig nutzt die Gemini-Runtime den Embedding-Key mit:
-
-```text
-SYNAPSE_GEMINI_USE_EMBEDDING_KEY=true
-```
-
-Wenn das auf `false` gesetzt wird, kann die Runtime perspektivisch Credentials aus `provider_credentials` laden und fällt sonst wieder auf ENV zurück.
-
-### Embedding-Provider und Vektor-Dimensionen
-
-Synapse nutzt Embeddings für semantische Suche in Qdrant. Der empfohlene Standard ist Google, wenn ein `GOOGLE_API_KEY` vorhanden ist. Ollama ist primär der lokale Fallback, wenn kein Google-Key genutzt werden soll oder darf.
-
-Wichtig: Qdrant-Collections haben eine feste Vektorgröße. Man kann den Embedding-Provider oder das Modell daher nicht beliebig wechseln, wenn das neue Modell eine andere Dimension erzeugt.
-
-```text
-Google Embedding Modell
-   → z. B. 3072 Dimensionen
-   → Qdrant Collection wird mit 3072 angelegt
-
-Ollama Modell
-   → je nach Modell andere Dimension
-   → passt NICHT automatisch in dieselbe Collection
-```
-
-Wenn du den Provider wechselst, gibt es nur sichere Wege:
-
-```text
-1. Modell wählen, das dieselbe Vektor-Dimension erzeugt
-   → bestehende Collection bleibt kompatibel
-
-2. Collection neu aufbauen / migrieren
-   → alte Vektoren löschen oder re-embedden
-
-3. Projekt bewusst neu indexieren
-   → alle Chunks mit neuem Modell neu schreiben
-```
-
-Unsicher ist:
-
-```text
-Provider wechseln
-   ↓
-neue Embeddings mit anderer Dimension
-   ↓
-in alte Qdrant-Collection schreiben
-   ↓
-Dimension-Mismatch / kaputte oder unbrauchbare Suche
-```
-
-Kurz gesagt:
-
-```text
-GOOGLE_API_KEY vorhanden → Google verwenden
-kein Google-Key       → Ollama möglich
-Provider-Wechsel     → Dimension prüfen oder re-indexieren
-```
-
-### MCP-Konfiguration
-
-Beispiel aus `.mcp.json.example`:
+Aktualisiertes Beispiel; die Werte sind Platzhalter beziehungsweise lokale Standard-Endpunkte:
 
 ```json
 {
@@ -1208,110 +210,67 @@ Beispiel aus `.mcp.json.example`:
       "command": "node",
       "args": ["/pfad/zu/synapse/packages/mcp-server/dist/index.js"],
       "env": {
+        "DATABASE_URL": "postgresql://<user>:<password>@localhost:5432/synapse",
         "QDRANT_URL": "http://localhost:6333",
-        "EMBEDDING_PROVIDER": "google",
-        "GOOGLE_API_KEY": "dein-google-api-key",
-        "DATABASE_URL": "postgresql://synapse:passwort@localhost:5432/synapse",
+        "EMBEDDING_PROVIDER": "ollama",
         "OLLAMA_URL": "http://localhost:11434",
-        "OLLAMA_MODEL": "nomic-embed-text",
-        "CONTEXT7_API_KEY": "dein-context7-key"
+        "OLLAMA_MODEL": "hf.co/zenmagnets/Nemotron-3-Embed-1B-Q4_K_M-GGUF:latest",
+        "EMBEDDING_TARGET_DIM": "1024"
       }
     }
   }
 }
 ```
 
----
+Der Modellname muss zum tatsächlich installierten Ollama-Modell und dem passenden PG-Profil passen. `CONTEXT7_API_KEY` sowie externe Provider-Keys sind optional je benötigter Funktion.
 
-## Wichtige Umgebungsvariablen
+### Deployment: Unraid und Cloudflare-Tunnel
 
-```text
-DATABASE_URL
-QDRANT_URL
-QDRANT_API_KEY
-EMBEDDING_PROVIDER
-GOOGLE_API_KEY
-OPENAI_API_KEY
-OLLAMA_URL
-OLLAMA_MODEL
-CONTEXT7_API_KEY
-API_PORT
-API_HOST
-MAX_FILE_SIZE_MB
-CHUNK_SIZE
-CHUNK_OVERLAP
-DEBOUNCE_MS
-PARSER_WORKER_THREADS
-PARSER_LOOP_DISABLED
-PARSER_LOOP_INTERVAL_MS
-SYNAPSE_SKIP_EMBEDDINGS
-SYNAPSE_KEEP_ALIVE
-SYNAPSE_POLL_INTERVAL
-SYNAPSE_WS_PER_PROJECT_CAP
-SYNAPSE_WS_PRIVILEGED_ROLES
+Die REST-API läuft im Docker-Betrieb auf Unraid; der Cloudflare-Tunnel stellt den externen Zugang bereit. Auth-/OAuth-Routen liegen in der API. Private Serveradressen, Tunnel-Zugangsdaten und Tokens sind Betreiberkonfiguration.
+
+Das Repo liefert das API-[Dockerfile](Dockerfile) und [Compose](docker-compose.yml):
+
+```bash
+docker compose up -d --build
 ```
 
----
+Ohne Profil startet Compose nur die API und erwartet PostgreSQL/Qdrant außerhalb. Mit `--profile bundled` startet es auch Postgres und Qdrant; `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` müssen zur `DATABASE_URL` passen. Der SQL-Init-Mount läuft nur bei einem leeren Datenverzeichnis. Ollama, Prüfcontainer, Workspace-Images, Tunnel und lokale Daemons werden dadurch nicht automatisch vollständig eingerichtet.
 
-## Praktische Arbeitsweise für KI-Agenten
+Die API benötigt Docker-Zugriff für die entsprechenden Container-Funktionen. Nach einem Core-/Daemon-Update müssen lokale Prozesse den neu gebauten Stand laden; ein API-Deploy aktualisiert einen bereits laufenden lokalen Prozess nicht. Deployment und Migrationen sind Betreiberaktionen.
 
-Synapse ist am stärksten, wenn Agenten nicht direkt Dateien dumpen, sondern strukturierte Tools nutzen.
+## Tests
 
-### Code verstehen
+**Datenbanktests ausschließlich gegen `synapse_test` auf Port 5433**, mit eigenem Testprojekt und eigener isolierter Fixture. Die Synapse-Systemdatenbank ist kein Testziel. Zugangsdaten nicht ausgeben.
 
-```text
-code_intel.tree(path, depth)
-code_intel.search_batch([...])
-code_intel.functions(file_path)
-code_intel.flow(file_path, scope)
-code_intel.file(file_path, from_line, to_line)
+Tests liegen in `packages/*/tests` und `scripts/test-*.mjs`. Es gibt keine zentrale mise-Aufgabe `test`; den benötigten Test gezielt auswählen und dessen DB-Schutz beachten. Manche Skripte verwenden `TEST_DATABASE_URL`, andere verlangen explizit `DATABASE_URL` und `SYNAPSE_DATABASE_URL` für dieselbe Test-DB.
+
+DB-freie Beispielproben:
+
+```bash
+node packages/core/tests/tool-antwort-anhaenge-p10-t53.test.mjs
+node packages/core/tests/tool-antwort-huelle-p10-t55.test.mjs
+node scripts/test-db-schutz.mjs
 ```
 
-### Impact-Analyse
+[Tool-Golden](packages/core/tests/tool-antwort-kompakt-p10-t51.golden.test.mjs) und [Hinweis-Probe](packages/core/tests/tool-hinweise-p10-t62.test.mjs) testen echte REST-/stdio-Strecken in privaten Testschemas. Golden-Baselines werden vor einer Änderung erfasst; nur Laufzeitwerte normalisieren, keine Inhalte. Testverzeichnisse werden durch die [Fixture-Helfer](packages/core/tests/_helfer/test-fixture-cleanup.mjs) unter dem Projekt verwaltet.
 
-```text
-code_intel.references(name)
-code_intel.calls(callee)
-code_intel.functions(name)
-```
+## Wichtige Konfiguration
 
-### Änderung vorbereiten
+| Bereich | Variablen |
+|---|---|
+| Datenbank/Suche | `DATABASE_URL`, `SYNAPSE_DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY` |
+| Embedding | `EMBEDDING_PROVIDER`, `OLLAMA_URL`, `OLLAMA_MODEL`, `EMBEDDING_MODEL`, `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL`, `EMBEDDING_TARGET_DIM` |
+| Modellprofil | `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_DOC_PREFIX`, `EMBEDDING_PRAEFIXE`, zweckbezogene Score-Übersteuerungen |
+| API/Schema | `API_PORT`, `API_HOST`, `WEB_UI_DIST`, `SYNAPSE_SCHEMA`, `SYNAPSE_INTERN_TOOL` |
+| Projekt/Sandbox | `SYNAPSE_WORKSPACE_ROOT`, `SYNAPSE_WS_PER_PROJECT_CAP`, `SYNAPSE_WS_PRIVILEGED_ROLES` |
+| Dateiverarbeitung | `MAX_FILE_SIZE_MB`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `DEBOUNCE_MS` |
+| Anzeige | `SYNAPSE_TOOL_ANTWORT_KOMPAKT` |
 
-```text
-memory.find_for_file(file_path)
-docs.get_for_file(file_path)
-files_batch(plan, ops[], anchor_contains)
-files_batch(commit, plan_id)
-```
+## Arbeitsweise für Agenten
 
-### Wissen sichern
+Projekt und eigene Agent-ID eindeutig bestimmen, Regeln laden, strukturierte Lese-Werkzeuge benutzen, Änderungen als Datei-Plan vorbereiten und Wissen als Thought/Memory sichern. Große Berichte stehen im Wissensspeicher; der Channel enthält die kurze Referenz. Projektarbeit liegt unter `~/dev/`.
 
-```text
-thought.add(...)
-memory.write(...)
-plan.update_task(...)
-channel.post(...)
-```
-
----
-
-## Design-Prinzipien
-
-```text
-PostgreSQL first
-Qdrant second
-code_intel before grep
-flow before file dump
-tools before shell
-files before direct write
-plans before multi-file commit
-anchors before risky edits
-DNS names before container IPs
-```
-
-Synapse ist absichtlich lokal-first. Es soll dem User gehören: eigene Projekte, eigene Datenbank, eigene Agenten, eigene Workspaces.
-
----
+Code-Index und Assets sind Leseansichten. Dateiversionierung und PostgreSQL sind die Grundlage für Änderungen und Recovery; Git dient dem Review und Commit, nicht dem Umgehen des Sync.
 
 ## Lizenz
 

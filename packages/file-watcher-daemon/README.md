@@ -1,4 +1,23 @@
-# Synapse FileWatcher Daemon
+# Synapse FileWatcher Daemon (Moo-Variante)
+
+## Einordnung im aktuellen System
+
+Diese README beschreibt den älteren Moo-Watcher in `src/*.moo`. Der TypeScript-Daemon in [`../file-watcher-daemon-ts`](../file-watcher-daemon-ts/src/main.ts) übernimmt zusätzlich die direkte Core-Anbindung, PG↔Dateisystem-Synchronisation sowie Shell-, Specialist- und Project-Init-Worker. Die Tray-Oberflächen liegen daneben in [`tray/`](tray/) (Moo und Go); sie sind vom Watcher-Prozess getrennt.
+
+Für den TypeScript-Daemon vom Repo-Root aus:
+
+```bash
+mise run build:core
+pnpm run build:agents
+mise run build:mcp
+pnpm --filter @synapse/file-watcher-daemon-ts run build
+pnpm --filter @synapse/file-watcher-daemon-ts run start
+```
+
+Konfiguration und Discovery-Dateien des TS-Daemons liegen ebenfalls unter `~/.synapse/file-watcher/`. Nicht gleichzeitig zwei Daemons für dieselben Projekte starten. Die folgenden Build-/API-Angaben gelten für die Moo-Variante, nicht als vollständige Beschreibung des TS-Daemons.
+
+Siehe auch [Architektur und Tests](../../README.md).
+
 
 Eigenständiger Hintergrund-Prozess in **moo**, der Projekte auf
 Datei-Änderungen pollt und sie per HTTP-API verwaltet. Läuft unabhängig
