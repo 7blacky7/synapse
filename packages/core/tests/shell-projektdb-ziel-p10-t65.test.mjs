@@ -71,3 +71,49 @@ test('Node-Datei außerhalb des Projektroots hat keine Helferpflicht',async()=>{
  const file='/tmp/p10_shell_ziel_adhoc.mjs',text="const pool=getPool();await pool.query('DROP TABLE owned')";
  assert.equal((await decision('node '+file,{texts:{[file]:text},env:{DATABASE_URL:own}})).darf_starten,true);
 });
+
+/** NOGO b1680e68: erkennbare Overrides werden unabhängig vom eigenen Default blockiert. */
+for(const [name,js]of [
+ ['H1 partielles Live-Tuple',"const{Client}=require('pg');const c=new Client({host:'live.invalid',port:5432,database:'synapse'});c.query('DROP TABLE owned')"],
+ ['H1 nur fremde DB',"const{Client}=require('pg');const c=new Client({database:'foreign'});c.query('DROP TABLE owned')"],
+ ['H1 nur Live-Port',"const{Pool}=require('pg');const c=new Pool({port:5432});c.query('DROP TABLE owned')"],
+ ['H1 Configvariable',"const{Client}=require('pg');const cfg={database:'foreign'};const c=new Client(cfg);c.query('DROP TABLE owned')"],
+ ['H1 nachträgliches Configfeld',"const{Client}=require('pg');const cfg={database:'synapse_test'};cfg.database='foreign';const c=new Client(cfg);c.query('DROP TABLE owned')"],
+ ['H1 unbekanntes partielles Feld',"const{Client}=require('pg');const c=new Client({host:process.env.UNKNOWN_HOST});c.query('DROP TABLE owned')"],
+ ['H2 geänderte URI',"const{Client}=require('pg');let uri=process.env.DATABASE_URL;uri='"+live+"';const c=new Client({connectionString:uri});c.query('DROP TABLE owned')"],
+ ['H2 URI-Alias',"const{Client}=require('pg');let uri=process.env.DATABASE_URL;uri='"+live+"';const alias=uri;const c=new Client({connectionString:alias});c.query('DROP TABLE owned')"],
+ ['H2 Objektfeld geändert',"const{Client}=require('pg');const cfg={connectionString:process.env.DATABASE_URL};cfg.connectionString='"+live+"';const c=new Client(cfg);c.query('DROP TABLE owned')"],
+ ['H3 SQL-Konstante',"const c=getPool();const sql='DROP DATABASE synapse';c.query(sql)"],
+ ['H3 SQL-Verkettung',"const c=getPool();const sql='DROP DATABASE '+'synapse';c.query(sql)"],
+ ['H3 SQL-Zuweisung',"const c=getPool();let sql='DROP TABLE owned';sql='DROP DATABASE synapse';c.query(sql)"],
+ ['H3 QueryConfig',"const c=getPool();const sql='DROP DATABASE synapse';c.query({text:sql})"],
+ ['H3 eigene explizite DSN ohne Default',"const{Client}=require('pg');const c=new Client({connectionString:'"+own+"'});const sql='DROP DATABASE synapse';c.query(sql)"]
+])test(name+' bleibt Anleitung',async()=>{
+ const env=name==='H3 eigene explizite DSN ohne Default'?{}:{DATABASE_URL:own};
+ const r=await decision(inline(js),{env});assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
+});
+for(const [name,js]of [
+ ['eigenes partielles Tuple',"const{Client}=require('pg');const c=new Client({host:'test.invalid',port:5433,database:'synapse_test'});c.query('DROP TABLE owned')"],
+ ['eigene URI-Zuweisung',"const{Client}=require('pg');let uri=process.env.DATABASE_URL;uri='"+own+"';const c=new Client({connectionString:uri});c.query('DROP TABLE owned')"],
+ ['eigene SQL-Konstante',"const c=getPool();const sql='DROP TABLE owned';c.query(sql)"],
+ ['eigene QueryConfig',"const c=getPool();const sql='CREATE TABLE owned(x int)';c.query({text:sql})"]
+])test(name+' bleibt frei ohne Helfer',async()=>{
+ const r=await decision(inline(js),{env:{DATABASE_URL:own}});assert.equal(r.darf_starten,true);assert.equal(r.audit.grund,'projekt_eigene_db');
+});
+
+for(const [name,js]of [
+ ['H1 Pool-Importalias',"const{Pool:DbPool}=require('pg');const c=new DbPool({database:'foreign'});c.query('DROP TABLE owned')"],
+ ['H1 Configalias',"const{Client}=require('pg');const cfg={database:'synapse_test'};const alias=cfg;alias.database='foreign';const c=new Client(cfg);c.query('DROP TABLE owned')"],
+ ['H1 verschachtelte Config',"const{Client}=require('pg');const cfg={db:{database:'foreign'}};const c=new Client(cfg.db);c.query('DROP TABLE owned')"],
+ ['H2 partielle Configvariable geändert',"const{Client}=require('pg');let port=5433;port=5432;const c=new Client({port});c.query('DROP TABLE owned')"],
+ ['H2 unbekannte URI-Änderung',"const{Client}=require('pg');let uri=process.env.DATABASE_URL;uri=uri.replace('synapse_test','synapse');const c=new Client({connectionString:uri});c.query('DROP TABLE owned')"],
+ ['H3 DB-Name vor SQL geändert',"const c=getPool();let name='synapse_test';name='synapse';const sql='DROP DATABASE '+name;c.query(sql)"],
+ ['H3 QueryConfig-Text geändert',"const c=getPool();const cfg={text:'DROP TABLE owned'};cfg.text='DROP DATABASE synapse';c.query(cfg)"],
+ ['H3 SQL-Template',"const c=getPool();const name='synapse';const sql=`DROP DATABASE ${name}`;c.query(sql)"]
+])test(name+' bleibt Anleitung',async()=>{
+ const r=await decision(inline(js),{env:{DATABASE_URL:own}});assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
+});
+test('Eigene Configaliase bleiben frei',async()=>{
+ const js="const{Client}=require('pg');const cfg={database:'synapse_test'};const alias=cfg;alias.database='synapse_test';const c=new Client(alias);const sql='DROP TABLE owned';c.query({text:sql})";
+ assert.equal((await decision(inline(js),{env:{DATABASE_URL:own}})).darf_starten,true);
+});
