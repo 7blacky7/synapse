@@ -1,0 +1,137 @@
+{
+  "reference": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "reference": {
+        "model": "p20-r11-fixture",
+        "modelDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nativeDimension": 8,
+        "targetDimension": 4,
+        "numCtx": 512,
+        "quantization": null,
+        "requiredTotalVramMb": 100,
+        "requiredFreeVramMb": 50,
+        "queryPraefix": "q: ",
+        "dokPraefix": "d: ",
+        "maxStueckZeichen": null
+      },
+      "download": {
+        "linux": "https://ollama.com/download",
+        "windows": "https://ollama.com/download/windows",
+        "macos": "https://ollama.com/download/mac",
+        "model": "https://ollama.com/library/p20-r11-fixture",
+        "modelSizeGb": null
+      }
+    }
+  },
+  "register": {
+    "status": 201,
+    "body": {
+      "success": true,
+      "nodeId": "p20-r11-a",
+      "status": "ready",
+      "locked": false,
+      "claimBatch": 2
+    }
+  },
+  "self": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "reference": {
+        "model": "p20-r11-fixture",
+        "modelDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nativeDimension": 8,
+        "targetDimension": 4,
+        "numCtx": 512,
+        "quantization": null,
+        "requiredTotalVramMb": 100,
+        "requiredFreeVramMb": 50,
+        "queryPraefix": "q: ",
+        "dokPraefix": "d: ",
+        "maxStueckZeichen": null
+      },
+      "node": {
+        "node_id": "p20-r11-a",
+        "host": "fixture",
+        "ollama_url": "http://127.0.0.1:9",
+        "modell": "p20-r11-fixture",
+        "modell_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "quantisierung": null,
+        "native_dimension": 8,
+        "ziel_dimension": 4,
+        "num_ctx": 512,
+        "vram_gesamt_mb": 1000,
+        "vram_frei_mb": 0,
+        "system_memory_mb": null,
+        "cpu_cores": null,
+        "gpu_name": null,
+        "max_concurrency": 2,
+        "active_jobs": 0,
+        "status": "ready",
+        "gesperrt_vom_user": false,
+        "sperrgrund": null,
+        "agent_version": null,
+        "boot_id": "11111111-1111-4111-8111-111111111111",
+        "last_sequence": "0",
+        "boot_started_at": "<zeit>",
+        "registriert_am": "<zeit>",
+        "letzter_kontakt": "<zeit>",
+        "aktualisiert_am": "<zeit>",
+        "server_now": "<zeit>",
+        "effectiveStatus": "ready",
+        "usable": true,
+        "compatibilityProblems": []
+      }
+    }
+  },
+  "heartbeat": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "nodeId": "p20-r11-a",
+      "serverTime": "<zeit>"
+    }
+  },
+  "claims": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "claims": [],
+      "pausiert": {
+        "seit": "<zeit>",
+        "bis": "<zeit>",
+        "grund": "p20_r11",
+        "von": "sol-5"
+      },
+      "reference": {
+        "model": "p20-r11-fixture",
+        "modelDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nativeDimension": 8,
+        "targetDimension": 4,
+        "numCtx": 512,
+        "quantization": null,
+        "requiredTotalVramMb": 100,
+        "requiredFreeVramMb": 50,
+        "queryPraefix": "q: ",
+        "dokPraefix": "d: ",
+        "maxStueckZeichen": null
+      }
+    }
+  },
+  "complete": {
+    "status": 400,
+    "body": {
+      "success": false,
+      "error": "invalid_completion"
+    }
+  },
+  "release": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "freigegeben": []
+    }
+  }
+}

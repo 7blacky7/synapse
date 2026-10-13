@@ -1,6 +1,9 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   getPool,
+  API_CONTRACT_HEADER,
+  apiCapabilitiesForClient,
+  parseComputeNodeExtension,
   claimEmbeddingChunks,
   completeEmbeddingClaim,
   completeEmbeddingClaims,
@@ -12,6 +15,7 @@ import {
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
 import {
   authorizedNodeCapacity,
+  embeddingNodeProjection,
   compatibilityProblems,
   EmbeddingReferenceUnavailable,
   releaseEmbeddingClaims,
@@ -190,7 +194,7 @@ export function createEmbeddingNodeRoutes(
           candidate.node_id === nodeId && candidate.service_token_hash === auth!.token_hash
         );
         if (!node) return reply.code(404).send({ success: false, error: 'node_not_registered' });
-        const { service_token_hash: _secret, ...visible } = node;
+        const visible = embeddingNodeProjection(node, !!apiCapabilitiesForClient(request.headers[API_CONTRACT_HEADER]));
         return reply.send({ success: true, reference: await getEmbeddingReferenceContract(), node: visible });
       },
     );
@@ -209,6 +213,8 @@ export function createEmbeddingNodeRoutes(
         if (!tokenAllowsNode(auth, input.nodeId)) {
           return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
         }
+        try { parseComputeNodeExtension(input, input.nodeId); }
+        catch { return reply.code(400).send({ success: false, error: 'invalid_node_resources' }); }
         const reference = await getEmbeddingReferenceContract();
         // ⚠⚠ HIER STAND BIS ZUM 01.08.2026 AUCH EINE FREI-SCHWELLE, UND SIE WAR DIE
         // VIERTE UND LETZTE STELLE DERSELBEN FALLE.
@@ -284,6 +290,8 @@ export function createEmbeddingNodeRoutes(
         if (!body || !validHeartbeat(body)) {
           return reply.code(400).send({ success: false, error: 'invalid_heartbeat' });
         }
+        try { parseComputeNodeExtension(body, nodeId); }
+        catch { return reply.code(400).send({ success: false, error: 'invalid_node_resources' }); }
         const problems = compatibilityProblems(body, await getEmbeddingReferenceContract());
         if (problems.length > 0) {
           return reply.code(409).send({ success: false, error: 'incompatible_node', problems });
@@ -300,6 +308,7 @@ export function createEmbeddingNodeRoutes(
           nativeDimension: body.nativeDimension,
           targetDimension: body.targetDimension,
           numCtx: body.numCtx,
+          ...parseComputeNodeExtension(body, nodeId),
         }, deps.db);
         if (!node) return reply.code(409).send({ success: false, error: 'heartbeat_rejected' });
         return reply.send({ success: true, nodeId, serverTime: new Date().toISOString() });
@@ -479,7 +488,7 @@ export function createEmbeddingNodeRoutes(
       return reply.send({
         success: true,
         reference: await getEmbeddingReferenceContract(),
-        nodes: (await listEmbeddingNodes(deps.db)).map(({ service_token_hash: _secret, ...node }) => node),
+        nodes: (await listEmbeddingNodes(deps.db)).map(node => embeddingNodeProjection(node, !!apiCapabilitiesForClient(request.headers[API_CONTRACT_HEADER]))),
       });
     });
 

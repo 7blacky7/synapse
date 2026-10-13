@@ -1,5 +1,11 @@
 import {
   aktivePraefixe,
+  API_CONTRACT_VERSION,
+  parseComputeNodeExtension,
+  computeResourceSnapshot,
+  type ComputeNodeExtension,
+  type ComputeResources,
+  type ComputeCapability,
   embeddingModellName,
   geladenesModellprofil,
   getPool,
@@ -26,7 +32,7 @@ export interface EmbeddingReferenceContract {
   maxStueckZeichen: number | null;
 }
 
-export interface EmbeddingNodeRegistration {
+export interface EmbeddingNodeRegistration extends ComputeNodeExtension {
   nodeId: string;
   host: string;
   ollamaUrl: string;
@@ -47,7 +53,7 @@ export interface EmbeddingNodeRegistration {
   bootStartedAt: string;
 }
 
-export interface EmbeddingNodeHeartbeat {
+export interface EmbeddingNodeHeartbeat extends ComputeNodeExtension {
   status: 'ready' | 'busy';
   vramFreeMb: number;
   activeJobs: number;
@@ -62,6 +68,14 @@ export interface EmbeddingNodeHeartbeat {
 }
 
 export interface EmbeddingNodeRow {
+  contract_version?: number | null;
+  features?: string[] | null;
+  capability_revision?: string | null;
+  policy_revision?: string | null;
+  location?: string | null;
+  host_resource_domain?: string | null;
+  ressourcen?: ComputeResources | null;
+  capabilities?: ComputeCapability[] | null;
   node_id: string;
   host: string;
   ollama_url: string;
@@ -235,20 +249,38 @@ export function deriveEmbeddingNodeStatus(
   return row.status === 'busy' ? 'busy' : 'ready';
 }
 
+/** Legacy-Antwort behält exakt ihre Felder; private Messungen nur nach A1-Verhandlung. */
+export function embeddingNodeProjection<T extends EmbeddingNodeRow>(row: T, contract: boolean): Record<string, unknown> {
+  const { service_token_hash: _secret, contract_version, features, capability_revision, policy_revision,
+    location, host_resource_domain, ressourcen, capabilities, ...legacy } = row;
+  if (!contract) return legacy;
+  return { ...legacy, contractVersion: contract_version ?? API_CONTRACT_VERSION, features: features ?? [],
+    capabilityRevision: capability_revision === null || capability_revision === undefined ? null : Number(capability_revision),
+    policyRevision: policy_revision === null || policy_revision === undefined ? null : Number(policy_revision),
+    location: location ?? null, hostResourceDomain: host_resource_domain ?? null,
+    resources: computeResourceSnapshot(ressourcen), capabilities: capabilities ?? [] };
+}
+
 export async function registerEmbeddingNode(
   tokenHash: string,
   input: EmbeddingNodeRegistration,
   db: Queryable = getPool(),
 ): Promise<EmbeddingNodeRow | null> {
+  const extension = parseComputeNodeExtension(input, input.nodeId);
   const result = await db.query<EmbeddingNodeRow>(
     `INSERT INTO embedding_knoten (
        node_id, host, ollama_url, modell, modell_digest, quantisierung,
        native_dimension, ziel_dimension, num_ctx, vram_gesamt_mb, vram_frei_mb,
        system_memory_mb, cpu_cores, gpu_name, max_concurrency, active_jobs,
        status, service_token_hash, agent_version, boot_id, last_sequence, boot_started_at,
-       letzter_kontakt, aktualisiert_am
+       letzter_kontakt, aktualisiert_am, contract_version, features, capability_revision,
+       policy_revision, location, host_resource_domain, ressourcen, capabilities
      ) VALUES (
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,0,'ready',$16,$17,$18,0,$19,NOW(),NOW()
+       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,0,'ready',$16,$17,$18,0,$19,NOW(),NOW(),
+       ($20::jsonb->>'contractVersion')::integer,
+       CASE WHEN $20::jsonb ? 'features' THEN ARRAY(SELECT jsonb_array_elements_text($20::jsonb->'features')) END,
+       ($20::jsonb->>'capabilityRevision')::bigint, ($20::jsonb->>'policyRevision')::bigint,
+       $20::jsonb->>'location', $20::jsonb->>'hostResourceDomain', $20::jsonb->'resources', $20::jsonb->'capabilities'
      )
      ON CONFLICT (node_id) DO UPDATE SET
        host=EXCLUDED.host, ollama_url=EXCLUDED.ollama_url, modell=EXCLUDED.modell,
@@ -260,7 +292,15 @@ export async function registerEmbeddingNode(
        max_concurrency=EXCLUDED.max_concurrency, active_jobs=0, status='ready',
        service_token_hash=EXCLUDED.service_token_hash, agent_version=EXCLUDED.agent_version,
        boot_id=EXCLUDED.boot_id, last_sequence=0, boot_started_at=EXCLUDED.boot_started_at,
-       letzter_kontakt=NOW(), aktualisiert_am=NOW()
+       letzter_kontakt=NOW(), aktualisiert_am=NOW(),
+       contract_version=COALESCE(EXCLUDED.contract_version,embedding_knoten.contract_version),
+       features=COALESCE(EXCLUDED.features,embedding_knoten.features),
+       capability_revision=COALESCE(EXCLUDED.capability_revision,embedding_knoten.capability_revision),
+       policy_revision=COALESCE(EXCLUDED.policy_revision,embedding_knoten.policy_revision),
+       location=COALESCE(EXCLUDED.location,embedding_knoten.location),
+       host_resource_domain=COALESCE(EXCLUDED.host_resource_domain,embedding_knoten.host_resource_domain),
+       ressourcen=COALESCE(EXCLUDED.ressourcen,embedding_knoten.ressourcen),
+       capabilities=COALESCE(EXCLUDED.capabilities,embedding_knoten.capabilities)
      WHERE embedding_knoten.boot_started_at <= EXCLUDED.boot_started_at
         OR embedding_knoten.letzter_kontakt < NOW() - INTERVAL '2 minutes'
      RETURNING *`,
@@ -269,7 +309,7 @@ export async function registerEmbeddingNode(
       input.quantization ?? null, input.nativeDimension, input.targetDimension, input.numCtx,
       input.vramTotalMb, input.vramFreeMb, input.systemMemoryMb ?? null, input.cpuCores ?? null,
       input.gpuName ?? null, input.maxConcurrency, tokenHash, input.agentVersion ?? null,
-      input.bootId, new Date(input.bootStartedAt),
+      input.bootId, new Date(input.bootStartedAt), JSON.stringify(extension ?? {}),
     ],
   );
   return result.rows[0] ?? null;
@@ -284,7 +324,15 @@ export async function heartbeatEmbeddingNode(
   const result = await db.query<EmbeddingNodeRow>(
     `UPDATE embedding_knoten
         SET status=$5, vram_frei_mb=$6, active_jobs=$7, last_sequence=$4,
-            letzter_kontakt=NOW(), aktualisiert_am=NOW()
+            letzter_kontakt=NOW(), aktualisiert_am=NOW(),
+            contract_version=COALESCE(($14::jsonb->>'contractVersion')::integer,contract_version),
+            features=CASE WHEN $14::jsonb ? 'features' THEN ARRAY(SELECT jsonb_array_elements_text($14::jsonb->'features')) ELSE features END,
+            capability_revision=COALESCE(($14::jsonb->>'capabilityRevision')::bigint,capability_revision),
+            policy_revision=COALESCE(($14::jsonb->>'policyRevision')::bigint,policy_revision),
+            location=COALESCE($14::jsonb->>'location',location),
+            host_resource_domain=COALESCE($14::jsonb->>'hostResourceDomain',host_resource_domain),
+            ressourcen=COALESCE($14::jsonb->'resources',ressourcen),
+            capabilities=COALESCE($14::jsonb->'capabilities',capabilities)
       WHERE node_id=$1 AND service_token_hash=$2 AND boot_id=$3 AND last_sequence < $4
         AND modell=$8 AND modell_digest=$9 AND native_dimension=$10
         AND ziel_dimension=$11 AND num_ctx=$12
@@ -293,7 +341,8 @@ export async function heartbeatEmbeddingNode(
     [nodeId, tokenHash, heartbeat.bootId, heartbeat.sequence,
       heartbeat.status, heartbeat.vramFreeMb, heartbeat.activeJobs,
       heartbeat.model, normalizeDigest(heartbeat.modelDigest), heartbeat.nativeDimension,
-      heartbeat.targetDimension, heartbeat.numCtx, heartbeat.quantization ?? null],
+      heartbeat.targetDimension, heartbeat.numCtx, heartbeat.quantization ?? null,
+      JSON.stringify(parseComputeNodeExtension(heartbeat, nodeId) ?? {})],
   );
   return result.rows[0] ?? null;
 }
