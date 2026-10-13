@@ -24,6 +24,7 @@ import {
   expirePendingProjectInitJobs,
   isValidProjectName,
   registerProject,
+  registerVirtualProject,
   envHatDatabaseUrl,
   schreibeProjektDbEnv,
   vergissJobUmgebungCache,
@@ -293,8 +294,13 @@ async function initializeProject(
     }
   }
 
-  // Projekt in PG registrieren (project-registry.ts)
+  // Projekt lokal und fuer REST/Cloud-Clients registrieren.
   await registerProject(job.name, projectPath)
+  try {
+    await registerVirtualProject(job.name)
+  } catch (err) {
+    throw new Error(`Virtuelle REST-Registrierung fuer ${job.name} fehlgeschlagen: ${(err as Error).message}`)
+  }
 
   // Daemon-Config + FileWatcher in einem: registriert in config.json,
   // persistiert, spawnt Watcher. Damit erscheint das Projekt automatisch
