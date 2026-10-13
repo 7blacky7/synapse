@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import {embeddingComputePolicy,pruefeComputeZuteilung} from './compute-policy.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
 import { zielDimension } from '../embeddings/index.js';
@@ -45,6 +46,8 @@ export interface ClaimOptions {
   leaseSeconds?: number;
   /** Server-authoritative parallel claim cap for this node. */
   maxConcurrent?: number;
+  /** Nur vertrauenswürdiger API-intern-Executor; HTTP-Clients setzen dies nie. */
+  internalServer?: boolean;
 }
 
 type QueryResult<T> = { rows: T[]; rowCount?: number | null };
@@ -231,6 +234,16 @@ export async function claimEmbeddingChunks(
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
       `embedding-node:${nodeId}`,
     ]);
+    const policy = await embeddingComputePolicy(nodeId, client, options.internalServer === true);
+    if (policy && !policy.decision.allowed) { await client.query('COMMIT'); return []; }
+    // Legacy-SQL ist unverändert; aktivierte Policy filtert dieselben Projekte in JEDEM Zweig.
+    const sql = policy ? {
+      ...CLAIM_SQL,
+      vorgezogen: CLAIM_SQL.vorgezogen.replace('AND cc.prio > 0', 'AND cc.prio > 0 AND cc.project <> ALL($2::text[])'),
+      projektWahl: CLAIM_SQL.projektWahl.replace('WHERE p.enabled', 'WHERE p.enabled AND p.name <> ALL($2::text[])'),
+      normal: CLAIM_SQL.normal.replace('WHERE cc.project = $2', 'WHERE cc.project = $2 AND cc.project <> ALL($3::text[])'),
+      hinten: CLAIM_SQL.hinten.replace('WHERE cc.project = $2', 'WHERE cc.project = $2 AND cc.project <> ALL($3::text[])'),
+    } : CLAIM_SQL;
     const active = await client.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM code_chunks
         WHERE claimed_by=$1 AND embedded_at IS NULL AND lease_until >= NOW()`,
@@ -259,23 +272,23 @@ export async function claimEmbeddingChunks(
     // arbeitet eine Datei am Stueck ab statt quer durch den Bestand zu springen.
     // P15-T12 E4: Schritt 0 - ausdruecklich vorgezogene Chunks (prio > 0) vor allem anderen.
     // P12-T14: danach Projektwahl nach Embed-Prioritaet (Stufe 1 zuerst, ohne Eintrag 3), innerhalb zufaellig.
-    const ausgewaehlt: ClaimZeile[] = (await client.query<ClaimZeile>(CLAIM_SQL.vorgezogen, [limit])).rows;
+    const ausgewaehlt: ClaimZeile[] = (await client.query<ClaimZeile>(sql.vorgezogen, policy ? [limit,policy.excludedProjects] : [limit])).rows;
     let rest = limit - ausgewaehlt.length;
     // P15-T25: liefert das gewaehlte Projekt nichts (Chunks gerade von einer anderen Transaktion
     // gesperrt), sofort das naechste nehmen statt eine leere Runde zu melden. Ein Projekt, das
     // etwas geliefert hat, beendet die Runde wie bisher (ein Projekt je Runde).
     const versucht: string[] = [];
     while (rest > 0 && versucht.length < PROJEKTWAHL_MAX_VERSUCHE) {
-      const projekt = (await client.query<{ name: string }>(CLAIM_SQL.projektWahl, [versucht])).rows[0]?.name;
+      const projekt = (await client.query<{ name: string }>(sql.projektWahl, policy ? [versucht,policy.excludedProjects] : [versucht])).rows[0]?.name;
       if (!projekt) break;
       versucht.push(projekt);
       const vorher = rest;
-      const normal = await client.query<ClaimZeile>(CLAIM_SQL.normal, [rest, projekt]);
+      const normal = await client.query<ClaimZeile>(sql.normal, policy ? [rest,projekt,policy.excludedProjects] : [rest,projekt]);
       ausgewaehlt.push(...normal.rows);
       rest -= normal.rows.length;
       // Schritt 2: Chunks, die ausdruecklich ans Projektende gestellt wurden (prio < 0).
       if (rest > 0) {
-        const hinten = await client.query<ClaimZeile>(CLAIM_SQL.hinten, [rest, projekt]);
+        const hinten = await client.query<ClaimZeile>(sql.hinten, policy ? [rest,projekt,policy.excludedProjects] : [rest,projekt]);
         ausgewaehlt.push(...hinten.rows);
         rest -= hinten.rows.length;
       }
@@ -289,6 +302,7 @@ export async function claimEmbeddingChunks(
 
     const claims: EmbeddingChunkClaim[] = [];
     for (const row of ausgewaehlt) {
+      if (policy && !(await pruefeComputeZuteilung({nodeId,project:row.project,capability:'embedding',profileCompatible:true,resourcesAvailable:true,internalServer:options.internalServer},client,policy.snapshot)).allowed) continue;
       const contentHash = embeddingContentHash(row.content);
       const claimToken = uuidv4();
       const updated = await client.query<{ claim_attempt: number; lease_until: Date }>(
