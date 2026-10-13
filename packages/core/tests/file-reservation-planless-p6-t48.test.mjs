@@ -2,14 +2,18 @@
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-const u=new URL(process.env.DATABASE_URL||'http://ungueltig');
-assert.equal(u.port,'5433'); assert.equal(u.pathname,'/synapse_test');
-process.env.SYNAPSE_PLAN_PRUEFUNG='0'; process.env.QDRANT_URL='http://127.0.0.1:9';
-const batch=await import('../dist/services/file-batch.js');
-const res=await import('../dist/services/file-reservations.js');
-const ci=await import('../dist/services/code-intel.js');
-const {mitCodeIntelSchatten}=await import('../dist/services/code-intel-schatten.js');
-const {getPool}=await import('../dist/db/client.js'); const pool=getPool();
+import {dirname,join} from 'node:path';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+const hier=dirname(fileURLToPath(import.meta.url));
+assert.ok(/^postgres(?:ql)?:\/\/[^/]+:5433\/synapse_test(?:\?|$)/.test(process.env.DATABASE_URL||''),'Testziel muss synapse_test:5433 sein');
+// Die Testumgebung setzt QDRANT_URL im Shell-Aufruf; die DB-Env bleibt unverändert.
+const dist=process.env.P6_T48_DIST||join(hier,'..','dist');
+const load=rel=>import(pathToFileURL(join(dist,rel)).href);
+const batch=await load('services/file-batch.js');
+const res=await load('services/file-reservations.js');
+const ci=await load('services/code-intel.js');
+const {mitCodeIntelSchatten}=await load('services/code-intel-schatten.js');
+const {getPool}=await load('db/client.js'); const pool=getPool();
 assert.equal((await pool.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');
 const project='p6_t48_'+randomUUID(), owner='sol-9-t48-owner', writer='sol-9-t48-writer';
 const names=new Map(), hash=s=>createHash('sha256').update(s).digest('hex');
@@ -36,7 +40,7 @@ const run=(action,a)=>mitCodeIntelSchatten(action,{project,...a},async()=>{
 });
 try {
  await pool.query('INSERT INTO projects(name,hostname,path) VALUES($1,$2,$3)',[project,'p6-t48-test','/virtual/p6-t48']);
- for(const file of ['src/golden.ts','src/free.ts','src/legacy.ts','src/expired.ts'])await seed(file);
+ for(const file of ['src/golden.ts','src/free.ts','src/legacy.ts','src/expired.ts','src/multi-a.ts','src/multi-b.ts'])await seed(file);
  // Altumfang: vorhandener Ownerplan => exakt dieselbe Antwort, Waitbindung und contribution.
  await res.addFileReservations({project,agentId:owner,filePaths:['src/golden.ts']});
  const p=await batch.planBatch({project,agent_id:owner,ops:[op('src/golden.ts','return 1','return 2')]}); names.set(p.plan_id,'<owner-plan>');
@@ -44,7 +48,7 @@ try {
  const contribution=await batch.addCoeditContribution({project,plan_id:p.plan_id,wait_token:w.coedit_waits[0].wait_token,agent_id:writer,ops:[op('src/golden.ts','probe','goldenProbe')]});
  const golden=normal({plan:p,wait:w,contribution});
  if(process.argv.includes('--capture'))console.log('GOLDEN_JSON='+JSON.stringify(golden));
- else assert.deepEqual(golden,JSON.parse(readFileSync(new URL('./fixtures/file-reservation-planless-p6-t48.golden.json',import.meta.url),'utf8')));
+ else if(!process.argv.includes('--funktional')) assert.deepEqual(golden,JSON.parse(readFileSync(join(hier,'fixtures','file-reservation-planless-p6-t48.golden.json'),'utf8')));
  if(!process.argv.includes('--capture')&&!process.argv.includes('--golden')){
   // Kein Plan: Absicht sichtbar, Bestand unverändert, Schreiben ohne Wait.
   await res.addFileReservations({project,agentId:owner,filePaths:['src/free.ts','lib/new.ts']});
@@ -74,6 +78,46 @@ try {
   assert.ok(!(await run('file',{file_path:'src/expired.ts',schatten:'alle'})).reservierungen);
   await res.releaseFileReservations({project,agentId:owner,filePaths:['lib/new.ts']});
   assert.ok(!(await run('tree',{path:'lib',show_ghosts:true})).reservierungen);
+  // Filter und Metadaten: inaktive/fremde Absichten bleiben unsichtbar;
+  // Taskreferenz aus vorhandener Plan-ID ist echt, fehlende Referenz bleibt null.
+  const inactive=project+'_inactive';
+  await pool.query("INSERT INTO agent_sessions(id,project,status) VALUES($1,$2,'stopped')",[inactive,project]);
+  await pool.query("INSERT INTO file_reservations(project,agent_id,file_path,content_hash_at_reservation,expires_at) VALUES($1,$2,'filter/inactive.ts',$3,NOW()+INTERVAL '5 minutes')",[project,inactive,hash('')]);
+  await pool.query("INSERT INTO file_reservations(project,agent_id,file_path,content_hash_at_reservation,expires_at) VALUES($1,$2,'filter/foreign.ts',$3,NOW()+INTERVAL '5 minutes')",[project+'_foreign',owner,hash('')]);
+  assert.ok(!(await run('tree',{path:'filter',show_ghosts:true})).reservierungen);
+  await res.addFileReservations({project,agentId:owner,filePaths:['filter/root.ts','filter/deep/new.ts']});
+  const filtered=await run('tree',{path:'filter',show_ghosts:true,recursive:false});
+  assert.deepEqual(filtered.reservierungen.map(r=>r.file_path),['filter/root.ts']);
+  assert.equal(filtered.reservierungen[0].task_id,null);
+  const depth=await run('tree',{path:'filter',show_ghosts:true,depth:0});
+  assert.deepEqual(depth.reservierungen.map(r=>r.file_path),['filter/root.ts']);
+  assert.ok(!(await run('tree',{path:'filter',show_ghosts:true,file_type:'txt'})).reservierungen);
+  assert.ok(!(await run('file',{file_path:'src/golden.ts',schatten:'alle'})).reservierungen,'offener Ownerplan ist keine planlose Absicht');
+  const referenced=(await pool.query("INSERT INTO file_batch_plans(project,owner_agent_id,ops,expected_hashes,previews,status) VALUES($1,$2,$3::jsonb,'{}','[]','cancelled') RETURNING id::text",
+   [project,owner,JSON.stringify([{action:'create',file_path:'filter/task.ts',task_id:'synthetic-task-ref',content:''}])])).rows[0].id;
+  await res.addFileReservations({project,agentId:owner,filePaths:['filter/task.ts'],planId:referenced});
+  const metadata=await run('file',{file_path:'filter/task.ts',schatten:'alle'});
+  assert.equal(metadata.reservierungen[0].task_id,'synthetic-task-ref');
+  assert.equal(metadata.reservierungen[0].reserviert_von,owner);
+  // Stresstest-Muster: zwei Reservierungen ohne Plan, genau ein sofortiger Writerplan;
+  // späterer Reservierender landet additiv in diesem bestehenden Ziel, kein Parallelplan.
+  await res.addFileReservations({project,agentId:owner,filePaths:['src/multi-a.ts','src/multi-b.ts']});
+  const multi=await batch.planBatch({project,agent_id:writer,ops:[
+   op('src/multi-a.ts','return 1','return 5'),op('src/multi-b.ts','return 1','return 6')]});
+  assert.equal(multi.total_ops,2);assert.ok(!multi.coedit_waits?.length);
+  assert.equal(multi.reservation_hint.files.length,2);
+  const followerOps=[op('src/multi-a.ts','probe','laterA'),op('src/multi-b.ts','probe','laterB')];
+  const follower=await batch.planBatch({project,agent_id:owner,ops:followerOps});
+  assert.equal(follower.total_ops,0);assert.equal(follower.coedit_waits.length,1);
+  assert.equal(follower.coedit_waits[0].target_plan_id,multi.plan_id);
+  const followAdd=await batch.addCoeditContribution({project,plan_id:multi.plan_id,
+   wait_token:follower.coedit_waits[0].wait_token,agent_id:owner,ops:followerOps});
+  assert.equal(followAdd.success,true);assert.equal(followAdd.total_plan_ops,4);
+  await batch.markCoeditReady({project,plan_id:multi.plan_id,agent_id:owner});
+  assert.equal((await batch.commitBatch({plan_id:multi.plan_id,agent_id:writer})).success,true);
+  assert.match((await ci.getFileContent(project,'src/multi-a.ts')).content,/laterA.*return 5/);
+  assert.match((await ci.getFileContent(project,'src/multi-b.ts')).content,/laterB.*return 6/);
+  assert.equal((await pool.query('SELECT status FROM file_batch_plans WHERE id=$1',[follower.plan_id])).rows[0].status,'cancelled');
   // Alt-Wait synthetisch nachstellen: spätere Ownerplanung bindet ihn, Inhalte bleiben erhalten.
   await res.addFileReservations({project,agentId:owner,filePaths:['src/legacy.ts']});
   const carrier=(await pool.query("INSERT INTO file_batch_plans(project,owner_agent_id,ops,expected_hashes,previews) VALUES($1,$2,'[]','{}','[]') RETURNING id::text",[project,writer])).rows[0].id;
@@ -91,9 +135,16 @@ try {
   assert.equal((await batch.commitBatch({plan_id:legacy.plan_id,agent_id:owner})).success,true);
   assert.match((await ci.getFileContent(project,'src/legacy.ts')).content,/legacyProbe.*return 4/);
  }
- console.log('P6-T48 '+(process.argv.includes('--capture')?'Altgolden erfasst':process.argv.includes('--golden')?'Altgolden unverändert':'Golden + Planlos/Schatten/Alt-Wait grün'));
+ console.log('P6-T48 '+(process.argv.includes('--capture')?'Altgolden erfasst':process.argv.includes('--golden')?'Altgolden unverändert':process.argv.includes('--funktional')?'Planlos/Schatten/Alt-Wait funktional grün; Golden NICHT geprüft':'Golden + Planlos/Schatten/Alt-Wait grün'));
 }finally{
  await pool.query('DELETE FROM agent_event_acks WHERE event_id IN (SELECT id FROM agent_events WHERE project=$1)',[project]);
- for(const t of ['file_batch_waits','file_reservations','file_batch_plans','file_versions','code_files','agent_events'])await pool.query('DELETE FROM '+t+' WHERE project=$1',[project]);
+ await pool.query('DELETE FROM file_batch_waits WHERE project=$1',[project]);
+ await pool.query('DELETE FROM file_reservations WHERE project=$1',[project]);
+ await pool.query('DELETE FROM file_batch_plans WHERE project=$1',[project]);
+ await pool.query('DELETE FROM file_versions WHERE project=$1',[project]);
+ await pool.query('DELETE FROM code_files WHERE project=$1',[project]);
+ await pool.query('DELETE FROM agent_events WHERE project=$1',[project]);
+ await pool.query('DELETE FROM file_reservations WHERE project=$1',[project+'_foreign']);
+ await pool.query('DELETE FROM agent_sessions WHERE project=$1',[project]);
  await pool.query('DELETE FROM projects WHERE name=$1',[project]);await pool.end();
 }
