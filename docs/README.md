@@ -66,7 +66,7 @@ Das [Embedding-Modul](../packages/core/src/embeddings/README.md) verwendet konfi
 
 ## Abhängigkeiten
 
-Die Varianten teilen Core und die Datenspeicher. Lokale Dateisynchronisation setzt den Daemon voraus; Container-Ausführung und Syntaxprüfcontainer benötigen die jeweilige Container-Anbindung. Cloudflare und `cc-wrap` sind externe Komponenten. Die Bilder sind eigenständige SVGs mit festem schwarzem Hintergrund, orangenen Akzenten, heller Beschriftung und mindestens 16 px Schrift und ohne externe Bild- oder Schriftressourcen.
+Die Varianten teilen Core und die Datenspeicher. Lokale Dateisynchronisation setzt den Daemon voraus; Container-Ausführung und Syntaxprüfcontainer benötigen die jeweilige Container-Anbindung. Cloudflare und `cc-wrap` sind externe Komponenten. Die Bilder sind eigenständige SVGs mit festem dunklem Hintergrund in der GitHub-Primer-Dark-Palette, orangenen Akzenten, heller Beschriftung und mindestens 16 px Schrift und ohne externe Bild- oder Schriftressourcen.
 
 ## Siehe auch
 
