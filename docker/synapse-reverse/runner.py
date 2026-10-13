@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -15,6 +16,16 @@ from typing import Any
 
 BIB = Path("/bib")
 WORK = Path("/arbeit")
+PACKAGE_VERSION_FILE = Path("/opt/reverse/versionen-pakete.txt")
+UPSTREAM_VERSION_FILE = Path("/opt/reverse/versionen.txt")
+TOOL_PACKAGES = {
+    "7zz": "7zip", "bsdtar": "libarchive-tools", "bchunk": "bchunk",
+    "unshield": "unshield", "innoextract": "innoextract", "msiextract": "msitools",
+    "cabextract": "cabextract", "unar": "unar", "lhasa": "lhasa", "arj": "arj",
+    "file": "file", "llvm-readobj": "llvm", "wasm-objdump": "wabt", "wasm2wat": "wabt",
+    "ffmpeg": "ffmpeg", "ffprobe": "ffmpeg", "javap": "openjdk-21-jdk-headless",
+}
+UPSTREAM_TOOLS = {"rizin": "rizin", "rz-bin": "rizin", "analyzeHeadless": "ghidra"}
 JOB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 TOOLS: dict[str, tuple[str, ...]] = {
     "7zz": ("7zz", "x", "-y", "-snld", "-aoa"),
@@ -39,7 +50,7 @@ TOOLS: dict[str, tuple[str, ...]] = {
     "analyzeHeadless": ("analyzeHeadless",),
 }
 EXTRACTORS = {
-    ".iso": "7zz", ".img": "7zz", ".bin": "7zz", ".7z": "7zz", ".zip": "7zz",
+    ".iso": "7zz", ".img": "7zz", ".bin": "7zz", ".cue": "bchunk", ".jar": "7zz", ".7z": "7zz",
     ".rar": "7zz", ".cab": "cabextract", ".msi": "msiextract", ".exe": "7zz",
     ".tar": "bsdtar", ".gz": "bsdtar", ".bz2": "bsdtar", ".xz": "bsdtar",
     ".lha": "lhasa", ".lzh": "lhasa", ".arj": "arj",
@@ -76,6 +87,47 @@ def limits(req: dict[str, Any]) -> dict[str, int]:
         "max_tiefe": min(max(int(raw.get("max_tiefe", 32)), 1), 128),
         "max_kompressionsfaktor": min(max(int(raw.get("max_kompressionsfaktor", 200)), 1), 1000),
     }
+
+
+FORBIDDEN_TOOLS = ("wine", "wine64", "qemu-system-i386", "qemu-system-x86_64", "dosbox", "dosbox-staging", "gdb", "gdb-multiarch", "gdbserver", "upx")
+
+
+def self_probe() -> dict[str, Any]:
+    try:
+        socket.getaddrinfo("example.com", 443, type=socket.SOCK_STREAM)
+        dns = "reachable"
+    except OSError:
+        dns = "blocked"
+    try:
+        connection = socket.create_connection(("1.1.1.1", 443), timeout=1)
+    except OSError:
+        tcp = "blocked"
+    else:
+        connection.close()
+        tcp = "reachable"
+    forbidden = [name for name in FORBIDDEN_TOOLS if shutil.which(name)]
+    uid = os.getuid()
+    status = "ok" if uid == 65532 and dns == "blocked" and tcp == "blocked" and not forbidden else "fehler"
+    return {"status": status, "uid": uid, "dns": dns, "tcp": tcp, "forbidden_tools": forbidden}
+
+
+def tool_version(tool: str) -> str:
+    if tool in TOOL_PACKAGES:
+        package = TOOL_PACKAGES[tool]
+        manifest = PACKAGE_VERSION_FILE
+    elif tool in UPSTREAM_TOOLS:
+        package = UPSTREAM_TOOLS[tool]
+        manifest = UPSTREAM_VERSION_FILE
+    else:
+        return "unbekannt"
+    try:
+        for line in manifest.read_text(encoding="utf-8").splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name == package:
+                return value.split()[0]
+    except OSError:
+        pass
+    return "unbekannt"
 
 
 def output_manifest(root: Path, cap: dict[str, int], input_size: int) -> tuple[list[dict[str, Any]], int]:
@@ -117,6 +169,21 @@ def selected_tool(req: dict[str, Any]) -> str:
     return str(req.get("werkzeug", ""))
 
 
+def cue_image(source: Path) -> Path:
+    cue_bytes = source.read_bytes()
+    if len(cue_bytes) > 1_048_576:
+        raise ValueError("CUE-Datei zu gross")
+    cue_text = cue_bytes.decode("utf-8-sig")
+    references = re.findall(r'(?im)^\s*FILE\s+(?:"([^"]+)"|(\S+))\s+(?:BINARY|MOTOROLA)\s*$', cue_text)
+    filenames = list(dict.fromkeys(first or second for first, second in references))
+    if len(filenames) != 1:
+        raise ValueError("nur CUE mit genau einem BIN/MOTOROLA-Image unterstuetzt")
+    image = path_under(str(source.parent / filenames[0]), BIB, True)
+    if not image.is_file():
+        raise ValueError("CUE-Image ist keine regulaere Datei")
+    return image
+
+
 def command_for(tool: str, source: Path, out: Path, req: dict[str, Any]) -> list[str]:
     if tool not in TOOLS or not shutil.which(TOOLS[tool][0]):
         raise ValueError("Werkzeug nicht_unterstuetzt")
@@ -124,6 +191,8 @@ def command_for(tool: str, source: Path, out: Path, req: dict[str, Any]) -> list
         return [*TOOLS[tool], f"-o{out}", str(source)]
     if tool == "bsdtar":
         return [*TOOLS[tool], str(source), "-C", str(out), "--no-same-owner", "--no-same-permissions"]
+    if tool == "bchunk":
+        return [*TOOLS[tool], "-w", str(cue_image(source)), str(source), str(out / "track")]
     if tool == "cabextract":
         return [*TOOLS[tool], str(out), str(source)]
     if tool in ("msiextract", "innoextract", "unar", "lhasa", "arj", "unshield"):
@@ -173,7 +242,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
         return [{"status": "fehler", "fehlercode": "werkzeug_fehler",
                  "meldung": (proc.stderr or proc.stdout)[-4000:]}]
     files, size = output_manifest(out, cap, source.stat().st_size)
-    version = (proc.stdout.strip().splitlines() or ["unbekannt"])[0][:300]
+    version = tool_version(tool)
     return [
         {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
         {"status": "fertig", "fehlercode": None, "werkzeug_version": version,
@@ -182,6 +251,10 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-probe"]:
+        result = self_probe()
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), flush=True)
+        return 0 if result["status"] == "ok" else 1
     for line in sys.stdin:
         try:
             if len(line.encode("utf-8")) > 65536:

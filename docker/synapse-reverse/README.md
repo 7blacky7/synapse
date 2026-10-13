@@ -4,13 +4,19 @@ This image provides static extraction and analysis tools. Original programs are 
 
 ## Build
 
-Run from the repository root. Supply the approved immutable OCI digest for the base image.
+Run from the repository root. The base image and upstream archives are pinned in the Dockerfile; Debian packages come from the dated main snapshot.
 
-    docker build --build-arg DEBIAN_BASE='debian:trixie-slim@sha256:<approved-digest>' \
-      --build-arg DEBIAN_SNAPSHOT=20261001T000000Z \
+    docker buildx build --provenance=false --load \
       -f docker/synapse-reverse/Dockerfile -t synapse-reverse:rv11 docker/synapse-reverse
 
-The dated Debian snapshot and pinned 7-Zip, FFmpeg, and Ghidra inputs stabilize the package set and large upstream archive. The build records tool versions in /opt/reverse/versionen.txt.
+`--provenance=false` makes the local image manifest digest comparable across identical rebuilds. Exact Debian package versions are recorded in `/opt/reverse/versionen-pakete.txt`; upstream versions and SHA-256 values are in `/opt/reverse/versionen.txt`. Python 3.13 is the RV26 reader runtime; it uses the standard library only, with no pip/npm or package installation at runtime.
+
+Check the runtime boundary with:
+
+    docker run --rm --network none --read-only --cap-drop ALL \
+      --security-opt no-new-privileges synapse-reverse:rv11 --self-probe
+
+Expected JSON reports UID 65532, blocked DNS/TCP, and an empty forbidden-tools list.
 
 ## Runner
 

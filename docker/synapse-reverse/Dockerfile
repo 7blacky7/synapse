@@ -20,16 +20,16 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
       "7zip=${SEVENZIP_VERSION}" "ffmpeg=${FFMPEG_VERSION}" \
       ca-certificates curl file libarchive-tools libmirage11 gir1.2-mirage-3.2 \
       bchunk unshield innoextract msitools cabextract unar lhasa arj mtools \
-      llvm wabt libopenmpt0 python3 unzip xz-utils openjdk-21-jdk-headless passwd \
- && curl --fail --location --retry 3 --output /tmp/rizin.tar.xz "https://github.com/rizinorg/rizin/releases/download/v${RIZIN_VERSION}/rizin-v${RIZIN_VERSION}-static-x86_64.tar.xz" \
+      llvm wabt libopenmpt0 mscompress python3 unzip xz-utils openjdk-21-jdk-headless passwd \
+ && ln -sf /usr/bin/7z /usr/local/bin/7zz \
+ && rm -rf /var/cache/apt/archives/*
+RUN curl --fail --location --retry 3 --output /tmp/rizin.tar.xz "https://github.com/rizinorg/rizin/releases/download/v${RIZIN_VERSION}/rizin-v${RIZIN_VERSION}-static-x86_64.tar.xz" \
  && echo "${RIZIN_SHA256}  /tmp/rizin.tar.xz" | sha256sum --check - \
  && mkdir -p /opt/rizin /opt/reverse/bin /opt/reverse/licenses /opt/reverse/ghidra_scripts /opt/reverse/tmp \
  && tar -xJf /tmp/rizin.tar.xz -C /opt/rizin \
  && ln -sf /opt/rizin/bin/rizin /opt/reverse/bin/rizin \
  && ln -sf /opt/rizin/bin/rz-bin /opt/reverse/bin/rz-bin \
  && rm /tmp/rizin.tar.xz \
- && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
- && ln -sf /usr/bin/7z /usr/local/bin/7zz \
  && curl --fail --location --retry 3 --output /opt/ghidra.zip "${GHIDRA_URL}" \
  && echo "${GHIDRA_SHA256}  /opt/ghidra.zip" | sha256sum --check - \
  && unzip -q /opt/ghidra.zip -d /opt \
@@ -42,13 +42,14 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
  && ln -sf "${GHIDRA_HOME}/support/analyzeHeadless" /opt/reverse/bin/analyzeHeadless \
  && printf '%s %s\n' "${GHIDRA_VERSION}" "${GHIDRA_SHA256}" > /opt/reverse/version-ghidra \
  && chmod 0444 /opt/reverse/version-ghidra \
- && useradd --uid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin reverse \
+ && /usr/sbin/useradd --uid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin reverse \
  && chmod 1777 /opt/reverse/tmp
 COPY --chmod=0444 runner.py /opt/reverse/runner.py
 COPY --chmod=0444 LIZENZEN.md /opt/reverse/licenses/README.md
 COPY --chmod=0444 ghidra/ExportFunctions.java /opt/reverse/ghidra_scripts/ExportFunctions.java
-RUN set -eu; { printf 'debian_snapshot=%s\n' "${DEBIAN_SNAPSHOT}"; printf '7zip=%s\n' "$(7zz --help 2>&1 | head -1)"; printf 'ffmpeg=%s\n' "$(ffmpeg -version | head -1)"; printf 'rizin=%s\n' "$(rizin -v | head -1)"; printf 'python=%s\n' "$(python3 --version)"; printf 'java=%s\n' "$(java -version 2>&1 | head -1)"; printf 'ghidra=%s sha256=%s\n' "${GHIDRA_VERSION}" "${GHIDRA_SHA256}"; } > /opt/reverse/versionen.txt \
+RUN set -eu; { printf 'debian_snapshot=%s\n' "${DEBIAN_SNAPSHOT}"; printf '7zip=%s\n' "$(7zz i 2>&1 | grep -m1 '^7-Zip')"; printf 'ffmpeg=%s\n' "$(ffmpeg -version | head -1)"; printf 'rizin=%s\n' "$(rizin -v | head -1)"; printf 'python=%s\n' "$(python3 --version)"; printf 'java=%s\n' "$(java -version 2>&1 | head -1)"; printf 'ghidra=%s sha256=%s\n' "${GHIDRA_VERSION}" "${GHIDRA_SHA256}"; } > /opt/reverse/versionen.txt \
  && chmod 0444 /opt/reverse/versionen.txt
+RUN dpkg-query -W -f='${Package}=${Version}\n' 7zip ffmpeg file libarchive-tools libmirage11 gir1.2-mirage-3.2 bchunk unshield innoextract msitools cabextract unar lhasa arj mtools llvm wabt libopenmpt0 mscompress python3 openjdk-21-jdk-headless > /opt/reverse/versionen-pakete.txt && chmod 0444 /opt/reverse/versionen-pakete.txt
 USER 65532:65532
 WORKDIR /arbeit
 ENTRYPOINT ["python3", "-u", "/opt/reverse/runner.py"]
