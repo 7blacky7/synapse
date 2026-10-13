@@ -1,0 +1,29 @@
+{
+  "cpu": {
+    "cores": {
+      "value": 4,
+      "scope": "container",
+      "quality": "measured",
+      "measuredAt": "2000-01-01T00:00:00Z"
+    }
+  },
+  "ram": {
+    "availableMb": {
+      "value": 128,
+      "scope": "container",
+      "quality": "measured",
+      "measuredAt": "2000-01-01T00:00:00Z"
+    }
+  },
+  "gpus": [
+    {
+      "deviceId": "GPU-r43",
+      "freeMb": {
+        "value": 64,
+        "scope": "device",
+        "quality": "measured",
+        "measuredAt": "2000-01-01T00:00:00Z"
+      }
+    }
+  ]
+}
