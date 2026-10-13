@@ -48,7 +48,11 @@ try{
    assert.equal(pot.anzahl,30);assert.equal(pot.namen.length,30);assert.equal('eintraege'in pot,false);
    const detail=await call('jev',{action:'topf',name:'test-name-0'});assert.equal(detail.eintraege[0].kennung,'test-name-0');
    const explanations=await call('jev',{action:'topf',topf:'erklaerung'});assert.deepEqual(explanations.namen,[]);
-   const preview=await call('jev',{action:'topf_namen_nachtragen'});assert.equal(preview.vorschau,true);assert.equal(preview.anzahl,0);
+   const preview=await call('jev',{action:'topf_namen_nachtragen',automatisch:true});assert.equal(preview.vorschau,true);assert.equal(preview.anzahl,0);
+   const inventory=await call('jev',{action:'topf_namen_nachtragen',bestand_pruefen:true});assert.equal(inventory.eindeutig,true);assert.equal(inventory.anzahl,30);
+   const missingList=await call('jev',{action:'topf_namen_nachtragen'});assert.equal(missingList.error,'namen_fehlen');
+   const explicit=await call('jev',{action:'topf_namen_nachtragen',namen:[{kennung:'test-name-0',name:'test-name-0'}]});assert.equal(explicit.success,true);assert.equal(explicit.unveraendert,1);
+   for(const key of ['namen','automatisch','bestand_pruefen']) assert.ok(definitions[mode].tools.find(t=>t.name==='jev').inputSchema.properties[key]);
    const noName=await call('thought',{action:'add',source:agent,content:'Nicht speichern',tags:['entscheidung','user']});
    assert.equal(noName.success,false);assert.ok(JSON.stringify(noName).includes('name'));
    assert.equal(Number((await pool.query('SELECT count(*) FROM thoughts WHERE project=$1',[project])).rows[0].count),0);

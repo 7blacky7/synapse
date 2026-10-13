@@ -1064,7 +1064,7 @@ export const JEV_TOPF_BESCHREIBUNG =
   'entscheidung_ablegen (nur Koordinator/User: frage_de|frage_en, antwort_wortlaut, kategorie, optionen, gewaehlte_option, aufbereitet {de:{entscheidung,begruendung,gilt_wenn}, en:{decision,reason,applies_when}}, themen; ohne Aufbereitung in den gepflegten Sprachen roh), ' +
   'entscheidung_aufbereiten (eintrag_id; roh -> aktiv, oder status stillgelegt|ersetzt), topf (Liste: status, kategorie, herkunft, eintrag_id), ' +
   'durchsicht (ohne urteil: offene autonome Entscheidungen, ohne Praezedenz zuerst; urteil ok|korrigieren mit id, wahl, wortlaut - die Korrektur wird neuer Topf-Eintrag). ' +
-  'Neue Eintraege brauchen einen Namen vom Ersteller, auch thoughts mit Tags entscheidung+user (name) und Durchsicht-Korrekturen. topf ohne frage liefert nur namen+anzahl, mit name den Volltext. topf mit frage vergleicht Bedeutungen per Jev und liefert den Namen mit dem hoechsten Prozentwert (schwelle Standard 80, vollstaendig optional). topf_namen_nachtragen: Vorschau alter fehlender Namen, ausfuehren:true schreibt nur als Koordinator/User. abwesend mit project "*" = alle Projekte.';
+  'Neue Eintraege brauchen einen Namen vom Ersteller, auch thoughts mit Tags entscheidung+user (name) und Durchsicht-Korrekturen. topf ohne frage liefert nur namen+anzahl, mit name den Volltext. topf mit frage vergleicht Bedeutungen per Jev und liefert den Namen mit dem hoechsten Prozentwert (schwelle Standard 80, vollstaendig optional). topf_namen_nachtragen: namen:[{id oder kennung,name}] als Vorschau; ausfuehren:true schreibt atomar nur als Koordinator/User. bestand_pruefen:true liest beide Toepfe auf Dubletten; automatisch:true ist ein ausdruecklicher Rueckfall. Namen sind DB-seitig topfuebergreifend eindeutig. abwesend mit project "*" = alle Projekte.';
 
 /** Zusaetzliche Parameter am Tool jev (Schema-Properties, REST und stdio identisch). */
 export const JEV_TOPF_PARAMETER: Record<string, Record<string, unknown>> = {
@@ -1073,6 +1073,9 @@ export const JEV_TOPF_PARAMETER: Record<string, Record<string, unknown>> = {
   frage: { type: 'string', description: 'topf: ausdrueckliche Bedeutungsfrage; nur dann kostenpflichtiger Jev-Vergleich aller Eintraege, hoechster Prozentwert gewinnt. entscheiden: Rueckfrage.' },
   schwelle: { type: 'number', minimum: 0, maximum: 100, description: 'topf: Ja-Schwelle in Prozent, Standard 80.' },
   vollstaendig: { type: 'boolean', description: 'topf mit frage: besten Eintrag zusaetzlich zum Namen ausgeben.' },
+  namen: { type: 'array', minItems: 1, description: 'topf_namen_nachtragen: explizite Namen, jeweils genau id oder kennung; Standard Vorschau, bestehende Namen werden nicht ersetzt.', items: { type: 'object', required: ['name'], properties: { id: { type: 'string' }, kennung: { type: 'string' }, name: { type: 'string', minLength: 1, maxLength: 160 } }, oneOf: [{ required: ['id'], not: { required: ['kennung'] } }, { required: ['kennung'], not: { required: ['id'] } }] } },
+  automatisch: { type: 'boolean', description: 'topf_namen_nachtragen: ausdruecklicher Rueckfall auf Text plus UUID; nicht zusammen mit namen.' },
+  bestand_pruefen: { type: 'boolean', description: 'topf_namen_nachtragen: rein lesende Bestandspruefung beider Toepfe auf Dubletten und fehlende Namen, auch vor Register-Migration.' },
   ausfuehren: { type: 'boolean', description: 'topf_namen_nachtragen: Standard Vorschau; true schreibt fehlende Alt-Namen ohne Jev, nur Koordinator/User.' },
   eintrag_id: { type: 'string', description: 'entscheidung_aufbereiten/topf: Topf-Eintrag (UUID oder kennung, z. B. ent-001)' },
   frage_de: { type: 'string', description: 'entscheidung_ablegen/aufbereiten: die Rueckfrage an den User (deutsch)' },

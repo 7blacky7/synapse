@@ -1788,10 +1788,10 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'jev({ action: "topf", project: "synapse", herkunft: "seed" })',
       },
       topf_namen_nachtragen: {
-        description: 'Fehlende Alt-Namen aus bestehendem Text und ID nachtragen, ohne Jev; vorhandene Namen bleiben unveraendert.',
-        params: 'project (req), topf (entscheidung Standard | erklaerung), ausfuehren (Standard false = Vorschau; true nur Koordinator/User)',
-        example: 'jev({ action: "topf_namen_nachtragen", project: "synapse", topf: "entscheidung" })',
-        tips: 'Erst Vorschau ansehen. Live-Nachtrag erst nach Deploy explizit ueber dieses Werkzeug. Neue Eintraege verlangen direkt einen Namen vom Ersteller.',
+        description: 'Explizite Alt-Namen atomar nachtragen, ohne Jev; vorhandene Namen bleiben unveraendert. Namen sind in der DB ueber beide Toepfe eindeutig.',
+        params: 'project (req), topf (entscheidung Standard | erklaerung), namen:[{id ODER kennung,name}], ausfuehren (Standard false = Vorschau; true nur Koordinator/User); alternativ automatisch:true (Text+UUID) oder bestand_pruefen:true (rein lesend, beide Toepfe)',
+        example: 'jev({ action: "topf_namen_nachtragen", project: "synapse", topf: "entscheidung", namen: [{id: "<uuid>", name: "familie-thema"}] })',
+        tips: 'Erst bestand_pruefen:true und Namensliste ansehen. Konflikte (doppelte Namen, fehlende Eintraege, bestehender anderer Name) verhindern den gesamten Nachtrag. Wiederholung derselben Liste schreibt nichts. Automatische Ableitung nur mit automatisch:true. Bestandspruefung benoetigt kein neues DB-Register; Schema-Migration bricht bei Dubletten ab.',
       },
       durchsicht: {
         description: 'P15 E1: autonome Jev-Entscheidungen durchsehen. Ohne urteil: offene Liste (ohne Praezedenz zuerst). urteil ok = bestaetigt; korrigieren = ueberstimmt + neuer Topf-Eintrag herkunft korrektur mit dem Wortlaut des Users.',

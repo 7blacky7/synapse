@@ -36,6 +36,7 @@ sich genau die richtige Abfolge:
 | `40_agenten.sql` | Agenten-Sessions, Events, Onboardings, Spezialisten-Channels, Wrapper-Status |
 | `45_modelle_embedding.sql` | Modell-Registry, Embedding-Knoten (Ollama/GPU-Lastverteilung) |
 | `47_modell_pool.sql` | Modell-Pool: Anbieter-Zustand, Zugaenge, Modell-Spiegel, Aenderungsprotokoll |
+| `48_topf_namen.sql` | Beide globalen Töpfe samt Namensregister und Triggern (P10-T61), von Hand gepflegte Struktur, ohne Bestandsmigration |
 | `50_dateien.sql` | Datei-Versionierung, Batch-Plaene, Watcher, Daemon-Heartbeats |
 | `60_shell.sql` | Shell-Job-Queue |
 | `70_auth.sql` | Tokens, TOTP, OAuth-Clients, Provider-Credentials |

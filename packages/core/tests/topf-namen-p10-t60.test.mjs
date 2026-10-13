@@ -19,11 +19,11 @@ try{
  const jev=async a=>{calls++;return {ok:true,daten:{answers:Object.fromEntries(Object.entries(a.state.eintraege).map(([key,value])=>[key,{noul:value.name==='bester-treffer'?0.94:0.12}]))},kosten:{usd:0},dauer_ms:0,modell:'double'};};
  assert.equal((await mod.leseTopf({topf:'entscheidung'},'fixture','sol-3',{jev})).anzahl,3);
  assert.equal(calls,0,'keine automatische kostenpflichtige Abfrage');
- const denied=await mod.trageTopfNamenNach({topf:'entscheidung',ausfuehren:true},'sol-3');assert.equal(denied.success,false);
- const preview=await mod.trageTopfNamenNach({topf:'entscheidung'},'sol-3');assert.equal(preview.anzahl,1);
+ const denied=await mod.trageTopfNamenNach({automatisch:true,topf:'entscheidung',ausfuehren:true},'sol-3');assert.equal(denied.success,false);
+ const preview=await mod.trageTopfNamenNach({automatisch:true,topf:'entscheidung'},'sol-3');assert.equal(preview.anzahl,1);
  assert.equal((await pool.query('SELECT kennung FROM jev_entscheidungstopf WHERE id=$1',[ids[2]])).rows[0].kennung,null);
- const applied=await mod.trageTopfNamenNach({topf:'entscheidung',ausfuehren:true},'koordinator');assert.equal(applied.geschrieben,1);
- assert.equal((await mod.trageTopfNamenNach({topf:'entscheidung'},'sol-3')).anzahl,0,'Nachtrag idempotent');
+ const applied=await mod.trageTopfNamenNach({automatisch:true,topf:'entscheidung',ausfuehren:true},'koordinator');assert.equal(applied.geschrieben,1);
+ assert.equal((await mod.trageTopfNamenNach({automatisch:true,topf:'entscheidung'},'sol-3')).anzahl,0,'Nachtrag idempotent');
  const result=await mod.leseTopf({topf:'entscheidung',frage:'Gesuchte Bedeutung'},'fixture','sol-3',{jev});
  assert.equal(result.name,'bester-treffer');assert.equal(result.prozent,94);assert.equal(result.passend,true);
  assert.equal(result.message,'Ja, im Topf-Eintrag bester-treffer (94 %)');
@@ -41,8 +41,8 @@ try{
  const mirror=await decision.spiegeleThoughtInTopf('fixture',{id:randomUUID(),content:'Entscheidung',tags:['entscheidung','user']});
  assert.equal(mirror.angelegt,false);assert.ok(mirror.fehler.includes('name'));
  await pool.query("INSERT INTO erklaerungen(kennung,familie,schluessel,lage_de,wieso_de,abhilfe_de,status) VALUES(NULL,'fixture','fixture','Lage','Ursache','Abhilfe','vorgeschlagen')");
- assert.equal((await mod.trageTopfNamenNach({topf:'erklaerung'},'sol-3')).anzahl,1);
- assert.equal((await mod.trageTopfNamenNach({topf:'erklaerung',ausfuehren:true},'koordinator')).geschrieben,1);
+ assert.equal((await mod.trageTopfNamenNach({automatisch:true,topf:'erklaerung'},'sol-3')).anzahl,1);
+ assert.equal((await mod.trageTopfNamenNach({automatisch:true,topf:'erklaerung',ausfuehren:true},'koordinator')).geschrieben,1);
  assert.equal((await mod.leseTopf({topf:'erklaerung'},'fixture','sol-3')).namen.length,1);
  const E=await import('../dist/services/jev-entscheidung.js');
  const correctionId=(await pool.query("INSERT INTO jev_entscheidungen(project,frage,typ,entschieden,kategorie) VALUES('fixture','Frage','choice',true,'variante') RETURNING id")).rows[0].id;

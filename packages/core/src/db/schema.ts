@@ -32,6 +32,7 @@
 
 
 import { createHash } from 'node:crypto';
+import { TOPF_NAMEN_SCHEMA_SQL } from './topf-namen-schema.js';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
 import { getPool } from './client.js';
 
@@ -455,6 +456,7 @@ CREATE TABLE IF NOT EXISTS jev_entscheidungstopf (
 );
 CREATE INDEX IF NOT EXISTS idx_jev_entscheidungstopf_status ON jev_entscheidungstopf(status, kategorie);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jev_entscheidungstopf_thought ON jev_entscheidungstopf(quelle_ref) WHERE herkunft = 'thought';
+${TOPF_NAMEN_SCHEMA_SQL}
 ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS praezedenz_id UUID;
 ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS praezedenz_confidence DOUBLE PRECISION;
 ALTER TABLE jev_entscheidungen ADD COLUMN IF NOT EXISTS ohne_praezedenz BOOLEAN NOT NULL DEFAULT false;
