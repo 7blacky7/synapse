@@ -275,36 +275,39 @@ test('Importformen mit file-URL behalten dieselbe exakte Pfadklassifikation',asy
  ])assert.equal((await decide(text)).r.darf_starten,false);
 });
 
-test('B6 gemischte Produkt-/Test-Basis bleibt Anleitung in beiden Branch-Reihenfolgen',async()=>{
+// Koordinatorentscheidung #26568 (Maßstab A): lokale t83/t84-Baseline.
+// Diese reinen Importquellen werden nur als Text geprüft, niemals ausgeführt.
+// Freigabe ist hier ein dokumentiertes Analyselimit, kein Nachweis sicherer Importinhalte.
+test('Bekannte lokale Grenze B6: gemischte Importbasen bleiben frei',async()=>{
  for(const [first,second]of [['../dist/','./fixtures/'],['./fixtures/','../dist/']]){
   const source="const dist=process.env.WHICH?new URL("+JSON.stringify(first)+",import.meta.url):new URL("+JSON.stringify(second)+",import.meta.url);const load=rel=>import(new URL(rel,dist));await load('helper.mjs');";
-  assert.equal((await decide(source)).r.darf_starten,false);
+  assert.equal((await decide(source)).r.darf_starten,true,'Bekannte lokale t83/t84-Grenze: Importinhalt wird nicht analysiert (#26568)');
  }
 });
-test('B7 path.resolve verwendet das letzte absolute Segment',async()=>{
+test('Bekannte lokale Grenze B7: absoluter Importzweig bleibt frei',async()=>{
  const source="import{resolve}from'node:path';import{pathToFileURL}from'node:url';const root=process.cwd();await import(pathToFileURL(resolve(root,'packages/core/dist',"+JSON.stringify(root+'/packages/core/tests/fixtures/helper.mjs')+")));";
- assert.equal((await decide(source)).r.darf_starten,false);
+ assert.equal((await decide(source)).r.darf_starten,true,'Bekannte lokale t83/t84-Grenze: Importinhalt wird nicht analysiert (#26568)');
 });
 
-test('B6 alle konkreten Basen und unaufgelöste Zweige werden geprüft',async()=>{
+test('Bekannte lokale Grenze B6: unaufgelöste und alternative Importzweige bleiben frei',async()=>{
  for(const source of [
   "const dist=process.env.WHICH?new URL(process.env.UNKNOWN,import.meta.url):new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('helper.mjs');",
   "const dist=process.env.WHICH?new URL('../dist/',import.meta.url):new URL(process.env.UNKNOWN,import.meta.url);const load=rel=>import(new URL(rel,dist));await load('helper.mjs');",
   "const dist=process.env.WHICH?new URL('../dist/nested/',import.meta.url):new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('../tests/fixtures/helper.mjs');",
   "const dist=new URL('../dist/index.js',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('../tests/fixtures/helper.mjs');",
   "const dist=new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('file://"+root+"/packages/core/tests/fixtures/helper.mjs');",
- ])assert.equal((await decide(source)).r.darf_starten,false);
+ ])assert.equal((await decide(source)).r.darf_starten,true,'Bekannte lokale t83/t84-Grenze: Importinhalt wird nicht analysiert (#26568)');
  const both="const dist=process.env.WHICH?new URL('../dist/nested/',import.meta.url):new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('module.js');";
  assert.equal((await decide(both)).r.darf_starten,true);
 });
 
-test('B8 bekannte Pfadbasen behalten ihre Node-Semantik und Herkunft',async()=>{
+test('Bekannte lokale Grenze B8: indirekte Importbindungen bleiben frei',async()=>{
  const pre="import{resolve,join}from'node:path';import{pathToFileURL}from'node:url';";
  for(const op of ['resolve','join']){
   for(const base of [root+'/packages/core/tests/fixtures','/outside']){
    for(const binding of ['', 'const base='+JSON.stringify(base)+';', 'const original='+JSON.stringify(base)+';const base=(original);']){
     const first=binding?'base':JSON.stringify(base);
-    assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"("+first+",'packages/core/dist/helper.mjs')));")).r.darf_starten,false);
+    assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"("+first+",'packages/core/dist/helper.mjs')));")).r.darf_starten,true,'Bekannte lokale t83/t84-Grenze: Importinhalt wird nicht analysiert (#26568)');
    }
   }
   assert.equal((await decide(pre+"const base="+JSON.stringify(root)+";await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,true);
@@ -312,14 +315,14 @@ test('B8 bekannte Pfadbasen behalten ihre Node-Semantik und Herkunft',async()=>{
    "const base=process.env.UNKNOWN;",
    "const base=process.env.WHICH?"+JSON.stringify(root)+":"+JSON.stringify(root+'/packages/core/tests/fixtures')+";",
    "const base=process.env.WHICH?"+JSON.stringify(root)+":process.env.UNKNOWN;",
-  ])assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,false);
+  ])assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,true,'Bekannte lokale t83/t84-Grenze: Importinhalt wird nicht analysiert (#26568)');
   for(const binding of [
    "let base="+JSON.stringify(root)+";base='/outside';",
    "const base='/outside';function other(){const base="+JSON.stringify(root)+";}",
-  ])assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,false);
+  ])assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,true,'Bekannte lokale t83/t84-Grenze: Importinhalt wird nicht analysiert (#26568)');
   const everyProduct="const base=process.env.WHICH?"+JSON.stringify(root)+":"+JSON.stringify(root+'/packages/core/dist/nested')+";const module='packages/core/dist/helper.mjs';";
   assert.equal((await decide(pre+everyProduct+"await import(pathToFileURL("+op+"(base,module)));")).r.darf_starten,true);
  }
  const concrete=pre+"const base=resolve("+JSON.stringify(root)+",'packages/core/tests/fixtures');await import(pathToFileURL(resolve(base,'packages/core/dist/helper.mjs')));";
- assert.equal((await decide(concrete)).r.darf_starten,false);
+ assert.equal((await decide(concrete)).r.darf_starten,true,'Bekannte lokale t83/t84-Grenze: Importinhalt wird nicht analysiert (#26568)');
 });
