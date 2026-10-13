@@ -94,11 +94,14 @@ test('Response timeout remains active through actual stalled HTTP download',asyn
  const f=await fake({onBytes:async(req,res)=>{res.writeHead(200);res.write(Buffer.from('x'));return true;}});
  const r=await f.api.request('/api/assets/bytes',{timeoutMs:40});await assert.rejects(r.arrayBuffer());
 });
-test('2MiB actual HTTP upload chunk budget/full hash/ACK and metadata-only journal',async()=>{
+test('2MiB actual HTTP upload chunk budget/full hash/ACK and metadata-only journal',async(t)=>{
+ const warnings=[],onWarning=w=>{if(w.name==='MaxListenersExceededWarning'&&w.message.includes('FileHandle'))warnings.push(w);};
+ process.on('warning',onWarning);t.after(()=>process.removeListener('warning',onWarning));
  const p=await dir(),b=png(2*1024*1024),f=await fake();await fs.writeFile(join(p,'a.png'),b);
  const q=queue(p,f.api);await q.ereignis('a.png','add');assert.equal(f.state.chunks.length,0);q.start();await settled(q);
  assert.equal(f.state.finals,1);assert.ok(f.state.chunks.length>20);assert.ok(f.state.chunks.every(c=>c.length<=opts.chunkBytes));
  assert.equal((await q.bekannt('a.png')).sha256,sha(b));
+ await new Promise(r=>setImmediate(r));assert.equal(warnings.length,0,'FileHandle close listeners must not grow with chunk count');
  const journals=(await fs.readdir(join(p,'.synapse/asset-sync'))).filter(s=>s.endsWith('.json'));
  const journal=await fs.readFile(join(p,'.synapse/asset-sync',journals[0]),'utf8');assert.ok(!journal.includes(b.toString('base64')));
  assert.ok(f.state.requests.every(r=>r.auth==='Bearer fixture-only'&&r.contract==='1'));

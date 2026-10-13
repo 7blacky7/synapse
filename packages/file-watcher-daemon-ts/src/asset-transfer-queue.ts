@@ -209,7 +209,19 @@ export class AssetTransferQueue {
     let res:Response;
     try{res=await this.api.request(this.base+'/uploads/'+encodeURIComponent(j.upload!)+'/chunk?offset='+offset,{
      method:'PUT',signal:this.abort.signal,timeoutMs:this.optionen.timeoutMs,headers:{'content-type':'application/octet-stream','content-length':String(length)},
-     body:()=>fd.createReadStream({start,end:start+length-1,autoClose:false,highWaterMark:this.optionen.chunkBytes}),
+     body:()=>{
+      const signal=this.abort.signal,chunkBytes=this.optionen.chunkBytes;
+      return (async function*(){
+       let at=start,remaining=length;
+       while(remaining){
+        if(signal.aborted)throw signal.reason;
+        const buffer=Buffer.allocUnsafe(Math.min(chunkBytes,remaining));
+        const {bytesRead}=await fd.read(buffer,0,buffer.length,at);
+        if(!bytesRead)error('datei_geaendert',408,'Datei vor bestätigtem Chunkende verkürzt.');
+        yield buffer.subarray(0,bytesRead);at+=bytesRead;remaining-=bytesRead;
+       }
+      })();
+     },
     });}catch(e){
      if(e instanceof AssetApiFehler&&e.status===409&&e.code==='offset_konflikt'){
       const state=(await this.api.json<{upload:Sitzung}>(this.base+'/uploads/'+encodeURIComponent(j.upload!),undefined,'GET',this.abort.signal)).upload;
