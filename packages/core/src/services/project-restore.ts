@@ -82,8 +82,9 @@ export class ProjectRestoreService {
    await c.query('COMMIT');
   }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
  }
- async manifest(project:string,hostname:string,raw?:string,limit=100){
+ async manifest(project:string,hostname:string,raw?:string,requestedLimit?:number){
   await this.requireBinding(project,hostname);
+  const cfg=getAssetKonfiguration(),limit=requestedLimit??Math.min(cfg.speicher.maxProjektDateien,cfg.speicher.maxObjekteJeDatei);
   if(!Number.isSafeInteger(limit)||limit<1||limit>getAssetKonfiguration().speicher.maxProjektDateien)fail('limit_ungueltig',400);
   let id:string,after='';
   if(raw){const c=cursor(raw);id=c.id;after=c.after;}
@@ -91,6 +92,9 @@ export class ProjectRestoreService {
    id=randomUUID();const c=await this.db.connect();
    try{
     await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    const count=await c.query('SELECT COUNT(*)::text AS n FROM code_files WHERE project=$1 AND content IS NOT NULL',[project]);
+    if(BigInt(count.rows[0].n)>BigInt(cfg.speicher.maxProjektDateien))fail('restore_quote',413);
+    await c.query('DELETE FROM project_code_manifests WHERE project=$1 AND lease_until<=clock_timestamp()',[project]);
     await c.query("INSERT INTO project_code_manifests(id,project,hostname,lease_until) VALUES($1,$2,$3,clock_timestamp()+$4*interval '1 millisecond')",[id,project,hostname,this.ttl()]);
     await c.query("INSERT INTO project_code_manifest_entries(manifest_id,file_path,sha256,groesse) SELECT $1,file_path,encode(digest(convert_to(content,'UTF8'),'sha256'),'hex'),octet_length(content) FROM code_files WHERE project=$2 AND content IS NOT NULL",[id,project]);
     await c.query('COMMIT');
