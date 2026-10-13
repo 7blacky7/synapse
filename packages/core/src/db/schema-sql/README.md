@@ -1,58 +1,64 @@
-# Datenbank-Schema als SQL
+# SQL-Schema-Spiegel
 
-Diese nummerierten SQL-Dateien sind der Kaltstart-Spiegel des Synapse-Schemas. Die aktuelle Laufzeitdefinition steht in [`schema.ts`](../schema.ts); historische Exportzählungen beschreiben den heutigen Stand nicht zuverlässig.
+[Synapse](../../../../../README.md) › [Core](../../../../README.md) › [Quellcode](../../../README.md) › [Datenbank](../README.md) › SQL-Schema
 
-## Laufzeit und Kaltstart
+## Zweck
 
-Die API initialisiert das Schema beim Start über `initSynapse(..., { schema: 'ausfuehren' })`. MCP-stdio und Wrapper prüfen standardmäßig den Stand über `schema_stand`. `SYNAPSE_SCHEMA` erlaubt `ausfuehren`, `pruefen` und `aus`; bei einer leeren DB kann der Prüfweg einmal initialisieren. **API zuerst** starten/aktualisieren.
+Dieser Ordner enthält nummerierte SQL-Dateien mit der Struktur der Synapse-Datenbank. Die Dateien spiegeln Tabellen, Funktionen, Trigger und Beziehungen für den Kaltstart; die ausgeführte Laufzeitdefinition liegt in [`schema.ts`](../schema.ts). Die SQL-Dateien enthalten kein Nutzdaten-Backup und bilden nicht alle externen oder zur Laufzeit gepflegten Werte ab.
 
-Die SQL-Spiegelung wird von der Laufzeitinitialisierung nicht automatisch aktualisiert. Nach Schemaänderungen müssen beide Wege zusammen gepflegt und separat geprüft werden. Ein erfolgreiches inkrementelles Laufzeit-DDL beweist nicht den Aufbau aller Exportdateien auf einer leeren Datenbank.
+## Inhalt
 
-## Aufbaureihenfolge
+### Grundlagen und Wissensdaten
 
-Dateien alphabetisch ausführen. Extensions/Typen kommen zuerst, Funktionen vor Triggern und Fremdschlüssel nach ihren Tabellen.
-
-| Bereich | Dateien |
+| Datei | Aufgabe |
 |---|---|
-| Grundlagen | `00_extensions_types.sql`, `05_funktionen.sql` |
-| Projekte/Wissen/Code | `10_projekte.sql`, `20_wissen.sql`, `30_code_intelligence.sql` |
-| Agenten/Modelle | `40_agenten.sql`, `45_modelle_embedding.sql`, `47_modell_pool.sql` |
-| Dateien/Shell | `50_dateien.sql`, `60_shell.sql` |
-| Auth/Skills/Audit | `70_auth.sql`, `80_skills.sql`, `85_audit.sql` |
-| Trigger/Assets/Fremdschlüssel | `90_trigger.sql`, `95_asset_intel.sql`, `95_foreign_keys.sql` |
+| [`00_extensions_types.sql`](00_extensions_types.sql) | Definiert benötigte PostgreSQL-Erweiterungen und Typen. |
+| [`05_funktionen.sql`](05_funktionen.sql) | Enthält Datenbankfunktionen, unter anderem für Änderungsbenachrichtigungen. |
+| [`10_projekte.sql`](10_projekte.sql) | Definiert Projekt-, Workspace- und Workspace-Rollentabellen. |
+| [`20_wissen.sql`](20_wissen.sql) | Definiert Wissensdatensätze wie Memories, Thoughts, Pläne, Vorschläge und Tech-Dokumentation. |
+| [`21_wissen_stuecke.sql`](21_wissen_stuecke.sql) | Definiert Status und Stücke für den versionierten Wissens-Stückindex. |
 
-Einzelne Ergänzungen sind von Hand gepflegt und können Fremdschlüssel inline enthalten. Die Nummerierung und tatsächlichen Abhängigkeiten sind maßgeblich.
+### Codeindex und Agenten
 
-## Neue Installation
+| Datei | Aufgabe |
+|---|---|
+| [`30_code_intelligence.sql`](30_code_intelligence.sql) | Definiert Code-Dateien, Symbole, Referenzen, Chunks, Aufrufkanten, Statements und Parse-Status. |
+| [`40_agenten.sql`](40_agenten.sql) | Definiert Agent-Sitzungen, Events, Chat, Spezialistenkanäle und zugehörige Laufzeitdaten. |
+| [`45_modelle_embedding.sql`](45_modelle_embedding.sql) | Definiert Modell-, Embedding-, Cutoff- und Schaltertabellen. |
+| [`47_modell_pool.sql`](47_modell_pool.sql) | Definiert Provider, Zugangsdaten, Modelle und Ereignisse des freien Modellpools. |
 
-[Compose](../../../../../docker-compose.yml) bietet `--profile bundled`: PostgreSQL legt Rolle und Datenbank aus `POSTGRES_*` an und lädt diesen Ordner als `/docker-entrypoint-initdb.d`. Das geschieht nur beim ersten Start mit leerem Datenverzeichnis. Zugangsdaten müssen zur API-`DATABASE_URL` passen.
+### Shell, Dateien und Sicherung
 
-Bei manuell bereitgestellter Datenbank zuerst Rolle, Rechte und leere Datenbank einrichten. Anschließend mit einem dafür autorisierten Betreiberzugang:
+| Datei | Aufgabe |
+|---|---|
+| [`47-shell-altbestand.sql`](47-shell-altbestand.sql) | Definiert Gruppen und Bezüge des Shell-Altbestands. |
+| [`50_dateien.sql`](50_dateien.sql) | Definiert Datei-Versionen, Änderungspläne, Reservierungen, Waits und Watcher-Daten. |
+| [`51_file_task_zuordnung.sql`](51_file_task_zuordnung.sql) | Definiert die Zuordnung von Datei-Versionen zu Plan-Tasks. |
+| [`52_shell_sicherung.sql`](52_shell_sicherung.sql) | Definiert Shell-Sicherungsregeln, Risiko-Verben, Antworttopf und Auditdaten. |
+| [`60_shell.sql`](60_shell.sql) | Definiert Shell-Jobs und Ausgabestream-Chunks. |
+| [`61_shell_sicherungs_audit.sql`](61_shell_sicherungs_audit.sql) | Enthält die Ergänzung für das Shell-Sicherungs-Audit. |
 
-```bash
-for f in packages/core/src/db/schema-sql/*.sql; do
-  psql -v ON_ERROR_STOP=1 -d synapse -f "$f"
-done
-```
+### Authentifizierung, Skills und weitere Fachbereiche
 
-Der Aufruf setzt einen passenden PostgreSQL-Verbindungskontext voraus. `ON_ERROR_STOP=1` verhindert, dass nach einem Fehler unbemerkt weitergearbeitet wird. Die Exportdateien sind kein allgemeiner Wiederholungs-Migrationsweg für bestehende Datenbanken.
+| Datei | Aufgabe |
+|---|---|
+| [`70_auth.sql`](70_auth.sql) | Definiert OAuth-Clients, Tokens, TOTP und Provider-Zugangsdaten. |
+| [`80_skills.sql`](80_skills.sql) | Definiert Skill-Namen, Skill-Abschnitte und Hook-Daten. |
+| [`85_audit.sql`](85_audit.sql) | Definiert Fehlermuster und den Audit-Store für Tool-Aufrufe. |
+| [`90_trigger.sql`](90_trigger.sql) | Bündelt Trigger, die Datenbankänderungen weitergeben. |
+| [`95_asset_intel.sql`](95_asset_intel.sql) | Definiert Asset-Dateien, -Objekte und -Referenzen. |
+| [`95_foreign_keys.sql`](95_foreign_keys.sql) | Ergänzt Fremdschlüsselbeziehungen zwischen den Fachbereichen. |
 
-## Grenzen und Prüfung
+## Schnittstellen nach außen
 
-- Dieser Ordner ist Struktur, kein Backup und keine Wiederherstellung von Nutzerdaten.
-- Rollen, Rechte, reale Passwörter und Qdrant-Vektoren werden damit nicht eingerichtet.
-- Modellprofile, Rollen-Templates und andere benötigte Stammdaten haben eigene Initialisierungswege.
-- Ein historischer `pg_dump` oder alte Objektzahlen sind keine aktuelle Abnahme des Schema-Spiegels.
-- Änderungen auf einer leeren Test-DB und gegen einen passenden Bestandsstand prüfen; keine Produktions-Probe durch Testskripte.
+[`schema.ts`](../schema.ts) ist die Laufzeit-Schemadefinition; dieser Ordner enthält deren SQL-Spiegel für Datenbankstrukturen. Die nummerierten Dateien werden außerdem vom gebündelten PostgreSQL-Dienst in [`docker-compose.yml`](../../../../../docker-compose.yml) als Initialisierungsskripte eingebunden.
 
-Datenbanktests laufen ausschließlich in `synapse_test` auf Port 5433, mit isoliertem eigenem Projekt/Schema. Die [Root-README](../../../../../README.md#tests) beschreibt den Testweg. Eine neue Gesamtprobe wurde durch diese Dokumentationsänderung nicht ausgeführt.
+## Abhängigkeiten
 
-## Pflege
+Die SQL-Dateien setzen PostgreSQL voraus. Ihre Reihenfolge und Beziehungen spiegeln Abhängigkeiten zwischen Typen, Tabellen, Funktionen, Triggern und Fremdschlüsseln wider. Die Laufzeitschnittstelle für Schema-Prüfung und -Initialisierung liegt im übergeordneten [Datenbankordner](../README.md).
 
-`schema.ts` ist der Laufzeitweg. Zugehörige SQL-Dateien bei Änderungen mitpflegen, Abhängigkeiten prüfen und den Kaltstart separat testen. Ein autorisierter Schema-Export kann die Pflege unterstützen:
+## Siehe auch
 
-```bash
-pg_dump --schema-only --no-owner --no-privileges -h <host> -U <user> -d <database> -f schema.sql
-```
-
-Keine fremden Projektobjekte oder Zugangsdaten in den Synapse-Spiegel übernehmen. Exportierte Sequenz-Startwerte ersetzen keinen Datenbestand.
+- [Datenbankzugriff und Laufzeitschema](../README.md)
+- [Core-Quellcode](../../README.md)
+- [Zusammenhang und Betriebsvarianten](../../../../../docs/README.md)
