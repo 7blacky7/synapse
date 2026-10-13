@@ -1,6 +1,6 @@
 /** A12: leichte In-API-Worker mit dauerhaften PG-Aufträgen; bestehende Inspector-Engine. */
 import {createHash,randomUUID} from 'node:crypto';
-import {getPool} from '../db/client.js';
+import {getPool,imHintergrund} from '../db/client.js';
 import {standardRegistry} from '../asset-intel/index.js';
 import {AssetInspektionsWorker,WORKER_GNADENFRIST_MS} from '../asset-intel/worker-runner.js';
 import type {AssetLimits,AssetResult} from '../asset-intel/types.js';
@@ -116,7 +116,7 @@ export function starteAssetInspektion():ApiAuftragsLoop|null {
  const cfg=getAssetKonfiguration();
  if(!cfg.aktiv||!apiCapabilitiesForClient('1')?.features.includes('asset_sync'))return null;
  const dienst=new AssetInspektionsDienst(cfg);
- const loop=starteApiAuftragsLoop({intervallMs:cfg.sync.scanIntervallMs,arbeit:()=>dienst.durchlauf(),
+ const loop=starteApiAuftragsLoop({intervallMs:cfg.sync.scanIntervallMs,arbeit:()=>imHintergrund(()=>dienst.durchlauf()),
   fehler:e=>console.error('[Asset-Inspektion] Durchlauf fehlgeschlagen',e)});
  return {durchlauf:loop.durchlauf,beende:async()=>{await dienst.beende();await loop.beende();}};
 }
