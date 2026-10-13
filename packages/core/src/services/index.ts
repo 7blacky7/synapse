@@ -105,6 +105,8 @@ export { resolveAgentId } from './agent-id-resolver.js';
 
 // Tool-Call Activity-Log — zentraler Audit-Store fuer shell(action:"activity")
 export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './tool-call-log.js';
+export {erfasseToolAktivitaet,letzteToolAktivitaet,bereinigeToolAktivitaet,toolAktivitaetRetentionTage} from './tool-aktivitaet.js';
+export type {ToolAktivitaetDb,ToolAktivitaetDescriptor,ToolAktivitaetKontext,ToolAktivitaetEintrag,ToolAktivitaetZeile,ToolAktivitaetFenster} from './tool-aktivitaet.js';
 export type {
   ToolCallLogEntry,
   ToolCallRow,

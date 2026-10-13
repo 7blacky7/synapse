@@ -291,6 +291,30 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Parser-Worker per PARSER_LOOP_DISABLED=1 ausgeschaltet');
   }
 
+  // R5.2: durable Toolaktivitaet hat eigene Retention; Audit-Vertrag bleibt unveraendert.
+  // SYNAPSE_TOOL_AKTIVITAET_RETENTION_DAYS (Default 90), *_INTERVAL_MS (Default 6h).
+  if (process.env.SYNAPSE_TOOL_AKTIVITAET_RETENTION_DISABLED !== '1') {
+    const {bereinigeToolAktivitaet,toolAktivitaetRetentionTage,registriereWorker,workerPausiert,meldeWorkerArbeit} = await import('@synapse/core');
+    toolAktivitaetRetentionTage(); // Fehlkonfiguration nicht still als sichere Leere behandeln.
+    const roh = process.env.SYNAPSE_TOOL_AKTIVITAET_RETENTION_INTERVAL_MS;
+    const intervall = roh === undefined ? 6 * 60 * 60 * 1000 : Number(roh);
+    if (!Number.isSafeInteger(intervall) || intervall < 1 || intervall > 2147483647) {
+      throw new Error('Ungueltiges Toolaktivitaet-Retention-Intervall');
+    }
+    const lauf = async (): Promise<{ausgealtert:number}> => {
+      const n = await bereinigeToolAktivitaet();
+      if (n > 0) meldeWorkerArbeit('tool-aktivitaet-retention');
+      return {ausgealtert:n};
+    };
+    registriereWorker({name:'tool-aktivitaet-retention',beschreibung:'R5.2 strukturierte Toolaktivitaet',durchlauf:lauf});
+    const starten = (): void => {
+      if (workerPausiert('tool-aktivitaet-retention')) return;
+      void lauf().catch((err:unknown)=>console.error('[Synapse API] Toolaktivitaet-Retention fehlgeschlagen:',err));
+    };
+    starten();
+    setInterval(starten,intervall).unref();
+  }
+
   // Tool-Call-Retention: aeltert Eintraege im Activity-Store (tool_calls) aus.
   // Laeuft hier (24/7-REST) statt im lokalen Daemon, da die DB zentral ist. ENV:
   //   TOOLCALL_RETENTION_DISABLED=1        — Worker ausschalten
