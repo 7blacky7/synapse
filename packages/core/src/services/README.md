@@ -393,6 +393,21 @@ Eine Antwort oberhalb des Confidence-Tors wird mit Wahl, Confidence und Protokol
 
 Details und Statusdaten laufen über getrennte Verwaltungsaktionen: `jev_status`, `jev_schalten`, `jev_budget`, `jev_kosten`, `jev_entscheidungstopf` und `jev_erklaerungstopf`.
 
+### Syntaxprüfung und Erklärungsfälle
+
+
+Der Schreibpfad prüft Änderungen vor ihrer Persistierung. Beim Start registrieren REST-API und MCP-Server die Standardprüfer aus dem [Syntax-Prüfer-Katalog](syntax-pruefer/README.md); die REST-API kann zusätzlich Prüfer im [Prüfcontainer](../../../rest-api/src/services/pruef-container.ts) anmelden. Die Zuordnung richtet sich nach Dateiendung oder ausdrücklich eingetragenem Dateinamen. Prüfer melden strukturierte Befunde mit Sprache, Position und Schweregrad zurück. Allgemeine Typ- und Lint-Prüfungen gehören nicht zu dieser Stufe.
+
+Standardprüfer laufen in einem eigenen Node-Worker-Pool. Das ist ein anderer Pool als der Parser-Pool; alternativ kann die Syntaxprüfung im Hauptthread laufen. Für weitere Sprachen spricht der REST-Dienst über zeilenweises JSON mit einem Docker-Container, dessen Netzwerk abgeschaltet ist. Der Container prüft Text, führt ihn aber nicht aus. Sein Start ist bedarfsweise; Bereitschaft, Kaltstartbudget, Auftragszeitlimit, Warteschlangengrenze und Neustart nach wiederholten Timeouts begrenzen den Dienst. Diese Mechanismen machen aus der Prüfung keine allgemeine Build- oder Laufzeitvalidierung.
+
+Beim Einzelschreibweg werden sperrende Syntaxbefunde vor dem Schreiben zurückgewiesen. Eine explizite Quittierung mit Begründung kann einen solchen Befund in einen quittierten Hinweis umwandeln. Auch Planänderungen erhalten Befunde pro geänderter Operation; harte Syntaxfehler können den Plan-Commit sperren. Signaturmuster bilden eine ergänzende Prüfung: sie werden nach dem Schreiben ausgewertet und als Befund vorgemerkt, nicht als dieselbe Syntax-Sperre behandelt.
+
+Die Prüfung ist absichtlich nicht in jedem Fehlerfall eine Sperre. Erreicht ein Prüfer sein Budget, ist das Ergebnis teilweise; ein später eintreffender Befund wird dem Schreibvorgang als Hinweis nachgeliefert, obwohl bereits geschrieben wurde. Fehler eines Prüfers werden protokolliert und übersprungen. Ist Docker nicht erreichbar oder das Prüf-Image fehlt, meldet die REST-API die Containerprüfer nicht an; diese Sprachen erhalten dann aus diesem Containerpfad keinen Prüfer. Ein deaktivierter Prüfschalter registriert ebenfalls keine Syntaxprüfer. Ein nicht verfügbarer oder unvollständiger Prüflauf darf daher nicht als fehlerfrei missverstanden werden.
+
+Ein zurückgewiesener Syntaxfehler stößt daneben den asynchronen Erklärungsweg an: Der Schreibaufruf reiht den Fall ein und wartet weder auf Datenbankzugriff noch auf Jev. Ein Hintergrund-Worker sichert das vorbereitete, maskierte Ereignis dauerhaft und sucht passende Erklärungen aus derselben Prüferfamilie. Wenn der Erklärungstopf aktiv ist und Budget sowie Kandidatenlage es zulassen, bittet Jev um eine Auswahl; die Schwelle für die Übernahme liegt bei 0,7. Eine verifizierte passende Erklärung kann als Hinweis ausgeliefert werden. Andernfalls bleibt ein offener Fall, zu dem eine generische Erklärung abgelegt werden kann. Die neue Erklärung wird erst verifiziert, wenn ein neuer Dateistand die vollständige Syntaxprüfung besteht und keine passende Fehlersignatur mehr an den betroffenen Änderungszeilen vorliegt; danach werden Fall und Schatten entfernt. So bleibt die fachliche Schreibentscheidung synchron, während Auswahl und Pflege einer Erklärung unabhängig im Hintergrund weiterlaufen.
+
+![Datenfluss von Syntaxprüfung, Prüfcontainer und asynchronem Erklärungsfall](../../../../docs/bilder/pruefung.svg)
+
 ## Schnittstellen nach außen
 
 Die öffentlichen Paket-Exports werden in [`../index.ts`](../index.ts) und die Service-Exports in [`index.ts`](index.ts) gebündelt. Die abschnittsbezogenen Schnittstellen stehen jeweils bei Teil A, B und C.

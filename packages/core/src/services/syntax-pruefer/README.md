@@ -6,6 +6,16 @@
 
 Dieser Ordner bündelt die Syntax-Prüfer der ersten Prüfungsstufe für Schreibvorgänge. Er meldet Syntax- und Grammatikfehler mit Quellpositionen und strukturierten Meldungen; allgemeine Typ- und Lint-Prüfungen sind davon getrennt. Der Katalog kann im Worker-Pool oder auf Wunsch im Hauptthread ausgeführt werden.
 
+## Prüfablauf und Grenzen
+
+Der Core ordnet eine Datei anhand ihrer Endung oder eines eingetragenen Dateinamens den passenden Prüfern zu. Geprüft wird der neue Inhalt vor dem Persistieren des Einzelschreibwegs; Befunde außerhalb der geänderten Zeilen gelten nur dann als neu verursacht, wenn der vorherige Stand fehlerfrei war. Ein harter Syntaxfehler blockiert das Schreiben, solange er nicht mit einer ausreichenden Begründung quittiert wurde. Bei Planänderungen ordnet der Core Befunde den verursachenden Operationen zu; sperrende Befunde verhindern den Plan-Commit. Signaturmuster werden separat nach dem Schreiben geprüft.
+
+Der eigene Node-Worker-Pool startet standardmäßig zwei Worker, begrenzt auf höchstens acht und die verfügbare Kernzahl. `SYNTAX_WORKER_THREADS=0` schaltet den Pool ab und führt Prüfungen im Hauptthread aus. Ein Worker darf je Auftrag standardmäßig fünf Sekunden laufen und erhält standardmäßig 256 MB Heap; für den ersten Auftrag kommt während des Aufwärmens standardmäßig ein Zuschlag von 30 Sekunden hinzu. Höchstens 64 Aufträge warten in der Queue. Drei aufeinanderfolgende Worker-Ausfälle legen einen Poolslot still; ein späterer Auftrag versucht ihn nach standardmäßig 60 Sekunden wiederzubeleben. Der Pool hält bis zu 128 Ergebnisse nach Prüfer, Pfad und Inhalts-Hash bereit.
+
+Das Gesamtbudget kommt vom aufrufenden Fehlerprüfdienst. Läuft ein Prüfer über dieses Budget, ist das Prüfergebnis zunächst teilweise und das Schreiben geht weiter; ein später gefundener Fehler wird als Hinweis dem ursprünglichen Schreibstand nachgereicht. Wirft ein Prüfer oder ist der Pool nicht verfügbar, protokolliert der Dienst den Fehler und fährt ohne diesen Prüfer fort. Ein ausgebliebener Befund bedeutet in diesen Fällen daher keine bestätigte Fehlerfreiheit.
+
+Quellbelege: [`pool.ts`](pool.ts) (Workergrenzen und Cache), [`fehlermuster-pruefung.ts`](../fehlermuster-pruefung.ts) (Budget, Befunde und Quittierung), [`code-write.ts`](../code-write.ts) (Schreibsperre) und [`plan-befunde.ts`](../plan-befunde.ts) (Befunde je Operation).
+
 ## Inhalt
 
 | Datei / Unterordner | Aufgabe |

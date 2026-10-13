@@ -6,6 +6,16 @@
 
 Dieses Image stellt Parser für Syntaxprüfungen bereit, die außerhalb des Node-Prozesses laufen. Der Python-Prüfserver nimmt den Prüftext entgegen und verteilt ihn an sprachspezifische Parser. Die Hilfsprogramme prüfen Syntax und führen den geprüften Quelltext nicht als Benutzerprogramm aus.
 
+## Containerleben und Fehlergrenzen
+
+Beim Start der REST-API prüft der Dienst, ob Docker erreichbar und das Prüf-Image vorhanden ist. Mit `SYNTAXPRUEFUNG=0` oder `PRUEFCONTAINER=0` bleibt die Registrierung aus. Fehlt Docker oder das Image, werden die Container-Prüfer ebenfalls nicht registriert; ihre Sprachen erhalten dann aus diesem Pfad keine Syntaxprüfung. Sofern nicht mit `PRUEFCONTAINER_VORWAERMEN=0` abgeschaltet, startet die API den Container nach der Registrierung im Hintergrund vor. Sonst startet ihn der erste Prüfauftrag. Die API spricht mit PID 1 über JSON-Zeilen an stdin/stdout und setzt `NetworkMode=none`; das Container-Root-Dateisystem ist schreibgeschützt, es gibt keine Bind-Mounts, und die Prüfer führen den geprüften Quelltext nicht als Programm aus.
+
+Der Prüfserver meldet seine Bereitschaft nach dem Start. Das normale Auftragslimit beträgt standardmäßig fünf Sekunden und beginnt nach dieser Bereitschaft; der Start selbst hat standardmäßig bis zu 60 Sekunden. Der Container wird nach zehn Minuten Leerlauf gestoppt. Der erste Auftrag jeder Sprache erhält auch in einem bereits laufenden Container ein Kaltbudget von standardmäßig drei Sekunden, weil Parser oder Grammatik erst dann initialisiert werden können. Kotlin und Java haben zusätzlich ein eigenes JVM-Kaltbudget von standardmäßig vier Sekunden. Drei Zeitüberschreitungen in Folge stoppen den Container; nach mehr als drei Starts innerhalb von fünf Minuten pausiert der Dienst standardmäßig eine Minute.
+
+Ein Timeout, Containerabsturz oder Parserfehler liefert für diesen Auftrag keinen bestätigten Syntaxbefund. Der Core protokolliert den fehlgeschlagenen Prüfer und fährt mit dem Schreibvorgang fort; andere registrierte Prüfer können denselben Inhalt weiterhin prüfen und gegebenenfalls blockieren. Überschreitet ein Prüfer nur das Gesamtbudget, läuft der Auftrag weiter und ein späterer Befund wird als Hinweis nachgeliefert, nachdem der Schreibvorgang bereits fortgesetzt wurde. Ein fehlender Containerbefund belegt daher keine fehlerfreie Datei.
+
+Quellbelege: [`pruef-container.ts`](../../packages/rest-api/src/services/pruef-container.ts) (Registrierung, Start, Budgets und Stopps), [`fehlermuster-pruefung.ts`](../../packages/core/src/services/fehlermuster-pruefung.ts) (Teilergebnis und Nachlieferung) und [`code-write.ts`](../../packages/core/src/services/code-write.ts) (Weiterlauf bei Prüferfehlern).
+
 ## Inhalt
 
 | Datei / Unterordner | Aufgabe |
