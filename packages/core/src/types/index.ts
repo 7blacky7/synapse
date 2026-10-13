@@ -123,6 +123,9 @@ export interface ProjectPlan {
   prioritaet?: 'hoch' | 'mittel' | 'niedrig';
   /** Wiedervorlage (P3-T3): ISO-Zeitpunkt, bis dahin aus list/Onboarding ausgeblendet */
   zurueckgestellt_bis?: string;
+  /** Ziel-Branch für den GIT-Commit, nicht Synapse files commit; fehlt er, gilt der aktuelle Arbeitsbranch. */
+  git_branch?: string | null;
+  git_branch_hinweis?: string;
 }
 
 export interface ProjectTask {
@@ -136,6 +139,9 @@ export interface ProjectTask {
   warning?: string;
   /** Kurz-ID "P<n>-T<m>" (Task 137fabaf), stabil und nie wiederverwendet */
   kurz_id?: string;
+  /** Ziel-Branch für den GIT-Commit; sonst vom Plan geerbt. */
+  git_branch?: string | null;
+  git_branch_hinweis?: string;
   /** Weitere Felder (z. B. empfehlung) bleiben beim Schreiben erhalten */
   [key: string]: unknown;
 }

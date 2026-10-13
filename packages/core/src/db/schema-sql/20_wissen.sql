@@ -39,6 +39,7 @@ CREATE TABLE public.plans (
     tasks jsonb DEFAULT '[]'::jsonb,
     created_at timestamp with time zone DEFAULT now(),
     updated_at timestamp with time zone DEFAULT now(),
+    git_branch text,
     kurz_id text,
     aktiv boolean,
     naechste_task_nr integer

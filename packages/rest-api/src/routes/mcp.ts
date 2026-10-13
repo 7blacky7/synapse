@@ -476,6 +476,7 @@ export const MCP_TOOLS = [
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
         plan_id: { type: 'string', description: 'Optional bei allen Aktionen: Plan-UUID oder Kurz-ID "P<n>" (siehe list). Ohne plan_id wirkt der AKTIVE Plan des Projekts (bisheriges Verhalten). Pflicht fuer aktivieren. Tasks akzeptieren task_id als UUID oder Kurz-ID "P<n>-T<m>".' },
+        git_branch: { type: 'string', description: 'Optional fuer create/update (Plan) und add_task/update_task (Task). Ziel-Branch für den GIT-Commit, nicht Synapse files commit; Task erbt den Plan-Branch. Ohne Wert gilt der aktuelle Arbeitsbranch.' },
         ziel: { type: 'string', description: 'Nur fuer verschieben: Zielplan (UUID oder Kurz-ID P<n>).' },
         ziele: { type: 'array', items: { type: 'string' }, description: 'Nur fuer einordnen: Kandidaten-Plaene (UUID oder Kurz-ID). Standard: alle Plaene des Projekts inkl. Quellplan.' },
         verschieben: { type: 'boolean', description: 'Nur fuer einordnen: true verschiebt Tasks mit confidence >= Tor und anderem Plan (Standard false = nur Vorschlag).' },
@@ -3019,7 +3020,7 @@ async function handleToolCallKern(
           const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
           const compact = bool(args, 'compact') ?? !nachId.gefiltert;
           const tasks = compact
-            ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority }))
+            ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, git_branch: t.git_branch, git_branch_hinweis: t.git_branch_hinweis }))
             : limited;
           return {
             ...p,
@@ -3046,10 +3047,11 @@ async function handleToolCallKern(
               goals: strArray(args, 'goals'),
               architecture: str(args, 'architecture'),
               prioritaet: str(args, 'plan_prioritaet'),
+              git_branch: str(args, 'git_branch'),
             }, str(args, 'plan_id'));
           } catch (e) {
             // Ungueltige plan_prioritaet -> klare Meldung wie im MCP-Tool
-            if (/Prioritaet/i.test(String((e as Error)?.message))) return { success: false, message: (e as Error).message };
+            if (/Prioritaet|git_branch/i.test(String((e as Error)?.message))) return { success: false, message: (e as Error).message };
             throw e;
           }
           return aktualisiert ? { ...aktualisiert, ...planKontext(aktualisiert) } : aktualisiert;
@@ -3058,16 +3060,17 @@ async function handleToolCallKern(
           return await addTask(
             project, reqStr(args, 'title'), reqStr(args, 'description'),
             (str(args, 'priority') || 'medium') as 'low' | 'medium' | 'high',
-            str(args, 'plan_id'),
+            str(args, 'plan_id'), str(args, 'git_branch'),
           );
         case 'update_task': {
           const taskId = reqStr(args, 'task_id');
           const { updateTask } = await import('@synapse/core');
-          const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high' } = {};
+          const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high'; git_branch?: string } = {};
           const t = str(args, 'title'); if (t !== undefined) updates.title = t;
           const d = str(args, 'description'); if (d !== undefined) updates.description = d;
           const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
           const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
+          const b = str(args, 'git_branch'); if (b !== undefined) updates.git_branch = b;
           const task = await updateTask(project, taskId, updates, str(args, 'plan_id'));
           if (!task) return { success: false, task: null, message: `Task nicht gefunden: ${taskId}` };
           return { success: true, task, message: 'Task aktualisiert' };
@@ -3172,9 +3175,10 @@ async function handleToolCallKern(
               aktiv: bool(args, 'aktiv') === true,
               architecture: str(args, 'architecture'),
               prioritaet: str(args, 'plan_prioritaet'),
+              git_branch: str(args, 'git_branch'),
             });
           } catch (e) {
-            if (/Prioritaet/i.test(String((e as Error)?.message))) return { success: false, message: (e as Error).message };
+            if (/Prioritaet|git_branch/i.test(String((e as Error)?.message))) return { success: false, message: (e as Error).message };
             throw e;
           }
           return {

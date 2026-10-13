@@ -74,6 +74,7 @@ interface PlanZeile {
   naechste_task_nr: number | null;
   /** hoch | mittel | niedrig; fehlt/null = mittel (Zeilen vor der Migration) */
   prioritaet?: string | null;
+  git_branch?: string | null;
   /** Wiedervorlage (P3-T3): bis dahin aus list/Onboarding ausgeblendet; fehlt/null = nicht zurueckgestellt */
   zurueckgestellt_bis?: string | Date | null;
 }
@@ -97,6 +98,26 @@ export function pruefePrioritaet(x: unknown): PlanPrioritaet | undefined {
   }
   return s as PlanPrioritaet;
 }
+
+/** Entspricht git check-ref-format --branch fuer normale Ref-Namen; main/master sind keine Commit-Ziele. */
+export function pruefeGitBranch(x: unknown): string {
+  if (typeof x !== 'string' || x.length === 0 || x !== x.trim()) {
+    throw new Error('Ungueltiger git_branch: erwartet einen Git-Branchnamen.');
+  }
+  const teile = x.split('/');
+  const ungueltigesZeichen = [...x].some((zeichen) => {
+    const code = zeichen.charCodeAt(0);
+    return code <= 32 || code === 127 || ['~', '^', ':', '?', '*', '[', '\\'].includes(zeichen);
+  });
+  if (x === 'main' || x === 'master' || x.startsWith('-') || x.startsWith('/') || x.endsWith('/') ||
+      x.endsWith('.') || x.includes('..') || x.includes('@{') || x.includes('//') || ungueltigesZeichen ||
+      teile.some((teil) => teil.startsWith('.') || teil.endsWith('.lock'))) {
+    throw new Error('Ungueltiger git_branch "' + x + '"; Git-Branchnamen muessen git check-ref-format entsprechen und duerfen main/master nicht als Ziel verwenden.');
+  }
+  return x;
+}
+
+const GIT_BRANCH_HINT_AKTUELL = 'Kein git_branch gesetzt; verwendet wird der aktuelle Arbeitsbranch.';
 
 const PRIO_RANG: Record<PlanPrioritaet, number> = { hoch: 0, mittel: 1, niedrig: 2 };
 
@@ -240,7 +261,7 @@ const iso = (x: string | Date | null | undefined): string =>
 async function lesePlaene(project: string): Promise<PlanZeile[]> {
   const { rows } = await getPool().query<PlanZeile>(
     `SELECT id, project, name, description, goals, architecture, tasks, created_at, updated_at,
-            kurz_id, aktiv, naechste_task_nr, prioritaet, zurueckgestellt_bis
+            kurz_id, aktiv, naechste_task_nr, prioritaet, zurueckgestellt_bis, git_branch
      FROM plans WHERE project = $1 ORDER BY created_at, id`,
     [project],
   );
@@ -256,7 +277,12 @@ function zuPlan(z: PlanZeile, alle: PlanZeile[]): ProjectPlan {
     description: z.description ?? '',
     goals: z.goals ?? [],
     architecture: z.architecture ?? undefined,
-    tasks: z.tasks ?? [],
+    tasks: (z.tasks ?? []).map((task) => {
+      const branch = typeof task.git_branch === 'string' && task.git_branch ? task.git_branch : z.git_branch;
+      return { ...task, git_branch: branch ?? null, ...(branch ? {} : { git_branch_hinweis: GIT_BRANCH_HINT_AKTUELL }) };
+    }),
+    git_branch: z.git_branch ?? null,
+    ...(z.git_branch ? {} : { git_branch_hinweis: GIT_BRANCH_HINT_AKTUELL }),
     createdAt: iso(z.created_at),
     updatedAt: iso(z.updated_at),
     kurz_id: z.kurz_id ?? null,
@@ -660,6 +686,7 @@ async function schreibePlan<R>(
   planId: string,
   aendern: (stand: PlanStand, zeile: PlanZeile) => { stand: PlanStand; ergebnis: R } | null,
   prioritaet?: PlanPrioritaet,
+  gitBranch?: string,
 ): Promise<{ plan: ProjectPlan; ergebnis: R; warning?: string } | null> {
   for (let versuch = 0; versuch < 3; versuch++) {
     const alle = await lesePlaene(project);
@@ -683,13 +710,14 @@ async function schreibePlan<R>(
     const jetzt = new Date().toISOString();
     const r = await getPool().query(
       `UPDATE plans SET name = $1, description = $2, goals = $3, architecture = $4, tasks = $5::jsonb,
-              naechste_task_nr = $6, updated_at = $7, prioritaet = COALESCE($10::text, prioritaet)
+              naechste_task_nr = $6, updated_at = $7, prioritaet = COALESCE($10::text, prioritaet),
+              git_branch = COALESCE($11::text, git_branch)
        WHERE id = $8 AND tasks = $9::jsonb`,
       [stand.name, stand.description, stand.goals, stand.architecture, JSON.stringify(stand.tasks),
-        stand.naechste_task_nr, jetzt, planId, JSON.stringify(zeile.tasks ?? []), prioritaet ?? null],
+        stand.naechste_task_nr, jetzt, planId, JSON.stringify(zeile.tasks ?? []), prioritaet ?? null, gitBranch ?? null],
     );
     if (r.rowCount === 1) {
-      const neu: PlanZeile = { ...zeile, ...stand, updated_at: jetzt, ...(prioritaet !== undefined ? { prioritaet } : {}) };
+      const neu: PlanZeile = { ...zeile, ...stand, updated_at: jetzt, ...(prioritaet !== undefined ? { prioritaet } : {}), ...(gitBranch !== undefined ? { git_branch: gitBranch } : {}) };
       const plan = zuPlan(neu, alle.map((z) => (z.id === planId ? neu : z)));
       const warning = await indexNachziehen(plan);
       // Ergebnis mit den vergebenen Kurz-IDs neu aufloesen (aendern kannte sie noch nicht)
@@ -730,9 +758,10 @@ export async function createPlan(
   name: string,
   description: string,
   goals: string[] = [],
-  optionen: { aktiv?: boolean; architecture?: string; prioritaet?: string } = {},
+  optionen: { aktiv?: boolean; architecture?: string; prioritaet?: string; git_branch?: string } = {},
 ): Promise<ProjectPlan> {
   const prioritaet = pruefePrioritaet(optionen.prioritaet) ?? 'mittel'; // ungueltig -> Error, nichts geschrieben
+  const gitBranch = optionen.git_branch === undefined ? undefined : pruefeGitBranch(optionen.git_branch);
   const alle = await lesePlaene(project);
   const alleMitKurz = alle.every((z) => planNummer(z.kurz_id) !== null);
   const maxP = alle.reduce((m, z) => Math.max(m, planNummer(z.kurz_id) ?? 0), 0);
@@ -749,10 +778,10 @@ export async function createPlan(
   // 1. PostgreSQL (Write-Primary) — fail-fast
   await pool.query(
     `INSERT INTO plans (id, project, name, description, goals, architecture, tasks, created_at, updated_at,
-                        kurz_id, aktiv, naechste_task_nr, prioritaet)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+                        kurz_id, aktiv, naechste_task_nr, prioritaet, git_branch)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
     [id, project, name, description, goals, optionen.architecture ?? null, JSON.stringify([]), now, now,
-      kurzId, aktiv, kurzId ? 1 : null, prioritaet],
+      kurzId, aktiv, kurzId ? 1 : null, prioritaet, gitBranch ?? null],
   );
   if (aktiv && alle.length > 0) {
     await pool.query('UPDATE plans SET aktiv = (id = $2) WHERE project = $1', [project, id]);
@@ -782,16 +811,18 @@ export async function aktivierePlan(project: string, planRef: string): Promise<P
  */
 export async function updatePlan(
   project: string,
-  updates: Partial<Pick<ProjectPlan, 'name' | 'description' | 'goals' | 'architecture'>> & { prioritaet?: string },
+  updates: Partial<Pick<ProjectPlan, 'name' | 'description' | 'goals' | 'architecture' | 'git_branch'>> & { prioritaet?: string },
   planRef?: string | null,
 ): Promise<ProjectPlan | null> {
   const prioritaet = pruefePrioritaet(updates.prioritaet); // ungueltig -> Error, nichts geschrieben
+  const gitBranch = updates.git_branch === undefined ? undefined : pruefeGitBranch(updates.git_branch);
   const alle = await lesePlaene(project);
   if (alle.length === 0) {
     console.error(`[Synapse] Plan-Upsert: lege neuen Plan an fuer Projekt "${project}"`);
     return await createPlan(project, updates.name ?? `Plan fuer ${project}`, updates.description ?? '', updates.goals ?? [], {
       architecture: updates.architecture,
       prioritaet,
+      git_branch: gitBranch,
     });
   }
   const ziel = findePlan(project, alle, planRef)!;
@@ -811,7 +842,7 @@ export async function updatePlan(
     },
     ergebnis: null,
     };
-  }, prioritaet);
+  }, prioritaet, gitBranch);
   if (!r) return null;
   console.error(`[Synapse] Plan aktualisiert: "${r.plan.name}"`);
   return { ...r.plan, ...(r.warning ? { warning: r.warning } : {}) };
@@ -824,14 +855,16 @@ export async function addTask(
   description: string,
   priority: ProjectTask['priority'] = 'medium',
   planRef?: string | null,
+  gitBranch?: string,
 ): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
+  if (gitBranch !== undefined) pruefeGitBranch(gitBranch);
   const alle = await lesePlaene(project);
   const ziel = findePlan(project, alle, planRef);
   if (!ziel) {
     console.warn(`[Synapse] Kein Plan gefunden fuer Projekt: ${project}`);
     return null;
   }
-  const task = neueTask(title, description, priority, new Date().toISOString());
+  const task = { ...neueTask(title, description, priority, new Date().toISOString()), ...(gitBranch !== undefined ? { git_branch: gitBranch } : {}) };
   const r = await schreibePlan(project, ziel.id, (stand) => ({ stand: { ...stand, tasks: [...stand.tasks, task] }, ergebnis: task.id }));
   if (!r) return null;
   const gespeichert = r.plan.tasks.find((t) => t.id === task.id)!;
@@ -902,9 +935,10 @@ function findeTask(project: string, alle: PlanZeile[], taskRef: string, planRef?
 export async function updateTask(
   project: string,
   taskId: string,
-  updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority'>>,
+  updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority' | 'git_branch'>>,
   planRef?: string | null,
 ): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
+  if (updates.git_branch !== undefined) pruefeGitBranch(updates.git_branch);
   const alle = await lesePlaene(project);
   const fund = findeTask(project, alle, taskId, planRef);
   if (!fund) {

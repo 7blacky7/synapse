@@ -68,6 +68,7 @@ export async function updateProjectPlan(
     goals?: string[];
     architecture?: string;
     prioritaet?: string;
+    git_branch?: string;
   },
   planRef?: string,
 ): Promise<{
@@ -112,6 +113,7 @@ export async function addPlanTask(
   description: string,
   priority: 'low' | 'medium' | 'high' = 'medium',
   planRef?: string,
+  gitBranch?: string,
 ): Promise<{
   success: boolean;
   task: ProjectTask | null;
@@ -120,7 +122,7 @@ export async function addPlanTask(
   hinweis_plaene?: string;
 }> {
   try {
-    const task = await addTask(project, title, description, priority, planRef);
+    const task = await addTask(project, title, description, priority, planRef, gitBranch);
 
     if (!task) {
       return {
@@ -206,6 +208,7 @@ export async function updatePlanTask(
     description?: string;
     status?: 'todo' | 'in_progress' | 'done' | 'blocked';
     priority?: 'low' | 'medium' | 'high';
+    git_branch?: string;
   },
   planRef?: string,
 ): Promise<{
@@ -319,13 +322,14 @@ export async function listProjectPlans(project: string, alle?: boolean): Promise
  */
 export async function createProjectPlan(
   project: string,
-  eingabe: { name: string; description?: string; goals?: string[]; architecture?: string; aktiv?: boolean; prioritaet?: string },
+  eingabe: { name: string; description?: string; goals?: string[]; architecture?: string; aktiv?: boolean; prioritaet?: string; git_branch?: string },
 ): Promise<{ success: boolean; plan: ProjectPlan | null; message: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
   try {
     const plan = await createPlan(project, eingabe.name, eingabe.description ?? '', eingabe.goals ?? [], {
       aktiv: eingabe.aktiv === true,
       architecture: eingabe.architecture,
       ...(eingabe.prioritaet !== undefined ? { prioritaet: eingabe.prioritaet } : {}),
+      ...(eingabe.git_branch !== undefined ? { git_branch: eingabe.git_branch } : {}),
     });
     return {
       success: true,

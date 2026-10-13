@@ -73,8 +73,11 @@ CREATE TABLE IF NOT EXISTS plans (
   architecture TEXT,
   tasks JSONB DEFAULT '[]',
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  git_branch TEXT
 );
+
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS git_branch TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_plans_project_name ON plans (project, name);
 

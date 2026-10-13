@@ -46,6 +46,7 @@ export const planTool: ConsolidatedTool = {
           type: 'string',
           description: 'Optional bei allen Aktionen: Plan-UUID oder Kurz-ID "P<n>" (siehe list). Ohne plan_id wirkt der AKTIVE Plan des Projekts (bisheriges Verhalten). Pflicht fuer aktivieren.',
         },
+        git_branch: { type: 'string', description: 'Optional fuer create/update (Plan) und add_task/update_task (Task). Ziel-Branch für den GIT-Commit, nicht Synapse files commit; Task erbt den Plan-Branch. Ohne Wert gilt der aktuelle Arbeitsbranch.' },
         plan_prioritaet: {
           type: 'string',
           enum: ['hoch', 'mittel', 'niedrig'],
@@ -204,7 +205,7 @@ export const planTool: ConsolidatedTool = {
         const limited = taskLimit ? filtered.slice(0, taskLimit) : filtered;
         const compact = bool(args, 'compact') ?? !nachId.gefiltert;
         const tasks = compact
-          ? limited.map((t) => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority }))
+          ? limited.map((t) => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, git_branch: t.git_branch, git_branch_hinweis: t.git_branch_hinweis }))
           : limited;
         return {
           ...p,
@@ -226,6 +227,7 @@ export const planTool: ConsolidatedTool = {
           goals: strArray(args, 'goals'),
           architecture: str(args, 'architecture'),
           prioritaet: str(args, 'plan_prioritaet'),
+          git_branch: str(args, 'git_branch'),
         }, str(args, 'plan_id'));
         return result;
       }
@@ -238,7 +240,7 @@ export const planTool: ConsolidatedTool = {
           | 'medium'
           | 'high';
 
-        const result = await addPlanTask(project, title, description, priority, str(args, 'plan_id'));
+        const result = await addPlanTask(project, title, description, priority, str(args, 'plan_id'), str(args, 'git_branch'));
         return result;
       }
 
@@ -258,11 +260,12 @@ export const planTool: ConsolidatedTool = {
 
       case 'update_task': {
         const taskId = reqStr(args, 'task_id');
-        const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high' } = {};
+        const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high'; git_branch?: string } = {};
         const t = str(args, 'title'); if (t !== undefined) updates.title = t;
         const d = str(args, 'description'); if (d !== undefined) updates.description = d;
         const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
         const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
+        const b = str(args, 'git_branch'); if (b !== undefined) updates.git_branch = b;
         const result = await updatePlanTask(project, taskId, updates, str(args, 'plan_id'));
         return result;
       }
@@ -319,6 +322,7 @@ export const planTool: ConsolidatedTool = {
           architecture: str(args, 'architecture'),
           aktiv: args.aktiv === true,
           prioritaet: str(args, 'plan_prioritaet'),
+          git_branch: str(args, 'git_branch'),
         });
       }
 

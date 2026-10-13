@@ -1014,7 +1014,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     ].join(' '),
     param_tips: [
       'project: Pflicht fuer alle Actions. plan(get) ist standardmaessig kompakt; compact:false oder task_id liefert Beschreibungen.',
-      'add_task: title + description beide Pflicht. priority: low|medium|high (Standard: medium).',
+      'add_task: title + description beide Pflicht. priority: low|medium|high (Standard: medium). git_branch ist optional: Ziel-Branch für den GIT-Commit, nicht Synapse files commit; Task erbt vom Plan. Ohne Branch gilt der aktuelle Arbeitsbranch.',
       'update: Felder die nicht gesetzt werden, bleiben unveraendert.',
       'goals: Array von Strings — Ziele des Projekts.',
       'plan_id (alle Aktionen, optional): Plan-UUID oder Kurz-ID "P<n>". OHNE plan_id wirkt der AKTIVE Plan des Projekts — genau das bisherige Verhalten. task_id nimmt die UUID oder die Kurz-ID "P<n>-T<m>" (daraus folgt der Plan); eine alte UUID wird ohne plan_id in allen Plaenen gefunden. Antworten nennen plan_ref {id, kurz_id, name, aktiv}; hat das Projekt mehrere Plaene, zusaetzlich hinweis_plaene.',
@@ -1039,13 +1039,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       update: {
         description: 'Plan-Metadaten aendern (name, description, goals, architecture).',
-        params: 'project (req), name, description, goals (Array), architecture',
+        params: 'project (req), name, description, goals (Array), architecture, git_branch? (Ziel-Branch für den GIT-Commit, nicht Synapse files commit)',
         example: 'plan({ action: "update", project: "synapse", architecture: "PostgreSQL + Qdrant dual-write" })',
         tips: 'Nicht gesetzte Felder bleiben unveraendert.',
       },
       add_task: {
         description: 'Neue Task zum Plan hinzufuegen.',
-        params: 'project (req), title (req), description (req), priority (low|medium|high)',
+        params: 'project (req), title (req), description (req), priority (low|medium|high), git_branch? (Task-Branch; sonst Plan-Branch)',
         example: 'plan({ action: "add_task", project: "synapse", title: "API-Rate-Limiting", description: "Implementiere Rate-Limiting fuer REST-API", priority: "medium" })',
       },
       add_tasks_batch: {
@@ -1056,7 +1056,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       update_task: {
         description: 'Eine bestehende Task aendern (status, priority, title, description).',
-        params: 'project (req), task_id (req), title?, description?, status (todo|in_progress|done|blocked)?, priority (low|medium|high)?',
+        params: 'project (req), task_id (req), title?, description?, status (todo|in_progress|done|blocked)?, priority (low|medium|high)?, git_branch? (Task-Branch; sonst Plan-Branch)',
         example: 'plan({ action: "update_task", project: "synapse", task_id: "abc-123", status: "done" })',
         tips: 'Status auf "done" setzen statt Task zu loeschen — bleibt fuer Audit erhalten.',
       },
@@ -1074,7 +1074,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       create: {
         description: 'Neuen Plan anlegen (neuer Stand = neuer Plan; der alte bleibt abrufbar und wird nie ueberschrieben). Bekommt die naechste Kurz-ID P<n>.',
-        params: 'project (req), name (req), description?, goals?, architecture?, aktiv? (Standard false; der erste Plan eines Projekts ist immer aktiv)',
+        params: 'project (req), name (req), description?, goals?, architecture?, aktiv? (Standard false; der erste Plan eines Projekts ist immer aktiv), git_branch? (Ziel-Branch für den GIT-Commit, nicht Synapse files commit)',
         example: 'plan({ action: "create", project: "synapse", name: "Runde 2", description: "...", aktiv: true })',
         tips: 'update ohne plan_id wirkt auf den aktiven Plan; per plan_id sind auch inaktive offene und leere Plaene aenderbar. Abgeschlossen = mindestens eine Task und alle Tasks done: Metadaten bleiben geschuetzt, Task-Status bleibt aenderbar.',
       },
