@@ -174,17 +174,89 @@ Mehrere Dienste speichern oder lesen Daten über den Core-Datenbankzugriff [../d
 
 #### Dateien und Unterordner
 
-| Datei / Unterordner | Aufgabe |
+##### Shell-Ausführung und Queue
+
+| Datei | Aufgabe |
 |---|---|
-| — | Dieser Abschnitt wird in P19-T6 anhand des Codebestands ergänzt. |
+| [`shell-exec.ts`](shell-exec.ts) | Gemeinsamer Shell-Ausführungsdienst für MCP und REST mit Projektauflösung, Aktivitätsprüfung, Arbeitsverzeichnis-Schutz und Stream-Verwaltung. |
+| [`shell-queue.ts`](shell-queue.ts) | Persistiert Shell-Jobs in PostgreSQL und verwaltet Einreihung, Übernahme, Ergebnis, Abbruch, Verlauf und Bereinigung. |
+| [`shell-hints.ts`](shell-hints.ts) | Stellt Hinweise zu laufenden Shell-Jobs für Tool-Antworten bereit und verfolgt deren Ausgabe. |
+| [`shell-channel-unterbrechung.ts`](shell-channel-unterbrechung.ts) | Prüft Channel-Mitgliedschaft und unterbricht das Warten eines Shell-Aufrufs, wenn eine neue Channel-Nachricht eingeht. |
+| [`shell-job-anzeige.ts`](shell-job-anzeige.ts) | Formt gespeicherte Shell-Jobdetails und Verlauf für die Tool-Ausgabe. |
+| [`shell-job-hinweis.ts`](shell-job-hinweis.ts) | Drosselt optionale Datenbankhinweise im äußeren Antwortpfad eines Shell-Jobs. |
+| [`shell-einreihung-sicherung.ts`](shell-einreihung-sicherung.ts) | Prüft Shell-Aufrufe beim Einreihen, bevor ein Job angehängt oder aus dem Cache bedient wird. |
+
+##### Shell-Sicherung, Lage und Ausgabe
+
+| Datei | Aufgabe |
+|---|---|
+| [`shell-sicherung-parser.ts`](shell-sicherung-parser.ts) | Zerlegt Shell-Text in eine begrenzte lexikalische Struktur, ohne Expansion oder Ausführung. |
+| [`shell-inline-pruefung.ts`](shell-inline-pruefung.ts) | Ermittelt Syntax- und Aufruffakten aus Shell-Skripten für die Sicherungsregeln. |
+| [`shell-sicherung.ts`](shell-sicherung.ts) | Lädt und befüllt den Sicherungskatalog und prüft normalisierte Shell-Kommandos. |
+| [`shell-sicherung-seed.ts`](shell-sicherung-seed.ts) | Enthält die festen Ausgangsregeln des Shell-Sicherungskatalogs. |
+| [`shell-sicherungs-lauf.ts`](shell-sicherungs-lauf.ts) | Verbindet Sicherungskatalog, Prozesslage und maskierte Job-Audits im Shell-Startpfad. |
+| [`shell-sicherungs-vertrag.ts`](shell-sicherungs-vertrag.ts) | Definiert die gemeinsamen Shell-Sicherungsparameter und Antwortfelder für REST und stdio. |
+| [`shell-start-sicherung.ts`](shell-start-sicherung.ts) | Trifft als reine Funktion die Startentscheidung für einen Shell-Aufruf und erzeugt nötigenfalls eine Bestätigung. |
+| [`shell-start.ts`](shell-start.ts) | Wählt die native Shell anhand der Auswahl und Plattform. |
+| [`shell-teilbar.ts`](shell-teilbar.ts) | Entscheidet anhand einer Positivliste, ob Shell-Aufrufe denselben Lauf teilen dürfen. |
+| [`shell-lage.ts`](shell-lage.ts) | Ermittelt Shell-Ausführungskontext und Risiken, ohne den Nutzerbefehl selbst auszuführen. |
+| [`shell-lage-probe.ts`](shell-lage-probe.ts) | Stellt eine native, schreibgeschützte Dateisystemprobe für Shell-Lageprüfungen bereit. |
+| [`shell-prozess-lage.ts`](shell-prozess-lage.ts) | Ermittelt geschützte Metadaten zur eigenen Prozesskette, ohne Nutzerbefehle oder Signale auszuführen. |
+| [`shell-job-umgebung.ts`](shell-job-umgebung.ts) | Baut die an einen Shell-Job übergebene Umgebung und verwaltet den zugehörigen Pfadcache. |
+| [`shell-maske.ts`](shell-maske.ts) | Liest Projektwerte und maskiert Shell-Daten vor Speicherung, Antwort und Audit. |
+| [`shell-masken-katalog.ts`](shell-masken-katalog.ts) | Bündelt Erkennungsregeln und Treffer für die Shell-Maskierung. |
+| [`shell-altbestand.ts`](shell-altbestand.ts) | Gruppiert gefundene Geheimniswerte in historischen Shell- und Tool-Protokollen und bewertet sie, ohne die Protokolle zu ändern. |
+| [`shell-altbestand-persistenz.ts`](shell-altbestand-persistenz.ts) | Liest und markiert ausgewählte historische Shell- und Tool-Daten nach einer Bewertung; laufende Shell-Jobs bleiben dabei ausgenommen. |
+| [`shell-build-log-fakten.ts`](shell-build-log-fakten.ts) | Leitet begrenzte Fakten aus einfachen Build-Schleifen für die Prüfung der Shell-Lage ab. |
+| [`shell-ausgabe-puffer.ts`](shell-ausgabe-puffer.ts) | Puffert Shell-Ausgabe begrenzt und maskiert unvollständige Werte über Zeilengrenzen hinweg. |
+| [`shell-ergebnis-hinweis.ts`](shell-ergebnis-hinweis.ts) | Ergänzt Shell-Ergebnisse bei Bedarf um Hinweise aus der Fehlerverarbeitung. |
+
+##### Skills, Spezialisten und Projektbezüge
+
+| Datei | Aufgabe |
+|---|---|
+| [`skill-hook.ts`](skill-hook.ts) | Ermittelt Skill-Vorschläge anhand von Werkzeugen, Channels und Quellen für Tool-Antworten. |
+| [`skills.ts`](skills.ts) | Verwaltet Skill-Suche, Sichtbarkeit, Sections und Schreibvorgänge; PostgreSQL ist die Quelle der Wahrheit. |
+| [`specialist-queue.ts`](specialist-queue.ts) | Persistiert Spezialisten-Aufträge und verwaltet Einreihung, Übernahme, Ergebnis und Ablauf. |
+| [`specialist-respawn.ts`](specialist-respawn.ts) | Prüft den Kontextkorridor und löst den gemeinsamen Spezialisten-Respawn aus. |
+| [`specialist-selbst.ts`](specialist-selbst.ts) | Stellt Spezialisten gespeicherte oder daraus berechnete Angaben zu Modell, Kontext und Wissensstand bereit. |
+| [`specialist-spawn-args.ts`](specialist-spawn-args.ts) | Vereinheitlicht Spawn-Eingaben für Einzel- und Batch-Aufträge in das Worker-Argumentformat. |
+| [`spezialisten-status-filter.ts`](spezialisten-status-filter.ts) | Filtert Spezialistenstatus nach Namen und kennzeichnet veraltete Wrapper-Einträge. |
+| [`task-id-resolver.ts`](task-id-resolver.ts) | Löst Task-Referenzen projektgebunden in PostgreSQL auf. |
+
+##### Technologie- und Wissensdienste
+
+| Datei | Aufgabe |
+|---|---|
+| [`tech-detection.ts`](tech-detection.ts) | Erkennt Frameworks und Bibliotheken aus Projektmanifesten und Importen. |
+| [`tech-docs.ts`](tech-docs.ts) | Speichert, durchsucht und verwaltet kuratierte Technologie-Dokumentation in PostgreSQL und Qdrant. |
+| [`thought-ids.ts`](thought-ids.ts) | Löst vollständige Thought-IDs und eindeutige Präfixe auf und liest Thoughts aus PostgreSQL. |
+| [`thoughts.ts`](thoughts.ts) | Speichert, durchsucht, aktualisiert und löscht Gedanken und Notizen; nachgelagerte Einbettungen werden angestoßen. |
+| [`topf-ansicht.ts`](topf-ansicht.ts) | Liefert eine kompakte Ansicht gespeicherter Einträge des Entscheidungstopfs über UUIDs. |
+| [`wissen-stuecke.ts`](wissen-stuecke.ts) | Teilt längere Wissenseinträge in Stücke und unterstützt deren Einbettung sowie Nachzug. |
+
+##### Tool-Antworten, Regeln und Laufzeitsteuerung
+
+| Datei | Aufgabe |
+|---|---|
+| [`tool-antwort.ts`](tool-antwort.ts) | Baut gemeinsame Tool-Antworten und ergänzt Hinweise oder kompakte Ergebnisdarstellungen. |
+| [`tool-call-log.ts`](tool-call-log.ts) | Protokolliert Tool-Aufrufe als Aktivitätsdaten und stellt Filterabfragen bereit. |
+| [`unbekannte-parameter.ts`](unbekannte-parameter.ts) | Erkennt unbekannte Werkzeugparameter und erstellt eine Übersicht erlaubter Parameter. |
+| [`update-anker.ts`](update-anker.ts) | Prüft Textanker gegen den aktuellen Dateiinhalt, bevor ein gezieltes Update angewendet wird. |
+| [`user-herkunft.ts`](user-herkunft.ts) | Überträgt authentifizierte UI-Herkunft innerhalb eines asynchronen Aufrufkontexts. |
+| [`werkzeug-regeln.ts`](werkzeug-regeln.ts) | Ermittelt Regeln, die mit einem konkreten Werkzeugaufruf verknüpft sind. |
+| [`warteschlangen-register.ts`](warteschlangen-register.ts) | Registriert prozesslokale Warteschlangen, damit interne Werkzeuge deren Zustand abfragen können. |
+| [`worker-steuerung.ts`](worker-steuerung.ts) | Verwaltet den prozesslokalen Zustand zum Pausieren, Fortsetzen und gezielten Auslösen von Hintergrund-Workern. |
+| [`wrapper-prozess.ts`](wrapper-prozess.ts) | Prüft lokale Wrapper-Prozessidentität und beendet oder bereinigt passende Prozesse. |
+| [`wrapper-status.ts`](wrapper-status.ts) | Speichert den PostgreSQL-Status laufender Wrapper und verwaltet Heartbeat-Einstellungen. |
 
 #### Schnittstellen nach außen
 
-Wird in P19-T6 anhand der Exporte und Aufrufer ergänzt.
+[`index.ts`](index.ts) bündelt unter anderem die Exporte für Technologieerkennung und -dokumentation, Thoughts, Shell-Hinweise und Shell-Queue sowie die Spezialisten-Queue. Der Shell-Ausführungsdienst [`shell-exec.ts`](shell-exec.ts) wird gemeinsam vom MCP-Werkzeug und REST-Endpunkt verwendet. Die übrigen Hilfsdienste stellen Funktionen für diese Service- und Werkzeugpfade bereit.
 
 #### Abhängigkeiten
 
-Wird in P19-T6 anhand der Imports ergänzt.
+Die Shell-Queue und die Spezialisten-Queue speichern Aufträge in PostgreSQL; der Shell-Startpfad verbindet Parser, Sicherungskatalog, Prozesslage, Umgebung und Maskierung. Technologie-Dokumentation und Skills verwenden PostgreSQL als Quelle persistenter Daten und Qdrant für Suchvektoren. Die Einbettung von Thoughts und Wissensstücken läuft über die jeweiligen nachgelagerten Einbettungspfade. Gemeinsame Tool-Antworten, Regelauflösung und Statusdienste werden von REST-, MCP- und Worker-Pfaden genutzt.
 
 #### Siehe auch
 
