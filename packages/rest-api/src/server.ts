@@ -347,7 +347,7 @@ export async function startServer(): Promise<void> {
   }
 
   // P15 E1: Entscheidungs-Topf - Startbestand (packages/core/data/entscheidungstopf-seed.json) idempotent laden
-  // (ON CONFLICT kennung), Status aktiv; danach fehlende Vektoren im Hintergrund. 30 s nach dem Start.
+  // (Inhalts-ID und vorhandene Seed-Inhalte), Status aktiv; danach fehlende Vektoren im Hintergrund. 30 s nach dem Start.
   //   ENTSCHEIDUNGSTOPF_SEED_DISABLED=1 - nicht laden (dann per admin(jev_entscheidungstopf, modus seed_laden))
   if (process.env.ENTSCHEIDUNGSTOPF_SEED_DISABLED !== '1') {
     const { ladeEntscheidungstopfSeed, ergaenzeTopfEmbeddings } = await import('@synapse/core');

@@ -425,7 +425,6 @@ export const MCP_TOOLS = [
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
         source: { type: 'string', description: 'Quelle (z.B. claude-code, gpt, user) - fuer action "add" oder "add_batch"' },
-        name: { type: 'string', description: 'add: Name vom Ersteller ist Pflicht bei Tags entscheidung+user.' },
         content: { type: 'string', description: 'Inhalt des Gedankens - fuer action "add" oder "update"' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags - fuer action "add" oder "update"' },
         items: {
@@ -435,7 +434,6 @@ export const MCP_TOOLS = [
             properties: {
               content: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
-              name: { type: 'string', description: 'Pflicht bei Tags entscheidung+user.' },
               task_id: { type: 'string', description: 'Optional: Task-ID fuer Verknuepfung pro Item' },
             },
             required: ['content'],
@@ -2831,7 +2829,7 @@ async function handleToolCallKern(
             project, source,
             reqStr(args, 'content'), strArrayOrEmpty(args, 'tags'),
             str(args, 'task_id'),
-            str(args, 'task_status') as Parameters<typeof addThought>[5], str(args, 'name')
+            str(args, 'task_status') as Parameters<typeof addThought>[5]
           );
           // Anti-Echo (DX-Befund 4): nicht den kompletten Content zurueckspielen,
           // den der Agent gerade selbst geschrieben hat — id + Preview reichen.
@@ -2877,7 +2875,7 @@ async function handleToolCallKern(
           const project = reqStr(args, 'project');
           const source = resolveAgentId(str(args, 'source'));
           if (!source) throw new Error('Parameter "source" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
-          const items = objArray<{ content: string; tags?: string[]; name?: string }>(args, 'items');
+          const items = objArray<{ content: string; tags?: string[] }>(args, 'items');
           if (!items || items.length === 0) {
             return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };
           }
@@ -2887,7 +2885,6 @@ async function handleToolCallKern(
           const normalized = items
             .map(it => ({
               content: String(it.content ?? ''),
-              name: typeof it.name === 'string' ? it.name : undefined,
               tags: Array.isArray(it.tags) ? it.tags.map(String) : undefined,
               task_id: typeof (it as unknown as { task_id?: unknown }).task_id === 'string' ? (it as unknown as { task_id: string }).task_id : undefined,
             }))

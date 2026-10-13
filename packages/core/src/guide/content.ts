@@ -1470,8 +1470,8 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       erklaerung_ablegen: {
         description: 'Generische Erklaerung (Lage, Wieso, Abhilfe) fuer einen Fall ablegen oder eine bestehende per erklaerung_id belegen; startet die Verifikation. Nur der betroffene Agent oder der Koordinator.',
-        params: 'fall_id (req), lage_de/wieso_de/abhilfe_de und/oder lage_en/wieso_en/abhilfe_en (alle gepflegten Sprachen Pflicht, admin jev_optionen), erklaerung_id, name (Pflicht bei neuer Erklaerung, vom Ersteller; Alias kennung)',
-        example: 'code_check({ action: "erklaerung_ablegen", fall_id: "17", name: "fehlende-runde-klammer", lage_de: "Eine schliessende runde Klammer fehlt.", wieso_de: "...", abhilfe_de: "...", lage_en: "A closing parenthesis is missing.", wieso_en: "...", abhilfe_en: "..." })',
+        params: 'fall_id (req), lage_de/wieso_de/abhilfe_de und/oder lage_en/wieso_en/abhilfe_en (alle gepflegten Sprachen Pflicht, admin jev_optionen), erklaerung_id',
+        example: 'code_check({ action: "erklaerung_ablegen", fall_id: "17", lage_de: "Eine schliessende runde Klammer fehlt.", wieso_de: "...", abhilfe_de: "...", lage_en: "A closing parenthesis is missing.", wieso_en: "...", abhilfe_en: "..." })',
         tips: 'Abgelehnt: sprache_fehlt, nicht_generisch (verstoesse: pfad, bezeichner, literal, zeilenangabe, hash, codeblock, geheimnis, projekt, agent, env_wert), nur_betroffener, dublette. Neue Erklaerungen starten vorgeschlagen; verifiziert erst, wenn der korrigierte Stand ohne Befund ist - dann werden Fall und Schatten geloescht.',
       },
       fall_pruefen: {
@@ -1773,30 +1773,24 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
       entscheidung_ablegen: {
         description: 'P15 E1: User-Entscheidung in den Entscheidungs-Topf legen (global, Vorlage fuer Jev). Mit Aufbereitung in allen gepflegten Sprachen (jev_optionen) direkt aktiv, sonst roh. Nur Koordinator/User.',
-        params: 'project (req), agent_id (req: koordinator|user), name (req, vom Ersteller), frage_de|frage_en (req), antwort_wortlaut (req, Original), kategorie (req), optionen ({key: Beschreibung}), gewaehlte_option, aufbereitet ({de:{entscheidung,begruendung,gilt_wenn}, en:{decision,reason,applies_when}}), themen, kandidat',
-        example: 'jev({ action: "entscheidung_ablegen", project: "synapse", agent_id: "koordinator", name: "ausgabeformat-json", frage_de: "Ausgabeformat?", kategorie: "variante", antwort_wortlaut: "JSON", gewaehlte_option: "a", aufbereitet: { de: { entscheidung: "JSON", begruendung: "maschinenlesbar", gilt_wenn: "Richtig, wenn ..." }, en: { decision: "JSON", reason: "machine readable", applies_when: "Correct when ..." } } })',
+        params: 'project (req), agent_id (req: koordinator|user), frage_de|frage_en (req), antwort_wortlaut (req, Original), kategorie (req), optionen ({key: Beschreibung}), gewaehlte_option, aufbereitet ({de:{entscheidung,begruendung,gilt_wenn}, en:{decision,reason,applies_when}}), themen, kandidat',
+        example: 'jev({ action: "entscheidung_ablegen", project: "synapse", agent_id: "koordinator", frage_de: "Ausgabeformat?", kategorie: "variante", antwort_wortlaut: "JSON", gewaehlte_option: "a", aufbereitet: { de: { entscheidung: "JSON", begruendung: "maschinenlesbar", gilt_wenn: "Richtig, wenn ..." }, en: { decision: "JSON", reason: "machine readable", applies_when: "Correct when ..." } } })',
         tips: 'gilt_wenn/applies_when ist das Kriterium, an dem Jev erkennt, ob die Entscheidung eine neue Frage regelt: die BEDINGUNG ausschreiben, nicht das Thema. Verbotene Kategorien werden gespeichert, sind aber nie Praezedenz.',
       },
       entscheidung_aufbereiten: {
         description: 'P15 E1: Topf-Eintrag ergaenzen und aktivieren (roh -> aktiv) oder stilllegen/ersetzen. Nur Koordinator/User.',
-        params: 'project (req), agent_id (req), eintrag_id (req, UUID oder kennung), aufbereitet, frage_de, frage_en, optionen, gewaehlte_option, kategorie, themen, kandidat, status (aktiv Standard | stillgelegt | ersetzt), status_grund, ersetzt_durch',
+        params: 'project (req), agent_id (req), eintrag_id (req, UUID oder eindeutiger Praefix ab 8 Zeichen), aufbereitet, frage_de, frage_en, optionen, gewaehlte_option, kategorie, themen, kandidat, status (aktiv Standard | stillgelegt | ersetzt), status_grund, ersetzt_durch',
         example: 'jev({ action: "entscheidung_aufbereiten", project: "synapse", agent_id: "koordinator", eintrag_id: "<uuid>", kategorie: "umsetzungsweg", aufbereitet: { de: {...}, en: {...} } })',
       },
       topf: {
-        description: 'Beide globalen Toepfe: Standard nur Namenliste und Anzahl; Volltext gezielt per name. Nur eine ausdrueckliche frage startet den kostenpflichtigen Bedeutungsvergleich per Jev: hoechster Prozentwert bestimmt den gespeicherten Namen.',
-        params: 'project (req), topf (entscheidung Standard | erklaerung), name oder frage, schwelle (0..100, Standard 80), vollstaendig (bester Eintrag zusaetzlich), status, kategorie, herkunft, eintrag_id',
+        description: 'Beide globalen Toepfe: Standard nur IDs, kurze Vorschau und Anzahl; Volltext per eintrag_id (UUID oder eindeutiger Praefix ab 8 Zeichen; mehrdeutig liefert Kandidaten). Nur eine ausdrueckliche frage startet den kostenpflichtigen Bedeutungsvergleich per Jev: hoechster Prozentwert bestimmt die ID des besten Treffers.',
+        params: 'project (req), topf (entscheidung Standard | erklaerung), eintrag_id oder frage, schwelle (0..100, Standard 80), vollstaendig (bester Eintrag zusaetzlich), status, kategorie, herkunft',
         example: 'jev({ action: "topf", project: "synapse", herkunft: "seed" })',
-      },
-      topf_namen_nachtragen: {
-        description: 'Explizite Alt-Namen atomar nachtragen, ohne Jev; vorhandene Namen bleiben unveraendert. Namen sind in der DB ueber beide Toepfe eindeutig.',
-        params: 'project (req), topf (entscheidung Standard | erklaerung), namen:[{id ODER kennung,name}], ausfuehren (Standard false = Vorschau; true nur Koordinator/User); alternativ automatisch:true (Text+UUID) oder bestand_pruefen:true (rein lesend, beide Toepfe)',
-        example: 'jev({ action: "topf_namen_nachtragen", project: "synapse", topf: "entscheidung", namen: [{id: "<uuid>", name: "familie-thema"}] })',
-        tips: 'Erst bestand_pruefen:true und Namensliste ansehen. Konflikte (doppelte Namen, fehlende Eintraege, bestehender anderer Name) verhindern den gesamten Nachtrag. Wiederholung derselben Liste schreibt nichts. Automatische Ableitung nur mit automatisch:true. Bestandspruefung benoetigt kein neues DB-Register; Schema-Migration bricht bei Dubletten ab.',
       },
       durchsicht: {
         description: 'P15 E1: autonome Jev-Entscheidungen durchsehen. Ohne urteil: offene Liste (ohne Praezedenz zuerst). urteil ok = bestaetigt; korrigieren = ueberstimmt + neuer Topf-Eintrag herkunft korrektur mit dem Wortlaut des Users.',
-        params: 'project (req, "*" = alle), agent_id (req fuer urteil: koordinator|user), id (Protokoll-Nummer), urteil (ok|korrigieren), wahl + name (bei korrigieren, Name vom Ersteller), wortlaut, notiz, aufbereitet, seit',
-        example: 'jev({ action: "durchsicht", project: "synapse", agent_id: "koordinator", id: 12, urteil: "korrigieren", name: "korrektur-variante-b", wahl: "b", wortlaut: "B war gemeint" })',
+        params: 'project (req, "*" = alle), agent_id (req fuer urteil: koordinator|user), id (Protokoll-Nummer), urteil (ok|korrigieren), wahl (bei korrigieren), wortlaut, notiz, aufbereitet, seit',
+        example: 'jev({ action: "durchsicht", project: "synapse", agent_id: "koordinator", id: 12, urteil: "korrigieren", wahl: "b", wortlaut: "B war gemeint" })',
         tips: 'Folgen einer falschen Entscheidung ueber files history/restore zuruecknehmen (regel-rueckbau-ueber-files-restore).',
       },
     },

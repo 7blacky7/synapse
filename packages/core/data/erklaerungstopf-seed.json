@@ -4,7 +4,7 @@
   "quelle": "P15-T33 E0 (thought 1486172c): 15 Gold-Erklaerungen, deutsch aus E0, englisch aus E1. Status (P15-T33 E2, Jev-Protokoll 2, nicht vom User): verifiziert, wo E0 die Verifikation (M6) UND eine zuverlaessige Jev-Erkennung (V3, Tor 0,7) belegt; K4 und K11 nur vorgeschlagen (Erkennung 3/5 bzw. 1/5). v2 (P15 Nachtrunde, 11.10.2026, Eintraege mit v2:true): 35 generische Erklaerungen fuer python, shell, go, rust, php, ruby, kotlin, java, csharp, yaml, toml, dockerfile, cmake; verifiziert nur, wo je 3 Mutationen echter Index-Dateien vom echten Pruefer gesperrt wurden (Original ohne Befund) UND Jev auf dem Produktionsweg (baueSchatten/baueJevFrage, Kandidaten = alle Erklaerungen der Familie) 3/3 ueber Tor 0,7 richtig waehlte; sonst vorgeschlagen.",
   "hinweise": [
     "Generisch: keine Pfade, Bezeichner, Zeilen, Projekt- oder Agentennamen. ladeErklaerungstopfSeed prueft Generik und die gepflegten Sprachen (jev_optionen) vor dem Einfuegen.",
-    "Idempotent ueber kennung (ON CONFLICT DO NOTHING); eine bestehende Erklaerung mit derselben Lage in der Familie gilt als vorhanden.",
+    "Idempotent ueber Inhalts-ID; eine bestehende Erklaerung mit derselben Lage in der Familie gilt als vorhanden. Historische Kennungen sind ungenutzte Metadaten.",
     "familie = Name des Syntaxpruefers (familieVon), schluessel = quelle|familie|code (nur Ordnung/Statistik).",
     "Gleiche Ursache in mehreren Familien steht vorerst je Familie einzeln (z. B. fehlende geschweifte Klammer); familienuebergreifende Erklaerungen entscheidet der User (Varianten A/C, thought 96cc1312)."
   ],

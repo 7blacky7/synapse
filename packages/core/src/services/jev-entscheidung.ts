@@ -1,4 +1,4 @@
-import { leseTopf, trageTopfNamenNach, topfName } from './topf-namen.js';
+import { leseTopf } from './topf-ansicht.js';
 /**
  * Jev entscheidet Rueckfragen, wenn der User nicht da ist (P7-T28 / JEV-10, 29.09.2026).
  *
@@ -711,16 +711,16 @@ export async function entscheideRueckfrage(
         }
       }
     }
-    const praezedenzName = praez ? (praez.eintrag.kennung ?? praez.eintrag.id.slice(0, 8)) : '';
+    const praezedenzId = praez?.eintrag.id ?? '';
     const kennz = (c: number): string => praez
-      ? `${kennzeichnung(c)}; wie User-Entscheidung ${praezedenzName} (Praezedenz-Confidence ${praez.confidence})`
+      ? `${kennzeichnung(c)}; wie User-Entscheidung ${praezedenzId} (Praezedenz-Confidence ${praez.confidence})`
       : ohnePraezedenz ? `${kennzeichnung(c)}; OHNE Praezedenz aus dem Topf (bei der Durchsicht zuerst)` : kennzeichnung(c);
     const topfFelder = async (): Promise<Record<string, unknown>> => {
       if (praez) {
         await zaehleTopf(praez.eintrag.id, 'gewaehlt_n');
         return {
           praezedenz: {
-            id: praez.eintrag.id, kennung: praez.eintrag.kennung, confidence: praez.confidence,
+            id: praez.eintrag.id, confidence: praez.confidence,
             entscheidung: praez.eintrag.aufbereitet_de?.entscheidung ?? praez.eintrag.aufbereitet_en?.decision ?? null,
           },
         };
@@ -961,7 +961,6 @@ export async function entscheidungsDurchsichtZeile(o: { project: string; koordin
 }
 
 export interface DurchsichtOptionen {
-  name?: unknown;
   agent_id?: string;
   /** Protokoll-Nummer; ohne id und urteil: Liste der offenen Durchsicht */
   id?: number | string;
@@ -1013,8 +1012,6 @@ export async function durchsichtEntscheidung(project: string, o: DurchsichtOptio
       return { success: true, id, durchsicht: 'bestaetigt', message: `Eintrag ${id} bestaetigt.` };
     }
     if (o.wahl === undefined || o.wahl === null || o.wahl === '') return { success: false, error: 'wahl_fehlt', message: 'korrigieren braucht wahl (die richtige Entscheidung).' };
-    const name = topfName(o.name);
-    if (!name) return { success: false, error: 'name_fehlt', message: 'Korrektur braucht name vom Ersteller (1..160 Zeichen ohne Steuerzeichen).' };
     const notiz = kurz(o.notiz, 500) || null;
     const client = await getPool().connect();
     let neu: Record<string, unknown>;
@@ -1023,7 +1020,7 @@ export async function durchsichtEntscheidung(project: string, o: DurchsichtOptio
       const wahlText = typeof o.wahl === 'string' ? o.wahl : JSON.stringify(o.wahl);
       neu = await schreibeTopfEintrag(
         {
-          name, frage_de: z.frage, optionen: z.optionen, gewaehlte_option: wahlText, kategorie: z.kategorie ?? 'variante', herkunft_projekt: z.project,
+          frage_de: z.frage, optionen: z.optionen, gewaehlte_option: wahlText, kategorie: z.kategorie ?? 'variante', herkunft_projekt: z.project,
           antwort_wortlaut: kurz(o.wortlaut, 4000) || `Korrektur des Users: richtig ist "${wahlText}"${notiz ? ` (${notiz})` : ''}.`,
           kontext: notiz ?? undefined, aufbereitet: o.aufbereitet,
         },
@@ -1051,7 +1048,7 @@ export async function durchsichtEntscheidung(project: string, o: DurchsichtOptio
   }
 }
 
-export const JEV_TOPF_ACTIONS = ['entscheidung_ablegen', 'entscheidung_aufbereiten', 'topf', 'topf_namen_nachtragen', 'durchsicht'] as const;
+export const JEV_TOPF_ACTIONS = ['entscheidung_ablegen', 'entscheidung_aufbereiten', 'topf', 'durchsicht'] as const;
 
 export function istJevTopfAction(action: string | undefined): boolean {
   return typeof action === 'string' && (JEV_TOPF_ACTIONS as readonly string[]).includes(action);
@@ -1064,20 +1061,15 @@ export const JEV_TOPF_BESCHREIBUNG =
   'entscheidung_ablegen (nur Koordinator/User: frage_de|frage_en, antwort_wortlaut, kategorie, optionen, gewaehlte_option, aufbereitet {de:{entscheidung,begruendung,gilt_wenn}, en:{decision,reason,applies_when}}, themen; ohne Aufbereitung in den gepflegten Sprachen roh), ' +
   'entscheidung_aufbereiten (eintrag_id; roh -> aktiv, oder status stillgelegt|ersetzt), topf (Liste: status, kategorie, herkunft, eintrag_id), ' +
   'durchsicht (ohne urteil: offene autonome Entscheidungen, ohne Praezedenz zuerst; urteil ok|korrigieren mit id, wahl, wortlaut - die Korrektur wird neuer Topf-Eintrag). ' +
-  'Neue Eintraege brauchen einen Namen vom Ersteller, auch thoughts mit Tags entscheidung+user (name) und Durchsicht-Korrekturen. topf ohne frage liefert nur namen+anzahl, mit name den Volltext. topf mit frage vergleicht Bedeutungen per Jev und liefert den Namen mit dem hoechsten Prozentwert (schwelle Standard 80, vollstaendig optional). topf_namen_nachtragen: namen:[{id oder kennung,name}] als Vorschau; ausfuehren:true schreibt atomar nur als Koordinator/User. bestand_pruefen:true liest beide Toepfe auf Dubletten; automatisch:true ist ein ausdruecklicher Rueckfall. Namen sind DB-seitig topfuebergreifend eindeutig. abwesend mit project "*" = alle Projekte.';
+  'topf liefert kompakt IDs und kurze Vorschau; eintrag_id (UUID oder eindeutiger Praefix ab 8 Zeichen) liefert Volltext. Nur frage startet den Jev-Bedeutungsvergleich und liefert die ID des besten Treffers (schwelle Standard80, vollstaendig optional). abwesend mit project "*" = alle Projekte.';
 
 /** Zusaetzliche Parameter am Tool jev (Schema-Properties, REST und stdio identisch). */
 export const JEV_TOPF_PARAMETER: Record<string, Record<string, unknown>> = {
-  name: { type: 'string', minLength: 1, maxLength: 160, description: 'Vom Ersteller gesetzter Name: Pflicht fuer neue Entscheidungen und Durchsicht-Korrekturen; topf: Volltext gezielt per Name.' },
-  topf: { type: 'string', enum: ['entscheidung', 'erklaerung'], description: 'topf/topf_namen_nachtragen: welcher globale Topf (Standard entscheidung).' },
+  topf: { type: 'string', enum: ['entscheidung', 'erklaerung'], description: 'topf: welcher globale Topf (Standard entscheidung).' },
   frage: { type: 'string', description: 'topf: ausdrueckliche Bedeutungsfrage; nur dann kostenpflichtiger Jev-Vergleich aller Eintraege, hoechster Prozentwert gewinnt. entscheiden: Rueckfrage.' },
   schwelle: { type: 'number', minimum: 0, maximum: 100, description: 'topf: Ja-Schwelle in Prozent, Standard 80.' },
-  vollstaendig: { type: 'boolean', description: 'topf mit frage: besten Eintrag zusaetzlich zum Namen ausgeben.' },
-  namen: { type: 'array', minItems: 1, description: 'topf_namen_nachtragen: explizite Namen, jeweils genau id oder kennung; Standard Vorschau, bestehende Namen werden nicht ersetzt.', items: { type: 'object', required: ['name'], properties: { id: { type: 'string' }, kennung: { type: 'string' }, name: { type: 'string', minLength: 1, maxLength: 160 } }, oneOf: [{ required: ['id'], not: { required: ['kennung'] } }, { required: ['kennung'], not: { required: ['id'] } }] } },
-  automatisch: { type: 'boolean', description: 'topf_namen_nachtragen: ausdruecklicher Rueckfall auf Text plus UUID; nicht zusammen mit namen.' },
-  bestand_pruefen: { type: 'boolean', description: 'topf_namen_nachtragen: rein lesende Bestandspruefung beider Toepfe auf Dubletten und fehlende Namen, auch vor Register-Migration.' },
-  ausfuehren: { type: 'boolean', description: 'topf_namen_nachtragen: Standard Vorschau; true schreibt fehlende Alt-Namen ohne Jev, nur Koordinator/User.' },
-  eintrag_id: { type: 'string', description: 'entscheidung_aufbereiten/topf: Topf-Eintrag (UUID oder kennung, z. B. ent-001)' },
+  vollstaendig: { type: 'boolean', description: 'topf mit frage: besten Eintrag zusaetzlich zur ID ausgeben.' },
+  eintrag_id: { type: 'string', description: 'entscheidung_aufbereiten/topf: Topf-Eintrag (UUID oder eindeutiger Praefix ab 8 Zeichen)' },
   frage_de: { type: 'string', description: 'entscheidung_ablegen/aufbereiten: die Rueckfrage an den User (deutsch)' },
   frage_en: { type: 'string', description: 'entscheidung_ablegen/aufbereiten: die Rueckfrage an den User (englisch)' },
   antwort_wortlaut: { type: 'string', description: 'entscheidung_ablegen: die Antwort des Users im Original (unveraendert)' },
@@ -1104,11 +1096,9 @@ export async function fuehreJevTopfActionAus(project: string, action: string, ar
         return await bereiteEntscheidungAuf(args, agent);
       case 'topf':
         return await leseTopf(args, project === '*' ? null : project, agent);
-      case 'topf_namen_nachtragen':
-        return await trageTopfNamenNach(args, agent);
       case 'durchsicht':
         return await durchsichtEntscheidung(project, {
-          name: args.name, agent_id: agent, id: args.id as number | string | undefined, urteil: typeof args.urteil === 'string' ? args.urteil : undefined,
+          agent_id: agent, id: args.id as number | string | undefined, urteil: typeof args.urteil === 'string' ? args.urteil : undefined,
           wahl: args.wahl, wortlaut: typeof args.wortlaut === 'string' ? args.wortlaut : undefined, notiz: typeof args.notiz === 'string' ? args.notiz : undefined,
           aufbereitet: args.aufbereitet, seit: typeof args.seit === 'string' ? args.seit : undefined, limit: typeof args.limit === 'number' ? args.limit : undefined,
         });

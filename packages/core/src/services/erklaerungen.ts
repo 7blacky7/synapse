@@ -1,4 +1,4 @@
-import { topfName } from './topf-namen.js';
+import { topfSeedId } from './topf-ansicht.js';
 /**
  * MODUL: Erklaerungs-Topf (P15-T33 E1, 11.10.2026) - Jev waehlt, Claude erklaert.
  * QUELLEN: Konzept thought 0a089e5d (v3), E0-Messung 1486172c, User-Entscheidungen a189da34 und a5fd30ea,
@@ -64,7 +64,6 @@ export interface ErklaerungTexte {
 
 export interface Erklaerung {
   id: string;
-  kennung: string | null;
   familie: string;
   schluessel: string | null;
   de: ErklaerungTexte | null;
@@ -81,7 +80,6 @@ export interface Erklaerung {
 
 interface ErklaerungRoh {
   id: string;
-  kennung: string | null;
   familie: string;
   schluessel: string | null;
   lage_de: string | null;
@@ -100,7 +98,7 @@ interface ErklaerungRoh {
   erstellt_am: Date | null;
 }
 
-const SPALTEN_E = 'id::text AS id, kennung, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, '
+const SPALTEN_E = 'id::text AS id, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, '
   + 'status, status_grund, gewaehlt_n, verifiziert_n, passt_nicht_n, verifiziert_am, erstellt_von, erstellt_am';
 
 const iso = (d: Date | string | null | undefined): string | null => (d ? new Date(d).toISOString() : null);
@@ -112,7 +110,6 @@ function texteAus(lage: string | null, wieso: string | null, abhilfe: string | n
 function alsErklaerung(r: ErklaerungRoh): Erklaerung {
   return {
     id: r.id,
-    kennung: r.kennung,
     familie: r.familie,
     schluessel: r.schluessel,
     de: texteAus(r.lage_de, r.wieso_de, r.abhilfe_de),
@@ -1147,12 +1144,7 @@ export async function legeErklaerungAb(a: {
   agent: string | null;
   erklaerung_id?: string;
   texte: Partial<Record<`${(typeof TEXTFELDER)[number]}_${ErklaerungSprache}`, string>>;
-  kennung?: string;
-  name?: string;
 }): Promise<Record<string, unknown>> {
-  const name = topfName(a.name ?? a.kennung);
-  if (!a.erklaerung_id && !name) return fehler('name_fehlt', 'name vom Ersteller ist Pflicht (1..160 Zeichen ohne Steuerzeichen).');
-  if (a.name && a.kennung && a.name.trim() !== a.kennung.trim()) return fehler('name_widerspruch', 'name und kennung muessen identisch sein.');
   const f = await ladeFall(a.fall_id);
   if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${a.fall_id}".`);
   const wer = a.agent ?? '';
@@ -1195,7 +1187,6 @@ export async function legeErklaerungAb(a: {
         + 'Erklaerungen beschreiben Lage, Wieso und Abhilfe allgemein - ohne Pfade, Dateinamen, Bezeichner, Literale, Zeilen, Hashes, Codebloecke, Projekt- oder Agentennamen.',
         { verstoesse: verstoesse.map((v) => ({ ...v, fund: v.art === 'geheimnis' || v.art === 'env_wert' ? '***' : v.fund })) });
     }
-    const kennung = name!;
     const dublette = await getPool().query<{ id: string }>(
       `SELECT id::text AS id FROM erklaerungen WHERE familie = $1 AND status <> 'stillgelegt'
          AND ((lage_en IS NOT NULL AND lower(lage_en) = lower($2)) OR (lage_de IS NOT NULL AND lower(lage_de) = lower($3))) LIMIT 1`,
@@ -1206,14 +1197,14 @@ export async function legeErklaerungAb(a: {
     }
     try {
       const { rows } = await getPool().query<ErklaerungRoh>(
-        `INSERT INTO erklaerungen (kennung, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, erstellt_von)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'vorgeschlagen', $10) RETURNING ${SPALTEN_E}`,
-        [kennung, f.familie, f.schluessel, texte.lage_de ?? null, texte.wieso_de ?? null, texte.abhilfe_de ?? null,
+        `INSERT INTO erklaerungen (familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, erstellt_von)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vorgeschlagen', $9) RETURNING ${SPALTEN_E}`,
+        [f.familie, f.schluessel, texte.lage_de ?? null, texte.wieso_de ?? null, texte.abhilfe_de ?? null,
           texte.lage_en ?? null, texte.wieso_en ?? null, texte.abhilfe_en ?? null, wer],
       );
       erklaerung = alsErklaerung(rows[0]);
     } catch (err) {
-      if ((err as { code?: string }).code === '23505') return fehler('dublette', `kennung "${kennung}" ist schon vergeben.`);
+      if ((err as { code?: string }).code === '23505') return fehler('dublette', 'Erklaerung bereits vorhanden.');
       throw err;
     }
   }
@@ -1294,7 +1285,6 @@ export async function erklaerungenTagespruefung(o: { maxPruefungen?: number } = 
 // ─── Startbestand, Status, Onboarding-Zeile (E2) ─────────────────────────────
 
 interface SeedErklaerung {
-  kennung: string;
   familie: string;
   schluessel?: string;
   status?: string;
@@ -1309,12 +1299,11 @@ export function erklaerungstopfSeedPfad(): string {
 }
 
 /**
- * Prueft einen Seed-Eintrag wie erklaerung_ablegen: kennung, Status, gepflegte Sprachen vollstaendig, Laenge,
+ * Prueft einen Seed-Eintrag wie erklaerung_ablegen: Status, gepflegte Sprachen vollstaendig, Laenge,
  * Generik (ohne Fall: Pfade, Zeilenangaben, Hashes, Codebloecke, Geheimnisse). Liefert die Probleme (leer = gut).
  */
 export function pruefeSeedEintrag(e: SeedErklaerung, pflicht: ErklaerungSprache[]): string[] {
   const aus: string[] = [];
-  if (!e || typeof e.kennung !== 'string' || !/^[a-z0-9][a-z0-9-]{2,60}$/.test(e.kennung)) aus.push('kennung ungueltig');
   if (!e || typeof e.familie !== 'string' || !e.familie.trim()) aus.push('familie fehlt');
   const status = e?.status ?? 'vorgeschlagen';
   if (status !== 'vorgeschlagen' && status !== 'verifiziert') aus.push(`status ${status} (nur vorgeschlagen | verifiziert)`);
@@ -1333,7 +1322,7 @@ export function pruefeSeedEintrag(e: SeedErklaerung, pflicht: ErklaerungSprache[
 }
 
 /**
- * Laedt den Startbestand idempotent: ON CONFLICT kennung DO NOTHING, eine nicht stillgelegte Erklaerung mit derselben
+ * Laedt den Startbestand idempotent: stabile Inhalts-ID, eine nicht stillgelegte Erklaerung mit derselben
  * Lage in der Familie gilt als vorhanden. Status laut Seed (verifiziert nur, wo E0 es belegt). Beim API-Start und per
  * admin(jev_erklaerungstopf, modus seed_laden). Wirft nie.
  */
@@ -1360,27 +1349,27 @@ export async function ladeErklaerungstopfSeed(o: { datei?: string; agent?: strin
     const probleme = pruefeSeedEintrag(e, pflicht);
     if (probleme.length) {
       abgelehnt++;
-      if (fehler.length < 10) fehler.push(`${e?.kennung ?? '?'}: ${probleme.join('; ')}`);
+      if (fehler.length < 10) fehler.push(`${e?.familie ?? '?'}: ${probleme.join('; ')}`);
       continue;
     }
     try {
       const status = e.status === 'verifiziert' ? 'verifiziert' : 'vorgeschlagen';
       const t = (s: ErklaerungSprache, f: (typeof TEXTFELDER)[number]): string | null => e[s]?.[f]?.trim() || null;
       const r = await getPool().query(
-        `INSERT INTO erklaerungen (kennung, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, status_grund,
+        `INSERT INTO erklaerungen (id, familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, status_grund,
            verifiziert_am, erstellt_von)
-         SELECT $1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, $9::text, $10::text, $11::text,
+         SELECT $1::uuid, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, $9::text, $10::text, $11::text,
                 CASE WHEN $10::text = 'verifiziert' THEN NOW() END, $12::text
           WHERE NOT EXISTS (SELECT 1 FROM erklaerungen WHERE familie = $2::text AND status <> 'stillgelegt'
                   AND ((lage_en IS NOT NULL AND lower(lage_en) = lower($7::text)) OR (lage_de IS NOT NULL AND lower(lage_de) = lower($4::text))))
-         ON CONFLICT (kennung) DO NOTHING`,
-        [e.kennung, e.familie.trim(), e.schluessel ?? null, t('de', 'lage'), t('de', 'wieso'), t('de', 'abhilfe'), t('en', 'lage'), t('en', 'wieso'),
+         ON CONFLICT (id) DO NOTHING`,
+        [topfSeedId('erklaerung', [e.familie.trim(), t('de', 'lage')?.toLowerCase() ?? null, t('en', 'lage')?.toLowerCase() ?? null]), e.familie.trim(), e.schluessel ?? null, t('de', 'lage'), t('de', 'wieso'), t('de', 'abhilfe'), t('en', 'lage'), t('en', 'wieso'),
           t('en', 'abhilfe'), status, `Seed (Startbestand E0)${e.beleg ? `: ${e.beleg}` : ''}`, o.agent ?? 'seed'],
       );
       if ((r.rowCount ?? 0) > 0) neu++; else vorhanden++;
     } catch (err) {
       fehlerhaft++;
-      if (fehler.length < 10) fehler.push(`${e.kennung}: ${fehlerText(err)}`);
+      if (fehler.length < 10) fehler.push(`${e.familie}: ${fehlerText(err)}`);
     }
   }
   return {
@@ -1526,8 +1515,6 @@ export const ERKLAERUNG_PARAMETER: Record<string, Record<string, unknown>> = {
   lage_en: { type: 'string', description: 'erklaerung_ablegen: situation, english - Pflicht, wenn Englisch gepflegt ist' },
   wieso_en: { type: 'string', description: 'erklaerung_ablegen: why (cause), english' },
   abhilfe_en: { type: 'string', description: 'erklaerung_ablegen: fix, english' },
-  name: { type: 'string', minLength: 1, maxLength: 160, description: 'erklaerung_ablegen: vom Ersteller gesetzter eindeutiger Name, Pflicht bei neuer Erklaerung.' },
-  kennung: { type: 'string', description: 'erklaerung_ablegen: kompatibler Alias fuer name.' },
   bewertung: { type: 'string', enum: [...BEWERTUNGEN], description: 'erklaerung_bewerten: passt_nicht (jeder) | stilllegen (Koordinator, grund >= 10) | reaktivieren (Koordinator)' },
   zustimmung_user: { type: 'boolean', description: 'fall_verwerfen: Pflichtfeld; der User hat dem Verwerfen zugestimmt' },
   grund: { type: 'string', description: 'fall_verwerfen: Pflicht, mindestens 10 Zeichen; erklaerung_bewerten: Begruendung' },
@@ -1564,7 +1551,7 @@ export async function fuehreErklaerungsActionAus(action: string, args: Record<st
           const v = text(args[`${feld}_${s}`]);
           if (v) texte[`${feld}_${s}`] = v;
         }
-        return await legeErklaerungAb({ fall_id: fallId, agent, erklaerung_id: text(args.erklaerung_id), texte, name: text(args.name), kennung: text(args.kennung) });
+        return await legeErklaerungAb({ fall_id: fallId, agent, erklaerung_id: text(args.erklaerung_id), texte });
       }
       case 'fall_pruefen': {
         const id = text(args.id) ?? text(args.fall_id);

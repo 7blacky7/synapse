@@ -180,7 +180,7 @@ export async function fuehreJevAdminAus(
         if (!darfKoordinatorOderUser(wer)) return nurKoordinator(wer);
         const seed = await ladeEntscheidungstopfSeed({ agent: wer });
         void ergaenzeTopfEmbeddings();
-        return { ...seed, topf: await entscheidungstopfStatus(), hinweis: 'Idempotent (kennung). Vektoren werden im Hintergrund berechnet. Durchsicht durch den User: jev(action:"topf", herkunft:"seed").' };
+        return { ...seed, topf: await entscheidungstopfStatus(), hinweis: 'Idempotent (Inhalts-ID und bestehende Seed-Inhalte). Vektoren werden im Hintergrund berechnet. Durchsicht durch den User: jev(action:"topf", herkunft:"seed").' };
       }
       case 'jev_erklaerungstopf': {
         // P15-T33 E2: Erklaerungs-Topf - Stand, Startbestand, Nachholen liegengebliebener Fehlersituationen
@@ -195,7 +195,7 @@ export async function fuehreJevAdminAus(
           return { success: !n.error, ...n, topf: await erklaerungstopfStatus() };
         }
         const seed = await ladeErklaerungstopfSeed({ agent: wer });
-        return { ...seed, topf: await erklaerungstopfStatus(), hinweis: 'Idempotent (kennung; gleiche Lage in der Familie gilt als vorhanden). Liste: code_check(action:"erklaerungen").' };
+        return { ...seed, topf: await erklaerungstopfStatus(), hinweis: 'Idempotent (Inhalts-ID; gleiche Lage in der Familie gilt als vorhanden). Liste: code_check(action:"erklaerungen").' };
       }
       default:
         return { success: false, error: 'unbekannte_action', message: `Unbekannte Jev-Action "${action}". Erlaubt: ${JEV_ADMIN_ACTIONS.join(', ')}.` };

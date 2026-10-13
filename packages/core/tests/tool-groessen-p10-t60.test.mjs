@@ -17,6 +17,9 @@ try{
  for(const {tablename}of(await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public'")).rows){
   const q='"'+tablename.replaceAll('"','""')+'"';await pool.query('CREATE TABLE "'+schema+'".'+q+' (LIKE public.'+q+' INCLUDING ALL)');
  }
+ await pool.query('ALTER TABLE chat_lesestand ADD COLUMN IF NOT EXISTS letzte_hinweis_id INTEGER NOT NULL DEFAULT 0');
+ const {setzeSchalter}=await import('../dist/services/intern-schalter.js');
+ await setzeSchalter('embedding',{aktiv:true,modus:'alle',dauer_min:10,agent:'fixture'});
  const tasks=Array.from({length:30},(_,i)=>({id:randomUUID(),title:'Task '+i,status:'todo',priority:'medium',description:'Ausführliche Beschreibung. '.repeat(120),kurz_id:'P1-T'+(i+1)}));
  await pool.query('INSERT INTO plans(id,project,name,tasks,kurz_id,aktiv) VALUES($1,$2,$3,$4::jsonb,$5,true)',[randomUUID(),project,'Testplan',JSON.stringify(tasks),'P1']);
  for(let i=0;i<30;i++)await pool.query("INSERT INTO jev_entscheidungstopf(kennung,kategorie,antwort_wortlaut,frage_de,status,herkunft) VALUES($1,'variante',$2,$3,'roh','tool')",['test-name-'+i,'Antwort. '.repeat(150),'Frage '+i]);
@@ -37,7 +40,7 @@ try{
   const normal=await call('plan',{action:'get',plan_id:'P1'});
   const full=await call('plan',{action:'get',plan_id:'P1',compact:false});
   const one=await call('plan',{action:'get',plan_id:'P1',task_id:'P1-T1'});
-  const pot=await call('jev',{action:'topf'});
+  const pot=await call('jev',{action:'topf',herkunft:'tool'});
   const activity=await call('shell',{action:'activity',tools:['t60fixture'],limit:1});
   console.log(JSON.stringify({mode,plan:JSON.stringify(normal).length,plan_full:JSON.stringify(full).length,topf:JSON.stringify(pot).length,activity:JSON.stringify(activity).length}));
   if(!old || mode==='rest')assert.equal((full.tasks??full.plan?.tasks).length,30);
@@ -45,21 +48,19 @@ try{
   if(!old){
    assert.equal(JSON.stringify(normal).includes(tasks[0].description),false,'kein versteckter Volltext im Standardplan');
    assert.equal((normal.tasks??normal.plan?.tasks).length,30);
-   assert.equal(pot.anzahl,30);assert.equal(pot.namen.length,30);assert.equal('eintraege'in pot,false);
-   const detail=await call('jev',{action:'topf',name:'test-name-0'});assert.equal(detail.eintraege[0].kennung,'test-name-0');
-   const explanations=await call('jev',{action:'topf',topf:'erklaerung'});assert.deepEqual(explanations.namen,[]);
-   const preview=await call('jev',{action:'topf_namen_nachtragen',automatisch:true});assert.equal(preview.vorschau,true);assert.equal(preview.anzahl,0);
-   const inventory=await call('jev',{action:'topf_namen_nachtragen',bestand_pruefen:true});assert.equal(inventory.eindeutig,true);assert.equal(inventory.anzahl,30);
-   const missingList=await call('jev',{action:'topf_namen_nachtragen'});assert.equal(missingList.error,'namen_fehlen');
-   const explicit=await call('jev',{action:'topf_namen_nachtragen',namen:[{kennung:'test-name-0',name:'test-name-0'}]});assert.equal(explicit.success,true);assert.equal(explicit.unveraendert,1);
-   for(const key of ['namen','automatisch','bestand_pruefen']) assert.ok(definitions[mode].tools.find(t=>t.name==='jev').inputSchema.properties[key]);
-   const noName=await call('thought',{action:'add',source:agent,content:'Nicht speichern',tags:['entscheidung','user']});
-   assert.equal(noName.success,false);assert.ok(JSON.stringify(noName).includes('name'));
-   assert.equal(Number((await pool.query('SELECT count(*) FROM thoughts WHERE project=$1',[project])).rows[0].count),0);
-   const missingExplanation=await call('code_check',{action:'erklaerung_ablegen',fall_id:'999999'});
-   assert.equal(missingExplanation.error,'name_fehlt');
-   assert.ok(definitions[mode].tools.find(t=>t.name==='jev').inputSchema.properties.name);
-   assert.ok(definitions[mode].tools.find(t=>t.name==='code_check').inputSchema.properties.name);
+   assert.equal(pot.anzahl,30);assert.equal(pot.eintraege.length,30);
+   assert.ok(pot.eintraege.every(e=>e.id&&e.vorschau&&!('kennung'in e)));
+   const id=pot.eintraege[0].id;
+   for(const eingabe of [id,id.slice(0,8)]){
+    const detail=await call('jev',{action:'topf',eintrag_id:eingabe});assert.equal(detail.eintraege[0].id,id);assert.equal('kennung'in detail.eintraege[0],false);
+   }
+   const explanations=await call('jev',{action:'topf',topf:'erklaerung'});assert.deepEqual(explanations.eintraege,[]);
+   const thought=await call('thought',{action:'add',source:agent,content:'Namenslose Entscheidung',tags:['entscheidung','user']});assert.equal(thought.success,true);
+   const batch=await call('thought',{action:'add_batch',source:agent,items:[{content:'Namenslose Batchentscheidung',tags:['entscheidung','user']}]});assert.equal(batch.success,true);
+   assert.equal(Number((await pool.query("SELECT count(*) FROM jev_entscheidungstopf WHERE herkunft='thought' AND herkunft_projekt=$1",[project])).rows[0].count),mode==='rest'?2:4);
+   const missingExplanation=await call('code_check',{action:'erklaerung_ablegen',fall_id:'999999'});assert.equal(missingExplanation.error,'nicht_gefunden');
+   for(const tool of ['jev','code_check','thought'])assert.equal('name'in definitions[mode].tools.find(t=>t.name===tool).inputSchema.properties,false);
+   assert.equal(definitions[mode].tools.find(t=>t.name==='jev').inputSchema.properties.action.enum.includes('topf_namen_nachtragen'),false);
    assert.ok(definitions[mode].tools.find(t=>t.name==='thought').inputSchema.required.includes('project'));
    assert.ok(definitions[mode].tools.find(t=>t.name==='specialist').inputSchema.allOf.some(x=>x.if.properties.action.const==='status'&&x.then.required.includes('project')));
    const shell=definitions[mode].tools.find(t=>t.name==='shell');assert.ok(shell.inputSchema.properties.limit.description.includes('activity'));

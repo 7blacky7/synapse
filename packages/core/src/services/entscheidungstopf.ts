@@ -26,7 +26,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPool } from '../db/client.js';
-import { leseTopf, topfName } from './topf-namen.js';
+import { leseTopf, loeseTopfId, topfSeedId } from './topf-ansicht.js';
 import { embed } from '../embeddings/index.js';
 import { embeddingModellKennung, sichereModellprofil } from '../embeddings/modell-profil.js';
 import { leseJevOptionen, type JevSprache } from './jev-optionen.js';
@@ -50,7 +50,6 @@ export interface TopfAufbereitung { de?: TopfAufbereitungDe; en?: TopfAufbereitu
 
 export interface TopfEintrag {
   id: string;
-  kennung: string | null;
   herkunft_projekt: string | null;
   themen: string[];
   kategorie: string;
@@ -86,7 +85,7 @@ export interface TopfDeps {
   modell?: string;
 }
 
-const SPALTEN = `id, kennung, herkunft_projekt, themen, kategorie, kandidat, frage_de, frage_en, optionen, gewaehlte_option, kontext,
+const SPALTEN = `id, herkunft_projekt, themen, kategorie, kandidat, frage_de, frage_en, optionen, gewaehlte_option, kontext,
   antwort_wortlaut, wortlaut_rekonstruiert, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, ersetzt_durch, status_grund,
   gewaehlt_n, bestaetigt_n, korrigiert_n, erfasst_von, aufbereitet_von, erstellt_am, geaendert_am`;
 
@@ -187,7 +186,6 @@ function leseThemen(roh: unknown): string[] | undefined {
 // ---------------------------------------------------------------------------
 
 export interface AblegenEingabe {
-  name?: unknown;
   frage_de?: unknown;
   frage_en?: unknown;
   optionen?: unknown;
@@ -206,8 +204,6 @@ export async function schreibeTopfEintrag(
   e: AblegenEingabe,
   meta: { herkunft: (typeof TOPF_HERKUNFT)[number]; quelle_ref?: string | null; erfasst_von?: string | null; db?: Pick<ReturnType<typeof getPool>, 'query'> },
 ): Promise<Record<string, unknown>> {
-  const name = topfName(e.name);
-  if (!name) return { success: false, error: 'name_fehlt', message: 'name vom Ersteller ist Pflicht (1..160 Zeichen ohne Steuerzeichen).' };
   const frageDe = text(e.frage_de, 1000);
   const frageEn = text(e.frage_en, 1000);
   const wortlaut = text(e.antwort_wortlaut);
@@ -221,20 +217,19 @@ export async function schreibeTopfEintrag(
   const kandidat = e.kandidat === false || e.kandidat === 'false' ? false : true;
   const { rows } = await (meta.db ?? getPool()).query<{ id: string }>(
     `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, frage_en, optionen, gewaehlte_option, kontext,
-       antwort_wortlaut, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, erfasst_von, aufbereitet_von, kennung)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17, $18)
+       antwort_wortlaut, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, erfasst_von, aufbereitet_von)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17)
      RETURNING id`,
     [
       text(e.herkunft_projekt, 200) ?? null, leseThemen(e.themen) ?? [], kategorie, kandidat, frageDe ?? null, frageEn ?? null,
       JSON.stringify(leseOptionen(e.optionen)), text(e.gewaehlte_option, 200) ?? null, text(e.kontext, 1500) ?? null, wortlaut,
       aufb?.de ? JSON.stringify(aufb.de) : null, aufb?.en ? JSON.stringify(aufb.en) : null, meta.herkunft, meta.quelle_ref ?? null, status,
-      meta.erfasst_von ?? null, status === 'aktiv' ? (meta.erfasst_von ?? null) : null, name,
+      meta.erfasst_von ?? null, status === 'aktiv' ? (meta.erfasst_von ?? null) : null,
     ],
   );
   return {
     success: true,
     id: rows[0].id,
-    name,
     status,
     ...(status === 'roh'
       ? {
@@ -269,9 +264,11 @@ export async function bereiteEntscheidungAuf(
     return { success: false, error: 'nur_koordinator', message: `Aufbereiten darf nur der Koordinator oder der User (agent_id koordinator|coordinator|user), bekommen: "${w}".` };
   }
   const id = text(e.eintrag_id, 100);
-  if (!id) return { success: false, error: 'eintrag_id_fehlt', message: 'eintrag_id (UUID oder kennung) ist Pflicht.' };
+  if (!id) return { success: false, error: 'eintrag_id_fehlt', message: 'eintrag_id (UUID oder eindeutiger Praefix ab 8 Zeichen) ist Pflicht.' };
   try {
-    const { rows } = await getPool().query<TopfEintrag>(`SELECT ${SPALTEN} FROM jev_entscheidungstopf WHERE id::text = $1 OR kennung = $1`, [id]);
+    const aufgeloest = await loeseTopfId('jev_entscheidungstopf', id);
+    if ('error' in aufgeloest) return { success: false, ...aufgeloest };
+    const { rows } = await getPool().query<TopfEintrag>(`SELECT ${SPALTEN} FROM jev_entscheidungstopf WHERE id = $1::uuid`, [aufgeloest.id]);
     const alt = rows[0];
     if (!alt) return { success: false, error: 'nicht_gefunden', message: `Kein Topf-Eintrag "${id}".` };
     const aufb = leseAufbereitung(e.aufbereitet);
@@ -311,7 +308,7 @@ export async function bereiteEntscheidungAuf(
   }
 }
 
-/** Kompakte Namenliste; Details und ausdrueckliche Bedeutungsfrage ueber den gemeinsamen Vertrag. */
+/** Kompakte ID-Liste; Details und ausdrueckliche Bedeutungsfrage ueber den gemeinsamen Vertrag. */
 export async function listeEntscheidungstopf(f: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   return leseTopf({ ...f, topf: 'entscheidung' });
 }
@@ -346,21 +343,19 @@ export async function entscheidungstopfStatus(): Promise<Record<string, unknown>
  */
 export async function spiegeleThoughtInTopf(
   project: string,
-  t: { id: string; source?: string | null; content: string; tags?: string[] | null; name?: string },
+  t: { id: string; source?: string | null; content: string; tags?: string[] | null },
 ): Promise<{ angelegt: boolean; id?: string; fehler?: string }> {
   const tags = (t.tags ?? []).map((x) => String(x).trim().toLowerCase());
   if (!tags.includes('entscheidung') || !tags.includes('user')) return { angelegt: false };
-  const name = topfName(t.name);
-  if (!name) return { angelegt: false, fehler: 'name vom Ersteller ist Pflicht (1..160 Zeichen ohne Steuerzeichen).' };
   try {
     const erste = kurz(t.content.split('\n').find((z) => z.trim()) ?? t.content, 300);
     const { rows } = await getPool().query<{ id: string }>(
-      `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, antwort_wortlaut, herkunft, quelle_ref, status, erfasst_von, kennung)
-       VALUES ($1, $2, $3, false, $4, $5, 'thought', $6, 'roh', $7, $8)
+      `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, antwort_wortlaut, herkunft, quelle_ref, status, erfasst_von)
+       VALUES ($1, $2, $3, false, $4, $5, 'thought', $6, 'roh', $7)
        ON CONFLICT (quelle_ref) WHERE herkunft = 'thought' DO NOTHING
        RETURNING id`,
       [project, tags.filter((x) => x !== 'entscheidung' && x !== 'user').slice(0, 20), KATEGORIE_OFFEN,
-        `(aus thought ${t.id.slice(0, 8)}, Frage noch aufzubereiten) ${erste}`, t.content.slice(0, 20_000), t.id, t.source ?? null, name],
+        `(aus thought ${t.id.slice(0, 8)}, Frage noch aufzubereiten) ${erste}`, t.content.slice(0, 20_000), t.id, t.source ?? null],
     );
     return rows.length > 0 ? { angelegt: true, id: rows[0].id } : { angelegt: false };
   } catch (err) {
@@ -373,7 +368,6 @@ export async function spiegeleThoughtInTopf(
 // ---------------------------------------------------------------------------
 
 interface SeedEintrag {
-  id: string;
   quelle?: { art?: string; ref?: string; teil?: string; ersetzt?: string };
   herkunft_projekt?: string;
   kategorie: string;
@@ -394,7 +388,7 @@ export function seedDateiPfad(): string {
 }
 
 /**
- * Laedt den Startbestand idempotent (ON CONFLICT kennung DO NOTHING), Status aktiv, herkunft seed.
+ * Laedt den Startbestand idempotent (stabile Inhalts-ID und vorhandene Seed-Inhalte), Status aktiv, herkunft seed.
  * Beim API-Start und per admin(jev_entscheidungstopf, modus seed_laden). Wirft nie.
  */
 export async function ladeEntscheidungstopfSeed(o: { datei?: string; agent?: string | null } = {}): Promise<Record<string, unknown>> {
@@ -412,17 +406,18 @@ export async function ladeEntscheidungstopfSeed(o: { datei?: string; agent?: str
   const fehler: string[] = [];
   for (const e of seed.eintraege) {
     try {
-      if (!topfName(e.id)) throw new Error('name (Seed-id) fehlt oder ist ungueltig');
       const a = e.aufbereitet ?? {};
       const ersetzt = e.ersetzt ?? e.quelle?.ersetzt;
       const ref = e.quelle ? `${e.quelle.art ?? 'quelle'}:${e.quelle.ref ?? ''}${e.quelle.teil ? `#${e.quelle.teil}` : ''}` : null;
       const r = await getPool().query(
-        `INSERT INTO jev_entscheidungstopf (kennung, herkunft_projekt, themen, kategorie, kandidat, frage_de, frage_en, optionen, gewaehlte_option,
+        `INSERT INTO jev_entscheidungstopf (id, herkunft_projekt, themen, kategorie, kandidat, frage_de, frage_en, optionen, gewaehlte_option,
            antwort_wortlaut, wortlaut_rekonstruiert, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, status_grund, erfasst_von, aufbereitet_von)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12::jsonb, $13::jsonb, 'seed', $14, 'aktiv', $15, $16, $16)
-         ON CONFLICT (kennung) DO NOTHING`,
+         SELECT $1::uuid, $2::text, $3::text[], $4::text, $5::boolean, $6::text, $7::text, $8::jsonb, $9::text, $10::text, $11::boolean, $12::jsonb, $13::jsonb, 'seed', $14::text, 'aktiv', $15::text, $16::text, $16::text
+         WHERE NOT EXISTS (SELECT 1 FROM jev_entscheidungstopf WHERE herkunft = 'seed'
+           AND frage_de IS NOT DISTINCT FROM $6::text AND frage_en IS NOT DISTINCT FROM $7::text AND antwort_wortlaut = $10::text)
+         ON CONFLICT (id) DO NOTHING`,
         [
-          e.id, e.herkunft_projekt ?? null, e.themen ?? [], e.kategorie, e.kandidat !== false, e.frage?.de ?? null, e.frage?.en ?? null,
+          topfSeedId('entscheidung', [e.frage?.de ?? null, e.frage?.en ?? null, e.antwort_wortlaut]), e.herkunft_projekt ?? null, e.themen ?? [], e.kategorie, e.kandidat !== false, e.frage?.de ?? null, e.frage?.en ?? null,
           JSON.stringify(e.optionen ?? null), e.gewaehlte_option ?? null, e.antwort_wortlaut, e.wortlaut_rekonstruiert === true,
           a.de ? JSON.stringify(a.de) : null, a.en ? JSON.stringify(a.en) : null, ref,
           ersetzt ? `Seed; ersetzt: ${ersetzt}` : 'Seed (Startbestand, vom User noch durchzusehen)', o.agent ?? 'seed',
@@ -431,7 +426,7 @@ export async function ladeEntscheidungstopfSeed(o: { datei?: string; agent?: str
       if ((r.rowCount ?? 0) > 0) neu++; else vorhanden++;
     } catch (err) {
       fehlerhaft++;
-      if (fehler.length < 5) fehler.push(`${e.id}: ${err instanceof Error ? err.message : String(err)}`);
+      if (fehler.length < 5) fehler.push(`${e.frage?.de ?? e.frage?.en ?? '?'}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return { success: fehlerhaft === 0, gelesen: seed.eintraege.length, neu, vorhanden, fehlerhaft, ...(fehler.length ? { fehler } : {}) };

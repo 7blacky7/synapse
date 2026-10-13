@@ -43,7 +43,6 @@ export const thoughtTool: ConsolidatedTool = {
           type: 'string',
           description: 'Quelle (z.B. claude-code, gpt, user) - fuer action "add"',
         },
-        name: { type: 'string', description: 'add: Name vom Ersteller ist Pflicht bei Tags entscheidung+user.' },
         content: {
           type: 'string',
           description: 'Inhalt des Gedankens - fuer action "add" oder "update"',
@@ -85,7 +84,6 @@ export const thoughtTool: ConsolidatedTool = {
           items: {
             type: 'object',
             properties: {
-              name: { type: 'string', description: 'Pflicht bei Tags entscheidung+user.' },
               content: { type: 'string' },
               tags: { type: 'array', items: { type: 'string' } },
               task_id: { type: 'string', description: 'Optional: Task-ID fuer Verknuepfung pro Item' },
@@ -128,7 +126,7 @@ export const thoughtTool: ConsolidatedTool = {
         const taskStatus = typeof args.task_status === 'string' ? args.task_status as Parameters<typeof addThought>[5] : undefined;
         const triggerRespawn = bool(args, 'trigger_respawn') ?? false;
 
-        const result = await addThought(project, source, content, tags, taskId, taskStatus, str(args, 'name'));
+        const result = await addThought(project, source, content, tags, taskId, taskStatus);
 
         if (triggerRespawn) {
           const decision = await maybeTriggerRespawn(project, source);
@@ -148,13 +146,12 @@ export const thoughtTool: ConsolidatedTool = {
         const project = reqStr(args, 'project');
         const source = resolveAgentId(str(args, 'source'));
         if (!source) throw new Error('Parameter "source" ist erforderlich (oder SYNAPSE_AGENT_NAME setzen)');
-        const items = objArray<{ content: string; tags?: string[]; task_id?: string; name?: string }>(args, 'items');
+        const items = objArray<{ content: string; tags?: string[]; task_id?: string }>(args, 'items');
         if (!items || items.length === 0) {
           return { success: false, count: 0, thoughts: [], message: 'items (Array) ist erforderlich' };
         }
         const normalized = items.map(it => ({
           content: String(it.content ?? ''),
-          name: typeof it.name === 'string' ? it.name : undefined,
           tags: Array.isArray(it.tags) ? it.tags.map(String) : undefined,
           task_id: typeof (it as { task_id?: unknown }).task_id === 'string' ? (it as { task_id: string }).task_id : undefined,
         }));

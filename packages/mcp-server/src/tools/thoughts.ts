@@ -25,8 +25,7 @@ export async function addThought(
   content: string,
   tags: string[] = [],
   taskId?: string,
-  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked',
-  name?: string
+  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked'
 ): Promise<{
   warning?: string;
   success: boolean;
@@ -38,7 +37,7 @@ export async function addThought(
   message: string;
 }> {
   try {
-    const thought = await addThoughtCore(project, source, content, tags, taskId, taskStatus, name);
+    const thought = await addThoughtCore(project, source, content, tags, taskId, taskStatus);
 
     // Anti-Echo (DX-Befund 4): id + Preview statt komplettem Content-Echo.
     return {
@@ -66,7 +65,7 @@ export async function addThought(
 export async function addThoughtsBatchTool(
   project: string,
   source: ThoughtSource,
-  items: Array<{ content: string; tags?: string[]; task_id?: string; name?: string }>,
+  items: Array<{ content: string; tags?: string[]; task_id?: string }>,
   taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked'
 ): Promise<{
   success: boolean;

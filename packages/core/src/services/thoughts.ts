@@ -63,13 +63,7 @@ import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { updateTask } from './plans.js';
 import { spiegeleThoughtInTopf } from './entscheidungstopf.js';
-import { topfName } from './topf-namen.js';
 import type { ProjectTask } from '../types/index.js';
-function pruefeTopfNamen(tags: string[], name?: string): void {
-  const t = tags.map(x => x.trim().toLowerCase());
-  if (t.includes('entscheidung') && t.includes('user') && !topfName(name)) throw new Error('name vom Ersteller ist Pflicht fuer einen Entscheidungs-Thought (1..160 Zeichen ohne Steuerzeichen).');
-}
-
 /**
  * Fuegt einen Gedanken hinzu
  */
@@ -79,10 +73,8 @@ export async function addThought(
   content: string,
   tags: string[] = [],
   taskId?: string,
-  taskStatus?: ProjectTask['status'],
-  name?: string
+  taskStatus?: ProjectTask['status']
 ): Promise<Thought> {
-  pruefeTopfNamen(tags, name);
   // P10-T11: Collection-Prüfung gehört zum Index-Nachtrag, nicht vor den PG-Write.
 
   // Das Embedding passiert NICHT mehr hier, sondern nebenlaeufig nach dem PG-Schreiben
@@ -122,7 +114,7 @@ export async function addThought(
     console.error(`[Synapse] Thought-Embedding fehlgeschlagen, Backlog holt es nach:`, err);
   });
   // P15 E1: thought mit Tags entscheidung+user -> roh-Eintrag im Entscheidungs-Topf (wirft nie; Fehler als warning)
-  const spiegel = await spiegeleThoughtInTopf(project, { id: thought.id, source, content, tags, name });
+  const spiegel = await spiegeleThoughtInTopf(project, { id: thought.id, source, content, tags });
   if (spiegel.fehler) warning = `Topf-Spiegel fehlgeschlagen: ${spiegel.fehler}`;
 
   // 3. Optional: Task-Status atomar mit setzen (wenn taskId + taskStatus)
@@ -149,11 +141,10 @@ export async function addThought(
 export async function addThoughtsBatch(
   project: string,
   source: ThoughtSource,
-  items: Array<{ content: string; tags?: string[]; task_id?: string; name?: string }>,
+  items: Array<{ content: string; tags?: string[]; task_id?: string }>,
   taskStatus?: ProjectTask['status']
 ): Promise<{ thoughts: Thought[]; warning?: string }> {
   if (items.length === 0) return { thoughts: [] };
-  for (const item of items) pruefeTopfNamen(item.tags ?? [], item.name);
 
   // P10-T11: Auch ein Batch speichert unabhängig von der Verfügbarkeit des Suchindex.
   const now = new Date().toISOString();
@@ -206,8 +197,8 @@ export async function addThoughtsBatch(
   })();
 
   // P15 E1: Entscheidungs-Topf-Spiegel (entscheidung+user -> roh-Eintrag, Fehler als warning)
-  for (const [i, t] of thoughts.entries()) {
-    const spiegel = await spiegeleThoughtInTopf(project, { id: t.id, source, content: t.content, tags: t.tags, name: items[i].name });
+  for (const t of thoughts) {
+    const spiegel = await spiegeleThoughtInTopf(project, { id: t.id, source, content: t.content, tags: t.tags });
     if (spiegel.fehler) warning = (warning ? warning + '; ' : '') + `Topf-Spiegel ${t.id}: ${spiegel.fehler}`;
   }
 
