@@ -7,8 +7,7 @@ import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {createHash,randomUUID} from 'node:crypto';
 import {setTimeout as pause} from 'node:timers/promises';
-import {oeffneGeschuetzteShellTestDb} from '../dist/services/test-db-laufzeit-schutz.js';
-import {mitLesePool,closePool} from '../dist/db/client.js';
+import {getPool,mitLesePool,closePool} from '../dist/db/client.js';
 import {ASSET_INSPEKTIONS_SCHEMA_SQL} from '../dist/db/asset-inspektions-schema.js';
 import {AssetInspektionsDienst,starteAssetInspektion} from '../dist/services/asset-inspektion.js';
 import {AssetSpeicher} from '../dist/services/asset-speicher.js';
@@ -33,15 +32,20 @@ test('A12 Share-Inspektion',async t=>{
  // Nur direkte FS-Aufrufe dieser Testdatei; kein importierter Cleanup-Helfer.
  t.after(async()=>{await rm(root,{recursive:true,force:true});});
  assert.equal(await realpath(root),root,'Testwurzel muss realpath-kanonisch sein');
- const db=await oeffneGeschuetzteShellTestDb();
- const q=db.query;
+ const ziel=new URL(process.env.DATABASE_URL??'');
+ assert.equal(ziel.pathname,'/synapse_test');assert.equal(ziel.port,'5433');
+ const produktPool=getPool();
+ const db=await produktPool.connect();
+ const q=db.query.bind(db);
+ assert.equal((await q('SELECT current_database() AS name')).rows[0].name,'synapse_test');
  let created=false;
  const cfg=ladeAssetKonfiguration({SYNAPSE_ASSET_ENABLED:'1',SYNAPSE_PROJEKTE_ROOT:root,SYNAPSE_ASSET_KONKURRENZ:'1',SYNAPSE_ASSET_RETRY_INTERVAL_MS:'1000'});
  const storage=new AssetSpeicher({konfiguration:cfg});
  const pool={query:q,async connect(){
-  const c=await oeffneGeschuetzteShellTestDb();clients.add(c);
-  await c.query('SET search_path TO '+schema+',public');
-  return {query:c.query,release(){clients.delete(c);void c.end();}};
+  const c=await produktPool.connect();clients.add(c);
+  try{await c.query('SET search_path TO '+schema+',public');}
+  catch(e){clients.delete(c);c.release(true);throw e;}
+  return {query:c.query.bind(c),release(){clients.delete(c);c.release(true);}};
  }};
  const service=(s=storage)=>{const d=new AssetInspektionsDienst(cfg,s);services.push(d);return d;};
  const row=async()=> (await q('SELECT * FROM asset_files WHERE project=$1 AND file_path=$2',[project,main])).rows[0];
@@ -218,9 +222,9 @@ test('A12 Share-Inspektion',async t=>{
   });
  }finally{
   for(const d of services)await d.beende();
-  for(const c of clients)await c.end();
+  for(const c of clients)c.release(true);
   if(created){await q('SET search_path TO public');await q('DROP SCHEMA '+schema+' CASCADE');}
-  await db.end();await closePool();
+  db.release(true);await closePool();
   for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);
   resetAssetKonfiguration();vergissAssetStand();
  }
