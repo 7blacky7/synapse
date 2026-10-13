@@ -46,9 +46,14 @@ func zeigeAssetSyncFenster() {
         go func(){
             requestCtx,stop:=context.WithTimeout(ctx,30*time.Second);defer stop()
             host,hostErr:=daemonAssetHost(requestCtx)
+            mappedHost:=""
+            mappingErr:=hostErr
+            if mappingErr==nil{mappedHost,mappingErr=apiAssetDaemonHost(requestCtx)}
             var binding apiAssetBinding
-            bindErr:=hostErr
-            if bindErr==nil{binding,bindErr=apiAssetProjectBinding(requestCtx,project,host)}
+            bindErr:=mappingErr
+            if bindErr==nil{
+                if mappedHost==""{bindErr=fmt.Errorf("Diesen PC zuerst ausdrücklich zuordnen")}else if mappedHost!=host{bindErr=fmt.Errorf("Zugang gehört zu einem anderen PC")}else{binding,bindErr=apiAssetProjectBinding(requestCtx,project,host)}
+            }
             syncState,syncErr:=daemonAssetStatus(requestCtx,project)
             conflictPage,conflictErr:=apiAssetConflicts(requestCtx,project,offset)
             conflicts:=conflictPage.Konflikte
@@ -65,6 +70,31 @@ func zeigeAssetSyncFenster() {
             fyne.Do(func(){
                 if ctx.Err()!=nil||actionBusy||selected!=project||generation!=detailGeneration{return}
                 rows:=[]fyne.CanvasObject{widget.NewLabelWithStyle(project,fyne.TextAlignLeading,fyne.TextStyle{Bold:true})}
+                if hostErr==nil{
+                    if mappingErr!=nil{
+                        rows=append(rows,assetSyncLabel("PC-Zuordnung konnte nicht geladen werden: "+mappingErr.Error()))
+                    }else if mappedHost==""{
+                        rows=append(rows,assetSyncLabel("Dieser PC ist noch nicht bei Synapse zugeordnet: "+host+"."))
+                        assign:=widget.NewButton("Diesen PC zuordnen",nil)
+                        assign.OnTapped=func(){
+                            if actionBusy{return}
+                            actionBusy=true;chooser.Disable();assign.Disable();detailGeneration++
+                            go func(){
+                                actionCtx,done:=context.WithTimeout(ctx,30*time.Second);defer done()
+                                err:=apiBindAssetDaemonHost(actionCtx,host)
+                                fyne.Do(func(){
+                                    if ctx.Err()!=nil{return}
+                                    actionBusy=false;chooser.Enable()
+                                    if err!=nil{dialog.ShowError(err,window);assign.Enable();return}
+                                    showProject(project) // GET bestätigt Mapping und Projektbindung frisch.
+                                })
+                            }()
+                        }
+                        rows=append(rows,assign)
+                    }else if mappedHost!=host{
+                        rows=append(rows,assetSyncLabel("Der Zugang ist einem anderen PC zugeordnet: "+mappedHost+". Dieser PC ist "+host+"."))
+                    }
+                }
                 bindCheck:=widget.NewCheck("Auf diesem PC binden / wiederherstellen",nil)
                 known:=bindErr==nil&&binding.Bound!=nil
                 bound:=known&&*binding.Bound

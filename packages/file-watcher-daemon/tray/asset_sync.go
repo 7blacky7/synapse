@@ -75,10 +75,31 @@ func apiAssetProjects(ctx context.Context)(apiProjectsResponse,error) {
     if err==nil&&!r.Success{err=fmt.Errorf("Projektliste wurde abgelehnt")}
     return r,err
 }
+// A10: vorhandener Ausweis -> explizit bestätigter OS-Host, niemals das Tokenlabel.
+type apiAssetDaemonBinding struct {
+    Success bool `json:"success"`
+    Hostname *string `json:"hostname"`
+}
+func apiAssetDaemonHost(ctx context.Context)(string,error) {
+    var r apiAssetDaemonBinding
+    err:=apiAssetJSON(ctx,http.MethodGet,"/api/project-init/restore/host-binding",nil,&r)
+    if err!=nil{return "",err}
+    if !r.Success{return "",fmt.Errorf("PC-Zuordnung wurde nicht bestätigt")}
+    if r.Hostname==nil{return "",nil}
+    if strings.TrimSpace(*r.Hostname)==""{return "",fmt.Errorf("Server meldet einen ungültigen PC")}
+    return *r.Hostname,nil
+}
+func apiBindAssetDaemonHost(ctx context.Context,host string)error {
+    if strings.TrimSpace(host)==""||host=="unknown"{return fmt.Errorf("PC-Identität fehlt")}
+    var r apiAssetDaemonBinding
+    err:=apiAssetJSON(ctx,http.MethodPost,"/api/project-init/restore/host-binding",map[string]interface{}{"hostname":host},&r)
+    if err==nil&&(!r.Success||r.Hostname==nil||*r.Hostname!=host){err=fmt.Errorf("Server hat diesen PC nicht zugeordnet")}
+    return err
+}
 func apiAssetProjectBinding(ctx context.Context,project,host string)(apiAssetBinding,error) {
     var r apiAssetBinding
     err:=apiAssetJSON(ctx,http.MethodGet,"/api/projects/"+urlSeg(project)+"/host-binding?hostname="+urlSeg(host),nil,&r)
-    if err==nil&&(!r.Success||r.Bound==nil){err=fmt.Errorf("Server meldet keine bestätigte Projektbindung")}
+    if err==nil&&(!r.Success||r.Bound==nil||r.Hostname!=host){err=fmt.Errorf("Server meldet keine bestätigte Projektbindung für diesen PC")}
     return r,err
 }
 func apiSetAssetProjectBinding(ctx context.Context,project,host string,bound bool)error {
