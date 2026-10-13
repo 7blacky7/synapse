@@ -67,12 +67,6 @@ export interface ToolCallLogEntry {
  */
 export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
   try {
-    // P13-T14: selbst gekürzte/ungültige Prüfwort-Args niemals in tool_calls übernehmen.
-    if (entry.tool === 'admin' && entry.action === 'bildprobe') entry = {
-      ...entry, argsPreview: '{"action":"bildprobe","details":"nicht protokolliert"}',
-      result: '[Bildprobe-Antwort nicht protokolliert]',
-      error: entry.error ? 'bildprobe_fehlgeschlagen' : null,
-    };
     if(entry.tool==='shell')entry=await maskiereShellVorSpeichern(entry.project??undefined,entry);
     let result = entry.result ?? null;
     if (result != null && OHNE_RESULT.has(`${entry.tool}:${entry.action ?? ''}`)) {

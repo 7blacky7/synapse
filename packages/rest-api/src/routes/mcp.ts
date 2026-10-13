@@ -10,8 +10,6 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 import { getProjectRecordById } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
-import { bildprobeDienst } from './bildprobe.js';
-import { BILDPROBE_PARAMETER } from '@synapse/core';
 import {
   // Code-Suche
   searchCode,
@@ -933,13 +931,13 @@ export const MCP_TOOLS = [
   // 12. admin
   {
     name: 'admin',
-    description: 'Wartungs- und Statistik-Operationen der eigenen Synapse-Instanz: Index-Statistiken, Backup-Restore innerhalb der eigenen DB, Ideen-Eingang, Indexierung lokaler Mediendateien im Projekt-Verzeichnis. Wirkt nur auf die User-eigene lokale Synapse-Datenbank. Keine externen Systeme.' + ' Bildprobe: Inline-PNG oder Link mit offen_sekunden (Env-Standard 600s, Env-Max 3600s); einmalig:true wählt den strengen Einmalabruf.' + JEV_ADMIN_BESCHREIBUNG,
+    description: 'Wartungs- und Statistik-Operationen der eigenen Synapse-Instanz: Index-Statistiken, Backup-Restore innerhalb der eigenen DB, Ideen-Eingang, Indexierung lokaler Mediendateien im Projekt-Verzeichnis. Wirkt nur auf die User-eigene lokale Synapse-Datenbank. Keine externen Systeme.' + JEV_ADMIN_BESCHREIBUNG,
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, 'bildprobe'],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS],
           description: 'Die auszufuehrende Admin-Action',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer alle Actions ausser confirm_idea)' },
@@ -968,7 +966,6 @@ export const MCP_TOOLS = [
         // P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget)
         ...JEV_ADMIN_PARAMETER,
         ...KONTEXTPROFIL_ADMIN_PARAMETER,
-        ...BILDPROBE_PARAMETER,
       },
       required: ['action'],
     },
@@ -4292,7 +4289,6 @@ async function handleToolCallKern(
     // 12. ADMIN
     // =================================================================
     case 'admin': {
-      if (action === 'bildprobe') return bildprobeDienst.ausfuehren(args);
       // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu stdio)
       if (istKontextprofilAdminAction(action as string)) return fuehreKontextprofilAdminAus(action as string, args, effectiveAgentId);
       if (istJevAdminAction(action)) return await fuehreJevAdminAus(action as string, args, effectiveAgentId);
@@ -6108,10 +6104,6 @@ async function fuehreToolsCallAus(
   let _logResult: string | null = null;
   let result: unknown;
   try {
-    // P13-T14: Bildblöcke sind MCP-content, kein zu serialisierendes Datenobjekt.
-    if (toolName === 'admin' && toolArgs.action === 'bildprobe') {
-      result = await handleToolCall(toolName, toolArgs, effectiveAgentId);
-    } else {
     const toolResult = await attachShellJobHints(
       await attachRestPendingEventHints(
         await attachWerkzeugRegeln(
@@ -6148,7 +6140,6 @@ async function fuehreToolsCallAus(
     _logResult = JSON.stringify(toolResult);
     // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text (muss zum outputSchema passen).
     result = baueToolErgebnis(toolResult, { tool: toolName, strukturiert: true });
-    }
   } catch (toolErr) {
     // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
     // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.

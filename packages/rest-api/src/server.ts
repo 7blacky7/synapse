@@ -41,7 +41,6 @@ import {
   projektDbRoutes,
 } from './routes/index.js';
 import { internDaemonRoutes } from './routes/intern-daemon.js';
-import { bildprobeRoutes } from './routes/bildprobe.js';
 
 /**
  * Erstellt und konfiguriert den Fastify Server
@@ -106,8 +105,6 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(embeddingNodeRoutes);
   // P15-T12 E2: Debug-Steuerung lokaler Daemons (Long-Poll; ohne SYNAPSE_INTERN_TOOL=1 nur debug:false).
   await fastify.register(internDaemonRoutes);
-  // P13-T14: einmalige Bildprobe (GET präzise allowlisted, POST hinter Auth).
-  await fastify.register(bildprobeRoutes);
 
   // API-Bruecke Schritt 1: alles, was der Spezialisten-Wrapper heute per direkter
   // PostgreSQL-Verbindung macht, als HTTP-Routen. Rein additiv — kein bestehender

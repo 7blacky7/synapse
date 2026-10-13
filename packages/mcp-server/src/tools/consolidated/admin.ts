@@ -24,19 +24,16 @@ import {
 } from '../index.js';
 import { migrateToRelativePaths, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus, KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus, wendeSitzungsSignalAn, SITZUNG_PARAMETER } from '@synapse/core';
 
-import { BILDPROBE_PARAMETER } from '@synapse/core';
-import { fuehreStdioBildprobeAus } from '../bildprobe.js';
-
 export const adminTool: ConsolidatedTool = {
   definition: {
     name: 'admin',
-    description: 'Konsolidiertes Admin/Utility-Tool mit verschiedenen Actions für Projekt-Management, Statistiken, Ideen und Media-Indexierung.' + ' Bildprobe: Inline-PNG oder Link mit offen_sekunden (Env-Standard 600s, Env-Max 3600s); einmalig:true wählt den strengen Einmalabruf.' + JEV_ADMIN_BESCHREIBUNG,
+    description: 'Konsolidiertes Admin/Utility-Tool mit verschiedenen Actions für Projekt-Management, Statistiken, Ideen und Media-Indexierung.' + JEV_ADMIN_BESCHREIBUNG,
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, 'bildprobe'],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS],
           description: 'Die auszuführende Admin-Action',
         },
         // === migrate ===
@@ -105,7 +102,6 @@ export const adminTool: ConsolidatedTool = {
         // === P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget) ===
         ...JEV_ADMIN_PARAMETER,
         ...KONTEXTPROFIL_ADMIN_PARAMETER,
-        ...BILDPROBE_PARAMETER,
       },
       required: ['action'],
     },
@@ -116,7 +112,6 @@ export const adminTool: ConsolidatedTool = {
     if (!action) {
       throw new Error('Parameter "action" ist erforderlich');
     }
-    if (action === 'bildprobe') return fuehreStdioBildprobeAus(args);
     // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu REST)
     if (istKontextprofilAdminAction(action)) return fuehreKontextprofilAdminAus(action, args, str(args, 'agent_id'));
     if (istJevAdminAction(action)) return await fuehreJevAdminAus(action, args, str(args, 'agent_id'));

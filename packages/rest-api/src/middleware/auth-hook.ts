@@ -66,9 +66,6 @@ function getCookie(request: FastifyRequest, key: string): string | null {
  * Bekommt den reinen Pfad (ohne Query-String).
  */
 function isAllowlisted(method: string, pathname: string): boolean {
-  // P13-T14: ausschließlich GET auf einen vollständigen, zufälligen Einmal-Bildpfad.
-  if (method === 'GET' && /^\/api\/bildprobe\/[a-f0-9]{64}$/.test(pathname)) return true;
-
   // Health-Check
   if (pathname === '/health') return true;
 
