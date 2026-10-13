@@ -26,6 +26,10 @@ export async function oeffneGeschuetzteTestDb(
       const run=async()=>{
         if(geschlossen)throw Error('test_db_verbindung_geschlossen');
         if(typeof text!=='string'||!sqlBleibtInDb(text,ziel))throw Error('test_db_sql_ausserhalb');
+        // Nach SQL-Fehler lässt PG keine Kontroll-SELECT zu (25P02). Nacktes ROLLBACK
+        // verwirft nur die Transaktion derselben Verbindung; jede folgende Nutzabfrage
+        // prüft DB/Cluster/User erneut. Keine Werte oder Folge-Statements ausnehmen.
+        if(values===undefined&&/^\s*ROLLBACK\s*;?\s*$/i.test(text))return query(text);
         const r=await query('SELECT current_database() AS datenbank, system_identifier::text AS system_id, current_user AS user FROM pg_control_system()');
         const row=r.rows[0];
         if(r.rows.length!==1||!row||row.datenbank!==ziel.datenbank||row.system_id!==systemId||row.user!==ziel.user)

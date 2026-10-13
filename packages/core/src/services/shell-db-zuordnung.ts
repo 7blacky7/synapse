@@ -75,20 +75,43 @@ function pgUmgebungsZiel(env:Record<string,string|undefined>):ShellDbZiel|undefi
 }
 /** t82: Env bestimmt das Ziel; SQL-Inhalt ist frei, erkennbare Verbindungswechsel nicht. */
 function nodeFreigabe(text:string,env:Record<string,string|undefined>,p:ShellDbFreigabe):ShellDbErgebnis {
-  const betroffen=/\b(?:query|execute)\s*\(|\b(?:Client|Pool|getPool)\s*\(/.test(text);
-  if(!betroffen)return {betroffen:false,erlaubt:false,ziele:[]};
   const f=ts.createSourceFile('db-ziel.mjs',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  const konstruktoren=new Set(['Client','Pool']),mcpKlassen=new Set<string>(),mcpModule=new Set<string>();
+  const mcpQuelle=(s:string)=>/(?:^|\/)@modelcontextprotocol\/sdk\/(?:dist\/(?:esm|cjs)\/)?client(?:\/|$)/.test(s);
+  function bind(n:ts.Node):void {
+    if(ts.isImportDeclaration(n)&&ts.isStringLiteralLike(n.moduleSpecifier)) {
+      const mcp=mcpQuelle(n.moduleSpecifier.text),cl=n.importClause;
+      if(mcp&&cl?.name)mcpModule.add(cl.name.text);
+      if(cl?.namedBindings&&ts.isNamespaceImport(cl.namedBindings)&&mcp)mcpModule.add(cl.namedBindings.name.text);
+      if(cl?.namedBindings&&ts.isNamedImports(cl.namedBindings))for(const b of cl.namedBindings.elements)
+        if(['Client','Pool'].includes(b.propertyName?.text??b.name.text)){
+          if(mcp)mcpKlassen.add(b.name.text);else konstruktoren.add(b.name.text);
+        }
+    }
+    if(ts.isVariableDeclaration(n)&&ts.isObjectBindingPattern(n.name))for(const b of n.name.elements)
+      if(ts.isIdentifier(b.name)&&['Client','Pool'].includes(b.propertyName?.getText(f)??b.name.text))konstruktoren.add(b.name.text);
+    ts.forEachChild(n,bind);
+  }
+  bind(f);
+  const dbKonstruktor=(e:ts.Expression)=>ts.isIdentifier(e)?konstruktoren.has(e.text)&&!mcpKlassen.has(e.text):
+    ts.isPropertyAccessExpression(e)&&['Client','Pool'].includes(e.name.text)&&!mcpModule.has(e.expression.getText(f));
+  let betroffen=false;
+  function nutzung(n:ts.Node):void {
+    if(ts.isNewExpression(n)&&dbKonstruktor(n.expression))betroffen=true;
+    if(ts.isCallExpression(n)&&(dbKonstruktor(n.expression)||
+      ts.isIdentifier(n.expression)&&['query','execute','getPool'].includes(n.expression.text)||
+      ts.isPropertyAccessExpression(n.expression)&&['query','execute','getPool'].includes(n.expression.name.text)))betroffen=true;
+    ts.forEachChild(n,nutzung);
+  }
+  nutzung(f);
+  if(!betroffen)return {betroffen:false,erlaubt:false,ziele:[]};
   const ziel=env.DATABASE_URL?dbZielAusUrl(env.DATABASE_URL):pgUmgebungsZiel(env);
   if(!eigenesZiel(ziel,p)||!dbUmgebungPasst(env,ziel)||(f as ts.SourceFile&{parseDiagnostics?:unknown[]}).parseDiagnostics?.length)
     return {betroffen:true,erlaubt:false,ziele:[]};
   let ok=true;
-  const konstruktoren=new Set(['Client','Pool']);
   const direkteEnv=(n:ts.Expression):boolean=>ts.isPropertyAccessExpression(n)&&n.expression.getText(f)==='process.env'&&n.name.text==='DATABASE_URL';
   const name=(n:ts.PropertyName):string=>n.getText(f).replace(/^['"]|['"]$/g,'');
   function scan(n:ts.Node):void {
-    if(ts.isImportSpecifier(n)&&['Client','Pool'].includes(n.propertyName?.text??n.name.text))konstruktoren.add(n.name.text);
-    if(ts.isVariableDeclaration(n)&&ts.isObjectBindingPattern(n.name))for(const e of n.name.elements)
-      if(ts.isIdentifier(e.name)&&['Client','Pool'].includes(e.propertyName?.getText(f)??e.name.text))konstruktoren.add(e.name.text);
     if(ts.isStringLiteralLike(n)||ts.isTemplateHead(n)||ts.isTemplateMiddle(n)||ts.isTemplateTail(n)) {
       // Auch geteilte/templatisierte DB-Wechsel bleiben sichtbar. Schema-/Tabellen-SQL
       // darf dagegen aus Variablen, QueryConfig oder Laufzeitwerten entstehen.
@@ -102,7 +125,7 @@ function nodeFreigabe(text:string,env:Record<string,string|undefined>,p:ShellDbF
         /\.(?:connectionString|host|hostname|port|database|user|pathname|href)\b/.test(left))ok=false;
     }
     if(ts.isPropertyAssignment(n)&&name(n.name)==='connectionString'&&!direkteEnv(n.initializer))ok=false;
-    if(ts.isNewExpression(n)&&(ts.isIdentifier(n.expression)?konstruktoren.has(n.expression.text):ts.isPropertyAccessExpression(n.expression)&&['Client','Pool'].includes(n.expression.name.text))) {
+    if(ts.isNewExpression(n)&&dbKonstruktor(n.expression)) {
       const args=n.arguments??[];
       if(args.length>1)ok=false;
       if(args.length===1) {
