@@ -68,6 +68,8 @@ export interface EmbeddingNodeHeartbeat extends ComputeNodeExtension {
 }
 
 export interface EmbeddingNodeRow {
+  node_kind?: 'embedding'|'cpu';
+  executor_owner?: string|null;
   contract_version?: number | null;
   features?: string[] | null;
   capability_revision?: string | null;
@@ -252,12 +254,13 @@ export function deriveEmbeddingNodeStatus(
 /** Legacy-Antwort behält exakt ihre Felder; private Messungen nur nach A1-Verhandlung. */
 export function embeddingNodeProjection<T extends EmbeddingNodeRow>(row: T, contract: boolean): Record<string, unknown> {
   const { service_token_hash: _secret, contract_version, features, capability_revision, policy_revision,
-    location, host_resource_domain, ressourcen, capabilities, ...legacy } = row;
+    location, host_resource_domain, ressourcen, capabilities, node_kind:_kind, executor_owner:_owner, ...legacy } = row;
   if (!contract) return legacy;
   return { ...legacy, contractVersion: contract_version ?? API_CONTRACT_VERSION, features: features ?? [],
     capabilityRevision: capability_revision === null || capability_revision === undefined ? null : Number(capability_revision),
     policyRevision: policy_revision === null || policy_revision === undefined ? null : Number(policy_revision),
     location: location ?? null, hostResourceDomain: host_resource_domain ?? null,
+    executorOwner: _owner ?? null, bootGeneration: row.boot_id,
     resources: computeResourceSnapshot(ressourcen), capabilities: capabilities ?? [] };
 }
 
@@ -301,8 +304,8 @@ export async function registerEmbeddingNode(
        host_resource_domain=COALESCE(EXCLUDED.host_resource_domain,embedding_knoten.host_resource_domain),
        ressourcen=COALESCE(EXCLUDED.ressourcen,embedding_knoten.ressourcen),
        capabilities=COALESCE(EXCLUDED.capabilities,embedding_knoten.capabilities)
-     WHERE embedding_knoten.boot_started_at <= EXCLUDED.boot_started_at
-        OR embedding_knoten.letzter_kontakt < NOW() - INTERVAL '2 minutes'
+     WHERE embedding_knoten.modell IS NOT NULL AND (embedding_knoten.boot_started_at <= EXCLUDED.boot_started_at
+        OR embedding_knoten.letzter_kontakt < NOW() - INTERVAL '2 minutes')
      RETURNING *`,
     [
       input.nodeId, input.host, input.ollamaUrl, input.model, normalizeDigest(input.modelDigest),
@@ -351,7 +354,7 @@ export async function listEmbeddingNodes(
   db: Queryable = getPool(),
   nowMs?: number,
 ): Promise<Array<EmbeddingNodeRow & { effectiveStatus: EmbeddingNodeEffectiveStatus; usable: boolean; compatibilityProblems: string[] }>> {
-  const result = await db.query<EmbeddingNodeRow>('SELECT *, NOW() AS server_now FROM embedding_knoten ORDER BY node_id');
+  const result = await db.query<EmbeddingNodeRow>('SELECT *, NOW() AS server_now FROM embedding_knoten WHERE modell IS NOT NULL AND modell_digest IS NOT NULL AND ollama_url IS NOT NULL AND native_dimension IS NOT NULL AND ziel_dimension IS NOT NULL AND num_ctx IS NOT NULL AND vram_gesamt_mb IS NOT NULL AND vram_frei_mb IS NOT NULL ORDER BY node_id');
   const reference = await getEmbeddingReferenceContract();
   return result.rows.map((row) => {
     const problems = compatibilityProblems({

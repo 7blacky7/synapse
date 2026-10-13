@@ -53,6 +53,7 @@ import {
   adminTool,
   codeIntelTool,
   assetIntelTool,
+  reverseTool,
   codeCheckTool,
   ignoreTool,
   freeModelsTool,
@@ -127,6 +128,7 @@ export function createServer(): Server {
     adminTool.definition,
     codeIntelTool.definition,
     assetIntelTool.definition,
+    reverseTool.definition,
     codeCheckTool.definition,
     ignoreTool.definition,
     freeModelsTool.definition,
@@ -152,6 +154,8 @@ export function createServer(): Server {
   // Tool-Aufrufe verarbeiten
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    // RV9: API verantwortet DB, Audit und Antwort-Hooks; stdio reicht die fertige Antwort weiter.
+    if (name === 'reverse') return await reverseTool.handler(args ?? {}) as { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
     const _t0 = Date.now();
 
     // Globale Parameter fuer Agent-Onboarding extrahieren

@@ -8,6 +8,10 @@
 export { registriereHinweisQuelle, baueHinweisKontext, haengeAusloeserHinweiseAn, haengeAusloeserTextHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from './services/ausloeser-hinweise.js';
 export type { HinweisKontext, AusloeserHinweis, HinweisQuelle, HinweisOptionen, HinweisMetrik } from './services/ausloeser-hinweise.js';
 
+// P18-T19/RV9: eine Reverse-Definition, der Dispatcher läuft serverseitig.
+export { REVERSE_DEFINITION, REVERSE_ACTIONS, REVERSE_FEHLERCODES, REVERSE_NULL_FELDER, REVERSE_AKTIVITAET_DESCRIPTOR, ReverseFehler, baueReverseAntwort, pruefeReversePfad, pruefeReverseBindung, createReverseToolService, fuehreReverseAus, configureReverseRuntime } from './services/reverse-tool.js';
+export type { ReverseAction, ReverseFehlercode, ReverseContainerInfo, ReverseAnalyseAnfrage, ReverseRuntime, ReverseToolDependencies } from './services/reverse-tool.js';
+
 // P18-T12/RV2: feste interne Bereiche für Projekt- und Reverse-Abfragen.
 export { PROJEKT_BEREICH, REVERSE_BEREICH, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './services/intel-bereich.js';
 export type { CodeBereich, AssetBereich } from './services/intel-bereich.js';
@@ -16,6 +20,9 @@ export { mitUserHerkunft, aktuelleUserHerkunft, userHerkunftAusMetadata } from '
 
 // P6-T27: optionale Ghost-Schatten, Standardabfragen unveraendert.
 export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-intel-schatten.js';
+// P16-T15: gemeinsame Typprüfung; API registriert nur den Projekt-Workspace als Abhängigkeitsort.
+export { registriereTypWorkspacePruefer } from './services/typen-pruefung.js';
+export type { TypAuftrag, TypPruefung } from './services/typen-pruefung.js';
 export type { RegelVerzeichnis } from './services/agent-rollen.js';
 // P18-T11/RV1: gemeinsame Geheimnis-Maskierung für neue API-Verbraucher.
 export { MASKEN_KATALOG, maskiereMitKatalog, zaehleMaskenTreffer } from './services/masken-katalog.js';
@@ -32,9 +39,20 @@ export { kuerzeThoughtTreffer, thoughtVorschau, THOUGHT_VORSCHAU_ZEICHEN } from 
 export { holeAgentOnboarding } from './services/agent-onboarding.js';
 
 export { ermittleProjektAusPfad } from './services/project-registry.js';
+export {validateToolDescriptor,registerToolDescriptor,setToolActivation,toolDescriptorHash,TOOL_CONTAINER_LOCK} from './services/tool-descriptor.js';
+export type {ToolDescriptor,ToolControlAuthority} from './services/tool-descriptor.js';
+export {registerWorkJobClaimGuard} from './services/work-job-guards.js';
+export type {WorkJobClaimGuard} from './services/work-job-guards.js';
+
+// P20-T18/R4.3: private Server-Bootgeneration in derselben Registry.
+export {createServerExecutorIdentity,serverClaimOwner,startServerExecutor,serverExecutorMayClaim} from './services/server-executor.js';
+export type {ServerExecutorIdentity,ServerExecutorFence} from './services/server-executor.js';
 
 export { computeResourceBinding, computePhysicalDeviceKey, parseComputeNodeExtension, computeResourceSnapshot } from './vertrag/compute-ressourcen.js';
 export type { ComputeNodeExtension, ComputeResources, ComputeMeasurement, ComputeCapability, ComputeResourceBinding } from './vertrag/compute-ressourcen.js';
+
+export {computePolicyAktiv,leseComputePolicy,setzeComputePolicy,leseComputeProjektPolicy,setzeComputeProjektPolicy,ladeComputePolicySnapshot,pruefeComputeZuteilung,embeddingComputePolicy,computePolicyStatus,ComputePolicyError} from './services/compute-policy.js';
+export type {ComputePolicyDb,ComputePolicy,ComputeProjectPolicy,ComputePolicyPatch,ComputeAllocationInput,ComputeAllocationDecision,ComputeRecommendation,ComputePolicySnapshot} from './services/compute-policy.js';
 
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
@@ -72,9 +90,18 @@ export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis 
 // Typen
 export * from './types/index.js';
 
+// P13-T25/A7: konsistente Manifeste und revisionierte explizite Pfadmutationen.
+export { AssetManifestKern } from './services/asset-manifest.js';
+export type { AssetMutationArt,AssetMutationEingang } from './services/asset-manifest.js';
+export type { AssetPfadOperation } from './services/asset-speicher.js';
+
+// P13-T24/A6: ein Upload-/Downloadkern für Projekt und Reverse.
+export { AssetUploadKern, AssetUploadFehler } from './services/asset-upload.js';
+export type { AssetUploadKontext, AssetUploadEingang, AssetUploadSitzung, AssetUploadErgebnis, AssetUploadDb, AssetUploadFinalisierer, AssetDownloadReferenz, AssetDownloadBeschreibung, AssetDownloadRange } from './services/asset-upload.js';
+
 // P13-T21/A3: serverseitiger Bytezugang, Staging und bestätigte Crash-Recovery.
-export { AssetSpeicher, AssetSpeicherFehler, normalisiereSpeicherPfad } from './services/asset-speicher.js';
-export type { AssetAdresse, AssetStaging, AssetOperation, AssetPublishOptionen, AssetRecoveryOptionen, AssetSpeicherLayout } from './services/asset-speicher.js';
+export { AssetSpeicher, AssetSpeicherFehler, normalisiereSpeicherPfad, erzeugeReverseId } from './services/asset-speicher.js';
+export type { AssetAdresse, AssetStaging, AssetOperation, AssetPublishOptionen, AssetRecoveryOptionen, AssetSpeicherLayout, ReverseLayout, ReverseManifestDatei, ReverseManifest, ReversePublishOperation, ReversePublishOptionen } from './services/asset-speicher.js';
 
 // Asset-Intel (Nicht-Quellcode-Dateien): Inspektion + Speichern (P4-T60 ff., P4-T67)
 export * from './asset-intel/index.js';
@@ -115,6 +142,9 @@ export {
 } from './services/asset-intel-sync.js';
 export type { AssetSyncKonfiguration, AssetSyncZaehler, AssetVerifyErgebnis } from './services/asset-intel-sync.js';
 export { AssetInspektionsWorker, WORKER_GNADENFRIST_MS } from './asset-intel/worker-runner.js';
+export {assetProjektNutztShare,setzeAssetInspektionsModus} from './services/asset-inspektions-projekte.js';
+export {starteAssetInspektion,AssetInspektionsDienst} from './services/asset-inspektion.js';
+export {starteApiAuftragsLoop} from './services/api-auftrags-loop.js';
 export type { WorkerInspektionsOptionen } from './asset-intel/worker-runner.js';
 export { assetArt, assetEndungen, leseDateiKopf, KOPF_BYTES } from './watcher/binary.js';
 export type { AssetArt } from './watcher/binary.js';

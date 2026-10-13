@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import {serverExecutorMayClaim,type ServerExecutorFence} from './server-executor.js';
 import {embeddingComputePolicy,pruefeComputeZuteilung} from './compute-policy.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
@@ -48,6 +49,8 @@ export interface ClaimOptions {
   maxConcurrent?: number;
   /** Nur vertrauenswürdiger API-intern-Executor; HTTP-Clients setzen dies nie. */
   internalServer?: boolean;
+  /** P20-T18: private Bootbindung; niemals aus einem HTTP-Body übernehmen. */
+  serverBootFence?: ServerExecutorFence;
 }
 
 type QueryResult<T> = { rows: T[]; rowCount?: number | null };
@@ -234,7 +237,13 @@ export async function claimEmbeddingChunks(
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
       `embedding-node:${nodeId}`,
     ]);
-    const policy = await embeddingComputePolicy(nodeId, client, options.internalServer === true);
+    if (options.serverBootFence && (options.internalServer !== true ||
+      !await serverExecutorMayClaim(client, options.serverBootFence, nodeId))) {
+      await client.query('COMMIT'); return [];
+    }
+    // Unkonfigurierte Altserver behalten ihre bestehende Policy-ID, Claims bleiben prozessisoliert.
+    const policy = await embeddingComputePolicy(options.serverBootFence?.nodeId ??
+      (options.internalServer === true ? 'unraid-local' : nodeId), client, options.internalServer === true);
     if (policy && !policy.decision.allowed) { await client.query('COMMIT'); return []; }
     // Legacy-SQL ist unverändert; aktivierte Policy filtert dieselben Projekte in JEDEM Zweig.
     const sql = policy ? {

@@ -15,6 +15,7 @@ import { registerAuthHook } from './middleware/auth-hook.js';
 import {
   statusRoutes,
   projectRoutes,
+  assetsRoutes,
   searchRoutes,
   thoughtsRoutes,
   mcpRoutes,
@@ -84,6 +85,7 @@ export async function createServer(): Promise<FastifyInstance> {
   // REST API Routes
   await fastify.register(statusRoutes);
   await fastify.register(projectRoutes);
+  await fastify.register(assetsRoutes);
   await fastify.register(searchRoutes);
   await fastify.register(thoughtsRoutes);
   await fastify.register(memoryRoutes);
@@ -232,6 +234,8 @@ export async function startServer(): Promise<void> {
     if (process.env.WORKSPACE_MAX_CONCURRENT) wsCfg.maxConcurrent = parseInt(process.env.WORKSPACE_MAX_CONCURRENT, 10);
     if (process.env.WORKSPACE_IDLE_MINUTES) wsCfg.idleStopMinutes = parseInt(process.env.WORKSPACE_IDLE_MINUTES, 10);
     await initWorkspaceOrchestrator(wsCfg);
+    const { installTypWorkspacePruefer } = await import('./services/typen-pruefung-workspace.js');
+    installTypWorkspacePruefer();
   } else {
     console.log('[Synapse API] Workspace-Orchestrator per WORKSPACE_DISABLED=1 ausgeschaltet');
   }
@@ -475,6 +479,14 @@ export async function startServer(): Promise<void> {
 
   // Server erstellen und starten
   const server = await createServer();
+  // A12: leichte dauerhafte PG-Aufträge; ausschließlich bestätigte Share-Revisionen.
+  const {starteAssetInspektion}=await import('@synapse/core');
+  const assetInspektion=starteAssetInspektion();
+  if(assetInspektion)server.addHook('onClose',async()=>{await assetInspektion.beende();});
+  // R5.1: eigener opt-in Tool-Lifecycle; alte Workspace/Syntax-Verträge unverändert.
+  const {initToolLifecycle,closeToolLifecycle} = await import('./services/tool-lifecycle-runtime.js');
+  initToolLifecycle();
+  server.addHook('onClose',async()=>{closeToolLifecycle();});
 
   try {
     await server.listen({

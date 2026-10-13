@@ -34,10 +34,17 @@
 import { createHash } from 'node:crypto';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
 import { getPool } from './client.js';
+import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
 import { HINWEIS_SCHEMA_SQL } from './ausloeser-hinweise-schema.js';
 import { WORK_JOBS_SCHEMA_SQL } from './work-jobs-schema.js';
+import { CPU_NODES_SCHEMA_SQL } from './cpu-nodes-schema.js';
+import { SERVER_EXECUTOR_SCHEMA_SQL } from './server-executor-schema.js';
 import { REVERSE_SCHEMA_SQL } from './reverse-schema.js';
+import { ASSET_UPLOAD_SCHEMA_SQL } from './asset-upload-schema.js';
+import { ASSET_MANIFEST_SCHEMA_SQL } from './asset-manifest-schema.js';
+import { ASSET_INSPEKTIONS_SCHEMA_SQL } from './asset-inspektions-schema.js';
 import {TOOL_AKTIVITAET_SCHEMA_SQL} from './tool-aktivitaet-schema.js';
+import {TOOL_CONTAINER_SCHEMA_SQL} from './tool-container-schema.js';
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -2645,8 +2652,16 @@ ${HINWEIS_SCHEMA_SQL}
 
 -- P20-T14/R2.1: generische Jobs/Leases; additiv, keine code_chunks-Ausführung.
 ${WORK_JOBS_SCHEMA_SQL}
+${TOOL_CONTAINER_SCHEMA_SQL}
 -- P18-T13/RV3: nach A2 und P20, keine Änderung bestehender Tabellen.
 ${REVERSE_SCHEMA_SQL}
+
+-- P13-T24/A6: resumierbare Uploadteile, Prepared-Owner und Recoverymetadaten.
+${ASSET_UPLOAD_SCHEMA_SQL}
+
+-- P13-T25/A7: konsistente Seiten, Pfadmutationen und historische Deltametadaten.
+${ASSET_MANIFEST_SCHEMA_SQL}
+${ASSET_INSPEKTIONS_SCHEMA_SQL}
 
 
 
@@ -2739,6 +2754,14 @@ ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS host_resource_domain TEXT;
 ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS ressourcen JSONB;
 ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS capabilities JSONB;
 CREATE INDEX IF NOT EXISTS idx_embedding_knoten_resource_domain ON embedding_knoten(host_resource_domain);
+
+-- P20-T13: CPUonly nach vorhandener Registry/R1.1; Activation compute_cpu_only bleibt default AUS.
+${CPU_NODES_SCHEMA_SQL}
+
+-- P20-T18/R4.3: eigene additive Executor-Spalte, keine fremden DDL-Blöcke verändern.
+${SERVER_EXECUTOR_SCHEMA_SQL}
+
+${COMPUTE_POLICY_SCHEMA_SQL}
 
 -- EMBEDDING-KENNUNG JE QDRANT-COLLECTION (P12-T6, 11.10.2026).
 -- Welches Modell (Kennung aus core/embeddings/modell-profil.ts: Provider, Modell, Digest,

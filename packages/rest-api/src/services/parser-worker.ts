@@ -42,6 +42,7 @@ import {
   stosseContext7An,
 } from '@synapse/core';
 import { listEmbeddingNodes } from './embedding-nodes.js';
+import {ServerExecutor} from './server-executor.js';
 
 /**
  * Gibt einen selbst gehaltenen Claim frei. Wirkt nur auf die Claim-Spalten und
@@ -109,6 +110,7 @@ export class ParserWorker {
   private filesDone = 0;
   private chunksEmbedded = 0;
   private leerlaufZyklen = 0;
+  private readonly executor = new ServerExecutor();
 
   constructor(cfg: ParserWorkerConfig = {}) {
     this.cfg = { ...DEFAULTS, ...cfg } as Required<ParserWorkerConfig>;
@@ -123,21 +125,14 @@ export class ParserWorker {
     // Erster Tick gleich nach 2s (nicht beim Boot, damit Schema/Init durch sind).
     setTimeout(() => this.fire(), 2_000);
     this.timer = setInterval(() => this.fire(), this.cfg.intervalMs);
-    // P12-T14: Claims des EIGENEN Knotens aus einem frueheren Prozess freigeben, bevor die Schleife
-    // startet. Alle Server-Prozesse heissen 'unraid-local'; ein neuer Prozess hat keine laufenden
-    // Claims, verwaiste (Deploy/Absturz mitten im Stapel) zaehlten aber gegen seine Kapazitaet und
-    // legten den Code-Nachzug bis zum Lease-Ablauf (15 min) still - gemessen nach t47 -> t48.
+    // P20-T18/R4.3: Registry-Bootrotation gibt ausschließlich die eigene Altgeneration frei.
+    // Unkonfigurierte Altclaims werden nicht geraten; sie laufen regulär aus.
     void imHintergrund(async () => {
       try {
-        const frei = await getPool().query(
-          `UPDATE code_chunks SET claimed_by = NULL, claim_token = NULL, lease_until = NULL
-            WHERE claimed_by = 'unraid-local' AND embedded_at IS NULL`,
-        );
-        if ((frei.rowCount ?? 0) > 0) {
-          console.error('[parser-worker] ' + frei.rowCount + ' verwaiste eigene Claims beim Start freigegeben');
-        }
+        const released = await this.executor.start();
+        if (released > 0) console.error('[parser-worker] ' + released + ' eigene Altgenerationsclaims freigegeben');
       } catch (err) {
-        console.error('[parser-worker] Freigabe verwaister Claims fehlgeschlagen: ' + (err as Error).message);
+        console.error('[parser-worker] Executor-Start abgelehnt: ' + (err as Error).message);
       }
       await this.embeddingLoop();
     });
@@ -148,7 +143,7 @@ export class ParserWorker {
     // P15-T12: einzeln pausierbar/ausloesbar ueber intern(worker_*)
     registriereWorker({
       name: 'server_embedding',
-      beschreibung: 'Code-Chunks als Knoten unraid-local claimen und einbetten (Dauerschleife, Leerlauf-Backoff bis 30 s)',
+      beschreibung: 'Code-Chunks mit eigener Executor-Bootgeneration claimen und einbetten (Dauerschleife, Leerlauf-Backoff bis 30 s)',
       durchlauf: () => this.einStapel(),
     });
     registriereWorker({
@@ -186,7 +181,12 @@ export class ParserWorker {
     if (this.running) return;       // vorheriger Tick noch aktiv → ueberspringen
     this.running = true;
     // P5-T15: alles im Tick ist Hintergrundarbeit -> Hintergrund-Pool (getPool liefert ihn darin)
-    imHintergrund(() => this.tick())
+    // R4.3: Registry-Heartbeat unabhängig vom Embedding-Schalter/Worker-Pause.
+    imHintergrund(async () => {
+      await this.executor.refresh().catch(err =>
+        console.error('[parser-worker] Executor-Heartbeat fehlgeschlagen: ' + (err as Error).message));
+      await this.tick();
+    })
       .catch(err => console.error(`[parser-worker] tick error: ${(err as Error).message}`))
       .finally(() => { this.running = false; });
   }
@@ -246,11 +246,15 @@ export class ParserWorker {
    */
   private async einStapel(): Promise<StapelErgebnis> {
     if (await schalterHaeltAn('embedding', 'parser-worker/embedding-claims')) return { status: 'schalter' };
-    const externeAktiv = (await listEmbeddingNodes(getPool())).some((node) => node.usable);
+    if (!await this.executor.refresh() || this.executor.cpuOnly) return { status: 'aus' };
+    const externeAktiv = (await listEmbeddingNodes(getPool())).some((node) => node.usable && node.node_id !== this.executor.identity.nodeId);
     const parallel = externeAktiv ? PARALLEL_GETEILT : PARALLEL_ALLEIN;
     if (parallel === 0) return { status: 'aus' };
 
-    const claims = await claimEmbeddingChunks('unraid-local', {
+    const claimOwner = this.executor.identity.claimOwner;
+    const claims = await claimEmbeddingChunks(claimOwner, {
+      serverBootFence: this.executor.fence,
+      internalServer: true,
       limit: parallel * STAPEL,
       maxConcurrent: parallel * STAPEL,
       leaseSeconds: 900,
@@ -275,7 +279,7 @@ export class ParserWorker {
     // liegengebliebener Claim sieht aus wie ein haengender Knoten und blockiert den Chunk.
     const nachId = new Map(claims.map((c) => [String(c.chunkId), c]));
     try {
-      const erg = await completeEmbeddingClaims('unraid-local', claims.map((c, idx) => ({
+      const erg = await completeEmbeddingClaims(claimOwner, claims.map((c, idx) => ({
         chunkId: c.chunkId,
         claimToken: c.claimToken,
         contentHash: c.contentHash,

@@ -8,6 +8,9 @@
 
 import { FastifyInstance } from 'fastify';
 import path from 'node:path';
+import {dispatchAssetFsEreignis,istAssetFsEreignis} from './assets.js';
+import type {AssetFsEingang} from './assets.js';
+import {AssetUploadFehler,AssetSpeicherFehler} from '@synapse/core';
 import {
   indexFile,
   indexDocument,
@@ -21,7 +24,7 @@ import {
 // Akzeptiert beide Konventionen:
 //   Legacy REST-Form:  added / modified / deleted
 //   Chokidar/Core:     add   / change   / unlink   (ab moo-Daemon Phase-1)
-type EventTyp = 'added' | 'modified' | 'deleted' | 'add' | 'change' | 'unlink';
+type EventTyp = 'added' | 'modified' | 'deleted' | 'add' | 'change' | 'unlink' | 'verschoben' | 'moved' | 'wiederhergestellt' | 'restored';
 type NormalizedTyp = 'added' | 'modified' | 'deleted';
 
 const TYP_ALIAS: Record<string, NormalizedTyp> = {
@@ -33,7 +36,7 @@ const TYP_ALIAS: Record<string, NormalizedTyp> = {
   deleted: 'deleted',
 };
 
-interface FsEventBody {
+interface FsEventBody extends Omit<AssetFsEingang,'typ'|'pfad'> {
   projekt: string;
   typ: EventTyp;
   pfad: string;
@@ -43,6 +46,16 @@ interface FsEventBody {
 export async function fsEventsRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.post<{ Body: FsEventBody }>('/api/fs/events', async (request, reply) => {
     const { projekt, typ: rawTyp, pfad } = request.body ?? ({} as FsEventBody);
+
+    // P13-T25: only new asset payloads branch before ANY code removal/project-root lookup.
+    if(istAssetFsEreignis(request.body)){
+      try{return reply.status(200).send(await dispatchAssetFsEreignis(request,request.body));}
+      catch(err){
+        if(err instanceof AssetUploadFehler)return reply.status(err.httpStatus).send({success:false,error:{code:err.code,message:err.message}});
+        if(err instanceof AssetSpeicherFehler)return reply.status(400).send({success:false,error:{code:err.code,message:err.message}});
+        fastify.log.error({err,projekt},'asset fs-event processing failed');return reply.status(500).send({success:false,error:{message:(err as Error).message}});
+      }
+    }
 
     if (!projekt || !rawTyp || !pfad) {
       return reply.status(400).send({

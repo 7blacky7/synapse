@@ -6,7 +6,9 @@
  * Eine abgelaufene Lease ist nur ein logischer Fence, niemals ein physischer Freigabenachweis.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import {computePolicyAktiv,pruefeComputeZuteilung} from './compute-policy.js';
 import { getPool } from '../db/client.js';
+import {lockWorkJobClaimGuards,allowWorkJobClaim} from './work-job-guards.js';
 import type { ApiObjektReferenz } from '../vertrag/api-vertrag.js';
 
 export interface WorkJobResult<T extends Record<string, unknown> = Record<string, unknown>> {
@@ -220,6 +222,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
       const contactMs = node ? new Date(node.letzter_kontakt).getTime() : NaN;
       if (!node || node.gesperrt_vom_user || !['ready','busy'].includes(node.status) ||
           !Number.isFinite(contactMs) || new Date(node.work_now).getTime()-contactMs > c.nodeFreshnessSeconds*1000) return [];
+      await lockWorkJobClaimGuards(client); // R5.1: Domain/Knoten -> Lifecycle -> Joblocks.
       const selected = await client.query<WorkJobRow>(
         `SELECT *,clock_timestamp() AS work_now FROM work_jobs
          WHERE (state='pending' OR (state IN ('leased','staged') AND lease_until<=clock_timestamp()))
@@ -231,6 +234,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
       for (const row of selected.rows) {
         if (result.length >= limit) break;
         const current = job(row);
+        if (!await allowWorkJobClaim(current,client)) continue;
         const grant = await authorize(node,current,client);
         if (!grant || grant.resourceDomain !== domain || !Number.isSafeInteger(grant.maxConcurrent) ||
             grant.maxConcurrent < 1 || !await checkInput(current,client)) continue;
@@ -245,6 +249,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
         if (used.n >= grant.maxConcurrent-reserve || current.resourceNeed.cpu+used.cpu>budget.cpu ||
             current.resourceNeed.ram+used.ram>budget.ram || current.resourceNeed.vram+used.vram>budget.vram ||
             (current.resourceNeed.gpu && !budget.gpu)) continue;
+        if (computePolicyAktiv() && !(await pruefeComputeZuteilung({nodeId:who.nodeId,project:current.project,capability:current.capability,profileId:current.profileId,profileCompatible:true,resourcesAvailable:true},client)).allowed) continue;
         const expired = ['leased','staged'].includes(row.state);
         if (expired) await audit(client,row.id,'lease_reclaimed',{ownerNode:row.owner_node,
           bootGeneration:row.boot_generation,resourceDomain:row.resource_domain,physicalResourceState:'unknown'});

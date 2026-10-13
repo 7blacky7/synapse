@@ -4,6 +4,7 @@
 
 export { statusRoutes } from './status.js';
 export { projectRoutes } from './projects.js';
+export { assetsRoutes,createAssetsRoutes } from './assets.js';
 export { searchRoutes } from './search.js';
 export { thoughtsRoutes } from './thoughts.js';
 export { mcpRoutes } from './mcp.js';

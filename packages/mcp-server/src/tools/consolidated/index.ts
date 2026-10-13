@@ -22,6 +22,7 @@ export { adminTool } from './admin.js';
 export { watcherTool } from './watcher.js';
 export { codeIntelTool } from './code-intel.js';
 export { assetIntelTool } from './asset-intel.js';
+export { reverseTool } from './reverse.js';
 export { codeCheckTool } from './code-check.js';
 export { filesTool } from './files.js';
 export { shellTool } from './shell.js';

@@ -1,6 +1,6 @@
 /** P13-T24/A6: additive Assetfamilie, gleicher API-Zugang, Binärstream statt JSON-ReadAll. */
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
-import {AssetUploadKern,AssetManifestKern,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled} from '@synapse/core';
+import {AssetUploadKern,AssetManifestKern,assetProjektNutztShare,setzeAssetInspektionsModus,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled} from '@synapse/core';
 import type {AssetMutationEingang,AssetUploadSitzung,AssetUploadEingang,AssetUploadKontext,AssetDownloadRange} from '@synapse/core';
 import {validateToken} from '../services/auth.js';
 import type {AuthTokenRow} from '../services/auth.js';
@@ -63,6 +63,19 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
     // Nur dieses gekapselte Plugin nimmt rohe Chunks; bestehende JSONparser bleiben erhalten.
     fastify.addContentTypeParser('application/octet-stream',(request,payload,done)=>done(null,payload));
     const base='/api/projects/:projekt/assets';
+    // A8 setzt den Share-Writer vor dem ersten Upload, damit kein lokaler Inspector daneben schreibt.
+    fastify.get<{Params:{projekt:string}}>(base+'/inspektionsmodus',async(req,reply)=>run(reply,async()=>{
+      await kontext(req,req.params.projekt,false);
+      return {success:true,modus:await assetProjektNutztShare(req.params.projekt)?'asset_sync':'legacy_local'};
+    }));
+    fastify.post<{Params:{projekt:string};Body:{modus?:unknown}}>(base+'/inspektionsmodus',async(req,reply)=>run(reply,async()=>{
+      await kontext(req,req.params.projekt);
+      const modus=req.body?.modus;
+      if(modus!=='asset_sync'&&modus!=='legacy_local')throw new AssetUploadFehler('modus_ungueltig',400,'asset_sync oder legacy_local erforderlich.');
+      try {await setzeAssetInspektionsModus(req.params.projekt,modus);}
+      catch {throw new AssetUploadFehler('inspektionsmodus_konflikt',409,'Projektmodus nicht umschaltbar; Transportbindungen prüfen.');}
+      return {success:true,modus};
+    }));
     fastify.get<{Params:{projekt:string};Querystring:{cursor?:string;limit?:string}}>(base+'/manifest',async(req,reply)=>run(reply,async()=>{
       const c=await kontext(req,req.params.projekt,false);
       return {success:true,...await manifest().manifest(c,{cursor:req.query.cursor,limit:req.query.limit===undefined?undefined:Number(req.query.limit)})};

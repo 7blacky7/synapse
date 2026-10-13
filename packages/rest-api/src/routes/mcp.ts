@@ -222,6 +222,7 @@ import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core'
 // asset_intel (P4-T70): Schema und Dispatcher aus core — dieselben, die die stdio-Strecke einhaengt.
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
 import { mitCodeIntelSchatten } from '@synapse/core';
+import { REVERSE_DEFINITION, fuehreReverseAus } from '@synapse/core';
 // intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
 // P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
@@ -999,6 +1000,7 @@ export const MCP_TOOLS = [
         show_imports: { type: 'boolean', description: 'Import-Statements auflisten (Standard: false, fuer tree)' },
         show_assets: { type: 'boolean', description: 'tree: Asset-Zeilen mit Marker zeigen (Standard true)' },
         schatten: { type: 'string', description: "Offener plan_id oder 'alle': Ghost-Overlay für file/functions/symbols/references/search/statements/calls. Alle Pläne getrennt; keine semantische Suche." },
+        typen: { type: 'boolean', description: 'typen:true prüft unterstützte Dateien aus PG auch ohne Schatten; mit schatten automatisch typbefunde (typen:false aus), TS und JS bei checkJs. Fehlende externe Typen: vollstaendig:false.' },
         stand_nach_op: { type: 'integer', minimum: 0, description: 'Optionaler Zwischenstand nach diesem 0-basierten Op-Index.' },
         show_ghosts: { type: 'boolean', description: 'tree: Ghost-Dateien [g]/[g~] und neue Ordner [g] mit plan_id. Standard false, bisherige Index-Zählwerte unverändert.' },
         file_path: { type: 'string', description: 'Datei-Pfad-Filter (LIKE-Pattern) fuer functions/variables/symbols/file/statements/calls/entrypoints — UND seit 08.08.2026 auch fuer search: dort im Volltext-Modus als LIKE-Teilpfad, mit semantic:true dagegen als VOLLSTAENDIGER Pfad, weil Qdrant keinen Teilstring-Vergleich kennt. Vorher wurde der Parameter bei search still verworfen und die Suche lieferte Treffer aus dem ganzen Projekt.' },
@@ -1041,6 +1043,8 @@ export const MCP_TOOLS = [
   // FLACHE KOPIE, weil die OUTPUT_EXTRAS-Schleife unten description und outputSchema AM OBJEKT
   // setzt: ohne Kopie veraenderte sie die core-Konstante, die die stdio-Strecke ausliefert.
   { ...ASSET_INTEL_DEFINITION },
+  // P18-T19/RV9: nur additive neue Definition; Legacy-Verträge bleiben gleich.
+  { ...REVERSE_DEFINITION },
 
   // 15. files
   {
@@ -1657,6 +1661,8 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
 };
 
 for (const _t of MCP_TOOLS as any[]) {
+  // RV9: der gemeinsame neue Vertrag wird auch bei Output nicht lokal überschrieben.
+  if (_t.name === 'reverse') continue;
   const extra = OUTPUT_EXTRAS[_t.name as string];
   _t.outputSchema = {
     type: 'object',
@@ -2229,6 +2235,9 @@ async function handleToolCallKern(
     const sperre = await jevToolSperre(typeof args.project === 'string' ? args.project : null);
     if (sperre) return sperre;
   }
+
+  // RV9 prüft unbekannte Parameter selbst, damit auch Fehler den festen Dateikontext tragen.
+  if (name === 'reverse') return fuehreReverseAus({ ...args, ...(effectiveAgentId ? { agent_id: effectiveAgentId } : {}) });
 
   const parameterBefund = pruefeUnbekannteParameter(
     name,

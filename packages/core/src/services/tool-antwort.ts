@@ -21,6 +21,7 @@
 
 
 import { getPool } from '../db/client.js';
+import { REVERSE_NULL_FELDER } from './reverse-tool.js';
 import { getUnreadChatHint } from './chat-unread.js';
 import { claimUnreadChannelHints } from './channel-unread.js';
 import { claimShellJobHints, markShellJobSeenForToolCall } from './shell-hints.js';
@@ -109,6 +110,7 @@ export const TOOL_ANTWORT_NULL_BEHALTEN: Readonly<Record<string, readonly string
   '*': ['exit_code'],
   // P10-T18: total null = nicht bestimmbar, nicht 0.
   asset_intel: ['total'],
+  reverse: REVERSE_NULL_FELDER,
 };
 
 /** Schalter: Standard an. 0/false/aus/off/nein = altes Format. */

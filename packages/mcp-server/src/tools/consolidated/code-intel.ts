@@ -63,6 +63,7 @@ export const codeIntelTool: ConsolidatedTool = {
         },
 
         schatten: { type: 'string', description: "Offener plan_id oder 'alle': Ghost-Overlay für file/functions/symbols/references/search/statements/calls. Alle Pläne getrennt; keine semantische Suche." },
+        typen: { type: 'boolean', description: 'typen:true prüft unterstützte Dateien aus PG auch ohne Schatten; mit schatten automatisch typbefunde (typen:false aus), TS und JS bei checkJs. Fehlende externe Typen: vollstaendig:false.' },
         stand_nach_op: { type: 'integer', minimum: 0, description: 'Optionaler Zwischenstand nach diesem 0-basierten Op-Index.' },
         show_ghosts: { type: 'boolean', description: 'tree: Ghost-Dateien [g]/[g~] und neue Ordner [g] mit plan_id. Standard false, bisherige Index-Zählwerte unverändert.' },
 

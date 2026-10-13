@@ -13,7 +13,9 @@ import {
   meldeWorkerArbeit,
 } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
+import {registerComputePolicyRoutes} from './compute-policy.js';
 import { registerWorkJobRoutes, type WorkJobRouteDependencies } from './work-jobs.js';
+import { CpuNodeError,cpuNodeRequested,registerCpuNode,heartbeatCpuNode,listCpuNodes } from '../services/cpu-nodes.js';
 import {
   authorizedNodeCapacity,
   embeddingNodeProjection,
@@ -155,11 +157,13 @@ export function createEmbeddingNodeRoutes(
   });
 
   return async (fastify: FastifyInstance): Promise<void> => {
+    await registerComputePolicyRoutes(fastify,{db:deps.db,validateToken:deps.validateToken});
     // P20-T14: additive Familie, bestehende Compute-Ausweise/Route, explizites A1-Featuregate.
     await registerWorkJobRoutes(fastify,{validateToken:deps.validateToken,service:overrides.workJobs});
     // P15-T1: Referenzvertrag nicht ermittelbar (Env fehlt, Ollama des Servers antwortet nicht) ->
     // 503 mit den fehlenden Feldern statt stiller Altwerte. Gilt nur in diesem Plugin (register kapselt).
     fastify.setErrorHandler((error, _request, reply) => {
+      if(error instanceof CpuNodeError)return reply.code(error.status).send({success:false,error:error.code});
       if (error instanceof EmbeddingReferenceUnavailable) {
         return reply.code(503).send({ success: false, error: 'reference_unavailable', missing: error.missing });
       }
@@ -194,6 +198,8 @@ export function createEmbeddingNodeRoutes(
         if (!validateNodeId(nodeId) || !tokenAllowsNode(auth, nodeId)) {
           return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
         }
+        const cpu=(await listCpuNodes(deps.db,request.headers[API_CONTRACT_HEADER],nodeId,auth!.token_hash))[0];
+        if(cpu)return reply.send({success:true,node:cpu});
         const node = (await listEmbeddingNodes(deps.db)).find((candidate) =>
           candidate.node_id === nodeId && candidate.service_token_hash === auth!.token_hash
         );
@@ -209,6 +215,14 @@ export function createEmbeddingNodeRoutes(
         const input = request.body;
         if (!input || !validateNodeId(input.nodeId)) {
           return reply.code(400).send({ success: false, error: 'invalid_node_id' });
+        }
+        if(cpuNodeRequested(input)){
+          const auth=await principal(request,deps);
+          if(!tokenAllowsNode(auth,input.nodeId))return reply.code(403).send({success:false,error:'node_token_mismatch'});
+          const cpu=await registerCpuNode(input,auth!.token_hash,request.headers[API_CONTRACT_HEADER],deps.db);
+          if(!cpu)return reply.code(409).send({success:false,error:'stale_registration'});
+          return reply.code(201).send({success:true,nodeId:cpu.node_id,status:cpu.gesperrt_vom_user?'locked':'ready',
+            locked:cpu.gesperrt_vom_user,claimBatch:cpu.max_concurrency});
         }
         if (!validRegistration(input)) {
           return reply.code(400).send({ success: false, error: 'invalid_node_metadata' });
@@ -291,6 +305,11 @@ export function createEmbeddingNodeRoutes(
           return reply.code(403).send({ success: false, error: 'node_token_mismatch' });
         }
         const body = request.body;
+        if(cpuNodeRequested(body)){
+          const cpu=await heartbeatCpuNode(nodeId,body,auth!.token_hash,request.headers[API_CONTRACT_HEADER],deps.db);
+          if(!cpu)return reply.code(409).send({success:false,error:'heartbeat_rejected'});
+          return reply.send({success:true,nodeId,serverTime:new Date().toISOString()});
+        }
         if (!body || !validHeartbeat(body)) {
           return reply.code(400).send({ success: false, error: 'invalid_heartbeat' });
         }
@@ -492,7 +511,7 @@ export function createEmbeddingNodeRoutes(
       return reply.send({
         success: true,
         reference: await getEmbeddingReferenceContract(),
-        nodes: (await listEmbeddingNodes(deps.db)).map(node => embeddingNodeProjection(node, !!apiCapabilitiesForClient(request.headers[API_CONTRACT_HEADER]))),
+        nodes: [...(await listEmbeddingNodes(deps.db)).map(node => embeddingNodeProjection(node, !!apiCapabilitiesForClient(request.headers[API_CONTRACT_HEADER]))), ...(await listCpuNodes(deps.db,request.headers[API_CONTRACT_HEADER]))],
       });
     });
 
