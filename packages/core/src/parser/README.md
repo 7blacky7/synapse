@@ -35,9 +35,19 @@ Die zentrale Auswahl erfolgt über getParserForFile aus [index.ts](index.ts). Au
 
 Die Sprachmodule implementieren das gemeinsame LanguageParser-Modell aus [types.ts](types.ts). [index.ts](index.ts) bindet sie in einer gemeinsamen Registry zusammen. Der übergeordnete Core-Quellcode verwendet diese Registry für die Code-Analyse; Binärformate werden über [Asset-Intel](../asset-intel/README.md) verarbeitet.
 
+## Funktionsweise
+
+Eine Änderung wird zunächst als Datei in PostgreSQL registriert. Der serverseitige [Parser-Worker](../../../rest-api/src/services/parser-worker.ts) und der lokale Dateiwächter können offene Dateien aus dem Backlog anstoßen; pro Projekt und Datei serialisiert ein PostgreSQL-Advisory-Lock die Verarbeitung. Der ausgewählte Sprachparser erzeugt Symbole, Referenzen und – sofern unterstützt – Ablaufdaten. Diese strukturierten Ergebnisse landen in PostgreSQL. Der [Worker-Pool](worker-pool.ts) verlagert einzelne Parse-Aufrufe in Worker-Threads; eine Datei ohne passenden Parser liefert keinen Parse-Treffer statt eines Workerfehlers.
+
+Aus demselben Dateiinhalt entstehen [Chunks](../chunking/README.md), die in `code_chunks` gespeichert werden. Sie bilden die Eingabe für die getrennte [Embedding-Pipeline](../embeddings/README.md): Ein Chunk mit offenem Embedding kann vom Server oder einem [Compute-Node](../../../compute-node-agent/src/README.md) beansprucht werden. Parser-Ergebnisse sind damit schon in PostgreSQL sichtbar, während die semantische Einbettung noch aussteht.
+
+Ein Parse- oder Speicherfehler wird als Parse-Ausfall protokolliert und kann über den Backlog erneut bearbeitet werden. Embedding-Ausfälle lassen den Chunk offen; eine erneute Verarbeitung kann fertige Chunks überspringen. Binärdateien laufen nicht durch Sprachparser, sondern – soweit als Asset klassifiziert – durch die getrennte [Asset-Intel-Pipeline](../asset-intel/README.md).
+
 ## Siehe auch
 
 - [Core-Quellcode](../README.md)
 - [Asset-Intel](../asset-intel/README.md)
 - [Core-Paket](../../README.md)
 - [Zusammenhang und Betriebsvarianten](../../../../docs/README.md)
+- [Embedding und Compute-Nodes](../embeddings/README.md)
+- [Embedding-Datenfluss](../../../../docs/bilder/embedding.svg)

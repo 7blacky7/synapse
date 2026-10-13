@@ -28,6 +28,16 @@ Aufrufer verwenden inspectAsset aus [index.ts](index.ts). Das Ergebnis enthält 
 
 Die Registry und Inspektoren teilen die Verträge aus [types.ts](types.ts); [run.ts](run.ts) verbindet Formaterkennung, begrenzten Zugriff und Ergebnisbildung. Die [Inspector-Familien](inspectors/README.md) nutzen [binary-reader.ts](binary-reader.ts) für geprüfte Bytezugriffe. Textdateien laufen getrennt über den [Parser](../parser/README.md).
 
+## Funktionsweise
+
+Der lokale Dateiwächter reicht ein Änderungsereignis nur dann an Asset-Intel weiter, wenn es als Asset markiert ist. Der Asset-Zweig läuft neben dem Textindex und darf dessen Verarbeitung nicht unterbrechen. Beim Start gleicht der Wächter vorhandene Asset-Einträge mit dem Dateisystem ab; unveränderte Dateien werden übersprungen. Neue, geänderte oder mit neuerer Inspektorversion fällige Dateien werden in eine begrenzte Warteschlange gestellt. Doppelte wartende Ereignisse desselben Projektpfads werden zusammengeführt.
+
+Ein Worker liest den Dateikopf und die Registry ordnet das Format zuerst anhand von Magic Bytes, dann anhand der Endung zu. Der Inspektor greift über `AssetSource` begrenzt und schreibgeschützt auf Bytes zu. Größen-, Lese-, Zeit-, Objekt- und Verschachtelungsgrenzen beschränken die Auswertung. Das Ergebnis enthält erkannte Metadaten, Objekte, Verweise und Warnungen; Rohdatei-Inhalte werden nicht als Asset-Index gespeichert.
+
+Der Store schreibt die abgeleiteten Daten nach PostgreSQL in `asset_files`, `asset_objects` und `asset_references`. Abfragen lesen diesen Bestand für Baum, Suche, Objektlisten, Verweise und Graphen. Bei fehlender Quelle bleibt der Datensatz mit Status „Quelle nicht gefunden“ bestehen; der Startabgleich entfernt ihn erst nach der Aufbewahrungsfrist. Ein harter Worker-Abbruch oder eine nicht erkannte Datei wird als Status beziehungsweise Warnung sichtbar. Fehlt die Asset-Tabelle im Datenbankschema, wird nur der Asset-Weg bis zum Neustart abgeschaltet; der Code-Index läuft weiter.
+
+Medien-Embeddings sind ein anderer Pfad: Bilder und Videos werden über den Core-Medienindexierer in eine eigene Qdrant-Collection eingebettet. Asset-Intel liefert dagegen strukturierte Dateimetadaten und Verweise; es erzeugt keine semantischen Medienvektoren.
+
 ## Siehe auch
 
 - [Inspectoren](inspectors/README.md)
@@ -35,3 +45,6 @@ Die Registry und Inspektoren teilen die Verträge aus [types.ts](types.ts); [run
 - [Core-Quellcode](../README.md)
 - [Core-Paket](../../README.md)
 - [Zusammenhang und Betriebsvarianten](../../../../docs/README.md)
+- [Textparser](../parser/README.md)
+- [Embedding-, Wissens- und Medienwege](../embeddings/README.md)
+- [Asset-Datenfluss](../../../../docs/bilder/asset.svg)

@@ -53,6 +53,16 @@ Fehlt der Docker-Socket oder antwortet Docker beim Start nicht, wird der Orchest
 
 Umgesetzt sind benannte Container, Rollen-Vorlagen, persistente Volumes, Materialisierung, Idle/LRU, Pinning und Ressourcen-Konfiguration. Daraus folgt kein vollständiges Abbild des lokalen Rechners und keine Garantie für beliebige Betriebssystem-, Geräte- oder Dienste-Konfigurationen. Die ausführlichere [Workspace-/Scope-Konzeption](../../../../docs/konzepte/ARCHITEKTUR_WORKSPACE_TESTSYSTEME_SCOPES.md) ordnet weitergehende Ideen ein; maßgeblich für die hier beschriebenen Abläufe bleibt der Orchestratorcode.
 
+## Funktionsweise: Parser- und Embedding-Worker
+
+Der REST-Server startet den [ParserWorker](parser-worker.ts) nach der Initialisierung. In seinem regelmäßigen Tick fragt er Core nach Projekten mit Parse-Backlog; die Auswahl berücksichtigt Registry- und Aktivierungsstatus. Der Worker verarbeitet höchstens 20 Projekte pro Tick. Für jede Datei ruft er denselben Core-Pfad wie andere Parser-Aufrufer auf. Eine transaktionale Sperre pro Datei serialisiert parallele Läufe, etwa mit dem lokalen FileWatcher. Der Parser aktualisiert Symbole, Referenzen, Statements, Aufrufkanten und Code-Chunks in PostgreSQL.
+
+Das Einbetten der Code-Chunks läuft als eigener Hintergrundpfad. Der Server beansprucht Chunks unter seiner Knotenkennung mit befristeter Lease und bettet sie stapelweise mit Hintergrundpriorität ein. Sind externe Embedding-Knoten aktiv, arbeitet der Server mit begrenzter Parallelität mit; ohne sie darf er mehr Slots nutzen. Die Konfiguration kann die Server-Beiträge auch abschalten. Beim Abschluss übergibt er Claim-Bezeichner, Inhaltshash und Vektor an Core, das veraltete oder nicht mehr gültige Claims ablehnt. Fehlerhafte Stapel und abgelehnte Claims werden freigegeben, damit sie nicht bis zum Lease-Ablauf blockieren.
+
+Ein [Compute-Node](../../../compute-node-agent/README.md) ist ein separater Worker-Prozess: Er bezieht Modellprofil und Claims über die REST-API, berechnet Vektoren lokal und meldet sie mit Claim- und Inhaltsdaten zurück. Der Server-Worker kann unabhängig davon weiterarbeiten. Bei beiden Wegen bleiben Claim-Prüfung, Vektorpersistierung und Indexpflege in Core; Details zu Zuständen und Übergängen zeigt das [Embedding-Diagramm](../../../../docs/bilder/embedding.svg).
+
+Der ParserWorker behandelt außerdem den Wissens-Embedding-Backlog als gedrosselten Nachzug, getrennt vom Code-Chunk-Claim-Pfad. Er stößt ebenso die Context7-Automatik an. Medien laufen davon getrennt: Der explizite Medien-Indexierungspfad verwendet einen multimodalen Provider und eine eigene Medien-Collection; er wird nicht durch das Datei-Parsing automatisch eingebettet.
+
 ## Schnittstellen nach außen
 
 Die Route-Module verwenden die Dienste direkt, etwa Auth in [`middleware/auth-hook.ts`](../middleware/auth-hook.ts), Embedding-Knoten in den Knotenrouten und Runtime-Funktionen in [`agent-runtimes.ts`](../routes/agent-runtimes.ts). Der Server startet Parser-, Syntaxprüfungs- und Workspace-Dienste während seiner Initialisierung. Die Dienste greifen für Daten und Kernlogik auf [`@synapse/core`](../../../core/README.md) zu.
