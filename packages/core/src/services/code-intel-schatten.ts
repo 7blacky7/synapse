@@ -9,6 +9,7 @@ import { getPool, mitLesePool } from '../db/client.js';
 import { getParserForFile } from '../parser/index.js';
 import { getCodeIntelSchatten, type FileBatchOp, type FileBatchStatus } from './file-batch.js';
 import * as ci from './code-intel.js';
+import { lesePlanloseReservierungen } from './file-reservation-intents.js';
 type Row = Record<string, unknown>;
 type Plan = { id: string; project: string; ops: FileBatchOp[]; expected_hashes: Record<string,string>; status: FileBatchStatus };
 type Datei = { file_path: string; content: string; deleted: boolean; neu: boolean; drift?: string };
@@ -353,6 +354,35 @@ function keinBezugHinweis(bezug: Bezug): string {
 /** Ohne Schalter unveränderte Antwort; ausschließlich ausstehende Commits überbrücken den Parse-Lag. */
 
 export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
+  const antwort = await mitCodeIntelSchattenKern(action,args,bestand);
+  const project = s(args,'project');
+  // Standardantworten und ungültige Optionen bleiben unverändert.
+  if(!project || !['file','functions','symbols','tree'].includes(action) ||
+    (args.schatten===undefined && !(action==='tree' && args.show_ghosts===true)) ||
+    args.semantic===true ||
+    (args.schatten!==undefined && (typeof args.schatten!=='string' ||
+      (args.schatten!=='alle' && !/^\d+$/.test(args.schatten))))) return antwort;
+  const bezug = schattenBezug(action,args);
+  const reservierungen = (await lesePlanloseReservierungen(project)).filter(r => {
+    if(!bezug.trifft(r.file_path)) return false;
+    if(args.file_type && path.extname(r.file_path).slice(1)!==args.file_type) return false;
+    if(action==='tree') {
+      const base=(s(args,'path')??s(args,'file_path')??'').replace(/\/$/,'');
+      const folder=path.posix.dirname(r.file_path);
+      if(args.recursive===false && folder!==base && !(base==='' && folder==='.')) return false;
+      const relative=base && folder.startsWith(base)?folder.slice(base.length).replace(/^\//,''):folder;
+      if(typeof args.depth==='number' && (relative && relative!=='.'?relative.split('/').length:0)>args.depth) return false;
+    }
+    return true;
+  });
+  if(!reservierungen.length) return antwort;
+  return {...antwort, reservierungen,
+    ...(action==='tree' ? {tree:String(antwort.tree??'')+
+      '\nReservierungen ohne Plan (Absicht; keine Schreibsperre):\n'+
+      reservierungen.map(r=>'  [r] '+r.file_path+' — '+r.reserviert_von+
+        ', Task '+(r.task_id??'unbekannt')+', seit '+r.seit+', bis '+r.expires_at).join('\n')} : {})};
+}
+async function mitCodeIntelSchattenKern(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
   if(args.schatten===undefined && !(action==='tree' && args.show_ghosts===true)) {
     const project=s(args,'project');
     return project && args.semantic!==true && ['tree','functions','symbols','references','search','file','statements','calls'].includes(action)

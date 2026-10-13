@@ -67,6 +67,7 @@ import {
   refreshReservationTtlsForFiles,
   type ForeignActiveReservationPrimary,
 } from './file-reservations.js';
+import { lesePlanloseReservierungen, type PlanloseReservierung } from './file-reservation-intents.js';
 
 /**
  * Keine Beschraenkung beim Aendern (User-Vorgabe 29.09.2026): so viele Ops je plan/coedit_add,
@@ -455,6 +456,8 @@ export interface CoeditWaitGroup {
 
 export interface PlanBatchResult {
   fs_pruefung?: FsPruefung;
+  /** P6-T48: planlose fremde Reservierung ist ein Hinweis, kein Wait. */
+  reservation_hint?: { files: PlanloseReservierung[]; message: string };
   plan_id: string;
   total_ops: number;
   files_touched: string[];
@@ -2618,8 +2621,8 @@ async function planBatchKern(args: {
     }
     // V4 (29.09.2026): Ein offener Plan auf einer Datei ist ihr EINZIGES Ziel — auch wenn ein
     // anderer die Datei reserviert hat (ohne dort zu planen), und auch fuer den Owner selbst. Pro
-    // Pfad der aelteste offene Plan (eigener oder fremder); nur Pfade ohne offenen Plan laufen
-    // ueber die Reservierungs-Waits wie bisher. Vorher ging die fremde Reservierung vor: der
+    // Pfad der aelteste offene Plan (eigener oder fremder); Pfade ohne offenen Plan tragen
+    // seit P6-T48 nur Reservierungshinweise. Vorher ging die fremde Reservierung vor: der
     // Wartende bekam kein Ziel, solange der Reservierende nicht plante, obwohl schon ein Plan offen war.
     // P15-T27 Ziel 2: tote Waits des Aufrufers auf diesen Dateien schliessen (kein Ziel gebunden, der
     // Primaeragent haelt keine lebende Reservierung mehr: abgelaufen, freigegeben, abgemeldet). Ein
@@ -2669,8 +2672,14 @@ async function planBatchKern(args: {
       reserved_since: asIso(row.created_at),
       expires_at: new Date(Date.now() + SHARED_PLAN_WAIT_MINUTES * 60000).toISOString(),
     }));
+    // P6-T48: nur ein existierender offener Plan erzeugt deferred Ops/Waits.
+    // Reservierungen ohne Plan bleiben sichtbar, blockieren aber keine Planung.
+    const planloseHinweise = reservationRows.length
+      ? (await lesePlanloseReservierungen(args.project, reservationRows.map(row => row.file_path), client))
+          .filter(row => reservationRows.some(primary => primary.file_path === row.file_path && primary.reserved_by === row.reserviert_von))
+      : [];
     const primaryByPath = new Map(
-      [...reservationRows, ...planPrimaryRows].map((row) => [row.file_path, row] as const),
+      planPrimaryRows.map((row) => [row.file_path, row] as const),
     );
     const sharedPaths = new Set(primaryByPath.keys());
     // Runde 3: eine nur gegen den Zielplan gepruefte Op muss auch wirklich dorthin gehen. Ist das Ziel
@@ -2819,6 +2828,10 @@ async function planBatchKern(args: {
       for (const weiterer of zusammengefuehrt.slice(1)) await pruefeGespeichertenPlanSicher(weiterer.plan_id);
       return {
         plan_id: erster.plan_id,
+        ...(planloseHinweise.length ? { reservation_hint: {
+          files: planloseHinweise,
+          message: 'Reservierung ohne offenen Plan: nur Hinweis; Planung wurde nicht blockiert.',
+        } } : {}),
         total_ops: erster.total_ops,
         files_touched: Object.keys(erster.expected),
         expected_hashes: erster.expected,
@@ -3095,6 +3108,10 @@ async function planBatchKern(args: {
     for (const ziel of zusammengefuehrt) await pruefeGespeichertenPlanSicher(ziel.plan_id);
     const result: PlanBatchResult = {
       plan_id: planRow.id,
+      ...(planloseHinweise.length ? { reservation_hint: {
+        files: planloseHinweise,
+        message: 'Reservierung ohne offenen Plan: nur Hinweis; Planung wurde nicht blockiert.',
+      } } : {}),
       total_ops: planOps.length,
       files_touched: planFiles,
       expected_hashes: planExpectedHashes,
