@@ -374,7 +374,14 @@ export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=
     const [proj,id]=JSON.parse(key);
     if(proj===project && (auswahl==='alle'||id===auswahl) && !offene.has(id)) cache.delete(key);
   }
-  if(!plans.length) return auswahl==='alle'?bestand():{success:false,error:'Offener Plan in diesem Projekt nicht gefunden',project};
+  if(!plans.length) {
+    if(auswahl!=='alle') return {success:false,error:'Offener Plan in diesem Projekt nicht gefunden',project};
+    const bezug=schattenBezug(action,args);
+    const antwort=await bestand();
+    return antwort==null || (typeof antwort==='object' && !Array.isArray(antwort))
+      ? {...(antwort??{}),schatten_hinweis:keinBezugHinweis(bezug)}
+      : antwort;
+  }
   // P6-T44: bei 'alle' nur Pläne mit Bezug zur Anfrage; gezielte plan_id bleibt unverändert.
   const bezug=auswahl==='alle'?schattenBezug(action,args):undefined;
   const kandidaten=bezug?plans.filter(p=>planPfade(p).some(bezug.trifft)):plans;

@@ -23,6 +23,7 @@ const pool = db.getPool();
 assert.equal((await pool.query('SELECT current_database() AS db')).rows[0].db, 'synapse_test');
 const project = 'p6_t44_schatten-' + randomUUID();
 const project2 = 'p6_t44_schatten-fs-' + randomUUID();
+const projectNoPlans = 'p6_t44_schatten-empty-' + randomUUID();
 const hash = text => createHash('sha256').update(text).digest('hex');
 const namen = new Map();
 const normal = value => JSON.parse(JSON.stringify(value, (key, v) => {
@@ -59,7 +60,7 @@ const aufraeumen = async () => {
   for (const sql of ['DELETE FROM file_batch_waits WHERE project=ANY($1)', 'DELETE FROM file_reservations WHERE project=ANY($1)',
     'DELETE FROM file_batch_plans WHERE project=ANY($1)', 'DELETE FROM file_versions WHERE project=ANY($1)',
     'DELETE FROM code_files WHERE project=ANY($1)', 'DELETE FROM projects WHERE name=ANY($1)']) {
-    try { await pool.query(sql, [[project, project2]]); } catch { /* Tabelle fehlt oder FK: Testdaten bleiben isoliert */ }
+    try { await pool.query(sql, [[project, project2, projectNoPlans]]); } catch { /* Tabelle fehlt oder FK: Testdaten bleiben isoliert */ }
   }
 };
 let dir;
@@ -69,6 +70,10 @@ try {
     await pool.query('INSERT INTO code_files(id,project,file_path,file_name,file_type,file_size,content,content_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
       [randomUUID(), project, file_path, file_path.split('/').at(-1), file_path.split('.').at(-1), Buffer.byteLength(content), content, hash(content)]);
   }
+  await pool.query('INSERT INTO projects(name,hostname,path) VALUES($1,$2,$3)', [projectNoPlans, 'p6-t44-empty', '/tmp/p6-t44-empty']);
+  const EMPTY = 'synthetic empty plan baseline\n';
+  await pool.query('INSERT INTO code_files(id,project,file_path,file_name,file_type,file_size,content,content_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+    [randomUUID(), projectNoPlans, 'src/empty.ts', 'empty.ts', 'ts', Buffer.byteLength(EMPTY), EMPTY, hash(EMPTY)]);
   const plan = async (ops, expected) => (await pool.query(
     "INSERT INTO file_batch_plans(project,owner_agent_id,ops,expected_hashes,previews,status,expires_at) VALUES($1,$2,$3::jsonb,$4::jsonb,'[]'::jsonb,'open',NOW()+INTERVAL '1 day') RETURNING id::text",
     [project, 'p6-t44-test', JSON.stringify(ops), JSON.stringify(expected)])).rows[0].id;
@@ -125,6 +130,16 @@ try {
     assert.deepEqual(golden, JSON.parse(readFileSync(new URL('./fixtures/code-intel-schatten-p6-t44.golden.json', import.meta.url), 'utf8')));
     console.log('OK Golden: gezielter Schatten, Aufrufe ohne schatten und commit-Antwort (ohne fs_pruefung-Zusatz) bytegleich');
     if (!process.argv.includes('--golden')) {
+      const noPlan = await core.mitCodeIntelSchatten('file',
+        { project: projectNoPlans, schatten: 'alle', file_path: 'src/empty.ts' },
+        async () => { const f = await ci.getFileContent(projectNoPlans, 'src/empty.ts'); return f ? { success: true, ...f, project: projectNoPlans } : { success: false, project: projectNoPlans }; });
+      assert.equal(noPlan.content, EMPTY);
+      assert.equal(noPlan.staende, undefined);
+      assert.ok((noPlan.schatten_hinweis ?? '').includes('Kein offener Plan berührt src/empty.ts'));
+      const noPlanTree = await core.mitCodeIntelSchatten('tree',
+        { project: projectNoPlans, schatten: 'alle', show_ghosts: true, show_assets: false },
+        async () => ({ success: true, tree: await ci.getProjectTree(projectNoPlans, { show_assets: false }), project: projectNoPlans }));
+      assert.ok((noPlanTree.schatten_hinweis ?? '').includes('Kein offener Plan berührt das Projekt'));
       const ids = r => (r.staende ?? []).map(s => s.plan_id).sort();
       // Datei-Actions: nur Plaene mit Bezug, keine fremde Drift, Zaehlung der uebrigen.
       const fa = await run('file', { schatten: 'alle', file_path: 'src/a.ts' });
