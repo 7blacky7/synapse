@@ -43,7 +43,7 @@ function positiveEnv(name: string): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-import {mitComputeAdmission} from '../services/compute-admission.js';
+import {mitComputeAdmission,computeAdmissionAktiv} from '../services/compute-admission.js';
 
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
   readonly name = 'ollama';
@@ -248,8 +248,10 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         ...(numCtx !== null ? { options: { num_ctx: numCtx } } : {}),
       }),
     });
-    const text=await response.text();
-    ended(); // Vollständige Antwort: HTTP-Rechnung beendet, auch bei fachlichem Fehler.
+    let text:string;
+    try{text=await response.text();ended();}
+    catch(error){if(!response.ok&&!computeAdmissionAktiv())text='';else throw error;}
+    // Erst vollständig konsumierte Antwort bestätigt das Ende; Legacy-HTTPfehler behält leeren Detailfallback.
     if (!response.ok) {
       const detail = text.slice(0, 300);
       const meldung = `Ollama Fehler: ${response.status} ${response.statusText} ${detail}`.trim();

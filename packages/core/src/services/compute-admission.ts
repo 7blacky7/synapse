@@ -80,8 +80,12 @@ async function used(db:AdmissionDb,d:NonNullable<ReturnType<typeof computeAdmiss
  const models=await db.query<{mb:number}>('SELECT COALESCE(SUM(reserved_mb),0)::float8 AS mb FROM compute_admission_models WHERE resource_domain=$1',[d.key]);
  // GPU-Jobs der Hostdomain sind konservativ reserviert, auch nach verlorener Lease.
  const jobs=await db.query<{n:number;mb:number}>(`SELECT COUNT(*)::int AS n,COALESCE(SUM((resource_need->>'vram')::numeric),0)::float8 AS mb
-  FROM work_jobs WHERE resource_domain IN ($1,$2) AND (resource_need->>'gpu')::boolean
-  AND (state IN ('leased','staged') OR resource_unconfirmed)`,[d.host,d.key]);
+  FROM work_jobs w LEFT JOIN embedding_knoten n ON n.node_id=w.owner_node
+  WHERE (w.resource_need->>'gpu')::boolean AND (w.state IN ('leased','staged') OR w.resource_unconfirmed)
+  AND (w.resource_domain IN ($1,$2)
+   OR (n.host_resource_domain=$1 AND NOT EXISTS(SELECT 1 FROM compute_admission_domains p WHERE p.resource_domain=w.resource_domain))
+   OR ((w.owner_node IS NULL OR n.host_resource_domain IS NULL OR w.boot_generation<>n.boot_id)
+    AND NOT EXISTS(SELECT 1 FROM compute_admission_domains p WHERE p.resource_domain=w.resource_domain OR p.host_domain=w.resource_domain)))`,[d.host,d.key]);
  return {http:http.rows[0].n,exclusive:http.rows[0].exclusive,models:models.rows[0].mb,jobs:jobs.rows[0].n,jobMb:jobs.rows[0].mb};
 }
 /** Fehlende/stale Telemetrie bleibt unknown, niemals erfundene freie Kapazität. */
@@ -99,9 +103,11 @@ async function physicalBudget(db:AdmissionDb,nodeId:string,d:NonNullable<ReturnT
  return Math.min(d.config.vramMb,free.value!+credit);
 }
 /** Unter bereits gehaltenem Domainlock, unmittelbar vor dem Work-Job-Claim. */
-export async function computeAdmissionAllowsWork(db:AdmissionDb,nodeId:string,need:{gpu:boolean;vram:number},priority:string):Promise<boolean>{
+export async function computeAdmissionAllowsWork(db:AdmissionDb,nodeId:string,need:{gpu:boolean;vram:number},priority:string,resourceDomain?:string):Promise<boolean>{
  if(!need.gpu||process.env.SYNAPSE_COMPUTE_ADMISSION!=='1')return true;
- const d=computeAdmissionDomain(nodeId)!;const u=await used(db,d);
+ const d=computeAdmissionDomain(nodeId)!;
+ if(resourceDomain!==d.host&&resourceDomain!==d.key)return false;
+ const u=await used(db,d);
  // Noch rechnende/unbestätigte Embeddings und residente Modelle bleiben reserviert.
  const cap=d.config.maxHttp-(priority==='interaktiv'?0:d.config.interactiveReserve),budget=await physicalBudget(db,nodeId,d);
  return budget!==null&&!u.exclusive&&u.http+u.jobs<cap&&u.models+u.jobMb+need.vram<=budget;

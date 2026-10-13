@@ -240,7 +240,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
         const grant = await authorize(node,current,client);
         if (!grant || grant.resourceDomain !== domain || !Number.isSafeInteger(grant.maxConcurrent) ||
             grant.maxConcurrent < 1 || !await checkInput(current,client)) continue;
-        if(!await computeAdmissionAllowsWork(client,who.nodeId,current.resourceNeed,current.priority))continue;
+        if(!await computeAdmissionAllowsWork(client,who.nodeId,current.resourceNeed,current.priority,grant.resourceDomain))continue;
         const budget = validateWorkResources(grant.budget);
         const active = await client.query<{n:number;cpu:number;ram:number;vram:number}>(
           `SELECT COUNT(*)::int AS n, COALESCE(SUM((resource_need->>'cpu')::numeric),0)::float8 AS cpu,
