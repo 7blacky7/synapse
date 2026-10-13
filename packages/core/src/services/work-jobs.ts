@@ -8,6 +8,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {computePolicyAktiv,pruefeComputeZuteilung} from './compute-policy.js';
 import { getPool } from '../db/client.js';
+import {lockComputeAdmissionDomain,computeAdmissionAllowsWork} from './compute-admission.js';
 import {lockWorkJobClaimGuards,allowWorkJobClaim} from './work-job-guards.js';
 import type { ApiObjektReferenz } from '../vertrag/api-vertrag.js';
 
@@ -147,6 +148,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
   }
   async function lockAuthority(client: WorkJobClient, who: WorkIdentity, domain: string) {
     if (!id(who.nodeId) || !uuid(who.bootGeneration) || !who.authHash) return null;
+    await lockComputeAdmissionDomain(client,who.nodeId);
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['work-domain:'+domain]);
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['work-node:'+who.nodeId]);
     const r = await client.query<WorkNodeAuthority>('SELECT *, clock_timestamp() AS work_now FROM embedding_knoten WHERE node_id=$1 FOR SHARE',[who.nodeId]);
@@ -238,6 +240,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
         const grant = await authorize(node,current,client);
         if (!grant || grant.resourceDomain !== domain || !Number.isSafeInteger(grant.maxConcurrent) ||
             grant.maxConcurrent < 1 || !await checkInput(current,client)) continue;
+        if(!await computeAdmissionAllowsWork(client,who.nodeId,current.resourceNeed,current.priority))continue;
         const budget = validateWorkResources(grant.budget);
         const active = await client.query<{n:number;cpu:number;ram:number;vram:number}>(
           `SELECT COUNT(*)::int AS n, COALESCE(SUM((resource_need->>'cpu')::numeric),0)::float8 AS cpu,

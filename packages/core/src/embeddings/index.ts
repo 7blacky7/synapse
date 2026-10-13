@@ -23,6 +23,7 @@
  */
 
 import { getConfig } from '../config.js';
+import {computeAdmissionAktiv,mitComputeAdmissionKontext} from '../services/compute-admission.js';
 import { SynapseConfig } from '../types/index.js';
 import { EmbeddingProvider } from './types.js';
 import { OllamaEmbeddingProvider } from './ollama.js';
@@ -186,7 +187,10 @@ export async function getEmbeddingProvider(
 }
 
 // ───── Globale Embedding-Queue ────────────────────────────────────────────
-// Interaktive Aufrufe haben IMMER Vorrang vor Parser-/Backfill-Arbeit (P5-T15, User-Vorgabe
+// R2.2: Bei aktiver PG-Admission laufen bestehende Requests ohne Abort zu Ende; Vorrang
+// und Reserve gelten pro physischer Domain. Die lokale Queue bleibt Backpressure.
+// Der folgende P5-T15-Abortpfad gilt nur ohne aktiviertes R2.2-Gate.
+// Interaktive Aufrufe haben Vorrang vor Parser-/Backfill-Arbeit (P5-T15, User-Vorgabe
 // 11.10.2026: KI-Anfragen werden nie blockiert):
 //   - Ein Hintergrundauftrag startet nur, wenn KEIN interaktiver Auftrag laeuft oder wartet —
 //     auch nicht auf einen freien Slot.
@@ -227,6 +231,9 @@ export interface EmbedOptions {
   maxQueueWaitMs?: number;
   /** Compute-Node: lokales Ollama erzwingen, insbesondere bei gesetztem OpenAI-Key. */
   strictOllama?: boolean;
+  /** R2.2: Herkunftszähler, kein vom Client gelieferter ResourceDomain-Schlüssel. */
+  admissionSource?: string;
+  admissionClaims?: Array<{chunkId:string;claimToken:string;contentHash:string}>;
   /**
    * P12-T4: 'query' fuer Suchanfragen, sonst 'dokument' (Standard). Bestimmt den Praefix laut
    * Model-Card (modell-profil.ts). Jeder Suchpfad MUSS 'query' setzen - ohne Praefix verlieren
@@ -390,7 +397,7 @@ function acquireEmbedSlot(options: EmbedOptions = {}, neuversuch = false): Promi
 
   // P5-T15: ein interaktiver Auftrag verdraengt laufende Hintergrund-Aufrufe; ein
   // Hintergrundauftrag nimmt keinen freien Slot, solange Interaktives laeuft oder wartet.
-  if (priority === 'interactive') brichHintergrundAb();
+  if (priority === 'interactive' && !computeAdmissionAktiv()) brichHintergrundAb();
   if (activeEmbedCalls < MAX_CONCURRENT_EMBED && (priority === 'interactive' || !interaktivBeschaeftigt())) {
     return Promise.resolve(startLease(priority, now));
   }
@@ -440,9 +447,10 @@ async function runQueued<T>(
   // Die Schleife wiederholt sich NUR nach einer Verdraengung (sonst return/throw).
   for (let neuversuch = false; ; neuversuch = true) {
     await pruefeEmbeddingSchalter(options.priority ?? 'interactive');
-    const lease = await acquireEmbedSlot(options, neuversuch);
+    let lease:EmbedLease|null = await acquireEmbedSlot(options, neuversuch);
+    const priority=lease.priority;
     // Nur Hintergrund-Aufrufe sind verdraengbar.
-    const abbruch = lease.priority === 'background' ? new AbortController() : null;
+    const abbruch = priority === 'background' && !computeAdmissionAktiv() ? new AbortController() : null;
     if (abbruch) laufendeHintergrund.add(abbruch);
     try {
       const gap = Date.now() - lastEmbedFinishMs;
@@ -453,7 +461,12 @@ async function runQueued<T>(
         verdraengtHintergrund++;
         continue; // noch vor dem Aufruf verdraengt -> hinten neu einreihen
       }
-      return await operation(abbruch?.signal);
+      return await mitComputeAdmissionKontext({
+        source:options.admissionSource??(priority==='interactive'?'core-interactive':'core-background'),
+        priority:priority==='interactive'?'interaktiv':'hintergrund',maxWaitMs:options.maxQueueWaitMs,claims:options.admissionClaims,
+        releaseLocal:()=>{if(lease){releaseEmbedSlot(lease);lease=null;}},
+        resumeLocal:async()=>{lease??=await acquireEmbedSlot(options,true);},
+      },()=>operation(abbruch?.signal));
     } catch (error) {
       if (!abbruch?.signal.aborted) throw error;
       // P5-T15: ein interaktiver Auftrag hat diesen Hintergrund-Aufruf verdraengt -> Slot frei
@@ -461,7 +474,7 @@ async function runQueued<T>(
       verdraengtHintergrund++;
     } finally {
       if (abbruch) laufendeHintergrund.delete(abbruch);
-      releaseEmbedSlot(lease);
+      if(lease)releaseEmbedSlot(lease);
     }
   }
 }
@@ -568,7 +581,7 @@ export async function supportsMultimodal(): Promise<boolean> {
  * Generiert Embedding fuer eine Medien-Datei (Bild/Video)
  * Nur verfuegbar bei multimodalen Providern (Google Gemini)
  */
-export async function embedMedia(data: Buffer, mimeType: string): Promise<number[]> {
+export async function embedMedia(data: Buffer, mimeType: string, options: EmbedOptions = {}): Promise<number[]> {
   const provider = await getEmbeddingProvider();
   if (!provider.embedMedia) {
     throw new Error(
@@ -576,7 +589,8 @@ export async function embedMedia(data: Buffer, mimeType: string): Promise<number
       `Setze EMBEDDING_PROVIDER=google fuer Bild/Video-Support.`
     );
   }
-  return provider.embedMedia(data, mimeType);
+  const operation=()=>provider.embedMedia!(data,mimeType);
+  return computeAdmissionAktiv()?runQueued(operation,{priority:'background',admissionSource:'media',...options}):operation();
 }
 
 /**

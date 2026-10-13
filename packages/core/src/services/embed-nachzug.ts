@@ -110,6 +110,7 @@ export async function betteEinzelnEin(
   embedOptions: EmbedOptions,
   passt?: (p: NachzugPunkt) => boolean,
 ): Promise<void> {
+  embedOptions={admissionSource:'wissen:'+quelle.tabelle,...embedOptions};
   const punkt = (await quelle.lese([id])).find((p) => !passt || passt(p));
   if (!punkt) return; // zwischenzeitlich geloescht — nichts nachzutragen
   if (await betteWissenEin(quelle, punkt, embedOptions)) return;
@@ -130,6 +131,7 @@ export async function betteStapelEin(
   ids: string[],
   embedOptions: EmbedOptions,
 ): Promise<number> {
+  embedOptions={admissionSource:'wissen:'+quelle.tabelle,...embedOptions};
   const gelesen = await quelle.lese(ids);
   if (gelesen.length === 0) return 0;
   const punkte: NachzugPunkt[] = [];

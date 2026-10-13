@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
+import {installComputeAdmissionClient,withComputeAdmissionFeature} from './admission.js';
 import { renameSync, writeFileSync } from 'node:fs';
 import { lokalerModellDigest, probeNodeCapabilities, type EmbeddingReference } from './probe.js';
 
@@ -306,7 +307,8 @@ while (!stopped) {
     // Einzige Stelle mit harter Schwellenpruefung: vor der Registrierung.
     capabilities = await probeNodeCapabilities(reference, true);
     startReferenz = reference;
-    const antwort = await api<RegisterResponse>('/api/embedding-nodes/register', { ...capabilities, bootId, bootStartedAt });
+    const antwort = await api<RegisterResponse>('/api/embedding-nodes/register', withComputeAdmissionFeature({ ...capabilities, bootId, bootStartedAt }));
+    await installComputeAdmissionClient({nodeId:capabilities.nodeId,bootId,transport:apiFetch,stopped:()=>stopped});
     // P15-T9: die Kapazitaet kommt vom Server (SYNAPSE_NODE_MAX_CLAIMS bzw. unser Wunsch) - kein eigener Default.
     if (!Number.isInteger(antwort.claimBatch) || (antwort.claimBatch as number) <= 0) {
       throw new Error('Registrierung ohne claimBatch (API zu alt?) - Knoten arbeitet nicht mit geratener Stapelgroesse.');
@@ -540,6 +542,8 @@ async function claimLoop(): Promise<void> {
       vectors = await embedBatch(aktuell.claims.map((c) => c.content), {
         priority: 'background',
         strictOllama: true,
+        admissionSource:'compute-node',
+        admissionClaims:aktuell.claims.map(c=>({chunkId:c.chunkId,claimToken:c.claimToken,contentHash:c.contentHash})),
       });
     } catch (error) {
       console.error('[ComputeNode] embedding failed, releasing claims and retrying:', error);

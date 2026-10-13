@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
 import { zielDimension } from '../embeddings/index.js';
 import { leseSchalter } from './intern-schalter.js';
+import {lockComputeAdmissionDomain,computeAdmissionMayPrefetch} from './compute-admission.js';
 import { ensureProjectCollection } from '../qdrant/collections.js';
 import { insertVector, insertVectors } from '../qdrant/operations.js';
 import type { CodeChunkPayload } from '../types/index.js';
@@ -231,6 +232,14 @@ export async function claimEmbeddingChunks(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const admissionNode=options.serverBootFence?.nodeId??(options.internalServer?process.env.SYNAPSE_SERVER_NODE_ID:nodeId);
+    if(process.env.SYNAPSE_COMPUTE_ADMISSION==='1'){
+      if(!admissionNode)throw Error('admission_binding_missing');
+      await lockComputeAdmissionDomain(client,admissionNode);
+      if(!await computeAdmissionMayPrefetch(client,admissionNode,options.internalServer===true)){
+        await client.query('COMMIT');return [];
+      }
+    }
     // Kapazitaetspruefung und Claim sind pro Node atomar. Ohne diesen Lock
     // koennen zwei Transaktionen gleichzeitig COUNT=0 sehen und gemeinsam das
     // server-autorisierte maxConcurrent ueberschreiten.
@@ -340,6 +349,10 @@ export async function claimEmbeddingChunks(
         lineEnd: row.line_end,
         leaseUntil: new Date(state.lease_until).toISOString(),
       });
+    }
+    if(process.env.SYNAPSE_COMPUTE_ADMISSION==='1'&&claims.length){
+      await client.query('INSERT INTO work_job_audit(id,job_id,event,detail) VALUES($1,NULL,$2,$3::jsonb)',
+        [uuidv4(),'embedding_admission',JSON.stringify({nodeId:admissionNode,claimOwner:nodeId,source:options.internalServer?'parser-worker':'compute-node',leasedChunks:claims.length,reservedHttpBatches:0,prefetch:true})]);
     }
     await client.query('COMMIT');
     return claims;

@@ -35,7 +35,7 @@ export type ApiVertragUmgebung = Readonly<Record<string, string | undefined>>;
 /** Serverkonfiguration ersetzt/erweitert diesen offenen Startkatalog. */
 const START_FEATURE_KATALOG: readonly string[] = [
   'asset_sync', 'reverse_bibliothek', 'compute_resources', 'compute_control',
-  'compute_cpu_only', 'tool_container',
+  'compute_cpu_only', 'tool_container', 'compute_admission',
 ];
 function ids(roh: string | undefined): string[] {
   return [...new Set((roh ?? '').split(',').map(s => s.trim()).filter(Boolean))];

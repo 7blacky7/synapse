@@ -2718,7 +2718,7 @@ export async function indexMediaFile(
   const fileName = path.basename(filePath);
 
   try {
-    const vector = await embedMedia(buffer, mimeType);
+    const vector = await embedMedia(buffer, mimeType, {priority:'background',admissionSource:'media'});
 
     const payload: MediaChunkPayload = {
       file_path: filePath,

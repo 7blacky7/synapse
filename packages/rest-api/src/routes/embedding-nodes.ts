@@ -14,6 +14,7 @@ import {
 } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
 import {registerComputePolicyRoutes} from './compute-policy.js';
+import {registerComputeAdmissionRoutes} from './compute-admission.js';
 import { registerWorkJobRoutes, type WorkJobRouteDependencies } from './work-jobs.js';
 import { CpuNodeError,cpuNodeRequested,registerCpuNode,heartbeatCpuNode,listCpuNodes } from '../services/cpu-nodes.js';
 import {
@@ -158,6 +159,7 @@ export function createEmbeddingNodeRoutes(
 
   return async (fastify: FastifyInstance): Promise<void> => {
     await registerComputePolicyRoutes(fastify,{db:deps.db,validateToken:deps.validateToken});
+    await registerComputeAdmissionRoutes(fastify,{validateToken:deps.validateToken});
     // P20-T14: additive Familie, bestehende Compute-Ausweise/Route, explizites A1-Featuregate.
     await registerWorkJobRoutes(fastify,{validateToken:deps.validateToken,service:overrides.workJobs});
     // P15-T1: Referenzvertrag nicht ermittelbar (Env fehlt, Ollama des Servers antwortet nicht) ->

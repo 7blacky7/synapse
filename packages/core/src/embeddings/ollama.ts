@@ -43,6 +43,8 @@ function positiveEnv(name: string): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+import {mitComputeAdmission} from '../services/compute-admission.js';
+
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
   readonly name = 'ollama';
   private baseUrl: string;
@@ -233,6 +235,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
 
   /** Ein Aufruf an /api/embed fuer eine Liste von Texten. Ohne Dim-Truncation. */
   private async embedRaw(texte: string[], signal?: AbortSignal): Promise<number[][]> {
+    return mitComputeAdmission(this.model,async ended=>{
     const numCtx = this.numCtx();
     const response = await fetch(`${this.baseUrl}/api/embed`, {
       method: 'POST',
@@ -245,18 +248,21 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         ...(numCtx !== null ? { options: { num_ctx: numCtx } } : {}),
       }),
     });
+    const text=await response.text();
+    ended(); // Vollständige Antwort: HTTP-Rechnung beendet, auch bei fachlichem Fehler.
     if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 300);
+      const detail = text.slice(0, 300);
       const meldung = `Ollama Fehler: ${response.status} ${response.statusText} ${detail}`.trim();
       const batch = /batch size:?\s*(\d+)/i.exec(detail);
       if (batch && Number(batch[1]) > 0) throw new BatchZuKleinFehler(Number(batch[1]), meldung);
       throw new Error(meldung);
     }
-    const data = (await response.json()) as OllamaEmbedAntwort;
+    const data = JSON.parse(text) as OllamaEmbedAntwort;
     if (!Array.isArray(data.embeddings) || data.embeddings.length !== texte.length) {
       throw new Error(`Ollama lieferte ${data.embeddings?.length ?? 0} statt ${texte.length} Vektoren`);
     }
     return data.embeddings;
+    },this.baseUrl);
   }
 
   /**

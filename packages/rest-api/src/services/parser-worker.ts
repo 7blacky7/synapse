@@ -29,6 +29,7 @@ import {
   embeddeOffeneEintraege,
   expirePendingProjectInitJobs,
   getPool,
+  createComputeAdmission,
   parseUnparsedFiles,
   projekteMitBacklog,
   context7AutomatikTick,
@@ -140,6 +141,7 @@ export class ParserWorker {
     initContext7Automatik();
     // P14-T4: Stats fuer intern(action:'status')
     registriereInternQuelle('parser_worker', () => this.getStats());
+    if(process.env.SYNAPSE_COMPUTE_ADMISSION==='1')registriereInternQuelle('compute_admission',()=>createComputeAdmission().status());
     // P15-T12: einzeln pausierbar/ausloesbar ueber intern(worker_*)
     registriereWorker({
       name: 'server_embedding',
@@ -268,6 +270,7 @@ export class ParserWorker {
       vektoren = await embedBatch(claims.map((c) => c.content), {
         priority: 'background',
         strictOllama: true,
+        admissionSource:'parser-worker',
       });
     } catch (err) {
       await Promise.all(claims.map((c) => gibClaimFrei(c.chunkId, c.claimToken).catch(() => undefined)));

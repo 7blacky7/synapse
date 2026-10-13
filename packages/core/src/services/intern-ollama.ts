@@ -15,6 +15,7 @@
 
 import { getConfig } from '../config.js';
 import { leseSchalter } from './intern-schalter.js';
+import {computeAdmissionAktiv,mitComputeAdmissionKontext,mitComputeAdmission,observeLocalComputeModelAbsent,localComputeModelObservation} from './compute-admission.js';
 
 export class InternOllamaFehler extends Error {
   constructor(public readonly code: string, message: string) {
@@ -54,18 +55,22 @@ export function ollamaBasis(): string {
 }
 
 async function ollama<T>(pfad: string, opt: { body?: unknown; zeitlimitMs?: number } = {}): Promise<T> {
+  const gpu=opt.body!==undefined&&['/api/embed','/api/generate'].includes(pfad);
+  const model=(opt.body as {model?:string}|undefined)?.model;
+  const run=async(ended:()=>void):Promise<T>=>{
   let antwort: Response;
   try {
     antwort = await fetch(ollamaBasis() + pfad, {
       method: opt.body !== undefined ? 'POST' : 'GET',
       headers: opt.body !== undefined ? { 'content-type': 'application/json' } : undefined,
       body: opt.body !== undefined ? JSON.stringify(opt.body) : undefined,
-      signal: AbortSignal.timeout(opt.zeitlimitMs ?? 10_000),
+      signal: gpu&&computeAdmissionAktiv()?undefined:AbortSignal.timeout(opt.zeitlimitMs ?? 10_000),
     });
   } catch (err) {
     throw new InternOllamaFehler('ollama_nicht_erreichbar', `Ollama unter ${ollamaBasis()} nicht erreichbar (${pfad}): ${(err as Error).message}`);
   }
   const text = await antwort.text();
+  ended();
   if (!antwort.ok) {
     throw new InternOllamaFehler('ollama_fehler', `Ollama ${pfad} -> HTTP ${antwort.status}: ${text.slice(0, 300)}`);
   }
@@ -74,6 +79,8 @@ async function ollama<T>(pfad: string, opt: { body?: unknown; zeitlimitMs?: numb
   } catch {
     throw new InternOllamaFehler('ollama_fehler', `Ollama ${pfad}: Antwort ist kein JSON.`);
   }
+  };
+  return gpu?mitComputeAdmissionKontext({source:'intern-ollama',priority:'interaktiv'},()=>mitComputeAdmission(model??'',run,ollamaBasis())):run(()=>{});
 }
 
 /** Geladene Modelle wie "ollama ps". */
@@ -176,6 +183,7 @@ export async function ollamaEntladen(modell: string): Promise<Record<string, unk
   }
 
   // Ollama entlaedt asynchron — bis 5 s nachsehen, nach einem Zeitlimit bis 30 s
+  const admissionObservation=await localComputeModelObservation(treffer.name);
   let nachher = await geladeneModelle();
   const runden = aufrufHinweis ? 60 : 10;
   for (let i = 0; i < runden && nachher.some((m) => gleichesModell(m.name, treffer.name)); i++) {
@@ -183,6 +191,7 @@ export async function ollamaEntladen(modell: string): Promise<Record<string, unk
     nachher = await geladeneModelle();
   }
   const weg = !nachher.some((m) => gleichesModell(m.name, treffer.name));
+  if(weg)await observeLocalComputeModelAbsent(treffer.name,admissionObservation);
   if (!weg && aufrufHinweis) {
     throw new InternOllamaFehler('entladen_zeitlimit',
       'Der Entlade-Aufruf lief ins Zeitlimit und das Modell ist nach 30 s noch geladen (laufende Anfragen?). Ollama selbst antwortet (/api/ps). Aufruf: ' + aufrufHinweis);
