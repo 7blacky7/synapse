@@ -49,6 +49,14 @@ Die Code-Pipeline erzeugt Symbole und Chunks; Server-Worker oder [Compute-Nodes]
 
 Die [Zusammenhangsdokumentation](docs/README.md) erklärt die Schnittstellen genauer. Die [Bildübersicht](docs/bilder/README.md) verknüpft jede Ansicht mit ihren Codequellen; [Konzepte](docs/konzepte/README.md) sind separat ausgewiesen.
 
+### Funktionsweise im Detail
+
+[Tray](packages/file-watcher-daemon/tray/README.md#funktionsweise) · [Daemon](packages/file-watcher-daemon-ts/src/README.md#funktionsweise) · [Dateiänderungen](packages/core/src/services/README.md#dateiänderungen-co-edit-und-platten-synchronisation) · [Shell](packages/core/src/services/README.md#shell-ausführung-und-workspaces) · [Workspaces](packages/rest-api/src/services/README.md#funktionsweise-workspaces)
+
+[Kommunikation](packages/core/src/services/README.md#kommunikation-und-hinweiszustellung) · [Wrapper](packages/agents/src/README.md#funktionsweise) · [Jev](packages/core/src/services/README.md#jev-und-entscheidungen) · [Syntaxprüfung](packages/core/src/services/README.md#syntaxprüfung-und-erklärungsfälle)
+
+[Embedding](packages/core/src/embeddings/README.md#funktionsweise) · [Assets](packages/core/src/asset-intel/README.md#funktionsweise) · [Auth und Projekte](docs/README.md#authentifizierung-und-projekte) · [Web-UI und Wissen](docs/README.md#web-oberfläche-und-wissen)
+
 ## Werkzeuge
 
 Die Tabelle dient zur Orientierung. Die genaue Aktionsreferenz liefert [guide](packages/core/src/guide/README.md); maßgeblich für Verfügbarkeit und Parameter sind das [stdio-Register](packages/mcp-server/src/server.ts) und das [REST-MCP-Register](packages/rest-api/src/routes/mcp.ts). Einzelne Aktionen und kontextabhängige Werkzeuge können sich unterscheiden.

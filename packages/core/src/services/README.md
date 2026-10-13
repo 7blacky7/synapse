@@ -10,7 +10,6 @@ Dieser Ordner enthält die fachlichen Core-Services für Code, Wissen, Dateien, 
 
 Die Inhaltsübersicht ist in drei getrennte Abschnitte aufgeteilt. Jeder Abschnitt nennt die zugehörigen Dateien mit relativen Links und beschreibt deren belegte Aufgabe.
 
-<!-- P19-T4:ANFANG -->
 ### Teil A (a–i)
 
 #### Dateien und Unterordner
@@ -132,9 +131,7 @@ Der T4-Bestand reicht von `agent-id-resolver.ts` bis `intern-warteschlangen.ts`;
 - [Services: Teil C (s–z)](#teil-c-sz)
 - [Syntax-Prüfer](syntax-pruefer/README.md)
 - [Zusammenhang und Betriebsvarianten](../../../../docs/README.md)
-<!-- P19-T4:ENDE -->
 
-<!-- P19-T5:ANFANG -->
 ### Teil B (j–r)
 
 #### Dateien und Unterordner
@@ -167,9 +164,7 @@ Mehrere Dienste speichern oder lesen Daten über den Core-Datenbankzugriff [../d
 
 - [Core-Quellcode](../README.md)
 - [Zusammenhang](../../../../docs/README.md)
-<!-- P19-T5:ENDE -->
 
-<!-- P19-T6:ANFANG -->
 ### Teil C (s–z)
 
 #### Dateien und Unterordner
@@ -262,7 +257,6 @@ Die Shell-Queue und die Spezialisten-Queue speichern Aufträge in PostgreSQL; de
 
 - [Core-Quellcode](../README.md)
 - [Zusammenhang](../../../../docs/README.md)
-<!-- P19-T6:ENDE -->
 
 ## Funktionsweise
 
@@ -347,6 +341,7 @@ Die Queue unterscheidet `pending`, `running` und die Endzustände `done`, `faile
 
 Der Workspace-Pfad liefert stdout/stderr synchron zurück und bietet nicht dieselbe fortsetzbare lokale Queue-/Stream-Semantik. Bei einem Workspace-Timeout werden Warten und Stream beendet. Der Orchestrator sendet dabei kein eigenes Kill-Signal an den Exec-Prozess; aus diesem Timeout allein lässt sich deshalb keine sichere Prozessbeendigung ableiten. Zielauswahl, Startprüfung und Laufzeitende sind drei getrennte Entscheidungen.
 
+
 ### Kommunikation und Hinweiszustellung
 
 Synapse hält vier Kommunikationswege getrennt: projektbezogene Gruppen-Boards (Channels), Broadcasts und Direktnachrichten (Chat), adressierte Inbox-Post sowie steuernde Events. Sie teilen sich PostgreSQL als dauerhaften Speicher, haben aber eigene Nachrichten- und Zustandsmarken.
@@ -408,6 +403,7 @@ Ein zurückgewiesener Syntaxfehler stößt daneben den asynchronen Erklärungswe
 
 ![Datenfluss von Syntaxprüfung, Prüfcontainer und asynchronem Erklärungsfall](../../../../docs/bilder/pruefung.svg)
 
+
 ### Authentifizierung, Onboarding und Projektzuordnung
 
 #### Projektpfad und Agenten-Onboarding
@@ -426,6 +422,7 @@ Der Worker meldet einen der Endzustände `done`, `failed`, `rejected` oder `time
 
 Quellbelege: [project-registry.ts](project-registry.ts) (Pfadauflösung und Registry), [agent-rollen.ts](agent-rollen.ts) und [agent-onboarding.ts](agent-onboarding.ts) (Rollen- und Zustellpfad), [project-init-queue.ts](project-init-queue.ts) und [project-init-worker.ts](../../../../packages/file-watcher-daemon-ts/src/project-init-worker.ts) (Queue und Worker).
 
+
 ### Web-Oberfläche, Hauptagenten und Wissenszugriff
 
 Die Web-Oberfläche verbindet Ansichten über typisierte Adapter mit REST-Routen. Der Auth-Adapter ergänzt API-Aufrufe um die Benutzer-Session und leitet HTTP-401-Antworten an das Login-Gate zurück. Ein Teil der Control-Plane-Daten kann zusätzlich über die lokale GoTray-API kommen; der Adapter fällt bei fehlendem JSON auf REST zurück. Ansicht und Datenquelle bleiben getrennt: View-Modelle tragen die aufbereitete Darstellung, Statuskennzeichnungen unterscheiden Live-Daten von Teilanbindungen und Demo-Werten. Die [UI-Dokumentation](../../../web-ui/src/README.md) beschreibt die sichtbare Abgrenzung; [ui.svg](../../../../docs/bilder/ui.svg) zeigt den Datenweg.
@@ -442,6 +439,7 @@ Wissenseinträge und ihre semantischen Indizes haben unterschiedliche Rollen:
 | Tech-Docs | Eintrag über seine ID; projektgebundene Recherche- und manuelle Docs liegen neben globalen Context7-Einträgen in PostgreSQL. | Semantische Suche erfolgt nach Scope in den passenden Qdrant-Collections. |
 
 Bei Memory, Thought und Tech-Docs wird zuerst PostgreSQL geschrieben. Einbettung und Qdrant-Nachtrag laufen danach; solange **embedded_at** leer ist, kann der Backlog den Index ergänzen. Daher kann ein frisch gespeicherter Eintrag direkt abrufbar sein, bevor er in der semantischen Suche erscheint. Qdrant dient als Suchindex, nicht als Quelle für den gespeicherten Inhalt.
+
 
 ## Schnittstellen nach außen
 

@@ -61,6 +61,8 @@ Fehlt der Docker-Socket oder antwortet Docker beim Start nicht, wird der Orchest
 
 Umgesetzt sind benannte Container, Rollen-Vorlagen, persistente Volumes, Materialisierung, Idle/LRU, Pinning und Ressourcen-Konfiguration. Daraus folgt kein vollständiges Abbild des lokalen Rechners und keine Garantie für beliebige Betriebssystem-, Geräte- oder Dienste-Konfigurationen. Die ausführlichere [Workspace-/Scope-Konzeption](../../../../docs/konzepte/ARCHITEKTUR_WORKSPACE_TESTSYSTEME_SCOPES.md) ordnet weitergehende Ideen ein; maßgeblich für die hier beschriebenen Abläufe bleibt der Orchestratorcode.
 
+
+
 ## Funktionsweise: Parser- und Embedding-Worker
 
 Der REST-Server startet den [ParserWorker](parser-worker.ts) nach der Initialisierung. In seinem regelmäßigen Tick fragt er Core nach Projekten mit Parse-Backlog; die Auswahl berücksichtigt Registry- und Aktivierungsstatus. Der Worker verarbeitet höchstens 20 Projekte pro Tick. Für jede Datei ruft er denselben Core-Pfad wie andere Parser-Aufrufer auf. Eine transaktionale Sperre pro Datei serialisiert parallele Läufe, etwa mit dem lokalen FileWatcher. Der Parser aktualisiert Symbole, Referenzen, Statements, Aufrufkanten und Code-Chunks in PostgreSQL.
