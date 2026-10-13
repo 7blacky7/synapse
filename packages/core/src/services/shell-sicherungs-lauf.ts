@@ -40,7 +40,7 @@ export interface ShellPruefSpeicher {
 }
 /** Bei normalen direkten Aufrufen keine zusätzliche Zeile; Queue-Jobs immer annotieren. */
 export async function beginneShellSicherungsJob(o:ShellPruefSpeicher):Promise<string|undefined>{
-  if(!o.job_id&&!o.entscheidung.antwort&&o.entscheidung.audit.entscheidung!=='bestaetigt')return undefined;
+  if(!o.job_id&&!o.entscheidung.antwort&&o.entscheidung.audit.entscheidung!=='bestaetigt'&&o.entscheidung.audit.grund!=='projekt_eigene_db')return undefined;
   const data=await maskiereShellVorSpeichern(o.project,{
     audit:o.entscheidung.audit,lage:o.lage,rechner:o.rechner??null,ursprung:o.ursprung??'mcp_local',
     ...(o.entscheidung.antwort?{antwort:o.entscheidung.antwort}:{}),

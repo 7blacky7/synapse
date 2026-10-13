@@ -3,6 +3,7 @@
  * Native Dateisystemprobe ist austauschbar (Daemon/Container derselbe Helfer).
  */
 import path from 'node:path';
+import {pruefeDbKommando,gleichesDbZiel,type ShellDbFreigabe,type ShellDbErgebnis} from './shell-db-zuordnung.js';
 import{gebundeneBuildLogFakten}from'./shell-build-log-fakten.js';
 import{skriptFakten}from'./shell-inline-pruefung.js';
 import {createHash}from'node:crypto';
@@ -10,6 +11,8 @@ import {parseShellText,type SicherungsShell,type ShellWort,type ShellTextKommand
 import {probeShellLage,type ShellProbeAnfrage,type ShellProbeAntwort}from'./shell-lage-probe.js';
 
 export interface ShellLageKontext {
+  /** Nur vom bestehenden API/Job-Vertrag, niemals von Nutzerparametern. */
+  datenbank_freigabe?:ShellDbFreigabe;
   shell?: SicherungsShell; os?: 'linux'|'windows'|'macos'|'wsl';
   cwd: string; project_root: string; env?: Record<string,string|undefined>;
   variablen?: Record<string,string|undefined>;
@@ -24,6 +27,8 @@ export interface ShellLageZiel {
   glob: boolean; leere_variablen: string[]; ungeklaert: string[];
 }
 export interface ShellLage {
+  datenbank_pruefung?:boolean;
+  datenbank_zuordnung?:{project:string;ziele:ShellDbFreigabe['ziele'];grund:'projekt_eigene_db'};
   shell: SicherungsShell; os: ShellLageKontext['os']; cwd:string; project_root:string;
   variablen: Array<{name:string;wert?:string;gesetzt:boolean}>;
   kommandos?:ShellTextKommando[]; quell_hash?:string; inline_pfade?:Record<string,boolean|undefined>;scratchpad_roots?:string[];testprojekt?:boolean;
@@ -165,6 +170,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   let testprojekt=false;try{const db=new URL(ctx.env?.DATABASE_URL??'');testprojekt=db.port==='5433'&&!['/synapse','/postgres','/'].includes(db.pathname);}catch{/* keine verifizierte Spielwiese */}
   const scratchpad_roots=ctx.scratchpad_roots??(ctx.env?.SYNAPSE_SCRATCHPAD_ROOT?[ctx.env.SYNAPSE_SCRATCHPAD_ROOT]:[]);
   const kommandos:ShellTextKommando[]=[];
+  const dbErgebnisse:ShellDbErgebnis[]=[];
   const mitQuelle=tree.kommandos.some(k=>/^(?:source|\.)$/.test(k.argv[0]?.text??''));let autoExport=false;
   const unresolved=tree.ungeklart.filter(x=>!['ziel_dynamisch','dynamisches_programm'].includes(x));
   const probe=ctx.probe??probeShellLage;
@@ -238,6 +244,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
         }
       }
     }
+    if(ctx.datenbank_freigabe)dbErgebnisse.push(pruefeDbKommando(projected,local,ctx.datenbank_freigabe));
     if(projected.argv.length||projected.umleitungen.length)kommandos.push(projected);
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
@@ -249,6 +256,13 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
         let verified=false;
         if(pfad&&projected.argv.length===2&&!(k.zuweisungen?.length)&&!k.umleitungen.length&&!['&&','||','|','|&','&'].includes(k.nach??'')&&ctx.inspect!==false){
           const q=(await probe({cwd,umgebungsdatei:pfad})).umgebungsdatei;
+          // Zusatznachweis nur gegen vertrauenswürdige Registry/Test-Konfiguration.
+          if(q&&q.pfad===pfad&&/^[a-f0-9]{64}$/.test(q.sha256)&&(autoExport||q.exportiert)&&q.datenbank_ziel&&ctx.datenbank_freigabe?.ziele.some(z=>gleichesDbZiel(z,q.datenbank_ziel!))){
+            const z=q.datenbank_ziel;
+            env.DATABASE_URL='postgresql://'+encodeURIComponent(z.user)+'@'+z.host+':'+z.port+'/'+encodeURIComponent(z.datenbank);
+            actualEnv.DATABASE_URL=env.DATABASE_URL;
+            verified=true;
+          }
           if(q&&q.pfad===pfad&&/^[a-f0-9]{64}$/.test(q.sha256)&&q.testprojekt&&q.port==='5433'&&q.datenbank==='synapse_test'&&(autoExport||q.exportiert)){
             projected.umgebungsquelle={pfad,sha256:q.sha256,testprojekt:true,port:q.port,datenbank:q.datenbank};testprojekt=true;verified=true;
           }
@@ -299,7 +313,11 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
     }
   }
   const ungeklaert=[...new Set(unresolved)];
+  const sql=dbErgebnisse.filter(x=>x.betroffen);
+  const dbEigene=ctx.datenbank_freigabe&&sql.length>0&&sql.every(x=>x.erlaubt)&&ungeklaert.length===0;
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
+    ...(ctx.datenbank_freigabe?.ziele.length&&sql.length?{datenbank_pruefung:true}:{}),
+    ...(dbEigene?{datenbank_zuordnung:{project:ctx.datenbank_freigabe!.project,ziele:ctx.datenbank_freigabe!.ziele,grund:'projekt_eigene_db' as const}}:{}),
     ...(buildLog?{build_log:{belege:buildLog.belege,hash:buildLog.hash}}:{}),
     quell_hash:createHash('sha256').update(command).digest('hex'),
     sicher_aufloesbar:ungeklaert.length===0,...(ungeklaert.length?{hinweis:'Lage nicht sicher auflösbar'}:{}),

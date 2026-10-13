@@ -23,6 +23,8 @@ import { ermittleShellLage, type ShellLage, type ShellLageKontext } from './shel
 import {pruefeShellStart,type ShellBestaetigung}from'./shell-start-sicherung.js';
 import{holeShellStartKatalog,geschuetzteShellProzesse,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./shell-sicherungs-lauf.js';
 import { waehleShellStart } from './shell-start.js';
+import {holeShellDbFreigabe} from './shell-db-freigabe.js';
+import type {ShellDbFreigabe} from './shell-db-zuordnung.js';
 import type { SicherungsShell } from './shell-sicherung-parser.js';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
@@ -62,6 +64,8 @@ function formatDauer(ms: number): string {
 }
 
 export type ShellExecArgs = {
+  /** Interne API/Queue-Metadaten, kein MCP-/REST-Nutzerparameter. */
+  datenbank_freigabe?:ShellDbFreigabe;
   project: string;
   command: string;
   cwd_relative?: string;
@@ -203,7 +207,13 @@ export async function execShellInProject(
     return { error: 'cwd_outside_project', message: 'cwd_relative darf nicht aus dem Projekt-Root ausbrechen' };
   }
   const start = waehleShellStart(args.shell);
+  // Queue liefert API-Metadaten; lokale Altpfade verwenden den vorhandenen Job-DB-Lookup.
+  // Kein zusätzlicher Registry-/PG-Zugang auf dem PC für die neue Sicherung.
+  const dbFreigabe=args.datenbank_freigabe??await holeShellDbFreigabe(args.project,{leseZugang:async()=>null});
+  if(!args.datenbank_freigabe&&jobUmgebung.datenbank_ziel&&dbFreigabe.live&&jobUmgebung.datenbank_ziel.port!==dbFreigabe.live.port&&jobUmgebung.datenbank_ziel.datenbank!==dbFreigabe.live.datenbank)
+    dbFreigabe.ziele.push({...jobUmgebung.datenbank_ziel,art:'projekt'});
   const lageKontext: ShellLageKontext = {
+    datenbank_freigabe:dbFreigabe,
     shell: start.shell, os: process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : process.env.WSL_DISTRO_NAME ? 'wsl' : 'linux',
     cwd, project_root: projectRoot, env: jobUmgebung.env, env_vollstaendig: true,
   };

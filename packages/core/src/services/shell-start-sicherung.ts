@@ -92,7 +92,8 @@ function vorschau(a:ShellAntwortEintrag|undefined,o:ShellStartEingabe,k:ShellSic
   return check.stufe==='laeuft'&&!check.risiko_verb&&!check.ungeklaert.length?text:fallback;
 }
 export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):ShellStartEntscheidung{
-  const text=pruefeShellText(o.command,{shell:o.lage.shell,project:o.project,os:o.lage.os,rechner:o.rechner,katalog:k,kommandos:lageKommandos(o),cwd:o.lage.cwd,testprojekt:o.lage.testprojekt,inline_pfade:o.lage.inline_pfade,scratchpad_roots:o.lage.scratchpad_roots,projekt_root:o.lage.project_root});
+  const eigeneDb=!!lageKommandos(o)&&o.lage.datenbank_zuordnung?.project===o.project&&o.lage.sicher_aufloesbar;
+  const text=pruefeShellText(o.command,{projekt_eigene_db:eigeneDb,projekt_db_geprueft:o.lage.datenbank_pruefung,shell:o.lage.shell,project:o.project,os:o.lage.os,rechner:o.rechner,katalog:k,kommandos:lageKommandos(o),cwd:o.lage.cwd,testprojekt:o.lage.testprojekt,inline_pfade:o.lage.inline_pfade,scratchpad_roots:o.lage.scratchpad_roots,projekt_root:o.lage.project_root});
   const hard=selbstschaden(o);
   let stufe=text.stufe;
   if(text.ungeklaert.includes('parser_grenze')&&/^\s*(?:node|python[\d.]*)(?:\.exe)?\b/.test(o.command))stufe='anleitung';
@@ -109,7 +110,7 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
     }else if(stufe!=='sperre'){allow=true;confirmed=true;}
   }
   if(stufe==='sperre'){allow=false;error='shell_sperre';}
-  const audit={agent_id:o.agent_id??null,grund:confirmed?o.bestaetigt!.grund.trim():null,...bindings,
+  const audit={agent_id:o.agent_id??null,grund:confirmed?o.bestaetigt!.grund.trim():eigeneDb&&allow?'projekt_eigene_db':null,...bindings,
     stufe,entscheidung:allow?(confirmed?'bestaetigt' as const:'erlaubt' as const):'abgewiesen' as const,zeit:new Date().toISOString()};
   if(stufe==='laeuft'&&allow)return {darf_starten:true,audit};
   const strongest=text.treffer.filter(t=>t.stufe===text.stufe).sort((a,b)=>a.regel_id.localeCompare(b.regel_id))[0];

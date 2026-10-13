@@ -254,6 +254,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
       shell: job.sicherung?.anfrage?.shell,
       sicherungs_job_id: job.id,
       sicherungs_ursprung: 'daemon',
+      datenbank_freigabe: job.sicherung?.anfrage?.datenbank_freigabe,
       cwd_relative: job.cwd_relative ?? undefined,
       // job.timeout_ms ist seit SH-1 die HARTE Obergrenze, nicht die Antwortfrist.
       // Der Worker wartet hier bis zum ECHTEN Ende des Prozesses — auch Stunden.

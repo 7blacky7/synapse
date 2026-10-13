@@ -5,9 +5,10 @@ export interface ShellProbePfad {
   mount?: string; dev?: string; fehler?: string;eigener_benutzer?:boolean;
 }
 export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; prozesse?:boolean;umgebungsdatei?:string; }
+import type {ShellDbZiel} from './shell-db-zuordnung.js';
 export interface ShellProbeAntwort {
   cwd: string; os: 'linux'|'windows'|'macos'|'wsl'; env: Record<string,string>;
-  umgebungsdatei?:{pfad:string;sha256:string;testprojekt:boolean;exportiert:boolean;port?:string;datenbank?:string};
+  umgebungsdatei?:{pfad:string;sha256:string;testprojekt:boolean;exportiert:boolean;port?:string;datenbank?:string;datenbank_ziel?:ShellDbZiel};
   pfade: ShellProbePfad[]; prozesse?:{pids:number[];namen:string[]}; rechner?:string;
 }
 export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellProbeAntwort> {
@@ -85,12 +86,17 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
         const bytes=await fs.readFile(pfad),sha256=(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex');
         const lines=bytes.toString('utf8').split(/\r?\n/).filter(x=>x.trim()&&!x.trim().startsWith('#'));
         let testprojekt=false,exportiert=false;
+        let datenbank_ziel:ShellDbZiel|undefined;
         // Ein einziger Literalwert: keine Shell-Auswertung, Zweitvariable oder Umleitung.
         if(lines.length===1){
           const m=lines[0].match(/^\s*(export\s+)?DATABASE_URL=(?:'([^']*)'|"([^"$`\\]*)"|([^ \t"'$`\\;|&<>()]*))\s*$/);
-          if(m)try{const u=new URL(m[2]??m[3]??m[4]);testprojekt=/^postgres(?:ql)?:$/.test(u.protocol)&&u.port==='5433'&&u.pathname==='/synapse_test';exportiert=!!m[1];}catch{testprojekt=false;/* Ungültige URL ist bewusst kein Test-DB-Nachweis. */}
+          if(m)try{const u=new URL(m[2]??m[3]??m[4]);testprojekt=/^postgres(?:ql)?:$/.test(u.protocol)&&u.port==='5433'&&u.pathname==='/synapse_test';exportiert=!!m[1];
+            if(/^postgres(?:ql)?:$/.test(u.protocol)&&u.hostname&&u.port&&u.username&&!u.hash&&[...u.searchParams.keys()].every(k=>['sslmode','application_name','connect_timeout','options'].includes(k))){
+              const datenbank=decodeURIComponent(u.pathname.slice(1)),user=decodeURIComponent(u.username);
+              if(datenbank&&!datenbank.includes('/')&&user)datenbank_ziel={host:u.hostname.toLowerCase(),port:u.port,datenbank,user};
+            }}catch{testprojekt=false;/* Ungültige URL ist bewusst kein Test-DB-Nachweis. */}
         }
-        umgebungsdatei={pfad,sha256,testprojekt,exportiert,...(testprojekt?{port:'5433',datenbank:'synapse_test'}:{})};
+        umgebungsdatei={pfad,sha256,testprojekt,exportiert,...(testprojekt?{port:'5433',datenbank:'synapse_test'}:{}),...(datenbank_ziel?{datenbank_ziel}:{})};
       }
     }catch{/* unlesbar oder außerhalb des Dateisystems: kein Nachweis */}
   }

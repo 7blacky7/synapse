@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { leseProjektDbZugang } from './projekt-db.js';
+import {dbZielAusUrl,type ShellDbZiel} from './shell-db-zuordnung.js';
 
 export const SYNAPSE_SYSTEM_PROJEKT = 'synapse';
 
@@ -43,6 +44,8 @@ export interface JobUmgebungInfo {
 }
 
 export interface JobUmgebung {
+  /** Interne, passwortfreie Zuordnung aus demselben bestehenden Registry-Lookup. */
+  datenbank_ziel?:ShellDbZiel;
   env: NodeJS.ProcessEnv;
   info: JobUmgebungInfo;
 }
@@ -211,6 +214,7 @@ export async function baueJobUmgebung(
   }
 
   let dbInfo = 'keine';
+  let datenbank_ziel:ShellDbZiel|undefined;
   if (projekt === SYNAPSE_SYSTEM_PROJEKT) {
     if (synapseUrl) {
       env.DATABASE_URL = synapseUrl;
@@ -226,6 +230,8 @@ export async function baueJobUmgebung(
       const zugang = await projektDbMitCache(projekt, leseZugang);
       if (zugang && istErlaubteProjektDb(zugang, synapseUrl)) {
         env.DATABASE_URL = zugang.database_url;
+        const z=dbZielAusUrl(zugang.database_url);
+        if(z&&z.host===zugang.host.toLowerCase()&&z.port===String(zugang.port)&&z.datenbank===zugang.database)datenbank_ziel=z;
         dbInfo = `projekt-db ${zugang.database} (${zugang.host}:${zugang.port})`;
       } else if (zugang) {
         env.SYNAPSE_PROJEKT_DB_HINWEIS =
@@ -239,5 +245,5 @@ export async function baueJobUmgebung(
     }
   }
 
-  return { env, info: { database_url: dbInfo, entfernt } };
+  return { env, info: { database_url: dbInfo, entfernt },...(datenbank_ziel?{datenbank_ziel}:{}) };
 }

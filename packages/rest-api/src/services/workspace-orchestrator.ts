@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore, ermittleShellLage, shellLageProbeProgramm, maskiereShellAntwort } from '@synapse/core';
 import type { ShellLage,ShellBestaetigung,ShellSicherungsAntwort,SicherungsShell } from '@synapse/core';
-import {pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart}from'@synapse/core';
+import {holeShellDbFreigabe,pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart}from'@synapse/core';
 import type { ShellProbeAnfrage, ShellProbeAntwort } from '@synapse/core';
 
 /**
@@ -507,7 +507,9 @@ export class WorkspaceOrchestrator {
     const names = [...command.matchAll(/\$(?:env:)?([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)/g)].map(m=>m[1]??m[2]);
     const context = await this.lageProbeImContainer(container, { variablen: [...new Set(['HOME', 'PWD', ...names])],prozesse:true }, workingDir);
     const start=waehleShellStart(opts.shell,'linux');
+    const dbFreigabe=await holeShellDbFreigabe(project);
     const ermittle=()=>ermittleShellLage(command, {
+      datenbank_freigabe:dbFreigabe,
       shell:start.shell,os:context.os,cwd:context.cwd,project_root:'/workspace',env:context.env,env_vollstaendig:true,
       probe:(input)=>this.lageProbeImContainer(container,input,workingDir),
     });
