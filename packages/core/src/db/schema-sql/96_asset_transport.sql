@@ -62,6 +62,22 @@ $asset_wasserlinie$;
 CREATE OR REPLACE TRIGGER asset_aenderung_commit_cursor
 BEFORE INSERT ON asset_aenderungen FOR EACH ROW EXECUTE FUNCTION asset_aenderung_wasserlinie();
 
+-- A13: Beobachtungen/Hash-Checkpoints je vertrauenswürdiger Scannerwurzel, keine Bytes.
+CREATE TABLE IF NOT EXISTS asset_scan_checkpoints (
+  root_key TEXT PRIMARY KEY,
+  stand JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- M4: dauerhafte Retention-Referenzen für A15 und laufende Leser.
+CREATE TABLE IF NOT EXISTS asset_retention_referenzen (
+ ref_key TEXT PRIMARY KEY,
+ asset_id BIGINT NOT NULL REFERENCES asset_files(id) ON DELETE RESTRICT,
+ revision BIGINT NOT NULL CHECK(revision>0),
+ art TEXT NOT NULL CHECK(art IN('ansicht','transfer')),
+ expires_at TIMESTAMPTZ NOT NULL,
+ released_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_asset_retention_asset ON asset_retention_referenzen(asset_id);
 CREATE TABLE IF NOT EXISTS asset_host_checkpoints (
   host_id TEXT NOT NULL,
   project TEXT NOT NULL,

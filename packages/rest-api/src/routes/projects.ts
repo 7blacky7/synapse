@@ -18,10 +18,13 @@ import {
 } from '@synapse/core';
 import type { FileWatcherInstance } from '@synapse/core';
 
+import {registerProjectRestoreRoutes} from './project-restore.js';
+
 /** Aktive FileWatcher */
 const activeWatchers = new Map<string, FileWatcherInstance>();
 
 export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
+  await registerProjectRestoreRoutes(fastify);
   /**
    * GET /api/projects
    * Alle Projekte auflisten

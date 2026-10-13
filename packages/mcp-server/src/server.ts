@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { haengeAusloeserTextHinweiseAn } from '@synapse/core';
+import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -100,6 +100,7 @@ function buildFirstUseHint(toolName: string): Record<string, unknown> | null {
  * Erstellt und konfiguriert den MCP Server
  */
 export function createServer(): Server {
+  initialisiereAssetKonfliktHinweise();
   const server = new Server(
     {
       name: 'synapse-mcp',

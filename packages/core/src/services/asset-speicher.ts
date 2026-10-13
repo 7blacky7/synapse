@@ -30,6 +30,8 @@ export interface AssetStaging {
 }
 export interface AssetOperation extends AssetStaging {
   storage_key: string;
+  /** Unveränderliche Byteskopie der neuen Revision, unabhängig vom sichtbaren Sharepfad. */
+  revision_storage_key?: string;
   staging_key: string;
   vorheriger_storage_key: string | null;
   basis_sha256: string | null;
@@ -208,7 +210,7 @@ export class AssetSpeicher {
   /** Durchläuft jedes Verzeichnis ohne Symlinks und hält das Ziel-Elternverzeichnis offen. */
   private async eltern(k: Kontext,key: string,erstellen=false): Promise<Eltern> {
     const teile=normalisiereSpeicherPfad(key).split('/');
-    if(teile[0]!==k.adresse.ziel_ref && !(k.adresse.bereich==='reverse' && teile[0]==='_eingang')) return fail('pfad_ungueltig','Speicherschlüssel gehört zu anderer Identität.');
+    if(teile[0]!==k.adresse.ziel_ref && !(k.adresse.bereich==='reverse' && ['_eingang','_direkt'].includes(teile[0]))) return fail('pfad_ungueltig','Speicherschlüssel gehört zu anderer Identität.');
     const name=teile.pop()!;
     let h=await fs.open(k.root,DIR_FLAGS);
     try {
@@ -349,6 +351,44 @@ export class AssetSpeicher {
     if(typeof erwartet.sha256!=='string' || !/^[0-9a-f]{64}$/.test(erwartet.sha256)) return fail('hash_falsch','Vollständiger SHA256 fehlt.');
     return this.stageIntern(adresse,quelle,erwartet);
   }
+  /** RV5: stabil beobachtete _direkt-Datei auf demselben Dataset atomar ins Journal-Staging übernehmen. */
+  async stageReverseDirekt(adresse:AssetAdresse,relPfad:string,id:string,erwartet:{sha256:string;groesse:number}):Promise<AssetStaging>{
+    if(adresse.bereich!=='reverse')return fail('bereich_ungueltig','Direkteingang ist nur Reverse.');
+    auftragId(id);const k=await this.kontext(adresse),source='_direkt/'+normalisiereSpeicherPfad(relPfad);
+    if(!/^[a-f0-9]{64}$/.test(erwartet.sha256)||!Number.isSafeInteger(erwartet.groesse)||erwartet.groesse<0||erwartet.groesse>k.maxDatei)return fail('quote','Ungültige Direktdatei.');
+    let op:AssetOperation;
+    try {op=await this.leseJournal(k,id);}
+    catch(e){if(!istCode(e,'ENOENT'))throw e;op={id,adresse:k.adresse,sha256:erwartet.sha256,groesse:erwartet.groesse,storage_key:k.key,
+      staging_key:this.intern(k,'staging',id+'.part'),vorheriger_storage_key:null,basis_sha256:null,status:'uploading',created_at:new Date().toISOString()};await this.journal(k,op);}
+    if(op.sha256!==erwartet.sha256||op.groesse!==erwartet.groesse||op.storage_key!==k.key||!['uploading','staged'].includes(op.status))return fail('konflikt','Direktjournal gehört anderem Auftrag.');
+    const release=await this.lock(k,'direkt',id);this.aktive.add(id);
+    try{
+      const staged=await this.info(k,op.staging_key);
+      if(!staged){
+        const before=await this.info(k,source);
+        if(before?.sha256!==erwartet.sha256||before.groesse!==erwartet.groesse)return fail('hash_falsch','Direktquelle seit Scan verändert.');
+        // EXDEV wird propagiert, niemals Copy/Delete als stiller Ersatz.
+        await this.rename(k,source,op.staging_key);
+      }
+      const actual=await this.info(k,op.staging_key);
+      if(actual?.sha256!==erwartet.sha256||actual.groesse!==erwartet.groesse)return fail('hash_falsch','Direktbytes nach Rename abweichend; Journal für Recovery erhalten.');
+      op.status='staged';await this.journal(k,op);
+      return {id,adresse:k.adresse,sha256:op.sha256,groesse:op.groesse};
+    }finally{this.aktive.delete(id);await release();}
+  }
+  /** RV5: nur bestätigte verwaiste Direktübernahmen; abgelaufene Lease alleine genügt nie. */
+  async recoveryReverseDirekt(adresse:AssetAdresse,relPfad:string,id:string,erwartet:{sha256:string;groesse:number},istVerwaist:()=>Promise<boolean>):Promise<AssetStaging>{
+    if(adresse.bereich!=='reverse'||this.aktive.has(id)||!await istVerwaist())return fail('konflikt','Direktübernahme nicht bestätigt verwaist.');
+    auftragId(id);const k=await this.kontext(adresse),op=await this.leseJournal(k,id);
+    if(!['uploading','staged'].includes(op.status)||op.sha256!==erwartet.sha256||op.groesse!==erwartet.groesse||op.storage_key!==k.key)return fail('konflikt','Direkt-Recovery braucht unverändertes Vorbereitungsjournal.');
+    const lockKey=this.intern(k,'locks','direkt');
+    let held=false;
+    try{const h=await this.open(k,lockKey);try{if(await h.readFile('utf8')!==id)return fail('konflikt','Fremde Direktsperre bleibt erhalten.');held=true;}finally{await h.close();}}
+    catch(e){if(!istCode(e,'ENOENT'))throw e;}
+    if(this.aktive.has(id)||!await istVerwaist())return fail('konflikt','Verwaisungsbeleg nicht mehr gültig.');
+    if(held)await this.entferne(k,lockKey);
+    return this.stageReverseDirekt(adresse,relPfad,id,erwartet);
+  }
   /** Interne unabhängige Uploadteile: Vollhash wird beim Schreiben berechnet. */
   async stageTeil(adresse: AssetAdresse,quelle: AsyncIterable<Uint8Array>|Iterable<Uint8Array>,erwartet: {groesse: number}): Promise<AssetStaging> {
     return this.stageIntern(adresse,quelle,erwartet);
@@ -394,6 +434,21 @@ export class AssetSpeicher {
     const h=await this.open(k,op.staging_key);
     return h.createReadStream({autoClose:true,highWaterMark:this.cfg.speicher.chunkBytes});
   }
+  /** A11: retain a full-hash PC candidate without touching the canonical visible path. */
+  async sichereRevision(stage: AssetStaging): Promise<string> {
+    const k=await this.kontext(stage.adresse),op=await this.leseJournal(k,stage.id);
+    if(op.status!=='staged'||op.storage_key!==k.key||op.sha256!==stage.sha256||op.groesse!==stage.groesse)
+      return fail('konflikt','Nur unverändertes Staging darf als PC-Revision gesichert werden.');
+    const key=this.intern(k,'revisionen',op.id+'-pc');
+    const existing=await this.info(k,key);
+    if(existing){if(existing.sha256!==stage.sha256||existing.groesse!==stage.groesse)return fail('hash_falsch','PC-Revisionskopie abweichend.');return key;}
+    const staged=await this.info(k,op.staging_key);
+    if(staged?.sha256!==stage.sha256||staged.groesse!==stage.groesse)return fail('hash_falsch','PC-Staging abweichend.');
+    try{await this.kopiere(k,op.staging_key,key);}catch(e){if(!istCode(e,'EEXIST'))throw e;}
+    const saved=await this.info(k,key);
+    if(saved?.sha256!==stage.sha256||saved.groesse!==stage.groesse)return fail('hash_falsch','Gesicherte PC-Revision abweichend.');
+    return key;
+  }
   async publish(stage: AssetStaging,o: AssetPublishOptionen): Promise<AssetOperation> {
     const k=await this.kontext(stage.adresse),op=await this.leseJournal(k,stage.id);
     if(op.status!=='staged' || op.storage_key!==k.key || op.sha256!==stage.sha256 || op.groesse!==stage.groesse) {
@@ -423,6 +478,12 @@ export class AssetSpeicher {
       await this.rename(k,op.staging_key,k.key);
       op.status='published'; await this.journal(k,op);
       if((await this.info(k,k.key))?.sha256!==op.sha256) return fail('hash_falsch','Veröffentlichte Bytes nicht erreichbar/unverändert.');
+      if(k.adresse.bereich==='projekt'){
+        op.revision_storage_key=this.intern(k,'revisionen',op.id+'-neu');
+        await this.kopiere(k,k.key,op.revision_storage_key);
+        if((await this.info(k,op.revision_storage_key))?.sha256!==op.sha256) return fail('konflikt','Neue Revisionskopie während Sicherung verändert.');
+      }
+      await this.journal(k,op);
       await o.commit(Object.freeze({...op}));
       op.status='committed'; await this.journal(k,op);
       await release();
@@ -437,6 +498,10 @@ export class AssetSpeicher {
   /** RV4: nur serverseitig erzeugte Layoutschlüssel, keine absoluten Containerpfade. */
   private async reverseKontext(id: string): Promise<Kontext> {
     return this.kontext({bereich:'reverse',ziel_ref:id,storage_kind:'assets',logischer_pfad:'meta'});
+  }
+  async reverseDirektBereich():Promise<string>{
+    const k=await this.reverseKontext('_direkt'),p=await this.eltern(k,'_direkt/.bereich',true);
+    await p.handle.close();return '_direkt';
   }
   async reverseArbeitsbereich(id: string): Promise<string> {
     auftragId(id);
@@ -751,6 +816,14 @@ export class AssetSpeicher {
         schliessen:async()=>{if(!geschlossen){geschlossen=true;await h.close();}},
       };
     } catch(e){await h.close();throw e;}
+  }
+  /** M4 serverintern: ausschließlich eigene interne Versionen, niemals sichtbare Sharepfade. */
+  async entferneRevision(adresse:AssetAdresse,storageKey:string,sha256:string):Promise<void>{
+    const k=await this.kontext(adresse),key=normalisiereSpeicherPfad(storageKey);
+    if(!key.startsWith(this.intern(k,'revisionen',''))||!/^[a-f0-9]{64}$/.test(sha256))return fail('pfad_ungueltig','Purge darf nur bestätigte eigene interne Revisionen entfernen.');
+    const current=await this.info(k,key);if(!current)return;
+    if(current.sha256!==sha256)return fail('hash_falsch','Purge erhält fremd veränderte Revisionsbytes.');
+    await this.entferne(k,key);
   }
   async readRevisionRange(adresse: AssetAdresse,storageKey: string,offset: number,length: number): Promise<Buffer> {
     const k=await this.kontext(adresse),key=normalisiereSpeicherPfad(storageKey);

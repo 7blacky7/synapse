@@ -1,4 +1,5 @@
 /** P18-T13: additive Reverse-Tabellen; SQL-Spiegel 97_reverse.sql. */
+import {REVERSE_EINGANG_SCHEMA_SQL} from './reverse-eingang-schema.js';
 export const REVERSE_SCHEMA_SQL = `
 -- P18-T13/RV3: Reverse-Bibliothek. Nur Metadaten und maskierter Analysetext.
 -- Originalbytes bleiben unter SYNAPSE_REVERSE_ROOT; storage_key ist relativ.
@@ -212,4 +213,4 @@ CREATE TABLE IF NOT EXISTS reverse_uebernahmen (
 );
 CREATE INDEX IF NOT EXISTS idx_reverse_uebernahmen_eintrag ON reverse_uebernahmen(eintrag_id,at);
 CREATE INDEX IF NOT EXISTS idx_reverse_uebernahmen_asset ON reverse_uebernahmen(asset_id,asset_revision);
-`;
+` + REVERSE_EINGANG_SCHEMA_SQL;

@@ -1,6 +1,6 @@
 /** P13-T24/A6: additive Assetfamilie, gleicher API-Zugang, Binärstream statt JSON-ReadAll. */
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
-import {AssetUploadKern,AssetManifestKern,assetProjektNutztShare,setzeAssetInspektionsModus,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled} from '@synapse/core';
+import {AssetKonfliktKern,AssetUploadKern,AssetManifestKern,assetProjektNutztShare,setzeAssetInspektionsModus,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled,ladeAssetProjektoptionen,getAssetKonfiguration,loeseAssetProjektoptionen} from '@synapse/core';
 import type {AssetMutationEingang,AssetUploadSitzung,AssetUploadEingang,AssetUploadKontext,AssetDownloadRange} from '@synapse/core';
 import {validateToken} from '../services/auth.js';
 import type {AuthTokenRow} from '../services/auth.js';
@@ -8,12 +8,14 @@ import type {AuthTokenRow} from '../services/auth.js';
 export interface AssetRouteAbhaengigkeiten {
   upload?:AssetUploadKern;
   manifest?:AssetManifestKern;
+  konflikte?:AssetKonfliktKern;
   validateToken?:typeof validateToken;
   projektErlaubt?:(projekt:string,principal:AuthTokenRow)=>Promise<boolean>;
 }
 export function assetSitzungAntwort(s:AssetUploadSitzung){
   return {id:s.id,bereich:s.bereich,ziel_ref:s.ziel_ref,logischer_pfad:s.logischer_pfad,groesse:s.groesse,sha256:s.sha256,
-    offset:s.offset,status:s.status,lease_bis:s.lease_bis,...(s.ergebnis?{asset_id:s.ergebnis.asset_id,revision:s.ergebnis.revision}:{})};
+    offset:s.offset,status:s.status,lease_bis:s.lease_bis,...(s.ergebnis?{asset_id:s.ergebnis.asset_id,revision:s.ergebnis.revision,
+      ...(s.ergebnis.konflikt?{konflikt:s.ergebnis.konflikt}:{})}:{})};
 }
 export function assetRange(header:string|undefined):AssetDownloadRange|undefined {
   if(header===undefined)return undefined;
@@ -48,13 +50,14 @@ export async function assetRequestKontext(request:FastifyRequest,projekt:string,
   }
 
 export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyInstance)=>Promise<void>{
-  let upload=o.upload,manifestKern=o.manifest;
+  let upload=o.upload,manifestKern=o.manifest,konfliktKern=o.konflikte;
+  const konflikte=()=>konfliktKern??=new AssetKonfliktKern();
   const manifest=()=>manifestKern??=new AssetManifestKern();
   const kern=()=>upload??=(new AssetUploadKern());
   const kontext=(request:FastifyRequest,projekt:string,schreiben=true)=>assetRequestKontext(request,projekt,schreiben,o);
   async function run(reply:FastifyReply,fn:()=>Promise<unknown>){
     try{return await fn();}catch(e){
-      if(e instanceof AssetUploadFehler)return reply.code(e.httpStatus).send({success:false,error:{code:e.code,message:e.message}});
+      if(e instanceof AssetUploadFehler)return reply.code(e.httpStatus).send({success:false,error:{code:e.code,message:e.message,...(e.details?{details:e.details}:{})}});
       if(e instanceof AssetSpeicherFehler)return reply.code(['konflikt','hash_falsch'].includes(e.code)?409:400).send({success:false,error:{code:e.code,message:e.message}});
       throw e;
     }
@@ -63,6 +66,24 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
     // Nur dieses gekapselte Plugin nimmt rohe Chunks; bestehende JSONparser bleiben erhalten.
     fastify.addContentTypeParser('application/octet-stream',(request,payload,done)=>done(null,payload));
     const base='/api/projects/:projekt/assets';
+    fastify.get<{Params:{projekt:string};Querystring:{asset_id?:string;file_path?:string;limit?:string;offset?:string}}>(base+'/konflikte',async(req,reply)=>run(reply,async()=>{
+      await kontext(req,req.params.projekt,false);
+      return {success:true,...await konflikte().liste(req.params.projekt,{asset_id:req.query.asset_id,file_path:req.query.file_path,
+        limit:req.query.limit===undefined?undefined:Number(req.query.limit),offset:req.query.offset===undefined?undefined:Number(req.query.offset)})};
+    }));
+    fastify.post<{Params:{projekt:string;asset_id:string};Body:{wahl?:unknown}}>(base+'/konflikte/:asset_id/loesen',async(req,reply)=>run(reply,async()=>{
+      const c=await kontext(req,req.params.projekt,false),wahl=req.body?.wahl;
+      if(wahl!=='pc'&&wahl!=='share')throw new AssetUploadFehler('eingang_ungueltig',400,'Wahl pc oder share erforderlich.');
+      return {success:true,asset:await konflikte().loesen(c,req.params.asset_id,wahl,c.host_id)};
+    }));
+    // A8: only transfer budgets/direction, never server filesystem roots or storage keys.
+    fastify.get<{Params:{projekt:string}}>(base+'/sync-optionen',async(req,reply)=>run(reply,async()=>{
+      const c=await kontext(req,req.params.projekt,false),cfg=getAssetKonfiguration();
+      const entry=await ladeAssetProjektoptionen(req.params.projekt),effective=entry?.wirksam??loeseAssetProjektoptionen(cfg,{});
+      return {success:true,contractVersion:1,host:c.host_id,richtung:effective.richtung,policyRevision:entry?.policyRevision??0,
+        chunkBytes:cfg.speicher.chunkBytes,parallelTransfers:cfg.speicher.parallelTransfers,timeoutMs:cfg.speicher.timeoutMs,retryMs:cfg.sync.retryIntervallMs,
+        scanMs:cfg.sync.scanIntervallMs,maxDateiBytes:effective.maxDateiBytes,erlaubteTypen:effective.erlaubteTypen};
+    }));
     // A8 setzt den Share-Writer vor dem ersten Upload, damit kein lokaler Inspector daneben schreibt.
     fastify.get<{Params:{projekt:string}}>(base+'/inspektionsmodus',async(req,reply)=>run(reply,async()=>{
       await kontext(req,req.params.projekt,false);
@@ -126,7 +147,7 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
 export interface AssetFsEingang {
  projekt:string;typ:string;pfad?:string;event_id?:string;contractVersion?:number;host?:string;
  logischer_pfad?:string;alter_pfad?:string;sha256?:string;groesse?:number;erwartete_assetrevision?:string;
- upload_id?:string;asset_id?:string;asset?:boolean;
+ upload_id?:string;asset_id?:string;asset?:boolean;restore_window_ms?:number;
 }
 let fsUpload:AssetUploadKern|undefined,fsManifest:AssetManifestKern|undefined;
 export function istAssetFsEreignis(e:AssetFsEingang){
@@ -145,6 +166,7 @@ export async function dispatchAssetFsEreignis(req:FastifyRequest,e:AssetFsEingan
    const art=['deleted','unlink'].includes(e.typ)?'loeschen':['verschoben','moved'].includes(e.typ)?'verschieben':'wiederherstellen';
    const id=e.asset_id??await mutation.assetNachPfad(c,art==='verschieben'?e.alter_pfad??'':logical,e.event_id);
    return {success:true,asset:await mutation.mutieren(c,art,{event_id:e.event_id,asset_id:id,basis_revision:e.erwartete_assetrevision!,
+     ...(e.restore_window_ms!==undefined?{restore_window_ms:e.restore_window_ms}:{}),
      ...(art==='verschieben'?{alter_pfad:e.alter_pfad,pfad:logical}:{})})};
  }
  if(!['added','add','modified','change'].includes(e.typ))throw new AssetUploadFehler('eingang_ungueltig',400,'Unbekannter Assetereignistyp.');

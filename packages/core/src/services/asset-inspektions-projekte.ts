@@ -1,5 +1,6 @@
 /** A12: Persistente Writer-Zuordnung; A8 setzt asset_sync vor dem ersten Transfer. */
 import { getPool } from '../db/client.js';
+import type {AssetUploadDb} from './asset-upload.js';
 
 export const ASSET_LOKAL_ERLAUBT_SQL = `NOT EXISTS (SELECT 1 FROM asset_inspektions_projekte p WHERE p.project=$1 AND p.modus='asset_sync')
  AND NOT EXISTS (SELECT 1 FROM asset_files a WHERE a.project=$1 AND (a.transport_revision IS NOT NULL OR a.storage_key IS NOT NULL))`;
@@ -19,9 +20,9 @@ export async function assetProjektNutztShare(project: string): Promise<boolean> 
 }
 
 /** Rückkehr zu Legacy erst nach expliziter Entfernung sämtlicher Transportbindungen. */
-export async function setzeAssetInspektionsModus(project: string, modus: 'legacy_local' | 'asset_sync'): Promise<void> {
+export async function setzeAssetInspektionsModus(project: string, modus: 'legacy_local' | 'asset_sync',o:{db?:AssetUploadDb}={}): Promise<void> {
   if (!project.trim() || !['legacy_local','asset_sync'].includes(modus)) throw new TypeError('Ungültiger Asset-Inspektionsmodus');
-  const c = await getPool().connect();
+  const c = await (o.db??getPool()).connect();
   try {
     await c.query('BEGIN');
     await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', ['asset-inspektion:'+project]);

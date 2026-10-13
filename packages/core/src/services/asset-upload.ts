@@ -17,7 +17,7 @@ export interface AssetUploadSitzung extends AssetUploadKontext {
   id:string;logischer_pfad:string;groesse:number;sha256:string;offset:number;status:string;lease_bis:string;
   auftrag:AssetUploadEingang;ergebnis?:AssetUploadErgebnis|null;
 }
-export interface AssetUploadErgebnis {asset_id:string;revision:string;storage_key:string;}
+export interface AssetUploadErgebnis {asset_id:string;revision:string;storage_key:string;konflikt?:Record<string,unknown>;}
 export interface AssetDownloadReferenz {asset_id?:string;pfad?:string;revision:string;}
 export interface AssetDownloadBeschreibung {adresse:AssetAdresse;storage_key:string;groesse:number;sha256:string;mime_type:string;}
 export type AssetDownloadRange = {offset:number;groesse:number}|((gesamt:number)=>{offset:number;groesse:number});
@@ -26,6 +26,10 @@ export interface AssetUploadDb {
   connect():Promise<AssetUploadDb & {release():void|Promise<void>}>;
 }
 export interface AssetUploadFinalisierer {
+  /** Serverseitige Bereichs-Policy; niemals aus Clientparametern. */
+  formatErlaubt?:(eingang:AssetUploadEingang)=>boolean;
+  /** Fachlicher Bestand für Quoten; läuft unter derselben Scope-Sperre wie die Reservierung. */
+  belegung?:(ctx:AssetUploadKontext,db:AssetUploadDb)=>Promise<{bytes:string;n:number}>;
   download?:(ctx:AssetUploadKontext,ref:AssetDownloadReferenz,db:AssetUploadDb)=>Promise<AssetDownloadBeschreibung>;
   rollback?:(ctx:AssetUploadKontext,sitzung:AssetUploadSitzung,op:Readonly<AssetOperation>,db:AssetUploadDb)=>Promise<void>;
   /** Nur PG/Metadaten, kein Dateitransfer unter einer Transaktion. */
@@ -34,7 +38,7 @@ export interface AssetUploadFinalisierer {
   commit:(ctx:AssetUploadKontext,sitzung:AssetUploadSitzung,op:Readonly<AssetOperation>,db:AssetUploadDb)=>Promise<AssetUploadErgebnis>;
 }
 export class AssetUploadFehler extends Error {
-  constructor(public readonly code:string,public readonly httpStatus:number,message:string){super(message);this.name='AssetUploadFehler';}
+  constructor(public readonly code:string,public readonly httpStatus:number,message:string,public readonly details?:Record<string,unknown>){super(message);this.name='AssetUploadFehler';}
 }
 const fail=(code:string,status:number,message:string):never=>{throw new AssetUploadFehler(code,status,message);};
 const REV=/^(0|[1-9][0-9]*)$/;
@@ -57,7 +61,10 @@ const canonical=(value:object)=>JSON.stringify(Object.fromEntries(Object.entries
 export class AssetUploadKern {
   private readonly db:AssetUploadDb;private readonly speicher:AssetSpeicher;private readonly cfg:AssetKonfiguration;
   private readonly finalisierer=new Map<string,AssetUploadFinalisierer>();
-  constructor(o:{db?:AssetUploadDb;speicher?:AssetSpeicher;konfiguration?:AssetKonfiguration}={}){
+  private readonly quelle:'pc'|'share';
+  /** quelle ist ausschließlich ein serverinterner Konstruktorparameter, kein HTTP-Eingang. */
+  constructor(o:{db?:AssetUploadDb;speicher?:AssetSpeicher;konfiguration?:AssetKonfiguration;quelle?:'pc'|'share'}={}){
+    this.quelle=o.quelle??'pc';
     this.db=o.db??getPool() as unknown as AssetUploadDb;
     this.cfg=o.konfiguration??getAssetKonfiguration();
     this.speicher=o.speicher??new AssetSpeicher({konfiguration:this.cfg});
@@ -120,7 +127,7 @@ export class AssetUploadKern {
       maxDateiBytes:num(row.max_datei_bytes),maxProjektBytes:num(row.max_projekt_bytes),maxProjektDateien:num(row.max_projekt_dateien),
       erlaubteTypen:row.erlaubte_typen as string[]|undefined??undefined,
     }:{});
-    if(value.richtung==='share_to_pc')fail('richtung_verboten',403,'Projekt erlaubt keine PC-Uploads.');
+    if(this.quelle==='pc'&&value.richtung==='share_to_pc')fail('richtung_verboten',403,'Projekt erlaubt keine PC-Uploads.');
     return value;
   }
   async erstellen(ctx:AssetUploadKontext,eingang:AssetUploadEingang):Promise<AssetUploadSitzung>{
@@ -129,7 +136,7 @@ export class AssetUploadKern {
     const a=adresse(ctx,eingang);
     const limit=await this.grenzen(ctx),max=limit.maxDateiBytes;
     const format=eingang.format?.toLowerCase()??standardRegistry.detect(a.logischer_pfad,new Uint8Array()).format;
-    if(!format||!limit.erlaubteTypen.includes(format))return fail('format_verboten',415,'Transferformat nicht in Betreiber-/Projektfreigabe.');
+    if(!(this.finalisierer.get(ctx.bereich)?.formatErlaubt?.(eingang)??Boolean(format&&limit.erlaubteTypen.includes(format))))return fail('format_verboten',415,'Transferformat nicht in Betreiber-/Projektfreigabe.');
     if(!Number.isSafeInteger(eingang.groesse)||eingang.groesse<0||eingang.groesse>max)return fail('quote',413,'Dateigröße überschreitet Betreibergrenze.');
     if(!/^[0-9a-f]{64}$/.test(eingang.sha256)||!REV.test(eingang.basis_revision))return fail('eingang_ungueltig',400,'Vollhash/Basisrevision fehlt.');
     if(typeof eingang.idempotency_key!=='string'||!eingang.idempotency_key||eingang.idempotency_key.length>200)return fail('eingang_ungueltig',400,'Idempotenzschlüssel fehlt.');
@@ -147,7 +154,7 @@ export class AssetUploadKern {
         return;
       }
       const pending=await db.query("SELECT COALESCE(sum(groesse),0)::text AS bytes,count(*)::int AS n FROM asset_upload_sitzungen WHERE bereich=$1 AND ziel_ref=$2 AND status IN ('offen','laeuft','vollstaendig') AND lease_bis>clock_timestamp()",[ctx.bereich,ctx.ziel_ref]);
-      const current=ctx.bereich==='projekt'?await db.query("SELECT COALESCE(sum(file_size),0)::text AS bytes,count(*)::int AS n FROM asset_files WHERE project=$1 AND file_path<>$2 AND deleted_at IS NULL AND storage_key IS NOT NULL",[ctx.ziel_ref,a.logischer_pfad]):{rows:[{bytes:'0',n:0}]};
+      const current=ctx.bereich==='projekt'?await db.query("SELECT COALESCE(sum(file_size),0)::text AS bytes,count(*)::int AS n FROM asset_files WHERE project=$1 AND file_path<>$2 AND deleted_at IS NULL AND storage_key IS NOT NULL",[ctx.ziel_ref,a.logischer_pfad]):{rows:[await this.finalisierer.get(ctx.bereich)?.belegung?.(ctx,db)??{bytes:'0',n:0}]};
       const limits=await this.grenzen(ctx,db);
       if(BigInt(String(pending.rows[0].bytes))+BigInt(String(current.rows[0].bytes))+BigInt(auftrag.groesse)>BigInt(limits.maxProjektBytes)
         ||Number(pending.rows[0].n)+Number(current.rows[0].n)+1>limits.maxProjektDateien)fail('quote',413,'Projekt-/Uploadquote überschritten.');
@@ -171,14 +178,22 @@ export class AssetUploadKern {
     });
     return this.lade(ctx,id);
   }
-  async finalisieren(ctx:AssetUploadKontext,id:string):Promise<AssetUploadSitzung & Partial<AssetUploadErgebnis>>{
+  async finalisieren(ctx:AssetUploadKontext,id:string):Promise<AssetUploadSitzung & Partial<AssetUploadErgebnis>>{return this.abschliessen(ctx,id);}
+  /** Nur serverinterner _direkt-Adapter; HTTP kann kein Stagingobjekt übergeben. */
+  async finalisierenStaging(ctx:AssetUploadKontext,id:string,stage:AssetStaging):Promise<AssetUploadSitzung & Partial<AssetUploadErgebnis>>{
+    const s=await this.gueltig(ctx,id),a=adresse(ctx,s.auftrag);
+    if(ctx.bereich!=='reverse'||(s.offset!==0&&s.offset!==s.groesse)||stage.sha256!==s.sha256||stage.groesse!==s.groesse||canonical(stage.adresse)!==canonical(a))return fail('scope_verboten',403,'Direktstaging passt nicht zur Reverse-Reservierung.');
+    await this.db.query("UPDATE asset_upload_sitzungen SET bestaetigte_bytes=groesse WHERE id=$1 AND bestaetigte_bytes=0 AND status='offen'",[id]);
+    return this.abschliessen(ctx,id,stage);
+  }
+  private async abschliessen(ctx:AssetUploadKontext,id:string,direkt?:AssetStaging):Promise<AssetUploadSitzung & Partial<AssetUploadErgebnis>>{
     this.gate(ctx);let s=await this.lade(ctx,id);
     if(s.status==='finalisiert')return {...s,...s.ergebnis};
     s=await this.gueltig(ctx,id);
     if(s.offset!==s.groesse)fail('upload_unvollstaendig',409,'Nicht alle Bytes bestätigt.');
     const parts=(await this.db.query('SELECT * FROM asset_upload_teile WHERE upload_id=$1 ORDER BY byte_offset',[id])).rows;
     let wanted=0;for(const p of parts){if(Number(p.byte_offset)!==wanted)fail('upload_unvollstaendig',409,'Teilkatalog hat Lücke.');wanted+=Number(p.groesse);}
-    if(wanted!==s.groesse)fail('upload_unvollstaendig',409,'Teilkataloggröße abweichend.');
+    if(!direkt&&wanted!==s.groesse)fail('upload_unvollstaendig',409,'Teilkataloggröße abweichend.');
     const token=randomUUID();
     const taken=await this.db.query("UPDATE asset_upload_sitzungen SET status='vollstaendig',finalisierer_token=$2,finalisierer_bis=clock_timestamp()+$3*interval '1 millisecond' WHERE id=$1 AND status IN ('offen','laeuft') AND bestaetigte_bytes=groesse AND lease_bis>clock_timestamp() RETURNING id",[id,token,this.cfg.speicher.timeoutMs]);
     if(!taken.rows.length){s=await this.lade(ctx,id);if(s.status==='finalisiert')return {...s,...s.ergebnis};return fail('finalisierung_laeuft',409,'Finalisierung bereits aktiv oder unzulässig.');}
@@ -187,10 +202,15 @@ export class AssetUploadKern {
     async function* stream(){for(const p of parts){const part:AssetStaging={id:String(p.staging_id),adresse:a,sha256:String(p.sha256),groesse:Number(p.groesse)};for await(const bytes of await storage.readStagingStream(part))yield bytes;}}
     let prepared=false;
     try{
-      const full=await this.transfer(ctx,()=>storage.stage(a,this.begrenzt(stream()),{groesse:s.groesse,sha256:s.sha256}));
+      const full=direkt??await this.transfer(ctx,()=>storage.stage(a,this.begrenzt(stream()),{groesse:s.groesse,sha256:s.sha256}));
+      if(ctx.bereich==='projekt'&&this.quelle==='pc'){
+        const {AssetKonfliktKern}=await import('./asset-konflikte.js');
+        const saved=await new AssetKonfliktKern({db:this.db,konfiguration:this.cfg,speicher:storage}).sichereUpload(ctx,s,full,token);
+        if(saved){s=await this.lade(ctx,id);return {...s,...s.ergebnis};}
+      }
       const basis=await f.basis(ctx,s);
       await storage.publish(full,{
-        basisSha256:basis.sha256,
+        basisSha256:this.quelle==='share'?s.sha256:basis.sha256,
         prepare:async op=>{
           // FS-Journal existiert bereits: Entscheidungspfad bleibt auch bei anschließendem PG-Rollback auffindbar.
           const logged=await this.db.query("UPDATE asset_upload_sitzungen SET publish_operation=$3::jsonb WHERE id=$1 AND finalisierer_token=$2 AND status='vollstaendig' RETURNING id",[id,token,JSON.stringify(op)]);
@@ -210,7 +230,15 @@ export class AssetUploadKern {
         });},
       });
     }catch(e){
-      if(!prepared)await this.db.query("UPDATE asset_upload_sitzungen SET status='fehler',updated_at=clock_timestamp() WHERE id=$1 AND finalisierer_token=$2 AND status='vollstaendig'",[id,token]);
+      if(!prepared){
+        // A11: a concurrent Share writer must not make a verified PC upload terminal.
+        // No publication journal exists here; retained chunks can be finalized again against the new Share basis.
+        const retry=ctx.bereich==='projekt'&&this.quelle==='pc'&&
+          (e instanceof AssetUploadFehler&&['revision_konflikt','konflikt_wird_geloest','loesung_laeuft'].includes(e.code)||
+           e instanceof AssetSpeicherFehler&&e.code==='konflikt');
+        if(retry)await this.db.query("UPDATE asset_upload_sitzungen SET status='laeuft',finalisierer_token=NULL,finalisierer_bis=NULL,lease_bis=clock_timestamp()+$3*interval '1 millisecond',updated_at=clock_timestamp() WHERE id=$1 AND finalisierer_token=$2 AND status='vollstaendig'",[id,token,this.cfg.speicher.timeoutMs]);
+        else await this.db.query("UPDATE asset_upload_sitzungen SET status='fehler',updated_at=clock_timestamp() WHERE id=$1 AND finalisierer_token=$2 AND status='vollstaendig'",[id,token]);
+      }
       if(e instanceof AssetSpeicherFehler)throw new AssetUploadFehler(e.code,409,e.message);throw e;
     }
     s=await this.lade(ctx,id);return {...s,...s.ergebnis};
@@ -227,10 +255,15 @@ export class AssetUploadKern {
       if(d.adresse.bereich!==ctx.bereich||d.adresse.ziel_ref!==ctx.ziel_ref)return fail('scope_verboten',403,'Downloadadapter verlässt authentifizierten Scope.');
       const gesamt=d.groesse,selected=typeof range==='function'?range(gesamt):range,offset=selected?.offset??0,groesse=selected?.groesse??gesamt;
       if(!Number.isSafeInteger(gesamt)||gesamt<0||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(groesse)||groesse<0||offset+groesse>gesamt)return fail('range_ungueltig',416,'Range verlässt Bytesrevision.');
+      const retention=ctx.bereich==='projekt'?randomUUID():null;
+      if(retention){
+        const pin=await db.query("INSERT INTO asset_retention_referenzen(ref_key,asset_id,revision,art,expires_at) SELECT $1,id,$2,'transfer',clock_timestamp()+$3*interval '1 millisecond' FROM asset_files WHERE project=$4 AND file_path=$5 AND storage_status='ready' RETURNING ref_key",[retention,e.revision,this.cfg.speicher.timeoutMs,ctx.ziel_ref,d.adresse.logischer_pfad]);
+        if(!pin.rows.length)fail('revision_konflikt',409,'Downloadretention konnte nicht gebunden werden.');
+      }
       const release=this.transferStart(ctx);let stream;
       try{stream=await this.speicher.readStorageStream(d.adresse,d.storage_key,offset,groesse);}catch(e){release();throw e;}
       const timer=setTimeout(()=>stream.destroy(new AssetUploadFehler('transfer_timeout',408,'Konfiguriertes Downloadzeitbudget abgelaufen.')),this.cfg.speicher.timeoutMs);timer.unref();
-      stream.once('close',()=>{clearTimeout(timer);release();});
+      stream.once('close',()=>{clearTimeout(timer);release();if(retention)void this.db.query('UPDATE asset_retention_referenzen SET released_at=clock_timestamp() WHERE ref_key=$1',[retention]).catch(()=>undefined);});
       return {stream,gesamt,offset,groesse,sha256:d.sha256,revision:e.revision,mime_type:d.mime_type};
     });
   }
@@ -271,7 +304,7 @@ export class AssetUploadKern {
     const current=async(s:AssetUploadSitzung,db=this.db,lock=false)=>{
       const r=await db.query('SELECT * FROM asset_files WHERE project=$1 AND file_path=$2'+(lock?' FOR UPDATE':''),[s.ziel_ref,s.logischer_pfad]);
       const row=r.rows[0],revision=row?.transport_revision??'0';
-      if(String(revision)!==s.auftrag.basis_revision||row?.deleted_at||row&&row.prepared_upload_id||row&&(row.transport_revision!==null||row.storage_key!==null)&&(row.storage_status!=='ready'||!row.transport_sha256))
+      if(String(revision)!==s.auftrag.basis_revision||row?.deleted_at||row&&(row.prepared_upload_id||row.prepared_mutation_id||row.prepared_konflikt_id)||row&&(row.transport_revision!==null||row.storage_key!==null)&&(row.storage_status!=='ready'||!row.transport_sha256))
         fail('revision_konflikt',409,'Basisrevision ist nicht aktuell erreichbar.');
       return row;
     };
@@ -292,7 +325,7 @@ export class AssetUploadKern {
         const old=await current(s,db,true);
         await db.query('UPDATE asset_upload_sitzungen SET vorherige_datei=$2::jsonb WHERE id=$1',[s.id,old?JSON.stringify(old):null]);
         if(old){
-          if(op.vorheriger_storage_key)await db.query('UPDATE asset_revisionen SET storage_key=$3 WHERE asset_id=$1 AND revision=$2',[old.id,old.transport_revision,op.vorheriger_storage_key]);
+          if(this.quelle==='pc'&&op.vorheriger_storage_key)await db.query('UPDATE asset_revisionen SET storage_key=$3 WHERE asset_id=$1 AND revision=$2 AND storage_key=$4',[old.id,old.transport_revision,op.vorheriger_storage_key,old.storage_key]);
           await db.query("UPDATE asset_files SET storage_status='prepared',prepared_upload_id=$2,updated_at=clock_timestamp() WHERE id=$1",[old.id,s.id]);
         }else{
           await db.query("INSERT INTO asset_files(project,file_path,file_name,extension,status,storage_status,storage_kind,prepared_upload_id) VALUES($1,$2,$3,$4,'nicht_erkannt','prepared',$5,$6)",
@@ -311,10 +344,10 @@ export class AssetUploadKern {
       commit:async(_c,s,op,db)=>{
         const row=(await db.query('SELECT * FROM asset_files WHERE project=$1 AND file_path=$2 FOR UPDATE',[s.ziel_ref,s.logischer_pfad])).rows[0];
         if(!row||row.prepared_upload_id!==s.id||row.storage_status!=='prepared'||String(row.transport_revision??'0')!==s.auftrag.basis_revision)fail('revision_konflikt',409,'Vorbereitete Basisrevision abweichend.');
-        const rev=(BigInt(s.auftrag.basis_revision)+1n).toString();
+        const rev=String((await db.query('SELECT COALESCE(max(revision),0)+1 AS revision FROM asset_revisionen WHERE asset_id=$1',[row.id])).rows[0].revision);
         await db.query("UPDATE asset_files SET storage_key=$2,transport_sha256=$3,transport_revision=$4,file_size=$5,storage_status='ready',prepared_upload_id=NULL,storage_kind=$6,mime_type=$7,updated_at=clock_timestamp() WHERE id=$1",
           [row.id,op.storage_key,s.sha256,rev,s.groesse,s.auftrag.storage_kind,s.auftrag.mime_type??'application/octet-stream']);
-        await db.query("INSERT INTO asset_revisionen(asset_id,revision,sha256,groesse,storage_key,quelle) VALUES($1,$2,$3,$4,$5,'pc')",[row.id,rev,s.sha256,s.groesse,op.storage_key]);
+        await db.query("INSERT INTO asset_revisionen(asset_id,revision,sha256,groesse,storage_key,quelle) VALUES($1,$2,$3,$4,$5,$6)",[row.id,rev,s.sha256,s.groesse,op.revision_storage_key??op.storage_key,this.quelle]);
         await db.query("INSERT INTO asset_aenderungen(project,asset_id,revision,art) VALUES($1,$2,$3,'publish')",[s.ziel_ref,row.id,rev]);
         return {asset_id:String(row.id),revision:rev,storage_key:op.storage_key};
       },

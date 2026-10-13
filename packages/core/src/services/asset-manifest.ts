@@ -11,7 +11,7 @@ import type {AssetUploadKontext,AssetUploadDb} from './asset-upload.js';
 
 type Zeile=Record<string,unknown>;
 export type AssetMutationArt='verschieben'|'loeschen'|'wiederherstellen';
-export interface AssetMutationEingang {event_id:string;asset_id:string;basis_revision:string;alter_pfad?:string;pfad?:string;}
+export interface AssetMutationEingang {event_id:string;asset_id:string;basis_revision:string;alter_pfad?:string;pfad?:string;restore_window_ms?:number;}
 const REV=/^(0|[1-9][0-9]*)$/;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const fail=(code:string,status:number,message:string):never=>{throw new AssetUploadFehler(code,status,message);};
@@ -30,7 +30,9 @@ function metadaten(a:Zeile){
 const META_SQL="jsonb_build_object('asset_id',a.id::text,'pfad',a.file_path,'revision',a.transport_revision::text,'sha256',a.transport_sha256,'groesse',a.file_size,'mime_type',a.mime_type,'storage_kind',a.storage_kind,'storage_status',a.storage_status,'deleted_at',a.deleted_at,'restore_until',a.restore_until)";
 export class AssetManifestKern {
   private readonly db:AssetUploadDb;private readonly cfg:AssetKonfiguration;private readonly speicher:AssetSpeicher;
-  constructor(o:{db?:AssetUploadDb;konfiguration?:AssetKonfiguration;speicher?:AssetSpeicher}={}){
+  private readonly quelle:'pc'|'share';
+  constructor(o:{db?:AssetUploadDb;konfiguration?:AssetKonfiguration;speicher?:AssetSpeicher;quelle?:'pc'|'share'}={}){
+    this.quelle=o.quelle??'pc';
     this.db=o.db??getPool() as unknown as AssetUploadDb;this.cfg=o.konfiguration??getAssetKonfiguration();
     this.speicher=o.speicher??new AssetSpeicher({konfiguration:this.cfg});
   }
@@ -105,7 +107,7 @@ export class AssetManifestKern {
   private async aktuell(ctx:AssetUploadKontext,e:AssetMutationEingang,art:AssetMutationArt,db=this.db,lock=false):Promise<Zeile>{
     const a=(await db.query('SELECT *,restore_until>clock_timestamp() AS wiederherstellbar FROM asset_files WHERE id=$1 AND project=$2'+(lock?' FOR UPDATE':''),[e.asset_id,ctx.ziel_ref])).rows[0];
     if(!a)return fail('asset_fehlt',404,'Asset im Projekt fehlt.');
-    if(String(a.transport_revision)!==e.basis_revision||a.prepared_upload_id||a.prepared_mutation_id||a.storage_status!=='ready'||!a.storage_key||!a.transport_sha256)return fail('revision_konflikt',409,'Basisrevision nicht unverändert verfügbar.');
+    if(String(a.transport_revision)!==e.basis_revision||a.prepared_upload_id||a.prepared_mutation_id||a.prepared_konflikt_id||a.storage_status!=='ready'||!a.storage_key||!a.transport_sha256)return fail('revision_konflikt',409,'Basisrevision nicht unverändert verfügbar.');
     if(art==='wiederherstellen'?!a.deleted_at||!a.wiederherstellbar:Boolean(a.deleted_at))return fail('revision_konflikt',409,'Lösch-/Wiederherstellungszustand oder Fenster unpassend.');
     if(art==='verschieben'&&(typeof e.alter_pfad!=='string'||normalisiereSpeicherPfad(e.alter_pfad)!==a.file_path))return fail('revision_konflikt',409,'Expliziter alter Pfad stimmt nicht.');
     if(art==='verschieben'){
@@ -118,9 +120,23 @@ export class AssetManifestKern {
     this.gate(ctx);
     if(!e||!['verschieben','loeschen','wiederherstellen'].includes(art)||typeof e.event_id!=='string'||!e.event_id||e.event_id.length>200||typeof e.asset_id!=='string'||!REV.test(e.asset_id)||e.asset_id==='0')return fail('eingang_ungueltig',400,'Event-ID, Asset-ID und bekannte Basisrevision erforderlich.');
     if(typeof e.basis_revision!=='string'||!REV.test(e.basis_revision)||e.basis_revision==='0')return fail('revision_konflikt',409,'Bekannte Basisrevision erforderlich.');
+    if(e.restore_window_ms!==undefined&&(art!=='loeschen'||!Number.isSafeInteger(e.restore_window_ms)||e.restore_window_ms<0||e.restore_window_ms>this.cfg.sync.restoreWindowMs))return fail('fenster_ungueltig',400,'Löschfenster muss innerhalb der Betreiberobergrenze liegen.');
     const input={event_id:e.event_id,asset_id:e.asset_id,basis_revision:e.basis_revision,
+      ...(e.restore_window_ms!==undefined?{restore_window_ms:e.restore_window_ms}:{}),
       ...(art==='verschieben'?{alter_pfad:normalisiereSpeicherPfad(e.alter_pfad!),pfad:normalisiereSpeicherPfad(e.pfad!)}:{})};
-    const options=await this.optionen(ctx);if(options.richtung==='share_to_pc')return fail('richtung_verboten',403,'Projekt erlaubt keine PC-Mutation.');
+    const options=await this.optionen(ctx);if(this.quelle==='pc'&&options.richtung==='share_to_pc')return fail('richtung_verboten',403,'Projekt erlaubt keine PC-Mutation.');
+    if(art==='verschieben'&&this.quelle==='pc'){
+      // Replay precedes checking today's occupied destination; the durable event remains authoritative.
+      const prior=(await this.db.query('SELECT * FROM asset_mutationen WHERE project=$1 AND host_id=$2 AND event_id=$3',[ctx.ziel_ref,ctx.host_id,e.event_id])).rows[0];
+      if(prior){
+        if(prior.art!==art||json(prior.auftrag)!==json(input)&&json(Object.entries(prior.auftrag as Zeile).sort())!==json(Object.entries(input).sort()))return fail('idempotency_konflikt',409,'Event-ID gehört anderem Auftrag.');
+        if(prior.status==='fertig')return prior.ergebnis;
+        return fail('mutation_laeuft',409,'Mutation läuft oder benötigt bestätigte Recovery.');
+      }
+      const {AssetKonfliktKern}=await import('./asset-konflikte.js');
+      const konflikt=await new AssetKonfliktKern({db:this.db,konfiguration:this.cfg,speicher:this.speicher}).sichereRename(ctx,{...input,alter_pfad:input.alter_pfad!,pfad:input.pfad!});
+      if(konflikt)throw new AssetUploadFehler('ziel_belegt',409,'Share-Ziel bleibt aktiv; PC-Fassung ist als Revision gesichert.',{konflikt});
+    }
     const claimed=await this.tx(async db=>{
       await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['asset-event:'+ctx.ziel_ref+':'+ctx.host_id+':'+e.event_id]);
       const prior=(await db.query('SELECT * FROM asset_mutationen WHERE project=$1 AND host_id=$2 AND event_id=$3',[ctx.ziel_ref,ctx.host_id,e.event_id])).rows[0];
@@ -142,13 +158,13 @@ export class AssetManifestKern {
         const own=(await db.query("SELECT id FROM asset_mutationen WHERE id=$1 AND status='offen' AND lease_bis>clock_timestamp() FOR UPDATE",[id])).rows[0];
         if(!own)return fail('lease_abgelaufen',409,'Mutationslease abgelaufen.');
         const fresh=await this.aktuell(ctx,input,art,db,true),policy=await this.optionen(ctx,db);
-        if(policy.richtung==='share_to_pc')return fail('richtung_verboten',403,'Projekt erlaubt keine PC-Mutation.');
+        if(this.quelle==='pc'&&policy.richtung==='share_to_pc')return fail('richtung_verboten',403,'Projekt erlaubt keine PC-Mutation.');
         if(art==='wiederherstellen'){
           await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['asset-upload:projekt:'+ctx.ziel_ref]);
           const total=(await db.query('SELECT COALESCE(sum(file_size),0)::text AS bytes,count(*)::int AS n FROM asset_files WHERE project=$1 AND deleted_at IS NULL AND storage_key IS NOT NULL',[ctx.ziel_ref])).rows[0];
           if(Number(fresh.file_size)>policy.maxDateiBytes||BigInt(String(total.bytes))+BigInt(String(fresh.file_size))>BigInt(policy.maxProjektBytes)||Number(total.n)+1>policy.maxProjektDateien)return fail('quote',413,'Restore überschreitet Projektquote.');
         }
-        if(art!=='wiederherstellen')await db.query('UPDATE asset_revisionen SET storage_key=$3 WHERE asset_id=$1 AND revision=$2 AND NOT tombstone',[old.id,old.transport_revision,op.vorheriger_storage_key]);
+        if(art!=='wiederherstellen')await db.query('UPDATE asset_revisionen SET storage_key=$3 WHERE asset_id=$1 AND revision=$2 AND NOT tombstone AND storage_key=$4',[old.id,old.transport_revision,op.vorheriger_storage_key,old.storage_key]);
         await db.query("UPDATE asset_files SET storage_status='prepared',prepared_mutation_id=$2 WHERE id=$1",[old.id,id]);
         await db.query("UPDATE asset_mutationen SET status='prepared' WHERE id=$1",[id]);
       });
@@ -157,13 +173,13 @@ export class AssetManifestKern {
       const own=(await db.query("SELECT id FROM asset_mutationen WHERE id=$1 AND status='prepared' AND lease_bis>clock_timestamp() FOR UPDATE",[id])).rows[0];
       const current=(await db.query('SELECT * FROM asset_files WHERE id=$1 AND project=$2 FOR UPDATE',[old.id,ctx.ziel_ref])).rows[0];
       if(!own||current?.prepared_mutation_id!==id||String(current.transport_revision)!==input.basis_revision)return fail('revision_konflikt',409,'Mutationsowner/Basisrevision abweichend.');
-      const revision=(BigInt(input.basis_revision)+1n).toString(),policy=await this.optionen(ctx,db);
+      const revision=String((await db.query('SELECT COALESCE(max(revision),0)+1 AS revision FROM asset_revisionen WHERE asset_id=$1',[old.id])).rows[0].revision),policy=await this.optionen(ctx,db);
       const storage_key=art==='verschieben'?(op as AssetPfadOperation).ziel_storage_key:art==='loeschen'?op.vorheriger_storage_key:op.storage_key;
       if(!storage_key)return fail('bytes_nicht_ready',409,'Bestätigter Speicherschlüssel fehlt.');
       const nextPath=art==='verschieben'?input.pfad:String(old.file_path);
       await db.query("UPDATE asset_files SET file_path=$2,file_name=$3,extension=$4,transport_revision=$5,storage_key=$6,storage_status='ready',prepared_mutation_id=NULL,deleted_at=CASE WHEN $7 THEN clock_timestamp() ELSE NULL END,restore_until=CASE WHEN $7 THEN clock_timestamp()+$8*interval '1 millisecond' ELSE NULL END,updated_at=clock_timestamp() WHERE id=$1",
-        [old.id,nextPath,path.posix.basename(nextPath!),path.posix.extname(nextPath!).slice(1),revision,storage_key,art==='loeschen',policy.restoreWindowMs]);
-      await db.query("INSERT INTO asset_revisionen(asset_id,revision,sha256,groesse,storage_key,tombstone,quelle) VALUES($1,$2,$3,$4,$5,$6,'pc')",[old.id,revision,old.transport_sha256,old.file_size,storage_key,art==='loeschen']);
+        [old.id,nextPath,path.posix.basename(nextPath!),path.posix.extname(nextPath!).slice(1),revision,storage_key,art==='loeschen',input.restore_window_ms??policy.restoreWindowMs]);
+      await db.query("INSERT INTO asset_revisionen(asset_id,revision,sha256,groesse,storage_key,tombstone,quelle) VALUES($1,$2,$3,$4,$5,$6,$7)",[old.id,revision,old.transport_sha256,old.file_size,op.revision_storage_key??storage_key,art==='loeschen',this.quelle]);
       const fresh=(await db.query('SELECT * FROM asset_files WHERE id=$1',[old.id])).rows[0],result={...metadaten(fresh),...(art==='verschieben'?{alter_pfad:old.file_path}:{})};
       await db.query('INSERT INTO asset_aenderungen(project,asset_id,revision,art,metadaten) VALUES($1,$2,$3,$4,$5::jsonb)',[ctx.ziel_ref,old.id,revision,art,json(result)]);
       await db.query("UPDATE asset_mutationen SET status='fertig',ergebnis=$2::jsonb WHERE id=$1",[id,json(result)]);

@@ -2,7 +2,13 @@
  * P18-T12/RV2: feste interne Lesebereiche. Keine Tool-Parameter, keine freien
  * Tabellennamen. Projekt-SQL bleibt unverändert; Reverse nutzt dieselbe Engine.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { QueryResult, QueryResultRow } from 'pg';
+export interface CodeLeserDb {query<R extends QueryResultRow = any>(sql:string,params?:unknown[]):Promise<QueryResult<R>>}
+const reverseCodeLeser=new AsyncLocalStorage<CodeLeserDb>();
+/** Interner request-scoped Reverse-Leser. PROJEKT_BEREICH bleibt immer unverändert. */
+export function mitReverseCodeLeser<T>(db:CodeLeserDb,run:()=>T):T{return reverseCodeLeser.run(db,run);}
+
 import { getPool } from '../db/client.js';
 
 export const PROJEKT_BEREICH = Object.freeze({
@@ -57,7 +63,7 @@ export function codeBereichSql(sql: string, bereich: CodeBereich = PROJEKT_BEREI
 /** Typisierte Lesegrenze: auch Alias-/Suffix-Helfer benutzen denselben Bereich. */
 export function codeBereichLeser(bereich: CodeBereich = PROJEKT_BEREICH) {
   pruefeCodeBereich(bereich);
-  const pool = getPool();
+  const pool = bereich === REVERSE_BEREICH ? reverseCodeLeser.getStore() ?? getPool() : getPool();
   return {
     // pg.query verwendet bisher ebenfalls any als Standard-Zeilentyp.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

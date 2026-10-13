@@ -185,7 +185,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
       return run(client,row);
     });
   }
-  async function enqueue(input: WorkJobInput): Promise<WorkJob> {
+  async function enqueue(input: WorkJobInput, transactionClient?: Pick<WorkJobClient,'query'>): Promise<WorkJob> {
     if (!input || !id(input.kind) || !id(input.capability) || !id(input.project) || !id(input.scope) ||
         !id(input.idempotencyKey) || (input.profileId != null && !id(input.profileId))) fail('invalid_work_input');
     const priority = input.priority ?? 'hintergrund';
@@ -197,7 +197,7 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
     const normalized = { kind:input.kind,capability:input.capability,profileId:input.profileId??null,
       project:input.project,scope:input.scope,inputRef,resourceNeed,priority,deadline };
     const hash = createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
-    return tx(async client => {
+    const insert = async (client: Pick<WorkJobClient,'query'>): Promise<WorkJob> => {
       const r = await client.query<WorkJobRow>(
         `INSERT INTO work_jobs(id,kind,capability,profile_id,project,scope,input_ref,resource_need,
           priority,idempotency_key,request_hash,deadline) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10,$11,$12)
@@ -206,7 +206,8 @@ export function createWorkJobService(deps: WorkJobDependencies = {}) {
           JSON.stringify(inputRef),JSON.stringify(resourceNeed),priority,input.idempotencyKey,hash,deadline]);
       if (r.rows[0].request_hash !== hash) fail('idempotency_conflict');
       return job(r.rows[0]);
-    });
+    };
+    return transactionClient ? insert(transactionClient) : tx(insert);
   }
   async function claim(who: WorkIdentity, options: {limit?:number;leaseSeconds?:number} = {}): Promise<WorkJob[]> {
     const h = hooks();

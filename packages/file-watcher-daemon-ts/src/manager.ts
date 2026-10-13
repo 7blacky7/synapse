@@ -43,6 +43,8 @@ import {
   removeProjekt,
 } from './config.js';
 
+import {DaemonAssetSync} from './asset-sync.js';
+
 export interface OpResult {
   ok: boolean;
   msg: string;
@@ -298,11 +300,13 @@ export async function darfWatcherEventNachSlot(
 export class WatcherManager {
   private instances = new Map<string, FileWatcherInstance>();
   private config: DaemonConfig;
+  readonly assetSync: DaemonAssetSync;
   /** EventEmitter fuer State-Changes — abonniert von api.ts SSE-Stream. Events: "state_change". */
   readonly events = new EventEmitter();
 
   constructor(config?: DaemonConfig) {
     this.config = config ?? loadConfig();
+    this.assetSync = new DaemonAssetSync(()=>this.config,undefined,()=>this.emitChange('asset_sync'),()=>saveConfig(this.config));
   }
 
   /** Emittiert ein state_change-Event mit aktuellem Aggregate-Snapshot. */
@@ -407,6 +411,16 @@ export class WatcherManager {
     return projekt;
   }
 
+  /** A10: called only after complete API restore + persisted A8 checkpoint. No initial empty tree. */
+  async registerRestored(name:string,pfad:string):Promise<ProjektConfig>{
+    if(this.isRunning(name))throw new Error('restore_watcher_laeuft');
+    if(!fs.lstatSync(pfad).isDirectory()||fs.lstatSync(pfad).isSymbolicLink())throw new Error('restore_pfad_ungueltig');
+    const prior=findProjekt(this.config,name);
+    const projekt:ProjektConfig={...prior,name,pfad,enabled:true,asset_sync:{...prior?.asset_sync,verwaltet:true}};
+    upsertProjekt(this.config,projekt);saveConfig(this.config);
+    this.spawnWatcher(projekt);this.emitChange('restore:'+name);return projekt;
+  }
+
   /** Entfernt Projekt komplett. Wirft wenn nicht gefunden. */
   async unregister(name: string): Promise<void> {
     const existed = !!findProjekt(this.config, name) || this.instances.has(name);
@@ -482,6 +496,17 @@ export class WatcherManager {
   // ══════════════════════════════════════════════════════════════════
 
   private spawnWatcher(p: ProjektConfig): void {
+    // A10: stale config/registry must not start a scan against partially installed restore bytes.
+    const journalPath=path.join(path.dirname(path.resolve(p.pfad)),'.synapse-restore',p.name,'state.json');
+    let restoreFd:number|undefined;
+    try{
+      restoreFd=fs.openSync(journalPath,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+      const journal=JSON.parse(fs.readFileSync(restoreFd,'utf8'));
+      if(journal.project!==p.name||journal.path!==path.resolve(p.pfad)||journal.complete!==true)
+        throw new Error('restore_noch_nicht_abgeschlossen');
+    }catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+    finally{if(restoreFd!==undefined)fs.closeSync(restoreFd);}
+    this.assetSync.starte(p);
     const instance = startFileWatcher({
       projectPath: p.pfad,
       projectName: p.name,
@@ -491,7 +516,7 @@ export class WatcherManager {
       },
       // Asset-Abgleich nach dem Erstscan (P4-T67): nur asset_*, inspiziert nur Abweichungen.
       onReady: () => {
-        void verifyAssetsAgainstFilesystem(p.name, p.pfad).catch((err) =>
+        void this.assetSync.bereit(p.name).then(managed=>managed?undefined:verifyAssetsAgainstFilesystem(p.name,p.pfad)).catch((err) =>
           console.error(`[manager] Asset-Abgleich "${p.name}" fehlgeschlagen:`, (err as Error).message)
         );
       },
@@ -501,6 +526,7 @@ export class WatcherManager {
   }
 
   private async stopWatcher(name: string): Promise<void> {
+    await this.assetSync.stop(name);
     const inst = this.instances.get(name);
     if (!inst) return;
     try {
@@ -513,6 +539,10 @@ export class WatcherManager {
   }
 
   private async forwardEvent(event: FileEvent): Promise<void> {
+    // New pure binary transport is API-only and precedes legacy code PG/backpressure.
+    const local=this.config.projekte.find(p=>p.name===event.project);
+    const managedAsset=Boolean(event.asset&&local?.enabled&&await this.assetSync.ereignis(event));
+    if(managedAsset&&event.asset==='nur_asset')return;
     // In-Process Indexierung — wie der alte watcher-daemon.ts vor dem moo-Pivot.
     // indexFile() macht intern: storeFileContent (Hash/mtime-Schutz) + parseAndEmbed
     // (PG -> Qdrant). Kein HTTP-Umweg, kein REST-API-Bedarf, Daemon bleibt
@@ -550,7 +580,8 @@ export class WatcherManager {
       // der Index-Slot gehoert dem Code-Weg. 'nur_asset' (Binaerdateien) erreicht den Code-Weg
       // nie, genau wie vor dem Umbau, als der Watcher sie verwarf.
       if (event.asset) {
-        void verarbeiteAssetEreignis({ ...event, path: relPath }, projectRoot);
+        const managed=managedAsset||await this.assetSync.ereignis({...event,path:relPath});
+        if(!managed)void verarbeiteAssetEreignis({ ...event, path: relPath }, projectRoot);
         if (event.asset === 'nur_asset') return;
       }
       if (event.type === 'unlink') {

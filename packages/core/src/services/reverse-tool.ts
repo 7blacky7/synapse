@@ -10,8 +10,9 @@ import { pruefeUnbekannteParameter } from './unbekannte-parameter.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { maskiereMitKatalog } from './masken-katalog.js';
 import { erfasseToolAktivitaet } from './tool-aktivitaet.js';
+import { REVERSE_CODE_ACTIONS, ReverseCodeFehler, fuehreReverseCodeAus } from './reverse-code-tool.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen'] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen',...REVERSE_CODE_ACTIONS] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -26,9 +27,9 @@ const TEXTE: Record<ReverseFehlercode,string> = {
   keine_berechtigung:'Keine Berechtigung für diese Aktion oder dieses Projekt.',ansicht_nicht_darstellbar:'Für dieses Asset ist keine Ansicht verfügbar.',
   semantik_nicht_verfuegbar:'Semantische Reverse-Suche ist noch nicht verfügbar.',
 };
-const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'}},required:['id'],additionalProperties:false};
+const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator). Analyse asynchron, keine lokale Byteausführung. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator). Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -38,9 +39,14 @@ export const REVERSE_DEFINITION = {
     titel:{type:'string'},medien:{type:'array',items:mediumSchema,description:'Alle Medien in gewünschter Reihenfolge, optionale Bezeichnungen'},
     zusammenfuehren_mit:{type:'string',description:'Unanalysierten Vorschlag in diesen Ziel-Eintrag zusammenführen'},
     aufteilen:{type:'array',items:{type:'object',properties:{titel:{type:'string'},medien:{type:'array',items:{type:'string'}}},required:['titel','medien'],additionalProperties:false},description:'Vorschlag vor der Analyse in vollständige disjunkte Mediengruppen aufteilen'},
-    notiz:{type:'string'},datei:{type:'string',description:'Relativer Reverse-Dateipfad'},file_path:{type:'string',description:'Alias für datei'},
+    notiz:{type:'string'},datei:{type:'string',description:'Relativer Reverse-Dateipfad'},file_path:{type:'string',description:'Alias für datei bei status/analysieren; Code-Aktionen nutzen virtuelle Pfade <Original>@S1/strings.txt, @S2/<Funktion>.asm oder @S3/<Funktion>.c'},
     warten_sekunden:{type:'number',minimum:0,maximum:50},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
     prioritaet:{type:'string',enum:['interaktiv','hintergrund','nachzug']},auftrag_id:{type:'string'},
+    path:{type:'string'},name:{type:'string'},symbol_type:{type:'string'},file_type:{type:'string'},callee:{type:'string'},
+    from_line:{type:'number'},to_line:{type:'number'},truncate_long_lines:{type:'number'},
+    semantic:{type:'boolean'},exported_only:{type:'boolean'},include_name_matches:{type:'boolean'},value_contains:{type:'string'},
+    min_laenge:{type:'number'},match_limit:{type:'number'},match_skip:{type:'number'},depth:{type:'number'},recursive:{type:'boolean'},
+    show_functions:{type:'boolean'},show_counts:{type:'boolean'},show_lines:{type:'boolean'},
   },required:['action','agent_id']},
   outputSchema:{type:'object',properties:{
     success:{type:'boolean'},reverse_id:{type:['string','null']},datei:{type:['string','null']},
@@ -57,6 +63,13 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
   status:['reverse_id','datei','file_path','warten_sekunden'],analysieren:['reverse_id','datei','file_path','bis_schicht','prioritaet'],
   abbrechen:['auftrag_id'],
+  tree:['reverse_id','file_path','path','limit','offset','depth','recursive','show_functions','show_counts','show_lines','file_type'],
+  functions:['reverse_id','file_path','name','exported_only','limit','offset'],
+  symbols:['reverse_id','file_path','symbol_type','name','value_contains','min_laenge','limit','offset'],
+  references:['reverse_id','file_path','name','include_name_matches','limit','offset'],
+  search:['reverse_id','file_path','query','file_type','semantic','match_limit','match_skip','limit','offset'],
+  file:['reverse_id','file_path','from_line','to_line','truncate_long_lines','min_laenge','limit','offset'],
+  calls:['reverse_id','file_path','callee','limit','offset'],
 };
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
 export const REVERSE_AKTIVITAET_DESCRIPTOR = Object.freeze({toolId:'reverse',tool:'reverse',aktivitaetsAktionen:REVERSE_ACTIONS.filter(a=>a!=='status')});
@@ -143,7 +156,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     if(!r.rows[0])fail('nicht_gefunden');return r.rows[0];
   }
   async function medien(db:Db,rid:string):Promise<Row[]> {
-    return (await db.query('SELECT id::text AS id,position,bezeichnung,art,status,fehlercode,groesse,satz_sha256 FROM reverse_medien WHERE eintrag_id=$1 ORDER BY position,id',[rid])).rows;
+    return (await db.query('SELECT id::text AS id,position,bezeichnung,art,status,fehlercode,groesse,satz_sha256,vorschlag FROM reverse_medien WHERE eintrag_id=$1 ORDER BY position,id',[rid])).rows;
   }
   async function entryDto(db:Db,e:Row):Promise<Row> {
     const ms=await medien(db,str(e.id));
@@ -195,6 +208,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const pos=Number((await db.query('SELECT COALESCE(max(position),-1)+1 AS n FROM reverse_medien WHERE eintrag_id=$1',[target])).rows[0].n);
       for(const [i,m]of ms.entries())await db.query('UPDATE reverse_medien SET eintrag_id=$1,position=$2 WHERE id=$3',[target,pos+i,m.id]);
       await db.query("UPDATE reverse_eintraege SET status='archiviert',archiviert_at=NOW(),updated_at=NOW() WHERE id=$1",[rid]);
+      await db.query('UPDATE reverse_eingang_dateien d SET eintrag_id=m.eintrag_id FROM reverse_medien m WHERE d.medium_id=m.id AND d.eintrag_id=$1',[rid]);
       rid=target;ms=await medien(db,rid);
     }
     if(gesetzt(a.aufteilen)){
@@ -204,6 +218,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         if(!object(g)||Object.keys(g).some(k=>!['titel','medien'].includes(k))||!Array.isArray(g.medien)||!g.medien.length||!g.medien.every(x=>typeof x==='string'))fail('werkzeug_fehler','parameter_ungueltig');
         return {titel:text(g.titel),medien:g.medien as string[]};
       });
+      const aufgenommen=(await db.query('SELECT 1 FROM reverse_eingang_dateien WHERE eintrag_id=$1 LIMIT 1',[rid])).rows.length>0;
+      if(aufgenommen&&ms.some(m=>m.status!=='vollstaendig'))fail('werkzeug_fehler','medien_unvollstaendig');
       const all=groups.flatMap(g=>g.medien);
       if(all.length!==ms.length||new Set(all).size!==all.length||ms.some(m=>!all.includes(str(m.id))))fail('werkzeug_fehler','parameter_ungueltig');
       const entries=groups.map(g=>({
@@ -219,6 +235,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       await db.query(`UPDATE reverse_medien m SET eintrag_id=g.eintrag_id,position=g.position
         FROM jsonb_to_recordset($1::jsonb) AS g(id bigint,eintrag_id text,position integer) WHERE m.id=g.id`,[JSON.stringify(moves)]);
       await db.query("SELECT pg_notify('synapse_reverse_changed',id) FROM unnest($1::text[]) AS id",[entries.map(g=>g.id)]);
+      await db.query('UPDATE reverse_eingang_dateien d SET eintrag_id=m.eintrag_id FROM reverse_medien m WHERE d.medium_id=m.id AND d.eintrag_id=$1',[rid]);
+      const {katalogisiereReverseOrdner}=await import('./reverse-eingang.js');
+      for(const g of entries)await katalogisiereReverseOrdner(db,g.id);
       const neu=entries.map(g=>g.id);
       await db.query("UPDATE reverse_eintraege SET status='archiviert',archiviert_at=NOW(),updated_at=NOW() WHERE id=$1",[rid]);
       return {reverse_id:rid,status:'archiviert',aufgeteilt:neu};
@@ -226,14 +245,36 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     if(a.medien!==undefined){
       if(!Array.isArray(a.medien)||a.medien.length!==ms.length)fail('werkzeug_fehler','parameter_ungueltig');
       const order=a.medien.map(m=>{
-        if(!object(m)||Object.keys(m).some(k=>!['id','bezeichnung'].includes(k))||typeof m.id!=='string'||!ms.some(x=>x.id===m.id))fail('werkzeug_fehler','parameter_ungueltig');
-        return {id:m.id,bezeichnung:m.bezeichnung===undefined?null:text(m.bezeichnung)};
+        if(!object(m)||Object.keys(m).some(k=>!['id','bezeichnung','art'].includes(k))||typeof m.id!=='string'||!ms.some(x=>x.id===m.id))fail('werkzeug_fehler','parameter_ungueltig');
+        if(m.art!==undefined&&!['image','ordner','archiv'].includes(String(m.art)))fail('werkzeug_fehler','parameter_ungueltig');
+        return {id:m.id,bezeichnung:m.bezeichnung===undefined?null:text(m.bezeichnung),art:m.art===undefined?null:String(m.art)};
       });
+      if(order.some(m=>m.art!==null&&ms.find(x=>x.id===m.id)?.art!==m.art))await groupingAllowed(db,rid);
       if(new Set(order.map(m=>m.id)).size!==ms.length)fail('werkzeug_fehler','parameter_ungueltig');
       if(ms.some(m=>Number(m.position)<0))fail('werkzeug_fehler');
       await db.query('UPDATE reverse_medien SET position=-position-1 WHERE eintrag_id=$1',[rid]);
-      for(const [i,m]of order.entries())await db.query('UPDATE reverse_medien SET position=$1,bezeichnung=COALESCE($2,bezeichnung) WHERE id=$3',[i,m.bezeichnung,m.id]);
+      for(const [i,m]of order.entries())await db.query('UPDATE reverse_medien SET position=$1,bezeichnung=COALESCE($2,bezeichnung),art=COALESCE($4,art) WHERE id=$3',[i,m.bezeichnung,m.id,m.art]);
+      if(order.some(m=>m.art!==null)){
+        await db.query(`UPDATE reverse_medien m SET
+          status=CASE WHEN EXISTS(SELECT 1 FROM reverse_eingang_dateien d JOIN reverse_eingang_bytes b USING(sha256) WHERE d.medium_id=m.id AND b.status<>'ready') THEN 'unvollstaendig' ELSE 'vollstaendig' END,
+          fehlercode=NULL
+          WHERE m.eintrag_id=$1 AND m.art='ordner' AND m.id=ANY($2::bigint[]) AND COALESCE(jsonb_array_length(m.vorschlag->'case_kollisionen'),0)=0`,[rid,order.filter(m=>m.art==='ordner').map(m=>m.id)]);
+        const originals=(await db.query('SELECT medium_id,original_name AS rel_pfad,groesse,sha256 FROM reverse_medien_dateien WHERE medium_id=ANY($1::bigint[])',[order.filter(m=>m.art!==null).map(m=>m.id)])).rows;
+        const {reverseOrdnerFingerabdruck}=await import('./reverse-gruppierung.js');
+        for(const choice of order.filter(m=>m.art!==null)){
+          const files=originals.filter(f=>String(f.medium_id)===choice.id);
+          if(choice.art==='archiv'&&files.length!==1)fail('werkzeug_fehler','archiv_braucht_eine_datei');
+          const fingerprint=choice.art==='archiv'?String(files[0].sha256):reverseOrdnerFingerabdruck(files.map(f=>({rel_pfad:String(f.rel_pfad),groesse:Number(f.groesse),sha256:String(f.sha256)})));
+          await db.query('UPDATE reverse_medien SET satz_sha256=$2 WHERE id=$1',[choice.id,fingerprint]);
+        }
+      }
       ms=await medien(db,rid);
+    }
+    const aufgenommen=(await db.query('SELECT 1 FROM reverse_eingang_dateien WHERE eintrag_id=$1 LIMIT 1',[rid])).rows.length>0;
+    if(aufgenommen){
+      if(ms.some(m=>m.status!=='vollstaendig'))fail('beschaedigt','medium_noch_unvollstaendig');
+      const {katalogisiereReverseOrdner}=await import('./reverse-eingang.js');
+      await katalogisiereReverseOrdner(db,rid);
     }
     const fp=createHash('sha256').update(JSON.stringify(ms.map(m=>[m.art,m.satz_sha256]))).digest('hex');
     await db.query(`UPDATE reverse_eintraege SET titel=COALESCE($2,titel),status='bestaetigt',bestaetigt_von=$3,fingerabdruck=$4,
@@ -300,6 +341,20 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       ...(hooks().analysieren?{...done[0],fehlercode:done[0].fehlercode??null}:{fehlercode:'container_ruht',message:TEXTE.container_ruht})};
   }
   async function execute(a:Row,action:ReverseAction):Promise<Row> {
+    if((REVERSE_CODE_ACTIONS as readonly string[]).includes(action)){
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id);
+      await entry(pool,rid);
+      if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
+      const data=await fuehreReverseCodeAus(a,{db:pool,anfordern:(datei,schicht)=>tx(async db=>{
+        const e=await entry(db,rid,true);
+        const input={...a,action:'analysieren',datei,file_path:undefined,bis_schicht:schicht,prioritaet:'interaktiv'};
+        const job=await analyse(db,input,e);await activity(db,input);return job;
+      })});
+      await tx(db=>activity(db,a));
+      const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
+      if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
+      return {...data,container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s}};
+    }
     if(action==='status'){
       const wait=integer(a.warten_sekunden,0,50),until=Date.now()+wait*1000;
       let result=await statusData(a),fingerprint=JSON.stringify(result);
@@ -362,7 +417,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const data=await execute(a,action);
       return baueReverseAntwort(a,{...data,...(unused.length?{nicht_verwendet:unused}:{})});
     }catch(e){
-      if(e instanceof ReverseFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
+      if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
       const code=(e as {code?:string})?.code;
       return baueReverseAntwort(a,{},code==='23505'?'ziel_belegt':code==='57014'?'zeitlimit':'werkzeug_fehler');
     }

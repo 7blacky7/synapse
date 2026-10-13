@@ -37,12 +37,17 @@ import { getPool } from './client.js';
 import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
 import { HINWEIS_SCHEMA_SQL } from './ausloeser-hinweise-schema.js';
 import { WORK_JOBS_SCHEMA_SQL } from './work-jobs-schema.js';
+import { COMPUTE_ADMISSION_SCHEMA_SQL } from './compute-admission-schema.js';
+import { COMPUTE_CONTROL_SCHEMA_SQL } from './compute-control-schema.js';
 import { CPU_NODES_SCHEMA_SQL } from './cpu-nodes-schema.js';
 import { SERVER_EXECUTOR_SCHEMA_SQL } from './server-executor-schema.js';
 import { REVERSE_SCHEMA_SQL } from './reverse-schema.js';
+import {REVERSE_PIPELINE_SCHEMA_SQL} from './reverse-pipeline-schema.js';
+import { PROJECT_RESTORE_SCHEMA_SQL } from './project-restore-schema.js';
 import { ASSET_UPLOAD_SCHEMA_SQL } from './asset-upload-schema.js';
 import { ASSET_MANIFEST_SCHEMA_SQL } from './asset-manifest-schema.js';
 import { ASSET_INSPEKTIONS_SCHEMA_SQL } from './asset-inspektions-schema.js';
+import {ASSET_KONFLIKT_SCHEMA_SQL} from './asset-konflikt-schema.js';
 import {TOOL_AKTIVITAET_SCHEMA_SQL} from './tool-aktivitaet-schema.js';
 import {TOOL_CONTAINER_SCHEMA_SQL} from './tool-container-schema.js';
 
@@ -2612,6 +2617,22 @@ $asset_wasserlinie$;
 CREATE OR REPLACE TRIGGER asset_aenderung_commit_cursor
 BEFORE INSERT ON asset_aenderungen FOR EACH ROW EXECUTE FUNCTION asset_aenderung_wasserlinie();
 
+-- A13: Beobachtungen/Hash-Checkpoints je vertrauenswürdiger Scannerwurzel, keine Bytes.
+CREATE TABLE IF NOT EXISTS asset_scan_checkpoints (
+  root_key TEXT PRIMARY KEY,
+  stand JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- M4: dauerhafte Retention-Referenzen für A15 und laufende Leser.
+CREATE TABLE IF NOT EXISTS asset_retention_referenzen (
+ ref_key TEXT PRIMARY KEY,
+ asset_id BIGINT NOT NULL REFERENCES asset_files(id) ON DELETE RESTRICT,
+ revision BIGINT NOT NULL CHECK(revision>0),
+ art TEXT NOT NULL CHECK(art IN('ansicht','transfer')),
+ expires_at TIMESTAMPTZ NOT NULL,
+ released_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_asset_retention_asset ON asset_retention_referenzen(asset_id);
 CREATE TABLE IF NOT EXISTS asset_host_checkpoints (
   host_id TEXT NOT NULL,
   project TEXT NOT NULL,
@@ -2652,9 +2673,12 @@ ${HINWEIS_SCHEMA_SQL}
 
 -- P20-T14/R2.1: generische Jobs/Leases; additiv, keine code_chunks-Ausführung.
 ${WORK_JOBS_SCHEMA_SQL}
+${COMPUTE_ADMISSION_SCHEMA_SQL}
+${COMPUTE_CONTROL_SCHEMA_SQL}
 ${TOOL_CONTAINER_SCHEMA_SQL}
 -- P18-T13/RV3: nach A2 und P20, keine Änderung bestehender Tabellen.
 ${REVERSE_SCHEMA_SQL}
+${REVERSE_PIPELINE_SCHEMA_SQL}
 
 -- P13-T24/A6: resumierbare Uploadteile, Prepared-Owner und Recoverymetadaten.
 ${ASSET_UPLOAD_SCHEMA_SQL}
@@ -2662,6 +2686,7 @@ ${ASSET_UPLOAD_SCHEMA_SQL}
 -- P13-T25/A7: konsistente Seiten, Pfadmutationen und historische Deltametadaten.
 ${ASSET_MANIFEST_SCHEMA_SQL}
 ${ASSET_INSPEKTIONS_SCHEMA_SQL}
+${ASSET_KONFLIKT_SCHEMA_SQL}
 
 
 
@@ -3048,6 +3073,7 @@ CREATE INDEX IF NOT EXISTS idx_free_pool_events_zeit
   ON free_pool_events(at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_free_pool_events_ref
   ON free_pool_events(ref, at DESC) WHERE ref IS NOT NULL;
+${PROJECT_RESTORE_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

@@ -7,7 +7,13 @@
 
 export { registriereHinweisQuelle, baueHinweisKontext, haengeAusloeserHinweiseAn, haengeAusloeserTextHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from './services/ausloeser-hinweise.js';
 export type { HinweisKontext, AusloeserHinweis, HinweisQuelle, HinweisOptionen, HinweisMetrik } from './services/ausloeser-hinweise.js';
+export {AssetKonfliktKern,holeAssetKonflikt} from './services/asset-konflikte.js';
+export {ASSET_KONFLIKT_SCHEMA_SQL} from './db/asset-konflikt-schema.js';
+export {assetKonfliktHinweisQuelle,initialisiereAssetKonfliktHinweise} from './services/asset-konflikt-hinweise.js';
 
+export {ReverseEingang,reverseEingang} from './services/reverse-eingang.js';
+export type {ReverseFundDatei,ReverseGruppenDatei,ReverseMediumVorschlag,ReverseGruppenvorschlag} from './services/reverse-gruppierung.js';
+export {reverseGruppieren,reverseOrdnerFingerabdruck,reverseArchivMagic} from './services/reverse-gruppierung.js';
 // P18-T19/RV9: eine Reverse-Definition, der Dispatcher läuft serverseitig.
 export { REVERSE_DEFINITION, REVERSE_ACTIONS, REVERSE_FEHLERCODES, REVERSE_NULL_FELDER, REVERSE_AKTIVITAET_DESCRIPTOR, ReverseFehler, baueReverseAntwort, pruefeReversePfad, pruefeReverseBindung, createReverseToolService, fuehreReverseAus, configureReverseRuntime } from './services/reverse-tool.js';
 export type { ReverseAction, ReverseFehlercode, ReverseContainerInfo, ReverseAnalyseAnfrage, ReverseRuntime, ReverseToolDependencies } from './services/reverse-tool.js';
@@ -54,6 +60,15 @@ export type { ComputeNodeExtension, ComputeResources, ComputeMeasurement, Comput
 export {computePolicyAktiv,leseComputePolicy,setzeComputePolicy,leseComputeProjektPolicy,setzeComputeProjektPolicy,ladeComputePolicySnapshot,pruefeComputeZuteilung,embeddingComputePolicy,computePolicyStatus,ComputePolicyError} from './services/compute-policy.js';
 export type {ComputePolicyDb,ComputePolicy,ComputeProjectPolicy,ComputePolicyPatch,ComputeAllocationInput,ComputeAllocationDecision,ComputeRecommendation,ComputePolicySnapshot} from './services/compute-policy.js';
 
+// P20-T16/R4.1: gleicher Heartbeat-/Claim-Kanal für revisionsgefencete Soll-/Istzustände.
+export {parseComputeControlCommand,parseComputeControlObservation} from './vertrag/compute-steuerung.js';
+export type {ComputeControlCommand,ComputeControlObservation,ComputeControlResponse,ComputeControlAction} from './vertrag/compute-steuerung.js';
+export {computeControlEnabled,setComputeNodeControl,computeNodeControlResponse,observeComputeNodeControl} from './services/compute-node-control.js';
+
+// P20-T15/R2.2: ein PG-Admission-Gate und API-only Adapter für PC-Knoten.
+export {computeAdmissionAktiv,computeAdmissionDomain,createComputeAdmission,configureLocalComputeAdmission,configureRemoteComputeAdmission,mitComputeAdmissionKontext,mitComputeAdmission,ComputeAdmissionError} from './services/compute-admission.js';
+export type {AdmissionIdentity,AdmissionInput,AdmissionLease,AdmissionRemote,AdmissionContext,AdmissionPool} from './services/compute-admission.js';
+
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
 export {
@@ -88,9 +103,15 @@ export { setzeDbProzess, verbindeListenClient, getPool, getHintergrundPool, imHi
 export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis } from './db/index.js';
 
 // Typen
+export { ProjectRestoreService,ProjectRestoreError } from './services/project-restore.js';
+export type { RestoreCodeEntry,RestoreJob } from './services/project-restore.js';
 export * from './types/index.js';
 
 // P13-T25/A7: konsistente Manifeste und revisionierte explizite Pfadmutationen.
+export { ShareScanner, shareScanner, registriereShareScannerBereich, starteShareScanner } from './services/share-scanner.js';
+export type { ShareScanWurzel,ShareScanDatei,ShareScannerHandler,ShareScannerStore,ShareScanCheckpoint } from './services/share-scanner.js';
+export { registriereProjektShareScanner } from './services/share-scanner-projekt.js';
+export { AssetRetention,starteAssetRetention } from './services/asset-retention.js';
 export { AssetManifestKern } from './services/asset-manifest.js';
 export type { AssetMutationArt,AssetMutationEingang } from './services/asset-manifest.js';
 export type { AssetPfadOperation } from './services/asset-speicher.js';
@@ -144,6 +165,8 @@ export type { AssetSyncKonfiguration, AssetSyncZaehler, AssetVerifyErgebnis } fr
 export { AssetInspektionsWorker, WORKER_GNADENFRIST_MS } from './asset-intel/worker-runner.js';
 export {assetProjektNutztShare,setzeAssetInspektionsModus} from './services/asset-inspektions-projekte.js';
 export {starteAssetInspektion,AssetInspektionsDienst} from './services/asset-inspektion.js';
+export {starteReversePipeline,ReversePipelineDienst,reverseAnalyseFingerabdruck,maskiereReverseAnalyse} from './services/reverse-pipeline.js';
+export {REVERSE_PIPELINE_SCHEMA_SQL} from './db/reverse-pipeline-schema.js';
 export {starteApiAuftragsLoop} from './services/api-auftrags-loop.js';
 export type { WorkerInspektionsOptionen } from './asset-intel/worker-runner.js';
 export { assetArt, assetEndungen, leseDateiKopf, KOPF_BYTES } from './watcher/binary.js';
@@ -397,6 +420,7 @@ export {
   getDefaultIgnores,
 } from './watcher/index.js';
 export type { FileWatcherOptions, FileWatcherInstance } from './watcher/index.js';
+export {istGesperrt} from './watcher/ignore.js';
 
 // Chunking
 export { chunkText, chunkFile } from './chunking/index.js';
@@ -525,6 +549,7 @@ export {pruefeShellStart,regelVersion}from'./services/shell-start-sicherung.js';
 export type{ShellBestaetigung,ShellSicherungsAntwort}from'./services/shell-start-sicherung.js';
 export type{SicherungsShell}from'./services/shell-sicherung-parser.js';
 export {holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./services/shell-sicherungs-lauf.js';
+export {dbZielAusUrl,gleichesDbZiel} from './services/shell-db-zuordnung.js';
 
 // Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
 export {

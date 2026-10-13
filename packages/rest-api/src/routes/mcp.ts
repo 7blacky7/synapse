@@ -9,7 +9,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 import { getProjectRecordById } from '@synapse/core';
-import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from '@synapse/core';
+import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import {
   // Code-Suche
@@ -315,6 +315,7 @@ export const MCP_TOOLS = [
         phase: { type: 'string', enum: ['initial', 'post-indexing'], description: 'Setup-Phase (fuer complete_setup)' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Onboarding (fuer init)' },
         hostname: { type: 'string', description: 'Optional fuer init: Ziel-Hostname falls mehrere Daemons im selben PG haengen.' },
+        mode: {type:'string',enum:['create','restore_existing'],description:'init: bestehende Tray-Hostbindung via API wiederherstellen; name+hostname, kein path.'},
         template: { type: 'string', description: 'Optional fuer init: Skeleton-Template ("node"|"python"|"blank"). Aktuell informational, Daemon legt nur Basisordner + README an.' },
         job_id: { type: 'string', description: 'Erforderlich fuer init_status: Job-ID aus der ersten init-Antwort.' },
       },
@@ -2265,6 +2266,14 @@ async function handleToolCallKern(
         case 'init': {
           const explicitPath = str(args, 'path');
           const requestedName = str(args, 'name');
+          const restoreMode = str(args, 'mode');
+          if(restoreMode && !['create','restore_existing'].includes(restoreMode))return {success:false,error:'invalid_mode'};
+          if(restoreMode==='restore_existing'){
+            if(explicitPath||!requestedName||!str(args,'hostname'))return {success:false,error:'restore_arguments',message:'restore_existing braucht name+hostname und eine bereits im Tray bestätigte Bindung; kein path.'};
+            const {enqueueProjectInitJob}=await import('@synapse/core');
+            const job=await enqueueProjectInitJob({name:requestedName,hostname:str(args,'hostname'),mode:'restore_existing',requested_by:str(args,'agent_id')});
+            return {success:true,mode:'restore_existing',project:requestedName,job_id:job.id,status:'pending'};
+          }
           const indexDocs = bool(args, 'index_docs') !== false;
           const requestedBy = resolveAgentId(str(args, 'agent_id')) ?? undefined;
 
@@ -4482,7 +4491,7 @@ async function handleToolCallKern(
     // Unbekannte Parameter hat PA-1 oben schon abgewiesen; fuehreAssetIntelAus wirft nie.
     // =================================================================
     case 'asset_intel':
-      return fuehreAssetIntelAus(args);
+      return fuehreAssetIntelAus(args, {apiAusfuehrung:true,agentId:effectiveAgentId??(typeof args.agent_id==='string'?args.agent_id:undefined)});
 
     // =================================================================
     // 23. INTERN — Dispatcher aus core (P14); Freischaltung oben vor PA-1 geprueft.
@@ -6195,6 +6204,7 @@ async function fuehreToolsCallAus(
 }
 
 export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
+  initialisiereAssetKonfliktHinweise();
   /**
    * GET /mcp/sse - SSE Endpoint für MCP
    */

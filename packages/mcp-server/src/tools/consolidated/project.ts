@@ -75,6 +75,7 @@ const projectTool: ConsolidatedTool = {
           type: 'string',
           description: 'Optional fuer init: Ziel-Hostname falls mehrere Daemons im selben PG haengen.',
         },
+        mode: {type:'string',enum:['create','restore_existing'],description:'init: restore_existing liefert ein bereits im Tray an hostname gebundenes Projekt per API; kein Stub/DB/Workspace-Start.'},
         template: {
           type: 'string',
           description: 'Optional fuer init: Skeleton-Template ("node"|"python"|"blank"). Aktuell informational.',
@@ -103,6 +104,14 @@ const projectTool: ConsolidatedTool = {
         case 'init': {
           const explicitPath = str(args, 'path');
           const requestedName = str(args, 'name');
+          const restoreMode = str(args, 'mode');
+          if(restoreMode && !['create','restore_existing'].includes(restoreMode))return {success:false,error:'invalid_mode'};
+          if(restoreMode==='restore_existing'){
+            if(explicitPath||!requestedName||!str(args,'hostname'))return {success:false,error:'restore_arguments',message:'restore_existing braucht name+hostname und eine bereits im Tray bestätigte Bindung; kein path.'};
+            const {enqueueProjectInitJob}=await import('@synapse/core');
+            const job=await enqueueProjectInitJob({name:requestedName,hostname:str(args,'hostname'),mode:'restore_existing',requested_by:str(args,'agent_id')});
+            return {success:true,mode:'restore_existing',project:requestedName,job_id:job.id,status:'pending'};
+          }
           const indexDocs = bool(args, 'index_docs') !== false;
           const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
 

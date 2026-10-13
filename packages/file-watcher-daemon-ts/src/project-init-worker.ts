@@ -41,6 +41,7 @@ import {
 
 import { getWorkspaceRoot, loadConfig, DEFAULT_SYNAPSE_API_URL } from './config.js'
 import type { WatcherManager } from './manager.js'
+import {startProjectRestoreWorker} from './project-restore-worker.js'
 
 const HOSTNAME = os.hostname()
 const DAEMON_ID = `daemon-${HOSTNAME}-${process.pid}`
@@ -56,6 +57,7 @@ export async function startProjectInitWorker(
   let listenClient: any = null
   let safetyInterval: ReturnType<typeof setInterval> | null = null
   let stopped = false
+  const restoreWorker = startProjectRestoreWorker(manager)
 
   listenClient = await verbindeListenClient()
   await listenClient.query('LISTEN project_init_job_created')
@@ -101,6 +103,7 @@ export async function startProjectInitWorker(
 
   const stop = async (): Promise<void> => {
     stopped = true
+    await restoreWorker.stop()
     if (safetyInterval !== null) {
       clearInterval(safetyInterval)
       safetyInterval = null
@@ -234,6 +237,8 @@ export async function initializeProject(
   job: ProjectInitJobRow,
   manager: WatcherManager,
 ): Promise<InitResult> {
+  // Ein Restorejob darf niemals versehentlich die Legacy-Stubs/DB-Vorwärmung auslösen.
+  if (job.mode === 'restore_existing') throw new Error('restore_api_worker_required')
   // Validierung
   if (!isValidProjectName(job.name)) {
     const err = new Error(

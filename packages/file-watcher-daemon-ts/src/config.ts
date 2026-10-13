@@ -15,6 +15,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import type {AssetTransferOptionen} from './asset-transfer-queue.js';
 
 export const DEFAULT_PORT = 7878;
 export const DEFAULT_SYNAPSE_API_URL = 'http://127.0.0.1:3456';
@@ -43,6 +44,12 @@ export function getWorkspaceRoot(): string {
   return path.join(home, 'dev');
 }
 
+/** A8 client preferences can restrict the centrally negotiated direction and budgets. */
+export interface DaemonAssetSyncConfig {
+ aktiv?:boolean;richtung?:'both'|'pc_to_share'|'share_to_pc';
+ chunk_bytes?:number;retry_ms?:number;scan_ms?:number;
+}
+export interface ProjektAssetSyncConfig {richtung?:'both'|'pc_to_share'|'share_to_pc';verwaltet?:boolean;host?:string;optionen?:AssetTransferOptionen;}
 export interface ProjektConfig {
   name: string;
   pfad: string;
@@ -51,9 +58,11 @@ export interface ProjektConfig {
   file_count?: number;
   /** Optional: Timestamp letzter Scan (ms) */
   last_scan_ms?: number;
+  asset_sync?: ProjektAssetSyncConfig;
 }
 
 export interface DaemonConfig {
+  asset_sync?: DaemonAssetSyncConfig;
   port: number;
   synapse_api_url: string;
   /** Optionaler gemeinsamer API-Rueckfall; Quelle ist config.json. */
@@ -159,6 +168,7 @@ function normalizeProjekt(p: Partial<ProjektConfig>): ProjektConfig {
     enabled: p.enabled !== false,
     file_count: typeof p.file_count === 'number' ? p.file_count : undefined,
     last_scan_ms: typeof p.last_scan_ms === 'number' ? p.last_scan_ms : undefined,
+    asset_sync: normalizeAssetSync(p.asset_sync),
   };
 }
 
@@ -189,4 +199,16 @@ export function removeProjekt(cfg: DaemonConfig, name: string): boolean {
   const before = cfg.projekte.length;
   cfg.projekte = cfg.projekte.filter((p) => p.name !== name);
   return cfg.projekte.length < before;
+}
+
+
+/** Reject malformed preferences rather than silently enabling an unintended direction. */
+function normalizeAssetSync(p:unknown):ProjektAssetSyncConfig|undefined{
+ if(p===undefined)return undefined;
+ if(!p||typeof p!=='object'||Array.isArray(p))throw new TypeError('asset_sync muss ein Objekt sein.');
+ const a=p as ProjektAssetSyncConfig;
+ if(a.richtung!==undefined&&!['both','pc_to_share','share_to_pc'].includes(a.richtung))throw new TypeError('asset_sync.richtung ungültig.');
+ if(a.verwaltet!==undefined&&typeof a.verwaltet!=='boolean')throw new TypeError('asset_sync.verwaltet ungültig.');
+ return {...(a.richtung?{richtung:a.richtung}:{}),...(a.verwaltet===undefined?{}:{verwaltet:a.verwaltet}),
+  ...(typeof a.host==='string'&&a.host?{host:a.host}:{}),...(a.optionen?{optionen:a.optionen}:{})};
 }

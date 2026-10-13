@@ -41,6 +41,7 @@ import {
   modelPoolRoutes,
   projektDbRoutes,
 } from './routes/index.js';
+import {reverseEingangRoutes} from './routes/reverse-eingang.js';
 import { internDaemonRoutes } from './routes/intern-daemon.js';
 
 /**
@@ -86,6 +87,7 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(statusRoutes);
   await fastify.register(projectRoutes);
   await fastify.register(assetsRoutes);
+  await fastify.register(reverseEingangRoutes);
   await fastify.register(searchRoutes);
   await fastify.register(thoughtsRoutes);
   await fastify.register(memoryRoutes);
@@ -479,9 +481,25 @@ export async function startServer(): Promise<void> {
 
   // Server erstellen und starten
   const server = await createServer();
+  // A13: derselbe periodische Scanner für Projekt-Share und RV5/_direkt.
+  const {registriereProjektShareScanner,starteShareScanner,getAssetKonfiguration}=await import('@synapse/core');
+  const shareCfg=getAssetKonfiguration();
+  if(shareCfg.aktiv||shareCfg.reverse.aktiv){
+    const stopProjektScanner=shareCfg.aktiv?registriereProjektShareScanner():()=>{};
+    const {reverseEingang}=await import('@synapse/core');
+    const stopReverseScanner=shareCfg.reverse.aktiv?reverseEingang().registriereScanner():()=>{};
+    server.addHook('onClose',async()=>{stopReverseScanner();});
+    const shareLoop=starteShareScanner();
+    const {starteAssetRetention}=await import('@synapse/core');
+    const retentionLoop=shareCfg.aktiv?starteAssetRetention():null;
+    server.addHook('onClose',async()=>{await shareLoop.beende();await retentionLoop?.beende();stopProjektScanner();});
+  }
   // A12: leichte dauerhafte PG-Aufträge; ausschließlich bestätigte Share-Revisionen.
   const {starteAssetInspektion}=await import('@synapse/core');
   const assetInspektion=starteAssetInspektion();
+  const {starteReversePipeline}=await import('@synapse/core');
+  const reversePipeline=starteReversePipeline();
+  if(reversePipeline)server.addHook('onClose',async()=>{await reversePipeline.beende();});
   if(assetInspektion)server.addHook('onClose',async()=>{await assetInspektion.beende();});
   // R5.1: eigener opt-in Tool-Lifecycle; alte Workspace/Syntax-Verträge unverändert.
   const {initToolLifecycle,closeToolLifecycle} = await import('./services/tool-lifecycle-runtime.js');

@@ -20,6 +20,7 @@
 import { getPool } from '../db/client.js';
 import { escapeLike, inspiziereAusDb, kappeAntwort, zerlegeSuchanfrage } from './asset-intel-abfragen.js';
 import { normalisiereAssetPfad } from './asset-intel-store.js';
+import {holeAssetKonflikt} from './asset-konflikte.js';
 
 /** Hoechstzahl Asset-Zeilen je Verzeichnis im code_intel-Baum; der Rest wird zur Sammelzeile. */
 export const BAUM_ASSETS_JE_VERZEICHNIS = 50;
@@ -482,7 +483,10 @@ export async function ergaenzeCodeIntelAntwort(action: string | undefined, args:
   try {
     switch (action) {
       case 'file':
-        return await weicheDatei(project, args, a);
+        {const datei=await weicheDatei(project,args,a);
+         const pfad=textArg(args,'file_path')??textArg(args,'path');
+         const konflikt=pfad?await holeAssetKonflikt(project,pfad):null;
+         return konflikt?{...datei,konflikt}:datei;}
       case 'search':
         return await weicheSuche(project, args, a);
       case 'functions':

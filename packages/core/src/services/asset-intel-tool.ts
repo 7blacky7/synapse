@@ -40,11 +40,15 @@ import {
   sucheAssetsBatch,
 } from './asset-intel-abfragen.js';
 import { findeCodeDatei, zaehleCodeDateien } from './asset-weiche.js';
+import {fuehreAssetWiederherstellungAus} from './asset-wiederherstellung.js';
 import { getFileContent } from './code-intel.js';
+import {AssetKonfliktKern,holeAssetKonflikt} from './asset-konflikte.js';
+import {AssetUploadFehler} from './asset-upload.js';
+import {isProjectEnabled} from './project-registry.js';
 
 export const ASSET_INTEL_ACTIONS = [
   'tree', 'inspect', 'objects', 'references', 'used_by', 'missing', 'graph',
-  'roots', 'orphans', 'search', 'search_batch', 'move_preview', 'health',
+  'roots', 'orphans', 'search', 'search_batch', 'move_preview', 'health', 'konflikte', 'konflikt_loesen', 'geloescht', 'wiederherstellen',
 ] as const;
 export type AssetIntelAction = (typeof ASSET_INTEL_ACTIONS)[number];
 
@@ -57,15 +61,17 @@ export const ASSET_INTEL_DEFINITION = {
     'tree=Asset-Baum; inspect=Datei mit Metadaten, Objekten, Verweisen (seitenweise); objects=Objekte einer Art projektweit; ' +
     'references=ausgehende Verweise; used_by=wer verweist auf die Datei; missing=Verweise ins Leere; ' +
     'graph=Abhaengigkeiten (down/up, Zyklen markiert); roots/orphans; search=Pfad, Objektname, Verweisziel + Filter; ' +
-    'move_preview=was bricht beim Verschieben; health=Zustand des Index. ' +
+    'move_preview=was bricht beim Verschieben; health=Zustand des Index; geloescht=Löschliste; wiederherstellen(asset_id,basis_revision,event_id)=neue Share-Revision. ' +
     'Filter where: "<asset_type|kind>.<schluessel><op><wert>", op = != > >= < <= ~, max 5, z. B. image.width>=4096. ' +
-    'Listen tragen total + gekappt.',
+    'Listen tragen total + gekappt. konflikte=offene Share/PC-Konflikte; konflikt_loesen(asset_id,wahl pc|share) über API. Share gewinnt automatisch, PC-Revision bleibt gesichert.',
   inputSchema: {
     type: 'object',
     properties: {
       action: { type: 'string', enum: [...ASSET_INTEL_ACTIONS], description: 'Aktion' },
       project: { type: 'string', description: 'Projekt-Name' },
       agent_id: { type: 'string', description: 'Agent-ID' },
+      asset_id: {type:'string',description:'Asset-ID (konflikt_loesen Pflicht, konflikte Filter)'},
+      wahl: {type:'string',enum:['pc','share'],description:'konflikt_loesen: PC übernehmen oder Share behalten'},
       file_path: { type: 'string', description: 'Projekt-relativer Pfad (inspect, references, used_by, graph, move_preview Pflicht; objects, missing, health optional)' },
       path: { type: 'string', description: 'tree: Verzeichnis-Prefix' },
       new_path: { type: 'string', description: 'move_preview: Zielpfad' },
@@ -84,6 +90,8 @@ export const ASSET_INTEL_DEFINITION = {
       include_name_matches: { type: 'boolean', description: 'used_by: auch Verweise mit gleichem Dateinamen, anderem Pfad' },
       offset: { type: 'number', description: 'Paging (inspect, objects)' },
       limit: { type: 'number', description: 'Max. Eintraege' },
+      basis_revision: {type:'string',description:'Bekannte Revision (wiederherstellen Pflicht)'},
+      event_id: {type:'string',description:'Idempotenz-ID (wiederherstellen Pflicht)'},
     },
     required: ['action', 'project'],
   },
@@ -106,6 +114,10 @@ const PARAMETER_JE_ACTION: Record<AssetIntelAction, string[]> = {
   search_batch: ['queries', 'limit'],
   move_preview: ['file_path', 'new_path'],
   health: ['file_path'],
+  konflikte: ['asset_id','file_path','limit','offset'],
+  konflikt_loesen: ['asset_id','wahl'],
+  geloescht: ['file_path','limit','offset'],
+  wiederherstellen: ['file_path','asset_id','basis_revision','event_id'],
 };
 
 const ERLAUBT = new Set(Object.keys(ASSET_INTEL_DEFINITION.inputSchema.properties));
@@ -133,8 +145,12 @@ function pflicht(args: Record<string, unknown>, name: string, action: string, be
   }
 }
 
-async function fuehreAus(action: AssetIntelAction, project: string, a: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function fuehreAus(action: AssetIntelAction, project: string, a: Record<string, unknown>,api:{apiAusfuehrung?:boolean;agentId?:string}={}): Promise<Record<string, unknown>> {
   switch (action) {
+    case 'geloescht':
+    case 'wiederherstellen':
+      if(!api.apiAusfuehrung)throw new AssetUploadFehler('api_erforderlich',403,'Restoreaktionen laufen ausschließlich über die API.');
+      return fuehreAssetWiederherstellungAus(action,project,{...a,agent_id:api.agentId});
     case 'tree':
       return holeAssetBaum(project, a);
     case 'inspect': {
@@ -177,6 +193,15 @@ async function fuehreAus(action: AssetIntelAction, project: string, a: Record<st
       return movePreview(project, a.file_path, a.new_path);
     case 'health':
       return assetHealth(project, a.file_path);
+    case 'konflikte':
+    case 'konflikt_loesen': {
+      if(!api.apiAusfuehrung)throw new AssetUploadFehler('api_erforderlich',403,'Konfliktaktionen laufen ausschließlich über die API.');
+      if(!await isProjectEnabled(project))throw new AssetUploadFehler('projekt_verboten',403,'Projekt fehlt oder ist nicht freigegeben.');
+      const kern=new AssetKonfliktKern();
+      if(action==='konflikte')return kern.liste(project,{asset_id:a.asset_id as string|undefined,file_path:a.file_path as string|undefined,limit:a.limit as number|undefined,offset:a.offset as number|undefined});
+      pflicht(a,'asset_id',action,'asset_id:"123", wahl:"pc"');pflicht(a,'wahl',action,'asset_id:"123", wahl:"share"');
+      return {asset:await kern.loesen({bereich:'projekt',ziel_ref:project,host_id:'tool:'+String(api.agentId??'')},a.asset_id as string,a.wahl as 'pc'|'share',api.agentId??'')};
+    }
   }
 }
 
@@ -213,7 +238,7 @@ async function umkehrZuCodeIntel(act: AssetIntelAction, project: string, filePat
  * Fuehrt einen asset_intel-Aufruf aus. Wirft nie: jeder Fehler wird zu einer Antwort mit
  * success:false, fehler-Code und Hinweis. Antworten sind hart auf 60.000 Zeichen gekappt.
  */
-export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefined | null): Promise<Record<string, unknown>> {
+export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefined | null,api:{apiAusfuehrung?:boolean;agentId?:string}={}): Promise<Record<string, unknown>> {
   const a: Record<string, unknown> = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   const action = a.action;
   const project = a.project;
@@ -232,7 +257,7 @@ export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefi
   const nichtVerwendet = Object.keys(a).filter(k => !wirksam.has(k) && gesetzt(a[k]));
 
   try {
-    const daten = await fuehreAus(act, project, a);
+    const daten = await fuehreAus(act, project, a,api);
     const antwort: Record<string, unknown> = {
       success: true,
       action: act,
@@ -253,12 +278,17 @@ export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefi
       const h = 'Parameter ohne Wirkung bei ' + act + ': ' + nichtVerwendet.join(', ') + ' (wirksam: ' + PARAMETER_JE_ACTION[act].join(', ') + ').';
       antwort.hinweis = antwort.hinweis ? antwort.hinweis + ' | ' + h : h;
     }
+    if(typeof a.file_path==='string'){
+      const konflikt=await holeAssetKonflikt(project,a.file_path);
+      if(konflikt)antwort.konflikt=konflikt;
+    }
     return kappeAntwort(antwort);
   } catch (e) {
     if (e instanceof AssetIntelFehler && e.code === 'datei_nicht_im_asset_index' && UMKEHR_ACTIONS.has(act)) {
       const umkehr = await umkehrZuCodeIntel(act, project, a.file_path);
       if (umkehr) return umkehr;
     }
+    if(e instanceof AssetUploadFehler)return fehlerAntwort(act,project,e.code,e.message,undefined,e.details);
     if (e instanceof AssetIntelFehler) return fehlerAntwort(act, project, e.code, e.message, e.hinweis, e.details);
     const code = (e as { code?: string }).code;
     if (code === '57014') {

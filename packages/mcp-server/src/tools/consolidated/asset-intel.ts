@@ -14,9 +14,14 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus } from '@synapse/core';
 
 import { ConsolidatedTool } from './types.js';
+import {rufeAssetKonfliktApi} from './asset-konflikt-api.js';
+import {rufeAssetApi} from './asset-api.js';
 
 export const assetIntelTool: ConsolidatedTool = {
   // as const in core macht die Arrays readonly; das MCP-Tool-Schema erwartet veraenderbare Typen.
   definition: ASSET_INTEL_DEFINITION as unknown as Tool,
-  handler: (args) => fuehreAssetIntelAus(args),
+  handler: (args) => args.action==='konflikte'||args.action==='konflikt_loesen'?rufeAssetKonfliktApi(args):fuehreAssetIntelAus(args),
 };
+// M4 ergänzt den fertigen A11/Legacy-Handler, ohne dessen Aktionen zu ersetzen.
+const assetMetadataHandler=assetIntelTool.handler;
+assetIntelTool.handler=args=>['geloescht','wiederherstellen'].includes(String(args.action))?rufeAssetApi(args):assetMetadataHandler(args);
