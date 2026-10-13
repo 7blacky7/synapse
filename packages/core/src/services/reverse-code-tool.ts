@@ -139,7 +139,16 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
   const shortened=new Set<string>();
   while(Buffer.byteLength(JSON.stringify(masked))>budget){
    const arrays=Object.entries(masked).filter(([,v])=>Array.isArray(v)&&v.length).sort(([,x],[,y])=>JSON.stringify(y).length-JSON.stringify(x).length);
-   if(!arrays.length)fail('zu_gross');
+   if(!arrays.length){
+    const key=typeof masked.content==='string'?'content':typeof masked.baum==='string'?'baum':undefined;
+    if(!key||!(masked[key] as string).length)fail('zu_gross');
+    const text=masked[key] as string,excess=Buffer.byteLength(JSON.stringify(masked))-budget;
+    masked[key]=text.slice(0,Math.max(0,text.length-Math.max(1,excess)));masked.gekappt=true;
+    if(key==='content'&&masked.returned_range&&typeof masked.returned_range==='object'){
+     const range=masked.returned_range as Row;range.to=Number(range.from)+String(masked.content).split('\n').length-1;range.eof=false;
+    }
+    continue;
+   }
    (arrays[0][1] as unknown[]).pop();shortened.add(arrays[0][0]);
   }
   if(shortened.size){
