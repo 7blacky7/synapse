@@ -1,12 +1,13 @@
 /** P13-T24/A6: additive Assetfamilie, gleicher API-Zugang, Binärstream statt JSON-ReadAll. */
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
-import {AssetUploadKern,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled} from '@synapse/core';
-import type {AssetUploadSitzung,AssetUploadEingang,AssetUploadKontext,AssetDownloadRange} from '@synapse/core';
+import {AssetUploadKern,AssetManifestKern,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled} from '@synapse/core';
+import type {AssetMutationEingang,AssetUploadSitzung,AssetUploadEingang,AssetUploadKontext,AssetDownloadRange} from '@synapse/core';
 import {validateToken} from '../services/auth.js';
 import type {AuthTokenRow} from '../services/auth.js';
 
 export interface AssetRouteAbhaengigkeiten {
   upload?:AssetUploadKern;
+  manifest?:AssetManifestKern;
   validateToken?:typeof validateToken;
   projektErlaubt?:(projekt:string,principal:AuthTokenRow)=>Promise<boolean>;
 }
@@ -27,10 +28,7 @@ export function assetRange(header:string|undefined):AssetDownloadRange|undefined
     return {offset,groesse:end-offset+1};
   };
 }
-export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyInstance)=>Promise<void>{
-  let upload=o.upload;
-  const kern=()=>upload??=(new AssetUploadKern());
-  async function kontext(request:FastifyRequest,projekt:string,schreiben=true):Promise<AssetUploadKontext>{
+export async function assetRequestKontext(request:FastifyRequest,projekt:string,schreiben=true,o:AssetRouteAbhaengigkeiten={}):Promise<AssetUploadKontext>{
     const token=/^Bearer\s+(.+)$/i.exec(String(request.headers.authorization??''))?.[1]?.trim();
     if(!token)throw new AssetUploadFehler('unauthorized',401,'Bearer-Token fehlt.');
     const principal=await (o.validateToken??validateToken)(token);
@@ -48,10 +46,16 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
     if(!host_id)throw new AssetUploadFehler('host_ungueltig',403,'Daemon-Hostbindung fehlt.');
     return {bereich:'projekt',ziel_ref:projekt,host_id};
   }
+
+export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyInstance)=>Promise<void>{
+  let upload=o.upload,manifestKern=o.manifest;
+  const manifest=()=>manifestKern??=new AssetManifestKern();
+  const kern=()=>upload??=(new AssetUploadKern());
+  const kontext=(request:FastifyRequest,projekt:string,schreiben=true)=>assetRequestKontext(request,projekt,schreiben,o);
   async function run(reply:FastifyReply,fn:()=>Promise<unknown>){
     try{return await fn();}catch(e){
       if(e instanceof AssetUploadFehler)return reply.code(e.httpStatus).send({success:false,error:{code:e.code,message:e.message}});
-      if(e instanceof AssetSpeicherFehler)return reply.code(400).send({success:false,error:{code:e.code,message:e.message}});
+      if(e instanceof AssetSpeicherFehler)return reply.code(['konflikt','hash_falsch'].includes(e.code)?409:400).send({success:false,error:{code:e.code,message:e.message}});
       throw e;
     }
   }
@@ -59,6 +63,20 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
     // Nur dieses gekapselte Plugin nimmt rohe Chunks; bestehende JSONparser bleiben erhalten.
     fastify.addContentTypeParser('application/octet-stream',(request,payload,done)=>done(null,payload));
     const base='/api/projects/:projekt/assets';
+    fastify.get<{Params:{projekt:string};Querystring:{cursor?:string;limit?:string}}>(base+'/manifest',async(req,reply)=>run(reply,async()=>{
+      const c=await kontext(req,req.params.projekt,false);
+      return {success:true,...await manifest().manifest(c,{cursor:req.query.cursor,limit:req.query.limit===undefined?undefined:Number(req.query.limit)})};
+    }));
+    fastify.get<{Params:{projekt:string};Querystring:{cursor?:string;limit?:string}}>(base+'/aenderungen',async(req,reply)=>run(reply,async()=>{
+      const c=await kontext(req,req.params.projekt,false);
+      return {success:true,...await manifest().aenderungen(c,{cursor:req.query.cursor,limit:req.query.limit===undefined?undefined:Number(req.query.limit)})};
+    }));
+    for(const art of ['verschieben','loeschen','wiederherstellen'] as const){
+      fastify.post<{Params:{projekt:string};Body:AssetMutationEingang}>(base+'/'+art,async(req,reply)=>run(reply,async()=>{
+        const c=await kontext(req,req.params.projekt);return {success:true,asset:await manifest().mutieren(c,art,req.body)};
+      }));
+    }
+
     fastify.post<{Params:{projekt:string};Body:AssetUploadEingang}>(base+'/uploads',async(req,reply)=>run(reply,async()=>{
       const c=await kontext(req,req.params.projekt);
       if(!req.body||typeof req.body!=='object'||Array.isArray(req.body))throw new AssetUploadFehler('eingang_ungueltig',400,'Uploadmetadaten fehlen.');
@@ -90,4 +108,38 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
     }));
   };
 }
+
+/** A7 metadata events; old bodies never enter this dispatcher. No scan list implies deletion. */
+export interface AssetFsEingang {
+ projekt:string;typ:string;pfad?:string;event_id?:string;contractVersion?:number;host?:string;
+ logischer_pfad?:string;alter_pfad?:string;sha256?:string;groesse?:number;erwartete_assetrevision?:string;
+ upload_id?:string;asset_id?:string;asset?:boolean;
+}
+let fsUpload:AssetUploadKern|undefined,fsManifest:AssetManifestKern|undefined;
+export function istAssetFsEreignis(e:AssetFsEingang){
+ return Boolean(e&&(e.asset===true||e.asset_id!==undefined||e.upload_id!==undefined||e.erwartete_assetrevision!==undefined
+   ||typeof e.logischer_pfad==='string'&&assetArt(e.logischer_pfad)==='nur_asset'
+   ||e.contractVersion!==undefined&&e.event_id!==undefined&&typeof e.pfad==='string'&&assetArt(e.pfad)==='nur_asset'));
+}
+export async function dispatchAssetFsEreignis(req:FastifyRequest,e:AssetFsEingang,o:AssetRouteAbhaengigkeiten={}){
+ const c=await assetRequestKontext(req,e.projekt,true,o);
+ if(e.contractVersion!==1||typeof e.event_id!=='string'||!e.event_id||e.event_id.length>200)
+   throw new AssetUploadFehler('vertrag_erforderlich',400,'Assetereignis braucht Vertrag1 und Event-ID.');
+ if(e.host!==undefined&&e.host!==c.host_id)throw new AssetUploadFehler('host_ungueltig',403,'Hostfeld weicht vom authentifizierten Daemon ab.');
+ const logical=normalisiereSpeicherPfad(e.logischer_pfad??e.pfad??'');
+ const mutation=o.manifest??(fsManifest??=new AssetManifestKern());
+ if(['deleted','unlink','verschoben','moved','wiederhergestellt','restored'].includes(e.typ)){
+   const art=['deleted','unlink'].includes(e.typ)?'loeschen':['verschoben','moved'].includes(e.typ)?'verschieben':'wiederherstellen';
+   const id=e.asset_id??await mutation.assetNachPfad(c,art==='verschieben'?e.alter_pfad??'':logical,e.event_id);
+   return {success:true,asset:await mutation.mutieren(c,art,{event_id:e.event_id,asset_id:id,basis_revision:e.erwartete_assetrevision!,
+     ...(art==='verschieben'?{alter_pfad:e.alter_pfad,pfad:logical}:{})})};
+ }
+ if(!['added','add','modified','change'].includes(e.typ))throw new AssetUploadFehler('eingang_ungueltig',400,'Unbekannter Assetereignistyp.');
+ if(!e.upload_id)throw new AssetUploadFehler('upload_erforderlich',409,'Neue Bytes müssen über eine bestätigte Uploadsitzung übertragen werden.');
+ const upload=o.upload??(fsUpload??=new AssetUploadKern()),s=await upload.status(c,e.upload_id);
+ if(s.logischer_pfad!==logical||e.sha256!==s.sha256||e.groesse!==s.groesse||e.erwartete_assetrevision!==s.auftrag.basis_revision)
+   throw new AssetUploadFehler('revision_konflikt',409,'Ereignis passt nicht zu bestätigtem Uploadauftrag.');
+ return {success:true,upload:assetSitzungAntwort(await upload.finalisieren(c,e.upload_id))};
+}
+
 export const assetsRoutes=createAssetsRoutes();
