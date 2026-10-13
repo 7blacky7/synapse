@@ -24,11 +24,13 @@ export function assetKonfliktHinweisQuelle(db:Pick<AssetUploadDb,'query'>=getPoo
   const stamp=(v:unknown)=>(v instanceof Date?v.toISOString():String(v)).slice(0,16);
   return r.rows.map(x=>{
    const args={project:c.projekt,asset_id:String(x.asset_id),wahl:'pc'};
-   const call='asset_intel(action:"konflikt_loesen", project:'+JSON.stringify(c.projekt)+', asset_id:'+JSON.stringify(String(x.asset_id))+', wahl:"pc")';
+   const call='asset_intel({action:"konflikt_loesen",project:'+JSON.stringify(c.projekt)+',asset_id:'+JSON.stringify(String(x.asset_id))+',wahl:"pc"})';
+   const file=String(x.file_path);
+   const shortFile=file.length>24?'…'+file.slice(-23):file;
    return {hinweis_id:String(x.id)+':'+String(x.pc_revision),modus:'bis_erledigt' as const,spezifitaet:paths.length?100:50,
     // RV19 bounds text to 240 chars: keep the complete executable call ahead of metadata.
-    text:call+'; User fragen: PC übernehmen? Share '+stamp(x.share_time)+'/'+String(x.share_size)+'B/'+String(x.share_hash).slice(0,8)+
-     ', PC '+stamp(x.pc_time)+'/'+String(x.pc_size)+'B/'+String(x.pc_hash).slice(0,8)+' '+String(x.file_path),
+    text:call+'; User fragen: PC? '+shortFile+' Share '+stamp(x.share_time).slice(5)+'/'+String(x.share_size)+'B/'+String(x.share_hash).slice(0,6)+
+     ' PC '+stamp(x.pc_time).slice(5)+'/'+String(x.pc_size)+'B/'+String(x.pc_hash).slice(0,6),
     kurztext:call+'; User fragen: PC übernehmen? Konflikt offen, PC gesichert. '+String(x.file_path),
     folgeaktion:{tool:'asset_intel',aktion:'konflikt_loesen',argumente:args}};
   });
