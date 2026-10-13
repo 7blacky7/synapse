@@ -1,6 +1,6 @@
 # P20 R2.2 – gemeinsame GPU-Admission
 
-Die neue Zulassung ergänzt die vorhandenen Chunk- und Work-Job-Claims. Standard ist aus: `SYNAPSE_COMPUTE_ADMISSION=1` aktiviert die serverseitige Zulassung. Bestehende Antworten ohne das neue Feature behalten ihren Vertrag.
+Die neue Zulassung ergänzt die vorhandenen Chunk- und Work-Job-Claims. Standard ist aus: `SYNAPSE_COMPUTE_ADMISSION=1` aktiviert die serverseitige Zulassung. Dafür muss der bestehende R1.2-/Projektpolicyvertrag mit `SYNAPSE_COMPUTE_POLICY_ENABLED=1` aktiv sein; andernfalls verweigert die neue GPUadmission die Zulassung. Bestehende Antworten ohne das neue Feature behalten ihren Vertrag.
 
 Drei Größen bleiben getrennt:
 
@@ -26,7 +26,7 @@ Drei Größen bleiben getrennt:
 
 Modellnamen werden kanonisiert. Widersprüchliche Budgets für Modell und `:latest` werden abgewiesen. Die erste deklarierte Policy wird unter Host-/Gerätelock in `compute_admission_domains` gebunden. Weitere Prozesse müssen denselben kanonischen Policyhash liefern. Abweichungen ergeben `admission_domain_config_conflict`, statt mit unterschiedlichen Caps zu rechnen.
 
-Zusätzlich begrenzt aktuelle `ComputeResources`-Telemetrie das Budget: GPU-Gesamt/frei müssen `measured`, `device` und anhand der PG-Zeit `fresh` sein. `SYNAPSE_COMPUTE_TELEMETRY_MAX_AGE_MS` legt das zulässige Alter fest. Nur beobachtete eigene Modellresidenz erhält einen Kredit. Fehlende/stale Werte bleiben unbekannt. GPU-Work-Job-Reservationen einer Hostdomain werden konservativ berücksichtigt, auch nach verlorener Lease. Neue GPU-Grants müssen die gebundene Hostdomain oder den physischen Geräteschlüssel liefern; ein beliebiger Namespace ist keine Geräteauthority. Noch nicht zuordenbare Legacy-GPUarbeit verhindert eine neue Ressourcenzusage.
+Zusätzlich begrenzt aktuelle `ComputeResources`-Telemetrie das Budget: GPU-Gesamt/frei müssen `measured`, `device` und anhand der PG-Zeit `fresh` sein. `SYNAPSE_COMPUTE_TELEMETRY_MAX_AGE_MS` legt das zulässige Alter fest. Nur beobachtete eigene Modellresidenz erhält einen Kredit, höchstens bis zur für dasselbe Modell tatsächlich belasteten oder im aktuellen Grant geplanten Reservation. Fehlende/stale Werte bleiben unbekannt. GPU-Work-Job-Reservationen einer Hostdomain werden konservativ berücksichtigt, auch nach verlorener Lease. Neue GPU-Grants müssen die gebundene Hostdomain oder den physischen Geräteschlüssel liefern; ein beliebiger Namespace ist keine Geräteauthority. Noch nicht zuordenbare Legacy-GPUarbeit verhindert eine neue Ressourcenzusage.
 
 Der API-Server erhält seine lokale private Identität erst nach erfolgreichem `ServerExecutor.start()`. Backendadresse und Modell des tatsächlichen Requests müssen zum registrierten Knoten passen. Die konfigurierte Server-Gerätewahl muss zur Admission-Gerätewahl passen. Prozesse ohne diese Anbindung werden gesperrt und nach Herkunft als `uncovered` sichtbar.
 

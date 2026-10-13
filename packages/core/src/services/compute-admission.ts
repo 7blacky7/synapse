@@ -2,7 +2,7 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {getPool} from '../db/client.js';
-import {embeddingComputePolicy} from './compute-policy.js';
+import {embeddingComputePolicy,computePolicyAktiv} from './compute-policy.js';
 import {computeResourceBinding,computePhysicalDeviceKey,computeResourceSnapshot,type ComputeResources} from '../vertrag/compute-ressourcen.js';
 export type AdmissionPriority='interaktiv'|'hintergrund'|'nachzug';
 export interface AdmissionDb {query<T extends Record<string,unknown>=Record<string,unknown>>(sql:string,values?:unknown[]):Promise<{rows:T[];rowCount?:number|null}>}
@@ -29,6 +29,7 @@ const normalModel=(s:string)=>s.includes(':')?s:s+':latest';
 const integer=(n:unknown,min:number)=>{if(typeof n!=='number'||!Number.isSafeInteger(n)||n<min||n>2147483647)fail('admission_config_invalid');return n as number;};
 export function computeAdmissionDomain(nodeId:string):{host:string;device:string;key:string;config:DomainConfig}|null {
  if(process.env.SYNAPSE_COMPUTE_ADMISSION!=='1')return null;
+ if(!computePolicyAktiv())fail('admission_policy_required');
  const binding=computeResourceBinding(nodeId);if(!binding)fail('admission_binding_missing');
  const devices=JSON.parse(process.env.SYNAPSE_COMPUTE_ADMISSION_DEVICES??'{}') as Record<string,string>;
  const device=devices[nodeId]??(binding.deviceIds.length===1?binding.deviceIds[0]:undefined);
@@ -57,6 +58,10 @@ function domainPolicy(d:NonNullable<ReturnType<typeof computeAdmissionDomain>>){
 export async function lockComputeAdmissionDomain(db:AdmissionDb,nodeId:string):Promise<ReturnType<typeof computeAdmissionDomain>>{
  if(process.env.SYNAPSE_COMPUTE_ADMISSION!=='1')return null;
  const binding=computeResourceBinding(nodeId);
+ if(!binding){
+  const node=(await db.query<{node_kind:string}>('SELECT node_kind FROM embedding_knoten WHERE node_id=$1',[nodeId])).rows[0];
+  if(node?.node_kind==='cpu')return null; // bestehende CPU-Authority bleibt beim Work-Hostlock
+ }
  if(binding?.deviceIds.length===0){
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['work-domain:'+binding.hostResourceDomain]);return null;
  }
@@ -89,8 +94,8 @@ async function used(db:AdmissionDb,d:NonNullable<ReturnType<typeof computeAdmiss
  return {http:http.rows[0].n,exclusive:http.rows[0].exclusive,models:models.rows[0].mb,jobs:jobs.rows[0].n,jobMb:jobs.rows[0].mb};
 }
 /** Fehlende/stale Telemetrie bleibt unknown, niemals erfundene freie Kapazität. */
-async function physicalBudget(db:AdmissionDb,nodeId:string,d:NonNullable<ReturnType<typeof computeAdmissionDomain>>):Promise<number|null>{
- const n=(await db.query<{ressourcen:ComputeResources|null;now:Date}>('SELECT ressourcen,clock_timestamp() AS now FROM embedding_knoten WHERE node_id=$1 FOR SHARE',[nodeId])).rows[0];
+async function physicalBudget(db:AdmissionDb,nodeId:string,d:NonNullable<ReturnType<typeof computeAdmissionDomain>>,prospective?:{model:string;mb:number}):Promise<number|null>{
+ const n=(await db.query<{ressourcen:ComputeResources|null;modell:string|null;now:Date}>('SELECT ressourcen,modell,clock_timestamp() AS now FROM embedding_knoten WHERE node_id=$1 FOR SHARE',[nodeId])).rows[0];
  let gpu:ComputeResources['gpus'][number]|undefined;
  try{gpu=n?computeResourceSnapshot(n.ressourcen,new Date(n.now).getTime())?.gpus.find(g=>g.deviceId===d.device):undefined;}catch{return null;}
  if(!gpu)return null;
@@ -98,8 +103,12 @@ async function physicalBudget(db:AdmissionDb,nodeId:string,d:NonNullable<ReturnT
  const measured=(m:typeof free|undefined)=>!!m&&m.freshness==='fresh'&&m.quality==='measured'&&m.scope==='device'&&m.value!==null;
  if(!measured(free)||!measured(total)||free.value!>total.value!)return null;
  // Nur beobachtetes Eigenmodell zurückrechnen; unbekannte/fremde Residency erhält keinen Kredit.
- const credit=measured(own)?own.value!:0;
- if(credit>total.value!||free.value!+credit>total.value!)return null;
+ const name=typeof n?.modell==='string'?normalModel(n.modell):'';
+ const charged=(await db.query<{mb:number}>('SELECT reserved_mb AS mb FROM compute_admission_models WHERE resource_domain=$1 AND model=$2',[d.key,name])).rows[0]?.mb??0;
+ const planned=prospective?.model===name?prospective.mb:0;
+ const ownMb=measured(own)?own.value!:0;
+ if(ownMb>total.value!||free.value!+ownMb>total.value!)return null;
+ const credit=Math.min(ownMb,Math.max(charged,planned));
  return Math.min(d.config.vramMb,free.value!+credit);
 }
 /** Unter bereits gehaltenem Domainlock, unmittelbar vor dem Work-Job-Claim. */
@@ -130,7 +139,7 @@ export function createComputeAdmission(pool:AdmissionPool=getPool() as unknown a
   const d=computeAdmissionDomain(input.nodeId);if(!d)return null;
   if(!uuid(input.id)||!input.bootId||!input.authHash||!['interaktiv','hintergrund','nachzug'].includes(input.priority)
    ||!/^[a-zA-Z0-9_.:-]{1,100}$/.test(input.source)||typeof input.model!=='string'||!input.model||input.model.length>255)fail('admission_input_invalid');
-  input={...input,model:normalModel(input.model)};
+  input={...input,id:input.id.toLowerCase(),model:normalModel(input.model)};
   if(input.source==='unbound'){await metric(pool,d.key,'unbound','uncovered');fail('admission_producer_unbound');}
   const wait=input.maxWaitMs??d.config.maxWaitMs;integer(wait,0);if(wait>d.config.maxWaitMs)fail('admission_wait_invalid');
   if(!Object.hasOwn(d.config.modelMb,input.model))fail('admission_model_budget_missing');
@@ -173,8 +182,9 @@ export function createComputeAdmission(pool:AdmissionPool=getPool() as unknown a
    const resident=await db.query('SELECT model FROM compute_admission_models WHERE resource_domain=$1 AND model=$2',[d.key,input.model]);
    const required=resident.rows.length?0:d.config.modelMb[input.model];
    const first=(await db.query<{id:string}>(`SELECT id FROM compute_admission_requests WHERE resource_domain=$1 AND state='waiting' AND deadline_at>=clock_timestamp()
-    ORDER BY GREATEST(0,(CASE priority WHEN 'interaktiv' THEN 0 WHEN 'hintergrund' THEN 1 ELSE 2 END)-FLOOR(EXTRACT(EPOCH FROM(clock_timestamp()-queued_at))*1000/$2)),queued_at,id LIMIT 1`,[d.key,d.config.agingMs])).rows[0];
-   const cap=d.config.maxHttp-(input.priority==='interaktiv'?0:d.config.interactiveReserve),budget=await physicalBudget(db,input.nodeId,d);
+     AND (priority='interaktiv' OR $3::boolean)
+    ORDER BY GREATEST(0,(CASE priority WHEN 'interaktiv' THEN 0 WHEN 'hintergrund' THEN 1 ELSE 2 END)-FLOOR(EXTRACT(EPOCH FROM(clock_timestamp()-queued_at))*1000/$2)),queued_at,id LIMIT 1`,[d.key,d.config.agingMs,u.http+u.jobs<d.config.maxHttp-d.config.interactiveReserve])).rows[0];
+   const cap=d.config.maxHttp-(input.priority==='interaktiv'?0:d.config.interactiveReserve),budget=await physicalBudget(db,input.nodeId,d,{model:input.model,mb:required});
    if(own.alive&&first?.id===input.id&&!u.exclusive&&(input.source!=='intern-ollama'||u.http+u.jobs===0)&&u.http+u.jobs<cap&&budget!==null&&u.models+u.jobMb+required<=budget){
     await db.query(`INSERT INTO compute_admission_models(resource_domain,model,reserved_mb) VALUES($1,$2,$3)
      ON CONFLICT(resource_domain,model) DO UPDATE SET revision=compute_admission_models.revision+1,observed_at=clock_timestamp()`,[d.key,input.model,d.config.modelMb[input.model]]);
