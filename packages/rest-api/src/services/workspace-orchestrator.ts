@@ -469,7 +469,6 @@ export class WorkspaceOrchestrator {
     const stream = await probe.start({ hijack: true, stdin: false });
     const stdout = new PassThrough(), stderr = new PassThrough();
     const chunks: Buffer[]=[]; let bytes=0;
-    this.docker.modem.demuxStream(stream, stdout, stderr);
     return new Promise((resolve,reject)=>{
       let done=false;
       const finish=(err?:Error)=>{
@@ -488,7 +487,12 @@ export class WorkspaceOrchestrator {
         chunks.push(Buffer.from(chunk));
       });
       stderr.resume();
-      stdout.once('end',()=>finish());stream.once('error',()=>finish(Error('workspace_lage_helfer_nicht_verfuegbar')));
+      // docker-modem schreibt in stdout, beendet diesen PassThrough aber nicht.
+      // Der Rohstream ist die Abschlussquelle; Listener vor dem Demux setzen.
+      stream.once('end',()=>finish());
+      stream.once('close',()=>{if(!done)finish(Error('workspace_lage_helfer_nicht_verfuegbar'));});
+      stream.once('error',()=>finish(Error('workspace_lage_helfer_nicht_verfuegbar')));
+      this.docker.modem.demuxStream(stream, stdout, stderr);
     });
   }
 
