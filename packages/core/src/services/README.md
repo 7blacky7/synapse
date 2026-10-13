@@ -141,15 +141,27 @@ Der T4-Bestand reicht von `agent-id-resolver.ts` bis `intern-warteschlangen.ts`;
 
 | Datei / Unterordner | Aufgabe |
 |---|---|
-| — | Dieser Abschnitt wird in P19-T5 anhand des Codebestands ergänzt. |
+| [jev-admin.ts](jev-admin.ts), [jev-client.ts](jev-client.ts), [jev-criteria-katalog.ts](jev-criteria-katalog.ts), [jev-criteria.ts](jev-criteria.ts) | Stellen Admin-Aktionen, den Jev-Aufruf und Kriterien für Empfehlungen bereit. |
+| [jev-empfehlung.ts](jev-empfehlung.ts), [jev-entscheidung.ts](jev-entscheidung.ts), [jev-kosten.ts](jev-kosten.ts), [jev-modus-hinweis.ts](jev-modus-hinweis.ts), [jev-optionen.ts](jev-optionen.ts), [jev-schalter.ts](jev-schalter.ts) | Bündeln Planempfehlungen und Rückfrageentscheidungen sowie Kosten, Optionen, Schalter und Modushinweise für Jev. |
+| [kontext-korridor.ts](kontext-korridor.ts), [kontextprofil-admin.ts](kontextprofil-admin.ts) | Berechnen Kontextschwellen und stellen administrative Aktionen für Kontextprofile bereit. |
+| [mcp-json-maske.ts](mcp-json-maske.ts) | Erkennt und maskiert Geheimniswerte in MCP-JSON, URLs und Diff-Texten und stellt Sicht- und Entmaskierungsfunktionen bereit. |
+| [memory.ts](memory.ts) | Verwaltet Memories einschließlich Suche, Embedding-Nachzug, Pfadbezügen und Onboarding-Regeln. |
+| [model-cutoffs.ts](model-cutoffs.ts), [model-registry.ts](model-registry.ts), [models-dev.ts](models-dev.ts) | Lösen Modell-Cutoffs und Providerdaten auf; models-dev.ts liest ergänzende Modelldaten aus dem lokalen Dateisystem. |
+| [neu-einbetten.ts](neu-einbetten.ts), [parser-health.ts](parser-health.ts) | Ordnen erneutes Einbetten ein und koordinieren es; erfassen Parserabdeckung und Parsergesundheit. |
+| [plan-befunde.ts](plan-befunde.ts), [plan-einordnen.ts](plan-einordnen.ts), [plan-hints.ts](plan-hints.ts), [plan-kurz-ids.ts](plan-kurz-ids.ts), [plans.ts](plans.ts), [plan-zuweisung.ts](plan-zuweisung.ts) | Verwalten Planbefunde und -hinweise, Kurz-IDs, Plan- und Taskänderungen sowie Einordnung und Zuweisung von Tasks. |
+| [project-init-queue.ts](project-init-queue.ts) | Stellt eine persistente Warteschlange für Projektinitialisierungsaufträge bereit. |
+| [project-record-ids.ts](project-record-ids.ts), [project-registry.ts](project-registry.ts), [project-setup-status.ts](project-setup-status.ts), [project-status.ts](project-status.ts) | Lösen Projekt-IDs auf und verwalten Registry, Setup-Phase, Projektstatus und Onboarding-Metadaten. |
+| [projekt-db.ts](projekt-db.ts), [projekt-pfad.ts](projekt-pfad.ts) | Prüfen Projekt-DB-Ziele und bilden Projektpfade sowie zulässige Schreibziele ab. |
+| [proposal-ids.ts](proposal-ids.ts), [proposals.ts](proposals.ts) | Lösen Vorschlags-IDs auf und stellen Anlegen, Abrufen, Suchen und Statusänderungen für Vorschläge bereit. |
+| [rollen-pruefung.ts](rollen-pruefung.ts) | Prüft, ob die Herkunft für eine Koordinator- oder User-Aktion berechtigt ist. |
 
 #### Schnittstellen nach außen
 
-Wird in P19-T5 anhand der Exporte und Aufrufer ergänzt.
+Der Service-Barrel [index.ts](index.ts) bündelt die Core-Services. Die Planfunktionen aus [plans.ts](plans.ts) werden unter anderem vom Agententransport verwendet; [proposals.ts](proposals.ts) wird von den MCP- und REST-MCP-Wegen aufgerufen. Jev- und Kontextprofil-Adminfunktionen sind in den Admin-Tools angebunden. [neu-einbetten.ts](neu-einbetten.ts) wird vom internen Core-Werkzeug verwendet.
 
 #### Abhängigkeiten
 
-Wird in P19-T5 anhand der Imports ergänzt.
+Mehrere Dienste speichern oder lesen Daten über den Core-Datenbankzugriff [../db/client.ts](../db/client.ts). Memories, Pläne und Vorschläge greifen außerdem auf Einbettungs- und Qdrant-Funktionen zurück; Projektstatus- und Registry-Dienste verbinden den Datenbankzugriff mit Pfad- und Dateisystemfunktionen. Die Jev-Module teilen sich Client-, Kosten-, Options- und Schalterlogik. Weitere Verbindungen bestehen zu Plan-Kurz-IDs, Wrapperstatus, Rollenprüfung und Einbettungsnachzug. [models-dev.ts](models-dev.ts), [projekt-db.ts](projekt-db.ts) und [projekt-pfad.ts](projekt-pfad.ts) nutzen Node-Dateisystem-, Pfad- oder Kryptografie-Module für ihre jeweiligen lokalen Aufgaben.
 
 #### Siehe auch
 
