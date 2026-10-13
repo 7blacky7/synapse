@@ -318,6 +318,35 @@ Auch `nein` oder `unbekannt` rollen einen bereits erfolgreichen PG-Commit nicht 
 
 Quellen: [Plan, Co-Edit und Commit](file-batch.ts), [Einzelschreibweg und Snapshots](code-write.ts), [FS-Drift](file-fs-drift.ts), [Versionsabruf und Restore](file-versions.ts), [PG→FS-Synchronisation](../watcher/index.ts). Die [Syntax-Prüfer](syntax-pruefer/README.md) erklären ihren Anteil am Schreibtor.
 
+### Shell-Ausführung und Workspaces
+
+![Shell-Ziel, Startentscheidung und Ergebnis](../../../../docs/bilder/shell.svg)
+
+#### Ziel und Startentscheidung
+
+Das Shell-Werkzeug wählt zuerst den Ausführungsort. Im automatischen REST-Pfad führt ein frischer Daemon-Heartbeat zum lokalen Rechner, andernfalls zum Workspace-Container. Ein ausdrücklich gewähltes Ziel und die Containeroption gehen dieser Auswahl vor. Die Antwort nennt das tatsächliche Ziel mit `executed_via`. Lokal reiht die [REST-MCP-Route](../../../rest-api/src/routes/mcp.ts) den Auftrag in die PostgreSQL-[Shell-Queue](shell-queue.ts) ein; der lokale stdio-MCP-Pfad kann [execShellCommand](shell-exec.ts) unmittelbar aufrufen. Beide verwenden dieselbe Startprüfung. Die [Workspace-Dokumentation](../../../rest-api/src/services/README.md) beschreibt den getrennten Container-Lebenszyklus.
+
+**Der Benutzerbefehl startet erst nach der Entscheidung.** [shell-lage.ts](shell-lage.ts) zerlegt den Text nach Shell-Art und verbindet ihn mit dem tatsächlichen Arbeitsverzeichnis, Variablen, kanonischen Pfaden, Symlinks und Prozessinformationen des Zielrechners. Für erkannte Inline-Skripte liefert die begrenzte statische Analyse zusätzlich Operations- und Zielfakten. Die Lage-Probe liest diese Informationen; sie führt den Benutzerbefehl nicht zur Probe aus. Nicht auflösbare Variablen, dynamische Ausdrücke oder Parsergrenzen bleiben als Unsicherheit sichtbar. Ein vorbereiteter Container und interne Probeprozesse können zu diesem Zeitpunkt bereits existieren.
+
+[shell-sicherungs-lauf.ts](shell-sicherungs-lauf.ts) verbindet den ausgelieferten Regelgrundstock mit dem gepflegten Katalog aus PostgreSQL; gepflegte gleichnamige Einträge bleiben maßgeblich. [pruefeShellStart](shell-start-sicherung.ts) bewertet die Text- und Lagefakten gegen diesen Katalog und den Schutz eigener Prozesse. Erst danach darf `spawn` beziehungsweise der Docker-Exec für den Benutzerbefehl folgen.
+
+| Stufe | Wirkung |
+|---|---|
+| `laeuft` | Der Befehl darf starten. |
+| `hinweis` | Der Befehl darf starten; die Antwort erklärt die erkannte Lage. |
+| `anleitung` | Der Befehl bleibt stehen; die Antwort nennt Risiko, Lage und einen sicheren Klärungsschritt. |
+| `sperre` | Der Befehl bleibt stehen; diese Stufe ist nicht übergehbar. |
+
+Eine Bestätigung für einen angehaltenen Befehl benötigt eine berechtigte Koordinator-/User-Rolle und einen begründenden Text. Sie bindet sich an den Hash von Projekt und Befehl, den Lage-Hash und die aktuelle Regelversion. Ändert sich einer dieser Werte, ist die Bestätigung veraltet; eine unberechtigte Rolle reicht auch mit passenden Hashes nicht aus. Eine `sperre` bleibt selbst bei berechtigter Bestätigung bestehen. Die Entscheidung enthält Auditdaten; Queue-Jobs werden damit annotiert, direkte Läufe erhalten bei einer Sicherungsantwort oder Bestätigung einen Sicherungs-Job.
+
+#### Ausgabe, Protokoll und Laufzeit
+
+Die [Job-Umgebung](shell-job-umgebung.ts) entfernt Daemon-Zugangsdaten und setzt den Datenbankkontext des Projekts ausdrücklich. Die [Maskierung](shell-maske.ts) verarbeitet bekannte vertrauliche Werte und erkannte Geheimnisformen. Lokal schützt der [Ausgabepuffer](shell-ausgabe-puffer.ts) auch über Chunk-Grenzen hinweg, bevor Text im Stream-Log landet. Shell-Antworten sowie Ergebnis- und Sicherungsdaten vor PostgreSQL-Persistenz werden ebenfalls maskiert. Eine begründete Anzeigeausnahme ist rollenbeschränkt und wird auditiert; sie schaltet die maskierte Persistenz nicht ab. Diese Grenze betrifft die Shell-Ausgabe und ihre Synapse-Protokolle, nicht beliebige Dateien oder Logs, die das gestartete Programm selbst erzeugt.
+
+Die Queue unterscheidet `pending`, `running` und die Endzustände `done`, `failed`, `rejected` oder `timeout`. Eine Job-UUID bezeichnet den Auftrag; die separate `stream_id` bezeichnet dessen lokalen Ausgabelog. Der lokale Aufruf kehrt regulär nach 20 Sekunden mit `running_background` zurück, während der gespeicherte Job weiter `running` ist. Auch eine neue Channel-Nachricht beendet nur das Warten und meldet `unterbrochen_durch`; sie beendet nicht den Prozess. Erst ein ausdrücklicher Abbruch oder die harte Laufzeitgrenze von drei Stunden löst die Prozessbeendigung aus.
+
+Der Workspace-Pfad liefert stdout/stderr synchron zurück und bietet nicht dieselbe fortsetzbare lokale Queue-/Stream-Semantik. Bei einem Workspace-Timeout werden Warten und Stream beendet. Der Orchestrator sendet dabei kein eigenes Kill-Signal an den Exec-Prozess; aus diesem Timeout allein lässt sich deshalb keine sichere Prozessbeendigung ableiten. Zielauswahl, Startprüfung und Laufzeitende sind drei getrennte Entscheidungen.
+
 ## Schnittstellen nach außen
 
 Die öffentlichen Paket-Exports werden in [`../index.ts`](../index.ts) und die Service-Exports in [`index.ts`](index.ts) gebündelt. Die abschnittsbezogenen Schnittstellen stehen jeweils bei Teil A, B und C.
