@@ -48,6 +48,9 @@ import {
 import { embed, type EmbedOptions } from '../embeddings/index.js';
 import type { NachzugPunkt, NachzugQuelle } from './embed-nachzug.js';
 import { getPool } from '../db/client.js';
+import { leseGeschuetztenHauptbranch } from './hinweis-drossel.js';
+import { pruefeGitBranch } from './git-branch.js';
+export { pruefeGitBranch } from './git-branch.js';
 import {
   planNummer, taskNummer, planKurzId, taskKurzId, waehleAktiven, ergaenzeTaskKurzIds,
 } from './plan-kurz-ids.js';
@@ -97,24 +100,6 @@ export function pruefePrioritaet(x: unknown): PlanPrioritaet | undefined {
     throw new Error(`Ungueltige Plan-Prioritaet "${String(x)}" — erlaubt: ${PLAN_PRIORITAETEN.join(' | ')} (Parameter plan_prioritaet).`);
   }
   return s as PlanPrioritaet;
-}
-
-/** Entspricht git check-ref-format --branch fuer normale Ref-Namen; main/master sind keine Commit-Ziele. */
-export function pruefeGitBranch(x: unknown): string {
-  if (typeof x !== 'string' || x.length === 0 || x !== x.trim()) {
-    throw new Error('Ungueltiger git_branch: erwartet einen Git-Branchnamen.');
-  }
-  const teile = x.split('/');
-  const ungueltigesZeichen = [...x].some((zeichen) => {
-    const code = zeichen.charCodeAt(0);
-    return code <= 32 || code === 127 || ['~', '^', ':', '?', '*', '[', '\\'].includes(zeichen);
-  });
-  if (x === 'main' || x === 'master' || x.startsWith('-') || x.startsWith('/') || x.endsWith('/') ||
-      x.endsWith('.') || x.includes('..') || x.includes('@{') || x.includes('//') || ungueltigesZeichen ||
-      teile.some((teil) => teil.startsWith('.') || teil.endsWith('.lock'))) {
-    throw new Error('Ungueltiger git_branch "' + x + '"; Git-Branchnamen muessen git check-ref-format entsprechen und duerfen main/master nicht als Ziel verwenden.');
-  }
-  return x;
 }
 
 const GIT_BRANCH_HINT_AKTUELL = 'Kein git_branch gesetzt; verwendet wird der aktuelle Arbeitsbranch.';
@@ -761,7 +746,7 @@ export async function createPlan(
   optionen: { aktiv?: boolean; architecture?: string; prioritaet?: string; git_branch?: string } = {},
 ): Promise<ProjectPlan> {
   const prioritaet = pruefePrioritaet(optionen.prioritaet) ?? 'mittel'; // ungueltig -> Error, nichts geschrieben
-  const gitBranch = optionen.git_branch === undefined ? undefined : pruefeGitBranch(optionen.git_branch);
+  const gitBranch = optionen.git_branch === undefined ? undefined : pruefeGitBranch(optionen.git_branch, await leseGeschuetztenHauptbranch(project));
   const alle = await lesePlaene(project);
   const alleMitKurz = alle.every((z) => planNummer(z.kurz_id) !== null);
   const maxP = alle.reduce((m, z) => Math.max(m, planNummer(z.kurz_id) ?? 0), 0);
@@ -815,7 +800,7 @@ export async function updatePlan(
   planRef?: string | null,
 ): Promise<ProjectPlan | null> {
   const prioritaet = pruefePrioritaet(updates.prioritaet); // ungueltig -> Error, nichts geschrieben
-  const gitBranch = updates.git_branch === undefined ? undefined : pruefeGitBranch(updates.git_branch);
+  const gitBranch = updates.git_branch === undefined ? undefined : pruefeGitBranch(updates.git_branch, await leseGeschuetztenHauptbranch(project));
   const alle = await lesePlaene(project);
   if (alle.length === 0) {
     console.error(`[Synapse] Plan-Upsert: lege neuen Plan an fuer Projekt "${project}"`);
@@ -857,7 +842,7 @@ export async function addTask(
   planRef?: string | null,
   gitBranch?: string,
 ): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
-  if (gitBranch !== undefined) pruefeGitBranch(gitBranch);
+  if (gitBranch !== undefined) pruefeGitBranch(gitBranch, await leseGeschuetztenHauptbranch(project));
   const alle = await lesePlaene(project);
   const ziel = findePlan(project, alle, planRef);
   if (!ziel) {
@@ -938,7 +923,7 @@ export async function updateTask(
   updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority' | 'git_branch'>>,
   planRef?: string | null,
 ): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
-  if (updates.git_branch !== undefined) pruefeGitBranch(updates.git_branch);
+  if (updates.git_branch !== undefined) pruefeGitBranch(updates.git_branch, await leseGeschuetztenHauptbranch(project));
   const alle = await lesePlaene(project);
   const fund = findeTask(project, alle, taskId, planRef);
   if (!fund) {

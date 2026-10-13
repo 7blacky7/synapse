@@ -304,6 +304,7 @@ export const MCP_TOOLS = [
           description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         hinweise: {type:'boolean',description:'project(hinweise): optionale Hinweise je Projekt gemeinsam an/aus; setzen nur Koordinator/User. Ohne Wert Status.'},
+        geschuetzter_hauptbranch: {type:'string',description:'project(hinweise): geschuetzten Git-Hauptbranch je Projekt setzen; Standard main. Lesen/Setzen nur Koordinator/User, Anzeige in project(status).'},
         path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei action="init" optional — ohne path queued der Job an den Daemon und resolved gegen WORKSPACE_ROOT/name.' },
         erstellen: { type: 'boolean', description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).' },
         name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
@@ -2377,8 +2378,12 @@ async function handleToolCallKern(
           };
         }
         case 'hinweise': {
-          const {projektHinweisOption} = await import('@synapse/core');
+          const {projektHinweisOption,projektHauptbranchOption} = await import('@synapse/core');
           if(args.hinweise !== undefined && typeof args.hinweise !== 'boolean')throw new Error('hinweise muss boolean sein');
+          if(args.geschuetzter_hauptbranch !== undefined) {
+            if(typeof args.geschuetzter_hauptbranch !== 'string')throw new Error('geschuetzter_hauptbranch muss string sein');
+            return projektHauptbranchOption(reqStr(args,'project'),String(effectiveAgentId??args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),args.geschuetzter_hauptbranch);
+          }
           return projektHinweisOption(reqStr(args,'project'),String(effectiveAgentId??args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),args.hinweise as boolean|undefined);
         }
         case 'projekt_db': {
@@ -2473,6 +2478,8 @@ async function handleToolCallKern(
           const registry = await getProjectRegistryRows(projectName);
           const watcherActive = await isDaemonAliveForProject(projectName);
           const setupPhase = await getSetupPhase(projectName);
+          const {projektHauptbranchStatus} = await import('@synapse/core');
+          const projektOptionen = await projektHauptbranchStatus(projectName,String(effectiveAgentId??args.agent_id??process.env.SYNAPSE_AGENT_NAME??''));
           return {
             success: true,
             stats: codeStats,
@@ -2482,6 +2489,7 @@ async function handleToolCallKern(
             watcher_active: watcherActive,
             setup_phase: setupPhase,
             projekt_db: await projektDbFeld(projectName),
+            ...(projektOptionen ? {projekt_optionen:projektOptionen} : {}),
           };
         }
         case 'list': {

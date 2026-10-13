@@ -583,9 +583,11 @@ ALTER TABLE projects ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT T
 CREATE TABLE IF NOT EXISTS hinweis_optionen (
   project TEXT PRIMARY KEY,
   aktiv BOOLEAN NOT NULL DEFAULT TRUE,
+  geschuetzter_hauptbranch TEXT NOT NULL DEFAULT 'main',
   gesetzt_von TEXT,
   gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE hinweis_optionen ADD COLUMN IF NOT EXISTS geschuetzter_hauptbranch TEXT NOT NULL DEFAULT 'main';
 CREATE TABLE IF NOT EXISTS hinweis_gesehen (
   project TEXT NOT NULL,
   agent_id TEXT NOT NULL,

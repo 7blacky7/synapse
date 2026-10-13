@@ -12,7 +12,8 @@ export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-in
 export type { RegelVerzeichnis } from './services/agent-rollen.js';
 // P10-T33: gemeinsame Shell-Maske, auch fuer Lage-/Audit-Daten.
 export {maskiereShellAntwort,maskiereShellDaten,maskiereShellText,ladeShellWerte,mitShellAusgabe,shellSichtUnmaskiert} from './services/shell-maske.js';
-export {claimHinweis,projektHinweisOption} from './services/hinweis-drossel.js';
+export {claimHinweis,projektHinweisOption,projektHauptbranchOption,projektHauptbranchStatus} from './services/hinweis-drossel.js';
+export {pruefeGitBranch,pruefeGitBranchName} from './services/git-branch.js';
 // P10-T51: gemeinsame Tool-Antwort-Huelle (REST + stdio) und Thought-Suchvorschau.
 export { ergaenzeToolHinweise, baueToolErgebnis, kompaktiereToolAntwort, kompaktiereTextErgebnis, toolAntwortKompaktAktiv, TOOL_ANTWORT_NULL_BEHALTEN } from './services/tool-antwort.js';
 export type { ToolErgebnisHuelle, ToolErgebnisOptionen } from './services/tool-antwort.js';

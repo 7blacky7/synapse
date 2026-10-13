@@ -24,16 +24,30 @@ try {
  const alterMs=Number(process.hrtime.bigint()-alterStart)/1e6;
  await pool.query('ALTER TABLE plans ADD COLUMN IF NOT EXISTS git_branch TEXT');
  assert.equal((await pool.query("SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='plans' AND column_name='git_branch'",[schema])).rowCount,1);
+ const branchAlterStart=process.hrtime.bigint();
+ await pool.query("ALTER TABLE hinweis_optionen ADD COLUMN IF NOT EXISTS geschuetzter_hauptbranch TEXT NOT NULL DEFAULT 'main'");
+ const branchAlterMs=Number(process.hrtime.bigint()-branchAlterStart)/1e6;
+ await pool.query("ALTER TABLE hinweis_optionen ADD COLUMN IF NOT EXISTS geschuetzter_hauptbranch TEXT NOT NULL DEFAULT 'main'");
+ assert.equal((await pool.query("SELECT 1 FROM information_schema.columns WHERE table_schema=$1 AND table_name='hinweis_optionen' AND column_name='geschuetzter_hauptbranch'",[schema])).rowCount,1);
  const P=await import('../dist/services/plans.js');P.planIndex.sync=async()=>{};
  assert.equal(typeof P.pruefeGitBranch,'function','RED: Plan-Service muss Git-Branchnamen pruefen');
  for(const name of ['feature/t12','topic/Abc_123','release-2026.10']){
   assert.equal(P.pruefeGitBranch(name),name);
   execFileSync('git',['check-ref-format','--branch',name],{stdio:'ignore'});
  }
- for(const name of ['','-feature','bad..name','bad//name','bad/','.hidden','x/.hidden','x/end.lock','bad name','bad\\name','bad@{name}','main','master']){
+ for(const name of ['','-feature','bad..name','bad//name','bad/','.hidden','x/.hidden','x/end.lock','bad name','bad\\name','bad@{name}','main']){
   assert.throws(()=>P.pruefeGitBranch(name),undefined,name);
-  if(!['main','master'].includes(name))assert.throws(()=>execFileSync('git',['check-ref-format','--branch',name],{stdio:'ignore'}),undefined,name);
+  if(name!=='main')assert.throws(()=>execFileSync('git',['check-ref-format','--branch',name],{stdio:'ignore'}),undefined,name);
  }
+ assert.equal(P.pruefeGitBranch('master'),'master','Standard: nur main ist geschuetzt');
+ assert.equal(P.pruefeGitBranch('main','master'),'main','mit geschuetztem master bleibt main erlaubt');
+ assert.throws(()=>P.pruefeGitBranch('master','master'),/geschuetzt/i);
+ const H=await import('../dist/services/hinweis-drossel.js');
+ assert.equal((await H.projektHauptbranchStatus(project,'koordinator')).geschuetzter_hauptbranch,'main');
+ await assert.rejects(H.projektHauptbranchOption(project,'t14-agent','master'),/Koordinator/);
+ await H.projektHauptbranchOption(project,'koordinator','master');
+ assert.equal((await H.projektHauptbranchStatus(project,'koordinator')).geschuetzter_hauptbranch,'master');
+ await assert.rejects(P.createPlan(project,'Verboten','',[],{git_branch:'master'}),/git_branch/i);
  const plan=await P.createPlan(project,'Core branch','test',[],{git_branch:'feature/plan'});
  const inherited=await P.addTask(project,'erbt','', 'medium',plan.id);
  assert.equal(inherited.git_branch,'feature/plan');
@@ -50,7 +64,7 @@ try {
  const taskOhne=await P.addTask(project,'aktuell','', 'medium',ohne.id);
  assert.equal(taskOhne.git_branch,null);
  assert.match(taskOhne.git_branch_hinweis,/aktuelle Arbeitsbranch/);
- await assert.rejects(P.createPlan(project,'Verboten','',[],{git_branch:'main'}),/git_branch/i);
+ await assert.rejects(P.createPlan(project,'Verboten','',[],{git_branch:'master'}),/git_branch/i);
  await assert.rejects(P.updatePlan(project,{git_branch:'bad..name'},plan.id),/git_branch/i);
  await assert.rejects(P.addTask(project,'Verboten','', 'medium',plan.id,'master'),/git_branch/i);
  await assert.rejects(P.updateTask(project,inherited.id,{git_branch:'bad//name'},plan.id),/git_branch/i);
@@ -68,6 +82,16 @@ try {
  for(const mode of ['rest','stdio']){
   const call=async args=>{const input={name:'plan',arguments:{project,agent_id:'t12-agent',...args}};
    return unpack(mode==='rest'?(await app.inject({method:'POST',url:'/',payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:input}})).json().result:await client.callTool(input));};
+  const projectCall=async args=>{const input={name:'project',arguments:{project,agent_id:'t14-agent',...args}};
+   return unpack(mode==='rest'?(await app.inject({method:'POST',url:'/',payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:input}})).json().result:await client.callTool(input));};
+  const gesetzt=await projectCall({action:'hinweise',agent_id:'koordinator',geschuetzter_hauptbranch:'master'});
+  assert.equal(gesetzt.geschuetzter_hauptbranch,'master',JSON.stringify(gesetzt));
+  const statusKoordinator=await projectCall({action:'status',agent_id:'koordinator'});
+  assert.equal(statusKoordinator.projekt_optionen?.geschuetzter_hauptbranch,'master',JSON.stringify(statusKoordinator));
+  const statusAgent=await projectCall({action:'status'});
+  assert.equal(statusAgent.projekt_optionen,undefined,'Hauptbranch-Einstellung ist nur Koordinator/User zugaenglich');
+  const verweigert=await projectCall({action:'hinweise',geschuetzter_hauptbranch:'trunk'});
+  assert.match(JSON.stringify(verweigert),/Koordinator|User/i);
   const created=await call({action:'create',name:'Transport '+mode,description:'test',git_branch:'feature/'+mode});
   assert.ok(created.success!==false,JSON.stringify(created));
   const planId=created.plan_ref?.id??created.plan?.id;
@@ -80,7 +104,7 @@ try {
   assert.equal(gotTask.git_branch,'feature/'+mode,'git_branch ist auch kompakt sichtbar');
   const changed=await call({action:'update_task',plan_id:planId,task_id:addedTask.id,git_branch:'feature/task-'+mode});
   assert.equal(changed.task?.git_branch,'feature/task-'+mode);
-  await call({action:'update',plan_id:planId,git_branch:'main'}).then(r=>assert.match(JSON.stringify(r),/git_branch|main/i));
+  await call({action:'update',plan_id:planId,git_branch:'master'}).then(r=>assert.match(JSON.stringify(r),/git_branch|master/i));
   const bad=await call({action:'update',plan_id:planId,git_branch:'feature/plan-neu'});
   assert.ok(bad.success!==false,JSON.stringify(bad));
   const final=await call({action:'get',plan_id:planId});
@@ -88,7 +112,7 @@ try {
   assert.equal((finalPlan.tasks??final.tasks).find(t=>t.id===addedTask.id).git_branch,'feature/task-'+mode);
   console.log('PASS '+mode+': create/update, add/update task, kompakter get, Vererbung/Override');
  }
- console.log('PASS P3-T12: Git-Format, main/master-Sperre, Migration '+alterMs.toFixed(3)+' ms, REST+stdio');
+ console.log('PASS P3-T12/T14: Git-Format, Projekt-Schutzbranch, Migration plans '+alterMs.toFixed(3)+' ms, hinweis_optionen '+branchAlterMs.toFixed(3)+' ms, REST+stdio');
 } finally {
  await client?.close();await app?.close();await pool.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');await closePool();
 }

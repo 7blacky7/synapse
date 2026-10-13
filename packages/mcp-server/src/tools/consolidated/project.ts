@@ -36,6 +36,7 @@ const projectTool: ConsolidatedTool = {
       type: 'object',
       properties: {
         hinweise: {type:'boolean',description:'project(hinweise): optionale Hinweise je Projekt gemeinsam an/aus; setzen nur Koordinator/User. Ohne Wert Status.'},
+        geschuetzter_hauptbranch: {type:'string',description:'project(hinweise): geschuetzten Git-Hauptbranch je Projekt setzen; Standard main. Lesen/Setzen nur Koordinator/User, Anzeige in project(status).'},
         action: {
           type: 'string',
           enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise'],
@@ -170,8 +171,12 @@ const projectTool: ConsolidatedTool = {
         }
 
         case 'hinweise': {
-          const {projektHinweisOption} = await import('@synapse/core');
+          const {projektHinweisOption,projektHauptbranchOption} = await import('@synapse/core');
           if(args.hinweise !== undefined && typeof args.hinweise !== 'boolean')throw new Error('hinweise muss boolean sein');
+          if(args.geschuetzter_hauptbranch !== undefined) {
+            if(typeof args.geschuetzter_hauptbranch !== 'string')throw new Error('geschuetzter_hauptbranch muss string sein');
+            return projektHauptbranchOption(reqStr(args,'project'),String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),args.geschuetzter_hauptbranch);
+          }
           return projektHinweisOption(reqStr(args,'project'),String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),args.hinweise as boolean|undefined);
         }
         case 'projekt_db': {
@@ -317,12 +322,15 @@ const projectTool: ConsolidatedTool = {
             const erkannt = await ermittleProjektAusPfad(path);
             if (project && project !== erkannt.project) throw new Error('project passt nicht zum registrierten Pfad.');
             const statusErgebnis = await getProjectStatusWithStats(erkannt.path);
-            return { ...statusErgebnis, status: { ...statusErgebnis.status, ...erkannt }, projekt_db: await projektDbFeld(erkannt.project) };
+            const {projektHauptbranchStatus} = await import('@synapse/core');
+            const projektOptionen = await projektHauptbranchStatus(erkannt.project,String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''));
+            return { ...statusErgebnis, status: { ...statusErgebnis.status, ...erkannt }, projekt_db: await projektDbFeld(erkannt.project), ...(projektOptionen ? {projekt_optionen:projektOptionen} : {}) };
           }
           // Fallback: nur Stats anhand des Projektnamens
-          const { getProjectStats } = await import('@synapse/core');
+          const { getProjectStats, projektHauptbranchStatus } = await import('@synapse/core');
           const stats = await getProjectStats(project!);
-          return { success: true, stats, projekt_db: await projektDbFeld(project!), message: `Projekt "${project}" nicht lokal registriert — nur Index-Stats verfuegbar` };
+          const projektOptionen = await projektHauptbranchStatus(project!,String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''));
+          return { success: true, stats, projekt_db: await projektDbFeld(project!), ...(projektOptionen ? {projekt_optionen:projektOptionen} : {}), message: `Projekt "${project}" nicht lokal registriert — nur Index-Stats verfuegbar` };
         }
 
         case 'list': {
