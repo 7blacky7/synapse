@@ -45,11 +45,11 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
   const original=pfad(virtual[1]),stage=virtual[2];
   const row=(await k.db.query('SELECT id::text,pfad,format,arch,bits,metadaten FROM reverse_dateien WHERE eintrag_id=$1 AND pfad=$2',[rid,original])).rows[0];
   if(!row)fail('nicht_gefunden');
-  const layer=(await k.db.query('SELECT status,werkzeug,fehlercode FROM reverse_schichten WHERE datei_id=$1 AND schicht=$2 AND aktuell',[row.id,stage])).rows[0];
+  const layer=(await k.db.query('SELECT status,werkzeug,fehlercode,funktionen_gesamt,funktionen_fertig FROM reverse_schichten WHERE datei_id=$1 AND schicht=$2 AND aktuell',[row.id,stage])).rows[0];
   const finished=(await k.db.query("SELECT schicht FROM reverse_schichten WHERE datei_id=$1 AND aktuell AND status IN ('fertig','teilweise') ORDER BY schicht DESC LIMIT 1",[row.id])).rows[0];
   const metadata=row.metadaten&&typeof row.metadaten==='object'?row.metadaten:{};
   context={datei:original,format:row.format??'unbekannt',arch:row.arch??'unbekannt',bits:row.bits??null,schicht:finished?.schicht??null,schicht_angefragt:stage,status:layer?.status??'offen',werkzeug:layer?.werkzeug??null,
-   merkmale:Array.isArray(metadata.merkmale)?metadata.merkmale.filter((x:unknown)=>typeof x==='string'):[]};
+   merkmale:Array.isArray(metadata.merkmale)?metadata.merkmale.filter((x:unknown)=>typeof x==='string'):[],fortschritt:{gesamt:Number(layer?.funktionen_gesamt??0),fertig:Number(layer?.funktionen_fertig??0)}};
   layerStatus=layer?.status;
   if(!['fertig','teilweise'].includes(layerStatus??''))return pending(original,stage);
  }
