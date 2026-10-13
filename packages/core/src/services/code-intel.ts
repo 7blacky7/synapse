@@ -1731,9 +1731,71 @@ export function applyContentRange(
 }
 
 /**
+ * Loest einen Einzeldatei-Pfad auf: erst exakt, sonst nur als Suffix an einer
+ * Pfadgrenze. Mehrere Suffix-Treffer sind ein Fehler statt einer stillen Wahl.
+ */
+export class CodeIntelAmbiguousFilePathError extends Error {
+  readonly code = 'mehrdeutig';
+  readonly file_path: string;
+  readonly kandidaten: string[];
+  readonly anzahl: number;
+
+  constructor(filePath: string, kandidaten: string[], anzahl: number) {
+    const details = {
+      error: 'mehrdeutig',
+      message: `Dateipfad "${filePath}" ist mehrdeutig`,
+      file_path: filePath,
+      kandidaten,
+      anzahl,
+    };
+    super(JSON.stringify(details));
+    this.name = 'CodeIntelAmbiguousFilePathError';
+    this.file_path = filePath;
+    this.kandidaten = kandidaten;
+    this.anzahl = anzahl;
+  }
+}
+
+/**
+ * Findet den eindeutigen kanonischen Dateipfad fuer eine Einzeldatei-Abfrage.
+ * Ein Vergleich per RIGHT statt LIKE behandelt %, _ und Backslash literal.
+ */
+async function loeseEinzelDateipfad(project: string, filePath: string): Promise<string | null> {
+  const pool = getPool();
+  const exakt = await pool.query(
+    'SELECT file_path FROM code_files WHERE project = $1 AND file_path = $2 LIMIT 1',
+    [project, filePath]
+  );
+  if (exakt.rows[0]) return exakt.rows[0].file_path;
+
+  const suffix = await pool.query(
+    `SELECT file_path, COUNT(*) OVER() AS anzahl
+       FROM code_files
+      WHERE project = $1
+        AND char_length(file_path) > char_length($2)
+        AND right(file_path, char_length($2) + 1) = ('/' || $2)
+      ORDER BY file_path
+      LIMIT 21`,
+    [project, filePath]
+  );
+  if (!suffix.rows.length) return null;
+
+  const anzahl = Number(suffix.rows[0].anzahl);
+  if (anzahl > 1) {
+    throw new CodeIntelAmbiguousFilePathError(
+      filePath,
+      suffix.rows.slice(0, 20).map((row: { file_path: string }) => row.file_path),
+      anzahl
+    );
+  }
+  return suffix.rows[0].file_path;
+}
+
+/**
  * Laedt den Inhalt einer Datei aus PostgreSQL.
- * filePath wird als LIKE-Pattern verwendet ('%filePath%').
- * Gibt null zurueck wenn nicht gefunden.
+ * Exakter Pfad hat Vorrang; ohne exakten Treffer wird ein Suffix an einer
+ * Pfadgrenze aufgeloest. Mehrdeutige Suffixe liefern Kandidaten statt einer
+ * beliebigen Datei. Gibt null zurueck wenn nicht gefunden.
  *
  * Unterstuetzt optionale Range- und Truncation-Parameter:
  * - from / to: Zeilen-Range (1-basiert, inklusiv)
@@ -1746,14 +1808,15 @@ export async function getFileContent(
   options?: FileContentOptions
 ): Promise<FileContentResult | null> {
   const pool = getPool();
+  const resolvedPath = await loeseEinzelDateipfad(project, filePath);
+  if (!resolvedPath) return null;
 
   const result = await pool.query(
     `SELECT file_path, file_type, file_size, content
      FROM code_files
-     WHERE project = $1 AND file_path LIKE $2
-     ORDER BY file_path
+     WHERE project = $1 AND file_path = $2
      LIMIT 1`,
-    [project, `%${filePath}%`]
+    [project, resolvedPath]
   );
 
   if (!result.rows[0]) return null;
@@ -1961,7 +2024,8 @@ export async function getExecutionFlow(
   scopeName?: string
 ): Promise<ExecutionFlowResult> {
   const pool = getPool();
-  const params: unknown[] = [project, `%${filePath}%`];
+  const resolvedPath = await loeseEinzelDateipfad(project, filePath);
+  const params: unknown[] = [project, resolvedPath ?? filePath];
   let scopeCond: string;
   if (scopeName) {
     params.push(scopeName);
@@ -1971,16 +2035,16 @@ export async function getExecutionFlow(
     scopeCond = `is_top_level = true`;
   }
 
-  const result = await pool.query(
+  const result = resolvedPath ? await pool.query(
     `SELECT id, file_path, scope_type, scope_name, statement_type, node_kind,
             line_start, line_end, order_index, depth, parent_statement_id,
             text, callee, receiver, assigned_to, condition_text,
             is_top_level, is_awaited
        FROM code_statements
-      WHERE project = $1 AND file_path LIKE $2 AND ${scopeCond} AND depth = 0
+      WHERE project = $1 AND file_path = $2 AND ${scopeCond} AND depth = 0
       ORDER BY order_index, line_start`,
     params
-  );
+  ) : { rows: [] };
 
   const statements: StatementInfo[] = result.rows.map(row => ({
     id: String(row.id),
@@ -2004,7 +2068,7 @@ export async function getExecutionFlow(
   }));
 
   return {
-    file_path: statements[0]?.file_path ?? filePath,
+    file_path: statements[0]?.file_path ?? resolvedPath ?? filePath,
     scope_name: scopeName ?? null,
     statements,
   };

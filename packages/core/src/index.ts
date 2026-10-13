@@ -780,6 +780,7 @@ export type {
 } from './services/specialist-queue.js';
 
 export type { FunctionInfo, VariableInfo, SymbolInfo, ReferenceInfo, ReferencesResult, FullTextSearchResult, FileContentResult, FileContentOptions, TreeOptions, StatementInfo, CallEdgeInfo, CallEdgesResult, ExecutionFlowResult, EntrypointInfo } from './services/code-intel.js';
+export { CodeIntelAmbiguousFilePathError } from './services/code-intel.js';
 export type { BatchEdit, BatchResult, BatchFehlschlag } from './services/code-write.js';
 // P15-T17: Einzelschreibweg (E-a) - Optionen und Ergebnis von createFileInPg/updateFileInPg
 export type { EinzelSchreibOptionen, SchreibErgebnis } from './services/code-write.js';

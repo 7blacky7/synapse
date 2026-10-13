@@ -15,6 +15,7 @@ import {
   getStatements,
   getCallEdges,
   getExecutionFlow,
+  CodeIntelAmbiguousFilePathError,
   getEntrypoints,
 } from '@synapse/core';
 
@@ -324,6 +325,12 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
         file: result,
       };
     } catch (error) {
+      if (error instanceof CodeIntelAmbiguousFilePathError) {
+        return reply.status(409).send({
+          success: false,
+          error: { code: error.code, message: `Dateipfad "${error.file_path}" ist mehrdeutig`, file_path: error.file_path, kandidaten: error.kandidaten, anzahl: error.anzahl },
+        });
+      }
       return reply.status(500).send({
         success: false,
         error: { message: String(error) },
@@ -425,6 +432,12 @@ export async function codeIntelRoutes(fastify: FastifyInstance): Promise<void> {
         ...result,
       };
     } catch (error) {
+      if (error instanceof CodeIntelAmbiguousFilePathError) {
+        return reply.status(409).send({
+          success: false,
+          error: { code: error.code, message: `Dateipfad "${error.file_path}" ist mehrdeutig`, file_path: error.file_path, kandidaten: error.kandidaten, anzahl: error.anzahl },
+        });
+      }
       return reply.status(500).send({
         success: false,
         error: { message: String(error) },
