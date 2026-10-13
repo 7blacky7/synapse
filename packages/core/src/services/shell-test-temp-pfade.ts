@@ -93,17 +93,28 @@ export class ShellTestTempPfade {
    const rel=this.o.projekt_root?this.p.relative(this.o.projekt_root,target).replace(/\\/g,'/'):'';
    return /^packages\/[^/]+\/dist(?:\/|$)/.test(rel);
   };
-  const basisPfad=(e:ts.Expression|undefined,depth=0):string|undefined=>{
-   if(!e||depth>8)return undefined;
-   if(ts.isStringLiteralLike(e))return this.p.resolve(this.p.dirname(this.o.testdatei_pfad??''),e.text);
-   if(ts.isIdentifier(e))return basisPfad(decl.get(e.text),depth+1);
-   // Betreiber-Override des Produkt-dist; der vorhandene Produkt-Fallback bleibt
-   // neutral nach26486. Explizite Testpfade in einem Zweig bleiben ausgeschlossen.
+  const unwrap=(e:ts.Expression):ts.Expression=>ts.isParenthesizedExpression(e)?unwrap(e.expression):e;
+  const operatorDist=(condition:ts.Expression,value:ts.Expression):boolean=>{
+   if(unwrap(condition).getText(file)!=='process.env.P6_T48_DIST')return false;
+   const pieces:ts.Expression[]=[];
+   const flatten=(e:ts.Expression):void=>{e=unwrap(e);if(ts.isBinaryExpression(e)&&e.operatorToken.kind===ts.SyntaxKind.PlusToken){flatten(e.left);flatten(e.right);}else pieces.push(e);};flatten(value);
+   if(pieces.length!==3||!ts.isStringLiteralLike(pieces[0])||pieces[0].text!=='file://'||!ts.isStringLiteralLike(pieces[2])||pieces[2].text!=='/')return false;
+   const middle=pieces[1];
+   return ts.isCallExpression(middle)&&middle.expression.getText(file)==='process.env.P6_T48_DIST.replace'&&middle.arguments.length===2&&ts.isRegularExpressionLiteral(middle.arguments[0])&&middle.arguments[0].getText(file)==='/\\/$/'&&ts.isStringLiteralLike(middle.arguments[1])&&middle.arguments[1].text==='';
+  };
+  const basisPfade=(e:ts.Expression|undefined,depth=0):string[]|undefined=>{
+   if(!e||depth>8)return undefined;e=unwrap(e);
+   if(ts.isStringLiteralLike(e))try{return [new URL(e.text,pathToFileURL(this.o.testdatei_pfad??'').href).href];}catch{return undefined;}
+   if(ts.isIdentifier(e))return basisPfade(decl.get(e.text),depth+1);
    if(ts.isConditionalExpression(e)){
-    const a=basisPfad(e.whenTrue,depth+1),b=basisPfad(e.whenFalse,depth+1);
-    return a&&produkt(a)?a:b&&produkt(b)&&(!a||produkt(a))?b:undefined;
+    const a=basisPfade(e.whenTrue,depth+1),b=basisPfade(e.whenFalse,depth+1);
+    // Nur der bereits freigegebene P6-Betreiberparameter bezeichnet einen
+    // alternativen dist-Root. Kein allgemeiner unbekannter Zweig wird geraten.
+    if(!a&&b?.every(produkt)&&operatorDist(e.condition,e.whenTrue))return b;
+    if(!a||!b||![...a,...b].every(produkt))return undefined;
+    return [...new Set([...a,...b])];
    }
-   if(ts.isNewExpression(e)&&api(e.expression)==='URL'&&e.arguments?.length===2&&e.arguments[1].getText(file)==='import.meta.url')return basisPfad(e.arguments[0],depth+1);
+   if(ts.isNewExpression(e)&&api(e.expression)==='URL'&&e.arguments?.length===2&&e.arguments[1].getText(file)==='import.meta.url')return basisPfade(e.arguments[0],depth+1);
    return undefined;
   };
   const produktImport=(e:ts.Expression|undefined,depth=0):boolean=>{
@@ -114,20 +125,27 @@ export class ShellTestTempPfade {
    if(ts.isCallExpression(e)&&/^path\.(?:resolve|join)$/.test(api(e.expression))){
     const rest=e.arguments.slice(1);
     if(!rest.length||!rest.every(ts.isStringLiteralLike))return false;
-    const relative=this.p.normalize(this.p.join(...rest.map(x=>(x as ts.StringLiteralLike).text))).replace(/\\/g,'/');
-    return /^packages\/[^/]+\/dist(?:\/|$)/.test(relative);
+    const parts=rest.map(x=>(x as ts.StringLiteralLike).text);
+    // resolve: letztes absolutes Segment ersetzt frühere Komponenten.
+    // join: Node hängt absolute Teilkomponenten an, ohne Reset.
+    const first=e.arguments[0],prefix=ts.isStringLiteralLike(first)?first.text:this.o.projekt_root??this.o.cwd??'.';
+    const target=api(e.expression)==='path.resolve'?this.p.resolve(this.o.cwd??'.',prefix,...parts):this.p.resolve(this.o.cwd??'.',this.p.join(prefix,...parts));
+    return produkt(target);
    }
    if(ts.isNewExpression(e)&&api(e.expression)==='URL'&&e.arguments?.length===2){
     if(e.arguments[1].getText(file)==='import.meta.url'&&ts.isStringLiteralLike(e.arguments[0]))return !testHelfer(e.arguments[0].text);
-    const base=basisPfad(e.arguments[1]);
-    if(!base||!produkt(base))return false;
+    const bases=basisPfade(e.arguments[1]);
+    if(!bases?.length||!bases.every(produkt))return false;
+    const inAllenProduktbasen=(rel:string):boolean=>{
+     try{return bases.every(base=>produkt(new URL(rel,base).href));}catch{return false;}
+    };
     const rel=e.arguments[0];
-    if(ts.isStringLiteralLike(rel))return produkt(this.p.resolve(base,rel.text));
+    if(ts.isStringLiteralLike(rel))return inAllenProduktbasen(rel.text);
     if(!ts.isIdentifier(rel))return false;
     let fn:ts.Node|undefined=e.parent;while(fn&&!ts.isFunctionLike(fn))fn=fn.parent;
     if(!fn||!ts.isArrowFunction(fn)||fn.parameters.length!==1||!ts.isIdentifier(fn.parameters[0].name)||fn.parameters[0].name.text!==rel.text||!ts.isVariableDeclaration(fn.parent)||!ts.isIdentifier(fn.parent.name))return false;
     const wrapper=fn.parent.name.text;let count=0,ok=true;
-    const calls=(n:ts.Node):void=>{if(ts.isCallExpression(n)&&ts.isIdentifier(n.expression)&&n.expression.text===wrapper){count++;const a=n.arguments[0];if(n.arguments.length!==1||!a||!ts.isStringLiteralLike(a)||!produkt(this.p.resolve(base,a.text)))ok=false;}ts.forEachChild(n,calls);};calls(file);
+    const calls=(n:ts.Node):void=>{if(ts.isCallExpression(n)&&ts.isIdentifier(n.expression)&&n.expression.text===wrapper){count++;const a=n.arguments[0];if(n.arguments.length!==1||!a||!ts.isStringLiteralLike(a)||!inAllenProduktbasen(a.text))ok=false;}ts.forEachChild(n,calls);};calls(file);
     return count>0&&ok;
    }
    return false;

@@ -274,3 +274,26 @@ test('Importformen mit file-URL behalten dieselbe exakte Pfadklassifikation',asy
   "import * as h from 'file://"+root+"/packages/core/tests/fixtures/pruefer1-helper.mjs';h.createFixture();",
  ])assert.equal((await decide(text)).r.darf_starten,false);
 });
+
+test('B6 gemischte Produkt-/Test-Basis bleibt Anleitung in beiden Branch-Reihenfolgen',async()=>{
+ for(const [first,second]of [['../dist/','./fixtures/'],['./fixtures/','../dist/']]){
+  const source="const dist=process.env.WHICH?new URL("+JSON.stringify(first)+",import.meta.url):new URL("+JSON.stringify(second)+",import.meta.url);const load=rel=>import(new URL(rel,dist));await load('helper.mjs');";
+  assert.equal((await decide(source)).r.darf_starten,false);
+ }
+});
+test('B7 path.resolve verwendet das letzte absolute Segment',async()=>{
+ const source="import{resolve}from'node:path';import{pathToFileURL}from'node:url';const root=process.cwd();await import(pathToFileURL(resolve(root,'packages/core/dist',"+JSON.stringify(root+'/packages/core/tests/fixtures/helper.mjs')+")));";
+ assert.equal((await decide(source)).r.darf_starten,false);
+});
+
+test('B6 alle konkreten Basen und unaufgelöste Zweige werden geprüft',async()=>{
+ for(const source of [
+  "const dist=process.env.WHICH?new URL(process.env.UNKNOWN,import.meta.url):new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('helper.mjs');",
+  "const dist=process.env.WHICH?new URL('../dist/',import.meta.url):new URL(process.env.UNKNOWN,import.meta.url);const load=rel=>import(new URL(rel,dist));await load('helper.mjs');",
+  "const dist=process.env.WHICH?new URL('../dist/nested/',import.meta.url):new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('../tests/fixtures/helper.mjs');",
+  "const dist=new URL('../dist/index.js',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('../tests/fixtures/helper.mjs');",
+  "const dist=new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('file://"+root+"/packages/core/tests/fixtures/helper.mjs');",
+ ])assert.equal((await decide(source)).r.darf_starten,false);
+ const both="const dist=process.env.WHICH?new URL('../dist/nested/',import.meta.url):new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('module.js');";
+ assert.equal((await decide(both)).r.darf_starten,true);
+});
