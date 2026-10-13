@@ -1,10 +1,13 @@
 import os from 'node:os';
+import {existsSync} from 'node:fs';
+import type {ComputeNodeExtension} from '@synapse/core';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-export interface NodeCapabilities {
+export interface NodeCapabilities extends ComputeNodeExtension {
+  deviceId?: string;
   nodeId: string;
   host: string;
   ollamaUrl: string;
@@ -83,20 +86,52 @@ async function eigenesModellImVram(model: string): Promise<number> {
   }
 }
 
-async function gpuInfo(): Promise<{ name: string | null; totalMb: number; freeMb: number }> {
+export async function gpuInfo(): Promise<{ name: string | null; deviceId:string|null; utilization:number|null;totalMb: number; freeMb: number }> {
   try {
     const gpuIndex = process.env.SYNAPSE_GPU_INDEX;
     if (!gpuIndex || !/^\d+$/.test(gpuIndex)) throw new Error('SYNAPSE_GPU_INDEX must select exactly one GPU');
     const { stdout } = await execFileAsync('nvidia-smi', [
       `--id=${gpuIndex}`,
-      '--query-gpu=name,memory.total,memory.free',
+      '--query-gpu=name,memory.total,memory.free,uuid,utilization.gpu',
       '--format=csv,noheader,nounits',
     ], { timeout: 5000 });
-    const [name, total, free] = stdout.trim().split('\n')[0].split(',').map((v) => v.trim());
-    return { name: name || null, totalMb: Number(total) || 0, freeMb: Number(free) || 0 };
+    const rows=stdout.trim().split('\n');if(rows.length!==1)throw Error('GPU selection is ambiguous');
+    const [name,total,free,deviceId,load]=rows[0].split(',').map(v=>v.trim());
+    const utilization=Number(load);
+    return {name:name||null,deviceId:deviceId?.startsWith('GPU-')?deviceId:null,
+      utilization:Number.isFinite(utilization)&&utilization>=0&&utilization<=100?utilization:null,totalMb:Number(total)||0,freeMb:Number(free)||0};
   } catch {
-    return { name: null, totalMb: 0, freeMb: 0 };
+    return { name: null, deviceId:null, utilization:null,totalMb: 0, freeMb: 0 };
   }
+}
+
+
+let previousCpu:{idle:number;total:number}|undefined;
+/** Deltalast statt Load-Average; fehlende Messung bleibt unknown. */
+export async function probeResourceReport(model:string,gpu?:Awaited<ReturnType<typeof gpuInfo>>):Promise<NonNullable<ComputeNodeExtension['resources']>>{
+ const current=gpu??await gpuInfo(),at=new Date().toISOString();
+ const container=existsSync('/.dockerenv')||existsSync('/run/.containerenv')||!!process.env.container;
+ const cpu=os.cpus().reduce((a,c)=>({idle:a.idle+c.times.idle,total:a.total+Object.values(c.times).reduce((n,v)=>n+v,0)}),{idle:0,total:0});
+ const before=previousCpu;previousCpu=cpu;
+ const load=before&&cpu.total>before.total?100*(1-(cpu.idle-before.idle)/(cpu.total-before.total)):null;
+ const measurement=(value:number|null,scope:'host'|'device'|'container')=>({value,scope,measuredAt:value===null?null:at,quality:value===null?'unknown' as const:'measured' as const});
+ const own=await eigenesModellImVramBeobachtet(model);
+ return {
+  cpu:{cores:measurement(container?null:os.cpus().length,'host'),loadPercent:measurement(container?null:load===null?null:Math.max(0,Math.min(100,load)),'host')},
+  ram:{totalMb:measurement(container?null:Math.floor(os.totalmem()/1048576),'host'),availableMb:measurement(container?null:Math.floor(os.freemem()/1048576),'host')},
+  gpus:current.deviceId?[{deviceId:current.deviceId,origin:'nvidia-smi',totalMb:measurement(current.totalMb,'device'),
+   freeMb:measurement(current.freeMb,'device'),residentOwnModelMb:measurement(own,'device'),utilizationPercent:measurement(current.utilization,'device')}]:[],
+ };
+}
+async function eigenesModellImVramBeobachtet(model:string):Promise<number|null>{
+ try{
+  const r=await fetch(lokaleOllamaUrl()+'/api/ps',{signal:AbortSignal.timeout(5000),redirect:'error'});if(!r.ok)return null;
+  const p=await r.json() as {models?:Array<{name?:string;model?:string;size_vram?:number}>};
+  if(!Array.isArray(p.models))return null;
+  const normal=(s:string)=>s.includes(':')?s:s+':latest';
+  const entry=p.models.find(m=>normal(m.model??m.name??'')===normal(model));
+  return entry?typeof entry.size_vram==='number'&&entry.size_vram>=0?Math.floor(entry.size_vram/1048576):null:0;
+ }catch{return null;}
 }
 
 /** OLLAMA_URL, nur strikt lokal (loopback HTTP). */
@@ -211,6 +246,9 @@ export async function probeNodeCapabilities(
     // in die Env (EMBEDDING_TARGET_DIM, EMBEDDING_NUM_CTX), damit gemeldet = gerechnet gilt.
     targetDimension: reference.targetDimension,
     numCtx: reference.numCtx,
+    contractVersion:1,features:['compute_resources','compute_control'],
+    ...(gpu.deviceId?{deviceId:gpu.deviceId}:{}),
+    resources:await probeResourceReport(model,gpu),
     vramTotalMb: gpu.totalMb,
     vramFreeMb: gpu.freeMb,
     systemMemoryMb: Math.round(os.totalmem() / 1024 / 1024),

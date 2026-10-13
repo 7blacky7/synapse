@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   getPool,
+  computeNodeControlResponse,observeComputeNodeControl,parseComputeControlObservation,
   API_CONTRACT_HEADER,
   apiCapabilitiesForClient,
   parseComputeNodeExtension,
@@ -157,6 +158,11 @@ export function createEmbeddingNodeRoutes(
     beschreibung: 'Claim-Vergabe an externe GPU-Knoten (POST /api/embedding-nodes/:nodeId/claims); pausiert = leere Claims',
   });
 
+  const controlFields=async(node:EmbeddingNodeRow,request:FastifyRequest)=>{
+    if(!apiCapabilitiesForClient(request.headers[API_CONTRACT_HEADER])?.features.includes('compute_control'))return {};
+    const control=await computeNodeControlResponse(node,deps.db);
+    return control?{control}:{};
+  };
   return async (fastify: FastifyInstance): Promise<void> => {
     await registerComputePolicyRoutes(fastify,{db:deps.db,validateToken:deps.validateToken});
     await registerComputeAdmissionRoutes(fastify,{validateToken:deps.validateToken});
@@ -291,11 +297,12 @@ export function createEmbeddingNodeRoutes(
           status: node.gesperrt_vom_user ? 'locked' : 'ready',
           locked: node.gesperrt_vom_user,
           claimBatch,
+          ...await controlFields(node,request),
         });
       },
     );
 
-    fastify.post<{ Params: { nodeId: string }; Body: EmbeddingNodeHeartbeat }>(
+    fastify.post<{ Params: { nodeId: string }; Body: EmbeddingNodeHeartbeat & {controlObservation?:unknown} }>(
       '/api/embedding-nodes/:nodeId/heartbeat',
       async (request, reply) => {
         const { nodeId } = request.params;
@@ -317,6 +324,9 @@ export function createEmbeddingNodeRoutes(
         }
         try { parseComputeNodeExtension(body, nodeId); }
         catch { return reply.code(400).send({ success: false, error: 'invalid_node_resources' }); }
+        if(body.controlObservation!==undefined&&apiCapabilitiesForClient(request.headers[API_CONTRACT_HEADER])?.features.includes('compute_control')){
+          try{parseComputeControlObservation(body.controlObservation);}catch{return reply.code(400).send({success:false,error:'invalid_control_observation'});}
+        }
         const problems = compatibilityProblems(body, await getEmbeddingReferenceContract());
         if (problems.length > 0) {
           return reply.code(409).send({ success: false, error: 'incompatible_node', problems });
@@ -336,17 +346,25 @@ export function createEmbeddingNodeRoutes(
           ...parseComputeNodeExtension(body, nodeId),
         }, deps.db);
         if (!node) return reply.code(409).send({ success: false, error: 'heartbeat_rejected' });
-        return reply.send({ success: true, nodeId, serverTime: new Date().toISOString() });
+        const control=await controlFields(node,request);
+        if('control' in control)await observeComputeNodeControl(node,body.controlObservation,deps.db);
+        return reply.send({ success: true, nodeId, serverTime: new Date().toISOString(),...control });
       },
     );
 
-    fastify.post<{ Params: { nodeId: string }; Body: { limit?: number } }>(
+    fastify.post<{ Params: { nodeId: string }; Body: { limit?: number;bootId?:string } }>(
       '/api/embedding-nodes/:nodeId/claims',
       async (request, reply) => {
         const { nodeId } = request.params;
         const auth = await principal(request, deps);
         const node = await usableNode(auth, nodeId, deps);
         if (!node) return reply.code(403).send({ success: false, error: 'node_not_usable' });
+        const control=await controlFields(node,request);
+        if('control' in control){
+          if(request.body?.bootId!==node.boot_id)return reply.code(409).send({success:false,error:'control_boot_mismatch'});
+          if(!control.control!.allowed||control.control!.desired&&control.control!.desired.action!=='resume')
+            return reply.send({success:true,claims:[],reference:await getEmbeddingReferenceContract(),...control});
+        }
         const requested = request.body?.limit ?? 1;
         if (!Number.isInteger(requested) || requested <= 0 || requested > 100) {
           return reply.code(400).send({ success: false, error: 'invalid_claim_limit' });
@@ -359,6 +377,7 @@ export function createEmbeddingNodeRoutes(
             success: true,
             claims: [],
             pausiert: pause,
+            ...control,
             reference: await getEmbeddingReferenceContract(),
           });
         }
@@ -370,6 +389,7 @@ export function createEmbeddingNodeRoutes(
         return reply.send({
           success: true,
           claims,
+          ...control,
           reference: await getEmbeddingReferenceContract(),
         });
       },

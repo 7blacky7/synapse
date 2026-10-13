@@ -3,7 +3,9 @@ import 'dotenv/config';
 import { randomUUID } from 'node:crypto';
 import {installComputeAdmissionClient,withComputeAdmissionFeature} from './admission.js';
 import { renameSync, writeFileSync } from 'node:fs';
-import { lokalerModellDigest, probeNodeCapabilities, type EmbeddingReference } from './probe.js';
+import { lokalerModellDigest, probeNodeCapabilities,gpuInfo, type EmbeddingReference } from './probe.js';
+import {ComputeNodeControl} from './control.js';
+import type {ComputeControlResponse} from '@synapse/core';
 
 const token = process.env.SYNAPSE_API_TOKEN || '';
 const heartbeatMs = Number(process.env.SYNAPSE_NODE_HEARTBEAT_MS) || 30_000;
@@ -120,7 +122,7 @@ async function apiFetch(path: string, init: RequestInit): Promise<Response> {
       statusSchreiben();
     };
     try {
-      const response = await fetch(basis + path, { ...init, signal: AbortSignal.timeout(30_000), redirect: 'error' });
+      const response = await fetch(basis + path, { ...init,headers:{authorization:`Bearer ${token}`,'x-synapse-contract-version':'1',...init.headers}, signal: AbortSignal.timeout(30_000), redirect: 'error' });
       if (response.status >= 500) wechsle(`HTTP ${response.status}`);
       return response;
     } catch (error) {
@@ -145,11 +147,13 @@ interface EmbeddingClaim {
 }
 
 interface ClaimResponse {
+  control?:ComputeControlResponse;
   claims?: EmbeddingClaim[];
   reference?: EmbeddingReference;
 }
 
 interface RegisterResponse {
+  control?:ComputeControlResponse;
   /** P15-T9: vom Server autorisierte Zahl gleichzeitig offener Claims dieses Knotens. */
   claimBatch?: number;
 }
@@ -265,9 +269,12 @@ const bootStartedAt = new Date().toISOString();
 let sequence = 0;
 let stopped = false;
 let activeJobs = 0;
+let claimRequests=0;
+let uncertainClaims=0; // verlorene Claimantwort ist keine bestätigte Rückgabe
 let capabilities: Faehigkeit | null = null;
 let startReferenz: EmbeddingReference | null = null;
 let claimBatch = 0;
+let control:ComputeNodeControl|undefined;
 /** P15-T9: Claims, die dieser Prozess gerade haelt (vorausgeholt, in Arbeit, im Abschluss) - beim Beenden gehen ALLE zurueck. */
 const offeneClaims = new Map<string, string>();
 
@@ -275,12 +282,14 @@ const offeneClaims = new Map<string, string>();
  * P15-T9: Gibt eigene Claims an den Server zurueck (geordnetes Beenden, gescheiterter Stapel). Ohne das
  * blieben sie bis zum Lease-Ende (bis 15 min) blockiert. Best effort: ein Fehler wird gemeldet, nicht geworfen.
  */
-async function gibClaimsFrei(claims: Array<{ chunkId: string; claimToken: string }>): Promise<void> {
-  if (claims.length === 0 || !capabilities) return;
-  try {
-    await api(`/api/embedding-nodes/${encodeURIComponent(capabilities.nodeId)}/claims/release`, { claims });
-  } catch (error) {
-    console.error('[ComputeNode] claim release failed (lease expires on its own):', error);
+async function gibClaimsFrei(claims: Array<{ chunkId: string; claimToken: string }>): Promise<boolean> {
+  if(claims.length===0)return true;if(!capabilities)return false;
+  try{
+    await api(`/api/embedding-nodes/${encodeURIComponent(capabilities.nodeId)}/claims/release`,{claims});
+    return true;
+  }catch(error){
+    console.error('[ComputeNode] claim release failed (lease expires on its own):',error);
+    return false;
   }
 }
 
@@ -308,12 +317,19 @@ while (!stopped) {
     capabilities = await probeNodeCapabilities(reference, true);
     startReferenz = reference;
     const antwort = await api<RegisterResponse>('/api/embedding-nodes/register', withComputeAdmissionFeature({ ...capabilities, bootId, bootStartedAt }));
-    await installComputeAdmissionClient({nodeId:capabilities.nodeId,bootId,transport:apiFetch,stopped:()=>stopped});
+    await installComputeAdmissionClient({nodeId:capabilities.nodeId,bootId,transport:apiFetch,stopped:()=>stopped||!!control&&!control.canClaim()});
     // P15-T9: die Kapazitaet kommt vom Server (SYNAPSE_NODE_MAX_CLAIMS bzw. unser Wunsch) - kein eigener Default.
     if (!Number.isInteger(antwort.claimBatch) || (antwort.claimBatch as number) <= 0) {
       throw new Error('Registrierung ohne claimBatch (API zu alt?) - Knoten arbeitet nicht mit geratener Stapelgroesse.');
     }
     claimBatch = antwort.claimBatch as number;
+    if(capabilities.deviceId){
+      const device=capabilities.deviceId;
+      const {parseComputeControlCommand}=await import('@synapse/core');
+      control=new ComputeNodeControl(bootId,device,capabilities.model,capabilities.modelDigest,capabilities.ollamaUrl,
+       async()=>{const gpu=await gpuInfo();return gpu.deviceId===device&&!!gpu.name&&gpu.totalMb>0;},parseComputeControlCommand);
+      control.receive(antwort.control);
+    }else if(antwort.control)throw Error('control_device_missing');
     break;
   } catch (error) {
     console.error('[ComputeNode] registration failed, retrying:', error);
@@ -389,9 +405,12 @@ async function heartbeatLoop(): Promise<void> {
         stop();
         return;
       }
+      await control?.settle(offeneClaims.size+claimRequests+uncertainClaims);
       const current = await probeNodeCapabilities(reference);
       if (!sameFingerprint(current, reference)) vollpruefungFaellig = true;
-      await api(`/api/embedding-nodes/${encodeURIComponent(registered.nodeId)}/heartbeat`, {
+      const heartbeat=await api<{control?:ComputeControlResponse}>(`/api/embedding-nodes/${encodeURIComponent(registered.nodeId)}/heartbeat`, {
+        contractVersion:1,features:withComputeAdmissionFeature(current).features,resources:current.resources,
+        ...(control?.report()?{controlObservation:control.report()}:{}),
         status: activeJobs > 0 ? 'busy' : 'ready',
         vramFreeMb: current.vramFreeMb,
         activeJobs,
@@ -404,6 +423,7 @@ async function heartbeatLoop(): Promise<void> {
         targetDimension: current.targetDimension,
         numCtx: current.numCtx,
       });
+      control?.receive(heartbeat.control);
     } catch (error) {
       console.error('[ComputeNode] heartbeat failed, will retry:', error);
     }
@@ -418,24 +438,34 @@ interface Stapel {
 /** Claims eines Stapels, die noch offen sind, aus der Verfolgung nehmen und an den Server zurueckgeben. */
 async function gibStapelFrei(claims: EmbeddingClaim[]): Promise<void> {
   const haengend = claims.filter((c) => offeneClaims.has(c.chunkId));
-  for (const c of haengend) offeneClaims.delete(c.chunkId);
-  await gibClaimsFrei(haengend.map((c) => ({ chunkId: c.chunkId, claimToken: c.claimToken })));
+  if(await gibClaimsFrei(haengend.map((c) => ({ chunkId: c.chunkId, claimToken: c.claimToken }))))
+    for(const c of haengend)offeneClaims.delete(c.chunkId);
 }
 
 /** Holt einen Stapel; null = nichts frei. Jeder Claim wird SOFORT verfolgt (SIGTERM gibt ihn frei). */
 async function holeStapel(): Promise<Stapel | null> {
-  const response = await api<ClaimResponse>(
+  if(control&&!control.canClaim())return null;
+  claimRequests++;
+  try{
+  let response:ClaimResponse;
+  try{response = await api<ClaimResponse>(
     `/api/embedding-nodes/${encodeURIComponent(registered.nodeId)}/claims`,
-    { limit: stapelGroesse },
-  );
+    { limit: stapelGroesse,bootId },
+  );}catch(error){
+    if(!(error instanceof Error)||!/^Synapse API [0-9]+:/.test(error.message))uncertainClaims++;
+    throw error;
+  }
   const claims = response.claims ?? [];
-  if (claims.length === 0) return null;
   for (const c of claims) offeneClaims.set(c.chunkId, c.claimToken);
+  try{control?.receive(response.control);}catch(error){await gibStapelFrei(claims);throw error;}
+  if (claims.length === 0) return null;
+  if(control&&!control.canClaim()){await gibStapelFrei(claims);return null;}
   if (!response.reference) {
     await gibStapelFrei(claims);
     throw new Error('claim response has no embedding reference');
   }
   return { claims, reference: response.reference };
+  }finally{claimRequests--;}
 }
 
 /**
@@ -497,6 +527,13 @@ async function claimLoop(): Promise<void> {
   let vorrat: Stapel | null = null;
   let abschluss: Promise<void> = Promise.resolve();
   while (!stopped) {
+    if(control&&!control.canClaim()){
+      await abschluss;
+      if(vorrat){await gibStapelFrei(vorrat.claims);vorrat=null;}
+      if(offeneClaims.size)await gibStapelFrei([...offeneClaims].map(([chunkId,claimToken])=>({chunkId,claimToken,content:'',contentHash:''})));
+      await control.settle(offeneClaims.size+claimRequests+uncertainClaims);
+      await sleep(retryMs);continue;
+    }
     if (!vorrat) {
       try {
         vorrat = await holeStapel();
@@ -525,6 +562,7 @@ async function claimLoop(): Promise<void> {
       continue;
     }
 
+    if(control&&!control.begin()){await gibStapelFrei(aktuell.claims);continue;}
     // Vorausholen: erst den vorherigen Abschluss fertig senden (Kapazitaet), dann den naechsten Stapel.
     // Ein Fehler hier kostet nur den Vorlauf - der naechste Durchlauf claimt dann selbst.
     const voraus: Promise<Stapel | null> = vorlaufTiefe > 1
@@ -554,11 +592,12 @@ async function claimLoop(): Promise<void> {
 
     vorrat = await voraus;
     if (vectors) {
-      abschluss = schliesseAb(aktuell, vectors, faehigkeit);
+      abschluss = schliesseAb(aktuell, vectors, faehigkeit).finally(()=>control?.end());
       // Ohne Vorausholen reicht die Kapazitaet nur fuer einen Stapel: erst abschliessen, dann weiter.
       if (vorlaufTiefe === 1) await abschluss;
     } else {
       await gibStapelFrei(aktuell.claims);
+      control?.end();
       await sleep(retryMs);
     }
   }
