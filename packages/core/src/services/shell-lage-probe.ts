@@ -8,7 +8,7 @@ export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?:
 import type {ShellDbZiel} from './shell-db-zuordnung.js';
 export interface ShellProbeAntwort {
   cwd: string; os: 'linux'|'windows'|'macos'|'wsl'; env: Record<string,string>;
-  testdatei?:{pfad:string;kanonisch:string;sha256:string;text:string;tmpdir?:string};
+  testdatei?:{pfad:string;kanonisch:string;sha256:string;text:string};
   umgebungsdatei?:{pfad:string;sha256:string;testprojekt:boolean;exportiert:boolean;port?:string;datenbank?:string;datenbank_ziel?:ShellDbZiel};
   pfade: ShellProbePfad[]; prozesse?:{pids:number[];namen:string[]}; rechner?:string;
 }
@@ -108,10 +108,7 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
     if(p.isAbsolute(kanonisch)){
       const st=await fs.stat(kanonisch);
       if(st.isFile()&&st.size<=131072){const bytes=await fs.readFile(kanonisch);
-        const text=bytes.toString('utf8'),rel=p.relative(root,kanonisch).replace(/\\/g,'/');
-        const erlaubt=(r:string)=>/^(?:packages\/[^/]+\/tests\/|scripts\/test-[^/]+(?:$|\/))/.test(r);
-        testdatei={pfad,kanonisch,text,sha256:(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex'),
-          ...(erlaubt(rel)?{tmpdir:await fs.realpath((await import('node:os')).tmpdir())}:{})};}
+        testdatei={pfad,kanonisch,text:bytes.toString('utf8'),sha256:(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex')};}
     }
   }catch{/* Keine unbekannten oder fremden Dateien ausführen. */}
   let prozesse:ShellProbeAntwort['prozesse'];
