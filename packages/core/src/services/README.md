@@ -264,6 +264,60 @@ Die Shell-Queue und die Spezialisten-Queue speichern Aufträge in PostgreSQL; de
 - [Zusammenhang](../../../../docs/README.md)
 <!-- P19-T6:ENDE -->
 
+## Funktionsweise
+
+### Dateiänderungen, Co-Edit und Platten-Synchronisation
+
+![Dateiänderung vom Entwurf über den PostgreSQL-Commit bis zur getrennten Plattenbestätigung.](../../../../docs/bilder/files.svg)
+
+#### Vom Entwurf zum gespeicherten Stand
+
+Eine Dateiänderung beginnt als Operation auf projektbezogenen Pfaden. [planBatch](file-batch.ts) löst den Task-Bezug auf, normalisiert und prüft die Pfade und lädt den aktuellen Inhalt aus PostgreSQL. Die Operationen laufen zunächst auf einem **Schattenstand**: Einfügungen, Ersetzungen, Verschiebungen und Löschungen verändern diesen Entwurf, noch nicht `code_files` oder die Platte. Vorschau, Diff, Text-/Zeilenanker und Basis-Hashes beschreiben, auf welchen Stand sich die Änderung bezieht. Syntax- und Fehlermusterbefunde gehören zu den betroffenen Operationen; ein gespeicherter Plan mit gescheiterten Operationen ist kein erfolgreicher Schreibvorgang.
+
+Beim Commit werden die Befunde gegen den aktuellen Entwurf geprüft. Ein offener sperrender Befund verhindert das Schreiben. Der [Plattenvergleich](file-fs-drift.ts) ermittelt, soweit ein physischer Projekt-Host erreichbar ist, einen eigenen Datei-Hash: bekannte ältere Synapse-Stände können kurz auf den Sync warten; eine nachgewiesene fremde Abweichung ergibt `fs_drift`, der Plan bleibt offen. Ohne prüfbaren Host lautet das Ergebnis `ungeprueft`; das ist kein Nachweis der Gleichheit.
+
+Vor der Übernahme werden Plan und betroffene Dateistände gesperrt und die aktuellen Hashes mit der Planbasis verglichen. Ein anderer PG-Inhalt macht den Plan `stale`. Erst bei anwendbaren, konfliktfreien Operationen werden der neue `code_files`-Stand und die Versionsdaten gespeichert. `committed` bezeichnet die abgeschlossene Übernahme in PostgreSQL.
+
+Die **gemeinsame Co-Edit-Transaktion** speichert Dateien und Vorherstände zusammen; ein Transaktionsfehler rollt diese Schreibvorgänge zurück. Der ältere Batchpfad schreibt dagegen dateiweise über Funktionen mit eigenen Transaktionen. Dort ist ein bereits gespeicherter Dateistand nicht allein durch einen späteren Fehler an einer anderen Datei zurückgerollt. Eine pauschale Atomaritätsgarantie für jeden Multi-File-Aufruf wäre deshalb falsch. Der spätere Platten-Sync gehört zu keiner dieser Schreibtransaktionen.
+
+#### Ein gemeinsamer Entwurf mit mehreren Autoren
+
+[Dateireservierungen](file-reservations.ts) koordinieren überlappende Pfade. Co-Edit führt Beiträge in einen gemeinsamen Zielplan; ein Trägerplan beziehungsweise Wait hält zurückgestellte Beiträge und ihre Zuordnung fest. Der gemeinsame Schatten berücksichtigt die Operationen der beteiligten Autoren, statt unabhängig vorbereitete Komplettdateien übereinanderzuschreiben. Überlappende Änderungen verschiedener Autoren können einen terminalen `conflict` erzeugen; reine Einfügungen am selben Punkt werden gesondert behandelt.
+
+Das Ready-Gate wartet auf gebundene Beitragende, die noch nicht `ready` oder `no_changes` gemeldet haben **und** jüngst Tool-Aktivität hatten. Die Antwort `waiting_for_contributors` beschreibt einen offenen Plan, keinen neuen gespeicherten Plan-Endzustand. Inaktive Beitragende blockieren nicht; ihre bereits eingebrachten Operationen bleiben Bestandteil des Commits. Der Commit-Aufrufer gilt für seinen eigenen Beitrag als fertig.
+
+Ein Rückzug entfernt nur die Operationen des zurückziehenden Autors, solange fremde Beiträge verbleiben. Der Rest wird erneut trocken geprüft; zieht der Owner zurück, kann die Eigentümerschaft auf einen verbleibenden Autor übergehen. Das Rückzugsprotokoll bleibt erhalten. Ein Beitrag nach einem abgeschlossenen Commit landet auf aktueller Basis in einem Folgeplan. Zeilenoperationen werden umgerechnet; ist ihre frühere Stelle inzwischen verändert, wird die Zuordnung mit `late_line_ops_unmappable` abgelehnt, statt eine andere Zeile zu treffen.
+
+| Situation | Bedeutung für den Dateiinhalt |
+|---|---|
+| Offener Plan / wartende Beitragende | Entwurf vorhanden; noch kein Datei-Commit. |
+| Gescheiterte Operation / sperrender Befund / `fs_drift` | Dateischreiben verhindert; der offene Entwurf bleibt prüfbar. |
+| `stale` / `conflict` | Planbasis beziehungsweise gemeinsame Operationen sind nicht mehr committbar. |
+| `committed` | Neuer Inhalt und Versionsdaten sind in PostgreSQL gespeichert. |
+| `cancelled` | Entwurf beendet; ein Rückzug aus einem weiterlaufenden gemeinsamen Plan betrifft nur eigene Beiträge. |
+
+#### Versionierung und Rückweg
+
+[file_versions](file-versions.ts) enthält **Vorherstände**, nicht ausschließlich fertige Ergebnisdateien. Beim Einzel-Update entsteht ein Snapshot, wenn ein vorhandener Inhalt geändert wird. Im gemeinsamen Commit werden Vorherstände je Datei, Autor und Task-Bezug zusammengefasst; `batch_id` verbindet sie mit dem Commit. `task_id` wird aus der projektbezogenen Task-Referenz aufgelöst und ermöglicht die fachliche Zuordnung. Fehlender Task-Bezug in älteren Versionen wird nicht durch eine automatische Migration ergänzt. Der Ergebnis-Hash und das Historienfeld `nachher` beschreiben dagegen den Stand nach der Änderung.
+
+Ein Restore ist ein **neuer Schreibvorgang**: Der gewählte Vorherstand wird aktuell und der bisherige Inhalt wird wiederum versioniert. Ein Batch-Restore führt die Wiederherstellungen dateiweise aus; er ist kein gemeinsamer atomarer Rückwärts-Commit. Bereits erfolgte spätere Änderungen werden durch den wiederhergestellten Stand ersetzt. Ein Transaktions-Rollback vor dem Commit und ein Restore nach dem Commit sind daher unterschiedliche Rückwege.
+
+#### Datenbank-Commit und Platte sind zwei Bestätigungen
+
+Nach dem PG-Commit folgt die lokale Übernahme durch den [PG→FS-Poller](../watcher/index.ts). Er vergleicht Inhalte per Hash, beachtet Pfadschutz und zurückgestellte lokale Ereignisse und überschreibt eine fremde, in den Versionen unbekannte lokale Änderung nicht einfach. Ein passender Hash benötigt keinen erneuten Schreibvorgang. Parsing und Embedding laufen getrennt nach; ein erfolgreicher Datei-Commit garantiert noch keinen aktuellen Vektorindex.
+
+`wait_sync` ergänzt eine zeitlich begrenzte **Leseprobe** beim eindeutig verbundenen lokalen Daemon. Sie fragt den Plattenstand ab und vergleicht ihn mit dem Commit-Hash; bei einer Löschung wird die Abwesenheit geprüft. Sie führt keinen zweiten PG-Commit aus und ersetzt den Poller nicht.
+
+| `auf_platte` | Aussage der Probe |
+|---|---|
+| `ja` | Ergebnis-Hash stimmt beziehungsweise der gelöschte Pfad fehlt. |
+| `nein` | Ein lesbarer Plattenstand entsprach bis zum Ende des Wartebudgets noch nicht dem Ergebnis. |
+| `unbekannt` | Kein eindeutiger Daemon oder keine belastbare Antwort; ohne `wait_sync` bleibt die Bestätigung ebenfalls unbekannt. |
+
+Auch `nein` oder `unbekannt` rollen einen bereits erfolgreichen PG-Commit nicht zurück. Die Unterscheidung verhindert, dass eine Datenbankbestätigung mit einer Zusage über lokale Build-Eingaben verwechselt wird.
+
+Quellen: [Plan, Co-Edit und Commit](file-batch.ts), [Einzelschreibweg und Snapshots](code-write.ts), [FS-Drift](file-fs-drift.ts), [Versionsabruf und Restore](file-versions.ts), [PG→FS-Synchronisation](../watcher/index.ts). Die [Syntax-Prüfer](syntax-pruefer/README.md) erklären ihren Anteil am Schreibtor.
+
 ## Schnittstellen nach außen
 
 Die öffentlichen Paket-Exports werden in [`../index.ts`](../index.ts) und die Service-Exports in [`index.ts`](index.ts) gebündelt. Die abschnittsbezogenen Schnittstellen stehen jeweils bei Teil A, B und C.
