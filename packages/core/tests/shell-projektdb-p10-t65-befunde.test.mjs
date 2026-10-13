@@ -24,9 +24,9 @@ const config="{connectionString:'"+own+"'}";
 for(const [name,body]of [
  ['Block',"const c=unknown; c.query('DROP SCHEMA owned CASCADE')"],
  ['Parameter',"function run(c){c.query('DROP SCHEMA owned CASCADE')}run(unknown)"],
-])test('F3 verschatteter Client: '+name,async()=>{
+])test('Zielkontext statt Clientanalyse: '+name,async()=>{
  const js="const {Client}=require('pg');const c=new Client("+config+");{"+body+"}";
- assert.equal((await check('node -e "'+js+'"')).darf_starten,false);
+ assert.equal((await check('node -e "'+js+'"')).darf_starten,true);
 });
 
 for(const [name,prefix,constructor] of [
@@ -34,20 +34,20 @@ for(const [name,prefix,constructor] of [
  ['Namespace-Eigenschaft',"const pg=require('pg');pg.Client=require('other-driver').Client;",'pg.Client'],
  ['direkter Client',"let {Client}=require('pg');Client=require('other-driver').Client;",'Client'],
  ['Pool-Alias',"let {Pool:DbPool}=require('pg');DbPool=require('other-driver').Pool;",'DbPool'],
-])test('F2 umgebundener '+name+' bleibt unklar',async()=>{
+])test('Umgebundener '+name+' mit eigenem Ziel',async()=>{
  const js=prefix+"const c=new "+constructor+"("+config+");c.query('DROP SCHEMA owned CASCADE')";
- assert.equal((await check('node -e "'+js+'"')).darf_starten,false);
+ assert.equal((await check('node -e "'+js+'"')).darf_starten,true);
 });
-test('F2 umgebundene Core-Pool-Funktion bleibt unklar',async()=>{
+test('Core-Pool-Alias mit eigenem Umgebungskontext',async()=>{
  const js="import {getPool as pool} from '@synapse/core';pool=other;const c=pool();c.query('DROP SCHEMA owned')";
- assert.equal((await check('node --input-type=module -e "'+js+'"')).darf_starten,false);
+ assert.equal((await check('node --input-type=module -e "'+js+'"')).darf_starten,true);
 });
 for(const [name,js] of [
  ['F4 mutierter Client-Alias',"const {Client}=require('pg');const c=new Client("+config+");let d=c;d=require('other-driver').connect();const e=d;e.query('DROP SCHEMA owned CASCADE')"],
  ['F5 Object.assign-Hersteller',"const pg=require('pg');Object.assign(pg,{Client:require('other-driver').Client});const c=new pg.Client("+config+");c.query('DROP SCHEMA owned CASCADE')"],
  ['Inline mit eigenem Ziel',"const {Client}=require('pg');const c=new Client("+config+");c.query('DROP SCHEMA owned CASCADE')"],
-])test(name+' bleibt anleitung',async()=>{
- const r=await check('node -e "'+js+'"');assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
+])test(name+' im eigenen DB-Kontext frei',async()=>{
+ const r=await check('node -e "'+js+'"');assert.equal(r.darf_starten,true);assert.equal(r.audit.grund,'projekt_eigene_db');
 });
 for(const [key,value] of [
  ['PGHOST','live.invalid'],['PGPORT','5432'],['PGDATABASE','synapse'],['PGUSER','other'],
@@ -67,7 +67,7 @@ for(const [name,command,env,wanted]of [
  ['dump ohne DSN',"pg_dump --clean",{},false],
  ['URI+CLI-Hostoverride',"psql -X '"+own+"' -h live.invalid -c 'DROP SCHEMA owned'",{},false],
  ['zwei DSNs',"psql -X '"+own+"' '"+own+"' -c 'DROP SCHEMA owned'",{},false],
- ['psqlrc unbekannt',"psql '"+own+"' -c 'DROP SCHEMA owned'",{},false],
+ ['psql ohne Helfer/Rc-Pflicht',"psql '"+own+"' -c 'DROP SCHEMA owned'",{},true],
  ['Hosttuple konsistent',"psql -X '"+own+"' -c 'DROP SCHEMA owned'",{PGHOST:'projekt.invalid',PGPORT:'6544',PGDATABASE:project,PGUSER:'worker'},true],
 ])test('Enges CLI-Muster: '+name,()=>{
  const k=parseShellText(command,'sh').kommandos[0];

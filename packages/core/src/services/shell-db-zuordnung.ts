@@ -47,112 +47,90 @@ export function dbUmgebungPasst(env:Record<string,string|undefined>,z:ShellDbZie
   return true;
 }
 function psqlZiel(k:ShellTextKommando,env:Record<string,string|undefined>):{ziel?:ShellDbZiel;sql:string[];ok:boolean} {
-  // Enger CLI-Vertrag: genau eine explizite URI, keine Verbindungsdefaults/Overrides.
-  const dump=/^(?:pg_dump)(?:\.exe)?$/.test(k.argv[0]?.text.replace(/\\/g,'/').split('/').pop()??'');
-  const a=k.argv.slice(1);let raw:string|undefined,sql:string[]=[],ok=true,noRc=false;
-  const uri=(v:string)=>{if(raw!==undefined||!/^postgres(?:ql)?:\/\//.test(v))ok=false;else raw=v;};
+  const a=k.argv.slice(1);let raw:string|undefined,dbName:string|undefined,sql:string[]=[],ok=true;
+  const overrides:Record<string,string>={};
+  const conn=(v:string)=>{if(/^postgres(?:ql)?:\/\//.test(v)){if(raw!==undefined)ok=false;raw=v;}else {if(dbName!==undefined)ok=false;dbName=v;}};
   for(let i=0;i<a.length;i++){
-    const w=a[i];if(w.dynamisch){ok=false;continue;}
-    const t=w.text;
-    if(!dump&&(t==='-c'||t==='--command')){const v=a[++i];if(v&&!v.dynamisch)sql.push(v.text);else ok=false;continue;}
-    if(!dump&&t.startsWith('--command=')){sql.push(t.slice(10));continue;}
-    if(t==='-d'||t==='--dbname'){const v=a[++i];if(v&&!v.dynamisch)uri(v.text);else ok=false;continue;}
-    if(t.startsWith('--dbname=')){uri(t.slice(9));continue;}
-    if(!dump&&(t==='-X'||t==='--no-psqlrc')){noRc=true;continue;}
-    const flags=dump?['--schema-only','--data-only','--clean','--if-exists','--no-owner','--no-privileges','--no-acl','--format=plain','-Fp','-s','-a','-w','--no-password']:['-q','--quiet','-t','--tuples-only','-A','--no-align','-w','--no-password'];
-    if(flags.includes(t))continue;
-    if(t.startsWith('-'))ok=false;else uri(t);
+    const w=a[i];if(w.dynamisch){ok=false;continue;}const t=w.text;
+    if(['-c','--command'].includes(t)){const v=a[++i];if(v&&!v.dynamisch)sql.push(v.text);else ok=false;continue;}
+    if(t.startsWith('--command=')){sql.push(t.slice(10));continue;}
+    if(['-d','--dbname'].includes(t)){const v=a[++i];if(v&&!v.dynamisch)conn(v.text);else ok=false;continue;}
+    if(t.startsWith('--dbname=')){conn(t.slice(9));continue;}
+    const keys:Record<string,string>={'-h':'PGHOST','--host':'PGHOST','-p':'PGPORT','--port':'PGPORT','-U':'PGUSER','--username':'PGUSER'};
+    if(keys[t]){const v=a[++i];if(v&&!v.dynamisch)overrides[keys[t]]=v.text;else ok=false;continue;}
+    const eq=t.match(/^--(host|port|username)=(.*)$/);if(eq){overrides[{'host':'PGHOST','port':'PGPORT','username':'PGUSER'}[eq[1]]!]=eq[2];continue;}
+    if(['-f','--file','-o','--output','-F','--format','-n','--schema','-t','--table'].includes(t)){if(!a[++i]||a[i].dynamisch)ok=false;continue;}
+    if(t.startsWith('-')){if(!/^(?:-X|--no-psqlrc|-q|--quiet|-A|--no-align|-w|--no-password|-s|-a|-Fp|--(?:schema-only|data-only|clean|if-exists|no-owner|no-privileges|no-acl|tuples-only|format=\w+))$/.test(t))ok=false;continue;}
+    conn(t);
   }
-  const z=dbZielAusUrl(raw);
-  if(z&&!dbUmgebungPasst(env,z))ok=false;
-  return {ziel:z,sql,ok:ok&&!!z&&(dump||noRc&&sql.length>0)&&!k.umleitungen.length};
+  const effective={...env,...overrides,...(dbName?{PGDATABASE:dbName}:{})};
+  const z=raw?dbZielAusUrl(raw):pgUmgebungsZiel(effective);
+  if(z&&!dbUmgebungPasst(effective,z))ok=false;
+  return {ziel:z,sql,ok:ok&&!!z};
 }
-function nodeZiele(text:string,env:Record<string,string|undefined>):{ziele:Array<ShellDbZiel|undefined>;sql:string[];ok:boolean} {
-  const f=ts.createSourceFile('db-inline.mjs',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
-  if((f as ts.SourceFile&{parseDiagnostics?:unknown[]}).parseDiagnostics?.length)return {ziele:[undefined],sql:[],ok:false};
-  const decl=new Map<string,ts.Expression>(),pg=new Set<string>(),poolFns=new Set<string>(),clients=new Map<string,ShellDbZiel|undefined>();
-  const mutable=new Set<string>(),envAliases=new Set<string>(),bindungen=new Set<string>();
-  // Namenbasierte Analyse beweist keine lexikalischen Scopes: Mehrfachbindungen bleiben unklar.
-  function merkeBindung(name:ts.BindingName):void{
-    if(ts.isIdentifier(name)){if(bindungen.has(name.text))mutable.add(name.text);bindungen.add(name.text);}
-    else for(const x of name.elements)if(ts.isBindingElement(x))merkeBindung(x.name);
-  }
-  let ok=true,queries=0;const ziele:Array<ShellDbZiel|undefined>=[],sql:string[]=[];
+/** User-Richtungswechsel2: Umgebung ist Zielkontext; erkennbare Overrides gewinnen als Ablehnungsfakten. */
+function pgUmgebungsZiel(env:Record<string,string|undefined>):ShellDbZiel|undefined{
+  if(!['PGHOST','PGPORT','PGDATABASE','PGUSER'].every(k=>!!env[k]))return undefined;
+  return {host:env.PGHOST!.toLowerCase(),port:env.PGPORT!,datenbank:env.PGDATABASE!,user:env.PGUSER!};
+}
+function nodeFreigabe(text:string,env:Record<string,string|undefined>,p:ShellDbFreigabe):ShellDbErgebnis{
+  const f=ts.createSourceFile('db-ziel.mjs',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
+  const betroffen=/\b(?:query|execute)\s*\(|\b(?:Client|Pool|getPool)\s*\(/.test(text);
+  if(!betroffen)return {betroffen:false,erlaubt:false,ziele:[]};
+  if((f as ts.SourceFile&{parseDiagnostics?:unknown[]}).parseDiagnostics?.length)return {betroffen:true,erlaubt:false,ziele:[]};
+  const decl=new Map<string,ts.Expression>(),ziele:Array<ShellDbZiel|undefined>=[];
+  const raw=env.DATABASE_URL,defaultZiel=raw?dbZielAusUrl(raw):pgUmgebungsZiel(env);
+  if(raw||Object.keys(env).some(k=>/^PG(?:HOST|PORT|DATABASE|USER)$/.test(k)&&!!env[k]))ziele.push(defaultZiel);
+  let ok=true;
+  function bind(n:ts.Node):void{if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&n.initializer)decl.set(n.name.text,n.initializer);ts.forEachChild(n,bind);}
+  bind(f);
   function value(n:ts.Expression|undefined,depth=0):unknown{
     if(!n||depth>12)return undefined;
     if(ts.isStringLiteralLike(n))return n.text;
-    if(ts.isNumericLiteral(n))return Number(n.text);
+    if(ts.isNumericLiteral(n))return String(n.text);
+    if(ts.isIdentifier(n))return value(decl.get(n.text),depth+1);
     if(ts.isAwaitExpression(n)||ts.isParenthesizedExpression(n))return value(n.expression,depth+1);
-    if(ts.isIdentifier(n))return mutable.has(n.text)?undefined:value(decl.get(n.text),depth+1);
     if(ts.isPropertyAccessExpression(n)&&n.expression.getText(f)==='process.env')return env[n.name.text];
     if(ts.isBinaryExpression(n)&&n.operatorToken.kind===ts.SyntaxKind.PlusToken){const a=value(n.left,depth+1),b=value(n.right,depth+1);return typeof a==='string'&&typeof b==='string'?a+b:undefined;}
-    if(ts.isObjectLiteralExpression(n)){const o:Record<string,unknown>={};for(const p of n.properties){if(!ts.isPropertyAssignment(p)||ts.isComputedPropertyName(p.name))return undefined;o[p.name.getText(f).replace(/^['"]|['"]$/g,'')]=value(p.initializer,depth+1);}return o;}
+    if(ts.isNewExpression(n)&&n.expression.getText(f)==='URL')return value(n.arguments?.[0],depth+1);
+    if(ts.isPropertyAccessExpression(n)&&['href','pathname'].includes(n.name.text)){
+      const raw=value(n.expression,depth+1);if(typeof raw==='string')try{return n.name.text==='href'?raw:new URL(raw).pathname;}catch{return undefined;}
+    }
+    if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&n.expression.name.text==='toString')return value(n.expression.expression,depth+1);
     return undefined;
   }
-  function bind(n:ts.Node):void{
-    if(ts.isVariableDeclaration(n)||ts.isParameter(n))merkeBindung(n.name);
-    if((ts.isFunctionDeclaration(n)||ts.isClassDeclaration(n))&&n.name)merkeBindung(n.name);
-    if(ts.isImportClause(n)&&n.name)merkeBindung(n.name);
-    if(ts.isImportSpecifier(n)||ts.isNamespaceImport(n))merkeBindung(n.name);
-    if(ts.isImportDeclaration(n)&&ts.isStringLiteral(n.moduleSpecifier)){
-      const m=n.moduleSpecifier.text,b=n.importClause?.namedBindings;
-      if(m==='pg'){if(n.importClause?.name)pg.add(n.importClause.name.text);if(b){if(ts.isNamespaceImport(b))pg.add(b.name.text);else for(const x of b.elements)if(['Client','Pool'].includes(x.propertyName?.text??x.name.text))pg.add(x.name.text);}}
-      if(m==='@synapse/core'||/(?:^|\/)core\/dist\/db\/client\.js$/.test(m)){
-        if(b&&ts.isNamedImports(b))for(const x of b.elements)if((x.propertyName?.text??x.name.text)==='getPool')poolFns.add(x.name.text);
-      }
-    }
-    if(ts.isVariableDeclaration(n)&&n.initializer){
-      if(ts.isIdentifier(n.name)){
-        decl.set(n.name.text,n.initializer);
-        if(n.initializer.getText(f)==='process.env')envAliases.add(n.name.text);
-        const e=ts.isAwaitExpression(n.initializer)?n.initializer.expression:n.initializer;
-        if(ts.isCallExpression(e)&&ts.isIdentifier(e.expression)&&e.expression.text==='require'&&value(e.arguments[0])==='pg')pg.add(n.name.text);
-      }else if(ts.isObjectBindingPattern(n.name)&&ts.isCallExpression(n.initializer)&&n.initializer.expression.getText(f)==='require'&&value(n.initializer.arguments[0])==='pg'){
-        for(const x of n.name.elements)if(ts.isIdentifier(x.name)&&['Client','Pool'].includes(x.propertyName?.getText(f)??x.name.text))pg.add(x.name.text);
-      }
-    }
-    // Änderbare Einstellungen/Umgebung bleiben unklar; URLs niemals erraten.
-    if(ts.isBinaryExpression(n)&&n.operatorToken.kind>=ts.SyntaxKind.FirstAssignment&&n.operatorToken.kind<=ts.SyntaxKind.LastAssignment){
-      let base:ts.Node=n.left;while(ts.isPropertyAccessExpression(base)||ts.isElementAccessExpression(base))base=base.expression;
-      if(ts.isIdentifier(base))mutable.add(base.text);
-      if(/^process(?:\.env|\[['"]env['"]\])/.test(n.left.getText(f))||ts.isIdentifier(base)&&envAliases.has(base.text)||n.left.getText(f)==='process')ok=false;
-    }
-    ts.forEachChild(n,bind);
-  }
-  bind(f);
-  function target(n:ts.Expression):ShellDbZiel|undefined{
+  function url(n:ts.Expression):void{
     const v=value(n);
-    if(typeof v==='string')return dbZielAusUrl(v);
-    if(v&&typeof v==='object'){
-      const o=v as Record<string,unknown>;
-      if(Object.keys(o).some(k=>!['connectionString','host','port','database','user','password','ssl','application_name','options'].includes(k)))return undefined;
-      if(o.connectionString!==undefined)return Object.keys(o).some(k=>['host','port','database','user'].includes(k))?undefined:dbZielAusUrl(o.connectionString);
-      if(['host','port','database','user'].every(k=>typeof o[k]==='string'||k==='port'&&typeof o[k]==='number'))return {host:String(o.host).toLowerCase(),port:String(o.port),datenbank:String(o.database),user:String(o.user)};
-    }
-    return undefined;
+    if(typeof v==='string')ziele.push(dbZielAusUrl(v));
+    else if(/^process\.env\./.test(n.getText(f)))ok=false;
+    // Keine Sandbox: verdeckte Bibliotheksdatenflüsse werden nicht rückwärts bewiesen.
   }
   function scan(n:ts.Node):void{
-    if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&n.initializer){
-      const e=ts.isAwaitExpression(n.initializer)?n.initializer.expression:n.initializer;
-      if(ts.isNewExpression(e)&&((ts.isIdentifier(e.expression)&&pg.has(e.expression.text))||(ts.isPropertyAccessExpression(e.expression)&&pg.has(e.expression.expression.getText(f))&&['Client','Pool'].includes(e.expression.name.text)))){
-        const hersteller=ts.isIdentifier(e.expression)?e.expression.text:(e.expression as ts.PropertyAccessExpression).expression.getText(f);
-        const z=e.arguments?.length===1&&!mutable.has(n.name.text)&&!mutable.has(hersteller)?target(e.arguments[0]):undefined;clients.set(n.name.text,z);ziele.push(z);
-      }else if(ts.isCallExpression(e)&&ts.isIdentifier(e.expression)&&poolFns.has(e.expression.text)&&!e.arguments.length){
-        const z=!mutable.has(e.expression.text)&&!mutable.has(n.name.text)?dbZielAusUrl(env.DATABASE_URL):undefined;clients.set(n.name.text,z);ziele.push(z);
-      }else if(ts.isIdentifier(e)&&clients.has(e.text))clients.set(n.name.text,clients.get(e.text));
-      else if(ts.isCallExpression(e)&&ts.isPropertyAccessExpression(e.expression)&&e.expression.name.text==='connect'&&clients.has(e.expression.expression.getText(f)))clients.set(n.name.text,clients.get(e.expression.expression.getText(f)));
+    if(ts.isPropertyAssignment(n)&&n.name.getText(f).replace(/^['"]|['"]$/g,'')==='connectionString')url(n.initializer);
+    if(ts.isNewExpression(n)&&/(?:^|\.)(?:Client|Pool)$/.test(n.expression.getText(f))&&n.arguments?.[0]&&ts.isStringLiteralLike(n.arguments[0]))url(n.arguments[0]);
+    if(ts.isObjectLiteralExpression(n)){
+      const props=new Map(n.properties.filter(ts.isPropertyAssignment).map(x=>[x.name.getText(f).replace(/^['"]|['"]$/g,''),x.initializer]));
+      if(['host','port','database','user'].every(k=>props.has(k))){
+        const values=['host','port','database','user'].map(k=>value(props.get(k)));
+        ziele.push(values.every(v=>typeof v==='string')?{host:String(values[0]).toLowerCase(),port:String(values[1]),datenbank:String(values[2]),user:String(values[3])}:undefined);
+      }
     }
-    if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&['query','execute'].includes(n.expression.name.text)){
-      queries++;const clientName=n.expression.expression.getText(f);
-      if(!clients.has(clientName)||mutable.has(clientName))ziele.push(undefined);
-      const s=value(n.arguments[0]);if(typeof s==='string')sql.push(s);else ok=false;
+    if(ts.isBinaryExpression(n)&&n.operatorToken.kind===ts.SyntaxKind.EqualsToken&&/^process\.env\.(?:DATABASE_URL|PGHOST|PGPORT|PGDATABASE|PGUSER)$/.test(n.left.getText(f))){
+      const v=value(n.right);if(n.left.getText(f)==='process.env.DATABASE_URL'&&typeof v==='string')ziele.push(dbZielAusUrl(v));
+      else if(n.left.getText(f)==='process.env.DATABASE_URL'&&/^process\.env\./.test(n.right.getText(f)))ok=false;
+      else if(typeof v==='string'&&n.left.getText(f)!=='process.env.DATABASE_URL'){
+        const key=n.left.getText(f).slice(12),soll=defaultZiel&&({PGHOST:defaultZiel.host,PGPORT:defaultZiel.port,PGDATABASE:defaultZiel.datenbank,PGUSER:defaultZiel.user} as Record<string,string>)[key];
+        if(v!==soll)ok=false;
+      }
     }
-    // Stringausführung/auswertbare Codewege können weitere DB-Ziele verbergen.
-    if(ts.isCallExpression(n)&&(/^(?:eval|Function|process\.loadEnvFile)$/.test(n.expression.getText(f))||n.expression.getText(f).includes('dotenv')||n.arguments.some(a=>a.getText(f)==='process.env'||ts.isIdentifier(a)&&envAliases.has(a.text))))ok=false;
+    if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&['query','execute'].includes(n.expression.name.text)&&n.arguments[0]&&ts.isStringLiteralLike(n.arguments[0])&&defaultZiel&&!sqlBleibtInDb(n.arguments[0].text,defaultZiel))ok=false;
     ts.forEachChild(n,scan);
   }
-  scan(f);return {ziele,sql,ok:ok&&queries>0&&sql.length===queries};
+  scan(f);
+  const erlaubt=ok&&ziele.length>0&&ziele.every(z=>eigenesZiel(z,p)&&dbUmgebungPasst(env,z));
+  return {betroffen:true,erlaubt,ziele:erlaubt?ziele as ShellDbZiel[]:[]};
 }
+
 export function pruefeDbKommando(k:ShellTextKommando,env:Record<string,string|undefined>,p:ShellDbFreigabe):ShellDbErgebnis {
   const cmd=k.argv[0]?.text.replace(/\\/g,'/').split('/').pop()?.toLowerCase();
   if(cmd==='psql'||cmd==='psql.exe'||cmd==='pg_dump'||cmd==='pg_dump.exe'){
@@ -160,10 +138,7 @@ export function pruefeDbKommando(k:ShellTextKommando,env:Record<string,string|un
     return {betroffen:true,erlaubt:allowed,ziele:allowed?[x.ziel!]:[]};
   }
   if(k.inline_skript?.sprache==='node'){
-    const x=nodeZiele(k.inline_skript.text,env);
-    if(!x.ziele.length&&!x.sql.length)return {betroffen:false,erlaubt:false,ziele:[]};
-    // Statische JS-Ziele sind ausschließlich zusätzliche Ablehnungsfakten, nie Freigaben.
-    return {betroffen:true,erlaubt:false,ziele:[]};
+    return nodeFreigabe(k.inline_skript.text,env,p);
   }
   // Nicht verstandene SQL-Interpreter werden nie von der neuen Ausnahme erfasst.
   return {betroffen:!!k.inline_skript&&/\b(?:query|execute)\s*\(/.test(k.inline_skript.text)||!!cmd&&/^(?:mysql|mariadb|sqlite3)$/.test(cmd),erlaubt:false,ziele:[]};
