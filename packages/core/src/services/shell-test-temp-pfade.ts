@@ -76,9 +76,12 @@ export class ShellTestTempPfade {
    // keine Ausnahme. Insbesondere keine Freigabe anhand eines Dateinamens.
    return true;
   };
-  const decl=new Map<string,ts.Expression>(),aliases=new Map<string,string>();
+  const decl=new Map<string,ts.Expression>(),aliases=new Map<string,string>(),unklareBindungen=new Set<string>();
   const binds=(n:ts.Node):void=>{
-   if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&n.initializer)decl.set(n.name.text,n.initializer);
+   if(ts.isVariableDeclaration(n)&&ts.isIdentifier(n.name)&&n.initializer){
+    if(decl.has(n.name.text)||!ts.isVariableDeclarationList(n.parent)||(n.parent.flags&ts.NodeFlags.Const)===0)unklareBindungen.add(n.name.text);
+    decl.set(n.name.text,n.initializer);
+   }
    if(ts.isImportDeclaration(n)&&ts.isStringLiteralLike(n.moduleSpecifier)&&n.importClause?.namedBindings){
     const mod=n.moduleSpecifier.text.replace(/^node:/,'');
     if(ts.isNamedImports(n.importClause.namedBindings))for(const b of n.importClause.namedBindings.elements)aliases.set(b.name.text,mod+'.'+(b.propertyName?.text??b.name.text));
@@ -105,7 +108,7 @@ export class ShellTestTempPfade {
   const basisPfade=(e:ts.Expression|undefined,depth=0):string[]|undefined=>{
    if(!e||depth>8)return undefined;e=unwrap(e);
    if(ts.isStringLiteralLike(e))try{return [new URL(e.text,pathToFileURL(this.o.testdatei_pfad??'').href).href];}catch{return undefined;}
-   if(ts.isIdentifier(e))return basisPfade(decl.get(e.text),depth+1);
+   if(ts.isIdentifier(e))return unklareBindungen.has(e.text)?undefined:basisPfade(decl.get(e.text),depth+1);
    if(ts.isConditionalExpression(e)){
     const a=basisPfade(e.whenTrue,depth+1),b=basisPfade(e.whenFalse,depth+1);
     // Nur der bereits freigegebene P6-Betreiberparameter bezeichnet einen
@@ -117,20 +120,41 @@ export class ShellTestTempPfade {
    if(ts.isNewExpression(e)&&api(e.expression)==='URL'&&e.arguments?.length===2&&e.arguments[1].getText(file)==='import.meta.url')return basisPfade(e.arguments[0],depth+1);
    return undefined;
   };
+  // Pfadwerte bleiben Werte: ein Identifier darf keinen bekannten Testpfad
+  // durch den Projektroot ersetzen. Nur der bestehende Betreiberparameter ist
+  // ein expliziter Root-Vertrag; andere unaufgelöste Ausdrücke bleiben unklar.
+  const pfadWerte=(e:ts.Expression|undefined,depth=0):string[]|undefined=>{
+   if(!e||depth>8)return undefined;e=unwrap(e);
+   if(ts.isStringLiteralLike(e))return [e.text];
+   if(ts.isIdentifier(e))return unklareBindungen.has(e.text)?undefined:pfadWerte(decl.get(e.text),depth+1);
+   if(ts.isConditionalExpression(e)){
+    const a=pfadWerte(e.whenTrue,depth+1),b=pfadWerte(e.whenFalse,depth+1);
+    return a&&b?[...new Set([...a,...b])]:undefined;
+   }
+   if(ts.isCallExpression(e)&&api(e.expression)==='process.cwd'&&!e.arguments.length)return this.o.cwd?[this.o.cwd]:undefined;
+   if(ts.isBinaryExpression(e)&&e.operatorToken.kind===ts.SyntaxKind.QuestionQuestionToken&&e.left.getText(file)==='process.env.ASSET_HTTP_SOURCE_ROOT'&&ts.isStringLiteralLike(e.right)&&e.right.text==='.')
+    return this.o.projekt_root?[this.o.projekt_root]:undefined;
+   if(ts.isCallExpression(e)&&/^path\.(?:resolve|join)$/.test(api(e.expression))){
+    const args=e.arguments.map(a=>pfadWerte(a,depth+1));
+    if(args.some(a=>!a))return undefined;
+    let combinations:string[][]=[[]];
+    for(const values of args){
+     combinations=combinations.flatMap(parts=>values!.map(value=>[...parts,value]));
+     if(combinations.length>32)return undefined;
+    }
+    const cwd=this.o.cwd;if(!cwd)return undefined;
+    return [...new Set(combinations.map(parts=>api(e.expression)==='path.resolve'?this.p.resolve(cwd,...parts):this.p.resolve(cwd,this.p.join(...parts))))];
+   }
+   return undefined;
+  };
   const produktImport=(e:ts.Expression|undefined,depth=0):boolean=>{
    if(!e||depth>8)return false;
    if(ts.isStringLiteralLike(e))return produkt(e.text);
-   if(ts.isIdentifier(e))return produktImport(decl.get(e.text),depth+1);
+   if(ts.isIdentifier(e))return !unklareBindungen.has(e.text)&&produktImport(decl.get(e.text),depth+1);
    if(ts.isCallExpression(e)&&api(e.expression)==='url.pathToFileURL')return e.arguments.length===1&&produktImport(e.arguments[0],depth+1);
    if(ts.isCallExpression(e)&&/^path\.(?:resolve|join)$/.test(api(e.expression))){
-    const rest=e.arguments.slice(1);
-    if(!rest.length||!rest.every(ts.isStringLiteralLike))return false;
-    const parts=rest.map(x=>(x as ts.StringLiteralLike).text);
-    // resolve: letztes absolutes Segment ersetzt frühere Komponenten.
-    // join: Node hängt absolute Teilkomponenten an, ohne Reset.
-    const first=e.arguments[0],prefix=ts.isStringLiteralLike(first)?first.text:this.o.projekt_root??this.o.cwd??'.';
-    const target=api(e.expression)==='path.resolve'?this.p.resolve(this.o.cwd??'.',prefix,...parts):this.p.resolve(this.o.cwd??'.',this.p.join(prefix,...parts));
-    return produkt(target);
+    const targets=pfadWerte(e,depth+1);
+    return !!targets?.length&&targets.every(produkt);
    }
    if(ts.isNewExpression(e)&&api(e.expression)==='URL'&&e.arguments?.length===2){
     if(e.arguments[1].getText(file)==='import.meta.url'&&ts.isStringLiteralLike(e.arguments[0]))return !testHelfer(e.arguments[0].text);

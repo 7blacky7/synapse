@@ -297,3 +297,29 @@ test('B6 alle konkreten Basen und unaufgelöste Zweige werden geprüft',async()=
  const both="const dist=process.env.WHICH?new URL('../dist/nested/',import.meta.url):new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('module.js');";
  assert.equal((await decide(both)).r.darf_starten,true);
 });
+
+test('B8 bekannte Pfadbasen behalten ihre Node-Semantik und Herkunft',async()=>{
+ const pre="import{resolve,join}from'node:path';import{pathToFileURL}from'node:url';";
+ for(const op of ['resolve','join']){
+  for(const base of [root+'/packages/core/tests/fixtures','/outside']){
+   for(const binding of ['', 'const base='+JSON.stringify(base)+';', 'const original='+JSON.stringify(base)+';const base=(original);']){
+    const first=binding?'base':JSON.stringify(base);
+    assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"("+first+",'packages/core/dist/helper.mjs')));")).r.darf_starten,false);
+   }
+  }
+  assert.equal((await decide(pre+"const base="+JSON.stringify(root)+";await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,true);
+  for(const binding of [
+   "const base=process.env.UNKNOWN;",
+   "const base=process.env.WHICH?"+JSON.stringify(root)+":"+JSON.stringify(root+'/packages/core/tests/fixtures')+";",
+   "const base=process.env.WHICH?"+JSON.stringify(root)+":process.env.UNKNOWN;",
+  ])assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,false);
+  for(const binding of [
+   "let base="+JSON.stringify(root)+";base='/outside';",
+   "const base='/outside';function other(){const base="+JSON.stringify(root)+";}",
+  ])assert.equal((await decide(pre+binding+"await import(pathToFileURL("+op+"(base,'packages/core/dist/helper.mjs')));")).r.darf_starten,false);
+  const everyProduct="const base=process.env.WHICH?"+JSON.stringify(root)+":"+JSON.stringify(root+'/packages/core/dist/nested')+";const module='packages/core/dist/helper.mjs';";
+  assert.equal((await decide(pre+everyProduct+"await import(pathToFileURL("+op+"(base,module)));")).r.darf_starten,true);
+ }
+ const concrete=pre+"const base=resolve("+JSON.stringify(root)+",'packages/core/tests/fixtures');await import(pathToFileURL(resolve(base,'packages/core/dist/helper.mjs')));";
+ assert.equal((await decide(concrete)).r.darf_starten,false);
+});
