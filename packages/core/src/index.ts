@@ -469,6 +469,10 @@ export {
 } from './services/shell-job-umgebung.js';
 export type { JobUmgebung, JobUmgebungInfo, BaueJobUmgebungOptionen } from './services/shell-job-umgebung.js';
 
+// P13-T14: flüchtige Bildprobe ohne Datenbank
+export { BildprobeDienst, BILDPROBE_PARAMETER, ladeBildprobeKonfiguration, renderBildprobePng } from './services/bildprobe.js';
+export type { BildprobeErgebnis, BildprobeKonfiguration } from './services/bildprobe.js';
+
 // Migrations
 export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.js';
 

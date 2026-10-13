@@ -696,8 +696,11 @@ export function createServer(): Server {
         case 'docs':
           return withOnboarding(await docsTool.handler(args as Record<string, unknown>));
 
-        case 'admin':
-          return withOnboarding(await adminTool.handler(args as Record<string, unknown>));
+        case 'admin': {
+          const result = await adminTool.handler(args as Record<string, unknown>);
+          if (args?.action === 'bildprobe') return result as unknown as import('@modelcontextprotocol/sdk/types.js').CallToolResult;
+          return withOnboarding(result);
+        }
 
         case 'code_intel':
           return withOnboarding(await codeIntelTool.handler(args as Record<string, unknown>));
@@ -759,6 +762,8 @@ export function createServer(): Server {
       durationMs: Date.now() - _t0,
       result: _text,
     });
+    // P13-T14: echte image-Blöcke unverändert; keine JSON-Hülle/Anbauten an der Probe.
+    if (name === 'admin' && args?.action === 'bildprobe') return baseResp;
     // P10-T51 (K2): nach ALLEN Anhaengen einmal kompakt serialisieren (null-Felder weg, keine
     // Einrueckung, success ergaenzt) — derselbe Helfer wie auf dem REST-Weg.
     return kompaktiereTextErgebnis(
