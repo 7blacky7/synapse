@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore, ermittleShellLage, shellLageProbeProgramm, maskiereShellAntwort } from '@synapse/core';
 import type { ShellLage,ShellBestaetigung,ShellSicherungsAntwort,SicherungsShell } from '@synapse/core';
-import {holeShellDbFreigabe,pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart}from'@synapse/core';
+import {holeShellDbFreigabe,pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart,baueJobUmgebung}from'@synapse/core';
 import type { ShellProbeAnfrage, ShellProbeAntwort } from '@synapse/core';
 
 /**
@@ -506,12 +506,18 @@ export class WorkspaceOrchestrator {
     const workingDir = opts.workingDir ?? '/workspace';
     const names = [...command.matchAll(/\$(?:env:)?([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)/g)].map(m=>m[1]??m[2]);
     const context = await this.lageProbeImContainer(container, { variablen: [...new Set(['HOME', 'PWD', ...names])],prozesse:true }, workingDir);
+    // Docker exec erbt Config.Env trotz fehlender Env-Einträge: env -i entfernt sie tatsächlich.
+    const containerInfo=await container.inspect();
+    const basis=Object.fromEntries((containerInfo.Config.Env??[]).map(e=>{const i=e.indexOf('=');return [e.slice(0,i),e.slice(i+1)];}));
+    const jobUmgebung=await baueJobUmgebung(project,{basis:{...basis,...context.env},home:context.env.HOME,existiert:()=>false});
+    const bereinigteEnv:Record<string,string>=Object.fromEntries(Object.entries(jobUmgebung.env).filter((e):e is [string,string]=>e[1]!==undefined));
+    context.env=bereinigteEnv;
     const start=waehleShellStart(opts.shell,'linux');
     const dbFreigabe=await holeShellDbFreigabe(project);
     const ermittle=()=>ermittleShellLage(command, {
       datenbank_freigabe:dbFreigabe,
       shell:start.shell,os:context.os,cwd:context.cwd,project_root:'/workspace',env:context.env,env_vollstaendig:true,
-      probe:(input)=>this.lageProbeImContainer(container,input,workingDir),
+      probe:async(input)=>({...await this.lageProbeImContainer(container,input,workingDir),env:bereinigteEnv}),
     });
     let lage=await ermittle();
     if(opts.onLage){await opts.onLage(await maskiereShellAntwort(project,lage));lage=await ermittle();}
@@ -529,13 +535,15 @@ export class WorkspaceOrchestrator {
     void this.appendToLog(containerId, `EXEC: ${command.slice(0, 200)}`);
 
     const exec = await container.exec({
-      Cmd: [opts.shell?start.programm:'/bin/sh', ...start.prefix, command],
+      Cmd: ['/usr/bin/env','-i',...Object.entries(jobUmgebung.env).filter((e):e is [string,string]=>e[1]!==undefined).map(([k,v])=>k+'='+v),
+        `SYNAPSE_PROJECT=${project}`,...(lage.datenbank_zuordnung&&dbFreigabe.test_system_id?[`SYNAPSE_SHELL_DB_FREIGABE=${JSON.stringify(dbFreigabe)}`]:[]),
+        opts.shell?start.programm:'/bin/sh', ...start.prefix, command],
       AttachStdout: true,
       AttachStderr: true,
       Tty: false,
       User: '1000:1000',
       WorkingDir: opts.workingDir ?? '/workspace',
-      Env: [`SYNAPSE_PROJECT=${project}`,...(lage.datenbank_zuordnung&&dbFreigabe.test_system_id?[`SYNAPSE_SHELL_DB_FREIGABE=${JSON.stringify(dbFreigabe)}`]:[])],
+      Env: [], // Kindumgebung ausschließlich aus dem bereinigten env -i oben.
     });
 
     const stream = await exec.start({ hijack: true, stdin: false });

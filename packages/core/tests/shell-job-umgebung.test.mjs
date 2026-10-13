@@ -104,7 +104,7 @@ try {
   };
   // P9-T13: PATH-Ergaenzung hier abgeschaltet (existiert:false) — sie hat eigenen Test
   // (shell-job-pfad.test.mjs); sonst haengt der Test am echten ~/.local/bin des Rechners.
-  const opt = { basis, leseZugang: lookup, secretsPfad, existiert: () => false };
+  const opt = { basis, systemUrl:SYNAPSE_URL, leseZugang: lookup, secretsPfad, existiert: () => false };
 
   if (typeof baueJobUmgebung !== 'function') {
     ok('baueJobUmgebung ist exportiert', false);
@@ -131,10 +131,10 @@ try {
 
     // 3. Projekt synapse
     const c = await baueJobUmgebung('synapse', opt);
-    ok('synapse: DATABASE_URL = Synapse-DB', c.env.DATABASE_URL === SYNAPSE_URL);
-    ok('synapse: SYNAPSE_DATABASE_URL = dieselbe', c.env.SYNAPSE_DATABASE_URL === SYNAPSE_URL);
-    ok('synapse: SYNAPSE_DB_HINWEIS gesetzt', /alleinige Synapse-System-DB/.test(c.env.SYNAPSE_DB_HINWEIS ?? ''));
-    ok('synapse: info = synapse-system-db', c.info.database_url === 'synapse-system-db');
+    ok('synapse: DATABASE_URL entfernt', !('DATABASE_URL' in c.env));
+    ok('synapse: SYNAPSE_DATABASE_URL entfernt', !('SYNAPSE_DATABASE_URL' in c.env));
+    ok('synapse: Hinweis ohne Zugang', /ohne System-DB-Zugang/.test(c.env.SYNAPSE_DB_HINWEIS ?? ''));
+    ok('synapse: info = keine', c.info.database_url === 'keine');
     ok('synapse: keine PG*-Variablen', !Object.keys(c.env).some((n) => /^PG/.test(n)));
     ok('synapse: Durchlass laesst PGPASSWORD trotzdem nicht durch', !('PGPASSWORD' in c.env));
 
@@ -161,7 +161,7 @@ try {
 }
 
 // ── TEIL B ─────────────────────────────────────────────────────────────────
-if (!process.env.DATABASE_URL) {
+if (!process.argv.includes('--integration') || !process.env.DATABASE_URL) {
   console.log('SKIP TEIL B: keine DATABASE_URL in der Test-Umgebung');
 } else {
   try {
@@ -189,8 +189,8 @@ if (!process.env.DATABASE_URL) {
 
     const syn = await lauf('synapse');
     ok(`B synapse: lief (${syn.r.status ?? syn.r.error})`, syn.r.status === 'done');
-    ok(`B synapse: DATABASE_URL -> ${syn.db}`, /:5432\/synapse$/.test(syn.db));
-    ok(`B synapse: SYNAPSE_DATABASE_URL -> ${syn.syn}`, syn.syn === syn.db);
+    ok('B synapse: DATABASE_URL entfernt', !syn.namen.includes('DATABASE_URL'));
+    ok('B synapse: SYNAPSE_DATABASE_URL entfernt', !syn.namen.includes('SYNAPSE_DATABASE_URL'));
     ok('B synapse: SYNAPSE_DB_HINWEIS da', syn.namen.includes('SYNAPSE_DB_HINWEIS'));
     ok(`B synapse: keine Secrets (${verboten(syn.namen).join(',') || '-'})`, verboten(syn.namen).length === 0);
   } catch (err) {
