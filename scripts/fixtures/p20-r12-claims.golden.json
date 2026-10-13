@@ -1,0 +1,47 @@
+[
+  {
+    "chunkId": "p20_t9_a-1",
+    "claimAttempt": 1,
+    "project": "p20_t9_a",
+    "filePath": "src/a.ts",
+    "fileType": "ts",
+    "chunkIndex": 1,
+    "totalChunks": 3,
+    "content": "fixture 1",
+    "contentHash": "2ae2f0decb81fc1ec7b1dcbc19912b19605e312b725268f01de9d6614d2d8926",
+    "lineStart": 1,
+    "lineEnd": 1,
+    "claimToken": "<token>",
+    "leaseUntil": "<zeit>"
+  },
+  {
+    "chunkId": "p20_t9_a-2",
+    "claimAttempt": 1,
+    "project": "p20_t9_a",
+    "filePath": "src/a.ts",
+    "fileType": "ts",
+    "chunkIndex": 2,
+    "totalChunks": 3,
+    "content": "fixture 2",
+    "contentHash": "b743cbe1bb107033458694774ad7146dec3f339346803159e2c58f55e2ac67dc",
+    "lineStart": 1,
+    "lineEnd": 1,
+    "claimToken": "<token>",
+    "leaseUntil": "<zeit>"
+  },
+  {
+    "chunkId": "p20_t9_a-3",
+    "claimAttempt": 1,
+    "project": "p20_t9_a",
+    "filePath": "src/a.ts",
+    "fileType": "ts",
+    "chunkIndex": 3,
+    "totalChunks": 3,
+    "content": "fixture 3",
+    "contentHash": "c509a1e728f019899e4a40503ac62872d9373c6a7719c48054941a7e8c298815",
+    "lineStart": 1,
+    "lineEnd": 1,
+    "claimToken": "<token>",
+    "leaseUntil": "<zeit>"
+  }
+]
