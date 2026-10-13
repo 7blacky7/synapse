@@ -147,7 +147,9 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
    if(fn&&expr){for(const arg of n.arguments)visit(arg,scope,depth+1);funktion(fn,expr,bindings(fn,n.arguments,scope,depth),depth+1);return;}
    const api=apiName(n.expression),args=n.arguments.map(x=>value(x,scope)),opts=args[2];
    let method:string|undefined;
-   for(const v of args)if(objectValue(v)&&Object.hasOwn(v,'method'))method=typeof v.method==='string'?v.method:dyn;
+   // Ein method-Feld ist erst an einem HTTP-Aufruf ein Netzwerkfakt (Fastify.inject ist lokal).
+   const httpAufruf=/^(?:fetch|(?:https?|axios|requests|httpx)\.(?:request|get|post|put|patch|delete|head|options))$/.test(api)||/\.(?:request|fetch)$/.test(api);
+   if(httpAufruf)for(const v of args)if(objectValue(v)&&Object.hasOwn(v,'method'))method=typeof v.method==='string'?v.method:dyn;
    if(/^(?:fetch|(?:https?|axios|requests|httpx)\.request)$/.test(api)&&n.arguments[1]&&!objectValue(args[1]))method=method??dyn;
    let projected:ShellTextKommando[]=[],eingabe=false;
    const optionsOk=n.arguments.length<=2||n.arguments.length===3&&objectValue(opts)&&!hashText(opts)&&Object.keys(opts).every(k=>['encoding','stdio','input'].includes(k))&&

@@ -64,3 +64,29 @@ test('Abweichende PG-Umgebung verhindert Verbindung',async()=>{
  try{process.env.PGHOST='live.invalid';await assert.rejects(()=>oeffneGeschuetzteTestDb(url,proof,()=>{connected=true;throw Error('unused');}),/test_db_umgebung_abweichend/);assert.equal(connected,false);}
  finally{previous===undefined?delete process.env.PGHOST:process.env.PGHOST=previous;}
 });
+
+test('Nacktes ROLLBACK heilt fehlgeschlagene Transaktion; nächste Nutzabfrage wird erneut geprüft',async()=>{
+ const calls=[];let failed=false,checks=0;
+ const client={connect:async()=>{},end:async()=>{},query:async sql=>{
+  calls.push(sql);
+  if(/^ROLLBACK\s*;?$/.test(sql)){failed=false;return {rows:[]};}
+  if(failed)throw Object.assign(Error('transaction aborted'),{code:'25P02'});
+  if(sql.startsWith('SELECT current_database()')){checks++;return {rows:[checks<3?ok():{...ok(),datenbank:'foreign'}]};}
+  if(sql==='SELECT fixture_error()'){failed=true;throw Object.assign(Error('original failure'),{code:'55P03'});}
+  return {rows:[]};
+ }};
+ const db=await oeffneGeschuetzteTestDb(url,proof,()=>client);
+ await db.query('BEGIN');
+ await assert.rejects(()=>db.query('SELECT fixture_error()'),e=>e.code==='55P03');
+ await db.query('ROLLBACK');
+ assert.equal(failed,false);
+ await assert.rejects(()=>db.query('DELETE FROM owned'),/test_db_laufzeit_ziel_abweichend/);
+ assert.equal(calls.includes('DELETE FROM owned'),false);
+ await db.end();
+});
+test('ROLLBACK mit Folge-SQL erhält keine Recovery-Ausnahme',async()=>{
+ const m=mock([ok()]);const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
+ await db.query('ROLLBACK; DELETE FROM owned');
+ assert.equal(m.calls.length,2);assert.match(m.calls[0],/current_database/);
+ await db.end();
+});
