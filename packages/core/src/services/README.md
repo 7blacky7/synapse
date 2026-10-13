@@ -408,6 +408,24 @@ Ein zurückgewiesener Syntaxfehler stößt daneben den asynchronen Erklärungswe
 
 ![Datenfluss von Syntaxprüfung, Prüfcontainer und asynchronem Erklärungsfall](../../../../docs/bilder/pruefung.svg)
 
+### Authentifizierung, Onboarding und Projektzuordnung
+
+#### Projektpfad und Agenten-Onboarding
+
+Ein absoluter Pfad wird gegen die registrierten Projekt-Roots in PostgreSQL geprüft. [ermittleProjektAusPfad](project-registry.ts) normalisiert Pfade, akzeptiert den Root und seine Unterordner und wählt den längsten passenden Root. Ohne Treffer meldet die Auflösung eine fehlende Zuordnung; mehrere gleich lange passende Roots mit unterschiedlichen Projektnamen ergeben einen Mehrdeutigkeitsfehler. Der Projektname wird nicht aus dem Ordnernamen geraten und eine unbekannte Zuordnung startet keine Anlage. Die Registry ordnet Projekte Hostnamen und Pfaden zu; ein virtueller Eintrag der REST-API erlaubt Web-Agenten den Zugriff ohne lokalen Projektpfad.
+
+Für das Onboarding bestimmt [rolleFuerAgent](agent-rollen.ts) die Rolle aus einem gültigen Rollenwert oder einem Namenspräfix und gibt die Herkunft mit zurück. Unbekannte Rollenwerte werden sichtbar als unbekannt markiert und auf die Standardrolle abgebildet. [holeAgentOnboarding](agent-onboarding.ts) erkennt bekannte Sitzungen und liefert bei erneutem Onboarding keine Regelkopie. Beim ersten oder ausdrücklich angeforderten Onboarding werden die Projektregeln geladen, nach Rollenbindung gefiltert und aufbereitet: Regeln mit dem Tag `pflicht` kommen vollständig, andere als Auszug mit Verweis auf den Einzelabruf. Der Zustellstatus wird erst nach dem Aufbau des ganzen Blocks beansprucht; konkurrierende Abrufe erhalten dadurch höchstens einen erfolgreichen Block. PostgreSQL enthält Memory-Volltexte und Regelmetadaten; Qdrant trägt abgeleitete Suchvektoren. Die [Skills-Übersicht](../../../../skills/README.md) beschreibt die Skill-Dateien und deren Einordnung.
+
+![Datenfluss für Authentifizierung, Onboarding und Projektanlage](../../../../docs/bilder/auth.svg)
+
+#### Projektanlage und Registry
+
+Die Self-Service-Anlage beginnt mit einem expliziten Init-Auftrag, der einen gültigen Namen statt eines Pfads enthält. [project-init-queue.ts](project-init-queue.ts) speichert den Auftrag in PostgreSQL. Der [Projekt-Init-Worker](../../../../packages/file-watcher-daemon-ts/src/project-init-worker.ts) nimmt per PostgreSQL-Benachrichtigung oder Sicherheitsabfrage einen noch offenen Auftrag für seinen Host atomar aus der Queue. Er löst den Zielordner unter der konfigurierten Workspace-Wurzel auf, legt das Projekt an und registriert Name, Host und Pfad; danach kann er den zugehörigen Watcher starten.
+
+Der Worker meldet einen der Endzustände `done`, `failed`, `rejected` oder `timeout` zurück. Ungültige Namen, Pfadausbrüche oder vorhandene Nicht-Verzeichnisse werden abgewiesen. Bereits vorhandene Projektverzeichnisse werden registriert und weiterverwendet; ein nicht rechtzeitig übernommener Auftrag läuft aus. Das Ergebnis wird gespeichert und an den wartenden Aufrufer signalisiert. Der Anlegepfad kann außerdem die projektspezifische Datenbank konfigurieren; deren Erreichbarkeit und lokaler Dateisystemschritt sind getrennte Grenzen. Registry-Zuordnung und Self-Service-Anlage bleiben unterschiedliche Pfade: Ein fehlender Registry-Treffer erzeugt für sich allein keinen Init-Auftrag.
+
+Quellbelege: [project-registry.ts](project-registry.ts) (Pfadauflösung und Registry), [agent-rollen.ts](agent-rollen.ts) und [agent-onboarding.ts](agent-onboarding.ts) (Rollen- und Zustellpfad), [project-init-queue.ts](project-init-queue.ts) und [project-init-worker.ts](../../../../packages/file-watcher-daemon-ts/src/project-init-worker.ts) (Queue und Worker).
+
 ## Schnittstellen nach außen
 
 Die öffentlichen Paket-Exports werden in [`../index.ts`](../index.ts) und die Service-Exports in [`index.ts`](index.ts) gebündelt. Die abschnittsbezogenen Schnittstellen stehen jeweils bei Teil A, B und C.

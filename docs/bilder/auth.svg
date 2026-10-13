@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900" role="img" aria-labelledby="title desc">
+<title id="title">Eintritt · Authentifizierung, Onboarding und Projektanlage</title>
+<desc id="desc">Drei getrennte Abschnitte: Tokenarten und gemeinsames Auth-Gate, Projektpfad mit rollenbezogenem Onboarding und expliziter Init-Auftrag über Queue und lokalen Daemon. Quellen: REST auth.ts, auth-hook.ts, routes/auth.ts, routes/oauth.ts; Core agent-onboarding.ts, agent-rollen.ts, project-registry.ts, project-init-queue.ts; Daemon project-init-worker.ts.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#f0883e"/></marker></defs>
+<rect width="1500" height="900" rx="18" fill="#0d1117"/>
+<g font-family="DejaVu Sans, sans-serif" fill="#e6edf3">
+<text x="42" y="50" font-size="32" font-weight="700" fill="#f0883e">Eintritt · Authentifizierung, Onboarding und Projektanlage</text>
+<text x="42" y="80" font-size="18" fill="#b1bac4">HTTP-Identität, Projektkontext und Anlage haben getrennte Zuständigkeiten.</text>
+<rect x="35" y="105" width="1430" height="230" rx="16" fill="#161b22" stroke="#f0883e" stroke-width="2"/>
+<text x="60" y="140" font-size="24" font-weight="700" fill="#f0883e">1 · Authentifizierung: drei Tokenwege, ein gemeinsames Gate</text>
+<rect x="65" y="165" width="300" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="85" y="198" font-size="20" font-weight="700">Web-UI</text><text x="85" y="228" font-size="17">TOTP → Session · 24 h</text><text x="85" y="256" font-size="16" fill="#b1bac4">httpOnly-Cookie für SSE</text>
+<rect x="405" y="165" width="350" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="425" y="198" font-size="20" font-weight="700">MCP OAuth</text><text x="425" y="228" font-size="17">TOTP → Code + PKCE</text><text x="425" y="256" font-size="16" fill="#b1bac4">Access · Refresh-Rotation</text>
+<rect x="795" y="165" width="285" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="815" y="198" font-size="20" font-weight="700">Dauerprozesse</text><text x="815" y="228" font-size="17">Service-Token</text><text x="815" y="256" font-size="16" fill="#b1bac4">z. B. Daemon / Tray</text>
+<rect x="1120" y="165" width="305" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="1140" y="198" font-size="20" font-weight="700">API / MCP Auth-Hook</text><text x="1140" y="228" font-size="17">Bearer prüfen · Ablauf</text><text x="1140" y="256" font-size="16" fill="#b1bac4">Hashabgleich in PostgreSQL</text>
+<text x="65" y="310" font-size="16" fill="#b1bac4">Token-Klartext nur bei Ausgabe · DB speichert SHA-256-Hash, Client, Scope und Ablauf · Auth-Allowlist hält Bootstrap offen</text>
+<rect x="35" y="365" width="1430" height="225" rx="16" fill="#161b22" stroke="#f0883e" stroke-width="2"/>
+<text x="60" y="400" font-size="24" font-weight="700" fill="#f0883e">2 · Projektkontext und Onboarding</text>
+<rect x="65" y="425" width="300" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="85" y="458" font-size="20" font-weight="700">Absoluter Pfad</text><text x="85" y="488" font-size="17">registrierter Root / Kindpfad</text><text x="85" y="516" font-size="16" fill="#b1bac4">kein Treffer → Fehler</text>
+<rect x="425" y="425" width="300" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="445" y="458" font-size="20" font-weight="700">Registry + Rolle</text><text x="445" y="488" font-size="17">längster Root · Host</text><text x="445" y="516" font-size="16" fill="#b1bac4">Rollenquelle wird benannt</text>
+<rect x="785" y="425" width="300" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="805" y="458" font-size="20" font-weight="700">Regelblock</text><text x="805" y="488" font-size="17">Projekt- und Rollenfilter</text><text x="805" y="516" font-size="16" fill="#b1bac4">Pflicht voll · andere Auszug</text>
+<rect x="1145" y="425" width="280" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="1165" y="458" font-size="20" font-weight="700">Zustell-Claim</text><text x="1165" y="488" font-size="17">nach vollständigem Aufbau</text><text x="1165" y="516" font-size="16" fill="#b1bac4">bekannt → kein Regelblock</text>
+<path d="M365 482H425" fill="none" stroke="#f0883e" stroke-width="2.5" marker-end="url(#arrow)"/><path d="M725 482H785" fill="none" stroke="#f0883e" stroke-width="2.5" marker-end="url(#arrow)"/><path d="M1085 482H1145" fill="none" stroke="#f0883e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<text x="65" y="570" font-size="16" fill="#b1bac4">Rollen-/Regelkontext ist unabhängig vom Token-Gate.</text>
+<rect x="35" y="620" width="1430" height="230" rx="16" fill="#161b22" stroke="#f0883e" stroke-width="2"/>
+<text x="60" y="655" font-size="24" font-weight="700" fill="#f0883e">3 · Explizite Projektanlage</text>
+<rect x="65" y="680" width="300" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="85" y="713" font-size="20" font-weight="700">Init-Anfrage</text><text x="85" y="743" font-size="17">gültiger Name · ohne Pfad</text><text x="85" y="771" font-size="16" fill="#b1bac4">explizit angefordert</text>
+<rect x="425" y="680" width="300" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="445" y="713" font-size="20" font-weight="700">PostgreSQL-Queue</text><text x="445" y="743" font-size="17">pending → Host-Claim</text><text x="445" y="771" font-size="16" fill="#b1bac4">NOTIFY + Sicherheitsabfrage</text>
+<rect x="785" y="680" width="300" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="805" y="713" font-size="20" font-weight="700">Lokaler Daemon</text><text x="805" y="743" font-size="17">Workspace-Root → Ordner</text><text x="805" y="771" font-size="16" fill="#b1bac4">Registry · optional DB / Watcher</text>
+<rect x="1145" y="680" width="280" height="115" rx="12" fill="#0d1117" stroke="#f0883e" stroke-width="2"/>
+<text x="1165" y="713" font-size="20" font-weight="700">Job-Endzustand</text><text x="1165" y="743" font-size="17">done · failed · rejected</text><text x="1165" y="771" font-size="16" fill="#b1bac4">timeout · Ergebnis signalisiert</text>
+<path d="M365 737H425" fill="none" stroke="#f0883e" stroke-width="2.5" marker-end="url(#arrow)"/><path d="M725 737H785" fill="none" stroke="#f0883e" stroke-width="2.5" marker-end="url(#arrow)"/><path d="M1085 737H1145" fill="none" stroke="#f0883e" stroke-width="2.5" marker-end="url(#arrow)"/>
+<text x="42" y="880" font-size="14" fill="#b1bac4">Quellen: REST auth.ts, auth-hook.ts, routes/auth.ts, routes/oauth.ts · Core agent-onboarding.ts, agent-rollen.ts, project-registry.ts, project-init-queue.ts · Daemon project-init-worker.ts</text>
+</g></svg>

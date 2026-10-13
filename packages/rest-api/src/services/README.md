@@ -19,6 +19,14 @@ Die Dienste kapseln API-nahe Fachlogik, die von mehreren Routen oder dem Servers
 | [`wrapper-stream.ts`](wrapper-stream.ts) | Verteilt PostgreSQL-Benachrichtigungen als Ereignisse an verbundene Wrapper-Streams und stellt deren Zustand dar. |
 | [`agent-runtime`](agent-runtime/README.md) | Runtime-Treiber, Sitzungsverwaltung, Terminale und Artefaktzustellung für Hauptagenten. |
 
+## Funktionsweise: Authentifizierung
+
+Die [Auth-Dienste](auth.ts) und [Auth-Routen](../routes/auth.ts) trennen drei Tokenarten nach ihrem Zweck. Beim Web-UI-Login bestätigt der TOTP-Schritt die Anmeldung und stellt ein 24-Stunden-Session-Token aus; dasselbe Token wird als httpOnly-Cookie für Browser-EventSource gesetzt. Beim OAuth-Fluss für MCP-Clients führt ein TOTP-Consent zu einem Authorization-Code. Der Code bindet Redirect-URI und optional PKCE-Challenge; beim Einlösen prüft die Route den PKCE-Verifier und gibt Access- und bei angefordertem Offline-Zugriff Refresh-Tokens aus. Ein Refresh-Token ist einmalig: seine Rotation invalidiert das alte Token und erhält dessen absolutes Ablaufdatum. Service-Tokens bilden den eigenen Zugang für länger laufende Prozesse wie Daemon oder Tray.
+
+Der Dienst gibt das Klartext-Token nur beim Ausstellen zurück. In PostgreSQL wird sein SHA-256-Hash gespeichert; Validierung hasht den vorgelegten Wert erneut und akzeptiert nur passende, nicht abgelaufene Einträge. Widerruf entfernt den Eintrag. Der globale [Auth-Hook](../middleware/auth-hook.ts) verlangt für geschützte API-, MCP- und MCP-Root-Aufrufe einen gültigen Bearer-Access-Token. Bootstrap-, Discovery- und Auth-Routen stehen auf einer Allowlist. Browser-EventSource kann keinen Authorization-Header senden und wird deshalb über Session-Cookie oder kurzlebigen SSE-Token geprüft. Ist der Auth-Hook per Konfiguration deaktiviert, entfällt dieses Gate.
+
+Dieses technische Token-Gate bestimmt nicht die Agentenrolle: OAuth-Scope und Token-Client gehören zur HTTP-Authentifizierung; `agent_id` und Rolle steuern den Projektkontext und das sichtbare Onboarding-Regelwerk. Details zu den drei Abläufen zeigt [auth.svg](../../../../docs/bilder/auth.svg).
+
 ## Funktionsweise: Workspaces
 
 ![Workspace-Zustände und getrennte Materialisierung](../../../../docs/bilder/workspace.svg)
