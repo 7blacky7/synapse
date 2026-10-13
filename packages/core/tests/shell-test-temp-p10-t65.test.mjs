@@ -12,20 +12,20 @@ const fixtures=JSON.parse(readFileSync(new URL('./fixtures/shell-test-temp-p10-t
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const target={host:'test.invalid',port:'5433',datenbank:'synapse_test',user:'tester'};
 const proof={project,ziele:[{...target,art:'test'}],live:{host:'live.invalid',port:'6123',datenbank:'system',user:'system'}};
-async function decide(text,{source=file,helpers=[],outside=false,inline=false}={}){
+async function decide(text,{source=file,helpers=[],outside=false,inline=false,canonical=p=>p}={}){
  const full=root+'/'+source,command=inline?'node -e '+JSON.stringify(text):'node '+source;
- const probe=async input=>({cwd:input.cwd,os:'linux',env:{},pfade:(input.pfade??[]).map(p=>({pfad:p,kanonisch:outside&&p===root+'/coedit-test'?'/outside/coedit':p,existiert:true,links:[]})),
+ const probe=async input=>({cwd:input.cwd,os:'linux',env:{},pfade:(input.pfade??[]).map(p=>({pfad:p,kanonisch:outside&&p===root+'/coedit-test'?'/outside/coedit':canonical(p),existiert:true,links:[]})),
   ...(input.testdatei===full?{testdatei:{pfad:full,kanonisch:full,text,sha256:hash(text),tmpdir:'/tmp',helfer:helpers.map(h=>({pfad:root+'/'+h.file,text:h.text,sha256:h.sha256??hash(h.text)}))}}:{})});
  const lage=await ermittleShellLage(command,{cwd:root,project_root:root,shell:'sh',os:'linux',env:{DATABASE_URL:'postgresql://tester:synthetic@test.invalid:5433/synapse_test'},env_vollstaendig:true,inspect:true,probe,datenbank_freigabe:proof});
  const r=pruefeShellStart({project,command,lage,agent_id:'sol-2'},SHELL_SICHERUNG_SEED);
  const fs=skriptFakten(text,'node',{cwd:root,projekt_root:root,os:'linux',testdatei_pfad:full,test_tmpdir:'/tmp',inline_pfade:lage.inline_pfade,testhelfer:helpers.map(h=>({pfad:root+'/'+h.file,text:h.text,sha256:h.sha256??hash(h.text)}))}).filter(k=>/^fs\./.test(k.skript_operation?.name??'')).map(k=>k.skript_operation);
  return {r,lage,fs};
 }
-for(const f of fixtures)test('Historischer Quellstand '+f.job.slice(0,8)+' wird begrenzt freigegeben',async()=>{
+for(const f of fixtures)test('Historischer Quellstand '+f.job.slice(0,8)+(f.job.startsWith('7364031f')?' wird begrenzt freigegeben':' bleibt Anleitung'),async()=>{
  assert.equal(hash(f.text),f.sha256);
  for(const h of f.helpers??[])assert.equal(hash(h.text),h.sha256);
  const {r,fs}=await decide(f.text,{source:f.file,helpers:f.helpers});
- assert.equal(r.darf_starten,true,JSON.stringify({risiko:r.antwort?.risiko,fs}));
+ assert.equal(r.darf_starten,f.job.startsWith('7364031f'),JSON.stringify({risiko:r.antwort?.risiko,fs}));
 });
 test('A12 tmpdir-Variante ist frei',async()=>{
  const f=fixtures[0],text=f.text.replace("import {dirname,join} from 'node:path';","import {dirname,join} from 'node:path';import {tmpdir} from 'node:os';").replace("mkdtemp(join(here,'fixtures','a12-runtime-'))","mkdtemp(join(tmpdir(),'synapse-a12-'))");
@@ -100,7 +100,7 @@ test('Native Probe liest und bindet nur Test-Helfer; kompiliertes Standalone-Pro
  const direct=await probeShellLage(input);
  assert.equal(direct.testdatei.tmpdir,tmpdir());
  assert.equal(direct.testdatei.helfer.length,1);
- assert.match(direct.testdatei.helfer[0].pfad,/tests\/_helfer\/test-fixture-cleanup\.mjs$/);
+ assert.match(direct.testdatei.helfer[0].pfad,/tests\/fixtures\/shell-test-temp-helper-p10-t65\.mjs$/);
  assert.equal(hash(direct.testdatei.helfer[0].text),direct.testdatei.helfer[0].sha256);
  const child=spawnSync(process.execPath,['-e',shellLageProbeProgramm(),JSON.stringify(input)],{encoding:'utf8'});
  assert.equal(child.status,0,child.stderr);
@@ -117,4 +117,68 @@ test('Gleichnamige Helper-Bindings in fremdem Scope beweisen keine eigene Wurzel
   "import{mkdtemp}from'node:fs/promises';import{join}from'node:path';export function make(){const rootBase='/outside';const createRoot=async prefix=>{const root=await mkdtemp(join(rootBase,prefix));return root;};function unrelated(){const rootBase='/home/blacky/dev/synapse/coedit-test';}return{createRoot};}"};
  const source="import{make}from'./_helfer/shadow.mjs';import{rm}from'node:fs/promises';const factory=make();const root=await factory.createRoot('owned-fixture-');await rm(root,{recursive:true});";
  assert.equal((await decide(source,{helpers:[helper]})).r.darf_starten,false);
+});
+
+const helperSource=effect=>"import{mkdtemp,rm,writeFile,mkdir,rename}from'node:fs/promises';import{join}from'node:path';export function createFixture(){const base=join(process.cwd(),'coedit-test');const createRoot=async prefix=>{"+effect+"const created=await mkdtemp(join(base,prefix));return created;};return{createRoot};}";
+const helperCaller="import{createFixture}from'./fixtures/pruefer1-helper.mjs';import{rm}from'node:fs/promises';const fixture=createFixture();const created=await fixture.createRoot('pruefer1-owned-');await rm(created,{recursive:true});";
+for(const [label,effect] of [
+ ['B1 Außenwrite',"await writeFile('/outside/pruefer1-counterexample','x');"],
+ ['B2 Außenrm',"await rm('/outside/pruefer1-counterexample',{recursive:true});"],
+ ['indirekter Außenwrite',"const hidden=()=>writeFile('/outside/pruefer1-counterexample','x');await hidden();"],
+ ['dynamisches Ziel',"await rm(process.env.DEST,{recursive:true});"],
+ ['Link im Helper',"await symlink('/outside',join(base,'linked'));"],
+])test('NOGO: Helper '+label+' bleibt Anleitung',async()=>{
+ const helpers=[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:helperSource(effect)}];
+ assert.equal((await decide(helperCaller,{helpers})).r.darf_starten,false);
+});
+test('Reine Helfer-Erzeugung bleibt frei',async()=>{
+ assert.equal((await decide(helperCaller,{helpers:[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:helperSource('')}]})).r.darf_starten,true);
+});
+for(const base of [root+'/coedit-test/nested',root+'/packages/core/tests/fixtures/nested','/tmp/nested'])test('NOGO: konkreter Prefix über Symlink '+base+' bleibt Anleitung',async()=>{
+ const text=imports+"const own=await mkdtemp(join("+JSON.stringify(base)+",'pruefer1-owned-'));await rm(own,{recursive:true});";
+ const canonical=p=>p===base||p.startsWith(base+'/')?'/outside/nested'+p.slice(base.length):p;
+ const {r,lage}=await decide(text,{canonical});
+ assert.equal(r.darf_starten,false,JSON.stringify(lage.inline_pfade));
+});
+test('NOGO: nativer Eltern-Symlink wird aufgelöst und blockiert',async()=>{
+ const fs=await import('node:fs/promises'),p=await import('node:path'),os=await import('node:os');
+ const {probeShellLage}=await import('../dist/services/shell-lage-probe.js');
+ const own=await fs.mkdtemp(p.join(root,'coedit-test','t84-symlink-'));
+ const external=await fs.mkdtemp(p.join(os.tmpdir(),'t84-external-'));
+ try{
+  const linked=p.join(own,'nested');await fs.symlink(external,linked);
+  const source=imports+"const own=await mkdtemp("+JSON.stringify(p.join(linked,'pruefer1-owned-'))+");await rm(own,{recursive:true});";
+  const full=root+'/'+file;
+  const probe=async input=>input.testdatei?{cwd:root,os:'linux',env:{},pfade:[],testdatei:{pfad:full,kanonisch:full,text:source,sha256:hash(source),tmpdir:os.tmpdir()}}:probeShellLage(input);
+  const command='node '+file;
+  const lage=await ermittleShellLage(command,{cwd:root,project_root:root,shell:'sh',os:'linux',inspect:true,probe,env:{},env_vollstaendig:true});
+  assert.equal(pruefeShellStart({project,command,lage,agent_id:'sol-2'},SHELL_SICHERUNG_SEED).darf_starten,false);
+ }finally{await fs.rm(own,{recursive:true,force:true});await fs.rm(external,{recursive:true,force:true});}
+});
+
+test('Ungeklärter Helfer blockiert auch ohne anschließende Caller-FS-Operation',async()=>{
+ const helpers=[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:helperSource("await writeFile('/outside/pruefer1-counterexample','x');")}];
+ assert.equal((await decide(helperCaller.replace("await rm(created,{recursive:true});",""),{helpers})).r.darf_starten,false);
+});
+test('Factory-/Modulinitialisierung mit Außenwrite ist keine reine Factory',async()=>{
+ for(const source of [
+  helperSource('').replace("const base=","writeFile('/outside/factory','x');const base="),
+  helperSource('')+"await writeFile('/outside/module','x');",
+ ])assert.equal((await decide(helperCaller,{helpers:[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:source}]})).r.darf_starten,false);
+});
+
+test('Fehlender oder negativer nativer Prefix-Nachweis gewährt keine Provenanz',()=>{
+ for(const inline_pfade of [undefined,{}, {[root+'/coedit-test']:true,[root+'/coedit-test/owned-fixture-']:false}]){
+  const source=imports+"const created=await mkdtemp(join("+JSON.stringify(root+'/coedit-test')+",'owned-fixture-'));await rm(created,{recursive:true});";
+  const fs=skriptFakten(source,'node',{cwd:root,projekt_root:root,os:'linux',testdatei_pfad:root+'/'+file,test_tmpdir:'/tmp',inline_pfade}).filter(k=>k.skript_operation?.name==='fs.promises.rm');
+  assert.equal(fs.length,1);assert.equal(fs[0].skript_operation.ziel_im_projekt,false);
+ }
+});
+test('Helfer-Override, unzulässiger Prefix und ungeprüfte Methode blockieren ohne Caller-Writer',async()=>{
+ const helpers=[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:helperSource('')}];
+ for(const source of [
+  helperCaller.replace("createFixture()","createFixture({root:'/outside'})").replace("await rm(created,{recursive:true});",""),
+  helperCaller.replace("'pruefer1-owned-'","'../../outside-'").replace("await rm(created,{recursive:true});",""),
+  helperCaller.replace("await rm(created,{recursive:true});","await fixture.unknown();"),
+ ])assert.equal((await decide(source,{helpers})).r.darf_starten,false);
 });

@@ -245,16 +245,20 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       projected.inline_skript.cwd=cwd;
       if(mitQuelle)projected.inline_skript.testprojekt=testprojekt;
       if(ctx.inspect!==false){
-        const paths=[...new Set(skriptFakten(projected.inline_skript.text,projected.inline_skript.sprache,{cwd,projekt_root:ctx.project_root,os:ctx.os,testdatei_pfad:projected.inline_skript.testdatei_pfad,test_tmpdir:projected.inline_skript.test_tmpdir,testhelfer:projected.inline_skript.testhelfer})
-          .map(k=>k.skript_operation?.ziel).filter((x):x is string=>typeof x==='string').map(x=>p.resolve(cwd,x))),...(projected.inline_skript.testdatei_pfad?[p.join(ctx.project_root,'coedit-test')]:[])].slice(0,64);
+        const testProbePfade:string[]=[];
+        const inlineFakten=skriptFakten(projected.inline_skript.text,projected.inline_skript.sprache,{cwd,projekt_root:ctx.project_root,os:ctx.os,testdatei_pfad:projected.inline_skript.testdatei_pfad,test_tmpdir:projected.inline_skript.test_tmpdir,testhelfer:projected.inline_skript.testhelfer,test_probe_pfade:testProbePfade});
+        const paths=[...new Set([...testProbePfade,...inlineFakten
+          .map(k=>k.skript_operation?.ziel).filter((x):x is string=>typeof x==='string').map(x=>p.resolve(cwd,x)),...(projected.inline_skript.testdatei_pfad?[p.join(ctx.project_root,'coedit-test')]:[])])].slice(0,64);
         if(paths.length){
           const roots=[ctx.project_root,...scratchpad_roots];
           const native=await probe({cwd,pfade:[...paths,...roots]});
           for(let i=0;i<paths.length;i++){
             const n=native.pfade[i];
             const rel=p.relative(ctx.project_root,paths[i]).replace(/\\/g,'/');
+            const tmpwurzel=projected.inline_skript.test_tmpdir;
+            const imTmp=!!tmpwurzel&&innerhalb(tmpwurzel,paths[i],p,winOs(ctx));
             const testwurzel=!!projected.inline_skript.testdatei_pfad&&/^(?:coedit-test(?:\/|$)|packages\/[^/]+\/tests\/fixtures(?:\/|$))/.test(rel);
-            inline_pfade[paths[i]]=testwurzel&&n?.kanonisch!==p.normalize(paths[i])?false:n?.kanonisch&&!n.fehler?roots.some((root,j)=>innerhalb(native.pfade[paths.length+j]?.kanonisch??root,n.kanonisch!,p,winOs(ctx))):undefined;
+            inline_pfade[paths[i]]=(testwurzel||imTmp)&&n?.kanonisch!==p.normalize(paths[i])?false:n?.kanonisch&&!n.fehler?imTmp||roots.some((root,j)=>innerhalb(native.pfade[paths.length+j]?.kanonisch??root,n.kanonisch!,p,winOs(ctx))):undefined;
           }
         }
       }

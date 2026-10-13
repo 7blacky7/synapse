@@ -3,7 +3,7 @@ import ts from'typescript';
 import path from'node:path';
 import{ShellTestTempPfade}from'./shell-test-temp-pfade.js';
 import{parseShellText,type ShellTextKommando}from'./shell-sicherung-parser.js';
-export interface InlineKontext{testdatei_pfad?:string;test_tmpdir?:string;testhelfer?:Array<{pfad:string;sha256:string;text:string}>;cwd?:string;projekt_root?:string;project?:string;os?:string;scratchpad_roots?:string[];inline_pfade?:Record<string,boolean|undefined>;testprojekt?:boolean;}
+export interface InlineKontext{test_probe_pfade?:string[];testdatei_pfad?:string;test_tmpdir?:string;testhelfer?:Array<{pfad:string;sha256:string;text:string}>;cwd?:string;projekt_root?:string;project?:string;os?:string;scratchpad_roots?:string[];inline_pfade?:Record<string,boolean|undefined>;testprojekt?:boolean;}
 export interface InlineOperation{ziel_im_projekt?:boolean;ziel?:string;testprojekt:boolean;statischer_befehl?:boolean;eingabe_ungeklaert?:boolean;befehl?:ShellTextKommando;name:string;}
 const dyn='<dynamisch>';
 function innerhalb(value:unknown,o:InlineKontext):boolean|undefined{
@@ -177,7 +177,10 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
    }
    if(api==='process.kill'&&typeof args[0]==='number')projected.push({argv:['kill',String(args[0])].map(text=>({text,dynamisch:false})),umleitungen:[]});
    const statisch=projected.length>0&&projected.every(k=>!k.argv.some(a=>a.dynamisch)&&(!/^(?:node|python[\d.]*)(?:\.exe)?$/.test(k.argv[0]?.text??'')||!!k.inline_skript));
-   const carrier=fakt(api,args,'node',o,method,statisch);
+   const helperReceiver=ts.isPropertyAccessExpression(n.expression)?value(n.expression.expression,scope):undefined;
+   const helperUnsicher=temp.unsichererHelfer(api,args,helperReceiver,n);
+   const carrier=fakt(helperUnsicher?'fs.writeFile':api,args,'node',o,method,statisch);
+   if(helperUnsicher&&carrier.skript_operation)carrier.skript_operation.ziel_im_projekt=false;
    const ownTarget=temp.dateiOperation(api,args);
    if(ownTarget!==undefined&&carrier.skript_operation)carrier.skript_operation.ziel_im_projekt=ownTarget;
    if(eingabe&&carrier.skript_operation){carrier.skript_operation.eingabe_ungeklaert=true;carrier.skript_operation.befehl=projected[0];}

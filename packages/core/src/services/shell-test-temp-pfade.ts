@@ -15,6 +15,7 @@ export class ShellTestTempPfade {
  private readonly cwdGeaendert:boolean;
  private readonly p:typeof path.posix;
  private readonly factory=new Map<string,Factory>();
+ private readonly unsichereFactories=new Set<string>();
  constructor(private readonly o:InlineKontext,private readonly file:ts.SourceFile,private readonly unbekannt:symbol){
   this.p=o.os==='windows'?path.win32:path.posix;
   const rel=o.testdatei_pfad&&o.projekt_root?this.p.relative(o.projekt_root,o.testdatei_pfad).replace(/\\/g,'/'):'';
@@ -47,7 +48,7 @@ export class ShellTestTempPfade {
   this.testdatei=!!rel&&!rel.startsWith('../')&&!this.p.isAbsolute(rel)&&/^(?:packages\/[^/]+\/tests\/|scripts\/test-[^/]+(?:$|\/))/.test(rel);
   this.links=links;this.cwdGeaendert=cwdGeaendert;
   this.erlaubt=this.testdatei&&!tempEnvGeaendert&&!links&&!cwdGeaendert;
-  if(this.erlaubt)for(const statement of file.statements){
+  if(this.testdatei)for(const statement of file.statements){
    if(!ts.isImportDeclaration(statement)||!ts.isStringLiteralLike(statement.moduleSpecifier)||!statement.moduleSpecifier.text.startsWith('.'))continue;
    const specifier=statement.moduleSpecifier.text;
    const source=o.testhelfer?.find(h=>h.pfad===this.p.resolve(this.p.dirname(o.testdatei_pfad!),specifier));
@@ -57,8 +58,9 @@ export class ShellTestTempPfade {
    const bindings=statement.importClause?.namedBindings;
    if(!bindings||!ts.isNamedImports(bindings))continue;
    for(const b of bindings.elements){
-    const summary=this.helfer(source.text,b.propertyName?.text??b.name.text);
-    if(summary)this.factory.set(moduleName(statement.moduleSpecifier.text)+'.'+(b.propertyName?.text??b.name.text),summary);
+    const summary=this.erlaubt?this.helfer(source.text,b.propertyName?.text??b.name.text):undefined;
+    const key=moduleName(statement.moduleSpecifier.text)+'.'+(b.propertyName?.text??b.name.text);
+    if(summary)this.factory.set(key,summary);else this.unsichereFactories.add(key);
    }
   }
  }
@@ -71,16 +73,32 @@ export class ShellTestTempPfade {
  private coedit():string|undefined{
   if(!this.o.projekt_root)return undefined;
   const root=this.p.join(this.o.projekt_root,'coedit-test');
-  return !this.o.inline_pfade||this.o.inline_pfade[root]===true?root:undefined;
+  return this.o.inline_pfade?this.o.inline_pfade[root]===true?root:undefined:this.o.test_probe_pfade?root:undefined;
  }
  private prefix(p:unknown):boolean {
   if(!this.erlaubt||typeof p!=='string'||!sichererPrefix(this.p.basename(p)))return false;
-  const dir=this.p.dirname(p),coedit=this.coedit();
+  const dir=this.p.dirname(p);
+  if(!this.erlaubterBasisPfad(dir))return false;
+  // Der erste Durchgang erhebt nur Probeziele. Freigabe braucht anschließend
+  // positive native Nachweise für den konkreten Prefix UND dessen Elternpfad.
+  this.o.test_probe_pfade?.push(p,dir);
+  return this.o.inline_pfade?this.o.inline_pfade[p]===true&&this.o.inline_pfade[dir]===true:!!this.o.test_probe_pfade;
+ }
+ private erlaubterBasisPfad(dir:string):boolean {
+  const coedit=this.coedit();
   if(coedit&&(dir===coedit||this.innen(coedit,dir)))return true;
   if(this.o.test_tmpdir&&dir===this.o.test_tmpdir)return true;
   const rel=this.o.projekt_root?this.p.relative(this.o.projekt_root,dir).replace(/\\/g,'/'):'';
-  return /^(?:packages\/[^/]+\/tests\/fixtures)(?:\/|$)/.test(rel)&&
-   (!this.o.inline_pfade||this.o.inline_pfade[p]===true);
+  return /^(?:packages\/[^/]+\/tests\/fixtures)(?:\/|$)/.test(rel);
+ }
+ unsichererHelfer(api:string,args:unknown[],receiver:unknown,n:ts.CallExpression):boolean {
+  if(this.unsichereFactories.has(api))return true;
+  if(this.factory.has(api))return args.length!==0;
+  if(this.istFactory(receiver)&&ts.isPropertyAccessExpression(n.expression)){
+   if(!receiver.methoden.has(n.expression.name.text))return true;
+   return args.length!==1||!sichererPrefix(args[0])||!this.prefix(this.p.join(receiver.base,args[0]));
+  }
+  return false;
  }
  private tempPath(v:Temp,rel:string):unknown {
   // Ein symbolischer Root ist kein beliebiger String: ../ und ein Sibling-Suffix dürfen ihn nicht verlassen.
@@ -170,7 +188,7 @@ export class ShellTestTempPfade {
    if(!made?.initializer||!ts.isIdentifier(made.name))continue;
    const call=(made.initializer as ts.AwaitExpression).expression as ts.CallExpression;
    const p=evalPath(call.arguments[0],scope);
-   if(!p||!this.prefix(p))continue;
+   if(!p||!this.erlaubterBasisPfad(this.p.dirname(p)))continue;
    const ret=fn.body.statements.at(-1);
    if(!ret||!ts.isReturnStatement(ret)||!ret.expression)continue;
    let r=ret.expression;
@@ -188,6 +206,69 @@ export class ShellTestTempPfade {
    let unsicher=false;
    const returns=(n:ts.Node)=>{if(n!==fn.body&&(ts.isFunctionLike(n)))return;if(ts.isReturnStatement(n)&&n!==ret)unsicher=true;ts.forEachChild(n,returns);};returns(fn.body);
    if(unsicher||mutable.has(made.name.text))continue;
+   const own:Temp={art:TEMP,id:made.pos,rel:''};
+   const checked=new Set<ts.Node>(),provenFs=new Set<ts.Node>();
+   const effectValue=(e:ts.Expression|undefined,local:Map<string,unknown>,depth=0):unknown=>{
+    if(!e||depth>12)return this.unbekannt;
+    if(ts.isAwaitExpression(e)||ts.isParenthesizedExpression(e))return effectValue(e.expression,local,depth+1);
+    if(ts.isIdentifier(e)){if(mutable.has(e.text))return this.unbekannt;return local.has(e.text)?local.get(e.text):decl.has(e.text)?effectValue(decl.get(e.text),local,depth+1):evalPath(e,scope);}
+    if(ts.isStringLiteralLike(e))return e.text;
+    if(ts.isBinaryExpression(e)&&e.operatorToken.kind===ts.SyntaxKind.PlusToken){
+     const a=effectValue(e.left,local,depth+1),b=effectValue(e.right,local,depth+1);
+     return this.ist(a)&&typeof b==='string'?this.plus(a,b):typeof a==='string'&&typeof b==='string'?a+b:this.unbekannt;
+    }
+    if(ts.isCallExpression(e)){
+     const api=name(e.expression),args=e.arguments.map(a=>effectValue(a,local,depth+1));
+     if(/^path\.(?:join|resolve|dirname)$/.test(api)&&this.ist(args[0]))return this.call(api,args,undefined,e);
+     return evalPath(e,scope);
+    }
+    return this.unbekannt;
+   };
+   const effects=(node:ts.Node,local:Map<string,unknown>,depth=0):boolean=>{
+    if(depth>64)return false;
+    if(ts.isFunctionLike(node))return true;
+    if(ts.isCallExpression(node)){
+     const api=name(node.expression),args=node.arguments.map(a=>effectValue(a,local));
+     if(/^fs(?:\.promises)?\./.test(api)){
+      provenFs.add(node);
+      if(node===call){/* die exakt nachgewiesene eigene Erzeugung */}
+      else if(/^fs(?:\.promises)?\.mkdir$/.test(api)&&args[0]===this.p.dirname(p)&&this.erlaubterBasisPfad(args[0] as string)){/* Basis anlegen, nie entfernen */}
+      else if(/^fs(?:\.promises)?\.(?:stat|lstat|readFile|readdir|realpath|access)$/.test(api)){/* lesende Metadaten */}
+      else if(this.dateiOperation(api,args)!==true)return false;
+     }else if(ts.isIdentifier(node.expression)&&decl.get(node.expression.text)&&(ts.isArrowFunction(decl.get(node.expression.text)!)||ts.isFunctionExpression(decl.get(node.expression.text)!))){
+      const nested=decl.get(node.expression.text)! as ts.ArrowFunction|ts.FunctionExpression;
+      if(checked.has(nested)||!nested.body)return false;
+      const binding=new Map(local);nested.parameters.forEach((a,i)=>{if(ts.isIdentifier(a.name))binding.set(a.name.text,args[i]);});
+      checked.add(nested);const ok=effects(nested.body,binding,depth+1);checked.delete(nested);if(!ok)return false;
+     }else if(!/^(?:path\.(?:join|resolve|relative|isAbsolute|dirname)|process\.cwd)$/.test(api)){
+      if(!ts.isPropertyAccessExpression(node.expression))return false;
+      const receiver=node.expression.expression,method=node.expression.name.text,v=effectValue(receiver,local);
+      const set=ts.isIdentifier(receiver)?decl.get(receiver.text):undefined;
+      const pureString=typeof v==='string'&&/^(?:startsWith|endsWith|includes)$/.test(method);
+      const pureRegex=method==='test'&&ts.isRegularExpressionLiteral(receiver);
+      const pureSet=/^(?:has|add)$/.test(method)&&set&&ts.isNewExpression(set)&&ts.isIdentifier(set.expression)&&set.expression.text==='Set'&&!mutable.has(receiver.getText(f));
+      if(!pureString&&!pureRegex&&!pureSet)return false;
+     }
+    }
+    if(ts.isNewExpression(node)&&(!ts.isIdentifier(node.expression)||!['Error','Set','Map'].includes(node.expression.text)))return false;
+    let ok=true;ts.forEachChild(node,child=>{if(!effects(child,local,depth+1))ok=false;});return ok;
+   };
+   if(!effects(fn.body,new Map<string,unknown>([[prefixParam,'synapse-provenance-'],[made.name.text,own]])))continue;
+   // Die Factory und Modulinitialisierung laufen bereits beim Import/Aufruf.
+   // Kein unkontrollierter Writer in einer sonstigen Helfermethode wird mitimportiert.
+   const initScope=new Map<string,unknown>();for(const [key,expr]of decl){const v=evalPath(expr,scope);if(v!==undefined)initScope.set(key,v);}
+   if(!effects(factory.body,initScope)||!effects(f,initScope))continue;
+   let covered=true;
+   const allEffects=(n:ts.Node):void=>{
+    if(ts.isCallExpression(n)){
+     const api=name(n.expression);
+     if(/^fs(?:\.promises)?\./.test(api)&&!/^fs(?:\.promises)?\.(?:stat|lstat|readFile|readdir|realpath|access)$/.test(api)&&!provenFs.has(n))covered=false;
+     if(api==='process.chdir'||/^(?:fs(?:\.promises)?\.(?:symlink|link)(?:Sync)?)$/.test(api))covered=false;
+    }
+    if(ts.isBinaryExpression(n)&&n.operatorToken.kind>=ts.SyntaxKind.FirstAssignment&&n.operatorToken.kind<=ts.SyntaxKind.LastAssignment&&/^process\.(?:env|cwd|chdir)/.test(n.left.getText(f)))covered=false;
+    ts.forEachChild(n,allEffects);
+   };allEffects(f);
+   if(!covered)continue;
    const dir=this.p.dirname(p);if(base&&base!==dir)continue;base=dir;methoden.add(prop.name.getText(f).replace(/^['"]|['"]$/g,''));
   }
   return base&&methoden.size?{art:FACTORY,base,methoden}:undefined;
