@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 const url=new URL(process.env.DATABASE_URL||'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
-const {getPool,closePool}=await import('../dist/db/client.js');
-const {logToolCall,queryToolCalls}=await import('../dist/services/tool-call-log.js');
+// Baseline consumes the identical immutable golden expectations, never writes its worktree.
+const basis=process.env.SYNAPSE_R52_BASIS;
+if(basis)assert.equal(basis,'/tmp/synapse-basis-7cd5ddb');
+const dist=basis?'file://'+basis+'/packages/core/dist/':'../dist/';
+const {getPool,closePool}=await import(dist+'db/client.js');
+const {logToolCall,queryToolCalls}=await import(dist+'services/tool-call-log.js');
 const pool=getPool(),P='p20_r52_'+randomUUID(),S='p20_r52_'+randomUUID().replaceAll('-','');
 const normal=rows=>rows.map(({id,ts,...row})=>row);
 try {
