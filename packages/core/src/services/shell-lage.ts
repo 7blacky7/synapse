@@ -237,7 +237,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       const q=(await probe({cwd,testdatei:datei,projekt_root:ctx.project_root})).testdatei;
       if(q&&q.pfad===datei&&/^[a-f0-9]{64}$/.test(q.sha256)){
         verifizierteDatei=true;
-        projected.inline_skript={sprache:'node',text:q.text,expansion:false,testprojekt:false};
+        projected.inline_skript={sprache:'node',text:q.text,expansion:false,testprojekt:false,testdatei_pfad:q.kanonisch,...(q.tmpdir?{test_tmpdir:q.tmpdir}:{}),...(q.helfer?.length?{testhelfer:q.helfer}:{})};
       }
     }
     if(verifizierteDatei)verifizierteTestdateien++;
@@ -245,14 +245,16 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       projected.inline_skript.cwd=cwd;
       if(mitQuelle)projected.inline_skript.testprojekt=testprojekt;
       if(ctx.inspect!==false){
-        const paths=[...new Set(skriptFakten(projected.inline_skript.text,projected.inline_skript.sprache,{cwd,projekt_root:ctx.project_root,os:ctx.os})
-          .map(k=>k.skript_operation?.ziel).filter((x):x is string=>typeof x==='string').map(x=>p.resolve(cwd,x)))].slice(0,64);
+        const paths=[...new Set(skriptFakten(projected.inline_skript.text,projected.inline_skript.sprache,{cwd,projekt_root:ctx.project_root,os:ctx.os,testdatei_pfad:projected.inline_skript.testdatei_pfad,test_tmpdir:projected.inline_skript.test_tmpdir,testhelfer:projected.inline_skript.testhelfer})
+          .map(k=>k.skript_operation?.ziel).filter((x):x is string=>typeof x==='string').map(x=>p.resolve(cwd,x))),...(projected.inline_skript.testdatei_pfad?[p.join(ctx.project_root,'coedit-test')]:[])].slice(0,64);
         if(paths.length){
           const roots=[ctx.project_root,...scratchpad_roots];
           const native=await probe({cwd,pfade:[...paths,...roots]});
           for(let i=0;i<paths.length;i++){
             const n=native.pfade[i];
-            inline_pfade[paths[i]]=n?.kanonisch&&!n.fehler?roots.some((root,j)=>innerhalb(native.pfade[paths.length+j]?.kanonisch??root,n.kanonisch!,p,winOs(ctx))):undefined;
+            const rel=p.relative(ctx.project_root,paths[i]).replace(/\\/g,'/');
+            const testwurzel=!!projected.inline_skript.testdatei_pfad&&/^(?:coedit-test(?:\/|$)|packages\/[^/]+\/tests\/fixtures(?:\/|$))/.test(rel);
+            inline_pfade[paths[i]]=testwurzel&&n?.kanonisch!==p.normalize(paths[i])?false:n?.kanonisch&&!n.fehler?roots.some((root,j)=>innerhalb(native.pfade[paths.length+j]?.kanonisch??root,n.kanonisch!,p,winOs(ctx))):undefined;
           }
         }
       }

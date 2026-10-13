@@ -8,7 +8,7 @@ export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?:
 import type {ShellDbZiel} from './shell-db-zuordnung.js';
 export interface ShellProbeAntwort {
   cwd: string; os: 'linux'|'windows'|'macos'|'wsl'; env: Record<string,string>;
-  testdatei?:{pfad:string;kanonisch:string;sha256:string;text:string};
+  testdatei?:{pfad:string;kanonisch:string;sha256:string;text:string;tmpdir?:string;helfer?:Array<{pfad:string;sha256:string;text:string}>};
   umgebungsdatei?:{pfad:string;sha256:string;testprojekt:boolean;exportiert:boolean;port?:string;datenbank?:string;datenbank_ziel?:ShellDbZiel};
   pfade: ShellProbePfad[]; prozesse?:{pids:number[];namen:string[]}; rechner?:string;
 }
@@ -108,7 +108,24 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
     if(p.isAbsolute(kanonisch)){
       const st=await fs.stat(kanonisch);
       if(st.isFile()&&st.size<=131072){const bytes=await fs.readFile(kanonisch);
-        testdatei={pfad,kanonisch,text:bytes.toString('utf8'),sha256:(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex')};}
+        const text=bytes.toString('utf8'),rel=p.relative(root,kanonisch).replace(/\\/g,'/');
+        const erlaubt=(r:string)=>/^(?:packages\/[^/]+\/tests\/|scripts\/test-[^/]+(?:$|\/))/.test(r);
+        const helfer:Array<{pfad:string;sha256:string;text:string}>=[];
+        if(erlaubt(rel)){
+          // Nur explizite relative Importquellen, begrenzt und innerhalb versionierter Testpfade.
+          for(const match of text.matchAll(/\bimport[^\n;]*?\bfrom\s*['"](\.[^'"\n]+)['"]/g)){
+            if(helfer.length>=8)break;
+            try{
+              const h=await fs.realpath(p.resolve(p.dirname(kanonisch),match[1])),r=p.relative(root,h).replace(/\\/g,'/');
+              if(!erlaubt(r)||r.startsWith('../')||p.isAbsolute(r))continue;
+              const st=await fs.stat(h);if(!st.isFile()||st.size>65536)continue;
+              const b=await fs.readFile(h);
+              helfer.push({pfad:h,text:b.toString('utf8'),sha256:(await import('node:crypto')).createHash('sha256').update(b).digest('hex')});
+            }catch{/* Unauflösbare Helfer gewähren keine Pfadausnahme. */}
+          }
+        }
+        testdatei={pfad,kanonisch,text,sha256:(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex'),
+          ...(erlaubt(rel)?{tmpdir:(await import('node:os')).tmpdir(),...(helfer.length?{helfer}:{})}:{})};}
     }
   }catch{/* Keine unbekannten oder fremden Dateien ausführen. */}
   let prozesse:ShellProbeAntwort['prozesse'];
