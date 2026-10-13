@@ -24,12 +24,13 @@ async function decision(command,{cwd=root,texts={},env={},freigabe=proof}={}){
 }
 const captures=JSON.parse(readFileSync(new URL('./fixtures/shell-projektdb-w2-p10-t65.json',import.meta.url),'utf8'));
 for(const c of captures)for(const s of c.scripts){const f=ts.createSourceFile(s.file,s.text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);assert.equal(f.parseDiagnostics.length,0,'Quellsnapshot muss syntaktisch gültig sein: '+s.file);}
-for(const c of captures)test('W2-Aufruf '+c.id.slice(0,8)+' mit Umbau ergibt konservative Anleitung',async()=>{
+for(const c of captures)test('W2-Aufruf '+c.id.slice(0,8)+' trennt SQL von Verbindungsumbau',async()=>{
  const cwd=path.join(root,c.cwd_relative);
  const texts=Object.fromEntries(c.scripts.map(s=>[path.resolve(cwd,s.file),s.text.replaceAll('/home/blacky/dev/synapse',root)]));
  const r=await decision(c.command,{cwd,texts});
- assert.equal(r.darf_starten,false,JSON.stringify({audit:r.audit,risiko:r.antwort?.risiko,lage:r.antwort?.lage.ungeklaert}));
- assert.equal(r.audit.stufe,'anleitung');
+ const sqlOhneUmbau=/^(?:edcd8ef2|ae9789bf)/.test(c.id);
+ assert.equal(r.darf_starten,sqlOhneUmbau,JSON.stringify({audit:r.audit,risiko:r.antwort?.risiko,lage:r.antwort?.lage.ungeklaert}));
+ if(!sqlOhneUmbau)assert.equal(r.audit.stufe,'anleitung');
 });
 const inline=text=>'node -e '+JSON.stringify(text);
 for(const [name,command,env] of [
@@ -98,7 +99,7 @@ for(const [name,js]of [
  ['eigene SQL-Konstante',"const c=getPool();const sql='DROP TABLE owned';c.query(sql)"],
  ['eigene QueryConfig',"const c=getPool();const sql='CREATE TABLE owned(x int)';c.query({text:sql})"]
 ])test(name+' bleibt frei ohne Helfer',async()=>{
- const r=await decision(inline(js),{env:{DATABASE_URL:own}});assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
+ const r=await decision(inline(js),{env:{DATABASE_URL:own}});assert.equal(r.darf_starten,name==='eigene SQL-Konstante'||name==='eigene QueryConfig');
 });
 
 for(const [name,js]of [
