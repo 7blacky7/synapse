@@ -198,7 +198,8 @@ export async function baueJobUmgebung(
     if (wert === undefined) continue;
     const wertZiel=dbZielAusUrl(wert),systemZiel=dbZielAusUrl(synapseUrl);
     const systemZugang=!!wertZiel&&!!systemZiel&&wertZiel.host===systemZiel.host&&wertZiel.port===systemZiel.port&&wertZiel.datenbank===systemZiel.datenbank;
-    const istDb = DB_NAMEN.some((m) => m.test(name)) || systemZugang;
+    // DB-URLs bleiben DB-Zugang auch ohne Port/mit Aliasnamen; kein Secrets-Durchlass.
+    const istDb = DB_NAMEN.some((m) => m.test(name)) || systemZugang || /postgres(?:ql)?:\/\//i.test(wert);
     const istGeheim = GEHEIM_NAMEN.some((m) => m.test(name))
       || secretNamen.has(name)
       || URL_MIT_ZUGANG.test(wert)
