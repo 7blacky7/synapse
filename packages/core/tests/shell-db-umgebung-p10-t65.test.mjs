@@ -17,12 +17,12 @@ const cases=[
  ['URL mutiert',"const{Client}=require('pg');const u=new URL(process.env.DATABASE_URL);u.hostname='system.invalid';u.port='6123';u.pathname='/system_catalog';new Client({connectionString:u.toString()}).query('DROP TABLE owned')"],
  ['Literal eigene DSN',"const{Client}=require('pg');new Client({connectionString:'"+own+"'}).query('DROP TABLE owned')"],
  ['Env-Alias',"const{Client}=require('pg');const uri=process.env.DATABASE_URL;new Client({connectionString:uri}).query('DROP TABLE owned')"],
- ['unbekanntes QueryConfig',"const c=getPool();c.query(process.env.SQL)"],
  ['SQL Wechsel',"const c=getPool();c.query('USE system_catalog')"],
  ['Env-Neuzuweisung',"process.env.DATABASE_URL='"+live+"';const c=getPool();c.query('DROP TABLE owned')"],
 ];
 for(const [name,text]of cases)test(name+' ergibt Anleitung',()=>assert.equal(js(text).erlaubt,false));
 for(const text of [
+ "const c=getPool();c.query(process.env.SQL)",
  "const{Client}=require('pg');new Client({connectionString:process.env.DATABASE_URL}).query('DROP TABLE owned')",
  "const{Pool}=require('pg');new Pool({connectionString:process.env.DATABASE_URL}).query('CREATE TABLE owned(x int)')",
  "const c=getPool();c.query('DROP TABLE owned')"

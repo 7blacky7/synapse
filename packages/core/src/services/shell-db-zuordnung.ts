@@ -73,7 +73,7 @@ function pgUmgebungsZiel(env:Record<string,string|undefined>):ShellDbZiel|undefi
   if(!['PGHOST','PGPORT','PGDATABASE','PGUSER'].every(k=>!!env[k]))return undefined;
   return {host:env.PGHOST!.toLowerCase(),port:env.PGPORT!,datenbank:env.PGDATABASE!,user:env.PGUSER!};
 }
-/** Richtungswechsel3: direkte unveränderte Env-Ziele; keinerlei Datenflussbeweis. */
+/** t82: Env bestimmt das Ziel; SQL-Inhalt ist frei, erkennbare Verbindungswechsel nicht. */
 function nodeFreigabe(text:string,env:Record<string,string|undefined>,p:ShellDbFreigabe):ShellDbErgebnis {
   const betroffen=/\b(?:query|execute)\s*\(|\b(?:Client|Pool|getPool)\s*\(/.test(text);
   if(!betroffen)return {betroffen:false,erlaubt:false,ziele:[]};
@@ -89,13 +89,18 @@ function nodeFreigabe(text:string,env:Record<string,string|undefined>,p:ShellDbF
     if(ts.isImportSpecifier(n)&&['Client','Pool'].includes(n.propertyName?.text??n.name.text))konstruktoren.add(n.name.text);
     if(ts.isVariableDeclaration(n)&&ts.isObjectBindingPattern(n.name))for(const e of n.name.elements)
       if(ts.isIdentifier(e.name)&&['Client','Pool'].includes(e.propertyName?.getText(f)??e.name.text))konstruktoren.add(e.name.text);
-    if(ts.isStringLiteralLike(n)&&(/postgres(?:ql)?:\/\//i.test(n.text)||!sqlBleibtInDb(n.text,ziel!)||/\bUSE\s+\w+/i.test(n.text)))ok=false;
-    if(ts.isNewExpression(n)&&n.expression.getText(f)==='URL')ok=false;
+    if(ts.isStringLiteralLike(n)||ts.isTemplateHead(n)||ts.isTemplateMiddle(n)||ts.isTemplateTail(n)) {
+      // Auch geteilte/templatisierte DB-Wechsel bleiben sichtbar. Schema-/Tabellen-SQL
+      // darf dagegen aus Variablen, QueryConfig oder Laufzeitwerten entstehen.
+      if(/postgres(?:ql)?:\/\//i.test(n.text)||!sqlBleibtInDb(n.text,ziel!)||
+        /\bUSE\s+\w+|\b(?:CREATE|ALTER|DROP)\s+DATABASE\s*(?:IF\s+EXISTS\s*)?$/i.test(n.text))ok=false;
+    }
     if(ts.isBinaryExpression(n)&&n.operatorToken.kind>=ts.SyntaxKind.FirstAssignment&&n.operatorToken.kind<=ts.SyntaxKind.LastAssignment) {
       // Auch Alias-/Objektmutation wird nicht durch einen früheren Env-Wert gerechtfertigt.
-      if(/process\.env|\.(?:connectionString|host|hostname|port|database|user|pathname|href|text)\b/.test(n.left.getText(f)))ok=false;
+      const left=n.left.getText(f);
+      if(/^process\.env$/.test(left)||/process\.env(?:\.(?:(?:SYNAPSE_)?DATABASE_URL|PG\w*)\b|\[['"](?:(?:SYNAPSE_)?DATABASE_URL|PG\w*)['"]\])/i.test(left)||
+        /\.(?:connectionString|host|hostname|port|database|user|pathname|href)\b/.test(left))ok=false;
     }
-    if(ts.isPropertyAssignment(n)&&['host','hostname','port','database','user'].includes(name(n.name)))ok=false;
     if(ts.isPropertyAssignment(n)&&name(n.name)==='connectionString'&&!direkteEnv(n.initializer))ok=false;
     if(ts.isNewExpression(n)&&(ts.isIdentifier(n.expression)?konstruktoren.has(n.expression.text):ts.isPropertyAccessExpression(n.expression)&&['Client','Pool'].includes(n.expression.name.text))) {
       const args=n.arguments??[];
@@ -106,10 +111,9 @@ function nodeFreigabe(text:string,env:Record<string,string|undefined>,p:ShellDbF
         if(!direkteEnv(a)&&!envObj)ok=false;
       }
     }
-    if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&['query','execute'].includes(n.expression.name.text)) {
-      // Variablen, QueryConfig, Templates und unbekannte SQL-Texte gehen zur Anleitung.
-      if(!n.arguments[0]||!ts.isStringLiteralLike(n.arguments[0]))ok=false;
-    }
+    if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&
+      ['set','append','delete','sort'].includes(n.expression.name.text)&&
+      ts.isPropertyAccessExpression(n.expression.expression)&&n.expression.expression.name.text==='searchParams')ok=false;
     ts.forEachChild(n,scan);
   }
   scan(f);
