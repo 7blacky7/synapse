@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1200" viewBox="0 0 1500 1200" role="img" aria-labelledby="title desc">
+<title id="title">Spezialisten-Wrapper: Start, Ereignisse und Rotation</title>
+<desc id="desc">stdio-MCP startet lokal direkt. REST/Web legt einen Job in PostgreSQL ab, den der FileWatcher-Daemon übernimmt. Der abgekoppelte Node-Wrapper verwaltet Provider, Unix-Socket, Heartbeat, Status und Rotation. Quellen: packages/mcp-server/src/tools/specialists.ts, packages/rest-api/src/routes/mcp.ts, packages/core/src/services/specialist-queue.ts, packages/agents/src/wrapper.ts, process.ts, heartbeat-state.ts und packages/core/src/services/specialist-respawn.ts.</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#f0883e"/></marker>
+  <style>
+    text { font-family: "DejaVu Sans", sans-serif; fill: #e6edf3; }
+    .box { fill: #161b22; stroke: #f0883e; stroke-width: 2; }
+    .subtle { fill: #b1bac4; }
+    .title { fill: #f0883e; font-weight: 700; }
+    .flow { fill: none; stroke: #f0883e; stroke-width: 2.5; marker-end: url(#arrow); }
+    .optional { fill: none; stroke: #f0883e; stroke-width: 2.5; stroke-dasharray: 3 5; marker-end: url(#arrow); }
+    .external { fill: #161b22; stroke: #f0883e; stroke-width: 2; stroke-dasharray: 8 6; }
+  </style>
+</defs>
+<rect width="1500" height="1200" rx="16" fill="#0d1117"/>
+<text x="48" y="58" font-size="32" class="title">Spezialisten-Wrapper · Start, Ereignisse und Rotation</text>
+<text x="48" y="92" font-size="18" class="subtle">Provider und Wrapper sind getrennte Prozesse; Ereignisweg und Sicherheits-Poll arbeiten zusammen.</text>
+
+<rect class="box" x="50" y="130" width="310" height="110" rx="14"/>
+<text x="74" y="169" font-size="22" class="title">stdio-MCP</text>
+<text x="74" y="201" font-size="18">lokaler Spawn direkt</text>
+<rect class="box" x="50" y="280" width="310" height="120" rx="14"/>
+<text x="74" y="317" font-size="22" class="title">REST / Web-KI</text>
+<text x="74" y="350" font-size="18">Argumente prüfen,</text>
+<text x="74" y="376" font-size="18">Job ablegen</text>
+
+<rect class="box" x="430" y="280" width="340" height="120" rx="14"/>
+<text x="454" y="317" font-size="22" class="title">PostgreSQL-Queue</text>
+<text x="454" y="350" font-size="18">spawn · Status · Ergebnis</text>
+<rect class="box" x="850" y="280" width="360" height="120" rx="14"/>
+<text x="874" y="317" font-size="22" class="title">FileWatcher-Daemon</text>
+<text x="874" y="350" font-size="18">claimt Job auf dem</text>
+<text x="874" y="376" font-size="18">Projekt-Host</text>
+
+<path class="flow" d="M50 185H30V425H650V450"/>
+<path class="flow" d="M360 340H430"/>
+<path class="flow" d="M770 340H850"/>
+<path class="flow" d="M1030 400V425H1010V450"/>
+<text x="1052" y="428" font-size="16" class="subtle">startet Wrapper</text>
+
+<rect class="box" x="490" y="450" width="650" height="130" rx="16"/>
+<text x="520" y="489" font-size="24" class="title">Abgekoppelter Node-Wrapper</text>
+<text x="520" y="522" font-size="18">Transport PG/API · Wissen Datei/API · Statusquelle PostgreSQL</text>
+<text x="520" y="552" font-size="18">Unix-Socket: JSON-RPC wake / status / stop · reconnectbar</text>
+
+<rect class="box" x="50" y="450" width="360" height="130" rx="14"/>
+<text x="74" y="488" font-size="22" class="title">Live-Anlass</text>
+<text x="74" y="521" font-size="18">Channel · Inbox · Items · Wake</text>
+<text x="74" y="552" font-size="18">Treffer → 10 s und Poll</text>
+<path class="flow" d="M410 515H490"/>
+
+<rect class="box" x="50" y="640" width="360" height="155" rx="14"/>
+<text x="74" y="679" font-size="22" class="title">Adaptive Ladder</text>
+<text x="74" y="712" font-size="18">Leerlauf: 30 s → 1 → 2 → 5 min</text>
+<text x="74" y="743" font-size="18">danach 30 min, bis 60 min</text>
+<text x="74" y="774" font-size="18">Sicherheits-Tick</text>
+<path class="flow" d="M490 550H450V710H410"/>
+<text x="463" y="621" font-size="15" class="subtle">kein Treffer</text>
+<path class="flow" d="M410 766H460V570H490"/>
+<text x="400" y="820" font-size="13" class="subtle">nächster Takt</text>
+
+<rect class="box" x="50" y="835" width="360" height="125" rx="14"/>
+<text x="74" y="875" font-size="21" class="title">Keep-alive</text>
+<text x="74" y="908" font-size="17">Leerer Wake; nach 2 Leerantworten</text>
+<text x="74" y="936" font-size="17">Pause</text>
+<path class="optional" d="M230 795V835"/>
+<text x="250" y="821" font-size="15" class="subtle">optional</text>
+
+<rect class="box" x="490" y="640" width="650" height="110" rx="14"/>
+<text x="520" y="680" font-size="22" class="title">Provider-Unterprozess</text>
+<text x="520" y="714" font-size="18">Claude-CLI oder registrierte Node-Runtime · stdin/stdout-Events</text>
+<path class="flow" d="M815 580V640"/>
+<text x="842" y="617" font-size="15" class="subtle">Nachrichten / Ergebnisse</text>
+
+<rect class="box" x="490" y="800" width="650" height="175" rx="14"/>
+<text x="520" y="840" font-size="22" class="title">Kontextzustände</text>
+<text x="520" y="875" font-size="18">handoffTokens: Hinweis oder geprüfter Trigger</text>
+<text x="520" y="908" font-size="18">rotationTokens: im Leerlauf sichern und neu starten</text>
+<text x="520" y="941" font-size="18">hardRotationTokens: Rotation auch während busy</text>
+<path class="flow" d="M815 750V800"/>
+<path class="flow" d="M1140 880H1220V515H1140"/>
+<text x="1240" y="690" font-size="16" class="subtle">Rotation / Neustart</text>
+
+<rect class="box" x="490" y="1010" width="650" height="105" rx="14"/>
+<text x="520" y="1050" font-size="18" class="title">PostgreSQL: Statusquelle · status.json: Cache</text>
+<text x="520" y="1084" font-size="16" class="subtle">Crash: crashed · Keep-alive-Respawn: max. 3 / 60 s</text>
+<path class="flow" d="M815 975V1010"/>
+
+<rect class="external" x="1250" y="150" width="210" height="120" rx="14"/>
+<text x="1274" y="190" font-size="20" class="title">cc-wrap</text>
+<text x="1274" y="222" font-size="16" class="subtle">extern · User-</text>
+<text x="1274" y="246" font-size="16" class="subtle">Laufzeit</text>
+
+<path d="M48 1150H1450" fill="none" stroke="#30363d" stroke-width="2"/>
+<text x="48" y="1180" font-size="15" class="subtle">Durchgezogen: Prozess- oder Datenfluss · Kurz gestrichelt: optionaler Wake · Lang gestrichelt: externer Bereich</text>
+</svg>
