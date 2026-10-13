@@ -27,7 +27,7 @@ import { getPool, listChannels, getChannelMessages, postChannelMessage, listActi
 import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
-import { registriereSkillsProxy } from './skills-proxy.js';
+import { registriereSkillsProxy,istLoopback } from './skills-proxy.js';
 
 const STARTED_AT = Date.now();
 
@@ -118,6 +118,14 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       port: agg.port,
       synapse_api_url: agg.synapse_api_url,
     };
+  });
+
+  // A8 additive metadata-only status for Tray; no credentials or binary payloads.
+  app.get<{Params:{name:string}}>('/projects/:name/assets/status',async(req,reply)=>{
+    if(!istLoopback(req.ip)||req.headers.origin!==undefined)return reply.code(403).send({success:false,error:'nur_lokal'});
+    if(!manager.get(req.params.name))return reply.code(404).send({success:false,error:'projekt_unbekannt'});
+    const state=await manager.assetSync.status(req.params.name);
+    return {success:true,...(state??{modus:'aus'})};
   });
 
   // ---- POST /projects -----------------------------------------------------
