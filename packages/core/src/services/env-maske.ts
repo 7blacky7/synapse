@@ -22,7 +22,7 @@
  * files(restore) wiederherstellbar" — nur Namen, nie Werte.
  */
 
-import {SHELL_KV_ZEILE as KV,SHELL_BEARER,SHELL_SSHPASS,SHELL_JSON_FREI,SHELL_KV_FREI,holeShellLiteralMatcher,sammleShellMaskenTreffer,shellIstLeerWert,type ShellMaskenTreffer} from './shell-masken-katalog.js';
+import {SHELL_KV_ZEILE as KV,SHELL_BEARER_WERT,maskiereShellText,sammleShellMaskenTreffer,shellIstLeerWert,type ShellMaskenTreffer} from './masken-katalog.js';
 import { getPool } from '../db/client.js';
 import { getFileContentFromPg } from './code-write.js';
 import { entmaskiereMcpJson, istMcpJsonDatei, maskiereMcpJson, maskiereMcpJsonDiffText, maskiereMcpJsonFragment, mcpJsonHinweise, mcpJsonSicht, mcpJsonWerte, MCP_JSON_PFAD_REGEX_SQL, maskiereUrl, istShellGeheimnisName, istShellJsonGeheimnisName, SHELL_LITERAL_MIN_LAENGE, shellUrlPasswoerter } from './mcp-json-maske.js';
@@ -379,7 +379,7 @@ export function shellGeheimWerte(envText: string, jsonText = ''): string[] {
       ...roh.split('\n').map(z=>z.trim().replace(/^["'\x60]|["'\x60]$/g,''))];
     for(const w of varianten){
       if(sensibel && w.length>=SHELL_LITERAL_MIN_LAENGE && w!==ENV_PLATZHALTER)aus.add(w);
-      const bearer=/^Bearer\s+(.+)$/i.exec(w);if(sensibel && bearer && bearer[1].length>=SHELL_LITERAL_MIN_LAENGE)aus.add(bearer[1]);
+      const bearer=SHELL_BEARER_WERT.exec(w);if(sensibel && bearer && bearer[1].length>=SHELL_LITERAL_MIN_LAENGE)aus.add(bearer[1]);
       for(const pass of shellUrlPasswoerter(w))aus.add(pass);
     }
   };
@@ -387,49 +387,7 @@ export function shellGeheimWerte(envText: string, jsonText = ''): string[] {
   for(const teil of zerlegeEnv(envText))if(teil.art==='kv' && !teil.leer)sammle(teil.wert,istShellGeheimnisName(teil.name));
   return [...aus];
 }
-export function maskiereShellText(text: string, bekannteWerte: readonly string[] = []): {text: string; maskiert: number} {
-  let maskiert=0, aus=text;
-  const matcher=holeShellLiteralMatcher(bekannteWerte);
-  if(matcher instanceof RegExp)aus=aus.replace(matcher,(wert)=>{if(wert===ENV_PLATZHALTER)return wert;maskiert++;return ENV_PLATZHALTER;});
-  else if(matcher)for(const wert of matcher){
-    aus=aus.split(ENV_PLATZHALTER).map(teil=>teil.replaceAll(wert,()=>{maskiert++;return ENV_PLATZHALTER;})).join(ENV_PLATZHALTER);
-  }
-  const vorher=(aus.match(/\[WERT\]/g)??[]).length;
-  if(/^\s*[\[{]/.test(aus))try {
-    const original=JSON.parse(aus),strukturiert=maskiereMcpJson(aus,true);
-    maskiert+=Math.max(0,(strukturiert.match(/\[WERT\]/g)??[]).length-vorher);
-    const walk=(v:unknown):unknown=>{
-      if(typeof v==='string'){const r=maskiereShellText(v,bekannteWerte);maskiert+=r.maskiert;return r.text;}
-      if(Array.isArray(v))return v.map(walk);
-      if(v && typeof v==='object')return Object.fromEntries(Object.entries(v).map(([k,w])=>[k,walk(w)]));
-      return v;
-    };
-    const safe=walk(JSON.parse(strukturiert));
-    return {text:maskiert?JSON.stringify(safe,null,aus.includes('\n')?2:undefined)+(aus.endsWith('\n')?'\n':''):aus,maskiert};
-  }catch { /* freie Logzeile statt vollstaendigem JSON */ }
-  aus=maskiereMcpJsonFragment(aus,true);
-  aus=maskiereUrl(aus);
-  aus=aus.replace(SHELL_BEARER,(_,praefix:string)=>praefix+ENV_PLATZHALTER);
-  // P10-T42: sshpass -p <passwort> (Fund aus dem Altbestand-Test). Schon maskierte Werte bleiben, Quotes bleiben.
-  aus=aus.replace(SHELL_SSHPASS,(ganz,praefix:string,wert:string)=>{
-    const q=wert[0]==='"'||wert[0]==="'"?wert[0]:'';
-    const kern=q?wert.slice(1,-1):wert;
-    return kern===ENV_PLATZHALTER?ganz:praefix+q+ENV_PLATZHALTER+q;
-  });
-  aus=aus.split('\n').map(zeile=>{
-    const kv=KV.exec(ohneCr(zeile).text);
-    if(kv && istShellGeheimnisName(kv[2])) return maskiereEnv(zeile);
-    return zeile.replace(SHELL_JSON_FREI,
-      (ganz,praefix:string,q:string,name:string,trenner:string,wert:string)=>
-        istShellJsonGeheimnisName(name)
-          ? praefix+q+name+q+trenner+wert[0]+ENV_PLATZHALTER+wert[0] : ganz);
-  }).join('\n');
-  aus=aus.replace(SHELL_KV_FREI,
-    (ganz,praefix:string,name:string,trenner:string)=>
-      istShellGeheimnisName(name)?praefix+name+trenner+ENV_PLATZHALTER:ganz);
-  maskiert+=Math.max(0,(aus.match(/\[WERT\]/g)??[]).length-vorher);
-  return {text:aus,maskiert};
-}
+export { maskiereShellText } from './masken-katalog.js';
 
 /** Provenienzvariante: Ausgabe/Zähler bleiben exakt die bestehende Live-Maske. */
 export function maskiereShellTextMitTreffern(text:string,werte:readonly string[]=[],opt:{name?:string;strukturiert?:boolean}={}):{text:string;maskiert:number;treffer:ShellMaskenTreffer[]} {

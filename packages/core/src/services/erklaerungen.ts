@@ -156,35 +156,8 @@ export function schluesselVon(b: Pick<FehlerBefund, 'quelle' | 'pruefer' | 'code
 
 // ─── Geheimnisse ─────────────────────────────────────────────────────────────
 
-const GEHEIM = '[GEHEIM]';
-type Ersetzer = (treffer: string, ...gruppen: string[]) => string;
-const GEHEIM_MUSTER: Array<[RegExp, Ersetzer]> = [
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, () => GEHEIM],
-  [/\bsk-[A-Za-z0-9_-]{16,}/g, () => GEHEIM],
-  [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, () => GEHEIM],
-  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, () => GEHEIM],
-  [/\bAKIA[0-9A-Z]{16}\b/g, () => GEHEIM],
-  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/g, () => GEHEIM],
-  [/\bAIza[0-9A-Za-z_-]{30,}/g, () => GEHEIM],
-  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, () => GEHEIM],
-  [/\b(Bearer\s+)[A-Za-z0-9._~+/-]{16,}=*/gi, (_t, vor) => vor + GEHEIM],
-  [/([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+@/gi, (_t, vor) => vor + GEHEIM + '@'],
-  [/\b((?:api[_-]?key|secret|token|passwor[dt]|passwd|pwd|access[_-]?key)["']?\s*[:=]\s*["'])[^"'\s]{8,}/gi, (_t, vor) => vor + GEHEIM],
-];
-
-/** Schwaerzt typische Geheimnisse (API-Keys, Tokens, private Schluessel, Passwoerter in URLs/Zuweisungen). */
-export function schwaerzeGeheimnisse(text: string): { text: string; treffer: number } {
-  if (typeof text !== 'string' || text === '') return { text, treffer: 0 };
-  let treffer = 0;
-  let aus = text;
-  for (const [re, ersetze] of GEHEIM_MUSTER) {
-    aus = aus.replace(re, (t: string, ...rest: unknown[]) => {
-      treffer++;
-      return ersetze(t, ...rest.filter((x): x is string => typeof x === 'string'));
-    });
-  }
-  return { text: aus, treffer };
-}
+export { schwaerzeGeheimnisse } from './masken-katalog.js';
+import { schwaerzeGeheimnisse } from './masken-katalog.js';
 
 const geschwaerzt = (t: string): string => schwaerzeGeheimnisse(t).text;
 
