@@ -1,0 +1,51 @@
+{
+  "claims": [
+    {
+      "chunkId": "r21-chunk",
+      "claimToken": "<token>",
+      "claimAttempt": 1,
+      "project": "p20_r21",
+      "filePath": "src/a.ts",
+      "fileType": "typescript",
+      "chunkIndex": 0,
+      "totalChunks": 1,
+      "content": "synthetic content",
+      "contentHash": "a04dc6c38580462e46df7968a7d91a006455989bb839a6c9c1cf5fb4c4551a47",
+      "lineStart": 1,
+      "lineEnd": 2,
+      "leaseUntil": "<time>"
+    }
+  ],
+  "completion": {
+    "completed": true,
+    "alreadyCompleted": false,
+    "pointId": "9b95d38b-5e03-5d52-ae62-a053e6ccfefc"
+  },
+  "bad": {
+    "error": "claim_fence_rejected"
+  },
+  "written": [
+    {
+      "collection": "project_p20_r21_code",
+      "vector": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "payload": {
+        "file_path": "src/a.ts",
+        "file_name": "a.ts",
+        "file_type": "typescript",
+        "line_start": 1,
+        "line_end": 2,
+        "project": "p20_r21",
+        "chunk_index": 0,
+        "total_chunks": 1,
+        "updated_at": "<time>",
+        "content": "synthetic content"
+      },
+      "pointId": "9b95d38b-5e03-5d52-ae62-a053e6ccfefc"
+    }
+  ]
+}
