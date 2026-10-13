@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="980" viewBox="0 0 1440 980" role="img" aria-labelledby="title desc">
+<title id="title">Jev · Entscheidung, Budget und Durchsicht</title>
+<desc id="desc">Jev prüft Abwesenheit, Schalter, erlaubte Kategorie und Text. Optional gleicht es frühere Entscheidungen ab. Der gemeinsame Client prüft Budget und ruft den externen Dienst auf; Ergebnis und Kosten werden protokolliert und autonome Entscheidungen kommen in die Durchsicht. Quellen: packages/core/src/services/jev-entscheidung.ts:412-810,861-1049; jev-schalter.ts:142-236; jev-client.ts:86-154; jev-kosten.ts:97-260; entscheidungstopf.ts:350-450.</desc>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#f0883e"/></marker>
+  <marker id="arrowMuted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#b1bac4"/></marker>
+  <style>
+    text { font-family: "DejaVu Sans", sans-serif; }
+    .box { fill:#161b22; stroke:#f0883e; stroke-width:2; }
+    .optional { fill:#161b22; stroke:#f0883e; stroke-width:2; stroke-dasharray:3 4; }
+    .external { fill:#161b22; stroke:#f0883e; stroke-width:2; stroke-dasharray:7 5; }
+    .title { fill:#f0883e; font-size:23px; font-weight:700; }
+    .body { fill:#e6edf3; font-size:18px; }
+    .note { fill:#b1bac4; font-size:16px; }
+    .edge { fill:none; stroke:#f0883e; stroke-width:2.5; marker-end:url(#arrow); }
+    .edgeMuted { fill:none; stroke:#b1bac4; stroke-width:2; marker-end:url(#arrowMuted); }
+  </style>
+</defs>
+<rect width="1440" height="980" rx="16" fill="#0d1117"/>
+<text x="40" y="54" class="title" font-size="32">Jev · Entscheidung, Budget und Durchsicht</text>
+<text x="40" y="86" class="note">Der Entscheidungsdienst hält Leitplanken und Protokoll lokal; nur der Modellaufruf verlässt den Dienst.</text>
+
+<rect x="40" y="135" width="270" height="125" rx="14" class="box"/>
+<text x="60" y="170" class="title">Rückfrage</text>
+<text x="60" y="201" class="body">Kategorie · Kontext</text>
+<text x="60" y="229" class="body">Optionen · agent_id</text>
+
+<rect x="375" y="120" width="385" height="155" rx="14" class="box"/>
+<text x="395" y="155" class="title">Lokale Tore</text>
+<text x="395" y="188" class="body">Abwesenheit + wirksamer Schalter</text>
+<text x="395" y="217" class="body">Kategorie + Sicherheitstext-Scan</text>
+<text x="395" y="246" class="note">aus / User da / Treffer → zurückfragen</text>
+<path d="M310 198H375" class="edge"/>
+
+<rect x="820" y="120" width="350" height="155" rx="14" class="optional"/>
+<text x="840" y="155" class="title">Entscheidungstopf</text>
+<text x="840" y="188" class="body">bis zu 6 passende Präzedenz-IDs</text>
+<text x="840" y="217" class="body">Irreversibel- und Präzedenz-Tor</text>
+<text x="840" y="239" class="note">ohne Präzedenz: Option oder</text>
+<text x="840" y="262" class="note">offene Frage</text>
+<path d="M760 198H820" class="edge"/>
+
+<rect x="820" y="350" width="350" height="145" rx="14" class="box"/>
+<text x="840" y="385" class="title">Gemeinsamer Jev-Client</text>
+<text x="840" y="418" class="body">Funktionsschalter erneut prüfen</text>
+<text x="840" y="447" class="body">Budget atomar reservieren</text>
+<text x="840" y="476" class="note">Key · Timeout · HTTP / Netzwerk</text>
+<path d="M995 275V350" class="edge"/>
+
+<rect x="1220" y="350" width="180" height="145" rx="14" class="external"/>
+<text x="1240" y="390" class="title">Jev-Dienst</text>
+<text x="1240" y="423" class="body">Antwort +</text>
+<text x="1240" y="451" class="body">Nutzungsdaten</text>
+<text x="1240" y="480" class="note">extern</text>
+<path d="M1170 405H1220" class="edge"/>
+<path d="M1220 460H1170" fill="none" stroke="#f0883e" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+<rect x="470" y="555" width="350" height="140" rx="14" class="box"/>
+<text x="490" y="590" class="title">Auswertung</text>
+<text x="490" y="623" class="body">Confidence-Tor (Standard 0,7)</text>
+<text x="490" y="652" class="body">weitere Runde oder offene Frage</text>
+<text x="490" y="680" class="note">Wahl wird als Jev-Entscheidung markiert</text>
+<path d="M820 445H760V555" class="edge"/>
+<text x="748" y="520" class="note" text-anchor="end">Antwort</text>
+
+<rect x="40" y="555" width="350" height="140" rx="14" class="box"/>
+<text x="60" y="590" class="title">Protokoll + Kosten</text>
+<text x="60" y="623" class="body">Entscheidung / Ablehnung</text>
+<text x="60" y="652" class="body">Tokens · USD · Dauer · Status</text>
+<text x="60" y="680" class="note">DB-Fehler können Buchung auslassen</text>
+<path d="M470 625H390" class="edge"/>
+
+<rect x="470" y="770" width="350" height="160" rx="14" class="box"/>
+<text x="490" y="805" class="title">Durchsicht</text>
+<text x="490" y="838" class="body">ok → bestätigt</text>
+<text x="490" y="864" class="body">korrigieren → überstimmt</text>
+<text x="490" y="886" class="body">+ Korrektur</text>
+<text x="490" y="907" class="note">ohne Präzedenz zuerst</text>
+<path d="M645 695V770" class="edge"/>
+
+<rect x="900" y="770" width="430" height="145" rx="14" class="optional"/>
+<text x="920" y="805" class="title">Topf-Einträge</text>
+<text x="920" y="838" class="body">UUID / eindeutiger Präfix</text>
+<text x="920" y="867" class="body">User-Entscheidungen als Präzedenz</text>
+<text x="920" y="896" class="note">getrennt vom Erklärungstopf</text>
+<path d="M820 850H900" class="edge"/>
+
+<path d="M40 945H1400" stroke="#30363d" stroke-width="1.5"/>
+<text x="40" y="969" class="note">Durchgezogen: Kernfluss · kurz gestrichelt: optionaler Topf-Schritt · lang gestrichelt: externer Dienst</text>
+</svg>
