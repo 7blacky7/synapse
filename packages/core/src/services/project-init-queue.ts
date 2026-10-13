@@ -21,6 +21,7 @@ export type ProjectInitStatus = 'pending' | 'running' | 'done' | 'failed' | 'rej
 
 export interface ProjectInitJobRow {
   id: string;
+  mode?: 'create' | 'restore_existing';
   name: string;
   hostname: string | null;
   template: string | null;
@@ -60,7 +61,12 @@ export async function enqueueProjectInitJob(args: {
   hostname?: string;
   template?: string;
   requested_by?: string;
+  mode?: 'create' | 'restore_existing';
 }): Promise<{ id: string }> {
+  if(args.mode==='restore_existing') {
+    const {ProjectRestoreService}=await import('./project-restore.js');
+    return new ProjectRestoreService().enqueue(args.name,args.hostname??'',args.requested_by);
+  }
   const pool = getPool();
   const res = await pool.query<{ id: string }>(
     `INSERT INTO project_init_jobs (name, hostname, template, requested_by)
@@ -87,6 +93,7 @@ export async function claimPendingProjectInitJob(
     const res = await client.query<ProjectInitJobRow>(
       `SELECT * FROM project_init_jobs
        WHERE status = 'pending'
+         AND mode = 'create'
          AND (hostname IS NULL OR hostname = $1)
          AND created_at > NOW() - interval '30 seconds'
        ORDER BY created_at ASC
@@ -154,6 +161,7 @@ export async function expirePendingProjectInitJobs(maxAgeSec: number = 30): Prom
          completed_at = NOW(),
          updated_at = NOW()
      WHERE status = 'pending'
+       AND mode = 'create'
        AND created_at < NOW() - ($1 || ' seconds')::interval
      RETURNING id`,
     [String(maxAgeSec)],

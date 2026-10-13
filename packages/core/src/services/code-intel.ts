@@ -1672,6 +1672,8 @@ export interface FileContentResult {
  * Optionen fuer getFileContent und applyContentRange.
  */
 export interface FileContentOptions {
+  /** API-internal complete code transport; tools do not expose this option. Masks remain active. */
+  vollstaendig?: boolean;
   /** 1-basierte Start-Zeile (Standard: 1). */
   from?: number;
   /** 1-basierte End-Zeile inklusiv (Standard: letzte Zeile). */
@@ -1695,6 +1697,7 @@ export function applyContentRange(
   pruefeCodeBereich(bereich);
   const lines = rawContent.split('\n');
   const total_lines = lines.length;
+  if (options.vollstaendig === true) return {content:rawContent,total_lines,returned_range:{from:1,to:total_lines,eof:true}};
 
   const from = Math.max(1, options.from ?? 1);
   const toRequested = options.to ?? total_lines;
