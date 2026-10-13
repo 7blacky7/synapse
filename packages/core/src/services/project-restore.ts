@@ -13,14 +13,30 @@ export class ProjectRestoreError extends Error {
 const fail=(c:string,s=409):never=>{throw new ProjectRestoreError(c,s);};
 export interface RestoreCodeEntry {pfad:string;sha256:string;groesse:number;excluded?:boolean}
 export interface RestoreJob {id:string;name:string;hostname:string;mode:'restore_existing';restore_lease:string}
-function host(h:string){if(!h||h.length>200||/[\s/\\\x00]/.test(h))fail('host_ungueltig',400);}
+function host(h:string){if(typeof h!=='string'||!h||h.length>200||/[\s/\\\x00]/.test(h))fail('host_ungueltig',400);}
+function uuid(v:string){if(typeof v!=='string'||! /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(v))fail('id_ungueltig',400);}
 function cursor(raw:string):{id:string;after:string}{
- try {const c=JSON.parse(Buffer.from(raw,'base64url').toString());if(typeof c.id!=='string'||typeof c.after!=='string')throw 0;return c;}
+ try {const c=JSON.parse(Buffer.from(raw,'base64url').toString());if(typeof c.id!=='string'||typeof c.after!=='string'||c.after.length>4096)throw 0;uuid(c.id);return c;}
  catch{return fail('cursor_ungueltig',400);}
 }
 export class ProjectRestoreService {
  constructor(private readonly db:Pool=getPool()){}
  private ttl(){return getAssetKonfiguration().speicher.timeoutMs;}
+ /** Explicit Tray operation using the existing daemon credential; labels never identify OS hosts. */
+ async bindDaemonHost(tokenHash:string,hostname:string):Promise<string>{
+  host(hostname);
+  if(!/^[a-f0-9]{64}$/.test(tokenHash))fail('daemon_identitaet_ungueltig',400);
+  const r=await this.db.query(`INSERT INTO daemon_restore_host_bindings(token_hash,hostname) VALUES($1,$2)
+   ON CONFLICT(token_hash) DO UPDATE SET updated_at=clock_timestamp()
+   WHERE daemon_restore_host_bindings.hostname=EXCLUDED.hostname RETURNING hostname`,[tokenHash,hostname]);
+  if(!r.rows.length)fail('daemon_host_bereits_gebunden',409);
+  return r.rows[0].hostname;
+ }
+ async daemonHost(tokenHash:string):Promise<string|null>{
+  const r=await this.db.query('SELECT hostname FROM daemon_restore_host_bindings WHERE token_hash=$1',[tokenHash]);
+  return r.rows[0]?.hostname??null;
+ }
+
  async binding(project:string,hostname:string):Promise<boolean>{
   host(hostname);
   const r=await this.db.query('SELECT 1 FROM project_host_bindings b WHERE b.project=$1 AND b.hostname=$2 AND b.enabled AND EXISTS(SELECT 1 FROM projects p WHERE p.name=b.project AND p.enabled)',[project,hostname]);
@@ -60,6 +76,7 @@ export class ProjectRestoreService {
   return r.rows[0]??null;
  }
  async renew(id:string,hostname:string,lease:string){
+  uuid(id);uuid(lease);host(hostname);
   const r=await this.db.query(`UPDATE project_init_jobs j SET lease_until=clock_timestamp()+$4*interval '1 millisecond'
    WHERE id=$1 AND hostname=$2 AND mode='restore_existing' AND restore_lease=$3 AND status='running' AND lease_until>clock_timestamp()
     AND EXISTS(SELECT 1 FROM project_host_bindings b WHERE b.project=j.name AND b.hostname=$2 AND b.enabled)
@@ -67,6 +84,7 @@ export class ProjectRestoreService {
   if(!r.rows.length)fail('restore_lease_veraltet');
  }
  async complete(id:string,hostname:string,lease:string,result:{status:'done'|'failed';path?:string;error?:string}){
+  uuid(id);uuid(lease);host(hostname);
   const c=await this.db.connect();
   try{
    await c.query('BEGIN');
@@ -108,6 +126,7 @@ export class ProjectRestoreService {
   return {manifest_id:id,eintraege:entries,vollstaendig:!more,cursor:more?Buffer.from(JSON.stringify({id,after:page.at(-1)!.file_path})).toString('base64url'):null};
  }
  async bytes(project:string,hostname:string,id:string,filePath:string,sha256:string){
+  uuid(id);if(typeof sha256!=='string'||!/^[a-f0-9]{64}$/.test(sha256))fail('sha256_ungueltig',400);
   await this.requireBinding(project,hostname);
   const logical=normalisiereSpeicherPfad(filePath);
   if(istMaskierteDatei(logical))fail('lokale_geheimdatei',403);

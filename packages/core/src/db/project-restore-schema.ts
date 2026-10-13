@@ -4,6 +4,10 @@ export const PROJECT_RESTORE_SCHEMA_SQL = `
 ALTER TABLE project_init_jobs ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'create';
 ALTER TABLE project_init_jobs ADD COLUMN IF NOT EXISTS restore_lease UUID;
 ALTER TABLE project_init_jobs ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS daemon_restore_host_bindings (
+ token_hash TEXT PRIMARY KEY, hostname TEXT NOT NULL,
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
 CREATE TABLE IF NOT EXISTS project_host_bindings (
  project TEXT NOT NULL, hostname TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT true,
  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(project,hostname)
