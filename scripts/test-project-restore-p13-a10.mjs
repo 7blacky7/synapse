@@ -1,18 +1,21 @@
-/** P13-T28/A10: real PG behind the approved client; isolated schema, no filesystem writes. */
+/** P13-T28/A10: coordinator-approved PG test per #26641; isolated schema, no filesystem writes. */
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
-import {oeffneGeschuetzteShellTestDb} from './lib/test-db-schutz.mjs';
+const pg=createRequire(new URL('../packages/core/package.json',import.meta.url))('pg');
 const url=new URL(process.env.DATABASE_URL??'');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 process.env.SYNAPSE_API_FEATURES='asset_sync';
-const db=await oeffneGeschuetzteShellTestDb();
+const db=new pg.Client({connectionString:url.toString()});
+await db.connect();
+try{assert.equal((await db.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');}
+catch(e){await db.end();throw e;}
 const schema='p13_a10_'+randomUUID().replaceAll('-','');
 const core=await import('../packages/core/dist/index.js');
 const {ProjectRestoreService}=await import('../packages/core/dist/services/project-restore.js');
 const {PROJECT_RESTORE_SCHEMA_SQL}=await import('../packages/core/dist/db/project-restore-schema.js');
 const queue=await import('../packages/core/dist/services/project-init-queue.js');
-const adapter={query:db.query,connect:async()=>({query:db.query,release(){}})};
+const adapter={query:db.query.bind(db),connect:async()=>({query:db.query.bind(db),release(){}})};
 const {mitLesePool}=await import('../packages/core/dist/db/client.js');
 const service=new ProjectRestoreService(adapter);
 const host='p13-a10-os-host',project='p13-a10-test',hash='a'.repeat(64);
@@ -84,7 +87,7 @@ try{
   assert.equal((await db.query('SELECT path FROM projects WHERE name=$1 AND hostname=$2',[project,host])).rows[0].path,'/fixture/restored');
   await assert.rejects(service.complete(job.id,host,job.restore_lease,{status:'done',path:'/fixture/restored'}),error('restore_lease_veraltet'));
  });
- await db.query("INSERT INTO code_files(project,file_path,file_name,file_type,content,file_size) VALUES($1,'src/main.ts','main.ts','ts',$2,$3),($1,'z.ts','z.ts','ts','original',8),($1,'.env','.env','env','SECRET=fixture',14)",[project,content,Buffer.byteLength(content)]);
+ await db.query("INSERT INTO code_files(id,project,file_path,file_name,file_type,content,file_size) VALUES($4,$1,'src/main.ts','main.ts','ts',$2,$3),($5,$1,'z.ts','z.ts','ts','original',8),($6,$1,'.env','.env','env','SECRET=fixture',14)",[project,content,Buffer.byteLength(content),randomUUID(),randomUUID(),randomUUID()]);
  let manifest;
  await check('paged snapshot excludes secrets and stays stable despite subsequent code writes',async()=>{
   manifest=await service.manifest(project,host,undefined,1);
