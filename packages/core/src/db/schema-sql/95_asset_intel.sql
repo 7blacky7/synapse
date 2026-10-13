@@ -44,6 +44,25 @@ CREATE TABLE IF NOT EXISTS asset_files (
   CONSTRAINT asset_files_project_file_path_key UNIQUE (project, file_path),
   CONSTRAINT asset_files_status_check CHECK (status IN ('ok','teilweise','nicht_erkannt','fehler','quelle_nicht_gefunden'))
 );
+-- P13-T20/A2: Transportzustand getrennt vom bestehenden Inspektionsstatus.
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS mime_type TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS storage_kind TEXT CHECK (storage_kind IN ('assets','binaries'));
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS storage_key TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS transport_sha256 TEXT CHECK (transport_sha256 ~ '^[0-9a-f]{64}$');
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS transport_revision BIGINT CHECK (transport_revision >= 0);
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS storage_status TEXT DEFAULT 'legacy_local';
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS inspection_revision BIGINT CHECK (inspection_revision >= 0);
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS restore_until TIMESTAMPTZ;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS reverse_id TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS reverse_quellpfad TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS reverse_quellhash TEXT CHECK (reverse_quellhash ~ '^[0-9a-f]{64}$');
+-- Kein erfundener Transporthash aus alten Inspektionshashes.
+UPDATE asset_files SET storage_status = 'legacy_local'
+ WHERE storage_key IS NULL AND storage_status IS NULL;
+CREATE INDEX IF NOT EXISTS idx_asset_files_transport ON asset_files(project, transport_revision);
+CREATE INDEX IF NOT EXISTS idx_asset_files_restore ON asset_files(restore_until) WHERE deleted_at IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_asset_files_format    ON asset_files(project, format);
 CREATE INDEX IF NOT EXISTS idx_asset_files_typ       ON asset_files(project, asset_type);
 CREATE INDEX IF NOT EXISTS idx_asset_files_status    ON asset_files(project, status) WHERE status <> 'ok';
