@@ -86,7 +86,7 @@ assert.deepEqual(pngInfo(Buffer.from(inline.content[1].data, 'base64')), { w: 48
 assert.equal(text(dienst.ausfuehren({ probe_id: text(inline).probe_id, wort: 'FALSCH' })).richtig, false);
 assert.equal(text(dienst.ausfuehren({ probe_id: text(inline).probe_id, wort: fixture })).richtig, true);
 assert.ok(!JSON.stringify(dienst.ausfuehren({ probe_id: text(inline).probe_id, wort: fixture })).includes(fixture));
-const link = text(dienst.ausfuehren({ modus: 'link' }));
+const link = text(dienst.ausfuehren({ modus: 'link', offen_sekunden:1, einmalig:true }));
 assert.equal(link.modus, 'link');
 assert.ok(link.link.startsWith('https://example.invalid/api/bildprobe/'));
 const token = new URL(link.link).pathname.split('/').at(-1);
@@ -100,8 +100,8 @@ assert.equal(stats.richtig, true);
 assert.equal(stats.abrufe.length, 2);
 assert.deepEqual(stats.abrufe.map(x => x.user_agent), ['proxy-one', 'proxy-two']);
 assert.ok(stats.abrufe.every(x => x.zeit && x.ip));
-const expires = text(dienst.ausfuehren({ modus: 'link' }));
-now += 101;
+const expires = text(dienst.ausfuehren({ modus: 'link', offen_sekunden:1, einmalig:true }));
+now += 1001;
 assert.equal(dienst.abrufen(new URL(expires.link).pathname.split('/').at(-1), { ip: '127.0.0.1', userAgent: 'late' }).status, 410);
 assert.equal(text(dienst.ausfuehren({ probe_id: expires.probe_id, wort: fixture })).abgelaufen, true);
 assert.deepEqual(pngInfo(bp.renderBildprobePng(fixture, 720, 240)), { w: 720, h: 240 });
@@ -116,7 +116,7 @@ registerAuthHook(authApp);
 await authApp.register(bildprobeRoutes, { dienst });
 authApp.get('/api/geschuetzt', () => ({ ok: true }));
 try {
-  const publicProbe = text(dienst.ausfuehren({ modus: 'link' }));
+  const publicProbe = text(dienst.ausfuehren({ modus: 'link', offen_sekunden:1, einmalig:true }));
   const path = new URL(publicProbe.link).pathname;
   const publicGet = await authApp.inject({ method: 'GET', url: path });
   assert.equal(publicGet.statusCode, 200);
@@ -127,11 +127,11 @@ try {
     ['GET', '/api/geschuetzt'], ['POST', '/api/bildprobe'], ['HEAD', path],
     ['POST', path], ['GET', path + '/extra'], ['GET', '/api/bildprobe/short'],
   ]) assert.equal((await authApp.inject({ method, url })).statusCode, 401, method + ' Pfad bleibt geschützt');
-  const concurrent = new URL(text(dienst.ausfuehren({ modus: 'link' })).link).pathname;
+  const concurrent = new URL(text(dienst.ausfuehren({ modus: 'link', offen_sekunden:1, einmalig:true })).link).pathname;
   const races = await Promise.all([authApp.inject(concurrent), authApp.inject(concurrent)]);
   assert.deepEqual(races.map(x => x.statusCode).sort(), [200,410]);
-  const late = text(dienst.ausfuehren({ modus:'link' }));
-  now += 101;
+  const late = text(dienst.ausfuehren({ modus:'link', offen_sekunden:1, einmalig:true }));
+  now += 1001;
   assert.equal((await authApp.inject(new URL(late.link).pathname)).statusCode, 410);
   const lateCheck = text(dienst.ausfuehren({ probe_id:late.probe_id, wort:fixture }));
   assert.equal(lateCheck.abrufe[0].status, 410);
@@ -162,7 +162,7 @@ try {
   for (const list of lists) {
     const def = list.find(x => x.name === 'admin');
     assert.ok(def.inputSchema.properties.action.enum.includes('bildprobe'));
-    for (const key of ['modus','probe_id','wort']) assert.ok(key in def.inputSchema.properties);
+    for (const key of ['modus','probe_id','wort','offen_sekunden','einmalig']) assert.ok(key in def.inputSchema.properties);
   }
   for (const call of [args => client.callTool({ name: 'admin', arguments: args }), rpc]) {
     const r = await call({ action:'bildprobe', modus:'inline' });
@@ -176,7 +176,7 @@ try {
   process.env.SYNAPSE_API_TOKEN = 'test-only-bildprobe';
   await app.listen({ port:0, host:'127.0.0.1' });
   process.env.SYNAPSE_API_URL = 'http://127.0.0.1:' + app.server.address().port;
-  const remote = await client.callTool({ name:'admin', arguments:{ action:'bildprobe', modus:'link' } });
+  const remote = await client.callTool({ name:'admin', arguments:{ action:'bildprobe', modus:'link', offen_sekunden:2, einmalig:true } });
   const meta = text(remote);
   assert.match(meta.probe_id, /^api\./);
   const remotePath = new URL(meta.link).pathname;
@@ -184,6 +184,19 @@ try {
   assert.equal((await app.inject(remotePath)).statusCode, 410);
   const checkRemote = text(await client.callTool({ name:'admin', arguments:{ action:'bildprobe',probe_id:meta.probe_id,wort:fixture } }));
   assert.equal(checkRemote.abrufe.length, 2);
+  for (const call of [args => client.callTool({name:'admin',arguments:args}), rpc]) {
+    const started = Date.now();
+    const window = text(await call({action:'bildprobe',modus:'link',offen_sekunden:2}));
+    assert.equal(window.einmalig,false);
+    assert.ok(Date.parse(window.offen_bis) - started >= 1900);
+    assert.ok(Date.parse(window.offen_bis) - started <= 2200, 'offen_sekunden durch beide MCP-Wege/Brücke weitergegeben');
+    const path = new URL(window.link).pathname;
+    assert.equal((await app.inject(path)).statusCode,200);
+    assert.equal((await app.inject(path)).statusCode,200);
+    const denied = text(await call({action:'bildprobe',modus:'link',offen_sekunden:3601}));
+    assert.equal(denied.error,'bildprobe_offen_sekunden_ungueltig');
+    assert.equal(denied.max_offen_sekunden,3600);
+  }
   const { logToolCall } = await import('../../core/dist/services/tool-call-log.js');
   await logToolCall({ tool:'admin', action:'bildprobe', argsPreview:'{"wort":"' + fixture, error:fixture, result:fixture, ok:false });
   await logToolCall({ tool:'admin', action:'index_stats', argsPreview:'{"bleibt":true}', result:'{"bleibt":true}', ok:true });

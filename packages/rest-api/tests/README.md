@@ -17,18 +17,22 @@ Dieser Ordner enthält Prüfungen für die HTTP- und JSON-RPC-Seite der REST API
 | Wissen | [`memory-is-update-p10-t12.test.mjs`](memory-is-update-p10-t12.test.mjs) |
 | Prüfcontainer und Parser-Sprachen | [`pruef-container-build.test.mjs`](pruef-container-build.test.mjs), [`pruef-container-erstpruefung.test.mjs`](pruef-container-erstpruefung.test.mjs), [`pruef-container-fp.mjs`](pruef-container-fp.mjs), [`pruef-container-funktional.test.mjs`](pruef-container-funktional.test.mjs), [`pruef-container-jvm.test.mjs`](pruef-container-jvm.test.mjs), [`pruef-container-mutation.mjs`](pruef-container-mutation.mjs), [`pruef-container-system.test.mjs`](pruef-container-system.test.mjs), [`pruef-container.test.mjs`](pruef-container.test.mjs), [`pruef-container-treesitter.test.mjs`](pruef-container-treesitter.test.mjs) |
 
-### Bildprobe (P13-T14)
+### Bildprobe (P13-T14/P13-T15)
 
-[`bildprobe-p13-t14.test.mjs`](bildprobe-p13-t14.test.mjs) prüft PNG-Dekodierung/CRC, den Inline-Bildblock über beide MCP-Wege, Einmal-Links, Ablauf, parallele Abrufe und die genaue Auth-Ausnahme. Ein Query-Mock ersetzt alle Datenbankzugriffe; es wird keine Datenbankverbindung aufgebaut.
+[`bildprobe-p13-t15.test.mjs`](bildprobe-p13-t15.test.mjs) prüft mit einer Fake-Uhr Default/Max, Mehrfachabruf im Fenster, Schließzeit, eigene 410-Fehlercodes und CF-IP. Lauf: `node packages/rest-api/tests/bildprobe-p13-t15.test.mjs`.
+
+[`bildprobe-p13-t14.test.mjs`](bildprobe-p13-t14.test.mjs) prüft PNG-Dekodierung/CRC, den Inline-Bildblock über beide MCP-Wege, Zeitfenster- und Einmal-Links, Ablauf, parallele Abrufe und die genaue Auth-Ausnahme. Ein Query-Mock ersetzt alle Datenbankzugriffe; es wird keine Datenbankverbindung aufgebaut.
 
 Nach den Core-, MCP- und API-Builds läuft die Probe mit `node packages/rest-api/tests/bildprobe-p13-t14.test.mjs`. `BILDPROBE_VORSCHAU=1` legt zusätzlich ein zufälliges Bild zur eigenen Sichtprüfung unter `/tmp/synapse-p13-t14/positivkontrolle.png` ab. Das Codewort wird weder ausgegeben noch in Auditdaten gespeichert.
 
-Das Testwerkzeug wird mit `admin(action:'bildprobe', modus:'inline'|'link')` aufgerufen; `probe_id` und das gelesene `wort` prüfen dieselbe Probe. Die Prüfung liefert auch Abrufzeit, IP, User-Agent und HTTP-Status für bekannte Links. GET liefert das Bild nur einmal, danach oder nach Ablauf `410`; POST zum Erzeugen/Prüfen bleibt authentifiziert. Prozessneustarts verlieren diese Testdaten.
+Das Testwerkzeug wird mit `admin(action:'bildprobe', modus:'inline'|'link')` aufgerufen; `probe_id` und das gelesene `wort` prüfen dieselbe Probe. Die Prüfung liefert auch Abrufzeit, IP, User-Agent und HTTP-Status für bekannte Links. Links sind standardmäßig mehrfach bis `offen_bis` (ISO, UTC) lesbar. `offen_sekunden` bestimmt das Fenster ab Erzeugung; `einmalig:true` verbraucht den Link beim ersten Abruf. Danach gilt `410` mit `bildprobe_verbraucht`, nach Ablauf `bildprobe_abgelaufen`. `CF-Connecting-IP` wird bei vorhandenem Header als Abruf-IP erfasst; POST zum Erzeugen/Prüfen bleibt authentifiziert. Prozessneustarts verlieren diese Testdaten.
 
 | Umgebung | Standard / Wirkung |
 |---|---|
 | `SYNAPSE_BILDPROBE_BASE_URL` | Öffentliche Basisadresse; sonst `SYNAPSE_PUBLIC_URL`, `SYNAPSE_API_URL`, zuletzt `http://localhost:3456`. Für entfernte Oberflächen ausdrücklich die öffentliche Adresse setzen. |
-| `SYNAPSE_BILDPROBE_TTL_MS` | 600000 ms; Bild/Prüfung gültig, danach ein weiteres TTL-Fenster Metadaten zur Auswertung. Bereinigung erfolgt bei weiterer Nutzung. |
+| `SYNAPSE_BILDPROBE_TTL_MS` | 600000 ms Inline-Lebensdauer und zusätzliches Metadatenfenster nach Ablauf; verkürzt das Linkfenster nicht. Bereinigung erfolgt bei weiterer Nutzung. |
+| `SYNAPSE_BILDPROBE_OFFEN_S` | 600 Sekunden Default-Linkfenster ab Erzeugung, durch `offen_sekunden` überschreibbar |
+| `SYNAPSE_BILDPROBE_OFFEN_MAX_S` | 3600 Sekunden Maximalfenster; höhere/ungültige Aufrufwerte werden abgewiesen, nicht gekappt |
 | `SYNAPSE_BILDPROBE_WIDTH` / `SYNAPSE_BILDPROBE_HEIGHT` | 480 / 160 Pixel |
 | `SYNAPSE_BILDPROBE_MAX_PROBEN` | 128 gleichzeitig aufbewahrte Proben; bei Erreichen sichtbarer Kapazitätsfehler |
 | `SYNAPSE_API_URL` / `SYNAPSE_API_TOKEN` | Für stdio-Link-Proben: API-Adresse und vorhandener Bearer-Ausweis. Inline im stdio-Prozess benötigt diese Brücke nicht. |

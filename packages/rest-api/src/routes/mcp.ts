@@ -933,7 +933,7 @@ export const MCP_TOOLS = [
   // 12. admin
   {
     name: 'admin',
-    description: 'Wartungs- und Statistik-Operationen der eigenen Synapse-Instanz: Index-Statistiken, Backup-Restore innerhalb der eigenen DB, Ideen-Eingang, Indexierung lokaler Mediendateien im Projekt-Verzeichnis. Wirkt nur auf die User-eigene lokale Synapse-Datenbank. Keine externen Systeme.' + JEV_ADMIN_BESCHREIBUNG,
+    description: 'Wartungs- und Statistik-Operationen der eigenen Synapse-Instanz: Index-Statistiken, Backup-Restore innerhalb der eigenen DB, Ideen-Eingang, Indexierung lokaler Mediendateien im Projekt-Verzeichnis. Wirkt nur auf die User-eigene lokale Synapse-Datenbank. Keine externen Systeme.' + ' Bildprobe: Inline-PNG oder Link mit offen_sekunden (Env-Standard 600s, Env-Max 3600s); einmalig:true wählt den strengen Einmalabruf.' + JEV_ADMIN_BESCHREIBUNG,
     inputSchema: {
       type: 'object',
       properties: {

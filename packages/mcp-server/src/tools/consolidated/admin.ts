@@ -30,7 +30,7 @@ import { fuehreStdioBildprobeAus } from '../bildprobe.js';
 export const adminTool: ConsolidatedTool = {
   definition: {
     name: 'admin',
-    description: 'Konsolidiertes Admin/Utility-Tool mit verschiedenen Actions für Projekt-Management, Statistiken, Ideen und Media-Indexierung.' + JEV_ADMIN_BESCHREIBUNG,
+    description: 'Konsolidiertes Admin/Utility-Tool mit verschiedenen Actions für Projekt-Management, Statistiken, Ideen und Media-Indexierung.' + ' Bildprobe: Inline-PNG oder Link mit offen_sekunden (Env-Standard 600s, Env-Max 3600s); einmalig:true wählt den strengen Einmalabruf.' + JEV_ADMIN_BESCHREIBUNG,
     inputSchema: {
       type: 'object',
       properties: {

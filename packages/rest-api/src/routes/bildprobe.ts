@@ -13,9 +13,10 @@ export async function bildprobeRoutes(fastify: FastifyInstance, opts: { dienst?:
     reply.header('Referrer-Policy', 'no-referrer');
     reply.header('X-Content-Type-Options', 'nosniff');
     const result = dienst.abrufen(request.params.token, {
-      ip: request.ip, userAgent: String(request.headers['user-agent'] ?? ''),
+      ip: typeof request.headers['cf-connecting-ip'] === 'string' && request.headers['cf-connecting-ip'].trim()
+        ? request.headers['cf-connecting-ip'].trim() : request.ip, userAgent: String(request.headers['user-agent'] ?? ''),
     });
-    if (result.status !== 200) return reply.code(410).send({ error: 'bildprobe_verbraucht_oder_abgelaufen' });
+    if (result.status !== 200) return reply.code(410).send({ error: result.error });
     return reply.type('image/png').send(result.png);
   });
 }

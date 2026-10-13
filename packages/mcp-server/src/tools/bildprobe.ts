@@ -19,7 +19,8 @@ export async function fuehreStdioBildprobeAus(args: Record<string, unknown>): Pr
   try {
     const r = await fetch(url, { method: 'POST', redirect: 'error',
       headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
-      body: JSON.stringify({ modus: args.modus, probe_id: args.probe_id, wort: args.wort }),
+      body: JSON.stringify({ modus: args.modus, probe_id: args.probe_id, wort: args.wort,
+        offen_sekunden: args.offen_sekunden, einmalig: args.einmalig }),
       signal: AbortSignal.timeout(10_000),
     });
     if (!r.ok) return fehler('bildprobe_api_http_fehler');

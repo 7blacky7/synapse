@@ -6,7 +6,9 @@ import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from 
 import { deflateSync } from 'node:zlib';
 
 export const BILDPROBE_PARAMETER = {
-  modus: { type: 'string', enum: ['inline', 'link'], description: 'Bildprobe: echtes Inline-PNG oder öffentlicher Einmal-Link (Standard inline)' },
+  modus: { type: 'string', enum: ['inline', 'link'], description: 'Bildprobe: echtes Inline-PNG oder öffentlicher Link mit Zeitfenster (Standard inline)' },
+  offen_sekunden: { type: 'integer', minimum: 1, description: 'Link offen ab Erzeugung in Sekunden; Standard SYNAPSE_BILDPROBE_OFFEN_S (600), Max SYNAPSE_BILDPROBE_OFFEN_MAX_S (3600); größere Werte sind Fehler' },
+  einmalig: { type: 'boolean', description: 'Link beim ersten Abruf verbrauchen (Standard false); sonst mehrfach bis offen_bis lesbar' },
   probe_id: { type: 'string', description: 'Bildprobe prüfen: Kennung aus dem vorherigen Aufruf' },
   wort: { type: 'string', description: 'Bildprobe prüfen: nur das im Bild gelesene Codewort; wird nicht protokolliert' },
 };
@@ -17,6 +19,8 @@ export interface BildprobeKonfiguration {
   width: number;
   height: number;
   maxProben: number;
+  offenSekunden: number;
+  offenMaxSekunden: number;
 }
 export function ladeBildprobeKonfiguration(env: NodeJS.ProcessEnv = process.env): BildprobeKonfiguration {
   const zahl = (name: string, fallback: number, min: number, max: number) => {
@@ -31,7 +35,10 @@ export function ladeBildprobeKonfiguration(env: NodeJS.ProcessEnv = process.env)
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
     throw Error('bildprobe_basisadresse_ungueltig');
   }
+  const offenMaxSekunden = zahl('SYNAPSE_BILDPROBE_OFFEN_MAX_S', 3600, 1, 86_400_000);
+  const offenSekunden = zahl('SYNAPSE_BILDPROBE_OFFEN_S', 600, 1, offenMaxSekunden);
   return {
+    offenSekunden, offenMaxSekunden,
     basisUrl: basisUrl.replace(/\/+$/, ''),
     ttlMs: zahl('SYNAPSE_BILDPROBE_TTL_MS', 600_000, 1, 86_400_000),
     width: zahl('SYNAPSE_BILDPROBE_WIDTH', 480, 96, 2048),
@@ -105,7 +112,7 @@ export function renderBildprobePng(wort: string, width: number, height: number):
     chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 type Abruf = { zeit: string; ip: string; user_agent: string; status: number };
-type Probe = { digest: Buffer; png?: Buffer; token?: string; ablauf: number; verwendet: boolean; abrufe: Abruf[] };
+type Probe = { digest: Buffer; png?: Buffer; token?: string; ablauf: number; modus: 'inline' | 'link'; einmalig: boolean; verwendet: boolean; abrufe: Abruf[] };
 export type BildprobeErgebnis = {
   content: Array<{ type: 'text'; text: string } | { type: 'image'; mimeType: 'image/png'; data: string }>;
   structuredContent: Record<string, unknown>;
@@ -154,33 +161,52 @@ export class BildprobeDienst {
       if (!p) return antwort({ success: false, error: 'bildprobe_unbekannt' });
       const abgelaufen = this.jetzt() >= p.ablauf;
       return antwort({ success: true, probe_id: args.probe_id,
+        modus: p.modus, einmalig: p.einmalig, offen_bis: new Date(p.ablauf).toISOString(),
         richtig: !abgelaufen && timingSafeEqual(p.digest, digest(args.wort.trim().toUpperCase())),
         abgelaufen, abrufanzahl: p.abrufe.length, abrufe: p.abrufe.map(x => ({ ...x })) });
     }
     const modus = args.modus ?? 'inline';
     if (modus !== 'inline' && modus !== 'link') return antwort({ success: false, error: 'bildprobe_modus_ungueltig' });
+    const offenSekunden = args.offen_sekunden ?? this.config.offenSekunden;
+    if (modus === 'link' && (typeof offenSekunden !== 'number' || !Number.isInteger(offenSekunden) ||
+        offenSekunden < 1 || offenSekunden > this.config.offenMaxSekunden)) {
+      return antwort({ success: false, error: 'bildprobe_offen_sekunden_ungueltig',
+        max_offen_sekunden: this.config.offenMaxSekunden,
+        message: 'offen_sekunden muss eine ganze Zahl zwischen 1 und ' + this.config.offenMaxSekunden + ' sein.' });
+    }
+    if (args.einmalig !== undefined && typeof args.einmalig !== 'boolean') {
+      return antwort({ success: false, error: 'bildprobe_einmalig_ungueltig' });
+    }
+    if (modus !== 'link' && (args.offen_sekunden !== undefined || args.einmalig !== undefined)) {
+      return antwort({ success: false, error: 'bildprobe_linkparameter_nur_link' });
+    }
+    const einmalig = modus === 'link' && args.einmalig === true;
     if (this.proben.size >= this.config.maxProben) return antwort({ success: false, error: 'bildprobe_kapazitaet' });
     const wort = this.wort(), png = renderBildprobePng(wort, this.config.width, this.config.height);
-    const probe_id = this.kennung + '.' + randomUUID(), ablauf = this.jetzt() + this.config.ttlMs;
+    const probe_id = this.kennung + '.' + randomUUID();
+    const ablauf = this.jetzt() + (modus === 'link' ? (offenSekunden as number) * 1000 : this.config.ttlMs);
     const token = modus === 'link' ? randomBytes(32).toString('hex') : undefined;
-    this.proben.set(probe_id, { digest: digest(wort), png, token, ablauf, verwendet: false, abrufe: [] });
+    this.proben.set(probe_id, { digest: digest(wort), png, token, ablauf, modus, einmalig, verwendet: false, abrufe: [] });
     if (token) this.tokens.set(token, probe_id);
-    return antwort({ success: true, probe_id, modus, ablauf: new Date(ablauf).toISOString(),
+    return antwort({ success: true, probe_id, modus, einmalig,
+      offen_bis: new Date(ablauf).toISOString(), ablauf: new Date(ablauf).toISOString(),
       ...(token ? { link: this.config.basisUrl + '/api/bildprobe/' + token } : {}),
       hinweis: 'Lies das Codewort im Bild und prüfe es mit admin(action:bildprobe, probe_id, wort).' },
       modus === 'inline' ? png : undefined);
   }
-  abrufen(token: string, details: { ip: string; userAgent: string }): { status: 200 | 410; png?: Buffer } {
+  abrufen(token: string, details: { ip: string; userAgent: string }): { status: 200 | 410; png?: Buffer; error?: string } {
     this.bereinigen();
     const id = this.tokens.get(token), p = id ? this.proben.get(id) : undefined;
-    if (!p) return { status: 410 };
-    const now = this.jetzt(), status = now < p.ablauf && !p.verwendet && p.png ? 200 : 410;
+    if (!p) return { status: 410, error: 'bildprobe_abgelaufen' };
+    const now = this.jetzt();
+    const error = now >= p.ablauf ? 'bildprobe_abgelaufen' :
+      p.einmalig && p.verwendet ? 'bildprobe_verbraucht' : undefined;
+    const status = error ? 410 : 200;
     p.abrufe.push({ zeit: new Date(now).toISOString(), ip: details.ip, user_agent: details.userAgent, status });
-    if (status === 410) return { status };
-    // Kein await zwischen Prüfung und Verbrauch: parallele Abrufe haben genau einen Gewinner.
-    p.verwendet = true;
+    if (error) return { status: 410, error };
+    // Kein await zwischen Prüfung und Verbrauch; im Fenster bleibt das PNG lesbar.
     const png = p.png;
-    p.png = undefined;
+    if (p.einmalig) { p.verwendet = true; p.png = undefined; }
     return { status: 200, png };
   }
 }
