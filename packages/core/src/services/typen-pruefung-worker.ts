@@ -108,8 +108,14 @@ function neuGegen(neu:Diagnose[],alt:Diagnose[]):Diagnose[] {
 function stufen(dateien:PruefDatei[],root:string) {
   return dateien.map(d=>{
     const alt=d.basis.split('\n'),neu=d.ergebnis.split('\n');
-    const bereiche=aenderungsBereiche(alt,neu);
     const ops=d.ops;
+    // Benachbarte Ersetzungen gleicher Länge bleiben an Op-Grenzen getrennt.
+    // Sonst würde ein gemeinsamer Diff-Hunk erst mit der letzten Op zugeschaltet.
+    const bereiche=aenderungsBereiche(alt,neu).flatMap(b=>{
+      if(b.a1-b.a0!==b.b1-b.b0) return [b];
+      const grenzen=[...new Set([b.b0,b.b1,...ops.flatMap(o=>o.spannen.flatMap(s=>s)).filter(n=>n>b.b0&&n<b.b1)])].sort((x,y)=>x-y);
+      return grenzen.slice(0,-1).map((s,i)=>({a0:b.a0+s-b.b0,a1:b.a0+grenzen[i+1]-b.b0,b0:s,b1:grenzen[i+1]}));
+    });
     const rang=bereiche.map(b=>{
       const beruehrt=ops.filter(o=>o.spannen.some(([s,e])=>s<e&&b.b0<b.b1?s<b.b1&&e>b.b0:s<=b.b1&&e>=b.b0));
       return Math.max(...(beruehrt.length?beruehrt:ops).map(o=>o.op_index));
