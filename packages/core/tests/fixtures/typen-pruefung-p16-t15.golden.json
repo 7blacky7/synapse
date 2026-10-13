@@ -1,0 +1,328 @@
+{
+  "defaults": [
+    [
+      "file",
+      {
+        "success": true,
+        "file_path": "packages/core/src/p16-fixture/golden.ts",
+        "file_type": "ts",
+        "file_size": 62,
+        "content": "export function golden(value:number):number { return value; }\n",
+        "total_lines": 2,
+        "returned_range": {
+          "from": 1,
+          "to": 2,
+          "eof": true
+        },
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "tree",
+      {
+        "success": true,
+        "tree": "golden/ (1 Dateien, 1fn)\n  base.py (3Z, 1fn)\npackages/core/src/p16-fixture/ (1 Dateien, 1fn)\n  golden.ts (2Z, 1fn)\n---\n2 Dateien | Projekt: <PROJEKT>",
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "functions",
+      {
+        "success": true,
+        "functions": [
+          {
+            "id": "<UUID>",
+            "file_path": "packages/core/src/p16-fixture/golden.ts",
+            "name": "golden",
+            "line_start": 1,
+            "line_end": 1,
+            "params": [
+              "value:number"
+            ],
+            "return_type": "number",
+            "is_exported": true,
+            "parent_name": null,
+            "usage_count": 0
+          }
+        ],
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "symbols",
+      {
+        "success": true,
+        "symbols": [
+          {
+            "id": "<UUID>",
+            "file_path": "packages/core/src/p16-fixture/golden.ts",
+            "symbol_type": "function",
+            "name": "golden",
+            "line_start": 1,
+            "line_end": 1,
+            "is_exported": true,
+            "value": null
+          }
+        ],
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "references",
+      {
+        "success": true,
+        "definition": {
+          "id": "<UUID>",
+          "file_path": "packages/core/src/p16-fixture/golden.ts",
+          "symbol_type": "function",
+          "name": "golden",
+          "line_start": 1,
+          "is_exported": true,
+          "parent_symbol": null
+        },
+        "references": [],
+        "total_files": 0,
+        "total_references": 0,
+        "string_occurrences": [],
+        "total_string_occurrences": 0,
+        "name_matches": [],
+        "total_name_matches": 0,
+        "gekappt": false,
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "search",
+      {
+        "success": true,
+        "results": [
+          {
+            "file_path": "golden/base.py",
+            "file_type": "py",
+            "headline": "<b>golden</b>_python(value):\n    return value",
+            "rank": 0.06079271,
+            "matches": [
+              {
+                "line": 1,
+                "text": "def golden_python(value):"
+              }
+            ],
+            "total_matches": 1,
+            "matches_gekappt": false
+          },
+          {
+            "file_path": "packages/core/src/p16-fixture/golden.ts",
+            "file_type": "ts",
+            "headline": "export function <b>golden</b>(value:number):number { return value",
+            "rank": 0.06079271,
+            "matches": [
+              {
+                "line": 1,
+                "text": "export function golden(value:number):number { return value; }"
+              }
+            ],
+            "total_matches": 1,
+            "matches_gekappt": false
+          }
+        ],
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "variables",
+      {
+        "success": true,
+        "variables": [],
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "statements",
+      {
+        "success": true,
+        "statements": [],
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "calls",
+      {
+        "success": true,
+        "calls": [],
+        "total": 0,
+        "gekappt": false,
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "flow",
+      {
+        "success": true,
+        "file_path": "packages/core/src/p16-fixture/golden.ts",
+        "scope_name": null,
+        "statements": [],
+        "project": "<PROJEKT>"
+      }
+    ],
+    [
+      "entrypoints",
+      {
+        "success": true,
+        "entrypoints": [],
+        "project": "<PROJEKT>"
+      }
+    ]
+  ],
+  "schattenNichtTs": [
+    [
+      "file",
+      {
+        "success": true,
+        "file_path": "golden/ghost.py",
+        "file_type": "py",
+        "file_size": 46,
+        "content": "def ghost_python(value):\n    return value + 1\n",
+        "total_lines": 3,
+        "returned_range": {
+          "from": 1,
+          "to": 3,
+          "eof": true
+        },
+        "project": "<PROJEKT>",
+        "schatten": true,
+        "plan_id": "<PLAN>",
+        "schatten_parse_ms": 0
+      }
+    ],
+    [
+      "functions",
+      {
+        "success": true,
+        "functions": [
+          {
+            "id": "ghost:<PLAN>:golden/ghost.py:0",
+            "file_path": "golden/ghost.py",
+            "name": "ghost_python",
+            "line_start": 1,
+            "line_end": 3,
+            "params": [
+              "value"
+            ],
+            "return_type": null,
+            "is_exported": true,
+            "parent_name": null,
+            "usage_count": 0,
+            "schatten": true,
+            "plan_id": "<PLAN>"
+          }
+        ],
+        "count": 1,
+        "project": "<PROJEKT>",
+        "plan_id": "<PLAN>",
+        "schatten_parse_ms": 0
+      }
+    ],
+    [
+      "symbols",
+      {
+        "success": true,
+        "symbols": [
+          {
+            "id": "ghost:<PLAN>:golden/ghost.py:0",
+            "file_path": "golden/ghost.py",
+            "symbol_type": "function",
+            "name": "ghost_python",
+            "line_start": 1,
+            "line_end": 3,
+            "is_exported": true,
+            "value": null,
+            "schatten": true,
+            "plan_id": "<PLAN>"
+          }
+        ],
+        "count": 1,
+        "symbol_type": "function",
+        "project": "<PROJEKT>",
+        "plan_id": "<PLAN>",
+        "schatten_parse_ms": 0
+      }
+    ],
+    [
+      "references",
+      {
+        "success": true,
+        "definition": {
+          "id": "ghost:<PLAN>:golden/ghost.py:0",
+          "file_path": "golden/ghost.py",
+          "symbol_type": "function",
+          "name": "ghost_python",
+          "line_start": 1,
+          "is_exported": true,
+          "parent_symbol": null,
+          "schatten": true,
+          "plan_id": "<PLAN>"
+        },
+        "references": [],
+        "total_files": 0,
+        "total_references": 0,
+        "string_occurrences": [],
+        "total_string_occurrences": 0,
+        "name_matches": [],
+        "total_name_matches": 0,
+        "gekappt": false,
+        "project": "<PROJEKT>",
+        "plan_id": "<PLAN>",
+        "schatten_parse_ms": 0
+      }
+    ],
+    [
+      "search",
+      {
+        "success": true,
+        "results": [
+          {
+            "file_path": "golden/ghost.py",
+            "file_type": "py",
+            "headline": "<b>ghost</b>_<b>python</b>(value):\n    return value",
+            "rank": 0.09910322,
+            "matches": [
+              {
+                "line": 1,
+                "text": "def ghost_python(value):"
+              }
+            ],
+            "total_matches": 1,
+            "matches_gekappt": false,
+            "schatten": true,
+            "plan_id": "<PLAN>"
+          }
+        ],
+        "count": 1,
+        "mode": "fulltext",
+        "project": "<PROJEKT>",
+        "plan_id": "<PLAN>",
+        "schatten_parse_ms": 0
+      }
+    ],
+    [
+      "tree",
+      {
+        "success": true,
+        "tree": "golden/ (1 Dateien, 1fn)\n  base.py (3Z, 1fn)\npackages/core/src/p16-fixture/ (1 Dateien, 1fn)\n  golden.ts (2Z, 1fn)\n---\n2 Dateien | Projekt: <PROJEKT>\nGhost-Schatten (Index-Zählwerte oben unverändert):\ngolden/ (plan <PLAN>)\n  [g] ghost.py (plan <PLAN>)",
+        "project": "<PROJEKT>",
+        "plan_id": "<PLAN>",
+        "schatten_parse_ms": 0
+      }
+    ]
+  ],
+  "befundeNichtTs": {
+    "status": "fertig",
+    "dauer_ms": 0,
+    "befunde": [],
+    "altlasten": 0,
+    "ergebnis_hashes": {
+      "golden/check.py": "da4d6cb1afc6d23b19fb35972dc2edd334b7b399b1e31593b9310e2b3a38615f"
+    },
+    "geprueft_am": "<ZEIT>"
+  }
+}
