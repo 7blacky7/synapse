@@ -31,6 +31,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
+import {ASSET_LOKAL_ERLAUBT_SQL} from './asset-inspektions-projekte.js';
 import type { AssetReference, AssetResult } from '../asset-intel/types.js';
 import { DEFAULT_ASSET_MAX_OBJECTS_PER_FILE, DEFAULT_ASSET_RESTORE_WINDOW_MS, getAssetKonfiguration, loeseAssetProjektoptionen } from '../config/asset-konfig.js';
 
@@ -68,6 +69,8 @@ const BIBLIOTHEK_ARTEN = new Set(['library']);
 export interface AufloesungsKontext {
   /** Projekt-relativer Pfad des verweisenden Assets ('/' als Trenner). */
   assetPfad: string;
+  /** Share-Inspektoren entscheiden Existenz ausschließlich am logischen Katalog. */
+  katalogAutoritativ?: boolean;
   /** Absoluter Projektpfad; nur noetig fuer absolute Ziele innerhalb des Projekts. */
   projektRoot?: string | null;
   /**
@@ -129,6 +132,7 @@ function dekodiere(ziel: string): string {
 
 /** Ergebnis aus Inspektor-Urteil und Existenzpruefung bilden. */
 function dateiOderFehlt(zielPfad: string, resolved: boolean | undefined, kx: AufloesungsKontext): VerweisAufloesung {
+  if (kx.katalogAutoritativ && kx.existiert) return { ziel_pfad: zielPfad, aufloesung: kx.existiert(zielPfad) ? 'datei' : 'fehlt' };
   if (resolved === true) return { ziel_pfad: zielPfad, aufloesung: 'datei' };
   if (resolved === false) return { ziel_pfad: zielPfad, aufloesung: 'fehlt' };
   if (kx.existiert) return { ziel_pfad: zielPfad, aufloesung: kx.existiert(zielPfad) ? 'datei' : 'fehlt' };
@@ -246,20 +250,37 @@ function pgJson(wert: unknown, tiefe = 0): unknown {
 // Ausfuehrung: EINE Anweisung je Aufruf, mit Zeitgrenzen
 // ---------------------------------------------------------------------------
 
-async function eineAnweisung<T extends Record<string, unknown>>(sql: string, params: unknown[]): Promise<T[]> {
+export interface AssetInspektionsFence { id:string; token:string; }
+export class AssetLokalerWriterFehler extends Error {
+  readonly code='asset_inspektion_serverseitig';
+  constructor(){super('Share-Assets werden ausschließlich durch API-Aufträge inspiziert.');}
+}
+/** Kurze Writer-Transaktion; niemals Dateisystem-I/O innerhalb der Sperre. */
+async function eineAnweisung<T extends Record<string, unknown>>(sql: string, params: unknown[], fence?:AssetInspektionsFence): Promise<T[]> {
   const client: PoolClient = await getPool().connect();
   try {
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}; SET lock_timeout = ${LOCK_TIMEOUT_MS}`);
-    const r = await client.query(sql, params);
-    return r.rows as T[];
-  } finally {
-    try {
-      await client.query('RESET statement_timeout; RESET lock_timeout');
-      client.release();
-    } catch (e) {
-      client.release(e instanceof Error ? e : true);
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}; SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['asset-inspektion:'+String(params[0])]);
+    if(fence){
+      const job=await client.query(`SELECT j.id FROM asset_inspektions_auftraege j WHERE j.id=$1::uuid AND j.lease_token=$2::uuid
+        AND j.project=$3 AND j.status='running' AND j.lease_bis>clock_timestamp()
+        AND EXISTS(SELECT 1 FROM asset_files a WHERE a.id=j.asset_id AND a.project=$3 AND a.file_path=$4
+          AND a.transport_revision=j.transport_revision AND a.transport_sha256=j.sha256)
+        FOR UPDATE OF j`,[fence.id,fence.token,params[0],params[1]]);
+      if(!job.rowCount)throw new AssetInspektionsRevisionFehler();
+    }else{
+      const erlaubt=await client.query(`SELECT (${ASSET_LOKAL_ERLAUBT_SQL}) AS erlaubt`,[params[0]]);
+      if(erlaubt.rows[0]?.erlaubt!==true)throw new AssetLokalerWriterFehler();
     }
-  }
+    const r = await client.query(sql, params);
+    if(fence){
+      if(!r.rows[0]?.asset_id)throw new AssetInspektionsRevisionFehler();
+      await client.query("UPDATE asset_inspektions_auftraege SET status='done',lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1::uuid AND lease_token=$2::uuid",[fence.id,fence.token]);
+    }
+    await client.query('COMMIT');
+    return r.rows as T[];
+  } catch(e){await client.query('ROLLBACK');throw e;} finally { client.release(); }
 }
 
 function maxObjekteAusEnv(): number {
@@ -286,6 +307,9 @@ export interface SpeicherOptionen {
   erkenneUmbenennung?: boolean;
   /** Publiziert nur zur passenden Transportrevision; String erhält BIGINT-Präzision. */
   erwarteteTransportRevision?: string | number;
+  /** API-Auftrag mit noch gültigem PG-Lease; ohne Fence kein Share-Schreibweg. */
+  inspektionsAuftrag?: AssetInspektionsFence;
+  katalogAutoritativ?: boolean;
 }
 
 export class AssetInspektionsRevisionFehler extends Error {
@@ -320,9 +344,9 @@ WITH up AS (
     $1, $2, $3, $4, $5, $6, $7, $8,
     $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb,
     $16, $17, $18, $19, NULL, $20, NOW()
-  WHERE $23::bigint IS NULL OR EXISTS (
-    SELECT 1 FROM asset_files a WHERE a.project=$1 AND a.file_path=$2 AND a.transport_revision=$23::bigint
-  )
+  WHERE ($23::bigint IS NULL OR EXISTS (
+    SELECT 1 FROM asset_files a WHERE a.project=$1 AND a.file_path=$2 AND a.transport_revision=$23::bigint AND a.prepared_upload_id IS NULL
+  ))
   ON CONFLICT (project, file_path) DO UPDATE SET
     file_name = EXCLUDED.file_name, extension = EXCLUDED.extension, asset_type = EXCLUDED.asset_type,
     format = EXCLUDED.format, status = EXCLUDED.status, inspector = EXCLUDED.inspector,
@@ -333,6 +357,7 @@ WITH up AS (
     quelle_fehlt_seit = NULL, inspiziert_von = EXCLUDED.inspiziert_von, updated_at = NOW(),
     inspection_revision = COALESCE(asset_files.transport_revision, asset_files.inspection_revision)
   WHERE ($23::bigint IS NULL OR asset_files.transport_revision=$23::bigint)
+    AND asset_files.prepared_upload_id IS NULL
     AND ((asset_files.transport_revision IS NULL AND asset_files.storage_key IS NULL) OR (
       asset_files.transport_revision IS NOT NULL AND asset_files.storage_key IS NOT NULL AND asset_files.storage_status='ready' AND asset_files.deleted_at IS NULL
       AND asset_files.transport_sha256=EXCLUDED.sha256 AND asset_files.file_size=EXCLUDED.file_size
@@ -409,6 +434,7 @@ export async function speichereAssetErgebnis(
   const start = Date.now();
   const pfad = normalisiereAssetPfad(relPfad);
   const revision = opts.erwarteteTransportRevision;
+  if(opts.inspektionsAuftrag && revision===undefined)throw new AssetInspektionsRevisionFehler();
   if (revision !== undefined && !((typeof revision === 'string' && /^(0|[1-9][0-9]*)$/.test(revision)) || (typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0))) {
     throw new TypeError('Erwartete Transportrevision muss eine nichtnegative Ganzzahl sein.');
   }
@@ -463,7 +489,7 @@ export async function speichereAssetErgebnis(
   });
   const gekappt = ergebnis.objects.length > objekte.length;
 
-  const kx: AufloesungsKontext = { assetPfad: pfad, projektRoot: root, existiert };
+  const kx: AufloesungsKontext = { assetPfad: pfad, projektRoot: root, existiert, katalogAutoritativ:opts.katalogAutoritativ };
   const verweise = ergebnis.references.map((r, i) => {
     const a = loesePfadAuf(r, kx);
     return {
@@ -500,7 +526,7 @@ export async function speichereAssetErgebnis(
     JSON.stringify(objekte),
     JSON.stringify(verweise),
     revision ?? null,
-  ]);
+  ], opts.inspektionsAuftrag);
   const z = zeilen[0];
   if (!z?.asset_id) throw new AssetInspektionsRevisionFehler();
   return {

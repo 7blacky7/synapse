@@ -59,7 +59,7 @@ class DateiQuelle implements AssetSource {
   constructor(
     readonly filePath: string,
     readonly size: number,
-    private readonly handle: fs.promises.FileHandle,
+    private readonly handle: AssetLeser,
     private readonly grenzen: AssetLimits,
     private readonly signal: AbortSignal,
     private readonly frist: number
@@ -125,7 +125,7 @@ const GRENZ_CODE: Record<AssetGrenze, string> = {
   maxDepth: 'tiefengrenze_ueberschritten',
 };
 
-async function berechneHash(handle: fs.promises.FileHandle, size: number, signal: AbortSignal, frist: number): Promise<string | null> {
+async function berechneHash(handle: AssetLeser, size: number, signal: AbortSignal, frist: number): Promise<string | null> {
   const h = createHash('sha256');
   const buf = Buffer.alloc(Math.min(HASH_BLOCK, Math.max(size, 1)));
   let pos = 0;
@@ -155,6 +155,19 @@ function klone(res: AssetResult): AssetResult {
  * @param opts Grenzen ueberschreiben, optional eigene Registry.
  */
 export async function inspectAsset(filePath: string, opts?: InspectAssetOptions): Promise<AssetResult> {
+  return inspectQuelle(filePath, opts);
+}
+
+/** Inspiziert eine bereits geöffnete, begrenzte Quelle ohne lokalen Projektpfad. */
+export async function inspectAssetSource(source: AssetSource, opts?: InspectAssetOptions): Promise<AssetResult> {
+  return inspectQuelle(source.filePath, opts, source);
+}
+
+interface AssetLeser {
+  read(buffer: Buffer, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+}
+
+async function inspectQuelle(filePath: string, opts?: InspectAssetOptions, source?: AssetSource): Promise<AssetResult> {
   const pfad = typeof filePath === 'string' ? filePath : String(filePath);
   const res = erzeugeAssetResult(pfad, 0);
   const warn = (code: string, message: string): void => {
@@ -167,9 +180,10 @@ export async function inspectAsset(filePath: string, opts?: InspectAssetOptions)
     const registry = opts?.registry ?? standardRegistry;
 
     // stat zuerst: blockiert nicht (open auf eine FIFO ohne Gegenstelle taete es).
-    let st: fs.Stats;
+    let st: Pick<fs.Stats, 'size' | 'isFile'>;
     try {
-      st = await fs.promises.stat(pfad);
+      if (source && (!Number.isSafeInteger(source.size) || source.size < 0)) throw new Error('Ungültige Quellgröße');
+      st = source ? { size: source.size, isFile: () => true } : await fs.promises.stat(pfad);
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' || code === 'ENOTDIR') {
@@ -189,13 +203,20 @@ export async function inspectAsset(filePath: string, opts?: InspectAssetOptions)
     res.size = st.size;
 
     try {
-      handle = await fs.promises.open(pfad, 'r');
+      if (!source) handle = await fs.promises.open(pfad, 'r');
     } catch (e) {
       warn('quelle_nicht_lesbar', `Quelle nicht lesbar (${(e as NodeJS.ErrnoException).code ?? 'unbekannt'}): ${pfad}`);
       res.status = 'fehler';
       return res;
     }
-    const h = handle;
+    const h: AssetLeser = source ? {
+      read: async (buffer, offset, length, position) => {
+        const bytes = await source.readRange(position, length);
+        if (bytes.length > length) throw new Error('Quelle überschreitet Lesebereich');
+        bytes.copy(buffer, offset);
+        return { bytesRead: bytes.length };
+      },
+    } : handle!;
 
     const abbruch = new AbortController();
     const frist = Date.now() + grenzen.timeoutMs;

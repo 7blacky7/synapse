@@ -37,7 +37,7 @@ function cacheMs(): number {
   return Number.isFinite(n) && n >= 0 ? n : 10000;
 }
 
-const assetStand = new Map<string, { hat: boolean; bis: number }>();
+const assetStand = new Map<string, { hat: boolean; bis: number; revision:string }>();
 
 /**
  * Hat das Projekt ueberhaupt asset_files-Zeilen? Billig (EXISTS ueber den UNIQUE-Index) und kurz gecacht.
@@ -46,7 +46,12 @@ const assetStand = new Map<string, { hat: boolean; bis: number }>();
 export async function projektHatAssets(project: string): Promise<boolean> {
   const jetzt = Date.now();
   const c = assetStand.get(project);
-  if (c && c.bis > jetzt) return c.hat;
+  let revision='legacy';
+  try {
+    const r=await getPool().query('SELECT stand::text AS stand FROM asset_aenderungsstaende WHERE project=$1',[project]);
+    revision=r.rows[0]?.stand??'0';
+  } catch(e) { if((e as {code?:string}).code!=='42P01')return false; }
+  if (c && c.bis > jetzt && c.revision===revision) return c.hat;
   let hat = false;
   try {
     const r = await getPool().query('SELECT EXISTS (SELECT 1 FROM asset_files WHERE project = $1) AS hat', [project]);
@@ -55,7 +60,7 @@ export async function projektHatAssets(project: string): Promise<boolean> {
     hat = false;
   }
   const ms = cacheMs();
-  if (ms > 0) assetStand.set(project, { hat, bis: jetzt + ms });
+  if (ms > 0) assetStand.set(project, { hat, bis: jetzt + ms, revision });
   return hat;
 }
 

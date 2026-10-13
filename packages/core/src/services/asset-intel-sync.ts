@@ -24,6 +24,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import type { FileEvent } from '../types/index.js';
 import { getPool } from '../db/client.js';
+import {assetProjektNutztShare} from './asset-inspektions-projekte.js';
 import { getAssetKonfiguration } from '../config/asset-konfig.js';
 import { assetArt, isExtractableDocument, isMultimodalFile, leseDateiKopf } from '../watcher/binary.js';
 import { loadGitignore, shouldIgnore, istGesperrt } from '../watcher/ignore.js';
@@ -264,7 +265,7 @@ async function markiereVerschobeneZwillinge(project: string, root: string, rel: 
 }
 
 async function fuehreAus(job: Job, worker: AssetInspektionsWorker): Promise<void> {
-  if (assetWegAus) return;
+  if (assetWegAus || await assetProjektNutztShare(job.project)) return;
   const abs = absolut(job.root, job.rel);
   let st: fs.Stats | null = null;
   try {
@@ -437,6 +438,7 @@ export async function verifyAssetsAgainstFilesystem(project: string, projectRoot
   if (assetWegAus) return fertig();
 
   try {
+    if(await assetProjektNutztShare(project))return fertig();
     const registry = await verifyRegistry();
     const kandidaten = sammleAssetKandidaten(projectRoot, project);
     erg.kandidaten = kandidaten.size;
