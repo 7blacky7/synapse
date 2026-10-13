@@ -302,6 +302,54 @@ async function standardMitUebergabe(project: string, bestand: ()=>Promise<Row>):
   for(const {plan,stand}of pending) antwort=markiere(antwort,plan.id,new Set(stand.dateien.filter(f=>letzte.get(f.file_path)===plan.id).map(f=>f.file_path))) as Row;
   return {...antwort,index_folgt:pending.map(({plan,stand})=>({plan_id:plan.id,status:'committet, Index folgt',dateien:stand.dateien.map(f=>f.file_path)}))};
 }
+const GHOST_KOPF='\nGhost-Schatten (Index-Zählwerte oben unverändert):\n';
+/** P6-T44: Bezug einer schatten:'alle'-Anfrage. vergleich = Plan nur ausgeben, wenn sein Ergebnis vom Bestand abweicht. */
+type Bezug={text:string;trifft:(pfad:string)=>boolean;vergleich:boolean};
+/** Alle Pfade, die ein Plan liest oder schreibt (Op-Pfade, Ziele, Basis-Hashes). */
+function planPfade(plan: Plan): string[] {
+  const pfade=[...(Array.isArray(plan.ops)?plan.ops:[]).flatMap(op=>[op.file_path,op.new_path]),...Object.keys(plan.expected_hashes??{})];
+  return [...new Set(pfade.filter((p): p is string=>typeof p==='string' && p.length>0))];
+}
+const regexText=(text: string)=>text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+/** Dieselbe LIKE-Semantik wie code-intel.ts ('%'+file_path+'%', Backslash maskiert) als RegExp. */
+function likeMuster(muster: string): RegExp {
+  let re='';
+  for(let i=0;i<muster.length;i++){
+    const c=muster[i];
+    if(c==='\\' && i+1<muster.length) re+=regexText(muster[++i]);
+    else if(c==='%') re+='[\\s\\S]*';
+    else if(c==='_') re+='[\\s\\S]';
+    else re+=regexText(c);
+  }
+  return new RegExp('^'+re+'$');
+}
+function schattenBezug(action: string, args: Row): Bezug {
+  if(action==='tree') {
+    const base=(s(args,'path')??s(args,'file_path')??'').replace(/\/$/,'');
+    return {text:base||'das Projekt',trifft:p=>p.includes(base),vergleich:false};
+  }
+  if(action==='file') {
+    const fp=s(args,'file_path')??s(args,'path')??'';
+    return {text:fp,trifft:p=>p===fp||p.endsWith('/'+fp),vergleich:false};
+  }
+  const fp=action==='references'?undefined:s(args,'file_path');
+  if(fp) { const re=likeMuster('%'+fp+'%'); return {text:fp,trifft:p=>re.test(p),vergleich:action==='search'}; }
+  return {text:'',trifft:()=>true,vergleich:true};
+}
+function ergebnisPfade(value: unknown, out=new Set<string>()): Set<string> {
+  if(Array.isArray(value)) value.forEach(v=>ergebnisPfade(v,out));
+  else if(value && typeof value==='object') for(const [key,v] of Object.entries(value)) {
+    if(key==='file_path' && typeof v==='string') out.add(v); else ergebnisPfade(v,out);
+  }
+  return out;
+}
+function ohneBezugHinweis(anzahl: number, bezug: Bezug): string {
+  return anzahl+' '+(anzahl===1?'offener Plan':'offene Pläne')+(bezug.text?' ohne Bezug zu '+bezug.text:' ohne Einfluss auf dieses Ergebnis')+
+    ' (weggelassen; einzeln ansehen mit schatten:<plan_id>).';
+}
+function keinBezugHinweis(bezug: Bezug): string {
+  return (bezug.text?'Kein offener Plan berührt '+bezug.text:'Kein offener Plan verändert dieses Ergebnis')+'; Bestandsantwort ohne Schatten.';
+}
 /** Ohne Schalter unveränderte Antwort; ausschließlich ausstehende Commits überbrücken den Parse-Lag. */
 
 export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=>Promise<Row>): Promise<Row> {
@@ -327,8 +375,13 @@ export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=
     if(proj===project && (auswahl==='alle'||id===auswahl) && !offene.has(id)) cache.delete(key);
   }
   if(!plans.length) return auswahl==='alle'?bestand():{success:false,error:'Offener Plan in diesem Projekt nicht gefunden',project};
+  // P6-T44: bei 'alle' nur Pläne mit Bezug zur Anfrage; gezielte plan_id bleibt unverändert.
+  const bezug=auswahl==='alle'?schattenBezug(action,args):undefined;
+  const kandidaten=bezug?plans.filter(p=>planPfade(p).some(bezug.trifft)):plans;
+  let ohneBezug=plans.length-kandidaten.length;
+  let basis: string | undefined;
   const antworten: Row[]=[];
-  for(const plan of plans){
+  for(const plan of kandidaten){
     if(typeof args.stand_nach_op==='number' && args.stand_nach_op>=plan.ops.length) return {success:false,error:'stand_nach_op liegt außerhalb des Plans',project};
     try {
       const stand=await lade(plan,n(args,'stand_nach_op'));
@@ -339,20 +392,34 @@ export async function mitCodeIntelSchatten(action: string,args: Row,bestand: ()=
       }
       const antwort=action==='tree'?await ghostTree(project,args,stand,plan.id):
         await mitLesePool(lesePool(pool,project,stand),()=>abfrage(action,args));
+      if(bezug) {
+        if(action==='tree' && !String(antwort.tree).includes(GHOST_KOPF)) { ohneBezug++; continue; }
+        if(bezug.vergleich) {
+          basis??=JSON.stringify(await abfrage(action,args));
+          if(JSON.stringify(antwort)===basis) { ohneBezug++; continue; }
+        }
+      }
+      const imErgebnis=bezug?.vergleich?ergebnisPfade(antwort):undefined;
+      const drift=stand.dateien.filter(f=>f.drift && (!bezug || (bezug.trifft(f.file_path) && (!imErgebnis || imErgebnis.has(f.file_path)))));
       antworten.push({...markiere(antwort,plan.id,new Set(stand.dateien.map(f=>f.file_path))) as Row,plan_id:plan.id,
         ...(stand.befunde.length?{nicht_anwendbar:stand.befunde}:{}),
-        ...(stand.dateien.some(f=>f.drift)?{drift:stand.dateien.filter(f=>f.drift).map(f=>({file_path:f.file_path,hinweis:f.drift}))}:{}),
+        ...(drift.length?{drift:drift.map(f=>({file_path:f.file_path,hinweis:f.drift}))}:{}),
         schatten_parse_ms:stand.ms,...(plan.status==='committed'?{status:'committet, Index folgt'}:{})});
     } catch {
       return {success:false,error:'Ghost-Schatten konnte nicht untersucht werden',plan_id:plan.id,project};
     }
   }
   if(auswahl!=='alle') return antworten[0];
-  if(!antworten.length) return bestand();
+  const ohne=bezug && ohneBezug>0 ? {ohne_bezug:ohneBezug,ohne_bezug_hinweis:ohneBezugHinweis(ohneBezug,bezug)} : {};
+  if(!antworten.length) {
+    const antwort=await bestand();
+    return bezug && (antwort==null || (typeof antwort==='object' && !Array.isArray(antwort)))
+      ? {...(antwort??{}),schatten_hinweis:keinBezugHinweis(bezug),...ohne} : antwort;
+  }
   if(action==='tree') {
     const basis=await ci.getProjectTree(project,args);
     const extras=antworten.map(r=>String(r.tree).split('\nGhost-Schatten (Index-Zählwerte oben unverändert):\n')[1]).filter(Boolean);
-    return {success:true,project,tree:basis+(extras.length?'\nGhost-Schatten (Index-Zählwerte oben unverändert):\n'+extras.join('\n'):''),plaene:antworten.map(r=>r.plan_id)};
+    return {success:true,project,tree:basis+(extras.length?'\nGhost-Schatten (Index-Zählwerte oben unverändert):\n'+extras.join('\n'):''),plaene:antworten.map(r=>r.plan_id),...ohne};
   }
-  return {success:true,project,staende:antworten,hinweis:'Jeder offene Plan ist ein eigener Schatten; überlappende Pläne werden nicht zu einem erfundenen Stand vermischt.'};
+  return {success:true,project,staende:antworten,hinweis:'Jeder offene Plan ist ein eigener Schatten; überlappende Pläne werden nicht zu einem erfundenen Stand vermischt.',...ohne};
 }

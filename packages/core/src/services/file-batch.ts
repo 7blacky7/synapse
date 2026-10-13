@@ -18,7 +18,7 @@
  */
 
 import type { PoolClient } from 'pg';
-import {pruefeFsDrift,FsDriftFehler,fsDriftAntwort,type FsPruefung} from './file-fs-drift.js';
+import {pruefeFsDrift,FsDriftFehler,fsDriftAntwort,fsPruefungNachCommit,type FsPruefung} from './file-fs-drift.js';
 import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
 import { daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
@@ -4743,12 +4743,15 @@ export async function commitBatch(args: {
           ? await commitDateienAufPlatteWarten(planProjekt, result.files, commitSyncWartezeitMs())
           : new Map(result.files.map((datei) => [datei.file_path, 'unbekannt' as const]));
       }
+      const files = result.files.map((datei) => ({ ...datei, auf_platte: syncStatus?.get(datei.file_path) ?? 'unbekannt' as const }));
       const mitSyncStatus = {
         ...result,
-        files: result.files.map((datei) => ({ ...datei, auf_platte: syncStatus?.get(datei.file_path) ?? 'unbekannt' as const })),
+        files,
         sync_hinweis: args.wait_sync === true
           ? 'Auf Platte beschreibt den Hashvergleich des verbundenen lokalen Daemons; ohne eindeutige Daemon-Antwort bleibt der Status unbekannt.'
           : 'PG->FS-Sync laeuft asynchron; ohne lokale Daemon-Bestaetigung ist auf_platte unbekannt. Vor lokaler Ausfuehrung kurz warten.',
+        // P6-T44: fs_pruefung bleibt der Pre-Flight-Stand, gekennzeichnet; nach_commit nennt den Stand danach.
+        ...(result.fs_pruefung ? { fs_pruefung: fsPruefungNachCommit(result.fs_pruefung, files) } : {}),
       };
       const envListe = await envHinweiseFuerBatch(result.plan_id).catch(() => [] as string[]);
       return envListe.length > 0 ? { ...mitSyncStatus, env_hinweise: envListe } : mitSyncStatus;

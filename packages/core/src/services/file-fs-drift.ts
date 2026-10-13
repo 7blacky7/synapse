@@ -18,6 +18,25 @@ export class FsDriftFehler extends Error {
 export function fsDriftAntwort(fehler:FsDriftFehler):Record<string,unknown> {
   return {success:false,error:'fs_drift',geschrieben:false,fs_pruefung:fehler.fs_pruefung,message:fehler.message};
 }
+/** P6-T44: Stand einer Datei nach dem Commit (aus der commit-Antwort, ohne neue Plattenprobe). */
+export interface FsNachCommitDatei {file_path:string;pg_hash:string|null;fs_hash?:string|null;fs_status:'gleich'|'noch_nicht_synchron'|'noch_nicht_geprueft'}
+/**
+ * P6-T44: pruefeFsDrift laeuft VOR dem Schreiben (Drift-Sperre). Die commit-Antwort behaelt diese Werte
+ * unveraendert, kennzeichnet sie als vor_commit und nennt unter nach_commit den neuen PG-Hash; die Platte
+ * gilt nur mit auf_platte 'ja' (wait_sync + verbundener Daemon) als geprueft, sonst ehrlich noch_nicht_geprueft.
+ */
+export function fsPruefungNachCommit(vor:FsPruefung,dateien:Array<{file_path:string;hash:string;deleted?:boolean;auf_platte?:'ja'|'nein'|'unbekannt'}>):
+  FsPruefung&{zeitpunkt:'vor_commit';hinweis:string;nach_commit:{status:FsNachCommitDatei['fs_status'];dateien:FsNachCommitDatei[]}} {
+  const nach=dateien.map((d):FsNachCommitDatei=>{
+    const pg_hash=d.deleted?null:d.hash;
+    if(d.auf_platte==='ja')return {file_path:d.file_path,pg_hash,fs_hash:pg_hash,fs_status:'gleich'};
+    return {file_path:d.file_path,pg_hash,fs_status:d.auf_platte==='nein'?'noch_nicht_synchron':'noch_nicht_geprueft'};
+  });
+  const status=nach.every(d=>d.fs_status==='gleich')?'gleich':nach.some(d=>d.fs_status==='noch_nicht_synchron')?'noch_nicht_synchron':'noch_nicht_geprueft';
+  return {...vor,zeitpunkt:'vor_commit',
+    hinweis:'pg_hash/fs_hash unter dateien = Stand VOR dem Schreiben (Drift-Pruefung). Stand nach dem Commit: nach_commit; die Platte gilt nur mit wait_sync:true und verbundenem lokalen Daemon als geprueft.',
+    nach_commit:{status,dateien:nach}};
+}
 export async function pruefeFsDrift(project:string,pfade:string[]):Promise<FsPruefung> {
   const files=[...new Set(pfade)];
   const result:FsPruefung={status:'gleich',dateien:[]};

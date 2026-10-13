@@ -112,7 +112,8 @@ try {
    assert.equal((await core.mitCodeIntelSchatten('file',{project,schatten:move,file_path:'basis.ts'},async()=>null)).success,false);
    assert.equal((await core.mitCodeIntelSchatten('file',{project:project+'-fremd',schatten:secrets,file_path:'.env.example'},async()=>null)).success,false);
    const alle=await core.mitCodeIntelSchatten('functions',{project,schatten:'alle',name:'pending'},async()=>null);
-   assert(alle.staende.length>=1);
+   // P6-T44: kein offener Plan beeinflusst 'pending' mehr (id committet, move verworfen) -> Bestand + Hinweis statt fremder Staende.
+   assert.match(alle.schatten_hinweis,/Kein offener Plan/); assert.equal(alle.staende,undefined);
    const invalid=await core.mitCodeIntelSchatten('file',{project,schatten:secrets,stand_nach_op:-1,file_path:'.env.example'},async()=>null);
    assert.equal(invalid.success,false);
    const kaputt=await plan([{action:'create',file_path:'kaputt/a.ts',content:'export function ok(){}'},
