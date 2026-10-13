@@ -7,6 +7,7 @@ import type {AssetKonfiguration} from '../config/asset-konfig.js';
 import {standardRegistry} from '../asset-intel/registry.js';
 import {istGesperrt,aktualisiereIgnoreRegeln} from '../watcher/ignore.js';
 import {AssetUploadKern} from './asset-upload.js';
+import {setzeAssetInspektionsModus} from './asset-inspektions-projekte.js';
 import {ShareScanner,shareScanner} from './share-scanner.js';
 import type {ShareScanDatei} from './share-scanner.js';
 import type {AssetUploadDb} from './asset-upload.js';
@@ -38,6 +39,7 @@ export function registriereProjektShareScanner(o:{scanner?:ShareScanner;db?:Asse
    if(!detected.format)return false;
    const basis=String(old?.transport_revision??'0'),ctx={bereich:'projekt' as const,ziel_ref:project,host_id:'share-scanner'};
    const idempotency='share:'+createHash('sha256').update(JSON.stringify([project,e.pfad,basis,e.sha256])).digest('hex');
+   await setzeAssetInspektionsModus(project,'asset_sync',{db});
    let session=await upload.erstellen(ctx,{logischer_pfad:e.pfad,storage_kind:kind,groesse:e.groesse,sha256:e.sha256,
     basis_revision:basis,idempotency_key:idempotency,format:detected.format});
    if(session.status==='finalisiert')return true;
