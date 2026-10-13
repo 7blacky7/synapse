@@ -125,9 +125,14 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
  }
  bind(file);
  if(mutable.has('process'))o={...o,testprojekt:false};
- const wrappers=new Set(functions.values());let budget=0,grenze=false;
+ const wrappers=new Set(functions.values()),aktiveFunktionen=new Set<Fn>();let budget=0,grenze=false;
+ // Rekursive reine Helfer nicht endlos entfalten; jeden äußeren Aufruf/Argument weiterhin prüfen.
+ function funktion(fn:Fn,expr:ts.Expression,scope:Scope,depth:number):void{
+  if(aktiveFunktionen.has(fn))return;
+  aktiveFunktionen.add(fn);try{visit(expr,scope,depth);}finally{aktiveFunktionen.delete(fn);}
+ }
  function visit(n:ts.Node,scope:Scope,depth=0):void{
-  if(depth>12||++budget>2048){if(!grenze){out.push(fakt('inline.ungeklaert',[],'node',o));grenze=true;}return;}
+  if(depth>12||++budget>32768){if(!grenze){out.push(fakt('inline.ungeklaert',[],'node',o));grenze=true;}return;}
   if((ts.isArrowFunction(n)||ts.isFunctionExpression(n)||ts.isFunctionDeclaration(n))&&wrappers.has(n))return;
   if(ts.isForOfStatement(n)&&ts.isVariableDeclarationList(n.initializer)&&n.initializer.declarations.length===1){
    const pattern=n.initializer.declarations[0].name,items=value(n.expression,scope);
@@ -139,7 +144,7 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
   }
   if(ts.isCallExpression(n)){
    const fn=fnOf(n.expression),expr=fn&&body(fn);
-   if(fn&&expr){for(const arg of n.arguments)visit(arg,scope,depth+1);visit(expr,bindings(fn,n.arguments,scope,depth),depth+1);return;}
+   if(fn&&expr){for(const arg of n.arguments)visit(arg,scope,depth+1);funktion(fn,expr,bindings(fn,n.arguments,scope,depth),depth+1);return;}
    const api=apiName(n.expression),args=n.arguments.map(x=>value(x,scope)),opts=args[2];
    let method:string|undefined;
    for(const v of args)if(objectValue(v)&&Object.hasOwn(v,'method'))method=typeof v.method==='string'?v.method:dyn;
@@ -163,14 +168,14 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
    const carrier=fakt(api,args,'node',o,method,statisch);
    if(eingabe&&carrier.skript_operation){carrier.skript_operation.eingabe_ungeklaert=true;carrier.skript_operation.befehl=projected[0];}
    out.push(carrier,...projected.flatMap(k=>k.inline_skript?skriptFakten(k.inline_skript.text,k.inline_skript.sprache,o,tiefe+1):[k]));
-   for(const arg of n.arguments){const escaped=fnOf(arg),e=escaped&&body(escaped);if(escaped&&e)visit(e,new Map(escaped.parameters.filter(p=>ts.isIdentifier(p.name)).map(p=>[(p.name as ts.Identifier).text,U])),depth+1);}
+   for(const arg of n.arguments){const escaped=fnOf(arg),e=escaped&&body(escaped);if(escaped&&e)funktion(escaped,e,new Map(escaped.parameters.filter(p=>ts.isIdentifier(p.name)).map(p=>[(p.name as ts.Identifier).text,U])),depth+1);}
   }
   if(ts.isIdentifier(n)&&functions.has(n.text)){
    const parent=n.parent;
    const declaration=(ts.isVariableDeclaration(parent)||ts.isFunctionDeclaration(parent))&&parent.name===n;
    if(!declaration){const escaped=functions.get(n.text)!,e=body(escaped);if(e){
     const unknown=new Map(scope);for(const p of escaped.parameters)if(ts.isIdentifier(p.name))unknown.set(p.name.text,U);
-    visit(e,unknown,depth+1);
+    funktion(escaped,e,unknown,depth+1);
    }}
   }
   ts.forEachChild(n,child=>visit(child,scope,depth));

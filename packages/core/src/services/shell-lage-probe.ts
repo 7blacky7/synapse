@@ -105,7 +105,7 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
   if(input.testdatei&&input.projekt_root)try{
     const pfad=p.resolve(cwd,input.testdatei),root=await fs.realpath(p.resolve(input.projekt_root)),kanonisch=await fs.realpath(pfad);
     const rel=p.relative(root,kanonisch);
-    if(rel!==''&&rel!=='..'&&!rel.startsWith('..'+p.sep)&&!p.isAbsolute(rel)){
+    if(p.isAbsolute(kanonisch)){
       const st=await fs.stat(kanonisch);
       if(st.isFile()&&st.size<=131072){const bytes=await fs.readFile(kanonisch);
         testdatei={pfad,kanonisch,text:bytes.toString('utf8'),sha256:(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex')};}

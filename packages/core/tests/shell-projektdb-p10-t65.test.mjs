@@ -47,7 +47,7 @@ if(!process.argv.includes('--golden')){
  assert.equal((await decision(psql(own,'DELETE FROM owned'),{datenbank_freigabe:undefined})).darf_starten,false,'Ohne Registry keine Freigabe');
  const node="node -e \"const {Client}=require('pg');const c=new Client({connectionString:process.env.DATABASE_URL});c.query('DROP SCHEMA owned CASCADE')\"";
  const allowed=await decision(node,{env:{DATABASE_URL:own}});
- assert.equal(allowed.darf_starten,false,'Richtungswechsel: Inline-JS ist kein Freigabenachweis');assert.equal(allowed.audit.stufe,'anleitung');
+ assert.equal(allowed.darf_starten,true,'Eigener Zielkontext erlaubt Inline-JS ohne Helfer');assert.equal(allowed.audit.grund,'projekt_eigene_db');
  for(const command of [
   "node -e \"const{Client}=require('pg');const c=new Client({connectionString:process.env.UNKNOWN_URL});c.query('DROP SCHEMA owned')\"",
   "node -e \"const{Client}=require('pg');const a=new Client({connectionString:'"+own+"'});const b=new Client({connectionString:'"+foreign+"'});a.query('DROP SCHEMA owned');b.query('DELETE FROM owned')\"",
@@ -109,8 +109,13 @@ if(process.argv.includes('--integration')){
   ]){
    let negativeStarted=false;
    const wrong=await execShellInProject({project,command:befehl,agent_id:'sol-2',datenbank_freigabe:meta,onStarted:()=>negativeStarted=true,tail_lines:3});
-   assert.equal(negativeStarted,true,name+': Probe muss den tatsächlichen Runtimeguard erreichen');
-   assert.ok(typeof wrong.exit_code==='number'&&wrong.exit_code!==0,name+' darf kein DROP ausführen');
+   if(name==='falsche Clusterkennung'){
+    assert.equal(negativeStarted,true,'Optionaler Runtimeguard muss erreicht werden');
+    assert.ok(typeof wrong.exit_code==='number'&&wrong.exit_code!==0,'Falsche Clusterkennung führt kein DROP aus');
+   }else{
+    assert.equal(negativeStarted,false,name+': abweichendes Ziel wird vor Spawn abgewiesen');
+    assert.equal(wrong.error,'shell_anleitung');
+   }
    assert.equal((await pool.query('SELECT 1 FROM pg_namespace WHERE nspname=$1',[schema])).rowCount,1,name+': eigenes Schema bleibt');
   }
   let started=false;

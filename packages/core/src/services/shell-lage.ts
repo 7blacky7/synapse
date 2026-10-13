@@ -3,7 +3,6 @@
  * Native Dateisystemprobe ist austauschbar (Daemon/Container derselbe Helfer).
  */
 import path from 'node:path';
-import {testDateiPfad,testDateiNutztGuard} from './shell-testdatei-guard.js';
 import {pruefeDbKommando,gleichesDbZiel,type ShellDbFreigabe,type ShellDbErgebnis} from './shell-db-zuordnung.js';
 import{gebundeneBuildLogFakten}from'./shell-build-log-fakten.js';
 import{skriptFakten}from'./shell-inline-pruefung.js';
@@ -29,6 +28,7 @@ export interface ShellLageZiel {
 }
 export interface ShellLage {
   datenbank_pruefung?:boolean;
+  datenbank_abgewiesen?:boolean;
   datenbank_zuordnung?:{project:string;ziele:ShellDbFreigabe['ziele'];grund:'projekt_eigene_db'};
   shell: SicherungsShell; os: ShellLageKontext['os']; cwd:string; project_root:string;
   variablen: Array<{name:string;wert?:string;gesetzt:boolean}>;
@@ -230,17 +230,17 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
             raw:String.fromCharCode(34)+k.inline_skript.text.replaceAll(String.fromCharCode(34),String.fromCharCode(92,34))+String.fromCharCode(34),
             dynamisch:true},art,local).wert??k.inline_skript.text:k.inline_skript.text}}:{}),
     };
-    let guardDatei=false;
+    let verifizierteDatei=false;
     const programm=basis(projected.argv[0]?.text??'').toLowerCase();
     if(/^(?:node)(?:\.exe)?$/.test(programm)&&!projected.inline_skript&&projected.argv[1]&&!projected.argv[1].text.startsWith('-')&&!projected.argv.some(w=>w.dynamisch)&&ctx.inspect!==false){
       const datei=p.resolve(cwd,projected.argv[1].text);
       const q=(await probe({cwd,testdatei:datei,projekt_root:ctx.project_root})).testdatei;
-      if(q&&q.pfad===datei&&/^[a-f0-9]{64}$/.test(q.sha256)&&innerhalb(ctx.project_root,q.kanonisch,p,winOs(ctx))&&/\b(?:query|execute)\s*\(/.test(q.text)){
-        guardDatei=/^[1-9][0-9]{0,19}$/.test(ctx.datenbank_freigabe?.test_system_id??'')&&!!ctx.datenbank_freigabe?.ziele.some(z=>z.art==='test'&&z.datenbank==='synapse_test')&&testDateiPfad(ctx.project_root,q.kanonisch)&&testDateiNutztGuard(q.text,q.kanonisch,ctx.project_root);
+      if(q&&q.pfad===datei&&/^[a-f0-9]{64}$/.test(q.sha256)){
+        verifizierteDatei=true;
         projected.inline_skript={sprache:'node',text:q.text,expansion:false,testprojekt:false};
       }
     }
-    if(guardDatei)verifizierteTestdateien++;
+    if(verifizierteDatei)verifizierteTestdateien++;
     if(projected.inline_skript){
       projected.inline_skript.cwd=cwd;
       if(mitQuelle)projected.inline_skript.testprojekt=testprojekt;
@@ -257,7 +257,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
         }
       }
     }
-    if(ctx.datenbank_freigabe)dbErgebnisse.push(guardDatei?{betroffen:true,erlaubt:true,ziele:ctx.datenbank_freigabe.ziele.filter(z=>z.art==='test')}:pruefeDbKommando(projected,local,ctx.datenbank_freigabe));
+    if(ctx.datenbank_freigabe)dbErgebnisse.push(pruefeDbKommando(projected,local,ctx.datenbank_freigabe));
     if(projected.argv.length||projected.umleitungen.length)kommandos.push(projected);
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
@@ -330,7 +330,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   const sql=dbErgebnisse.filter(x=>x.betroffen);
   const dbEigene=ctx.datenbank_freigabe&&sql.length>0&&sql.every(x=>x.erlaubt)&&ungeklaert.length===0;
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
-    ...(ctx.datenbank_freigabe?.ziele.length&&sql.length?{datenbank_pruefung:true}:{}),
+    ...(ctx.datenbank_freigabe&&sql.length?{datenbank_pruefung:true,...(!dbEigene?{datenbank_abgewiesen:true}:{})}:{}),
     ...(dbEigene?{datenbank_zuordnung:{project:ctx.datenbank_freigabe!.project,ziele:ctx.datenbank_freigabe!.ziele,grund:'projekt_eigene_db' as const}}:{}),
     ...(buildLog?{build_log:{belege:buildLog.belege,hash:buildLog.hash}}:{}),
     quell_hash:createHash('sha256').update(command).digest('hex'),

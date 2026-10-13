@@ -97,6 +97,7 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
   const hard=selbstschaden(o);
   let stufe=text.stufe;
   if(text.ungeklaert.includes('parser_grenze')&&/^\s*(?:node|python[\d.]*)(?:\.exe)?\b/.test(o.command))stufe='anleitung';
+  if(o.lage.datenbank_abgewiesen)stufe='anleitung';
   if(hard)stufe='sperre';
   else if(text.risiko_verb&&!o.lage.sicher_aufloesbar&&stufe==='laeuft')stufe='anleitung';
   const befehl_hash=createHash('sha256').update(JSON.stringify([o.project,o.command])).digest('hex');
