@@ -152,7 +152,7 @@ export function createComputeAdmission(pool:AdmissionPool=getPool() as unknown a
     if(!Array.isArray(refs)||!refs.length||refs.length>100||
      refs.some(r=>!r||typeof r!=='object'||!uuid(r.chunkId)||!uuid(r.claimToken)||!/^[a-f0-9]{64}$/.test(r.contentHash))||new Set(refs.map(r=>r.chunkId)).size!==refs.length)fail('admission_claims_invalid');
     const current=await db.query<{project:string}>(`SELECT cc.project FROM code_chunks cc
-     JOIN jsonb_to_recordset($2::jsonb) AS x(id uuid,token uuid,hash text) ON cc.id=x.id
+     JOIN jsonb_to_recordset($2::jsonb) AS x(id text,token text,hash text) ON cc.id=x.id
      WHERE cc.claimed_by=$1 AND cc.claim_token=x.token AND cc.content_hash=x.hash
       AND cc.embedded_at IS NULL AND cc.lease_until>=clock_timestamp() FOR SHARE OF cc`,
      [input.nodeId,JSON.stringify(refs.map(r=>({id:r.chunkId,token:r.claimToken,hash:r.contentHash})))]);
