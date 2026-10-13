@@ -22,6 +22,9 @@ export async function holeShellDbFreigabe(
   }catch{/* Keine Zuordnung bei Registryfehler, niemals raten. */}
   // P10-T27 prüft Test-DSNs, registriert sie aber nicht. Neue Konfiguration ist opt-in.
   const test=dbZielAusUrl(env.SYNAPSE_TEST_DATABASE_URL);
-  if(test&&test.port!==live.port&&test.datenbank!==live.datenbank)r.ziele.push({...test,art:'test'});
+  if(test&&test.port!==live.port&&test.datenbank!==live.datenbank){
+    r.ziele.push({...test,art:'test'});
+    if(/^[1-9][0-9]{0,19}$/.test(env.SYNAPSE_TEST_DATABASE_SYSTEM_ID??''))r.test_system_id=env.SYNAPSE_TEST_DATABASE_SYSTEM_ID;
+  }
   return r;
 }

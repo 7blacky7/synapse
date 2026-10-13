@@ -3,6 +3,7 @@
  * Native Dateisystemprobe ist austauschbar (Daemon/Container derselbe Helfer).
  */
 import path from 'node:path';
+import {testDateiPfad,testDateiNutztGuard} from './shell-testdatei-guard.js';
 import {pruefeDbKommando,gleichesDbZiel,type ShellDbFreigabe,type ShellDbErgebnis} from './shell-db-zuordnung.js';
 import{gebundeneBuildLogFakten}from'./shell-build-log-fakten.js';
 import{skriptFakten}from'./shell-inline-pruefung.js';
@@ -171,6 +172,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   const scratchpad_roots=ctx.scratchpad_roots??(ctx.env?.SYNAPSE_SCRATCHPAD_ROOT?[ctx.env.SYNAPSE_SCRATCHPAD_ROOT]:[]);
   const kommandos:ShellTextKommando[]=[];
   const dbErgebnisse:ShellDbErgebnis[]=[];
+  let verifizierteTestdateien=0;
   const mitQuelle=tree.kommandos.some(k=>/^(?:source|\.)$/.test(k.argv[0]?.text??''));let autoExport=false;
   const unresolved=tree.ungeklart.filter(x=>!['ziel_dynamisch','dynamisches_programm'].includes(x));
   const probe=ctx.probe??probeShellLage;
@@ -228,6 +230,17 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
             raw:String.fromCharCode(34)+k.inline_skript.text.replaceAll(String.fromCharCode(34),String.fromCharCode(92,34))+String.fromCharCode(34),
             dynamisch:true},art,local).wert??k.inline_skript.text:k.inline_skript.text}}:{}),
     };
+    let guardDatei=false;
+    const programm=basis(projected.argv[0]?.text??'').toLowerCase();
+    if(/^(?:node)(?:\.exe)?$/.test(programm)&&!projected.inline_skript&&projected.argv[1]&&!projected.argv[1].text.startsWith('-')&&!projected.argv.some(w=>w.dynamisch)&&ctx.inspect!==false){
+      const datei=p.resolve(cwd,projected.argv[1].text);
+      const q=(await probe({cwd,testdatei:datei,projekt_root:ctx.project_root})).testdatei;
+      if(q&&q.pfad===datei&&/^[a-f0-9]{64}$/.test(q.sha256)&&innerhalb(ctx.project_root,q.kanonisch,p,winOs(ctx))&&/\b(?:query|execute)\s*\(/.test(q.text)){
+        guardDatei=/^[1-9][0-9]{0,19}$/.test(ctx.datenbank_freigabe?.test_system_id??'')&&!!ctx.datenbank_freigabe?.ziele.some(z=>z.art==='test'&&z.datenbank==='synapse_test')&&testDateiPfad(ctx.project_root,q.kanonisch)&&testDateiNutztGuard(q.text,q.kanonisch,ctx.project_root);
+        projected.inline_skript={sprache:'node',text:q.text,expansion:false,testprojekt:false};
+      }
+    }
+    if(guardDatei)verifizierteTestdateien++;
     if(projected.inline_skript){
       projected.inline_skript.cwd=cwd;
       if(mitQuelle)projected.inline_skript.testprojekt=testprojekt;
@@ -244,7 +257,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
         }
       }
     }
-    if(ctx.datenbank_freigabe)dbErgebnisse.push(pruefeDbKommando(projected,local,ctx.datenbank_freigabe));
+    if(ctx.datenbank_freigabe)dbErgebnisse.push(guardDatei?{betroffen:true,erlaubt:true,ziele:ctx.datenbank_freigabe.ziele.filter(z=>z.art==='test')}:pruefeDbKommando(projected,local,ctx.datenbank_freigabe));
     if(projected.argv.length||projected.umleitungen.length)kommandos.push(projected);
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
@@ -271,7 +284,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       }
     }
     if(cmd.wert==='eval'||art!=='sh'&&art!=='bash'&&/^(?:source|\.)$/.test(cmd.wert??''))unresolved.push('lage_nicht_sicher_aufloesbar');
-    if(/^(?:node|python[\d.]*)(?:\.exe)?$/.test(cmd.wert??'')&&!k.inline_skript)unresolved.push('inline_oder_script_lage_unbekannt');
+    if(/^(?:node|python[\d.]*)(?:\.exe)?$/.test(cmd.wert??'')&&!projected.inline_skript)unresolved.push('inline_oder_script_lage_unbekannt');
     if(art!==shell)unresolved.push('interpreter_scope_nicht_verifiziert');
     if(/^(?:cd|set-location)$/i.test(cmd.wert??'')){
       const val=expand(k.argv[1]??{text:'$HOME',raw:'$HOME',dynamisch:true},art,local);
@@ -312,7 +325,8 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       ziele.push(r);unresolved.push(...errors);
     }
   }
-  const ungeklaert=[...new Set(unresolved)];
+  const interpreterDateien=tree.kommandos.filter(k=>/^(?:node|python[\d.]*)(?:\.exe)?$/i.test(basis(k.argv[0]?.text??''))&&!k.inline_skript).length;
+  const ungeklaert=[...new Set(unresolved.filter(x=>x!=='interpreter_datei'||!interpreterDateien||interpreterDateien!==verifizierteTestdateien))];
   const sql=dbErgebnisse.filter(x=>x.betroffen);
   const dbEigene=ctx.datenbank_freigabe&&sql.length>0&&sql.every(x=>x.erlaubt)&&ungeklaert.length===0;
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,

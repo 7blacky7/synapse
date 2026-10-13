@@ -4,6 +4,8 @@ import type {ShellTextKommando} from './shell-sicherung-parser.js';
 export interface ShellDbZiel {host:string;port:string;datenbank:string;user:string;}
 export interface ShellDbFreigabe {
   project:string;
+  /** Trusted Server-Konfiguration; nie aus der Prüfverbindung lernen. */
+  test_system_id?:string;
   ziele:Array<ShellDbZiel&{art:'projekt'|'test'}>;
   live?:ShellDbZiel;
 }
@@ -27,42 +29,43 @@ function eigenesZiel(z:ShellDbZiel|undefined,p:ShellDbFreigabe):z is ShellDbZiel
   return !!z&&!!p.live&&z.port!==p.live.port&&z.datenbank!==p.live.datenbank&&
     p.ziele.some(x=>gleichesDbZiel(x,z));
 }
-function sqlBleibtInDb(sql:string,z:ShellDbZiel):boolean {
+export function sqlBleibtInDb(sql:string,z:ShellDbZiel):boolean {
   // Wechsel/Serveradministration/externes SQL ist keine Freigabe der eigenen DB.
   if(/\\(?:connect|c|include|i|ir|!|gexec)\b|(?:\bdblink\b|\bpostgres_fdw\b|\bPROGRAM\b|\b(?:CREATE|ALTER|DROP)\s+(?:ROLE|USER|SERVER|SYSTEM|TABLESPACE)\b)/i.test(sql))return false;
   for(const m of sql.matchAll(/\b(?:CREATE|ALTER|DROP)\s+DATABASE\s+(?:IF\s+EXISTS\s+)?(?:"([^"]+)"|([A-Za-z_]\w*))/gi))
     if((m[1]??m[2])!==z.datenbank)return false;
   return true;
 }
+export function dbUmgebungPasst(env:Record<string,string|undefined>,z:ShellDbZiel):boolean {
+  const erwartung:Record<string,string>={PGHOST:z.host,PGPORT:z.port,PGDATABASE:z.datenbank,PGUSER:z.user};
+  for(const [key,v]of Object.entries(env)){
+    const upper=key.toUpperCase();if(!upper.startsWith('PG')||v===undefined||v==='')continue;
+    if(upper==='PGPASSWORD')continue;
+    const soll=erwartung[upper];
+    if(soll===undefined||(upper==='PGHOST'?v.toLowerCase():v)!==soll)return false;
+  }
+  return true;
+}
 function psqlZiel(k:ShellTextKommando,env:Record<string,string|undefined>):{ziel?:ShellDbZiel;sql:string[];ok:boolean} {
-  // psql liest DATABASE_URL nicht als Verbindungsdefault; nur explizite URI belegt das Ziel.
-  const a=k.argv.slice(1);let raw:string|undefined,sql:string[]=[],ok=true;
-  let host:string|undefined,port:string|undefined,db:string|undefined,user:string|undefined;
+  // Enger CLI-Vertrag: genau eine explizite URI, keine Verbindungsdefaults/Overrides.
+  const dump=/^(?:pg_dump)(?:\.exe)?$/.test(k.argv[0]?.text.replace(/\\/g,'/').split('/').pop()??'');
+  const a=k.argv.slice(1);let raw:string|undefined,sql:string[]=[],ok=true,noRc=false;
+  const uri=(v:string)=>{if(raw!==undefined||!/^postgres(?:ql)?:\/\//.test(v))ok=false;else raw=v;};
   for(let i=0;i<a.length;i++){
     const w=a[i];if(w.dynamisch){ok=false;continue;}
     const t=w.text;
-    if(t==='-c'||t==='--command'){if(a[i+1]&&!a[i+1].dynamisch)sql.push(a[++i].text);else ok=false;continue;}
-    const cm=t.match(/^--command=(.*)$/s);if(cm){sql.push(cm[1]);continue;}
-    if(['-f','--file','-l','--list'].includes(t)||t.startsWith('--file=')){ok=false;continue;}
-    const flag=/^(?:-h|--host|-p|--port|-U|--username|-d|--dbname)$/.test(t)?t:undefined;
-    if(flag){const value=a[++i];if(!value||value.dynamisch){ok=false;continue;}
-      if(['-h','--host'].includes(flag))host=value.text;
-      if(['-p','--port'].includes(flag))port=value.text;
-      if(['-U','--username'].includes(flag))user=value.text;
-      if(['-d','--dbname'].includes(flag)){if(/^postgres(?:ql)?:\/\//.test(value.text))raw=value.text;else db=value.text;}
-      continue;
-    }
-    if(t.startsWith('-')){
-      if(!['-X','--no-psqlrc','-q','--quiet','-t','--tuples-only','-A','--no-align','-w','--no-password','--'].includes(t))ok=false;
-    }else if(/^postgres(?:ql)?:\/\//.test(t))raw=t;
-    else if(!db)db=t;else ok=false;
+    if(!dump&&(t==='-c'||t==='--command')){const v=a[++i];if(v&&!v.dynamisch)sql.push(v.text);else ok=false;continue;}
+    if(!dump&&t.startsWith('--command=')){sql.push(t.slice(10));continue;}
+    if(t==='-d'||t==='--dbname'){const v=a[++i];if(v&&!v.dynamisch)uri(v.text);else ok=false;continue;}
+    if(t.startsWith('--dbname=')){uri(t.slice(9));continue;}
+    if(!dump&&(t==='-X'||t==='--no-psqlrc')){noRc=true;continue;}
+    const flags=dump?['--schema-only','--data-only','--clean','--if-exists','--no-owner','--no-privileges','--no-acl','--format=plain','-Fp','-s','-a','-w','--no-password']:['-q','--quiet','-t','--tuples-only','-A','--no-align','-w','--no-password'];
+    if(flags.includes(t))continue;
+    if(t.startsWith('-'))ok=false;else uri(t);
   }
   const z=dbZielAusUrl(raw);
-  if(host||port||db||user){
-    if(!z)return {sql,ok:false};
-    if(host)z.host=host.toLowerCase();if(port)z.port=port;if(db)z.datenbank=db;if(user)z.user=user;
-  }
-  return {ziel:z,sql,ok:ok&&sql.length>0&&!k.umleitungen.length};
+  if(z&&!dbUmgebungPasst(env,z))ok=false;
+  return {ziel:z,sql,ok:ok&&!!z&&(dump||noRc&&sql.length>0)&&!k.umleitungen.length};
 }
 function nodeZiele(text:string,env:Record<string,string|undefined>):{ziele:Array<ShellDbZiel|undefined>;sql:string[];ok:boolean} {
   const f=ts.createSourceFile('db-inline.mjs',text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
@@ -152,15 +155,15 @@ function nodeZiele(text:string,env:Record<string,string|undefined>):{ziele:Array
 }
 export function pruefeDbKommando(k:ShellTextKommando,env:Record<string,string|undefined>,p:ShellDbFreigabe):ShellDbErgebnis {
   const cmd=k.argv[0]?.text.replace(/\\/g,'/').split('/').pop()?.toLowerCase();
-  if(cmd==='psql'||cmd==='psql.exe'){
+  if(cmd==='psql'||cmd==='psql.exe'||cmd==='pg_dump'||cmd==='pg_dump.exe'){
     const x=psqlZiel(k,env),allowed=x.ok&&eigenesZiel(x.ziel,p)&&x.sql.every(s=>sqlBleibtInDb(s,x.ziel!));
     return {betroffen:true,erlaubt:allowed,ziele:allowed?[x.ziel!]:[]};
   }
   if(k.inline_skript?.sprache==='node'){
     const x=nodeZiele(k.inline_skript.text,env);
     if(!x.ziele.length&&!x.sql.length)return {betroffen:false,erlaubt:false,ziele:[]};
-    const allowed=x.ok&&x.ziele.length>0&&x.ziele.every(z=>eigenesZiel(z,p))&&x.sql.every(s=>x.ziele.every(z=>sqlBleibtInDb(s,z!)));
-    return {betroffen:true,erlaubt:allowed,ziele:allowed?x.ziele as ShellDbZiel[]:[]};
+    // Statische JS-Ziele sind ausschließlich zusätzliche Ablehnungsfakten, nie Freigaben.
+    return {betroffen:true,erlaubt:false,ziele:[]};
   }
   // Nicht verstandene SQL-Interpreter werden nie von der neuen Ausnahme erfasst.
   return {betroffen:!!k.inline_skript&&/\b(?:query|execute)\s*\(/.test(k.inline_skript.text)||!!cmd&&/^(?:mysql|mariadb|sqlite3)$/.test(cmd),erlaubt:false,ziele:[]};

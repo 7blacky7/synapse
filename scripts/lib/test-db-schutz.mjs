@@ -83,3 +83,8 @@ export function kindEnv(env = process.env) {
   for (const [k, v] of Object.entries(env)) if (typeof v === 'string') kopie[k] = v;
   return kopie;
 }
+/** P10-T65: additive gemeinsame Laufzeit-API, Alt-URL-Prüfungen bleiben unverändert. */
+export async function oeffneGeschuetzteShellTestDb(url=process.env.DATABASE_URL??''){
+  const guard=await import('../../packages/core/dist/services/test-db-laufzeit-schutz.js');
+  return guard.oeffneGeschuetzteShellTestDb(url);
+}

@@ -535,7 +535,7 @@ export class WorkspaceOrchestrator {
       Tty: false,
       User: '1000:1000',
       WorkingDir: opts.workingDir ?? '/workspace',
-      Env: [`SYNAPSE_PROJECT=${project}`],
+      Env: [`SYNAPSE_PROJECT=${project}`,...(lage.datenbank_zuordnung&&dbFreigabe.test_system_id?[`SYNAPSE_SHELL_DB_FREIGABE=${JSON.stringify(dbFreigabe)}`]:[])],
     });
 
     const stream = await exec.start({ hijack: true, stdin: false });

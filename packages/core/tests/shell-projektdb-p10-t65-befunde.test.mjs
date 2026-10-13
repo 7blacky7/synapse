@@ -42,8 +42,34 @@ test('F2 umgebundene Core-Pool-Funktion bleibt unklar',async()=>{
  const js="import {getPool as pool} from '@synapse/core';pool=other;const c=pool();c.query('DROP SCHEMA owned')";
  assert.equal((await check('node --input-type=module -e "'+js+'"')).darf_starten,false);
 });
-test('Positivkontrollen: explizite psql-URI und unveränderter pg-Konstruktor',async()=>{
- for(const command of ["psql '"+own+"' -c 'DROP SCHEMA owned CASCADE'",'node -e "const {Client}=require(\'pg\');const c=new Client('+config+');c.query(\'DROP SCHEMA owned CASCADE\')"']){
-  const r=await check(command);assert.equal(r.darf_starten,true);assert.equal(r.audit.grund,'projekt_eigene_db');
- }
+for(const [name,js] of [
+ ['F4 mutierter Client-Alias',"const {Client}=require('pg');const c=new Client("+config+");let d=c;d=require('other-driver').connect();const e=d;e.query('DROP SCHEMA owned CASCADE')"],
+ ['F5 Object.assign-Hersteller',"const pg=require('pg');Object.assign(pg,{Client:require('other-driver').Client});const c=new pg.Client("+config+");c.query('DROP SCHEMA owned CASCADE')"],
+ ['Inline mit eigenem Ziel',"const {Client}=require('pg');const c=new Client("+config+");c.query('DROP SCHEMA owned CASCADE')"],
+])test(name+' bleibt anleitung',async()=>{
+ const r=await check('node -e "'+js+'"');assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
+});
+for(const [key,value] of [
+ ['PGHOST','live.invalid'],['PGPORT','5432'],['PGDATABASE','synapse'],['PGUSER','other'],
+ ['PGSERVICE','unknown'],['PGSERVICEFILE','unknown'],['PGHOSTADDR','127.0.0.1'],
+])test('CLI: abweichendes '+key+' verweigert Ausnahme',async()=>{
+ assert.equal((await check("psql -X '"+own+"' -c 'DROP SCHEMA owned CASCADE'",{[key]:value})).darf_starten,false);
+});
+test('Positivkontrolle: explizite psql-URI',async()=>{
+ const r=await check("psql -X '"+own+"' -c 'DROP SCHEMA owned CASCADE'");
+ assert.equal(r.darf_starten,true);assert.equal(r.audit.grund,'projekt_eigene_db');
+});
+const {pruefeDbKommando}=await import('../dist/services/shell-db-zuordnung.js');
+const {parseShellText}=await import('../dist/services/shell-sicherung-parser.js');
+for(const [name,command,env,wanted]of [
+ ['dump explizit',"pg_dump --clean '"+own+"'",{},true],
+ ['dump abweichender Port',"pg_dump --clean '"+own+"'",{PGPORT:'5432'},false],
+ ['dump ohne DSN',"pg_dump --clean",{},false],
+ ['URI+CLI-Hostoverride',"psql -X '"+own+"' -h live.invalid -c 'DROP SCHEMA owned'",{},false],
+ ['zwei DSNs',"psql -X '"+own+"' '"+own+"' -c 'DROP SCHEMA owned'",{},false],
+ ['psqlrc unbekannt',"psql '"+own+"' -c 'DROP SCHEMA owned'",{},false],
+ ['Hosttuple konsistent',"psql -X '"+own+"' -c 'DROP SCHEMA owned'",{PGHOST:'projekt.invalid',PGPORT:'6544',PGDATABASE:project,PGUSER:'worker'},true],
+])test('Enges CLI-Muster: '+name,()=>{
+ const k=parseShellText(command,'sh').kommandos[0];
+ assert.equal(pruefeDbKommando(k,env,proof).erlaubt,wanted);
 });

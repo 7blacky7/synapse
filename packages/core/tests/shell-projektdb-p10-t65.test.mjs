@@ -16,6 +16,7 @@ const proof={project,ziele:[
 const root='/home/blacky/dev/p10_shell_projektdb';
 const ctx={shell:'sh',os:'linux',cwd:root,project_root:root,env:{},env_vollstaendig:true,inspect:false,datenbank_freigabe:proof};
 const psql=(url,sql)=>"psql '"+url+"' -c '"+sql+"'";
+const cli=(url,sql)=>psql(url,sql).replace("psql ","psql -X ");
 const cases=[
  ['live',psql(live,'DROP SCHEMA owned CASCADE')],
  ['fremd',psql(foreign,'DROP SCHEMA owned CASCADE')],
@@ -35,8 +36,8 @@ const wanted=(await readFile(new URL('./fixtures/shell-projektdb-p10-t65.golden.
 assert.equal(JSON.stringify(golden),wanted,'Bisherige fremde/live/unklare/andere Risikoentscheidungen bytegleich');
 if(!process.argv.includes('--golden')){
  const good=[
-  psql(own,'DROP SCHEMA owned CASCADE'),psql(testdb,'TRUNCATE owned'),
-  psql(own,'DELETE FROM owned'),psql(own,'ALTER TABLE owned ADD COLUMN x int'),
+  cli(own,'DROP SCHEMA owned CASCADE'),cli(testdb,'TRUNCATE owned'),
+  cli(own,'DELETE FROM owned'),cli(own,'ALTER TABLE owned ADD COLUMN x int'),
  ];
  for(const command of good){const r=await decision(command);assert.equal(r.darf_starten,true,command);assert.equal(r.audit.grund,'projekt_eigene_db');}
  assert.equal((await decision(good[0],{datenbank_freigabe:{...proof,project:'anders'}})).darf_starten,false);
@@ -46,7 +47,7 @@ if(!process.argv.includes('--golden')){
  assert.equal((await decision(psql(own,'DELETE FROM owned'),{datenbank_freigabe:undefined})).darf_starten,false,'Ohne Registry keine Freigabe');
  const node="node -e \"const {Client}=require('pg');const c=new Client({connectionString:process.env.DATABASE_URL});c.query('DROP SCHEMA owned CASCADE')\"";
  const allowed=await decision(node,{env:{DATABASE_URL:own}});
- assert.equal(allowed.darf_starten,true,'Node-Ziel aus eindeutiger eigener DB');assert.equal(allowed.audit.grund,'projekt_eigene_db');
+ assert.equal(allowed.darf_starten,false,'Richtungswechsel: Inline-JS ist kein Freigabenachweis');assert.equal(allowed.audit.stufe,'anleitung');
  for(const command of [
   "node -e \"const{Client}=require('pg');const c=new Client({connectionString:process.env.UNKNOWN_URL});c.query('DROP SCHEMA owned')\"",
   "node -e \"const{Client}=require('pg');const a=new Client({connectionString:'"+own+"'});const b=new Client({connectionString:'"+foreign+"'});a.query('DROP SCHEMA owned');b.query('DELETE FROM owned')\"",
@@ -81,7 +82,8 @@ if(process.argv.includes('--integration')){
  const {mkdtemp,rm}=await import('node:fs/promises');const os=await import('node:os');
  const pool=getPool();const actual=dbZielAusUrl(u.href);
  assert.ok(actual);
- const root=await mkdtemp(new URL('./fixtures/p10-t65-',import.meta.url).pathname),schema='p10_t65_'+process.pid;
+ const tmpRoot=await mkdtemp(new URL('./fixtures/p10-t65-',import.meta.url).pathname),root=new URL('../../../',import.meta.url).pathname,schema='p10_t65_'+process.pid;
+ const systemId=process.env.SYNAPSE_TEST_DATABASE_SYSTEM_ID;assert.match(systemId??'',/^[1-9][0-9]{0,19}$/,'Trusted Testcluster-Sollwert muss von der Testkonfiguration kommen');
  const oldFetch=globalThis.fetch,oldSystem=process.env.SYNAPSE_DATABASE_URL,oldTest=process.env.SYNAPSE_TEST_DATABASE_URL;let registered=false,created=false;
  try{
   assert.equal((await pool.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');
@@ -89,16 +91,28 @@ if(process.argv.includes('--integration')){
   await pool.query('INSERT INTO projects(name,hostname,path,enabled)VALUES($1,$2,$3,true)',[project,os.hostname(),root]);registered=true;
   await pool.query('CREATE SCHEMA '+schema);created=true;
   globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
-  const js="const{Client}=require('pg');const c=new Client({connectionString:"+JSON.stringify(u.href)+"});(async()=>{await c.connect();await c.query("+JSON.stringify('DROP SCHEMA '+schema+' CASCADE')+");await c.end()})().catch(e=>{console.error(e.message);process.exitCode=1})";
-  const command="node -e '"+js.replaceAll("'","'\\''")+"'";
+  const quote=s=>"'"+s.replaceAll("'","'\\''")+"'";
+  const command="DATABASE_URL="+quote(u.href)+" node packages/core/tests/fixtures/shell-testdb-drop-p10-t65.mjs "+schema;
   process.env.SYNAPSE_DATABASE_URL=live;process.env.SYNAPSE_TEST_DATABASE_URL=u.href;
   const {pruefeShellEinreihung}=await import('../dist/services/shell-einreihung-sicherung.js');
   const queued=await pruefeShellEinreihung({project,command});
   const transport=queued.sicherung?.anfrage?.datenbank_freigabe;
   assert.ok(transport,'API-Queue übermittelt dieselbe Zuordnung');
+  assert.equal(transport.test_system_id,systemId,'Sollwert kommt aus Serverkonfiguration, nicht der Clientverbindung');
   assert.ok(transport.ziele.some(z=>z.host===actual.host&&z.port===actual.port&&z.datenbank===actual.datenbank&&z.user===actual.user));
   assert.equal(JSON.stringify(transport).includes('password'),false);
   assert.equal(JSON.stringify(transport).includes('database_url'),false);
+  for(const [name,befehl,meta]of [
+   ['falsche Clusterkennung',command,{...transport,test_system_id:'1'}],
+   ['abweichende PG-Env','PGHOST=live.invalid '+command,transport],
+   ['falsche DSN',"DATABASE_URL="+quote(live)+" node packages/core/tests/fixtures/shell-testdb-drop-p10-t65.mjs "+schema,transport],
+  ]){
+   let negativeStarted=false;
+   const wrong=await execShellInProject({project,command:befehl,agent_id:'sol-2',datenbank_freigabe:meta,onStarted:()=>negativeStarted=true,tail_lines:3});
+   assert.equal(negativeStarted,true,name+': Probe muss den tatsächlichen Runtimeguard erreichen');
+   assert.ok(typeof wrong.exit_code==='number'&&wrong.exit_code!==0,name+' darf kein DROP ausführen');
+   assert.equal((await pool.query('SELECT 1 FROM pg_namespace WHERE nspname=$1',[schema])).rowCount,1,name+': eigenes Schema bleibt');
+  }
   let started=false;
   const result=await execShellInProject({project,command,agent_id:'sol-2',datenbank_freigabe:transport,onStarted:()=>started=true,tail_lines:3});
   assert.equal(started,true,JSON.stringify(result));assert.equal(result.exit_code,0,JSON.stringify(result));
@@ -113,7 +127,7 @@ if(process.argv.includes('--integration')){
   oldTest===undefined?delete process.env.SYNAPSE_TEST_DATABASE_URL:process.env.SYNAPSE_TEST_DATABASE_URL=oldTest;
   if(created)await pool.query('DROP SCHEMA '+schema+' CASCADE');
   if(registered){await pool.query('DELETE FROM shell_jobs WHERE project=$1',[project]);await pool.query('DELETE FROM projects WHERE name=$1 AND hostname=$2',[project,os.hostname()]);}
-  await closePool();await rm(root,{recursive:true,force:true});
+  await closePool();await rm(tmpRoot,{recursive:true,force:true});
  }
 }
 

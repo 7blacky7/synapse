@@ -237,6 +237,7 @@ export async function execShellInProject(
     return maskiereShellDaten({status:'rejected',error:pruefung.antwort?.error??'shell_anleitung',
       ...pruefung.antwort,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten;
   }
+  if(lage.datenbank_zuordnung&&dbFreigabe.test_system_id)jobUmgebung.env.SYNAPSE_SHELL_DB_FREIGABE=JSON.stringify(dbFreigabe);
   const result = await new Promise<Record<string,unknown>>((resolve) => {
     ensureStreamsDir();
     cleanupOldStreams();

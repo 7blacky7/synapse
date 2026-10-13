@@ -4,10 +4,11 @@ export interface ShellProbePfad {
   naechster_elternpfad?: string; links: Array<{pfad:string;ziel:string}>;
   mount?: string; dev?: string; fehler?: string;eigener_benutzer?:boolean;
 }
-export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; prozesse?:boolean;umgebungsdatei?:string; }
+export interface ShellProbeAnfrage { cwd?: string; variablen?: string[]; pfade?: string[]; prozesse?:boolean;umgebungsdatei?:string;testdatei?:string;projekt_root?:string; }
 import type {ShellDbZiel} from './shell-db-zuordnung.js';
 export interface ShellProbeAntwort {
   cwd: string; os: 'linux'|'windows'|'macos'|'wsl'; env: Record<string,string>;
+  testdatei?:{pfad:string;kanonisch:string;sha256:string;text:string};
   umgebungsdatei?:{pfad:string;sha256:string;testprojekt:boolean;exportiert:boolean;port?:string;datenbank?:string;datenbank_ziel?:ShellDbZiel};
   pfade: ShellProbePfad[]; prozesse?:{pids:number[];namen:string[]}; rechner?:string;
 }
@@ -100,6 +101,16 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
       }
     }catch{/* unlesbar oder außerhalb des Dateisystems: kein Nachweis */}
   }
+  let testdatei:ShellProbeAntwort['testdatei'];
+  if(input.testdatei&&input.projekt_root)try{
+    const pfad=p.resolve(cwd,input.testdatei),root=await fs.realpath(p.resolve(input.projekt_root)),kanonisch=await fs.realpath(pfad);
+    const rel=p.relative(root,kanonisch);
+    if(rel!==''&&rel!=='..'&&!rel.startsWith('..'+p.sep)&&!p.isAbsolute(rel)){
+      const st=await fs.stat(kanonisch);
+      if(st.isFile()&&st.size<=131072){const bytes=await fs.readFile(kanonisch);
+        testdatei={pfad,kanonisch,text:bytes.toString('utf8'),sha256:(await import('node:crypto')).createHash('sha256').update(bytes).digest('hex')};}
+    }
+  }catch{/* Keine unbekannten oder fremden Dateien ausführen. */}
   let prozesse:ShellProbeAntwort['prozesse'];
   if(input.prozesse){
     if(process.platform!=='linux')throw Error('container_prozesslage_nicht_verfuegbar');
@@ -116,7 +127,7 @@ export async function probeShellLage(input: ShellProbeAnfrage): Promise<ShellPro
     }
     prozesse={pids:[...pids],namen:[...namen]};
   }
-  return {...(umgebungsdatei?{umgebungsdatei}:{}),cwd,os:windows?'windows':process.platform==='darwin'?'macos':process.env.WSL_DISTRO_NAME?'wsl':'linux',env,pfade:records,
+  return {...(testdatei?{testdatei}:{}),...(umgebungsdatei?{umgebungsdatei}:{}),cwd,os:windows?'windows':process.platform==='darwin'?'macos':process.env.WSL_DISTRO_NAME?'wsl':'linux',env,pfade:records,
     ...(prozesse?{prozesse,rechner:(await import('node:os')).hostname()}:{} )};
 }
 /** Der Nutzerbefehl ist nie Teil dieses Programms; nur JSON-Daten in argv[1]. */
