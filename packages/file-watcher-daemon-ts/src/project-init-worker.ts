@@ -23,6 +23,10 @@ import {
   completeProjectInitJob,
   expirePendingProjectInitJobs,
   isValidProjectName,
+  getProjectStatus,
+  setProjectStatus,
+  getSetupPhase,
+  setSetupPhase,
   registerProject,
   registerVirtualProject,
   envHatDatabaseUrl,
@@ -119,6 +123,13 @@ async function processNextJob(manager: WatcherManager): Promise<void> {
   if (!job) return
   meldeWorkerArbeit('project_init')
 
+  await processProjectInitJob(job, manager)
+}
+
+export async function processProjectInitJob(
+  job: ProjectInitJobRow,
+  manager: WatcherManager,
+): Promise<void> {
   console.error(`[project-init-worker] Job ${job.id} (name=${job.name}) gestartet`)
 
   try {
@@ -219,7 +230,7 @@ async function richteProjektDbEin(name: string, projectPath: string): Promise<st
   }
 }
 
-async function initializeProject(
+export async function initializeProject(
   job: ProjectInitJobRow,
   manager: WatcherManager,
 ): Promise<InitResult> {
@@ -305,12 +316,25 @@ async function initializeProject(
   // Daemon-Config + FileWatcher in einem: registriert in config.json,
   // persistiert, spawnt Watcher. Damit erscheint das Projekt automatisch
   // im Tray-Refresh.
-  try {
-    await manager.register(job.name, projectPath)
-  } catch (regErr) {
-    console.error(
-      `[project-init-worker] manager.register fuer ${job.name} fehlgeschlagen (uebersprungen): ${(regErr as Error).message}`,
-    )
+  await manager.register(job.name, projectPath)
+
+  // PG ist die Quelle der Wahrheit; status.json bleibt ein lokaler Cache.
+  // Ein wiederholtes Init setzt einen vorhandenen Setup-Fortschritt nicht zurueck.
+  const setupPhase = await getSetupPhase(job.name, projectPath)
+  const nextSetupPhase = setupPhase === 'none' ? 'initial-pending' : setupPhase
+  const status = getProjectStatus(projectPath)
+  setProjectStatus(projectPath, {
+    project: job.name,
+    path: projectPath,
+    status: 'active',
+    lastAccess: status?.lastAccess,
+    setupPhase: nextSetupPhase,
+  })
+  if (setupPhase === 'none') {
+    await setSetupPhase(job.name, 'initial-pending', {
+      projectPath,
+      updatedBy: 'file-watcher-daemon:project-init',
+    })
   }
 
   // WS-P10: Bridge zur synapse-api — Workspace-Container vorwaermen.

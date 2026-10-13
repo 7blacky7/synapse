@@ -2478,6 +2478,7 @@ async function handleToolCallKern(
           // dieselbe Quelle wie der lokale MCP-Server (stdio), ueber REST also
           // ebenso einsehbar. status.json ist nur noch Cache/Fallback.
           const registry = await getProjectRegistryRows(projectName);
+          const daemonRegistered = registry.some((row) => row.hostname !== 'rest-api' && row.path !== '/virtual/rest-api');
           const watcherActive = await isDaemonAliveForProject(projectName);
           const setupPhase = await getSetupPhase(projectName);
           const {projektHauptbranchStatus} = await import('@synapse/core');
@@ -2487,6 +2488,7 @@ async function handleToolCallKern(
             stats: codeStats,
             status: { project: projectName, ...(erkannt ? { path: erkannt.path } : {}) },
             registered_in_db: registry.length > 0,
+            daemon_registered: daemonRegistered,
             registry,
             watcher_active: watcherActive,
             setup_phase: setupPhase,

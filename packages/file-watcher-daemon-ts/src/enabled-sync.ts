@@ -19,14 +19,55 @@
  */
 
 import os from 'node:os';
-import { getPool } from '@synapse/core';
+import { getPool, getProjectStatus, setProjectStatus } from '@synapse/core';
 import type { WatcherManager } from './manager.js';
+import type { SetupPhase } from '@synapse/core';
 
 const SYNC_INTERVAL_MS = Number(process.env.ENABLED_SYNC_INTERVAL_MS ?? 10_000);
 const HOSTNAME = os.hostname();
 
 export interface EnabledSyncHandle {
   stop: () => void;
+}
+
+type ProjectSnapshotRow = {
+  name: string;
+  path: string;
+  enabled: boolean;
+  setup_phase: SetupPhase | null;
+};
+
+/** Wendet denselben PG-Snapshot auf Registry-Cache und Setup-Status-Cache an. */
+export function synchronisiereProjektCache(
+  manager: WatcherManager,
+  rows: ProjectSnapshotRow[],
+): void {
+  manager.discoverFromRegistry(rows.map((row) => ({
+    name: row.name,
+    pfad: row.path,
+    enabled: row.enabled,
+  })));
+
+  for (const row of rows) {
+    try {
+      const setupPhase = row.setup_phase ?? 'none';
+      const status = row.enabled ? 'active' : 'stopped';
+      const current = getProjectStatus(row.path);
+      if (current?.project === row.name
+        && current.path === row.path
+        && current.status === status
+        && current.setupPhase === setupPhase) continue;
+      setProjectStatus(row.path, {
+        project: row.name,
+        path: row.path,
+        status,
+        lastAccess: current?.lastAccess,
+        setupPhase,
+      });
+    } catch (err) {
+      console.error(`[enabled-sync] Status-Cache fuer ${row.name} nicht aktualisierbar: ${(err as Error).message}`);
+    }
+  }
 }
 
 export function startEnabledSync(manager: WatcherManager): EnabledSyncHandle {
@@ -37,14 +78,17 @@ export function startEnabledSync(manager: WatcherManager): EnabledSyncHandle {
     if (stopped || running) return;
     running = true;
     try {
-      const res = await getPool().query<{ name: string; path: string; enabled: boolean }>(
-        'SELECT name, path, enabled FROM projects WHERE hostname = $1',
+      const res = await getPool().query<ProjectSnapshotRow>(
+        `SELECT p.name, p.path, p.enabled, s.setup_phase
+           FROM projects p
+           LEFT JOIN project_setup_status s ON s.project = p.name
+          WHERE p.hostname = $1`,
         [HOSTNAME]
       );
       // Discovery ZUERST: PG-Projekte, die lokal fehlen, in config.json uebernehmen
       // + Watcher starten. Erst danach das enabled-Flag fuer alle (inkl. der
       // gerade uebernommenen) angleichen — siehe Schleife unten.
-      manager.discoverFromRegistry(res.rows.map((r) => ({ name: r.name, pfad: r.path, enabled: r.enabled })));
+      synchronisiereProjektCache(manager, res.rows);
       const pgState = new Map(res.rows.map((r) => [r.name, r.enabled]));
       for (const p of manager.list()) {
         const want = pgState.get(p.name);
