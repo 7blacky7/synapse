@@ -39,6 +39,36 @@ Der Ordner enthält zwei getrennte Tray-Oberflächen: eine Go-Anwendung mit nati
 | [pg_test.moo](pg_test.moo) | Enthält Testcode für die Moo-PostgreSQL-Anbindung. |
 | [user_chat_test.go](user_chat_test.go) | Enthält Tests zu Chatfunktionen der Go-Oberfläche. |
 
+## Funktionsweise
+
+![Tray: getrennte Wege für lokalen Daemon, zentrale API und Moo-Oberfläche](../../../docs/bilder/tray.svg)
+
+### Go: vom Start zum sichtbaren Status
+
+Der Go-Tray ist ein eigener Desktop-Prozess. Er liest den Daemon-Port aus `~/.synapse/file-watcher/daemon.port`; fehlt eine brauchbare Angabe, gilt Port 7878. API-Einstellungen kommen aus Umgebung und `config.json`. Die Sperrdatei `tray.lock` begrenzt parallele Instanzen: Unter Unix versucht ein neuer Start, den erkannten Vorgänger zu beenden und dessen Sperre zu übernehmen; unter Windows beendet sich die zweite Instanz. Kann die Sperrdatei gar nicht geöffnet werden, startet der Tray allerdings ohne Sperre. Die Einzelinstanz ist daher keine bedingungslose Garantie.
+
+Das Symbol zeigt die Erreichbarkeit des **lokalen Daemons**. Maßgeblich ist eine erfolgreich dekodierte Antwort auf `GET /projects`, mit drei Sekunden HTTP-Frist. Die zentrale Synapse-API wird getrennt abgefragt. Deshalb bedeutet „Daemon online“ weder „API erreichbar“ noch „alle Daten aktuell“; ein aktiviertes Projekt und ein tatsächlich laufender Watcher sind ebenfalls unterschiedliche Zustände.
+
+Der Daemon liefert über `/events` einen ersten Status und weitere Zustandsänderungen als Server-Sent Events (SSE). Jede `data:`-Zeile stößt eine erneute Abfrage an; der Tray übernimmt den Ereignisinhalt nicht direkt ins Menü. Eine gepufferte Refresh-Anforderung bündelt gleichzeitige Auslöser, ein Mutex serialisiert die Aktualisierung. Zusätzlich läuft Polling: ungefähr jede Sekunde ohne SSE, alle zehn Sekunden bei aktiver SSE-Verbindung. Nach einem Verbindungsabbruch wird SSE erneut aufgebaut.
+
+Ein Wechsel zwischen online und offline oder eine geänderte Projekt-, Workspace- oder Channel-Signatur baut das Menü neu. Ändert sich nur ein Aktiv-Schalter, werden dessen vorhandene Menüeinträge angepasst. Workspaces werden höchstens alle 30 Sekunden abgefragt, nach Fehlern erst nach fünf Minuten; die Channel-Signatur höchstens alle fünf Sekunden. Sichtbare Detail- und Chatfenster haben einen eigenen Drei-Sekunden-Takt. Versteckte Fenster bleiben wiederverwendbar, werden dabei aber nicht abgefragt.
+
+### Go: Klick, Ausführung und Rückmeldung
+
+Ein Projekt-Schalter liest zunächst den aktuellen Status, sendet dann `enable` oder `disable` an den lokalen Daemon und stößt eine Auffrischung an. Nur eine HTTP-200-Antwort führt zur unmittelbaren Anpassung des Schalters. Im Daemon ändert der Manager Konfiguration, Watcher und das Aktiv-Flag in PostgreSQL; anschließend meldet er die Zustandsänderung per SSE.
+
+„Daemon starten“ und „Deaktivieren“ schreiben dagegen `start-requested` beziehungsweise `stop-requested`. Der getrennte [Starthelfer](start-watcher.sh) prüft diese Dateien alle zwei Sekunden und startet oder beendet den TypeScript-Daemon. Der Tray bleibt beim Deaktivieren offen. „Beenden“ fordert zusätzlich sein eigenes Ende an. Ohne laufenden Starthelfer bewirkt die Steuerdatei allein keinen Prozessstart.
+
+Für zentrale Daten verwendet der [API-Client](api_client.go) mehrere Basisadressen derselben Instanz und merkt sich die zuletzt erfolgreiche. Transportfehler und Serverfehler erlauben einen weiteren Versuch; auch unlesbare beziehungsweise ungültige Antworten können zur nächsten Basis führen. HTTP-4xx-Ablehnungen und Redirects werden unmittelbar als Fehler zurückgegeben. Ein Service-Token wird als Bearer-Header übertragen. Das ist ein Adressrückfall, kein lokaler Offline-Schreibspeicher.
+
+Die Implementierung enthält weiterhin direkte **PG-Leserückfälle**, etwa für Agentenlisten und Channel-Nachrichten, wenn der API-Aufruf scheitert. Eine gefüllte Ansicht beweist somit nicht den Erfolg ihres API-Pfads. Beim Senden einer Chatnachricht zeigt der Tray einen Fehler an; erst nach erfolgreichem Senden leert er das Eingabefeld und lädt Nachrichten nach.
+
+### Moo: eigenständige Oberfläche
+
+Die [Moo-Variante](tray.moo) besitzt eine separat konfigurierte Daemon-Adresse und einen direkten [PostgreSQL-Client](pg_client.moo). Listen werden aus PG gelesen; Projektaktionen und Chat-Schreiben laufen über HTTP zum Daemon. Bei verlorener PG-Verbindung wird der Client verworfen und beim nächsten Leseversuch neu verbunden.
+
+Das Menü wird beim Start, durch „Neu laden“ und durch Benutzeraktionen aufgebaut. Obwohl eine Funktion `update_tick` vorhanden ist, wird **kein periodischer Menü-Timer** registriert: Das vermeidet wiederholte Menüaufbauten durch Desktop-Signale. Offene Chats besitzen dagegen einen eigenen Drei-Sekunden-Timer. Die Go-SSE-, Discovery- und Sperrmechanismen dürfen deshalb nicht pauschal auf Moo übertragen werden.
+
 ## Schnittstellen nach außen
 
 Der Go-Tray spricht über [api_client.go](api_client.go) mit den HTTP-Endpunkten der Synapse-API und bezieht Status- und Agenteninformationen von dort. Die Moo-Oberfläche verwendet [pg_client.moo](pg_client.moo) für PostgreSQL-Abfragen und [tray.moo](tray.moo) für DateiWatcher- und Projektaktionen. Beide Ansätze bleiben getrennte Anwendungen und teilen sich einzelne Funktionsbereiche.
