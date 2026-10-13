@@ -809,6 +809,14 @@ func rebuildMenu(projs []Project) {
 		}
 	}()
 
+	// P13-T27/A9: serverseitige Projektbindung und Asset-Sync neben bestehender UI.
+	mAssets := systray.AddMenuItem("Projekte auf diesem PC / Asset-Sync …", "Bindung, Transfers und offene Konflikte")
+	go func() {
+		for range mAssets.ClickedCh {
+			fyne.Do(zeigeAssetSyncFenster)
+		}
+	}()
+
 	mGPU := systray.AddMenuItem("Lokale GPU / Ollama …", "GPU-Modell vergleichen, einrichten oder sperren")
 	go func() {
 		for range mGPU.ClickedCh {

@@ -28,6 +28,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -153,6 +154,11 @@ func forgetBase(base string) {
 // ECHTE Antwort des Servers (falsches Token, Projekt unbekannt) und wird sofort
 // zurueckgegeben — sonst wuerde ein Auth-Fehler als "Server nicht erreichbar"
 // erscheinen und man debuggt an der falschen Stelle.
+// P13-T27/A9: zusätzlicher Streamingweg; bestehende JSON-Aufrufe bleiben unverändert.
+func apiRequestBinaryWithToken(ctx context.Context, in apiBinaryRequest, token string) (apiBinaryResult, error) {
+	return apiStreamBinary(ctx, in, token)
+}
+
 func apiRequest(method, path string, out interface{}) (base string, err error) {
 	return apiRequestBody(method, path, nil, out)
 }
