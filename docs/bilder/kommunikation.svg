@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="875" viewBox="0 0 1280 875" role="img" aria-labelledby="title desc">
+<title id="title">Kommunikationswege und getrennte Zustandsmarken</title>
+<desc id="desc">Vier getrennte Speicherpfade für Channels, Chat, Inbox und Events. Channels erhalten ein Live-Signal und einen Poll-Fallback; Lesen, Hinweis-Claim, Inbox-Verarbeitung und Event-ACK haben getrennte Marken.</desc>
+<metadata>Quellen im Projekt: packages/core/src/services/channels.ts, channel-unread.ts, chat.ts, chat-unread.ts, inbox.ts, events.ts; packages/core/src/services/event-sichtbarkeit.ts; packages/agents/src/transport/pg.ts, api.ts und wrapper.ts; packages/rest-api/src/routes/wrapper-bridge.ts.</metadata>
+<style>
+.bg{fill:#0d1117}.box{fill:#161b22;stroke:#f0883e;stroke-width:2}.soft{fill:#161b22;stroke:#f0883e;stroke-width:2}
+.title{font:700 27px "DejaVu Sans",sans-serif;fill:#f0883e}.lane{font:700 18px "DejaVu Sans",sans-serif;fill:#f0883e}
+.label{font:600 16px "DejaVu Sans",sans-serif;fill:#f0883e}.small{font:14px "DejaVu Sans",sans-serif;fill:#b1bac4}.tiny{font:12px "DejaVu Sans",sans-serif;fill:#b1bac4}
+.path{stroke:#f0883e;stroke-width:3;fill:none;marker-end:url(#arrow)}.hint{stroke:#f0883e;stroke-width:2;fill:none;stroke-dasharray:3 4;marker-end:url(#arrow)}
+</style>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f0883e"/></marker></defs>
+<rect class="bg" width="1280" height="875"/>
+<text class="title" x="40" y="48">Kommunikation: vier getrennte Wege</text>
+<text class="small" x="40" y="76">Speicherung, Zustellung und Bestätigung haben je Weg eigene Zustände</text>
+
+<!-- Column headers -->
+<text class="tiny" x="55" y="118">SCHREIBEN</text><text class="tiny" x="315" y="118">DAUERHAFTER SPEICHER</text><text class="tiny" x="625" y="118">ZUSTELLUNG / LESEN</text><text class="tiny" x="1010" y="118">ZUSTANDSMARKE</text>
+
+<!-- Channel lane -->
+<text class="lane" x="40" y="164">Channel</text>
+<rect class="box" x="40" y="178" width="205" height="82" rx="10"/>
+<text class="label" x="58" y="208">channel.post</text><text class="small" x="58" y="234">Mitgliedschaft · Feed</text>
+<path class="path" d="M245 219 H295"/>
+<rect class="box" x="300" y="178" width="250" height="82" rx="10"/>
+<text class="label" x="318" y="208">specialist_channel_</text><text class="small" x="318" y="234">messages · ID-Reihenfolge</text>
+<path class="path" d="M550 219 H600"/>
+<rect class="soft" x="605" y="178" width="340" height="82" rx="10"/>
+<text class="label" x="623" y="208">PG NOTIFY + Heartbeat-Poll</text><text class="small" x="623" y="234">Live beschleunigt; Poll holt nach</text>
+<path class="path" d="M945 219 H995"/>
+<rect class="box" x="1000" y="178" width="240" height="82" rx="10"/>
+<text class="label" x="1018" y="208">last_read_message_id</text><text class="small" x="1018" y="234">nur ausgelieferter Feed</text>
+<path class="hint" d="M725 260 V278 H1120 V260"/>
+<text class="tiny" x="766" y="296">separat: last_notified_message_id beansprucht den Hinweis</text>
+
+<!-- Chat lane -->
+<text class="lane" x="40" y="356">Chat</text>
+<rect class="box" x="40" y="370" width="205" height="82" rx="10"/>
+<text class="label" x="58" y="400">chat.send</text><text class="small" x="58" y="426">Broadcast oder DM</text>
+<path class="path" d="M245 411 H295"/>
+<rect class="box" x="300" y="370" width="250" height="82" rx="10"/>
+<text class="label" x="318" y="400">chat_messages</text><text class="small" x="318" y="426">Empfänger optional</text>
+<path class="path" d="M550 411 H600"/>
+<rect class="soft" x="605" y="370" width="340" height="82" rx="10"/>
+<text class="label" x="623" y="400">chat.get</text><text class="small" x="623" y="426">liefert Broadcasts + eigene DMs</text>
+<path class="path" d="M945 411 H995"/>
+<rect class="box" x="1000" y="370" width="240" height="82" rx="10"/>
+<text class="label" x="1018" y="400">letzte_id</text><text class="small" x="1018" y="426">tatsächlicher Lesestand</text>
+<path class="hint" d="M730 452 V470 H1120 V452"/>
+<text class="tiny" x="780" y="488">getrennter Hinweis-Claim: letzte_hinweis_id</text>
+
+<!-- Inbox lane -->
+<text class="lane" x="40" y="548">Inbox</text>
+<rect class="box" x="40" y="562" width="205" height="82" rx="10"/>
+<text class="label" x="58" y="592">inbox_send</text><text class="small" x="58" y="618">an Empfänger-ID</text>
+<path class="path" d="M245 603 H295"/>
+<rect class="box" x="300" y="562" width="250" height="82" rx="10"/>
+<text class="label" x="318" y="592">specialist_inbox</text><text class="small" x="318" y="618">offene Nachrichten</text>
+<path class="path" d="M550 603 H600"/>
+<rect class="soft" x="605" y="562" width="340" height="82" rx="10"/>
+<text class="label" x="623" y="592">Poll / inbox_check</text><text class="small" x="623" y="618">Poll selbst quittiert nicht</text>
+<path class="path" d="M945 603 H995"/>
+<rect class="box" x="1000" y="562" width="240" height="82" rx="10"/>
+<text class="label" x="1018" y="592">processed</text><text class="small" x="1018" y="618">separate Inbox-Quittung</text>
+
+<!-- Events lane -->
+<text class="lane" x="40" y="690">Events</text>
+<rect class="box" x="40" y="704" width="205" height="82" rx="10"/>
+<text class="label" x="58" y="734">event.emit</text><text class="small" x="58" y="760">Typ · Priorität · Scope</text>
+<path class="path" d="M245 745 H295"/>
+<rect class="box" x="300" y="704" width="250" height="82" rx="10"/>
+<text class="label" x="318" y="734">agent_events</text><text class="small" x="318" y="760">sichtbare offene Events</text>
+<path class="path" d="M550 745 H600"/>
+<rect class="soft" x="605" y="704" width="340" height="82" rx="10"/>
+<text class="label" x="623" y="734">event.pending</text><text class="small" x="623" y="760">bis zum ACK sichtbar</text>
+<path class="path" d="M945 745 H995"/>
+<rect class="box" x="1000" y="704" width="240" height="82" rx="10"/>
+<text class="label" x="1018" y="734">agent_event_acks</text><text class="small" x="1018" y="760">unabhängig von Leseständen</text>
+<text class="lane" x="40" y="824">Legende</text>
+<path class="path" d="M40 852 H100"/><text class="tiny" x="118" y="857">durchgezogener Pfeil: Nachrichten- und Zustellpfad</text>
+<path class="hint" d="M650 852 H710"/><text class="tiny" x="728" y="857">gestrichelter Pfeil: separater Hinweis-Claim</text>
+</svg>

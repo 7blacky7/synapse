@@ -26,4 +26,6 @@ Das Paket hängt von [Core](../core/README.md) und pg ab; die Entwicklungstypen 
 
 - [Übergeordneter Ordner](../README.md)
 - [MCP-Adapter](../mcp-server/README.md)
+- [Kommunikation und Hinweiszustellung](../core/src/services/README.md#kommunikation-und-hinweiszustellung)
+- [Kommunikationsdiagramm](../../docs/bilder/kommunikation.svg)
 - [Zusammenhang und Betriebsvarianten](../../docs/README.md)

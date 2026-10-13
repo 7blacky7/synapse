@@ -347,6 +347,36 @@ Die Queue unterscheidet `pending`, `running` und die Endzustände `done`, `faile
 
 Der Workspace-Pfad liefert stdout/stderr synchron zurück und bietet nicht dieselbe fortsetzbare lokale Queue-/Stream-Semantik. Bei einem Workspace-Timeout werden Warten und Stream beendet. Der Orchestrator sendet dabei kein eigenes Kill-Signal an den Exec-Prozess; aus diesem Timeout allein lässt sich deshalb keine sichere Prozessbeendigung ableiten. Zielauswahl, Startprüfung und Laufzeitende sind drei getrennte Entscheidungen.
 
+### Kommunikation und Hinweiszustellung
+
+Synapse hält vier Kommunikationswege getrennt: projektbezogene Gruppen-Boards (Channels), Broadcasts und Direktnachrichten (Chat), adressierte Inbox-Post sowie steuernde Events. Sie teilen sich PostgreSQL als dauerhaften Speicher, haben aber eigene Nachrichten- und Zustandsmarken.
+
+#### Channel: Gruppenbeiträge, Feed und Lesestand
+
+Ein Channel hat Mitglieder. Beim Beitritt wird für einen neuen Mitgliedseintrag der aktuelle höchste Nachrichtenwert als Ausgangsstand gespeichert; ein erneuter Beitritt setzt einen bestehenden Stand nicht zurück. Beiträge landen in `specialist_channel_messages`. Der Feed ist über Nachrichten-IDs begrenzt und blätterbar: standardmäßig kommen die jüngsten 20 Beiträge zurück, chronologisch sortiert; `order: "asc"` und `since_id` führen zum älteren Anfang, `before_id` blättert rückwärts. Archivierte Beiträge bleiben standardmäßig ausgeblendet und werden nur mit `archiv: true` einbezogen. [Channel-Service](channels.ts#L32) · [Feed-Abfrage](channels.ts#L100)
+
+Nach dem Einfügen löst ein PostgreSQL-Trigger `synapse_channel` mit Projekt, Channel, Absender und Nachrichten-ID aus. Der PG-Transport lauscht auf diesen Kanal. Ein Live-Signal beschleunigt die Zustellung; es ist kein Ersatz für den Heartbeat-Poll. Bei einer getrennten Live-Verbindung läuft der Poll weiter. Der HTTP-Wrapper fragt mit `channel_since_id` und `inbox_since_id` ab; bei gekürzten Antworten setzt er mit der letzten gelieferten ID nach. [Trigger](../db/schema-sql/05_funktionen.sql#L47) · [PG-Transport](../../../../packages/agents/src/transport/pg.ts#L330) · [Wrapper-Livekanal](../../../../packages/agents/src/wrapper.ts#L371) · [HTTP-Poll](../../../../packages/agents/src/transport/api.ts#L436)
+
+Ein ausgelieferter Feed und ein Hinweis sind unterschiedliche Zustände. `channel.feed` speichert die IDs der tatsächlich zurückgegebenen Beiträge als monotonen `last_read_message_id`; REST und stdio rufen dafür denselben Core-Service auf. Das getrennte `last_notified_message_id` beansprucht einen Hinweis auf ungelesene fremde Beiträge. Der Hinweis enthält Zähler und die neueste ID, nicht den Nachrichtentext. Scheitert das Speichern des Lesestands, protokolliert der Service den Fehler und liefert `false`; die Feed-Antwort wird davon nicht abgebrochen. [Lesestand und Hinweis-Claim](channel-unread.ts#L36) · [REST-Feed](../../../../packages/rest-api/src/routes/mcp.ts#L3570) · [stdio-Feed](../../../../packages/mcp-server/src/tools/consolidated/channel.ts#L150)
+
+#### Chat und Inbox: zwei Arten direkter Zustellung
+
+`chat.send` legt Broadcasts mit leerem Empfänger und DMs mit Agent-ID in `chat_messages` ab. Ein agentengefiltertes `chat.get` liefert Broadcasts, an den Agenten gerichtete DMs und dessen eigene Nachrichten. Die ausgelieferten fremden Nachrichten schieben den tatsächlichen Chat-Lesestand in `chat_lesestand.letzte_id` vor. Der optionale Ungelesen-Hinweis beansprucht unabhängig davon `letzte_hinweis_id`; erst `chat.get` aktualisiert den Lesestand. Bei einem Fehler im Hinweis-Claim bleibt die eigentliche Toolantwort verfügbar. [Chat-Sitzungen und Nachrichten](chat.ts#L61) · [Ungelesen-Hinweis](chat-unread.ts#L10)
+
+Die Inbox ist eine separate, adressierte Queue in `specialist_inbox`. Der Wrapper liest neue Einträge nach ID; der Poll selbst quittiert sie nicht. `inbox_check` liest offene Einträge und markiert sie atomar als verarbeitet. Der Wrapper quittiert konkret gelieferte IDs über `inbox/ack`; die REST-Antwort meldet angeforderte, aktualisierte und noch offene Einträge. Leere ID-Listen werden abgewiesen, und die REST-Quittierung prüft den Empfänger. [Inbox-Service](inbox.ts#L16) · [Wrapper-ACK](../../../../packages/agents/src/wrapper.ts#L1218) · [REST-ACK](../../../../packages/rest-api/src/routes/wrapper-bridge.ts#L376)
+
+#### Events: Steuerung und Quittung
+
+Events sind kein Channel-Post und keine Inbox-Nachricht. Ein Event speichert Typ, Priorität, Geltungsbereich, Quelle, optionale Nutzlast und `requires_ack` (standardmäßig wahr). `event.pending` zeigt nicht quittierte, für den Agenten sichtbare Events; ACKs liegen separat in `agent_event_acks`. Projektweite Events (`scope: "all"`) werden erst ab Beginn der aktiven Agentenphase sichtbar, direkt adressierte Events (`scope: "agent:<id>"`) bleiben für den Empfänger sichtbar. Ein ACK ändert weder Channel-Lesestand noch Chat-Lesestand. [Event-Schreiben und ACK](events.ts#L70) · [Pending-Abfrage](events.ts#L175) · [Sichtbarkeit](event-sichtbarkeit.ts#L18)
+
+#### Sitzung: frisch gestartet oder fortgesetzt
+
+`sitzung: "neu"` beginnt eine neue aktive Phase; frühere Broadcast-Events gelten für diese Phase nicht mehr, direkt adressierte Events bleiben offen. `sitzung: "fortsetzung"` desselben aktiven Agenten lässt die aktive Phase bestehen, damit unquittierte Events erhalten bleiben. War die vorige Sitzung inaktiv, beginnt auch eine Fortsetzung eine neue aktive Phase. Ohne Sitzungssignal bleibt der bisherige Zustand unverändert. [Sitzungssignal und Zustandswechsel](chat.ts#L140)
+
+![Kommunikationswege und getrennte Zustandsmarken](../../../../docs/bilder/kommunikation.svg)
+
+Die unterschiedlichen Tabellen und Marken sind absichtlich getrennt: Channel-Hinweis ist nicht Channel-Lesen, Chat-Hinweis ist nicht Chat-Lesen, Inbox-Verarbeitung und Event-ACK sind jeweils eigene Bestätigungen.
+
 ## Schnittstellen nach außen
 
 Die öffentlichen Paket-Exports werden in [`../index.ts`](../index.ts) und die Service-Exports in [`index.ts`](index.ts) gebündelt. Die abschnittsbezogenen Schnittstellen stehen jeweils bei Teil A, B und C.
