@@ -1,52 +1,27 @@
-# synapse-workspace-podman — Container-Szenarien in der Sandbox testen (WS5)
+# Workspace mit Podman
 
-Tier-2-Image auf Basis von `synapse-workspace:latest`: die KI kann hier
-**Dockerfiles bauen** und **Container/Compose-Stacks ausfuehren** — rootless
-und daemonlos via Podman. `docker` ist als Alias auf `podman` verlinkt, die
-meisten Docker-Workflows laufen unveraendert.
+[Synapse](../../README.md) › [Docker-Umgebung](../README.md) › Workspace mit Podman
 
-## Warum Podman statt Docker?
+## Zweck
 
-| Variante | Risiko | Status |
-|---|---|---|
-| docker.sock in die Sandbox mounten | Sandbox kontrolliert den Unraid-Host-Docker = Host-Takeover | NIEMALS |
-| `--privileged` DinD (dockerd im Container) | praktisch Root auf dem Host | NIEMALS |
-| **rootless Podman (dieses Image)** | kein Daemon, kein Socket, user namespaces | ✅ WS5 |
-| Sysbox-Runtime auf Unraid | echtes unpriv. DinD, Host-Eingriff noetig | optionaler spaeterer Track |
+Dieses Tier-2-Image erweitert den [Basis-Workspace](../synapse-workspace/README.md) um Podman und Werkzeuge zum Bauen und Ausführen verschachtelter Container. Podman läuft rootless und ohne Docker-Daemon; das Image stellt keinen Host-Docker-Socket bereit.
 
-## Bauen (Unraid, NACH dem Basis-Image)
+## Inhalt
 
-```bash
-docker build -t synapse-workspace:latest        docker/synapse-workspace/
-docker build -t synapse-workspace-podman:latest docker/synapse-workspace-podman/
-```
+| Datei | Aufgabe |
+|---|---|
+| [Dockerfile](Dockerfile) | Ergänzt das Basis-Image um Podman, Buildah, Skopeo, rootless Netzwerk- und Storage-Komponenten. |
 
-## Nutzung (als Rolle, ab WS5-1/WS5-3)
+## Schnittstellen nach außen
 
-```text
-workspace(role_list)                       # Rolle "container-builder" (Seed, WS5-3)
-workspace(exec, project, name:"builder", role:"container-builder",
-  command:"podman build -t test:1 . && podman run --rm test:1")
-podman-compose up -d                       # Compose-Stacks
-```
+Die Workspace-Orchestrierung kann dieses Image als Workspace-Image verwenden. Innerhalb des Containers stellt Podman eine Docker-kompatible Kommandozeile bereit. Die Image- und Containerdaten liegen im persistenten Home des jeweiligen Workspace.
 
-Storage (Images/Container) liegt in `$HOME/.local/share/containers` —
-persistent ueber Restarts, `reset_home` = kompletter Cache-Reset.
+## Abhängigkeiten
 
-## Ehrliche Grenzen + Abhaengigkeiten
+Das Image baut auf [synapse-workspace](../synapse-workspace/README.md) auf. Podman, Buildah und Skopeo stellen die Containerfunktionen bereit; fuse-overlayfs und slirp4netns ergänzen Storage und rootless Netzwerk. Die REST-API-Orchestrierung ist in [REST-API-Services](../../packages/rest-api/src/services/README.md) eingeordnet.
 
-- **Voller Betrieb braucht WS5-1**: Rollen-Privilegien (devices `/dev/fuse` +
-  seccomp-Anpassung, gated via ENV `SYNAPSE_WS_PRIVILEGED_ROLES`). Ohne diese
-  Flags je nach Host-Docker-Version nur Teilbetrieb mit
-  `podman --storage-driver vfs` (langsam) oder gar nicht — WS5-4 verifiziert
-  das empirisch und dokumentiert den Ist-Stand.
-- `BUILDAH_ISOLATION=chroot` ist gesetzt (Builds ohne Zusatzprivilegien);
-  `XDG_RUNTIME_DIR=/tmp/runtime-synapse` (tmpfs, /run ist read-only).
-- Kein KVM, kein systemd, keine privilegierten Container IN der Sandbox.
-- Verschachtelte Container haengen NICHT im proxynet — Ports innerhalb des
-  Workspace testen (`podman run -p` bindet auf den Workspace-Container,
-  andere Instanzen erreichen ihn via `synapse-ws-<projekt>-<name>:<port>`).
-- Abgrenzung: "Ich brauche eine DB/einen Dienst daneben" ist KEIN Fall fuer
-  dieses Image — dafuer gibt es die WS4-Rollen (db-postgres, server, ...).
-  Dieses Image ist fuer Projekte, deren Testgegenstand selbst
-  Dockerfiles/Compose sind.
+## Siehe auch
+
+- [Docker-Umgebung](../README.md)
+- [Basis-Workspace](../synapse-workspace/README.md)
+- [Zusammenhang und Betriebsvarianten](../../docs/README.md)

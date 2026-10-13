@@ -1,111 +1,31 @@
-# Synapse FileWatcher Daemon (Moo-Variante)
+# Moo-FileWatcher-Daemon
 
-## Einordnung im aktuellen System
+[Synapse](../../README.md) › [Pakete](../README.md) › Moo-FileWatcher-Daemon
 
-Diese README beschreibt den älteren Moo-Watcher in `src/*.moo`. Der TypeScript-Daemon in [`../file-watcher-daemon-ts`](../file-watcher-daemon-ts/src/main.ts) übernimmt zusätzlich die direkte Core-Anbindung, PG↔Dateisystem-Synchronisation sowie Shell-, Specialist- und Project-Init-Worker. Die Tray-Oberflächen liegen daneben in [`tray/`](tray/) (Moo und Go); sie sind vom Watcher-Prozess getrennt.
+## Zweck
 
-Für den TypeScript-Daemon vom Repo-Root aus:
+Dieses Paket enthält die ältere, eigenständige Moo-Variante des FileWatchers sowie die Tray-Oberflächen. Der Moo-Daemon pollt registrierte Projektordner, erkennt Dateiänderungen und kann Änderungsereignisse per HTTP an die REST-API weitergeben. Der TypeScript-Daemon ist ein separates Paket mit direkter Core-Anbindung und zusätzlichen Hintergrund-Workern.
 
-```bash
-mise run build:core
-pnpm run build:agents
-mise run build:mcp
-pnpm --filter @synapse/file-watcher-daemon-ts run build
-pnpm --filter @synapse/file-watcher-daemon-ts run start
-```
+## Inhalt
 
-Konfiguration und Discovery-Dateien des TS-Daemons liegen ebenfalls unter `~/.synapse/file-watcher/`. Nicht gleichzeitig zwei Daemons für dieselben Projekte starten. Die folgenden Build-/API-Angaben gelten für die Moo-Variante, nicht als vollständige Beschreibung des TS-Daemons.
+| Datei / Unterordner | Aufgabe |
+|---|---|
+| [Moo-Quellcode](src/README.md) | Beschreibt Daemon-Start, Konfiguration, Polling und Dateiausschlussregeln. |
+| [Tray](tray/README.md) | Enthält Go- und Moo-Oberflächen zur Anzeige und Steuerung von Synapse. |
+| [End-to-End-Szenarien](tests/e2e_scenarios.sh) | Enthält Shell-Szenarien für die Integration des FileWatchers. |
+| [.gitignore](.gitignore) | Schließt generierte Daemon-Artefakte aus der Versionsverwaltung aus. |
 
-Siehe auch [Architektur und Tests](../../README.md).
+## Schnittstellen nach außen
 
-
-Eigenständiger Hintergrund-Prozess in **moo**, der Projekte auf
-Datei-Änderungen pollt und sie per HTTP-API verwaltet. Läuft unabhängig
-vom MCP-Server — MCP-Shutdown tötet den Daemon **nicht**.
-
-## Build
-
-```bash
-cd src
-moo-compiler compile daemon.moo -o /tmp/synapse-fwd
-```
-
-Erzeugt eine selbständige Binary.
-
-## Start
-
-```bash
-/tmp/synapse-fwd
-```
-
-Legt Config-Verzeichnis unter `~/.synapse/file-watcher/` an:
-
-- `config.json` — persistente Projektliste
-- `daemon.pid`, `daemon.port` — Discovery
-- `projects/<name>.active` — Worker-Flag-File (Stop-Signal)
-
-Default-Port: **7878** (konfigurierbar in `config.json`).
-
-## HTTP-API
-
-| Method | Pfad                            | Zweck                              |
-|--------|----------------------------------|-------------------------------------|
-| GET    | `/health`                        | `{status, uptime_ms}`               |
-| GET    | `/host/status`                   | `{online, hostname, time_ms}`       |
-| GET    | `/projects`                      | Projektliste + Port                 |
-| POST   | `/projects`                      | Projekt registrieren + starten      |
-| GET    | `/projects/<name>/status`        | `{enabled, watcher_running, …}`     |
-| POST   | `/projects/<name>/enable`        | Watcher starten                     |
-| POST   | `/projects/<name>/disable`       | Watcher stoppen (Flag-File löschen) |
-| DELETE | `/projects/<name>`               | Projekt entfernen                   |
-
-### Beispiel
-
-```bash
-# Projekt registrieren
-curl -X POST http://localhost:7878/projects \
-  -d '{"name":"mein-projekt","pfad":"/home/.../foo"}'
-
-# Status prüfen
-curl http://localhost:7878/projects/mein-projekt/status
-```
-
-## Architektur
-
-- **Main-Thread**: HTTP-Server (`web_server` + `web_annehmen`-Loop),
-  Config-Verwaltung, spawnt Worker-Threads.
-- **Pro Projekt**: ein Worker-Thread (`starte(worker_main, ctx)`),
-  polling-basiert mit adaptivem Intervall (200 ms busy /
-  1000 ms normal / 2000 ms idle).
-- **Stop-Signal**: Flag-File `projects/<name>.active` verschwindet →
-  Worker beendet sich im nächsten Zyklus.
-
-## Event-Forwarding an Synapse-REST
-
-Wenn `config.json` ein Feld `synapse_api_url` enthaelt (z.B.
-`"http://127.0.0.1:3030/api/fs/events"`), postet jeder Worker pro
-FS-Change einen Event:
-
-```json
-{
-  "projekt": "mein-projekt",
-  "typ": "added|modified|deleted",
-  "pfad": "/abs/pfad/zur/datei",
-  "mtime": 1776600000
-}
-```
-
-Bei leerem Feld (Default) → nur stdout-Log, kein Netzwerk.
-
-Gegenstueck: `packages/rest-api/src/routes/fs-events.ts` nimmt Events
-entgegen und delegiert an `indexFile` / `removeFile` aus dem Core.
+Der Moo-Daemon stellt eine HTTP-API für Status und Projektverwaltung bereit. Seine Worker melden Dateiereignisse an den REST-Endpunkt für Dateisystemereignisse; der REST-Dienst delegiert die Indexierung und Entfernung von Dateien an Core-Funktionen. Die Tray-Oberflächen sind separate Prozesse, die API beziehungsweise Daemon-Discovery nutzen.
 
 ## Abhängigkeiten
 
-- moo-Compiler mit First-Class-Functions
-  (Branch `feat/first-class-functions` im moo-Repo, PR #1)
-- `datei_mtime` / `datei_ist_verzeichnis` / `datei_mkdir` Runtime-Builtins
+Der Daemon verwendet die Moo-Laufzeit und deren Dateisystemfunktionen. Die aktuelle TypeScript-Implementierung liegt in [file-watcher-daemon-ts](../file-watcher-daemon-ts/README.md). Der REST-Empfänger für Dateiänderungen befindet sich im [REST-API-Paket](../rest-api/README.md).
 
-## Tests
+## Siehe auch
 
-Siehe `tests/` für das Test-Skript.
+- [Moo-Quellcode](src/README.md)
+- [Tray](tray/README.md)
+- [TypeScript-FileWatcher-Daemon](../file-watcher-daemon-ts/README.md)
+- [Zusammenhang und Betriebsvarianten](../../docs/README.md)
