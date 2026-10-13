@@ -13,6 +13,7 @@ const {createRequire}=require('node:module');
 const {pathToFileURL}=require('node:url');
 const leer=(status,hinweis,fehlende_module=[])=>({status,dauer_ms:0,befunde:[],altlasten:0,dateien:[],vollstaendig:false,fehlende_module,betroffene_aufrufer:[],hinweis});
 let input='';
+process.stdin.setEncoding('utf8');
 process.stdin.on('data',b=>{
  input+=b.toString('utf8');
  if(!input.includes('\n'))return;

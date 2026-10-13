@@ -9,7 +9,7 @@ import type { TypAuftrag, TypPruefung, TypRohBefund } from './typen-pruefung.js'
 interface PaketCache {
   basis?: ts.Program;
   schatten?: ts.Program;
-  quellen: Map<string,{text:string;sf:ts.SourceFile}>;
+  quellen: Map<string,{text:string;optionen:string;sf:ts.SourceFile}>;
 }
 const cache = new Map<string,PaketCache>();
 const norm = (p:string) => path.resolve(p).replace(/\\/g,'/');
@@ -41,10 +41,11 @@ function hostFuer(root:string,texte:Map<string,string>,paket:PaketCache,optionen
     const text=read(f);
     if(text===undefined) return undefined;
     const key=norm(f);
+    const optionen=JSON.stringify(lang);
     const alt=paket.quellen.get(key);
-    if(alt?.text===text) return alt.sf;
+    if(alt?.text===text && alt.optionen===optionen) return alt.sf;
     const sf=ts.createSourceFile(f,text,lang,true);
-    paket.quellen.set(key,{text,sf});
+    paket.quellen.set(key,{text,optionen,sf});
     return sf;
   };
   host.writeFile=()=>{};
