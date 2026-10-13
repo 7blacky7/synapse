@@ -13,6 +13,7 @@ import {
   meldeWorkerArbeit,
 } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
+import { registerWorkJobRoutes, type WorkJobRouteDependencies } from './work-jobs.js';
 import {
   authorizedNodeCapacity,
   embeddingNodeProjection,
@@ -35,6 +36,7 @@ import {
 } from '../services/embedding-nodes.js';
 
 interface EmbeddingNodeRouteDependencies {
+  workJobs?: WorkJobRouteDependencies['service'];
   validateToken: (token: string) => Promise<AuthTokenRow | null>;
   db: Queryable;
 }
@@ -153,6 +155,8 @@ export function createEmbeddingNodeRoutes(
   });
 
   return async (fastify: FastifyInstance): Promise<void> => {
+    // P20-T14: additive Familie, bestehende Compute-Ausweise/Route, explizites A1-Featuregate.
+    await registerWorkJobRoutes(fastify,{validateToken:deps.validateToken,service:overrides.workJobs});
     // P15-T1: Referenzvertrag nicht ermittelbar (Env fehlt, Ollama des Servers antwortet nicht) ->
     // 503 mit den fehlenden Feldern statt stiller Altwerte. Gilt nur in diesem Plugin (register kapselt).
     fastify.setErrorHandler((error, _request, reply) => {

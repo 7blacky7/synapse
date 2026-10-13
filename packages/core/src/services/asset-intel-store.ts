@@ -32,15 +32,16 @@ import * as path from 'path';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import type { AssetReference, AssetResult } from '../asset-intel/types.js';
+import { DEFAULT_ASSET_MAX_OBJECTS_PER_FILE, DEFAULT_ASSET_RESTORE_WINDOW_MS, getAssetKonfiguration, loeseAssetProjektoptionen } from '../config/asset-konfig.js';
 
 /** Ergebnis der Pruefung eines Verweisziels (CHECK asset_references_aufloesung_check). */
 export type AssetAufloesung = 'datei' | 'fehlt' | 'intern' | 'extern' | 'eingebettet' | 'ausserhalb' | 'unbekannt';
 
 /** Standard-Kappe fuer gespeicherte Objekte je Datei (Koordinator-Entscheidung F5). */
-export const ASSET_MAX_OBJEKTE_STANDARD = 2000;
+export const ASSET_MAX_OBJEKTE_STANDARD = DEFAULT_ASSET_MAX_OBJECTS_PER_FILE;
 
 /** Frist fuer Eintraege mit 'quelle_nicht_gefunden', danach endgueltig entfernbar (F2). */
-export const ASSET_LOESCHFRIST_TAGE = 30;
+export const ASSET_LOESCHFRIST_TAGE = DEFAULT_ASSET_RESTORE_WINDOW_MS / (24 * 60 * 60 * 1000);
 
 /** Zeitgrenzen je Schreibanweisung (Millisekunden). */
 const STATEMENT_TIMEOUT_MS = 15000;
@@ -262,8 +263,7 @@ async function eineAnweisung<T extends Record<string, unknown>>(sql: string, par
 }
 
 function maxObjekteAusEnv(): number {
-  const n = Number(process.env.SYNAPSE_ASSET_MAX_OBJEKTE);
-  return Number.isInteger(n) && n > 0 ? n : ASSET_MAX_OBJEKTE_STANDARD;
+  return getAssetKonfiguration().speicher.maxObjekteJeDatei;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +284,13 @@ export interface SpeicherOptionen {
   existiert?: (relPfad: string) => boolean;
   /** Fehlende Zeile mit gleichem sha256 als Umbenennung uebernehmen (Standard true). */
   erkenneUmbenennung?: boolean;
+  /** Publiziert nur zur passenden Transportrevision; String erhält BIGINT-Präzision. */
+  erwarteteTransportRevision?: string | number;
+}
+
+export class AssetInspektionsRevisionFehler extends Error {
+  readonly code = 'inspection_revision_veraltet';
+  constructor() { super('Inspektion gehört nicht zur aktuellen erreichbaren Bytesrevision.'); this.name = 'AssetInspektionsRevisionFehler'; }
 }
 
 /** Ergebnis von speichereAssetErgebnis. */
@@ -309,10 +316,12 @@ WITH up AS (
     project, file_path, file_name, extension, asset_type, format, status, inspector,
     parser_version, file_size, sha256, mtime, metadata, format_specific, warnings,
     n_objects, n_references, objekte_gekappt, extracted_at, quelle_fehlt_seit, inspiziert_von, updated_at
-  ) VALUES (
+  ) SELECT
     $1, $2, $3, $4, $5, $6, $7, $8,
     $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15::jsonb,
     $16, $17, $18, $19, NULL, $20, NOW()
+  WHERE $23::bigint IS NULL OR EXISTS (
+    SELECT 1 FROM asset_files a WHERE a.project=$1 AND a.file_path=$2 AND a.transport_revision=$23::bigint
   )
   ON CONFLICT (project, file_path) DO UPDATE SET
     file_name = EXCLUDED.file_name, extension = EXCLUDED.extension, asset_type = EXCLUDED.asset_type,
@@ -321,7 +330,13 @@ WITH up AS (
     mtime = EXCLUDED.mtime, metadata = EXCLUDED.metadata, format_specific = EXCLUDED.format_specific,
     warnings = EXCLUDED.warnings, n_objects = EXCLUDED.n_objects, n_references = EXCLUDED.n_references,
     objekte_gekappt = EXCLUDED.objekte_gekappt, extracted_at = EXCLUDED.extracted_at,
-    quelle_fehlt_seit = NULL, inspiziert_von = EXCLUDED.inspiziert_von, updated_at = NOW()
+    quelle_fehlt_seit = NULL, inspiziert_von = EXCLUDED.inspiziert_von, updated_at = NOW(),
+    inspection_revision = COALESCE(asset_files.transport_revision, asset_files.inspection_revision)
+  WHERE ($23::bigint IS NULL OR asset_files.transport_revision=$23::bigint)
+    AND ((asset_files.transport_revision IS NULL AND asset_files.storage_key IS NULL) OR (
+      asset_files.transport_revision IS NOT NULL AND asset_files.storage_key IS NOT NULL AND asset_files.storage_status='ready' AND asset_files.deleted_at IS NULL
+      AND asset_files.transport_sha256=EXCLUDED.sha256 AND asset_files.file_size=EXCLUDED.file_size
+    ))
   RETURNING id
 ),
 alt_obj AS (DELETE FROM asset_objects WHERE asset_id IN (SELECT id FROM up)),
@@ -344,7 +359,7 @@ neu_ref AS (
 eingehend AS (
   UPDATE asset_references SET aufloesung = 'datei'
    WHERE project = $1 AND ziel_pfad = $2 AND aufloesung = 'fehlt'
-     AND asset_id NOT IN (SELECT id FROM up)
+     AND asset_id NOT IN (SELECT id FROM up) AND EXISTS (SELECT 1 FROM up)
   RETURNING 1
 )
 SELECT (SELECT id FROM up) AS asset_id,
@@ -358,6 +373,7 @@ WITH kandidat AS (
   SELECT id, file_path AS alt
     FROM asset_files
    WHERE project = $1 AND sha256 = $3 AND status = 'quelle_nicht_gefunden'
+     AND transport_revision IS NULL AND storage_key IS NULL
      AND NOT EXISTS (SELECT 1 FROM asset_files WHERE project = $1 AND file_path = $2)
    ORDER BY quelle_fehlt_seit DESC NULLS LAST, id DESC
    LIMIT 1
@@ -392,8 +408,13 @@ export async function speichereAssetErgebnis(
 ): Promise<SpeicherErgebnis> {
   const start = Date.now();
   const pfad = normalisiereAssetPfad(relPfad);
+  const revision = opts.erwarteteTransportRevision;
+  if (revision !== undefined && !((typeof revision === 'string' && /^(0|[1-9][0-9]*)$/.test(revision)) || (typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0))) {
+    throw new TypeError('Erwartete Transportrevision muss eine nichtnegative Ganzzahl sein.');
+  }
 
   if (ergebnis.status === 'quelle_nicht_gefunden') {
+    if (revision !== undefined) throw new AssetInspektionsRevisionFehler();
     const m = await markiereAssetQuelleFehlt(project, pfad);
     return { asset_id: m.asset_id, objekte: 0, verweise: 0, gekappt: false, eingehend_nachgezogen: 0, umbenannt_von: null, dauer_ms: Date.now() - start };
   }
@@ -422,7 +443,9 @@ export async function speichereAssetErgebnis(
     }
   }
 
-  const max = opts.maxObjekte && opts.maxObjekte > 0 ? opts.maxObjekte : maxObjekteAusEnv();
+  const max = opts.maxObjekte === undefined
+    ? maxObjekteAusEnv()
+    : loeseAssetProjektoptionen(getAssetKonfiguration(), { maxObjekteJeDatei: opts.maxObjekte }).maxObjekteJeDatei;
   const objekte = ergebnis.objects.slice(0, max).map((o, i) => {
     const sr = o.source_range;
     const byteBereich = sr && 'offset' in sr ? sr : null;
@@ -476,8 +499,10 @@ export async function speichereAssetErgebnis(
     pgText(opts.host ?? os.hostname()),
     JSON.stringify(objekte),
     JSON.stringify(verweise),
+    revision ?? null,
   ]);
   const z = zeilen[0];
+  if (!z?.asset_id) throw new AssetInspektionsRevisionFehler();
   return {
     asset_id: z?.asset_id === undefined || z?.asset_id === null ? null : Number(z.asset_id),
     objekte: z?.objekte ?? 0,
@@ -508,12 +533,14 @@ export async function markiereAssetQuelleFehlt(project: string, relPfad: string)
     `WITH m AS (
        UPDATE asset_files
           SET status = 'quelle_nicht_gefunden', quelle_fehlt_seit = COALESCE(quelle_fehlt_seit, NOW()), updated_at = NOW()
-        WHERE project = $1 AND file_path = $2
+        WHERE project = $1 AND file_path = $2 AND transport_revision IS NULL AND storage_key IS NULL
        RETURNING id
      ),
      r AS (
        UPDATE asset_references SET aufloesung = 'fehlt'
         WHERE project = $1 AND ziel_pfad = $2 AND aufloesung = 'datei'
+          AND NOT EXISTS (SELECT 1 FROM asset_files a WHERE a.project=$1 AND a.file_path=$2
+            AND (a.transport_revision IS NOT NULL OR a.storage_key IS NOT NULL))
        RETURNING 1
      )
      SELECT (SELECT id FROM m) AS asset_id, (SELECT count(*) FROM r)::int AS verweise`,
@@ -582,7 +609,7 @@ export interface EntfernenOptionen {
 
 /**
  * Entfernt Asset-Zeilen endgueltig; Objekte und Verweise gehen per ON DELETE CASCADE mit.
- * Ohne Optionen: nur 'quelle_nicht_gefunden' aelter als ASSET_LOESCHFRIST_TAGE.
+ * Ohne Optionen: nur 'quelle_nicht_gefunden' aelter als das zentral konfigurierte Wiederherstellungsfenster.
  */
 export async function entferneAssetsEndgueltig(project: string, opts: EntfernenOptionen = {}): Promise<number> {
   let sql: string;
@@ -595,7 +622,7 @@ export async function entferneAssetsEndgueltig(project: string, opts: EntfernenO
     sql = `WITH d AS (DELETE FROM asset_files WHERE project = $1 AND file_path = ANY($2::text[]) RETURNING 1) SELECT count(*)::int AS n FROM d`;
     params = [project, opts.pfade.map(normalisiereAssetPfad)];
   } else {
-    const tage = opts.aelterAlsTage ?? ASSET_LOESCHFRIST_TAGE;
+    const tage = opts.aelterAlsTage ?? getAssetKonfiguration().sync.restoreWindowMs / (24 * 60 * 60 * 1000);
     if (!Number.isFinite(tage) || tage < 0) throw new Error(`asset-intel: aelterAlsTage ungueltig: ${tage}`);
     sql = `WITH d AS (
              DELETE FROM asset_files

@@ -34,6 +34,10 @@
 import { createHash } from 'node:crypto';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
 import { getPool } from './client.js';
+import { HINWEIS_SCHEMA_SQL } from './ausloeser-hinweise-schema.js';
+import { WORK_JOBS_SCHEMA_SQL } from './work-jobs-schema.js';
+import { REVERSE_SCHEMA_SQL } from './reverse-schema.js';
+import {TOOL_AKTIVITAET_SCHEMA_SQL} from './tool-aktivitaet-schema.js';
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -1414,6 +1418,8 @@ CREATE INDEX IF NOT EXISTS idx_tool_calls_mut   ON tool_calls(ts DESC) WHERE is_
 -- ohne ihn Seq-Scan ueber die 90-Tage-Retention). Stand 11.10.2026 ~213k Zeilen -> Anlage weit unter 60 s.
 CREATE INDEX IF NOT EXISTS idx_tool_calls_ts    ON tool_calls(ts);
 
+${TOOL_AKTIVITAET_SCHEMA_SQL}
+
 -- ==========================================================================
 -- Specialist-Queue: REST-API ↔ FileWatcher-Daemon Specialist-Calls.
 -- Alle Specialist-Actions (spawn, stop, purge, wake, etc.) werden via PG
@@ -2470,6 +2476,25 @@ CREATE TABLE IF NOT EXISTS asset_files (
   CONSTRAINT asset_files_project_file_path_key UNIQUE (project, file_path),
   CONSTRAINT asset_files_status_check CHECK (status IN ('ok','teilweise','nicht_erkannt','fehler','quelle_nicht_gefunden'))
 );
+-- P13-T20/A2: Transportzustand getrennt vom bestehenden Inspektionsstatus.
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS mime_type TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS storage_kind TEXT CHECK (storage_kind IN ('assets','binaries'));
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS storage_key TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS transport_sha256 TEXT CHECK (transport_sha256 ~ '^[0-9a-f]{64}$');
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS transport_revision BIGINT CHECK (transport_revision >= 0);
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS storage_status TEXT DEFAULT 'legacy_local';
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS inspection_revision BIGINT CHECK (inspection_revision >= 0);
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS restore_until TIMESTAMPTZ;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS reverse_id TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS reverse_quellpfad TEXT;
+ALTER TABLE asset_files ADD COLUMN IF NOT EXISTS reverse_quellhash TEXT CHECK (reverse_quellhash ~ '^[0-9a-f]{64}$');
+-- Kein erfundener Transporthash aus alten Inspektionshashes.
+UPDATE asset_files SET storage_status = 'legacy_local'
+ WHERE storage_key IS NULL AND storage_status IS NULL;
+CREATE INDEX IF NOT EXISTS idx_asset_files_transport ON asset_files(project, transport_revision);
+CREATE INDEX IF NOT EXISTS idx_asset_files_restore ON asset_files(restore_until) WHERE deleted_at IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_asset_files_format    ON asset_files(project, format);
 CREATE INDEX IF NOT EXISTS idx_asset_files_typ       ON asset_files(project, asset_type);
 CREATE INDEX IF NOT EXISTS idx_asset_files_status    ON asset_files(project, status) WHERE status <> 'ok';
@@ -2516,8 +2541,112 @@ CREATE INDEX IF NOT EXISTS idx_asset_refs_ziel        ON asset_references(projec
 CREATE INDEX IF NOT EXISTS idx_asset_refs_fehlt       ON asset_references(project) WHERE aufloesung = 'fehlt';
 CREATE INDEX IF NOT EXISTS idx_asset_refs_target_trgm ON asset_references USING gin (target gin_trgm_ops);
 
+-- P13-T20/A2: Metadaten des Asset-Transports, niemals Originalbytes/Base64.
+-- Spiegel des ausgeführten Blocks in schema.ts. FK auf reverse_eintraege folgt RV3.
+CREATE TABLE IF NOT EXISTS asset_upload_sitzungen (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bereich TEXT NOT NULL CHECK (bereich IN ('projekt','reverse')),
+  ziel_ref TEXT NOT NULL,
+  logischer_pfad TEXT NOT NULL,
+  groesse BIGINT NOT NULL CHECK (groesse >= 0),
+  sha256 TEXT NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+  bestaetigte_bytes BIGINT NOT NULL DEFAULT 0 CHECK (bestaetigte_bytes >= 0 AND bestaetigte_bytes <= groesse),
+  "offset" BIGINT GENERATED ALWAYS AS (bestaetigte_bytes) STORED,
+  -- Fail-closed: eine wirksame Lease verlängert A6 aus PG-Zeit und konfigurierter Dauer.
+  lease_bis TIMESTAMPTZ NOT NULL DEFAULT statement_timestamp(),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  host_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'offen'
+    CHECK (status IN ('offen','laeuft','vollstaendig','finalisiert','abgebrochen','abgelaufen','fehler')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  finalisiert_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_asset_upload_ziel ON asset_upload_sitzungen(bereich,ziel_ref,status);
+CREATE INDEX IF NOT EXISTS idx_asset_upload_lease ON asset_upload_sitzungen(lease_bis) WHERE status IN ('offen','laeuft');
+
+CREATE TABLE IF NOT EXISTS asset_revisionen (
+  asset_id BIGINT NOT NULL REFERENCES asset_files(id) ON DELETE RESTRICT,
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  sha256 TEXT CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+  groesse BIGINT NOT NULL CHECK (groesse >= 0),
+  storage_key TEXT,
+  tombstone BOOLEAN NOT NULL DEFAULT false,
+  quelle TEXT NOT NULL CHECK (quelle IN ('pc','share','reverse')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (asset_id,revision),
+  CHECK (tombstone OR (sha256 IS NOT NULL AND storage_key IS NOT NULL))
+);
+
+-- Stand ist eine Commit-Wasserlinie je Projekt, KEIN BIGSERIAL-/Zeit-Cursor.
+-- Der kurze Publikationsabschnitt sperrt nur diese Projektzeile bis zum Commit.
+CREATE TABLE IF NOT EXISTS asset_aenderungsstaende (
+  project TEXT PRIMARY KEY,
+  stand BIGINT NOT NULL DEFAULT 0 CHECK (stand >= 0)
+);
+CREATE TABLE IF NOT EXISTS asset_aenderungen (
+  id BIGSERIAL PRIMARY KEY,
+  project TEXT NOT NULL,
+  stand BIGINT NOT NULL,
+  asset_id BIGINT REFERENCES asset_files(id) ON DELETE RESTRICT,
+  revision BIGINT CHECK (revision > 0),
+  art TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(project,stand)
+);
+CREATE OR REPLACE FUNCTION asset_aenderung_wasserlinie() RETURNS trigger
+LANGUAGE plpgsql AS $asset_wasserlinie$
+BEGIN
+  INSERT INTO asset_aenderungsstaende(project) VALUES(NEW.project) ON CONFLICT DO NOTHING;
+  UPDATE asset_aenderungsstaende SET stand=stand+1 WHERE project=NEW.project RETURNING stand INTO NEW.stand;
+  RETURN NEW;
+END
+$asset_wasserlinie$;
+CREATE OR REPLACE TRIGGER asset_aenderung_commit_cursor
+BEFORE INSERT ON asset_aenderungen FOR EACH ROW EXECUTE FUNCTION asset_aenderung_wasserlinie();
+
+CREATE TABLE IF NOT EXISTS asset_host_checkpoints (
+  host_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  stand BIGINT NOT NULL DEFAULT 0 CHECK (stand >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(host_id,project)
+);
+-- NULL = erbt validierte Betreiber-Konfiguration, keine kopierten Defaults.
+CREATE TABLE IF NOT EXISTS asset_projekt_optionen (
+  project TEXT PRIMARY KEY,
+  richtung TEXT CHECK (richtung IN ('both','pc_to_share','share_to_pc')),
+  loeschfenster_ms BIGINT CHECK (loeschfenster_ms >= 0),
+  max_datei_bytes BIGINT CHECK (max_datei_bytes >= 0),
+  max_projekt_bytes BIGINT CHECK (max_projekt_bytes >= 0),
+  max_projekt_dateien BIGINT CHECK (max_projekt_dateien >= 0),
+  erlaubte_typen TEXT[],
+  policy_revision BIGINT NOT NULL DEFAULT 0 CHECK (policy_revision >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS asset_konflikte (
+  id BIGSERIAL PRIMARY KEY,
+  asset_id BIGINT NOT NULL REFERENCES asset_files(id) ON DELETE RESTRICT,
+  basis_revision BIGINT NOT NULL CHECK (basis_revision >= 0),
+  share_revision BIGINT NOT NULL CHECK (share_revision > 0),
+  pc_revision BIGINT NOT NULL CHECK (pc_revision > 0),
+  status TEXT NOT NULL DEFAULT 'offen' CHECK (status IN ('offen','uebernommen_pc','verworfen_pc')),
+  erledigt_von TEXT,
+  erledigt_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CHECK (status='offen' OR (erledigt_von IS NOT NULL AND erledigt_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_konflikt_offen ON asset_konflikte(asset_id) WHERE status='offen';
+
 -- P10-T37: Spiegel schema-sql/61_shell_sicherungs_audit.sql, Altbestand bleibt NULL.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS sicherung JSONB;
+
+${HINWEIS_SCHEMA_SQL}
+
+-- P20-T14/R2.1: generische Jobs/Leases; additiv, keine code_chunks-Ausführung.
+${WORK_JOBS_SCHEMA_SQL}
+-- P18-T13/RV3: nach A2 und P20, keine Änderung bestehender Tabellen.
+${REVERSE_SCHEMA_SQL}
 
 
 
@@ -2599,6 +2728,17 @@ CREATE TABLE IF NOT EXISTS embedding_knoten (
 );
 CREATE INDEX IF NOT EXISTS idx_embedding_knoten_letzter_kontakt
   ON embedding_knoten(letzter_kontakt);
+
+-- P20-T11/R1.1: bestehende Registry additiv erweitern; Legacy-Werte bleiben unknown.
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS contract_version INTEGER;
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS features TEXT[];
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS capability_revision BIGINT;
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS policy_revision BIGINT;
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS location TEXT;
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS host_resource_domain TEXT;
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS ressourcen JSONB;
+ALTER TABLE embedding_knoten ADD COLUMN IF NOT EXISTS capabilities JSONB;
+CREATE INDEX IF NOT EXISTS idx_embedding_knoten_resource_domain ON embedding_knoten(host_resource_domain);
 
 -- EMBEDDING-KENNUNG JE QDRANT-COLLECTION (P12-T6, 11.10.2026).
 -- Welches Modell (Kennung aus core/embeddings/modell-profil.ts: Provider, Modell, Digest,

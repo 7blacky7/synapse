@@ -5,6 +5,9 @@
  * @packageDocumentation
  */
 
+export { registriereHinweisQuelle, baueHinweisKontext, haengeAusloeserHinweiseAn, haengeAusloeserTextHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from './services/ausloeser-hinweise.js';
+export type { HinweisKontext, AusloeserHinweis, HinweisQuelle, HinweisOptionen, HinweisMetrik } from './services/ausloeser-hinweise.js';
+
 // P18-T12/RV2: feste interne Bereiche für Projekt- und Reverse-Abfragen.
 export { PROJEKT_BEREICH, REVERSE_BEREICH, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './services/intel-bereich.js';
 export type { CodeBereich, AssetBereich } from './services/intel-bereich.js';
@@ -30,8 +33,30 @@ export { holeAgentOnboarding } from './services/agent-onboarding.js';
 
 export { ermittleProjektAusPfad } from './services/project-registry.js';
 
+export { computeResourceBinding, computePhysicalDeviceKey, parseComputeNodeExtension, computeResourceSnapshot } from './vertrag/compute-ressourcen.js';
+export type { ComputeNodeExtension, ComputeResources, ComputeMeasurement, ComputeCapability, ComputeResourceBinding } from './vertrag/compute-ressourcen.js';
+
 // Konfiguration
 export { loadConfig, getConfig, resetConfig } from './config.js';
+export {
+  DEFAULT_ASSET_LIMITS,
+  DEFAULT_ASSET_MAX_OBJECTS_PER_FILE,
+  DEFAULT_ASSET_RESTORE_WINDOW_MS,
+  ladeAssetKonfiguration,
+  loeseAssetProjektoptionen,
+  getAssetKonfiguration,
+  resetAssetKonfiguration,
+} from './config/asset-konfig.js';
+export type {
+  AssetSyncRichtung,
+  AssetKonfiguration,
+  AssetProjektOptionen,
+  WirksameAssetProjektoptionen,
+} from './config/asset-konfig.js';
+
+// P13-T22/A4: nullable, revisionsgefuehrte Projekt-Assetoptionen.
+export { ladeAssetProjektoptionen, setzeAssetProjektoptionen } from './services/asset-projekt-optionen.js';
+export type { AssetProjektOptionenEintrag, PersistierteAssetProjektoptionen } from './services/asset-projekt-optionen.js';
 
 // Guide-Content (Tool-Doku, geteilt zwischen REST-API und MCP-Server)
 export { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide/index.js';
@@ -47,10 +72,15 @@ export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis 
 // Typen
 export * from './types/index.js';
 
+// P13-T21/A3: serverseitiger Bytezugang, Staging und bestätigte Crash-Recovery.
+export { AssetSpeicher, AssetSpeicherFehler, normalisiereSpeicherPfad } from './services/asset-speicher.js';
+export type { AssetAdresse, AssetStaging, AssetOperation, AssetPublishOptionen, AssetRecoveryOptionen, AssetSpeicherLayout } from './services/asset-speicher.js';
+
 // Asset-Intel (Nicht-Quellcode-Dateien): Inspektion + Speichern (P4-T60 ff., P4-T67)
 export * from './asset-intel/index.js';
 export {
   speichereAssetErgebnis,
+  AssetInspektionsRevisionFehler,
   markiereAssetQuelleFehlt,
   benenneAssetUm,
   aktualisiereVerweisZiel,
@@ -128,6 +158,9 @@ export type {
 } from './services/asset-intel-abfragen.js';
 export { ASSET_INTEL_DEFINITION, ASSET_INTEL_ACTIONS, fuehreAssetIntelAus } from './services/asset-intel-tool.js';
 export type { AssetIntelAction } from './services/asset-intel-tool.js';
+// P20-T14/R2.1: generische PG-Job-Leases, default ohne Ausführungsfreigabe.
+export { createWorkJobService, configureWorkJobHooks, WorkJobError, validateWorkReference, validateWorkResources } from './services/work-jobs.js';
+export type { WorkJobService, WorkJob, WorkJobInput, WorkIdentity, WorkJobGrant, WorkJobConfig, WorkJobHooks, WorkJobDependencies, WorkResourceNeed, WorkPriority, WorkJobPool, WorkJobClient, WorkNodeAuthority } from './services/work-jobs.js';
 // Intern-Tool (P14): Schalter fuer interne Ablaeufe + Tool-Definition/Dispatcher (nur bei SYNAPSE_INTERN_TOOL=1)
 export {
   INTERN_SCHALTER,
@@ -379,6 +412,8 @@ export type { ParameterBefund } from './services/unbekannte-parameter.js';
 // Tool-Call Activity-Log (zentraler Audit-Store fuer shell(action:"activity"))
 export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './services/tool-call-log.js';
 export type { ToolCallLogEntry, ToolCallRow, ActivityFilters, ActivityDetail } from './services/tool-call-log.js';
+export {erfasseToolAktivitaet,letzteToolAktivitaet,bereinigeToolAktivitaet,toolAktivitaetRetentionTage} from './services/tool-aktivitaet.js';
+export type {ToolAktivitaetDb,ToolAktivitaetDescriptor,ToolAktivitaetKontext,ToolAktivitaetEintrag,ToolAktivitaetZeile,ToolAktivitaetFenster} from './services/tool-aktivitaet.js';
 
 // Model-Registry Service (DB-Loader fuer Spezialisten-Modelle)
 export {
