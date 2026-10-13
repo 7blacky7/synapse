@@ -5,6 +5,8 @@
 import { FastifyInstance } from 'fastify';
 import {
   listeProjekte,
+  API_CONTRACT_HEADER,
+  apiCapabilitiesForClient,
   ensureProjectCollection,
   startFileWatcher,
   handleFileEvent,
@@ -31,6 +33,8 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
     // echte Projekte fehlten — in der Web-UI liess sich dadurch kein Projekt
     // waehlen, und ohne aktives Projekt blieb alles Projektbezogene leer.
     const eintraege = await listeProjekte();
+    // A1: nur ausdrücklich verhandelte Clients erhalten den additiven Vertragsblock.
+    const capabilities = apiCapabilitiesForClient(request.headers[API_CONTRACT_HEADER]);
 
     return {
       success: true,
@@ -42,6 +46,7 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
       activeWatchers: eintraege.filter((eintrag) => eintrag.enabled).map((eintrag) => eintrag.name),
       localWatchers: Array.from(activeWatchers.keys()),
       projectDetails: eintraege,
+      ...(capabilities !== undefined ? { capabilities } : {}),
     };
   });
 

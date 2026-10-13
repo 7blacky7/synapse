@@ -260,6 +260,76 @@ type apiAgent struct {
 	LastActivity  string `json:"last_activity"`
 }
 
+// P13-T19/A1: Gegenstück zum Core-Vertragskern (vertrag/api-vertrag.ts).
+// Nur Metadaten-Parsing, kein neuer Kanal und keine Nutzung als Rechenfreigabe.
+type apiContractCapabilities struct {
+	ContractVersion    int      `json:"contractVersion"`
+	Features           []string `json:"features"`
+	CapabilityRevision *int64   `json:"capabilityRevision,omitempty"`
+	PolicyRevision     *int64   `json:"policyRevision,omitempty"`
+}
+
+type apiProjectsResponse struct {
+	Success        bool            `json:"success"`
+	Projects       []string        `json:"projects"`
+	ActiveWatchers []string        `json:"activeWatchers"`
+	LocalWatchers  []string        `json:"localWatchers"`
+	ProjectDetails json.RawMessage `json:"projectDetails"`
+	Capabilities   json.RawMessage `json:"capabilities,omitempty"`
+}
+
+// knownFeatures kommt vom unterstützten Feature-Katalog des Aufrufers, kein Enum.
+func apiParseContract(raw json.RawMessage, knownFeatures map[string]bool) (*apiContractCapabilities, error) {
+	if len(raw) == 0 || string(bytes.TrimSpace(raw)) == "null" {
+		return nil, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if _, vorhanden := fields["contractVersion"]; !vorhanden {
+		return nil, nil
+	}
+	var version int
+	if string(bytes.TrimSpace(fields["contractVersion"])) == "null" {
+		return nil, fmt.Errorf("contractVersion muss eine Ganzzahl sein")
+	}
+	if err := json.Unmarshal(fields["contractVersion"], &version); err != nil || version < 0 {
+		return nil, fmt.Errorf("contractVersion muss eine nichtnegative Ganzzahl sein")
+	}
+	if version != 1 {
+		return nil, nil
+	}
+	for _, feld := range []string{"features", "capabilityRevision", "policyRevision"} {
+		if v, vorhanden := fields[feld]; vorhanden && string(bytes.TrimSpace(v)) == "null" {
+			return nil, fmt.Errorf("%s darf nicht null sein", feld)
+		}
+	}
+	var parsed apiContractCapabilities
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, err
+	}
+	// Wie Core: sichere JSON-Ganzzahlen, auch wenn Go int64 mehr kann.
+	for _, r := range []*int64{parsed.CapabilityRevision, parsed.PolicyRevision} {
+		if r != nil && (*r < 0 || *r > 9007199254740991) {
+			return nil, fmt.Errorf("Revision muss eine nichtnegative sichere Ganzzahl sein")
+		}
+	}
+	filtered := []string{}
+	seen := map[string]bool{}
+	for _, feature := range parsed.Features {
+		if strings.TrimSpace(feature) == "" {
+			return nil, fmt.Errorf("features enthält eine leere ID")
+		}
+		if knownFeatures[feature] && !seen[feature] {
+			filtered = append(filtered, feature)
+			seen[feature] = true
+		}
+	}
+	parsed.Features = filtered
+	return &parsed, nil
+}
+
 type apiAgentsResponse struct {
 	Success bool       `json:"success"`
 	Agents  []apiAgent `json:"agents"`
