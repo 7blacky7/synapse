@@ -28,9 +28,9 @@
  * bekommt im Zielplan eine neue Kurz-ID; die alte(n) stehen in alias_kurz_ids und werden von
  * findeTask/findeTaskInPlan plan-uebergreifend aufgeloest. Nummern werden nie wiederverwendet.
  *
- * ABGESCHLOSSEN: update (Metadaten) wirkt nur auf den aktiven Plan — ein inaktiver Plan wird
- * nicht ueberschrieben, ein neuer Stand ist ein neuer Plan (createPlan). Task-Status bleibt
- * auch in inaktiven Plaenen aenderbar (UUID-Kompatibilitaet).
+ * ABGESCHLOSSEN: mindestens eine Task, alle Tasks done. update sperrt dann Metadaten,
+ * unabhaengig von aktiv. Offene und leere Plaene sind auch inaktiv per planRef aenderbar.
+ * Task-Status bleibt aenderbar (UUID-Kompatibilitaet).
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -659,6 +659,7 @@ async function schreibePlan<R>(
   project: string,
   planId: string,
   aendern: (stand: PlanStand, zeile: PlanZeile) => { stand: PlanStand; ergebnis: R } | null,
+  prioritaet?: PlanPrioritaet,
 ): Promise<{ plan: ProjectPlan; ergebnis: R; warning?: string } | null> {
   for (let versuch = 0; versuch < 3; versuch++) {
     const alle = await lesePlaene(project);
@@ -682,13 +683,13 @@ async function schreibePlan<R>(
     const jetzt = new Date().toISOString();
     const r = await getPool().query(
       `UPDATE plans SET name = $1, description = $2, goals = $3, architecture = $4, tasks = $5::jsonb,
-              naechste_task_nr = $6, updated_at = $7
+              naechste_task_nr = $6, updated_at = $7, prioritaet = COALESCE($10::text, prioritaet)
        WHERE id = $8 AND tasks = $9::jsonb`,
       [stand.name, stand.description, stand.goals, stand.architecture, JSON.stringify(stand.tasks),
-        stand.naechste_task_nr, jetzt, planId, JSON.stringify(zeile.tasks ?? [])],
+        stand.naechste_task_nr, jetzt, planId, JSON.stringify(zeile.tasks ?? []), prioritaet ?? null],
     );
     if (r.rowCount === 1) {
-      const neu: PlanZeile = { ...zeile, ...stand, updated_at: jetzt };
+      const neu: PlanZeile = { ...zeile, ...stand, updated_at: jetzt, ...(prioritaet !== undefined ? { prioritaet } : {}) };
       const plan = zuPlan(neu, alle.map((z) => (z.id === planId ? neu : z)));
       const warning = await indexNachziehen(plan);
       // Ergebnis mit den vergebenen Kurz-IDs neu aufloesen (aendern kannte sie noch nicht)
@@ -776,7 +777,7 @@ export async function aktivierePlan(project: string, planRef: string): Promise<P
 
 /**
  * Aktualisiert Plan-Metadaten — ohne planRef am aktiven Plan (bisheriges Verhalten).
- * Ein INAKTIVER Plan wird nicht ueberschrieben (abgeschlossen): Fehler, neuer Stand = createPlan.
+ * Nur abgeschlossene Plaene (mindestens eine Task, alle done) sind vor Metadaten-Aenderung geschuetzt.
  * Hat das Projekt noch keinen Plan, wird wie bisher einer angelegt (Upsert).
  */
 export async function updatePlan(
@@ -784,8 +785,7 @@ export async function updatePlan(
   updates: Partial<Pick<ProjectPlan, 'name' | 'description' | 'goals' | 'architecture'>> & { prioritaet?: string },
   planRef?: string | null,
 ): Promise<ProjectPlan | null> {
-  const { prioritaet: prioEingabe, ...metadaten } = updates;
-  const prioritaet = pruefePrioritaet(prioEingabe); // ungueltig -> Error, nichts geschrieben
+  const prioritaet = pruefePrioritaet(updates.prioritaet); // ungueltig -> Error, nichts geschrieben
   const alle = await lesePlaene(project);
   if (alle.length === 0) {
     console.error(`[Synapse] Plan-Upsert: lege neuen Plan an fuer Projekt "${project}"`);
@@ -795,29 +795,14 @@ export async function updatePlan(
     });
   }
   const ziel = findePlan(project, alle, planRef)!;
-  const nurPrioritaet = prioritaet !== undefined && Object.values(metadaten).every((v) => v === undefined);
-  if (nurPrioritaet && waehleAktiven(alle)?.id !== ziel.id) {
-    // Inaktiver Plan: nur die Prioritaet ist aenderbar — EIN Statement, updated_at/Tasks bleiben
-    await getPool().query('UPDATE plans SET prioritaet = $1 WHERE id = $2', [prioritaet, ziel.id]);
-    const neu: PlanZeile = { ...ziel, prioritaet };
-    const plan = zuPlan(neu, alle.map((z) => (z.id === ziel.id ? neu : z)));
-    const warning = await indexNachziehen(plan);
-    console.error(`[Synapse] Plan-Prioritaet gesetzt: "${plan.name}" = ${prioritaet}`);
-    return { ...plan, ...(warning ? { warning } : {}) };
-  }
-  if (waehleAktiven(alle)?.id !== ziel.id) {
-    throw new Error(
-      `Plan ${ziel.kurz_id ?? ziel.id} "${ziel.name}" ist nicht aktiv (abgeschlossen) — Name, Ziel und Architektur bleiben unveraendert. ` +
-      'Neuer Stand = neuer Plan: plan(create), oder den Plan erst aktivieren: plan(aktivieren).',
-    );
-  }
-  // Prioritaet zuerst (eigenes Statement, aendert updated_at nicht) — schreibePlan liest danach
-  // neu und zieht den Index schon mit der neuen Prioritaet nach.
-  if (prioritaet !== undefined) {
-    await getPool().query('UPDATE plans SET prioritaet = $1 WHERE id = $2', [prioritaet, ziel.id]);
-  }
-  const r = await schreibePlan(project, ziel.id, (stand) => ({
-    stand: {
+  const r = await schreibePlan(project, ziel.id, (stand, zeile) => {
+    // Im CAS-Callback erneut pruefen: eine parallele letzte Task darf die Sperre nicht umgehen.
+    if (stand.tasks.length > 0 && stand.tasks.every((task) => task.status === 'done')) {
+      throw new Error(
+        `Plan ${zeile.kurz_id ?? zeile.id} "${zeile.name}" ist abgeschlossen (alle ${stand.tasks.length} Tasks erledigt) — Metadaten bleiben unveraendert. Neuer Stand = neuer Plan: plan(create).`,
+      );
+    }
+    return { stand: {
       ...stand,
       ...(updates.name !== undefined ? { name: updates.name } : {}),
       ...(updates.description !== undefined ? { description: updates.description } : {}),
@@ -825,7 +810,8 @@ export async function updatePlan(
       ...(updates.architecture !== undefined ? { architecture: updates.architecture ?? null } : {}),
     },
     ergebnis: null,
-  }));
+    };
+  }, prioritaet);
   if (!r) return null;
   console.error(`[Synapse] Plan aktualisiert: "${r.plan.name}"`);
   return { ...r.plan, ...(r.warning ? { warning: r.warning } : {}) };

@@ -1076,7 +1076,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         description: 'Neuen Plan anlegen (neuer Stand = neuer Plan; der alte bleibt abrufbar und wird nie ueberschrieben). Bekommt die naechste Kurz-ID P<n>.',
         params: 'project (req), name (req), description?, goals?, architecture?, aktiv? (Standard false; der erste Plan eines Projekts ist immer aktiv)',
         example: 'plan({ action: "create", project: "synapse", name: "Runde 2", description: "...", aktiv: true })',
-        tips: 'update (Metadaten) wirkt nur auf den aktiven Plan — ein inaktiver Plan gilt als abgeschlossen. Task-Status bleibt auch dort aenderbar.',
+        tips: 'update ohne plan_id wirkt auf den aktiven Plan; per plan_id sind auch inaktive offene und leere Plaene aenderbar. Abgeschlossen = mindestens eine Task und alle Tasks done: Metadaten bleiben geschuetzt, Task-Status bleibt aenderbar.',
       },
       einordnen: {
         description: 'Jev ordnet Tasks dem passenden Plan zu (je Task eine choice ueber die Plaene, criteria = Name + Beschreibung). Standard nur VORSCHLAG; mit verschieben:true werden die sicheren verschoben (confidence >= Tor UND anderer Plan als der aktuelle), gruppiert je Zielplan ueber plan(verschieben) (Alias-Kurz-IDs bleiben).',
