@@ -5,6 +5,7 @@
 
 import { config as dotenvConfig } from 'dotenv';
 import { SynapseConfig } from './types/index.js';
+import { getAssetKonfiguration, resetAssetKonfiguration } from './config/asset-konfig.js';
 
 // .env laden (sucht im aktuellen Verzeichnis und aufwaerts)
 dotenvConfig();
@@ -13,6 +14,8 @@ dotenvConfig();
  * Laedt die Konfiguration aus Umgebungsvariablen
  */
 export function loadConfig(): SynapseConfig {
+  // Validierung erfolgt beim Prozessstart; fehlende Mounts oder ungueltige Grenzen brechen klar ab.
+  getAssetKonfiguration();
   return {
     qdrant: {
       url: process.env.QDRANT_URL || 'http://localhost:6333',
@@ -73,4 +76,5 @@ export function getConfig(): SynapseConfig {
  */
 export function resetConfig(): void {
   _config = null;
+  resetAssetKonfiguration();
 }

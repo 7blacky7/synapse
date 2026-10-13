@@ -24,6 +24,7 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 import type { FileEvent } from '../types/index.js';
 import { getPool } from '../db/client.js';
+import { getAssetKonfiguration } from '../config/asset-konfig.js';
 import { assetArt, isExtractableDocument, isMultimodalFile, leseDateiKopf } from '../watcher/binary.js';
 import { loadGitignore, shouldIgnore, istGesperrt } from '../watcher/ignore.js';
 import { standardRegistry } from '../asset-intel/index.js';
@@ -34,7 +35,6 @@ import {
   markiereAssetQuelleFehlt,
   entferneAssetsEndgueltig,
   normalisiereAssetPfad,
-  ASSET_LOESCHFRIST_TAGE,
 } from './asset-intel-store.js';
 
 // ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ export function setzeAssetWegZurueck(): void {
 }
 
 function konkurrenz(): number {
-  const roh = konfig.konkurrenz ?? Number(process.env.SYNAPSE_ASSET_KONKURRENZ);
+  const roh = konfig.konkurrenz ?? getAssetKonfiguration().sync.parallelInspektionen;
   return Number.isInteger(roh) && roh >= 2 ? 2 : 1;
 }
 
@@ -283,8 +283,9 @@ async function fuehreAus(job: Job, worker: AssetInspektionsWorker): Promise<void
   // Die Datei existiert — auch bei einem UNLINK, wenn sie inzwischen wieder angelegt wurde.
   zaehler.inspektionen++;
   const vorher = worker.abgebrochen;
+  const timeoutMs = konfig.timeoutMs ?? getAssetKonfiguration().inspektion.timeoutMs;
   const ergebnis = await worker.inspiziere(abs, {
-    ...(konfig.timeoutMs ? { timeoutMs: konfig.timeoutMs } : {}),
+    ...(timeoutMs ? { timeoutMs } : {}),
     ...(konfig.gnadenfristMs !== undefined && konfig.gnadenfristMs !== null ? { gnadenfristMs: konfig.gnadenfristMs } : {}),
     ...(konfig.registryModul ? { registryModul: konfig.registryModul } : {}),
   });
@@ -506,7 +507,7 @@ export async function verifyAssetsAgainstFilesystem(project: string, projectRoot
     await Promise.all(auftraege);
 
     // 3. Frist abgelaufen -> endgueltig entfernen.
-    if (!assetWegAus) erg.aufgeraeumt = await entferneAssetsEndgueltig(project, { aelterAlsTage: ASSET_LOESCHFRIST_TAGE });
+    if (!assetWegAus) erg.aufgeraeumt = await entferneAssetsEndgueltig(project);
   } catch (e) {
     if (!behandleDbFehler(e, `Asset-Abgleich ${project}`)) throw e;
   }

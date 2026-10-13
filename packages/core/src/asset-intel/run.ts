@@ -21,19 +21,13 @@ import { createHash } from 'crypto';
 import { AssetLimitError, AssetReadError } from './errors.js';
 import type { AssetGrenze } from './errors.js';
 import { standardRegistry } from './registry.js';
+import { DEFAULT_ASSET_LIMITS, getAssetKonfiguration } from '../config/asset-konfig.js';
 import type { AssetRegistry } from './registry.js';
 import { erzeugeAssetResult } from './types.js';
 import type { AssetContext, AssetLimits, AssetResult, AssetSource } from './types.js';
 
 /** Standardgrenzen. Bewusst grosszuegig fuer die Dateigroesse, knapp bei Lesungen und Zeit. */
-export const STANDARD_GRENZEN: Readonly<AssetLimits> = Object.freeze({
-  maxFileBytes: 256 * 1024 * 1024,
-  maxReadBytes: 64 * 1024 * 1024,
-  maxObjects: 10_000,
-  timeoutMs: 30_000,
-  maxDepth: 8,
-  maxHashBytes: 256 * 1024 * 1024,
-});
+export const STANDARD_GRENZEN: Readonly<AssetLimits> = DEFAULT_ASSET_LIMITS;
 
 /** Optionen von inspectAsset: jede Grenze einzeln ueberschreibbar. */
 export interface InspectAssetOptions extends Partial<AssetLimits> {
@@ -47,11 +41,14 @@ const KOPF_BYTES = 4096;
 const HASH_BLOCK = 1024 * 1024;
 
 function loeseGrenzen(opts?: InspectAssetOptions): AssetLimits {
-  const g: AssetLimits = { ...STANDARD_GRENZEN };
+  const g: AssetLimits = { ...getAssetKonfiguration().inspektion };
   for (const k of Object.keys(g) as Array<keyof AssetLimits>) {
     const v = opts?.[k];
-    // Unsinnige Werte (NaN, negativ, Text) fallen auf den Standard zurueck; timeoutMs 0 gaebe sofortigen Abbruch.
-    if (typeof v === 'number' && Number.isFinite(v) && v >= (k === 'timeoutMs' ? 1 : 0)) g[k] = v;
+    // Historisch ungueltige Optionswerte fallen weiter auf den Standard zurueck.
+    if (typeof v === 'number' && Number.isFinite(v) && v >= (k === 'timeoutMs' ? 1 : 0)) {
+      if (v > g[k]) throw new Error(`Asset-Option ${k} ueberschreitet Betreibergrenze ${g[k]}`);
+      g[k] = v;
+    }
   }
   return g;
 }
