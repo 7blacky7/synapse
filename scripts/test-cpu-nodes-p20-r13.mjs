@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import {readFile} from 'node:fs/promises';
+import {pathToFileURL} from 'node:url';
 import {oeffneGeschuetzteShellTestDb} from './lib/test-db-schutz.mjs';
 const base=new URL(process.env.TEST_DATABASE_URL??process.env.DATABASE_URL??'');
 assert.equal(base.pathname,'/synapse_test');assert.equal(base.port,'5433');
@@ -18,8 +19,10 @@ Object.assign(process.env,{OLLAMA_MODEL:'r13-fixture',SYNAPSE_OLLAMA_MODEL_DIGES
   EMBEDDING_QUERY_PREFIX:'q: ',EMBEDDING_DOC_PREFIX:'d: ',SYNAPSE_NODE_MAX_CLAIMS:'2',
   SYNAPSE_API_FEATURES:'compute_resources',OLLAMA_URL:'http://127.0.0.1:9'});
 globalThis.fetch=async()=>{throw Error('Synthetische Probe ohne Netzwerk');};
-const core=await import('../packages/core/dist/index.js');
-const {createEmbeddingNodeRoutes}=await import('../packages/rest-api/dist/routes/embedding-nodes.js');
+const moduleRoot=process.argv[3];
+const moduleUrl=p=>moduleRoot?pathToFileURL(moduleRoot+'/'+p):new URL('../'+p,import.meta.url);
+const core=await import(moduleUrl('packages/core/dist/index.js'));
+const {createEmbeddingNodeRoutes}=await import(moduleUrl('packages/rest-api/dist/routes/embedding-nodes.js'));
 const tokens={gpu:{kind:'service',scope:'compute-node:r13-gpu',token_hash:'r13-gpu-hash'},
   cpu:{kind:'service',scope:'compute-node:r13-cpu',token_hash:'r13-cpu-hash'},
   admin:{kind:'session',scope:'mcp:tools',token_hash:'r13-admin-hash'}};
@@ -53,6 +56,8 @@ try{
     const expected=JSON.parse(await readFile(new URL('./fixtures/p20-r13-legacy.golden.json',import.meta.url),'utf8'));
     assert.equal(JSON.stringify(snap),JSON.stringify(expected),'Legacy-Golden bytegleich');
     console.log('R1.3 sieben Legacy-Goldens unverändert');
+    if(mode==='golden-verify')process.exitCode=0;
+    else {
     const {CPU_NODES_SCHEMA_SQL}=await import('../packages/core/dist/db/cpu-nodes-schema.js');
     await db.query(CPU_NODES_SCHEMA_SQL);await db.query(CPU_NODES_SCHEMA_SQL);
     process.env.SYNAPSE_COMPUTE_RESOURCE_BINDINGS=JSON.stringify({'r13-cpu':{hostResourceDomain:'r13-host',deviceIds:[],location:'unraid'}});
@@ -91,6 +96,7 @@ try{
     await capture('release','POST','r13-gpu/claims/release',{claims:[]});
     assert.equal(JSON.stringify(snap),JSON.stringify(expected),'Legacy-Golden mit CPU-Zeile bytegleich');
     console.log('R1.3 CPU/Gates/NULL/Heartbeatfences/Legacyfilter: grün');
+    }
   }
 }finally{
   await app.close();await core.closePool();
