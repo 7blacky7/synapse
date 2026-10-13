@@ -98,3 +98,11 @@ test('WorkspaceOrchestrator.exec entfernt tatsächlich Docker-Config.Env vor dem
  assert.equal(Object.keys(env).some(k=>/^PG/i.test(k)),false);
  assert.equal(env.SYNAPSE_SHELL_JOB,'1');
 });
+
+test('System-Alias ohne PostgreSQL-Standardport ist kein Durchlass-Geheimnis',async()=>{
+ const system='postgresql://system:synthetic@system.invalid:5432/system_catalog';
+ const alias='postgresql://other:synthetic@system.invalid/system_catalog';
+ const job=await baueJobUmgebung('synapse',{basis:{PATH:process.env.PATH,REPORT_DB:alias,SYNAPSE_SHELL_ENV_DURCHLASS:'REPORT_DB'},systemUrl:system,leseZugang:async()=>null,secretsPfad:'/nonexistent/p10_env_test',existiert:()=>false});
+ const child=spawnSync(process.execPath,['-e',"process.stdout.write(String(!process.env.REPORT_DB))"],{env:job.env,encoding:'utf8'});
+ assert.equal(child.status,0);assert.equal(child.stdout,'true');
+});
