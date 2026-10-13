@@ -1,0 +1,375 @@
+/**
+ * RV9: eine Definition und ein serverseitiger Dispatcher für die Reverse-Bibliothek.
+ * Originalbytes und Code/Assets werden hier niemals vom PC gelesen. RV10/RV8 ergänzen
+ * diese Grenze später. Alle SQL-Werte sind gebunden; Projektinhalt bleibt getrennt.
+ */
+import { createHash, randomBytes } from 'node:crypto';
+import type { Pool, PoolClient } from 'pg';
+import { getPool } from '../db/client.js';
+import { pruefeUnbekannteParameter } from './unbekannte-parameter.js';
+import { darfKoordinatorOderUser } from './rollen-pruefung.js';
+import { maskiereMitKatalog } from './masken-katalog.js';
+import { erfasseToolAktivitaet } from './tool-aktivitaet.js';
+
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen'] as const;
+export type ReverseAction = typeof REVERSE_ACTIONS[number];
+export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar'] as const;
+export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
+const TEXTE: Record<ReverseFehlercode,string> = {
+  nicht_gefunden:'Eintrag, Datei oder Auftrag nicht gefunden.',nicht_gebunden:'Eintrag zuerst für dieses Projekt binden.',
+  nicht_unterstuetzt:'Aktion oder Format wird nicht unterstützt.',gepackt:'Datei ist gepackt.',verschluesselt:'Datei ist verschlüsselt.',
+  beschaedigt:'Datei ist beschädigt.',zu_gross:'Größenlimit überschritten.',bombe_verdacht:'Verdacht auf eine Archivbombe.',
+  pfad_gefahr:'Nur sichere relative Reverse-Pfade sind erlaubt.',zeitlimit:'Zeitlimit überschritten.',speicherlimit:'Speicherlimit überschritten.',
+  werkzeug_fehler:'Reverse-Werkzeug konnte die Anfrage nicht verarbeiten.',container_ruht:'Auftrag eingereiht; der Werkzeug-Container ruht.',
+  container_gesperrt:'Werkzeug-Container oder notwendiger Anschluss ist gesperrt.',warteschlange_voll:'Die Warteschlange ist voll.',
+  schicht_nicht_fertig:'Die angefragte Schicht ist noch nicht fertig.',ziel_belegt:'Ziel oder bestätigter Fingerabdruck bereits belegt.',
+  keine_berechtigung:'Keine Berechtigung für diese Aktion oder dieses Projekt.',ansicht_nicht_darstellbar:'Für dieses Asset ist keine Ansicht verfügbar.',
+  semantik_nicht_verfuegbar:'Semantische Reverse-Suche ist noch nicht verfügbar.',
+};
+const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'}},required:['id'],additionalProperties:false};
+export const REVERSE_DEFINITION = {
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator). Analyse asynchron, keine lokale Byteausführung. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  inputSchema:{type:'object',properties:{
+    action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
+    project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
+    reverse_id:{type:'string',description:'Reverse-Eintrag-ID'},
+    status:{type:'string',enum:['vorschlag','bestaetigt','archiviert']},tag:{type:'string'},query:{type:'string'},
+    limit:{type:'number',description:'Seitengröße, begrenzt durch API-Konfiguration'},offset:{type:'number'},
+    titel:{type:'string'},medien:{type:'array',items:mediumSchema,description:'Alle Medien in gewünschter Reihenfolge, optionale Bezeichnungen'},
+    zusammenfuehren_mit:{type:'string',description:'Unanalysierten Vorschlag in diesen Ziel-Eintrag zusammenführen'},
+    aufteilen:{type:'array',items:{type:'object',properties:{titel:{type:'string'},medien:{type:'array',items:{type:'string'}}},required:['titel','medien'],additionalProperties:false},description:'Vorschlag vor der Analyse in vollständige disjunkte Mediengruppen aufteilen'},
+    notiz:{type:'string'},datei:{type:'string',description:'Relativer Reverse-Dateipfad'},file_path:{type:'string',description:'Alias für datei'},
+    warten_sekunden:{type:'number',minimum:0,maximum:50},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
+    prioritaet:{type:'string',enum:['interaktiv','hintergrund','nachzug']},auftrag_id:{type:'string'},
+  },required:['action','agent_id']},
+  outputSchema:{type:'object',properties:{
+    success:{type:'boolean'},reverse_id:{type:['string','null']},datei:{type:['string','null']},
+    format:{type:['string','null']},arch:{type:['string','null']},bits:{type:['number','null']},
+    schicht:{type:['string','null']},schicht_angefragt:{type:['string','null']},status:{type:'string'},
+    fehlercode:{type:['string','null'],enum:[...REVERSE_FEHLERCODES,null]},werkzeug:{type:['string','null']},
+    merkmale:{type:'array',items:{type:'string'}},fortschritt:{type:'object',properties:{gesamt:{type:'number'},fertig:{type:'number'}},required:['gesamt','fertig']},
+    container:{type:'object',properties:{zustand:{type:'string',enum:['ruht','startet','laeuft']},kaltstart_s:{type:['number','null']}},required:['zustand','kaltstart_s']},
+  },required:['success','reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','status','fehlercode','werkzeug','merkmale','fortschritt','container'],additionalProperties:true},
+} as const;
+const JE_ACTION: Record<ReverseAction,readonly string[]> = {
+  liste:['status','tag','query','limit','offset'],vorschlaege:['tag','query','limit','offset'],
+  eintrag:['reverse_id'],bestaetigen:['reverse_id','titel','medien','zusammenfuehren_mit','aufteilen'],
+  archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
+  status:['reverse_id','datei','file_path','warten_sekunden'],analysieren:['reverse_id','datei','file_path','bis_schicht','prioritaet'],
+  abbrechen:['auftrag_id'],
+};
+export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
+export const REVERSE_AKTIVITAET_DESCRIPTOR = Object.freeze({toolId:'reverse',tool:'reverse',aktivitaetsAktionen:REVERSE_ACTIONS.filter(a=>a!=='status')});
+type Db = Pick<Pool|PoolClient,'query'>;
+type Row = Record<string,unknown>;
+const object = (v:unknown):v is Row => !!v && typeof v==='object'&&!Array.isArray(v);
+const str = (v:unknown):string => typeof v==='string'?v:'';
+const gesetzt = (v:unknown) => v!==undefined&&v!==null&&v!=='';
+const stages = ['E','S0','S1','S2','S3'] as const;
+export interface ReverseContainerInfo {zustand:'laeuft'|'startet'|'ruht';kaltstart_s:number|null;container_id?:string}
+export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:string;dateiId:string|null;mediumId:string|null;bisSchicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug'}
+export interface ReverseRuntime {
+  /** PG-only, derselbe Client wie Fachauftrag und Aktivität. Kein Wake/FS/Docker unter Lock. */
+  analysieren?: (anfrage:ReverseAnalyseAnfrage,db:PoolClient)=>Promise<Row>;
+  abbrechen?: (auftrag:Row,agentId:string,db:PoolClient)=>Promise<void>;
+  /** Nur lesen; nach der PG-Transaktion, keine Lebenszyklusänderung. */
+  containerStatus?: (reverseId:string)=>Promise<ReverseContainerInfo>;
+}
+export interface ReverseToolDependencies {pool?:Pool;runtime?:ReverseRuntime}
+let runtime:ReverseRuntime={};
+/** Nur vom API-Start/RV8 setzen, niemals aus Client-Argumenten. */
+export function configureReverseRuntime(value:ReverseRuntime):void {runtime={...value};}
+export class ReverseFehler extends Error {
+  constructor(readonly code:ReverseFehlercode,readonly detail?:string,readonly extra:Row={}) {super(TEXTE[code]);}
+}
+function fail(code:ReverseFehlercode,detail?:string,extra:Row={}):never {throw new ReverseFehler(code,detail,extra);}
+function envInt(name:string,fallback:number):number {
+  const value=process.env[name]===undefined?fallback:Number(process.env[name]);
+  if(!Number.isSafeInteger(value)||value<=0)throw new Error('Ungültige Reverse-Konfiguration '+name);
+  return value;
+}
+function integer(v:unknown,fallback:number,max:number):number {
+  const n=v===undefined?fallback:Number(v);
+  if((typeof v!=='number'&&typeof v!=='string'&&v!==undefined)||!Number.isSafeInteger(n)||n<0||n>max)fail('werkzeug_fehler','parameter_ungueltig');
+  return n;
+}
+function id(v:unknown):string {
+  if(typeof v!=='string'||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/.test(v))fail('werkzeug_fehler','parameter_ungueltig');
+  return v;
+}
+function text(v:unknown):string {
+  if(typeof v!=='string'||v.length>envInt('SYNAPSE_REVERSE_TEXT_MAX',4096))fail('werkzeug_fehler','parameter_ungueltig');
+  return maskiereMitKatalog(v,'reverse').text;
+}
+export function pruefeReversePfad(v:unknown):string {
+  if(typeof v!=='string'||!v||v.startsWith('/')||v.includes('\\')||/[\x00-\x1f]/.test(v)||v.split('/').some(p=>!p||p==='.'||p==='..')||/^[A-Za-z]:/.test(v)||v.length>4096)fail('pfad_gefahr');
+  return v;
+}
+function fileArg(a:Row):string|null {
+  if(gesetzt(a.datei)&&gesetzt(a.file_path)&&a.datei!==a.file_path)fail('werkzeug_fehler','parameter_ungueltig');
+  return gesetzt(a.datei??a.file_path)?pruefeReversePfad(a.datei??a.file_path):null;
+}
+/** Jede Antwort, auch Fehler, trägt denselben kleinen maschinenlesbaren Kontext für RV19. */
+export function baueReverseAntwort(a:Row,daten:Row={},fehler?:ReverseFehlercode,detail?:string):Row {
+  const base:Row={reverse_id:typeof a.reverse_id==='string'?a.reverse_id:null,datei:typeof (a.datei??a.file_path)==='string'?(a.datei??a.file_path):null,
+    format:'unbekannt',arch:'unbekannt',bits:null,schicht:null,schicht_angefragt:null,status:fehler?'fehler':'offen',
+    fehlercode:fehler??null,werkzeug:null,merkmale:[],fortschritt:{gesamt:0,fertig:0},container:{zustand:'ruht',kaltstart_s:null}};
+  for(const k of Object.keys(base))if(Object.hasOwn(daten,k))base[k]=daten[k];
+  const antwort:Row={success:!fehler,action:a.action??null,...(typeof a.project==='string'?{project:a.project}:{}),...base,...daten,
+    ...(fehler?{fehlercode:fehler,message:TEXTE[fehler]}:{}),...(detail?{fehler:detail}:{}),felder:{...base,fehlercode:fehler??base.fehlercode}};
+  return antwort;
+}
+export async function pruefeReverseBindung(db:Db,project:string,reverseId:string):Promise<boolean> {
+  return ((await db.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[project,reverseId])).rowCount??0)>0;
+}
+
+export function createReverseToolService(deps:ReverseToolDependencies={}) {
+  const pool=deps.pool??getPool();
+  const hooks=()=>({...runtime,...deps.runtime});
+  async function tx<T>(fn:(db:PoolClient)=>Promise<T>):Promise<T> {
+    const db=await pool.connect();
+    try {await db.query('BEGIN');const r=await fn(db);await db.query('COMMIT');return r;}
+    catch(e){await db.query('ROLLBACK').catch(()=>undefined);throw e;}finally{db.release();}
+  }
+  async function projektRecht(db:Db,a:Row):Promise<string> {
+    const project=str(a.project);if(!project)fail('werkzeug_fehler','parameter_fehlt',{parameter:'project'});
+    const r=await db.query('SELECT project FROM agent_sessions WHERE id=$1',[a.agent_id]);
+    if(!darfKoordinatorOderUser(a.agent_id)&&r.rows[0]?.project!==project)fail('keine_berechtigung');
+    if(!(await db.query('SELECT 1 FROM projects WHERE name=$1 LIMIT 1',[project])).rowCount)fail('nicht_gefunden');
+    return project;
+  }
+  async function entry(db:Db,rid:string,lock=false):Promise<Row> {
+    const r=await db.query('SELECT id,titel,beschreibung,status,gruppierung,fingerabdruck,analyse_policy,tags FROM reverse_eintraege WHERE id=$1'+(lock?' FOR UPDATE':''),[rid]);
+    if(!r.rows[0])fail('nicht_gefunden');return r.rows[0];
+  }
+  async function medien(db:Db,rid:string):Promise<Row[]> {
+    return (await db.query('SELECT id::text AS id,position,bezeichnung,art,status,fehlercode,groesse,satz_sha256 FROM reverse_medien WHERE eintrag_id=$1 ORDER BY position,id',[rid])).rows;
+  }
+  async function entryDto(db:Db,e:Row):Promise<Row> {
+    const ms=await medien(db,str(e.id));
+    const layers=(await db.query(`SELECT s.schicht,count(*)::int AS gesamt,count(*) FILTER(WHERE s.status='fertig')::int AS fertig FROM reverse_schichten s
+      LEFT JOIN reverse_dateien d ON d.id=s.datei_id LEFT JOIN reverse_medien m ON m.id=s.medium_id
+      WHERE s.aktuell AND COALESCE(d.eintrag_id,m.eintrag_id)=$1 GROUP BY s.schicht ORDER BY s.schicht`,[e.id])).rows;
+    return {reverse_id:e.id,titel:maskiereMitKatalog(str(e.titel),'reverse').text,beschreibung:maskiereMitKatalog(str(e.beschreibung),'reverse').text,status:e.status,tags:e.tags,
+      medien:ms.map(m=>({...m,bezeichnung:maskiereMitKatalog(str(m.bezeichnung),'reverse').text})),schicht_summen:layers,
+      dateizahl:Number((await db.query('SELECT count(*)::int AS n FROM reverse_dateien WHERE eintrag_id=$1',[e.id])).rows[0].n),
+      bindungen:Number((await db.query('SELECT count(*)::int AS n FROM reverse_bindungen WHERE eintrag_id=$1 AND geloest_at IS NULL',[e.id])).rows[0].n)};
+  }
+  async function activity(db:Db,a:Row,accepted=true):Promise<void> {
+    const project=str(a.project);if(!project)return;
+    const binding=a.reverse_id
+      ? await pruefeReverseBindung(db,project,str(a.reverse_id))
+      : (await db.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND geloest_at IS NULL LIMIT 1',[project])).rowCount!==0;
+    await erfasseToolAktivitaet({project,tool:'reverse',aktion:str(a.action),agentId:str(a.agent_id),akzeptiert:accepted,zaehltAlsAktivitaet:binding&&a.action!=='status'},
+      {descriptor:REVERSE_AKTIVITAET_DESCRIPTOR,gebundenesProjekt:binding?project:null,berechtigt:true},db);
+  }
+  async function list(db:Db,a:Row):Promise<Row> {
+    const limit=integer(a.limit,envInt('SYNAPSE_REVERSE_LIST_LIMIT',50),envInt('SYNAPSE_REVERSE_MAX_LIMIT',200));
+    if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
+    const offset=integer(a.offset,0,2147483647);
+    const status=a.action==='vorschlaege'?'vorschlag':a.status??null;
+    if(status!==null&&!['vorschlag','bestaetigt','archiviert'].includes(String(status)))fail('werkzeug_fehler','parameter_ungueltig');
+    const tag=gesetzt(a.tag)?text(a.tag):null,query=gesetzt(a.query)?text(a.query):null;
+    const where=" WHERE ($1::text IS NULL OR status=$1) AND ($2::text IS NULL OR $2=ANY(tags)) AND ($3::text IS NULL OR strpos(lower(titel||' '||COALESCE(beschreibung,'')),lower($3))>0)";
+    const vals=[status,tag,query];
+    const total=Number((await db.query('SELECT count(*)::int AS n FROM reverse_eintraege'+where,vals)).rows[0].n);
+    const rows=(await db.query('SELECT id,titel,beschreibung,status,tags FROM reverse_eintraege'+where+' ORDER BY id LIMIT $4 OFFSET $5',[...vals,limit,offset])).rows;
+    const items:Row[]=[];const max=envInt('SYNAPSE_REVERSE_ANTWORT_MAX',80000);
+    for(const e of rows){const r=await entryDto(db,e);if(JSON.stringify(items).length+JSON.stringify(r).length>max)break;items.push(r);}
+    if(rows.length&&!items.length)fail('zu_gross');
+    return {eintraege:items,total,gekappt:offset+items.length<total,naechster_offset:offset+items.length<total?offset+items.length:null};
+  }
+  async function groupingAllowed(db:Db,rid:string):Promise<void> {
+    const r=await db.query(`SELECT (SELECT count(*) FROM reverse_dateien WHERE eintrag_id=$1)+(SELECT count(*) FROM reverse_auftraege WHERE eintrag_id=$1)+(SELECT count(*) FROM reverse_schichten s JOIN reverse_medien m ON m.id=s.medium_id WHERE m.eintrag_id=$1) AS n`,[rid]);
+    if(Number(r.rows[0].n)>0)fail('ziel_belegt','gruppierung_bereits_analysiert');
+  }
+  async function confirm(db:PoolClient,a:Row,e:Row):Promise<Row> {
+    if(!darfKoordinatorOderUser(a.agent_id))fail('keine_berechtigung');
+    if(e.status==='archiviert')fail('keine_berechtigung');
+    let rid=str(e.id),ms=await medien(db,rid);
+    if(gesetzt(a.zusammenfuehren_mit)&&gesetzt(a.aufteilen))fail('werkzeug_fehler','parameter_ungueltig');
+    if(gesetzt(a.zusammenfuehren_mit)){
+      const target=id(a.zusammenfuehren_mit);if(target===rid)fail('werkzeug_fehler','parameter_ungueltig');
+      await groupingAllowed(db,rid);await groupingAllowed(db,target);
+      const t=await entry(db,target,true);if(t.status==='archiviert')fail('keine_berechtigung');
+      const pos=Number((await db.query('SELECT COALESCE(max(position),-1)+1 AS n FROM reverse_medien WHERE eintrag_id=$1',[target])).rows[0].n);
+      for(const [i,m]of ms.entries())await db.query('UPDATE reverse_medien SET eintrag_id=$1,position=$2 WHERE id=$3',[target,pos+i,m.id]);
+      await db.query("UPDATE reverse_eintraege SET status='archiviert',archiviert_at=NOW(),updated_at=NOW() WHERE id=$1",[rid]);
+      rid=target;ms=await medien(db,rid);
+    }
+    if(gesetzt(a.aufteilen)){
+      await groupingAllowed(db,rid);
+      if(!Array.isArray(a.aufteilen)||a.aufteilen.length<2)fail('werkzeug_fehler','parameter_ungueltig');
+      const groups=a.aufteilen.map(g=>{
+        if(!object(g)||Object.keys(g).some(k=>!['titel','medien'].includes(k))||!Array.isArray(g.medien)||!g.medien.length||!g.medien.every(x=>typeof x==='string'))fail('werkzeug_fehler','parameter_ungueltig');
+        return {titel:text(g.titel),medien:g.medien as string[]};
+      });
+      const all=groups.flatMap(g=>g.medien);
+      if(all.length!==ms.length||new Set(all).size!==all.length||ms.some(m=>!all.includes(str(m.id))))fail('werkzeug_fehler','parameter_ungueltig');
+      const entries=groups.map(g=>({
+        id:'rev-'+g.titel.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g,'-').slice(0,60).replace(/^-|-$/g,'')+'-'+randomBytes(3).toString('hex'),
+        titel:g.titel,
+        fingerabdruck:createHash('sha256').update(JSON.stringify(g.medien.map(mid=>{const m=ms.find(x=>x.id===mid)!;return [m.art,m.satz_sha256];}))).digest('hex'),
+        medien:g.medien,
+      }));
+      await db.query(`INSERT INTO reverse_eintraege(id,titel,status,erstellt_von,bestaetigt_von,gruppierung,analyse_policy,fingerabdruck)
+        SELECT g.id,g.titel,'bestaetigt',$2,$2,$3,'{"bis_schicht":"S3","automatisch":true}'::jsonb,g.fingerabdruck
+        FROM jsonb_to_recordset($1::jsonb) AS g(id text,titel text,fingerabdruck text)`,[JSON.stringify(entries),a.agent_id,rid]);
+      const moves=entries.flatMap(g=>g.medien.map((mid,position)=>({id:mid,eintrag_id:g.id,position})));
+      await db.query(`UPDATE reverse_medien m SET eintrag_id=g.eintrag_id,position=g.position
+        FROM jsonb_to_recordset($1::jsonb) AS g(id bigint,eintrag_id text,position integer) WHERE m.id=g.id`,[JSON.stringify(moves)]);
+      await db.query("SELECT pg_notify('synapse_reverse_changed',id) FROM unnest($1::text[]) AS id",[entries.map(g=>g.id)]);
+      const neu=entries.map(g=>g.id);
+      await db.query("UPDATE reverse_eintraege SET status='archiviert',archiviert_at=NOW(),updated_at=NOW() WHERE id=$1",[rid]);
+      return {reverse_id:rid,status:'archiviert',aufgeteilt:neu};
+    }
+    if(a.medien!==undefined){
+      if(!Array.isArray(a.medien)||a.medien.length!==ms.length)fail('werkzeug_fehler','parameter_ungueltig');
+      const order=a.medien.map(m=>{
+        if(!object(m)||Object.keys(m).some(k=>!['id','bezeichnung'].includes(k))||typeof m.id!=='string'||!ms.some(x=>x.id===m.id))fail('werkzeug_fehler','parameter_ungueltig');
+        return {id:m.id,bezeichnung:m.bezeichnung===undefined?null:text(m.bezeichnung)};
+      });
+      if(new Set(order.map(m=>m.id)).size!==ms.length)fail('werkzeug_fehler','parameter_ungueltig');
+      if(ms.some(m=>Number(m.position)<0))fail('werkzeug_fehler');
+      await db.query('UPDATE reverse_medien SET position=-position-1 WHERE eintrag_id=$1',[rid]);
+      for(const [i,m]of order.entries())await db.query('UPDATE reverse_medien SET position=$1,bezeichnung=COALESCE($2,bezeichnung) WHERE id=$3',[i,m.bezeichnung,m.id]);
+      ms=await medien(db,rid);
+    }
+    const fp=createHash('sha256').update(JSON.stringify(ms.map(m=>[m.art,m.satz_sha256]))).digest('hex');
+    await db.query(`UPDATE reverse_eintraege SET titel=COALESCE($2,titel),status='bestaetigt',bestaetigt_von=$3,fingerabdruck=$4,
+      analyse_policy=analyse_policy||'{"bis_schicht":"S3","automatisch":true}'::jsonb,updated_at=NOW() WHERE id=$1`,[rid,a.titel===undefined?null:text(a.titel),a.agent_id,fp]);
+    await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
+    return {reverse_id:rid,status:'bestaetigt',eintrag:await entryDto(db,await entry(db,rid))};
+  }
+  async function datei(db:Db,rid:string,path:string):Promise<Row> {
+    const r=await db.query('SELECT id::text AS id,medium_id::text AS medium_id,pfad,format,arch,bits,status,metadaten FROM reverse_dateien WHERE eintrag_id=$1 AND pfad=$2',[rid,path]);
+    if(!r.rows[0])fail('nicht_gefunden');return r.rows[0];
+  }
+  async function statusData(a:Row):Promise<Row> {
+    const rid=id(a.reverse_id),path=fileArg(a);await entry(pool,rid);
+    if(a.project)await projektRecht(pool,a);
+    if(path){await projektRecht(pool,a);if(!await pruefeReverseBindung(pool,str(a.project),rid))fail('nicht_gebunden');}
+    const f=path?await datei(pool,rid,path):null;
+    const ls=(await pool.query(`SELECT s.* FROM reverse_schichten s LEFT JOIN reverse_dateien d ON d.id=s.datei_id LEFT JOIN reverse_medien m ON m.id=s.medium_id
+      WHERE s.aktuell AND COALESCE(d.eintrag_id,m.eintrag_id)=$1 AND ($2::bigint IS NULL OR s.datei_id=$2) ORDER BY s.schicht,s.id`,[rid,f?.id??null])).rows;
+    const jobs=(await pool.query("SELECT id,schicht,status,fehlercode FROM reverse_auftraege WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) AND status IN ('offen','wartet','laeuft') ORDER BY created_at DESC,id DESC LIMIT 1",[rid,f?.id??null])).rows;
+    const rank=(s:unknown)=>stages.indexOf(s as typeof stages[number]);
+    const finished=ls.filter(l=>l.status==='fertig'||l.status==='teilweise').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0];
+    const active=ls.filter(l=>l.status!=='fertig'&&l.status!=='uebersprungen').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0]??finished;
+    const meta=object(f?.metadaten)?f.metadaten:{};
+    const features=Array.isArray(meta.merkmale)?meta.merkmale.filter(x=>typeof x==='string').map(x=>maskiereMitKatalog(x as string,'reverse').text):[];
+    const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
+    if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
+    const error=active?.fehlercode&&REVERSE_FEHLERCODES.includes(active.fehlercode as ReverseFehlercode)?active.fehlercode:null;
+    return {reverse_id:rid,datei:path,format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,schicht:finished?.schicht??null,
+      schicht_angefragt:jobs[0]?.schicht??active?.schicht??null,status:jobs[0]?.status??active?.status??f?.status??'offen',fehlercode:error,
+      werkzeug:active?.werkzeug??null,merkmale:features,fortschritt:{gesamt:Number(active?.funktionen_gesamt??ls.length),fertig:Number(active?.funktionen_fertig??ls.filter(l=>l.status==='fertig').length)},
+      container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s},...(jobs[0]?{auftrag_id:jobs[0].id,eta:null}:{}),schichten:ls.map(l=>({schicht:l.schicht,status:l.status,fehlercode:l.fehlercode}))};
+  }
+  async function analyse(db:PoolClient,a:Row,e:Row):Promise<Row> {
+    const project=await projektRecht(db,a),rid=str(e.id);
+    if(!await pruefeReverseBindung(db,project,rid))fail('nicht_gebunden');
+    if(e.status==='archiviert')fail('keine_berechtigung');
+    const path=fileArg(a),bis=str(a.bis_schicht)||'S3';
+    if(!stages.includes(bis as typeof stages[number]))fail('werkzeug_fehler','parameter_ungueltig');
+    const prio=(str(a.prioritaet)||'interaktiv') as ReverseAnalyseAnfrage['prioritaet'];
+    if(!['interaktiv','hintergrund','nachzug'].includes(prio))fail('werkzeug_fehler','parameter_ungueltig');
+    const f=path?await datei(db,rid,path):null;
+    const targets:{dateiId:string|null;mediumId:string|null;schicht:string}[]=f?[{dateiId:str(f.id),mediumId:str(f.medium_id),schicht:bis}]
+      : (await db.query('SELECT id::text AS id FROM reverse_dateien WHERE eintrag_id=$1 ORDER BY id',[rid])).rows.map(d=>({dateiId:str(d.id),mediumId:null,schicht:bis}));
+    if(!targets.length)for(const m of await medien(db,rid))targets.push({dateiId:null,mediumId:str(m.id),schicht:'E'});
+    if(!targets.length)fail('nicht_gefunden');
+    const done:Row[]=[];
+    for(const t of targets){
+      const request:ReverseAnalyseAnfrage={reverseId:rid,project,agentId:str(a.agent_id),dateiId:t.dateiId,mediumId:t.mediumId,bisSchicht:bis,prioritaet:prio};
+      if(hooks().analysieren){done.push(await hooks().analysieren!(request,db));continue;}
+      // RV8-Anschluss folgt W3. Wartende Fachaufträge sind niemals ausführbare Work-Leases.
+      await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-analyse:'+rid+':'+(t.dateiId??'medium:'+t.mediumId)+':'+t.schicht]);
+      let job=(await db.query("SELECT id,prioritaet FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND medium_id IS NOT DISTINCT FROM $3::bigint AND schicht=$4 AND status IN ('offen','wartet','laeuft') FOR UPDATE",[rid,t.dateiId,t.mediumId,t.schicht])).rows[0];
+      if(job){if(prio==='interaktiv')await db.query("UPDATE reverse_auftraege SET prioritaet='interaktiv',updated_at=NOW() WHERE id=$1",[job.id]);}
+      else {
+        await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-queue-limit'))");
+        const n=Number((await db.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE status IN ('offen','wartet','laeuft')")).rows[0].n);
+        if(n>=envInt('SYNAPSE_REVERSE_QUEUE_MAX',10000))fail('warteschlange_voll');
+        job=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser) VALUES($1,$2,$3,$4,$5,'wartet',$6) RETURNING id",[rid,t.dateiId,t.mediumId,t.schicht,prio,'agent:'+str(a.agent_id)])).rows[0];
+      }
+      done.push({auftrag_id:job.id});
+    }
+    return {reverse_id:rid,datei:path,format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,status:'wartet',schicht_angefragt:bis,
+      auftrag_id:done[0].auftrag_id,auftraege:done,eta:null,
+      ...(hooks().analysieren?{...done[0],fehlercode:done[0].fehlercode??null}:{fehlercode:'container_ruht',message:TEXTE.container_ruht})};
+  }
+  async function execute(a:Row,action:ReverseAction):Promise<Row> {
+    if(action==='status'){
+      const wait=integer(a.warten_sekunden,0,50),until=Date.now()+wait*1000;
+      let result=await statusData(a),fingerprint=JSON.stringify(result);
+      while(wait&&Date.now()<until){
+        await new Promise(resolve=>setTimeout(resolve,Math.min(envInt('SYNAPSE_REVERSE_POLL_MS',100),until-Date.now())));
+        const next=await statusData(a);result=next;if(JSON.stringify(next)!==fingerprint)break;
+      }
+      if(a.project)await tx(db=>activity(db,a));return result;
+    }
+    return tx(async db=>{
+      if(action==='liste'||action==='vorschlaege'){const r=await list(db,a);if(a.project){await projektRecht(db,a);await activity(db,a);}return r;}
+      if(action==='bindungen'){
+        const project=await projektRecht(db,a),limit=integer(a.limit,50,envInt('SYNAPSE_REVERSE_MAX_LIMIT',200)),offset=integer(a.offset,0,2147483647);
+        if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
+        const rows=(await db.query("SELECT b.eintrag_id AS reverse_id,b.gebunden_von,b.gebunden_at,b.notiz FROM reverse_bindungen b WHERE project=$1 AND geloest_at IS NULL ORDER BY eintrag_id LIMIT $2 OFFSET $3",[project,limit,offset])).rows;
+        const total=Number((await db.query('SELECT count(*)::int AS n FROM reverse_bindungen WHERE project=$1 AND geloest_at IS NULL',[project])).rows[0].n);
+        await activity(db,a);return {bindungen:rows,total,gekappt:offset+rows.length<total,naechster_offset:offset+rows.length<total?offset+rows.length:null};
+      }
+      if(action==='abbrechen'){
+        const project=await projektRecht(db,a),jid=str(a.auftrag_id);
+        if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(jid))fail('werkzeug_fehler','parameter_ungueltig');
+        const job=(await db.query('SELECT * FROM reverse_auftraege WHERE id=$1 FOR UPDATE',[jid])).rows[0];
+        if(!job)fail('nicht_gefunden');
+        if(!darfKoordinatorOderUser(a.agent_id)&&job.ausloeser!=='agent:'+str(a.agent_id))fail('keine_berechtigung');
+        if(!await pruefeReverseBindung(db,project,str(job.eintrag_id)))fail('nicht_gebunden');
+        if(!['offen','wartet','laeuft'].includes(str(job.status)))return {reverse_id:job.eintrag_id,auftrag_id:jid,status:job.status};
+        if(job.p20_auftrag_id&&!hooks().abbrechen)fail('container_gesperrt','pipeline_anschluss_fehlt');
+        if(hooks().abbrechen)await hooks().abbrechen!(job,str(a.agent_id),db);
+        await db.query("UPDATE reverse_auftraege SET status='abgebrochen',updated_at=NOW() WHERE id=$1 AND status IN ('offen','wartet','laeuft')",[jid]);
+        await activity(db,{...a,reverse_id:job.eintrag_id});return {reverse_id:job.eintrag_id,auftrag_id:jid,status:'abgebrochen'};
+      }
+      if(action==='bestaetigen')await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-gruppierung'))");
+      const rid=id(a.reverse_id),e=await entry(db,rid,['bestaetigen','archivieren','analysieren'].includes(action));
+      let r:Row;
+      if(action==='eintrag')r={status:e.status,eintrag:await entryDto(db,e)};
+      else if(action==='bestaetigen')r=await confirm(db,a,e);
+      else if(action==='archivieren'){
+        if(!darfKoordinatorOderUser(a.agent_id))fail('keine_berechtigung');
+        await db.query("UPDATE reverse_eintraege SET status='archiviert',archiviert_at=COALESCE(archiviert_at,NOW()),updated_at=NOW() WHERE id=$1",[rid]);r={status:'archiviert'};
+      }else if(action==='binden'||action==='loesen'){
+        const project=await projektRecht(db,a);
+        if(action==='binden')await db.query(`INSERT INTO reverse_bindungen(project,eintrag_id,gebunden_von,notiz) VALUES($1,$2,$3,$4)
+          ON CONFLICT(project,eintrag_id) WHERE geloest_at IS NULL DO NOTHING`,[project,rid,a.agent_id,a.notiz===undefined?null:text(a.notiz)]);
+        else await db.query('UPDATE reverse_bindungen SET geloest_at=NOW() WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[project,rid]);
+        r={status:e.status,gebunden:action==='binden'};
+      }else r=await analyse(db,a,e);
+      if(a.project){await projektRecht(db,a);await activity(db,{...a,reverse_id:r.reverse_id??rid});}
+      return r;
+    });
+  }
+  async function ausfuehren(args:Row|undefined|null):Promise<Row> {
+    const a=object(args)?args:{};
+    try {
+      if(typeof a.agent_id!=='string'||!a.agent_id.trim())fail('keine_berechtigung','agent_id_fehlt');
+      const befund=pruefeUnbekannteParameter('reverse',new Set(Object.keys(REVERSE_DEFINITION.inputSchema.properties)),a);
+      if(befund)fail('werkzeug_fehler','unbekannte_parameter',{unbekannt:befund.unbekannt});
+      if(!REVERSE_ACTIONS.includes(a.action as ReverseAction))fail('nicht_unterstuetzt','unbekannte_action');
+      const action=a.action as ReverseAction;
+      const unused=Object.keys(a).filter(k=>!['action','agent_id','project',...JE_ACTION[action]].includes(k)&&gesetzt(a[k]));
+      const data=await execute(a,action);
+      return baueReverseAntwort(a,{...data,...(unused.length?{nicht_verwendet:unused}:{})});
+    }catch(e){
+      if(e instanceof ReverseFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
+      const code=(e as {code?:string})?.code;
+      return baueReverseAntwort(a,{},code==='23505'?'ziel_belegt':code==='57014'?'zeitlimit':'werkzeug_fehler');
+    }
+  }
+  return {ausfuehren};
+}
+export async function fuehreReverseAus(args:Row|undefined|null,deps:ReverseToolDependencies={}):Promise<Row> {
+  try{return await createReverseToolService(deps).ausfuehren(args);}
+  catch{return baueReverseAntwort(object(args)?args:{},{},'werkzeug_fehler');}
+}
