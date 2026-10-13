@@ -6,8 +6,10 @@ import {fileURLToPath} from 'node:url';
 const db = new URL(process.env.DATABASE_URL ?? 'http://invalid');
 assert.equal(db.port,'5433'); assert.equal(db.pathname,'/synapse_test');
 const schema = 'sol3_chat_' + randomUUID().replaceAll('-','');
-db.searchParams.set('options','-c search_path=' + schema + ',public');
+db.searchParams.set('options','-c search_path=' + schema + ',public -c statement_timeout=60000 -c lock_timeout=10000 -c idle_in_transaction_session_timeout=60000');
 process.env.DATABASE_URL = db.toString();
+process.env.SYNAPSE_DATABASE_URL = db.toString();
+Object.assign(process.env,{QDRANT_URL:'http://127.0.0.1:1',OLLAMA_URL:'http://127.0.0.1:1',SYNAPSE_INTERN_TOOL:'0'});
 const {getPool} = await import('../../core/dist/db/client.js');
 const {getMessages} = await import('../../core/dist/services/chat.js');
 const {default:Fastify} = await import('../node_modules/fastify/fastify.js');
@@ -35,7 +37,9 @@ async function restart() {
   client = new Client({name:'chat-read-test',version:'1'});
   const env = {...process.env,DATABASE_URL:db.toString(),SYNAPSE_DATABASE_URL:db.toString()};
   delete env.SYNAPSE_AGENT_NAME;
-  const transport = new StdioClientTransport({command:process.execPath,args:[fileURLToPath(new URL('../../mcp-server/dist/index.js',import.meta.url))],env,stderr:'pipe'});
+  const serverPath = fileURLToPath(new URL('../../mcp-server/dist/server.js',import.meta.url));
+  const transportPath = fileURLToPath(new URL('../../mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js',import.meta.url));
+  const transport = new StdioClientTransport({command:process.execPath,args:['--input-type=module','--eval','const {createServer}=await import('+JSON.stringify(serverPath)+');const {StdioServerTransport}=await import('+JSON.stringify(transportPath)+');await createServer().connect(new StdioServerTransport());'],env,stderr:'pipe'});
   transport.stderr?.resume();
   await client.connect(transport);
 }
@@ -44,7 +48,12 @@ const shape = r => r.unreadChat ? {broadcasts:r.unreadChat.broadcasts,dms:r.unre
 const mark = async project => (await pool.query('SELECT letzte_id::text FROM chat_lesestand WHERE project=$1 AND agent_id=$2',[project,agent])).rows[0]?.letzte_id;
 try {
   await pool.query('CREATE SCHEMA ' + schema);
-  await pool.query('CREATE TABLE chat_messages (LIKE public.chat_messages INCLUDING ALL)');
+  for (const {tablename} of (await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")).rows) {
+    const q='"'+tablename.replaceAll('"','""')+'"';
+    await pool.query('CREATE TABLE '+schema+'.'+q+' (LIKE public.'+q+' INCLUDING ALL)');
+  }
+  await pool.query('DROP TABLE chat_lesestand'); // ausschließlich die leere eigene Testtabelle
+
   const source = await readFile(new URL('../../core/src/db/schema.ts',import.meta.url),'utf8');
   const ddl = source.match(/CREATE TABLE IF NOT EXISTS chat_lesestand \([\s\S]*?\);/)?.[0];
   check('Laufzeitschema enthält Lesestand',!!ddl,true);
@@ -64,7 +73,7 @@ try {
     const first = await call({...base,action:'list'});
     check(name+' Hinweis',shape(first),expected);
     if(first.unreadChat) assert.equal(typeof first.unreadChat.hint,'string');
-    check(name+' wiederholen zählt ohne Lesen',shape(await call({...base,action:'list'})),expected);
+    check(name+' Hinweis wird ohne neue Nachricht nicht wiederholt',shape(await call({...base,action:'list'})),null);
     check(name+' weiterer Hinweis verschiebt Ausgangsstand nicht',await mark(project),String(alt.id));
     const read = await call({...base,action:'get'});
     assert.equal(read.messages.length,4,'echter Read liefert auch historischen Broadcast, eigene Nachricht und eigene DM');
@@ -80,7 +89,7 @@ try {
     const ids = (await pool.query("INSERT INTO chat_messages(project,sender_id,recipient_id,content) SELECT $1,$2,$3,'mehr' FROM generate_series(1,60) RETURNING id",[project,sender,agent])).rows;
     check(name+' vollständige Zählung',shape(await rest({...base,action:'list'})),{broadcasts:0,dms:[{from:sender,count:60}]});
     await call({...base,action:'get',limit:5});
-    check(name+' Teilabruf lässt Rest offen',shape(await rest({...base,action:'list'})),{broadcasts:0,dms:[{from:sender,count:59}]});
+    check(name+' Teilabruf wiederholt bereits gemeldeten Rest nicht',shape(await rest({...base,action:'list'})),null);
     await Promise.all([getMessages(project,{agentId:agent,limit:100}),getMessages(project,{agentId:agent,limit:1})]);
     check(name+' parallele Leser monoton',await mark(project),String(ids.at(-1).id));
     await getMessages(project,{agentId:agent,limit:1});
@@ -97,7 +106,7 @@ try {
     await pool.query("INSERT INTO chat_messages(project,sender_id,content) VALUES($1,$2,'neu nach Register')",[project,sender]);
     check(name+' nach Register neuer Broadcast',shape(await call({project,agent_id:newcomer,action:'list'})),{broadcasts:1,dms:[]});
     await call({project,action:'register',id:newcomer});
-    check(name+' Wiederanmeldung setzt Stand nicht zurück',shape(await call({project,agent_id:newcomer,action:'list'})),{broadcasts:1,dms:[]});
+    check(name+' Wiederanmeldung setzt Hinweisstand nicht zurück',shape(await call({project,agent_id:newcomer,action:'list'})),null);
     console.log('geprüft',name);
   }
   assert.deepEqual(failures,[],failures.join('\n'));

@@ -20,19 +20,30 @@ export async function initialisiereChatLesestand(project: string, agentId: strin
   return (rowCount ?? 0) > 0;
 }
 
-/** Nach dem einmaligen Ausgangsstand reine PG-Zählung; eigene und fremde DMs zählen nicht. */
+/** Beansprucht neue Hinweise atomisch pro Empfänger; der tatsächliche Lesestand bleibt unverändert. */
 export async function getUnreadChatHint(project: string, agentId: string): Promise<UnreadChatHint | null> {
   if (!project || !agentId) return null;
   try {
     if (await initialisiereChatLesestand(project, agentId)) return null;
     const { rows } = await getPool().query<{ recipient_id: string | null; sender_id: string | null; count: number }>(
-      `SELECT recipient_id,
+      `WITH neu AS MATERIALIZED (
+         SELECT m.id, m.recipient_id, m.sender_id
+         FROM chat_messages m
+         JOIN chat_lesestand l ON l.project = m.project AND l.agent_id = $2
+         WHERE m.project = $1 AND m.sender_id <> $2
+           AND (m.recipient_id IS NULL OR m.recipient_id = $2)
+           AND m.id > GREATEST(l.letzte_id, l.letzte_hinweis_id)
+       ), beansprucht AS (
+         UPDATE chat_lesestand l
+         SET letzte_hinweis_id = (SELECT MAX(id) FROM neu)
+         WHERE l.project = $1 AND l.agent_id = $2
+           AND (SELECT MAX(id) FROM neu) > GREATEST(l.letzte_id, l.letzte_hinweis_id)
+         RETURNING l.project
+       )
+       SELECT recipient_id,
               CASE WHEN recipient_id IS NOT NULL THEN sender_id END AS sender_id,
               COUNT(*)::int AS count
-       FROM chat_messages
-       WHERE project = $1 AND sender_id <> $2
-         AND (recipient_id IS NULL OR recipient_id = $2)
-         AND id > COALESCE((SELECT letzte_id FROM chat_lesestand WHERE project = $1 AND agent_id = $2), 0)
+       FROM neu CROSS JOIN beansprucht
        GROUP BY recipient_id, CASE WHEN recipient_id IS NOT NULL THEN sender_id END
        ORDER BY sender_id NULLS FIRST`,
       [project, agentId],

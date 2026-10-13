@@ -10,8 +10,8 @@
  * und liesse den Kontext jedes Agenten volllaufen.
  *
  * ZWECK IST KOORDINATION, NICHT INFORMATION. Deshalb:
- *   - Der Start-Hinweis geht NICHT an den Agenten, der den Job abgesetzt hat —
- *     der kennt seine Job-ID bereits (analog msg.sender <> mem.agent_name).
+ *   - Start-Hinweise gehen auch an den Starter (P10-T62), sofern der Job
+ *     nicht bereits in derselben Antwort steht oder von ihm abgeholt wurde.
  *   - Der Fertig-Hinweis geht an ALLE, auch an den Starter: der will sein
  *     Ergebnis, und genau dafuer wurde der blockierende Aufruf abgeschafft.
  *
@@ -121,6 +121,7 @@ export async function claimShellJobHints(
   project: string,
   agentId: string,
   limit: number = MAX_HINWEISE,
+  excludeJobIds: readonly string[] = [],
 ): Promise<ShellJobHint[]> {
   if (!project || !agentId) return [];
   try {
@@ -145,15 +146,16 @@ export async function claimShellJobHints(
                 COALESCE(j.completed_at, j.claimed_at, j.created_at) AS sortzeit
          FROM shell_jobs j
          WHERE j.project = $1
+           AND NOT (j.id = ANY($6::uuid[]))
            AND (
-             -- Laeuft gerade: melden, ausser dem Absender selbst.
+             -- Laeuft gerade: einmal je Empfänger, auch an den Absender.
              -- Die Altersgrenze ist wichtig: ein Job kann als 'running' haengen
              -- bleiben, wenn der Daemon neu startet, waehrend er laeuft. Solche
              -- Leichen wurden sonst als "laeuft gerade" gemeldet — eine FALSCHE
              -- Auskunft ist schlimmer als gar keine, weil ein Agent daraufhin auf
              -- ein Ergebnis wartet, das nie kommt. Kein Job kann laenger laufen
              -- als die harte Obergrenze; was aelter ist, laeuft nicht mehr.
-             (j.status = 'running' AND j.agent_id IS DISTINCT FROM $2
+             (j.status = 'running'
               AND COALESCE(j.claimed_at, j.created_at) > NOW() - ($5::integer * interval '1 minute'))
              -- Frisch fertig: an alle, auch an den Absender.
              -- AUSSER Jobs, die nur durch einen Daemon-Neustart terminal wurden:
@@ -209,7 +211,7 @@ export async function claimShellJobHints(
            AND tc.ts > k.project_state_at
        ) m ON k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL
        ORDER BY k.sortzeit DESC`,
-      [project, agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN],
+      [project, agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN, excludeJobIds],
     );
 
     return rows.map((r) => {

@@ -78,8 +78,10 @@ try {
   // Beide Transportpfade rufen denselben Core-Mechanismus auf.
   const rest = await readFile(join(repo, 'packages/rest-api/src/routes/mcp.ts'), 'utf8');
   const stdio = await readFile(join(repo, 'packages/mcp-server/src/server.ts'), 'utf8');
-  assert.match(rest, /markShellJobSeenForToolCall\(str\(args, 'action'\), args, result, effectiveAgentId\)/);
-  assert.match(stdio, /markShellJobSeenForToolCall\([\s\S]*?parsed,[\s\S]*?agentId/);
+  const central = await readFile(join(repo, 'packages/core/src/services/tool-antwort.ts'), 'utf8');
+  assert.match(rest, /await ergaenzeToolHinweise\(/);
+  assert.match(stdio, /await ergaenzeToolHinweise\(JSON.parse\(first.text\), name/);
+  assert.match(central, /await markShellJobSeenForToolCall\(args.action, args, kern, agentId\)/);
 
   console.log('OK P10-T48: starter/get/log/get_stream, Fremdagent, running->done, REST+stdio gemeinsam');
 } finally {

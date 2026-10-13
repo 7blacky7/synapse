@@ -24,10 +24,7 @@ import {
 } from './tools/index.js';
 
 import {
-  claimUnreadChannelHints,
-  getUnreadChatHint,
-  claimShellJobHints,
-  markShellJobSeenForToolCall,
+  ergaenzeToolHinweise,
   claimOpenPlanHints,
   getPendingEventHints,
   pruefeEventEskalation,
@@ -236,8 +233,10 @@ export function createServer(): Server {
       const first = guided.content?.[0];
       if (!first || first.type !== 'text' || typeof first.text !== 'string') return guided;
       try {
-        const parsed = JSON.parse(first.text);
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return guided;
+        const erweitert = await ergaenzeToolHinweise(JSON.parse(first.text), name, (args ?? {}) as Record<string, unknown>, agentId);
+        first.text = JSON.stringify(erweitert, null, 2);
+        if (typeof erweitert !== 'object' || erweitert === null || Array.isArray(erweitert)) return guided;
+        const parsed = erweitert as Record<string, unknown>;
 
         // CE-7: Jede erweiterbare Objektantwort wird zur Inbox-Gelegenheit.
         // event ist die Vollansicht und guide bleibt bewusst kontextfrei.
@@ -257,47 +256,7 @@ export function createServer(): Server {
           } catch { /* Pending-Events duerfen Toolantworten nie brechen */ }
         }
 
-        const unreadChat = projectName ? await getUnreadChatHint(projectName, agentId) : null;
-        if (unreadChat) {
-          parsed.unreadChat = unreadChat;
-          first.text = JSON.stringify(parsed, null, 2);
-        }
 
-        const hints = await claimUnreadChannelHints(agentId);
-        if (hints.length > 0) {
-          parsed.unread_channels = hints.map((hint) => ({
-            project: hint.project,
-            channel: hint.channel,
-            count: hint.count,
-            newest_id: hint.newestId,
-          }));
-          first.text = JSON.stringify(parsed, null, 2);
-        }
-
-        // SH-3: laufende und frisch beendete Shell-Jobs des Projekts. Zweck ist
-        // Koordination — wer sieht, dass ein anderer gerade baut, baut nicht
-        // nochmal. shell selbst ist ausgenommen: dessen Antworten sprechen
-        // ohnehin ueber Jobs. Best-effort, darf die Antwort nie brechen.
-        if (name === 'shell') {
-          try {
-            await markShellJobSeenForToolCall(
-              typeof args?.action === 'string' ? args.action : undefined,
-              (args ?? {}) as Record<string, unknown>,
-              parsed,
-              agentId,
-            );
-          } catch { /* Seen-Marker duerfen eine Tool-Antwort nie brechen */ }
-        }
-
-        if (name !== 'shell' && typeof args?.project === 'string' && args.project) {
-          try {
-            const shellHints = await claimShellJobHints(args.project, agentId, 3);
-            if (shellHints.length > 0) {
-              parsed.shell_activity = shellHints;
-              first.text = JSON.stringify(parsed, null, 2);
-            }
-          } catch { /* Hinweise duerfen Toolantworten nie brechen */ }
-        }
 
         // Offene Multi-File-Plaene (laufen seit 28.09.2026 nicht mehr ab). Gedrosselt je
         // Agent in claimOpenPlanHints: eigene Aenderungen sofort, sonst 30 Min bei files/plan.

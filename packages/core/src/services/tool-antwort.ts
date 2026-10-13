@@ -16,8 +16,92 @@
  *     success verlangt. Nicht bei isError.
  *   - Rueckweg: SYNAPSE_TOOL_ANTWORT_KOMPAKT=0 liefert das alte Format (eingerueckt, alle fachlichen Felder; Skill-Telemetrie bleibt intern).
  *
- * Persistenz (tool_calls, shell_jobs, Audit) bleibt unberuehrt: das hier ist nur Auslieferung.
+ * Fachliche Persistenz bleibt unberührt; P10-T62 ergänzt nur getrennte Hinweis-Zustellmarken.
  */
+
+
+import { getPool } from '../db/client.js';
+import { getUnreadChatHint } from './chat-unread.js';
+import { claimUnreadChannelHints } from './channel-unread.js';
+import { claimShellJobHints, markShellJobSeenForToolCall } from './shell-hints.js';
+
+const HINWEIS_JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** P10-T62: REST und stdio beanspruchen dieselben dauerhaften Empfänger-Hinweise.
+ * Ohne effektive Agent-ID bleibt die Antwort unverändert. Lesemarken bleiben getrennt.
+ * Legacy-Shell-Hüllen werden nur für Seen/Projekt/IDs betrachtet, nicht umformatiert.
+ */
+export async function ergaenzeToolHinweise(
+  result: unknown,
+  toolName: string,
+  args: Record<string, unknown>,
+  agentId?: string | null,
+): Promise<unknown> {
+  if (!agentId || (!istSchlichtesObjekt(result) && !Array.isArray(result))) return result;
+  const extras: Record<string, unknown> = {};
+  let project = typeof args.project === 'string' ? args.project : '';
+  const ausgeschlossen = new Set<string>();
+  const addId = (id: unknown) => {
+    if (typeof id === 'string' && HINWEIS_JOB_ID.test(id)) ausgeschlossen.add(id);
+  };
+  if (toolName === 'shell' && istSchlichtesObjekt(result)) {
+    let kern = result;
+    if (Array.isArray(result.content) && result.content.length === 1) {
+      const block = result.content[0];
+      if (istSchlichtesObjekt(block) && block.type === 'text' && typeof block.text === 'string') {
+        try {
+          const innen: unknown = JSON.parse(block.text);
+          if (istSchlichtesObjekt(innen)) kern = innen;
+        } catch { /* Nicht-JSON-Ausgabe ist keine Job-Metadatenquelle. */ }
+      }
+    }
+    await markShellJobSeenForToolCall(args.action, args, kern, agentId);
+    const action = typeof args.action === 'string' ? args.action : 'exec';
+    if (kern.success !== false && !kern.error) {
+      if (action === 'exec') addId(kern.id);
+      if (action === 'get' && istSchlichtesObjekt(kern.job)) {
+        addId(kern.job.id);
+        if (!project && typeof kern.job.project === 'string') project = kern.job.project;
+      }
+      if ((action === 'get' || action === 'log') && kern.success === true) addId(args.id);
+      if (action === 'history' && Array.isArray(kern.jobs)) {
+        for (const job of kern.jobs) if (istSchlichtesObjekt(job)) addId(job.id);
+      }
+      if (!project && typeof kern.project === 'string') project = kern.project;
+      // get/log dürfen ohne project aufgerufen werden; nur die exakte Job-ID auflösen.
+      try {
+        if (action === 'get_stream' && typeof args.stream_id === 'string' && args.stream_id) {
+          const { rows } = await getPool().query<{ id: string; project: string }>(
+            'SELECT id, project FROM shell_jobs WHERE stream_id = $1 ORDER BY created_at DESC LIMIT 1',
+            [args.stream_id],
+          );
+          if (rows[0]) { addId(rows[0].id); project ||= rows[0].project; }
+        } else if (!project && ausgeschlossen.size > 0 && action !== 'history') {
+          const { rows } = await getPool().query<{ project: string }>(
+            'SELECT project FROM shell_jobs WHERE id = $1::uuid', [[...ausgeschlossen][0]],
+          );
+          if (rows[0]) project = rows[0].project;
+        }
+      } catch (error) {
+        console.error('[ToolHinweise] Job-Projekt konnte nicht aufgelöst werden:', error);
+      }
+    }
+  }
+  // Ausschluss VOR dem Claim: insbesondere history darf andere Hinweise nicht verbrauchen.
+  if (project) {
+    const unreadChat = await getUnreadChatHint(project, agentId);
+    if (unreadChat) extras.unreadChat = unreadChat;
+    const shellHints = await claimShellJobHints(project, agentId, 3, [...ausgeschlossen]);
+    if (shellHints.length > 0) extras.shell_activity = shellHints;
+  }
+  const channels = await claimUnreadChannelHints(agentId);
+  if (channels.length > 0) extras.unread_channels = channels.map(hint => ({
+    project: hint.project, channel: hint.channel, count: hint.count, newest_id: hint.newestId,
+  }));
+  if (Object.keys(extras).length === 0) return result;
+  // Eine fachliche Liste bleibt vollständig; nur bei echten Hinweisen braucht sie eine Hülle.
+  return Array.isArray(result) ? { result, ...extras } : { ...result, ...extras };
+}
 
 /** null-Felder, die eine Aussage tragen. '*' gilt fuer alle Tools; Schluessel = Feldname auf jeder Ebene. */
 export const TOOL_ANTWORT_NULL_BEHALTEN: Readonly<Record<string, readonly string[]>> = {

@@ -56,6 +56,7 @@ try{
   for(const {tablename}of(await pool.query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")).rows){
     const q='"'+tablename.replaceAll('"','""')+'"';await pool.query('CREATE TABLE "'+schema+'".'+q+' (LIKE public.'+q+' INCLUDING ALL)');
   }
+  await pool.query('ALTER TABLE chat_lesestand ADD COLUMN IF NOT EXISTS letzte_hinweis_id bigint NOT NULL DEFAULT 0');
   await pool.query('INSERT INTO projects(name,hostname,path) VALUES($1,$2,$3)',[project,'t54-fixture',root]);
   for(let i=0;i<12;i++)await pool.query(
     'INSERT INTO shell_jobs(id,project,agent_id,command,status,exit_code,tail,output,output_truncated,error,message,claimed_by,created_at,completed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10,$11,$12,$13)',

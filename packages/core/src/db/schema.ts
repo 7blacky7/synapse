@@ -486,9 +486,12 @@ CREATE TABLE IF NOT EXISTS chat_lesestand (
   project TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   letzte_id BIGINT NOT NULL DEFAULT 0,
+  letzte_hinweis_id BIGINT NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (project, agent_id)
 );
+-- P10-T62: Zustellstand unabhängig vom Lesestand; bestehende Installationen ergänzen.
+ALTER TABLE chat_lesestand ADD COLUMN IF NOT EXISTS letzte_hinweis_id BIGINT NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS tech_docs (
   id TEXT PRIMARY KEY,

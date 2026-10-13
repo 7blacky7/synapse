@@ -161,6 +161,7 @@ try {
   }
   // Der Golden modelliert auch optionale Detailspalten älterer/neuerer Test-DB-Stände, nur im eigenen Schema.
   await pool.query('ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS output_size integer DEFAULT 0');
+  await pool.query('ALTER TABLE chat_lesestand ADD COLUMN IF NOT EXISTS letzte_hinweis_id bigint NOT NULL DEFAULT 0');
   await pool.query('INSERT INTO projects(name,hostname,path) VALUES($1,$2,$3)',[project,'t51-fixture',root]);
   await pool.query("INSERT INTO memories(id,project,name,content,category,tags) VALUES($1,$2,'context-handoff-regeln','Fixture-Regel','rules',$3)",[randomUUID(),project,['pflicht']]);
   const stamp='2026-01-01T00:00:00.000Z';

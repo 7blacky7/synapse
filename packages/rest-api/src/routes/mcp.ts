@@ -75,7 +75,6 @@ import {
   listActiveAgents,
   sendChatMessage,
   getChatMessages,
-  getUnreadChatHint,
   // JEV-10: Jev entscheidet Rueckfragen (P7-T28)
   entscheideRueckfrage,
   setzeAbwesenheit,
@@ -187,9 +186,7 @@ import {
   listChannels,
   recordChannelRead,
   markChannelRead,
-  claimUnreadChannelHints,
-  claimShellJobHints,
-  markShellJobSeenForToolCall,
+  ergaenzeToolHinweise,
   claimOpenPlanHints,
   // Inbox
   postToInbox,
@@ -1970,25 +1967,7 @@ async function attachRestOnboarding(
   }
 }
 
-async function attachRestChannelHints(
-  result: unknown,
-  effectiveAgentId?: string,
-): Promise<unknown> {
-  if (!effectiveAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
-    return result;
-  }
-  const hints = await claimUnreadChannelHints(effectiveAgentId);
-  if (hints.length === 0) return result;
-  return {
-    ...result,
-    unread_channels: hints.map((hint) => ({
-      project: hint.project,
-      channel: hint.channel,
-      count: hint.count,
-      newest_id: hint.newestId,
-    })),
-  };
-}
+
 /**
  * SH-3 — laufende und frisch beendete Shell-Jobs des Projekts anhaengen.
  *
@@ -1996,8 +1975,8 @@ async function attachRestChannelHints(
  * baut, und es nicht ein zweites Mal tun. Der Hinweis traegt nie Ausgabe, nur
  * Job-ID, Befehl und Status — den Output holt sich wer ihn braucht gezielt.
  *
- * shell selbst ist ausgenommen: dessen Antworten sprechen ohnehin ueber Jobs,
- * ein zusaetzlicher Hinweisblock waere dort nur Rauschen.
+ * Shell-/Chat-/Channel-Hinweise kommen zentral aus ergaenzeToolHinweise.
+ * Hier bleiben die übrigen projektbezogenen Antwort-Anhänge.
  *
  * Zusaetzlich open_plans (28.09.2026): offene Multi-File-Plaene des Projekts. Sie
  * laufen nicht mehr ab; wer sie sieht, committet oder verwirft sie. Gedrosselt je
@@ -2016,25 +1995,10 @@ async function attachShellJobHints(
     || Array.isArray(result)) {
     return result;
   }
-  if (toolName === 'shell' && effectiveAgentId) {
-    try {
-      await markShellJobSeenForToolCall(str(args, 'action'), args, result, effectiveAgentId);
-    } catch { /* Best-effort: der Ergebnis-Hinweis darf die Antwort nie brechen */ }
-  }
-
   const project = str(args, 'project');
   if (!project) return result;
 
-  // Ein Hinweis darf den eigentlichen Tool-Aufruf nie brechen.
   const extras: Record<string, unknown> = {};
-  const unreadChat = await getUnreadChatHint(project, effectiveAgentId);
-  if (unreadChat) extras.unreadChat = unreadChat;
-  if (toolName !== 'shell') {
-    try {
-      const hints = await claimShellJobHints(project, effectiveAgentId, 3);
-      if (hints.length > 0) extras.shell_activity = hints;
-    } catch { /* best effort */ }
-  }
   try {
     const plans = await claimOpenPlanHints(project, effectiveAgentId, Date.now(), 'agentOnboarding' in result, toolName);
     if (plans) extras.open_plans = plans;
@@ -6134,7 +6098,7 @@ async function fuehreToolsCallAus(
     const toolResult = await attachShellJobHints(
       await attachRestPendingEventHints(
         await attachWerkzeugRegeln(
-          await attachRestChannelHints(
+          await ergaenzeToolHinweise(
             await attachSkillHinweisgeber(
               await attachRestOnboarding(
                 await attachDirectWriteReservationHint(
@@ -6149,6 +6113,8 @@ async function fuehreToolsCallAus(
               toolArgs,
               effectiveAgentId,
             ),
+            toolName,
+            toolArgs,
             effectiveAgentId,
           ),
           toolName,
@@ -6176,8 +6142,10 @@ async function fuehreToolsCallAus(
     _logOk = false;
     _logErr = msg;
     const errorPayload = await attachRestPendingEventHints(
-      await attachRestChannelHints(
+      await ergaenzeToolHinweise(
         { success: false, error: `Fehler im Tool "${toolName}": ${msg}` },
+        toolName,
+        toolArgs,
         effectiveAgentId,
       ),
       toolName,

@@ -14,7 +14,7 @@ export type { RegelVerzeichnis } from './services/agent-rollen.js';
 export {maskiereShellAntwort,maskiereShellDaten,maskiereShellText,ladeShellWerte,mitShellAusgabe,shellSichtUnmaskiert} from './services/shell-maske.js';
 export {claimHinweis,projektHinweisOption} from './services/hinweis-drossel.js';
 // P10-T51: gemeinsame Tool-Antwort-Huelle (REST + stdio) und Thought-Suchvorschau.
-export { baueToolErgebnis, kompaktiereToolAntwort, kompaktiereTextErgebnis, toolAntwortKompaktAktiv, TOOL_ANTWORT_NULL_BEHALTEN } from './services/tool-antwort.js';
+export { ergaenzeToolHinweise, baueToolErgebnis, kompaktiereToolAntwort, kompaktiereTextErgebnis, toolAntwortKompaktAktiv, TOOL_ANTWORT_NULL_BEHALTEN } from './services/tool-antwort.js';
 export type { ToolErgebnisHuelle, ToolErgebnisOptionen } from './services/tool-antwort.js';
 export { kuerzeThoughtTreffer, thoughtVorschau, THOUGHT_VORSCHAU_ZEICHEN } from './services/thoughts.js';
 
