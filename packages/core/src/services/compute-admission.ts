@@ -84,7 +84,7 @@ async function used(db:AdmissionDb,d:NonNullable<ReturnType<typeof computeAdmiss
   WHERE (w.resource_need->>'gpu')::boolean AND (w.state IN ('leased','staged') OR w.resource_unconfirmed)
   AND (w.resource_domain IN ($1,$2)
    OR (n.host_resource_domain=$1 AND NOT EXISTS(SELECT 1 FROM compute_admission_domains p WHERE p.resource_domain=w.resource_domain))
-   OR ((w.owner_node IS NULL OR n.host_resource_domain IS NULL OR w.boot_generation<>n.boot_id)
+   OR ((w.owner_node IS NULL OR n.host_resource_domain IS NULL OR w.boot_generation::text<>n.boot_id::text)
     AND NOT EXISTS(SELECT 1 FROM compute_admission_domains p WHERE p.resource_domain=w.resource_domain OR p.host_domain=w.resource_domain)))`,[d.host,d.key]);
  return {http:http.rows[0].n,exclusive:http.rows[0].exclusive,models:models.rows[0].mb,jobs:jobs.rows[0].n,jobMb:jobs.rows[0].mb};
 }
