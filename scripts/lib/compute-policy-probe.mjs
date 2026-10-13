@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import {readFileSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+import {runComputePolicyEdges} from './compute-policy-edge-probe.mjs';
 export async function runComputePolicyProbe(db,mode) {
 const pool={query:db.query,connect:async()=>({query:db.query,release(){}})};
 await db.query('CREATE SCHEMA IF NOT EXISTS p20_r12');
@@ -13,11 +15,12 @@ Object.assign(process.env,{SYNAPSE_COMPUTE_POLICY_ENABLED:'0',OLLAMA_MODEL:'p20-
 process.env.SYNAPSE_COMPUTE_RESOURCE_BINDINGS=JSON.stringify({[NODE]:{
   hostResourceDomain:'p20-fixture-pc',deviceIds:['GPU-p20-fixture'],location:'pc'}});
 globalThis.fetch=async()=>{throw new Error('kein externes IO');};
-const core=await import('../../packages/core/dist/index.js');
+const base=process.env.P20_COMPUTE_DIST_BASE?pathToFileURL(process.env.P20_COMPUTE_DIST_BASE+'/'):new URL('../../',import.meta.url);
+const core=await import(new URL('packages/core/dist/index.js',base));
 const corePool=core.getPool();
 corePool.query=db.query;
 corePool.connect=pool.connect;
-const claims=await import('../../packages/core/dist/services/embedding-claims.js');
+const claims=await import(new URL('packages/core/dist/services/embedding-claims.js',base));
 const tables=['projects','code_files','code_chunks','embed_prioritaet','auth_tokens','embedding_knoten','work_jobs','work_job_audit'];
 const boot='11111111-1111-4111-8111-111111111111';
 const authHash='p20-r12-auth';
@@ -44,7 +47,10 @@ try {
   await seed();
   const old=normalized(await claim());
   assert.equal(old.length,3);
-  if(mode==='record') console.log('GOLDEN='+JSON.stringify(old));
+  if(mode==='record') {
+    assert.equal(JSON.stringify(old),JSON.stringify(JSON.parse(readFileSync(new URL('../fixtures/p20-r12-claims.golden.json',import.meta.url),'utf8'))));
+    console.log('GOLDEN unverändert gegen '+(process.env.P20_COMPUTE_DIST_BASE??'W2'));
+  }
   else {
     assert.equal(JSON.stringify(old),JSON.stringify(JSON.parse(readFileSync(new URL('../fixtures/p20-r12-claims.golden.json',import.meta.url),'utf8'))));
     const policy=await import('../../packages/core/dist/services/compute-policy.js');
@@ -137,6 +143,7 @@ try {
       assert.equal((await request('PATCH','/api/embedding-nodes/'+NODE+'/policy',{lan_bevorzugen:true},'daemon')).statusCode,400);
       assert.equal((await request('PATCH','/api/projects/'+A+'/compute-policy',{pc_gpu_ausgeschlossen:true},'session')).statusCode,200);
       assert.equal((await request('GET','/api/projects/'+A+'/compute-policy',null,'session')).json().policy.pc_gpu_ausgeschlossen,true);
+      if(mode==='verify') await runComputePolicyEdges(db,policy,NODE,A,request);
       console.log(mode==='policy'?'R1.2 Teilmodus grün: Legacybytegolden, Vorregistry, API-Autorisierung/CAS/Empfehlung; Claim-Gates nicht geprüft':'R1.2/T9 Vollprüfung grün: Legacybytegolden, Vorregistry, Consent/Usersperren/Manuell, Projektoptout3Zweige+Unraid+Workjobs, regulärer Abschluss, API-Autorisierung/CAS/Revision/Empfehlung');
     }
   }
