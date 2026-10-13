@@ -1,0 +1,107 @@
+{
+  "vorgezogen": {
+    "first": [
+      {
+        "chunkId": "22222222-2222-4222-8222-000000000001",
+        "claimToken": "<token>",
+        "claimAttempt": 1,
+        "project": "p20_r22",
+        "filePath": "src/a.ts",
+        "fileType": "typescript",
+        "chunkIndex": 0,
+        "totalChunks": 4,
+        "content": "synthetic 0",
+        "contentHash": "a94efe42b12aeb799b6be6fed321adf3f560dc2aa3ae757acf00fa1dc7f79c20",
+        "lineStart": 1,
+        "lineEnd": 2,
+        "leaseUntil": "<time>"
+      },
+      {
+        "chunkId": "22222222-2222-4222-8222-000000000002",
+        "claimToken": "<token>",
+        "claimAttempt": 1,
+        "project": "p20_r22",
+        "filePath": "src/a.ts",
+        "fileType": "typescript",
+        "chunkIndex": 1,
+        "totalChunks": 4,
+        "content": "synthetic 1",
+        "contentHash": "7063bde79a73ff8ee5996c863a9ea368a96cd9ceff9076608dc7d605354780bb",
+        "lineStart": 2,
+        "lineEnd": 3,
+        "leaseUntil": "<time>"
+      }
+    ],
+    "second": []
+  },
+  "normal": {
+    "first": [
+      {
+        "chunkId": "22222222-2222-4222-8222-000000000001",
+        "claimToken": "<token>",
+        "claimAttempt": 1,
+        "project": "p20_r22",
+        "filePath": "src/a.ts",
+        "fileType": "typescript",
+        "chunkIndex": 0,
+        "totalChunks": 4,
+        "content": "synthetic 0",
+        "contentHash": "a94efe42b12aeb799b6be6fed321adf3f560dc2aa3ae757acf00fa1dc7f79c20",
+        "lineStart": 1,
+        "lineEnd": 2,
+        "leaseUntil": "<time>"
+      },
+      {
+        "chunkId": "22222222-2222-4222-8222-000000000002",
+        "claimToken": "<token>",
+        "claimAttempt": 1,
+        "project": "p20_r22",
+        "filePath": "src/a.ts",
+        "fileType": "typescript",
+        "chunkIndex": 1,
+        "totalChunks": 4,
+        "content": "synthetic 1",
+        "contentHash": "7063bde79a73ff8ee5996c863a9ea368a96cd9ceff9076608dc7d605354780bb",
+        "lineStart": 2,
+        "lineEnd": 3,
+        "leaseUntil": "<time>"
+      }
+    ],
+    "second": []
+  },
+  "hinten": {
+    "first": [
+      {
+        "chunkId": "22222222-2222-4222-8222-000000000001",
+        "claimToken": "<token>",
+        "claimAttempt": 1,
+        "project": "p20_r22",
+        "filePath": "src/a.ts",
+        "fileType": "typescript",
+        "chunkIndex": 0,
+        "totalChunks": 4,
+        "content": "synthetic 0",
+        "contentHash": "a94efe42b12aeb799b6be6fed321adf3f560dc2aa3ae757acf00fa1dc7f79c20",
+        "lineStart": 1,
+        "lineEnd": 2,
+        "leaseUntil": "<time>"
+      },
+      {
+        "chunkId": "22222222-2222-4222-8222-000000000002",
+        "claimToken": "<token>",
+        "claimAttempt": 1,
+        "project": "p20_r22",
+        "filePath": "src/a.ts",
+        "fileType": "typescript",
+        "chunkIndex": 1,
+        "totalChunks": 4,
+        "content": "synthetic 1",
+        "contentHash": "7063bde79a73ff8ee5996c863a9ea368a96cd9ceff9076608dc7d605354780bb",
+        "lineStart": 2,
+        "lineEnd": 3,
+        "leaseUntil": "<time>"
+      }
+    ],
+    "second": []
+  }
+}
