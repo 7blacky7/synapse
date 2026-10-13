@@ -41,7 +41,7 @@ export function reverseGruppieren(input:ReverseGruppenDatei[],cfg:ReverseEingang
     satz_sha256:art==='archiv'||art==='image'&&fs.length===1?fs[0].sha256:art==='image'?hash(fs.map(f=>[f.rel_pfad===haupt?'haupt':'begleit',f.groesse,f.sha256]).sort((a,b)=>String(a[2]).localeCompare(String(b[2])))):reverseOrdnerFingerabdruck(fs,wurzel)});
   };
   for(const f of files){
-   const rule=cfg.companions.find(r=>r.endungen.includes(ext(f.rel_pfad)));if(!rule)continue;
+   const rule=cfg.companions.find(r=>r.endungen.includes(ext(f.rel_pfad)));if(!rule||f.archiv_format||reverseArchivMagic(f.kopf))continue;
    const base=f.rel_pfad.slice(0,-path.posix.extname(f.rel_pfad).length),required=rule.pflicht.map(e=>base+'.'+e);
    if(rule.referenzen){
     if(f.referenzen===undefined)required.push('[Descriptor noch nicht hochgeladen]');
@@ -54,13 +54,14 @@ export function reverseGruppieren(input:ReverseGruppenDatei[],cfg:ReverseEingang
    add('image',[f,...found],f.rel_pfad,required.filter(p=>p===f.rel_pfad||!byPath.has(p)));
   }
   const rest=files.filter(f=>!used.has(f.rel_pfad));
-  for(const f of rest)if(cfg.imageEndungen.includes(ext(f.rel_pfad)))add('image',[f],f.rel_pfad);
-  for(const f of rest)if(!used.has(f.rel_pfad)&&(f.archiv_format||reverseArchivMagic(f.kopf)))add('archiv',[f],f.rel_pfad);
+  for(const f of rest)if(f.archiv_format||reverseArchivMagic(f.kopf))add('archiv',[f],f.rel_pfad);
+  for(const f of rest)if(!used.has(f.rel_pfad)&&cfg.imageEndungen.includes(ext(f.rel_pfad)))add('image',[f],f.rel_pfad);
   const remaining=files.filter(f=>!used.has(f.rel_pfad));
   if(remaining.length){
    const knownFolder=remaining.some(f=>/\.(exe|dll)$/i.test(f.rel_pfad)||/(^|\/)(data|gfx|snd)\//i.test(f.rel_pfad));
    add('ordner',remaining,wurzel||remaining[0].rel_pfad,[],knownFolder ? .85 : .5,medien.length?['image','archiv']:['archiv']);
   }
+  if(new Set(medien.map(m=>m.art)).size>1)for(const m of medien){m.confidence=Math.min(m.confidence,.7);m.alternativen=[...new Set([...m.alternativen,...['image','ordner','archiv'].filter(a=>a!==m.art)])];}
   medien.sort((a,b)=>natural(a.haupt,b.haupt));
   const build=(ms:ReverseMediumVorschlag[],titel:string):ReverseGruppenvorschlag=>({titel,wurzel,medien:ms,
    fingerabdruck:hash(ms.map(m=>[m.art,m.satz_sha256])),case_kollisionen:[...caseMap.values()].filter(a=>a.length>1)});

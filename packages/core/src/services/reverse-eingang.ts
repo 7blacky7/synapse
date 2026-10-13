@@ -250,9 +250,16 @@ export class ReverseEingang {
     await db.query("INSERT INTO reverse_fund_snapshots(id,host_id,lease_bis) VALUES($1,$2,clock_timestamp()+$3*interval '1 millisecond')",[id,host,this.cfg.speicher.timeoutMs]);
     await db.query(`INSERT INTO reverse_fund_snapshot_zeilen(snapshot_id,id,daten)
      SELECT $1,d.id,jsonb_build_object('id',d.id::text,'rel_pfad',d.rel_pfad,'sha256',d.sha256,'reverse_id',d.eintrag_id,
-      'status',CASE WHEN m.fehlercode IS NOT NULL OR layer.fehlercode IS NOT NULL THEN 'fehler' WHEN layer.schicht IS NOT NULL THEN CASE WHEN layer.schicht='E' THEN 'entpackt' ELSE layer.schicht END WHEN b.status='ready' THEN 'hochgeladen' ELSE 'erkannt' END,
-      'fehlercode',COALESCE(layer.fehlercode,m.fehlercode),'medium_id',m.id::text,'art',m.art,'vorschlag',m.vorschlag)
+      'status',CASE WHEN m.fehlercode IS NOT NULL OR layer.fehlercode IS NOT NULL OR upload.status='fehler' THEN 'fehler' WHEN layer.schicht IS NOT NULL THEN CASE WHEN layer.schicht='E' THEN 'entpackt' ELSE layer.schicht END WHEN b.status='ready' THEN 'hochgeladen' ELSE 'erkannt' END,
+      'fehlercode',COALESCE(layer.fehlercode,m.fehlercode,CASE WHEN upload.status='fehler' THEN 'upload_fehler' END),
+      'medium_id',m.id::text,'art',m.art,'vorschlag',m.vorschlag,'fortschritt',progress.daten)
      FROM reverse_eingang_dateien d JOIN reverse_eingang_bytes b USING(sha256) LEFT JOIN reverse_medien m ON m.id=d.medium_id
+     LEFT JOIN asset_upload_sitzungen upload ON upload.id=b.upload_id
+     LEFT JOIN (SELECT md.medium_id,jsonb_build_object('dateien_gesamt',count(*),'dateien_fertig',count(*) FILTER(WHERE mb.status='ready'),
+       'bytes_gesamt',COALESCE(sum(md.groesse),0)::text,
+       'bytes_erledigt',COALESCE(sum(CASE WHEN mb.status='ready' THEN md.groesse ELSE LEAST(md.groesse,COALESCE(mu.bestaetigte_bytes,0)) END),0)::text) AS daten
+      FROM reverse_eingang_dateien md JOIN reverse_eingang_bytes mb USING(sha256) LEFT JOIN asset_upload_sitzungen mu ON mu.id=mb.upload_id
+      WHERE md.host_id=$2 GROUP BY md.medium_id) progress ON progress.medium_id=m.id
      LEFT JOIN LATERAL(SELECT s.schicht,s.fehlercode FROM reverse_schichten s LEFT JOIN reverse_dateien f ON f.id=s.datei_id
        WHERE s.aktuell AND (s.medium_id=m.id OR f.medium_id=m.id) ORDER BY s.created_at DESC,s.id DESC LIMIT 1) layer ON true WHERE d.host_id=$2`,[id,host]);
    },true);
