@@ -4,7 +4,7 @@
  */
 export type SicherungsShell = 'bash' | 'sh' | 'pwsh' | 'cmd';
 export interface ShellWort { text: string; dynamisch: boolean; raw?: string; }
-export interface ShellInlineSkript { testdatei_pfad?:string;test_tmpdir?:string;testhelfer?:Array<{pfad:string;sha256:string;text:string}>; testprojekt?:boolean;sprache:'node'|'python';text:string;expansion:boolean;argv_index?:number;cwd?:string; }
+export interface ShellInlineSkript { testdatei_pfad?:string;test_tmpdir?:string; testprojekt?:boolean;sprache:'node'|'python';text:string;expansion:boolean;argv_index?:number;cwd?:string; }
 export interface ShellTextKommando { umgebungsquelle?:{pfad:string;sha256:string;testprojekt:boolean;port:string;datenbank:string};inline_skript?:ShellInlineSkript; skript_operation?:import('./shell-inline-pruefung.js').InlineOperation; argv: ShellWort[]; umleitungen: string[]; umleitungs_woerter?: ShellWort[]; zuweisungen?: ShellWort[]; shell?: SicherungsShell; nach?: string; }
 export interface ShellTextBaum { kommandos: ShellTextKommando[]; ungeklart: string[]; komplex: boolean; }
 type Token = ShellWort & { operator?: boolean; quoted?: boolean; };

@@ -132,7 +132,7 @@ export function pruefeShellText(
   const katalog = opts.katalog ?? SHELL_SICHERUNG_SEED;
   const tree = parseShellText(command, opts.shell ?? 'bash');
   const commands = (opts.kommandos ?? tree.kommandos).map(normalisiere).flatMap(k=>k.inline_skript?
-    skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{...opts,testprojekt:opts.projekt_db_geprueft?opts.projekt_eigene_db===true:k.inline_skript.testprojekt??opts.testprojekt,cwd:k.inline_skript.cwd??opts.cwd,testdatei_pfad:k.inline_skript.testdatei_pfad,test_tmpdir:k.inline_skript.test_tmpdir,testhelfer:k.inline_skript.testhelfer}).map(normalisiere):[k]);
+    skriptFakten(k.inline_skript.text,k.inline_skript.sprache,{...opts,testprojekt:opts.projekt_db_geprueft?opts.projekt_eigene_db===true:k.inline_skript.testprojekt??opts.testprojekt,cwd:k.inline_skript.cwd??opts.cwd,testdatei_pfad:k.inline_skript.testdatei_pfad,test_tmpdir:k.inline_skript.test_tmpdir}).map(normalisiere):[k]);
   const activeAnswers = new Set(katalog.antworten.filter(a => a.status === 'aktiv' && gilt(a, opts)).map(a => a.id));
   const treffer: ShellTextErgebnis['treffer'] = [];
   for (const r of katalog.regeln) {

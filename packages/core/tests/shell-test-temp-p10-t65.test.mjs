@@ -36,9 +36,7 @@ const made="const root=await mkdtemp(join(tmpdir(),'owned-fixture-'));";
 for(const text of [
  imports+made+"await writeFile(join(root,'x.json'),'{}');await rm(root,{recursive:true})",
  imports+"const root=await mkdtemp(join('/home/blacky/dev/synapse/packages/core/tests/fixtures','owned-fixture-'));await rm(root,{recursive:true})",
- imports+"const root=await mkdtemp(join('/home/blacky/dev/synapse/coedit-test','owned-fixture-'));await writeFile(join(root,'config.json'),'{}');await rm(root,{recursive:true})",
  imports+made+"const child=join(root,'dir','x');await writeFile(child,'a');await rename(child,join(root,'new'));await rm(dirname(child),{recursive:true})",
- imports+"await writeFile('/home/blacky/dev/synapse/coedit-test/owned/config.json','{}')",
  imports+made+"const save=x=>writeFile(join(root,x),'a');save('nested/file.json')"
 ])test('Nachgewiesener eigener Testpfad bleibt frei',async()=>assert.equal((await decide(text)).r.darf_starten,true));
 for(const [name,text,options] of [
@@ -91,24 +89,24 @@ test('Symlink im Test gewährt keine spätere Schreibausnahme',async()=>{
  const text=imports+"import{symlink as ln}from'node:fs/promises';"+made+"await ln('/outside',join(root,'link'));await writeFile(join(root,'link','x'),'a')";
  assert.equal((await decide(text)).r.darf_starten,false);
 });
-test('Native Probe liest und bindet nur Test-Helfer; kompiliertes Standalone-Programm funktioniert',async()=>{
+test('Native Probe bindet direkte Testdatei ohne Helfer-Snapshots; Standalone funktioniert',async()=>{
  const {probeShellLage,shellLageProbeProgramm}=await import('../dist/services/shell-lage-probe.js');
  const {spawnSync}=await import('node:child_process');
  const {tmpdir}=await import('node:os');
  const source='packages/core/tests/fixtures/shell-test-temp-native-p10-t65.mjs';
  const input={cwd:root,projekt_root:root,testdatei:root+'/'+source};
  const direct=await probeShellLage(input);
- assert.equal(direct.testdatei.tmpdir,tmpdir());
- assert.equal(direct.testdatei.helfer.length,1);
- assert.match(direct.testdatei.helfer[0].pfad,/tests\/fixtures\/shell-test-temp-helper-p10-t65\.mjs$/);
- assert.equal(hash(direct.testdatei.helfer[0].text),direct.testdatei.helfer[0].sha256);
+ assert.equal(direct.testdatei.tmpdir,await(await import('node:fs/promises')).realpath(tmpdir()));
+ assert.equal(hash(direct.testdatei.text),direct.testdatei.sha256);
+ assert.match(direct.testdatei.text,/mkdtemp/);
+ assert.equal(Object.hasOwn(direct.testdatei,'helfer'),false);
  const child=spawnSync(process.execPath,['-e',shellLageProbeProgramm(),JSON.stringify(input)],{encoding:'utf8'});
  assert.equal(child.status,0,child.stderr);
  const embedded=JSON.parse(child.stdout);
  assert.deepEqual(embedded.testdatei,direct.testdatei);
  const command='node '+source;
  const lage=await ermittleShellLage(command,{cwd:root,project_root:root,shell:'sh',os:'linux',inspect:true,env:{},env_vollstaendig:true});
- assert.ok(lage.kommandos[0].inline_skript.testhelfer.length);
+ assert.equal(Object.hasOwn(lage.kommandos[0].inline_skript,'testhelfer'),false);
  assert.equal(pruefeShellStart({project,command,lage,agent_id:'sol-2'},SHELL_SICHERUNG_SEED).darf_starten,true);
 });
 
@@ -131,8 +129,8 @@ for(const [label,effect] of [
  const helpers=[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:helperSource(effect)}];
  assert.equal((await decide(helperCaller,{helpers})).r.darf_starten,false);
 });
-test('Reine Helfer-Erzeugung bleibt frei',async()=>{
- assert.equal((await decide(helperCaller,{helpers:[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:helperSource('')}]})).r.darf_starten,true);
+test('Auch reine importierte Test-Helfer bleiben Anleitung',async()=>{
+ assert.equal((await decide(helperCaller,{helpers:[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text:helperSource('')}]})).r.darf_starten,false);
 });
 for(const base of [root+'/coedit-test/nested',root+'/packages/core/tests/fixtures/nested','/tmp/nested'])test('NOGO: konkreter Prefix über Symlink '+base+' bleibt Anleitung',async()=>{
  const text=imports+"const own=await mkdtemp(join("+JSON.stringify(base)+",'pruefer1-owned-'));await rm(own,{recursive:true});";
@@ -143,7 +141,7 @@ for(const base of [root+'/coedit-test/nested',root+'/packages/core/tests/fixture
 test('NOGO: nativer Eltern-Symlink wird aufgelöst und blockiert',async()=>{
  const fs=await import('node:fs/promises'),p=await import('node:path'),os=await import('node:os');
  const {probeShellLage}=await import('../dist/services/shell-lage-probe.js');
- const own=await fs.mkdtemp(p.join(root,'coedit-test','t84-symlink-'));
+ const own=await fs.mkdtemp(p.join(root,'packages/core/tests/fixtures','t84-symlink-'));
  const external=await fs.mkdtemp(p.join(os.tmpdir(),'t84-external-'));
  try{
   const linked=p.join(own,'nested');await fs.symlink(external,linked);
@@ -181,4 +179,98 @@ test('Helfer-Override, unzulässiger Prefix und ungeprüfte Methode blockieren o
   helperCaller.replace("'pruefer1-owned-'","'../../outside-'").replace("await rm(created,{recursive:true});",""),
   helperCaller.replace("await rm(created,{recursive:true});","await fixture.unknown();"),
  ])assert.equal((await decide(source,{helpers})).r.darf_starten,false);
+});
+
+for(const [label,source] of [
+ ['B4 Namespace',"import * as h from './fixtures/pruefer1-helper.mjs';const fixture=h.createFixture();await fixture.createRoot('pruefer1-owned-');"],
+ ['B5 Default',"import createFixture from './fixtures/pruefer1-helper.mjs';const fixture=createFixture();await fixture.createRoot('pruefer1-owned-');"],
+ ['Seitenimport',"import './fixtures/pruefer1-helper.mjs';"],
+ ['Dynamischer Import',"const h=await import('./fixtures/pruefer1-helper.mjs');await h.createFixture().createRoot('pruefer1-owned-');"],
+ ['require',"const h=require('./fixtures/pruefer1-helper.mjs');h.createFixture().createRoot('pruefer1-owned-');"],
+ ['unaufgelöster Import',"await import(process.env.HELPER);"],
+])test('Enge Scopeentscheidung: '+label+' bleibt Anleitung ohne Caller-Writer',async()=>{
+ const text=helperSource("await writeFile('/outside/import-form','x');")+(label==='B5 Default'?'export default createFixture;':'');
+ assert.equal((await decide(source,{helpers:[{file:'packages/core/tests/fixtures/pruefer1-helper.mjs',text}]})).r.darf_starten,false);
+});
+test('coedit-test besitzt keine Sonderfreigabe mehr',async()=>{
+ for(const text of [
+  imports+"const created=await mkdtemp("+JSON.stringify(root+'/coedit-test/owned-fixture-')+");await writeFile(join(created,'x'),'a');await rm(created,{recursive:true});",
+  imports+"await writeFile("+JSON.stringify(root+'/coedit-test/owned/config.json')+",'{}');",
+ ])assert.equal((await decide(text)).r.darf_starten,false);
+});
+
+test('Direkte Testdatei: gleichnamiger Root aus fremdem Scope ist kein Besitznachweis',async()=>{
+ const text=imports+"function remove(){const owned='/outside';return rm(owned,{recursive:true});}function unrelated(){const owned=mkdtemp(join(tmpdir(),'owned-fixture-'));}await remove();";
+ assert.equal((await decide(text)).r.darf_starten,false);
+});
+test('Umgebundene FS-API der Testdatei erhält keine direkte Schreibfreigabe',async()=>{
+ const text=imports+made+"writeFile=customWriter;await writeFile(join(root,'x'),'a');";
+ assert.equal((await decide(text)).r.darf_starten,false);
+});
+
+test('Aktueller A12-Test mit direktem Cleanup erhält native Freigabe ohne SQL-Ausführung',async()=>{
+ const command='node packages/core/tests/asset-inspektion-share-p13-a12.test.mjs';
+ const lage=await ermittleShellLage(command,{cwd:root,project_root:root,shell:'sh',os:'linux',inspect:true,env:{DATABASE_URL:'postgresql://tester:synthetic@test.invalid:5433/synapse_test'},env_vollstaendig:true,datenbank_freigabe:proof});
+ assert.equal(lage.kommandos[0].inline_skript.testdatei_pfad,root+'/packages/core/tests/asset-inspektion-share-p13-a12.test.mjs');
+ const r=pruefeShellStart({project,command,lage,agent_id:'sol-2'},SHELL_SICHERUNG_SEED);
+ assert.equal(r.darf_starten,true,JSON.stringify({risiko:r.antwort?.risiko,ungeklaert:lage.ungeklaert}));
+});
+
+test('Root vor try bleibt bei terminalem Env-Restore und direktem Callback-Cleanup gebunden',async()=>{
+ const text=imports+made+"after(async()=>{await rm(root,{recursive:true});});try{await writeFile(join(root,'x'),'a');}finally{for(const k of Object.keys(process.env))delete process.env[k];Object.assign(process.env,saved);}";
+ assert.equal((await decide(text)).r.darf_starten,true);
+ const second=imports+made+"try{await writeFile(join(root,'x'),'a');}finally{process.env.TMPDIR='/outside';}const other=await mkdtemp(join(tmpdir(),'second-root-'));await rm(other,{recursive:true});";
+ assert.equal((await decide(second)).r.darf_starten,false);
+});
+
+test('Produkt-dist-Imports bleiben neutral; Testpfade, Writerpakete und unklare Imports nicht',async()=>{
+ for(const text of [
+  "import{Client}from'../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';new Client({name:'fixture'},{capabilities:{}});",
+  "import {pathToFileURL}from'node:url';import{resolve}from'node:path';const root=process.cwd();await import(pathToFileURL(resolve(root,'packages/core/dist/index.js')));",
+  "const dist=new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('services/module.js');",
+ ])assert.equal((await decide(text)).r.darf_starten,true);
+ for(const text of [
+  "const dist=new URL('./fixtures/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('helper.mjs');",
+  "const dist=new URL('../dist/',import.meta.url);const load=rel=>import(new URL(rel,dist));await load('../tests/fixtures/helper.mjs');",
+  "import writer from'fs-extra';writer.remove('/outside');",
+  "import writer from'../node_modules/rimraf/dist/esm/index.js';writer('/outside');",
+  "import{Client}from'./fixtures/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';new Client({name:'fixture'});",
+  "import helper from '../../../scripts/lib/helper.mjs';helper();",
+ ])assert.equal((await decide(text)).r.darf_starten,false);
+});
+
+test('Direkte bekannte FS-Writer benötigen eigene Wurzel auch außerhalb alter Regexliste',async()=>{
+ for(const text of [
+  imports+"await mkdtemp('/outside/owned-fixture-');",
+  "import{appendFile}from'node:fs/promises';await appendFile('/outside/x','a');",
+  "import{copyFile}from'node:fs/promises';await copyFile('/owned/x','/outside/x');",
+  "import{mkdir}from'node:fs/promises';await mkdir('/outside/x');",
+  imports+"await mkdtemp("+JSON.stringify(root+'/coedit-test/owned-fixture-')+");",
+ ])assert.equal((await decide(text)).r.darf_starten,false);
+ for(const text of [
+  imports+made+"import{appendFile}from'node:fs/promises';await appendFile(join(root,'x'),'a');await rm(root,{recursive:true});",
+  imports+made+"import{copyFile}from'node:fs/promises';await copyFile(join(root,'a'),join(root,'b'));await rm(root,{recursive:true});",
+ ])assert.equal((await decide(text)).r.darf_starten,true);
+});
+
+test('DB-Bootstrap-Vertrauen gilt nur für die beiden expliziten Infrastrukturpfade',async()=>{
+ for(const module of ['../../../scripts/lib/test-db-schutz.mjs','../dist/services/test-db-laufzeit-schutz.js']){
+  assert.equal((await decide("import {oeffneGeschuetzteShellTestDb}from'"+module+"';const db=await oeffneGeschuetzteShellTestDb();await db.query('SELECT 1');await db.end();")).r.darf_starten,true);
+ }
+ for(const module of [
+  './fixtures/test-db-schutz.mjs','./fixtures/test-db-laufzeit-schutz.js',
+  '../../../scripts/lib/other/test-db-schutz.mjs','../../../other/scripts/lib/test-db-schutz.mjs',
+  '/outside/scripts/lib/test-db-schutz.mjs','../../../scripts/lib/test-db-schutz.mjs.backup',
+ ])assert.equal((await decide("import{oeffneGeschuetzteShellTestDb}from'"+module+"';await oeffneGeschuetzteShellTestDb();")).r.darf_starten,false);
+});
+
+test('Importformen mit file-URL behalten dieselbe exakte Pfadklassifikation',async()=>{
+ for(const text of [
+  "await import('file://"+root+"/scripts/lib/test-db-schutz.mjs');",
+  "await import(new URL('../../../scripts/lib/test-db-schutz.mjs',import.meta.url));",
+ ])assert.equal((await decide(text)).r.darf_starten,true);
+ for(const text of [
+  "await import('file://"+root+"/packages/core/tests/fixtures/test-db-schutz.mjs');",
+  "import * as h from 'file://"+root+"/packages/core/tests/fixtures/pruefer1-helper.mjs';h.createFixture();",
+ ])assert.equal((await decide(text)).r.darf_starten,false);
 });

@@ -3,7 +3,7 @@ import ts from'typescript';
 import path from'node:path';
 import{ShellTestTempPfade}from'./shell-test-temp-pfade.js';
 import{parseShellText,type ShellTextKommando}from'./shell-sicherung-parser.js';
-export interface InlineKontext{test_probe_pfade?:string[];testdatei_pfad?:string;test_tmpdir?:string;testhelfer?:Array<{pfad:string;sha256:string;text:string}>;cwd?:string;projekt_root?:string;project?:string;os?:string;scratchpad_roots?:string[];inline_pfade?:Record<string,boolean|undefined>;testprojekt?:boolean;}
+export interface InlineKontext{test_probe_pfade?:string[];testdatei_pfad?:string;test_tmpdir?:string;cwd?:string;projekt_root?:string;project?:string;os?:string;scratchpad_roots?:string[];inline_pfade?:Record<string,boolean|undefined>;testprojekt?:boolean;}
 export interface InlineOperation{ziel_im_projekt?:boolean;ziel?:string;testprojekt:boolean;statischer_befehl?:boolean;eingabe_ungeklaert?:boolean;befehl?:ShellTextKommando;name:string;}
 const dyn='<dynamisch>';
 function innerhalb(value:unknown,o:InlineKontext):boolean|undefined{
@@ -102,8 +102,7 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
    const api=apiName(n.expression),args=n.arguments.map(x=>value(x,scope,depth+1)),p=o.os==='windows'?path.win32:path.posix;
    const base=baseIdentifier(n.expression);
    if(!base||!mutable.has(base)||base==='process'){
-    const receiver=ts.isPropertyAccessExpression(n.expression)?value(n.expression.expression,scope,depth+1):undefined;
-    const owned=temp.call(api,args,receiver,n);if(owned!==undefined)return owned;
+    const owned=temp.call(api,args,n);if(owned!==undefined)return owned;
    }else if(/^(?:fs|path|os|url)(?:\.|$)/.test(api))return U;
    if(api==='process.cwd'&&!args.length)return o.cwd;
    if(/^(?:path\.)?(?:join|resolve)$/.test(api)&&args.every(x=>typeof x==='string'))return api.endsWith('join')?p.join(...args as string[]):p.resolve(o.cwd??'.',...args as string[]);
@@ -124,7 +123,7 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
    if(cl?.namedBindings){if(ts.isNamespaceImport(cl.namedBindings))aliases.set(cl.namedBindings.name.text,mod);else for(const b of cl.namedBindings.elements)aliases.set(b.name.text,mod+'.'+(b.propertyName?.text??b.name.text));}
   }
   if(ts.isVariableDeclaration(n)&&n.initializer){
-   if(ts.isIdentifier(n.name)){decl.set(n.name.text,n.initializer);if((ts.isArrowFunction(n.initializer)||ts.isFunctionExpression(n.initializer))&&body(n.initializer))functions.set(n.name.text,n.initializer);}
+   if(ts.isIdentifier(n.name)){if(temp.testdatei&&decl.has(n.name.text))mutable.add(n.name.text);decl.set(n.name.text,n.initializer);if((ts.isArrowFunction(n.initializer)||ts.isFunctionExpression(n.initializer))&&body(n.initializer))functions.set(n.name.text,n.initializer);}
    else if(ts.isObjectBindingPattern(n.name)){const mod=moduleOf(n.initializer);if(mod)for(const b of n.name.elements)if(ts.isIdentifier(b.name))aliases.set(b.name.text,mod+'.'+(b.propertyName?.getText(file)??b.name.text));}
   }
   if(ts.isFunctionDeclaration(n)&&n.name&&body(n))functions.set(n.name.text,n);
@@ -177,12 +176,12 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
    }
    if(api==='process.kill'&&typeof args[0]==='number')projected.push({argv:['kill',String(args[0])].map(text=>({text,dynamisch:false})),umleitungen:[]});
    const statisch=projected.length>0&&projected.every(k=>!k.argv.some(a=>a.dynamisch)&&(!/^(?:node|python[\d.]*)(?:\.exe)?$/.test(k.argv[0]?.text??'')||!!k.inline_skript));
-   const helperReceiver=ts.isPropertyAccessExpression(n.expression)?value(n.expression.expression,scope):undefined;
-   const helperUnsicher=temp.unsichererHelfer(api,args,helperReceiver,n);
-   const carrier=fakt(helperUnsicher?'fs.writeFile':api,args,'node',o,method,statisch);
-   if(helperUnsicher&&carrier.skript_operation)carrier.skript_operation.ziel_im_projekt=false;
-   const ownTarget=temp.dateiOperation(api,args);
+   const carrier=fakt(api,args,'node',o,method,statisch);
+   let ownTarget=temp.dateiOperation(api,args);
+   const fsBase=baseIdentifier(n.expression);
+   if(ownTarget!==undefined&&fsBase&&mutable.has(fsBase))ownTarget=false;
    if(ownTarget!==undefined&&carrier.skript_operation)carrier.skript_operation.ziel_im_projekt=ownTarget;
+   if(ownTarget===false)out.push(fakt('inline.ungeklaert',[],'node',o));
    if(eingabe&&carrier.skript_operation){carrier.skript_operation.eingabe_ungeklaert=true;carrier.skript_operation.befehl=projected[0];}
    out.push(carrier,...projected.flatMap(k=>k.inline_skript?skriptFakten(k.inline_skript.text,k.inline_skript.sprache,o,tiefe+1):[k]));
    for(const arg of n.arguments){const escaped=fnOf(arg),e=escaped&&body(escaped);if(escaped&&e)funktion(escaped,e,new Map(escaped.parameters.filter(p=>ts.isIdentifier(p.name)).map(p=>[(p.name as ts.Identifier).text,U])),depth+1);}
@@ -197,6 +196,7 @@ function nodeFakten(text:string,o:InlineKontext,tiefe:number):ShellTextKommando[
   }
   ts.forEachChild(n,child=>visit(child,scope,depth));
  }
+ if(temp.testHelferImport)out.push(fakt('inline.ungeklaert',[],'node',o));
  visit(file,new Map());return out;
 }
 interface PyToken{text:string;literal?:string;nummer?:number;name?:boolean;}
