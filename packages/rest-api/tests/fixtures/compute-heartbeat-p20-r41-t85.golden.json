@@ -1,0 +1,39 @@
+{
+  "ready_ohne_verhandlung": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "nodeId": "r41-legacy",
+      "serverTime": "<zeit>"
+    }
+  },
+  "busy_unterstuetzung_unbekannt": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "nodeId": "r41-legacy",
+      "serverTime": "<zeit>"
+    }
+  },
+  "alter_stand": {
+    "status": 409,
+    "body": {
+      "success": false,
+      "error": "heartbeat_rejected"
+    }
+  },
+  "ungueltiger_heartbeat": {
+    "status": 400,
+    "body": {
+      "success": false,
+      "error": "invalid_heartbeat"
+    }
+  },
+  "falscher_ausweis": {
+    "status": 403,
+    "body": {
+      "success": false,
+      "error": "node_token_mismatch"
+    }
+  }
+}
