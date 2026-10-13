@@ -26,7 +26,7 @@ for(const [name,body]of [
  ['Parameter',"function run(c){c.query('DROP SCHEMA owned CASCADE')}run(unknown)"],
 ])test('Zielkontext statt Clientanalyse: '+name,async()=>{
  const js="const {Client}=require('pg');const c=new Client("+config+");{"+body+"}";
- assert.equal((await check('node -e "'+js+'"')).darf_starten,true);
+ assert.equal((await check('node -e "'+js+'"')).darf_starten,false);
 });
 
 for(const [name,prefix,constructor] of [
@@ -36,7 +36,7 @@ for(const [name,prefix,constructor] of [
  ['Pool-Alias',"let {Pool:DbPool}=require('pg');DbPool=require('other-driver').Pool;",'DbPool'],
 ])test('Umgebundener '+name+' mit eigenem Ziel',async()=>{
  const js=prefix+"const c=new "+constructor+"("+config+");c.query('DROP SCHEMA owned CASCADE')";
- assert.equal((await check('node -e "'+js+'"')).darf_starten,true);
+ assert.equal((await check('node -e "'+js+'"')).darf_starten,false);
 });
 test('Core-Pool-Alias mit eigenem Umgebungskontext',async()=>{
  const js="import {getPool as pool} from '@synapse/core';pool=other;const c=pool();c.query('DROP SCHEMA owned')";
@@ -46,8 +46,8 @@ for(const [name,js] of [
  ['F4 mutierter Client-Alias',"const {Client}=require('pg');const c=new Client("+config+");let d=c;d=require('other-driver').connect();const e=d;e.query('DROP SCHEMA owned CASCADE')"],
  ['F5 Object.assign-Hersteller',"const pg=require('pg');Object.assign(pg,{Client:require('other-driver').Client});const c=new pg.Client("+config+");c.query('DROP SCHEMA owned CASCADE')"],
  ['Inline mit eigenem Ziel',"const {Client}=require('pg');const c=new Client("+config+");c.query('DROP SCHEMA owned CASCADE')"],
-])test(name+' im eigenen DB-Kontext frei',async()=>{
- const r=await check('node -e "'+js+'"');assert.equal(r.darf_starten,true);assert.equal(r.audit.grund,'projekt_eigene_db');
+])test(name+' mit Literal-Konfiguration Anleitung',async()=>{
+ const r=await check('node -e "'+js+'"');assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
 });
 for(const [key,value] of [
  ['PGHOST','live.invalid'],['PGPORT','5432'],['PGDATABASE','synapse'],['PGUSER','other'],

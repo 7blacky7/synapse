@@ -24,12 +24,12 @@ async function decision(command,{cwd=root,texts={},env={},freigabe=proof}={}){
 }
 const captures=JSON.parse(readFileSync(new URL('./fixtures/shell-projektdb-w2-p10-t65.json',import.meta.url),'utf8'));
 for(const c of captures)for(const s of c.scripts){const f=ts.createSourceFile(s.file,s.text,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);assert.equal(f.parseDiagnostics.length,0,'Quellsnapshot muss syntaktisch gültig sein: '+s.file);}
-for(const c of captures)test('W2-Aufruf '+c.id.slice(0,8)+' ohne Helferpflicht freigegeben',async()=>{
+for(const c of captures)test('W2-Aufruf '+c.id.slice(0,8)+' mit Umbau ergibt konservative Anleitung',async()=>{
  const cwd=path.join(root,c.cwd_relative);
  const texts=Object.fromEntries(c.scripts.map(s=>[path.resolve(cwd,s.file),s.text.replaceAll('/home/blacky/dev/synapse',root)]));
  const r=await decision(c.command,{cwd,texts});
- assert.equal(r.darf_starten,true,JSON.stringify({audit:r.audit,risiko:r.antwort?.risiko,lage:r.antwort?.lage.ungeklaert}));
- assert.equal(r.audit.grund,'projekt_eigene_db');
+ assert.equal(r.darf_starten,false,JSON.stringify({audit:r.audit,risiko:r.antwort?.risiko,lage:r.antwort?.lage.ungeklaert}));
+ assert.equal(r.audit.stufe,'anleitung');
 });
 const inline=text=>'node -e '+JSON.stringify(text);
 for(const [name,command,env] of [
@@ -40,7 +40,7 @@ for(const [name,command,env] of [
  ['Projekt-DB', "psql 'postgresql://owner:synthetic@project.invalid:5433/spielwiese' -c 'DROP TABLE owned'",{}]
 ])test(name+' erlaubt',async()=>{
  const freigabe=name==='Projekt-DB'?{...proof,ziele:[{art:'projekt',host:'project.invalid',port:'5433',user:'owner',datenbank:'spielwiese'}]}:proof;
- assert.equal((await decision(command,{env,freigabe})).darf_starten,true);
+ assert.equal((await decision(command,{env,freigabe})).darf_starten,name!=='Explizite Inline-DSN');
 });
 test('Node-Datei außerhalb Testpfadmuster ohne Helfer',async()=>{
  const file=root+'/tools/adhoc.mjs',text="const pool=getPool();await pool.query('DROP TABLE owned')";
@@ -98,7 +98,7 @@ for(const [name,js]of [
  ['eigene SQL-Konstante',"const c=getPool();const sql='DROP TABLE owned';c.query(sql)"],
  ['eigene QueryConfig',"const c=getPool();const sql='CREATE TABLE owned(x int)';c.query({text:sql})"]
 ])test(name+' bleibt frei ohne Helfer',async()=>{
- const r=await decision(inline(js),{env:{DATABASE_URL:own}});assert.equal(r.darf_starten,true);assert.equal(r.audit.grund,'projekt_eigene_db');
+ const r=await decision(inline(js),{env:{DATABASE_URL:own}});assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
 });
 
 for(const [name,js]of [
@@ -113,7 +113,7 @@ for(const [name,js]of [
 ])test(name+' bleibt Anleitung',async()=>{
  const r=await decision(inline(js),{env:{DATABASE_URL:own}});assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
 });
-test('Eigene Configaliase bleiben frei',async()=>{
+test('Configaliase gehen ohne Datenflussanalyse zur Anleitung',async()=>{
  const js="const{Client}=require('pg');const cfg={database:'synapse_test'};const alias=cfg;alias.database='synapse_test';const c=new Client(alias);const sql='DROP TABLE owned';c.query({text:sql})";
- assert.equal((await decision(inline(js),{env:{DATABASE_URL:own}})).darf_starten,true);
+ assert.equal((await decision(inline(js),{env:{DATABASE_URL:own}})).darf_starten,false);
 });

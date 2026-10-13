@@ -20,7 +20,7 @@ async function drossle<T>(args:Objekt, daten:T):Promise<T> {
         const r=await getPool().query<{host:string;port:number;db:string}>(
           'SELECT host,port,db FROM projekt_datenbanken WHERE project=$1',[project]);
         const db=r.rows[0];
-        const database_url=project==='synapse'?'synapse-system-db':db?`projekt-db ${db.db} (${db.host}:${db.port})`:'keine';
+        const database_url=project==='synapse'?'keine':db?`projekt-db ${db.db} (${db.host}:${db.port})`:'keine';
         return await claimHinweis({project,agentId:agent,art:'job_env',fingerprint:database_url})
           ? {database_url} : undefined;
       })();

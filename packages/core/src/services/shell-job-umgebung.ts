@@ -9,7 +9,7 @@
  * REGELN:
  *   - DATABASE_URL bleibt als Standardvariable, zeigt aber IMMER auf die DB des
  *     Projekts, in dem der Job laeuft:
- *       Projekt synapse  -> Synapse-DB, dazu SYNAPSE_DATABASE_URL + SYNAPSE_DB_HINWEIS.
+ *       Projekt synapse  -> KEINE System-DB-Zugangsdaten; Test-DB ausdrücklich laden.
  *       anderes Projekt  -> Spielwiese aus projekt_datenbanken (5433). Gibt es keine,
  *                           wird DATABASE_URL NICHT gesetzt, stattdessen
  *                           SYNAPSE_PROJEKT_DB_HINWEIS. Nie Rueckfall auf die Synapse-DB.
@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { leseProjektDbZugang } from './projekt-db.js';
 import {dbZielAusUrl,type ShellDbZiel} from './shell-db-zuordnung.js';
+import {getConfig} from '../config.js';
 
 export const SYNAPSE_SYSTEM_PROJEKT = 'synapse';
 
@@ -37,7 +38,7 @@ export const SYNAPSE_DB_HINWEIS =
 
 /** Was ein Job ueber seine DB-Variable erfaehrt — ohne Passwort. */
 export interface JobUmgebungInfo {
-  /** "projekt-db <db> (<host>:<port>)" | "synapse-system-db" | "keine" */
+  /** "projekt-db <db> (<host>:<port>)" | "keine" (System-DB niemals im Kind). */
   database_url: string;
   /** Anzahl entfernter Variablen der Daemon-Umgebung. */
   entfernt: number;
@@ -61,6 +62,8 @@ export interface JobDbZugang {
 export interface BaueJobUmgebungOptionen {
   /** Ausgangsumgebung (Default process.env). */
   basis?: NodeJS.ProcessEnv;
+  /** Eigene System-Konfiguration; nur Tests injizieren einen synthetischen Wert. */
+  systemUrl?: string;
   /** Projekt-DB-Lookup (Default leseProjektDbZugang, also projekt_datenbanken). */
   leseZugang?: (projekt: string) => Promise<JobDbZugang | null>;
   /** Secrets-Datei, deren Namen entfernt werden (Default ~/.config/synapse/secrets.env). */
@@ -150,17 +153,12 @@ function leseSecretNamen(pfad: string): Set<string> {
   return namen;
 }
 
-/** Nur eine echte Spielwiese wird uebernommen: nie 5432, nie DB synapse, nie die Synapse-URL. */
-function istErlaubteProjektDb(zugang: JobDbZugang, synapseUrl: string | undefined): boolean {
-  if (synapseUrl && zugang.database_url === synapseUrl) return false;
-  try {
-    const u = new URL(zugang.database_url);
-    const port = u.port || '5432';
-    const db = decodeURIComponent(u.pathname.replace(/^\//, '')).toLowerCase();
-    return port !== '5432' && db !== 'synapse' && zugang.port !== 5432 && zugang.database.toLowerCase() !== 'synapse';
-  } catch {
-    return false;
-  }
+/** Registry-Ziel gegen eigene System-Konfiguration prüfen, ohne feste Hosts/Ports/DB-Namen. */
+function istErlaubteProjektDb(zugang: JobDbZugang, systemUrl: string | undefined): boolean {
+  const ziel=dbZielAusUrl(zugang.database_url),system=dbZielAusUrl(systemUrl);
+  if(!ziel||!system)return false;
+  if(ziel.host===system.host&&ziel.port===system.port&&ziel.datenbank===system.datenbank)return false;
+  return ziel.host===zugang.host.toLowerCase()&&ziel.port===String(zugang.port)&&ziel.datenbank===zugang.database;
 }
 
 async function projektDbMitCache(
@@ -188,7 +186,7 @@ export async function baueJobUmgebung(
     ?? basis.SYNAPSE_SECRETS_ENV
     ?? path.join(os.homedir(), '.config', 'synapse', 'secrets.env');
 
-  const synapseUrl = basis.SYNAPSE_DATABASE_URL || basis.DATABASE_URL || undefined;
+  const synapseUrl = optionen.systemUrl ?? process.env.SYNAPSE_DATABASE_URL ?? getConfig().database.url;
   const secretNamen = leseSecretNamen(secretsPfad);
   const durchlass = new Set(
     (basis.SYNAPSE_SHELL_ENV_DURCHLASS ?? '').split(',').map((n) => n.trim()).filter(Boolean),
@@ -198,7 +196,9 @@ export async function baueJobUmgebung(
   let entfernt = 0;
   for (const [name, wert] of Object.entries(basis)) {
     if (wert === undefined) continue;
-    const istDb = DB_NAMEN.some((m) => m.test(name));
+    const wertZiel=dbZielAusUrl(wert),systemZiel=dbZielAusUrl(synapseUrl);
+    const systemZugang=!!wertZiel&&!!systemZiel&&wertZiel.host===systemZiel.host&&wertZiel.port===systemZiel.port&&wertZiel.datenbank===systemZiel.datenbank;
+    const istDb = DB_NAMEN.some((m) => m.test(name)) || systemZugang;
     const istGeheim = GEHEIM_NAMEN.some((m) => m.test(name))
       || secretNamen.has(name)
       || URL_MIT_ZUGANG.test(wert)
@@ -213,17 +213,11 @@ export async function baueJobUmgebung(
     env.PATH = ergaenzeJobPfad(env.PATH, optionen.home ?? os.homedir(), optionen.existiert ?? fs.existsSync);
   }
 
+  env.SYNAPSE_SHELL_JOB = '1';
   let dbInfo = 'keine';
   let datenbank_ziel:ShellDbZiel|undefined;
   if (projekt === SYNAPSE_SYSTEM_PROJEKT) {
-    if (synapseUrl) {
-      env.DATABASE_URL = synapseUrl;
-      env.SYNAPSE_DATABASE_URL = synapseUrl;
-      env.SYNAPSE_DB_HINWEIS = SYNAPSE_DB_HINWEIS;
-      dbInfo = 'synapse-system-db';
-    } else {
-      env.SYNAPSE_DB_HINWEIS = 'Der Daemon kennt keine Synapse-DB-URL — DATABASE_URL nicht gesetzt.';
-    }
+    env.SYNAPSE_DB_HINWEIS = 'Shell-Kindumgebung ohne System-DB-Zugang. Projekt-/Test-DB bei Bedarf ausdrücklich laden.';
   } else {
     const anlegen = `Anlegen mit project(action:"projekt_db", project:"${projekt}", erstellen:true)`;
     try {
