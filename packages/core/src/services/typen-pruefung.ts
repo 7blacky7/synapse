@@ -225,6 +225,15 @@ export async function pruefePlanTypen(project: string, dateien: PruefDatei[], ba
     }
     // JS nur bei checkJs des nächstgelegenen Paket-tsconfig (einschließlich extends).
     const unterstuetzt = dateien.filter(d => {
+      // P16-T15/26209: ohne indexierten Paketkontext wird keine Typstufe versucht.
+      // Syntax-/Musterantworten solcher Dateien bleiben dadurch bytegleich.
+      let paketKontext = false;
+      for (let dir = path.posix.dirname(d.file_path);; dir = path.posix.dirname(dir)) {
+        const config = dir === '.' ? 'tsconfig.json' : dir + '/tsconfig.json';
+        if (quellen.has(config)) { paketKontext = true; break; }
+        if (dir === '.') break;
+      }
+      if (!paketKontext) return false;
       const typ = rows.find(r=>r.file_path===d.file_path)?.file_type ?? path.extname(d.file_path).slice(1);
       return ['ts','tsx','mts','cts'].includes(typ) || ['js','mjs','cjs'].includes(typ) && checkJsAusPg(d.file_path,quellen);
     });
