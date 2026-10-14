@@ -36,7 +36,8 @@ interface Session {
 const TERMINAL=new Set(['ok','fertig','completed','failed','fehler','teilweise','error']);
 export class DockerToolContainerExecutor implements ToolContainerExecutor {
  private readonly docker:Docker;private readonly sessions=new Map<string,Session>();
- constructor(private readonly cfg:{docker?:Docker;socketPath?:string;resolveMounts?:(d:ToolDescriptor,c:ToolInstanceContext)=>Promise<ResolvedToolMount[]>;gpuProbe?:(id:string)=>Promise<number|null>}={}){
+ /** lokaleImages (P18-T59): lokal gebaute Images ohne RepoDigests per Image-ID starten, vorher Id und Name/Tag prüfen. */
+ constructor(private readonly cfg:{docker?:Docker;socketPath?:string;resolveMounts?:(d:ToolDescriptor,c:ToolInstanceContext)=>Promise<ResolvedToolMount[]>;gpuProbe?:(id:string)=>Promise<number|null>;lokaleImages?:boolean}={}){
   this.docker=cfg.docker??new Docker({socketPath:cfg.socketPath??'/var/run/docker.sock'});
  }
  async start(d:ToolDescriptor,ctx:ToolInstanceContext){
@@ -45,6 +46,8 @@ export class DockerToolContainerExecutor implements ToolContainerExecutor {
    if(actual!==resolve(m.source)||root!==resolve(m.root)||(!(await lstat(actual)).isDirectory()&&!(await lstat(actual)).isFile()))throw Error('tool_mount_symlink');
   }
   const options=buildToolContainerOptions(d,ctx,mounts),start=performance.now();
+  // 'name@sha256:' löst Docker für lokal gebaute Images nicht auf; Referenz dann = geprüfte Image-ID.
+  if(this.cfg.lokaleImages){await this.pruefeLokalesImage(d);options.Image=d.digest;}
   if(!await ctx.isCurrent())throw Error('tool_start_fenced');
   let container:Docker.Container;
   try{container=await this.docker.createContainer(options);}
@@ -62,6 +65,13 @@ export class DockerToolContainerExecutor implements ToolContainerExecutor {
    // Der Lifecycle beobachtet/stoppt exakt diesen generationsgebundenen Namen; nie force-remove fremder Container.
    throw e;
   }
+ }
+ /** Id muss exakt dem Descriptor-Digest entsprechen und ein RepoTag zum Descriptor-Namen passen. */
+ private async pruefeLokalesImage(d:ToolDescriptor):Promise<void>{
+  let info:{Id?:string;RepoTags?:string[]|null};
+  try{info=await this.docker.getImage(d.digest).inspect();}catch{throw Error('tool_image_mismatch');}
+  const tags=info.RepoTags??[],mitTag=/:[^/]+$/.test(d.image);
+  if(info.Id!==d.digest||!tags.some(t=>mitTag?t===d.image:t.startsWith(d.image+':')))throw Error('tool_image_mismatch');
  }
  private attach(id:string,stream:Duplex,maxFrameBytes:number){
   const out=new PassThrough(),err=new PassThrough(),decoder=new StringDecoder('utf8');

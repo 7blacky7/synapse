@@ -384,7 +384,8 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  catch(e){console.error('[reverse-executor] Konfiguration ungültig, Executor bleibt aus:',(e as Error).message);return null;}
  if(!k)return null;
  const konfig=k;
- try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:reverseMountResolver(konfig)}),resources:reverseRessourcen});}
+ try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:reverseMountResolver(konfig),
+  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:reverseRessourcen});}
  catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
  const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet:reverseServerIdentitaet()});
  const abmelden=registriereWorkJobHooks(REVERSE_CAPABILITY,executor.hooks());
