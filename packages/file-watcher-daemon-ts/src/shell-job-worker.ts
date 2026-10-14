@@ -78,17 +78,23 @@ export async function gleicheShellAbschluesseAb():Promise<void>{
   await abschluesse.flush();
   const rows=jobWeg==='api'?await shellWartungApi('eigene_laufende',DAEMON_ID):await listeEigeneLaufendeShellJobs(DAEMON_ID);
   for(const job of rows){
-   if(aktiveBearbeitungen.has(job.id)||abschluesse.has(job.id)||!job.stream_id||!/^[-a-f0-9]+$/i.test(job.stream_id))continue;
-   let meta:{project?:string;status?:string;pid?:number;exit_code?:number};
+   if(abschluesse.has(job.id)||!job.stream_id||!/^[-a-f0-9]+$/i.test(job.stream_id))continue;
+   let meta:{project?:string;status?:string;pid?:number;exit_code?:number;output_truncated?:boolean};
    try{meta=JSON.parse(fs.readFileSync(path.join(STREAMS_DIR,job.stream_id+'.meta.json'),'utf8'));}catch{continue;}
    if(meta.project!==job.project||!shellProzessEnde(meta))continue;
    const output=readStreamLog(job.stream_id);
    const done=meta.status==='done'&&meta.exit_code===0;
+   console.error('[shell-worker] Beendeter Prozess ohne bestaetigten Abschluss wird nachgetragen:', job.id);
+   aktiveBearbeitungen.delete(job.id);
+   laufendeJobs.delete(job.id);
    await abschluesse.complete(job.id,{
     status:done?'done':'failed',exit_code:meta.exit_code??-1,output,
+    nur_laufend:true,output_truncated:meta.output_truncated===true||meta.status==='running'||output===undefined,
     tail:output?.split('\n').filter((s,i,a)=>s!==''||i<a.length-1).slice(-(job.tail_lines??5)),
     ...(!done?{error:'completion_reconciled'}:{}),
-    message:'Shellprozess beendet; verlorener Abschluss aus lokalem Streamzustand nachgetragen.',
+    message:meta.status==='running'
+      ?'Shellprozess nicht mehr vorhanden; Abschluss nachgetragen, Ausgabe moeglicherweise unvollstaendig (Exit-Code unbekannt).'
+      :'Shellprozess beendet; verlorener Abschluss aus lokalem Streamzustand nachgetragen.',
    });
   }
  }finally{recoveryLaeuft=false;}
@@ -420,6 +426,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
     output,
     ...(roh ? { demaskierung: roh.demaskierung } : {}),
     ...(result['maskiert']?{maskiert:Number(result['maskiert'])}:{}),
+    ...(result['output_truncated']===true||(streamId&&output===undefined)?{output_truncated:true}:{}),
     ...(abgebrochen
       ? {
           error: 'cancelled',
@@ -429,7 +436,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
         }
       : result['message'] ? { message: String(result['message']) } : jobEnvText ? { message: jobEnvText } : {}),
   });
-  console.error(`[shell-worker] Job ${job.id} ${abschluesse.has(job.id)?'lokal beendet; PG-Abschluss ausstehend':'abgeschlossen'} mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
+  console.error(`[shell-worker] Job ${job.id} ${abschluesse.has(job.id)?'lokal beendet; Abschluss ausstehend':'abgeschlossen'} mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }
 
 // ── P9-T27: API-Weg ────────────────────────────────────────────────────────────

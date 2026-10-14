@@ -26,7 +26,7 @@ export class ShellAbschlussWiederholung {
      entry.versuche++;this.deps.report(id,error,entry.versuche);
      // Nach wiederholtem Ergebnisfehler bleibt eine minimale ehrliche Fehlermeldung
      // retrybar. Kein erneutes Ausführen des Kommandos, auch bei dauerhafter DB-Störung.
-     if(entry.versuche>=6)entry.result={status:'failed',error:'completion_persistence_failed',
+     if(entry.versuche>=6)entry.result={status:'failed',error:'completion_persistence_failed',output_truncated:true,
       message:'Shellprozess beendet; Ergebnis konnte nicht gespeichert werden. Abschluss wird erneut versucht.'};
      if(round<2)await (this.deps.wait??(ms=>new Promise(r=>setTimeout(r,ms))))(100*(round+1));
     }

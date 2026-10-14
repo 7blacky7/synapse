@@ -24,7 +24,7 @@ test('Dauerstörung bleibt retrybar; späterer Safety-Net-Lauf beendet minimal f
  const q=new ShellAbschlussWiederholung({complete:async(_id,r)=>{sent.push(r);if(fail)throw Error('down');},report:()=>{},wait:async()=>{}});
  assert.equal(await q.complete('j',{status:'done',output:'original'}),false);assert.equal(sent.length,3);assert.equal(q.size,1);
  await q.flush();assert.equal(sent.length,6);fail=false;await q.flush();
- assert.equal(sent.length,7);assert.deepEqual(sent[6],{status:'failed',error:'completion_persistence_failed',message:'Shellprozess beendet; Ergebnis konnte nicht gespeichert werden. Abschluss wird erneut versucht.'});
+ assert.equal(sent.length,7);assert.deepEqual(sent[6],{status:'failed',error:'completion_persistence_failed',output_truncated:true,message:'Shellprozess beendet; Ergebnis konnte nicht gespeichert werden. Abschluss wird erneut versucht.'});
  assert.equal(q.size,0);
 });
 test('Parallelcomplete/flush teilt einen Sender und ursprüngliches Ergebnis',async()=>{

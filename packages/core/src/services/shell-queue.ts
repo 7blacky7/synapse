@@ -89,6 +89,10 @@ export interface ShellJobCompletion {
   message?: string;
   /** Voller stdout+stderr-Output. Wird gecappt auf MAX_OUTPUT_BYTES. */
   output?: string;
+  /** P9-T33: Ausgabe lokal/bei Uebertragung unvollstaendig, auch unterhalb des Groessencaps. */
+  output_truncated?: boolean;
+  /** Nur Recovery: spaetes Nachtragen darf bereits terminale Ergebnisse nie ueberschreiben. */
+  nur_laufend?: boolean;
   /** P10-T73: bestaetigt demaskiert -> output/tail unmaskiert speichern und in shell_demaskierungen vormerken. */
   demaskierung?: ShellDemaskierung;
 }
@@ -417,7 +421,7 @@ export async function completeShellJob(
   // Output cappen — sehr grosse Logs sprengen die JSON-Response der KI-Tools.
   // Bei Bedarf kann der File-Fallback die volle Groesse liefern.
   let output = result.output ?? null;
-  let truncated = false;
+  let truncated = result.output_truncated === true;
   if (output !== null && output.length > MAX_OUTPUT_BYTES) {
     output =
       output.slice(0, MAX_OUTPUT_BYTES) +
@@ -447,6 +451,7 @@ export async function completeShellJob(
          updated_at = NOW()
      WHERE id = $1
        AND ($5::text IS DISTINCT FROM 'completion_persistence_failed' OR status IN ('pending','running'))
+       AND ($9::boolean IS NOT TRUE OR status IN ('pending','running'))
      RETURNING status`,
     [
       id,
@@ -457,6 +462,7 @@ export async function completeShellJob(
       result.message ?? null,
       output,
       truncated,
+      result.nur_laufend === true,
     ],
   );
   if(roh&&project)await trageShellDemaskierungEin(id,project,roh.demaskierung);

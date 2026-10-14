@@ -136,6 +136,7 @@ type StreamMeta = {
   exit_code?: number;
   last_read_offset: number;
   maskiert?: number;
+  output_truncated?: boolean;
   log_path: string;
 };
 
@@ -324,23 +325,44 @@ export async function execShellInProject(
       last_read_offset: 0,
       log_path: logPath(streamId),
     };
-    writeMeta(meta);
+    let ausgabeGekuerzt = false;
+    const protokolliereAusgabeFehler = (phase: string, error: unknown): void => {
+      ausgabeGekuerzt = true;
+      // Nur Code, niemals Roh-Ausgabe oder Pfade/Secrets aus einer Fehlermeldung.
+      const code = (error as NodeJS.ErrnoException)?.code;
+      console.error('[shell-exec] Ausgabe/Metadaten fehlgeschlagen:', streamId, phase,
+        typeof code === 'string' && /^[A-Z0-9_]+$/.test(code) ? code : 'unknown');
+    };
+    const speichereMeta = (): void => {
+      try { writeMeta(meta); } catch (error) { protokolliereAusgabeFehler('meta', error); }
+    };
+    const schreibeAusgabe = (text: string): void => {
+      try { fs.writeSync(log, text); } catch (error) { protokolliereAusgabeFehler('log', error); }
+    };
+    speichereMeta();
 
     // P10-T33: Klartext darf nie in die Stream-Datei. UTF-8 und Geheimnisse ueber Chunk-Grenzen.
     const decoderOut=new StringDecoder('utf8'),decoderErr=new StringDecoder('utf8');
     let maskiert=0,nulBytes=0;
-    const puffer=new ShellAusgabePuffer(werte,(text,anzahl)=>{maskiert+=anzahl;const safe=shellNulText(text);nulBytes+=safe.anzahl;fs.writeSync(log,safe.text);});
+    const puffer=new ShellAusgabePuffer(werte,(text,anzahl)=>{maskiert+=anzahl;const safe=shellNulText(text);nulBytes+=safe.anzahl;schreibeAusgabe(safe.text);});
     // P10-T73: nur bei bestaetigter Demaskierung die Rohausgabe im Speicher mitfuehren (begrenzt).
     const rohTeile:string[]=[];let rohLaenge=0;
     const empfange=(text:string)=>{
       if(demaskierung&&text&&rohLaenge<ROH_AUSGABE_GRENZE){const t=text.slice(0,ROH_AUSGABE_GRENZE-rohLaenge);rohTeile.push(t);rohLaenge+=t.length;}
-      puffer.empfange(text);
+      try { puffer.empfange(text); } catch (error) { protokolliereAusgabeFehler('puffer', error); }
     };
     child.stdout?.on('data',(chunk:Buffer)=>empfange(decoderOut.write(chunk)));
     child.stderr?.on('data',(chunk:Buffer)=>empfange(decoderErr.write(chunk)));
     let flushed=false;
-    const flush=()=>{if(flushed)return;flushed=true;empfange(decoderOut.end());empfange(decoderErr.end());puffer.ende();if(nulBytes)fs.writeSync(log,`\n[NUL-Bytes ersetzt: ${nulBytes}]\n`);
-      if(demaskierung)rohAusgabe=shellNulText(rohTeile.join('')).text;};
+    const flush = (): void => {
+      if (flushed) return;
+      flushed = true;
+      try {
+        empfange(decoderOut.end()); empfange(decoderErr.end()); puffer.ende();
+        if (nulBytes) schreibeAusgabe(`\n[NUL-Bytes ersetzt: ${nulBytes}]\n`);
+        if (demaskierung) rohAusgabe = shellNulText(rohTeile.join('')).text;
+      } catch (error) { protokolliereAusgabeFehler('flush', error); }
+    };
 
     // ── Abbruch von aussen (SH-2) ──
     // Der Aufrufer bekommt eine Handhabe auf den Kindprozess. Ohne sie koennte
@@ -405,50 +427,58 @@ export async function execShellInProject(
       if (cancelKillTimer) clearTimeout(cancelKillTimer);
     };
 
-    child.on('close', (code) => {
-      flush();
-      if(maskiert) meta.maskiert=maskiert;
+    // P9-T33: exit bedeutet Prozessende, close wartet zusaetzlich auf ALLE
+    // Ausgabepipes. Ein gestarteter Hintergrundprozess kann diese erben und
+    // offen halten, obwohl der eigentliche Shellprozess schon exit=0 meldete.
+    // Drain begrenzen; danach nur unsere Lese-Enden schliessen, nichts toeten.
+    let fertig = false;
+    let drainTimer: NodeJS.Timeout | null = null;
+    const beenden = (code: number | null, error?: Error): void => {
+      if (fertig) return;
+      fertig = true;
+      if (drainTimer) clearTimeout(drainTimer);
       clearTimers();
-      try { fs.closeSync(log); } catch { /* already closed */ }
-      meta.status = (hardLimitHit || cancelled) ? 'failed' : (code === 0 ? 'done' : 'failed');
+      flush();
+      if (maskiert) meta.maskiert = maskiert;
+      try { fs.closeSync(log); } catch (e) { protokolliereAusgabeFehler('close-log', e); }
+      meta.status = error || hardLimitHit || cancelled ? 'failed' : (code === 0 ? 'done' : 'failed');
+      meta.exit_code = error ? -1 : code ?? -1;
+      if (ausgabeGekuerzt) meta.output_truncated = true;
+      speichereMeta();
+      const meldung = error ? undefined
+        : cancelled ? 'Job wurde abgebrochen.'
+        : hardLimitHit ? `Harte Obergrenze von ${formatDauer(hardLimitMs)} erreicht — Prozess wurde beendet.` : undefined;
+      resolve({
+        status: error ? 'failed' : cancelled ? 'cancelled' : hardLimitHit ? 'hard_limit' : meta.status,
+        stream_id: streamId, exit_code: meta.exit_code, detached,
+        tail: tailLines(logPath(streamId), tailN), job_env: jobEnv,
+        ...(error ? { error: maskiereShellText(error.message, werte).text } : {}),
+        ...(maskiert ? { maskiert } : {}),
+        ...(ausgabeGekuerzt ? { output_truncated: true } : {}),
+        ...(meldung || ausgabeGekuerzt ? { message: [meldung,
+          ausgabeGekuerzt ? 'Ausgabe unvollstaendig: Logfehler oder nach Prozessende offen gebliebene Ausgabepipes.' : undefined,
+        ].filter(Boolean).join(' ') } : {}),
+      });
+    };
+    child.once('exit', (code) => {
+      clearTimeout(hardTimer);
+      clearTimeout(detachTimer);
+      // Recovery sieht das echte Ende auch dann, wenn ein Pipe-EOF ausbleibt.
+      meta.status = hardLimitHit || cancelled ? 'failed' : (code === 0 ? 'done' : 'failed');
       meta.exit_code = code ?? -1;
-      writeMeta(meta);
-      // Reihenfolge der Faelle ist wichtig: ein abgebrochener Job ist kein
-      // Fehlschlag des Kommandos, und die harte Obergrenze ist kein Abbruch
-      // durch einen Agenten. Beides muss unterscheidbar bleiben.
-      resolve({
-        status: cancelled ? 'cancelled' : (hardLimitHit ? 'hard_limit' : meta.status),
-        stream_id: streamId,
-        exit_code: meta.exit_code,
-        detached,
-        tail: tailLines(logPath(streamId), tailN),
-        job_env: jobEnv,
-        ...(maskiert?{maskiert}:{}),
-        ...(cancelled
-          ? { message: 'Job wurde abgebrochen.' }
-          : hardLimitHit
-            ? { message: `Harte Obergrenze von ${formatDauer(hardLimitMs)} erreicht — Prozess wurde beendet.` }
-            : {}),
-      });
+      speichereMeta();
+      drainTimer = setTimeout(() => {
+        if (fertig) return;
+        ausgabeGekuerzt = true;
+        console.error('[shell-exec] Prozess beendet; Ausgabepipes nach 1000 ms noch offen:', streamId);
+        child.stdout?.destroy(); child.stderr?.destroy();
+        beenden(code);
+      }, 1000);
     });
-
-    child.on('error', (err) => {
-      flush();
-      if(maskiert)meta.maskiert=maskiert;
-      clearTimers();
-      try { fs.closeSync(log); } catch { /* ignore */ }
-      meta.status = 'failed';
-      meta.exit_code = -1;
-      writeMeta(meta);
-      resolve({
-        status: 'failed',
-        stream_id: streamId,
-        error: maskiereShellText(err.message,werte).text,
-        detached,
-        tail: tailLines(logPath(streamId), tailN),
-        job_env: jobEnv,
-      });
-    });
+    child.stdout?.on('error', (e) => protokolliereAusgabeFehler('stdout', e));
+    child.stderr?.on('error', (e) => protokolliereAusgabeFehler('stderr', e));
+    child.once('close', (code) => beenden(code));
+    child.once('error', (error) => beenden(-1, error));
   });
   if(pruefung.hinweis){
     // User-Vorgabe 14.10.2026: Warnhinweis statt Sperre; message landet auch im Queue-Job.

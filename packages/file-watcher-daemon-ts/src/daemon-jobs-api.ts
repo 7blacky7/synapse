@@ -130,24 +130,37 @@ export async function holeShellJobsApi(o: { daemonId: string; projekte: string[]
   return { jobs: Array.isArray(a.jobs) ? a.jobs : [], abbrueche: Array.isArray(a.abbrueche) ? a.abbrueche : [] };
 }
 
-/** MAX_OUTPUT_BYTES der Queue; ein Zeichen mehr genuegt, damit die API exakt wie bisher kuerzt. */
-const OUTPUT_UEBERTRAG_MAX = 1_000_000 + 1;
+/** Die HTTP-JSON-Huelle muss unter Fastifys Bodylimit bleiben (auch Escape-/UTF-8-Bytes). */
+const ABSCHLUSS_BODY_MAX = 900_000;
 
 /**
- * Meldet den Abschluss. Wirft bei Netz-/Serverfehlern (die Wiederholung macht ShellAbschlussWiederholung).
- * job_unbekannt/nicht_eigener_job sind endgueltig: protokolliert, nicht wiederholt.
+ * Abschluss-Retry/Backoff liegt zentral in ShellAbschlussWiederholung (PG/API gleich).
+ * Zu grosse Ausgabe und 413 duerfen den kleinen terminalen Status nicht blockieren.
  */
 export async function meldeShellAbschlussApi(id: string, daemonId: string, abschluss: ShellJobCompletion): Promise<void> {
-  const body = {
-    host: DAEMON_HOST,
-    daemon_id: daemonId,
-    id,
-    abschluss: typeof abschluss.output === 'string' && abschluss.output.length > OUTPUT_UEBERTRAG_MAX
-      ? { ...abschluss, output: abschluss.output.slice(0, OUTPUT_UEBERTRAG_MAX) }
-      : abschluss,
+  let ergebnis = abschluss;
+  const body = () => ({ host: DAEMON_HOST, daemon_id: daemonId, id, abschluss: ergebnis });
+  const kuerzen = (): void => {
+    ergebnis = {
+      status: abschluss.status, exit_code: abschluss.exit_code,
+      error: abschluss.error, nur_laufend: abschluss.nur_laufend,
+      output_truncated: true,
+      message: 'Shellprozess beendet; Ausgabe konnte nicht vollstaendig uebertragen werden. Lokaler Stream bleibt erhalten.',
+    };
   };
+  if (Buffer.byteLength(JSON.stringify(body()), 'utf8') > ABSCHLUSS_BODY_MAX) {
+    console.error('[daemon-jobs] Abschluss-Ausgabe zu gross; terminaler Status wird ohne Ausgabe gemeldet:', id);
+    kuerzen();
+  }
   try {
-    await anfrage('/api/daemon/shell/abschluss', { method: 'POST', body }, 60_000);
+    try {
+      await anfrage('/api/daemon/shell/abschluss', { method: 'POST', body: body() }, 60_000);
+    } catch (err) {
+      if (!(err instanceof DaemonJobsApiFehler) || err.status !== 413) throw err;
+      console.error('[daemon-jobs] Abschluss-Ausgabe abgelehnt (HTTP 413); Wiederholung ohne Ausgabe:', id);
+      kuerzen();
+      await anfrage('/api/daemon/shell/abschluss', { method: 'POST', body: body() }, 60_000);
+    }
   } catch (err) {
     if (err instanceof DaemonJobsApiFehler && (err.code === 'job_unbekannt' || err.code === 'nicht_eigener_job')) {
       console.error(`[daemon-jobs] Abschluss ${id} verworfen: ${err.code} (Job gehoert nicht mehr diesem Daemon).`);
