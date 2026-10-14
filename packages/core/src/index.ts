@@ -558,16 +558,16 @@ export {pruefeShellStart,regelVersion}from'./services/shell-start-sicherung.js';
 export type{ShellBestaetigung,ShellSicherungsAntwort}from'./services/shell-start-sicherung.js';
 export type{SicherungsShell}from'./services/shell-sicherung-parser.js';
 export {holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./services/shell-sicherungs-lauf.js';
-export {dbZielAusUrl,gleichesDbZiel} from './services/shell-db-zuordnung.js';
-
-// Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
-export {
 // P10-T73: Rueckfrage-Stufe (fluechtig) + Liste bestaetigt demaskierter Jobs mit Nachmaskier-Worker.
 export {stelleShellRueckfrage,loeseShellRueckfrageEin,leseShellBestaetigung,offeneShellRueckfragen,leereShellRueckfragen,
   aktuelleShellDemaskierung,mitShellDemaskierung,shellDemaskierFristStunden,isShellDemaskierung,shellRueckfrageFristMs,befehlHash as shellBefehlHash}from'./services/shell-rueckfrage.js';
 export type{ShellBestaetigungEingabe,ShellDemaskierung,ShellRueckfrageBindung}from'./services/shell-rueckfrage.js';
 export {maskiereFaelligeShellJobs,entferneVerworfeneShellRueckfragen,shellNachmaskierLauf,trageShellDemaskierungEin}from'./services/shell-demaskierung.js';
 export {shellRohAusgabe}from'./services/shell-exec.js';
+export {dbZielAusUrl,gleichesDbZiel} from './services/shell-db-zuordnung.js';
+
+// Shell-Exec (gemeinsam fuer MCP-Tool + REST /api/shell)
+export {
   execShellInProject,
   getShellStream,
   isProjectActive,
