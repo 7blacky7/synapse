@@ -25,8 +25,23 @@ import {
   registriereWorker,
   workerPausiert,
   meldeWorkerArbeit,
+  pruefeWrapperProzess,
   type SpecialistJobRow,
+  type SpecialistJobCompletion,
 } from '@synapse/core'
+// P9-T27: optionaler API-Weg (daemon_jobs_weg=api) statt PG LISTEN/SQL
+import {
+  daemonJobsWeg,
+  pruefeApiWeg,
+  holeSpecialistJobsApi,
+  meldeSpecialistAbschlussApi,
+  specialistExpireApi,
+  wrapperKandidatenApi,
+  wrapperAbgestuerztApi,
+  schlafe,
+  DAEMON_JOBS_POLL_S,
+  type SpecialistApiJob,
+} from './daemon-jobs-api.js'
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`
 
@@ -57,6 +72,8 @@ export interface SpecialistJobWorkerHandle {
 export async function startSpecialistJobWorker(
   getActiveProjects: () => string[],
 ): Promise<SpecialistJobWorkerHandle> {
+  // P9-T27: Schalter daemon_jobs_weg — 'api' holt/meldet Jobs ueber die Synapse-API statt PG LISTEN/SQL.
+  if (daemonJobsWeg() === 'api') return startSpecialistJobWorkerApi(getActiveProjects)
   const pool = getPool()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let listenClient: any = null
@@ -174,7 +191,11 @@ async function processJob(project: string): Promise<void> {
  * Tools liegen in @synapse/mcp-server — dynamic import damit der Daemon
  * nicht zwingend mcp-server im Build braucht.
  */
-export async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<Record<string, unknown>> {
+export async function dispatchSpecialistAction(
+  job: SpecialistJobRow,
+  /** P9-T27: im API-Weg liefert die API den Projektpfad dieses Hosts mit (sonst PG-Lookup wie bisher). */
+  optionen: { lokalerProjektpfad?: string | null } = {},
+): Promise<Record<string, unknown>> {
   const args = job.args as Record<string, unknown>
   const tools = await import('@synapse/mcp-server/tools')
 
@@ -231,7 +252,7 @@ export async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<R
     }
 
     case 'stop': {
-      const path = await lokalerProjektpfad(job.project)
+      const path = optionen.lokalerProjektpfad !== undefined ? optionen.lokalerProjektpfad : await lokalerProjektpfad(job.project)
       if (!path) throw new Error('Stop: Projektpfad dieses Hosts nicht eindeutig registriert')
       const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
       const projectPath = path
@@ -316,5 +337,126 @@ export async function dispatchSpecialistAction(job: SpecialistJobRow): Promise<R
 
     default:
       throw new Error(`Unbekannte Specialist-Action: ${job.action}`)
+  }
+}
+
+// ── P9-T27: API-Weg ───────────────────────────────────────────────────────────
+
+/**
+ * Spezialisten-Worker ueber die Synapse-API (daemon_jobs_weg=api). Gleiches Verhalten wie der PG-Weg:
+ * Claim nur fuer aktive Projekte und diesen Host (target_hostname), Jobs juenger als 30 s, Verfall
+ * nach 30 s, Wrapper-Reaper (Datenteil ueber die API, Prozesspruefung /proc lokal), Pause ueber
+ * intern(worker_pausieren, worker specialist_jobs). dispatchSpecialistAction bleibt unveraendert;
+ * den Projektpfad fuer stop liefert die API mit.
+ * OFFEN (Welle 2): die Spezialisten-Tools selbst (spawn/stop/purge/status in @synapse/mcp-server)
+ * schreiben weiter direkt in PG; der Wrapper hat dafuer bereits SYNAPSE_WRAPPER_TRANSPORT=api.
+ */
+async function startSpecialistJobWorkerApi(getActiveProjects: () => string[]): Promise<SpecialistJobWorkerHandle> {
+  pruefeApiWeg()
+  let stopped = false
+  let laufend: AbortController | null = null
+  let reaperLaeuft = false
+
+  const bearbeite = async (job: SpecialistApiJob): Promise<void> => {
+    meldeWorkerArbeit('specialist_jobs')
+    console.error(`[specialist-worker] Job ${job.id} (${job.project}) gestartet: action=${job.action}`)
+    let abschluss: SpecialistJobCompletion
+    try {
+      const result = await dispatchSpecialistAction(job, { lokalerProjektpfad: job.lokaler_projektpfad ?? null })
+      abschluss = { status: 'done', result }
+    } catch (err: unknown) {
+      const m = (err as Error).message ?? String(err)
+      abschluss = { status: 'failed', error: 'specialist_exception', message: m }
+    }
+    for (let versuch = 1; versuch <= 3; versuch++) {
+      try {
+        await meldeSpecialistAbschlussApi(job.id, DAEMON_ID, abschluss)
+        console.error(`[specialist-worker] Job ${job.id} ${abschluss.status}${abschluss.message ? `: ${abschluss.message}` : ''}`)
+        return
+      } catch (err) {
+        console.error(`[specialist-worker] Abschluss ${job.id}, Versuch ${versuch} fehlgeschlagen:`, (err as Error).message)
+        if (versuch < 3) await schlafe(1_000 * versuch)
+      }
+    }
+  }
+
+  const abruf = async (warteS: number, signal?: AbortSignal): Promise<number> => {
+    if (workerPausiert('specialist_jobs')) return 0
+    const projekte = getActiveProjects()
+    if (projekte.length === 0) return 0
+    const jobs = await holeSpecialistJobsApi({ daemonId: DAEMON_ID, projekte, warteS, signal })
+    for (const job of jobs) {
+      void bearbeite(job).catch((err: unknown) => {
+        console.error(`[specialist-worker] Job ${job.id} Fehler:`, (err as Error).message)
+      })
+    }
+    return jobs.length
+  }
+
+  registriereWorker({
+    name: 'specialist_jobs',
+    beschreibung: 'Specialist-Jobs ueber die Synapse-API holen und ausfuehren',
+    durchlauf: async () => ({ projekte: getActiveProjects().length, jobs: await abruf(0), weg: 'api' }),
+  })
+
+  /** reapLokaleWrapper im API-Weg: Kandidaten von der API, Prozesspruefung lokal, CAS-Update per API. */
+  const reaper = async (): Promise<number> => {
+    let anzahl = 0
+    for (const k of await wrapperKandidatenApi(DAEMON_ID, getActiveProjects())) {
+      if ((await pruefeWrapperProzess(Number(k.wrapper_pid), k.agent_name, k.project, k.path)).zustand !== 'tot') continue
+      anzahl += await wrapperAbgestuerztApi(DAEMON_ID, k)
+    }
+    return anzahl
+  }
+
+  const safetyInterval = setInterval(() => {
+    if (stopped) return
+    if (!reaperLaeuft && !workerPausiert('specialist_jobs')) {
+      reaperLaeuft = true
+      void reaper().catch((err: unknown) => {
+        console.error('[specialist-worker] Reaper (API):', (err as Error).message)
+      }).finally(() => { reaperLaeuft = false })
+    }
+    // P15-T12: waehrend einer Pause nichts verfallen lassen — die Jobs warten nur.
+    if (!workerPausiert('specialist_jobs')) {
+      void specialistExpireApi(DAEMON_ID, 30).catch((err: unknown) => {
+        console.error('[specialist-worker] expire (API) Fehler:', (err as Error).message)
+      })
+    }
+  }, 10_000)
+
+  void (async () => {
+    let fehlerZyklen = 0
+    let fehlerGemeldet = false
+    while (!stopped) {
+      try {
+        if (workerPausiert('specialist_jobs') || getActiveProjects().length === 0) { await schlafe(2_000); continue }
+        laufend = new AbortController()
+        await abruf(DAEMON_JOBS_POLL_S, laufend.signal)
+        laufend = null
+        if (fehlerGemeldet) { console.error('[specialist-worker] API wieder erreichbar'); fehlerGemeldet = false }
+        fehlerZyklen = 0
+      } catch (err) {
+        laufend = null
+        if (stopped) break
+        fehlerZyklen = Math.min(fehlerZyklen + 1, 30)
+        if (!fehlerGemeldet) {
+          console.error(`[specialist-worker] API nicht erreichbar (${(err as Error).message}) — neuer Versuch mit Backoff bis 30 s`)
+          fehlerGemeldet = true
+        }
+        await schlafe(1_000 * fehlerZyklen)
+      }
+    }
+  })()
+
+  console.error(`[specialist-worker] gestartet als ${DAEMON_ID} (Weg: API)`)
+
+  return {
+    stop: async (): Promise<void> => {
+      stopped = true
+      clearInterval(safetyInterval)
+      laufend?.abort()
+      console.error('[specialist-worker] gestoppt.')
+    },
   }
 }

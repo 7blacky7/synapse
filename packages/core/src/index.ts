@@ -117,6 +117,25 @@ export { GUIDE_OVERVIEW, TOOL_GUIDES } from './guide/index.js';
 export type { ToolGuide, ActionGuide } from './guide/index.js';
 
 export { lokalerProjektpfad, pruefeWrapperProzess, stoppeLokalenWrapper, reapLokaleWrapper } from './services/wrapper-prozess.js';
+// P9-T27: Daemon-Job-Vertrag (Shell-/Spezialisten-Jobs des lokalen Daemons ueber die API)
+export {
+  DAEMON_JOB_WARTE_MAX_S,
+  DAEMON_JOB_MAX_JE_ABRUF,
+  istGueltigeDaemonId,
+  leseProjektListe,
+  holeShellJobsFuerDaemon,
+  schliesseShellJobFuerDaemon,
+  gibShellJobZurueck,
+  shellAbbruchWuensche,
+  holeSpecialistJobsFuerDaemon,
+  schliesseSpecialistJobFuerDaemon,
+  gibSpecialistJobZurueck,
+  lokalerProjektpfadFuerHost,
+  wrapperReapKandidaten,
+  markiereWrapperAbgestuerzt,
+  schliesseDaemonJobWecker,
+} from './services/daemon-jobs-vertrag.js';
+export type { ShellDaemonAbruf, SpecialistDaemonJob, WrapperReapKandidat, DaemonAbschlussErgebnis } from './services/daemon-jobs-vertrag.js';
 export { getProjectRecordById } from './services/project-record-ids.js';
 
 // PostgreSQL

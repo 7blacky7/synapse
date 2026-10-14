@@ -33,6 +33,17 @@ import {
   meldeWorkerArbeit,
 } from '@synapse/core';
 import type { ShellJobRow } from '@synapse/core';
+// P9-T27: optionaler API-Weg (daemon_jobs_weg=api) statt PG LISTEN/SQL
+import {
+  daemonJobsWeg,
+  pruefeApiWeg,
+  holeShellJobsApi,
+  meldeShellAbschlussApi,
+  shellWartungApi,
+  schlafe,
+  DAEMON_JOBS_POLL_S,
+  type ShellAbrufAntwort,
+} from './daemon-jobs-api.js';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
 
@@ -48,8 +59,10 @@ function readStreamLog(streamId: string | undefined | null): string | undefined 
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`;
 const aktiveBearbeitungen=new Set<string>();
+/** P9-T27: 'api' = Abschluss/Abgleich ueber die Synapse-API (gesetzt beim Worker-Start). */
+let jobWeg:'pg'|'api'='pg';
 const abschluesse=new ShellAbschlussWiederholung({
- complete:completeShellJob,
+ complete:(id,result)=>jobWeg==='api'?meldeShellAbschlussApi(id,DAEMON_ID,result):completeShellJob(id,result),
  report:(id,error,versuch)=>console.error(`[shell-worker] Abschluss ${id}, Versuch ${versuch} fehlgeschlagen:`,
   maskiereShellText(error instanceof Error?error.message:String(error)).text.replace(/\u0000/g,'\\0')),
 });
@@ -59,7 +72,7 @@ export async function gleicheShellAbschluesseAb():Promise<void>{
  if(recoveryLaeuft)return;recoveryLaeuft=true;
  try{
   await abschluesse.flush();
-  const rows=await listeEigeneLaufendeShellJobs(DAEMON_ID);
+  const rows=jobWeg==='api'?await shellWartungApi('eigene_laufende',DAEMON_ID):await listeEigeneLaufendeShellJobs(DAEMON_ID);
   for(const job of rows){
    if(aktiveBearbeitungen.has(job.id)||abschluesse.has(job.id)||!job.stream_id||!/^[-a-f0-9]+$/i.test(job.stream_id))continue;
    let meta:{project?:string;status?:string;pid?:number;exit_code?:number};
@@ -113,6 +126,8 @@ export interface ShellJobWorkerHandle {
 export async function startShellJobWorker(
   getActiveProjects: () => string[]
 ): Promise<ShellJobWorkerHandle> {
+  // P9-T27: Schalter daemon_jobs_weg — 'api' holt/meldet Jobs ueber die Synapse-API statt PG LISTEN/SQL.
+  if (daemonJobsWeg() === 'api') return startShellJobWorkerApi(getActiveProjects);
   // pg hat Overloads fuer connect() — 'any' vermeidet den Callback-vs-Promise Overload-Konflikt
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let listenClient: any = null;
@@ -400,4 +415,150 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
       : result['message'] ? { message: String(result['message']) } : jobEnvText ? { message: jobEnvText } : {}),
   });
   console.error(`[shell-worker] Job ${job.id} ${abschluesse.has(job.id)?'lokal beendet; PG-Abschluss ausstehend':'abgeschlossen'} mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
+}
+
+// ── P9-T27: API-Weg ────────────────────────────────────────────────────────────
+
+/**
+ * Shell-Worker ueber die Synapse-API (daemon_jobs_weg=api). Gleiches Verhalten wie der PG-Weg:
+ * - Jobs werden nur geholt, wenn ein Slot frei ist (frei = MAX - aktive); pausiert -> frei 0.
+ * - Abbruchwuensche (cancelShellJob) kommen im selben Long-Poll statt per LISTEN shell_job_cancel.
+ * - runClaimedJob (Rueckfrage, Maskierung, DB-Freigabe, Demaskierung) und die Abschluss-Wiederholung
+ *   bleiben unveraendert; nur der Abschluss geht per POST statt completeShellJob.
+ * - Verwaiste Jobs (reap) beim Start, Verfall (expire) und Abschluss-Abgleich alle 10 s ueber die API.
+ * Kein stiller Rueckfall auf PG: fehlt der Zugang, wirft der Start (main.ts protokolliert).
+ */
+async function startShellJobWorkerApi(getActiveProjects: () => string[]): Promise<ShellJobWorkerHandle> {
+  pruefeApiWeg();
+  jobWeg = 'api';
+  let stopped = false;
+  let laufend: AbortController | null = null;
+  let sofortLaeuft = false;
+  const abbruchGesendet = new Set<string>();
+
+  const starteJob = (job: ShellJobRow): void => {
+    if (aktiveBearbeitungen.has(job.id)) return;
+    aktiveBearbeitungen.add(job.id);
+    void runClaimedJob(job.project, job)
+      .catch((err: unknown) => console.error(`[shell-worker] Job ${job.id} Fehler:`, (err as Error).message))
+      .finally(() => {
+        // PFLICHT wie im PG-Weg: Slot immer freigeben, sonst nimmt der Worker irgendwann nichts mehr an.
+        aktiveBearbeitungen.delete(job.id);
+        laufendeJobs.delete(job.id);
+        abbruchGesendet.delete(job.id);
+        void sofortAbruf();
+      });
+  };
+
+  /** true = etwas Neues (Job gestartet oder Abbruch ausgeloest). */
+  const verarbeite = (a: ShellAbrufAntwort): boolean => {
+    let neu = false;
+    for (const id of a.abbrueche) {
+      if (abbruchGesendet.has(id)) continue;
+      const kill = laufendeJobs.get(id);
+      // Kein Treffer: Prozess noch nicht gestartet — der Wunsch kommt beim naechsten Abruf erneut.
+      if (kill) {
+        abbruchGesendet.add(id);
+        console.error(`[shell-worker] Job ${id} wird abgebrochen`);
+        kill();
+        neu = true;
+      }
+    }
+    for (const job of a.jobs) { starteJob(job); neu = true; }
+    return neu;
+  };
+
+  // P9-T27 Nachbesserung: Slots, die ein laufender Abruf (Long-Poll) schon angefragt hat, sind
+  // reserviert. Sonst koennte sofortAbruf parallel zum Long-Poll dieselben freien Slots noch einmal
+  // anfragen und MAX_CONCURRENT_JOBS ueberschreiten. Die Reservierung endet synchron unmittelbar vor
+  // verarbeite() (das die Jobs in aktiveBearbeitungen eintraegt) — keine Luecke dazwischen.
+  let reserviert = 0;
+  const abruf = async (warteS: number, signal?: AbortSignal): Promise<ShellAbrufAntwort & { neu: boolean }> => {
+    const projekte = getActiveProjects();
+    const frei = workerPausiert('shell') ? 0 : Math.max(0, MAX_CONCURRENT_JOBS - aktiveBearbeitungen.size - reserviert);
+    reserviert += frei;
+    let a: ShellAbrufAntwort;
+    try {
+      a = await holeShellJobsApi({ daemonId: DAEMON_ID, projekte, frei, warteS, signal });
+    } finally {
+      reserviert -= frei;
+    }
+    return { ...a, neu: verarbeite(a) };
+  };
+
+  async function sofortAbruf(): Promise<void> {
+    if (stopped || sofortLaeuft) return;
+    sofortLaeuft = true;
+    try { await abruf(0); }
+    catch (err) { console.error('[shell-worker] Sofort-Abruf (API) fehlgeschlagen:', (err as Error).message); }
+    finally { sofortLaeuft = false; }
+  }
+
+  registriereWorker({
+    name: 'shell',
+    beschreibung: 'Shell-Jobs ueber die Synapse-API holen und ausfuehren (laufende laufen bei Pause weiter)',
+    inAlle: false,
+    durchlauf: async () => {
+      const a = await abruf(0);
+      return { projekte: getActiveProjects().length, jobs: a.jobs.length, weg: 'api' };
+    },
+  });
+
+  // Verwaiste Jobs des vorherigen Daemon-Laufs ehrlich machen (wie reapOrphanedRunningJobs im PG-Weg).
+  try {
+    const verwaist = await shellWartungApi('reap', DAEMON_ID);
+    if (verwaist > 0) console.error(`[shell-worker] ${verwaist} verwaiste(r) Job(s) aus dem letzten Lauf abgeschlossen`);
+  } catch (err) {
+    console.error('[shell-worker] Aufraeumen verwaister Jobs (API) fehlgeschlagen:', (err as Error).message);
+  }
+
+  const safetyInterval = setInterval(() => {
+    if (stopped) return;
+    void gleicheShellAbschluesseAb().catch((err:unknown)=>console.error('[shell-worker] Abschlussabgleich fehlgeschlagen:',maskiereShellText(String(err)).text.replace(/\u0000/g,'\\0')));
+    // P15-T12: waehrend einer Pause nichts verfallen lassen — die Jobs warten nur.
+    if (!workerPausiert('shell')) {
+      void shellWartungApi('expire', DAEMON_ID).catch((err: unknown) => {
+        console.error('[shell-worker] expire (API) Fehler:', (err as Error).message);
+      });
+    }
+  }, 10_000);
+
+  void (async () => {
+    let fehlerZyklen = 0;
+    let fehlerGemeldet = false;
+    while (!stopped) {
+      try {
+        if (getActiveProjects().length === 0 && aktiveBearbeitungen.size === 0) { await schlafe(2_000); continue; }
+        laufend = new AbortController();
+        const a = await abruf(DAEMON_JOBS_POLL_S, laufend.signal);
+        laufend = null;
+        if (fehlerGemeldet) { console.error('[shell-worker] API wieder erreichbar'); fehlerGemeldet = false; }
+        fehlerZyklen = 0;
+        // Nur bekannte Abbruchwuensche (Prozess beendet sich gerade): nicht im Kreis fragen.
+        if (!a.neu && a.abbrueche.length > 0) await schlafe(1_000);
+      } catch (err) {
+        laufend = null;
+        if (stopped) break;
+        fehlerZyklen = Math.min(fehlerZyklen + 1, 30);
+        if (!fehlerGemeldet) {
+          console.error(`[shell-worker] API nicht erreichbar (${(err as Error).message}) — neuer Versuch mit Backoff bis 30 s`);
+          fehlerGemeldet = true;
+        }
+        await schlafe(1_000 * fehlerZyklen);
+      }
+    }
+  })();
+
+  console.error(`[shell-worker] gestartet als ${DAEMON_ID} (Weg: API)`);
+
+  return {
+    stop: async (): Promise<void> => {
+      stopped = true;
+      clearInterval(safetyInterval);
+      laufend?.abort();
+      await abschluesse.flush();
+      if(abschluesse.size)console.error(`[shell-worker] ${abschluesse.size} Abschlüsse noch ausstehend; Streammetadaten bleiben für Recovery erhalten.`);
+      console.error('[shell-worker] gestoppt.');
+    },
+  };
 }

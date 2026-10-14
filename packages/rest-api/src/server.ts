@@ -43,6 +43,8 @@ import {
 } from './routes/index.js';
 import {reverseEingangRoutes} from './routes/reverse-eingang.js';
 import { internDaemonRoutes } from './routes/intern-daemon.js';
+// P9-T27: Shell-/Spezialisten-Jobs des lokalen Daemons ueber die API
+import { daemonJobsRoutes } from './routes/daemon-jobs.js';
 
 /**
  * Erstellt und konfiguriert den Fastify Server
@@ -109,6 +111,9 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(embeddingNodeRoutes);
   // P15-T12 E2: Debug-Steuerung lokaler Daemons (Long-Poll; ohne SYNAPSE_INTERN_TOOL=1 nur debug:false).
   await fastify.register(internDaemonRoutes);
+  // P9-T27 (Welle 1): Shell- und Spezialisten-Jobs des lokalen Daemons per Long-Poll statt PG LISTEN.
+  // Rein additiv; der Daemon nutzt sie nur mit SYNAPSE_DAEMON_JOBS_WEG=api bzw. config daemon_jobs_weg.
+  await fastify.register(daemonJobsRoutes);
 
   // API-Bruecke Schritt 1: alles, was der Spezialisten-Wrapper heute per direkter
   // PostgreSQL-Verbindung macht, als HTTP-Routen. Rein additiv — kein bestehender
