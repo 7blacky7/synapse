@@ -36,9 +36,23 @@ const pgStore:ShareScannerStore={
 };
 const fdPfad=(h:FileHandle)=>'/proc/self/fd/'+h.fd;
 const verboten=new Set(['.intern','_arbeit','_eingang']);
+/** P13-T46: Share-Ordner entstehen erst mit Asset-Sync. Nur wenn die Wurzel lexikalisch im Mount liegt,
+ * selbst nicht existiert (auch nicht als Symlink) und der nächste existierende Vorfahre symlinkfrei ist,
+ * gilt sie als "noch nicht angelegt". Alles andere (Symlink, ELOOP, EACCES, außerhalb) bleibt ein Fehler. */
+async function wurzelFehltNur(root:string,base:string):Promise<boolean>{
+ if(!(root===base||root.startsWith(base+path.sep)))return false;
+ let p=root;
+ for(;;){
+  try{await fs.lstat(p);break;}
+  catch(e){if((e as NodeJS.ErrnoException)?.code!=='ENOENT')return false;const up=path.dirname(p);if(up===p)return false;p=up;}
+ }
+ if(p===root)return false;
+ try{return await fs.realpath(p)===p;}catch{return false;}
+}
 export class ShareScanner {
  private readonly handler=new Map<'projekt'|'reverse',ShareScannerHandler>();
  private laufend:Promise<void>|null=null;
+ private readonly fehlendGemeldet=new Set<string>();
  constructor(private readonly o:{konfiguration?:AssetKonfiguration;store?:ShareScannerStore;fehler?:(e:unknown)=>void}={}){}
  registrieren(bereich:'projekt'|'reverse',handler:ShareScannerHandler):()=>void{
   if(!['projekt','reverse'].includes(bereich)||this.handler.has(bereich))throw new Error('Scannerbereich bereits registriert/ungültig');
@@ -60,7 +74,17 @@ export class ShareScanner {
  private async wurzel(bereich:'projekt'|'reverse',wurzel:ShareScanWurzel,handler:ShareScannerHandler,cfg:AssetKonfiguration){
   const mount=bereich==='projekt'?cfg.speicher.root:cfg.speicher.reverseRoot;
   if(!mount||!path.isAbsolute(wurzel.pfad)||!wurzel.id)throw new Error('Ungültige Scannerwurzel');
-  const root=path.resolve(wurzel.pfad),base=await fs.realpath(mount),real=await fs.realpath(root);
+  const root=path.resolve(wurzel.pfad),base=await fs.realpath(mount),fehlKey=bereich+':'+root;
+  let real:string;
+  try{real=await fs.realpath(root);}
+  catch(e){
+   if((e as NodeJS.ErrnoException)?.code==='ENOENT'&&await wurzelFehltNur(root,base)){
+    if(!this.fehlendGemeldet.has(fehlKey)){this.fehlendGemeldet.add(fehlKey);console.debug('[share-scanner] Share-Ordner fehlt noch, übersprungen:',root);}
+    return;
+   }
+   throw e;
+  }
+  this.fehlendGemeldet.delete(fehlKey);
   if(real!==root||!(real===base||real.startsWith(base+path.sep)))throw new Error('Scannerwurzel verlässt konfigurierten Mount');
   const store=this.o.store??pgStore,key=bereich+':'+wurzel.id+':'+root;
   const vorher=await store.laden(key),next:ShareScanCheckpoint={dateien:Object.create(null),vollstaendig:false};
