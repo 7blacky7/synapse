@@ -81,6 +81,17 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
     const before=userExecutions,r=await call('node '+file);assert.equal(r.success,true,JSON.stringify(r));assert.equal(r.executed_via,'workspace');assert.equal(userExecutions,before+1);
     assert.ok(rootCommands.length>0);for(const opts of rootCommands){assert.equal(opts.User,'0');assert.ok(opts.Cmd[2].includes('/bin/stat -c %u:%g:%a /workspace'));}
    });
+   await t.test('Wiederherstellungsliste erreicht echte MCP-Antwort; Restorefehler bleibt Fehler',async()=>{
+    const saved=w.stelleWorkspaceQuellenWiederHer;
+    try{
+     w.stelleWorkspaceQuellenWiederHer=async()=>['control.txt'];
+     const r=await call('node '+file);assert.equal(r.success,true);assert.deepEqual(r.quellen_wiederhergestellt,['control.txt']);
+     const row=(await q('SELECT sicherung FROM shell_jobs WHERE id=$1',[r.id])).rows[0];
+     assert.deepEqual(row.sicherung.quellen_wiederhergestellt,['control.txt']);
+     w.stelleWorkspaceQuellenWiederHer=async()=>{throw Error('t70_restore_failed');};
+     const failed=await call('node '+file);assert.equal(failed.success,false);assert.match(failed.message,/t70_restore_failed/);
+    }finally{w.stelleWorkspaceQuellenWiederHer=saved;}
+   });
    await t.test('scripts/test-* hat dieselbe native Ausnahme',async()=>assert.equal((await call('node scripts/test-t68.mjs')).success,true));
    await t.test('Produktdatei und unbekannter kanonischer Pfad bleiben Anleitung',async()=>{
     const before=userExecutions;assert.equal((await call('node packages/core/src/t68-product.mjs')).status,'rejected');

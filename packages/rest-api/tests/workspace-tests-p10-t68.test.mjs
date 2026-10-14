@@ -57,9 +57,9 @@ test('Quellschutz nutzt festen Root-Exec und prüft dessen Erfolg',async()=>{
  const container=exit=>({exec:async opts=>{seen=opts;return{start:async()=>Readable.from([]),inspect:async()=>({ExitCode:exit})};}});
  await schuetzeWorkspaceWurzel(container(0));
  assert.equal(seen.User,'0');assert.deepEqual(seen.Cmd.slice(0,2),['/bin/sh','-ec']);
- assert.ok(seen.Cmd[2].includes('/bin/chown 0:0 /workspace'));
+ assert.ok(seen.Cmd[2].includes('/bin/chown 1000:1000 /workspace'));
  assert.ok(seen.Cmd[2].includes('/bin/chmod 0755 /workspace'));
  assert.ok(seen.Cmd[2].includes('/bin/stat -c %u:%g:%a /workspace'));
- assert.ok(seen.Cmd[2].includes('"0:0:755"'));
- for(const exit of [1,null])await assert.rejects(()=>schuetzeWorkspaceWurzel(container(exit)),/workspace_quellschutz_fehlgeschlagen/);
+ assert.ok(seen.Cmd[2].includes('"1000:1000:755"'));
+ for(const exit of [1,null])await assert.rejects(()=>schuetzeWorkspaceWurzel(container(exit)),/workspace_quellen_helfer_fehlgeschlagen/);
 });

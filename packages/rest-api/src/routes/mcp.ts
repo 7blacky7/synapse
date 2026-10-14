@@ -5596,6 +5596,7 @@ async function handleToolCallKern(
             status: r.status??(r.timedOut ? 'timeout' : (r.exitCode === 0 ? 'done' : 'failed')),
             ...shellSicherungsAntwortAus(r as unknown as Record<string,unknown>),
             exit_code: r.exitCode,
+            ...(r.quellen_wiederhergestellt?.length?{quellen_wiederhergestellt:r.quellen_wiederhergestellt,...(r.id?{id:r.id}:{})}:{}),
             tail,
             stderr_tail: r.stderr ? r.stderr.split('\n').slice(-20) : undefined,
             duration_ms: r.durationMs,

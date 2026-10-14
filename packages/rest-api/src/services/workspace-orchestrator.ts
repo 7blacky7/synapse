@@ -20,12 +20,12 @@ import Docker from 'dockerode';
 import { PassThrough } from 'node:stream';
 import * as tar from 'tar-stream';
 import { minimatch } from 'minimatch';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDefaultIgnore, shouldIgnore, ermittleShellLage, shellLageProbeProgramm, maskiereShellAntwort } from '@synapse/core';
 import type { ShellLage,ShellBestaetigung,ShellSicherungsAntwort,SicherungsShell } from '@synapse/core';
 import {workspaceJobDatenbank} from './workspace-job-db.js';
-import {schuetzeWorkspaceWurzel} from './workspace-quellschutz.js';
+import {schuetzeWorkspaceWurzel,pruefeWorkspaceQuellen,schreibeWorkspaceQuellen,workspaceExecProgramm} from './workspace-quellschutz.js';
 import {holeShellDbFreigabe,pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart,baueJobUmgebung}from'@synapse/core';
 import type { ShellProbeAnfrage, ShellProbeAntwort } from '@synapse/core';
 
@@ -502,7 +502,7 @@ export class WorkspaceOrchestrator {
     project: string,
     command: string,
     opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; agent_id?:string|null; bestaetigt?:ShellBestaetigung|null; shell?:SicherungsShell; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string}> {
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string;quellen_wiederhergestellt?:string[]}> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
@@ -532,7 +532,7 @@ export class WorkspaceOrchestrator {
     const katalog=await holeShellStartKatalog();
     const pruefung=pruefeShellStart({project,command,lage,workspace_testdateien:true,agent_id:opts.agent_id,bestaetigt:opts.bestaetigt,
       rechner:context.rechner??containerId,geschuetzte_pids:context.prozesse?.pids,geschuetzte_namen:context.prozesse?.namen},katalog);
-    const sicherungsJob=await beginneShellSicherungsJob({project,command,agent_id:opts.agent_id,entscheidung:pruefung,lage,
+    let sicherungsJob=await beginneShellSicherungsJob({project,command,agent_id:opts.agent_id,entscheidung:pruefung,lage,
       ursprung:'workspace',rechner:context.rechner??containerId});
     if(!pruefung.darf_starten)return maskiereShellAntwort(project,{
       stdout:'',stderr:'',exitCode:null,timedOut:false,durationMs:0,status:'rejected',
@@ -542,10 +542,18 @@ export class WorkspaceOrchestrator {
     console.error(`[Workspaces] exec ${project}: ${command.slice(0, 120)}${command.length > 120 ? '…' : ''} (timeout=${timeoutMs}ms)`);
     void this.appendToLog(containerId, `EXEC: ${command.slice(0, 200)}`);
 
+    const testdatei=lage.kommandos?.some(k=>k.inline_skript?.workspace_testdatei===true)===true;
+    const timeoutMarker='[workspace-timeout-'+randomUUID()+']';
+    let wiederherstellungVersucht=false;
+    const wiederherstellen=async()=>{
+      wiederherstellungVersucht=true;
+      return testdatei?this.stelleWorkspaceQuellenWiederHer(project,container):[];
+    };
+    try {
     const exec = await container.exec({
       Cmd: ['/usr/bin/env','-i',...Object.entries(jobUmgebung.env).filter((e):e is [string,string]=>e[1]!==undefined).map(([k,v])=>k+'='+v),
         `SYNAPSE_PROJECT=${project}`,...(lage.datenbank_zuordnung&&dbFreigabe.test_system_id?[`SYNAPSE_SHELL_DB_FREIGABE=${JSON.stringify(dbFreigabe)}`]:[]),
-        opts.shell?start.programm:'/bin/sh', ...start.prefix, command],
+        ...(testdatei?['node','-e',workspaceExecProgramm(),JSON.stringify({programm:opts.shell?start.programm:'/bin/sh',argv:[...start.prefix,command],timeoutMs,marker:timeoutMarker})]:[opts.shell?start.programm:'/bin/sh',...start.prefix,command])],
       AttachStdout: true,
       AttachStderr: true,
       Tty: false,
@@ -572,7 +580,7 @@ export class WorkspaceOrchestrator {
     });
     let timeoutHandle: NodeJS.Timeout | null = null;
     const timeout = new Promise<void>((_resolve, reject) => {
-      timeoutHandle = setTimeout(() => { timedOut = true; reject(new Error(`exec timeout > ${timeoutMs}ms`)); }, timeoutMs);
+      timeoutHandle = setTimeout(() => { timedOut = true; reject(new Error(`exec timeout > ${timeoutMs}ms`)); }, timeoutMs+(testdatei?2000:0));
     });
 
     let timeoutMsg = '';
@@ -595,6 +603,15 @@ export class WorkspaceOrchestrator {
       exitCode = info.ExitCode ?? null;
     } catch { /* ignore */ }
 
+    if(testdatei&&exitCode===124&&stderr.includes(timeoutMarker))timedOut=true;
+    const quellen_wiederhergestellt=await wiederherstellen();
+    if(quellen_wiederhergestellt.length&&!sicherungsJob){
+      const audit=await getPool().query<{id:string}>(
+        "INSERT INTO shell_jobs(project,command,status,agent_id,claimed_by,sicherung) VALUES($1,$2,'running',$3,'workspace',$4::jsonb) RETURNING id",
+        [project,command,opts.agent_id??null,JSON.stringify({ursprung:'workspace',quellen_wiederhergestellt})]);
+      sicherungsJob=audit.rows[0].id;
+    }
+
     // Activity bei jedem exec frischen — Idle-Timer nicht versehentlich triggern.
     await this.recordActivity(project, wsName);
 
@@ -605,11 +622,41 @@ export class WorkspaceOrchestrator {
     const internal_urls: Record<number, string> = {};
     if (opts.exposePorts) for (const p of opts.exposePorts) internal_urls[p] = this.internalUrl(project, p, wsName);
 
-    const result={stdout,stderr,exitCode,timedOut,durationMs:dt,...(opts.exposePorts?{internal_urls}:{}),
+    const result={stdout,stderr,exitCode,timedOut,durationMs:dt,...(quellen_wiederhergestellt.length?{quellen_wiederhergestellt}:{}),...(opts.exposePorts?{internal_urls}:{}),
       ...(pruefung.antwort?pruefung.antwort:{}),...(sicherungsJob?{id:sicherungsJob}:{})};
     if(sicherungsJob)await beendeShellSicherungsJob(sicherungsJob,project,{
       status:timedOut?'hard_limit':exitCode===0?'done':'failed',exit_code:exitCode,tail:(stdout+stderr).split('\n').slice(-5)});
+    if(sicherungsJob&&quellen_wiederhergestellt.length)await getPool().query(
+      "UPDATE shell_jobs SET sicherung=COALESCE(sicherung,'{}'::jsonb)||jsonb_build_object('quellen_wiederhergestellt',$2::jsonb) WHERE id=$1::uuid AND project=$3",
+      [sicherungsJob,JSON.stringify(quellen_wiederhergestellt),project]);
     return maskiereShellAntwort(project,result);
+    }catch(error){
+      if(!wiederherstellungVersucht)await wiederherstellen();
+      if(sicherungsJob)await beendeShellSicherungsJob(sicherungsJob,project,{status:'failed',error:'workspace_quellen_exec_fehlgeschlagen',message:String(error)});
+      throw error;
+    }
+  }
+
+
+  /** Nur nach nativer Testdatei-Ausnahme: aktuelle PG-Revision während Restore/Verify sperren. */
+  async stelleWorkspaceQuellenWiederHer(project:string,container: Docker.Container):Promise<string[]>{
+    const client=await getPool().connect();
+    try{
+      await client.query('BEGIN');
+      const r=await client.query<{file_path:string;content:string}>(
+        'SELECT file_path, content FROM code_files WHERE project=$1 AND content IS NOT NULL FOR SHARE',[project]);
+      const quellen=r.rows.filter(q=>q.file_path!=='pnpm-lock.yaml'&&!istWorkspaceIgnoriert(q.file_path));
+      for(const q of quellen)if(!q.file_path||q.file_path.startsWith('/')||q.file_path.includes('\\')||
+        q.file_path.split('/').some(p=>p==='..'||p==='.'||!p)||/[\x00-\x1f]/.test(q.file_path))throw Error('workspace_quellen_pfad_ungueltig');
+      const fehlend=await pruefeWorkspaceQuellen(container,quellen);
+      if(fehlend.length){
+        await schreibeWorkspaceQuellen(container,quellen.filter(q=>fehlend.includes(q.file_path)));
+        if((await pruefeWorkspaceQuellen(container,quellen)).length)throw Error('workspace_quellen_wiederherstellung_unvollstaendig');
+      }
+      await client.query('COMMIT');
+      return fehlend;
+    }catch(error){await client.query('ROLLBACK');throw error;}
+    finally{client.release();}
   }
 
   /**

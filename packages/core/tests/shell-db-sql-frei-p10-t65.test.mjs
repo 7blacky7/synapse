@@ -69,7 +69,9 @@ test('Reguläre Helfer-Freigabe gibt Servermetadaten an echten Kindprozess weite
     // Echter Docker-Startvektor, statt SQL nur DB-freie Beobachtung des Kind-Env.
     const code="process.stdout.write(JSON.stringify({proof:JSON.parse(process.env.SYNAPSE_SHELL_DB_FREIGABE),hasSystem:Object.values(process.env).includes(process.argv[1]),pg:Object.keys(process.env).some(k=>/^PG/.test(k))}))";
     const cmd=o.Cmd.slice(0,-1);
-    cmd.push('node -e '+JSON.stringify(code)+' '+JSON.stringify(live));
+    const replacement='node -e '+JSON.stringify(code)+' '+JSON.stringify(live);
+    if(o.Cmd.at(-3)==='-e'&&o.Cmd.at(-4)==='node'){const config=JSON.parse(o.Cmd.at(-1));config.argv[config.argv.length-1]=replacement;cmd.push(JSON.stringify(config));}
+    else cmd.push(replacement);
     const child=spawnSync(cmd[0],cmd.slice(1),{env:{PATH:process.env.PATH,DATABASE_URL:live,PGPASSWORD:'synthetic'},encoding:'utf8'});
     assert.equal(child.status,0,child.stderr);
     return {start:async()=>Readable.from([Buffer.from(child.stdout)]),inspect:async()=>({ExitCode:child.status})};

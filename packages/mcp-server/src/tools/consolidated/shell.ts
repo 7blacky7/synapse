@@ -96,6 +96,8 @@ async function execViaWorkspace(
       exitCode?: number;
       timedOut?: boolean;
       durationMs?: number;
+      quellen_wiederhergestellt?: string[];
+      id?: string;
       error?: { message?: string };
     };
     const safety=shellSicherungsAntwortAus(data as Record<string,unknown>);
@@ -107,6 +109,7 @@ async function execViaWorkspace(
       executed_via: 'workspace',
       status: data.timedOut ? 'timeout' : (data.exitCode === 0 ? 'done' : Object.keys(safety).length&&data.exitCode==null ? 'rejected':'failed'),
       exit_code: data.exitCode,
+      ...(data.quellen_wiederhergestellt?.length?{quellen_wiederhergestellt:data.quellen_wiederhergestellt,...(data.id?{id:data.id}:{})}:{}),
       tail,
       stderr_tail: data.stderr ? data.stderr.split('\n').slice(-20) : undefined,
       duration_ms: data.durationMs,
