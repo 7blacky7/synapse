@@ -33,11 +33,26 @@ const risk=pruefeShellStart({project,command:outside,lage:await ermittleShellLag
 assert.equal(risk.darf_starten,false,'negative Kontrolle nur statisch, nie ausführen');
 const{mkdir,symlink}=await import('node:fs/promises');const{join}=await import('node:path');
 const owned=await cleanup.createRoot('synapse-t47-path-'),scratch=await cleanup.createRoot('synapse-t47-scratch-');
-await mkdir(join(owned,'safe'));await symlink(scratch,join(owned,'escape'),'dir');
+// P10-T73: das Temp-Verzeichnis ist Testordner (sicher). Die Link-Flucht zeigt deshalb auf ein Systemverzeichnis ausserhalb
+// von Projekt, Scratchpad und Temp (/usr; nur statisch geprueft, nie ausgefuehrt); templink fuehrt aus dem Projekt in den Temp-Ordner.
+await mkdir(join(owned,'safe'));await symlink('/usr',join(owned,'escape'),'dir');await symlink(scratch,join(owned,'templink'),'dir');
 const pathCtx={...local,cwd:owned,project_root:owned};
-const pathCheck=async(command,ctx=pathCtx)=>pruefeShellStart({project,command,lage:await ermittleShellLage(command,ctx),agent_id:'sol-2'},katalog);
+// P10-T73 H2 (7c83bf3c, Regel exec.indirekt, an Basis 354135ca schon wirksam): Interpreter-Einzeiler mit Loesch-/Prozess-API
+// sind als Klasse 'rueckfrage' - unabhaengig vom Ziel, also strenger als bei Entstehung dieses Tests. Exakt so pruefen:
+const scratchCmd="node -e "+JSON.stringify("require('fs').rmSync("+JSON.stringify(join(scratch,'owned'))+")");
+for(const [command,ctx] of [["node -e \"require('fs').rmSync('./safe/new')\"",pathCtx],["node -e \"require('fs').rmSync('./escape/new')\"",pathCtx],[scratchCmd,{...pathCtx,scratchpad_roots:[scratch]}],["cd safe && node -e \"require('fs').rmSync('../../outside')\"",pathCtx]]){
+ const r=await pruefeShellStart({project,command,lage:await ermittleShellLage(command,ctx),agent_id:'sol-2'},katalog);
+ assert.equal(r.darf_starten,false,command);assert.equal(r.audit.stufe,'rueckfrage',command);assert.equal(r.antwort?.stufe,'rueckfrage',command);
+}
+// Die Pfadaufloesung selbst (Link-Flucht, Scratchpad-Wurzel, CWD nach cd) bleibt Pruefgegenstand: mit stillgelegter
+// exec.indirekt-Regel gelten die bisherigen Erwartungen unveraendert.
+const ohneIndirekt=structuredClone(katalog);ohneIndirekt.regeln.find(x=>x.id==='exec.indirekt').status='stillgelegt';
+const pathCheck=async(command,ctx=pathCtx)=>pruefeShellStart({project,command,lage:await ermittleShellLage(command,ctx),agent_id:'sol-2'},ohneIndirekt);
 assert.equal((await pathCheck("node -e \"require('fs').rmSync('./safe/new')\"")).darf_starten,true);
 assert.equal((await pathCheck("node -e \"require('fs').rmSync('./escape/new')\"")).darf_starten,false,'native Link-Flucht');
+// Fix P10-T78/TP-E (gefahrGilt): Link aus dem Projekt und cd vor dem Einzeiler -> echtes Ziel statisch unbekannt, fail-closed.
+assert.equal((await pathCheck("node -e \"require('fs').rmSync('./templink/new')\"")).audit.stufe,'rueckfrage','Link aus dem Projekt fail-closed');
+assert.equal((await pathCheck("cd /usr && node -e \"require('fs').rmSync('./new')\"")).audit.stufe,'rueckfrage','cd vor dem Einzeiler fail-closed');
 assert.equal((await pathCheck("node -e "+JSON.stringify("require('fs').rmSync("+JSON.stringify(join(scratch,'owned'))+")"),{...pathCtx,scratchpad_roots:[scratch]})).darf_starten,true,'explizit bekannte Scratchpad-Wurzel');
 assert.equal((await pathCheck("cd safe && node -e \"require('fs').rmSync('../../outside')\"")).darf_starten,false,'tatsächlicher CWD nach cd');
 console.log('P10-T47 Original89f8c63a echter Spawn, PG_FS_SYNC_OK + echter API-Build grün; Risiko-Kontrolle abgewiesen.');

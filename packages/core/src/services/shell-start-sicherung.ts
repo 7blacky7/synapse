@@ -79,7 +79,18 @@ function gefahrGilt(g:ShellTrefferGefahr,lage:ShellLage):boolean{
     if(lage.os!=='windows'&&/^(?:[A-Za-z]:[\\/]|\\\\)/.test(k))return true;
     if(!zielSicher(p.resolve(lage.cwd,k),lage,g))return true;
   }
-  for(const s of g.skript_ziele??[])if(!zielSicher(p.resolve(lage.cwd,s),lage,{...g,ziel:'ausserhalb_projekt'}))return true;
+  // P10-T78/TP-E: skript_ziele tragen nur Ziele, deren NATIVER Pfad (Links aufgeloest, Skript-cwd nach cd) ausserhalb von
+  // Projekt und Scratchpad liegt. Die lexikalische Aufloesung gegen lage.cwd kennt weder Links noch cd: nach einem cd oder
+  // wenn der lexikalische Pfad trotzdem in Projekt/Scratchpad liegt (ein Link fuehrt hinaus), ist das echte Ziel hier
+  // unbekannt -> fail-closed wie H1. Vorher galten 'escape -> /usr' und 'cd /usr && node -e rmSync(...)' als sicher.
+  const lc=(x:string)=>lage.os==='windows'?x.toLowerCase():x;
+  const wurzeln=[lage.project_root,...(lage.scratchpad_roots??[])].filter((w):w is string=>typeof w==='string'&&w.length>0);
+  for(const s of g.skript_ziele??[]){
+    if(cdImBefehl)return true;
+    const ziel=p.resolve(lage.cwd,s);
+    if(wurzeln.some(w=>{const r=p.relative(lc(w),lc(ziel));return r===''||r!=='..'&&!r.startsWith('..'+p.sep)&&!p.isAbsolute(r);}))return true;
+    if(!zielSicher(ziel,lage,{...g,ziel:'ausserhalb_projekt'}))return true;
+  }
   return false;
 }
 export function regelVersion(k:ShellSicherungsKatalog):string{

@@ -24,8 +24,13 @@ hit('node -e "require(\'fs\').rmSync(\'x\', {recursive:true})"','inline.node');
 hit('python -c "import shutil; shutil.rmtree(\'x\')"','inline.python');
 hit('psql -c "DELETE FROM t"','db.sql');
 hit('echo x > .env','fs.redirect');
-assert.equal(pruefeShellText('echo x > "$TARGET"').jev_kandidat,true);
-assert.ok(pruefeShellText('echo x > "$TARGET"').ungeklaert.includes('ziel_dynamisch'));
+// P10-T73 (7c83bf3c): dynamisches Umleitungsziel trifft jetzt die Regel fs.umleitung_ausserhalb (Rueckfrage). Mit
+// Regeltreffer ist es kein Jev-Kandidat mehr (strenger als vorher); Jev-Kandidat ohne Regel: aws ... weiter unten.
+{
+ const r=pruefeShellText('echo x > "$TARGET"');
+ assert.ok(r.treffer.some(t=>t.regel_id==='fs.umleitung_ausserhalb'&&t.stufe==='rueckfrage'),JSON.stringify(r.treffer));
+ assert.equal(r.stufe,'rueckfrage');assert.equal(r.jev_kandidat,false);assert.ok(r.ungeklaert.includes('ziel_dynamisch'));
+}
 for(const command of ['git status','pnpm build','pnpm test','mise run build:core']){
  const r=pruefeShellText(command);assert.equal(r.harmlos,true,command);assert.equal(r.treffer.length,0);
 }
