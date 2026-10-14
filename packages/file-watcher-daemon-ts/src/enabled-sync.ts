@@ -18,8 +18,9 @@
  *        Projekt nirgends, ohne dass ein Fehler sichtbar wurde.
  */
 
+import fs from 'node:fs';
 import os from 'node:os';
-import { getPool, getProjectStatus, setProjectStatus } from '@synapse/core';
+import { getPool, getProjectStatus, setProjectStatus, istVirtuellesProjekt, istVirtuellerRegistryPfad } from '@synapse/core';
 import type { WatcherManager } from './manager.js';
 import type { SetupPhase } from '@synapse/core';
 
@@ -50,6 +51,13 @@ export function synchronisiereProjektCache(
 
   for (const row of rows) {
     try {
+      // P9-T30: status.json NIE schreiben, wenn der Projektordner fehlt (geloescht/anderer Ort) —
+      // sonst legte dieser 10-s-Abgleich einen geloeschten Ordner samt .synapse/status.json neu an.
+      // Fuer deaktivierte Projekte keine NEUE Statusdatei anlegen, nur eine vorhandene nachfuehren.
+      let ordnerDa = false;
+      try { ordnerDa = fs.statSync(row.path).isDirectory(); } catch { ordnerDa = false; }
+      if (!ordnerDa) continue;
+      if (!row.enabled && getProjectStatus(row.path) === null) continue;
       const setupPhase = row.setup_phase ?? 'none';
       const status = row.enabled ? 'active' : 'stopped';
       const current = getProjectStatus(row.path);
@@ -85,6 +93,8 @@ export function startEnabledSync(manager: WatcherManager): EnabledSyncHandle {
           WHERE p.hostname = $1`,
         [HOSTNAME]
       );
+      // P9-T30: virtuelle API-Projekte (z. B. reverse-bibliothek, Pfad /virtual/*) nie uebernehmen/umschalten.
+      res.rows = res.rows.filter((r) => !istVirtuellesProjekt(r.name) && !istVirtuellerRegistryPfad(r.path));
       // Discovery ZUERST: PG-Projekte, die lokal fehlen, in config.json uebernehmen
       // + Watcher starten. Erst danach das enabled-Flag fuer alle (inkl. der
       // gerade uebernommenen) angleichen — siehe Schleife unten.

@@ -16,6 +16,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { pruefeNichtVirtuell } from './virtuelle-projekte.js';
 
 export type ProjectInitStatus = 'pending' | 'running' | 'done' | 'failed' | 'rejected' | 'timeout';
 
@@ -63,6 +64,8 @@ export async function enqueueProjectInitJob(args: {
   requested_by?: string;
   mode?: 'create' | 'restore_existing';
 }): Promise<{ id: string }> {
+  // P9-T30: virtuelle API-Projekte werden nie per Init/Restore auf einem PC angelegt.
+  pruefeNichtVirtuell(args.name, args.mode === 'restore_existing' ? 'restore_existing' : 'project init');
   if(args.mode==='restore_existing') {
     const {ProjectRestoreService}=await import('./project-restore.js');
     return new ProjectRestoreService().enqueue(args.name,args.hostname??'',args.requested_by);

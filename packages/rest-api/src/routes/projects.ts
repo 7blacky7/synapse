@@ -5,6 +5,7 @@
 import { FastifyInstance } from 'fastify';
 import {
   listeProjekte,
+  istVirtuellesProjekt,
   API_CONTRACT_HEADER,
   apiCapabilitiesForClient,
   ensureProjectCollection,
@@ -49,6 +50,8 @@ export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
       activeWatchers: eintraege.filter((eintrag) => eintrag.enabled).map((eintrag) => eintrag.name),
       localWatchers: Array.from(activeWatchers.keys()),
       projectDetails: eintraege,
+      // P9-T30: virtuelle API-Projekte (z. B. reverse-bibliothek) — Tray bietet sie nie zum Binden/Wiederherstellen an.
+      virtuelle_projekte: eintraege.map((eintrag) => eintrag.name).filter((name) => istVirtuellesProjekt(name)),
       ...(capabilities !== undefined ? { capabilities } : {}),
     };
   });

@@ -36,6 +36,8 @@ func zeigeAssetSyncFenster() {
     var actionBusy bool
     var reload func()
     var showProject func(string)
+    // P9-T30: virtuelle API-Projekte bekommen keinen Binden/Wiederherstellen-Haken.
+    virtuell:=map[string]bool{"reverse-bibliothek":true}
     showProject=func(project string){
         if actionBusy{return}
         detailGeneration++
@@ -122,7 +124,42 @@ func zeigeAssetSyncFenster() {
                         })
                     }()
                 }
-                rows=append(rows,bindCheck)
+                if virtuell[project]{
+                    rows=append(rows,assetSyncLabel("Virtuelles API-Projekt: lebt nur auf der Synapse-API und wird nie an einen PC gebunden oder wiederhergestellt."))
+                }else{
+                    rows=append(rows,bindCheck)
+                }
+                // P9-T30: "Von diesem PC entfernen" — nur fuer den bestaetigt zugeordneten eigenen PC.
+                if hostErr==nil&&mappingErr==nil&&mappedHost!=""&&mappedHost==host{
+                    remove:=widget.NewButton("Von diesem PC entfernen",nil)
+                    remove.OnTapped=func(){
+                        if actionBusy{return}
+                        actionBusy=true;chooser.Disable();remove.Disable();detailGeneration++
+                        go func(){
+                            actionCtx,done:=context.WithTimeout(ctx,30*time.Second);defer done()
+                            vorschau,err:=apiAssetHostLoesen(actionCtx,project,host,true)
+                            fyne.Do(func(){
+                                if ctx.Err()!=nil{return}
+                                if err!=nil{actionBusy=false;chooser.Enable();remove.Enable();dialog.ShowError(err,window);return}
+                                dialog.ShowConfirm("Von diesem PC entfernen",assetSyncHostLoesenText(vorschau)+"\n\nJetzt von diesem PC entfernen?",func(ok bool){
+                                    if !ok{actionBusy=false;chooser.Enable();remove.Enable();return}
+                                    go func(){
+                                        runCtx,stop:=context.WithTimeout(ctx,30*time.Second);defer stop()
+                                        ergebnis,err:=apiAssetHostLoesen(runCtx,project,host,false)
+                                        fyne.Do(func(){
+                                            if ctx.Err()!=nil{return}
+                                            actionBusy=false;chooser.Enable()
+                                            if err!=nil{remove.Enable();dialog.ShowError(err,window);return}
+                                            dialog.ShowInformation("Von diesem PC entfernt",assetSyncHostLoesenText(ergebnis),window)
+                                            showProject(project)
+                                        })
+                                    }()
+                                },window)
+                            })
+                        }()
+                    }
+                    rows=append(rows,remove)
+                }
                 if cacheErr!=nil{rows=append(rows,assetSyncLabel("Serverbindung bestätigt; Cache konnte nicht gespeichert werden: "+cacheErr.Error()))}
                 rows=append(rows,widget.NewSeparator(),widget.NewLabelWithStyle("Asset-Sync",fyne.TextAlignLeading,fyne.TextStyle{Bold:true}))
                 if syncErr!=nil{rows=append(rows,assetSyncLabel(syncErr.Error()))}else{
@@ -194,6 +231,8 @@ func zeigeAssetSyncFenster() {
                 if ctx.Err()!=nil||actionBusy{return}
                 if err!=nil{summary.SetText(err.Error());chooser.Disable();return}
                 summary.SetText("Projektliste von Synapse. Neue Projekte bleiben ungebunden, bis Sie das Häkchen ausdrücklich setzen.")
+                virtuell=map[string]bool{"reverse-bibliothek":true}
+                for _,name:=range list.VirtuelleProjekte{virtuell[name]=true}
                 chooser.Options=list.Projects;chooser.Refresh();chooser.Enable()
                 if len(list.Projects)==0{details.Objects=[]fyne.CanvasObject{assetSyncLabel("Keine Projekte auf dem Server vorhanden.")};details.Refresh();return}
                 exists:=false;for _,name:=range list.Projects{if name==selected{exists=true;break}}

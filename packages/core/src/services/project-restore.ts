@@ -7,6 +7,7 @@ import {istMaskierteDatei} from './env-maske.js';
 import {isValidProjectName} from './project-init-queue.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
 import {getAssetKonfiguration} from '../config/asset-konfig.js';
+import {istVirtuellesProjekt,virtuelleProjekte} from './virtuelle-projekte.js';
 export class ProjectRestoreError extends Error {
  constructor(readonly code:string,readonly httpStatus=409){super(code);}
 }
@@ -39,6 +40,8 @@ export class ProjectRestoreService {
 
  async binding(project:string,hostname:string):Promise<boolean>{
   host(hostname);
+  // P9-T30: virtuelle API-Projekte sind nie an einen PC gebunden (auch nicht durch eine Altzeile).
+  if(istVirtuellesProjekt(project))return false;
   const r=await this.db.query('SELECT 1 FROM project_host_bindings b WHERE b.project=$1 AND b.hostname=$2 AND b.enabled AND EXISTS(SELECT 1 FROM projects p WHERE p.name=b.project AND p.enabled)',[project,hostname]);
   return r.rows.length>0;
  }
@@ -46,6 +49,8 @@ export class ProjectRestoreService {
  /** Called only after user/Tray authorization; bind=false merely queues an existing binding. */
  async enqueue(project:string,hostname:string,requestedBy?:string,bind=false):Promise<{id:string}>{
   if(!isValidProjectName(project))fail('invalid_name',400);host(hostname);
+  // P9-T30: virtuelle API-Projekte (z. B. reverse-bibliothek) nie an einen PC binden/wiederherstellen.
+  if(istVirtuellesProjekt(project))fail('virtuelles_projekt',409);
   const c=await this.db.connect();
   try {
    await c.query('BEGIN');
@@ -69,10 +74,11 @@ export class ProjectRestoreService {
    WHERE j.mode='restore_existing' AND j.hostname=$1
     AND (j.status='pending' OR j.status='running' AND j.lease_until<clock_timestamp())
     AND EXISTS(SELECT 1 FROM projects p WHERE p.name=j.name AND p.enabled)
+    AND NOT (j.name = ANY($4::text[]))
    ORDER BY j.created_at LIMIT 1 FOR UPDATE OF j SKIP LOCKED
   ) UPDATE project_init_jobs j SET status='running',claimed_by=$1,claimed_at=clock_timestamp(),
    restore_lease=$2,lease_until=clock_timestamp()+$3*interval '1 millisecond',updated_at=clock_timestamp()
-   FROM candidate c WHERE j.id=c.id RETURNING j.*`,[hostname,lease,this.ttl()]);
+   FROM candidate c WHERE j.id=c.id RETURNING j.*`,[hostname,lease,this.ttl(),virtuelleProjekte()]);
   return r.rows[0]??null;
  }
  async renew(id:string,hostname:string,lease:string){
@@ -80,7 +86,8 @@ export class ProjectRestoreService {
   const r=await this.db.query(`UPDATE project_init_jobs j SET lease_until=clock_timestamp()+$4*interval '1 millisecond'
    WHERE id=$1 AND hostname=$2 AND mode='restore_existing' AND restore_lease=$3 AND status='running' AND lease_until>clock_timestamp()
     AND EXISTS(SELECT 1 FROM project_host_bindings b WHERE b.project=j.name AND b.hostname=$2 AND b.enabled)
-    AND EXISTS(SELECT 1 FROM projects p WHERE p.name=j.name AND p.enabled) RETURNING id`,[id,hostname,lease,this.ttl()]);
+    AND EXISTS(SELECT 1 FROM projects p WHERE p.name=j.name AND p.enabled)
+    AND NOT (j.name = ANY($5::text[])) RETURNING id`,[id,hostname,lease,this.ttl(),virtuelleProjekte()]);
   if(!r.rows.length)fail('restore_lease_veraltet');
  }
  async complete(id:string,hostname:string,lease:string,result:{status:'done'|'failed';path?:string;error?:string}){
@@ -92,6 +99,8 @@ export class ProjectRestoreService {
     WHERE j.id=$1 AND j.hostname=$2 AND j.restore_lease=$3 AND j.mode='restore_existing' AND j.status='running' AND j.lease_until>clock_timestamp()
      AND EXISTS(SELECT 1 FROM projects p WHERE p.name=j.name AND p.enabled) FOR UPDATE OF j FOR SHARE OF b`,[id,hostname,lease]);
    if(!r.rows.length)fail('restore_lease_veraltet');
+   // P9-T30: ein (Alt-)Restore eines virtuellen Projekts traegt nie eine PC-Zeile ein.
+   if(result.status==='done'&&istVirtuellesProjekt(r.rows[0].name))fail('virtuelles_projekt',409);
    if(result.status==='done'){
     if(!result.path||!(/^(\/|[A-Za-z]:[\\/])/.test(result.path)))fail('path_ungueltig',400);
     await c.query('INSERT INTO projects(name,hostname,path,enabled) VALUES($1,$2,$3,true) ON CONFLICT(name,hostname) DO UPDATE SET path=EXCLUDED.path,enabled=true,last_access=clock_timestamp()',[r.rows[0].name,hostname,result.path]);

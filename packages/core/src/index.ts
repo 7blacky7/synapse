@@ -145,6 +145,10 @@ export type { SchemaModus, SchemaPruefung, SchemaStandArt, SchemaSicherErgebnis 
 // Typen
 export { ProjectRestoreService,ProjectRestoreError } from './services/project-restore.js';
 export type { RestoreCodeEntry,RestoreJob } from './services/project-restore.js';
+// P9-T30: virtuelle API-Projekte nie an einen PC binden + Host-Bindung gezielt loesen.
+export { VIRTUELLE_SYSTEMPROJEKTE, VIRTUELLER_HOST, virtuelleProjekte, istVirtuellesProjekt, istVirtuellerRegistryPfad, VirtuellesProjektFehler, pruefeNichtVirtuell } from './services/virtuelle-projekte.js';
+export { HOST_LOESEN_MODE, HostLoesenFehler, projektHostLoesen, claimHostLoesungen, schliesseHostLoesung } from './services/project-host-loesen.js';
+export type { HostLoesenAuftrag } from './services/project-host-loesen.js';
 export * from './types/index.js';
 
 // P13-T25/A7: konsistente Manifeste und revisionierte explizite Pfadmutationen.

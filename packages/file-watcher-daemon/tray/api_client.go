@@ -284,6 +284,8 @@ type apiProjectsResponse struct {
 	LocalWatchers  []string        `json:"localWatchers"`
 	ProjectDetails json.RawMessage `json:"projectDetails"`
 	Capabilities   json.RawMessage `json:"capabilities,omitempty"`
+	// P9-T30: virtuelle API-Projekte (z. B. reverse-bibliothek) — nie an einen PC binden.
+	VirtuelleProjekte []string `json:"virtuelle_projekte,omitempty"`
 }
 
 // knownFeatures kommt vom unterstützten Feature-Katalog des Aufrufers, kein Enum.

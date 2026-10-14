@@ -1,6 +1,6 @@
 /** A10: explicit restore contract beside legacy init, host identity from existing auth. */
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
-import {ProjectRestoreService,ProjectRestoreError,API_CONTRACT_HEADER,apiCapabilitiesForClient} from '@synapse/core';
+import {ProjectRestoreService,ProjectRestoreError,API_CONTRACT_HEADER,apiCapabilitiesForClient,HostLoesenFehler,VirtuellesProjektFehler,projektHostLoesen,claimHostLoesungen,schliesseHostLoesung,mitUserHerkunft} from '@synapse/core';
 import {validateToken,type AuthTokenRow} from '../services/auth.js';
 export interface ProjectRestoreRoutesDeps {service?:ProjectRestoreService;validateToken?:typeof validateToken}
 export async function registerProjectRestoreRoutes(f:FastifyInstance,o:ProjectRestoreRoutesDeps={}){
@@ -15,17 +15,25 @@ export async function registerProjectRestoreRoutes(f:FastifyInstance,o:ProjectRe
  function daemon(auth:AuthTokenRow){
   return auth.kind==='service'&&(auth.scope==='daemon'||auth.scope?.startsWith('daemon:'));
  }
+ // P9-T30 (Nachbesserung): User = Web-UI-Sitzung des Users (session ohne scope; wie user-post P10-T41).
+ function webUiUser(auth:AuthTokenRow){return auth.kind==='session'&&auth.scope===null;}
  async function host(auth:AuthTokenRow,requested?:string,userAllowed=false){
   if(daemon(auth)){
    const own=await service.daemonHost(auth.token_hash);
    if(!own)throw new ProjectRestoreError('daemon_host_nicht_gebunden',403);
    if(requested&&requested!==own)throw new ProjectRestoreError('host_verboten',403);return own;
   }
-  if(userAllowed&&(auth.kind==='access'||auth.kind==='session')&&requested)return requested;
+  // Frei waehlbarer hostname nur fuer den User; Access-/OAuth-Token und andere Sitzungen (z. B. ui:tray) -> 403.
+  if(userAllowed&&!webUiUser(auth))throw new ProjectRestoreError('nur_koordinator_oder_user',403);
+  if(userAllowed&&requested)return requested;
   throw new ProjectRestoreError('daemon_host_erforderlich',403);
  }
  async function run(reply:FastifyReply,fn:()=>Promise<unknown>){
-  try{return await fn();}catch(e){if(e instanceof ProjectRestoreError)return reply.code(e.httpStatus).send({success:false,error:{code:e.code,message:e.message}});throw e;}
+  try{return await fn();}catch(e){
+   if(e instanceof ProjectRestoreError||e instanceof HostLoesenFehler)return reply.code(e.httpStatus).send({success:false,error:{code:e.code,message:e.message}});
+   if(e instanceof VirtuellesProjektFehler)return reply.code(409).send({success:false,error:{code:e.code,message:e.message}});
+   throw e;
+  }
  }
  f.get('/api/project-init/restore/host-binding',(req,reply)=>run(reply,async()=>{
   const auth=await identity(req);if(!daemon(auth))throw new ProjectRestoreError('daemon_host_erforderlich',403);
@@ -47,6 +55,25 @@ export async function registerProjectRestoreRoutes(f:FastifyInstance,o:ProjectRe
  f.delete<{Params:{project:string};Querystring:{hostname?:string}}>('/api/projects/:project/host-binding',(req,reply)=>run(reply,async()=>{
   const auth=await identity(req),hostname=await host(auth,req.query.hostname,true);
   await service.unbind(req.params.project,hostname);return {success:true,bound:false};
+ }));
+ // P9-T30: Tray "Von diesem PC entfernen" — Host-Bindung gezielt loesen (Vorschau Standard).
+ // Daemon-/Tray-Zugang: nur der eigene, bestaetigte Host. Frei waehlbarer hostname nur fuer den
+ // User (Web-UI-Sitzung, session ohne scope; wie user-post P10-T41). Access-/OAuth-Token und andere
+ // Sitzungen -> 403. Der User-Kontext wird hier gesetzt; projektHostLoesen verlangt ihn bei 'tray'.
+ f.post<{Params:{project:string};Body:{hostname?:string;vorschau?:boolean}}>('/api/projects/:project/host-loesen',(req,reply)=>run(reply,async()=>{
+  const auth=await identity(req);
+  const user=webUiUser(auth);
+  if(!daemon(auth)&&!user)throw new ProjectRestoreError('nur_koordinator_oder_user',403);
+  const hostname=await host(auth,req.body?.hostname,user);
+  if(req.body?.vorschau!==undefined&&typeof req.body.vorschau!=='boolean')throw new ProjectRestoreError('vorschau_ungueltig',400);
+  return await mitUserHerkunft(daemon(auth)?'tray':'web-ui-chat',()=>projektHostLoesen({project:req.params.project,hostname,agent:'tray:'+hostname,vorschau:req.body?.vorschau!==false,berechtigung:'tray'}));
+ }));
+ // P9-T30: Daemon holt host_loesen-Auftraege fuer seinen Host ab und entfernt den config.json-Eintrag.
+ f.post('/api/project-init/host-loesen/claim',(req,reply)=>run(reply,async()=>{
+  return {success:true,jobs:await claimHostLoesungen(await host(await identity(req)))};
+ }));
+ f.post<{Params:{id:string};Body:{status:'done'|'failed';message?:string;error?:string}}>('/api/project-init/host-loesen/:id/complete',(req,reply)=>run(reply,async()=>{
+  await schliesseHostLoesung(req.params.id,await host(await identity(req)),req.body);return {success:true};
  }));
  f.post('/api/project-init/restore/claim',(req,reply)=>run(reply,async()=>{
   return {success:true,job:await service.claim(await host(await identity(req)))};

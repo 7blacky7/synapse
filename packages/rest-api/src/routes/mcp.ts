@@ -302,21 +302,21 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise'],
-          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise', 'host_loesen'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db | host_loesen. host_loesen (project, hostname, nur Koordinator/User, Standard vorschau) entfernt NUR die Registry-Zeile dieses Hosts und ueber den Daemon dessen config.json-Eintrag; andere Hosts und alle Projektdaten bleiben, kein disable, lokale Ordner werden nicht geloescht. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         hinweise: {type:'boolean',description:'project(hinweise): optionale Hinweise je Projekt gemeinsam an/aus; setzen nur Koordinator/User. Ohne Wert Status.'},
         geschuetzter_hauptbranch: {type:'string',description:'project(hinweise): geschuetzten Git-Hauptbranch je Projekt setzen; Standard main. Lesen/Setzen nur Koordinator/User, Anzeige in project(status).'},
         path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei action="init" optional — ohne path queued der Job an den Daemon und resolved gegen WORKSPACE_ROOT/name.' },
         erstellen: { type: 'boolean', description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).' },
         uebernehmen: { type: 'object', description: 'Nur projekt_db, nur Koordinator/User: BESTEHENDE Projekt-DB registrieren {database, user, passwort, host?, port?}. Prueft Ziel (nur Projekt-Instanz, nie System-DB) und Anmeldung; Standard Vorschau, eintragen mit vorschau:false. Ueberschreibt nie.', properties: { database: { type: 'string' }, user: { type: 'string' }, passwort: { type: 'string' }, host: { type: 'string' }, port: { type: 'number' } } },
-        vorschau: { type: 'boolean', description: 'Nur projekt_db mit uebernehmen: true (Standard) = nur pruefen; false = eintragen.' },
+        vorschau: { type: 'boolean', description: 'projekt_db mit uebernehmen und host_loesen: true (Standard) = nur pruefen/zeigen; false = ausfuehren.' },
         name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
         index_docs: { type: 'boolean', description: 'Framework-Dokumentation vorladen (Standard: true, fuer init)' },
         project: { type: 'string', description: 'Projekt-Name (fuer complete_setup, stop, list nutzt dies)' },
         phase: { type: 'string', enum: ['initial', 'post-indexing'], description: 'Setup-Phase (fuer complete_setup)' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Onboarding (fuer init)' },
-        hostname: { type: 'string', description: 'Optional fuer init: Ziel-Hostname falls mehrere Daemons im selben PG haengen.' },
+        hostname: { type: 'string', description: 'Optional fuer init: Ziel-Hostname falls mehrere Daemons im selben PG haengen. Pflicht fuer host_loesen: der zu loesende Host (nie rest-api).' },
         mode: {type:'string',enum:['create','restore_existing'],description:'init: bestehende Tray-Hostbindung via API wiederherstellen; name+hostname, kein path.'},
         template: { type: 'string', description: 'Optional fuer init: Skeleton-Template ("node"|"python"|"blank"). Aktuell informational, Daemon legt nur Basisordner + README an.' },
         job_id: { type: 'string', description: 'Erforderlich fuer init_status: Job-ID aus der ersten init-Antwort.' },
@@ -2398,6 +2398,12 @@ async function handleToolCallKern(
             projekt_db: await projektDbBeiInit(projectName, explicitPath),
             message: `Projekt "${projectName}": Docs-Automatik ${indexDocs ? 'angestossen' : 'aus'}, aber NICHT in PostgreSQL registriert und KEIN FileWatcher gestartet — dieser REST-Aufruf kann das fuer einen expliziten Pfad nicht leisten (Hostname-Problem, siehe Code-Kommentar). Fuer vollstaendige Einrichtung project(action:"init", name:"${projectName}") OHNE path aufrufen (Self-Service ueber den lokalen Daemon) oder lokal ueber den MCP-Server (stdio) initialisieren.`,
           };
+        }
+        case 'host_loesen': {
+          // P9-T30: Host-Bindung gezielt loesen (nur Koordinator/User, Vorschau zuerst).
+          const {projektHostLoesen} = await import('@synapse/core');
+          if(args.vorschau !== undefined && typeof args.vorschau !== 'boolean')throw new Error('vorschau muss boolean sein');
+          return projektHostLoesen({project:reqStr(args,'project'),hostname:reqStr(args,'hostname'),agent:String(effectiveAgentId??args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),vorschau:args.vorschau!==false});
         }
         case 'hinweise': {
           const {projektHinweisOption,projektHauptbranchOption} = await import('@synapse/core');

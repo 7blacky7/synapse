@@ -80,7 +80,16 @@ export function setProjectStatus(
   const synapseDir = path.join(projectPath, STATUS_DIR);
   const statusPath = getStatusPath(projectPath);
 
-  // .synapse Ordner erstellen falls noetig
+  // P9-T30: den Projektordner selbst NIE anlegen. Fehlt er (geloescht, anderer Host, virtuelles
+  // Projekt), bleibt status.json aus — sonst legt jedes enable/disable/enabled-sync einen geloeschten
+  // Ordner samt .synapse/status.json wieder an. Init/Restore legen den Ordner vorher selbst an.
+  try {
+    if (!fs.statSync(projectPath).isDirectory()) return;
+  } catch {
+    return;
+  }
+
+  // .synapse Ordner erstellen falls noetig (nur innerhalb des vorhandenen Projektordners)
   if (!fs.existsSync(synapseDir)) {
     fs.mkdirSync(synapseDir, { recursive: true });
   }

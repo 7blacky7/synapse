@@ -4,7 +4,7 @@ import {constants} from 'node:fs';
 import * as path from 'node:path';
 import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
-import {normalisiereSpeicherPfad,isValidProjectName} from '@synapse/core';
+import {normalisiereSpeicherPfad,isValidProjectName,istVirtuellesProjekt} from '@synapse/core';
 import type {RestoreJob,RestoreCodeEntry} from '@synapse/core';
 import {getWorkspaceRoot,loadConfig} from './config.js';
 import type {WatcherManager} from './manager.js';
@@ -39,6 +39,8 @@ async function save(p:string,body:unknown){
 }
 export async function restoreExistingProject(job:RestoreJob,manager:WatcherManager,api=new AssetApiTransport()){
  if(job.mode!=='restore_existing'||!isValidProjectName(job.name)||job.hostname!==os.hostname())throw new Error('restore_host_verboten');
+ // P9-T30: virtuelle API-Projekte nie lokal anlegen (vor jedem mkdir/Journal).
+ if(istVirtuellesProjekt(job.name))throw new Error('restore_virtuelles_projekt');
  const root=path.resolve(getWorkspaceRoot());await fs.mkdir(root,{recursive:true});
  if(await fs.realpath(root)!==root)throw new Error('restore_workspace_symlink');
  const target=path.join(root,job.name),stateDir=await directory(root,'.synapse-restore/'+job.name);

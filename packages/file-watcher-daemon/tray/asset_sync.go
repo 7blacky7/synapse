@@ -112,6 +112,51 @@ func apiSetAssetProjectBinding(ctx context.Context,project,host string,bound boo
     if err==nil&&!response.Success{err=fmt.Errorf("Server hat Projektbindung abgelehnt")}
     return err
 }
+// P9-T30: "Von diesem PC entfernen" — Host-Bindung ueber die API loesen (Vorschau zuerst).
+type apiHostLoesenZeile struct {
+    Hostname string `json:"hostname"`
+    Path string `json:"path"`
+}
+type apiHostLoesen struct {
+    Success bool `json:"success"`
+    Status string `json:"status"`
+    Virtuell bool `json:"virtuell"`
+    Entfernt struct {
+        RegistryZeile *apiHostLoesenZeile `json:"registry_zeile"`
+        TrayBindung bool `json:"tray_bindung_abschalten"`
+    } `json:"entfernt"`
+    Bleibt struct {
+        Registry []apiHostLoesenZeile `json:"registry"`
+    } `json:"bleibt"`
+    HinweisLokal string `json:"hinweis_lokal"`
+    Ergebnis *struct {
+        DaemonJobID string `json:"daemon_job_id"`
+    } `json:"ergebnis,omitempty"`
+}
+func apiAssetHostLoesen(ctx context.Context,project,host string,vorschau bool)(apiHostLoesen,error) {
+    var r apiHostLoesen
+    if strings.TrimSpace(host)==""{return r,fmt.Errorf("PC-Identität fehlt")}
+    err:=apiAssetJSON(ctx,http.MethodPost,"/api/projects/"+urlSeg(project)+"/host-loesen",map[string]interface{}{"hostname":host,"vorschau":vorschau},&r)
+    if err==nil&&!r.Success{err=fmt.Errorf("Server hat das Entfernen abgelehnt")}
+    return r,err
+}
+func assetSyncHostLoesenText(r apiHostLoesen)string {
+    zeilen:=[]string{}
+    if r.Entfernt.RegistryZeile!=nil{
+        zeilen=append(zeilen,"Entfernt wird die Zuordnung: "+r.Entfernt.RegistryZeile.Hostname+" → "+r.Entfernt.RegistryZeile.Path)
+    }else{
+        zeilen=append(zeilen,"Keine Zuordnung dieses PCs in Synapse gefunden; der lokale Eintrag wird trotzdem entfernt.")
+    }
+    zeilen=append(zeilen,"Der lokale Daemon nimmt das Projekt aus seiner Liste (Watcher stoppt).")
+    if len(r.Bleibt.Registry)>0{
+        bleibt:=[]string{}
+        for _,z:=range r.Bleibt.Registry{bleibt=append(bleibt,z.Hostname)}
+        zeilen=append(zeilen,"Bleibt: "+strings.Join(bleibt,", ")+" sowie alle Projektdaten (kein Deaktivieren).")
+    }
+    if r.HinweisLokal!=""{zeilen=append(zeilen,r.HinweisLokal)}
+    if r.Ergebnis!=nil&&r.Ergebnis.DaemonJobID!=""{zeilen=append(zeilen,"Auftrag an den Daemon: "+r.Ergebnis.DaemonJobID)}
+    return strings.Join(zeilen,"\n")
+}
 func apiAssetTool(ctx context.Context,args map[string]interface{},out interface{})error {
     var response struct {
         Error *struct{Message string `json:"message"`} `json:"error"`

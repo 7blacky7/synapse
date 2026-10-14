@@ -31,6 +31,8 @@ import {
   registriereWarteschlange,
   seiteAusListe,
   assetWarteschlange,
+  istVirtuellesProjekt,
+  istVirtuellerRegistryPfad,
 } from '@synapse/core';
 import type { VerschiebeAuftrag, WarteschlangenEintrag } from '@synapse/core';
 import {
@@ -372,6 +374,8 @@ export class WatcherManager {
     let changed = false;
     for (const row of rows) {
       if (findProjekt(this.config, row.name)) continue;
+      // P9-T30: virtuelle API-Projekte nie in config.json uebernehmen.
+      if (istVirtuellesProjekt(row.name) || istVirtuellerRegistryPfad(row.pfad)) continue;
       if (!fs.existsSync(row.pfad) || !fs.statSync(row.pfad).isDirectory()) {
         console.error(`[manager] PG-Projekt "${row.name}" uebersprungen: Pfad "${row.pfad}" existiert nicht auf diesem Host.`);
         continue;
@@ -410,6 +414,7 @@ export class WatcherManager {
   /** Registriert ein Projekt neu und startet den Watcher. Wirft bei Fehler. */
   async register(name: string, pfad: string): Promise<ProjektConfig> {
     if (!name || !pfad) throw new Error('name und pfad erforderlich');
+    if (istVirtuellesProjekt(name)) throw new Error(`Projekt "${name}" ist ein virtuelles API-Projekt und wird nie an diesen PC gebunden.`);
     if (!fs.existsSync(pfad) || !fs.statSync(pfad).isDirectory()) {
       throw new Error(`Pfad existiert nicht oder ist kein Verzeichnis: ${pfad}`);
     }
@@ -431,6 +436,7 @@ export class WatcherManager {
   /** A10: called only after complete API restore + persisted A8 checkpoint. No initial empty tree. */
   async registerRestored(name:string,pfad:string):Promise<ProjektConfig>{
     if(this.isRunning(name))throw new Error('restore_watcher_laeuft');
+    if(istVirtuellesProjekt(name))throw new Error('restore_virtuelles_projekt');
     if(!fs.lstatSync(pfad).isDirectory()||fs.lstatSync(pfad).isSymbolicLink())throw new Error('restore_pfad_ungueltig');
     const prior=findProjekt(this.config,name);
     const projekt:ProjektConfig={...prior,name,pfad,enabled:true,asset_sync:{...prior?.asset_sync,verwaltet:true}};
@@ -579,6 +585,12 @@ export class WatcherManager {
   // ══════════════════════════════════════════════════════════════════
 
   private spawnWatcher(p: ProjektConfig): void {
+    // P9-T30: virtuelle API-Projekte laufen nie lokal; ein fehlender (z. B. vom User geloeschter)
+    // Projektordner wird NIE von selbst neu angelegt — kein Watcher, kein Asset-Sync, keine status.json.
+    if (istVirtuellesProjekt(p.name)) throw new Error(`Projekt "${p.name}" ist ein virtuelles API-Projekt und laeuft nie lokal.`);
+    let ordnerDa = false;
+    try { ordnerDa = fs.statSync(p.pfad).isDirectory(); } catch { ordnerDa = false; }
+    if (!ordnerDa) throw new Error(`Projektordner "${p.pfad}" fehlt — wird nicht neu angelegt, Watcher nicht gestartet.`);
     // A10: stale config/registry must not start a scan against partially installed restore bytes.
     const journalPath=path.join(path.dirname(path.resolve(p.pfad)),'.synapse-restore',p.name,'state.json');
     let restoreFd:number|undefined;

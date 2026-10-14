@@ -39,8 +39,8 @@ const projectTool: ConsolidatedTool = {
         geschuetzter_hauptbranch: {type:'string',description:'project(hinweise): geschuetzten Git-Hauptbranch je Projekt setzen; Standard main. Lesen/Setzen nur Koordinator/User, Anzeige in project(status).'},
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise'],
-          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise', 'host_loesen'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db | host_loesen. host_loesen (project, hostname, nur Koordinator/User, Standard vorschau) entfernt NUR die Registry-Zeile dieses Hosts und ueber den Daemon dessen config.json-Eintrag; andere Hosts und alle Projektdaten bleiben, kein disable, lokale Ordner werden nicht geloescht. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         path: {
           type: 'string',
@@ -65,7 +65,7 @@ const projectTool: ConsolidatedTool = {
         },
         vorschau: {
           type: 'boolean',
-          description: 'Nur projekt_db mit uebernehmen: true (Standard) = nur pruefen; false = eintragen.',
+          description: 'projekt_db mit uebernehmen und host_loesen: true (Standard) = nur pruefen/zeigen; false = ausfuehren.',
         },
         project: {
           type: 'string',
@@ -82,7 +82,7 @@ const projectTool: ConsolidatedTool = {
         },
         hostname: {
           type: 'string',
-          description: 'Optional fuer init: Ziel-Hostname falls mehrere Daemons im selben PG haengen.',
+          description: 'Optional fuer init: Ziel-Hostname falls mehrere Daemons im selben PG haengen. Pflicht fuer host_loesen: der zu loesende Host (nie rest-api).',
         },
         mode: {type:'string',enum:['create','restore_existing'],description:'init: restore_existing liefert ein bereits im Tray an hostname gebundenes Projekt per API; kein Stub/DB/Workspace-Start.'},
         template: {
@@ -115,6 +115,12 @@ const projectTool: ConsolidatedTool = {
           const requestedName = str(args, 'name');
           const restoreMode = str(args, 'mode');
           if(restoreMode && !['create','restore_existing'].includes(restoreMode))return {success:false,error:'invalid_mode'};
+          // P9-T30: virtuelle API-Projekte (z. B. reverse-bibliothek) nie lokal anlegen oder binden.
+          {
+            const {istVirtuellesProjekt} = await import('@synapse/core');
+            const zielName = requestedName ?? explicitPath?.split(/[/\\]/).filter(Boolean).pop();
+            if (istVirtuellesProjekt(zielName)) return {success:false,error:'virtuelles_projekt',message:`Projekt "${zielName}" ist ein virtuelles API-Projekt und wird nie auf einem PC angelegt oder gebunden.`};
+          }
           if(restoreMode==='restore_existing'){
             if(explicitPath||!requestedName||!str(args,'hostname'))return {success:false,error:'restore_arguments',message:'restore_existing braucht name+hostname und eine bereits im Tray bestätigte Bindung; kein path.'};
             const {enqueueProjectInitJob}=await import('@synapse/core');
@@ -188,6 +194,12 @@ const projectTool: ConsolidatedTool = {
           return result;
         }
 
+        case 'host_loesen': {
+          // P9-T30: Host-Bindung gezielt loesen (nur Koordinator/User, Vorschau zuerst).
+          const {projektHostLoesen} = await import('@synapse/core');
+          if(args.vorschau !== undefined && typeof args.vorschau !== 'boolean')throw new Error('vorschau muss boolean sein');
+          return await projektHostLoesen({project:reqStr(args,'project'),hostname:reqStr(args,'hostname'),agent:String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),vorschau:args.vorschau!==false});
+        }
         case 'hinweise': {
           const {projektHinweisOption,projektHauptbranchOption} = await import('@synapse/core');
           if(args.hinweise !== undefined && typeof args.hinweise !== 'boolean')throw new Error('hinweise muss boolean sein');

@@ -29,6 +29,7 @@ import {
   setSetupPhase,
   registerProject,
   registerVirtualProject,
+  istVirtuellesProjekt,
   envHatDatabaseUrl,
   schreibeProjektDbEnv,
   vergissJobUmgebungCache,
@@ -42,6 +43,7 @@ import {
 import { getWorkspaceRoot, loadConfig, DEFAULT_SYNAPSE_API_URL } from './config.js'
 import type { WatcherManager } from './manager.js'
 import {startProjectRestoreWorker} from './project-restore-worker.js'
+import {startHostLoesenWorker} from './host-loesen-worker.js'
 
 const HOSTNAME = os.hostname()
 const DAEMON_ID = `daemon-${HOSTNAME}-${process.pid}`
@@ -58,6 +60,8 @@ export async function startProjectInitWorker(
   let safetyInterval: ReturnType<typeof setInterval> | null = null
   let stopped = false
   const restoreWorker = startProjectRestoreWorker(manager)
+  // P9-T30: host_loesen-Auftraege (config.json-Eintrag entfernen) ueber die API abholen.
+  const hostLoesenWorker = startHostLoesenWorker(manager)
 
   listenClient = await verbindeListenClient()
   await listenClient.query('LISTEN project_init_job_created')
@@ -104,6 +108,7 @@ export async function startProjectInitWorker(
   const stop = async (): Promise<void> => {
     stopped = true
     await restoreWorker.stop()
+    await hostLoesenWorker.stop()
     if (safetyInterval !== null) {
       clearInterval(safetyInterval)
       safetyInterval = null
@@ -239,6 +244,12 @@ export async function initializeProject(
 ): Promise<InitResult> {
   // Ein Restorejob darf niemals versehentlich die Legacy-Stubs/DB-Vorwärmung auslösen.
   if (job.mode === 'restore_existing') throw new Error('restore_api_worker_required')
+  // P9-T30: virtuelle API-Projekte (z. B. reverse-bibliothek) nie auf einem PC anlegen.
+  if (istVirtuellesProjekt(job.name)) {
+    const err = new Error(`Projekt "${job.name}" ist ein virtuelles API-Projekt und wird nie lokal angelegt.`) as Error & { rejectReason: string }
+    err.rejectReason = 'virtuelles_projekt'
+    throw err
+  }
   // Validierung
   if (!isValidProjectName(job.name)) {
     const err = new Error(
