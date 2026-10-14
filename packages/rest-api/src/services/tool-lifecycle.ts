@@ -263,7 +263,7 @@ export class ToolLifecycle {
    const result=await c.query(`SELECT w.* FROM work_jobs w JOIN embedding_knoten n ON n.node_id=w.owner_node
     WHERE w.id=$1 AND w.project=$2 AND w.capability=$3 AND w.kind<>'tool-warmup' AND w.state='leased' AND w.lease_until>clock_timestamp()
      AND (w.deadline IS NULL OR w.deadline>clock_timestamp()) AND w.owner_node=$4 AND w.boot_generation=$5
-     AND w.owner_auth_hash=$6 AND w.claim_token=$7 AND n.boot_id=w.boot_generation AND n.service_token_hash=w.owner_auth_hash
+     AND w.owner_auth_hash=$6 AND w.claim_token=$7 AND n.boot_id=w.boot_generation::text AND n.service_token_hash=w.owner_auth_hash
     FOR SHARE OF w,n`,[jobId,project,d.capability,who.nodeId,who.bootGeneration,who.authHash,claimToken]);
    const job=result.rows[0];if(!job)throw Error('tool_job_fenced');
    const run=await c.query("INSERT INTO tool_container_runs(job_id,attempt,instance_id,generation,state) VALUES($1,$2,$3,$4,'running') ON CONFLICT DO NOTHING",[jobId,job.attempt,id,r.generation]);

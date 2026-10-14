@@ -501,6 +501,10 @@ export async function startServer(): Promise<void> {
   const reversePipeline=starteReversePipeline();
   if(reversePipeline)server.addHook('onClose',async()=>{await reversePipeline.beende();});
   if(assetInspektion)server.addHook('onClose',async()=>{await assetInspektion.beende();});
+  // P18-T59/RV12: Reverse-Executor (nur SYNAPSE_REVERSE_ENABLED=1); Adapter vor initToolLifecycle setzen.
+  const {starteReverseExecutor} = await import('./services/reverse-executor.js');
+  const reverseExecutor=starteReverseExecutor();
+  if(reverseExecutor)server.addHook('onClose',async()=>{await reverseExecutor.beende();});
   // R5.1: eigener opt-in Tool-Lifecycle; alte Workspace/Syntax-Verträge unverändert.
   const {initToolLifecycle,closeToolLifecycle} = await import('./services/tool-lifecycle-runtime.js');
   initToolLifecycle();
