@@ -34,6 +34,7 @@ const (
 	menueVerbinden
 	menueAssetSync
 	menueReverse
+	menueImages // P18-T65: ISO-Image einbinden (nur wo isoUnterstuetzt)
 	menueGPU
 	menueWorkspaces
 	menueNeuLaden
@@ -96,6 +97,12 @@ func hauptmenueLayout(verbunden bool, projs []Project) []menueEintrag {
 		menueEintrag{Art: menueVerbinden},
 		menueEintrag{Art: menueAssetSync},
 		menueEintrag{Art: menueReverse},
+	)
+	// P18-T65: unter Windows/macOS kein Eintrag (folgt spaeter, Mount-DiskImage).
+	if isoUnterstuetzt {
+		l = append(l, menueEintrag{Art: menueImages})
+	}
+	l = append(l,
 		menueEintrag{Art: menueGPU},
 		menueEintrag{Art: menueWorkspaces},
 		menueEintrag{Art: menueTrenner},

@@ -756,6 +756,15 @@ func rebuildMenu(projs []Project) {
 					fyne.Do(zeigeReverseBibliothekFenster)
 				}
 			}()
+		case menueImages:
+			// P18-T65: ISO-Abbild nur lesend als Laufwerk einbinden (udisks). Neuer Eintrag ->
+			// das abschliessende statusItem.SetTitle unten liefert das LayoutUpdated (P8-T21).
+			mImages := systray.AddMenuItem("Image einbinden …", "ISO-Abbild nur lesend als Laufwerk einbinden, eingebundene öffnen oder auswerfen")
+			go func() {
+				for range mImages.ClickedCh {
+					fyne.Do(func() { zeigeIsoFenster(true) })
+				}
+			}()
 		case menueGPU:
 			mGPU := systray.AddMenuItem("Lokale GPU / Ollama …", "GPU-Modell vergleichen, einrichten oder sperren")
 			go func() {

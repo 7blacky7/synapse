@@ -505,7 +505,109 @@ func reverseDaemonText(s reverseDaemonStatus) string {
 	if s.Fehler != "" {
 		text += "\nFehler: " + s.Fehler
 	}
+	// P18-T63: Fehler einzelner Transfers ebenfalls zeigen (hoechstens drei).
+	n := 0
+	for _, a := range s.Auftraege {
+		if strings.TrimSpace(a.Fehler) == "" {
+			continue
+		}
+		if n == 3 {
+			text += "\n…"
+			break
+		}
+		text += "\nTransfer " + filepath.Base(a.Pfad) + ": " + a.Fehler
+		n++
+	}
 	return text
+}
+
+// ---------------------------------------------------------------------------
+// PC-Zuordnung (P18-T63)
+// ---------------------------------------------------------------------------
+//
+// Ohne explizite Daemon-Hostbindung laedt der Daemon nichts hoch (Modus "offen",
+// fehler "Explizite Daemon-Hostbindung fehlt."). Die Loesung lag bisher nur im
+// Fenster "Projekte auf diesem PC / Asset-Sync". Das Reverse-Fenster prueft die
+// Zuordnung deshalb selbst – mit denselben Funktionen (daemonAssetHost,
+// apiAssetDaemonHost, apiBindAssetDaemonHost) – und bietet denselben Knopf.
+
+// reverseCodeHostNichtGebunden: API-Fehlercode bei fehlender Daemon-Hostbindung.
+const reverseCodeHostNichtGebunden = "daemon_host_nicht_gebunden"
+
+type reversePCZuordnung struct {
+	Host       string // dieser PC laut lokalem Daemon
+	Zugeordnet string // vom Server bestaetigter PC ("" = keiner)
+	Fehler     error
+}
+
+// Fehlt: PC bekannt, Server hat keinen PC zugeordnet -> Knopf anbieten.
+func (z reversePCZuordnung) Fehlt() bool {
+	return z.Fehler == nil && z.Host != "" && z.Zugeordnet == ""
+}
+
+// AndererPC: Zugang gehoert einem anderen PC -> nur Hinweis, kein Knopf.
+func (z reversePCZuordnung) AndererPC() bool {
+	return z.Fehler == nil && z.Host != "" && z.Zugeordnet != "" && z.Zugeordnet != z.Host
+}
+
+// reverseZuordnungPruefen: nur nachsehen, wenn der Daemon nicht mit Synapse
+// verbunden ist, einen Fehler meldet oder die API die fehlende Bindung nennt.
+// Im Normalbetrieb (Modus "api", kein Fehler) entstehen keine Zusatzabfragen.
+func reverseZuordnungPruefen(s reverseDaemonStatus, daemonErr error, apiFehler ...error) bool {
+	for _, e := range apiFehler {
+		var f *reverseAPIFehler
+		if errors.As(e, &f) && f.Code == reverseCodeHostNichtGebunden {
+			return true
+		}
+	}
+	if daemonErr != nil || !s.Aktiv {
+		return false
+	}
+	return s.Modus == "offen" || s.Modus == "fehler" || strings.TrimSpace(s.Fehler) != ""
+}
+
+// reverseLadePCZuordnung fragt den lokalen Daemon (eigener Host) und die API (Zuordnung).
+func reverseLadePCZuordnung(ctx context.Context) reversePCZuordnung {
+	host, err := daemonAssetHost(ctx)
+	if err != nil {
+		return reversePCZuordnung{Fehler: err}
+	}
+	zugeordnet, err := apiAssetDaemonHost(ctx)
+	return reversePCZuordnung{Host: host, Zugeordnet: zugeordnet, Fehler: err}
+}
+
+// reverseZuordnungText: Klartext fuer das Fenster ("" = alles in Ordnung).
+func reverseZuordnungText(z reversePCZuordnung) string {
+	switch {
+	case z.Fehler != nil:
+		return "PC-Zuordnung konnte nicht geprüft werden: " + z.Fehler.Error()
+	case z.Fehlt():
+		return "Dieser PC ist noch nicht bei Synapse zugeordnet: " + z.Host + ". Ohne Zuordnung lädt der Daemon nichts hoch."
+	case z.AndererPC():
+		return "Der Zugang ist einem anderen PC zugeordnet: " + z.Zugeordnet + ". Dieser PC ist " + z.Host + "."
+	}
+	return ""
+}
+
+// reversePCZuordnen ordnet diesen PC zu (apiBindAssetDaemonHost) und stoesst den
+// lokalen Daemon per POST /reverse/konfig zum sofortigen Neuversuch an (nur wenn
+// die Reverse-Bibliothek aktiv ist; aktiv/pfad startet dort die Bindung neu).
+// err = Zuordnung fehlgeschlagen; neuversuch = Zuordnung ok, Anstoss nicht.
+func reversePCZuordnen(ctx context.Context, cfgPfad, host, daemonBasis string) (neuversuch error, err error) {
+	if err := apiBindAssetDaemonHost(ctx, host); err != nil {
+		return nil, err
+	}
+	if cfgPfad == "" {
+		return fmt.Errorf("config.json nicht auffindbar"), nil
+	}
+	k, kErr := leseReverseKonfig(cfgPfad)
+	if kErr != nil {
+		return kErr, nil
+	}
+	if !k.Aktiv {
+		return nil, nil
+	}
+	return daemonReverseKonfig(ctx, daemonBasis, map[string]interface{}{"aktiv": true}), nil
 }
 
 // ---------------------------------------------------------------------------

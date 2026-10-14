@@ -30,10 +30,13 @@ func artIndex(l []menueEintrag, art menueArt) int {
 }
 
 func TestHauptmenueGlobaleObenInaktiveImUntermenue(t *testing.T) {
+	alt := isoUnterstuetzt
+	isoUnterstuetzt = true
+	t.Cleanup(func() { isoUnterstuetzt = alt })
 	projs := testProjekte(87, 4) // 22 aktiv, 65 inaktiv, gemischt
 	l := hauptmenueLayout(true, projs)
 
-	wantStart := []menueArt{menueStatus, menueTrenner, menueVerbinden, menueAssetSync, menueReverse,
+	wantStart := []menueArt{menueStatus, menueTrenner, menueVerbinden, menueAssetSync, menueReverse, menueImages,
 		menueGPU, menueWorkspaces, menueTrenner, menueNeuLaden, menueDeaktivieren, menueBeenden, menueTrenner}
 	for i, art := range wantStart {
 		if l[i].Art != art {

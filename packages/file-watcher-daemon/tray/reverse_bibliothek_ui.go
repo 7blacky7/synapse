@@ -85,6 +85,13 @@ func zeigeReverseBibliothekFenster() {
 	policyLabel := reverseLabel("Einstellungen werden von Synapse geladen …")
 	serverHinweis := reverseLabel("")
 	daemonLabel := reverseLabel("Lokaler Daemon wird abgefragt …")
+	// P18-T63: fehlende PC-Zuordnung samt Loesung direkt hier (nicht nur im Asset-Sync-Fenster).
+	zuordnungLabel := reverseLabel("")
+	zuordnungLabel.Importance = widget.DangerImportance
+	zuordnungLabel.Hide()
+	zuordnungBtn := widget.NewButton("Diesen PC zuordnen", nil)
+	zuordnungBtn.Hide()
+	zuordnungHost := ""
 	zusammenfassung := reverseLabel("")
 
 	// --- Filter -----------------------------------------------------------
@@ -124,10 +131,73 @@ func zeigeReverseBibliothekFenster() {
 	hinweisBtn.Hide()
 	zurueckBtn := widget.NewButton("Zurückholen", nil)
 	zurueckBtn.Hide()
+	// P18-T65: lokal vorhandene ISO-Fundstelle nur lesend als Laufwerk einbinden.
+	einbindenBtn := widget.NewButton("Einbinden", nil)
+	einbindenBtn.Hide()
 	aktualisieren := widget.NewButton("Aktualisieren", nil)
 
 	var neuLaden func()
 	aktionLaeuft := false
+
+	zeigeZuordnung := func(pruefen bool, z reversePCZuordnung) {
+		text := ""
+		if pruefen {
+			text = reverseZuordnungText(z)
+		}
+		if text == "" {
+			zuordnungLabel.Hide()
+			zuordnungBtn.Hide()
+			return
+		}
+		zuordnungLabel.SetText(text)
+		zuordnungLabel.Show()
+		if z.Fehlt() {
+			zuordnungHost = z.Host
+			zuordnungBtn.Show()
+			if aktionLaeuft {
+				zuordnungBtn.Disable()
+			} else {
+				zuordnungBtn.Enable()
+			}
+		} else {
+			zuordnungBtn.Hide()
+		}
+	}
+	zuordnungBtn.OnTapped = func() {
+		host := zuordnungHost
+		if aktionLaeuft || host == "" {
+			return
+		}
+		aktionLaeuft = true
+		zuordnungBtn.Disable()
+		zuordnungLabel.SetText("PC " + host + " wird bei Synapse zugeordnet …")
+		basis := fmt.Sprintf("http://127.0.0.1:%d", port)
+		go func() {
+			c, stop := context.WithTimeout(ctx, 30*time.Second)
+			defer stop()
+			neuversuch, err := reversePCZuordnen(c, cfgPfad, host, basis)
+			fyne.Do(func() {
+				if ctx.Err() != nil {
+					return
+				}
+				aktionLaeuft = false
+				if err != nil {
+					zuordnungLabel.SetText(reverseZuordnungText(reversePCZuordnung{Host: host}))
+					zuordnungBtn.Enable()
+					dialog.ShowError(err, window)
+					return
+				}
+				zuordnungLabel.Hide()
+				zuordnungBtn.Hide()
+				if neuversuch != nil {
+					speicherHinweis.SetText("Dieser PC ist jetzt zugeordnet: " + host + ". Der lokale Daemon hat den Neuversuch nicht übernommen (" + neuversuch.Error() + ") – er versucht es spätestens beim nächsten Start.")
+				} else {
+					speicherHinweis.SetText("Dieser PC ist jetzt zugeordnet: " + host + ". Der lokale Daemon versucht es sofort erneut.")
+				}
+				neuLaden()
+			})
+		}()
+	}
 
 	bibliotheksWurzel := func() string {
 		if letzteWurzel != "" {
@@ -146,6 +216,7 @@ func zeigeReverseBibliothekFenster() {
 		k := baum.Knoten[uid]
 		hinweisBtn.Hide()
 		zurueckBtn.Hide()
+		einbindenBtn.Hide()
 		vorschlagBtn.Disable()
 		if uid == "" || k == nil {
 			detail.Objects = []fyne.CanvasObject{reverseLabel("Eintrag im Baum auswählen")}
@@ -164,6 +235,9 @@ func zeigeReverseBibliothekFenster() {
 		}
 		if _, ok := reverseVorschlagText(f.Vorschlag); ok {
 			vorschlagBtn.Enable()
+		}
+		if reverseIsoEinbindbar(f) {
+			einbindenBtn.Show()
 		}
 		if reverseHatLokalHinweis(f) {
 			if f.HinweisAusgeblendet {
@@ -336,6 +410,19 @@ func zeigeReverseBibliothekFenster() {
 			})
 		}()
 	}
+	einbindenBtn.OnTapped = func() {
+		k := baum.Knoten[ausgewaehlt]
+		if k == nil || k.Datei == nil || !reverseIsoEinbindbar(k.Datei) {
+			return
+		}
+		ziel, err := reverseZielPfad(bibliotheksWurzel(), k.Datei.RelPfad)
+		if err != nil {
+			dialog.ShowError(err, window)
+			return
+		}
+		einbindenBtn.Disable()
+		isoEinbindenMitRueckmeldung(ctx, window, ziel, func() { einbindenBtn.Enable() })
+	}
 	zurueckBtn.OnTapped = func() {
 		k := baum.Knoten[ausgewaehlt]
 		if aktionLaeuft || k == nil || k.Datei == nil || !reverseIstGesichert(k.Datei) {
@@ -443,6 +530,12 @@ func zeigeReverseBibliothekFenster() {
 				dateien, fundErr = apiReverseFundstellen(c)
 			}
 			status, daemonErr := daemonReverseStatus(c)
+			// P18-T63: Zuordnung nur pruefen, wenn Daemon/API darauf hindeuten.
+			pruefen := reverseZuordnungPruefen(status, daemonErr, optErr, fundErr)
+			var zuordnung reversePCZuordnung
+			if pruefen {
+				zuordnung = reverseLadePCZuordnung(c)
+			}
 			fyne.Do(func() {
 				if ctx.Err() != nil {
 					return
@@ -468,14 +561,19 @@ func zeigeReverseBibliothekFenster() {
 					}
 				}
 				serverHinweis.SetText(strings.Join(hinweise, "\n"))
+				daemonLabel.Importance = widget.MediumImportance
 				if daemonErr == nil {
 					letzteAuftraege = status.Auftraege
 					letzteWurzel = status.Pfad
+					if status.Fehler != "" || status.Modus == "fehler" {
+						daemonLabel.Importance = widget.DangerImportance
+					}
 					daemonLabel.SetText(reverseDaemonText(status))
 				} else {
 					letzteAuftraege = nil
 					daemonLabel.SetText("Lokaler Daemon: " + daemonErr.Error())
 				}
+				zeigeZuordnung(pruefen, zuordnung)
 				setzeBaum()
 			})
 		}()
@@ -495,10 +593,12 @@ func zeigeReverseBibliothekFenster() {
 		serverHinweis,
 		widget.NewSeparator(),
 		daemonLabel,
+		zuordnungLabel,
+		container.NewHBox(zuordnungBtn),
 		container.NewHBox(aktualisieren, geloeschteAusblenden, ausgeblendeteZeigen),
 		zusammenfassung,
 	)
-	rechts := container.NewBorder(nil, container.NewHBox(vorschlagBtn, hinweisBtn, zurueckBtn), nil, nil, container.NewVScroll(detail))
+	rechts := container.NewBorder(nil, container.NewHBox(vorschlagBtn, hinweisBtn, zurueckBtn, einbindenBtn), nil, nil, container.NewVScroll(detail))
 	split := container.NewHSplit(tree, rechts)
 	split.Offset = 0.6
 	window.SetContent(container.NewBorder(kopf, nil, nil, nil, split))
