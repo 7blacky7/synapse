@@ -2,7 +2,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import tar from 'tar-stream';
+import {Readable} from 'node:stream';
 import {ermittleShellLage} from '../../core/dist/services/shell-lage.js';
 import {pruefeShellStart} from '../../core/dist/services/shell-start-sicherung.js';
 import {SHELL_SICHERUNG_SEED} from '../../core/dist/services/shell-sicherung-seed.js';
@@ -52,13 +52,14 @@ test('Nur identische private Test-DB-Konfiguration kommt ins Systemprojekt',()=>
  const own={DATABASE_URL:'registry-project-value'};
  assert.deepEqual(workspaceJobDatenbank('other',own,{...proof,project:'other'},{SYNAPSE_TEST_DATABASE_URL:uri}),own);
 });
-test('Quellschutz überträgt feste Root-Metadaten statt einen Nutzerpfad',async()=>{
- const headers=[];
- await schuetzeWorkspaceWurzel({putArchive:async stream=>{
-  const extract=tar.extract();
-  extract.on('entry',(header,entry,next)=>{headers.push(header);entry.resume();entry.on('end',next);});
-  await new Promise((resolve,reject)=>{extract.on('finish',resolve);extract.on('error',reject);stream.pipe(extract);});
- }});
- assert.equal(headers.length,1);assert.equal(headers[0].name,'.');assert.equal(headers[0].type,'directory');
- assert.equal(headers[0].uid,0);assert.equal(headers[0].gid,0);assert.equal(headers[0].mode&0o777,0o755);
+test('Quellschutz nutzt festen Root-Exec und prüft dessen Erfolg',async()=>{
+ let seen;
+ const container=exit=>({exec:async opts=>{seen=opts;return{start:async()=>Readable.from([]),inspect:async()=>({ExitCode:exit})};}});
+ await schuetzeWorkspaceWurzel(container(0));
+ assert.equal(seen.User,'0');assert.deepEqual(seen.Cmd.slice(0,2),['/bin/sh','-ec']);
+ assert.ok(seen.Cmd[2].includes('/bin/chown 0:0 /workspace'));
+ assert.ok(seen.Cmd[2].includes('/bin/chmod 0755 /workspace'));
+ assert.ok(seen.Cmd[2].includes('/bin/stat -c %u:%g:%a /workspace'));
+ assert.ok(seen.Cmd[2].includes('"0:0:755"'));
+ for(const exit of [1,null])await assert.rejects(()=>schuetzeWorkspaceWurzel(container(exit)),/workspace_quellschutz_fehlgeschlagen/);
 });
