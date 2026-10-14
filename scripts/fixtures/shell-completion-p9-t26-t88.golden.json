@@ -1,0 +1,35 @@
+{
+  "success": {
+    "status": "done",
+    "exit_code": 0,
+    "tail": [
+      "plain☃😀"
+    ],
+    "output": "plain☃😀\n",
+    "error": null,
+    "message": null,
+    "output_truncated": false
+  },
+  "failure": {
+    "status": "failed",
+    "exit_code": 7,
+    "tail": [
+      "plain error"
+    ],
+    "output": "plain error\n",
+    "error": "fixture_failed",
+    "message": "synthetic failure",
+    "output_truncated": false
+  },
+  "cancelled": {
+    "status": "failed",
+    "exit_code": 0,
+    "tail": [
+      "plain"
+    ],
+    "output": "plain\n",
+    "error": "cancelled",
+    "message": "Job wurde abgebrochen.",
+    "output_truncated": false
+  }
+}

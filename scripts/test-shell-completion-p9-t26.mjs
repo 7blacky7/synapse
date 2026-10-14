@@ -25,8 +25,8 @@ os.homedir=()=>root; // Produktstreams/Secrets unter eigener Root, HOME bleibt u
 childProcess.spawn=(bin,argv,opts)=>{calls.push({bin,argv,cwd:opts?.cwd});return originalSpawn(bin,argv,opts);};
 syncBuiltinESMExports();
 await db.query('SELECT current_database() AS datenbank'); // Sichtbarer Test-DB-Nachweis.
-await db.query('SET search_path TO '+schema);
-const pool={query:db.query.bind(db),async connect(){const c=await openDb();await c.query('SET search_path TO '+schema);return {query:c.query.bind(c),release(){closing.push(c.end());}};}};
+await db.query('SET search_path TO '+schema+',public');
+const pool={query:db.query.bind(db),async connect(){const c=await openDb();await c.query('SET search_path TO '+schema+',public');return {query:c.query.bind(c),release(){closing.push(c.end());}};}};
 const closing=[];let made=false,passed=0;
 const {mitLesePool}=await import(mod('packages/core/dist/db/client.js'));
 const queue=await import(mod('packages/core/dist/services/shell-queue.js'));
@@ -152,6 +152,21 @@ try{
    const retry=new ShellAbschlussWiederholung({complete:(id,r)=>mitLesePool(flaky,()=>queue.completeShellJob(id,r)),report:()=>{},wait:async()=>{}});
    await retry.complete(j.id,{status:'done',exit_code:0,output:'saved\n'});await retry.flush();await retry.flush();
    assert.equal((await row(j.id)).status,'done','gespeicherter Erfolg bleibt terminal, selbst nach wiederholtem Notificationausfall');
+  });
+  await check('Verlorene UPDATE-Bestätigung schützt bereits gespeicherten Erfolg vor Minimalfallback',async()=>{
+   const j=await job(),{ShellAbschlussWiederholung}=await import('../packages/file-watcher-daemon-ts/dist/shell-job-completion.js');
+   let errors=6,updates=0;
+   const flaky={...pool,query:async(sql,v)=>{
+    const result=await pool.query(sql,v);
+    if(/UPDATE shell_jobs\s+SET status = CASE/.test(sql)){updates++;if(errors-- >0)throw Error('synthetic lost update acknowledgement');}
+    return result;
+   }};
+   const retry=new ShellAbschlussWiederholung({complete:(id,r)=>mitLesePool(flaky,()=>queue.completeShellJob(id,r)),report:()=>{},wait:async()=>{}});
+   await retry.complete(j.id,{status:'done',exit_code:0,output:'ack_saved\n'});
+   await retry.flush();await retry.flush();
+   const stored=await row(j.id);
+   assert.equal(updates,7);assert.equal(retry.has(j.id),false);
+   assert.equal(stored.status,'done');assert.equal(stored.error,null);assert.equal(stored.output,'ack_saved\n');
   });
   console.log('P9-T26 TEST_GRUEN '+passed+' PG-/Prozessgruppen, 0 Skip; eigene Schema/Root-Bereinigung.');
   }
