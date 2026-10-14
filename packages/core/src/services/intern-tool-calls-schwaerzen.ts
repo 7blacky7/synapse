@@ -22,13 +22,16 @@
  *     begrenzt. Mit ids gibt es keine Spannen-Grenze (hoechstens 1000 IDs).
  *   - Vorschau UND Ausfuehren nur fuer Koordinator/User (die ID-Liste zeigt, wo Geheimnisse lagen).
  *   - max_pruefen und limit muessen positive ganze Zahlen sein (0, negativ, Text -> parameter_ungueltig).
+ *   - P10-T76: regeln:[...] wendet nur diese Regel-Kennungen an (SCHWAERZ_REGELN aus tool-args-schwaerzen.ts,
+ *     unbekannte -> parameter_ungueltig). Die Antwort nennt je_regel, je_schluessel (normalisierte Namen, nie
+ *     Werte) und je ID die Regeln mit Treffern. Ohne regeln gilt weiter: Erkennung = Schreibweg.
  * NICHT UMKEHRBAR: geschwaerzte Werte sind danach weg (wie bei neuen Eintraegen). result_bytes bleibt die
  *   Originalgroesse, result_truncated bleibt unveraendert.
  */
 
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
-import { schwaerzeToolLogText, TOOL_LOG_PLATZHALTER } from './tool-args-schwaerzen.js';
+import { schwaerzeToolLogTextMitRegeln, SCHWAERZ_REGELN, TOOL_LOG_PLATZHALTER } from './tool-args-schwaerzen.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 
 export const TOOL_CALLS_SCHWAERZEN_ACTIONS = ['tool_calls_nachschwaerzen'] as const;
@@ -39,18 +42,20 @@ export function istToolCallsSchwaerzenAction(action: string): action is ToolCall
 }
 
 export const TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG =
-  'TOOL_CALLS-ALTBESTAND: tool_calls_nachschwaerzen (ids, project, tools, seit, bis, ab_id, max_pruefen, ausfuehren, limit): ' +
+  'TOOL_CALLS-ALTBESTAND: tool_calls_nachschwaerzen (ids, project, tools, seit, bis, ab_id, max_pruefen, regeln, ausfuehren, limit): ' +
   'bestehende tool_calls-Zeilen (args_preview, result, error) mit derselben Schwaerzung wie logToolCall neu schreiben; ' +
   'betroffen = die Schwaerzung wuerde ein Feld aendern. Standard Vorschau: Anzahl, IDs mit Feldnamen, je Tool, bei ids ' +
   'gefunden/nicht_gefunden/ohne_treffer - nie Inhalte. ausfuehren:true je Zeile Sperre (lock_timeout) und Neuberechnung, ' +
   'limit = Zeilen je Aufruf, nicht umkehrbar; gescheiterte Zeilen -> vollstaendig:false + nicht_geschrieben_ids. ' +
-  'max_pruefen = gescannte ID-Spanne je Aufruf, Fortsetzung mit ab_id. Vorschau und Ausfuehren nur Koordinator/User. ';
+  'max_pruefen = gescannte ID-Spanne je Aufruf, Fortsetzung mit ab_id. Vorschau und Ausfuehren nur Koordinator/User. ' +
+  'regeln:[' + SCHWAERZ_REGELN.join(',') + '] = nur diese Regeln anwenden; Antwort je_regel, je_schluessel und je ID regeln. ';
 
 /** Nur NEUE Parameter (project, tools, seit, bis, limit, ausfuehren gibt es schon). */
 export const TOOL_CALLS_SCHWAERZEN_PARAMETER: Record<string, unknown> = {
   ids: { type: ['array', 'string'], items: { type: ['number', 'string'] }, description: 'tool_calls_nachschwaerzen: nur diese tool_calls-IDs (hoechstens 1000)' },
   ab_id: { type: ['number', 'string'], description: 'tool_calls_nachschwaerzen: erst nach dieser ID weiterpruefen (naechste_ab_id der letzten Antwort)' },
   max_pruefen: { type: 'number', description: 'tool_calls_nachschwaerzen: hoechstens diese ID-Spanne je Aufruf scannen (positive ganze Zahl, Standard 20000, max 500000; mit ids ohne Grenze)' },
+  regeln: { type: ['array', 'string'], items: { type: 'string', enum: [...SCHWAERZ_REGELN] }, description: 'tool_calls_nachschwaerzen: nur diese Regel-Kennungen anwenden (' + SCHWAERZ_REGELN.join(', ') + '); ohne = alle wie logToolCall' },
 };
 
 const FELDER = ['args_preview', 'result', 'error'] as const;
@@ -70,6 +75,8 @@ export interface NachschwaerzenOptionen {
   bis?: string;
   abId?: string;
   maxPruefen?: number;
+  /** P10-T76: nur diese Regel-Kennungen (SCHWAERZ_REGELN); ohne = alle (= Schreibweg). */
+  regeln?: string[];
   ausfuehren: boolean;
   limit?: number;
 }
@@ -84,22 +91,51 @@ function zaehlePlatzhalter(s: string): number {
   return n;
 }
 
-/** Schwaerzt die drei Felder einer Zeile wie logToolCall. Liefert nur geaenderte Felder. */
-export function schwaerzeToolCallZeile(zeile: Partial<Record<Feld, string | null>>): { neu: Partial<Record<Feld, string>>; felder: Feld[]; ersetzungen: number } {
+/** Schwaerzt die drei Felder einer Zeile wie logToolCall (bzw. nur mit regeln). Liefert nur geaenderte Felder,
+ * dazu Treffer je Regel-Kennung und je Schluesselname (P10-T76). */
+export function schwaerzeToolCallZeile(zeile: Partial<Record<Feld, string | null>>, regeln?: readonly string[]): {
+  neu: Partial<Record<Feld, string>>; felder: Feld[]; ersetzungen: number; regeln: Record<string, number>; schluessel: Record<string, number>;
+} {
   const neu: Partial<Record<Feld, string>> = {};
   const felder: Feld[] = [];
   let ersetzungen = 0;
+  const jeRegel: Record<string, number> = {};
+  const jeSchluessel: Record<string, number> = {};
   for (const f of FELDER) {
     const alt = zeile[f];
     if (typeof alt !== 'string' || alt === '') continue;
-    const geschwaerzt = schwaerzeToolLogText(alt);
+    const bericht = schwaerzeToolLogTextMitRegeln(alt, { regeln });
+    const geschwaerzt = bericht.text;
     if (typeof geschwaerzt !== 'string' || geschwaerzt === alt) continue;
     neu[f] = geschwaerzt;
     felder.push(f);
     ersetzungen += Math.max(0, zaehlePlatzhalter(geschwaerzt) - zaehlePlatzhalter(alt));
+    for (const [r, n] of Object.entries(bericht.treffer)) jeRegel[r] = (jeRegel[r] ?? 0) + (n ?? 0);
+    for (const [s, n] of Object.entries(bericht.schluessel)) jeSchluessel[s] = (jeSchluessel[s] ?? 0) + n;
   }
-  return { neu, felder, ersetzungen };
+  return { neu, felder, ersetzungen, regeln: jeRegel, schluessel: jeSchluessel };
 }
+
+/** P10-T76: regeln-Parameter pruefen (Liste oder Komma-Text; unbekannte Kennung -> parameter_ungueltig). */
+function regelListe(v: unknown): string[] | undefined {
+  if (v === undefined || v === null) return undefined;
+  let roh: unknown = v;
+  if (typeof roh === 'string') {
+    const t = roh.trim();
+    if (t === '') return undefined;
+    if (t.startsWith('[')) { try { roh = JSON.parse(t); } catch { throw new NachschwaerzenFehler('parameter_ungueltig', 'regeln: JSON-Liste nicht lesbar'); } }
+    else roh = t.split(',');
+  }
+  if (!Array.isArray(roh)) throw new NachschwaerzenFehler('parameter_ungueltig', 'regeln: Liste von Regel-Kennungen erwartet');
+  const l = [...new Set(roh.map((x) => String(x).trim()).filter(Boolean))];
+  const unbekannt = l.filter((r) => !(SCHWAERZ_REGELN as readonly string[]).includes(r));
+  if (unbekannt.length) {
+    throw new NachschwaerzenFehler('parameter_ungueltig', 'regeln: unbekannt ' + unbekannt.join(', ') + ' (erlaubt: ' + SCHWAERZ_REGELN.join(', ') + ')');
+  }
+  return l.length ? l : undefined;
+}
+
+const SCHLUESSEL_ANZEIGE_MAX = 50;
 
 function pruefeZeit(name: string, wert?: string): void {
   if (wert !== undefined && (!/^\d{4}-\d{2}-\d{2}(?:T|$)/.test(wert) || !Number.isFinite(Date.parse(wert)))) {
@@ -143,7 +179,9 @@ export async function toolCallsNachschwaerzen(opt: NachschwaerzenOptionen): Prom
   let geprueft = 0, gescannt = 0, betroffen = 0, geschrieben = 0, uebersprungen = 0, fehler = 0, ersetzungen = 0;
   const jeFeld: Record<Feld, number> = { args_preview: 0, result: 0, error: 0 };
   const jeTool: Record<string, number> = {};
-  const liste: Array<{ id: string; tool: string; project: string | null; felder: Feld[] }> = [];
+  const jeRegel: Record<string, number> = {};
+  const jeSchluessel: Record<string, number> = {};
+  const liste: Array<{ id: string; tool: string; project: string | null; felder: Feld[]; regeln: string[] }> = [];
   let listeGekappt = false;
   const nichtGeschrieben: string[] = [];
   const gefunden = new Set<string>();
@@ -164,15 +202,17 @@ export async function toolCallsNachschwaerzen(opt: NachschwaerzenOptionen): Prom
     const id = String(r.id);
     geprueft++;
     gefunden.add(id);
-    const { felder, ersetzungen: n } = schwaerzeToolCallZeile(r as Partial<Record<Feld, string | null>>);
+    const { felder, ersetzungen: n, regeln: zr, schluessel: zs } = schwaerzeToolCallZeile(r as Partial<Record<Feld, string | null>>, opt.regeln);
     if (felder.length === 0) return false;
     betroffen++;
     ersetzungen += n;
+    for (const [k, c] of Object.entries(zr)) jeRegel[k] = (jeRegel[k] ?? 0) + c;
+    for (const [k, c] of Object.entries(zs)) jeSchluessel[k] = (jeSchluessel[k] ?? 0) + c;
     mitTreffer.add(id);
     for (const f of felder) jeFeld[f]++;
     const tool = String(r.tool_name ?? '');
     jeTool[tool] = (jeTool[tool] ?? 0) + 1;
-    if (liste.length < ANZEIGE_MAX) liste.push({ id, tool, project: (r.project as string | null) ?? null, felder });
+    if (liste.length < ANZEIGE_MAX) liste.push({ id, tool, project: (r.project as string | null) ?? null, felder, regeln: Object.keys(zr).sort() });
     else listeGekappt = true;
     if (!opt.ausfuehren) return false;
     const k = await pool.connect();
@@ -182,7 +222,7 @@ export async function toolCallsNachschwaerzen(opt: NachschwaerzenOptionen): Prom
       await k.query("SET LOCAL statement_timeout = '30s'");
       await k.query("SET LOCAL idle_in_transaction_session_timeout = '30s'");
       const akt = (await k.query('SELECT args_preview, result, error FROM tool_calls WHERE id = $1::bigint FOR UPDATE', [id])).rows[0];
-      const neu = akt ? schwaerzeToolCallZeile(akt).neu : {};
+      const neu = akt ? schwaerzeToolCallZeile(akt, opt.regeln).neu : {};
       const spalten = Object.keys(neu) as Feld[];
       if (spalten.length === 0) { uebersprungen++; await k.query('ROLLBACK'); }
       else {
@@ -253,6 +293,9 @@ export async function toolCallsNachschwaerzen(opt: NachschwaerzenOptionen): Prom
   }
 
   const vollstaendig = scanFertig && fehler === 0;
+  const schluesselSortiert = Object.entries(jeSchluessel).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const schluesselTop = Object.fromEntries(schluesselSortiert.slice(0, SCHLUESSEL_ANZEIGE_MAX));
+  const schluesselGekappt = schluesselSortiert.length > SCHLUESSEL_ANZEIGE_MAX;
   const angefragt = opt.ids
     ? {
       angefragt: opt.ids.length,
@@ -284,12 +327,16 @@ export async function toolCallsNachschwaerzen(opt: NachschwaerzenOptionen): Prom
       ...(opt.seit ? { seit: opt.seit } : {}),
       ...(opt.bis ? { bis: opt.bis } : {}),
       ...(opt.abId ? { ab_id: opt.abId } : {}),
+      ...(opt.regeln?.length ? { regeln: opt.regeln } : {}),
     },
     ...(opt.ids ? {} : { gescannt_id_spanne: gescannt, max_pruefen: maxPruefen }),
     geprueft,
     betroffen,
     felder: jeFeld,
     je_tool: jeTool,
+    je_regel: jeRegel,
+    je_schluessel: schluesselTop,
+    je_schluessel_gekappt: schluesselGekappt,
     ersetzungen,
     ids: liste,
     ids_gekappt: listeGekappt,
@@ -360,6 +407,7 @@ export async function fuehreToolCallsSchwaerzenAus(action: ToolCallsSchwaerzenAc
       bis: typeof a.bis === 'string' && a.bis.trim() !== '' ? a.bis.trim() : undefined,
       abId,
       maxPruefen: positiveGanzzahl('max_pruefen', a.max_pruefen),
+      regeln: regelListe(a.regeln),
       ausfuehren,
       limit: positiveGanzzahl('limit', a.limit),
     });
