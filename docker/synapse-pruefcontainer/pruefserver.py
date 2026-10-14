@@ -50,6 +50,7 @@ import pruefer_jvm
 import pruefer_naga
 import pruefer_treesitter
 import pruefer_tsbuild
+import pruefer_projekt
 
 # compile() meldet SyntaxWarnings (z. B. ungueltige Escapes) auf stderr - das sind keine Syntaxfehler und wuerden
 # nur das API-Log fuellen.
@@ -442,7 +443,8 @@ def info():
     return {'werkzeuge': {name: v() for name, (_f, v) in PRUEFER.items()},
             'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
             'python2_rueckfall': bool(_py2_driver()), 'jvm': pruefer_jvm.zustand(),
-            'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version()}
+            'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version(),
+            'projektpruefung': pruefer_projekt.info()}
 
 
 def bearbeite(auftrag):
@@ -454,6 +456,10 @@ def bearbeite(auftrag):
         if auftrag.get('build') is not None:
             schreibe({'id': aid, 'ok': True, 'build': pruefer_tsbuild.pruefe(auftrag.get('build') or {})})
             return
+        for art in ('gobuild', 'pyright'):
+            if auftrag.get(art) is not None:
+                schreibe({'id': aid, 'ok': True, art: pruefer_projekt.pruefe(art, auftrag.get(art))})
+                return
         if auftrag.get('vorwaermen'):
             erg = {}
             if 'jvm' in auftrag.get('vorwaermen'):
@@ -484,7 +490,7 @@ def main():
         except Exception as e:  # noqa: BLE001
             schreibe({'id': None, 'ok': False, 'fehler': f'kein JSON: {e}'})
             continue
-        if isinstance(auftrag, dict) and auftrag.get('build') is not None:
+        if isinstance(auftrag, dict) and any(auftrag.get(art) is not None for art in ('build', 'gobuild', 'pyright')):
             # P16-T16 E1: Build-Pruefung dauert Sekunden bis Minuten - eigener Thread, der Syntax-Pool bleibt frei.
             threading.Thread(target=bearbeite, args=(auftrag,), daemon=True).start()
             continue

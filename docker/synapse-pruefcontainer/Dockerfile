@@ -16,6 +16,10 @@
 # Module), Bibliotheken per Maven nur im Builder.
 # P16-T16 E1: projektweite TypeScript-Build-Pruefung (pruefer_tsbuild.py): Node-Binary + typescript (npm nur im
 # Builder, --ignore-scripts) unter /opt/pruef/tsc; tsc laeuft nur mit --noEmit im tmpfs, keine Projekt-node_modules.
+# P16-T16 E2: projektweite Go-/Python-Pruefung (pruefer_projekt.py): vollstaendige Go-Toolchain (go build -o /dev/null +
+# go vet, CGO aus, kein Netz/Toolchain-Download) und Pyright-CLI samt typeshed; Downloads nur im Builder mit fester
+# Version + SHA256 (LIZENZEN.md). Zusaetzlich ca. 260-340 MB entpackt. Fuer Go-Projekte tmpfs_mb >= 384 einplanen
+# (GOCACHE der Standardbibliothek ~40 MB je Programmfamilie, geteilt unter /tmp/pruef-gocache).
 
 ARG DEBIAN_TAG=bookworm-slim
 ARG RUST_VERSION=1.96.1
@@ -100,6 +104,40 @@ RUN mkdir -p /out/bin /out/tsc /out/versionen && cd /out/tsc \
  && /out/bin/node /out/tsc/node_modules/typescript/lib/tsc.js --version > /out/versionen/tsc \
  && cat /out/versionen/tsc && du -sh /out/tsc /out/bin/node
 
+# ─── P16-T16 E2 Vorbereitung: vollständige Go-Toolchain, offizielles versioniertes Archiv ───
+# Debian-main-Go ist aelter als der vorhandene gofmt-Stand (1.26); upstream mit SHA256 statt Sprachdowngrade.
+FROM debian:${DEBIAN_TAG} AS goprojekt
+ARG TARGETARCH
+# Neueste stabile Version (go.dev, 14.10.2026): eine neuere Toolchain prueft aeltere go.mod-Staende mit, umgekehrt nicht.
+ARG GO_PROJEKT_VERSION=1.27.2
+ARG GO_PROJEKT_SHA256_AMD64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
+ARG GO_PROJEKT_SHA256_ARM64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && GO_ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \
+ && case "$GO_ARCH" in amd64) SHA="$GO_PROJEKT_SHA256_AMD64" ;; arm64) SHA="$GO_PROJEKT_SHA256_ARM64" ;; *) exit 1 ;; esac \
+ && curl --fail --location --proto '=https' --tlsv1.2 "https://go.dev/dl/go${GO_PROJEKT_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz \
+ && printf '%s  /tmp/go.tar.gz\n' "$SHA" | sha256sum -c - \
+ && mkdir -p /out/versionen && tar -xzf /tmp/go.tar.gz -C /out \
+ && /out/go/bin/go version > /out/versionen/gobuild \
+ && rm /tmp/go.tar.gz
+
+# ─── P16-T16 E2 Vorbereitung: Pyright-CLI + bundled typeshed, Node aus E1 wiederverwenden ───
+FROM node:${NODE_TAG} AS pyright
+ARG PYRIGHT_VERSION=1.1.414
+ARG PYRIGHT_SHA256=bf5f473f6167c0d14175492c3263d783b4489a6956e1c06c18e15228e3a3fa42
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl --fail --location --proto '=https' --tlsv1.2 "https://registry.npmjs.org/pyright/-/pyright-${PYRIGHT_VERSION}.tgz" -o /tmp/pyright.tgz \
+ && printf '%s  /tmp/pyright.tgz\n' "$PYRIGHT_SHA256" | sha256sum -c - \
+ && mkdir -p /out/pyright /out/versionen \
+ && tar -xzf /tmp/pyright.tgz --strip-components=1 -C /out/pyright \
+ && node /out/pyright/index.js --version > /out/versionen/pyright \
+ && test -f /out/pyright/dist/typeshed-fallback/LICENSE \
+ && rm /tmp/pyright.tgz
+# Verifizierter Original-Tarball ist CLI-ready; nur optionale macOS-Abhängigkeit fsevents entfällt auf Linux.
+# Keine Projektpakete, Install-Skripte oder Netzdownloads zur Laufzeit.
+
 # ─── Stufe jvm: Kotlin-Bibliotheken (Maven), Hilfsprozess kompilieren, schlanke JVM per jlink ───
 # java.desktop braucht der Kotlin-Parser (intellij-core), ohne startet KotlinCoreEnvironment nicht (gemessen).
 FROM maven:${MAVEN_TAG} AS jvm
@@ -160,6 +198,12 @@ COPY --chmod=0444 pruefserver.py pruefer_jvm.py pruefer_naga.py pruefer_build.py
 COPY --from=tsc --chmod=0555 /out/bin/node /opt/pruef/bin/node
 COPY --from=tsc --chmod=0555 /out/tsc/ /opt/pruef/tsc/
 COPY --from=tsc --chmod=0444 /out/versionen/tsc /opt/pruef/versionen/tsc
+COPY --from=goprojekt --chmod=0555 /out/go/ /opt/pruef/go/
+COPY --from=goprojekt --chmod=0444 /out/versionen/gobuild /opt/pruef/versionen/gobuild
+COPY --from=pyright --chmod=0555 /out/pyright/ /opt/pruef/pyright/
+COPY --from=pyright --chmod=0444 /out/versionen/pyright /opt/pruef/versionen/pyright
+COPY --chmod=0444 pruefer_projekt.py LIZENZEN.md /opt/pruef/
+COPY --chmod=0555 python-isoliert.sh /opt/pruef/bin/python-isoliert
 COPY --from=treesitter --chmod=0555 /out/py/ /opt/pruef/py/
 COPY --from=treesitter --chmod=0555 /out/ts/ /opt/pruef/ts/
 COPY --chmod=0555 pruefer_treesitter.py /opt/pruef/
@@ -185,6 +229,9 @@ RUN python3 -m compileall -q /opt/pruef/py && mkdir -p /opt/pruef/leer && touch 
  && python3 -c "import sys; sys.path.insert(0, '/opt/pruef'); import pruefer_treesitter as t; p = t.selbsttest(); print('tree-sitter', t.info()['pack'], sorted(t.lade_sprachen()), p or 'probe ok'); sys.exit(1 if p else 0)" \
  && python3 -c "import sys; from fissix import pygram; from fissix.pgen2 import driver; print(sys.version.split()[0], 'fissix ok')" \
  && node --version && python3 /opt/pruef/pruefer_tsbuild.py \
+ && /opt/pruef/go/bin/go version && node /opt/pruef/pyright/index.js --version \
+ && mkdir -p /opt/pruef/gomodcache \
+ && python3 /opt/pruef/pruefer_projekt.py \
  && chmod -R a+rX /opt/pruef/cache /opt/pruef/versionen && ls -la /opt/pruef/cache/fissix/*/
 LABEL synapse.pruefcontainer="1" org.opencontainers.image.title="synapse-pruefcontainer"
 USER 65532:65532

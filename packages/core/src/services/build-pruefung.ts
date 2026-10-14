@@ -37,6 +37,15 @@
  *        Projektmenge, Budget). Nach einem commit ist der neue PG-Stand inhaltsgleich zum geprueften Schatten - dessen
  *        Ergebnis ist ohne neuen Lauf die Basis des naechsten Plans.
  *
+ * ETAPPE 2 (Go + Python, 14.10.2026, claude-e2 auf der Vorbereitung von sol-11, thought 26799282): dieselbe Stufe fuer
+ *        Go-Module (Ordner mit go.mod: go build -o /dev/null + go vet) und Python-Projekte (Ordner mit pyproject.toml/
+ *        setup.py/setup.cfg, sonst die Projektwurzel: Pyright) im selben Container (pruefer_projekt.py). Gleicher Schalter,
+ *        Ergebnis-Cache, Basisvergleich, Warteschlange; 'teilweise' sperrt nie. Sprachen je Projekt/global abwaehlbar
+ *        (code_check build_einstellungen sprachen, Env BUILD_PRUEFUNG_SPRACHEN). go vet-Analyzerbefunde sind warnings
+ *        (sperren nicht), nicht aufgeloeste Python-Importe nur Abdeckungshinweis (dort Unknown, keine Folgefehler).
+ *        Go ohne Modulbestand im Container (externe Abhaengigkeiten) und cgo -> 'teilweise'. Ohne Go-/Python-Aenderung
+ *        bleiben alle Antworten wie in E1.
+ *
  * BUDGET (User 444127bc 2b): Speicher und tmpfs des Pruefcontainers, Heap von tsc und Zeitlimit per
  *        code_check(build_einstellungen) einstellbar (Tabelle build_pruefung_einstellungen), im Tool abrufbar.
  *        Aenderung von Speicher/tmpfs startet den Container neu (vor dem naechsten Auftrag abgeglichen).
@@ -62,12 +71,19 @@ export interface BuildDatei {
   wurzel_ersetzen?: boolean;
 }
 
+/** P16-T16 E2: Projektpruefer neben TypeScript (Nachrichtenschluessel im Container, pruefer_projekt.py). */
+export type SprachArt = 'gobuild' | 'pyright';
+
 export interface BuildAuftrag {
   dateien: BuildDatei[];
   /** Zu pruefende tsconfig-Dateien (die erzeugten tsconfig.synapse-build.json), projekt-relativ. */
   projekte: string[];
   zeitlimit_ms: number;
   heap_mb: number;
+  /** P16-T16 E2: Go-/Python-Projektpruefer; ohne = TypeScript (E1, Nachricht 'build'). projekte sind dann Ordner. */
+  art?: SprachArt;
+  /** Nur pyright: Python-Sprachstand 3.x (aus .python-version des Projekts). */
+  python_version?: string;
 }
 
 export interface BuildDiagnose {
@@ -79,14 +95,26 @@ export interface BuildDiagnose {
   meldung: string;
   /** tsconfig, in deren Lauf die Diagnose entstand (wie in BuildAuftrag.projekte). */
   projekt: string;
+  /** P16-T16 E2 (Go/Python): error | warning | information; fehlt bei TypeScript (= error). */
+  schwere?: 'error' | 'warning' | 'information';
+  /** Pyright: nicht aufgeloester Import (Abdeckungsluecke, nie Befund). */
+  weich?: boolean;
 }
 
 export interface BuildProjektLauf {
   projekt: string;
-  status: 'fertig' | 'zeitlimit' | 'speicher' | 'fehler';
+  /** E2 zusaetzlich: ausgabe (zu viel Ausgabe), abhaengigkeiten (Go-Module fehlen offline), cgo (cgo-Dateien ungeprueft). */
+  status: 'fertig' | 'zeitlimit' | 'speicher' | 'fehler' | 'ausgabe' | 'abhaengigkeiten' | 'cgo';
   ms: number;
   rc: number | null;
   hinweis?: string;
+  /** E2: Schritt im Projekt (Go: build, vet; Python: pyright). */
+  schritt?: string;
+  /** E2 Pyright: 'unvollstaendig' = Importe nicht aufgeloest (Lauf trotzdem fertig). */
+  abdeckung?: string;
+  fehlende_importe?: number;
+  /** E2 Pyright: analysierte Dateien. */
+  dateien?: number;
 }
 
 export interface BuildLaufErgebnis {
@@ -121,6 +149,12 @@ export interface BuildStand {
   hinweis?: string;
   /** Laufende/wartende Pruefungen gerade (nur bei status laeuft). */
   laufend?: number;
+  /** E2: Sprache dieses Teilstands (fehlt = TypeScript). */
+  sprache?: 'go' | 'python';
+  /** E2: neue go vet-Warnungen (sperren nicht). */
+  neue_warnungen?: number;
+  /** E2: Teilstaende je Sprache, wenn mehrere Sprachen im Plan geprueft wurden. */
+  teile?: BuildStand[];
 }
 
 export type BuildBefund = FehlerBefund & { op_index: number | null; agent_id: string | null; beteiligt?: number[] };
@@ -191,6 +225,8 @@ interface Werte {
   tmpfs_mb?: number;
   heap_mb?: number;
   zeitlimit_s?: number;
+  /** E2: Sprachen neben TypeScript (go, python); [] = nur TypeScript. */
+  sprachen?: string[];
 }
 
 interface EinstellungsZeile {
@@ -485,6 +521,8 @@ interface ProjektBasis {
   erste_fehler: Array<Pick<BuildDiagnose, 'datei' | 'zeile' | 'code' | 'meldung'>>;
 }
 const projektBasis = new Map<string, ProjektBasis>();
+/** E2: Basisstand je Projekt und Sprache (Go/Python), getrennt von der TS-Basis. */
+const sprachBasis = new Map<string, Map<SprachArt, ProjektBasis>>();
 
 function leer(status: BuildLaufErgebnis['status'], hinweis: string): BuildLaufErgebnis {
   return { status, dauer_ms: 0, projekte: [], diagnosen: [], hinweis };
@@ -496,19 +534,28 @@ function merke(schluessel: string, e: BuildLaufErgebnis): void {
   while (ergebnisCache.size > CACHE_MAX) ergebnisCache.delete(ergebnisCache.keys().next().value as string);
 }
 
-function merkeBasis(project: string, e: BuildLaufErgebnis, projekte: string[], vollstaendig: boolean): void {
-  const alt = projektBasis.get(project);
+function merkeBasis(project: string, e: BuildLaufErgebnis, projekte: string[], vollstaendig: boolean, art?: SprachArt): void {
+  const sprachen = art ? (sprachBasis.get(project) ?? new Map<SprachArt, ProjektBasis>()) : null;
+  const alt = sprachen && art ? sprachen.get(art) : projektBasis.get(project);
   // Ein Teilblick (nur betroffene Projekte eines Plans) ueberschreibt keinen vollstaendigen Basisstand.
   if (alt?.vollstaendig && !vollstaendig && Date.now() - new Date(alt.geprueft_am).getTime() < 10 * 60_000) return;
-  projektBasis.set(project, {
-    status: e.status, fehler: e.diagnosen.length, projekte, vollstaendig, geprueft_am: new Date().toISOString(), dauer_ms: e.dauer_ms,
+  // E2: Go/Python zaehlen nur Fehler (keine vet-Warnungen, Hinweise, Importluecken); TypeScript wie bisher alle Diagnosen.
+  const diagnosen = art ? e.diagnosen.filter(istFehlerDiag) : e.diagnosen;
+  const eintrag: ProjektBasis = {
+    status: e.status, fehler: diagnosen.length, projekte, vollstaendig, geprueft_am: new Date().toISOString(), dauer_ms: e.dauer_ms,
     ...(e.werkzeug ? { werkzeug: e.werkzeug } : {}), ...(e.hinweis ? { hinweis: e.hinweis } : {}),
-    erste_fehler: e.diagnosen.slice(0, 5).map((d) => ({ datei: d.datei, zeile: d.zeile, code: d.code, meldung: d.meldung.slice(0, 300) })),
-  });
+    erste_fehler: diagnosen.slice(0, 5).map((d) => ({ datei: d.datei, zeile: d.zeile, code: d.code, meldung: d.meldung.slice(0, 300) })),
+  };
+  if (sprachen && art) {
+    sprachen.set(art, eintrag);
+    sprachBasis.set(project, sprachen);
+  } else {
+    projektBasis.set(project, eintrag);
+  }
 }
 
 /** Startet (bzw. teilt) einen Lauf. Nie parallel im Container: eine Kette fuer alle Projekte. Wirft nie. */
-function starteLauf(project: string, v: Vorbereitet, basis?: { projekte: string[]; vollstaendig: boolean }): Promise<BuildLaufErgebnis> {
+function starteLauf(project: string, v: Vorbereitet, basis?: { projekte: string[]; vollstaendig: boolean; art?: SprachArt }): Promise<BuildLaufErgebnis> {
   const treffer = ergebnisCache.get(v.schluessel);
   if (treffer) return Promise.resolve(treffer);
   const offen = laufend.get(v.schluessel);
@@ -530,7 +577,7 @@ function starteLauf(project: string, v: Vorbereitet, basis?: { projekte: string[
   laufend.set(v.schluessel, p);
   void p.then((e) => {
     if (e.status !== 'nicht_verfuegbar') merke(v.schluessel, e);
-    if (basis) merkeBasis(project, e, basis.projekte, basis.vollstaendig);
+    if (basis) merkeBasis(project, e, basis.projekte, basis.vollstaendig, basis.art);
   }).finally(() => {
     laufend.delete(v.schluessel);
     const n = (projektLaeuft.get(project) ?? 1) - 1;
@@ -581,7 +628,8 @@ function opZuordnung(d: BuildDiagnose, dateien: PruefDatei[]): { op_index: numbe
   return { op_index: null, agent_id: null, ...(alle.length > 0 ? { beteiligt: alle } : {}) };
 }
 
-function alsBefund(d: BuildDiagnose, dateien: PruefDatei[], werkzeug: string): BuildBefund {
+function alsBefund(d: BuildDiagnose, dateien: PruefDatei[], werkzeug: string, art?: SprachArt): BuildBefund {
+  if (art) return alsSprachBefund(d, dateien, werkzeug, art);
   const paket = dirOf(d.projekt) || '.';
   return {
     quelle: 'build',
@@ -607,8 +655,9 @@ function alsBefund(d: BuildDiagnose, dateien: PruefDatei[], werkzeug: string): B
  * Build-Stufe eines Plans. null = Schalter aus oder keine relevante Datei (Antwort unveraendert).
  * warten:false (plan, plan_status, commit eines Agenten): vorhandene Ergebnisse sofort, sonst Lauf im Hintergrund
  * starten und status 'laeuft'. warten:true (Warteschlange): auf das Resultat warten. Wirft nie.
+ * E2: TypeScript-Teil; der exportierte pruefeBuildFuerPlan (unten) ergaenzt Go/Python.
  */
-export async function pruefeBuildFuerPlan(project: string, dateien: PruefDatei[], o: { warten?: boolean } = {}): Promise<BuildPlanErgebnis | null> {
+async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: { warten?: boolean } = {}): Promise<BuildPlanErgebnis | null> {
   const relevant = dateien.filter((d) => istBuildRelevant(d.file_path));
   if (relevant.length === 0) return null;
   const t0 = Date.now();
@@ -692,7 +741,7 @@ export async function pruefeBuildFuerPlan(project: string, dateien: PruefDatei[]
 }
 
 /** Basisstand eines Projekts pruefen (alle TS-Projekte). wartenMs > 0: bis dahin auf das Resultat warten. */
-export async function pruefeBuildBasis(project: string, wartenMs = 0): Promise<Record<string, unknown>> {
+async function pruefeTsBuildBasis(project: string, wartenMs = 0): Promise<Record<string, unknown>> {
   if (!anbindung) return { gestartet: false, status: 'nicht_verfuegbar', hinweis: KEIN_PRUEFER };
   const budget = await wirksamesBuildBudget();
   const quellen = await ladeQuellen(project);
@@ -707,6 +756,370 @@ export async function pruefeBuildBasis(project: string, wartenMs = 0): Promise<R
   const e = await hoechstens(p, wartenMs);
   return e ? { gestartet: true, fertig: true, projekte, status: e.status, fehler: e.diagnosen.length, dauer_ms: e.dauer_ms }
     : { gestartet: true, fertig: false, projekte, hinweis: `Nach ${Math.round(wartenMs / 1000)} s noch nicht fertig; laeuft weiter.` };
+}
+
+// ─── Etappe 2: Go und Python projektweit (pruefer_projekt.py im selben Container) ────────────────────────────────────
+
+interface SprachDef {
+  art: SprachArt;
+  sprache: 'go' | 'python';
+  /** Aenderung an so einer Datei loest die Pruefung aus. */
+  relevant: RegExp;
+  /** Dateien des Schnappschusses (PG-Regex). */
+  sql: string;
+  /** Datei, deren Ordner ein Projekt ist (Go-Modul bzw. Python-Projekt). */
+  wurzel: RegExp;
+}
+
+const SPRACHEN: SprachDef[] = [
+  {
+    art: 'gobuild', sprache: 'go', relevant: /(?:\.go|(?:^|\/)go\.(?:mod|sum))$/,
+    sql: '(\\.go$)|((^|/)go\\.(mod|sum)$)|((^|/)vendor/modules\\.txt$)', wurzel: /(?:^|\/)go\.mod$/,
+  },
+  {
+    art: 'pyright', sprache: 'python', relevant: /(?:\.pyi?|(?:^|\/)(?:pyproject\.toml|setup\.cfg|\.python-version))$/,
+    sql: '(\\.pyi?$)|((^|/)(pyproject\\.toml|setup\\.cfg|\\.python-version)$)', wurzel: /(?:^|\/)(?:pyproject\.toml|setup\.py|setup\.cfg)$/,
+  },
+];
+const SPRACH_AUSSCHLUSS = '(^|/)(node_modules|\\.venv|venv|\\.tox|site-packages|__pycache__|\\.git)/';
+const SPRACH_NAME: Record<SprachArt, string> = { gobuild: 'Go', pyright: 'Python' };
+const ALLE_SPRACHEN = ['go', 'python'];
+
+/** Dateien, deren Aenderung die Go- bzw. Python-Pruefung ausloest. */
+export const istSprachRelevant = (p: string): boolean => SPRACHEN.some((s) => s.relevant.test(p));
+
+/** Wirksame Sprachen neben TypeScript: Projekt-Eintrag, sonst global, sonst Env BUILD_PRUEFUNG_SPRACHEN, sonst go+python. */
+export async function sprachenAktiv(project: string | undefined): Promise<string[]> {
+  const z = await ladeEinstellungen();
+  const p = project ? z.get('projekt:' + project)?.werte.sprachen : undefined;
+  if (Array.isArray(p)) return p;
+  const g = z.get('global')?.werte.sprachen;
+  if (Array.isArray(g)) return g;
+  const env = process.env.BUILD_PRUEFUNG_SPRACHEN;
+  if (env !== undefined) return env.split(',').map((x) => x.trim().toLowerCase()).filter((x) => ALLE_SPRACHEN.includes(x));
+  return [...ALLE_SPRACHEN];
+}
+
+/** Zaehlt fuer Basis/Status: Fehler (TS ohne schwere = Fehler); nie Importluecken, Warnungen, Hinweise. */
+const istFehlerDiag = (d: BuildDiagnose): boolean => !d.weich && (d.schwere === undefined || d.schwere === 'error');
+/** Wird zum Befund: Fehler und go vet-Analyzerbefunde (warning). Pyright-Warnungen/-Hinweise nicht. */
+const istSprachBefundDiag = (d: BuildDiagnose): boolean => !d.weich && (d.schwere === 'error' || (d.schwere === 'warning' && d.code === 'vet'));
+
+/** Go-/Python-Quellen des Projekts aus PG (ohne node_modules, venv, __pycache__ ...). */
+async function ladeSprachQuellen(project: string, s: SprachDef): Promise<Map<string, string>> {
+  const rows = (await getPool().query<{ file_path: string; content: string }>(
+    `SELECT file_path, content FROM code_files
+      WHERE project = $1 AND deleted_at IS NULL AND ignored = false AND content IS NOT NULL
+        AND file_path ~ $2 AND file_path !~ $3
+      ORDER BY file_path`,
+    [project, s.sql, SPRACH_AUSSCHLUSS],
+  )).rows;
+  return new Map(rows.map((r) => [r.file_path, r.content]));
+}
+
+const projektName = (w: string): string => w || '.';
+const sprachWurzeln = (s: SprachDef, quellen: Map<string, string>): string[] =>
+  [...new Set([...quellen.keys()].filter((p) => s.wurzel.test(p)).map(dirOf))].sort();
+/** Tiefste Projektwurzel, unter der die Datei liegt (undefined = keine). */
+function naechsteWurzel(datei: string, wurzeln: string[]): string | undefined {
+  return wurzeln.filter((w) => unter(datei, w)).sort((a, b) => b.length - a.length)[0];
+}
+
+/** Lokale replace-Ziele eines go.mod (./x, ../x), projekt-relativ; Ziele ausserhalb des Projekts entfallen. */
+function goReplaceZiele(modDir: string, gomod: string | undefined): string[] {
+  if (!gomod) return [];
+  const ziele: string[] = [];
+  for (const m of gomod.matchAll(/=>\s*["`]?(\.{1,2}(?:\/[^\s)"`]*)?)/g)) {
+    const z = verbinde(modDir, m[1]);
+    if (!z.startsWith('..')) ziele.push(z);
+  }
+  return ziele;
+}
+
+/** Hat der Stand diese Projektwurzel? Python: die Projektwurzel '' gibt es immer (Rueckfall ohne pyproject). */
+const hatWurzel = (s: SprachDef, quellen: Map<string, string>, w: string): boolean =>
+  (s.art === 'pyright' && w === '') || [...quellen.keys()].some((p) => s.wurzel.test(p) && dirOf(p) === w);
+
+/**
+ * Betroffene Projekte eines Plans: tiefste Wurzel je geaenderter Datei (Python ohne Wurzel: Projektwurzel; Go ohne
+ * go.mod: nicht pruefbar). Go zusaetzlich transitiv alle Module, die ein betroffenes Modul per lokalem replace einbinden.
+ */
+function betroffeneWurzeln(s: SprachDef, quellen: Map<string, string>, geaendert: string[]): string[] {
+  const alle = sprachWurzeln(s, quellen);
+  const betroffen = new Set<string>();
+  for (const f of geaendert) {
+    const w = naechsteWurzel(f, alle) ?? (s.art === 'pyright' ? '' : undefined);
+    if (w !== undefined) betroffen.add(w);
+  }
+  if (s.art === 'gobuild') {
+    for (let weiter = true; weiter;) {
+      weiter = false;
+      for (const m of alle) {
+        if (betroffen.has(m)) continue;
+        if (goReplaceZiele(m, quellen.get(verbinde(m, 'go.mod'))).some((z) => betroffen.has(z))) {
+          betroffen.add(m);
+          weiter = true;
+        }
+      }
+    }
+  }
+  return [...betroffen].sort();
+}
+
+/** Alle Projekte des Stands (Basispruefung); Python mit Projektwurzel, wenn Dateien ausserhalb jeder Wurzel liegen. */
+function alleSprachWurzeln(s: SprachDef, quellen: Map<string, string>): string[] {
+  const w = sprachWurzeln(s, quellen);
+  if (s.art === 'pyright' && !w.includes('') && [...quellen.keys()].some((p) => /\.pyi?$/.test(p) && naechsteWurzel(p, w) === undefined)) w.unshift('');
+  return w;
+}
+
+/**
+ * Auftrag fuer pruefer_projekt.py: Dateien der Projekte (Go: nur das Modul selbst, verschachtelte Module nur ueber
+ * lokales replace; Python: alles unter der Wurzel) plus Cache-Schluessel. Nichts wird erzeugt oder umgeschrieben.
+ */
+function bereiteSpracheVor(s: SprachDef, quellen: Map<string, string>, wurzeln: string[], budget: BuildBudget): Vorbereitet {
+  const alle = sprachWurzeln(s, quellen);
+  const pfade = new Set<string>();
+  const besucht = new Set<string>();
+  const sammle = (w: string): void => {
+    if (besucht.has(w)) return;
+    besucht.add(w);
+    for (const p of quellen.keys()) {
+      if (!unter(p, w)) continue;
+      if (s.art === 'gobuild' && naechsteWurzel(p, alle) !== w) continue;
+      pfade.add(p);
+    }
+    if (s.art === 'gobuild') {
+      for (const z of goReplaceZiele(w, quellen.get(verbinde(w, 'go.mod')))) if (alle.includes(z)) sammle(z);
+    }
+  };
+  for (const w of wurzeln) sammle(w);
+  const dateien: BuildDatei[] = [...pfade].sort().map((pfad) => ({ pfad, inhalt: quellen.get(pfad) ?? '' }));
+  const bytes = dateien.reduce((n, d) => n + Buffer.byteLength(d.inhalt), 0);
+  const python_version = s.art === 'pyright'
+    ? wurzeln.map((w) => /^\s*(3\.\d{1,2})\b/.exec(quellen.get(verbinde(w, '.python-version')) ?? '')?.[1]).find((v): v is string => !!v)
+    : undefined;
+  const projekte = wurzeln.map(projektName);
+  const auftrag: BuildAuftrag = {
+    art: s.art, dateien, projekte, zeitlimit_ms: budget.zeitlimit_s * 1000, heap_mb: budget.heap_mb,
+    ...(python_version ? { python_version } : {}),
+  };
+  const schluessel = sha(JSON.stringify(['e2', s.art, budget.heap_mb, budget.zeitlimit_s, projekte, python_version ?? null, dateien.map((d) => [d.pfad, sha(d.inhalt)])]));
+  return { auftrag, schluessel, bytes };
+}
+
+/** Alle Schritte eines Projekts (Go: build + vet) fertig? */
+function sprachFertig(e: BuildLaufErgebnis, name: string): boolean {
+  const laeufe = e.projekte.filter((p) => p.projekt === name);
+  return laeufe.length > 0 && laeufe.every((p) => p.status === 'fertig');
+}
+
+function alsSprachBefund(d: BuildDiagnose, dateien: PruefDatei[], werkzeug: string, art: SprachArt): BuildBefund {
+  const projekt = d.projekt || '.';
+  const vet = d.code === 'vet';
+  const warnung = d.schwere === 'warning';
+  const was = art === 'gobuild' ? (vet ? 'go vet' : 'Go') : 'Pyright';
+  return {
+    quelle: 'build',
+    pruefer: `build:${werkzeug.split(' (')[0].replace(/\s+/g, '@')}`,
+    severity: warnung ? 'warning' : 'error',
+    datei: d.datei ?? verbinde(projekt === '.' ? '' : projekt, art === 'gobuild' ? 'go.mod' : 'pyproject.toml'),
+    zeilen: [Math.max(1, d.zeile), Math.max(1, d.zeile)],
+    ...(d.spalte > 0 ? { spalte: d.spalte } : {}),
+    // Code mit Kurz-Hash der Meldung: Quittierungen bleiben je Meldung getrennt (Schluessel ohne Zeile).
+    code: `${d.code}#${sha(meldungNorm(d.meldung)).slice(0, 6)}`,
+    titel: `${d.code} (${was} ${projekt})`,
+    was: d.meldung,
+    warum: art === 'gobuild'
+      ? (vet
+        ? `Neuer go-vet-Befund im Modul ${projekt} gegenueber dem Basisstand (Warnung, sperrt nicht).`
+        : `Neuer Fehler der projektweiten Go-Pruefung (go build -o /dev/null, Typpruefung der Tests ueber go vet; Modul ${projekt}) gegenueber dem Basisstand.`)
+      : `Neuer Fehler der projektweiten Python-Typpruefung (Pyright, Projekt ${projekt}) gegenueber dem Basisstand.`,
+    wie: warnung
+      ? 'Pruefen und bei Bedarf im selben Plan anpassen (sperrt nicht).'
+      : 'Betroffene Aufrufer/Typen im selben Plan anpassen (plan_update bzw. coedit_add) oder bewusst quittieren (commit mit befunde_quittieren).',
+    wo: [projekt],
+    ...opZuordnung(d, dateien),
+  };
+}
+
+/** Go- bzw. Python-Teil der Build-Stufe eines Plans; Verhalten wie der TypeScript-Teil. null = nichts zu pruefen. */
+async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: PruefDatei[], o: { warten?: boolean }): Promise<BuildPlanErgebnis | null> {
+  const relevant = dateien.filter((d) => s.relevant.test(d.file_path));
+  if (relevant.length === 0) return null;
+  const t0 = Date.now();
+  const stand = (x: Partial<BuildStand> & Pick<BuildStand, 'status'>): BuildStand => ({ tor: true, neue_fehler: 0, projekte: [], sprache: s.sprache, ...x, dauer_ms: x.dauer_ms ?? Date.now() - t0 });
+  try {
+    if (!(await buildAktiv(project)).aktiv) return null;
+    if (!(await sprachenAktiv(project)).includes(s.sprache)) return null;
+    if (!anbindung) return { stand: stand({ status: 'nicht_verfuegbar', hinweis: KEIN_PRUEFER }), befunde: [] };
+    const budget = await wirksamesBuildBudget();
+    const basisQuellen = await ladeSprachQuellen(project, s);
+    const schattenQuellen = new Map(basisQuellen);
+    for (const d of relevant) {
+      if (d.geloescht) schattenQuellen.delete(d.file_path);
+      else schattenQuellen.set(d.file_path, d.ergebnis);
+    }
+    const wurzeln = betroffeneWurzeln(s, schattenQuellen, relevant.map((d) => d.file_path));
+    if (wurzeln.length === 0) {
+      return { stand: stand({ status: 'fertig', hinweis: 'Keine geaenderte Go-Datei liegt in einem Modul (go.mod) - nicht geprueft.' }), befunde: [] };
+    }
+    const projekte = wurzeln.map(projektName);
+    const basisWurzeln = wurzeln.filter((w) => hatWurzel(s, basisQuellen, w));
+    const a = bereiteSpracheVor(s, basisQuellen, basisWurzeln, budget);
+    const b = bereiteSpracheVor(s, schattenQuellen, wurzeln, budget);
+    const groesste = Math.max(a.bytes, b.bytes);
+    if (groesste > budget.max_mb * 1024 * 1024) {
+      return {
+        stand: stand({ status: 'teilweise', projekte, hinweis: `Schnappschuss ${(groesste / 1048576).toFixed(1)} MB > ${budget.max_mb} MB (BUILD_PRUEFUNG_MAX_MB bzw. 80 % tmpfs) - nicht geprueft, nichts gesperrt. Mehr Platz: code_check(build_einstellungen, modus:'setzen', tmpfs_mb).` }),
+        befunde: [],
+      };
+    }
+    let basis = ergebnisCache.get(a.schluessel);
+    let schatten = ergebnisCache.get(b.schluessel);
+    if (!basis || !schatten) {
+      const pa = starteLauf(project, a, { projekte: basisWurzeln.map(projektName), vollstaendig: false, art: s.art });
+      const pb = starteLauf(project, b);
+      if (!o.warten) {
+        return {
+          stand: stand({ status: 'laeuft', projekte, laufend: laufend.size, hinweis: `Projektweite ${SPRACH_NAME[s.art]}-Pruefung laeuft im Pruefcontainer (Basis und Plan-Stand); Ergebnis bei plan_status/commit. Ein commit wird solange eingereiht, nicht gesperrt.` }),
+          befunde: [],
+        };
+      }
+      [basis, schatten] = await Promise.all([pa, pb]);
+    }
+    if (basis.status === 'nicht_verfuegbar' || schatten.status === 'nicht_verfuegbar') {
+      return { stand: stand({ status: 'nicht_verfuegbar', projekte, hinweis: schatten.hinweis ?? basis.hinweis ?? KEIN_PRUEFER }), befunde: [] };
+    }
+    const neu: BuildDiagnose[] = [];
+    const unvollstaendig: string[] = [];
+    const abdeckung: string[] = [];
+    for (const w of wurzeln) {
+      const name = projektName(w);
+      const imBasis = basisWurzeln.includes(w);
+      if (!sprachFertig(schatten, name) || (imBasis && !sprachFertig(basis, name))) {
+        const lauf = [...schatten.projekte, ...basis.projekte].find((p) => p.projekt === name && p.status !== 'fertig');
+        const grund = lauf?.hinweis ?? schatten.hinweis ?? basis.hinweis;
+        unvollstaendig.push(`${name}: ${lauf?.status ?? 'nicht gelaufen'}${grund ? ` (${grund})` : ''}`);
+        continue;
+      }
+      for (const l of schatten.projekte) {
+        if (l.projekt === name && l.abdeckung === 'unvollstaendig') abdeckung.push(`${name}: ${l.fehlende_importe ?? '?'} Import(e) nicht aufgeloest`);
+      }
+      neu.push(...neueDiagnosen(
+        imBasis ? basis.diagnosen.filter((d) => d.projekt === name && istSprachBefundDiag(d)) : [],
+        schatten.diagnosen.filter((d) => d.projekt === name && istSprachBefundDiag(d)),
+        relevant,
+      ));
+    }
+    const gesehen = new Set<string>();
+    const eindeutig = neu.filter((d) => {
+      const k = `${d.datei ?? ''}|${d.zeile}|${d.code}|${meldungNorm(d.meldung)}`;
+      if (gesehen.has(k)) return false;
+      gesehen.add(k);
+      return true;
+    });
+    const werkzeug = schatten.werkzeug ?? basis.werkzeug ?? s.art;
+    const befunde = eindeutig.map((d) => alsBefund(d, relevant, werkzeug, s.art));
+    const fehler = befunde.filter((x) => x.severity === 'error').length;
+    const warnungen = befunde.length - fehler;
+    const hinweise = [
+      ...(unvollstaendig.length > 0 ? [`Teilweise geprueft (sperrt nicht): ${unvollstaendig.join('; ')}.`] : []),
+      ...(abdeckung.length > 0 ? [`Abdeckung unvollstaendig (dort Unknown, keine Folgefehler): ${abdeckung.join('; ')}.`] : []),
+      ...(fehler > 0 ? [`${fehler} neue(r) ${SPRACH_NAME[s.art]}-Fehler gegenueber dem Basisstand - sperrt den commit; korrigieren oder quittieren.`] : []),
+      ...(warnungen > 0 ? [`${warnungen} neue go-vet-Warnung(en) (sperren nicht).`] : []),
+    ];
+    return {
+      stand: stand({
+        status: unvollstaendig.length > 0 ? 'teilweise' : 'fertig', neue_fehler: fehler, ...(warnungen > 0 ? { neue_warnungen: warnungen } : {}),
+        basis_fehler: basis.diagnosen.filter(istFehlerDiag).length, projekte, dauer_ms: basis.dauer_ms + schatten.dauer_ms, werkzeug,
+        ...(hinweise.length > 0 ? { hinweis: hinweise.join(' ') } : {}),
+      }),
+      befunde,
+    };
+  } catch (err) {
+    return { stand: stand({ status: 'nicht_verfuegbar', hinweis: `${SPRACH_NAME[s.art]}-Pruefung fehlgeschlagen (sperrt nicht): ${(err as Error).message}` }), befunde: [] };
+  }
+}
+
+/** Mehrere Teilstaende (TS, Go, Python) zu einem: laeuft gewinnt (Warteschlange), sonst teilweise vor fertig. */
+function kombiniere(teile: BuildPlanErgebnis[]): BuildPlanErgebnis | null {
+  if (teile.length === 0) return null;
+  if (teile.length === 1) return teile[0];
+  const st = teile.map((t) => t.stand);
+  const status: BuildStand['status'] = st.some((s) => s.status === 'laeuft') ? 'laeuft'
+    : st.every((s) => s.status === 'nicht_verfuegbar') ? 'nicht_verfuegbar'
+      : st.some((s) => s.status !== 'fertig') ? 'teilweise' : 'fertig';
+  const summe = (f: (s: BuildStand) => number | undefined): number => st.reduce((n, s) => n + (f(s) ?? 0), 0);
+  const name = (s: BuildStand): string => (s.sprache === 'go' ? 'Go' : s.sprache === 'python' ? 'Python' : 'TypeScript');
+  const hinweise = st.filter((s) => s.hinweis).map((s) => `${name(s)}: ${s.hinweis}`);
+  const werkzeug = [...new Set(st.map((s) => s.werkzeug).filter((w): w is string => !!w))].join(' + ');
+  const warnungen = summe((s) => s.neue_warnungen);
+  return {
+    stand: {
+      status, tor: true, neue_fehler: summe((s) => s.neue_fehler),
+      ...(warnungen > 0 ? { neue_warnungen: warnungen } : {}),
+      ...(st.some((s) => s.basis_fehler !== undefined) ? { basis_fehler: summe((s) => s.basis_fehler) } : {}),
+      projekte: st.flatMap((s) => (s.sprache ? s.projekte.map((p) => `${s.sprache}:${p}`) : s.projekte)),
+      dauer_ms: summe((s) => s.dauer_ms),
+      ...(werkzeug ? { werkzeug } : {}),
+      ...(hinweise.length > 0 ? { hinweis: hinweise.join(' | ') } : {}),
+      ...(status === 'laeuft' ? { laufend: Math.max(0, ...st.map((s) => s.laufend ?? 0)) } : {}),
+      teile: st,
+    },
+    befunde: teile.flatMap((t) => t.befunde),
+  };
+}
+
+/**
+ * Build-Stufe eines Plans (plan-befunde.ts): TypeScript (E1) plus Go/Python (E2). null = Schalter aus oder keine
+ * relevante Datei. Ohne Go-/Python-Datei im Plan exakt das E1-Ergebnis. Wirft nie.
+ */
+export async function pruefeBuildFuerPlan(project: string, dateien: PruefDatei[], o: { warten?: boolean } = {}): Promise<BuildPlanErgebnis | null> {
+  const tsTeil = await pruefeTsBuildFuerPlan(project, dateien, o);
+  if (!dateien.some((d) => istSprachRelevant(d.file_path))) return tsTeil;
+  const teile: BuildPlanErgebnis[] = tsTeil ? [tsTeil] : [];
+  for (const s of SPRACHEN) {
+    const e = await pruefeSpracheFuerPlan(project, s, dateien, o);
+    if (e) teile.push(e);
+  }
+  return kombiniere(teile);
+}
+
+/** Basisstand einer Sprache (alle Projekte). null = keine Projekte dieser Sprache im Index. */
+async function pruefeSpracheBasis(project: string, s: SprachDef, wartenMs: number): Promise<Record<string, unknown> | null> {
+  const budget = await wirksamesBuildBudget();
+  const quellen = await ladeSprachQuellen(project, s);
+  const wurzeln = alleSprachWurzeln(s, quellen);
+  if (wurzeln.length === 0) return null;
+  const projekte = wurzeln.map(projektName);
+  const v = bereiteSpracheVor(s, quellen, wurzeln, budget);
+  if (v.bytes > budget.max_mb * 1024 * 1024) {
+    return { gestartet: false, status: 'teilweise', projekte, hinweis: `Schnappschuss ${(v.bytes / 1048576).toFixed(1)} MB > ${budget.max_mb} MB - tmpfs_mb erhoehen.` };
+  }
+  const p = starteLauf(project, v, { projekte, vollstaendig: true, art: s.art });
+  if (wartenMs <= 0) return { gestartet: true, projekte };
+  const e = await hoechstens(p, wartenMs);
+  return e ? { gestartet: true, fertig: true, projekte, status: e.status, fehler: e.diagnosen.filter(istFehlerDiag).length, dauer_ms: e.dauer_ms }
+    : { gestartet: true, fertig: false, projekte, hinweis: `Nach ${Math.round(wartenMs / 1000)} s noch nicht fertig; laeuft weiter.` };
+}
+
+/**
+ * Basisstand eines Projekts pruefen: TypeScript (E1) und - wenn vorhanden und eingeschaltet - Go/Python (E2, Feld
+ * sprachen). wartenMs > 0: insgesamt hoechstens so lange auf die Resultate warten. Ohne Go/Python wie in E1.
+ */
+export async function pruefeBuildBasis(project: string, wartenMs = 0): Promise<Record<string, unknown>> {
+  const ende = Date.now() + wartenMs;
+  const tsErgebnis = await pruefeTsBuildBasis(project, wartenMs);
+  if (!anbindung) return tsErgebnis;
+  const aktiv = await sprachenAktiv(project);
+  const sprachen: Record<string, unknown> = {};
+  for (const s of SPRACHEN) {
+    if (!aktiv.includes(s.sprache)) continue;
+    const r = await pruefeSpracheBasis(project, s, wartenMs > 0 ? Math.max(1, ende - Date.now()) : 0);
+    if (r) sprachen[s.sprache] = r;
+  }
+  return Object.keys(sprachen).length > 0 ? { ...tsErgebnis, sprachen } : tsErgebnis;
 }
 
 // ─── Warteschlange der commits ──────────────────────────────────────────────────────────────────────────────────
@@ -813,9 +1226,11 @@ async function arbeiteAb(project: string): Promise<void> {
 function zustandVon(project: string): 'laeuft' | 'gruen' | 'rot' | 'teilweise' | 'unbekannt' {
   if ((projektLaeuft.get(project) ?? 0) > 0 || inArbeit.has(project)) return 'laeuft';
   const b = projektBasis.get(project);
-  if (!b) return 'unbekannt';
-  if (b.status !== 'fertig') return 'teilweise';
-  return b.fehler === 0 ? 'gruen' : 'rot';
+  // E2: Go-/Python-Basis fliesst ein (schlechtester Stand); ohne sie wie in E1.
+  const alle = [...(b ? [b] : []), ...(sprachBasis.get(project)?.values() ?? [])];
+  if (alle.length === 0) return 'unbekannt';
+  if (alle.some((x) => x.status !== 'fertig')) return 'teilweise';
+  return alle.every((x) => x.fehler === 0) ? 'gruen' : 'rot';
 }
 
 function warteschlangeAnzeige(project: string): Array<Record<string, unknown>> {
@@ -824,7 +1239,7 @@ function warteschlangeAnzeige(project: string): Array<Record<string, unknown>> {
 
 /** intern(status) -> quellen.build_pruefung */
 export function buildPruefungZustand(): Record<string, unknown> {
-  const projekte = new Set([...projektBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys()]);
+  const projekte = new Set([...projektBasis.keys(), ...sprachBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys()]);
   return {
     pruefer_verfuegbar: !!anbindung,
     laufend: laufend.size,
@@ -848,6 +1263,7 @@ export const BUILD_PARAMETER: Record<string, Record<string, unknown>> = {
   tmpfs_mb: { type: 'number', description: 'build_einstellungen setzen: /tmp des Pruefcontainers in MB (16..4096); Container startet neu' },
   heap_mb: { type: 'number', description: 'build_einstellungen setzen: Heap von tsc in MB (128..16384; Standard Speicher - 192)' },
   zeitlimit_s: { type: 'number', description: 'build_einstellungen setzen: Zeitlimit je Build-Lauf in s (10..3600); danach teilweise (sperrt nicht)' },
+  sprachen: { type: 'array', items: { type: 'string', enum: ['go', 'python', 'keine'] }, description: 'build_einstellungen setzen: Sprachen der projektweiten Pruefung neben TypeScript (go, python; keine = nur TypeScript) - mit project fuer dieses Projekt, ohne global. Standard go+python (Env BUILD_PRUEFUNG_SPRACHEN)' },
   zuruecksetzen: { type: 'string', enum: ['projekt', 'global', 'budget'], description: 'build_einstellungen setzen: Eintrag entfernen (projekt braucht project) - danach gilt die naechste Ebene bzw. Env' },
 };
 
@@ -884,6 +1300,7 @@ async function einstellungenAnzeige(project: string | undefined): Promise<Record
     ...(project ? { projekt: z.get('projekt:' + project) ?? null, schalter: await buildAktiv(project) } : {}),
     pruefcontainer: z.get('pruefcontainer') ?? null,
     budget: await wirksamesBuildBudget(),
+    sprachen_wirksam: await sprachenAktiv(project),
     ...(anbindung ? { container_jetzt: anbindung.budget() } : {}),
     env: { BUILD_PRUEFUNG: process.env.BUILD_PRUEFUNG ?? null },
     ...(einstellungsCache?.fehler ? { tabelle_fehler: einstellungsCache.fehler } : {}),
@@ -901,7 +1318,7 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
         const sek = Math.max(0, Math.min(50, Number(args.warten_sekunden) || 0));
         pruefung = await pruefeBuildBasis(project, sek * 1000);
       }
-      const projekte = project ? [project] : [...new Set([...projektBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys()])].sort();
+      const projekte = project ? [project] : [...new Set([...projektBasis.keys(), ...sprachBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys()])].sort();
       return {
         success: true,
         pruefer_verfuegbar: !!anbindung,
@@ -912,6 +1329,8 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
           zustand: zustandVon(p),
           schalter: await buildAktiv(p),
           basis: projektBasis.get(p) ?? null,
+          // E2: nur wenn es eine Go-/Python-Basis gibt (sonst Antwort wie in E1).
+          ...(sprachBasis.get(p)?.size ? { basis_sprachen: Object.fromEntries([...sprachBasis.get(p)!].map(([art, b]) => [art === 'gobuild' ? 'go' : 'python', b])) } : {}),
           warteschlange: warteschlangeAnzeige(p),
           letzte_commits: letzteCommits.get(p) ?? [],
         }))),
@@ -938,10 +1357,19 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
       if (heap !== undefined) budget.heap_mb = heap;
       if (zeit !== undefined) budget.zeitlimit_s = zeit;
       const aktiv = args.aktiv === true || args.aktiv === 'true' ? true : args.aktiv === false || args.aktiv === 'false' ? false : undefined;
+      // E2: sprachen als Liste oder Komma-Text; 'keine' bzw. [] = nur TypeScript.
+      let sprachen: string[] | undefined;
+      if (args.sprachen !== undefined && args.sprachen !== null) {
+        const roh = Array.isArray(args.sprachen) ? args.sprachen : String(args.sprachen).split(',');
+        const liste = roh.map((x) => String(x).trim().toLowerCase()).filter((x) => x && x !== 'keine');
+        const falsch = liste.filter((x) => !ALLE_SPRACHEN.includes(x));
+        if (falsch.length > 0) fehler.push(`sprachen nur ${ALLE_SPRACHEN.join(' | ')} | keine (unbekannt: ${falsch.join(', ')})`);
+        else sprachen = [...new Set(liste)];
+      }
       const zurueck = text(args.zuruecksetzen);
       if (zurueck && !['projekt', 'global', 'budget'].includes(zurueck)) fehler.push('zuruecksetzen nur projekt | global | budget');
       if (zurueck === 'projekt' && !project) fehler.push('zuruecksetzen projekt braucht project');
-      if (aktiv === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s oder zuruecksetzen)');
+      if (aktiv === undefined && sprachen === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, sprachen, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s oder zuruecksetzen)');
       if (fehler.length > 0) return { success: false, error: 'ungueltig', message: fehler.join('; '), fehler };
       const geaendert: string[] = [];
       if (zurueck) {
@@ -953,6 +1381,11 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
         const bereich = project ? 'projekt:' + project : 'global';
         await zeileSchreiben(bereich, { aktiv }, agent, grund);
         geaendert.push(`${bereich}: aktiv ${aktiv}`);
+      }
+      if (sprachen !== undefined) {
+        const bereich = project ? 'projekt:' + project : 'global';
+        await zeileSchreiben(bereich, { sprachen }, agent, grund);
+        geaendert.push(`${bereich}: sprachen ${sprachen.length > 0 ? sprachen.join(', ') : 'keine (nur TypeScript)'}`);
       }
       if (Object.keys(budget).length > 0) {
         await zeileSchreiben('pruefcontainer', budget, agent, grund);

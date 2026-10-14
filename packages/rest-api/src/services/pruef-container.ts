@@ -204,7 +204,7 @@ interface Offen {
   timer: NodeJS.Timeout | null;
 }
 
-type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; build?: BuildLaufErgebnis };
+type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; build?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis };
 
 const START_FENSTER_MS = 5 * 60_000;
 const MAX_TIMEOUTS_IN_FOLGE = 3;
@@ -646,12 +646,20 @@ export class PruefContainer {
     try {
       await this.bereitMachen();
       // Zeitlimit des Laufs plus Reserve fuer Dateien schreiben/aufraeumen; ohne timeoutInfo (kein Neustart-Zaehler).
-      const antwort = await this.schicke({
-        build: { dateien: auftrag.dateien, projekte: auftrag.projekte, zeitlimit_s: Math.max(1, Math.round(auftrag.zeitlimit_ms / 1000)), heap_mb: auftrag.heap_mb },
-      }, auftrag.zeitlimit_ms + 30_000) as Antwort;
+      // P16-T16 E2: Go/Python ueber eigene Nachrichtenschluessel (pruefer_projekt.py); TypeScript unveraendert 'build'.
+      const zeitlimit_s = Math.max(1, Math.round(auftrag.zeitlimit_ms / 1000));
+      const nachricht = auftrag.art
+        ? { [auftrag.art]: { dateien: auftrag.dateien, projekte: auftrag.projekte, zeitlimit_s, heap_mb: auftrag.heap_mb, ...(auftrag.python_version ? { python_version: auftrag.python_version } : {}) } }
+        : { build: { dateien: auftrag.dateien, projekte: auftrag.projekte, zeitlimit_s, heap_mb: auftrag.heap_mb } };
+      const antwort = await this.schicke(nachricht, auftrag.zeitlimit_ms + 30_000) as Antwort;
       this.letzteAktivitaet = Date.now();
-      if (!antwort.build) throw new PruefContainerNichtVerfuegbar('Antwort ohne build (Image ohne Build-Pruefung? neu bauen: docker/synapse-pruefcontainer)');
-      const ergebnis = { ...antwort.build, dauer_ms: antwort.build.dauer_ms || Date.now() - t0 };
+      const roh = auftrag.art ? antwort[auftrag.art] : antwort.build;
+      if (!roh) {
+        throw new PruefContainerNichtVerfuegbar(auftrag.art
+          ? `Antwort ohne ${auftrag.art} (Image ohne Go-/Python-Projektpruefung P16-T16 E2? neu bauen: docker/synapse-pruefcontainer)`
+          : 'Antwort ohne build (Image ohne Build-Pruefung? neu bauen: docker/synapse-pruefcontainer)');
+      }
+      const ergebnis = { ...roh, dauer_ms: roh.dauer_ms || Date.now() - t0 };
       this.buildZ.letzte_ms = Date.now() - t0;
       this.buildZ.letzter_status = ergebnis.status;
       return ergebnis;
@@ -713,7 +721,11 @@ export class PruefContainer {
       letzte_aktivitaet: new Date(this.letzteAktivitaet).toISOString(),
       limits: { mem_mb: this.cfg.memMb, cpus: this.cfg.cpus, pids: this.cfg.pids, tmpfs_mb: this.cfg.tmpfsMb, timeout_ms: this.cfg.timeoutMs, idle_min: this.cfg.idleMin },
       // P16-T16 E1: projektweite Build-Pruefung
-      build: { ...this.buildZ, werkzeug: (this.info as { tsbuild?: unknown } | null)?.tsbuild ?? null },
+      build: {
+        ...this.buildZ, werkzeug: (this.info as { tsbuild?: unknown } | null)?.tsbuild ?? null,
+        // P16-T16 E2: Go-/Pyright-Versionen und Grenzen, nur wenn das Image sie meldet (sonst wie in E1).
+        ...((this.info as { projektpruefung?: unknown } | null)?.projektpruefung ? { projektpruefung: (this.info as { projektpruefung?: unknown }).projektpruefung } : {}),
+      },
       zaehler: { ...this.z },
     };
   }
