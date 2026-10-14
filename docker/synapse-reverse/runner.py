@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -26,6 +27,7 @@ TOOL_PACKAGES = {
     "cabextract": "cabextract", "unar": "unar", "lhasa": "lhasa", "arj": "arj",
     "file": "file", "llvm-readobj": "llvm", "wasm-objdump": "wabt", "wasm2wat": "wabt",
     "ffmpeg": "ffmpeg", "ffprobe": "ffmpeg", "javap": "openjdk-21-jdk-headless",
+    "libmirage": "libmirage11",
 }
 UPSTREAM_TOOLS = {"rizin": "rizin", "rz-bin": "rizin", "analyzeHeadless": "ghidra"}
 JOB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
@@ -80,6 +82,25 @@ OUTPUT_RE = re.compile(r"^/arbeit/([^/]+)/?$")
 # P18-T62: Grenzen gelten WAEHREND des Entpackens. Die Ausgabe wird in diesem Takt geprueft; bei Verletzung stirbt
 # die Prozessgruppe sofort und die Teilausgabe wird geloescht. Zusaetzlich begrenzt RLIMIT_FSIZE jede einzelne Datei.
 GUARD_INTERVAL_S = 0.5
+# P18-T49/RV34: Disc-Images ueber Spurtabelle + gemeinsamen Extraktor (disc.py neben dem Runner). Formate ohne
+# verfuegbaren Parser, die frueher schon einen Weg hatten, nehmen ihn weiter (CUE ohne libmirage -> bchunk).
+DISC_PY = Path(__file__).with_name("disc.py")
+ALTER_WEG = frozenset({"cue"})
+ROH_ENDUNGEN = (".bin", ".img", ".iso")
+_DISC: Any = None
+
+
+def disc_modul() -> Any:
+    """Spurtabellen-Modul einmal laden (per Pfad, unabhaengig von sys.path)."""
+    global _DISC
+    if _DISC is None:
+        spec = importlib.util.spec_from_file_location("reverse_disc", DISC_PY)
+        if spec is None or spec.loader is None:
+            raise ValueError("disc.py fehlt")
+        modul = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modul)
+        _DISC = modul
+    return _DISC
 
 
 class GrenzeUeberschritten(ValueError):
@@ -416,6 +437,8 @@ def limits(req: dict[str, Any]) -> dict[str, int]:
         "max_bytes": min(max(int(raw.get("max_bytes", 2_000_000_000)), 1), 20_000_000_000),
         "max_tiefe": min(max(int(raw.get("max_tiefe", 32)), 1), 128),
         "max_kompressionsfaktor": min(max(int(raw.get("max_kompressionsfaktor", 200)), 1), 1000),
+        # P18-T49: Adressraum-Grenze fuer den Parser-Prozess (libmirage liest fremde, evtl. defekte Images).
+        "parser_ram_mb": min(max(int(raw.get("parser_ram_mb", 2048)), 256), 65536),
     }
 
 
@@ -547,6 +570,174 @@ def command_for(tool: str, source: Path, out: Path, req: dict[str, Any], fmt: st
     return [*TOOLS[tool], str(source)]
 
 
+def sicherer_name(name: str) -> str:
+    """Dateiname fuer den Medium-Ordner: nur der letzte Teil, keine Steuerzeichen (CUE/CCD verweisen per Name)."""
+    teil = Path(str(name).replace("\\", "/")).name
+    teil = "".join(c if c.isprintable() else "_" for c in teil)[:255]
+    return teil if teil not in ("", ".", "..") else "datei"
+
+
+def disc_medium(req: dict[str, Any], source: Path, begleit: list[tuple[str, Path]]) -> list[tuple[str, Path]]:
+    """Hauptdatei zuerst; Namen = Originalnamen (eingabe_name/begleitdateien[].name), eindeutig ohne Gross/Klein."""
+    medium = [(sicherer_name(str(req.get("eingabe_name") or source.name)), source)]
+    medium += [(sicherer_name(name), path) for name, path in begleit]
+    gesehen: set[str] = set()
+    for name, _ in medium:
+        if name.lower() in gesehen:
+            raise ValueError("Dateinamen im Medium doppelt: " + name)
+        gesehen.add(name.lower())
+    return medium
+
+
+def disc_grenzen(cap: dict[str, int], input_size: int) -> Callable[[], None]:
+    fsize = per_file_limit(cap, input_size)
+    ram = int(cap.get("parser_ram_mb", 2048)) * 1024 * 1024
+
+    def apply() -> None:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
+        resource.setrlimit(resource.RLIMIT_AS, (ram, ram))
+    return apply
+
+
+def entpacke_iso(out: Path, eintrag: dict[str, Any], cap: dict[str, int], input_size: int, env: dict[str, str],
+                 job_tmp: Path, hinweise: list[dict[str, Any]]) -> bool:
+    """P18-T49: ISO aus dem Extraktor -> E-Profil ISO/UDF (RV13) per 7-Zip nach inhalt/<abbild>/. False = nicht entpackt."""
+    iso = out / eintrag["pfad"]
+    fmt = detect_format(iso)
+    if fmt not in SEVENZIP_TYPES:
+        hinweise.append({"code": "kein_dateisystem", "pfad": eintrag["pfad"],
+                         "meldung": "Datenspur ohne erkanntes ISO9660/UDF; nur das Abbild liegt vor"})
+        return True
+    ziel = out / "inhalt" / Path(eintrag["pfad"]).stem
+    ziel.mkdir(parents=True, exist_ok=True)
+    try:
+        command = command_for("7zz", iso, ziel, {}, fmt)
+    except ValueError:
+        hinweise.append({"code": "iso_nicht_entpackt", "pfad": eintrag["pfad"], "meldung": "7-Zip nicht verfuegbar"})
+        ziel.rmdir()
+        return False
+    code, meldung = run_isolated(command, cap["zeitlimit_s"], env, ziel, job_tmp,
+                                 guard=lambda: scan_output(out, cap, input_size),
+                                 preexec=file_size_limit(per_file_limit(cap, input_size)))
+    final = scan_output(out, cap, input_size)
+    if final:
+        raise GrenzeUeberschritten(*final)
+    if code == -signal.SIGXFSZ or (code and "File too large" in meldung):
+        raise GrenzeUeberschritten(*file_limit_violation(cap, input_size))
+    if code:
+        clear_output(ziel)
+        ziel.rmdir()
+        hinweise.append({"code": "iso_nicht_entpackt", "pfad": eintrag["pfad"], "meldung": meldung[-500:]})
+        return False
+    eintrag.setdefault("metadaten", {})["inhalt"] = ziel.relative_to(out).as_posix()
+    return True
+
+
+def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int, medium: list[tuple[str, Path]],
+             erkennung: Any, nur_tabelle: bool = False) -> list[dict[str, Any]]:
+    """P18-T49/RV34: Parser (Registry) -> Spurtabelle -> gemeinsamer Extraktor im eigenen Prozess mit Zeit-, RAM- und
+    Dateigroessen-Grenzen; danach ISO -> E-Profil. Das Ergebnis traegt Spurtabelle, Hinweise und je Datei art/metadaten."""
+    disc = disc_modul()
+    started = time.monotonic()
+    if not erkennung.parser:
+        return [{"status": "fehler", "fehlercode": "format_nicht_unterstuetzt", "format_detail": erkennung.format,
+                 "meldung": "Format " + erkennung.format + " wird noch nicht unterstuetzt (kein Parser verfuegbar)",
+                 "parser_registry_version": disc.REGISTRY_VERSION, "manifest": []}]
+    out: Path | None = None
+    if not nur_tabelle:
+        WORK.mkdir(parents=True, exist_ok=True)
+        out = path_under(job, WORK, False)
+        out.mkdir(parents=True, exist_ok=True)
+        if any(out.iterdir()):
+            raise ValueError("Ausgabeordner muss leer sein")
+    job_tmp = TMP_ROOT / job
+    shutil.rmtree(job_tmp, ignore_errors=True)
+    job_tmp.mkdir(mode=0o700, parents=True)
+    env = {**os.environ, "HOME": str(job_tmp), "TMPDIR": str(job_tmp), "LC_ALL": "C.UTF-8"}
+    optionen = req.get("optionen") if isinstance(req.get("optionen"), dict) else {}
+    hinweise: list[dict[str, Any]] = []
+    teilweise = False
+    try:
+        try:
+            ordner = job_tmp / "medium"
+            ordner.mkdir(mode=0o700)
+            dateien, steuer = [], erkennung.steuer
+            for name, path in medium:
+                link = name
+                # libmirage waehlt den ISO/BIN-Parser an der Endung: Raw-2352 ohne passende Endung als .bin anbieten.
+                if erkennung.format == "raw2352" and name == erkennung.steuer and not name.lower().endswith(ROH_ENDUNGEN):
+                    link = name + ".bin"
+                    steuer = link
+                (ordner / link).symlink_to(path)
+                dateien.append({"name": link, "pfad": str(ordner / link)})
+            auftrag_pfad, ergebnis_pfad = job_tmp / ".disc-auftrag.json", job_tmp / ".disc-ergebnis.json"
+            auftrag_pfad.write_text(json.dumps({
+                "kommando": "spurtabelle" if nur_tabelle else "extrahieren", "parser": erkennung.parser,
+                "format": erkennung.format, "steuer": steuer, "dateien": dateien,
+                "ausgabe": str(out or job_tmp), "ergebnis": str(ergebnis_pfad),
+                "optionen": {"wav_pregap": optionen.get("wav_pregap") is True}}), encoding="utf-8")
+            guard = (lambda: scan_output(out, cap, input_size)) if out else None
+            code, meldung = run_isolated([sys.executable, "-I", str(DISC_PY), str(auftrag_pfad)], cap["zeitlimit_s"],
+                                         env, job_tmp, job_tmp, guard=guard, preexec=disc_grenzen(cap, input_size))
+            if out:
+                final = scan_output(out, cap, input_size)
+                if final:
+                    raise GrenzeUeberschritten(*final)
+            if code == -signal.SIGXFSZ or (code and "File too large" in meldung):
+                raise GrenzeUeberschritten(*file_limit_violation(cap, input_size))
+            try:
+                ergebnis = json.loads(ergebnis_pfad.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # Absturz/RAM-Grenze im Parser: kein Haenger, sondern ein klarer Fehler.
+                ergebnis = {"status": "fehler", "fehlercode": "beschaedigt" if code else "werkzeug_fehler",
+                            "meldung": (meldung or "")[-1000:] or f"Parser-Prozess endete mit {code}"}
+            if ergebnis.get("status") != "fertig":
+                if out:
+                    clear_output(out)
+                fehler = str(ergebnis.get("fehlercode") or "werkzeug_fehler")
+                event = {"status": "fehler", "fehlercode": fehler, "meldung": ergebnis.get("meldung"), "manifest": [],
+                         "format": erkennung.format, "dauer_s": round(time.monotonic() - started, 3)}
+                if fehler == "format_nicht_unterstuetzt":
+                    event["format_detail"] = ergebnis.get("format_detail") or erkennung.format
+                return [event]
+            tabelle = ergebnis.get("spurtabelle") or {}
+            hinweise = list(ergebnis.get("hinweise") or [])
+            meta = {str(d["pfad"]): d for d in ergebnis.get("dateien") or [] if isinstance(d, dict) and d.get("pfad")}
+            if out:
+                for eintrag in list(meta.values()):
+                    if (eintrag.get("metadaten") or {}).get("rolle") == "iso":
+                        teilweise = not entpacke_iso(out, eintrag, cap, input_size, env, job_tmp, hinweise) or teilweise
+        finally:
+            rest = sweep_processes()
+            clean_tmp(job_tmp)
+            if rest:
+                print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
+                                  "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
+                raise SystemExit(3)
+        parser = tabelle.get("parser") or {}
+        version = f"disc-registry {disc.REGISTRY_VERSION}; {parser.get('id', erkennung.parser)} {parser.get('version', '')}".strip()
+        if out is None:
+            return [{"status": "fertig", "fehlercode": None, "werkzeug_version": version, "format": erkennung.format,
+                     "spurtabelle": tabelle, "manifest": [], "dauer_s": round(time.monotonic() - started, 3)}]
+        files, size = output_manifest(out, cap, input_size)
+    except GrenzeUeberschritten as exc:
+        if out:
+            clear_output(out)
+        return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
+                 "dauer_s": round(time.monotonic() - started, 3)}]
+    for datei in files:
+        zusatz = meta.get(datei["pfad"])
+        if zusatz:
+            datei["art"] = zusatz.get("art")
+            datei["metadaten"] = zusatz.get("metadaten") or {}
+    return [
+        {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
+        {"status": "teilweise" if teilweise else "fertig", "fehlercode": "werkzeug_fehler" if teilweise else None,
+         "werkzeug_version": version, "format": erkennung.format, "spurtabelle": tabelle, "hinweise": hinweise,
+         "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size},
+    ]
+
+
 def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     job = job_id(req)
     cap = limits(req)
@@ -555,10 +746,24 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
         raise ValueError("Eingabe ist keine regulaere Datei")
     extract = req.get("kommando") == "extrahieren"
     input_size = source.stat().st_size
+    if req.get("kommando") == "spurtabelle" and not req.get("werkzeug"):
+        # P18-T49: nur die Spurtabelle (kein Schreiben in /arbeit); mit 'werkzeug' bleibt der bisherige Weg.
+        medium = disc_medium(req, source, companions(req))
+        erkennung = disc_modul().erkenne(medium)
+        if erkennung is None:
+            return [{"status": "fehler", "fehlercode": "nicht_unterstuetzt", "meldung": "kein Disc-Image erkannt",
+                     "manifest": []}]
+        size = sum(path.stat().st_size for _, path in medium)
+        return run_disc(req, job, cap, size, medium, erkennung, nur_tabelle=True)
     if extract:
         begleit = companions(req)
         # P18-T62: Grenzen beziehen sich auf das ganze Medium (Hauptdatei + Begleitdateien, z. B. CUE + BIN).
         input_size = sum(path.stat().st_size for path in {source, *(item for _, item in begleit)})
+        # P18-T49: Disc-Images (CUE, CloneCD, MDS, NRG, ... und Raw-2352) ueber Registry + gemeinsamen Extraktor.
+        medium = disc_medium(req, source, begleit)
+        erkennung = disc_modul().erkenne(medium)
+        if erkennung is not None and (erkennung.parser or erkennung.format not in ALTER_WEG):
+            return run_disc(req, job, cap, input_size, medium, erkennung)
         unsupported = unsupported_format(source, begleit)
         cue = cue_companion(begleit)
         if not unsupported and cue is not None and head_bytes(source, 12) == RAW_SYNC:

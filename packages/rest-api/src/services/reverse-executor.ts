@@ -156,17 +156,18 @@ const fehlercode=(roh:unknown,detail?:unknown):string=>{
 };
 /**
  * P18-T64: Formate, die der Runner (noch) nicht kann, VOR dem Containerlauf klar benennen statt 'nicht_unterstuetzt'.
- * CloneCD-Steuerdatei ('[CloneCD]') und Raw-2352-Sektoren (Sync 00 FF*10 00) ohne CUE: Unterstützung folgt mit P18-T46/T49.
+ * P18-T49/T46: Raw-2352 (libmirage) und CloneCD (eigener Parser) liest der Runner jetzt selbst über seine Parser-Registry
+ * und meldet fehlende Parser selbst (format_nicht_unterstuetzt:<format>). Die Liste ist deshalb leer; Einträge nur für
+ * Formate, die nachweislich ohne Containerlauf abgelehnt werden sollen. N3: Raw-BIN mit CUE läuft über die CUE.
  */
+const VORAB_OHNE_PARSER:readonly {format:string;passt:(kopf:Buffer)=>boolean}[]=[];
 export async function reverseFormatVorpruefung(dateien:{pfad:string;rolle:string;name?:string}[]):Promise<string|null>{
- // N3: Raw-BIN mit CUE als Begleitdatei verarbeitet der Runner über die CUE (bchunk).
- const mitCue=dateien.some(d=>(d.name??d.pfad).toLowerCase().endsWith('.cue'));
+ if(!VORAB_OHNE_PARSER.length)return null;
  for(const d of dateien){
   let kopf:Buffer;
   try{const h=await open(d.pfad,'r');try{const b=Buffer.alloc(64);const {bytesRead}=await h.read(b,0,64,0);kopf=b.subarray(0,bytesRead);}finally{await h.close();}}
   catch{continue;}
-  if(kopf.subarray(0,9).toString('latin1').toLowerCase()==='[clonecd]')return 'format_nicht_unterstuetzt:clonecd';
-  if(d.rolle==='haupt'&&!mitCue&&kopf.length>=12&&kopf[0]===0&&kopf[11]===0&&kopf.subarray(1,11).every(x=>x===0xff))return 'format_nicht_unterstuetzt:raw2352';
+  for(const f of VORAB_OHNE_PARSER)if(f.passt(kopf))return 'format_nicht_unterstuetzt:'+f.format;
  }
  return null;
 }
@@ -382,7 +383,7 @@ export class ReverseExecutor {
    let ergebnis:Record<string,unknown>;
    try{
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',
-     eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
+     eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes}}));
    }catch(e){

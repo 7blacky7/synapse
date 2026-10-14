@@ -28,6 +28,9 @@ export { ergaenzeReverseRuntime } from './services/reverse-tool.js';
 // P18-T61/R1-C: E-Ergebnis eines Reverse-Container-Auftrags in die Bibliothek übernehmen.
 export { uebernehmeEErgebnis, reverseEGruppe, ReverseEUebernahmeFehler } from './services/reverse-e-uebernahme.js';
 export type { ReverseEManifestEintrag, ReverseEUebernahmeOptionen } from './services/reverse-e-uebernahme.js';
+// P18-T49/RV34: Spurtabelle der Disc-Images (identisch zu docker/synapse-reverse/disc.py).
+export { REVERSE_SPURTABELLE_VERSION, REVERSE_SPUR_MODI, REVERSE_SPUR_SEKTORGROESSEN, ReverseSpurtabellenFehler, pruefeReverseSpurtabelle, reverseSpurSchritt } from './services/reverse-spurtabelle.js';
+export type { ReverseSpurtabelle, ReverseSpurSession, ReverseSpur, ReverseSpurAbschnitt, ReverseSpurIndex, ReverseSubchannel, ReverseSpurModus } from './services/reverse-spurtabelle.js';
 export { reverseBisSchichtGrenze, begrenzeReverseSchicht } from './services/reverse-tool.js';
 // P18-T64: Ausführer-Registry, Diagnose und Entstörer der Reverse-Aufträge.
 export { REVERSE_EXECUTOR_UNTERSTUETZT, meldeReverseAusfuehrer, reverseAusfuehrer, reverseKindAusfuehrbar, zerlegeReverseFehlercode, reverseFehlerDeterministisch } from './services/reverse-ausfuehrer.js';

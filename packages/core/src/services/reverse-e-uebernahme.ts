@@ -12,7 +12,17 @@ import path from 'node:path';
 import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-konfig.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
 
-export interface ReverseEManifestEintrag {pfad:string;sha256:string;groesse:number}
+export interface ReverseEManifestEintrag {pfad:string;sha256:string;groesse:number;
+  /** P18-T49: optionale Einordnung aus dem Runner (Disc-Extraktor): reverse_dateien.art + Zusatzmetadaten. */
+  art?:string;metadaten?:Record<string,unknown>}
+/** P18-T49: erlaubte Arten (CHECK reverse_dateien.art); alles andere wird 'sonstig'. */
+const E_ARTEN=new Set(['binaer','asset','text','archiv','sonstig']);
+const E_META_MAX=16384;
+function eArt(roh:unknown):string{return typeof roh==='string'&&E_ARTEN.has(roh)?roh:'sonstig';}
+function eMeta(roh:unknown):string{
+  if(!roh||typeof roh!=='object'||Array.isArray(roh))return '{}';
+  try{const s=JSON.stringify(roh);return s.length<=E_META_MAX?s:'{}';}catch{return '{}';}
+}
 export interface ReverseEUebernahmeOptionen {
   /** Nur für Tests/Serverstart; Standard ist die Asset-Konfiguration der API. */
   konfiguration?:AssetKonfiguration;
@@ -115,7 +125,7 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
       &&typeof roh.sha256==='string'&&/^[a-f0-9]{64}$/.test(roh.sha256)
       &&Number.isSafeInteger(roh.groesse)&&roh.groesse>=0&&roh.groesse<=maxDatei;
     if(!ok){verworfen++;continue;}
-    gesehen.add(pfad);gueltig.push({pfad,sha256:roh.sha256,groesse:roh.groesse});
+    gesehen.add(pfad);gueltig.push({pfad,sha256:roh.sha256,groesse:roh.groesse,art:eArt(roh.art),metadaten:JSON.parse(eMeta(roh.metadaten))});
   }
   verworfen+=Math.max(0,e.manifest.length-maxAnzahl);
 
@@ -159,13 +169,14 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
     const label=typeof medium.bezeichnung==='string'&&SEGMENT.test(medium.bezeichnung.trim())?medium.bezeichnung.trim():'medium-'+(Number(medium.position)+1);
     // Ein Stapel-Statement; ein fremder Eintrag mit gleichem Pfad wird nie überschrieben.
     const r=uebernommen.length?await client.query(`INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,sha256,groesse,art,storage_key,entpackt_mit,metadaten,status)
-      SELECT $1,$2,u.pfad,u.sha256,u.groesse,'sonstig',u.storage_key,'reverse-E',jsonb_build_object('e_auftrag',$3::text,'e_pfad',u.e_pfad),'offen'
-      FROM unnest($4::text[],$5::text[],$6::bigint[],$7::text[],$8::text[]) AS u(pfad,sha256,groesse,storage_key,e_pfad)
+      SELECT $1,$2,u.pfad,u.sha256,u.groesse,u.art,u.storage_key,'reverse-E',u.meta::jsonb||jsonb_build_object('e_auftrag',$3::text,'e_pfad',u.e_pfad),'offen'
+      FROM unnest($4::text[],$5::text[],$6::bigint[],$7::text[],$8::text[],$9::text[],$10::text[]) AS u(pfad,sha256,groesse,storage_key,e_pfad,art,meta)
       ON CONFLICT(eintrag_id,pfad) DO UPDATE SET sha256=EXCLUDED.sha256,groesse=EXCLUDED.groesse,storage_key=EXCLUDED.storage_key,
-        metadaten=reverse_dateien.metadaten||EXCLUDED.metadaten,updated_at=clock_timestamp()
+        art=EXCLUDED.art,metadaten=reverse_dateien.metadaten||EXCLUDED.metadaten,updated_at=clock_timestamp()
       WHERE reverse_dateien.storage_key=EXCLUDED.storage_key OR reverse_dateien.storage_key IS NULL RETURNING id`,
       [rid,mid,job,uebernommen.map(d=>label+'/'+d.pfad),uebernommen.map(d=>d.sha256),uebernommen.map(d=>d.groesse),
-       uebernommen.map(d=>rid+'/entpackt/'+gruppe+'/'+d.pfad),uebernommen.map(d=>d.pfad)]):{rowCount:0};
+       uebernommen.map(d=>rid+'/entpackt/'+gruppe+'/'+d.pfad),uebernommen.map(d=>d.pfad),
+       uebernommen.map(d=>eArt(d.art)),uebernommen.map(d=>eMeta(d.metadaten))]):{rowCount:0};
     const neu=Number(r.rowCount??0);
     const dateien=neu,weg=verworfen+(uebernommen.length-neu),gesamt=dateien+weg;
     const status=gesamt===0||weg===0?'fertig':dateien>0?'teilweise':'fehler';

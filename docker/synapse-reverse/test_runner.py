@@ -285,13 +285,27 @@ class ReverseT64Tests(unittest.TestCase):
     """P18-T64: Begleitdateien und klare Codes fuer noch nicht unterstuetzte Formate."""
 
     def test_clonecd_and_raw2352_are_named(self):
+        """Angepasst in der Testphase Welle 2: CloneCD hat seit P18-T46 einen eigenen Parser (kein
+        format_nicht_unterstuetzt mehr; eine CCD ohne IMG ist nicht_gefunden). raw2352 liest seit P18-T49 libmirage;
+        nur ohne libmirage bleibt format_nicht_unterstuetzt:raw2352."""
         with Sandbox() as box:
             ccd = box.put("rev/original/dateien/aa/disc.ccd", b"[CloneCD]\nVersion=3\n")
             img = box.put("rev/original/dateien/bb/disc.img", b"\x00" + b"\xff" * 10 + b"\x00" + b"\x00" * 2340)
-            for source, detail in ((ccd, "clonecd"), (img, "raw2352")):
-                events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job1"})
-                self.assertEqual(events[-1]["fehlercode"], "format_nicht_unterstuetzt")
-                self.assertEqual(events[-1]["format_detail"], detail)
+            last = runner.run_request({"kommando": "extrahieren", "eingabe": ccd, "ausgabe": "/arbeit/job1"})[-1]
+            self.assertEqual((last["status"], last["fehlercode"]), ("fehler", "nicht_gefunden"), last)
+            self.assertIn("disc.img", last["meldung"])
+            last = runner.run_request({"kommando": "extrahieren", "eingabe": img, "ausgabe": "/arbeit/job2"})[-1]
+            if runner.disc_modul().libmirage_verfuegbar():
+                self.assertNotEqual(last.get("fehlercode"), "format_nicht_unterstuetzt", last)
+                # libmirage liest Raw ohne Steuerdatei erst ab ca. 600 KB: 300 Sektoren werden als MODE1-Spur gelesen.
+                gross = box.put("rev/original/dateien/cc/disc.img", runner.RAW_SYNC + b"\x00\x02\x00\x01" + b"\x00" * 2336
+                                + b"".join(runner.RAW_SYNC + bytes([0, 2, i % 75, 1]) + b"\x00" * 2336 for i in range(1, 300)))
+                last = runner.run_request({"kommando": "extrahieren", "eingabe": gross, "eingabe_name": "disc.img",
+                                           "ausgabe": "/arbeit/job3"})[-1]
+                self.assertIn(last["status"], ("fertig", "teilweise"), last)
+                self.assertEqual(last["spurtabelle"]["parser"]["id"], "libmirage")
+            else:
+                self.assertEqual((last["fehlercode"], last["format_detail"]), ("format_nicht_unterstuetzt", "raw2352"))
 
     def test_cue_finds_bin_among_companions(self):
         with Sandbox() as box:
@@ -450,8 +464,11 @@ class ReverseT62BombTests(unittest.TestCase):
                         path.chmod(0o700)
 
     def test_cue_with_bin_companion_counts_the_whole_medium(self):
-        """Kompressionsfaktor bezieht sich auf CUE + BIN, nicht nur auf die winzige CUE."""
-        with Sandbox() as box:
+        """Kompressionsfaktor bezieht sich auf CUE + BIN, nicht nur auf die winzige CUE.
+        Prueft den alten bchunk-Weg (P18-T49: nur ohne libmirage-Parser) -> libmirage hier aus der Registry nehmen."""
+        disc = runner.disc_modul()
+        ohne_mirage = [p for p in disc.REGISTRY if p.id != "libmirage"]
+        with Sandbox() as box, patch.object(disc, "REGISTRY", ohne_mirage):
             cue = box.put("rev/original/dateien/aa/game.cue", b'FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n')
             binary = box.put("rev/original/dateien/bb/game.bin", b"\x00" * 50_000)
             script = 'head -c 40000 /dev/zero > track01.iso'

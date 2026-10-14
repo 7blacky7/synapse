@@ -4,7 +4,8 @@
 |---|---|---|
 | 7-Zip | LGPL-2.1-or-later mit unRAR-Klausel; hier nur Entpacken | Debian 7zip 25.01 |
 | libarchive / bsdtar | BSD-2-Clause | Debian trixie |
-| libMirage | GPL-2.0-or-later | libmirage11, GObject-Introspection |
+| libMirage | GPL-2.0-or-later | libmirage11 3.2.x + gir1.2-mirage-3.2; P18-T49: als eigenständiges Werkzeug im Container über GObject-Introspection geladen (Parser-Prozess je Auftrag), nicht in Synapse-Code eingebunden oder weitergegeben |
+| PyGObject (python3-gi) | LGPL-2.1-or-later | Debian trixie |
 | bchunk | GPL-2.0-or-later | Debian trixie |
 | unshield | MIT | Debian trixie |
 | innoextract | zlib | Debian trixie |

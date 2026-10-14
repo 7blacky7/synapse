@@ -153,21 +153,27 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   absturzFuer=null;
   console.log('PASS 4 Absturz trifft nur einen Auftrag');
 
-  // 5) CloneCD: klarer Fehlercode ohne Containerlauf, keine Wiederholung; Begleitdateien gehen an den Runner.
+  // 5) P18-T46 (angepasst in der Testphase Welle 2): CloneCD liest der Runner jetzt mit dem eigenen Parser. Keine
+  //    Vorab-Ablehnung mehr (vorher P18-T64: format_nicht_unterstuetzt:clonecd ohne Containerlauf); Haupt- und
+  //    Begleitdateien gehen mit Originalnamen an den Runner, der fachliche Ausgang kommt vom Runner.
   const n=kommandos.length;
+  const ccdPfad=join(root,'vorab.ccd');await writeFile(ccdPfad,'[CloneCD]\nVersion=3\n');
+  assert.equal(await ex.reverseFormatVorpruefung([{pfad:ccdPfad,rolle:'haupt',name:'disc.ccd'}]),null,'keine Vorab-Ablehnung für CloneCD');
   const e5=await neuerAuftrag(5,{haupt:'[CloneCD]\nVersion=3\n',begleit:[{name:'disc.img',inhalt:'raw'},{name:'disc.sub',inhalt:'sub'}]});
   await durchlaufe(2);
-  assert.deepEqual(await zustand(e5.job.id),{state:'failed',error_code:'format_nicht_unterstuetzt:clonecd'});
-  assert.deepEqual(await auftrag(e5.auftrag),{status:'fehler',fehlercode:'format_nicht_unterstuetzt:clonecd',schicht_status:'fehler',schicht_fehler:'format_nicht_unterstuetzt:clonecd'});
-  assert.equal(kommandos.length,n,'kein Containerlauf für CloneCD');
-  const st5=await tool({action:'status',agent_id:'claude-t64',reverse_id:e5.rid});
-  assert.equal(st5.fehlercode,'format_nicht_unterstuetzt');assert.equal(st5.fehler_detail,'clonecd');assert.equal(st5.status,'fehler',JSON.stringify(st5));
+  assert.deepEqual(await zustand(e5.job.id),{state:'completed',error_code:null});
+  assert.equal(kommandos.length,n+1,'CloneCD läuft im Container');
+  const k5=kommandos.find(k=>k.req.auftrag_id===e5.job.id).req;
+  assert.equal(k5.eingabe_name,'disc.iso','Originalname der Hauptdatei an den Runner');
+  assert.deepEqual(k5.begleitdateien.map(b=>b.name).sort(),['disc.img','disc.sub']);
+  for(const b of k5.begleitdateien)assert.match(b.pfad,/^\/bib\/rev-t64-5-/);
+  assert.notEqual((await auftrag(e5.auftrag)).fehlercode,'format_nicht_unterstuetzt:clonecd');
   const e6=await neuerAuftrag(6,{begleit:[{name:'disc.sub',inhalt:'sub6'}]});
   await durchlaufe(2);
   assert.equal((await zustand(e6.job.id)).state,'completed');
   const k6=kommandos.find(k=>k.req.auftrag_id===e6.job.id).req;
   assert.equal(k6.begleitdateien.length,1);assert.match(k6.begleitdateien[0].pfad,/^\/bib\/rev-t64-6-.*\/disc\.sub$/);assert.equal(k6.begleitdateien[0].name,'disc.sub');
-  console.log('PASS 5 CloneCD format_nicht_unterstuetzt, Begleitdateien');
+  console.log('PASS 5 CloneCD läuft im Container (P18-T46), Begleitdateien');
 
   // 6) Abgelaufene Lease wird erkannt und freigegeben.
   const e7=await neuerAuftrag(7);
