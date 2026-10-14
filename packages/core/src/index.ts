@@ -17,6 +17,8 @@ export {reverseGruppieren,reverseOrdnerFingerabdruck,reverseArchivMagic} from '.
 // P18-T19/RV9: eine Reverse-Definition, der Dispatcher läuft serverseitig.
 export { REVERSE_DEFINITION, REVERSE_ACTIONS, REVERSE_FEHLERCODES, REVERSE_NULL_FELDER, REVERSE_AKTIVITAET_DESCRIPTOR, ReverseFehler, baueReverseAntwort, pruefeReversePfad, pruefeReverseBindung, createReverseToolService, fuehreReverseAus, configureReverseRuntime } from './services/reverse-tool.js';
 export type { ReverseAction, ReverseFehlercode, ReverseContainerInfo, ReverseAnalyseAnfrage, ReverseRuntime, ReverseToolDependencies } from './services/reverse-tool.js';
+// P18-T59: einzelne Reverse-Runtime-Hooks additiv setzen (containerStatus vom RV12-Executor).
+export { ergaenzeReverseRuntime } from './services/reverse-tool.js';
 // P18-T61/R1-C: E-Ergebnis eines Reverse-Container-Auftrags in die Bibliothek übernehmen.
 export { uebernehmeEErgebnis, reverseEGruppe, ReverseEUebernahmeFehler } from './services/reverse-e-uebernahme.js';
 export type { ReverseEManifestEintrag, ReverseEUebernahmeOptionen } from './services/reverse-e-uebernahme.js';

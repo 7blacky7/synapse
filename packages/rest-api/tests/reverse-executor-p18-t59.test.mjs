@@ -21,7 +21,7 @@ const {REVERSE_PIPELINE_SCHEMA_SQL}=await import('../../core/dist/db/reverse-pip
 const {ASSET_UPLOAD_SCHEMA_SQL}=await import('../../core/dist/db/asset-upload-schema.js');
 const {ladeAssetKonfiguration}=await import('../../core/dist/config/asset-konfig.js');
 const {createWorkJobService}=await import('../../core/dist/services/work-jobs.js');
-const {uebernehmeEErgebnis}=await import('../../core/dist/services/reverse-e-uebernahme.js');
+const {uebernehmeEErgebnis,ReverseEUebernahmeFehler}=await import('../../core/dist/services/reverse-e-uebernahme.js');
 const {ToolLifecycle}=await import('../dist/services/tool-lifecycle.js');
 const {buildToolContainerOptions}=await import('../dist/services/tool-container-docker.js');
 const ex=await import('../dist/services/reverse-executor.js');
@@ -72,7 +72,7 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
     onTerminal?.();return {status:'fertig',fehlercode:null,manifest};
    },
   };
-  lc=new ToolLifecycle({pool:db,executor:fake,resources:ex.reverseRessourcen,maxContainers:4});
+  lc=new ToolLifecycle({pool:db,executor:fake,resources:ex.reverseRessourcen,maxContainers:16}); // ohne Lifecycle-Tick laufen Fake-Container nicht aus
   let uebernahmen=0;
   const executor=new ex.ReverseExecutor({pool:db,konfig,lifecycle:()=>lc,identitaet:async()=>wer,
    uebernahme:async(...a)=>{uebernahmen++;return uebernehmeEErgebnis(...a);},uebernahmeOptionen:{konfiguration:cfg},
@@ -138,6 +138,32 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   assert.equal(await jobs.release(wer,a3.job.id,eigen.claimToken),true);
   assert.equal((await zustand(a4.job.id)).state,'pending','reverse-S2 nicht geclaimt');
   console.log('PASS 3 fremde Identität abgewiesen');
+  await db.query("UPDATE work_jobs SET state='cancelled' WHERE id=ANY($1::uuid[])",[[a3.job.id,a4.job.id]]);
+
+  // 4) W5: fachlicher Übernahmefehler -> failed; sonstiger Fehler -> release, nach Versuchszahl failed.
+  const echt=executor.deps.uebernahme;
+  const a5=await neuerAuftrag(5);
+  executor.deps.uebernahme=async()=>{throw new ReverseEUebernahmeFehler('pfad_gefahr','Fixture');};
+  await executor.durchlauf();await executor.leerlauf();
+  assert.deepEqual(await zustand(a5.job.id),{state:'failed',error_code:'pfad_gefahr'});
+  const a6=await neuerAuftrag(6);
+  executor.deps.uebernahme=async()=>{throw new Error('DB weg');};
+  await executor.durchlauf();await executor.leerlauf();
+  assert.equal((await zustand(a6.job.id)).state,'pending','sonstiger Fehler gibt frei');
+  konfig.retryMax=1;
+  await executor.durchlauf();await executor.leerlauf();
+  assert.deepEqual(await zustand(a6.job.id),{state:'failed',error_code:'werkzeug_fehler'},'Versuchszähler beendet Neuentpacken');
+  konfig.retryMax=3;executor.deps.uebernahme=echt;
+  console.log('PASS 4 Übernahmefehler failed/release mit Versuchszähler');
+
+  // 5) W3: bei parallel 1 wird nur ein Auftrag geweckt und geclaimt.
+  const a7=await neuerAuftrag(7),a8=await neuerAuftrag(8);
+  const r5=await executor.durchlauf();
+  assert.equal(r5.geweckt,1,JSON.stringify(r5));assert.equal(r5.gestartet,1);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM tool_containers WHERE work_job_id=ANY($1::uuid[])',[[a7.job.id,a8.job.id]])).rows[0].n,1,'nur ein Job-Container');
+  await executor.leerlauf();
+  assert.equal((await zustand(a7.job.id)).state,'completed');assert.equal((await zustand(a8.job.id)).state,'pending');
+  console.log('PASS 5 nur freie Plätze geweckt');
  }finally{
   unhook?.();lc?.close();
   await pool.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');await pool.end();

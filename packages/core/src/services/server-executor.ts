@@ -17,9 +17,10 @@ export interface ServerExecutorFence extends ServerExecutorIdentity {nodeId:stri
 export function serverClaimOwner(nodeId:string,executorOwner:string,bootId:string):string {
   return 'srv-'+createHash('sha256').update(JSON.stringify([nodeId,executorOwner,bootId])).digest('hex').slice(0,60);
 }
-export function createServerExecutorIdentity(env:NodeJS.ProcessEnv=process.env):ServerExecutorIdentity {
-  const nodeId=env.SYNAPSE_SERVER_NODE_ID?.trim()||null;
-  const executorOwner=env.SYNAPSE_SERVER_EXECUTOR_OWNER?.trim()||'';
+/** prefix: Env-Namensraum der Identität (Default SYNAPSE_SERVER_; P18-T59 Reverse: SYNAPSE_REVERSE_). */
+export function createServerExecutorIdentity(env:NodeJS.ProcessEnv=process.env,prefix='SYNAPSE_SERVER_'):ServerExecutorIdentity {
+  const nodeId=env[prefix+'NODE_ID']?.trim()||null;
+  const executorOwner=env[prefix+'EXECUTOR_OWNER']?.trim()||'';
   if(nodeId&&(!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(nodeId)||!executorOwner||executorOwner.length>255))
     throw new Error('server_executor_identity_invalid');
   if(!nodeId&&executorOwner)throw new Error('server_executor_node_missing');

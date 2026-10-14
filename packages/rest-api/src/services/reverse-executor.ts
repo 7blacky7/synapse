@@ -9,12 +9,12 @@
  * Alles aus, solange SYNAPSE_REVERSE_ENABLED nicht '1' ist.
  */
 import {createHash} from 'node:crypto';
-import {mkdir,chmod,rm} from 'node:fs/promises';
+import {mkdir,chmod,chown,rm,readdir} from 'node:fs/promises';
 import path from 'node:path';
 import type {Pool} from 'pg';
 import {getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
- reverseEGruppe,ReversePipelineDienst,REVERSE_FEHLERCODES,
+ reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
@@ -56,7 +56,7 @@ export function registriereWorkJobHooks(capability:string,hooks:WorkJobHooks):()
 export interface ReverseExecutorKonfig {
  reverseRoot:string;arbeitRoot:string;image:string;digest:string;kinds:string[];parallel:number;
  leaseSeconds:number;renewMs:number;tickMs:number;resourceNeed:WorkResourceNeed;resourceDomain:string|null;
- zeitlimitS:number;maxDateien:number;maxBytes:number;tmpfsMb:number;pids:number;outputBytes:number;
+ zeitlimitS:number;maxDateien:number;maxBytes:number;tmpfsMb:number;pids:number;outputBytes:number;retryMax:number;
 }
 function ganz(env:NodeJS.ProcessEnv,name:string,fallback:number,min=1,max=2147483647):number{
  const n=Number(env[name]??fallback);
@@ -85,7 +85,8 @@ export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:stri
   resourceDomain:env.SYNAPSE_REVERSE_RESOURCE_DOMAIN?.trim()||null,
   zeitlimitS:ganz(env,'SYNAPSE_REVERSE_ZEITLIMIT_S',3600,1,86400),maxDateien:ganz(env,'SYNAPSE_REVERSE_MAX_DATEIEN',20000,1,200000),
   maxBytes:ganz(env,'SYNAPSE_REVERSE_MAX_BYTES',2000000000,1,Number.MAX_SAFE_INTEGER),tmpfsMb:ganz(env,'SYNAPSE_REVERSE_TMPFS_MB',512,16),
-  pids:ganz(env,'SYNAPSE_REVERSE_PIDS',256,16),outputBytes:ganz(env,'SYNAPSE_REVERSE_OUTPUT_BYTES',33554432,65536)};
+  pids:ganz(env,'SYNAPSE_REVERSE_PIDS',256,16),outputBytes:ganz(env,'SYNAPSE_REVERSE_OUTPUT_BYTES',33554432,65536),
+  retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100)};
 }
 /**
  * E2: ein Container je Auftrag, kein Netz, Bibliothek nur lesend, nur der eigene Arbeitsordner schreibbar.
@@ -100,12 +101,19 @@ export function reverseToolDescriptor(k:ReverseExecutorKonfig):ToolDescriptor{
   lifecycle:{idle_ms:30000,activity_lookback_seconds:300,cpu_idle_percent:5,gpu_idle_percent:100,measurement_max_age_ms:60000,
    start_timeout_ms:120000,max_starts:20,start_window_ms:600000,pause_ms:300000}});
 }
+const RUNNER_UID=65532;
+/** K4: als root Eigentümer 65532 + 0700; ohne root (Tests/Entwicklung) bleibt nur 0777 übrig. */
+async function runnerOrdner(dir:string):Promise<void>{
+ await mkdir(dir,{recursive:true,mode:0o700});
+ if(process.getuid?.()===0){await chown(dir,RUNNER_UID,RUNNER_UID);await chmod(dir,0o700);}
+ else await chmod(dir,0o777);
+}
 /** Arbeitsordner je Auftrag; der Container läuft als 65532 und muss hinein schreiben. */
 export async function reverseArbeitsOrdner(k:ReverseExecutorKonfig,jobId:string):Promise<string>{
  if(!UUID.test(jobId))throw Error('reverse_job_ungueltig');
  await mkdir(k.arbeitRoot,{recursive:true,mode:0o711});
  const dir=path.join(k.arbeitRoot,jobId);
- await mkdir(dir,{recursive:true,mode:0o777});await chmod(dir,0o777);
+ await runnerOrdner(dir);
  return dir;
 }
 export function reverseMountResolver(k:ReverseExecutorKonfig):(d:ToolDescriptor,ctx:ToolInstanceContext)=>Promise<ResolvedToolMount[]>{
@@ -200,18 +208,21 @@ export class ReverseExecutor {
  async durchlauf():Promise<ReverseDurchlauf>{
   const leer=(hinweis?:string):ReverseDurchlauf=>({geprueft:true,geweckt:0,gestartet:0,...(hinweis?{hinweis}:{})});
   if(this.beendet)return leer('beendet');
-  if(!this.eingerichtet)await this.einrichten();
+  // K6: ohne Lebenszyklus nichts schreiben.
   const lc=this.deps.lifecycle();if(!lc)return leer('tool_lifecycle_aus');
+  if(!this.eingerichtet)await this.einrichten();
   this.wer=await this.deps.identitaet();
   if(!this.wer)return leer('server_identitaet_fehlt');
+  await this.raeumeArbeitAuf().catch(e=>console.error('[reverse-executor] Aufräumen fehlgeschlagen:',(e as Error).message));
+  // W3: nur so viele Aufträge wecken und claimen, wie Plätze frei sind.
+  const frei=this.k.parallel-this.laufend.size;
+  if(frei<=0)return {geprueft:true,geweckt:0,gestartet:0};
   // Der Claim-Guard verlangt einen warmen Job-Container; offene Aufträge deshalb zuerst wecken.
   const offen=(await this.pool.query(`SELECT id FROM work_jobs WHERE capability=$1 AND project=$2 AND kind=ANY($3::text[])
    AND state='pending' AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY created_at,id LIMIT $4`,
-   [REVERSE_CAPABILITY,REVERSE_PROJEKT,this.k.kinds,this.k.parallel*2])).rows;
+   [REVERSE_CAPABILITY,REVERSE_PROJEKT,this.k.kinds,frei])).rows;
   let geweckt=0;
   for(const row of offen){try{await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
-  const frei=this.k.parallel-this.laufend.size;
-  if(frei<=0)return {geprueft:true,geweckt,gestartet:0};
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:this.k.leaseSeconds});
   const wer=this.wer;
   for(const job of claims){
@@ -220,6 +231,16 @@ export class ReverseExecutor {
    this.laufend.set(job.id,lauf);
   }
   return {geprueft:true,geweckt,gestartet:claims.length};
+ }
+ /** K3: Arbeitsordner ohne offenen Auftrag (verlorene Lease, Abbruch) entfernen. */
+ async raeumeArbeitAuf():Promise<number>{
+  let namen:string[];
+  try{namen=(await readdir(this.k.arbeitRoot)).filter(n=>UUID.test(n)&&!this.laufend.has(n));}catch{return 0;}
+  if(!namen.length)return 0;
+  const offen=new Set((await this.pool.query("SELECT id::text FROM work_jobs WHERE id=ANY($1::uuid[]) AND state IN ('pending','leased','staged')",[namen])).rows.map(r=>String(r.id)));
+  let n=0;
+  for(const name of namen)if(!offen.has(name.toLowerCase())){await rm(path.join(this.k.arbeitRoot,name),{recursive:true,force:true});n++;}
+  return n;
  }
  /** Wartet auf laufende Aufträge (Tests, geordnetes Herunterfahren). */
  async leerlauf():Promise<void>{await Promise.allSettled([...this.laufend.values()]);}
@@ -259,12 +280,14 @@ export class ReverseExecutor {
   if(job.capability!==REVERSE_CAPABILITY||job.project!==REVERSE_PROJEKT||!this.k.kinds.includes(job.kind)){
    await this.jobs.release(wer,job.id,token);return;
   }
+  // W5/K3: kein Endlos-Neuentpacken nach wiederholtem Lease-Verlust oder Übernahmefehler.
+  if(job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
   const quelle=await this.eingabe(job);
   if(!quelle){await this.scheitern(job,wer,'nicht_gefunden');return;}
   const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=path.join(arbeit,job.id);
   // Der Runner verlangt einen leeren Ausgabeordner; Reste eines verlorenen Versuchs entfernen.
   await rm(ausgabe,{recursive:true,force:true});
-  await mkdir(ausgabe,{mode:0o777});await chmod(ausgabe,0o777);
+  await runnerOrdner(ausgabe);
   let lebt=true,aufraeumen=false;
   const timer=setInterval(()=>{void this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).then(ok=>{if(!ok)lebt=false;},()=>{lebt=false;});},this.k.renewMs);
   timer.unref();
@@ -285,7 +308,17 @@ export class ReverseExecutor {
    const status=String(ergebnis.status);
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if((status==='fertig'||(status==='teilweise'&&manifest.length>0))&&lebt){
-    const r=await this.uebernimmUnterFence(job,wer,{jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,arbeitsWurzel:ausgabe,manifest});
+    // K7: Lease vor der Übernahme einmal auffrischen (Hashing großer Ergebnisse unter dem Fence).
+    if(!await this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).catch(()=>false)){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
+    let r:{dateien:number;verworfen:number}|null;
+    try{r=await this.uebernimmUnterFence(job,wer,{jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,arbeitsWurzel:ausgabe,manifest});}
+    catch(e){
+     // W5: fachlicher Fehler -> endgültig; sonst freigeben, bis der Versuchszähler erreicht ist.
+     console.error('[reverse-executor] Übernahme fehlgeschlagen:',job.id,(e as Error).message);
+     if(e instanceof ReverseEUebernahmeFehler||job.attempt>=this.k.retryMax)aufraeumen=await this.scheitern(job,wer,e instanceof ReverseEUebernahmeFehler?fehlercode(e.code):'werkzeug_fehler');
+     else aufraeumen=await this.jobs.release(wer,job.id,token);
+     return;
+    }
     if(!r){console.warn('[reverse-executor] Späte Rückmeldung nach Lease-Ablauf verworfen:',job.id);return;}
     aufraeumen=true;
     const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:createHash('sha256').update(JSON.stringify(manifest)).digest('hex')};
@@ -320,11 +353,17 @@ export class ReverseExecutor {
 }
 
 // ---------------------------------------------------------------------------------------------
-/** Server-Identität über denselben R4.3-Registryvertrag wie der Parser-Worker (gleiche Bootgeneration). */
-function serverIdentitaet():()=>Promise<WorkIdentity|null>{
- const server=new ServerExecutor();let gestartet=false,gemeldet=false;
+/**
+ * B1: eigener CPU-Knoten über denselben R4.3-Registryvertrag, aber eigener Env-Namensraum SYNAPSE_REVERSE_*
+ * (NODE_ID, EXECUTOR_OWNER, COMPUTE_TOKEN, NODE_REGISTRATION, HOST_PROBE_FILE). Parser-Knoten (SYNAPSE_SERVER_*)
+ * und dessen lokale GPU-Admission bleiben unberührt; claimOwner/Fence sind je node_id eindeutig.
+ */
+export function reverseServerIdentitaet(env:NodeJS.ProcessEnv=process.env):()=>Promise<WorkIdentity|null>{
+ const server=new ServerExecutor({envPrefix:'SYNAPSE_REVERSE_',nurCpu:true,lokaleAdmission:false});let gestartet=false,gemeldet=false;
+ const konflikt=!!server.identity.nodeId&&server.identity.nodeId===env.SYNAPSE_SERVER_NODE_ID?.trim();
  return async()=>{
-  if(!server.identity.nodeId){if(!gemeldet){gemeldet=true;console.warn('[reverse-executor] SYNAPSE_SERVER_NODE_ID fehlt – keine Claims.');}return null;}
+  if(!server.identity.nodeId){if(!gemeldet){gemeldet=true;console.warn('[reverse-executor] SYNAPSE_REVERSE_NODE_ID fehlt – keine Claims.');}return null;}
+  if(konflikt){if(!gemeldet){gemeldet=true;console.error('[reverse-executor] SYNAPSE_REVERSE_NODE_ID darf nicht SYNAPSE_SERVER_NODE_ID sein – keine Claims.');}return null;}
   try{
    if(!gestartet){await server.start();gestartet=true;}
    else if(!await server.refresh())return null;
@@ -347,15 +386,15 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const konfig=k;
  try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:reverseMountResolver(konfig)}),resources:reverseRessourcen});}
  catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
- const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet:serverIdentitaet()});
+ const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet:reverseServerIdentitaet()});
  const abmelden=registriereWorkJobHooks(REVERSE_CAPABILITY,executor.hooks());
- // reverse(status): echter Containerzustand statt Platzhalter (Hook der RV8-Pipeline).
- (ReversePipelineDienst.prototype as unknown as {containerStatus:(rid:string)=>Promise<ReverseContainerInfo>}).containerStatus=rid=>executor.containerStatus(rid);
+ // K5: reverse(status) liest den echten Containerzustand über die Reverse-Runtime (nach starteReversePipeline gesetzt).
+ const ohneStatus=ergaenzeReverseRuntime({containerStatus:rid=>executor.containerStatus(rid)});
  let running:Promise<ReverseDurchlauf>|null=null;
  const tick=async()=>{if(!running)running=executor.durchlauf().finally(()=>{running=null;});return running;};
  registriereWorker({name:'reverse-executor',beschreibung:'RV12 reverse-E-Aufträge im Reverse-Container ausführen',durchlauf:tick});
  const run=()=>{if(workerPausiert('reverse-executor'))return;void tick().catch(e=>console.error('[reverse-executor] Durchlauf fehlgeschlagen:',(e as Error).message));};
  const timer=setInterval(run,konfig.tickMs);timer.unref();
  console.log('[reverse-executor] aktiv: Kinds '+konfig.kinds.join(',')+', parallel '+konfig.parallel);
- return {beende:async()=>{clearInterval(timer);abmelden();await executor.beende();}};
+ return {beende:async()=>{clearInterval(timer);abmelden();ohneStatus();await executor.beende();}};
 }

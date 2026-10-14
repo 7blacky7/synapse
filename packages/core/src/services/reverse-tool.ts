@@ -104,6 +104,11 @@ export interface ReverseToolDependencies {pool?:Pool;runtime?:ReverseRuntime}
 let runtime:ReverseRuntime={};
 /** Nur vom API-Start/RV8 setzen, niemals aus Client-Argumenten. */
 export function configureReverseRuntime(value:ReverseRuntime):void {runtime={...value};}
+/** P18-T59: einzelne Hooks additiv setzen (z. B. containerStatus vom RV12-Executor); Rückgabe nimmt genau diese wieder heraus. */
+export function ergaenzeReverseRuntime(value:Partial<ReverseRuntime>):()=>void {
+  runtime={...runtime,...value};
+  return ()=>{for(const [k,v] of Object.entries(value))if((runtime as Record<string,unknown>)[k]===v)delete (runtime as Record<string,unknown>)[k];};
+}
 export class ReverseFehler extends Error {
   constructor(readonly code:ReverseFehlercode,readonly detail?:string,readonly extra:Row={}) {super(TEXTE[code]);}
 }
