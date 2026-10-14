@@ -8,7 +8,11 @@ import type {AssetSyncRichtung} from '@synapse/core';
 import {AssetApiTransport,AssetApiFehler} from './asset-api-transport.js';
 import {pruefeLokalesAsset} from './asset-erkennung.js';
 
-export interface AssetTransferScope {bereich:'projekt'|'reverse';ziel_ref:string;host:string;root:string;apiPfad?:string;}
+export interface AssetTransferScope {bereich:'projekt'|'reverse';ziel_ref:string;host:string;root:string;apiPfad?:string;
+ /** RV6: eigenes Zustandsverzeichnis außerhalb der Wurzel (Reverse-Bibliothek); ohne = <root>/.synapse/asset-sync. */
+ zustandsDir?:string;}
+/** RV6: Routenadapter Reverse. Sitzungen entstehen über POST /api/reverse/fundstellen (nicht POST uploads); null = Bytes sind serverseitig bekannt. */
+export interface ReverseRoutenAdapter {sitzung(pfad:string,h:{sha256:string;groesse:number}):Promise<{upload_id:string;reverse_id:string}|null>;}
 export interface AssetTransferOptionen {richtung:AssetSyncRichtung;chunkBytes:number;retryMs:number;timeoutMs:number;maxDateiBytes:number;erlaubteTypen?:string[];parallelTransfers?:number;}
 export interface AssetSyncMeta {
  asset_id:string;pfad:string;revision:string|null;sha256:string|null;groesse:number;storage_kind:'assets'|'binaries'|null;
@@ -16,7 +20,9 @@ export interface AssetSyncMeta {
 }
 interface Sitzung {id:string;offset:number;status:string;lease_bis:string;asset_id?:string;revision?:string;konflikt?:{id:string;share:{sha256:string;groesse:number;revision:string;tombstone:boolean}};}
 interface Auftrag {
- id:string;art:'upload'|'download'|'loeschen';pfad:string;meta?:AssetSyncMeta;bytes_erledigt?:number;
+ id:string;art:'upload'|'download'|'loeschen';pfad:string;meta?:AssetSyncMeta;bytes_erledigt?:number;ziel?:string;
+ /** RV6/K2: Statsignatur, zu der sha256 gehoert (Reverse); gleich der aktuellen = kein erneuter Hash vor dem Upload. */
+ hash_signatur?:string;
  upload?:string;sha256?:string;groesse?:number;signatur?:string;beobachtet_ms?:number;basis?:string;versuche:number;naechster:number;fehler?:string;gesperrt?:boolean;
 }
 interface Zustand {
@@ -28,6 +34,28 @@ const missing=(e:unknown)=>(e as NodeJS.ErrnoException).code==='ENOENT';
 const signature=(s:{dev:bigint;ino:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint})=>[s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join(':');
 const HASH=/^[a-f0-9]{64}$/;
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+/** A8/RV6: streamender Hash mit stat vor/nach; eine wachsende oder ersetzte Datei wird nie als stabil gemeldet. */
+export async function hasheStabil(target:string,o:{maxDateiBytes:number;chunkBytes:number;signal?:AbortSignal}){
+ const fd=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
+ try{
+  const before=await fd.stat({bigint:true});if(!before.isFile()||before.size>BigInt(o.maxDateiBytes))error('quote',413,'Dateigröße überschreitet Grenze.');
+  const hash=createHash('sha256');let size=0;
+  for await(const chunk of fd.createReadStream({autoClose:false,highWaterMark:o.chunkBytes})){if(o.signal?.aborted)throw o.signal.reason;hash.update(chunk);size+=chunk.length;}
+  const after=await fd.stat({bigint:true}),actual=await fs.lstat(target,{bigint:true});
+  if(signature(before)!==signature(after)||signature(after)!==signature(actual)||size!==Number(before.size))
+   error('datei_geaendert',408,'Datei während Hash geändert; neu einreihen.');
+  return {sha256:hash.digest('hex'),groesse:size,signatur:signature(after)};
+ }finally{await fd.close();}
+}
+/** RV6: dieselbe Statsignatur wie Queue und Hash (dev:ino:size:mtimeNs:ctimeNs). */
+export const dateiSignatur=signature;
+/** RV6: Zustandsverzeichnis außerhalb des Benutzerordners, nur für den Daemon lesbar (0700). */
+async function privatesVerzeichnis(dir:string):Promise<string>{
+ const p=path.resolve(dir);await fs.mkdir(p,{recursive:true,mode:0o700});
+ const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink())error('pfad_ungueltig',400,'Zustandsverzeichnis ist kein sicheres Verzeichnis.');
+ if((s.mode&0o077)!==0)await fs.chmod(p,0o700);
+ return p;
+}
 let aktiveTransfers=0;
 const transferWartende=new Set<()=>void>();
 async function transferSlot(max:number,signal:AbortSignal){
@@ -55,15 +83,27 @@ export class AssetTransferQueue {
  private readonly abort=new AbortController();
  private wake?:NodeJS.Timeout;private draining=false;private paused=true;private lauf?:Promise<void>;
  constructor(scope:AssetTransferScope,private optionen:AssetTransferOptionen,readonly api=new AssetApiTransport(),
-  private readonly geaendert:()=>void=()=>{}){
+  private readonly geaendert:()=>void=()=>{},private readonly reverse?:ReverseRoutenAdapter){
   pruefeOptionen(optionen);
   this.scope={...scope,root:path.resolve(scope.root)};
   if(!scope.host||normalisiereSpeicherPfad(scope.ziel_ref)!==scope.ziel_ref||scope.ziel_ref.includes('/'))throw new Error('Ungültige Transferbindung.');
   if(scope.apiPfad&&!/^\/api\/[A-Za-z0-9_/%.-]+$/.test(scope.apiPfad))throw new Error('Ungültige Transferroute.');
   if(scope.bereich==='reverse'&&!scope.apiPfad)throw new Error('Reverse braucht seinen registrierten API-Routenadapter.');
+  if(scope.zustandsDir!==undefined&&!path.isAbsolute(scope.zustandsDir))throw new Error('Ungültiges Zustandsverzeichnis.');
   this.ready=this.load();
  }
  get base(){return this.scope.apiPfad??'/api/projects/'+encodeURIComponent(this.scope.ziel_ref)+'/assets';}
+ /** RV6: Reverse-Sitzungen liegen unter /api/reverse/<reverse_id>/uploads, Projekt unter <base>/uploads. */
+ private uploads(j:Auftrag){return this.scope.bereich==='reverse'?this.base+'/'+encodeURIComponent(j.ziel??'')+'/uploads':this.base+'/uploads';}
+ /** RV6: Reverse nimmt jede reguläre Datei (Ordner-Medien), ohne gitignore/Asset-Typprüfung. */
+ private async reverseKandidat(pfad:string){
+  const target=await this.local(pfad);
+  try{
+   const s=await fs.lstat(target,{bigint:true});
+   if(!s.isFile()||s.size>BigInt(this.optionen.maxDateiBytes))return null;
+   return {format:'reverse-original',groesse:Number(s.size),signatur:signature(s)};
+  }catch(e){if(missing(e))return null;throw e;}
+ }
  private async locked<T>(fn:()=>Promise<T>):Promise<T>{
   const run=this.serial.then(fn);this.serial=run.then(()=>{},()=>{});return run;
  }
@@ -77,7 +117,7 @@ export class AssetTransferQueue {
   return p;
  }
  private async load(){
-  this.dir=await this.directory('.synapse/asset-sync');
+  this.dir=this.scope.zustandsDir?await privatesVerzeichnis(this.scope.zustandsDir):await this.directory('.synapse/asset-sync');
   const key=createHash('sha256').update(this.scope.bereich+'\0'+this.scope.ziel_ref+'\0'+this.scope.host).digest('hex');
   this.file=path.join(this.dir,key+'.json');
   const scope=this.scope.bereich+':'+this.scope.ziel_ref+':'+this.scope.host;
@@ -120,9 +160,35 @@ export class AssetTransferQueue {
   });
  }
  setzeOptionen(o:AssetTransferOptionen){pruefeOptionen(o);const changed=this.optionen.richtung!==o.richtung;this.optionen=o;return changed;}
+ /** RV6: vom Bibliotheks-Watcher stabil gehashte Datei mit der Sitzung aus POST /api/reverse/fundstellen einreihen. */
+ async reverseEinreihen(pfad:string,e:{upload_id:string;reverse_id:string;sha256:string;groesse:number;signatur:string}){
+  await this.ready;
+  if(this.scope.bereich!=='reverse')error('bereich_ungueltig',400,'Nur für den Reverse-Bereich.');
+  if(!UUID.test(e.upload_id)||!HASH.test(e.sha256)||!Number.isSafeInteger(e.groesse)||e.groesse<0||typeof e.reverse_id!=='string'||normalisiereSpeicherPfad(e.reverse_id)!==e.reverse_id||e.reverse_id.includes('/'))
+   error('sitzung_ungueltig',409,'Reverse-Sitzung ungültig.');
+  const rel=normalisiereSpeicherPfad(pfad);
+  await this.locked(async()=>{
+   const j=this.state.auftraege.find(x=>x.pfad===rel&&x.art==='upload');
+   if(j&&j.upload===e.upload_id&&j.sha256===e.sha256){j.ziel=e.reverse_id;j.hash_signatur=e.signatur;j.gesperrt=false;j.naechster=0;}
+   else if(j){
+    j.upload=e.upload_id;j.ziel=e.reverse_id;j.sha256=e.sha256;j.groesse=e.groesse;j.signatur=e.signatur;j.hash_signatur=e.signatur;j.bytes_erledigt=0;
+    j.gesperrt=false;j.naechster=0;j.versuche=0;delete j.fehler;delete j.beobachtet_ms;
+   }else this.state.auftraege.push({id:randomUUID(),art:'upload',pfad:rel,upload:e.upload_id,ziel:e.reverse_id,sha256:e.sha256,groesse:e.groesse,signatur:e.signatur,hash_signatur:e.signatur,basis:'0',versuche:0,naechster:0});
+   delete this.state.bekannt[rel];await this.save();
+  });
+ }
+ /** RV6: offene Aufträge eines lokal verschwundenen Pfads verwerfen (nie ein Fern-Löschen). */
+ async verwerfen(pfad:string){
+  await this.ready;const rel=normalisiereSpeicherPfad(pfad);
+  await this.locked(async()=>{
+   const vorher=this.state.auftraege.length;this.state.auftraege=this.state.auftraege.filter(j=>j.pfad!==rel);
+   const known=rel in this.state.bekannt;delete this.state.bekannt[rel];
+   if(vorher!==this.state.auftraege.length||known)await this.save();
+  });
+ }
  private async local(pfad:string,create=false):Promise<string>{
   const rel=normalisiereSpeicherPfad(pfad);
-  if(shouldIgnore(loadGitignore(this.scope.root),rel))error('pfad_gesperrt',403,'Gesperrter oder ignorierter Projektpfad.');
+  if(this.scope.bereich!=='reverse'&&shouldIgnore(loadGitignore(this.scope.root),rel))error('pfad_gesperrt',403,'Gesperrter oder ignorierter Projektpfad.');
   const parts=rel.split('/');let parent=this.scope.root;
   for(const part of parts.slice(0,-1)){
    parent=path.join(parent,part);
@@ -135,16 +201,7 @@ export class AssetTransferQueue {
  }
  async hash(pfad:string){
   await this.ready;const target=await this.local(pfad);
-  const fd=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
-  try{
-   const before=await fd.stat({bigint:true});if(!before.isFile()||before.size>BigInt(this.optionen.maxDateiBytes))error('quote',413,'Dateigröße überschreitet Grenze.');
-   const hash=createHash('sha256');let size=0;
-   for await(const chunk of fd.createReadStream({autoClose:false,highWaterMark:this.optionen.chunkBytes})){if(this.abort.signal.aborted)throw this.abort.signal.reason;hash.update(chunk);size+=chunk.length;}
-   const after=await fd.stat({bigint:true}),actual=await fs.lstat(target,{bigint:true});
-   if(signature(before)!==signature(after)||signature(after)!==signature(actual)||size!==Number(before.size))
-    error('datei_geaendert',408,'Datei während Hash geändert; neu einreihen.');
-   return {sha256:hash.digest('hex'),groesse:size,signatur:signature(after)};
-  }finally{await fd.close();}
+  return hasheStabil(target,{maxDateiBytes:this.optionen.maxDateiBytes,chunkBytes:this.optionen.chunkBytes,signal:this.abort.signal});
  }
  async ereignis(pfad:string,typ:'add'|'change'|'unlink'){
   await this.ready;const rel=normalisiereSpeicherPfad(pfad);
@@ -175,30 +232,40 @@ export class AssetTransferQueue {
  }
  private async upload(j:Auftrag){
   if(this.optionen.richtung==='share_to_pc')return;
-    const detected=await pruefeLokalesAsset(this.scope.root,this.scope.ziel_ref,j.pfad,this.optionen);
+    const detected=this.scope.bereich==='reverse'?await this.reverseKandidat(j.pfad):await pruefeLokalesAsset(this.scope.root,this.scope.ziel_ref,j.pfad,this.optionen);
     if(!detected)return;
     if(j.signatur!==detected.signatur){j.signatur=detected.signatur;j.beobachtet_ms=Date.now();await this.save();error('datei_geaendert',408,'Erste stabile Statbeobachtung; Hash erst im nächsten Retry.');}
     if(j.beobachtet_ms!==undefined&&Date.now()-j.beobachtet_ms<this.optionen.retryMs)error('datei_geaendert',408,'Stabilitätsintervall noch nicht abgelaufen.');
-    const h=await this.hash(j.pfad),known=this.state.bekannt[j.pfad];
+    // RV6/K2: Reverse spart den Hash vor dem Upload, wenn genau diese Statsignatur schon stabil gehasht wurde (Kontrollhash nach dem Upload bleibt).
+    const h=this.scope.bereich==='reverse'&&j.sha256&&j.groesse!==undefined&&j.hash_signatur===detected.signatur
+     ?{sha256:j.sha256,groesse:j.groesse,signatur:detected.signatur}:await this.hash(j.pfad),known=this.state.bekannt[j.pfad];
   const marker=this.state.marker[j.pfad];
   if((known?.sha256===h.sha256&&!known.deleted_at)||(marker?.sha256===h.sha256)){return;}
-  if(j.sha256&&j.sha256!==h.sha256){j.upload=undefined;j.id=randomUUID();}
-  Object.assign(j,h);j.basis??=known?.revision??'0';await this.save();
+  if(j.sha256&&j.sha256!==h.sha256){j.upload=undefined;j.id=randomUUID();if(this.scope.bereich==='reverse')delete j.ziel;}
+  Object.assign(j,h);if(this.scope.bereich==='reverse')j.hash_signatur=h.signatur;j.basis??=known?.revision??'0';await this.save();
   let upload:Sitzung;
   if(j.upload){
    try{
-    upload=(await this.api.json<{upload:Sitzung}>(this.base+'/uploads/'+encodeURIComponent(j.upload),undefined,'GET',this.abort.signal)).upload;
+    upload=(await this.api.json<{upload:Sitzung}>(this.uploads(j)+'/'+encodeURIComponent(j.upload),undefined,'GET',this.abort.signal)).upload;
     if(upload.status!=='finalisiert'&&(['fehler','abgebrochen'].includes(upload.status)||Date.parse(upload.lease_bis)<=Date.now())){
      j.upload=undefined;j.id=randomUUID();j.bytes_erledigt=0;await this.save();
     }
    }
    catch(e){if(e instanceof AssetApiFehler&&[404,410].includes(e.status)){j.upload=undefined;j.id=randomUUID();await this.save();}else throw e;}
   }
+  if(!j.upload&&this.scope.bereich==='reverse'){
+   // RV6: Reverse-Sitzung kommt aus fundstellen (Routenadapter); bekannt = nichts zu übertragen.
+   if(!this.reverse)error('route_fehlt',500,'Reverse-Routenadapter fehlt.');
+   const s=await this.reverse.sitzung(j.pfad,{sha256:h.sha256,groesse:h.groesse});
+   if(!s){this.state.bekannt[j.pfad]={asset_id:h.sha256,pfad:j.pfad,revision:'1',sha256:h.sha256,groesse:h.groesse,storage_kind:'binaries',deleted_at:null};await this.save();return;}
+   if(!UUID.test(s.upload_id)||typeof s.reverse_id!=='string'||normalisiereSpeicherPfad(s.reverse_id)!==s.reverse_id||s.reverse_id.includes('/'))error('sitzung_ungueltig',409,'Reverse-Sitzung ungültig.');
+   j.upload=s.upload_id;j.ziel=s.reverse_id;j.bytes_erledigt=0;await this.save();
+  }
   if(!j.upload){
    upload=(await this.api.json<{upload:Sitzung}>(this.base+'/uploads',{
     logischer_pfad:j.pfad,storage_kind:'assets',groesse:h.groesse,sha256:h.sha256,basis_revision:j.basis,idempotency_key:j.id,format:detected.format,
    },'POST',this.abort.signal)).upload;j.upload=upload.id;await this.save();
-  }else upload=(await this.api.json<{upload:Sitzung}>(this.base+'/uploads/'+encodeURIComponent(j.upload),undefined,'GET',this.abort.signal)).upload;
+  }else upload=(await this.api.json<{upload:Sitzung}>(this.uploads(j)+'/'+encodeURIComponent(j.upload),undefined,'GET',this.abort.signal)).upload;
   if(!upload!.id||!Number.isSafeInteger(upload!.offset)||upload!.offset<0||upload!.offset>h.groesse)error('offset_ungueltig',409,'Serveroffset ungültig.');
   const target=await this.local(j.pfad),fd=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
   try{
@@ -207,7 +274,7 @@ export class AssetTransferQueue {
    while(offset<h.groesse){
     const length=Math.min(this.optionen.chunkBytes,h.groesse-offset),start=offset;
     let res:Response;
-    try{res=await this.api.request(this.base+'/uploads/'+encodeURIComponent(j.upload!)+'/chunk?offset='+offset,{
+    try{res=await this.api.request(this.uploads(j)+'/'+encodeURIComponent(j.upload!)+'/chunk?offset='+offset,{
      method:'PUT',signal:this.abort.signal,timeoutMs:this.optionen.timeoutMs,headers:{'content-type':'application/octet-stream','content-length':String(length)},
      body:()=>{
       const signal=this.abort.signal,chunkBytes=this.optionen.chunkBytes;
@@ -224,7 +291,7 @@ export class AssetTransferQueue {
      },
     });}catch(e){
      if(e instanceof AssetApiFehler&&e.status===409&&e.code==='offset_konflikt'){
-      const state=(await this.api.json<{upload:Sitzung}>(this.base+'/uploads/'+encodeURIComponent(j.upload!),undefined,'GET',this.abort.signal)).upload;
+      const state=(await this.api.json<{upload:Sitzung}>(this.uploads(j)+'/'+encodeURIComponent(j.upload!),undefined,'GET',this.abort.signal)).upload;
       if(state.offset===offset+length){offset=state.offset;continue;}
       error('offset_neu_pruefen',408,'Uploadoffset nach unterbrochener Antwort erneut prüfen.');
      }
@@ -237,9 +304,9 @@ export class AssetTransferQueue {
    const fresh=await this.hash(j.pfad);
    if(fresh.signatur!==h.signatur||fresh.sha256!==h.sha256)error('datei_geaendert',408,'Datei während Upload geändert.');
   }finally{await fd.close();}
-  const final=(await this.api.json<{upload:Sitzung}>(this.base+'/uploads/'+encodeURIComponent(j.upload!)+'/finalisieren',{},'POST',this.abort.signal)).upload;
+  const final=(await this.api.json<{upload:Sitzung}>(this.uploads(j)+'/'+encodeURIComponent(j.upload!)+'/finalisieren',{},'POST',this.abort.signal)).upload;
   if(!final.asset_id||!final.revision||final.status!=='finalisiert')error('revision_offen',409,'Finalisierung nicht bestätigt.');
-  this.state.bekannt[j.pfad]={asset_id:final.asset_id,pfad:j.pfad,revision:final.revision,sha256:h.sha256,groesse:h.groesse,storage_kind:'assets',deleted_at:null};
+  this.state.bekannt[j.pfad]={asset_id:final.asset_id,pfad:j.pfad,revision:final.revision,sha256:h.sha256,groesse:h.groesse,storage_kind:this.scope.bereich==='reverse'?'binaries':'assets',deleted_at:null};
   if(final.konflikt){
    const share=final.konflikt.share;
    if(!share||!HASH.test(share.sha256)||!Number.isSafeInteger(share.groesse)||!/^[1-9][0-9]*$/.test(share.revision))error('konflikt_ungueltig',409,'Konfliktsicherung ohne kanonische Share-Metadaten.');

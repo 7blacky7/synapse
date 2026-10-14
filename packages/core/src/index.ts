@@ -12,6 +12,7 @@ export {ASSET_KONFLIKT_SCHEMA_SQL} from './db/asset-konflikt-schema.js';
 export {assetKonfliktHinweisQuelle,initialisiereAssetKonfliktHinweise} from './services/asset-konflikt-hinweise.js';
 
 export {ReverseEingang,reverseEingang} from './services/reverse-eingang.js';
+export type {ReverseAbmeldung} from './services/reverse-eingang.js';
 export type {ReverseFundDatei,ReverseGruppenDatei,ReverseMediumVorschlag,ReverseGruppenvorschlag} from './services/reverse-gruppierung.js';
 export {reverseGruppieren,reverseOrdnerFingerabdruck,reverseArchivMagic} from './services/reverse-gruppierung.js';
 // P18-T19/RV9: eine Reverse-Definition, der Dispatcher läuft serverseitig.

@@ -20,6 +20,7 @@ Der Quellcode startet den Daemon, verwaltet pro Projekt die Dateiüberwachung un
 | [main.ts](main.ts) | Bootstrapped den Prozess, startet API, Manager und Worker und behandelt den Shutdown. |
 | [manager.ts](manager.ts) | Verwaltet Watcher je Projekt und steuert Synchronisations- und Indexier-Slots. |
 | [project-init-worker.ts](project-init-worker.ts) | Verarbeitet Projektinitialisierungs-Aufträge. |
+| [reverse-bibliothek.ts](reverse-bibliothek.ts) | Überwacht den Reverse-Bibliotheksordner, hasht stabile Dateien und meldet sie über die API (P18-T16). |
 | [shell-job-worker.ts](shell-job-worker.ts) | Verarbeitet eingereihte Shell-Jobs für Projekte mit aktivem Watcher. |
 | [skills-proxy.ts](skills-proxy.ts) | Stellt die lokale Weiterleitung von Skill-Abfragen bereit. |
 | [specialist-job-worker.ts](specialist-job-worker.ts) | Verarbeitet Specialist-Aufträge des Daemons. |
@@ -59,6 +60,10 @@ Ein Worker-Startfehler wird protokolliert und beendet nicht zwingend den gesamte
 Die beiden Sync-Richtungen sind getrennt pausierbar. `sync_fs_pg` hält Datei-Ereignisse im Prozess zurück; `sync_pg_fs` überspringt seine Ticks und behält den Prüfstand. Das ist keine persistente Ereigniswarteschlange. Pausierte Job-Worker übernehmen keine neuen Jobs; bereits laufende Shell-Prozesse laufen weiter.
 
 Bei SIGTERM oder SIGINT schließt der Daemon HTTP-Server, Worker, Heartbeat und Watcher, entfernt die Discovery-Dateien und beendet sich. Ein Fünf-Sekunden-Limit erzwingt das Ende, falls das Aufräumen hängt. Dieser Abbruchpfad ist keine Zusage, dass jeder laufende Auftrag vorher erfolgreich abgeschlossen wird.
+
+### Reverse-Bibliothek (P18-T16)
+
+[reverse-bibliothek.ts](reverse-bibliothek.ts) läuft nur bei `reverse_bibliothek.aktiv:true` in `config.json` (Pfad Standard `~/synapse-reverse`, nie `$HOME` selbst, kein Punktordner direkt unter `$HOME`, kein Projekt). Er verhandelt über `GET /api/projects` (Feature `reverse_bibliothek`) und `GET /api/reverse/sync-optionen`, beobachtet den Ordner mit einer eigenen chokidar-Instanz ohne Projekt- und `.gitignore`-Regeln, ignoriert Symlinks und `.synapse-tmp-*`, hasht eine Datei erst, wenn Größe und mtime über `stabilMs` gleich bleiben, und meldet sie per `POST /api/reverse/fundstellen`. Uploads laufen über die gemeinsame [Transfer-Queue](asset-transfer-queue.ts) (Bereich `reverse`, Zustand unter `~/.synapse/file-watcher/reverse-transfer`). Verschwundene Dateien gehen per `POST /api/reverse/fundstellen/abmelden` als `fehlt` (an anderem Pfad neu aufgetaucht) oder `geloescht_lokal` an die API; das Original bleibt auf Unraid. Der Tray nutzt die lokalen Routen `GET /reverse/status` und `POST /reverse/konfig {aktiv?, pfad?, geloeschte_ausblenden?}`; `reverse_bibliothek` wird nur dort geschrieben, alle anderen Speicherwege übernehmen den Stand von der Platte. Serverseitig kommen `POST /api/reverse/fundstellen/hinweis` und `GET /api/reverse/fundstellen/original` (Zurückholen) dazu.
 
 ## Schnittstellen nach außen
 

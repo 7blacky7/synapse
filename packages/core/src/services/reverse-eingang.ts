@@ -14,6 +14,8 @@ import type {ShareScanDatei} from './share-scanner.js';
 import {reverseGruppieren,reverseOrdnerFingerabdruck,reverseArchivMagic} from './reverse-gruppierung.js';
 import type {ReverseFundDatei,ReverseGruppenDatei} from './reverse-gruppierung.js';
 type Row=Record<string,unknown>;
+/** RV6: Abmeldung einer lokal verschwundenen Bibliotheksdatei; das Original bleibt in der Bibliothek. */
+export interface ReverseAbmeldung {rel_pfad:string;status:'geloescht_lokal'|'fehlt';}
 const fail=(c:string,s:number,m:string):never=>{throw new AssetUploadFehler(c,s,m);};
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -110,6 +112,8 @@ export class ReverseEingang {
     }
    }
   });
+  // RV6: Wiedersehen hebt Lösch-/Fehlmarke und ausgeblendeten Hinweis dieser Fundstellen auf.
+  await this.db.query("UPDATE reverse_fundstellen SET status='gesehen',hinweis_ausgeblendet_at=NULL,zuletzt_gesehen=clock_timestamp() WHERE quelle=$1 AND host_id=$2 AND rel_pfad=ANY($3::text[]) AND (status<>'gesehen' OR hinweis_ausgeblendet_at IS NOT NULL)",[quelle,host,files.map(f=>f.rel_pfad)]);
   for(const sha of new Set(files.map(f=>f.sha256)))await this.bytesErkannt(sha);
   for(const rid of rids)await this.aktualisieren(rid);
   const results:Row[]=[];
@@ -131,6 +135,63 @@ export class ReverseEingang {
    results.push({rel_pfad:f.rel_pfad,status:'upload_noetig',upload_id:s.id,ziel_ref:s.ziel_ref,offset:s.offset,lease_bis:s.lease_bis,reverse_id:b.eintrag_id});
   }
   return {dateien:results,reverse_ids:[...rids]};
+ }
+ /** RV6: Transferbudgets und Katalog für den Bibliotheks-Watcher; nie Serverpfade oder Speicherschlüssel. */
+ syncOptionen(host:string){
+  this.gate(host);
+  return {host,chunkBytes:this.cfg.speicher.chunkBytes,timeoutMs:this.cfg.speicher.timeoutMs,retryMs:this.cfg.sync.retryIntervallMs,scanMs:this.cfg.sync.scanIntervallMs,
+   maxDateiBytes:this.cfg.reverse.maxDateiBytes,parallelTransfers:this.cfg.speicher.parallelTransfers,maxBatch:this.regeln.maxBatch,stabilMs:this.regeln.stabilMs,
+   loesch_verhalten:this.regeln.loeschVerhalten,endungen:{images:[...this.regeln.imageEndungen],companions:this.regeln.companions.map(r=>({...r}))},erlaubt_alle_dateien:true};
+ }
+ private eingabePfade<T extends {rel_pfad:string}>(input:T[]):T[]{
+  if(!Array.isArray(input)||!input.length||input.length>this.regeln.maxBatch)fail('eingang_ungueltig',400,'Dateiliste überschreitet Batchgrenze.');
+  const seen=new Set<string>();
+  return input.map(f=>{
+   if(!f||typeof f!=='object')fail('eingang_ungueltig',400,'Eintrag ungültig.');
+   const p=normalisiereSpeicherPfad(f.rel_pfad);if(p.length>4096||seen.has(p))fail('eingang_ungueltig',400,'Doppelter/zu langer Pfad.');seen.add(p);
+   return {...f,rel_pfad:p};
+  });
+ }
+ /** RV6: setzt reverse_fundstellen.status für lokal gelöschte/verschobene Dateien. Keine Byte-Löschung. */
+ async abmelden(host:string,input:ReverseAbmeldung[],quelle:'tray'='tray'){
+  this.gate(host);
+  const files=this.eingabePfade(input);
+  for(const f of files)if(f.status!=='geloescht_lokal'&&f.status!=='fehlt')fail('eingang_ungueltig',400,'status geloescht_lokal oder fehlt erwartet.');
+  const results:Row[]=[];
+  await this.tx(async db=>{
+   for(const f of files){
+    const set=await db.query('UPDATE reverse_fundstellen SET status=$4,zuletzt_gesehen=clock_timestamp() WHERE quelle=$1 AND host_id=$2 AND rel_pfad=$3 RETURNING id',[quelle,host,f.rel_pfad,f.status]);
+    if(set.rows.length){results.push({rel_pfad:f.rel_pfad,status:f.status,ergebnis:'gesetzt'});continue;}
+    const d=(await db.query('SELECT sha256,groesse,mtime FROM reverse_eingang_dateien WHERE host_id=$1 AND rel_pfad=$2 AND quelle=$3 ORDER BY id DESC LIMIT 1',[host,f.rel_pfad,quelle])).rows[0];
+    if(!d){results.push({rel_pfad:f.rel_pfad,status:f.status,ergebnis:'unbekannt'});continue;}
+    await db.query(`INSERT INTO reverse_fundstellen(quelle,host_id,rel_pfad,sha256,groesse,mtime,status) VALUES($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT(quelle,host_id,rel_pfad) DO UPDATE SET status=EXCLUDED.status,zuletzt_gesehen=clock_timestamp()`,[quelle,host,f.rel_pfad,d.sha256,d.groesse,d.mtime,f.status]);
+    results.push({rel_pfad:f.rel_pfad,status:f.status,ergebnis:'gesetzt'});
+   }
+  });
+  return {dateien:results};
+ }
+ /** RV6: Lösch-/Fehlhinweis einer eigenen Fundstelle aus- bzw. wieder einblenden. */
+ async hinweis(host:string,relPfad:string,ausblenden:boolean,quelle:'tray'='tray'){
+  this.gate(host);
+  if(typeof ausblenden!=='boolean')fail('eingang_ungueltig',400,'ausblenden (boolean) erforderlich.');
+  const p=normalisiereSpeicherPfad(relPfad);
+  const r=(await this.db.query('UPDATE reverse_fundstellen SET hinweis_ausgeblendet_at=CASE WHEN $4::boolean THEN clock_timestamp() ELSE NULL END WHERE quelle=$1 AND host_id=$2 AND rel_pfad=$3 RETURNING status',[quelle,host,p,ausblenden])).rows[0];
+  if(!r)fail('fundstelle_unbekannt',404,'Keine eigene Fundstelle unter diesem Pfad.');
+  return {rel_pfad:p,lokal:String(r.status),hinweis_ausgeblendet:ausblenden};
+ }
+ /** RV6: Original einer eigenen Fundstelle zum Zurückholen; nur bestätigte Bytes, optional ab offset. */
+ async original(host:string,relPfad:string,offset=0,quelle:'tray'='tray'){
+  this.gate(host);
+  const p=normalisiereSpeicherPfad(relPfad);
+  const b=(await this.db.query(`SELECT b.* FROM reverse_eingang_dateien d JOIN reverse_eingang_bytes b USING(sha256)
+   WHERE d.host_id=$1 AND d.rel_pfad=$2 AND d.quelle=$3 ORDER BY d.id DESC LIMIT 1`,[host,p,quelle])).rows[0];
+  if(!b)fail('fundstelle_unbekannt',404,'Keine eigene Fundstelle unter diesem Pfad.');
+  if(b.status!=='ready'||!b.storage_key)fail('nicht_gesichert',404,'Original ist noch nicht gesichert.');
+  const groesse=Number(b.groesse);
+  if(!Number.isSafeInteger(offset)||offset<0||offset>groesse)fail('range_ungueltig',416,'offset außerhalb des Originals.');
+  const stream=await this.speicher.readStorageStream({bereich:'reverse',ziel_ref:String(b.ziel_ref),storage_kind:'binaries',logischer_pfad:String(b.logischer_pfad)},String(b.storage_key),offset,groesse-offset);
+  return {stream,sha256:String(b.sha256),groesse,offset,laenge:groesse-offset};
  }
  async direkt(datei:ShareScanDatei):Promise<boolean>{
   const result=await this.fundstellen('unraid_eingang',[{rel_pfad:datei.pfad,sha256:datei.sha256,groesse:datei.groesse}],'unraid_eingang');
@@ -226,7 +287,7 @@ export class ReverseEingang {
      fund AS (INSERT INTO reverse_fundstellen(quelle,host_id,rel_pfad,sha256,groesse,mtime,medien_datei_id)
       SELECT x.quelle,x.host_id,x.rel_pfad,x.sha256,x.groesse,x.mtime,n.id FROM x JOIN neu n USING(original_name)
       ON CONFLICT(quelle,host_id,rel_pfad) DO UPDATE SET sha256=EXCLUDED.sha256,groesse=EXCLUDED.groesse,mtime=EXCLUDED.mtime,
-       medien_datei_id=EXCLUDED.medien_datei_id,zuletzt_gesehen=clock_timestamp(),status='gesehen')
+       medien_datei_id=EXCLUDED.medien_datei_id,zuletzt_gesehen=clock_timestamp())
      UPDATE reverse_eingang_dateien d SET medium_id=$1,medien_datei_id=n.id,rolle=x.rolle FROM x LEFT JOIN neu n USING(original_name) WHERE d.id=x.id`,[mid,JSON.stringify(items)]);
 
    }
@@ -252,9 +313,11 @@ export class ReverseEingang {
      SELECT $1,d.id,jsonb_build_object('id',d.id::text,'rel_pfad',d.rel_pfad,'sha256',d.sha256,'reverse_id',d.eintrag_id,
       'status',CASE WHEN m.fehlercode IS NOT NULL OR layer.fehlercode IS NOT NULL OR upload.status='fehler' THEN 'fehler' WHEN layer.schicht IS NOT NULL THEN CASE WHEN layer.schicht='E' THEN 'entpackt' ELSE layer.schicht END WHEN b.status='ready' THEN 'hochgeladen' ELSE 'erkannt' END,
       'fehlercode',COALESCE(layer.fehlercode,m.fehlercode,CASE WHEN upload.status='fehler' THEN 'upload_fehler' END),
-      'medium_id',m.id::text,'art',m.art,'vorschlag',m.vorschlag,'fortschritt',progress.daten)
+      'medium_id',m.id::text,'art',m.art,'vorschlag',m.vorschlag,'fortschritt',progress.daten,
+      'lokal',COALESCE(fs.status,'gesehen'),'hinweis_ausgeblendet',(fs.hinweis_ausgeblendet_at IS NOT NULL),'gesichert',(b.status='ready'))
      FROM reverse_eingang_dateien d JOIN reverse_eingang_bytes b USING(sha256) LEFT JOIN reverse_medien m ON m.id=d.medium_id
      LEFT JOIN asset_upload_sitzungen upload ON upload.id=b.upload_id
+     LEFT JOIN reverse_fundstellen fs ON fs.quelle=d.quelle AND fs.host_id=d.host_id AND fs.rel_pfad=d.rel_pfad
      LEFT JOIN (SELECT md.medium_id,jsonb_build_object('dateien_gesamt',count(*),'dateien_fertig',count(*) FILTER(WHERE mb.status='ready'),
        'bytes_gesamt',COALESCE(sum(md.groesse),0)::text,
        'bytes_erledigt',COALESCE(sum(CASE WHEN mb.status='ready' THEN md.groesse ELSE LEAST(md.groesse,COALESCE(mu.bestaetigte_bytes,0)) END),0)::text) AS daten

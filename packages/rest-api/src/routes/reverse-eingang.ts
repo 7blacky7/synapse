@@ -1,7 +1,7 @@
 /** RV5: additive Reverse-Routen auf API-Vertrag1, keine Rückspiegelung zum PC. */
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
 import {reverseEingang,AssetUploadFehler,AssetSpeicherFehler,ProjectRestoreService,apiCapabilitiesForClient,API_CONTRACT_HEADER} from '@synapse/core';
-import type {ReverseEingang,ReverseFundDatei,AssetUploadKontext} from '@synapse/core';
+import type {ReverseEingang,ReverseFundDatei,ReverseAbmeldung,AssetUploadKontext} from '@synapse/core';
 import {validateToken} from '../services/auth.js';
 import {assetSitzungAntwort} from './assets.js';
 export function createReverseEingangRoutes(o:{eingang?:ReverseEingang;validateToken?:typeof validateToken;daemonHost?:(tokenHash:string)=>Promise<string|null>}={}){
@@ -33,6 +33,28 @@ export function createReverseEingangRoutes(o:{eingang?:ReverseEingang;validateTo
   }));
   fastify.get<{Querystring:{host?:string;cursor?:string;limit?:string}}>('/api/reverse/fundstellen',async(req,reply)=>run(reply,async()=>{
    const h=await host(req,req.query.host);return {success:true,...await kern().status(h,{cursor:req.query.cursor,limit:req.query.limit===undefined?undefined:Number(req.query.limit)})};
+  }));
+  // RV6: Policy für den Bibliotheks-Watcher des Daemons (gleicher Gate/Hostbindung).
+  fastify.get<{Querystring:{host?:string}}>('/api/reverse/sync-optionen',async(req,reply)=>run(reply,async()=>{
+   const h=await host(req,req.query.host);return {success:true,contractVersion:1,...kern().syncOptionen(h)};
+  }));
+  // RV6: lokal gelöscht/verschoben melden; das Original bleibt in der Bibliothek.
+  fastify.post<{Body:{host?:string;dateien:ReverseAbmeldung[]}}>('/api/reverse/fundstellen/abmelden',async(req,reply)=>run(reply,async()=>{
+   const h=await host(req,req.body?.host);return {success:true,...await kern().abmelden(h,req.body?.dateien)};
+  }));
+  // RV6: Hinweis je eigener Fundstelle aus-/einblenden.
+  fastify.post<{Body:{host?:string;rel_pfad:string;ausblenden:boolean}}>('/api/reverse/fundstellen/hinweis',async(req,reply)=>run(reply,async()=>{
+   const h=await host(req,req.body?.host);return {success:true,...await kern().hinweis(h,req.body?.rel_pfad,req.body?.ausblenden)};
+  }));
+  // RV6: gesichertes Original einer eigenen Fundstelle zurückholen (Binärstream, optional ab offset).
+  fastify.get<{Querystring:{host?:string;rel_pfad?:string;offset?:string}}>('/api/reverse/fundstellen/original',async(req,reply)=>run(reply,async()=>{
+   const h=await host(req,req.query.host);
+   if(typeof req.query.rel_pfad!=='string'||!req.query.rel_pfad)throw new AssetUploadFehler('eingang_ungueltig',400,'rel_pfad erforderlich.');
+   const offset=req.query.offset===undefined?0:/^\d+$/.test(req.query.offset)?Number(req.query.offset):NaN;
+   if(!Number.isSafeInteger(offset))throw new AssetUploadFehler('range_ungueltig',416,'offset ungültig.');
+   const o2=await kern().original(h,req.query.rel_pfad,offset);
+   return reply.code(200).header('content-type','application/octet-stream').header('content-length',String(o2.laenge))
+    .header('x-synapse-sha256',o2.sha256).header('x-synapse-groesse',String(o2.groesse)).header('x-synapse-offset',String(o2.offset)).send(o2.stream);
   }));
   const base='/api/reverse/:reverse_id/uploads/:id';
   fastify.get<{Params:{reverse_id:string;id:string}}>(base,async(req,reply)=>run(reply,async()=>({success:true,upload:assetSitzungAntwort(await kern().upload.status(await ctx(req,req.params.reverse_id),req.params.id))})));

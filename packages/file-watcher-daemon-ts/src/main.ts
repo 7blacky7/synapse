@@ -71,6 +71,9 @@ async function main(): Promise<void> {
   // Enabled Projekte direkt starten
   await manager.startAllEnabled();
 
+  // P18-T16/RV6: Reverse-Bibliothek (nur bei reverse_bibliothek.aktiv); der Start blockiert den Daemon nicht.
+  void manager.startReverse().catch((err) => console.error('[daemon] Reverse-Bibliothek konnte nicht gestartet werden:', err));
+
   // Shell-Job-Worker starten (LISTEN 'shell_job_created')
   let shellWorker: ShellJobWorkerHandle | null = null;
   try {

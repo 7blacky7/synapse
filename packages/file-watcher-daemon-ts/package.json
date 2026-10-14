@@ -18,6 +18,7 @@
     "@synapse/agents": "workspace:*",
     "@synapse/core": "workspace:*",
     "@synapse/mcp-server": "workspace:*",
+    "chokidar": "^3.5.3",
     "fastify": "^4.28.1"
   },
   "files": [

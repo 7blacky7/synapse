@@ -62,8 +62,21 @@ export interface ProjektConfig {
   asset_sync?: ProjektAssetSyncConfig;
 }
 
+/**
+ * P18-T16/RV6: Reverse-Bibliothek (schreibt der Tray, RV7). aktiv Standard false; pfad Standard
+ * <os.homedir()>/synapse-reverse; geloeschte_ausblenden wertet nur der Tray aus (Daemon reicht durch).
+ * Unbekannte Unterfelder bleiben erhalten.
+ */
+export interface ReverseBibliothekConfig {
+  aktiv?: boolean;
+  pfad?: string;
+  geloeschte_ausblenden?: boolean;
+  [fremdesFeld: string]: unknown;
+}
+
 export interface DaemonConfig {
   asset_sync?: DaemonAssetSyncConfig;
+  reverse_bibliothek?: ReverseBibliothekConfig;
   port: number;
   synapse_api_url: string;
   /** Optionaler gemeinsamer API-Rueckfall; Quelle ist config.json. */
@@ -150,7 +163,9 @@ export function loadConfig(): DaemonConfig {
         typeof parsed.workspace_root === 'string' && parsed.workspace_root.trim()
           ? parsed.workspace_root.trim()
           : undefined,
+      reverse_bibliothek: leseReverseBibliothek(parsed.reverse_bibliothek),
     };
+    if (cfg.reverse_bibliothek === undefined) delete cfg.reverse_bibliothek;
     return cfg;
   } catch (err) {
     console.error('[config] WARN: parse-fehler, starte mit Defaults:', (err as Error).message);
@@ -173,9 +188,21 @@ function normalizeProjekt(p: Partial<ProjektConfig>): ProjektConfig {
   };
 }
 
-/** Schreibt Config atomar (tmp + rename). */
-export function saveConfig(cfg: DaemonConfig): void {
+/**
+ * Schreibt Config atomar (tmp + rename).
+ * P18-T16/M1: reverse_bibliothek gehoert dem Tray bzw. POST /reverse/konfig. Alle anderen Speicherwege
+ * uebernehmen den Stand von der Platte (auch in cfg), damit nie ein alter Speicherstand zurueckgeschrieben wird.
+ * Nur setzeReverseKonfig speichert mit reverseBibliothekEigen:true.
+ */
+export function saveConfig(cfg: DaemonConfig, o: { reverseBibliothekEigen?: boolean } = {}): void {
   const p = configFilePath();
+  if (!o.reverseBibliothekEigen) {
+    const platte = reverseVonPlatte(p);
+    if (platte.gelesen) {
+      if (platte.wert === undefined) delete cfg.reverse_bibliothek;
+      else cfg.reverse_bibliothek = platte.wert;
+    }
+  }
   const tmp = p + '.tmp';
   const json = JSON.stringify(cfg, null, 2);
   fs.writeFileSync(tmp, json, 'utf-8');
@@ -213,4 +240,64 @@ function normalizeAssetSync(p:unknown):ProjektAssetSyncConfig|undefined{
  if(a.aktiv!==undefined&&typeof a.aktiv!=='boolean')throw new TypeError('asset_sync.aktiv ungültig.');
  return {...(a.aktiv===undefined?{}:{aktiv:a.aktiv}),...(a.richtung?{richtung:a.richtung}:{}),...(a.verwaltet===undefined?{}:{verwaltet:a.verwaltet}),
   ...(typeof a.host==='string'&&a.host?{host:a.host}:{}),...(a.optionen?{optionen:a.optionen}:{})};
+}
+
+/** P18-T16/RV6: wie normalizeAssetSync — fehlerhafte Werte werden abgelehnt statt still uminterpretiert. */
+export function normalizeReverseBibliothek(p: unknown): ReverseBibliothekConfig | undefined {
+  if (p === undefined) return undefined;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) throw new TypeError('reverse_bibliothek muss ein Objekt sein.');
+  const a = p as ReverseBibliothekConfig;
+  if (a.aktiv !== undefined && typeof a.aktiv !== 'boolean') throw new TypeError('reverse_bibliothek.aktiv ungültig.');
+  if (a.geloeschte_ausblenden !== undefined && typeof a.geloeschte_ausblenden !== 'boolean') throw new TypeError('reverse_bibliothek.geloeschte_ausblenden ungültig.');
+  if (a.pfad !== undefined && (typeof a.pfad !== 'string' || !a.pfad.trim() || a.pfad.includes(String.fromCharCode(0)) || !path.isAbsolute(a.pfad.trim()))) {
+    throw new TypeError('reverse_bibliothek.pfad muss ein absoluter Pfad sein.');
+  }
+  if (a.pfad !== undefined) {
+    const gesperrt = reversePfadGesperrt(path.resolve(a.pfad.trim()));
+    if (gesperrt) throw new TypeError('reverse_bibliothek.pfad gesperrt: ' + gesperrt);
+  }
+  return { ...a, ...(a.pfad !== undefined ? { pfad: path.resolve(a.pfad.trim()) } : {}) };
+}
+
+/** Beim Laden: ungueltige Werte bleiben unveraendert erhalten (der Tray kann sie korrigieren), Reverse startet dann nicht. */
+function leseReverseBibliothek(p: unknown): ReverseBibliothekConfig | undefined {
+  try {
+    return normalizeReverseBibliothek(p);
+  } catch (e) {
+    console.error('[config] WARN: reverse_bibliothek ungueltig, Reverse bleibt aus:', (e as Error).message);
+    return p as ReverseBibliothekConfig;
+  }
+}
+
+/**
+ * P18-T16/K4: Sperrliste fuer die Bibliothek. $HOME selbst und Punktordner direkt unter $HOME (~/.ssh, ~/.gnupg,
+ * ~/.config, ~/.synapse ...) samt Inhalt waeren sonst ueber die Loopback-Route hochladbar. Liefert den Grund oder undefined.
+ */
+export function reversePfadGesperrt(abs: string): string | undefined {
+  const home = path.resolve(os.homedir());
+  const ziel = path.resolve(abs);
+  if (ziel === home) return '$HOME selbst';
+  if (ziel === path.parse(ziel).root) return 'Dateisystemwurzel';
+  const rel = path.relative(home, ziel);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
+  const erster = rel.split(path.sep)[0];
+  return erster.startsWith('.') ? 'Punktordner unter $HOME (' + erster + ')' : undefined;
+}
+
+/** M1: reverse_bibliothek aus der aktuellen config.json; gelesen:false bei fehlender/kaputter Datei. */
+function reverseVonPlatte(p: string): { gelesen: boolean; wert?: ReverseBibliothekConfig } {
+  try {
+    if (!fs.existsSync(p)) return { gelesen: false };
+    const j = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return { gelesen: false };
+    return { gelesen: true, wert: j.reverse_bibliothek === undefined ? undefined : leseReverseBibliothek(j.reverse_bibliothek) };
+  } catch {
+    return { gelesen: false };
+  }
+}
+
+/** Bibliothekspfad: reverse_bibliothek.pfad, sonst <os.homedir()>/synapse-reverse (kein absoluter Hardcode). */
+export function reverseBibliothekPfad(cfg: DaemonConfig): string {
+  const p = cfg.reverse_bibliothek?.pfad;
+  return typeof p === 'string' && p.trim() && path.isAbsolute(p.trim()) ? path.resolve(p.trim()) : path.join(os.homedir(), 'synapse-reverse');
 }

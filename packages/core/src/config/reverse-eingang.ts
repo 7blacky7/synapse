@@ -3,8 +3,12 @@ export interface ReverseCompanionRegel {
  format:string; endungen:string[]; referenzen?:'cue';
  pflicht:string[]; optional:string[];
 }
+/** RV6: was mit dem Bibliotheksoriginal geschieht, wenn der PC eine Datei lokal löscht (dokumentierter Standard: behalten). */
+export type ReverseLoeschVerhalten='behalten'|'mitloeschen';
 export interface ReverseEingangKonfiguration {
  companions:ReverseCompanionRegel[]; imageEndungen:string[]; maxBatch:number; maxDescriptorBytes:number;
+ /** RV6: Größe/mtime müssen so lange unverändert sein, bevor der Daemon hasht. */
+ stabilMs:number; loeschVerhalten:ReverseLoeschVerhalten;
 }
 export function ladeReverseEingangKonfiguration(env:NodeJS.ProcessEnv=process.env):ReverseEingangKonfiguration {
  const defaults:ReverseCompanionRegel[]=[
@@ -20,5 +24,8 @@ export function ladeReverseEingangKonfiguration(env:NodeJS.ProcessEnv=process.en
  const number=(key:string,fallback:number)=>{const n=Number(env[key]??fallback);if(!Number.isSafeInteger(n)||n<1)throw new Error(key+': positive Ganzzahl erforderlich');return n;};
  const imageEndungen=(env.SYNAPSE_REVERSE_IMAGE_EXTENSIONS??'iso,img,bin,nrg,cdi,mdf').split(',').map(s=>s.trim());
  if(imageEndungen.some(s=>!/^[a-z0-9]+$/.test(s)))throw new Error('SYNAPSE_REVERSE_IMAGE_EXTENSIONS: ungültiger Katalog');
- return {companions,imageEndungen,maxBatch:number('SYNAPSE_REVERSE_BATCH_MAX',10000),maxDescriptorBytes:number('SYNAPSE_REVERSE_DESCRIPTOR_MAX_BYTES',1024*1024)};
+ const loeschVerhalten=(env.SYNAPSE_REVERSE_LOESCH_VERHALTEN??'behalten').trim() as ReverseLoeschVerhalten;
+ if(loeschVerhalten!=='behalten'&&loeschVerhalten!=='mitloeschen')throw new Error('SYNAPSE_REVERSE_LOESCH_VERHALTEN: behalten oder mitloeschen erwartet');
+ return {companions,imageEndungen,maxBatch:number('SYNAPSE_REVERSE_BATCH_MAX',10000),maxDescriptorBytes:number('SYNAPSE_REVERSE_DESCRIPTOR_MAX_BYTES',1024*1024),
+  stabilMs:number('SYNAPSE_REVERSE_STABIL_MS',2000),loeschVerhalten};
 }

@@ -17,6 +17,8 @@
  *   POST   /projects/:name/open-file      Datei im Standard-Editor oeffnen (Body: Pfad)
  *   DELETE /projects/:name
  *   POST   /skills/:aktion                Skill-DB ueber den Daemon-Token (skills-proxy.ts)
+ *   GET    /reverse/status                Reverse-Bibliothek (P18-T16, nur lokal): aktiv, pfad, modus, auftraege, ...
+ *   POST   /reverse/konfig                { aktiv?, pfad?, geloeschte_ausblenden? } (P18-T16, nur lokal)
  */
 
 import os from 'node:os';
@@ -138,6 +140,34 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     if(!manager.get(req.params.name))return reply.code(404).send({success:false,error:'projekt_unbekannt'});
     const state=await manager.assetSync.status(req.params.name);
     return {success:true,...(state??{modus:'aus'})};
+  });
+
+  // ---- GET /reverse/status -----------------------------------------------
+  // P18-T16/RV6: Vertrag fuer den Tray (RV7). Nur Loopback ohne Origin; nur Metadaten, keine Zugangsdaten.
+  // { aktiv, pfad, modus:'aus'|'offen'|'api'|'fehler', fehler?, policy?, auftraege:[{pfad,art,bytes_erledigt,groesse,fehler}], erkannt, wartend_stabil }
+  app.get('/reverse/status', async (req, reply) => {
+    if (!istLoopback(req.ip) || req.headers.origin !== undefined) return reply.code(403).send({ success: false, error: 'nur_lokal' });
+    return { success: true, ...(await manager.reverse.status()) };
+  });
+
+  // ---- POST /reverse/konfig ----------------------------------------------
+  // P18-T16/RV6: { aktiv?:bool, pfad?:string(absolut), geloeschte_ausblenden?:bool } -> config.json atomar
+  // (Fremdfelder bleiben), bei aktiv/pfad startet nur die Reverse-Bindung neu.
+  app.post('/reverse/konfig', async (req, reply) => {
+    if (!istLoopback(req.ip) || req.headers.origin !== undefined) return reply.code(403).send({ ok: false, error: 'nur_lokal' });
+    const body = req.body as Record<string, unknown> | null | undefined;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return reply.code(400).send({ ok: false, error: 'JSON-Objekt erforderlich' });
+    const e: { aktiv?: boolean; pfad?: string; geloeschte_ausblenden?: boolean } = {};
+    if (body.aktiv !== undefined) { if (typeof body.aktiv !== 'boolean') return reply.code(400).send({ ok: false, error: 'aktiv (boolean) erwartet' }); e.aktiv = body.aktiv; }
+    if (body.pfad !== undefined) { if (typeof body.pfad !== 'string') return reply.code(400).send({ ok: false, error: 'pfad (string) erwartet' }); e.pfad = body.pfad; }
+    if (body.geloeschte_ausblenden !== undefined) { if (typeof body.geloeschte_ausblenden !== 'boolean') return reply.code(400).send({ ok: false, error: 'geloeschte_ausblenden (boolean) erwartet' }); e.geloeschte_ausblenden = body.geloeschte_ausblenden; }
+    if (!Object.keys(e).length) return reply.code(400).send({ ok: false, error: 'aktiv, pfad oder geloeschte_ausblenden erforderlich' });
+    try {
+      const r = await manager.setzeReverseKonfig(e);
+      return { ok: true, ...r, status: await manager.reverse.status() };
+    } catch (err) {
+      return reply.code(err instanceof TypeError ? 400 : 500).send({ ok: false, error: (err as Error).message });
+    }
   });
 
   // ---- POST /projects -----------------------------------------------------

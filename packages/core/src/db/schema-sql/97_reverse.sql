@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS reverse_fundstellen (
 );
 CREATE INDEX IF NOT EXISTS idx_reverse_fundstellen_sha ON reverse_fundstellen(sha256);
 CREATE INDEX IF NOT EXISTS idx_reverse_fundstellen_datei ON reverse_fundstellen(medien_datei_id);
+-- P18-T16/RV6: Lösch-/Fehlhinweis je Fundstelle ausblendbar; Wiedersehen setzt NULL.
+ALTER TABLE reverse_fundstellen ADD COLUMN IF NOT EXISTS hinweis_ausgeblendet_at TIMESTAMPTZ NULL;
 CREATE TABLE IF NOT EXISTS reverse_dateien (
  id BIGSERIAL PRIMARY KEY, eintrag_id TEXT NOT NULL REFERENCES reverse_eintraege(id) ON DELETE RESTRICT,
  medium_id BIGINT NOT NULL, eltern_id BIGINT,

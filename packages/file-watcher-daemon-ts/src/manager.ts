@@ -41,9 +41,18 @@ import {
   findProjekt,
   upsertProjekt,
   removeProjekt,
+  normalizeReverseBibliothek,
+  reverseBibliothekPfad as reverseBibliothekPfadVon,
 } from './config.js';
+import type { ReverseBibliothekConfig } from './config.js';
 
 import {DaemonAssetSync} from './asset-sync.js';
+import { DaemonReverseBibliothek } from './reverse-bibliothek.js';
+
+/** P18-T16/RV6: gueltige Reverse-Einstellungen oder leer (ungueltige Altwerte werden beim Setzen ersetzt). */
+function reverseEinstellungenSicher(p: unknown): ReverseBibliothekConfig {
+  try { return normalizeReverseBibliothek(p) ?? {}; } catch { return {}; }
+}
 
 export interface OpResult {
   ok: boolean;
@@ -303,6 +312,9 @@ export class WatcherManager {
   private instances = new Map<string, FileWatcherInstance>();
   private config: DaemonConfig;
   readonly assetSync: DaemonAssetSync;
+  /** P18-T16/RV6: Reverse-Bibliotheks-Watcher (eigene Wurzel, nur ueber die API). */
+  readonly reverse: DaemonReverseBibliothek;
+  private reverseSchalter: Promise<unknown> = Promise.resolve();
   /** P13-T45: laufende Asset-Sync-Umschaltungen je Projekt (werden nacheinander abgearbeitet). */
   private readonly assetSchalter = new Map<string, Promise<unknown>>();
   /** EventEmitter fuer State-Changes — abonniert von api.ts SSE-Stream. Events: "state_change". */
@@ -311,6 +323,7 @@ export class WatcherManager {
   constructor(config?: DaemonConfig) {
     this.config = config ?? loadConfig();
     this.assetSync = new DaemonAssetSync(()=>this.config,undefined,()=>this.emitChange('asset_sync'),()=>saveConfig(this.config));
+    this.reverse = new DaemonReverseBibliothek(() => this.config, undefined, () => this.emitChange('reverse'));
   }
 
   /** Emittiert ein state_change-Event mit aktuellem Aggregate-Snapshot. */
@@ -490,6 +503,39 @@ export class WatcherManager {
     }
   }
 
+  /** P18-T16/RV6: Reverse-Bibliothek starten (wirkt nur bei reverse_bibliothek.aktiv:true). */
+  async startReverse(): Promise<void> {
+    await this.reverse.starte();
+  }
+
+  /**
+   * P18-T16/RV6: Tray-Schalter fuer die Reverse-Bibliothek. Uebernimmt zuerst den Stand aus config.json
+   * (der Tray schreibt dort z.B. geloeschte_ausblenden), setzt die uebergebenen Felder, speichert atomar
+   * (Fremdfelder bleiben) und startet bei aktiv/pfad ausschliesslich die Reverse-Bindung neu.
+   * Ungueltige Werte werfen TypeError (Route: 400). Aufrufe laufen nacheinander.
+   */
+  async setzeReverseKonfig(e: { aktiv?: boolean; pfad?: string; geloeschte_ausblenden?: boolean }): Promise<{ aktiv: boolean; pfad: string; geloeschte_ausblenden: boolean; neu_gestartet: boolean }> {
+    const lauf = this.reverseSchalter.catch(() => undefined).then(async () => {
+      let disk: unknown;
+      try { disk = loadConfig().reverse_bibliothek; } catch { disk = undefined; }
+      const roh = { ...reverseEinstellungenSicher(this.config.reverse_bibliothek), ...reverseEinstellungenSicher(disk) };
+      for (const [k, v] of Object.entries(e)) if (v !== undefined) roh[k] = v;
+      const neu = normalizeReverseBibliothek(roh) ?? {};
+      this.config.reverse_bibliothek = neu;
+      saveConfig(this.config, { reverseBibliothekEigen: true });
+      let neuGestartet = false;
+      if (e.aktiv !== undefined || e.pfad !== undefined) {
+        await this.reverse.stop();
+        await this.reverse.starte();
+        neuGestartet = true;
+      }
+      this.emitChange('reverse_konfig');
+      return { aktiv: neu.aktiv === true, pfad: reverseBibliothekPfadVon(this.config), geloeschte_ausblenden: neu.geloeschte_ausblenden === true, neu_gestartet: neuGestartet };
+    });
+    this.reverseSchalter = lauf;
+    return await lauf;
+  }
+
   /** Status eines einzelnen Projekts. */
   status(name: string): ProjektStatus | undefined {
     const p = findProjekt(this.config, name);
@@ -525,6 +571,7 @@ export class WatcherManager {
   async stopAll(): Promise<void> {
     const names = [...this.instances.keys()];
     await Promise.all(names.map((n) => this.stopWatcher(n)));
+    await this.reverse.stop();
   }
 
   // ══════════════════════════════════════════════════════════════════
