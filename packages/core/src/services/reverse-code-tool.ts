@@ -53,6 +53,7 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
   layerStatus=layer?.status;
   if(!['fertig','teilweise'].includes(layerStatus??''))return pending(original,stage);
  }
+ const adressName=action==='functions'&&typeof a.name==='string'&&/^0x[0-9a-f]{1,16}$/i.test(a.name)?BigInt(a.name).toString():undefined;
  const ready="EXISTS(SELECT 1 FROM reverse_schichten rs WHERE rs.datei_id=d.datei_id AND rs.schicht=d.schicht AND rs.fingerabdruck=d.fingerabdruck AND rs.aktuell AND rs.status IN ('fertig','teilweise'))";
  const available=(await k.db.query('SELECT count(*)::int AS n FROM reverse_code_dateien d WHERE d.eintrag_id=$1 AND '+ready,[rid])).rows[0];
  if(Number(available.n)===0)return pending(virtual?.[1],virtual?.[2]??'S1');
@@ -64,6 +65,7 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
   views[table]='(SELECT x.* FROM '+table+' x WHERE EXISTS(SELECT 1 FROM reverse_code_dateien d WHERE d.eintrag_id=x.eintrag_id AND d.file_path=x.file_path AND '+ready+')'+
    (table==='reverse_code_symbole'?" AND (x.symbol_type<>'string' OR char_length(COALESCE(x.value,''))>="+min+")":'')+')';
  }
+ if(adressName!==undefined)views.reverse_code_symbole=views.reverse_code_symbole.slice(0,-1)+' AND x.adresse='+adressName+')';
  let total=0;
  const reader:CodeLeserDb={async query(sql,params=[]){
   const main=action==='tree'?/^\s*SELECT cf\.file_path/.test(sql):action==='functions'?sql.includes('cs.params'):action==='symbols'?sql.includes('cs.value'):action==='search'?sql.includes('ts_headline'):action==='calls'?sql.includes('COUNT(*) OVER()'):false;
@@ -96,7 +98,7 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
     const masked=String(maske(tree)),cut=masked.length>budget;
     result={baum:cut?masked.slice(0,budget):masked,total,gekappt:cut||offset+limit<total,naechster_offset:offset+limit<total?offset+limit:null};break;
    }
-   case 'functions':result=page('functions',await getFunctions(rid,file,name,a.exported_only===true,limit,REVERSE_BEREICH));break;
+   case 'functions':result=page('functions',await getFunctions(rid,file,adressName===undefined?name:undefined,a.exported_only===true,limit,REVERSE_BEREICH));break;
    case 'symbols':{
     const type=optionalText(a.symbol_type);if(!type)fail('werkzeug_fehler','parameter_fehlt',{parameter:'symbol_type'});
     result=page('symbols',await getSymbols(rid,type,file,name,limit,optionalText(a.value_contains),REVERSE_BEREICH));break;

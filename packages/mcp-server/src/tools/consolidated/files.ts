@@ -65,6 +65,8 @@ import {
   normalizeReservationFilePaths,
   getDirectWriteReservationHint,
 } from '@synapse/core';
+import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
+import {rufeReverseApi} from './reverse.js';
 import type { BatchEdit, FileBatchOp } from '@synapse/core';
 
 import * as path from 'path';
@@ -176,6 +178,7 @@ export const filesTool: ConsolidatedTool = {
           type: 'string',
           description: 'Agent-ID — aktiviert Error-Pattern-Check bei Write-Operationen',
         },
+        ...REF_VERGLEICH_PARAMETER,
         from_line: {
           type: 'number',
           description: 'read: Start-Zeile (1-basiert, Standard: 1)',
@@ -836,6 +839,7 @@ export const filesTool: ConsolidatedTool = {
           file_path: filePath,
           size: rawContent.length,
           ...ranged,
+          ...(args.ref_vergleich===true?await refVergleich({project,file_path:filePath,content:rawContent,agent_id:agentId,name:str(args,'name')},{reverse:rufeReverseApi}):{}),
           ...(await embeddingPendingHint(project, filePath)),
         };
       }

@@ -5,6 +5,9 @@
  * @packageDocumentation
  */
 
+// P18-T28/RV18: gezielter optionaler files(read)-Vergleich.
+export {refVergleich,REF_VERGLEICH_PARAMETER} from './services/ref-vergleich.js';
+export type {RefVergleichDb,RefVergleichOptionen} from './services/ref-vergleich.js';
 export { registriereHinweisQuelle, baueHinweisKontext, haengeAusloeserHinweiseAn, haengeAusloeserTextHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from './services/ausloeser-hinweise.js';
 export type { HinweisKontext, AusloeserHinweis, HinweisQuelle, HinweisOptionen, HinweisMetrik } from './services/ausloeser-hinweise.js';
 // P13-T32/A14: API-only Ansichtsdienst, RV16 registriert den Reverse-Adapter.

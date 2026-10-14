@@ -8,6 +8,7 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
+import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 import { getProjectRecordById } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
@@ -1113,6 +1114,7 @@ export const MCP_TOOLS = [
         },
         anchor_text: { type: 'string', description: 'update (oberste Ebene): OPTIONALER Drift-Schutz — Text, der im AKTUELLEN Dateiinhalt vorkommen muss (getrimmter Substring). Mismatch -> Fehler anchor_mismatch, es wird nichts geschrieben. Ohne Anker wird wie bisher direkt geschrieben. PFLICHT ist der Anker nur bei update-Ops in plan/files_batch (ops[].anchor_text).' },
         anchor_contains: { type: 'string', description: 'update (oberste Ebene): OPTIONAL, wie anchor_text, aber Substring exakt wie angegeben. Mismatch -> Fehler anchor_mismatch, kein Schreiben.' },
+        ...REF_VERGLEICH_PARAMETER,
         from_line: { type: 'number', description: 'read: Start-Zeile (1-basiert, Standard: 1)' },
         to_line: { type: 'number', description: 'read: End-Zeile inklusiv (Standard: letzte Zeile). Auto-Reduce bei > 80k Zeichen.' },
         truncate_long_lines: { type: 'number', description: 'read: Zeilen laenger als N Zeichen kuerzen + Marker. 0 = aus (Standard).' },
@@ -5360,6 +5362,7 @@ async function handleToolCallKern(
             file_path: filePath,
             size: rawContent.length,
             ...ranged,
+            ...(args.ref_vergleich===true?await refVergleich({project,file_path:filePath,content:rawContent,agent_id:agentId,name:str(args,'name')}):{}),
             ...(await embeddingPendingHint(project, filePath)),
           };
         }

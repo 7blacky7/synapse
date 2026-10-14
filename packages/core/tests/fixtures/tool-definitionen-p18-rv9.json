@@ -196,5 +196,24 @@
   "task": "P3-T15",
   "datum": "2026-10-14"
 }
+,
+{
+  "strecke": "rest",
+  "tool": "files",
+  "alt": "e3b7bbbdb359b6cf473787345befbb75538f16f7f8d507ce6f28b71ac43c422a",
+  "neu": "cb192dad9f1c8f74177181da6545b4580336c228f02f362a748d69bfef2d9607",
+  "grund": "P18-T28 ref_vergleich: optionale Parameter ref_vergleich und name für files(read); bestehende Leseantwort bleibt ohne Parameter unverändert.",
+  "task": "P18-T28",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "files",
+  "alt": "72a10c143ef69a6c269a600ed5f6416cfad569911b5d5670b56c18c970c16ca5",
+  "neu": "b983b9a5477e94a55c23ba6f67b719a184690d3e4583f2c396ae11bc8aa2273f",
+  "grund": "P18-T28 ref_vergleich: optionale Parameter ref_vergleich und name für files(read); bestehende Leseantwort bleibt ohne Parameter unverändert.",
+  "task": "P18-T28",
+  "datum": "2026-10-14"
+}
 ]
 }
