@@ -17,7 +17,7 @@ import (
 var assetSyncWindow fyne.Window
 
 func zeigeAssetSyncFenster() {
-    if assetSyncWindow!=nil{assetSyncWindow.Show();assetSyncWindow.RequestFocus();return}
+    if assetSyncWindow!=nil{zeigeFyneFenster(assetSyncWindow);assetSyncWindow.RequestFocus();return}
     window:=myApp.NewWindow("Projekte auf diesem PC · Asset-Sync")
     assetSyncWindow=window
     ctx,cancel:=context.WithCancel(context.Background())
@@ -241,7 +241,7 @@ func zeigeAssetSyncFenster() {
         }()
     }
     content:=container.NewBorder(container.NewVBox(summary,container.NewBorder(nil,nil,nil,widget.NewButton("Neu laden",reload),chooser)),nil,nil,nil,container.NewVScroll(details))
-    window.SetContent(content);window.Show();reload()
+    window.SetContent(content);zeigeFyneFenster(window);reload()
     go func(){
         ticker:=time.NewTicker(10*time.Second);defer ticker.Stop()
         for{select{case <-ctx.Done():return;case <-ticker.C:fyne.Do(func(){if ctx.Err()==nil{reload()}})}}

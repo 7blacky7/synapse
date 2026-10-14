@@ -46,7 +46,7 @@ func reverseLabel(text string) *widget.Label {
 
 func zeigeReverseBibliothekFenster() {
 	if reverseFenster != nil {
-		reverseFenster.Show()
+		zeigeFyneFenster(reverseFenster)
 		reverseFenster.RequestFocus()
 		return
 	}
@@ -602,7 +602,7 @@ func zeigeReverseBibliothekFenster() {
 	split := container.NewHSplit(tree, rechts)
 	split.Offset = 0.6
 	window.SetContent(container.NewBorder(kopf, nil, nil, nil, split))
-	window.Show()
+	zeigeFyneFenster(window)
 	neuLaden()
 	intervall := reverseRefreshIntervall
 	go func() {

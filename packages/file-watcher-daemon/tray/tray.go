@@ -179,6 +179,11 @@ func main() {
 		if db != nil {
 			db.Close()
 		}
+		// Beim SIGTERM vor dem ersten Fyne-Fenster existiert noch kein GLFW-Kontext.
+		// App.Quit wuerde dann im systray-Exitpfad mit NotInitialized paniken.
+		if !fyneTreiberInitialisiert.Load() {
+			os.Exit(0)
+		}
 		myApp.Quit()
 	})
 
@@ -1490,7 +1495,7 @@ func openDetailAuf(name, tab string) {
 		w.sichtbar.Store(true)
 		w.Window.SetContent(w.Tabs)
 		w.zeigeTab(tab)
-		w.Window.Show()
+		zeigeFyneFenster(w.Window)
 	})
 
 	go w.ReloadAll()
@@ -2476,7 +2481,7 @@ func openChat(projectName, channelName string) {
 		versteckbaresFenster(w.Window, &w.sichtbar)
 		w.sichtbar.Store(true)
 		w.Window.SetContent(mainContent)
-		w.Window.Show()
+		zeigeFyneFenster(w.Window)
 		w.Window.Canvas().Focus(w.InputEntry)
 	})
 

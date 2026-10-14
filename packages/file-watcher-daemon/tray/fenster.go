@@ -30,6 +30,15 @@ import (
 // ankerFenster haelt die Fyne-Loop am Leben (siehe oben). Nie zeigen, nie schliessen.
 var ankerFenster fyne.Window
 
+// fyneTreiberInitialisiert wird erst nach dem ersten gezeigten User-Fenster gesetzt.
+// Vorher kann app.Quit im GLFW-Treiber wegen fehlendem Kontext paniken.
+var fyneTreiberInitialisiert atomic.Bool
+
+func zeigeFyneFenster(w fyne.Window) {
+	w.Show()
+	fyneTreiberInitialisiert.Store(true)
+}
+
 // legeAnkerFensterAn erzeugt das unsichtbare Ankerfenster.
 func legeAnkerFensterAn(a fyne.App) fyne.Window {
 	w := a.NewWindow("Synapse-Tray")
@@ -52,7 +61,7 @@ func oeffneEinzelFenster(schluessel, titel string, bau func(fyne.Window) func())
 	einzelFensterMu.Lock()
 	if w, ok := einzelFenster[schluessel]; ok {
 		einzelFensterMu.Unlock()
-		w.Show()
+		zeigeFyneFenster(w)
 		w.RequestFocus()
 		return w
 	}
@@ -72,7 +81,7 @@ func oeffneEinzelFenster(schluessel, titel string, bau func(fyne.Window) func())
 		}
 	})
 	tastaturSchliessen(w, w.Close)
-	w.Show()
+	zeigeFyneFenster(w)
 	return w
 }
 
@@ -100,7 +109,7 @@ func versteckbaresFenster(w fyne.Window, sichtbar *atomic.Bool) {
 // true: ohne das blieb die Live-Aktualisierung nach dem Wiederoeffnen aus.
 func zeigeVersteckt(w fyne.Window, sichtbar *atomic.Bool) {
 	sichtbar.Store(true)
-	w.Show()
+	zeigeFyneFenster(w)
 	w.RequestFocus()
 }
 
