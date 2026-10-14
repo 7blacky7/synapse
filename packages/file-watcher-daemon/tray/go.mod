@@ -5,7 +5,6 @@ go 1.25.7
 require (
 	fyne.io/fyne/v2 v2.7.4
 	fyne.io/systray v1.12.1
-	github.com/lib/pq v1.12.3
 )
 
 require (

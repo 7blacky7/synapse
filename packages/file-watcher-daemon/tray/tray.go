@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"database/sql"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -29,7 +28,6 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"fyne.io/systray"
-	_ "github.com/lib/pq"
 )
 
 type Project struct {
@@ -103,10 +101,6 @@ var (
 	currentChannelSig    string
 	nextChannelPoll      time.Time
 
-	// DB connection
-	db    *sql.DB
-	dbErr error
-
 	// Window tracking
 	openWindows = make(map[string]*DetailWindow)
 	windowLock  sync.Mutex
@@ -131,6 +125,9 @@ type DetailWindow struct {
 	ChunksLabel   *widget.Label
 	FilesLabel    *widget.Label
 	Tabs          *container.AppTabs
+	AgentStatus   *widget.Label
+	EventStatus   *widget.Label
+	ActivityStatus *widget.Label
 	// P8-T20: Auswahl ueber Schluessel statt Zeilenindex (nur UI-Faden).
 	agentAuswahl      tabellenAuswahl
 	eventAuswahl      tabellenAuswahl
@@ -154,6 +151,8 @@ type ChatWindow struct {
 	ChannelName   string
 	MessageBox    *fyne.Container
 	MessageScroll *container.Scroll
+	MessageStatus *widget.Label
+	AgentStatus   *widget.Label
 	LastMsgID     int64
 	AgentTable    *widget.Table
 	AgentRows     [][]string
@@ -175,18 +174,7 @@ func main() {
 	// geschlossen wird (Ursache des Absturzes beim Schliessen, siehe fenster.go).
 	ankerFenster = legeAnkerFensterAn(myApp)
 
-	start, end := systray.RunWithExternalLoop(onReady, func() {
-		if db != nil {
-			db.Close()
-		}
-		// Beim SIGTERM vor dem ersten Fyne-Fenster existiert noch kein GLFW-Kontext.
-		// App.Quit wuerde dann im systray-Exitpfad mit NotInitialized paniken.
-		if !fyneTreiberInitialisiert.Load() {
-			os.Exit(0)
-		}
-		myApp.Quit()
-	})
-
+	start, end := systray.RunWithExternalLoop(onReady, trayBeenden)
 	start()
 
 	// Fyne event loop blocks main thread
@@ -202,8 +190,6 @@ func onReady() {
 	port = readPort()
 	synapseApiUrl = readSynapseApiUrl()
 	systray.SetIcon(makeIcon(false))
-
-	dbInit()
 
 	go runRefreshLoop(stopChan)
 	go runPollLoop(stopChan)
@@ -346,46 +332,7 @@ func startSSE(stop chan struct{}) {
 	}
 }
 
-// DB Helpers
-func dbInit() {
-	connStr := "postgres://synapse@192.168.50.65:5432/synapse?sslmode=disable"
-	var err error
-	db, err = sql.Open("postgres", connStr)
-	if err != nil {
-		dbErr = err
-		return
-	}
-	db.SetMaxOpenConns(2)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(10 * time.Minute)
 
-	err = db.Ping()
-	if err != nil {
-		dbErr = err
-		db.Close()
-		db = nil
-	} else {
-		dbErr = nil
-	}
-}
-
-func dbQuery(query string, args ...interface{}) (*sql.Rows, error) {
-	if db == nil {
-		dbInit()
-		if db == nil {
-			return nil, fmt.Errorf("DB connection failed: %v", dbErr)
-		}
-	}
-	rows, err := db.Query(query, args...)
-	if err != nil {
-		if db != nil {
-			db.Close()
-		}
-		db = nil
-		return nil, err
-	}
-	return rows, nil
-}
 
 // readSynapseApiUrl liest synapse_api_url aus ~/.synapse/file-watcher/config.json.
 // Fallback: http://127.0.0.1:3456 (DEFAULT_SYNAPSE_API_URL im TS-Daemon).
@@ -1164,6 +1111,10 @@ func openDetailAuf(name, tab string) {
 		ProjectName: name,
 	}
 
+	w.AgentStatus = widget.NewLabel("")
+	w.EventStatus = widget.NewLabel("")
+	w.ActivityStatus = widget.NewLabel("")
+
 	// Tab 1: Agenten
 	w.AgentTable = neueTabelle([]string{"Agent", "Modell", "Status", "Kontext", "Letzte Aktivität"},
 		func() [][]string { return w.AgentRows })
@@ -1201,7 +1152,7 @@ func openDetailAuf(name, tab string) {
 		go w.ReloadAgenten()
 	})
 
-	tabAgenten := container.NewBorder(nil, container.NewHBox(btnStop, btnRefA), nil, nil, w.AgentTable)
+	tabAgenten := container.NewBorder(w.AgentStatus, container.NewHBox(btnStop, btnRefA), nil, nil, w.AgentTable)
 
 	// Tab 2: Events
 	w.FilterEntry = widget.NewEntry()
@@ -1245,7 +1196,7 @@ func openDetailAuf(name, tab string) {
 	})
 
 	tabEvents := container.NewBorder(
-		container.NewBorder(nil, nil, widget.NewLabel("Filter:"), nil, w.FilterEntry),
+		container.NewVBox(w.EventStatus, container.NewBorder(nil, nil, widget.NewLabel("Filter:"), nil, w.FilterEntry)),
 		container.NewHBox(btnRefE, btnOpenE),
 		nil,
 		nil,
@@ -1282,7 +1233,7 @@ func openDetailAuf(name, tab string) {
 		}
 	})
 
-	tabAktivitaet := container.NewBorder(nil, container.NewHBox(btnRefAkt, btnDetailAkt), nil, nil, w.ActivityTable)
+	tabAktivitaet := container.NewBorder(w.ActivityStatus, container.NewHBox(btnRefAkt, btnDetailAkt), nil, nil, w.ActivityTable)
 
 	// Tab 4: Status
 	w.PathLabel = widget.NewLabel("-")
@@ -2079,39 +2030,16 @@ func (w *DetailWindow) ReloadAll() {
 }
 
 func (w *DetailWindow) ReloadAgenten() {
-	// TRAY-2: API zuerst. Der PG-Zweig darunter bleibt vorerst als LETZTER
-	// Fallback stehen, damit der Tray auch gegen eine Instanz laeuft, auf der
-	// die neuen Endpunkte noch nicht deployed sind. Entfaellt sobald TRAY-1 ueberall live ist.
-	if agents, apiErr := apiFetchAgents(w.ProjectName); apiErr == nil {
-		var apiRows [][]string
-		for _, a := range agents {
-			apiRows = append(apiRows, []string{a.AgentName, a.Model, a.Status, a.TokensPercent + "%", a.LastActivity})
-		}
-		fyne.Do(func() {
-			w.AgentRows = apiRows
-			w.AgentTable.Refresh()
-			w.agentAuswahl.nachfuehren(w.AgentTable, spaltenSchluessel(w.AgentRows, 0))
-		})
-		return
-	}
-
-	rows, err := dbQuery("SELECT agent_name, COALESCE(model, ''), status, COALESCE(tokens_percent::text, '0'), COALESCE(last_activity::text, '') FROM wrapper_status WHERE project = $1 ORDER BY last_activity DESC NULLS LAST", w.ProjectName)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	var newRows [][]string
-	for rows.Next() {
-		var agentName, model, status, tokens, lastAct string
-		if err := rows.Scan(&agentName, &model, &status, &tokens, &lastAct); err == nil {
-			newRows = append(newRows, []string{agentName, model, status, tokens + "%", lastAct})
-		}
+	agents, err := apiFetchAgents(w.ProjectName)
+	var rows [][]string
+	for _, a := range agents {
+		rows = append(rows, []string{a.AgentName, a.Model, a.Status, a.TokensPercent + "%", a.LastActivity})
 	}
 	fyne.Do(func() {
-		w.AgentRows = newRows
+		zeigeAPIStatus(w.AgentStatus, err)
+		w.AgentRows = rows
 		w.AgentTable.Refresh()
-		w.agentAuswahl.nachfuehren(w.AgentTable, spaltenSchluessel(w.AgentRows, 0))
+		w.agentAuswahl.nachfuehren(w.AgentTable, spaltenSchluessel(rows, 0))
 	})
 }
 
@@ -2129,73 +2057,26 @@ func kuerzeAnzeige(s string) string {
 
 func (w *DetailWindow) ReloadEvents() {
 	filter := strings.ToLower(w.filterTextWert())
-
-	// TRAY-2: API zuerst, PG als letzter Fallback (siehe ReloadAgenten).
-	if versions, apiErr := apiFetchFileVersions(w.ProjectName, 50); apiErr == nil {
-		var apiRows [][]string
-		for _, v := range versions {
-			if filter != "" {
-				haystack := strings.ToLower(oderLeer(v.AgentId, "") + " " + v.FilePath + " " +
-					oderLeer(v.Reason, "") + " " + oderLeer(v.FeatureTag, ""))
-				if !strings.Contains(haystack, filter) {
-					continue
-				}
+	versions, err := apiFetchFileVersions(w.ProjectName, 50)
+	var rows [][]string
+	for _, v := range versions {
+		if filter != "" {
+			haystack := strings.ToLower(oderLeer(v.AgentId, "") + " " + v.FilePath + " " +
+				oderLeer(v.Reason, "") + " " + oderLeer(v.FeatureTag, ""))
+			if !strings.Contains(haystack, filter) {
+				continue
 			}
-			apiRows = append(apiRows, []string{
-				pgZeitKurz(v.CreatedAt), oderLeer(v.AgentId, "<unbekannt>"), v.FilePath,
-				oderLeer(v.EditAction, ""),
-				kuerzeAnzeige(oderLeer(v.Reason, "")), kuerzeAnzeige(oderLeer(v.FeatureTag, "")),
-			})
 		}
-		fyne.Do(func() {
-			w.EventRows = apiRows
-			w.EventTable.Refresh()
-			w.eventAuswahl.nachfuehren(w.EventTable, eventSchluessel(w.EventRows))
+		rows = append(rows, []string{
+			pgZeitKurz(v.CreatedAt), oderLeer(v.AgentId, "<unbekannt>"), v.FilePath,
+			oderLeer(v.EditAction, ""), kuerzeAnzeige(oderLeer(v.Reason, "")), kuerzeAnzeige(oderLeer(v.FeatureTag, "")),
 		})
-		return
-	}
-
-	rows, err := dbQuery("SELECT COALESCE(agent_id, '<unbekannt>'), COALESCE(file_path, ''), COALESCE(edit_action, ''), COALESCE(reason, ''), COALESCE(feature_tag, ''), to_char(created_at, 'DD.MM. HH24:MI:SS') FROM file_versions WHERE project = $1 ORDER BY id DESC LIMIT 50", w.ProjectName)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	filterText := filter
-
-	var newRows [][]string
-	for rows.Next() {
-		var agent, file, action, reason, feature, timeStr string
-		if err := rows.Scan(&agent, &file, &action, &reason, &feature, &timeStr); err == nil {
-			if filterText != "" {
-				haystack := strings.ToLower(agent + " " + file + " " + reason + " " + feature)
-				if !strings.Contains(haystack, filterText) {
-					continue
-				}
-			}
-
-			// Sanitize reason and feature (Bug 5)
-			reasonDisplay := strings.ReplaceAll(reason, "\n", " ")
-			reasonDisplay = strings.ReplaceAll(reasonDisplay, "\r", " ")
-			rReason := []rune(reasonDisplay)
-			if len(rReason) > 200 {
-				reasonDisplay = string(rReason[:200]) + "…"
-			}
-
-			featureDisplay := strings.ReplaceAll(feature, "\n", " ")
-			featureDisplay = strings.ReplaceAll(featureDisplay, "\r", " ")
-			rFeature := []rune(featureDisplay)
-			if len(rFeature) > 200 {
-				featureDisplay = string(rFeature[:200]) + "…"
-			}
-
-			newRows = append(newRows, []string{timeStr, agent, file, action, reasonDisplay, featureDisplay})
-		}
 	}
 	fyne.Do(func() {
-		w.EventRows = newRows
+		zeigeAPIStatus(w.EventStatus, err)
+		w.EventRows = rows
 		w.EventTable.Refresh()
-		w.eventAuswahl.nachfuehren(w.EventTable, eventSchluessel(w.EventRows))
+		w.eventAuswahl.nachfuehren(w.EventTable, eventSchluessel(rows))
 	})
 }
 
@@ -2216,53 +2097,22 @@ func dauerText(ms *int) string {
 }
 
 func (w *DetailWindow) ReloadActivity() {
-	// TRAY-2-Muster: API zuerst, PG als letzter Fallback (siehe ReloadEvents).
-	if calls, apiErr := apiFetchToolCalls(w.ProjectName, 50); apiErr == nil {
-		var apiRows [][]string
-		var ids []string
-		for _, c := range calls {
-			apiRows = append(apiRows, []string{
-				pgZeitKurz(c.Ts), c.ToolName, oderLeer(c.Action, ""),
-				oderLeer(c.AgentId, "<unbekannt>"), okText(c.Ok), dauerText(c.DurationMs),
-				kuerzeAnzeige(oderLeer(c.ResultPreview, "")),
-			})
-			ids = append(ids, c.Id)
-		}
-		fyne.Do(func() {
-			w.ActivityRows = apiRows
-			w.ActivityIDs = ids
-			w.ActivityTable.Refresh()
-			w.aktivitaetAuswahl.nachfuehren(w.ActivityTable, w.ActivityIDs)
-		})
-		return
-	}
-
-	rows, err := dbQuery(
-		"SELECT id::text, to_char(ts, 'DD.MM. HH24:MI:SS'), tool_name, COALESCE(action,''), "+
-			"COALESCE(agent_id,'<unbekannt>'), COALESCE(ok,true), COALESCE(duration_ms::text,'-'), "+
-			"COALESCE(left(result,200),'') FROM tool_calls WHERE project = $1 ORDER BY ts DESC LIMIT 50",
-		w.ProjectName,
-	)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	var newRows [][]string
+	calls, err := apiFetchToolCalls(w.ProjectName, 50)
+	var rows [][]string
 	var ids []string
-	for rows.Next() {
-		var id, zeit, tool, action, agent, dauer, ergebnis string
-		var ok bool
-		if scanErr := rows.Scan(&id, &zeit, &tool, &action, &agent, &ok, &dauer, &ergebnis); scanErr == nil {
-			newRows = append(newRows, []string{zeit, tool, action, agent, okText(ok), dauer, kuerzeAnzeige(ergebnis)})
-			ids = append(ids, id)
-		}
+	for _, c := range calls {
+		rows = append(rows, []string{
+			pgZeitKurz(c.Ts), c.ToolName, oderLeer(c.Action, ""), oderLeer(c.AgentId, "<unbekannt>"),
+			okText(c.Ok), dauerText(c.DurationMs), kuerzeAnzeige(oderLeer(c.ResultPreview, "")),
+		})
+		ids = append(ids, c.Id)
 	}
 	fyne.Do(func() {
-		w.ActivityRows = newRows
+		zeigeAPIStatus(w.ActivityStatus, err)
+		w.ActivityRows = rows
 		w.ActivityIDs = ids
 		w.ActivityTable.Refresh()
-		w.aktivitaetAuswahl.nachfuehren(w.ActivityTable, w.ActivityIDs)
+		w.aktivitaetAuswahl.nachfuehren(w.ActivityTable, ids)
 	})
 }
 
@@ -2430,6 +2280,8 @@ func openChat(projectName, channelName string) {
 
 	// Nachrichten: scrollbare Liste mehrzeiliger Wrapping-Labels (kein Truncation,
 	// kein Überlappen, voller Text immer lesbar — ersetzt die starre Tabelle).
+	w.MessageStatus = widget.NewLabel("")
+	w.AgentStatus = widget.NewLabel("")
 	w.MessageBox = container.NewVBox()
 	w.MessageScroll = container.NewVScroll(w.MessageBox)
 
@@ -2456,8 +2308,8 @@ func openChat(projectName, channelName string) {
 		go w.ReloadAll()
 	})
 
-	leftSide := container.NewBorder(widget.NewLabel("Nachrichten:"), nil, nil, nil, w.MessageScroll)
-	rightSide := container.NewBorder(widget.NewLabel("Teilnehmer in #"+w.ChannelName+":"), nil, nil, nil, w.AgentTable)
+	leftSide := container.NewBorder(container.NewVBox(widget.NewLabel("Nachrichten:"), w.MessageStatus), nil, nil, nil, w.MessageScroll)
+	rightSide := container.NewBorder(container.NewVBox(widget.NewLabel("Teilnehmer in #"+w.ChannelName+":"), w.AgentStatus), nil, nil, nil, w.AgentTable)
 
 	split := container.NewHSplit(leftSide, rightSide)
 	split.Offset = 0.7
@@ -2521,50 +2373,15 @@ func (w *ChatWindow) ReloadMessages() {
 	var newMsgs [][]string
 	var maxID = w.LastMsgID
 
-	// TRAY-6: API zuerst. apiFetchChannelMessages liefert IMMER aufsteigend —
-	// das Umdrehen beim Erst-Laden ist deshalb allein Sache des PG-Zweigs.
-	if msgs, err := apiFetchChannelMessages(w.ProjectName, w.ChannelName, w.LastMsgID, 50); err == nil {
-		for _, m := range msgs {
-			// Voller Inhalt inkl. Zeilenumbrüche — Wrapping-Label rendert das sauber.
-			newMsgs = append(newMsgs, []string{pgZeitKurz(m.CreatedAt), m.Sender, m.Content})
-			if m.Id > maxID {
-				maxID = m.Id
-			}
-		}
-	} else {
-		// Rueckfallebene: direkt an PostgreSQL, wie vor der Umstellung.
-		var query string
-		var args []interface{}
-		if firstLoad {
-			query = "SELECT m.id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = $1 AND c.name = $2 ORDER BY m.id DESC LIMIT 50"
-			args = []interface{}{w.ProjectName, w.ChannelName}
-		} else {
-			query = "SELECT m.id, m.sender, m.content, to_char(m.created_at, 'DD.MM. HH24:MI:SS') FROM specialist_channel_messages m JOIN specialist_channels c ON c.id = m.channel_id WHERE c.project = $1 AND c.name = $2 AND m.id > $3 ORDER BY m.id LIMIT 50"
-			args = []interface{}{w.ProjectName, w.ChannelName, w.LastMsgID}
-		}
-
-		rows, dbErr := dbQuery(query, args...)
-		if dbErr != nil {
-			return
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var id int64
-			var sender, content, timeStr string
-			if scanErr := rows.Scan(&id, &sender, &content, &timeStr); scanErr == nil {
-				newMsgs = append(newMsgs, []string{timeStr, sender, content})
-				if id > maxID {
-					maxID = id
-				}
-			}
-		}
-
-		// Nur dieser Weg liefert beim Erst-Laden absteigend.
-		if firstLoad {
-			for i, j := 0, len(newMsgs)-1; i < j; i, j = i+1, j-1 {
-				newMsgs[i], newMsgs[j] = newMsgs[j], newMsgs[i]
-			}
+	msgs, err := apiFetchChannelMessages(w.ProjectName, w.ChannelName, w.LastMsgID, 50)
+	fyne.Do(func() { zeigeAPIStatus(w.MessageStatus, err) })
+	if err != nil {
+		return
+	}
+	for _, m := range msgs {
+		newMsgs = append(newMsgs, []string{pgZeitKurz(m.CreatedAt), m.Sender, m.Content})
+		if m.Id > maxID {
+			maxID = m.Id
 		}
 	}
 
@@ -2608,55 +2425,46 @@ func (w *ChatWindow) ReloadAgents() {
 	}
 	defer w.loadingAgs.Store(false)
 
-	// CH-2 (15.08.2026): TEILNEHMER DIESES CHANNELS, nicht Agenten des Projekts.
-	// Vorher stand hier in JEDEM Channel dieselbe Liste — beide Zweige (API wie DB-Rueckfall)
-	// fragten nur nach ProjectName, der Channel kam gar nicht vor. Im Screenshot vom 15.08.
-	// standen neben #hint-probe neun Projekt-Agenten, von denen genau einer je dort war.
-	// Zweite Spalte sagt, WIE jemand drinhaengt: ein Nur-Poster ist nicht Mitglied und bekommt
-	// keine Hinweise auf neue Nachrichten — ihn hier anzuschreiben erreicht ihn nicht.
-	var newRows [][]string
-	if members, err := apiFetchChannelMembers(w.ProjectName, w.ChannelName); err == nil {
-		for _, m := range members {
-			rolle := "nur gepostet"
-			if m.Mitglied {
-				rolle = "Mitglied"
-			}
-			if m.Aktiv {
-				rolle += " · aktiv"
-			}
-			newRows = append(newRows, []string{m.Agent, rolle})
+	members, err := apiFetchChannelMembers(w.ProjectName, w.ChannelName)
+	var rows [][]string
+	for _, m := range members {
+		rolle := "nur gepostet"
+		if m.Mitglied {
+			rolle = "Mitglied"
 		}
-		fyne.Do(func() {
-			w.AgentRows = newRows
-			w.AgentTable.Refresh()
-		})
-		return
-	}
-
-	// RUECKFALL: Endpunkt nicht erreichbar (alte API) -> Projekt-Sessions wie bisher.
-	// Die Ueberschrift weist das aus, damit der Rueckfall nicht wie das Ergebnis aussieht.
-	if sessions, err := apiFetchSessions(w.ProjectName); err == nil {
-		for _, s := range sessions {
-			newRows = append(newRows, []string{s.Id, s.Model})
+		if m.Aktiv {
+			rolle += " · aktiv"
 		}
-	} else {
-		rows, dbErr := dbQuery("SELECT id, COALESCE(model, '') FROM agent_sessions WHERE project = $1 AND status = 'active' ORDER BY id", w.ProjectName)
-		if dbErr != nil {
-			return
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var id, model string
-			if scanErr := rows.Scan(&id, &model); scanErr == nil {
-				newRows = append(newRows, []string{id, model})
-			}
-		}
+		rows = append(rows, []string{m.Agent, rolle})
 	}
 	fyne.Do(func() {
-		w.AgentRows = newRows
+		zeigeAPIStatus(w.AgentStatus, err)
+		w.AgentRows = rows
 		w.AgentTable.Refresh()
 	})
+}
+
+// zeigeAPIStatus laeuft auf dem UI-Faden. Ein Fehler ersetzt keine Datenzeile
+// und kann daher nie versehentlich als Agent/Datei/Tool-Call ausgewaehlt werden.
+func zeigeAPIStatus(label *widget.Label, err error) {
+	if label == nil {
+		return
+	}
+	if err != nil {
+		label.SetText("API nicht erreichbar: " + err.Error())
+	} else {
+		label.SetText("")
+	}
+}
+
+// trayBeenden beendet den Prozess nach dem Systray-Stop ohne GLFW anzufassen.
+// RunWithExternalLoop ruft dies auch bei SIGTERM auf. Ein jemals gezeigtes
+// Fenster beweist keinen noch lebenden GLFW-Kontext; App.Quit schliesst auch
+// das unsichtbare Ankerfenster und kann dabei NotInitialized ausloesen.
+// Es gibt keine Tray-Schreibwarteschlange: Kernel/OS geben Fenster, Sockets
+// und den Single-Instance-Lock beim Prozessende frei.
+func trayBeenden() {
+	os.Exit(0)
 }
 
 //go:embed icon.png

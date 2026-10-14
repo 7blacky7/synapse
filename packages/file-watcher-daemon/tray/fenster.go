@@ -16,7 +16,7 @@ package main
 // FIX: ein Ankerfenster, das nie gezeigt wird. Ohne Show() bekommt es keinen
 // Viewport, die Loop ueberspringt es, es bleibt aber in der Fensterliste — die
 // Liste wird also nie leer. Beendet wird der Tray nur noch ueber "Beenden"
-// (quitApp -> systray.Quit -> myApp.Quit).
+// (quitApp -> systray.Quit -> trayBeenden).
 
 import (
 	"sync"
@@ -30,13 +30,8 @@ import (
 // ankerFenster haelt die Fyne-Loop am Leben (siehe oben). Nie zeigen, nie schliessen.
 var ankerFenster fyne.Window
 
-// fyneTreiberInitialisiert wird erst nach dem ersten gezeigten User-Fenster gesetzt.
-// Vorher kann app.Quit im GLFW-Treiber wegen fehlendem Kontext paniken.
-var fyneTreiberInitialisiert atomic.Bool
-
 func zeigeFyneFenster(w fyne.Window) {
 	w.Show()
-	fyneTreiberInitialisiert.Store(true)
 }
 
 // legeAnkerFensterAn erzeugt das unsichtbare Ankerfenster.
