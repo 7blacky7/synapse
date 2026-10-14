@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {ShellAbschlussWiederholung,shellProzessEnde} from './shell-job-completion.js';
 import {
-  getPool,
+  listeEigeneLaufendeShellJobs,
   verbindeListenClient,
   maskiereShellText,
   claimPendingShellJob,
@@ -58,7 +58,7 @@ export async function gleicheShellAbschluesseAb():Promise<void>{
  if(recoveryLaeuft)return;recoveryLaeuft=true;
  try{
   await abschluesse.flush();
-  const rows=(await getPool().query<ShellJobRow>("SELECT * FROM shell_jobs WHERE status='running' AND claimed_by=$1",[DAEMON_ID])).rows;
+  const rows=await listeEigeneLaufendeShellJobs(DAEMON_ID);
   for(const job of rows){
    if(aktiveBearbeitungen.has(job.id)||abschluesse.has(job.id)||!job.stream_id||!/^[-a-f0-9]+$/i.test(job.stream_id))continue;
    let meta:{project?:string;status?:string;pid?:number;exit_code?:number};
@@ -112,7 +112,6 @@ export interface ShellJobWorkerHandle {
 export async function startShellJobWorker(
   getActiveProjects: () => string[]
 ): Promise<ShellJobWorkerHandle> {
-  const pool = getPool();
   // pg hat Overloads fuer connect() — 'any' vermeidet den Callback-vs-Promise Overload-Konflikt
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let listenClient: any = null;

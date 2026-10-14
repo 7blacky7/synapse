@@ -946,6 +946,13 @@ export async function getShellJobs(opts: {
   return opts.anzeige === 'kompakt' ? jobs.map(shellHistoryAnzeige) : jobs;
 }
 
+/** Laufende Claims genau dieser Daemon-Instanz; Recovery beurteilt den lokalen Prozesszustand. */
+export async function listeEigeneLaufendeShellJobs(claimedBy: string): Promise<ShellJobRow[]> {
+  return (await getPool().query<ShellJobRow>(
+    "SELECT * FROM shell_jobs WHERE status='running' AND claimed_by=$1", [claimedBy],
+  )).rows;
+}
+
 export interface ShellJobDetail extends ShellJobRow {
   output_line_count: number;
 }
