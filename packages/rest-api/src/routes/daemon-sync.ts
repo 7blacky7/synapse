@@ -247,7 +247,7 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
         return { success: true, aktion: 'claim', job: await claimPendingProjectInitJob(d.daemonId, d.host) };
       case 'expire': {
         const s = grenze(body.max_alter_s, 30, 30, 3600);
-        return { success: true, aktion: 'expire', anzahl: await expirePendingProjectInitJobs(s) };
+        return { success: true, aktion: 'expire', anzahl: await expirePendingProjectInitJobs(s, d.host) };
       }
       case 'abschluss': {
         if (!istText(body.id, 64)) return reply.code(400).send({ success: false, error: 'id_fehlt' });

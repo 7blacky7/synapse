@@ -448,6 +448,16 @@ async function erhebeLage(
         });
       }
     }
+    // Katalogänderungen vor dem Einmalcode erkennen. Danach sollte ein DB-Transaktionsabbruch praktisch nur noch
+    // durch eine echte Race Condition entstehen (z. B. parallele Schema-/Datenänderung nach dieser Vorschau).
+    const fkStart = eintraege.map((e) => e.tabelle).filter((t) => t !== PROJEKT_DB_EINTRAG.tabelle);
+    const fkErfasst = new Set([...fkStart, ...kinder.map((k) => k.tabelle)]);
+    try {
+      await pruefeFremdschluessel(db, fkStart, fkErfasst);
+    } catch (err) {
+      if (!(err instanceof ProjektLoeschenFehler) || err.code !== 'unbekannte_kaskade') throw err;
+      blockiert.push({ grund: 'unbekannte_kaskade', detail: (err as Error).message });
+    }
   }
 
   const qdrant: Lage['qdrant'] = [];
@@ -584,7 +594,9 @@ export async function projektLoeschenVorschau(o: LoeschVorschauEingabe): Promise
       `Der USER liest den Loesch-Code fuer Rechner "${lage.hostname}" aus seiner Authenticator-App ` +
       `(Eintrag "Synapse-Loeschen:${lage.hostname}") und gibt ihn weiter. Dann: project(action:"loeschen", ` +
       `loesch_auftrag_id:"${a.id}", loesch_code:"<6 Ziffern>"). Der Code gilt ca. 3 Minuten und nur einmal; ` +
-      `der Auftrag bis ${new Date(a.gueltig_bis).toISOString()}. Agenten koennen den Code nicht abrufen.`,
+      `der Auftrag bis ${new Date(a.gueltig_bis).toISOString()}. Nach erfolgreicher Code-Pruefung ist er auch dann verbraucht, ` +
+      `wenn eine spaetere Transaktion wegen einer zwischenzeitlichen Aenderung zurueckrollt; dann neue Vorschau und neuen App-Code verwenden. ` +
+      `Agenten koennen den Code nicht abrufen.`,
   };
 }
 
@@ -710,7 +722,7 @@ export async function projektLoeschenAusfuehren(o: LoeschAusfuehrenEingabe): Pro
     pg = await loescheInTransaktion(db, a, lage);
   } catch (e) {
     const code = e instanceof ProjektLoeschenFehler ? e.code : 'db_fehler';
-    await setzeAuftrag(db, id, 'fehlgeschlagen', { grund: code, meldung: (e as Error).message.slice(0, 500), rollback: true }).catch(() => undefined);
+    await setzeAuftrag(db, id, 'fehlgeschlagen', { grund: code, meldung: (e as Error).message.slice(0, 500), rollback: true, code_verbraucht: true, hinweis: 'Neue Vorschau und neuen App-Code verwenden.' }).catch(() => undefined);
     throw e;
   }
 
@@ -723,10 +735,24 @@ export async function projektLoeschenAusfuehren(o: LoeschAusfuehrenEingabe): Pro
   let projektDb: Record<string, unknown> = { vorhanden: lage.projekt_db.vorhanden, geloescht: false, gruende: lage.projekt_db.gruende };
   if (lage.projekt_db.wird_geloescht && lage.projekt_db.database && lage.projekt_db.rolle) {
     if (!o.psql) {
-      projektDb = { ...projektDb, hinweis: `Registrierung entfernt; DB "${lage.projekt_db.database}" bitte auf der API entfernen lassen (kein psql-Zugang in diesem Prozess).` };
+      projektDb = { ...projektDb, hinweis: `Registrierung und DB "${lage.projekt_db.database}" bleiben erhalten; psql-Rueckbau auf der API ausfuehren.` };
     } else {
       try {
         await o.psql(bauRueckbauSql(lage.projekt_db.database, lage.projekt_db.rolle), 'postgres');
+        const cDb = await db.connect();
+        try {
+          await cDb.query('BEGIN');
+          const r = await cDb.query(
+            'DELETE FROM projekt_datenbanken WHERE project = $1 AND db = $2 AND db_user = $3',
+            [a.project, lage.projekt_db.database, lage.projekt_db.rolle]);
+          if (r.rowCount !== 1) fail('registrierung_geaendert', 'Projekt-DB wurde zurueckgebaut, aber die Registrierung hat sich seit der Vorschau geaendert und blieb erhalten.', 409);
+          await cDb.query('COMMIT');
+        } catch (err) {
+          await cDb.query('ROLLBACK').catch(() => undefined);
+          throw err;
+        } finally {
+          cDb.release();
+        }
         projektDb = { ...projektDb, geloescht: true, database: lage.projekt_db.database };
       } catch (err) {
         projektDb = { ...projektDb, database: lage.projekt_db.database, fehler: (err as Error).message.slice(0, 300) };
@@ -754,7 +780,7 @@ export async function projektLoeschenAusfuehren(o: LoeschAusfuehrenEingabe): Pro
 async function loescheInTransaktion(db: Pool, a: AuftragZeile, lage: Lage): Promise<Record<string, unknown>> {
   const { project, hostname } = a;
   const eintraege: Eintrag[] = a.umfang === 'rechner' ? [...RECHNER] : [...ZENTRAL];
-  if (a.umfang !== 'rechner' && lage.projekt_db.wird_geloescht) eintraege.push(PROJEKT_DB_EINTRAG);
+  // projekt_datenbanken bleibt bis nach erfolgreichem psql-Rueckbau erhalten (siehe Schritt 4).
   const kinder: Kind[] = a.umfang === 'rechner' ? [...KASKADE_RECHNER] : [...KASKADE_ZENTRAL];
   const vorschau = new Map(lage.tabellen.map((z) => [z.tabelle, z]));
   const vorschauKind = new Map(lage.kaskade.map((z) => [z.tabelle, z]));

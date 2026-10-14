@@ -16,7 +16,7 @@ export type {AnsichtBereich,AssetAnsichtReferenz,AssetAnsichtQuelle,AssetAnsicht
 export {AssetAnsichtFehler,FfmpegAnsichtRenderer,kodiereAnsichtPng,pruefeAnsichtPng} from './services/asset-ansicht-renderer.js';
 export type {AssetAnsichtRenderer,AnsichtRenderGrenzen,AnsichtRaster} from './services/asset-ansicht-renderer.js';
 // P13-T33/A15: Ansicht-Links (Capability-Tokens mit Timer), Erzeugung nur nach Auth (A16).
-export {AnsichtLinkDienst,AnsichtLinkFehler,standardAnsichtLinkDienst,gemeinsamerAnsichtDienst,ladeAnsichtLinkKonfiguration,ansichtClientIp,istOeffentlicherAnsichtPfad,ANSICHT_LINK_PFAD,ANSICHT_TOKEN_MUSTER} from './services/asset-ansicht-link.js';
+export {AnsichtLinkDienst,AnsichtLinkFehler,standardAnsichtLinkDienst,gemeinsamerAnsichtDienst,ladeAnsichtLinkKonfiguration,ansichtClientIp,istOeffentlicherAnsichtPfad,bereinigeAnsichtLinkRetention,ANSICHT_LINK_PFAD,ANSICHT_TOKEN_MUSTER} from './services/asset-ansicht-link.js';
 export type {AnsichtLinkKonfiguration,AnsichtLinkArt,AnsichtLinkQuellenDienst,AnsichtLinkEingang,AnsichtLinkErzeugung,AnsichtAbrufMeta,AnsichtAbruf,AnsichtLinkStatus,AnsichtLinkEintrag,AnsichtLinkOptionen} from './services/asset-ansicht-link.js';
 export {ASSET_ANSICHT_LINK_SCHEMA_SQL} from './db/asset-ansicht-link-schema.js';
 // P18-T26/RV16: Reverse-Retentionhalter (A14) und Bindungsprüfung beim Linkabruf (A15).

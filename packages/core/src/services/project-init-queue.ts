@@ -154,7 +154,7 @@ export async function completeProjectInitJob(
 }
 
 /** Setzt Jobs aelter als maxAgeSec auf timeout (Daemon down / nicht erreichbar). */
-export async function expirePendingProjectInitJobs(maxAgeSec: number = 30): Promise<number> {
+export async function expirePendingProjectInitJobs(maxAgeSec: number = 30, hostname?: string): Promise<number> {
   const pool = getPool();
   const res = await pool.query<{ id: string }>(
     `UPDATE project_init_jobs
@@ -166,8 +166,9 @@ export async function expirePendingProjectInitJobs(maxAgeSec: number = 30): Prom
      WHERE status = 'pending'
        AND mode = 'create'
        AND created_at < NOW() - ($1 || ' seconds')::interval
+       AND ($2::text IS NULL OR hostname = $2)
      RETURNING id`,
-    [String(maxAgeSec)],
+    [String(maxAgeSec), hostname ?? null],
   );
   for (const row of res.rows) {
     const channel = doneChannelForJob(row.id);

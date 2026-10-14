@@ -194,8 +194,8 @@ try{
   assert.equal((await d({aktion:'projektpfad',project:FREMD})).json().pfad,null);
   assert.equal((await d({aktion:'sitzung_neu',agent:A})).json().error,'project_fehlt');
   const f=await d({aktion:'general_channel',project:FREMD,agent:A});assert.equal(f.statusCode,409);assert.equal(f.json().error,'projekt_nicht_auf_diesem_host');
-  // istAgentName prueft nur Laenge/Steuerzeichen (Agentname geht nur parametrisiert in SQL, nie ins Dateisystem der API).
-  for(const a of ['','a\u0001b','x'.repeat(129)])assert.equal((await d({aktion:'wrapper_pid',project:P,agent:a})).json().error,'agent_ungueltig',JSON.stringify(a));
+  // Agentnamen duerfen keine Steuerzeichen, Pfadtrenner oder Traversalsegmente enthalten.
+  for(const a of ['','a\u0001b','x'.repeat(129),'../agent','foo/bar','foo\\bar','..'])assert.equal((await d({aktion:'wrapper_pid',project:P,agent:a})).json().error,'agent_ungueltig',JSON.stringify(a));
   await wrapperZeile(A,424242);
   assert.equal((await d({aktion:'wrapper_pid',project:P,agent:A})).json().pid,424242);
   assert.equal((await d({aktion:'wrapper_gestoppt',project:P,agent:A,pid:1})).statusCode,400);
@@ -278,6 +278,10 @@ try{
   assert.equal((await q('SELECT count(*)::int n FROM '+T('code_files')+' WHERE id=$1',[z.id])).rows[0].n,1,'Zeile bleibt');
   await dsa.apiWatcherDatenweg.geloeschtAbschliessen(P,String(lebend.id),'sync/a.txt');// wirft nicht
   assert.equal((await q('SELECT count(*)::int n FROM '+T('code_files')+' WHERE id=$1',[lebend.id])).rows[0].n,1,'lebende Zeile unberuehrt');
+  await q('UPDATE '+T('code_files')+' SET deleted_at=NOW() WHERE id=$1',[lebend.id]);
+  await q('UPDATE '+T('code_files')+' SET deleted_at=NULL WHERE id=$1',[lebend.id]);
+  assert.equal(await dsa.apiWatcherDatenweg.geloeschtAbschliessen(P,String(lebend.id),'sync/a.txt'),false,'Wiederherstellung zwischen Scan und Abschluss');
+  assert.equal((await q('SELECT count(*)::int n FROM '+T('code_files')+' WHERE id=$1',[lebend.id])).rows[0].n,1,'wiederhergestellte Zeile bleibt');
   assert.equal((await sync({aktion:'geloescht_abschliessen',project:P,id:String(z.id),file_path:'sync/c.txt'})).json().success,true);
   assert.equal((await q('SELECT count(*)::int n FROM '+T('code_files')+' WHERE id=$1',[z.id])).rows[0].n,0);
  });
@@ -317,9 +321,10 @@ try{
   assert.equal((await pi({aktion:'abschluss',id:j1,abschluss:{status:'done',resolved_path:path.join(ws,N1)}})).json().success,true);
   assert.equal((await q('SELECT status FROM '+T('project_init_jobs')+' WHERE id=$1',[j1])).rows[0].status,'done');
   assert.equal((await pi({aktion:'registrieren',id:j1,path:path.join(ws,N1)})).statusCode,409,'abgeschlossener Job');
-  await q('UPDATE '+T('project_init_jobs')+" SET created_at=NOW()-interval '5 minutes' WHERE id=$1",[j2]);
-  assert.ok((await pi({aktion:'expire',max_alter_s:1})).json().anzahl>=1);
-  assert.notEqual((await q('SELECT status FROM '+T('project_init_jobs')+' WHERE id=$1',[j2])).rows[0].status,'pending');
+  const expireOwn=await ini('t27w2-expire-'+process.pid,HOST,'5 minutes');
+  assert.equal((await pi({aktion:'expire',max_alter_s:1})).json().anzahl,1,'nur ein abgelaufener Job dieses Hosts');
+  assert.equal((await q('SELECT status FROM '+T('project_init_jobs')+' WHERE id=$1',[expireOwn])).rows[0].status,'timeout');
+  assert.equal((await q('SELECT status FROM '+T('project_init_jobs')+' WHERE id=$1',[j2])).rows[0].status,'pending','abgelaufener Job eines anderen Hosts bleibt pending');
   assert.equal((await pi({aktion:'x'})).statusCode,400);
   await q('DELETE FROM '+T('project_init_jobs'));
   await q('DELETE FROM '+T('projects')+' WHERE name=$1',[N1]);await q('DELETE FROM '+T('project_setup_status')+' WHERE project=$1',[N1]);

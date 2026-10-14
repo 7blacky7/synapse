@@ -31,6 +31,27 @@ runner = lade("reverse_runner_disc_test", "runner.py")
 SYNC = disc.SYNC
 
 
+
+class LibmirageFileReferenceSecurity(unittest.TestCase):
+    def test_cue_rejects_paths_and_missing_media_before_libmirage_load(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cue = root / "test.cue"
+            image = root / "test.bin"
+            image.write_bytes(b"fixture")
+            namen = {str(cue): "test.cue", str(image): "test.bin"}
+            for reference, code in (("../test.bin", "beschaedigt"),
+                                    ("/tmp/test.bin", "beschaedigt"),
+                                    ("missing.bin", "nicht_gefunden")):
+                with self.subTest(reference=reference):
+                    cue.write_text(f'FILE "{reference}" BINARY\n')
+                    with patch.object(disc, "_mirage") as mirage:
+                        with self.assertRaises(disc.DiscFehler) as ctx:
+                            disc.libmirage_spurtabelle("cue", cue, namen)
+                        self.assertEqual(ctx.exception.code, code)
+                        mirage.assert_not_called()
+
+
 def bcd(n):
     return ((n // 10) << 4) | (n % 10)
 

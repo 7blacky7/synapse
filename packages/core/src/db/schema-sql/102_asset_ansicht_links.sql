@@ -38,10 +38,16 @@ CREATE TABLE IF NOT EXISTS ansicht_token_audit (
   akteur TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ansicht_token_audit_token ON ansicht_token_audit(token_id,zeit);
+CREATE INDEX IF NOT EXISTS idx_ansicht_token_audit_zeit ON ansicht_token_audit(zeit);
 -- Löschung, Purge oder Projektwechsel eines Projekt-Assets widerruft alle zugehörigen Links.
 CREATE OR REPLACE FUNCTION ansicht_tokens_asset_widerruf() RETURNS trigger
 LANGUAGE plpgsql AS $ansicht_widerruf$
 BEGIN
+  IF TG_OP='DELETE' THEN
+    UPDATE ansicht_tokens SET revoked_at=clock_timestamp(),widerruf_grund='asset_geloescht'
+     WHERE bereich='projekt' AND ziel_ref=OLD.project AND id=OLD.id::text AND revoked_at IS NULL;
+    RETURN OLD;
+  END IF;
   IF (NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL)
      OR (NEW.storage_status IN ('purging','purged') AND NEW.storage_status IS DISTINCT FROM OLD.storage_status)
      OR NEW.project IS DISTINCT FROM OLD.project THEN
@@ -53,5 +59,5 @@ BEGIN
 END
 $ansicht_widerruf$;
 CREATE OR REPLACE TRIGGER trg_ansicht_tokens_asset_widerruf
-AFTER UPDATE OF deleted_at,storage_status,project ON asset_files
+AFTER UPDATE OF deleted_at,storage_status,project OR DELETE ON asset_files
 FOR EACH ROW EXECUTE FUNCTION ansicht_tokens_asset_widerruf();

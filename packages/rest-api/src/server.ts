@@ -339,6 +339,22 @@ export async function startServer(): Promise<void> {
     setInterval(starten,intervall).unref();
   }
 
+  // P9-T32/P13-T33: abgelaufene Ansicht-Tokens, Audits und Retentionhalter begrenzt bereinigen.
+  if (process.env.SYNAPSE_ANSICHT_LINK_RETENTION_DISABLED !== '1') {
+    const {bereinigeAnsichtLinkRetention,registriereWorker,workerPausiert,meldeWorkerArbeit} = await import('@synapse/core');
+    const roh=process.env.SYNAPSE_ANSICHT_LINK_RETENTION_INTERVAL_MS;
+    const intervall=roh===undefined?6*60*60*1000:Number(roh);
+    if(!Number.isSafeInteger(intervall)||intervall<1000||intervall>2147483647)throw new Error('Ungueltiges Ansicht-Link-Retention-Intervall');
+    const lauf=async()=>{
+      const r=await bereinigeAnsichtLinkRetention();
+      if(r.tokens||r.audit||r.assetRetention||r.reverseRetention)meldeWorkerArbeit('ansicht-link-retention');
+      return r;
+    };
+    registriereWorker({name:'ansicht-link-retention',beschreibung:'P9-T32 Ansicht-Link-Retention',durchlauf:lauf});
+    const starten=():void=>{if(workerPausiert('ansicht-link-retention'))return;void lauf().catch((err:unknown)=>console.error('[Synapse API] Ansicht-Link-Retention fehlgeschlagen:',err));};
+    starten();setInterval(starten,intervall).unref();
+  }
+
   // P10-T73: bestaetigt demaskierte Shell-Jobs nach Frist wieder maskieren. Arbeitet NUR die kleine
   // Liste shell_demaskierungen ab (kein Scan ueber shell_jobs) und loescht verworfene Rueckfragen.
   //   SYNAPSE_SHELL_NACHMASKIEREN_DISABLED=1   — Worker ausschalten

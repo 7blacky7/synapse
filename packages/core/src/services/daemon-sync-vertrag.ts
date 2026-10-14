@@ -89,8 +89,7 @@ export async function schliesseGeloeschteZeileFuerDaemon(project: string, id: st
     [id, project, filePath],
   );
   if (!rows[0]) return false;
-  await pgWatcherDatenweg.geloeschtAbschliessen(project, id, filePath);
-  return true;
+  return pgWatcherDatenweg.geloeschtAbschliessen(project, id, filePath);
 }
 
 export interface WatcherEreignisEintrag {

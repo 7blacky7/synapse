@@ -57,12 +57,60 @@ const erzeuge=(d,extra={})=>d.erzeugen({bereich:'projekt',ziel_ref:projekt,id:'1
 
 before(async()=>{
   admin=await connection();await admin.query('CREATE SCHEMA '+schema);await admin.query('SET search_path TO '+schema+',public');
-  for(const f of ['95_asset_intel.sql','96_asset_transport.sql','102_asset_ansicht_links.sql'])
+  await admin.query('CREATE TABLE reverse_eintraege(id TEXT PRIMARY KEY)');
+  await admin.query('CREATE TABLE reverse_bindungen(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),project TEXT NOT NULL,eintrag_id TEXT NOT NULL,geloest_at TIMESTAMPTZ)');
+  for(const f of ['95_asset_intel.sql','96_asset_transport.sql','102_asset_ansicht_links.sql','104_reverse_ansicht.sql'])
     await admin.query(await fs.readFile(new URL('../../core/src/db/schema-sql/'+f,import.meta.url),'utf8'));
   db={connect:connection,async query(s,v){const c=await connection();try{return await c.query(s,v);}finally{await c.release();}}};
   cfg=ladeAssetKonfiguration({SYNAPSE_ASSET_PREVIEW_OPEN_SECONDS:'300',SYNAPSE_ASSET_PREVIEW_MAX_OPEN_SECONDS:'3600'});
 });
 after(async()=>{if(admin){await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.release();}});
+
+test('IPv6-Rotation innerhalb /64 teilt dasselbe Rate-Limit',async()=>{
+  const d=neuerDienst({link:{...link,rateProMinute:1}});
+  const a=await d.abrufen('ungueltig',{clientIp:'2001:db8:abcd:12::1'});
+  const b=await d.abrufen('ungueltig',{clientIp:'2001:db8:abcd:12::2'});
+  assert.equal(a.status,404);
+  assert.equal(b.status,429);
+  const mapped=neuerDienst({link:{...link,rateProMinute:1}});
+  assert.equal((await mapped.abrufen('x',{clientIp:'::ffff:192.0.2.1'})).status,404);
+  assert.equal((await mapped.abrufen('x',{clientIp:'192.0.2.1'})).status,429);
+});
+
+test('Retention-Cleanup entfernt abgelaufene Tokens, alte Audits und freigegebene Asset-/Reverse-Halter',async()=>{
+  const {bereinigeAnsichtLinkRetention}=await import('@synapse/core');
+  const asset=(await db.query("INSERT INTO asset_files(project,file_path,file_name,status) VALUES($1,'cleanup.png','cleanup.png','ok') RETURNING id",[projekt])).rows[0].id;
+  const token=randomUUID(),digest=createHash('sha256').update('expired-a15-token').digest('hex');
+  await db.query("INSERT INTO ansicht_tokens(token_id,token_digest,bereich,ziel_ref,id,revision,sha256,offen_sekunden,expires_at,retention_ref,created_at) VALUES($1,$2,'projekt',$3,$4,'1',$5,60,NOW()-interval '1 day','asset-expired',NOW()-interval '100 days')",[token,digest,projekt,String(asset),sha]);
+  await db.query("INSERT INTO asset_retention_referenzen(ref_key,asset_id,revision,art,expires_at) VALUES('asset-expired',$1,1,'ansicht',NOW()+interval '1 day'),('asset-released',$1,1,'ansicht',NOW()+interval '1 day')",[asset]);
+  await db.query("UPDATE asset_retention_referenzen SET released_at=NOW() WHERE ref_key='asset-released'");
+  await db.query("INSERT INTO ansicht_token_audit(token_id,zeit,ereignis,ergebnis,akteur) VALUES($1,NOW()-interval '100 days','abruf','ok','p9-t32')",[token]);
+  await db.query("INSERT INTO reverse_eintraege(id) VALUES('reverse-cleanup')");
+  await db.query("INSERT INTO reverse_ansicht_retention(ref_key,eintrag_id,sha256,expires_at) VALUES('reverse-expired','reverse-cleanup',$1,NOW()+interval '1 day')",[sha]);
+  await db.query("INSERT INTO ansicht_tokens(token_id,token_digest,bereich,ziel_ref,id,revision,sha256,offen_sekunden,expires_at,retention_ref) VALUES($1,$2,'reverse','reverse-cleanup','r1','1',$3,60,NOW()-interval '1 day','reverse-expired')",[randomUUID(),createHash('sha256').update('expired-reverse-a15-token').digest('hex'),sha]);
+  const r=await bereinigeAnsichtLinkRetention(db);
+  assert.equal(r.tokens,2);assert.equal(r.audit,1);assert.equal(r.assetRetention,2);assert.equal(r.reverseRetention,1);
+  assert.equal((await db.query('SELECT count(*) n FROM ansicht_tokens WHERE token_id=$1',[token])).rows[0].n,'0');
+  assert.equal((await db.query("SELECT count(*) n FROM ansicht_token_audit WHERE akteur='p9-t32'")).rows[0].n,'0');
+  assert.equal((await db.query("SELECT count(*) n FROM asset_retention_referenzen WHERE ref_key='asset-expired'")).rows[0].n,'0');
+  assert.equal((await db.query("SELECT count(*) n FROM reverse_ansicht_retention WHERE ref_key='reverse-expired'")).rows[0].n,'0');
+});
+
+test('DELETE asset_files widerruft Capability-Link mit 410; released Reverse-Retention blockiert DELETE nicht',async()=>{
+  const d=neuerDienst();
+  const asset=(await db.query("INSERT INTO asset_files(project,file_path,file_name,status) VALUES($1,'delete.png','delete.png','ok') RETURNING id",[projekt])).rows[0].id;
+  const r=await erzeuge(d,{id:String(asset)}),token=tokenAus(r.url);
+  await db.query('DELETE FROM asset_files WHERE id=$1',[asset]);
+  assert.ok((await db.query('SELECT revoked_at FROM ansicht_tokens WHERE token_id=$1',[r.token_id])).rows[0].revoked_at);
+  assert.equal((await d.abrufen(token,{clientIp:'198.51.100.8'})).status,410);
+  await db.query("INSERT INTO reverse_eintraege(id) VALUES('reverse-released')");
+  await db.query("INSERT INTO reverse_ansicht_retention(ref_key,eintrag_id,sha256,expires_at,released_at) VALUES('reverse-released-ref','reverse-released',$1,NOW()+interval '1 day',NOW())",[sha]);
+  await db.query("DELETE FROM reverse_eintraege WHERE id='reverse-released'");
+  assert.equal((await db.query("SELECT count(*) n FROM reverse_ansicht_retention WHERE ref_key='reverse-released-ref'")).rows[0].n,'0');
+  await db.query("INSERT INTO reverse_eintraege(id) VALUES('reverse-active')");
+  await db.query("INSERT INTO reverse_ansicht_retention(ref_key,eintrag_id,sha256,expires_at) VALUES('reverse-active-ref','reverse-active',$1,NOW()+interval '1 day')",[sha]);
+  await assert.rejects(db.query("DELETE FROM reverse_eintraege WHERE id='reverse-active'"),e=>e.code==='23503');
+});
 
 test('Konfiguration: externe Basis validiert, kein localhost-Rückfall im Produktionsmodus',()=>{
   assert.equal(ladeAnsichtLinkKonfiguration({NODE_ENV:'production'},cfg).basisUrl,null);
@@ -70,10 +118,30 @@ test('Konfiguration: externe Basis validiert, kein localhost-Rückfall im Produk
   assert.equal(ladeAnsichtLinkKonfiguration({NODE_ENV:'production',SYNAPSE_PUBLIC_URL:'http://synapse.example'},cfg).basisUrl,null);
   assert.equal(ladeAnsichtLinkKonfiguration({NODE_ENV:'production',SYNAPSE_PUBLIC_URL:'https://u:p@synapse.example'},cfg).basisUrl,null);
   assert.equal(ladeAnsichtLinkKonfiguration({NODE_ENV:'production',SYNAPSE_ASSET_ANSICHT_BASE_URL:'https://synapse.example/'},cfg).basisUrl,'https://synapse.example');
+  const proxyHosts= ladeAnsichtLinkKonfiguration({SYNAPSE_TRUSTED_PROXY_HOSTS:'cloudflared, cloudflared.internal'},cfg);
+  assert.deepEqual(proxyHosts.vertrauenswuerdigeProxyNamen,['cloudflared','cloudflared.internal']);
+  assert.throws(()=>ladeAnsichtLinkKonfiguration({SYNAPSE_TRUSTED_PROXY_HOSTS:'invalid/name'},cfg));
   assert.throws(()=>ladeAnsichtLinkKonfiguration({SYNAPSE_TRUSTED_PROXY_IPS:'kein-ip'},cfg));
   assert.throws(()=>ladeAnsichtLinkKonfiguration({SYNAPSE_ASSET_ANSICHT_RATE_PRO_MINUTE:'0'},cfg));
 });
 
+test('Trusted Proxy DNS: Hostnamen werden aufgeloest und periodisch erneuert',async()=>{
+  const gesehen=[];let aufloesungen=0;
+  const proxyLink={...link,vertrauenswuerdigeProxies:[],vertrauenswuerdigeProxyNamen:['cloudflared']};
+  const dienst={link:proxyLink,abrufen:async(_token,meta)=>{gesehen.push(meta.clientIp);return {status:404,code:'nicht_gefunden'};}};
+  const app=Fastify({logger:false});
+  await app.register(createAnsichtLinkRoutes({dienst,link:proxyLink,proxyNamenAufloesen:async()=>[++aufloesungen===1?'127.0.0.1':'10.0.0.8'],proxyAktualisierungMs:10}));
+  await app.ready();
+  const abruf=()=>app.inject({method:'GET',url:'/api/assets/ansicht/'+('A'.repeat(43)),headers:{'cf-connecting-ip':'198.51.100.7'}});
+  try{
+    await abruf();
+    await new Promise(r=>setTimeout(r,30));
+    await abruf();
+    assert.equal(gesehen[0],'198.51.100.7');
+    assert.equal(gesehen[1],'127.0.0.1');
+    assert.ok(aufloesungen>=2);
+  }finally{await app.close();}
+});
 test('Auth-Ausnahme exakt: nur GET mit 43-Zeichen-Token',()=>{
   const t='A'.repeat(43);
   assert.equal(istOeffentlicherAnsichtPfad('GET','/api/assets/ansicht/'+t),true);

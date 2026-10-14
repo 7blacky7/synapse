@@ -121,7 +121,21 @@ export async function registerLoeschRoutes(f: FastifyInstance, o: LoeschRoutesDe
   }));
   f.post<{ Body: { code?: unknown } }>('/api/loesch-token/bestaetigen', (req, reply) => run(reply, async () => {
     const h = await eigenerHost(await identity(req));
-    return { success: true, ...(await loeschTokenBestaetigen(h, req.body?.code)) };
+    let bestaetigung: Awaited<ReturnType<typeof loeschTokenBestaetigen>> | undefined;
+    let bestaetigungsFehler: unknown;
+    const ok = await pruefeLoeschLoginMitSperre(h, async () => {
+      try {
+        bestaetigung = await loeschTokenBestaetigen(h, req.body?.code);
+        return true;
+      } catch (err) {
+        bestaetigungsFehler = err;
+        // Falscher/ungueltig formatierter TOTP-Code zaehlt als Versuch; Setup-/DB-Fehler bleiben unveraendert.
+        return false;
+      }
+    });
+    if (bestaetigungsFehler) throw bestaetigungsFehler;
+    if (!ok || !bestaetigung) throw new LoeschTokenFehler('code_ungueltig', 'Code passt nicht zum neu eingerichteten Loesch-Geheimnis.', 403);
+    return { success: true, ...bestaetigung };
   }));
 
   // ── Projekt loeschen (Tray "Projekt loeschen …", Web-UI) ──

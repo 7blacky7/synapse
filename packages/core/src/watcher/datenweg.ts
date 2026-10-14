@@ -55,7 +55,7 @@ export interface WatcherDatenweg {
   /** Aktueller Inhalt einer nicht geloeschten Zeile (null/undefined = keine Zeile oder kein Inhalt). */
   inhalt(project: string, filePath: string): Promise<string | null | undefined>;
   /** Nach dem Loeschen auf der Platte: Vektoren der Datei entfernen und die Zeile hart loeschen. */
-  geloeschtAbschliessen(project: string, id: string, filePath: string): Promise<void>;
+  geloeschtAbschliessen(project: string, id: string, filePath: string): Promise<boolean>;
 }
 
 /** Bisheriges Verhalten: dieselben Abfragen wie vorher inline in startFileWatcher. */
@@ -138,12 +138,17 @@ export const pgWatcherDatenweg: WatcherDatenweg = {
   },
 
   async geloeschtAbschliessen(project, id, filePath) {
+    const geloescht = await getPool().query(
+      'DELETE FROM code_files WHERE id::text=$1 AND project=$2 AND file_path=$3 AND deleted_at IS NOT NULL RETURNING id',
+      [id, project, filePath],
+    );
+    if (!geloescht.rowCount) return false;
     try {
       // Dynamisch wie bisher (Zyklus types/qdrant -> watcher vermeiden).
       const { COLLECTIONS } = await import('../types/index.js');
       const { deleteByFilePath } = await import('../qdrant/index.js');
       await deleteByFilePath(COLLECTIONS.projectCode(project), filePath, project);  // relativ fuer Qdrant
     } catch { /* wie bisher: Qdrant-Fehler halten die PG-Loeschung nicht auf */ }
-    await getPool().query('DELETE FROM code_files WHERE id = $1', [id]);
+    return true;
   },
 };

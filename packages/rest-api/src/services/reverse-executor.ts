@@ -60,7 +60,7 @@ export function registriereWorkJobHooks(capability:string,hooks:WorkJobHooks):()
 export interface ReverseExecutorKonfig {
  reverseRoot:string;arbeitRoot:string;image:string;digest:string;kinds:string[];parallel:number;
  leaseSeconds:number;renewMs:number;tickMs:number;resourceNeed:WorkResourceNeed;resourceDomain:string|null;
- zeitlimitS:number;maxDateien:number;maxBytes:number;tmpfsMb:number;pids:number;outputBytes:number;retryMax:number;
+ zeitlimitS:number;maxDateien:number;maxBytes:number;tmpfsMb:number;pids:number;outputBytes:number;retryMax:number;wavPregap:boolean;
  /** P18-T64: Leerlauf, nach dem der globale Reverse-Container schläft. */
  idleMs:number;
 }
@@ -92,7 +92,7 @@ export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:stri
   zeitlimitS:ganz(env,'SYNAPSE_REVERSE_ZEITLIMIT_S',3600,1,86400),maxDateien:ganz(env,'SYNAPSE_REVERSE_MAX_DATEIEN',20000,1,200000),
   maxBytes:ganz(env,'SYNAPSE_REVERSE_MAX_BYTES',2000000000,1,Number.MAX_SAFE_INTEGER),tmpfsMb:ganz(env,'SYNAPSE_REVERSE_TMPFS_MB',512,16),
   pids:ganz(env,'SYNAPSE_REVERSE_PIDS',256,16),outputBytes:ganz(env,'SYNAPSE_REVERSE_OUTPUT_BYTES',33554432,65536),
-  retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100),idleMs:ganz(env,'SYNAPSE_REVERSE_IDLE_MS',300000,10000,86400000)};
+  retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100),wavPregap:env.SYNAPSE_REVERSE_WAV_PREGAP==='1',idleMs:ganz(env,'SYNAPSE_REVERSE_IDLE_MS',300000,10000,86400000)};
 }
 /**
  * E2 (P18-T64): EIN globaler Container (instance_scope 'project'; das Projekt ist immer reverse-bibliothek), kein Netz,
@@ -385,6 +385,7 @@ export class ReverseExecutor {
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
+     optionen:{wav_pregap:this.k.wavPregap},
      grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes}}));
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);

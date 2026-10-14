@@ -139,10 +139,11 @@ export const apiWatcherDatenweg: WatcherDatenweg = {
   async geloeschtAbschliessen(project, id, filePath) {
     try {
       await sync('geloescht_abschliessen', { project, id, file_path: filePath });
+      return true;
     } catch (err) {
       // Die API loescht nur eine passende soft-geloeschte Zeile; eine inzwischen wiederhergestellte
       // oder schon geloeschte Zeile ist kein Fehler des Ticks.
-      if (err instanceof DaemonJobsApiFehler && err.code === 'zeile_passt_nicht') return;
+      if (err instanceof DaemonJobsApiFehler && err.code === 'zeile_passt_nicht') return false;
       throw err;
     }
   },

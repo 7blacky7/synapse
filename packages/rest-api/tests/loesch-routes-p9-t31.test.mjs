@@ -223,4 +223,13 @@ test('B3: Login-Code beim Einrichten je Rechner begrenzt: 5 Fehlversuche -> 429 
   const ok = await call('POST', '/api/loesch-token/einrichten', 'daemon-b', { login_code: '111111' });
   assert.equal(ok.status, 200, ok.text);
   assert.equal(ok.json.hostname, HB);
+  const bestaetigungsFehlversuche = ['222220', '222221', '222222', '222223', '222224'];
+  for (const code of bestaetigungsFehlversuche) {
+    const r = await call('POST', '/api/loesch-token/bestaetigen', 'daemon-b', { code });
+    assert.equal(r.status, 403, r.text);
+  }
+  assert.equal((await pool.query('SELECT count(*) n FROM loesch_login_fehlversuche WHERE hostname=$1', [HB])).rows[0].n, '10');
+  const gesperrteBestaetigung = await call('POST', '/api/loesch-token/bestaetigen', 'daemon-b', { code: '111111' });
+  assert.deepEqual([gesperrteBestaetigung.status, gesperrteBestaetigung.json.error.code], [429, 'login_gesperrt']);
+  assert.equal((await pool.query('SELECT neues_geheimnis FROM loesch_geheimnisse WHERE hostname=$1', [HB])).rows[0].neues_geheimnis !== null, true, 'Sperre lässt Einrichtung offen');
 });

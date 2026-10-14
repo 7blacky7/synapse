@@ -292,7 +292,16 @@ test('Projekt-DB: Rueckbau nur fuer eigene Synapse-DB (Fake-psql), nicht bei gle
   assert.match(psqlAufrufe[0][0], /datname = 't31x_db' AND r\.rolname = 't31x_db_user'/);
   assert.match(psqlAufrufe[0][0], /DROP ROLE IF EXISTS "t31x_db_user"/);
   assert.equal(psqlAufrufe[0][1], 'postgres');
-  assert.equal((await zaehle(PR.db)).projekt_db, 0, 'Registrierung entfernt');
+  assert.equal((await zaehle(PR.db)).projekt_db, 0, 'Registrierung erst nach erfolgreichem psql entfernt');
+
+  // a2) psql-Fehler: zentrale Projektdaten sind gelöscht, DB-Registrierung bleibt für einen späteren Rückbau.
+  await seed(PR.db, [H.f]);
+  await reg(PR.db, 't31x_db_fail');
+  const vf = await vorschau({ project: PR.db, hostname: H.f, konfig: DB_KONFIG });
+  assert.equal(vf.status, 'vorschau', JSON.stringify(vf.blockiert));
+  const rf = await ausfuehren({ loesch_auftrag_id: vf.loesch_auftrag_id, loesch_code: codeFuer(H.f), konfig: DB_KONFIG, psql: async () => { throw new Error('synthetischer psql-Fehler'); } });
+  assert.equal(rf.status, 'teilweise_geloescht');
+  assert.equal((await zaehle(PR.db)).projekt_db, 1, 'Registrierung bleibt bei fehlgeschlagenem psql');
 
   // b) anderes Projekt ergibt denselben DB-Namen (t31x-db2 vs t31x_db2) -> DB + Registrierung bleiben
   await seed(PR.db2, [H.g]);

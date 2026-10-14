@@ -11,6 +11,15 @@ CREATE TABLE IF NOT EXISTS reverse_ansicht_retention (
 );
 CREATE INDEX IF NOT EXISTS idx_reverse_ansicht_retention_quelle ON reverse_ansicht_retention(eintrag_id,sha256) WHERE released_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ansicht_tokens_reverse_bindung ON ansicht_tokens(ziel_ref,erstellt_von_projekt) WHERE bereich='reverse' AND revoked_at IS NULL;
+CREATE OR REPLACE FUNCTION reverse_ansicht_retention_freigegeben_bereinigen() RETURNS trigger
+LANGUAGE plpgsql AS $reverse_ansicht_retention_bereinigen$
+BEGIN
+  DELETE FROM reverse_ansicht_retention WHERE eintrag_id=OLD.id AND (released_at IS NOT NULL OR expires_at<=clock_timestamp());
+  RETURN OLD;
+END
+$reverse_ansicht_retention_bereinigen$;
+CREATE OR REPLACE TRIGGER trg_reverse_ansicht_retention_bereinigen
+BEFORE DELETE ON reverse_eintraege FOR EACH ROW EXECUTE FUNCTION reverse_ansicht_retention_freigegeben_bereinigen();
 -- A15 (User F5: nur gebundene Einträge): Lösen/Entfernen einer Bindung widerruft die Reverse-Links,
 -- die aus diesem Projekt erzeugt wurden, und gibt deren Retention frei.
 CREATE OR REPLACE FUNCTION ansicht_tokens_reverse_bindung_widerruf() RETURNS trigger

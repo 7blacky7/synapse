@@ -39,6 +39,25 @@ const UUID_MUSTER=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const REF_MUSTER=/^[A-Za-z0-9_.:-]{1,200}$/;
 const RATE_FENSTER_MS=60_000;
 const RATE_MAX_SCHLUESSEL=10_000;
+function rateLimitSchluessel(ip:string|null):string{
+  if(!ip)return 'unbekannt';
+  const normal=normIp(ip).split('%')[0];
+  if(isIP(normal)===4)return 'ipv4:'+normal;
+  if(isIP(normal)!==6)return 'ip:'+normal;
+  let v=normal;
+  if(v.includes('.')){
+    const i=v.lastIndexOf(':');const oktette=v.slice(i+1).split('.').map(Number);
+    if(oktette.length===4&&oktette.every(n=>n>=0&&n<=255))v=v.slice(0,i+1)+((oktette[0]<<8)|oktette[1]).toString(16)+':'+((oktette[2]<<8)|oktette[3]).toString(16);
+  }
+  const [links,rechts='']=v.split('::');
+  const l=links?links.split(':'):[],r=rechts?rechts.split(':'):[];
+  const gruppen=[...l,...Array(Math.max(0,8-l.length-r.length)).fill('0'),...r].map(x=>parseInt(x||'0',16).toString(16).padStart(4,'0'));
+  if(gruppen.length===8&&gruppen.slice(0,5).every(g=>g==='0000')&&gruppen[5]==='ffff'){
+    const a=parseInt(gruppen[6].slice(0,2),16),b=parseInt(gruppen[6].slice(2),16),c=parseInt(gruppen[7].slice(0,2),16),d=parseInt(gruppen[7].slice(2),16);
+    return `ipv4:${a}.${b}.${c}.${d}`;
+  }
+  return 'ipv6/64:'+gruppen.slice(0,4).join(':');
+}
 
 /**
  * Einzige Auth-Ausnahme: exakt GET /api/assets/ansicht/<43 Zeichen base64url>, ohne weitere
@@ -57,6 +76,7 @@ export interface AnsichtLinkKonfiguration {
   rateProMinute:number;
   /** Nur von diesen direkten Absendern (z. B. cloudflared) wird CF-Connecting-IP übernommen. */
   vertrauenswuerdigeProxies:string[];
+  vertrauenswuerdigeProxyNamen?:string[];
   maxOriginalBytes:number;
 }
 
@@ -97,11 +117,18 @@ export function ladeAnsichtLinkKonfiguration(env:NodeJS.ProcessEnv=process.env,a
   }
   const proxies=(env.SYNAPSE_TRUSTED_PROXY_IPS??'').split(',').map(s=>s.trim()).filter(Boolean);
   for(const p of proxies)if(!isIP(p))throw new Error('Ansicht-Link-Konfiguration SYNAPSE_TRUSTED_PROXY_IPS: Eintrag ist keine IP-Adresse');
+  const proxyNamen=(env.SYNAPSE_TRUSTED_PROXY_HOSTS??'').split(',').map(s=>s.trim()).filter(Boolean).map(s=>s.toLowerCase());
+  for(const host of proxyNamen){
+    const labels=host.split('.');
+    if(host.length>253||labels.some(label=>label.length<1||label.length>63||!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)))
+      throw new Error('Ansicht-Link-Konfiguration SYNAPSE_TRUSTED_PROXY_HOSTS: Eintrag ist kein gültiger DNS-Name');
+  }
   const a=asset??getAssetKonfiguration();
   return {
     basisUrl,basisFehler,produktion,
     rateProMinute:envZahl(env,'SYNAPSE_ASSET_ANSICHT_RATE_PRO_MINUTE',60,1,100_000),
     vertrauenswuerdigeProxies:proxies.map(normIp),
+    vertrauenswuerdigeProxyNamen:proxyNamen,
     maxOriginalBytes:envZahl(env,'SYNAPSE_ASSET_ANSICHT_MAX_ORIGINAL_BYTES',a.vorschau.maxInputBytes??64*1024*1024,1,Number.MAX_SAFE_INTEGER),
   };
 }
@@ -378,8 +405,8 @@ export class AnsichtLinkDienst {
 
   private async quellenFehler(tokenId:string,err:unknown):Promise<AnsichtAbruf>{
     const code=err instanceof AssetAnsichtFehler?err.code:'unbekannt';
-    if(code==='ansicht_revision_falsch'){
-      await this.markiereWiderrufen(tokenId,'revision_falsch');
+    if(code==='ansicht_revision_falsch'||code==='asset_geloescht'){
+      await this.markiereWiderrufen(tokenId,code==='asset_geloescht'?'asset_geloescht':'revision_falsch');
       return {status:410,code:'widerrufen',token_id:tokenId};
     }
     if(code==='ansicht_nicht_darstellbar')return {status:422,code:'nicht_darstellbar',token_id:tokenId};
@@ -439,7 +466,7 @@ export class AnsichtLinkDienst {
   }
 
   private rateErlaubt(ip:string|null):boolean{
-    const key=ip??'unbekannt',t=this.jetzt().getTime(),f=this.fenster.get(key);
+    const key=rateLimitSchluessel(ip),t=this.jetzt().getTime(),f=this.fenster.get(key);
     if(!f||t-f.start>=RATE_FENSTER_MS||t<f.start){
       if(this.fenster.size>=RATE_MAX_SCHLUESSEL)for(const [k,v] of this.fenster)if(t-v.start>=RATE_FENSTER_MS)this.fenster.delete(k);
       if(this.fenster.size>=RATE_MAX_SCHLUESSEL)return false;
@@ -458,6 +485,23 @@ export class AnsichtLinkDienst {
         [tokenId,this.jetzt(),ereignis,status,ergebnis.slice(0,200),ua,meta?.clientIp?meta.clientIp.slice(0,64):null,kurz(akteur)]);
     }catch{console.warn('[ansicht-link] Audit konnte nicht geschrieben werden.');}
   }
+}
+
+/** Entfernt abgelaufene Ansichtstokens und deren Retention, alte Auditzeilen und freigegebene Retentionhalter. */
+export async function bereinigeAnsichtLinkRetention(db=getPool()):Promise<{tokens:number;audit:number;assetRetention:number;reverseRetention:number}>{
+  const asset=await db.query(`DELETE FROM asset_retention_referenzen WHERE ref_key IN (
+    SELECT r.ref_key FROM asset_retention_referenzen r WHERE r.released_at IS NOT NULL OR r.expires_at<=clock_timestamp()
+      OR r.ref_key IN (SELECT retention_ref FROM ansicht_tokens WHERE expires_at<=clock_timestamp() OR revoked_at IS NOT NULL)
+    ORDER BY r.expires_at LIMIT 1000)`);
+  const reverse=await db.query(`DELETE FROM reverse_ansicht_retention WHERE ref_key IN (
+    SELECT r.ref_key FROM reverse_ansicht_retention r WHERE r.released_at IS NOT NULL OR r.expires_at<=clock_timestamp()
+      OR r.ref_key IN (SELECT retention_ref FROM ansicht_tokens WHERE expires_at<=clock_timestamp() OR revoked_at IS NOT NULL)
+    ORDER BY r.expires_at LIMIT 1000)`);
+  const tokens=await db.query(`DELETE FROM ansicht_tokens WHERE token_id IN (
+    SELECT token_id FROM ansicht_tokens WHERE expires_at<=clock_timestamp() ORDER BY expires_at LIMIT 1000)`);
+  const audit=await db.query(`DELETE FROM ansicht_token_audit WHERE id IN (
+    SELECT id FROM ansicht_token_audit WHERE zeit<clock_timestamp()-interval '90 days' ORDER BY zeit LIMIT 5000)`);
+  return {tokens:tokens.rowCount??0,audit:audit.rowCount??0,assetRetention:asset.rowCount??0,reverseRetention:reverse.rowCount??0};
 }
 
 let standard:AnsichtLinkDienst|null=null;

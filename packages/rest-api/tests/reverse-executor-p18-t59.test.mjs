@@ -34,6 +34,7 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
  const connect=async()=>{const c=await pool.connect();await c.query('SET search_path TO "'+schema+'",public');return c;};
  const db={connect,query:async(...a)=>{const c=await connect();try{return await c.query(...a);}finally{c.release();}}};
  let lc,unhook;
+ const vorherigeReverseImage=process.env.SYNAPSE_REVERSE_IMAGE;
  try{
   assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name,'synapse_test');
   await pool.query('CREATE SCHEMA "'+schema+'"');
@@ -43,9 +44,12 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   await db.query("CREATE TABLE embedding_knoten(node_id text PRIMARY KEY,boot_id text NOT NULL,service_token_hash text NOT NULL,status text NOT NULL DEFAULT 'ready',gesperrt_vom_user boolean NOT NULL DEFAULT false,letzter_kontakt timestamptz NOT NULL DEFAULT now(),node_kind text DEFAULT 'cpu')");
   for(const sql of [WORK_JOBS_SCHEMA_SQL,ASSET_UPLOAD_SCHEMA_SQL,REVERSE_SCHEMA_SQL,REVERSE_PIPELINE_SCHEMA_SQL,TOOL_AKTIVITAET_SCHEMA_SQL,TOOL_CONTAINER_SCHEMA_SQL])await db.query(sql);
 
-  const konfig=ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:'synapse-reverse:p18-t60@sha256:'+'a'.repeat(64),
-   SYNAPSE_REVERSE_RESOURCE_NEED:'{"cpu":1,"ram":512,"vram":0,"gpu":false}',SYNAPSE_REVERSE_EXECUTOR_LEASE_SECONDS:'30'},reverseRoot);
+  process.env.SYNAPSE_REVERSE_IMAGE='synapse-reverse@sha256:'+'a'.repeat(64);
+  const konfig=ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:process.env.SYNAPSE_REVERSE_IMAGE,
+   SYNAPSE_REVERSE_RESOURCE_NEED:'{"cpu":1,"ram":512,"vram":0,"gpu":false}',SYNAPSE_REVERSE_EXECUTOR_LEASE_SECONDS:'30',SYNAPSE_REVERSE_WAV_PREGAP:'1'},reverseRoot);
   konfig.renewMs=3600000; // Erneuerung im Test aus: Lease-Ablauf wird gezielt erzwungen.
+  assert.equal(konfig.wavPregap,true,'WAV-Pregap aus der Konfiguration');
+  assert.equal(ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:'synapse-reverse@sha256:'+'a'.repeat(64),SYNAPSE_REVERSE_RESOURCE_NEED:'{"cpu":1,"ram":512,"vram":0,"gpu":false}'},reverseRoot).wavPregap,false,'WAV-Pregap standardmaessig aus');
   assert.equal(ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'0'},reverseRoot),null,'aus ohne SYNAPSE_REVERSE_ENABLED=1');
   assert.throws(()=>ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:'synapse-reverse:latest',SYNAPSE_REVERSE_RESOURCE_NEED:'{"cpu":1,"ram":1,"vram":0,"gpu":false}'},reverseRoot),/SYNAPSE_REVERSE_IMAGE/);
   const cfg=ladeAssetKonfiguration({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:reverseRoot});
@@ -64,6 +68,7 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
    async stop(){},async cleanup(){},
    async command(id,req,_t,_m,onTerminal){
     assert.equal(req.kommando,'extrahieren');assert.match(req.eingabe,/^\/bib\/rev-t59-/);assert.equal(req.ausgabe,'/arbeit/'+req.auftrag_id);
+    assert.deepEqual(req.optionen,{wav_pregap:true},'WAV-Pregap-Option wird an den Runner weitergereicht');
     const out=join(container.get(id),req.auftrag_id);
     assert.deepEqual(await (await import('node:fs/promises')).readdir(out),[],'Ausgabeordner leer vorab angelegt');
     if(verzoegerung)await pause(verzoegerung);
@@ -107,7 +112,7 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   assert.equal(o.HostConfig.NetworkMode,'none');assert.equal(o.HostConfig.ReadonlyRootfs,true);assert.ok(o.HostConfig.Tmpfs['/tmp'].startsWith('size=512m'));
   // P18-T64: ein globaler Container – /arbeit ist der ganze Arbeitsbereich, je Auftrag ein Unterordner.
   assert.deepEqual(o.HostConfig.Binds,[reverseRoot+':/bib:ro',konfig.arbeitRoot+':/arbeit:rw']);
-  assert.equal(o.Image,'synapse-reverse:p18-t60@sha256:'+'a'.repeat(64));
+  assert.equal(o.Image,'synapse-reverse@sha256:'+'a'.repeat(64));
   assert.equal((await db.query('SELECT count(*)::int AS n FROM tool_activation WHERE tool_id=$1 AND project=$2 AND enabled',[ex.REVERSE_TOOL_ID,ex.REVERSE_PROJEKT])).rows[0].n,1,'E1 Aktivierung');
   console.log('PASS 1 Auftrag -> reverse_dateien');
 
@@ -166,6 +171,8 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   assert.equal((await zustand(a7.job.id)).state,'completed');assert.equal((await zustand(a8.job.id)).state,'pending');
   console.log('PASS 5 nur freie Plätze geweckt');
  }finally{
+  if(vorherigeReverseImage===undefined)delete process.env.SYNAPSE_REVERSE_IMAGE;
+  else process.env.SYNAPSE_REVERSE_IMAGE=vorherigeReverseImage;
   unhook?.();lc?.close();
   await pool.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');await pool.end();
   await rm(root,{recursive:true,force:true});

@@ -10,6 +10,7 @@
  * Erzeugt werden Links ausschließlich über geschützte Tool-Aufrufe (A16), nicht über diese Routen.
  */
 import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
+import {lookup as dnsLookup} from 'node:dns/promises';
 import {AnsichtLinkDienst,AnsichtLinkFehler,ansichtClientIp,ladeAnsichtLinkKonfiguration,standardAnsichtLinkDienst} from '@synapse/core';
 import type {AnsichtAbruf,AnsichtLinkKonfiguration} from '@synapse/core';
 import {validateToken} from '../services/auth.js';
@@ -20,6 +21,9 @@ export interface AnsichtLinkRouteOptionen {
   validateToken?:typeof validateToken;
   /** Test/Betrieb: Konfiguration explizit statt aus der Umgebung. */
   link?:AnsichtLinkKonfiguration;
+  /** Tests koennen DNS-Antworten und den Refresh-Takt kontrollieren. */
+  proxyNamenAufloesen?:(namen:readonly string[])=>Promise<string[]>;
+  proxyAktualisierungMs?:number;
 }
 
 const SICHERHEITS_HEADER:Readonly<Record<string,string>>={
@@ -54,14 +58,40 @@ export function createAnsichtLinkRoutes(o:AnsichtLinkRouteOptionen={}):(f:Fastif
     if(link?.basisFehler)console.warn('[ansicht-link] '+link.basisFehler+' Linkerzeugung wird abgewiesen.');
     const dienst=()=>o.dienst??standardAnsichtLinkDienst();
     const pruefe=o.validateToken??validateToken;
+    const statischeProxies=link?.vertrauenswuerdigeProxies??[];
+    const proxyNamen=link?.vertrauenswuerdigeProxyNamen??[];
+    let proxyAdressen=[...statischeProxies];
+    let proxyDnsFehler=false;
+    const aufloeser=o.proxyNamenAufloesen??(async(namen:readonly string[])=>{
+      const listen=await Promise.all(namen.map(name=>dnsLookup(name,{all:true,verbatim:true})));
+      return listen.flat().map(eintrag=>eintrag.address);
+    });
+    const aktualisiereProxyAdressen=async()=>{
+      try{
+        const aufgeloest=await aufloeser(proxyNamen);
+        proxyAdressen=[...new Set([...statischeProxies,...aufgeloest])];
+        proxyDnsFehler=proxyNamen.length>0&&aufgeloest.length===0&&statischeProxies.length===0;
+      }catch{
+        proxyAdressen=[...statischeProxies];
+        proxyDnsFehler=proxyNamen.length>0&&statischeProxies.length===0;
+        console.warn('[ansicht-link] Trusted Proxy DNS nicht verfügbar; Ansicht-Route bleibt bis zur nächsten Auflösung geschlossen.');
+      }
+    };
+    if(proxyNamen.length>0){
+      await aktualisiereProxyAdressen();
+      const takt=Math.max(1,Math.min(3_600_000,o.proxyAktualisierungMs??30_000));
+      const timer=setInterval(()=>{void aktualisiereProxyAdressen();},takt);
+      timer.unref?.();
+      fastify.addHook('onClose',async()=>clearInterval(timer));
+    }
 
     fastify.route<{Params:{token:string}}>({
       method:'GET',url:'/api/assets/ansicht/:token',exposeHeadRoute:false,
       handler:async(request,reply)=>{
         for(const [k,v] of Object.entries(SICHERHEITS_HEADER))reply.header(k,v);
-        if(konfigFehler||!link)return reply.code(503).send({success:false,error:{code:'nicht_verfuegbar'}});
+        if(konfigFehler||!link||proxyDnsFehler)return reply.code(503).send({success:false,error:{code:'nicht_verfuegbar'}});
         const meta={
-          clientIp:ansichtClientIp(request.socket?.remoteAddress??request.ip,request.headers['cf-connecting-ip'],link.vertrauenswuerdigeProxies),
+          clientIp:ansichtClientIp(request.socket?.remoteAddress??request.ip,request.headers['cf-connecting-ip'],proxyAdressen),
           userAgent:typeof request.headers['user-agent']==='string'?request.headers['user-agent']:null,
         };
         let r:AnsichtAbruf;

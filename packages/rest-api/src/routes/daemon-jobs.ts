@@ -154,7 +154,7 @@ function warteMsAus(roh: unknown): number {
 
 /** P9-T27 Welle 2: Agentenname wie in Spezialisten-Tools (kein Pfad, begrenzt). */
 function istAgentName(n: unknown): n is string {
-  return typeof n === 'string' && n.length > 0 && n.length <= 128 && !/[\u0000-\u001f]/.test(n);
+  return typeof n === 'string' && n.length > 0 && n.length <= 128 && !n.includes('..') && !/[\\/\u0000-\u001f]/.test(n);
 }
 
 /** Fehlercode -> HTTP-Status fuer den Shell-Kontext. */

@@ -49,7 +49,12 @@ export function projektAnsichtAdapter(o:{db?:AssetUploadDb;speicher:AssetSpeiche
       "AND a.storage_status='ready' AND a.prepared_upload_id IS NULL "+
       "AND a.prepared_mutation_id IS NULL AND a.prepared_konflikt_id IS NULL AND r.tombstone=false",
       [ref.id,ref.ziel_ref,ref.revision??null])).rows[0];
-    if(!row||!row.storage_key||!row.sha256||!['assets','binaries'].includes(String(row.storage_kind)))throw new AssetAnsichtFehler('ansicht_quelle_fehlt','Keine bestätigte Bytesrevision verfügbar.');
+    if(!row){
+      const deleted=(await db.query('SELECT deleted_at FROM asset_files WHERE id=$1::bigint AND project=$2',[ref.id,ref.ziel_ref])).rows[0];
+      if(deleted)throw new AssetAnsichtFehler('asset_geloescht','Asset wurde gelöscht.');
+      throw new AssetAnsichtFehler('ansicht_quelle_fehlt','Keine bestätigte Bytesrevision verfügbar.');
+    }
+    if(!row.storage_key||!row.sha256||!['assets','binaries'].includes(String(row.storage_kind)))throw new AssetAnsichtFehler('ansicht_quelle_fehlt','Keine bestätigte Bytesrevision verfügbar.');
     const adresse:AssetAdresse={bereich:'projekt',ziel_ref:ref.ziel_ref,storage_kind:row.storage_kind as 'assets'|'binaries',logischer_pfad:String(row.file_path)};
     const opts=(await db.query('SELECT erlaubte_typen FROM asset_projekt_optionen WHERE project=$1',[ref.ziel_ref])).rows[0];
     return {bereich:'projekt',id:ref.id,revision:String(row.revision),sha256:String(row.sha256),adresse,

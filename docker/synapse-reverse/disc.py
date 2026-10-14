@@ -117,6 +117,8 @@ def _text(head: bytes) -> bool:
 
 
 CUE_ZEILE = re.compile(rb'(?im)^[ \t]*FILE[ \t]+\S.*[ \t](?:BINARY|MOTOROLA|WAVE|AIFF|MP3)[ \t]*\r?$')
+CUE_MAX_BYTES = 1_048_576
+CUE_FILE_EINTRAG = re.compile(r'^\s*FILE\s+(?:"([^"]+)"|(\S+))\s+(?:BINARY|MOTOROLA|WAVE|AIFF|MP3)\s*$', re.IGNORECASE)
 TOC_ZEILE = re.compile(rb'(?im)^[ \t]*(?:CD_DA|CD_ROM|CD_ROM_XA|CD_I)[ \t]*\r?$|^[ \t]*TRACK[ \t]+(?:AUDIO|MODE[012])')
 TOC_DATEI = re.compile(rb'(?im)^[ \t]*(?:FILE|DATAFILE|AUDIOFILE)[ \t]+"')
 
@@ -559,9 +561,44 @@ def _gefiltert(path: Path) -> str | None:
     return None
 
 
+def _pruefe_steuerdatei_verweise(fmt: str, steuer: Path, namen: dict[str, str]) -> None:
+    """Validiert FILE-Zeilen, bevor libmirage Steuerdateien samt Begleitpfaden oeffnet."""
+    if os.path.abspath(str(steuer)) not in namen:
+        raise DiscFehler("beschaedigt", f"{fmt}: Steuerdatei liegt ausserhalb des Mediums", fmt)
+    try:
+        with steuer.open("rb") as stream:
+            roh = stream.read(CUE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise DiscFehler("nicht_gefunden", f"{fmt}: Steuerdatei nicht lesbar: {exc}", fmt) from None
+    if len(roh) > CUE_MAX_BYTES:
+        raise DiscFehler("zu_gross", f"{fmt}: Steuerdatei ueberschreitet {CUE_MAX_BYTES} Bytes", fmt)
+    try:
+        text = roh.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = roh.decode("latin-1")
+    erlaubt = set(namen.values())
+    anzahl = 0
+    for nr, zeile in enumerate(text.splitlines(), 1):
+        if not re.match(r"^\s*FILE(?:\s|$)", zeile, re.IGNORECASE):
+            continue
+        match = CUE_FILE_EINTRAG.fullmatch(zeile)
+        if not match:
+            raise DiscFehler("beschaedigt", f"{fmt}: FILE-Zeile {nr} ungueltig", fmt)
+        dateiname = match.group(1) or match.group(2)
+        if (not dateiname or dateiname in (".", "..") or "/" in dateiname or "\\" in dateiname
+                or os.path.isabs(dateiname) or re.match(r"^[A-Za-z]:", dateiname)
+                or any(ord(c) < 32 for c in dateiname)):
+            raise DiscFehler("beschaedigt", f"{fmt}: FILE-Zeile {nr} enthaelt einen Pfad statt eines Mediennamens", fmt)
+        if dateiname not in erlaubt:
+            raise DiscFehler("nicht_gefunden", f"{fmt}: FILE-Zeile {nr} verweist auf keine Mediendatei ({dateiname!r})", fmt)
+        anzahl += 1
+    if fmt == "cue" and anzahl == 0:
+        raise DiscFehler("beschaedigt", "CUE enthaelt keine FILE-Zeile", fmt)
 def libmirage_spurtabelle(fmt: str, steuer: Path, namen: dict[str, str]) -> dict[str, Any]:
     """Liest das Medium mit libmirage und uebersetzt Disc/Session/Track/Fragment in die Spurtabelle.
     namen: absoluter Pfad (im Medium-Ordner des Auftrags) -> Originalname."""
+    if fmt in ("cue", "clonecd"):
+        _pruefe_steuerdatei_verweise(fmt, steuer, namen)
     mirage = _mirage()
     if mirage is None:
         raise DiscFehler("format_nicht_unterstuetzt", "libmirage nicht verfuegbar: " + str(_MIRAGE_FEHLER), fmt)
