@@ -13,16 +13,26 @@ for(const x of historical)assert.equal((await check(x.command)).darf_starten,tru
 for(const command of ['git add -A -n | cat','git add --all --dry-run | cat','git ls-tree -r HEAD | cat','git commit -m "sync kill reset" | cat','git commit --message="sync kill reset" | cat','git commit -msync | cat']){
  assert.equal((await check(command)).darf_starten,true,command);
 }
-for(const command of ['git checkout -- owned','git reset --hard','git worktree remove --force owned','git add -A -- owned -n','git add --pathspec-from-file -n -A','git commit -m "note" --amend','git commit -m "$(git reset --hard)"','node -e "db.query(\'DELETE FROM owned\')"']){
- assert.equal((await check(command)).darf_starten,false,command);
+// P10-T71 (6a9bbef8, User-Vorgabe 14.10.2026 'ausser Sperren nur Warnhinweise'): 'anleitung'-Treffer laufen mit
+// Warnhinweis (audit.stufe 'hinweis', nie still); gefaehrliche Faelle (P10-T73) bleiben Rueckfrage. Exakte Stufe je Fall.
+for(const [command,stufe] of [['git checkout -- owned','hinweis'],['git reset --hard','rueckfrage'],['git worktree remove --force owned','hinweis'],
+ ['git add -A -- owned -n','hinweis'],['git add --pathspec-from-file -n -A','hinweis'],['git commit -m "note" --amend','hinweis'],
+ ['git commit -m "$(git reset --hard)"','rueckfrage'],['node -e "db.query(\'DELETE FROM owned\')"','hinweis']]){
+ const r=await check(command);assert.equal(r.audit.stufe,stufe,command);assert.equal(r.darf_starten,stufe==='hinweis',command);
+ if(stufe==='hinweis')assert.equal(r.hinweis?.stufe,'hinweis',command);
 }
 assert.equal(pruefeShellText('git diff -R --ext-diff | cat').risiko_verb,true,'keine pauschale Ausnahme externer Diffprogramme');
 const oldDefaults={"regeln":[{"id":"git.add","version":1,"art":"text","stufe":"anleitung","status":"aktiv","muster":{"command":["^git$","^add$"],"argv_any":["^\\.$","^-A$","^--all$"]},"antwort_id":"git.add","quelle":"https://git-scm.com/docs/git-add","bereich":"global","project":null,"os":[],"rechner":[],"positiv":["git add ."],"negativ":["git status --short"]}],"antworten":[],"risiko_verben":[{"id":"mutation","muster":{"command":["^(?:aws|gcloud|az|gsutil|kubectl|terraform|pulumi|rclone|docker|git|redis-cli|psql|mysql|systemctl|kill|pkill|killall|rm|mv|cp|chmod|chown|dd|mkfs.*|wipefs|sh|bash|pwsh|powershell|cmd|python[\\d.]*|node|eval|source|\\.)(?:\\.exe)?$"],"argv_any":["(?:^|[-_\\s])(?:delete|remove|terminate|destroy|purge|drop|truncate|flushall|flushdb|reset|clean|prune|kill|stop|disable|mask|isolate|mirror|sync|force|overwrite|restore|rebase|apply|rmtree|unlink|writeFile|rmSync)(?:$|[-_(\\s])","^-r[fR]*$","^-[fR]*r[fR]*$","^--delete","^of="],"ausnahmen":[{"command":["^git$","^apply$"],"argv_all":["^--cached$"],"argv_none":["^--index$"]},{"command":["^git$","^restore$"],"argv_all":["^(?:--staged|-S)$"],"argv_none":["^(?:--worktree|-W|-SW|-WS)$"]},{"command":["^git$","^update-index$"]},{"command":["^git$","^add$"],"argv_any":["^(?:--patch|-p)$"]}]},"status":"aktiv","quelle":"P10-T35: unabhängige Risikowortklassifikation, kein DCG"},{"id":"direkte_mutation","muster":{"command":["^(?:kill|pkill|killall|mv|cp|chmod|chown|dd|mkfs.*|wipefs|rm|rmdir|del|erase|remove-item|eval|source)(?:\\.exe)?$"]},"status":"aktiv","quelle":"Eigene Risiko-Klassifikation nach GNU/Microsoft-Dokumentation."},{"id":"dynamisches_schreibziel","muster":{"command":[],"umleitung":true,"target_regex":".*\\$.*"},"quelle":"https://www.gnu.org/software/bash/manual/html_node/Redirections.html","status":"aktiv"}]};
 assert.equal((await check('git ls-tree -r HEAD | cat',verbindeShellStartKatalog(oldDefaults))).darf_starten,true,'unveränderter t75-DB-Default folgt neuer Katalogsemantik');
 const customized=structuredClone(SHELL_SICHERUNG_SEED);
 customized.regeln.push({id:'owned-message',version:1,art:'text',stufe:'anleitung',status:'aktiv',muster:{command:['^git$','^commit$'],argv_any:['sync']},antwort_id:'git.amend',quelle:'owned-test'});
-assert.equal((await check('git commit -m sync',customized)).darf_starten,false,'gepflegte Regel kann Nachrichten weiterhin explizit prüfen');
-for(const x of historical)assert.equal((await check(x.command,oldDefaults)).darf_starten,false,'alle drei ALT-Katalogfälle reproduziert '+x.id);
+// P10-T71: Regeltreffer der Stufe 'anleitung' = Warnhinweis statt Abweisung; ohne die Regel laeuft derselbe Befehl still.
+assert.equal((await check('git commit -m sync')).audit.stufe,'laeuft');
+assert.equal((await check('git commit -m sync',customized)).audit.stufe,'hinweis','gepflegte Regel kann Nachrichten weiterhin explizit prüfen');
+for(const x of historical){
+ assert.equal((await check(x.command)).audit.stufe,'laeuft','neuer Katalog still '+x.id);
+ assert.equal((await check(x.command,oldDefaults)).audit.stufe,'hinweis','alle drei ALT-Katalogfälle reproduziert '+x.id);
+}
 if(process.argv.includes('--native')){
  const u=new URL(process.env.DATABASE_URL);assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
  const{createTestFixtureCleanup}=await import('./_helfer/test-fixture-cleanup.mjs');const cleanup=createTestFixtureCleanup();

@@ -9,11 +9,13 @@ const{shellTool}=await import('../../mcp-server/dist/tools/consolidated/shell.js
 const root=await cleanup.createRoot('synapse-e3-stdio-'),project='test-e3-stdio-'+randomUUID();
 fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
 await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
-await getPool().query("INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ)VALUES($1,1,'text','anleitung',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,'[]','[]')",['owned-'+randomUUID(),JSON.stringify({command:['^printf$']}),project]);
+await getPool().query("INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ,gefaehrlich)VALUES($1,1,'text','rueckfrage',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,'[]','[]','true'::jsonb)",['owned-'+randomUUID(),JSON.stringify({command:['^printf$']}),project]);
 globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
 const args={action:'exec',project,command:'printf E3_STDIO',agent_id:'sol-2',target:'local'};
 const call=async(extra={})=>JSON.parse((await shellTool.handler({...args,...extra})).content[0].text);
-const denied=await call();assert.equal(denied.status,'rejected');assert.equal(denied.ausgefuehrt,false);
+// P10-T71 (6a9bbef8): 'anleitung' laeuft nur noch mit Warnhinweis; vor dem Start anhalten (Koordinator-Bestaetigung) gibt es
+// seit P10-T73 (7c83bf3c) nur fuer 'rueckfrage' mit Gefahrkennzeichen. Die eigene Regel ist deshalb rueckfrage + gefaehrlich.
+const denied=await call();assert.equal(denied.status,'rejected');assert.equal(denied.ausgefuehrt,false);assert.equal(denied.stufe,'rueckfrage');
 const rows=(await getPool().query('SELECT id,sicherung FROM shell_jobs WHERE project=$1',[project])).rows;
 assert.equal(rows.length,1,'stdio darf Core-Audit nicht mit zweitem History-Job verdoppeln');assert.equal(rows[0].id,denied.id);
 assert.equal(rows[0].sicherung.audit.agent_id,'sol-2');

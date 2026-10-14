@@ -14,7 +14,9 @@ for(const js of [
  "require('child_process').execFileSync('git',['hash-object','--stdin'],{encoding:'utf8',input:'owned'})",
  "const{execFileSync}=require('child_process');const run=(a,input)=>execFileSync('git',a,{input,encoding:'utf8'}).trim();for(const f of ['one','two'])run(['ls-files','--',f]);",
  "const{execFileSync}=require('child_process');const run=(a,o={})=>execFileSync('git',a,{encoding:'utf8',...o}).trim();run(['hash-object','--stdin'],{input:process.env.DATA});"
-])assert.equal((await check(node(js))).darf_starten,true,js);
+// P10-T73 (7c83bf3c): Einzeiler mit Prozess-API (execFileSync/execSync) sind Rueckfrage, auch mit statischen
+// Argumenten (strenger als vorher, vgl. einzeilerApi in shell-inline-p10-t47). Statische Aufloesung bleibt: keine Sperre.
+])assert.equal((await check(node(js))).audit.stufe,'rueckfrage',js);
 for(const js of [
  "require('child_process').execFileSync(process.env.CMD,['status'],{encoding:'utf8'})",
  "require('child_process').execFileSync('git',process.env.ARGS,{encoding:'utf8'})",
@@ -31,7 +33,9 @@ for(const js of [
  "const{execFileSync}=require('child_process');const run=a=>execFileSync('git',a,{encoding:'utf8'});run(['status'],process.kill(4242));",
  "process.kill(4242)",
  "db.query('DELETE FROM owned')"
-])assert.equal((await check(node(js))).darf_starten,false,js);
+// P10-T71/T73: geschuetzte PID = Sperre; SQL auf Nicht-Prod-DB = Warnhinweis (memory regel-datenbanken-nur-prod-gesperrt);
+// alles andere Rueckfrage. Exakte Stufe je Fall.
+])assert.equal((await check(node(js))).audit.stufe,js.includes('process.kill(4242)')?'sperre':js.startsWith('db.query')?'hinweis':'rueckfrage',js);
 if(process.argv.includes('--native-b')){
  const u=new URL(process.env.DATABASE_URL);assert.equal(u.pathname,'/synapse_test');assert.equal(u.port,'5433');
 const cleanup=createTestFixtureCleanup();const oldFetch=globalThis.fetch;const fixtureProjects=[];let fixtureApp;

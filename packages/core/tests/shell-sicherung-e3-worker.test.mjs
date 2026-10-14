@@ -13,10 +13,12 @@ await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)'
 globalThis.fetch=async()=>new Response('{"enabled":true}',{status:200});
 const args={project,command:'printf E3_WORKER',agent_id:'sol-2',target:'local'};
 const old=await enqueueShellJob(args);
-await getPool().query("INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ)VALUES($1,1,'text','anleitung',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,'[]','[]')",['owned-'+randomUUID(),JSON.stringify({command:['^printf$']}),project]);
+await getPool().query("INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ,gefaehrlich)VALUES($1,1,'text','rueckfrage',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,'[]','[]','true'::jsonb)",['owned-'+randomUUID(),JSON.stringify({command:['^printf$']}),project]);
 await runClaimedJob(project,await claimPendingShellJob(project,'owned-worker'));
 const denied=await waitForShellJob(old.id,1000);
-assert.equal(denied.status,'rejected');assert.equal(denied.ausgefuehrt,false);assert.equal(denied.stufe,'anleitung');
+// P10-T71 (6a9bbef8): 'anleitung' laeuft nur noch mit Warnhinweis; vor dem Start anhalten (Koordinator-Bestaetigung) gibt es
+// seit P10-T73 (7c83bf3c) nur fuer 'rueckfrage' mit Gefahrkennzeichen. Die eigene Regel ist deshalb rueckfrage + gefaehrlich.
+assert.equal(denied.status,'rejected');assert.equal(denied.ausgefuehrt,false);assert.equal(denied.stufe,'rueckfrage');
 assert.equal((await getShellJobById(old.id)).sicherung.audit.agent_id,'sol-2');
 const grant={grund:'Eigene ungefährliche Workerprobe',...denied.bestaetigungsdaten};
 const approved=await enqueueShellJob({...args,agent_id:'koordinator',bestaetigt:grant});

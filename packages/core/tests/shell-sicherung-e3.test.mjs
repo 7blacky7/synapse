@@ -28,7 +28,9 @@ assert.equal(r.darf_starten,true);assert.equal(Object.hasOwn(r,'antwort'),false)
 const hint=structuredClone(SHELL_SICHERUNG_SEED);hint.regeln.find(x=>x.id==='fs.rm').stufe='hinweis';
 // P10-T73: Gefahrkennzeichen ist eine eigene Achse; diese Kontrolle prueft nur die Regelstufe.
 for(const x of hint.regeln)if(['fs.rm','fs.ziel_ausserhalb'].includes(x.id))x.gefaehrlich=null;
-r=run({},hint);assert.equal(r.darf_starten,true);assert.equal(r.antwort.stufe,'hinweis');assert.equal(r.antwort.ausgefuehrt,true);
+// P10-T71 (6a9bbef8): Hinweis-Stufe liefert keine Antwort-Huelle mehr, sondern r.hinweis; der Befehl laeuft mit Warnhinweis.
+r=run({},hint);assert.equal(r.darf_starten,true);assert.equal(Object.hasOwn(r,'antwort'),false);assert.equal(r.hinweis.stufe,'hinweis');
+assert.ok(r.hinweis.risiko);assert.equal(r.audit.stufe,'hinweis');assert.equal(r.audit.entscheidung,'erlaubt');
 r=run({command:'bash /tmp/context-handoff.sh --force',agent_id:'koordinator',bestaetigt:grant});
 assert.equal(r.darf_starten,false);assert.equal(r.antwort.stufe,'sperre');
 r=run({command:'kill -TERM 4242',geschuetzte_pids:[4242],agent_id:'koordinator',bestaetigt:grant});
@@ -38,7 +40,8 @@ for(const command of ['sudo -u owned kill -TERM 4242','kill -TERM -4242','kill -
  assert.equal(r.antwort?.stufe,'sperre',command);
 }
 const inj='rm '+JSON.stringify("/virtual/project/a'; touch OWNED_MARKER #");
-r=run({command:inj,lage:await ermittleShellLage(inj,ctx)});assert.ok(!r.antwort.sicher.includes('&& touch'));
+// P10-T71 (6a9bbef8): rm einer Projektdatei laeuft mit Warnhinweis; die sichere Vorschau steht dann in r.hinweis.
+r=run({command:inj,lage:await ermittleShellLage(inj,ctx)});{const s=(r.antwort??r.hinweis)?.sicher;assert.ok(s,JSON.stringify(r).slice(0,300));assert.ok(!s.includes('&& touch'));}
 
 const{maskiereShellDaten}=await import('../dist/services/shell-maske.js');
 const h='a'.repeat(62)+'01';const meta={bestaetigungsdaten:{befehl_hash:h,lage_hash:h,regelversion:h},lage:{hash:h}};

@@ -23,7 +23,9 @@ for(const command of [
  'for p in @synapse/core; do pnpm --filter $p build > /tmp/owned-$(echo $p|tr / _).log; git checkout -- owned; done',
  'for p in @synapse/core; do pnpm --filter $p build > /tmp/owned-$(echo $p|tr / _).log; git worktree remove --force owned; done',
  'for p in @synapse/core; do pnpm --filter $p build > /tmp/owned-$(echo $p|tr / _).log; node -e "db.query(\'DELETE FROM owned\')"; done'
-])assert.equal((await check(command)).darf_starten,false,command);
+// P10-T71 (6a9bbef8): das in Anfuehrungszeichen literale Log-Ziel ist nur 'anleitung' -> laeuft mit Warnhinweis;
+// alle uebrigen bleiben Rueckfrage. Exakte Stufe je Fall.
+])assert.equal((await check(command)).audit.stufe,command.includes("> '/tmp/owned-")?'hinweis':'rueckfrage',command);
 assert.equal((await check(historical,{inspect:false})).darf_starten,false,'keine Native-Lage, kein neuer Log-Nachweis');
 assert.equal((await check(historical,{probe:async input=>({...await probe(input),pfade:(input.pfade??[]).map((pfad,i)=>({pfad,kanonisch:i===0?'/etc/different':pfad,existiert:true,links:[],eigener_benutzer:true}))})})).darf_starten,false,'Symlink außerhalb Log-Scope');
 assert.equal((await check(historical,{probe:async input=>({...await probe(input),pfade:(input.pfade??[]).map(pfad=>({pfad,kanonisch:pfad,existiert:true,links:[],eigener_benutzer:false}))})})).darf_starten,false,'fremder bestehender Log');

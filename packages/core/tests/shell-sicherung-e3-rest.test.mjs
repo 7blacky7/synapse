@@ -16,7 +16,7 @@ for(const mode of ['http','mcp']){
  const root=await cleanup.createRoot('synapse-e3-rest-'),project='test-e3-rest-'+randomUUID();
 fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
  await getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
- await getPool().query("INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ)VALUES($1,1,'text','anleitung',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,'[]','[]')",['owned-'+randomUUID(),JSON.stringify({command:['^printf$']}),project]);
+ await getPool().query("INSERT INTO shell_sicherungsregeln(id,version,art,stufe,muster,antwort_id,quelle,status,bereich,project,positiv,negativ,gefaehrlich)VALUES($1,1,'text','rueckfrage',$2::jsonb,'fs.rm','owned-test','aktiv','projekt',$3,'[]','[]','true'::jsonb)",['owned-'+randomUUID(),JSON.stringify({command:['^printf$']}),project]);
  const args={action:'exec',project,command:'printf E3_REST',agent_id:'sol-2',target:'local'};
  const call=async(extra={})=>{
    const payload={...args,...extra};
@@ -26,7 +26,9 @@ fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanup
    await runClaimedJob(project,job);
    return pending;
  };
- const denied=await call();assert.equal(denied.ausgefuehrt,false);assert.equal(denied.stufe,'anleitung');assert.equal(denied.status,'rejected');
+ // P10-T71 (6a9bbef8): 'anleitung' laeuft nur noch mit Warnhinweis; vor dem Start anhalten (Koordinator-Bestaetigung) gibt es
+ // seit P10-T73 (7c83bf3c) nur fuer 'rueckfrage' mit Gefahrkennzeichen. Die eigene Regel ist deshalb rueckfrage + gefaehrlich.
+ const denied=await call();assert.equal(denied.ausgefuehrt,false);assert.equal(denied.stufe,'rueckfrage');assert.equal(denied.status,'rejected');
  const approved=await call({agent_id:'koordinator',bestaetigt:{grund:'Eigene ungefährliche REST-Probe',...denied.bestaetigungsdaten}});
  assert.equal(approved.status,'done');assert.equal(approved.ausgefuehrt,true);assert.deepEqual(approved.tail,['E3_REST']);
  const rows=(await getPool().query('SELECT sicherung FROM shell_jobs WHERE project=$1 ORDER BY created_at',[project])).rows;

