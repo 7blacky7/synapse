@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import resource
 import shutil
 import signal
 import socket
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 BIB = Path("/bib")
 WORK = Path("/arbeit")
@@ -76,6 +77,17 @@ MAX_BEGLEIT = 64
 TMP_ROOT = Path("/tmp")
 CONTAINER_MODUS = os.getuid() == 65532
 OUTPUT_RE = re.compile(r"^/arbeit/([^/]+)/?$")
+# P18-T62: Grenzen gelten WAEHREND des Entpackens. Die Ausgabe wird in diesem Takt geprueft; bei Verletzung stirbt
+# die Prozessgruppe sofort und die Teilausgabe wird geloescht. Zusaetzlich begrenzt RLIMIT_FSIZE jede einzelne Datei.
+GUARD_INTERVAL_S = 0.5
+
+
+class GrenzeUeberschritten(ValueError):
+    """P18-T62: Ausgabegrenze verletzt. code = bombe_verdacht | zu_gross (fachlich, deterministisch: kein Neuversuch)."""
+
+    def __init__(self, code: str, meldung: str) -> None:
+        super().__init__(meldung)
+        self.code = code
 
 
 def disc_format(head: bytes) -> str:
@@ -177,13 +189,138 @@ def clean_tmp(job_tmp: Path) -> None:
                     pass
 
 
-def run_isolated(command: list[str], timeout: int, env: dict[str, str], cwd: Path, job_tmp: Path) -> tuple[int, str]:
-    """Werkzeug in eigener Prozessgruppe; Ausgaben in Dateien (verwaiste Kinder halten keine Pipe offen)."""
+def limit_violation(files: int, dirs: int, total: int, cap: dict[str, int], input_size: int) -> tuple[str, str] | None:
+    """(fehlercode, meldung) bei verletzter Ausgabegrenze, sonst None."""
+    if input_size and total > input_size * cap["max_kompressionsfaktor"]:
+        return "bombe_verdacht", (f"Kompressionsfaktor ueberschritten: mehr als {total} Bytes aus "
+                                  f"{input_size} Bytes Eingabe (max_kompressionsfaktor {cap['max_kompressionsfaktor']})")
+    if total > cap["max_bytes"]:
+        return "zu_gross", f"max_bytes ueberschritten: mehr als {cap['max_bytes']} Bytes Ausgabe"
+    if files > cap["max_dateien"] or dirs > cap["max_dateien"]:
+        return "zu_gross", f"max_dateien ueberschritten: mehr als {cap['max_dateien']} Eintraege"
+    return None
+
+
+def scan_output(root: Path, cap: dict[str, int], input_size: int) -> tuple[str, str] | None:
+    """P18-T62: laufende Pruefung der Ausgabe (Groesse, Anzahl, Tiefe) mit fruehem Abbruch; folgt keinen Symlinks."""
+    files = dirs = total = 0
+    stack: list[tuple[str, int]] = [(str(root), 0)]
+    while stack:
+        here, depth = stack.pop()
+        if depth > cap["max_tiefe"]:
+            return "bombe_verdacht", f"max_tiefe ueberschritten: tiefer als {cap['max_tiefe']} Ebenen"
+        try:
+            entries = list(os.scandir(here))
+        except PermissionError:
+            # Archive koennen Ordner ohne Leserecht anlegen; der Runner ist Eigentuemer und darf sie oeffnen.
+            try:
+                if not os.path.islink(here):
+                    os.chmod(here, 0o700)
+                entries = list(os.scandir(here))
+            except OSError:
+                continue
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    dirs += 1
+                    stack.append((entry.path, depth + 1))
+                    continue
+                total += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                continue
+            files += 1
+        violation = limit_violation(files, dirs, total, cap, input_size)
+        if violation:
+            return violation
+    return None
+
+
+def per_file_limit(cap: dict[str, int], input_size: int) -> int:
+    """RLIMIT_FSIZE fuer das Werkzeug: eine einzelne Datei darf die Gesamtgrenze nur um 1 Byte ueberschreiten."""
+    threshold = cap["max_bytes"]
+    if input_size:
+        threshold = min(threshold, input_size * cap["max_kompressionsfaktor"])
+    return threshold + 1
+
+
+def file_limit_violation(cap: dict[str, int], input_size: int) -> tuple[str, str]:
+    """Werkzeug ist an RLIMIT_FSIZE gescheitert: Code nach der engeren der beiden Grenzen."""
+    if input_size and input_size * cap["max_kompressionsfaktor"] < cap["max_bytes"]:
+        return "bombe_verdacht", ("Einzeldatei ueber der Grenze (RLIMIT_FSIZE): mehr als "
+                                  f"{input_size * cap['max_kompressionsfaktor']} Bytes aus {input_size} Bytes Eingabe")
+    return "zu_gross", f"Einzeldatei ueber der Grenze (RLIMIT_FSIZE): mehr als {cap['max_bytes']} Bytes"
+
+
+def file_size_limit(limit_bytes: int) -> Callable[[], None]:
+    def apply() -> None:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit_bytes, limit_bytes))
+    return apply
+
+
+def clear_output(out: Path) -> None:
+    """P18-T62: Teilausgabe nach Grenzverletzung loeschen, auch schreib-/lesegeschuetzte Ordner aus dem Archiv."""
+    def retry(func: Callable[..., Any], path: str, _exc: Any) -> None:
+        for target in (os.path.dirname(path), path):
+            try:
+                if not os.path.islink(target):
+                    os.chmod(target, 0o700)
+            except OSError:
+                pass
+        try:
+            # rmtree meldet unter Python >= 3.12 auch os.open (braucht flags); ohne flags kam TypeError durch.
+            result = func(path, os.O_RDONLY) if func is os.open else func(path)
+            if isinstance(result, int):
+                os.close(result)
+            elif hasattr(result, "close"):
+                result.close()
+        except (OSError, TypeError):
+            pass
+    handler: dict[str, Any] = {"onexc": retry} if sys.version_info >= (3, 12) else {"onerror": retry}
+    for _ in range(3):
+        try:
+            entries = list(out.iterdir())
+        except OSError:
+            return
+        if not entries:
+            return
+        for entry in entries:
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, **handler)
+            else:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+
+
+def run_isolated(command: list[str], timeout: int, env: dict[str, str], cwd: Path, job_tmp: Path,
+                 guard: Callable[[], tuple[str, str] | None] | None = None,
+                 preexec: Callable[[], None] | None = None) -> tuple[int, str]:
+    """Werkzeug in eigener Prozessgruppe; Ausgaben in Dateien (verwaiste Kinder halten keine Pipe offen).
+
+    P18-T62: mit guard wird die Ausgabe alle GUARD_INTERVAL_S geprueft. Bei einer Grenzverletzung stirbt die ganze
+    Prozessgruppe sofort und GrenzeUeberschritten wird geworfen; die Teilausgabe raeumt run_request.
+    """
+    violation: tuple[str, str] | None = None
+    code = -1
     with (job_tmp / ".stdout").open("w+b") as out_stream, (job_tmp / ".stderr").open("w+b") as err_stream:
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out_stream, stderr=err_stream,
-                                env=env, cwd=str(cwd), start_new_session=True)
+                                env=env, cwd=str(cwd), start_new_session=True, preexec_fn=preexec)
+        deadline = time.monotonic() + timeout
         try:
-            code = proc.wait(timeout=timeout)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                try:
+                    code = proc.wait(timeout=min(GUARD_INTERVAL_S, remaining) if guard else remaining)
+                    break
+                except subprocess.TimeoutExpired:
+                    violation = guard() if guard else None
+                    if violation:
+                        break
         finally:
             kill_group(proc.pid)
             try:
@@ -196,6 +333,8 @@ def run_isolated(command: list[str], timeout: int, env: dict[str, str], cwd: Pat
             tail = stream.read()
             if tail.strip():
                 break
+    if violation:
+        raise GrenzeUeberschritten(*violation)
     return code, tail.decode("utf-8", "replace")[-4000:]
 
 
@@ -331,17 +470,16 @@ def output_manifest(root: Path, cap: dict[str, int], input_size: int) -> tuple[l
             raise ValueError("Symlink-Verzeichnis im Ergebnis verboten")
         dirs[:] = sorted(dirs)
         if len(here.relative_to(root).parts) > cap["max_tiefe"]:
-            raise ValueError("max_tiefe ueberschritten")
+            raise GrenzeUeberschritten("bombe_verdacht", "max_tiefe ueberschritten")
         for name in sorted(files):
             path = here / name
             if path.is_symlink() or not path.is_file():
                 raise ValueError("Symlinks und Nicht-Dateien sind verboten")
             size = path.stat().st_size
             total += size
-            if len(entries) >= cap["max_dateien"] or total > cap["max_bytes"]:
-                raise ValueError("Ausgabelimit ueberschritten")
-            if input_size and total > input_size * cap["max_kompressionsfaktor"]:
-                raise ValueError("Ausgabelimit ueberschritten")
+            violation = limit_violation(len(entries) + 1, 0, total, cap, input_size)
+            if violation:
+                raise GrenzeUeberschritten(*violation)
             digest = hashlib.sha256()
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -416,8 +554,11 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     if not source.is_file():
         raise ValueError("Eingabe ist keine regulaere Datei")
     extract = req.get("kommando") == "extrahieren"
+    input_size = source.stat().st_size
     if extract:
         begleit = companions(req)
+        # P18-T62: Grenzen beziehen sich auf das ganze Medium (Hauptdatei + Begleitdateien, z. B. CUE + BIN).
+        input_size = sum(path.stat().st_size for path in {source, *(item for _, item in begleit)})
         unsupported = unsupported_format(source, begleit)
         cue = cue_companion(begleit)
         if not unsupported and cue is not None and head_bytes(source, 12) == RAW_SYNC:
@@ -444,20 +585,36 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     job_tmp.mkdir(mode=0o700, parents=True)
     env = {**os.environ, "HOME": str(job_tmp), "TMPDIR": str(job_tmp),
            "LC_ALL": "C.UTF-8", "GHIDRA_HOME": "/opt/ghidra"}
+    # P18-T62: beim Entpacken laufende Pruefung + Groessengrenze je Datei; Analysewerkzeuge wie bisher.
+    guard = (lambda: scan_output(out, cap, input_size)) if extract else None
+    preexec = file_size_limit(per_file_limit(cap, input_size)) if extract else None
     try:
-        code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp)
-    finally:
-        rest = sweep_processes()
-        clean_tmp(job_tmp)
-        if rest:
-            # Isolation nicht wiederhergestellt: Auftrag scheitert, Runner beendet sich -> der Lebenszyklus
-            # erkennt den toten Container (container_crashed) und startet beim naechsten Auftrag frisch.
-            print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
-                              "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
-            raise SystemExit(3)
-    if code:
-        return [{"status": "fehler", "fehlercode": "werkzeug_fehler", "meldung": meldung}]
-    files, size = output_manifest(out, cap, source.stat().st_size)
+        try:
+            code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp, guard=guard, preexec=preexec)
+        finally:
+            rest = sweep_processes()
+            clean_tmp(job_tmp)
+            if rest:
+                # Isolation nicht wiederhergestellt: Auftrag scheitert, Runner beendet sich -> der Lebenszyklus
+                # erkennt den toten Container (container_crashed) und startet beim naechsten Auftrag frisch.
+                print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
+                                  "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
+                raise SystemExit(3)
+        if extract:
+            # Endpruefung nach Prozessende (auch nach RLIMIT_FSIZE-Abbruch des Werkzeugs).
+            final = scan_output(out, cap, input_size)
+            if final:
+                raise GrenzeUeberschritten(*final)
+            # Das Werkzeug kann die abgeschnittene Datei selbst entfernt haben: SIGXFSZ bzw. EFBIG zaehlt als Grenze.
+            if code == -signal.SIGXFSZ or (code and "File too large" in meldung):
+                raise GrenzeUeberschritten(*file_limit_violation(cap, input_size))
+        if code:
+            return [{"status": "fehler", "fehlercode": "werkzeug_fehler", "meldung": meldung}]
+        files, size = output_manifest(out, cap, input_size)
+    except GrenzeUeberschritten as exc:
+        clear_output(out)
+        return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
+                 "dauer_s": round(time.monotonic() - started, 3)}]
     version = tool_version(tool)
     return [
         {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},

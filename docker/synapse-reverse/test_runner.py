@@ -332,5 +332,156 @@ class ReverseT64Tests(unittest.TestCase):
                 time.sleep(0.05)
             self.assertFalse(runner.alive(pid), "Kindprozess ueberlebt den Auftrag nicht")
 
+
+class ReverseT62BombTests(unittest.TestCase):
+    """P18-T62: Grenzen greifen WAEHREND des Entpackens; Abbruch in Sekunden, keine Teilausgabe auf der Platte."""
+
+    CAP = {"zeitlimit_s": 30, "max_dateien": 50, "max_bytes": 1_000_000, "max_tiefe": 4,
+           "max_kompressionsfaktor": 10}
+    SOURCE = b"PK\x03\x04" + b"\x00" * 96  # 100 Bytes Eingabe
+
+    def run_bomb(self, box, script, grenzen, guard_interval=None):
+        source = box.put("rev/original/dateien/aa/bomb.zip", self.SOURCE)
+        patches = [patch.object(runner, "command_for", return_value=["sh", "-c", script])]
+        if guard_interval is not None:
+            patches.append(patch.object(runner, "GUARD_INTERVAL_S", guard_interval))
+        with tempfile.TemporaryDirectory() as tmp_root, patch.object(runner, "TMP_ROOT", Path(tmp_root)):
+            for item in patches:
+                item.start()
+            try:
+                started = time.monotonic()
+                events = runner.run_request({"kommando": "extrahieren", "eingabe": source,
+                                             "ausgabe": "/arbeit/job-bomb", "grenzen": grenzen})
+                return events, time.monotonic() - started
+            finally:
+                for item in patches:
+                    item.stop()
+
+    def assert_no_output(self, box):
+        self.assertEqual(list((box.work / "job-bomb").iterdir()), [], "keine Teilausgabe auf der Platte")
+
+    def test_scan_output_names_each_limit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.assertIsNone(runner.scan_output(root, self.CAP, 100))
+            (root / "a").write_bytes(b"x" * 2000)
+            self.assertEqual(runner.scan_output(root, self.CAP, 100)[0], "bombe_verdacht")
+            self.assertIsNone(runner.scan_output(root, self.CAP, 1000))
+            self.assertEqual(runner.scan_output(root, {**self.CAP, "max_bytes": 1000}, 0)[0], "zu_gross")
+            for index in range(60):
+                (root / f"e{index}").touch()
+            self.assertEqual(runner.scan_output(root, self.CAP, 1000)[0], "zu_gross")
+        with tempfile.TemporaryDirectory() as temp:
+            Path(temp).joinpath(*["d"] * 6).mkdir(parents=True)
+            self.assertEqual(runner.scan_output(Path(temp), self.CAP, 0)[0], "bombe_verdacht")
+
+    def test_manifest_limit_errors_carry_deterministic_codes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "a").write_bytes(b"x" * 2000)
+            with self.assertRaises(runner.GrenzeUeberschritten) as bomb:
+                runner.output_manifest(root, self.CAP, 100)
+            self.assertEqual(bomb.exception.code, "bombe_verdacht")
+            with self.assertRaises(runner.GrenzeUeberschritten) as big:
+                runner.output_manifest(root, {**self.CAP, "max_bytes": 1000}, 0)
+            self.assertEqual(big.exception.code, "zu_gross")
+
+    def test_per_file_limit_uses_the_tighter_bound(self):
+        self.assertEqual(runner.per_file_limit(self.CAP, 100), 1001)
+        self.assertEqual(runner.per_file_limit(self.CAP, 0), 1_000_001)
+        self.assertEqual(runner.per_file_limit(self.CAP, 10_000_000), 1_000_001)
+        self.assertEqual(runner.file_limit_violation(self.CAP, 100)[0], "bombe_verdacht")
+        self.assertEqual(runner.file_limit_violation(self.CAP, 10_000_000)[0], "zu_gross")
+
+    def test_growing_output_is_stopped_within_seconds_and_removed(self):
+        with Sandbox() as box:
+            script = 'i=0; while :; do head -c 4096 /dev/zero > "f$i" 2>/dev/null; i=$((i+1)); done'
+            events, elapsed = self.run_bomb(box, script, {"zeitlimit_s": 60, "max_kompressionsfaktor": 200})
+            self.assertLess(elapsed, 10, "Abbruch waehrend des Laufs, nicht erst am Zeitlimit")
+            self.assertEqual(events[-1]["status"], "fehler")
+            self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
+            self.assertEqual(events[-1]["manifest"], [])
+            self.assert_no_output(box)
+
+    def test_single_file_is_capped_by_rlimit_fsize(self):
+        with Sandbox() as box, tempfile.TemporaryDirectory() as probe:
+            size_file = Path(probe) / "size"
+            script = f'head -c 10000000 /dev/zero > big 2>/dev/null; wc -c < big > {size_file}; exit 0'
+            # Laufende Pruefung praktisch aus: nur RLIMIT_FSIZE + Endpruefung greifen.
+            events, elapsed = self.run_bomb(box, script, {"zeitlimit_s": 60, "max_kompressionsfaktor": 200},
+                                            guard_interval=60)
+            self.assertLess(elapsed, 10)
+            self.assertEqual(int(size_file.read_text().strip()), 100 * 200 + 1, "Datei bei der Grenze abgeschnitten")
+            self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
+            self.assert_no_output(box)
+
+    def test_tool_killed_by_sigxfsz_counts_as_limit_even_without_leftover(self):
+        with Sandbox() as box:
+            script = 'head -c 10000000 /dev/zero > big 2>/dev/null; rm -f big; kill -XFSZ $$'
+            events, _ = self.run_bomb(box, script, {"zeitlimit_s": 60, "max_kompressionsfaktor": 200},
+                                      guard_interval=60)
+            self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
+            self.assert_no_output(box)
+
+    def test_endless_files_hit_max_dateien(self):
+        with Sandbox() as box:
+            script = 'i=0; while :; do : > "e$i"; i=$((i+1)); done'
+            events, elapsed = self.run_bomb(box, script, {"zeitlimit_s": 60, "max_dateien": 50})
+            self.assertLess(elapsed, 10)
+            self.assertEqual(events[-1]["fehlercode"], "zu_gross", events[-1])
+            self.assert_no_output(box)
+
+    def test_clear_output_removes_protected_directories(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp) / "out"
+            (out / "ro").mkdir(parents=True)
+            (out / "ro" / "datei").write_bytes(b"x")
+            (out / "zu" / "tief").mkdir(parents=True)
+            (out / "zu" / "tief" / "datei").write_bytes(b"x")
+            (out / "lose.bin").write_bytes(b"x")
+            (out / "ro").chmod(0o555)
+            (out / "zu").chmod(0o000)
+            try:
+                runner.clear_output(out)
+                self.assertEqual(list(out.iterdir()), [])
+            finally:
+                for path in (out / "ro", out / "zu"):
+                    if path.exists():
+                        path.chmod(0o700)
+
+    def test_cue_with_bin_companion_counts_the_whole_medium(self):
+        """Kompressionsfaktor bezieht sich auf CUE + BIN, nicht nur auf die winzige CUE."""
+        with Sandbox() as box:
+            cue = box.put("rev/original/dateien/aa/game.cue", b'FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n')
+            binary = box.put("rev/original/dateien/bb/game.bin", b"\x00" * 50_000)
+            script = 'head -c 40000 /dev/zero > track01.iso'
+            with tempfile.TemporaryDirectory() as tmp_root, patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+                 patch.object(runner, "command_for", return_value=["sh", "-c", script]):
+                events = runner.run_request({"kommando": "extrahieren", "eingabe": cue, "ausgabe": "/arbeit/job-cue",
+                                             "begleitdateien": [{"pfad": binary, "name": "game.bin"}],
+                                             "grenzen": {"max_kompressionsfaktor": 2}})
+            self.assertEqual(events[-1]["status"], "fertig", events[-1])
+
+    def test_real_zip_bomb_with_7zip_is_stopped(self):
+        seven = shutil.which("7zz") or shutil.which("7z")
+        if not seven:
+            self.skipTest("7-Zip fehlt")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            archive.writestr("null.bin", b"\x00" * 50_000_000)
+        data = buffer.getvalue()
+        self.assertLess(len(data), 200_000, "klein komprimiert")
+        with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, \
+             patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+             patch.dict(runner.TOOLS, {"7zz": (seven, *runner.TOOLS["7zz"][1:])}):
+            source = box.put("rev/original/dateien/aa/bomb.zip", data)
+            started = time.monotonic()
+            events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-bomb",
+                                         "grenzen": {"zeitlimit_s": 120}})
+            self.assertLess(time.monotonic() - started, 30)
+            self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
+            self.assert_no_output(box)
+
+
 if __name__ == "__main__":
     unittest.main()
