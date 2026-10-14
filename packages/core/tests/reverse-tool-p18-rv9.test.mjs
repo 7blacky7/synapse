@@ -156,7 +156,10 @@ try {
  assert.deepEqual(golden.fehler,[],G.toolDefinitionenMeldung(golden));
  assert.deepEqual(MCP_TOOLS.find(t=>t.name==='reverse'),REVERSE_DEFINITION);
  assert.deepEqual(stdio.reverseTool.definition,REVERSE_DEFINITION);
- assert.equal(REVERSE_FEHLERCODES.length,20);
+ // P18-T64 (527fed6c, auf main 5b9a3774, bereits in Basis 354135ca) hat 'kein_ausfuehrer' und 'format_nicht_unterstuetzt'
+ // ergaenzt (20 -> 22); P18-T26 hat keine Codes hinzugefuegt. Exakte Liste statt nur Laenge, damit auch Tausch/Umbenennung auffaellt.
+ assert.deepEqual([...REVERSE_FEHLERCODES],['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt']);
+ assert.equal(REVERSE_FEHLERCODES.length,22);
  console.log('RV9 PASS: Schema-Golden, Bibliothek/Paging, Bestätigung/Reorder, Rechte/Bindung/Race, Statusfelder, Queue/Dedup/Abbruch, Longpoll, Aktivität, unbekannte/ungenutzte Parameter, Archiv');
 } catch(error){console.error(error);process.exitCode=1;}
 finally {await pool.query('DELETE FROM public.tool_aktivitaet WHERE projekt=$1 AND agent_id IN ($2,$3)',[project,agent,other]);await pool.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await pool.end();await core.closePool();}
