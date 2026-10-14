@@ -49,12 +49,70 @@ TOOLS: dict[str, tuple[str, ...]] = {
     "javap": ("javap", "-c", "-p"),
     "analyzeHeadless": ("analyzeHeadless",),
 }
-EXTRACTORS = {
-    ".iso": "7zz", ".img": "7zz", ".bin": "7zz", ".cue": "bchunk", ".jar": "7zz", ".7z": "7zz",
-    ".rar": "7zz", ".cab": "cabextract", ".msi": "msiextract", ".exe": "7zz",
-    ".tar": "bsdtar", ".gz": "bsdtar", ".bz2": "bsdtar", ".xz": "bsdtar",
-    ".lha": "lhasa", ".lzh": "lhasa", ".arj": "arj",
+# Formatwahl fuer 'extrahieren' ausschliesslich am Inhalt, nie an der Endung.
+DISC_SECTOR = 2048
+ISO_MAGIC_OFFSETS = (0x8001, 0x8801, 0x9001)
+VRS_IDS = {b"CD001", b"BEA01", b"NSR02", b"NSR03", b"TEA01", b"BOOT2", b"CDW02"}
+HEAD_BYTES = 64 * DISC_SECTOR + 8
+SEVENZIP_TYPES = {"iso9660": "-tiso", "udf": "-tudf"}
+FORMAT_TOOLS = {
+    "iso9660": "7zz", "udf": "7zz", "7z": "7zz", "rar": "7zz", "zip": "7zz", "pe": "7zz",
+    "cab": "cabextract", "ole": "msiextract", "gzip": "bsdtar", "bzip2": "bsdtar",
+    "xz": "bsdtar", "tar": "bsdtar", "lha": "lhasa", "arj": "arj", "cue": "bchunk",
 }
+SIGNATURES = (
+    (b"7z\xbc\xaf\x27\x1c", "7z"), (b"Rar!\x1a\x07", "rar"), (b"PK\x03\x04", "zip"),
+    (b"MSCF", "cab"), (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "ole"), (b"\x1f\x8b", "gzip"),
+    (b"BZh", "bzip2"), (b"\xfd7zXZ\x00", "xz"), (b"\x60\xea", "arj"), (b"MZ", "pe"),
+)
+CUE_RE = re.compile(rb'(?im)^[ \t]*FILE[ \t]+\S.*[ \t](?:BINARY|MOTOROLA)[ \t]*\r?$')
+OUTPUT_RE = re.compile(r"^/arbeit/([^/]+)/?$")
+
+
+def disc_format(head: bytes) -> str:
+    """ISO9660 (CD001 an 0x8001/0x8801/0x9001) bzw. UDF (NSR02/NSR03 in der Volume Recognition Sequence)."""
+    iso = any(head[offset:offset + 5] == b"CD001" for offset in ISO_MAGIC_OFFSETS)
+    udf = False
+    for sector in range(16, 64):
+        ident = head[sector * DISC_SECTOR + 1:sector * DISC_SECTOR + 6]
+        if ident not in VRS_IDS:
+            break
+        if ident in (b"NSR02", b"NSR03"):
+            udf = True
+    return "udf" if udf else "iso9660" if iso else ""
+
+
+def detect_format(source: Path) -> str:
+    with source.open("rb") as stream:
+        head = stream.read(HEAD_BYTES)
+    disc = disc_format(head)
+    if disc:
+        return disc
+    if head[257:262] == b"ustar":
+        return "tar"
+    if head[2:4] == b"-l" and head[4:5] in (b"h", b"z") and head[6:7] == b"-":
+        return "lha"
+    for magic, name in SIGNATURES:
+        if head.startswith(magic):
+            return name
+    if b"\x00" not in head[:65536] and CUE_RE.search(head[:65536]):
+        return "cue"
+    return ""
+
+
+def job_id(req: dict[str, Any]) -> str:
+    """auftrag_id ist optional; sonst gilt der Ordnername aus ausgabe=/arbeit/<jobId>."""
+    raw_out = req.get("ausgabe")
+    derived = ""
+    if raw_out is not None:
+        match = OUTPUT_RE.fullmatch(str(raw_out))
+        derived = match.group(1) if match else str(raw_out)
+    job = str(req.get("auftrag_id", derived))
+    if not JOB_RE.fullmatch(job):
+        raise ValueError("ungueltige auftrag_id")
+    if raw_out is not None and derived != job:
+        raise ValueError("Ausgabe muss /arbeit/<auftrag_id> sein")
+    return job
 
 
 def path_under(value: str, root: Path, must_exist: bool) -> Path:
@@ -160,12 +218,12 @@ def output_manifest(root: Path, cap: dict[str, int], input_size: int) -> tuple[l
     return entries, total
 
 
-def selected_tool(req: dict[str, Any]) -> str:
+def selected_tool(req: dict[str, Any], fmt: str = "") -> str:
     command = req.get("kommando")
     if command not in (None, "spurtabelle", "extrahieren", "leser_ausfuehren"):
         raise ValueError("Kommando nicht_unterstuetzt")
     if command == "extrahieren":
-        return EXTRACTORS.get(Path(str(req.get("eingabe", ""))).suffix.lower(), "")
+        return FORMAT_TOOLS.get(fmt, "")
     return str(req.get("werkzeug", ""))
 
 
@@ -184,11 +242,12 @@ def cue_image(source: Path) -> Path:
     return image
 
 
-def command_for(tool: str, source: Path, out: Path, req: dict[str, Any]) -> list[str]:
+def command_for(tool: str, source: Path, out: Path, req: dict[str, Any], fmt: str = "") -> list[str]:
     if tool not in TOOLS or not shutil.which(TOOLS[tool][0]):
         raise ValueError("Werkzeug nicht_unterstuetzt")
     if tool == "7zz":
-        return [*TOOLS[tool], f"-o{out}", str(source)]
+        forced = [SEVENZIP_TYPES[fmt]] if fmt in SEVENZIP_TYPES else []
+        return [*TOOLS[tool], *forced, f"-o{out}", str(source)]
     if tool == "bsdtar":
         return [*TOOLS[tool], str(source), "-C", str(out), "--no-same-owner", "--no-same-permissions"]
     if tool == "bchunk":
@@ -213,27 +272,27 @@ def command_for(tool: str, source: Path, out: Path, req: dict[str, Any]) -> list
 
 
 def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
-    job = str(req.get("auftrag_id", ""))
-    if not JOB_RE.fullmatch(job):
-        raise ValueError("ungueltige auftrag_id")
+    job = job_id(req)
     cap = limits(req)
     source = path_under(str(req.get("eingabe", "")), BIB, True)
     if not source.is_file():
         raise ValueError("Eingabe ist keine regulaere Datei")
-    raw_out = str(req.get("ausgabe", f"/arbeit/{job}"))
-    if raw_out not in (f"/arbeit/{job}", job):
-        raise ValueError("Ausgabe muss /arbeit/<auftrag_id> sein")
+    extract = req.get("kommando") == "extrahieren"
+    fmt = detect_format(source) if extract else ""
+    tool = selected_tool(req, fmt)
+    if not tool:
+        if extract:
+            return [{"status": "fehler", "fehlercode": "nicht_unterstuetzt",
+                     "meldung": "Format am Inhalt nicht erkannt", "manifest": []}]
+        raise ValueError("kein Werkzeug angegeben")
     WORK.mkdir(parents=True, exist_ok=True)
     out = path_under(job, WORK, False)
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
         raise ValueError("Ausgabeordner muss leer sein")
-    tool = selected_tool(req)
-    if not tool:
-        raise ValueError("kein Extraktor fuer dieses Format")
-    command = command_for(tool, source, out, req)
+    command = command_for(tool, source, out, req, fmt)
     started = time.monotonic()
-    env = {**os.environ, "HOME": "/arbeit", "TMPDIR": "/opt/reverse/tmp",
+    env = {**os.environ, "HOME": "/tmp", "TMPDIR": "/tmp",
            "LC_ALL": "C.UTF-8", "GHIDRA_HOME": "/opt/ghidra"}
     proc = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, timeout=cap["zeitlimit_s"], check=False,
@@ -245,7 +304,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     version = tool_version(tool)
     return [
         {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
-        {"status": "fertig", "fehlercode": None, "werkzeug_version": version,
+        {"status": "fertig", "fehlercode": None, "werkzeug_version": version, "format": fmt or None,
          "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size},
     ]
 

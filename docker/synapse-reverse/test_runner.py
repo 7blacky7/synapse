@@ -1,6 +1,12 @@
+import gzip
 import hashlib
 import importlib.util
+import io
+import shutil
+import subprocess
+import tarfile
 import tempfile
+import zipfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +16,45 @@ SPEC = importlib.util.spec_from_file_location("reverse_runner", MODULE_PATH)
 runner = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(runner)
+
+
+def disc_image(sector_ids, offset_ids=()):
+    """Synthetic disc head: sector_ids are written into sectors 16.. (VRS), offset_ids as (offset, ident)."""
+    data = bytearray((16 + len(sector_ids) + 4) * 2048)
+    for index, ident in enumerate(sector_ids):
+        start = (16 + index) * 2048
+        data[start] = 1
+        data[start + 1:start + 6] = ident
+        data[start + 6] = 1
+    for offset, ident in offset_ids:
+        data[offset:offset + 5] = ident
+    return bytes(data)
+
+
+class Sandbox:
+    """Temporary /bib and /arbeit roots patched into the runner."""
+
+    def __enter__(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.bib = root / "bib"
+        self.work = root / "arbeit"
+        self.bib.mkdir()
+        self.patches = [patch.object(runner, "BIB", self.bib), patch.object(runner, "WORK", self.work)]
+        for item in self.patches:
+            item.start()
+        return self
+
+    def put(self, key, data):
+        path = self.bib / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return f"{self.bib}/{key}"
+
+    def __exit__(self, *exc):
+        for item in self.patches:
+            item.stop()
+        self.temp.cleanup()
 
 
 class RunnerContractTests(unittest.TestCase):
@@ -62,11 +107,138 @@ class RunnerContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.output_manifest(root, {**cap, "max_kompressionsfaktor": 4}, input_size=1)
 
-    def test_extract_selection_uses_extension_allowlist(self):
-        self.assertEqual(runner.selected_tool({"kommando": "extrahieren", "eingabe": "/bib/a.iso"}), "7zz")
-        self.assertEqual(runner.selected_tool({"kommando": "extrahieren", "eingabe": "/bib/a.cue"}), "bchunk")
-        self.assertEqual(runner.selected_tool({"kommando": "extrahieren", "eingabe": "/bib/a.jar"}), "7zz")
-        self.assertEqual(runner.selected_tool({"kommando": "extrahieren", "eingabe": "/bib/a.unknown"}), "")
+    def test_extract_selection_maps_content_format_not_extension(self):
+        request = {"kommando": "extrahieren", "eingabe": "/bib/a.iso"}
+        self.assertEqual(runner.selected_tool(request, "iso9660"), "7zz")
+        self.assertEqual(runner.selected_tool(request, "udf"), "7zz")
+        self.assertEqual(runner.selected_tool(request, "cue"), "bchunk")
+        self.assertEqual(runner.selected_tool(request, ""), "")
+        with self.assertRaises(ValueError):
+            runner.selected_tool({"kommando": "ausfuehren"})
+
+    def test_iso9660_magic_is_found_at_all_three_offsets(self):
+        for offset in (0x8001, 0x8801, 0x9001):
+            self.assertEqual(runner.disc_format(disc_image([], [(offset, b"CD001")])), "iso9660", hex(offset))
+        self.assertEqual(runner.disc_format(disc_image([], [(0x8002, b"CD001")])), "")
+        self.assertEqual(runner.disc_format(b"\x00" * 0x9100), "")
+
+    def test_udf_is_recognised_by_nsr_descriptor_in_vrs(self):
+        self.assertEqual(runner.disc_format(disc_image([b"BEA01", b"NSR02", b"TEA01"])), "udf")
+        self.assertEqual(runner.disc_format(disc_image([b"CD001", b"CD001", b"BEA01", b"NSR03", b"TEA01"])), "udf")
+        self.assertEqual(runner.disc_format(disc_image([b"CD001", b"CD001"])), "iso9660")
+        # NSR after a foreign sector is not part of the recognition sequence
+        self.assertEqual(runner.disc_format(disc_image([b"XXXXX", b"NSR02"])), "")
+
+    def test_detect_format_reads_content_and_ignores_extension(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cases = {
+                "game.bin": (disc_image([b"CD001", b"CD001"]), "iso9660"),
+                "movie.img": (disc_image([b"BEA01", b"NSR03", b"TEA01"]), "udf"),
+                "fake.iso": (b"\x00" * 70000, ""),
+                "raw.bin": (b"\xff" * 0x9800, ""),
+                "disk.img": (b"no magic here", ""),
+                "setup.dat": (b"MZ\x90\x00" + b"\x00" * 60, "pe"),
+                "x.iso": (b"7z\xbc\xaf\x27\x1c\x00\x04", "7z"),
+                "x.lzh": (b"\x00\x00-lh5-" + b"\x00" * 20, "lha"),
+                "disc.txt": (b'FILE "track.bin" BINARY\r\n  TRACK 01 MODE1/2352\r\n', "cue"),
+            }
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr("a.txt", "a")
+            cases["app.iso"] = (buffer.getvalue(), "zip")
+            cases["data.gz"] = (gzip.compress(b"abc"), "gzip")
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                info = tarfile.TarInfo("a.txt")
+                info.size = 1
+                archive.addfile(info, io.BytesIO(b"a"))
+            cases["plain.bin"] = (buffer.getvalue(), "tar")
+            for name, (data, expected) in cases.items():
+                (root / name).write_bytes(data)
+                self.assertEqual(runner.detect_format(root / name), expected, name)
+
+    def test_job_id_comes_from_executor_output_path(self):
+        self.assertEqual(runner.job_id({"ausgabe": "/arbeit/0f0e-job_1"}), "0f0e-job_1")
+        self.assertEqual(runner.job_id({"ausgabe": "/arbeit/abc/"}), "abc")
+        self.assertEqual(runner.job_id({"auftrag_id": "abc", "ausgabe": "/arbeit/abc"}), "abc")
+        self.assertEqual(runner.job_id({"auftrag_id": "abc"}), "abc")
+        for bad in ({"auftrag_id": "abc", "ausgabe": "/arbeit/other"}, {"ausgabe": "/arbeit/../etc"},
+                    {"ausgabe": "/tmp/abc"}, {"ausgabe": "/arbeit/a/b"}, {}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                runner.job_id(bad)
+
+    def test_executor_request_without_magic_is_nicht_unterstuetzt_and_writes_nothing(self):
+        for key in ("r1/original/fake.iso", "r1/original/raw.bin", "r1/original/disk.img"):
+            with Sandbox() as box:
+                request = {"kommando": "extrahieren", "eingabe": box.put(key, b"\x00" * 70000),
+                           "ausgabe": "/arbeit/job-nm", "grenzen": {"zeitlimit_s": 10}}
+                with patch.object(runner.subprocess, "run") as run:
+                    events = runner.run_request(request)
+                run.assert_not_called()
+                self.assertEqual(events, [{"status": "fehler", "fehlercode": "nicht_unterstuetzt",
+                                           "meldung": "Format am Inhalt nicht erkannt", "manifest": []}], key)
+                self.assertFalse((box.work / "job-nm").exists())
+
+    def test_executor_request_rejects_paths_outside_mounts(self):
+        with Sandbox() as box:
+            box.put("ok.iso", disc_image([b"CD001"]))
+            for request in (
+                {"kommando": "extrahieren", "eingabe": f"{box.bib}/../outside.iso", "ausgabe": "/arbeit/j1"},
+                {"kommando": "extrahieren", "eingabe": "/etc/passwd", "ausgabe": "/arbeit/j1"},
+                {"kommando": "extrahieren", "eingabe": f"{box.bib}/ok.iso", "ausgabe": "/arbeit/../j1"},
+            ):
+                with self.assertRaises(ValueError):
+                    runner.run_request(request)
+
+    def test_executor_request_runs_tool_with_tmp_dirs_and_forced_disc_type(self):
+        with Sandbox() as box:
+            request = {"kommando": "extrahieren", "eingabe": box.put("r1/original/disc.bin", disc_image([b"CD001", b"CD001"])),
+                       "ausgabe": "/arbeit/job-env", "grenzen": {"zeitlimit_s": 5}}
+            completed = subprocess.CompletedProcess([], 0, "", "")
+            with patch.object(runner.shutil, "which", return_value="/usr/bin/7zz"), \
+                 patch.object(runner.subprocess, "run", return_value=completed) as run:
+                events = runner.run_request(request)
+            command = run.call_args.args[0]
+            env = run.call_args.kwargs["env"]
+            self.assertEqual(env["TMPDIR"], "/tmp")
+            self.assertEqual(env["HOME"], "/tmp")
+            self.assertEqual(run.call_args.kwargs["timeout"], 5)
+            self.assertIn("-tiso", command)
+            self.assertEqual(command[-2:], [f"-o{box.work / 'job-env'}", str(box.bib / "r1/original/disc.bin")])
+            self.assertEqual(events[-1]["status"], "fertig")
+            self.assertEqual(events[-1]["format"], "iso9660")
+            self.assertEqual(events[-1]["manifest"], [])
+
+    def test_e2e_mini_iso_from_xorriso_extracts_with_manifest(self):
+        seven = shutil.which("7zz") or shutil.which("7z")
+        if not shutil.which("xorriso") or not seven:
+            self.skipTest("xorriso oder 7-Zip fehlt")
+        with Sandbox() as box, tempfile.TemporaryDirectory() as src_temp:
+            src = Path(src_temp)
+            (src / "DATEN").mkdir()
+            (src / "README.TXT").write_bytes(b"hallo siedler\n")
+            (src / "DATEN" / "KARTE.DAT").write_bytes(bytes(range(256)) * 4)
+            image = box.bib / "r1" / "original" / "cd1.img"
+            image.parent.mkdir(parents=True)
+            subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-R", "-J", "-V", "MINI", "-o", str(image), str(src)],
+                           check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+            self.assertEqual(runner.detect_format(image), "iso9660")
+            request = {"kommando": "extrahieren", "eingabe": f"{box.bib}/r1/original/cd1.img",
+                       "ausgabe": "/arbeit/job-e2e", "grenzen": {"zeitlimit_s": 60, "max_dateien": 10}}
+            with patch.dict(runner.TOOLS, {"7zz": (seven, *runner.TOOLS["7zz"][1:])}):
+                events = runner.run_request(request)
+            final = events[-1]
+            self.assertEqual(final["status"], "fertig", final)
+            manifest = {entry["pfad"]: entry for entry in final["manifest"]}
+            self.assertEqual(set(manifest), {"README.TXT", "DATEN/KARTE.DAT"})
+            for entry in final["manifest"]:
+                self.assertEqual(set(entry), {"pfad", "sha256", "groesse"})
+            self.assertEqual(manifest["README.TXT"]["sha256"], hashlib.sha256(b"hallo siedler\n").hexdigest())
+            self.assertEqual(manifest["DATEN/KARTE.DAT"]["groesse"], 1024)
+            # same ISO under a misleading name is still recognised, and the output folder must be fresh
+            with self.assertRaises(ValueError):
+                runner.run_request(request)
 
     def test_bchunk_uses_the_cue_referenced_image_and_safe_output_prefix(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -82,7 +254,10 @@ class RunnerContractTests(unittest.TestCase):
     def test_commands_are_argument_arrays_and_tool_is_allowlisted(self):
         with patch.object(runner.shutil, "which", return_value="/usr/bin/7zz"):
             command = runner.command_for("7zz", Path("/bib/in.iso"), Path("/arbeit/job"), {})
+            udf = runner.command_for("7zz", Path("/bib/in.iso"), Path("/arbeit/job"), {}, "udf")
         self.assertEqual(command[-2:], ["-o/arbeit/job", "/bib/in.iso"])
+        self.assertNotIn("-tiso", command)
+        self.assertEqual(udf[-3:], ["-tudf", "-o/arbeit/job", "/bib/in.iso"])
         with self.assertRaises(ValueError):
             runner.command_for("arbitrary-shell", Path("/bib/in"), Path("/arbeit/job"), {})
 
