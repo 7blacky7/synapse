@@ -155,6 +155,12 @@ const GRUND = 'Testlauf bewusst bestaetigt (P10-T73)';
       "git config alias.x '!rm -rf /etc/x'", "lua -e 'os.remove(\"/etc/x\")'", "lua -e 'os.execute(\"rm -rf /etc/x\")'",
       "awk 'BEGIN{system(\"rm -rf /etc/x\")}'", "echo x | awk '{system(\"rm -rf /etc/x\")}'", 'awk -f prog.awk datei', "gawk 'BEGIN{system(\"id\")}'",
       "tclsh <<< 'file delete /etc/x'", "deno eval 'Deno.removeSync(\"/etc/x\")'", "bun -e \"require('fs').rmSync('/etc/x')\"",
+      // P10-T75 (Restgrenzen ca9bf7be): versionierte Lua-Namen, process.binding/internalBinding, Git-Ref-/Stash-/Historienloeschung, setfacl ausserhalb
+      "lua5.4 -e 'os.remove(\"/etc/x\")'", "lua5.1 -e 'os.execute(\"rm -rf /etc/x\")'", "luajit -e 'io.popen(\"id\")'",
+      "node -e \"process.binding('fs')\"", "node -e \"internalBinding('fs')\"", "bun -e \"process.binding('fs')\"",
+      'git update-ref -d refs/heads/main', 'git update-ref --stdin', 'git branch -D main', 'git branch -df feature', 'git branch --delete --force feature',
+      'git stash drop', 'git stash drop stash@{0}', 'git stash clear', "git filter-branch --tree-filter 'rm -f x' HEAD", 'git filter-repo --invert-paths --path x',
+      'setfacl -R -m u:x:rwx /etc', 'setfacl -m u:x:r /etc/x', 'setfacl -R -b /opt/t75',
     ],
     nicht: [
       'git status --short', 'rm -rf dist', 'rm -rf packages/core/dist', 'rm -rf node_modules/.cache', 'rm -rf /tmp/t73-probe',
@@ -187,6 +193,10 @@ const GRUND = 'Testlauf bewusst bestaetigt (P10-T73)';
       'git switch -c neu', 'git stash', 'git merge main', 'git push origin HEAD', 'git worktree list', 'git checkout -b neu', 'git rebase main',
       'cat <(echo hi)', 'diff <(sort a) <(sort b)', './scripts/run.sh', 'psql -c "select 1"', 'curl -s https://x.invalid/a.json | jq .',
       'rm -rf .cache', 'cp out.log /tmp/out.log', 'grep -rn foo packages | head',
+      // P10-T75 Gegenrichtung: harmlose Nachbarn der neuen Katalogregeln laufen weiter (hoechstens Hinweis/Anleitung)
+      "lua5.4 -e 'print(1)'", "node -e \"console.log(process.versions.node)\"", 'git update-ref refs/heads/x HEAD', 'git branch -d feature',
+      'git branch --delete feature', 'git branch -vv', 'git stash list', 'git stash pop', 'git stash show -p',
+      'setfacl -R -m u:x:rwx ./build', 'setfacl -m u:x:r ./a', 'getfacl /etc/hosts',
     ],
   };
   const abweichung = [];

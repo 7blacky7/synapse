@@ -115,6 +115,9 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
     canonicalOutside=true;try{mitHinweis(await call('node '+file));}finally{canonicalOutside=false;}
     assert.equal(userExecutions,before+2);
    });
+   // P10-T78 (Auflage 61ca8b09): das pg.Client-Tupel live.invalid/synapse ist NICHT die Prod-DB dieses Testservers
+   // (live = dessen DATABASE_URL auf synapse_test) und bleibt deshalb Hinweis. Ein Tupel auf die echte Prod-DB ist
+   // auch aus einer Workspace-Datei gesperrt: core/tests/shell-test-temp-p10-t65 'Workspace-Testdatei ... (P10-T78)'.
    await t.test('DB- und Prozessrisiken bleiben trotz Workspace-Datei als Hinweis sichtbar',async()=>{
     const before=userExecutions;
     for(const source of ["import pg from'pg';new pg.Client({host:'live.invalid',database:'synapse'}).query('DROP TABLE foreign');","import{exec}from'node:child_process';exec(process.env.UNKNOWN);"]){

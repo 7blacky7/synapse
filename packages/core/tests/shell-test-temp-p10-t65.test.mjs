@@ -305,6 +305,28 @@ test('Testdatei mit Prod-Lesezugriff bzw. Test-DB-Schreibzugriff laeuft',async()
  ]){const {r,lage}=await decide(text);assert.equal(lage.datenbank_live,undefined);assert.notEqual(r.audit.stufe,'sperre');}
 });
 
+// P10-T78 Folgepunkt c (Auflage 61ca8b09 zu workspace-http-p10-t68:120): auch eine Workspace-Testdatei
+// (workspace_testdateien) mit pg.Client-Tupel bzw. URL auf die Prod-DB ist gesperrt; fehlender Port gilt als
+// 5432-Standard. Der HTTP-Fall dort bleibt Hinweis, weil sein Tupel nicht die Prod-DB jenes Testservers ist.
+test('Workspace-Testdatei mit Prod-Schreibzugriff ist gesperrt, Lesen/Test-DB nicht (P10-T78)',async()=>{
+ const wsProof={project,ziele:[],live:{host:'live.invalid',port:'5432',datenbank:'synapse',user:'system'}};
+ for(const [text,gesperrt] of [
+  ["import pg from'pg';new pg.Client({host:'live.invalid',database:'synapse'}).query('DROP TABLE foreign');",true],
+  ["import pg from'pg';new pg.Client({host:'x',port:5432,database:'synapse'}).query('DROP TABLE foreign');",true],
+  ["import pg from'pg';new pg.Client({connectionString:'postgresql://a@x:5432/synapse'}).query('UPDATE t SET a=1');",true],
+  ["import pg from'pg';new pg.Client({host:'live.invalid',database:'synapse'}).query('SELECT 1');",false],
+  ["import pg from'pg';new pg.Client({host:'x',port:5433,database:'synapse_test'}).query('DROP TABLE foreign');",false],
+ ]){
+  const full=root+'/'+file,command='node '+file;
+  const probe=async input=>({cwd:input.cwd,os:'linux',env:{},pfade:(input.pfade??[]).map(p=>({pfad:p,kanonisch:p,existiert:true,links:[]})),
+   ...(input.testdatei===full?{testdatei:{pfad:full,kanonisch:full,text,sha256:hash(text)}}:{})});
+  const lage=await ermittleShellLage(command,{cwd:root,project_root:root,shell:'sh',os:'linux',env:{},env_vollstaendig:true,probe,datenbank_freigabe:wsProof,workspace_testdateien:true});
+  const r=pruefeShellStart({project,command,lage,agent_id:'sol-2',workspace_testdateien:true},SHELL_SICHERUNG_SEED);
+  if(gesperrt){assert.equal(lage.datenbank_live,true,text);assert.equal(r.darf_starten,false,text);assert.equal(r.audit.stufe,'sperre',text);}
+  else{assert.ok(!lage.datenbank_live,text);assert.notEqual(r.audit.stufe,'sperre',text);}
+ }
+});
+
 // Koordinatorentscheidung #26568 (Maßstab A): lokale t83/t84-Baseline.
 // Diese reinen Importquellen werden nur als Text geprüft, niemals ausgeführt.
 // Freigabe ist hier ein dokumentiertes Analyselimit, kein Nachweis sicherer Importinhalte.

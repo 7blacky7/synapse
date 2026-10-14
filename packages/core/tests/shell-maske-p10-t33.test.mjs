@@ -45,8 +45,12 @@ try{
  assert(!JSON.stringify(json.daten).includes('unbekanntesTestGeheimnis'));assert(!JSON.stringify(json.daten).includes('andereTestDaten'));
  const bare=await runShell({project,command:"cut -d= -f2 .env",tail_lines:5});
  assert(!JSON.stringify(bare).includes(fake),'bekannter Wert ohne Schluessel');
- const chunked=await runShell({project,command:"node -e 'process.stdout.write(\"TOK\");setTimeout(()=>process.stdout.write(\"EN=chunkTestSecret\\n\"),15)'",tail_lines:5});
- assert(!JSON.stringify(chunked).includes('chunkTestSecret'),'Chunkgrenze trennt Secret-Schluessel');
+ // P10-T78: seit der User-Vorgabe 14.10.2026 (P10-T71, 6a9bbef8 shellWertWirktGeheim) macht der Name allein
+ // keinen Wert geheim; der Testwert muss nach Zugangsdaten aussehen (Ziffern + Buchstaben). Gepruefte Zusage
+ // bleibt unveraendert: ein ueber zwei Chunks getrennter Schluessel wird trotzdem maskiert.
+ const chunked=await runShell({project,command:"node -e 'process.stdout.write(\"TOK\");setTimeout(()=>process.stdout.write(\"EN=chunkTestSecret4711\\n\"),15)'",tail_lines:5});
+ assert(!JSON.stringify(chunked).includes('chunkTestSecret4711'),'Chunkgrenze trennt Secret-Schluessel');
+ assert.deepEqual(chunked.tail,['TOKEN=[WERT]'],'Chunk-Fall: Schluessel bleibt sichtbar, Wert maskiert');
  const raw='UNRAID_SSH_PASSWORD='+fake+'\n'+fake+'\nBearer unbekanntesTestGeheimnis\n';
  const {id}=await queue.insertCompletedShellJob({project,command:'test-completion',status:'done',tail:[raw],output:raw,message:'postgresql://tester:unbekanntesTestGeheimnis@host/db',source:'mcp_local',agent_id:'sol-1-test'});
  const saved=(await pool.query('SELECT output,tail,message FROM shell_jobs WHERE id=$1',[id])).rows[0];
@@ -64,16 +68,21 @@ try{
  const legacy=(await pool.query("INSERT INTO shell_jobs(project,command,status,output,tail,completed_at) VALUES($1,'legacy-test','done',$2,$3::jsonb,NOW()) RETURNING id",[project,raw,JSON.stringify([raw])])).rows[0].id;
  const counts=await maske.zaehleShellSecretBestand(project);assert.equal(counts.jobs,1);
  assert((await pool.query('SELECT output FROM shell_jobs WHERE id=$1',[legacy])).rows[0].output.includes(fake),'Zaehlen bereinigt keine Zeile');
- await assert.rejects(()=>maske.mitShellAusgabe({project,maskierung:false,agent_id:'sol-1',grund:'Gezielter Testfall'},()=>queue.getShellJobById(legacy)));
- await assert.rejects(()=>maske.mitShellAusgabe({project,maskierung:false,agent_id:'koordinator',grund:'kurz'},()=>queue.getShellJobById(legacy)));
+ // P10-T78: seit P10-T73 (7c83bf3c) wirft ein unberechtigtes Demaskieren nicht mehr, sondern liefert die
+ // Rueckfrage-Stufe (nichts gelesen, kein Klartext). Zusage unveraendert: ohne Bestaetigung kein Klartext.
+ const istRueckfrage=r=>r?.success===false&&r?.stufe==='rueckfrage'&&r?.ausgefuehrt===false&&typeof r?.bestaetigung_id==='string'&&!JSON.stringify(r).includes(fake);
+ assert(istRueckfrage(await maske.mitShellAusgabe({project,maskierung:false,agent_id:'sol-1',grund:'Gezielter Testfall'},()=>queue.getShellJobById(legacy))),'sol-1 ohne Bestaetigung: Rueckfrage, kein Klartext');
+ assert(istRueckfrage(await maske.mitShellAusgabe({project,maskierung:false,agent_id:'koordinator',grund:'kurz'},()=>queue.getShellJobById(legacy))),'Koordinator mit zu kurzem Grund: Rueckfrage, kein Klartext');
  const erlaubt=await maske.mitShellAusgabe({project,maskierung:false,agent_id:'koordinator',grund:'Gezielter Altbestandstest'},()=>queue.getShellJobById(legacy));
  assert(erlaubt.output.includes(fake));assert(erlaubt.maskierung_audit);
  assert.equal((await pool.query("SELECT COUNT(*)::int AS n FROM tool_calls WHERE project=$1 AND action='maskierung_aus'",[project])).rows[0].n,1);
  assert(!JSON.stringify((await pool.query('SELECT result,args_preview FROM tool_calls WHERE project=$1',[project])).rows).includes(fake));
  console.log('OK Persistenz/get/log/activity, Muster/Wertliste/Chunkgrenzen, Altbestand nur gezaehlt, Override-Audit');
 
- assert.equal(maske.maskiereShellText('log KEY=inlineSecret').text,'log KEY=[WERT]');
- const docker=JSON.parse(maske.maskiereShellText('{"Config":{"Env":["API_KEY=dockerSecret","LANG=C.UTF8"]}}').text);
+ // P10-T78: Testwerte mit Ziffern, weil seit P10-T71 (6a9bbef8) nur zugangsdatenartige Werte per Namensregel
+ // maskiert werden (User-Vorgabe 14.10.2026); die Zusage (Inline/Docker-Env maskiert, LANG frei) bleibt.
+ assert.equal(maske.maskiereShellText('log KEY=inlineSecret42').text,'log KEY=[WERT]');
+ const docker=JSON.parse(maske.maskiereShellText('{"Config":{"Env":["API_KEY=dockerSecret42","LANG=C.UTF8"]}}').text);
  assert.equal(docker.Config.Env[0],'API_KEY=[WERT]');assert.equal(docker.Config.Env[1],'LANG=C.UTF8');
  fs.writeFileSync(path.join(root,'.mcp.json'),JSON.stringify({mcpServers:{test:{env:{API_KEY:'mcpOnlyValue-98765'}}}}));
  fs.writeFileSync(path.join(root,'secrets.env'),'DEPLOY_AUTH=deployOnlyValue-98765\n');
@@ -92,7 +101,9 @@ try{
   for(const args of [{action:'get',id:legacy},{action:'log',id:legacy},{action:'log',id:legacy,query:'WERT'},{action:'activity',project,tools:['shell'],detail:'full'}]){
    const r=decode(await handler(args));assert(!JSON.stringify(r).includes(fake));assert(!JSON.stringify(r).includes('unbekanntesTestGeheimnis'));
   }
-  await assert.rejects(()=>handler({action:'get',id:legacy,maskierung:false,agent_id:'sol-1',grund:'Unberechtigter Test'}));
+  // P10-T78: P10-T73 liefert auch ueber die Transporte die Rueckfrage-Stufe statt eines Fehlers.
+  const verweigert=decode(await handler({action:'get',id:legacy,maskierung:false,agent_id:'sol-1',grund:'Unberechtigter Test'}));
+  assert(verweigert?.stufe==='rueckfrage'&&verweigert?.ausgefuehrt===false&&!JSON.stringify(verweigert).includes(fake),'Transport: unberechtigtes Demaskieren nur Rueckfrage');
   const r=decode(await handler({action:'get',id:legacy,project,maskierung:false,agent_id:'koordinator',grund:'Transport Altbestandsprobe'}));
   assert(r.job.output.includes(fake));
  }

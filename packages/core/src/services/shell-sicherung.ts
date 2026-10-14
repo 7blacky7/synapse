@@ -11,6 +11,13 @@
  * (npx/pnpm dlx/pnpm exec mit Loeschwerkzeugen wie rimraf), crontab, Skriptdateien im Projekt (bash scripts/x.sh
  * bleibt erlaubt, Inhalt nicht geprueft). Gewollte Fehlalarme: blosser Import gefaehrlicher Module in Einzeilern
  * (require('child_process'), import subprocess) ergibt Rueckfrage.
+ * P10-T75 (Restgrenzen ca9bf7be): lua5.4/lua5.1 -e, process.binding/internalBinding, git update-ref -d/--stdin,
+ * git branch -D (bzw. -d mit --force), git stash drop/clear, git filter-branch/filter-repo und setfacl ausserhalb
+ * des Projekts sind Rueckfrage. SQL ALTER ... DROP COLUMN und UPDATE ohne WHERE bleiben auf Projekt-/Test-DBs frei
+ * (regel-datenbanken-nur-prod-gesperrt); auf der Prod-DB sperrt sie LIVE_SCHREIBEND. Weiter nur dokumentiert: git push
+ * --force-if-includes (wirkt nur zusammen mit --force-with-lease, das schon Rueckfrage ist), rsync --delete im Projekt
+ * (Hinweis), N1 Demaskier-Bestaetigung hinter mehreren REST-Prozessen (Rueckfragen im Speicher je Prozess), N2 stdio
+ * ohne laufende REST-API: kein Nachmaskier-Worker.
  */
 import type { Pool } from 'pg';
 import{skriptFakten,type InlineKontext}from'./shell-inline-pruefung.js';
@@ -114,12 +121,12 @@ const INTERPRETER = /^(?:python[\d.]*|node|perl|ruby|php)$/i;
 /** Gefaehrliche APIs in Interpreter-Einzeilern (je Sprache); harmlose Einzeiler laufen weiter. */
 const EINZEILER_API: Array<[RegExp, RegExp]> = [
   [/^python[\d.]*$/i, /\b(?:os\.(?:system|popen|remove|unlink|rmdir|removedirs|kill|killpg|exec\w*|spawn\w*|truncate)|subprocess|shutil\.(?:rmtree|move)|pty\.spawn|(?:^|[^.\w])(?:eval|exec)\s*\(|__import__|\.unlink\s*\(|\.rmdir\s*\(|\.write_(?:text|bytes)\s*\()/],
-  [/^node$/i, /\b(?:child_process|execSync|execFileSync|spawnSync|execFile|spawn|exec|rmSync|rm|unlinkSync|unlink|rmdirSync|rmdir|writeFileSync|writeFile|truncateSync|renameSync|process\.kill|eval|Function)\s*\(|child_process|\[[^\]]*['"`]\s*\+|\+\s*['"`][^\]]*\]/],
+  [/^node$/i, /\b(?:child_process|execSync|execFileSync|spawnSync|execFile|spawn|exec|rmSync|rm|unlinkSync|unlink|rmdirSync|rmdir|writeFileSync|writeFile|truncateSync|renameSync|process\.kill|process\.binding|internalBinding|eval|Function)\s*\(|child_process|\[[^\]]*['"`]\s*\+|\+\s*['"`][^\]]*\]/],
   [/^perl$/i, /\b(?:system|exec|unlink|rmdir|rmtree|remove_tree|kill|qx|truncate|rename)\b|`|File::Path/],
   [/^ruby$/i, /\b(?:system|exec|spawn|IO\.popen|Open3|Process\.kill|FileUtils\.(?:rm\w*|remove\w*|mv)|File\.(?:delete|unlink|write)|Dir\.(?:delete|rmdir|unlink))\b|`|%x/],
   [/^php$/i, /\b(?:system|exec|shell_exec|passthru|popen|proc_open|pcntl_exec|unlink|rmdir|file_put_contents|eval)\s*\(|`/],
   [/^lua(?:jit|[\d.]*)$/i, /\b(?:os\.(?:execute|remove|rename)|io\.popen|loadstring|load|dofile)\b/],
-  [/^bun$/i, /\b(?:child_process|execSync|execFileSync|spawnSync|execFile|spawn|exec|rmSync|rm|unlinkSync|unlink|rmdirSync|rmdir|writeFileSync|writeFile|truncateSync|renameSync|process\.kill|eval|Function)\s*\(|child_process|Bun\.(?:spawn|spawnSync|\$|write)|\[[^\]]*['"`]\s*\+/],
+  [/^bun$/i, /\b(?:child_process|execSync|execFileSync|spawnSync|execFile|spawn|exec|rmSync|rm|unlinkSync|unlink|rmdirSync|rmdir|writeFileSync|writeFile|truncateSync|renameSync|process\.kill|process\.binding|internalBinding|eval|Function)\s*\(|child_process|Bun\.(?:spawn|spawnSync|\$|write)|\[[^\]]*['"`]\s*\+/],
   [/^(?:pwsh|powershell|iex|invoke-expression)$/i, /\b(?:Invoke-Expression|iex|Remove-Item|ri|del|erase|rd|rmdir|Stop-Process|spps|kill|Start-Process|Set-Content|Clear-Content|Out-File|Invoke-WebRequest|iwr|Invoke-RestMethod)\b|\[(?:System\.)?IO\.(?:Directory|File)\]::(?:Delete|Move|WriteAll\w*)|\[(?:System\.)?Diagnostics\.Process\]/i],
 ];
 const CODE_OPTION: Record<string, RegExp> = {
@@ -198,7 +205,8 @@ function indirekteAusfuehrung(command: string, roh: ShellTextKommando[], lage: S
       if (/\bsystem\s*\(|\|\s*getline|\b(?:print|printf)\b[^;}]*\|\s*"/.test(prog)) { gruende.push('awk_system'); continue; }
     }
     if (/^(?:pwsh|powershell)$/.test(name) && args.some(a => /^-(?:e|ec|enc|encodedcommand)$/i.test(a.text))) { gruende.push('encodedcommand'); continue; }
-    const sprache = /^python[\d.]*$/.test(name) ? 'python' : /^(?:iex|invoke-expression)$/.test(name) ? 'pwsh' : name;
+    // P10-T75: versionierte Lua-Namen (lua5.4, lua5.1) wie lua behandeln; luajit hat einen eigenen Eintrag.
+    const sprache = /^python[\d.]*$/.test(name) ? 'python' : /^lua[\d.]+$/.test(name) ? 'lua' : /^(?:iex|invoke-expression)$/.test(name) ? 'pwsh' : name;
     let code: string | undefined;
     if (sprache === 'pwsh' && /^(?:iex|invoke-expression)$/.test(name)) {
       if (args.some(a => a.dynamisch)) { gruende.push('iex_dynamisch'); continue; }
@@ -227,7 +235,9 @@ function textZieleSicher(g: ShellGefahr, kandidaten: string[], commands: ShellTe
     if (roh.startsWith('-')) continue;
     const p = roh.replace(/^(?:of|if)=/, '');
     if (SHELL_SICHERE_GERAETE.test(p)) continue;
-    if (!p || /^[~$%]/.test(p) || /[$`%]/.test(p) || p.startsWith('/') || p.startsWith('\\') || /^[A-Za-z]:/.test(p)) return false;
+    // Laufwerkspraefix (C:, C:\x) ist absolut; ein weiterer Doppelpunkt vor dem ersten Trenner ist kein Windows-Pfad,
+    // sondern z. B. eine ACL-Angabe (setfacl -m u:x:rwx, P10-T75).
+    if (!p || /^[~$%]/.test(p) || /[$`%]/.test(p) || p.startsWith('/') || p.startsWith('\\') || /^[A-Za-z]:(?![^\\/]*:)/.test(p)) return false;
     const teile = p.split(/[\\/]+/);
     if (teile.includes('..')) return false;
     if (g.ziel === 'ausserhalb_sicherer_orte' && !teile.some(t => segmente.some(s => regex(s, t)))) return false;
@@ -302,9 +312,12 @@ export interface ShellPruefOptionen extends InlineKontext {
   rechner?: string; katalog?: ShellSicherungsKatalog;
   kommandos?: ShellTextKommando[];
 }
+/** Katalogmuster: ohne Gross-/Kleinschreibung. P10-T75: Praefix '(?-i)' = genau mit Gross-/Kleinschreibung
+ * (git branch -D vs. -d); JS kennt kein Inline-Flag, deshalb wird das Praefix hier ausgewertet. */
 function regex(pattern: string, text: string): boolean {
   if (pattern.length > 512) throw new Error('shell_regel_muster_zu_lang');
-  return new RegExp(pattern, 'i').test(text);
+  const exakt = pattern.startsWith('(?-i)');
+  return new RegExp(exakt ? pattern.slice(5) : pattern, exakt ? '' : 'i').test(text);
 }
 /** Git-Nachrichten sind Daten; Shell-Substitutionen erscheinen separat im Syntaxbaum. */
 function gitNachrichtenIndizes(k:ShellTextKommando):Set<number>{

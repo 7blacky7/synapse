@@ -216,6 +216,17 @@ try{
   assert.equal((await q('SELECT status FROM '+schema+'.specialist_jobs WHERE id=$1',[z])).rows[0].status,'pending');
   const exp=(await post('/api/daemon/specialist/wartung',{host:HOST,daemon_id:D,aktion:'expire',max_alter_s:30})).json();
   assert.equal(exp.success,true);
+  // P10-T78 Folgepunkt b: expire wirkt hostuebergreifend -> Untergrenze 30 s; ein 10 s alter Job eines anderen Hosts bleibt.
+  const jung=await spJob(FREMD,{});
+  await q('UPDATE '+schema+".specialist_jobs SET created_at=NOW()-interval '10 seconds' WHERE id=$1",[jung]);
+  const kurz=(await post('/api/daemon/specialist/wartung',{host:HOST,daemon_id:D,aktion:'expire',max_alter_s:1})).json();
+  assert.equal(kurz.max_alter_s,30);
+  assert.equal((await q('SELECT status FROM '+schema+'.specialist_jobs WHERE id=$1',[jung])).rows[0].status,'pending','Untergrenze 30 s');
+  assert.equal((await post('/api/daemon/specialist/wartung',{host:HOST,daemon_id:D,aktion:'expire',max_alter_s:'abc'})).json().max_alter_s,30);
+  assert.equal((await post('/api/daemon/specialist/wartung',{host:HOST,daemon_id:D,aktion:'expire',max_alter_s:3600})).json().max_alter_s,3600);
+  await q('UPDATE '+schema+".specialist_jobs SET created_at=NOW()-interval '5 minutes' WHERE id=$1",[jung]);
+  assert.ok((await post('/api/daemon/specialist/wartung',{host:HOST,daemon_id:D,aktion:'expire',max_alter_s:1})).json().anzahl>=1);
+  assert.equal((await q('SELECT status FROM '+schema+'.specialist_jobs WHERE id=$1',[jung])).rows[0].status,'rejected','aelter als 30 s');
  });
  await check('Spezialisten-Wartung: wrapper_kandidaten nur Host-Projekte, wrapper_abgestuerzt fremd 409 / eigen CAS',async()=>{
   const spalten=(await q("SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name='wrapper_status' AND is_nullable='NO' AND column_default IS NULL",[schema])).rows.map(r=>r.column_name);

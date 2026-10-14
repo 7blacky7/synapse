@@ -232,8 +232,11 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     if (!d) return reply;
     switch (body.aktion) {
       case 'expire': {
-        const s = Number(body.max_alter_s ?? 30);
-        return { success: true, aktion: 'expire', anzahl: await expirePendingSpecialistJobs(Number.isFinite(s) && s > 0 ? Math.floor(s) : 30) };
+        // P10-T78 (Abnahme 61ca8b09): expire wirkt hostuebergreifend auf alle pending Spezialisten-Jobs. Untergrenze
+        // 30 s (wie der Daemon selbst), damit ein Client mit kleinem max_alter_s keine frischen Jobs anderer Hosts verwirft.
+        const minS = 30, s = Number(body.max_alter_s ?? minS);
+        const maxAlterS = Number.isFinite(s) ? Math.max(minS, Math.floor(s)) : minS;
+        return { success: true, aktion: 'expire', max_alter_s: maxAlterS, anzahl: await expirePendingSpecialistJobs(maxAlterS) };
       }
       case 'wrapper_kandidaten': {
         const alter = Number(body.alter_ms ?? 300_000);

@@ -79,6 +79,25 @@ for(const [name,command,env]of [
  if(erwartet){assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,erwartet);}
  else{assert.equal(r.darf_starten,true);assert.notEqual(r.audit.grund,'projekt_eigene_db');}
 });
+// P10-T78 Folgepunkt a (Abnahme d996c097 'export PG...;psql still') + P10-T75 SQL-Restgrenzen: PG*-Variablen per
+// export als eigener Befehl vor psql zaehlen fuer die Prod-Erkennung; ALTER ... DROP COLUMN und UPDATE ohne WHERE sind
+// auf der Prod-DB gesperrt (LIVE_SCHREIBEND), auf Projekt-/Test-DB frei (regel-datenbanken-nur-prod-gesperrt).
+for(const [command,gesperrt] of [
+ ["export PGPORT=5432 PGDATABASE=synapse; psql -c 'DELETE FROM t WHERE id=1'",true],
+ ["export PGPORT=5432; export PGDATABASE=synapse; psql -c 'UPDATE t SET a=1 WHERE id=2'",true],
+ ["export PGHOST=live.invalid PGPORT=5432 PGDATABASE=synapse && psql -c 'ALTER TABLE t DROP COLUMN c'",true],
+ ["export PGDATABASE=synapse\npsql -p 5432 -c 'INSERT INTO t VALUES (1)'",true],
+ ["psql '"+live+"' -c 'ALTER TABLE t DROP COLUMN c'",true],
+ ["psql '"+live+"' -c 'UPDATE t SET a=1'",true],
+ ["export PGPORT=5432 PGDATABASE=synapse; psql -c 'SELECT 1'",false],
+ ["export PGPORT=5433 PGDATABASE=synapse_test; psql -c 'UPDATE t SET a=1 WHERE id=1'",false],
+ ["psql '"+own+"' -c 'ALTER TABLE t DROP COLUMN c'",false],
+ ["psql '"+own+"' -c 'UPDATE t SET a=1'",false],
+])test('P10-T78 export PG*/Prod-SQL '+(gesperrt?'gesperrt':'frei')+': '+command.replace(/\n/g,' ').replace(/postgresql:\/\/[^@]*@/,'postgresql://'),async()=>{
+ const r=await decision(command);
+ if(gesperrt){assert.equal(r.darf_starten,false,JSON.stringify(r.audit));assert.equal(r.audit.stufe,'sperre');}
+ else{assert.equal(r.darf_starten,true,JSON.stringify(r.audit));assert.notEqual(r.audit.stufe,'rueckfrage');}
+});
 test('Andere Risiken neben erlaubter DB bleiben aktiv',async()=>{
  const r=await decision(inline("const c=getPool();c.query('DROP TABLE owned');require('child_process').execSync(process.env.COMMAND)"),{env:{DATABASE_URL:own}});
  assert.equal(r.darf_starten,false);

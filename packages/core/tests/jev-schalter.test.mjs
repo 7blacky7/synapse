@@ -116,6 +116,10 @@ const C = await lade(dist, 'services', 'jev-client.js');
 const A = await lade(dist, 'services', 'jev-admin.js');
 const E = await lade(dist, 'services', 'jev-entscheidung.js');
 const M = await lade(dist, 'services', 'jev-modus-hinweis.js');
+// P10-T78: seit P10-T41 (ce18a355) ist der freie Name 'user' kein Herkunftsnachweis mehr; echte User-Aufrufe
+// kommen ueber den authentifizierten UI-Eingang (mitUserHerkunft). Der Test simuliert genau diesen Eingang.
+const U = await lade(dist, 'services', 'user-herkunft.js');
+const alsUser = (fn) => U.mitUserHerkunft('tray', fn);
 
 /** Fake-fetch: zaehlt Aufrufe, antwortet mit usage nach Vorgabe */
 function fakeFetch(antwort = () => ({ status: 200, body: { answers: { a: { choice: 'x', confidence: 0.9 } }, usage: { input_tokens: 1000, output_tokens: 70, cost: 0.000042 } } }), verzoegerung = 0) {
@@ -309,7 +313,10 @@ try {
     r = await A.fuehreJevAdminAus('jev_status', { project: Q }, 'p15-irgendwer');
     pruefe(r.success === true && r.wirksam?.tool?.an === false && r.wirksam?.empfehlung?.an === true && 'budget' in r && Array.isArray(r.schalter), 'A jev_status: wirksam je Funktion, Schalterzeilen, Budget', r);
     r = await A.fuehreJevAdminAus('jev_schalten', { ebene: 'projekt', project: Q, funktion: 'tool', aktiv: true }, 'user');
-    pruefe(r.success === true && (await S.jevWirksam(Q, 'tool')).an === true, 'A agent_id user darf schalten', r);
+    pruefe(r.success === false && r.error === 'nur_koordinator' && (await S.jevWirksam(Q, 'tool')).an === false,
+      'A agent_id user OHNE UI-Herkunft darf nicht schalten (P10-T41)', r);
+    r = await alsUser(() => A.fuehreJevAdminAus('jev_schalten', { ebene: 'projekt', project: Q, funktion: 'tool', aktiv: true }, 'user'));
+    pruefe(r.success === true && (await S.jevWirksam(Q, 'tool')).an === true, 'A agent_id user (UI-Herkunft) darf schalten', r);
     r = await A.fuehreJevAdminAus('jev_kosten', { project: P, nur_dieses_projekt: true }, 'x');
     pruefe(r.success === true && r.kosten?.gesamt && Array.isArray(r.kosten.je_tag), 'A jev_kosten', r);
     r = await A.fuehreJevAdminAus('jev_budget', { modus: 'setzen', grenze_usd: 5, reset_tag: 3 }, 'koordinator');
@@ -352,7 +359,7 @@ try {
     r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', erklaerung_de: false, jev_sprache: 'de' }, 'koordinator');
     pruefe(r.success && r.optionen.jev_sprache === 'de' && r.optionen.jev_sprache_wirksam === 'en' && /Rueckfall/.test(r.optionen.hinweis ?? '')
       && JSON.stringify(r.optionen.gepflegte_sprachen) === '["en"]', 'O de aus + jev_sprache de -> Rueckfall en mit Hinweis, gepflegt [en]', r);
-    r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', jev_sprache: 'mix' }, 'user');
+    r = await alsUser(() => A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', jev_sprache: 'mix' }, 'user'));
     pruefe(r.success && r.optionen.jev_sprache_wirksam === 'en' && /mix/.test(r.optionen.hinweis ?? ''), 'O mix bei nur en -> Rueckfall en', r);
     r = await A.fuehreJevAdminAus('jev_optionen', { modus: 'setzen', erklaerung_de: true }, 'koordinator');
     pruefe(r.success && r.optionen.jev_sprache === 'mix' && r.optionen.jev_sprache_wirksam === 'mix' && !r.optionen.hinweis, 'O de wieder an: mix wirksam, kein Hinweis (Wunsch blieb gespeichert)', r);

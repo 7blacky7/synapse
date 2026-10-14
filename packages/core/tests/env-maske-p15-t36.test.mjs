@@ -101,6 +101,10 @@ const BEISPIEL = ['# Vorlage', `DB_URL=${G.X}`, `PORT=${G.P}`, 'LEER=', `TOKEN=$
 
 await aufraeumen();
 await core.registerProject(PROJECT, wurzel);
+// P10-T78: der Test schreibt nur ueber das files-Tool nach PG (kein Daemon spiegelt auf die Platte). Die
+// Plattenpruefung vor plan/commit (P6-T3, file-fs-drift.ts) saehe sonst den leeren Temp-Ordner als Drift.
+// Ein Host ohne lokalen/verbundenen Daemon liefert ehrlich 'ungeprueft'; die Masken-Zusagen bleiben gleich.
+await pool.query('UPDATE projects SET hostname = $2 WHERE name = $1', [PROJECT, 'env-t36-ohne-daemon']);
 // Bestands-.env wie in der Live-DB (EVALINK-MCP, saar-quiz): ignored=false, also auch in der Volltextsuche.
 await pool.query(
   `INSERT INTO code_files (id, project, file_path, file_name, file_type, content, content_hash, file_size, updated_at, ignored)

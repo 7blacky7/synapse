@@ -29,7 +29,8 @@ export async function holeAgentOnboarding(e: {
   const durchsicht = await core.entscheidungsDurchsichtZeile({ project, koordinator });
   const plaene = await core.planUebersicht(project);
   const block = {
-    isFirstVisit: true, project, rolle, rolle_quelle: quelle,
+    // P10-T78: Begruessung wieder auf allen Strecken (REST verlor sie mit P7-T40; stdio ergaenzt sie in server.ts).
+    isFirstVisit: true, message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:', project, rolle, rolle_quelle: quelle,
     rolle_hinweis: rollenQuelleKlartext(rolle, quelle, e.role),
     rules, regel_verzeichnis,
     ...(volltext ? { volltext_hinweis: volltext } : {}),

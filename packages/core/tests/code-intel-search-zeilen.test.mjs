@@ -89,11 +89,31 @@ if (typeof ci.findeSuchZeilen === 'function') {
     f('a requests b', [{ wort: 'requesting', begriffe: ['requesting', 'request'] }]).matches.map((m) => m.line), [1]);
 }
 
-// ─── Teil 2: gegen den echten Index (nur mit DATABASE_URL) ──────────────────
+// ─── Teil 2: gegen den Index in synapse_test (nur mit DATABASE_URL) ──────────
+// P10-T78 (P10-T56): Teil 2 las frueher den LIVE-Index (Projekt synapse und synapse-mega-html-benchmark).
+// Tests laufen nur noch gegen synapse_test; dort fehlen diese Projekte bzw. sind veraltet -> rot unabhaengig vom
+// Code. Jetzt legt der Test ein eigenes Projekt an: A) dieselbe CRLF-Datei von der Platte, B) ein synthetisches
+// 100k-Zeilen-HTML mit denselben Ankern/Trefferzeilen. Alle Erwartungen (Zeilen, Kappung, Kuerzung) sind
+// unveraendert; nur die Datenquelle ist eigen und wird am Ende entfernt.
 if (process.env.DATABASE_URL) {
+  const { pruefeTestDbUrl } = await import(pathToFileURL(join(wurzel, 'scripts', 'lib', 'test-db-schutz.mjs')).href);
+  pruefeTestDbUrl('code-intel-search-zeilen.test');
   const { getPool } = await import(dist('db/client.js'));
+  const pool = getPool();
+  const P = 'test-p10-t78-suchzeilen-' + process.pid;
+  const einfuegen = (pfad, inhalt, typ) => pool.query(
+    `INSERT INTO code_files (id, project, file_path, file_name, file_type, content, content_hash, file_size, updated_at, ignored)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), false)`,
+    [P + ':' + pfad, P, pfad, pfad.split('/').pop(), typ, inhalt, 'fixture-' + pfad.length, inhalt.length]);
+  const aufraeumen = async () => {
+    await pool.query('DELETE FROM code_files WHERE project = $1', [P]);
+    await pool.query('DELETE FROM projects WHERE name = $1', [P]);
+  };
+  try {
+  await aufraeumen();
+  await pool.query('INSERT INTO projects (name, hostname, path, enabled) VALUES ($1, $2, $3, true)', [P, 'test-ohne-daemon', '/nonexistent/' + P]);
 
-  // A) CRLF-Datei im Projekt synapse. Anker gegen die Platte.
+  // A) CRLF-Datei (Inhalt von der Platte). Anker gegen die Platte.
   const gs = 'packages/core/src/services/global-search.ts';
   const platte = readFileSync(join(wurzel, gs), 'utf8');
   const zeilen = platte.split('\n');
@@ -101,10 +121,11 @@ if (process.env.DATABASE_URL) {
     console.error(`FEHLER  Anker veraltet: ${gs}:51 sollte "  projectFilter?: string[];" mit CRLF sein`);
     process.exit(1);
   }
+  await einfuegen(gs, platte, 'ts');
   const erwartetGs = zeilen
     .map((z, i) => [i + 1, z.replace(/\r$/, '')])
     .filter(([, z]) => z.toLowerCase().includes('projectfilter'));
-  const a = (await ci.fullTextSearchCode('synapse', 'projectFilter', undefined, 5, gs))
+  const a = (await ci.fullTextSearchCode(P, 'projectFilter', undefined, 5, gs))
     .find((r) => r.file_path === gs);
   pruefe('CRLF-Datei: Treffer vorhanden', !!a, true);
   pruefe('CRLF-Datei: Z51 = "  projectFilter?: string[];" (ohne \\r)',
@@ -113,10 +134,21 @@ if (process.env.DATABASE_URL) {
     [a?.total_matches, a?.matches_gekappt, a?.matches?.map((m) => [m.line, m.text])],
     [erwartetGs.length, erwartetGs.length > 20, erwartetGs.slice(0, 20)]);
 
-  // B) 100k-Zeilen-HTML (Projekt synapse-mega-html-benchmark, nur lesen). Anker
-  //    gegen den indizierten Text — die Datei liegt nicht in diesem Checkout.
-  const P = 'synapse-mega-html-benchmark';
-  const inhalt = (await getPool().query(
+  // B) 100k-Zeilen-HTML, synthetisch nachgebaut (Anker und Trefferzeilen wie im frueheren Benchmark-Projekt).
+  const html = Array.from({ length: 100000 }, (_, i) => `<p class="z">zeile ${i + 1}</p>`);
+  const z64101 = "function drawGalaxy(){const c=document.getElementById('galaxyCanvas');";
+  const treffer = {
+    20: '#galaxyCanvas{width:100%;height:100%;display:block}',
+    15028: '<canvas id="galaxyCanvas"></canvas>',
+    64096: '// galaxyCanvas: Groesse und Zeichnen',
+    64097: "function resizeCanvas(){const c=document.getElementById('galaxyCanvas');",
+    64101: z64101 + 'c.width=c.width;'.repeat(Math.ceil((2285 - z64101.length) / 16)).slice(0, 2285 - z64101.length),
+    64102: 'window.addEventListener("resize",()=>{resizeCanvas();/* galaxyCanvas */});',
+    64104: 'document.getElementById("galaxyCanvas").focus();',
+  };
+  for (const [z, t] of Object.entries(treffer)) html[Number(z) - 1] = t;
+  await einfuegen('index.html', html.join('\n'), 'html');
+  const inhalt = (await pool.query(
     'SELECT content FROM code_files WHERE project = $1 AND file_path = $2', [P, 'index.html']
   )).rows[0]?.content?.split('\n') ?? [];
   const anker = [
@@ -147,7 +179,10 @@ if (process.env.DATABASE_URL) {
     .find((r) => r.file_path === 'index.html');
   pruefe('match_skip 5 + match_limit 2 -> Z64102, Z64104, nicht gekappt',
     [c?.matches?.map((m) => m.line), c?.matches_gekappt], [[64102, 64104], false]);
-  await getPool().end();
+  } finally {
+    await aufraeumen();
+    await pool.end();
+  }
 } else {
   console.log('HINWEIS Teil 2 uebersprungen (keine DATABASE_URL).');
 }

@@ -57,6 +57,19 @@ export const SHELL_SICHERUNG_VORGAENGER:Record<string,ShellSicherungsKatalog['ri
       ]
     }
   ],
+  "regel:git.branch": [
+    {
+      "command": [
+        "^git$",
+        "^branch$"
+      ],
+      "argv_any": [
+        "^-D$",
+        "^--delete$",
+        "^-d$"
+      ]
+    }
+  ],
   "regel:inline.exec": [
     {
       "command": [
@@ -533,7 +546,13 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
     },
     {
       "id": "git.branch",
-      "version": 1,
+      "version": 2,
+      "gefaehrlich": {
+        "argv_any": [
+          "(?-i)^-[A-Za-z]*[Df][A-Za-z]*$",
+          "^--force$"
+        ]
+      },
       "art": "text",
       "stufe": "anleitung",
       "status": "aktiv",
@@ -543,9 +562,8 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
           "^branch$"
         ],
         "argv_any": [
-          "^-D$",
-          "^--delete$",
-          "^-d$"
+          "^-[A-Za-z]*d[A-Za-z]*$",
+          "^--delete$"
         ]
       },
       "antwort_id": "git.branch",
@@ -637,7 +655,8 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
     },
     {
       "id": "git.stash",
-      "version": 1,
+      "version": 2,
+      "gefaehrlich": true,
       "art": "text",
       "stufe": "anleitung",
       "status": "aktiv",
@@ -662,6 +681,89 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
       ],
       "negativ": [
         "git status --short"
+      ]
+    },
+    {
+      "id": "git.update_ref",
+      "version": 1,
+      "gefaehrlich": true,
+      "art": "text",
+      "stufe": "anleitung",
+      "status": "aktiv",
+      "muster": {
+        "command": [
+          "^git$",
+          "^update-ref$"
+        ],
+        "argv_any": [
+          "^-d$",
+          "^--stdin$"
+        ]
+      },
+      "antwort_id": "git.update_ref",
+      "quelle": "https://git-scm.com/docs/git-update-ref",
+      "bereich": "global",
+      "project": null,
+      "os": [],
+      "rechner": [],
+      "positiv": [
+        "git update-ref -d refs/heads/main"
+      ],
+      "negativ": [
+        "git update-ref refs/heads/x HEAD"
+      ]
+    },
+    {
+      "id": "git.filter_branch",
+      "version": 1,
+      "gefaehrlich": true,
+      "art": "text",
+      "stufe": "anleitung",
+      "status": "aktiv",
+      "muster": {
+        "command": [
+          "^git$",
+          "^filter-(?:branch|repo)$"
+        ]
+      },
+      "antwort_id": "git.filter_branch",
+      "quelle": "https://git-scm.com/docs/git-filter-branch",
+      "bereich": "global",
+      "project": null,
+      "os": [],
+      "rechner": [],
+      "positiv": [
+        "git filter-branch --tree-filter 'rm -f x' HEAD"
+      ],
+      "negativ": [
+        "git log --oneline"
+      ]
+    },
+    {
+      "id": "fs.setfacl",
+      "version": 1,
+      "gefaehrlich": {
+        "ziel": "ausserhalb_projekt"
+      },
+      "art": "text",
+      "stufe": "rueckfrage",
+      "status": "aktiv",
+      "muster": {
+        "command": [
+          "^setfacl$"
+        ]
+      },
+      "antwort_id": "fs.ausserhalb",
+      "quelle": "P10-T75: Zugriffsrechte (ACL) ausserhalb von Projekt-Root und Scratchpad",
+      "bereich": "global",
+      "project": null,
+      "os": [],
+      "rechner": [],
+      "positiv": [
+        "setfacl -R -m u:x:rwx /etc"
+      ],
+      "negativ": [
+        "setfacl -R -m u:x:rwx ./build"
       ]
     },
     {
@@ -1909,6 +2011,58 @@ export const SHELL_SICHERUNG_SEED: ShellSicherungsKatalog = {
       ],
       "negativ": [
         "git branch -vv"
+      ]
+    },
+    {
+      "id": "git.update_ref",
+      "version": 1,
+      "beschreibung": "git.update_ref",
+      "risiko": "Eine Referenz (Branch, Tag) wird direkt geloescht oder ueber stdin veraendert; ohne Reflog-Eintrag ist der Stand schwer wiederzufinden.",
+      "sicher": {
+        "bash": "git show-ref",
+        "sh": "git show-ref",
+        "pwsh": "git show-ref",
+        "cmd": "git show-ref"
+      },
+      "danach": "Ziel, vorhandene Daten und Sicherung pruefen; danach eine konkrete gepruefte Variante waehlen.",
+      "platzhalter": {},
+      "quelle": "https://git-scm.com/docs/git-update-ref",
+      "status": "aktiv",
+      "bereich": "global",
+      "project": null,
+      "os": [],
+      "rechner": [],
+      "positiv": [
+        "git update-ref -d refs/heads/main"
+      ],
+      "negativ": [
+        "git update-ref refs/heads/x HEAD"
+      ]
+    },
+    {
+      "id": "git.filter_branch",
+      "version": 1,
+      "beschreibung": "git.filter_branch",
+      "risiko": "Die gesamte Historie wird umgeschrieben; alle Commit-IDs aendern sich und Branches anderer passen nicht mehr.",
+      "sicher": {
+        "bash": "git log --oneline -5",
+        "sh": "git log --oneline -5",
+        "pwsh": "git log --oneline -5",
+        "cmd": "git log --oneline -5"
+      },
+      "danach": "Ziel, vorhandene Daten und Sicherung pruefen; danach eine konkrete gepruefte Variante waehlen.",
+      "platzhalter": {},
+      "quelle": "https://git-scm.com/docs/git-filter-branch",
+      "status": "aktiv",
+      "bereich": "global",
+      "project": null,
+      "os": [],
+      "rechner": [],
+      "positiv": [
+        "git filter-branch --tree-filter 'rm -f x' HEAD"
+      ],
+      "negativ": [
+        "git log --oneline"
       ]
     },
     {

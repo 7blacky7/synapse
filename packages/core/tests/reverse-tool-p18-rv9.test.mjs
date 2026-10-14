@@ -137,20 +137,23 @@ try {
  assert.equal(restMissing.fehlercode,'keine_berechtigung');
  const stdio=await import('../../mcp-server/dist/tools/consolidated/index.js');
 
- // P16-T15 erweitert im selben W2 code_intel um genau typen. Diese neue Eigenschaft
- // wird separat geprüft; die bereits vorhandenen Vertragsbytes bleiben gegen 7cd5ddb eingefroren.
- const legacyDefinition=definition=>{
-   const d=structuredClone(definition);
-   if(d.name==='code_intel'){
-     assert.deepEqual(d.inputSchema.properties.typen,{type:'boolean',description:'typen:true prüft unterstützte Dateien aus PG auch ohne Schatten; mit schatten automatisch typbefunde (typen:false aus), TS und JS bei checkJs. Fehlende externe Typen: vollstaendig:false.'});
-     delete d.inputSchema.properties.typen;
-   }
-   return d;
- };
-
- const defs=Object.entries(stdio).filter(([name,v])=>name.endsWith('Tool')&&v?.definition&&v.definition.name!=='reverse').map(([,v])=>v.definition).sort((a,b)=>a.name.localeCompare(b.name));
- assert.equal(hash(MCP_TOOLS.filter(t=>t.name!=='reverse').map(legacyDefinition)),'c1f8362b8f43a9e7493c1db5aab75a2c7f6b323c451950dc763ce6714dcadfcf','REST Altdefinitionen eingefroren');
- assert.equal(hash(defs.map(legacyDefinition)),'1cada027187ec8a345e0afc3270cf5287687ace8a84b54185453e47edbb81090','stdio Altdefinitionen eingefroren');
+ // P10-T78 (User-Entscheidung 444127bc Punkt 1): statt zwei Gesamt-Hashes (c1f8362b/1cada027 gegen 7cd5ddb, mit
+ // Sonderregel fuer code_intel.typen) ist je Strecke und Tool eingefroren (Stand 354135ca). Absichtliche Aenderungen
+ // brauchen einen Eintrag mit grund + task in fixtures/tool-definitionen-p18-rv9.json (Helfer _helfer/tool-definitionen-golden.mjs).
+ const G=await import('./_helfer/tool-definitionen-golden.mjs');
+ const stdioDefs=Object.entries(stdio).filter(([name,v])=>name.endsWith('Tool')&&v?.definition).map(([,v])=>v.definition);
+ const istDefs={rest:G.hashJeTool(MCP_TOOLS),stdio:G.hashJeTool(stdioDefs)};
+ // Selbsttest (Positivkontrolle, nur gegen den eingefrorenen Stand): unbegruendete Aenderung rot, Eintrag ohne
+ // grund rot, begruendeter Eintrag gruen.
+ const g0=G.ladeToolDefinitionen(),leer={...g0,aenderungen:[]},null64='0'.repeat(64);
+ const manipuliert={rest:{...g0.eingefroren.rest,code_intel:null64},stdio:{...g0.eingefroren.stdio}};
+ const eintrag={strecke:'rest',tool:'code_intel',alt:g0.eingefroren.rest.code_intel,neu:null64,task:'P10-T78',datum:'2026-10-14'};
+ assert(G.pruefeToolDefinitionen(manipuliert,leer).fehler.some(f=>f.startsWith('rest/code_intel: GEAENDERT')),'Selbsttest: unbegruendete Aenderung wird erkannt');
+ assert(G.pruefeToolDefinitionen(manipuliert,{...leer,aenderungen:[eintrag]}).fehler.some(f=>/grund fehlt/.test(f)),'Selbsttest: Eintrag ohne grund wird abgelehnt');
+ assert.deepEqual(G.pruefeToolDefinitionen(manipuliert,{...leer,aenderungen:[{...eintrag,grund:'Selbsttest: absichtliche Aenderung'}]}).fehler,[],'Selbsttest: begruendete Aenderung wird akzeptiert');
+ assert(G.pruefeToolDefinitionen(manipuliert,{...leer,aenderungen:[{...eintrag,alt:null64,grund:'Selbsttest: falsche Kette'}]}).fehler.some(f=>/Kette unterbrochen/.test(f)),'Selbsttest: falscher alt-Hash wird erkannt');
+ const golden=G.pruefeToolDefinitionen(istDefs);
+ assert.deepEqual(golden.fehler,[],G.toolDefinitionenMeldung(golden));
  assert.deepEqual(MCP_TOOLS.find(t=>t.name==='reverse'),REVERSE_DEFINITION);
  assert.deepEqual(stdio.reverseTool.definition,REVERSE_DEFINITION);
  assert.equal(REVERSE_FEHLERCODES.length,20);

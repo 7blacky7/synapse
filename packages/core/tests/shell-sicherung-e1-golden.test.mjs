@@ -19,6 +19,11 @@ fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanup
 const db=await import('../dist/db/client.js');
 const {execShellInProject:rawExecShellInProject}=await import('../dist/services/shell-exec.js');
 const execShellInProject=trackShellStreams(cleanup,rawExecShellInProject);
+// P10-T78: job_env.entfernt zaehlt die aus der AUFRUFER-Umgebung entfernten Variablen (Tokens, DB-URLs ...) und ist damit ein
+// Laufzeitwert: das Golden (c37bc1da) entstand in einer Umgebung mit 7 solcher Variablen, ein Synapse-Shell-Job hat nur noch 1.
+// Deshalb exakt gegen baueJobUmgebung derselben Umgebung pruefen und im Golden normalisieren (Regel: nur Laufzeitwerte).
+const{baueJobUmgebung}=await import('../dist/services/shell-job-umgebung.js');
+const erwartetEntfernt=(await baueJobUmgebung(project,{leseZugang:async()=>null})).info.entfernt;
 const actualFetch=globalThis.fetch;
 globalThis.fetch=(u,opts)=>String(u).includes('/projects/')&&String(u).includes('/status')
  ? Promise.resolve(new Response('{"enabled":true}',{status:200})):actualFetch(u,opts);
@@ -29,7 +34,8 @@ const results=[];
 for(const command of ['pnpm build','pnpm test','git status --short']){
  const r=await execShellInProject({project,command,tail_lines:100});
  assert.equal(r.exit_code,0);
- const norm={...r,stream_id:'<STREAM>',tail:r.tail.map(l=>l.split(root).join('<TEST_ROOT>'))};
+ assert.equal(r.job_env?.entfernt,erwartetEntfernt,'job_env.entfernt = entfernte Variablen der Aufrufer-Umgebung');
+ const norm={...r,stream_id:'<STREAM>',job_env:{...r.job_env,entfernt:'<ENTFERNT>'},tail:r.tail.map(l=>l.split(root).join('<TEST_ROOT>'))};
  results.push({command,result:norm});
 }
 const bytes=JSON.stringify(results);

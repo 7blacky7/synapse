@@ -55,8 +55,20 @@ const cases = [
   ['long', 'not JSON {"note":"' + 'token key '.repeat(6000) + '"}'],
 ];
 // Erfasst am unveränderten Altstand, Job b4c69b46-89da-4363-8bcd-2167ca59309b.
+// GOLDEN-AENDERUNGEN (je Eintrag: alter Hash, Grund, Task). Nur absichtliche, begruendete Aenderungen; jede
+// Aenderung zeigt, dass kein bekannter Wert/kein Zugangsdatum frei wird (Klartext-Wache unten).
+//   P10-T78 (14.10.2026), Ursache P10-T71 6a9bbef8 + 467181df und P10-T72 24958521, Vergleich Klartext 7cd5ddb -> 354135ca:
+//   - text/plain   (alt 3591d2fb…): 'key=normal' bleibt sichtbar. User-Vorgabe 14.10.2026: der Name allein macht
+//                   keinen Wert geheim (shellWertWirktGeheim); 'normal' sieht nicht nach Zugangsdaten aus.
+//   - text/assignment (alt ed6167a2…): shell maskierte 'api_key=…' bis zum Zeilenende (verschluckte token:/pwd=);
+//                   jetzt je Wert einzeln '[WERT]', literal/Provenienz behalten die Anfuehrungszeichen. Alle drei
+//                   Werte bleiben maskiert.
+//   - text/quotes  (alt e4313d32…): literal/Provenienz behalten die Anfuehrungszeichen um [WERT]; Wert maskiert.
+//   - response / persistence (alt 2701aa07… / e101f329…): Summe der drei Faelle oben; zusaetzlich verschluckt ein
+//                   leeres 'TOKEN=' nicht mehr die Folgezeile (alt maskierte dadurch zufaellig 'sk-…' der
+//                   Nachbarzeile; das Shell-Profil maskiert sk- ohne Namen/Literal weder alt noch neu, text/sk unveraendert).
 const golden = {
-  "text/plain": "3591d2fb3c67ff8e8c7cc60a426a540843b9faeabc7270f316cb8d1cd9c59736",
+  "text/plain": "23b9e5fcc26b160e1c7a4e9b964fee910954d0381ea829c1ca872fce5961c20e",
   "text/pem": "e682766b2119ad9f2012096fbad80670b026ab81347b5044601192ebb6d63b2f",
   "text/pem_offen": "67b473e37168fc35ac1937365b23de2f2cd9e4ca2c7929ca8d4a9227f91b99e3",
   "text/sk": "b18fee40ebb4a39c2c2f7a75aa107b8fcd6c6758863b715b25d6f773234f6d91",
@@ -71,11 +83,11 @@ const golden = {
   "text/bearer_kurz": "bf04ebef86e27c0bc7c5aea2d01836e078892ff5e6c484742bf0da1cc860d84f",
   "text/url": "2b7e0a8a7699a3fa7fb0389235985bbe8f59330b11f9a3b5d60e6bb27364c44e",
   "text/url_kodiert": "f3629d44abd6caedb5a9e396b265ac949f70ad992fd89163a64c510dfafce32b",
-  "text/assignment": "ed6167a2efca10ba6e8e884c913af40aab9e702f695f2dca662f55a6a6ab23f8",
+  "text/assignment": "be1b9e41c7fab37f53724e13cedef21eb6dfd252703e0b553779f12a1ddc7688",
   "text/shell_names": "a143d6345be127c3a7df8d459ad147255cebebd36ddbfc55011c2edea85b538a",
   "text/exceptions": "49d2cdf537cc3f4face2e6a7ea301b605c3b0a09cbd70651b470fb886cc74822",
   "text/sshpass": "3c415b6d699acd6d01c32ea5b631d4f93102959fb1f54b22c712660adf5a1cbb",
-  "text/quotes": "e4313d32b7e7bf2fe61337c73d7d39dcfba9a824ce6762af17817237e09562d9",
+  "text/quotes": "89f1ad4860f09e9639c57ea2751b070013d8bde9e54836ba1c57e0d3452fa142",
   "text/json": "39e1d86021dc168d1bf3ae3e394489c1f693d2849e47b610e561397bbc9d695f",
   "text/json_pretty": "663b3ee8aa040d444a05089daa593447a1c41fc04601f2498776dcafe9b299f0",
   "text/json_fragment": "866247671960808dddc35b344e0a0e6b1163c3f82f06764ce5015030ce095b17",
@@ -88,8 +100,8 @@ const golden = {
   "mcp": "32a0f91e1360ee6a1cbaea96baccf2c1ed5f236b3c9e8040264d183eee4055b2",
   "literal_large": "b901049d00135822cdbe97a789f8fe4cc7d76f95e130756a9d554828211cfc12",
   "structured": "b154c0dff1486c72e4d7974497e1bee8c06e983be0cdbc6e0ba8871b265e1be6",
-  "response": "2701aa0711922d84ba6361a3af37a9cfbc4ad82781a6a8ab15233d7ce3f5ce2b",
-  "persistence": "e101f329f18fdff70ed96122e9925b3c2f1d57bf9c3286aadc1087ab87854e15"
+  "response": "6adf886498ccb610f388971bf186737c4186c834ae59de4c58a238a329abea6a",
+  "persistence": "8011e444660878459fb28c92073052252a6f87e4380a7a8782095dd68419d046"
 }; // GOLDEN_ALTSTAND
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const values = [fake, 'test_ueberlappender_Wert', 'ueberlappender'];
@@ -118,8 +130,16 @@ try {
   inserted = true;
   await pool.query("INSERT INTO code_files(id,project,file_path,file_name,file_type,content,content_hash,file_size) VALUES($1,$2,'cfg/.env','.env','env',$3,'rv1-fixture',40)",[randomUUID(),project,'TOKEN='+fake]);
   const payload = {project,id:'11111111-1111-4111-8111-111111111111',status:'done',command:'echo TOKEN='+fake,output:cases.map(x=>x[1]).join('\n'),tail:[fake,'Bearer '+fake],nested:{password:fake,key:'public'}};
-  capture('response',await shell.maskiereShellAntwort(project,payload));
+  const antwort = await shell.maskiereShellAntwort(project,payload);
+  capture('response',antwort);
   capture('persistence',await shell.maskiereShellVorSpeichern(project,payload));
+  // P10-T78: Klartext-Wache unabhaengig von den Hashes - ein bekannter Wert erscheint in keiner Ausgabe mit
+  // Wertliste (literal, Provenienz) und nicht in der Tool-Antwort. Fängt eine Lockerung, auch wenn jemand Hashes neu erfasst.
+  for (const [name, text] of cases) {
+    assert(!env.maskiereShellText(text, values).text.includes(fake), 'literal ohne Klartext: ' + name);
+    assert(!env.maskiereShellTextMitTreffern(text, values).text.includes(fake), 'Provenienz ohne Klartext: ' + name);
+  }
+  assert(!JSON.stringify(antwort).includes(fake), 'Tool-Antwort ohne Klartext');
   if (mode === 'capture') {
     console.log('GOLDEN_ALTSTAND='+JSON.stringify(actual));
   } else {
