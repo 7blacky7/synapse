@@ -26,7 +26,7 @@ import { getPool, registriereWorker, workerPausiert, meldeWorkerArbeit, createDe
 import type { ShellLage,ShellBestaetigung,ShellSicherungsAntwort,SicherungsShell } from '@synapse/core';
 import {workspaceJobDatenbank} from './workspace-job-db.js';
 import {schuetzeWorkspaceWurzel,pruefeWorkspaceQuellen,schreibeWorkspaceQuellen,workspaceExecProgramm} from './workspace-quellschutz.js';
-import {holeShellDbFreigabe,pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart,baueJobUmgebung}from'@synapse/core';
+import {holeShellDbFreigabe,privateShellTestDbFreigabe,pruefeShellStart,holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob,waehleShellStart,baueJobUmgebung}from'@synapse/core';
 import type { ShellProbeAnfrage, ShellProbeAntwort } from '@synapse/core';
 
 /**
@@ -546,6 +546,7 @@ export class WorkspaceOrchestrator {
     if(!pruefung.darf_starten)return maskiereShellAntwort(project,{
       stdout:'',stderr:'',exitCode:null,timedOut:false,durationMs:0,status:'rejected',
       ...pruefung.antwort,...(sicherungsJob?{id:sicherungsJob}:{})});
+    const testDbMetadaten=privateShellTestDbFreigabe(lage,dbFreigabe,pruefung);
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const t0 = Date.now();
     console.error(`[Workspaces] exec ${project}: ${command.slice(0, 120)}${command.length > 120 ? '…' : ''} (timeout=${timeoutMs}ms)`);
@@ -578,7 +579,7 @@ export class WorkspaceOrchestrator {
     try {
     const exec = await container.exec({
       Cmd: ['/usr/bin/env','-i',...Object.entries(jobUmgebung.env).filter((e):e is [string,string]=>e[1]!==undefined).map(([k,v])=>k+'='+v),
-        `SYNAPSE_PROJECT=${project}`,...(lage.datenbank_zuordnung&&dbFreigabe.test_system_id?[`SYNAPSE_SHELL_DB_FREIGABE=${JSON.stringify(dbFreigabe)}`]:[]),
+        `SYNAPSE_PROJECT=${project}`,...(testDbMetadaten?[`SYNAPSE_SHELL_DB_FREIGABE=${testDbMetadaten}`]:[]),
         ...(testdatei?['node','-e',workspaceExecProgramm(),JSON.stringify({programm:opts.shell?start.programm:'/bin/sh',argv:[...start.prefix,command],timeoutMs,marker:timeoutMarker})]:[opts.shell?start.programm:'/bin/sh',...start.prefix,command])],
       AttachStdout: true,
       AttachStderr: true,

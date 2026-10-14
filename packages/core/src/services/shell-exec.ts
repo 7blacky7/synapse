@@ -12,6 +12,7 @@
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import {ShellAusgabePuffer} from './shell-ausgabe-puffer.js';
+import {shellNulText} from './shell-ausgabe-nul.js';
 import {ladeShellWerte,maskiereShellDaten,maskiereShellText} from './shell-maske.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -23,7 +24,7 @@ import { ermittleShellLage, type ShellLage, type ShellLageKontext } from './shel
 import {pruefeShellStart,type ShellBestaetigung}from'./shell-start-sicherung.js';
 import{holeShellStartKatalog,geschuetzteShellProzesse,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./shell-sicherungs-lauf.js';
 import { waehleShellStart } from './shell-start.js';
-import {holeShellDbFreigabe} from './shell-db-freigabe.js';
+import {holeShellDbFreigabe,privateShellTestDbFreigabe} from './shell-db-freigabe.js';
 import type {ShellDbFreigabe} from './shell-db-zuordnung.js';
 import type { SicherungsShell } from './shell-sicherung-parser.js';
 
@@ -77,6 +78,8 @@ export type ShellExecArgs = {
   bestaetigt?: ShellBestaetigung | null;
   /** Interne bestehende Queue-ID; keine neue Berechtigung. */
   sicherungs_job_id?: string;
+  /** Private Queuebindung, nicht aus MCP-/REST-Parametern übernehmen. */
+  queued_stream_id?: string;
   sicherungs_ursprung?: 'daemon' | 'mcp_local' | 'workspace';
   /** @deprecated Altname der Abloesegrenze. Wirkt als detach_after_ms. */
   timeout_ms?: number;
@@ -237,11 +240,13 @@ export async function execShellInProject(
     return maskiereShellDaten({status:'rejected',error:pruefung.antwort?.error??'shell_anleitung',
       ...pruefung.antwort,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten;
   }
-  if(lage.datenbank_zuordnung&&dbFreigabe.test_system_id)jobUmgebung.env.SYNAPSE_SHELL_DB_FREIGABE=JSON.stringify(dbFreigabe);
+  const testDbMetadaten=privateShellTestDbFreigabe(lage,dbFreigabe,pruefung);
+  if(testDbMetadaten)jobUmgebung.env.SYNAPSE_SHELL_DB_FREIGABE=testDbMetadaten;
   const result = await new Promise<Record<string,unknown>>((resolve) => {
     ensureStreamsDir();
     cleanupOldStreams();
-    const streamId = crypto.randomBytes(8).toString('hex');
+    const streamId = args.queued_stream_id && /^[a-f0-9]{16}$/.test(args.queued_stream_id)
+      ? args.queued_stream_id : crypto.randomBytes(8).toString('hex');
 
     const log = fs.openSync(logPath(streamId), 'w');
     // detached:true gibt dem Kind eine EIGENE Prozessgruppe, und das ist die
@@ -295,11 +300,12 @@ export async function execShellInProject(
 
     // P10-T33: Klartext darf nie in die Stream-Datei. UTF-8 und Geheimnisse ueber Chunk-Grenzen.
     const decoderOut=new StringDecoder('utf8'),decoderErr=new StringDecoder('utf8');
-    let maskiert=0;
-    const puffer=new ShellAusgabePuffer(werte,(text,anzahl)=>{maskiert+=anzahl;fs.writeSync(log,text);});
+    let maskiert=0,nulBytes=0;
+    const puffer=new ShellAusgabePuffer(werte,(text,anzahl)=>{maskiert+=anzahl;const safe=shellNulText(text);nulBytes+=safe.anzahl;fs.writeSync(log,safe.text);});
     child.stdout?.on('data',(chunk:Buffer)=>puffer.empfange(decoderOut.write(chunk)));
     child.stderr?.on('data',(chunk:Buffer)=>puffer.empfange(decoderErr.write(chunk)));
-    const flush=()=>{puffer.empfange(decoderOut.end());puffer.empfange(decoderErr.end());puffer.ende();};
+    let flushed=false;
+    const flush=()=>{if(flushed)return;flushed=true;puffer.empfange(decoderOut.end());puffer.empfange(decoderErr.end());puffer.ende();if(nulBytes)fs.writeSync(log,`\n[NUL-Bytes ersetzt: ${nulBytes}]\n`);};
 
     // ── Abbruch von aussen (SH-2) ──
     // Der Aufrufer bekommt eine Handhabe auf den Kindprozess. Ohne sie koennte

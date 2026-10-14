@@ -33,6 +33,7 @@ export type { RegelVerzeichnis } from './services/agent-rollen.js';
 // P18-T11/RV1: gemeinsame Geheimnis-Maskierung für neue API-Verbraucher.
 export { MASKEN_KATALOG, maskiereMitKatalog, zaehleMaskenTreffer } from './services/masken-katalog.js';
 export type { MaskenBereich, MaskenEintrag, MaskenErsetzer } from './services/masken-katalog.js';
+export {privateShellTestDbFreigabe} from './services/shell-db-freigabe.js';
 // P10-T33: gemeinsame Shell-Maske, auch fuer Lage-/Audit-Daten.
 export {maskiereShellAntwort,maskiereShellDaten,maskiereShellText,ladeShellWerte,mitShellAusgabe,shellSichtUnmaskiert} from './services/shell-maske.js';
 export {claimHinweis,projektHinweisOption,projektHauptbranchOption,projektHauptbranchStatus} from './services/hinweis-drossel.js';
