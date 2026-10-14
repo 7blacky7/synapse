@@ -18,6 +18,8 @@ PROTOKOLL (eine JSON-Zeile je Nachricht, UTF-8):
   rein:  {"id": 7, "sprache": "rust", "inhalt": "...", "pfad": "src/a.rs"}
          {"id": 8, "info": true}
          {"id": 9, "vorwaermen": ["jvm"]}   (E3b: JVM starten und anwaermen; Antwort erst, wenn sie bereit ist)
+         {"id": 10, "build": {...}}         (P16-T16 E1: TS-Build-Pruefung projektweit, Modul pruefer_tsbuild.py;
+                                            Antwort {"id", "ok": true, "build": {...}}; eigener Thread, einer zur Zeit)
   raus:  {"id": 7, "ok": true, "meldungen": [{"zeile": 3, "spalte": 5, "code": null, "meldung": "..."}], "ms": 31.2}
          Eine Meldung kann "weich": true tragen (Hinweis, sperrt nie).
          {"id": 7, "ok": false, "fehler": "..."}
@@ -47,6 +49,7 @@ import pruefer_build
 import pruefer_jvm
 import pruefer_naga
 import pruefer_treesitter
+import pruefer_tsbuild
 
 # compile() meldet SyntaxWarnings (z. B. ungueltige Escapes) auf stderr - das sind keine Syntaxfehler und wuerden
 # nur das API-Log fuellen.
@@ -439,7 +442,7 @@ def info():
     return {'werkzeuge': {name: v() for name, (_f, v) in PRUEFER.items()},
             'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
             'python2_rueckfall': bool(_py2_driver()), 'jvm': pruefer_jvm.zustand(),
-            'treesitter': pruefer_treesitter.info()}
+            'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version()}
 
 
 def bearbeite(auftrag):
@@ -447,6 +450,9 @@ def bearbeite(auftrag):
     try:
         if auftrag.get('info'):
             schreibe({'id': aid, 'ok': True, 'info': info()})
+            return
+        if auftrag.get('build') is not None:
+            schreibe({'id': aid, 'ok': True, 'build': pruefer_tsbuild.pruefe(auftrag.get('build') or {})})
             return
         if auftrag.get('vorwaermen'):
             erg = {}
@@ -477,6 +483,10 @@ def main():
             auftrag = json.loads(zeile.decode('utf-8', 'replace'))
         except Exception as e:  # noqa: BLE001
             schreibe({'id': None, 'ok': False, 'fehler': f'kein JSON: {e}'})
+            continue
+        if isinstance(auftrag, dict) and auftrag.get('build') is not None:
+            # P16-T16 E1: Build-Pruefung dauert Sekunden bis Minuten - eigener Thread, der Syntax-Pool bleibt frei.
+            threading.Thread(target=bearbeite, args=(auftrag,), daemon=True).start()
             continue
         pool.submit(bearbeite, auftrag)
     pool.shutdown(wait=True)

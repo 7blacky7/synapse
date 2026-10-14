@@ -14,6 +14,7 @@ import { resolveAgentId } from './agent-id-resolver.js';
 import { deleteErrorPattern, listErrorPatterns, type ErrorPattern } from './error-patterns.js';
 import { _signaturMusterCacheLeeren } from './fehlermuster-pruefung.js';
 import { ERKLAERUNG_ACTIONS, ERKLAERUNG_PARAMETER, fuehreErklaerungsActionAus, istErklaerungsAction } from './erklaerungen.js';
+import { BUILD_ACTIONS, BUILD_PARAMETER, fuehreBuildActionAus, istBuildAction } from './build-pruefung.js';
 import {
   PFLEGE_SEVERITY,
   PFLEGE_STATUS,
@@ -27,7 +28,7 @@ import {
   type PflegeStatus,
 } from './fehlermuster-pflege.js';
 
-export const CODE_CHECK_ACTIONS = ['add_pattern', 'update_pattern', 'list_patterns', 'delete_pattern', ...ERKLAERUNG_ACTIONS] as const;
+export const CODE_CHECK_ACTIONS = ['add_pattern', 'update_pattern', 'list_patterns', 'delete_pattern', ...ERKLAERUNG_ACTIONS, ...BUILD_ACTIONS] as const;
 
 export const CODE_CHECK_DEFINITION = {
   name: 'code_check',
@@ -38,11 +39,13 @@ export const CODE_CHECK_DEFINITION = {
     'Neue Muster starten als warning; error nur per update_pattern mit grund. ' +
     'ERKLAERUNGS-TOPF (P15-T33): Syntaxfehler ohne passende Erklaerung werden als offener Fall gesammelt; offene_faelle, fall (Schatten), ' +
     'erklaerung_ablegen (generisch, gepflegte Sprachen Pflicht; nur betroffener Agent oder Koordinator), fall_pruefen (Verifikation), ' +
-    'fall_verwerfen (Koordinator jederzeit, andere Agenten ab 3 Monaten; grund >=10 Zeichen und zustimmung_user:true Pflicht), erklaerungen, erklaerung_bewerten. Eigene lokale Datenbank, keine externen Systeme.',
+    'fall_verwerfen (Koordinator jederzeit, andere Agenten ab 3 Monaten; grund >=10 Zeichen und zustimmung_user:true Pflicht), erklaerungen, erklaerung_bewerten. ' +
+    'BUILD-PRUEFUNG (P16-T16): build_status (Zustand gruen/rot/laeuft/teilweise je Projekt, Warteschlange eingereihter commits, Budget; pruefen:true prueft den Basisstand im Pruefcontainer), ' +
+    'build_einstellungen (modus status|setzen: Build-Tor je Projekt/global, Speicher/tmpfs/Heap/Zeitlimit des Pruefcontainers; setzen nur Koordinator/User). Eigene lokale Datenbank, keine externen Systeme.',
   inputSchema: {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: [...CODE_CHECK_ACTIONS], description: 'add_pattern | update_pattern | list_patterns | delete_pattern | offene_faelle | fall | erklaerung_ablegen | fall_pruefen | fall_verwerfen | erklaerungen | erklaerung_bewerten' },
+      action: { type: 'string', enum: [...CODE_CHECK_ACTIONS], description: 'add_pattern | update_pattern | list_patterns | delete_pattern | offene_faelle | fall | erklaerung_ablegen | fall_pruefen | fall_verwerfen | erklaerungen | erklaerung_bewerten | build_status | build_einstellungen' },
       id: { type: 'string', description: 'Pflicht fuer update_pattern und delete_pattern: Pattern-ID. update_pattern: volle UUID oder eindeutiger Praefix (mind. 8 Zeichen, wie thought get; mehrdeutig -> Fehler mit Kandidaten, nichts geaendert). delete_pattern: volle UUID' },
       description: { type: 'string', description: 'add_pattern Pflicht: was ist der Fehler (Langtext). update_pattern: neuer Text' },
       fix: { type: 'string', description: 'add_pattern Pflicht: wie wird es richtig ("wie")' },
@@ -71,6 +74,8 @@ export const CODE_CHECK_DEFINITION = {
       detail: { type: 'boolean', description: 'list_patterns: alle Felder (Standard kompakt: id, titel, status, severity, scope, Signatur-Kurzform)' },
       agent_id: { type: 'string', description: 'Agent-ID' },
       // P15-T33 E1: Erklaerungs-Topf (id = Fall-ID bei fall/fall_pruefen/fall_verwerfen, Erklaerungs-ID bei erklaerungen/erklaerung_bewerten)
+      // P16-T16 E1: Build-Pruefung (project/grund kommen aus ERKLAERUNG_PARAMETER)
+      ...BUILD_PARAMETER,
       ...ERKLAERUNG_PARAMETER,
     },
     required: ['action'],
@@ -221,6 +226,7 @@ export async function fuehreCodeCheckAus(args: Record<string, unknown>, agentId?
       }
       default:
         if (istErklaerungsAction(action)) return { action, ...(await fuehreErklaerungsActionAus(action, args, aufrufer)) };
+        if (istBuildAction(action)) return { action, ...(await fuehreBuildActionAus(action, args, aufrufer)) };
         return fehlerAntwort(action, 'unbekannte_action', `Unbekannte code_check action: "${action}". Erlaubt: ${CODE_CHECK_ACTIONS.join(', ')}`);
     }
   } catch (err) {

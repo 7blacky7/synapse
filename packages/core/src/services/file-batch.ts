@@ -61,6 +61,7 @@ import {
 import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText, zeilenZuordnung, type Bereich, type DateiDiff } from './file-diff.js';
 import { normalisiereOps } from './projekt-pfad.js';
 import { meldeFehlerfall } from './erklaerungen.js';
+import { registriereBuildCommitAusfuehrer, reiheCommitEin, buildWarteschlangeLaenge, laeuftAusBuildWarteschlange } from './build-pruefung.js';
 import {
   findForeignActiveReservationPrimaries,
   getReservationTtlConfig,
@@ -5038,7 +5039,7 @@ async function commitBatchOnce(args: {
   // ein offener error-Befund an einer Op sperrt den commit, BEVOR etwas geschrieben wird.
   let commitArgs = args;
   if (Array.isArray(plan.ops) && plan.ops.length > 0) {
-    const pruef = await pruefeVorCommit(args.plan_id, args.befunde_quittieren);
+    const pruef = await pruefeVorCommit(args.plan_id, args.befunde_quittieren, { project: plan.project, owner: plan.owner_agent_id, args: { ...args } });
     if (pruef.sperre) return pruef.sperre;
     if (pruef.vermerk && !(args.agent_note ?? '').includes(pruef.vermerk)) {
       commitArgs = { ...args, agent_note: [args.agent_note, pruef.vermerk].filter(Boolean).join(' ') };
@@ -6781,7 +6782,7 @@ export async function pruefeGespeichertenPlan(
   let neuGeprueft = false;
   // P16-T15: andere Paketdateien/Abhängigkeiten können sich trotz gleicher Plan-Hashes geändert haben.
   // Die Typstufe nutzt ihren eigenen Paketcache; gespeicherte Gesamtbefunde niemals blind wiederverwenden.
-  if (!vorher?.typen && !dateien.some(d => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(d.file_path))
+  if (!vorher?.typen && !vorher?.build && !dateien.some(d => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(d.file_path))
     && vorher && vorher.status === 'fertig' && Date.now() - new Date(vorher.geprueft_am).getTime() < pruefungGueltigMs()
     && gleicheHashes(vorher.ergebnis_hashes ?? {}, ergebnisHashesAus(dateien))) {
     pruefung = vorher;
@@ -6812,6 +6813,9 @@ async function pruefeGespeichertenPlanSicher(
   }
 }
 
+// P16-T16 E1: die Build-Warteschlange fuehrt eingereihte commits ueber denselben Weg aus (kein Import-Zyklus).
+registriereBuildCommitAusfuehrer((a) => commitBatch(a as unknown as Parameters<typeof commitBatch>[0]) as unknown as Promise<Record<string, unknown>>);
+
 /**
  * commit-Sperre (P15-T17 E3): vor dem Schreiben gegen den aktuellen Stand neu pruefen und befunde_quittieren
  * anwenden. Offener error-Befund an einer Op -> pruef_befunde, nichts geschrieben (warning/Altlast nie).
@@ -6820,6 +6824,8 @@ async function pruefeGespeichertenPlanSicher(
 async function pruefeVorCommit(
   planId: string,
   quittierungen: Array<{ id: string; grund?: string }> = [],
+  /** P16-T16 E1: fuer das Einreihen in die Build-Warteschlange (Projekt, Owner, commit-Argumente). */
+  kontext?: { project: string; owner: string | null; args: Record<string, unknown> },
 ): Promise<{ sperre: CommitBatchResult | null; vermerk?: string }> {
   const ergebnis = await pruefeGespeichertenPlanSicher(planId, Array.isArray(quittierungen) ? quittierungen : []);
   if (!ergebnis) return { sperre: null };
@@ -6832,6 +6838,35 @@ async function pruefeVorCommit(
         status: 'open',
         pruefung: befundUebersicht(pruefung),
         ...(abgelehnt.length > 0 ? { quittierung_abgelehnt: abgelehnt } : {}),
+      } as unknown as CommitBatchResult,
+    };
+  }
+  // P16-T16 E1: Build-Tor (nur bei wirksamem Schalter, dann ist pruefung.build gesetzt). Laeuft die projektweite
+  // Pruefung noch oder wartet schon ein commit dieses Projekts, wird EINGEREIHT statt blockiert: nichts geschrieben,
+  // die Warteschlange fuehrt den commit nach dem Resultat selbst aus und meldet es als Event. Neue Build-Fehler
+  // sperren oben ueber commitSperre (quittierbar); 'teilweise'/'nicht_verfuegbar' sperren nie.
+  const build = pruefung.build;
+  if (kontext && build?.tor && !laeuftAusBuildWarteschlange()
+    && (build.status === 'laeuft' || buildWarteschlangeLaenge(kontext.project) > 0)) {
+    const agentArg = typeof kontext.args.agent_id === 'string' ? kontext.args.agent_id : undefined;
+    const platz = reiheCommitEin(kontext.project, planId, kontext.args, resolveAgentId(agentArg) ?? kontext.owner);
+    return {
+      sperre: {
+        success: false,
+        plan_id: planId,
+        status: 'open',
+        error: 'build_pruefung_eingereiht',
+        geschrieben: false,
+        eingereiht: true,
+        warteschlange: platz,
+        pruefung: befundUebersicht(pruefung),
+        message: `commit eingereiht (Platz ${platz.position} von ${platz.laenge}): die projektweite Build-Pruefung fuer ${kontext.project} laeuft. `
+          + 'Nichts geschrieben; die Warteschlange fuehrt den commit nach dem Resultat selbst aus und meldet das Ergebnis als Event '
+          + '(ANNOUNCEMENT, Quelle build-pruefung). Die Warteschlange liegt nur im Speicher der API: solange die API nicht neu '
+          + 'startet, kommt das Ergebnis von selbst - dann nicht erneut committen. Ein API-Neustart (Deploy) verwirft den Eintrag '
+          + 'OHNE Event. Bleibt das Event aus: steht der Plan in plan_status noch auf open und fuehrt build_status die plan_id '
+          + `nicht mehr in der Warteschlange, denselben commit erneut ausfuehren. Stand: code_check(action:"build_status", project:"${kontext.project}") `
+          + `bzw. files(action:"plan_status", plan_id:"${planId}").`,
       } as unknown as CommitBatchResult,
     };
   }

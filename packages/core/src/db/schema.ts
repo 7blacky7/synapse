@@ -48,6 +48,7 @@ import { ASSET_UPLOAD_SCHEMA_SQL } from './asset-upload-schema.js';
 import { ASSET_MANIFEST_SCHEMA_SQL } from './asset-manifest-schema.js';
 import { ASSET_INSPEKTIONS_SCHEMA_SQL } from './asset-inspektions-schema.js';
 import {ASSET_KONFLIKT_SCHEMA_SQL} from './asset-konflikt-schema.js';
+import { BUILD_PRUEFUNG_SCHEMA_SQL } from './build-pruefung-schema.js';
 import {TOOL_AKTIVITAET_SCHEMA_SQL} from './tool-aktivitaet-schema.js';
 import {TOOL_CONTAINER_SCHEMA_SQL} from './tool-container-schema.js';
 
@@ -2715,6 +2716,8 @@ ${ASSET_UPLOAD_SCHEMA_SQL}
 ${ASSET_MANIFEST_SCHEMA_SQL}
 ${ASSET_INSPEKTIONS_SCHEMA_SQL}
 ${ASSET_KONFLIKT_SCHEMA_SQL}
+-- P16-T16 E1: Spiegel schema-sql/101_build_pruefung.sql
+${BUILD_PRUEFUNG_SCHEMA_SQL}
 
 
 

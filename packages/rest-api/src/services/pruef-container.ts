@@ -41,6 +41,12 @@
  * 9 Sprachen gleichzeitig inkl. JVM -Xmx160m, Rest = Reserve fuer volle Heap-Nutzung), PRUEFCONTAINER_CPUS (1), PRUEFCONTAINER_PIDS (64),
  * PRUEFCONTAINER_TMPFS_MB (64). SICHERHEIT: read-only rootfs, User 65532, cap_drop ALL, no-new-privileges, keine Binds.
  * Schalter: PRUEFCONTAINER=0 (aus), SYNTAXPRUEFUNG=0 (alle Syntaxpruefer aus). Image: PRUEFCONTAINER_IMAGE.
+ *
+ * BUILD-PRUEFUNG (P16-T16 E1, 14.10.2026): derselbe Container prueft auf Auftrag ein TS-Monorepo projektweit
+ * ({build:{dateien, projekte, zeitlimit_s, heap_mb}} -> pruefer_tsbuild.py, tsc --noEmit, nur tmpfs). Logik, Cache,
+ * Schalter und Warteschlange in core build-pruefung.ts; hier nur der Transport (pruefeBuild) und das Speicherbudget
+ * (setzeBudget: Speicher/tmpfs aus code_check build_einstellungen; ein laufender Container wird neu gestartet).
+ * Fuer die Build-Pruefung reicht das Syntax-Budget (384 MB) nicht: Budget ueber build_einstellungen anheben.
  */
 
 import Docker from 'dockerode';
@@ -48,6 +54,7 @@ import { PassThrough } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { registriereSyntaxPruefer, registriereWorker, workerPausiert, meldeWorkerArbeit, registriereInternQuelle, type SyntaxMeldung } from '@synapse/core';
+import { registriereBuildPruefer, synchronisiereBuildBudget, buildPruefungZustand, type BuildAuftrag, type BuildLaufErgebnis } from '@synapse/core';
 import { TREESITTER_SPRACHEN } from './pruef-container-treesitter.js';
 
 /** Sprachen, die der Container prueft. sperrfaehig nur nach Falsch-Positiv-Test auf echten Index-Dateien. */
@@ -197,7 +204,7 @@ interface Offen {
   timer: NodeJS.Timeout | null;
 }
 
-type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown> };
+type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; build?: BuildLaufErgebnis };
 
 const START_FENSTER_MS = 5 * 60_000;
 const MAX_TIMEOUTS_IN_FOLGE = 3;
@@ -624,6 +631,53 @@ export class PruefContainer {
     }
   }
 
+  /** P16-T16 E1: Zaehler der Build-Pruefung (Diagnose). */
+  private buildZ = { auftraege: 0, fehler: 0, letzte_ms: null as number | null, letzter_status: null as string | null, budget_neustarts: 0 };
+
+  /**
+   * P16-T16 E1: projektweite TS-Build-Pruefung im selben Container (pruefer_tsbuild.py). Kein Ergebnis-Cache hier
+   * (der liegt in core). Wirft PruefContainerNichtVerfuegbar, wenn der Container nicht pruefen kann.
+   */
+  async pruefeBuild(auftrag: BuildAuftrag): Promise<BuildLaufErgebnis> {
+    if (Date.now() < this.pauseBis) throw new PruefContainerNichtVerfuegbar(`${this.pauseGrund} (Pause bis ${new Date(this.pauseBis).toISOString()})`);
+    this.buildZ.auftraege++;
+    this.letzteAktivitaet = Date.now();
+    const t0 = Date.now();
+    try {
+      await this.bereitMachen();
+      // Zeitlimit des Laufs plus Reserve fuer Dateien schreiben/aufraeumen; ohne timeoutInfo (kein Neustart-Zaehler).
+      const antwort = await this.schicke({
+        build: { dateien: auftrag.dateien, projekte: auftrag.projekte, zeitlimit_s: Math.max(1, Math.round(auftrag.zeitlimit_ms / 1000)), heap_mb: auftrag.heap_mb },
+      }, auftrag.zeitlimit_ms + 30_000) as Antwort;
+      this.letzteAktivitaet = Date.now();
+      if (!antwort.build) throw new PruefContainerNichtVerfuegbar('Antwort ohne build (Image ohne Build-Pruefung? neu bauen: docker/synapse-pruefcontainer)');
+      const ergebnis = { ...antwort.build, dauer_ms: antwort.build.dauer_ms || Date.now() - t0 };
+      this.buildZ.letzte_ms = Date.now() - t0;
+      this.buildZ.letzter_status = ergebnis.status;
+      return ergebnis;
+    } catch (err) {
+      this.buildZ.fehler++;
+      this.merkeFehler(`Build-Pruefung: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+
+  /**
+   * P16-T16 E1: Speicher/tmpfs zur Laufzeit (code_check build_einstellungen). Bei Aenderung wird ein laufender Container
+   * gestoppt (offene Auftraege scheitern), der naechste Auftrag startet ihn mit den neuen Grenzen. true = geaendert.
+   */
+  async setzeBudget(b: { speicher_mb?: number; tmpfs_mb?: number }): Promise<boolean> {
+    const mem = typeof b.speicher_mb === 'number' && Number.isFinite(b.speicher_mb) ? Math.max(128, Math.round(b.speicher_mb)) : this.cfg.memMb;
+    const tmp = typeof b.tmpfs_mb === 'number' && Number.isFinite(b.tmpfs_mb) ? Math.max(8, Math.round(b.tmpfs_mb)) : this.cfg.tmpfsMb;
+    if (mem === this.cfg.memMb && tmp === this.cfg.tmpfsMb) return false;
+    console.error(`[pruefcontainer] Speicherbudget ${this.cfg.memMb}/${this.cfg.tmpfsMb} MB -> ${mem}/${tmp} MB (Speicher/tmpfs), Container startet neu`);
+    this.cfg.memMb = mem;
+    this.cfg.tmpfsMb = tmp;
+    this.buildZ.budget_neustarts++;
+    if (this.zustandName !== 'aus' || this.stream) await this.stoppen('Speicherbudget geaendert');
+    return true;
+  }
+
   /** Werkzeugversionen aus dem letzten erfolgreichen Start (null = noch nie gestartet). */
   werkzeugInfo(): PruefContainerInfo | null {
     return this.info;
@@ -658,6 +712,8 @@ export class PruefContainer {
       pause_grund: this.pauseBis > Date.now() ? this.pauseGrund : null,
       letzte_aktivitaet: new Date(this.letzteAktivitaet).toISOString(),
       limits: { mem_mb: this.cfg.memMb, cpus: this.cfg.cpus, pids: this.cfg.pids, tmpfs_mb: this.cfg.tmpfsMb, timeout_ms: this.cfg.timeoutMs, idle_min: this.cfg.idleMin },
+      // P16-T16 E1: projektweite Build-Pruefung
+      build: { ...this.buildZ, werkzeug: (this.info as { tsbuild?: unknown } | null)?.tsbuild ?? null },
       zaehler: { ...this.z },
     };
   }
@@ -731,6 +787,14 @@ export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; 
   await docker.getContainer(cfg.name).remove({ force: true }).catch(() => {});
   const pc = new PruefContainer(docker, cfg);
   melde(pc);
+  // P16-T16 E1: Build-Pruefung ueber denselben Container; gespeichertes Budget vor dem ersten Start uebernehmen.
+  registriereBuildPruefer({
+    pruefe: (a) => pc.pruefeBuild(a),
+    setzeBudget: (b) => pc.setzeBudget(b),
+    budget: () => ({ speicher_mb: pc.cfg.memMb, tmpfs_mb: pc.cfg.tmpfsMb }),
+  });
+  registriereInternQuelle('build_pruefung', () => buildPruefungZustand());
+  await synchronisiereBuildBudget(true).catch(() => false);
   if (opt.takt !== false) pc.starteTakt();
   instanz = pc;
   if (opt.vorwaermen ?? process.env.PRUEFCONTAINER_VORWAERMEN !== '0') pc.vorwaermen();
@@ -746,5 +810,6 @@ export function pruefContainerZustand(): Record<string, unknown> | null {
 export async function beendePruefContainer(): Promise<void> {
   const p = instanz;
   instanz = null;
+  registriereBuildPruefer(null);
   if (p) await p.beenden();
 }

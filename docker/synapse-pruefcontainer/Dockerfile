@@ -14,6 +14,8 @@
 # E3b Kotlin + Java: EIN JVM-Hilfsprozess (jvm/JvmPruefer.java), den pruefserver.py traege startet. Kotlin-Parser aus
 # kotlin-compiler-embeddable (PSI), Java ueber die javac-API (nur parse). JVM-Laufzeit per jlink (nur die noetigen
 # Module), Bibliotheken per Maven nur im Builder.
+# P16-T16 E1: projektweite TypeScript-Build-Pruefung (pruefer_tsbuild.py): Node-Binary + typescript (npm nur im
+# Builder, --ignore-scripts) unter /opt/pruef/tsc; tsc laeuft nur mit --noEmit im tmpfs, keine Projekt-node_modules.
 
 ARG DEBIAN_TAG=bookworm-slim
 ARG RUST_VERSION=1.96.1
@@ -23,7 +25,7 @@ ARG PYTHON_TAG=3.14-slim-trixie
 ARG GO_TAG=1.26-trixie
 ARG FISSIX_VERSION=24.4.24
 # E3a: Debian-Pakete der Endstufe (trixie: PHP 8.4, Ruby 3.3, Lua 5.4). Beim Anheben FP-Lauf wiederholen.
-ARG APT_PAKETE="php8.4-cli ruby lua5.4 make"
+ARG APT_PAKETE="php8.4-cli ruby lua5.4 make libstdc++6"
 # E3b: neueste stabile Kotlin-Version (Grammatik des Kotlin-Parsers) und JDK 25 LTS (Java-Sprachstand = JDK).
 # Beim Anheben FP-Lauf wiederholen (pruef-container-fp.mjs kotlin / java).
 ARG KOTLIN_VERSION=2.4.21
@@ -41,6 +43,10 @@ ARG NAGA_VERSION=30.0.1
 # pruefgo/ (buildkit, hclsyntax, buildtools, go-jsonnet; Versionen fest in pruefgo/go.mod); make + ld aus Debian trixie.
 # Beim Anheben FP-Lauf wiederholen (pruef-container-fp.mjs make|meson|linkerscript|dockerfile|hcl|starlark|jsonnet).
 ARG MESON_VERSION=1.12.1
+# P16-T16 E1: Node (nur das Binary) + TypeScript-Compiler fuer die Build-Pruefung. TYPESCRIPT_VERSION = Version der
+# Projekte (packages/core: ^5.9.3); beim Anheben Basis neu pruefen (code_check build_status pruefen:true).
+ARG NODE_TAG=24-trixie-slim
+ARG TYPESCRIPT_VERSION=5.9.3
 
 # ─── Stufe rust: Toolchain nur zum Herauskopieren von rustfmt + Laufzeit-Bibliotheken ───
 FROM debian:${DEBIAN_TAG} AS rust
@@ -84,6 +90,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends binutils && rm 
  && cp "$(readlink -f /usr/bin/ld.bfd)" /out/bin/ld \
  && for so in $(ldd /usr/bin/ld.bfd | awk '/=> \// {print $3}' | grep -E 'lib(bfd|ctf|sframe|jansson|opcodes)'); do cp "$so" /out/lib/; done \
  && ls -la /out/bin /out/lib
+
+# ─── Stufe tsc (P16-T16 E1): Node-Binary + typescript, Probe mit tsc --version ───
+FROM node:${NODE_TAG} AS tsc
+ARG TYPESCRIPT_VERSION
+RUN mkdir -p /out/bin /out/tsc /out/versionen && cd /out/tsc \
+ && npm install --no-audit --no-fund --ignore-scripts --omit=dev "typescript@${TYPESCRIPT_VERSION}" \
+ && cp "$(command -v node)" /out/bin/node \
+ && /out/bin/node /out/tsc/node_modules/typescript/lib/tsc.js --version > /out/versionen/tsc \
+ && cat /out/versionen/tsc && du -sh /out/tsc /out/bin/node
 
 # ─── Stufe jvm: Kotlin-Bibliotheken (Maven), Hilfsprozess kompilieren, schlanke JVM per jlink ───
 # java.desktop braucht der Kotlin-Parser (intellij-core), ohne startet KotlinCoreEnvironment nicht (gemessen).
@@ -141,7 +156,10 @@ COPY --from=binutils --chmod=0555 /out/lib/ /opt/pruef/lib/
 COPY --from=go --chmod=0444 /out/versionen/go /opt/pruef/versionen/go
 COPY --from=jvm --chmod=0555 /out/jvm/ /opt/pruef/jvm/
 COPY --from=jvm --chmod=0444 /out/versionen/kotlin /out/versionen/java /out/versionen/scala /out/versionen/groovy /opt/pruef/versionen/
-COPY --chmod=0444 pruefserver.py pruefer_jvm.py pruefer_naga.py pruefer_build.py /opt/pruef/
+COPY --chmod=0444 pruefserver.py pruefer_jvm.py pruefer_naga.py pruefer_build.py pruefer_tsbuild.py /opt/pruef/
+COPY --from=tsc --chmod=0555 /out/bin/node /opt/pruef/bin/node
+COPY --from=tsc --chmod=0555 /out/tsc/ /opt/pruef/tsc/
+COPY --from=tsc --chmod=0444 /out/versionen/tsc /opt/pruef/versionen/tsc
 COPY --from=treesitter --chmod=0555 /out/py/ /opt/pruef/py/
 COPY --from=treesitter --chmod=0555 /out/ts/ /opt/pruef/ts/
 COPY --chmod=0555 pruefer_treesitter.py /opt/pruef/
@@ -166,6 +184,7 @@ RUN python3 -m compileall -q /opt/pruef/py && mkdir -p /opt/pruef/leer && touch 
  && /opt/pruef/jvm/rt/bin/java -Xshare:auto -cp '/opt/pruef/jvm/lib/*:/opt/pruef/jvm/klassen' JvmPruefer --probe \
  && python3 -c "import sys; sys.path.insert(0, '/opt/pruef'); import pruefer_treesitter as t; p = t.selbsttest(); print('tree-sitter', t.info()['pack'], sorted(t.lade_sprachen()), p or 'probe ok'); sys.exit(1 if p else 0)" \
  && python3 -c "import sys; from fissix import pygram; from fissix.pgen2 import driver; print(sys.version.split()[0], 'fissix ok')" \
+ && node --version && python3 /opt/pruef/pruefer_tsbuild.py \
  && chmod -R a+rX /opt/pruef/cache /opt/pruef/versionen && ls -la /opt/pruef/cache/fissix/*/
 LABEL synapse.pruefcontainer="1" org.opencontainers.image.title="synapse-pruefcontainer"
 USER 65532:65532

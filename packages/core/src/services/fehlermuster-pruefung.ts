@@ -35,7 +35,7 @@ import {
 
 // ─── Befundformat ────────────────────────────────────────────────────────────
 
-export type BefundQuelle = 'syntax' | 'muster' | 'typen';
+export type BefundQuelle = 'syntax' | 'muster' | 'typen' | 'build';
 
 export interface FehlerBefund {
   quelle: BefundQuelle;

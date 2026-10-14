@@ -45,6 +45,10 @@ export { mitCodeIntelSchatten, schattenCacheStatistik } from './services/code-in
 // P16-T15: gemeinsame Typprüfung; API registriert nur den Projekt-Workspace als Abhängigkeitsort.
 export { registriereTypWorkspacePruefer } from './services/typen-pruefung.js';
 export type { TypAuftrag, TypPruefung } from './services/typen-pruefung.js';
+// P16-T16 E1: projektweite Build-Pruefung; die rest-api meldet den Pruefcontainer an (registriereBuildPruefer).
+export { registriereBuildPruefer, synchronisiereBuildBudget, buildPruefungZustand, wirksamesBuildBudget, BUILD_ACTIONS } from './services/build-pruefung.js';
+export type { BuildAuftrag, BuildDatei, BuildDiagnose, BuildLaufErgebnis, BuildProjektLauf, BuildPrueferAnbindung, BuildStand } from './services/build-pruefung.js';
+export { BUILD_PRUEFUNG_SCHEMA_SQL } from './db/build-pruefung-schema.js';
 export type { RegelVerzeichnis } from './services/agent-rollen.js';
 // P18-T11/RV1: gemeinsame Geheimnis-Maskierung für neue API-Verbraucher.
 export { MASKEN_KATALOG, maskiereMitKatalog, zaehleMaskenTreffer } from './services/masken-katalog.js';

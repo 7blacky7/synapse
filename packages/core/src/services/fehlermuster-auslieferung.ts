@@ -42,7 +42,7 @@ export interface FehlermusterHinweis {
    * P15-T17: 'thema' = Embedding-Aehnlichkeit (kein sicherer Befund), 'muster' = Signatur-Treffer in den
    * geaenderten Zeilen, 'syntax' = Syntaxbefund (nachgeliefert oder quittiert).
    */
-  quelle?: 'thema' | 'muster' | 'syntax' | 'typen' | 'erklaerung';
+  quelle?: 'thema' | 'muster' | 'syntax' | 'typen' | 'erklaerung' | 'build';
   /** P15-T33 E1: Erklaerung aus dem Erklaerungs-Topf (id, status, confidence, gepflegte Sprachen). */
   erklaerung?: Record<string, unknown>;
   titel?: string;
