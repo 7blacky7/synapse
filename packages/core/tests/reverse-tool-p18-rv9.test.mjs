@@ -8,6 +8,8 @@ delete process.env.SYNAPSE_DATABASE_URL;
 const schema='p18_rv9_'+process.pid;
 // DSN bleibt unverändert; der explizite PG-Pool erhält nur einen eigenen Suchpfad.
 process.env.SYNAPSE_SKIP_EMBEDDINGS='1';process.env.QDRANT_URL='http://127.0.0.1:1';
+// P18-T61/E4: Standard-Obergrenze ist S1; die Bestätigungs-Policy wird hier mit S3 geprüft.
+process.env.SYNAPSE_REVERSE_BIS_SCHICHT='S3';
 const core=await import('../dist/index.js');
 assert.equal(typeof core.fuehreReverseAus,'function','RV9 Dispatcher fehlt (rote Kontrolle)');
 const {REVERSE_DEFINITION,createReverseToolService,REVERSE_FEHLERCODES}=core;

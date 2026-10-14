@@ -20,6 +20,7 @@ export type { ReverseAction, ReverseFehlercode, ReverseContainerInfo, ReverseAna
 // P18-T61/R1-C: E-Ergebnis eines Reverse-Container-Auftrags in die Bibliothek übernehmen.
 export { uebernehmeEErgebnis, reverseEGruppe, ReverseEUebernahmeFehler } from './services/reverse-e-uebernahme.js';
 export type { ReverseEManifestEintrag, ReverseEUebernahmeOptionen } from './services/reverse-e-uebernahme.js';
+export { reverseBisSchichtGrenze, begrenzeReverseSchicht } from './services/reverse-tool.js';
 
 // P18-T12/RV2: feste interne Bereiche für Projekt- und Reverse-Abfragen.
 export { PROJEKT_BEREICH, REVERSE_BEREICH, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './services/intel-bereich.js';

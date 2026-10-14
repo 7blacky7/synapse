@@ -10,6 +10,8 @@ const dsn=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(dsn.p
 delete process.env.SYNAPSE_DATABASE_URL;
 process.env.SYNAPSE_SKIP_EMBEDDINGS='1';process.env.QDRANT_URL='http://127.0.0.1:1';
 process.env.SYNAPSE_REVERSE_PARALLEL='1';process.env.SYNAPSE_REVERSE_RETRY_MAX='2';
+// P18-T61/E4: Standard-Obergrenze ist S1; dieser Test prüft die S2/S3-Folge und hebt sie ausdrücklich an.
+process.env.SYNAPSE_REVERSE_BIS_SCHICHT='S3';
 process.env.SYNAPSE_REVERSE_CONTAINER_PROFIL='fixture-reverse';process.env.SYNAPSE_REVERSE_WERKZEUG_VERSION='fixture-1';
 process.env.SYNAPSE_REVERSE_RESOURCE_NEED='{"cpu":1,"ram":64,"vram":0,"gpu":false}';
 const core=await import('../dist/index.js');

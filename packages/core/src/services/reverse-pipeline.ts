@@ -12,7 +12,7 @@ import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-kon
 import {AssetSpeicher,type AssetAdresse} from './asset-speicher.js';
 import {reverseDateiSpeicherAdresse} from './reverse-eingang.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
-import {configureReverseRuntime,type ReverseAnalyseAnfrage} from './reverse-tool.js';
+import {configureReverseRuntime,reverseBisSchichtGrenze,begrenzeReverseSchicht,type ReverseAnalyseAnfrage} from './reverse-tool.js';
 import {createWorkJobService,validateWorkResources,type WorkResourceNeed} from './work-jobs.js';
 import {starteApiAuftragsLoop,type ApiAuftragsLoop} from './api-auftrags-loop.js';
 
@@ -172,11 +172,11 @@ export class ReversePipelineDienst{
   return {zustand:'ruht',kaltstart_s:null};
  }
  private async entdecke():Promise<void>{
-  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht=COALESCE(e.analyse_policy->>'bis_schicht','S3') AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100),this.profile])).rows;
+  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht=(CASE WHEN array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3)) IS NULL OR array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3))>array_position(ARRAY['E','S0','S1','S2','S3'],$3::text) THEN $3::text ELSE COALESCE(e.analyse_policy->>'bis_schicht',$3::text) END) AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100),this.profile,reverseBisSchichtGrenze()])).rows;
   for(const d of files)await this.tx(async db=>{await db.query('UPDATE reverse_dateien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[d.id]);return this.queue(db,{reverseId:d.eintrag_id,dateiId:d.id,mediumId:d.medium_id,
-   project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:STAGES.includes(d.analyse_policy?.bis_schicht)?d.analyse_policy.bis_schicht:'S3',prioritaet:'hintergrund'});});
+   project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:begrenzeReverseSchicht(d.analyse_policy?.bis_schicht),prioritaet:'hintergrund'});});
   const media=(await this.pool.query("SELECT m.id::text,m.eintrag_id FROM reverse_medien m JOIN reverse_eintraege e ON e.id=m.eintrag_id WHERE e.status='bestaetigt' AND m.status='vollstaendig' AND m.art<>'ordner' AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.medium_id=m.id AND s.schicht='E' AND s.aktuell AND s.status IN ('fertig','teilweise')) ORDER BY m.pipeline_gesehen_at NULLS FIRST,m.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100)])).rows;
-  for(const m of media)await this.tx(async db=>{await db.query('UPDATE reverse_medien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[m.id]);return this.queue(db,{reverseId:m.eintrag_id,dateiId:null,mediumId:m.id,project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:'S3',prioritaet:'hintergrund'});});
+  for(const m of media)await this.tx(async db=>{await db.query('UPDATE reverse_medien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[m.id]);return this.queue(db,{reverseId:m.eintrag_id,dateiId:null,mediumId:m.id,project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:reverseBisSchichtGrenze(),prioritaet:'hintergrund'});});
  }
  private async claim():Promise<Job|undefined>{
   return this.tx(async db=>{
@@ -302,7 +302,7 @@ export class ReversePipelineDienst{
     }
     await this.materialisiere(db,j,payload);
     if(j.schicht==='S1')await this.s1Werkzeuge(db,j);
-    await this.queue(db,{reverseId:j.eintrag_id,dateiId:j.datei_id,mediumId:j.medium_id,project:j.projekt??'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:j.ziel_schicht??'S3',prioritaet:j.prioritaet});
+    await this.queue(db,{reverseId:j.eintrag_id,dateiId:j.datei_id,mediumId:j.medium_id,project:j.projekt??'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:j.ziel_schicht??reverseBisSchichtGrenze(),prioritaet:j.prioritaet});
    });
   }catch{
    const failed=await this.pool.query("UPDATE reverse_auftraege SET status='fehler',fehlercode='werkzeug_fehler',lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_token=$2",[j.id,j.lease_token]);

@@ -12,7 +12,7 @@ import { maskiereMitKatalog } from './masken-katalog.js';
 import { erfasseToolAktivitaet } from './tool-aktivitaet.js';
 import { REVERSE_CODE_ACTIONS, ReverseCodeFehler, fuehreReverseCodeAus } from './reverse-code-tool.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen',...REVERSE_CODE_ACTIONS] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien',...REVERSE_CODE_ACTIONS] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -29,7 +29,7 @@ const TEXTE: Record<ReverseFehlercode,string> = {
 };
 const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator). Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -62,7 +62,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   eintrag:['reverse_id'],bestaetigen:['reverse_id','titel','medien','zusammenfuehren_mit','aufteilen'],
   archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
   status:['reverse_id','datei','file_path','warten_sekunden'],analysieren:['reverse_id','datei','file_path','bis_schicht','prioritaet'],
-  abbrechen:['auftrag_id'],
+  abbrechen:['auftrag_id'],dateien:['reverse_id','path','limit','offset'],
   tree:['reverse_id','file_path','path','limit','offset','depth','recursive','show_functions','show_counts','show_lines','file_type'],
   functions:['reverse_id','file_path','name','exported_only','limit','offset'],
   symbols:['reverse_id','file_path','symbol_type','name','value_contains','min_laenge','limit','offset'],
@@ -79,6 +79,18 @@ const object = (v:unknown):v is Row => !!v && typeof v==='object'&&!Array.isArra
 const str = (v:unknown):string => typeof v==='string'?v:'';
 const gesetzt = (v:unknown) => v!==undefined&&v!==null&&v!=='';
 const stages = ['E','S0','S1','S2','S3'] as const;
+/** P18-T61/E4: Obergrenze der automatischen Analyse (Env SYNAPSE_REVERSE_BIS_SCHICHT, Standard S1). */
+export function reverseBisSchichtGrenze():typeof stages[number] {
+  const wert=(process.env.SYNAPSE_REVERSE_BIS_SCHICHT??'S1').trim()||'S1';
+  if(!stages.includes(wert as typeof stages[number]))throw new Error('Ungültige Reverse-Konfiguration SYNAPSE_REVERSE_BIS_SCHICHT');
+  return wert as typeof stages[number];
+}
+/** Begrenzt eine gewünschte Schicht auf die konfigurierte Obergrenze; Unbekanntes wird zur Grenze. */
+export function begrenzeReverseSchicht(wunsch:unknown):typeof stages[number] {
+  const grenze=reverseBisSchichtGrenze();
+  if(!stages.includes(wunsch as typeof stages[number]))return grenze;
+  return stages.indexOf(wunsch as typeof stages[number])>stages.indexOf(grenze)?grenze:wunsch as typeof stages[number];
+}
 export interface ReverseContainerInfo {zustand:'laeuft'|'startet'|'ruht';kaltstart_s:number|null;container_id?:string}
 export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:string;dateiId:string|null;mediumId:string|null;bisSchicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug'}
 export interface ReverseRuntime {
@@ -229,8 +241,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         medien:g.medien,
       }));
       await db.query(`INSERT INTO reverse_eintraege(id,titel,status,erstellt_von,bestaetigt_von,gruppierung,analyse_policy,fingerabdruck)
-        SELECT g.id,g.titel,'bestaetigt',$2,$2,$3,'{"bis_schicht":"S3","automatisch":true}'::jsonb,g.fingerabdruck
-        FROM jsonb_to_recordset($1::jsonb) AS g(id text,titel text,fingerabdruck text)`,[JSON.stringify(entries),a.agent_id,rid]);
+        SELECT g.id,g.titel,'bestaetigt',$2,$2,$3,jsonb_build_object('bis_schicht',$4::text,'automatisch',true),g.fingerabdruck
+        FROM jsonb_to_recordset($1::jsonb) AS g(id text,titel text,fingerabdruck text)`,[JSON.stringify(entries),a.agent_id,rid,reverseBisSchichtGrenze()]);
       const moves=entries.flatMap(g=>g.medien.map((mid,position)=>({id:mid,eintrag_id:g.id,position})));
       await db.query(`UPDATE reverse_medien m SET eintrag_id=g.eintrag_id,position=g.position
         FROM jsonb_to_recordset($1::jsonb) AS g(id bigint,eintrag_id text,position integer) WHERE m.id=g.id`,[JSON.stringify(moves)]);
@@ -278,7 +290,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     }
     const fp=createHash('sha256').update(JSON.stringify(ms.map(m=>[m.art,m.satz_sha256]))).digest('hex');
     await db.query(`UPDATE reverse_eintraege SET titel=COALESCE($2,titel),status='bestaetigt',bestaetigt_von=$3,fingerabdruck=$4,
-      analyse_policy=analyse_policy||'{"bis_schicht":"S3","automatisch":true}'::jsonb,updated_at=NOW() WHERE id=$1`,[rid,a.titel===undefined?null:text(a.titel),a.agent_id,fp]);
+      analyse_policy=analyse_policy||jsonb_build_object('bis_schicht',$5::text,'automatisch',true),updated_at=NOW() WHERE id=$1`,[rid,a.titel===undefined?null:text(a.titel),a.agent_id,fp,reverseBisSchichtGrenze()]);
     await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
     return {reverse_id:rid,status:'bestaetigt',eintrag:await entryDto(db,await entry(db,rid))};
   }
@@ -311,7 +323,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const project=await projektRecht(db,a),rid=str(e.id);
     if(!await pruefeReverseBindung(db,project,rid))fail('nicht_gebunden');
     if(e.status==='archiviert')fail('keine_berechtigung');
-    const path=fileArg(a),bis=str(a.bis_schicht)||'S3';
+    const path=fileArg(a),bis=str(a.bis_schicht)||reverseBisSchichtGrenze();
     if(!stages.includes(bis as typeof stages[number]))fail('werkzeug_fehler','parameter_ungueltig');
     const prio=(str(a.prioritaet)||'interaktiv') as ReverseAnalyseAnfrage['prioritaet'];
     if(!['interaktiv','hintergrund','nachzug'].includes(prio))fail('werkzeug_fehler','parameter_ungueltig');
@@ -354,6 +366,31 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
       if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
       return {...data,container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s}};
+    }
+    if(action==='dateien'){
+      // P18-T61: Inhalte nur nach Projektbindung; Pfade und Texte maskiert wie die übrigen Ausgaben.
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id);
+      await entry(pool,rid);
+      if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
+      const limit=integer(a.limit,envInt('SYNAPSE_REVERSE_LIST_LIMIT',50),envInt('SYNAPSE_REVERSE_MAX_LIMIT',200));
+      if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
+      const offset=integer(a.offset,0,2147483647);
+      const prefix=gesetzt(a.path)?pruefeReversePfad(a.path):null;
+      const where=" WHERE eintrag_id=$1 AND ($2::text IS NULL OR pfad=$2 OR left(pfad,length($2)+1)=$2||'/')";
+      const total=Number((await pool.query('SELECT count(*)::int AS n FROM reverse_dateien'+where,[rid,prefix])).rows[0].n);
+      const rows=(await pool.query('SELECT id::text AS id,medium_id::text AS medium_id,pfad,art,format,arch,bits,groesse,sha256,status,entpackt_mit,storage_key FROM reverse_dateien'+where+' ORDER BY pfad,id LIMIT $3 OFFSET $4',[rid,prefix,limit,offset])).rows;
+      const mask=(v:unknown)=>typeof v==='string'?maskiereMitKatalog(v,'reverse').text:null;
+      const items:Row[]=[];const max=envInt('SYNAPSE_REVERSE_ANTWORT_MAX',80000);let laenge=2;
+      for(const r of rows){
+        const item:Row={id:r.id,medium_id:r.medium_id,pfad:mask(r.pfad),art:r.art,format:mask(r.format),arch:mask(r.arch),bits:r.bits??null,
+          groesse:Number(r.groesse??0),sha256:r.sha256??null,status:mask(r.status),entpackt_mit:mask(r.entpackt_mit),
+          herkunft:str(r.storage_key).startsWith(rid+'/entpackt/')?'entpackt':'original'};
+        laenge+=JSON.stringify(item).length+1;if(laenge>max)break;items.push(item);
+      }
+      if(rows.length&&!items.length)fail('zu_gross');
+      await tx(db=>activity(db,a));
+      const weiter=offset+items.length<total;
+      return {reverse_id:rid,path:prefix,dateien:items,total,gekappt:weiter,naechster_offset:weiter?offset+items.length:null};
     }
     if(action==='status'){
       const wait=integer(a.warten_sekunden,0,50),until=Date.now()+wait*1000;
