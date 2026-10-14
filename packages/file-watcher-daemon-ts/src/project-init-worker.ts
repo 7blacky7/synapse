@@ -44,6 +44,7 @@ import { getWorkspaceRoot, loadConfig, DEFAULT_SYNAPSE_API_URL } from './config.
 import type { WatcherManager } from './manager.js'
 import {startProjectRestoreWorker} from './project-restore-worker.js'
 import {startHostLoesenWorker} from './host-loesen-worker.js'
+import {startProjektLoeschenWorker} from './projekt-loeschen-worker.js'
 
 const HOSTNAME = os.hostname()
 const DAEMON_ID = `daemon-${HOSTNAME}-${process.pid}`
@@ -62,6 +63,8 @@ export async function startProjectInitWorker(
   const restoreWorker = startProjectRestoreWorker(manager)
   // P9-T30: host_loesen-Auftraege (config.json-Eintrag entfernen) ueber die API abholen.
   const hostLoesenWorker = startHostLoesenWorker(manager)
+  // P9-T31: Ordner-Loeschauftraege (nach bestaetigtem Loesch-Code) ueber die API abholen.
+  const projektLoeschenWorker = startProjektLoeschenWorker(manager)
 
   listenClient = await verbindeListenClient()
   await listenClient.query('LISTEN project_init_job_created')
@@ -109,6 +112,7 @@ export async function startProjectInitWorker(
     stopped = true
     await restoreWorker.stop()
     await hostLoesenWorker.stop()
+    await projektLoeschenWorker.stop()
     if (safetyInterval !== null) {
       clearInterval(safetyInterval)
       safetyInterval = null

@@ -302,8 +302,8 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise', 'host_loesen'],
-          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db | host_loesen. host_loesen (project, hostname, nur Koordinator/User, Standard vorschau) entfernt NUR die Registry-Zeile dieses Hosts und ueber den Daemon dessen config.json-Eintrag; andere Hosts und alle Projektdaten bleiben, kein disable, lokale Ordner werden nicht geloescht. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
+          enum: ['init', 'init_status', 'complete_setup', 'detect_tech', 'cleanup', 'stop', 'status', 'list', 'enable', 'disable', 'projekt_db', 'hinweise', 'host_loesen', 'loeschen'],
+          description: 'Aktion: init | init_status | complete_setup | detect_tech | cleanup | stop | status | list | enable | disable | projekt_db | host_loesen | loeschen. loeschen (P9-T31): Projekt von einem Rechner und/oder aus Synapse loeschen, NUR mit dem Loesch-Code des USERS. Schritt 1 project+hostname(+umfang rechner|zentral|komplett, Standard komplett) = Vorschau mit Zaehlung je Tabelle + loesch_auftrag_id, nichts geloescht. Schritt 2 loesch_auftrag_id+loesch_code (6 Ziffern aus der Authenticator-App des Users fuer DIESEN Rechner, ~3 Min, einmalig) = loeschen. Nur loesch_auftrag_id = Stand. Geschuetzt: synapse, reverse-bibliothek, virtuelle Projekte. Zentrale Daten erst, wenn kein anderer Rechner mehr gebunden ist. host_loesen (project, hostname, nur Koordinator/User, Standard vorschau) entfernt NUR die Registry-Zeile dieses Hosts und ueber den Daemon dessen config.json-Eintrag; andere Hosts und alle Projektdaten bleiben, kein disable, lokale Ordner werden nicht geloescht. projekt_db (project) zeigt die Projekt-DB (Spielwiese auf 192.168.50.65:5433): Host, Port, DB, User, Passwort, DATABASE_URL — oder vorhanden:false plus fertigen Aufruf; mit erstellen:true wird sie angelegt, falls keine existiert. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein. enable/disable schalten das Projekt in PG (Source of Truth) — Parser-Worker und FileWatcher-Daemon folgen.',
         },
         hinweise: {type:'boolean',description:'project(hinweise): optionale Hinweise je Projekt gemeinsam an/aus; setzen nur Koordinator/User. Ohne Wert Status.'},
         geschuetzter_hauptbranch: {type:'string',description:'project(hinweise): geschuetzten Git-Hauptbranch je Projekt setzen; Standard main. Lesen/Setzen nur Koordinator/User, Anzeige in project(status).'},
@@ -320,6 +320,9 @@ export const MCP_TOOLS = [
         mode: {type:'string',enum:['create','restore_existing'],description:'init: bestehende Tray-Hostbindung via API wiederherstellen; name+hostname, kein path.'},
         template: { type: 'string', description: 'Optional fuer init: Skeleton-Template ("node"|"python"|"blank"). Aktuell informational, Daemon legt nur Basisordner + README an.' },
         job_id: { type: 'string', description: 'Erforderlich fuer init_status: Job-ID aus der ersten init-Antwort.' },
+        umfang: { type: 'string', enum: ['rechner', 'zentral', 'komplett'], description: 'Nur loeschen (Vorschau): rechner = nur Ordner/Registry dieses Rechners, zentral = nur Synapse-Daten, komplett = beides (Standard).' },
+        loesch_auftrag_id: { type: 'string', description: 'Nur loeschen: ID aus der Vorschau. Ohne loesch_code = Stand des Auftrags.' },
+        loesch_code: { type: 'string', description: 'Nur loeschen: 6-stelliger Loesch-Code, den der USER aus seiner Authenticator-App (Eintrag Synapse-Loeschen:<Rechner>) nennt. Nie selbst erzeugen oder raten; wird in Logs geschwaerzt.' },
       },
       required: ['action'],
     },
@@ -2404,6 +2407,26 @@ async function handleToolCallKern(
           const {projektHostLoesen} = await import('@synapse/core');
           if(args.vorschau !== undefined && typeof args.vorschau !== 'boolean')throw new Error('vorschau muss boolean sein');
           return projektHostLoesen({project:reqStr(args,'project'),hostname:reqStr(args,'hostname'),agent:String(effectiveAgentId??args.agent_id??process.env.SYNAPSE_AGENT_NAME??''),vorschau:args.vorschau!==false});
+        }
+        case 'loeschen': {
+          // P9-T31: Projekt loeschen nur mit rechnergebundenem Loesch-Code des Users (Vorschau zuerst).
+          const kern = await import('@synapse/core');
+          const agent = String(effectiveAgentId ?? args.agent_id ?? process.env.SYNAPSE_AGENT_NAME ?? '');
+          try {
+            if (args.loesch_auftrag_id !== undefined) {
+              if (args.loesch_code === undefined) return await kern.loeschAuftragStatus(args.loesch_auftrag_id);
+              const {loeschPsql} = await import('./loesch-routes.js');
+              return await kern.projektLoeschenAusfuehren({loesch_auftrag_id: args.loesch_auftrag_id, loesch_code: args.loesch_code, agent, psql: loeschPsql()});
+            }
+            if (args.loesch_code !== undefined) return { success: false, error: 'loesch_auftrag_id_fehlt', message: 'loesch_code nur zusammen mit loesch_auftrag_id aus der Vorschau.' };
+            return await kern.projektLoeschenVorschau({project: args.project, hostname: args.hostname, umfang: args.umfang, agent});
+          } catch (e) {
+            if (e instanceof kern.ProjektLoeschenFehler || e instanceof kern.LoeschTokenFehler) {
+              const details = e instanceof kern.ProjektLoeschenFehler && e.details !== undefined ? { details: e.details } : {};
+              return { success: false, error: e.code, message: e.message, ...details };
+            }
+            throw e;
+          }
         }
         case 'hinweise': {
           const {projektHinweisOption,projektHauptbranchOption} = await import('@synapse/core');

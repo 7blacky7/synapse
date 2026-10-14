@@ -20,12 +20,15 @@ import {
 import type { FileWatcherInstance } from '@synapse/core';
 
 import {registerProjectRestoreRoutes} from './project-restore.js';
+import {registerLoeschRoutes} from './loesch-routes.js';
 
 /** Aktive FileWatcher */
 const activeWatchers = new Map<string, FileWatcherInstance>();
 
 export async function projectRoutes(fastify: FastifyInstance): Promise<void> {
   await registerProjectRestoreRoutes(fastify);
+  // P9-T31: Loesch-Code (Tray) und Projekt-Loeschung mit rechnergebundenem Code.
+  await registerLoeschRoutes(fastify);
   /**
    * GET /api/projects
    * Alle Projekte auflisten

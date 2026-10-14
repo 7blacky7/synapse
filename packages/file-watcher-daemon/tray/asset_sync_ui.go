@@ -160,6 +160,19 @@ func zeigeAssetSyncFenster() {
                     }
                     rows=append(rows,remove)
                 }
+                // P9-T31: Löschen nur mit rechnergebundenem Lösch-Code (auch für den User); Einrichtung des Codes für diesen PC.
+                if hostErr==nil&&mappingErr==nil&&mappedHost!=""&&mappedHost==host{
+                    einrichten:=widget.NewButton("Lösch-Code für diesen PC einrichten …",func(){zeigeLoeschTokenEinrichten(ctx,window,nil)})
+                    rows=append(rows,einrichten)
+                    if !virtuell[project]{
+                        loeschen:=widget.NewButton("Projekt löschen …",func(){
+                            if actionBusy{return}
+                            zeigeProjektLoeschen(ctx,window,project,host,func(){reload()})
+                        })
+                        loeschen.Importance=widget.DangerImportance
+                        rows=append(rows,loeschen)
+                    }
+                }
                 if cacheErr!=nil{rows=append(rows,assetSyncLabel("Serverbindung bestätigt; Cache konnte nicht gespeichert werden: "+cacheErr.Error()))}
                 rows=append(rows,widget.NewSeparator(),widget.NewLabelWithStyle("Asset-Sync",fyne.TextAlignLeading,fyne.TextStyle{Bold:true}))
                 if syncErr!=nil{rows=append(rows,assetSyncLabel(syncErr.Error()))}else{

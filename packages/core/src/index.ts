@@ -163,6 +163,12 @@ export type { RestoreCodeEntry,RestoreJob } from './services/project-restore.js'
 export { VIRTUELLE_SYSTEMPROJEKTE, VIRTUELLER_HOST, virtuelleProjekte, istVirtuellesProjekt, istVirtuellerRegistryPfad, VirtuellesProjektFehler, pruefeNichtVirtuell } from './services/virtuelle-projekte.js';
 export { HOST_LOESEN_MODE, HostLoesenFehler, projektHostLoesen, claimHostLoesungen, schliesseHostLoesung } from './services/project-host-loesen.js';
 export type { HostLoesenAuftrag } from './services/project-host-loesen.js';
+// P9-T31: sicheres Loeschen nur mit rechnergebundenem Loesch-Code (Agent, Tray, Web-UI).
+export { LOESCH_TOKEN_SCHEMA_SQL } from './db/loesch-token-schema.js';
+export { LoeschTokenFehler, loeschTokenStatus, loeschTokenEinrichten, loeschTokenBestaetigen, pruefeLoeschCode, pruefeLoeschHost, normiereLoeschCode, findeZeitschritt, totpCode, base32Kodieren, base32Dekodieren, zeitschrittVon, LOESCH_TOTP_AUSSTELLER, pruefeLoeschLoginMitSperre, LOESCH_LOGIN_SPERRE_FEHLVERSUCHE, LOESCH_LOGIN_SPERRE_MINUTEN } from './services/loesch-token.js';
+export type { LoeschTokenStatus } from './services/loesch-token.js';
+export { ProjektLoeschenFehler, projektLoeschenVorschau, projektLoeschenAusfuehren, loeschAuftragStatus, claimOrdnerLoeschungen, schliesseOrdnerLoeschung, istGeschuetztesProjekt, projektCollections, LOESCH_UMFAENGE } from './services/projekt-loeschen.js';
+export type { LoeschUmfang, LoeschQdrant, LoeschVorschauEingabe, LoeschAusfuehrenEingabe, OrdnerLoeschJob } from './services/projekt-loeschen.js';
 export * from './types/index.js';
 
 // P13-T25/A7: konsistente Manifeste und revisionierte explizite Pfadmutationen.

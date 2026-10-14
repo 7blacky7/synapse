@@ -49,6 +49,7 @@ import { ASSET_MANIFEST_SCHEMA_SQL } from './asset-manifest-schema.js';
 import { ASSET_INSPEKTIONS_SCHEMA_SQL } from './asset-inspektions-schema.js';
 import {ASSET_KONFLIKT_SCHEMA_SQL} from './asset-konflikt-schema.js';
 import { BUILD_PRUEFUNG_SCHEMA_SQL } from './build-pruefung-schema.js';
+import { LOESCH_TOKEN_SCHEMA_SQL } from './loesch-token-schema.js';
 import { ASSET_ANSICHT_LINK_SCHEMA_SQL } from './asset-ansicht-link-schema.js';
 import { REVERSE_ANSICHT_SCHEMA_SQL } from './reverse-ansicht-schema.js';
 import {TOOL_AKTIVITAET_SCHEMA_SQL} from './tool-aktivitaet-schema.js';
@@ -2720,6 +2721,8 @@ ${ASSET_INSPEKTIONS_SCHEMA_SQL}
 ${ASSET_KONFLIKT_SCHEMA_SQL}
 -- P16-T16 E1: Spiegel schema-sql/101_build_pruefung.sql
 ${BUILD_PRUEFUNG_SCHEMA_SQL}
+-- P9-T31: Spiegel schema-sql/103_loesch_token.sql
+${LOESCH_TOKEN_SCHEMA_SQL}
 -- P13-T33/A15: Spiegel schema-sql/102_asset_ansicht_links.sql (nach asset_files/A2).
 ${ASSET_ANSICHT_LINK_SCHEMA_SQL}
 -- P18-T26/RV16: Spiegel schema-sql/104_reverse_ansicht.sql (nach reverse_* und ansicht_tokens).
