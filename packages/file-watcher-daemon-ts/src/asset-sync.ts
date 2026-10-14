@@ -35,7 +35,9 @@ export class DaemonAssetSync {
  }
  private async verhandle(b:Bindung){
   b.negotiated=false;b.queue?.pause();
-  if(this.stopped||b.stopped||!b.p.enabled||this.config().asset_sync?.aktiv===false){b.mode=b.p.asset_sync?.verwaltet?'api':'legacy';return;}
+  // User-Vorgabe 14.10.2026: Sync nur fuer Projekte mit asset_sync.aktiv:true (Standard aus).
+  const projektAktiv=b.p.asset_sync?.aktiv===true;
+  if(this.stopped||b.stopped||!b.p.enabled||this.config().asset_sync?.aktiv===false||!projektAktiv){b.mode=projektAktiv&&b.p.asset_sync?.verwaltet?'api':'legacy';return;}
   const response=await this.api.json<{projects:string[];activeWatchers:string[];capabilities?:unknown}>('/api/projects',undefined,'GET',b.abort.signal);
   const contract=parseApiContract(response.capabilities,new Set(['asset_sync']));
   if(!contract?.features.includes('asset_sync')){if(!b.p.asset_sync?.verwaltet)b.mode='legacy';return;}

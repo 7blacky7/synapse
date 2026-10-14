@@ -49,7 +49,8 @@ export interface DaemonAssetSyncConfig {
  aktiv?:boolean;richtung?:'both'|'pc_to_share'|'share_to_pc';
  chunk_bytes?:number;retry_ms?:number;scan_ms?:number;
 }
-export interface ProjektAssetSyncConfig {richtung?:'both'|'pc_to_share'|'share_to_pc';verwaltet?:boolean;host?:string;optionen?:AssetTransferOptionen;}
+/** aktiv: Asset-Sync fuer dieses Projekt einschalten (User-Vorgabe 14.10.2026: Standard aus, je Projekt). */
+export interface ProjektAssetSyncConfig {aktiv?:boolean;richtung?:'both'|'pc_to_share'|'share_to_pc';verwaltet?:boolean;host?:string;optionen?:AssetTransferOptionen;}
 export interface ProjektConfig {
   name: string;
   pfad: string;
@@ -209,6 +210,7 @@ function normalizeAssetSync(p:unknown):ProjektAssetSyncConfig|undefined{
  const a=p as ProjektAssetSyncConfig;
  if(a.richtung!==undefined&&!['both','pc_to_share','share_to_pc'].includes(a.richtung))throw new TypeError('asset_sync.richtung ungültig.');
  if(a.verwaltet!==undefined&&typeof a.verwaltet!=='boolean')throw new TypeError('asset_sync.verwaltet ungültig.');
- return {...(a.richtung?{richtung:a.richtung}:{}),...(a.verwaltet===undefined?{}:{verwaltet:a.verwaltet}),
+ if(a.aktiv!==undefined&&typeof a.aktiv!=='boolean')throw new TypeError('asset_sync.aktiv ungültig.');
+ return {...(a.aktiv===undefined?{}:{aktiv:a.aktiv}),...(a.richtung?{richtung:a.richtung}:{}),...(a.verwaltet===undefined?{}:{verwaltet:a.verwaltet}),
   ...(typeof a.host==='string'&&a.host?{host:a.host}:{}),...(a.optionen?{optionen:a.optionen}:{})};
 }

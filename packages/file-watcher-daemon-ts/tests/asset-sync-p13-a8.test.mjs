@@ -183,7 +183,7 @@ test('Legacy daemon configuration operations equal LIVE t85 exactly',async()=>{
 const syncs=new Set();
 after(async()=>{for(const s of syncs)await s.stopAll();});
 async function negotiation({enabled=true,ownerStatus=200,policy={},pages,changes,offline}={}){
- const p=await dir(),config={asset_sync:{retry_ms:20},projekte:[]},project={name:'p13_a8',pfad:p,enabled:true};
+ const p=await dir(),config={asset_sync:{retry_ms:20},projekte:[]},project={name:'p13_a8',pfad:p,enabled:true,asset_sync:{aktiv:true}};
  const defaults={success:true,host:'daemon_fixture',...opts,scanMs:60000},requests=[];
  const f=await fake({extra:async(req,res,u,state,json)=>{
   if(u.pathname==='/api/projects'){requests.push('capability');if(offline?.())json(res,{error:{code:'offline',message:'offline'}},503);else json(res,{projects:['p13_a8'],activeWatchers:['p13_a8'],capabilities:{contractVersion:1,features:enabled?['asset_sync']:[]}});return true;}
@@ -198,7 +198,12 @@ async function negotiation({enabled=true,ownerStatus=200,policy={},pages,changes
 test('Feature-off retains legacy routing without policy/owner/transfer calls',async()=>{
  const n=await negotiation({enabled:false});n.sync.starte(n.project);assert.equal(await n.sync.bereit(n.project.name),false);
  assert.equal(await n.sync.ereignis({project:n.project.name,path:'a.png',type:'add'}),false);
- assert.deepEqual(n.requests,['capability']);assert.equal(n.project.asset_sync,undefined);await n.sync.stopAll();assert.equal(n.project.enabled,true);
+ assert.deepEqual(n.requests,['capability']);assert.deepEqual(n.project.asset_sync,{aktiv:true});await n.sync.stopAll();assert.equal(n.project.enabled,true);
+});
+test('Projekt ohne asset_sync.aktiv bleibt lokal und fragt die API nicht (P13-T44)',async()=>{
+ const n=await negotiation();delete n.project.asset_sync;n.sync.starte(n.project);assert.equal(await n.sync.bereit(n.project.name),false);
+ assert.equal(await n.sync.ereignis({project:n.project.name,path:'a.png',type:'add'}),false);
+ assert.deepEqual(n.requests,[]);await n.sync.stopAll();
 });
 test('API ownership fence precedes journal activation and manifest/bytes',async()=>{
  const n=await negotiation();n.sync.starte(n.project);assert.equal(await n.sync.bereit(n.project.name),true);
@@ -206,8 +211,8 @@ test('API ownership fence precedes journal activation and manifest/bytes',async(
  const status=await n.sync.status(n.project.name);assert.equal(status.modus,'api');assert.ok(status.cursor);assert.equal(n.project.asset_sync.host,'daemon_fixture');await n.sync.stopAll();
 });
 test('Denied owner/contradictory direction fail closed before manifest or bytes',async()=>{
- const a=await negotiation({ownerStatus:409});a.sync.starte(a.project);await a.sync.bereit(a.project.name);assert.ok(!a.requests.includes('manifest'));assert.equal(a.project.asset_sync,undefined);await a.sync.stopAll();
- const b=await negotiation({policy:{richtung:'share_to_pc'}});b.project.asset_sync={richtung:'pc_to_share'};b.sync.starte(b.project);await b.sync.bereit(b.project.name);
+ const a=await negotiation({ownerStatus:409});a.sync.starte(a.project);await a.sync.bereit(a.project.name);assert.ok(!a.requests.includes('manifest'));assert.deepEqual(a.project.asset_sync,{aktiv:true});await a.sync.stopAll();
+ const b=await negotiation({policy:{richtung:'share_to_pc'}});b.project.asset_sync={aktiv:true,richtung:'pc_to_share'};b.sync.starte(b.project);await b.sync.bereit(b.project.name);
  assert.ok(!b.requests.includes('owner'));assert.ok(!b.requests.includes('manifest'));await b.sync.stopAll();
 });
 test('Manifest multi-page stand drift leaves cursor unacknowledged',async()=>{
@@ -222,7 +227,7 @@ test('Commit-delta fullscan recovery resets stale cursor and installs fresh full
 test('Offline managed cache is not authority; explicit unlink resumes only after fresh policy+owner',async()=>{
  let offline=true;const n=await negotiation({offline:()=>offline}),b=png(20);await fs.writeFile(join(n.p,'a.png'),b);
  const seeded=queue(n.p,n.f.api);await seeded.restoreCheckpoint([meta(b)],'prior','prior');await seeded.stop();await fs.unlink(join(n.p,'a.png'));
- n.project.asset_sync={verwaltet:true,host:'daemon_fixture',optionen:opts};n.sync.starte(n.project);await n.sync.bereit(n.project.name);
+ n.project.asset_sync={aktiv:true,verwaltet:true,host:'daemon_fixture',optionen:opts};n.sync.starte(n.project);await n.sync.bereit(n.project.name);
  await n.sync.ereignis({project:n.project.name,path:join(n.p,'a.png'),type:'unlink'});
  assert.equal(n.f.state.deletes,0);assert.equal((await n.sync.status(n.project.name)).auftraege.length,1);
  offline=false;await until(()=>n.f.state.deletes===1,'authorized offline delete resume');assert.ok(n.requests.indexOf('owner')>n.requests.indexOf('policy'));await n.sync.stopAll();
