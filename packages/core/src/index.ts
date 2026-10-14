@@ -865,6 +865,7 @@ export {
   WERKZEUG_REGEL_FELD,
 
 } from './services/index.js';
+export {listeEigeneLaufendeShellJobs} from './services/shell-queue.js';
 export type {
   EnqueueArgs,
   ShellJobRow,
