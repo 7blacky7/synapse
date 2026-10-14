@@ -264,9 +264,12 @@ function zuPlan(z: PlanZeile, alle: PlanZeile[]): ProjectPlan {
     architecture: z.architecture ?? undefined,
     tasks: (z.tasks ?? []).map((task) => {
       const branch = typeof task.git_branch === 'string' && task.git_branch ? task.git_branch : z.git_branch;
-      return { ...task, git_branch: branch ?? null, ...(branch ? {} : { git_branch_hinweis: GIT_BRANCH_HINT_AKTUELL }) };
+      const taskOhneBranchHinweis = { ...task };
+      delete taskOhneBranchHinweis.git_branch;
+      delete taskOhneBranchHinweis.git_branch_hinweis;
+      return { ...taskOhneBranchHinweis, ...(branch ? { git_branch: branch } : {}) };
     }),
-    git_branch: z.git_branch ?? null,
+    ...(z.git_branch ? { git_branch: z.git_branch } : {}),
     ...(z.git_branch ? {} : { git_branch_hinweis: GIT_BRANCH_HINT_AKTUELL }),
     createdAt: iso(z.created_at),
     updatedAt: iso(z.updated_at),

@@ -62,8 +62,14 @@ try {
  assert.equal(gelesen.tasks.find(t=>t.id===override.id).git_branch,'feature/task-neu');
  const ohne=await P.createPlan(project,'Ohne Branch','test');
  const taskOhne=await P.addTask(project,'aktuell','', 'medium',ohne.id);
- assert.equal(taskOhne.git_branch,null);
- assert.match(taskOhne.git_branch_hinweis,/aktuelle Arbeitsbranch/);
+ assert.equal(taskOhne.git_branch,undefined,'leerer Branch wird weggelassen');
+ assert.equal(taskOhne.git_branch_hinweis,undefined,'direkte Task-Antwort wiederholt den Plan-Hinweis nicht');
+ const planOhne=await P.getPlan(project,ohne.id);
+ assert.equal(planOhne.git_branch,undefined,'plan(get) laesst leeren Plan-Branch weg');
+ assert.match(planOhne.git_branch_hinweis,/aktuelle Arbeitsbranch/,'Hinweis bleibt einmalig am Plan');
+ const gelesenOhne=planOhne.tasks.find(t=>t.id===taskOhne.id);
+ assert.equal(gelesenOhne.git_branch,undefined,'plan(get) laesst leeren Task-Branch weg');
+ assert.equal(gelesenOhne.git_branch_hinweis,undefined,'plan(get) wiederholt den Plan-Hinweis nicht an der Task');
  await assert.rejects(P.createPlan(project,'Verboten','',[],{git_branch:'master'}),/git_branch/i);
  await assert.rejects(P.updatePlan(project,{git_branch:'bad..name'},plan.id),/git_branch/i);
  await assert.rejects(P.addTask(project,'Verboten','', 'medium',plan.id,'master'),/git_branch/i);
@@ -110,7 +116,20 @@ try {
   const final=await call({action:'get',plan_id:planId});
   const finalPlan=final.plan??final;assert.equal(finalPlan.git_branch,'feature/plan-neu');
   assert.equal((finalPlan.tasks??final.tasks).find(t=>t.id===addedTask.id).git_branch,'feature/task-'+mode);
-  console.log('PASS '+mode+': create/update, add/update task, kompakter get, Vererbung/Override');
+  const branchlos=await call({action:'create',name:'Ohne Branch '+mode,description:'test'});
+  const branchlosId=branchlos.plan_ref?.id??branchlos.plan?.id;
+  assert.ok(branchlosId,JSON.stringify(branchlos));
+  const branchlosTask=await call({action:'add_task',plan_id:branchlosId,title:'kein Branch '+mode,description:'test'});
+  const branchlosGet=await call({action:'get',plan_id:branchlosId});
+  const branchlosPlan=branchlosGet.plan??branchlosGet;
+  assert.equal(branchlosPlan.git_branch,undefined,mode+': leeres git_branch-Feld am Plan fehlt');
+  assert.match(branchlosPlan.git_branch_hinweis,/aktuelle Arbeitsbranch/,mode+': Plan-Hinweis bleibt erhalten');
+  const branchlosTasks=branchlosPlan.tasks??branchlosGet.tasks;
+  const branchlosReadTask=branchlosTasks.find(t=>t.id===(branchlosTask.task??branchlosTask).id);
+  assert.ok(branchlosReadTask,JSON.stringify(branchlosGet));
+  assert.equal(branchlosReadTask.git_branch,undefined,mode+': leeres git_branch-Feld an der Task fehlt');
+  assert.equal(branchlosReadTask.git_branch_hinweis,undefined,mode+': Task wiederholt den Plan-Hinweis nicht');
+  console.log('PASS '+mode+': create/update, add/update task, kompakter get, Vererbung/Override, branchloser Hinweis');
  }
  console.log('PASS P3-T12/T14: Git-Format, Projekt-Schutzbranch, Migration plans '+alterMs.toFixed(3)+' ms, hinweis_optionen '+branchAlterMs.toFixed(3)+' ms, REST+stdio');
 } finally {

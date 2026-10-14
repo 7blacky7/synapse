@@ -3064,7 +3064,7 @@ async function handleToolCallKern(
           const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
           const compact = bool(args, 'compact') ?? !nachId.gefiltert;
           const tasks = compact
-            ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, git_branch: t.git_branch, git_branch_hinweis: t.git_branch_hinweis }))
+            ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, ...(typeof t.git_branch === 'string' && t.git_branch ? { git_branch: t.git_branch } : {}) }))
             : limited;
           return {
             ...p,
