@@ -1,5 +1,6 @@
 /** P10-T33: gemeinsamer Shell-Kontext, die Regeln selbst liegen in env-maske (P15-T41). */
 import fs from 'node:fs';
+import {shellNulDaten} from './shell-ausgabe-nul.js';
 import os from 'node:os';
 import path from 'node:path';
 import {getPool} from '../db/client.js';
@@ -102,9 +103,11 @@ export async function maskiereShellVorSpeichern<T>(project:string|undefined,date
     const original=daten as Record<string,unknown>,out={...safe} as Record<string,unknown>;
     for(const key of ['id','project','agent_id','agentId','source','tool','action','status','exit_code','ok','durationMs','stream_id','cwd_relative','command','timeout_ms','tail_lines'])
       if(key in original)out[key]=original[key];
-    return out as T;
+    const nul=shellNulDaten(out);
+    if(nul.anzahl)nul.daten.message=[nul.daten.message,`NUL-Bytes ersetzt: ${nul.anzahl}`].filter(Boolean).join('; ');
+    return nul.daten as T;
   }
-  return safe;
+  return shellNulDaten(safe).daten;
 }
 
 import {AsyncLocalStorage} from 'node:async_hooks';

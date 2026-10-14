@@ -15,6 +15,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import {ShellAbschlussWiederholung,shellProzessEnde} from './shell-job-completion.js';
 import {
   getPool,
   verbindeListenClient,
@@ -45,6 +46,35 @@ function readStreamLog(streamId: string | undefined | null): string | undefined 
 }
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`;
+const aktiveBearbeitungen=new Set<string>();
+const abschluesse=new ShellAbschlussWiederholung({
+ complete:completeShellJob,
+ report:(id,error,versuch)=>console.error(`[shell-worker] Abschluss ${id}, Versuch ${versuch} fehlgeschlagen:`,
+  maskiereShellText(error instanceof Error?error.message:String(error)).text.replace(/\u0000/g,'\\0')),
+});
+let recoveryLaeuft=false;
+/** Nur eigene aktuelle Daemonclaims; fremde Hosts/Generationen und aktive Bearbeitung bleiben unangetastet. */
+export async function gleicheShellAbschluesseAb():Promise<void>{
+ if(recoveryLaeuft)return;recoveryLaeuft=true;
+ try{
+  await abschluesse.flush();
+  const rows=(await getPool().query<ShellJobRow>("SELECT * FROM shell_jobs WHERE status='running' AND claimed_by=$1",[DAEMON_ID])).rows;
+  for(const job of rows){
+   if(aktiveBearbeitungen.has(job.id)||abschluesse.has(job.id)||!job.stream_id||!/^[-a-f0-9]+$/i.test(job.stream_id))continue;
+   let meta:{project?:string;status?:string;pid?:number;exit_code?:number};
+   try{meta=JSON.parse(fs.readFileSync(path.join(STREAMS_DIR,job.stream_id+'.meta.json'),'utf8'));}catch{continue;}
+   if(meta.project!==job.project||!shellProzessEnde(meta))continue;
+   const output=readStreamLog(job.stream_id);
+   const done=meta.status==='done'&&meta.exit_code===0;
+   await abschluesse.complete(job.id,{
+    status:done?'done':'failed',exit_code:meta.exit_code??-1,output,
+    tail:output?.split('\n').filter((s,i,a)=>s!==''||i<a.length-1).slice(-(job.tail_lines??5)),
+    ...(!done?{error:'completion_reconciled'}:{}),
+    message:'Shellprozess beendet; verlorener Abschluss aus lokalem Streamzustand nachgetragen.',
+   });
+  }
+ }finally{recoveryLaeuft=false;}
+}
 
 /**
  * SH-2: Obergrenze gleichzeitig laufender Shell-Jobs.
@@ -148,6 +178,7 @@ export async function startShellJobWorker(
 
   safetyInterval = setInterval(() => {
     if (stopped) return;
+    void gleicheShellAbschluesseAb().catch((err:unknown)=>console.error('[shell-worker] Abschlussabgleich fehlgeschlagen:',maskiereShellText(String(err)).text.replace(/\u0000/g,'\\0')));
     // P15-T12: waehrend einer Pause nichts verfallen lassen — die Jobs warten nur.
     if (!workerPausiert('shell')) {
       void expirePendingShellJobs(EXPIRE_PENDING_AFTER_SEC).catch((err: unknown) => {
@@ -201,6 +232,8 @@ export async function startShellJobWorker(
       }
       listenClient = null;
     }
+    await abschluesse.flush();
+    if(abschluesse.size)console.error(`[shell-worker] ${abschluesse.size} Abschlüsse noch ausstehend; Streammetadaten bleiben für Recovery erhalten.`);
     console.error('[shell-worker] gestoppt.');
   };
 
@@ -224,6 +257,7 @@ async function processJob(project: string): Promise<void> {
 
   const job = await claimPendingShellJob(project, DAEMON_ID);
   if (!job) return; // Kein Job vorhanden oder von anderem Daemon geclaimed
+  aktiveBearbeitungen.add(job.id);
 
   try {
     await runClaimedJob(project, job);
@@ -231,6 +265,7 @@ async function processJob(project: string): Promise<void> {
     // PFLICHT und deshalb in finally: wird der Slot nicht freigegeben, waechst
     // die Map bei jedem Fehlerpfad um einen Eintrag, bis der Worker gar keine
     // Jobs mehr annimmt — ohne dass irgendwo ein Fehler sichtbar waere.
+    aktiveBearbeitungen.delete(job.id);
     laufendeJobs.delete(job.id);
     // Slot ist frei: sofort den naechsten Wartenden holen, statt bis zum
     // Safety-Net (10 s) zu warten.
@@ -253,6 +288,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
       bestaetigt: job.sicherung?.anfrage?.bestaetigt,
       shell: job.sicherung?.anfrage?.shell,
       sicherungs_job_id: job.id,
+      queued_stream_id: job.stream_id??undefined,
       sicherungs_ursprung: 'daemon',
       datenbank_freigabe: job.sicherung?.anfrage?.datenbank_freigabe,
       cwd_relative: job.cwd_relative ?? undefined,
@@ -278,7 +314,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   } catch (err: unknown) {
     // Unerwarteter Fehler in execShellInProject selbst
     const m = (err as Error).message ?? String(err);
-    await completeShellJob(job.id, {
+    await abschluesse.complete(job.id, {
       status: 'failed',
       error: 'exec_exception',
       message: m,
@@ -300,7 +336,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
       (result['reason'] as string | undefined) ??
       errCode;
 
-    await completeShellJob(job.id, {
+    await abschluesse.complete(job.id, {
       status: isInactive ? 'rejected' : 'failed',
       error: errCode,
       message: errMsg,
@@ -341,7 +377,7 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   const jobEnv = result['job_env'] as { database_url?: string } | undefined;
   const jobEnvText = jobEnv?.database_url ? `job_env: database_url=${maskiereShellText(jobEnv.database_url).text}` : undefined;
 
-  await completeShellJob(job.id, {
+  await abschluesse.complete(job.id, {
     status,
     exit_code: exitCode,
     tail,
@@ -356,5 +392,5 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
         }
       : result['message'] ? { message: String(result['message']) } : jobEnvText ? { message: jobEnvText } : {}),
   });
-  console.error(`[shell-worker] Job ${job.id} abgeschlossen mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
+  console.error(`[shell-worker] Job ${job.id} ${abschluesse.has(job.id)?'lokal beendet; PG-Abschluss ausstehend':'abgeschlossen'} mit status=${status} (output ${output ? output.length + ' bytes' : 'kein file'})`);
 }
