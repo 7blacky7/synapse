@@ -420,7 +420,7 @@ export async function completeShellJob(
   // Angaben in derselben Zeile, die sich widersprechen. Die Entscheidung faellt
   // deshalb hier in der Datenbank, wo beide Angaben vorliegen, und nicht im
   // Worker, der vom Abbruch nichts mitbekommen haben muss.
-  await pool.query(
+  const geschrieben=await pool.query<{status:string}>(
     `UPDATE shell_jobs
      SET status = CASE WHEN cancelled_at IS NOT NULL
                        THEN 'failed'::shell_job_status ELSE $2::shell_job_status END,
@@ -434,7 +434,9 @@ export async function completeShellJob(
          output_truncated = $8,
          completed_at = NOW(),
          updated_at = NOW()
-     WHERE id = $1`,
+     WHERE id = $1
+       AND ($5::text IS DISTINCT FROM 'completion_persistence_failed' OR status IN ('pending','running'))
+     RETURNING status`,
     [
       id,
       result.status,
@@ -447,8 +449,15 @@ export async function completeShellJob(
     ],
   );
   const channel = doneChannelForJob(id);
-  // pg_notify akzeptiert beliebige Strings als Channel — sicherer Weg via Parameter.
-  await pool.query(`SELECT pg_notify($1, $2)`, [channel, result.status]);
+  const gespeichert=geschrieben.rows[0]?.status??(await pool.query<{status:string}>('SELECT status FROM shell_jobs WHERE id=$1',[id])).rows[0]?.status??result.status;
+  // Ein Notificationfehler nach erfolgreicher Speicherung verliert das Ergebnis nicht.
+  // Wartende lesen den terminalen DB-Stand auch über ihren bestehenden Timeout-/Pollpfad.
+  try{await pool.query(`SELECT pg_notify($1, $2)`, [channel, gespeichert]);}
+  catch(error){
+    const code=(error as {code?:unknown})?.code;
+    console.error('[shell-queue] Abschluss gespeichert; Benachrichtigung fehlgeschlagen:',id,
+      typeof code==='string'&&/^[A-Z0-9_]+$/.test(code)?code:'unknown');
+  }
 }
 
 /**

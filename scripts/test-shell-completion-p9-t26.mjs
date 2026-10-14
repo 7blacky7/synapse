@@ -26,7 +26,7 @@ childProcess.spawn=(bin,argv,opts)=>{calls.push({bin,argv,cwd:opts?.cwd});return
 syncBuiltinESMExports();
 await db.query('SELECT current_database() AS datenbank'); // Sichtbarer Test-DB-Nachweis.
 await db.query('SET search_path TO '+schema);
-const pool={query:db.query,async connect(){const c=await openDb();await c.query('SET search_path TO '+schema);return {query:c.query,release(){closing.push(c.end());}};}};
+const pool={query:db.query.bind(db),async connect(){const c=await openDb();await c.query('SET search_path TO '+schema);return {query:c.query.bind(c),release(){closing.push(c.end());}};}};
 const closing=[];let made=false,passed=0;
 const {mitLesePool}=await import(mod('packages/core/dist/db/client.js'));
 const queue=await import(mod('packages/core/dist/services/shell-queue.js'));

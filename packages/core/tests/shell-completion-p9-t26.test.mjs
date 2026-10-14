@@ -46,3 +46,18 @@ for(const [name,meta,probe,expected]of [
  ['bad pid',{status:'running',pid:-1},()=>{},false],
  ['bad state',{status:'untrusted',pid:123},()=>{},false],
 ])test('Prozessende '+name,()=>assert.equal(shellProzessEnde(meta,probe),expected));
+
+test('Realer Abschlussweg: verlorenes Notify nach erfolgreichem UPDATE erhält done',async()=>{
+ const {mitLesePool}=await import('../dist/db/client.js');
+ const {completeShellJob}=await import('../dist/services/shell-queue.js');
+ let stored='running',errors=6;
+ const pool={query:async(sql,v)=>{
+  if(/UPDATE shell_jobs\s+SET status = CASE/.test(sql)){stored=v[1];return {rows:[],rowCount:1};}
+  if(/SELECT pg_notify/.test(sql)&&errors-- >0)throw Object.assign(Error('synthetic notification outage'),{code:'ECONNRESET'});
+  return {rows:[],rowCount:0};
+ }};
+ const retry=new ShellAbschlussWiederholung({complete:(id,r)=>mitLesePool(pool,()=>completeShellJob(id,r)),report:()=>{},wait:async()=>{}});
+ await retry.complete('11111111-1111-4111-8111-111111111111',{status:'done',exit_code:0,output:'saved\n'});
+ await retry.flush();await retry.flush();
+ assert.equal(stored,'done','gespeicherter Erfolg wird nicht durch fehlende Benachrichtigung überschrieben');
+});
