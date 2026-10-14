@@ -845,6 +845,14 @@ func rebuildMenu(projs []Project) {
 		}
 	}()
 
+	// P18-T17/RV7: globaler Reverse-Bibliotheksordner, Policy aus der API, Statusbaum.
+	mReverse := systray.AddMenuItem("Reverse-Bibliothek …", "Ordner für Originale, Einstellungen von Synapse und Status je Fundstelle")
+	go func() {
+		for range mReverse.ClickedCh {
+			fyne.Do(zeigeReverseBibliothekFenster)
+		}
+	}()
+
 	mGPU := systray.AddMenuItem("Lokale GPU / Ollama …", "GPU-Modell vergleichen, einrichten oder sperren")
 	go func() {
 		for range mGPU.ClickedCh {
