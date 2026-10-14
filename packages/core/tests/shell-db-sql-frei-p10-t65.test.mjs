@@ -51,7 +51,8 @@ for(const [name,text] of [
  ['PG-Umgebung geändert',"process.env.PGHOST='system.invalid';const db=getPool();db.query(process.env.SQL)"]
 ])test(name+' bleibt Anleitung',()=>assert.equal(js(text).erlaubt,false));
 
-test('Reguläre Helfer-Freigabe gibt Servermetadaten an echten Kindprozess weiter',async()=>{
+// P10-T71 Teil 2: frueher wurden private Freigabe-Metadaten injiziert; jetzt laeuft der Kindprozess ohne sie.
+test('Workspace-Kindprozess laeuft ohne Freigabe-Metadaten; System-DB und PG-Werte fehlen weiter',async()=>{
  const saved={...process.env};
  let starts=0;
  try{
@@ -65,9 +66,9 @@ test('Reguläre Helfer-Freigabe gibt Servermetadaten an echten Kindprozess weite
    exec:async o=>{
     if(o.User==='0')return{start:async()=>Readable.from([]),inspect:async()=>({Running:false,ExitCode:0})};
     starts++;
-    assert.ok(o.Cmd.some(x=>x.startsWith('SYNAPSE_SHELL_DB_FREIGABE=')),'Private Metadaten fehlen');
+    assert.equal(o.Cmd.some(x=>x.startsWith('SYNAPSE_SHELL_DB_FREIGABE=')),false,'P10-T71: keine Freigabe-Metadaten mehr');
     // Echter Docker-Startvektor, statt SQL nur DB-freie Beobachtung des Kind-Env.
-    const code="process.stdout.write(JSON.stringify({proof:JSON.parse(process.env.SYNAPSE_SHELL_DB_FREIGABE),hasSystem:Object.values(process.env).includes(process.argv[1]),pg:Object.keys(process.env).some(k=>/^PG/.test(k))}))";
+    const code="process.stdout.write(JSON.stringify({freigabe:'SYNAPSE_SHELL_DB_FREIGABE' in process.env,hasSystem:Object.values(process.env).includes(process.argv[1]),pg:Object.keys(process.env).some(k=>/^PG/.test(k))}))";
     const cmd=o.Cmd.slice(0,-1);
     const replacement='node -e '+JSON.stringify(code)+' '+JSON.stringify(live);
     if(o.Cmd.at(-3)==='-e'&&o.Cmd.at(-4)==='node'){const config=JSON.parse(o.Cmd.at(-1));config.argv[config.argv.length-1]=replacement;cmd.push(JSON.stringify(config));}
@@ -88,8 +89,7 @@ test('Reguläre Helfer-Freigabe gibt Servermetadaten an echten Kindprozess weite
   const r=await mitLesePool(pool,()=>w.exec(project,c.command,{agent_id:'sol-2'}));
   assert.equal(starts,1,JSON.stringify(r));assert.equal(r.exitCode,0,r.stderr);
   const observed=JSON.parse(r.stdout);
-  assert.equal(observed.proof.test_system_id,proof.test_system_id);
-  assert.ok(observed.proof.ziele.some(z=>z.art==='test'&&z.datenbank==='synapse_test'));
+  assert.equal(observed.freigabe,false);
   assert.equal(observed.hasSystem,false);assert.equal(observed.pg,false);
  }finally{
   for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];

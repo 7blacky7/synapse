@@ -156,7 +156,7 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
   const textStufe=treffer.reduce<ShellStufe>((s,t)=>strengereShellStufe(s,t.stufe),'laeuft');
   let stufe:ShellStufe=textStufe;
   if(text.ungeklaert.includes('parser_grenze')&&/^\s*(?:node|python[\d.]*)(?:\.exe)?\b/.test(o.command))stufe=strengereShellStufe(stufe,'anleitung');
-  if(o.lage.datenbank_abgewiesen)stufe=strengereShellStufe(stufe,'anleitung');
+  // P10-T71: datenbank_abgewiesen ist keine Startbedingung mehr (nur Prod-DB ist gesperrt, siehe hard).
   if(hard)stufe='sperre';
   else if(text.risiko_verb&&!o.lage.sicher_aufloesbar&&stufe==='laeuft')stufe='anleitung';
   // User-Vorgabe 14.10.2026: ausser Sperren nur Warnhinweise, nichts wartet auf Bestaetigung.

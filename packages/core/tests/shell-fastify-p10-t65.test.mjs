@@ -23,6 +23,8 @@ for(const f of fixtures)test('Unveränderter historischer Job '+f.job.slice(0,8)
  const r=await decide(f.command,f);assert.equal(r.darf_starten,true,JSON.stringify({audit:r.audit,risiko:r.antwort?.risiko,ungeklaert:r.antwort?.lage.ungeklaert,db:r.antwort?.lage.datenbank_abgewiesen}));
 });
 const inline=text=>'node -e '+JSON.stringify(text);
+// P10-T71: ausser Sperren nur Warnhinweise. 'bleibt Anleitung' heisst jetzt: nicht stilles 'laeuft' (Hinweis/Rueckfrage/Sperre).
+const frei=r=>r.darf_starten===true&&r.audit.stufe==='laeuft'&&!r.hinweis;
 for(const text of [
  "const app=Fastify();app.inject({method:'POST',url:'/fixture',payload:{}})",
  "const app=Fastify();const probes=[{method:'DELETE',url:'/fixture'}];for(const r of probes)app.inject(r)",
@@ -36,7 +38,7 @@ for(const text of [
  "import axios from'axios';axios.request({url:'https://outside.invalid',method:'PUT'})",
  "const client=unknown;client.request({method:'POST'})",
  "const app=Fastify();app.inject({method:'POST'});fetch('https://outside.invalid',{method:'POST'})"
-])test('Echter oder unklarer HTTP-Schreibaufruf bleibt Anleitung',async()=>assert.equal((await decide(inline(text))).darf_starten,false));
+])test('Echter oder unklarer HTTP-Schreibaufruf bleibt Hinweis',async()=>assert.equal(frei(await decide(inline(text))),false));
 const db=text=>pruefeDbKommando({argv:[{text:'node'}],inline_skript:{sprache:'node',text}},{},proof);
 for(const module of ['@modelcontextprotocol/sdk/client/index.js','../node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js'])
  test('Expliziter MCP-Import ist kein PG-Client '+module,()=>{

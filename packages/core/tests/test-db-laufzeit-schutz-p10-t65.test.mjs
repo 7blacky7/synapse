@@ -1,92 +1,108 @@
-/** P10-T65: Laufzeitguard auf derselben Verbindung vor jeder Nutzabfrage. */
+/**
+ * P10-T65, angepasst P10-T71 Teil 2 (14.10.2026, memory regel-datenbanken-nur-prod-gesperrt):
+ * Der Laufzeitguard (Systemkennung, SQL-Kontrolle vor jeder Abfrage, PG*-Umgebung, Freigabe-Metadaten)
+ * ist zurueckgebaut. Einziger Schutz: das Ziel ist nicht die Synapse-Produktions-DB.
+ * Die frueheren Guard-Faelle pruefen jetzt 'oeffnet direkt' bzw. 'Prod abgewiesen, ohne zu verbinden'.
+ */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {oeffneGeschuetzteTestDb} from '../dist/services/test-db-laufzeit-schutz.js';
+import {oeffneGeschuetzteTestDb,oeffneGeschuetzteShellTestDb,istSynapseProdDb} from '../dist/services/test-db-laufzeit-schutz.js';
 const url='postgresql://worker:synthetic@own.invalid:6544/synapse_test';
-const ziel={host:'own.invalid',port:'6544',datenbank:'synapse_test',user:'worker'};
-const proof={project:'p10_shell_projektdb',test_system_id:'123456789',ziele:[{...ziel,art:'test'}],live:{host:'live.invalid',port:'5432',datenbank:'synapse',user:'worker'}};
-function mock(rows){
- const calls=[];let closed=false;
- const client={connect:async()=>{},end:async()=>{closed=true;},query:async(sql,values)=>{
-  calls.push(sql);if(sql.startsWith('SELECT current_database()'))return {rows:[rows.shift()]};
-  return {rows:[{ok:true}],rowCount:1};
- }};
- return {client,calls,get closed(){return closed;}};
+const live={host:'live.invalid',port:'5432',datenbank:'synapse',user:'worker'};
+const proof={project:'p10_shell_projektdb',test_system_id:'123456789',ziele:[{host:'own.invalid',port:'6544',datenbank:'synapse_test',user:'worker',art:'test'}],live};
+function mock(){
+ const calls=[];let connected=false,closed=false;
+ const client={connect:async()=>{connected=true;},end:async()=>{closed=true;},query:async sql=>{calls.push(sql);return {rows:[{ok:true}],rowCount:1};}};
+ return {client,calls,get connected(){return connected;},get closed(){return closed;}};
 }
-const ok=()=>({datenbank:ziel.datenbank,port:6544,user:'worker',system_id:'123456789'});
-test('Ziel außerhalb der Registry verbindet sich überhaupt nicht',async()=>{
- let connected=false;
- await assert.rejects(()=>oeffneGeschuetzteTestDb(url.replace('6544','5432'),proof,()=>{connected=true;throw Error('unused');}),/test_db_ziel_nicht_freigegeben/);
- assert.equal(connected,false);
+async function ohneVerbindung(u,freigabe,muster){
+ let created=false;
+ await assert.rejects(()=>oeffneGeschuetzteTestDb(u,freigabe,()=>{created=true;throw Error('unused');}),muster);
+ assert.equal(created,false,'Prod-Ziel darf keinen Client erzeugen');
+}
+test('Prod-DB per Name, bekannter Adresse oder Live-Angabe wird abgewiesen, ohne zu verbinden',async()=>{
+ await ohneVerbindung('postgresql://worker:x@irgendwo.invalid:6544/synapse',undefined,/test_db_ist_produktion/);
+ await ohneVerbindung('postgresql://worker:x@192.168.50.65:5432/andere_db',undefined,/test_db_ist_produktion/);
+ await ohneVerbindung('postgresql://worker:x@live.invalid:5432/synapse_live',{...proof,live:{...live,datenbank:'synapse_live'}},/test_db_ist_produktion/);
 });
-test('Vor jeder Abfrage SQL-Kontrolle auf derselben Verbindung',async()=>{
- const m=mock([ok(),ok()]);
- const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
- await db.query('DELETE FROM owned');await db.query('DROP SCHEMA owned CASCADE');await db.end();
- assert.equal(m.calls.length,4);assert.match(m.calls[0],/current_database\(\).*pg_control_system\(\)/);
- assert.equal(m.calls[1],'DELETE FROM owned');assert.match(m.calls[2],/current_database/);assert.equal(m.calls[3],'DROP SCHEMA owned CASCADE');
- assert.equal(m.closed,true);assert.equal('client' in db,false);
+test('Gleiches Ziel wie SYNAPSE_DATABASE_URL gilt als Prod',async()=>{
+ const alt=process.env.SYNAPSE_DATABASE_URL;
+ try{
+  process.env.SYNAPSE_DATABASE_URL='postgresql://sys:x@sys.invalid:7000/systemdb';
+  await ohneVerbindung('postgresql://worker:y@sys.invalid:7000/systemdb',undefined,/test_db_ist_produktion/);
+  assert.equal(istSynapseProdDb('postgresql://worker:y@sys.invalid:7001/systemdb'),false,'anderer Port ist nicht Prod');
+ }finally{alt===undefined?delete process.env.SYNAPSE_DATABASE_URL:process.env.SYNAPSE_DATABASE_URL=alt;}
 });
-for(const [name,row]of [
- ['DB',{...ok(),datenbank:'synapse'}],['Cluster',{...ok(),system_id:'987654321'}],['User',{...ok(),user:'other'}],['fehlender Nachweis',undefined],
-])test('Abweichender Server-'+name+' verhindert Nutzabfrage',async()=>{
- const m=mock([row]);const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
- await assert.rejects(()=>db.query('DROP SCHEMA owned CASCADE'),/test_db_laufzeit_ziel_abweichend/);
- assert.equal(m.calls.length,1);await db.end();
+test('P10-T71 Nachbesserung: URL ohne DB-Namen und host/port/dbname-Overrides werden als Prod erkannt',async()=>{
+ // libpq nimmt ohne DB-Namen den User-Namen als DB -> leere DB gilt als Prod.
+ await ohneVerbindung('postgresql://worker:x@own.invalid:6544',undefined,/test_db_ist_produktion/);
+ await ohneVerbindung('postgresql://worker:x@own.invalid:6544/',undefined,/test_db_ist_produktion/);
+ // ?host=/?port= ueberschreiben die Adresse aus dem Authority-Teil.
+ await ohneVerbindung('postgresql://worker:x@own.invalid:6544/andere_db?host=192.168.50.65&port=5432',undefined,/test_db_ist_produktion/);
+ // ?dbname= ueberschreibt den Pfad wie bei libpq.
+ await ohneVerbindung('postgresql://worker:x@own.invalid:6544/synapse_test?dbname=synapse',undefined,/test_db_ist_produktion/);
+ // Live-Angabe: Port+DB treffen auch ueber einen anderen Host-Namen bzw. per ?port=.
+ await ohneVerbindung('postgresql://worker:x@alias.invalid/synapse_live',{...proof,live:{...live,datenbank:'synapse_live'}},/test_db_ist_produktion/);
+ await ohneVerbindung('postgresql://worker:x@live.invalid:6544/synapse_live?port=5432',{...proof,live:{...live,datenbank:'synapse_live'}},/test_db_ist_produktion/);
+ // Gegenfaelle bleiben frei: echte Test-/Workspace-DBs, auch mit harmlosen Optionen.
+ for(const u of ['postgresql://synapse_test:x@192.168.50.65:5433/synapse_test?sslmode=disable','postgresql://worker:x@own.invalid:6544/synapse_test?host=own2.invalid&port=6545','postgres://user:x@localhost/kommunikation_test'])
+  assert.equal(istSynapseProdDb(u,{}),false,u);
 });
-test('Nachweis wird nicht für spätere Abfragen gecacht',async()=>{
- const m=mock([ok(),{...ok(),datenbank:'foreign'}]);const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
- await db.query('DELETE FROM owned');
- await assert.rejects(()=>db.query('DROP SCHEMA owned CASCADE'),/test_db_laufzeit_ziel_abweichend/);
- assert.equal(m.calls.filter(x=>x.startsWith('DROP')).length,0);await db.end();
+test('Leere oder unlesbare URL verbindet nicht',async()=>{
+ await ohneVerbindung('',undefined,/test_db_url_fehlt/);
+ await ohneVerbindung('http://own.invalid/synapse_test',undefined,/test_db_ist_produktion/);
+ await ohneVerbindung('kein url',undefined,/test_db_ist_produktion/);
 });
-test('Gleichzeitige Abfragen halten Prüfung und Abfrage zusammen',async()=>{
- const m=mock([ok(),ok()]);const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
- await Promise.all([db.query('DELETE FROM first'),db.query('DELETE FROM second')]);await db.end();
- assert.equal(m.calls[1],'DELETE FROM first');assert.equal(m.calls[3],'DELETE FROM second');
+for(const [name,u] of [
+ ['synapse_test (Projekt-DB-Instanz 5433)','postgresql://synapse_test:x@192.168.50.65:5433/synapse_test'],
+ ['fremde Registry-unbekannte Test-DB','postgresql://worker:x@own.invalid:6544/synapse_test'],
+ ['Workspace-eigener DB-Container','postgresql://postgres:x@synapse-ws-demo-db:5432/app_test'],
+ ['zusaetzliche Workspace-Test-DB','postgres://user:x@localhost:5432/kommunikation_test'],
+])test('Nicht-Prod oeffnet direkt ohne Freigabe-Metadaten: '+name,async()=>{
+ const m=mock();
+ const db=await oeffneGeschuetzteTestDb(u,undefined,()=>m.client);
+ assert.equal(m.connected,true);
+ await db.query('DROP SCHEMA owned CASCADE');await db.query('DELETE FROM owned');
+ assert.deepEqual(m.calls,['DROP SCHEMA owned CASCADE','DELETE FROM owned'],'keine vorgeschaltete Kennungs-/SQL-Pruefung');
+ await db.end();assert.equal(m.closed,true);
 });
-test('Serveradministration/DB-Wechsel erhält keine Ausnahme',async()=>{
- const m=mock([ok()]);const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
- await assert.rejects(()=>db.query('DROP DATABASE foreign'),/test_db_sql_ausserhalb/);
- assert.equal(m.calls.length,0);await db.end();
+test('Frueherer Freigabe-Nachweis (Systemkennung, SQL-Kontrolle) wird nicht mehr verlangt',async()=>{
+ for(const freigabe of [proof,{...proof,test_system_id:undefined},undefined]){
+  const m=mock();const db=await oeffneGeschuetzteTestDb(url,freigabe,()=>m.client);
+  await db.query('DROP DATABASE foreign');await db.end();
+  assert.deepEqual(m.calls,['DROP DATABASE foreign']);
+ }
 });
-test('Docker-Portmapping derselben Test-Clusterkennung bleibt erlaubt',async()=>{
- const m=mock([{...ok(),port:5432}]);const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
- await db.query('DELETE FROM owned');assert.equal(m.calls.length,2);await db.end();
-});
-test('Fehlender trusted Cluster-Sollwert verbindet überhaupt nicht',async()=>{
- let connected=false;
- await assert.rejects(()=>oeffneGeschuetzteTestDb(url,{...proof,test_system_id:undefined},()=>{connected=true;throw Error('unused');}),/test_db_kennung_fehlt/);
- assert.equal(connected,false);
-});
-test('Abweichende PG-Umgebung verhindert Verbindung',async()=>{
- const previous=process.env.PGHOST;let connected=false;
- try{process.env.PGHOST='live.invalid';await assert.rejects(()=>oeffneGeschuetzteTestDb(url,proof,()=>{connected=true;throw Error('unused');}),/test_db_umgebung_abweichend/);assert.equal(connected,false);}
+test('Abweichende PG-Umgebung blockiert nicht mehr',async()=>{
+ const previous=process.env.PGHOST;
+ try{process.env.PGHOST='live.invalid';const m=mock();const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);assert.equal(m.connected,true);await db.end();}
  finally{previous===undefined?delete process.env.PGHOST:process.env.PGHOST=previous;}
 });
-
-test('Nacktes ROLLBACK heilt fehlgeschlagene Transaktion; nächste Nutzabfrage wird erneut geprüft',async()=>{
- const calls=[];let failed=false,checks=0;
- const client={connect:async()=>{},end:async()=>{},query:async sql=>{
-  calls.push(sql);
-  if(/^ROLLBACK\s*;?$/.test(sql)){failed=false;return {rows:[]};}
-  if(failed)throw Object.assign(Error('transaction aborted'),{code:'25P02'});
-  if(sql.startsWith('SELECT current_database()')){checks++;return {rows:[checks<3?ok():{...ok(),datenbank:'foreign'}]};}
-  if(sql==='SELECT fixture_error()'){failed=true;throw Object.assign(Error('original failure'),{code:'55P03'});}
-  return {rows:[]};
- }};
- const db=await oeffneGeschuetzteTestDb(url,proof,()=>client);
- await db.query('BEGIN');
- await assert.rejects(()=>db.query('SELECT fixture_error()'),e=>e.code==='55P03');
- await db.query('ROLLBACK');
- assert.equal(failed,false);
- await assert.rejects(()=>db.query('DELETE FROM owned'),/test_db_laufzeit_ziel_abweichend/);
- assert.equal(calls.includes('DELETE FROM owned'),false);
- await db.end();
+test('Verbindungsfehler wird gemeldet und der Client geschlossen',async()=>{
+ let closed=false;
+ const client={connect:async()=>{throw Error('ECONNREFUSED');},end:async()=>{closed=true;},query:async()=>({rows:[]})};
+ await assert.rejects(()=>oeffneGeschuetzteTestDb(url,undefined,()=>client),/test_db_verbindung_fehlgeschlagen: ECONNREFUSED/);
+ assert.equal(closed,true);
 });
-test('ROLLBACK mit Folge-SQL erhält keine Recovery-Ausnahme',async()=>{
- const m=mock([ok()]);const db=await oeffneGeschuetzteTestDb(url,proof,()=>m.client);
- await db.query('ROLLBACK; DELETE FROM owned');
- assert.equal(m.calls.length,2);assert.match(m.calls[0],/current_database/);
- await db.end();
+test('Shell-Variante nimmt DATABASE_URL und weist Prod ab',async()=>{
+ const alt=process.env.DATABASE_URL;
+ try{
+  process.env.DATABASE_URL='postgresql://worker:x@192.168.50.65:5432/synapse';
+  await assert.rejects(()=>oeffneGeschuetzteShellTestDb(),/test_db_ist_produktion/);
+  delete process.env.DATABASE_URL;
+  await assert.rejects(()=>oeffneGeschuetzteShellTestDb(),/test_db_url_fehlt/);
+ }finally{alt===undefined?delete process.env.DATABASE_URL:process.env.DATABASE_URL=alt;}
+});
+test('Echte Verbindung zur Shell-Job-DB (synapse_test) ohne SYNAPSE_SHELL_DB_FREIGABE',{skip:!/:5433\/synapse_test(?:\?|$)/.test(process.env.DATABASE_URL??'')&&'DATABASE_URL ist nicht synapse_test'},async()=>{
+ const alt=process.env.SYNAPSE_SHELL_DB_FREIGABE;delete process.env.SYNAPSE_SHELL_DB_FREIGABE;
+ const db=await oeffneGeschuetzteShellTestDb();
+ try{
+  const schema='p10_t71_'+process.pid;
+  await db.query('CREATE SCHEMA '+schema);
+  try{
+   await db.query('CREATE TABLE '+schema+'.probe(x int)');await db.query('INSERT INTO '+schema+'.probe VALUES (71)');
+   assert.equal((await db.query('SELECT x FROM '+schema+'.probe')).rows[0].x,71);
+   assert.equal((await db.query('SELECT current_database() AS db')).rows[0].db,'synapse_test');
+  }finally{await db.query('DROP SCHEMA '+schema+' CASCADE');}
+ }finally{await db.end();if(alt!==undefined)process.env.SYNAPSE_SHELL_DB_FREIGABE=alt;}
 });

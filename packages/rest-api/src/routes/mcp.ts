@@ -5617,6 +5617,9 @@ async function handleToolCallKern(
             executed_via: 'workspace',
             status: r.status??(r.timedOut ? 'timeout' : (r.exitCode === 0 ? 'done' : 'failed')),
             ...shellSicherungsAntwortAus(r as unknown as Record<string,unknown>),
+            // P10-T71: Warnhinweis (Stufe hinweis) wie im lokalen Pfad mitliefern, sonst sieht der Agent ihn nie.
+            ...(()=>{const h=(r as unknown as {sicherung_hinweis?:{risiko?:string;danach?:string}}).sicherung_hinweis;
+              return h?{sicherung_hinweis:h,message:'Hinweis: '+(h.risiko??'')+' '+(h.danach??'')}:{};})(),
             exit_code: r.exitCode,
             ...(r.quellen_pruefung_ausstehend?{quellen_pruefung_ausstehend:true,...(r.id?{id:r.id}:{})}:{}),
             ...(r.quellen_wiederhergestellt?.length?{quellen_wiederhergestellt:r.quellen_wiederhergestellt,...(r.id?{id:r.id}:{})}:{}),

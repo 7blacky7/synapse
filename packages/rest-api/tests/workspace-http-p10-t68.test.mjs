@@ -1,4 +1,6 @@
-/** W3 T68: echter W3-Fastify-Server + eigene PG-Tabellen; nur die Executorgrenze ist simuliert. */
+/** W3 T68: echter W3-Fastify-Server + eigene PG-Tabellen; nur die Executorgrenze ist simuliert.
+ * P10-T71 (14.10.2026): ausser der Prod-DB-Sperre gibt es nur Warnhinweise. Frueher 'rejected/Anleitung'
+ * heisst jetzt: laeuft MIT Hinweis (nicht still). */
 import {test,mock} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
@@ -13,11 +15,13 @@ import {createServer} from '../dist/server.js';
 const project='p10_t68_http_'+process.pid,schema=project;
 const file='packages/core/tests/t68-http-fixture.mjs';
 const writer="import{writeFile,rm}from'node:fs/promises';await writeFile('/tmp/owned/value','ok');await rm('/tmp/owned',{recursive:true});";
+const frei=v=>v.darf_starten===true&&v.audit?.stufe==='laeuft'&&!v.hinweis;
+const mitHinweis=r=>{assert.equal(r.status,'done',JSON.stringify(r));assert.match(JSON.stringify(r),/"(?:shell_)?hinweis"/,'Risiko muss als Hinweis sichtbar sein: '+JSON.stringify(r));};
 test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Executorgrenze',async t=>{
  const uri=new URL(process.env.DATABASE_URL??'');assert.equal(uri.pathname,'/synapse_test');assert.equal(uri.port,'5433');
  const client=await oeffneGeschuetzteShellTestDb(),saved={...process.env};let created=false,app;
  const sources=new Map([[file,writer],['packages/core/src/t68-product.mjs',writer],['scripts/test-t68.mjs',writer]]);
- let canonicalOutside=false,rootFailure=false,userExecutions=0,localWorkerCalls=0,simulateLocal=false,userRunning=false;
+ let canonicalOutside=false,rootFailure=false,userExecutions=0,localWorkerCalls=0,simulateLocal=false,userRunning=false,localVerdict;
  const rootCommands=[];
  const q=client.query.bind(client);
  const probeFor=(root,input)=>({cwd:root,os:'linux',env:{HOME:'/home/fixture',PWD:root},pfade:(input.pfade??[]).map(p=>({pfad:p,kanonisch:p,existiert:true,links:[]})),prozesse:{pids:[],namen:[]},
@@ -30,8 +34,9 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
    const command='node '+file,root=process.cwd();
    const lage=await ermittleShellLage(command,{cwd:root,project_root:root,shell:'sh',os:'linux',env:{},env_vollstaendig:true,probe:async input=>probeFor(root,input)});
    const verdict=pruefeShellStart({project,command,lage,agent_id:'sol-2'},SHELL_SICHERUNG_SEED);
-   assert.equal(verdict.darf_starten,false,'lokaler Worker bekommt keine private Workspace-Ausnahme');
-   await q("UPDATE shell_jobs SET status='rejected',error='shell_anleitung',sicherung=$2::jsonb WHERE id=$1",[r.rows[0].id,JSON.stringify({antwort:verdict.antwort})]);
+   assert.equal(frei(verdict),false,'lokaler Worker bekommt keine private Workspace-Ausnahme (Hinweis statt still)');
+   localVerdict=verdict;
+   await q("UPDATE shell_jobs SET status='rejected',error='shell_anleitung',sicherung=$2::jsonb WHERE id=$1",[r.rows[0].id,JSON.stringify({antwort:verdict.antwort??{stufe:'hinweis',...verdict.hinweis}})]);
   }
   return r;
  }};
@@ -105,17 +110,17 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
     }finally{userRunning=false;w.stelleWorkspaceQuellenWiederHer=saved;}
    });
    await t.test('scripts/test-* hat dieselbe native Ausnahme',async()=>assert.equal((await call('node scripts/test-t68.mjs')).success,true));
-   await t.test('Produktdatei und unbekannter kanonischer Pfad bleiben Anleitung',async()=>{
-    const before=userExecutions;assert.equal((await call('node packages/core/src/t68-product.mjs')).status,'rejected');
-    canonicalOutside=true;try{assert.equal((await call('node '+file)).status,'rejected');}finally{canonicalOutside=false;}
-    assert.equal(userExecutions,before);
+   await t.test('Produktdatei und unbekannter kanonischer Pfad laufen nur mit Hinweis',async()=>{
+    const before=userExecutions;mitHinweis(await call('node packages/core/src/t68-product.mjs'));
+    canonicalOutside=true;try{mitHinweis(await call('node '+file));}finally{canonicalOutside=false;}
+    assert.equal(userExecutions,before+2);
    });
-   await t.test('DB- und Prozessrisiken bleiben trotz Workspace-Datei blockiert',async()=>{
+   await t.test('DB- und Prozessrisiken bleiben trotz Workspace-Datei als Hinweis sichtbar',async()=>{
     const before=userExecutions;
     for(const source of ["import pg from'pg';new pg.Client({host:'live.invalid',database:'synapse'}).query('DROP TABLE foreign');","import{exec}from'node:child_process';exec(process.env.UNKNOWN);"]){
-     sources.set(file,source);assert.equal((await call('node '+file)).status,'rejected');
+     sources.set(file,source);mitHinweis(await call('node '+file));
     }
-    sources.set(file,writer);assert.equal(userExecutions,before);
+    sources.set(file,writer);assert.equal(userExecutions,before+2);
    });
    await t.test('Rootschutzfehler stoppt vor Lageprobe/Nutzerexec',async()=>{
     const before=userExecutions;rootFailure=true;
@@ -127,7 +132,9 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
     assert.equal(spoof.error,'unbekannter_parameter');assert.deepEqual(spoof.unbekannte_parameter,['workspace_testdateien']);
     const before=userExecutions;simulateLocal=true;
     let r;try{r=await call('node '+file,{isolated:false,target:'local'});}finally{simulateLocal=false;}
-    assert.equal(r.executed_via,'local',JSON.stringify(r));assert.equal(r.status,'rejected',JSON.stringify(r));assert.equal(r.stufe,'anleitung');assert.equal(localWorkerCalls,1);assert.equal(userExecutions,before);
+    // P10-T71: der simulierte lokale Worker sieht einen Hinweis (keine stille Workspace-Ausnahme).
+    assert.equal(r.executed_via,'local',JSON.stringify(r));assert.equal(localWorkerCalls,1);assert.equal(userExecutions,before);
+    assert.equal(localVerdict.darf_starten,true);assert.equal(localVerdict.hinweis?.stufe,'hinweis');
    });
   });
  }finally{

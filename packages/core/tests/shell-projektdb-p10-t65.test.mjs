@@ -39,7 +39,10 @@ if(!process.argv.includes('--golden')){
   cli(own,'DROP SCHEMA owned CASCADE'),cli(testdb,'TRUNCATE owned'),
   cli(own,'DELETE FROM owned'),cli(own,'ALTER TABLE owned ADD COLUMN x int'),
  ];
- for(const command of good){const r=await decision(command);assert.equal(r.darf_starten,true,command);assert.equal(r.audit.grund,'projekt_eigene_db');}
+ for(const command of good){const r=await decision(command);
+  // P10-T73: DROP/TRUNCATE/DELETE ohne WHERE per psql ist auch auf der eigenen Projekt-DB eine Rueckfrage (kein Freigabe-Thema).
+  if(/\b(?:DROP|TRUNCATE|DELETE)\b/.test(command)){assert.equal(r.darf_starten,false,command);assert.equal(r.antwort.stufe,'rueckfrage',command);continue;}
+  assert.equal(r.darf_starten,true,command);assert.equal(r.audit.grund,'projekt_eigene_db');}
  assert.equal((await decision(good[0],{datenbank_freigabe:{...proof,project:'anders'}})).darf_starten,false);
  assert.equal((await decision(psql(own,'DROP SCHEMA owned')+'; rm -rf /outside')).darf_starten,false);
  assert.equal((await decision(psql(own,'DROP DATABASE fremdes_projekt'))).darf_starten,false,'SQL wechselt zu fremder DB');
@@ -52,7 +55,8 @@ if(!process.argv.includes('--golden')){
   "node -e \"const{Client}=require('pg');const c=new Client({connectionString:process.env.UNKNOWN_URL});c.query('DROP SCHEMA owned')\"",
   "node -e \"const{Client}=require('pg');const a=new Client({connectionString:'"+own+"'});const b=new Client({connectionString:'"+foreign+"'});a.query('DROP SCHEMA owned');b.query('DELETE FROM owned')\"",
   "node -e \"process.env.DATABASE_URL=process.env.UNKNOWN;db.query('DROP SCHEMA owned')\"",
- ])assert.equal((await decision(command,{env:{DATABASE_URL:own}})).darf_starten,false,command);
+ // P10-T71 Teil 2: unbekannte/fremde Nicht-Prod-Ziele werden nicht mehr abgewiesen (nur Prod ist gesperrt).
+ ])assert.equal((await decision(command,{env:{DATABASE_URL:own}})).darf_starten,true,command);
 }
 
 const {dbZielAusUrl}=await import('../dist/services/shell-db-zuordnung.js');
@@ -60,12 +64,15 @@ const source='/home/blacky/dev/p10_shell_projektdb/test-db.env';
 const fakeProbe=async input=>({cwd:input.cwd,os:'linux',env:{},pfade:[],umgebungsdatei:{
  pfad:source,sha256:'a'.repeat(64),testprojekt:false,exportiert:false,datenbank_ziel:dbZielAusUrl(testdb),
 }});
-const loaded="set -a\n. "+source+"\nset +a\npsql \"$DATABASE_URL\" -X -c 'DROP SCHEMA owned CASCADE'";
+const loaded="set -a\n. "+source+"\nset +a\npsql \"$DATABASE_URL\" -X -c 'CREATE TABLE owned(x int)'";
 const sourced=await decision(loaded,{inspect:true,probe:fakeProbe,env:{DATABASE_URL:live}});
 assert.equal(sourced.darf_starten,true,'Geladene Quelle muss an konfiguriertes Ziel gebunden werden');
 assert.equal(sourced.audit.grund,'projekt_eigene_db');
 const badProbe=async input=>({...await fakeProbe(input),umgebungsdatei:{...await fakeProbe(input).then(x=>x.umgebungsdatei),datenbank_ziel:dbZielAusUrl(foreign)}});
-assert.equal((await decision(loaded,{inspect:true,probe:badProbe,env:{DATABASE_URL:live}})).darf_starten,false,'Dateiname erteilt keine Freigabe');
+// P10-T71: ohne Zuordnung der geladenen Quelle bleibt das Prozess-Ziel (hier Prod) massgeblich -> Prod-Sperre.
+const bad=await decision(loaded,{inspect:true,probe:badProbe,env:{DATABASE_URL:live}});
+assert.equal(bad.darf_starten,false,'Dateiname erteilt keine Freigabe');assert.equal(bad.audit.stufe,'sperre');
+assert.notEqual(bad.audit.grund,'projekt_eigene_db');
 const {holeShellDbFreigabe}=await import('../dist/services/shell-db-freigabe.js');
 const registry={host:'projekt.invalid',port:6544,database:project,user:'worker',passwort:'synthetic',database_url:own,created_at:'2020-01-01'};
 const meta=await holeShellDbFreigabe(project,{env:{DATABASE_URL:live,SYNAPSE_TEST_DATABASE_URL:testdb},leseZugang:async p=>p===project?registry:null});

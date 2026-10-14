@@ -119,7 +119,8 @@ export function pruefeTestDbUrl(name, { env = process.env, datenbank = TEST_DB_N
   return undefined;
 }
 
-/** P10-T65: additive gemeinsame Laufzeit-API, Alt-URL-Prüfungen bleiben unverändert. */
+/** P10-T65, Rueckbau P10-T71: oeffnet DATABASE_URL direkt; einziger Schutz ist 'nicht die Synapse-Prod-DB'.
+ * Keine SYNAPSE_SHELL_DB_FREIGABE, keine Systemkennung. Braucht nur den core-Build (dist). */
 export async function oeffneGeschuetzteShellTestDb(url=process.env.DATABASE_URL??''){
   const guard=await import('../../packages/core/dist/services/test-db-laufzeit-schutz.js');
   return guard.oeffneGeschuetzteShellTestDb(url);

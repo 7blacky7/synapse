@@ -25,7 +25,7 @@ import {pruefeShellStart,type ShellBestaetigung}from'./shell-start-sicherung.js'
 import {aktuelleShellDemaskierung,type ShellBestaetigungEingabe,type ShellDemaskierung}from'./shell-rueckfrage.js';
 import{holeShellStartKatalog,geschuetzteShellProzesse,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./shell-sicherungs-lauf.js';
 import { waehleShellStart } from './shell-start.js';
-import {holeShellDbFreigabe,privateShellTestDbFreigabe} from './shell-db-freigabe.js';
+import {holeShellDbFreigabe} from './shell-db-freigabe.js';
 import type {ShellDbFreigabe} from './shell-db-zuordnung.js';
 import type { SicherungsShell } from './shell-sicherung-parser.js';
 
@@ -251,8 +251,7 @@ export async function execShellInProject(
     return maskiereShellDaten({status:'rejected',error:pruefung.antwort?.error??'shell_anleitung',
       ...pruefung.antwort,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten;
   }
-  const testDbMetadaten=privateShellTestDbFreigabe(lage,dbFreigabe,pruefung);
-  if(testDbMetadaten)jobUmgebung.env.SYNAPSE_SHELL_DB_FREIGABE=testDbMetadaten;
+  // P10-T71: keine SYNAPSE_SHELL_DB_FREIGABE-Injektion mehr; Test-DBs oeffnen DATABASE_URL direkt.
   let rohAusgabe:string|undefined;
   const result = await new Promise<Record<string,unknown>>((resolve) => {
     ensureStreamsDir();

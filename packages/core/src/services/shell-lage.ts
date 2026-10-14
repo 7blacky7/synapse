@@ -29,7 +29,7 @@ export interface ShellLageZiel {
   glob: boolean; leere_variablen: string[]; ungeklaert: string[];
 }
 export interface ShellLage {
-  /** Private target evidence only; never grants execution without accepted confirmation. */
+  /** @deprecated P10-T71: wird nicht mehr gesetzt (Test-DBs ohne Freigabe-Nachweis). */
   datenbank_testzuordnung?:{project:string;ziele:ShellDbFreigabe['ziele']};
   datenbank_pruefung?:boolean;
   datenbank_abgewiesen?:boolean;
@@ -272,6 +272,14 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
     if(/^(?:export|unset)$/.test(cmd.wert??'')&&projected.argv.slice(1).some(w=>/^(?:DATABASE_URL|PG\w*)(?:=|$)/i.test(w.text)))dbKontextVerifiziert=false;
+    // P10-T71 Nachbesserung: 'export PGPORT=5432 PGDATABASE=synapse; psql …' – exportierte bzw. entfernte PG*-Werte
+    // gelten fuer die Folgekommandos (Prod-Erkennung in pruefeDbKommando); nicht im Hintergrund/Pipe-Teil.
+    if((art==='sh'||art==='bash')&&/^(?:export|unset)$/.test(cmd.wert??'')&&!['|','|&','&'].includes(k.nach??''))
+      for(const w of projected.argv.slice(1)){
+        if(w.dynamisch)continue;
+        const m=w.text.match(/^(PG[A-Z]+)(?:=([\s\S]*))?$/);if(!m)continue;
+        if(cmd.wert==='unset')delete env[m[1]];else if(m[2]!==undefined)env[m[1]]=m[2];
+      }
     if(mitQuelle&&/^(?:export|unset)$/.test(cmd.wert??'')&&projected.argv.slice(1).some(w=>/^(?:DATABASE_URL)(?:=|$)/.test(w.text)))testprojekt=false;
     if(art==='sh'||art==='bash'){
       if(cmd.wert==='set'&&projected.argv.length===2){if(projected.argv[1].text==='-a')autoExport=true;if(projected.argv[1].text==='+a')autoExport=false;}
@@ -341,19 +349,12 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   const ungeklaert=[...new Set(unresolved.filter(x=>x!=='interpreter_datei'||!interpreterDateien||interpreterDateien!==verifizierteTestdateien))];
   const sql=dbErgebnisse.filter(x=>x.betroffen);
   const dbEigene=ctx.datenbank_freigabe&&sql.length>0&&sql.every(x=>x.erlaubt)&&ungeklaert.length===0;
-  const dbTestZiele=ctx.datenbank_freigabe&&/^[1-9][0-9]{0,19}$/.test(ctx.datenbank_freigabe.test_system_id??'')&&!dbEigene&&dbKontextVerifiziert&&sql.length>0&&
-    !ungeklaert.some(x=>/interpreter|script_datei|inline_oder_script|kontrollfluss|parser_grenze|lage_nicht_sicher_aufloesbar/.test(x))&&
-    sql.every(x=>x.erlaubt&&x.ziele.length>0&&x.ziele.every(z=>z.datenbank==='synapse_test'&&z.port!=='5432'&&
-      ctx.datenbank_freigabe!.live&&z.port!==ctx.datenbank_freigabe!.live!.port&&
-      z.datenbank!==ctx.datenbank_freigabe!.live!.datenbank&&
-      ctx.datenbank_freigabe!.ziele.some(t=>t.art==='test'&&gleichesDbZiel(t,z))))
-    ?sql.flatMap(x=>x.ziele.map(z=>({...z,art:'test' as const}))):undefined;
+  // P10-T71: datenbank_testzuordnung (Freigabe-Nachweis fuer Test-DBs) entfaellt; Test-DBs brauchen keine Zuordnung.
   // User-Vorgabe 14.10.2026: Live-DB per psql-Ziel oder ausdruecklicher DSN im Befehlstext (Port+DB der Synapse-Live-DB).
   const live=ctx.datenbank_freigabe?.live;
   const dbLive=!!live&&(sql.some(x=>x.live)||new RegExp(':'+live.port+'/'+live.datenbank.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?![\\w-])').test(command)&&LIVE_SCHREIBEND.test(command));
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
     ...(dbLive?{datenbank_live:true}:{}),
-    ...(dbTestZiele?{datenbank_testzuordnung:{project:ctx.datenbank_freigabe!.project,ziele:dbTestZiele}}:{}),
     ...(ctx.datenbank_freigabe&&sql.length?{datenbank_pruefung:true,...(!dbEigene?{datenbank_abgewiesen:true}:{})}:{}),
     ...(dbEigene?{datenbank_zuordnung:{project:ctx.datenbank_freigabe!.project,ziele:ctx.datenbank_freigabe!.ziele,grund:'projekt_eigene_db' as const}}:{}),
     ...(buildLog?{build_log:{belege:buildLog.belege,hash:buildLog.hash}}:{}),

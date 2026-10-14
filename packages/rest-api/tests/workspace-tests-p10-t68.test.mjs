@@ -20,18 +20,20 @@ async function decision(text,{workspace=false,path=file,canonical=root+'/'+path,
  return {lage,result:pruefeShellStart({project,command,lage,workspace_testdateien:startWorkspace,agent_id:'sol-2'},SHELL_SICHERUNG_SEED)};
 }
 const writer="import{rm,writeFile}from'node:fs/promises';await writeFile('/tmp/owned/x','a');await rm('/tmp/owned',{recursive:true});";
+// P10-T71: ausser der Prod-DB-Sperre nur Warnhinweise. Frueher darf_starten:false heisst jetzt: nicht stilles 'laeuft'.
+const frei=r=>r.darf_starten===true&&r.audit.stufe==='laeuft'&&!r.hinweis;
 test('Nur native Workspace-Testdatei erhält Datei-Ausnahme',async()=>{
  const positive=await decision(writer,{workspace:true});
  assert.equal(positive.result.darf_starten,true,JSON.stringify(positive));
  for(const options of [{},{startWorkspace:true},{workspace:true,startWorkspace:false},{workspace:true,path:'packages/core/src/product.mjs'},
-  {workspace:true,canonical:'/outside/test.mjs'}])assert.equal((await decision(writer,options)).result.darf_starten,false);
+  {workspace:true,canonical:'/outside/test.mjs'}])assert.equal(frei((await decision(writer,options)).result),false);
  assert.equal((await decision(writer,{workspace:true,path:'scripts/test-write.mjs'})).result.darf_starten,true);
 });
-test('DB und Prozessregeln bleiben im Workspace wirksam',async()=>{
+test('DB und Prozessregeln bleiben im Workspace wirksam (Hinweis)',async()=>{
  for(const text of [
   "import{exec}from'node:child_process';exec(process.env.UNKNOWN);",
   "import pg from'pg';const db=new pg.Client({connectionString:'postgresql://user:pw@live.invalid:6123/system'});await db.query('DROP TABLE outside');",
- ])assert.equal((await decision(text,{workspace:true})).result.darf_starten,false);
+ ])assert.equal(frei((await decision(text,{workspace:true})).result),false);
 });
 test('Root-Lockfile wird transportiert, bleibt verborgen; abhängige/geschützte Pfade gesperrt',()=>{
  assert.equal(istGesperrt('pnpm-lock.yaml','/no-fs-needed','p10_t68'),false);
