@@ -29,6 +29,8 @@ export interface ShellLageZiel {
   glob: boolean; leere_variablen: string[]; ungeklaert: string[];
 }
 export interface ShellLage {
+  /** Private target evidence only; never grants execution without accepted confirmation. */
+  datenbank_testzuordnung?:{project:string;ziele:ShellDbFreigabe['ziele']};
   datenbank_pruefung?:boolean;
   datenbank_abgewiesen?:boolean;
   datenbank_zuordnung?:{project:string;ziele:ShellDbFreigabe['ziele'];grund:'projekt_eigene_db'};
@@ -174,6 +176,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   const scratchpad_roots=ctx.scratchpad_roots??(ctx.env?.SYNAPSE_SCRATCHPAD_ROOT?[ctx.env.SYNAPSE_SCRATCHPAD_ROOT]:[]);
   const kommandos:ShellTextKommando[]=[];
   const dbErgebnisse:ShellDbErgebnis[]=[];
+  let dbKontextVerifiziert=true;
   let verifizierteTestdateien=0;
   const mitQuelle=tree.kommandos.some(k=>/^(?:source|\.)$/.test(k.argv[0]?.text??''));let autoExport=false;
   const unresolved=tree.ungeklart.filter(x=>!['ziel_dynamisch','dynamisches_programm'].includes(x));
@@ -266,12 +269,13 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
     if(projected.argv.length||projected.umleitungen.length)kommandos.push(projected);
     const cmd=expand(k.argv[0]??{text:'',dynamisch:false},art,local);
     if(cmd.probleme.length)unresolved.push(...cmd.probleme);
+    if(/^(?:export|unset)$/.test(cmd.wert??'')&&projected.argv.slice(1).some(w=>/^(?:DATABASE_URL|PG\w*)(?:=|$)/i.test(w.text)))dbKontextVerifiziert=false;
     if(mitQuelle&&/^(?:export|unset)$/.test(cmd.wert??'')&&projected.argv.slice(1).some(w=>/^(?:DATABASE_URL)(?:=|$)/.test(w.text)))testprojekt=false;
     if(art==='sh'||art==='bash'){
       if(cmd.wert==='set'&&projected.argv.length===2){if(projected.argv[1].text==='-a')autoExport=true;if(projected.argv[1].text==='+a')autoExport=false;}
       if(/^(?:source|\.)$/.test(cmd.wert??'')){
         const file=projected.argv[1],pfad=file&&!file.dynamisch?p.resolve(cwd,file.text):undefined;
-        let verified=false;
+        let verified=false,dbVerified=false;
         if(pfad&&projected.argv.length===2&&!(k.zuweisungen?.length)&&!k.umleitungen.length&&!['&&','||','|','|&','&'].includes(k.nach??'')&&ctx.inspect!==false){
           const q=(await probe({cwd,umgebungsdatei:pfad})).umgebungsdatei;
           // Zusatznachweis nur gegen vertrauenswürdige Registry/Test-Konfiguration.
@@ -279,12 +283,13 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
             const z=q.datenbank_ziel;
             env.DATABASE_URL='postgresql://'+encodeURIComponent(z.user)+'@'+z.host+':'+z.port+'/'+encodeURIComponent(z.datenbank);
             actualEnv.DATABASE_URL=env.DATABASE_URL;
-            verified=true;
+            verified=true;dbVerified=true;
           }
           if(q&&q.pfad===pfad&&/^[a-f0-9]{64}$/.test(q.sha256)&&q.testprojekt&&q.port==='5433'&&q.datenbank==='synapse_test'&&(autoExport||q.exportiert)){
             projected.umgebungsquelle={pfad,sha256:q.sha256,testprojekt:true,port:q.port,datenbank:q.datenbank};testprojekt=true;verified=true;
           }
         }
+        if(!dbVerified)dbKontextVerifiziert=false;
         if(!verified){testprojekt=false;unresolved.push('lage_nicht_sicher_aufloesbar');}
       }
     }
@@ -334,7 +339,15 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   const ungeklaert=[...new Set(unresolved.filter(x=>x!=='interpreter_datei'||!interpreterDateien||interpreterDateien!==verifizierteTestdateien))];
   const sql=dbErgebnisse.filter(x=>x.betroffen);
   const dbEigene=ctx.datenbank_freigabe&&sql.length>0&&sql.every(x=>x.erlaubt)&&ungeklaert.length===0;
+  const dbTestZiele=ctx.datenbank_freigabe&&!dbEigene&&dbKontextVerifiziert&&sql.length>0&&
+    !ungeklaert.some(x=>/interpreter|script_datei|inline_oder_script|kontrollfluss|parser_grenze|lage_nicht_sicher_aufloesbar/.test(x))&&
+    sql.every(x=>x.erlaubt&&x.ziele.length>0&&x.ziele.every(z=>z.datenbank==='synapse_test'&&z.port!=='5432'&&
+      ctx.datenbank_freigabe!.live&&z.port!==ctx.datenbank_freigabe!.live!.port&&
+      z.datenbank!==ctx.datenbank_freigabe!.live!.datenbank&&
+      ctx.datenbank_freigabe!.ziele.some(t=>t.art==='test'&&gleichesDbZiel(t,z))))
+    ?sql.flatMap(x=>x.ziele.map(z=>({...z,art:'test' as const}))):undefined;
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
+    ...(dbTestZiele?{datenbank_testzuordnung:{project:ctx.datenbank_freigabe!.project,ziele:dbTestZiele}}:{}),
     ...(ctx.datenbank_freigabe&&sql.length?{datenbank_pruefung:true,...(!dbEigene?{datenbank_abgewiesen:true}:{})}:{}),
     ...(dbEigene?{datenbank_zuordnung:{project:ctx.datenbank_freigabe!.project,ziele:ctx.datenbank_freigabe!.ziele,grund:'projekt_eigene_db' as const}}:{}),
     ...(buildLog?{build_log:{belege:buildLog.belege,hash:buildLog.hash}}:{}),

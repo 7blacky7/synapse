@@ -28,3 +28,20 @@ export async function holeShellDbFreigabe(
   }
   return r;
 }
+
+/** P10-T69: metadata is not a start permission; only an already accepted decision may inject it. */
+export function privateShellTestDbFreigabe(
+ lage:import('./shell-lage.js').ShellLage,freigabe:ShellDbFreigabe,
+ pruefung:Pick<import('./shell-start-sicherung.js').ShellStartEntscheidung,'darf_starten'|'audit'>,
+):string|undefined{
+ if(!pruefung.darf_starten||!freigabe.test_system_id)return undefined;
+ // Existing successful DB assignments retain their exact serialized contract.
+ if(lage.datenbank_zuordnung)return JSON.stringify(freigabe);
+ const nachweis=lage.datenbank_testzuordnung;
+ if(pruefung.audit.entscheidung!=='bestaetigt'||!nachweis||nachweis.project!==freigabe.project||
+  !freigabe.live||! /^[1-9][0-9]{0,19}$/.test(freigabe.test_system_id)||!nachweis.ziele.length)return undefined;
+ if(!nachweis.ziele.every(z=>z.art==='test'&&z.datenbank==='synapse_test'&&z.port!=='5432'&&
+  z.port!==freigabe.live!.port&&z.datenbank!==freigabe.live!.datenbank&&
+  freigabe.ziele.some(s=>s.art==='test'&&gleichesDbZiel(s,z))))return undefined;
+ return JSON.stringify(freigabe);
+}
