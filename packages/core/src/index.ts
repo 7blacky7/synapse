@@ -592,7 +592,9 @@ export { migrateToRelativePaths } from './migrations/migrate-to-relative-paths.j
 export {
   embeddeOffeneEintraege,
   zaehleOffeneEmbeddings,
+  /** @deprecated statischer Text; getEmbeddingPendingHint(project) nutzen */
   EMBED_PENDING_HINT,
+  getEmbeddingPendingHint,
 } from './services/embed-backlog.js';
 export type { BacklogErgebnis } from './services/embed-backlog.js';
 
@@ -630,6 +632,7 @@ export {
   linkCrossFileReferences,
   getEmbeddingPending,
   embeddingPendingHint,
+  /** @deprecated statischer Text; embeddingPendingHint(project, file) nutzen */
   EMBEDDING_PENDING_HINT,
   resetProjectEmbeddings,
   resetProjectParse,

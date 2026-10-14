@@ -36,7 +36,7 @@ import {
   addTask,
   // Thought
   addThought,
-  EMBED_PENDING_HINT,
+  getEmbeddingPendingHint,
   getThoughts,
   getThoughtsByIds,
   searchThoughts,
@@ -2753,8 +2753,7 @@ async function handleToolCallKern(
             ...(memory.warning ? { warning: memory.warning } : {}),
             // EMBED-1: steht in PostgreSQL und ist ueber memory(read) sofort da; der Vektor
             // wird nebenlaeufig nachgereicht.
-            embeddings_pending: true,
-            embeddings_hint: EMBED_PENDING_HINT,
+            ...(await getEmbeddingPendingHint(project)),
           };
         }
         case 'read': {
@@ -2894,8 +2893,7 @@ async function handleToolCallKern(
             // auffindbar; der Vektor wird nebenlaeufig nachgereicht. Ohne diesen Hinweis sucht
             // eine KI direkt nach dem Schreiben semantisch danach, findet nichts und haelt das
             // Speichern fuer fehlgeschlagen.
-            embeddings_pending: true,
-            embeddings_hint: EMBED_PENDING_HINT,
+            ...(await getEmbeddingPendingHint(project)),
           };
           // ⚠️ NICHT ===true VERGLEICHEN (Fix 02.08.2026, gefunden von rollen-ist).
           // Auf dem Cloud-Weg kommt der Wert als ZEICHENKETTE 'true' an — der strikte Vergleich
@@ -3329,7 +3327,7 @@ async function handleToolCallKern(
           const tags = strArray(args, 'tags') ?? [];
           // EMBED-1: der Vektor wird nebenlaeufig nachgereicht, siehe embeddings_hint unten.
           const proposal = await createProposal(project, filePath, suggested, desc, author, tags);
-          return { success: true, proposal, embeddings_pending: true, embeddings_hint: EMBED_PENDING_HINT };
+          return { success: true, proposal, ...(await getEmbeddingPendingHint(project)) };
         }
         case 'list': {
           const proposals = await listProposals(project, str(args, 'status') as 'pending' | 'reviewed' | 'accepted' | 'rejected' | undefined);

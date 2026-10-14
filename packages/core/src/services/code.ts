@@ -76,6 +76,7 @@ import { envSicht, istMaskierteDatei, maskiereDatei } from './env-maske.js';
 import { getConfig } from '../config.js';
 import { indexDocument, removeDocument } from './documents.js';
 import { getPool, imHintergrund } from '../db/client.js';
+import { getEmbeddingPendingHint } from './embed-backlog.js';
 import { getParserForFile } from '../parser/index.js';
 import { isProjectEnabled } from './project-registry.js';
 import { inTransaktionMitRetry, istTransienterPgFehler, wartezeitMs } from '../db/transient-retry.js';
@@ -1549,7 +1550,11 @@ async function parseAndEmbedLauf(
 // SELECTen + neue Workers starten, die dieselben Files doppelt parsen).
 const activeParseProjects = new Set<string>();
 
-/** Nicht-blockierender Hinweis-Text fuer aufrufende KIs. */
+/**
+ * Nicht-blockierender Hinweis-Text fuer aufrufende KIs.
+ * @deprecated Seit P12-T15 statisch und ohne Status; embeddingPendingHint() liefert den dynamischen
+ *   Hinweis aus getEmbeddingPendingHint(project). Bleibt als oeffentlicher Export erhalten (erweitern statt entfernen).
+ */
 export const EMBEDDING_PENDING_HINT =
   'Struktur/Symbole (code_intel) sind sofort nutzbar. Die semantische Suche (Embeddings) ' +
   'spiegelt diese Aenderung noch nicht — laeuft im Hintergrund nach. Kein Blocker: warten ' +
@@ -1584,9 +1589,8 @@ export async function embeddingPendingHint(
   project: string,
   filePath: string
 ): Promise<{ embeddings_pending?: true; embeddings_hint?: string }> {
-  return (await getEmbeddingPending(project, filePath))
-    ? { embeddings_pending: true, embeddings_hint: EMBEDDING_PENDING_HINT }
-    : {};
+  if (!(await getEmbeddingPending(project, filePath))) return {};
+  return getEmbeddingPendingHint(project);
 }
 
 /**

@@ -31,7 +31,9 @@ import { embeddeTechDocNach, techDocNachzug } from './tech-docs.js';
 import { embeddeSkillSectionNach, skillSectionNachzug } from './skills.js';
 import { betteStapelEin } from './embed-nachzug.js';
 import { wissensNachzugWo } from './wissen-stuecke.js';
-import { schalterHaeltAn } from './intern-schalter.js';
+import { schalterHaeltAn, embeddingNachtragAngehalten } from './intern-schalter.js';
+import { getEmbeddingQueueStats, embeddingModellKennung } from '../embeddings/index.js';
+import { sichereModellprofil } from '../embeddings/modell-profil.js';
 
 /**
  * Welche Tabellen der Nachzug bedient, und womit.
@@ -99,6 +101,8 @@ function projektBedingung(mitProjekt: boolean): string {
 /**
  * Hinweis fuer aufrufende KIs, wortgleich gehalten zum EMBEDDING_PENDING_HINT der Code-Seite.
  * Der Eintrag ist SOFORT ueber PostgreSQL abrufbar — nur die semantische Suche hinkt kurz nach.
+ * @deprecated Seit P12-T15 statisch und ohne Status; Antworten nutzen getEmbeddingPendingHint(project)
+ *   (Modell, Rueckstand, Queue, Laufstatus). Bleibt als oeffentlicher Export erhalten (erweitern statt entfernen).
  */
 export const EMBED_PENDING_HINT =
   'In PostgreSQL gespeichert und sofort abrufbar. Die semantische Suche spiegelt den Eintrag ' +
@@ -246,4 +250,54 @@ export async function zaehleOffeneEmbeddings(project?: string): Promise<Record<s
   }
 
   return ergebnis;
+}
+
+
+
+/** Status-Hinweis fuer Antworten mit noch ausstehenden Embeddings. */
+export async function getEmbeddingPendingHint(project?: string): Promise<{ embeddings_pending: true; embeddings_hint: string }> {
+  let modell = 'unbekannt';
+  try {
+    await sichereModellprofil();
+    modell = embeddingModellKennung();
+  } catch { /* Der Statushinweis darf die Schreibantwort nicht verhindern. */ }
+
+  const queue = getEmbeddingQueueStats();
+  const aktive = Object.values(queue.active).reduce((sum, n) => sum + n, 0);
+  const wartende = Object.values(queue.queued).reduce((sum, n) => sum + n, 0);
+  let rueckstand = 0;
+  let codeRueckstand = 0;
+  let angehalten = false;
+  try {
+    const [wissen, code, pause] = await Promise.all([
+      zaehleOffeneEmbeddings(project),
+      getPool().query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM code_chunks WHERE embedded_at IS NULL AND ($1::text IS NULL OR project = $1)',
+        [project ?? null],
+      ),
+      embeddingNachtragAngehalten(),
+    ]);
+    rueckstand = Object.values(wissen).reduce((sum, n) => sum + n, 0);
+    codeRueckstand = code.rows[0]?.n ?? 0;
+    angehalten = pause;
+  } catch { /* DB-/Schalterausfall darf die Schreibantwort nicht verhindern. */ }
+
+  const skipEmbeddings = process.env.SYNAPSE_SKIP_EMBEDDINGS === '1';
+  const laufstatus = skipEmbeddings
+    ? 'Code-Embeddings abgeschaltet (SYNAPSE_SKIP_EMBEDDINGS=1)'
+    : angehalten
+      ? 'Hintergrund-Embedding-Nachtrag angehalten'
+      : 'Embeddings aktiv';
+  const codeStatus = codeRueckstand > 0
+    ? `Code-Re-Embedding/Rueckstand: ${codeRueckstand} Chunks ohne Vektor`
+    : 'Code-Re-Embedding: kein offener Chunk';
+  const hint = [
+    `Modell: ${modell}`,
+    `offener Rueckstand: ${rueckstand + codeRueckstand} Eintraege`,
+    codeStatus,
+    `lokale Worker-Queue: ${aktive} aktiv, ${wartende} wartend`,
+    laufstatus,
+    'PostgreSQL ist sofort lesbar; die semantische Suche wird nach dem Embedding aktualisiert.',
+  ].join('; ');
+  return { embeddings_pending: true, embeddings_hint: hint };
 }

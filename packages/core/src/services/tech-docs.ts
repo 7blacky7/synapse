@@ -29,7 +29,7 @@ import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
 import { getContext7Client } from './context7.js';
 import { getLanguagesForFile } from '../parser/index.js';
-import { EMBED_PENDING_HINT } from './embed-backlog.js';
+import { getEmbeddingPendingHint } from './embed-backlog.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 
 export interface TechDoc {
@@ -255,7 +255,7 @@ export async function speichereTechDoc(
     duplicate: false,
     message: `${framework} ${version} ${section} indexiert`,
     warning,
-    ...(pending ? { embeddings_pending: true, embeddings_hint: EMBED_PENDING_HINT } : {}),
+    ...(pending ? await getEmbeddingPendingHint(project ?? undefined) : {}),
   };
 }
 
@@ -791,7 +791,6 @@ export async function updateTechDoc(
   return {
     success: true,
     message: `Tech-Doc "${id}" aktualisiert`,
-    embeddings_pending: true,
-    embeddings_hint: EMBED_PENDING_HINT,
+    ...(await getEmbeddingPendingHint(project ?? undefined)),
   };
 }
