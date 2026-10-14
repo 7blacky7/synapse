@@ -17,6 +17,9 @@ export {reverseGruppieren,reverseOrdnerFingerabdruck,reverseArchivMagic} from '.
 // P18-T19/RV9: eine Reverse-Definition, der Dispatcher läuft serverseitig.
 export { REVERSE_DEFINITION, REVERSE_ACTIONS, REVERSE_FEHLERCODES, REVERSE_NULL_FELDER, REVERSE_AKTIVITAET_DESCRIPTOR, ReverseFehler, baueReverseAntwort, pruefeReversePfad, pruefeReverseBindung, createReverseToolService, fuehreReverseAus, configureReverseRuntime } from './services/reverse-tool.js';
 export type { ReverseAction, ReverseFehlercode, ReverseContainerInfo, ReverseAnalyseAnfrage, ReverseRuntime, ReverseToolDependencies } from './services/reverse-tool.js';
+// P18-T61/R1-C: E-Ergebnis eines Reverse-Container-Auftrags in die Bibliothek übernehmen.
+export { uebernehmeEErgebnis, reverseEGruppe, ReverseEUebernahmeFehler } from './services/reverse-e-uebernahme.js';
+export type { ReverseEManifestEintrag, ReverseEUebernahmeOptionen } from './services/reverse-e-uebernahme.js';
 
 // P18-T12/RV2: feste interne Bereiche für Projekt- und Reverse-Abfragen.
 export { PROJEKT_BEREICH, REVERSE_BEREICH, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './services/intel-bereich.js';
