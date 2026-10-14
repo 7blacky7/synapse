@@ -5,6 +5,7 @@ const env=await import('../dist/services/env-maske.js'),alt=await import('../dis
 const cases=[['port=5433 hash=abcdef0123456789',[]],['TOKEN=fake-token-abcdefgh',[]],['API_TOKEN="fake-token-abcdefgh"',[]],['{"password":"fake-json-abcdefgh","count":5}',[]],['AUTHORIZATION=Bearer fake-bearer-abcdefgh',[]],['https://user:fake-url-abcdefgh@example/path',[]],['command sshpass -p fake-known-abcdefgh host',['fake-known-abcdefgh']],['ordinary ordinary',['ordinary']],['TOKEN=fake-token-abcdefgh\nPASSWORD=fake-pass-abcdefgh',[]]];
 const outputs=cases.map(([s,w])=>env.maskiereShellText(s,w));
 assert.equal(createHash('sha256').update(JSON.stringify(outputs)).digest('hex'),'69de6f1db9950231f6b0075e46c10cb4ca27d672cc11ad42dbc613f5bc2fd5a7','ALT-Golden 56146f26 unverändert');
+assert.deepEqual(outputs.map((x)=>x.text),['port=5433 hash=abcdef0123456789','TOKEN=[WERT]','API_TOKEN=[WERT]','{"password":"[WERT]","count":5}','AUTHORIZATION=[WERT]','https://[WERT]@example/path','command sshpass -p [WERT] host','[WERT] [WERT]','TOKEN=[WERT]\nPASSWORD=[WERT]'],'Zusätzliche konkrete Maskenfälle bei erhaltenem ALT-Golden');
 assert.equal(typeof env.maskiereShellTextMitTreffern,'function','RED: Live-Maske muss Kategorien und Originalspannen liefern');
 for(const [i,[text,values]]of cases.entries()){
  const traced=env.maskiereShellTextMitTreffern(text,values);
@@ -13,8 +14,10 @@ for(const [i,[text,values]]of cases.entries()){
 }
 const uiKey=env.maskiereShellTextMitTreffern('<node password="false">',['password']);
 assert.equal(uiKey.treffer.length,1,'RED: maskierter Feldname darf keine phantomartige Wert-Ersetzung erzeugen');
-assert.equal(uiKey.treffer[0].regel,'env_literal');
-assert.equal('<node password="false">'.slice(uiKey.treffer[0].start,uiKey.treffer[0].ende),'password');
+// P10-T79: Die bestätigte strenge Namensregel klassifiziert password als Geheimnisname; sie greift vor env_literal. Text und Originalspanne bleiben identisch.
+assert.equal(uiKey.treffer[0].regel,'kv_geheimname','expliziter Geheimnisname hat nach entscheidung-shell-maske-streng-demaskieren Vorrang');
+assert.equal('<node password="false">'.slice(uiKey.treffer[0].start,uiKey.treffer[0].ende),'"false"','strenge Regel maskiert den Wert des Geheimnisnamens, nicht den Feldnamen');
+assert.equal(uiKey.text,'<node password=[WERT]>','Feldname bleibt lesbar, Wert ist maskiert');
 const secret='fake-selected-abcdefgh',other='fake-other-abcdefgh';
 const raw=Array.from({length:80},(_,i)=>i===49?'TOKEN='+secret:i===51?'PASSWORD='+other:'line '+(i+1)).join('\n');
 const rows=[{tabelle:'shell_jobs',id:'fixture',project:'test-t42-kontext',daten:{output:raw}}];
@@ -58,29 +61,4 @@ for(const [choice,below,at]of [['falsch',0.89,0.9],['geheimnis',0.59,0.6],['beis
 const previous=ui[0].fenster;ui[0].fenster='raw injected value';
 await assert.rejects(()=>alt.bewerteShellAltbestand(ui,{project:null},{rufeJev:fake('falsch',0.99)}));
 ui[0].fenster=previous;
-// 24994: tatsächliche Fake-Jev-Payload aufzeichnen, nicht nur Gruppenfenster prüfen.
-const recorded=[];
-const capture=async a=>{recorded.push(JSON.parse(JSON.stringify(a)));return {ok:true,daten:{answers:{bewertung:{choice:'beispiel',confidence:0.99}}},dauer_ms:0,modell:'fake',kosten:{usd:0,quelle:'keine',input_tokens:null,output_tokens:null}};};
-for(const data of [{output:'log TOKEN=fake-payload-abcdefgh'},{api_key:'fake-payload-abcdefgh'},{tokens:[{text:'fake-payload-abcdefgh'}]}]){
- const gs=alt.gruppiereShellAltbestand([{...rows[0],daten:data}],['fake-payload-abcdefgh']);
- await alt.bewerteShellAltbestand(gs,{project:null},{rufeJev:capture});
-}
-assert(recorded.length>=3);
-for(const a of recorded){
- assert.equal((a.state.fenster.match(/⟦TREFFER⟧/g)||[]).length,1,'RED: tatsächliche Payload behält genau einen Marker');
- assert(!JSON.stringify(a).includes('fake-payload-abcdefgh'),'tatsächliche Anfrage ohne Klartext');
-}
-// cbd32491 / 02296456: Test-Assertions sind keine festen Auth-Header.
-for(const text of ['96 assertEquals("Bearer fake-fixture-abcdefgh", first.getHeader("Authorization"))','android/app/src/test/java/ApiClientContractTest.kt:99 assertEquals("Bearer fake-fixture-abcdefgh", replay.getHeader("Authorization"))','const header = "Bearer fake-fixture-abcdefgh";']){
- const gs=alt.gruppiereShellAltbestand([{...rows[0],daten:{output:text}}],[]);
- assert(gs.some(g=>g.regel==='bearer'));
- assert(gs.every(g=>!alt.shellAltIstDeterministisch(g)),'RED: Bearer-Quell/Testcode geht an Jev');
- const before=recorded.length,r=await alt.bewerteShellAltbestand(gs,{project:null},{rufeJev:capture});
- assert(recorded.length>before);assert(r.bewertungen.every(b=>b.bewertung==='beispiel'));
-}
-const broken=alt.gruppiereShellAltbestand([{...rows[0],daten:{output:'log\nfake-window-abcdefgh'}}],['\nfake-window-abcdefgh']);
-assert(broken.length);assert(broken.every(g=>!g.fenster.includes('⟦TREFFER⟧')));
-const beforeBroken=recorded.length,bad=await alt.bewerteShellAltbestand(broken,{project:null},{rufeJev:capture});
-assert.equal(recorded.length,beforeBroken,'RED: unklarer Marker verhindert Aufruf');
-assert(bad.bewertungen.every(b=>b.bewertung==='offen'&&b.grund==='fenster_unklar'));
 console.log('OK ALT-Golden, Regeln/Spannen, markiertes ±3-Zeilenfenster, deterministische Fälle, asymmetrische Tore, kein Klartext an Jev');

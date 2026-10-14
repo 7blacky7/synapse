@@ -25,8 +25,15 @@ try{
    const s=a.state,choice=s.fenster.includes('Example:')?'beispiel':s.name==='PUBLIC_FLAG'?'falsch':s.name==='AUTH'?'keine_passt':'geheimnis';
    return {ok:true,daten:{answers:{bewertung:{choice,confidence:0.95}}},dauer_ms:0,modell:'fake',kosten:{usd:0.00001,quelle:'antwort',input_tokens:200,output_tokens:0}};
  };
+ const deterministisch=gruppen.filter(mod.shellAltIstDeterministisch);
+ const beispielGruppe=gruppen.find(g=>g.fenster.includes('Example:'));
+ assert(beispielGruppe&&!mod.shellAltIstDeterministisch(beispielGruppe),'Example-Kontext bleibt eigene Jev-Gruppe, nicht mit TOKEN-Konfiguration zusammengelegt');
  const r=await mod.bewerteShellAltbestand(gruppen,{project,agent_id:'sol-1-test'},{rufeJev:fake});
- assert.equal(r.status,'fertig');assert.equal(sent.length,gruppen.filter(g=>!mod.shellAltIstDeterministisch(g)).length,'jede Jev-pflichtige Gruppe, deterministische ohne Aufruf');
+ assert.equal(r.status,'fertig');
+ assert.equal(r.bewertungen.length,gruppen.length,'jede Gruppe erhält eine Bewertung');
+ assert.equal(deterministisch.length,1,'TOKEN-Konfiguration mit bekanntem Zugangswert wird deterministisch bewertet');
+ assert.equal(sent.length,gruppen.length-deterministisch.length,'nur nichtdeterministische Gruppen werden an Jev gesendet');
+ assert(r.bewertungen.some(b=>deterministisch.some(g=>g.id===b.gruppe)&&b.bewertung==='geheimnis'&&b.grund==='deterministisch'),'deterministische Secret-Gruppe erhält die Geheimnisbewertung ohne Jev');
  assert(r.bewertungen.some(b=>b.bewertung==='geheimnis'));
  assert(r.bewertungen.some(b=>b.bewertung==='beispiel'));
  assert(r.bewertungen.some(b=>b.bewertung==='falsch'));

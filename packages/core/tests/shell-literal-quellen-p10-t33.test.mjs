@@ -44,3 +44,4 @@ try{
  assert(full.includes('PORT=3456')&&full.includes('X=1')&&full.includes('PUBLIC_LONG=ordinary-public-long-value'));
  console.log('OK echter Stream: öffentliche Ausgabe bytegleich, Test-.env nur Geheimnisse maskiert');
 }finally{globalThis.fetch=oldFetch;await cleanup.cleanup();cleanup.dispose();await pool.query('DELETE FROM projects WHERE name=$1',[project]);await closePool();}
+process.exit(0);

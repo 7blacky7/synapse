@@ -4,7 +4,7 @@ import{pruefeShellStart}from'../dist/services/shell-start-sicherung.js';
 import{SHELL_SICHERUNG_SEED}from'../dist/services/shell-sicherung-seed.js';
 import{geschuetzteShellProzesse}from'../dist/services/shell-prozess-lage.js';
 import{waehleShellStart}from'../dist/services/shell-start.js';
-assert.equal(process.platform,'win32');const run=promisify(execFile),root=process.cwd();
+if(process.platform!=='win32'){console.log('SKIP shell-sicherung-e3-windows: benötigt Windows/Win32');process.exit(0);}const run=promisify(execFile),root=process.cwd();
 const p=await geschuetzteShellProzesse();assert.ok(p.pids.includes(process.pid));assert.ok(p.pids.includes(process.ppid));
 const katalog=structuredClone(SHELL_SICHERUNG_SEED);
 katalog.regeln.push({id:'owned.windows-marker',version:1,art:'text',stufe:'anleitung',muster:{command:['^(echo|Write-Output)$']},antwort_id:'fs.rm',quelle:'owned-test',status:'aktiv'});

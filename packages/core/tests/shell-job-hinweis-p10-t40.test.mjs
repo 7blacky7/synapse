@@ -8,7 +8,10 @@ const {mitShellAusgabe}=await import('../dist/services/shell-maske.js');
 const pool=getPool(), project='sol3-t40-'+randomUUID(), agent='sol3-t40-'+randomUUID();
 const raw={success:true,id:randomUUID(),status:'done',message:'job_env: database_url=keine',tail:['OK']};
 const call=(args={},data=raw)=>mitShellAusgabe({action:'get',project,agent_id:agent,...args},async()=>structuredClone(data));
+const oldSystemUrl=process.env.SYNAPSE_DATABASE_URL;
 try {
+ // Testbare System-DB-Kennung: der Shell-Testprozess selbst nutzt synapse_test auf 5433.
+ process.env.SYNAPSE_DATABASE_URL='postgresql://system:fixture-secret@db.test:5432/synapse';
  await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES($1,$2,'active',NOW())",[agent,project]);
  const first=await call();
  assert.equal(first.job_env?.database_url,'keine','erster Hinweis im eigenen Feld');
@@ -43,6 +46,7 @@ try {
  assert.deepEqual(await call(),golden,'alte Historie loest keine Wiederholung aus');
  console.log('P10-T40 PASS: Golden, Sitzung, Option, Detail, Parallelitaet, Meldungen, stdio, history, Projekt, DB-Wechsel');
 } finally {
+ if(oldSystemUrl===undefined)delete process.env.SYNAPSE_DATABASE_URL;else process.env.SYNAPSE_DATABASE_URL=oldSystemUrl;
  for(const table of ['hinweis_gesehen','hinweis_optionen']) {
   if((await pool.query('SELECT to_regclass($1) AS t',[table])).rows[0].t)
    await pool.query('DELETE FROM '+table+' WHERE project = ANY($1::text[])',[[project,project+'-b']]);

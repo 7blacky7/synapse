@@ -5,7 +5,7 @@ import{join,dirname,win32}from'node:path';import{fileURLToPath}from'node:url';im
 import{ermittleShellLage}from'../dist/services/shell-lage.js';
 import{probeShellLage,shellLageProbeProgramm}from'../dist/services/shell-lage-probe.js';
 import{waehleShellStart}from'../dist/services/shell-start.js';
-assert.equal(process.platform,'win32');
+if(process.platform!=='win32'){console.log('SKIP shell-lage-e2-windows: benötigt Windows/Win32');process.exit(0);}
 const base=dirname(dirname(fileURLToPath(import.meta.url)));
 const root=await mkdtemp(join(base,'runtime-'));assert.ok(root.toLowerCase().startsWith('c:\\synapse-e2-test\\sol-2\\'));
 await mkdir(join(root,'safe'));await writeFile(join(root,'safe','x.txt'),'owned fixture');

@@ -54,7 +54,7 @@ export class ShellAusgabePuffer {
     const prefix=this.pending.slice(0,cut),rest=this.pending.slice(cut);
     // Ein offener Musterwert braucht Zustand, sonst wuerde seine Fortsetzung ohne Namen lecken.
     // Probes nutzen dieselben Regeln; kein zweiter Schluessel-/URL-Katalog.
-    const marker='__SHELL_PUFFER_PROBE_93a7__';
+    const marker='zzzzshellpufferprobezzzz';
     const direkt=maskiereShellText(prefix+marker);
     const quoted=maskiereShellText(prefix+marker+'"');
     const offenesJson=/"\s*:\s*"(?:\\.|[^"\\])*$/.test(prefix);

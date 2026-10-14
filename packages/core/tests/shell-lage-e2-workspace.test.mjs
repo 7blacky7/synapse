@@ -15,12 +15,16 @@ const project='test-e2-workspace-'+randomUUID();
 fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanupCheckpoint();
 await db.getPool().query('INSERT INTO projects(name,hostname,path)VALUES($1,$2,$3)',[project,'test',root]);
 const run=promisify(execFile);const calls=[];
-const container={exec:async(spec)=>{
+const isRootGuard=spec=>spec.Cmd[0]==='/bin/sh'&&spec.Cmd[1]==='-ec'&&spec.Cmd[2].startsWith('/bin/chown 1000:1000 /workspace && /bin/chmod 0755 /workspace');
+const isUserCommand=spec=>spec.User==='1000:1000'&&spec.Cmd[0]==='/usr/bin/env'&&spec.Cmd[1]==='-i'&&JSON.stringify(spec.Cmd.slice(-3))===JSON.stringify(['/bin/sh','-c','printf E2_WORKSPACE'])&&spec.Cmd.includes('SYNAPSE_PROJECT='+project)&&spec.Cmd.slice(2,-3).every(a=>/^[A-Za-z_]\w*=/.test(a));
+const container={inspect:async()=>({Config:{Env:[]},State:{Running:true}}),exec:async(spec)=>{
  calls.push(spec);let output='';
- if(spec.Cmd[0]==='node'){
+ if(isRootGuard(spec)){
+   assert.equal(spec.User,'0');output=''; // Quellschutz-Aufruf erfolgreich quittieren
+ }else if(spec.Cmd[0]==='node'){
    assert.equal(spec.Cmd.length,4);assert.ok(!spec.Cmd[2].includes('printf E2_WORKSPACE'));
    output=(await run(process.execPath,spec.Cmd.slice(1),{cwd:root,env:{...process.env,ROOT:root}})).stdout;
- }else {assert.deepEqual(spec.Cmd,['/bin/sh','-c','printf E2_WORKSPACE']);output='E2_WORKSPACE';}
+ }else {assert.ok(isUserCommand(spec),'nur der erwartete Shell-Nutzerbefehl wird ausgeführt');output='E2_WORKSPACE';}
  return {start:async()=>{
    const stream=new PassThrough();setImmediate(()=>stream.end(output));return stream;
  },inspect:async()=>({ExitCode:0})};
@@ -33,10 +37,10 @@ orch.recordActivity=async()=>{};orch.appendToLog=async()=>{};
 let seen=false;
 const r=await orch.exec(project,'printf E2_WORKSPACE',{onLage:(lage)=>{seen=true;assert.ok(lage.hash);assert.equal(lage.cwd,root);}});
 assert.equal(seen,true);assert.equal(r.exitCode,0);assert.equal(r.stdout,'E2_WORKSPACE');
-assert.equal(calls[0].Cmd[0],'node');assert.equal(calls.at(-1).Cmd[0],'/bin/sh');
+assert.ok(isRootGuard(calls[0]),'Quellschutz der Workspace-Wurzel wird vor Probe und Befehl quittiert');assert.ok(isUserCommand(calls.at(-1)),'eigentlichen Shell-Befehl prüfen');
 calls.length=0;
 await assert.rejects(()=>orch.exec(project,'printf E2_WORKSPACE',{onLage:()=>{throw Error('test_gate');}}),/test_gate/);
-assert.ok(calls.every(c=>c.Cmd[0]==='node'),'Nutzerbefehl nach Gate-Ablehnung nie gestartet');
+assert.ok(calls.some(isRootGuard),'Quellschutz wird quittiert');assert.ok(!calls.some(isUserCommand),'Nutzerbefehl nach Gate-Ablehnung nie gestartet');
 console.log('P10-T36 Workspace: fester read-only Helper, Daten-argv, Preflight/Gate gruen.');
 
 

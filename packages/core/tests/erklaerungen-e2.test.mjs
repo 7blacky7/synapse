@@ -24,6 +24,7 @@
  * Exit 0 = alle Zusagen erfuellt, 1 = mindestens eine verletzt, 2 = falsche DB.
  */
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -76,6 +77,7 @@ for (const m of schemaJs.matchAll(/CREATE (?:UNIQUE )?INDEX IF NOT EXISTS idx_er
 const SEED_DATEI = join(hier, '..', 'data', 'erklaerungstopf-seed.json');
 const seed = JSON.parse(readFileSync(SEED_DATEI, 'utf8'));
 const KENNUNGEN = seed.eintraege.map((e) => e.kennung);
+const seedAgent = 'seed-test-' + randomUUID();
 
 const PRJ = 'zz-erklaerungen-e2';
 const A = 'e2-a';
@@ -84,7 +86,7 @@ const KOORD = 'koordinator';
 const aufraeumen = async () => {
   await pool.query('DELETE FROM erklaerung_ereignisse WHERE project = $1', [PRJ]);
   await pool.query('DELETE FROM erklaerung_faelle WHERE project = $1', [PRJ]);
-  await pool.query(`DELETE FROM erklaerungen WHERE kennung = ANY($1) OR erstellt_von = ANY($2)`, [KENNUNGEN, ['seed-test', 'e2-setup', KOORD]]);
+  await pool.query(`DELETE FROM erklaerungen WHERE kennung = ANY($1) OR erstellt_von = ANY($2) OR status_grund LIKE 'Seed (Startbestand E0)%'`, [KENNUNGEN, ['seed-test', seedAgent, 'e2-setup', KOORD]]);
   await pool.query('DELETE FROM jev_schalter');
   await pool.query('DELETE FROM jev_budget_stand');
   await pool.query('DELETE FROM jev_optionen');
@@ -158,19 +160,20 @@ try {
     const k1 = seed.eintraege.find((e) => e.e0_klasse === 'K1');
     await pool.query(`INSERT INTO erklaerungen (familie, lage_en, wieso_en, abhilfe_en, status, erstellt_von) VALUES ('typescript', $1, $2, $3, 'vorgeschlagen', 'e2-setup')`,
       [k1.en.lage.toUpperCase(), k1.en.wieso, k1.en.abhilfe]);
-    const r1 = await E.ladeErklaerungstopfSeed({ agent: 'seed-test' });
+    const r1 = await E.ladeErklaerungstopfSeed({ agent: seedAgent });
     const N = seed.eintraege.length;
     pruefe(r1.success === true && r1.neu === N - 1 && r1.vorhanden === 1 && r1.abgelehnt === 0, `D 1. Lauf: ${N - 1} neu, 1 vorhanden (gleiche Lage in der Familie, Gross/Klein egal)`, r1);
     await pool.query(`DELETE FROM erklaerungen WHERE erstellt_von = 'e2-setup'`);
-    const r2 = await E.ladeErklaerungstopfSeed({ agent: 'seed-test' });
+    const r2 = await E.ladeErklaerungstopfSeed({ agent: seedAgent });
     pruefe(r2.success === true && r2.neu === 1 && r2.vorhanden === N - 1, `D 2. Lauf: die fehlende kommt dazu (1 neu, ${N - 1} vorhanden)`, r2);
-    const r3 = await E.ladeErklaerungstopfSeed({ agent: 'seed-test' });
+    const r3 = await E.ladeErklaerungstopfSeed({ agent: seedAgent });
     pruefe(r3.success === true && r3.neu === 0 && r3.vorhanden === N, 'D idempotent: 3. Lauf 0 neu', r3);
-    const { rows } = await pool.query(`SELECT kennung, familie, status, verifiziert_am IS NOT NULL AS va, lage_de IS NOT NULL AND lage_en IS NOT NULL AS beide, erstellt_von
-      FROM erklaerungen WHERE kennung = ANY($1)`, [KENNUNGEN]);
-    const erwartet = Object.fromEntries(seed.eintraege.map((e) => [e.kennung, e.status]));
-    pruefe(rows.length === N && rows.every((r) => r.status === erwartet[r.kennung] && r.va === (r.status === 'verifiziert') && r.beide && r.erstellt_von === 'seed-test'),
-      'D in PG: Status laut Seed, verifiziert_am nur bei verifiziert, de+en, erstellt_von', rows);
+    const { rows } = await pool.query(`SELECT familie, lage_de, lage_en, status, verifiziert_am IS NOT NULL AS va, lage_de IS NOT NULL AND lage_en IS NOT NULL AS beide, erstellt_von
+      FROM erklaerungen WHERE status_grund LIKE 'Seed (Startbestand E0)%' AND erstellt_von = $1`, [seedAgent]);
+    const key = (r) => [r.familie, r.lage_de?.toLowerCase(), r.lage_en?.toLowerCase()].join('|');
+    const erwartet = new Map(seed.eintraege.map((e) => [[e.familie, e.de.lage.toLowerCase(), e.en.lage.toLowerCase()].join('|'), e.status]));
+    pruefe(rows.length === N && rows.every((r) => erwartet.get(key(r)) === r.status && r.va === (r.status === 'verifiziert') && r.beide && r.erstellt_von === seedAgent),
+      'D in PG: Status laut Seed (Familie + Lage), verifiziert_am nur bei verifiziert, de+en, erstellt_von', rows);
     const kaputt = join(mkdtempSync(join(tmpdir(), 'e2-seed-')), 'seed.json');
     writeFileSync(kaputt, JSON.stringify({ format: 'erklaerungstopf-seed', eintraege: [{ ...seed.eintraege[0], kennung: 'zz-e2-pfad', de: { ...seed.eintraege[0].de, lage: 'Im Projekt zz-erklaerungen-e2 fehlt in src/a/b.ts eine Klammer.' } }] }));
     const r4 = await E.ladeErklaerungstopfSeed({ datei: kaputt, agent: 'seed-test' });
