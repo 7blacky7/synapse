@@ -7,6 +7,11 @@
 
 export { registriereHinweisQuelle, baueHinweisKontext, haengeAusloeserHinweiseAn, haengeAusloeserTextHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from './services/ausloeser-hinweise.js';
 export type { HinweisKontext, AusloeserHinweis, HinweisQuelle, HinweisOptionen, HinweisMetrik } from './services/ausloeser-hinweise.js';
+// P13-T32/A14: API-only Ansichtsdienst, RV16 registriert den Reverse-Adapter.
+export {AssetAnsichtDienst,projektAnsichtAdapter} from './services/asset-ansicht.js';
+export type {AnsichtBereich,AssetAnsichtReferenz,AssetAnsichtQuelle,AssetAnsichtQuellenAdapter,AssetAnsichtLinkRueckfall,AssetAnsichtErgebnis} from './services/asset-ansicht.js';
+export {AssetAnsichtFehler,FfmpegAnsichtRenderer,kodiereAnsichtPng,pruefeAnsichtPng} from './services/asset-ansicht-renderer.js';
+export type {AssetAnsichtRenderer,AnsichtRenderGrenzen,AnsichtRaster} from './services/asset-ansicht-renderer.js';
 export {AssetKonfliktKern,holeAssetKonflikt} from './services/asset-konflikte.js';
 export {ASSET_KONFLIKT_SCHEMA_SQL} from './db/asset-konflikt-schema.js';
 export {assetKonfliktHinweisQuelle,initialisiereAssetKonfliktHinweise} from './services/asset-konflikt-hinweise.js';

@@ -64,6 +64,17 @@ export interface AssetKonfiguration {
     maxAnzahl: number;
     offenSekundenStandard: number;
     offenSekundenObergrenze: number;
+    /** A14: optionale additive Decodergrenzen (alte Konfigurations-Fixtures bleiben gültig). */
+    maxInputBytes?: number;
+    maxRamBytes?: number;
+    timeoutMs?: number;
+    maxKante?: number;
+    maxFrames?: number;
+    maxDauerMs?: number;
+    parallelRenderer?: number;
+    ffmpeg?: string;
+    ffprobe?: string;
+    prlimit?: string;
   };
   reverse: {
     aktiv: boolean;
@@ -257,6 +268,16 @@ export function ladeAssetKonfiguration(env: NodeJS.ProcessEnv = process.env): As
       maxAnzahl: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_COUNT', 5, 1, 100),
       offenSekundenStandard: vorschauStandardSekunden,
       offenSekundenObergrenze: vorschauMaxSekunden,
+      maxInputBytes: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_INPUT_BYTES', 64 * MIB, 1, 256 * MIB),
+      maxRamBytes: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_RAM_BYTES', GIB, 64 * MIB, 16 * GIB),
+      timeoutMs: zahl(env, 'SYNAPSE_ASSET_PREVIEW_TIMEOUT_MS', 15_000, 1, 3_600_000),
+      maxKante: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_EDGE', 2048, 1, 16384),
+      maxFrames: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_FRAMES', 1, 1, 100),
+      maxDauerMs: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_DURATION_MS', 12_000, 1, 60_000),
+      parallelRenderer: zahl(env, 'SYNAPSE_ASSET_PREVIEW_PARALLEL', 1, 1, 8),
+      ffmpeg: env.SYNAPSE_ASSET_PREVIEW_FFMPEG ?? 'ffmpeg',
+      ffprobe: env.SYNAPSE_ASSET_PREVIEW_FFPROBE ?? 'ffprobe',
+      prlimit: env.SYNAPSE_ASSET_PREVIEW_PRLIMIT ?? 'prlimit',
     },
     reverse: {
       aktiv: reverseAktiv,

@@ -1,0 +1,25 @@
+# A14: Anschlussvertrag für A15/A16 und RV16
+
+`AssetAnsichtDienst` läuft ausschließlich in der API. A16 ruft ihn erst nach bestehender Auth-/Projekt-Scopeprüfung auf; stdio transportiert die API-Antwort. Es entsteht kein neuer lokaler Decoder im Daemon oder MCP-Prozess.
+
+```ts
+const dienst = new AssetAnsichtDienst();
+const ergebnis = await dienst.ansicht({
+  bereich: 'projekt', ziel_ref: autorisiertesProjekt,
+  id: assetId, revision: erwarteteRevision, sha256: erwarteterHash,
+});
+```
+
+Erfolg enthält `png: Buffer`, `mimeType: 'image/png'`, Maße, `cacheKey`, `cacheTreffer` und `quelle` mit unveränderlicher Revision/Hash. A16 erstellt daraus den MCP-Bildblock; Base64 kommt nicht zusätzlich in structuredContent. Ohne angefragte Ansicht wird der Dienst nicht aufgerufen. `ansichten(refs)` prüft Anzahl und Gesamtbildbytes einer Antwort.
+
+Fehler liefern `success:false`, `fehlercode`, `grund` und gegebenenfalls `link_rueckfall`. Letzteres ist eine gebundene Quellenreferenz, keine öffentliche URL. A15 erzeugt daraus nach Scopeprüfung den Timerlink. Audio, PSD, SVG/HTML, Archive und nicht vorhandene Decoder ergeben `ansicht_nicht_darstellbar`; bei Grenzen `ansicht_limit`, bei fehlenden Bytes `ansicht_quelle_fehlt`, bei falschem Hash/Revision `ansicht_revision_falsch`. Keine Originalbytes werden verändert.
+
+RV16 registriert mit `dienst.registriereQuellenAdapter('reverse', adapter)` seinen Adapter. `aufloesen(ref)` liefert `AssetAnsichtQuelle`: Bereich, ID, Revision/Hash, Größe, Format/MIME, A3-Adresse, Revisions-Bytesleser und Retention-`halten/freigeben`. Der Dienst prüft Scope und angefragte Revision/Hash selbst, liest begrenzt und verifiziert den vollständigen Bytehash vor dem Rendern. Der Reverse-Adapter verwendet A3 und seinen bestehenden Revisions-/Auftrags-Fence. Keine Registrierung als Projektquelle, kein zweiter Renderer. Der Rückgabewert der Registrierung entfernt nur diesen eigenen Adapter.
+
+Der Previewcache liegt über A3 in `<Identität>/.intern/ansichten/<cacheKey>.png`; Code-/Projektbäume und Share-Scanner sehen diesen internen Bereich nicht. Schlüssel enthält Bereich, Identität, ID, Revision, Hash, Renderer-/Profilversion und wirksame Grenzen. Publish erfolgt atomar, Cachetreffer werden auf PNG-Struktur/CRC/Pixellimits geprüft. Temporäre Decoderdateien liegen im selben internen Bereich und werden nach Abschluss entfernt. Nur ihr Read-only-FD wird an FFmpeg vererbt; kein Originalpfad wird übergeben.
+
+Retention: A14 hält die Originalrevision während der Verarbeitung über `AssetRetention`; RV16 liefert den äquivalenten Halter. A15 hält die gebundene Revision für Token-TTL separat und darf keine URL ohne diese Bindung erzeugen. `bereinigeCache(adresse, cacheKey, unterRetentionFence)` ist der explizite Cleanup-Anschluss: A15/M4 muss im Callback bestätigte abgelaufene Revisions-/Tokenretention prüfen und seinen dauerhaften Fence bis zum Abschluss des Unlink halten. Der Dienst löscht niemals nur nach Mtime/Alter. Ein Cachefehler verhindert kein Re-Rendern bei weiterhin verfügbarer Revision.
+
+A4 besitzt zusätzlich `SYNAPSE_ASSET_PREVIEW_MAX_INPUT_BYTES/MAX_RAM_BYTES/TIMEOUT_MS/MAX_EDGE/MAX_FRAMES/MAX_DURATION_MS/PARALLEL`. Betreiberwerte begrenzen Input, RAM, Gesamtzeit, Quell-/Zielpixel, PNG-Bytes, Antwortanzahl, Standbildframes und Dauer. Frameausgabe ist derzeit genau ein Standbild; kein Clip. Konfigurierte Programmpfade: `SYNAPSE_ASSET_PREVIEW_FFMPEG/FFPROBE/PRLIMIT`. Fehlende Programme bleiben ein klarer Link-Rückfall. FFmpeg/FFprobe werden mit CPU-/Adressraumgrenzen, einem Thread, Demuxer-/Protokollfreigabe und hartem SIGKILL-Timeout gestartet. Keine Playlists, Netzprotokolle, MOV-Datenreferenzen oder aktive SVG-/HTML-Verarbeitung.
+
+Testphase: `node --test packages/core/tests/asset-ansicht-p13-a14.test.mjs` über Synapse shell. DB-Teil verlangt `synapse_test:5433` und erzeugt ein eigenes `p13_a14_<uuid>`-Schema/Projekt; synthetische Sharewurzeln ausschließlich im Temp-Bereich `synapse-p13-a14-fixtures`. Ohne DATABASE_URL läuft nur der DB-freie Teil. Keine lokale Env-Datei. Testphase Welle 1 (14.10.2026): alle zehn Renderer-/Cache-/Retentiontests ausgeführt und grün, einschließlich des DB-Falls auf synapse_test:5433. Job: 698c86de-bdd8-42c2-ab01-992a6ecca656; Corebuild nach Adapterfix: 2a97a86c-4560-4888-a37a-88c4bf7e9a74 (EXIT=0, error TS=0). API-Image-/Werkzeug-Abnahme gehört in die gebündelte Testphase/Deployprüfung.

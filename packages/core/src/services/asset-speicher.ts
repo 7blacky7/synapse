@@ -754,6 +754,59 @@ export class AssetSpeicher {
     await this.journal(k,op);if(held)await this.entferne(k,lockKey);return op;
   }
 
+  /** A14: interne Previewdateien benutzen dieselben FD-/Symlinkgrenzen wie Originalbytes. */
+  private previewKey(k: Kontext,key: string): string {
+    if(!/^[a-f0-9]{64}$/.test(key))return fail('pfad_ungueltig','Ungültiger Previewschlüssel.');
+    return this.intern(k,'ansichten',key+'.png');
+  }
+  async leseAnsichtCache(adresse:AssetAdresse,key:string):Promise<Buffer|null>{
+    const k=await this.kontext(adresse);let h:FileHandle;
+    try{h=await this.open(k,this.previewKey(k,key));}catch(e){if(istCode(e,'ENOENT'))return null;throw e;}
+    try{
+      const n=(await h.stat()).size;
+      if(n>this.cfg.vorschau.maxBytes)return null;
+      const b=Buffer.alloc(n);let at=0;
+      while(at<n){const r=await h.read(b,at,n-at,at);if(!r.bytesRead)return null;at+=r.bytesRead;}
+      return b;
+    }finally{await h.close();}
+  }
+  async schreibeAnsichtCache(adresse:AssetAdresse,key:string,png:Buffer):Promise<void>{
+    const k=await this.kontext(adresse),target=this.previewKey(k,key);
+    if(png.length>this.cfg.vorschau.maxBytes)return fail('ansicht_limit','Preview überschreitet Bytebudget.');
+    const tmp=this.intern(k,'ansichten',key+'-'+randomUUID()+'.tmp');
+    try{
+      await this.mitEltern(k,tmp,true,async p=>{
+        const h=await fs.open(p.pfad,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
+        try{await this.write(h,png);await h.sync();}finally{await h.close();}
+      });
+      await this.rename(k,tmp,target);
+    }finally{await this.entferne(k,tmp);}
+  }
+  /**
+   * A15/Retention entscheidet unter seinem dauerhaften Revisions-/Token-Fence.
+   * Kein Timer oder Mtime darf allein eine noch referenzierte Ansicht entfernen.
+   * Der Caller muss den Fence bis zum Abschluss dieses Aufrufs halten.
+   */
+  async entferneAnsichtCache(adresse:AssetAdresse,key:string,unterRetentionFence:()=>Promise<boolean>):Promise<boolean>{
+    const k=await this.kontext(adresse),target=this.previewKey(k,key);
+    if(!await unterRetentionFence())return false;
+    await this.entferne(k,target);return true;
+  }
+  /** Read-only Snapshot-FD für FFmpeg: nur eigene temporäre Bytes, nie Originalpfade an Decoder. */
+  async mitAnsichtArbeitsdatei<T>(adresse:AssetAdresse,bytes:Buffer,fn:(fd:number)=>Promise<T>):Promise<T>{
+    const k=await this.kontext(adresse);
+    if(bytes.length>(this.cfg.vorschau.maxInputBytes??this.cfg.inspektion.maxReadBytes))return fail('ansicht_limit','Inputbudget überschritten.');
+    const tmp=this.intern(k,'ansichten','arbeit-'+randomUUID()+'.tmp');
+    try{
+      await this.mitEltern(k,tmp,true,async p=>{
+        const h=await fs.open(p.pfad,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
+        try{await this.write(h,bytes);}finally{await h.close();}
+      });
+      const h=await this.open(k,tmp);
+      try{return await fn(h.fd);}finally{await h.close();}
+    }finally{await this.entferne(k,tmp);}
+  }
+
   private async range(k: Kontext,key: string,offset: number,length: number): Promise<Buffer> {
     if(!Number.isSafeInteger(offset) || offset<0 || !Number.isSafeInteger(length) || length<0 || length>Math.min(k.maxDatei,this.cfg.inspektion.maxReadBytes)) {
       return fail('bereich_ungueltig','Ungültiger/budgetüberschreitender Lesebereich.');
