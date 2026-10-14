@@ -2,19 +2,23 @@
  * P18-T59/RV12 (Welle R1-A): führt reverse-E-Aufträge (P20-Work-Jobs) auf dem Unraid-Server aus.
  * Grundlage Wellenplan R1 (thought ef68838e):
  *  E1 Systemprojekt 'reverse-bibliothek' virtuell registrieren + tool_activation, kein Umbau des Lebenszyklus.
- *  E2 instance_scope 'job': je Auftrag /bib (ro, Reverse-Bibliothek) und /arbeit (rw, <reverseRoot>/_arbeit/<jobId>).
- *  E3 nur Kinds aus SYNAPSE_REVERSE_EXECUTOR_KINDS (Default 'reverse-E').
- * Ablauf: offener Auftrag -> Lebenszyklus weckt Job-Container -> Claim nur mit Server-Identität ->
+ *  E2 (P18-T64): EIN globaler Reverse-Container (instance_scope 'project' im einzigen virtuellen Projekt reverse-bibliothek)
+ *     mit Warteschlange: /bib (ro, Reverse-Bibliothek), /arbeit (rw, <reverseRoot>/_arbeit), je Auftrag /arbeit/<jobId>.
+ *     Startet bei Bedarf, schläft nach SYNAPSE_REVERSE_IDLE_MS Leerlauf. Alte Job-Container laufen über den Lebenszyklus aus;
+ *     solange einer davon lebt, bleibt der alte Descriptor (je Auftrag) aktiv und die Umstellung wird je Durchlauf erneut versucht.
+ *  E3 nur Kinds aus SYNAPSE_REVERSE_EXECUTOR_KINDS (Default 'reverse-E'); die Kinds stehen in der Ausführer-Registry (core).
+ * Ablauf: offener Auftrag -> Lebenszyklus weckt den Reverse-Container -> Claim nur mit Server-Identität ->
  * lifecycle.execute {kommando:'extrahieren'} -> uebernehmeEErgebnis unter Lease-Fence -> stage -> complete.
  * Alles aus, solange SYNAPSE_REVERSE_ENABLED nicht '1' ist.
  */
 import {createHash} from 'node:crypto';
-import {mkdir,chmod,chown,rm,readdir} from 'node:fs/promises';
+import {mkdir,chmod,chown,rm,readdir,open} from 'node:fs/promises';
 import path from 'node:path';
 import type {Pool} from 'pg';
 import {getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
- reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,
+ reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
+ reverseFehlerDeterministisch,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
@@ -25,7 +29,7 @@ import {ServerExecutor} from './server-executor.js';
 export const REVERSE_PROJEKT='reverse-bibliothek';
 export const REVERSE_CAPABILITY='reverse_bibliothek';
 export const REVERSE_TOOL_ID='reverse-e';
-const UNTERSTUETZTE_KINDS=['reverse-E'];
+const UNTERSTUETZTE_KINDS:readonly string[]=REVERSE_EXECUTOR_UNTERSTUETZT;
 /** Serverseitige Selbstkonfiguration aus der API-Umgebung, niemals aus Clientargumenten. */
 const SERVER_AUTHORITY={role:'koordinator',authenticated:true} as const;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -57,6 +61,8 @@ export interface ReverseExecutorKonfig {
  reverseRoot:string;arbeitRoot:string;image:string;digest:string;kinds:string[];parallel:number;
  leaseSeconds:number;renewMs:number;tickMs:number;resourceNeed:WorkResourceNeed;resourceDomain:string|null;
  zeitlimitS:number;maxDateien:number;maxBytes:number;tmpfsMb:number;pids:number;outputBytes:number;retryMax:number;
+ /** P18-T64: Leerlauf, nach dem der globale Reverse-Container schläft. */
+ idleMs:number;
 }
 function ganz(env:NodeJS.ProcessEnv,name:string,fallback:number,min=1,max=2147483647):number{
  const n=Number(env[name]??fallback);
@@ -86,19 +92,21 @@ export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:stri
   zeitlimitS:ganz(env,'SYNAPSE_REVERSE_ZEITLIMIT_S',3600,1,86400),maxDateien:ganz(env,'SYNAPSE_REVERSE_MAX_DATEIEN',20000,1,200000),
   maxBytes:ganz(env,'SYNAPSE_REVERSE_MAX_BYTES',2000000000,1,Number.MAX_SAFE_INTEGER),tmpfsMb:ganz(env,'SYNAPSE_REVERSE_TMPFS_MB',512,16),
   pids:ganz(env,'SYNAPSE_REVERSE_PIDS',256,16),outputBytes:ganz(env,'SYNAPSE_REVERSE_OUTPUT_BYTES',33554432,65536),
-  retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100)};
+  retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100),idleMs:ganz(env,'SYNAPSE_REVERSE_IDLE_MS',300000,10000,86400000)};
 }
 /**
- * E2: ein Container je Auftrag, kein Netz, Bibliothek nur lesend, nur der eigene Arbeitsordner schreibbar.
+ * E2 (P18-T64): EIN globaler Container (instance_scope 'project'; das Projekt ist immer reverse-bibliothek), kein Netz,
+ * Bibliothek nur lesend, /arbeit = _arbeit mit je Auftrag eigenem Unterordner. concurrency = parallel (der Runner arbeitet
+ * die Zeilen nacheinander ab, weitere warten im Transport). Grenzen je Auftrag kommen mit jedem Kommando.
  * Rootfs ist read-only; der Docker-Adapter hängt /tmp als tmpfs (resources.tmpfs MB) ein – der Runner nutzt TMPDIR=HOME=/tmp.
  */
 export function reverseToolDescriptor(k:ReverseExecutorKonfig):ToolDescriptor{
  return validateToolDescriptor({tool_id:REVERSE_TOOL_ID,tool:'reverse',capability:REVERSE_CAPABILITY,image:k.image,digest:k.digest,
-  instance_scope:'job',network:'none',allow_project_share:false,
-  mounts:[{role:'bibliothek',target:'/bib',write:false},{role:'arbeit',target:'/arbeit',write:true,job_only:true}],
-  resources:{cpu:k.resourceNeed.cpu,ram:k.resourceNeed.ram,vram:0,gpu:false,pids:k.pids,tmpfs:k.tmpfsMb,concurrency:1},
+  instance_scope:'project',network:'none',allow_project_share:false,
+  mounts:[{role:'bibliothek',target:'/bib',write:false},{role:'arbeit',target:'/arbeit',write:true}],
+  resources:{cpu:k.resourceNeed.cpu,ram:k.resourceNeed.ram,vram:0,gpu:false,pids:k.pids,tmpfs:k.tmpfsMb,concurrency:k.parallel},
   limits:{time_ms:(k.zeitlimitS+60)*1000,output_bytes:k.outputBytes,input_bytes:65536},
-  lifecycle:{idle_ms:30000,activity_lookback_seconds:300,cpu_idle_percent:5,gpu_idle_percent:100,measurement_max_age_ms:60000,
+  lifecycle:{idle_ms:k.idleMs,activity_lookback_seconds:300,cpu_idle_percent:5,gpu_idle_percent:100,measurement_max_age_ms:60000,
    start_timeout_ms:120000,max_starts:20,start_window_ms:600000,pause_ms:300000}});
 }
 const RUNNER_UID=65532;
@@ -107,6 +115,15 @@ async function runnerOrdner(dir:string):Promise<void>{
  await mkdir(dir,{recursive:true,mode:0o700});
  if(process.getuid?.()===0){await chown(dir,RUNNER_UID,RUNNER_UID);await chmod(dir,0o700);}
  else await chmod(dir,0o777);
+}
+/**
+ * P18-T64/M1: Nach dem Lauf gehört der Auftragsordner wieder root (0700). Im gemeinsamen Container kann der Runner
+ * (uid 65532) damit nur in den Ordner des gerade laufenden Auftrags schreiben, nie in fertige oder fremde. Ohne root
+ * (Tests/Entwicklung) nicht möglich, dann bleibt es bei 0711 auf _arbeit und nicht ratbaren UUID-Namen.
+ */
+export async function sperreArbeitsOrdner(dir:string):Promise<boolean>{
+ if(process.getuid?.()!==0)return false;
+ try{await chown(dir,0,0);await chmod(dir,0o700);return true;}catch{return false;}
 }
 /** Arbeitsordner je Auftrag; der Container läuft als 65532 und muss hinein schreiben. */
 export async function reverseArbeitsOrdner(k:ReverseExecutorKonfig,jobId:string):Promise<string>{
@@ -120,7 +137,9 @@ export function reverseMountResolver(k:ReverseExecutorKonfig):(d:ToolDescriptor,
  return async(d,ctx)=>{
   if(d.tool_id!==REVERSE_TOOL_ID)return [];
   const mounts:ResolvedToolMount[]=[{role:'bibliothek',source:k.reverseRoot,root:k.reverseRoot,allowWrite:false,allowProjectShare:false}];
+  // Alter Descriptor (je Auftrag, während der Migration): nur dessen Ordner. Globaler Container: ganz _arbeit.
   if(ctx.job_id)mounts.push({role:'arbeit',source:await reverseArbeitsOrdner(k,ctx.job_id),root:k.arbeitRoot,allowWrite:true,allowProjectShare:false});
+  else{await mkdir(k.arbeitRoot,{recursive:true,mode:0o711});mounts.push({role:'arbeit',source:k.arbeitRoot,root:k.arbeitRoot,allowWrite:true,allowProjectShare:false});}
   return mounts;
  };
 }
@@ -129,11 +148,28 @@ export const reverseRessourcen:ToolResourceAdapter={
  async acquire(d,ctx){return d.tool_id===REVERSE_TOOL_ID?'reverse-lokal:'+ctx.instance_id+':'+ctx.generation:null;},
  async release(){},
 };
-const fehlercode=(roh:unknown):string=>{
+const fehlercode=(roh:unknown,detail?:unknown):string=>{
  const c=String(roh??'');
  if(c==='deadline')return 'zeitlimit';
+ if(c==='format_nicht_unterstuetzt'){const d=String(detail??'').replace(/[^a-zA-Z0-9_.-]/g,'').slice(0,64);return d?c+':'+d:c;}
  return (REVERSE_FEHLERCODES as readonly string[]).includes(c)?c:'werkzeug_fehler';
 };
+/**
+ * P18-T64: Formate, die der Runner (noch) nicht kann, VOR dem Containerlauf klar benennen statt 'nicht_unterstuetzt'.
+ * CloneCD-Steuerdatei ('[CloneCD]') und Raw-2352-Sektoren (Sync 00 FF*10 00) ohne CUE: Unterstützung folgt mit P18-T46/T49.
+ */
+export async function reverseFormatVorpruefung(dateien:{pfad:string;rolle:string;name?:string}[]):Promise<string|null>{
+ // N3: Raw-BIN mit CUE als Begleitdatei verarbeitet der Runner über die CUE (bchunk).
+ const mitCue=dateien.some(d=>(d.name??d.pfad).toLowerCase().endsWith('.cue'));
+ for(const d of dateien){
+  let kopf:Buffer;
+  try{const h=await open(d.pfad,'r');try{const b=Buffer.alloc(64);const {bytesRead}=await h.read(b,0,64,0);kopf=b.subarray(0,bytesRead);}finally{await h.close();}}
+  catch{continue;}
+  if(kopf.subarray(0,9).toString('latin1').toLowerCase()==='[clonecd]')return 'format_nicht_unterstuetzt:clonecd';
+  if(d.rolle==='haupt'&&!mitCue&&kopf.length>=12&&kopf[0]===0&&kopf[11]===0&&kopf.subarray(1,11).every(x=>x===0xff))return 'format_nicht_unterstuetzt:raw2352';
+ }
+ return null;
+}
 
 // ---------------------------------------------------------------------------------------------
 export interface ReverseExecutorDeps {
@@ -147,10 +183,13 @@ export interface ReverseExecutorDeps {
  registriereProjekt?:(name:string)=>Promise<void>;
 }
 export interface ReverseDurchlauf {geprueft:true;geweckt:number;gestartet:number;hinweis?:string}
+interface ReverseQuelle {reverseId:string;mediumId:string;storageKey:string;dateien:{storageKey:string;rolle:string;name:string}[]}
 export class ReverseExecutor {
  private readonly pool:Db;private readonly k:ReverseExecutorKonfig;private readonly jobs:WorkJobService;
  private readonly laufend=new Map<string,Promise<void>>();
  private wer:WorkIdentity|null=null;private eingerichtet=false;private beendet=false;
+ /** P18-T64: true, solange noch der alte Descriptor je Auftrag gilt (Migration). */
+ private altScope=false;private altGemeldet=false;
  constructor(private readonly deps:ReverseExecutorDeps){
   this.pool=deps.pool??getPool();this.k=deps.konfig;
   this.jobs=deps.jobs??createWorkJobService({pool:this.pool as unknown as WorkJobPool});
@@ -186,31 +225,60 @@ export class ReverseExecutor {
    WHERE m.id=$1::bigint AND m.eintrag_id=$2 AND m.satz_sha256=$3 AND e.status='bestaetigt' FOR SHARE OF m`,[ref.revision,ref.id,ref.sha256]);
   return r.rows.length>0;
  }
- private async eingabe(job:WorkJob):Promise<{reverseId:string;mediumId:string;storageKey:string}|null>{
+ /** P18-T64: ALLE Dateien des Mediums (z. B. .ccd + .img + .sub, .cue + .bin), Hauptdatei zuerst. */
+ private async eingabe(job:WorkJob):Promise<ReverseQuelle|null>{
   const ref=job.inputRef;
   if(job.kind!=='reverse-E'||!/^[1-9][0-9]{0,18}$/.test(ref.revision))return null;
-  const r=(await this.pool.query(`SELECT m.eintrag_id,m.id::text AS medium_id,d.storage_key FROM reverse_medien m
-   JOIN reverse_eintraege e ON e.id=m.eintrag_id JOIN reverse_medien_dateien d ON d.medium_id=m.id AND d.rolle='haupt'
-   WHERE m.id=$1::bigint AND m.eintrag_id=$2 AND m.satz_sha256=$3 AND e.status='bestaetigt' ORDER BY d.id LIMIT 1`,[ref.revision,ref.id,ref.sha256])).rows[0];
-  const key=String(r?.storage_key??'');
-  if(!r||!key||key.startsWith('/')||key.includes('\\')||key.split('/').some(t=>!t||t==='.'||t==='..'))return null;
-  return {reverseId:String(r.eintrag_id),mediumId:String(r.medium_id),storageKey:key};
+  const rows=(await this.pool.query(`SELECT m.eintrag_id,m.id::text AS medium_id,d.storage_key,d.rolle,d.original_name FROM reverse_medien m
+   JOIN reverse_eintraege e ON e.id=m.eintrag_id JOIN reverse_medien_dateien d ON d.medium_id=m.id
+   WHERE m.id=$1::bigint AND m.eintrag_id=$2 AND m.satz_sha256=$3 AND e.status='bestaetigt' ORDER BY (d.rolle='haupt') DESC,d.id LIMIT 64`,[ref.revision,ref.id,ref.sha256])).rows;
+  const sicher=(k:string)=>!!k&&!k.startsWith('/')&&!k.includes('\\')&&!k.split('/').some(t=>!t||t==='.'||t==='..');
+  if(!rows.length||rows[0].rolle!=='haupt'||rows.some(r=>!sicher(String(r.storage_key??''))))return null;
+  const dateien=rows.map(r=>({storageKey:String(r.storage_key),rolle:String(r.rolle),name:String(r.original_name??'').slice(0,255)}));
+  return {reverseId:String(rows[0].eintrag_id),mediumId:String(rows[0].medium_id),storageKey:dateien[0].storageKey,dateien};
  }
  /** E1: Systemprojekt, Descriptor und Aktivierung idempotent anlegen. */
- async einrichten():Promise<void>{
+ /** M2: alte Job-Container ohne laufenden Auftrag über den Lebenszyklus stoppen (finishStop). */
+ private async altAuslaufen(lc:ToolLifecycle):Promise<number>{
+  const rows=(await this.pool.query(`SELECT t.work_job_id::text AS job FROM tool_containers t LEFT JOIN work_jobs w ON w.id=t.work_job_id
+   WHERE t.tool_id=$1 AND t.state IN ('warm','waiting') AND t.work_job_id IS NOT NULL AND (w.id IS NULL OR w.state NOT IN ('leased','staged'))
+    AND NOT EXISTS(SELECT 1 FROM tool_container_runs r WHERE r.instance_id=t.instance_id AND r.state IN ('running','unknown'))`,[REVERSE_TOOL_ID])).rows;
+  let n=0;
+  for(const r of rows){const x=await lc.neustart(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(r.job));if(x.neu_gestartet)n++;}
+  if(n)console.log('[reverse-executor] Migration: '+n+' ruhende(r) Alt-Container gestoppt.');
+  return n;
+ }
+ async einrichten(lc:ToolLifecycle|null=null):Promise<void>{
   await (this.deps.registriereProjekt??registerVirtualProject)(REVERSE_PROJEKT);
+  let aktuell=true;
   try{await registerToolDescriptor(this.pool,reverseToolDescriptor(this.k),SERVER_AUTHORITY);}
-  catch(e){if((e as Error).message!=='tool_descriptor_in_use')throw e;console.warn('[reverse-executor] Descriptor geändert, läuft noch mit altem Stand bis die Container ruhen.');}
+  catch(e){
+   if((e as Error).message!=='tool_descriptor_in_use')throw e;
+   // P18-T64-Migration: alte Job-Container laufen über den Lebenszyklus aus; je Durchlauf erneut versuchen.
+   aktuell=false;if(!this.altGemeldet){this.altGemeldet=true;console.warn('[reverse-executor] Descriptor geändert, läuft noch mit altem Stand bis die Container ruhen.');}
+  }
   await setToolActivation(this.pool,REVERSE_TOOL_ID,null,true,SERVER_AUTHORITY);
-  await setToolActivation(this.pool,REVERSE_TOOL_ID,REVERSE_PROJEKT,true,SERVER_AUTHORITY);
-  this.eingerichtet=true;
+  // M2: im Altmodus Projektaktivierung aus -> weder Lebenszyklus-Tick noch Wake starten neue Job-Container;
+  // laufende Aufträge enden, ruhende Alt-Container werden gestoppt. Danach gelingt die Umstellung sofort.
+  await setToolActivation(this.pool,REVERSE_TOOL_ID,REVERSE_PROJEKT,aktuell,SERVER_AUTHORITY);
+  if(!aktuell&&lc)await this.altAuslaufen(lc).catch(e=>console.error('[reverse-executor] Alt-Container stoppen fehlgeschlagen:',(e as Error).message));
+  if(aktuell){
+   const d=(await this.pool.query('SELECT descriptor FROM tool_descriptors WHERE tool_id=$1',[REVERSE_TOOL_ID])).rows[0]?.descriptor;
+   this.altScope=validateToolDescriptor(d).instance_scope==='job';
+   if(this.altGemeldet)console.log('[reverse-executor] Umstellung auf den globalen Reverse-Container abgeschlossen.');
+  }else this.altScope=true;
+  this.eingerichtet=aktuell;
  }
  async durchlauf():Promise<ReverseDurchlauf>{
   const leer=(hinweis?:string):ReverseDurchlauf=>({geprueft:true,geweckt:0,gestartet:0,...(hinweis?{hinweis}:{})});
   if(this.beendet)return leer('beendet');
   // K6: ohne Lebenszyklus nichts schreiben.
   const lc=this.deps.lifecycle();if(!lc)return leer('tool_lifecycle_aus');
-  if(!this.eingerichtet)await this.einrichten();
+  if(!this.eingerichtet){
+   await this.einrichten(lc);
+   // M2: solange alte Container auslaufen, keine neuen wecken oder claimen.
+   if(!this.eingerichtet)return leer('migration_alte_container_laufen_aus');
+  }
   this.wer=await this.deps.identitaet();
   if(!this.wer)return leer('server_identitaet_fehlt');
   await this.raeumeArbeitAuf().catch(e=>console.error('[reverse-executor] Aufräumen fehlgeschlagen:',(e as Error).message));
@@ -222,7 +290,8 @@ export class ReverseExecutor {
    AND state='pending' AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY created_at,id LIMIT $4`,
    [REVERSE_CAPABILITY,REVERSE_PROJEKT,this.k.kinds,frei])).rows;
   let geweckt=0;
-  for(const row of offen){try{await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
+  // P18-T64: der globale Container wird einmal geweckt; nur der alte Descriptor braucht einen Container je Auftrag.
+  for(const row of this.altScope?offen:offen.slice(0,1)){try{await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:this.k.leaseSeconds});
   const wer=this.wer;
   for(const job of claims){
@@ -239,7 +308,10 @@ export class ReverseExecutor {
   if(!namen.length)return 0;
   const offen=new Set((await this.pool.query("SELECT id::text FROM work_jobs WHERE id=ANY($1::uuid[]) AND state IN ('pending','leased','staged')",[namen])).rows.map(r=>String(r.id)));
   let n=0;
-  for(const name of namen)if(!offen.has(name.toLowerCase())){await rm(path.join(this.k.arbeitRoot,name),{recursive:true,force:true});n++;}
+  for(const name of namen){
+   if(!offen.has(name.toLowerCase())){await rm(path.join(this.k.arbeitRoot,name),{recursive:true,force:true});n++;}
+   else if(!this.altScope)await sperreArbeitsOrdner(path.join(this.k.arbeitRoot,name)); // M1: nicht laufender Auftrag -> für den Runner gesperrt
+  }
   return n;
  }
  /** Wartet auf laufende Aufträge (Tests, geordnetes Herunterfahren). */
@@ -262,8 +334,13 @@ export class ReverseExecutor {
   }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
   finally{c.release();}
  }
- /** Endgültiger Fehlschlag unter Lease-Fence; die Pipeline legt bei Bedarf einen neuen Versuch an. */
+ /**
+  * Endgültiger Fehlschlag unter Lease-Fence. P18-T64: immer eine Logzeile; fachliche Fehler (deterministisch) setzen
+  * Auftrag und Schicht sofort auf 'fehler' mit echtem Code, sonst legt die Pipeline einen neuen Versuch an.
+  */
  private async scheitern(job:WorkJob,wer:WorkIdentity,code:string):Promise<boolean>{
+  const endgueltig=reverseFehlerDeterministisch(code);
+  console.warn('[reverse-executor] Auftrag gescheitert:',job.id,'kind',job.kind,'eintrag',job.inputRef.id,'medium',job.inputRef.revision,'versuch',job.attempt,'code',code,endgueltig?'(fachlich, kein Neuversuch)':'(Neuversuch durch Pipeline)');
   const c=await this.pool.connect();
   try{
    await c.query('BEGIN');
@@ -271,6 +348,11 @@ export class ReverseExecutor {
    await c.query(`UPDATE work_jobs SET state='failed',error_code=$2,lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1`,[job.id,code]);
    await c.query("INSERT INTO work_job_audit(id,job_id,event,detail) VALUES(gen_random_uuid(),$1,'failed',$2::jsonb)",[job.id,JSON.stringify({fehlercode:code,executor:'reverse'})]);
    await c.query('UPDATE reverse_auftraege SET fehlercode=$2,updated_at=clock_timestamp() WHERE p20_auftrag_id=$1',[job.id,code]);
+   if(endgueltig){
+    await c.query("UPDATE reverse_auftraege SET status='fehler',lease_token=NULL,lease_bis=NULL WHERE p20_auftrag_id=$1 AND status IN ('offen','wartet','laeuft')",[job.id]);
+    await c.query("UPDATE reverse_schichten SET status='fehler',fehlercode=$2 WHERE aktuell AND status IN ('offen','wartet','laeuft') AND auftrag_id IN (SELECT id FROM reverse_auftraege WHERE p20_auftrag_id=$1)",[job.id,code]);
+    await c.query("UPDATE reverse_analyse_cache SET status='fehler',fehlercode=$2 WHERE p20_auftrag_id=$1",[job.id,code]);
+   }
    await c.query('COMMIT');return true;
   }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
   finally{c.release();}
@@ -284,7 +366,12 @@ export class ReverseExecutor {
   if(job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
   const quelle=await this.eingabe(job);
   if(!quelle){await this.scheitern(job,wer,'nicht_gefunden');return;}
-  const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=path.join(arbeit,job.id);
+  // P18-T64: bekannte, noch nicht unterstützte Formate ohne Containerlauf klar benennen.
+  const vorab=await reverseFormatVorpruefung(quelle.dateien.map(d=>({pfad:path.join(this.k.reverseRoot,d.storageKey),rolle:d.rolle,name:d.name})));
+  if(vorab){await this.scheitern(job,wer,vorab);return;}
+  // Globaler Container: /arbeit=_arbeit, Ausgabe /arbeit/<jobId>. Alter Descriptor: /arbeit=_arbeit/<jobId>, Ausgabe darin.
+  const alt=this.altScope;
+  const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
   // Der Runner verlangt einen leeren Ausgabeordner; Reste eines verlorenen Versuchs entfernen.
   await rm(ausgabe,{recursive:true,force:true});
   await runnerOrdner(ausgabe);
@@ -296,8 +383,10 @@ export class ReverseExecutor {
    try{
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',
      eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
+     begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes}}));
    }catch(e){
+    if(!alt)await sperreArbeitsOrdner(arbeit);
     const m=(e as Error).message;
     // Nicht abgesetzt: sauber zurückgeben. Sonst bleibt der Auftrag bis zum Lease-Ablauf gesperrt.
     if(m==='tool_not_ready'||m==='tool_runner_capacity'){await this.jobs.release(wer,job.id,token);aufraeumen=true;}
@@ -305,6 +394,8 @@ export class ReverseExecutor {
     return;
    }
    clearInterval(timer);
+   // M1: Lauf beendet -> Ordner gehört wieder root; der Runner kann ihn nicht mehr verändern (Übernahme liest als root).
+   if(!alt)await sperreArbeitsOrdner(arbeit);
    const status=String(ergebnis.status);
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if((status==='fertig'||(status==='teilweise'&&manifest.length>0))&&lebt){
@@ -328,7 +419,7 @@ export class ReverseExecutor {
     return;
    }
    if(!lebt){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
-   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?'zeitlimit':fehlercode(ergebnis.fehlercode));
+   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?'zeitlimit':fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
   }finally{
    clearInterval(timer);
    // Nur mit gültigem Abschluss aufräumen: ein Folgeversuch nutzt denselben Auftragsordner.
@@ -391,11 +482,15 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const abmelden=registriereWorkJobHooks(REVERSE_CAPABILITY,executor.hooks());
  // K5: reverse(status) liest den echten Containerzustand über die Reverse-Runtime (nach starteReversePipeline gesetzt).
  const ohneStatus=ergaenzeReverseRuntime({containerStatus:rid=>executor.containerStatus(rid)});
+ // P18-T64: Ausführer anmelden – Pipeline reiht nur noch diese Kinds ein, Diagnose/Entstörer sehen Kapazität und können neu starten.
+ const abmeldenAusfuehrer=meldeReverseAusfuehrer({kinds:konfig.kinds,parallel:konfig.parallel,
+  kapazitaet:async()=>{const lc=getToolLifecycle();if(!lc)throw Error('tool_lifecycle_aus');return lc.kapazitaet();},
+  containerNeustart:async(jobId?:string|null)=>{const lc=getToolLifecycle();if(!lc)return {neu_gestartet:false,zustand:'tool_lifecycle_aus'};return lc.neustart(REVERSE_TOOL_ID,REVERSE_PROJEKT,jobId??null);}});
  let running:Promise<ReverseDurchlauf>|null=null;
  const tick=async()=>{if(!running)running=executor.durchlauf().finally(()=>{running=null;});return running;};
  registriereWorker({name:'reverse-executor',beschreibung:'RV12 reverse-E-Aufträge im Reverse-Container ausführen',durchlauf:tick});
  const run=()=>{if(workerPausiert('reverse-executor'))return;void tick().catch(e=>console.error('[reverse-executor] Durchlauf fehlgeschlagen:',(e as Error).message));};
  const timer=setInterval(run,konfig.tickMs);timer.unref();
  console.log('[reverse-executor] aktiv: Kinds '+konfig.kinds.join(',')+', parallel '+konfig.parallel);
- return {beende:async()=>{clearInterval(timer);abmelden();ohneStatus();await executor.beende();}};
+ return {beende:async()=>{clearInterval(timer);abmelden();ohneStatus();abmeldenAusfuehrer();await executor.beende();}};
 }

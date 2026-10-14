@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -66,6 +67,14 @@ SIGNATURES = (
     (b"BZh", "bzip2"), (b"\xfd7zXZ\x00", "xz"), (b"\x60\xea", "arj"), (b"MZ", "pe"),
 )
 CUE_RE = re.compile(rb'(?im)^[ \t]*FILE[ \t]+\S.*[ \t](?:BINARY|MOTOROLA)[ \t]*\r?$')
+# P18-T64: bekannte, noch nicht unterstuetzte Medienformate klar benennen (Unterstuetzung: P18-T46/RV32, P18-T49/RV34).
+RAW_SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
+MAX_BEGLEIT = 64
+# P18-T64/M1: ein Dauer-Container fuer viele Auftraege -> je Auftrag eigenes TMPDIR, danach /tmp leer und
+# keine ueberlebenden Prozesse. Der Sweep ueber /proc und das Leeren von ganz /tmp laufen nur im Container
+# (uid 65532), nie auf einem Entwickler-Rechner.
+TMP_ROOT = Path("/tmp")
+CONTAINER_MODUS = os.getuid() == 65532
 OUTPUT_RE = re.compile(r"^/arbeit/([^/]+)/?$")
 
 
@@ -80,6 +89,130 @@ def disc_format(head: bytes) -> str:
         if ident in (b"NSR02", b"NSR03"):
             udf = True
     return "udf" if udf else "iso9660" if iso else ""
+
+
+def head_bytes(source: Path, size: int = 64) -> bytes:
+    with source.open("rb") as stream:
+        return stream.read(size)
+
+
+def unsupported_format(source: Path, begleit: list[tuple[str, Path]] | None = None) -> str:
+    """'clonecd' (Steuerdatei [CloneCD]) bzw. 'raw2352' (Raw-Sektoren ohne CUE), sonst ''."""
+    head = head_bytes(source)
+    if head[:9].lower() == b"[clonecd]":
+        return "clonecd"
+    if head[:12] == RAW_SYNC and not cue_companion(begleit):
+        return "raw2352"
+    return ""
+
+
+def cue_companion(begleit: list[tuple[str, Path]] | None) -> Path | None:
+    for name, path in begleit or []:
+        if name.lower().endswith(".cue"):
+            return path
+    return None
+
+
+def kill_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def parent_of(pid: int) -> int:
+    stat = Path(f"/proc/{pid}/stat").read_text()
+    return int(stat.rsplit(")", 1)[1].split()[1])
+
+
+def alive(pid: int) -> bool:
+    """Lebt und ist kein Zombie."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def sweep_processes() -> int:
+    """Im Container: alle Prozesse ausser dem Runner und seinen Vorfahren beenden. Rueckgabe: Restanzahl."""
+    if not CONTAINER_MODUS:
+        return 0
+    keep, pid = set(), os.getpid()
+    while pid > 0 and pid not in keep:
+        keep.add(pid)
+        try:
+            pid = parent_of(pid)
+        except (OSError, ValueError, IndexError):
+            break
+    def others() -> list[int]:
+        return [int(p.name) for p in Path("/proc").iterdir() if p.name.isdigit() and int(p.name) not in keep and alive(int(p.name))]
+    rest = others()
+    deadline = time.monotonic() + 2
+    while rest and time.monotonic() < deadline:
+        for victim in rest:
+            try:
+                os.kill(victim, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        time.sleep(0.05)
+        try:  # als PID 1 erben wir verwaiste Kinder und muessen sie einsammeln
+            while os.waitpid(-1, os.WNOHANG)[0] > 0:
+                pass
+        except ChildProcessError:
+            pass
+        rest = others()
+    return len(rest)
+
+
+def clean_tmp(job_tmp: Path) -> None:
+    shutil.rmtree(job_tmp, ignore_errors=True)
+    if CONTAINER_MODUS:
+        for entry in TMP_ROOT.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
+
+
+def run_isolated(command: list[str], timeout: int, env: dict[str, str], cwd: Path, job_tmp: Path) -> tuple[int, str]:
+    """Werkzeug in eigener Prozessgruppe; Ausgaben in Dateien (verwaiste Kinder halten keine Pipe offen)."""
+    with (job_tmp / ".stdout").open("w+b") as out_stream, (job_tmp / ".stderr").open("w+b") as err_stream:
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=out_stream, stderr=err_stream,
+                                env=env, cwd=str(cwd), start_new_session=True)
+        try:
+            code = proc.wait(timeout=timeout)
+        finally:
+            kill_group(proc.pid)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        tail = b""
+        for stream in (err_stream, out_stream):
+            stream.seek(max(0, stream.seek(0, os.SEEK_END) - 4000))
+            tail = stream.read()
+            if tail.strip():
+                break
+    return code, tail.decode("utf-8", "replace")[-4000:]
+
+
+def companions(req: dict[str, Any]) -> list[tuple[str, Path]]:
+    """Begleitdateien desselben Mediums (z. B. BIN zur CUE), nur unter /bib, nur regulaere Dateien."""
+    raw = req.get("begleitdateien") or []
+    if not isinstance(raw, list) or len(raw) > MAX_BEGLEIT:
+        raise ValueError("begleitdateien ungueltig")
+    result: list[tuple[str, Path]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("begleitdateien ungueltig")
+        path = path_under(str(item.get("pfad", "")), BIB, True)
+        if not path.is_file():
+            raise ValueError("Begleitdatei ist keine regulaere Datei")
+        result.append((str(item.get("name") or path.name), path))
+    return result
 
 
 def detect_format(source: Path) -> str:
@@ -227,7 +360,7 @@ def selected_tool(req: dict[str, Any], fmt: str = "") -> str:
     return str(req.get("werkzeug", ""))
 
 
-def cue_image(source: Path) -> Path:
+def cue_image(source: Path, begleit: list[tuple[str, Path]] | None = None) -> Path:
     cue_bytes = source.read_bytes()
     if len(cue_bytes) > 1_048_576:
         raise ValueError("CUE-Datei zu gross")
@@ -236,6 +369,11 @@ def cue_image(source: Path) -> Path:
     filenames = list(dict.fromkeys(first or second for first, second in references))
     if len(filenames) != 1:
         raise ValueError("nur CUE mit genau einem BIN/MOTOROLA-Image unterstuetzt")
+    wanted = Path(filenames[0].replace("\\", "/")).name.lower()
+    # P18-T64: im Speicher liegt jede Datei in eigenem sha-Ordner; BIN zuerst unter den Begleitdateien suchen.
+    for name, path in begleit or []:
+        if Path(name).name.lower() == wanted:
+            return path
     image = path_under(str(source.parent / filenames[0]), BIB, True)
     if not image.is_file():
         raise ValueError("CUE-Image ist keine regulaere Datei")
@@ -251,7 +389,7 @@ def command_for(tool: str, source: Path, out: Path, req: dict[str, Any], fmt: st
     if tool == "bsdtar":
         return [*TOOLS[tool], str(source), "-C", str(out), "--no-same-owner", "--no-same-permissions"]
     if tool == "bchunk":
-        return [*TOOLS[tool], "-w", str(cue_image(source)), str(source), str(out / "track")]
+        return [*TOOLS[tool], "-w", str(cue_image(source, companions(req))), str(source), str(out / "track")]
     if tool == "cabextract":
         return [*TOOLS[tool], str(out), str(source)]
     if tool in ("msiextract", "innoextract", "unar", "lhasa", "arj", "unshield"):
@@ -278,6 +416,15 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     if not source.is_file():
         raise ValueError("Eingabe ist keine regulaere Datei")
     extract = req.get("kommando") == "extrahieren"
+    if extract:
+        begleit = companions(req)
+        unsupported = unsupported_format(source, begleit)
+        cue = cue_companion(begleit)
+        if not unsupported and cue is not None and head_bytes(source, 12) == RAW_SYNC:
+            source = cue  # N3: Raw-BIN als Hauptdatei, CUE als Begleitdatei -> ueber die CUE (bchunk)
+        if unsupported:
+            return [{"status": "fehler", "fehlercode": "format_nicht_unterstuetzt", "format_detail": unsupported,
+                     "meldung": "Format " + unsupported + " wird noch nicht unterstuetzt", "manifest": []}]
     fmt = detect_format(source) if extract else ""
     tool = selected_tool(req, fmt)
     if not tool:
@@ -292,14 +439,24 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
         raise ValueError("Ausgabeordner muss leer sein")
     command = command_for(tool, source, out, req, fmt)
     started = time.monotonic()
-    env = {**os.environ, "HOME": "/tmp", "TMPDIR": "/tmp",
+    job_tmp = TMP_ROOT / job
+    shutil.rmtree(job_tmp, ignore_errors=True)
+    job_tmp.mkdir(mode=0o700, parents=True)
+    env = {**os.environ, "HOME": str(job_tmp), "TMPDIR": str(job_tmp),
            "LC_ALL": "C.UTF-8", "GHIDRA_HOME": "/opt/ghidra"}
-    proc = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, timeout=cap["zeitlimit_s"], check=False,
-                          text=True, env=env, cwd=str(out))
-    if proc.returncode:
-        return [{"status": "fehler", "fehlercode": "werkzeug_fehler",
-                 "meldung": (proc.stderr or proc.stdout)[-4000:]}]
+    try:
+        code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp)
+    finally:
+        rest = sweep_processes()
+        clean_tmp(job_tmp)
+        if rest:
+            # Isolation nicht wiederhergestellt: Auftrag scheitert, Runner beendet sich -> der Lebenszyklus
+            # erkennt den toten Container (container_crashed) und startet beim naechsten Auftrag frisch.
+            print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
+                              "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
+            raise SystemExit(3)
+    if code:
+        return [{"status": "fehler", "fehlercode": "werkzeug_fehler", "meldung": meldung}]
     files, size = output_manifest(out, cap, source.stat().st_size)
     version = tool_version(tool)
     return [

@@ -15,6 +15,8 @@ import {maskiereMitKatalog} from './masken-katalog.js';
 import {configureReverseRuntime,reverseBisSchichtGrenze,begrenzeReverseSchicht,type ReverseAnalyseAnfrage} from './reverse-tool.js';
 import {createWorkJobService,validateWorkResources,type WorkResourceNeed} from './work-jobs.js';
 import {starteApiAuftragsLoop,type ApiAuftragsLoop} from './api-auftrags-loop.js';
+import {reverseKindAusfuehrbar,reverseFehlerDeterministisch} from './reverse-ausfuehrer.js';
+import {starteReverseEntstoerer} from './reverse-entstoerer.js';
 
 type Row=Record<string,unknown>;
 interface AnalysePayload {result:Omit<AssetResult,'file_path'>;strings:string[];metadata:Row;status:string;dauer_ms:number}
@@ -42,7 +44,8 @@ export function maskiereReverseAnalyse(value:unknown):{wert:unknown;treffer:numb
  return {wert:walk(value),treffer};
 }
 interface Job extends Row {id:string;eintrag_id:string;datei_id:string|null;medium_id:string|null;schicht:string;fingerabdruck:string;lease_token:string;werkzeug:string;werkzeug_version:string;profil_version:string;projekt:string;ziel_schicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug'}
-export interface ReversePipelineOptionen {pool?:Pool;konfiguration?:AssetKonfiguration;speicher?:AssetSpeicher}
+/** ausfuehrbareKinds: nur Tests; sonst gilt die Ausführer-Registry (P18-T64). */
+export interface ReversePipelineOptionen {pool?:Pool;konfiguration?:AssetKonfiguration;speicher?:AssetSpeicher;ausfuehrbareKinds?:string[]}
 export class ReversePipelineDienst{
  private readonly pool:Pool;
  private readonly cfg:AssetKonfiguration;
@@ -53,9 +56,10 @@ export class ReversePipelineDienst{
  private readonly retry:number;
  private readonly leaseMs:number;
  private readonly stringsBytes:number;
+ private readonly kinds?:string[];
  private beendet=false;
  constructor(o:ReversePipelineOptionen={}){
-  this.pool=o.pool??getPool();this.cfg=o.konfiguration??getAssetKonfiguration();
+  this.pool=o.pool??getPool();this.cfg=o.konfiguration??getAssetKonfiguration();this.kinds=o.ausfuehrbareKinds;
   this.speicher=o.speicher??new AssetSpeicher({konfiguration:this.cfg});
   this.retry=num('SYNAPSE_REVERSE_RETRY_MAX',3);
   this.version=hash(standardRegistry.list().map(i=>[i.id,i.version]).sort());
@@ -78,6 +82,13 @@ export class ReversePipelineDienst{
   }
   return null;
  }
+ /** P18-T64: gibt es einen angemeldeten Ausführer für diesen Container-Kind? */
+ private kindOk(stage:string):boolean{return reverseKindAusfuehrbar('reverse-'+stage,this.kinds);}
+ /** Endgültiger Fehler mit echtem Code: Auftrag und aktuelle Schicht stehen danach auf 'fehler'. */
+ private async endgueltig(db:PoolClient,id:unknown,code:string):Promise<void>{
+  await db.query("UPDATE reverse_auftraege SET status='fehler',fehlercode=$2,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1",[id,code]);
+  await db.query("UPDATE reverse_schichten SET status='fehler',fehlercode=$2 WHERE auftrag_id=$1 AND aktuell AND status IN ('offen','wartet','laeuft')",[id,code]);
+ }
  private async containerAuftrag(db:PoolClient,j:Row,sha:string,stage:string):Promise<string|null>{
   const raw=process.env.SYNAPSE_REVERSE_RESOURCE_NEED,profile=process.env.SYNAPSE_REVERSE_CONTAINER_PROFIL;
   if(!raw||!profile)return null;
@@ -85,15 +96,22 @@ export class ReversePipelineDienst{
   if(resources.cpu<=0||resources.ram<=0)throw new Error('Reverse-Containerprofil benötigt CPU/RAM');
   await db.query("INSERT INTO reverse_analyse_cache(fingerabdruck,sha256,schicht,werkzeug,werkzeug_version,profil_version) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",[j.fingerabdruck,sha,stage,j.werkzeug,j.werkzeug_version,j.profil_version]);
   const cached=(await db.query('SELECT * FROM reverse_analyse_cache WHERE fingerabdruck=$1 FOR UPDATE',[j.fingerabdruck])).rows[0];
-  let workId=cached.p20_auftrag_id;
+  let workId=cached.p20_auftrag_id,letzterFehler:string|null=null;
   if(workId){
-   const work=(await db.query('SELECT state FROM work_jobs WHERE id=$1',[workId])).rows[0];
-   if(work?.state==='cancelled'||work?.state==='failed'||work?.state==='expired')workId=null;
+   const work=(await db.query('SELECT state,error_code FROM work_jobs WHERE id=$1',[workId])).rows[0];
+   if(work?.state==='cancelled'||work?.state==='failed'||work?.state==='expired'){letzterFehler=work.state==='failed'&&work.error_code?String(work.error_code):null;workId=null;}
   }
   if(!workId){
+   // P18-T64: fachliche Fehler (z. B. format_nicht_unterstuetzt) scheitern identisch erneut -> nicht still wiederholen.
+   if(letzterFehler&&reverseFehlerDeterministisch(letzterFehler)){
+    await db.query("UPDATE reverse_analyse_cache SET status='fehler',fehlercode=$2 WHERE fingerabdruck=$1",[j.fingerabdruck,letzterFehler]);
+    await this.endgueltig(db,j.id,letzterFehler);return null;
+   }
    if(Number(cached.versuche)>=this.retry){
-    await db.query("UPDATE reverse_analyse_cache SET status='fehler',fehlercode='werkzeug_fehler' WHERE fingerabdruck=$1",[j.fingerabdruck]);
-    await db.query("UPDATE reverse_auftraege SET status='fehler',fehlercode='werkzeug_fehler',versuch=$2 WHERE id=$1",[j.id,this.retry]);return null;
+    const code=letzterFehler??'werkzeug_fehler';
+    await db.query("UPDATE reverse_analyse_cache SET status='fehler',fehlercode=$2 WHERE fingerabdruck=$1",[j.fingerabdruck,code]);
+    await this.endgueltig(db,j.id,code);
+    await db.query('UPDATE reverse_auftraege SET versuch=$2 WHERE id=$1',[j.id,this.retry]);return null;
    }
    const generation=Number(cached.versuche)+1;
    const work=await createWorkJobService({pool:this.pool}).enqueue({kind:'reverse-'+stage,capability:'reverse_bibliothek',profileId:profile,
@@ -108,12 +126,14 @@ export class ReversePipelineDienst{
  }
  /** S1 inspector output remains usable while optional container enrichment waits. */
  private async s1Werkzeuge(db:PoolClient,j:Job):Promise<void>{
+  // P18-T64: ohne Ausführer für reverse-S1 keine ergänzenden Container-Aufträge (sonst ewig pending, Plätze belegt).
+  if(!this.kindOk('S1'))return;
   const d=(await db.query('SELECT sha256 FROM reverse_dateien WHERE id=$1',[j.datei_id])).rows[0];
   const version=process.env.SYNAPSE_REVERSE_WERKZEUG_VERSION??'nicht-konfiguriert';
   const fp=reverseAnalyseFingerabdruck(d.sha256,'S1','reverse-S1',version,this.profile);
   let supplementary=(await db.query("SELECT * FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2 AND schicht='S1' AND ausfuehrung='container' AND status IN ('offen','wartet','laeuft') FOR UPDATE",[j.eintrag_id,j.datei_id])).rows[0];
   if(!supplementary)supplementary=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,schicht,prioritaet,status,ausloeser,ausfuehrung,fingerabdruck,ziel_schicht,projekt,werkzeug,werkzeug_version,profil_version) VALUES($1,$2,'S1',$3,'wartet','pipeline:s1-tools','container',$4,$5,$6,'reverse-S1',$7,$8) RETURNING *",[j.eintrag_id,j.datei_id,j.prioritaet,fp,j.ziel_schicht,j.projekt,version,this.profile])).rows[0];
-  if(!await this.containerAuftrag(db,supplementary,d.sha256,'S1'))await db.query("UPDATE reverse_auftraege SET fehlercode='container_gesperrt' WHERE id=$1",[supplementary.id]);
+  if(!await this.containerAuftrag(db,supplementary,d.sha256,'S1'))await db.query("UPDATE reverse_auftraege SET fehlercode='container_gesperrt' WHERE id=$1 AND status<>'fehler'",[supplementary.id]);
  }
  private async queue(db:PoolClient,a:ReverseAnalyseAnfrage):Promise<Row>{
   const stage=await this.naechste(db,a.reverseId,a.dateiId,a.mediumId,a.bisSchicht);
@@ -131,7 +151,10 @@ export class ReversePipelineDienst{
   // Adopt RV9 waiting requests instead of creating a parallel executable job.
   let j=(await db.query("SELECT * FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND ($2::bigint IS NOT NULL OR medium_id IS NOT DISTINCT FROM $4::bigint) AND schicht=$3 AND status IN ('offen','wartet','laeuft','fehler') AND (fingerabdruck IS NULL OR ausfuehrung=$5) ORDER BY created_at LIMIT 1 FOR UPDATE",[a.reverseId,a.dateiId,stage,a.dateiId?null:a.mediumId,local?'api':'container'])).rows[0];
   if(j?.status==='laeuft'&&j.fingerabdruck!==fp)return {auftrag_id:j.id,status:'wartet',fehlercode:'schicht_nicht_fertig'};
-  if(j?.status==='fehler'&&j.fingerabdruck===fp)return {auftrag_id:j.id,status:'fehler',fehlercode:j.fehlercode};
+  const ohneAusfuehrer=!local&&!this.kindOk(stage);
+  // P18-T64: 'kein_ausfuehrer' lebt wieder auf, sobald ein Ausführer angemeldet ist; andere Fehler bleiben stehen.
+  const wiederbeleben=j?.status==='fehler'&&j.fehlercode==='kein_ausfuehrer'&&!ohneAusfuehrer;
+  if(j?.status==='fehler'&&j.fingerabdruck===fp&&!wiederbeleben)return {auftrag_id:j.id,status:'fehler',fehlercode:j.fehlercode};
   if(!j)j=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser) VALUES($1,$2,$3,$4,$5,'wartet',$6) RETURNING *",[a.reverseId,a.dateiId,a.dateiId?null:a.mediumId,stage,a.prioritaet,'agent:'+a.agentId])).rows[0];
   await db.query("UPDATE reverse_auftraege SET medium_id=CASE WHEN datei_id IS NOT NULL THEN NULL ELSE medium_id END,fingerabdruck=$2,ziel_schicht=GREATEST(ziel_schicht,$3),projekt=COALESCE(projekt,$4),ausfuehrung=$5,werkzeug=$6,werkzeug_version=$7,profil_version=$8,prioritaet=CASE WHEN prioritaet='interaktiv' OR $9='interaktiv' THEN 'interaktiv' ELSE prioritaet END,updated_at=clock_timestamp() WHERE id=$1",
    [j.id,fp,a.bisSchicht,a.project,local?'api':'container',tool,version,this.profile,a.prioritaet]);
@@ -140,15 +163,29 @@ export class ReversePipelineDienst{
   await db.query("INSERT INTO reverse_schichten(datei_id,medium_id,schicht,fingerabdruck,status,werkzeug,werkzeug_version,profil_version,auftrag_id) VALUES($1,$2,$3,$4,'wartet',$5,$6,$7,$8) ON CONFLICT DO NOTHING",
    [a.dateiId,a.dateiId?null:a.mediumId,stage,fp,tool,version,this.profile,j.id]);
   await db.query('UPDATE reverse_schichten SET aktuell=true,auftrag_id=$5 WHERE datei_id IS NOT DISTINCT FROM $1::bigint AND medium_id IS NOT DISTINCT FROM $2::bigint AND schicht=$3 AND fingerabdruck=$4',[a.dateiId,a.dateiId?null:a.mediumId,stage,fp,j.id]);
+  if(wiederbeleben){
+   await db.query("UPDATE reverse_auftraege SET status='wartet',fehlercode=NULL,updated_at=clock_timestamp() WHERE id=$1",[j.id]);
+   await db.query("UPDATE reverse_schichten SET status='wartet',fehlercode=NULL WHERE auftrag_id=$1 AND aktuell AND fehlercode='kein_ausfuehrer'",[j.id]);
+   j={...j,status:'wartet',fehlercode:null};
+  }
+  if(ohneAusfuehrer){
+   await this.endgueltig(db,j.id,'kein_ausfuehrer');
+   return {auftrag_id:j.id,status:'fehler',fehlercode:'kein_ausfuehrer',schicht_angefragt:a.bisSchicht,eta:null};
+  }
   if(!local){
    const work=await this.containerAuftrag(db,{...j,fingerabdruck:fp,werkzeug:tool,werkzeug_version:version,profil_version:this.profile,projekt:j.projekt??a.project,prioritaet:j.prioritaet==='interaktiv'?'interaktiv':a.prioritaet},sha,stage);
-   if(!work)await db.query("UPDATE reverse_auftraege SET fehlercode='container_gesperrt' WHERE id=$1",[j.id]);
+   if(!work){
+    const nach=(await db.query('SELECT status,fehlercode FROM reverse_auftraege WHERE id=$1',[j.id])).rows[0];
+    if(nach?.status==='fehler')return {auftrag_id:j.id,status:'fehler',fehlercode:nach.fehlercode,schicht_angefragt:a.bisSchicht,eta:null};
+    await db.query("UPDATE reverse_auftraege SET fehlercode='container_gesperrt' WHERE id=$1",[j.id]);
+   }
   }
   return {auftrag_id:j.id,status:j.status??'wartet',schicht_angefragt:a.bisSchicht,eta:null,...(!local?{fehlercode:'container_ruht'}:{})};
  }
  /** Caller holds the same Fachtransaction as tool audit; PG only. */
  async analysieren(a:ReverseAnalyseAnfrage,db:PoolClient):Promise<Row>{
-  await db.query("UPDATE reverse_analyse_cache SET versuche=0,status='wartet' WHERE status='fehler' AND fingerabdruck IN (SELECT fingerabdruck FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND status='fehler')",[a.reverseId,a.dateiId]);
+  // Manueller Neuversuch: auch fachlich gescheiterte Container-Aufträge bekommen einen frischen Work-Job.
+  await db.query("UPDATE reverse_analyse_cache SET versuche=0,status='wartet',p20_auftrag_id=NULL WHERE status='fehler' AND fingerabdruck IN (SELECT fingerabdruck FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND status='fehler')",[a.reverseId,a.dateiId]);
   if(!STAGES.includes(a.bisSchicht as typeof STAGES[number]))throw new Error('Ungültige Schicht');
   // A manual retry can re-open exhausted light jobs, but never running or cancelled work.
   await db.query("UPDATE reverse_auftraege SET status='wartet',versuch=0,fehlercode=NULL,lease_token=NULL,lease_bis=NULL WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND status='fehler'",[a.reverseId,a.dateiId]);
@@ -322,5 +359,7 @@ export function starteReversePipeline():ApiAuftragsLoop|null{
  const dienst=new ReversePipelineDienst({konfiguration:cfg});
  configureReverseRuntime({analysieren:(a,db)=>dienst.analysieren(a,db),abbrechen:(j,agent,db)=>dienst.abbrechen(j,agent,db),containerStatus:rid=>dienst.containerStatus(rid)});
  const loop=starteApiAuftragsLoop({intervallMs:cfg.sync.scanIntervallMs,arbeit:()=>imHintergrund(()=>dienst.durchlauf()),fehler:()=>console.error('[Reverse-Pipeline] Durchlauf fehlgeschlagen')});
- return {durchlauf:loop.durchlauf,beende:async()=>{await dienst.beende();await loop.beende();configureReverseRuntime({});}};
+ // P18-T64: automatischer Entstörer (gleiche Regeln wie reverse(entstoeren)) läuft im selben API-Prozess.
+ const entstoerer=starteReverseEntstoerer();
+ return {durchlauf:loop.durchlauf,beende:async()=>{entstoerer?.beende();await dienst.beende();await loop.beende();configureReverseRuntime({});}};
 }

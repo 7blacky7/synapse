@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
 import unittest
 from pathlib import Path
@@ -195,15 +196,17 @@ class RunnerContractTests(unittest.TestCase):
         with Sandbox() as box:
             request = {"kommando": "extrahieren", "eingabe": box.put("r1/original/disc.bin", disc_image([b"CD001", b"CD001"])),
                        "ausgabe": "/arbeit/job-env", "grenzen": {"zeitlimit_s": 5}}
-            completed = subprocess.CompletedProcess([], 0, "", "")
-            with patch.object(runner.shutil, "which", return_value="/usr/bin/7zz"), \
-                 patch.object(runner.subprocess, "run", return_value=completed) as run:
+            # P18-T64/M1: Werkzeug laeuft ueber run_isolated mit TMPDIR/HOME je Auftrag (nicht mehr gemeinsames /tmp).
+            with tempfile.TemporaryDirectory() as tmp_root, \
+                 patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+                 patch.object(runner.shutil, "which", return_value="/usr/bin/7zz"), \
+                 patch.object(runner, "run_isolated", return_value=(0, "")) as run:
                 events = runner.run_request(request)
-            command = run.call_args.args[0]
-            env = run.call_args.kwargs["env"]
-            self.assertEqual(env["TMPDIR"], "/tmp")
-            self.assertEqual(env["HOME"], "/tmp")
-            self.assertEqual(run.call_args.kwargs["timeout"], 5)
+                self.assertFalse((Path(tmp_root) / "job-env").exists(), "TMPDIR nach dem Auftrag entfernt")
+            command, timeout, env = run.call_args.args[0], run.call_args.args[1], run.call_args.args[2]
+            self.assertEqual(env["TMPDIR"], str(Path(tmp_root) / "job-env"))
+            self.assertEqual(env["HOME"], env["TMPDIR"])
+            self.assertEqual(timeout, 5)
             self.assertIn("-tiso", command)
             self.assertEqual(command[-2:], [f"-o{box.work / 'job-env'}", str(box.bib / "r1/original/disc.bin")])
             self.assertEqual(events[-1]["status"], "fertig")
@@ -276,6 +279,58 @@ class RunnerContractTests(unittest.TestCase):
                 self.assertEqual(runner.tool_version("file"), "1:5.46-5")
                 self.assertEqual(runner.tool_version("rz-bin"), "0.9.1")
                 self.assertEqual(runner.tool_version("analyzeHeadless"), "11.4.3")
+
+
+class ReverseT64Tests(unittest.TestCase):
+    """P18-T64: Begleitdateien und klare Codes fuer noch nicht unterstuetzte Formate."""
+
+    def test_clonecd_and_raw2352_are_named(self):
+        with Sandbox() as box:
+            ccd = box.put("rev/original/dateien/aa/disc.ccd", b"[CloneCD]\nVersion=3\n")
+            img = box.put("rev/original/dateien/bb/disc.img", b"\x00" + b"\xff" * 10 + b"\x00" + b"\x00" * 2340)
+            for source, detail in ((ccd, "clonecd"), (img, "raw2352")):
+                events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job1"})
+                self.assertEqual(events[-1]["fehlercode"], "format_nicht_unterstuetzt")
+                self.assertEqual(events[-1]["format_detail"], detail)
+
+    def test_cue_finds_bin_among_companions(self):
+        with Sandbox() as box:
+            cue = box.put("rev/original/dateien/aa/game.cue", b'FILE "game.bin" BINARY\n  TRACK 01 MODE1/2352\n')
+            binary = box.put("rev/original/dateien/bb/game.bin", b"\x00" * 4096)
+            req = {"begleitdateien": [{"pfad": binary, "name": "game.bin"}]}
+            self.assertEqual(runner.cue_image(Path(cue), runner.companions(req)), Path(binary))
+            with self.assertRaises(ValueError):
+                runner.companions({"begleitdateien": [{"pfad": "/etc/passwd", "name": "x"}]})
+
+    def test_raw_bin_with_cue_companion_is_not_unsupported(self):
+        with Sandbox() as box:
+            binary = box.put("rev/original/dateien/aa/game.bin", runner.RAW_SYNC + b"\x00" * 2340)
+            cue = box.put("rev/original/dateien/bb/game.cue", b'FILE "game.bin" BINARY\n')
+            begleit = runner.companions({"begleitdateien": [{"pfad": cue, "name": "game.cue"}]})
+            self.assertEqual(runner.unsupported_format(Path(binary), begleit), "")
+            self.assertEqual(runner.unsupported_format(Path(binary)), "raw2352")
+
+    def test_job_isolation_kills_orphans_and_cleans_tmp(self):
+        """M1: verwaiste Kindprozesse sterben mit dem Auftrag, TMPDIR ist je Auftrag eigen und danach weg."""
+        with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, tempfile.TemporaryDirectory() as probe:
+            source = box.put("rev/original/dateien/aa/a.zip", b"PK\x03\x04" + b"\x00" * 64)
+            pidfile, tmpfile = Path(probe) / "pid", Path(probe) / "tmp"
+            script = (f'sleep 60 & echo $! > {pidfile}; echo "$TMPDIR" > {tmpfile}; '
+                      'echo rest > "$TMPDIR/rest"; exit 0')
+            with patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+                 patch.object(runner, "command_for", return_value=["sh", "-c", script]):
+                started = time.monotonic()
+                events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-iso"})
+            self.assertLess(time.monotonic() - started, 20, "kein Warten auf das verwaiste Kind")
+            self.assertEqual(events[-1]["status"], "fertig")
+            job_tmp = tmpfile.read_text().strip()
+            self.assertEqual(job_tmp, str(Path(tmp_root) / "job-iso"), "TMPDIR je Auftrag")
+            self.assertFalse(Path(job_tmp).exists(), "TMPDIR nach dem Auftrag entfernt")
+            pid = int(pidfile.read_text())
+            deadline = time.monotonic() + 5
+            while runner.alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(runner.alive(pid), "Kindprozess ueberlebt den Auftrag nicht")
 
 if __name__ == "__main__":
     unittest.main()

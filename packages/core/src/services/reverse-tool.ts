@@ -11,10 +11,12 @@ import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { maskiereMitKatalog } from './masken-katalog.js';
 import { erfasseToolAktivitaet } from './tool-aktivitaet.js';
 import { REVERSE_CODE_ACTIONS, ReverseCodeFehler, fuehreReverseCodeAus } from './reverse-code-tool.js';
+import { zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
+import { diagnoseReverse, entstoereReverse, REVERSE_ENTSTOERBAR } from './reverse-entstoerer.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien',...REVERSE_CODE_ACTIONS] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
-export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar'] as const;
+export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
 const TEXTE: Record<ReverseFehlercode,string> = {
   nicht_gefunden:'Eintrag, Datei oder Auftrag nicht gefunden.',nicht_gebunden:'Eintrag zuerst für dieses Projekt binden.',
@@ -26,10 +28,12 @@ const TEXTE: Record<ReverseFehlercode,string> = {
   schicht_nicht_fertig:'Die angefragte Schicht ist noch nicht fertig.',ziel_belegt:'Ziel oder bestätigter Fingerabdruck bereits belegt.',
   keine_berechtigung:'Keine Berechtigung für diese Aktion oder dieses Projekt.',ansicht_nicht_darstellbar:'Für dieses Asset ist keine Ansicht verfügbar.',
   semantik_nicht_verfuegbar:'Semantische Reverse-Suche ist noch nicht verfügbar.',
+  kein_ausfuehrer:'Für diesen Auftragstyp ist kein Ausführer angemeldet; der Auftrag wird nicht abgearbeitet.',
+  format_nicht_unterstuetzt:'Dieses Medienformat wird noch nicht unterstützt (siehe fehler_detail).',
 };
 const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -40,7 +44,9 @@ export const REVERSE_DEFINITION = {
     zusammenfuehren_mit:{type:'string',description:'Unanalysierten Vorschlag in diesen Ziel-Eintrag zusammenführen'},
     aufteilen:{type:'array',items:{type:'object',properties:{titel:{type:'string'},medien:{type:'array',items:{type:'string'}}},required:['titel','medien'],additionalProperties:false},description:'Vorschlag vor der Analyse in vollständige disjunkte Mediengruppen aufteilen'},
     notiz:{type:'string'},datei:{type:'string',description:'Relativer Reverse-Dateipfad'},file_path:{type:'string',description:'Alias für datei bei status/analysieren; Code-Aktionen nutzen virtuelle Pfade <Original>@S1/strings.txt, @S2/<Funktion>.asm oder @S3/<Funktion>.c'},
-    warten_sekunden:{type:'number',minimum:0,maximum:50},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
+    warten_sekunden:{type:'number',minimum:0,maximum:50},
+    ursache:{type:'array',items:{type:'string',enum:[...REVERSE_ENTSTOERBAR]},description:'entstoeren: nur diese Ursachen (Standard alle entstörbaren)'},
+    vorschau:{type:'boolean',description:'entstoeren: Standard true = nur zeigen; false = ausführen'},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
     prioritaet:{type:'string',enum:['interaktiv','hintergrund','nachzug']},auftrag_id:{type:'string'},
     path:{type:'string'},name:{type:'string'},symbol_type:{type:'string'},file_type:{type:'string'},callee:{type:'string'},
     from_line:{type:'number'},to_line:{type:'number'},truncate_long_lines:{type:'number'},
@@ -63,6 +69,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
   status:['reverse_id','datei','file_path','warten_sekunden'],analysieren:['reverse_id','datei','file_path','bis_schicht','prioritaet'],
   abbrechen:['auftrag_id'],dateien:['reverse_id','path','limit','offset'],
+  diagnose:['reverse_id','limit'],entstoeren:['reverse_id','ursache','auftrag_id','vorschau'],
   tree:['reverse_id','file_path','path','limit','offset','depth','recursive','show_functions','show_counts','show_lines','file_type'],
   functions:['reverse_id','file_path','name','exported_only','limit','offset'],
   symbols:['reverse_id','file_path','symbol_type','name','value_contains','min_laenge','limit','offset'],
@@ -310,7 +317,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const f=path?await datei(pool,rid,path):null;
     const ls=(await pool.query(`SELECT s.* FROM reverse_schichten s LEFT JOIN reverse_dateien d ON d.id=s.datei_id LEFT JOIN reverse_medien m ON m.id=s.medium_id
       WHERE s.aktuell AND COALESCE(d.eintrag_id,m.eintrag_id)=$1 AND ($2::bigint IS NULL OR s.datei_id=$2) ORDER BY s.schicht,s.id`,[rid,f?.id??null])).rows;
-    const jobs=(await pool.query("SELECT id,schicht,status,fehlercode FROM reverse_auftraege WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) AND status IN ('offen','wartet','laeuft') ORDER BY created_at DESC,id DESC LIMIT 1",[rid,f?.id??null])).rows;
+    // P18-T64: ALLE offenen Aufträge (nicht nur den jüngsten), damit abbrechen/entstoeren jede ID kennt.
+    const jobs=(await pool.query("SELECT id,schicht,status,fehlercode,to_jsonb(r)->>'ausfuehrung' AS ausfuehrung,p20_auftrag_id FROM reverse_auftraege r WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) AND status IN ('offen','wartet','laeuft') ORDER BY created_at DESC,id DESC LIMIT $3",[rid,f?.id??null,envInt('SYNAPSE_REVERSE_STATUS_AUFTRAEGE_MAX',100)])).rows;
     const rank=(s:unknown)=>stages.indexOf(s as typeof stages[number]);
     const finished=ls.filter(l=>l.status==='fertig'||l.status==='teilweise').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0];
     const active=ls.filter(l=>l.status!=='fertig'&&l.status!=='uebersprungen').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0]??finished;
@@ -318,11 +326,15 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const features=Array.isArray(meta.merkmale)?meta.merkmale.filter(x=>typeof x==='string').map(x=>maskiereMitKatalog(x as string,'reverse').text):[];
     const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
     if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
-    const error=active?.fehlercode&&REVERSE_FEHLERCODES.includes(active.fehlercode as ReverseFehlercode)?active.fehlercode:null;
+    const zerlegt=zerlegeReverseFehlercode(active?.fehlercode);
+    const error=zerlegt.code&&REVERSE_FEHLERCODES.includes(zerlegt.code as ReverseFehlercode)?zerlegt.code:null;
     return {reverse_id:rid,datei:path,format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,schicht:finished?.schicht??null,
       schicht_angefragt:jobs[0]?.schicht??active?.schicht??null,status:jobs[0]?.status??active?.status??f?.status??'offen',fehlercode:error,
       werkzeug:active?.werkzeug??null,merkmale:features,fortschritt:{gesamt:Number(active?.funktionen_gesamt??ls.length),fertig:Number(active?.funktionen_fertig??ls.filter(l=>l.status==='fertig').length)},
-      container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s},...(jobs[0]?{auftrag_id:jobs[0].id,eta:null}:{}),schichten:ls.map(l=>({schicht:l.schicht,status:l.status,fehlercode:l.fehlercode}))};
+      container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s},...(jobs[0]?{auftrag_id:jobs[0].id,eta:null}:{}),
+      ...(error&&zerlegt.detail?{fehler_detail:zerlegt.detail}:{}),
+      auftraege:jobs.map(j=>{const z=zerlegeReverseFehlercode(j.fehlercode);return {auftrag_id:j.id,schicht:j.schicht,status:j.status,ausfuehrung:j.ausfuehrung,p20_auftrag_id:j.p20_auftrag_id??null,fehlercode:z.code,...(z.detail?{fehler_detail:z.detail}:{})};}),
+      schichten:ls.map(l=>{const z=zerlegeReverseFehlercode(l.fehlercode);return {schicht:l.schicht,status:l.status,fehlercode:z.code,...(z.detail?{fehler_detail:z.detail}:{})};})};
   }
   async function analyse(db:PoolClient,a:Row,e:Row):Promise<Row> {
     const project=await projektRecht(db,a),rid=str(e.id);
@@ -396,6 +408,23 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       await tx(db=>activity(db,a));
       const weiter=offset+items.length<total;
       return {reverse_id:rid,path:prefix,dateien:items,total,gekappt:weiter,naechster_offset:weiter?offset+items.length:null};
+    }
+    if(action==='diagnose'){
+      // P18-T64: lesend für jeden Agenten; nur Auftrags-/Containerzustände, keine Inhalte.
+      const rid=gesetzt(a.reverse_id)?id(a.reverse_id):null;if(rid)await entry(pool,rid);
+      const limit=integer(a.limit,200,1000);if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
+      return {reverse_id:rid,status:'diagnose',...await diagnoseReverse({reverseId:rid,limit,pool})};
+    }
+    if(action==='entstoeren'){
+      if(!darfKoordinatorOderUser(a.agent_id))fail('keine_berechtigung');
+      const rid=gesetzt(a.reverse_id)?id(a.reverse_id):null;if(rid)await entry(pool,rid);
+      if(a.vorschau!==undefined&&typeof a.vorschau!=='boolean')fail('werkzeug_fehler','parameter_ungueltig');
+      const ursachen=a.ursache===undefined?null:Array.isArray(a.ursache)?a.ursache:[a.ursache];
+      if(ursachen&&ursachen.some(u=>!(REVERSE_ENTSTOERBAR as readonly unknown[]).includes(u)))fail('werkzeug_fehler','parameter_ungueltig',{erlaubt:[...REVERSE_ENTSTOERBAR]});
+      const auftrag=gesetzt(a.auftrag_id)?str(a.auftrag_id):null;
+      if(auftrag&&!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(auftrag))fail('werkzeug_fehler','parameter_ungueltig');
+      const r=await entstoereReverse({reverseId:rid,ursachen:ursachen as string[]|null,auftragId:auftrag,ausfuehren:a.vorschau===false,quelle:'agent:'+str(a.agent_id),pool});
+      return {reverse_id:rid,status:r.vorschau?'vorschau':'entstoert',...r};
     }
     if(action==='status'){
       const wait=integer(a.warten_sekunden,0,50),until=Date.now()+wait*1000;

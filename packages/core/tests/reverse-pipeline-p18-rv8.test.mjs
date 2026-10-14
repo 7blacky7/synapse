@@ -79,7 +79,8 @@ try{
  const rid='rev-fixture-000001',rid2='rev-fixture-000002';
  const ids={elf:await add(rid,'hello',elf),duplicate:await add(rid2,'hello',elf),pe:await add(rid,'native.exe',pe()),dotnet:await add(rid,'managed.dll',pe(true)),
   jar:await add(rid,'hello.jar',jar()),wasm:await add(rid,'hello.wasm',Buffer.from([0,97,115,109,1,0,0,0])),unknown:await add(rid,'unknown.bin',Buffer.from('unknown\0password = "'+secret+'";'))};
- const service=new core.ReversePipelineDienst({pool,konfiguration:cfg});services.push(service);
+ // P18-T64: ohne angemeldeten Ausführer würden Container-Kinds als kein_ausfuehrer enden; RV8 prüft Dedup/Reihenfolge mit simuliertem Ausführer.
+ const service=new core.ReversePipelineDienst({pool,konfiguration:cfg,ausfuehrbareKinds:['reverse-E','reverse-S1','reverse-S2','reverse-S3']});services.push(service);
  for(let i=0;i<30;i++)await service.durchlauf();
  const rows=(await pool.query('SELECT id::int,format,arch,bits,metadaten FROM reverse_dateien ORDER BY id')).rows;
  const row=id=>rows.find(r=>r.id===id);

@@ -24,6 +24,10 @@ export { ergaenzeReverseRuntime } from './services/reverse-tool.js';
 export { uebernehmeEErgebnis, reverseEGruppe, ReverseEUebernahmeFehler } from './services/reverse-e-uebernahme.js';
 export type { ReverseEManifestEintrag, ReverseEUebernahmeOptionen } from './services/reverse-e-uebernahme.js';
 export { reverseBisSchichtGrenze, begrenzeReverseSchicht } from './services/reverse-tool.js';
+// P18-T64: Ausführer-Registry, Diagnose und Entstörer der Reverse-Aufträge.
+export { REVERSE_EXECUTOR_UNTERSTUETZT, meldeReverseAusfuehrer, reverseAusfuehrer, reverseKindAusfuehrbar, zerlegeReverseFehlercode, reverseFehlerDeterministisch } from './services/reverse-ausfuehrer.js';
+export type { ReverseAusfuehrerInfo } from './services/reverse-ausfuehrer.js';
+export { diagnoseReverse, entstoereReverse, starteReverseEntstoerer, REVERSE_URSACHEN, REVERSE_ENTSTOERBAR } from './services/reverse-entstoerer.js';
 
 // P18-T12/RV2: feste interne Bereiche für Projekt- und Reverse-Abfragen.
 export { PROJEKT_BEREICH, REVERSE_BEREICH, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './services/intel-bereich.js';

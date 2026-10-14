@@ -33,6 +33,7 @@ const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 export class ToolLifecycle {
  private readonly pool:Db;private readonly executor:ToolContainerExecutor;private readonly resources?:ToolResourceAdapter;
  private readonly maxContainers:number;private readonly starts=new Map<string,Promise<unknown>>();private unregister:()=>void;
+ private kapazitaetVollGemeldet=false;
  constructor(deps:{pool?:Db;executor:ToolContainerExecutor;resources?:ToolResourceAdapter;maxContainers?:number;registerGuards?:boolean}){
   this.pool=deps.pool??getPool();this.executor=deps.executor;this.resources=deps.resources;this.maxContainers=deps.maxContainers??4;
   if(!Number.isSafeInteger(this.maxContainers)||this.maxContainers<1)throw Error('invalid_tool_capacity');
@@ -121,7 +122,12 @@ export class ToolLifecycle {
    if(r?.state==='warm'||(r?.state==='waiting'&&r.operation_token))return null;
    if(r?.blocked_until&&+r.blocked_until>+r.now)throw Error('container_gesperrt');
    const capacity=await c.query("SELECT COUNT(*)::int AS n FROM tool_containers WHERE state IN('warm','stopping') OR (state='waiting' AND operation_token IS NOT NULL)");
-   if(Number(capacity.rows[0].n)>=this.maxContainers)return null; // Kein Pin/LRU-Überziehen.
+   if(Number(capacity.rows[0].n)>=this.maxContainers){
+    // P18-T64/C3: nicht mehr still – einmal je Zustand sichtbar im Log (reverse diagnose zeigt die Belegung).
+    if(!this.kapazitaetVollGemeldet){this.kapazitaetVollGemeldet=true;console.warn('[tool-lifecycle] Kapazität voll ('+capacity.rows[0].n+'/'+this.maxContainers+'), '+d.tool_id+' wartet auf einen Platz.');}
+    return null; // Kein Pin/LRU-Überziehen.
+   }
+   if(this.kapazitaetVollGemeldet){this.kapazitaetVollGemeldet=false;console.log('[tool-lifecycle] Kapazität wieder frei.');}
    const reusableWarmup=r?.state==='waiting'?r.warmup_job_id:null;
    const generation=reusableWarmup?r!.generation:randomUUID(),token=randomUUID();
    await c.query(`INSERT INTO tool_containers(instance_id,tool_id,project,work_job_id,generation,state,operation_token,operation_at)
@@ -199,6 +205,28 @@ export class ToolLifecycle {
    // Nur physisch beendete Runner dürfen aus unbekannt/running freigegeben werden.
    await c.query("UPDATE tool_container_runs SET state='done',updated_at=clock_timestamp() WHERE instance_id=$1 AND generation=$2",[r.instance_id,r.generation]);
   });
+ }
+ /** P18-T64: lesend – belegte Plätze über alle Tools und die Obergrenze. */
+ async kapazitaet():Promise<{belegt:number;max:number}>{
+  const r=await this.pool.query("SELECT COUNT(*)::int AS n FROM tool_containers WHERE state IN('warm','stopping') OR (state='waiting' AND operation_token IS NOT NULL)");
+  return {belegt:Number(r.rows[0].n),max:this.maxContainers};
+ }
+ /**
+  * P18-T64: festsitzende Instanz über den normalen Stop-Pfad beenden (finishStop: Container stoppen, Ressourcen freigeben,
+  * unbekannte Läufe erst nach physischem Ende abschließen). Der nächste Tick/Wake startet bei offenen Aufträgen neu.
+  */
+ async neustart(toolId:string,project:string,jobId:string|null=null):Promise<{neu_gestartet:boolean;zustand:string|null}>{
+  const d=await this.descriptor(toolId),id=this.key(d,project,d.instance_scope==='job'?jobId:null);
+  const token=randomUUID();
+  const vorher=await this.tx(async c=>{
+   const r=await this.row(c,id);if(!r||!['warm','waiting'].includes(r.state))return r?.state??null;
+   await c.query("UPDATE tool_containers SET state='stopping',operation_token=$2,operation_at=clock_timestamp(),last_error='entstoerer_neustart' WHERE instance_id=$1",[id,token]);
+   return 'gestoppt';
+  });
+  if(vorher!=='gestoppt')return {neu_gestartet:false,zustand:vorher};
+  const current=await this.row(this.pool,id);
+  if(current?.operation_token===token)await this.finishStop(current,d);
+  return {neu_gestartet:true,zustand:'stopping'};
  }
  async tick():Promise<void>{
   // Jobs/Aktivität von gebundenen aktiven Projekten liefern Instanzen, enabled allein nie.

@@ -105,7 +105,8 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   await assert.rejects(()=>stat(join(konfig.arbeitRoot,a1.job.id)),'Arbeitsordner nach Abschluss entfernt');
   const o=starts[0];
   assert.equal(o.HostConfig.NetworkMode,'none');assert.equal(o.HostConfig.ReadonlyRootfs,true);assert.ok(o.HostConfig.Tmpfs['/tmp'].startsWith('size=512m'));
-  assert.deepEqual(o.HostConfig.Binds,[reverseRoot+':/bib:ro',join(konfig.arbeitRoot,a1.job.id)+':/arbeit:rw']);
+  // P18-T64: ein globaler Container – /arbeit ist der ganze Arbeitsbereich, je Auftrag ein Unterordner.
+  assert.deepEqual(o.HostConfig.Binds,[reverseRoot+':/bib:ro',konfig.arbeitRoot+':/arbeit:rw']);
   assert.equal(o.Image,'synapse-reverse:p18-t60@sha256:'+'a'.repeat(64));
   assert.equal((await db.query('SELECT count(*)::int AS n FROM tool_activation WHERE tool_id=$1 AND project=$2 AND enabled',[ex.REVERSE_TOOL_ID,ex.REVERSE_PROJEKT])).rows[0].n,1,'E1 Aktivierung');
   console.log('PASS 1 Auftrag -> reverse_dateien');
@@ -160,7 +161,7 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   const a7=await neuerAuftrag(7),a8=await neuerAuftrag(8);
   const r5=await executor.durchlauf();
   assert.equal(r5.geweckt,1,JSON.stringify(r5));assert.equal(r5.gestartet,1);
-  assert.equal((await db.query('SELECT count(*)::int AS n FROM tool_containers WHERE work_job_id=ANY($1::uuid[])',[[a7.job.id,a8.job.id]])).rows[0].n,1,'nur ein Job-Container');
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM tool_containers WHERE tool_id=$1 AND state<>'cold'",[ex.REVERSE_TOOL_ID])).rows[0].n,1,'P18-T64: genau ein Reverse-Container');
   await executor.leerlauf();
   assert.equal((await zustand(a7.job.id)).state,'completed');assert.equal((await zustand(a8.job.id)).state,'pending');
   console.log('PASS 5 nur freie Plätze geweckt');
