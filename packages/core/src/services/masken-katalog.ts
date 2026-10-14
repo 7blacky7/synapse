@@ -65,11 +65,19 @@ export function shellWertWirktGeheim(roh:string):boolean{
   return (/\d/.test(w)&&/[A-Za-z]/.test(w))||(w.length>=20&&/[a-z]/.test(w)&&/[A-Z]/.test(w))||(w.length>=16&&/[^A-Za-z0-9_.\-\/]/.test(w));
 }
 export const URL_ZUGANGSDATEN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/@?#:\s]+:[^/@?#\s]*@/gi;
+/** P13-T33/A15: Capability-Token der öffentlichen Ansicht-Route (Pfad + Token); nie in Logs/tool_calls. */
+export const ANSICHT_LINK_TOKEN = /(\/api\/assets\/ansicht\/)[A-Za-z0-9_-]{8,}/g;
 
 export function istMcpJsonDatei(pfad: string | null | undefined): boolean {
   if (typeof pfad !== 'string' || pfad === '') return false;
   const name = pfad.replace(/\\/g, '/').split('/').pop() ?? '';
   return name === '.mcp.json' || (name.startsWith('.mcp.json.') && name !== '.mcp.json.example');
+}
+
+/** P13-T33/A15: ersetzt den Token jeder Ansicht-URL durch [WERT]; Pfadpräfix bleibt lesbar. */
+export function maskiereAnsichtLinks(text: string): string {
+  if (typeof text !== 'string' || !text.includes('/api/assets/ansicht/')) return text;
+  return ersetzeKatalogRegel(text, 'ansicht.link');
 }
 
 export function maskiereUrl(wert: string): string {
@@ -429,6 +437,8 @@ export function maskiereShellText(text: string, bekannteWerte: readonly string[]
   aus=maskiereMcpJsonFragment(aus,true);
   aus=maskiereUrl(aus);
   aus=ersetzeKatalogRegel(aus,'shell.bearer');
+  // P13-T33/A15: Ansicht-Link-Token (z. B. curl auf die Capability-URL).
+  aus=maskiereAnsichtLinks(aus);
   // P10-T42: sshpass -p <passwort> (Fund aus dem Altbestand-Test). Schon maskierte Werte bleiben, Quotes bleiben.
   aus=ersetzeKatalogRegel(aus,'shell.sshpass');
   aus=aus.split('\n').map(zeile=>{
@@ -459,6 +469,7 @@ export const MASKEN_KATALOG: readonly MaskenEintrag[] = [
   {kennung: 'erklaerung.bearer_lang', muster: /\b(Bearer\s+)[A-Za-z0-9._~+/-]{16,}=*/gi, ersatz: (_t, vor) => vor + GEHEIM, anwendungsbereich: ['erklaerung', 'reverse'], art: 'text'},
   {kennung: 'erklaerung.url_passwort', muster: /([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s@/]+@/gi, ersatz: (_t, vor) => vor + GEHEIM + '@', anwendungsbereich: ['erklaerung', 'reverse'], art: 'text'},
   {kennung: 'erklaerung.zuweisung', muster: /\b((?:api[_-]?key|secret|token|passwor[dt]|passwd|pwd|access[_-]?key)["']?\s*[:=]\s*["'])[^"'\s]{8,}/gi, ersatz: (_t, vor) => vor + GEHEIM, anwendungsbereich: ['erklaerung', 'reverse'], art: 'text'},
+  {kennung:'ansicht.link',muster:ANSICHT_LINK_TOKEN,ersatz:(_t,vor)=>vor+ENV_PLATZHALTER,anwendungsbereich:['shell','mcp-json','reverse'],art:'text'},
   {kennung:'shell.url',muster:URL_ZUGANGSDATEN,ersatz:(_t,vor)=>vor+ENV_PLATZHALTER+'@',anwendungsbereich:['shell','mcp-json','reverse'],art:'text'},
   {kennung:'shell.bearer',muster:SHELL_BEARER,ersatz:(_t,vor)=>vor+ENV_PLATZHALTER,anwendungsbereich:['shell','reverse'],art:'text'},
   {kennung:'shell.sshpass',muster:SHELL_SSHPASS,ersatz:(t,vor,wert)=>{

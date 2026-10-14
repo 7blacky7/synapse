@@ -59,7 +59,7 @@
  *  N5 Go-Zuweisung ':=' (apiKey := "x") wird wie '=' behandelt (kv-Regel), Literal unter geheimem Namen -> [WERT].
  * Nur Audit-Daten: die Antwort an den Aufrufer bleibt unveraendert.
  */
-import { maskiereUrl, URL_ZUGANGSDATEN } from './masken-katalog.js';
+import { maskiereAnsichtLinks, maskiereUrl, URL_ZUGANGSDATEN } from './masken-katalog.js';
 
 export const TOOL_LOG_PLATZHALTER = '[WERT]';
 
@@ -76,6 +76,8 @@ export const SCHWAERZ_REGELN = [
   'url', 'url_ohne_user', 'bearer', 'cli_lang', 'cli_mysql', 'sshpass',
   // Nachbesserung 2 (N3): bekannte Geheimnis-Muster im freien Text (ghp_, github_pat_, xox?-, sk-, sk_live_, AKIA …)
   'muster',
+  // P13-T33/A15: Token in Ansicht-Link-URLs (/api/assets/ansicht/<token>).
+  'ansicht_link',
 ] as const;
 export type SchwaerzRegel = (typeof SCHWAERZ_REGELN)[number];
 
@@ -512,6 +514,10 @@ export function schwaerzeToolText(text: string): string {
   if (aktiv('cli_lang')) aus = aus.replace(CLI_LANG, ersetzeWert('cli_lang'));
   if (aktiv('cli_mysql')) aus = aus.replace(CLI_MYSQL, ersetzeWert('cli_mysql'));
   if (aktiv('sshpass')) aus = aus.replace(SSHPASS, ersetzeWert('sshpass'));
+  if (aktiv('ansicht_link') && aus.includes('/api/assets/ansicht/')) {
+    const neu = maskiereAnsichtLinks(aus);
+    if (neu !== aus) { zaehle('ansicht_link'); aus = neu; }
+  }
   if (aktiv('muster')) {
     aus = aus.replace(PEM_PRIVAT, (_t, kopf: string, fuss: string) => { zaehle('muster'); return kopf + TOOL_LOG_PLATZHALTER + fuss; });
     aus = aus.replace(GEHEIM_MUSTER_FREI, () => { zaehle('muster'); return TOOL_LOG_PLATZHALTER; }); // N3

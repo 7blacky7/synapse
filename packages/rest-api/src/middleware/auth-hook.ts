@@ -23,6 +23,7 @@
 
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { validateToken } from '../services/auth.js';
+import { istOeffentlicherAnsichtPfad } from '@synapse/core';
 
 /**
  * Ermittelt die externe Basis-URL (HTTPS hinter Reverse-Proxy beachten) —
@@ -78,6 +79,12 @@ function isAllowlisted(method: string, pathname: string): boolean {
   // GPU-3 Bootstrap: Modellvertrag und offizielle Downloadlinks sind oeffentliche
   // Metadaten. Der Tray muss sie vor dem ersten lokalen GPU-/Token-Setup anzeigen.
   if (method === 'GET' && pathname === '/api/embedding-nodes/reference') return true;
+
+  // P13-T33/A15: EINZIGE Capability-Ausnahme fuer Ansicht-Links. Exakt GET
+  // /api/assets/ansicht/<43 Zeichen base64url>; der Token selbst ist die Berechtigung
+  // (PG-Digest, Timer, Widerruf). Kein HEAD, keine weiteren Segmente, alles andere
+  // unter /api/assets/* bleibt Bearer-pflichtig.
+  if (istOeffentlicherAnsichtPfad(method, pathname)) return true;
 
   // OAuth-Flow (AUTH-3) — Discovery + Authorize + Token + Dynamic Client Registration.
   if (pathname.startsWith('/.well-known/')) return true;

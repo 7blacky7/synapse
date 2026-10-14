@@ -12,6 +12,11 @@ export {AssetAnsichtDienst,projektAnsichtAdapter} from './services/asset-ansicht
 export type {AnsichtBereich,AssetAnsichtReferenz,AssetAnsichtQuelle,AssetAnsichtQuellenAdapter,AssetAnsichtLinkRueckfall,AssetAnsichtErgebnis} from './services/asset-ansicht.js';
 export {AssetAnsichtFehler,FfmpegAnsichtRenderer,kodiereAnsichtPng,pruefeAnsichtPng} from './services/asset-ansicht-renderer.js';
 export type {AssetAnsichtRenderer,AnsichtRenderGrenzen,AnsichtRaster} from './services/asset-ansicht-renderer.js';
+// P13-T33/A15: Ansicht-Links (Capability-Tokens mit Timer), Erzeugung nur nach Auth (A16).
+export {AnsichtLinkDienst,AnsichtLinkFehler,standardAnsichtLinkDienst,gemeinsamerAnsichtDienst,ladeAnsichtLinkKonfiguration,ansichtClientIp,istOeffentlicherAnsichtPfad,ANSICHT_LINK_PFAD,ANSICHT_TOKEN_MUSTER} from './services/asset-ansicht-link.js';
+export type {AnsichtLinkKonfiguration,AnsichtLinkArt,AnsichtLinkQuellenDienst,AnsichtLinkEingang,AnsichtLinkErzeugung,AnsichtAbrufMeta,AnsichtAbruf,AnsichtLinkStatus,AnsichtLinkEintrag,AnsichtLinkOptionen} from './services/asset-ansicht-link.js';
+export {ASSET_ANSICHT_LINK_SCHEMA_SQL} from './db/asset-ansicht-link-schema.js';
+export {maskiereAnsichtLinks,ANSICHT_LINK_TOKEN} from './services/masken-katalog.js';
 export {AssetKonfliktKern,holeAssetKonflikt} from './services/asset-konflikte.js';
 export {ASSET_KONFLIKT_SCHEMA_SQL} from './db/asset-konflikt-schema.js';
 export {assetKonfliktHinweisQuelle,initialisiereAssetKonfliktHinweise} from './services/asset-konflikt-hinweise.js';

@@ -171,6 +171,16 @@ export class AssetAnsichtDienst {
     }
   }
   /**
+   * P13-T33/A15: Quelle auflösen und Scope/Revision/Hash prüfen, ohne zu rendern. Liefert Retention-
+   * halter (Linkbindung) und Revisions-Bytesleser (Original-Link). Auth/Scope vorher beim Aufrufer.
+   */
+  async quelle(ref:AssetAnsichtReferenz):Promise<AssetAnsichtQuelle>{
+    if((ref.bereich==='projekt'&&!this.cfg.aktiv)||(ref.bereich==='reverse'&&!this.cfg.reverse.aktiv))throw new AssetAnsichtFehler('ansicht_deaktiviert','Ansichtsbereich ist deaktiviert.');
+    const adapter=this.adapter.get(ref.bereich);if(!adapter)throw new AssetAnsichtFehler('ansicht_nicht_darstellbar','Kein Quellenadapter für diesen Bereich.');
+    const q=await adapter.aufloesen(ref);this.validiere(ref,q);
+    return q;
+  }
+  /**
    * Retentionkoordinator hält PG-/Token-Fence bis zum Unlink. Aufruf erst nach Revisions-
    * und Tokenretention; kein automatisches Cleanup anhand Dateialter.
    */

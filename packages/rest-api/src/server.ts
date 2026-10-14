@@ -9,7 +9,8 @@ import fastifyStatic from '@fastify/static';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { getConfig, initSynapse, getPool, registerVirtualProject, setzeOnboardingRuhe } from '@synapse/core';
+import { getConfig, initSynapse, getPool, registerVirtualProject, setzeOnboardingRuhe, maskiereAnsichtLinks } from '@synapse/core';
+import { ansichtLinkRoutes } from './routes/asset-ansicht-links.js';
 import { errorHandler } from './middleware/error.js';
 import { registerAuthHook } from './middleware/auth-hook.js';
 import {
@@ -59,6 +60,16 @@ export async function createServer(): Promise<FastifyInstance> {
   const fastify = Fastify({
     logger: {
       level: 'info',
+      // P13-T33/A15: Capability-Token der oeffentlichen Ansicht-Route nie ins Request-Log.
+      serializers: {
+        req: (req: { method?: string; url?: string; hostname?: string; ip?: string; socket?: { remoteAddress?: string; remotePort?: number } }) => ({
+          method: req.method,
+          url: typeof req.url === 'string' ? maskiereAnsichtLinks(req.url) : req.url,
+          hostname: req.hostname,
+          remoteAddress: req.ip ?? req.socket?.remoteAddress,
+          remotePort: req.socket?.remotePort,
+        }),
+      },
     },
     bodyLimit: Math.round((Number.isFinite(bodyLimitMb) && bodyLimitMb > 0 ? bodyLimitMb : 64) * 1024 * 1024),
   });
@@ -89,6 +100,8 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(statusRoutes);
   await fastify.register(projectRoutes);
   await fastify.register(assetsRoutes);
+  // P13-T33/A15: Ansicht-Links (oeffentliche Capability-Route + geschuetzte Verwaltung).
+  await fastify.register(ansichtLinkRoutes);
   await fastify.register(reverseEingangRoutes);
   await fastify.register(searchRoutes);
   await fastify.register(thoughtsRoutes);
