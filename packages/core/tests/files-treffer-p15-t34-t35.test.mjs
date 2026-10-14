@@ -14,17 +14,15 @@
  *  C1 (T35) Reservierung von A (A danach still), B reserviert dieselbe Datei: die Verlaengerung von A
  *     darf nicht ueber A-letzte-Aktivitaet + Basis-TTL hinausgehen (B verlaengert A nicht).
  *
- * AUFRUF (Test-DB!): set -a; . <test-db.env>; set +a; node packages/core/tests/files-treffer-p15-t34-t35.test.mjs
+ * AUFRUF (Test-DB!): (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/files-treffer-p15-t34-t35.test.mjs
  */
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const hier = dirname(fileURLToPath(import.meta.url));
 const dist = process.env.PLAENE_TEST_DIST || join(hier, '..', 'dist');
-if (!/5433\/synapse_test/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH  nur gegen die Test-DB synapse_test (Port 5433) — DATABASE_URL zeigt woanders hin.');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('files-treffer-p15-t34-t35.test');
 const PROJECT = 'treffer-t34-test';
 const cw = await import(join(dist, 'services', 'code-write.js'));
 const batch = await import(join(dist, 'services', 'file-batch.js'));

@@ -20,7 +20,7 @@
  * ABSICHERUNG: nur Test-DB (...:5433/synapse_test, sonst Exit 2). Qdrant/Ollama 127.0.0.1:9. Jeder Jev-Aufruf ist
  * ein Fake-fetch. Tabellen mit der DDL aus dem gebauten SCHEMA_SQL. Seed-Zeilen werden am Ende wieder entfernt
  * (sonst aendern sie die Kandidaten im E1-Test).
- * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/erklaerungen-e2.test.mjs   (core vorher bauen)
+ * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/erklaerungen-e2.test.mjs   (core vorher bauen)
  * Exit 0 = alle Zusagen erfuellt, 1 = mindestens eine verletzt, 2 = falsche DB.
  */
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -29,10 +29,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DB_URL = process.env.DATABASE_URL ?? '';
-if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
-  console.error('ABBRUCH: dieser Test laeuft nur gegen die Test-DB (...:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('erklaerungen-e2.test');
 Object.assign(process.env, {
   EMBEDDING_PROVIDER: 'ollama', QDRANT_URL: 'http://127.0.0.1:9', OLLAMA_URL: 'http://127.0.0.1:9',
   JEV_SCHALTER_CACHE_MS: '0', JEV_MODUS_CACHE_S: '0', JEV_OPENROUTER_API_KEY: 'sk-or-test-GEHEIM-erklaerungen-e2-0123',

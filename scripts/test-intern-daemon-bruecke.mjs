@@ -12,7 +12,7 @@
 //   B8 (P15-T29) warteschlange_liste mit prozess daemon ueber das echte intern-bruecke.ts (Uebersicht + Liste)
 //   B9 (P15-T29) veralteter Daemon (alte Allowlist) antwortet befehl_unbekannt -> API meldet daemon_veraltet
 //      mit Klartext (Neustart), direkt, in der warteschlange_liste-Uebersicht und bei worker_status
-// Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-intern-daemon-bruecke.mjs
+// Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node scripts/test-intern-daemon-bruecke.mjs
 //   (PG nur fuer validateToken/alleSchalter; braucht gebaute dists von core, rest-api, file-watcher-daemon-ts)
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -21,10 +21,8 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH: DATABASE_URL zeigt nicht auf die Test-DB (:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-intern-daemon-bruecke');
 
 const wurzel = new URL('..', import.meta.url).pathname;
 // B5 zuerst, in einem Kindprozess OHNE SYNAPSE_INTERN_TOOL (internToolAktiv wird beim Laden festgehalten)

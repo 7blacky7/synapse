@@ -18,7 +18,7 @@
  *  W4 Sicherung laesst sich wieder einspielen: Ops aus dem thought -> planBatch + commit schreibt.
  *  W5 ueber fuehreInternAus erreichbar (Action registriert).
  *
- * AUFRUF (Test-DB!): set -a; . <test-db.env>; set +a; node packages/core/tests/file-batch-nichts-geschrieben.test.mjs
+ * AUFRUF (Test-DB!): (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/file-batch-nichts-geschrieben.test.mjs
  * Gegenprobe alter Stand: PLAENE_TEST_DIST=<altes dist> node ...
  */
 import { fileURLToPath } from 'node:url';
@@ -26,10 +26,8 @@ import { dirname, join } from 'node:path';
 
 const hier = dirname(fileURLToPath(import.meta.url));
 const dist = process.env.PLAENE_TEST_DIST || join(hier, '..', 'dist');
-if (!/5433\/synapse_test/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH  nur gegen die Test-DB synapse_test (Port 5433) — DATABASE_URL zeigt woanders hin.');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('file-batch-nichts-geschrieben.test');
 const PROJECT = 'nichts-geschrieben-test';
 const F = 'ng-fremd';
 const W = 'ng-warte';

@@ -83,6 +83,42 @@ export function kindEnv(env = process.env) {
   for (const [k, v] of Object.entries(env)) if (typeof v === 'string') kopie[k] = v;
   return kopie;
 }
+/**
+ * P9-T29: gemeinsame Schutzpruefung fuer Tests, die DATABASE_URL direkt nutzen.
+ * Im Synapse-shell-Job setzt die Job-Umgebung DATABASE_URL automatisch auf die Projekt-DB
+ * (fuer synapse: synapse_test auf Port 5433; Zugang: project(action:'projekt_db')). Keine
+ * test-db.env laden. Erlaubt ist nur Port 5433 + die erwartete DB (Standard synapse_test,
+ * per Option eine andere registrierte Projekt-DB), nie die System-DB (Port 5432 / DB synapse).
+ * Reine Funktion; gibt keine Zugangsdaten aus (nur host:port/db).
+ */
+export const TEST_DB_PORT = '5433';
+export const TEST_DB_NAME = 'synapse_test';
+
+export function bewerteTestDbUrl(roh, { datenbank = TEST_DB_NAME } = {}) {
+  const text = String(roh ?? '').trim();
+  if (!text) return { ok: false, grund: 'DATABASE_URL fehlt' };
+  let url;
+  try { url = new URL(text); } catch { return { ok: false, grund: 'DATABASE_URL ist keine gueltige URL' }; }
+  if (!/^postgres(?:ql)?:$/.test(url.protocol)) return { ok: false, grund: `Protokoll ${url.protocol} ist kein postgres` };
+  const port = url.port || '5432';
+  const db = decodeURIComponent(url.pathname.replace(/^\//, ''));
+  const ziel = `${url.hostname}:${port}/${db}`;
+  if (port === '5432' || LIVE_DB_NAMEN.has(db)) return { ok: false, grund: `DATABASE_URL zeigt auf die System-DB (${ziel})`, ziel };
+  if (port !== TEST_DB_PORT) return { ok: false, grund: `Port ${port} statt ${TEST_DB_PORT} (${ziel})`, ziel };
+  if (!datenbank || LIVE_DB_NAMEN.has(datenbank) || db !== datenbank) return { ok: false, grund: `Datenbank '${db}' statt '${datenbank}' (${ziel})`, ziel };
+  return { ok: true, url: text, ziel };
+}
+
+/** Bricht mit Exit 2 und klarer Meldung ab, wenn DATABASE_URL nicht die Test-/Projekt-DB ist. Gibt die URL zurueck. */
+export function pruefeTestDbUrl(name, { env = process.env, datenbank = TEST_DB_NAME, beende = (code) => process.exit(code) } = {}) {
+  const e = bewerteTestDbUrl(env.DATABASE_URL, { datenbank });
+  if (e.ok) return e.url;
+  console.error(`ABBRUCH ${name}: ${e.grund}. Dieser Test laeuft nur gegen die Test-DB (Port ${TEST_DB_PORT}, DB ${datenbank}). ` +
+    `Im Synapse-shell-Job kommt DATABASE_URL automatisch aus der Projekt-DB (project(action:'projekt_db')); keine test-db.env laden.`);
+  beende(2);
+  return undefined;
+}
+
 /** P10-T65: additive gemeinsame Laufzeit-API, Alt-URL-Prüfungen bleiben unverändert. */
 export async function oeffneGeschuetzteShellTestDb(url=process.env.DATABASE_URL??''){
   const guard=await import('../../packages/core/dist/services/test-db-laufzeit-schutz.js');

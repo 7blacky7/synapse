@@ -8,13 +8,11 @@
 //   K6 T25 alle Chunks von A zurueckgestellt: Claim liefert B
 //   K7 T25 Chunks von A von einer anderen Transaktion gesperrt: naechstes Projekt in derselben Runde
 //   K8 nichts claimbar: leere Antwort, keine Endlosschleife
-// Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-claims-t24-t25.mjs
+// Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node scripts/test-claims-t24-t25.mjs
 import assert from 'node:assert/strict';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH: DATABASE_URL zeigt nicht auf die Test-DB (:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-claims-t24-t25');
 const core = await import('../packages/core/dist/index.js');
 const { CLAIM_SQL, claimEmbeddingChunks } = await import('../packages/core/dist/services/embedding-claims.js');
 const pool = core.getPool();

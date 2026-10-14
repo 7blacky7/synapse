@@ -8,14 +8,12 @@
 //   L6 Fehlercodes: unbekannte Warteschlange, limit 0, prozess daemon ohne Daemon
 //   L7 Speicher-Register: eigene Warteschlange mit Filter/Rang; embedding_queue lesbar
 //   L8 Daemon-Bruecke: warteschlange_liste prozess daemon (simulierter Daemon im selben Prozess)
-// Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-warteschlangen-pg.mjs
+// Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node scripts/test-warteschlangen-pg.mjs
 // Braucht gebautes packages/core/dist.
 import assert from 'node:assert/strict';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH: DATABASE_URL zeigt nicht auf die Test-DB (:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-warteschlangen-pg');
 process.env.SYNAPSE_INTERN_TOOL = '1';
 
 const core = await import('../packages/core/dist/index.js');

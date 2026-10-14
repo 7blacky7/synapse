@@ -1,7 +1,7 @@
 /**
  * P6-T31: Reservierung ohne Plan erzeugt einen handlungsleitenden Wait.
  * Test-DB only; separates Projekt, fremde aktive Projektdateien werden nicht beruehrt.
- * Aufruf: source test-db.env && node packages/core/tests/file-batch-wait-ohne-ziel-p6-t31.test.mjs
+ * Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/file-batch-wait-ohne-ziel-p6-t31.test.mjs
  */
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';

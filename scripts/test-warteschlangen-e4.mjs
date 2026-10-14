@@ -11,13 +11,11 @@
 //   V6 einreihen eines eingebetteten Chunks -> neu einbetten (embedded_at NULL)
 //   V7 Fehlercodes (dauer_fehlt, parameter_ungueltig, nicht_verschiebbar, unbekanntes_projekt, Kappung)
 //   I1-I4 Daemon-Index (Speicher): FIFO ohne Steuerung, Projekt vorne, Projekt zurueckstellen mit Wecker, Ereignis vorne
-// Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-warteschlangen-e4.mjs   (core + daemon gebaut)
+// Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node scripts/test-warteschlangen-e4.mjs   (core + daemon gebaut)
 import assert from 'node:assert/strict';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH: DATABASE_URL zeigt nicht auf die Test-DB (:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-warteschlangen-e4');
 process.env.SYNAPSE_INTERN_TOOL = '1';
 process.env.INDEX_MAX_CONCURRENT = '1';
 

@@ -7,7 +7,7 @@
 process.env.SYNAPSE_AUTH_DISABLED = '1';
 process.env.SYNAPSE_SKIP_EMBEDDINGS = '1';
 process.env.PARSER_LOOP_DISABLED = '1';
-// Im Synapse-Projekt wird zusaetzlich die System-DB-URL injiziert; Tests nutzen ausschliesslich DATABASE_URL aus test-db.env.
+// Tests nutzen ausschliesslich DATABASE_URL (im shell-Job automatisch die Projekt-DB synapse_test); eine geerbte System-DB-URL wird verworfen.
 delete process.env.SYNAPSE_DATABASE_URL;
 
 import assert from 'node:assert/strict';

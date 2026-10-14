@@ -6,7 +6,7 @@
  * Je Konfiguration (5/50/100 KB x 1/10/50 Ops) N verschraenkte Laeufe planBatch mit Pruefung gegen
  * FEHLERPRUEFUNG_PLAN=0; Plan danach verworfen. (1) misst pruefeGespeichertenPlan (Schatten neu bauen inkl.
  * PG-Lesen + Pruefung, obere Schranke) und pruefung.dauer_ms (nur Stufe 1).
- * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/file-batch-pruefbefunde-messung.mjs [N] [ohne-ts|haupt]
+ * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/file-batch-pruefbefunde-messung.mjs [N] [ohne-ts|haupt]
  *   ohne Option = Stufe-1-Pruefer aus P16-T4 (registriereStandardSyntaxPruefer, Worker-Pool);
  *   ohne-ts = kein Syntaxpruefer, nur Signatur-Muster; haupt = Pruefer im Haupt-Thread (SYNTAX_WORKER_THREADS=0).
  */
@@ -16,7 +16,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) { console.error('ABBRUCH: nur Test-DB'); process.exit(2); }
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('file-batch-pruefbefunde-messung');
 const N = Number(process.argv[2] ?? 100);
 const PRJ = 'zz-planbefunde-messung';
 const MODELL = 'fake-pbm-embed:latest';

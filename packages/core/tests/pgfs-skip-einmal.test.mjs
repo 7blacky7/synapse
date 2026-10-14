@@ -16,7 +16,7 @@
  *   K6 Positivkontrolle Sync: eine neue PG-Zeile ohne Plattendatei wird geschrieben (Poller arbeitet).
  * POSITIVKONTROLLE: am Stand vor dem Fix zaehlt K1/K2 eine Zeile je Runde (> 1) -> FEHL.
  * ABSICHERUNG: nur Test-DB (...:5433/synapse_test, sonst Exit 2). Qdrant/Ollama hart auf 127.0.0.1:9.
- * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/pgfs-skip-einmal.test.mjs
+ * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/pgfs-skip-einmal.test.mjs
  * Braucht gebautes packages/core/dist.
  */
 import { createHash } from 'node:crypto';
@@ -26,10 +26,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DB_URL = process.env.DATABASE_URL ?? '';
-if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
-  console.error('ABBRUCH: dieser Test laeuft nur gegen die Test-DB (...:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('pgfs-skip-einmal.test');
 process.env.QDRANT_URL = 'http://127.0.0.1:9';
 process.env.OLLAMA_URL = 'http://127.0.0.1:9';
 process.env.SYNAPSE_SKIP_EMBEDDINGS = '1';

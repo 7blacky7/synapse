@@ -20,7 +20,7 @@
  *     wirklich verdraengt (Abbrueche > 0) — sonst waere gruen nur ein Zeichen fehlender Last.
  *
  * AUFRUF (NUR gegen die Test-DB, nie Produktion):
- *   set -a; . <test-db.env>; set +a; node packages/core/tests/embed-vorrang.test.mjs
+ *   (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/embed-vorrang.test.mjs
  * Exit 0 = alle Zusagen erfuellt, 1 = mindestens eine verletzt, 2 = falsche DB (Abbruch vor allem).
  * Braucht ein gebautes packages/core/dist. Schreibt nur Memories im Projekt PROJECT und raeumt sie ab.
  */
@@ -29,10 +29,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const DB_URL = process.env.DATABASE_URL ?? '';
-if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
-  console.error('ABBRUCH: dieser Test laeuft nur gegen die Test-DB (...:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('embed-vorrang.test');
 
 const PROJECT = 'embed-vorrang-test';
 const EMBED_MS = Number(process.env.FAKE_EMBED_MS ?? 100);

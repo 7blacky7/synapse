@@ -8,7 +8,7 @@ import { SynapseConfig } from './types/index.js';
 import { getAssetKonfiguration, resetAssetKonfiguration } from './config/asset-konfig.js';
 
 // .env laden (sucht im aktuellen Verzeichnis und aufwaerts)
-// Shell-Kinder laden Zugangsdaten nur ausdrücklich (z. B. test-db.env), nie implizit aus der Projekt-.env.
+// Shell-Kinder bekommen DATABASE_URL aus der Job-Umgebung (Projekt-DB, P9-T29), nie implizit aus der Projekt-.env.
 if (process.env.SYNAPSE_SHELL_JOB !== '1') dotenvConfig();
 
 /**

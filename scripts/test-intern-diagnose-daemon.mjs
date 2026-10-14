@@ -15,7 +15,7 @@
 //   G10 sync_fs_pg im Daemon pausiert (worker_pausieren ueber die Bruecke) -> Befund PAUSIERT, sync_pausen
 //   G11 parser_pool prozess daemon -> prozess daemon:<host>, ohne daemon_teil; API-Variante mit daemon_teil;
 //       daemon:<host> gezielt, unbekannter Host -> daemon_nicht_verbunden
-// Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-intern-diagnose-daemon.mjs
+// Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node scripts/test-intern-diagnose-daemon.mjs
 //   (braucht gebaute dists von core, rest-api, file-watcher-daemon-ts)
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -24,10 +24,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH: DATABASE_URL zeigt nicht auf die Test-DB (:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-intern-diagnose-daemon');
 
 process.env.SYNAPSE_INTERN_TOOL = '1';
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'p15-diag-daemon-'));

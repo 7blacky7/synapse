@@ -19,8 +19,9 @@
  *   T11 checkErrorPatterns (Fake-Ollama/Qdrant): stillgelegtes und geloeschtes Muster liefern nichts, aktives schon.
  *   T12 zweiter Lauf ist idempotent: 104 aktualisiert, 0 geloescht, Zustand gleich.
  * ABSICHERUNG: DATABASE_URL muss ...:5433/synapse_test sein; die Live-DB wird nur gelesen.
- * AUFRUF (Shell-Job im Projekt synapse, dort ist DATABASE_URL die Live-DB):
- *   L="$DATABASE_URL"; set -a; . <test-db.env>; set +a; LIVE_DATABASE_URL="$L" node scripts/test-fehlermuster-migration.mjs
+ * AUFRUF: historischer Einmaltest (P15-T17). Der Synapse-shell-Job setzt DATABASE_URL auf die Projekt-DB synapse_test
+ *   und liefert KEINE Live-URL mehr; LIVE_DATABASE_URL (nur lesend) braucht eine ausdrueckliche Freigabe des Users:
+ *   LIVE_DATABASE_URL=<freigegeben> node scripts/test-fehlermuster-migration.mjs
  */
 import http from 'node:http';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
@@ -30,10 +31,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DB_URL = process.env.DATABASE_URL ?? '';
-if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
-  console.error('ABBRUCH: dieser Test laeuft nur gegen die Test-DB (...:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-fehlermuster-migration');
 const LIVE_URL = process.env.LIVE_DATABASE_URL ?? '';
 if (!LIVE_URL || LIVE_URL === DB_URL) {
   console.error('ABBRUCH: LIVE_DATABASE_URL fehlt (Quelle der echten Muster, wird nur gelesen).');

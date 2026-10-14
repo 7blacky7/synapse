@@ -9,16 +9,14 @@
  *     embeddeOffeneEintraege kennt skill_sections (zaehleOffeneEmbeddings).
  *  S5 loescheSkill: PG leer, skill_names-Zeile weg, Qdrant-Delete per ID und per Namensfilter.
  * Fake-Ollama + Fake-Qdrant lokal; bricht ab (Exit 2), wenn DB/Qdrant/Ollama nicht die Test-Ziele sind.
- * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/skills-pg-first.test.mjs
+ * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/skills-pg-first.test.mjs
  */
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH: nur gegen die Test-DB (...:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('skills-pg-first.test');
 
 const anfragen = [];
 const embedAufrufe = [];

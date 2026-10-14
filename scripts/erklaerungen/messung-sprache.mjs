@@ -4,7 +4,7 @@
 // Kandidaten = Gold-Erklaerungen derselben Pruefer-Familie (gemischt wie E0). Tor 0,7 (JEV_ERKLAERUNG_TOR).
 //
 // AUFRUF (core gebaut, Test-DB gesetzt):
-//   set -a; . <test-db.env>; set +a
+//   DATABASE_URL = Projekt-DB synapse_test (setzt der Synapse-shell-Job automatisch, keine test-db.env)
 //   node scripts/erklaerungen/messung-sprache.mjs <situationen.json> <ausgabe-ordner> [--mock] [--sprachen en,de,mix] [--deckel 0.09] [--limit N]
 // --mock: Fake-fetch (waehlt das Gold-Kriterium, Confidence 0,9) - prueft nur den Ablauf, keine Qualitaet, kostet nichts.
 // Ohne --mock: echte Jev-Aufrufe. Key aus JEV_OPENROUTER_API_KEY oder ~/dev/JEV-Test/.env (OPENROUTER_API_KEY); nie
@@ -21,7 +21,8 @@ const flag = (n) => args.includes(n);
 const wert = (n, std) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : std; };
 const [KORPUS, AUS] = args.filter((a, i) => !a.startsWith('--') && !(i > 0 && args[i - 1].startsWith('--') && !['--mock'].includes(args[i - 1])));
 if (!KORPUS || !AUS) { console.error('Aufruf: messung-sprache.mjs <situationen.json> <ausgabe-ordner> [--mock] [--sprachen en,de,mix] [--deckel 0.09] [--limit N]'); process.exit(2); }
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) { console.error('ABBRUCH: nur gegen die Test-DB (...:5433/synapse_test).'); process.exit(2); }
+import { pruefeTestDbUrl } from '../lib/test-db-schutz.mjs';
+pruefeTestDbUrl('messung-sprache');
 const MOCK = flag('--mock');
 const SPRACHEN = wert('--sprachen', 'en,de,mix').split(',');
 const DECKEL = Number(wert('--deckel', '0.09'));

@@ -11,17 +11,15 @@
  *   ANKER: in jedem Fall kommt der Erklaerungs-Teil ueberhaupt (sonst waere "nicht enthalten" automatisch erfuellt).
  *
  * Kein PG-Zugriff (Auslieferung ist im Speicher). DB-Sperre wie bei allen Erklaerungs-Tests: nur synapse_test.
- * AUFRUF: set -a; . <test-db.env>; set +a; node packages/core/tests/erklaerung-hinweis-status.test.mjs   (core vorher bauen)
+ * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/erklaerung-hinweis-status.test.mjs   (core vorher bauen)
  * Exit 0 = alle Zusagen erfuellt, 1 = mindestens eine verletzt, 2 = falsche DB.
  */
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DB_URL = process.env.DATABASE_URL ?? '';
-if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
-  console.error('ABBRUCH: dieser Test laeuft nur gegen die Test-DB (...:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from '../../../scripts/lib/test-db-schutz.mjs';
+pruefeTestDbUrl('erklaerung-hinweis-status.test');
 Object.assign(process.env, { QDRANT_URL: 'http://127.0.0.1:9', OLLAMA_URL: 'http://127.0.0.1:9', PARSER_LOOP_DISABLED: '1', FEHLERMUSTER_WARTE_MS: '0' });
 
 const hier = dirname(fileURLToPath(import.meta.url));

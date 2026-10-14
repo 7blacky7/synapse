@@ -8,16 +8,14 @@
 //   R1 Freigabe: eigener Claim mit Token -> frei; fremder Knoten-Token -> 403; falsches Token -> nichts.
 //   K2 (P15-T11) Vorausholen: zwei Stapel der halben Kapazitaet passen nebeneinander, ein dritter
 //      bekommt nichts (claimEmbeddingChunks: capacity = maxConcurrent - aktive Claims).
-// Aufruf: set -a; . <test-db.env>; set +a; node scripts/test-embedding-nodes-stapel.mjs
+// Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node scripts/test-embedding-nodes-stapel.mjs
 // Braucht gebautes packages/core/dist und packages/rest-api/dist.
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 
-if (!/:5433\/synapse_test(\?|$)/.test(process.env.DATABASE_URL ?? '')) {
-  console.error('ABBRUCH: DATABASE_URL zeigt nicht auf die Test-DB (:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-embedding-nodes-stapel');
 
 // Fake-Qdrant: nimmt alles an und zaehlt Upserts (PUT .../points).
 const qdrantUpserts = [];

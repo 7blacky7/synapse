@@ -10,7 +10,7 @@
  *   R5 Nachlieferung: ein ausstehender Hinweis (z. B. aus MCP) kommt mit der naechsten REST-Antwort.
  * POSITIVKONTROLLE: R1 zeigt den Treffer; mit dem alten Code (errorPatterns aus result.warnings) war er immer leer.
  * ABSICHERUNG: nur Test-DB (...:5433/synapse_test); Ollama und Qdrant sind eigene Fakes.
- * AUFRUF: set -a; . <test-db.env>; set +a; node scripts/test-fehlermuster-rest.mjs  (core + rest-api vorher bauen)
+ * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node scripts/test-fehlermuster-rest.mjs  (core + rest-api vorher bauen)
  */
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -18,10 +18,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DB_URL = process.env.DATABASE_URL ?? '';
-if (!/:5433\/synapse_test(\?|$)/.test(DB_URL)) {
-  console.error('ABBRUCH: dieser Test laeuft nur gegen die Test-DB (...:5433/synapse_test).');
-  process.exit(2);
-}
+import { pruefeTestDbUrl } from './lib/test-db-schutz.mjs';
+pruefeTestDbUrl('test-fehlermuster-rest');
 
 const MODELL = 'fake-fm-embed:latest';
 const P_ID = 'f0f0f0f0-1717-4e00-8a17-0000000000e2';

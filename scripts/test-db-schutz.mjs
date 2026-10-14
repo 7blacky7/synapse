@@ -132,6 +132,69 @@ for (const datei of TESTS) {
   })
 }
 
+// ---- P9-T29: pruefeTestDbUrl (DATABASE_URL kommt automatisch aus der Projekt-DB, keine test-db.env) ----
+const { bewerteTestDbUrl, pruefeTestDbUrl } = await import('./lib/test-db-schutz.mjs')
+const TEST_OK = 'postgresql://u:p@10.0.0.5:5433/synapse_test'
+await fall('P9-T29 bewerteTestDbUrl: nur Port 5433 + synapse_test ok', () => {
+  assert.equal(bewerteTestDbUrl(TEST_OK).ok, true)
+  assert.equal(bewerteTestDbUrl(TEST_OK + '?sslmode=disable').ok, true)
+  assert.equal(bewerteTestDbUrl('postgres://u:p@10.0.0.5:5433/synapse_test').ok, true)
+  for (const [url, teil] of [
+    [undefined, 'fehlt'], ['', 'fehlt'], ['kein url', 'gueltige'],
+    ['http://u:p@10.0.0.5:5433/synapse_test', 'Protokoll'],
+    ['postgresql://u:p@192.168.50.65:5432/synapse', 'System-DB'],
+    ['postgresql://u:p@10.0.0.5/synapse_test', 'System-DB'],
+    ['postgresql://u:p@10.0.0.5:5433/synapse', 'System-DB'],
+    ['postgresql://u:p@10.0.0.5:5434/synapse_test', 'Port 5434'],
+    ['postgresql://u:p@10.0.0.5:5433/anderes_projekt', "Datenbank 'anderes_projekt'"],
+  ]) {
+    const r = bewerteTestDbUrl(url)
+    assert.equal(r.ok, false, String(url))
+    assert.ok(r.grund.includes(teil), `${url}: ${r.grund}`)
+    assert.ok(!r.grund.includes('u:p@'), 'keine Zugangsdaten in der Meldung')
+  }
+  // andere registrierte Projekt-DB nur ausdruecklich, System-Name nie
+  assert.equal(bewerteTestDbUrl('postgresql://u:p@10.0.0.5:5433/anderes_projekt', { datenbank: 'anderes_projekt' }).ok, true)
+  assert.equal(bewerteTestDbUrl('postgresql://u:p@10.0.0.5:5433/synapse', { datenbank: 'synapse' }).ok, false)
+})
+await fall('P9-T29 pruefeTestDbUrl: Exit 2 bei falscher URL, URL zurueck bei ok', () => {
+  let code
+  const alt = console.error
+  const meldungen = []
+  console.error = (m) => meldungen.push(String(m))
+  try {
+    assert.equal(pruefeTestDbUrl('t', { env: { DATABASE_URL: TEST_OK }, beende: (c) => { code = c } }), TEST_OK)
+    assert.equal(code, undefined)
+    assert.equal(pruefeTestDbUrl('t', { env: { DATABASE_URL: 'postgresql://u:geheim@192.168.50.65:5432/synapse' }, beende: (c) => { code = c } }), undefined)
+    assert.equal(code, 2)
+  } finally { console.error = alt }
+  assert.match(meldungen.join('\n'), /ABBRUCH t: DATABASE_URL zeigt auf die System-DB.*project\(action:'projekt_db'\).*keine test-db\.env/s)
+  assert.ok(!meldungen.join('\n').includes('geheim'), 'Passwort nie in der Meldung')
+})
+const UMGESTELLT = [
+  'packages/core/tests/erklaerung-hinweis-status.test.mjs', 'packages/core/tests/jev-schalter.test.mjs',
+  'scripts/test-fehlermuster-rest.mjs', 'scripts/test-intern-daemon-bruecke.mjs', 'scripts/erklaerungen/messung-sprache.mjs',
+]
+for (const datei of UMGESTELLT.slice(0, 1).concat(['scripts/test-intern-daemon-bruecke.mjs'])) {
+  for (const [fallname, url] of [['ohne DATABASE_URL', undefined], ['System-DB', 'postgresql://x:y@192.168.50.65:5432/synapse'], ['fremde DB auf 5433', 'postgresql://x:y@127.0.0.1:5433/andere']]) {
+    await fall(`P9-T29 ${datei}: ${fallname} -> Abbruch Exit 2 vor jeder Verbindung`, () => {
+      const env = { PATH: process.env.PATH ?? '' }
+      if (url) env.DATABASE_URL = url
+      const r = spawnSync('node', [pfad(datei)], { env, encoding: 'utf8', timeout: 20_000, cwd: pfad('') })
+      assert.equal(r.status, 2, `Exit ${r.status}: ${r.stderr.slice(0, 300)}`)
+      assert.match(r.stderr, /ABBRUCH .*Projekt-DB/)
+    })
+  }
+}
+for (const datei of UMGESTELLT) {
+  await fall(`P9-T29 ${datei}: nutzt pruefeTestDbUrl, laedt keine test-db.env`, async () => {
+    const text = await readFile(pfad(datei), 'utf8')
+    assert.match(text, /^import \{ pruefeTestDbUrl \} from '[./]+(?:\/[.]{2})*(?:\/scripts)?\/lib\/test-db-schutz\.mjs';$/m)
+    assert.match(text, /^pruefeTestDbUrl\('[^']+'\);$/m)
+    assert.equal(/\. <?test-db\.env|source test-db\.env/.test(text), false, 'kein Laden einer test-db.env')
+  })
+}
+
 if (fehler) {
   console.error(`\n${fehler} FEHLER, ${ok} OK`)
   process.exit(1)
