@@ -29,11 +29,14 @@ import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
 import { registriereSkillsProxy,istLoopback } from './skills-proxy.js';
+import type { ApiWeiterleitung } from './api-weiterleitung.js';
 
 const STARTED_AT = Date.now();
 
 export interface BuildApiOptions {
   manager: WatcherManager;
+  /** P9-T28: lokale API-Weiterleitung (fuer die Statusanzeige im Tray). */
+  weiterleitung?: ApiWeiterleitung | null;
 }
 
 const STALE_MS = 3 * 60_000;
@@ -119,6 +122,14 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       port: agg.port,
       synapse_api_url: agg.synapse_api_url,
     };
+  });
+
+  // P9-T28: welcher Weg (LAN/Tunnel) ist fuer die lokale API-Weiterleitung aktiv? Nur Metadaten.
+  app.get('/api-weiterleitung/status', async (req, reply) => {
+    if (!istLoopback(req.ip) || req.headers.origin !== undefined) return reply.code(403).send({ success: false, error: 'nur_lokal' });
+    const w = opts.weiterleitung;
+    if (!w) return { success: true, lauscht: false, aktiv: null, hinweis: 'Weiterleitung aus (Port 0) oder nicht gestartet.' };
+    return w.status();
   });
 
   // A8 additive metadata-only status for Tray; no credentials or binary payloads.

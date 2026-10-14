@@ -25,6 +25,7 @@ import { startEnabledSync, type EnabledSyncHandle } from './enabled-sync.js';
 import { startInternBruecke, type InternBrueckeHandle } from './intern-bruecke.js';
 import { registriereWorker, setzeDbProzess } from '@synapse/core';
 import { startLogpflege, type LogpflegeHandle } from './logpflege.js';
+import { ApiWeiterleitung, weiterleitungsPortAusConfig } from './api-weiterleitung.js';
 
 async function main(): Promise<void> {
   setzeDbProzess('daemon');
@@ -133,7 +134,21 @@ async function main(): Promise<void> {
     }
   }
 
-  const app = buildApi({ manager });
+  // P9-T28: lokale API-Weiterleitung (LAN zuerst, Tunnel als Rueckfall) fuer Claude Code/Codex/MCP.
+  // Eigener Port (Standard 7879, SYNAPSE_API_WEITERLEITUNG_PORT bzw. config api_weiterleitung_port, 0 = aus).
+  let weiterleitung: ApiWeiterleitung | null = null;
+  const weiterleitungsPort = weiterleitungsPortAusConfig();
+  if (weiterleitungsPort > 0) {
+    const w = new ApiWeiterleitung({ port: weiterleitungsPort });
+    try {
+      await w.start();
+      weiterleitung = w;
+    } catch (err) {
+      console.error('[daemon] API-Weiterleitung konnte nicht gestartet werden:', err);
+    }
+  }
+
+  const app = buildApi({ manager, weiterleitung });
 
   try {
     await app.listen({ host: '127.0.0.1', port });
@@ -223,6 +238,10 @@ async function main(): Promise<void> {
 
     if (logpflege !== null) {
       try { logpflege.stop(); } catch { /* ignore */ }
+    }
+
+    if (weiterleitung !== null) {
+      try { await weiterleitung.stop(); } catch { /* ignore */ }
     }
 
     try {
