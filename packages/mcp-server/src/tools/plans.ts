@@ -117,6 +117,8 @@ export async function addPlanTask(
 ): Promise<{
   success: boolean;
   task: ProjectTask | null;
+  aehnlich?: unknown;
+  aehnlich_hinweis?: unknown;
   message: string;
   plan_ref?: PlanRef;
   hinweis_plaene?: string;
@@ -135,6 +137,8 @@ export async function addPlanTask(
     return {
       success: true,
       task,
+      aehnlich: task.aehnlich,
+      ...(task.aehnlich_hinweis ? { aehnlich_hinweis: task.aehnlich_hinweis } : {}),
       message: `Task "${title}" hinzugefuegt${task.kurz_id ? ` (${task.kurz_id})` : ''}`,
       ...(task.plan_ref ? { plan_ref: task.plan_ref } : {}),
       ...(task.hinweis_plaene ? { hinweis_plaene: task.hinweis_plaene } : {}),
@@ -159,6 +163,7 @@ export async function addPlanTasksBatch(
   success: boolean;
   count: number;
   tasks: ProjectTask[];
+  aehnlich?: unknown;
   warning?: string;
   message: string;
   plan_ref?: PlanRef;
@@ -181,6 +186,7 @@ export async function addPlanTasksBatch(
       success: true,
       count: result.tasks.length,
       tasks: result.tasks,
+      aehnlich: result.aehnlich,
       warning: result.warning,
       message: `${result.tasks.length} Tasks hinzugefuegt`,
       ...(result.plan_ref ? { plan_ref: result.plan_ref } : {}),

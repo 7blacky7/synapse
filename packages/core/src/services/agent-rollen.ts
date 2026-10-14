@@ -279,7 +279,9 @@ export function baueOnboardingRegelwerk(
   project: string,
   rolle: AgentRolle,
 ): { rules: OnboardingRegel[]; regel_verzeichnis: RegelVerzeichnis } {
-  const katalog = eindeutigeRegeln(memories);
+  const katalog = eindeutigeRegeln(memories).map(m => m.name === 'regel-erst-suchen-dann-widersprechen' && !m.content.includes('Task-Suche')
+    ? { ...m, content: m.content + ' Vor einer neuen Task außerdem search(tasks) und search(plans) bzw. plan(search), alle:true, ohne Statusfilter verwenden; Verknüpfungen mit mit_verknuepfungen:true prüfen.' }
+    : m);
   const anzahl: RegelVerzeichnis['anzahl'] = {
     alle: 0, koordinator: 0, spezialist: 0, subagent: 0, channelverwalter: 0,
     wissen: 0, ueberholt: 0, nur_andere_rollen: 0,

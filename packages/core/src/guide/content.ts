@@ -769,12 +769,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
   },
 
   search: {
-    summary: 'Semantische Suche (Embeddings) in Code, Paths, Memories, Thoughts, Proposals, Tech-Docs und Media.',
+    summary: 'Semantische Suche (Embeddings) in Code, Paths, Memories, Thoughts, Tasks, Plänen, Proposals, Tech-Docs und Media.',
     when_to_use: [
       'Konzeptuelle/fuzzy Code-Suche (action: "code"): "wie wird Authentifizierung gehandhabt?"',
       'Datei-Pfad-Suche (action: "path") mit Glob-Pattern.',
       'Projekt-Wissen durchsuchen (action: "memory").',
-      'Gedanken/Updates suchen (action: "thoughts").',
+      'Gedanken/Updates suchen (action: "thoughts", optional task_id als UUID/Kurz-ID/Alias).',
+      'Vor neuen Tasks search(tasks) und search(plans) über alle Status mit alle:true nutzen.',
       'Framework-Doku nachschlagen (action: "tech_docs").',
       'Wenn code_intel search nicht reicht (kein semantischer Kontext).',
     ].join(' '),
@@ -788,6 +789,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Spezifisch sein: Funktionsnamen, Library-Namen, Konzepte (nicht "wie funktioniert X").',
       'limit: 5-10 setzen — Standard ist 10-50, oft zu viel.',
       'Score-Skala haengt am Embedding-Modell (Nemotron liegt deutlich tiefer als qwen): keine festen Cutoffs merken - die kalibrierten Schwellen je Zweck stehen im Modellprofil (intern modellprofil).',
+      'tasks/plans: status, plan_id (UUID/P<n>), priority; alle:true zeigt Zurückgestellte. Dünne PG-Treffer mit kurz_id, title, plan, status, vorschau, score, pins. mit_verknuepfungen:true liefert jüngste IDs; verwaiste Vektoren unter verworfen_ohne_pg gezählt.',
       'code_with_path: Kombiniert semantische Suche mit Pfad-Filter (best of both).',
       'tech_docs scope: "project" fuer projektspezifische, "global" fuer allgemeine, "all" fuer beide.',
     ].join('\\n'),
@@ -828,9 +830,19 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         example: 'search({ action: "memory", project: "synapse", query: "architecture decisions" })',
         tips: 'Fuer vollstaendige Liste: memory(action: "list") nutzen.',
       },
+      tasks: {
+        description: 'Jede Task semantisch über Titel und Beschreibung suchen. PG liefert den aktuellen Stand; Pins zählen verknüpfte Thoughts und Dateiversionen.',
+        params: 'query, project (Pflicht), limit, status, plan_id, priority low|medium|high, alle, mit_verknuepfungen',
+        example: 'search({ action: "tasks", project: "synapse", query: "Embedding Nachzug", alle: true, mit_verknuepfungen: true })',
+      },
+      plans: {
+        description: 'Pläne semantisch nach Name, Beschreibung und Zielen suchen; Pins über alle zugehörigen Tasks. Status: done wenn alle erledigt, sonst in_progress vor blocked vor todo.',
+        params: 'query, project (Pflicht), limit, status, plan_id, priority hoch|mittel|niedrig, alle, mit_verknuepfungen',
+        example: 'search({ action: "plans", project: "synapse", query: "Embedding", alle: true })',
+      },
       thoughts: {
         description: 'Gedanken/Team-Updates durchsuchen. Je Treffer vorschau (~300 Zeichen) + content_laenge statt Volltext; Volltext per thought get oder volltext:true.',
-        params: 'query (req), project (req), limit, volltext (Standard false)',
+        params: 'query (req), project (req), limit, volltext (Standard false), task_id (UUID/Kurz-ID/Alias)',
         example: 'search({ action: "thoughts", project: "synapse", query: "auto-handoff" })',
       },
       tech_docs: {
@@ -1012,6 +1024,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     when_to_use: [
       'Aktuellen Plan und Tasks anzeigen: get.',
       'Plan-Metadaten aktualisieren (Ziele, Architektur): update.',
+      'Vor add_task/add_tasks_batch zuerst search(tasks), search(plans) oder plan(search) ohne Statusfilter und mit alle:true. aehnlich ist nur ein Hinweis; fehlt die tasks-Kalibrierung, aehnlich_hinweis beachten.',
       'Neue Task zum Plan hinzufuegen: add_task.',
       'Task-Status tracken fuer langfristige Projekte.',
       'EXPERIMENTELL: Modell/Effort/Kontext je Task vorschlagen lassen: empfehlen.',
@@ -1022,6 +1035,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'Komplette Plan-Neuanlage → project(action: "init") macht das automatisch.',
     ].join(' '),
     param_tips: [
+      'search: query + art tasks|plans (Standard tasks), status, priority, plan_id, alle, mit_verknuepfungen. Ohne plan_id Suche über alle Pläne. Tasks haben eigene Vektoren, Plan-Vektoren bleiben erhalten. Bestand/Nachzug: intern(nachzug_jetzt, tabelle:plan_tasks); Schwelle vor Dublettenhinweisen je Modell mit intern(modellprofil_kalibrieren, zweck:tasks, project) pflegen; kein fixer Ersatzwert.',
       'project: Pflicht fuer alle Actions. plan(get) ist standardmaessig kompakt; compact:false oder task_id liefert Beschreibungen.',
       'add_task: title + description beide Pflicht. priority: low|medium|high (Standard: medium). git_branch ist optional: Ziel-Branch für den GIT-Commit, nicht Synapse files commit; Task erbt vom Plan. Ohne Branch gilt der aktuelle Arbeitsbranch.',
       'update: Felder die nicht gesetzt werden, bleiben unveraendert.',
@@ -1040,6 +1054,11 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       'update mit leeren goals: [] — wuerde alle Ziele loeschen.',
     ],
     actions: {
+      search: {
+        description: 'Task-/Plansuche wie search(tasks|plans), gemeinsame Core-Funktion; immer PG-Text, Score aus Qdrant, Pins und Orphan-Zähler.',
+        params: 'project, query (Pflicht), art tasks|plans, status, plan_id, priority, limit, alle, mit_verknuepfungen',
+        example: 'plan({ action: "search", project: "synapse", query: "Task-Suche", art: "tasks", alle: true })',
+      },
       get: {
         description: 'Aktuellen Projekt-Plan + Tasks abrufen.',
         params: 'project (req)',

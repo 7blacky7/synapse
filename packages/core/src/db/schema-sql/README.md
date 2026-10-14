@@ -17,6 +17,7 @@ Dieser Ordner enthält nummerierte SQL-Dateien mit der Struktur der Synapse-Date
 | [`10_projekte.sql`](10_projekte.sql) | Definiert Projekt-, Workspace- und Workspace-Rollentabellen. |
 | [`20_wissen.sql`](20_wissen.sql) | Definiert Wissensdatensätze wie Memories, Thoughts, Pläne, Vorschläge und Tech-Dokumentation. |
 | [`21_wissen_stuecke.sql`](21_wissen_stuecke.sql) | Definiert Status und Stücke für den versionierten Wissens-Stückindex. |
+| [`105_plan_tasks.sql`](105_plan_tasks.sql) | Abgeleiteter Task-Nachzugstand, Triggerpflege und idempotente Bestandsübernahme; nach den Plan-Spalten ausführen. |
 
 ### Codeindex und Agenten
 

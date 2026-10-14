@@ -148,7 +148,8 @@ export async function searchThoughts(
   query: string,
   project: string,
   limit: number = 10,
-  volltext: boolean = false
+  volltext: boolean = false,
+  taskId?: string,
 ): Promise<{
   success: boolean;
   results: Array<{
@@ -167,7 +168,7 @@ export async function searchThoughts(
   message: string;
 }> {
   try {
-    const results = await searchThoughtsCore(query, project, limit);
+    const results = await searchThoughtsCore(query, project, limit, taskId);
 
     return {
       success: true,

@@ -25,6 +25,7 @@ import { searchSkills } from './skills.js';
 import { searchCode } from './code.js';
 import { searchMemories } from './memory.js';
 import { searchThoughts } from './thoughts.js';
+import { searchTasks, searchPlans } from './plan-suche.js';
 import { globalSearch } from './global-search.js';
 import { searchTechDocs } from './tech-docs.js';
 
@@ -243,7 +244,7 @@ export interface KalibrierAuftrag {
 
 interface Treffer { name: string; score: number }
 
-const KALIBRIERBAR: ScoreZweck[] = ['hook', 'channel_skill', 'global_search', 'graph_code', 'code_semantic_fallback', 'graph_wissen', 'error_patterns', 'tech_docs_gut'];
+const KALIBRIERBAR: ScoreZweck[] = ['tasks', 'plans', 'hook', 'channel_skill', 'global_search', 'graph_code', 'code_semantic_fallback', 'graph_wissen', 'error_patterns', 'tech_docs_gut'];
 
 /** Text oder Objekt -> KalibrierAnfrage; leere Anfragen fallen weg (Connector schickt evtl. JSON-Text). */
 export function normalisiereAnfragen(roh: unknown[]): KalibrierAnfrage[] {
@@ -264,6 +265,10 @@ async function suche(zweck: ScoreZweck, query: string, project?: string, framewo
     return project;
   };
   switch (zweck) {
+    case 'tasks':
+    case 'plans':
+      return (await (zweck === 'tasks' ? searchTasks : searchPlans)(query, brauchtProjekt(), { alle: true, limit: 10 }))
+        .results.map(r => ({ name: `${r.kurz_id ?? r.id}: ${r.title}`, score: r.score }));
     case 'hook':
     case 'channel_skill':
       return (await searchSkills(query, 10)).map((h) => ({ name: h.skill_name, score: h.score }));

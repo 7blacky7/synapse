@@ -78,6 +78,9 @@ export type { ToolErgebnisHuelle, ToolErgebnisOptionen } from './services/tool-a
 export { kuerzeThoughtTreffer, thoughtVorschau, THOUGHT_VORSCHAU_ZEICHEN } from './services/thoughts.js';
 
 export { holeAgentOnboarding } from './services/agent-onboarding.js';
+export { searchTasks, searchPlans, suchePlanWissen, suchePlanTool, PLAN_SEARCH_PROPERTIES, taskIndex, taskNachzug, embeddeTaskNach, planSuchIndex, thoughtTaskFilter } from './services/plan-suche.js';
+export type { PlanSuchOptionen, PlanSuchTreffer, PlanSuchErgebnis, TaskPins } from './services/plan-suche.js';
+export { PLAN_TASK_SCHEMA_SQL } from './db/plan-task-schema.js';
 
 export { ermittleProjektAusPfad } from './services/project-registry.js';
 export {validateToolDescriptor,registerToolDescriptor,setToolActivation,toolDescriptorHash,TOOL_CONTAINER_LOCK} from './services/tool-descriptor.js';

@@ -153,6 +153,7 @@ export async function ensureProjectCollections(project: string): Promise<void> {
     COLLECTIONS.projectMemories(project),
     COLLECTIONS.projectThoughts(project),
     COLLECTIONS.projectPlans(project),
+    COLLECTIONS.projectTasks(project),
     COLLECTIONS.projectProposals(project),
     COLLECTIONS.projectDocs(project),
   ];

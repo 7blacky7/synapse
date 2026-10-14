@@ -156,6 +156,7 @@ const QUELLEN: Record<string, { tabelle: string; wo: string; projekt: boolean; i
   thoughts: { tabelle: 'thoughts', wo: 'TRUE', projekt: true, id: 'id' },
   proposals: { tabelle: 'proposals', wo: 'TRUE', projekt: true, id: 'id' },
   plans: { tabelle: 'plans', wo: 'TRUE', projekt: true, id: 'id' },
+  tasks: { tabelle: 'plan_tasks', wo: 'TRUE', projekt: true, id: 'id' },
   docs: { tabelle: 'tech_docs', wo: 'project IS NOT NULL', projekt: true, id: 'id' },
   tech_docs_cache: { tabelle: 'tech_docs', wo: 'project IS NULL', projekt: false, id: 'id' },
   error_patterns: { tabelle: 'error_patterns', wo: 'TRUE', projekt: false, id: 'id' },
@@ -170,6 +171,7 @@ function collectionFuer(art: string, project: string | null): string {
     case 'thoughts': return COLLECTIONS.projectThoughts(p);
     case 'proposals': return COLLECTIONS.projectProposals(p);
     case 'plans': return COLLECTIONS.projectPlans(p);
+    case 'tasks': return COLLECTIONS.projectTasks(p);
     case 'docs': return COLLECTIONS.projectDocs(p);
     case 'tech_docs_cache': return COLLECTIONS.techDocs;
     case 'error_patterns': return COLLECTIONS.globalErrorPatterns;

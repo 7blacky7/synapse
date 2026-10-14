@@ -326,6 +326,8 @@ export const COLLECTIONS = {
   projectThoughts: (project: string) => `project_${project}_thoughts`,
   /** Plans pro Projekt */
   projectPlans: (project: string) => `project_${project}_plans`,
+  /** Einzelne Tasks pro Projekt (P3-T15). */
+  projectTasks: (project: string) => `project_${project}_tasks`,
   /** Proposals pro Projekt */
   projectProposals: (project: string) => `project_${project}_proposals`,
   /** Docs pro Projekt */

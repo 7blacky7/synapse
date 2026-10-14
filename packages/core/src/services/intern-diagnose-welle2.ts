@@ -41,6 +41,7 @@ import { planNachzug } from './plans.js';
 import { errorPatternNachzug } from './error-patterns.js';
 import { techDocNachzug } from './tech-docs.js';
 import type { NachzugQuelle } from './embed-nachzug.js';
+import { taskNachzug } from './plan-suche.js';
 import { DiagnoseFehler, tabelleDa } from './intern-diagnose-code.js';
 
 const rund = (x: number, s = 4) => Math.round(x * 10 ** s) / 10 ** s;
@@ -61,6 +62,7 @@ const WISSEN: Record<string, { quelle: () => NachzugQuelle; projekt: boolean }> 
   thoughts: { quelle: () => thoughtNachzug, projekt: true },
   proposals: { quelle: () => proposalNachzug, projekt: true },
   plans: { quelle: () => planNachzug, projekt: true },
+  tasks: { quelle: () => taskNachzug, projekt: true },
   error_patterns: { quelle: () => errorPatternNachzug, projekt: false },
   tech_docs: { quelle: () => techDocNachzug, projekt: true },
 };
@@ -113,7 +115,7 @@ async function zieheProbenWissen(art: string, project: string | undefined, n: nu
   if (rows.length === 0) return [];
   const zeit = new Map(rows.map((r) => [r.id, r.embedded_at]));
   const punkte = await q.lese(rows.map((r) => r.id));
-  return punkte.map((p) => ({ id: p.id, collection: p.collection, text: p.text, embedded_at: zeit.get(p.id) ?? null, herkunft: null }));
+  return punkte.map((p) => ({ id: art === 'tasks' ? String(p.payload.task_id) : p.id, collection: p.collection, text: p.text, embedded_at: zeit.get(p.id) ?? null, herkunft: null }));
 }
 
 export async function vektorraumPruefen(opt: { art: string; project?: string; stichprobe: number; schwelle: number }): Promise<Record<string, unknown>> {

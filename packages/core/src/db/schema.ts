@@ -44,6 +44,7 @@ import { SERVER_EXECUTOR_SCHEMA_SQL } from './server-executor-schema.js';
 import { REVERSE_SCHEMA_SQL } from './reverse-schema.js';
 import {REVERSE_PIPELINE_SCHEMA_SQL} from './reverse-pipeline-schema.js';
 import { PROJECT_RESTORE_SCHEMA_SQL } from './project-restore-schema.js';
+import { PLAN_TASK_SCHEMA_SQL } from './plan-task-schema.js';
 import { ASSET_UPLOAD_SCHEMA_SQL } from './asset-upload-schema.js';
 import { ASSET_MANIFEST_SCHEMA_SQL } from './asset-manifest-schema.js';
 import { ASSET_INSPEKTIONS_SCHEMA_SQL } from './asset-inspektions-schema.js';
@@ -3114,6 +3115,7 @@ CREATE INDEX IF NOT EXISTS idx_free_pool_events_zeit
 CREATE INDEX IF NOT EXISTS idx_free_pool_events_ref
   ON free_pool_events(ref, at DESC) WHERE ref IS NOT NULL;
 ${PROJECT_RESTORE_SCHEMA_SQL}
+${PLAN_TASK_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

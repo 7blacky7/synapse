@@ -34,6 +34,8 @@ import {
   getPlan,
   updatePlan,
   addTask,
+  // P3-T15: gemeinsamer Task-/Plansuchvertrag
+  suchePlanTool, PLAN_SEARCH_PROPERTIES,
   // Thought
   addThought,
   getEmbeddingPendingHint,
@@ -338,8 +340,8 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['code', 'path', 'code_with_path', 'memory', 'thoughts', 'proposals', 'tech_docs', 'media'],
-          description: 'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media',
+          enum: ['code', 'path', 'code_with_path', 'memory', 'thoughts', 'proposals', 'tech_docs', 'media', 'tasks', 'plans'],
+          description: 'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media|tasks|plans',
         },
         query: { type: 'string', description: 'Suchanfrage (erforderlich fuer die meisten Actions)' },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -355,6 +357,8 @@ export const MCP_TOOLS = [
         source: { type: 'string', description: 'Source-Filter (fuer tech_docs)' },
         scope: { type: 'string', enum: ['project', 'global', 'all'], description: 'Suchbereich (project|global|all, fuer tech_docs)' },
         category: { type: 'string', description: 'Memory-Kategorie-Filter (fuer memory)' },
+        ...PLAN_SEARCH_PROPERTIES,
+        task_id: { type: 'string', description: 'Thoughts: Task-UUID, Kurz-ID oder Alias als Filter.' },
       },
       required: ['action'],
     },
@@ -481,7 +485,7 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen', 'einordnen'],
+          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen', 'einordnen'],
           description: 'Aktion: "einordnen" (plan_id = Quellplan + task_id String/Array, max 200; optional ziele, verschieben, confidence_tor) laesst Jev je Task den passenden Plan waehlen — Standard nur Vorschlag, verschieben:true verschiebt die sicheren (confidence >= Tor, anderer Plan), "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -502,6 +506,7 @@ export const MCP_TOOLS = [
         architecture: { type: 'string', description: 'Architektur-Beschreibung' },
         title: { type: 'string', description: 'Task-Titel' },
         priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'Prioritaet (Standard: medium)' },
+        ...PLAN_SEARCH_PROPERTIES,
         tasks: {
           type: 'array',
           items: {
@@ -2664,6 +2669,8 @@ async function handleToolCallKern(
             message: `${filtered.length} Ergebnisse fuer Pattern "${pathPattern}"`,
           };
         }
+        case 'tasks':
+        case 'plans': return await suchePlanTool(args, action);
         case 'memory': {
           const results = await searchMemories(
             reqStr(args, 'query'),
@@ -2682,7 +2689,8 @@ async function handleToolCallKern(
           const treffer = await searchThoughts(
             reqStr(args, 'query'),
             str(args, 'project') ?? '',
-            num(args, 'limit') ?? 10
+            num(args, 'limit') ?? 10,
+            str(args, 'task_id'),
           );
           return bool(args, 'volltext') ? treffer : kuerzeThoughtTreffer(treffer);
         }
@@ -3022,7 +3030,8 @@ async function handleToolCallKern(
           const treffer = await searchThoughts(
             reqStr(args, 'query'),
             str(args, 'project') ?? '',
-            num(args, 'limit') ?? 10
+            num(args, 'limit') ?? 10,
+            str(args, 'task_id'),
           );
           return bool(args, 'volltext') ? treffer : kuerzeThoughtTreffer(treffer);
         }
@@ -3076,6 +3085,7 @@ async function handleToolCallKern(
     case 'plan': {
       const project = reqStr(args, 'project');
       switch (action) {
+        case 'search': return await suchePlanTool(args);
         case 'get': {
           const plan = await getPlan(project, str(args, 'plan_id'));
           if (!plan) return { message: 'Kein Plan gefunden' };
@@ -3194,6 +3204,7 @@ async function handleToolCallKern(
             success: true,
             count: result.tasks.length,
             tasks: result.tasks,
+            aehnlich: result.aehnlich,
             warning: result.warning,
             message: `${result.tasks.length} Tasks hinzugefuegt`,
             ...(result.plan_ref ? { plan_ref: result.plan_ref } : {}),

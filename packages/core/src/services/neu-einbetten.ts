@@ -29,7 +29,7 @@ import { COLLECTIONS } from '../types/index.js';
 import { resetProjectEmbeddings } from './code.js';
 
 export const NEU_EINBETTEN_ARTEN = [
-  'code', 'memories', 'thoughts', 'proposals', 'plans', 'docs', 'tech_docs_cache', 'error_patterns', 'skills',
+  'code', 'memories', 'thoughts', 'proposals', 'plans', 'tasks', 'docs', 'tech_docs_cache', 'error_patterns', 'skills',
 ] as const;
 export type NeuEinbettenArt = (typeof NEU_EINBETTEN_ARTEN)[number];
 
@@ -47,7 +47,7 @@ export function ordneCollectionEin(name: string): Einordnung {
   if (name === COLLECTIONS.techDocs) return { art: 'tech_docs_cache', project: null };
   if (name === COLLECTIONS.globalErrorPatterns) return { art: 'error_patterns', project: null };
   if (name === SKILL_COLLECTION) return { art: 'skills', project: null };
-  const m = /^project_(.+)_(code|media|memories|thoughts|plans|proposals|docs)$/.exec(name);
+  const m = /^project_(.+)_(code|media|memories|thoughts|plans|tasks|proposals|docs)$/.exec(name);
   if (!m) return { art: 'unbekannt', project: null };
   return { art: m[2] as Einordnung['art'], project: m[1] };
 }
@@ -58,6 +58,7 @@ const PG_QUELLE: Record<Exclude<NeuEinbettenArt, 'code'>, { tabelle: string; wo:
   thoughts: { tabelle: 'thoughts', wo: 'project = $1', mitProjekt: true },
   proposals: { tabelle: 'proposals', wo: 'project = $1', mitProjekt: true },
   plans: { tabelle: 'plans', wo: 'project = $1', mitProjekt: true },
+  tasks: { tabelle: 'plan_tasks', wo: 'project = $1', mitProjekt: true },
   docs: { tabelle: 'tech_docs', wo: 'project = $1', mitProjekt: true },
   tech_docs_cache: { tabelle: 'tech_docs', wo: 'project IS NULL', mitProjekt: false },
   error_patterns: { tabelle: 'error_patterns', wo: 'TRUE', mitProjekt: false },
@@ -72,6 +73,7 @@ function zielCollection(art: NeuEinbettenArt, project: string | null): string {
     case 'thoughts': return COLLECTIONS.projectThoughts(p);
     case 'proposals': return COLLECTIONS.projectProposals(p);
     case 'plans': return COLLECTIONS.projectPlans(p);
+    case 'tasks': return COLLECTIONS.projectTasks(p);
     case 'docs': return COLLECTIONS.projectDocs(p);
     case 'tech_docs_cache': return COLLECTIONS.techDocs;
     case 'error_patterns': return COLLECTIONS.globalErrorPatterns;
@@ -142,7 +144,7 @@ async function fehlendeZiele(vorhanden: Set<string>, filter: Set<string> | null)
   const ergebnis: Ziel[] = [];
   const mitProjekt: Array<[NeuEinbettenArt, string]> = [
     ['code', 'code_chunks'], ['memories', 'memories'], ['thoughts', 'thoughts'],
-    ['proposals', 'proposals'], ['plans', 'plans'], ['docs', 'tech_docs'],
+    ['proposals', 'proposals'], ['plans', 'plans'], ['tasks', 'plan_tasks'], ['docs', 'tech_docs'],
   ];
   for (const [art, tabelle] of mitProjekt) {
     if (filter && !filter.has(art)) continue;

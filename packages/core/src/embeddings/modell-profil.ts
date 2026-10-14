@@ -48,6 +48,8 @@ interface Praefixe {
  * Score-Skala EINES Modells - deshalb stehen sie im Profil und nicht hier.
  */
 export const SCORE_ZWECKE = {
+  tasks: 'Dublettenhinweis vor dem Anlegen einer Task (Titel + Beschreibung)',
+  plans: 'Kalibrierung der semantischen Plansuche (Name + Beschreibung + Ziele)',
   hook: 'Skill-Vorschlaege der Claude-Code-Hooks (skill-suggest*.sh ueber skills search)',
   channel_skill: 'Serverseitige Skill-Vorschlaege aus Channel/Memory/Thought/Task-Texten (skill-hook.ts)',
   channel_skill_abstand: 'Mindestabstand Platz 1 zu Platz 2 bei channel_skill, sonst mehrdeutig (Score-Differenz)',

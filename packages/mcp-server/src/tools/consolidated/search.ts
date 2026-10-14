@@ -37,6 +37,7 @@ import {
 } from '../tech-docs.js';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
+import { suchePlanTool, PLAN_SEARCH_PROPERTIES } from '@synapse/core';
 
 type SearchAction =
   | 'code'
@@ -46,13 +47,15 @@ type SearchAction =
   | 'thoughts'
   | 'proposals'
   | 'tech_docs'
-  | 'media';
+  | 'media'
+  | 'tasks'
+  | 'plans';
 
 export const searchTool: ConsolidatedTool = {
   definition: {
     name: 'search',
     description:
-      'Konsolidierte Such-Funktion mit action-Parameter fuer Code, Paths, Memory, Thoughts, Proposals, Tech-Docs und Media',
+      'Konsolidierte Such-Funktion mit action-Parameter fuer Code, Paths, Memory, Thoughts, Tasks, Pläne, Proposals, Tech-Docs und Media',
     inputSchema: {
       type: 'object',
       properties: {
@@ -66,12 +69,14 @@ export const searchTool: ConsolidatedTool = {
             'thoughts',
             'proposals',
             'tech_docs',
-            'media',
+            'media', 'tasks', 'plans',
           ],
           description:
-            'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media',
+            'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media|tasks|plans',
         },
 
+        ...PLAN_SEARCH_PROPERTIES,
+        task_id: { type: 'string', description: 'Thoughts: Task-UUID, Kurz-ID oder Alias als Filter.' },
         // Gemeinsame Parameter
         query: {
           type: 'string',
@@ -143,6 +148,9 @@ export const searchTool: ConsolidatedTool = {
 
     try {
       switch (action) {
+        case 'tasks':
+        case 'plans':
+          return { content: [{ type: 'text', text: JSON.stringify(await suchePlanTool(args, action)) }] };
         case 'code': {
           const query = reqStr(args, 'query');
           const project = reqStr(args, 'project');
@@ -226,7 +234,7 @@ export const searchTool: ConsolidatedTool = {
           const project = reqStr(args, 'project');
           const limit = num(args, 'limit');
 
-          const result = await searchThoughts(query, project, limit, bool(args, 'volltext') ?? false);
+          const result = await searchThoughts(query, project, limit, bool(args, 'volltext') ?? false, str(args, 'task_id'));
 
           return {
             content: [

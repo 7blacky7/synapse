@@ -33,6 +33,7 @@ export async function holeAgentOnboarding(e: {
     isFirstVisit: true, message: '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:', project, rolle, rolle_quelle: quelle,
     rolle_hinweis: rollenQuelleKlartext(rolle, quelle, e.role),
     rules, regel_verzeichnis,
+    task_suche_hinweis: 'Vor dem Anlegen einer Task zuerst search(tasks), search(plans) oder plan(search, art:tasks|plans) mit alle:true ohne Statusfilter. Pins zählen Thoughts/Dateiversionen; mit_verknuepfungen:true liefert jüngste IDs. aehnlich beim Anlegen ist nur ein Hinweis.',
     ...(volltext ? { volltext_hinweis: volltext } : {}),
     ...(channels ? { channels } : {}),
     ...(jev ? { jev_hinweis: jev } : {}),

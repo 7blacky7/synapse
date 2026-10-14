@@ -136,6 +136,7 @@ const ZENTRAL: readonly Eintrag[] = Object.freeze([
   { tabelle: 'wissen_stueck_status', spalte: 'project', gruppe: 'wissen' },
   { tabelle: 'memories', spalte: 'project', gruppe: 'wissen' },
   { tabelle: 'thoughts', spalte: 'project', gruppe: 'wissen' },
+  { tabelle: 'plan_tasks', spalte: 'project', gruppe: 'wissen' },
   { tabelle: 'plans', spalte: 'project', gruppe: 'wissen' },
   { tabelle: 'proposals', spalte: 'project', gruppe: 'wissen' },
   { tabelle: 'tech_docs', spalte: 'project', gruppe: 'wissen' },
@@ -302,7 +303,7 @@ async function standardQdrant(): Promise<LoeschQdrant> {
 export function projektCollections(project: string): string[] {
   return [
     COLLECTIONS.projectCode(project), COLLECTIONS.projectMedia(project), COLLECTIONS.projectMemories(project),
-    COLLECTIONS.projectThoughts(project), COLLECTIONS.projectPlans(project), COLLECTIONS.projectProposals(project),
+    COLLECTIONS.projectThoughts(project), COLLECTIONS.projectPlans(project), COLLECTIONS.projectTasks(project), COLLECTIONS.projectProposals(project),
     COLLECTIONS.projectDocs(project),
   ];
 }

@@ -62,6 +62,7 @@ import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { updateTask } from './plans.js';
+import { thoughtTaskRefs } from './plan-suche.js';
 import { spiegeleThoughtInTopf } from './entscheidungstopf.js';
 import type { ProjectTask } from '../types/index.js';
 /**
@@ -239,7 +240,8 @@ export async function getThoughts(
 export async function searchThoughts(
   query: string,
   project: string,
-  limit: number = 10
+  limit: number = 10,
+  taskId?: string,
 ): Promise<ThoughtSearchResult[]> {
   const collectionName = COLLECTIONS.projectThoughts(project);
 
@@ -256,6 +258,14 @@ export async function searchThoughts(
     ],
   };
 
+  let resolvedTasks: string[] | undefined;
+  if (taskId) {
+    resolvedTasks = (await thoughtTaskRefs(project, taskId)).map(ref => ref.toUpperCase());
+    // PG-IDs als Vektorfilter: auch alte Payloads ohne task_id bleiben auffindbar.
+    const { rows } = await getPool().query<{ id: string }>('SELECT id FROM thoughts WHERE project=$1 AND upper(task_id)=ANY($2::text[])', [project, resolvedTasks]);
+    if (!rows.length) return [];
+    (filter.must as unknown[]).push({ has_id: rows.map(r => r.id) });
+  }
   const treffer = await searchVectors<ThoughtPayload>(
     collectionName,
     queryVector,
@@ -270,7 +280,9 @@ export async function searchThoughts(
   if (gemischt.verworfen > 0) {
     console.error(`[Synapse] searchThoughts: ${gemischt.verworfen} Qdrant-Treffer ohne PG-Zeile verworfen (Projekt "${project}")`);
   }
-  const ergebnis: ThoughtSearchResult[] = gemischt.treffer;
+  const ergebnis: ThoughtSearchResult[] = resolvedTasks
+    ? gemischt.treffer.filter(t => resolvedTasks!.includes(String((t.payload as unknown as Record<string, unknown>).task_id ?? '').toUpperCase()))
+    : gemischt.treffer;
   if (gemischt.verworfen > 0) {
     (ergebnis as ThoughtSearchResult[] & { verworfen_ohne_pg?: number }).verworfen_ohne_pg = gemischt.verworfen;
   }

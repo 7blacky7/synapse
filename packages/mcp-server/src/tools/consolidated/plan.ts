@@ -19,6 +19,7 @@ import {
 } from '../plans.js';
 import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks, filtereNachTaskIds, leseAbwesenheit, jevEntscheidetHinweis } from '@synapse/core';
 import type { ProjectTask } from '@synapse/core';
+import { suchePlanTool, PLAN_SEARCH_PROPERTIES } from '@synapse/core';
 
 export const planTool: ConsolidatedTool = {
   definition: {
@@ -29,7 +30,7 @@ export const planTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen', 'einordnen'],
+          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen', 'einordnen'],
           description:
             'Aktion: "einordnen" (plan_id = Quellplan + task_id String/Array, max 200; optional ziele, verschieben, confidence_tor) laesst Jev je Task den passenden Plan waehlen — Standard nur Vorschlag, verschieben:true verschiebt die sicheren (confidence >= Tor, anderer Plan), "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
@@ -56,6 +57,7 @@ export const planTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Nur fuer create: neuen Plan gleich aktiv schalten (Standard false; der erste Plan eines Projekts ist immer aktiv).',
         },
+        ...PLAN_SEARCH_PROPERTIES,
         // fuer "update"
         name: {
           type: 'string',
@@ -81,8 +83,8 @@ export const planTool: ConsolidatedTool = {
         },
         priority: {
           type: 'string',
-          enum: ['low', 'medium', 'high'],
-          description: 'Prioritaet (Standard: medium)',
+          enum: ['low', 'medium', 'high', 'hoch', 'mittel', 'niedrig'],
+          description: 'Task-Prioritaet low|medium|high; Plansuche hoch|mittel|niedrig.',
         },
         // fuer "update_task" / "delete_task"
         task_id: {
@@ -183,6 +185,7 @@ export const planTool: ConsolidatedTool = {
     const project = reqStr(args, 'project');
 
     switch (action) {
+      case 'search': return { ...await suchePlanTool(args) };
       case 'get': {
         const result = await getProjectPlan(project, str(args, 'plan_id'));
         if (!result) return result;

@@ -34,6 +34,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import { taskIndex, taskDublettenHinweis, geaenderteTaskIds } from './plan-suche.js';
 import {
   ProjectPlan,
   ProjectTask,
@@ -181,14 +182,19 @@ function planPunkt(plan: ProjectPlan, stand: string | null): NachzugPunkt {
   };
 }
 
-async function indexNachziehen(plan: ProjectPlan): Promise<string | undefined> {
-  try {
-    await planIndex.sync(plan);
-    return undefined;
-  } catch (error) {
-    console.error('[Synapse] Qdrant Plan-Index nicht nachgezogen (PG ist geschrieben):', error);
-    return `Qdrant-Write fehlgeschlagen: ${error}`;
+async function indexNachziehen(plan: ProjectPlan, geaendert: string[] = []): Promise<string | undefined> {
+  const warnings: string[] = [];
+  for (const [name, sync] of [
+    ['Plan', () => planIndex.sync(plan)],
+    ['Task', () => taskIndex.sync(plan, {}, geaendert)],
+  ] as const) {
+    try { await sync(); }
+    catch (error) {
+      console.error('[Synapse] Qdrant ' + name + '-Index nicht nachgezogen (PG ist geschrieben):', error);
+      warnings.push((name === 'Plan' ? 'Qdrant-Write fehlgeschlagen: ' : 'Qdrant-Task-Write fehlgeschlagen: ') + String(error));
+    }
   }
+  return warnings.length ? warnings.join('; ') : undefined;
 }
 
 /**
@@ -707,7 +713,7 @@ async function schreibePlan<R>(
     if (r.rowCount === 1) {
       const neu: PlanZeile = { ...zeile, ...stand, updated_at: jetzt, ...(prioritaet !== undefined ? { prioritaet } : {}), ...(gitBranch !== undefined ? { git_branch: gitBranch } : {}) };
       const plan = zuPlan(neu, alle.map((z) => (z.id === planId ? neu : z)));
-      const warning = await indexNachziehen(plan);
+      const warning = await indexNachziehen(plan, geaenderteTaskIds(zeile.tasks ?? [], stand.tasks));
       // Ergebnis mit den vergebenen Kurz-IDs neu aufloesen (aendern kannte sie noch nicht)
       return { plan, ergebnis: res.ergebnis, ...(warning ? { warning } : {}) };
     }
@@ -731,7 +737,12 @@ export async function aendereTasks<R>(
   });
 }
 
+function pruefeTaskPrioritaet(priority: unknown): void {
+  if (!['low', 'medium', 'high'].includes(String(priority))) throw new Error('Ungültige Task-Priorität: low | medium | high verwenden.');
+}
+
 function neueTask(title: string, description: string, priority: ProjectTask['priority'], jetzt: string): ProjectTask {
+  pruefeTaskPrioritaet(priority);
   return { id: uuidv4(), title, description, status: 'todo', priority, createdAt: jetzt, updatedAt: jetzt };
 }
 
@@ -852,12 +863,13 @@ export async function addTask(
     console.warn(`[Synapse] Kein Plan gefunden fuer Projekt: ${project}`);
     return null;
   }
+  const aehnlich = await taskDublettenHinweis(project, title, description);
   const task = { ...neueTask(title, description, priority, new Date().toISOString()), ...(gitBranch !== undefined ? { git_branch: gitBranch } : {}) };
   const r = await schreibePlan(project, ziel.id, (stand) => ({ stand: { ...stand, tasks: [...stand.tasks, task] }, ergebnis: task.id }));
   if (!r) return null;
   const gespeichert = r.plan.tasks.find((t) => t.id === task.id)!;
   console.error(`[Synapse] Task hinzugefuegt: "${title}"`);
-  return { ...gespeichert, ...planKontext(r.plan), ...(r.warning ? { warning: r.warning } : {}) };
+  return { ...gespeichert, ...aehnlich, ...planKontext(r.plan), ...(r.warning ? { warning: r.warning } : {}) };
 }
 
 /** Fuegt mehrere Tasks atomar hinzu (ein Schreibvorgang) — ohne planRef zum aktiven Plan. */
@@ -865,7 +877,7 @@ export async function addTasksBatch(
   project: string,
   tasksInput: Array<{ title: string; description: string; priority?: ProjectTask['priority'] }>,
   planRef?: string | null,
-): Promise<{ tasks: ProjectTask[]; warning?: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
+): Promise<{ tasks: ProjectTask[]; aehnlich?: Array<{ task_id: string; aehnlich: unknown; hinweis?: unknown }>; warning?: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
   if (tasksInput.length === 0) return { tasks: [] };
   const alle = await lesePlaene(project);
   const ziel = findePlan(project, alle, planRef);
@@ -877,10 +889,11 @@ export async function addTasksBatch(
   const neu = tasksInput.map((t) => neueTask(t.title, t.description, t.priority ?? 'medium', jetzt));
   const r = await schreibePlan(project, ziel.id, (stand) => ({ stand: { ...stand, tasks: [...stand.tasks, ...neu] }, ergebnis: null }));
   if (!r) return { tasks: [] };
+  const aehnlich = await Promise.all(neu.map(t => taskDublettenHinweis(project, t.title, t.description, [t.id])));
   const ids = new Set(neu.map((t) => t.id));
-  const gespeichert = r.plan.tasks.filter((t) => ids.has(t.id));
+  const gespeichert = r.plan.tasks.filter((t) => ids.has(t.id)).map(t => ({ ...t, ...aehnlich[neu.findIndex(n => n.id === t.id)] }));
   console.error(`[Synapse] ${gespeichert.length} Tasks hinzugefuegt (Batch)`);
-  return { tasks: gespeichert, ...(r.warning ? { warning: r.warning } : {}), ...planKontext(r.plan) };
+  return { tasks: gespeichert, aehnlich: gespeichert.map(t => ({ task_id: t.id, aehnlich: t.aehnlich, ...(t.aehnlich_hinweis ? { hinweis: t.aehnlich_hinweis } : {}) })), ...(r.warning ? { warning: r.warning } : {}), ...planKontext(r.plan) };
 }
 
 /**
@@ -926,6 +939,7 @@ export async function updateTask(
   updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority' | 'git_branch'>>,
   planRef?: string | null,
 ): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
+  if (updates.priority !== undefined) pruefeTaskPrioritaet(updates.priority);
   if (updates.git_branch !== undefined) pruefeGitBranch(updates.git_branch, await leseGeschuetztenHauptbranch(project));
   const alle = await lesePlaene(project);
   const fund = findeTask(project, alle, taskId, planRef);
@@ -1112,7 +1126,8 @@ export async function verschiebeTasks(
     });
     const warnungen: string[] = [];
     for (const id of ids) {
-      const w = await indexNachziehen(zuPlan(neuZeilen.find((z) => z.id === id)!, neuZeilen));
+      const w = await indexNachziehen(zuPlan(neuZeilen.find((z) => z.id === id)!, neuZeilen),
+        geaenderteTaskIds(alle.find(z => z.id === id)?.tasks ?? [], neuZeilen.find(z => z.id === id)!.tasks ?? []));
       if (w) warnungen.push(w);
     }
     console.error(`[Synapse] ${verschoben.length} Task(s) nach Plan ${ziel.kurz_id} verschoben`);
@@ -1134,6 +1149,9 @@ export async function deletePlan(project: string, planRef?: string | null): Prom
   if (!plan) return { success: false };
 
   await getPool().query('DELETE FROM plans WHERE id = $1', [plan.id]);
+  let taskWarning: string | undefined;
+  try { await taskIndex.removePlan(project, plan.id); }
+  catch (error) { taskWarning = 'Qdrant-Task-Delete fehlgeschlagen: ' + String(error); }
   let warning: string | undefined;
   try {
     await deleteVector(COLLECTIONS.projectPlans(project), plan.id);
@@ -1142,7 +1160,7 @@ export async function deletePlan(project: string, planRef?: string | null): Prom
     warning = `Qdrant-Write fehlgeschlagen: ${error}`;
   }
   console.error(`[Synapse] Plan geloescht fuer Projekt: ${project}`);
-  return { success: true, warning };
+  return { success: true, warning: warning || taskWarning ? [warning, taskWarning].filter(Boolean).join('; ') : undefined };
 }
 
 export { taskKurzId };

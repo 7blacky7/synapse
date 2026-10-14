@@ -151,7 +151,7 @@ export const INTERN_DEFINITION = {
       notiz: { type: ['string', 'null'], description: 'modellprofil_setzen: Notiz (z. B. Verweis auf den Mess-Thought)' },
       messwerte: { type: ['object', 'string'], description: 'modellprofil_setzen: Objekt, wird in die vorhandenen Messwerte gemischt (wie: messwerte_modus)' },
       messwerte_modus: { type: 'string', enum: ['tief', 'oben', 'ersetzen'], description: 'modellprofil_setzen: tief (Standard, rekursiv, null entfernt einen Schluessel) | oben (nur oberste Ebene ersetzen) | ersetzen (ganzes Objekt neu)' },
-      zweck: { type: 'string', description: 'modellprofil_kalibrieren: hook | channel_skill | global_search | graph_code | code_semantic_fallback | graph_wissen | error_patterns | tech_docs_gut' },
+      zweck: { type: 'string', description: 'modellprofil_kalibrieren: tasks | plans | hook | channel_skill | global_search | graph_code | code_semantic_fallback | graph_wissen | error_patterns | tech_docs_gut' },
       passend: { type: 'array', items: { type: ['string', 'object'] }, description: 'modellprofil_kalibrieren: Anfragen mit erwartetem Treffer - Text oder {query, erwartet, framework} (erwartet = Teil des Namens/Pfads; error_patterns: ID-Anfang oder Teil der Beschreibung; framework nur tech_docs_gut)' },
       rauschen: { type: 'array', items: { type: ['string', 'object'] }, description: 'modellprofil_kalibrieren: Anfragen, zu denen nichts passen soll - Text oder {query, framework}' },
       schreiben: { type: 'boolean', description: 'modellprofil_kalibrieren: Vorschlag ins Profil des aktiven Modells schreiben (nur bei sauberer Trennung)' },

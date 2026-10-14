@@ -166,6 +166,7 @@ export async function backupProject(project: string): Promise<{
     { name: COLLECTIONS.projectMemories(project), label: 'memories' },
     { name: COLLECTIONS.projectThoughts(project), label: 'thoughts' },
     { name: COLLECTIONS.projectPlans(project), label: 'plans' },
+    { name: COLLECTIONS.projectTasks(project), label: 'tasks' },
     { name: COLLECTIONS.projectProposals(project), label: 'proposals' },
   ];
 

@@ -26,6 +26,7 @@ import { embeddeMemoryNach, memoryNachzug } from './memory.js';
 import { embeddeThoughtNach, thoughtNachzug } from './thoughts.js';
 import { embeddeProposalNach, proposalNachzug } from './proposals.js';
 import { embeddePlanNach, planNachzug } from './plans.js';
+import { embeddeTaskNach, taskNachzug } from './plan-suche.js';
 import { embeddeErrorPatternNach, errorPatternNachzug } from './error-patterns.js';
 import { embeddeTechDocNach, techDocNachzug } from './tech-docs.js';
 import { embeddeSkillSectionNach, skillSectionNachzug } from './skills.js';
@@ -70,6 +71,7 @@ const TABELLEN = [
   { name: 'thoughts', sortSpalte: 'timestamp', idSpalte: 'id', mitProjekt: true, quelle: () => thoughtNachzug, nachtrag: embeddeThoughtNach },
   { name: 'proposals', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, quelle: () => proposalNachzug, nachtrag: embeddeProposalNach },
   { name: 'plans', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, quelle: () => planNachzug, nachtrag: embeddePlanNach },
+  { name: 'plan_tasks', sortSpalte: 'updated_at', idSpalte: 'key', mitProjekt: true, quelle: () => taskNachzug, nachtrag: embeddeTaskNach },
   { name: 'error_patterns', sortSpalte: 'created_at', idSpalte: 'id', mitProjekt: false, quelle: () => errorPatternNachzug, nachtrag: embeddeErrorPatternNach },
   { name: 'tech_docs', sortSpalte: 'indexed_at', idSpalte: 'id', mitProjekt: true, quelle: () => techDocNachzug, nachtrag: embeddeTechDocNach },
 ] as const;
