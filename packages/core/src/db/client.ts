@@ -119,7 +119,7 @@ function hauptPool(): Pool {
     const config = getConfig();
     _pool = new Pool({
       connectionString: config.database.url,
-      max: kleinerProzess() ? 3 : 20,
+      max: envGanzzahl('SYNAPSE_DB_HAUPT_MAX', kleinerProzess() ? 3 : 20),
       idleTimeoutMillis: envGanzzahl('SYNAPSE_DB_IDLE_MS', 10_000),
       connectionTimeoutMillis: kleinerProzess() ? 10_000 : 0,
       application_name: 'synapse-' + dbProzess,
