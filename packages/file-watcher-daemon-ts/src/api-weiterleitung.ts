@@ -35,6 +35,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import type { Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { loadConfig } from './config.js';
 import { istLoopback } from './skills-proxy.js';
@@ -69,6 +70,28 @@ export function weiterleitungsPortAusConfig(env: NodeJS.ProcessEnv = process.env
   return WEITERLEITUNG_STANDARD_PORT;
 }
 
+/** P9-T28/1a: nur FREIE Sockets begrenzen, niemals laufende SSE/Tool-Aufrufe.
+ * Standard 1s liegt mit Abstand unter dem ueblichen Node-Server-Keep-Alive von 5s.
+ * Bei kuerzerem Upstream-Timeout muss der Betreiber die Frist entsprechend senken.
+ */
+export function weiterleitungsIdleMsAusConfig(o: {
+  env?: NodeJS.ProcessEnv;
+  cfg?: { api_weiterleitung_idle_ms?: unknown };
+} = {}): number {
+  const gueltig = (v: unknown): number | null => {
+    if (typeof v !== 'number' && typeof v !== 'string') return null;
+    if (typeof v === 'string' && !v.trim()) return null;
+    const n = Number(v);
+    return Number.isInteger(n) && n > 0 && n <= 2_147_483_647 ? n : null;
+  };
+  const env = o.env ?? process.env;
+  const ausEnv = gueltig(env.SYNAPSE_API_WEITERLEITUNG_IDLE_MS);
+  if (ausEnv !== null) return ausEnv;
+  let cfg = o.cfg;
+  if (!cfg) { try { cfg = { api_weiterleitung_idle_ms: loadConfig().api_weiterleitung_idle_ms }; } catch { cfg = {}; } }
+  return gueltig(cfg.api_weiterleitung_idle_ms) ?? 1_000;
+}
+
 /** lokal (Loopback), lan (private Adresse, .local/.lan) oder tunnel (alles andere). */
 export function artDerAdresse(basis: string): AdressArt {
   let host: string;
@@ -101,6 +124,8 @@ export interface WeiterleitungOptionen {
   pruefIntervallMs?: number;
   verbindungsTimeoutMs?: number;
   maxBodyBytes?: number;
+  /** Freie Upstream-Sockets vor dem Server schliessen; Standard aus Env/config. */
+  idleSocketTimeoutMs?: number;
   log?: (msg: string) => void;
 }
 
@@ -129,7 +154,40 @@ export class ApiWeiterleitung {
   private readonly httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64 });
   private readonly httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
 
-  constructor(private readonly o: WeiterleitungOptionen = {}) {}
+  private readonly idleObserved = new WeakSet<Socket>();
+  private readonly idleTimers = new Map<Socket, NodeJS.Timeout>();
+  private readonly idleSocketTimeoutMs: number;
+
+  constructor(private readonly o: WeiterleitungOptionen = {}) {
+    this.idleSocketTimeoutMs = o.idleSocketTimeoutMs ?? weiterleitungsIdleMsAusConfig();
+    if (!Number.isInteger(this.idleSocketTimeoutMs) || this.idleSocketTimeoutMs <= 0 || this.idleSocketTimeoutMs > 2_147_483_647) {
+      throw new TypeError('Idle-Frist muss eine positive Millisekunden-Zahl sein.');
+    }
+    for (const agent of [this.httpAgent, this.httpsAgent]) {
+      agent.on('free', (socket: Socket) => {
+        this.beendeIdleTimer(socket);
+        // Der interne Agent-Listener kann einen wartenden Request sofort bedienen.
+        // Dann ist der Socket bereits aktiv und darf keine Idle-Frist erhalten.
+        if (!Object.values(agent.freeSockets).some((sockets) => sockets?.includes(socket))) return;
+        const timer = setTimeout(() => {
+          this.idleTimers.delete(socket);
+          socket.destroy();
+        }, this.idleSocketTimeoutMs);
+        timer.unref();
+        this.idleTimers.set(socket, timer);
+        if (!this.idleObserved.has(socket)) {
+          this.idleObserved.add(socket);
+          socket.once('close', () => this.beendeIdleTimer(socket));
+        }
+      });
+    }
+  }
+
+  private beendeIdleTimer(socket: Socket): void {
+    const timer = this.idleTimers.get(socket);
+    if (timer) clearTimeout(timer);
+    this.idleTimers.delete(socket);
+  }
 
   private log(msg: string): void {
     (this.o.log ?? ((m: string) => console.error(m)))(`[api-weiterleitung] ${msg}`);
@@ -212,6 +270,8 @@ export class ApiWeiterleitung {
     this.timer = null;
     const s = this.server;
     this.server = null;
+    for (const timer of this.idleTimers.values()) clearTimeout(timer);
+    this.idleTimers.clear();
     this.httpAgent.destroy();
     this.httpsAgent.destroy();
     if (!s) return;
@@ -373,6 +433,7 @@ export class ApiWeiterleitung {
         servername: istHttps ? ziel.hostname : undefined,
       });
       upReq.on('socket', (sock) => {
+        this.beendeIdleTimer(sock);
         if (upReq.reusedSocket || !(sock as unknown as { connecting?: boolean }).connecting) { verbunden = true; return; }
         const t = setTimeout(() => upReq.destroy(Object.assign(new Error('Verbindungs-Timeout'), { code: 'VERBINDUNG_TIMEOUT' })), timeoutMs);
         sock.once(istHttps ? 'secureConnect' : 'connect', () => { verbunden = true; clearTimeout(t); });
@@ -383,7 +444,13 @@ export class ApiWeiterleitung {
         if (fertig) return;
         fertig = true;
         const code = err.code ?? 'FEHLER';
-        // Auch Keep-Alive-Resets koennen nach Verarbeitung auftreten: nie erneut senden.
+        // Genau ein frischer Versuch an dieselbe Basis, nur fuer sichere Methoden.
+        // Schreibende Methoden bleiben auch bei reusedSocket-Reset ohne Wiederholung.
+        if (upReq.reusedSocket && code === 'ECONNRESET' && !frisch &&
+            ['GET', 'HEAD', 'OPTIONS'].includes(req.method ?? '')) {
+          this.sende(basis, req, body, true).then(resolve, reject);
+          return;
+        }
         const transport = TRANSPORT_CODES.has(code) || /certificate|SSL|TLS/i.test(err.message);
         reject(new TransportFehler(err.message, code, verbunden || !transport));
       });

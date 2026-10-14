@@ -256,3 +256,98 @@ test('Zeitgeber kehrt automatisch zur bevorzugten API zurueck; kein eigenes Toke
   assert.equal(JSON.parse(neu.text).server,'lan');
   assert.ok(!logs.some(m=>m.includes(body)));
 });
+
+
+// 1a: Reset nur auf einem bereits fuer einen Request verwendeten Socket.
+// Frische Verbindungen liefern Erfolg, /immer-reset scheitert auch frisch.
+async function resetApi(){
+  const seen=[],closed=[],sockets=new Set();
+  const uses=new WeakMap();
+  const server=http.createServer((req,res)=>{
+    req.resume();
+    req.on('end',()=>{
+      const prior=uses.get(req.socket)??0;uses.set(req.socket,prior+1);
+      seen.push({method:req.method,url:req.url,socket:req.socket,prior});
+      if(req.url==='/health'){res.end('ok');return;}
+      if(req.url==='/immer-reset'||(req.url==='/reset-wiederverwendet'&&prior>0)){
+        req.socket.destroy();return;
+      }
+      res.writeHead(200,{'x-frisch':String(prior===0)});
+      res.end('angekommen');
+    });
+  });
+  server.keepAliveTimeout=5000;
+  server.on('connection',socket=>{
+    sockets.add(socket);socket.on('close',()=>{sockets.delete(socket);closed.push(socket);});
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  offen.push(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
+  return {seen,closed,url:`http://127.0.0.1:${server.address().port}`};
+}
+
+async function idleProxy(api,idleSocketTimeoutMs=1000){
+  const w=new mod.ApiWeiterleitung({port:0,basen:()=>[api.url],pruefIntervallMs:0,idleSocketTimeoutMs,log:()=>{}});
+  const port=await w.start();offen.push(()=>w.stop());return {w,port};
+}
+
+test('1a GET/HEAD/OPTIONS nach reusedSocket-Reset genau einmal frisch, auch Retry begrenzt',async()=>{
+  for(const method of ['GET','HEAD','OPTIONS']){
+    const api=await resetApi(),{port}=await idleProxy(api);
+    await anfrage(port,{method:'POST',path:'/warm',body:'warm'});
+    const r=await anfrage(port,{method,path:'/reset-wiederverwendet'});
+    assert.equal(r.status,200);assert.equal(r.headers['x-frisch'],'true');
+    const calls=api.seen.filter(s=>s.url==='/reset-wiederverwendet');
+    assert.equal(calls.length,2);assert.ok(calls[0].prior>0);assert.equal(calls[1].prior,0);
+    // Der frische Retry benutzt agent:false; fuer den naechsten Fall erst warm verbinden.
+    await anfrage(port,{method:'POST',path:'/warm',body:'warm'});
+    const failed=await anfrage(port,{method,path:'/immer-reset'});
+    assert.equal(failed.status,502);
+    assert.equal(api.seen.filter(s=>s.url==='/immer-reset').length,2,'kein zweiter Retry');
+  }
+});
+
+test('1a POST/PUT/PATCH/DELETE nach reusedSocket-Reset nie wiederholen',async()=>{
+  for(const method of ['POST','PUT','PATCH','DELETE']){
+    const api=await resetApi(),{port}=await idleProxy(api);
+    await anfrage(port,{method:'POST',path:'/warm',body:'warm'});
+    // Node aktiviert fuer DELETE keine implizite Chunked-Kodierung. Body explizit rahmen,
+    // damit der HTTP-Parser keinen zweiten (ungueltigen) Request aus den Bytes liest.
+    const body='wirkung';
+    const r=await anfrage(port,{method,path:'/reset-wiederverwendet',headers:{'content-length':String(Buffer.byteLength(body))},body});
+    assert.equal(r.status,502,`${method}: ${r.text}`);
+    assert.equal(JSON.parse(r.text).error,'api_verbindung_abgebrochen');
+    const calls=api.seen.filter(s=>s.url==='/reset-wiederverwendet');
+    assert.equal(calls.length,1);assert.ok(calls[0].prior>0);
+  }
+});
+
+test('1a Idle-Socket vor Serverfrist geschlossen; naechster POST kommt frisch ohne Reset an',async()=>{
+  const api=await resetApi(),{port}=await idleProxy(api,40);
+  await anfrage(port,{method:'POST',path:'/warm',body:'warm'});
+  const warm=api.seen.find(s=>s.url==='/warm').socket;
+  const deadline=Date.now()+2000;
+  while(!api.closed.includes(warm)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+  assert.ok(api.closed.includes(warm),'Client muss freien Socket vor 5000ms Serverfrist schliessen');
+  const r=await anfrage(port,{method:'POST',path:'/reset-wiederverwendet',body:'wirkung'});
+  assert.equal(r.status,200);assert.equal(r.headers['x-frisch'],'true');
+  assert.equal(api.seen.filter(s=>s.url==='/reset-wiederverwendet').length,1);
+});
+
+test('1a kurze Idle-Frist beendet keinen laufenden SSE-Stream',async()=>{
+  const api=await fakeApi('idle-stream').start();offen.push(()=>api.stop());
+  const {port}=await idleProxy(api,30);
+  const r=await anfrage(port,{path:'/sse'});
+  assert.equal(r.status,200);
+  assert.equal(r.text,'data: idle-stream-0\n\ndata: idle-stream-1\n\ndata: idle-stream-2\n\n');
+});
+
+test('1a Idle-Konfiguration: Env vor Config, positive Millisekunden, konservativer Standard',()=>{
+  const cfg={api_weiterleitung_idle_ms:250};
+  assert.equal(mod.weiterleitungsIdleMsAusConfig({env:{SYNAPSE_API_WEITERLEITUNG_IDLE_MS:'120'},cfg}),120);
+  assert.equal(mod.weiterleitungsIdleMsAusConfig({env:{},cfg}),250);
+  assert.equal(mod.weiterleitungsIdleMsAusConfig({env:{SYNAPSE_API_WEITERLEITUNG_IDLE_MS:'-1'},cfg}),250);
+  for(const value of [0,-1,'ungueltig',2.5,2147483648]){
+    assert.equal(mod.weiterleitungsIdleMsAusConfig({env:{},cfg:{api_weiterleitung_idle_ms:value}}),1000);
+  }
+  assert.equal(mod.weiterleitungsIdleMsAusConfig({env:{},cfg:{}}),1000);
+});
