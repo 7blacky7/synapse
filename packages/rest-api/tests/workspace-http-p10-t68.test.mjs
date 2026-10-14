@@ -3,7 +3,6 @@ import {test,mock} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {Readable} from 'node:stream';
-import tar from 'tar-stream';
 import {mitLesePool} from '../../core/dist/db/client.js';
 import {oeffneGeschuetzteShellTestDb} from '../../../scripts/lib/test-db-schutz.mjs';
 import {ermittleShellLage} from '../../core/dist/services/shell-lage.js';
@@ -19,7 +18,7 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
  const client=await oeffneGeschuetzteShellTestDb(),saved={...process.env};let created=false,app;
  const sources=new Map([[file,writer],['packages/core/src/t68-product.mjs',writer],['scripts/test-t68.mjs',writer]]);
  let canonicalOutside=false,rootFailure=false,userExecutions=0,localWorkerCalls=0,simulateLocal=false;
- const rootHeaders=[];
+ const rootCommands=[];
  const q=client.query.bind(client);
  const probeFor=(root,input)=>({cwd:root,os:'linux',env:{HOME:'/home/fixture',PWD:root},pfade:(input.pfade??[]).map(p=>({pfad:p,kanonisch:p,existiert:true,links:[]})),prozesse:{pids:[],namen:[]},
   ...(input.testdatei&&sources.has(input.testdatei.slice(root.length+1))?{testdatei:{pfad:input.testdatei,kanonisch:canonicalOutside?'/outside/file.mjs':input.testdatei,text:sources.get(input.testdatei.slice(root.length+1)),sha256:createHash('sha256').update(sources.get(input.testdatei.slice(root.length+1))).digest('hex')}}:{})});
@@ -54,13 +53,15 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
    w.ensureProjectRunning=async()=> 't68-simulated-container';w.recordActivity=async()=>{};w.appendToLog=async()=>{};
    w.lageProbeImContainer=async(_container,input)=>probeFor('/workspace',input);
    const container={
-    putArchive:async stream=>{
-     if(rootFailure){stream.destroy();throw Error('t68_root_protection_failed');}
-     const extract=tar.extract();extract.on('entry',(h,e,next)=>{rootHeaders.push(h);e.resume();e.on('end',next);});
-     await new Promise((resolve,reject)=>{extract.on('finish',resolve);extract.on('error',reject);stream.pipe(extract);});
-    },
     inspect:async()=>({Config:{Env:['PATH=/usr/bin:/bin','HOME=/home/fixture']}}),
-    exec:async()=>{userExecutions++;return{start:async()=>Readable.from([Buffer.from('T68_EXECUTOR_STUB_OK')]),inspect:async()=>({ExitCode:0})};}
+    exec:async opts=>{
+     if(opts.User==='0'){
+      rootCommands.push(opts);
+      if(rootFailure)throw Error('t68_root_protection_failed');
+      return{start:async()=>Readable.from([]),inspect:async()=>({ExitCode:0})};
+     }
+     userExecutions++;return{start:async()=>Readable.from([Buffer.from('T68_EXECUTOR_STUB_OK')]),inspect:async()=>({ExitCode:0})};
+    }
    };
    w.docker={getContainer:()=>container,modem:{demuxStream:(s,out,err)=>{s.pipe(out);err.end();}}};
    app=await createServer();await app.ready();let id=0,session;
@@ -78,7 +79,7 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
    };
    await t.test('isolated:true erreicht ohne Bestätigung private Ausnahme und Executor',async()=>{
     const before=userExecutions,r=await call('node '+file);assert.equal(r.success,true,JSON.stringify(r));assert.equal(r.executed_via,'workspace');assert.equal(userExecutions,before+1);
-    assert.ok(rootHeaders.length>0);for(const h of rootHeaders){assert.equal(h.name,'.');assert.equal(h.uid,0);assert.equal(h.gid,0);assert.equal(h.mode&0o777,0o755);}
+    assert.ok(rootCommands.length>0);for(const opts of rootCommands){assert.equal(opts.User,'0');assert.ok(opts.Cmd[2].includes('/bin/stat -c %u:%g:%a /workspace'));}
    });
    await t.test('scripts/test-* hat dieselbe native Ausnahme',async()=>assert.equal((await call('node scripts/test-t68.mjs')).success,true));
    await t.test('Produktdatei und unbekannter kanonischer Pfad bleiben Anleitung',async()=>{
