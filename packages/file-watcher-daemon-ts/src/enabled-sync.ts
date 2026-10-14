@@ -23,6 +23,8 @@ import os from 'node:os';
 import { getPool, getProjectStatus, setProjectStatus, istVirtuellesProjekt, istVirtuellerRegistryPfad } from '@synapse/core';
 import type { WatcherManager } from './manager.js';
 import type { SetupPhase } from '@synapse/core';
+// P9-T27 Welle 2 (Schritt 3): Projekt-Snapshot ueber die API statt eigener PG-Abfrage (daemon_jobs_weg=api)
+import { daemonJobsWeg, holeProjekteApi } from './daemon-jobs-api.js';
 
 const SYNC_INTERVAL_MS = Number(process.env.ENABLED_SYNC_INTERVAL_MS ?? 10_000);
 const HOSTNAME = os.hostname();
@@ -79,6 +81,7 @@ export function synchronisiereProjektCache(
 }
 
 export function startEnabledSync(manager: WatcherManager): EnabledSyncHandle {
+  const weg = daemonJobsWeg();
   let stopped = false;
   let running = false;
 
@@ -86,7 +89,10 @@ export function startEnabledSync(manager: WatcherManager): EnabledSyncHandle {
     if (stopped || running) return;
     running = true;
     try {
-      const res = await getPool().query<ProjectSnapshotRow>(
+      // P9-T27: API-Weg liefert dieselben Zeilen (Host aus dem Daemon-Token, virtuelle schon gefiltert).
+      const res: { rows: ProjectSnapshotRow[] } = weg === 'api'
+        ? { rows: (await holeProjekteApi()).map((r) => ({ ...r, setup_phase: (r.setup_phase ?? null) as SetupPhase | null })) }
+        : await getPool().query<ProjectSnapshotRow>(
         `SELECT p.name, p.path, p.enabled, s.setup_phase
            FROM projects p
            LEFT JOIN project_setup_status s ON s.project = p.name
@@ -112,7 +118,7 @@ export function startEnabledSync(manager: WatcherManager): EnabledSyncHandle {
         }
       }
     } catch (err) {
-      console.error(`[enabled-sync] PG nicht erreichbar — lokaler Stand bleibt: ${(err as Error).message}`);
+      console.error(`[enabled-sync] ${weg === 'api' ? 'API' : 'PG'} nicht erreichbar — lokaler Stand bleibt: ${(err as Error).message}`);
     } finally {
       running = false;
     }
@@ -121,7 +127,7 @@ export function startEnabledSync(manager: WatcherManager): EnabledSyncHandle {
   // Start-Sync sofort, dann periodisch
   void tick();
   const interval = setInterval(() => void tick(), SYNC_INTERVAL_MS);
-  console.error(`[enabled-sync] aktiv (interval=${SYNC_INTERVAL_MS}ms, host=${HOSTNAME}, PG=SoT)`);
+  console.error(`[enabled-sync] aktiv (interval=${SYNC_INTERVAL_MS}ms, host=${HOSTNAME}, PG=SoT, Weg: ${weg === 'api' ? 'API' : 'PG'})`);
 
   return {
     stop: () => {

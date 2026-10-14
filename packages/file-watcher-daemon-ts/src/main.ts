@@ -23,13 +23,26 @@ import { startProjectInitWorker, type ProjectInitWorkerHandle } from './project-
 import { startDaemonHeartbeat, type DaemonHeartbeatHandle } from './daemon-heartbeat.js';
 import { startEnabledSync, type EnabledSyncHandle } from './enabled-sync.js';
 import { startInternBruecke, type InternBrueckeHandle } from './intern-bruecke.js';
-import { registriereWorker, setzeDbProzess } from '@synapse/core';
+import { registriereWorker, setzeDbProzess, sperreDbZugriff } from '@synapse/core';
+// P9-T27 letzter Schritt: Daemon ohne DATABASE_URL
+import { daemonJobsWeg, hatDatenbankUrl } from './daemon-jobs-api.js';
+import { installiereIgnoreApiQuelle, leereEreignisPuffer } from './daemon-sync-api.js';
 import { startLogpflege, type LogpflegeHandle } from './logpflege.js';
 import { ApiWeiterleitung, weiterleitungsPortAusConfig } from './api-weiterleitung.js';
 
 async function main(): Promise<void> {
   setzeDbProzess('daemon');
   ensureConfigDir();
+
+  // P9-T27: API-Weg = dieser Prozess oeffnet KEINE PG-Verbindung mehr (Regel regel-pc-nur-ueber-api-kein-
+  // lokaler-db-zugang). Jede vergessene Aufrufstelle lehnt dann laut ab statt still zu verbinden.
+  // Ignore-Regeln (Watcher + asset-sync) kommen ueber die API. PG-Weg (Rueckfall) bleibt unveraendert.
+  const apiWeg = daemonJobsWeg() === 'api';
+  if (apiWeg) {
+    sperreDbZugriff('Daemon im API-Weg (daemon_jobs_weg=api bzw. ohne DATABASE_URL): alle Daten ueber die Synapse-API');
+    installiereIgnoreApiQuelle();
+    console.error(`[daemon] Weg: API — keine eigene DB-Verbindung${hatDatenbankUrl() ? ' (DATABASE_URL gesetzt, wird nicht benutzt)' : ''}.`);
+  }
 
   // Single-Instance: lebt der Daemon aus daemon.pid noch, beenden wir uns
   // sofort — zwei parallele Daemons fuehren zu doppeltem Sync, doppeltem
@@ -251,6 +264,11 @@ async function main(): Promise<void> {
       await manager.stopAll();
     } catch (err) {
       console.error('[daemon] Manager stopAll Fehler:', err);
+    }
+
+    // P9-T27: gepufferte watcher_events noch uebertragen (best effort, Hard-Exit nach 5 s bleibt).
+    if (apiWeg) {
+      try { await leereEreignisPuffer(); } catch { /* ignore */ }
     }
 
     try { fs.unlinkSync(pidFilePath()); } catch { /* ignore */ }

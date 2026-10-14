@@ -32,6 +32,14 @@ import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
 import { registriereSkillsProxy,istLoopback } from './skills-proxy.js';
 import type { ApiWeiterleitung } from './api-weiterleitung.js';
+// P9-T27 letzter Schritt: im API-Weg (Daemon ohne DATABASE_URL) holen die Tray-Endpunkte alles ueber die API.
+import { daemonJobsWeg } from './daemon-jobs-api.js';
+import { trayApi } from './daemon-sync-api.js';
+
+/** P9-T27: wrapper_status-Zeile aus JSON (lastActivity als Text) wieder mit Date wie aus PG. */
+function alsWrapperZeile(r: WrapperStatusRow): WrapperStatusRow {
+  return { ...r, lastActivity: new Date(r.lastActivity as unknown as string) };
+}
 
 const STARTED_AT = Date.now();
 
@@ -87,6 +95,8 @@ async function safeCall(
 
 export function buildApi(opts: BuildApiOptions): FastifyInstance {
   const { manager } = opts;
+  /** P9-T27: true = keine eigene PG-Verbindung, Tray-Daten ueber POST /api/daemon/tray. */
+  const apiWeg = daemonJobsWeg() === 'api';
 
   const app = Fastify({
     logger: false,
@@ -276,7 +286,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
         return { error: 'unknown project' };
       }
       try {
-        const result = await resetProjectParse(name);
+        const result = apiWeg
+          ? ((await trayApi<{ ergebnis?: Record<string, unknown> }>('reindex', name)).ergebnis ?? {})
+          : await resetProjectParse(name);
         return { ok: true, ...result };
       } catch (err) {
         reply.code(500);
@@ -312,7 +324,10 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       const nurVeraltete = req.body?.nur_veraltete === true;
 
       // Bewusst NICHT awaited — der Aufrufer bekommt sofort Antwort.
-      void reparseProject(name, { extensions, nurVeraltete }).catch((err) => {
+      // P9-T27: im API-Weg startet die API den Reparse (Fortschritt dann im API-Log).
+      void (apiWeg
+        ? trayApi('reparse', name, { extensions, nur_veraltete: nurVeraltete })
+        : reparseProject(name, { extensions, nurVeraltete })).catch((err) => {
         console.error(`[Synapse] Reparse "${name}" abgebrochen:`, err);
       });
 
@@ -391,6 +406,7 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       if (!Number.isFinite(limit) || limit <= 0) limit = 50;
       if (limit > 500) limit = 500;
       try {
+        if (apiWeg) return { events: (await trayApi<{ events?: unknown[] }>('history', name, { limit })).events ?? [] };
         const pool = getPool();
         const { rows } = await pool.query(
           `SELECT event_type, file_path, created_at, details
@@ -425,6 +441,7 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       if (!Number.isFinite(limit) || limit <= 0) limit = 100;
       if (limit > 1000) limit = 1000;
       try {
+        if (apiWeg) return { versions: (await trayApi<{ versions?: unknown[] }>('file_versions', name, { limit })).versions ?? [] };
         const pool = getPool();
         const { rows } = await pool.query(
           `SELECT id, file_path, edit_action, agent_id, reason, feature_tag,
@@ -459,7 +476,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       }
       try {
         // Primary: PostgreSQL wrapper_status
-        const pgRows = await listWrapperStatus(projectName);
+        const pgRows = apiWeg
+          ? ((await trayApi<{ zeilen?: WrapperStatusRow[] }>('specialists', projectName)).zeilen ?? []).map(alsWrapperZeile)
+          : await listWrapperStatus(projectName);
         // Metadaten (maxSpecialists, lastUpdate-Fallback) aus status.json
         const statusFile = await readStatus(info.pfad);
 
@@ -505,7 +524,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       }
       try {
         // PG primary: wrapperPid aus wrapper_status
-        const pgRow = await getWrapperStatus(specName, name).catch(() => null);
+        const pgRow = await (apiWeg
+          ? trayApi<{ zeile?: WrapperStatusRow | null }>('specialist', name, { agent: specName }).then((r) => r.zeile ?? null)
+          : getWrapperStatus(specName, name)).catch(() => null);
         // Fallback: status.json (fuer Wrapper die noch keinen Heartbeat geschrieben haben)
         const statusFile = await readStatus(info.pfad).catch(() => null);
         const wrapperPid = pgRow?.wrapperPid ?? statusFile?.specialists[specName]?.wrapperPid;
@@ -521,7 +542,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
         }
         // Cleanup: status.json + PG (beide, non-fatal einzeln)
         await removeSpecialist(info.pfad, specName).catch(() => { /* non-fatal */ });
-        await removeWrapperStatus(specName, name).catch(() => { /* non-fatal */ });
+        await (apiWeg
+          ? trayApi('specialist_entfernen', name, { agent: specName })
+          : removeWrapperStatus(specName, name)).catch(() => { /* non-fatal */ });
         return { ok: true, stopped: specName, wrapperPid };
       } catch (err) {
         reply.code(500);
@@ -539,7 +562,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     async (req, reply) => {
       try {
         const mitArchiv = req.query.archiv === '1' || req.query.archiv === 'true';
-        const channels = await listChannels(req.params.name, { mitArchiv });
+        const channels = apiWeg
+          ? ((await trayApi<{ channels?: unknown[] }>('channels', req.params.name, { mit_archiv: mitArchiv })).channels ?? [])
+          : await listChannels(req.params.name, { mitArchiv });
         return { project: req.params.name, mit_archiv: mitArchiv, channels };
       } catch (err) {
         reply.code(500);
@@ -561,7 +586,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       // getChannelMessages selbst); ?archiv=1 holt sie dazu — gleicher Schalter wie ueberall.
       const mitArchiv = req.query.archiv === '1';
       try {
-        const messages = await getChannelMessages(req.params.name, req.params.channel, { limit, mitArchiv });
+        const messages = apiWeg
+          ? ((await trayApi<{ messages?: unknown[] }>('feed', req.params.name, { channel: req.params.channel, limit, mit_archiv: mitArchiv })).messages ?? [])
+          : await getChannelMessages(req.params.name, req.params.channel, { limit, mitArchiv });
         return { project: req.params.name, channel: req.params.channel, messages };
       } catch (err) {
         reply.code(500);
@@ -585,7 +612,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
         return { error: 'content required' };
       }
       try {
-        const res = await postChannelMessage(req.params.name, req.params.channel, sender, content);
+        const res = apiWeg
+          ? (await trayApi<{ nachricht?: { id: number; createdAt: string } | null }>('post', req.params.name, { channel: req.params.channel, sender, content })).nachricht ?? null
+          : await postChannelMessage(req.params.name, req.params.channel, sender, content);
         if (!res) {
           reply.code(404);
           return { error: `channel "${req.params.channel}" not found` };
@@ -604,7 +633,9 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     '/projects/:name/agents',
     async (req, reply) => {
       try {
-        const agents = await listActiveAgents(req.params.name);
+        const agents = apiWeg
+          ? ((await trayApi<{ agents?: unknown[] }>('agents', req.params.name)).agents ?? [])
+          : await listActiveAgents(req.params.name);
         return { project: req.params.name, agents };
       } catch (err) {
         reply.code(500);

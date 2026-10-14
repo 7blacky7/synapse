@@ -11,6 +11,11 @@ import { createRequire } from 'node:module';
 
 import { stoppeLokalenWrapper, removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
 
+// P9-T27 Welle 2: PG-Schritte ueber austauschbaren Datenweg (Vorgabe PG; Daemon-API-Weg setzt 'api').
+import { spezialistenDatenweg } from './spezialisten-datenweg.js';
+export { setzeSpezialistenDatenweg, spezialistenDatenweg, pgSpezialistenDatenweg } from './spezialisten-datenweg.js';
+export type { SpezialistenDatenweg, WrapperStatusZeile } from './spezialisten-datenweg.js';
+
 import {
   bereiteMcpBrueckeVor,
   selbsttestHinweis,
@@ -231,9 +236,10 @@ export async function spawnSpecialistTool(
   await wissen.legeSystemPromptAb(name, systemPrompt);
 
   // 8. General-Channel sicherstellen und Agent joinen
-  await ensureGeneralChannel(project, name, name);
+  const datenweg = spezialistenDatenweg();
+  await datenweg.generalChannel(project, name, name);
   if (channel && channel !== `${project}-general`) {
-    await joinChannel(project, channel, name);
+    await datenweg.channelBeitreten(project, channel, name);
   }
 
   // 8b. P15-T32: Spawn = NEUE Sitzung, auch wenn der Name noch eine aktive Vorsitzung hat (Stop ohne Purge,
@@ -242,7 +248,7 @@ export async function spawnSpecialistTool(
   //     laufen NICHT hier durch und behalten ihre unquittierten Events. Der System-Prompt (prompts.ts) ist
   //     bei Spawn und Rotation derselbe - nur hier ist das Ereignis eindeutig. PG-Ausfall blockiert nicht.
   try {
-    await beginneSitzung(name, project, 'neu');
+    await datenweg.sitzungNeu(name, project);
   } catch (err) {
     console.error(`[Synapse] Sitzungsbeginn fuer "${name}" nicht gesetzt (non-fatal): ${err}`);
   }
@@ -263,6 +269,8 @@ export async function spawnSpecialistTool(
   const wrapper = spawn('node', [wrapperPath], {
     env: {
       ...process.env,
+      // P9-T27 Welle 2: im Daemon-API-Weg Wrapper-Transport + API-Zugang (nur wo nicht schon gesetzt).
+      ...datenweg.wrapperUmgebung(),
       SYNAPSE_AGENT_NAME: name,
       SYNAPSE_AGENT_MODEL: model,
       // Immer ausdruecklich setzen: ein Spawn aus einem Spezialisten heraus erbt sonst
@@ -327,7 +335,7 @@ export async function spawnSpecialistTool(
   //      Wrapper ueberschreibt diese Row beim naechsten Heartbeat mit
   //      aktuellen Token-Werten. Try/catch: PG-Down darf Spawn nicht blockieren.
   try {
-    await upsertWrapperStatus({
+    await datenweg.wrapperStatus({
       agentName: name,
       project,
       wrapperPid,
@@ -348,7 +356,7 @@ export async function spawnSpecialistTool(
     });
     // P7-T25: ein Neu-Spawn erbt die Heartbeat-Einstellung der alten Zeile NICHT mehr
     // (abgeschalteter Heartbeat machte den Agenten still) — zurueck auf an + adaptiv.
-    await setzeHeartbeatBeimSpawn(project, name);
+    await datenweg.heartbeatBeimSpawn(project, name);
   } catch (err) {
     console.error(`[Synapse] PG-Status-Init fuer "${name}" fehlgeschlagen (non-fatal): ${err}`);
   }
@@ -451,7 +459,7 @@ export async function stopSpecialistTool(
   projectPath: string,
   project?: string,
 ) {
-  const result = await stoppeLokalenWrapper(name, projectPath, project);
+  const result = await spezialistenDatenweg().stoppeWrapper(name, projectPath, project);
   if (result.success === true) {
     await heartbeatController.disconnectFromWrapper(name);
     await updateSpecialist(projectPath, name, {
@@ -531,7 +539,7 @@ export async function purgeSpecialistTool(
 
   // 2. Aus allen Channels entfernen (DB)
   try {
-    const removed = await removeAgentFromAllChannels(name);
+    const removed = await spezialistenDatenweg().ausAllenChannels(name, project);
     steps.channels_removed = removed;
   } catch (err) {
     steps.channels_removed = `Fehler: ${err}`;
@@ -539,7 +547,7 @@ export async function purgeSpecialistTool(
 
   // 3. Chat-Session abmelden (DB)
   try {
-    await unregisterAgent(name);
+    await spezialistenDatenweg().chatAbmelden(name, project);
     steps.chat_unregistered = 'ok';
   } catch (err) {
     steps.chat_unregistered = `Fehler: ${err}`;
@@ -601,7 +609,7 @@ export async function purgeSpecialistTool(
   // 6. Wrapper-Status aus PG entfernen (zusaetzlich zu status.json)
   if (project) {
     try {
-      await removeWrapperStatus(name, project);
+      await spezialistenDatenweg().wrapperStatusEntfernen(name, project);
       steps.pg_status_removed = 'ok';
     } catch (err) {
       // Kein Hard-Fail — PG-Row fehlt z.B. bei alten Spezialisten ohne PG-Eintrag
@@ -617,7 +625,7 @@ export async function purgeSpecialistTool(
   // Die ANZAHL steht ausdruecklich in steps, damit man sieht was passiert ist,
   // statt es glauben zu muessen.
   try {
-    steps.inbox_removed = await removeInboxForAgent(name);
+    steps.inbox_removed = await spezialistenDatenweg().inboxEntfernen(name, project);
   } catch (err) {
     steps.inbox_removed = `Fehler: ${err}`;
   }
@@ -721,6 +729,8 @@ export async function specialistStatusTool(
 export async function wakeSpecialistTool(
   name: string,
   message: string,
+  /** P9-T27 Welle 2: Projekt fuer den Inbox-Rueckfall im Daemon-API-Weg (optional). */
+  project?: string,
 ) {
   if (!heartbeatController.isConnected(name)) {
     return jsonResult({
@@ -744,7 +754,7 @@ export async function wakeSpecialistTool(
     const errMsg = err instanceof Error ? err.message : String(err);
     if (errMsg.includes('Agent is busy')) {
       try {
-        const inboxResult = await postToInbox('koordinator', name, message);
+        const inboxResult = await spezialistenDatenweg().inboxPost('koordinator', name, message, project);
         return jsonResult({
           success: true,
           queued: true,

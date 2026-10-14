@@ -234,6 +234,19 @@ export function resolveModel(aliasOrId: string): ModelEntry | null {
  * nur STATIC_FALLBACK, ein Modell, das nur in model_registry stand, war
  * "unbekannt", und Wrapper und core-Respawn rechneten mit verschiedenen Quellen.
  */
+/** Zeilen der Modell-Registry, wie core listModels sie liefert. */
+export type ModellRegistryZeilen = Awaited<ReturnType<typeof import('@synapse/core')['listModels']>>;
+/** P9-T27 Welle 2: alternative Quelle (z. B. Synapse-API im Daemon ohne DATABASE_URL); null = PG. */
+let modellQuelle: (() => Promise<ModellRegistryZeilen>) | null = null;
+
+/**
+ * Setzt die Quelle der Modell-Registry fuer loadFromDb. Ohne Aufruf (Vorgabe) liest loadFromDb
+ * wie bisher ueber core listModels aus PG. Ein bereits geladener Cache bleibt bestehen.
+ */
+export function setzeModellQuelle(quelle: (() => Promise<ModellRegistryZeilen>) | null): void {
+  modellQuelle = quelle;
+}
+
 export async function loadFromDb(): Promise<void> {
   if (dbCache) return;
   if (dbLaden) return dbLaden;
@@ -246,7 +259,7 @@ async function ladeAusDb(): Promise<void> {
     // Dynamic import um circular dep zu vermeiden (core importiert agents nicht)
     const { listModels: dbListModels } = await import('@synapse/core');
     const dbModels = await Promise.race([
-      dbListModels(),
+      (modellQuelle ?? dbListModels)(),
       new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error(`keine Antwort nach ${DB_LADE_TIMEOUT_MS} ms`)), DB_LADE_TIMEOUT_MS).unref();
       }),

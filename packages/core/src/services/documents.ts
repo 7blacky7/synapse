@@ -195,7 +195,25 @@ export async function indexDocument(
 }> {
   // Dokument extrahieren
   const doc = await extractDocument(filePath);
+  return indexiereExtrahiertesDokument(filePath, projectName, doc);
+}
 
+/**
+ * P9-T27 (Daemon ohne DATABASE_URL): indexDocument ab dem extrahierten Text. Der Daemon extrahiert
+ * lokal (extractDocument, dort liegt die Datei) und schickt Text, Typ und Metadaten; die API
+ * chunkt, embeddet und schreibt die Vektoren hier — unter derselben Sperre wie bisher.
+ */
+export async function indexiereExtrahiertesDokument(
+  filePath: string,
+  projectName: string,
+  doc: ExtractedDocument | null,
+): Promise<{
+  success: boolean;
+  chunks: number;
+  type: string;
+  metadata?: ExtractedDocument['metadata'];
+  error?: string;
+}> {
   if (!doc || !doc.text.trim()) {
     return {
       success: false,

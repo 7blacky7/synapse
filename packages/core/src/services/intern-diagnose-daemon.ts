@@ -36,7 +36,45 @@ export interface DiagnoseDaemonKontext {
   prozess: string;
   /** Projektpfad aus der Daemon-Config; undefined = Projekt dort nicht eingetragen */
   projektPfad: (project: string) => string | undefined;
+  /** P9-T27: PG-Stand ueber die API statt direkt (Daemon ohne DATABASE_URL). Ohne Angabe: PG direkt. */
+  pgZugriff?: SyncDateiPgZugriff;
 }
+
+/** P9-T27: PG-Stand einer Datei fuer sync_datei (code_files-Zeile, Inhalt, bekannte file_version). */
+export interface SyncDateiZeile {
+  content_hash: string | null;
+  file_size: number | null;
+  updated_at: unknown;
+  deleted_at: unknown;
+  ohne_inhalt: boolean;
+}
+export interface SyncDateiPgZugriff {
+  zeile(project: string, filePath: string): Promise<SyncDateiZeile | undefined>;
+  inhalt(project: string, filePath: string): Promise<string | null | undefined>;
+  bekannteVersion(project: string, filePath: string, hash: string): Promise<{ id: string; agent_id: string | null; created_at: unknown } | undefined>;
+}
+
+/** Bisherige Abfragen von syncDateiLokal (PG direkt); die API nutzt sie fuer den Daemon ohne DB. */
+export const pgSyncDateiZugriff: SyncDateiPgZugriff = {
+  async zeile(project, filePath) {
+    const { rows } = await getPool().query<SyncDateiZeile>(
+      `SELECT content_hash, file_size, updated_at, deleted_at, (content IS NULL) AS ohne_inhalt
+         FROM code_files WHERE project = $1 AND file_path = $2`, [project, filePath],
+    );
+    return rows[0];
+  },
+  async inhalt(project, filePath) {
+    return (await getPool().query<{ content: string | null }>('SELECT content FROM code_files WHERE project=$1 AND file_path=$2 AND deleted_at IS NULL', [project, filePath])).rows[0]?.content;
+  },
+  async bekannteVersion(project, filePath, hash) {
+    const v = await getPool().query<{ id: string; agent_id: string | null; created_at: unknown }>(
+      `SELECT id::text, agent_id, created_at FROM file_versions
+        WHERE project = $1 AND file_path = $2 AND content_hash = $3
+        ORDER BY created_at DESC, id DESC LIMIT 1`, [project, filePath, hash],
+    );
+    return v.rows[0];
+  },
+};
 
 const sha256 = (daten: string | Buffer): string =>
   typeof daten === 'string'
@@ -76,6 +114,7 @@ export async function syncDateiLokal(
   projektRoot: string | undefined,
   prozess = 'daemon',
   mitDiff = false,
+  pgZugriff?: SyncDateiPgZugriff,
 ): Promise<Record<string, unknown>> {
   if (!projektRoot) {
     throw new DiagnoseFehler('projekt_unbekannt',
@@ -135,14 +174,10 @@ export async function syncDateiLokal(
   let pgFehler: string | null = null;
   let bekannteVersion: Record<string, unknown> | null = null;
   try {
-    const pool = getPool();
-    const { rows } = await pool.query(
-      `SELECT content_hash, file_size, updated_at, deleted_at, (content IS NULL) AS ohne_inhalt
-         FROM code_files WHERE project = $1 AND file_path = $2`, [project, filePath],
-    );
-    const f = rows[0];
+    const zugriff = pgZugriff ?? pgSyncDateiZugriff;
+    const f = await zugriff.zeile(project, filePath);
     if(mitDiff&&!platte.fehler && (hashText !== (f && !f.deleted_at ? f.content_hash : null) || (platte.existiert === true) !== Boolean(f && !f.deleted_at))) {
-      const basis=(await pool.query('SELECT content FROM code_files WHERE project=$1 AND file_path=$2 AND deleted_at IS NULL',[project,filePath])).rows[0]?.content??'';
+      const basis=(await zugriff.inhalt(project, filePath))??'';
       const lokal=plattenText??'';
       if(basis.length<=diffMaxZeichen()&&lokal.length<=diffMaxZeichen()) {
         const d=dateiDiff(maskiereDatei(filePath,basis),maskiereDatei(filePath,lokal));
@@ -161,12 +196,8 @@ export async function syncDateiLokal(
         ohne_inhalt: f.ohne_inhalt === true,
       };
       if (hashText && f.content_hash && hashText !== f.content_hash) {
-        const v = await pool.query(
-          `SELECT id::text, agent_id, created_at FROM file_versions
-            WHERE project = $1 AND file_path = $2 AND content_hash = $3
-            ORDER BY created_at DESC, id DESC LIMIT 1`, [project, filePath, hashText],
-        );
-        if (v.rows[0]) bekannteVersion = { id: v.rows[0].id, agent_id: v.rows[0].agent_id, created_at: alsIso(v.rows[0].created_at) };
+        const v = await zugriff.bekannteVersion(project, filePath, hashText);
+        if (v) bekannteVersion = { id: v.id, agent_id: v.agent_id, created_at: alsIso(v.created_at) };
       }
     }
   } catch (err) {
@@ -237,7 +268,7 @@ export async function fuehreDiagnoseLokal(
       const project = typeof args.project === 'string' ? args.project : '';
       const filePath = typeof args.file_path === 'string' ? args.file_path : '';
       if (!project || !filePath) throw new DiagnoseFehler('parameter_fehlt', 'sync_datei: project und file_path angeben.');
-      return await syncDateiLokal(project, filePath, kontext.projektPfad(project), kontext.prozess, args.mit_diff === true);
+      return await syncDateiLokal(project, filePath, kontext.projektPfad(project), kontext.prozess, args.mit_diff === true, kontext.pgZugriff);
     }
     return { success: false, action: befehl, error: 'befehl_unbekannt', message: `Kein Diagnose-Befehl: ${befehl}.` };
   } catch (err) {

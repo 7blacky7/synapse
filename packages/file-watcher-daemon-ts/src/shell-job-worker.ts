@@ -43,7 +43,11 @@ import {
   schlafe,
   DAEMON_JOBS_POLL_S,
   type ShellAbrufAntwort,
+  // P9-T27 Welle 2: Kontext fuer execShellInProject ueber die API
+  holeShellKontextApi,
+  meldeShellSicherungApi,
 } from './daemon-jobs-api.js';
+import type { ShellExecKontext } from '@synapse/core';
 
 const STREAMS_DIR = path.join(os.homedir(), '.synapse', 'shell-streams');
 
@@ -296,7 +300,18 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
 
   let result: Record<string, unknown>;
   try {
+    // P9-T27 Welle 2: im API-Weg liefert die API Projektpfad, Projekt-DB, Katalog und Freigabe; das Audit
+    // geht per POST. execShellInProject braucht dann keine eigene PG-Verbindung.
+    let kontext: ShellExecKontext | undefined;
+    if (jobWeg === 'api') {
+      const daten = await holeShellKontextApi(job.id, DAEMON_ID);
+      kontext = {
+        ...daten,
+        sicherung: ({ project: _p, command: _c, job_id: _j, ...speicher }) => meldeShellSicherungApi(job.id, DAEMON_ID, speicher),
+      };
+    }
     const ausfuehren=()=>execShellInProject({
+      ...(kontext ? { kontext } : {}),
       project: job.project,
       command: job.command,
       agent_id: job.agent_id,

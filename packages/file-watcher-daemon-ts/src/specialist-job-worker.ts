@@ -42,6 +42,8 @@ import {
   DAEMON_JOBS_POLL_S,
   type SpecialistApiJob,
 } from './daemon-jobs-api.js'
+// P9-T27 Welle 2: PG-Schritte der Spezialisten-Tools ueber die API
+import { installiereSpezialistenApiWeg } from './spezialisten-datenweg-api.js'
 
 const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`
 
@@ -288,12 +290,12 @@ export async function dispatchSpecialistAction(
       const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
       const message = String(args.message)
       if (names.length === 1) {
-        return (await tools.wakeSpecialistTool(names[0], message)) as Record<string, unknown>
+        return (await tools.wakeSpecialistTool(names[0], message, job.project)) as Record<string, unknown>
       }
       const results: Array<Record<string, unknown>> = []
       const errors: string[] = []
       for (const n of names) {
-        try { results.push((await tools.wakeSpecialistTool(n, message)) as Record<string, unknown>) }
+        try { results.push((await tools.wakeSpecialistTool(n, message, job.project)) as Record<string, unknown>) }
         catch (e) { errors.push(`${n}: ${e}`) }
       }
       return { results, count: results.length, errors }
@@ -348,11 +350,13 @@ export async function dispatchSpecialistAction(
  * nach 30 s, Wrapper-Reaper (Datenteil ueber die API, Prozesspruefung /proc lokal), Pause ueber
  * intern(worker_pausieren, worker specialist_jobs). dispatchSpecialistAction bleibt unveraendert;
  * den Projektpfad fuer stop liefert die API mit.
- * OFFEN (Welle 2): die Spezialisten-Tools selbst (spawn/stop/purge/status in @synapse/mcp-server)
- * schreiben weiter direkt in PG; der Wrapper hat dafuer bereits SYNAPSE_WRAPPER_TRANSPORT=api.
+ * Welle 2: die PG-Schritte der Spezialisten-Tools (spawn/stop/purge/wake in @synapse/mcp-server) und die
+ * Modell-Registry laufen ueber die API (spezialisten-datenweg-api.ts); neu gestartete Wrapper bekommen
+ * SYNAPSE_WRAPPER_TRANSPORT=api + API-Zugang.
  */
 async function startSpecialistJobWorkerApi(getActiveProjects: () => string[]): Promise<SpecialistJobWorkerHandle> {
   pruefeApiWeg()
+  await installiereSpezialistenApiWeg()
   let stopped = false
   let laufend: AbortController | null = null
   let reaperLaeuft = false

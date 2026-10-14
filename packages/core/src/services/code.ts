@@ -200,8 +200,6 @@ export async function storeFileContent(
   projectName: string,
   projectRoot: string
 ): Promise<boolean> {
-  const pool = getPool();
-
   // Absoluten Pfad rekonstruieren fuer Filesystem-Zugriff
   const absolutePath = filePath.startsWith('/')
     ? filePath
@@ -214,6 +212,27 @@ export async function storeFileContent(
     console.error(`[Synapse] Datei nicht lesbar: ${absolutePath}`);
     return false;
   }
+
+  return speichereDateiInhalt(filePath, projectName, fileData.content, {
+    fileType: fileData.fileType,
+    dateiGroesse: () => fs.statSync(absolutePath).size,
+  });
+}
+
+/**
+ * P9-T27 (Daemon ohne DATABASE_URL): Stage 1 mit bereits gelesenem Inhalt. storeFileContent liest die
+ * Datei und delegiert hierher (Verhalten unveraendert); die API ruft es fuer den Daemon auf, der Inhalt
+ * und Groesse mitschickt (routes/daemon-sync.ts). scanAbgeschlossen: der Daemon weiss, ob sein Erstscan
+ * durch ist (fs_add-Version nur im laufenden Betrieb) — ohne Angabe gilt wie bisher das prozesslokale Set.
+ */
+export async function speichereDateiInhalt(
+  filePath: string,
+  projectName: string,
+  content: string,
+  opts: { fileType?: string; dateiGroesse?: number | (() => number); scanAbgeschlossen?: boolean } = {},
+): Promise<boolean> {
+  const pool = getPool();
+  const fileData = { content, fileType: opts.fileType ?? getFileType(filePath) };
 
   const contentHash = crypto.createHash('sha256').update(fileData.content).digest('hex');
 
@@ -293,13 +312,15 @@ export async function storeFileContent(
   // und dadurch war jede neu angelegte Datei im Tray unsichtbar — der User hat es
   // gemeldet: seine Aenderung an einer bekannten Datei erschien, seine neue Datei
   // nicht. Bei 904 ADD-Ereignissen stand genau EIN Eintrag in file_versions.
-  const fileSize = fs.statSync(absolutePath).size;
+  const fileSize = typeof opts.dateiGroesse === 'function'
+    ? opts.dateiGroesse()
+    : typeof opts.dateiGroesse === 'number' ? opts.dateiGroesse : Buffer.byteLength(fileData.content, 'utf8');
   await upsertCodeFile(
     projectName, filePath, path.basename(filePath), fileData.fileType,
     0, fileSize, fileData.content, contentHash
   );
 
-  if (projekteMitAbgeschlossenemScan.has(projectName)) {
+  if (opts.scanAbgeschlossen ?? projekteMitAbgeschlossenemScan.has(projectName)) {
     // Nach upsertCodeFile, weil snapshotFileVersion den Inhalt aus code_files liest.
     try {
       const { snapshotFileVersion } = await import('./code-write.js');
@@ -2247,6 +2268,33 @@ export async function indexFile(
   if (changed) {
     enqueueParseAndEmbed(projectName, filePath);
   }
+  return changed ? 1 : 0;
+}
+
+/**
+ * P9-T27 (Daemon ohne DATABASE_URL): indexFile mit vom Daemon gelesenem Inhalt — laeuft in der API.
+ * Gleiche Schutzlinien wie indexFile (Media, Binaer nach Endung/Kopf), gleiche Stufen: Stage 1
+ * speichereDateiInhalt, Stage 2 enqueueParseAndEmbed (Parsen/Embedding auf dem Server).
+ */
+export async function indexiereDateiInhalt(
+  filePath: string,
+  projectName: string,
+  content: string,
+  opts: { dateiGroesse?: number; scanAbgeschlossen?: boolean } = {},
+): Promise<number> {
+  if (klassifiziereDatei(filePath) === 'media') {
+    console.error(`[Synapse] indexiereDateiInhalt: Media gehoert nicht in den Code-Index, uebersprungen: ${filePath}`);
+    return 0;
+  }
+  if (isBinaryFile(filePath, Buffer.from(content.slice(0, 8192), 'utf8'))) {
+    console.error(`[Synapse] indexiereDateiInhalt: Binaerdatei gehoert nicht in den Code-Index, uebersprungen: ${filePath}`);
+    return 0;
+  }
+  const changed = await speichereDateiInhalt(filePath, projectName, content, {
+    dateiGroesse: opts.dateiGroesse,
+    scanAbgeschlossen: opts.scanAbgeschlossen,
+  });
+  if (changed) enqueueParseAndEmbed(projectName, filePath);
   return changed ? 1 : 0;
 }
 

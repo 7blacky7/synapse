@@ -35,6 +35,10 @@ import { isBinaryFile, isExtractableDocument, isMultimodalFile, getFileType, MAX
 import { workerPausiert } from '../services/worker-steuerung.js';
 import { liegtImProjekt } from '../services/projekt-pfad.js';
 import { SkipMeldungen } from './skip-meldung.js';
+// P9-T27: PG-Zugriffe des Watchers hinter einem austauschbaren Datenweg (Vorgabe PG, Daemon-API-Weg: API)
+import { pgWatcherDatenweg, type WatcherDatenweg } from './datenweg.js';
+export { pgWatcherDatenweg } from './datenweg.js';
+export type { WatcherDatenweg, PgFsZeile, PgFsLoeschZeile, PgFsSeiten } from './datenweg.js';
 
 export * from './binary.js';
 export * from './ignore.js';
@@ -52,6 +56,12 @@ export interface FileWatcherOptions {
   onIgnoreChange?: (newPatterns: string[]) => void | Promise<void>;
   /** Callback nach Initial-Scan (Reconciliation gegen PG) */
   onReady?: () => void | Promise<void>;
+  /**
+   * P9-T27: Weg fuer alle PG-Zugriffe des Watchers (watcher_events, Rename-Pruefung, PG->Platte).
+   * Ohne Angabe: pgWatcherDatenweg (bisheriges Verhalten). Der Daemon ohne DATABASE_URL uebergibt
+   * einen API-Datenweg.
+   */
+  datenweg?: WatcherDatenweg;
 }
 
 export interface FileWatcherInstance {
@@ -68,6 +78,7 @@ export interface FileWatcherInstance {
  */
 export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstance {
   const { projectPath, projectName, onFileChange, onError, onIgnoreChange, onReady } = options;
+  const datenweg: WatcherDatenweg = options.datenweg ?? pgWatcherDatenweg;
   const config = getConfig();
 
   console.error(`[Synapse] Starte FileWatcher fuer "${projectName}" in ${projectPath}`);
@@ -231,13 +242,9 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
       pendingEvents.delete(relativePath);
 
       // Bei Unlink: pruefen ob die PG-Row bereits von einem Rename umgebogen wurde
-      if (type === 'unlink' && debugPool) {
+      if (type === 'unlink') {
         try {
-          const res = await debugPool.query(
-            'SELECT 1 FROM code_files WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL',
-            [projectName, relativePath]
-          );
-          if (!res.rows[0]) {
+          if (!(await datenweg.codeZeileVorhanden(projectName, relativePath))) {
             if (!asset) {
               console.error(`[Synapse] UNLINK uebersprungen (Rename-detected): ${relativePath}`);
               return;
@@ -279,30 +286,14 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
     console.error(`[Synapse] FileWatcher verbose-log AKTIV (IGNORE/ALLOW/RAW)`);
   }
 
-  let debugPool: import('pg').Pool | null = null;
-  (async () => {
-    try {
-      const { getPool } = await import('../db/client.js');
-      debugPool = getPool();
-
-      // TTL-Cleanup: Events aelter als 7 Tage loeschen (einmal beim Start)
-      debugPool.query(
-        `DELETE FROM watcher_events WHERE project = $1 AND created_at < NOW() - INTERVAL '7 days'`,
-        [projectName]
-      ).catch(() => {});
-    } catch {
-      console.error('[Synapse] watcher_events: PG-Pool nicht verfuegbar — Logs gehen verloren');
-    }
-  })();
+  // P9-T27: watcher_events ueber den Datenweg (PG wie bisher; im Daemon-API-Weg gebuendelt ueber die API).
+  // TTL-Cleanup: Events aelter als 7 Tage loeschen (einmal beim Start)
+  void datenweg.ereignisseAufraeumen(projectName).catch(() => {});
 
   function debugLog(kind: string, rel: string, details?: unknown): void {
-    if (!debugPool) return;
     // Verbose-Events nur bei aktivem Flag
     if (!verboseEnabled && (kind === 'IGNORE' || kind === 'ALLOW' || kind.startsWith('RAW:'))) return;
-    debugPool.query(
-      'INSERT INTO watcher_events (project, event_type, file_path, details) VALUES ($1, $2, $3, $4)',
-      [projectName, kind, rel, details ? JSON.stringify(details) : null]
-    ).catch(() => { /* best-effort */ });
+    datenweg.ereignisProtokollieren(projectName, kind, rel, details);
   }
 
   /**
@@ -451,12 +442,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   // Start PG-Watcher (async setup, doesn't block return)
   (async () => {
     try {
-      const { getPool } = await import('../db/client.js');
-      const { COLLECTIONS } = await import('../types/index.js');
-      const { deleteByFilePath } = await import('../qdrant/index.js');
       const crypto = await import('crypto');
-
-      const pool = getPool();
 
       pgPollInterval = setInterval(async () => {
         if (pgPollBusy) return;  // vorheriger Poll laeuft noch → diesen Tick ueberspringen
@@ -479,19 +465,16 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
           //    eine Datei wirklich geschrieben werden muss. Alle Contents
           //    gleichzeitig im Query-Result zu halten war der native-Buffer-
           //    Treiber des OOM (RSS waechst ueber den JS-Heap-Cap hinaus).
-          const delta = await pool.query(
-            `SELECT file_path, content_hash, updated_at FROM code_files
-             WHERE project = $1 AND updated_at >= $2 AND content IS NOT NULL AND deleted_at IS NULL`,
-            [projectName, untergrenze]
-          );
+          const geaendert = await datenweg.geaenderte(projectName, {
+            untergrenze,
+            vollNach: vollabgleich?.changedAfter != null ? vollabgleich.changedAfter : null,
+            limit: pgFullBatchFiles,
+          });
+          const delta = { rows: geaendert.delta };
           // Keyset-Paging statt eines synchronen Hash-Laufs ueber zehntausende Dateien.
           // Delta laeuft auch waehrend des Vollabgleichs in JEDEM Tick; geloeschte Zeilen
           // verschieben keine Offsets. Neue Zeilen hinter dem Cursor sieht der naechste Vollabgleich.
-          const volleSeite = vollabgleich?.changedAfter != null ? await pool.query(
-            `SELECT file_path, content_hash, updated_at FROM code_files
-             WHERE project = $1 AND file_path > $2 AND content IS NOT NULL AND deleted_at IS NULL
-             ORDER BY file_path LIMIT $3`, [projectName, vollabgleich.changedAfter, pgFullBatchFiles]
-          ) : { rows: [] };
+          const volleSeite = { rows: geaendert.voll };
           const deltaPfade = new Set(delta.rows.map(row => row.file_path));
           const vollePfade = new Set(volleSeite.rows.map(row => row.file_path));
           const changed = { rows: [...new Map([...delta.rows, ...volleSeite.rows].map(row => [row.file_path, row])).values()] };
@@ -559,13 +542,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             // noch nicht eingesammelt — dann stehen lassen und den naechsten Tick
             // abwarten. Das Einsammeln erledigt storeFileContent (versioniert).
             if (exists && localHash) {
-              const bekannt = await pool.query(
-                `SELECT 1 FROM file_versions
-                  WHERE project = $1 AND file_path = $2 AND content_hash = $3
-                  LIMIT 1`,
-                [projectName, relativePath, localHash]
-              );
-              if ((bekannt.rowCount ?? 0) === 0) {
+              if (!(await datenweg.hashBekannt(projectName, relativePath, localHash))) {
                 // Nur zurueckstellen (Checkpoint halten), wenn der Watcher den Pfad auch einsammeln kann.
                 // Sonst kaeme das Einsammeln nie und jede Runde fragte ab der aeltesten solchen Zeile neu
                 // (Endlosschleife, Befund 929b5b10). Ueberschrieben wird in beiden Faellen NICHT.
@@ -586,12 +563,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
             }
             // Content erst JETZT holen — nur fuer die wenigen Rows die wirklich
             // geschrieben werden, nicht fuer den ganzen Batch.
-            const contentRes = await pool.query(
-              `SELECT content FROM code_files
-               WHERE project = $1 AND file_path = $2 AND deleted_at IS NULL`,
-              [projectName, relativePath]
-            );
-            const content: string | undefined = contentRes.rows[0]?.content;
+            const content: string | null | undefined = await datenweg.inhalt(projectName, relativePath);
             if (content == null) continue;
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
             fs.writeFileSync(filePath, content, 'utf-8');
@@ -605,16 +577,13 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
           }
 
           // 2. Soft-deleted files
-          const deletedDelta = await pool.query(
-            `SELECT id, file_path, updated_at FROM code_files
-             WHERE project = $1 AND deleted_at IS NOT NULL AND deleted_at >= $2`,
-            [projectName, untergrenze]
-          );
-          const geloeschteSeite = vollabgleich?.deletedAfter != null ? await pool.query(
-            `SELECT id, file_path, updated_at FROM code_files
-             WHERE project = $1 AND deleted_at IS NOT NULL AND file_path > $2 ORDER BY file_path LIMIT $3`,
-            [projectName, vollabgleich.deletedAfter, pgFullBatchFiles]
-          ) : { rows: [] };
+          const geloescht = await datenweg.geloeschte(projectName, {
+            untergrenze,
+            geloeschtNach: vollabgleich?.deletedAfter != null ? vollabgleich.deletedAfter : null,
+            limit: pgFullBatchFiles,
+          });
+          const deletedDelta = { rows: geloescht.delta };
+          const geloeschteSeite = { rows: geloescht.voll };
           const volleLoeschPfade = new Set(geloeschteSeite.rows.map(row => row.file_path));
           const deleted = { rows: [...new Map([...deletedDelta.rows, ...geloeschteSeite.rows].map(row => [row.file_path, row])).values()] };
           for (const row of deleted.rows) {
@@ -632,11 +601,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
                 ? `[Synapse] PG→FS Nachgeholt (${ausVollabgleich ? 'Vollabgleich' : 'Überlappung'}, gelöscht): ${row.file_path}`
                 : `[Synapse] PG→FS Delete: ${row.file_path}`);
             }
-            try {
-              const collectionName = COLLECTIONS.projectCode(projectName);
-              await deleteByFilePath(collectionName, row.file_path, projectName);  // relativ fuer Qdrant
-            } catch {}
-            await pool.query('DELETE FROM code_files WHERE id = $1', [row.id]);
+            await datenweg.geloeschtAbschliessen(projectName, String(row.id), row.file_path);
           }
 
           // Checkpoint: MAX(updated_at) from results

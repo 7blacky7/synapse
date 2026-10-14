@@ -45,8 +45,59 @@ export function setzeDbProzess(art: 'wrapper' | 'daemon'): void {
 }
 const kleinerProzess = () => dbProzess === 'wrapper' || dbProzess === 'daemon';
 
+// ── P9-T27 (letzter Schritt): Prozess ohne DB-Zugang ─────────────────────────────────────────────
+// Der lokale Daemon arbeitet im API-Weg OHNE DATABASE_URL (Memory regel-pc-nur-ueber-api-kein-lokaler-
+// db-zugang). sperreDbZugriff() sorgt dafuer, dass dieser Prozess danach KEINE PG-Verbindung mehr
+// aufbaut — auch nicht ueber einen vergessenen Restweg oder ein DATABASE_URL aus einer .env im
+// Arbeitsordner (dotenv). getPool()/getHintergrundPool() liefern dann einen Ersatz, dessen query/
+// connect mit klarer Meldung ablehnen (asynchron, wie ein Verbindungsfehler: kein Absturz), und jede
+// neue Aufrufstelle wird EINMAL mit Stack im Log gemeldet — so faellt ein Rest sofort auf.
+let dbSperre: string | null = null;
+let gesperrterPoolInstanz: Pool | null = null;
+const gemeldeteSperrStellen = new Set<string>();
+
+/** Sperrt jeden weiteren PG-Zugang dieses Prozesses (Daemon im API-Weg). Nicht umkehrbar. */
+export function sperreDbZugriff(grund: string): void {
+  dbSperre = grund || 'DB-Zugang in diesem Prozess gesperrt';
+}
+
+/** Grund der DB-Sperre oder null (kein gesperrter Prozess). */
+export function dbZugriffGesperrt(): string | null {
+  return dbSperre;
+}
+
+function sperrFehler(): Error {
+  const err = new Error(`PG-Zugriff gesperrt: ${dbSperre}. Dieser Weg muss ueber die Synapse-API laufen.`);
+  const stelle = (err.stack ?? '').split('\n').slice(2, 5).join(' | ');
+  if (!gemeldeteSperrStellen.has(stelle) && gemeldeteSperrStellen.size < 200) {
+    gemeldeteSperrStellen.add(stelle);
+    console.error(`[Synapse] DB-Sperre: abgewiesener PG-Zugriff bei ${stelle || '(unbekannt)'}`);
+  }
+  return err;
+}
+
+function gesperrterPool(): Pool {
+  if (!gesperrterPoolInstanz) {
+    const p: Record<string, unknown> = {
+      query: async () => { throw sperrFehler(); },
+      connect: async () => { throw sperrFehler(); },
+      on: () => p,
+      once: () => p,
+      removeListener: () => p,
+      end: async () => undefined,
+      totalCount: 0,
+      idleCount: 0,
+      waitingCount: 0,
+      options: { gesperrt: true },
+    };
+    gesperrterPoolInstanz = p as unknown as Pool;
+  }
+  return gesperrterPoolInstanz;
+}
+
 /** LISTEN braucht eine dauerhafte Verbindung, aber keinen Platz im Query-Pool. */
 export async function verbindeListenClient(): Promise<Client> {
+  if (dbSperre) throw sperrFehler();
   const client = new Client({ connectionString: getConfig().database.url, application_name: 'synapse-' + dbProzess + '-listen' });
   try { await client.connect(); return client; }
   catch (err) { await client.end().catch(() => {}); throw err; }
@@ -80,6 +131,7 @@ function hauptPool(): Pool {
 
 /** Pool fuer Hintergrundarbeit. Direkt nutzen, wo ein Ablauf immer Hintergrund ist. */
 export function getHintergrundPool(): Pool {
+  if (dbSperre) return gesperrterPool();
   if (!_hintergrundPool) {
     const config = getConfig();
     _hintergrundPool = new Pool({
@@ -103,6 +155,7 @@ export function mitLesePool<T>(pool: Pool, fn: () => Promise<T>): Promise<T> {
 }
 
 export function getPool(): Pool {
+  if (dbSperre) return gesperrterPool();
   return lesePoolKontext.getStore() ?? (hintergrundKontext.getStore() ? getHintergrundPool() : hauptPool());
 }
 

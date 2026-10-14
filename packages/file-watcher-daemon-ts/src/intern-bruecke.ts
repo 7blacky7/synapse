@@ -23,6 +23,9 @@ import { DAEMON_BEFEHLE, fuehreDiagnoseLokal, skillNutzungLokal, fuehreWorkerAct
 import { findProjekt, loadConfig } from './config.js';
 import { leseApiZugang } from './skills-proxy.js';
 import { gpuHelferEinstellen, gpuHelferStatus } from './gpu-helfer-datei.js';
+// P9-T27 letzter Schritt: sync_datei liest den PG-Stand im API-Weg ueber die API.
+import { daemonJobsWeg } from './daemon-jobs-api.js';
+import { apiSyncDateiZugriff } from './daemon-sync-api.js';
 
 const HOST = os.hostname().replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 128) || 'daemon';
 const PROZESS = `daemon:${HOST}`;
@@ -108,6 +111,7 @@ export function startInternBruecke(): InternBrueckeHandle {
           ergebnis = await fuehreDiagnoseLokal(b.befehl, args, {
             prozess: PROZESS,
             projektPfad: (name) => findProjekt(loadConfig(), name)?.pfad,
+            ...(daemonJobsWeg() === 'api' ? { pgZugriff: apiSyncDateiZugriff } : {}),
           });
         }
         else ergebnis = await fuehreWorkerActionAus(b.befehl, args, typeof args.von === 'string' ? args.von : undefined, PROZESS);

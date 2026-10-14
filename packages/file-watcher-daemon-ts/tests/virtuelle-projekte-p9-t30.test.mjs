@@ -15,6 +15,9 @@ let root,dev,cfgPath,core,WatcherManager,loadConfig,startEnabledSync;
 const managers=[];
 before(async()=>{
  delete process.env.DATABASE_URL;delete process.env.SYNAPSE_DATABASE_URL;delete process.env.SYNAPSE_VIRTUELLE_PROJEKTE;
+ // P9-T27 Welle 2: ohne DATABASE_URL waehlt der Daemon jetzt automatisch den API-Weg. Dieser Test prueft den
+ // PG-Weg der enabled-sync-Abfrage (Fake-Pool) -> Rueckfall-Schalter ausdruecklich auf pg setzen.
+ process.env.SYNAPSE_DAEMON_JOBS_WEG='pg';
  root=fs.mkdtempSync(join(os.tmpdir(),'p9-t30-'));
  dev=join(root,'dev');fs.mkdirSync(dev);
  process.env.HOME=root;process.env.SYNAPSE_WORKSPACE_ROOT=join(root,'ws');

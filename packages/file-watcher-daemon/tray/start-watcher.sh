@@ -9,7 +9,23 @@ PID_FILE="$TRIGGER_DIR/daemon.pid"
 
 MCP_JSON="$HOME/.mcp.json"
 [ -f "$HOME/dev/synapse/.mcp.json" ] && MCP_JSON="$HOME/dev/synapse/.mcp.json"
-eval "$(jq -r '.mcpServers.synapse.env | to_entries[] | "export \(.key)=\(.value|@sh)"' "$MCP_JSON" 2>/dev/null)"
+# P9-T27 Welle 2 (Zielbild: PC nur ueber die API, kein DB-Zugang). Schalter in der Tray-Konfig
+# ~/.synapse/file-watcher/config.json: "daemon_ohne_db": true
+#   -> KEIN Env-Import aus .mcp.json (also auch kein DATABASE_URL); der Daemon holt ALLES ueber die API
+#      (Token aus config.json, daemon_jobs_weg=api): Shell-/Spezialisten-Jobs, Shell-Kontext, Spezialisten-
+#      Daten, enabled-sync, Heartbeat, Datei-Sync/Index (Parsen + Embedding auf dem Server), Ignore-Regeln,
+#      project-init, Tray-Endpunkte, intern sync_datei. Der Prozess sperrt jeden PG-Zugriff (sperreDbZugriff).
+#      Legacy-Asset-Inspektion ohne Asset-Sync entfaellt (Hinweis im Log) - Assets ueber den Asset-Sync.
+#      Start mit cwd $TRIGGER_DIR, damit dotenv (core config.ts) keine .env aus dem Arbeitsordner laedt.
+# Ohne Schalter (Vorgabe): unveraendert wie bisher (PG-Weg = Rueckfall).
+DAEMON_CWD=""
+if [ "$(jq -r '.daemon_ohne_db // false' "$TRIGGER_DIR/config.json" 2>/dev/null)" = "true" ]; then
+  unset DATABASE_URL SYNAPSE_DATABASE_URL
+  export SYNAPSE_DAEMON_JOBS_WEG=api
+  DAEMON_CWD="$TRIGGER_DIR"
+else
+  eval "$(jq -r '.mcpServers.synapse.env | to_entries[] | "export \(.key)=\(.value|@sh)"' "$MCP_JSON" 2>/dev/null)"
+fi
 
 daemon_url() {
   local port
@@ -142,7 +158,7 @@ while true; do
       echo "[start-watcher] Daemon laeuft bereits" >> "$LOG"
     else
       echo "[start-watcher] Starte Daemon..." >> "$LOG"
-      setsid nohup node "$DAEMON" >> "$LOG" 2>&1 < /dev/null &
+      ( cd "${DAEMON_CWD:-.}" && exec setsid nohup node "$DAEMON" >> "$LOG" 2>&1 < /dev/null ) &
       disown
     fi
   fi

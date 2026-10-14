@@ -150,7 +150,36 @@ export {
   schliesseDaemonJobWecker,
 } from './services/daemon-jobs-vertrag.js';
 export type { ShellDaemonAbruf, SpecialistDaemonJob, WrapperReapKandidat, DaemonAbschlussErgebnis } from './services/daemon-jobs-vertrag.js';
+// P9-T27 Welle 2: Shell-Kontext (execShellInProject ohne PG im Daemon), Host-Filter, Wrapper-Stop-Zugriff
+export { projekteDesHosts } from './services/daemon-jobs-vertrag.js';
+export { ladeShellExecKontextFuerDaemon, speichereShellSicherungFuerDaemon, passwortfreieDbUrl, verworfenHinweis } from './services/shell-exec-kontext.js';
+export type { ShellExecKontext, ShellExecKontextDaten, ShellSicherungEingabe, ShellKontextFehler } from './services/shell-exec-kontext.js';
+export type { WrapperStopZugriff } from './services/wrapper-prozess.js';
+// P9-T27 letzter Schritt: Daemon ohne DATABASE_URL (Datei-Sync, Index, project-init, Tray ueber die API)
+export { sperreDbZugriff, dbZugriffGesperrt } from './db/client.js';
+export { pgWatcherDatenweg } from './watcher/datenweg.js';
+export type { WatcherDatenweg, PgFsZeile, PgFsLoeschZeile, PgFsSeiten } from './watcher/datenweg.js';
+export { setzeIgnoreRegelQuelle, ladeIgnoreRegelZeilen } from './watcher/ignore.js';
+export type { IgnoreRegelZeile } from './watcher/ignore.js';
+export { speichereDateiInhalt, indexiereDateiInhalt } from './services/code.js';
+export { indexiereExtrahiertesDokument } from './services/documents.js';
+export { pgSyncDateiZugriff } from './services/intern-diagnose-daemon.js';
+export type { SyncDateiPgZugriff, SyncDateiZeile } from './services/intern-diagnose-daemon.js';
+export {
+  istSyncPfad,
+  registriereProjektFuerHost,
+  eigenerProjectInitJob,
+  registriereInitProjektFuerDaemon,
+  schliesseGeloeschteZeileFuerDaemon,
+  protokolliereWatcherEreignisse,
+  trayWatcherEreignisse,
+  trayDateiVersionen,
+} from './services/daemon-sync-vertrag.js';
+export type { WatcherEreignisEintrag } from './services/daemon-sync-vertrag.js';
 export { getProjectRecordById } from './services/project-record-ids.js';
+// P9-T27 Nachbesserung (291473c2 Nr. 1): Spezialisten-Aufraeumschritte projektgebunden
+export { entferneAgentAusProjektChannels, meldeAgentImProjektAb, sitzungsProjektDesAgenten, andereProjekteDesAgenten, entferneInboxImProjekt } from './services/spezialisten-projektbindung.js';
+export type { ProjektInboxErgebnis } from './services/spezialisten-projektbindung.js';
 
 // PostgreSQL
 export { setzeDbProzess, verbindeListenClient, getPool, getHintergrundPool, imHintergrund, istImHintergrund, testDatabaseConnection, closePool, ensureSchema, pruefeSchema, stelleSchemaSicher, schemaModus, leereSchemaWarnung, SCHEMA_KENNUNG } from './db/index.js';

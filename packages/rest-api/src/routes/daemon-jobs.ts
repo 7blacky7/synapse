@@ -17,6 +17,15 @@
  *   POST /api/daemon/specialist/wartung   { host, daemon_id, aktion:'expire'|'wrapper_kandidaten'|
  *                                           'wrapper_abgestuerzt', projekte?, alter_ms?, kandidat? }
  *
+ * P9-T27 WELLE 2 (Daemon ohne DATABASE_URL, gleiche Auth):
+ *   GET  /api/daemon/shell/kontext?host=&daemon_id=&id=   -> { success, kontext:ShellExecKontextDaten }
+ *        (Projektpfad, Projekt-DB, passwortfreie System-DB-Grenze, DB-Freigabe, Katalog; nur eigener laufender Job)
+ *   POST /api/daemon/shell/sicherung { host, daemon_id, id, speicher }  -> beginneShellSicherungsJob
+ *   POST /api/daemon/specialist/daten { host, daemon_id, aktion, ... }   -> PG-Schritte der Spezialisten-Tools
+ *   GET  /api/daemon/projekte?host=&daemon_id=             -> { success, projekte:[{name,path,enabled,setup_phase}] }
+ *   POST /api/daemon/heartbeat { host, daemon_id, aktion:'melden'|'loeschen', projekte, pid? }
+ *   Alles nur fuer Projekte, die auf dem Token-Host liegen (projekteDesHosts / lokalerProjektpfadFuerHost).
+ *
  * AUTH: globaler Bearer-Hook (/api/*) UND hier: nur Daemon-/Tray-Service-Token (kind service, scope
  *   daemon | daemon:*). Der Host kommt aus der bestaetigten Hostbindung des Tokens
  *   (ProjectRestoreService.daemonHost(token_hash), Muster routes/project-restore.ts) — nie vom Client.
@@ -48,7 +57,35 @@ import {
 } from '@synapse/core';
 import { ProjectRestoreService } from '@synapse/core';
 import type { ShellJobCompletion, SpecialistJobCompletion } from '@synapse/core';
+// P9-T27 Welle 2
+import {
+  getPool,
+  projekteDesHosts,
+  ladeShellExecKontextFuerDaemon,
+  speichereShellSicherungFuerDaemon,
+  listModels,
+  ensureGeneralChannel,
+  joinChannel,
+  beginneSitzung,
+  upsertWrapperStatus,
+  setzeHeartbeatBeimSpawn,
+  removeWrapperStatus,
+  postToInbox,
+  // P9-T27 Nachbesserung (291473c2 Nr. 1): nur Daten des geprueften Projekts
+  entferneAgentAusProjektChannels,
+  meldeAgentImProjektAb,
+  sitzungsProjektDesAgenten,
+  andereProjekteDesAgenten,
+  entferneInboxImProjekt,
+  upsertDaemonHeartbeat,
+  clearDaemonHeartbeat,
+  istVirtuellesProjekt,
+  istVirtuellerRegistryPfad,
+} from '@synapse/core';
+import type { ShellSicherungEingabe } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
+// P9-T27 letzter Schritt: Datei-Sync, Projekt-Schalter, project-init, Tray (gleiche Vorpruefung)
+import { daemonSyncRoutes } from './daemon-sync.js';
 
 const SHELL_STATUS = ['done', 'failed', 'rejected', 'timeout'] as const;
 
@@ -113,6 +150,16 @@ function erstellePruefer(o: DaemonJobsRoutesOptionen): Pruefer {
 function warteMsAus(roh: unknown): number {
   const n = Number(roh ?? DAEMON_JOB_WARTE_MAX_S);
   return Math.min(Math.max(Number.isFinite(n) ? n : DAEMON_JOB_WARTE_MAX_S, 0), DAEMON_JOB_WARTE_MAX_S) * 1000;
+}
+
+/** P9-T27 Welle 2: Agentenname wie in Spezialisten-Tools (kein Pfad, begrenzt). */
+function istAgentName(n: unknown): n is string {
+  return typeof n === 'string' && n.length > 0 && n.length <= 128 && !/[\u0000-\u001f]/.test(n);
+}
+
+/** Fehlercode -> HTTP-Status fuer den Shell-Kontext. */
+function kontextStatus(error: string): number {
+  return error === 'job_unbekannt' ? 404 : 409;
 }
 
 function istShellAbschluss(a: unknown): a is ShellJobCompletion {
@@ -180,6 +227,80 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
   );
 
   // ── Spezialisten ─────────────────────────────────────────────────────────
+  // P9-T27 Welle 2: Kontext fuer execShellInProject (Daemon ohne eigene PG-Lesewege)
+  fastify.get<{ Querystring: { host?: string; daemon_id?: string; id?: string } }>(
+    '/api/daemon/shell/kontext',
+    async (request, reply) => {
+      const d = await pruefeDaemon(request, reply, request.query.host, request.query.daemon_id);
+      if (!d) return reply;
+      const id = request.query.id;
+      if (typeof id !== 'string' || !id) return reply.code(400).send({ success: false, error: 'id_fehlt' });
+      const r = await ladeShellExecKontextFuerDaemon(id, d.daemonId, d.host);
+      if (!r.ok) return reply.code(kontextStatus(r.error)).send({ success: false, error: r.error });
+      return { success: true, kontext: r.kontext };
+    },
+  );
+
+  // P9-T27 Welle 2: Sicherungs-Audit eines eigenen laufenden Jobs (beginneShellSicherungsJob serverseitig)
+  fastify.post<{ Body: { host?: string; daemon_id?: string; id?: string; speicher?: unknown } }>(
+    '/api/daemon/shell/sicherung',
+    async (request, reply) => {
+      const body = request.body ?? {};
+      const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+      if (!d) return reply;
+      if (typeof body.id !== 'string' || !body.id) return reply.code(400).send({ success: false, error: 'id_fehlt' });
+      const s = body.speicher as Partial<ShellSicherungEingabe> | undefined;
+      if (!s || typeof s !== 'object' || !s.entscheidung || typeof s.entscheidung !== 'object' || !s.lage || typeof s.lage !== 'object') {
+        return reply.code(400).send({ success: false, error: 'speicher_ungueltig' });
+      }
+      const r = await speichereShellSicherungFuerDaemon(body.id, d.daemonId, s as ShellSicherungEingabe);
+      if (!r.ok) return reply.code(kontextStatus(r.error)).send({ success: false, error: r.error });
+      return { success: true, id: r.id ?? null };
+    },
+  );
+
+  // P9-T27 Welle 2: Projekt-Snapshot dieses Hosts fuer enabled-sync (gleiche Abfrage wie bisher im Daemon)
+  fastify.get<{ Querystring: { host?: string; daemon_id?: string } }>(
+    '/api/daemon/projekte',
+    async (request, reply) => {
+      const d = await pruefeDaemon(request, reply, request.query.host, request.query.daemon_id);
+      if (!d) return reply;
+      const res = await getPool().query<{ name: string; path: string; enabled: boolean; setup_phase: string | null }>(
+        `SELECT p.name, p.path, p.enabled, s.setup_phase
+           FROM projects p
+           LEFT JOIN project_setup_status s ON s.project = p.name
+          WHERE p.hostname = $1`,
+        [d.host],
+      );
+      const projekte = res.rows.filter((r) => !istVirtuellesProjekt(r.name) && !istVirtuellerRegistryPfad(r.path));
+      return { success: true, host: d.host, projekte };
+    },
+  );
+
+  // P9-T27 Welle 2: Daemon-Heartbeat (daemon_heartbeats) fuer die Projekte dieses Hosts
+  fastify.post<{ Body: { host?: string; daemon_id?: string; aktion?: string; projekte?: string[] | string; pid?: number } }>(
+    '/api/daemon/heartbeat',
+    async (request, reply) => {
+      const body = request.body ?? {};
+      const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+      if (!d) return reply;
+      const projekte = await projekteDesHosts(leseProjektListe(body.projekte), d.host);
+      if (body.aktion === 'melden') {
+        const pid = Number.isSafeInteger(body.pid) ? Number(body.pid) : Number(d.daemonId.slice(`daemon-${d.host}-`.length));
+        const fehler: string[] = [];
+        for (const p of projekte) {
+          try { await upsertDaemonHeartbeat(p, d.host, pid); } catch (err) { fehler.push(`${p}: ${(err as Error).message}`); }
+        }
+        return { success: fehler.length === 0, aktion: 'melden', projekte, ...(fehler.length ? { fehler } : {}) };
+      }
+      if (body.aktion === 'loeschen') {
+        for (const p of projekte) { try { await clearDaemonHeartbeat(p); } catch { /* wie im Daemon: ignorieren */ } }
+        return { success: true, aktion: 'loeschen', projekte };
+      }
+      return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: ['melden', 'loeschen'] });
+    },
+  );
+
   fastify.get<{ Querystring: { host?: string; daemon_id?: string; projekte?: string; warte?: string } }>(
     '/api/daemon/specialist/jobs',
     async (request, reply) => {
@@ -265,4 +386,100 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: ['expire', 'wrapper_kandidaten', 'wrapper_abgestuerzt'] });
     }
   });
+
+  // P9-T27 Welle 2: PG-Schritte der Spezialisten-Tools (spawn/stop/purge/wake), ausgefuehrt im Daemon.
+  // Jede Aktion ausser 'modelle' verlangt ein Projekt, das eindeutig auf dem Token-Host liegt.
+  const SPEZIALISTEN_DATEN = ['modelle', 'projektpfad', 'general_channel', 'channel_beitreten', 'sitzung_neu', 'wrapper_status',
+    'heartbeat_beim_spawn', 'wrapper_pid', 'wrapper_gestoppt', 'aus_channels', 'chat_abmelden', 'wrapper_status_entfernen',
+    'inbox_entfernen', 'inbox_post'] as const;
+  fastify.post<{
+    Body: {
+      host?: string; daemon_id?: string; aktion?: string; project?: string; agent?: string; channel?: string;
+      created_by?: string; pid?: number; zeile?: Record<string, unknown>; from?: string; to?: string; content?: string;
+    };
+  }>('/api/daemon/specialist/daten', async (request, reply) => {
+    const body = request.body ?? {};
+    const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+    if (!d) return reply;
+    const aktion = body.aktion;
+    if (!aktion || !(SPEZIALISTEN_DATEN as readonly string[]).includes(aktion)) {
+      return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: SPEZIALISTEN_DATEN });
+    }
+    if (aktion === 'modelle') return { success: true, aktion, modelle: await listModels() };
+    const project = aktion === 'wrapper_status' ? body.zeile?.project : body.project;
+    if (typeof project !== 'string' || leseProjektListe(project).length !== 1) {
+      return reply.code(400).send({ success: false, error: 'project_fehlt' });
+    }
+    if (aktion === 'projektpfad') return { success: true, aktion, pfad: await lokalerProjektpfadFuerHost(project, d.host) };
+    if ((await projekteDesHosts([project], d.host)).length !== 1) {
+      return reply.code(409).send({ success: false, error: 'projekt_nicht_auf_diesem_host' });
+    }
+    const agent = aktion === 'wrapper_status' ? body.zeile?.agentName : aktion === 'inbox_post' ? body.to : body.agent;
+    if (!istAgentName(agent)) return reply.code(400).send({ success: false, error: 'agent_ungueltig' });
+    switch (aktion) {
+      case 'general_channel':
+        await ensureGeneralChannel(project, istAgentName(body.created_by) ? body.created_by : agent, agent);
+        return { success: true, aktion };
+      case 'channel_beitreten':
+        if (typeof body.channel !== 'string' || !body.channel) return reply.code(400).send({ success: false, error: 'channel_fehlt' });
+        return { success: true, aktion, beigetreten: await joinChannel(project, body.channel, agent) };
+      case 'sitzung_neu': {
+        // agent_sessions.id ist global: gehoert die Sitzung einem anderen Projekt, bleibt sie unberuehrt.
+        const sitzungsProjekt = await sitzungsProjektDesAgenten(agent);
+        if (sitzungsProjekt !== null && sitzungsProjekt !== project) {
+          return reply.code(409).send({ success: false, error: 'agent_in_anderem_projekt', andere_projekte: [sitzungsProjekt] });
+        }
+        await beginneSitzung(agent, project, 'neu');
+        return { success: true, aktion };
+      }
+      case 'wrapper_status':
+        await upsertWrapperStatus(body.zeile as unknown as Parameters<typeof upsertWrapperStatus>[0]);
+        return { success: true, aktion };
+      case 'heartbeat_beim_spawn':
+        await setzeHeartbeatBeimSpawn(project, agent);
+        return { success: true, aktion };
+      case 'wrapper_pid': {
+        const { rows } = await getPool().query<{ wrapper_pid: number | null }>(
+          'SELECT wrapper_pid FROM wrapper_status WHERE agent_name=$1 AND project=$2', [agent, project]);
+        return { success: true, aktion, pid: rows.length === 1 && rows[0].wrapper_pid ? Number(rows[0].wrapper_pid) : null };
+      }
+      case 'wrapper_gestoppt': {
+        if (!Number.isSafeInteger(body.pid) || Number(body.pid) <= 1) return reply.code(400).send({ success: false, error: 'pid_ungueltig' });
+        // PID-CAS wie stoppeLokalenWrapper: ein zwischenzeitlich neu gestarteter Wrapper bleibt unangetastet.
+        const r = await getPool().query(
+          "UPDATE wrapper_status SET status='stopped',busy=false,current_task=NULL,connected_mcp=false WHERE agent_name=$1 AND project=$2 AND wrapper_pid=$3",
+          [agent, project, Number(body.pid)]);
+        return { success: true, aktion, anzahl: r.rowCount ?? 0 };
+      }
+      // P9-T27 Nachbesserung (291473c2 Nr. 1): wirkt nur im geprueften Projekt, nie projektuebergreifend.
+      case 'aus_channels':
+        return { success: true, aktion, anzahl: await entferneAgentAusProjektChannels(agent, project) };
+      case 'chat_abmelden':
+        return { success: true, aktion, anzahl: await meldeAgentImProjektAb(agent, project) };
+      case 'wrapper_status_entfernen':
+        await removeWrapperStatus(agent, project);
+        return { success: true, aktion };
+      case 'inbox_entfernen': {
+        // specialist_inbox hat keine project-Spalte: nur loeschen, wenn der Name allein diesem Projekt gehoert.
+        const r = await entferneInboxImProjekt(agent, project);
+        if (r.andereProjekte.length > 0) {
+          return reply.code(409).send({ success: false, error: 'agent_in_anderem_projekt', andere_projekte: r.andereProjekte });
+        }
+        return { success: true, aktion, anzahl: r.anzahl };
+      }
+      case 'inbox_post': {
+        if (!istAgentName(body.from) || typeof body.content !== 'string') return reply.code(400).send({ success: false, error: 'nachricht_ungueltig' });
+        // Gleichnamiger Agent eines anderen Projekts wuerde die Nachricht mitlesen.
+        const andere = await andereProjekteDesAgenten(agent, project);
+        if (andere.length > 0) return reply.code(409).send({ success: false, error: 'agent_in_anderem_projekt', andere_projekte: andere });
+        const r = await postToInbox(body.from, agent, body.content);
+        return { success: true, aktion, id: r.id };
+      }
+      default:
+        return reply.code(400).send({ success: false, error: 'aktion_unbekannt' });
+    }
+  });
+
+  // P9-T27 letzter Schritt: /api/daemon/sync, /projekt-schalter, /project-init, /tray (routes/daemon-sync.ts)
+  await daemonSyncRoutes(fastify, pruefeDaemon);
 }

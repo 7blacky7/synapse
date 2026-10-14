@@ -54,17 +54,35 @@ export async function pruefeWrapperProzess(pid: number, name: string, project: s
   }
 }
 
-export async function stoppeLokalenWrapper(name: string, projectPath: string, project?: string): Promise<Record<string, unknown>> {
-  const pool=getPool();
-  if (!project) {
+/**
+ * P9-T27 Welle 2: Datenzugriff fuer stoppeLokalenWrapper ohne eigene PG-Verbindung (Daemon-API-Weg).
+ * Die Prozesspruefung und die Signale bleiben lokal; nur Lesen/Schreiben der Zeilen geht ueber den Zugriff.
+ */
+export interface WrapperStopZugriff {
+  /** Projektpfad dieses Hosts (wie lokalerProjektpfad) oder null. */
+  projektpfad: (project: string) => Promise<string | null>;
+  /** Wrapper-PID aus wrapper_status (genau eine Zeile) oder null. */
+  wrapperPid: (name: string, project: string) => Promise<number | null>;
+  /** PID-CAS wie unten: status stopped nur fuer genau diese PID. */
+  setzeGestoppt: (name: string, project: string, pid: number) => Promise<void>;
+}
+
+export async function stoppeLokalenWrapper(name: string, projectPath: string, project?: string, zugriff?: WrapperStopZugriff): Promise<Record<string, unknown>> {
+  const pool=zugriff?null:getPool();
+  if (!project && pool) {
     const {rows}=await pool.query<{name:string}>('SELECT DISTINCT name FROM projects WHERE hostname=$1 AND path=$2',[hostname(),projectPath]);
     if(rows.length===1)project=rows[0].name;
   }
   const ungeprueft=(grund:string)=>({success:false,message:'Prozesstod UNGEPRUEFT: '+grund,steps:{prozess_beendet:'ungeprueft'}});
-  if(!project || await lokalerProjektpfad(project)!==projectPath)return ungeprueft('Projekt gehört nicht eindeutig zu diesem Host/Pfad');
-  const {rows}=await pool.query('SELECT wrapper_pid,last_activity FROM wrapper_status WHERE agent_name=$1 AND project=$2',[name,project]);
-  if(rows.length!==1 || !rows[0].wrapper_pid)return ungeprueft('keine Wrapper-PID in PostgreSQL');
-  const pid=Number(rows[0].wrapper_pid), vorher=await pruefeWrapperProzess(pid,name,project,projectPath);
+  if(!project || await (zugriff?zugriff.projektpfad(project):lokalerProjektpfad(project))!==projectPath)return ungeprueft('Projekt gehört nicht eindeutig zu diesem Host/Pfad');
+  let gespeichertePid:number|null=null;
+  if(zugriff)gespeichertePid=await zugriff.wrapperPid(name,project);
+  else{
+    const {rows}=await pool!.query('SELECT wrapper_pid,last_activity FROM wrapper_status WHERE agent_name=$1 AND project=$2',[name,project]);
+    if(rows.length===1 && rows[0].wrapper_pid)gespeichertePid=Number(rows[0].wrapper_pid);
+  }
+  if(!gespeichertePid)return ungeprueft('keine Wrapper-PID in PostgreSQL');
+  const pid=gespeichertePid, vorher=await pruefeWrapperProzess(pid,name,project,projectPath);
   if(vorher.zustand==='ungeprueft')return ungeprueft(vorher.grund||'Identität unbekannt');
   let tot=vorher.zustand==='tot';
   const gleich=async()=>{const p=await pruefeWrapperProzess(pid,name,project!,projectPath);return p.zustand==='wrapper'&&p.start===vorher.start;};
@@ -89,7 +107,8 @@ export async function stoppeLokalenWrapper(name: string, projectPath: string, pr
   }
   if(!tot)return ungeprueft('Wrapper nach Frist nicht nachweislich beendet');
   // PID-CAS: ein zwischenzeitlich neu gestarteter Wrapper bleibt unangetastet.
-  await pool.query("UPDATE wrapper_status SET status='stopped',busy=false,current_task=NULL,connected_mcp=false WHERE agent_name=$1 AND project=$2 AND wrapper_pid=$3",[name,project,pid]);
+  if(zugriff)await zugriff.setzeGestoppt(name,project,pid);
+  else await pool!.query("UPDATE wrapper_status SET status='stopped',busy=false,current_task=NULL,connected_mcp=false WHERE agent_name=$1 AND project=$2 AND wrapper_pid=$3",[name,project,pid]);
   return {success:true,message:'Spezialist "'+name+'" gestoppt. Prozess nachweislich beendet.',wrapper_pid:pid,steps:{prozess_beendet:true}};
 }
 

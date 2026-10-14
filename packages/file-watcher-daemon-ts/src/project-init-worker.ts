@@ -20,7 +20,7 @@ import {
   getPool,
   verbindeListenClient,
   claimPendingProjectInitJob,
-  completeProjectInitJob,
+  completeProjectInitJob as completeProjectInitJobPg,
   expirePendingProjectInitJobs,
   isValidProjectName,
   getProjectStatus,
@@ -45,6 +45,17 @@ import type { WatcherManager } from './manager.js'
 import {startProjectRestoreWorker} from './project-restore-worker.js'
 import {startHostLoesenWorker} from './host-loesen-worker.js'
 import {startProjektLoeschenWorker} from './projekt-loeschen-worker.js'
+// P9-T27 letzter Schritt: im API-Weg (Daemon ohne DATABASE_URL) laufen Claim/Abschluss/Registrierung ueber die API.
+import { daemonJobsWeg, pruefeApiWeg } from './daemon-jobs-api.js'
+import {
+  claimProjectInitApi,
+  schliesseProjectInitApi,
+  expireProjectInitApi,
+  registriereProjectInitApi,
+} from './daemon-sync-api.js'
+
+/** P9-T27: Poll-Takt im API-Weg (statt LISTEN project_init_job_created). Jobs verfallen nach 30 s. */
+const API_POLL_MS = 3_000
 
 const HOSTNAME = os.hostname()
 const DAEMON_ID = `daemon-${HOSTNAME}-${process.pid}`
@@ -65,6 +76,44 @@ export async function startProjectInitWorker(
   const hostLoesenWorker = startHostLoesenWorker(manager)
   // P9-T31: Ordner-Loeschauftraege (nach bestaetigtem Loesch-Code) ueber die API abholen.
   const projektLoeschenWorker = startProjektLoeschenWorker(manager)
+
+  // P9-T27: API-Weg — kein LISTEN, kein Pool; Polling alle 3 s, Verfall alle 10 s ueber die API.
+  if (daemonJobsWeg() === 'api') {
+    pruefeApiWeg()
+    let busy = false
+    const poll = (): void => {
+      if (stopped || busy) return
+      busy = true
+      void processNextJob(manager, true)
+        .catch((err: unknown) => console.error('[project-init-worker] (Weg: API) Abruf Fehler:', (err as Error).message))
+        .finally(() => { busy = false })
+    }
+    registriereWorker({
+      name: 'project_init',
+      beschreibung: 'Project-Init-Jobs (Web-KI Self-Service) claimen und ausfuehren (Weg: API)',
+      durchlauf: async () => { await processNextJob(manager, true); return { versucht: true } },
+    })
+    const pollTimer = setInterval(poll, API_POLL_MS)
+    const expireTimer = setInterval(() => {
+      if (stopped || workerPausiert('project_init')) return
+      void expireProjectInitApi(30).catch((err: unknown) => {
+        console.error('[project-init-worker] (Weg: API) expire Fehler:', (err as Error).message)
+      })
+    }, 10_000)
+    poll()
+    console.error(`[project-init-worker] gestartet als ${DAEMON_ID} (Weg: API, Poll ${API_POLL_MS / 1000} s, workspace_root=${getWorkspaceRoot()})`)
+    return {
+      stop: async (): Promise<void> => {
+        stopped = true
+        clearInterval(pollTimer)
+        clearInterval(expireTimer)
+        await restoreWorker.stop()
+        await hostLoesenWorker.stop()
+        await projektLoeschenWorker.stop()
+        console.error('[project-init-worker] gestoppt.')
+      },
+    }
+  }
 
   listenClient = await verbindeListenClient()
   await listenClient.query('LISTEN project_init_job_created')
@@ -128,24 +177,27 @@ export async function startProjectInitWorker(
   return { stop }
 }
 
-async function processNextJob(manager: WatcherManager): Promise<void> {
+async function processNextJob(manager: WatcherManager, apiWeg = false): Promise<void> {
   // P15-T12: pausiert -> nicht claimen, der Job bleibt pending.
   if (workerPausiert('project_init')) return
-  const job = await claimPendingProjectInitJob(DAEMON_ID, HOSTNAME)
+  const job = apiWeg ? await claimProjectInitApi() : await claimPendingProjectInitJob(DAEMON_ID, HOSTNAME)
   if (!job) return
   meldeWorkerArbeit('project_init')
 
-  await processProjectInitJob(job, manager)
+  await processProjectInitJob(job, manager, apiWeg)
 }
 
 export async function processProjectInitJob(
   job: ProjectInitJobRow,
   manager: WatcherManager,
+  apiWeg = false,
 ): Promise<void> {
-  console.error(`[project-init-worker] Job ${job.id} (name=${job.name}) gestartet`)
+  console.error(`[project-init-worker] Job ${job.id} (name=${job.name}) gestartet${apiWeg ? ' (Weg: API)' : ''}`)
+  // P9-T27: Abschluss im API-Weg nur fuer den eigenen laufenden Job (Pruefung in der API).
+  const completeProjectInitJob = apiWeg ? schliesseProjectInitApi : completeProjectInitJobPg
 
   try {
-    const resolved = await initializeProject(job, manager)
+    const resolved = await initializeProject(job, manager, apiWeg)
     await completeProjectInitJob(job.id, {
       status: 'done',
       resolved_path: resolved.path,
@@ -245,6 +297,7 @@ async function richteProjektDbEin(name: string, projectPath: string): Promise<st
 export async function initializeProject(
   job: ProjectInitJobRow,
   manager: WatcherManager,
+  apiWeg = false,
 ): Promise<InitResult> {
   // Ein Restorejob darf niemals versehentlich die Legacy-Stubs/DB-Vorwärmung auslösen.
   if (job.mode === 'restore_existing') throw new Error('restore_api_worker_required')
@@ -326,11 +379,19 @@ export async function initializeProject(
   }
 
   // Projekt lokal und fuer REST/Cloud-Clients registrieren.
-  await registerProject(job.name, projectPath)
-  try {
-    await registerVirtualProject(job.name)
-  } catch (err) {
-    throw new Error(`Virtuelle REST-Registrierung fuer ${job.name} fehlgeschlagen: ${(err as Error).message}`)
+  // P9-T27: im API-Weg registriert die API (Host aus dem Token) und setzt die Setup-Phase in PG;
+  // die lokale status.json-Phase geht als Notnagel mit (wie getSetupPhase(name, projectPath)).
+  let apiPhaseVorher: string | null = null
+  if (apiWeg) {
+    const r = await registriereProjectInitApi(job.id, projectPath, getProjectStatus(projectPath)?.setupPhase ?? null)
+    apiPhaseVorher = r.setup_phase_vorher
+  } else {
+    await registerProject(job.name, projectPath)
+    try {
+      await registerVirtualProject(job.name)
+    } catch (err) {
+      throw new Error(`Virtuelle REST-Registrierung fuer ${job.name} fehlgeschlagen: ${(err as Error).message}`)
+    }
   }
 
   // Daemon-Config + FileWatcher in einem: registriert in config.json,
@@ -340,7 +401,9 @@ export async function initializeProject(
 
   // PG ist die Quelle der Wahrheit; status.json bleibt ein lokaler Cache.
   // Ein wiederholtes Init setzt einen vorhandenen Setup-Fortschritt nicht zurueck.
-  const setupPhase = await getSetupPhase(job.name, projectPath)
+  const setupPhase = apiPhaseVorher !== null
+    ? (apiPhaseVorher as Awaited<ReturnType<typeof getSetupPhase>>)
+    : await getSetupPhase(job.name, projectPath)
   const nextSetupPhase = setupPhase === 'none' ? 'initial-pending' : setupPhase
   const status = getProjectStatus(projectPath)
   setProjectStatus(projectPath, {
@@ -350,7 +413,8 @@ export async function initializeProject(
     lastAccess: status?.lastAccess,
     setupPhase: nextSetupPhase,
   })
-  if (setupPhase === 'none') {
+  // P9-T27: im API-Weg hat die API 'initial-pending' bereits in PG gesetzt.
+  if (setupPhase === 'none' && !apiWeg) {
     await setSetupPhase(job.name, 'initial-pending', {
       projectPath,
       updatedBy: 'file-watcher-daemon:project-init',

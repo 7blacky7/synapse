@@ -13,10 +13,17 @@
  *   "daemon_jobs_weg": "api"|"pg"   (config.json)
  *   Unbekannte Werte werden laut gemeldet und als 'pg' behandelt. Ist 'api' gewaehlt, faellt der
  *   Daemon NICHT still auf PG zurueck — ein Worker, der anders arbeitet als bestellt, waere unsichtbar.
+ *
+ * P9-T27 WELLE 2: Derselbe Schalter steuert jetzt auch Shell-Kontext (execShellInProject ohne PG),
+ *   die PG-Schritte der Spezialisten-Tools, enabled-sync und den Daemon-Heartbeat.
+ *   VORGABE ohne Schalter: 'pg', solange der Daemon ein DATABASE_URL hat (Rueckfall, unveraendert).
+ *   Fehlt DATABASE_URL/SYNAPSE_DATABASE_URL ganz, ist der PG-Weg ohnehin unmoeglich -> 'api'.
+ *   Ein ausdruecklich gesetztes 'pg' bleibt 'pg' (Rueckfall per Schalter).
  */
 
 import os from 'node:os';
 import type { ShellJobCompletion, ShellJobRow, SpecialistJobCompletion, SpecialistJobRow } from '@synapse/core';
+import type { ShellExecKontextDaten, ShellSicherungEingabe } from '@synapse/core';
 import { loadConfig } from './config.js';
 import { leseApiZugang } from './skills-proxy.js';
 
@@ -43,8 +50,24 @@ export function daemonJobsWeg(): DaemonJobsWeg {
     gemeldeterUnbekannterWert = roh;
     console.error(`[daemon-jobs] daemon_jobs_weg/SYNAPSE_DAEMON_JOBS_WEG="${roh}" ist unbekannt — es gibt nur "pg" und "api". Ich nehme "pg".`);
   }
+  // P9-T27 Welle 2: ohne Schalter und ohne DB-Zugang ist PG unmoeglich -> API ist Standard.
+  if (roh === '' && !ohneDatenbankGemeldet && !hatDatenbankUrl()) {
+    ohneDatenbankGemeldet = true;
+    console.error('[daemon-jobs] kein DATABASE_URL in der Daemon-Umgebung — Weg: API (Rueckfall per daemon_jobs_weg="pg" nur mit DATABASE_URL).');
+  }
+  if (roh === '' && !hatDatenbankUrl()) return 'api';
   return 'pg';
 }
+
+let ohneDatenbankGemeldet = false;
+
+/** true, wenn der Daemon (noch) einen direkten DB-Zugang in seiner Umgebung hat. */
+export function hatDatenbankUrl(): boolean {
+  return !!(process.env.DATABASE_URL ?? '').trim() || !!(process.env.SYNAPSE_DATABASE_URL ?? '').trim();
+}
+
+/** Daemon-ID dieses Prozesses (wie in shell-/specialist-job-worker). */
+export const DAEMON_API_ID = `daemon-${DAEMON_HOST}-${process.pid}`;
 
 /** Prueft die Voraussetzungen des API-Wegs; wirft mit klarer Meldung statt still zurueckzufallen. */
 export function pruefeApiWeg(): void {
@@ -61,7 +84,8 @@ export class DaemonJobsApiFehler extends Error {
   }
 }
 
-async function anfrage<T>(pfad: string, init: { method: 'GET' | 'POST'; body?: unknown }, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+/** P9-T27 letzter Schritt: auch von daemon-sync-api.ts genutzt (gleicher Zugang, gleiche Fehlerform). */
+export async function anfrage<T>(pfad: string, init: { method: 'GET' | 'POST'; body?: unknown }, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   const { url, token } = leseApiZugang();
   if (!token) throw new DaemonJobsApiFehler('kein synapse_api_token in config.json (Tray: Verbindung einrichten)', 0, 'kein_token');
   const controller = new AbortController();
@@ -180,6 +204,48 @@ export async function wrapperAbgestuerztApi(daemonId: string, kandidat: WrapperK
   const a = await anfrage<{ anzahl?: number }>('/api/daemon/specialist/wartung',
     { method: 'POST', body: { host: DAEMON_HOST, daemon_id: daemonId, aktion: 'wrapper_abgestuerzt', kandidat } }, 30_000);
   return Number(a.anzahl ?? 0);
+}
+
+// ── P9-T27 Welle 2: Shell-Kontext ────────────────────────────────────────────────
+
+/** Kontext fuer execShellInProject eines eigenen, laufenden Jobs (Projektpfad, Projekt-DB, Katalog, Freigabe). */
+export async function holeShellKontextApi(id: string, daemonId: string): Promise<ShellExecKontextDaten> {
+  const a = await anfrage<{ kontext?: ShellExecKontextDaten }>(
+    `/api/daemon/shell/kontext?${query({ host: DAEMON_HOST, daemon_id: daemonId, id })}`, { method: 'GET' }, 30_000);
+  if (!a.kontext || typeof a.kontext.project_root !== 'string') throw new DaemonJobsApiFehler('Shell-Kontext ohne Inhalt', 0, 'kontext_leer');
+  return a.kontext;
+}
+
+/** Sicherungs-Audit (beginneShellSicherungsJob) eines eigenen laufenden Jobs serverseitig speichern. */
+export async function meldeShellSicherungApi(id: string, daemonId: string, speicher: ShellSicherungEingabe): Promise<string | undefined> {
+  const a = await anfrage<{ id?: string | null }>('/api/daemon/shell/sicherung',
+    { method: 'POST', body: { host: DAEMON_HOST, daemon_id: daemonId, id, speicher } }, 30_000);
+  return typeof a.id === 'string' ? a.id : undefined;
+}
+
+// ── P9-T27 Welle 2: Spezialisten-Daten, Projekte, Heartbeat ────────────────────────
+
+/** PG-Schritt der Spezialisten-Tools ueber POST /api/daemon/specialist/daten. */
+export async function spezialistenDatenApi<T = Record<string, unknown>>(aktion: string, daten: Record<string, unknown> = {}): Promise<T> {
+  return anfrage<T>('/api/daemon/specialist/daten',
+    { method: 'POST', body: { ...daten, host: DAEMON_HOST, daemon_id: DAEMON_API_ID, aktion } }, 30_000);
+}
+
+export interface DaemonProjektZeile { name: string; path: string; enabled: boolean; setup_phase: string | null }
+
+/** Projekt-Snapshot dieses Hosts (enabled-sync), gleiche Zeilen wie die bisherige PG-Abfrage. */
+export async function holeProjekteApi(): Promise<DaemonProjektZeile[]> {
+  const a = await anfrage<{ projekte?: DaemonProjektZeile[] }>(
+    `/api/daemon/projekte?${query({ host: DAEMON_HOST, daemon_id: DAEMON_API_ID })}`, { method: 'GET' }, 30_000);
+  if (!Array.isArray(a.projekte)) throw new DaemonJobsApiFehler('Projekt-Snapshot ohne Liste', 0, 'projekte_leer');
+  return a.projekte;
+}
+
+/** Daemon-Heartbeat (daemon_heartbeats) melden oder loeschen. */
+export async function heartbeatApi(aktion: 'melden' | 'loeschen', projekte: string[]): Promise<void> {
+  if (projekte.length === 0) return;
+  await anfrage('/api/daemon/heartbeat',
+    { method: 'POST', body: { host: DAEMON_HOST, daemon_id: DAEMON_API_ID, aktion, projekte, pid: process.pid } }, 15_000);
 }
 
 export const schlafe = (ms: number): Promise<void> => new Promise((r) => { const t = setTimeout(r, ms); t.unref?.(); });

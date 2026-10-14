@@ -369,31 +369,50 @@ function gepufferterStand(project?: string): RegelStand | null {
  * zoege dann heruntergeladene Pakete in den Index. Lieber kurz veraltet als
  * kurz blind.
  */
+/** P9-T27: eine aktive Regelzeile aus project_ignore_rules (Form der Abfrage unten). */
+export interface IgnoreRegelZeile {
+  pattern: string;
+  modus: string;
+  befristet_offen: boolean;
+  restsekunden: number | string | null;
+}
+
+/**
+ * P9-T27 (Daemon ohne DB): austauschbare Quelle der Regelzeilen. Vorgabe null = PG
+ * (ladeIgnoreRegelZeilen). Der Daemon im API-Weg setzt eine Quelle, die dieselben Zeilen ueber die
+ * Synapse-API holt (POST /api/daemon/sync, aktion ignore_regeln -> serverseitig ladeIgnoreRegelZeilen).
+ */
+let regelQuelle: ((project: string) => Promise<IgnoreRegelZeile[]>) | null = null;
+export function setzeIgnoreRegelQuelle(quelle: ((project: string) => Promise<IgnoreRegelZeile[]>) | null): void {
+  regelQuelle = quelle;
+}
+
+/** Aktive Regelzeilen eines Projekts direkt aus PG (bisherige Abfrage, unveraendert). */
+export async function ladeIgnoreRegelZeilen(project: string): Promise<IgnoreRegelZeile[]> {
+  const { getPool } = await import('../db/client.js');
+  // eingeblendet_bis hebt eine Ausblend-Regel voruebergehend auf. Die Pruefung
+  // laeuft ueber NOW() in der Datenbank, damit die Zeitrechnung an EINER Stelle
+  // stattfindet und nicht von der Uhr des jeweiligen Prozesses abhaengt.
+  const ergebnis = await getPool().query<IgnoreRegelZeile>(
+    `SELECT pattern,
+            modus,
+            (modus = 'ausgeblendet' AND eingeblendet_bis IS NOT NULL AND eingeblendet_bis > NOW()) AS befristet_offen,
+            CASE WHEN eingeblendet_bis > NOW()
+                 THEN EXTRACT(EPOCH FROM (eingeblendet_bis - NOW()))
+            END AS restsekunden
+       FROM project_ignore_rules
+      WHERE project = $1 AND enabled
+      ORDER BY sort_order, id`,
+    [project],
+  );
+  return ergebnis.rows;
+}
+
 export async function aktualisiereIgnoreRegeln(project: string): Promise<number> {
   if (!project) return -1;
   laufendeAbfragen.add(project);
   try {
-    const { getPool } = await import('../db/client.js');
-    // eingeblendet_bis hebt eine Ausblend-Regel voruebergehend auf. Die Pruefung
-    // laeuft ueber NOW() in der Datenbank, damit die Zeitrechnung an EINER Stelle
-    // stattfindet und nicht von der Uhr des jeweiligen Prozesses abhaengt.
-    const ergebnis = await getPool().query<{
-      pattern: string;
-      modus: string;
-      befristet_offen: boolean;
-      restsekunden: number | null;
-    }>(
-      `SELECT pattern,
-              modus,
-              (modus = 'ausgeblendet' AND eingeblendet_bis IS NOT NULL AND eingeblendet_bis > NOW()) AS befristet_offen,
-              CASE WHEN eingeblendet_bis > NOW()
-                   THEN EXTRACT(EPOCH FROM (eingeblendet_bis - NOW()))
-              END AS restsekunden
-         FROM project_ignore_rules
-        WHERE project = $1 AND enabled
-        ORDER BY sort_order, id`,
-      [project],
-    );
+    const ergebnis = { rows: await (regelQuelle ?? ladeIgnoreRegelZeilen)(project) };
     // Eine Regel mit laufender Frist zaehlt nicht zur Sichtbarkeitsmenge — genau
     // das ist die Einblendung.
     const sichtbarkeit = ergebnis.rows.filter((zeile) => !zeile.befristet_offen);
@@ -414,7 +433,7 @@ export async function aktualisiereIgnoreRegeln(project: string): Promise<number>
           ? Date.now() + Math.min(naechsteFrist * 1000, REGEL_GUELTIGKEIT_MS)
           : Date.now() + REGEL_GUELTIGKEIT_MS,
     });
-    return ergebnis.rowCount ?? 0;
+    return ergebnis.rows.length;
   } catch (error) {
     console.error(
       `[Synapse] Ignore-Regeln fuer "${project}" nicht ladbar, bisheriger Stand bleibt gueltig:`,

@@ -50,6 +50,23 @@ import type { ReverseBibliothekConfig } from './config.js';
 
 import {DaemonAssetSync} from './asset-sync.js';
 import { DaemonReverseBibliothek } from './reverse-bibliothek.js';
+// P9-T27 letzter Schritt: Daemon ohne DATABASE_URL (Datei-Sync, Index, Projekt-Schalter ueber die API)
+import { daemonJobsWeg } from './daemon-jobs-api.js';
+import {
+  apiWatcherDatenweg,
+  indexiereDateiApi,
+  indexiereDokumentApi,
+  entferneDateiApi,
+  setzeProjektSchalterApi,
+} from './daemon-sync-api.js';
+
+/** P9-T27: Legacy-Asset-Inspektion (asset_*-Tabellen direkt) gibt es im API-Weg nicht — einmal melden. */
+let legacyAssetGemeldet = false;
+function meldeLegacyAssetImApiWeg(project: string): void {
+  if (legacyAssetGemeldet) return;
+  legacyAssetGemeldet = true;
+  console.error(`[manager] API-Weg: Legacy-Asset-Inspektion uebersprungen ("${project}" u. a.) — fuer Assets den Asset-Sync einschalten (Tray: Asset-Sync).`);
+}
 
 /** P18-T16/RV6: gueltige Reverse-Einstellungen oder leer (ungueltige Altwerte werden beim Setzen ersetzt). */
 function reverseEinstellungenSicher(p: unknown): ReverseBibliothekConfig {
@@ -321,6 +338,10 @@ export class WatcherManager {
   private readonly assetSchalter = new Map<string, Promise<unknown>>();
   /** EventEmitter fuer State-Changes — abonniert von api.ts SSE-Stream. Events: "state_change". */
   readonly events = new EventEmitter();
+  /** P9-T27: true = Daemon ohne eigene PG-Wege (daemonJobsWeg()==='api'); gilt bis zum Neustart. */
+  private readonly apiWeg: boolean = daemonJobsWeg() === 'api';
+  /** P9-T27: Projekte, deren Erstscan durch ist (fs_add-Version nur im laufenden Betrieb, API-Weg). */
+  private readonly scanFertig = new Set<string>();
 
   constructor(config?: DaemonConfig) {
     this.config = config ?? loadConfig();
@@ -461,7 +482,7 @@ export class WatcherManager {
     p.enabled = true;
     saveConfig(this.config);
     // enabled-Flag server-seitig spiegeln, damit der Parser-Worker es respektiert.
-    try { await setProjectEnabled(name, true); } catch (e) { console.error(`[manager] setProjectEnabled(${name},true) fehlgeschlagen:`, (e as Error).message); }
+    try { await (this.apiWeg ? setzeProjektSchalterApi(name, true) : setProjectEnabled(name, true)); } catch (e) { console.error(`[manager] setProjectEnabled(${name},true) fehlgeschlagen:`, (e as Error).message); }
     if (!this.instances.has(name)) this.spawnWatcher(p);
     this.emitChange(`enable:${name}`);
   }
@@ -473,7 +494,7 @@ export class WatcherManager {
     p.enabled = false;
     saveConfig(this.config);
     // enabled-Flag server-seitig spiegeln → Parser-Worker ueberspringt das Projekt.
-    try { await setProjectEnabled(name, false); } catch (e) { console.error(`[manager] setProjectEnabled(${name},false) fehlgeschlagen:`, (e as Error).message); }
+    try { await (this.apiWeg ? setzeProjektSchalterApi(name, false) : setProjectEnabled(name, false)); } catch (e) { console.error(`[manager] setProjectEnabled(${name},false) fehlgeschlagen:`, (e as Error).message); }
     await this.stopWatcher(name);
     this.emitChange(`disable:${name}`);
   }
@@ -602,6 +623,7 @@ export class WatcherManager {
     }catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
     finally{if(restoreFd!==undefined)fs.closeSync(restoreFd);}
     this.assetSync.starte(p);
+    this.scanFertig.delete(p.name);
     const instance = startFileWatcher({
       projectPath: p.pfad,
       projectName: p.name,
@@ -609,9 +631,12 @@ export class WatcherManager {
       onError: (err) => {
         console.error(`[manager] Watcher-Fehler "${p.name}":`, err.message);
       },
+      // P9-T27: im API-Weg laufen watcher_events, Rename-Pruefung und PG->Platte ueber die API.
+      ...(this.apiWeg ? { datenweg: apiWatcherDatenweg } : {}),
       // Asset-Abgleich nach dem Erstscan (P4-T67): nur asset_*, inspiziert nur Abweichungen.
       onReady: () => {
-        void this.assetSync.bereit(p.name).then(managed=>managed?undefined:verifyAssetsAgainstFilesystem(p.name,p.pfad)).catch((err) =>
+        this.scanFertig.add(p.name);
+        void this.assetSync.bereit(p.name).then(async (managed): Promise<unknown> => { if (managed) return undefined; if (this.apiWeg) { meldeLegacyAssetImApiWeg(p.name); return undefined; } return verifyAssetsAgainstFilesystem(p.name,p.pfad); }).catch((err) =>
           console.error(`[manager] Asset-Abgleich "${p.name}" fehlgeschlagen:`, (err as Error).message)
         );
       },
@@ -621,6 +646,7 @@ export class WatcherManager {
   }
 
   private async stopWatcher(name: string): Promise<void> {
+    this.scanFertig.delete(name);
     await this.assetSync.stop(name);
     const inst = this.instances.get(name);
     if (!inst) return;
@@ -660,11 +686,12 @@ export class WatcherManager {
     await acquireIndexSlot(wartender);
     try {
       const projektCfg = this.config.projekte.find((p) => p.name === event.project);
-      if (!(await darfWatcherEventNachSlot(event.type, projektCfg?.enabled === true, event.project))) {
+      // P9-T27: im API-Weg prueft die API projects.enabled selbst (aktion datei/dokument) — hier nur lokal.
+      if (!(await darfWatcherEventNachSlot(event.type, projektCfg?.enabled === true, event.project, this.apiWeg ? async () => true : undefined))) {
         console.error(`[manager] ${event.type} nach Disable verworfen: ${event.project}/${event.path}`);
         return;
       }
-      const projectRoot = (await getProjectRoot(event.project)) ?? projektCfg?.pfad;
+      const projectRoot = this.apiWeg ? projektCfg?.pfad : (await getProjectRoot(event.project)) ?? projektCfg?.pfad;
       if (!projectRoot) {
         console.error(`[manager] indexieren skip: kein projectRoot fuer "${event.project}"`);
         return;
@@ -676,11 +703,14 @@ export class WatcherManager {
       // nie, genau wie vor dem Umbau, als der Watcher sie verwarf.
       if (event.asset) {
         const managed=managedAsset||await this.assetSync.ereignis({...event,path:relPath});
-        if(!managed)void verarbeiteAssetEreignis({ ...event, path: relPath }, projectRoot);
+        if(!managed){
+          if (this.apiWeg) meldeLegacyAssetImApiWeg(event.project);
+          else void verarbeiteAssetEreignis({ ...event, path: relPath }, projectRoot);
+        }
         if (event.asset === 'nur_asset') return;
       }
       if (event.type === 'unlink') {
-        await removeFile(relPath, event.project);
+        await (this.apiWeg ? entferneDateiApi(relPath, event.project) : removeFile(relPath, event.project));
       } else {
         // KLASSIFIKATION PFLICHT. Hier stand bis zum 28.07.2026 ein blankes
         // indexFile() — dieser Pfad umging damit die Aussortierung, die
@@ -693,7 +723,10 @@ export class WatcherManager {
           // Nur ueber admin(index_media), nur auf Anweisung des Users.
           console.error(`[manager] Media uebersprungen: ${relPath}`);
         } else if (art === 'dokument') {
-          await indexDocument(relPath, event.project);
+          if (this.apiWeg) await indexiereDokumentApi(relPath, event.project, path.join(projectRoot, relPath));
+          else await indexDocument(relPath, event.project);
+        } else if (this.apiWeg) {
+          await indexiereDateiApi(relPath, event.project, path.join(projectRoot, relPath), this.scanFertig.has(event.project));
         } else {
           await indexFile(relPath, event.project, projectRoot);
         }

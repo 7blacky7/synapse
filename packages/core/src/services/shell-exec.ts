@@ -13,7 +13,9 @@ import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import {ShellAusgabePuffer} from './shell-ausgabe-puffer.js';
 import {shellNulText} from './shell-ausgabe-nul.js';
-import {ladeShellWerte,maskiereShellDaten,maskiereShellText} from './shell-maske.js';
+import {ladeShellWerte,leseShellWerteVomFs,maskiereShellDaten,maskiereShellText} from './shell-maske.js';
+// P9-T27 Welle 2: Kontext-Weg des Daemons (API statt eigener PG-Lesewege)
+import {verworfenHinweis,type ShellExecKontext} from './shell-exec-kontext.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -68,6 +70,12 @@ function formatDauer(ms: number): string {
 export type ShellExecArgs = {
   /** Interne API/Queue-Metadaten, kein MCP-/REST-Nutzerparameter. */
   datenbank_freigabe?:ShellDbFreigabe;
+  /**
+   * P9-T27 Welle 2: vorgeholter Kontext (Daemon-API-Weg). Ersetzt die PG-Lesewege
+   * (Projektpfad, Projekt-DB, Katalog, DB-Freigabe, Maskenwerte aus code_files) und den
+   * Audit-Schreibweg. Ohne kontext: unveraendert wie bisher. Kein MCP-/REST-Nutzerparameter.
+   */
+  kontext?: ShellExecKontext;
   project: string;
   command: string;
   cwd_relative?: string;
@@ -188,7 +196,8 @@ export async function execShellInProject(
 ): Promise<Record<string, unknown>> {
   const tailN = args.tail_lines ?? DEFAULT_TAIL_LINES;
 
-  const projectRoot = await getProjectRoot(args.project);
+  const kontext = args.kontext;
+  const projectRoot = kontext ? kontext.project_root : await getProjectRoot(args.project);
   if (!projectRoot) {
     return {
       error: 'unknown_project',
@@ -208,8 +217,14 @@ export async function execShellInProject(
   // Nie die Daemon-Umgebung durchreichen: sie traegt DATABASE_URL der Synapse-DB
   // und Tokens. DATABASE_URL zeigt stattdessen auf die DB DIESES Projekts
   // (siehe shell-job-umgebung.ts). job_env meldet die Wahl ohne Passwort.
-  const jobUmgebung = await baueJobUmgebung(args.project);
-  const werte=await ladeShellWerte(args.project);
+  const jobUmgebung = kontext
+    ? await baueJobUmgebung(args.project,{leseZugang:async()=>kontext.projekt_db,...(kontext.system_db_url?{systemUrl:kontext.system_db_url}:{})})
+    : await baueJobUmgebung(args.project);
+  if(kontext?.projekt_db_verworfen&&!jobUmgebung.env.DATABASE_URL)jobUmgebung.env.SYNAPSE_PROJEKT_DB_HINWEIS=verworfenHinweis(args.project);
+  // Kontext-Weg: Geheimnisquellen von der eigenen Platte (dieselben Dateien wie code_files), keine PG-Abfrage.
+  const werte=kontext
+    ? [...new Set([...leseShellWerteVomFs(fs.existsSync(projectRoot)?projectRoot:undefined),...(kontext.werte??[])])]
+    : await ladeShellWerte(args.project);
   const jobEnv = maskiereShellDaten(jobUmgebung.info,werte).daten;
 
   const cwd = args.cwd_relative ? path.resolve(projectRoot, args.cwd_relative) : projectRoot;
@@ -220,8 +235,9 @@ export async function execShellInProject(
   const start = waehleShellStart(args.shell);
   // Queue liefert API-Metadaten; lokale Altpfade verwenden den vorhandenen Job-DB-Lookup.
   // Kein zusätzlicher Registry-/PG-Zugang auf dem PC für die neue Sicherung.
-  const dbFreigabe=args.datenbank_freigabe??await holeShellDbFreigabe(args.project,{leseZugang:async()=>null});
-  if(!args.datenbank_freigabe&&jobUmgebung.datenbank_ziel&&dbFreigabe.live&&jobUmgebung.datenbank_ziel.port!==dbFreigabe.live.port&&jobUmgebung.datenbank_ziel.datenbank!==dbFreigabe.live.datenbank)
+  const freigabeVorgabe=args.datenbank_freigabe??kontext?.datenbank_freigabe;
+  const dbFreigabe=freigabeVorgabe??await holeShellDbFreigabe(args.project,{leseZugang:async()=>null});
+  if(!freigabeVorgabe&&jobUmgebung.datenbank_ziel&&dbFreigabe.live&&jobUmgebung.datenbank_ziel.port!==dbFreigabe.live.port&&jobUmgebung.datenbank_ziel.datenbank!==dbFreigabe.live.datenbank)
     dbFreigabe.ziele.push({...jobUmgebung.datenbank_ziel,art:'projekt'});
   const lageKontext: ShellLageKontext = {
     datenbank_freigabe:dbFreigabe,
@@ -237,16 +253,17 @@ export async function execShellInProject(
   const prozesse = /\b(?:kill|pkill|killall|taskkill|stop-process)\b/i.test(args.command)
     ? await geschuetzteShellProzesse()
     : {pids:[process.pid,process.ppid],namen:[path.basename(process.execPath).toLowerCase()]};
-  const katalog = await holeShellStartKatalog();
+  const katalog = kontext ? kontext.katalog : await holeShellStartKatalog();
   const pruefung = pruefeShellStart({project:args.project,command:args.command,lage,
     agent_id:args.agent_id,bestaetigt:args.bestaetigt,bestaetigung:args.bestaetigung,rechner:os.hostname(),
     geschuetzte_pids:prozesse.pids,geschuetzte_namen:prozesse.namen},katalog);
   // P10-T73: Grund der Demaskierung gehoert ins Job-Audit.
   const demaskierung=args.demaskierung??aktuelleShellDemaskierung();
   if(demaskierung)pruefung.audit.demaskierung={...demaskierung};
-  const sicherungsJob = await beginneShellSicherungsJob({project:args.project,command:args.command,
+  const sicherungsEingabe={project:args.project,command:args.command,
     cwd_relative:args.cwd_relative,agent_id:args.agent_id,job_id:args.sicherungs_job_id,
-    entscheidung:pruefung,lage,rechner:os.hostname(),ursprung:args.sicherungs_ursprung});
+    entscheidung:pruefung,lage,rechner:os.hostname(),ursprung:args.sicherungs_ursprung};
+  const sicherungsJob = kontext ? await kontext.sicherung(sicherungsEingabe) : await beginneShellSicherungsJob(sicherungsEingabe);
   if (!pruefung.darf_starten) {
     return maskiereShellDaten({status:'rejected',error:pruefung.antwort?.error??'shell_anleitung',
       ...pruefung.antwort,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten;
@@ -442,7 +459,8 @@ export async function execShellInProject(
   // P10-T73: bestaetigt demaskiert -> Antwort-Tail aus der Rohausgabe, Rohausgabe fuer die Speicherung anhaengen.
   const roh=demaskierung&&rohAusgabe!==undefined?{output:rohAusgabe,tail:rohTail(rohAusgabe,tailN)}:undefined;
   if(roh)result.tail=roh.tail;
-  if (sicherungsJob && !args.sicherungs_job_id) await beendeShellSicherungsJob(sicherungsJob,args.project,result);
+  // Kontext-Weg nur mit Queue-Job (sicherungs_job_id): der Abschluss geht ueber die Queue-Meldung.
+  if (sicherungsJob && !args.sicherungs_job_id && !kontext) await beendeShellSicherungsJob(sicherungsJob,args.project,result);
   const antwort=pruefung.antwort
     ? roh?{...pruefung.antwort,...result,...(sicherungsJob?{id:sicherungsJob}:{})}
       :maskiereShellDaten({...pruefung.antwort,...result,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten
