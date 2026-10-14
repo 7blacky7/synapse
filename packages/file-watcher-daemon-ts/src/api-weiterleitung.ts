@@ -30,7 +30,7 @@
  * gestreamt.
  *
  * SCHUTZ: bindet nur an 127.0.0.1, lehnt Nicht-Loopback-Absender ab und Browser-Anfragen
- * mit fremdem Origin (gleiche Herkunft bleibt erlaubt: Formular der OAuth-Anmeldeseite).
+ * mit jedem Origin-Header (kein Browser-Zugriff).
  */
 
 import http from 'node:http';
@@ -39,8 +39,8 @@ import type { AddressInfo } from 'node:net';
 import { loadConfig } from './config.js';
 import { istLoopback } from './skills-proxy.js';
 
-export const API_TUNNEL_STANDARD = 'https://synapse.moosynapse.org';
-export const API_LAN_STANDARD = 'http://192.168.50.65:3456';
+import { apiBasenAusConfig, normalisiereBasis, gueltigeBasis } from './api-adressen.js';
+export { apiBasenAusConfig, normalisiereBasis, API_TUNNEL_STANDARD, API_LAN_STANDARD } from './api-adressen.js';
 export const WEITERLEITUNG_STANDARD_PORT = 7879;
 export const WEITERLEITUNG_STATUS_PFAD = '/__synapse-weiterleitung/status';
 
@@ -54,43 +54,6 @@ const TRANSPORT_CODES = new Set([
 ]);
 
 export type AdressArt = 'lokal' | 'lan' | 'tunnel';
-
-export function normalisiereBasis(roh: unknown): string {
-  return typeof roh === 'string' ? roh.trim().replace(/\/+$/, '') : '';
-}
-
-function gueltigeBasis(basis: string): boolean {
-  try {
-    const u = new URL(basis);
-    return (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password && !u.search && !u.hash;
-  } catch {
-    return false;
-  }
-}
-
-/** Adresskette in derselben Reihenfolge wie apiBases() (tray/api_client.go), ohne Duplikate. */
-export function apiBasenAusConfig(o: {
-  env?: NodeJS.ProcessEnv;
-  cfg?: { synapse_api_url?: unknown; synapse_api_fallback_url?: unknown };
-} = {}): string[] {
-  const env = o.env ?? process.env;
-  let cfg = o.cfg;
-  if (!cfg) {
-    try { cfg = loadConfig(); } catch { cfg = {}; }
-  }
-  const out: string[] = [];
-  const add = (roh: unknown) => {
-    const u = normalisiereBasis(roh);
-    if (u && !out.includes(u) && gueltigeBasis(u)) out.push(u);
-  };
-  add(env.SYNAPSE_API_URL);
-  add(cfg.synapse_api_url);
-  add(API_TUNNEL_STANDARD); // Nur Rueckfall, Quelle ist config.json.
-  const fbEnv = normalisiereBasis(env.SYNAPSE_API_FALLBACK_URL);
-  const fbCfg = normalisiereBasis(cfg.synapse_api_fallback_url);
-  add(fbEnv || fbCfg || API_LAN_STANDARD);
-  return out;
-}
 
 /** Port der Weiterleitung: SYNAPSE_API_WEITERLEITUNG_PORT, sonst config.json api_weiterleitung_port, sonst 7879. 0 = aus. */
 export function weiterleitungsPortAusConfig(env: NodeJS.ProcessEnv = process.env): number {
@@ -219,6 +182,9 @@ export class ApiWeiterleitung {
 
   async start(): Promise<number> {
     if (this.server) return this.port;
+    if (this.o.host !== undefined && this.o.host !== '127.0.0.1') {
+      throw new TypeError('API-Weiterleitung darf nur an 127.0.0.1 binden.');
+    }
     const wunsch = this.o.port ?? weiterleitungsPortAusConfig();
     const server = http.createServer((req, res) => { void this.behandle(req, res); });
     // Lange Tool-Aufrufe, Long-Polls (50 s) und SSE duerfen nicht am Server-Timeout sterben.
@@ -227,7 +193,7 @@ export class ApiWeiterleitung {
     server.keepAliveTimeout = 5_000;
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(wunsch, this.o.host ?? '127.0.0.1', () => { server.off('error', reject); resolve(); });
+      server.listen(wunsch, '127.0.0.1', () => { server.off('error', reject); resolve(); });
     });
     this.server = server;
     this.port = (server.address() as AddressInfo).port;
@@ -316,8 +282,8 @@ export class ApiWeiterleitung {
     }
     const lokal = this.lokaleHerkunft(req);
     const origin = req.headers.origin;
-    if (origin !== undefined && origin.toLowerCase() !== lokal.toLowerCase()) {
-      json(403, { success: false, error: 'browser_abgelehnt', message: 'Fremder Origin ist nicht erlaubt.' });
+    if (origin !== undefined) {
+      json(403, { success: false, error: 'browser_abgelehnt', message: 'Browser-Origin ist nicht erlaubt.' });
       return;
     }
     if (req.method === 'GET' && (req.url ?? '').split('?')[0] === WEITERLEITUNG_STATUS_PFAD) {
@@ -380,8 +346,9 @@ export class ApiWeiterleitung {
     const istHttps = ziel.protocol === 'https:';
     const pfad = ziel.pathname.replace(/\/+$/, '') + (req.url ?? '/');
     const headers: http.OutgoingHttpHeaders = {};
+    const connectionHeaders = new Set(String(req.headers.connection ?? '').toLowerCase().split(',').map((v) => v.trim()));
     for (const [k, v] of Object.entries(req.headers)) {
-      if (v === undefined || HOP_BY_HOP.has(k) || k === 'host' || k === 'content-length') continue;
+      if (v === undefined || HOP_BY_HOP.has(k) || connectionHeaders.has(k) || k === 'host' || k === 'content-length') continue;
       headers[k] = v;
     }
     headers.host = ziel.host;
@@ -416,11 +383,7 @@ export class ApiWeiterleitung {
         if (fertig) return;
         fertig = true;
         const code = err.code ?? 'FEHLER';
-        // Wiederverwendete Keep-Alive-Verbindung vom Server geschlossen: einmal frisch an dieselbe Basis.
-        if (upReq.reusedSocket && code === 'ECONNRESET' && !frisch) {
-          this.sende(basis, req, body, true).then(resolve, reject);
-          return;
-        }
+        // Auch Keep-Alive-Resets koennen nach Verarbeitung auftreten: nie erneut senden.
         const transport = TRANSPORT_CODES.has(code) || /certificate|SSL|TLS/i.test(err.message);
         reject(new TransportFehler(err.message, code, verbunden || !transport));
       });
@@ -430,8 +393,9 @@ export class ApiWeiterleitung {
 
   private antworte(basis: string, lokal: string, req: http.IncomingMessage, res: http.ServerResponse, upReq: http.ClientRequest, upRes: http.IncomingMessage): void {
     const headers: http.OutgoingHttpHeaders = {};
+    const connectionHeaders = new Set(String(upRes.headers.connection ?? '').toLowerCase().split(',').map((v) => v.trim()));
     for (const [k, v] of Object.entries(upRes.headers)) {
-      if (v === undefined || HOP_BY_HOP.has(k)) continue;
+      if (v === undefined || HOP_BY_HOP.has(k) || connectionHeaders.has(k)) continue;
       if (k === 'www-authenticate' || k === 'location' || k === 'link') {
         (headers as Record<string, string | string[]>)[k] = Array.isArray(v) ? v.map((x) => ersetzeUpstreamHerkunft(x, basis, lokal)) : ersetzeUpstreamHerkunft(v, basis, lokal);
       } else {

@@ -31,8 +31,11 @@ function fakeApi(name){
     const teile=[];req.on('data',c=>teile.push(c));
     req.on('end',()=>{
       const body=Buffer.concat(teile).toString('utf8');
-      seen.push({method:req.method,url:req.url,authorization:req.headers.authorization,host:req.headers.host});
+      seen.push({method:req.method,url:req.url,authorization:req.headers.authorization,host:req.headers.host,hop:req.headers['x-hop'],session:req.headers['mcp-session-id']});
       const herkunft=`http://${req.headers.host}`;
+      if(req.url==='/reset'){req.socket.destroy();return;}
+      if(req.url==='/fehler'){res.writeHead(503);res.end('api-fehler');return;}
+      if(req.url==='/hop'){res.writeHead(200,{'content-type':'application/json',connection:'x-hop','x-hop':'nur-verbindung','mcp-session-id':'session-antwort'});res.end(JSON.stringify({hop:req.headers['x-hop']??null,session:req.headers['mcp-session-id']}));return;}
       if(req.url==='/health'){res.writeHead(200,{'content-type':'application/json'});return res.end('{"status":"ok"}');}
       if(req.url==='/.well-known/oauth-protected-resource'){
         res.writeHead(200,{'content-type':'application/json'});
@@ -179,24 +182,18 @@ test('OAuth-Discovery und WWW-Authenticate zeigen auf die lokale Weiterleitung',
   assert.equal(JSON.parse(d2.text).resource,`http://localhost:${port}/`);
 });
 
-test('Schutz: fremder Origin abgelehnt, gleicher Origin erlaubt, Nicht-Loopback abgelehnt',async()=>{
+test('Schutz: jeder Origin abgelehnt und Bindung ausschliesslich Loopback',async()=>{
   const api=await fakeApi('api').start();offen.push(()=>api.stop());
   const {port}=await weiterleitung([api.url]);
-  const boese=await anfrage(port,{method:'POST',path:'/',headers:{origin:'https://evil.example','content-type':'application/json'},body:'{}'});
-  assert.equal(boese.status,403);assert.equal(JSON.parse(boese.text).error,'browser_abgelehnt');
-  const gleich=await anfrage(port,{method:'POST',path:'/authorize',headers:{origin:`http://127.0.0.1:${port}`,'content-type':'application/x-www-form-urlencoded'},body:'totp_code=1'});
-  assert.equal(gleich.status,200);
-  assert.ok(!api.seen.some(s=>s.url==='/'&&s.method==='POST'),'fremder Origin darf nicht ankommen');
-
-  const ip=Object.values(os.networkInterfaces()).flat().find(i=>i&&i.family==='IPv4'&&!i.internal)?.address;
-  if(!ip)return; // ohne Netzwerkkarte nicht pruefbar
-  const w=new mod.ApiWeiterleitung({port:0,host:'0.0.0.0',basen:()=>[api.url],pruefIntervallMs:0,log:()=>{}});
-  const p=await w.start();offen.push(()=>w.stop());
-  const r=await new Promise((resolve,reject)=>{
-    const req=http.request({host:ip,port:p,path:'/',method:'POST',localAddress:ip,agent:false},(res)=>{let t='';res.on('data',c=>t+=c);res.on('end',()=>resolve({status:res.statusCode,text:t}));});
-    req.on('error',reject);req.end('{}');
-  });
-  assert.equal(r.status,403);assert.equal(JSON.parse(r.text).error,'nur_lokal');
+  for(const origin of ['https://evil.example',`http://127.0.0.1:${port}`,'null']){
+    const r=await anfrage(port,{method:'POST',path:'/mcp',headers:{origin,'content-type':'application/json'},body:'{}'});
+    assert.equal(r.status,403);assert.equal(JSON.parse(r.text).error,'browser_abgelehnt');
+  }
+  assert.ok(!api.seen.some(s=>s.url==='/mcp'),'Browser darf nie Upstream erreichen');
+  for(const host of ['0.0.0.0','::','192.168.1.2']){
+    const w=new mod.ApiWeiterleitung({port:0,host,basen:()=>[api.url],pruefIntervallMs:0,log:()=>{}});
+    await assert.rejects(w.start(),/nur an 127\.0\.0\.1/);
+  }
 });
 
 test('Statusanzeige: eigener Pfad und Daemon-Route /api-weiterleitung/status',async()=>{
@@ -211,4 +208,51 @@ test('Statusanzeige: eigener Pfad und Daemon-Route /api-weiterleitung/status',as
   const aus=buildApi({manager:{}});offen.push(()=>aus.close());
   const r2=await aus.inject({method:'GET',url:'/api-weiterleitung/status',remoteAddress:'127.0.0.1'});
   assert.equal(r2.json().lauscht,false);
+});
+
+test('Verarbeiteter POST auf Keep-Alive wird nach Reset weder wiederholt noch umgeleitet',async()=>{
+  const a=await fakeApi('a').start(),b=await fakeApi('b').start();
+  offen.push(()=>a.stop(),()=>b.stop());
+  const {port}=await weiterleitung([a.url,b.url]);
+  await anfrage(port,{method:'POST',path:'/warm',body:'warm'});
+  const r=await anfrage(port,{method:'POST',path:'/reset',body:'wirkung'});
+  assert.equal(r.status,502);
+  assert.equal(JSON.parse(r.text).error,'api_verbindung_abgebrochen');
+  assert.equal(a.seen.filter(s=>s.url==='/reset').length,1);
+  assert.equal(b.seen.filter(s=>s.url==='/reset').length,0);
+});
+
+test('HTTP-Fehler bleiben unveraendert und Connection-Header gelten in beide Richtungen',async()=>{
+  const a=await fakeApi('a').start(),b=await fakeApi('b').start();
+  offen.push(()=>a.stop(),()=>b.stop());
+  const {port}=await weiterleitung([a.url,b.url]);
+  const err=await anfrage(port,{method:'POST',path:'/fehler',body:'wirkung'});
+  assert.equal(err.status,503);assert.equal(err.text,'api-fehler');
+  assert.equal(b.seen.filter(s=>s.url==='/fehler').length,0);
+  const r=await anfrage(port,{path:'/hop',headers:{connection:'x-hop','x-hop':'nur-verbindung','mcp-session-id':'session-anfrage'}});
+  assert.equal(JSON.parse(r.text).hop,null);
+  assert.equal(JSON.parse(r.text).session,'session-anfrage');
+  assert.equal(r.headers['x-hop'],undefined);
+  assert.equal(r.headers['mcp-session-id'],'session-antwort');
+});
+
+test('Zeitgeber kehrt automatisch zur bevorzugten API zurueck; kein eigenes Token und keine Body-Logs',async()=>{
+  const a=await fakeApi('lan').start(),b=await fakeApi('tunnel').start();
+  offen.push(()=>a.stop(),()=>b.stop());
+  const lanUrl=a.url,lanPort=a.port,logs=[];
+  await a.stop();
+  const w=new mod.ApiWeiterleitung({port:0,basen:()=>[lanUrl,b.url],pruefIntervallMs:40,verbindungsTimeoutMs:100,log:m=>logs.push(m)});
+  const port=await w.start();offen.push(()=>w.stop());
+  assert.equal(w.status().aktiv.url,b.url);
+  const body='p9-t28-body-darf-nie-im-log-stehen';
+  const r=await anfrage(port,{method:'POST',path:'/mcp',body});
+  assert.equal(JSON.parse(r.text).authorization,null);
+  assert.equal(JSON.parse(r.text).body,body);
+  await a.start(lanPort);
+  const deadline=Date.now()+2000;
+  while(w.status().aktiv.url!==lanUrl&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(w.status().aktiv.url,lanUrl);
+  const neu=await anfrage(port,{method:'POST',path:'/mcp',body:'nach-rueckkehr'});
+  assert.equal(JSON.parse(neu.text).server,'lan');
+  assert.ok(!logs.some(m=>m.includes(body)));
 });

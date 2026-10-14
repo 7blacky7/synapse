@@ -1,6 +1,6 @@
 /** A8: shared configured API access; binary bodies recreated for transport/5xx fallback only. */
 import {API_CONTRACT_HEADER,API_CONTRACT_VERSION} from '@synapse/core';
-import {loadConfig} from './config.js';
+import {apiBasenAusConfig} from './api-adressen.js';
 import {leseApiZugang} from './skills-proxy.js';
 
 export class AssetApiFehler extends Error {
@@ -12,8 +12,8 @@ export interface AssetApiAufruf {
 }
 export class AssetApiTransport {
  constructor(private readonly fetcher:typeof fetch=fetch,private readonly zugang=()=>{
-  const cfg=loadConfig(),a=leseApiZugang();
-  return {token:a.token,basen:[a.url,...(typeof cfg.synapse_api_fallback_url==='string'?[cfg.synapse_api_fallback_url]:[])]};
+  const a=leseApiZugang();
+  return {token:a.token,basen:apiBasenAusConfig()};
  }){}
  async request(pfad:string,o:AssetApiAufruf={}):Promise<Response>{
   if(!pfad.startsWith('/api/')||pfad.startsWith('//')||/[\\\r\n]/.test(pfad))throw new AssetApiFehler(400,'pfad_ungueltig','API-Pfad ungültig.');
