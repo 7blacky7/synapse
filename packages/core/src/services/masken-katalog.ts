@@ -20,14 +20,19 @@ const ENV_PLATZHALTER = '[WERT]';
 const SHELL_NAME_AUSNAHME = /^(?:wait_token|batch_token|stream_id)$/;
 const SHELL_NAME_MASS = /(?:^|[_.-])(?:count|length|size|limit|ttl|timeout|duration|ms|rate|usage|used|path|file)$/;
 const SHELL_NAME_TOKENS = /^(?:input|output|total|cached|prompt|completion)_tokens(?:_|$)/;
-const SHELL_NAME_GEHEIM = /(?:^|[_.-])(?:keys?|tokens?|secrets?|password|pass|pwd|auth|authorization|credentials?)(?:$|[_.-])|^pgpass(?:word)?$/;
+// P10-T72: deutsche Schreibweisen (passwort/kennwort) und passwd sind ebenfalls Geheimnisnamen.
+const SHELL_NAME_GEHEIM = /(?:^|[_.-])(?:keys?|tokens?|secrets?|password|passwort|kennwort|passwd|pass|pwd|auth|authorization|credentials?)(?:$|[_.-])|^pgpass(?:word)?$/;
+/** P10-T72: Platzhalter-Woerter aus Vorlagen (z. B. postgresql://user:passwort@... in .env.example) sind
+ * keine bekannten Geheimwerte; als Literal ersetzt wuerden sie den SCHLUESSEL "passwort" maskieren und den
+ * echten Wert daneben stehen lassen. */
+const SHELL_LITERAL_PLATZHALTER = /^(?:passwor[dt]|kennwort|changeme|platzhalter|placeholder|beispiel|example)$/i;
 const SHELL_JSON_KEY = /^keys?$/i;
 export const SHELL_BEARER_WERT = /^Bearer\s+(.+)$/i;
 
 // ─── MCP-JSON, Namen und URLs (bestehender Vertrag) ────────────────────────────
 const PLATZHALTER = '[WERT]';
 export const MCP_JSON_PFAD_REGEX_SQL = '(^|/)\\.mcp\\.json(\\.[^/]*)?$';
-const SENSIBLER_SCHLUESSEL = /(?:token|key|secret|password|authorization)/i;
+const SENSIBLER_SCHLUESSEL = /(?:token|key|secret|password|passwort|passwd|kennwort|authorization)/i;
 export const MCP_JSON_FELD_PREFIX=/(?<!\\)("(?:\\.|[^"\\])*")(\s*:\s*)/g;
 export const MCP_JSON_FELD_WERT=/^("(?:\\.|[^"\\])*"|[^,}\]]+)/;
 const SENSIBLE_BEREICHE = new Set(['env', 'headers']);
@@ -295,7 +300,7 @@ const matcherCache=new WeakMap<readonly string[],RegExp|readonly string[]|null>(
 export function holeShellLiteralMatcher(bekannteWerte:readonly string[]){
  let matcher=matcherCache.get(bekannteWerte);
  if(matcher===undefined){
-  const werte=[...new Set(bekannteWerte)].filter(w=>w.length>=SHELL_LITERAL_MIN_LAENGE&&w!=='[WERT]').sort((a,b)=>b.length-a.length);
+  const werte=[...new Set(bekannteWerte)].filter(w=>w.length>=SHELL_LITERAL_MIN_LAENGE&&w!=='[WERT]'&&!SHELL_LITERAL_PLATZHALTER.test(w)).sort((a,b)=>b.length-a.length);
   matcher=werte.reduce((n,w)=>n+w.length,0)>32768?werte:werte.length?new RegExp('\\[WERT\\]|'+werte.map(w=>w.replace(/[.*+?^\x24{}()|[\]\\]/g,'\\$&')).join('|'),'g'):null;
   matcherCache.set(bekannteWerte,matcher);
  }

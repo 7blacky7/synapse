@@ -473,6 +473,7 @@ export type { ParameterBefund } from './services/unbekannte-parameter.js';
 
 // Tool-Call Activity-Log (zentraler Audit-Store fuer shell(action:"activity"))
 export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './services/tool-call-log.js';
+export { schwaerzeToolDaten, schwaerzeToolText, schwaerzeToolLogText, toolArgsVorschau, istToolLogGeheimSchluessel } from './services/tool-args-schwaerzen.js';
 export type { ToolCallLogEntry, ToolCallRow, ActivityFilters, ActivityDetail } from './services/tool-call-log.js';
 export {erfasseToolAktivitaet,letzteToolAktivitaet,bereinigeToolAktivitaet,toolAktivitaetRetentionTage} from './services/tool-aktivitaet.js';
 export type {ToolAktivitaetDb,ToolAktivitaetDescriptor,ToolAktivitaetKontext,ToolAktivitaetEintrag,ToolAktivitaetZeile,ToolAktivitaetFenster} from './services/tool-aktivitaet.js';
@@ -1143,7 +1144,9 @@ export {
   schreibeProjektDbEnv,
   ProjektDbSchutzFehler,
   PROJEKT_DB_MEMORY_NAME,
+  uebernehmeProjektDb,
 } from './services/projekt-db.js';
+export type { ProjektDbUebernahme, ProjektDbUebernahmeEingabe, UebernehmeProjektDbOptionen, ProjektDbVerbindungsPruefer } from './services/projekt-db.js';
 export type {
   ProjektDbErgebnis,
   ProjektDbAnlage,

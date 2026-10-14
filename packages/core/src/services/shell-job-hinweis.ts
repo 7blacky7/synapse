@@ -1,6 +1,9 @@
 /** P10-T40: optionale DB-Hinweise nur am aeusseren Antwortpfad filtern. */
 import {getPool} from '../db/client.js';
 import {claimHinweis} from './hinweis-drossel.js';
+import {leseProjektDbZugang} from './projekt-db.js';
+import {istErlaubteProjektDb} from './shell-job-umgebung.js';
+import {getConfig} from '../config.js';
 
 type Objekt=Record<string,unknown>;
 const objekt=(v:unknown):v is Objekt=>!!v && typeof v==='object' && !Array.isArray(v);
@@ -17,10 +20,10 @@ async function drossle<T>(args:Objekt, daten:T):Promise<T> {
     let p=entscheidungen.get(project);
     if (!p) {
       p=(async()=>{
-        const r=await getPool().query<{host:string;port:number;db:string}>(
-          'SELECT host,port,db FROM projekt_datenbanken WHERE project=$1',[project]);
-        const db=r.rows[0];
-        const database_url=project==='synapse'?'keine':db?`projekt-db ${db.db} (${db.host}:${db.port})`:'keine';
+        // P10-T72 N2: nur eine DB nennen, die dieselbe Pruefung wie baueJobUmgebung besteht (nie die System-DB).
+        const db=await leseProjektDbZugang(project);
+        const systemUrl=process.env.SYNAPSE_DATABASE_URL??getConfig().database.url;
+        const database_url=db&&istErlaubteProjektDb(db,systemUrl)?`projekt-db ${db.database} (${db.host}:${db.port})`:'keine';
         return await claimHinweis({project,agentId:agent,art:'job_env',fingerprint:database_url})
           ? {database_url} : undefined;
       })();

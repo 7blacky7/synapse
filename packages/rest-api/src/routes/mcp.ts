@@ -214,7 +214,7 @@ import {
   setSetupPhase,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
-import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls, baueToolErgebnis, kuerzeThoughtTreffer } from '@synapse/core';
+import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls, baueToolErgebnis, kuerzeThoughtTreffer, toolArgsVorschau } from '@synapse/core';
 import { leiteAgentIdAusHeaders } from './agent-header.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen — dieselbe Funktion wie im
 // lokalen MCP-Server, damit die beiden Strecken nicht auseinanderlaufen.
@@ -309,6 +309,8 @@ export const MCP_TOOLS = [
         geschuetzter_hauptbranch: {type:'string',description:'project(hinweise): geschuetzten Git-Hauptbranch je Projekt setzen; Standard main. Lesen/Setzen nur Koordinator/User, Anzeige in project(status).'},
         path: { type: 'string', description: 'Absoluter Pfad zum Projekt-Ordner. Bei action="init" optional — ohne path queued der Job an den Daemon und resolved gegen WORKSPACE_ROOT/name.' },
         erstellen: { type: 'boolean', description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).' },
+        uebernehmen: { type: 'object', description: 'Nur projekt_db, nur Koordinator/User: BESTEHENDE Projekt-DB registrieren {database, user, passwort, host?, port?}. Prueft Ziel (nur Projekt-Instanz, nie System-DB) und Anmeldung; Standard Vorschau, eintragen mit vorschau:false. Ueberschreibt nie.', properties: { database: { type: 'string' }, user: { type: 'string' }, passwort: { type: 'string' }, host: { type: 'string' }, port: { type: 'number' } } },
+        vorschau: { type: 'boolean', description: 'Nur projekt_db mit uebernehmen: true (Standard) = nur pruefen; false = eintragen.' },
         name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
         index_docs: { type: 'boolean', description: 'Framework-Dokumentation vorladen (Standard: true, fuer init)' },
         project: { type: 'string', description: 'Projekt-Name (fuer complete_setup, stop, list nutzt dies)' },
@@ -2412,6 +2414,20 @@ async function handleToolCallKern(
           const name = str(args, 'project') ?? str(args, 'name');
           if (!name || !isValidProjectName(name)) {
             return { success: false, error: 'invalid_name', message: 'Gueltiger Projekt-Name (project) erforderlich.' };
+          }
+          if (args.uebernehmen !== undefined) {
+            // P10-T72: bestehende Projekt-DB registrieren (z. B. synapse -> synapse_test); Vorschau ist Standard.
+            const u = args.uebernehmen;
+            if (!u || typeof u !== 'object' || Array.isArray(u)) {
+              return { success: false, error: 'invalid_param', message: 'uebernehmen muss ein Objekt {database, user, passwort, host?, port?} sein.' };
+            }
+            if (args.vorschau !== undefined && typeof args.vorschau !== 'boolean') throw new Error('vorschau muss boolean sein');
+            const { uebernehmeProjektDb } = await import('@synapse/core');
+            const ergebnis = await uebernehmeProjektDb(name, u as Record<string, unknown>, {
+              agent: String(effectiveAgentId ?? args.agent_id ?? process.env.SYNAPSE_AGENT_NAME ?? ''),
+              vorschau: args.vorschau !== false,
+            });
+            return { success: ergebnis.status === 'vorschau' || ergebnis.status === 'uebernommen', ...ergebnis };
           }
           const { leseProjektDbZugang } = await import('@synapse/core');
           let anlage: { status: string; hinweis: string; host?: string; port?: number; database?: string } | undefined;
@@ -6196,7 +6212,8 @@ async function fuehreToolsCallAus(
     source: 'cloud',
     tool: toolName,
     action: typeof toolArgs.action === 'string' ? toolArgs.action : null,
-    argsPreview: JSON.stringify(toolArgs).slice(0, 500),
+    // P10-T72 B1: Geheimnisse (z. B. uebernehmen.passwort) vor dem Kuerzen schwaerzen.
+    argsPreview: toolArgsVorschau(toolArgs),
     ok: _logOk,
     error: _logErr,
     durationMs: Date.now() - _t0,

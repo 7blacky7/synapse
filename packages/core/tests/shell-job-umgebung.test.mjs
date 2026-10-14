@@ -129,12 +129,36 @@ try {
       b.info.database_url.includes('coedit_test') && !b.info.database_url.includes('geheim'));
     pruefeGrundregeln('coedit-test', b.env);
 
-    // 3. Projekt synapse
+    // 3. Projekt synapse — P10-T72: kein Sonderfall mehr. Ohne Registrierung wie jedes Projekt;
+    //    die geerbte Live-DATABASE_URL der Basis (SYNAPSE_URL) darf nie durchrutschen.
     const c = await baueJobUmgebung('synapse', opt);
-    ok('synapse: DATABASE_URL entfernt', !('DATABASE_URL' in c.env));
+    ok('synapse ohne Registrierung: geerbte Live-DATABASE_URL entfernt', !('DATABASE_URL' in c.env));
     ok('synapse: SYNAPSE_DATABASE_URL entfernt', !('SYNAPSE_DATABASE_URL' in c.env));
-    ok('synapse: Hinweis ohne Zugang', /ohne System-DB-Zugang/.test(c.env.SYNAPSE_DB_HINWEIS ?? ''));
+    ok('synapse ohne Registrierung: Hinweis wie bei anderen Projekten',
+      (c.env.SYNAPSE_PROJEKT_DB_HINWEIS ?? '').startsWith('Keine Projekt-DB. Anlegen mit project(action:"projekt_db", project:"synapse"'));
+    ok('synapse: kein SYNAPSE_DB_HINWEIS-Sonderfall', !('SYNAPSE_DB_HINWEIS' in c.env));
     ok('synapse: info = keine', c.info.database_url === 'keine');
+    pruefeGrundregeln('synapse ohne Registrierung', c.env);
+
+    // 3b. synapse mit registrierter synapse_test; Basis traegt DATABASE_URL = System-DB
+    const TEST_URL = 'postgresql://synapse_test_user:geheim-test@192.168.50.65:5433/synapse_test';
+    vergissJobUmgebungCache('synapse');
+    const optSyn = { ...opt, leseZugang: async (p) => (p === 'synapse'
+      ? { database_url: TEST_URL, host: '192.168.50.65', port: 5433, database: 'synapse_test' } : lookup(p)) };
+    const c2 = await baueJobUmgebung('synapse', optSyn);
+    ok('synapse registriert: DATABASE_URL = synapse_test', c2.env.DATABASE_URL === TEST_URL);
+    ok(`synapse registriert: job_env (${c2.info.database_url})`, c2.info.database_url === 'projekt-db synapse_test (192.168.50.65:5433)');
+    ok('synapse registriert: Live-URL in keinem Wert', !Object.values(c2.env).some((w) => String(w).includes('geheim-synapse') || /:5432\//.test(String(w))));
+    ok('synapse registriert: datenbank_ziel synapse_test', c2.datenbank_ziel?.datenbank === 'synapse_test' && c2.datenbank_ziel?.port === '5433');
+    ok('synapse registriert: kein Hinweis-Rest', !('SYNAPSE_DB_HINWEIS' in c2.env) && !('SYNAPSE_PROJEKT_DB_HINWEIS' in c2.env));
+    pruefeGrundregeln('synapse registriert', c2.env);
+
+    // 3c. synapse-Registrierung zeigt auf die System-DB -> verworfen (gleicher Schutz wie bei jedem Projekt)
+    vergissJobUmgebungCache('synapse');
+    const c3 = await baueJobUmgebung('synapse', { ...opt, leseZugang: async () => ({ database_url: SYNAPSE_URL, host: '192.168.50.65', port: 5432, database: 'synapse' }) });
+    ok('synapse -> System-DB registriert: verworfen', !('DATABASE_URL' in c3.env) && c3.info.database_url === 'keine'
+      && /verworfen/.test(c3.env.SYNAPSE_PROJEKT_DB_HINWEIS ?? ''));
+    vergissJobUmgebungCache('synapse');
     ok('synapse: keine PG*-Variablen', !Object.keys(c.env).some((n) => /^PG/.test(n)));
     ok('synapse: Durchlass laesst PGPASSWORD trotzdem nicht durch', !('PGPASSWORD' in c.env));
 
@@ -189,9 +213,12 @@ if (!process.argv.includes('--integration') || !process.env.DATABASE_URL) {
 
     const syn = await lauf('synapse');
     ok(`B synapse: lief (${syn.r.status ?? syn.r.error})`, syn.r.status === 'done');
-    ok('B synapse: DATABASE_URL entfernt', !syn.namen.includes('DATABASE_URL'));
+    // P10-T72: synapse wie jedes Projekt — registrierte Projekt-DB (5433) oder gar keine, nie die System-DB.
+    const synRegistriert = /^projekt-db /.test(syn.r.job_env?.database_url ?? '');
+    ok(`B synapse: DATABASE_URL nur Projekt-DB oder keine (${syn.db || '-'})`,
+      synRegistriert ? /:5433\//.test(syn.db) && !/:5432\//.test(syn.db) : !syn.namen.includes('DATABASE_URL'));
     ok('B synapse: SYNAPSE_DATABASE_URL entfernt', !syn.namen.includes('SYNAPSE_DATABASE_URL'));
-    ok('B synapse: SYNAPSE_DB_HINWEIS da', syn.namen.includes('SYNAPSE_DB_HINWEIS'));
+    ok('B synapse: kein SYNAPSE_DB_HINWEIS-Sonderfall', !syn.namen.includes('SYNAPSE_DB_HINWEIS'));
     ok(`B synapse: keine Secrets (${verboten(syn.namen).join(',') || '-'})`, verboten(syn.namen).length === 0);
   } catch (err) {
     ok(`TEIL B ohne Ausnahme (${err.message})`, false);

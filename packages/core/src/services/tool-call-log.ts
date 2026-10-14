@@ -16,6 +16,7 @@
 
 import { getPool } from '../db/index.js';
 import {maskiereShellVorSpeichern,maskiereShellAntwort} from './shell-maske.js';
+import {schwaerzeToolLogText} from './tool-args-schwaerzen.js';
 
 /** Cap fuer das gespeicherte result (Storage-/PII-Hebel). Default 32 KB. */
 const RESULT_CAP = (() => {
@@ -68,6 +69,13 @@ export interface ToolCallLogEntry {
 export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
   try {
     if(entry.tool==='shell')entry=await maskiereShellVorSpeichern(entry.project??undefined,entry);
+    // P10-T72 B1: fuer ALLE Tools und jedes Ergebnis (auch abgelehnt) Geheimnisse vor dem INSERT schwaerzen.
+    entry = {
+      ...entry,
+      argsPreview: schwaerzeToolLogText(entry.argsPreview) ?? null,
+      result: schwaerzeToolLogText(entry.result) ?? null,
+      error: schwaerzeToolLogText(entry.error) ?? null,
+    };
     let result = entry.result ?? null;
     if (result != null && OHNE_RESULT.has(`${entry.tool}:${entry.action ?? ''}`)) {
       result = '[nicht protokolliert: Antwort enthaelt Schattendaten eines Erklaerungsfalls]';

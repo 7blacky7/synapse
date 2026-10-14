@@ -40,17 +40,24 @@ test('Root-Lockfile wird transportiert, bleibt verborgen; abhängige/geschützte
  for(const p of ['node_modules/pnpm-lock.yaml','.git/pnpm-lock.yaml','.synapse/pnpm-lock.yaml','.env','.env.test'])
   assert.equal(istWorkspaceIgnoriert(p),true,p);
 });
-test('Nur identische private Test-DB-Konfiguration kommt ins Systemprojekt',()=>{
+// P10-T72: kein Sonderfall fuer synapse mehr; nur die registrierte Projekt-DB (art 'projekt') bleibt, fuer jedes Projekt.
+test('Workspace: nur registrierte Projekt-DB, kein Test-DB-Fallback, kein Projekt-Sonderfall',()=>{
  const uri='postgresql://tester:synthetic@test.invalid:5433/synapse_test';
  const target={host:'test.invalid',port:'5433',datenbank:'synapse_test',user:'tester'};
- const proof={project:'synapse',live:{host:'live.invalid',port:'6123',datenbank:'system',user:'system'},ziele:[{...target,art:'test'}]};
- assert.equal(workspaceJobDatenbank('synapse',{},proof,{SYNAPSE_TEST_DATABASE_URL:uri}).DATABASE_URL,uri);
- for(const env of [{},{SYNAPSE_TEST_DATABASE_URL:uri.replace('5433','6123')},{SYNAPSE_TEST_DATABASE_URL:uri.replace('synapse_test','system')},
-  {SYNAPSE_TEST_DATABASE_URL:uri+'?host=live.invalid'}])
-  assert.equal(workspaceJobDatenbank('synapse',{DATABASE_URL:'postgresql://system:secret@live.invalid:6123/system'},proof,env).DATABASE_URL,undefined);
- assert.equal(workspaceJobDatenbank('synapse',{}, {...proof,ziele:[]},{SYNAPSE_TEST_DATABASE_URL:uri}).DATABASE_URL,undefined);
- const own={DATABASE_URL:'registry-project-value'};
- assert.deepEqual(workspaceJobDatenbank('other',own,{...proof,project:'other'},{SYNAPSE_TEST_DATABASE_URL:uri}),own);
+ const live={host:'live.invalid',port:'6123',datenbank:'system',user:'system'};
+ for(const p of ['synapse','other']){
+  const proof={project:p,live,ziele:[{...target,art:'projekt'}]};
+  assert.equal(workspaceJobDatenbank(p,{DATABASE_URL:uri},proof,{}).DATABASE_URL,uri,p+' registriert');
+  // Eine Test-DSN aus der Serverkonfiguration ist keine Projektfreigabe (frueher nur fuer synapse).
+  assert.equal(workspaceJobDatenbank(p,{},{...proof,ziele:[{...target,art:'test'}]},{SYNAPSE_TEST_DATABASE_URL:uri}).DATABASE_URL,undefined,p+' kein Test-Fallback');
+  assert.equal(workspaceJobDatenbank(p,{DATABASE_URL:uri},{...proof,ziele:[{...target,art:'test'}]},{}).DATABASE_URL,undefined,p+' test ist nicht projekt');
+  for(const env of [{DATABASE_URL:'postgresql://system:secret@live.invalid:6123/system'},{DATABASE_URL:uri.replace('5433','6123')},
+   {DATABASE_URL:uri.replace('synapse_test','system')},{DATABASE_URL:uri+'?host=live.invalid'},{DATABASE_URL:'registry-project-value'}])
+   assert.equal(workspaceJobDatenbank(p,env,proof,{}).DATABASE_URL,undefined,p+' '+env.DATABASE_URL);
+  assert.equal(workspaceJobDatenbank(p,{DATABASE_URL:uri},{...proof,project:'fremd'},{}).DATABASE_URL,undefined,p+' fremde Freigabe');
+  assert.equal(workspaceJobDatenbank(p,{DATABASE_URL:uri},{...proof,ziele:[]},{}).DATABASE_URL,undefined,p+' ohne Ziel');
+  assert.equal(workspaceJobDatenbank(p,{DATABASE_URL:uri},{project:p,ziele:[{...target,art:'projekt'}]},{}).DATABASE_URL,undefined,p+' ohne Systemgrenze');
+ }
 });
 test('Quellschutz nutzt festen Root-Exec und prüft dessen Erfolg',async()=>{
  let seen;

@@ -58,6 +58,15 @@ const projectTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).',
         },
+        uebernehmen: {
+          type: 'object',
+          description: 'Nur projekt_db, nur Koordinator/User: BESTEHENDE Projekt-DB registrieren {database, user, passwort, host?, port?}. Prueft Ziel (nur Projekt-Instanz, nie System-DB) und Anmeldung; Standard Vorschau, eintragen mit vorschau:false. Ueberschreibt nie.',
+          properties: { database: { type: 'string' }, user: { type: 'string' }, passwort: { type: 'string' }, host: { type: 'string' }, port: { type: 'number' } },
+        },
+        vorschau: {
+          type: 'boolean',
+          description: 'Nur projekt_db mit uebernehmen: true (Standard) = nur pruefen; false = eintragen.',
+        },
         project: {
           type: 'string',
           description: 'Projekt-Name (für complete_setup, stop, list nutzt dies)',
@@ -196,6 +205,20 @@ const projectTool: ConsolidatedTool = {
           const name = str(args, 'project') ?? str(args, 'name');
           if (!name || !isValidProjectName(name)) {
             return { success: false, error: 'invalid_name', message: 'Gueltiger Projekt-Name (project) erforderlich.' };
+          }
+          if (args.uebernehmen !== undefined) {
+            // P10-T72: bestehende Projekt-DB registrieren; gleiche Kernlogik wie die REST-Strecke.
+            const u = args.uebernehmen;
+            if (!u || typeof u !== 'object' || Array.isArray(u)) {
+              return { success: false, error: 'invalid_param', message: 'uebernehmen muss ein Objekt {database, user, passwort, host?, port?} sein.' };
+            }
+            if (args.vorschau !== undefined && typeof args.vorschau !== 'boolean') throw new Error('vorschau muss boolean sein');
+            const { uebernehmeProjektDb } = await import('@synapse/core');
+            const ergebnis = await uebernehmeProjektDb(name, u as Record<string, unknown>, {
+              agent: String(args.agent_id ?? process.env.SYNAPSE_AGENT_NAME ?? ''),
+              vorschau: args.vorschau !== false,
+            });
+            return { success: ergebnis.status === 'vorschau' || ergebnis.status === 'uebernommen', ...ergebnis };
           }
           const vorher = await leseProjektDbZugang(name);
           if (vorher || bool(args, 'erstellen') !== true) {

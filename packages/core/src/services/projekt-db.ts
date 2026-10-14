@@ -30,6 +30,10 @@ import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { getPool } from '../db/client.js';
 import { writeMemory } from './memory.js';
+import pg from 'pg';
+import { getConfig } from '../config.js';
+import { dbZielAusUrl } from './shell-db-zuordnung.js';
+import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 
 export const PROJEKT_DB_MEMORY_NAME = 'projekt-datenbank';
 
@@ -432,4 +436,156 @@ export async function leseProjektDbInfo(projekt: string): Promise<ProjektDbErgeb
     memory: PROJEKT_DB_MEMORY_NAME,
     hinweis: `Details in memory "${PROJEKT_DB_MEMORY_NAME}".`,
   };
+}
+
+
+// ── P10-T72: BESTEHENDE Projekt-DB registrieren (uebernehmen) ──────────────────
+// Anlass: synapse hat seine Projekt-DB (synapse_test) nachtraeglich bekommen; legeProjektDbAn kann
+// sie nicht registrieren (DB-Name passt nicht zum Projektnamen, Zugangsdaten unbekannt). Weg: der
+// Koordinator/User nennt DB, Rolle und Passwort; Synapse prueft das Ziel (nur Projekt-Instanz, nie
+// die System-DB), meldet sich mit genau diesen Daten an und traegt erst nach bestandener Pruefung
+// ein. Standard ist die Vorschau; nichts wird ueberschrieben, keine DB/Rolle wird angelegt/geaendert.
+
+export interface ProjektDbUebernahmeEingabe {
+  database?: unknown;
+  user?: unknown;
+  passwort?: unknown;
+  host?: unknown;
+  port?: unknown;
+}
+
+/** Anmeldung mit den genannten Daten; liefert, wo man tatsaechlich gelandet ist. */
+export type ProjektDbVerbindungsPruefer = (url: string) => Promise<{ datenbank: string; user: string; synapse_dbs: number }>;
+
+export interface UebernehmeProjektDbOptionen {
+  /** Aufrufer; nur Koordinator/User duerfen uebernehmen. */
+  agent: string;
+  /** true (Standard) = nur pruefen, nichts schreiben. */
+  vorschau?: boolean;
+  /** Konfig statt /run/secrets/projektdb.env (Tests). */
+  konfig?: ProjektDbKonfig | null;
+  /** System-DB-URL (Tests); Default SYNAPSE_DATABASE_URL bzw. getConfig().database.url. */
+  systemUrl?: string;
+  /** Verbindungspruefung (Tests); Default echte Anmeldung per pg. */
+  pruefeVerbindung?: ProjektDbVerbindungsPruefer;
+}
+
+export interface ProjektDbUebernahme {
+  status: 'vorschau' | 'uebernommen' | 'vorhanden' | 'abgelehnt' | 'fehler';
+  project: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  user?: string;
+  pruefungen: Array<{ pruefung: string; ok: boolean; detail?: string }>;
+  hinweis: string;
+}
+
+const standardVerbindungsPruefer: ProjektDbVerbindungsPruefer = async (url) => {
+  const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 10_000, statement_timeout: 10_000 });
+  await client.connect();
+  try {
+    const r = await client.query<{ datenbank: string; benutzer: string; synapse_dbs: string }>(
+      "SELECT current_database() AS datenbank, current_user AS benutzer, (SELECT count(*) FROM pg_database WHERE datname = 'synapse')::text AS synapse_dbs",
+    );
+    const z = r.rows[0];
+    return { datenbank: z.datenbank, user: z.benutzer, synapse_dbs: Number(z.synapse_dbs) };
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+};
+
+/**
+ * Registriert eine bereits existierende Projekt-DB fuer `projekt` in projekt_datenbanken.
+ * Wirft nie. Das Passwort steht nie in der Antwort.
+ */
+export async function uebernehmeProjektDb(
+  projekt: string,
+  eingabe: ProjektDbUebernahmeEingabe,
+  optionen: UebernehmeProjektDbOptionen,
+): Promise<ProjektDbUebernahme> {
+  const pruefungen: ProjektDbUebernahme['pruefungen'] = [];
+  const pruefe = (pruefung: string, ok: boolean, detail?: string): boolean => {
+    pruefungen.push({ pruefung, ok, ...(detail ? { detail } : {}) });
+    return ok;
+  };
+  if (!darfKoordinatorOderUser(optionen.agent)) {
+    return { status: 'abgelehnt', project: projekt, pruefungen, hinweis: 'Projekt-DB uebernehmen darf nur Koordinator/User.' };
+  }
+  const konfig = optionen.konfig === undefined ? ladeProjektDbKonfig() : optionen.konfig;
+  const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
+  const host = (text(eingabe.host) || konfig?.host || '').toLowerCase();
+  const port = Number(eingabe.port ?? konfig?.port);
+  const database = text(eingabe.database);
+  const user = text(eingabe.user);
+  const passwort = typeof eingabe.passwort === 'string' ? eingabe.passwort : '';
+  const ziel = { project: projekt, host, port, database, user };
+  const abgelehnt = (hinweis: string): ProjektDbUebernahme => ({ ...ziel, status: 'abgelehnt', pruefungen, hinweis });
+  const schwaerzen = (s: string): string => (passwort ? s.split(passwort).join('***') : s);
+
+  try {
+    const namen = /^[a-z_][a-z0-9_]{0,62}$/;
+    if (!pruefe('eingabe', !!host && Number.isInteger(port) && port > 0 && namen.test(database) && namen.test(user),
+      'database und user ([a-z_][a-z0-9_]*) Pflicht; host/port aus der Projekt-DB-Konfiguration, falls nicht angegeben.')) {
+      return abgelehnt('Eingabe unvollstaendig oder ungueltig.');
+    }
+    // Passwort geht unkodiert in die DATABASE_URL (wie bei angelegten DBs) — daher nur URL-sichere Zeichen.
+    if (!pruefe('passwort', /^[A-Za-z0-9._~-]{8,200}$/.test(passwort), 'mind. 8 Zeichen aus [A-Za-z0-9._~-]')) {
+      return abgelehnt('Passwort fehlt oder enthaelt Zeichen, die in der DATABASE_URL nicht unkodiert stehen duerfen.');
+    }
+    try {
+      pruefeProjektDbZiel({ host, port, container: ERLAUBTER_CONTAINER, database });
+      pruefe('ziel_projekt_instanz', true);
+    } catch (err) {
+      pruefe('ziel_projekt_instanz', false, (err as Error).message);
+      return abgelehnt('Ziel ist nicht die Projekt-Instanz.');
+    }
+    if (!pruefe('rolle_nicht_system', !['synapse', 'postgres'].includes(user) && user !== konfig?.adminUser)) {
+      return abgelehnt(`Rolle "${user}" ist gesperrt.`);
+    }
+    const system = dbZielAusUrl(optionen.systemUrl ?? process.env.SYNAPSE_DATABASE_URL ?? getConfig().database.url);
+    if (!pruefe('nicht_system_db', !(system && system.host === host && system.port === String(port) && system.datenbank === database))) {
+      return abgelehnt('Ziel ist die Synapse-System-DB.');
+    }
+    const vorhanden = await leseProjektDbZugang(projekt);
+    if (vorhanden) {
+      return {
+        status: 'vorhanden', project: projekt, host: vorhanden.host, port: vorhanden.port, database: vorhanden.database, user: vorhanden.user,
+        pruefungen, hinweis: `Fuer "${projekt}" ist bereits eine Projekt-DB hinterlegt (${vorhanden.database}) — nichts ueberschrieben.`,
+      };
+    }
+    const url = projektDbDsn({ host, port, database, user, passwort });
+    if (!url) return abgelehnt('DATABASE_URL nicht bildbar.');
+    let ist: Awaited<ReturnType<ProjektDbVerbindungsPruefer>>;
+    try {
+      ist = await (optionen.pruefeVerbindung ?? standardVerbindungsPruefer)(url);
+      pruefe('anmeldung', true);
+    } catch (err) {
+      pruefe('anmeldung', false, schwaerzen((err as Error).message).slice(0, 300));
+      return { ...ziel, status: 'fehler', pruefungen, hinweis: 'Anmeldung mit den genannten Zugangsdaten fehlgeschlagen — nichts eingetragen.' };
+    }
+    const passt = [
+      pruefe('datenbank_bestaetigt', ist.datenbank === database, `angemeldet an ${ist.datenbank}`),
+      pruefe('rolle_bestaetigt', ist.user === user, `angemeldet als ${ist.user}`),
+      pruefe('instanz_ohne_system_db', ist.synapse_dbs === 0, 'Ziel-Instanz darf keine DB "synapse" haben'),
+    ].every(Boolean);
+    if (!passt) return abgelehnt('Pruefung der Anmeldung fehlgeschlagen — nichts eingetragen.');
+    if (optionen.vorschau !== false) {
+      return { ...ziel, status: 'vorschau', pruefungen, hinweis: 'Alle Pruefungen bestanden. Eintragen mit vorschau:false.' };
+    }
+    const r = await getPool().query(
+      `INSERT INTO projekt_datenbanken (project, host, port, db, db_user, passwort)
+       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (project) DO NOTHING RETURNING project`,
+      [projekt, host, port, database, user, passwort],
+    );
+    if (r.rowCount === 0) {
+      return { ...ziel, status: 'vorhanden', pruefungen, hinweis: 'Inzwischen hat ein anderer Aufruf eine Projekt-DB eingetragen — nichts ueberschrieben.' };
+    }
+    return {
+      ...ziel, status: 'uebernommen', pruefungen,
+      hinweis: `Projekt-DB "${database}" (${host}:${port}) fuer "${projekt}" registriert. Shell-Jobs bekommen sie als DATABASE_URL (Cache bis 15 s).`,
+    };
+  } catch (err) {
+    return { ...ziel, status: 'fehler', pruefungen, hinweis: `Projekt-DB uebernehmen: ${schwaerzen((err as Error).message).slice(0, 300)}` };
+  }
 }

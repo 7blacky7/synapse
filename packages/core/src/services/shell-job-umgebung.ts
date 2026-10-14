@@ -9,10 +9,13 @@
  * REGELN:
  *   - DATABASE_URL bleibt als Standardvariable, zeigt aber IMMER auf die DB des
  *     Projekts, in dem der Job laeuft:
- *       Projekt synapse  -> KEINE System-DB-Zugangsdaten; Test-DB ausdrücklich laden.
- *       anderes Projekt  -> Spielwiese aus projekt_datenbanken (5433). Gibt es keine,
- *                           wird DATABASE_URL NICHT gesetzt, stattdessen
+ *       jedes Projekt (auch synapse) -> Spielwiese aus projekt_datenbanken (5433).
+ *                           Gibt es keine, wird DATABASE_URL NICHT gesetzt, stattdessen
  *                           SYNAPSE_PROJEKT_DB_HINWEIS. Nie Rueckfall auf die Synapse-DB.
+ *     P10-T72 (14.10.2026): Kein Sonderfall mehr fuer das Projekt synapse. Der einzige
+ *     Schutz ist fuer alle Projekte gleich: das Ziel darf nie die System-DB sein
+ *     (istErlaubteProjektDb). Geerbte DB-Variablen des Daemons werden IMMER zuerst
+ *     entfernt, erst danach wird die Projekt-DB gesetzt.
  *   - Entfernt werden fuer alle Projekte PG*-Variablen, DB-URLs, Tokens, Secrets,
  *     Passwoerter, API-Keys, UNRAID_*, jeder Wert mit Zugangsdaten in einer URL und
  *     alle Namen aus ~/.config/synapse/secrets.env.
@@ -30,8 +33,6 @@ import path from 'node:path';
 import { leseProjektDbZugang } from './projekt-db.js';
 import {dbZielAusUrl,type ShellDbZiel} from './shell-db-zuordnung.js';
 import {getConfig} from '../config.js';
-
-export const SYNAPSE_SYSTEM_PROJEKT = 'synapse';
 
 export const SYNAPSE_DB_HINWEIS =
   'Das ist die alleinige Synapse-System-DB (5432/synapse) — keine Spielwiese, keine Test-/Projektdaten hineinschreiben.';
@@ -153,11 +154,16 @@ function leseSecretNamen(pfad: string): Set<string> {
   return namen;
 }
 
-/** Registry-Ziel gegen eigene System-Konfiguration prüfen, ohne feste Hosts/Ports/DB-Namen. */
-function istErlaubteProjektDb(zugang: JobDbZugang, systemUrl: string | undefined): boolean {
+/**
+ * Registry-Ziel gegen eigene System-Konfiguration prüfen, ohne feste Hosts/Ports/DB-Namen.
+ * P10-T72 M2: so streng wie die Shell-Freigabe (holeShellDbFreigabe/workspace-job-db): anderer Port UND
+ * andere DB als die System-DB. Der Hostname zaehlt bewusst nicht — ein Alias derselben Instanz
+ * (anderer Name/IP, gleicher Port oder gleiche DB) wird damit ebenfalls verworfen.
+ */
+export function istErlaubteProjektDb(zugang: JobDbZugang, systemUrl: string | undefined): boolean {
   const ziel=dbZielAusUrl(zugang.database_url),system=dbZielAusUrl(systemUrl);
   if(!ziel||!system)return false;
-  if(ziel.host===system.host&&ziel.port===system.port&&ziel.datenbank===system.datenbank)return false;
+  if(ziel.port===system.port||ziel.datenbank===system.datenbank)return false;
   return ziel.host===zugang.host.toLowerCase()&&ziel.port===String(zugang.port)&&ziel.datenbank===zugang.database;
 }
 
@@ -217,9 +223,7 @@ export async function baueJobUmgebung(
   env.SYNAPSE_SHELL_JOB = '1';
   let dbInfo = 'keine';
   let datenbank_ziel:ShellDbZiel|undefined;
-  if (projekt === SYNAPSE_SYSTEM_PROJEKT) {
-    env.SYNAPSE_DB_HINWEIS = 'Shell-Kindumgebung ohne System-DB-Zugang. Projekt-/Test-DB bei Bedarf ausdrücklich laden.';
-  } else {
+  {
     const anlegen = `Anlegen mit project(action:"projekt_db", project:"${projekt}", erstellen:true)`;
     try {
       const zugang = await projektDbMitCache(projekt, leseZugang);
