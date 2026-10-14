@@ -2669,6 +2669,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_konflikt_offen ON asset_konflikte(as
 -- P10-T37: Spiegel schema-sql/61_shell_sicherungs_audit.sql, Altbestand bleibt NULL.
 ALTER TABLE shell_jobs ADD COLUMN IF NOT EXISTS sicherung JSONB;
 
+-- P10-T73: Spiegel schema-sql/62_shell_demaskierungen.sql. Additiv: Gefahrkennzeichen + Stufe rueckfrage
+-- im Katalog, kleine Liste bestaetigt demaskierter Jobs (Worker maskiert nur diese nach).
+ALTER TABLE shell_sicherungsregeln ADD COLUMN IF NOT EXISTS gefaehrlich JSONB;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='shell_sicherungsregeln_stufe_check'
+                 AND pg_get_constraintdef(oid) LIKE '%rueckfrage%') THEN
+    ALTER TABLE shell_sicherungsregeln DROP CONSTRAINT IF EXISTS shell_sicherungsregeln_stufe_check;
+    ALTER TABLE shell_sicherungsregeln ADD CONSTRAINT shell_sicherungsregeln_stufe_check
+      CHECK (stufe IN ('hinweis','anleitung','rueckfrage','sperre'));
+  END IF;
+END $$;
+CREATE TABLE IF NOT EXISTS shell_demaskierungen (
+  job_id UUID PRIMARY KEY REFERENCES shell_jobs(id) ON DELETE CASCADE,
+  bestaetigung_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  grund TEXT NOT NULL CHECK (length(trim(grund)) >= 10),
+  demaskiert_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  maskieren_bis TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shell_demaskierungen_faellig ON shell_demaskierungen(maskieren_bis);
+-- M3: abgewiesene Rueckfrage-Jobs werden hier vorgemerkt; der Worker loescht per Primaerschluessel (kein Scan).
+CREATE TABLE IF NOT EXISTS shell_rueckfrage_jobs (
+  job_id UUID PRIMARY KEY REFERENCES shell_jobs(id) ON DELETE CASCADE,
+  verfaellt_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shell_rueckfrage_jobs_verfall ON shell_rueckfrage_jobs(verfaellt_at);
+
 ${HINWEIS_SCHEMA_SQL}
 
 -- P20-T14/R2.1: generische Jobs/Leases; additiv, keine code_chunks-Ausführung.

@@ -504,7 +504,7 @@ export class WorkspaceOrchestrator {
   async exec(
     project: string,
     command: string,
-    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; agent_id?:string|null; bestaetigt?:ShellBestaetigung|null; shell?:SicherungsShell; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
+    opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; agent_id?:string|null; bestaetigt?:ShellBestaetigung|null; bestaetigung?:{id:string;grund:string;frist_stunden?:number}; shell?:SicherungsShell; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string;quellen_wiederhergestellt?:string[];quellen_pruefung_ausstehend?:boolean}> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
@@ -539,7 +539,7 @@ export class WorkspaceOrchestrator {
     let lage=await ermittle();
     if(opts.onLage){await opts.onLage(await maskiereShellAntwort(project,lage));lage=await ermittle();}
     const katalog=await holeShellStartKatalog();
-    const pruefung=pruefeShellStart({project,command,lage,workspace_testdateien:true,agent_id:opts.agent_id,bestaetigt:opts.bestaetigt,
+    const pruefung=pruefeShellStart({project,command,lage,workspace_testdateien:true,agent_id:opts.agent_id,bestaetigt:opts.bestaetigt,bestaetigung:opts.bestaetigung,
       rechner:context.rechner??containerId,geschuetzte_pids:context.prozesse?.pids,geschuetzte_namen:context.prozesse?.namen},katalog);
     let sicherungsJob=await beginneShellSicherungsJob({project,command,agent_id:opts.agent_id,entscheidung:pruefung,lage,
       ursprung:'workspace',rechner:context.rechner??containerId});

@@ -51,6 +51,8 @@ export function istToolLogGeheimSchluessel(name: string): boolean {
   const norm = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[.\-\s]/g, '_');
   if (AUSNAHME.test(norm)) return false;
   const kompakt = norm.replace(/_/g, '');
+  // P10-T73 H3: Rueckfrage-IDs sind Einmal-Berechtigungen und duerfen nicht dauerhaft lesbar sein.
+  if (kompakt === 'bestaetigungid' || kompakt === 'bestaetigung') return true;
   if (GEHEIM_TEIL.test(kompakt)) return true;
   if (PASS_ENDE.test(kompakt)) return true; // SSHPASS, DB_PASS, MYSQL_PASS — nicht bypass/compass
   if (/^(?:ssh|db|pg|mysql|sql|smtp|mail|user|admin|root|redis|ftp|ldap|proxy|api)pw$/.test(kompakt)) return true;

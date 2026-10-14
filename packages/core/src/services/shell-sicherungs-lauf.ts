@@ -3,6 +3,7 @@ import {getPool}from'../db/client.js';
 import{ladeShellSicherungsKatalog,type ShellSicherungsKatalog}from'./shell-sicherung.js';
 import{SHELL_SICHERUNG_SEED,SHELL_SICHERUNG_VORGAENGER}from'./shell-sicherung-seed.js';
 import{maskiereShellVorSpeichern}from'./shell-maske.js';
+import{merkeShellRueckfrageJobVor}from'./shell-demaskierung.js';
 import type{ShellStartEntscheidung,ShellBestaetigung}from'./shell-start-sicherung.js';
 import type{ShellLage}from'./shell-lage.js';
 /** Gepflegte DB-Einträge überschreiben gleichnamigen Grundstock, auch stillgelegt. */
@@ -20,7 +21,10 @@ export function verbindeShellStartKatalog(db:ShellSicherungsKatalog):ShellSicher
     const canonical=(v:unknown):string=>JSON.stringify(v,(_k,value)=>value&&typeof value==='object'&&!Array.isArray(value)?
       Object.fromEntries(Object.keys(value).sort().map(k=>[k,value[k]])):value);
     const {skript_ziel:_z,skript_db:_d,skript_exec:_e,ausnahmen:_a,...alt}=shipped.muster;
-    return [alt,...SHELL_SICHERUNG_VORGAENGER['regel:'+r.id]??[]].some(x=>canonical(r.muster)===canonical(x))?{...r,version:shipped.version,muster:shipped.muster}:r;
+    // P10-T73: auch der aktuell ausgelieferte Muster-Stand zählt als unverändert; ein in der DB
+    // gepflegtes Gefahrkennzeichen (auch false) bleibt, sonst gilt das ausgelieferte.
+    return [shipped.muster,alt,...SHELL_SICHERUNG_VORGAENGER['regel:'+r.id]??[]].some(x=>canonical(r.muster)===canonical(x))
+      ?{...r,version:shipped.version,muster:shipped.muster,gefaehrlich:r.gefaehrlich??shipped.gefaehrlich??null}:r;
   });
   const risiko_verben=merge(SHELL_SICHERUNG_SEED.risiko_verben,db.risiko_verben).map(v=>{
     const shipped=SHELL_SICHERUNG_SEED.risiko_verben.find(x=>x.id===v.id);
@@ -49,7 +53,9 @@ export async function beginneShellSicherungsJob(o:ShellPruefSpeicher):Promise<st
     const r=await getPool().query<{id:string}>(
       'UPDATE shell_jobs SET sicherung=$4::jsonb,updated_at=NOW() WHERE id=$1::uuid AND project=$2 AND command=$3 RETURNING id',
       [o.job_id,o.project,o.command,JSON.stringify(data)]);
-    if(!r.rows[0])throw Error('sicherungs_job_nicht_zugeordnet');return r.rows[0].id;
+    if(!r.rows[0])throw Error('sicherungs_job_nicht_zugeordnet');
+    await rueckfrageVormerken(r.rows[0].id,o.entscheidung);
+    return r.rows[0].id;
   }
   const status=o.entscheidung.darf_starten?'running':'rejected';
   const r=await getPool().query<{id:string}>(
@@ -57,7 +63,13 @@ export async function beginneShellSicherungsJob(o:ShellPruefSpeicher):Promise<st
     'VALUES($1,$2,$3,$4::shell_job_status,$5,$6,$7::jsonb,$8,CASE WHEN $4::text=$9::text THEN NOW() ELSE NULL END) RETURNING id',
     [o.project,o.command,o.cwd_relative??null,status,o.agent_id??null,'mcp_local',JSON.stringify(data),
       o.entscheidung.darf_starten?null:o.entscheidung.antwort?.error??'shell_anleitung','rejected']);
+  await rueckfrageVormerken(r.rows[0].id,o.entscheidung);
   return r.rows[0].id;
+}
+/** P10-T73 M3: nicht ausgefuehrte Rueckfrage-Zeilen fuer das spurlose Aufraeumen vormerken. */
+async function rueckfrageVormerken(id:string,e:ShellStartEntscheidung):Promise<void>{
+  if(e.darf_starten||e.antwort?.stufe!=='rueckfrage')return;
+  await merkeShellRueckfrageJobVor(id,e.antwort.gueltig_bis);
 }
 /** Für direkte Core/Workspace-Läufe; Queue-Worker behält seinen bestehenden Abschlussweg. */
 export async function beendeShellSicherungsJob(id:string,project:string,result:Record<string,unknown>):Promise<void>{

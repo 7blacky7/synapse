@@ -36,13 +36,19 @@ const inline=text=>'node -e '+JSON.stringify(text);
 for(const [name,command,env] of [
  ['Inline-SQL',inline("const{Client}=require('pg');const c=new Client({connectionString:process.env.DATABASE_URL});c.query('DROP SCHEMA owned CASCADE')"),{DATABASE_URL:own}],
  ['Explizite Inline-DSN',inline("const{Client}=require('pg');const c=new Client({connectionString:'"+own+"'});c.query('CREATE TABLE owned(x int)')"),{}],
- ['psql ohne -X',"psql '"+own+"' -c 'DROP SCHEMA owned CASCADE'",{}],
+ ['psql ohne -X',"psql '"+own+"' -c 'CREATE TABLE owned(x int)'",{}],
  ['psql PG-Umgebung',"psql -c 'CREATE TABLE owned(x int)'",{PGHOST:'test.invalid',PGPORT:'5433',PGUSER:'tester',PGDATABASE:'synapse_test'}],
- ['Projekt-DB', "psql 'postgresql://owner:synthetic@project.invalid:5433/spielwiese' -c 'DROP TABLE owned'",{}]
+ ['Projekt-DB', "psql 'postgresql://owner:synthetic@project.invalid:5433/spielwiese' -c 'CREATE TABLE owned(x int)'",{}]
 ])test(name+' erlaubt',async()=>{
  const freigabe=name==='Projekt-DB'?{...proof,ziele:[{art:'projekt',host:'project.invalid',port:'5433',user:'owner',datenbank:'spielwiese'}]}:proof;
  assert.equal((await decision(command,{env,freigabe})).darf_starten,name!=='Explizite Inline-DSN');
 });
+// P10-T73: DROP/TRUNCATE/DELETE ohne WHERE per psql ist auch auf der eigenen Projekt-DB eine Rueckfrage.
+for(const [name,command] of [['psql ohne -X',"psql '"+own+"' -c 'DROP SCHEMA owned CASCADE'"],['Projekt-DB',"psql 'postgresql://owner:synthetic@project.invalid:5433/spielwiese' -c 'DROP TABLE owned'"]])
+ test(name+' DROP ist Rueckfrage',async()=>{
+  const freigabe=name==='Projekt-DB'?{...proof,ziele:[{art:'projekt',host:'project.invalid',port:'5433',user:'owner',datenbank:'spielwiese'}]}:proof;
+  const r=await decision(command,{freigabe});assert.equal(r.darf_starten,false);assert.equal(r.antwort.stufe,'rueckfrage');
+ });
 test('Node-Datei außerhalb Testpfadmuster ohne Helfer',async()=>{
  const file=root+'/tools/adhoc.mjs',text="const pool=getPool();await pool.query('DROP TABLE owned')";
  assert.equal((await decision('node tools/adhoc.mjs',{texts:{[file]:text},env:{DATABASE_URL:own}})).darf_starten,true);
@@ -57,7 +63,9 @@ for(const [name,command,env]of [
  ['Unbekanntes Ziel',"psql 'postgresql://tester:synthetic@other.invalid:5433/unknown' -c 'DROP TABLE owned'",{}],
  ['SQL wechselt DB',"psql '"+own+"' -c '\\connect synapse'",{}],
 ])test(name+' bleibt Anleitung',async()=>{
- const r=await decision(command,{env});assert.equal(r.darf_starten,false);assert.equal(r.audit.stufe,'anleitung');
+ const r=await decision(command,{env});assert.equal(r.darf_starten,false);
+ // P10-T73: psql mit DROP ist db.massiv -> rueckfrage (Live-CLI faellt unter die Live-Sperre, nicht T73).
+ assert.equal(r.audit.stufe,name!=='Live CLI'&&/^psql\b/.test(command)&&/DROP/.test(command)?'rueckfrage':'anleitung');
 });
 test('Andere Risiken neben erlaubter DB bleiben aktiv',async()=>{
  const r=await decision(inline("const c=getPool();c.query('DROP TABLE owned');require('child_process').execSync(process.env.COMMAND)"),{env:{DATABASE_URL:own}});

@@ -112,25 +112,82 @@ export async function maskiereShellVorSpeichern<T>(project:string|undefined,date
 
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {logToolCall} from './tool-call-log.js';
+import {stelleShellRueckfrage,loeseShellRueckfrageEin,leseShellBestaetigung,befehlHash,shellDemaskierFristStunden,mitShellDemaskierung,
+  merkeShellDemaskierungVor,loeseShellDemaskierungVorab,type ShellRueckfrageBindung,type ShellBestaetigungEingabe,type ShellDemaskierung} from './shell-rueckfrage.js';
 import {drossleShellJobHinweis} from './shell-job-hinweis.js';
 import {ergaenzeShellErgebnisHinweis} from './shell-ergebnis-hinweis.js';
 const sicht=new AsyncLocalStorage<boolean>();
 export function shellSichtUnmaskiert():boolean{return sicht.getStore()===true;}
+/** Inhalt einer Tool-Antwort: REST liefert das Objekt, stdio {content:[{text}]}. */
+function antwortObjekt(v:unknown):Record<string,unknown>|undefined{
+  if(!v||typeof v!=='object'||Array.isArray(v))return undefined;
+  const text=(v as {content?:Array<{text?:unknown}>}).content?.[0]?.text;
+  if(typeof text==='string')try{const o=JSON.parse(text);return o&&typeof o==='object'&&!Array.isArray(o)?o:undefined;}catch{return undefined;}
+  return v as Record<string,unknown>;
+}
+/**
+ * P10-T73: Demaskieren (maskierung:false) fuer JEDEN Agenten ueber die Rueckfrage-Stufe.
+ * Ohne gueltige bestaetigung:{id,grund} wird nichts ausgefuehrt/gelesen: Antwort stufe 'rueckfrage' mit
+ * bestaetigung_id + gueltig_bis. Verworfenes hinterlaesst keine Spur.
+ */
+function demaskierBindung(args:Record<string,unknown>,project:string|undefined,actor:string,action:string):ShellRueckfrageBindung{
+  return action==='exec'
+    ?{art:'demaskieren',agent_id:actor,project:project??'',befehl_hash:befehlHash(project??'',String(args.command??''))}
+    :{art:'demaskieren',agent_id:actor,project:project??'',ziel:action+':'+String(args.id??'')};
+}
 /** Anzeige-Override mit vorhandener Namenstreue, Speicherung bleibt unabhaengig davon geschuetzt. */
-export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Promise<T>):Promise<T> {
+export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Promise<T>,form:(o:Record<string,unknown>)=>T=(o=>o as T)):Promise<T> {
   let project=typeof args.project==='string'?args.project:undefined;
   if(!project && typeof args.stream_id==='string' && /^[a-f0-9]{16}$/i.test(args.stream_id))try {
     const meta=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.synapse','shell-streams',args.stream_id+'.meta.json'),'utf8'));
     if(typeof meta.project==='string')project=meta.project;
   }catch {/* unbekannter Stream wird vom bestehenden Handler gemeldet */}
-  if(args.maskierung===false){
+  if(args.maskierung===false&&!(args.bestaetigung===undefined&&darfKoordinatorOderUser(String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''))&&
+    typeof args.grund==='string'&&args.grund.trim().length>=10)){
     const actor=String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??'');
-    if(!darfKoordinatorOderUser(actor))throw new Error('Maskierung abschalten darf nur Koordinator/User');
-    if(typeof args.grund!=='string'||args.grund.trim().length<10)throw new Error('Maskierung abschalten erfordert einen Grund (mindestens 10 Zeichen)');
+    const action=typeof args.action==='string'?args.action:'exec';
+    if(!['exec','get','log'].includes(action))throw new Error('maskierung:false gibt es nur fuer exec, get und log');
+    if(!actor)throw new Error('Demaskieren erfordert eine agent_id');
+    const bindung=demaskierBindung(args,project,actor,action);
+    let b:ShellBestaetigungEingabe|undefined,fehler:string|undefined,d:ShellDemaskierung|undefined,befehl:ShellBestaetigungEingabe|undefined;
+    try{b=leseShellBestaetigung(args.bestaetigung);}catch{fehler='bestaetigung_ungueltig';}
+    if(b){
+      const vorab=action==='exec'?loeseShellDemaskierungVorab(b.id,bindung):undefined;
+      if(vorab){d=vorab;befehl=b;}
+      else{
+        const r=loeseShellRueckfrageEin(b.id,b.grund,bindung);
+        if(r.ok)d={bestaetigung_id:b.id,agent_id:actor,grund:b.grund.trim(),
+          maskieren_bis:new Date(Date.now()+shellDemaskierFristStunden(b.frist_stunden)*3_600_000).toISOString()};
+        else fehler=r.error;
+      }
+    }
+    if(!d){
+      const rf=stelleShellRueckfrage(bindung);
+      return form({success:false,status:'rueckfrage',ausgefuehrt:false,stufe:'rueckfrage',art:'demaskieren',error:fehler??'shell_rueckfrage',
+        risiko:'Die Ausgabe wuerde unmaskiert (mit Geheimnissen) angezeigt'+(action==='exec'?' und bis zur Frist unmaskiert gespeichert':'')+'.',
+        ...rf,
+        trotzdem:'Nicht ausgefuehrt. Bestaetigen kann nur der aufrufende Agent selbst: denselben Aufruf mit maskierung:false und bestaetigung:{id:<bestaetigung_id>,'+
+          'grund:"<mind. 10 Zeichen>"} bis gueltig_bis erneut senden'+(action==='exec'?
+          ' (optional frist_stunden: frueher nachmaskieren; Standard '+shellDemaskierFristStunden()+' h)':'')+'. Ohne Bestaetigung verfaellt die Rueckfrage ohne Spur.'});
+    }
+    const demask=d;
+    await logToolCall({project,agentId:actor,tool:'shell',action:'demaskieren',argsPreview:JSON.stringify({grund:demask.grund,action,id:args.id,bestaetigung_id:demask.bestaetigung_id}),ok:true});
+    const antwort=await ergaenzeShellErgebnisHinweis({...args,project},await drossleShellJobHinweis(args,
+      await mitShellDemaskierung({...demask,...(befehl?{befehl_bestaetigung:befehl}:{})},()=>sicht.run(true,lauf))));
+    // Der Befehl selbst stellte eine Rueckfrage (gefaehrlich): Demaskier-Freigabe an deren ID haengen.
+    const inhalt=antwortObjekt(antwort);
+    if(action==='exec'&&inhalt?.stufe==='rueckfrage'&&typeof inhalt.bestaetigung_id==='string')merkeShellDemaskierungVor(inhalt.bestaetigung_id,bindung,demask);
+    return antwort && typeof antwort==='object' && !Array.isArray(antwort)
+      ? {...antwort,maskierung_audit:{agent_id:actor,grund:maskiereShellText(demask.grund).text,bestaetigung_id:demask.bestaetigung_id,
+        ...(action==='exec'?{maskieren_bis:demask.maskieren_bis}:{})}} : antwort;
+  }
+  if(args.maskierung===false){
+    // Altweg (unveraendert): Koordinator/User mit grund, nur Anzeige.
+    const actor=String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??'');
     await logToolCall({project,agentId:actor,tool:'shell',action:'maskierung_aus',argsPreview:JSON.stringify({grund:args.grund,action:args.action,id:args.id}),ok:true});
     const antwort=await ergaenzeShellErgebnisHinweis({...args,project},await drossleShellJobHinweis(args,await sicht.run(true,lauf)));
     return antwort && typeof antwort==='object' && !Array.isArray(antwort)
-      ? {...antwort,maskierung_audit:{agent_id:actor,grund:maskiereShellText(args.grund).text}} : antwort;
+      ? {...antwort,maskierung_audit:{agent_id:actor,grund:maskiereShellText(String(args.grund)).text}} : antwort;
   }
   return maskiereShellAntwort(project,await ergaenzeShellErgebnisHinweis({...args,project},await drossleShellJobHinweis(args,await lauf())));
 }

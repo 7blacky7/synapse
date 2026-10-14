@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob} from '@synapse/core';
+import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs} from '@synapse/core';
 import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -146,11 +146,11 @@ export const shellTool: ConsolidatedTool = {
       type: 'object',
       properties: {
         ...SHELL_SICHERUNGS_PARAMETER,
-        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true); false nur Koordinator/User mit grund. Persistenz bleibt maskiert.'},
-        grund: {type:'string',description:'Audit-Grund fuer maskierung:false (mind. 10 Zeichen)'},
+        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true). false (exec|get|log, jeder Agent): erst Rueckfrage mit bestaetigung_id, dann denselben Aufruf mit bestaetigung:{id,grund} wiederholen. Bestaetigt demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden kuerzer) unmaskiert gespeichert und danach automatisch nachmaskiert. tool_calls, Embeddings und Logs bleiben maskiert.'},
+        grund: {type:'string',description:'Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
         action: {
           type: 'string',
-          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel'],
+          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'maskieren'],
           description: 'Default: exec. history = Shell-Job-Metadaten mit kurzer Vorschau; get/log = Details und voller Output. activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
         },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
@@ -196,6 +196,13 @@ export const shellTool: ConsolidatedTool = {
   handler: async (args) => mitShellAusgabe(args,async()=>{
     const action = str(args, 'action') ?? 'exec';
 
+    if (action === 'maskieren') {
+      // P10-T73: bestaetigt demaskierten Job sofort (vor Fristende) wieder maskieren.
+      const res = await maskiereFaelligeShellJobs({ job_id: reqStr(args, 'id') });
+      return { content: [{ type: 'text', text: JSON.stringify({ success: true, ...res,
+        ...(res.nachmaskiert ? {} : { hinweis: 'Job steht nicht in der Liste bestaetigt demaskierter Jobs (bereits maskiert).' }) }, null, 2) }] };
+    }
+
     if (action === 'get_stream') {
       const result = getShellStream({
         stream_id: reqStr(args, 'stream_id'),
@@ -230,7 +237,7 @@ export const shellTool: ConsolidatedTool = {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
         return { content: [{ type: 'text', text: JSON.stringify({ success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(jobId) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` }, null, 2) }] };
       }
-      const job = await getShellJobById(reqStr(args, 'id'), { anzeige: str(args, 'detail') === 'full' ? 'full' : 'kompakt' });
+      const job = await getShellJobById(reqStr(args, 'id'), { anzeige: str(args, 'detail') === 'full' ? 'full' : 'kompakt', betrachter: resolveAgentId(str(args, 'agent_id')) });
       if (!job) {
         return {
           content: [
@@ -424,9 +431,12 @@ export const shellTool: ConsolidatedTool = {
                   ? 'timeout'
                   : 'failed');
         const streamId = (final['stream_id'] as string | undefined) ?? undefined;
+        // P10-T73: bestaetigt demaskiert -> Rohausgabe speichern und vormerken (Nachmaskieren per Worker).
+        const roh = shellRohAusgabe(final);
         if(typeof final.id==='string'){
-          await completeShellJob(final.id,{status,exit_code:final.exit_code as number|undefined,tail:final.tail as string[]|undefined,
-            error:errCode,message:final.message as string|undefined,output:readStreamLog(streamId)});
+          await completeShellJob(final.id,{status,exit_code:final.exit_code as number|undefined,tail:roh?.tail??final.tail as string[]|undefined,
+            error:errCode,message:final.message as string|undefined,output:roh?.output??readStreamLog(streamId),
+            ...(roh?{demaskierung:roh.demaskierung}:{})});
           return final.id;
         }
         const persistedId = await insertCompletedShellJob({
@@ -437,10 +447,11 @@ export const shellTool: ConsolidatedTool = {
           tail_lines: tailLines,
           status,
           exit_code: final['exit_code'] as number | undefined,
-          tail: final['tail'] as string[] | undefined,
+          tail: roh?.tail ?? final['tail'] as string[] | undefined,
           error: errCode,
           message: final['message'] as string | undefined,
-          output: readStreamLog(streamId),
+          output: roh?.output ?? readStreamLog(streamId),
+          ...(roh ? { demaskierung: roh.demaskierung } : {}),
           stream_id: streamId,
           source: 'mcp_local',
           agent_id: resolveAgentId(str(args, 'agent_id')),
@@ -463,5 +474,5 @@ export const shellTool: ConsolidatedTool = {
     }
 
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-  }),
+  },o=>({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] })),
 };

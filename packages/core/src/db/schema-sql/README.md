@@ -37,6 +37,7 @@ Dieser Ordner enthält nummerierte SQL-Dateien mit der Struktur der Synapse-Date
 | [`52_shell_sicherung.sql`](52_shell_sicherung.sql) | Definiert Shell-Sicherungsregeln, Risiko-Verben, Antworttopf und Auditdaten. |
 | [`60_shell.sql`](60_shell.sql) | Definiert Shell-Jobs und Ausgabestream-Chunks. |
 | [`61_shell_sicherungs_audit.sql`](61_shell_sicherungs_audit.sql) | Enthält die Ergänzung für das Shell-Sicherungs-Audit. |
+| [`62_shell_demaskierungen.sql`](62_shell_demaskierungen.sql) | Ergänzt Gefahrkennzeichen und Rückfrage-Stufe im Shell-Katalog sowie die Liste bestätigt demaskierter Shell-Jobs. |
 
 ### Authentifizierung, Skills und weitere Fachbereiche
 

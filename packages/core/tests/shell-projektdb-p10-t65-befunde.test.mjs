@@ -53,11 +53,15 @@ for(const [key,value] of [
  ['PGHOST','live.invalid'],['PGPORT','5432'],['PGDATABASE','synapse'],['PGUSER','other'],
  ['PGSERVICE','unknown'],['PGSERVICEFILE','unknown'],['PGHOSTADDR','127.0.0.1'],
 ])test('CLI: abweichendes '+key+' verweigert Ausnahme',async()=>{
- assert.equal((await check("psql -X '"+own+"' -c 'DROP SCHEMA owned CASCADE'",{[key]:value})).darf_starten,false);
+ assert.equal((await check("psql -X '"+own+"' -c 'CREATE TABLE owned(x int)'",{[key]:value})).darf_starten,false);
 });
 test('Positivkontrolle: explizite psql-URI',async()=>{
- const r=await check("psql -X '"+own+"' -c 'DROP SCHEMA owned CASCADE'");
+ const r=await check("psql -X '"+own+"' -c 'CREATE TABLE owned(x int)'");
  assert.equal(r.darf_starten,true);assert.equal(r.audit.grund,'projekt_eigene_db');
+});
+test('P10-T73: DROP auf eigener Projekt-DB ist Rueckfrage',async()=>{
+ const r=await check("psql -X '"+own+"' -c 'DROP SCHEMA owned CASCADE'");
+ assert.equal(r.darf_starten,false);assert.equal(r.antwort.stufe,'rueckfrage');
 });
 const {pruefeDbKommando}=await import('../dist/services/shell-db-zuordnung.js');
 const {parseShellText}=await import('../dist/services/shell-sicherung-parser.js');

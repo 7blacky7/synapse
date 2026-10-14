@@ -20,6 +20,8 @@
 import { randomUUID } from 'node:crypto';
 import { shellJobAnzeige, shellHistoryAnzeige, type ShellJobAnzeige } from './shell-job-anzeige.js';
 import {pruefeShellEinreihung,type ShellJobSicherung}from'./shell-einreihung-sicherung.js';
+import {aktuelleShellDemaskierung,type ShellBestaetigungEingabe,type ShellDemaskierung}from'./shell-rueckfrage.js';
+import {trageShellDemaskierungEin}from'./shell-demaskierung.js';
 import type{ShellBestaetigung,ShellSicherungsAntwort}from'./shell-start-sicherung.js';
 import type{SicherungsShell}from'./shell-sicherung-parser.js';
 import {maskiereShellAntwort,maskiereShellVorSpeichern} from './shell-maske.js';
@@ -32,6 +34,8 @@ import {
 
 export interface EnqueueArgs {
   bestaetigt?:ShellBestaetigung|null;
+  /** P10-T73: Rueckfrage-Bestaetigung des aufrufenden Agenten (Pruefung beim Daemon). */
+  bestaetigung?:ShellBestaetigungEingabe;
   shell?:SicherungsShell;
   project: string;
   command: string;
@@ -85,6 +89,8 @@ export interface ShellJobCompletion {
   message?: string;
   /** Voller stdout+stderr-Output. Wird gecappt auf MAX_OUTPUT_BYTES. */
   output?: string;
+  /** P10-T73: bestaetigt demaskiert -> output/tail unmaskiert speichern und in shell_demaskierungen vormerken. */
+  demaskierung?: ShellDemaskierung;
 }
 
 export interface ShellJobResult extends Partial<ShellSicherungsAntwort> {
@@ -194,7 +200,9 @@ export async function enqueueShellJob(
   // exec_key wird NUR bei nebenwirkungsfreien Befehlen gesetzt (Positivliste in
   // shell-teilbar.ts). Alles andere bekommt NULL und laeuft ungehindert doppelt —
   // ein zweites `git commit` MUSS ein zweites Mal laufen.
-  const sicherung=await pruefeShellEinreihung(args);
+  // P10-T73: bestaetigte Demaskierung (Anzeige-Kontext) reist mit dem Job zum Daemon.
+  const demaskierung=aktuelleShellDemaskierung();
+  const sicherung=await pruefeShellEinreihung({...args,...(demaskierung?{demaskierung}:{})});
   const anfrage=sicherung.sicherung?await maskiereShellVorSpeichern(args.project,sicherung.sicherung):null;
   const teilbar = sicherung.wiederverwendbar && args.force !== true && istTeilbar(args.command);
   const execKey = teilbar
@@ -401,7 +409,10 @@ export async function completeShellJob(
 ): Promise<void> {
   const pool = getPool();
   const project=(await pool.query<{project:string}>('SELECT project FROM shell_jobs WHERE id=$1',[id])).rows[0]?.project;
+  // P10-T73: bestaetigt demaskierte Ausgabe bleibt bis zur Frist unmaskiert (Liste + Worker maskieren nach).
+  const roh=result.demaskierung&&project?{output:result.output,tail:result.tail,demaskierung:result.demaskierung}:undefined;
   result=await maskiereShellVorSpeichern(project,result);
+  if(roh){result.output=roh.output;result.tail=roh.tail;delete result.demaskierung;}
   if(result.maskiert)result.message=[result.message,`maskiert: ${result.maskiert} Werte`].filter(Boolean).join('; ');
   // Output cappen — sehr grosse Logs sprengen die JSON-Response der KI-Tools.
   // Bei Bedarf kann der File-Fallback die volle Groesse liefern.
@@ -448,6 +459,7 @@ export async function completeShellJob(
       truncated,
     ],
   );
+  if(roh&&project)await trageShellDemaskierungEin(id,project,roh.demaskierung);
   const channel = doneChannelForJob(id);
   const gespeichert=geschrieben.rows[0]?.status??(await pool.query<{status:string}>('SELECT status FROM shell_jobs WHERE id=$1',[id])).rows[0]?.status??result.status;
   // Ein Notificationfehler nach erfolgreicher Speicherung verliert das Ergebnis nicht.
@@ -824,10 +836,14 @@ export async function insertCompletedShellJob(args: {
   source: 'mcp_local' | 'rest_queue';
   /** Attribution: welcher Agent den Job abgesetzt hat (NULL = unbekannt). */
   agent_id?: string | null;
+  /** P10-T73: bestaetigt demaskiert -> output/tail unmaskiert speichern und vormerken. */
+  demaskierung?: ShellDemaskierung;
 }): Promise<{ id: string }> {
   const pool = getPool();
   const command=args.command;
+  const roh=args.demaskierung?{output:args.output,tail:args.tail,demaskierung:args.demaskierung}:undefined;
   const safe=await maskiereShellVorSpeichern(args.project,args) as typeof args & {maskiert?:number};
+  if(roh){safe.output=roh.output;safe.tail=roh.tail;delete safe.demaskierung;}
   if(safe.maskiert)safe.message=[safe.message,`maskiert: ${safe.maskiert} Werte`].filter(Boolean).join('; ');
   args=safe;
   args.command=command; // Ausfuehrungs-/Audit-Kommando bleibt in der Job-Steuerung, Ausgaben sind geschwaerzt.
@@ -862,6 +878,7 @@ export async function insertCompletedShellJob(args: {
       args.agent_id ?? null,
     ],
   );
+  if(roh)await trageShellDemaskierungEin(res.rows[0].id,args.project,roh.demaskierung);
   return { id: res.rows[0].id };
 }
 
@@ -930,6 +947,8 @@ export async function getShellJobs(opts: {
     `SELECT id, project, agent_id, command, cwd_relative, status, exit_code, tail, error,
             message, output_truncated, stream_id, claimed_by AS source,
             created_at, completed_at,
+            CASE WHEN sicherung->'audit'->>'entscheidung'='bestaetigt' THEN sicherung->'audit'->>'grund' END AS bestaetigt_grund,
+            sicherung->'demaskierung'->>'grund' AS demaskiert_grund,
             CASE
               WHEN output IS NULL OR output = '' THEN 0
               WHEN substring(output FROM length(output) FOR 1) = E'\n'
@@ -942,6 +961,8 @@ export async function getShellJobs(opts: {
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
+  // P10-T73: Gruende bestaetigter Ausfuehrung/Demaskierung nur zeigen, wenn vorhanden (sonst unveraenderte Form).
+  for(const row of rows)for(const k of ['bestaetigt_grund','demaskiert_grund'])if(row[k]===null||row[k]===undefined)delete row[k];
   const jobs = await Promise.all(rows.map(row=>maskiereShellAntwort(row.project,row))) as ShellJobSummary[];
   return opts.anzeige === 'kompakt' ? jobs.map(shellHistoryAnzeige) : jobs;
 }
@@ -1002,8 +1023,8 @@ export async function reapOrphanedRunningJobs(hostname: string): Promise<number>
 }
 
 export function getShellJobById(id: string): Promise<ShellJobDetail | null>;
-export function getShellJobById(id: string, optionen: { anzeige: 'kompakt' | 'full' }): Promise<ShellJobAnzeige | null>;
-export async function getShellJobById(id: string, optionen?: { anzeige: 'kompakt' | 'full' }): Promise<ShellJobDetail | ShellJobAnzeige | null> {
+export function getShellJobById(id: string, optionen: { anzeige: 'kompakt' | 'full'; betrachter?: string | null }): Promise<ShellJobAnzeige | null>;
+export async function getShellJobById(id: string, optionen?: { anzeige: 'kompakt' | 'full'; betrachter?: string | null }): Promise<ShellJobDetail | ShellJobAnzeige | null> {
   const pool = getPool();
   const { rows } = await pool.query<ShellJobRow>(
     `SELECT * FROM shell_jobs WHERE id = $1`,
@@ -1011,10 +1032,21 @@ export async function getShellJobById(id: string, optionen?: { anzeige: 'kompakt
   );
   if (rows.length === 0) return null;
   const row = rows[0];
-  const {sicherung,...normal}=row;
-  const sichtbar=sicherung?.antwort||sicherung?.anfrage?.bestaetigt||sicherung?.anfrage?.shell;
+  const {sicherung:gespeichert,...normal}=row;
+  // P10-T73 H3: eine offene Rueckfrage-ID sieht nur der Agent, der sie ausgeloest hat (Bindung bleibt agent_id).
+  const sicherung=gespeichert&&!(optionen?.betrachter&&optionen.betrachter===row.agent_id)?ohneRueckfrageId(gespeichert):gespeichert;
+  const sichtbar=sicherung?.antwort||sicherung?.anfrage?.bestaetigt||sicherung?.anfrage?.shell||(sicherung as {demaskierung?:unknown}|null|undefined)?.demaskierung;
   const job = await maskiereShellAntwort(row.project,{ ...normal,...(sichtbar?{sicherung}:{}), output_line_count: countLines(row.output) });
   return optionen ? shellJobAnzeige(job, optionen.anzeige) : job;
+}
+
+/** P10-T73 H3: bestaetigung_id/gueltig_bis und mitgeschickte Bestaetigungs-IDs aus der Anzeige entfernen. */
+function ohneRueckfrageId(s: ShellJobSicherung): ShellJobSicherung {
+  const kopie = JSON.parse(JSON.stringify(s)) as ShellJobSicherung & { antwort?: Record<string, unknown>; anfrage?: Record<string, unknown> };
+  if (kopie.antwort) { delete (kopie.antwort as Record<string, unknown>).bestaetigung_id; delete (kopie.antwort as Record<string, unknown>).gueltig_bis; }
+  const anfrage = kopie.anfrage as Record<string, Record<string, unknown> | undefined> | undefined;
+  if (anfrage?.bestaetigung) delete anfrage.bestaetigung.id;
+  return kopie;
 }
 
 /**

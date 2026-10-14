@@ -321,6 +321,32 @@ export async function startServer(): Promise<void> {
     setInterval(starten,intervall).unref();
   }
 
+  // P10-T73: bestaetigt demaskierte Shell-Jobs nach Frist wieder maskieren. Arbeitet NUR die kleine
+  // Liste shell_demaskierungen ab (kein Scan ueber shell_jobs) und loescht verworfene Rueckfragen.
+  //   SYNAPSE_SHELL_NACHMASKIEREN_DISABLED=1   — Worker ausschalten
+  //   SYNAPSE_SHELL_NACHMASKIEREN_INTERVAL_MS  — Intervall (Default 60 s)
+  //   SYNAPSE_SHELL_DEMASKIERT_STUNDEN         — Frist bis zum Nachmaskieren (Default 72 h)
+  if (process.env.SYNAPSE_SHELL_NACHMASKIEREN_DISABLED !== '1') {
+    const {shellNachmaskierLauf,registriereWorker,workerPausiert,meldeWorkerArbeit} = await import('@synapse/core');
+    const roh = process.env.SYNAPSE_SHELL_NACHMASKIEREN_INTERVAL_MS;
+    const intervall = roh === undefined ? 60_000 : Number(roh);
+    if (!Number.isSafeInteger(intervall) || intervall < 1000 || intervall > 2147483647) {
+      throw new Error('Ungueltiges Shell-Nachmaskier-Intervall');
+    }
+    const lauf = async (): Promise<{nachmaskiert:number;rueckfragen_entfernt:number}> => {
+      const r = await shellNachmaskierLauf();
+      if (r.nachmaskiert || r.rueckfragen_entfernt) meldeWorkerArbeit('shell-nachmaskieren');
+      return r;
+    };
+    registriereWorker({name:'shell-nachmaskieren',beschreibung:'P10-T73 bestaetigt demaskierte Shell-Jobs nachmaskieren',durchlauf:lauf});
+    const starten = (): void => {
+      if (workerPausiert('shell-nachmaskieren')) return;
+      void lauf().catch((err:unknown)=>console.error('[Synapse API] Shell-Nachmaskieren fehlgeschlagen:',err));
+    };
+    starten();
+    setInterval(starten,intervall).unref();
+  }
+
   // Tool-Call-Retention: aeltert Eintraege im Activity-Store (tool_calls) aus.
   // Laeuft hier (24/7-REST) statt im lokalen Daemon, da die DB zentral ist. ENV:
   //   TOOLCALL_RETENTION_DISABLED=1        — Worker ausschalten

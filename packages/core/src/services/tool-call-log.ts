@@ -39,6 +39,26 @@ const OHNE_RESULT = new Set(['code_check:fall']);
 const MUTATION_PATTERN =
   /(?:^|_)(write|create|update|delete|del|add|insert|replace|move|copy|remove|commit|restore|spawn|purge|stop|start|materialize|save|migrate|set|rm|emit|ack|post|pin|unpin|index_media|confirm)(?:_|$)/i;
 
+/**
+ * P10-T73 M2: Eine nicht ausgefuehrte Rueckfrage (stufe rueckfrage, ausgefuehrt false) hinterlaesst in
+ * tool_calls nur einen Kurzvermerk ohne bestaetigung_id, Lage und Antworttext. Sonst undefined.
+ */
+function rueckfrageVermerk(result: string): string | undefined {
+  if (!result.includes('rueckfrage')) return undefined;
+  let o: unknown;
+  try { o = JSON.parse(result); } catch { return undefined; }
+  const inhalt = (v: unknown): Record<string, unknown> | undefined => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+    const text = (v as { content?: Array<{ text?: unknown }> }).content?.[0]?.text;
+    if (typeof text === 'string') { try { return inhalt(JSON.parse(text)); } catch { return undefined; } }
+    return v as Record<string, unknown>;
+  };
+  const r = inhalt(o);
+  if (!r || r.stufe !== 'rueckfrage' || r.ausgefuehrt !== false) return undefined;
+  return JSON.stringify({ stufe: 'rueckfrage', ausgefuehrt: false, ...(r.art ? { art: r.art } : {}),
+    ...(typeof r.error === 'string' ? { error: r.error } : {}), hinweis: 'Rueckfrage nicht ausgefuehrt; ID und Details werden nicht protokolliert.' });
+}
+
 export function isMutationAction(action?: string | null): boolean {
   if (!action) return false;
   return MUTATION_PATTERN.test(action);
@@ -77,6 +97,7 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
       error: schwaerzeToolLogText(entry.error) ?? null,
     };
     let result = entry.result ?? null;
+    if (result != null && entry.tool === 'shell') result = rueckfrageVermerk(result) ?? result;
     if (result != null && OHNE_RESULT.has(`${entry.tool}:${entry.action ?? ''}`)) {
       result = '[nicht protokolliert: Antwort enthaelt Schattendaten eines Erklaerungsfalls]';
     }

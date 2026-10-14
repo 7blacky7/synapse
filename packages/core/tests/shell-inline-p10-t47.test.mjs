@@ -10,14 +10,18 @@ async function check(command,katalog=SHELL_SICHERUNG_SEED,extra={}){
  return pruefeShellStart({project:'owned-t47',command,lage,agent_id:'sol-2',geschuetzte_pids:[4242],...extra},katalog);
 }
 const golden=[];for(const command of ['rm -rf /outside','kill -- -1','bash /tmp/context-handoff.sh']){
- const r=await check(command,fixed);r.audit.zeit='<ZEIT>';golden.push({command,result:r});
+ const r=await check(command,fixed);r.audit.zeit='<ZEIT>';
+ // P10-T73: Rueckfrage-ID und Frist sind Laufzeitwerte.
+ if(r.antwort?.bestaetigung_id){r.antwort.bestaetigung_id='<ID>';r.antwort.gueltig_bis='<ZEIT>';}
+ golden.push({command,result:r});
 }
 if(process.argv.includes('--capture')){console.log('T47_ALT_GOLDEN='+JSON.stringify(golden));process.exit(0);}
 assert.equal(JSON.stringify(golden),(await readFile(new URL('./fixtures/shell-inline-p10-t47.golden.json',import.meta.url),'utf8')).trim());
 const original="node --input-type=module <<'NODE'\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport {createHash} from 'node:crypto';\nfor(const [p,h] of [[\"packages/rest-api/src/routes/specialists.ts\",\"252ad19ec4a24ea19005b1131893062b1369cd3d87c35edba5f6f10c3b0b7dd0\"],[\"packages/rest-api/src/routes/auth.ts\",\"fe63bac6d148b714ac4de83268ff05b3433df01677cfb4dbb82cde78e7605a82\"],[\"packages/file-watcher-daemon/tray/api_client.go\",\"201444d677e8a47f630a1699ea390410158bebcd00508d252680ce5279008bfe\"],[\"packages/file-watcher-daemon/tray/tray.go\",\"800c01d14ba9198025aeca880d2c61b228523a74841ee2743050abd8952aaada\"],[\"packages/rest-api/tests/user-herkunft-p10-t41.test.mjs\",\"ecd0c745a2378fdc0793ab77b22d604d815df035d4e7eb2ca47ae9dab436853d\"],[\"packages/file-watcher-daemon/tray/user_chat_test.go\",\"3c2a33e582874dcf95929f5ef3b4789b9dce6478f2945ff69bf47f49613ac2a7\"]]) assert.equal(createHash('sha256').update(fs.readFileSync(p)).digest('hex'),h,p);\nconsole.log('PG_FS_SYNC_OK');\nNODE\nmise run build:api";
 const live=await check(original);assert.equal(live.darf_starten,true,'exakter read-only Job89f8c63a muss passieren');
+// P10-T73: Einzeiler mit gefaehrlicher API (execSync, rmSync) sind jetzt Rueckfrage, siehe einzeilerApi unten.
+const einzeilerApi=["node -e \"require('child_process').execSync('git status --short')\"","node -e \"require('fs').rmSync('/virtual/t47/owned-temp')\""];
 const safe=[
-"node -e \"require('child_process').execSync('git status --short')\"",
 "git diff --cached -G 'waitForSpecialistJob\\(id, actionStr' -- packages/rest-api/src/routes/mcp.ts | git apply --cached -R && git diff --cached -G 'waitForSpecialistJob\\(id, actionStr' --unified=3 -- packages/rest-api/src/routes/mcp.ts && git status --short",
 "git restore --staged file",
 "git restore -S file",
@@ -26,10 +30,10 @@ const safe=[
  "node -e \"console.log('kill rmSync DROP DELETE')\"",
  "node --input-type=module <<'JS'\nimport fs from 'node:fs'; console.log('PG_FS_SYNC_OK'); fs.readFileSync('package.json');\nJS",
  "python3 -c \"import hashlib; print(hashlib.sha256(b'kill delete sync').hexdigest())\"",
- "node -e \"require('fs').rmSync('/virtual/t47/owned-temp')\"",
  "python3 <<'PY'\nimport os\nos.remove('/virtual/t47/owned-temp')\nPY",
 ];
 for(const command of safe)assert.equal((await check(command)).darf_starten,true,command);
+for(const command of einzeilerApi){const r=await check(command);assert.equal(r.darf_starten,false,command);assert.equal(r.antwort.stufe,'rueckfrage',command);}
 const risky=[
 "node -e \"require('child_process').execSync(\\\"node --input-type=module -e \\\\\\\"import{rmSync as zap}from'node:fs';zap('/outside')\\\\\\\"\\\")\"",
 "node -e \"require('child_process').execSync(\\\"node -e \\\\\\\"require('fs').rmSync('./safe')\\\\\\\"\\\",{cwd:'/outside'})\"",
@@ -61,7 +65,8 @@ const oldDefault={"regeln":[{"id":"git.restore","version":1,"art":"text","stufe"
 const reversed=x=>x&&typeof x==='object'&&!Array.isArray(x)?Object.fromEntries(Object.keys(x).reverse().map(k=>[k,reversed(x[k])])):Array.isArray(x)?x.map(reversed):x;
 const upgraded=verbindeShellStartKatalog(reversed(oldDefault));
 assert.equal((await check("git diff --cached | git apply --cached -R",upgraded)).darf_starten,true,'alte unveränderte PG-Defaults mit JSONB-Schlüsselreihenfolge');
-assert.equal((await check("node -e \"require('fs').rmSync('/virtual/t47/owned-temp')\"",upgraded)).darf_starten,true);
+// P10-T73: rmSync-Einzeiler ist Rueckfrage (exec.indirekt kommt aus dem Grundstock, auch bei alten DB-Defaults).
+assert.equal((await check("node -e \"require('fs').rmSync('/virtual/t47/owned-temp')\"",upgraded)).darf_starten,false);
 const disabled=structuredClone(oldDefault);disabled.regeln.find(x=>x.id==='inline.node').status='stillgelegt';
 assert.equal(verbindeShellStartKatalog(disabled).regeln.find(x=>x.id==='inline.node').status,'stillgelegt');
 const changed=structuredClone(oldDefault);changed.regeln.find(x=>x.id==='inline.node').muster.argv_any=['owned-custom'];

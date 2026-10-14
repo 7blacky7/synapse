@@ -22,6 +22,7 @@ import { getProjectRoot } from './project-registry.js';
 import { baueJobUmgebung } from './shell-job-umgebung.js';
 import { ermittleShellLage, type ShellLage, type ShellLageKontext } from './shell-lage.js';
 import {pruefeShellStart,type ShellBestaetigung}from'./shell-start-sicherung.js';
+import {aktuelleShellDemaskierung,type ShellBestaetigungEingabe,type ShellDemaskierung}from'./shell-rueckfrage.js';
 import{holeShellStartKatalog,geschuetzteShellProzesse,beginneShellSicherungsJob,beendeShellSicherungsJob}from'./shell-sicherungs-lauf.js';
 import { waehleShellStart } from './shell-start.js';
 import {holeShellDbFreigabe,privateShellTestDbFreigabe} from './shell-db-freigabe.js';
@@ -76,6 +77,13 @@ export type ShellExecArgs = {
   onLage?: (lage: ShellLage) => Promise<void> | void;
   agent_id?: string | null;
   bestaetigt?: ShellBestaetigung | null;
+  /** P10-T73: Rueckfrage-Bestaetigung (id + grund) des aufrufenden Agenten. */
+  bestaetigung?: ShellBestaetigungEingabe | null;
+  /**
+   * P10-T73: bestaetigt demaskierte Ausfuehrung (Queue-Metadaten oder Anzeige-Kontext).
+   * Das Stream-Log bleibt maskiert; die Rohausgabe haengt nicht aufzaehlbar als roh_ausgabe am Ergebnis.
+   */
+  demaskierung?: ShellDemaskierung;
   /** Interne bestehende Queue-ID; keine neue Berechtigung. */
   sicherungs_job_id?: string;
   /** Private Queuebindung, nicht aus MCP-/REST-Parametern übernehmen. */
@@ -231,8 +239,11 @@ export async function execShellInProject(
     : {pids:[process.pid,process.ppid],namen:[path.basename(process.execPath).toLowerCase()]};
   const katalog = await holeShellStartKatalog();
   const pruefung = pruefeShellStart({project:args.project,command:args.command,lage,
-    agent_id:args.agent_id,bestaetigt:args.bestaetigt,rechner:os.hostname(),
+    agent_id:args.agent_id,bestaetigt:args.bestaetigt,bestaetigung:args.bestaetigung,rechner:os.hostname(),
     geschuetzte_pids:prozesse.pids,geschuetzte_namen:prozesse.namen},katalog);
+  // P10-T73: Grund der Demaskierung gehoert ins Job-Audit.
+  const demaskierung=args.demaskierung??aktuelleShellDemaskierung();
+  if(demaskierung)pruefung.audit.demaskierung={...demaskierung};
   const sicherungsJob = await beginneShellSicherungsJob({project:args.project,command:args.command,
     cwd_relative:args.cwd_relative,agent_id:args.agent_id,job_id:args.sicherungs_job_id,
     entscheidung:pruefung,lage,rechner:os.hostname(),ursprung:args.sicherungs_ursprung});
@@ -242,6 +253,7 @@ export async function execShellInProject(
   }
   const testDbMetadaten=privateShellTestDbFreigabe(lage,dbFreigabe,pruefung);
   if(testDbMetadaten)jobUmgebung.env.SYNAPSE_SHELL_DB_FREIGABE=testDbMetadaten;
+  let rohAusgabe:string|undefined;
   const result = await new Promise<Record<string,unknown>>((resolve) => {
     ensureStreamsDir();
     cleanupOldStreams();
@@ -302,10 +314,17 @@ export async function execShellInProject(
     const decoderOut=new StringDecoder('utf8'),decoderErr=new StringDecoder('utf8');
     let maskiert=0,nulBytes=0;
     const puffer=new ShellAusgabePuffer(werte,(text,anzahl)=>{maskiert+=anzahl;const safe=shellNulText(text);nulBytes+=safe.anzahl;fs.writeSync(log,safe.text);});
-    child.stdout?.on('data',(chunk:Buffer)=>puffer.empfange(decoderOut.write(chunk)));
-    child.stderr?.on('data',(chunk:Buffer)=>puffer.empfange(decoderErr.write(chunk)));
+    // P10-T73: nur bei bestaetigter Demaskierung die Rohausgabe im Speicher mitfuehren (begrenzt).
+    const rohTeile:string[]=[];let rohLaenge=0;
+    const empfange=(text:string)=>{
+      if(demaskierung&&text&&rohLaenge<ROH_AUSGABE_GRENZE){const t=text.slice(0,ROH_AUSGABE_GRENZE-rohLaenge);rohTeile.push(t);rohLaenge+=t.length;}
+      puffer.empfange(text);
+    };
+    child.stdout?.on('data',(chunk:Buffer)=>empfange(decoderOut.write(chunk)));
+    child.stderr?.on('data',(chunk:Buffer)=>empfange(decoderErr.write(chunk)));
     let flushed=false;
-    const flush=()=>{if(flushed)return;flushed=true;puffer.empfange(decoderOut.end());puffer.empfange(decoderErr.end());puffer.ende();if(nulBytes)fs.writeSync(log,`\n[NUL-Bytes ersetzt: ${nulBytes}]\n`);};
+    const flush=()=>{if(flushed)return;flushed=true;empfange(decoderOut.end());empfange(decoderErr.end());puffer.ende();if(nulBytes)fs.writeSync(log,`\n[NUL-Bytes ersetzt: ${nulBytes}]\n`);
+      if(demaskierung)rohAusgabe=shellNulText(rohTeile.join('')).text;};
 
     // ── Abbruch von aussen (SH-2) ──
     // Der Aufrufer bekommt eine Handhabe auf den Kindprozess. Ohne sie koennte
@@ -421,10 +440,33 @@ export async function execShellInProject(
     result.sicherung_hinweis=h;
     result.message=typeof result.message==='string'?result.message+' | '+t:t;
   }
+  // P10-T73: bestaetigt demaskiert -> Antwort-Tail aus der Rohausgabe, Rohausgabe fuer die Speicherung anhaengen.
+  const roh=demaskierung&&rohAusgabe!==undefined?{output:rohAusgabe,tail:rohTail(rohAusgabe,tailN)}:undefined;
+  if(roh)result.tail=roh.tail;
   if (sicherungsJob && !args.sicherungs_job_id) await beendeShellSicherungsJob(sicherungsJob,args.project,result);
-  return pruefung.antwort
-    ? maskiereShellDaten({...pruefung.antwort,...result,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten
+  const antwort=pruefung.antwort
+    ? roh?{...pruefung.antwort,...result,...(sicherungsJob?{id:sicherungsJob}:{})}
+      :maskiereShellDaten({...pruefung.antwort,...result,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten
     : result;
+  if(roh&&demaskierung){
+    Object.defineProperty(antwort,'roh_ausgabe',{value:roh,enumerable:false});
+    Object.defineProperty(antwort,'demaskierung',{value:demaskierung,enumerable:false});
+  }
+  return antwort;
+}
+
+/** P10-T73: Obergrenze der im Speicher mitgefuehrten Rohausgabe (wie MAX_OUTPUT_BYTES der Queue). */
+const ROH_AUSGABE_GRENZE=1_000_000;
+function rohTail(text:string,n:number):string[]{
+  const lines=text.split('\n');
+  if(lines[lines.length-1]==='')lines.pop();
+  return lines.slice(-n);
+}
+/** P10-T73: Rohausgabe einer bestaetigt demaskierten Ausfuehrung (nicht aufzaehlbar, nie in JSON). */
+export function shellRohAusgabe(r:unknown):{output:string;tail:string[];demaskierung:ShellDemaskierung}|undefined{
+  if(!r||typeof r!=='object')return undefined;
+  const roh=(r as {roh_ausgabe?:{output:string;tail:string[]}}).roh_ausgabe,d=(r as {demaskierung?:ShellDemaskierung}).demaskierung;
+  return roh&&d?{...roh,demaskierung:d}:undefined;
 }
 
 export function getShellStream(args: ShellGetStreamArgs): Record<string, unknown> {

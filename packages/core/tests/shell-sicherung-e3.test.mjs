@@ -8,7 +8,7 @@ const ctx={shell:'bash',os:'linux',cwd:'/virtual/project',project_root:'/virtual
 const args={command:'rm -rf ./owned',project:'test-e3-unit',agent_id:'sol-2',rechner:'test-host'};
 const lage=await ermittleShellLage(args.command,ctx);
 const run=(patch={},catalog=SHELL_SICHERUNG_SEED)=>pruefeShellStart({...args,lage,...patch},catalog);
-let r=run();assert.equal(r.darf_starten,false);assert.equal(r.antwort.ausgefuehrt,false);assert.equal(r.antwort.stufe,'anleitung');
+let r=run();assert.equal(r.darf_starten,false);assert.equal(r.antwort.ausgefuehrt,false);assert.equal(r.antwort.stufe,'rueckfrage');
 assert.ok(r.antwort.risiko);assert.ok(r.antwort.sicher);assert.ok(r.antwort.danach);assert.ok(r.antwort.trotzdem);
 const grant={grund:'Ziele und Sicherung geprüft',...r.antwort.bestaetigungsdaten};
 r=run({bestaetigt:grant});assert.equal(r.darf_starten,false);assert.equal(r.antwort.error,'nur_koordinator');
@@ -26,6 +26,8 @@ assert.equal(mitUserHerkunft('web-ui-chat',()=>run({agent_id:'user',bestaetigt:g
 const benign='pnpm build';r=run({command:benign,lage:await ermittleShellLage(benign,ctx)});
 assert.equal(r.darf_starten,true);assert.equal(Object.hasOwn(r,'antwort'),false);
 const hint=structuredClone(SHELL_SICHERUNG_SEED);hint.regeln.find(x=>x.id==='fs.rm').stufe='hinweis';
+// P10-T73: Gefahrkennzeichen ist eine eigene Achse; diese Kontrolle prueft nur die Regelstufe.
+for(const x of hint.regeln)if(['fs.rm','fs.ziel_ausserhalb'].includes(x.id))x.gefaehrlich=null;
 r=run({},hint);assert.equal(r.darf_starten,true);assert.equal(r.antwort.stufe,'hinweis');assert.equal(r.antwort.ausgefuehrt,true);
 r=run({command:'bash /tmp/context-handoff.sh --force',agent_id:'koordinator',bestaetigt:grant});
 assert.equal(r.darf_starten,false);assert.equal(r.antwort.stufe,'sperre');

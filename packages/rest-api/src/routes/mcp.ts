@@ -1274,9 +1274,9 @@ export const MCP_TOOLS = [
       type: 'object',
       properties: {
         ...SHELL_SICHERUNGS_PARAMETER,
-        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true); false nur Koordinator/User mit grund. Persistenz bleibt maskiert.'},
-        grund: {type:'string',description:'Audit-Grund fuer maskierung:false (mind. 10 Zeichen)'},
-        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide'], description: 'Default: exec. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
+        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true). false (exec|get|log, jeder Agent): erst Rueckfrage mit bestaetigung_id, dann denselben Aufruf mit bestaetigung:{id,grund} wiederholen. Bestaetigt demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden kuerzer) unmaskiert gespeichert und danach automatisch nachmaskiert. tool_calls, Embeddings und Logs bleiben maskiert.'},
+        grund: {type:'string',description:'Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide', 'maskieren'], description: 'Default: exec. Gefaehrliche Befehle (Katalog-Kennzeichen gefaehrlich) laufen nicht sofort: Antwort stufe "rueckfrage" mit bestaetigung_id; derselbe Aufruf mit bestaetigung:{id,grund} fuehrt aus (nur der aufrufende Agent, Frist 60 s). maskieren + id maskiert einen bestaetigt demaskierten Job sofort wieder. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
         id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
@@ -5474,7 +5474,7 @@ async function handleToolCallKern(
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(jobId)) {
           return { success: false, error: 'invalid_job_id', message: `"${jobId}" ist keine Job-UUID${/^[0-9a-f]{16}$/i.test(jobId) ? ' (das ist eine stream_id)' : ''} — nutze das id-Feld der exec-Antwort oder shell(history).` };
         }
-        const job = await getShellJobById(reqStr(args, 'id'), { anzeige: str(args, 'detail') === 'full' ? 'full' : 'kompakt' });
+        const job = await getShellJobById(reqStr(args, 'id'), { anzeige: str(args, 'detail') === 'full' ? 'full' : 'kompakt', betrachter: resolveAgentId(str(args, 'agent_id')) });
         if (!job) {
           return { success: false, error: 'unknown_job', message: `Job ${reqStr(args, 'id')} nicht gefunden` };
         }
@@ -5514,6 +5514,14 @@ async function handleToolCallKern(
           detail: (str(args, 'detail') as 'meta' | 'summary' | 'full' | undefined) ?? 'meta',
         });
         return { success: true, count: rows.length, detail: str(args, 'detail') ?? 'meta', activity: rows };
+      }
+
+      if (shellAction === 'maskieren') {
+        // P10-T73: bestaetigt demaskierten Job vor Fristende wieder maskieren (Liste shell_demaskierungen).
+        const { maskiereFaelligeShellJobs } = await import('@synapse/core');
+        const res = await maskiereFaelligeShellJobs({ job_id: reqStr(args, 'id') });
+        return { success: true, ...res,
+          ...(res.nachmaskiert ? {} : { hinweis: 'Job steht nicht in der Liste bestaetigt demaskierter Jobs (bereits maskiert).' }) };
       }
 
       if (shellAction === 'cancel') {

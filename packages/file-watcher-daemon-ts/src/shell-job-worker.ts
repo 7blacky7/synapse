@@ -23,6 +23,7 @@ import {
   claimPendingShellJob,
   completeShellJob,
   execShellInProject,
+  shellRohAusgabe,isShellDemaskierung,
   mitUserHerkunft,userHerkunftAusMetadata,
   expirePendingShellJobs,
   EXPIRE_PENDING_AFTER_SEC,
@@ -285,6 +286,10 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
       command: job.command,
       agent_id: job.agent_id,
       bestaetigt: job.sicherung?.anfrage?.bestaetigt,
+      // P10-T73: Rueckfrage-Bestaetigung prueft dieser Daemon gegen seine eigene fluechtige Rueckfrage.
+      bestaetigung: job.sicherung?.anfrage?.bestaetigung,
+      demaskierung: isShellDemaskierung(job.sicherung?.anfrage?.demaskierung)&&job.sicherung?.anfrage?.demaskierung.agent_id===job.agent_id
+        ? job.sicherung.anfrage.demaskierung : undefined,
       shell: job.sicherung?.anfrage?.shell,
       sicherungs_job_id: job.id,
       queued_stream_id: job.stream_id??undefined,
@@ -369,7 +374,9 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   // Log nicht sehen. File bleibt als Streaming-Fallback bei laufenden
   // Jobs, ist nach diesem Punkt aber nicht mehr Source-of-Truth.
   const streamId = (result['stream_id'] as string | undefined) ?? job.stream_id ?? undefined;
-  const output = readStreamLog(streamId);
+  // P10-T73: bestaetigt demaskiert -> Rohausgabe statt maskiertem Stream-Log (wird vorgemerkt und nachmaskiert).
+  const roh = shellRohAusgabe(result);
+  const output = roh?.output ?? readStreamLog(streamId);
   // shell_jobs hat keine eigene Spalte dafuer; message wird von der REST-Seite
   // ohnehin durchgereicht. So sieht der Aufrufer ohne API-Deploy, welche DB-
   // Variable sein Job hatte (ohne Passwort).
@@ -379,8 +386,9 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
   await abschluesse.complete(job.id, {
     status,
     exit_code: exitCode,
-    tail,
+    tail: roh?.tail ?? tail,
     output,
+    ...(roh ? { demaskierung: roh.demaskierung } : {}),
     ...(result['maskiert']?{maskiert:Number(result['maskiert'])}:{}),
     ...(abgebrochen
       ? {
