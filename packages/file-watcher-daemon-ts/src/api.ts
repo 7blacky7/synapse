@@ -12,6 +12,7 @@
  *   POST   /projects                      { "name": str, "pfad": str }
  *   POST   /projects/:name/enable
  *   POST   /projects/:name/disable
+ *   POST   /projects/:name/asset-sync     { "aktiv": bool } Asset-Sync je Projekt (nur lokal, P13-T45)
  *   POST   /projects/:name/reindex        Parse-Stand verwerfen, Backlog parst neu
  *   POST   /projects/:name/open-file      Datei im Standard-Editor oeffnen (Body: Pfad)
  *   DELETE /projects/:name
@@ -195,6 +196,24 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
   // ---- POST /projects/:name/disable --------------------------------------
   app.post<{ Params: { name: string } }>('/projects/:name/disable', async (req, reply) => {
     return safeCall(reply, () => manager.disable(req.params.name));
+  });
+
+  // ---- POST /projects/:name/asset-sync -----------------------------------
+  // P13-T45: Tray-Schalter. Setzt asset_sync.aktiv im Daemon (Speicher + config.json) und
+  // startet nur die Asset-Bindung dieses Projekts neu. Nur Loopback ohne Origin (kein Browser).
+  app.post<{ Params: { name: string } }>('/projects/:name/asset-sync', async (req, reply) => {
+    if (!istLoopback(req.ip) || req.headers.origin !== undefined) return reply.code(403).send({ ok: false, error: 'nur_lokal' });
+    const body = req.body as { aktiv?: unknown } | null | undefined;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || typeof body.aktiv !== 'boolean') {
+      return reply.code(400).send({ ok: false, error: 'aktiv (boolean) erforderlich' });
+    }
+    if (!manager.get(req.params.name)) return reply.code(404).send({ ok: false, error: `Projekt "${req.params.name}" nicht gefunden` });
+    try {
+      const r = await manager.setzeAssetSyncAktiv(req.params.name, body.aktiv);
+      return { ok: true, name: req.params.name, ...r };
+    } catch (err) {
+      return reply.code(500).send({ ok: false, error: (err as Error).message });
+    }
   });
 
   // ---- DELETE /projects/:name --------------------------------------------

@@ -57,6 +57,8 @@ export interface ProjektStatus {
   running: boolean;
   file_count?: number;
   last_scan_ms?: number;
+  /** P13-T45: projekte[].asset_sync.aktiv (Standard aus) — fuer den Tray-Schalter. */
+  asset_sync_aktiv?: boolean;
 }
 
 export interface AggregateStatus {
@@ -301,6 +303,8 @@ export class WatcherManager {
   private instances = new Map<string, FileWatcherInstance>();
   private config: DaemonConfig;
   readonly assetSync: DaemonAssetSync;
+  /** P13-T45: laufende Asset-Sync-Umschaltungen je Projekt (werden nacheinander abgearbeitet). */
+  private readonly assetSchalter = new Map<string, Promise<unknown>>();
   /** EventEmitter fuer State-Changes — abonniert von api.ts SSE-Stream. Events: "state_change". */
   readonly events = new EventEmitter();
 
@@ -455,6 +459,37 @@ export class WatcherManager {
     this.emitChange(`disable:${name}`);
   }
 
+  /**
+   * P13-T45: Asset-Sync je Projekt schalten (Tray-Schalter). Setzt NUR asset_sync.aktiv in der
+   * Konfiguration im Speicher, speichert config.json (Fremdfelder bleiben, siehe loadConfig) und
+   * startet bei laufendem Watcher ausschliesslich die Asset-Bindung dieses Projekts neu
+   * (DaemonAssetSync stop/starte). Der Datei-Watcher und andere Projekte laufen weiter.
+   * Aufrufe je Projekt laufen nacheinander, damit zwei schnelle Klicks keine Bindung doppelt stoppen.
+   */
+  async setzeAssetSyncAktiv(name: string, aktiv: boolean): Promise<{ aktiv: boolean; neu_gestartet: boolean }> {
+    const vorher = this.assetSchalter.get(name) ?? Promise.resolve();
+    const lauf = vorher.catch(() => undefined).then(async () => {
+      const p = findProjekt(this.config, name);
+      if (!p) throw new Error(`Projekt "${name}" nicht gefunden`);
+      p.asset_sync = { ...p.asset_sync, aktiv };
+      saveConfig(this.config);
+      let neuGestartet = false;
+      if (this.instances.has(name)) {
+        await this.assetSync.stop(name);
+        this.assetSync.starte(p);
+        neuGestartet = true;
+      }
+      this.emitChange(`asset_sync:${name}`);
+      return { aktiv, neu_gestartet: neuGestartet };
+    });
+    this.assetSchalter.set(name, lauf);
+    try {
+      return await lauf;
+    } finally {
+      if (this.assetSchalter.get(name) === lauf) this.assetSchalter.delete(name);
+    }
+  }
+
   /** Status eines einzelnen Projekts. */
   status(name: string): ProjektStatus | undefined {
     const p = findProjekt(this.config, name);
@@ -481,6 +516,7 @@ export class WatcherManager {
         running: this.instances.has(p.name),
         file_count: p.file_count,
         last_scan_ms: p.last_scan_ms,
+        asset_sync_aktiv: p.asset_sync?.aktiv === true,
       })),
     };
   }

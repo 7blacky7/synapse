@@ -36,6 +36,8 @@ type Project struct {
 	Name    string `json:"name"`
 	Pfad    string `json:"pfad"`
 	Enabled bool   `json:"enabled"`
+	// P13-T45: vom Daemon (/projects); nil bei aelterem Daemon -> Wert aus config.json.
+	AssetSyncAktiv *bool `json:"asset_sync_aktiv,omitempty"`
 }
 
 type ProjectsResponse struct {
@@ -68,6 +70,9 @@ type ProjectMenuHandles struct {
 	SubMenu   *systray.MenuItem
 	CheckItem *systray.MenuItem
 	Enabled   bool
+	// P13-T45: Schalter Asset-Sync je Projekt (asset_sync.aktiv).
+	AssetItem      *systray.MenuItem
+	AssetSyncAktiv bool
 }
 
 var (
@@ -659,6 +664,14 @@ func rebuildMenu(projs []Project) {
 			// Reguläres Item statt Checkbox: AddSubMenuItemCheckbox feuert ClickedCh
 			// auf KDE/SNI nicht zuverlässig, reguläre Items schon. State steht im Titel.
 			check := sm.AddSubMenuItem(toggleLabel(enabled), "")
+			// P13-T45: Asset-Sync je Projekt (config.json asset_sync.aktiv, Standard aus).
+			assetAktiv := assetSyncAktivFuer(p)
+			assetItem := sm.AddSubMenuItem(assetSyncSchalterLabel(assetAktiv), "Asset-Dateien dieses Projekts mit dem Share synchronisieren")
+			go func(pName string, item *systray.MenuItem) {
+				for range item.ClickedCh {
+					go assetSyncUmschalten(pName)
+				}
+			}(name, assetItem)
 			sm.AddSeparator()
 
 			itOeffnen := sm.AddSubMenuItem("Öffnen...", "")
@@ -717,9 +730,11 @@ func rebuildMenu(projs []Project) {
 			}(name)
 
 			projectHandles[name] = &ProjectMenuHandles{
-				SubMenu:   sm,
-				CheckItem: check,
-				Enabled:   enabled,
+				SubMenu:        sm,
+				CheckItem:      check,
+				Enabled:        enabled,
+				AssetItem:      assetItem,
+				AssetSyncAktiv: assetAktiv,
 			}
 
 			// Active toggle handler
@@ -928,6 +943,10 @@ func refresh() {
 		name := p.Name
 		newEnabled := p.Enabled
 		if handle, ok := projectHandles[name]; ok {
+			if a := assetSyncAktivFuer(p); handle.AssetItem != nil && handle.AssetSyncAktiv != a {
+				handle.AssetSyncAktiv = a
+				handle.AssetItem.SetTitle(assetSyncSchalterLabel(a))
+			}
 			if handle.Enabled != newEnabled {
 				handle.Enabled = newEnabled
 				if newEnabled {
