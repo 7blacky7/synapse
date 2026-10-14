@@ -74,8 +74,8 @@ test('Altstand-Golden: erlaubte Lage, Hash und Startantwort bytegleich t88',asyn
  const base=process.env.P10_T69_GOLDEN_BASE??'/tmp/synapse-basis-e502866';
  const old=await import(pathToFileURL(base+'/packages/core/dist/services/shell-lage.js'));
  const oldStart=await import(pathToFileURL(base+'/packages/core/dist/services/shell-start-sicherung.js'));
- for(const c of ["printf plain","node -e "+quote(js)]){
-  const ctx={cwd:root,project_root:root,shell:'sh',os:'linux',inspect:true,probe:probe(),env:{DATABASE_URL:own},env_vollstaendig:true,datenbank_freigabe:proof};
+ for(const [c,freigabe] of [["printf plain",proof],["node -e "+quote(js),proof],...[undefined,'0','invalid','01'].map(id=>[command,{...proof,test_system_id:id}])]){
+  const ctx={cwd:root,project_root:root,shell:'sh',os:'linux',inspect:true,probe:probe(),env:{DATABASE_URL:own},env_vollstaendig:true,datenbank_freigabe:freigabe};
   const before=await old.ermittleShellLage(c,ctx);
   const previous=oldStart.pruefeShellStart({project,command:c,lage:before,agent_id:'sol-5'},catalog);
   const after=await ermittleShellLage(c,ctx);

@@ -339,7 +339,7 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
   const ungeklaert=[...new Set(unresolved.filter(x=>x!=='interpreter_datei'||!interpreterDateien||interpreterDateien!==verifizierteTestdateien))];
   const sql=dbErgebnisse.filter(x=>x.betroffen);
   const dbEigene=ctx.datenbank_freigabe&&sql.length>0&&sql.every(x=>x.erlaubt)&&ungeklaert.length===0;
-  const dbTestZiele=ctx.datenbank_freigabe&&!dbEigene&&dbKontextVerifiziert&&sql.length>0&&
+  const dbTestZiele=ctx.datenbank_freigabe&&/^[1-9][0-9]{0,19}$/.test(ctx.datenbank_freigabe.test_system_id??'')&&!dbEigene&&dbKontextVerifiziert&&sql.length>0&&
     !ungeklaert.some(x=>/interpreter|script_datei|inline_oder_script|kontrollfluss|parser_grenze|lage_nicht_sicher_aufloesbar/.test(x))&&
     sql.every(x=>x.erlaubt&&x.ziele.length>0&&x.ziele.every(z=>z.datenbank==='synapse_test'&&z.port!=='5432'&&
       ctx.datenbank_freigabe!.live&&z.port!==ctx.datenbank_freigabe!.live!.port&&
