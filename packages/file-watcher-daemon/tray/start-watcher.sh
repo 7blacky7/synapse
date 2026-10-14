@@ -158,7 +158,13 @@ while true; do
       echo "[start-watcher] Daemon laeuft bereits" >> "$LOG"
     else
       echo "[start-watcher] Starte Daemon..." >> "$LOG"
-      ( cd "${DAEMON_CWD:-.}" && exec setsid nohup node "$DAEMON" >> "$LOG" 2>&1 < /dev/null ) &
+      # Env bei JEDEM Start frisch aus .mcp.json (P12-T14, 11.10.2026; stand bisher nur in der installierten
+      # Kopie): vorher nur einmal beim Skriptstart gelesen - ein Modellwechsel kam beim Neustart nicht an.
+      # Nur im PG-Weg; mit daemon_ohne_db (DAEMON_CWD gesetzt) nie.
+      if [ -z "$DAEMON_CWD" ]; then
+        eval "$(jq -r '.mcpServers.synapse.env | to_entries[] | "export \(.key)=\(.value|@sh)"' "$MCP_JSON" 2>/dev/null)"
+      fi
+      ( cd "${DAEMON_CWD:-.}" && exec setsid nohup node --max-old-space-size=8192 "$DAEMON" >> "$LOG" 2>&1 < /dev/null ) &
       disown
     fi
   fi
