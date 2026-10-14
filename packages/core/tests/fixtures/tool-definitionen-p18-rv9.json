@@ -214,6 +214,96 @@
   "grund": "P18-T28 ref_vergleich: optionale Parameter ref_vergleich und name für files(read); bestehende Leseantwort bleibt ohne Parameter unverändert.",
   "task": "P18-T28",
   "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "code_check",
+  "alt": "b28fc5f28b47c6265c9e70b9434516aeeb82c2aac21b748a36655aa4d3507e5c",
+  "neu": "135a56e1dc5d224564bf90eefc062587311df099ec1692f0c51d507b6ef5e834",
+  "grund": "P16-T18 E3a: c und cpp zur abwaehlbaren projektweiten C/C++-Pruefung in build_einstellungen sprachen; gemeinsames BUILD_PARAMETER fuer REST und stdio.",
+  "task": "P16-T18",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "code_check",
+  "alt": "625f53b25dc9882bf6968c9a38c2ebf4c708e2d78d19fffdf319ca3876eb0cdb",
+  "neu": "4ffce803703bbb2df414ae0882adb79950558df48ecdb0a70559f2845f0f1f56",
+  "grund": "P16-T18 E3a: c und cpp zur abwaehlbaren projektweiten C/C++-Pruefung in build_einstellungen sprachen; gemeinsames BUILD_PARAMETER fuer REST und stdio.",
+  "task": "P16-T18",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "code_check",
+  "alt": "135a56e1dc5d224564bf90eefc062587311df099ec1692f0c51d507b6ef5e834",
+  "neu": "ea2e85d2b8e4d6a2de11afa96f84c3f78fa7976f92b7a25903ba67d3fff1b456",
+  "grund": "P16-T18 Nachprüfung nach Integration P16-T18/T19/T20/T21 (27253): C/C++ bleibt explizit zuschaltbar; gemeinsames Schema enthält alle E3-Sprachen, Default weiter go+python.",
+  "task": "P16-T18",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "code_check",
+  "alt": "4ffce803703bbb2df414ae0882adb79950558df48ecdb0a70559f2845f0f1f56",
+  "neu": "616551ff1bef12ce2dc192224c173e262817309adb47117e53cc88206a7b8766",
+  "grund": "P16-T18 Nachprüfung nach Integration P16-T18/T19/T20/T21 (27253): C/C++ bleibt explizit zuschaltbar; gemeinsames Schema enthält alle E3-Sprachen, Default weiter go+python.",
+  "task": "P16-T18",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "code_check",
+  "alt": "ea2e85d2b8e4d6a2de11afa96f84c3f78fa7976f92b7a25903ba67d3fff1b456",
+  "neu": "ea2e85d2b8e4d6a2de11afa96f84c3f78fa7976f92b7a25903ba67d3fff1b456",
+  "grund": "P16-T20 E3c: rust ist in build_einstellungen sprachen explizit zuschaltbar; Sicherheitsinventar vor cargo check und teilweise bei Buildskripten/Proc-Makros. Gemeinsame E3-Integration bereits durch P16-T18 hashmäßig belegt; dieser unveränderte Hash bestätigt den Rust-Anteil für REST/stdio.",
+  "task": "P16-T20",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "code_check",
+  "alt": "616551ff1bef12ce2dc192224c173e262817309adb47117e53cc88206a7b8766",
+  "neu": "616551ff1bef12ce2dc192224c173e262817309adb47117e53cc88206a7b8766",
+  "grund": "P16-T20 E3c: rust ist in build_einstellungen sprachen explizit zuschaltbar; Sicherheitsinventar vor cargo check und teilweise bei Buildskripten/Proc-Makros. Gemeinsame E3-Integration bereits durch P16-T18 hashmäßig belegt; dieser unveränderte Hash bestätigt den Rust-Anteil für REST/stdio.",
+  "task": "P16-T20",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "code_check",
+  "alt": "ea2e85d2b8e4d6a2de11afa96f84c3f78fa7976f92b7a25903ba67d3fff1b456",
+  "neu": "e78281ec8038e5fb2d34bb238c04352f9db2b1ca9031b9a66a07bcd4c4cfe28b",
+  "grund": "P16-T21 E3d: dart und csharp explizit zuschaltbar; Dart-JSON-Analyse/Roslyn ohne MSBuild, fehlender SDK-/Paketkontext teilweise und F# sichtbar nicht unterstützt. Vollständige E3-Sprachliste im gemeinsamen Schema-Text ergänzt.",
+  "task": "P16-T21",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "code_check",
+  "alt": "616551ff1bef12ce2dc192224c173e262817309adb47117e53cc88206a7b8766",
+  "neu": "05fd96557cbec9330eb375048604918496e0fb2caae22aecb1931d4a11a49889",
+  "grund": "P16-T21 E3d: dart und csharp explizit zuschaltbar; Dart-JSON-Analyse/Roslyn ohne MSBuild, fehlender SDK-/Paketkontext teilweise und F# sichtbar nicht unterstützt. Vollständige E3-Sprachliste im gemeinsamen Schema-Text ergänzt.",
+  "task": "P16-T21",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "code_check",
+  "alt": "e78281ec8038e5fb2d34bb238c04352f9db2b1ca9031b9a66a07bcd4c4cfe28b",
+  "neu": "e78281ec8038e5fb2d34bb238c04352f9db2b1ca9031b9a66a07bcd4c4cfe28b",
+  "grund": "P16-T19 E3b: java/kotlin in build_einstellungen sprachen explizit zuschaltbar; javac -proc:none und fester Kotlin-Compiler im bestehenden Prüfcontainer, nur neue Diagnosen aus PG+Schatten; fehlende JARs/Generation teilweise. Gemeinsame E3-Definition durch vorangehende Kettenglieder bereits hashmäßig belegt, JVM-Anteil hier dokumentiert.",
+  "task": "P16-T19",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "code_check",
+  "alt": "05fd96557cbec9330eb375048604918496e0fb2caae22aecb1931d4a11a49889",
+  "neu": "05fd96557cbec9330eb375048604918496e0fb2caae22aecb1931d4a11a49889",
+  "grund": "P16-T19 E3b: java/kotlin in build_einstellungen sprachen explizit zuschaltbar; javac -proc:none und fester Kotlin-Compiler im bestehenden Prüfcontainer, nur neue Diagnosen aus PG+Schatten; fehlende JARs/Generation teilweise. Gemeinsame E3-Definition durch vorangehende Kettenglieder bereits hashmäßig belegt, JVM-Anteil hier dokumentiert.",
+  "task": "P16-T19",
+  "datum": "2026-10-14"
 }
 ]
 }

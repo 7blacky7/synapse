@@ -380,9 +380,9 @@ try {
     await bp.pruefeBuildFuerPlan(project, [pd('p/src/p/b.py', PY_B, neu)], { warten: true });
   });
   await check('sprachen keine -> nur TypeScript; [go] -> Python aus; Validierung; Env BUILD_PRUEFUNG_SPRACHEN', async () => {
-    const falsch = await aktion('build_einstellungen', { modus: 'setzen', sprachen: ['go', 'rust'] });
+    const falsch = await aktion('build_einstellungen', { modus: 'setzen', sprachen: ['go', 'fortran'] });
     assert.equal(falsch.error, 'ungueltig');
-    assert.match(falsch.message, /unbekannt: rust/);
+    assert.match(falsch.message, /unbekannt: fortran/);
     assert.equal((await aktion('build_einstellungen', { modus: 'setzen', sprachen: ['go'] }, agent)).error, 'nicht_erlaubt');
     let r = await aktion('build_einstellungen', { modus: 'setzen', sprachen: 'keine', grund: 'nur TS' });
     assert.equal(r.success, true, JSON.stringify(r));

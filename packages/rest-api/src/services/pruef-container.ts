@@ -204,7 +204,7 @@ interface Offen {
   timer: NodeJS.Timeout | null;
 }
 
-type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; build?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis };
+type Antwort = { id?: number | null; ok?: boolean; meldungen?: SyntaxMeldung[]; fehler?: string; info?: PruefContainerInfo; bereit?: boolean; ms?: number; vorgewaermt?: Record<string, unknown>; rustcheck?: BuildLaufErgebnis; build?: BuildLaufErgebnis; kotlinc?: BuildLaufErgebnis; javac?: BuildLaufErgebnis; gobuild?: BuildLaufErgebnis; pyright?: BuildLaufErgebnis; cbuild?: BuildLaufErgebnis; cppbuild?: BuildLaufErgebnis; dartbuild?: BuildLaufErgebnis; csharpbuild?: BuildLaufErgebnis };
 
 const START_FENSTER_MS = 5 * 60_000;
 const MAX_TIMEOUTS_IN_FOLGE = 3;

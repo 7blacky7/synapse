@@ -72,7 +72,7 @@ export interface BuildDatei {
 }
 
 /** P16-T16 E2: Projektpruefer neben TypeScript (Nachrichtenschluessel im Container, pruefer_projekt.py). */
-export type SprachArt = 'gobuild' | 'pyright';
+export type SprachArt = 'kotlinc' | 'javac' | 'rustcheck' | 'gobuild' | 'pyright' | 'cbuild' | 'cppbuild' | 'dartbuild' | 'csharpbuild';
 
 export interface BuildAuftrag {
   dateien: BuildDatei[];
@@ -93,6 +93,8 @@ export interface BuildDiagnose {
   spalte: number;
   code: string;
   meldung: string;
+  /** E3a: stabile Quellspanne (Inhalt statt Zeilennummer), vom Compileradapter. */
+  stabile_spanne?: string;
   /** tsconfig, in deren Lauf die Diagnose entstand (wie in BuildAuftrag.projekte). */
   projekt: string;
   /** P16-T16 E2 (Go/Python): error | warning | information; fehlt bei TypeScript (= error). */
@@ -104,12 +106,15 @@ export interface BuildDiagnose {
 export interface BuildProjektLauf {
   projekt: string;
   /** E2 zusaetzlich: ausgabe (zu viel Ausgabe), abhaengigkeiten (Go-Module fehlen offline), cgo (cgo-Dateien ungeprueft). */
-  status: 'fertig' | 'zeitlimit' | 'speicher' | 'fehler' | 'ausgabe' | 'abhaengigkeiten' | 'cgo';
+  status: 'fertig' | 'zeitlimit' | 'speicher' | 'fehler' | 'ausgabe' | 'abhaengigkeiten' | 'cgo' | 'build_skript_oder_proc_macro' | 'konfiguration' | 'abdeckung' | 'werkzeug';
   ms: number;
   rc: number | null;
   hinweis?: string;
   /** E2: Schritt im Projekt (Go: build, vet; Python: pyright). */
   schritt?: string;
+  /** Rust: Graph-Vorprüfung vor Cargo. */
+  grund?: string;
+  betroffene_crates?: string[];
   /** E2 Pyright: 'unvollstaendig' = Importe nicht aufgeloest (Lauf trotzdem fertig). */
   abdeckung?: string;
   fehlende_importe?: number;
@@ -150,7 +155,7 @@ export interface BuildStand {
   /** Laufende/wartende Pruefungen gerade (nur bei status laeuft). */
   laufend?: number;
   /** E2: Sprache dieses Teilstands (fehlt = TypeScript). */
-  sprache?: 'go' | 'python';
+  sprache?: 'kotlin' | 'java' | 'rust' | 'go' | 'python' | 'c' | 'cpp' | 'dart' | 'csharp';
   /** E2: neue go vet-Warnungen (sperren nicht). */
   neue_warnungen?: number;
   /** E2: Teilstaende je Sprache, wenn mehrere Sprachen im Plan geprueft wurden. */
@@ -589,7 +594,7 @@ function starteLauf(project: string, v: Vorbereitet, basis?: { projekte: string[
 // ─── Vergleich Basis <-> Schatten ───────────────────────────────────────────────────────────────────────────────
 
 const meldungNorm = (m: string): string => m.replace(/\s+/g, ' ').trim();
-const diagSchluessel = (d: BuildDiagnose): string => `${d.datei ?? ''}|${d.code}|${meldungNorm(d.meldung)}`;
+const diagSchluessel = (d: BuildDiagnose): string => `${d.datei ?? ''}|${d.code}|${d.stabile_spanne ?? ''}|${meldungNorm(d.meldung)}`;
 
 function inOpSpanne(d: BuildDiagnose, dateien: PruefDatei[]): boolean {
   const datei = d.datei ? dateien.find((f) => f.file_path === d.datei) : undefined;
@@ -762,7 +767,7 @@ async function pruefeTsBuildBasis(project: string, wartenMs = 0): Promise<Record
 
 interface SprachDef {
   art: SprachArt;
-  sprache: 'go' | 'python';
+  sprache: 'dart' | 'csharp' | 'kotlin' | 'java' | 'rust' | 'go' | 'python' | 'c' | 'cpp';
   /** Aenderung an so einer Datei loest die Pruefung aus. */
   relevant: RegExp;
   /** Dateien des Schnappschusses (PG-Regex). */
@@ -771,19 +776,44 @@ interface SprachDef {
   wurzel: RegExp;
 }
 
+// P16-T18 E3a: ganzer PG-Projektausschnitt; Header koennen sprachuebergreifend eingebunden sein.
+const C_PROJEKT_SQL = '(\\.(c|C|cc|cpp|cxx|c[+][+]|h|hh|hpp|hxx|inc|ipp|inl|tpp|m|mm)$)|((^|/)compile_commands\\.json$)';
+const istCArt = (s: SprachDef): boolean => s.art === 'cbuild' || s.art === 'cppbuild';
+// --- P16-T19 E3b Kotlin/Java ---
+const JVM_SQL = '(\\.(kt|java)$)|((^|/)(pom\\.xml|build\\.gradle(\\.kts)?|settings\\.gradle(\\.kts)?|gradle\\.properties|synapse-jvm\\.json)$)';
+const JVM_WURZEL = /(?:^|\/)(?:pom\.xml|build\.gradle(?:\.kts)?|synapse-jvm\.json)$/;
+const istJvmArt = (s: SprachDef): boolean => s.art === 'kotlinc' || s.art === 'javac';
 const SPRACHEN: SprachDef[] = [
+  // --- P16-T21 E3d Dart/C# ---
+  { art: 'dartbuild', sprache: 'dart', relevant: /(?:\.dart|(?:^|\/)(?:pubspec\.(?:yaml|lock)|analysis_options\.yaml|package_config\.json))$/,
+    sql: '(\\.dart$)|((^|/)(pubspec\\.(yaml|lock)|analysis_options\\.yaml|package_config\\.json)$)', wurzel: /(?:^|\/)pubspec\.yaml$/ },
+  { art: 'csharpbuild', sprache: 'csharp', relevant: /(?:\.(?:cs|csproj|fs|fsproj|sln|props|targets)|(?:^|\/)global\.json)$/,
+    sql: '(\\.(cs|csproj|fs|fsproj|sln|props|targets)$)|((^|/)global\\.json$)', wurzel: /\.(?:csproj|fsproj)$/ },
+  { art: 'kotlinc', sprache: 'kotlin', relevant: /(?:\.(?:kt|java)|(?:^|\/)(?:pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|gradle\.properties|synapse-jvm\.json))$/,
+    sql: JVM_SQL, wurzel: JVM_WURZEL },
+  { art: 'javac', sprache: 'java', relevant: /(?:\.(?:java|kt)|(?:^|\/)(?:pom\.xml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?|gradle\.properties|synapse-jvm\.json))$/,
+    sql: JVM_SQL, wurzel: JVM_WURZEL },
+  { art: 'cbuild', sprache: 'c', relevant: /(?:\.c|\.m|\.(?:h|hh|hpp|hxx|inc|ipp|inl|tpp)|(?:^|\/)compile_commands\.json)$/,
+    sql: C_PROJEKT_SQL, wurzel: /(?:^|\/)compile_commands\.json$/ },
+  { art: 'cppbuild', sprache: 'cpp', relevant: /(?:\.(?:C|cc|cpp|cxx|c\+\+|mm|h|hh|hpp|hxx|inc|ipp|inl|tpp)|(?:^|\/)compile_commands\.json)$/,
+    sql: C_PROJEKT_SQL, wurzel: /(?:^|\/)compile_commands\.json$/ },
   {
     art: 'gobuild', sprache: 'go', relevant: /(?:\.go|(?:^|\/)go\.(?:mod|sum))$/,
     sql: '(\\.go$)|((^|/)go\\.(mod|sum)$)|((^|/)vendor/modules\\.txt$)', wurzel: /(?:^|\/)go\.mod$/,
   },
+  // --- P16-T16 E3c Rust: Cargo-Graph und alle PG-Rustquellen ---
+  { art: 'rustcheck', sprache: 'rust',
+    relevant: /(?:\.rs|(?:^|\/)(?:Cargo\.(?:toml|lock)|rust-toolchain(?:\.toml)?|\.cargo\/(?:config|config\.toml)|\.cargo-checksum\.json))$/,
+    sql: '(\\.rs$)|((^|/)(Cargo\\.(toml|lock)|rust-toolchain(\\.toml)?|\\.cargo/(config|config\\.toml)|\\.cargo-checksum\\.json)$)|((^|/)vendor/)',
+    wurzel: /(?:^|\/)Cargo\.toml$/ },
   {
     art: 'pyright', sprache: 'python', relevant: /(?:\.pyi?|(?:^|\/)(?:pyproject\.toml|setup\.cfg|\.python-version))$/,
     sql: '(\\.pyi?$)|((^|/)(pyproject\\.toml|setup\\.cfg|\\.python-version)$)', wurzel: /(?:^|\/)(?:pyproject\.toml|setup\.py|setup\.cfg)$/,
   },
 ];
 const SPRACH_AUSSCHLUSS = '(^|/)(node_modules|\\.venv|venv|\\.tox|site-packages|__pycache__|\\.git)/';
-const SPRACH_NAME: Record<SprachArt, string> = { gobuild: 'Go', pyright: 'Python' };
-const ALLE_SPRACHEN = ['go', 'python'];
+const SPRACH_NAME: Record<SprachArt, string> = { kotlinc: 'Kotlin', javac: 'Java', rustcheck: 'Rust', gobuild: 'Go', pyright: 'Python', cbuild: 'C', cppbuild: 'C++', dartbuild: 'Dart', csharpbuild: 'C#' };
+const ALLE_SPRACHEN = ['kotlin', 'java', 'rust', 'go', 'python', 'c', 'cpp', 'dart', 'csharp'];
 
 /** Dateien, deren Aenderung die Go- bzw. Python-Pruefung ausloest. */
 export const istSprachRelevant = (p: string): boolean => SPRACHEN.some((s) => s.relevant.test(p));
@@ -797,7 +827,7 @@ export async function sprachenAktiv(project: string | undefined): Promise<string
   if (Array.isArray(g)) return g;
   const env = process.env.BUILD_PRUEFUNG_SPRACHEN;
   if (env !== undefined) return env.split(',').map((x) => x.trim().toLowerCase()).filter((x) => ALLE_SPRACHEN.includes(x));
-  return [...ALLE_SPRACHEN];
+  return ['go', 'python']; // E3-Sprachen ausdrücklich wählen.
 }
 
 /** Zaehlt fuer Basis/Status: Fehler (TS ohne schwere = Fehler); nie Importluecken, Warnungen, Hinweise. */
@@ -838,17 +868,25 @@ function goReplaceZiele(modDir: string, gomod: string | undefined): string[] {
 
 /** Hat der Stand diese Projektwurzel? Python: die Projektwurzel '' gibt es immer (Rueckfall ohne pyproject). */
 const hatWurzel = (s: SprachDef, quellen: Map<string, string>, w: string): boolean =>
-  (s.art === 'pyright' && w === '') || [...quellen.keys()].some((p) => s.wurzel.test(p) && dirOf(p) === w);
+  ((s.art === 'pyright' || istJvmArt(s) || istCArt(s)) && w === '') || [...quellen.keys()].some((p) => s.wurzel.test(p) && dirOf(p) === w);
 
 /**
  * Betroffene Projekte eines Plans: tiefste Wurzel je geaenderter Datei (Python ohne Wurzel: Projektwurzel; Go ohne
  * go.mod: nicht pruefbar). Go zusaetzlich transitiv alle Module, die ein betroffenes Modul per lokalem replace einbinden.
  */
 function betroffeneWurzeln(s: SprachDef, quellen: Map<string, string>, geaendert: string[]): string[] {
+  // E3a: bewusst alle TUs; auch Header ausserhalb einer compile_commands-Wurzel erreichen alle Aufrufer.
+  if (istCArt(s)) return [''];
   const alle = sprachWurzeln(s, quellen);
+  // E3b: nur Module mit dieser Quellart; gemeinsame Quellen und Elternmanifeste beachten.
+  if (istJvmArt(s)) return alleSprachWurzeln(s, quellen).filter((w) => geaendert.some((f) =>
+    unter(f, w) || (!/\.(?:kt|java)$/.test(f) && (w === dirOf(f) || unter(w + '/', dirOf(f))))));
+  // Rust: alle Crates statt nur naechster Ordner; path-Aufrufer und Workspace-Wurzel mitpruefen.
+  if (s.art === 'rustcheck') return alle;
+  if (s.art === 'dartbuild' || s.art === 'csharpbuild') return alle;
   const betroffen = new Set<string>();
   for (const f of geaendert) {
-    const w = naechsteWurzel(f, alle) ?? (s.art === 'pyright' ? '' : undefined);
+    const w = naechsteWurzel(f, alle) ?? ((s.art === 'pyright' || istJvmArt(s)) ? '' : undefined);
     if (w !== undefined) betroffen.add(w);
   }
   if (s.art === 'gobuild') {
@@ -868,7 +906,15 @@ function betroffeneWurzeln(s: SprachDef, quellen: Map<string, string>, geaendert
 
 /** Alle Projekte des Stands (Basispruefung); Python mit Projektwurzel, wenn Dateien ausserhalb jeder Wurzel liegen. */
 function alleSprachWurzeln(s: SprachDef, quellen: Map<string, string>): string[] {
+  if (istCArt(s)) return [...quellen.keys()].some((p) => (s.art === 'cbuild' ? /\.(?:c|m)$/ : /\.(?:C|cc|cpp|cxx|c\+\+|mm)$/).test(p)) ? [''] : [];
   const w = sprachWurzeln(s, quellen);
+  if (istJvmArt(s)) {
+    const ext = s.art === 'kotlinc' ? /\.kt$/ : /\.java$/;
+    const own = [...quellen.keys()].filter((p) => ext.test(p));
+    const roots = w.filter((r) => own.some((p) => naechsteWurzel(p, w) === r));
+    if (own.some((p) => naechsteWurzel(p, w) === undefined)) roots.unshift('');
+    return roots;
+  }
   if (s.art === 'pyright' && !w.includes('') && [...quellen.keys()].some((p) => /\.pyi?$/.test(p) && naechsteWurzel(p, w) === undefined)) w.unshift('');
   return w;
 }
@@ -879,14 +925,15 @@ function alleSprachWurzeln(s: SprachDef, quellen: Map<string, string>): string[]
  */
 function bereiteSpracheVor(s: SprachDef, quellen: Map<string, string>, wurzeln: string[], budget: BuildBudget): Vorbereitet {
   const alle = sprachWurzeln(s, quellen);
-  const pfade = new Set<string>();
+  // Rust: geschlossener PG-Snapshot inklusive path-/Workspace-/Vendor-Graph und Elternkonfigurationen.
+  const pfade = new Set<string>(s.art === 'rustcheck' ? [...quellen.keys()] : []);
   const besucht = new Set<string>();
   const sammle = (w: string): void => {
     if (besucht.has(w)) return;
     besucht.add(w);
     for (const p of quellen.keys()) {
       if (!unter(p, w)) continue;
-      if (s.art === 'gobuild' && naechsteWurzel(p, alle) !== w) continue;
+      if ((s.art === 'gobuild' || istJvmArt(s)) && (naechsteWurzel(p, alle) ?? '') !== w) continue;
       pfade.add(p);
     }
     if (s.art === 'gobuild') {
@@ -894,6 +941,14 @@ function bereiteSpracheVor(s: SprachDef, quellen: Map<string, string>, wurzeln: 
     }
   };
   for (const w of wurzeln) sammle(w);
+  // E3b: Eltern-Builddateien enthalten oft KAPT/KSP/Annotation-Processing oder SDK-Vorgaben.
+  // Nur als Daten ergänzen; außerhalb liegende Projektquellen bleiben ausgeschlossen.
+  if (istJvmArt(s)) for (const p of quellen.keys()) {
+    if (/\.(?:kt|java)$/.test(p)) continue;
+    if (wurzeln.some((w) => w === dirOf(p) || unter(w + '/', dirOf(p)))) pfade.add(p);
+  }
+  // E3d references can leave the selected package directory but never the PG snapshot.
+  if (s.art === 'dartbuild' || s.art === 'csharpbuild') for (const p of quellen.keys()) pfade.add(p);
   const dateien: BuildDatei[] = [...pfade].sort().map((pfad) => ({ pfad, inhalt: quellen.get(pfad) ?? '' }));
   const bytes = dateien.reduce((n, d) => n + Buffer.byteLength(d.inhalt), 0);
   const python_version = s.art === 'pyright'
@@ -918,23 +973,29 @@ function alsSprachBefund(d: BuildDiagnose, dateien: PruefDatei[], werkzeug: stri
   const projekt = d.projekt || '.';
   const vet = d.code === 'vet';
   const warnung = d.schwere === 'warning';
-  const was = art === 'gobuild' ? (vet ? 'go vet' : 'Go') : 'Pyright';
+  const was = (art === 'kotlinc' ? 'Kotlin' : art === 'javac' ? 'Java' : art === 'pyright' ? 'Pyright' : SPRACH_NAME[art] ?? art);
   return {
     quelle: 'build',
     pruefer: `build:${werkzeug.split(' (')[0].replace(/\s+/g, '@')}`,
     severity: warnung ? 'warning' : 'error',
-    datei: d.datei ?? verbinde(projekt === '.' ? '' : projekt, art === 'gobuild' ? 'go.mod' : 'pyproject.toml'),
+    datei: d.datei ?? verbinde(projekt === '.' ? '' : projekt, art === 'rustcheck' ? 'Cargo.toml' : art === 'gobuild' ? 'go.mod' : 'pyproject.toml'),
     zeilen: [Math.max(1, d.zeile), Math.max(1, d.zeile)],
     ...(d.spalte > 0 ? { spalte: d.spalte } : {}),
     // Code mit Kurz-Hash der Meldung: Quittierungen bleiben je Meldung getrennt (Schluessel ohne Zeile).
     code: `${d.code}#${sha(meldungNorm(d.meldung)).slice(0, 6)}`,
     titel: `${d.code} (${was} ${projekt})`,
     was: d.meldung,
-    warum: art === 'gobuild'
+    warum: art === 'rustcheck'
+      ? 'Neuer Fehler der projektweiten Rust-Pruefung (cargo check offline/locked, Graph ohne Buildskripte/Proc-Makros) gegenueber dem Basisstand.'
+      : art === 'cbuild' || art === 'cppbuild'
+      ? 'Neuer Fehler der projektweiten C/C++-Pruefung (-fsyntax-only, ohne Objektdateien/Linken) gegenueber dem Basisstand.'
+      : art === 'gobuild'
       ? (vet
         ? `Neuer go-vet-Befund im Modul ${projekt} gegenueber dem Basisstand (Warnung, sperrt nicht).`
         : `Neuer Fehler der projektweiten Go-Pruefung (go build -o /dev/null, Typpruefung der Tests ueber go vet; Modul ${projekt}) gegenueber dem Basisstand.`)
-      : `Neuer Fehler der projektweiten Python-Typpruefung (Pyright, Projekt ${projekt}) gegenueber dem Basisstand.`,
+      : art === 'pyright'
+      ? `Neuer Fehler der projektweiten Python-Typpruefung (Pyright, Projekt ${projekt}) gegenueber dem Basisstand.`
+      : `Neuer Fehler der projektweiten ${was}-Typpruefung (Projekt ${projekt}) gegenueber dem Basisstand.`,
     wie: warnung
       ? 'Pruefen und bei Bedarf im selben Plan anpassen (sperrt nicht).'
       : 'Betroffene Aufrufer/Typen im selben Plan anpassen (plan_update bzw. coedit_add) oder bewusst quittieren (commit mit befunde_quittieren).',
@@ -960,9 +1021,20 @@ async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: Pru
       if (d.geloescht) schattenQuellen.delete(d.file_path);
       else schattenQuellen.set(d.file_path, d.ergebnis);
     }
+    // E3b: beide Quellarten teilen die Modulmenge; leere zweite JVM-Prüfung entfällt.
+    if (istJvmArt(s) && alleSprachWurzeln(s, schattenQuellen).length === 0) return null;
+    // E3a: gemeinsame Header duerfen keine leere zweite Sprachpruefung erzeugen.
+    if (istCArt(s) && alleSprachWurzeln(s, schattenQuellen).length === 0
+      && [...schattenQuellen.keys()].some((p) => /\.(?:c|m|C|cc|cpp|cxx|c\+\+|mm)$/.test(p))) return null;
     const wurzeln = betroffeneWurzeln(s, schattenQuellen, relevant.map((d) => d.file_path));
+    // JVM: ein Plan der anderen Sprache außerhalb gemischter Module enthält nichts zu prüfen.
+    // Keine Prüfung ist kein unvollständiger Lauf; fehlender Kontext einer echten Prüfung bleibt teilweise.
+    if (istJvmArt(s) && wurzeln.length === 0) return null;
     if (wurzeln.length === 0) {
-      return { stand: stand({ status: 'fertig', hinweis: 'Keine geaenderte Go-Datei liegt in einem Modul (go.mod) - nicht geprueft.' }), befunde: [] };
+      if (s.art === 'dartbuild' || s.art === 'csharpbuild') return { stand: stand({ status: 'teilweise', hinweis: `${SPRACH_NAME[s.art]}: Projektmanifest fehlt (pubspec.yaml/.csproj); F# nicht unterstützt.` }), befunde: [] };
+      // E2-Verhalten: nicht geprueft ist kein Teilstatus; nicht betroffene Sprachen veraendern den Stand nicht.
+      if (s.art === 'gobuild') return { stand: stand({ status: 'fertig', hinweis: 'Keine geaenderte Go-Datei liegt in einem Modul (go.mod) - nicht geprueft.' }), befunde: [] };
+      return { stand: stand({ status: 'fertig', hinweis: `Keine geaenderte ${SPRACH_NAME[s.art]}-Datei liegt in einer Projektwurzel - nicht geprueft.` }), befunde: [] };
     }
     const projekte = wurzeln.map(projektName);
     const basisWurzeln = wurzeln.filter((w) => hatWurzel(s, basisQuellen, w));
@@ -1051,7 +1123,7 @@ function kombiniere(teile: BuildPlanErgebnis[]): BuildPlanErgebnis | null {
     : st.every((s) => s.status === 'nicht_verfuegbar') ? 'nicht_verfuegbar'
       : st.some((s) => s.status !== 'fertig') ? 'teilweise' : 'fertig';
   const summe = (f: (s: BuildStand) => number | undefined): number => st.reduce((n, s) => n + (f(s) ?? 0), 0);
-  const name = (s: BuildStand): string => (s.sprache === 'go' ? 'Go' : s.sprache === 'python' ? 'Python' : 'TypeScript');
+  const name = (s: BuildStand): string => s.sprache ? (SPRACH_NAME[SPRACHEN.find((x) => x.sprache === s.sprache)?.art ?? 'pyright'] ?? s.sprache) : 'TypeScript';
   const hinweise = st.filter((s) => s.hinweis).map((s) => `${name(s)}: ${s.hinweis}`);
   const werkzeug = [...new Set(st.map((s) => s.werkzeug).filter((w): w is string => !!w))].join(' + ');
   const warnungen = summe((s) => s.neue_warnungen);
@@ -1263,7 +1335,7 @@ export const BUILD_PARAMETER: Record<string, Record<string, unknown>> = {
   tmpfs_mb: { type: 'number', description: 'build_einstellungen setzen: /tmp des Pruefcontainers in MB (16..4096); Container startet neu' },
   heap_mb: { type: 'number', description: 'build_einstellungen setzen: Heap von tsc in MB (128..16384; Standard Speicher - 192)' },
   zeitlimit_s: { type: 'number', description: 'build_einstellungen setzen: Zeitlimit je Build-Lauf in s (10..3600); danach teilweise (sperrt nicht)' },
-  sprachen: { type: 'array', items: { type: 'string', enum: ['go', 'python', 'keine'] }, description: 'build_einstellungen setzen: Sprachen der projektweiten Pruefung neben TypeScript (go, python; keine = nur TypeScript) - mit project fuer dieses Projekt, ohne global. Standard go+python (Env BUILD_PRUEFUNG_SPRACHEN)' },
+  sprachen: { type: 'array', items: { type: 'string', enum: ['kotlin', 'java', 'rust', 'go', 'python', 'c', 'cpp', 'dart', 'csharp', 'keine'] }, description: 'build_einstellungen setzen: Sprachen der projektweiten Pruefung neben TypeScript (kotlin, java, rust, go, python, c, cpp, dart, csharp; keine = nur TypeScript) - mit project fuer dieses Projekt, ohne global. Standard go+python (Env BUILD_PRUEFUNG_SPRACHEN). Dart/C# offline, fehlender SDK-/Paketkontext teilweise; F# nicht unterstützt.' },
   zuruecksetzen: { type: 'string', enum: ['projekt', 'global', 'budget'], description: 'build_einstellungen setzen: Eintrag entfernen (projekt braucht project) - danach gilt die naechste Ebene bzw. Env' },
 };
 
@@ -1330,7 +1402,7 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
           schalter: await buildAktiv(p),
           basis: projektBasis.get(p) ?? null,
           // E2: nur wenn es eine Go-/Python-Basis gibt (sonst Antwort wie in E1).
-          ...(sprachBasis.get(p)?.size ? { basis_sprachen: Object.fromEntries([...sprachBasis.get(p)!].map(([art, b]) => [art === 'gobuild' ? 'go' : 'python', b])) } : {}),
+          ...(sprachBasis.get(p)?.size ? { basis_sprachen: Object.fromEntries([...sprachBasis.get(p)!].map(([art, b]) => [SPRACHEN.find((s) => s.art === art)?.sprache ?? art, b])) } : {}),
           warteschlange: warteschlangeAnzeige(p),
           letzte_commits: letzteCommits.get(p) ?? [],
         }))),

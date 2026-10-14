@@ -49,8 +49,12 @@ import pruefer_build
 import pruefer_jvm
 import pruefer_naga
 import pruefer_treesitter
+import pruefer_rustprojekt
 import pruefer_tsbuild
+import pruefer_jvmprojekt  # P16-T19 E3b
 import pruefer_projekt
+import pruefer_dart_csharp
+import pruefer_cprojekt
 
 # compile() meldet SyntaxWarnings (z. B. ungueltige Escapes) auf stderr - das sind keine Syntaxfehler und wuerden
 # nur das API-Log fuellen.
@@ -444,7 +448,7 @@ def info():
             'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
             'python2_rueckfall': bool(_py2_driver()), 'jvm': pruefer_jvm.zustand(),
             'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version(),
-            'projektpruefung': pruefer_projekt.info()}
+            'projektpruefung': {'rust': pruefer_rustprojekt.info(), **pruefer_projekt.info(), 'c_cpp': pruefer_cprojekt.info(), 'dart_csharp': pruefer_dart_csharp.info(), 'jvm': pruefer_jvmprojekt.info()}}
 
 
 def bearbeite(auftrag):
@@ -456,6 +460,25 @@ def bearbeite(auftrag):
         if auftrag.get('build') is not None:
             schreibe({'id': aid, 'ok': True, 'build': pruefer_tsbuild.pruefe(auftrag.get('build') or {})})
             return
+        # --- P16-T18 E3a C/C++ ---
+        for art in ('cbuild', 'cppbuild'):
+            if auftrag.get(art) is not None:
+                schreibe({'id': aid, 'ok': True, art: pruefer_cprojekt.pruefe(art, auftrag.get(art))})
+                return
+        # --- P16-T16 E3c Rust ---
+        if auftrag.get('rustcheck') is not None:
+            schreibe({'id': aid, 'ok': True, 'rustcheck': pruefer_rustprojekt.pruefe(auftrag.get('rustcheck'))})
+            return
+        # --- P16-T19 E3b Kotlin/Java ---
+        for art in pruefer_jvmprojekt.ARTEN:
+            if auftrag.get(art) is not None:
+                schreibe({'id': aid, 'ok': True, art: pruefer_jvmprojekt.pruefe(art, auftrag.get(art))})
+                return
+        # --- P16-T21 E3d Dart/C# ---
+        for art in ('dartbuild', 'csharpbuild'):
+            if auftrag.get(art) is not None:
+                schreibe({'id': aid, 'ok': True, art: pruefer_dart_csharp.pruefe(art, auftrag.get(art))})
+                return
         for art in ('gobuild', 'pyright'):
             if auftrag.get(art) is not None:
                 schreibe({'id': aid, 'ok': True, art: pruefer_projekt.pruefe(art, auftrag.get(art))})
@@ -490,7 +513,7 @@ def main():
         except Exception as e:  # noqa: BLE001
             schreibe({'id': None, 'ok': False, 'fehler': f'kein JSON: {e}'})
             continue
-        if isinstance(auftrag, dict) and any(auftrag.get(art) is not None for art in ('build', 'gobuild', 'pyright')):
+        if isinstance(auftrag, dict) and any(auftrag.get(art) is not None for art in ('kotlinc', 'javac', 'rustcheck', 'build', 'gobuild', 'pyright', 'cbuild', 'cppbuild', 'dartbuild', 'csharpbuild')):
             # P16-T16 E1: Build-Pruefung dauert Sekunden bis Minuten - eigener Thread, der Syntax-Pool bleibt frei.
             threading.Thread(target=bearbeite, args=(auftrag,), daemon=True).start()
             continue
