@@ -55,6 +55,11 @@ import {
 import { WAITS_ACTIONS, WAITS_BESCHREIBUNG, WAITS_PARAMETER, fuehreWaitsAus, istWaitsAction } from './intern-waits.js';
 // P10-T42: Shell-Altbestand mit der Live-Maske nachmaskieren (intern-shell-alt.ts).
 import { SHELL_ALT_ACTIONS, SHELL_ALT_BESCHREIBUNG, SHELL_ALT_PARAMETER, fuehreShellAltAus, istShellAltAction } from './intern-shell-alt.js';
+// P10-T74: tool_calls-Altbestand mit der Schwaerzung von logToolCall nachschwaerzen (intern-tool-calls-schwaerzen.ts).
+import {
+  TOOL_CALLS_SCHWAERZEN_ACTIONS, TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG, TOOL_CALLS_SCHWAERZEN_PARAMETER,
+  fuehreToolCallsSchwaerzenAus, istToolCallsSchwaerzenAction,
+} from './intern-tool-calls-schwaerzen.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -81,6 +86,7 @@ export const INTERN_ACTIONS = [
   ...WARTESCHLANGEN_ACTIONS,
   ...WAITS_ACTIONS,
   ...SHELL_ALT_ACTIONS,
+  ...TOOL_CALLS_SCHWAERZEN_ACTIONS,
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -116,6 +122,7 @@ export const INTERN_DEFINITION = {
     WARTESCHLANGEN_BESCHREIBUNG +
     WAITS_BESCHREIBUNG +
     SHELL_ALT_BESCHREIBUNG +
+    TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -172,6 +179,7 @@ export const INTERN_DEFINITION = {
       ...WARTESCHLANGEN_PARAMETER,
       ...WAITS_PARAMETER,
       ...SHELL_ALT_PARAMETER,
+      ...TOOL_CALLS_SCHWAERZEN_PARAMETER,
     },
     required: ['action'],
   },
@@ -268,6 +276,8 @@ export async function fuehreInternAus(
   if (istWaitsAction(action)) return await fuehreWaitsAus(action, a, agentId);
   // P10-T42: Shell-Altbestand nachmaskieren (intern-shell-alt.ts) - wirft nie
   if (istShellAltAction(action)) return await fuehreShellAltAus(action, a, agentId);
+  // P10-T74: tool_calls-Altbestand nachschwaerzen (intern-tool-calls-schwaerzen.ts) - wirft nie
+  if (istToolCallsSchwaerzenAction(action)) return await fuehreToolCallsSchwaerzenAus(action, a, agentId);
   try {
     switch (action) {
       case 'schalter_setzen': {
