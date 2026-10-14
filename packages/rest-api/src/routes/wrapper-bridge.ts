@@ -119,7 +119,7 @@ function grenze(roh: unknown, standard: number, max: number): number {
  * MAX sein und nicht 0, sonst flutet ein frisch gestarteter Wrapper seinen Agenten
  * mit der gesamten Historie.
  */
-async function leseWatermarks(agent: string): Promise<{ channel: number; inbox: number }> {
+async function leseWatermarks(agent: string, project: string): Promise<{ channel: number; inbox: number }> {
   const pool = getPool();
   const channelErgebnis = await pool.query<{ max_id: number }>(
     `SELECT COALESCE(MAX(cm.id), 0)::int AS max_id
@@ -132,8 +132,8 @@ async function leseWatermarks(agent: string): Promise<{ channel: number; inbox: 
   const inboxErgebnis = await pool.query<{ max_id: number }>(
     `SELECT COALESCE(MAX(id), 0)::int AS max_id
        FROM specialist_inbox
-      WHERE to_agent = $1`,
-    [agent],
+      WHERE to_agent = $1 AND project = $2`,
+    [agent, project],
   );
   return {
     channel: channelErgebnis.rows[0]?.max_id ?? 0,
@@ -155,10 +155,10 @@ async function leseMitgliedschaften(agent: string): Promise<string[]> {
 }
 
 /** Wie viele Inbox-Nachrichten sind unquittiert? Die Zahl ist der Beleg gegen stillen Verlust. */
-async function zaehleUnquittiert(agent: string): Promise<number> {
+async function zaehleUnquittiert(agent: string, project: string): Promise<number> {
   const { rows } = await getPool().query<{ n: string }>(
-    `SELECT COUNT(*)::text AS n FROM specialist_inbox WHERE to_agent = $1 AND processed = false`,
-    [agent],
+    `SELECT COUNT(*)::text AS n FROM specialist_inbox WHERE to_agent = $1 AND project = $2 AND processed = false`,
+    [agent, project],
   );
   return Number(rows[0]?.n ?? 0);
 }
@@ -261,7 +261,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
           });
         }
         const [watermarks, channels] = await Promise.all([
-          leseWatermarks(agent),
+          leseWatermarks(agent, project),
           leseMitgliedschaften(agent),
         ]);
         return {
@@ -286,10 +286,10 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
   fastify.get<{ Params: { name: string; specName: string } }>(
     `${BASIS}/watermarks`,
     async (request, reply) => {
-      const { specName: agent } = request.params;
+      const { name: project, specName: agent } = request.params;
       zaehler.watermarks += 1;
       try {
-        return { success: true, agent, watermarks: await leseWatermarks(agent) };
+        return { success: true, agent, watermarks: await leseWatermarks(agent, project) };
       } catch (error) {
         zaehler.fehler += 1;
         return reply.status(500).send({ success: false, error: { message: String(error) } });
@@ -306,7 +306,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
   fastify.get<{ Params: { name: string; specName: string } }>(
     `${BASIS}/channels`,
     async (request, reply) => {
-      const { specName: agent } = request.params;
+      const { name: project, specName: agent } = request.params;
       zaehler.channels += 1;
       try {
         return { success: true, agent, channels: await leseMitgliedschaften(agent) };
@@ -322,7 +322,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
     Params: { name: string; specName: string };
     Querystring: { since_id?: string; limit?: string };
   }>(`${BASIS}/channel-messages`, async (request, reply) => {
-    const { specName: agent } = request.params;
+    const { name: project, specName: agent } = request.params;
     const since = seitId(request.query.since_id);
     const limit = grenze(request.query.limit, 200, 500);
     zaehler.channelMessages += 1;
@@ -350,12 +350,12 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
     Params: { name: string; specName: string };
     Querystring: { since_id?: string; limit?: string };
   }>(`${BASIS}/inbox`, async (request, reply) => {
-    const { specName: agent } = request.params;
+    const { name: project, specName: agent } = request.params;
     const since = seitId(request.query.since_id);
     const limit = grenze(request.query.limit, 200, 500);
     zaehler.inbox += 1;
     try {
-      const alle = await getNewInboxMessages(agent, since);
+      const alle = await getNewInboxMessages(agent, since, project);
       const messages = alle.slice(0, limit);
       return {
         success: true,
@@ -364,7 +364,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
         count: messages.length,
         truncated: alle.length > messages.length,
         watermark: messages.length > 0 ? messages[messages.length - 1].id : since,
-        unacked_count: await zaehleUnquittiert(agent),
+        unacked_count: await zaehleUnquittiert(agent, project),
       };
     } catch (error) {
       zaehler.fehler += 1;
@@ -384,7 +384,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
     Params: { name: string; specName: string };
     Body: { ids?: unknown };
   }>(`${BASIS}/inbox/ack`, async (request, reply) => {
-    const { specName: agent } = request.params;
+    const { name: project, specName: agent } = request.params;
     zaehler.inboxAck += 1;
     const roh = Array.isArray(request.body?.ids) ? (request.body?.ids as unknown[]) : [];
     const ids = roh
@@ -404,9 +404,9 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
       const { rows } = await getPool().query<{ id: number }>(
         `UPDATE specialist_inbox
             SET processed = true
-          WHERE id = ANY($1::int[]) AND to_agent = $2 AND processed = false
+          WHERE id = ANY($1::int[]) AND to_agent = $2 AND project = $3 AND processed = false
         RETURNING id`,
-        [ids, agent],
+        [ids, agent, project],
       );
       return {
         success: true,
@@ -414,7 +414,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
         requested: ids.length,
         updated: rows.length,
         acked: rows.length,
-        unacked_count: await zaehleUnquittiert(agent),
+        unacked_count: await zaehleUnquittiert(agent, project),
       };
     } catch (error) {
       zaehler.fehler += 1;
@@ -572,7 +572,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
 
       const [zeile, watermarks, channels] = await Promise.all([
         getWrapperStatus(agent, project),
-        leseWatermarks(agent),
+        leseWatermarks(agent, project),
         leseMitgliedschaften(agent),
       ]);
 
@@ -656,9 +656,9 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
       const [zeile, channelAlle, inboxAlle, channels, unacked, items] = await Promise.all([
         getWrapperStatus(agent, project),
         getNewMessagesForAgent(agent, channelSeit, limit + 1),
-        getNewInboxMessages(agent, inboxSeit),
+        getNewInboxMessages(agent, inboxSeit, project),
         leseMitgliedschaften(agent),
-        zaehleUnquittiert(agent),
+        zaehleUnquittiert(agent, project),
         mitItems ? leseItems(project, agent) : Promise.resolve(null),
       ]);
 

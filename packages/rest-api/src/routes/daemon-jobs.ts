@@ -469,10 +469,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
       }
       case 'inbox_post': {
         if (!istAgentName(body.from) || typeof body.content !== 'string') return reply.code(400).send({ success: false, error: 'nachricht_ungueltig' });
-        // Gleichnamiger Agent eines anderen Projekts wuerde die Nachricht mitlesen.
-        const andere = await andereProjekteDesAgenten(agent, project);
-        if (andere.length > 0) return reply.code(409).send({ success: false, error: 'agent_in_anderem_projekt', andere_projekte: andere });
-        const r = await postToInbox(body.from, agent, body.content);
+        const r = await postToInbox(body.from, agent, body.content, project);
         return { success: true, aktion, id: r.id };
       }
       default:

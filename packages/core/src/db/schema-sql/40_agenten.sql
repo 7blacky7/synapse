@@ -218,9 +218,9 @@ CREATE TABLE public.specialist_inbox (
     to_agent text NOT NULL,
     content text NOT NULL,
     processed boolean DEFAULT false,
-    created_at timestamp with time zone DEFAULT now()
+    created_at timestamp with time zone DEFAULT now(),
+    project text
 );
-
 --
 -- Name: specialist_inbox_id_seq; Type: SEQUENCE; Schema: public
 --

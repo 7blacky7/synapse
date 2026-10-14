@@ -3553,16 +3553,16 @@ async function handleToolCallKern(
           const inboxContent = reqStr(args, 'content');
           if (Array.isArray(toAgentParam)) {
             const results = await Promise.all(
-              toAgentParam.map((t: string) => postToInbox(fromAgent, t, inboxContent))
+              toAgentParam.map((t: string) => postToInbox(fromAgent, t, inboxContent, reqStr(args, 'project')))
             );
             return { success: true, results, count: results.length, action: 'inbox_send' };
           }
-          const inboxResult = await postToInbox(fromAgent, reqStr(args, 'to_agent'), inboxContent);
+          const inboxResult = await postToInbox(fromAgent, reqStr(args, 'to_agent'), inboxContent, reqStr(args, 'project'));
           return { success: true, ...inboxResult, action: 'inbox_send' };
         }
         case 'inbox_check': {
           const inboxAgent = reqStr(args, 'agent_name');
-          const inboxMessages = await checkInbox(inboxAgent);
+          const inboxMessages = await checkInbox(inboxAgent, reqStr(args, 'project'));
           return { success: true, messages: inboxMessages, count: inboxMessages.length, action: 'inbox_check' };
         }
         default:
@@ -4126,7 +4126,7 @@ async function handleToolCallKern(
 
         // Persistent fallback: Inbox (wird beim naechsten Heartbeat verarbeitet)
         try {
-          const r = await postToInbox('rest-api', name, message);
+          const r = await postToInbox('rest-api', name, message, project);
           inboxId = r.id;
         } catch (e) {
           wakeErrors.push(`inbox: ${(e as Error).message}`);

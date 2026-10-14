@@ -518,7 +518,7 @@ export function createServer(): Server {
                     try {
                       const specStatus = await readStatus(sendProjectPath);
                       if (specStatus.specialists[rid]) {
-                        const inboxResult = await postToInbox(senderId, rid, content);
+                        const inboxResult = await postToInbox(senderId, rid, content, project);
                         results.push({ success: true, routed: 'specialist_inbox', recipient: rid, ...inboxResult });
                         continue;
                       }
@@ -549,7 +549,7 @@ export function createServer(): Server {
 
                 // Recipient ist ein Spezialist → direkt in die Inbox routen
                 if (recipientId && specStatus.specialists[recipientId]) {
-                  const inboxResult = await postToInbox(senderId, recipientId, content);
+                  const inboxResult = await postToInbox(senderId, recipientId, content, project);
                   const target = `DM an ${recipientId}`;
                   const preview = content.length > 80 ? content.slice(0, 80) + '...' : content;
                   try {
@@ -616,7 +616,7 @@ export function createServer(): Server {
               try {
                 const specStatus = await readStatus(getMsgProjectPath);
                 if (Object.keys(specStatus.specialists).length > 0) {
-                  const inboxMessages = await checkInbox(getMsgAgentId);
+                  const inboxMessages = await checkInbox(getMsgAgentId, (args as Record<string, unknown>)?.project as string);
                   if (inboxMessages.length > 0) {
                     const inboxResult: Record<string, unknown> = {
                       ...(typeof result === 'object' && result !== null ? result : { messages: [] }),

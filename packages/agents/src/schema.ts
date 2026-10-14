@@ -54,12 +54,25 @@ CREATE TABLE IF NOT EXISTS specialist_inbox (
   to_agent TEXT NOT NULL,
   content TEXT NOT NULL,
   processed BOOLEAN DEFAULT false,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  project TEXT
 );
+ALTER TABLE specialist_inbox ADD COLUMN IF NOT EXISTS project TEXT;
+WITH kandidaten AS (
+  SELECT agent_name AS agent, project FROM wrapper_status
+  UNION
+  SELECT id AS agent, project FROM agent_sessions
+), eindeutig AS (
+  SELECT agent, MIN(project) AS project FROM kandidaten GROUP BY agent HAVING COUNT(DISTINCT project) = 1
+)
+UPDATE specialist_inbox i SET project = e.project
+  FROM eindeutig e WHERE i.to_agent = e.agent AND i.project IS NULL;
 
 -- Performance Indices
 CREATE INDEX IF NOT EXISTS idx_specialist_inbox_unprocessed
   ON specialist_inbox(to_agent, processed) WHERE processed = false;
+CREATE INDEX IF NOT EXISTS idx_specialist_inbox_project_unprocessed
+  ON specialist_inbox(project, to_agent, id) WHERE processed = false;
 CREATE INDEX IF NOT EXISTS idx_specialist_channel_messages_channel
   ON specialist_channel_messages(channel_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_specialist_channel_messages_created

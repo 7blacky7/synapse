@@ -41,19 +41,19 @@ async function channelMitglied(project,agent,name='c'){
   ??(await q('SELECT id FROM '+T('specialist_channels')+' WHERE name=$1 AND project=$2',[name+'-'+project,project])).rows[0];
  await q('INSERT INTO '+T('specialist_channel_members')+'(channel_id,agent_name,last_read_message_id) VALUES($1,$2,0) ON CONFLICT DO NOTHING',[c.id,agent]);
 }
-const inbox=async(agent,n)=>{for(let i=0;i<n;i++)await q('INSERT INTO '+T('specialist_inbox')+"(from_agent,to_agent,content) VALUES('koordinator',$1,$2)",[agent,'t27pb '+i]);};
+const inbox=async(agent,n,project)=>{for(let i=0;i<n;i++)await q('INSERT INTO '+T('specialist_inbox')+"(from_agent,to_agent,content,project) VALUES('koordinator',$1,$2,$3)",[agent,'t27pb '+i,project]);};
 /** Alles, was in PB (bzw. global am Namen X haengt und PB gehoert) liegt — fuer Vorher/Nachher-Vergleich. */
 async function standPB(){
  return {
   mitglieder:(await q('SELECT c.name,m.agent_name FROM '+T('specialist_channel_members')+' m JOIN '+T('specialist_channels')+' c ON c.id=m.channel_id WHERE c.project=$1 ORDER BY 1,2',[PB])).rows,
   wrapper:(await q('SELECT agent_name,status,wrapper_pid FROM '+T('wrapper_status')+' WHERE project=$1 ORDER BY 1',[PB])).rows,
   sitzung:(await q('SELECT id,project,status,sitzung_seit,aktiv_seit FROM '+T('agent_sessions')+' WHERE id=$1',[X])).rows,
-  inbox:(await q('SELECT id,to_agent,content,processed FROM '+T('specialist_inbox')+' WHERE to_agent=$1 ORDER BY id',[X])).rows,
+  inbox:(await q('SELECT id,to_agent,content,processed FROM '+T('specialist_inbox')+' WHERE to_agent=$1 AND project=$2 ORDER BY id',[X,PB])).rows,
  };
 }
 const zaehle=async(sql,args)=>Number((await q(sql,args)).rows[0].n);
 const mitgliederIn=(project,agent)=>zaehle('SELECT count(*) n FROM '+T('specialist_channel_members')+' m JOIN '+T('specialist_channels')+' c ON c.id=m.channel_id WHERE c.project=$1 AND m.agent_name=$2',[project,agent]);
-const inboxVon=agent=>zaehle('SELECT count(*) n FROM '+T('specialist_inbox')+' WHERE to_agent=$1',[agent]);
+const inboxVon=(agent,project)=>zaehle('SELECT count(*) n FROM '+T('specialist_inbox')+' WHERE to_agent=$1 AND project=$2',[agent,project]);
 
 try{
  await q('CREATE SCHEMA '+schema);made=true;
@@ -62,8 +62,8 @@ try{
  // X gibt es in beiden Projekten; die (globale) Chat-Sitzung von X gehoert PB. Y gibt es nur in PA.
  for(const p of [PA,PB]){await wrapperZeile(X,p);await channelMitglied(p,X);await channelMitglied(p,X,'zwei');}
  await q('INSERT INTO '+T('agent_sessions')+"(id,project,status,registered_at,sitzung_seit,aktiv_seit) VALUES($1,$2,'active',NOW()-interval '1 hour',NOW()-interval '1 hour',NOW()-interval '1 hour')",[X,PB]);
- await inbox(X,2);
- await wrapperZeile(Y,PA);await channelMitglied(PA,Y);await inbox(Y,3);
+ await inbox(X,2,PA);await inbox(X,2,PB);
+ await wrapperZeile(Y,PA);await channelMitglied(PA,Y);await inbox(Y,3,PA);
  await q('INSERT INTO '+T('agent_sessions')+"(id,project,status) VALUES($1,$2,'active')",[Y,PA]);
 
  const core=await import('../packages/core/dist/index.js');
@@ -80,6 +80,13 @@ try{
  const vorher=await standPB();
  assert.equal(vorher.mitglieder.length,2);assert.equal(vorher.wrapper.length,1);assert.equal(vorher.sitzung.length,1);assert.equal(vorher.inbox.length,2);
 
+ // ══════════ Projektgebundene Core-Inbox-Abfrage ══════════
+ await check('Core Inbox trennt Nachrichten gleichen Namens nach Projekt',async()=>{
+  const ausPA=await core.getNewInboxMessages(X,0,PA);
+  const ausPB=await core.getNewInboxMessages(X,0,PB);
+  assert.equal(ausPA.length,2);assert.equal(ausPB.length,2);assert.equal(await inboxVon(X,PA),2);
+  assert.notDeepEqual(ausPA.map(m=>m.id),ausPB.map(m=>m.id));
+ });
  // ══════════ API-Weg: Aktionen in PA fuer den gleichnamigen Agenten X ══════════
  await check('API aus_channels in PA: nur PA-Mitgliedschaften weg, PB unveraendert',async()=>{
   assert.equal(await mitgliederIn(PA,X),2);
@@ -90,14 +97,15 @@ try{
   const r=await d({aktion:'chat_abmelden',project:PA,agent:X});assert.equal(r.statusCode,200,r.body);assert.equal(r.json().anzahl,0);
   assert.equal((await q('SELECT status FROM '+T('agent_sessions')+' WHERE id=$1',[X])).rows[0].status,'active');
  });
- await check('API inbox_entfernen in PA: Name auch in PB -> 409 agent_in_anderem_projekt, Inbox unveraendert',async()=>{
+ await check('API inbox_entfernen in PA: loescht nur PA-Zeilen, PB bleibt unveraendert',async()=>{
   const r=await d({aktion:'inbox_entfernen',project:PA,agent:X});
-  assert.equal(r.statusCode,409,r.body);assert.equal(r.json().error,'agent_in_anderem_projekt');assert.deepEqual(r.json().andere_projekte,[PB]);
-  assert.equal(await inboxVon(X),2);
+  assert.equal(r.statusCode,200,r.body);assert.equal(r.json().anzahl,2);
+  assert.equal(await inboxVon(X,PA),0);assert.equal(await inboxVon(X,PB),2);
  });
- await check('API inbox_post in PA an X: 409, keine neue Zeile',async()=>{
+ await check('API inbox_post in PA an X: 200, nur PA-Inbox erhaelt eine Zeile',async()=>{
   const r=await d({aktion:'inbox_post',project:PA,from:'koordinator',to:X,content:'nicht zustellen'});
-  assert.equal(r.statusCode,409,r.body);assert.equal(r.json().error,'agent_in_anderem_projekt');assert.equal(await inboxVon(X),2);
+  assert.equal(r.statusCode,200,r.body);assert.equal(r.json().success,true);
+  assert.equal(await inboxVon(X,PA),1);assert.equal(await inboxVon(X,PB),2);
  });
  await check('API sitzung_neu in PA: Sitzung von X gehoert PB -> 409, Sitzung unveraendert',async()=>{
   const r=await d({aktion:'sitzung_neu',project:PA,agent:X});
@@ -117,9 +125,9 @@ try{
  await check('API Y nur in PA: inbox_post 200, inbox_entfernen loescht alle, chat_abmelden 1, sitzung_neu 200, aus_channels 1',async()=>{
   assert.equal((await d({aktion:'sitzung_neu',project:PA,agent:Y})).statusCode,200);
   const p=await d({aktion:'inbox_post',project:PA,from:'koordinator',to:Y,content:'hallo'});assert.equal(p.statusCode,200,p.body);
-  assert.equal(await inboxVon(Y),4);
+  assert.equal(await inboxVon(Y,PA),4);
   const e=await d({aktion:'inbox_entfernen',project:PA,agent:Y});assert.equal(e.statusCode,200,e.body);assert.equal(e.json().anzahl,4);
-  assert.equal(await inboxVon(Y),0);
+  assert.equal(await inboxVon(Y,PA),0);
   assert.equal((await d({aktion:'chat_abmelden',project:PA,agent:Y})).json().anzahl,1);
   assert.equal((await q('SELECT status FROM '+T('agent_sessions')+' WHERE id=$1',[Y])).rows[0].status,'inactive');
   assert.equal((await d({aktion:'aus_channels',project:PA,agent:Y})).json().anzahl,1);
@@ -132,12 +140,12 @@ try{
  await check('PG-Weg mit Projekt PA: ausAllenChannels nur PA, chatAbmelden laesst PB-Sitzung, inboxEntfernen wirft ohne zu loeschen',async()=>{
   assert.equal(await pg.ausAllenChannels(X,PA),1);assert.equal(await mitgliederIn(PA,X),0);
   await pg.chatAbmelden(X,PA);
-  await assert.rejects(()=>pg.inboxEntfernen(X,PA),/auch in Projekt\(en\) .*t27pb-b-/);
+  assert.equal(await pg.inboxEntfernen(X,PA),1);
   await pg.wrapperStatusEntfernen(X,PA);
   assert.deepEqual(await standPB(),vorher);
  });
  await check('PG-Weg Positivfall: Y nur in PA -> inboxEntfernen loescht',async()=>{
-  await inbox(Y,2);assert.equal(await pg.inboxEntfernen(Y,PA),2);assert.equal(await inboxVon(Y),0);
+  await inbox(Y,2,PA);assert.equal(await pg.inboxEntfernen(Y,PA),2);assert.equal(await inboxVon(Y,PA),0);
  });
 
  // ══════════ Kontrolle: die alte globale Variante haette PB veraendert (Test ist empfindlich) ══════════

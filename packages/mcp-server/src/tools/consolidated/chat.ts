@@ -214,7 +214,7 @@ export const chatTool: ConsolidatedTool = {
           const toAgents = strArray(args, 'to_agent');
           if (toAgents && toAgents.length > 1) {
             const settled = await Promise.allSettled(
-              toAgents.map(ta => postToInboxTool(inboxFromAgent, ta, inboxContent))
+              toAgents.map(ta => postToInboxTool(inboxFromAgent, ta, inboxContent, reqStr(args, 'project')))
             );
             const results: Array<Record<string, unknown>> = [];
             const errors: string[] = [];
@@ -227,7 +227,7 @@ export const chatTool: ConsolidatedTool = {
 
           // Bestehend: Einzelner Empfaenger
           const inboxToAgent = reqStr(args, 'to_agent');
-          const result = await postToInboxTool(inboxFromAgent, inboxToAgent, inboxContent);
+          const result = await postToInboxTool(inboxFromAgent, inboxToAgent, inboxContent, reqStr(args, 'project'));
           return {
             success: true,
             action: 'inbox_send',
@@ -238,7 +238,7 @@ export const chatTool: ConsolidatedTool = {
         // ===== inbox_check =====
         case 'inbox_check': {
           const checkAgentName = reqStr(args, 'agent_name');
-          const result = await checkInboxTool(checkAgentName);
+          const result = await checkInboxTool(checkAgentName, reqStr(args, 'project'));
           return {
             success: true,
             action: 'inbox_check',

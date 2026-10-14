@@ -947,9 +947,10 @@ export async function postToInboxTool(
   fromAgent: string,
   toAgent: string,
   content: string,
+  project: string,
 ) {
   try {
-    const result = await postToInbox(fromAgent, toAgent, content);
+    const result = await postToInbox(fromAgent, toAgent, content, project);
     return jsonResult({
       success: true,
       message: `Nachricht von "${fromAgent}" an "${toAgent}" gesendet.`,
@@ -963,9 +964,10 @@ export async function postToInboxTool(
 
 export async function checkInboxTool(
   agentName: string,
+  project: string,
 ) {
   try {
-    const messages = await checkInbox(agentName);
+    const messages = await checkInbox(agentName, project);
     return jsonResult({
       success: true,
       agent: agentName,

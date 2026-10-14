@@ -12,75 +12,43 @@ function mapRow(row: Record<string, unknown>): InboxMessage {
   }
 }
 
-// Post a message to another agent's inbox
-export async function postToInbox(
-  fromAgent: string,
-  toAgent: string,
-  content: string,
-): Promise<{ id: number; createdAt: Date }> {
-  const pool = getPool()
-  const result = await pool.query(
-    `INSERT INTO specialist_inbox (from_agent, to_agent, content)
-     VALUES ($1, $2, $3)
-     RETURNING id, created_at`,
-    [fromAgent, toAgent, content],
+export async function postToInbox(fromAgent: string, toAgent: string, content: string, project: string): Promise<{ id: number; createdAt: Date }> {
+  const result = await getPool().query(
+    `INSERT INTO specialist_inbox (from_agent, to_agent, content, project) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
+    [fromAgent, toAgent, content, project],
   )
   const row = result.rows[0]
   return { id: row.id as number, createdAt: row.created_at as Date }
 }
 
-// Check and mark as read all unprocessed messages for an agent (UPDATE...RETURNING)
-export async function checkInbox(agentName: string): Promise<InboxMessage[]> {
-  const pool = getPool()
-  const result = await pool.query(
-    `UPDATE specialist_inbox
-     SET processed = true
-     WHERE to_agent = $1 AND processed = false
-     RETURNING id, from_agent, to_agent, content, processed, created_at`,
-    [agentName],
+export async function checkInbox(agentName: string, project: string): Promise<InboxMessage[]> {
+  const result = await getPool().query(
+    `UPDATE specialist_inbox SET processed = true WHERE to_agent = $1 AND project = $2 AND processed = false RETURNING id, from_agent, to_agent, content, processed, created_at`,
+    [agentName, project],
   )
   return result.rows.map(mapRow)
 }
 
-// Get new unprocessed messages since a given ID (for heartbeat polling, does NOT mark as read)
-export async function getNewInboxMessages(agentName: string, sinceId: number): Promise<InboxMessage[]> {
-  const pool = getPool()
-  const result = await pool.query(
-    `SELECT id, from_agent, to_agent, content, processed, created_at
-     FROM specialist_inbox
-     WHERE to_agent = $1 AND processed = false AND id > $2
-     ORDER BY id ASC`,
-    [agentName, sinceId],
+export async function getNewInboxMessages(agentName: string, sinceId: number, project: string): Promise<InboxMessage[]> {
+  const result = await getPool().query(
+    `SELECT id, from_agent, to_agent, content, processed, created_at FROM specialist_inbox WHERE to_agent = $1 AND project = $3 AND processed = false AND id > $2 ORDER BY id ASC`,
+    [agentName, sinceId, project],
   )
   return result.rows.map(mapRow)
 }
 
-// Get inbox history (all messages, including processed)
-export async function getInboxHistory(agentName: string, limit = 50): Promise<InboxMessage[]> {
-  const pool = getPool()
-  const result = await pool.query(
-    `SELECT id, from_agent, to_agent, content, processed, created_at
-     FROM specialist_inbox
-     WHERE to_agent = $1
-     ORDER BY id DESC
-     LIMIT $2`,
-    [agentName, limit],
+export async function getInboxHistory(agentName: string, project: string, limit = 50): Promise<InboxMessage[]> {
+  const result = await getPool().query(
+    `SELECT id, from_agent, to_agent, content, processed, created_at FROM specialist_inbox WHERE to_agent = $1 AND project = $2 ORDER BY id DESC LIMIT $3`,
+    [agentName, project, limit],
   )
   return result.rows.map(mapRow)
 }
 
-/**
- * Loescht ALLE Inbox-Zeilen eines Agenten und liefert die Anzahl.
- *
- * Gebraucht von purge: dort blieben die Zeilen bisher stehen, obwohl die
- * Erfolgsmeldung "PG" in ihrer Aufzaehlung fuehrte. Eine Meldung, die mehr sagt
- * als sie haelt, ist genau die Fehlerform, die hier schon zweimal Zeit gekostet hat.
- */
-export async function removeInboxForAgent(agentName: string): Promise<number> {
-  const pool = getPool()
-  const result = await pool.query(
-    `DELETE FROM specialist_inbox WHERE to_agent = $1 RETURNING id`,
-    [agentName],
+export async function removeInboxForAgent(agentName: string, project: string): Promise<number> {
+  const result = await getPool().query(
+    `DELETE FROM specialist_inbox WHERE to_agent = $1 AND project = $2 RETURNING id`,
+    [agentName, project],
   )
   return result.rowCount ?? result.rows.length
 }

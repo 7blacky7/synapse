@@ -310,7 +310,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       }
 
       try {
-        const r = await postToInbox('rest-api', specName, message);
+        const r = await postToInbox('rest-api', specName, message, project);
         inboxId = r.id;
       } catch (e) {
         wakeErrors.push(`inbox: ${(e as Error).message}`);

@@ -552,9 +552,9 @@ export async function wrapperTakt(project: string | undefined): Promise<Record<s
   const { rows } = await pool.query(
     `SELECT ws.agent_name, ws.project, ws.status, ws.busy, ws.model, ws.heartbeat_enabled, ws.heartbeat_interval_ms,
             ws.last_activity, EXTRACT(EPOCH FROM (NOW() - ws.last_activity))::int AS aktivitaet_vor_s,
-            (SELECT count(*)::int FROM specialist_inbox i WHERE i.to_agent = ws.agent_name AND i.processed = false) AS inbox_offen,
+            (SELECT count(*)::int FROM specialist_inbox i WHERE i.to_agent = ws.agent_name AND i.project = ws.project AND i.processed = false) AS inbox_offen,
             (SELECT EXTRACT(EPOCH FROM (NOW() - min(i.created_at)))::int FROM specialist_inbox i
-              WHERE i.to_agent = ws.agent_name AND i.processed = false) AS inbox_aelteste_s,
+              WHERE i.to_agent = ws.agent_name AND i.project = ws.project AND i.processed = false) AS inbox_aelteste_s,
             (SELECT count(*)::int FROM agent_events e
               WHERE e.project = ws.project AND e.requires_ack AND e.created_at > NOW() - INTERVAL '24 hours'
                 AND (e.scope = 'all' OR e.scope = 'agent:' || ws.agent_name)

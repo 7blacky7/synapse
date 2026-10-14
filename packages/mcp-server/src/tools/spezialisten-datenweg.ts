@@ -65,14 +65,10 @@ export const pgSpezialistenDatenweg: SpezialistenDatenweg = {
   chatAbmelden: async (name, project) => { if (project) await meldeAgentImProjektAb(name, project); else await unregisterAgent(name); },
   wrapperStatusEntfernen: (name, project) => removeWrapperStatus(name, project),
   inboxEntfernen: async (name, project) => {
-    if (!project) return removeInboxForAgent(name);
-    const r = await entferneInboxImProjekt(name, project);
-    if (r.andereProjekte.length > 0) {
-      throw new Error(`Inbox nicht geloescht: Name "${name}" auch in Projekt(en) ${r.andereProjekte.join(', ')} (Inbox hat keine Projektspalte)`);
-    }
-    return r.anzahl;
+    if (!project) throw new Error('project ist fuer Inbox-Entfernung erforderlich');
+    return (await entferneInboxImProjekt(name, project)).anzahl;
   },
-  inboxPost: (fromAgent, toAgent, content) => postToInbox(fromAgent, toAgent, content),
+  inboxPost: (fromAgent, toAgent, content, project) => project ? postToInbox(fromAgent, toAgent, content, project) : Promise.reject(new Error('project ist fuer Inbox-Post erforderlich')),
   wrapperUmgebung: () => ({}),
 };
 

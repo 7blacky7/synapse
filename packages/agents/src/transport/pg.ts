@@ -159,8 +159,8 @@ export class PgTransport implements WrapperTransport {
       const inboxResult = await pool.query<{ max_id: number }>(
         `SELECT COALESCE(MAX(id), 0)::int AS max_id
          FROM specialist_inbox
-         WHERE to_agent = $1`,
-        [this.umgebung.agentName],
+         WHERE to_agent = $1 AND project = $2`,
+        [this.umgebung.agentName, this.umgebung.projekt ?? '']
       )
       return {
         channel: channelResult.rows[0]?.max_id ?? 0,
@@ -200,7 +200,7 @@ export class PgTransport implements WrapperTransport {
 
   async leseNeueInboxNachrichten(seitId: number): Promise<InboxNachricht[]> {
     return this.buch.messe('inbox', async () => {
-      const nachrichten = await getNewInboxMessages(this.umgebung.agentName, seitId)
+      const nachrichten = await getNewInboxMessages(this.umgebung.agentName, seitId, this.umgebung.projekt ?? '')
       return nachrichten.map((m) => ({
         id: m.id,
         fromAgent: m.fromAgent,
@@ -214,8 +214,8 @@ export class PgTransport implements WrapperTransport {
     await this.buch.messe('inbox-quittung', async () => {
       const pool = getPool()
       await pool.query(
-        `UPDATE specialist_inbox SET processed = true WHERE id = ANY($1::int[])`,
-        [ids],
+        `UPDATE specialist_inbox SET processed = true WHERE id = ANY($1::int[]) AND to_agent = $2 AND project = $3`,
+        [ids, this.umgebung.agentName, this.umgebung.projekt ?? ''],
       )
     })
   }
