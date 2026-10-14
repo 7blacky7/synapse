@@ -92,7 +92,7 @@ var (
 	// synapse-api (Workspaces)
 	synapseApiUrl          string
 	workspaces             []Workspace
-	workspacesAvailable    bool
+	workspacesZustand      string // wsZustand* (P8-T21); "" = noch nicht abgerufen
 	lastWorkspaceSignature string
 	nextWorkspacePoll      time.Time
 
@@ -537,50 +537,98 @@ func toggleProject(name string, currentlyEnabled bool) {
 	triggerRefresh()
 }
 
-func fetchWorkspaces() ([]Workspace, bool) {
-	if synapseApiUrl == "" {
-		return nil, false
-	}
-	u := synapseApiUrl + "/api/workspaces"
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(u)
-	if err != nil {
-		return nil, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return nil, false
-	}
+// P8-T21: Abrufzustand der Workspaces.
+const (
+	wsZustandOK             = "ok"
+	wsZustandNichtVerbunden = "nicht_verbunden" // API antwortet 401/403: kein/falsches Token
+	wsZustandOffline        = "offline"         // keine Adresse der Kette erreichbar
+)
+
+// Workspace-Abruf im Hintergrund. nextWorkspacePoll und die Ergebnisse
+// gehoeren unter wsAbrufMu (nicht menuMutex), weil der Abruf in einer eigenen
+// Goroutine laeuft.
+var (
+	wsAbrufMu      sync.Mutex
+	wsAbrufLaeuft  atomic.Bool
+	wsAbrufListe   []Workspace
+	wsAbrufZustand string
+)
+
+// fetchWorkspaces geht ueber den API-Weg des Trays (api_client.go: Token aus
+// SYNAPSE_API_TOKEN bzw. config.json, Adresskette LAN -> Tunnel). Vorher ging
+// hier ein nackter http.Client OHNE Authorization-Header an synapseApiUrl; seit
+// die API auth-scharf ist, kam immer 401 und das Menue stand dauerhaft auf
+// "Workspaces (offline)".
+func fetchWorkspaces() ([]Workspace, string) {
 	var data WorkspacesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, false
+	if _, err := apiRequest(http.MethodGet, "/api/workspaces", &data); err != nil {
+		log.Printf("[tray] Workspaces abrufen: %v", err)
+		return nil, workspaceFehlerZustand(err)
 	}
-	return data.Workspaces, true
+	return data.Workspaces, wsZustandOK
+}
+
+// workspaceFehlerZustand: 401/403 ist eine echte Antwort der API (nicht
+// verbunden), alles andere heisst "nicht erreichbar".
+func workspaceFehlerZustand(err error) string {
+	var httpErr *apiBinaryHTTPError
+	if errors.As(err, &httpErr) && (httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden) {
+		return wsZustandNichtVerbunden
+	}
+	return wsZustandOffline
+}
+
+// workspacePollAbstand: ok alle 30 s; nicht verbunden nach 1 min erneut (damit
+// ein frisch hinterlegtes Token schnell wirkt); offline 5 min Backoff.
+func workspacePollAbstand(zustand string) time.Duration {
+	switch zustand {
+	case wsZustandOK:
+		return 30 * time.Second
+	case wsZustandNichtVerbunden:
+		return time.Minute
+	default:
+		return 5 * time.Minute
+	}
+}
+
+// starteWorkspaceAbruf holt die Workspaces in einer Goroutine. refresh() haelt
+// menuMutex; die API-Kette (bis 10 s je Adresse) darf das Menue nicht blockieren.
+// Ist ein Abruf schon unterwegs, passiert nichts.
+func starteWorkspaceAbruf() {
+	if !wsAbrufLaeuft.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer wsAbrufLaeuft.Store(false)
+		ws, zustand := fetchWorkspaces()
+		wsAbrufMu.Lock()
+		wsAbrufListe = ws
+		wsAbrufZustand = zustand
+		nextWorkspacePoll = time.Now().Add(workspacePollAbstand(zustand))
+		wsAbrufMu.Unlock()
+		triggerRefresh()
+	}()
 }
 
 func workspaceAction(project, action string, body string) {
-	if synapseApiUrl == "" {
-		return
-	}
-	u := fmt.Sprintf("%s/api/projects/%s/workspace/%s", synapseApiUrl, url.PathEscape(project), action)
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(u, "application/json", strings.NewReader(body))
-	if err != nil {
+	pfad := fmt.Sprintf("/api/projects/%s/workspace/%s", url.PathEscape(project), action)
+	if _, err := apiRequestBody(http.MethodPost, pfad, json.RawMessage(body), nil); err != nil {
 		log.Printf("[tray] workspace %s %s FEHLER: %v", action, project, err)
-		return
 	}
-	resp.Body.Close()
 	// Poll-Throttle uebersteuern: ohne Reset bliebe der angezeigte Status
 	// nach Start/Stop bis zu 30s alt (nextWorkspacePoll liegt in der Zukunft).
+	wsAbrufMu.Lock()
 	nextWorkspacePoll = time.Time{}
+	wsAbrufMu.Unlock()
 	triggerRefresh()
 }
 
-func getWorkspaceSignature(ws []Workspace, available bool) string {
-	if !available {
-		return "offline"
+func getWorkspaceSignature(ws []Workspace, zustand string) string {
+	if zustand != wsZustandOK {
+		return "zustand:" + zustand
 	}
-	parts := make([]string, 0, len(ws))
+	parts := make([]string, 0, len(ws)+1)
+	parts = append(parts, "ok")
 	for _, w := range ws {
 		pin := "u"
 		if w.Pinned {
@@ -591,13 +639,19 @@ func getWorkspaceSignature(ws []Workspace, available bool) string {
 	return strings.Join(parts, "|")
 }
 
+// getProjectSignature: Name UND Aktiv-Zustand (P8-T21). Wechselt ein Projekt
+// zwischen aktiv und inaktiv, wandert es zwischen Hauptmenue und dem Untermenue
+// "Inaktive Projekte" — das braucht einen Rebuild.
 func getProjectSignature(projs []Project) string {
-	var names []string
+	parts := make([]string, 0, len(projs))
 	for _, p := range projs {
-		names = append(names, p.Name)
+		zustand := "0"
+		if p.Enabled {
+			zustand = "1"
+		}
+		parts = append(parts, p.Name+":"+zustand)
 	}
-	// Sign with sorting to keep signature stable
-	return strings.Join(names, "|")
+	return strings.Join(parts, "|")
 }
 
 // getChannelSignature holt fuer jedes Projekt die Channel-Liste und baut daraus
@@ -642,252 +696,348 @@ func getChannelSignature(projs []Project, p int) string {
 	return strings.Join(parts, "|")
 }
 
+// rebuildMenu baut das Menue komplett neu auf. Reihenfolge und Gruppierung
+// kommen aus hauptmenueLayout (tray_menue.go, P8-T21): globale Eintraege oben,
+// darunter die aktiven Projekte, die inaktiven im Untermenue.
 func rebuildMenu(projs []Project) {
 	systray.ResetMenu()
 	projectHandles = make(map[string]*ProjectMenuHandles)
+	// Zaehlt die LayoutUpdated-Signale dieses Aufbaus (fyne systray v1.12.1:
+	// ResetMenu, jeder Separator, jedes Update eines bestehenden Eintrags).
+	signale := 1
 
 	statusText := "Daemon: OFFLINE"
 	if connected {
 		statusText = fmt.Sprintf("Daemon: online  (%d)", port)
 	}
-	statusItem = systray.AddMenuItem(statusText, "")
-	systray.AddSeparator()
 
-	if !connected {
-		mStart := systray.AddMenuItem("Daemon starten", "")
-		go func() {
-			for range mStart.ClickedCh {
-				daemonStarten()
-			}
-		}()
-	} else if len(projs) == 0 {
-		systray.AddMenuItem("(keine Projekte)", "")
-	} else {
-		client := &http.Client{Timeout: 1 * time.Second}
-		for _, p := range projs {
-			name := p.Name
-			enabled := p.Enabled
-
-			label := "○  " + name
-			if enabled {
-				label = "●  " + name
-			}
-
-			sm := systray.AddMenuItem(label, "")
-			// Reguläres Item statt Checkbox: AddSubMenuItemCheckbox feuert ClickedCh
-			// auf KDE/SNI nicht zuverlässig, reguläre Items schon. State steht im Titel.
-			check := sm.AddSubMenuItem(toggleLabel(enabled), "")
-			// P13-T45: Asset-Sync je Projekt (config.json asset_sync.aktiv, Standard aus).
-			assetAktiv := assetSyncAktivFuer(p)
-			assetItem := sm.AddSubMenuItem(assetSyncSchalterLabel(assetAktiv), "Asset-Dateien dieses Projekts mit dem Share synchronisieren")
-			go func(pName string, item *systray.MenuItem) {
-				for range item.ClickedCh {
-					go assetSyncUmschalten(pName)
+	client := &http.Client{Timeout: 1 * time.Second}
+	layout := hauptmenueLayout(connected, projs)
+	for _, e := range layout {
+		switch e.Art {
+		case menueStatus:
+			statusItem = systray.AddMenuItem(statusText, "")
+		case menueTrenner:
+			systray.AddSeparator()
+			signale++
+		case menueDaemonStarten:
+			mStart := systray.AddMenuItem("Daemon starten", "")
+			go func() {
+				for range mStart.ClickedCh {
+					daemonStarten()
 				}
-			}(name, assetItem)
-			sm.AddSeparator()
-
-			itOeffnen := sm.AddSubMenuItem("Öffnen...", "")
-			go func(projName string) {
-				for range itOeffnen.ClickedCh {
-					openDetail(projName)
-				}
-			}(name)
-
-			// Fetch channels
-			channelsUrl := channelsUrlFuer(port, name)
-			var channels []string
-			if chResp, err := client.Get(channelsUrl); err == nil {
-				var chData ChannelsResponse
-				if json.NewDecoder(chResp.Body).Decode(&chData) == nil {
-					for _, ch := range chData.Channels {
-						channels = append(channels, ch.Name)
-					}
-				}
-				chResp.Body.Close()
+			}()
+		case menueVerbinden:
+			// TRAY-3: Verbindung zur Synapse-API einrichten. Der Menuetext zeigt sofort,
+			// ob schon ein Token hinterlegt ist — der Nutzer muss nirgends nachsehen.
+			verbindungsLabel := "Mit Synapse verbinden …"
+			if apiToken() != "" {
+				verbindungsLabel = "Synapse-Verbindung …"
 			}
-
-			// CH-5: Umschalter direkt ueber den Channels — dort, wo man ihn braucht.
-			// Der Haken zeigt den AKTUELLEN Zustand; ein Klick kehrt ihn um und baut das
-			// Menue neu auf, damit die Wirkung sofort sichtbar ist.
-			archivLabel := "Archiv anzeigen"
-			if archivAnzeigen.Load() {
-				archivLabel = "✓ Archiv wird angezeigt"
-			}
-			mArchiv := sm.AddSubMenuItem(archivLabel, "Archivierte Channels und Nachrichten ein-/ausblenden (Inhalte bleiben erhalten)")
-			go func(item *systray.MenuItem) {
-				for range item.ClickedCh {
-					archivAnzeigen.Store(!archivAnzeigen.Load())
+			mVerbinden := systray.AddMenuItem(verbindungsLabel, "Zugang zur Synapse-API einrichten")
+			go func() {
+				for range mVerbinden.ClickedCh {
+					fyne.Do(zeigeVerbindungsFenster)
+				}
+			}()
+		case menueAssetSync:
+			// P13-T27/A9: serverseitige Projektbindung und Asset-Sync neben bestehender UI.
+			mAssets := systray.AddMenuItem("Projekte auf diesem PC / Asset-Sync …", "Bindung, Transfers und offene Konflikte")
+			go func() {
+				for range mAssets.ClickedCh {
+					fyne.Do(zeigeAssetSyncFenster)
+				}
+			}()
+		case menueReverse:
+			// P18-T17/RV7: globaler Reverse-Bibliotheksordner, Policy aus der API, Statusbaum.
+			mReverse := systray.AddMenuItem("Reverse-Bibliothek …", "Ordner für Originale, Einstellungen von Synapse und Status je Fundstelle")
+			go func() {
+				for range mReverse.ClickedCh {
+					fyne.Do(zeigeReverseBibliothekFenster)
+				}
+			}()
+		case menueGPU:
+			mGPU := systray.AddMenuItem("Lokale GPU / Ollama …", "GPU-Modell vergleichen, einrichten oder sperren")
+			go func() {
+				for range mGPU.ClickedCh {
+					fyne.Do(zeigeGPUFenster)
+				}
+			}()
+		case menueWorkspaces:
+			signale += baueWorkspacesMenue()
+		case menueNeuLaden:
+			mReload := systray.AddMenuItem("Neu laden", "")
+			go func() {
+				for range mReload.ClickedCh {
 					triggerRefresh()
 				}
-			}(mArchiv)
-
-			if len(channels) > 0 {
-				sm.AddSeparator()
-				for _, ch := range channels {
-					mChannel := sm.AddSubMenuItem("# "+ch, "")
-					go func(pName, cName string, item *systray.MenuItem) {
-						for range item.ClickedCh {
-							openChat(pName, cName)
-						}
-					}(name, ch, mChannel)
+			}()
+		case menueDeaktivieren:
+			mDisable := systray.AddMenuItem("Deaktivieren", "Daemon stoppen — Tray laeuft weiter")
+			go func() {
+				for range mDisable.ClickedCh {
+					daemonStoppen()
+					triggerRefresh()
 				}
+			}()
+		case menueBeenden:
+			mQuit := systray.AddMenuItem("Beenden", "Daemon stoppen + Tray beenden")
+			go func() {
+				for range mQuit.ClickedCh {
+					quitApp()
+				}
+			}()
+		case menueKeineProjekte:
+			systray.AddMenuItem("(keine Projekte)", "")
+		case menueProjekt:
+			sm := systray.AddMenuItem(projektLabel(e.Projekt), "")
+			signale += baueProjektUntermenue(sm, e.Projekt, client)
+		case menueWeitereAktive, menueInaktive:
+			gruppe := systray.AddMenuItem(gruppenLabel(e), "")
+			for _, p := range e.Gruppe {
+				sm := gruppe.AddSubMenuItem(projektLabel(p), "")
+				signale += baueProjektUntermenue(sm, p, client)
 			}
-
-			sm.AddSeparator()
-			itLoeschen := sm.AddSubMenuItem("Löschen...", "")
-			go func(projName string) {
-				for range itLoeschen.ClickedCh {
-					openDetailAuf(projName, "Aktionen") // Loeschen liegt im Tab Aktionen
-				}
-			}(name)
-
-			projectHandles[name] = &ProjectMenuHandles{
-				SubMenu:        sm,
-				CheckItem:      check,
-				Enabled:        enabled,
-				AssetItem:      assetItem,
-				AssetSyncAktiv: assetAktiv,
-			}
-
-			// Active toggle handler
-			go func(pName string, item *systray.MenuItem) {
-				for range item.ClickedCh {
-					toggleProject(pName, projectHandles[pName].Enabled)
-				}
-			}(name, check)
 		}
 	}
 
-	// Workspaces-Submenu (synapse-api) — WS-P6
-	systray.AddSeparator()
-	wsLabel := "Workspaces (offline)"
-	if workspacesAvailable {
-		running := 0
-		for _, w := range workspaces {
-			if w.Status == "active" || w.Status == "warming" {
-				running++
-			}
-		}
-		wsLabel = fmt.Sprintf("Workspaces  (%d/%d)", running, len(workspaces))
-	}
-	wsMenu := systray.AddMenuItem(wsLabel, synapseApiUrl)
-	if !workspacesAvailable {
-		wsMenu.Disable()
-	} else if len(workspaces) == 0 {
-		wsMenu.AddSubMenuItem("(keine Workspaces)", "")
-	} else {
-		for _, w := range workspaces {
-			wsCopy := w
-			label := "○  " + wsCopy.Project
-			switch wsCopy.Status {
-			case "active":
-				label = "●  " + wsCopy.Project
-			case "warming", "stopping":
-				label = "◐  " + wsCopy.Project
-			case "error":
-				label = "⚠  " + wsCopy.Project
-			}
-			if wsCopy.Pinned {
-				label += "  📌"
-			}
-			sub := wsMenu.AddSubMenuItem(label, fmt.Sprintf("status=%s container=%s", wsCopy.Status, wsCopy.ContainerId))
+	// P8-T21: abschliessendes LayoutUpdated. fyne.io/systray (v1.12.1,
+	// systray_menu_unix.go addOrUpdateMenuItem) sendet fuer NEU angelegte Eintraege
+	// kein LayoutUpdated, nur fuer ResetMenu, Separatoren und Updates bestehender
+	// Eintraege. Ohne dieses Update holt KDE das Layout zuletzt beim letzten
+	// Separator und zeigt alles danach Angelegte nie an. SetTitle auf einen
+	// bestehenden Eintrag loest genau ein refresh() mit voller Revision aus.
+	statusItem.SetTitle(statusText)
+	signale++
 
-			itStart := sub.AddSubMenuItem("Start", "")
-			go func(name string) {
-				for range itStart.ClickedCh {
-					go workspaceAction(name, "start", "{}")
-				}
-			}(wsCopy.Project)
-
-			itStop := sub.AddSubMenuItem("Stop", "")
-			go func(name string) {
-				for range itStop.ClickedCh {
-					go workspaceAction(name, "stop", "{}")
-				}
-			}(wsCopy.Project)
-
-			pinLabel := "Pin"
-			pinBody := `{"pinned":true}`
-			if wsCopy.Pinned {
-				pinLabel = "Unpin"
-				pinBody = `{"pinned":false}`
-			}
-			itPin := sub.AddSubMenuItem(pinLabel, "")
-			go func(name, body string) {
-				for range itPin.ClickedCh {
-					go workspaceAction(name, "pin", body)
-				}
-			}(wsCopy.Project, pinBody)
-		}
-	}
-
-	systray.AddSeparator()
-
-	// TRAY-3: Verbindung zur Synapse-API einrichten. Der Menuetext zeigt sofort,
-	// ob schon ein Token hinterlegt ist — der Nutzer muss nirgends nachsehen.
-	verbindungsLabel := "Mit Synapse verbinden …"
-	if apiToken() != "" {
-		verbindungsLabel = "Synapse-Verbindung …"
-	}
-	mVerbinden := systray.AddMenuItem(verbindungsLabel, "Zugang zur Synapse-API einrichten")
-	go func() {
-		for range mVerbinden.ClickedCh {
-			fyne.Do(zeigeVerbindungsFenster)
-		}
-	}()
-
-	// P13-T27/A9: serverseitige Projektbindung und Asset-Sync neben bestehender UI.
-	mAssets := systray.AddMenuItem("Projekte auf diesem PC / Asset-Sync …", "Bindung, Transfers und offene Konflikte")
-	go func() {
-		for range mAssets.ClickedCh {
-			fyne.Do(zeigeAssetSyncFenster)
-		}
-	}()
-
-	// P18-T17/RV7: globaler Reverse-Bibliotheksordner, Policy aus der API, Statusbaum.
-	mReverse := systray.AddMenuItem("Reverse-Bibliothek …", "Ordner für Originale, Einstellungen von Synapse und Status je Fundstelle")
-	go func() {
-		for range mReverse.ClickedCh {
-			fyne.Do(zeigeReverseBibliothekFenster)
-		}
-	}()
-
-	mGPU := systray.AddMenuItem("Lokale GPU / Ollama …", "GPU-Modell vergleichen, einrichten oder sperren")
-	go func() {
-		for range mGPU.ClickedCh {
-			fyne.Do(zeigeGPUFenster)
-		}
-	}()
-
-	mReload := systray.AddMenuItem("Neu laden", "")
-	go func() {
-		for range mReload.ClickedCh {
-			triggerRefresh()
-		}
-	}()
-	// "Deaktivieren" nur wenn der Daemon laeuft — offline zeigt das Menue
-	// oben bereits "Daemon starten" (rebuildMenu laeuft bei Statuswechsel neu).
-	if connected {
-		mDisable := systray.AddMenuItem("Deaktivieren", "Daemon stoppen — Tray laeuft weiter")
-		go func() {
-			for range mDisable.ClickedCh {
-				daemonStoppen()
-				triggerRefresh()
-			}
-		}()
-	}
-	mQuit := systray.AddMenuItem("Beenden", "Daemon stoppen + Tray beenden")
-	go func() {
-		for range mQuit.ClickedCh {
-			quitApp()
-		}
-	}()
+	log.Printf("[tray] Menue neu aufgebaut: %d Haupteintraege, %d Projekte (%d aktiv), %d LayoutUpdated",
+		len(layout), len(projs), len(aktiveProjekte(projs)), signale)
 
 	lastProjectSignature = getProjectSignature(projs)
-	lastWorkspaceSignature = getWorkspaceSignature(workspaces, workspacesAvailable)
+	lastWorkspaceSignature = getWorkspaceSignature(workspaces, workspacesZustand)
 	lastChannelSignature = currentChannelSig
 	wasOnline = connected
+}
+
+// Workspaces-Untermenue: Handle und Untereintraege (nur unter menuMutex), damit
+// eine Workspace-Aenderung ohne kompletten Rebuild nachgezogen werden kann.
+var (
+	wsMenuItem       *systray.MenuItem
+	wsUnterEintraege []*systray.MenuItem
+	wsUnterAnzahl    int // alle Eintraege unter wsMenuItem (inkl. Start/Stop/Pin)
+)
+
+// baueWorkspacesMenue legt das Workspaces-Untermenue (WS-P6) an. Rueckgabe:
+// Zahl der dabei ausgeloesten LayoutUpdated.
+func baueWorkspacesMenue() int {
+	wsMenuItem = systray.AddMenuItem(workspacesLabel(workspaces, workspacesZustand), synapseApiUrl)
+	fuelleWorkspacesMenue(wsMenuItem)
+	if workspacesZustand != wsZustandOK {
+		wsMenuItem.Disable() // Update eines bestehenden Eintrags -> ein LayoutUpdated
+		return 1
+	}
+	return 0
+}
+
+// aktualisiereWorkspacesMenue zieht eine Workspace-Aenderung nach, OHNE das
+// ganze Menue neu aufzubauen (P8-T21). systray.ResetMenu entfernt jeden alten
+// Eintrag einzeln und sendet dabei je Eintrag ein LayoutUpdated (gemessen: ~540
+// Signale bei 87 Projekten). Hier werden nur die Workspace-Untereintraege
+// ersetzt. Rueckgabe: Zahl der ausgeloesten LayoutUpdated.
+func aktualisiereWorkspacesMenue() int {
+	if wsMenuItem == nil {
+		return 0
+	}
+	signale := wsUnterAnzahl // jedes Remove eines Eintrags im Layout sendet eins
+	for _, e := range wsUnterEintraege {
+		e.Remove()
+	}
+	if workspacesZustand == wsZustandOK {
+		wsMenuItem.Enable()
+	} else {
+		wsMenuItem.Disable()
+	}
+	signale++
+	fuelleWorkspacesMenue(wsMenuItem)
+	// Neu angelegte Untereintraege senden selbst kein LayoutUpdated (siehe
+	// rebuildMenu); das SetTitle auf den bestehenden Eintrag zum Schluss liefert
+	// das abschliessende Signal mit vollstaendigem Layout.
+	wsMenuItem.SetTitle(workspacesLabel(workspaces, workspacesZustand))
+	signale++
+	return signale
+}
+
+// fuelleWorkspacesMenue legt die Untereintraege des Workspaces-Menues an.
+func fuelleWorkspacesMenue(wsMenu *systray.MenuItem) {
+	wsUnterEintraege = nil
+	wsUnterAnzahl = 0
+	if workspacesZustand != wsZustandOK {
+		return
+	}
+	if len(workspaces) == 0 {
+		wsUnterEintraege = append(wsUnterEintraege, wsMenu.AddSubMenuItem("(keine Workspaces)", ""))
+		wsUnterAnzahl = 1
+		return
+	}
+	for _, w := range workspaces {
+		wsCopy := w
+		label := "○  " + wsCopy.Project
+		switch wsCopy.Status {
+		case "active":
+			label = "●  " + wsCopy.Project
+		case "warming", "stopping":
+			label = "◐  " + wsCopy.Project
+		case "error":
+			label = "⚠  " + wsCopy.Project
+		}
+		if wsCopy.Pinned {
+			label += "  📌"
+		}
+		sub := wsMenu.AddSubMenuItem(label, fmt.Sprintf("status=%s container=%s", wsCopy.Status, wsCopy.ContainerId))
+		wsUnterEintraege = append(wsUnterEintraege, sub)
+		wsUnterAnzahl += 4
+
+		itStart := sub.AddSubMenuItem("Start", "")
+		go func(name string) {
+			for range itStart.ClickedCh {
+				go workspaceAction(name, "start", "{}")
+			}
+		}(wsCopy.Project)
+
+		itStop := sub.AddSubMenuItem("Stop", "")
+		go func(name string) {
+			for range itStop.ClickedCh {
+				go workspaceAction(name, "stop", "{}")
+			}
+		}(wsCopy.Project)
+
+		pinLabel := "Pin"
+		pinBody := `{"pinned":true}`
+		if wsCopy.Pinned {
+			pinLabel = "Unpin"
+			pinBody = `{"pinned":false}`
+		}
+		itPin := sub.AddSubMenuItem(pinLabel, "")
+		go func(name, body string) {
+			for range itPin.ClickedCh {
+				go workspaceAction(name, "pin", body)
+			}
+		}(wsCopy.Project, pinBody)
+	}
+}
+
+// baueProjektUntermenue fuellt das Untermenue eines Projekts und registriert die
+// Handles. Aktive Projekte bekommen das bisherige Untermenue (Aktiv-Schalter,
+// Asset-Sync, Oeffnen, Archiv, Channels, Loeschen). Inaktive bekommen nur den
+// Aktiv-Schalter und "Oeffnen..." (P8-T21): keine Channels, kein Asset-Sync (der
+// Daemon beobachtet inaktive Projekte nicht), kein Loeschen (liegt im Fenster unter
+// Aktionen), keine Trenner. Jeder Eintrag kostet beim naechsten ResetMenu ein
+// LayoutUpdated, jeder Trenner sofort eins; dazu spart es je Projekt einen
+// HTTP-Abruf. Rueckgabe: Zahl der ausgeloesten LayoutUpdated.
+func baueProjektUntermenue(sm *systray.MenuItem, p Project, client *http.Client) int {
+	name := p.Name
+	enabled := p.Enabled
+	signale := 0
+
+	// Reguläres Item statt Checkbox: AddSubMenuItemCheckbox feuert ClickedCh
+	// auf KDE/SNI nicht zuverlässig, reguläre Items schon. State steht im Titel.
+	check := sm.AddSubMenuItem(toggleLabel(enabled), "")
+	var assetItem *systray.MenuItem
+	assetAktiv := false
+	if enabled {
+		// P13-T45: Asset-Sync je Projekt (config.json asset_sync.aktiv, Standard aus).
+		assetAktiv = assetSyncAktivFuer(p)
+		assetItem = sm.AddSubMenuItem(assetSyncSchalterLabel(assetAktiv), "Asset-Dateien dieses Projekts mit dem Share synchronisieren")
+		go func(pName string, item *systray.MenuItem) {
+			for range item.ClickedCh {
+				go assetSyncUmschalten(pName)
+			}
+		}(name, assetItem)
+		sm.AddSeparator()
+		signale++
+	}
+
+	itOeffnen := sm.AddSubMenuItem("Öffnen...", "")
+	go func(projName string) {
+		for range itOeffnen.ClickedCh {
+			openDetail(projName)
+		}
+	}(name)
+
+	if enabled {
+		// Fetch channels
+		channelsUrl := channelsUrlFuer(port, name)
+		var channels []string
+		if chResp, err := client.Get(channelsUrl); err == nil {
+			var chData ChannelsResponse
+			if json.NewDecoder(chResp.Body).Decode(&chData) == nil {
+				for _, ch := range chData.Channels {
+					channels = append(channels, ch.Name)
+				}
+			}
+			chResp.Body.Close()
+		}
+
+		// CH-5: Umschalter direkt ueber den Channels — dort, wo man ihn braucht.
+		// Der Haken zeigt den AKTUELLEN Zustand; ein Klick kehrt ihn um und baut das
+		// Menue neu auf, damit die Wirkung sofort sichtbar ist.
+		archivLabel := "Archiv anzeigen"
+		if archivAnzeigen.Load() {
+			archivLabel = "✓ Archiv wird angezeigt"
+		}
+		mArchiv := sm.AddSubMenuItem(archivLabel, "Archivierte Channels und Nachrichten ein-/ausblenden (Inhalte bleiben erhalten)")
+		go func(item *systray.MenuItem) {
+			for range item.ClickedCh {
+				archivAnzeigen.Store(!archivAnzeigen.Load())
+				triggerRefresh()
+			}
+		}(mArchiv)
+
+		if len(channels) > 0 {
+			sm.AddSeparator()
+			signale++
+			for _, ch := range channels {
+				mChannel := sm.AddSubMenuItem("# "+ch, "")
+				go func(pName, cName string, item *systray.MenuItem) {
+					for range item.ClickedCh {
+						openChat(pName, cName)
+					}
+				}(name, ch, mChannel)
+			}
+		}
+
+		sm.AddSeparator()
+		signale++
+		itLoeschen := sm.AddSubMenuItem("Löschen...", "")
+		go func(projName string) {
+			for range itLoeschen.ClickedCh {
+				openDetailAuf(projName, "Aktionen") // Loeschen liegt im Tab Aktionen
+			}
+		}(name)
+	}
+
+	projectHandles[name] = &ProjectMenuHandles{
+		SubMenu:        sm,
+		CheckItem:      check,
+		Enabled:        enabled,
+		AssetItem:      assetItem, // nil bei inaktiven Projekten (Fall 3 und Klick pruefen das)
+		AssetSyncAktiv: assetAktiv,
+	}
+
+	// Active toggle handler. Nach einem Rebuild kann das Handle fehlen (Projekt
+	// entfernt) — dann den Daemon-Status entscheiden lassen statt nil zu lesen.
+	go func(pName string, item *systray.MenuItem) {
+		for range item.ClickedCh {
+			menuMutex.Lock()
+			aktiv := false
+			if h := projectHandles[pName]; h != nil {
+				aktiv = h.Enabled
+			}
+			menuMutex.Unlock()
+			toggleProject(pName, aktiv)
+		}
+	}(name, check)
+	return signale
 }
 
 func refresh() {
@@ -923,35 +1073,43 @@ func refresh() {
 
 	systray.SetIcon(makeIcon(connected))
 
-	// Workspaces gedrosselt pollen (synapse-api): alle 30s reicht fuers
-	// Tray-Menue — refresh() laeuft im 1s/10s-Takt und wuerde sonst die
-	// API-Logs fluten. Bei Fehler/nicht verfuegbar: 5min Backoff.
+	// Workspaces gedrosselt und im Hintergrund pollen (synapse-api, P8-T21):
+	// refresh() laeuft im 1s/10s-Takt; der Abruf selbst setzt den naechsten
+	// Termin je Ergebnis (ok 30 s, nicht verbunden 1 min, offline 5 min) und
+	// stoesst danach ein refresh() an. Hier wird nur der letzte Stand gelesen.
+	wsAbrufMu.Lock()
 	if time.Now().After(nextWorkspacePoll) {
-		ws, wsOK := fetchWorkspaces()
-		workspaces = ws
-		workspacesAvailable = wsOK
-		if wsOK {
-			nextWorkspacePoll = time.Now().Add(30 * time.Second)
-		} else {
-			nextWorkspacePoll = time.Now().Add(5 * time.Minute)
-		}
+		nextWorkspacePoll = time.Now().Add(30 * time.Second) // vorlaeufig bis der Abruf fertig ist
+		starteWorkspaceAbruf()
 	}
-	wsSig := getWorkspaceSignature(workspaces, workspacesAvailable)
+	workspaces = wsAbrufListe
+	workspacesZustand = wsAbrufZustand
+	wsAbrufMu.Unlock()
+	wsSig := getWorkspaceSignature(workspaces, workspacesZustand)
 
 	// Channels gedrosselt pollen (alle 5s) — damit neu angelegte Channels einen
 	// Rebuild ausloesen, ohne dass refresh() (1s-Takt) die API mit N Calls/s flutet.
+	// P8-T21: nur aktive Projekte, denn nur sie zeigen Channels im Menue.
 	if connected && time.Now().After(nextChannelPoll) {
-		currentChannelSig = getChannelSignature(projs, port)
+		currentChannelSig = getChannelSignature(aktiveProjekte(projs), port)
 		nextChannelPoll = time.Now().Add(5 * time.Second)
 	}
 
 	sig := getProjectSignature(projs)
 
-	// Fall 1: Online-Status ODER Projekt-Set ODER Workspaces ODER Channel-Set
-	//         geaendert -> Full rebuild
-	if connected != wasOnline || sig != lastProjectSignature || wsSig != lastWorkspaceSignature || currentChannelSig != lastChannelSignature {
+	// Fall 1: Online-Status ODER Projekt-Set (inkl. Aktiv-Zustand) ODER
+	//         Channel-Set geaendert -> Full rebuild (zieht Workspaces mit)
+	if connected != wasOnline || sig != lastProjectSignature || currentChannelSig != lastChannelSignature {
 		rebuildMenu(projs)
 		return
+	}
+
+	// Fall 1b (P8-T21): nur Workspaces geaendert -> nur dieses Untermenue
+	// ersetzen. Ein Rebuild wuerde jeden der ~500 Eintraege einzeln entfernen.
+	if wsSig != lastWorkspaceSignature {
+		n := aktualisiereWorkspacesMenue()
+		lastWorkspaceSignature = wsSig
+		log.Printf("[tray] Workspaces-Menue aktualisiert (%s): %d LayoutUpdated", workspacesZustand, n)
 	}
 
 	// Fall 2: Offline remained -> Nothing to do
@@ -959,24 +1117,13 @@ func refresh() {
 		return
 	}
 
-	// Fall 3: Incremental updates for active state
+	// Fall 3: Inkrementell nur noch der Asset-Sync-Schalter. Ein Wechsel
+	// aktiv/inaktiv aendert die Projekt-Signatur und baut oben neu auf (Fall 1).
 	for _, p := range projs {
-		name := p.Name
-		newEnabled := p.Enabled
-		if handle, ok := projectHandles[name]; ok {
+		if handle, ok := projectHandles[p.Name]; ok {
 			if a := assetSyncAktivFuer(p); handle.AssetItem != nil && handle.AssetSyncAktiv != a {
 				handle.AssetSyncAktiv = a
 				handle.AssetItem.SetTitle(assetSyncSchalterLabel(a))
-			}
-			if handle.Enabled != newEnabled {
-				handle.Enabled = newEnabled
-				if newEnabled {
-					handle.CheckItem.SetTitle(toggleLabel(true))
-					handle.SubMenu.SetTitle("●  " + name)
-				} else {
-					handle.CheckItem.SetTitle(toggleLabel(false))
-					handle.SubMenu.SetTitle("○  " + name)
-				}
 			}
 		}
 	}

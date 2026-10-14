@@ -221,7 +221,9 @@ func apiRequestBodyWithToken(method, path string, body interface{}, token string
 		}
 		if resp.StatusCode >= 400 {
 			// Echte Ablehnung: nicht weiterprobieren, Ursache benennen.
-			return b, fmt.Errorf("HTTP %d von %s: %s", resp.StatusCode, b, strings.TrimSpace(string(body)))
+			// P8-T21: typisierter Fehler (gleicher Text "HTTP %d von %s: %s"), damit
+			// Aufrufer 401/403 per errors.As von Netzfehlern unterscheiden koennen.
+			return b, &apiBinaryHTTPError{Status: resp.StatusCode, Base: b, Detail: strings.TrimSpace(string(body))}
 		}
 		if readErr != nil {
 			versuche = append(versuche, b+": Antwort nicht lesbar")
