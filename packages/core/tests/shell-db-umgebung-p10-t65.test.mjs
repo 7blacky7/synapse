@@ -76,10 +76,10 @@ test('WorkspaceOrchestrator.exec entfernt tatsächlich Docker-Config.Env vor dem
   putArchive:async stream=>{for await(const chunk of stream){void chunk;}},
   inspect:async()=>({Config:{Env:Object.entries(inherited).map(([k,v])=>k+'='+v)}}),
   exec:async o=>{
-   if(o.User==='0')return{start:async()=>Readable.from([]),inspect:async()=>({ExitCode:0})};
+   if(o.User==='0')return{start:async()=>Readable.from([]),inspect:async()=>({Running:false,ExitCode:0})};
    nutzerStart++;
    const child=spawnSync(o.Cmd[0],o.Cmd.slice(1),{env:inherited,encoding:'utf8'});
-   return {start:async()=>Readable.from([Buffer.from(child.stdout)]),inspect:async()=>({ExitCode:child.status})};
+   return {start:async()=>Readable.from([Buffer.from(child.stdout)]),inspect:async()=>({Running:false,ExitCode:child.status})};
   }
  };
  const w=new WorkspaceOrchestrator();

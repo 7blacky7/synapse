@@ -63,7 +63,7 @@ test('Reguläre Helfer-Freigabe gibt Servermetadaten an echten Kindprozess weite
   putArchive:async stream=>{for await(const chunk of stream){void chunk;}},
    inspect:async()=>({Config:{Env:['DATABASE_URL='+live,'PGPASSWORD=synthetic']}}),
    exec:async o=>{
-    if(o.User==='0')return{start:async()=>Readable.from([]),inspect:async()=>({ExitCode:0})};
+    if(o.User==='0')return{start:async()=>Readable.from([]),inspect:async()=>({Running:false,ExitCode:0})};
     starts++;
     assert.ok(o.Cmd.some(x=>x.startsWith('SYNAPSE_SHELL_DB_FREIGABE=')),'Private Metadaten fehlen');
     // Echter Docker-Startvektor, statt SQL nur DB-freie Beobachtung des Kind-Env.
@@ -74,7 +74,7 @@ test('Reguläre Helfer-Freigabe gibt Servermetadaten an echten Kindprozess weite
     else cmd.push(replacement);
     const child=spawnSync(cmd[0],cmd.slice(1),{env:{PATH:process.env.PATH,DATABASE_URL:live,PGPASSWORD:'synthetic'},encoding:'utf8'});
     assert.equal(child.status,0,child.stderr);
-    return {start:async()=>Readable.from([Buffer.from(child.stdout)]),inspect:async()=>({ExitCode:child.status})};
+    return {start:async()=>Readable.from([Buffer.from(child.stdout)]),inspect:async()=>({Running:false,ExitCode:child.status})};
    }
   };
   const w=new WorkspaceOrchestrator();

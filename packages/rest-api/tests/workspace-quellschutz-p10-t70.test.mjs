@@ -9,7 +9,7 @@ import {WorkspaceOrchestrator} from '../dist/services/workspace-orchestrator.js'
 import {mitLesePool} from '../../core/dist/db/client.js';
 import {oeffneGeschuetzteShellTestDb} from '../../../scripts/lib/test-db-schutz.mjs';
 const docker=new Docker({socketPath:'/var/run/docker.sock'});
-const fixture="import{rename,unlink,writeFile}from'node:fs/promises';const a=process.argv[2];if(a==='rename')await rename('/workspace/control.txt','/workspace/renamed.txt');if(['rm','replace','error','timeout'].includes(a))await unlink('/workspace/control.txt');if(a==='replace')await writeFile('/workspace/control.txt','changed');if(a==='error')throw Error('expected test failure');if(a==='timeout'){await new Promise(r=>setTimeout(r,5000));await writeFile('/workspace/control.txt','late');}";
+const fixture="import{rename,unlink,writeFile}from'node:fs/promises';const a=process.argv[2];if(a==='rename')await rename('/workspace/control.txt','/workspace/renamed.txt');if(['rm','replace','error','timeout'].includes(a))await unlink('/workspace/control.txt');if(a==='replace')await writeFile('/workspace/control.txt','changed');if(a==='error')throw Error('expected test failure');if(a==='transport'){await unlink('/workspace/control.txt');console.log('T70_TRANSPORT_SOURCE_REMOVED');await new Promise(r=>setTimeout(r,1500));await writeFile('/workspace/control.txt','late');}if(a==='timeout'){await new Promise(r=>setTimeout(r,5000));await writeFile('/workspace/control.txt','late');}";
 const file='packages/core/tests/recover.test.mjs';
 test('T70: native Testdatei-Execs restaurieren aktuelle PG-Quellen, Install bleibt möglich',async t=>{
  const client=await oeffneGeschuetzteShellTestDb();const schema='p10_t70_'+process.pid;
@@ -114,6 +114,56 @@ test('T70: native Testdatei-Execs restaurieren aktuelle PG-Quellen, Install blei
       const saved=c.putArchive;c.putArchive=async()=>{throw Error('t70_restore_failed');};
       try{await assert.rejects(()=>exec('rm'),/t70_restore_failed/);}finally{c.putArchive=saved;}
       assert.deepEqual(await w.stelleWorkspaceQuellenWiederHer(project,c),['control.txt']);
+     });
+
+     await t.test('Echter Transportabbruch: erst persistieren, nach Ende bei neuem Start nachholen',async()=>{
+      const before=(await run('cat /workspace/control.txt')).output;
+      const saved=c.exec;let captured,interrupted=false;
+      c.exec=async function(opts){
+       const ex=await saved.call(this,opts);
+       if(opts.Cmd[0]==='/usr/bin/env'&&opts.Cmd.at(-1).includes('transport')){
+        captured=ex;const start=ex.start.bind(ex);
+        ex.start=async function(...args){
+         const stream=await start(...args);let seen='';
+         stream.on('data',b=>{seen+=b.toString();if(!interrupted&&seen.includes('T70_TRANSPORT_SOURCE_REMOVED')){interrupted=true;setImmediate(()=>stream.destroy(Error('t70_transport_abort')));}});
+         return stream;
+        };
+       }
+       return ex;
+      };
+      try{
+       const r=await exec('transport',{timeoutMs:5000});
+       assert.equal(interrupted,true);assert.equal(r.status,'failed');assert.equal(r.quellen_pruefung_ausstehend,true);
+       assert.equal(r.quellen_wiederhergestellt,undefined);assert.equal((await captured.inspect()).Running,true);
+       assert.equal((await run('test ! -e /workspace/control.txt')).exit,0,'Keine Reparatur während des laufenden Prozesses');
+       const blocked=await exec('noop');assert.equal(blocked.status,'failed');assert.equal(blocked.quellen_pruefung_ausstehend,true);
+       const blockedStart=new WorkspaceOrchestrator();blockedStart.docker=w.docker;blockedStart.dockerAvailable=true;
+       await assert.rejects(()=>blockedStart.ensureProjectRunning(project),/quellen_pruefung_ausstehend/);
+       for(let i=0;i<60&&(await captured.inspect()).Running;i++)await new Promise(resolve=>setTimeout(resolve,50));
+       assert.equal((await captured.inspect()).Running,false,'Physischer Docker-Endebeleg vor späterer Wiederherstellung');
+       assert.equal((await run('cat /workspace/control.txt')).output,'late');
+       const restarted=new WorkspaceOrchestrator();restarted.docker=w.docker;restarted.dockerAvailable=true;
+       await q("INSERT INTO project_workspaces(project,name,container_id,status) VALUES($1,'main',$2,'active') ON CONFLICT(project,name) DO UPDATE SET container_id=$2,status='active'",[project,c.id]);
+       assert.equal(await restarted.ensureProjectRunning(project),c.id);
+       assert.equal((await run('cat /workspace/control.txt')).output,before);
+       const record=(await q('SELECT status,sicherung FROM shell_jobs WHERE id=$1',[r.id])).rows[0];
+       assert.equal(record.status,'failed');assert.equal(record.sicherung.quellen_pruefung_ausstehend,undefined);
+       assert.equal(record.sicherung.quellen_pruefung_nachgeholt,true);assert.deepEqual(record.sicherung.quellen_wiederhergestellt,['control.txt']);
+      }finally{c.exec=saved;}
+     });
+     await t.test('Großer Restore + frühes Upload-Reject gibt echte PG-Zeilensperren frei',async()=>{
+      const saved=c.putArchive;const large='x'.repeat(131072);
+      await q('UPDATE code_files SET content=$1 WHERE project=$2 AND file_path=$3',[large,project,'control.txt']);
+      c.putArchive=async()=>{throw Error('t70_early_large_upload_failure');};
+      try{await assert.rejects(()=>w.stelleWorkspaceQuellenWiederHer(project,c),/t70_early_large_upload_failure/);}
+      finally{c.putArchive=saved;}
+      const writer=await oeffneGeschuetzteShellTestDb();
+      try{
+       await writer.query('SET search_path TO '+schema+',public');await writer.query("SET lock_timeout TO '200ms'");
+       await writer.query('UPDATE code_files SET content=$1 WHERE project=$2 AND file_path=$3',['after failed upload',project,'control.txt']);
+      }finally{await writer.end();}
+      assert.deepEqual(await w.stelleWorkspaceQuellenWiederHer(project,c),['control.txt']);
+      assert.equal((await run('cat /workspace/control.txt')).output,'after failed upload');
      });
      console.log('T70_ERKENNEN_WIEDERHERSTELLEN_UND_FROZEN_INSTALL_OK '+(monorepo?'monorepo':'foreign'));
     }finally{await c.remove({force:true,v:true});}

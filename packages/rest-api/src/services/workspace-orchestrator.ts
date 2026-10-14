@@ -262,6 +262,8 @@ export class WorkspaceOrchestrator {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
     const pool = getPool();
+    // Offenes Prozessende vor jeder Container-Anlage abweisen; Restore folgt am verfügbaren Container.
+    await this.pruefeAusstehendeQuellen(project);
     const { ws: wsName, suffix } = this.wsKey(project, ws);
 
     // WS4: Cap pro Projekt konfigurierbar (ENV SYNAPSE_WS_PER_PROJECT_CAP,
@@ -305,7 +307,7 @@ export class WorkspaceOrchestrator {
     // Pruefen: laeuft Container wirklich?
     if (row.containerId && row.status === 'active') {
       const running = await this.isContainerRunning(row.containerId);
-      if (running) return row.containerId;
+      if (running) {await this.pruefeAusstehendeQuellen(project,this.docker.getContainer(row.containerId));return row.containerId;}
       // Stale: Container weg → status reset.
       await this.markStopped(project, 'container war stale (nicht mehr running)', wsName);
     }
@@ -341,6 +343,7 @@ export class WorkspaceOrchestrator {
       // WS4: Rollen-init_command — laeuft nach JEDEM Start (Dienste hochfahren,
       // z.B. initdb + pg_ctl). Template wird live gelesen (Edits wirken ab dem
       // naechsten Start). Fehler → last_error, Container bleibt nutzbar.
+      await this.pruefeAusstehendeQuellen(project,this.docker.getContainer(containerId));
       await this.runRoleInit(project, wsName, containerId).catch(() => {});
       return containerId;
     } catch (err) {
@@ -502,13 +505,19 @@ export class WorkspaceOrchestrator {
     project: string,
     command: string,
     opts: { timeoutMs?: number; workingDir?: string; exposePorts?: number[]; workspace?: string; role?: string; agent_id?:string|null; bestaetigt?:ShellBestaetigung|null; shell?:SicherungsShell; onLage?: (lage: ShellLage) => Promise<void> | void } = {}
-  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string;quellen_wiederhergestellt?:string[]}> {
+  ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; durationMs: number; internal_urls?: Record<number, string> } & Partial<ShellSicherungsAntwort> & {status?:string;id?:string;quellen_wiederhergestellt?:string[];quellen_pruefung_ausstehend?:boolean}> {
     if (!this.dockerAvailable) {
       throw new Error('Workspace-Orchestrator nicht verfuegbar (Docker-Socket nicht erreichbar)');
     }
     const { ws: wsName } = this.wsKey(project, opts.workspace ?? 'main');
-    const containerId = await this.ensureProjectRunning(project, wsName, opts.role);
+    let containerId:string;
+    try{containerId=await this.ensureProjectRunning(project, wsName, opts.role);}
+    catch(error){if((error as Error).message!=='quellen_pruefung_ausstehend')throw error;
+      return {stdout:'',stderr:'quellen_pruefung_ausstehend',exitCode:null,timedOut:false,durationMs:0,status:'failed',quellen_pruefung_ausstehend:true};}
     const container = this.docker.getContainer(containerId);
+    try{await this.pruefeAusstehendeQuellen(project,container);}
+    catch(error){if((error as Error).message!=='quellen_pruefung_ausstehend')throw error;
+      return {stdout:'',stderr:'quellen_pruefung_ausstehend',exitCode:null,timedOut:false,durationMs:0,status:'failed',quellen_pruefung_ausstehend:true};}
     await schuetzeWorkspaceWurzel(container);
     const workingDir = opts.workingDir ?? '/workspace';
     const names = [...command.matchAll(/\$(?:env:)?([A-Za-z_]\w*)|\$\{([A-Za-z_]\w*)/g)].map(m=>m[1]??m[2]);
@@ -545,8 +554,25 @@ export class WorkspaceOrchestrator {
     const testdatei=lage.kommandos?.some(k=>k.inline_skript?.workspace_testdatei===true)===true;
     const timeoutMarker='[workspace-timeout-'+randomUUID()+']';
     let wiederherstellungVersucht=false;
+    let gestarteterExec:Docker.Exec|undefined;
+    let endeBelegt=!testdatei;
+    const ausstehend=async(detail:string,stdout='',stderr='',timedOut=false)=>{
+      const offen={container_id:containerId,exec_id:gestarteterExec?.id};
+      if(!offen.exec_id)throw Error('workspace_exec_identitaet_fehlt');
+      if(!sicherungsJob){
+        const audit=await getPool().query<{id:string}>(
+          "INSERT INTO shell_jobs(project,command,status,agent_id,claimed_by,sicherung,error,message,completed_at) VALUES($1,$2,'failed',$3,'workspace',$4::jsonb,'quellen_pruefung_ausstehend',$5,NOW()) RETURNING id",
+          [project,command,opts.agent_id??null,JSON.stringify({ursprung:'workspace',quellen_pruefung_ausstehend:offen}),detail]);
+        sicherungsJob=audit.rows[0].id;
+      }else await getPool().query(
+        "UPDATE shell_jobs SET status='failed',error='quellen_pruefung_ausstehend',message=$4,completed_at=NOW(),sicherung=COALESCE(sicherung,'{}'::jsonb)||jsonb_build_object('quellen_pruefung_ausstehend',$2::jsonb) WHERE id=$1::uuid AND project=$3",
+        [sicherungsJob,JSON.stringify(offen),project,detail]);
+      return maskiereShellAntwort(project,{stdout,stderr,exitCode:null,timedOut,durationMs:Date.now()-t0,status:'failed',
+        error:'quellen_pruefung_ausstehend',quellen_pruefung_ausstehend:true,id:sicherungsJob});
+    };
     const wiederherstellen=async()=>{
       wiederherstellungVersucht=true;
+      if(testdatei&&!endeBelegt)throw Error('quellen_pruefung_ausstehend');
       return testdatei?this.stelleWorkspaceQuellenWiederHer(project,container):[];
     };
     try {
@@ -562,6 +588,7 @@ export class WorkspaceOrchestrator {
       Env: [], // Kindumgebung ausschließlich aus dem bereinigten env -i oben.
     });
 
+    gestarteterExec=exec;
     const stream = await exec.start({ hijack: true, stdin: false });
 
     const stdoutChunks: Buffer[] = [];
@@ -601,8 +628,10 @@ export class WorkspaceOrchestrator {
     try {
       const info = await exec.inspect();
       exitCode = info.ExitCode ?? null;
-    } catch { /* ignore */ }
+      endeBelegt=!testdatei||info.Running===false;
+    } catch { /* Ohne inspect-Beleg bleibt die Nachprüfung ausstehend. */ }
 
+    if(testdatei&&!endeBelegt)return ausstehend('Prozessende nicht verifiziert',stdout,stderr,timedOut);
     if(testdatei&&exitCode===124&&stderr.includes(timeoutMarker))timedOut=true;
     const quellen_wiederhergestellt=await wiederherstellen();
     if(quellen_wiederhergestellt.length&&!sicherungsJob){
@@ -631,12 +660,44 @@ export class WorkspaceOrchestrator {
       [sicherungsJob,JSON.stringify(quellen_wiederhergestellt),project]);
     return maskiereShellAntwort(project,result);
     }catch(error){
+      if(testdatei&&!endeBelegt){
+        if(!gestarteterExec)endeBelegt=true;
+        else {try{endeBelegt=(await gestarteterExec.inspect()).Running===false;}catch{/* Keine belegbare Beendigung; dauerhaft vormerken. */}}
+        if(!endeBelegt)return ausstehend(String(error));
+      }
       if(!wiederherstellungVersucht)await wiederherstellen();
       if(sicherungsJob)await beendeShellSicherungsJob(sicherungsJob,project,{status:'failed',error:'workspace_quellen_exec_fehlgeschlagen',message:String(error)});
       throw error;
     }
   }
 
+
+
+  /** Nach Neustart weiter nutzbar: offene Prüfungen stehen am ursprünglichen Job in PG. */
+  async pruefeAusstehendeQuellen(project:string,container?:Docker.Container):Promise<string[]>{
+    const r=await getPool().query<{id:string;sicherung:{quellen_pruefung_ausstehend?:{container_id?:string;exec_id?:string}}}>(
+      "SELECT id,sicherung FROM shell_jobs WHERE project=$1 AND sicherung ? 'quellen_pruefung_ausstehend'",[project]);
+    if(!r.rows.length)return [];
+    for(const row of r.rows){
+      const offen=row.sicherung?.quellen_pruefung_ausstehend;
+      if(!offen?.exec_id||!offen.container_id)throw Error('quellen_pruefung_ausstehend');
+      let beendet=false;
+      try{beendet=(await this.docker.getExec(offen.exec_id).inspect()).Running===false;}
+      catch(error){
+        if((error as {statusCode?:number}).statusCode===404){
+          try{beendet=(await this.docker.getContainer(offen.container_id).inspect()).State.Running===false;}
+          catch(containerError){beendet=(containerError as {statusCode?:number}).statusCode===404;}
+        }
+      }
+      if(!beendet)throw Error('quellen_pruefung_ausstehend');
+    }
+    if(!container)return [];
+    const repariert=await this.stelleWorkspaceQuellenWiederHer(project,container);
+    await getPool().query(
+      "UPDATE shell_jobs SET sicherung=(COALESCE(sicherung,'{}'::jsonb)-'quellen_pruefung_ausstehend')||$2::jsonb,error=NULL,message='quellen_pruefung_nachgeholt',updated_at=NOW() WHERE id=ANY($1::uuid[]) AND project=$3",
+      [r.rows.map(row=>row.id),JSON.stringify({quellen_pruefung_nachgeholt:true,quellen_wiederhergestellt:repariert}),project]);
+    return repariert;
+  }
 
   /** Nur nach nativer Testdatei-Ausnahme: aktuelle PG-Revision während Restore/Verify sperren. */
   async stelleWorkspaceQuellenWiederHer(project:string,container: Docker.Container):Promise<string[]>{

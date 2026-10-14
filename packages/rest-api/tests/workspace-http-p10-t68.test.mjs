@@ -17,7 +17,7 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
  const uri=new URL(process.env.DATABASE_URL??'');assert.equal(uri.pathname,'/synapse_test');assert.equal(uri.port,'5433');
  const client=await oeffneGeschuetzteShellTestDb(),saved={...process.env};let created=false,app;
  const sources=new Map([[file,writer],['packages/core/src/t68-product.mjs',writer],['scripts/test-t68.mjs',writer]]);
- let canonicalOutside=false,rootFailure=false,userExecutions=0,localWorkerCalls=0,simulateLocal=false;
+ let canonicalOutside=false,rootFailure=false,userExecutions=0,localWorkerCalls=0,simulateLocal=false,userRunning=false;
  const rootCommands=[];
  const q=client.query.bind(client);
  const probeFor=(root,input)=>({cwd:root,os:'linux',env:{HOME:'/home/fixture',PWD:root},pfade:(input.pfade??[]).map(p=>({pfad:p,kanonisch:p,existiert:true,links:[]})),prozesse:{pids:[],namen:[]},
@@ -58,12 +58,12 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
      if(opts.User==='0'){
       rootCommands.push(opts);
       if(rootFailure)throw Error('t68_root_protection_failed');
-      return{start:async()=>Readable.from([]),inspect:async()=>({ExitCode:0})};
+      return{start:async()=>Readable.from([]),inspect:async()=>({Running:false,ExitCode:0})};
      }
-     userExecutions++;return{start:async()=>Readable.from([Buffer.from('T68_EXECUTOR_STUB_OK')]),inspect:async()=>({ExitCode:0})};
+     userExecutions++;return{id:'t70-http-exec',start:async()=>Readable.from([Buffer.from('T68_EXECUTOR_STUB_OK')]),inspect:async()=>({Running:userRunning,ExitCode:userRunning?null:0})};
     }
    };
-   w.docker={getContainer:()=>container,modem:{demuxStream:(s,out,err)=>{s.pipe(out);err.end();}}};
+   w.docker={getContainer:()=>container,getExec:()=>({inspect:async()=>({Running:userRunning,ExitCode:userRunning?null:0})}),modem:{demuxStream:(s,out,err)=>{s.pipe(out);err.end();}}};
    app=await createServer();await app.ready();let id=0,session;
    const rpc=async(payload)=>{
     const headers={'content-type':'application/json',accept:'application/json, text/event-stream',...(session?{'mcp-session-id':session}:{})};
@@ -91,6 +91,18 @@ test('T68 In-Process-Kandidat: echte MCP-Shellroute bis Guard/Rootschutz und Exe
      w.stelleWorkspaceQuellenWiederHer=async()=>{throw Error('t70_restore_failed');};
      const failed=await call('node '+file);assert.equal(failed.success,false);assert.match(failed.message,/t70_restore_failed/);
     }finally{w.stelleWorkspaceQuellenWiederHer=saved;}
+   });
+   await t.test('Unklares Ende meldet failed+ausstehend, späterer Exec holt die Prüfung nach',async()=>{
+    const saved=w.stelleWorkspaceQuellenWiederHer;let restored=0;
+    try{
+     w.stelleWorkspaceQuellenWiederHer=async()=>{restored++;return[];};userRunning=true;
+     const r=await call('node '+file);assert.equal(r.success,false);assert.equal(r.status,'failed');
+     assert.equal(r.quellen_pruefung_ausstehend,true);assert.equal(r.quellen_wiederhergestellt,undefined);assert.equal(restored,0);
+     userRunning=false;const next=await call('node '+file);assert.equal(next.success,true);
+     assert.ok(restored>=1);
+     const original=(await q('SELECT sicherung FROM shell_jobs WHERE id=$1',[r.id])).rows[0];
+     assert.equal(original.sicherung.quellen_pruefung_ausstehend,undefined);assert.equal(original.sicherung.quellen_pruefung_nachgeholt,true);
+    }finally{userRunning=false;w.stelleWorkspaceQuellenWiederHer=saved;}
    });
    await t.test('scripts/test-* hat dieselbe native Ausnahme',async()=>assert.equal((await call('node scripts/test-t68.mjs')).success,true));
    await t.test('Produktdatei und unbekannter kanonischer Pfad bleiben Anleitung',async()=>{

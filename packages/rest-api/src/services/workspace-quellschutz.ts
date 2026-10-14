@@ -52,14 +52,25 @@ export async function pruefeWorkspaceQuellen(container:Pick<Docker.Container,'ex
  }
  return bad;
 }
-export async function schreibeWorkspaceQuellen(container:Pick<Docker.Container,'putArchive'>,quellen:WorkspaceQuelle[]):Promise<void>{
+export async function schreibeWorkspaceQuellen(container:Pick<Docker.Container,'putArchive'>,quellen:WorkspaceQuelle[],timeoutMs=10000):Promise<void>{
  if(!quellen.length)return;
- const pack=tar.pack();const put=container.putArchive(pack as unknown as NodeJS.ReadableStream,{path:'/workspace'});
- try{
+ const pack=tar.pack();let timer:NodeJS.Timeout|undefined;let abbrechen:(error:Error)=>void=()=>{};
+ const abbruch=new Promise<never>((_resolve,reject)=>{abbrechen=reject;timer=setTimeout(()=>reject(Error('workspace_quellen_archiv_timeout')),timeoutMs);});
+ // Ein zerstörter Pack kann seinen Fehler asynchron emittieren; immer beobachtet lassen.
+ pack.on('error',(error:Error)=>abbrechen(error));
+ const producer=Promise.resolve().then(async()=>{
   for(const q of quellen){const content=Buffer.from(q.content,'utf8');
-   await new Promise<void>((resolve,reject)=>pack.entry({name:q.file_path,size:content.length,mode:0o444,uid:0,gid:0},content,e=>e?reject(e):resolve()));}
-  pack.finalize();await put;
- }catch(e){pack.destroy();await put.catch(()=>{});throw e;}
+   await new Promise<void>((resolve,reject)=>{
+    const entry=pack.entry({name:q.file_path,size:content.length,mode:0o444,uid:0,gid:0},e=>e?reject(e):resolve());
+    entry.once('error',reject);entry.end(content);
+   });}
+  pack.finalize();
+ });
+ const consumer=Promise.resolve().then(()=>container.putArchive(pack as unknown as NodeJS.ReadableStream,{path:'/workspace'}));
+ // Beide Promises vor ihrem ersten Microtask beobachten; auch spätere Rejects bleiben behandelt.
+ try{await Promise.race([Promise.all([producer,consumer]),abbruch]);}
+ catch(error){pack.destroy(error instanceof Error?error:Error(String(error)));throw error;}
+ finally{if(timer)clearTimeout(timer);}
 }
 /** Fester Runner: beendet bei Fristablauf nur seine eigene Prozessgruppe, vor der Quellenprüfung. */
 export function workspaceExecProgramm():string{return `

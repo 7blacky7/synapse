@@ -22,3 +22,7 @@ Dateischreibende Tests laufen über den Container-Weg. Die direkte A12-Probe auf
 
 
 Die Nachprüfung läuft auch nach fehlgeschlagenen oder abgebrochenen Testläufen. Der feste Test-Runner beendet bei Timeout seine eigene Prozessgruppe vor der Wiederherstellung. Die API hält die aktuelle PG-Zeilenrevision während Restore und Nachprüfung per Lesesperre fest; parallel eingehende files-Änderungen werden dadurch nicht von einem älteren Snapshot überschrieben. Scheitert Restore oder Nachprüfung, liefert der Aufruf keinen Erfolg.
+
+Ein unterbrochener Ausgabestream ist kein Beleg für ein beendetes Docker-Exec. Ohne explizites inspect Running:false bleibt der Job failed und meldet quellen_pruefung_ausstehend:true; die API speichert Container-/Exec-Identität am Job. Vor dem nächsten Workspace-Exec oder -Start prüft sie diesen Vorgang erneut. Solange sein Ende unklar ist, startet keine weitere Arbeit. Nach belegtem Ende holt sie Restore und Verify nach und vermerkt quellen_pruefung_nachgeholt im ursprünglichen Job. Das funktioniert auch nach einem API-Neustart. Ein fehlender/gestoppter Ursprungscontainer kann als Ende-Beleg dienen, wenn das Exec bereits nicht mehr existiert.
+
+Der Restore beobachtet Tar-Producer, Entry-Sinks und Upload von Beginn an. Ein früher Uploadfehler oder ein Zeitlimit von 10 Sekunden bricht den Pack ab; die PG-Transaktion wird zurückgerollt und freigegeben. Ein fehlgeschlagener Transfer wird nicht als Wiederherstellung gemeldet.
