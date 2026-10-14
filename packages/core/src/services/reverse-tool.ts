@@ -11,10 +11,13 @@ import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { maskiereMitKatalog } from './masken-katalog.js';
 import { erfasseToolAktivitaet } from './tool-aktivitaet.js';
 import { REVERSE_CODE_ACTIONS, ReverseCodeFehler, fuehreReverseCodeAus } from './reverse-code-tool.js';
+import { REVERSE_ASSET_ACTIONS, ReverseAssetFehler, fuehreReverseAssetAus } from './reverse-asset-tool.js';
+import { fuehreReverseAnsichtAus } from './reverse-ansicht-ausgabe.js';
+import { ANSICHT_SCHEMA_PROPERTIES, setzeMcpBilder, trenneMcpBilder } from './asset-ansicht-ausgabe.js';
 import { zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
 import { diagnoseReverse, entstoereReverse, REVERSE_ENTSTOERBAR } from './reverse-entstoerer.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -33,7 +36,7 @@ const TEXTE: Record<ReverseFehlercode,string> = {
 };
 const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -53,6 +56,8 @@ export const REVERSE_DEFINITION = {
     semantic:{type:'boolean'},exported_only:{type:'boolean'},include_name_matches:{type:'boolean'},value_contains:{type:'string'},
     min_laenge:{type:'number'},match_limit:{type:'number'},match_skip:{type:'number'},depth:{type:'number'},recursive:{type:'boolean'},
     show_functions:{type:'boolean'},show_counts:{type:'boolean'},show_lines:{type:'boolean'},
+    format:{type:'string'},asset_type:{type:'string'},objects_offset:{type:'number'},objects_limit:{type:'number'},object_type:{type:'string'},references_limit:{type:'number'},
+    ...ANSICHT_SCHEMA_PROPERTIES,
   },required:['action','agent_id']},
   outputSchema:{type:'object',properties:{
     success:{type:'boolean'},reverse_id:{type:['string','null']},datei:{type:['string','null']},
@@ -77,6 +82,9 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   search:['reverse_id','file_path','query','file_type','semantic','match_limit','match_skip','limit','offset'],
   file:['reverse_id','file_path','from_line','to_line','truncate_long_lines','min_laenge','limit','offset'],
   calls:['reverse_id','file_path','callee','limit','offset'],
+  assets_tree:['reverse_id','path','depth','recursive','limit','format','asset_type'],
+  inspect:['reverse_id','datei','file_path','objects_offset','objects_limit','object_type','references_limit'],
+  ansicht:['reverse_id','datei','file_path','ansicht','offen_sekunden','einmalig'],
 };
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
 export const REVERSE_AKTIVITAET_DESCRIPTOR = Object.freeze({toolId:'reverse',tool:'reverse',aktivitaetsAktionen:REVERSE_ACTIONS.filter(a=>a!=='status')});
@@ -370,6 +378,23 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       ...(hooks().analysieren?{...done[0],fehlercode:done[0].fehlercode??null}:{fehlercode:'container_ruht',message:TEXTE.container_ruht})};
   }
   async function execute(a:Row,action:ReverseAction):Promise<Row> {
+    if(action==='ansicht'){
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id);
+      await entry(pool,rid);
+      if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
+      const path=fileArg(a);if(!path)fail('werkzeug_fehler','parameter_fehlt',{parameter:'file_path'});
+      const data=await fuehreReverseAnsichtAus({...a,file_path:path},pool);
+      await tx(db=>activity(db,a,data.fehlercode==null));
+      return data;
+    }
+    if((REVERSE_ASSET_ACTIONS as readonly string[]).includes(action)){
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id);
+      await entry(pool,rid);
+      if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
+      const data=await fuehreReverseAssetAus(a,pool);
+      await tx(db=>activity(db,a));
+      return data;
+    }
     if((REVERSE_CODE_ACTIONS as readonly string[]).includes(action)){
       const project=await projektRecht(pool,a),rid=id(a.reverse_id);
       await entry(pool,rid);
@@ -486,9 +511,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const action=a.action as ReverseAction;
       const unused=Object.keys(a).filter(k=>!['action','agent_id','project',...JE_ACTION[action]].includes(k)&&gesetzt(a[k]));
       const data=await execute(a,action);
-      return baueReverseAntwort(a,{...data,...(unused.length?{nicht_verwendet:unused}:{})});
+      return setzeMcpBilder(baueReverseAntwort(a,{...data,...(unused.length?{nicht_verwendet:unused}:{})},action==='ansicht'?data.fehlercode as ReverseFehlercode|undefined:undefined),trenneMcpBilder(data).bilder);
     }catch(e){
-      if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
+      if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler||e instanceof ReverseAssetFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
       const code=(e as {code?:string})?.code;
       return baueReverseAntwort(a,{},code==='23505'?'ziel_belegt':code==='57014'?'zeitlimit':'werkzeug_fehler');
     }

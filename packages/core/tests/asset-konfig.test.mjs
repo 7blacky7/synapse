@@ -24,7 +24,45 @@ test('P13-T22: feature-off defaults need no dataset mounts and preserve Inspecto
     maxDepth: 8,
     maxHashBytes: 256 * 1024 * 1024,
   });
-  assert.deepEqual(c.vorschau.formate, standardRegistry.formats());
+  // P18-T26: Vorschau-Katalog = Inspector-Formate PLUS Renderer-Formate (Blocker 238455c6); Transfer unveraendert.
+  for (const f of standardRegistry.formats()) assert.ok(c.vorschau.formate.includes(f), f);
+  assert.deepEqual(c.speicher.transferFormate, standardRegistry.formats());
+});
+
+test('P18-T26: Vorschau-Formate geben alle Formate mit echtem A14-Decoder frei (BMP), Transfer bleibt am Inspector-Katalog', async () => {
+  const { ANSICHT_RENDERER_FORMATE, FfmpegAnsichtRenderer } = await import(resolve(here, '../dist/services/asset-ansicht-renderer.js'));
+  const c = ladeAssetKonfiguration({});
+  assert.ok(Array.isArray(ANSICHT_RENDERER_FORMATE) && ANSICHT_RENDERER_FORMATE.includes('bmp'));
+  for (const f of ANSICHT_RENDERER_FORMATE) assert.ok(c.vorschau.formate.includes(f), 'Vorschau-Standard ohne ' + f);
+  assert.ok(!c.speicher.transferFormate.includes('bmp'), 'Transfer-Katalog darf nicht still erweitert werden');
+  // Explizite Betreiberliste mit bmp ist gueltig, unbekannte Formate bleiben Fehler.
+  assert.deepEqual(ladeAssetKonfiguration({ SYNAPSE_ASSET_PREVIEW_FORMATS: 'png,BMP' }).vorschau.formate, ['bmp', 'png']);
+  assert.throws(() => ladeAssetKonfiguration({ SYNAPSE_ASSET_PREVIEW_FORMATS: 'bmp,svg' }), /nicht registrierte Formate: svg/);
+  assert.throws(() => ladeAssetKonfiguration({ SYNAPSE_ASSET_TRANSFER_FORMATS: 'bmp' }), /nicht registrierte Formate: bmp/);
+
+  // Echter Decoder: 2x1-BMP (24 bit, BGR) -> PNG mit richtigen Abmessungen.
+  const { execFileSync } = await import('node:child_process');
+  try { execFileSync(c.vorschau.ffmpeg, ['-version'], { stdio: 'ignore' }); execFileSync(c.vorschau.prlimit, ['--version'], { stdio: 'ignore' }); }
+  catch { console.log('# ffmpeg/prlimit fehlen: Render-Teil uebersprungen'); return; }
+  const pixel = Buffer.from([0, 0, 255, 0, 255, 0, 0, 0]); // Zeile: rot, gruen + 2 Byte Padding
+  const kopf = Buffer.alloc(54);
+  kopf.write('BM', 0, 'ascii'); kopf.writeUInt32LE(54 + pixel.length, 2); kopf.writeUInt32LE(54, 10);
+  kopf.writeUInt32LE(40, 14); kopf.writeInt32LE(2, 18); kopf.writeInt32LE(1, 22); kopf.writeUInt16LE(1, 26);
+  kopf.writeUInt16LE(24, 28); kopf.writeUInt32LE(pixel.length, 34);
+  const dir = await mkdtemp(join(tmpdir(), 'p18-t26-bmp-'));
+  try {
+    const datei = join(dir, 'probe.bmp');
+    await writeFile(datei, Buffer.concat([kopf, pixel]));
+    const { open } = await import('node:fs/promises');
+    const fh = await open(datei, 'r');
+    try {
+      const v = c.vorschau;
+      const r = await new FfmpegAnsichtRenderer(c).render(fh.fd, 'bmp', { maxPixel: v.maxPixel, maxBytes: v.maxBytes, maxRamBytes: v.maxRamBytes,
+        timeoutMs: v.timeoutMs, maxKante: v.maxKante, maxFrames: v.maxFrames, maxDauerMs: v.maxDauerMs });
+      assert.equal(r.breite, 2); assert.equal(r.hoehe, 1);
+      assert.ok(r.png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
+    } finally { await fh.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('P13-T22: project overrides can tighten but never exceed operator ceilings', () => {

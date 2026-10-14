@@ -22,9 +22,14 @@
  */
 
 import * as path from 'path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { Pool } from 'pg';
+const reverseAssetLeser = new AsyncLocalStorage<Pool>();
+/** RV16: injizierter, request-scoped Reverse-Leser; Projektausgabe unverändert. */
+export function mitReverseAssetLeser<T>(pool: Pool, run: () => T): T { return reverseAssetLeser.run(pool, run); }
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
-import { assetBereichSql, pruefeAssetBereich, ASSET_BEREICH } from './intel-bereich.js';
+import { assetBereichSql, pruefeAssetBereich, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './intel-bereich.js';
 import type { AssetBereich } from './intel-bereich.js';
 export { ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './intel-bereich.js';
 export type { AssetBereich } from './intel-bereich.js';
@@ -82,7 +87,7 @@ function leseTimeoutMs(): number {
 
 async function mitLeser<T>(bereich: AssetBereich, fn: (q: Leser) => Promise<T>): Promise<T> {
   pruefeAssetBereich(bereich);
-  const client: PoolClient = await getPool().connect();
+  const client: PoolClient = await (bereich === REVERSE_ASSET_BEREICH ? reverseAssetLeser.getStore() ?? getPool() : getPool()).connect();
   const timeout = leseTimeoutMs();
   try {
     await client.query(

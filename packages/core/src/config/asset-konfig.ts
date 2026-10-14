@@ -9,6 +9,8 @@ import { standardRegistry } from '../asset-intel/registry.js';
 import { genericBinaryInspector } from '../asset-intel/generic-binary.js';
 import { alleInspektoren } from '../asset-intel/inspectors/index.js';
 import type { AssetLimits } from '../asset-intel/types.js';
+// Nur ein Wert-Import ohne Rueckimport: der Renderer kennt asset-konfig nur als Typ.
+import { ANSICHT_RENDERER_FORMATE } from '../services/asset-ansicht-renderer.js';
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
@@ -207,6 +209,11 @@ export function ladeAssetKonfiguration(env: NodeJS.ProcessEnv = process.env): As
   standardRegistry.register(genericBinaryInspector);
   for (const inspector of alleInspektoren) standardRegistry.register(inspector);
   const katalog = standardRegistry.formats();
+  // P18-T26 (Blocker 238455c6): Vorschau-Formate sind der Inspector-Katalog PLUS die Formate, fuer die der
+  // A14-Renderer einen echten Decoder hat (z. B. bmp, tga, mov, webm). Ohne das liess sich BMP weder per
+  // Standard noch per SYNAPSE_ASSET_PREVIEW_FORMATS freigeben, obwohl der Renderer es sicher dekodiert.
+  // Transfer-Formate bleiben unveraendert am Inspector-Katalog.
+  const vorschauKatalog = [...new Set([...katalog, ...ANSICHT_RENDERER_FORMATE])].sort();
   const maxDateiBytes = zahl(env, 'SYNAPSE_ASSET_MAX_FILE_BYTES', 2 * GIB, 1, Number.MAX_SAFE_INTEGER);
   const maxProjektBytes = zahl(env, 'SYNAPSE_ASSET_MAX_PROJECT_BYTES', 20 * GIB, maxDateiBytes, Number.MAX_SAFE_INTEGER);
   const maxProjektDateien = zahl(env, 'SYNAPSE_ASSET_MAX_PROJECT_FILES', 100_000, 1, Number.MAX_SAFE_INTEGER);
@@ -262,7 +269,7 @@ export function ladeAssetKonfiguration(env: NodeJS.ProcessEnv = process.env): As
     },
     inspektion: insp,
     vorschau: {
-      formate: formate(env, 'SYNAPSE_ASSET_PREVIEW_FORMATS', katalog),
+      formate: formate(env, 'SYNAPSE_ASSET_PREVIEW_FORMATS', vorschauKatalog),
       maxPixel: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_PIXELS', 16_777_216, 1, 268_435_456),
       maxBytes: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_BYTES', 8 * MIB, 1, 256 * MIB),
       maxAnzahl: zahl(env, 'SYNAPSE_ASSET_PREVIEW_MAX_COUNT', 5, 1, 100),

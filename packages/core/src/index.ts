@@ -16,6 +16,12 @@ export type {AssetAnsichtRenderer,AnsichtRenderGrenzen,AnsichtRaster} from './se
 export {AnsichtLinkDienst,AnsichtLinkFehler,standardAnsichtLinkDienst,gemeinsamerAnsichtDienst,ladeAnsichtLinkKonfiguration,ansichtClientIp,istOeffentlicherAnsichtPfad,ANSICHT_LINK_PFAD,ANSICHT_TOKEN_MUSTER} from './services/asset-ansicht-link.js';
 export type {AnsichtLinkKonfiguration,AnsichtLinkArt,AnsichtLinkQuellenDienst,AnsichtLinkEingang,AnsichtLinkErzeugung,AnsichtAbrufMeta,AnsichtAbruf,AnsichtLinkStatus,AnsichtLinkEintrag,AnsichtLinkOptionen} from './services/asset-ansicht-link.js';
 export {ASSET_ANSICHT_LINK_SCHEMA_SQL} from './db/asset-ansicht-link-schema.js';
+// P18-T26/RV16: Reverse-Retentionhalter (A14) und Bindungsprüfung beim Linkabruf (A15).
+export {ReverseAnsichtRetention,standardReverseAnsichtRetention,reverseAnsichtHalter,pruefeReverseAnsichtBindung,REVERSE_ANSICHT_WIDERRUF_GRUENDE} from './services/reverse-ansicht-retention.js';
+export type {ReverseAnsichtHalter,ReverseBindungsErgebnis} from './services/reverse-ansicht-retention.js';
+export {reverseAnsichtAdapter,holeReverseAnsichtDatei} from './services/reverse-ansicht-adapter.js';
+export {fuehreReverseAnsichtAus,setzeReverseAnsichtDienste} from './services/reverse-ansicht-ausgabe.js';
+export {REVERSE_ANSICHT_SCHEMA_SQL} from './db/reverse-ansicht-schema.js';
 export {maskiereAnsichtLinks,ANSICHT_LINK_TOKEN} from './services/masken-katalog.js';
 export {AssetKonfliktKern,holeAssetKonflikt} from './services/asset-konflikte.js';
 export {ASSET_KONFLIKT_SCHEMA_SQL} from './db/asset-konflikt-schema.js';

@@ -25,6 +25,8 @@ const DEMUXER:Readonly<Record<string,string>>=Object.freeze({
   mp4:'mov',mov:'mov',m4v:'mov',mkv:'matroska',webm:'matroska',
   avi:'avi',mpeg:'mpeg',mpg:'mpeg',ts:'mpegts',m2ts:'mpegts',flv:'flv',ogv:'ogg',
 });
+/** Formate mit echtem Decoder (DEMUXER-Schlüssel); A4 gibt sie im Vorschau-Katalog frei (asset-konfig.ts). */
+export const ANSICHT_RENDERER_FORMATE:readonly string[]=Object.freeze(Object.keys(DEMUXER));
 const zip=promisify(deflate);
 function crc32(data:Buffer):number{
   let c=0xffffffff;for(const b of data){c^=b;for(let i=0;i<8;i++)c=(c>>>1)^((c&1)?0xedb88320:0);}
