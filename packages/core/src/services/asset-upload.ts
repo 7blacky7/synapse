@@ -61,10 +61,12 @@ const canonical=(value:object)=>JSON.stringify(Object.fromEntries(Object.entries
 export class AssetUploadKern {
   private readonly db:AssetUploadDb;private readonly speicher:AssetSpeicher;private readonly cfg:AssetKonfiguration;
   private readonly finalisierer=new Map<string,AssetUploadFinalisierer>();
-  private readonly quelle:'pc'|'share';
+  private readonly quelle:'pc'|'share'|'reverse';
+  private readonly nachProjektPublikation?: (db:AssetUploadDb,s:AssetUploadSitzung,ergebnis:AssetUploadErgebnis)=>Promise<void>;
   /** quelle ist ausschließlich ein serverinterner Konstruktorparameter, kein HTTP-Eingang. */
-  constructor(o:{db?:AssetUploadDb;speicher?:AssetSpeicher;konfiguration?:AssetKonfiguration;quelle?:'pc'|'share'}={}){
+  constructor(o:{db?:AssetUploadDb;speicher?:AssetSpeicher;konfiguration?:AssetKonfiguration;quelle?:'pc'|'share'|'reverse';nachProjektPublikation?:(db:AssetUploadDb,s:AssetUploadSitzung,ergebnis:AssetUploadErgebnis)=>Promise<void>}={}){
     this.quelle=o.quelle??'pc';
+    this.nachProjektPublikation=o.nachProjektPublikation;
     this.db=o.db??getPool() as unknown as AssetUploadDb;
     this.cfg=o.konfiguration??getAssetKonfiguration();
     this.speicher=o.speicher??new AssetSpeicher({konfiguration:this.cfg});
@@ -349,7 +351,9 @@ export class AssetUploadKern {
           [row.id,op.storage_key,s.sha256,rev,s.groesse,s.auftrag.storage_kind,s.auftrag.mime_type??'application/octet-stream']);
         await db.query("INSERT INTO asset_revisionen(asset_id,revision,sha256,groesse,storage_key,quelle) VALUES($1,$2,$3,$4,$5,$6)",[row.id,rev,s.sha256,s.groesse,op.revision_storage_key??op.storage_key,this.quelle]);
         await db.query("INSERT INTO asset_aenderungen(project,asset_id,revision,art) VALUES($1,$2,$3,'publish')",[s.ziel_ref,row.id,rev]);
-        return {asset_id:String(row.id),revision:rev,storage_key:op.storage_key};
+        const ergebnis={asset_id:String(row.id),revision:rev,storage_key:op.storage_key};
+        await this.nachProjektPublikation?.(db,s,ergebnis);
+        return ergebnis;
       },
     };
   }

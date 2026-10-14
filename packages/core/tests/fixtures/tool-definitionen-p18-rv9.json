@@ -141,5 +141,60 @@
     "task": "P13-T34",
     "datum": "2026-10-14"
   }
+,
+{
+  "strecke": "rest",
+  "tool": "plan",
+  "alt": "fa5904c06081939c34a79c39bff4686caa7da2d3b0e5f98e72926c68df8ed0bd",
+  "neu": "0f8794f37377cb9927db97b3b04be922d789097f08c8cb46617336168ba7e258",
+  "grund": "P3-T15 Task-/Plansuche (search tasks/plans, plan search, aehnlich), bereits live in t99; Begründung nach Koordinatorauftrag nachgetragen.",
+  "task": "P3-T15",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "reverse",
+  "alt": "7c2ffdcb149389735b050056c7e7ab3509bbd4244911ad64aeee14d73bfb3ce9",
+  "neu": "c1349f4983c35154a977856c7be50567dfc5907d110820d9b93b13e7d47106a0",
+  "grund": "P18-T27 uebernehmen: neue Aktion und Parameter ziel_pfad/ueberschreiben für Assets über den P13-Revisionsweg.",
+  "task": "P18-T27",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "search",
+  "alt": "410fde342920dd9d559a424279628a55b41b03999dc2a80e4ebb08f5ed361f44",
+  "neu": "8ad041e2195073a8bcc1c74d5b9b4491f8576e059a6fed2af338d8ac73f45830",
+  "grund": "P3-T15 Task-/Plansuche (search tasks/plans, plan search, aehnlich), bereits live in t99; Begründung nach Koordinatorauftrag nachgetragen.",
+  "task": "P3-T15",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "plan",
+  "alt": "9b0e9a600fbfc59dd1e1fd7e4b513a67d1491cd135d8c45a44f27dec618fba9a",
+  "neu": "7763a87c6d12c283541ae18eff32473fc2028e70af06ef3835b781a93110abc1",
+  "grund": "P3-T15 Task-/Plansuche (search tasks/plans, plan search, aehnlich), bereits live in t99; Begründung nach Koordinatorauftrag nachgetragen.",
+  "task": "P3-T15",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "reverse",
+  "alt": "7c2ffdcb149389735b050056c7e7ab3509bbd4244911ad64aeee14d73bfb3ce9",
+  "neu": "c1349f4983c35154a977856c7be50567dfc5907d110820d9b93b13e7d47106a0",
+  "grund": "P18-T27 uebernehmen: neue Aktion und Parameter ziel_pfad/ueberschreiben für Assets über den P13-Revisionsweg.",
+  "task": "P18-T27",
+  "datum": "2026-10-14"
+},
+{
+  "strecke": "stdio",
+  "tool": "search",
+  "alt": "78b2ee1d533ae393aa923a52324bf8a4a552c7388ac58c9bd720e4fd2ce04dd4",
+  "neu": "aa4715414648a710f1cb80e93094193a084774085b6c20d879330a123035e7f9",
+  "grund": "P3-T15 Task-/Plansuche (search tasks/plans, plan search, aehnlich), bereits live in t99; Begründung nach Koordinatorauftrag nachgetragen.",
+  "task": "P3-T15",
+  "datum": "2026-10-14"
+}
 ]
 }

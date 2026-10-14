@@ -12,12 +12,13 @@ import { maskiereMitKatalog } from './masken-katalog.js';
 import { erfasseToolAktivitaet } from './tool-aktivitaet.js';
 import { REVERSE_CODE_ACTIONS, ReverseCodeFehler, fuehreReverseCodeAus } from './reverse-code-tool.js';
 import { REVERSE_ASSET_ACTIONS, ReverseAssetFehler, fuehreReverseAssetAus } from './reverse-asset-tool.js';
+import { uebernehmeReverseAsset, ReverseUebernahmeFehler } from './reverse-uebernehmen.js';
 import { fuehreReverseAnsichtAus } from './reverse-ansicht-ausgabe.js';
 import { ANSICHT_SCHEMA_PROPERTIES, setzeMcpBilder, trenneMcpBilder } from './asset-ansicht-ausgabe.js';
 import { zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
 import { diagnoseReverse, entstoereReverse, REVERSE_ENTSTOERBAR } from './reverse-entstoerer.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht'] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -57,6 +58,7 @@ export const REVERSE_DEFINITION = {
     min_laenge:{type:'number'},match_limit:{type:'number'},match_skip:{type:'number'},depth:{type:'number'},recursive:{type:'boolean'},
     show_functions:{type:'boolean'},show_counts:{type:'boolean'},show_lines:{type:'boolean'},
     format:{type:'string'},asset_type:{type:'string'},objects_offset:{type:'number'},objects_limit:{type:'number'},object_type:{type:'string'},references_limit:{type:'number'},
+    ziel_pfad:{type:'string',description:'Projektpfad 1:1; Übernahme ausschließlich von Assets'},ueberschreiben:{type:'boolean',default:false},
     ...ANSICHT_SCHEMA_PROPERTIES,
   },required:['action','agent_id']},
   outputSchema:{type:'object',properties:{
@@ -85,6 +87,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   assets_tree:['reverse_id','path','depth','recursive','limit','format','asset_type'],
   inspect:['reverse_id','datei','file_path','objects_offset','objects_limit','object_type','references_limit'],
   ansicht:['reverse_id','datei','file_path','ansicht','offen_sekunden','einmalig'],
+  uebernehmen:['reverse_id','file_path','ziel_pfad','ueberschreiben'],
 };
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
 export const REVERSE_AKTIVITAET_DESCRIPTOR = Object.freeze({toolId:'reverse',tool:'reverse',aktivitaetsAktionen:REVERSE_ACTIONS.filter(a=>a!=='status')});
@@ -378,6 +381,13 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       ...(hooks().analysieren?{...done[0],fehlercode:done[0].fehlercode??null}:{fehlercode:'container_ruht',message:TEXTE.container_ruht})};
   }
   async function execute(a:Row,action:ReverseAction):Promise<Row> {
+    if(action==='uebernehmen'){
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id);
+      await entry(pool,rid);
+      if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
+      const data=await uebernehmeReverseAsset(a,{db:pool});
+      await tx(db=>activity(db,a));return data;
+    }
     if(action==='ansicht'){
       const project=await projektRecht(pool,a),rid=id(a.reverse_id);
       await entry(pool,rid);
@@ -513,7 +523,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const data=await execute(a,action);
       return setzeMcpBilder(baueReverseAntwort(a,{...data,...(unused.length?{nicht_verwendet:unused}:{})},action==='ansicht'?data.fehlercode as ReverseFehlercode|undefined:undefined),trenneMcpBilder(data).bilder);
     }catch(e){
-      if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler||e instanceof ReverseAssetFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
+      if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler||e instanceof ReverseAssetFehler||e instanceof ReverseUebernahmeFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
       const code=(e as {code?:string})?.code;
       return baueReverseAntwort(a,{},code==='23505'?'ziel_belegt':code==='57014'?'zeitlimit':'werkzeug_fehler');
     }
