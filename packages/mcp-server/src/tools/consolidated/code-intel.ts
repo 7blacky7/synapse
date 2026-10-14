@@ -35,6 +35,7 @@ import {
   getParserGesundheitUebersicht,
   ergaenzeCodeIntelAntwort,
   mitCodeIntelSchatten,
+  ANSICHT_SCHEMA_PROPERTIES,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -240,6 +241,9 @@ export const codeIntelTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Nur Top-Level-Statements zurueckgeben (fuer statements).',
         },
+
+        // --- P13-T34/A16: ansicht nur bei file auf ein Asset; laeuft immer ueber die API (server.ts) ---
+        ...ANSICHT_SCHEMA_PROPERTIES,
       },
       required: ['action', 'project'],
     },

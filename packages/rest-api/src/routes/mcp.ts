@@ -222,6 +222,8 @@ import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core'
 // asset_intel (P4-T70): Schema und Dispatcher aus core — dieselben, die die stdio-Strecke einhaengt.
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
 import { mitCodeIntelSchatten } from '@synapse/core';
+// P13-T34/A16: Parameter ansicht + MCP-Bildbloecke (Base64 nie in Text, structuredContent oder Log).
+import { ANSICHT_SCHEMA_PROPERTIES, mitCodeIntelAnsicht, trenneMcpBilder, haengeMcpBilderAn, type McpBild } from '@synapse/core';
 import { REVERSE_DEFINITION, fuehreReverseAus } from '@synapse/core';
 // intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
@@ -1040,6 +1042,8 @@ export const MCP_TOOLS = [
         scope: { type: 'string', description: 'Scope-Name-Filter fuer statements/flow (z.B. Funktionsname). Ohne scope bei flow: Top-Level-Ausfuehrung der Datei.' },
         callee: { type: 'string', description: 'callee_name-Filter fuer calls-Action (aufgerufener Funktions-/Methodenname).' },
         top_level_only: { type: 'boolean', description: 'Nur Top-Level-Statements zurueckgeben (fuer statements).' },
+        // P13-T34/A16: nur action file auf ein Asset; Spiegel: mcp-server consolidated/code-intel.ts.
+        ...ANSICHT_SCHEMA_PROPERTIES,
       },
       required: ['action', 'project'],
     },
@@ -4547,7 +4551,8 @@ async function handleToolCallKern(
     // =================================================================
     // Etappe C (P4-T67/T70): die Asset-Weiche aus core haengt NACH der Bestandsantwort nur Zusatzfelder an;
     // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: mcp-server consolidated/code-intel.ts.
-    case 'code_intel': return mitCodeIntelSchatten(action!, args, async () => ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
+    // P13-T34/A16: mitCodeIntelAnsicht liefert ohne ansicht-Parameter unveraendert den Bestand.
+    case 'code_intel': return mitCodeIntelAnsicht(action, args, effectiveAgentId, () => mitCodeIntelSchatten(action!, args, async () => ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
       const project = reqStr(args, 'project');
       switch (action) {
         case 'tree': {
@@ -4693,7 +4698,7 @@ async function handleToolCallKern(
         default:
           return { success: false, error: `Unbekannte code_intel action: "${action}"` };
       }
-    })()));
+    })())));
 
     // =================================================================
     case 'files_batch':
@@ -6182,6 +6187,14 @@ async function fuehreToolsCallAus(
   let _logErr: string | null = null;
   let _logResult: string | null = null;
   let result: unknown;
+  // P13-T34/A16: Bildbloecke direkt nach dem Tool-Aufruf abtrennen; Hinweise bleiben im Textteil,
+  // die Bilder folgen nach baueToolErgebnis als eigene content-Bloecke (nie im Log/structuredContent).
+  let bilder: McpBild[] = [];
+  const ohneBilder = (wert: unknown): unknown => {
+    const t = trenneMcpBilder(wert);
+    bilder = t.bilder;
+    return t.daten;
+  };
   try {
     const toolResult = await attachShellJobHints(
       await attachRestPendingEventHints(
@@ -6190,7 +6203,7 @@ async function fuehreToolsCallAus(
             await attachSkillHinweisgeber(
               await attachRestOnboarding(
                 await attachDirectWriteReservationHint(
-                  await handleToolCall(toolName, toolArgs, effectiveAgentId),
+                  ohneBilder(await handleToolCall(toolName, toolArgs, effectiveAgentId)),
                   toolName,
                   toolArgs,
                 ),
@@ -6218,7 +6231,7 @@ async function fuehreToolsCallAus(
     );
     _logResult = JSON.stringify(toolResult);
     // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text (muss zum outputSchema passen).
-    result = baueToolErgebnis(toolResult, { tool: toolName, strukturiert: true });
+    result = haengeMcpBilderAn(baueToolErgebnis(toolResult, { tool: toolName, strukturiert: true }), bilder);
   } catch (toolErr) {
     // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
     // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.

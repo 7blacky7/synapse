@@ -304,6 +304,9 @@ export type {
 } from './services/asset-intel-abfragen.js';
 export { ASSET_INTEL_DEFINITION, ASSET_INTEL_ACTIONS, fuehreAssetIntelAus } from './services/asset-intel-tool.js';
 export type { AssetIntelAction } from './services/asset-intel-tool.js';
+// P13-T34/A16: Parameter ansicht (inline|link|beides) + MCP-Bildblock-Transport (REST + stdio).
+export { ANSICHT_MODI, ANSICHT_PARAMETER, ANSICHT_SCHEMA_PROPERTIES, setzeMcpBilder, trenneMcpBilder, haengeMcpBilderAn, hatAnsichtParameter, pruefeAnsichtParameter, setzeAnsichtAusgabeDienste, ergaenzeAnsicht, mitCodeIntelAnsicht } from './services/asset-ansicht-ausgabe.js';
+export type { AnsichtModus, McpBild, AnsichtParameterFehler, AnsichtAusgabeDienste, AnsichtKontext } from './services/asset-ansicht-ausgabe.js';
 // P20-T14/R2.1: generische PG-Job-Leases, default ohne Ausführungsfreigabe.
 export { createWorkJobService, configureWorkJobHooks, WorkJobError, validateWorkReference, validateWorkResources } from './services/work-jobs.js';
 export type { WorkJobService, WorkJob, WorkJobInput, WorkIdentity, WorkJobGrant, WorkJobConfig, WorkJobHooks, WorkJobDependencies, WorkResourceNeed, WorkPriority, WorkJobPool, WorkJobClient, WorkNodeAuthority } from './services/work-jobs.js';

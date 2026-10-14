@@ -1,0 +1,145 @@
+{
+  "zweck": "P10-T78 (User-Entscheidung 444127bc Punkt 1): eingefrorene Tool-Definitionen (sha256 von JSON.stringify je Definition) fuer reverse-tool-p18-rv9. Absichtliche Aenderungen werden NICHT durch Neu-Einfrieren, sondern als Eintrag unter aenderungen mit grund und task nachgewiesen.",
+  "anleitung": "Test rot wegen geaenderter/neuer/entfernter Definition? Wenn absichtlich: unter aenderungen einen Eintrag anhaengen {strecke:'rest'|'stdio', tool, alt:<bisher erwarteter Hash oder null bei neuem Tool>, neu:<Hash aus der Fehlermeldung oder null bei entferntem Tool>, grund:<mind. 15 Zeichen, was und warum>, task:'P<n>-T<m>', datum:'JJJJ-MM-TT'}. Die Fehlermeldung des Tests liefert den Eintrag fertig, nur grund und task ausfuellen. Eintraege nie loeschen oder umschreiben. Unbeabsichtigt: Definition zuruecknehmen.",
+  "eingefroren": {
+    "stand": "354135ca (Deploy t97, Basis Welle 2)",
+    "datum": "2026-10-14",
+    "task": "P10-T78",
+    "grund": "Einmaliges Neu-Einfrieren nach User-Entscheidung 444127bc Punkt 1; ersetzt die Gesamt-Hashes c1f8362b (REST) / 1cada027 (stdio) gegen 7cd5ddb und die Sonderregel fuer code_intel.typen (P16-T15).",
+    "rest": {
+      "admin": "c32e0a08313119616191f51b7f5be0cc286eefddc2641ffee37535937798b98f",
+      "artefakt": "4082d732a28cbc78fead2ffc22e5135049ff4327f446126cf44cfbe1cf703fb9",
+      "asset_intel": "a6f70763166c6c260e275b079074b45873771bb78eace0faad88c812ad731525",
+      "channel": "f334a1f2ce944c06570e0fea17add00883cc0f19e6209dbb2afd43993905e164",
+      "chat": "dab7cfcba761740e5c9b182856673371dd369f1f833f55139cdbdb8978478adc",
+      "code_check": "06877cf83c3896f6cba46e00188e184ef3ed56f11533bb9f894dfd6a6f5e0210",
+      "code_intel": "6966dbdd73fdd1d1fd6210d6da43927926676bf9af5931558f84077638169391",
+      "docs": "3768948cc13f33aec828d13fe39e8b5173a29e277962bf49b767523cc73a06c1",
+      "event": "ca5edeeeb53554d81ce69b200415917fc2ca5c8f244dfe76f72e3426787d3d99",
+      "files": "e3b7bbbdb359b6cf473787345befbb75538f16f7f8d507ce6f28b71ac43c422a",
+      "files_batch": "529f1795d437ed2aa691ee5360f57f93d6bac097a1d146e87950b38118d2e638",
+      "guide": "ea40449483cd360a9abd3a63d68e463cf9a9bc71dadc6b336b39329d2780f81b",
+      "ignore": "0cac8a90a9675085de2d33c45a504f9b729530643f43303ad64a1683bf19b2da",
+      "jev": "3c5412e58a54faa1b5727032b257ff7252362c2914048484d92f633c99623534",
+      "memory": "0002be244fca7a2d5d44115f4e561c8c8304e8fba14027d5a4d36ceafaae15f7",
+      "plan": "fa5904c06081939c34a79c39bff4686caa7da2d3b0e5f98e72926c68df8ed0bd",
+      "project": "9d7860b4df2b9817f3d06815e1cd774dafd4d58cfb2e4d1f1ba831759287e958",
+      "proposal": "7e266bb397203c4461665cbb8b6e13f06e814074b72c6d128cc6deb1d3f03fc4",
+      "reverse": "bb9d30c9fcc1e18ab3564028444d9eebe4eab224bab9614c273e991e4832089d",
+      "search": "410fde342920dd9d559a424279628a55b41b03999dc2a80e4ebb08f5ed361f44",
+      "shell": "65b39f1aecae6a716a1d13ca2c2fccfc58e4c4ef700130aed70bdab4a96f5e18",
+      "skills": "c4f70a550500230de56e697cc7dbb77272cf6bebb4d57ee7630f3f0c6085371c",
+      "specialist": "d6dd43eb662fc785a5bc7ea35fa5a19a3fc001d8f97abd3e4c9b80800dc52beb",
+      "thought": "38aa699701ef4cfec580f1e0421493b7ae7d8312e811100a746a142e7cef586c",
+      "workspace": "73dc21c720f1cd466b4062a955f34b606406f8fe4128244b736eeb22d42fe9b0"
+    },
+    "stdio": {
+      "admin": "6a00df37938fb4d131ebf2d5dee4c12b7622b51b7725d969c5a1742ce193de6f",
+      "asset_intel": "323b625a7248c9401cf00b27aee49b71190567e6fe305b9aa40ff12ad3ea89d3",
+      "channel": "03bd83e5afafb59811d95d5b58281278e225a974c8645b685d1f890dec42585e",
+      "chat": "10d6e7180b672eb0449c20ea7f51e256d71b71d3305e4feda4fc47c33227f322",
+      "code_check": "39ed8800ff96ef5780f36e2275435d07224ed2130fa68f6faf3c867016e8c9cf",
+      "code_intel": "84e7ed86f8d812e72f59bb7fc9ff964b42a9aceabbcbc302cb3af5ed3e6575b8",
+      "docs": "b472ac5b8bc3ecd9bcbd760d5f876c07caed5b4750339024bf377313f440f7a6",
+      "event": "80bd5516652c099c230c853c42e8d5e8b3464b98bdcb42d99c364d71c8b2bcaf",
+      "files": "72a10c143ef69a6c269a600ed5f6416cfad569911b5d5670b56c18c970c16ca5",
+      "free_models": "100058e8a14984ce8ea4dcc34df6cf822fa30d8464d346d4db2750802ab1e545",
+      "guide": "22b2f0444b8f925d45757fa912936f7663f79799d590f1bb77efdf3cb4886717",
+      "ignore": "52c08a0bee48d9db20b64752c9c9b763e1d424308355d86f77cb8254edd51bfd",
+      "jev": "072ed96401652f3e6ccb998457eafde6bac715c1e45b043f01f7f9679b7d8454",
+      "memory": "49c39b82237e7260e1ff30dda1cf945ee9adc9ce29191971463031fc5c986205",
+      "plan": "9b0e9a600fbfc59dd1e1fd7e4b513a67d1491cd135d8c45a44f27dec618fba9a",
+      "project": "cd1b9f5d95395114d46b8bbb462ee969d137ae58b4c72279bee9bf403c1a4a5a",
+      "proposal": "210c067bcc44af4bf3ff0ce76e91f38e55b87e3ef18a1c3ad255328cec39c0fc",
+      "reverse": "bb9d30c9fcc1e18ab3564028444d9eebe4eab224bab9614c273e991e4832089d",
+      "search": "78b2ee1d533ae393aa923a52324bf8a4a552c7388ac58c9bd720e4fd2ce04dd4",
+      "shell": "db69ee70a1f5703cfb87fc441d2e7012d8b184f627be0306601c7ab076c2f283",
+      "specialist": "aa23bc3109fd36338ab6a3103958729f7c93a06fb59180b27e61868bbcf59b8a",
+      "thought": "075967477bf3cc28b7702baa58621a3c708c5daecc5ecaf61d09c3d445b7d406",
+      "watcher": "e51b111cae755241d474c5dffa26c5938f6708292755500f7c6d52737907972c"
+    }
+  },
+  "aenderungen": [
+  {
+    "strecke": "rest",
+    "tool": "reverse",
+    "alt": "bb9d30c9fcc1e18ab3564028444d9eebe4eab224bab9614c273e991e4832089d",
+    "neu": "7c2ffdcb149389735b050056c7e7ab3509bbd4244911ad64aeee14d73bfb3ce9",
+    "grund": "P18-T26 RV16 ergänzt assets_tree/inspect/ansicht samt Asset-Paging und A16-Ansichtparametern, gemeinsame Definition auf REST und stdio.",
+    "task": "P18-T26",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "stdio",
+    "tool": "reverse",
+    "alt": "bb9d30c9fcc1e18ab3564028444d9eebe4eab224bab9614c273e991e4832089d",
+    "neu": "7c2ffdcb149389735b050056c7e7ab3509bbd4244911ad64aeee14d73bfb3ce9",
+    "grund": "P18-T26 RV16 ergänzt assets_tree/inspect/ansicht samt Asset-Paging und A16-Ansichtparametern, gemeinsame Definition auf REST und stdio.",
+    "task": "P18-T26",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "rest",
+    "tool": "code_check",
+    "alt": "06877cf83c3896f6cba46e00188e184ef3ed56f11533bb9f894dfd6a6f5e0210",
+    "neu": "b28fc5f28b47c6265c9e70b9434516aeeb82c2aac21b748a36655aa4d3507e5c",
+    "grund": "P16-T16 Etappe 2: neuer Parameter sprachen (go|python|keine) fuer build_einstellungen (BUILD_PARAMETER, Go/Python projektweit abwaehlbar); sonst unveraendert.",
+    "task": "P16-T16",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "stdio",
+    "tool": "code_check",
+    "alt": "39ed8800ff96ef5780f36e2275435d07224ed2130fa68f6faf3c867016e8c9cf",
+    "neu": "625f53b25dc9882bf6968c9a38c2ebf4c708e2d78d19fffdf319ca3876eb0cdb",
+    "grund": "P16-T16 Etappe 2: neuer Parameter sprachen (go|python|keine) fuer build_einstellungen (BUILD_PARAMETER aus derselben Quelle wie REST); sonst unveraendert.",
+    "task": "P16-T16",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "rest",
+    "tool": "project",
+    "alt": "9d7860b4df2b9817f3d06815e1cd774dafd4d58cfb2e4d1f1ba831759287e958",
+    "neu": "6acdaf0143d52e2e689ccb99cc78fd25927c8a82193466fee16e7f4372fc3b53",
+    "grund": "P9-T31: action loeschen (Vorschau, dann Loesch-Code des Users) mit Parametern umfang, loesch_auftrag_id, loesch_code; Beschreibung von action ergaenzt. Die stdio-Definition ist unveraendert.",
+    "task": "P9-T31",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "rest",
+    "tool": "asset_intel",
+    "alt": "a6f70763166c6c260e275b079074b45873771bb78eace0faad88c812ad731525",
+    "neu": "7099d4965b975dac7c38e7b8c4ccd38863d1b71d2f32f95066c4a60f6cfbeb27",
+    "grund": "P13-T34/A16: Parameter ansicht (inline|link|beides), offen_sekunden, einmalig fuer inspect (Bildblock/Link) und Satz in der Beschreibung.",
+    "task": "P13-T34",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "stdio",
+    "tool": "asset_intel",
+    "alt": "323b625a7248c9401cf00b27aee49b71190567e6fe305b9aa40ff12ad3ea89d3",
+    "neu": "8d855d1788af69f405e2c2739791987a1d191433f5e46519c7c8055ecb22b168",
+    "grund": "P13-T34/A16: Parameter ansicht (inline|link|beides), offen_sekunden, einmalig fuer inspect (Bildblock/Link) und Satz in der Beschreibung.",
+    "task": "P13-T34",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "rest",
+    "tool": "code_intel",
+    "alt": "6966dbdd73fdd1d1fd6210d6da43927926676bf9af5931558f84077638169391",
+    "neu": "c50477d36a838536eec3852939f6fe82c1feabb5ce8e273bd281d09129d7c128",
+    "grund": "P13-T34/A16: Parameter ansicht, offen_sekunden, einmalig fuer file auf einen Asset-Pfad (Weiche zu asset_intel, Bildblock/Link).",
+    "task": "P13-T34",
+    "datum": "2026-10-14"
+  },
+  {
+    "strecke": "stdio",
+    "tool": "code_intel",
+    "alt": "84e7ed86f8d812e72f59bb7fc9ff964b42a9aceabbcbc302cb3af5ed3e6575b8",
+    "neu": "255171505858628544781801ec709bde828acbdd9cc41be7cc987be7f9a3f054",
+    "grund": "P13-T34/A16: Parameter ansicht, offen_sekunden, einmalig fuer file auf einen Asset-Pfad (stdio leitet an die API weiter).",
+    "task": "P13-T34",
+    "datum": "2026-10-14"
+  }
+]
+}

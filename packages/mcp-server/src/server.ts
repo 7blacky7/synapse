@@ -66,6 +66,9 @@ import {
 // PA-1: unbekannte Parameter melden statt still verwerfen. Aus core — dieselbe Funktion
 // benutzt die REST-Strecke, damit die beiden Wege nicht auseinanderlaufen.
 import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
+// P13-T34/A16: ansicht (Bild inline/Link) nur ueber die API, Antwort unveraendert durchreichen.
+import { hatAnsichtParameter } from '@synapse/core';
+import { rufeAnsichtApi } from './tools/consolidated/ansicht-api.js';
 
 /** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
  *  Wird fuer Session-basiertes Onboarding verwendet: neue Instance = neues Onboarding. */
@@ -430,6 +433,12 @@ export function createServer(): Server {
         }],
         isError: true,
       }, name);
+    }
+
+    // P13-T34/A16: asset_intel/code_intel MIT ansicht -> API (Hooks, Audit, Bild kommen von dort);
+    // Textteil + image-Bloecke unveraendert wie bei reverse. Ohne ansicht bleibt der Weg wie bisher.
+    if ((name === 'asset_intel' || name === 'code_intel') && hatAnsichtParameter(args as Record<string, unknown> | undefined)) {
+      return await rufeAnsichtApi(name, (args ?? {}) as Record<string, unknown>);
     }
 
     const baseResp = await (async () => {

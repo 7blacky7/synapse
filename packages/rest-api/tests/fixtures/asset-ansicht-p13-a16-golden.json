@@ -1,0 +1,146 @@
+{
+  "basis": "/tmp/synapse-basis-354135c",
+  "erfasst": "p13_a16 Altstand",
+  "faelle": {
+    "REST | asset_intel inspect asset": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"datei\":{\"file_path\":\"texturen/stein.png\",\"format\":\"png\",\"asset_type\":\"image\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":4096,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{\"width\":512,\"height\":512},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false,\"total\":0,\"gekappt\":false,\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"datei\":{\"file_path\":\"texturen/stein.png\",\"format\":\"png\",\"asset_type\":\"image\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":4096,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{\"width\":512,\"height\":512},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false,\"total\":0,\"gekappt\":false,\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+    },
+    "stdio | asset_intel inspect asset": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"datei\":{\"file_path\":\"texturen/stein.png\",\"format\":\"png\",\"asset_type\":\"image\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":4096,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{\"width\":512,\"height\":512},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false,\"total\":0,\"gekappt\":false}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": null
+    },
+    "REST | asset_intel inspect audio": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"datei\":{\"file_path\":\"audio/ton.wav\",\"format\":\"wav\",\"asset_type\":\"audio\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":100,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false,\"total\":0,\"gekappt\":false,\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"datei\":{\"file_path\":\"audio/ton.wav\",\"format\":\"wav\",\"asset_type\":\"audio\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":100,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false,\"total\":0,\"gekappt\":false,\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+    },
+    "stdio | asset_intel inspect audio": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"datei\":{\"file_path\":\"audio/ton.wav\",\"format\":\"wav\",\"asset_type\":\"audio\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":100,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false,\"total\":0,\"gekappt\":false}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": null
+    },
+    "REST | asset_intel inspect code (Umkehr)": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"code_intel\",\"weiche\":\"Textdatei (ts) -> code_intel\",\"grund\":\"Kein Asset-Eintrag, aber im Code-Index\",\"file_path\":\"src/app.ts\",\"file_type\":\"ts\",\"file_size\":47,\"content\":\"export const steinPfad = 'texturen/stein.png';\\n\",\"total_lines\":2,\"returned_range\":{\"from\":1,\"to\":2,\"eof\":true},\"hinweis\":\"Mehr: code_intel(action:\\\"file\\\"|\\\"functions\\\", file_path:\\\"src/app.ts\\\")\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"code_intel\",\"weiche\":\"Textdatei (ts) -> code_intel\",\"grund\":\"Kein Asset-Eintrag, aber im Code-Index\",\"file_path\":\"src/app.ts\",\"file_type\":\"ts\",\"file_size\":47,\"content\":\"export const steinPfad = 'texturen/stein.png';\\n\",\"total_lines\":2,\"returned_range\":{\"from\":1,\"to\":2,\"eof\":true},\"hinweis\":\"Mehr: code_intel(action:\\\"file\\\"|\\\"functions\\\", file_path:\\\"src/app.ts\\\")\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+    },
+    "stdio | asset_intel inspect code (Umkehr)": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"code_intel\",\"weiche\":\"Textdatei (ts) -> code_intel\",\"grund\":\"Kein Asset-Eintrag, aber im Code-Index\",\"file_path\":\"src/app.ts\",\"file_type\":\"ts\",\"file_size\":47,\"content\":\"export const steinPfad = 'texturen/stein.png';\\n\",\"total_lines\":2,\"returned_range\":{\"from\":1,\"to\":2,\"eof\":true},\"hinweis\":\"Mehr: code_intel(action:\\\"file\\\"|\\\"functions\\\", file_path:\\\"src/app.ts\\\")\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": null
+    },
+    "REST | asset_intel inspect fehlt": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":false,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"fehler\":\"datei_nicht_im_asset_index\",\"message\":\"Kein Asset-Eintrag fuer gibts/nicht.png.\",\"hinweis\":\"Laeuft der lokale Watcher (nur er inspiziert)? Textdatei/Quellcode? -> code_intel(action:\\\"file\\\", file_path). Pfade: asset_intel(action:\\\"tree\\\") oder action:\\\"search\\\".\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": "{\"success\":false,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"fehler\":\"datei_nicht_im_asset_index\",\"message\":\"Kein Asset-Eintrag fuer gibts/nicht.png.\",\"hinweis\":\"Laeuft der lokale Watcher (nur er inspiziert)? Textdatei/Quellcode? -> code_intel(action:\\\"file\\\", file_path). Pfade: asset_intel(action:\\\"tree\\\") oder action:\\\"search\\\".\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+    },
+    "stdio | asset_intel inspect fehlt": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":false,\"action\":\"inspect\",\"project\":\"p13a16\",\"beantwortet_von\":\"asset_intel\",\"fehler\":\"datei_nicht_im_asset_index\",\"message\":\"Kein Asset-Eintrag fuer gibts/nicht.png.\",\"hinweis\":\"Laeuft der lokale Watcher (nur er inspiziert)? Textdatei/Quellcode? -> code_intel(action:\\\"file\\\", file_path). Pfade: asset_intel(action:\\\"tree\\\") oder action:\\\"search\\\".\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": null
+    },
+    "REST | code_intel file asset (Weiche)": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"beantwortet_von\":\"asset_intel\",\"weiche\":\"Asset (png) -> asset_intel\",\"grund\":\"Binaerdatei ohne Textinhalt im Code-Index; Struktur kommt aus dem Asset-Index\",\"file_path\":\"texturen/stein.png\",\"zusammenfassung\":{\"datei\":{\"file_path\":\"texturen/stein.png\",\"format\":\"png\",\"asset_type\":\"image\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":4096,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{\"width\":512,\"height\":512},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false},\"hinweis\":\"Mehr: asset_intel(action:\\\"inspect\\\"|\\\"references\\\"|\\\"used_by\\\", file_path:\\\"texturen/stein.png\\\")\",\"project\":\"p13a16\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": "{\"success\":true,\"beantwortet_von\":\"asset_intel\",\"weiche\":\"Asset (png) -> asset_intel\",\"grund\":\"Binaerdatei ohne Textinhalt im Code-Index; Struktur kommt aus dem Asset-Index\",\"file_path\":\"texturen/stein.png\",\"zusammenfassung\":{\"datei\":{\"file_path\":\"texturen/stein.png\",\"format\":\"png\",\"asset_type\":\"image\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":4096,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{\"width\":512,\"height\":512},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false},\"hinweis\":\"Mehr: asset_intel(action:\\\"inspect\\\"|\\\"references\\\"|\\\"used_by\\\", file_path:\\\"texturen/stein.png\\\")\",\"project\":\"p13a16\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+    },
+    "stdio | code_intel file asset (Weiche)": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"beantwortet_von\":\"asset_intel\",\"weiche\":\"Asset (png) -> asset_intel\",\"grund\":\"Binaerdatei ohne Textinhalt im Code-Index; Struktur kommt aus dem Asset-Index\",\"file_path\":\"texturen/stein.png\",\"zusammenfassung\":{\"datei\":{\"file_path\":\"texturen/stein.png\",\"format\":\"png\",\"asset_type\":\"image\",\"status\":\"ok\",\"inspector\":\"test\",\"parser_version\":1,\"file_size\":4096,\"n_objects\":0,\"n_references\":0,\"objekte_gekappt\":false,\"extracted_at\":\"<ZEIT>\",\"inspiziert_von\":\"cachyos-x64\",\"metadata\":{\"width\":512,\"height\":512},\"format_specific\":{},\"warnings\":[]},\"objektarten\":[],\"objekte\":[],\"objekte_total\":0,\"objekte_gekappt\":false,\"verweise\":[],\"verweise_total\":0,\"verweise_gekappt\":false},\"hinweis\":\"Mehr: asset_intel(action:\\\"inspect\\\"|\\\"references\\\"|\\\"used_by\\\", file_path:\\\"texturen/stein.png\\\")\",\"project\":\"p13a16\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": null
+    },
+    "REST | code_intel file code": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"file_path\":\"src/app.ts\",\"file_type\":\"ts\",\"file_size\":47,\"content\":\"export const steinPfad = 'texturen/stein.png';\\n\",\"total_lines\":2,\"returned_range\":{\"from\":1,\"to\":2,\"eof\":true},\"project\":\"p13a16\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": "{\"success\":true,\"file_path\":\"src/app.ts\",\"file_type\":\"ts\",\"file_size\":47,\"content\":\"export const steinPfad = 'texturen/stein.png';\\n\",\"total_lines\":2,\"returned_range\":{\"from\":1,\"to\":2,\"eof\":true},\"project\":\"p13a16\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+    },
+    "stdio | code_intel file code": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":true,\"file_path\":\"src/app.ts\",\"file_type\":\"ts\",\"file_size\":47,\"content\":\"export const steinPfad = 'texturen/stein.png';\\n\",\"total_lines\":2,\"returned_range\":{\"from\":1,\"to\":2,\"eof\":true},\"project\":\"p13a16\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": null
+    },
+    "REST | code_intel file fehlt": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":false,\"message\":\"Datei nicht gefunden: gibts/nicht.png\",\"project\":\"p13a16\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": "{\"success\":false,\"message\":\"Datei nicht gefunden: gibts/nicht.png\",\"project\":\"p13a16\",\"hinweis_agent_id\":\"Ohne agent_id bekommst du KEINE Projekt-Regeln und keine Skill-Vorschlaege. Schick bei jedem Aufruf agent_id mit (ein selbst gewaehlter, gleichbleibender Name).\"}"
+    },
+    "stdio | code_intel file fehlt": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"success\":false,\"message\":\"Datei nicht gefunden: gibts/nicht.png\",\"project\":\"p13a16\"}"
+        }
+      ],
+      "isError": false,
+      "structuredContent": null
+    }
+  }
+}

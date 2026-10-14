@@ -45,6 +45,7 @@ import { getFileContent } from './code-intel.js';
 import {AssetKonfliktKern,holeAssetKonflikt} from './asset-konflikte.js';
 import {AssetUploadFehler} from './asset-upload.js';
 import {isProjectEnabled} from './project-registry.js';
+import {ANSICHT_SCHEMA_PROPERTIES,ergaenzeAnsicht,hatAnsichtParameter,pruefeAnsichtParameter} from './asset-ansicht-ausgabe.js';
 
 export const ASSET_INTEL_ACTIONS = [
   'tree', 'inspect', 'objects', 'references', 'used_by', 'missing', 'graph',
@@ -63,7 +64,7 @@ export const ASSET_INTEL_DEFINITION = {
     'graph=Abhaengigkeiten (down/up, Zyklen markiert); roots/orphans; search=Pfad, Objektname, Verweisziel + Filter; ' +
     'move_preview=was bricht beim Verschieben; health=Zustand des Index; geloescht=Löschliste; wiederherstellen(asset_id,basis_revision,event_id)=neue Share-Revision. ' +
     'Filter where: "<asset_type|kind>.<schluessel><op><wert>", op = != > >= < <= ~, max 5, z. B. image.width>=4096. ' +
-    'Listen tragen total + gekappt. konflikte=offene Share/PC-Konflikte; konflikt_loesen(asset_id,wahl pc|share) über API. Share gewinnt automatisch, PC-Revision bleibt gesichert.',
+    'Listen tragen total + gekappt. inspect+ansicht=Bild als Bildblock/Link. konflikte=offene Share/PC-Konflikte; konflikt_loesen(asset_id,wahl pc|share) über API. Share gewinnt automatisch, PC-Revision bleibt gesichert.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -92,6 +93,8 @@ export const ASSET_INTEL_DEFINITION = {
       limit: { type: 'number', description: 'Max. Eintraege' },
       basis_revision: {type:'string',description:'Bekannte Revision (wiederherstellen Pflicht)'},
       event_id: {type:'string',description:'Idempotenz-ID (wiederherstellen Pflicht)'},
+      // P13-T34/A16: nur inspect, nur über die API.
+      ...ANSICHT_SCHEMA_PROPERTIES,
     },
     required: ['action', 'project'],
   },
@@ -102,7 +105,7 @@ const IMMER = ['action', 'project', 'agent_id'];
 /** Parameter, die je action wirken (alles andere wird als nicht_verwendet gemeldet). */
 const PARAMETER_JE_ACTION: Record<AssetIntelAction, string[]> = {
   tree: ['path', 'depth', 'recursive', 'format', 'asset_type', 'status', 'limit'],
-  inspect: ['file_path', 'object_type', 'offset', 'limit'],
+  inspect: ['file_path', 'object_type', 'offset', 'limit', 'ansicht', 'offen_sekunden', 'einmalig'],
   objects: ['object_type', 'file_path', 'name', 'where', 'limit', 'offset'],
   references: ['file_path', 'kind', 'limit'],
   used_by: ['file_path', 'kind', 'limit', 'include_name_matches'],
@@ -253,6 +256,14 @@ export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefi
     return fehlerAntwort(action, project, 'parameter_fehlt', 'project fehlt.', 'Projektname angeben, z. B. project:"synapse".');
   }
   const act = action as AssetIntelAction;
+  // P13-T34/A16: ansicht nur bei inspect und nur über die API; Werte/Kombination vor jeder Arbeit pruefen.
+  const mitAnsicht = hatAnsichtParameter(a);
+  if (mitAnsicht) {
+    if (act !== 'inspect') return fehlerAntwort(act, project, 'ansicht_nicht_unterstuetzt', 'ansicht wirkt bei asset_intel nur mit action:"inspect".', 'Bild: asset_intel(action:"inspect", file_path, ansicht:"inline").');
+    const f = pruefeAnsichtParameter(a);
+    if (f) return fehlerAntwort(act, project, f.fehlercode, f.message);
+    if (!api.apiAusfuehrung) return fehlerAntwort(act, project, 'api_erforderlich', 'Ansicht laeuft ausschliesslich ueber die API.');
+  }
   const wirksam = new Set([...IMMER, ...PARAMETER_JE_ACTION[act]]);
   const nichtVerwendet = Object.keys(a).filter(k => !wirksam.has(k) && gesetzt(a[k]));
 
@@ -282,11 +293,15 @@ export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefi
       const konflikt=await holeAssetKonflikt(project,a.file_path);
       if(konflikt)antwort.konflikt=konflikt;
     }
-    return kappeAntwort(antwort);
+    const gekappt = kappeAntwort(antwort);
+    if (!mitAnsicht) return gekappt;
+    const datei = gekappt.datei as { file_path?: unknown } | undefined;
+    const pfad = typeof datei?.file_path === 'string' ? datei.file_path : (typeof a.file_path === 'string' ? a.file_path : null);
+    return ergaenzeAnsicht(gekappt, { project, filePath: pfad, args: a, agentId: api.agentId });
   } catch (e) {
     if (e instanceof AssetIntelFehler && e.code === 'datei_nicht_im_asset_index' && UMKEHR_ACTIONS.has(act)) {
       const umkehr = await umkehrZuCodeIntel(act, project, a.file_path);
-      if (umkehr) return umkehr;
+      if (umkehr) return mitAnsicht ? { ...umkehr, ansicht: { modus: a.ansicht, fehlercode: 'kein_asset', grund: 'Textdatei im Code-Index; ansicht nur fuer Assets.' } } : umkehr;
     }
     if(e instanceof AssetUploadFehler)return fehlerAntwort(act,project,e.code,e.message,undefined,e.details);
     if (e instanceof AssetIntelFehler) return fehlerAntwort(act, project, e.code, e.message, e.hinweis, e.details);
