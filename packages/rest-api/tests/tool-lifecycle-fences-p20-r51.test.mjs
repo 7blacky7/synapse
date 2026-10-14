@@ -22,7 +22,7 @@ try {
  await db.query(WORK_JOBS_SCHEMA_SQL);await db.query(TOOL_AKTIVITAET_SCHEMA_SQL);await db.query(TOOL_CONTAINER_SCHEMA_SQL);
  await db.query('CREATE TABLE projects(name text,enabled boolean)');
  await db.query('INSERT INTO projects VALUES($1,true)',[P]);
- await db.query('CREATE TABLE embedding_knoten(node_id text,boot_id uuid,service_token_hash text)');
+ await db.query('CREATE TABLE embedding_knoten(node_id text,boot_id text,service_token_hash text)');
  const d=validateToolDescriptor({tool_id:'fences',tool:'reverse',capability:'fixture.fences',image:'fixture:1',digest:'sha256:'+'a'.repeat(64),mounts:[],
   resources:{cpu:1,ram:64,vram:0,gpu:false,pids:32,tmpfs:8,concurrency:1},limits:{time_ms:30,output_bytes:4096,input_bytes:4096},
   lifecycle:{idle_ms:1,activity_lookback_seconds:1,cpu_idle_percent:1,gpu_idle_percent:1,measurement_max_age_ms:1000,start_timeout_ms:30,max_starts:100,start_window_ms:60000,pause_ms:60000}});
