@@ -280,11 +280,15 @@ export async function startServer(): Promise<void> {
   // Eigener Worker-Pool (SYNTAX_WORKER_THREADS, Default 2; 0 = Haupt-Thread), startet hier vorgewaermt.
   // Notaus: SYNTAXPRUEFUNG=0.
   try {
-    const { registriereStandardSyntaxPruefer } = await import('@synapse/core');
+    const { registriereStandardSyntaxPruefer, syntaxPoolZustand } = await import('@synapse/core');
     const namen = registriereStandardSyntaxPruefer();
-    console.log(namen.length > 0
-      ? `[Synapse API] Syntaxpruefer angemeldet: ${namen.join(', ')}`
-      : '[Synapse API] Syntaxpruefer aus (SYNTAXPRUEFUNG=0)');
+    if (namen.length > 0) {
+      const pool = syntaxPoolZustand();
+      console.log(`[Synapse API] Syntax-Pool: ${Number(pool?.groesse ?? 0)} Worker, ${namen.length} Pruefer`);
+      console.log(`[Synapse API] Syntaxpruefer angemeldet: ${namen.join(', ')}`);
+    } else {
+      console.log('[Synapse API] Syntaxpruefer aus (SYNTAXPRUEFUNG=0)');
+    }
   } catch (err) {
     console.error('[Synapse API] Syntaxpruefer-Anmeldung fehlgeschlagen (Schreibweg laeuft ohne Syntaxpruefung):', err);
   }

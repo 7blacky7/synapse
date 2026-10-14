@@ -35,6 +35,7 @@ function poolAn(): boolean {
 }
 
 let poolGroesse: number | undefined;
+let poolPrueferZahl = 0;
 let hauptThreadGemeldet = false;
 
 function holePool(): SyntaxWorkerPool {
@@ -44,7 +45,7 @@ function holePool(): SyntaxWorkerPool {
     pool = new SyntaxWorkerPool(wahl.anzahl);
     const quelle = wahl.quelle === 'env' ? 'SYNTAX_WORKER_THREADS' : wahl.quelle === 'vorgabe' ? 'Vorgabe des Prozesses' : 'Standard';
     // stderr: im MCP-stdio-Prozess gehoert stdout dem Protokoll.
-    console.error(`[syntax-pool] gestartet: ${pool.size} Worker (${quelle})${wahl.hinweis ? ` - ${wahl.hinweis}` : ''}`);
+    console.error(`[syntax-pool] gestartet: ${pool.size} Worker, ${poolPrueferZahl} Pruefer (${quelle})${wahl.hinweis ? ` - ${wahl.hinweis}` : ''}`);
   }
   return pool;
 }
@@ -74,6 +75,7 @@ export function registriereStandardSyntaxPruefer(opt: { threads?: number } = {})
     });
     namen.push(def.name);
   }
+  poolPrueferZahl = namen.length;
   if (poolAn()) holePool();
   else if (!hauptThreadGemeldet) {
     hauptThreadGemeldet = true;

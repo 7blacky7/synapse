@@ -73,6 +73,8 @@ console.log('Positivkontrollen');
   };
   stelle('{ "a": 1, "b": }\n', 1, 16);
   stelle('{ "a": 1, "b": }', 1, 16);
+  stelle('{"a": tru}\r\n', 1, 10);
+  stelle('{\r\n "a": 1,\r\n}\r\n', 3, 1);
   stelle('{ "a": 1, "b": }\n\n\n', 1, 16);
   stelle('{"a": tru}\n', 1, 10);
   stelle('[1,2,]\n', 1, 6);

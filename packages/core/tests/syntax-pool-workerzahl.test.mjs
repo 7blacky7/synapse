@@ -45,6 +45,7 @@ console.log(`Syntax-Pool Worker-Zahl (obere Grenze auf diesem Rechner: ${ober})`
   const r = lauf({});
   pruefe('W1 ohne Env und Vorgabe: Standard 2 (bzw. Grenze)', r.aus?.groesse === Math.min(2, ober), r);
   pruefe('W1 Logzeile mit Worker-Zahl', r.log.length === 1 && r.log[0].includes(`${Math.min(2, ober)} Worker`) && /Standard/.test(r.log[0]), r.log);
+  pruefe('W1 Logzeile mit Pruefer-Zahl', r.log.length === 1 && new RegExp(`${r.aus?.namen} Pruefer`).test(r.log[0]), r.log);
 }
 {
   const r = lauf({}, 1);

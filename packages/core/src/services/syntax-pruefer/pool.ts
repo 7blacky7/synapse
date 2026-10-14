@@ -151,7 +151,7 @@ export class SyntaxWorkerPool {
     const maxMb = envZahl('SYNTAX_WORKER_MAX_MB', 256) || 256;
     const worker = new Worker(workerUrl(), {
       // execArgv des Elternprozesses ohne --input-type/--eval/--print (sonst startet kein Worker aus `node -e`).
-      execArgv: process.execArgv.filter((a) => !/^--(input-type|eval|print)\b|^-[ep]$/.test(a)),
+      execArgv: [],
       resourceLimits: { maxOldGenerationSizeMb: maxMb, maxYoungGenerationSizeMb: Math.min(64, Math.max(8, Math.floor(maxMb / 8))) },
     });
     this.z.worker_gestartet++;
