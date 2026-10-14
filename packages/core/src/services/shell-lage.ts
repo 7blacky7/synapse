@@ -3,7 +3,7 @@
  * Native Dateisystemprobe ist austauschbar (Daemon/Container derselbe Helfer).
  */
 import path from 'node:path';
-import {pruefeDbKommando,gleichesDbZiel,type ShellDbFreigabe,type ShellDbErgebnis} from './shell-db-zuordnung.js';
+import {pruefeDbKommando,gleichesDbZiel,LIVE_SCHREIBEND,type ShellDbFreigabe,type ShellDbErgebnis} from './shell-db-zuordnung.js';
 import{gebundeneBuildLogFakten}from'./shell-build-log-fakten.js';
 import{skriptFakten}from'./shell-inline-pruefung.js';
 import {createHash}from'node:crypto';
@@ -33,6 +33,8 @@ export interface ShellLage {
   datenbank_testzuordnung?:{project:string;ziele:ShellDbFreigabe['ziele']};
   datenbank_pruefung?:boolean;
   datenbank_abgewiesen?:boolean;
+  /** Befehl zielt erkennbar auf die Synapse-Produktions-DB (einzige harte DB-Sperre). */
+  datenbank_live?:boolean;
   datenbank_zuordnung?:{project:string;ziele:ShellDbFreigabe['ziele'];grund:'projekt_eigene_db'};
   shell: SicherungsShell; os: ShellLageKontext['os']; cwd:string; project_root:string;
   variablen: Array<{name:string;wert?:string;gesetzt:boolean}>;
@@ -346,7 +348,11 @@ export async function ermittleShellLage(command:string,ctx:ShellLageKontext):Pro
       z.datenbank!==ctx.datenbank_freigabe!.live!.datenbank&&
       ctx.datenbank_freigabe!.ziele.some(t=>t.art==='test'&&gleichesDbZiel(t,z))))
     ?sql.flatMap(x=>x.ziele.map(z=>({...z,art:'test' as const}))):undefined;
+  // User-Vorgabe 14.10.2026: Live-DB per psql-Ziel oder ausdruecklicher DSN im Befehlstext (Port+DB der Synapse-Live-DB).
+  const live=ctx.datenbank_freigabe?.live;
+  const dbLive=!!live&&(sql.some(x=>x.live)||new RegExp(':'+live.port+'/'+live.datenbank.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?![\\w-])').test(command)&&LIVE_SCHREIBEND.test(command));
   const base={shell,os:ctx.os,cwd:ctx.cwd,project_root:ctx.project_root,
+    ...(dbLive?{datenbank_live:true}:{}),
     ...(dbTestZiele?{datenbank_testzuordnung:{project:ctx.datenbank_freigabe!.project,ziele:dbTestZiele}}:{}),
     ...(ctx.datenbank_freigabe&&sql.length?{datenbank_pruefung:true,...(!dbEigene?{datenbank_abgewiesen:true}:{})}:{}),
     ...(dbEigene?{datenbank_zuordnung:{project:ctx.datenbank_freigabe!.project,ziele:ctx.datenbank_freigabe!.ziele,grund:'projekt_eigene_db' as const}}:{}),

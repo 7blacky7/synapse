@@ -9,7 +9,9 @@ export interface ShellDbFreigabe {
   ziele:Array<ShellDbZiel&{art:'projekt'|'test'}>;
   live?:ShellDbZiel;
 }
-export interface ShellDbErgebnis {betroffen:boolean;erlaubt:boolean;ziele:ShellDbZiel[];}
+export interface ShellDbErgebnis {betroffen:boolean;erlaubt:boolean;ziele:ShellDbZiel[];live?:boolean;}
+/** User-Vorgabe 14.10.2026: nur veraenderndes SQL gegen die Produktions-DB ist gesperrt, Lesen nicht. */
+export const LIVE_SCHREIBEND=/\b(?:INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|COPY|VACUUM|REINDEX|CLUSTER|LOCK)\b/i;
 export function dbZielAusUrl(raw:unknown):ShellDbZiel|undefined {
   if(typeof raw!=='string')return undefined;
   try {
@@ -147,7 +149,10 @@ export function pruefeDbKommando(k:ShellTextKommando,env:Record<string,string|un
   const cmd=k.argv[0]?.text.replace(/\\/g,'/').split('/').pop()?.toLowerCase();
   if(cmd==='psql'||cmd==='psql.exe'||cmd==='pg_dump'||cmd==='pg_dump.exe'){
     const x=psqlZiel(k,env),allowed=x.ok&&eigenesZiel(x.ziel,p)&&x.sql.every(s=>sqlBleibtInDb(s,x.ziel!));
-    return {betroffen:true,erlaubt:allowed,ziele:allowed?[x.ziel!]:[]};
+    // User-Vorgabe 14.10.2026: einzige harte DB-Grenze ist die Synapse-Produktions-DB.
+    const live=!!x.ziel&&!!p.live&&x.ziel.port===p.live.port&&x.ziel.datenbank===p.live.datenbank&&
+      (x.sql.length===0||x.sql.some(s=>LIVE_SCHREIBEND.test(s)));
+    return {betroffen:true,erlaubt:allowed,ziele:allowed?[x.ziel!]:[],...(live?{live:true}:{})};
   }
   if(k.inline_skript?.sprache==='node'){
     return nodeFreigabe(k.inline_skript.text,env,p);

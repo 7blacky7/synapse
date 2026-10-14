@@ -653,7 +653,7 @@ export class WorkspaceOrchestrator {
     if (opts.exposePorts) for (const p of opts.exposePorts) internal_urls[p] = this.internalUrl(project, p, wsName);
 
     const result={stdout,stderr,exitCode,timedOut,durationMs:dt,...(quellen_wiederhergestellt.length?{quellen_wiederhergestellt}:{}),...(opts.exposePorts?{internal_urls}:{}),
-      ...(pruefung.antwort?pruefung.antwort:{}),...(sicherungsJob?{id:sicherungsJob}:{})};
+      ...(pruefung.antwort?pruefung.antwort:{}),...(pruefung.hinweis?{sicherung_hinweis:pruefung.hinweis}:{}),...(sicherungsJob?{id:sicherungsJob}:{})};
     if(sicherungsJob)await beendeShellSicherungsJob(sicherungsJob,project,{
       status:timedOut?'hard_limit':exitCode===0?'done':'failed',exit_code:exitCode,tail:(stdout+stderr).split('\n').slice(-5)});
     if(sicherungsJob&&quellen_wiederhergestellt.length)await getPool().query(

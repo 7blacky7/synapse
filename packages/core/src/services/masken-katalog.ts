@@ -20,7 +20,7 @@ const ENV_PLATZHALTER = '[WERT]';
 const SHELL_NAME_AUSNAHME = /^(?:wait_token|batch_token|stream_id)$/;
 const SHELL_NAME_MASS = /(?:^|[_.-])(?:count|length|size|limit|ttl|timeout|duration|ms|rate|usage|used|path|file)$/;
 const SHELL_NAME_TOKENS = /^(?:input|output|total|cached|prompt|completion)_tokens(?:_|$)/;
-const SHELL_NAME_GEHEIM = /(?:^|[_.-])(?:keys?|tokens?|secrets?|password|pass|pwd|auth|authorization|credentials?)(?:$|[_.-])/;
+const SHELL_NAME_GEHEIM = /(?:^|[_.-])(?:keys?|tokens?|secrets?|password|pass|pwd|auth|authorization|credentials?)(?:$|[_.-])|^pgpass(?:word)?$/;
 const SHELL_JSON_KEY = /^keys?$/i;
 export const SHELL_BEARER_WERT = /^Bearer\s+(.+)$/i;
 
@@ -48,6 +48,14 @@ export function istShellGeheimnisName(name:string):boolean{
  */
 export function istShellJsonGeheimnisName(name:string):boolean {
   return !SHELL_JSON_KEY.test(name) && istShellGeheimnisName(name);
+}
+/** User-Vorgabe 14.10.2026: der Name allein (key=, token=, pass=) macht keinen Wert geheim.
+ * Geschwaerzt wird per Namensregel nur ein Wert, der nach Zugangsdaten aussieht; bekannte Geheimniswerte
+ * aus den Secret-Quellen maskiert die werteweise Maske unabhaengig davon. */
+export function shellWertWirktGeheim(roh:string):boolean{
+  const w=roh.trim().replace(/^(["'])([\s\S]*)\1$/,'$2');
+  if(w.length<SHELL_LITERAL_MIN_LAENGE||/\s/.test(w))return false;
+  return /\d/.test(w)||(/[a-z]/.test(w)&&/[A-Z]/.test(w))||/[^A-Za-z0-9_.\-\/]/.test(w);
 }
 export const URL_ZUGANGSDATEN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/@?#:\s]+:[^/@?#\s]*@/gi;
 
@@ -418,7 +426,7 @@ export function maskiereShellText(text: string, bekannteWerte: readonly string[]
   aus=ersetzeKatalogRegel(aus,'shell.sshpass');
   aus=aus.split('\n').map(zeile=>{
     const kv=SHELL_KV_ZEILE.exec(zeile.endsWith('\r')?zeile.slice(0,-1):zeile);
-    if(kv && istShellGeheimnisName(kv[2])) return shellIstLeerWert(kv[4]) ? zeile : kv[1]+kv[2]+kv[3]+ENV_PLATZHALTER+(zeile.endsWith('\r')?'\r':'');
+    if(kv && istShellGeheimnisName(kv[2]) && shellWertWirktGeheim(kv[4])) return shellIstLeerWert(kv[4]) ? zeile : kv[1]+kv[2]+kv[3]+ENV_PLATZHALTER+(zeile.endsWith('\r')?'\r':'');
     return ersetzeKatalogRegel(zeile,'shell.json_frei');
   }).join('\n');
   aus=ersetzeKatalogRegel(aus,'shell.kv_frei');
@@ -450,9 +458,9 @@ export const MASKEN_KATALOG: readonly MaskenEintrag[] = [
     const q=wert[0]==='"'||wert[0]==="'"?wert[0]:'';
     return (q?wert.slice(1,-1):wert)===ENV_PLATZHALTER?t:vor+q+ENV_PLATZHALTER+q;
   },anwendungsbereich:['shell','reverse'],art:'text'},
-  {kennung:'shell.kv_zeile',muster:SHELL_KV_ZEILE,ersatz:(t,vor,name,trenner,wert)=>istShellGeheimnisName(name)&&!shellIstLeerWert(wert)?vor+name+trenner+ENV_PLATZHALTER:t,anwendungsbereich:['shell','reverse'],art:'struktur'},
-  {kennung:'shell.kv_frei',muster:SHELL_KV_FREI,ersatz:(t,vor,name,trenner)=>istShellGeheimnisName(name)?vor+name+trenner+ENV_PLATZHALTER:t,anwendungsbereich:['shell','reverse'],art:'struktur'},
-  {kennung:'shell.json_frei',muster:SHELL_JSON_FREI,ersatz:(t,vor,q,name,trenner,wert)=>istShellJsonGeheimnisName(name)?vor+q+name+q+trenner+wert[0]+ENV_PLATZHALTER+wert[0]:t,anwendungsbereich:['shell','reverse'],art:'struktur'},
+  {kennung:'shell.kv_zeile',muster:SHELL_KV_ZEILE,ersatz:(t,vor,name,trenner,wert)=>istShellGeheimnisName(name)&&!shellIstLeerWert(wert)&&shellWertWirktGeheim(wert)?vor+name+trenner+ENV_PLATZHALTER:t,anwendungsbereich:['shell','reverse'],art:'struktur'},
+  {kennung:'shell.kv_frei',muster:SHELL_KV_FREI,ersatz:(t,vor,name,trenner)=>istShellGeheimnisName(name)&&shellWertWirktGeheim(t.slice(vor.length+name.length+trenner.length))?vor+name+trenner+ENV_PLATZHALTER:t,anwendungsbereich:['shell','reverse'],art:'struktur'},
+  {kennung:'shell.json_frei',muster:SHELL_JSON_FREI,ersatz:(t,vor,q,name,trenner,wert)=>istShellJsonGeheimnisName(name)&&shellWertWirktGeheim(wert)?vor+q+name+q+trenner+wert[0]+ENV_PLATZHALTER+wert[0]:t,anwendungsbereich:['shell','reverse'],art:'struktur'},
   {kennung:'shell.geheimname',muster:SHELL_NAME_GEHEIM,ersatz:()=>ENV_PLATZHALTER,anwendungsbereich:['shell','reverse'],art:'name'},
   {kennung:'shell.verfahrensname',muster:SHELL_NAME_AUSNAHME,ersatz:t=>t,anwendungsbereich:['shell','reverse'],art:'name'},
   {kennung:'shell.massname',muster:SHELL_NAME_MASS,ersatz:t=>t,anwendungsbereich:['shell','reverse'],art:'name'},

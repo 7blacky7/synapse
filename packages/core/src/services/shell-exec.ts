@@ -415,6 +415,12 @@ export async function execShellInProject(
       });
     });
   });
+  if(pruefung.hinweis){
+    // User-Vorgabe 14.10.2026: Warnhinweis statt Sperre; message landet auch im Queue-Job.
+    const h=pruefung.hinweis,t='Hinweis: '+h.risiko+' '+h.danach;
+    result.sicherung_hinweis=h;
+    result.message=typeof result.message==='string'?result.message+' | '+t:t;
+  }
   if (sicherungsJob && !args.sicherungs_job_id) await beendeShellSicherungsJob(sicherungsJob,args.project,result);
   return pruefung.antwort
     ? maskiereShellDaten({...pruefung.antwort,...result,...(sicherungsJob?{id:sicherungsJob}:{})},werte,true).daten

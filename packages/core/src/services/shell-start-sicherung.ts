@@ -9,6 +9,7 @@ import {pruefeShellText,normalisiereShellKommando,type ShellSicherungsKatalog,ty
 import {parseShellText,type SicherungsShell}from'./shell-sicherung-parser.js';
 import type{ShellLage}from'./shell-lage.js';
 import{darfKoordinatorOderUser}from'./rollen-pruefung.js';
+import{LIVE_SCHREIBEND}from'./shell-db-zuordnung.js';
 export interface ShellBestaetigung {
   grund:string; befehl_hash:string; lage_hash:string; regelversion:string;
 }
@@ -26,6 +27,8 @@ export interface ShellSicherungsAntwort {
 }
 export interface ShellStartEntscheidung {
   darf_starten:boolean; antwort?:ShellSicherungsAntwort;
+  /** Laeuft trotzdem; nur Warnhinweis (User-Vorgabe 14.10.2026). */
+  hinweis?:{stufe:'hinweis';risiko:string;danach:string;sicher:string};
   audit:{agent_id:string|null;grund:string|null;befehl_hash:string;lage_hash:string;
     regelversion:string;stufe:string;entscheidung:'erlaubt'|'bestaetigt'|'abgewiesen';zeit:string};
 }
@@ -96,16 +99,18 @@ function vorschau(a:ShellAntwortEintrag|undefined,o:ShellStartEingabe,k:ShellSic
 export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):ShellStartEntscheidung{
   const eigeneDb=!!lageKommandos(o)&&o.lage.datenbank_zuordnung?.project===o.project&&o.lage.sicher_aufloesbar;
   const text=pruefeShellText(o.command,{workspace_testdateien:o.workspace_testdateien,projekt_eigene_db:eigeneDb,projekt_db_geprueft:o.lage.datenbank_pruefung,shell:o.lage.shell,project:o.project,os:o.lage.os,rechner:o.rechner,katalog:k,kommandos:lageKommandos(o),cwd:o.lage.cwd,testprojekt:o.lage.testprojekt,inline_pfade:o.lage.inline_pfade,scratchpad_roots:o.lage.scratchpad_roots,projekt_root:o.lage.project_root});
-  const hard=selbstschaden(o);
+  const hard=selbstschaden(o)??(o.lage.datenbank_live?'Der Befehl veraendert direkt die Synapse-Produktionsdatenbank. Schreibender Shell-Zugriff darauf ist gesperrt (Lesen ist frei); Daten nur ueber die Synapse-Tools aendern.':undefined);
   let stufe=text.stufe;
   if(text.ungeklaert.includes('parser_grenze')&&/^\s*(?:node|python[\d.]*)(?:\.exe)?\b/.test(o.command))stufe='anleitung';
   if(o.lage.datenbank_abgewiesen)stufe='anleitung';
   if(hard)stufe='sperre';
   else if(text.risiko_verb&&!o.lage.sicher_aufloesbar&&stufe==='laeuft')stufe='anleitung';
+  // User-Vorgabe 14.10.2026: ausser Sperren nur Warnhinweise, nichts wartet auf Bestaetigung.
+  if(stufe==='anleitung')stufe='hinweis';
   const befehl_hash=createHash('sha256').update(JSON.stringify([o.project,o.command])).digest('hex');
   const bindings={befehl_hash,lage_hash:o.lage.hash,regelversion:regelVersion(k)};
   let allow=stufe==='laeuft'||stufe==='hinweis',confirmed=false,error:string|undefined;
-  if(o.bestaetigt){
+  if(o.bestaetigt&&stufe!=='laeuft'&&stufe!=='hinweis'){
     if(!darfKoordinatorOderUser(o.agent_id)){allow=false;error='nur_koordinator';}
     else if(typeof o.bestaetigt.grund!=='string'||o.bestaetigt.grund.trim().length<10){allow=false;error='grund_fehlt';}
     else if(Object.entries(bindings).some(([key,value])=>o.bestaetigt?.[key as keyof ShellBestaetigung]!==value)){
@@ -119,6 +124,13 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
   const strongest=text.treffer.filter(t=>t.stufe===text.stufe).sort((a,b)=>a.regel_id.localeCompare(b.regel_id))[0];
   const answer=k.antworten.find(a=>a.id===strongest?.antwort_id&&a.status==='aktiv');
   const risiko=hard??answer?.risiko??'Die Wirkung ist ohne sicher aufgelöste Lage nicht verlässlich bestimmbar.';
+  // User-Vorgabe 14.10.2026: Aenderungen an Projekt-/Test-DBs gehoeren in den Code, nicht direkt per Shell.
+  const adhocSql=!!o.lage.datenbank_pruefung&&LIVE_SCHREIBEND.test(o.command);
+  if(stufe==='hinweis'&&allow)return {darf_starten:true,audit,
+    hinweis:adhocSql
+      ?{stufe:'hinweis',risiko:'Veraendernder SQL direkt auf einer Datenbank per Shell.',
+        danach:'Laeuft. Zum Ausprobieren in Ordnung; soll die Aenderung bleiben, gehoert sie in den Code (Migration oder Testcode im Projekt).',sicher:vorschau(answer,o,k)}
+      :{stufe:'hinweis',risiko,danach:answer?.danach??'Ziel und Wirkung pruefen.',sicher:vorschau(answer,o,k)}};
   const antwort:ShellSicherungsAntwort={ausgefuehrt:allow,stufe:stufe==='laeuft'?'anleitung':stufe,...(error?{error}:{}),
     risiko,lage:o.lage,sicher:vorschau(answer,o,k),
     danach:hard??answer?.danach??'Ziel und Wirkung mit einer harmlosen Vorschau klären.',
