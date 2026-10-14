@@ -23,6 +23,8 @@ func zeigeAssetSyncFenster() {
     ctx,cancel:=context.WithCancel(context.Background())
     window.SetOnClosed(func(){cancel();assetSyncWindow=nil})
     window.Resize(fyne.NewSize(780,620))
+    // P8-T20: Esc/Strg+W schliessen; das Ankerfenster (fenster.go) haelt den Tray dabei am Leben.
+    tastaturSchliessen(window,window.Close)
     summary:=widget.NewLabel("Projektliste wird von Synapse geladen …")
     summary.Wrapping=fyne.TextWrapWord
     chooser:=widget.NewSelect(nil,nil)

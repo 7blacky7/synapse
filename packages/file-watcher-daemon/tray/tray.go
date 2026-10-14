@@ -130,6 +130,16 @@ type DetailWindow struct {
 	ActiveLabel   *widget.Label
 	ChunksLabel   *widget.Label
 	FilesLabel    *widget.Label
+	Tabs          *container.AppTabs
+	// P8-T20: Auswahl ueber Schluessel statt Zeilenindex (nur UI-Faden).
+	agentAuswahl      tabellenAuswahl
+	eventAuswahl      tabellenAuswahl
+	aktivitaetAuswahl tabellenAuswahl
+	// Filtertext fuer ReloadEvents (Goroutine) und Entprell-Zaehler.
+	filterText atomic.Value
+	filterNr   atomic.Uint64
+	// ladet verhindert, dass sich ReloadAll-Durchgaenge bei langsamer API stauen.
+	ladet atomic.Bool
 	// Ein geschlossenes Fenster wird nur versteckt (SetCloseIntercept), damit es
 	// beim naechsten Oeffnen sofort wieder da ist. Ohne diese Marke lief die
 	// Auffrisch-Schleife trotzdem weiter darueber: vier Abfragen je Projekt,
@@ -161,6 +171,9 @@ func main() {
 	}
 
 	myApp = app.New()
+	// P8-T20: haelt die Fyne-Loop am Leben, wenn das letzte sichtbare Fenster
+	// geschlossen wird (Ursache des Absturzes beim Schliessen, siehe fenster.go).
+	ankerFenster = legeAnkerFensterAn(myApp)
 
 	start, end := systray.RunWithExternalLoop(onReady, func() {
 		if db != nil {
@@ -725,7 +738,7 @@ func rebuildMenu(projs []Project) {
 			itLoeschen := sm.AddSubMenuItem("Löschen...", "")
 			go func(projName string) {
 				for range itLoeschen.ClickedCh {
-					openDetail(projName) // Delete is handled in Aktionen tab
+					openDetailAuf(projName, "Aktionen") // Loeschen liegt im Tab Aktionen
 				}
 			}(name)
 
@@ -962,14 +975,17 @@ func refresh() {
 }
 
 // Detail window implementation
-func openDetail(name string) {
+func openDetail(name string) { openDetailAuf(name, "") }
+
+// openDetailAuf oeffnet das Projektfenster und waehlt optional einen Tab
+// (Menue "Loeschen..." landet so direkt bei "Aktionen").
+func openDetailAuf(name, tab string) {
 	windowLock.Lock()
 	if w, ok := openWindows[name]; ok {
 		windowLock.Unlock()
-		w.sichtbar.Store(true)
 		fyne.Do(func() {
-			w.Window.Show()
-			w.Window.RequestFocus()
+			zeigeVersteckt(w.Window, &w.sichtbar)
+			w.zeigeTab(tab)
 		})
 		go w.ReloadAll()
 		return
@@ -980,30 +996,20 @@ func openDetail(name string) {
 	}
 
 	// Tab 1: Agenten
-	w.AgentTable = widget.NewTable(
-		func() (int, int) { return len(w.AgentRows), 5 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.AgentRows) && id.Col < 5 {
-				label.SetText(w.AgentRows[id.Row][id.Col])
-			}
-		},
-	)
+	w.AgentTable = neueTabelle([]string{"Agent", "Modell", "Status", "Kontext", "Letzte Aktivität"},
+		func() [][]string { return w.AgentRows })
 	w.AgentTable.SetColumnWidth(0, 150)
 	w.AgentTable.SetColumnWidth(1, 150)
 	w.AgentTable.SetColumnWidth(2, 100)
 	w.AgentTable.SetColumnWidth(3, 80)
 	w.AgentTable.SetColumnWidth(4, 180)
 
-	var selectedAgentRow = -1
 	w.AgentTable.OnSelected = func(id widget.TableCellID) {
-		selectedAgentRow = id.Row
+		w.agentAuswahl.waehle(spaltenSchluessel(w.AgentRows, 0), id.Row, id.Col)
 	}
 
 	btnStop := widget.NewButton("Stoppen", func() {
-		if selectedAgentRow >= 0 && selectedAgentRow < len(w.AgentRows) {
-			agentName := w.AgentRows[selectedAgentRow][0]
+		if agentName := w.agentAuswahl.schluessel; agentName != "" {
 			dialog.ShowConfirm("Stoppen?", fmt.Sprintf("Spezialist '%s' stoppen?\nSIGTERM geht an den Wrapper.", agentName), func(ok bool) {
 				if ok {
 					go func() {
@@ -1031,20 +1037,21 @@ func openDetail(name string) {
 	// Tab 2: Events
 	w.FilterEntry = widget.NewEntry()
 	w.FilterEntry.SetPlaceHolder("Substring in Datei/Agent/Reason/Feature...")
+	w.filterText.Store("")
 	w.FilterEntry.OnChanged = func(text string) {
-		go w.ReloadEvents()
+		// Entprellt: erst 300 ms nach dem letzten Tastendruck neu laden (vorher
+		// startete jeder Tastendruck einen eigenen Abruf).
+		w.filterText.Store(text)
+		nr := w.filterNr.Add(1)
+		time.AfterFunc(300*time.Millisecond, func() {
+			if w.filterNr.Load() == nr {
+				w.ReloadEvents()
+			}
+		})
 	}
 
-	w.EventTable = widget.NewTable(
-		func() (int, int) { return len(w.EventRows), 6 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.EventRows) && id.Col < 6 {
-				label.SetText(w.EventRows[id.Row][id.Col])
-			}
-		},
-	)
+	w.EventTable = neueTabelle([]string{"Zeit", "Agent", "Datei", "Aktion", "Grund", "Feature"},
+		func() [][]string { return w.EventRows })
 	w.EventTable.SetColumnWidth(0, 130)
 	w.EventTable.SetColumnWidth(1, 100)
 	w.EventTable.SetColumnWidth(2, 350)
@@ -1052,18 +1059,20 @@ func openDetail(name string) {
 	w.EventTable.SetColumnWidth(4, 250)
 	w.EventTable.SetColumnWidth(5, 120)
 
-	var selectedEventRow = -1
 	w.EventTable.OnSelected = func(id widget.TableCellID) {
-		selectedEventRow = id.Row
+		w.eventAuswahl.waehle(eventSchluessel(w.EventRows), id.Row, id.Col)
 	}
 
 	btnRefE := widget.NewButton("Aktualisieren", func() {
 		go w.ReloadEvents()
 	})
 	btnOpenE := widget.NewButton("Öffnen", func() {
-		if selectedEventRow >= 0 && selectedEventRow < len(w.EventRows) {
-			go w.OpenSelectedEventFile(selectedEventRow)
+		idx := zeileZuSchluessel(eventSchluessel(w.EventRows), w.eventAuswahl.schluessel)
+		if idx < 0 {
+			dialog.ShowInformation("Öffnen", "Keine Zeile ausgewählt.", w.Window)
+			return
 		}
+		go w.OpenEventFile(w.EventRows[idx][2])
 	})
 
 	tabEvents := container.NewBorder(
@@ -1077,16 +1086,8 @@ func openDetail(name string) {
 	// Tab 3: Aktivitaet — ALLE geloggten Tool-Aufrufe (tool_calls: code_intel,
 	// files, shell, alles). Details-Knopf oeffnet ein eigenes Fenster mit dem
 	// vollen (ungekuerzten) Inhalt der ausgewaehlten Zeile.
-	w.ActivityTable = widget.NewTable(
-		func() (int, int) { return len(w.ActivityRows), 7 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.ActivityRows) && id.Col < 7 {
-				label.SetText(w.ActivityRows[id.Row][id.Col])
-			}
-		},
-	)
+	w.ActivityTable = neueTabelle([]string{"Zeit", "Tool", "Action", "Agent", "OK", "ms", "Ergebnis"},
+		func() [][]string { return w.ActivityRows })
 	w.ActivityTable.SetColumnWidth(0, 130)
 	w.ActivityTable.SetColumnWidth(1, 110)
 	w.ActivityTable.SetColumnWidth(2, 150)
@@ -1095,18 +1096,18 @@ func openDetail(name string) {
 	w.ActivityTable.SetColumnWidth(5, 80)
 	w.ActivityTable.SetColumnWidth(6, 320)
 
-	var selectedActivityRow = -1
 	w.ActivityTable.OnSelected = func(id widget.TableCellID) {
-		selectedActivityRow = id.Row
+		w.aktivitaetAuswahl.waehle(w.ActivityIDs, id.Row, id.Col)
 	}
 
 	btnRefAkt := widget.NewButton("Aktualisieren", func() {
 		go w.ReloadActivity()
 	})
 	btnDetailAkt := widget.NewButton("Details", func() {
-		if selectedActivityRow >= 0 && selectedActivityRow < len(w.ActivityIDs) {
-			id := w.ActivityIDs[selectedActivityRow]
-			go showActivityDetailWindow(name, id)
+		if id := w.aktivitaetAuswahl.schluessel; id != "" {
+			// Auf dem UI-Faden: frueher per go-Routine, das Fenster entstand damit
+			// ausserhalb des Fyne-Fadens.
+			showActivityDetailWindow(name, id)
 		} else {
 			dialog.ShowInformation("Details", "Keine Zeile ausgewählt.", w.Window)
 		}
@@ -1119,6 +1120,9 @@ func openDetail(name string) {
 	w.ActiveLabel = widget.NewLabel("-")
 	w.ChunksLabel = widget.NewLabel("-")
 	w.FilesLabel = widget.NewLabel("-")
+	// Lange Pfade umbrechen statt abschneiden, und kopierbar machen.
+	w.PathLabel.Wrapping = fyne.TextWrapWord
+	w.PathLabel.Selectable = true
 
 	statusForm := widget.NewForm(
 		widget.NewFormItem("Pfad:", w.PathLabel),
@@ -1248,12 +1252,16 @@ func openDetail(name string) {
 						})
 						return
 					}
-					fyne.Do(func() {
-						w.Window.Hide()
-					})
 					windowLock.Lock()
 					delete(openWindows, name)
 					windowLock.Unlock()
+					// Wirklich schliessen statt nur verstecken: das Projekt ist weg, das
+					// versteckte Fenster wurde nie wieder gebraucht. Das Ankerfenster haelt
+					// die App dabei am Leben.
+					fyne.Do(func() {
+						w.sichtbar.Store(false)
+						w.Window.Close()
+					})
 					triggerRefresh()
 				}()
 			}
@@ -1300,7 +1308,7 @@ func openDetail(name string) {
 		btnDelete,
 	)
 
-	tabs := container.NewAppTabs(
+	w.Tabs = container.NewAppTabs(
 		container.NewTabItem("Agenten", tabAgenten),
 		container.NewTabItem("Events", tabEvents),
 		container.NewTabItem("Aktivität", tabAktivitaet),
@@ -1314,12 +1322,10 @@ func openDetail(name string) {
 	fyne.Do(func() {
 		w.Window = myApp.NewWindow("Projekt: " + name)
 		w.Window.Resize(fyne.NewSize(1200, 800))
-		w.Window.SetCloseIntercept(func() {
-			w.sichtbar.Store(false)
-			w.Window.Hide()
-		})
+		versteckbaresFenster(w.Window, &w.sichtbar)
 		w.sichtbar.Store(true)
-		w.Window.SetContent(tabs)
+		w.Window.SetContent(w.Tabs)
+		w.zeigeTab(tab)
 		w.Window.Show()
 	})
 
@@ -1330,7 +1336,12 @@ func openDetail(name string) {
 // Verwenden-Klick fuehrt die Hardwaremessung aus; vor diesem Gate wird Ollama
 // weder abgefragt noch gestartet.
 func zeigeGPUFenster() {
-	fenster := myApp.NewWindow("Lokale GPU / Ollama")
+	// P8-T20: hoechstens EIN GPU-Fenster; Schliessen beendet den Tray nicht mehr (fenster.go).
+	oeffneEinzelFenster("gpu", "Lokale GPU / Ollama", bauGPUFenster)
+}
+
+// bauGPUFenster fuellt das GPU-Fenster; die Rueckgabe raeumt beim Schliessen auf.
+func bauGPUFenster(fenster fyne.Window) func() {
 	status := widget.NewLabel("API-Einstellungen werden geladen …")
 	status.Wrapping = fyne.TextWrapWord
 	// Vergleichstext als LABEL, nicht als deaktiviertes Eingabefeld: ein
@@ -1398,7 +1409,12 @@ func zeigeGPUFenster() {
 				gpuSelect.Options = []string{"Keine messbare NVIDIA-GPU"}
 				gpuSelect.SetSelectedIndex(0)
 				gpuSelect.Disable()
-				status.SetText("API-Einstellungen geladen. " + hardwareErr.Error())
+				// Kein hardwareErr.Error() auf nil: eine Panik hier beendete den ganzen Tray.
+				grund := "keine NVIDIA-GPU gemeldet"
+				if hardwareErr != nil {
+					grund = hardwareErr.Error()
+				}
+				status.SetText("API-Einstellungen geladen. " + grund)
 				return
 			}
 			gpuSelect.Options = options
@@ -1758,11 +1774,12 @@ func zeigeGPUFenster() {
 		}()
 	})
 
-	fenster.SetContent(container.NewVBox(status, details,
+	// Scrollbar: lange Digests/Statusmeldungen passten auf kleinen Bildschirmen nicht.
+	fenster.SetContent(container.NewVScroll(container.NewVBox(status, details,
 		widget.NewLabel("GPU-Auswahl"), gpuSelect, pruefButton,
 		widget.NewLabel("Modell-Zielpfad (vor Download prüfen)"), modelDir,
 		container.NewHBox(toggleButton, stopButton),
-		lanCheck, adressStatus))
+		lanCheck, adressStatus)))
 	// Der 5-s-Pruefktakt (gpuHelferEinstellungenBeobachten) fuehrt Haekchen und Adressstatus nach,
 	// solange das Fenster offen ist - auch wenn KI/Daemon gpu-helfer.json geaendert haben.
 	fensterNr := meldeGPUFensterAn(func(e gpuHelferEinstellungen, text string) {
@@ -1775,11 +1792,10 @@ func zeigeGPUFenster() {
 			adressStatus.SetText(text)
 		})
 	})
-	fenster.SetOnClosed(func() { meldeGPUFensterAb(fensterNr) })
 	fenster.Resize(fyne.NewSize(820, 760))
 	// Beim Oeffnen zeigt der Knopf sofort den echten Zustand statt einer Vorgabe.
 	go knopfBeschriften()
-	fenster.Show()
+	return func() { meldeGPUFensterAb(fensterNr) }
 }
 
 // zeigeVerbindungsFenster oeffnet die Verbindungs-Einrichtung (TRAY-3).
@@ -1788,7 +1804,11 @@ func zeigeGPUFenster() {
 // Tray holt sich damit selbst ein Token (6 Monate gueltig) und schreibt es in
 // die config.json. Kein Terminal, kein curl, kein Datei-Editieren.
 func zeigeVerbindungsFenster() {
-	fenster := myApp.NewWindow("Synapse-Verbindung")
+	oeffneEinzelFenster("verbindung", "Synapse-Verbindung", bauVerbindungsFenster)
+}
+
+// bauVerbindungsFenster fuellt das Verbindungsfenster (P8-T20: Einzelfenster).
+func bauVerbindungsFenster(fenster fyne.Window) func() {
 
 	status := widget.NewLabel("Status wird geprueft …")
 	status.Wrapping = fyne.TextWrapWord
@@ -1863,19 +1883,26 @@ func zeigeVerbindungsFenster() {
 	codeFeld.OnSubmitted = func(string) { verbinden() }
 	knopf = widget.NewButton("Verbinden", verbinden)
 
-	fenster.SetContent(container.NewVBox(
+	fenster.SetContent(container.NewVScroll(container.NewVBox(
 		status,
 		widget.NewSeparator(),
 		hinweis,
 		codeFeld,
 		knopf,
 		ergebnis,
-	))
-	fenster.Resize(fyne.NewSize(460, 340))
-	fenster.Show()
+	)))
+	fenster.Resize(fyne.NewSize(480, 360))
+	// Tastatur: Code sofort tippen, Enter verbindet.
+	fenster.Canvas().Focus(codeFeld)
+	return nil
 }
 
 func (w *DetailWindow) ReloadAll() {
+	// Kein Stau: laeuft noch ein Durchgang (langsame API), faellt dieser Takt aus.
+	if w.ladet.Swap(true) {
+		return
+	}
+	defer w.ladet.Store(false)
 	w.ReloadAgenten()
 	w.ReloadEvents()
 	w.ReloadActivity()
@@ -1894,6 +1921,7 @@ func (w *DetailWindow) ReloadAgenten() {
 		fyne.Do(func() {
 			w.AgentRows = apiRows
 			w.AgentTable.Refresh()
+			w.agentAuswahl.nachfuehren(w.AgentTable, spaltenSchluessel(w.AgentRows, 0))
 		})
 		return
 	}
@@ -1914,6 +1942,7 @@ func (w *DetailWindow) ReloadAgenten() {
 	fyne.Do(func() {
 		w.AgentRows = newRows
 		w.AgentTable.Refresh()
+		w.agentAuswahl.nachfuehren(w.AgentTable, spaltenSchluessel(w.AgentRows, 0))
 	})
 }
 
@@ -1930,7 +1959,7 @@ func kuerzeAnzeige(s string) string {
 }
 
 func (w *DetailWindow) ReloadEvents() {
-	filter := strings.ToLower(w.FilterEntry.Text)
+	filter := strings.ToLower(w.filterTextWert())
 
 	// TRAY-2: API zuerst, PG als letzter Fallback (siehe ReloadAgenten).
 	if versions, apiErr := apiFetchFileVersions(w.ProjectName, 50); apiErr == nil {
@@ -1952,6 +1981,7 @@ func (w *DetailWindow) ReloadEvents() {
 		fyne.Do(func() {
 			w.EventRows = apiRows
 			w.EventTable.Refresh()
+			w.eventAuswahl.nachfuehren(w.EventTable, eventSchluessel(w.EventRows))
 		})
 		return
 	}
@@ -1962,7 +1992,7 @@ func (w *DetailWindow) ReloadEvents() {
 	}
 	defer rows.Close()
 
-	filterText := strings.ToLower(w.FilterEntry.Text)
+	filterText := filter
 
 	var newRows [][]string
 	for rows.Next() {
@@ -1996,6 +2026,7 @@ func (w *DetailWindow) ReloadEvents() {
 	fyne.Do(func() {
 		w.EventRows = newRows
 		w.EventTable.Refresh()
+		w.eventAuswahl.nachfuehren(w.EventTable, eventSchluessel(w.EventRows))
 	})
 }
 
@@ -2032,6 +2063,7 @@ func (w *DetailWindow) ReloadActivity() {
 			w.ActivityRows = apiRows
 			w.ActivityIDs = ids
 			w.ActivityTable.Refresh()
+			w.aktivitaetAuswahl.nachfuehren(w.ActivityTable, w.ActivityIDs)
 		})
 		return
 	}
@@ -2061,24 +2093,28 @@ func (w *DetailWindow) ReloadActivity() {
 		w.ActivityRows = newRows
 		w.ActivityIDs = ids
 		w.ActivityTable.Refresh()
+		w.aktivitaetAuswahl.nachfuehren(w.ActivityTable, w.ActivityIDs)
 	})
 }
 
 // showActivityDetailWindow oeffnet ein EIGENES Fenster mit dem vollen Inhalt
 // eines einzelnen Tool-Call-Eintrags (Argumente + Ergebnis ungekuerzt bis zum
 // serverseitigen Cap) — aufgerufen ueber den \"Details\"-Knopf im Aktivitaet-Tab.
+// Muss auf dem UI-Faden laufen. Je Tool-Call hoechstens ein Fenster.
 func showActivityDetailWindow(projectName, id string) {
-	fenster := myApp.NewWindow("Tool-Call: " + id)
+	oeffneEinzelFenster("toolcall:"+projectName+":"+id, "Tool-Call: "+id, func(fenster fyne.Window) func() {
+		bauActivityDetailFenster(fenster, projectName, id)
+		return nil
+	})
+}
 
-	kopf := widget.NewLabel("Wird geladen …")
-	kopf.Wrapping = fyne.TextWrapWord
+func bauActivityDetailFenster(fenster fyne.Window, projectName, id string) {
+	kopf := lesefeld("Wird geladen …", false)
 
-	argsBox := widget.NewMultiLineEntry()
-	argsBox.Wrapping = fyne.TextWrapWord
-	argsBox.Disable()
-	ergebnisBox := widget.NewMultiLineEntry()
-	ergebnisBox.Wrapping = fyne.TextWrapWord
-	ergebnisBox.Disable()
+	// Lesefelder statt deaktivierter Eingabefelder: die waren ausgegraut (auf
+	// dunklem Grund kaum lesbar) und nicht kopierbar.
+	argsBox := lesefeld("", true)
+	ergebnisBox := lesefeld("", true)
 
 	split := container.NewVSplit(
 		container.NewBorder(widget.NewLabel("Argumente:"), nil, nil, nil, container.NewVScroll(argsBox)),
@@ -2092,7 +2128,6 @@ func showActivityDetailWindow(projectName, id string) {
 		split,
 	))
 	fenster.Resize(fyne.NewSize(820, 640))
-	fenster.Show()
 
 	go func() {
 		detail, err := apiFetchToolCallDetail(projectName, id)
@@ -2131,7 +2166,7 @@ func (w *DetailWindow) ReloadStatus() {
 	if err != nil {
 		fyne.Do(func() {
 			w.PathLabel.SetText("-")
-			w.ActiveLabel.SetText("-")
+			w.ActiveLabel.SetText("? (Daemon nicht erreichbar)")
 			w.ChunksLabel.SetText("-")
 			w.FilesLabel.SetText("-")
 		})
@@ -2168,11 +2203,33 @@ func (w *DetailWindow) ReloadStatus() {
 	}
 }
 
-func (w *DetailWindow) OpenSelectedEventFile(rowIdx int) {
-	if rowIdx < 0 || rowIdx >= len(w.EventRows) {
+// filterTextWert liefert den Filtertext; aus Goroutinen lesbar (Entry.Text nicht).
+func (w *DetailWindow) filterTextWert() string {
+	v, _ := w.filterText.Load().(string)
+	return v
+}
+
+// zeigeTab waehlt den Tab mit diesem Titel (leer = unveraendert). UI-Faden.
+func (w *DetailWindow) zeigeTab(titel string) {
+	if titel == "" || w.Tabs == nil {
 		return
 	}
-	filePath := w.EventRows[rowIdx][2]
+	for _, it := range w.Tabs.Items {
+		if it.Text == titel {
+			w.Tabs.Select(it)
+			return
+		}
+	}
+}
+
+// eventSchluessel: Zeit, Agent, Datei und Aktion kennzeichnen eine Event-Zeile.
+func eventSchluessel(rows [][]string) []string { return spaltenSchluessel(rows, 0, 1, 2, 3) }
+
+// OpenEventFile laesst den Daemon die Datei im Editor oeffnen.
+func (w *DetailWindow) OpenEventFile(filePath string) {
+	if filePath == "" {
+		return
+	}
 	u := fmt.Sprintf("http://127.0.0.1:%d/projects/%s/open-file", port, url.QueryEscape(w.ProjectName))
 	client := &http.Client{Timeout: 1 * time.Second}
 	resp, err := client.Post(u, "text/plain", strings.NewReader(filePath))
@@ -2187,10 +2244,13 @@ func openChat(projectName, channelName string) {
 	chatLock.Lock()
 	if w, ok := openChats[key]; ok {
 		chatLock.Unlock()
+		// P8-T20: sichtbar wieder setzen — sonst blieb die Live-Aktualisierung nach
+		// dem Wiederoeffnen aus und der Chat zeigte einen eingefrorenen Stand.
 		fyne.Do(func() {
-			w.Window.Show()
-			w.Window.RequestFocus()
+			zeigeVersteckt(w.Window, &w.sichtbar)
+			w.Window.Canvas().Focus(w.InputEntry)
 		})
+		go w.ReloadAll()
 		return
 	}
 
@@ -2204,28 +2264,25 @@ func openChat(projectName, channelName string) {
 	w.MessageBox = container.NewVBox()
 	w.MessageScroll = container.NewVScroll(w.MessageBox)
 
-	w.AgentTable = widget.NewTable(
-		func() (int, int) { return len(w.AgentRows), 2 },
-		func() fyne.CanvasObject { return widget.NewLabel("Template") },
-		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			label := cell.(*widget.Label)
-			if id.Row < len(w.AgentRows) && id.Col < 2 {
-				label.SetText(w.AgentRows[id.Row][id.Col])
-			}
-		},
-	)
-	w.AgentTable.SetColumnWidth(0, 120)
-	w.AgentTable.SetColumnWidth(1, 150)
+	w.AgentTable = neueTabelle([]string{"Agent", "Rolle"}, func() [][]string { return w.AgentRows })
+	w.AgentTable.SetColumnWidth(0, 140)
+	w.AgentTable.SetColumnWidth(1, 170)
 
 	w.InputEntry = widget.NewEntry()
 	w.InputEntry.SetPlaceHolder("Nachricht eingeben... (Enter zum Senden)")
-	w.InputEntry.OnSubmitted = func(text string) {
-		go w.SendMessage()
+	// Text auf dem UI-Faden abnehmen und das Feld sofort leeren: ein zweites Enter
+	// sendet so nicht dieselbe Nachricht noch einmal.
+	senden := func() {
+		text := w.InputEntry.Text
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		w.InputEntry.SetText("")
+		go w.SendMessage(text)
 	}
+	w.InputEntry.OnSubmitted = func(string) { senden() }
 
-	btnSend := widget.NewButton("Senden", func() {
-		go w.SendMessage()
-	})
+	btnSend := widget.NewButton("Senden", senden)
 	btnRef := widget.NewButton("Aktualisieren", func() {
 		go w.ReloadAll()
 	})
@@ -2252,26 +2309,30 @@ func openChat(projectName, channelName string) {
 	fyne.Do(func() {
 		w.Window = myApp.NewWindow("Chat: #" + channelName + " (" + projectName + ")")
 		w.Window.Resize(fyne.NewSize(1000, 600))
-		w.Window.SetCloseIntercept(func() {
-			w.sichtbar.Store(false)
-			w.Window.Hide()
-		})
+		versteckbaresFenster(w.Window, &w.sichtbar)
 		w.sichtbar.Store(true)
 		w.Window.SetContent(mainContent)
 		w.Window.Show()
+		w.Window.Canvas().Focus(w.InputEntry)
 	})
 
 	go w.ReloadAll()
 }
 
-func (w *ChatWindow) SendMessage() {
-	content := w.InputEntry.Text
-	if strings.TrimSpace(content) == "" { return }
-	if err := sendeTrayUserNachricht(w.ProjectName, w.ChannelName, content); err != nil {
-		fyne.Do(func() { dialog.ShowError(err, w.Window) })
+func (w *ChatWindow) SendMessage(content string) {
+	if strings.TrimSpace(content) == "" {
 		return
 	}
-	fyne.Do(func() { w.InputEntry.SetText("") })
+	if err := sendeTrayUserNachricht(w.ProjectName, w.ChannelName, content); err != nil {
+		fyne.Do(func() {
+			// Text nicht verlieren: zurueck ins Feld, sofern dort nichts Neues steht.
+			if w.InputEntry.Text == "" {
+				w.InputEntry.SetText(content)
+			}
+			dialog.ShowError(err, w.Window)
+		})
+		return
+	}
 	go w.ReloadMessages()
 }
 
@@ -2341,23 +2402,34 @@ func (w *ChatWindow) ReloadMessages() {
 	if len(newMsgs) > 0 {
 		w.LastMsgID = maxID
 		fyne.Do(func() {
+			// Nur mitscrollen, wenn man ohnehin unten ist — wer weiter oben liest, bleibt dort.
+			mitscrollen := firstLoad || nahAmEnde(w.MessageScroll.Offset.Y, w.MessageScroll.Size().Height, w.MessageBox.MinSize().Height)
 			if firstLoad {
 				w.MessageBox.RemoveAll()
 			}
 			for _, m := range newMsgs {
 				w.MessageBox.Add(makeMsgItem(m[0], m[1], m[2]))
 			}
+			// Begrenzen: die Liste wuchs vorher unbegrenzt.
+			if n := len(w.MessageBox.Objects); n > maxChatNachrichten {
+				w.MessageBox.Objects = w.MessageBox.Objects[n-maxChatNachrichten:]
+			}
 			w.MessageBox.Refresh()
-			w.MessageScroll.ScrollToBottom()
+			if mitscrollen {
+				w.MessageScroll.ScrollToBottom()
+			}
 		})
 	}
 }
 
+// maxChatNachrichten begrenzt die im Chatfenster gehaltenen Nachrichten.
+const maxChatNachrichten = 500
+
 // makeMsgItem rendert eine Chat-Nachricht als mehrzeiliges, umbrechendes Element.
+// Der Text ist markier- und kopierbar (P8-T20).
 func makeMsgItem(timeStr, sender, content string) fyne.CanvasObject {
 	header := widget.NewLabelWithStyle("["+timeStr+"]  "+sender, fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-	body := widget.NewLabel(content)
-	body.Wrapping = fyne.TextWrapWord
+	body := lesefeld(content, false)
 	return container.NewVBox(header, body, widget.NewSeparator())
 }
 
