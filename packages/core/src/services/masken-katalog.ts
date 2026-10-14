@@ -55,7 +55,9 @@ export function istShellJsonGeheimnisName(name:string):boolean {
 export function shellWertWirktGeheim(roh:string):boolean{
   const w=roh.trim().replace(/^(["'])([\s\S]*)\1$/,'$2');
   if(w.length<SHELL_LITERAL_MIN_LAENGE||/\s/.test(w))return false;
-  return /\d/.test(w)||(/[a-z]/.test(w)&&/[A-Z]/.test(w))||/[^A-Za-z0-9_.\-\/]/.test(w);
+  // Code-Ausdruecke (Diffs, Quelltext) sind keine Zugangsdaten: key=bereich+':'+root, token=getToken(x).
+  if(/[(){}\[\]<>;,`$]|['"]/.test(w))return false;
+  return (/\d/.test(w)&&/[A-Za-z]/.test(w))||(w.length>=20&&/[a-z]/.test(w)&&/[A-Z]/.test(w))||(w.length>=16&&/[^A-Za-z0-9_.\-\/]/.test(w));
 }
 export const URL_ZUGANGSDATEN = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)[^/@?#:\s]+:[^/@?#\s]*@/gi;
 
