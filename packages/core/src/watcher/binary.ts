@@ -25,7 +25,7 @@ import { standardRegistry } from '../asset-intel/registry.js';
 /** Bekannte binaere Datei-Extensions */
 const BINARY_EXTENSIONS = new Set([
   // Bilder
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg', '.tiff', '.tif',
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.tiff', '.tif',
   // Audio
   '.mp3', '.wav', '.ogg', '.flac', '.aac', '.wma', '.m4a',
   // Video
@@ -41,7 +41,9 @@ const BINARY_EXTENSIONS = new Set([
   // Andere
   '.pyc', '.pyo', '.class', '.o', '.obj', '.lib', '.a',
   '.db', '.sqlite', '.sqlite3',
-  '.lock', '.lockb',
+  // Netpbm-Bilder (PBM, PGM, PPM)
+  '.pbm', '.pgm', '.ppm',
+  '.lockb',
 ]);
 
 /** Magic Bytes fuer binaere Dateien */

@@ -123,6 +123,12 @@ test('R1 assetArt: Code/Doku null, Media + Text-Asset zusaetzlich, Binaer nur_as
   assert.equal(assetArt('x/y.bin'), 'nur_asset', 'BINARY_EXTENSIONS');
   assert.equal(assetArt('x/y.ts'), null);
   assert.equal(assetArt('x/y.obj'), 'nur_asset', '.obj steht in BINARY_EXTENSIONS (Code-Weg unveraendert)');
+  for (const [name, content] of [
+    ['yarn.lock', '# yarn lockfile v1\\nleft-pad@^1.0.0:\\n  version \\"1.3.0\\"\\n'],
+    ['Cargo.lock', '[[package]]\\nname = \\"demo\\"\\nversion = \\"1.0.0\\"\\n'],
+    ['composer.lock', '{\\"packages\\":[]}\\n'],
+  ]) assert.equal(assetArt(name, Buffer.from(content)), null, `${name} ist Text, kein Asset`);
+  assert.equal(assetArt('opaque.lock', BIN), 'nur_asset', 'Binärinhalt bleibt trotz .lock-Endung als Asset erkennbar');
   const e = assetEndungen();
   for (const x of ['.gltf', '.glb', '.uasset', '.png']) assert.ok(e.has(x), `Endung ${x} fehlt`);
   for (const x of ['.ts', '.js', '.json', '.md', '.xml', '.txt', '.py']) assert.ok(!e.has(x), `Code-Endung ${x} darf keine Asset-Endung sein`);
