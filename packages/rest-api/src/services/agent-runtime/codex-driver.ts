@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { RuntimeStatusProbe, assertRuntimePidCapacity, captureRuntimeProbe, runtimeProbeDiagnostic } from './probe.js';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { randomUUID } from 'node:crypto';
@@ -123,6 +124,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
   readonly runtime = 'codex' as const;
   readonly label = 'Codex CLI';
   private readonly docker: Docker;
+  private readonly statusProbe = new RuntimeStatusProbe<RuntimeStatus>();
 
   constructor(
     private readonly repository: AgentRuntimeRepository,
@@ -132,6 +134,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
   }
 
   async configure(input: { rootPath: string; image?: string }): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     // Die gesamte neue Konfiguration wird validiert, bevor die laufende Runtime
     // auch nur beruehrt wird. Ein Tippfehler darf keinen gesunden Container stoppen.
     const rootPath = validateRuntimeRoot(input.rootPath);
@@ -141,10 +144,12 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       await this.removeContainer(previous).catch(() => undefined);
     }
     await this.repository.configure('codex', rootPath, image);
+    this.statusProbe.invalidate();
     return this.status();
   }
 
   async setup(): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     const config = await this.ensureConfig();
     try {
       await this.ensureImage(config.image);
@@ -168,18 +173,22 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       await this.repository.updateObserved('codex', { status: 'error', lastError: (error as Error).message });
       throw error;
     }
+    this.statusProbe.invalidate();
     return this.status();
   }
 
   async start(): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     const config = await this.ensureConfig();
     const container = await this.ensureContainer(config);
     await this.ensureRunning(container);
     await this.repository.updateObserved('codex', { containerId: container.id, status: 'running', lastError: null });
+    this.statusProbe.invalidate();
     return this.status();
   }
 
   async stop(): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     const config = await this.ensureConfig();
     try {
       const container = this.docker.getContainer(config.containerName);
@@ -189,10 +198,15 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       // Ein noch nie erstellter oder bereits entfernter Container ist bereits gestoppt.
     }
     await this.repository.clearContainer('codex');
+    this.statusProbe.invalidate();
     return this.status();
   }
 
-  async status(): Promise<RuntimeStatus> {
+  status(): Promise<RuntimeStatus> {
+    return this.statusProbe.run(() => this.probeStatus());
+  }
+
+  private async probeStatus(): Promise<RuntimeStatus> {
     const stored = await this.repository.get('codex');
     if (!stored) {
       return {
@@ -218,6 +232,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     let authStatus: RuntimeStatus['authentication']['status'] = 'unknown';
     let authMethod: string | undefined;
     let lastError: string | null = null;
+    let diagnostic: RuntimeStatus['diagnostic'];
 
     try {
       await this.docker.ping();
@@ -226,11 +241,12 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       containerId = info.Id;
       containerState = info.State?.Running ? 'running' : info.State?.Status === 'created' ? 'created' : 'stopped';
       if (info.State?.Running) {
-        const versionResult = await this.execCapture(container, ['codex', '--version']);
+        await assertRuntimePidCapacity(container, info.HostConfig?.PidsLimit);
+        const versionResult = await this.execCapture(container, ['codex', '--version'], 5_000);
         installed = versionResult.exitCode === 0;
         version = installed ? (versionResult.stdout || versionResult.stderr).trim() : null;
         if (installed) {
-          const login = await this.execCapture(container, ['codex', 'login', 'status']);
+          const login = await this.execCapture(container, ['codex', 'login', 'status'], 5_000);
           const loginText = (login.stdout + '\n' + login.stderr).trim();
           authStatus = login.exitCode === 0 ? 'authenticated' : 'not_authenticated';
           if (login.exitCode === 0) authMethod = loginText.replace(/^Logged in using\s+/i, '').trim() || 'unknown';
@@ -239,8 +255,9 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     } catch (error) {
       const message = (error as Error).message;
       if (!/no such container/i.test(message)) {
-        containerState = 'error';
-        lastError = message;
+        diagnostic = runtimeProbeDiagnostic(error);
+        if (diagnostic.code !== 'pid_limit' && diagnostic.code !== 'probe_timeout') containerState = 'error';
+        lastError = diagnostic.message;
       }
     }
 
@@ -264,6 +281,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       model: config.model,
       container: { name: config.containerName, id: containerId, status: containerState },
       authentication: { status: authStatus, ...(authMethod ? { method: authMethod } : {}) },
+      ...(diagnostic ? { diagnostic } : {}),
       version,
       lastError,
       assignedToMain: config.assignedToMain,
@@ -519,36 +537,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     command: string[],
     timeoutMs = 30_000,
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
-    const exec = await container.exec({
-      Cmd: command,
-      AttachStdout: true,
-      AttachStderr: true,
-      Tty: false,
-      Env: this.runtimeEnv(),
-      WorkingDir: '/projects',
-    });
-    const stream = await exec.start({ hijack: true, stdin: false });
-    const out = new PassThrough();
-    const err = new PassThrough();
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    out.on('data', (chunk: Buffer) => stdout.push(chunk));
-    err.on('data', (chunk: Buffer) => stderr.push(chunk));
-    this.docker.modem.demuxStream(stream, out, err);
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        stream.destroy();
-        reject(new Error('Runtime-Kommando Timeout nach ' + timeoutMs + 'ms'));
-      }, timeoutMs);
-      stream.once('end', () => { clearTimeout(timer); resolve(); });
-      stream.once('error', (error: Error) => { clearTimeout(timer); reject(error); });
-    });
-    const info = await exec.inspect();
-    return {
-      stdout: Buffer.concat(stdout).toString('utf8'),
-      stderr: Buffer.concat(stderr).toString('utf8'),
-      exitCode: info.ExitCode ?? null,
-    };
+    return captureRuntimeProbe(this.docker, container, command, this.runtimeEnv(), timeoutMs);
   }
 
   private safeJson(line: string): unknown {

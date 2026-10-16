@@ -9,6 +9,7 @@ import {
 } from '../api/agent-runtime';
 import { AgentRuntimeTerminal } from './CodexTerminal';
 import '../codex-runtime.css';
+import { runtimeTerminalBlockReason } from './runtime-feedback';
 
 const runtimeMeta: Record<AgentRuntimeName, {
   label: string;
@@ -139,6 +140,9 @@ export function AgentRuntimeControl({
     return result.status;
   });
 
+  const terminalBlockReason = runtimeTerminalBlockReason(status, busy);
+  const probeBlocked = Boolean(status?.diagnostic);
+
   if (compact) {
     return <article className="codex-settings-card">
       <header><div><i className={tone(status)} /><span><strong>{meta.label}</strong><small>PRODUKTIV · AgentRuntime / {meta.driver}</small></span></div><b>{status?.container.status || 'prüfen …'}</b></header>
@@ -151,20 +155,21 @@ export function AgentRuntimeControl({
           {status?.container.status === 'running' && status.installed
             ? <button type="button" disabled>Container und CLI erkannt</button>
             : status?.container.status === 'running'
-              ? <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Installation läuft …' : 'Installation abschließen'}</button>
+              ? <button type="button" disabled={!!busy || !rootPath.trim() || probeBlocked} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Installation läuft …' : 'Installation abschließen'}</button>
               : status?.container.status === 'created' || status?.container.status === 'stopped'
                 ? <button type="button" disabled={!!busy} onClick={() => void run('Start', () => controlAgentRuntime(runtime, 'start'))}>{busy === 'Start' ? 'Wird gestartet …' : 'Vorhandenen Container starten'}</button>
-                : <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Wird eingerichtet …' : 'Einrichten'}</button>}
-          <button type="button" className="primary-action" disabled={status?.container.status !== 'running' || !status.installed || !!busy} onClick={() => setCompactTerminalOpen((open) => !open)}>{compactTerminalOpen ? 'Login-Terminal schließen' : 'Login-Terminal öffnen'}</button>
+                : <button type="button" disabled={!!busy || !rootPath.trim() || probeBlocked} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Wird eingerichtet …' : 'Einrichten'}</button>}
+          <button type="button" className="primary-action" disabled={!!terminalBlockReason} title={terminalBlockReason || undefined} onClick={() => setCompactTerminalOpen((open) => !open)}>{compactTerminalOpen ? 'Login-Terminal schließen' : 'Login-Terminal öffnen'}</button>
           <button type="button" disabled={!!busy || status?.container.status !== 'running'} onClick={() => void run('Stopp', () => controlAgentRuntime(runtime, 'stop'))}>Stoppen</button>
           <button type="button" disabled={!!busy || !status || (!status.assignedToMain && (status.container.status !== 'running' || status.authentication.status !== 'authenticated'))} onClick={() => void assign()}>{status?.assignedToMain ? 'Zuweisung lösen' : meta.label + ' dem Main-Agenten zuweisen'}</button>
         </div>
       </div>
       <p className="runtime-feedback">Hauptagent: <b>{status?.assignedToMain ? meta.label + ' zugewiesen' : 'nicht zugewiesen'}</b>. Zum Zuweisen muss die Runtime laufen und angemeldet sein.</p>
       {status?.container.status === 'running' && status.installed && <p className="runtime-feedback">Vorhandener Container <b>{status.container.name}</b> und CLI erkannt{status.container.id ? ' · ' + status.container.id.slice(0, 12) : ''}. Es wird kein zweiter Container gestartet.</p>}
-      {status?.container.status === 'running' && !status.installed && <p className="runtime-feedback warning">Der Container läuft, aber die CLI-Installation ist noch nicht vollständig. Erst „Installation abschließen“, danach das Login-Terminal öffnen.</p>}
+      {status?.container.status === 'running' && !status.installed && !probeBlocked && <p className="runtime-feedback warning">Der Container läuft, aber die CLI-Installation ist noch nicht vollständig. Erst „Installation abschließen“, danach das Login-Terminal öffnen.</p>}
       {status?.configured && status.container.status !== 'running' && <p className="runtime-feedback warning">Der vorhandene Runtime-Eintrag ist nicht aktiv. Container starten, bevor das Login-Terminal verwendet wird.</p>}
-      {compactTerminalOpen && status?.container.status === 'running' && status.installed && <div className="codex-compact-terminal"><AgentRuntimeTerminal runtime={runtime} /></div>}
+      {terminalBlockReason && <p className="runtime-feedback warning" role="status">{terminalBlockReason}</p>}
+      {compactTerminalOpen && !terminalBlockReason && status?.container.status === 'running' && status.installed && <div className="codex-compact-terminal"><AgentRuntimeTerminal runtime={runtime} /></div>}
       {(error || notice) && <p className={error ? 'runtime-feedback error' : 'runtime-feedback'}>{error || notice}</p>}
     </article>;
   }
@@ -179,7 +184,7 @@ export function AgentRuntimeControl({
     <div className="runtime-path-contract wide"><span>Erzeugte Struktur</span><code>{rootPath || '…'}/home</code><code>{rootPath || '…'}/projects</code><code>{rootPath || '…'}/state</code><code>{rootPath || '…'}/attachments</code></div>
     <footer className="wide">
       <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void saveConfiguration()}>Pfad speichern</button>
-      <button type="button" className="primary-action" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Einrichtung läuft …' : 'Einrichten'}</button>
+      <button type="button" className="primary-action" disabled={!!busy || !rootPath.trim() || probeBlocked} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Einrichtung läuft …' : 'Einrichten'}</button>
       <button type="button" disabled={!!busy || !status?.installed} onClick={() => void run('Start', () => controlAgentRuntime(runtime, 'start'))}>Starten</button>
       <button type="button" disabled={!!busy || status?.container.status !== 'running'} onClick={() => void run('Stopp', () => controlAgentRuntime(runtime, 'stop'))}>Stoppen</button>
     </footer>
@@ -188,9 +193,9 @@ export function AgentRuntimeControl({
 
   if (tab === 'auth') return <div className="codex-auth-workbench">
     <header><div><span>{meta.provider}</span><h3>{authLabel(status)}</h3><p>Der Login wird interaktiv im echten Container-Terminal ausgeführt.</p></div><b className={tone(status)}>● {status?.authentication.status || 'unknown'}</b></header>
-    {status?.container.status === 'running' && status.installed
+    {!terminalBlockReason
       ? <AgentRuntimeTerminal runtime={runtime} />
-      : <div className="runtime-feedback warning">Die CLI ist noch nicht vollständig installiert und ausführbar.<br /><button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Installation läuft …' : 'Installation abschließen'}</button></div>}
+      : <div className="runtime-feedback warning" role="status">{terminalBlockReason}<br /><button type="button" disabled={!!busy || !rootPath.trim() || probeBlocked} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Installation läuft …' : 'Installation abschließen'}</button></div>}
     {(error || notice) && <p className={error ? 'runtime-feedback error' : 'runtime-feedback'}>{error || notice}</p>}
   </div>;
 
@@ -217,6 +222,7 @@ export function AgentRuntimeControl({
       <article><span>Main-Agent</span><b>{status?.assignedToMain ? 'zugewiesen' : 'frei'}</b><small>role=main · runtime={runtime}{status?.model ? ' · model=' + status.model : ''}</small></article>
     </section>
     <div className="runtime-route"><span>main-agent</span><i>→</i><span>AgentRuntime</span><i>→</i><span>{meta.driver}</span><i>→</i><span>{status?.model || status?.version || meta.label}</span></div>
+    {status?.diagnostic && <p className="runtime-feedback warning" role="status">{status.diagnostic.message}</p>}
     {(error || notice) && <p className={error ? 'runtime-feedback error' : 'runtime-feedback'}>{error || notice}</p>}
   </div>;
 }

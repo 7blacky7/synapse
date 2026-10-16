@@ -23,6 +23,7 @@ export interface AgentRuntimeStatus {
   };
   version?: string | null;
   lastError?: string | null;
+  diagnostic?: { code: 'pid_limit' | 'probe_timeout' | 'probe_error'; message: string };
   assignedToMain: boolean;
 }
 

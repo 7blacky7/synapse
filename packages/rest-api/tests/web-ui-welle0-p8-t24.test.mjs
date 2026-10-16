@@ -170,6 +170,8 @@ test('Kompakte Runtime: Login bleibt opt-in, Zuweisung und Stop verwenden echten
       const { AgentRuntimeControl } = load('packages/web-ui/src/components/CodexRuntimeControl.tsx', {
         ...h.modules,
         './CodexTerminal': { AgentRuntimeTerminal: component },
+        // Echter Helfer, kein Mock; aus dem aktuellen Testbaum auch bei Basis-Rotkontrolle.
+        './runtime-feedback': load(resolve(repo, 'packages/web-ui/src/components/runtime-feedback.ts'), {}),
         '../api/agent-runtime': {
           getAgentRuntimeStatus: missing('status polling'),
           configureAgentRuntime: missing('configure'),
