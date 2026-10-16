@@ -156,8 +156,11 @@ export function AgentRuntimeControl({
                 ? <button type="button" disabled={!!busy} onClick={() => void run('Start', () => controlAgentRuntime(runtime, 'start'))}>{busy === 'Start' ? 'Wird gestartet …' : 'Vorhandenen Container starten'}</button>
                 : <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void setup()}>{busy === 'Einrichtung' ? 'Wird eingerichtet …' : 'Einrichten'}</button>}
           <button type="button" className="primary-action" disabled={status?.container.status !== 'running' || !status.installed || !!busy} onClick={() => setCompactTerminalOpen((open) => !open)}>{compactTerminalOpen ? 'Login-Terminal schließen' : 'Login-Terminal öffnen'}</button>
+          <button type="button" disabled={!!busy || status?.container.status !== 'running'} onClick={() => void run('Stopp', () => controlAgentRuntime(runtime, 'stop'))}>Stoppen</button>
+          <button type="button" disabled={!!busy || !status || (!status.assignedToMain && (status.container.status !== 'running' || status.authentication.status !== 'authenticated'))} onClick={() => void assign()}>{status?.assignedToMain ? 'Zuweisung lösen' : meta.label + ' dem Main-Agenten zuweisen'}</button>
         </div>
       </div>
+      <p className="runtime-feedback">Hauptagent: <b>{status?.assignedToMain ? meta.label + ' zugewiesen' : 'nicht zugewiesen'}</b>. Zum Zuweisen muss die Runtime laufen und angemeldet sein.</p>
       {status?.container.status === 'running' && status.installed && <p className="runtime-feedback">Vorhandener Container <b>{status.container.name}</b> und CLI erkannt{status.container.id ? ' · ' + status.container.id.slice(0, 12) : ''}. Es wird kein zweiter Container gestartet.</p>}
       {status?.container.status === 'running' && !status.installed && <p className="runtime-feedback warning">Der Container läuft, aber die CLI-Installation ist noch nicht vollständig. Erst „Installation abschließen“, danach das Login-Terminal öffnen.</p>}
       {status?.configured && status.container.status !== 'running' && <p className="runtime-feedback warning">Der vorhandene Runtime-Eintrag ist nicht aktiv. Container starten, bevor das Login-Terminal verwendet wird.</p>}

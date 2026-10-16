@@ -439,7 +439,7 @@ function ToolActivity({
   const [open, setOpen] = useState(true);
 
   return (
-    <section className={open ? 'tool-run is-open' : 'tool-run'} aria-label="Ausführung des Hauptagenten">
+    <section className={open ? 'tool-run is-open' : 'tool-run'} aria-label="Toolaktivität des Projekts">
       <button className="tool-run-summary" type="button" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
         <i />
         <strong>{summary}</strong>
@@ -782,6 +782,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
           </div>
         </div>
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
+          {runtimeMode !== 'mock' && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Letzte Toolaufrufe im Projekt" phases={[]} />}
           {visibleMessages.map((message) => <Fragment key={message.id}>
             {message.id === 4 && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Projektstatus wird geprüft und als HTML-Antwort aufgebaut." phases={['Auftrag einordnen', 'Darstellung zusammensetzen']} />}
             <article className={'message ' + message.role + ' ' + message.kind}>

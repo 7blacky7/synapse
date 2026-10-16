@@ -77,8 +77,8 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
       endpunkte: ['GET /api/agent-runtimes', 'PUT /api/agent-runtimes/:runtime/config'],
     },
     main: {
-      stand: 'demo',
-      aufgabe: 'Kein Feld dieser Seite wird gespeichert. Der Hauptagent laesst sich bereits ueber die API lesen und wechseln.',
+      stand: 'teilweise',
+      aufgabe: 'Die Runtime-Karten oben steuern den echten Hauptagenten. Die Felder unter „Main-Agent-Entwurf“ sind lokale Entwürfe.',
       endpunkte: ['GET /api/main-agent/runtime', 'PUT /api/main-agent/runtime'],
     },
     heartbeat: { stand: 'demo', aufgabe: 'Reiner Entwurf.', fehlt: 'Die Herzschlag-Steuerung hat keine Route und keine Tabelle.' },
@@ -115,7 +115,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
   const allAgents = agentHosts.flatMap((host) => host.agents.map((agent) => ({ ...agent, host: host.name }))).filter((agent) => agent.role !== 'main');
 
   return <div className="standard-page cp-settings-page">
-    <header className="cp-settings-head"><div><span>CONTROL-PLANE-KONFIGURATION · UI1–UI3</span><h1>Einstellungen</h1><p>Vollständig bedienbarer Entwurf. Keine Runtime-, Token-, Host- oder Testsystem-Aktion wird produktiv ausgeführt.</p></div><div className="settings-scope"><button type="button" className={scope === 'global' ? 'active' : ''} onClick={() => setScope('global')}>Globale Defaults</button><button type="button" className={scope === 'project' ? 'active' : ''} onClick={() => setScope('project')}>Projekt: {project}</button></div></header>
+    <header className="cp-settings-head"><div><span>CONTROL-PLANE-KONFIGURATION · UI1–UI3</span><h1>Einstellungen</h1><p>Runtime-Karten und Modell-Pool wirken direkt. Als Entwurf markierte Felder werden nur lokal vorgemerkt.</p></div><div className="settings-scope"><button type="button" className={scope === 'global' ? 'active' : ''} onClick={() => setScope('global')}>Globale Defaults</button><button type="button" className={scope === 'project' ? 'active' : ''} onClick={() => setScope('project')}>Projekt: {project}</button></div></header>
     <section className="cp-settings-workbench">
       <aside className="settings-navigation"><div className="settings-search"><span>⌕</span><input value={settingsQuery} onChange={(event) => setSettingsQuery(event.target.value)} placeholder="Einstellungen suchen …" />{settingsQuery && <button type="button" onClick={() => setSettingsQuery('')}>×</button>}</div>{categoryGroups.map((group) => { const items = visibleCategories.filter((item) => item.group === group); return items.length ? <section key={group}><label>{group}</label>{items.map((item) => <button type="button" key={item.id} className={category === item.id ? 'active' : ''} onClick={() => setCategory(item.id)}><span>{item.id === 'all-agents' || item.id === 'all-workspaces' ? '●' : '›'}</span><div><strong>{item.label}</strong><small>{item.detail}</small></div></button>)}</section> : null; })}{!visibleCategories.length && <p className="settings-no-results">Keine passende Einstellung gefunden.</p>}</aside>
       <main>
@@ -126,6 +126,16 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
           {category === 'all-workspaces' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Workspaces aller Projekte</h3><p>Laufende, wartende und eingefrorene Arbeitsstände unabhängig vom aktuell gewählten Projekt.</p></div><b>{workspaceProfiles.length} Workspaces</b></header><div className="settings-fleet-table workspace-fleet">{workspaceProfiles.map((item) => <article key={item.id}><i className={item.status} /><span><strong>{item.name}</strong><small>{item.mode} · {item.role}</small></span><b>{item.project}</b><em>{item.image}</em><mark>{item.status}</mark></article>)}</div></div>}
           {category === 'model-pool' && <ModelPoolTable />}
           {category === 'main' && <>
+            <section aria-label="Hauptagent einrichten und zuweisen">
+              <h3>Hauptagent einrichten und zuweisen</h3>
+              <p>Runtime einrichten oder starten, im Login-Terminal anmelden und dem Hauptagenten zuweisen. Diese Aktionen wirken sofort und gelten global, unabhängig von der Projektauswahl.</p>
+              <div className="runtime-settings-list"><AgentRuntimeControl runtime="claude" compact /><AgentRuntimeControl runtime="codex" compact /></div>
+              <button type="button" onClick={() => setCategory('runtimes')}>Alle Runtime-Einstellungen öffnen</button>
+            </section>
+            <section aria-label="Main-Agent-Entwurf">
+              <h3>Main-Agent-Entwurf · DEMO</h3>
+              <p>Die folgenden Identitäts- und Profilfelder sind lokale Entwürfe. „UI-Entwurf speichern“ ändert keine Runtime und keine Hauptagent-Zuweisung.</p>
+            </section>
             <section className="main-agent-chain"><article><span>STABILE IDENTITÄT</span><b>{mainAgent.id}</b><small>Rolle: main · bleibt beim Runtime-Wechsel erhalten</small></article><i>→</i><article><span>RUNTIME</span><b>{mainAgent.runtime}</b><small>{mainAgent.provider}</small></article><i>→</i><article><span>MODELL</span><b>{mainAgent.model}</b><small>{mainAgent.auth}</small></article></section>
             <div className="cp-fields">
               <Field label="Main-Agent-ID" hint="Logische Identität, nicht Provider"><input value={mainAgent.id} onChange={(event) => { setMainAgent({ ...mainAgent, id: event.target.value }); mark(); }} /></Field>

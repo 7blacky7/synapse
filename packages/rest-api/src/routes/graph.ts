@@ -37,9 +37,9 @@ import {
   getThoughts,
   listProposals,
   // Stats / Projekte
-  listCollections,
+  listeProjekte,
   getProjectStats,
-  getCollectionStats,
+  getQdrantClient,
   // Versionen (PG)
   listFileVersions,
   getFileVersion,
@@ -175,52 +175,38 @@ async function getFileList(name: string): Promise<string[]> {
 
 // ───────────────────────── Aggregation: Overview ─────────────────────────
 async function buildOverview() {
-  const collections = await listCollections();
-  const names = new Set(
-    collections
-      .filter((c) => c.startsWith('project_'))
-      // project_<name>_<suffix> -> <name>; einfache Heuristik wie REST projects.ts
-      .map((c) => c.replace(/^project_/, '').replace(/_(code|thoughts|memories|proposals|plans|media)$/, '')),
-  );
-  const projekte = [...names].sort().map((n) => ({
-    name: n,
-    pfad: null as string | null,
-    enabled: null as boolean | null,
+  const registry = await listeProjekte();
+  const projekte = [...registry].sort((a, b) => a.name.localeCompare(b.name)).map((entry) => ({
+    name: entry.name,
+    pfad: entry.path,
+    enabled: entry.enabled,
     running: null as boolean | null,
     files: null as number | null,
     vectors: null as number | null,
   }));
-
-  // enabled-Flag projekt-weit aus PG (gleiche Quelle wie project-Registry /
-  // enabled-sync.ts): EINE Query, danach Map-Lookup pro Projekt.
-  const enabledMap = new Map<string, boolean>();
-  try {
-    const { rows } = await getPool().query<{ name: string; enabled: boolean }>(
-      'SELECT name, enabled FROM projects',
-    );
-    for (const r of rows) enabledMap.set(r.name, r.enabled);
-  } catch { /* projects-Tabelle best-effort */ }
-
   await Promise.all(
     projekte.map(async (p) => {
       // running: Daemon-Heartbeat (frisch <30s) fuer dieses Projekt
       try {
         p.running = await isDaemonAliveForProject(p.name);
       } catch { /* Heartbeat best-effort */ }
-      // enabled: aus PG-Map (kann false sein -> nicht auf null zuruecksetzen)
-      if (enabledMap.has(p.name)) p.enabled = enabledMap.get(p.name)!;
       try {
         const codeStats = await getProjectStats(p.name);
-        let thoughtsCount = 0;
-        let memoriesCount = 0;
-        try {
-          const ts = await getCollectionStats('project_thoughts');
-          thoughtsCount = ts?.pointsCount ?? 0;
-        } catch { /* Collection evtl. nicht vorhanden */ }
-        try {
-          const ms = await getCollectionStats('synapse_memories');
-          memoriesCount = ms?.pointsCount ?? 0;
-        } catch { /* Collection evtl. nicht vorhanden */ }
+        // Gemeinsame Wissens-Collections enthalten mehrere Projekte.
+        // Exakte gefilterte Counts statt globale Collection-Groessen je Projekt.
+        const countKnowledge = async (collection: string): Promise<number> => {
+          try {
+            const result = await getQdrantClient().count(collection, {
+              exact: true,
+              filter: { must: [{ key: 'project', match: { value: p.name } }] },
+            });
+            return result.count;
+          } catch { return 0; /* Collection evtl. nicht vorhanden */ }
+        };
+        const [thoughtsCount, memoriesCount] = await Promise.all([
+          countKnowledge('project_thoughts'),
+          countKnowledge('synapse_memories'),
+        ]);
         p.files = codeStats?.fileCount ?? null;
         p.vectors = (codeStats?.chunkCount ?? 0) + thoughtsCount + memoriesCount;
       } catch { /* Stats best-effort */ }
