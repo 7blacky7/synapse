@@ -12,6 +12,7 @@ import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 import { getProjectRecordById } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
+import { mainToolAccess, mainToolListe, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
 import {
   // Code-Suche
   searchCode,
@@ -6173,8 +6174,17 @@ async function fuehreToolsCallAus(
   toolArgs: Record<string, unknown>,
   derivedAgentId: ReturnType<typeof leiteAgentIdAusHeaders>,
   hauptagentSession: string | null,
+  access: MainToolAccess,
 ): Promise<unknown> {
-  if (hauptagentSession) {
+  const profilFehler = (access.profile === 'main-synapse' || access.error)
+    ? mainToolAblehnung(toolName, toolArgs, access, MCP_TOOLS) : null;
+  if (profilFehler) {
+    return baueToolErgebnis({ success: false, error: profilFehler,
+      message: 'Werkzeug durch Hauptagenten-Profil oder Sessionbindung abgelehnt.' },
+      { tool: toolName, isError: true, strukturiert: true });
+  }
+  if (access.agentId) toolArgs.agent_id = access.agentId;
+  if (hauptagentSession && access.profile === 'artefakt-only') {
     // Auflage (26.08.2026): die Hauptagenten-Verbindung ist auf artefakt
     // beschraenkt — jedes andere Werkzeug wird klar abgelehnt.
     if (toolName !== 'artefakt') {
@@ -6185,6 +6195,8 @@ async function fuehreToolsCallAus(
       };
       return baueToolErgebnis(ablehnung, { tool: toolName, isError: true, strukturiert: true });
     }
+    toolArgs.session_id = hauptagentSession;
+  } else if (toolName === 'artefakt' && hauptagentSession) {
     toolArgs.session_id = hauptagentSession;
   } else if (toolName === 'artefakt') {
     // Ohne Hauptagenten-Header gibt es keine Session-Bindung: ein selbst
@@ -6352,6 +6364,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
     // beiden Handler ist Bestand; Aenderungen hier IMMER in beiden pflegen).
     const hauptagentSessionHeader = request.headers['x-synapse-hauptagent-session'];
     const hauptagentSession = typeof hauptagentSessionHeader === 'string' && hauptagentSessionHeader.trim() !== '' ? hauptagentSessionHeader.trim() : null;
+    const mainAccess = await mainToolAccess(request.headers as Record<string, unknown>);
 
     try {
       let result: unknown;
@@ -6368,7 +6381,9 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/list':
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
-          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : await filtereJevTool(MCP_TOOLS) };
+          result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
+            ? mainToolListe(MCP_TOOLS, mainAccess)
+            : mainToolListe(await filtereJevTool(MCP_TOOLS), mainAccess) };
           break;
 
         case 'tools/call': {
@@ -6378,6 +6393,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             (params?.arguments || {}) as Record<string, unknown>,
             derivedAgentId,
             hauptagentSession,
+            mainAccess,
           );
           break;
         }
@@ -6436,6 +6452,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
     // setzt daraus session_id — eine von aussen behauptete session_id zaehlt nicht.
     const hauptagentSessionHeader = request.headers['x-synapse-hauptagent-session'];
     const hauptagentSession = typeof hauptagentSessionHeader === 'string' && hauptagentSessionHeader.trim() !== '' ? hauptagentSessionHeader.trim() : null;
+    const mainAccess = await mainToolAccess(request.headers as Record<string, unknown>);
 
     console.log(`[MCP] Request: ${method}`);
 
@@ -6454,7 +6471,9 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
         case 'tools/list':
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
-          result = { tools: hauptagentSession ? MCP_TOOLS.filter((t) => t.name === 'artefakt') : await filtereJevTool(MCP_TOOLS) };
+          result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
+            ? mainToolListe(MCP_TOOLS, mainAccess)
+            : mainToolListe(await filtereJevTool(MCP_TOOLS), mainAccess) };
           break;
 
         case 'tools/call': {
@@ -6464,6 +6483,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             (params?.arguments || {}) as Record<string, unknown>,
             derivedAgentId,
             hauptagentSession,
+            mainAccess,
           );
           break;
         }

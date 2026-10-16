@@ -30,6 +30,8 @@ export const INTERN_SCHALTER = {
   context7: ['pause'],
   // Freigabe statt Pause: aktiv=true erlaubt ausschliesslich die lokale Tray-Token-Einsetzung.
   tray_token_weiterleitung: ['freigegeben'],
+  // P22-T2: Hauptagent nur Synapse-MCP, kein eingebautes CLI-Werkzeug.
+  main_synapse: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 
@@ -104,7 +106,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
       dauerhaft: false, grund: null, gesetzt_von: null, gesetzt_am: null,
     };
   }
-  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung') && z.bis !== null && z.bis.getTime() <= jetzt;
+  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse') && z.bis !== null && z.bis.getTime() <= jetzt;
   return {
     name,
     aktiv: z.aktiv && !abgelaufen,
@@ -112,7 +114,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
     abgelaufen,
     modus: z.modus,
     bis: z.bis ? z.bis.toISOString() : null,
-    dauerhaft: (z.aktiv || (name === 'tray_token_weiterleitung' && z.modus === 'freigegeben')) && z.bis === null,
+    dauerhaft: (z.aktiv || ((name === 'tray_token_weiterleitung' || name === 'main_synapse') && z.modus === 'freigegeben')) && z.bis === null,
     grund: z.grund,
     gesetzt_von: z.gesetzt_von,
     gesetzt_am: z.gesetzt_am ? z.gesetzt_am.toISOString() : null,
@@ -143,7 +145,7 @@ export async function setzeSchalter(
   let hinweis: string | undefined;
 
   // Der Freigabeschalter braucht auch fuer einen AUS-Override einen Ablauf.
-  if (opt.aktiv || name === 'tray_token_weiterleitung') {
+  if (opt.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse') {
     modus = opt.modus ?? erlaubt[0];
     if (!erlaubt.includes(modus)) {
       throw new InternSchalterFehler('modus_ungueltig', `Modus "${modus}" passt nicht zu "${name}". Erlaubt: ${erlaubt.join(', ')}.`);

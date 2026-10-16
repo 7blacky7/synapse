@@ -8,7 +8,7 @@
  *   S4 falscher Modus / unbekannter Schalter / fehlende Pflichtangaben -> klare Fehlercodes
  *   S5 Ablauf: abgelaufener Schalter gilt als aus (abgelaufen:true), auch aus dem Cache
  *   S6 Cache: leseSchalter fragt PG erst nach SYNAPSE_INTERN_CACHE_MS erneut; setzeSchalter leert ihn
- *   S7 schalter_liste nennt alle vier Schalter (einschliesslich Tray-Token-Freigabe)
+ *   S7 schalter_liste nennt alle fuenf Schalter (einschliesslich Tray-Token- und main_synapse-Freigabe)
  *   R1 REST ohne SYNAPSE_INTERN_TOOL: 'intern' fehlt in BEIDEN tools/list-Stellen (/mcp/messages und POST /),
  *      Aufruf -> intern_tool_aus. ANKER: dieselbe Liste enthaelt 'artefakt' und 'code_intel' — sonst waere
  *      "fehlt" bei einer leeren Liste automatisch erfuellt (regel-nullzusagen-brauchen-anker).
@@ -193,11 +193,31 @@ try {
   st = await S.leseSchalter('tray_token_weiterleitung');
   pruefe(!st.aktiv && st.abgelaufen===true,'T28 AUS-Override kann aus dem Cache ablaufen',st);
 
+  // P22-T2: main_synapse ist eine Freigabe, aktiv:false ein befristeter AUS-Override.
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'main_synapse',aktiv:true});
+  pruefe(r.success && r.schalter.aktiv === true && r.schalter.gesetzt === true
+    && r.schalter.modus === 'freigegeben' && ungefaehr(r.schalter.bis,12*H),
+    'P22 EIN-Override: freigegeben, Default12h',r);
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'main_synapse',aktiv:false,dauer_min:0.02});
+  pruefe(r.success && r.schalter.aktiv === false && r.schalter.gesetzt === false
+    && r.schalter.modus === 'freigegeben' && ungefaehr(r.schalter.bis,1200),
+    'P22 AUS-Override: freigegeben und eigener Ablauf statt dauerhafter Pause',r);
+  await warte(1500);
+  st = await S.leseSchalter('main_synapse');
+  pruefe(st.aktiv === false && st.gesetzt === false && st.abgelaufen === true
+    && st.modus === 'freigegeben',
+    'P22 AUS-Override kann aus dem Cache ablaufen',st);
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'main_synapse',aktiv:false,dauer_min:24*60});
+  pruefe(r.success && r.schalter.aktiv === false && r.schalter.gesetzt === false
+    && r.schalter.modus === 'freigegeben' && ungefaehr(r.schalter.bis,12*H)
+    && /gekappt/.test(r.schalter.hinweis??''),
+    'P22 AUS-Override ebenfalls auf12h begrenzt und fuer REST sichtbar',r);
+
   // S7
   r = await T.fuehreInternAus({ action: 'schalter_liste' });
   const namen = (r.schalter ?? []).map((s) => s.name).sort();
-  pruefe(r.success && JSON.stringify(namen) === JSON.stringify(['context7', 'embedding', 'parser', 'tray_token_weiterleitung']) && r.hoechstdauer_stunden === 12,
-    'S7 schalter_liste: vier Schalter (einschliesslich Tray-Token-Freigabe), Hoechstdauer 12', r);
+  pruefe(r.success && JSON.stringify(namen) === JSON.stringify(['context7', 'embedding', 'main_synapse', 'parser', 'tray_token_weiterleitung']) && r.hoechstdauer_stunden === 12,
+    'S7 schalter_liste: fuenf Schalter (einschliesslich main_synapse), Hoechstdauer 12', r);
 
   // R1/R2 REST-Strecke in eigenen Prozessen (die Freischaltung wird beim Laden festgehalten)
   for (const modus of ['rest-aus', 'rest-an']) {
@@ -222,7 +242,14 @@ try {
         pruefe(e.antwort?.success === false && e.antwort?.error === 'intern_tool_aus', `R1 ${url}: Aufruf -> intern_tool_aus`, e.antwort);
       } else {
         pruefe(anker && e.namen.includes('intern') && e.outputSchema, `R2 ${url}: intern in tools/list mit outputSchema`, e.namen);
-        pruefe(e.antwort?.success === true && Array.isArray(e.antwort?.schalter) && e.antwort.schalter.length === 4, `R2 ${url}: schalter_liste ueber REST`, e.antwort);
+        const restSchalter = e.antwort?.schalter ?? [];
+        const restNamen = restSchalter.map((s) => s.name).sort();
+        pruefe(e.antwort?.success === true && JSON.stringify(restNamen) === JSON.stringify(['context7', 'embedding', 'main_synapse', 'parser', 'tray_token_weiterleitung']),
+          `R2 ${url}: schalter_liste ueber REST mit fuenf benannten Schaltern`, e.antwort);
+        const mainStand = restSchalter.find((s) => s.name === 'main_synapse');
+        pruefe(mainStand?.modus === 'freigegeben' && mainStand.aktiv === false && mainStand.gesetzt === false
+          && mainStand.abgelaufen === false && ungefaehr(mainStand.bis,12*H,120000),
+          `R2 ${url}: main_synapse zeigt befristeten AUS-Freigabeoverride`, mainStand);
       }
     }
   }

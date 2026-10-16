@@ -344,6 +344,24 @@
   "grund": "P9-T28/1b: tray_token_weiterleitung als befristeter EIN/AUS-Testoverride des Produktionsstandards, eigene Freigabesemantik statt Pause; Definition fuer REST und stdio gemeinsam aus core. intern ist im eingefrorenen RV9-Standard ohne SYNAPSE_INTERN_TOOL weder enthalten noch exportiert (deshalb alt:null/neu:null); die absichtliche Debug-Definitionsaenderung ist mit debug_definition_alt/neu dokumentiert.",
   "task": "P9-T28",
   "datum": "2026-10-16"
+},
+{
+  "strecke": "rest",
+  "tool": "intern",
+  "alt": null,
+  "neu": null,
+  "grund": "P22-T2: main_synapse ergänzt die gemeinsame intern-Definition um einen befristeten EIN/AUS-Freigabeoverride (Default AUS, Produktionsbasis unabhängig). intern bleibt im RV9-Standard verborgen; reguläre Werkzeugdefinitionen bleiben unverändert.",
+  "task": "P22-T2",
+  "datum": "2026-10-16"
+},
+{
+  "strecke": "stdio",
+  "tool": "intern",
+  "alt": null,
+  "neu": null,
+  "grund": "P22-T2: main_synapse ergänzt die gemeinsame intern-Definition um einen befristeten EIN/AUS-Freigabeoverride (Default AUS, Produktionsbasis unabhängig). intern bleibt im RV9-Standard verborgen; reguläre Werkzeugdefinitionen bleiben unverändert.",
+  "task": "P22-T2",
+  "datum": "2026-10-16"
 }
 ]
 }

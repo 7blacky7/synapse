@@ -23,6 +23,7 @@
 
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { validateToken } from '../services/auth.js';
+import { mainScopePasst } from '../services/agent-runtime/main-tool-profile.js';
 import { istOeffentlicherAnsichtPfad } from '@synapse/core';
 
 /**
@@ -175,6 +176,9 @@ export function registerAuthHook(fastify: FastifyInstance): void {
         return send401(reply, request, pathname, 'SSE: sse_token oder Session-Cookie erforderlich');
       }
       const row = await validateToken(sseToken);
+      if (row && !mainScopePasst(row.scope, method, pathname, request.headers as Record<string, unknown>)) {
+        return send401(reply, request, pathname, 'Hauptagenten-Ausweis ist kein User-SSE-Zugang');
+      }
       if (!row || (row.kind !== 'access' && row.kind !== 'session' && row.kind !== 'service')) {
         return send401(reply, request, pathname, 'SSE: ungueltiges/abgelaufenes Token');
       }
@@ -192,6 +196,9 @@ export function registerAuthHook(fastify: FastifyInstance): void {
     const row = await validateToken(token);
     if (!row) {
       return send401(reply, request, pathname, 'Token ungueltig oder abgelaufen');
+    }
+    if (!mainScopePasst(row.scope, method, pathname, request.headers as Record<string, unknown>)) {
+      return send401(reply, request, pathname, 'Hauptagenten-Ausweis passt nicht zu MCP-Session und Werkzeugprofil');
     }
     // Nur echte Zugriffstoken duerfen API/MCP nutzen — NICHT authcode/refresh.
     // /mcp/* (claude.ai/ChatGPT-Connector): strikt nur access|service.

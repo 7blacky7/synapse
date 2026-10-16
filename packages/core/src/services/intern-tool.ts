@@ -97,6 +97,7 @@ export const INTERN_DEFINITION = {
     'schalter_setzen haelt einen Ablauf an oder gibt ihn frei: name embedding (modus hintergrund | alle), parser, context7; ' +
     'Bei diesen Pausenschaltern bedeutet aktiv:true = angehalten. ' +
     'tray_token_weiterleitung (modus freigegeben) ueberschreibt dagegen befristet den Produktionsstandard: aktiv:true = Token-Einsetzung EIN, aktiv:false = AUS. Ohne intern, nach Ablauf oder Brueckenfehler gilt wieder der Standard aus SYNAPSE_TRAY_TOKEN_WEITERLEITUNG/config tray_token_weiterleitung (Default AUS). ' +
+    'main_synapse (modus freigegeben): befristeter EIN/AUS-Testoverride fuer das Hauptagent-Werkzeugprofil main-synapse, alle regulaeren Synapse-Tools inkl. shell, keine eingebauten CLI-Werkzeuge und kein intern; Produktionsbasis SYNAPSE_MAIN_SYNAPSE=1, Default AUS. Bei Ablauf/Lesefehler oder ohne intern gilt die Produktionsbasis. ' +
     'Jeder Schalter laeuft ab (Default und Obergrenze 12 h), ohne Ablauf nur mit dauerhaft:true. ' +
     'schalter_liste zeigt alle Schalter mit Ablauf. ' +
     'ollama_status: geladene Modelle (VRAM, CPU/GPU-Anteil, Kontext, Ablauf), Version, installierte Embedding-Modelle; ' +

@@ -1,10 +1,12 @@
 import Docker from 'dockerode';
+import { RuntimeStatusProbe, assertRuntimePidCapacity, captureRuntimeProbe, runtimeProbeDiagnostic } from './probe.js';
 import { PassThrough } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { AgentRuntimeRepository } from './repository.js';
 import { issueServiceToken } from '../auth.js';
+import { leseMainProfil, mainProfileScope, type MainToolProfile } from './main-tool-profile.js';
 import {
   persistentRuntimeBinds,
   validateRuntimeImage,
@@ -47,7 +49,7 @@ export function validateClaudeModel(model: string): string {
   return value;
 }
 
-export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null): string[] {
+export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only'): string[] {
   const validatedModel = validateClaudeModel(model);
   const command = [
     'claude',
@@ -77,7 +79,7 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
     // Auflage (26.08.2026): der Hauptagent bekommt GENAU EIN Werkzeug
     // freigeschaltet — nicht den ganzen Synapse-Werkzeugkasten. Die Server-
     // Seite erzwingt dasselbe zusaetzlich (tools/list-Filter + Ablehnung).
-    command.push('--allowedTools', 'mcp__synapse__artefakt');
+    command.push('--allowedTools', profile === 'main-synapse' ? 'mcp__synapse__*' : 'mcp__synapse__artefakt');
   }
   command.push('--model', validatedModel);
   return runtimeSessionId ? [...command, '--resume', runtimeSessionId] : command;
@@ -89,7 +91,7 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
  * die API im proxynet unter http://synapse-api:3456 (GEMESSEN 26.08.2026:
  * getent hosts synapse-api -> 172.19.0.2, /health -> {"status":"ok"}).
  */
-export function buildHauptagentMcpConfig(url: string, token: string, sessionId: string): string {
+export function buildHauptagentMcpConfig(url: string, token: string, sessionId: string, profile: MainToolProfile = 'artefakt-only'): string {
   return JSON.stringify({
     mcpServers: {
       synapse: {
@@ -98,6 +100,7 @@ export function buildHauptagentMcpConfig(url: string, token: string, sessionId: 
         headers: {
           Authorization: 'Bearer ' + token,
           'X-Synapse-Hauptagent-Session': sessionId,
+          ...(profile === 'main-synapse' ? { 'X-Synapse-Werkzeugprofil': profile } : {}),
         },
       },
     },
@@ -220,6 +223,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
   readonly runtime = 'claude' as const;
   readonly label = 'Claude Code';
   private readonly docker: Docker;
+  private readonly statusProbe = new RuntimeStatusProbe<RuntimeStatus>();
 
   constructor(
     private readonly repository: AgentRuntimeRepository,
@@ -229,6 +233,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
   }
 
   async configure(input: { rootPath: string; image?: string; model?: string }): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     const rootPath = validateRuntimeRoot(input.rootPath);
     const image = validateRuntimeImage(input.image || DEFAULT_IMAGE);
     const previous = await this.repository.get(this.runtime);
@@ -237,10 +242,12 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       await this.removeContainer(previous);
     }
     await this.repository.configure(this.runtime, rootPath, image, model);
+    this.statusProbe.invalidate();
     return this.status();
   }
 
   async setup(): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     const config = await this.ensureConfig();
     try {
       await this.ensureImage(config.image);
@@ -266,10 +273,12 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       await this.repository.updateObserved(this.runtime, { status: 'error', lastError: (error as Error).message });
       throw error;
     }
+    this.statusProbe.invalidate();
     return this.status();
   }
 
   async start(): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     const config = await this.ensureConfig();
     const container = await this.ensureContainer(config);
     await this.ensureRunning(container);
@@ -278,10 +287,12 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       status: 'running',
       lastError: null,
     });
+    this.statusProbe.invalidate();
     return this.status();
   }
 
   async stop(): Promise<RuntimeStatus> {
+    this.statusProbe.invalidate();
     const config = await this.ensureConfig();
     try {
       const container = this.docker.getContainer(config.containerName);
@@ -293,10 +304,15 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       // Ein noch nie erstellter oder bereits entfernter Container ist bereits gestoppt.
     }
     await this.repository.clearContainer(this.runtime);
+    this.statusProbe.invalidate();
     return this.status();
   }
 
-  async status(): Promise<RuntimeStatus> {
+  status(): Promise<RuntimeStatus> {
+    return this.statusProbe.run(() => this.probeStatus());
+  }
+
+  private async probeStatus(): Promise<RuntimeStatus> {
     const stored = await this.repository.get(this.runtime);
     if (!stored) return this.unconfiguredStatus();
 
@@ -307,6 +323,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     let authStatus: RuntimeStatus['authentication']['status'] = 'unknown';
     let authMethod: string | undefined;
     let lastError: string | null = null;
+    let diagnostic: RuntimeStatus['diagnostic'];
 
     try {
       await this.docker.ping();
@@ -316,7 +333,8 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       containerId = info.Id;
       containerState = info.State?.Running ? 'running' : info.State?.Status === 'created' ? 'created' : 'stopped';
       if (info.State?.Running) {
-        const versionResult = await this.execCapture(container, ['claude', '--version']);
+        await assertRuntimePidCapacity(container, info.HostConfig?.PidsLimit);
+        const versionResult = await this.execCapture(container, ['claude', '--version'], 5_000);
         installed = versionResult.exitCode === 0;
         version = installed ? (versionResult.stdout || versionResult.stderr).trim() : null;
         if (installed) {
@@ -328,8 +346,9 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     } catch (error) {
       const message = (error as Error).message;
       if (!/no such container/i.test(message)) {
-        containerState = 'error';
-        lastError = message;
+        diagnostic = runtimeProbeDiagnostic(error);
+        if (diagnostic.code !== 'pid_limit' && diagnostic.code !== 'probe_timeout') containerState = 'error';
+        lastError = diagnostic.message;
       }
     }
 
@@ -353,6 +372,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       model: stored.model ?? DEFAULT_MODEL,
       container: { name: stored.containerName, id: containerId, status: containerState },
       authentication: { status: authStatus, ...(authMethod ? { method: authMethod } : {}) },
+      ...(diagnostic ? { diagnostic } : {}),
       version,
       lastError,
       assignedToMain: stored.assignedToMain,
@@ -401,12 +421,17 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     await this.ensureTrustStore(container);
 
     const pidPath = '/tmp/synapse-claude-' + randomUUID() + '.pid';
-    const mcpConfig = await this.hauptagentMcpConfig(session.id, emit);
+    const profilStand = await leseMainProfil();
+    const profile = profilStand.profile;
+    if (profile === 'main-synapse' || profilStand.quelle === 'intern' || profilStand.letzterFehler) {
+      emit({ event: 'runtime', data: { werkzeugprofil: profilStand } });
+    }
+    const mcpConfig = await this.hauptagentMcpConfig(session.id, emit, profile);
     const command = [
       '/usr/bin/env',
       '-u',
       'ANTHROPIC_API_KEY',
-      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig),
+      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile),
     ];
     const runner = buildClaudeRunnerCommand();
     const exec = await container.exec({
@@ -503,8 +528,16 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
   private async hauptagentMcpConfig(
     sessionId: string,
     emit: (event: RuntimeStreamEvent) => void,
+    profile: MainToolProfile = 'artefakt-only',
   ): Promise<string | null> {
     try {
+      if (profile === 'main-synapse') {
+        // Minimaler Sessionausweis fuer W0/W2. Kein Daemon-/Tray-Ausweis im CLIkind.
+        // Ausstellen nur nach Freigabe; der MCP-Weg prueft sie bei JEDEM Aufruf erneut.
+        const issued = await issueServiceToken(mainProfileScope(sessionId), 'main-synapse', 24 * 60 * 60 * 1000);
+        const url = process.env.SYNAPSE_HAUPTAGENT_MCP_URL || 'http://synapse-api:3456/';
+        return buildHauptagentMcpConfig(url, issued.token, sessionId, profile);
+      }
       if (!this.hauptagentTokenPromise) {
         this.hauptagentTokenPromise = issueServiceToken(
           'hauptagent:claude',
@@ -519,6 +552,8 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       // Laut statt still (Muster stille Teilantwort): der Chat laeuft ohne das
       // Artefakt-Tool weiter, aber der Grund steht sichtbar im Strom.
       this.hauptagentTokenPromise = null;
+      // Ein gebundener neuer Lauf faellt niemals auf privilegierteren Legacy-Zugang zurueck.
+      if (profile === 'main-synapse') throw error;
       emit({
         event: 'runtime',
         data: {
@@ -570,6 +605,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     const result = await this.execCapture(
       container,
       ['/usr/bin/env', '-u', 'ANTHROPIC_API_KEY', 'claude', 'auth', 'status', '--json'],
+      5_000,
     );
     const raw = (result.stdout || result.stderr).trim();
     try {
@@ -712,36 +748,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     command: string[],
     timeoutMs = 30_000,
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
-    const exec = await container.exec({
-      Cmd: command,
-      AttachStdout: true,
-      AttachStderr: true,
-      Tty: false,
-      Env: this.runtimeEnv(),
-      WorkingDir: '/projects',
-    });
-    const stream = await exec.start({ hijack: true, stdin: false });
-    const out = new PassThrough();
-    const err = new PassThrough();
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    out.on('data', (chunk: Buffer) => stdout.push(chunk));
-    err.on('data', (chunk: Buffer) => stderr.push(chunk));
-    this.docker.modem.demuxStream(stream, out, err);
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        stream.destroy();
-        reject(new Error('Runtime-Kommando Timeout nach ' + timeoutMs + 'ms'));
-      }, timeoutMs);
-      stream.once('end', () => { clearTimeout(timer); resolve(); });
-      stream.once('error', (error: Error) => { clearTimeout(timer); reject(error); });
-    });
-    const info = await exec.inspect();
-    return {
-      stdout: Buffer.concat(stdout).toString('utf8'),
-      stderr: Buffer.concat(stderr).toString('utf8'),
-      exitCode: info.ExitCode ?? null,
-    };
+    return captureRuntimeProbe(this.docker, container, command, this.runtimeEnv(), timeoutMs);
   }
 
   private clamp(value: number | undefined, min: number, max: number, fallback: number): number {
