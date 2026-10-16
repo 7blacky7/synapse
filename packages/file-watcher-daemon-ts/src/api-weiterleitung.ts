@@ -15,8 +15,11 @@
  * hoeher stehende wieder antwortet. Laufende Anfragen behalten ihre Basis (kein Abbruch).
  *
  * TRANSPORT, KEINE ZWEITE WAHRHEIT: alle Basen zeigen auf dieselbe API. Reiner HTTP-Proxy,
- * kein DB-Zugriff, keine eigenen Tokens: der Authorization-Header des Clients geht
- * unveraendert durch. Bodies werden nie geloggt.
+ * kein DB-Zugriff, keine eigenen Tokens: ein Authorization-Header des Clients geht
+ * unveraendert durch. Ohne Header wird der bestehende Tray-Zugang eingesetzt
+ * (leseApiZugang wie skills-proxy), NUR wenn der Produktionsstandard oder ein frischer
+ * Intern-Testoverride tray_token_weiterleitung es erlaubt. Default AUS; ohne Intern-Bruecke
+ * oder nach Ablauf gilt der Produktionsstandard aus Env/Config. Bodies und Zugangsdaten werden nie geloggt.
  *
  * RUECKFALL nur bei Transportfehlern, bevor eine Verbindung stand (Verbindung abgelehnt,
  * DNS, Netz unerreichbar, Verbindungs-Timeout). Antwortet eine Basis (auch 4xx/5xx), geht
@@ -27,7 +30,9 @@
  * http://127.0.0.1:<port>/ die Anmeldung findet, ersetzt die Weiterleitung in
  * WWW-Authenticate-, Location- und Link-Headern sowie in JSON-Antworten unter /.well-known/
  * die Upstream-Herkunft durch die lokale. Alles andere (auch SSE) wird unveraendert
- * gestreamt.
+ * gestreamt. Bei eingesetztem Tray-Zugang wird eine 401 ohne OAuth-Challenge als
+ * Kopplungsfehler beantwortet: lokale Clients sollen den Tray koppeln statt OAuth starten.
+ * Die direkte HTTPS-Anmeldung an der API bleibt unveraendert.
  *
  * SCHUTZ: bindet nur an 127.0.0.1, lehnt Nicht-Loopback-Absender ab und Browser-Anfragen
  * mit jedem Origin-Header (kein Browser-Zugriff).
@@ -38,7 +43,8 @@ import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { loadConfig } from './config.js';
-import { istLoopback } from './skills-proxy.js';
+import { istLoopback, leseApiZugang } from './skills-proxy.js';
+import { trayTokenFreigabe, trayTokenBrueckenStatus, type TrayTokenFreigabe } from './tray-token-weiterleitung.js';
 
 import { apiBasenAusConfig, normalisiereBasis, gueltigeBasis } from './api-adressen.js';
 export { apiBasenAusConfig, normalisiereBasis, API_TUNNEL_STANDARD, API_LAN_STANDARD } from './api-adressen.js';
@@ -126,6 +132,10 @@ export interface WeiterleitungOptionen {
   maxBodyBytes?: number;
   /** Freie Upstream-Sockets vor dem Server schliessen; Standard aus Env/config. */
   idleSocketTimeoutMs?: number;
+  /** Bestehenden Tray-Zugang je Anfrage lesen; injizierbar fuer Fake-API-Tests. */
+  trayToken?: () => string | null;
+  /** Standard: Produktions-Env/Config plus frischer Intern-Testoverride. Injizierbar fuer Tests. */
+  trayFreigabe?: () => TrayTokenFreigabe;
   log?: (msg: string) => void;
 }
 
@@ -320,6 +330,8 @@ export class ApiWeiterleitung {
       laufende_anfragen: this.laufend,
       wechsel: [...this.wechsel],
       pruef_intervall_ms: this.o.pruefIntervallMs ?? 30_000,
+      tray_token: this.leseTrayFreigabe(),
+      tray_token_bruecke: trayTokenBrueckenStatus(),
     };
   }
 
@@ -328,6 +340,11 @@ export class ApiWeiterleitung {
     const host = String(req.headers.host ?? '');
     if (/^(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?$/i.test(host)) return `http://${host}`;
     return `http://127.0.0.1:${this.port}`;
+  }
+
+  private leseTrayFreigabe(): TrayTokenFreigabe {
+    try { return this.o.trayFreigabe ? this.o.trayFreigabe() : trayTokenFreigabe(); }
+    catch { return { an: false, bis: null, quelle: 'standard' }; }
   }
 
   private async behandle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -351,6 +368,22 @@ export class ApiWeiterleitung {
       return;
     }
 
+    // Vorhandensein pruefen, nicht Wahrheit: auch ein leerer eigener Header bleibt eigener Zugang.
+    const freigegeben = this.leseTrayFreigabe().an;
+    const trayZugang = req.headers.authorization === undefined && freigegeben;
+    // AUS behaelt auch die bisherige Hop-by-Hop-Filterung exakt bei.
+    let authorization = freigegeben ? req.headers.authorization : undefined;
+    if (trayZugang) {
+      let token: string | null = null;
+      try { token = this.o.trayToken ? this.o.trayToken() : leseApiZugang().token; } catch { /* klarer Kopplungsfehler, keine Fehlerdetails/Secrets */ }
+      if (!token || !token.trim() || /[\r\n]/.test(token)) {
+        json(503, { success: false, error: 'tray_nicht_gekoppelt', message: 'Tray mit PIN koppeln, dann die Anfrage erneut senden.' });
+        req.resume();
+        return;
+      }
+      authorization = `Bearer ${token}`;
+    }
+
     let body: Buffer;
     try {
       body = await this.sammle(req);
@@ -365,10 +398,10 @@ export class ApiWeiterleitung {
     for (const basis of this.reihenfolge()) {
       if (res.destroyed) return;
       try {
-        const { upReq, upRes } = await this.sende(basis, req, body);
+        const { upReq, upRes } = await this.sende(basis, req, body, authorization);
         this.markiere(basis, true, null);
         if (basis !== this.aktiv) this.setzeAktiv(basis, versuche.length ? 'Rueckfall nach Transportfehler' : 'erste erfolgreiche Anfrage');
-        this.antworte(basis, lokal, req, res, upReq, upRes);
+        this.antworte(basis, lokal, req, res, upReq, upRes, trayZugang);
         return;
       } catch (err) {
         const e = err as TransportFehler;
@@ -401,7 +434,7 @@ export class ApiWeiterleitung {
   }
 
   /** Schickt die Anfrage an eine Basis; loest mit den Antwort-Headern auf. */
-  private sende(basis: string, req: http.IncomingMessage, body: Buffer, frisch = false): Promise<{ upReq: http.ClientRequest; upRes: http.IncomingMessage }> {
+  private sende(basis: string, req: http.IncomingMessage, body: Buffer, authorization: string | undefined, frisch = false): Promise<{ upReq: http.ClientRequest; upRes: http.IncomingMessage }> {
     const ziel = new URL(basis);
     const istHttps = ziel.protocol === 'https:';
     const pfad = ziel.pathname.replace(/\/+$/, '') + (req.url ?? '/');
@@ -411,6 +444,8 @@ export class ApiWeiterleitung {
       if (v === undefined || HOP_BY_HOP.has(k) || connectionHeaders.has(k) || k === 'host' || k === 'content-length') continue;
       headers[k] = v;
     }
+    // Ein eigener Authorization-Header bleibt auch bei Connection: authorization erhalten.
+    if (authorization !== undefined) headers.authorization = authorization;
     headers.host = ziel.host;
     if (body.length > 0 || req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined) {
       headers['content-length'] = String(body.length);
@@ -448,7 +483,7 @@ export class ApiWeiterleitung {
         // Schreibende Methoden bleiben auch bei reusedSocket-Reset ohne Wiederholung.
         if (upReq.reusedSocket && code === 'ECONNRESET' && !frisch &&
             ['GET', 'HEAD', 'OPTIONS'].includes(req.method ?? '')) {
-          this.sende(basis, req, body, true).then(resolve, reject);
+          this.sende(basis, req, body, authorization, true).then(resolve, reject);
           return;
         }
         const transport = TRANSPORT_CODES.has(code) || /certificate|SSL|TLS/i.test(err.message);
@@ -458,7 +493,14 @@ export class ApiWeiterleitung {
     });
   }
 
-  private antworte(basis: string, lokal: string, req: http.IncomingMessage, res: http.ServerResponse, upReq: http.ClientRequest, upRes: http.IncomingMessage): void {
+  private antworte(basis: string, lokal: string, req: http.IncomingMessage, res: http.ServerResponse, upReq: http.ClientRequest, upRes: http.IncomingMessage, trayZugang: boolean): void {
+    if (trayZugang && upRes.statusCode === 401) {
+      // Kein Weiterreichen der OAuth-Challenge oder des Upstream-Bodys bei Tray-Anmeldung.
+      upRes.destroy();
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ success: false, error: 'tray_anmeldung_abgelehnt', message: 'Tray mit PIN koppeln: Die API hat den Tray-Zugang abgelehnt.' }));
+      return;
+    }
     const headers: http.OutgoingHttpHeaders = {};
     const connectionHeaders = new Set(String(upRes.headers.connection ?? '').toLowerCase().split(',').map((v) => v.trim()));
     for (const [k, v] of Object.entries(upRes.headers)) {

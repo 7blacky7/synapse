@@ -26,6 +26,7 @@ import { gpuHelferEinstellen, gpuHelferStatus } from './gpu-helfer-datei.js';
 // P9-T27 letzter Schritt: sync_datei liest den PG-Stand im API-Weg ueber die API.
 import { daemonJobsWeg } from './daemon-jobs-api.js';
 import { apiSyncDateiZugriff } from './daemon-sync-api.js';
+import { uebernehmeTrayTokenFreigabe, verwerfeTrayTokenFreigabe } from './tray-token-weiterleitung.js';
 
 const HOST = os.hostname().replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 128) || 'daemon';
 const PROZESS = `daemon:${HOST}`;
@@ -45,6 +46,7 @@ interface Befehl {
 const schlafe = (ms: number): Promise<void> => new Promise((r) => { const t = setTimeout(r, ms); t.unref?.(); });
 
 export function startInternBruecke(): InternBrueckeHandle {
+  verwerfeTrayTokenFreigabe();
   let stopped = false;
   let laufend: AbortController | null = null;
   /** null = noch nicht erkannt bzw. nach Verbindungsfehler neu erkennen */
@@ -77,6 +79,7 @@ export function startInternBruecke(): InternBrueckeHandle {
     try {
       await anfrage('/api/intern/daemon/antwort', { method: 'POST', body: JSON.stringify({ host: HOST, ...body }) }, 10_000);
     } catch (err) {
+      verwerfeTrayTokenFreigabe();
       console.error(`[intern-bruecke] Antwort an die API fehlgeschlagen: ${(err as Error).message}`);
     }
   }
@@ -135,6 +138,8 @@ export function startInternBruecke(): InternBrueckeHandle {
           fehlerGemeldet = false;
         }
         fehlerZyklen = 0;
+        if (stopped) break;
+        uebernehmeTrayTokenFreigabe(antwort);
         if (antwort === 'nicht_gefunden' || antwort.debug !== true) {
           if (debug !== false) {
             console.error(debug === true
@@ -153,6 +158,7 @@ export function startInternBruecke(): InternBrueckeHandle {
         const befehle = Array.isArray(antwort.befehle) ? (antwort.befehle as Befehl[]) : [];
         for (const b of befehle) await fuehreAus(b);
       } catch (err) {
+        verwerfeTrayTokenFreigabe();
         if (stopped) break;
         fehlerZyklen = Math.min(fehlerZyklen + 1, 30);
         if (!fehlerGemeldet) {
@@ -169,6 +175,7 @@ export function startInternBruecke(): InternBrueckeHandle {
   return {
     stop: () => {
       stopped = true;
+      verwerfeTrayTokenFreigabe();
       laufend?.abort();
     },
   };

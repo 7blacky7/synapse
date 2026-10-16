@@ -17,6 +17,7 @@
 
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
+  alleSchalter,
   holeDaemonBefehle,
   internToolAktiv,
   istGueltigerHost,
@@ -57,7 +58,10 @@ export async function internDaemonRoutes(fastify: FastifyInstance): Promise<void
         stelleDaemonBefehleZurueck(host, befehle);
         return reply;
       }
-      return { success: true, debug: true, befehle, server_zeit: new Date().toISOString() };
+      // Frisch lesen, kein gecachter letzter EIN-Stand bei PG-Ausfall. Unbekannt/Fehler = AUS.
+      let tray_token_weiterleitung: unknown = null;
+      try { tray_token_weiterleitung = (await alleSchalter()).find((s) => s.name === 'tray_token_weiterleitung') ?? null; } catch { /* AUS */ }
+      return { success: true, debug: true, befehle, server_zeit: new Date().toISOString(), tray_token_weiterleitung };
     },
   );
 

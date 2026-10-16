@@ -95,7 +95,9 @@ export const INTERN_DEFINITION = {
   description:
     'Debugging und Steuerung interner Synapse-Ablaeufe (nur sichtbar bei SYNAPSE_INTERN_TOOL=1). ' +
     'schalter_setzen haelt einen Ablauf an oder gibt ihn frei: name embedding (modus hintergrund | alle), parser, context7; ' +
-    'aktiv:true = angehalten. Jeder Schalter laeuft ab (Default und Obergrenze 12 h), ohne Ablauf nur mit dauerhaft:true. ' +
+    'Bei diesen Pausenschaltern bedeutet aktiv:true = angehalten. ' +
+    'tray_token_weiterleitung (modus freigegeben) ueberschreibt dagegen befristet den Produktionsstandard: aktiv:true = Token-Einsetzung EIN, aktiv:false = AUS. Ohne intern, nach Ablauf oder Brueckenfehler gilt wieder der Standard aus SYNAPSE_TRAY_TOKEN_WEITERLEITUNG/config tray_token_weiterleitung (Default AUS). ' +
+    'Jeder Schalter laeuft ab (Default und Obergrenze 12 h), ohne Ablauf nur mit dauerhaft:true. ' +
     'schalter_liste zeigt alle Schalter mit Ablauf. ' +
     'ollama_status: geladene Modelle (VRAM, CPU/GPU-Anteil, Kontext, Ablauf), Version, installierte Embedding-Modelle; ' +
     'ollama_entladen / ollama_laden (modell): Modell aus dem VRAM nehmen bzw. vorladen — nichts wird heruntergeladen oder geloescht. ' +
@@ -131,8 +133,8 @@ export const INTERN_DEFINITION = {
       project: { type: 'string', description: 'nutzung: Filter auf ein Projekt; langsam/nachzug_jetzt: jeweiliger Projektfilter; sonst Attribution (Schalter gelten fuer den ganzen Prozess)' },
       agent_id: { type: 'string', description: 'Agent-ID (landet in gesetzt_von)' },
       name: { type: 'string', enum: Object.keys(INTERN_SCHALTER), description: 'schalter_setzen: Schalter' },
-      aktiv: { type: 'boolean', description: 'schalter_setzen: true = anhalten, false = wieder freigeben' },
-      modus: { type: 'string', description: 'schalter_setzen: embedding hintergrund (Standard) | alle; parser/context7 pause' },
+      aktiv: { type: 'boolean', description: 'schalter_setzen: Pausenschalter true = anhalten, false = wieder freigeben; tray_token_weiterleitung true/false = befristeter EIN/AUS-Override des Produktionsstandards (Default AUS)' },
+      modus: { type: 'string', description: 'schalter_setzen: embedding hintergrund (Standard) | alle; parser/context7 pause; tray_token_weiterleitung freigegeben' },
       bis: { type: 'string', description: 'nutzung: Ende (ISO-Zeitpunkt; Standard jetzt); schalter_setzen / worker_pausieren: Ablauf als ISO-Zeitpunkt' },
       dauer_min: { type: 'number', description: 'schalter_setzen / worker_pausieren: Ablauf in Minuten ab jetzt' },
       dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich)' },
@@ -284,7 +286,7 @@ export async function fuehreInternAus(
         const name = text(a, 'name');
         if (!name) return fehler(action, 'parameter_fehlt', `name fehlt (${Object.keys(INTERN_SCHALTER).join(' | ')}).`);
         const aktiv = wahr(a, 'aktiv');
-        if (aktiv === undefined) return fehler(action, 'parameter_fehlt', 'aktiv fehlt (true = anhalten, false = wieder freigeben).');
+        if (aktiv === undefined) return fehler(action, 'parameter_fehlt', 'aktiv fehlt (Pausenschalter: true = anhalten; tray_token_weiterleitung: true/false = befristeter EIN/AUS-Testoverride).');
         const stand = await setzeSchalter(name, {
           aktiv,
           modus: text(a, 'modus'),
@@ -294,7 +296,9 @@ export async function fuehreInternAus(
           grund: text(a, 'grund'),
           agent: text(a, 'agent_id') ?? agentId,
         });
-        const message = !stand.aktiv
+        const message = name === 'tray_token_weiterleitung'
+          ? `Tray-Token-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne frische Intern-Bruecke/nach Ablauf gilt der Produktionsstandard aus Env/Config (Default AUS).`
+          : !stand.aktiv
           ? `Schalter ${name} aus — der Ablauf laeuft wieder (Worker merken es spaetestens nach dem Cache-Intervall).`
           : `Schalter ${name} an (${stand.modus}) ${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}.`;
         return { success: true, action, schalter: stand, message };

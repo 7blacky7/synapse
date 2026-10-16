@@ -322,6 +322,28 @@
   "grund": "P7-T53: abmelden ergänzt; uebernehmen meldet alle Agenten zur gemeinsamen Beteiligung an, passende_tasks zeigt belegte Tasks und Profil nur als Empfehlung.",
   "task": "P7-T53",
   "datum": "2026-10-16"
+},
+{
+  "strecke": "rest",
+  "tool": "intern",
+  "alt": null,
+  "neu": null,
+  "debug_definition_alt": "0c2cab5cc3aa66633d498fcf29d1ce21f7f240edb31f41504a308891dc0ee474",
+  "debug_definition_neu": "14900adc468a27755333a7602daa119e039bd70993dafe85dc04ea3487a6a4f8",
+  "grund": "P9-T28/1b: tray_token_weiterleitung als befristeter EIN/AUS-Testoverride des Produktionsstandards, eigene Freigabesemantik statt Pause; Definition fuer REST und stdio gemeinsam aus core. intern ist im eingefrorenen RV9-Standard ohne SYNAPSE_INTERN_TOOL weder enthalten noch exportiert (deshalb alt:null/neu:null); die absichtliche Debug-Definitionsaenderung ist mit debug_definition_alt/neu dokumentiert.",
+  "task": "P9-T28",
+  "datum": "2026-10-16"
+},
+{
+  "strecke": "stdio",
+  "tool": "intern",
+  "alt": null,
+  "neu": null,
+  "debug_definition_alt": "0c2cab5cc3aa66633d498fcf29d1ce21f7f240edb31f41504a308891dc0ee474",
+  "debug_definition_neu": "14900adc468a27755333a7602daa119e039bd70993dafe85dc04ea3487a6a4f8",
+  "grund": "P9-T28/1b: tray_token_weiterleitung als befristeter EIN/AUS-Testoverride des Produktionsstandards, eigene Freigabesemantik statt Pause; Definition fuer REST und stdio gemeinsam aus core. intern ist im eingefrorenen RV9-Standard ohne SYNAPSE_INTERN_TOOL weder enthalten noch exportiert (deshalb alt:null/neu:null); die absichtliche Debug-Definitionsaenderung ist mit debug_definition_alt/neu dokumentiert.",
+  "task": "P9-T28",
+  "datum": "2026-10-16"
 }
 ]
 }

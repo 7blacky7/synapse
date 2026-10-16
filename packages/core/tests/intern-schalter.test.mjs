@@ -8,7 +8,7 @@
  *   S4 falscher Modus / unbekannter Schalter / fehlende Pflichtangaben -> klare Fehlercodes
  *   S5 Ablauf: abgelaufener Schalter gilt als aus (abgelaufen:true), auch aus dem Cache
  *   S6 Cache: leseSchalter fragt PG erst nach SYNAPSE_INTERN_CACHE_MS erneut; setzeSchalter leert ihn
- *   S7 schalter_liste nennt alle drei Schalter
+ *   S7 schalter_liste nennt alle vier Schalter (einschliesslich Tray-Token-Freigabe)
  *   R1 REST ohne SYNAPSE_INTERN_TOOL: 'intern' fehlt in BEIDEN tools/list-Stellen (/mcp/messages und POST /),
  *      Aufruf -> intern_tool_aus. ANKER: dieselbe Liste enthaelt 'artefakt' und 'code_intel' — sonst waere
  *      "fehlt" bei einer leeren Liste automatisch erfuellt (regel-nullzusagen-brauchen-anker).
@@ -39,6 +39,12 @@ process.env.OLLAMA_URL = 'http://127.0.0.1:9';
 process.env.SYNAPSE_INTERN_CACHE_MS = '300';
 delete process.env.SYNAPSE_INTERN_MAX_STUNDEN;
 
+// Eigenes Schema wird an REST-Kindprozesse vererbt; keine fremden Test-Schalter anfassen.
+const testSchema = process.env.T28_SCHALTER_SCHEMA ?? ('p9_t28_schalter_' + process.pid);
+if (!/^p9_t28_schalter_[0-9]+$/.test(testSchema)) throw new Error('Test-Schema ungueltig');
+process.env.T28_SCHALTER_SCHEMA = testSchema;
+process.env.PGOPTIONS = '-c search_path=' + testSchema;
+
 const hier = dirname(fileURLToPath(import.meta.url));
 const repo = join(hier, '..', '..', '..');
 const dist = join(hier, '..', 'dist');
@@ -52,6 +58,8 @@ if (process.argv[2] === 'rest-an' || process.argv[2] === 'rest-aus') {
   const { mcpRoutes } = await lade(repo, 'packages', 'rest-api', 'dist', 'routes', 'mcp.js');
   const f = Fastify();
   await f.register(mcpRoutes);
+  const {internDaemonRoutes}=await lade(repo,'packages','rest-api','dist','routes','intern-daemon.js');
+  await f.register(internDaemonRoutes);
   await f.ready();
   const ergebnis = {};
   for (const url of ['/mcp/messages', '/']) {
@@ -67,6 +75,7 @@ if (process.argv[2] === 'rest-an' || process.argv[2] === 'rest-aus') {
       antwort,
     };
   }
+  ergebnis.bruecke=(await f.inject({method:'GET',url:'/api/intern/daemon/befehle?host=p9-t28-fixture&warte=0'})).json();
   console.log('ERGEBNIS ' + JSON.stringify(ergebnis));
   process.exit(0);
 }
@@ -96,6 +105,7 @@ if (!ddl) {
   process.exit(1);
 }
 await pool.query("SET lock_timeout = '5s'");
+await pool.query('CREATE SCHEMA IF NOT EXISTS ' + testSchema);
 await pool.query(ddl);
 await pool.query('DELETE FROM intern_schalter');
 
@@ -166,11 +176,28 @@ try {
   st = await S.leseSchalter('parser');
   pruefe(st.aktiv === true, 'S6 nach Cache-Intervall: neuer Stand (an)', st);
 
+  // P9-T28: Freigabe ist ein EIN/AUS-Override, keine Pause. Beide Richtungen befristet.
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'tray_token_weiterleitung',aktiv:true});
+  pruefe(r.success && r.schalter.modus==='freigegeben' && ungefaehr(r.schalter.bis,12*H) && /EIN/.test(r.message),
+    'T28 EIN-Override: Default12h und klare Freigabesemantik',r);
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'tray_token_weiterleitung',aktiv:false,dauer_min:24*60});
+  pruefe(r.success && !r.schalter.aktiv && ungefaehr(r.schalter.bis,12*H) && /gekappt/.test(r.schalter.hinweis??''),
+    'T28 AUS-Override ebenfalls befristet und auf12h begrenzt',r);
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'tray_token_weiterleitung',aktiv:false,dauerhaft:true});
+  pruefe(r.success && r.schalter.bis===null && r.schalter.dauerhaft===true,
+    'T28 dauerhaft AUS nur mit explizitem dauerhaft:true',r);
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'tray_token_weiterleitung',aktiv:false,dauerhaft:true,dauer_min:5});
+  pruefe(!r.success && r.error==='dauer_mehrdeutig','T28 auch AUS: Dauer nicht mehrdeutig',r);
+  r = await T.fuehreInternAus({action:'schalter_setzen',name:'tray_token_weiterleitung',aktiv:false,dauer_min:0.001});
+  await warte(90);
+  st = await S.leseSchalter('tray_token_weiterleitung');
+  pruefe(!st.aktiv && st.abgelaufen===true,'T28 AUS-Override kann aus dem Cache ablaufen',st);
+
   // S7
   r = await T.fuehreInternAus({ action: 'schalter_liste' });
   const namen = (r.schalter ?? []).map((s) => s.name).sort();
-  pruefe(r.success && JSON.stringify(namen) === JSON.stringify(['context7', 'embedding', 'parser']) && r.hoechstdauer_stunden === 12,
-    'S7 schalter_liste: drei Schalter, Hoechstdauer 12', r);
+  pruefe(r.success && JSON.stringify(namen) === JSON.stringify(['context7', 'embedding', 'parser', 'tray_token_weiterleitung']) && r.hoechstdauer_stunden === 12,
+    'S7 schalter_liste: vier Schalter (einschliesslich Tray-Token-Freigabe), Hoechstdauer 12', r);
 
   // R1/R2 REST-Strecke in eigenen Prozessen (die Freischaltung wird beim Laden festgehalten)
   for (const modus of ['rest-aus', 'rest-an']) {
@@ -183,6 +210,10 @@ try {
       continue;
     }
     const erg = JSON.parse(zeile.slice('ERGEBNIS '.length));
+    pruefe(modus==='rest-aus'
+      ? erg.bruecke?.debug===false && erg.bruecke?.tray_token_weiterleitung===undefined
+      : erg.bruecke?.debug===true && erg.bruecke?.tray_token_weiterleitung?.name==='tray_token_weiterleitung',
+      'T28 Long-Poll-Freigabe nur bei API-Debug AN',erg.bruecke);
     for (const url of ['/mcp/messages', '/']) {
       const e = erg[url];
       const anker = e.namen.includes('artefakt') && e.namen.includes('code_intel');
@@ -191,12 +222,13 @@ try {
         pruefe(e.antwort?.success === false && e.antwort?.error === 'intern_tool_aus', `R1 ${url}: Aufruf -> intern_tool_aus`, e.antwort);
       } else {
         pruefe(anker && e.namen.includes('intern') && e.outputSchema, `R2 ${url}: intern in tools/list mit outputSchema`, e.namen);
-        pruefe(e.antwort?.success === true && Array.isArray(e.antwort?.schalter) && e.antwort.schalter.length === 3, `R2 ${url}: schalter_liste ueber REST`, e.antwort);
+        pruefe(e.antwort?.success === true && Array.isArray(e.antwort?.schalter) && e.antwort.schalter.length === 4, `R2 ${url}: schalter_liste ueber REST`, e.antwort);
       }
     }
   }
 } finally {
   await pool.query('DELETE FROM intern_schalter').catch(() => {});
+  await pool.query('DROP SCHEMA ' + testSchema + ' CASCADE').catch(() => {});
   await db.closePool();
 }
 
