@@ -486,8 +486,8 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'verschieben', 'zurueckstellen', 'einordnen'],
-          description: 'Aktion: "einordnen" (plan_id = Quellplan + task_id String/Array, max 200; optional ziele, verschieben, confidence_tor) laesst Jev je Task den passenden Plan waehlen — Standard nur Vorschlag, verschieben:true verschiebt die sicheren (confidence >= Tor, anderer Plan), "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) offene Tasks, deren Empfehlung zu deinem Profil passt (Familie gleich, Kontext >= empfohlen, Effort gleich oder eine Stufe hoeher); ohne/unsichere Empfehlung -> offen_fuer_koordinator, "uebernehmen" (plan_id + task_id + agent_id Pflicht) nimmt eine passende Task atomar (zugewiesen_an, in_progress), "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
+          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'abmelden', 'verschieben', 'zurueckstellen', 'einordnen'],
+          description: 'Aktion: "einordnen" (plan_id = Quellplan + task_id String/Array, max 200; optional ziele, verschieben, confidence_tor) laesst Jev je Task den passenden Plan waehlen — Standard nur Vorschlag, verschieben:true verschiebt die sicheren (confidence >= Tor, anderer Plan), "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) zeigt offene/laufende Tasks inkl. Beteiligter und unverbindlichem Profilhinweis; jeder Agent darf sich anmelden, "uebernehmen" (plan_id + task_id + agent_id Pflicht) meldet atomar und idempotent zur gemeinsamen Beteiligung an; bestehende Beteiligte blockieren nie, "abmelden" (task_id + agent_id Pflicht, plan_id optional) entfernt die eigene Beteiligung, letzter Beteiligter setzt nicht erledigte Tasks auf todo, "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding. Neue Agenten sehen automatisch Projekt-Regeln.' },
@@ -3109,7 +3109,7 @@ async function handleToolCallKern(
           const limited = taskLimit && taskLimit > 0 ? filtered.slice(0, taskLimit) : filtered;
           const compact = bool(args, 'compact') ?? !nachId.gefiltert;
           const tasks = compact
-            ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, ...(typeof t.git_branch === 'string' && t.git_branch ? { git_branch: t.git_branch } : {}) }))
+            ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, beteiligte: t.beteiligte, ...(typeof t.zugewiesen_an === 'string' ? { zugewiesen_an: t.zugewiesen_an } : {}), ...(typeof t.git_branch === 'string' && t.git_branch ? { git_branch: t.git_branch } : {}) }))
             : limited;
           return {
             ...p,
@@ -3216,6 +3216,10 @@ async function handleToolCallKern(
         case 'passende_tasks': {
           const { passendeTasks } = await import('@synapse/core');
           return await passendeTasks(project, str(args, 'agent_id') ?? '', str(args, 'plan_id'));
+        }
+        case 'abmelden': {
+          const { meldeTaskAb } = await import('@synapse/core');
+          return await meldeTaskAb(project, str(args, 'plan_id'), str(args, 'task_id') ?? '', str(args, 'agent_id') ?? '');
         }
         case 'uebernehmen': {
           const { uebernehmeTask } = await import('@synapse/core');

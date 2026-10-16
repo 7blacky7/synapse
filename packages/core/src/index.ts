@@ -612,7 +612,7 @@ export type { KurzIdZeile, KurzIdAenderung } from './services/plan-kurz-ids.js';
 export type { PlanRef, PlanListenEintrag, VerschiebeErgebnis } from './services/plans.js';
 
 // Selbstzuweisung: plan(passende_tasks) / plan(uebernehmen) (Aufgabe C)
-export { passendeTasks, uebernehmeTask, passtZuProfil, ladeAgentProfil } from './services/plan-zuweisung.js';
+export { passendeTasks, uebernehmeTask, meldeTaskAb, passtZuProfil, ladeAgentProfil } from './services/plan-zuweisung.js';
 export type { AgentProfil } from './services/plan-zuweisung.js';
 
 // Selbstauskunft fuer Spezialisten: specialist(action:'selbst')

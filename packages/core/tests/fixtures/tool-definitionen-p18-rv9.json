@@ -304,6 +304,24 @@
   "grund": "P16-T19 E3b: java/kotlin in build_einstellungen sprachen explizit zuschaltbar; javac -proc:none und fester Kotlin-Compiler im bestehenden Prüfcontainer, nur neue Diagnosen aus PG+Schatten; fehlende JARs/Generation teilweise. Gemeinsame E3-Definition durch vorangehende Kettenglieder bereits hashmäßig belegt, JVM-Anteil hier dokumentiert.",
   "task": "P16-T19",
   "datum": "2026-10-14"
+},
+{
+  "strecke": "rest",
+  "tool": "plan",
+  "alt": "0f8794f37377cb9927db97b3b04be922d789097f08c8cb46617336168ba7e258",
+  "neu": "781d6694d7f12ac0602ad788b61840170a8be7b30d70e8e25d2d3f07cd1e608d",
+  "grund": "P7-T53: abmelden ergänzt; uebernehmen meldet alle Agenten zur gemeinsamen Beteiligung an, passende_tasks zeigt belegte Tasks und Profil nur als Empfehlung.",
+  "task": "P7-T53",
+  "datum": "2026-10-16"
+},
+{
+  "strecke": "stdio",
+  "tool": "plan",
+  "alt": "7763a87c6d12c283541ae18eff32473fc2028e70af06ef3835b781a93110abc1",
+  "neu": "a543631e05aa5ea1545cfb99283e40985a0d817547757184669a52cfeac7ec89",
+  "grund": "P7-T53: abmelden ergänzt; uebernehmen meldet alle Agenten zur gemeinsamen Beteiligung an, passende_tasks zeigt belegte Tasks und Profil nur als Empfehlung.",
+  "task": "P7-T53",
+  "datum": "2026-10-16"
 }
 ]
 }

@@ -1114,15 +1114,20 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
       },
 
       passende_tasks: {
-        description: 'Offene Tasks (status todo, nicht zugewiesen), deren empfehlung zum Profil des Aufrufers passt — Profil aus wrapper_status + model_registry wie specialist(selbst). Tasks ohne Empfehlung oder "unsicher" stehen getrennt unter offen_fuer_koordinator. Ohne plan_id ueber alle Plaene, je Treffer plan_id/plan_kurz_id.',
-        params: 'project (req), agent_id (req, eigener Spezialisten-Name), plan_id?',
-        example: 'plan({ action: "passende_tasks", project: "synapse", agent_id: "opus-kollege" })',
-        tips: 'PASST-REGEL: Modellfamilie gleich (spawn_alias ohne [1m] == eigener Alias ohne [1m]); eigener Kontext >= empfohlenem (1M darf 200k-Tasks, nicht umgekehrt); Effort gleich der empfohlenen Stufe oder GENAU eine Stufe hoeher (effort_stufen-Reihenfolge); Modelle ohne Effort (haiku) nur bei Empfehlung ohne Effort. Jev bewertet nur — Spezialisten nehmen sich Arbeit selbst und geben nichts weiter.',
+        description: 'Offene und laufende Tasks fuer JEDEN Agenten. tasks zeigt alle inkl. Beteiligter (seit, aktiv/inaktiv) und profil_hinweis passt/passt nicht mit Grund. Profil aus wrapper_status, sonst agent_sessions.model, sonst Profil unbekannt. Empfehlung ist niemals eine Sperre. Bestehende Listen passend und offen_fuer_koordinator bleiben zusaetzlich erhalten.',
+        params: 'project (req), agent_id (req, eigene Agent-ID), plan_id?',
+        example: 'plan({ action: "passende_tasks", project: "synapse", agent_id: "sol-22" })',
+        tips: 'Beteiligte blockieren nie, auch inaktive bleiben sichtbar. Arbeit ansehen: files(history, task_id), Thoughts mit task_id, code_intel(..., schatten:"alle"), gemeinsame Dateien per Co-Edit. Ab 3 Beteiligten nur Hinweis, keine Hoechstzahl.',
       },
       uebernehmen: {
-        description: 'Uebernimmt eine passende Task ATOMAR: setzt zugewiesen_an, zugewiesen_am und status in_progress (ein bedingtes UPDATE, keine Sperre). Nur wenn die Task offen und noch nicht zugewiesen ist, eine sichere Empfehlung hat und das Profil passt — sonst Fehler mit Grund, z. B. "empfohlen: opus@high (1m), du bist sonnet@medium (200k)". Zwei gleichzeitige Uebernahmen: genau eine gewinnt.',
+        description: 'Meldet JEDEN Agenten atomar zur gemeinsamen Task-Beteiligung an. beteiligte [{agent_id, seit}], todo wird in_progress; erneute Anmeldung ist idempotent. Andere Beteiligte, fehlende/unsichere Empfehlungen oder Profilabweichungen verhindern keine Anmeldung. Legacy zugewiesen_an/am spiegelt den ersten Beteiligten; Altbestand wird beim Lesen uebernommen.',
         params: 'project (req), plan_id (req, UUID oder P<n>), task_id (req, UUID oder P<n>-T<m>), agent_id (req)',
-        example: 'plan({ action: "uebernehmen", project: "synapse", plan_id: "P2", task_id: "P2-T12", agent_id: "opus-kollege" })',
+        example: 'plan({ action: "uebernehmen", project: "synapse", plan_id: "P2", task_id: "P2-T12", agent_id: "sol-22" })',
+      },
+      abmelden: {
+        description: 'Entfernt die eigene Beteiligung atomar und idempotent. Letzter Beteiligter verlaesst eine nicht erledigte Task: todo. Done bleibt done. update_task status todo leert die Beteiligten samt Legacy-Zuweisung.',
+        params: 'project (req), task_id (req), agent_id (req), plan_id?',
+        example: 'plan({ action: "abmelden", project: "synapse", plan_id: "P2", task_id: "P2-T12", agent_id: "sol-22" })',
       },
       aktivieren: {
         description: 'Macht einen Plan zum aktiven Plan des Projekts (EIN Update, alle anderen werden inaktiv).',

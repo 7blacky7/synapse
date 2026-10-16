@@ -20,7 +20,7 @@ ${config.task}
 Deine Modelldaten (Modell, Effort, Kontext, Cutoff) NICHT schaetzen, sondern mit specialist(action:'selbst', agent_id:'${config.name}') abrufen.
 
 ## Neue Arbeit
-Neue Arbeit: plan(action:'passende_tasks', project:'${config.project}', agent_id:'${config.name}') -> plan(action:'uebernehmen', project:'${config.project}', plan_id, task_id, agent_id:'${config.name}'). Nimm nur Tasks, die dir der Server als passend gibt. Gib keine Tasks an andere Agenten weiter. Passt nichts, melde dich im Channel und warte.`)
+Neue Arbeit: plan(action:'passende_tasks', project:'${config.project}', agent_id:'${config.name}') -> plan(action:'uebernehmen', project:'${config.project}', plan_id, task_id, agent_id:'${config.name}'). Das Profil ist eine Empfehlung, keine Sperre. Tasks mit Beteiligten bleiben offen: ihre Arbeit zuerst per Schatten/History ansehen, dann gemeinsam per Co-Edit beitragen. Gib keine Tasks an andere Agenten weiter.`)
 
   // 1b. Werkzeuge gezielt laden (P7-T16): kein breites ToolSearch nach "synapse" (~40k Kontext).
   //     Fuer alle Runtimes (Gemini/agy kennen kein ToolSearch — dort harmlos), praefix-neutral.

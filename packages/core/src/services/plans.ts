@@ -49,6 +49,7 @@ import {
 import { embed, type EmbedOptions } from '../embeddings/index.js';
 import type { NachzugPunkt, NachzugQuelle } from './embed-nachzug.js';
 import { getPool } from '../db/client.js';
+import { sichtbareTaskBeteiligte, mitTaskBeteiligten } from './plan-beteiligung.js';
 import { leseGeschuetztenHauptbranch } from './hinweis-drossel.js';
 import { pruefeGitBranch } from './git-branch.js';
 export { pruefeGitBranch } from './git-branch.js';
@@ -331,13 +332,18 @@ export function planKontext(plan: ProjectPlan): { plan_ref: PlanRef; hinweis_pla
 export async function getPlan(project: string, planRef?: string | null): Promise<ProjectPlan | null> {
   const alle = await lesePlaene(project);
   const z = findePlan(project, alle, planRef);
-  return z ? zuPlan(z, alle) : null;
+  if (!z) return null;
+  const plan = zuPlan(z, alle);
+  return { ...plan, tasks: await sichtbareTaskBeteiligte(project, plan.tasks) };
 }
 
 /** Alle Plaene des Projekts MIT Tasks (created_at-Reihenfolge) — fuer passende_tasks ohne plan_id. */
 export async function getAllePlaene(project: string): Promise<ProjectPlan[]> {
   const alle = await lesePlaene(project);
-  return alle.map((z) => zuPlan(z, alle));
+  const plaene = alle.map((z) => zuPlan(z, alle));
+  const tasks = await sichtbareTaskBeteiligte(project, plaene.flatMap(p => p.tasks));
+  let offset = 0;
+  return plaene.map(p => { const eigene = tasks.slice(offset, offset + p.tasks.length); offset += p.tasks.length; return { ...p, tasks: eigene }; });
 }
 
 /**
@@ -952,7 +958,7 @@ export async function updateTask(
     const i = stand.tasks.findIndex((t) => t.id === zielId);
     if (i === -1) return null;
     const tasks = [...stand.tasks];
-    tasks[i] = { ...tasks[i], ...updates, updatedAt: new Date().toISOString() };
+    tasks[i] = { ...(updates.status === 'todo' ? mitTaskBeteiligten(tasks[i], []) : tasks[i]), ...updates, updatedAt: new Date().toISOString() };
     return { stand: { ...stand, tasks }, ergebnis: null };
   });
   if (!r) return null;
