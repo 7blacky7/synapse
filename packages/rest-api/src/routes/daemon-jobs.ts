@@ -38,6 +38,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   DAEMON_JOB_WARTE_MAX_S,
+  leseTokenIdentitaetSchalter,
+  stelleAgentTokenAus,
+  AgentIdentitaetFehler,
   EXPIRE_PENDING_AFTER_SEC,
   expirePendingShellJobs,
   expirePendingSpecialistJobs,
@@ -391,7 +394,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
   // Jede Aktion ausser 'modelle' verlangt ein Projekt, das eindeutig auf dem Token-Host liegt.
   const SPEZIALISTEN_DATEN = ['modelle', 'projektpfad', 'general_channel', 'channel_beitreten', 'sitzung_neu', 'wrapper_status',
     'heartbeat_beim_spawn', 'wrapper_pid', 'wrapper_gestoppt', 'aus_channels', 'chat_abmelden', 'wrapper_status_entfernen',
-    'inbox_entfernen', 'inbox_post'] as const;
+    'inbox_entfernen', 'inbox_post', 'agent_start'] as const;
   fastify.post<{
     Body: {
       host?: string; daemon_id?: string; aktion?: string; project?: string; agent?: string; channel?: string;
@@ -417,6 +420,31 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     const agent = aktion === 'wrapper_status' ? body.zeile?.agentName : aktion === 'inbox_post' ? body.to : body.agent;
     if (!istAgentName(agent)) return reply.code(400).send({ success: false, error: 'agent_ungueltig' });
     switch (aktion) {
+      case 'agent_start': {
+        // Der authentifizierte Daemon darf nur eine vorhandene Identität seines
+        // Host-Projekts übernehmen, niemals eine neue Identität anlegen.
+        reply.header('cache-control', 'no-store');
+        const schalter = await leseTokenIdentitaetSchalter();
+        if (!schalter.freigegeben) return { success: true, aktion, freigegeben: false, schalter };
+        try {
+          const r = await getPool().query<{ id: string; name: string; status: string }>(
+            'SELECT id, name, status FROM agent_identitaeten WHERE project=$1 AND agent_id=$2',
+            [project, agent]);
+          const i = r.rows[0];
+          if (!i) return { success: true, aktion, freigegeben: true, legacy_start: true, schalter };
+          if (i.status !== 'aktiv') return reply.code(403).send({ success: false, error: 'identitaet_nicht_aktiv' });
+          const ausweis = await stelleAgentTokenAus({
+            project, name: i.name, identity_id: i.id, start_art: 'specialist',
+            grund: 'Frischstart durch authentifizierten Projekt-Daemon',
+          }, { system: 'daemon' });
+          // Klartext nur in dieser TLS-/LAN-Antwort an den geprüften Daemon,
+          // nie im Queue-Job, Completion, Wrapperstatus oder Projektordner.
+          return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter };
+        } catch (err) {
+          return reply.code(409).send({ success: false,
+            error: err instanceof AgentIdentitaetFehler ? err.code : 'agent_start_fehlgeschlagen' });
+        }
+      }
       case 'general_channel':
         await ensureGeneralChannel(project, istAgentName(body.created_by) ? body.created_by : agent, agent);
         return { success: true, aktion };

@@ -4,6 +4,7 @@ import { baueWerkzeugHinweis } from './werkzeuge-laden.js'
 export function buildSpecialistPrompt(
   config: SpecialistConfig,
   skillContent?: string | null,
+  tokenAnmeldung: boolean | 'neu' = false,
 ): string {
   const sections: string[] = []
 
@@ -37,8 +38,10 @@ ${skillContent}`)
 Du bist ein SPEZIALIST. Deine Rolle: spezialist
 
 ### Onboarding (PFLICHT — Allererste Aktion)
-admin(action: "index_stats", project: "${config.project}", agent_id: "${config.name}", role: "spezialist")
-→ Du bekommst Projekt-Regeln. Befolge sie.
+${tokenAnmeldung === true
+  ? 'Melde dich mit dem Token bei Synapse an: chat(action: "anmelden"). Der geschützte Transport liefert den Token; gib ihn nie aus.'
+  : `admin(action: "index_stats", project: "${config.project}", agent_id: "${config.name}", role: "spezialist")
+→ Du bekommst Projekt-Regeln. Befolge sie.`}
 
 Du hast Zugriff auf Synapse MCP-Tools. Nutze sie:
 - search(action: "code"): Code semantisch suchen

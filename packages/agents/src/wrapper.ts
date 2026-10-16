@@ -1499,7 +1499,9 @@ ERSTE AKTION: Lies deine gesicherten Daten:
 
 Danach: Check Channels und Inbox fuer neue Nachrichten — channel(action: "feed", preview: true, limit: 5), Volltext nur der Nachricht, die dich betrifft (channel(feed, since_id: <id-1>, limit: 1)).`
 
-    await wakeAgent(onboardingPrompt)
+    await wakeAgent(process.env.SYNAPSE_AGENT_TOKEN
+      ? 'Melde dich mit dem Token bei Synapse an: chat(action: "anmelden").'
+      : onboardingPrompt)
     log('Context rotation completed successfully')
   } catch (err) {
     log('Context rotation failed: %s', err)
@@ -1813,7 +1815,9 @@ async function main() {
 
     // Initial Wake: Agent mit seiner Aufgabe starten (Task steht im System-Prompt)
     log('Initial Wake: Starte Agent mit Aufgabe')
-    wakeAgent('Starte jetzt mit deiner Aufgabe. Fuehre zuerst das Onboarding durch, dann arbeite deinen Task ab.')
+    wakeAgent(process.env.SYNAPSE_AGENT_TOKEN
+      ? 'Melde dich mit dem Token bei Synapse an: chat(action: "anmelden"). Danach arbeite deinen Task ab.'
+      : 'Starte jetzt mit deiner Aufgabe. Fuehre zuerst das Onboarding durch, dann arbeite deinen Task ab.')
       .catch((err) => log('Initial Wake fehlgeschlagen: %s', err))
   }, STARTUP_DELAY_MS)
 

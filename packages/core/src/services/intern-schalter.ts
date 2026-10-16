@@ -32,6 +32,8 @@ export const INTERN_SCHALTER = {
   tray_token_weiterleitung: ['freigegeben'],
   // P22-T2: Hauptagent nur Synapse-MCP, kein eingebautes CLI-Werkzeug.
   main_synapse: ['freigegeben'],
+  // P22-T10: aktiv=true gibt Token-Identitaet befristet frei (kein Pause-Schalter).
+  token_identitaet: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 
@@ -106,7 +108,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
       dauerhaft: false, grund: null, gesetzt_von: null, gesetzt_am: null,
     };
   }
-  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse') && z.bis !== null && z.bis.getTime() <= jetzt;
+  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet') && z.bis !== null && z.bis.getTime() <= jetzt;
   return {
     name,
     aktiv: z.aktiv && !abgelaufen,
@@ -114,7 +116,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
     abgelaufen,
     modus: z.modus,
     bis: z.bis ? z.bis.toISOString() : null,
-    dauerhaft: (z.aktiv || ((name === 'tray_token_weiterleitung' || name === 'main_synapse') && z.modus === 'freigegeben')) && z.bis === null,
+    dauerhaft: (z.aktiv || ((name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet') && z.modus === 'freigegeben')) && z.bis === null,
     grund: z.grund,
     gesetzt_von: z.gesetzt_von,
     gesetzt_am: z.gesetzt_am ? z.gesetzt_am.toISOString() : null,
@@ -145,7 +147,7 @@ export async function setzeSchalter(
   let hinweis: string | undefined;
 
   // Der Freigabeschalter braucht auch fuer einen AUS-Override einen Ablauf.
-  if (opt.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse') {
+  if (opt.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet') {
     modus = opt.modus ?? erlaubt[0];
     if (!erlaubt.includes(modus)) {
       throw new InternSchalterFehler('modus_ungueltig', `Modus "${modus}" passt nicht zu "${name}". Erlaubt: ${erlaubt.join(', ')}.`);

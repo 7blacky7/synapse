@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -145,6 +146,7 @@ export function createServer(): Server {
 
   // PA-1: Nachschlagetabelle fuer die Parameter-Pruefung — aus DENSELBEN Definitionen, die
   // unten an ListTools gehen. Eine zweite, von Hand gepflegte Liste liefe sofort auseinander.
+  ergaenzeAgentTokenParameter(ALLE_DEFINITIONEN);
   const ERLAUBTE_PARAMETER = baueErlaubteParameter(
     ALLE_DEFINITIONEN as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
   );
@@ -153,14 +155,22 @@ export function createServer(): Server {
   // P15-T33 E0.5: ist Jev GLOBAL abgeschaltet (admin jev_schalten), fehlt das Tool jev in der Liste.
   // Grenze: MCP-Clients holen die Liste meist nur beim Verbinden - wirksam ab der naechsten Sitzung.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: await filtereJevTool(ALLE_DEFINITIONEN),
+    tools: await beworbeneAgentTools(await filtereJevTool(ALLE_DEFINITIONEN)),
   }));
 
   // Tool-Aufrufe verarbeiten
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+    const { name } = request.params;
+    const kontext = await bereiteAgentToolAufrufVor(name, request.params.arguments ?? {}, SERVER_INSTANCE_ID, process.env.SYNAPSE_AGENT_TOKEN, ERLAUBTE_PARAMETER.get(name));
+    if (kontext.aktiv && kontext.antwort?.success === false) {
+      void logToolCall({ agentId: kontext.principal?.agent_id ?? null, project: kontext.principal?.project ?? null,
+        source: 'stdio', tool: name, action: String(kontext.args.action ?? ''), ok: false,
+        error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
+      return kompaktiereTextErgebnis({ content: [{ type: 'text', text: JSON.stringify(kontext.antwort) }], isError: true }, name);
+    }
+    const args = kontext.args;
     // RV9: API verantwortet DB, Audit und Antwort-Hooks; stdio reicht die fertige Antwort weiter.
-    if (name === 'reverse') return await reverseTool.handler(args ?? {}) as { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
+    if (name === 'reverse' && !kontext.antwort) return await reverseTool.handler(kontext.aktiv ? { ...args, project: args.project, agent_id: args.agent_id, token: request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : args) as { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
     const _t0 = Date.now();
 
     // Globale Parameter fuer Agent-Onboarding extrahieren
@@ -171,7 +181,9 @@ export function createServer(): Server {
     // First-Use-Hint: pro (Session, Tool) genau einmal die Tool-Doku anhaengen.
     // sessionKey = agent_id wenn gesetzt, sonst Server-Instance-ID (Fallback fuer
     // anonyme Calls in derselben MCP-Session).
-    const sessionKey = agentId ?? SERVER_INSTANCE_ID;
+    const sessionKey = kontext.principal
+      ? `${kontext.principal.identitaet.id}:${kontext.principal.context_epoch}`
+      : agentId ?? SERVER_INSTANCE_ID;
     const firstUseKey = `${sessionKey}:${name}`;
     let toolGuideHint: Record<string, unknown> | null = null;
     if (!firstUseHinted.has(firstUseKey)) {
@@ -438,11 +450,12 @@ export function createServer(): Server {
     // P13-T34/A16: asset_intel/code_intel MIT ansicht -> API (Hooks, Audit, Bild kommen von dort);
     // Textteil + image-Bloecke unveraendert wie bei reverse. Ohne ansicht bleibt der Weg wie bisher.
     if ((name === 'asset_intel' || name === 'code_intel') && hatAnsichtParameter(args as Record<string, unknown> | undefined)) {
-      return await rufeAnsichtApi(name, (args ?? {}) as Record<string, unknown>);
+      return await rufeAnsichtApi(name, kontext.aktiv ? { ...args, project: args.project, agent_id: args.agent_id, token: request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : args);
     }
 
     const baseResp = await (async () => {
     try {
+      if (kontext.antwort) return withOnboarding(kontext.antwort);
       switch (name) {
         case 'project':
           return withOnboarding(await projectTool.handler(args as Record<string, unknown>));

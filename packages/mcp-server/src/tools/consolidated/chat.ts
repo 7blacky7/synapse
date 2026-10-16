@@ -38,7 +38,7 @@ export const chatTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['register', 'unregister', 'register_batch', 'unregister_batch', 'send', 'get', 'list', 'inbox_send', 'inbox_check'],
+          enum: ['register', 'anmelden', 'identitaet', 'unregister', 'register_batch', 'unregister_batch', 'send', 'get', 'list', 'inbox_send', 'inbox_check'],
           description:
             'Die auszufuehrende Aktion (register, unregister, register_batch, unregister_batch, send, get, list, inbox_send, inbox_check)',
         },

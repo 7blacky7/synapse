@@ -18,6 +18,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   alleSchalter,
+  leseTokenIdentitaetSchalter,
   holeDaemonBefehle,
   internToolAktiv,
   istGueltigerHost,
@@ -44,8 +45,11 @@ export async function internDaemonRoutes(fastify: FastifyInstance): Promise<void
   fastify.get<{ Querystring: { host?: string; warte?: string } }>(
     '/api/intern/daemon/befehle',
     async (request, reply) => {
-      if (!internToolAktiv()) return { success: true, debug: false };
       if (await istGpuKnotenToken(request)) return reply.code(403).send({ success: false, error: 'token_nicht_erlaubt' });
+      if (!internToolAktiv()) return {
+        success: true, debug: false, server_zeit: new Date().toISOString(),
+        token_identitaet: await leseTokenIdentitaetSchalter(),
+      };
       const host = request.query.host;
       if (!istGueltigerHost(host)) return reply.code(400).send({ success: false, error: 'host_ungueltig' });
       const warteRoh = Number(request.query.warte ?? MAX_WARTE_S);
@@ -61,7 +65,8 @@ export async function internDaemonRoutes(fastify: FastifyInstance): Promise<void
       // Frisch lesen, kein gecachter letzter EIN-Stand bei PG-Ausfall. Unbekannt/Fehler = AUS.
       let tray_token_weiterleitung: unknown = null;
       try { tray_token_weiterleitung = (await alleSchalter()).find((s) => s.name === 'tray_token_weiterleitung') ?? null; } catch { /* AUS */ }
-      return { success: true, debug: true, befehle, server_zeit: new Date().toISOString(), tray_token_weiterleitung };
+      return { success: true, debug: true, befehle, server_zeit: new Date().toISOString(), tray_token_weiterleitung,
+        token_identitaet: await leseTokenIdentitaetSchalter() };
     },
   );
 

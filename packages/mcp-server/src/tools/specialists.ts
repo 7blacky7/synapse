@@ -12,8 +12,8 @@ import { createRequire } from 'node:module';
 import { stoppeLokalenWrapper, removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
 
 // P9-T27 Welle 2: PG-Schritte ueber austauschbaren Datenweg (Vorgabe PG; Daemon-API-Weg setzt 'api').
-import { spezialistenDatenweg } from './spezialisten-datenweg.js';
-export { setzeSpezialistenDatenweg, spezialistenDatenweg, pgSpezialistenDatenweg } from './spezialisten-datenweg.js';
+import { spezialistenDatenweg, holeAgentStartUmgebung } from './spezialisten-datenweg.js';
+export { setzeAgentStartQuelle, setzeSpezialistenDatenweg, spezialistenDatenweg, pgSpezialistenDatenweg } from './spezialisten-datenweg.js';
 export type { SpezialistenDatenweg, WrapperStatusZeile } from './spezialisten-datenweg.js';
 
 import {
@@ -207,7 +207,10 @@ export async function spawnSpecialistTool(
     allowedTools,
     effort: effortWirksam,
   };
-  let systemPrompt = buildSpecialistPrompt(config, skill);
+  // Nur der Daemon installiert diese Quelle; keine Token in Job-Args/Antworten.
+  const agentStartUmgebung = await holeAgentStartUmgebung(name, project);
+  const tokenAnmeldung = !!agentStartUmgebung.SYNAPSE_AGENT_TOKEN;
+  let systemPrompt = buildSpecialistPrompt(config, skill, tokenAnmeldung);
 
   // 6b. MCP-Bruecke (Schritt 3b): bekommt der INNERE Claude seine Werkzeuge ueber
   //     HTTP statt ueber einen lokalen stdio-Prozess mit Datenbankverbindung?
@@ -215,7 +218,7 @@ export async function spawnSpecialistTool(
   //     Spawn hier ab — ein tauber Agent waere nicht als Defekt erkennbar.
   let mcpBruecke;
   try {
-    mcpBruecke = await bereiteMcpBrueckeVor(projectPath, name);
+    mcpBruecke = await bereiteMcpBrueckeVor(projectPath, name, tokenAnmeldung);
   } catch (err) {
     if (err instanceof McpBrueckeFehler) {
       return jsonResult({
@@ -266,11 +269,16 @@ export async function spawnSpecialistTool(
   const { openSync } = await import('node:fs');
   const logFd = openSync(join(logDir, 'wrapper.log'), 'a');
 
+  const wrapperUmgebung = { ...process.env, ...datenweg.wrapperUmgebung(), ...agentStartUmgebung };
+  // Nie einen Ausweis oder dessen Varianten vom Elternprozess erben, auch bei AUS.
+  // Nur die ausdrueckliche Startquelle darf den Ausweis dieses Kindes setzen.
+  for (const key of Object.keys(wrapperUmgebung)) {
+    if (key === 'SYNAPSE_AGENT_TOKEN' || key.startsWith('SYNAPSE_AGENT_TOKEN_')) delete wrapperUmgebung[key];
+  }
+  if (tokenAnmeldung) wrapperUmgebung.SYNAPSE_AGENT_TOKEN = agentStartUmgebung.SYNAPSE_AGENT_TOKEN;
   const wrapper = spawn('node', [wrapperPath], {
     env: {
-      ...process.env,
-      // P9-T27 Welle 2: im Daemon-API-Weg Wrapper-Transport + API-Zugang (nur wo nicht schon gesetzt).
-      ...datenweg.wrapperUmgebung(),
+      ...wrapperUmgebung,
       SYNAPSE_AGENT_NAME: name,
       SYNAPSE_AGENT_MODEL: model,
       // Immer ausdruecklich setzen: ein Spawn aus einem Spezialisten heraus erbt sonst

@@ -11,6 +11,7 @@
  * Wir importieren via dynamic import um Circular-Dep zu vermeiden.
  */
 
+import { installiereAgentStartQuelle } from './agent-start-api.js'
 import os from 'node:os'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -74,6 +75,7 @@ export interface SpecialistJobWorkerHandle {
 export async function startSpecialistJobWorker(
   getActiveProjects: () => string[],
 ): Promise<SpecialistJobWorkerHandle> {
+  await installiereAgentStartQuelle()
   // P9-T27: Schalter daemon_jobs_weg — 'api' holt/meldet Jobs ueber die Synapse-API statt PG LISTEN/SQL.
   if (daemonJobsWeg() === 'api') return startSpecialistJobWorkerApi(getActiveProjects)
   const pool = getPool()

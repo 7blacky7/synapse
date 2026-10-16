@@ -5,6 +5,9 @@
  * @packageDocumentation
  */
 
+// P22-T10: Gemeinsamer Identitaetskern fuer stdio, REST und Daemonadapter.
+export { leseTokenIdentitaetSchalter, stelleAgentTokenAus, meldeAgentMitTokenAn, pruefeAgentToken, widerrufeAgentToken, deaktiviereAgentIdentitaet, hashAgentToken, AgentIdentitaetFehler } from './services/agent-identitaet.js';
+export type { TokenIdentitaetSchalter, AgentIdentitaet, AgentTokenAnmeldung, AgentTokenAusgabe, AgentTokenAusstellen, AgentIdentitaetPrincipal } from './services/agent-identitaet.js';
 // P18-T28/RV18: gezielter optionaler files(read)-Vergleich.
 export {refVergleich,REF_VERGLEICH_PARAMETER} from './services/ref-vergleich.js';
 export type {RefVergleichDb,RefVergleichOptionen} from './services/ref-vergleich.js';
@@ -558,6 +561,9 @@ export type { RespawnDecision } from './services/specialist-respawn.js';
 
 // Agent-ID Resolver (zentrale Fallback-Logik fuer audit-relevante Schreib-Ops)
 export { resolveAgentId } from './services/agent-id-resolver.js';
+
+export { bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, AGENT_TOKEN_PARAMETER } from './services/agent-token-tools.js';
+export type { AgentToolKontext } from './services/agent-token-tools.js';
 
 // PA-1: unbekannte Tool-Parameter melden statt still verwerfen.
 // Liegt in core, weil BEIDE Strecken (stdio-MCP und REST) dieselbe Pruefung brauchen —

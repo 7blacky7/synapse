@@ -98,6 +98,7 @@ export const INTERN_DEFINITION = {
     'Bei diesen Pausenschaltern bedeutet aktiv:true = angehalten. ' +
     'tray_token_weiterleitung (modus freigegeben) ueberschreibt dagegen befristet den Produktionsstandard: aktiv:true = Token-Einsetzung EIN, aktiv:false = AUS. Ohne intern, nach Ablauf oder Brueckenfehler gilt wieder der Standard aus SYNAPSE_TRAY_TOKEN_WEITERLEITUNG/config tray_token_weiterleitung (Default AUS). ' +
     'main_synapse (modus freigegeben): befristeter EIN/AUS-Testoverride fuer das Hauptagent-Werkzeugprofil main-synapse, alle regulaeren Synapse-Tools inkl. shell, keine eingebauten CLI-Werkzeuge und kein intern; Produktionsbasis SYNAPSE_MAIN_SYNAPSE=1, Default AUS. Bei Ablauf/Lesefehler oder ohne intern gilt die Produktionsbasis. ' +
+    'token_identitaet (modus freigegeben): aktiv:true = Token-Anmeldung EIN, aktiv:false = AUS, befristeter Testoverride. Produktionsbasis SYNAPSE_TOKEN_IDENTITAET=1 (Default AUS), ohne intern/nach Ablauf/bei Lesefehler gilt diese Basis. schalter_liste.token_identitaet zeigt wirksamen Wert, Quelle, Ablauf und letzten Lesefehler. ' +
     'Jeder Schalter laeuft ab (Default und Obergrenze 12 h), ohne Ablauf nur mit dauerhaft:true. ' +
     'schalter_liste zeigt alle Schalter mit Ablauf. ' +
     'ollama_status: geladene Modelle (VRAM, CPU/GPU-Anteil, Kontext, Ablauf), Version, installierte Embedding-Modelle; ' +
@@ -297,7 +298,9 @@ export async function fuehreInternAus(
           grund: text(a, 'grund'),
           agent: text(a, 'agent_id') ?? agentId,
         });
-        const message = name === 'tray_token_weiterleitung'
+        const message = name === 'token_identitaet'
+          ? `Token-Identitaet-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne intern/nach Ablauf/bei Lesefehler gilt SYNAPSE_TOKEN_IDENTITAET (Standard AUS).`
+          : name === 'tray_token_weiterleitung'
           ? `Tray-Token-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne frische Intern-Bruecke/nach Ablauf gilt der Produktionsstandard aus Env/Config (Default AUS).`
           : !stand.aktiv
           ? `Schalter ${name} aus — der Ablauf laeuft wieder (Worker merken es spaetestens nach dem Cache-Intervall).`
@@ -311,6 +314,7 @@ export async function fuehreInternAus(
           hoechstdauer_stunden: hoechstdauerMs() / 3_600_000,
           moegliche: INTERN_SCHALTER,
           schalter: await alleSchalter(),
+          token_identitaet: await (await import('./agent-identitaet.js')).leseTokenIdentitaetSchalter(),
         };
       case 'ollama_status':
         return { success: true, action, ...(await ollamaStatus()) };

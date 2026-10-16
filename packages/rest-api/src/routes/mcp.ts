@@ -9,7 +9,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
-import { getProjectRecordById } from '@synapse/core';
+import { getProjectRecordById, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import { mainToolAccess, mainToolListe, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
@@ -626,7 +626,7 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['register', 'unregister', 'register_batch', 'unregister_batch', 'send', 'get', 'list', 'inbox_send', 'inbox_check'],
+          enum: ['register', 'anmelden', 'identitaet', 'unregister', 'register_batch', 'unregister_batch', 'send', 'get', 'list', 'inbox_send', 'inbox_check'],
           description: 'Die auszufuehrende Aktion (register, unregister, register_batch, unregister_batch, send, get, list, inbox_send, inbox_check)',
         },
         id: { type: 'string', description: 'Agent-ID (fuer register, unregister)' },
@@ -1678,6 +1678,8 @@ const OUTPUT_EXTRAS: Record<string, { props?: Record<string, unknown>; example?:
   },
 };
 
+ergaenzeAgentTokenParameter(MCP_TOOLS);
+
 for (const _t of MCP_TOOLS as any[]) {
   // RV9: der gemeinsame neue Vertrag wird auch bei Output nicht lokal überschrieben.
   if (_t.name === 'reverse') continue;
@@ -2220,6 +2222,13 @@ const ENV_NETZ_TOOLS = new Set(['files', 'files_batch', 'code_intel']);
  * Maskierung nicht kennt (z. B. eine Fehlermeldung, die eine Zeile zitiert). Ohne .env-Bezug ein No-op.
  */
 export async function handleToolCall(
+  name: string, args: Record<string, unknown>, effectiveAgentId?: string,
+): Promise<unknown> {
+  const kontext = await bereiteAgentToolAufrufVor(name, args, REST_INSTANCE_ID, undefined, ERLAUBTE_PARAMETER.get(name));
+  return kontext.antwort ?? handleAuthentifiziertenToolCall(name, kontext.args, kontext.principal?.agent_id ?? effectiveAgentId);
+}
+
+async function handleAuthentifiziertenToolCall(
   name: string,
   args: Record<string, unknown>,
   effectiveAgentId?: string,
@@ -6175,6 +6184,7 @@ async function fuehreToolsCallAus(
   derivedAgentId: ReturnType<typeof leiteAgentIdAusHeaders>,
   hauptagentSession: string | null,
   access: MainToolAccess,
+  agentTransportToken?: string,
 ): Promise<unknown> {
   const profilFehler = (access.profile === 'main-synapse' || access.error)
     ? mainToolAblehnung(toolName, toolArgs, access, MCP_TOOLS) : null;
@@ -6209,9 +6219,17 @@ async function fuehreToolsCallAus(
   if (derivedAgentId && !toolArgs.agent_id) {
     toolArgs.agent_id = derivedAgentId;
   }
-  const effectiveAgentId = typeof toolArgs.agent_id === 'string'
+  const kontext = await bereiteAgentToolAufrufVor(toolName, toolArgs, REST_INSTANCE_ID, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName));
+  toolArgs = kontext.args;
+  if (kontext.aktiv && kontext.antwort?.success === false) {
+    void logToolCall({ agentId: kontext.principal?.agent_id ?? null, project: kontext.principal?.project ?? null,
+      source: 'cloud', tool: toolName, action: String(toolArgs.action ?? ''), ok: false,
+      error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
+    return baueToolErgebnis(kontext.antwort, { tool: toolName, isError: true, strukturiert: true });
+  }
+  const effectiveAgentId = kontext.principal?.agent_id ?? (typeof toolArgs.agent_id === 'string'
     ? toolArgs.agent_id
-    : derivedAgentId;
+    : (kontext.aktiv ? undefined : derivedAgentId));
   const _t0 = Date.now();
   let _logOk = true;
   let _logErr: string | null = null;
@@ -6233,7 +6251,7 @@ async function fuehreToolsCallAus(
             await attachSkillHinweisgeber(
               await attachRestOnboarding(
                 await attachDirectWriteReservationHint(
-                  ohneBilder(await handleToolCall(toolName, toolArgs, effectiveAgentId)),
+                  ohneBilder(kontext.antwort ?? await handleAuthentifiziertenToolCall(toolName, toolArgs, effectiveAgentId)),
                   toolName,
                   toolArgs,
                 ),
@@ -6382,8 +6400,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
           result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? mainToolListe(MCP_TOOLS, mainAccess)
-            : mainToolListe(await filtereJevTool(MCP_TOOLS), mainAccess) };
+            ? mainToolListe(await beworbeneAgentTools(MCP_TOOLS), mainAccess)
+            : mainToolListe(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess) };
           break;
 
         case 'tools/call': {
@@ -6394,6 +6412,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             derivedAgentId,
             hauptagentSession,
             mainAccess,
+            typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined,
           );
           break;
         }
@@ -6472,8 +6491,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
           result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? mainToolListe(MCP_TOOLS, mainAccess)
-            : mainToolListe(await filtereJevTool(MCP_TOOLS), mainAccess) };
+            ? mainToolListe(await beworbeneAgentTools(MCP_TOOLS), mainAccess)
+            : mainToolListe(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess) };
           break;
 
         case 'tools/call': {
@@ -6484,6 +6503,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             derivedAgentId,
             hauptagentSession,
             mainAccess,
+            typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined,
           );
           break;
         }

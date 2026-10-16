@@ -18,6 +18,7 @@
  * AUS: DAEMON_INTERN_BRUECKE_DISABLED=1.
  */
 
+import { uebernehmeAgentStartFreigabe, verwerfeAgentStartFreigabe } from './agent-start-api.js';
 import os from 'node:os';
 import { DAEMON_BEFEHLE, fuehreDiagnoseLokal, skillNutzungLokal, fuehreWorkerActionAus, fuehreWarteschlangeLokal, workerStatus } from '@synapse/core';
 import { findProjekt, loadConfig } from './config.js';
@@ -47,6 +48,7 @@ const schlafe = (ms: number): Promise<void> => new Promise((r) => { const t = se
 
 export function startInternBruecke(): InternBrueckeHandle {
   verwerfeTrayTokenFreigabe();
+  verwerfeAgentStartFreigabe();
   let stopped = false;
   let laufend: AbortController | null = null;
   /** null = noch nicht erkannt bzw. nach Verbindungsfehler neu erkennen */
@@ -80,6 +82,7 @@ export function startInternBruecke(): InternBrueckeHandle {
       await anfrage('/api/intern/daemon/antwort', { method: 'POST', body: JSON.stringify({ host: HOST, ...body }) }, 10_000);
     } catch (err) {
       verwerfeTrayTokenFreigabe();
+      verwerfeAgentStartFreigabe();
       console.error(`[intern-bruecke] Antwort an die API fehlgeschlagen: ${(err as Error).message}`);
     }
   }
@@ -140,6 +143,7 @@ export function startInternBruecke(): InternBrueckeHandle {
         fehlerZyklen = 0;
         if (stopped) break;
         uebernehmeTrayTokenFreigabe(antwort);
+        uebernehmeAgentStartFreigabe(antwort);
         if (antwort === 'nicht_gefunden' || antwort.debug !== true) {
           if (debug !== false) {
             console.error(debug === true
@@ -159,6 +163,7 @@ export function startInternBruecke(): InternBrueckeHandle {
         for (const b of befehle) await fuehreAus(b);
       } catch (err) {
         verwerfeTrayTokenFreigabe();
+      verwerfeAgentStartFreigabe();
         if (stopped) break;
         fehlerZyklen = Math.min(fehlerZyklen + 1, 30);
         if (!fehlerGemeldet) {
@@ -176,6 +181,7 @@ export function startInternBruecke(): InternBrueckeHandle {
     stop: () => {
       stopped = true;
       verwerfeTrayTokenFreigabe();
+      verwerfeAgentStartFreigabe();
       laufend?.abort();
     },
   };

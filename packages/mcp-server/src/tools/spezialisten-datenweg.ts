@@ -72,6 +72,14 @@ export const pgSpezialistenDatenweg: SpezialistenDatenweg = {
   wrapperUmgebung: () => ({}),
 };
 
+/** P22-T12: Start-Ausweis separat vom bisherigen PG/API-Datenweg beziehen. */
+type AgentStartQuelle = (name: string, project: string) => Promise<Record<string, string>>;
+let agentStartQuelle: AgentStartQuelle | null = null;
+export function setzeAgentStartQuelle(quelle: AgentStartQuelle | null): void { agentStartQuelle = quelle; }
+export async function holeAgentStartUmgebung(name: string, project: string): Promise<Record<string, string>> {
+  return agentStartQuelle ? agentStartQuelle(name, project) : {};
+}
+
 let aktiv: SpezialistenDatenweg = pgSpezialistenDatenweg;
 
 /** Setzt den Datenweg (null = zurueck auf PG). Der Daemon ruft das einmal beim Start. */

@@ -60,6 +60,8 @@
     }
   },
   "aenderungen": [
+    {"strecke":"rest","tool":"intern","alt":null,"neu":null,"grund":"P22-T10: token_identitaet ergänzt die gemeinsame intern-Definition um den befristeten EIN/AUS-Freigabeoverride für Agenten-Identität (SYNAPSE_TOKEN_IDENTITAET, Standard AUS). schalter_liste zeigt wirksamen Wert, Quelle, Ablauf und Lesefehler. intern bleibt im RV9-Standard ohne SYNAPSE_INTERN_TOOL verborgen; deshalb alt:null/neu:null.","task":"P22-T10","datum":"2026-10-17"},
+    {"strecke":"stdio","tool":"intern","alt":null,"neu":null,"grund":"P22-T10: token_identitaet ergänzt die gemeinsame intern-Definition um den befristeten EIN/AUS-Freigabeoverride für Agenten-Identität (SYNAPSE_TOKEN_IDENTITAET, Standard AUS). schalter_liste zeigt wirksamen Wert, Quelle, Ablauf und Lesefehler. intern bleibt im RV9-Standard ohne SYNAPSE_INTERN_TOOL verborgen; deshalb alt:null/neu:null.","task":"P22-T10","datum":"2026-10-17"},
   {
     "strecke": "rest",
     "tool": "reverse",
@@ -362,6 +364,438 @@
   "grund": "P22-T2: main_synapse ergänzt die gemeinsame intern-Definition um einen befristeten EIN/AUS-Freigabeoverride (Default AUS, Produktionsbasis unabhängig). intern bleibt im RV9-Standard verborgen; reguläre Werkzeugdefinitionen bleiben unverändert.",
   "task": "P22-T2",
   "datum": "2026-10-16"
+},
+{
+  "strecke": "rest",
+  "tool": "project",
+  "alt": "6acdaf0143d52e2e689ccb99cc78fd25927c8a82193466fee16e7f4372fc3b53",
+  "neu": "5e681cf85f293ee8d88ffd78830dca008a5e0a437077a6ea25ff72c570dda30a",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "search",
+  "alt": "8ad041e2195073a8bcc1c74d5b9b4491f8576e059a6fed2af338d8ac73f45830",
+  "neu": "be112f03e2651d8f730c1fce4f55180cbe0b35ebe167b8ff5388ff7bfc777dc7",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "memory",
+  "alt": "0002be244fca7a2d5d44115f4e561c8c8304e8fba14027d5a4d36ceafaae15f7",
+  "neu": "38c483b0aac8cd852659179e30712184a940f455865212a6a52b722590b8be48",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "thought",
+  "alt": "38aa699701ef4cfec580f1e0421493b7ae7d8312e811100a746a142e7cef586c",
+  "neu": "0c11da067b46c2512cf45148559b368309a9dad1846a9e54f7f8f8effd69badf",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "plan",
+  "alt": "781d6694d7f12ac0602ad788b61840170a8be7b30d70e8e25d2d3f07cd1e608d",
+  "neu": "1169a24a60ea0391b7baa11cca1eeea91142075c116baa39773f2121ab00e439",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "proposal",
+  "alt": "7e266bb397203c4461665cbb8b6e13f06e814074b72c6d128cc6deb1d3f03fc4",
+  "neu": "739cd61c9c84df88ebb3656f6afc626683275d2d36636b142f82ec2d7b974285",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "chat",
+  "alt": "dab7cfcba761740e5c9b182856673371dd369f1f833f55139cdbdb8978478adc",
+  "neu": "e2f2be950ef1e3337f5f64a6650505a6de709d3a80c7e87a59525dee7534bb38",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "channel",
+  "alt": "f334a1f2ce944c06570e0fea17add00883cc0f19e6209dbb2afd43993905e164",
+  "neu": "d2f96e55654a9a1080ad3eda5b90b3627a1ece6d8c147d260044ba70bc1599a8",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "jev",
+  "alt": "3c5412e58a54faa1b5727032b257ff7252362c2914048484d92f633c99623534",
+  "neu": "2b874bc183c0cf50bd6c6708bfadd19c2ac22ee37dd3c3f1c3be4526bbdd96be",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "event",
+  "alt": "ca5edeeeb53554d81ce69b200415917fc2ca5c8f244dfe76f72e3426787d3d99",
+  "neu": "a5fca542d60da02943f3cf0f14d4680cd5f923dfad576645c092c734bd3bb6a1",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "specialist",
+  "alt": "d6dd43eb662fc785a5bc7ea35fa5a19a3fc001d8f97abd3e4c9b80800dc52beb",
+  "neu": "3fb7216268c8f55217beb24d532154bbc210aaaecd05776f18e8f5febee82aea",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "docs",
+  "alt": "3768948cc13f33aec828d13fe39e8b5173a29e277962bf49b767523cc73a06c1",
+  "neu": "bc63e95c5d82ea0aa1b716b876bbcefeea46b2e7352a49928acf8c343df63034",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "admin",
+  "alt": "c32e0a08313119616191f51b7f5be0cc286eefddc2641ffee37535937798b98f",
+  "neu": "ebfcbe2909088d755560e2aebd2e209fac02dd4e89ea584e95a342aa2d4c1f8f",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "code_intel",
+  "alt": "c50477d36a838536eec3852939f6fe82c1feabb5ce8e273bd281d09129d7c128",
+  "neu": "e28126d654917dd34b0474296af85c7380281ead0a4414cf85482b8a255e1386",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "asset_intel",
+  "alt": "7099d4965b975dac7c38e7b8c4ccd38863d1b71d2f32f95066c4a60f6cfbeb27",
+  "neu": "9970a854c8b57e767ef34903b45fbcd3da1b40d5860746f8bab93e457d1eebc5",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "reverse",
+  "alt": "c1349f4983c35154a977856c7be50567dfc5907d110820d9b93b13e7d47106a0",
+  "neu": "a2622790c81038aecb9aa055f36167c3c9586a00ec275fba9ae633b760925327",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "files",
+  "alt": "cb192dad9f1c8f74177181da6545b4580336c228f02f362a748d69bfef2d9607",
+  "neu": "f934f9346affdd76d776780dd7ad1313d01920a3e297afa3993fbc3603c23d4b",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "files_batch",
+  "alt": "529f1795d437ed2aa691ee5360f57f93d6bac097a1d146e87950b38118d2e638",
+  "neu": "f76b328ddaf0df9517898bc4aa57272eee2ff1393cdd212cf6ca53f0ff0888fd",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "shell",
+  "alt": "65b39f1aecae6a716a1d13ca2c2fccfc58e4c4ef700130aed70bdab4a96f5e18",
+  "neu": "62bc0a92eb029e3c3312030eddc975de4a542cd6c3eb2834e4fbcdabf8265395",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "code_check",
+  "alt": "e78281ec8038e5fb2d34bb238c04352f9db2b1ca9031b9a66a07bcd4c4cfe28b",
+  "neu": "801e6f8c1e0320a904c1f740af75fa6d478565d5c8d146a6d558d1777cd65e20",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "ignore",
+  "alt": "0cac8a90a9675085de2d33c45a504f9b729530643f43303ad64a1683bf19b2da",
+  "neu": "35779db3e32538e267b34d4b41ae1cef874d427603a8747f9bb018b7e0c2721e",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "guide",
+  "alt": "ea40449483cd360a9abd3a63d68e463cf9a9bc71dadc6b336b39329d2780f81b",
+  "neu": "bb559abb41059df3f4db690588ff391b8c695773b9919f602c4ec516771f4952",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "workspace",
+  "alt": "73dc21c720f1cd466b4062a955f34b606406f8fe4128244b736eeb22d42fe9b0",
+  "neu": "45acef5bb48150ae124e058d6289461a640918d4b6578f4d66d3c3e8781df54d",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "skills",
+  "alt": "c4f70a550500230de56e697cc7dbb77272cf6bebb4d57ee7630f3f0c6085371c",
+  "neu": "ae87ca1f46a86f865b8960883a2f677506e0953ed91b2ed29b09718bf35d200e",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "artefakt",
+  "alt": "4082d732a28cbc78fead2ffc22e5135049ff4327f446126cf44cfbe1cf703fb9",
+  "neu": "47390d1be3b8e5a7f866813eba67fdc992aa659ecfe9cf3466a5e0d8a7a7495e",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "admin",
+  "alt": "6a00df37938fb4d131ebf2d5dee4c12b7622b51b7725d969c5a1742ce193de6f",
+  "neu": "1b852602b26e6dd0417745d74dcb70e003f78ec034cdc134a7607cfcff6b7539",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "asset_intel",
+  "alt": "8d855d1788af69f405e2c2739791987a1d191433f5e46519c7c8055ecb22b168",
+  "neu": "21044c986dc36c652bdf6170ba8e6678e56fc827a7152a30e42278b065c3a7c1",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "channel",
+  "alt": "03bd83e5afafb59811d95d5b58281278e225a974c8645b685d1f890dec42585e",
+  "neu": "0db371a61df104ef796cbfb63fea4979683429e1f41702bf95966caf8da8ec10",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "chat",
+  "alt": "10d6e7180b672eb0449c20ea7f51e256d71b71d3305e4feda4fc47c33227f322",
+  "neu": "fdd9601e848f261f47c12d37e341ecfd1033b91ad05de8bede595356cdeecfe9",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "code_check",
+  "alt": "05fd96557cbec9330eb375048604918496e0fb2caae22aecb1931d4a11a49889",
+  "neu": "d93052909cf051c0f5a5d161c3bf8643ee10fde29e00f6bda37e7aca79d15a93",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "code_intel",
+  "alt": "255171505858628544781801ec709bde828acbdd9cc41be7cc987be7f9a3f054",
+  "neu": "425ff3dc92bd71a76890431bd492ce447c101962a966e2a05b3a9c358f211d45",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "docs",
+  "alt": "b472ac5b8bc3ecd9bcbd760d5f876c07caed5b4750339024bf377313f440f7a6",
+  "neu": "3e5bd7be59e484600368b7fc5096c4d5f3e3d65adaa7250e224f739ea4048697",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "event",
+  "alt": "80bd5516652c099c230c853c42e8d5e8b3464b98bdcb42d99c364d71c8b2bcaf",
+  "neu": "c861037f68605c0806d024671f6146d864f52e61ca42af8052d3c80469b7ca51",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "files",
+  "alt": "b983b9a5477e94a55c23ba6f67b719a184690d3e4583f2c396ae11bc8aa2273f",
+  "neu": "b88755ed5171128c6c1c9250ed6d5c0e3deddf71e30d6770761f009f5b9bd39d",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "free_models",
+  "alt": "100058e8a14984ce8ea4dcc34df6cf822fa30d8464d346d4db2750802ab1e545",
+  "neu": "f94ae62fbd48568a08d99f9b82eff590a89bd20ec29eda6969d4d0173e86460b",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "guide",
+  "alt": "22b2f0444b8f925d45757fa912936f7663f79799d590f1bb77efdf3cb4886717",
+  "neu": "5884203177018c926b7eba09b3f872feaf312757aa61e7bb67fc035d3c2ba9d3",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "ignore",
+  "alt": "52c08a0bee48d9db20b64752c9c9b763e1d424308355d86f77cb8254edd51bfd",
+  "neu": "dcb4f49643cadd536cd268cb74bcb37ed9b32c50163ed1cc9f925cb2470d4e7e",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "jev",
+  "alt": "072ed96401652f3e6ccb998457eafde6bac715c1e45b043f01f7f9679b7d8454",
+  "neu": "0105c337dcce89978790565d790655ca0ea00983a443fa63904ee540321e025d",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "memory",
+  "alt": "49c39b82237e7260e1ff30dda1cf945ee9adc9ce29191971463031fc5c986205",
+  "neu": "0d1d6cd40d99ad183d016062dca0614e04e1348bb9335ad4bf6fb13611d79ac2",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "plan",
+  "alt": "a543631e05aa5ea1545cfb99283e40985a0d817547757184669a52cfeac7ec89",
+  "neu": "6bbadb2ef605d98dbd9b12b2de16acf6065a9cd8aa2682eec7c50cc70467dc39",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "project",
+  "alt": "cd1b9f5d95395114d46b8bbb462ee969d137ae58b4c72279bee9bf403c1a4a5a",
+  "neu": "4deccaf8e5aa38121ff90198d29df73a03d75c4485d2d4c011985113d359754f",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "proposal",
+  "alt": "210c067bcc44af4bf3ff0ce76e91f38e55b87e3ef18a1c3ad255328cec39c0fc",
+  "neu": "221b15f2f1ac779ab61f7629f71123fb36bcefcf423cd0bd5e23991d25fea3d6",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "reverse",
+  "alt": "c1349f4983c35154a977856c7be50567dfc5907d110820d9b93b13e7d47106a0",
+  "neu": "a2622790c81038aecb9aa055f36167c3c9586a00ec275fba9ae633b760925327",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "search",
+  "alt": "aa4715414648a710f1cb80e93094193a084774085b6c20d879330a123035e7f9",
+  "neu": "39cf62c2661f547848886618e5323917e164abe01fd1991b27748c3ce1c7abfc",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "shell",
+  "alt": "db69ee70a1f5703cfb87fc441d2e7012d8b184f627be0306601c7ab076c2f283",
+  "neu": "79d3c36f384a1d3168a28774a6b0e9bca76d2a5e06ef8f20d6166391d2ef57ff",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "specialist",
+  "alt": "aa23bc3109fd36338ab6a3103958729f7c93a06fb59180b27e61868bbcf59b8a",
+  "neu": "a54067cf98a3894c73d992a61ee890a684721dd3b2df25f92bb6a0e3d3d42229",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "thought",
+  "alt": "075967477bf3cc28b7702baa58621a3c708c5daecc5ecaf61d09c3d445b7d406",
+  "neu": "e6efd4de6bd4bfa6919463d803d9df8c2aa96a885fd9230851d9b69fc0977067",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
+},
+{
+  "strecke": "stdio",
+  "tool": "watcher",
+  "alt": "e51b111cae755241d474c5dffa26c5938f6708292755500f7c6d52737907972c",
+  "neu": "8769e667495911afd7320901fb1015a2c624a1ca9d3a74bf415ede2db7ab53cc",
+  "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
+  "task": "P22-T11",
+  "datum": "2026-10-17"
 }
 ]
 }

@@ -266,13 +266,16 @@ export async function widerrufeWrapperTokens(
  * serverseitig ihm zu (tool_calls / shell(activity)), auch wenn er agent_id nicht mitschickt.
  * Nur Zuordnung, keine Berechtigung — die traegt das Token.
  */
-export function baueBrueckenConfig(endpunkt: string, token: string, agentName: string) {
+export function baueBrueckenConfig(endpunkt: string, token: string, agentName: string, tokenAnmeldung = false) {
   return {
     mcpServers: {
       [SERVER_NAME]: {
         type: 'http',
         url: endpunkt,
-        headers: { Authorization: `Bearer ${token}`, 'X-Synapse-Agent': agentName },
+        headers: { Authorization: `Bearer ${token}`, 'X-Synapse-Agent': agentName,
+          // CLI expandiert die Env-Referenz; der Identitätsausweis steht nie in der Datei.
+          ...(tokenAnmeldung ? { 'x-synapse-agent-token': '${SYNAPSE_AGENT_TOKEN}' } : {}),
+        },
       },
     },
   };
@@ -288,6 +291,7 @@ export function baueBrueckenConfig(endpunkt: string, token: string, agentName: s
 export async function bereiteMcpBrueckeVor(
   projectPath: string,
   agentName: string,
+  tokenAnmeldung = false,
 ): Promise<McpBrueckeErgebnis> {
   const roh = (process.env.SYNAPSE_AGENT_MCP_TRANSPORT ?? '').trim().toLowerCase();
 
@@ -383,7 +387,7 @@ export async function bereiteMcpBrueckeVor(
   }
 
   const configPfad = join(projectPath, '.synapse', 'agents', agentName, 'mcp-http.json');
-  const inhalt = baueBrueckenConfig(endpunkt, token, agentName);
+  const inhalt = baueBrueckenConfig(endpunkt, token, agentName, tokenAnmeldung);
   try {
     await writeFile(configPfad, JSON.stringify(inhalt, null, 2), 'utf-8');
     // Die Datei traegt ein Token — nur der Eigentuemer darf sie lesen.
