@@ -17,6 +17,7 @@ import type { TransportUmgebung, WrapperTransport } from './typen.js'
 
 export function erzeugeTransport(umgebung: TransportUmgebung): WrapperTransport {
   const roh = (process.env.SYNAPSE_WRAPPER_TRANSPORT ?? '').trim().toLowerCase()
+  if (process.env.SYNAPSE_AGENT_IDENTITY_ID && roh !== 'api') throw new Error('identity_wrapper_verlangt_api_transport')
 
   if (roh === 'api') return new ApiTransport(umgebung)
 

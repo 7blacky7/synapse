@@ -10,6 +10,24 @@
 import * as path from 'path';
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { getPool } from '../db/client.js';
+import { kommunikationsAgent, eigenerKommunikationsAgent, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
+import { loeseAgentZiel, aktuellerAgentPrincipal, type AgentZiel } from './agent-bezug.js';
+
+/** Nur explizite interne Handles repräsentieren fremde Identitäten. */
+async function skillAgent(project: string, agent: string): Promise<AgentZiel> {
+  if (agentBezugAktiv() && agent.startsWith('identity:')) return loeseAgentZiel(project,{identity_id:agent.slice(9)});
+  if (agentBezugAktiv() && agent.startsWith('legacy:')) return {art:'legacy',project,agent_id:agent.slice(7)};
+  return kommunikationsAgent(project,agent);
+}
+function skillKontextEpoch(): number {
+  const p=aktuellerAgentPrincipal();
+  return p?.art === 'identity' ? p.context_epoch : 0;
+}
+function skillHandle(project: string, agent: string): string {
+  if (!agentBezugAktiv() || agent.startsWith('identity:') || agent.startsWith('legacy:')) return agent;
+  const z=kommunikationsAgent(project,agent);
+  return z.art === 'identity' ? 'identity:' + z.identity_id : 'legacy:' + z.agent_id;
+}
 import { findeSkillsNachName, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
 import { scoreSchwelleOderHinweis } from '../embeddings/modell-profil.js';
 
@@ -164,8 +182,46 @@ export async function holeSprachSkillVorschlaege(
     return { suggestions: [], metrics: null, skipped_due_to_load: false };
   }
 
+  const z = eigenerKommunikationsAgent(agentId);
+  const identity = z.art === 'identity';
   try {
-    const result = await queryMitHarterFrist<SkillHookQueryRow>(pool, `
+    const result = await queryMitHarterFrist<SkillHookQueryRow>(pool, identity ? `
+        WITH kandidaten AS (
+          SELECT skill_name, ordinality
+            FROM unnest($2::text[]) WITH ORDINALITY AS k(skill_name, ordinality)
+        ),
+        eingefuegt AS (
+          INSERT INTO agent_identitaet_skill_deliveries (identity_id, agent_id, skill_name, hook_name, context_epoch)
+          SELECT $1, $4, skill_name, $3, $5 FROM kandidaten
+          ON CONFLICT(identity_id,skill_name) DO UPDATE SET context_epoch=EXCLUDED.context_epoch,suggested_at=NOW(),hook_name=EXCLUDED.hook_name
+          WHERE agent_identitaet_skill_deliveries.context_epoch<EXCLUDED.context_epoch
+          RETURNING skill_name
+        ),
+        summen AS (
+          SELECT COUNT(*)::bigint AS kandidaten,
+                 (SELECT COUNT(*)::bigint FROM eingefuegt) AS vorgeschlagen
+            FROM kandidaten
+        ),
+        metrik AS (
+          INSERT INTO skill_hook_metrics
+            (hook_name, suggested_count, dedup_suppressed_count, load_skipped_count)
+          SELECT $3, vorgeschlagen, kandidaten - vorgeschlagen, 0 FROM summen
+          ON CONFLICT (hook_name) DO UPDATE SET
+            suggested_count = skill_hook_metrics.suggested_count + EXCLUDED.suggested_count,
+            dedup_suppressed_count =
+              skill_hook_metrics.dedup_suppressed_count + EXCLUDED.dedup_suppressed_count,
+            updated_at = NOW()
+          RETURNING suggested_count::text, dedup_suppressed_count::text,
+                    load_skipped_count::text
+        )
+        SELECT COALESCE(
+                 (SELECT json_agg(k.skill_name ORDER BY k.ordinality)
+                    FROM kandidaten k JOIN eingefuegt e USING (skill_name)),
+                 '[]'::json
+               ) AS suggested_skills,
+               suggested_count, dedup_suppressed_count, load_skipped_count
+          FROM metrik
+      ` : `
         WITH kandidaten AS (
           SELECT skill_name, ordinality
             FROM unnest($2::text[]) WITH ORDINALITY AS k(skill_name, ordinality)
@@ -201,7 +257,7 @@ export async function holeSprachSkillVorschlaege(
                suggested_count, dedup_suppressed_count, load_skipped_count
           FROM metrik
       `,
-      [agentId, kandidaten, HOOK_NAME],
+      [bezugsWert(z), kandidaten, HOOK_NAME,...(identity ? [agentId,skillKontextEpoch()] : [])],
     );
 
     const row = result.rows[0];
@@ -469,13 +525,13 @@ export async function bereiteChannelSkillVorschlaegeVor(
   // seinem Vorrat kommt, ohne dass die anderen neu berechnet werden.
   let agents: string[];
   if (nurFuerAgenten?.length) {
-    agents = [...new Set(nurFuerAgenten.filter(Boolean))];
+    agents = [...new Set(nurFuerAgenten.filter(Boolean).map(a=>skillHandle(project,a)))];
   } else {
     const { rows } = await pool.query<{ agent_name: string }>(
-      `SELECT mem.agent_name
-         FROM specialist_channel_members mem
-         JOIN specialist_channels c ON c.id = mem.channel_id
-        WHERE c.project = $1 AND c.name = $2`,
+      agentBezugAktiv()
+        ? `SELECT 'legacy:'||mem.agent_name AS agent_name FROM specialist_channel_members mem JOIN specialist_channels c ON c.id=mem.channel_id WHERE c.project=$1 AND c.name=$2
+           UNION ALL SELECT 'identity:'||mem.identity_id FROM agent_identitaet_channel_mitglieder mem JOIN specialist_channels c ON c.id=mem.channel_id WHERE c.project=$1 AND c.name=$2`
+        : `SELECT mem.agent_name FROM specialist_channel_members mem JOIN specialist_channels c ON c.id=mem.channel_id WHERE c.project=$1 AND c.name=$2`,
       [project, channelName],
     );
     agents = [...new Set(rows.map((row) => row.agent_name).filter(Boolean))];
@@ -509,7 +565,7 @@ export async function bereiteSkillVorschlaegeVor(
 ): Promise<void> {
   const query = baueChannelSkillSuchtext([{ content }]);
   if (!query) return;
-  agents = [...new Set(agents.filter(Boolean))];
+  agents = [...new Set(agents.filter(Boolean).map(a=>skillHandle(project,a)))];
   if (agents.length === 0 || !sourceId) return;
   // ⚠️ BREIT SUCHEN, ENG AUSLIEFERN.
   // Die Namenserkennung kann nur Skills finden, die in der Trefferliste stehen. Mit acht
@@ -562,6 +618,8 @@ export async function bereiteSkillVorschlaegeVor(
     scoreSchwelleOderHinweis('channel_skill_abstand'),
   ]);
   await Promise.all(results.map(async ({ agent: agentId, hits }) => {
+    const z = await skillAgent(project,agentId);
+    const identity = z.art === 'identity';
     // MEHRERE KANDIDATEN ABLEGEN, nicht nur den besten. Ein Agent sieht jeden Skill nur
     // einmal; sind die vorderen verbraucht, ruecken beim naechsten Abruf die naechsten
     // nach — aber nur, wenn sie hier auch gespeichert wurden.
@@ -586,17 +644,17 @@ export async function bereiteSkillVorschlaegeVor(
     // beim Lesen wie ein Ausrutscher des Modells aussieht, statt auf die echte Ursache zu zeigen.
     for (const hit of treffer) {
       await pool.query(
-        `INSERT INTO skill_hook_preparations
-           (source_type, source_id, agent_id, skill_name, score, reason)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (source_type, source_id, agent_id, skill_name) DO UPDATE SET
+        `INSERT INTO ${identity ? 'agent_identitaet_skill_preparations' : 'skill_hook_preparations'}
+           (source_type,source_id,${identity ? 'identity_id,agent_id' : 'agent_id'},skill_name,score,reason)
+         VALUES($1,$2,$3,${identity ? '$7,' : ''}$4,$5,$6)
+         ON CONFLICT(source_type,source_id,${identity ? 'identity_id' : 'agent_id'},skill_name) DO UPDATE SET
            score = EXCLUDED.score,
            reason = EXCLUDED.reason,
            prepared_at = NOW()`,
         [
           sourceType,
           sourceId,
-          agentId,
+          bezugsWert(z),
           hit.skill_name,
           hit.score,
           istNamentlichGenannt(hit.skill_name, query)
@@ -604,6 +662,7 @@ export async function bereiteSkillVorschlaegeVor(
             : (istGenannt(hit.skill_name)
               ? `Name unscharf erkannt (${QUELLE_KLARTEXT[sourceType]})`
               : `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]})`),
+          ...(identity ? [z.agent_id] : []),
         ],
       );
     }
@@ -634,19 +693,21 @@ export async function holeChannelSkillsNachBeitritt(
   hoechstens = CHANNEL_SKILL_BEITRITT_NACHRICHTEN,
 ): Promise<number> {
   if (!agentName) return 0;
+  const z=await skillAgent(project,skillHandle(project,agentName));
+  const identity=z.art === 'identity';
   const { rows } = await pool.query<{ id: number; content: string }>(
     `SELECT msg.id, msg.content
        FROM specialist_channel_messages msg
        JOIN specialist_channels c ON c.id = msg.channel_id
       WHERE c.project = $1 AND c.name = $2
         AND NOT EXISTS (
-          SELECT 1 FROM skill_hook_preparations p
+          SELECT 1 FROM ${identity ? 'agent_identitaet_skill_preparations' : 'skill_hook_preparations'} p
            WHERE p.source_type = 'channel' AND p.source_id = msg.id::text
-             AND p.agent_id = $3
+             AND p.${identity ? 'identity_id' : 'agent_id'} = $3
         )
       ORDER BY msg.id DESC
       LIMIT $4`,
-    [project, channelName, agentName, hoechstens],
+    [project, channelName, bezugsWert(z), hoechstens],
   );
   let nachgeholt = 0;
   for (const row of rows) {
@@ -683,7 +744,7 @@ export async function holeSkillsFuerQuellen(
 ): Promise<number> {
   const empfaenger = [...new Set(
     (agentenFuerVorrat?.length ? agentenFuerVorrat : [agentId]).filter(Boolean) as string[],
-  )];
+  )].map(a=>skillHandle(project,a));
   if (empfaenger.length === 0) return 0;
   const brauchbar = quellen
     .filter((q) => q.id !== undefined && q.id !== null && !!q.content)
@@ -693,13 +754,28 @@ export async function holeSkillsFuerQuellen(
 
   // Nur was fehlt. Geprueft wird je Empfaenger einzeln: eine Quelle gilt nur fuer den Agenten
   // als erledigt, der sie schon hat — sonst wuerde ein neu hinzugekommener uebersprungen.
+  const vorhanden = new Set<string>();
+  if (!agentBezugAktiv()) {
   const { rows } = await pool.query<{ source_id: string; agent_id: string }>(
     `SELECT DISTINCT source_id, agent_id
        FROM skill_hook_preparations
       WHERE source_type = $1 AND source_id = ANY($2::text[]) AND agent_id = ANY($3::text[])`,
     [sourceType, brauchbar.map((q) => q.id), empfaenger],
   );
-  const vorhanden = new Set(rows.map((row) => `${row.source_id}>>${row.agent_id}`));
+  for (const k of new Set(rows.map((row) => `${row.source_id}>>${row.agent_id}`))) vorhanden.add(k);
+
+  } else {
+  for (const handle of empfaenger) {
+    const z=await skillAgent(project,handle);
+    const identity=z.art === 'identity';
+    const {rows}=await pool.query<{source_id:string}>(
+      `SELECT DISTINCT source_id FROM ${identity ? 'agent_identitaet_skill_preparations' : 'skill_hook_preparations'}
+       WHERE source_type=$1 AND source_id=ANY($2::text[]) AND ${identity ? 'identity_id' : 'agent_id'}=$3`,
+      [sourceType,brauchbar.map(q=>q.id),bezugsWert(z)]);
+    for (const row of rows) vorhanden.add(`${row.source_id}>>${handle}`);
+  }
+
+  }
 
   let nachgeholt = 0;
   for (const quelle of brauchbar) {
@@ -849,7 +925,10 @@ export async function aktiveProjektAgenten(
   pool: Pool = getPool(),
 ): Promise<string[]> {
   const { rows } = await pool.query<{ id: string }>(
-    `SELECT id FROM agent_sessions WHERE project = $1 AND status = 'active'`,
+    agentBezugAktiv()
+      ? `SELECT 'legacy:'||id AS id FROM agent_sessions WHERE project=$1 AND status='active'
+         UNION ALL SELECT 'identity:'||identity_id FROM agent_identitaet_sitzungen WHERE project=$1 AND status='active'`
+      : `SELECT id FROM agent_sessions WHERE project=$1 AND status='active'`,
     [project],
   );
   return rows.map((row) => row.id).filter(Boolean);
@@ -876,10 +955,34 @@ export async function holeOffeneSkillVorschlaege(
   hoechstens = CHANNEL_SKILL_VORSCHLAEGE,
 ): Promise<SkillHookErgebnis> {
   if (!agentId) return { suggestions: [], metrics: null, skipped_due_to_load: false };
+  const z = eigenerKommunikationsAgent(agentId);
+  const identity = z.art === 'identity';
   try {
     const result = await queryMitHarterFrist<{
       skill_name: string; score: number; reason: string; delivered: boolean;
-    }>(pool, `
+    }>(pool, identity ? `
+      WITH kandidat AS (
+        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
+          FROM agent_identitaet_skill_preparations p
+         WHERE p.identity_id = $1
+           AND NOT EXISTS (
+             SELECT 1 FROM agent_identitaet_skill_deliveries d
+              WHERE d.identity_id = p.identity_id AND d.skill_name = p.skill_name AND d.context_epoch=$5
+           )
+         ORDER BY p.skill_name, p.score DESC
+      ), rangfolge AS (
+        SELECT * FROM kandidat ORDER BY score DESC LIMIT $3
+      ), eingefuegt AS (
+        INSERT INTO agent_identitaet_skill_deliveries (identity_id, agent_id, skill_name, hook_name, context_epoch)
+        SELECT $1, $4, skill_name, $2, $5 FROM rangfolge
+        ON CONFLICT(identity_id,skill_name) DO UPDATE SET context_epoch=EXCLUDED.context_epoch,suggested_at=NOW(),hook_name=EXCLUDED.hook_name
+          WHERE agent_identitaet_skill_deliveries.context_epoch<EXCLUDED.context_epoch
+        RETURNING skill_name
+      )
+      SELECT r.skill_name, r.score, r.reason,
+             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
+        FROM rangfolge r ORDER BY r.score DESC
+    ` : `
       WITH kandidat AS (
         SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
           FROM skill_hook_preparations p
@@ -900,7 +1003,7 @@ export async function holeOffeneSkillVorschlaege(
       SELECT r.skill_name, r.score, r.reason,
              EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
         FROM rangfolge r ORDER BY r.score DESC
-    `, [agentId, CHANNEL_HOOK_NAME, hoechstens]);
+    `, [bezugsWert(z), CHANNEL_HOOK_NAME, hoechstens,...(identity ? [agentId,skillKontextEpoch()] : [])]);
 
     const frisch = result.rows.filter((row) => row.delivered);
     if (frisch.length === 0) return { suggestions: [], metrics: null, skipped_due_to_load: false };
@@ -943,13 +1046,36 @@ export async function holeChannelSkillVorschlaege(
     return { suggestions: [], metrics: null, skipped_due_to_load: false };
   }
 
+  const z = eigenerKommunikationsAgent(agentId);
+  const identity = z.art === 'identity';
   try {
     const result = await queryMitHarterFrist<{
       skill_name: string;
       score: number;
       reason: string;
       delivered: boolean;
-    }>(pool, `
+    }>(pool, identity ? `
+      WITH kandidat AS (
+        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
+          FROM agent_identitaet_skill_preparations p
+         WHERE p.identity_id = $1
+           AND p.source_type = 'channel'
+           AND p.source_id = ANY($2::text[])
+         ORDER BY p.skill_name, p.score DESC
+      ), rangfolge AS (
+        SELECT * FROM kandidat ORDER BY score DESC LIMIT $4
+      ), eingefuegt AS (
+        INSERT INTO agent_identitaet_skill_deliveries (identity_id, agent_id, skill_name, hook_name, context_epoch)
+        SELECT $1, $5, skill_name, $3, $6 FROM rangfolge
+        ON CONFLICT(identity_id,skill_name) DO UPDATE SET context_epoch=EXCLUDED.context_epoch,suggested_at=NOW(),hook_name=EXCLUDED.hook_name
+          WHERE agent_identitaet_skill_deliveries.context_epoch<EXCLUDED.context_epoch
+        RETURNING skill_name
+      )
+      SELECT r.skill_name, r.score, r.reason,
+             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
+        FROM rangfolge r
+       ORDER BY r.score DESC
+    ` : `
       WITH kandidat AS (
         SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
           FROM skill_hook_preparations p
@@ -969,7 +1095,7 @@ export async function holeChannelSkillVorschlaege(
              EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
         FROM rangfolge r
        ORDER BY r.score DESC
-    `, [agentId, messageIds, CHANNEL_HOOK_NAME, CHANNEL_SKILL_VORSCHLAEGE]);
+    `, [bezugsWert(z), messageIds, CHANNEL_HOOK_NAME, CHANNEL_SKILL_VORSCHLAEGE,...(identity ? [agentId,skillKontextEpoch()] : [])]);
 
     // Nur was in DIESEM Abruf erstmals ausgeliefert wurde, zaehlt als Vorschlag. Alles,
     // was der Agent schon einmal gesehen hat, faellt hier heraus — beim naechsten Abruf

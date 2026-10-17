@@ -1,4 +1,5 @@
 import { getPool } from '../db/client.js'
+import { kommunikationsAgent, eigenerKommunikationsAgent, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js'
 
 export interface UnreadChannelHint {
   project: string
@@ -39,30 +40,33 @@ export async function markChannelRead(
   agentId: string,
 ): Promise<number> {
   if (!project || !channelName || !agentId) return 0
+  const z = kommunikationsAgent(project,agentId)
+  const mitgliedTabelle = z.art === 'identity' ? 'agent_identitaet_channel_mitglieder' : 'specialist_channel_members'
+  const mitgliedSchluessel = z.art === 'identity' ? 'identity_id' : 'agent_name'
   try {
     const { rows } = await getPool().query<{ markiert: number }>(
       `WITH offen AS (
          SELECT mem.channel_id,
                 COUNT(msg.id)::int AS anzahl,
                 COALESCE(MAX(msg.id), mem.last_read_message_id) AS neueste
-         FROM specialist_channel_members mem
+         FROM ${mitgliedTabelle} mem
          JOIN specialist_channels c ON c.id = mem.channel_id
          LEFT JOIN specialist_channel_messages msg
            ON msg.channel_id = mem.channel_id
           AND msg.id > mem.last_read_message_id
-          AND msg.sender <> mem.agent_name
-         WHERE c.project = $1 AND c.name = $2 AND mem.agent_name = $3
+          AND ${agentBezugAktiv() ? (z.art === 'identity' ? 'msg.sender_identity_id IS DISTINCT FROM mem.identity_id' : '(msg.sender_identity_id IS NOT NULL OR msg.sender <> mem.agent_name)') : 'msg.sender <> mem.agent_name'}
+         WHERE c.project = $1 AND c.name = $2 AND mem.${mitgliedSchluessel} = $3
          GROUP BY mem.channel_id, mem.last_read_message_id
        )
-       UPDATE specialist_channel_members mem
+       UPDATE ${mitgliedTabelle} mem
           SET last_read_message_id = GREATEST(mem.last_read_message_id, offen.neueste),
               last_notified_message_id = GREATEST(
                 COALESCE(mem.last_notified_message_id, 0), offen.neueste),
               read_initialized_at = COALESCE(mem.read_initialized_at, NOW())
          FROM offen
-        WHERE mem.channel_id = offen.channel_id AND mem.agent_name = $3
+        WHERE mem.channel_id = offen.channel_id AND mem.${mitgliedSchluessel} = $3
         RETURNING offen.anzahl AS markiert`,
-      [project, channelName, agentId],
+      [project, channelName, bezugsWert(z)],
     )
     return rows[0]?.markiert ?? 0
   } catch (error) {
@@ -80,15 +84,18 @@ export async function recordChannelRead(
 ): Promise<boolean> {
   const ids = deliveredMessageIds.filter((id) => Number.isSafeInteger(id) && id >= 0)
   if (!agentId || ids.length === 0) return false
+  const z = kommunikationsAgent(project,agentId)
+  const mitgliedTabelle = z.art === 'identity' ? 'agent_identitaet_channel_mitglieder' : 'specialist_channel_members'
+  const mitgliedSchluessel = z.art === 'identity' ? 'identity_id' : 'agent_name'
   try {
     const { rowCount } = await getPool().query(
-      `UPDATE specialist_channel_members mem
+      `UPDATE ${mitgliedTabelle} mem
        SET last_read_message_id = GREATEST(mem.last_read_message_id, $4),
            read_initialized_at = COALESCE(mem.read_initialized_at, NOW())
        FROM specialist_channels c
        WHERE c.id = mem.channel_id
-         AND c.project = $1 AND c.name = $2 AND mem.agent_name = $3`,
-      [project, channelName, agentId, Math.max(...ids)],
+         AND c.project = $1 AND c.name = $2 AND mem.${mitgliedSchluessel} = $3`,
+      [project, channelName, bezugsWert(z), Math.max(...ids)],
     )
     return (rowCount ?? 0) > 0
   } catch (error) {
@@ -100,6 +107,9 @@ export async function recordChannelRead(
 /** Zaehlt fremde ungelesene Posts und beansprucht jeden neuesten Stand atomisch einmal. */
 export async function claimUnreadChannelHints(agentId: string): Promise<UnreadChannelHint[]> {
   if (!agentId) return []
+  const z = eigenerKommunikationsAgent(agentId)
+  const mitgliedTabelle = z.art === 'identity' ? 'agent_identitaet_channel_mitglieder' : 'specialist_channel_members'
+  const mitgliedSchluessel = z.art === 'identity' ? 'identity_id' : 'agent_name'
   try {
     const { rows } = await getPool().query<{
       project: string; channel_name: string; unread_count: number; newest_id: string | number
@@ -107,27 +117,27 @@ export async function claimUnreadChannelHints(agentId: string): Promise<UnreadCh
       `WITH unread AS (
          SELECT mem.channel_id, c.project, c.name AS channel_name,
                 COUNT(msg.id)::int AS unread_count, MAX(msg.id)::bigint AS newest_id
-         FROM specialist_channel_members mem
+         FROM ${mitgliedTabelle} mem
          JOIN specialist_channels c ON c.id = mem.channel_id
          JOIN specialist_channel_messages msg
            ON msg.channel_id = mem.channel_id
           AND msg.id > mem.last_read_message_id
-          AND msg.sender <> mem.agent_name
-         WHERE mem.agent_name = $1
+          AND ${agentBezugAktiv() ? (z.art === 'identity' ? 'msg.sender_identity_id IS DISTINCT FROM mem.identity_id' : '(msg.sender_identity_id IS NOT NULL OR msg.sender <> mem.agent_name)') : 'msg.sender <> mem.agent_name'}
+         WHERE mem.${mitgliedSchluessel} = $1
          GROUP BY mem.channel_id, c.project, c.name
        ),
        claimed AS (
-         UPDATE specialist_channel_members mem
+         UPDATE ${mitgliedTabelle} mem
          SET last_notified_message_id = unread.newest_id
          FROM unread
-         WHERE mem.channel_id = unread.channel_id AND mem.agent_name = $1
+         WHERE mem.channel_id = unread.channel_id AND mem.${mitgliedSchluessel} = $1
            AND mem.last_notified_message_id IS DISTINCT FROM unread.newest_id
          RETURNING unread.project, unread.channel_name,
                    unread.unread_count, unread.newest_id
        )
        SELECT project, channel_name, unread_count, newest_id
        FROM claimed ORDER BY project, channel_name`,
-      [agentId],
+      [bezugsWert(z)],
     )
     return rows.map((row) => ({
       project: row.project, channel: row.channel_name,

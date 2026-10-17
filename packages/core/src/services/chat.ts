@@ -21,6 +21,8 @@
  */
 
 import { getPool } from '../db/client.js';
+import { kommunikationsAgent, aufgeloestesKommunikationsZiel, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
+import { aktuellerAgentAufruf, leseAgentBezugModus, type AgentZiel } from './agent-bezug.js';
 import { resolveCutoff } from './model-cutoffs.js';
 import { initialisiereChatLesestand } from './chat-unread.js';
 import { vergissOnboarding } from './project-status.js';
@@ -32,9 +34,14 @@ export interface ChatMessage {
   recipientId: string | null;
   content: string;
   timestamp: string;
+  senderIdentityId?: string | null;
+  recipientIdentityId?: string | null;
 }
 
 export interface AgentSession {
+  identityId?: string;
+  identity_id?: string;
+  contextEpoch?: number;
   id: string;
   project: string;
   model: string | null;
@@ -353,10 +360,21 @@ export async function expireIdleAgentSessions(stunden?: number): Promise<number>
  */
 export async function getAgentSession(id: string): Promise<AgentSession | null> {
   const pool = getPool();
+  const k = aktuellerAgentAufruf();
+  const bezug = k?.bezug ?? await leseAgentBezugModus();
+  if (bezug.modus !== 'alt' && k?.principal?.art === 'identity' && k.principal.agent_id === id) {
+    const p = k.principal;
+    const r = await pool.query('SELECT * FROM agent_identitaet_sitzungen WHERE identity_id=$1 AND project=$2',[p.identity_id,p.project]);
+    const z = r.rows[0];
+    if (!z) return null;
+    return { id:z.agent_id,project:z.project,model:z.model,cutoffDate:z.cutoff_date ?? await resolveCutoff(z.model),
+      status:z.status,registeredAt:z.registered_at,sitzungSeit:z.sitzung_seit,
+      identityId:z.identity_id,identity_id:z.identity_id,contextEpoch:z.context_epoch };
+  }
   const result = await pool.query(
     `SELECT id, project, model, cutoff_date, status, registered_at,
             COALESCE(sitzung_seit, registered_at) AS sitzung_seit
-       FROM agent_sessions WHERE id = $1`,
+       FROM agent_sessions WHERE id = $1${bezug.modus !== 'alt' ? ' AND identity_id IS NULL' : ''}`,
     [id]
   );
 
@@ -379,15 +397,20 @@ export async function getAgentSession(id: string): Promise<AgentSession | null> 
  */
 export async function listActiveAgents(project: string): Promise<AgentSession[]> {
   const pool = getPool();
+  const bezug = aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   const result = await pool.query(
     `SELECT id, project, model, cutoff_date, status, registered_at,
             COALESCE(sitzung_seit, registered_at) AS sitzung_seit
-     FROM agent_sessions WHERE project = $1 AND status = 'active'
+     FROM agent_sessions WHERE project = $1 AND status = 'active'${bezug.modus !== 'alt' ? ' AND identity_id IS NULL' : ''}
      ORDER BY COALESCE(sitzung_seit, registered_at) DESC`,
     [project]
   );
-
+  if (bezug.modus !== 'alt') {
+    const identities = await pool.query("SELECT agent_id AS id,project,model,cutoff_date,status,registered_at,sitzung_seit,identity_id,context_epoch FROM agent_identitaet_sitzungen WHERE project=$1 AND status='active' ORDER BY sitzung_seit DESC",[project]);
+    result.rows.push(...identities.rows);
+  }
   return result.rows.map(row => ({
+    ...(row.identity_id ? { identityId:row.identity_id,identity_id:row.identity_id,contextEpoch:row.context_epoch } : {}),
     id: row.id,
     project: row.project,
     model: row.model,
@@ -407,8 +430,10 @@ export async function sendMessage(
   project: string,
   senderId: string,
   content: string,
-  recipientId?: string
+  recipientId?: string | AgentZiel
 ): Promise<ChatMessage> {
+  if (agentBezugAktiv()) return sendeIdentitaetsChat(project, senderId, content, recipientId);
+  if (typeof recipientId === 'object' || recipientId?.startsWith('identity:')) throw new Error('agent_bezug_nicht_freigegeben');
   const pool = getPool();
   const result = await pool.query(
     `INSERT INTO chat_messages (project, sender_id, recipient_id, content, timestamp)
@@ -446,17 +471,18 @@ export async function getMessages(
     limit?: number;
   } = {}
 ): Promise<ChatMessage[]> {
+  if (agentBezugAktiv()) return leseIdentitaetsChat(project, options);
   const { since, senderId, agentId, messageId, limit = 50 } = options;
   const pool = getPool();
 
-  let query = `SELECT id, project, sender_id, recipient_id, content, timestamp
-               FROM chat_messages WHERE project = $1`;
+  let query = `SELECT id, project, sender_id, recipient_id, content, timestamp, sender_identity_id, recipient_identity_id
+               FROM chat_messages WHERE project = $1 AND recipient_identity_id IS NULL`;
   const params: unknown[] = [project];
   let paramIdx = 2;
 
   // Nur Broadcasts + DMs an diesen Agenten
   if (agentId) {
-    query += ` AND (recipient_id IS NULL OR recipient_id = $${paramIdx} OR sender_id = $${paramIdx})`;
+    query += ` AND ((recipient_id IS NULL AND recipient_identity_id IS NULL) OR (recipient_identity_id IS NULL AND recipient_id = $${paramIdx}) OR (sender_identity_id IS NULL AND sender_id = $${paramIdx}))`;
     params.push(agentId);
     paramIdx++;
   }
@@ -468,7 +494,7 @@ export async function getMessages(
   }
 
   if (senderId) {
-    query += ` AND sender_id = $${paramIdx}`;
+    query += ` AND sender_id = $${paramIdx} AND sender_identity_id IS NULL`;
     params.push(senderId);
     paramIdx++;
   }
@@ -491,7 +517,7 @@ export async function getMessages(
       markiert AS (
         INSERT INTO chat_lesestand(project, agent_id, letzte_id)
         SELECT $1, ${leser}, MAX(id) FROM geliefert
-        WHERE sender_id <> ${leser} AND (recipient_id IS NULL OR recipient_id = ${leser})
+        WHERE (sender_identity_id IS NOT NULL OR sender_id <> ${leser}) AND recipient_identity_id IS NULL AND (recipient_id IS NULL OR recipient_id = ${leser})
         HAVING MAX(id) IS NOT NULL
         ON CONFLICT (project, agent_id) DO UPDATE
           SET letzte_id = GREATEST(chat_lesestand.letzte_id, EXCLUDED.letzte_id),
@@ -511,3 +537,59 @@ export async function getMessages(
     timestamp: row.timestamp,
   }));
 }
+
+/** Eine Nachricht, zwei Rollen: fehlender Empfängername macht niemals einen ID-DM zum Broadcast. */
+async function sendeIdentitaetsChat(project: string, sender: string, content: string, recipient?: string | AgentZiel): Promise<ChatMessage> {
+  const a = kommunikationsAgent(project, sender);
+  const z = recipient ? await aufgeloestesKommunikationsZiel(project, recipient) : null;
+  const { rows } = await getPool().query(
+    `INSERT INTO chat_messages(project,sender_id,recipient_id,content,timestamp,sender_identity_id,recipient_identity_id)
+     VALUES($1,$2,$3,$4,NOW(),$5,$6) RETURNING *`,
+    [project,a.agent_id,z?.agent_id ?? null,content,a.art === 'identity' ? a.identity_id : null,z?.art === 'identity' ? z.identity_id : null]);
+  return mapIdentitaetsChat(rows[0]);
+}
+function mapIdentitaetsChat(r: Record<string, any>): ChatMessage {
+  return { id:r.id,project:r.project,senderId:r.sender_id,recipientId:r.recipient_id,
+    content:r.content,timestamp:r.timestamp,senderIdentityId:r.sender_identity_id,recipientIdentityId:r.recipient_identity_id };
+}
+async function leseIdentitaetsChat(project: string, options: {
+  since?: string; senderId?: string; agentId?: string; messageId?: string|number; limit?: number;
+}): Promise<ChatMessage[]> {
+  const z = options.agentId ? await aufgeloestesKommunikationsZiel(project, options.agentId, true) : null;
+  const id = z?.art === 'identity';
+  const params: unknown[] = [project];
+  const conditions = ['project=$1'];
+  const bind = (v: unknown) => { params.push(v); return '$' + params.length; };
+  if (z) {
+    const p = bind(bezugsWert(z));
+    conditions.push(id
+      ? `((recipient_id IS NULL AND recipient_identity_id IS NULL) OR recipient_identity_id=${p} OR sender_identity_id=${p})`
+      : `((recipient_id IS NULL AND recipient_identity_id IS NULL) OR (recipient_identity_id IS NULL AND recipient_id=${p}) OR (sender_identity_id IS NULL AND sender_id=${p}))`);
+  }
+  if (options.since) conditions.push('timestamp>' + bind(options.since));
+  if (options.senderId) {
+    const sender=await aufgeloestesKommunikationsZiel(project,options.senderId);
+    conditions.push(sender.art === 'identity' ? 'sender_identity_id=' + bind(sender.identity_id)
+      : 'sender_id=' + bind(sender.agent_id) + ' AND sender_identity_id IS NULL');
+  }
+  if (options.messageId !== undefined) conditions.push('id=' + bind(options.messageId));
+  let query = `SELECT * FROM chat_messages WHERE ${conditions.join(' AND ')} ORDER BY timestamp ASC,id ASC LIMIT ${bind(options.limit ?? 50)}`;
+  if (z) {
+    const reader = bind(bezugsWert(z)), name = bind(z.agent_id);
+    const table = id ? 'agent_identitaet_chat_lesestand' : 'chat_lesestand';
+    const key = id ? 'identity_id' : 'agent_id';
+    const fremd = id ? `sender_identity_id IS DISTINCT FROM ${reader}` : `(sender_identity_id IS NOT NULL OR sender_id<>${reader})`;
+    const sichtbar = id ? `recipient_identity_id=${reader}` : `recipient_identity_id IS NULL AND recipient_id=${reader}`;
+    query = `WITH geliefert AS MATERIALIZED (${query}), markiert AS (
+      INSERT INTO ${table}(project,agent_id,${id ? 'identity_id,' : ''}letzte_id)
+      SELECT $1,${name},${id ? reader + ',' : ''}MAX(id) FROM geliefert
+      WHERE ${fremd} AND ((recipient_id IS NULL AND recipient_identity_id IS NULL) OR (${sichtbar}))
+      HAVING MAX(id) IS NOT NULL
+      ON CONFLICT(project,${key}) DO UPDATE SET letzte_id=GREATEST(${table}.letzte_id,EXCLUDED.letzte_id),updated_at=NOW()
+      RETURNING letzte_id)
+      SELECT * FROM geliefert ORDER BY timestamp ASC,id ASC`;
+  }
+  const { rows } = await getPool().query(query, params);
+  return rows.map(mapIdentitaetsChat);
+}
+

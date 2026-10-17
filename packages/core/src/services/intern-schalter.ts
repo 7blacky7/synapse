@@ -21,6 +21,7 @@
  * NEBENEFFEKTE: nur Upsert in intern_schalter. Nichts wird beendet oder geloescht.
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 
 /** Bekannte Schalter und ihre Modi; der erste Modus ist der Standard. */
@@ -34,6 +35,7 @@ export const INTERN_SCHALTER = {
   main_synapse: ['freigegeben'],
   // P22-T10: aktiv=true gibt Token-Identitaet befristet frei (kein Pause-Schalter).
   token_identitaet: ['freigegeben'],
+  agent_bezug_modus: ['alt', 'beide', 'neu'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 
@@ -108,7 +110,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
       dauerhaft: false, grund: null, gesetzt_von: null, gesetzt_am: null,
     };
   }
-  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet') && z.bis !== null && z.bis.getTime() <= jetzt;
+  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus') && z.bis !== null && z.bis.getTime() <= jetzt;
   return {
     name,
     aktiv: z.aktiv && !abgelaufen,
@@ -116,7 +118,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
     abgelaufen,
     modus: z.modus,
     bis: z.bis ? z.bis.toISOString() : null,
-    dauerhaft: (z.aktiv || ((name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet') && z.modus === 'freigegeben')) && z.bis === null,
+    dauerhaft: (z.aktiv || name === 'agent_bezug_modus' || ((name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus') && z.modus === 'freigegeben')) && z.bis === null,
     grund: z.grund,
     gesetzt_von: z.gesetzt_von,
     gesetzt_am: z.gesetzt_am ? z.gesetzt_am.toISOString() : null,
@@ -147,7 +149,7 @@ export async function setzeSchalter(
   let hinweis: string | undefined;
 
   // Der Freigabeschalter braucht auch fuer einen AUS-Override einen Ablauf.
-  if (opt.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet') {
+  if (opt.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus') {
     modus = opt.modus ?? erlaubt[0];
     if (!erlaubt.includes(modus)) {
       throw new InternSchalterFehler('modus_ungueltig', `Modus "${modus}" passt nicht zu "${name}". Erlaubt: ${erlaubt.join(', ')}.`);
@@ -182,12 +184,12 @@ export async function setzeSchalter(
   }
 
   const { rows } = await getPool().query<SchalterZeile>(
-    `INSERT INTO intern_schalter (name, aktiv, modus, bis, grund, gesetzt_von, gesetzt_am)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    `INSERT INTO intern_schalter (name, aktiv, modus, bis, grund, gesetzt_von, gesetzt_am, setter_identity_id)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
      ON CONFLICT (name) DO UPDATE SET aktiv = EXCLUDED.aktiv, modus = EXCLUDED.modus, bis = EXCLUDED.bis,
-       grund = EXCLUDED.grund, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am
+       grund = EXCLUDED.grund, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am, setter_identity_id=EXCLUDED.setter_identity_id
      RETURNING ${SPALTEN}`,
-    [name, opt.aktiv, modus, bis, opt.grund ?? null, opt.agent ?? null],
+    [name, opt.aktiv, modus, bis, opt.grund ?? null, opt.agent ?? null, aktuelleAgentAkteurIdentityId(opt.agent)],
   );
   schreibStand.set(name, (schreibStand.get(name) ?? 0) + 1);
   cache.set(name, { zeile: rows[0] ?? null, geholt: Date.now() });

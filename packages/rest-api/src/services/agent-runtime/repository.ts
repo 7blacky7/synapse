@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { getPool } from '@synapse/core';
+import { getPool, aktuellerAgentAufruf } from '@synapse/core';
 import { agentRuntimeBasisRoot } from './runtime-root.js';
 import type { MainAgentSession, RuntimeConfiguration, RuntimeName } from './types.js';
 
@@ -156,16 +156,18 @@ export class AgentRuntimeRepository {
 
   async createSession(runtime: RuntimeName): Promise<MainAgentSession> {
     const id = randomUUID();
+    const k = aktuellerAgentAufruf();
+    const principal = k?.bezug.modus !== 'alt' && k?.principal?.art === 'identity' ? k.principal : null;
     const result = await getPool().query(
-      'INSERT INTO agent_runtime_sessions (id,agent_role,runtime,status) VALUES ($1,\'main\',$2,\'ready\') RETURNING id,runtime,runtime_session_id,status,context,created_at',
-      [id, runtime],
+      'INSERT INTO agent_runtime_sessions (id,agent_role,runtime,status,identity_id,lauf_id) VALUES ($1,\'main\',$2,\'ready\',$3,$4) RETURNING id,runtime,runtime_session_id,status,context,created_at,identity_id,lauf_id',
+      [id, runtime, principal?.identity_id ?? null, principal?.lauf_id ?? null],
     );
     return this.mapSession(result.rows[0]);
   }
 
   async getSession(id: string): Promise<MainAgentSession | null> {
     const result = await getPool().query(
-      'SELECT id,runtime,runtime_session_id,status,context,created_at FROM agent_runtime_sessions WHERE id=$1 AND agent_role=\'main\'',
+      'SELECT id,runtime,runtime_session_id,status,context,created_at,identity_id,lauf_id FROM agent_runtime_sessions WHERE id=$1 AND agent_role=\'main\'',
       [id],
     );
     return result.rows[0] ? this.mapSession(result.rows[0]) : null;
@@ -187,6 +189,8 @@ export class AgentRuntimeRepository {
     return {
       id: String(row.id),
       runtime: row.runtime as RuntimeName,
+      ...(row.identity_id ? {identityId:String(row.identity_id)} : {}),
+      ...(row.lauf_id ? {laufId:String(row.lauf_id)} : {}),
       runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
       status: row.status as MainAgentSession['status'],
       context: (row.context as Record<string, unknown> | null) ?? null,

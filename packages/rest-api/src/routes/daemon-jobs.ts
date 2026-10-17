@@ -35,6 +35,7 @@
  * ADDITIV: keine bestehende Route aendert sich; der PG-Weg des Daemons bleibt Vorgabe.
  */
 
+import { mitAgentAufrufKontext, leseAgentBezugModus, loeseAgentZiel, getWrapperStatus, setzeHeartbeatKonfiguration, beendeIdentitaetsSitzung, type AgentZiel } from '@synapse/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   DAEMON_JOB_WARTE_MAX_S,
@@ -348,7 +349,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
       projekte?: string[] | string;
       alter_ms?: number;
       max_alter_s?: number;
-      kandidat?: { project?: string; agent_name?: string; wrapper_pid?: number; last_activity?: string };
+      kandidat?: { identity_id?: string; project?: string; agent_name?: string; wrapper_pid?: number; last_activity?: string };
     };
   }>('/api/daemon/specialist/wartung', async (request, reply) => {
     const body = request.body ?? {};
@@ -382,7 +383,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         return {
           success: true,
           aktion: 'wrapper_abgestuerzt',
-          anzahl: await markiereWrapperAbgestuerzt({ project: k.project, agent_name: k.agent_name, wrapper_pid: Number(k.wrapper_pid), last_activity: k.last_activity }),
+          anzahl: await markiereWrapperAbgestuerzt({ project: k.project, agent_name: k.agent_name, wrapper_pid: Number(k.wrapper_pid), last_activity: k.last_activity, ...(typeof k.identity_id === 'string' ? { identity_id: k.identity_id } : {}) }),
         };
       }
       default:
@@ -399,6 +400,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     Body: {
       host?: string; daemon_id?: string; aktion?: string; project?: string; agent?: string; channel?: string;
       created_by?: string; pid?: number; zeile?: Record<string, unknown>; from?: string; to?: string; content?: string;
+      identity_id?: string; auftrag_id?: string;
     };
   }>('/api/daemon/specialist/daten', async (request, reply) => {
     const body = request.body ?? {};
@@ -419,6 +421,23 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     }
     const agent = aktion === 'wrapper_status' ? body.zeile?.agentName : aktion === 'inbox_post' ? body.to : body.agent;
     if (!istAgentName(agent)) return reply.code(400).send({ success: false, error: 'agent_ungueltig' });
+    const bezug = await leseAgentBezugModus();
+    return mitAgentAufrufKontext({ principal:null, bezug }, async () => {
+    let ziel: AgentZiel = { art: 'legacy', project, agent_id: agent };
+    let actor: AgentZiel | null = null;
+    if (body.identity_id !== undefined) {
+      if (bezug.modus === 'alt') return reply.code(409).send({ success: false, error: 'daemon_identity_im_altmodus' });
+      try { ziel = await loeseAgentZiel(project, { identity_id: body.identity_id, agent_id: agent }); }
+      catch { return reply.code(403).send({ success: false, error: 'daemon_identity_ziel_ungueltig' }); }
+      // Nur der ausführende Daemon eines laufenden ID-Auftrags darf dessen Zustand ändern.
+      if (!body.auftrag_id) return reply.code(403).send({ success: false, error: 'daemon_identity_auftrag_fehlt' });
+      const bindung = await getPool().query(
+        "SELECT j.actor_identity_id,i.agent_id AS actor_name FROM specialist_jobs j LEFT JOIN agent_identitaeten i ON i.id=j.actor_identity_id AND i.project=j.project WHERE j.id=$1 AND j.project=$2 AND j.target_identity_id=$3 AND j.claimed_by=$4 AND j.status='running'",
+        [body.auftrag_id, project, body.identity_id, d.daemonId]);
+      if (!bindung.rows.length) return reply.code(403).send({ success: false, error: 'daemon_identity_auftrag_falsch' });
+      const a = bindung.rows[0];
+      if (a.actor_identity_id && a.actor_name) actor = { art:'identity',project,agent_id:a.actor_name,identity_id:a.actor_identity_id };
+    }
     switch (aktion) {
       case 'agent_start': {
         // Der authentifizierte Daemon darf nur eine vorhandene Identität seines
@@ -427,31 +446,37 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         const schalter = await leseTokenIdentitaetSchalter();
         if (!schalter.freigegeben) return { success: true, aktion, freigegeben: false, schalter };
         try {
+          if (bezug.modus !== 'alt' && ziel.art === 'legacy') return { success: true, aktion, freigegeben: true, legacy_start: true, schalter };
           const r = await getPool().query<{ id: string; name: string; status: string }>(
-            'SELECT id, name, status FROM agent_identitaeten WHERE project=$1 AND agent_id=$2',
-            [project, agent]);
+            'SELECT id, name, status FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 AND ($3::text IS NULL OR id=$3)',
+            [project, agent, ziel.art === 'identity' ? ziel.identity_id : null]);
           const i = r.rows[0];
           if (!i) return { success: true, aktion, freigegeben: true, legacy_start: true, schalter };
           if (i.status !== 'aktiv') return reply.code(403).send({ success: false, error: 'identitaet_nicht_aktiv' });
           const ausweis = await stelleAgentTokenAus({
             project, name: i.name, identity_id: i.id, start_art: 'specialist',
             grund: 'Frischstart durch authentifizierten Projekt-Daemon',
-          }, { system: 'daemon' });
+          }, { system: 'daemon' }, bezug);
           // Klartext nur in dieser TLS-/LAN-Antwort an den geprüften Daemon,
           // nie im Queue-Job, Completion, Wrapperstatus oder Projektordner.
-          return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter };
+          return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter,
+            ...(bezug.modus !== 'alt' ? { identity_id: i.id, agent_bezug_modus: bezug.modus } : {}) };
         } catch (err) {
           return reply.code(409).send({ success: false,
             error: err instanceof AgentIdentitaetFehler ? err.code : 'agent_start_fehlgeschlagen' });
         }
       }
       case 'general_channel':
-        await ensureGeneralChannel(project, istAgentName(body.created_by) ? body.created_by : agent, agent);
+        if (ziel.art === 'identity') {
+          await ensureGeneralChannel(project, istAgentName(body.created_by) ? body.created_by : agent);
+          await joinChannel(project, `${project}-general`, ziel);
+        } else await ensureGeneralChannel(project, istAgentName(body.created_by) ? body.created_by : agent, agent);
         return { success: true, aktion };
       case 'channel_beitreten':
         if (typeof body.channel !== 'string' || !body.channel) return reply.code(400).send({ success: false, error: 'channel_fehlt' });
-        return { success: true, aktion, beigetreten: await joinChannel(project, body.channel, agent) };
+        return { success: true, aktion, beigetreten: await joinChannel(project, body.channel, ziel) };
       case 'sitzung_neu': {
+        if (ziel.art === 'identity') return { success: true, aktion, identity_id: ziel.identity_id, anmeldung: 'per_ausweis' };
         // agent_sessions.id ist global: gehoert die Sitzung einem anderen Projekt, bleibt sie unberuehrt.
         const sitzungsProjekt = await sitzungsProjektDesAgenten(agent);
         if (sitzungsProjekt !== null && sitzungsProjekt !== project) {
@@ -461,12 +486,14 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         return { success: true, aktion };
       }
       case 'wrapper_status':
-        await upsertWrapperStatus(body.zeile as unknown as Parameters<typeof upsertWrapperStatus>[0]);
+        await upsertWrapperStatus(body.zeile as unknown as Parameters<typeof upsertWrapperStatus>[0], ziel);
         return { success: true, aktion };
       case 'heartbeat_beim_spawn':
-        await setzeHeartbeatBeimSpawn(project, agent);
+        if (ziel.art === 'identity') await setzeHeartbeatKonfiguration(project, [ziel], { enabled: true, intervalMs: null });
+        else await setzeHeartbeatBeimSpawn(project, agent);
         return { success: true, aktion };
       case 'wrapper_pid': {
+        if (ziel.art === 'identity') return { success: true, aktion, pid: (await getWrapperStatus(ziel, project))?.wrapperPid ?? null };
         const { rows } = await getPool().query<{ wrapper_pid: number | null }>(
           'SELECT wrapper_pid FROM wrapper_status WHERE agent_name=$1 AND project=$2', [agent, project]);
         return { success: true, aktion, pid: rows.length === 1 && rows[0].wrapper_pid ? Number(rows[0].wrapper_pid) : null };
@@ -475,19 +502,28 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         if (!Number.isSafeInteger(body.pid) || Number(body.pid) <= 1) return reply.code(400).send({ success: false, error: 'pid_ungueltig' });
         // PID-CAS wie stoppeLokalenWrapper: ein zwischenzeitlich neu gestarteter Wrapper bleibt unangetastet.
         const r = await getPool().query(
-          "UPDATE wrapper_status SET status='stopped',busy=false,current_task=NULL,connected_mcp=false WHERE agent_name=$1 AND project=$2 AND wrapper_pid=$3",
-          [agent, project, Number(body.pid)]);
+          `UPDATE ${ziel.art === 'identity' ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} SET status='stopped',busy=false,current_task=NULL,connected_mcp=false WHERE ${ziel.art === 'identity' ? 'identity_id' : 'agent_name'}=$1 AND project=$2 AND wrapper_pid=$3`,
+          [ziel.art === 'identity' ? ziel.identity_id : agent, project, Number(body.pid)]);
         return { success: true, aktion, anzahl: r.rowCount ?? 0 };
       }
       // P9-T27 Nachbesserung (291473c2 Nr. 1): wirkt nur im geprueften Projekt, nie projektuebergreifend.
       case 'aus_channels':
+        if (ziel.art === 'identity') {
+          const r = await getPool().query('DELETE FROM agent_identitaet_channel_mitglieder m USING specialist_channels c WHERE m.channel_id=c.id AND c.project=$1 AND m.identity_id=$2',[project,ziel.identity_id]);
+          return { success: true, aktion, anzahl: r.rowCount ?? 0 };
+        }
         return { success: true, aktion, anzahl: await entferneAgentAusProjektChannels(agent, project) };
       case 'chat_abmelden':
+        if (ziel.art === 'identity') { await beendeIdentitaetsSitzung(project,ziel.identity_id); return { success: true, aktion }; }
         return { success: true, aktion, anzahl: await meldeAgentImProjektAb(agent, project) };
       case 'wrapper_status_entfernen':
-        await removeWrapperStatus(agent, project);
+        await removeWrapperStatus(ziel, project);
         return { success: true, aktion };
       case 'inbox_entfernen': {
+        if (ziel.art === 'identity') {
+          const r = await getPool().query('DELETE FROM specialist_inbox WHERE project=$1 AND to_identity_id=$2',[project,ziel.identity_id]);
+          return { success: true, aktion, anzahl: r.rowCount ?? 0 };
+        }
         // specialist_inbox hat keine project-Spalte: nur loeschen, wenn der Name allein diesem Projekt gehoert.
         const r = await entferneInboxImProjekt(agent, project);
         if (r.andereProjekte.length > 0) {
@@ -497,12 +533,13 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
       }
       case 'inbox_post': {
         if (!istAgentName(body.from) || typeof body.content !== 'string') return reply.code(400).send({ success: false, error: 'nachricht_ungueltig' });
-        const r = await postToInbox(body.from, agent, body.content, project);
+        const r = await postToInbox(actor ?? body.from, ziel, body.content, project);
         return { success: true, aktion, id: r.id };
       }
       default:
         return reply.code(400).send({ success: false, error: 'aktion_unbekannt' });
     }
+    });
   });
 
   // P9-T27 letzter Schritt: /api/daemon/sync, /projekt-schalter, /project-init, /tray (routes/daemon-sync.ts)

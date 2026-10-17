@@ -20,6 +20,7 @@
  */
 
 import { createServer, type Server, type Socket } from 'node:net'
+import { agentLaufSchluessel } from './agent-lauf.js'
 import { setzeDbProzess } from '@synapse/core'
 import { unlinkSync, chmodSync, existsSync } from 'node:fs'
 import { readFile, unlink } from 'node:fs/promises'
@@ -439,7 +440,7 @@ function getContextPercent(): number {
  * die gesamte Konversation sendet).
  */
 async function syncTokensFromHistory(): Promise<void> {
-  const status = processManager.getStatus().get(AGENT_NAME)
+  const status = processManager.getStatus().get(agentLaufSchluessel(AGENT_NAME))
   if (!status) {
     log('syncTokens: processManager hat keinen Status fuer "%s"', AGENT_NAME)
     return
@@ -1352,7 +1353,7 @@ async function buildFullPgStatus(
     project: PROJECT_NAME,
     wrapperPid: process.pid,
     // Fix skeptiker-pg #1: innerPid = Claude-CLI-PID aus processManager
-    innerPid: processManager.getStatus().get(AGENT_NAME)?.pid ?? null,
+    innerPid: processManager.getStatus().get(agentLaufSchluessel(AGENT_NAME))?.pid ?? null,
     socketPath: SOCKET_PATH,
     model: AGENT_MODEL,
     // Fix skeptiker-pg #2: modelFullId + provider
@@ -1401,7 +1402,7 @@ async function updateStatusFile() {
       contextCeiling: getContextCeiling(),
       lastActivity: lastActivityTs,
       pid: processManager.isRunning(AGENT_NAME)
-        ? (processManager.getStatus().get(AGENT_NAME)?.pid ?? 0)
+        ? (processManager.getStatus().get(agentLaufSchluessel(AGENT_NAME))?.pid ?? 0)
         : 0,
       wrapperPid: process.pid,
     } as Partial<SpecialistStatus>)
@@ -1855,7 +1856,7 @@ async function main() {
         wrapperPid: process.pid,
         // P7-T32: echte PID (der Prozess laeuft hier meist schon) oder NULL — und die tote PID der
         // alten Session in PG ausdruecklich ueberschreiben (COALESCE haette sie behalten). Nie 0.
-        innerPid: processManager.getStatus().get(AGENT_NAME)?.pid ?? null,
+        innerPid: processManager.getStatus().get(agentLaufSchluessel(AGENT_NAME))?.pid ?? null,
         innerPidZuruecksetzen: true,
         socketPath: SOCKET_PATH,
         model: AGENT_MODEL,

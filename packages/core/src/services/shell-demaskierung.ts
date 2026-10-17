@@ -8,6 +8,7 @@
  * tool_calls, Embeddings und Logs bleiben immer maskiert.
  */
 import {getPool} from '../db/client.js';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 import {maskiereShellVorSpeichern,maskiereShellText} from './shell-maske.js';
 import {shellRueckfrageFristMs,type ShellDemaskierung} from './shell-rueckfrage.js';
 
@@ -16,16 +17,17 @@ type Abfrage={query:(sql:string,werte?:unknown[])=>Promise<{rows:Record<string,u
 /** Trägt einen unmaskiert gespeicherten Job in die Liste ein und hält den Grund im Job-Audit fest. */
 export async function trageShellDemaskierungEin(jobId:string,project:string,d:ShellDemaskierung,db:Abfrage=getPool() as unknown as Abfrage):Promise<void>{
   const grund=maskiereShellText(d.grund).text;
+  const identityId=d.actor_identity_id!==undefined?d.actor_identity_id:aktuelleAgentIdentityId(project,d.agent_id);
   await db.query(
-    `INSERT INTO shell_demaskierungen(job_id,bestaetigung_id,agent_id,project,grund,maskieren_bis)
-     VALUES($1::uuid,$2,$3,$4,$5,$6::timestamptz)
+    `INSERT INTO shell_demaskierungen(job_id,bestaetigung_id,agent_id,project,grund,maskieren_bis,actor_identity_id)
+     VALUES($1::uuid,$2,$3,$4,$5,$6::timestamptz,$7)
      ON CONFLICT(job_id) DO UPDATE SET bestaetigung_id=EXCLUDED.bestaetigung_id,agent_id=EXCLUDED.agent_id,
-       grund=EXCLUDED.grund,demaskiert_at=NOW(),maskieren_bis=EXCLUDED.maskieren_bis`,
-    [jobId,d.bestaetigung_id,d.agent_id,project,grund,d.maskieren_bis]);
+       actor_identity_id=EXCLUDED.actor_identity_id,grund=EXCLUDED.grund,demaskiert_at=NOW(),maskieren_bis=EXCLUDED.maskieren_bis`,
+    [jobId,d.bestaetigung_id,d.agent_id,project,grund,d.maskieren_bis,identityId]);
   await db.query(
     `UPDATE shell_jobs SET sicherung=COALESCE(sicherung,'{}'::jsonb)||jsonb_build_object('demaskierung',$2::jsonb),updated_at=NOW()
      WHERE id=$1::uuid`,
-    [jobId,JSON.stringify({bestaetigung_id:d.bestaetigung_id,agent_id:d.agent_id,grund,demaskiert_at:new Date().toISOString(),maskieren_bis:d.maskieren_bis})]);
+    [jobId,JSON.stringify({bestaetigung_id:d.bestaetigung_id,agent_id:d.agent_id,...(identityId?{actor_identity_id:identityId}:{}),grund,demaskiert_at:new Date().toISOString(),maskieren_bis:d.maskieren_bis})]);
 }
 
 /**

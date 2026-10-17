@@ -84,6 +84,9 @@ export type ShellExecArgs = {
   /** Fester Preflight-Anschluss; E3 nutzt ihn, E2 aktiviert keine Stufen. Maskierte Daten. */
   onLage?: (lage: ShellLage) => Promise<void> | void;
   agent_id?: string | null;
+  /** Nur verifizierte Queue-/API-Metadaten, keine öffentlichen Tool-Parameter. */
+  agent_identity_id?:string|null;
+  agent_koordination_erlaubt?:boolean;
   bestaetigt?: ShellBestaetigung | null;
   /** P10-T73: Rueckfrage-Bestaetigung (id + grund) des aufrufenden Agenten. */
   bestaetigung?: ShellBestaetigungEingabe | null;
@@ -256,7 +259,8 @@ export async function execShellInProject(
     : {pids:[process.pid,process.ppid],namen:[path.basename(process.execPath).toLowerCase()]};
   const katalog = kontext ? kontext.katalog : await holeShellStartKatalog();
   const pruefung = pruefeShellStart({project:args.project,command:args.command,lage,
-    agent_id:args.agent_id,bestaetigt:args.bestaetigt,bestaetigung:args.bestaetigung,rechner:os.hostname(),
+    agent_id:args.agent_id,agent_identity_id:args.agent_identity_id,
+    agent_koordination_erlaubt:args.agent_koordination_erlaubt??kontext?.agent_koordination_erlaubt,bestaetigt:args.bestaetigt,bestaetigung:args.bestaetigung,rechner:os.hostname(),
     geschuetzte_pids:prozesse.pids,geschuetzte_namen:prozesse.namen},katalog);
   // P10-T73: Grund der Demaskierung gehoert ins Job-Audit.
   const demaskierung=args.demaskierung??aktuelleShellDemaskierung();

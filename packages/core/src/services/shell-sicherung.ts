@@ -20,6 +20,7 @@
  * ohne laufende REST-API: kein Nachmaskier-Worker.
  */
 import type { Pool } from 'pg';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 import{skriptFakten,type InlineKontext}from'./shell-inline-pruefung.js';
 import { parseShellText, type SicherungsShell, type ShellTextKommando } from './shell-sicherung-parser.js';
 import { SHELL_SICHERUNG_SEED } from './shell-sicherung-seed.js';
@@ -506,8 +507,8 @@ export async function seedShellSicherung(pool: Pool, actor: { agent_id: string; 
       ...SHELL_SICHERUNG_SEED.risiko_verben.filter(x => v.rows.some(y => y.id === x.id)).map(x => ({ objekt_art: 'risiko_verb', objekt_id: x.id, version: 1, nachher: x })),
     ];
     await client.query(
-      'INSERT INTO shell_sicherungs_audit(objekt_art,objekt_id,version,nachher,agent_id,grund) SELECT objekt_art,objekt_id,version,nachher,$2,$3 FROM jsonb_to_recordset($1::jsonb) AS x(objekt_art text,objekt_id text,version integer,nachher jsonb)',
-      [JSON.stringify(fresh), actor.agent_id, actor.grund]);
+      'INSERT INTO shell_sicherungs_audit(objekt_art,objekt_id,version,nachher,agent_id,grund,actor_identity_id) SELECT objekt_art,objekt_id,version,nachher,$2,$3,$4 FROM jsonb_to_recordset($1::jsonb) AS x(objekt_art text,objekt_id text,version integer,nachher jsonb)',
+      [JSON.stringify(fresh), actor.agent_id, actor.grund, aktuellerAgentPrincipal() ? aktuelleAgentIdentityId(aktuellerAgentPrincipal()!.project,actor.agent_id) : null]);
     await client.query('COMMIT');
     return { antworten: a.rowCount ?? 0, regeln: r.rowCount ?? 0, risiko_verben: v.rowCount ?? 0 };
   } catch (e) { await client.query('ROLLBACK'); throw e; }

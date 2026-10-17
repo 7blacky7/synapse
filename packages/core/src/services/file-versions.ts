@@ -13,6 +13,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { aktuelleAgentIdentityId, aktuellerAgentAufruf } from './agent-bezug.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
 import { ergaenzeFileTasks } from './file-task-zuordnung.js';
 import { updateFileInPg, getFileContentFromPg } from './code-write.js';
@@ -118,6 +119,7 @@ async function ergaenzeNachher<T extends FileVersionMeta>(rows: T[]): Promise<vo
  * Ignore-Ereignisse (edit_action ignore_*) sind keine Datei-Aenderungen und bekommen keins.
  */
 async function ergaenzeDiffs<T extends FileVersionMeta>(rows: T[], opts: { max: number; kurz: boolean }): Promise<T[]> {
+  for (const row of rows) if (row.author_identity_id == null) delete row.author_identity_id;
   await ergaenzeFileTasks(rows);
   await ergaenzeNachher(rows);
   const fehlend = rows
@@ -155,6 +157,10 @@ async function ergaenzeDiffs<T extends FileVersionMeta>(rows: T[], opts: { max: 
   return rows;
 }
 
+function historyIdentity(project:string,name?:string):string|null {
+  if(!name || !aktuellerAgentAufruf() || aktuellerAgentAufruf()?.bezug.modus==='alt') return null;
+  return name.startsWith('identity:') ? name.slice(9) : aktuelleAgentIdentityId(project,name);
+}
 export interface FileVersionMeta {
   id: string;          // BIGSERIAL als String (JS Number-Limit)
   project: string;
@@ -162,6 +168,7 @@ export interface FileVersionMeta {
   content_hash: string;
   edit_action: string | null;
   agent_id: string | null;
+  author_identity_id?: string | null;
   batch_id: string | null;
   size_bytes: number;
   created_at: string;
@@ -209,17 +216,17 @@ export async function listFileVersions(
   const pool = getPool();
   const taskId = taskRef !== undefined ? await resolveProjectTaskId(project, taskRef) : null;
   const result = await pool.query<FileVersionMeta>(
-    `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
+    `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id, author_identity_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
             feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
      WHERE project = $1 AND file_path = $2 AND ($4::text IS NULL OR task_id = $4)
        AND (NOT $5::boolean OR task_id IS NULL)
        AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
-       AND ($7::text IS NULL OR agent_id = $7)
+       AND ($7::text IS NULL OR ($8::text IS NOT NULL AND author_identity_id=$8) OR ($8::text IS NULL AND author_identity_id IS NULL AND agent_id=$7))
      ORDER BY created_at DESC, id DESC
      LIMIT $3`,
-    [project, filePath, safeLimit, taskId, opts.ohne_task === true, opts.since ?? null, opts.agent_id ?? null]
+    [project, filePath, safeLimit, taskId, opts.ohne_task === true, opts.since ?? null, opts.agent_id ?? null, opts.agent_id ? historyIdentity(project,opts.agent_id) : null]
   );
   return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
 }
@@ -235,7 +242,7 @@ export async function getFileVersion(
   const pool = getPool();
   const result = await pool.query<FileVersionFull>(
     `SELECT id::text AS id, project, file_path, content, content_hash,
-            edit_action, agent_id, batch_id::text AS batch_id,
+            edit_action, agent_id, author_identity_id, batch_id::text AS batch_id,
             size_bytes, created_at::text AS created_at, reason,
             feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
@@ -244,6 +251,7 @@ export async function getFileVersion(
   );
   const row = result.rows[0];
   if (!row) return null;
+  if(!row.author_identity_id) delete row.author_identity_id;
   if (!mitDiff) await ergaenzeFileTasks([row]);
   const fertig = mitDiff ? (await ergaenzeDiffs([row], { max: 1, kurz: false }))[0] : row;
   if (opts.roh || !istMaskierteDatei(fertig.file_path)) return fertig;
@@ -336,17 +344,17 @@ export async function listFileHistory(
          JOIN chain c ON fv.id = c.parent_version_id
          WHERE fv.project = $2
        )
-       SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
+       SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id, author_identity_id,
               batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
             feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
        FROM chain
        WHERE ($4::text IS NULL OR task_id = $4)
          AND (NOT $5::boolean OR task_id IS NULL)
          AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
-         AND ($7::text IS NULL OR agent_id = $7)
+         AND ($7::text IS NULL OR ($8::text IS NOT NULL AND author_identity_id=$8) OR ($8::text IS NULL AND author_identity_id IS NULL AND agent_id=$7))
        ORDER BY created_at DESC, id DESC
        LIMIT $3`,
-      [opts.version_id, project, safeLimit, opts.task_id !== undefined ? await resolveProjectTaskId(project, opts.task_id) : null, opts.ohne_task === true, opts.ohne_task ? opts.since ?? null : null, opts.ohne_task ? opts.agent_id ?? null : null],
+      [opts.version_id, project, safeLimit, opts.task_id !== undefined ? await resolveProjectTaskId(project, opts.task_id) : null, opts.ohne_task === true, opts.ohne_task ? opts.since ?? null : null, opts.ohne_task ? opts.agent_id ?? null : null, opts.ohne_task && opts.agent_id ? historyIdentity(project,opts.agent_id) : null],
     );
     return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
   }
@@ -354,8 +362,9 @@ export async function listFileHistory(
   const params: unknown[] = [project];
   const conds: string[] = ['project = $1'];
   if (opts.agent_id) {
-    params.push(opts.agent_id);
-    conds.push(`agent_id = $${params.length}`);
+    const identityId = historyIdentity(project,opts.agent_id);
+    params.push(identityId ?? opts.agent_id);
+    conds.push(identityId ? `author_identity_id = $${params.length}` : `author_identity_id IS NULL AND agent_id = $${params.length}`);
   }
   if (opts.file_path) {
     params.push(opts.file_path + '%');
@@ -377,7 +386,7 @@ export async function listFileHistory(
   if (opts.ohne_task === true) conds.push('task_id IS NULL');
   params.push(safeLimit);
   const result = await pool.query<FileVersionMeta>(
-    `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
+    `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id, author_identity_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
             feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
@@ -398,7 +407,7 @@ export async function listBatchVersions(
 ): Promise<FileVersionMeta[]> {
   const pool = getPool();
   const result = await pool.query<FileVersionMeta>(
-    `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id,
+    `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id, author_identity_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
             feature_tag, parent_version_id::text AS parent_version_id, git_commit_sha, agent_note, diff, task_id
      FROM file_versions
@@ -406,6 +415,7 @@ export async function listBatchVersions(
      ORDER BY created_at ASC, id ASC`,
     [batchId]
   );
+  for(const row of result.rows) if(!row.author_identity_id) delete row.author_identity_id;
   return ergaenzeFileTasks(result.rows);
 }
 

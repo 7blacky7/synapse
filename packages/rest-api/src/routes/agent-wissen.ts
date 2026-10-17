@@ -36,6 +36,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { registriereAgentTransportKontext } from '../services/agent-transport-kontext.js';
 import {
   leseAgentWissen,
   leseWissensArt,
@@ -98,6 +99,7 @@ function artSicht(sicht: ArtSicht): Record<string, unknown> {
 
 export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void> {
   const BASIS = '/api/projects/:name/specialists/:specName/wissen';
+  registriereAgentTransportKontext(fastify, BASIS);
 
   /**
    * Loest den :art-Parameter auf. Ein unbekannter Wert gibt 400 mit der Liste der

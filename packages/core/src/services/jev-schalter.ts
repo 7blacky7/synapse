@@ -20,6 +20,7 @@
  *   Gemeldet einmal je Wechsel.
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { jevBudgetPause } from './jev-kosten.js';
 
@@ -219,12 +220,12 @@ export async function setzeJevSchalter(o: SetzeJevSchalterOptionen): Promise<Jev
   }
   if (typeof o.aktiv !== 'boolean') throw new JevSchalterFehler('aktiv_fehlt', 'aktiv (true = an, false = aus) ist Pflicht.');
   const { rows } = await getPool().query<Roh>(
-    `INSERT INTO jev_schalter (project, funktion, aktiv, grund, gesetzt_von, gesetzt_am)
-     VALUES ($1, $2, $3, $4, $5, NOW())
+    `INSERT INTO jev_schalter (project, funktion, aktiv, grund, gesetzt_von, gesetzt_am, setter_identity_id)
+     VALUES ($1, $2, $3, $4, $5, NOW(), $6)
      ON CONFLICT (project, funktion) DO UPDATE SET aktiv = EXCLUDED.aktiv, grund = EXCLUDED.grund,
-       gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am
+       gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am, setter_identity_id=EXCLUDED.setter_identity_id
      RETURNING project, funktion, aktiv, grund, gesetzt_von, gesetzt_am`,
-    [project, funktion, o.aktiv, o.grund ?? null, o.agent ?? null],
+    [project, funktion, o.aktiv, o.grund ?? null, o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
   );
   schreibStand++;
   const z = rows[0];

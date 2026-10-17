@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
+import { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -161,7 +161,7 @@ export function createServer(): Server {
   // Tool-Aufrufe verarbeiten
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name } = request.params;
-    const kontext = await bereiteAgentToolAufrufVor(name, request.params.arguments ?? {}, SERVER_INSTANCE_ID, process.env.SYNAPSE_AGENT_TOKEN, ERLAUBTE_PARAMETER.get(name));
+    return mitAgentToolAufruf(name, request.params.arguments ?? {}, SERVER_INSTANCE_ID, async (kontext) => {
     if (kontext.aktiv && kontext.antwort?.success === false) {
       void logToolCall({ agentId: kontext.principal?.agent_id ?? null, project: kontext.principal?.project ?? null,
         source: 'stdio', tool: name, action: String(kontext.args.action ?? ''), ok: false,
@@ -798,6 +798,7 @@ export function createServer(): Server {
       name,
       typeof args?.action === 'string' ? args.action : undefined,
     );
+    }, process.env.SYNAPSE_AGENT_TOKEN, ERLAUBTE_PARAMETER.get(name));
   });
 
   return server;

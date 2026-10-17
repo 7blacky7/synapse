@@ -18,6 +18,7 @@
  *   Erstellerprojekt samt sha256, sonst 410 nicht_mehr_gebunden ohne Metadaten. Lösen der Bindung widerruft
  *   per Trigger (104_reverse_ansicht.sql).
  */
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {isIP} from 'node:net';
 import {Transform,pipeline,type Readable} from 'node:stream';
@@ -242,8 +243,8 @@ export class AnsichtLinkDienst {
       await q.halten(retentionRef,ablauf);gehalten={q,ref:retentionRef};
       await this.db.query(
         'INSERT INTO ansicht_tokens(token_id,token_digest,bereich,ziel_ref,id,revision,sha256,art,einmalig,offen_sekunden,'+
-        'expires_at,retention_ref,erstellt_von_agent,erstellt_von_projekt,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)',
-        [tokenId,digest(token),q.bereich,ref.ziel_ref,q.id,q.revision,q.sha256,art,einmalig,sekunden,ablauf,retentionRef,kurz(e.agent_id),kurz(e.projekt),jetzt]);
+        'expires_at,retention_ref,erstellt_von_agent,erstellt_von_projekt,created_at,creator_identity_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)',
+        [tokenId,digest(token),q.bereich,ref.ziel_ref,q.id,q.revision,q.sha256,art,einmalig,sekunden,ablauf,retentionRef,kurz(e.agent_id),kurz(e.projekt),jetzt,aktuelleAgentAkteurIdentityId(e.agent_id)]);
       gehalten=null;
       await this.audit(tokenId,'erzeugt',null,'ok',null,e.agent_id??null);
       return {success:true,url:this.link.basisUrl+ANSICHT_LINK_PFAD+token,token_id:tokenId,expires_at:ablauf.toISOString(),
@@ -481,8 +482,8 @@ export class AnsichtLinkDienst {
     try{
       const ua=meta?.userAgent?maskiereAnsichtLinks(meta.userAgent.replace(/[\u0000-\u001f\u007f]/g,' ')).slice(0,200):null;
       await this.db.query(
-        'INSERT INTO ansicht_token_audit(token_id,zeit,ereignis,http_status,ergebnis,user_agent,client_ip,akteur) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-        [tokenId,this.jetzt(),ereignis,status,ergebnis.slice(0,200),ua,meta?.clientIp?meta.clientIp.slice(0,64):null,kurz(akteur)]);
+        'INSERT INTO ansicht_token_audit(token_id,zeit,ereignis,http_status,ergebnis,user_agent,client_ip,akteur,actor_identity_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        [tokenId,this.jetzt(),ereignis,status,ergebnis.slice(0,200),ua,meta?.clientIp?meta.clientIp.slice(0,64):null,kurz(akteur),aktuelleAgentAkteurIdentityId(akteur)]);
     }catch{console.warn('[ansicht-link] Audit konnte nicht geschrieben werden.');}
   }
 }

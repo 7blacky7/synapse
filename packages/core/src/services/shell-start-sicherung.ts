@@ -2,6 +2,7 @@
  * P10-T37: feste Startentscheidung und gemeinsame bestehende Rollenprüfung.
  * Reine Funktion; führt weder Originalbefehl noch Vorschau aus.
  */
+import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import {createHash}from'node:crypto';
 import path from'node:path';
 import{skriptFakten}from'./shell-inline-pruefung.js';
@@ -19,6 +20,8 @@ export interface ShellStartEingabe {
   /** Privater Workspace-Ausführungsweg; nie aus Clientdaten übernehmen. */
   workspace_testdateien?:boolean;
   project:string; command:string; lage:ShellLage; agent_id?:string|null;
+  /** Nur trusted interne Metadaten, niemals öffentliche Client-Argumente. */
+  agent_identity_id?:string|null; agent_koordination_erlaubt?:boolean;
   rechner?:string; bestaetigt?:ShellBestaetigung|null;
   /** P10-T73: Bestaetigung einer Rueckfrage durch den aufrufenden Agenten selbst. */
   bestaetigung?:ShellBestaetigungEingabe|null;
@@ -35,7 +38,7 @@ export interface ShellStartEntscheidung {
   darf_starten:boolean; antwort?:ShellSicherungsAntwort;
   /** Laeuft trotzdem; nur Warnhinweis (User-Vorgabe 14.10.2026). */
   hinweis?:{stufe:'hinweis';risiko:string;danach:string;sicher:string};
-  audit:{agent_id:string|null;grund:string|null;befehl_hash:string;lage_hash:string;
+  audit:{agent_id:string|null;identity_id?:string;grund:string|null;befehl_hash:string;lage_hash:string;
     regelversion:string;stufe:string;entscheidung:'erlaubt'|'bestaetigt'|'abgewiesen';zeit:string;
     bestaetigung_id?:string;demaskierung?:Omit<ShellDemaskierung,'grund'>&{grund:string}};
 }
@@ -176,7 +179,7 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
   const bindings={befehl_hash,lage_hash:o.lage.hash,regelversion:regelVersion(k)};
   let allow=stufe==='laeuft'||stufe==='hinweis',confirmed=false,error:string|undefined;
   if(o.bestaetigt&&stufe!=='laeuft'&&stufe!=='hinweis'){
-    if(!darfKoordinatorOderUser(o.agent_id)){allow=false;error='nur_koordinator';}
+    if(!(o.agent_identity_id ? o.agent_koordination_erlaubt===true || aktuelleAgentIdentityId(o.project,o.agent_id)===o.agent_identity_id && darfKoordinatorOderUser(o.agent_id) : darfKoordinatorOderUser(o.agent_id))){allow=false;error='nur_koordinator';}
     else if(typeof o.bestaetigt.grund!=='string'||o.bestaetigt.grund.trim().length<10){allow=false;error='grund_fehlt';}
     else if(Object.entries(bindings).some(([key,value])=>o.bestaetigt?.[key as keyof ShellBestaetigung]!==value)){
       allow=false;error='bestaetigung_veraltet';
@@ -185,7 +188,7 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
   // P10-T73: Rueckfrage. Der AUFRUFENDE Agent bestaetigt selbst mit ID + Grund; sonst neue fluechtige ID.
   let bestaetigungId:string|undefined,rueckfrage:{bestaetigung_id:string;gueltig_bis:string}|undefined;
   if(stufe==='rueckfrage'&&!confirmed){
-    const bindung={art:'befehl' as const,agent_id:o.agent_id??null,project:o.project,...bindings};
+    const bindung={art:'befehl' as const,agent_id:o.agent_id??null,identity_id:o.agent_identity_id!==undefined?o.agent_identity_id:aktuelleAgentIdentityId(o.project,o.agent_id),project:o.project,...bindings};
     if(o.bestaetigung){
       const r=loeseShellRueckfrageEin(o.bestaetigung.id,o.bestaetigung.grund,bindung);
       if(r.ok){allow=true;confirmed=true;bestaetigungId=o.bestaetigung.id;error=undefined;}
@@ -194,7 +197,8 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
     if(!confirmed){allow=false;rueckfrage=stelleShellRueckfrage(bindung);}
   }
   if(stufe==='sperre'){allow=false;error='shell_sperre';}
-  const audit={agent_id:o.agent_id??null,grund:confirmed?(bestaetigungId?o.bestaetigung!.grund.trim():o.bestaetigt!.grund.trim()):eigeneDb&&allow?'projekt_eigene_db':null,...bindings,
+  const identityId=o.agent_identity_id!==undefined?o.agent_identity_id:aktuelleAgentIdentityId(o.project,o.agent_id);
+  const audit={agent_id:o.agent_id??null,...(identityId?{identity_id:identityId}:{}),grund:confirmed?(bestaetigungId?o.bestaetigung!.grund.trim():o.bestaetigt!.grund.trim()):eigeneDb&&allow?'projekt_eigene_db':null,...bindings,
     stufe,entscheidung:allow?(confirmed?'bestaetigt' as const:'erlaubt' as const):'abgewiesen' as const,zeit:new Date().toISOString(),
     ...(bestaetigungId?{bestaetigung_id:bestaetigungId}:{})};
   if(stufe==='laeuft'&&allow)return {darf_starten:true,audit};

@@ -309,8 +309,9 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
     // P9-T27 Welle 2: im API-Weg liefert die API Projektpfad, Projekt-DB, Katalog und Freigabe; das Audit
     // geht per POST. execShellInProject braucht dann keine eigene PG-Verbindung.
     let kontext: ShellExecKontext | undefined;
-    if (jobWeg === 'api') {
+    if (jobWeg === 'api' || job.owner_identity_id) {
       const daten = await holeShellKontextApi(job.id, DAEMON_ID);
+      if (job.owner_identity_id && daten.agent_identity_id !== job.owner_identity_id) throw new Error('shell_job_identity_kontext_falsch');
       kontext = {
         ...daten,
         sicherung: ({ project: _p, command: _c, job_id: _j, ...speicher }) => meldeShellSicherungApi(job.id, DAEMON_ID, speicher),
@@ -321,10 +322,12 @@ export async function runClaimedJob(project: string, job: ShellJobRow): Promise<
       project: job.project,
       command: job.command,
       agent_id: job.agent_id,
+      ...(job.owner_identity_id ? { agent_identity_id:job.owner_identity_id,agent_koordination_erlaubt:kontext?.agent_koordination_erlaubt === true } : {}),
       bestaetigt: job.sicherung?.anfrage?.bestaetigt,
       // P10-T73: Rueckfrage-Bestaetigung prueft dieser Daemon gegen seine eigene fluechtige Rueckfrage.
       bestaetigung: job.sicherung?.anfrage?.bestaetigung,
       demaskierung: isShellDemaskierung(job.sicherung?.anfrage?.demaskierung)&&job.sicherung?.anfrage?.demaskierung.agent_id===job.agent_id
+        && (job.owner_identity_id ? job.sicherung.anfrage.demaskierung.actor_identity_id===job.owner_identity_id : !job.sicherung.anfrage.demaskierung.actor_identity_id)
         ? job.sicherung.anfrage.demaskierung : undefined,
       shell: job.sicherung?.anfrage?.shell,
       sicherungs_job_id: job.id,

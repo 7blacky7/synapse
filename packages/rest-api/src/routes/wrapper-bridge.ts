@@ -36,6 +36,8 @@
  */
 
 import { FastifyInstance } from 'fastify';
+import { registriereAgentTransportKontext } from '../services/agent-transport-kontext.js';
+import { aktuelleAgentIdentityId, aktuellerAgentAufruf } from '@synapse/core';
 import {
   getPool,
   getWrapperStatus,
@@ -121,19 +123,20 @@ function grenze(roh: unknown, standard: number, max: number): number {
  */
 async function leseWatermarks(agent: string, project: string): Promise<{ channel: number; inbox: number }> {
   const pool = getPool();
+  const identity = aktuelleAgentIdentityId(project, agent);
   const channelErgebnis = await pool.query<{ max_id: number }>(
     `SELECT COALESCE(MAX(cm.id), 0)::int AS max_id
        FROM specialist_channel_messages cm
        JOIN specialist_channels c ON c.id = cm.channel_id
-       JOIN specialist_channel_members mem ON mem.channel_id = c.id
-      WHERE mem.agent_name = $1`,
-    [agent],
+       JOIN ${identity ? 'agent_identitaet_channel_mitglieder' : 'specialist_channel_members'} mem ON mem.channel_id = c.id
+      WHERE mem.${identity ? 'identity_id' : 'agent_name'} = $1${identity ? ' AND c.project=$2' : ''}`,
+    identity ? [identity, project] : [agent],
   );
   const inboxErgebnis = await pool.query<{ max_id: number }>(
     `SELECT COALESCE(MAX(id), 0)::int AS max_id
        FROM specialist_inbox
-      WHERE to_agent = $1 AND project = $2`,
-    [agent, project],
+      WHERE ${identity ? 'to_identity_id' : 'to_agent'} = $1 AND project = $2${!identity && aktuellerAgentAufruf()?.bezug.modus !== 'alt' ? ' AND to_identity_id IS NULL' : ''}`,
+    [identity ?? agent, project],
   );
   return {
     channel: channelErgebnis.rows[0]?.max_id ?? 0,
@@ -142,23 +145,25 @@ async function leseWatermarks(agent: string, project: string): Promise<{ channel
 }
 
 /** Kanal-MITGLIEDSCHAFT dieses Agenten — nicht die Kanalliste des Projekts. */
-async function leseMitgliedschaften(agent: string): Promise<string[]> {
+async function leseMitgliedschaften(agent: string, project: string): Promise<string[]> {
+  const identity = aktuelleAgentIdentityId(project, agent);
   const { rows } = await getPool().query<{ channel_name: string }>(
     `SELECT c.name AS channel_name
        FROM specialist_channels c
-       JOIN specialist_channel_members m ON m.channel_id = c.id
-      WHERE m.agent_name = $1
+       JOIN ${identity ? 'agent_identitaet_channel_mitglieder' : 'specialist_channel_members'} m ON m.channel_id = c.id
+      WHERE m.${identity ? 'identity_id' : 'agent_name'} = $1${identity ? ' AND c.project=$2' : ''}
       ORDER BY c.name`,
-    [agent],
+    identity ? [identity, project] : [agent],
   );
   return rows.map((r) => r.channel_name);
 }
 
 /** Wie viele Inbox-Nachrichten sind unquittiert? Die Zahl ist der Beleg gegen stillen Verlust. */
 async function zaehleUnquittiert(agent: string, project: string): Promise<number> {
+  const identity = aktuelleAgentIdentityId(project, agent);
   const { rows } = await getPool().query<{ n: string }>(
-    `SELECT COUNT(*)::text AS n FROM specialist_inbox WHERE to_agent = $1 AND project = $2 AND processed = false`,
-    [agent, project],
+    `SELECT COUNT(*)::text AS n FROM specialist_inbox WHERE ${identity ? 'to_identity_id' : 'to_agent'} = $1 AND project = $2 AND processed = false${!identity && aktuellerAgentAufruf()?.bezug.modus !== 'alt' ? ' AND to_identity_id IS NULL' : ''}`,
+    [identity ?? agent, project],
   );
   return Number(rows[0]?.n ?? 0);
 }
@@ -174,15 +179,17 @@ async function leseItems(project: string, agent: string): Promise<{
   tasks: Array<{ id: string; title: string; description: string; status: string; priority: string }>;
   events: Array<{ id: number; eventType: string; priority: string; payload: string | null }>;
 }> {
+  const identity = aktuelleAgentIdentityId(project, agent);
+  const zuordnung = identity ? 'identity:' + identity : agent;
   const [memoriesRoh, thoughtsRoh, plan, eventsRoh] = await Promise.all([
     listMemories(project),
-    getThoughtsByTag(project, agent, 10),
+    getThoughtsByTag(project, zuordnung, 10),
     getPlan(project),
     getPendingEvents(project, agent),
   ]);
 
   const memories = memoriesRoh
-    .filter((m) => (m.tags ?? []).includes(agent))
+    .filter((m) => (m.tags ?? []).includes(zuordnung))
     .map((m) => ({ name: m.name, content: m.content, tags: m.tags ?? [] }));
 
   const thoughts = thoughtsRoh.map((t) => ({
@@ -195,7 +202,7 @@ async function leseItems(project: string, agent: string): Promise<{
   const tasks = (plan?.tasks ?? [])
     .filter(
       (t) =>
-        t.title.toLowerCase().includes(nameKlein) &&
+        (identity ? (Array.isArray(t.beteiligte) && t.beteiligte.some((b: unknown) => b !== null && typeof b === 'object' && (b as { identity_id?: string }).identity_id === identity)) : t.title.toLowerCase().includes(nameKlein)) &&
         (t.status === 'todo' || t.status === 'in_progress'),
     )
     .map((t) => ({
@@ -232,6 +239,7 @@ function konfigAntwort(zeile: { heartbeatEnabled: boolean; heartbeatIntervalMs: 
 
 export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<void> {
   const BASIS = '/api/projects/:name/specialists/:specName';
+  registriereAgentTransportKontext(fastify, BASIS);
 
   /**
    * GET .../config — ersetzt getWrapperStatus in ladeHeartbeatKonfiguration.
@@ -262,7 +270,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
         }
         const [watermarks, channels] = await Promise.all([
           leseWatermarks(agent, project),
-          leseMitgliedschaften(agent),
+          leseMitgliedschaften(agent, project),
         ]);
         return {
           success: true,
@@ -309,7 +317,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
       const { name: project, specName: agent } = request.params;
       zaehler.channels += 1;
       try {
-        return { success: true, agent, channels: await leseMitgliedschaften(agent) };
+        return { success: true, agent, channels: await leseMitgliedschaften(agent, project) };
       } catch (error) {
         zaehler.fehler += 1;
         return reply.status(500).send({ success: false, error: { message: String(error) } });
@@ -401,12 +409,13 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
     }
 
     try {
+      const identity = aktuelleAgentIdentityId(project, agent);
       const { rows } = await getPool().query<{ id: number }>(
         `UPDATE specialist_inbox
             SET processed = true
-          WHERE id = ANY($1::int[]) AND to_agent = $2 AND project = $3 AND processed = false
+          WHERE id = ANY($1::int[]) AND ${identity ? 'to_identity_id' : 'to_agent'} = $2 AND project = $3 AND processed = false${!identity && aktuellerAgentAufruf()?.bezug.modus !== 'alt' ? ' AND to_identity_id IS NULL' : ''}
         RETURNING id`,
-        [ids, agent, project],
+        [ids, identity ?? agent, project],
       );
       return {
         success: true,
@@ -573,7 +582,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
       const [zeile, watermarks, channels] = await Promise.all([
         getWrapperStatus(agent, project),
         leseWatermarks(agent, project),
-        leseMitgliedschaften(agent),
+        leseMitgliedschaften(agent, project),
       ]);
 
       return {
@@ -657,7 +666,7 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
         getWrapperStatus(agent, project),
         getNewMessagesForAgent(agent, channelSeit, limit + 1),
         getNewInboxMessages(agent, inboxSeit, project),
-        leseMitgliedschaften(agent),
+        leseMitgliedschaften(agent, project),
         zaehleUnquittiert(agent, project),
         mitItems ? leseItems(project, agent) : Promise.resolve(null),
       ]);

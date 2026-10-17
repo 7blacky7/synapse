@@ -13,6 +13,7 @@
 
 import { ApiWissen } from './api.js'
 import { DateiWissen } from './datei.js'
+import { agentLaufIdentitaet } from '../agent-lauf.js'
 import type { WissensQuelle, WissensUmgebung, WissensZugriff } from './typen.js'
 
 /** Was der Schalter gerade sagt — ohne dass dafuer schon etwas gebaut werden muss. */
@@ -23,7 +24,7 @@ export function gewaehlteWissensQuelle(): WissensQuelle {
 export function erzeugeWissen(umgebung: WissensUmgebung): WissensZugriff {
   const roh = (process.env.SYNAPSE_WISSEN_QUELLE ?? '').trim().toLowerCase()
 
-  if (roh === 'api') return new ApiWissen(umgebung)
+  if (agentLaufIdentitaet() || roh === 'api') return new ApiWissen(umgebung)
 
   if (roh !== '' && roh !== 'datei') {
     // Ein Tippfehler wuerde sonst stillschweigend 'datei' bedeuten — und wer

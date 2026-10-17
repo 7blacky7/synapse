@@ -14,6 +14,7 @@
  *   Standardwerte mit Hinweis (wirft nicht).
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 
 export const JEV_SPRACHEN = ['en', 'de', 'mix'] as const;
@@ -126,16 +127,16 @@ export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_
   }
   const wunsch = (o.jev_sprache as JevSprache | undefined) ?? alt.jev_sprache;
   await getPool().query(
-    `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am)
-     VALUES ('erklaerung_sprachen', $1::jsonb, $3, NOW()), ('jev_sprache', $2::jsonb, $3, NOW())
-     ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am`,
-    [JSON.stringify(sprachen), JSON.stringify(wunsch), o.agent ?? null],
+    `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am, setter_identity_id)
+     VALUES ('erklaerung_sprachen', $1::jsonb, $3, NOW(), $4), ('jev_sprache', $2::jsonb, $3, NOW(), $4)
+     ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am, setter_identity_id=EXCLUDED.setter_identity_id`,
+    [JSON.stringify(sprachen), JSON.stringify(wunsch), o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
   );
   if (typeof o.entscheidung_ohne_praezedenz === 'boolean') {
     await getPool().query(
-      `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am) VALUES ('entscheidung_ohne_praezedenz', $1::jsonb, $2, NOW())
-       ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am`,
-      [JSON.stringify(o.entscheidung_ohne_praezedenz), o.agent ?? null],
+      `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am, setter_identity_id) VALUES ('entscheidung_ohne_praezedenz', $1::jsonb, $2, NOW(), $3)
+       ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am, setter_identity_id=EXCLUDED.setter_identity_id`,
+      [JSON.stringify(o.entscheidung_ohne_praezedenz), o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
     );
   }
   return leseJevOptionen();

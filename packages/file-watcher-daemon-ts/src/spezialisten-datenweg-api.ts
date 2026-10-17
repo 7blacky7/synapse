@@ -15,6 +15,7 @@
 
 import type { ModellRegistryZeilen } from '@synapse/agents';
 import type { SpezialistenDatenweg, WrapperStatusZeile } from '@synapse/mcp-server/tools';
+import { agentLaufIdentitaet } from '@synapse/agents';
 import { stoppeLokalenWrapper, type WrapperStopZugriff } from '@synapse/core';
 import { spezialistenDatenApi } from './daemon-jobs-api.js';
 import { leseApiZugang } from './skills-proxy.js';
@@ -26,6 +27,7 @@ function mitProjekt(project: string | undefined, schritt: string): string {
 }
 
 const stopZugriff: WrapperStopZugriff = {
+  identityId: (name) => agentLaufIdentitaet(name),
   projektpfad: async (project) => (await spezialistenDatenApi<{ pfad?: string | null }>('projektpfad', { project })).pfad ?? null,
   wrapperPid: async (name, project) => {
     const pid = (await spezialistenDatenApi<{ pid?: number | null }>('wrapper_pid', { project, agent: name })).pid;

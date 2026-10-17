@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { agentLaufIdentitaet, agentLaufPfad, agentLaufSchluessel } from './agent-lauf.js'
 import type { SpecialistStatus, StatusFile } from './types.js'
 
 const DEFAULT_MAX_SPECIALISTS = 7
@@ -17,7 +18,7 @@ const DEFAULT_MAX_SPECIALISTS = 7
  * gesperrt (DEFAULT_IGNORES).
  */
 function statusPath(projectPath: string): string {
-  return join(projectPath, '.synapse', 'agents', 'status.json')
+  return agentLaufIdentitaet() ? join(agentLaufPfad(projectPath, ''), 'status.json') : join(projectPath, '.synapse', 'agents', 'status.json')
 }
 
 export async function readStatus(projectPath: string): Promise<StatusFile> {
@@ -35,7 +36,7 @@ export async function readStatus(projectPath: string): Promise<StatusFile> {
 
 export async function writeStatus(projectPath: string, status: StatusFile): Promise<void> {
   const path = statusPath(projectPath)
-  await mkdir(join(projectPath, '.synapse', 'agents'), { recursive: true })
+  await mkdir(dirname(path), { recursive: true })
   status.lastUpdate = new Date().toISOString()
   await writeFile(path, JSON.stringify(status, null, 2), 'utf-8')
 }
@@ -46,13 +47,13 @@ export async function updateSpecialist(
   update: Partial<SpecialistStatus>,
 ): Promise<void> {
   const status = await readStatus(projectPath)
-  status.specialists[name] = { ...status.specialists[name], ...update } as SpecialistStatus
+  status.specialists[agentLaufSchluessel(name)] = { ...status.specialists[agentLaufSchluessel(name)], ...update } as SpecialistStatus
   await writeStatus(projectPath, status)
 }
 
 export async function removeSpecialist(projectPath: string, name: string): Promise<void> {
   const status = await readStatus(projectPath)
-  delete status.specialists[name]
+  delete status.specialists[agentLaufSchluessel(name)]
   await writeStatus(projectPath, status)
 }
 

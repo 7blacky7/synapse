@@ -9,12 +9,16 @@ import { posix as path } from 'node:path';
 import { normalisiereProjektPfad, PfadUngueltig } from './projekt-pfad.js';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
+import { aktuelleAgentIdentityId, aktuellerAgentAufruf, leseAgentBezugModus, mitAgentAufrufKontext } from './agent-bezug.js';
+import { fileAgentKey, reservierungsQuelle } from './file-agent-bezug.js';
 import { contentHash } from './code-write.js';
 
 export interface FileReservation {
   id: string;
   project: string;
   agent_id: string;
+  identity_id?: string | null;
+  taken_over_by_identity_id?: string | null;
   file_path: string;
   reserved_at: string;
   expires_at: string;
@@ -32,6 +36,8 @@ interface FileReservationRow {
   id: string;
   project: string;
   agent_id: string;
+  identity_id?: string | null;
+  taken_over_by_identity_id?: string | null;
   file_path: string;
   reserved_at: Date | string;
   expires_at: Date | string;
@@ -117,6 +123,8 @@ function mapReservation(row: FileReservationRow): FileReservation {
     id: String(row.id),
     project: row.project,
     agent_id: row.agent_id,
+    ...(row.identity_id ? { identity_id: row.identity_id } : {}),
+    ...(row.taken_over_by_identity_id ? { taken_over_by_identity_id: row.taken_over_by_identity_id } : {}),
     file_path: row.file_path,
     reserved_at: iso(row.reserved_at),
     expires_at: iso(row.expires_at),
@@ -202,16 +210,18 @@ async function reservationParticipantCount(
   project: string,
   filePath: string,
 ): Promise<number> {
+  const idMode = !!aktuellerAgentAufruf() && aktuellerAgentAufruf()?.bezug.modus !== 'alt';
   const { rows } = await client.query<{ participant_count: string }>(
     `WITH participants AS (
-       SELECT agent_id FROM file_reservations
+       SELECT ${idMode ? "CASE WHEN identity_id IS NOT NULL THEN 'identity:'||identity_id ELSE 'legacy:'||agent_id END" : 'agent_id'} AS agent_id
+         FROM ${idMode ? reservierungsQuelle() : 'file_reservations'} AS reservations
         WHERE project = $1 AND file_path = $2 AND released_at IS NULL
        UNION
-       SELECT primary_agent FROM file_batch_waits
+       SELECT ${idMode ? "CASE WHEN primary_identity_id IS NOT NULL THEN 'identity:'||primary_identity_id ELSE 'legacy:'||primary_agent END" : 'primary_agent'} FROM file_batch_waits
         WHERE project = $1 AND $2 = ANY(shared_files)
           AND status IN ('waiting', 'linked') AND expires_at > NOW()
        UNION
-       SELECT waiting_agent FROM file_batch_waits
+       SELECT ${idMode ? "CASE WHEN waiting_identity_id IS NOT NULL THEN 'identity:'||waiting_identity_id ELSE 'legacy:'||waiting_agent END" : 'waiting_agent'} FROM file_batch_waits
         WHERE project = $1 AND $2 = ANY(shared_files)
           AND waiting_agent IS NOT NULL
           AND status IN ('waiting', 'linked') AND expires_at > NOW()
@@ -255,7 +265,7 @@ async function syncWaitExpiries(
                 FROM unnest(w.shared_files) AS shared(file_path)
                 JOIN LATERAL (
                   SELECT r.expires_at
-                    FROM file_reservations r
+                    FROM ${aktuellerAgentAufruf()?.bezug.modus !== 'alt' && aktuellerAgentAufruf() ? reservierungsQuelle() : 'file_reservations'} r
                    WHERE r.project = w.project
                      AND r.file_path = shared.file_path
                      AND r.released_at IS NULL
@@ -288,6 +298,9 @@ export async function refreshReservationTtlsForFiles(
   args: { project: string; filePaths: readonly string[]; agentId?: string },
   queryClient: ReservationQueryClient = getPool(),
 ): Promise<number> {
+  const identityId = args.agentId ? aktuelleAgentIdentityId(args.project,args.agentId) : null;
+  const table = identityId ? 'agent_identitaet_file_reservations' : 'file_reservations';
+  const actorColumn = identityId ? 'identity_id' : 'agent_id';
   const filePaths = [...new Set(args.filePaths.filter(Boolean))];
   if (filePaths.length === 0) return 0;
   const config = getReservationTtlConfig();
@@ -295,13 +308,13 @@ export async function refreshReservationTtlsForFiles(
   for (const filePath of filePaths) {
     const participants = await reservationParticipantCount(queryClient, args.project, filePath);
     const result = await queryClient.query(
-      `UPDATE file_reservations
+      `UPDATE ${table}
           SET expires_at = GREATEST(expires_at, NOW() + ($3 * INTERVAL '1 second'))
         WHERE project = $1 AND file_path = $2
           AND released_at IS NULL AND expires_at > NOW()
           AND plan_id IS NOT NULL
-          AND ($4::text IS NULL OR agent_id = $4)`,
-      [args.project, filePath, scaledTtlSeconds(config, participants), args.agentId ?? null],
+          AND ($4::text IS NULL OR ${actorColumn} = $4)`,
+      [args.project, filePath, scaledTtlSeconds(config, participants), identityId ?? args.agentId ?? null],
     );
     updated += result.rowCount ?? 0;
   }
@@ -312,7 +325,9 @@ export async function refreshReservationTtlsForFiles(
 async function renewDueWithClient(
   client: PoolClient,
   args: { project?: string; filePaths?: readonly string[] } = {},
+  identity = false,
 ): Promise<number> {
+  const table = identity ? 'agent_identitaet_file_reservations' : 'file_reservations';
   const config = getReservationTtlConfig();
   if (!config.enabled) return 0;
   const values: unknown[] = [config.renewBeforeMinutes];
@@ -338,9 +353,9 @@ async function renewDueWithClient(
     // laengst stillen Besitzer sonst eine volle TTL.
     `SELECT r.id::text AS id, r.project, r.agent_id, r.file_path,
             (SELECT MAX(t.ts) FROM tool_calls t
-              WHERE t.agent_id = r.agent_id
+              WHERE ${identity ? 't.identity_id = r.identity_id' : 't.identity_id IS NULL AND t.agent_id = r.agent_id'}
                 AND (t.project = r.project OR t.project IS NULL)) AS letzte_aktivitaet
-       FROM file_reservations r
+       FROM ${table} r
       WHERE ${filters.join(' AND ')}
         -- Nur echte Tool-Aktivitaet verlaengert (28.09.2026). Ein offener Plan ist KEIN
         -- Lebenszeichen mehr: Plaene laufen nicht ab, ein abgestuerzter Agent mit
@@ -348,7 +363,7 @@ async function renewDueWithClient(
         -- Plaene schuetzt der Hash-Check beim commit (expected_hashes).
         AND EXISTS (
           SELECT 1 FROM tool_calls t
-           WHERE t.agent_id = r.agent_id
+           WHERE ${identity ? 't.identity_id = r.identity_id' : 't.identity_id IS NULL AND t.agent_id = r.agent_id'}
              AND (t.project = r.project OR t.project IS NULL)
              AND t.ts > COALESCE(r.last_extended_at, r.reserved_at)
         )
@@ -366,7 +381,7 @@ async function renewDueWithClient(
   const basisSekunden = scaledTtlSeconds(config, 1);
   for (const row of rows) {
     await client.query(
-      `UPDATE file_reservations
+      `UPDATE ${table}
           SET expires_at = GREATEST(expires_at, $3::timestamptz + ($2 * INTERVAL '1 second')),
               last_extended_at = NOW()
         WHERE id = $1::bigint AND released_at IS NULL AND expires_at > NOW()`,
@@ -385,7 +400,15 @@ async function renewDueWithClient(
 export async function renewFileReservationTtls(
   args: { project?: string; filePaths?: readonly string[] } = {},
 ): Promise<number> {
-  return inTransaction((client) => renewDueWithClient(client, args));
+  if(!aktuellerAgentAufruf()) {
+    const bezug=await leseAgentBezugModus();
+    return mitAgentAufrufKontext({principal:null,bezug},()=>renewFileReservationTtls(args));
+  }
+  const modus=aktuellerAgentAufruf()!.bezug.modus;
+  return inTransaction(async client => {
+    const legacy = await renewDueWithClient(client,args);
+    return legacy + (modus === 'alt' ? 0 : await renewDueWithClient(client,args,true));
+  });
 }
 
 export interface StaleReservationRelease {
@@ -408,7 +431,13 @@ export interface StaleReservationRelease {
  */
 export async function releaseStaleFileReservations(
   args: { project?: string } = {},
+  identity = false,
 ): Promise<StaleReservationRelease> {
+  if(!aktuellerAgentAufruf()) {
+    const bezug=await leseAgentBezugModus();
+    return mitAgentAufrufKontext({principal:null,bezug},()=>releaseStaleFileReservations(args,identity));
+  }
+  const table = identity ? 'agent_identitaet_file_reservations' : 'file_reservations';
   const config = getReservationTtlConfig();
   const result = await inTransaction(async (client) => {
     const { rows } = await client.query<{ project: string; file_path: string; grund: string }>(
@@ -417,15 +446,15 @@ export async function releaseStaleFileReservations(
                 CASE WHEN (r.plan_id IS NULL AND r.expires_at <= NOW())
                        OR (r.plan_id IS NOT NULL AND r.expires_at <= NOW() - ($1 * INTERVAL '1 minute'))
                      THEN 'abgelaufen' ELSE 'abgemeldet' END AS grund
-           FROM file_reservations r
+           FROM ${table} r
           WHERE r.released_at IS NULL
             AND ($2::text IS NULL OR r.project = $2)
             AND ((r.plan_id IS NULL AND r.expires_at <= NOW())
                  OR (r.plan_id IS NOT NULL AND r.expires_at <= NOW() - ($1 * INTERVAL '1 minute'))
-                 OR EXISTS (SELECT 1 FROM agent_sessions s WHERE s.id = r.agent_id AND s.status <> 'active'))
+                 OR EXISTS (SELECT 1 FROM ${identity ? 'agent_identitaet_sitzungen' : 'agent_sessions'} s WHERE ${identity ? 's.identity_id = r.identity_id' : 's.id = r.agent_id'} AND s.status <> 'active'))
           FOR UPDATE OF r SKIP LOCKED
        )
-       UPDATE file_reservations r
+       UPDATE ${table} r
           SET released_at = NOW()
          FROM faellig
         WHERE r.id = faellig.id AND r.released_at IS NULL
@@ -451,6 +480,10 @@ export async function releaseStaleFileReservations(
     const batch = await import('./file-batch.js');
     for (const entry of result.freigaben) await batch.replanUnblockedReservationWaits(entry.project, entry.paths);
   }
+  if (!identity && (aktuellerAgentAufruf()?.bezug.modus ?? (await leseAgentBezugModus()).modus) !== 'alt') {
+    const token = await releaseStaleFileReservations(args,true);
+    return { abgelaufen: result.abgelaufen + token.abgelaufen, abgemeldet: result.abgemeldet + token.abgemeldet };
+  }
   return { abgelaufen: result.abgelaufen, abgemeldet: result.abgemeldet };
 }
 
@@ -465,54 +498,61 @@ async function addWithClient(
   },
 ): Promise<FileReservation[]> {
   const config = getReservationTtlConfig();
+  const identityId = aktuelleAgentIdentityId(args.project, args.agentId);
+  const table = identityId ? 'agent_identitaet_file_reservations' : 'file_reservations';
+  const actorColumn = identityId ? 'identity_id' : 'agent_id';
   const reservations: FileReservation[] = [];
   for (const filePath of args.filePaths) {
+    if(aktuellerAgentAufruf() && aktuellerAgentAufruf()?.bezug.modus !== 'alt') await client.query(
+      'SELECT pg_advisory_xact_lock(hashtextextended($1,0))', ['file-reservation:'+args.project+':'+filePath]);
     const baselineHash = await currentFileHash(client, args.project, filePath);
     await client.query(
-      `INSERT INTO file_reservations (
+      `INSERT INTO ${table} (
          project, agent_id, file_path, expires_at, plan_id,
-         content_hash_at_reservation, last_extended_at
+         content_hash_at_reservation, last_extended_at${identityId ? ', identity_id' : ''}
        )
        VALUES (
          $1, $2, $3,
          COALESCE($4::timestamptz, NOW() + ($6 * INTERVAL '1 second')),
-         $5::bigint, $7, NOW()
+         $5::bigint, $7, NOW()${identityId ? ', $8' : ''}
        )
-       ON CONFLICT (project, agent_id, file_path) WHERE released_at IS NULL
+       ON CONFLICT (project, ${actorColumn}, file_path) WHERE released_at IS NULL
        DO UPDATE SET
          expires_at = EXCLUDED.expires_at,
-         plan_id = COALESCE(EXCLUDED.plan_id, file_reservations.plan_id),
+         plan_id = COALESCE(EXCLUDED.plan_id, ${table}.plan_id),
          content_hash_at_reservation = COALESCE(
-           file_reservations.content_hash_at_reservation,
+           ${table}.content_hash_at_reservation,
            EXCLUDED.content_hash_at_reservation
          ),
          last_extended_at = NOW()`,
       [
         args.project, args.agentId, filePath, args.expiresAt, args.planId,
-        args.planId === null ? config.planlessMinutes * 60 : scaledTtlSeconds(config, 1), baselineHash,
+        args.planId === null ? config.planlessMinutes * 60 : scaledTtlSeconds(config, 1), baselineHash, ...(identityId ? [identityId] : []),
       ],
     );
 
-    const locked = await client.query<FileReservationRow>(
-      `SELECT id::text AS id, project, agent_id, file_path,
-              reserved_at, expires_at, released_at, plan_id::text AS plan_id,
-              content_hash_at_reservation, last_extended_at, taken_over_at, taken_over_by,
-              (expires_at <= NOW()) AS is_expired
-         FROM file_reservations
-        WHERE project = $1 AND file_path = $2 AND released_at IS NULL
-        ORDER BY reserved_at, id
-        FOR UPDATE`,
-      [args.project, filePath],
-    );
+    // Beide Tabellen einzeln sperren: FOR UPDATE auf einer UNION ist nicht erlaubt.
+    const lockedRows: FileReservationRow[] = [];
+    const tables = aktuellerAgentAufruf()?.bezug.modus === 'alt' || !aktuellerAgentAufruf()
+      ? ['file_reservations'] : ['file_reservations', 'agent_identitaet_file_reservations'];
+    for (const t of tables) {
+      const result = await client.query<FileReservationRow>(
+        `SELECT *, id::text AS id, plan_id::text AS plan_id, (expires_at<=NOW()) AS is_expired
+         FROM ${t} WHERE project=$1 AND file_path=$2 AND released_at IS NULL ORDER BY ${t}.reserved_at,${t}.id FOR UPDATE`,
+        [args.project, filePath]);
+      lockedRows.push(...result.rows);
+    }
+    lockedRows.sort((a,b) => new Date(a.reserved_at).getTime()-new Date(b.reserved_at).getTime() || Number(a.id)-Number(b.id));
+    const locked = { rows: lockedRows };
     const primary = locked.rows[0];
     let coordinationHint: string | null = null;
 
-    if (primary && primary.agent_id !== args.agentId) {
+    if (primary && fileAgentKey(primary) !== fileAgentKey({agent_id:args.agentId,identity_id:identityId})) {
       if (new Date(primary.expires_at).getTime() > Date.now()) {
         coordinationHint = `Aktive Primaerreservierung von ${primary.agent_id}; Co-Edit-Wait verwenden.`;
       } else {
         const contender = locked.rows.find(
-          (row) => row.agent_id !== primary.agent_id
+          (row) => fileAgentKey(row) !== fileAgentKey(primary)
             && new Date(row.expires_at).getTime() > Date.now(),
         );
         // Ein offener Plan blockiert die Uebernahme nicht mehr (28.09.2026): Plaene
@@ -526,7 +566,7 @@ async function addWithClient(
              NOW() < $3::timestamptz + ($4 * INTERVAL '1 minute') AS within_grace,
              EXISTS (
                SELECT 1 FROM tool_calls t
-                WHERE t.agent_id = $2
+                WHERE (($8::text IS NOT NULL AND t.identity_id=$8) OR ($8::text IS NULL AND t.identity_id IS NULL AND t.agent_id=$2))
                   AND (t.project = $1 OR t.project IS NULL)
                   AND t.ts > $3::timestamptz
              ) AS has_activity,
@@ -538,7 +578,7 @@ async function addWithClient(
           [
             args.project, primary.agent_id, primary.expires_at,
             config.takeoverGraceMinutes, filePath,
-            EMPTY_CONTENT_HASH, primary.content_hash_at_reservation,
+            EMPTY_CONTENT_HASH, primary.content_hash_at_reservation, primary.identity_id ?? null,
           ],
         );
         const check = checks[0];
@@ -550,15 +590,16 @@ async function addWithClient(
 
         if (contender && blockers.length === 0) {
           await client.query(
-            `UPDATE file_reservations
-                SET released_at = NOW(), taken_over_at = NOW(), taken_over_by = $2
+            `UPDATE ${primary.identity_id ? 'agent_identitaet_file_reservations' : 'file_reservations'}
+                SET released_at = NOW(), taken_over_at = NOW(), taken_over_by = $2, taken_over_by_identity_id=$3
               WHERE id = $1::bigint AND released_at IS NULL`,
-            [primary.id, contender.agent_id],
+            [primary.id, contender.agent_id, contender.identity_id ?? null],
           );
           await client.query(
             `UPDATE file_batch_waits
                 SET status = 'conflict', updated_at = NOW()
-              WHERE project = $1 AND primary_agent = $2
+              WHERE project = $1 AND primary_identity_id IS NOT DISTINCT FROM $4
+                AND ($4::text IS NOT NULL OR primary_agent = $2)
                 AND $3 = ANY(shared_files)
                 AND status IN ('waiting', 'linked')
                 -- Gemeinsamer Plan (28.09.2026): Waits, deren Ziel ein offener Co-Edit-Plan
@@ -567,11 +608,11 @@ async function addWithClient(
                   SELECT 1 FROM file_batch_plans p
                    WHERE p.project = $1 AND p.status = 'open' AND p.open_for_coedit = true
                      AND (p.id = file_batch_waits.primary_plan_id
-                          OR (p.owner_agent_id = $2 AND p.expected_hashes ? $3))
+                          OR (p.owner_identity_id IS NOT DISTINCT FROM $4 AND ($4::text IS NOT NULL OR p.owner_agent_id = $2) AND p.expected_hashes ? $3))
                 )`,
-            [args.project, primary.agent_id, filePath],
+            [args.project, primary.agent_id, filePath, primary.identity_id ?? null],
           );
-          coordinationHint = contender.agent_id === args.agentId
+          coordinationHint = fileAgentKey(contender) === fileAgentKey({agent_id:args.agentId,identity_id:identityId})
             ? `Restart-sicheres Takeover von ${primary.agent_id} abgeschlossen.`
             : `Primaerreservierung ging an den aelteren aktiven Contender ${contender.agent_id}.`;
         } else {
@@ -594,15 +635,12 @@ async function addWithClient(
     }
 
     const { rows } = await client.query<FileReservationRow>(
-      `SELECT id::text AS id, project, agent_id, file_path,
-              reserved_at, expires_at, released_at, plan_id::text AS plan_id,
-              content_hash_at_reservation, last_extended_at, taken_over_at, taken_over_by,
-              (expires_at <= NOW()) AS is_expired
-         FROM file_reservations
-        WHERE project = $1 AND agent_id = $2 AND file_path = $3
+      `SELECT *, id::text AS id, plan_id::text AS plan_id, (expires_at<=NOW()) AS is_expired
+         FROM ${table}
+        WHERE project = $1 AND ${actorColumn} = $2 AND file_path = $3
           AND released_at IS NULL
         LIMIT 1`,
-      [args.project, args.agentId, filePath],
+      [args.project, identityId ?? args.agentId, filePath],
     );
     if (rows[0]) {
       const mapped = mapReservation(rows[0]);
@@ -620,19 +658,22 @@ async function releaseWithClient(
   filePaths: readonly string[],
 ): Promise<FileReservation[]> {
   if (filePaths.length === 0) return [];
+  const identityId = aktuelleAgentIdentityId(project, agentId);
+  const table = identityId ? 'agent_identitaet_file_reservations' : 'file_reservations';
+  const actorColumn = identityId ? 'identity_id' : 'agent_id';
   const { rows } = await client.query<FileReservationRow>(
-    `UPDATE file_reservations
+    `UPDATE ${table}
         SET released_at = NOW()
       WHERE project = $1
-        AND agent_id = $2
+        AND ${actorColumn} = $2
         AND file_path = ANY($3::text[])
         AND released_at IS NULL
       RETURNING
-        id::text AS id, project, agent_id, file_path,
+        ${identityId ? 'identity_id, taken_over_by_identity_id,' : ''} id::text AS id, project, agent_id, file_path,
         reserved_at, expires_at, released_at, plan_id::text AS plan_id,
          content_hash_at_reservation, last_extended_at, taken_over_at, taken_over_by,
          (expires_at <= NOW()) AS is_expired`,
-    [project, agentId, filePaths],
+    [project, identityId ?? agentId, filePaths],
   );
   return rows.map(mapReservation);
 }
@@ -650,6 +691,9 @@ async function findAlreadyReleased(
   filePaths: readonly string[],
 ): Promise<AlreadyReleasedReservation[]> {
   if (filePaths.length === 0) return [];
+  const identityId = aktuelleAgentIdentityId(project, agentId);
+  const table = identityId ? 'agent_identitaet_file_reservations' : 'file_reservations';
+  const actorColumn = identityId ? 'identity_id' : 'agent_id';
   const { rows } = await client.query<{
     file_path: string;
     released_at: Date | string;
@@ -667,12 +711,12 @@ async function findAlreadyReleased(
               ORDER BY (p.id = r.plan_id) DESC NULLS LAST,
                        ABS(EXTRACT(EPOCH FROM (p.committed_at - r.released_at)))
               LIMIT 1) AS commit_plan_id
-       FROM file_reservations r
-      WHERE r.project = $1 AND r.agent_id = $2
+       FROM ${table} r
+      WHERE r.project = $1 AND r.${actorColumn} = $2
         AND r.file_path = ANY($3::text[])
         AND r.released_at IS NOT NULL
       ORDER BY r.file_path, r.released_at DESC, r.id DESC`,
-    [project, agentId, [...filePaths]],
+    [project, identityId ?? agentId, [...filePaths]],
   );
   return rows.map((row) => ({
     file_path: row.file_path,
@@ -751,6 +795,9 @@ export async function updateFileReservations(args: {
   expiresAt?: string;
   planId?: string;
 }): Promise<ReservationUpdateResult> {
+  const identityId = aktuelleAgentIdentityId(args.project,args.agentId);
+  const table = identityId ? 'agent_identitaet_file_reservations' : 'file_reservations';
+  const actorColumn = identityId ? 'identity_id' : 'agent_id';
   const releasePaths = optionalPaths(args.releasePaths);
   const keepPaths = optionalPaths(args.keepPaths);
   const addPaths = optionalPaths(args.addPaths);
@@ -772,17 +819,17 @@ export async function updateFileReservations(args: {
       ? []
       : (await client.query<FileReservationRow>(
           `SELECT
-             id::text AS id, project, agent_id, file_path,
+             ${identityId ? 'identity_id, taken_over_by_identity_id,' : ''} id::text AS id, project, agent_id, file_path,
              reserved_at, expires_at, released_at, plan_id::text AS plan_id,
          content_hash_at_reservation, last_extended_at, taken_over_at, taken_over_by,
          (expires_at <= NOW()) AS is_expired
-           FROM file_reservations
+           FROM ${table}
            WHERE project = $1
-             AND agent_id = $2
+             AND ${actorColumn} = $2
              AND file_path = ANY($3::text[])
              AND released_at IS NULL
            ORDER BY reserved_at, id`,
-          [args.project, args.agentId, keepPaths],
+          [args.project, identityId ?? args.agentId, keepPaths],
         )).rows.map(mapReservation);
     const added = await addWithClient(client, {
       project: args.project,
@@ -814,13 +861,15 @@ export async function listFileReservations(args: {
   filePaths?: readonly string[];
   includeReleased?: boolean;
 }): Promise<FileReservation[]> {
+  const identityId = args.agentId ? aktuelleAgentIdentityId(args.project,args.agentId) : null;
+  const idMode = aktuellerAgentAufruf()?.bezug.modus !== 'alt' && !!aktuellerAgentAufruf();
   const filePaths = optionalPaths(args.filePaths);
   const values: unknown[] = [args.project];
   const conditions = ['project = $1'];
 
   if (args.agentId) {
-    values.push(args.agentId);
-    conditions.push(`agent_id = $${values.length}`);
+    values.push(identityId ?? args.agentId);
+    conditions.push(identityId ? `identity_id = $${values.length}` : `${idMode ? 'identity_id IS NULL AND ' : ''}agent_id = $${values.length}`);
   }
   if (filePaths.length > 0) {
     values.push(filePaths);
@@ -832,11 +881,11 @@ export async function listFileReservations(args: {
 
   const { rows } = await getPool().query<FileReservationRow>(
     `SELECT
-       id::text AS id, project, agent_id, file_path,
+       ${idMode ? 'identity_id, taken_over_by_identity_id,' : ''} id::text AS id, project, agent_id, file_path,
        reserved_at, expires_at, released_at, plan_id::text AS plan_id,
          content_hash_at_reservation, last_extended_at, taken_over_at, taken_over_by,
          (expires_at <= NOW()) AS is_expired
-     FROM file_reservations
+     FROM ${idMode ? reservierungsQuelle() : 'file_reservations'} AS reservations
      WHERE ${conditions.join(' AND ')}
      ORDER BY file_path, reserved_at, id`,
     values,
@@ -848,6 +897,7 @@ export async function listFileReservations(args: {
 export interface ForeignActiveReservationPrimary {
   file_path: string;
   reserved_by: string;
+  reserved_identity_id?: string | null;
   reserved_since: string;
   expires_at: string;
 }
@@ -879,19 +929,22 @@ export async function findForeignActiveReservationPrimaries(
     await renewFileReservationTtls({ project: args.project, filePaths });
   }
   const queryClient = client ?? getPool();
+  const idMode = aktuellerAgentAufruf()?.bezug.modus !== 'alt' && !!aktuellerAgentAufruf();
+  const identityId = args.callerAgentId ? aktuelleAgentIdentityId(args.project,args.callerAgentId) : null;
 
   const { rows } = await queryClient.query<{
     file_path: string;
     reserved_by: string;
+    reserved_identity_id?: string | null;
     reserved_since: Date | string;
     expires_at: Date | string;
   }>(
     `WITH ranked AS (
-       SELECT file_path, agent_id, reserved_at, expires_at,
+       SELECT file_path, agent_id, ${idMode ? 'identity_id,' : ''} reserved_at, expires_at,
               ROW_NUMBER() OVER (
                 PARTITION BY file_path ORDER BY reserved_at ASC, id ASC
               ) AS reservation_rank
-         FROM file_reservations
+         FROM ${idMode ? reservierungsQuelle() : 'file_reservations'} AS file_reservations
         WHERE project = $1
           AND file_path = ANY($2::text[])
           AND released_at IS NULL
@@ -900,14 +953,15 @@ export async function findForeignActiveReservationPrimaries(
           -- vorher einen Wait, der sich nie loeste (Reservierung 3996, Plaene 24811/24812).
           AND expires_at > NOW()
           AND NOT EXISTS (
-            SELECT 1 FROM agent_sessions s WHERE s.id = file_reservations.agent_id AND s.status <> 'active'
+            SELECT 1 FROM agent_sessions s WHERE ${idMode ? 'file_reservations.identity_id IS NULL AND' : ''} s.id = file_reservations.agent_id AND s.status <> 'active'
           )
+          ${idMode ? "AND NOT EXISTS(SELECT 1 FROM agent_identitaet_sitzungen s WHERE s.identity_id=file_reservations.identity_id AND s.status<>'active')" : ''}
      )
-     SELECT file_path, agent_id AS reserved_by, reserved_at AS reserved_since, expires_at
+     SELECT file_path, agent_id AS reserved_by, ${idMode ? 'identity_id AS reserved_identity_id,' : ''} reserved_at AS reserved_since, expires_at
        FROM ranked
       WHERE reservation_rank = 1
-        AND ($3::text IS NULL OR agent_id <> $3)`,
-    [args.project, filePaths, args.callerAgentId ?? null],
+        AND (${idMode ? "($4::text IS NOT NULL AND identity_id IS DISTINCT FROM $4) OR ($4::text IS NULL AND ($3::text IS NULL OR identity_id IS NOT NULL OR agent_id <> $3))" : "$3::text IS NULL OR agent_id <> $3"})`,
+    [args.project, filePaths, args.callerAgentId ?? null, ...(idMode ? [identityId] : [])],
   );
 
   const byPath = new Map(rows.map((row) => [row.file_path, row] as const));
@@ -917,6 +971,7 @@ export async function findForeignActiveReservationPrimaries(
       ? [{
           file_path: row.file_path,
           reserved_by: row.reserved_by,
+          ...(row.reserved_identity_id ? { reserved_identity_id: row.reserved_identity_id } : {}),
           reserved_since: iso(row.reserved_since),
           expires_at: iso(row.expires_at),
         }]

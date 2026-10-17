@@ -59,10 +59,10 @@ export async function beginneShellSicherungsJob(o:ShellPruefSpeicher):Promise<st
   }
   const status=o.entscheidung.darf_starten?'running':'rejected';
   const r=await getPool().query<{id:string}>(
-    'INSERT INTO shell_jobs(project,command,cwd_relative,status,agent_id,claimed_by,sicherung,error,completed_at)'+
-    'VALUES($1,$2,$3,$4::shell_job_status,$5,$6,$7::jsonb,$8,CASE WHEN $4::text=$9::text THEN NOW() ELSE NULL END) RETURNING id',
+    'INSERT INTO shell_jobs(project,command,cwd_relative,status,agent_id,claimed_by,sicherung,error,completed_at,owner_identity_id)'+
+    'VALUES($1,$2,$3,$4::shell_job_status,$5,$6,$7::jsonb,$8,CASE WHEN $4::text=$9::text THEN NOW() ELSE NULL END,$10) RETURNING id',
     [o.project,o.command,o.cwd_relative??null,status,o.agent_id??null,'mcp_local',JSON.stringify(data),
-      o.entscheidung.darf_starten?null:o.entscheidung.antwort?.error??'shell_anleitung','rejected']);
+      o.entscheidung.darf_starten?null:o.entscheidung.antwort?.error??'shell_anleitung','rejected',o.entscheidung.audit.identity_id??null]);
   await rueckfrageVormerken(r.rows[0].id,o.entscheidung);
   return r.rows[0].id;
 }

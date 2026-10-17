@@ -38,6 +38,7 @@
  */
 
 import { getPool } from '../db/index.js';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 
 /** Laenge, auf die der Befehl im Hinweis gekuerzt wird. */
 const BEFEHL_MAX = 60;
@@ -67,6 +68,7 @@ export interface ShellJobHint {
   kind: 'start' | 'done';
   /** Wer den Job abgesetzt hat (NULL = unbekannt, z.B. Connector ohne Anmeldung). */
   agent: string | null;
+  owner_identity_id?:string;
   command: string;
   status: string;
   exit_code?: number;
@@ -124,11 +126,15 @@ export async function claimShellJobHints(
   excludeJobIds: readonly string[] = [],
 ): Promise<ShellJobHint[]> {
   if (!project || !agentId) return [];
+  const identityId = aktuelleAgentIdentityId(project, agentId);
+  const notices = identityId ? 'agent_identitaet_shell_job_notices' : 'shell_job_notices';
+  const noticeActor = identityId ? 'identity_id' : 'agent_id';
   try {
     const { rows } = await getPool().query<{
       job_id: string;
       kind: 'start' | 'done';
       agent_id: string | null;
+      owner_identity_id?:string|null;
       command: string;
       status: string;
       exit_code: number | null;
@@ -141,7 +147,7 @@ export async function claimShellJobHints(
       `WITH kandidaten AS (
          SELECT j.id AS job_id,
                 CASE WHEN j.status = 'running' THEN 'start' ELSE 'done' END AS kind,
-                j.agent_id, j.command, j.status::text AS status, j.exit_code, j.error,
+                j.agent_id, j.owner_identity_id, j.command, j.status::text AS status, j.exit_code, j.error,
                 j.exec_key, j.project_state_at,
                 COALESCE(j.completed_at, j.claimed_at, j.created_at) AS sortzeit
          FROM shell_jobs j
@@ -168,22 +174,22 @@ export async function claimShellJobHints(
                  AND j.completed_at > NOW() - ($4::integer * interval '1 minute'))
            )
            -- SH-7: ausgeblendet? NULL = alle sehen ihn (Normalfall).
-           AND (j.hint_agents IS NULL OR $2 = ANY(j.hint_agents))
+           AND (j.hint_agents IS NULL OR (${identityId ? "EXISTS(SELECT 1 FROM shell_job_agent_bezuege b WHERE b.job_id=j.id AND b.role='hint' AND b.identity_id=$2)" : "$2 = ANY(j.hint_agents)"}))
            AND NOT EXISTS (
-             SELECT 1 FROM shell_job_notices n
-             WHERE n.job_id = j.id AND n.agent_id = $2
+             SELECT 1 FROM ${notices} n
+             WHERE n.job_id = j.id AND n.${noticeActor} = $2
                AND n.kind = CASE WHEN j.status = 'running' THEN 'start' ELSE 'done' END
            )
          ORDER BY sortzeit DESC
          LIMIT $3
        ),
        beansprucht AS (
-         INSERT INTO shell_job_notices (job_id, agent_id, kind)
-         SELECT k.job_id, $2, k.kind FROM kandidaten k
+         INSERT INTO ${notices} (job_id, ${noticeActor}, kind${identityId ? ',agent_id' : ''})
+         SELECT k.job_id, $2, k.kind${identityId ? ', $7' : ''} FROM kandidaten k
          ON CONFLICT DO NOTHING
          RETURNING job_id, kind
        )
-       SELECT k.job_id, k.kind, k.agent_id, k.command, k.status, k.exit_code, k.error,
+       SELECT k.job_id, k.kind, k.agent_id, k.owner_identity_id, k.command, k.status, k.exit_code, k.error,
               -- Pruefbar nur, wenn der Befehl teilbar ist (ein zweiter 'git commit' waere
               -- ein anderer Vorgang, keine Wiederholung) UND es einen Bezugspunkt gibt.
               (k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL) AS pruefbar,
@@ -211,7 +217,7 @@ export async function claimShellJobHints(
            AND tc.ts > k.project_state_at
        ) m ON k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL
        ORDER BY k.sortzeit DESC`,
-      [project, agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN, excludeJobIds],
+      [project, identityId ?? agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN, excludeJobIds, ...(identityId ? [agentId] : [])],
     );
 
     return rows.map((r) => {
@@ -219,6 +225,7 @@ export async function claimShellJobHints(
         job_id: r.job_id,
         kind: r.kind,
         agent: r.agent_id,
+        ...(r.owner_identity_id ? {owner_identity_id:r.owner_identity_id} : {}),
         command: kuerze(r.command),
         status: r.status,
       };
@@ -286,23 +293,28 @@ export async function markShellJobSeenForToolCall(
 
   try {
     const pool = getPool();
+    const principal = aktuellerAgentPrincipal();
+    const project = typeof args.project === 'string' ? args.project : principal?.project;
+    const identityId = project ? aktuelleAgentIdentityId(project, agentId) : null;
+    const notices = identityId ? 'agent_identitaet_shell_job_notices' : 'shell_job_notices';
+    const noticeActor = identityId ? 'identity_id' : 'agent_id';
     if (jobId) {
       await pool.query(
-        `INSERT INTO shell_job_notices (job_id, agent_id, kind)
-         SELECT id, $2, CASE WHEN status IN ('pending', 'running') THEN 'start' ELSE 'done' END
+        `INSERT INTO ${notices} (job_id, ${noticeActor}, kind${identityId ? ',agent_id' : ''})
+         SELECT id, $2, CASE WHEN status IN ('pending', 'running') THEN 'start' ELSE 'done' END${identityId ? ', $3' : ''}
          FROM shell_jobs WHERE id = $1::uuid
          ON CONFLICT DO NOTHING`,
-        [jobId, agentId],
+        [jobId, identityId ?? agentId, ...(identityId ? [agentId] : [])],
       );
     } else if (streamId) {
       await pool.query(
-        `INSERT INTO shell_job_notices (job_id, agent_id, kind)
-         SELECT id, $2, CASE WHEN status IN ('pending', 'running') THEN 'start' ELSE 'done' END
+        `INSERT INTO ${notices} (job_id, ${noticeActor}, kind${identityId ? ',agent_id' : ''})
+         SELECT id, $2, CASE WHEN status IN ('pending', 'running') THEN 'start' ELSE 'done' END${identityId ? ', $3' : ''}
          FROM shell_jobs WHERE stream_id = $1
          ORDER BY created_at DESC
          LIMIT 1
          ON CONFLICT DO NOTHING`,
-        [streamId, agentId],
+        [streamId, identityId ?? agentId, ...(identityId ? [agentId] : [])],
       );
     }
   } catch (error) {

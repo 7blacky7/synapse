@@ -29,7 +29,7 @@ export function agentStartFreigegeben(): boolean {
 export async function holeAgentStartApi(name: string, project: string): Promise<Record<string, string>> {
   if (!agentStartFreigegeben()) return {};
   // Server prüft Freigabe erneut sowie Daemon-Host und Projektzuordnung.
-  const a = await spezialistenDatenApi<{ freigegeben?: boolean; token?: string; neuanmeldung?: boolean; legacy_start?: boolean }>('agent_start', { project, agent: name });
+  const a = await spezialistenDatenApi<{ freigegeben?: boolean; token?: string; neuanmeldung?: boolean; legacy_start?: boolean; identity_id?: string; agent_bezug_modus?: string }>('agent_start', { project, agent: name });
   if (a.freigegeben !== true) return {};
   if (a.token !== undefined && (typeof a.token !== 'string' || !/^sai_[a-f0-9]{64}$/.test(a.token))) {
     throw new Error('agent_start: ungültige API-Antwort');
@@ -39,6 +39,10 @@ export async function holeAgentStartApi(name: string, project: string): Promise<
     throw new Error('agent_start: Anmeldung nicht geklärt');
   }
   // Leer überschreibt einen eventuell vom aufrufenden Agenten geerbten Ausweis.
+  if (a.agent_bezug_modus === 'beide' || a.agent_bezug_modus === 'neu') {
+    if (typeof a.identity_id !== 'string' || !/^[a-f0-9-]{36}$/.test(a.identity_id)) throw new Error('agent_start: Identitäts-ID fehlt');
+    return { SYNAPSE_AGENT_TOKEN: a.token, SYNAPSE_AGENT_IDENTITY_ID: a.identity_id, SYNAPSE_WRAPPER_TRANSPORT: 'api', SYNAPSE_WISSEN_QUELLE: 'api' };
+  }
   return { SYNAPSE_AGENT_TOKEN: a.token };
 }
 export async function installiereAgentStartQuelle(): Promise<void> {

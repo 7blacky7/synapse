@@ -114,6 +114,7 @@ type DetailWindow struct {
 	ProjectName   string
 	AgentTable    *widget.Table
 	AgentRows     [][]string
+	AgentKeys     []string
 	EventTable    *widget.Table
 	EventRows     [][]string
 	ActivityTable *widget.Table
@@ -1125,7 +1126,7 @@ func openDetailAuf(name, tab string) {
 	w.AgentTable.SetColumnWidth(4, 180)
 
 	w.AgentTable.OnSelected = func(id widget.TableCellID) {
-		w.agentAuswahl.waehle(spaltenSchluessel(w.AgentRows, 0), id.Row, id.Col)
+		w.agentAuswahl.waehle(w.AgentKeys, id.Row, id.Col)
 	}
 
 	btnStop := widget.NewButton("Stoppen", func() {
@@ -2032,14 +2033,23 @@ func (w *DetailWindow) ReloadAll() {
 func (w *DetailWindow) ReloadAgenten() {
 	agents, err := apiFetchAgents(w.ProjectName)
 	var rows [][]string
+	var keys []string
 	for _, a := range agents {
-		rows = append(rows, []string{a.AgentName, a.Model, a.Status, a.TokensPercent + "%", a.LastActivity})
+		key := "legacy:" + a.AgentName
+		label := a.AgentName
+		if a.IdentityId != "" {
+			key = "identity:" + a.IdentityId
+			label += " [" + a.IdentityId + "]"
+		}
+		keys = append(keys, key)
+		rows = append(rows, []string{label, a.Model, a.Status, a.TokensPercent + "%", a.LastActivity})
 	}
 	fyne.Do(func() {
 		zeigeAPIStatus(w.AgentStatus, err)
 		w.AgentRows = rows
+		w.AgentKeys = keys
 		w.AgentTable.Refresh()
-		w.agentAuswahl.nachfuehren(w.AgentTable, spaltenSchluessel(rows, 0))
+		w.agentAuswahl.nachfuehren(w.AgentTable, keys)
 	})
 }
 
@@ -2435,7 +2445,9 @@ func (w *ChatWindow) ReloadAgents() {
 		if m.Aktiv {
 			rolle += " · aktiv"
 		}
-		rows = append(rows, []string{m.Agent, rolle})
+		label := m.Agent
+		if m.IdentityId != "" { label += " [" + m.IdentityId + "]" }
+		rows = append(rows, []string{label, rolle})
 	}
 	fyne.Do(func() {
 		zeigeAPIStatus(w.AgentStatus, err)

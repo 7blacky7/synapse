@@ -166,6 +166,7 @@ export interface Thought {
   id: string;
   project: string;
   source: ThoughtSource;
+  source_identity_id?: string;
   content: string;
   tags: string[];
   timestamp: string;
@@ -185,6 +186,7 @@ export type ThoughtSource =
 export interface ThoughtPayload {
   project: string;
   source: string;
+  source_identity_id?: string;
   content: string;
   tags: string[];
   timestamp: string;
@@ -267,6 +269,7 @@ export interface Proposal {
   suggestedContent: string;
   description: string;
   author: string;
+  author_identity_id?: string;
   status: 'pending' | 'reviewed' | 'accepted' | 'rejected';
   tags: string[];
   createdAt: string;
@@ -280,6 +283,7 @@ export interface ProposalPayload {
   suggested_content: string;
   description: string;
   author: string;
+  author_identity_id?: string;
   status: string;
   tags: string[];
   created_at: string;
@@ -297,6 +301,7 @@ export interface ChannelMessage {
   id: number;
   channelName: string;
   sender: string;
+  senderIdentityId?: string | null;
   content: string;
   metadata?: Record<string, unknown>;
   createdAt: Date;
@@ -306,6 +311,8 @@ export interface InboxMessage {
   id: number;
   fromAgent: string;
   toAgent: string;
+  fromIdentityId?: string | null;
+  toIdentityId?: string | null;
   content: string;
   processed: boolean;
   createdAt: Date;

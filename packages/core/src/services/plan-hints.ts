@@ -22,6 +22,8 @@
  * files/plan-Nutzung. Gemeinsamer Projekt-Schalter aus P10-T40.
  */
 
+import { aktuelleAgentIdentityId } from './agent-bezug.js';
+import { fileAgentKey, fileCallerKey } from './file-agent-bezug.js';
 import { getPool } from '../db/index.js';
 import {claimHinweis} from './hinweis-drossel.js';
 
@@ -37,6 +39,8 @@ const ALTBESTAND_TAGE = 7;
 export interface OpenPlanHintEntry {
   plan_id: string;
   owner: string | null;
+  owner_identity_id?:string;
+  beitraege_identity_ids?:string[];
   ops: number;
   dateien: string;
   alter: string;
@@ -92,6 +96,9 @@ export async function claimOpenPlanHints(
     const { rows } = await pool.query<{
       id: string;
       owner_agent_id: string | null;
+      owner_identity_id: string | null;
+      agent_keys: string[];
+      identity_ids: string[];
       ops: number;
       dateien: string[];
       created_at: Date;
@@ -100,7 +107,9 @@ export async function claimOpenPlanHints(
       agenten: string[] | null;
       aktivitaet: Date;
     }>(
-      `SELECT p.id::text AS id, p.owner_agent_id,
+      `SELECT p.id::text AS id, p.owner_agent_id, p.owner_identity_id,
+              ARRAY(SELECT DISTINCT CASE WHEN o->>'author_identity_id' IS NOT NULL THEN 'identity:'||(o->>'author_identity_id') ELSE 'legacy:'||to_json(o->>'agent_id')::text END FROM jsonb_array_elements(p.ops) o) AS agent_keys,
+              ARRAY(SELECT DISTINCT o->>'author_identity_id' FROM jsonb_array_elements(p.ops) o WHERE o->>'author_identity_id' IS NOT NULL) AS identity_ids,
               jsonb_array_length(p.ops) AS ops,
               ARRAY(SELECT jsonb_object_keys(p.expected_hashes)) AS dateien,
               p.created_at, p.open_for_coedit,
@@ -131,11 +140,13 @@ export async function claimOpenPlanHints(
     const aktuelle = rows.filter((r) => new Date(r.aktivitaet).getTime() >= grenze);
     const alte = rows.filter((r) => new Date(r.aktivitaet).getTime() < grenze);
     // eigene zuerst, sonst nach letzter Aktivitaet (Reihenfolge der Abfrage bleibt stabil)
-    const sortiert = [...aktuelle.filter((r) => r.owner_agent_id === agentId), ...aktuelle.filter((r) => r.owner_agent_id !== agentId)];
+    const callerKey=fileCallerKey(project,agentId);
+    const eigen=(r:{owner_agent_id:string|null;owner_identity_id:string|null})=>fileAgentKey({agent_id:r.owner_agent_id,identity_id:r.owner_identity_id})===callerKey;
+    const sortiert = [...aktuelle.filter(eigen), ...aktuelle.filter(r=>!eigen(r))];
     const top = sortiert.slice(0, MAX_EINTRAEGE);
     const gesamt = rows.length;
     // Nur eigener Bestand loest Sofortmeldungen aus; fremde Aktivitaet darf nicht fluten.
-    const eigene=rows.filter(r=>r.owner_agent_id===agentId || r.agenten?.includes(agentId));
+    const eigene=rows.filter(r=>eigen(r) || r.agent_keys?.includes(callerKey));
     const fingerprint=eigene.map(r=>`${r.id}:${r.ops}:${r.fehler_ops}`).sort().join(',');
     if (!await claimHinweis({
       project,agentId,art:'open_plans',fingerprint,jetzt,
@@ -146,6 +157,8 @@ export async function claimOpenPlanHints(
       const eintrag: OpenPlanHintEntry = {
         plan_id: r.id,
         owner: r.owner_agent_id,
+        ...(r.owner_identity_id ? {owner_identity_id:r.owner_identity_id} : {}),
+        ...(r.identity_ids?.length ? {beitraege_identity_ids:r.identity_ids} : {}),
         ops: Number(r.ops),
         dateien: dateienText(r.dateien ?? []),
         alter: alterText(jetzt - new Date(r.created_at).getTime()),

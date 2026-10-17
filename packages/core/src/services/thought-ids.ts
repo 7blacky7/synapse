@@ -14,6 +14,7 @@
  *  - sonst (andere Zeichen)               -> nur exakter Treffer (Altbestand mit fremden IDs)
  */
 
+import { agentBezugFuer, aktuellerAgentAufruf, loeseAgentZiel } from './agent-bezug.js'
 import { getPool } from '../db/client.js'
 
 export const PRAEFIX_MIN = 8
@@ -35,6 +36,7 @@ export interface ThoughtRow {
   id: string
   project: string
   source: string
+  source_identity_id?: string
   content: string
   tags: string[]
   timestamp: string
@@ -148,7 +150,7 @@ export async function loeseIdsAuf(
 
 // ───────────────────────── Lesen aus PostgreSQL ─────────────────────────
 
-const SPALTEN = 'id, project, source, content, tags, timestamp, task_id'
+const SPALTEN = 'id, project, source, content, tags, timestamp, task_id, source_identity_id'
 
 function zeitAlsIso(wert: unknown): string {
   if (wert instanceof Date) return wert.toISOString()
@@ -166,6 +168,7 @@ export function zeileZuThought(row: Record<string, unknown>): ThoughtRow {
     tags: Array.isArray(row.tags) ? (row.tags as unknown[]).map(String) : [],
     timestamp: zeitAlsIso(row.timestamp),
   }
+  if (row.source_identity_id != null) t.source_identity_id = String(row.source_identity_id)
   if (row.task_id != null) t.task_id = String(row.task_id)
   return t
 }
@@ -185,10 +188,18 @@ export async function leseThoughtsAusPg(project: string, limit = 50, deps: Thoug
 
 export async function leseThoughtsNachSourceAusPg(project: string, source: string, limit = 50, deps: ThoughtIdDeps = {}): Promise<ThoughtRow[]> {
   const query = deps.query ?? standardQuery
-  const r = await query(
-    `SELECT ${SPALTEN} FROM thoughts WHERE project = $1 AND source = $2 ORDER BY timestamp DESC LIMIT $3`,
-    [project, source, grenze(limit)],
-  )
+  const erweitert = aktuellerAgentAufruf()?.bezug.modus !== undefined && aktuellerAgentAufruf()?.bezug.modus !== 'alt'
+  if(source.startsWith('identity:') && !erweitert) throw new Error('thought_identity_im_altmodus')
+  const z = source.startsWith('identity:') ? await loeseAgentZiel(project,{identity_id:source.slice(9)}) : agentBezugFuer(project, source)
+  const r = erweitert
+    ? await query(
+      `SELECT ${SPALTEN} FROM thoughts WHERE project=$1 AND
+       (($4::text IS NOT NULL AND source_identity_id=$4) OR ($4::text IS NULL AND source_identity_id IS NULL AND source=$2))
+       ORDER BY timestamp DESC LIMIT $3`,
+      [project, source, grenze(limit), z.art === 'identity' ? z.identity_id : null])
+    : await query(
+      `SELECT ${SPALTEN} FROM thoughts WHERE project = $1 AND source = $2 AND source_identity_id IS NULL ORDER BY timestamp DESC LIMIT $3`,
+      [project, source, grenze(limit)])
   return r.rows.map(zeileZuThought)
 }
 
@@ -285,6 +296,7 @@ export function mischeSuchtreffer<P extends Record<string, unknown>>(
       ...t.payload,
       project: z.project,
       source: z.source,
+      ...(z.source_identity_id ? { source_identity_id: z.source_identity_id } : {}),
       content: z.content,
       tags: z.tags,
       timestamp: z.timestamp,

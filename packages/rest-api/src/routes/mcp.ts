@@ -9,7 +9,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
-import { getProjectRecordById, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
+import { getProjectRecordById, mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import { mainToolAccess, mainToolListe, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
@@ -2224,8 +2224,9 @@ const ENV_NETZ_TOOLS = new Set(['files', 'files_batch', 'code_intel']);
 export async function handleToolCall(
   name: string, args: Record<string, unknown>, effectiveAgentId?: string,
 ): Promise<unknown> {
-  const kontext = await bereiteAgentToolAufrufVor(name, args, REST_INSTANCE_ID, undefined, ERLAUBTE_PARAMETER.get(name));
-  return kontext.antwort ?? handleAuthentifiziertenToolCall(name, kontext.args, kontext.principal?.agent_id ?? effectiveAgentId);
+  return mitAgentToolAufruf(name, args, REST_INSTANCE_ID, async (kontext) =>
+    kontext.antwort ?? handleAuthentifiziertenToolCall(name, kontext.args, kontext.principal?.agent_id ?? effectiveAgentId),
+    undefined, ERLAUBTE_PARAMETER.get(name));
 }
 
 async function handleAuthentifiziertenToolCall(
@@ -3963,6 +3964,9 @@ async function handleToolCallKern(
     // 10. SPECIALIST — nur ueber MCP Server (stdio) verfuegbar
     // =================================================================
     case 'specialist': {
+      const { fuehreSpecialistIdentitaetsAktion } = await import('@synapse/core');
+      const identityResult = await fuehreSpecialistIdentitaetsAktion(args);
+      if (identityResult) return identityResult;
       // Specialist-Calls werden via PG-Queue an den lokalen FileWatcher-Daemon
       // delegiert (wo Claude-CLI + Projekt-FS verfuegbar sind).
       // status + capabilities lesen direkt aus PG ohne Queue.
@@ -6219,7 +6223,7 @@ async function fuehreToolsCallAus(
   if (derivedAgentId && !toolArgs.agent_id) {
     toolArgs.agent_id = derivedAgentId;
   }
-  const kontext = await bereiteAgentToolAufrufVor(toolName, toolArgs, REST_INSTANCE_ID, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName));
+  return mitAgentToolAufruf(toolName, toolArgs, REST_INSTANCE_ID, async (kontext) => {
   toolArgs = kontext.args;
   if (kontext.aktiv && kontext.antwort?.success === false) {
     void logToolCall({ agentId: kontext.principal?.agent_id ?? null, project: kontext.principal?.project ?? null,
@@ -6319,6 +6323,7 @@ async function fuehreToolsCallAus(
     result: _logResult,
   });
   return result;
+  }, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName));
 }
 
 export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {

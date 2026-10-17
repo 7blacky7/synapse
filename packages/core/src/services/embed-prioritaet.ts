@@ -12,6 +12,7 @@
  * embed-backlog in wenigen Minuten durch.
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 
 export const STUFE_STANDARD = 3;
@@ -39,11 +40,11 @@ export async function setzeEmbedPrioritaet(
     return { gesetzt: 0, entfernt: res.rowCount ?? 0 };
   }
   const res = await pool.query(
-    `INSERT INTO embed_prioritaet (project, stufe, gesetzt_von)
-     SELECT unnest($1::text[]), $2, $3
+    `INSERT INTO embed_prioritaet (project, stufe, gesetzt_von, setter_identity_id)
+     SELECT unnest($1::text[]), $2, $3, $4
      ON CONFLICT (project) DO UPDATE
-       SET stufe = EXCLUDED.stufe, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = NOW()`,
-    [projekte, stufe, agent ?? null],
+       SET stufe = EXCLUDED.stufe, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = NOW(), setter_identity_id=EXCLUDED.setter_identity_id`,
+    [projekte, stufe, agent ?? null, aktuelleAgentAkteurIdentityId(agent)],
   );
   return { gesetzt: res.rowCount ?? 0, entfernt: 0 };
 }

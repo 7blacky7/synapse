@@ -16,7 +16,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { getPool, resetProjectEmbeddings, reparseProject } from '@synapse/core';
+import { getPool, resetProjectEmbeddings, reparseProject, leseAgentBezugModus, listWrapperStatus, listActiveAgents, mitAgentAufrufKontext } from '@synapse/core';
 
 /** Obergrenze fuer alle Listen-Endpunkte — schuetzt vor versehentlichen Vollscans. */
 const MAX_LIMIT = 500;
@@ -36,6 +36,17 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
     '/api/projects/:name/agents',
     async (request) => {
       const { name } = request.params;
+      const bezug = await leseAgentBezugModus();
+      if (bezug.modus !== 'alt') {
+        const zeilen = await listWrapperStatus(name);
+        const agents = zeilen.map(r => ({
+          agent_name:r.agentName, identity_id:r.identityId ?? null,
+          agent_key:r.identityId ? 'identity:'+r.identityId : 'legacy:'+r.agentName,
+          model:r.model ?? '',status:r.status,tokens_percent:String(r.tokensPercent ?? 0),
+          last_activity:r.lastActivity?.toISOString() ?? '',
+        }));
+        return { success:true,project:name,count:agents.length,agents };
+      }
       const { rows } = await getPool().query(
         `SELECT agent_name,
                 COALESCE(model, '')                     AS model,
@@ -65,6 +76,12 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
     '/api/projects/:name/sessions',
     async (request) => {
       const { name } = request.params;
+      const bezug = await leseAgentBezugModus();
+      if (bezug.modus !== 'alt') {
+        const zeilen = await listActiveAgents(name);
+        const sessions = zeilen.map((r) => ({ ...r, agent_key: r.identityId ? 'identity:'+r.identityId : 'legacy:'+r.id, identity_id:r.identityId ?? null }));
+        return { success:true,project:name,count:sessions.length,sessions };
+      }
       const { rows } = await getPool().query(
         `SELECT id,
                 COALESCE(model, '') AS model
@@ -197,7 +214,7 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
     async (request) => {
       const { name, channel } = request.params;
       const { holeChannelTeilnehmer } = await import('@synapse/core');
-      const teilnehmer = await holeChannelTeilnehmer(name, channel);
+      const teilnehmer = await mitAgentAufrufKontext({principal:null,bezug:await leseAgentBezugModus()},()=>holeChannelTeilnehmer(name, channel));
       return {
         success: true,
         project: name,

@@ -15,6 +15,7 @@
  */
 
 import { getPool } from '../db/index.js';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal, aktuellerAgentAufruf } from './agent-bezug.js';
 import {maskiereShellVorSpeichern,maskiereShellAntwort} from './shell-maske.js';
 import {schwaerzeToolLogText} from './tool-args-schwaerzen.js';
 
@@ -87,6 +88,8 @@ export interface ToolCallLogEntry {
  * Aufrufer sollten zusaetzlich nicht awaiten bzw. .catch() anhaengen.
  */
 export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
+  const identityId = entry.project ? aktuelleAgentIdentityId(entry.project, entry.agentId) : null;
+  const principal = identityId ? aktuellerAgentPrincipal() : null;
   try {
     if(entry.tool==='shell')entry=await maskiereShellVorSpeichern(entry.project??undefined,entry);
     // P10-T72 B1: fuer ALLE Tools und jedes Ergebnis (auch abgelehnt) Geheimnisse vor dem INSERT schwaerzen.
@@ -114,8 +117,8 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
     await pool.query(
       `INSERT INTO tool_calls
          (project, agent_id, source, tool_name, action, args_preview, ok,
-          error, duration_ms, result, result_bytes, result_truncated, is_mutation)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+          error, duration_ms, result, result_bytes, result_truncated, is_mutation, identity_id, lauf_id, context_epoch)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
       [
         entry.project ?? null,
         entry.agentId ?? null,
@@ -130,6 +133,8 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
         resultBytes,
         truncated,
         isMutationAction(entry.action),
+        identityId, principal?.art === 'identity' ? principal.lauf_id : null,
+        principal?.art === 'identity' ? principal.context_epoch : null,
       ],
     );
   } catch (err) {
@@ -160,6 +165,9 @@ export interface ToolCallRow {
   ts: string;
   project: string | null;
   agent_id: string | null;
+  identity_id?:string|null;
+  lauf_id?:string|null;
+  context_epoch?:number|null;
   source: string | null;
   tool_name: string;
   action: string | null;
@@ -187,7 +195,12 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
 
   if (f.project) { where.push(`project = $${i++}`); params.push(f.project); }
   if (f.id) { where.push(`id::text = $${i++}`); params.push(f.id); }
-  if (f.agentId && f.agentId.length) { where.push(`agent_id = ANY($${i++})`); params.push(f.agentId); }
+  if (f.agentId && f.agentId.length) {
+    const idMode=!!aktuellerAgentAufruf() && aktuellerAgentAufruf()?.bezug.modus!=='alt';
+    const identities = f.agentId.flatMap(id => idMode && id.startsWith('identity:') ? [id.slice(9)] : f.project && aktuelleAgentIdentityId(f.project, id) ? [aktuelleAgentIdentityId(f.project, id)!] : []);
+    const names = f.agentId.filter(id => !(idMode && id.startsWith('identity:')) && !(f.project && aktuelleAgentIdentityId(f.project, id)));
+    where.push(`((identity_id IS NULL AND agent_id = ANY($${i++}::text[])) OR identity_id = ANY($${i++}::text[]))`); params.push(names, identities);
+  }
   if (f.tool && f.tool.length) { where.push(`tool_name = ANY($${i++})`); params.push(f.tool); }
   if (f.status === 'error') where.push('ok = false');
   else if (f.status === 'ok') where.push('ok = true');
@@ -196,7 +209,7 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
 
   const detail: ActivityDetail = f.detail ?? 'meta';
   const baseCols =
-    'id::text, ts, project, agent_id, source, tool_name, action, args_preview, ok, error, duration_ms, is_mutation';
+    'id::text, ts, project, agent_id, identity_id, lauf_id, context_epoch, source, tool_name, action, args_preview, ok, error, duration_ms, is_mutation';
   const cols =
     detail === 'full'
       ? `${baseCols}, result, result_bytes, result_truncated`
@@ -212,6 +225,7 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
 
   const res = await pool.query<ToolCallRow>(sql, params);
   return Promise.all(res.rows.map(async row=>{
+    if(!row.identity_id) { delete row.identity_id; delete row.lauf_id; delete row.context_epoch; }
     const safe=row.tool_name==='shell'?await maskiereShellAntwort(row.project??undefined,row):row;
     if(detail==='summary'){const {result,...rest}=safe;return {...rest,result_preview:result?.slice(0,200)??null};}
     return safe;

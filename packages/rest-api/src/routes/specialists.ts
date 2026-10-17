@@ -296,6 +296,9 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     }
 
     try {
+      const { fuehreSpecialistIdentitaetsAktion } = await import('@synapse/core');
+      const identityResult = await fuehreSpecialistIdentitaetsAktion({ action:'wake',project,name:specName,message });
+      if (identityResult) return identityResult;
       const topic = `synapse_specialist_wake_${specName}`;
       const payload = JSON.stringify({ message, from: 'rest-api', project, timestamp: Date.now() });
       let notifyOk = false;

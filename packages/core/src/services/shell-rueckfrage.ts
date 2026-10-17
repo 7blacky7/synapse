@@ -9,10 +9,11 @@
  */
 import {randomBytes,createHash} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
+import { aktuelleAgentIdentityId } from './agent-bezug.js';
 
 export type ShellRueckfrageArt='befehl'|'demaskieren';
 export interface ShellRueckfrageBindung{
-  art:ShellRueckfrageArt; agent_id:string|null; project:string;
+  art:ShellRueckfrageArt; agent_id:string|null; identity_id?:string|null; project:string;
   befehl_hash?:string; lage_hash?:string; regelversion?:string;
   /** Demaskieren von get/log: Aktion + Job-ID. */
   ziel?:string;
@@ -41,6 +42,7 @@ export function befehlHash(project:string,command:string):string{
 }
 /** Neue Rückfrage: kurze zufällige ID, flüchtig, bis gueltig_bis einlösbar. */
 export function stelleShellRueckfrage(bindung:ShellRueckfrageBindung):{bestaetigung_id:string;gueltig_bis:string}{
+  bindung={...bindung,identity_id:bindung.identity_id!==undefined?bindung.identity_id:aktuelleAgentIdentityId(bindung.project,bindung.agent_id)};
   aufraeumen();
   let id=randomBytes(5).toString('hex');
   while(offen.has(id))id=randomBytes(5).toString('hex');
@@ -58,13 +60,14 @@ const gleich=(a:ShellRueckfrageBindung,b:ShellRueckfrageBindung)=>
  * Eine ID einer anderen Art (z. B. Befehls-ID beim Demaskieren) bleibt unberührt.
  */
 export function loeseShellRueckfrageEin(id:unknown,grund:unknown,bindung:ShellRueckfrageBindung):{ok:true}|{ok:false;error:ShellRueckfrageFehler}{
+  bindung={...bindung,identity_id:bindung.identity_id!==undefined?bindung.identity_id:aktuelleAgentIdentityId(bindung.project,bindung.agent_id)};
   if(!bindung.agent_id)return {ok:false,error:'agent_fehlt'};
   if(typeof grund!=='string'||grund.trim().length<10)return {ok:false,error:'grund_fehlt'};
   if(typeof id!=='string')return {ok:false,error:'bestaetigung_unbekannt'};
   const e=offen.get(id);
   if(!e||e.bindung.art!==bindung.art)return {ok:false,error:'bestaetigung_unbekannt'};
   if(e.gueltig_bis<=Date.now()){offen.delete(id);return {ok:false,error:'bestaetigung_abgelaufen'};}
-  if(e.bindung.agent_id!==bindung.agent_id)return {ok:false,error:'bestaetigung_fremder_agent'};
+  if((e.bindung.identity_id ? e.bindung.identity_id!==bindung.identity_id : !!bindung.identity_id||e.bindung.agent_id!==bindung.agent_id))return {ok:false,error:'bestaetigung_fremder_agent'};
   offen.delete(id);
   return gleich(e.bindung,bindung)?{ok:true}:{ok:false,error:'bestaetigung_veraltet'};
 }
@@ -75,15 +78,17 @@ export function loeseShellRueckfrageEin(id:unknown,grund:unknown,bindung:ShellRu
  */
 const vorab=new Map<string,{bindung:ShellRueckfrageBindung;demaskierung:ShellDemaskierung;gueltig_bis:number}>();
 export function merkeShellDemaskierungVor(id:string,bindung:ShellRueckfrageBindung,d:ShellDemaskierung):void{
+  bindung={...bindung,identity_id:bindung.identity_id!==undefined?bindung.identity_id:aktuelleAgentIdentityId(bindung.project,bindung.agent_id)};
   const jetzt=Date.now();
   for(const [k,e] of vorab)if(e.gueltig_bis<=jetzt)vorab.delete(k);
   vorab.set(id,{bindung:{...bindung},demaskierung:{...d},gueltig_bis:jetzt+shellRueckfrageFristMs()});
 }
 export function loeseShellDemaskierungVorab(id:string,bindung:ShellRueckfrageBindung):ShellDemaskierung|undefined{
+  bindung={...bindung,identity_id:bindung.identity_id!==undefined?bindung.identity_id:aktuelleAgentIdentityId(bindung.project,bindung.agent_id)};
   const e=vorab.get(id);
   if(!e)return undefined;
   if(e.gueltig_bis<=Date.now()){vorab.delete(id);return undefined;}
-  if(e.bindung.agent_id!==bindung.agent_id||!gleich(e.bindung,bindung))return undefined;
+  if((e.bindung.identity_id ? e.bindung.identity_id!==bindung.identity_id : !!bindung.identity_id||e.bindung.agent_id!==bindung.agent_id)||!gleich(e.bindung,bindung))return undefined;
   vorab.delete(id);
   return e.demaskierung;
 }
@@ -103,13 +108,13 @@ export function leseShellBestaetigung(v:unknown):ShellBestaetigungEingabe|undefi
 }
 
 /** Bestätigt demaskierte Ausführung: wandert mit dem Job bis zur Speicherung. */
-export interface ShellDemaskierung{bestaetigung_id:string;agent_id:string;grund:string;maskieren_bis:string;}
+export interface ShellDemaskierung{bestaetigung_id:string;agent_id:string;actor_identity_id?:string|null;grund:string;maskieren_bis:string;}
 type DemaskKontext=ShellDemaskierung&{befehl_bestaetigung?:ShellBestaetigungEingabe};
 const demaskKontext=new AsyncLocalStorage<DemaskKontext>();
 export function mitShellDemaskierung<T>(d:DemaskKontext,lauf:()=>Promise<T>):Promise<T>{return demaskKontext.run(d,lauf);}
 export function aktuelleShellDemaskierung():ShellDemaskierung|undefined{
   const d=demaskKontext.getStore();
-  return d?{bestaetigung_id:d.bestaetigung_id,agent_id:d.agent_id,grund:d.grund,maskieren_bis:d.maskieren_bis}:undefined;
+  return d?{bestaetigung_id:d.bestaetigung_id,agent_id:d.agent_id,grund:d.grund,maskieren_bis:d.maskieren_bis,...(d.actor_identity_id ? {actor_identity_id:d.actor_identity_id} : {})}:undefined;
 }
 /** Bei maskierung:false gilt bestaetigung der Anzeige; eine zugleich bestaetigte Befehls-Rueckfrage reist hier mit. */
 export function demaskierteBefehlsBestaetigung():ShellBestaetigungEingabe|undefined{return demaskKontext.getStore()?.befehl_bestaetigung;}

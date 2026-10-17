@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus, getWrapperStatus, removeWrapperStatus, resetProjectParse, reparseProject } from '@synapse/core';
+import { loeseAgentZiel, type AgentZiel, getPool, listChannels, getChannelMessages, postChannelMessage, listActiveAgents, listWrapperStatus, getWrapperStatus, removeWrapperStatus, resetProjectParse, reparseProject } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
@@ -58,6 +58,7 @@ function pgRowToSpecialist(row: WrapperStatusRow): Record<string, unknown> {
   const isStale = (row.status === 'running' || row.status === 'idle') && ageMs > STALE_MS;
   return {
     name: row.agentName,
+    ...(row.identityId ? {identity_id:row.identityId,agent_key:'identity:'+row.identityId} : {}),
     model: row.model ?? '',
     status: isStale ? 'stale' : row.status,
     pid: row.innerPid ?? 0,
@@ -485,7 +486,7 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
         if (pgRows.length > 0) {
           const specialists: Record<string, unknown> = {};
           for (const row of pgRows) {
-            specialists[row.agentName] = pgRowToSpecialist(row);
+            specialists[row.identityId ? 'identity:'+row.identityId : row.agentName] = pgRowToSpecialist(row);
           }
           return {
             project: projectName,
@@ -517,6 +518,8 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
     '/projects/:name/specialists/:specName/stop',
     async (req, reply) => {
       const { name, specName } = req.params;
+      const identityId = specName.startsWith('identity:') ? specName.slice(9) : null;
+      const agentName = specName.startsWith('legacy:') ? specName.slice(7) : specName;
       const info = manager.status(name);
       if (!info) {
         reply.code(404);
@@ -525,11 +528,11 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
       try {
         // PG primary: wrapperPid aus wrapper_status
         const pgRow = await (apiWeg
-          ? trayApi<{ zeile?: WrapperStatusRow | null }>('specialist', name, { agent: specName }).then((r) => r.zeile ?? null)
-          : getWrapperStatus(specName, name)).catch(() => null);
+          ? trayApi<{ zeile?: WrapperStatusRow | null }>('specialist', name, identityId ? {identity_id:identityId} : {agent:agentName}).then((r) => r.zeile ?? null)
+          : (identityId ? loeseAgentZiel(name,{identity_id:identityId}) : Promise.resolve(agentName)).then(z => getWrapperStatus(z,name))).catch(() => null);
         // Fallback: status.json (fuer Wrapper die noch keinen Heartbeat geschrieben haben)
         const statusFile = await readStatus(info.pfad).catch(() => null);
-        const wrapperPid = pgRow?.wrapperPid ?? statusFile?.specialists[specName]?.wrapperPid;
+        const wrapperPid = pgRow?.wrapperPid ?? (!identityId ? statusFile?.specialists[agentName]?.wrapperPid : null);
         if (!wrapperPid) {
           reply.code(404);
           return { error: `unknown specialist: ${specName}` };
@@ -541,10 +544,10 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
           if (err.code !== 'ESRCH') throw err; // ESRCH = no such process, harmlos
         }
         // Cleanup: status.json + PG (beide, non-fatal einzeln)
-        await removeSpecialist(info.pfad, specName).catch(() => { /* non-fatal */ });
+        if (!identityId) await removeSpecialist(info.pfad, agentName).catch(() => { /* non-fatal */ });
         await (apiWeg
-          ? trayApi('specialist_entfernen', name, { agent: specName })
-          : removeWrapperStatus(specName, name)).catch(() => { /* non-fatal */ });
+          ? trayApi('specialist_entfernen', name, identityId ? {identity_id:identityId} : {agent:agentName})
+          : (identityId ? loeseAgentZiel(name,{identity_id:identityId}) : Promise.resolve(agentName)).then(z => removeWrapperStatus(z,name))).catch(() => { /* non-fatal */ });
         return { ok: true, stopped: specName, wrapperPid };
       } catch (err) {
         reply.code(500);

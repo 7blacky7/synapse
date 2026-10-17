@@ -38,6 +38,8 @@ export interface RuntimeStatus {
 
 export interface MainAgentSession {
   id: string;
+  identityId?: string | null;
+  laufId?: string | null;
   runtime: RuntimeName;
   runtimeSessionId: string | null;
   status: 'ready' | 'running' | 'completed' | 'error';

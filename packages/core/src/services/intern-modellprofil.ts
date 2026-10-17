@@ -9,6 +9,7 @@
  *   kalibrieren, nur von Hand setzen.
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { embed } from '../embeddings/index.js';
 import {
@@ -191,16 +192,17 @@ export async function modellprofilSetzen(aenderung: ProfilAenderung): Promise<Re
     messwerteNeu = modus === 'ersetzen' ? mischeTief({}, messwerteNeu) : mischeTief(alt.rows[0]?.messwerte ?? {}, messwerteNeu);
   }
   const n = werte.length;
-  werte.push(JSON.stringify(neueSchwellen), entfernt, JSON.stringify(messwerteNeu), aenderung.agent ?? null);
-  const pS = n + 1, pR = n + 2, pM = n + 3, pV = n + 4;
-  const einfuegeSpalten = ['modell', 'digest', ...spalten, 'score_schwellen', 'messwerte', 'kalibriert_am', 'kalibriert_von'];
-  const einfuegeWerte = ['$1', '$2', ...spalten.map((_, i) => '$' + (i + 3)), `$${pS}::jsonb`, `$${pM}::jsonb`, 'NOW()', `$${pV}`];
+  werte.push(JSON.stringify(neueSchwellen), entfernt, JSON.stringify(messwerteNeu), aenderung.agent ?? null, aktuelleAgentAkteurIdentityId(aenderung.agent));
+  const pS = n + 1, pR = n + 2, pM = n + 3, pV = n + 4, pI = n + 5;
+  const einfuegeSpalten = ['modell', 'digest', ...spalten, 'score_schwellen', 'messwerte', 'kalibriert_am', 'kalibriert_von', 'calibrator_identity_id'];
+  const einfuegeWerte = ['$1', '$2', ...spalten.map((_, i) => '$' + (i + 3)), `$${pS}::jsonb`, `$${pM}::jsonb`, 'NOW()', `$${pV}`, `$${pI}`];
   const update = [
     ...spalten.map((s) => `${s} = EXCLUDED.${s}`),
     `score_schwellen = (p.score_schwellen || $${pS}::jsonb) - $${pR}::text[]`,
     ganzesObjekt ? `messwerte = $${pM}::jsonb` : `messwerte = COALESCE(p.messwerte, '{}'::jsonb) || $${pM}::jsonb`,
     'kalibriert_am = NOW()',
     'kalibriert_von = EXCLUDED.kalibriert_von',
+    'calibrator_identity_id = EXCLUDED.calibrator_identity_id',
     'aktualisiert_am = NOW()',
   ];
   const { rows } = await (client ?? getPool()).query(

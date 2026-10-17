@@ -1,6 +1,7 @@
 /** R5.1: serverseitiger deklarativer Vertrag, niemals Client-GPU/Shell-Selbstfreigabe. */
 import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import {toolAktivitaetRetentionTage} from './tool-aktivitaet.js';
 export interface ToolDescriptor {
  tool_id:string; tool:string; capability:string; image:string; digest:string;
@@ -72,7 +73,7 @@ export async function setToolActivation(db:Db,toolId:string,project:string|null,
  authority(a);if(!id(toolId)||(project!==null&&!id(project))||typeof enabled!=='boolean')bad();
  const c=await db.connect();try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',[TOOL_CONTAINER_LOCK]);
  if(project===null){const r=await c.query('UPDATE tool_descriptors SET enabled=$2,updated_at=NOW() WHERE tool_id=$1',[toolId,enabled]);if(!r.rowCount)throw Error('unknown_tool_descriptor');}
- else await c.query(`INSERT INTO tool_activation(tool_id,project,enabled,updated_by) VALUES($1,$2,$3,$4)
- ON CONFLICT(tool_id,project) DO UPDATE SET enabled=EXCLUDED.enabled,updated_by=EXCLUDED.updated_by,updated_at=NOW()`,[toolId,project,enabled,a.role]);
+ else await c.query(`INSERT INTO tool_activation(tool_id,project,enabled,updated_by,updater_identity_id) VALUES($1,$2,$3,$4,$5)
+ ON CONFLICT(tool_id,project) DO UPDATE SET enabled=EXCLUDED.enabled,updated_by=EXCLUDED.updated_by,updater_identity_id=EXCLUDED.updater_identity_id,updated_at=NOW()`,[toolId,project,enabled,a.role,aktuelleAgentAkteurIdentityId()]);
  await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
 }

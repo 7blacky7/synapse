@@ -18,6 +18,7 @@
  * keine Schreibrechte) darf den Vorgang NICHT kippen.
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { getProjectStatus, setProjectStatus } from './project-status.js';
 import type { ProjectStatus } from './project-status.js';
@@ -74,13 +75,13 @@ export async function setSetupPhase(
 ): Promise<void> {
   const pool = getPool();
   await pool.query(
-    `INSERT INTO project_setup_status (project, setup_phase, updated_by, updated_at)
-     VALUES ($1, $2, $3, NOW())
+    `INSERT INTO project_setup_status (project, setup_phase, updated_by, updated_at, updater_identity_id)
+     VALUES ($1, $2, $3, NOW(), $4)
      ON CONFLICT (project) DO UPDATE SET
        setup_phase = EXCLUDED.setup_phase,
        updated_by  = EXCLUDED.updated_by,
-       updated_at  = NOW()`,
-    [project, phase, opts?.updatedBy ?? null]
+       updated_at  = NOW(), updater_identity_id=EXCLUDED.updater_identity_id`,
+    [project, phase, opts?.updatedBy ?? null, aktuelleAgentAkteurIdentityId(opts?.updatedBy)]
   );
 
   // Zusaetzliches Schreibziel, best effort: status.json bleibt Cache/Fallback.

@@ -1,5 +1,7 @@
 /** P10-T40: gemeinsame Drossel fuer optionale Tool-Hinweise (nicht fuer Events/Fehler). */
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
+import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { pruefeGitBranchName } from './git-branch.js';
 
@@ -8,8 +10,8 @@ export async function projektHinweisOption(project: string, agent: string, aktiv
   if (aktiv !== undefined) {
     if (!darfKoordinatorOderUser(agent)) throw new Error('Hinweise einstellen darf nur Koordinator/User');
     await getPool().query(
-      'INSERT INTO hinweis_optionen(project,aktiv,gesetzt_von) VALUES($1,$2,$3) ON CONFLICT(project) DO UPDATE SET aktiv=EXCLUDED.aktiv,gesetzt_von=EXCLUDED.gesetzt_von,gesetzt_am=NOW()',
-      [project,aktiv,agent]);
+      'INSERT INTO hinweis_optionen(project,aktiv,gesetzt_von,setter_identity_id) VALUES($1,$2,$3,$4) ON CONFLICT(project) DO UPDATE SET aktiv=EXCLUDED.aktiv,gesetzt_von=EXCLUDED.gesetzt_von,gesetzt_am=NOW(),setter_identity_id=EXCLUDED.setter_identity_id',
+      [project,aktiv,agent,aktuelleAgentAkteurIdentityId(agent)]);
   }
   const r = await getPool().query<{aktiv:boolean}>('SELECT aktiv FROM hinweis_optionen WHERE project=$1',[project]);
   return {success:true,project,hinweise:r.rows[0]?.aktiv !== false};
@@ -28,8 +30,8 @@ export async function projektHauptbranchOption(project: string, agent: string, b
   if (branch !== undefined) {
     const validiert = pruefeGitBranchName(branch);
     await getPool().query(
-      'INSERT INTO hinweis_optionen(project,geschuetzter_hauptbranch,gesetzt_von) VALUES($1,$2,$3) ON CONFLICT(project) DO UPDATE SET geschuetzter_hauptbranch=EXCLUDED.geschuetzter_hauptbranch,gesetzt_von=EXCLUDED.gesetzt_von,gesetzt_am=NOW()',
-      [project,validiert,agent]);
+      'INSERT INTO hinweis_optionen(project,geschuetzter_hauptbranch,gesetzt_von,setter_identity_id) VALUES($1,$2,$3,$4) ON CONFLICT(project) DO UPDATE SET geschuetzter_hauptbranch=EXCLUDED.geschuetzter_hauptbranch,gesetzt_von=EXCLUDED.gesetzt_von,gesetzt_am=NOW(),setter_identity_id=EXCLUDED.setter_identity_id',
+      [project,validiert,agent,aktuelleAgentAkteurIdentityId(agent)]);
   }
   return {success:true,project,geschuetzter_hauptbranch:await leseGeschuetztenHauptbranch(project)};
 }
@@ -49,6 +51,24 @@ export async function claimHinweis(o: {
   intervallMs?:number|null; wiederholen?:boolean; jetzt?:number;
 }): Promise<boolean> {
   if (!o.project || !o.agentId) return false;
+  const identity = aktuelleAgentIdentityId(o.project,o.agentId);
+  if (identity) {
+    const r=await getPool().query(
+    `INSERT INTO agent_identitaet_hinweis_gesehen(project,agent_id,identity_id,art,sitzung,fingerprint,gezeigt_am)
+     SELECT $1,$2,$8,$3,
+       COALESCE((SELECT COALESCE(sitzung_seit,registered_at)::text FROM agent_identitaet_sitzungen WHERE identity_id=$8),'unregistriert'),
+       $4,to_timestamp($5::double precision/1000)
+     WHERE COALESCE((SELECT aktiv FROM hinweis_optionen WHERE project=$1),true)
+     ON CONFLICT(project,identity_id,art) DO UPDATE SET
+       sitzung=EXCLUDED.sitzung,fingerprint=EXCLUDED.fingerprint,gezeigt_am=EXCLUDED.gezeigt_am
+     WHERE agent_identitaet_hinweis_gesehen.sitzung IS DISTINCT FROM EXCLUDED.sitzung
+        OR agent_identitaet_hinweis_gesehen.fingerprint IS DISTINCT FROM EXCLUDED.fingerprint
+        OR ($6::double precision IS NOT NULL AND $7::boolean AND
+            agent_identitaet_hinweis_gesehen.gezeigt_am <= EXCLUDED.gezeigt_am - ($6 * interval '1 millisecond'))
+     RETURNING art`,
+    [o.project,o.agentId,o.art,o.fingerprint,o.jetzt??Date.now(),o.intervallMs??null,o.wiederholen===true,identity]);
+    return r.rowCount === 1;
+  }
   const r=await getPool().query(
     `INSERT INTO hinweis_gesehen(project,agent_id,art,sitzung,fingerprint,gezeigt_am)
      SELECT $1,$2,$3,

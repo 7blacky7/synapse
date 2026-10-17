@@ -2,6 +2,7 @@
  * RV8: API-only scheduler and light S0/S1 inspection. PG transactions never perform FS or Docker work.
  * Container jobs are durable P20 requests, fenced by its server-side authority hooks.
  */
+import {aktuelleAgentAkteurIdentityId} from './agent-bezug.js';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {getPool,imHintergrund} from '../db/client.js';
@@ -155,7 +156,7 @@ export class ReversePipelineDienst{
   // P18-T64: 'kein_ausfuehrer' lebt wieder auf, sobald ein Ausführer angemeldet ist; andere Fehler bleiben stehen.
   const wiederbeleben=j?.status==='fehler'&&j.fehlercode==='kein_ausfuehrer'&&!ohneAusfuehrer;
   if(j?.status==='fehler'&&j.fingerabdruck===fp&&!wiederbeleben)return {auftrag_id:j.id,status:'fehler',fehlercode:j.fehlercode};
-  if(!j)j=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser) VALUES($1,$2,$3,$4,$5,'wartet',$6) RETURNING *",[a.reverseId,a.dateiId,a.dateiId?null:a.mediumId,stage,a.prioritaet,'agent:'+a.agentId])).rows[0];
+  if(!j)j=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser,trigger_identity_id) VALUES($1,$2,$3,$4,$5,'wartet',$6,$7) RETURNING *",[a.reverseId,a.dateiId,a.dateiId?null:a.mediumId,stage,a.prioritaet,'agent:'+a.agentId,aktuelleAgentAkteurIdentityId(a.agentId)])).rows[0];
   await db.query("UPDATE reverse_auftraege SET medium_id=CASE WHEN datei_id IS NOT NULL THEN NULL ELSE medium_id END,fingerabdruck=$2,ziel_schicht=GREATEST(ziel_schicht,$3),projekt=COALESCE(projekt,$4),ausfuehrung=$5,werkzeug=$6,werkzeug_version=$7,profil_version=$8,prioritaet=CASE WHEN prioritaet='interaktiv' OR $9='interaktiv' THEN 'interaktiv' ELSE prioritaet END,updated_at=clock_timestamp() WHERE id=$1",
    [j.id,fp,a.bisSchicht,a.project,local?'api':'container',tool,version,this.profile,a.prioritaet]);
   const prior=(await db.query('SELECT * FROM reverse_schichten WHERE datei_id IS NOT DISTINCT FROM $1::bigint AND medium_id IS NOT DISTINCT FROM $2::bigint AND schicht=$3 AND aktuell',[a.dateiId,a.dateiId?null:a.mediumId,stage])).rows[0];

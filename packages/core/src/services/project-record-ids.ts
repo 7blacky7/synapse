@@ -1,6 +1,7 @@
 import { getPool } from '../db/client.js';
 import { getMemoryById } from './memory.js';
 import { getMessages } from './chat.js';
+import { kommunikationsAgent, agentBezugAktiv } from './kommunikation-agent.js';
 
 export type ProjectRecordArt =
   | 'memory'
@@ -52,7 +53,7 @@ export async function getProjectRecordById(
   if (art === 'channel_message') {
     const { rows } = await pool.query(
       `SELECT cm.id, c.project, c.name AS "channelName", cm.sender,
-              cm.content, cm.metadata, cm.created_at AS "createdAt"
+              cm.content, cm.metadata, cm.created_at AS "createdAt"${agentBezugAktiv() ? ',cm.sender_identity_id AS "senderIdentityId"' : ''}
          FROM specialist_channel_messages cm
          JOIN specialist_channels c ON c.id = cm.channel_id
         WHERE c.project = $1 AND cm.id = $2
@@ -67,6 +68,7 @@ export async function getProjectRecordById(
   }
 
   if (art === 'event') {
+    const z=kommunikationsAgent(project,agentId!);
     const { rows } = await pool.query(
       `SELECT id, project, event_type AS "eventType", priority, scope,
               source_id AS "sourceId", payload, requires_ack AS "requiresAck",
@@ -75,7 +77,7 @@ export async function getProjectRecordById(
         WHERE project = $1 AND id = $2
           AND (scope = 'all' OR scope = $3)
         LIMIT 1`,
-      [project, idNum, `agent:${agentId}`],
+      [project,idNum,z.art === 'identity' ? `identity:${z.identity_id}` : `agent:${agentId}`],
     );
     return rows[0] ?? null;
   }

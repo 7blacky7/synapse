@@ -26,6 +26,7 @@
  *   sein Label werden nie ausgegeben.
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { abrechnungsmonat } from './context7-kontingent.js';
 
@@ -35,6 +36,8 @@ export interface JevAufrufBuchung {
   project: string | null;
   funktion: string;
   agent_id?: string | null;
+  /** Intern erfasster Auftraggeber; undefined erlaubt aktuellen Aufruf, null verbietet Rueckfall. */
+  identity_id?: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   usd: number;
@@ -97,10 +100,10 @@ function meldeDbFehler(was: string, err: unknown): void {
 export async function bucheJevAufruf(b: JevAufrufBuchung): Promise<void> {
   try {
     await mitZeitlimit(getPool().query(
-      `INSERT INTO jev_aufrufe (project, funktion, agent_id, input_tokens, output_tokens, usd, usd_quelle, ms, ok, fehler)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO jev_aufrufe (project, funktion, agent_id, input_tokens, output_tokens, usd, usd_quelle, ms, ok, fehler, identity_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [b.project, b.funktion, b.agent_id ?? null, b.input_tokens, b.output_tokens, b.usd, b.usd_quelle, b.ms, b.ok,
-        b.fehler ? b.fehler.slice(0, 500) : null],
+        b.fehler ? b.fehler.slice(0, 500) : null, b.identity_id !== undefined ? b.identity_id : aktuelleAgentAkteurIdentityId(b.agent_id)],
     ));
     buchFehlerGemeldet = false;
   } catch (err) {
@@ -287,12 +290,12 @@ export async function setzeJevBudget(o: { grenze_usd: number | null; reset_tag?:
   const monat = abrechnungsmonat(new Date(), tag);
   const verbraucht = grenze !== null ? await monatsSumme(monat) : 0;
   await getPool().query(
-    `INSERT INTO jev_budget_stand (id, grenze_usd, reset_tag, monat, verbraucht_usd, gesetzt_von, gesetzt_am)
-     VALUES (1, $1, $2, $3::date, $4, $5, NOW())
+    `INSERT INTO jev_budget_stand (id, grenze_usd, reset_tag, monat, verbraucht_usd, gesetzt_von, gesetzt_am, setter_identity_id)
+     VALUES (1, $1, $2, $3::date, $4, $5, NOW(), $6)
      ON CONFLICT (id) DO UPDATE SET grenze_usd = EXCLUDED.grenze_usd, reset_tag = EXCLUDED.reset_tag,
        monat = EXCLUDED.monat, verbraucht_usd = EXCLUDED.verbraucht_usd,
-       gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am`,
-    [grenze, tag, monat, verbraucht, o.agent ?? null],
+       gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am, setter_identity_id=EXCLUDED.setter_identity_id`,
+    [grenze, tag, monat, verbraucht, o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
   );
   vergissPauseCache();
   return jevBudgetStand();
@@ -302,8 +305,8 @@ export async function setzeJevBudget(o: { grenze_usd: number | null; reset_tag?:
 export async function setzeJevBudgetZurueck(o: { agent?: string | null } = {}): Promise<JevBudgetStand> {
   const st = await jevBudgetStand();
   await getPool().query(
-    `UPDATE jev_budget_stand SET verbraucht_usd = 0, monat = $1::date, gesetzt_von = $2, gesetzt_am = NOW() WHERE id = 1`,
-    [st.monat, o.agent ?? null],
+    `UPDATE jev_budget_stand SET verbraucht_usd = 0, monat = $1::date, gesetzt_von = $2, gesetzt_am = NOW(), setter_identity_id=$3 WHERE id = 1`,
+    [st.monat, o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
   );
   vergissPauseCache();
   return jevBudgetStand();

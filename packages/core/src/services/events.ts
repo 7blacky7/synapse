@@ -24,6 +24,8 @@
 
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
+import { aktuelleAgentIdentityId, loeseAgentZiel, aktuellerAgentAufruf } from './agent-bezug.js';
+import { kommunikationsAgent, eigenerKommunikationsAgent, kommunikationsKey, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
 import { eventsOffenBedingungSql } from './event-sichtbarkeit.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { sendMessage } from './chat.js';
@@ -76,6 +78,8 @@ export async function emitEvent(
   payload?: string,
   requiresAck?: boolean
 ): Promise<AgentEvent> {
+  if (agentBezugAktiv()) return await schreibeBezugsEvent({project,eventType,priority,scope,sourceId,payload,requiresAck}) as AgentEvent;
+  if (scope.startsWith('identity:')) throw new Error('agent_bezug_nicht_freigegeben');
   const pool = getPool();
 
   const result = await pool.query(
@@ -131,6 +135,8 @@ export async function emitEventOnce(
   args: EmitEventOnceArgs,
   client: PoolClient,
 ): Promise<AgentEvent | null> {
+  if (agentBezugAktiv()) return schreibeBezugsEvent(args,client);
+  if (args.scope.startsWith('identity:')) throw new Error('agent_bezug_nicht_freigegeben');
   const result = await client.query(
     `INSERT INTO agent_events (
        project, event_type, priority, scope, source_id, payload, requires_ack, dedupe_key, created_at
@@ -177,6 +183,7 @@ export async function acknowledgeEvent(
   agentId: string,
   reaction?: string
 ): Promise<EventAck> {
+  if (agentBezugAktiv()) return quittiereBezugsEvent(eventId,agentId,reaction);
   const pool = getPool();
 
   const result = await pool.query(
@@ -229,6 +236,7 @@ export async function getPendingEvents(
   limit?: number,
 ): Promise<AgentEvent[]> {
   const pool = getPool();
+  const z = kommunikationsAgent(project,agentId);
   const boundedLimit = limit === undefined
     ? null
     : Math.max(1, Math.min(100, Math.trunc(limit)));
@@ -242,7 +250,7 @@ export async function getPendingEvents(
   const result = await pool.query(
     `SELECT e.id, e.project, e.event_type, e.priority, e.scope, e.source_id, e.payload, e.requires_ack, e.created_at
      FROM agent_events e
-     WHERE ${eventsOffenBedingungSql({ projekt: '$1', scope: '$2', agent: '$3' })}
+     WHERE ${eventsOffenBedingungSql({ projekt: '$1', scope: '$2', agent: '$3', identity: z.art === 'identity' })}
      ORDER BY
        CASE e.priority
          WHEN 'critical' THEN 0
@@ -251,7 +259,7 @@ export async function getPendingEvents(
        END ASC,
        e.created_at ASC
      LIMIT $4`,
-    [project, `agent:${agentId}`, agentId, boundedLimit]
+    [project, z.art === 'identity' ? `identity:${z.identity_id}` : `agent:${agentId}`, bezugsWert(z), boundedLimit]
   );
 
   return result.rows.map(row => ({
@@ -376,7 +384,7 @@ export async function pruefeEventEskalation(
   agentId: string,
   urgent: DringlicherEventHinweis[],
 ): Promise<string | undefined> {
-  const key = JSON.stringify([project, agentId]);
+  const key = JSON.stringify([project, kommunikationsKey(agentId)]);
   if (urgent.length === 0) {
     eventEskalationen.delete(key);
     return undefined;
@@ -425,6 +433,13 @@ export async function getUnackedCount(
   project: string,
   agentId: string
 ): Promise<number> {
+  if (agentBezugAktiv() && kommunikationsAgent(project,agentId).art === 'identity') {
+    const z = kommunikationsAgent(project,agentId);
+    const {rows} = await getPool().query(
+      `SELECT COUNT(*)::int AS count FROM agent_events e WHERE ${eventsOffenBedingungSql({projekt:'$1',scope:'$2',agent:'$3',identity:z.art === 'identity'})}`,
+      [project,z.art === 'identity' ? 'identity:' + z.identity_id : 'agent:' + agentId,bezugsWert(z)]);
+    return rows[0]?.count ?? 0;
+  }
   const pool = getPool();
 
   const result = await pool.query(
@@ -451,4 +466,62 @@ export async function getUnackedCount(
   );
 
   return result.rows[0]?.count ?? 0;
+}
+
+/** Snapshot ist Anzeige; dedupe_key wird durch den ID-Scope pro Empfänger getrennt. */
+async function schreibeBezugsEvent(a: Omit<EmitEventOnceArgs,'dedupeKey'> & {dedupeKey?:string}, db: Pick<PoolClient,'query'> = getPool()): Promise<AgentEvent|null> {
+  const ziel = a.scope.startsWith('identity:')
+    ? await loeseAgentZiel(a.project,{identity_id:a.scope.slice(9)}) : null;
+  const {rows} = await db.query(
+    `INSERT INTO agent_events(project,event_type,priority,scope,source_id,payload,requires_ack,dedupe_key,source_identity_id,target_identity_id,target_agent_name)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ON CONFLICT(project,event_type,scope,dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING RETURNING *`,
+    [a.project,a.eventType,a.priority,a.scope,a.sourceId,a.payload ?? null,a.requiresAck ?? true,a.dedupeKey ?? null,
+      aktuelleAgentIdentityId(a.project,a.sourceId),ziel?.art === 'identity' ? ziel.identity_id : null,ziel?.agent_id ?? null]);
+  const r = rows[0];
+  return r ? {id:r.id,project:r.project,eventType:r.event_type,priority:r.priority,scope:r.scope,sourceId:r.source_id,
+    payload:r.payload,requiresAck:r.requires_ack,createdAt:r.created_at} : null;
+}
+async function quittiereBezugsEvent(eventId:number, agentId:string, reaction?:string): Promise<EventAck> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const {rows} = await client.query('SELECT * FROM agent_events WHERE id=$1 FOR UPDATE',[eventId]);
+    const e = rows[0];
+    if (!e) throw new Error('event_nicht_gefunden');
+    const principal = aktuellerAgentAufruf()?.principal;
+    if (principal && principal.project !== e.project) throw new Error('event_fremdes_projekt');
+    const actor = kommunikationsAgent(e.project,agentId);
+    const targetIdentity = e.scope.startsWith('identity:') ? e.scope.slice(9) : null;
+    const targetName = e.scope.startsWith('agent:') ? e.scope.slice(6) : null;
+    const broadcast = e.scope === 'all';
+    const own = broadcast || (targetIdentity ? actor.art === 'identity' && actor.identity_id === targetIdentity
+      : actor.art === 'legacy' && targetName === actor.agent_id);
+    let reaktion = reaction ?? null;
+    if (!own) {
+      if (!targetIdentity && !targetName) throw new Error('event_ziel_ungueltig');
+      if (!reaction?.trim()) throw new Error('event_stellvertretung_grund_fehlt');
+      const active = await client.query(targetIdentity
+        ? "SELECT 1 FROM agent_identitaet_sitzungen WHERE identity_id=$1 AND project=$2 AND status='active'"
+        : "SELECT 1 FROM agent_sessions WHERE id=$1 AND project=$2 AND status='active'",[targetIdentity ?? targetName,e.project]);
+      if (!darfKoordinatorOderUser(agentId) && active.rows.length) throw new Error('event_stellvertretung_verweigert');
+      reaktion = `stellvertretend durch ${actor.art === 'identity' ? 'identity:' + actor.identity_id : agentId}; Grund: ${reaction.trim()}`;
+    }
+    const ackIdentity = targetIdentity ?? (broadcast && actor.art === 'identity' ? actor.identity_id : null);
+    const actorIdentity = actor.art === 'identity' ? actor.identity_id : null;
+    const name = targetName ?? (broadcast ? agentId : e.target_agent_name ?? '');
+    const r = await client.query(ackIdentity
+      ? `INSERT INTO agent_identitaet_event_acks(event_id,agent_id,identity_id,actor_identity_id,acked_at,reaction)
+         VALUES($1,$2,$3,$4,NOW(),$5) ON CONFLICT(event_id,identity_id) DO UPDATE
+         SET acked_at=NOW(),reaction=COALESCE(EXCLUDED.reaction,agent_identitaet_event_acks.reaction),actor_identity_id=EXCLUDED.actor_identity_id
+         RETURNING event_id,agent_id,acked_at,reaction`
+      : `INSERT INTO agent_event_acks(event_id,agent_id,actor_identity_id,acked_at,reaction)
+         VALUES($1,$2,$3,NOW(),$4) ON CONFLICT(event_id,agent_id) DO UPDATE
+         SET acked_at=NOW(),reaction=COALESCE(EXCLUDED.reaction,agent_event_acks.reaction),actor_identity_id=EXCLUDED.actor_identity_id
+         RETURNING event_id,agent_id,acked_at,reaction`,
+      ackIdentity ? [eventId,name,ackIdentity,actorIdentity,reaktion] : [eventId,name,actorIdentity,reaktion]);
+    await client.query('COMMIT');
+    const a=r.rows[0]; return {eventId:a.event_id,agentId:a.agent_id,ackedAt:a.acked_at,reaction:a.reaction};
+  } catch(err) { await client.query('ROLLBACK'); throw err; }
+  finally { client.release(); }
 }

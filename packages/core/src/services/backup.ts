@@ -182,10 +182,36 @@ export async function backupProject(project: string): Promise<{
   // PostgreSQL-Backup (alle Projekt-Daten als JSON)
   try {
     const pool = getPool();
-    const tables = ['memories', 'thoughts', 'plans', 'proposals'];
-    for (const table of tables) {
+    const tables = [
+      ...['memories', 'thoughts', 'plans', 'proposals'].map(tabelle => ({ tabelle, wo: 'project = $1' })),
+      { tabelle: 'agent_identitaeten', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_tokens', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_audit', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_laeufe', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_sitzungen', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_onboardings', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_chat_lesestand', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_wrapper_status', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_wissen', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_file_reservations', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_hinweis_gesehen', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_hinweis_zustellungen', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_skill_sections', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_channel_sichtung', wo: 'project = $1' },
+      { tabelle: 'agent_identitaet_skill_deliveries', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_skill_preparations', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_hinweis_aufrufe', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_error_pattern_seen', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_shell_job_notices', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_channel_mitglieder', wo: 'channel_id IN (SELECT id FROM specialist_channels WHERE project = $1)' },
+      { tabelle: 'agent_identitaet_event_acks', wo: 'event_id IN (SELECT id FROM agent_events WHERE project = $1)' },
+      { tabelle: 'shell_job_agent_bezuege', wo: 'project = $1' },
+      { tabelle: 'agent_runtime_sessions', wo: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+      { tabelle: 'agent_artifacts', wo: 'created_by_identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1) OR session_id IN (SELECT id FROM agent_runtime_sessions WHERE identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1))' },
+    ];
+    for (const { tabelle: table, wo } of tables) {
       const result = await pool.query(
-        `SELECT * FROM ${table} WHERE project = $1`, [project]
+        `SELECT * FROM ${table} WHERE ${wo}`, [project]
       );
       if (result.rows.length > 0) {
         const pgPath = path.join(dir, `psql_${project}_${table}_${timestamp}.jsonl`);

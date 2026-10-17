@@ -1,4 +1,5 @@
 /** A11: Share wins; full-hash PC bytes survive in retained immutable revisions. */
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {getPool} from '../db/client.js';
 import {standardRegistry} from '../asset-intel/registry.js';
@@ -151,7 +152,7 @@ export class AssetKonfliktKern {
    const active=(await db.query("SELECT * FROM asset_konflikt_loesungen WHERE konflikt_id=$1 AND status IN('offen','prepared')",[c.id])).rows[0];
    if(active)return fail('loesung_laeuft',409,'Auflösung braucht Abschluss oder bestätigte physische Recovery.');
    if(wahl==='share'){
-    await db.query("UPDATE asset_konflikte SET status='verworfen_pc',erledigt_von=$2,erledigt_at=clock_timestamp() WHERE id=$1",[c.id,agent]);
+    await db.query("UPDATE asset_konflikte SET status='verworfen_pc',erledigt_von=$2,resolver_identity_id=$3,erledigt_at=clock_timestamp() WHERE id=$1",[c.id,agent,aktuelleAgentAkteurIdentityId(agent)]);
     // Retained PC bytes are not removed before the configured restoration window.
     return {fertig:true,ergebnis:{asset_id:assetId,revision:String(row.transport_revision),wahl}};
    }
@@ -159,7 +160,7 @@ export class AssetKonfliktKern {
    if(!pc?.gueltig||pc.tombstone||!pc.storage_key)return fail('revision_abgelaufen',410,'PC-Revisionsfenster abgelaufen.');
    await this.pcPolicy(ctx.ziel_ref,row,pc,db);
    const id=randomUUID();
-   await db.query("INSERT INTO asset_konflikt_loesungen(id,konflikt_id,project,agent_id,basis_revision,pc_revision,status,vorherige_datei,lease_bis) VALUES($1,$2,$3,$4,$5,$6,'offen',$7::jsonb,clock_timestamp()+$8*interval '1 millisecond')",[id,c.id,ctx.ziel_ref,agent,row.transport_revision,c.pc_revision,JSON.stringify(row),this.cfg.speicher.timeoutMs]);
+   await db.query("INSERT INTO asset_konflikt_loesungen(id,konflikt_id,project,agent_id,basis_revision,pc_revision,status,vorherige_datei,lease_bis,owner_identity_id) VALUES($1,$2,$3,$4,$5,$6,'offen',$7::jsonb,clock_timestamp()+$8*interval '1 millisecond',$9)",[id,c.id,ctx.ziel_ref,agent,row.transport_revision,c.pc_revision,JSON.stringify(row),this.cfg.speicher.timeoutMs,aktuelleAgentAkteurIdentityId(agent)]);
    return {fertig:false,id,c,row,pc};
   });
   if(claimed.fertig)return claimed.ergebnis;
@@ -191,7 +192,7 @@ export class AssetKonfliktKern {
      await db.query("INSERT INTO asset_revisionen(asset_id,revision,sha256,groesse,storage_key,quelle) VALUES($1,$2,$3,$4,$5,'pc')",[assetId,rev,pc.sha256,pc.groesse,op.revision_storage_key??op.storage_key]);
      result={asset_id:assetId,revision:rev,wahl:'pc',pfad:row.file_path,sha256:pc.sha256,groesse:Number(pc.groesse),storage_status:'ready',storage_kind:row.storage_kind,deleted_at:null,restore_until:null};
      await db.query("INSERT INTO asset_aenderungen(project,asset_id,revision,art,metadaten) VALUES($1,$2,$3,'konflikt_loesen',$4::jsonb)",[ctx.ziel_ref,assetId,rev,JSON.stringify(result)]);
-     await db.query("UPDATE asset_konflikte SET status='uebernommen_pc',erledigt_von=$2,erledigt_at=clock_timestamp() WHERE id=$1 AND status='offen'",[c.id,agent]);
+     await db.query("UPDATE asset_konflikte SET status='uebernommen_pc',erledigt_von=$2,resolver_identity_id=$3,erledigt_at=clock_timestamp() WHERE id=$1 AND status='offen'",[c.id,agent,aktuelleAgentAkteurIdentityId(agent)]);
      await db.query("UPDATE asset_konflikt_loesungen SET status='fertig',ergebnis=$2::jsonb WHERE id=$1",[id,JSON.stringify(result)]);
     });}
    });

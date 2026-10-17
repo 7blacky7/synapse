@@ -1100,7 +1100,7 @@ function ChannelsView({
   const [channelHeight, setChannelHeight] = useState(100);
   const [openAgentWindows, setOpenAgentWindows] = useState<ChannelAgentWindowState[]>([]);
   const messageListRef = useRef<HTMLDivElement>(null);
-  const channelAgents = [
+  const channelAgents: Array<{name:string;identityId?:string;role:string;status:string}> = [
     { name: 'Koordinator', role: 'Routing', status: 'online' },
     { name: 'Worker UI', role: 'Umsetzung', status: 'online' },
     { name: 'Dreamer', role: 'Ideen', status: 'idle' },
@@ -1134,13 +1134,13 @@ function ChannelsView({
     }
   };
 
-  const openChannelAgent = (agent: { name: string; role: string; status: string }) => {
+  const openChannelAgent = (agent: { name: string; identityId?: string; role: string; status: string }) => {
     if (!selectedChannel) return;
-    const key = selectedChannel + '::' + agent.name;
+    const key = project + '::' + selectedChannel + '::' + (agent.identityId ? 'identity:' + agent.identityId : 'legacy:' + agent.name);
     setOpenAgentWindows((current) => {
       const existing = current.find((item) => item.key === key);
       if (existing) return [...current.filter((item) => item.key !== key), existing];
-      return [...current, { key, agentName: agent.name, role: agent.role, status: agent.status, channelName: selectedChannel }];
+      return [...current, { key, agentName: agent.name, identityId: agent.identityId, role: agent.role, status: agent.status, channelName: selectedChannel }];
     });
   };
 
@@ -1214,10 +1214,10 @@ function ChannelsView({
           <div className="channel-agent-bar">
             <span>Agenten in #{selectedChannel || '—'} · Mock</span>
             {channelAgents.map((agent) => {
-              const windowKey = selectedChannel + '::' + agent.name;
+              const windowKey = project + '::' + selectedChannel + '::' + (agent.identityId ? 'identity:' + agent.identityId : 'legacy:' + agent.name);
               const isOpen = openAgentWindows.some((item) => item.key === windowKey);
               const isActive = openAgentWindows[openAgentWindows.length - 1]?.key === windowKey;
-              return <button type="button" key={agent.name} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><span><strong>{agent.name}</strong><small>{agent.role}</small></span></button>;
+              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><span><strong>{agent.name}</strong><small>{agent.role}</small></span></button>;
             })}
           </div>
           {openAgentWindows.map((agentWindow, index) => (

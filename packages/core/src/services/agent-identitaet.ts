@@ -8,6 +8,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
+import { leseAgentBezugModus, aktuellerAgentAufruf, type AgentBezugStand } from './agent-bezug.js';
+import { beginneIdentitaetsSitzung } from './agent-identitaet-sitzungen.js';
 
 export interface TokenIdentitaetSchalter {
   freigegeben: boolean;
@@ -58,6 +60,8 @@ export interface AgentIdentitaet {
 }
 export interface AgentTokenAnmeldung {
   identitaet: AgentIdentitaet;
+  /** Einmal pro Aufruf ermittelter Routingstand fuer Adapter/Hooks. */
+  bezug?: AgentBezugStand;
   project: string;
   agent_id: string;
   rolle: string;
@@ -130,13 +134,14 @@ async function berechtigung(c: PoolClient, project: string, p?: AgentIdentitaetP
   return { wer: p.identity_id, verwaltung: r.rows[0].rolle === 'koordinator', daemon: false };
 }
 async function audit(c: PoolClient, id: string, wer: string, aktion: string, alt: unknown, neu: unknown, grund?: string): Promise<void> {
-  await c.query(`INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund)
-    VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6)`, [id, wer, aktion, JSON.stringify(alt), JSON.stringify(neu), grund ?? null]);
+  await c.query(`INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id)
+    VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,(SELECT id FROM agent_identitaeten WHERE id=$2))`, [id, wer, aktion, JSON.stringify(alt), JSON.stringify(neu), grund ?? null]);
 }
 
 /** User27698: exakte Koordinatornamen duerfen sich selbst registrieren; sonst subagent. */
-export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: AgentIdentitaetPrincipal): Promise<AgentTokenAusgabe> {
+export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: AgentIdentitaetPrincipal, bezugsStand?: AgentBezugStand): Promise<AgentTokenAusgabe> {
   await freigabe();
+  const bezug = bezugsStand ?? aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   if (!text(e.project) || !text(e.name) || e.name.includes('#')) throw new AgentIdentitaetFehler('identitaet_parameter_ungueltig');
   const koordinatorSelbst = /^(koordinator|coordinator)$/i.test(e.name.trim());
   const name = koordinatorSelbst ? 'koordinator' : e.name;
@@ -165,18 +170,22 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
       let instanz = Number(nr.rows[0].nr);
       let agentId: string;
       // User27717: Legacy-Namen ablehnen, weder uebernehmen noch automatisch #2 anlegen.
+      if (bezug.modus === 'alt') {
       const legacy = await c.query(
         'SELECT id FROM agent_sessions WHERE project=$1 AND identity_id IS NULL AND (id=$2 OR id=$3)',
         [e.project,name,koordinatorSelbst ? 'coordinator' : name]);
       if (legacy.rows[0]) throw new AgentIdentitaetFehler('name_gehoert_bestehendem_agenten');
+      }
       agentId = instanz === 1 ? name : `${name}#${instanz}`;
+      if (bezug.modus === 'alt') {
       const belegt = await c.query('SELECT id FROM agent_sessions WHERE id=$1',[agentId]);
       if (belegt.rows[0]) throw new AgentIdentitaetFehler('name_gehoert_bestehendem_agenten');
+      }
       const id = randomUUID();
       const r = await c.query<AgentIdentitaet>(
         `INSERT INTO agent_identitaeten (id, project, name, instanz_nr, agent_id, rolle,
-          modell_bestaetigt, modell_selbstauskunft, erstellt_von)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${SPALTEN}`,
+          modell_bestaetigt, modell_selbstauskunft, erstellt_von, erstellt_von_identity_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,(SELECT id FROM agent_identitaeten WHERE id=$9)) RETURNING ${SPALTEN}`,
         [id, e.project, name, instanz, agentId, privilegiert ? (e.rolle ?? (koordinatorSelbst ? 'koordinator' : 'subagent')) : (koordinatorSelbst ? 'koordinator' : 'subagent'),
           privilegiert ? (e.modell_bestaetigt ?? null) : null, e.modell_selbstauskunft ?? null, recht.wer],
       );
@@ -200,11 +209,12 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
             gueltig_bis=CASE WHEN v.nr=1 THEN LEAST(COALESCE(t.gueltig_bis,NOW()+INTERVAL '60 seconds'),NOW()+INTERVAL '60 seconds') ELSE t.gueltig_bis END,
             widerrufen_am=CASE WHEN v.nr>1 THEN NOW() ELSE t.widerrufen_am END,
             widerrufen_von=CASE WHEN v.nr>1 THEN $3 ELSE t.widerrufen_von END,
+            widerrufen_von_identity_id=CASE WHEN v.nr>1 THEN (SELECT id FROM agent_identitaeten WHERE id=$3) ELSE t.widerrufen_von_identity_id END,
             widerrufen_grund=CASE WHEN v.nr>1 THEN 'start_rotation' ELSE t.widerrufen_grund END
           FROM vorher v WHERE t.id=v.id RETURNING t.id, t.gueltig_bis, t.widerrufen_am
-        ) INSERT INTO agent_identitaet_audit (identity_id,wer,aktion,alt,neu,grund)
+        ) INSERT INTO agent_identitaet_audit (identity_id,wer,aktion,alt,neu,grund,actor_identity_id)
           SELECT $1,$3,'start_rotation',jsonb_build_object('token_id',id),
-            jsonb_build_object('gueltig_bis',gueltig_bis,'widerrufen_am',widerrufen_am),$4 FROM aenderung`,
+            jsonb_build_object('gueltig_bis',gueltig_bis,'widerrufen_am',widerrufen_am),$4,(SELECT id FROM agent_identitaeten WHERE id=$3) FROM aenderung`,
         [identitaet.id,e.start_art,recht.wer,e.grund ?? null]);
     }
     // Nur der ungenutzte Start-Ausweis hat eine Bootstrap-Hoechstfrist; Hauptausweise nicht.
@@ -219,8 +229,9 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
 }
 
 /** Validiert den Ausweis bei JEDEM Aufruf; erhoeht nur bei anmelden die Epoch. */
-async function tokenIdentitaet(token: string, project: string | undefined, anmelden: boolean): Promise<AgentTokenAnmeldung> {
+async function tokenIdentitaet(token: string, project: string | undefined, anmelden: boolean, bezugsStand?: AgentBezugStand): Promise<AgentTokenAnmeldung> {
   await freigabe();
+  const bezug = bezugsStand ?? aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   if (typeof token !== 'string' || !/^sai_[a-f0-9]{64}$/.test(token)) throw new AgentIdentitaetFehler('agent_token_ungueltig');
   return transaktion(async (c) => {
     // Gleiche Reihenfolge wie Widerruf/Deaktivierung: erst Identitaet, dann Ausweis.
@@ -232,6 +243,36 @@ async function tokenIdentitaet(token: string, project: string | undefined, anmel
     let i = r.rows[0];
     if (!i || i.status !== 'aktiv') throw new AgentIdentitaetFehler('agent_token_ungueltig');
     if (project !== undefined && project !== i.project) throw new AgentIdentitaetFehler('agent_token_fremdes_projekt');
+    if (bezug.modus === 'alt') {
+      // Rueckwechsel adoptiert keine ausschliesslich im ID-Modus entstandenen Namenszustaende.
+      // Nur eine schon vorher an GENAU diese Identitaet gebundene Legacy-Sitzung ist nutzbar.
+      const rollback = await c.query(
+        `SELECT 1 FROM agent_identitaet_sitzungen s WHERE s.identity_id=$1
+          AND NOT EXISTS (SELECT 1 FROM agent_sessions l WHERE l.id=$2 AND l.project=$3 AND l.identity_id=$1)`,
+        [i.id,i.agent_id,i.project]);
+      if (rollback.rows.length) throw new AgentIdentitaetFehler('agent_identity_im_altmodus_nicht_gebunden');
+      // Ein frisch ausgestellter Ausweis hat noch keine ID-Sitzung. Auch seine reine
+      // Pruefung darf deshalb keine gleichnamige Legacy-Sitzung (NULL oder andere ID)
+      // bezeugen. Derselbe Guard gilt vor Anmeldung UND jedem fachlichen Folgeaufruf.
+      const kollision = await c.query(
+        'SELECT 1 FROM agent_sessions WHERE id=$1 AND (project IS DISTINCT FROM $2 OR identity_id IS DISTINCT FROM $3)',
+        [i.agent_id,i.project,i.id]);
+      if (kollision.rows.length) throw new AgentIdentitaetFehler('agent_sitzung_bereits_gebunden');
+      // Legacy-Zustaende brauchen keine Chat-Anmeldung (z.B. erster Wrapper-Heartbeat).
+      // Nur eine schon an DIESE Identitaet gebundene Alt-Sitzung bezeugt deren Besitz.
+      const altbestand = await c.query(
+        `SELECT 1 WHERE NOT EXISTS (
+           SELECT 1 FROM agent_sessions WHERE id=$1 AND project=$2 AND identity_id=$3
+         ) AND (
+           EXISTS (SELECT 1 FROM wrapper_status WHERE agent_name=$1 AND project=$2)
+           OR EXISTS (SELECT 1 FROM file_reservations WHERE agent_id=$1 AND project=$2
+             AND released_at IS NULL AND expires_at>NOW())
+           OR EXISTS (SELECT 1 FROM shell_jobs WHERE agent_id=$1 AND project=$2
+             AND owner_identity_id IS NULL AND status IN ('pending','running'))
+         )`, [i.agent_id,i.project,i.id]);
+      if (altbestand.rows.length) throw new AgentIdentitaetFehler('agent_legacy_zustand_bereits_gebunden');
+
+    }
     // Die Start-Hoechstfrist gilt nur bis zur erfolgreichen Erstanmeldung des aktuellen
     // Ausweises. Danach gueltig_bis=NULL: wiederverwendbar bis Widerruf/Deaktivierung
     // oder naechster Startrotation. Ein alter Uebergangsausweis behaelt seine 60s-Frist.
@@ -247,11 +288,11 @@ async function tokenIdentitaet(token: string, project: string | undefined, anmel
     if (anmelden && t.rows[0].start_art && !t.rows[0].start_uebergang) {
       await c.query(`WITH aenderung AS (
         UPDATE agent_identitaet_tokens SET widerrufen_am=NOW(),
-          widerrufen_von=$1, widerrufen_grund='start_angemeldet'
+          widerrufen_von=$1, widerrufen_von_identity_id=$1, widerrufen_grund='start_angemeldet'
         WHERE identity_id=$1 AND start_art=$2 AND id<>$3 AND widerrufen_am IS NULL RETURNING id
-      ) INSERT INTO agent_identitaet_audit (identity_id,wer,aktion,alt,neu,grund)
+      ) INSERT INTO agent_identitaet_audit (identity_id,wer,aktion,alt,neu,grund,actor_identity_id)
         SELECT $1,$1,'start_rotation',jsonb_build_object('token_id',id),
-          '{"widerrufen":true}'::jsonb,'start_angemeldet' FROM aenderung`,
+          '{"widerrufen":true}'::jsonb,'start_angemeldet',$1 FROM aenderung`,
         [i.id,t.rows[0].start_art,t.rows[0].id]);
     }
     const neu = await c.query<AgentIdentitaet>(
@@ -272,6 +313,7 @@ async function tokenIdentitaet(token: string, project: string | undefined, anmel
       // Sitzungsbindung atomar zur Epoch. Bestehende ACKs/Lesestaende und Zeitfelder bleiben.
       // agent_sessions hat historisch einen globalen Namensschluessel: niemals eine
       // fremde Projekt-/Identitaetsbindung durch dessen ON CONFLICT ueberschreiben.
+      if (bezug.modus === 'alt') {
       const sitzung = await c.query(`INSERT INTO agent_sessions (id,project,identity_id,context_epoch,status)
         VALUES ($1,$2,$3,$4,'active')
         ON CONFLICT (id) DO UPDATE SET identity_id=EXCLUDED.identity_id, context_epoch=EXCLUDED.context_epoch
@@ -279,23 +321,28 @@ async function tokenIdentitaet(token: string, project: string | undefined, anmel
           AND agent_sessions.identity_id=EXCLUDED.identity_id
         RETURNING id`, [i.agent_id,i.project,i.id,i.context_epoch]);
       if (!sitzung.rows[0]) throw new AgentIdentitaetFehler('agent_sitzung_bereits_gebunden');
+      } else {
+        await beginneIdentitaetsSitzung({ identitaet: i, project: i.project, agent_id: i.agent_id,
+          rolle: i.rolle, modell: i.modell_bestaetigt ?? i.modell_selbstauskunft,
+          context_epoch: i.context_epoch, lauf_id: laufId }, c);
+      }
       await audit(c, i.id, i.id, 'anmelden', { context_epoch: i.context_epoch - 1 }, { context_epoch: i.context_epoch });
     }
     if (!anmelden) {
       const lauf = await c.query<{id: string}>("SELECT id FROM agent_identitaet_laeufe WHERE identity_id=$1 AND status='aktiv'",[i.id]);
       laufId = lauf.rows[0]?.id ?? null;
     }
-    return { identitaet: i, project: i.project, agent_id: i.agent_id, rolle: i.rolle, lauf_id: laufId,
+    return { identitaet: i, bezug, project: i.project, agent_id: i.agent_id, rolle: i.rolle, lauf_id: laufId,
       modell: i.modell_bestaetigt ?? i.modell_selbstauskunft, context_epoch: i.context_epoch };
   });
 }
 /** Neuer Kontext; keine Events, ACKs, Channels, Reservierungen oder Waits werden angefasst. */
-export async function meldeAgentMitTokenAn(token: string, project?: string): Promise<AgentTokenAnmeldung> {
-  return tokenIdentitaet(token, project, true);
+export async function meldeAgentMitTokenAn(token: string, project?: string, bezug?: AgentBezugStand): Promise<AgentTokenAnmeldung> {
+  return tokenIdentitaet(token, project, true, bezug);
 }
 /** Transportbindung bei Folgeaufrufen pruefen, ohne Kontext-Epoch zu erhoehen. */
-export async function pruefeAgentToken(token: string, project?: string): Promise<AgentTokenAnmeldung> {
-  return tokenIdentitaet(token, project, false);
+export async function pruefeAgentToken(token: string, project?: string, bezug?: AgentBezugStand): Promise<AgentTokenAnmeldung> {
+  return tokenIdentitaet(token, project, false, bezug);
 }
 export async function widerrufeAgentToken(project: string, tokenId: string, principal: AgentIdentitaetPrincipal, grund: string): Promise<void> {
   await freigabe();
@@ -306,7 +353,7 @@ export async function widerrufeAgentToken(project: string, tokenId: string, prin
     const r = await c.query<{ id: string }>(`SELECT i.id FROM agent_identitaeten i
       JOIN agent_identitaet_tokens t ON t.identity_id=i.id WHERE i.project=$1 AND t.id=$2 FOR UPDATE OF i`, [project, tokenId]);
     if (!r.rows[0]) throw new AgentIdentitaetFehler('agent_token_ungueltig');
-    const geaendert = await c.query(`UPDATE agent_identitaet_tokens SET widerrufen_am=NOW(), widerrufen_von=$2, widerrufen_grund=$3
+    const geaendert = await c.query(`UPDATE agent_identitaet_tokens SET widerrufen_am=NOW(), widerrufen_von=$2, widerrufen_von_identity_id=(SELECT id FROM agent_identitaeten WHERE id=$2), widerrufen_grund=$3
       WHERE id=$1 AND widerrufen_am IS NULL RETURNING id`, [tokenId, recht.wer, grund]);
     if (geaendert.rows[0]) await audit(c, r.rows[0].id, recht.wer, 'token_widerrufen', { token_id: tokenId, widerrufen: false }, { token_id: tokenId, widerrufen: true }, grund);
   });

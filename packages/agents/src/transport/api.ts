@@ -122,6 +122,8 @@ export class ApiTransport implements WrapperTransport {
         Authorization: `Bearer ${this.token}`,
         Accept: 'application/json',
       }
+      if (process.env.SYNAPSE_AGENT_TOKEN) kopf['x-synapse-agent-token'] = process.env.SYNAPSE_AGENT_TOKEN
+      if (process.env.SYNAPSE_AGENT_IDENTITY_ID) kopf['x-synapse-agent-identity-id'] = process.env.SYNAPSE_AGENT_IDENTITY_ID
       if (optionen.koerper !== undefined) kopf['Content-Type'] = 'application/json'
 
       const antwort = await fetch(`${this.basis}${pfad}`, {
@@ -631,6 +633,8 @@ export class ApiTransport implements WrapperTransport {
           headers: {
             Authorization: `Bearer ${this.token}`,
             Accept: 'text/event-stream',
+            ...(process.env.SYNAPSE_AGENT_TOKEN ? { 'x-synapse-agent-token': process.env.SYNAPSE_AGENT_TOKEN } : {}),
+            ...(process.env.SYNAPSE_AGENT_IDENTITY_ID ? { 'x-synapse-agent-identity-id': process.env.SYNAPSE_AGENT_IDENTITY_ID } : {}),
           },
           signal: abbruch.signal,
         })
@@ -767,7 +771,9 @@ export class ApiTransport implements WrapperTransport {
       // Dieselben Filter wie beim pg-Weg: nur dieses Projekt, keine eigenen Aenderungen.
       const pfad = nutz.file_path
       const wer = nutz.agent_id
-      if (nutz.project === this.umgebung.projekt && wer !== this.umgebung.agentName && typeof pfad === 'string') {
+      const identity = process.env.SYNAPSE_AGENT_IDENTITY_ID
+      const eigenerAutor = identity ? (nutz.author_identity_id ?? nutz.identity_id) === identity : wer === this.umgebung.agentName && !nutz.author_identity_id && !nutz.identity_id
+      if (nutz.project === this.umgebung.projekt && !eigenerAutor && typeof pfad === 'string') {
         empfaenger({
           art: 'datei',
           pfad,

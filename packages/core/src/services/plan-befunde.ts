@@ -35,6 +35,7 @@ export interface PlanBefund extends FehlerBefund {
   id: string;
   op_index: number | null;
   agent_id: string | null;
+  author_identity_id?:string|null;
   /** Ops, die an der Stelle mitwirken (Kombinationsfehler) */
   beteiligt?: number[];
   status: 'offen' | 'quittiert';
@@ -44,6 +45,7 @@ export interface PlanBefund extends FehlerBefund {
 export interface PruefDateiOp {
   op_index: number;
   agent_id: string | null;
+  author_identity_id?:string|null;
   /** Zeilenspannen der Op im Ergebnis, 0-basiert halboffen [s, e) (leer = reine Loeschung vor s) */
   spannen: Array<[number, number]>;
 }
@@ -76,16 +78,16 @@ function hash(text: string): string {
 }
 
 /** Stabiler Schluessel fuer Quittierungen (ohne Zeilen, die sich verschieben). */
-export function befundSchluessel(b: Pick<PlanBefund, 'pruefer' | 'datei' | 'op_index' | 'code' | 'pattern_id'>): string {
-  return [b.pruefer, b.datei, b.op_index ?? '-', b.code ?? b.pattern_id ?? ''].join('|');
+export function befundSchluessel(b: Pick<PlanBefund, 'pruefer' | 'datei' | 'op_index' | 'code' | 'pattern_id' | 'author_identity_id'>): string {
+  return [b.pruefer, b.datei, b.op_index ?? '-', b.code ?? b.pattern_id ?? '', ...(b.author_identity_id ? ['identity:'+b.author_identity_id] : [])].join('|');
 }
 
-function opZuordnung(roh: FehlerBefund, datei: PruefDatei): { op_index: number | null; agent_id: string | null; beteiligt?: number[] } {
+function opZuordnung(roh: FehlerBefund, datei: PruefDatei): { op_index: number | null; agent_id: string | null; author_identity_id?:string|null; beteiligt?: number[] } {
   // P16-T8: Syntaxbefund mit ermittelter Ursache -> an die verursachende Op (auch die eines anderen Agenten, coedit).
   const ursache = roh.entstanden_bei;
   if (ursache?.op_index !== undefined) {
     const op = datei.ops.find((o) => o.op_index === ursache.op_index);
-    if (op) return { op_index: op.op_index, agent_id: op.agent_id, ...(ursache.beteiligt ? { beteiligt: ursache.beteiligt } : {}) };
+    if (op) return { op_index: op.op_index, agent_id: op.agent_id, ...(op.author_identity_id ? {author_identity_id:op.author_identity_id} : {}), ...(ursache.beteiligt ? { beteiligt: ursache.beteiligt } : {}) };
   }
   const zeilen = roh.zeilen;
   const [a, b] = [zeilen[0] - 1, zeilen[1] - 1];
@@ -95,7 +97,7 @@ function opZuordnung(roh: FehlerBefund, datei: PruefDatei): { op_index: number |
   if (kandidaten.length === 0) return { op_index: null, agent_id: null };
   const spaeteste = kandidaten.reduce((x, y) => (y.op_index > x.op_index ? y : x));
   const beteiligt = kandidaten.length > 1 ? kandidaten.map((o) => o.op_index).sort((x, y) => x - y) : undefined;
-  return { op_index: spaeteste.op_index, agent_id: spaeteste.agent_id, ...(beteiligt ? { beteiligt } : {}) };
+  return { op_index: spaeteste.op_index, agent_id: spaeteste.agent_id, ...(spaeteste.author_identity_id ? {author_identity_id:spaeteste.author_identity_id} : {}), ...(beteiligt ? { beteiligt } : {}) };
 }
 
 /**
@@ -139,7 +141,7 @@ export async function pruefePlanDateien(
         const grund = quittiert.get(schluessel);
         // P15-T33 E1: Syntaxbefund (error), der den commit sperrt -> Erklaerungs-Topf (nur einreihen, asynchron).
         if (roh.quelle === 'syntax' && roh.severity === 'error' && !roh.altlast && !grund) {
-          meldeFehlerfall({ project, agent_id: zuordnung.agent_id, befund: roh, basis: datei.basis, ergebnis: datei.ergebnis, weg: 'plan', op_index: zuordnung.op_index });
+          meldeFehlerfall({ project, agent_id: zuordnung.agent_id, owner_identity_id:zuordnung.author_identity_id??null, befund: roh, basis: datei.basis, ergebnis: datei.ergebnis, weg: 'plan', op_index: zuordnung.op_index });
         }
         befunde.push({
           ...teil,
@@ -162,6 +164,8 @@ export async function pruefePlanDateien(
       // Fremddatei-Folgefehler tragen den Hash der verursachenden Plan-Datei.
       const ursache = dateien.find(d => d.ops.some(o => o.op_index === roh.op_index));
       const ergebnisHash = hash(ursache?.ergebnis ?? '');
+      const ownerIdentity=ursache?.ops.find(o=>o.op_index===roh.op_index)?.author_identity_id;
+      if(ownerIdentity) (roh as typeof roh & {author_identity_id?:string}).author_identity_id=ownerIdentity;
       const schluessel = befundSchluessel(roh);
       const grund = quittiert.get(schluessel);
       befunde.push({
@@ -180,6 +184,8 @@ export async function pruefePlanDateien(
   for (const roh of build?.befunde ?? []) {
     const ursache = roh.op_index !== null ? dateien.find((d) => d.ops.some((o) => o.op_index === roh.op_index)) : undefined;
     const ergebnisHash = hash(ursache?.ergebnis ?? '');
+    const ownerIdentity=ursache?.ops.find(o=>o.op_index===roh.op_index)?.author_identity_id;
+    if(ownerIdentity) (roh as typeof roh & {author_identity_id?:string}).author_identity_id=ownerIdentity;
     const schluessel = befundSchluessel(roh);
     const grund = quittiert.get(schluessel);
     befunde.push({

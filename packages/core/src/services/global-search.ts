@@ -295,6 +295,7 @@ async function searchThoughtsCollection(
         metadata: {
           type: 'thoughts' as const,
           source: hit.payload.source,
+          ...(hit.payload.source_identity_id ? { source_identity_id: hit.payload.source_identity_id } : {}),
           tags: hit.payload.tags || [],
           timestamp: hit.payload.timestamp,
         },

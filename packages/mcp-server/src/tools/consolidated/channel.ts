@@ -172,6 +172,7 @@ async function handleFeed(args: Record<string, unknown>) {
       messages: messages.map(m => ({
         id: m.id,
         sender: m.sender,
+        ...(m.senderIdentityId ? { senderIdentityId: m.senderIdentityId } : {}),
         content: m.content,
         createdAt: m.createdAt.toISOString(),
       })),

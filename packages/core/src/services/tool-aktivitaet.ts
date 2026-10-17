@@ -6,6 +6,7 @@
  * Offene/geleaste Jobs bleiben ein separater, zwingender Idle-Stop-Schutz (R5.1).
  */
 import type {Pool, PoolClient} from 'pg';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 import {getPool} from '../db/client.js';
 
 export type ToolAktivitaetDb = Pick<Pool | PoolClient, 'query'>;
@@ -38,6 +39,7 @@ export interface ToolAktivitaetZeile {
   tool: string;
   aktion: string;
   agent_id: string | null;
+  identity_id?:string|null;
   tool_id: string;
   container_id: string | null;
   job_id: string | null;
@@ -77,11 +79,12 @@ export async function erfasseToolAktivitaet(
     && e.tool !== 'admin' && !KEINE_AKTIVITAET.has(e.aktion.toLowerCase());
   const res=await db.query<ToolAktivitaetZeile>(
     `INSERT INTO tool_aktivitaet
-      (projekt,tool,aktion,agent_id,tool_id,container_id,job_id,akzeptiert,berechtigt,projekt_gebunden,zaehlt_als_aktivitaet)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *, id::text AS id`,
+      (projekt,tool,aktion,agent_id,tool_id,container_id,job_id,akzeptiert,berechtigt,projekt_gebunden,zaehlt_als_aktivitaet,identity_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *, id::text AS id`,
     [e.project,e.tool,e.aktion,e.agentId??null,k.descriptor.toolId,e.containerId??null,e.jobId??null,
-     e.akzeptiert===true,k.berechtigt===true,gebunden,zaehlt],
+     e.akzeptiert===true,k.berechtigt===true,gebunden,zaehlt,aktuelleAgentIdentityId(e.project,e.agentId)],
   );
+  if(res.rows[0] && !res.rows[0].identity_id) delete res.rows[0].identity_id;
   return res.rows[0];
 }
 
@@ -102,6 +105,7 @@ export async function letzteToolAktivitaet(
       ORDER BY zeit DESC, tool_aktivitaet.id DESC LIMIT 1`,
     [f.project,f.toolId,f.tool,f.fensterSekunden,f.containerId??null],
   );
+  for(const row of res.rows) if(!row.identity_id) delete row.identity_id;
   return res.rows;
 }
 

@@ -22,6 +22,7 @@
  *     dort sofort wirkt
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import {
   verwirfIgnoreRegeln,
@@ -178,8 +179,8 @@ export async function fuegeIgnoreRegelnHinzu(
     const muster = regel.pattern.trim();
     if (!muster) continue;
     const eingefuegt = await pool.query(
-      `INSERT INTO project_ignore_rules (project, pattern, scope, kommentar, sort_order, created_by, modus)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO project_ignore_rules (project, pattern, scope, kommentar, sort_order, created_by, modus, creator_identity_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
@@ -192,6 +193,7 @@ export async function fuegeIgnoreRegelnHinzu(
         // Standard ist ausblenden: die haeufigere und die harmlosere Wahl.
         // Sperren ist der Eingriff, der ausdruecklich verlangt werden muss.
         regel.modus === 'gesperrt' ? 'gesperrt' : 'ausgeblendet',
+        aktuelleAgentAkteurIdentityId(agentId),
       ],
     );
     if (eingefuegt.rowCount) {
@@ -363,9 +365,9 @@ async function protokolliereIgnoreEreignis(args: {
   const reason = teile.length ? teile.join(', ') : 'keine bereits indexierte Datei betroffen';
   try {
     await getPool().query(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, reason, size_bytes)
-       VALUES ($1, $2, '', $3, $4, $5, $6, 0)`,
-      [project, pattern, contentHash(''), editAction, agentId ?? null, reason],
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, reason, size_bytes, author_identity_id)
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7)`,
+      [project, pattern, contentHash(''), editAction, agentId ?? null, reason,aktuelleAgentAkteurIdentityId(agentId)],
     );
   } catch (fehler) {
     console.error('[Synapse] Ignore-Ereignis nicht protokolliert (best-effort):', (fehler as Error).message);

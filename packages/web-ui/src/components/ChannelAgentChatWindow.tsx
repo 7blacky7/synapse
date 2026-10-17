@@ -11,6 +11,7 @@ import {
 export interface ChannelAgentWindowState {
   key: string;
   agentName: string;
+  identityId?: string;
   role: string;
   status: string;
   channelName: string;
@@ -53,7 +54,7 @@ export function ChannelAgentChatWindow({
       const prepared = await prepareMockChatAttachments(selectedFiles, {
         scope: 'agent',
         project,
-        agentId: windowState.agentName + '-' + project,
+        agentId: windowState.identityId ? 'identity:' + windowState.identityId : 'legacy:' + project + ':' + windowState.agentName,
       });
       setFiles((current) => [...current, ...prepared]);
       setDropActive(false);

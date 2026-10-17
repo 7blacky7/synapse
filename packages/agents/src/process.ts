@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { agentLaufSchluessel } from './agent-lauf.js'
 import { createInterface, type Interface } from 'node:readline'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
@@ -52,7 +53,7 @@ class ProcessManager extends EventEmitter {
     systemPrompt: string,
     opts?: StartOptions,
   ): Promise<void> {
-    if (this.processes.has(agentName)) {
+    if (this.processes.has(agentLaufSchluessel(agentName))) {
       throw new Error(`Agent "${agentName}" is already running`)
     }
 
@@ -178,16 +179,16 @@ class ProcessManager extends EventEmitter {
     })
 
     proc.on('exit', (code, signal) => {
-      this.processes.delete(agentName)
+      this.processes.delete(agentLaufSchluessel(agentName))
       this.emit('exit', agentName, code, signal)
     })
 
     proc.on('error', (err) => {
-      this.processes.delete(agentName)
+      this.processes.delete(agentLaufSchluessel(agentName))
       this.emit('error', agentName, err)
     })
 
-    this.processes.set(agentName, agent)
+    this.processes.set(agentLaufSchluessel(agentName), agent)
     this.emit('started', agentName)
   }
 
@@ -215,11 +216,11 @@ class ProcessManager extends EventEmitter {
 
   /** Letzte Frist des Wrappers: ausschließlich sein eigenes Kind beenden. */
   forceStop(agentName: string): void {
-    this.processes.get(agentName)?.proc.kill('SIGKILL')
+    this.processes.get(agentLaufSchluessel(agentName))?.proc.kill('SIGKILL')
   }
 
   async stop(agentName: string): Promise<void> {
-    const agent = this.processes.get(agentName)
+    const agent = this.processes.get(agentLaufSchluessel(agentName))
     if (!agent) return
 
     // Reject any queued messages
@@ -244,11 +245,11 @@ class ProcessManager extends EventEmitter {
       })
     })
 
-    this.processes.delete(agentName)
+    this.processes.delete(agentLaufSchluessel(agentName))
   }
 
   isRunning(agentName: string): boolean {
-    return this.processes.has(agentName)
+    return this.processes.has(agentLaufSchluessel(agentName))
   }
 
   getStatus(): Map<string, AgentStatus> {
@@ -271,7 +272,7 @@ class ProcessManager extends EventEmitter {
   }
 
   private getAgent(agentName: string): AgentProcess {
-    const agent = this.processes.get(agentName)
+    const agent = this.processes.get(agentLaufSchluessel(agentName))
     if (!agent) {
       throw new Error(`Agent "${agentName}" is not running`)
     }
@@ -386,7 +387,7 @@ class ProcessManager extends EventEmitter {
   }
 
   private async processQueue(agentName: string): Promise<void> {
-    const agent = this.processes.get(agentName)
+    const agent = this.processes.get(agentLaufSchluessel(agentName))
     if (!agent || agent.busy || agent.messageQueue.length === 0) return
 
     const next = agent.messageQueue.shift()!

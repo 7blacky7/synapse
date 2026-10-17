@@ -1,3 +1,4 @@
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { topfSeedId } from './topf-ansicht.js';
 /**
  * MODUL: Erklaerungs-Topf (P15-T33 E1, 11.10.2026) - Jev waehlt, Claude erklaert.
@@ -350,7 +351,7 @@ export interface JevVersuch {
  * gewaehlt nur bei gueltiger Wahl mit confidence >= Tor. Wirft nie.
  */
 export async function waehleErklaerung<T extends MitTexten>(
-  a: { project: string | null; agent_id: string | null; schatten: Schatten; kandidaten: T[]; sprache: JevSprache; shell?: boolean },
+  a: { project: string | null; agent_id: string | null; identity_id?: string | null; schatten: Schatten; kandidaten: T[]; sprache: JevSprache; shell?: boolean },
   deps: { fetch?: typeof fetch } = {},
 ): Promise<{ jev: JevVersuch; gewaehlt: T | null }> {
   const tor = erklaerungsTor();
@@ -358,7 +359,7 @@ export async function waehleErklaerung<T extends MitTexten>(
   const { questions, zuordnung } = baueJevFrage(a.kandidaten, a.sprache);
   if (a.shell) (questions.erklaerung as Record<string, unknown>).instructions = JEV_SHELL_ANWEISUNG;
   try {
-    const r = await rufeJev({ funktion: 'erklaerungstopf', project: a.project, agent_id: a.agent_id, state: jevZustand(a.schatten), questions }, deps);
+    const r = await rufeJev({ funktion: 'erklaerungstopf', project: a.project, agent_id: a.agent_id, identity_id: a.identity_id, state: jevZustand(a.schatten), questions }, deps);
     if (!r.ok) {
       const aufgerufen = !['aus', 'budget', 'kein_key'].includes(r.grund);
       return { jev: { aufgerufen, grund: r.grund, message: r.message, tor, sprache: a.sprache }, gewaehlt: null };
@@ -452,6 +453,7 @@ function fallHinweis(fallId: string, befund: FehlerBefund, sprachen: JevErklaeru
 export interface Fehlerereignis {
   project: string;
   agent_id: string | null;
+  owner_identity_id?: string | null;
   befund: FehlerBefund;
   /** Stand vorher ('' = neue Datei) */
   basis: string;
@@ -477,6 +479,7 @@ function schlankerBefund(b: FehlerBefund): Record<string, unknown> {
 interface Vorbereitet {
   project: string;
   agent_id: string | null;
+  owner_identity_id?: string | null;
   befund: FehlerBefund;
   familie: string;
   schluessel: string;
@@ -488,18 +491,18 @@ interface Vorbereitet {
 
 async function speichereFall(v: Vorbereitet, d: { jev: JevVersuch; erklaerungId: string | null }): Promise<{ id: string; neu: boolean }> {
   const { rows } = await getPool().query<{ id: string; neu: boolean }>(
-    `INSERT INTO erklaerung_faelle (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, jev, erklaerung_id, erklaert_von, erklaert_am)
+    `INSERT INTO erklaerung_faelle (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, jev, erklaerung_id, erklaert_von, erklaert_am, owner_identity_id)
      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10::uuid, CASE WHEN $10::uuid IS NULL THEN NULL ELSE 'jev' END,
-             CASE WHEN $10::uuid IS NULL THEN NULL ELSE NOW() END)
+             CASE WHEN $10::uuid IS NULL THEN NULL ELSE NOW() END, $11)
      ON CONFLICT (project, datei, schluessel) DO UPDATE SET
-       agent_id = EXCLUDED.agent_id, befund = EXCLUDED.befund, bezug = EXCLUDED.bezug, schatten = EXCLUDED.schatten, jev = EXCLUDED.jev,
+       agent_id = EXCLUDED.agent_id, owner_identity_id=EXCLUDED.owner_identity_id, befund = EXCLUDED.befund, bezug = EXCLUDED.bezug, schatten = EXCLUDED.schatten, jev = EXCLUDED.jev,
        erklaerung_id = COALESCE(erklaerung_faelle.erklaerung_id, EXCLUDED.erklaerung_id),
        erklaert_von = COALESCE(erklaerung_faelle.erklaert_von, EXCLUDED.erklaert_von),
        erklaert_am = COALESCE(erklaerung_faelle.erklaert_am, EXCLUDED.erklaert_am),
        haeufigkeit = erklaerung_faelle.haeufigkeit + 1, aktualisiert_am = NOW()
      RETURNING id::text AS id, (xmax = 0) AS neu`,
     [v.project, v.agent_id, v.befund.datei, v.familie, v.schluessel, JSON.stringify(schlankerBefund(v.befund)), JSON.stringify(v.bezug),
-      JSON.stringify(v.schatten), JSON.stringify(d.jev), d.erklaerungId],
+      JSON.stringify(v.schatten), JSON.stringify(d.jev), d.erklaerungId, v.owner_identity_id ?? null],
   );
   return rows[0];
 }
@@ -590,7 +593,7 @@ export function meldeFehlerfall(e: Fehlerereignis): void {
     const b = e.befund;
     const eigeneFamilie = e.familie?.startsWith('fileplan:') || e.familie?.startsWith('shell-ergebnis:');
     if (!b || (!eigeneFamilie && b.quelle !== 'syntax') || b.severity !== 'error' || b.altlast || b.quittiert_grund || !e.project || istDeployProbe(e)) return;
-    warteschlange.push(e);
+    warteschlange.push({ ...e, owner_identity_id: e.owner_identity_id !== undefined ? e.owner_identity_id : aktuelleAgentAkteurIdentityId(e.agent_id) });
     if (warteschlange.length > MAX_WARTESCHLANGE) {
       warteschlange.shift();
       if (!ueberlaufGemeldet) {
@@ -618,10 +621,10 @@ export interface FehlerfallErgebnis {
 async function sichereEreignis(v: Vorbereitet): Promise<string | null> {
   try {
     const { rows } = await getPool().query<{ id: string }>(
-      `INSERT INTO erklaerung_ereignisse (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, versuche, geclaimt_am, geclaimt_von)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, 1, NOW(), $9) RETURNING id::text AS id`,
+      `INSERT INTO erklaerung_ereignisse (project, agent_id, datei, familie, schluessel, befund, bezug, schatten, versuche, geclaimt_am, geclaimt_von, owner_identity_id)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, 1, NOW(), $9, $10) RETURNING id::text AS id`,
       [v.project, v.agent_id, v.befund.datei, v.familie, v.schluessel, JSON.stringify(schlankerBefund(v.befund)), JSON.stringify(v.bezug),
-        JSON.stringify(v.schatten), PROZESS],
+        JSON.stringify(v.schatten), PROZESS, v.owner_identity_id ?? null],
     );
     sichernFehlerGemeldet = false;
     return rows[0]?.id ?? null;
@@ -672,13 +675,14 @@ async function bereiteVor(e: Fehlerereignis): Promise<Vorbereitung> {
   const ergebnisHash = sha(e.ergebnis);
   const basisHash = sha(e.basis ?? '');
   const jetzt = Date.now();
-  const merk = `${e.project}|${e.befund.datei}|${schluessel}|${ergebnisHash}`;
+  const merk = `${e.project}|${e.owner_identity_id ?? 'legacy:' + e.agent_id}|${e.befund.datei}|${schluessel}|${ergebnisHash}`;
   if ((gesehen.get(merk) ?? 0) > jetzt - DOPPELT_MS) return { fertig: { ergebnis: 'doppelt' } };
   gesehen.set(merk, jetzt);
   if (gesehen.size > 500) for (const [k, t] of gesehen) if (t <= jetzt - DOPPELT_MS) gesehen.delete(k);
   const v: Vorbereitet = {
     project: e.project,
     agent_id: e.agent_id,
+    owner_identity_id: e.owner_identity_id !== undefined ? e.owner_identity_id : aktuelleAgentAkteurIdentityId(e.agent_id),
     befund: e.befund,
     familie,
     schluessel,
@@ -721,20 +725,20 @@ async function bearbeiteKern(v: Vorbereitet, d: { fetch?: typeof fetch; direkt?:
   } else {
     const shell = v.familie.startsWith('shell-ergebnis:');
     const englisch = shell || v.familie.startsWith('fileplan:');
-    const r = await waehleErklaerung({ project: v.project, agent_id: v.agent_id, schatten: v.schatten, kandidaten, sprache: englisch ? 'en' : optionen.jev_sprache_wirksam, shell }, d);
+    const r = await waehleErklaerung({ project: v.project, agent_id: v.agent_id, identity_id: v.owner_identity_id ?? null, schatten: v.schatten, kandidaten, sprache: englisch ? 'en' : optionen.jev_sprache_wirksam, shell }, d);
     jev = r.jev;
     gewaehlt = r.gewaehlt;
   }
   if (gewaehlt) {
     await getPool().query('UPDATE erklaerungen SET gewaehlt_n = gewaehlt_n + 1 WHERE id = $1::uuid', [gewaehlt.id]);
     const sprachen = (v.familie.startsWith('fileplan:') || v.familie.startsWith('shell-ergebnis:')) ? { de: true, en: false } : optionen.erklaerung_sprachen;
-    if (!d.direkt) vormerkenErklaerung(v.agent_id, v.befund.datei, erklaerungsHinweis(gewaehlt, jev.confidence ?? null, v.befund, sprachen));
+    if (!d.direkt) vormerkenErklaerung(v.agent_id, v.befund.datei, erklaerungsHinweis(gewaehlt, jev.confidence ?? null, v.befund, sprachen), v.owner_identity_id ?? null);
     if (gewaehlt.status === 'verifiziert') return { ergebnis: 'erklaert', erklaerung_id: gewaehlt.id, jev };
   }
   const fall = await speichereFall(v, { jev, erklaerungId: gewaehlt?.id ?? null });
   if (!gewaehlt && fall.neu && !d.direkt) {
     const sprachen = (v.familie.startsWith('fileplan:') || v.familie.startsWith('shell-ergebnis:')) ? { de: true, en: false } : optionen.erklaerung_sprachen;
-    vormerkenErklaerung(v.agent_id, v.befund.datei, fallHinweis(fall.id, v.befund, sprachen));
+    vormerkenErklaerung(v.agent_id, v.befund.datei, fallHinweis(fall.id, v.befund, sprachen), v.owner_identity_id ?? null);
   }
   return { ergebnis: gewaehlt ? 'erklaert_vorgeschlagen' : 'fall', fall_id: fall.id, ...(gewaehlt ? { erklaerung_id: gewaehlt.id } : {}), jev };
 }
@@ -747,6 +751,7 @@ export async function verarbeiteFehlerfall(e: Fehlerereignis, d: { fetch?: typeo
 }
 
 interface EreignisRoh {
+  owner_identity_id?: string | null;
   id: string;
   project: string;
   agent_id: string | null;
@@ -772,13 +777,13 @@ export async function holeErklaerungsEreignisseNach(o: { max?: number; verwaistM
         WHERE id IN (SELECT id FROM erklaerung_ereignisse
                       WHERE geclaimt_am IS NULL OR geclaimt_am < NOW() - make_interval(secs => $2::double precision)
                       ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED)
-        RETURNING id::text AS id, project, agent_id, familie, schluessel, befund, bezug, schatten`,
+        RETURNING id::text AS id, project, agent_id, owner_identity_id, familie, schluessel, befund, bezug, schatten`,
       [PROZESS, verwaist * 60, max],
     );
     aus.geholt = rows.length;
     for (const r of rows) {
       const v: Vorbereitet = {
-        project: r.project, agent_id: r.agent_id, befund: r.befund, familie: r.familie, schluessel: r.schluessel,
+        project: r.project, agent_id: r.agent_id, owner_identity_id: r.owner_identity_id, befund: r.befund, familie: r.familie, schluessel: r.schluessel,
         schatten: r.schatten, bezug: r.bezug, ereignis_id: r.id,
       };
       try {
@@ -906,6 +911,7 @@ const STUFE_SQL = `CASE WHEN erstellt_am < NOW() - INTERVAL '9 months' THEN 'loe
   WHEN erstellt_am < NOW() - INTERVAL '3 months' THEN 'verwerfen_anfragbar' ELSE 'neu' END`;
 
 interface FallRoh {
+  owner_identity_id?: string | null;
   id: string;
   project: string;
   agent_id: string | null;
@@ -927,7 +933,7 @@ interface FallRoh {
   stufe: string;
 }
 
-const SPALTEN_F = `id::text AS id, project, agent_id, datei, familie, schluessel, befund, bezug, schatten, jev, erklaerung_id::text AS erklaerung_id,
+const SPALTEN_F = `id::text AS id, project, agent_id, owner_identity_id, datei, familie, schluessel, befund, bezug, schatten, jev, erklaerung_id::text AS erklaerung_id,
   erklaert_von, erklaert_am, haeufigkeit, erstellt_am, aktualisiert_am, verwerfen_angefragt_am, markiert_am, ${STUFE_SQL} AS stufe`;
 
 async function ladeFall(id: string): Promise<FallRoh | null> {
@@ -969,14 +975,14 @@ function alterTage(d: Date): number {
 export async function listeOffeneFaelle(o: { project?: string | null; agent_id?: string | null; limit?: number }): Promise<Record<string, unknown>> {
   const limit = Math.min(Math.max(Number(o.limit) || 20, 1), 200);
   const { rows } = await getPool().query<FallRoh>(
-    `SELECT ${SPALTEN_F} FROM erklaerung_faelle WHERE ($1::text IS NULL OR project = $1) AND ($2::text IS NULL OR agent_id = $2)
+    `SELECT ${SPALTEN_F} FROM erklaerung_faelle WHERE ($1::text IS NULL OR project = $1) AND ($2::text IS NULL OR ($4::text IS NOT NULL AND owner_identity_id=$4) OR ($4::text IS NULL AND agent_id=$2 AND owner_identity_id IS NULL))
       ORDER BY erstellt_am LIMIT $3`,
-    [o.project ?? null, o.agent_id ?? null, limit],
+    [o.project ?? null, o.agent_id ?? null, limit, aktuelleAgentAkteurIdentityId(o.agent_id)],
   );
   const zaehl = await getPool().query<{ stufe: string; n: number }>(
     `SELECT ${STUFE_SQL} AS stufe, count(*)::int AS n FROM erklaerung_faelle WHERE ($1::text IS NULL OR project = $1)
-       AND ($2::text IS NULL OR agent_id = $2) GROUP BY 1`,
-    [o.project ?? null, o.agent_id ?? null],
+       AND ($2::text IS NULL OR ($3::text IS NOT NULL AND owner_identity_id=$3) OR ($3::text IS NULL AND agent_id=$2 AND owner_identity_id IS NULL)) GROUP BY 1`,
+    [o.project ?? null, o.agent_id ?? null, aktuelleAgentAkteurIdentityId(o.agent_id)],
   );
   const w = await jevWirksam(o.project ?? null, 'erklaerungstopf');
   return {
@@ -1121,7 +1127,7 @@ export async function legeErklaerungAb(a: {
   const f = await ladeFall(a.fall_id);
   if (!f) return fehler('nicht_gefunden', `Kein offener Fall mit id "${a.fall_id}".`);
   const wer = a.agent ?? '';
-  if (!(wer && (wer === f.agent_id || darfKoordinatorOderUser(wer)))) {
+  if (!(wer && ((aktuelleAgentAkteurIdentityId(wer) ? aktuelleAgentAkteurIdentityId(wer) === f.owner_identity_id : !f.owner_identity_id && wer === f.agent_id) || darfKoordinatorOderUser(wer)))) {
     return fehler('nur_betroffener', `Einen Fall schliesst nur der betroffene Agent (${f.agent_id ?? '?'}) oder der Koordinator (agent_id koordinator|coordinator|user), bekommen: "${wer}".`);
   }
   let erklaerung: Erklaerung | null = null;
@@ -1170,10 +1176,10 @@ export async function legeErklaerungAb(a: {
     }
     try {
       const { rows } = await getPool().query<ErklaerungRoh>(
-        `INSERT INTO erklaerungen (familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, erstellt_von)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vorgeschlagen', $9) RETURNING ${SPALTEN_E}`,
+        `INSERT INTO erklaerungen (familie, schluessel, lage_de, wieso_de, abhilfe_de, lage_en, wieso_en, abhilfe_en, status, erstellt_von, author_identity_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'vorgeschlagen', $9, $10) RETURNING ${SPALTEN_E}`,
         [f.familie, f.schluessel, texte.lage_de ?? null, texte.wieso_de ?? null, texte.abhilfe_de ?? null,
-          texte.lage_en ?? null, texte.wieso_en ?? null, texte.abhilfe_en ?? null, wer],
+          texte.lage_en ?? null, texte.wieso_en ?? null, texte.abhilfe_en ?? null, wer, aktuelleAgentAkteurIdentityId(wer)],
       );
       erklaerung = alsErklaerung(rows[0]);
     } catch (err) {
@@ -1181,8 +1187,8 @@ export async function legeErklaerungAb(a: {
       throw err;
     }
   }
-  await getPool().query('UPDATE erklaerung_faelle SET erklaerung_id = $2::uuid, erklaert_von = $3, erklaert_am = NOW() WHERE id = $1::bigint',
-    [f.id, erklaerung.id, wer]);
+  await getPool().query('UPDATE erklaerung_faelle SET erklaerung_id = $2::uuid, erklaert_von = $3, erklaert_von_identity_id=$4, erklaert_am = NOW() WHERE id = $1::bigint',
+    [f.id, erklaerung.id, wer, aktuelleAgentAkteurIdentityId(wer)]);
   const verifikation = await pruefeFall(f.id);
   const nachher = verifikation?.verifiziert ? await ladeErklaerung(erklaerung.id) : erklaerung;
   return {
@@ -1400,8 +1406,8 @@ export async function erklaerungsFaelleZeile(o: { project: string; agent_id: str
       `SELECT count(*)::int AS n,
               count(*) FILTER (WHERE erstellt_am < NOW() - INTERVAL '3 months' AND erstellt_am >= NOW() - INTERVAL '6 months')::int AS ab3,
               count(*) FILTER (WHERE erstellt_am < NOW() - INTERVAL '6 months')::int AS ab6
-         FROM erklaerung_faelle WHERE project = $1 AND ($2::text IS NULL OR agent_id = $2)`,
-      [o.project, agent],
+         FROM erklaerung_faelle WHERE project = $1 AND ($2::text IS NULL OR ($3::text IS NOT NULL AND owner_identity_id=$3) OR ($3::text IS NULL AND agent_id=$2 AND owner_identity_id IS NULL))`,
+      [o.project, agent, aktuelleAgentAkteurIdentityId(agent)],
     );
     const r = rows[0];
     if (!r || r.n === 0) return undefined;

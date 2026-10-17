@@ -8,7 +8,11 @@
  *   3. SYNAPSE_DEFAULT_AGENT_ID (manueller Override per Env)
  *   4. null (kein Fallback auf "koordinator" — bleibt explizit unbekannt)
  */
+import { aktuellerAgentAufruf } from './agent-bezug.js';
+
 export function resolveAgentId(agentId?: string | null): string | null {
+  const k = aktuellerAgentAufruf();
+  if (k?.bezug.modus !== 'alt' && k?.principal?.art === 'identity') return k.principal.agent_id;
   if (agentId && agentId.trim().length > 0) return agentId;
   const fromAgentName = process.env.SYNAPSE_AGENT_NAME;
   if (fromAgentName && fromAgentName.trim().length > 0) return fromAgentName;

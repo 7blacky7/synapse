@@ -31,6 +31,8 @@ import {
 } from '@synapse/agents';
 
 /** Eingabe fuer wrapper_status (wie core upsertWrapperStatus). */
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { agentLaufIdentitaet, agentLaufUmgebung } from '@synapse/agents';
 export type WrapperStatusZeile = Parameters<typeof upsertWrapperStatus>[0];
 
 export interface SpezialistenDatenweg {
@@ -77,9 +79,15 @@ type AgentStartQuelle = (name: string, project: string) => Promise<Record<string
 let agentStartQuelle: AgentStartQuelle | null = null;
 export function setzeAgentStartQuelle(quelle: AgentStartQuelle | null): void { agentStartQuelle = quelle; }
 export async function holeAgentStartUmgebung(name: string, project: string): Promise<Record<string, string>> {
+  if (agentLaufIdentitaet(name)) {
+    const env = agentLaufUmgebung();
+    if (env.SYNAPSE_AGENT_TOKEN) return Object.fromEntries(Object.entries(env).filter((e): e is [string,string] => typeof e[1] === 'string'));
+  }
   return agentStartQuelle ? agentStartQuelle(name, project) : {};
 }
 
+const aufrufDatenweg = new AsyncLocalStorage<SpezialistenDatenweg>();
+export function mitSpezialistenDatenweg<T>(weg:SpezialistenDatenweg, arbeit:()=>T):T { return aufrufDatenweg.run(weg,arbeit); }
 let aktiv: SpezialistenDatenweg = pgSpezialistenDatenweg;
 
 /** Setzt den Datenweg (null = zurueck auf PG). Der Daemon ruft das einmal beim Start. */
@@ -88,5 +96,5 @@ export function setzeSpezialistenDatenweg(weg: SpezialistenDatenweg | null): voi
 }
 
 export function spezialistenDatenweg(): SpezialistenDatenweg {
-  return aktiv;
+  return aufrufDatenweg.getStore() ?? aktiv;
 }

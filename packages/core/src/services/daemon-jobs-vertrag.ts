@@ -310,7 +310,9 @@ export async function schliesseSpecialistJobFuerDaemon(
 
 // ── Wrapper-Reaper (Datenteil von reapLokaleWrapper) ────────────────────────
 
+import { leseAgentBezugModus } from './agent-bezug.js';
 export interface WrapperReapKandidat {
+  identity_id?: string | null;
   project: string;
   path: string;
   agent_name: string;
@@ -332,15 +334,20 @@ export async function wrapperReapKandidaten(projekte: string[], host: string, al
       [project, alterMs],
     );
     for (const r of rows) aus.push({ project, path, agent_name: r.agent_name, wrapper_pid: Number(r.wrapper_pid), last_activity: r.last_activity });
+    if ((await leseAgentBezugModus()).modus !== 'alt') {
+      const ids = await getPool().query("SELECT identity_id,agent_name,wrapper_pid,last_activity::text AS last_activity FROM agent_identitaet_wrapper_status WHERE project=$1 AND status IN ('running','idle') AND last_activity < NOW()-($2::double precision * interval '1 millisecond')",[project,alterMs]);
+      for (const r of ids.rows) aus.push({ project,path,identity_id:r.identity_id,agent_name:r.agent_name,wrapper_pid:Number(r.wrapper_pid),last_activity:r.last_activity });
+    }
   }
   return aus;
 }
 
 /** CAS wie in reapLokaleWrapper: nur unveraenderte Zeilen werden 'crashed'. */
-export async function markiereWrapperAbgestuerzt(k: { project: string; agent_name: string; wrapper_pid: number; last_activity: string }): Promise<number> {
+export async function markiereWrapperAbgestuerzt(k: { identity_id?: string | null; project: string; agent_name: string; wrapper_pid: number; last_activity: string }): Promise<number> {
+  if (k.identity_id && (await leseAgentBezugModus()).modus === 'alt') return 0;
   const r = await getPool().query(
-    "UPDATE wrapper_status SET status='crashed',busy=false,connected_mcp=false WHERE project=$1 AND agent_name=$2 AND wrapper_pid=$3 AND last_activity=$4 AND status IN ('running','idle')",
-    [k.project, k.agent_name, k.wrapper_pid, k.last_activity],
+    `UPDATE ${k.identity_id ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} SET status='crashed',busy=false,connected_mcp=false WHERE project=$1 AND ${k.identity_id ? 'identity_id' : 'agent_name'}=$2 AND wrapper_pid=$3 AND last_activity=$4 AND status IN ('running','idle')`,
+    [k.project, k.identity_id ?? k.agent_name, k.wrapper_pid, k.last_activity],
   );
   return r.rowCount ?? 0;
 }

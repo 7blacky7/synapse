@@ -13,6 +13,7 @@ import { holeAgentOnboarding } from './agent-onboarding.js';
 import { pruefeUnbekannteParameter } from './unbekannte-parameter.js';
 import { logToolCall } from './tool-call-log.js';
 
+import { mitAgentAufrufKontext, leseAgentBezugModus, aktuellerAgentAufruf, agentPrincipalAusAnmeldung } from './agent-bezug.js';
 export const AGENT_TOKEN_PARAMETER = {
   token: { type: 'string', description: 'Persoenlicher Synapse-Agentenausweis. chat(anmelden) erneuert den Kontext; Folgeaufrufe pruefen die Identitaet. Nie in Logs/Channels ablegen.' },
 };
@@ -38,6 +39,20 @@ export async function beworbeneAgentTools<T extends { name: string; inputSchema?
   });
 }
 
+/** Umfasst Authentifizierung, Fachaktion, Antwort-Hooks und Audit in EINEM Modus-Snapshot. */
+export async function mitAgentToolAufruf<T>(
+  tool: string, eingabe: Record<string, unknown>, serverInstanceId: string,
+  arbeit: (kontext: AgentToolKontext) => Promise<T>,
+  transportToken?: string, erlaubteParameter?: Set<string>,
+): Promise<T> {
+  return mitAgentAufrufKontext({ principal: null, bezug: await leseAgentBezugModus() }, async () =>
+    arbeit(await bereiteAgentToolAufrufVor(tool, eingabe, serverInstanceId, transportToken, erlaubteParameter)));
+}
+function setzeAufrufPrincipal(p: AgentTokenAnmeldung): void {
+  const k = aktuellerAgentAufruf();
+  if (k) k.principal = agentPrincipalAusAnmeldung(p);
+}
+
 export interface AgentToolKontext {
   aktiv: boolean;
   args: Record<string, unknown>;
@@ -60,6 +75,7 @@ function zeigePrincipal(p: AgentTokenAnmeldung): Record<string, unknown> {
 export async function bereiteAgentToolAufrufVor(
   tool: string, eingabe: Record<string, unknown>, serverInstanceId: string, transportToken?: string, erlaubteParameter?: Set<string>,
 ): Promise<AgentToolKontext> {
+  const bezug = aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   const schalter = await leseTokenIdentitaetSchalter();
   const args = { ...eingabe };
   const token = Object.hasOwn(eingabe, 'token') ? feld(eingabe, 'token') : transportToken;
@@ -81,15 +97,33 @@ export async function bereiteAgentToolAufrufVor(
   }
   try {
     if (Object.hasOwn(eingabe, 'token') && !token) throw new AgentIdentitaetFehler('agent_token_ungueltig');
+    // Bestehende PC-/CLI-Legacy-Sitzungen bleiben auch bei ID-Modus auf ihrem alten Pfad.
+    // Keine Adoption einer Token-Sitzung und keine Identitaetsanlage fuer Alt-Agenten.
+    if (bezug.modus !== 'alt' && !token && !Object.hasOwn(eingabe, 'token')) {
+      const legacyId = tool === 'chat' && action === 'register' ? feld(args, 'id') : feld(args, 'agent_id');
+      const project = feld(args, 'project');
+      if (legacyId && project) {
+        const legacy = await getPool().query(
+          'SELECT 1 FROM agent_sessions WHERE id=$1 AND project=$2 AND identity_id IS NULL', [legacyId, project]);
+        if (legacy.rows.length) {
+          const k = aktuellerAgentAufruf();
+          if (k) k.principal = { art: 'legacy', project, agent_id: legacyId };
+          return basis;
+        }
+      }
+    }
     // Erstanmeldung ist der einzige unbeglaubigte Einstieg. Selbstauskunft verleiht keine Rechte.
     if (tool === 'chat' && action === 'register' && !token) {
       const id = feld(args, 'id'), project = feld(args, 'project');
       if (!id || !project || /^user$/i.test(id)) throw new AgentIdentitaetFehler('identitaet_parameter_ungueltig');
-      const ausgabe = await stelleAgentTokenAus({ project, name: id, modell_selbstauskunft: feld(args, 'model') });
-      const p = await meldeAgentMitTokenAn(ausgabe.token, project);
+      const ausgabe = await stelleAgentTokenAus({ project, name: id, modell_selbstauskunft: feld(args, 'model') }, undefined, bezug);
+      const p = await meldeAgentMitTokenAn(ausgabe.token, project, bezug);
       basis.principal = p;
+      setzeAufrufPrincipal(p);
       bezeuge(args, 'agent_id', p.agent_id, erlaubteParameter); bezeuge(args, 'project', p.project, erlaubteParameter); bezeuge(args, 'role', p.rolle, erlaubteParameter);
-      const session = await registerAgent(p.agent_id, p.project, p.modell ?? undefined, feld(args, 'cutoff_date'));
+      const session = bezug.modus === 'alt'
+        ? await registerAgent(p.agent_id, p.project, p.modell ?? undefined, feld(args, 'cutoff_date'))
+        : { id: p.agent_id, project: p.project, model: p.modell, status: 'active', identity_id: p.identitaet.id };
       const agentOnboarding = await holeAgentOnboarding({ project: p.project, agentId: p.agent_id,
         role: p.rolle, serverInstanceId, explizit: true });
       basis.antwort = { success: true, ...session, action: 'register', token: ausgabe.token,
@@ -103,9 +137,10 @@ export async function bereiteAgentToolAufrufVor(
     }
     const sitzungsSignal = tool === 'admin' && action === 'index_stats' && ['neu', 'fortsetzung'].includes(String(args.sitzung));
     const anmeldung = (tool === 'chat' && (action === 'anmelden' || action === 'register')) || sitzungsSignal;
-    const p = anmeldung ? await meldeAgentMitTokenAn(token, feld(args, 'project'))
-      : await pruefeAgentToken(token, feld(args, 'project'));
+    const p = anmeldung ? await meldeAgentMitTokenAn(token, feld(args, 'project'), bezug)
+      : await pruefeAgentToken(token, feld(args, 'project'), bezug);
     basis.principal = p;
+    setzeAufrufPrincipal(p);
     const abweichungen = Object.fromEntries(['agent_id', 'role', 'model'].flatMap(k => {
       const soll = k === 'agent_id' ? p.agent_id : k === 'role' ? p.rolle : p.modell;
       return args[k] !== undefined && args[k] !== soll ? [[k, { vorschlag: args[k], bezeugt: soll }]] : [];
@@ -127,7 +162,7 @@ export async function bereiteAgentToolAufrufVor(
     if (tool === 'channel' && ['join', 'leave', 'mark_read'].includes(action ?? '')) args.agent_name = p.agent_id;
     if (anmeldung) {
       // Auch nach Inaktivitaet die Lebensphase erhalten: offene Broadcasts bleiben adressiert.
-      await getPool().query("UPDATE agent_sessions SET status='active', sitzung_seit=clock_timestamp() WHERE id=$1 AND project=$2 AND identity_id=$3", [p.agent_id, p.project, p.identitaet.id]);
+      if (bezug.modus === 'alt') await getPool().query("UPDATE agent_sessions SET status='active', sitzung_seit=clock_timestamp() WHERE id=$1 AND project=$2 AND identity_id=$3", [p.agent_id, p.project, p.identitaet.id]);
       const agentOnboarding = await holeAgentOnboarding({ project: p.project, agentId: p.agent_id,
         role: p.rolle, serverInstanceId, explizit: true });
       if (sitzungsSignal) {

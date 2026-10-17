@@ -17,6 +17,7 @@
  */
 
 import { getPool } from '../db/index.js';
+import { aktuelleAgentIdentityId, aktuellerAgentAufruf, leseAgentBezugModus, loeseAgentZiel } from './agent-bezug.js';
 
 export type SpecialistAction =
   | 'spawn'
@@ -31,6 +32,8 @@ export type SpecialistAction =
   | 'rotate';
 
 export interface SpecialistJobRow {
+  actor_identity_id?: string | null;
+  target_identity_id?: string | null;
   id: string;
   project: string;
   action: SpecialistAction;
@@ -88,6 +91,19 @@ export async function enqueueSpecialistJob(args: {
 }): Promise<{ id: string }> {
   const pool = getPool();
   let jobArgs = args.args;
+  const bezug = aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
+  const identityId = typeof jobArgs.identity_id === 'string' ? jobArgs.identity_id
+    : typeof jobArgs.name === 'string' && jobArgs.name.startsWith('identity:') ? jobArgs.name.slice(9) : undefined;
+  let targetIdentity: string | null = null;
+  if (identityId) {
+    if (bezug.modus === 'alt') throw new Error('specialist_identity_im_altmodus');
+    const ziel = await loeseAgentZiel(args.project, { identity_id: identityId });
+    if (ziel.art !== 'identity') throw new Error('specialist_ziel_ungueltig');
+    if (typeof jobArgs.name === 'string' && !jobArgs.name.startsWith('identity:') && jobArgs.name !== ziel.agent_id)
+      throw new Error('specialist_ziel_name_falsch');
+    targetIdentity = ziel.identity_id;
+    jobArgs = { ...jobArgs, name: ziel.agent_id, identity_id: ziel.identity_id };
+  }
   if (args.action === 'stop') {
     const pfad = typeof jobArgs.project_path === 'string' ? jobArgs.project_path : null;
     const { rows } = await pool.query<{ hostname: string; path: string }>(
@@ -95,6 +111,12 @@ export async function enqueueSpecialistJob(args: {
       [args.project, pfad]);
     if (rows.length !== 1) throw new Error('Stop-Zielhost nicht eindeutig registriert');
     jobArgs = { ...jobArgs, project: args.project, project_path: rows[0].path, target_hostname: rows[0].hostname };
+  }
+  if (bezug.modus !== 'alt') {
+    const res = await pool.query<{ id: string }>(
+      'INSERT INTO specialist_jobs(project,action,args,actor_identity_id,target_identity_id) VALUES($1,$2,$3::jsonb,$4,$5) RETURNING id',
+      [args.project,args.action,JSON.stringify(jobArgs),aktuelleAgentIdentityId(args.project),targetIdentity]);
+    return { id: res.rows[0].id };
   }
   const res = await pool.query<{ id: string }>(
     `INSERT INTO specialist_jobs (project, action, args)

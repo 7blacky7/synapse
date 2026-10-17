@@ -1,5 +1,6 @@
 import { readFile, writeFile, mkdir, readdir, rename, access, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { agentLaufPfad } from './agent-lauf.js'
 import { serialisiereAgentMeta, leseAgentMetaYaml } from '@synapse/core'
 
 // ---------------------------------------------------------------------------
@@ -20,7 +21,7 @@ export type SkillFile = 'rules' | 'errors' | 'patterns' | 'context'
 // ---------------------------------------------------------------------------
 
 function agentDir(projectPath: string, agentName: string): string {
-  return join(projectPath, '.synapse', 'agents', agentName)
+  return agentLaufPfad(projectPath, agentName)
 }
 
 export async function ensureAgentDir(projectPath: string, agentName: string): Promise<string> {

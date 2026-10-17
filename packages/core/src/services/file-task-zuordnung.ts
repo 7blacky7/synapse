@@ -1,5 +1,6 @@
 /** P6-T25/T26: Versionsbezug, weiche Pflicht und explizite, auditierte Nachzuordnung. */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 import { posix } from 'node:path';
 import { getPool } from '../db/client.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
@@ -85,16 +86,18 @@ export async function ordneFileTasksZu(args: FileTaskZuordnung): Promise<Record<
   const batch = args.batch_id ?? args.plan_id;
   if (batch !== undefined && !/^\d+$/.test(batch)) throw new Error('batch_id/plan_id muss eine BIGINT-ID sein');
   const taskId = await resolveProjectTaskId(args.project, args.task_id);
-  const coordinator = /^(koordinator|coordinator|user)$/i.test(agent); // bestehende Synapse-Rollen-Konvention
+  const identityId = aktuelleAgentIdentityId(args.project, agent);
+  const p = aktuellerAgentPrincipal();
+  const coordinator = identityId ? p?.art === 'identity' && /^(koordinator|coordinator)$/.test(p.rolle) : /^(koordinator|coordinator|user)$/i.test(agent); // bestehende Synapse-Rollen-Konvention
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    const selected = await client.query<{ id: string; agent_id: string | null; task_id: string | null }>(
-      `SELECT id::text AS id, agent_id, task_id FROM file_versions
+    const selected = await client.query<{ id: string; agent_id: string | null; author_identity_id: string | null; task_id: string | null }>(
+      `SELECT id::text AS id, agent_id, author_identity_id, task_id FROM file_versions
         WHERE project = $1 AND ${ids ? 'id = ANY($2::bigint[])' : 'batch_id = $2::bigint'}
         ORDER BY id::bigint FOR UPDATE`, [args.project, ids ?? batch]);
     if (!selected.rows.length || (ids && selected.rows.length !== ids.length)) throw new Error('Version(en) nicht gefunden in diesem Projekt');
-    if (selected.rows.some((v) => v.agent_id !== agent && !coordinator)) throw new Error('Nicht berechtigt: nur Autor oder Koordinator darf Versionen zuordnen');
+    if (selected.rows.some((v) => !(identityId ? v.author_identity_id === identityId : !v.author_identity_id && v.agent_id === agent) && !coordinator)) throw new Error('Nicht berechtigt: nur Autor oder Koordinator darf Versionen zuordnen');
     const changed = selected.rows.filter((v) => v.task_id !== taskId && (v.task_id === null || args.ueberschreiben === true));
     if (changed.some((v) => v.task_id !== null) && !args.grund?.trim()) throw new Error('ueberschreiben braucht einen grund');
     let auditIds: string[] = [];
@@ -102,12 +105,12 @@ export async function ordneFileTasksZu(args: FileTaskZuordnung): Promise<Record<
       await client.query('UPDATE file_versions SET task_id = $2 WHERE id = ANY($1::bigint[])',
         [changed.map((v) => v.id), taskId]);
       const audit = await client.query<{ id: string }>(
-        `INSERT INTO file_version_task_zuordnungen (project, version_id, vorher_task_id, task_id, agent_id, grund)
-         SELECT $1, v.version_id, v.vorher_task_id, $4, $5, $6
+        `INSERT INTO file_version_task_zuordnungen (project, version_id, vorher_task_id, task_id, agent_id, grund, actor_identity_id)
+         SELECT $1, v.version_id, v.vorher_task_id, $4, $5, $6, $7
            FROM unnest($2::bigint[], $3::text[]) AS v(version_id, vorher_task_id)
          RETURNING id::text AS id`,
         [args.project, changed.map((v) => v.id), changed.map((v) => v.task_id),
-          taskId, agent, args.grund?.trim() || 'Nachtraegliche Task-Zuordnung']);
+          taskId, agent, args.grund?.trim() || 'Nachtraegliche Task-Zuordnung', identityId]);
       auditIds = audit.rows.map((row) => row.id);
     }
     await client.query('COMMIT');

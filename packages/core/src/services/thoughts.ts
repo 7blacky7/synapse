@@ -62,6 +62,7 @@ import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { updateTask } from './plans.js';
+import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import { thoughtTaskRefs } from './plan-suche.js';
 import { spiegeleThoughtInTopf } from './entscheidungstopf.js';
 import type { ProjectTask } from '../types/index.js';
@@ -88,6 +89,7 @@ export async function addThought(
     id: uuidv4(),
     project,
     source,
+    ...(aktuelleAgentIdentityId(project, source) ? {source_identity_id:aktuelleAgentIdentityId(project, source)!} : {}),
     content,
     tags,
     timestamp: new Date().toISOString(),
@@ -98,10 +100,10 @@ export async function addThought(
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
   await pool.query(
-    `INSERT INTO thoughts (id, project, source, content, tags, timestamp, task_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO thoughts (id, project, source, content, tags, timestamp, task_id, source_identity_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (id) DO NOTHING`,
-    [thought.id, project, source, content, tags, thought.timestamp, taskId ?? null]
+    [thought.id, project, source, content, tags, thought.timestamp, taskId ?? null, thought.source_identity_id ?? null]
   );
 
   // 2. Qdrant (Vektor-Index) — NEBENLAEUFIG seit EMBED-1.
@@ -153,6 +155,7 @@ export async function addThoughtsBatch(
     id: uuidv4(),
     project,
     source,
+    ...(aktuelleAgentIdentityId(project, source) ? {source_identity_id:aktuelleAgentIdentityId(project, source)!} : {}),
     content: item.content,
     tags: item.tags ?? [],
     timestamp: now,
@@ -168,12 +171,12 @@ export async function addThoughtsBatch(
   const values: unknown[] = [];
   const placeholders: string[] = [];
   thoughts.forEach((t, i) => {
-    const off = i * 7;
-    placeholders.push(`($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6}, $${off + 7})`);
-    values.push(t.id, t.project, t.source, t.content, t.tags, t.timestamp, t.task_id ?? null);
+    const off = i * 8;
+    placeholders.push(`($${off + 1}, $${off + 2}, $${off + 3}, $${off + 4}, $${off + 5}, $${off + 6}, $${off + 7}, $${off + 8})`);
+    values.push(t.id, t.project, t.source, t.content, t.tags, t.timestamp, t.task_id ?? null, t.source_identity_id ?? null);
   });
   await pool.query(
-    `INSERT INTO thoughts (id, project, source, content, tags, timestamp, task_id)
+    `INSERT INTO thoughts (id, project, source, content, tags, timestamp, task_id, source_identity_id)
      VALUES ${placeholders.join(', ')}
      ON CONFLICT (id) DO NOTHING`,
     values
@@ -570,7 +573,7 @@ export async function embeddeThoughtNach(
  * md5 ueber die eingebetteten Spalten: aendert updateThought Inhalt oder Tags waehrend des Einbettens,
  * bleibt embedded_at NULL und der naechste Lauf holt den neuen Stand.
  */
-const THOUGHT_STAND = "md5(concat_ws('|', t.content, t.tags::text, t.task_id))";
+const THOUGHT_STAND = "md5(concat_ws('|', t.content, t.tags::text, t.task_id, t.source_identity_id))";
 
 /**
  * P15-T4: Lesen, Text und Payload eines Gedankens — EINZIGE Stelle fuer Einzel-Nachtrag und Stapel
@@ -584,7 +587,7 @@ export const thoughtNachzug: NachzugQuelle = {
   async lese(ids) {
     // ⚠️ KEIN created_at/updated_at in thoughts — Zeitspalte heisst "timestamp".
     const { rows } = await getHintergrundPool().query(
-      `SELECT t.id, t.project, t.source, t.content, t.tags, t.timestamp, t.task_id,
+      `SELECT t.id, t.project, t.source, t.content, t.tags, t.timestamp, t.task_id, t.source_identity_id,
               ${THOUGHT_STAND} AS stand
          FROM thoughts t WHERE t.id = ANY($1::text[])`,
       [ids]
@@ -603,7 +606,7 @@ export const thoughtNachzug: NachzugQuelle = {
         project: row.project,
         collection: COLLECTIONS.projectThoughts(row.project),
         text: row.content,
-        payload: { ...payload },
+        payload: { ...payload, ...(row.source_identity_id ? { source_identity_id: row.source_identity_id } : {}) },
         stand: row.stand,
       };
     });

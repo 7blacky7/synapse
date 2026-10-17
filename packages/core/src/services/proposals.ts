@@ -38,6 +38,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { embed } from '../embeddings/index.js';
 import type { EmbedOptions } from '../embeddings/index.js';
+import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
@@ -96,6 +97,7 @@ export async function createProposal(
     suggestedContent,
     description,
     author,
+    ...(aktuelleAgentIdentityId(project, author) ? {author_identity_id:aktuelleAgentIdentityId(project, author)!} : {}),
     status: 'pending',
     tags,
     createdAt: now,
@@ -106,10 +108,10 @@ export async function createProposal(
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
   await pool.query(
-    `INSERT INTO proposals (id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO proposals (id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at, author_identity_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (id) DO NOTHING`,
-    [id, project, filePath, suggestedContent, description, author, 'pending', tags, now, now]
+    [id, project, filePath, suggestedContent, description, author, 'pending', tags, now, now, proposal.author_identity_id ?? null]
   );
 
   // 2. Qdrant (Vektor-Index) — NEBENLAEUFIG seit EMBED-1.
@@ -513,7 +515,7 @@ export const proposalNachzug: NachzugQuelle = {
   async lese(ids) {
     const { rows } = await getHintergrundPool().query(
       `SELECT t.id, t.project, t.file_path, t.suggested_content, t.description, t.author, t.status, t.tags,
-              t.created_at, t.updated_at, ${PROPOSAL_STAND} AS stand
+              t.created_at, t.updated_at, t.author_identity_id, ${PROPOSAL_STAND} AS stand
          FROM proposals t WHERE t.id = ANY($1::text[])`,
       [ids]
     );
@@ -536,7 +538,7 @@ export const proposalNachzug: NachzugQuelle = {
         // Derselbe Text wie im Schreibpfad: description + file_path. Wer das hier aendert, ohne es
         // dort zu aendern, bekommt zwei verschiedene Vektoren fuer denselben Eintrag.
         text: `${row.description} ${row.file_path}`,
-        payload: { ...payload },
+        payload: { ...payload, ...(row.author_identity_id ? { author_identity_id: row.author_identity_id } : {}) },
         stand: row.stand,
       };
     });

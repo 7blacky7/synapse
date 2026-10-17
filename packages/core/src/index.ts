@@ -5,6 +5,14 @@
  * @packageDocumentation
  */
 
+export { fuehreSpecialistIdentitaetsAktion } from './services/specialist-identitaet.js';
+export { AGENT_BEZUG_SCHEMA_SQL } from './db/agent-bezug-schema.js';
+export { beginneIdentitaetsSitzung, holeIdentitaetsSitzung, listeIdentitaetsSitzungen, beruehreIdentitaetsSitzung, beendeIdentitaetsSitzung } from './services/agent-identitaet-sitzungen.js';
+export type { AgentIdentitaetSitzung } from './services/agent-identitaet-sitzungen.js';
+// P22-T15: pro Aufruf isolierter Principal, Ziel und Routingmodus.
+export { aktuelleAgentAkteurIdentityId, AGENT_BEZUG_MODI, istAgentBezugModus, leseAgentBezugModus, agentPrincipalAusAnmeldung, agentSchluessel, gleicherAgent, mitAgentAufrufKontext, aktuellerAgentAufruf, aktuellerAgentPrincipal, agentBezugFuer, aktuelleAgentIdentityId, loeseAgentZiel } from './services/agent-bezug.js';
+export type { AgentBezugModus, AgentBezugStand, LegacyAgentZiel, IdentitaetsAgentZiel, AgentZiel, IdentitaetsAgentPrincipal, AgentPrincipal, AgentAufrufKontext } from './services/agent-bezug.js';
+
 // P22-T10: Gemeinsamer Identitaetskern fuer stdio, REST und Daemonadapter.
 export { leseTokenIdentitaetSchalter, stelleAgentTokenAus, meldeAgentMitTokenAn, pruefeAgentToken, widerrufeAgentToken, deaktiviereAgentIdentitaet, hashAgentToken, AgentIdentitaetFehler } from './services/agent-identitaet.js';
 export type { TokenIdentitaetSchalter, AgentIdentitaet, AgentTokenAnmeldung, AgentTokenAusgabe, AgentTokenAusstellen, AgentIdentitaetPrincipal } from './services/agent-identitaet.js';
@@ -562,7 +570,7 @@ export type { RespawnDecision } from './services/specialist-respawn.js';
 // Agent-ID Resolver (zentrale Fallback-Logik fuer audit-relevante Schreib-Ops)
 export { resolveAgentId } from './services/agent-id-resolver.js';
 
-export { bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, AGENT_TOKEN_PARAMETER } from './services/agent-token-tools.js';
+export { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, AGENT_TOKEN_PARAMETER } from './services/agent-token-tools.js';
 export type { AgentToolKontext } from './services/agent-token-tools.js';
 
 // PA-1: unbekannte Tool-Parameter melden statt still verwerfen.

@@ -80,6 +80,7 @@ export async function selbstAuskunft(agentId: unknown, project?: unknown): Promi
 
   return {
     success: true,
+    ...(zeile.identityId ? { identity_id: zeile.identityId } : {}),
     name: zeile.agentName,
     project: zeile.project,
     status: zeile.status,
@@ -109,7 +110,7 @@ export async function selbstAuskunft(agentId: unknown, project?: unknown): Promi
     current_task: zeile.currentTask,
     last_activity: zeile.lastActivity.toISOString(),
     quellen: {
-      status: 'wrapper_status',
+      status: zeile.identityId ? 'agent_identitaet_wrapper_status' : 'wrapper_status',
       modell: eintrag ? 'model_registry' : 'nicht in model_registry',
       schwellen: 'berechneKontextSchwellen (core kontext-korridor.ts)',
       cutoff: 'model_cutoffs (resolveCutoff)',

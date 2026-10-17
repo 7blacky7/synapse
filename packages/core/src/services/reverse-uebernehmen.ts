@@ -1,4 +1,5 @@
 /** P18-T27/RV17: API-only, keine Rohkopie und kein code_files-Schreibweg. */
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {getPool} from '../db/client.js';
@@ -49,7 +50,7 @@ export async function uebernehmeReverseAsset(a:Row,o:{db?:AssetUploadDb|Pool;kon
     assetId=String(existing?.id??(await d.query('INSERT INTO reverse_assets(eintrag_id,datei_id,pfad,format,mime,sha256,groesse,storage_key,erzeugt_mit) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id',[rid,source!.id,quelle,q.format,q.mimeType,q.sha256,q.groesse,datei.storage_key,'uebernahme-original'])).rows[0].id);
    }
    await d.query('UPDATE asset_files SET reverse_id=$2,reverse_quellpfad=$3,reverse_quellhash=$4 WHERE id=$1',[r.asset_id,rid,quelle,q.sha256]);
-   await d.query("INSERT INTO reverse_uebernahmen(eintrag_id,reverse_asset_id,project,ziel_pfad,asset_id,asset_revision,von_agent,status) VALUES($1,$2,$3,$4,$5,$6,$7,'fertig')",[rid,assetId,project,s.logischer_pfad,r.asset_id,r.revision,String(a.agent_id)]);
+   await d.query("INSERT INTO reverse_uebernahmen(eintrag_id,reverse_asset_id,project,ziel_pfad,asset_id,asset_revision,von_agent,status,actor_identity_id) VALUES($1,$2,$3,$4,$5,$6,$7,'fertig',$8)",[rid,assetId,project,s.logischer_pfad,r.asset_id,r.revision,String(a.agent_id),aktuelleAgentAkteurIdentityId(a.agent_id)]);
   }});
   const ctx={bereich:'projekt' as const,ziel_ref:project,host_id:'reverse-api'};
   const session=await kern.erstellen(ctx,{logischer_pfad:ziel,storage_kind:old?.storage_kind==='binaries'?'binaries':'assets',groesse:q.groesse,sha256:q.sha256,basis_revision:String(old?.transport_revision??'0'),idempotency_key:hold,mime_type:q.mimeType,format:q.format});

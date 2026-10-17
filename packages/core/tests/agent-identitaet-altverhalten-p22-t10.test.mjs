@@ -50,6 +50,17 @@ try{
  await q('CREATE TABLE chat_messages(id BIGINT,project TEXT)');
  await q('CREATE TABLE chat_lesestand(project TEXT,agent_id TEXT,letzte_id BIGINT,letzte_hinweis_id BIGINT DEFAULT 0,PRIMARY KEY(project,agent_id))');
  await q(AGENT_IDENTITAET_SCHEMA_SQL);
+
+  // P22-T15: additive Aktor-/Rollback-Spalten fuer diesen bewusst minimalen W1a-Scope.
+  await q('ALTER TABLE agent_identitaeten ADD COLUMN IF NOT EXISTS erstellt_von_identity_id TEXT');
+  await q('ALTER TABLE agent_identitaet_tokens ADD COLUMN IF NOT EXISTS widerrufen_von_identity_id TEXT');
+  await q('ALTER TABLE agent_identitaet_audit ADD COLUMN IF NOT EXISTS actor_identity_id TEXT');
+  await q('CREATE TABLE IF NOT EXISTS agent_identitaet_sitzungen(identity_id TEXT PRIMARY KEY)');
+
+ // P22-T15: rein leere Legacy-Bestandsformen fuer den neuen Kollisionsguard.
+ await q('CREATE TABLE wrapper_status(agent_name TEXT,project TEXT)');
+ await q('CREATE TABLE file_reservations(agent_id TEXT,project TEXT,released_at TIMESTAMPTZ,expires_at TIMESTAMPTZ)');
+ await q('CREATE TABLE shell_jobs(agent_id TEXT,project TEXT,owner_identity_id TEXT,status TEXT)');
  const golden=await capture(B,BDB);
  const actual=await capture(C,DB);
  assert.deepEqual(actual,golden,'AUS-Altverhalten muss identisch zur Basis t106 bleiben');

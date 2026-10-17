@@ -448,6 +448,7 @@ async function buildKnowledgeGraph(name: string, layers: string[]) {
       label: text.slice(0, 32) + (text.length > 32 ? '…' : ''),
       kind: 'thought',
       source: t.source ?? '',
+      ...(t.source_identity_id ? { source_identity_id:t.source_identity_id } : {}),
       meta: text.slice(0, 400),
     });
     edges.push({ source: projId, target: id, type: 'has' });
@@ -460,6 +461,7 @@ async function buildKnowledgeGraph(name: string, layers: string[]) {
       id,
       label: String(p.description ?? p.id).slice(0, 32),
       kind: 'proposal',
+      ...(p.author_identity_id ? { author_identity_id:p.author_identity_id } : {}),
       status: p.status ?? '',
       file: p.filePath ?? null,
       meta: String(p.description ?? '').slice(0, 400),
@@ -550,7 +552,7 @@ async function buildTimeline(name: string) {
       ts: t.timestamp ?? null,
       type: 'thought',
       title: text.slice(0, 90) + (text.length > 90 ? '…' : ''),
-      detail: `Quelle: ${t.source ?? '?'}\nTags: ${(t.tags ?? []).join(', ') || '—'}\n\n${text.slice(0, 1000)}`,
+      detail: `Quelle: ${t.source ?? '?'}${t.source_identity_id ? ' ['+t.source_identity_id+']' : ''}\nTags: ${(t.tags ?? []).join(', ') || '—'}\n\n${text.slice(0, 1000)}`,
       ref: `tho:${t.id}`,
     });
   }
@@ -568,7 +570,7 @@ async function buildTimeline(name: string) {
       ts: p.createdAt ?? null,
       type: 'proposal',
       title: String(p.description ?? p.id).slice(0, 90),
-      detail: `Status: ${p.status ?? '?'}\nDatei: ${p.filePath ?? '—'}\nAutor: ${p.author ?? '?'}`,
+      detail: `Status: ${p.status ?? '?'}\nDatei: ${p.filePath ?? '—'}\nAutor: ${p.author ?? '?'}${p.author_identity_id ? ' ['+p.author_identity_id+']' : ''}`,
       files: p.filePath ? [{ path: p.filePath, version: null }] : [],
       ref: `prop:${p.id}`,
     });

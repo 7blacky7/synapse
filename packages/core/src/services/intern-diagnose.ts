@@ -160,7 +160,7 @@ const QUELLEN: Record<string, { tabelle: string; wo: string; projekt: boolean; i
   docs: { tabelle: 'tech_docs', wo: 'project IS NOT NULL', projekt: true, id: 'id' },
   tech_docs_cache: { tabelle: 'tech_docs', wo: 'project IS NULL', projekt: false, id: 'id' },
   error_patterns: { tabelle: 'error_patterns', wo: 'TRUE', projekt: false, id: 'id' },
-  skills: { tabelle: 'skill_sections', wo: 'TRUE', projekt: false, id: null },
+  skills: { tabelle: '(SELECT embedded_at FROM skill_sections UNION ALL SELECT embedded_at FROM agent_identitaet_skill_sections) skill_gesamt', wo: 'TRUE', projekt: false, id: null },
 };
 
 function collectionFuer(art: string, project: string | null): string {

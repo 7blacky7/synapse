@@ -33,6 +33,7 @@
  *  - Assets/Reverse-Daten blockieren (Blob-Speicher gehoert dem Asset-Weg, nicht dieser Loeschung).
  *  - Protokolle (tool_calls, shell_jobs, Jev, loesch_auftraege …) bleiben als Audit.
  */
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
@@ -119,6 +120,21 @@ interface Eintrag {
 
 /** Reihenfolge = Loeschreihenfolge (Kinder vor Eltern). */
 const ZENTRAL: readonly Eintrag[] = Object.freeze([
+  { tabelle: 'agent_identitaet_sitzungen', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_onboardings', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_chat_lesestand', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_wrapper_status', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_wissen', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: false },
+  { tabelle: 'agent_identitaet_file_reservations', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_hinweis_gesehen', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_hinweis_zustellungen', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_skill_sections', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: false },
+  { tabelle: 'agent_identitaet_channel_sichtung', spalte: 'project', gruppe: 'agent_identitaet', fluechtig: true },
+  { tabelle: 'agent_identitaet_skill_deliveries', spalte: 'identity_id', gruppe: 'agent_identitaet', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)', fluechtig: true },
+  { tabelle: 'agent_identitaet_skill_preparations', spalte: 'identity_id', gruppe: 'agent_identitaet', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)', fluechtig: true },
+  { tabelle: 'agent_identitaet_hinweis_aufrufe', spalte: 'identity_id', gruppe: 'agent_identitaet', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)', fluechtig: true },
+  { tabelle: 'agent_identitaet_error_pattern_seen', spalte: 'identity_id', gruppe: 'agent_identitaet', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)', fluechtig: true },
+  { tabelle: 'agent_identitaet_shell_job_notices', spalte: 'identity_id', gruppe: 'agent_identitaet', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)', fluechtig: true },
   { tabelle: 'code_call_edges', spalte: 'project', gruppe: 'code_index' },
   { tabelle: 'code_references', spalte: 'project', gruppe: 'code_index' },
   { tabelle: 'parse_coverage', spalte: 'project', gruppe: 'code_index' },
@@ -188,6 +204,8 @@ const RECHNER: readonly Eintrag[] = Object.freeze([
 /** Kaskaden-Kinder ohne Projektspalte (ON DELETE CASCADE vom Elternteil). Zaehl-SQL ist konstant. */
 interface Kind { tabelle: string; eltern: string; bedingung: string; fluechtig?: boolean }
 const KASKADE_ZENTRAL: readonly Kind[] = Object.freeze([
+  { tabelle: 'agent_identitaet_channel_mitglieder', eltern: 'specialist_channels', bedingung: 'channel_id IN (SELECT id FROM specialist_channels WHERE project = $1)' },
+  { tabelle: 'agent_identitaet_event_acks', eltern: 'agent_events', bedingung: 'event_id IN (SELECT id FROM agent_events WHERE project = $1)' },
   { tabelle: 'agent_event_acks', eltern: 'agent_events', bedingung: 'event_id IN (SELECT id FROM agent_events WHERE project = $1)' },
   { tabelle: 'specialist_channel_members', eltern: 'specialist_channels', bedingung: 'channel_id IN (SELECT id FROM specialist_channels WHERE project = $1)' },
   { tabelle: 'specialist_channel_messages', eltern: 'specialist_channels', bedingung: 'channel_id IN (SELECT id FROM specialist_channels WHERE project = $1)' },
@@ -239,7 +257,7 @@ const BLOCKER_HINWEIS: Record<string, string> = {
 };
 
 /** Protokolle/Audit: bleiben bewusst stehen (auch das Protokoll der Loeschung selbst). */
-const BLEIBT: ReadonlyArray<{ tabelle: string; spalte: string }> = Object.freeze([
+const BLEIBT: ReadonlyArray<{ tabelle: string; spalte: string; bedingung?: string }> = Object.freeze([
   { tabelle: 'tool_calls', spalte: 'project' }, { tabelle: 'tool_aktivitaet', spalte: 'projekt' },
   { tabelle: 'shell_jobs', spalte: 'project' }, { tabelle: 'shell_demaskierungen', spalte: 'project' },
   { tabelle: 'shell_antworttopf', spalte: 'project' }, { tabelle: 'shell_sicherungsregeln', spalte: 'project' },
@@ -249,6 +267,14 @@ const BLEIBT: ReadonlyArray<{ tabelle: string; spalte: string }> = Object.freeze
   { tabelle: 'ausloeser_hinweis_zustellungen', spalte: 'project' }, { tabelle: 'work_jobs', spalte: 'project' },
   { tabelle: 'tool_containers', spalte: 'project' }, { tabelle: 'tool_activation', spalte: 'project' },
   { tabelle: 'loesch_auftraege', spalte: 'project' },
+  // Identitaeten bleiben als Ziele globaler Audit-FKs erhalten; keine Namensmigration.
+  { tabelle: 'agent_identitaeten', spalte: 'project' },
+  { tabelle: 'shell_job_agent_bezuege', spalte: 'project' },
+  { tabelle: 'agent_runtime_sessions', spalte: 'identity_id', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+  { tabelle: 'agent_artifacts', spalte: 'created_by_identity_id', bedingung: 'created_by_identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1) OR session_id IN (SELECT id FROM agent_runtime_sessions WHERE identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1))' },
+  { tabelle: 'agent_identitaet_tokens', spalte: 'identity_id', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+  { tabelle: 'agent_identitaet_audit', spalte: 'identity_id', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
+  { tabelle: 'agent_identitaet_laeufe', spalte: 'identity_id', bedingung: 'identity_id IN (SELECT id FROM agent_identitaeten WHERE project = $1)' },
 ]);
 
 const BEKANNT = new Set<string>([
@@ -291,6 +317,7 @@ export interface LoeschQdrant {
   liste(): Promise<string[]>;
   punkte(name: string): Promise<number | null>;
   loesche(name: string): Promise<void>;
+  identitaetsSkillsLoeschen?(project:string):Promise<void>;
 }
 async function standardQdrant(): Promise<LoeschQdrant> {
   const q = await import('../qdrant/collections.js');
@@ -298,6 +325,7 @@ async function standardQdrant(): Promise<LoeschQdrant> {
     liste: () => q.listCollections(),
     punkte: async (name) => (await q.getCollectionStats(name))?.pointsCount ?? null,
     loesche: (name) => q.deleteCollection(name),
+    identitaetsSkillsLoeschen: async project => (await import('./skills.js')).entferneProjektIdentitaetsSkillVektoren(project),
   };
 }
 export function projektCollections(project: string): string[] {
@@ -572,10 +600,10 @@ export async function projektLoeschenVorschau(o: LoeschVorschauEingabe): Promise
         `Erst ausfuehren oder ablaufen lassen (${LOESCH_AUFTRAG_MINUTEN} Min).`, 429);
     }
     const r = await c.query<{ id: string; gueltig_bis: Date }>(
-      `INSERT INTO loesch_auftraege (project, hostname, umfang, vorschau, vorschau_hash, erstellt_von, gueltig_bis)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, NOW() + ($7 || ' minutes')::interval)
+      `INSERT INTO loesch_auftraege (project, hostname, umfang, vorschau, vorschau_hash, erstellt_von, gueltig_bis, creator_identity_id)
+       VALUES ($1, $2, $3, $4::jsonb, $5, $6, NOW() + ($7 || ' minutes')::interval, $8)
        RETURNING id, gueltig_bis`,
-      [lage.project, lage.hostname, umfang, JSON.stringify(anzeige), lage.hash, o.agent ?? null, String(LOESCH_AUFTRAG_MINUTEN)]);
+      [lage.project, lage.hostname, umfang, JSON.stringify(anzeige), lage.hash, o.agent ?? null, String(LOESCH_AUFTRAG_MINUTEN), aktuelleAgentAkteurIdentityId(o.agent)]);
     a = r.rows[0];
     await c.query('COMMIT');
   } catch (e) {
@@ -731,6 +759,14 @@ export async function projektLoeschenAusfuehren(o: LoeschAusfuehrenEingabe): Pro
   for (const q of lage.qdrant) {
     try { await qdrant.loesche(q.collection); qdrantErgebnis.push({ collection: q.collection, geloescht: true }); }
     catch (err) { qdrantErgebnis.push({ collection: q.collection, geloescht: false, fehler: (err as Error).message.slice(0, 200) }); }
+  }
+  const geloeschteIdSkills=(pg.tabellen as Array<{tabelle:string;anzahl:number}> | undefined)?.find(t=>t.tabelle==='agent_identitaet_skill_sections')?.anzahl ?? 0;
+  if(geloeschteIdSkills>0){
+    try {
+      if(!qdrant.identitaetsSkillsLoeschen) throw new Error('Qdrant-Adapter fuer ID-Skills fehlt');
+      await qdrant.identitaetsSkillsLoeschen(a.project);
+      qdrantErgebnis.push({collection:'skills:identity:'+a.project,geloescht:true});
+    } catch(err){ qdrantErgebnis.push({collection:'skills:identity:'+a.project,geloescht:false,fehler:(err as Error).message.slice(0,200)}); }
   }
   let projektDb: Record<string, unknown> = { vorhanden: lage.projekt_db.vorhanden, geloescht: false, gruende: lage.projekt_db.gruende };
   if (lage.projekt_db.wird_geloescht && lage.projekt_db.database && lage.projekt_db.rolle) {

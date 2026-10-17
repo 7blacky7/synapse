@@ -261,6 +261,8 @@ func apiPost(path string, out interface{}) error {
 // ---------------------------------------------------------------------------
 
 type apiAgent struct {
+	IdentityId string `json:"identity_id"`
+	AgentKey string `json:"agent_key"`
 	AgentName     string `json:"agent_name"`
 	Model         string `json:"model"`
 	Status        string `json:"status"`
@@ -408,6 +410,8 @@ type apiFileVersionsResponse struct {
 // Mit int64 waere jedes Decode fehlgeschlagen und der Tray waere still
 // auf die PG-Abfrage zurueckgefallen (TRAY-6).
 type apiSession struct {
+	IdentityId string `json:"identity_id"`
+	AgentKey string `json:"agent_key"`
 	Id    string `json:"id"`
 	Model string `json:"model"`
 }
@@ -421,6 +425,7 @@ type apiSessionsResponse struct {
 // Mitglied und HatGepostet sind getrennt, weil channel(post) kein join verlangt:
 // wer nur schreibt, ist kein Mitglied und bekommt keine Hinweise auf neue Nachrichten.
 type apiChannelMember struct {
+	IdentityId string `json:"identity_id"`
 	Agent       string `json:"agent"`
 	Mitglied    bool   `json:"mitglied"`
 	HatGepostet bool   `json:"hat_gepostet"`

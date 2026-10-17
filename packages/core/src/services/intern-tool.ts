@@ -99,6 +99,7 @@ export const INTERN_DEFINITION = {
     'tray_token_weiterleitung (modus freigegeben) ueberschreibt dagegen befristet den Produktionsstandard: aktiv:true = Token-Einsetzung EIN, aktiv:false = AUS. Ohne intern, nach Ablauf oder Brueckenfehler gilt wieder der Standard aus SYNAPSE_TRAY_TOKEN_WEITERLEITUNG/config tray_token_weiterleitung (Default AUS). ' +
     'main_synapse (modus freigegeben): befristeter EIN/AUS-Testoverride fuer das Hauptagent-Werkzeugprofil main-synapse, alle regulaeren Synapse-Tools inkl. shell, keine eingebauten CLI-Werkzeuge und kein intern; Produktionsbasis SYNAPSE_MAIN_SYNAPSE=1, Default AUS. Bei Ablauf/Lesefehler oder ohne intern gilt die Produktionsbasis. ' +
     'token_identitaet (modus freigegeben): aktiv:true = Token-Anmeldung EIN, aktiv:false = AUS, befristeter Testoverride. Produktionsbasis SYNAPSE_TOKEN_IDENTITAET=1 (Default AUS), ohne intern/nach Ablauf/bei Lesefehler gilt diese Basis. schalter_liste.token_identitaet zeigt wirksamen Wert, Quelle, Ablauf und letzten Lesefehler. ' +
+    'agent_bezug_modus (alt | beide | neu): aktiv:true setzt den gewaehlten Testmodus, aktiv:false erzwingt alt; Ablauf/Lesefehler/ohne intern -> SYNAPSE_AGENT_BEZUG_MODUS (Default alt). schalter_liste.agent_bezug zeigt wirksamen Modus, Produktionsstandard, Quelle, Ablauf und letzten Fehler. ' +
     'Jeder Schalter laeuft ab (Default und Obergrenze 12 h), ohne Ablauf nur mit dauerhaft:true. ' +
     'schalter_liste zeigt alle Schalter mit Ablauf. ' +
     'ollama_status: geladene Modelle (VRAM, CPU/GPU-Anteil, Kontext, Ablauf), Version, installierte Embedding-Modelle; ' +
@@ -136,7 +137,7 @@ export const INTERN_DEFINITION = {
       agent_id: { type: 'string', description: 'Agent-ID (landet in gesetzt_von)' },
       name: { type: 'string', enum: Object.keys(INTERN_SCHALTER), description: 'schalter_setzen: Schalter' },
       aktiv: { type: 'boolean', description: 'schalter_setzen: Pausenschalter true = anhalten, false = wieder freigeben; tray_token_weiterleitung true/false = befristeter EIN/AUS-Override des Produktionsstandards (Default AUS)' },
-      modus: { type: 'string', description: 'schalter_setzen: embedding hintergrund (Standard) | alle; parser/context7 pause; tray_token_weiterleitung freigegeben' },
+      modus: { type: 'string', description: 'schalter_setzen: embedding hintergrund (Standard) | alle; parser/context7 pause; tray_token_weiterleitung freigegeben; agent_bezug_modus alt | beide | neu' },
       bis: { type: 'string', description: 'nutzung: Ende (ISO-Zeitpunkt; Standard jetzt); schalter_setzen / worker_pausieren: Ablauf als ISO-Zeitpunkt' },
       dauer_min: { type: 'number', description: 'schalter_setzen / worker_pausieren: Ablauf in Minuten ab jetzt' },
       dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich)' },
@@ -298,7 +299,9 @@ export async function fuehreInternAus(
           grund: text(a, 'grund'),
           agent: text(a, 'agent_id') ?? agentId,
         });
-        const message = name === 'token_identitaet'
+        const message = name === 'agent_bezug_modus'
+          ? `Agenten-Bezug-Testoverride ${stand.aktiv ? stand.modus : 'alt'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne intern/nach Ablauf/bei Lesefehler gilt SYNAPSE_AGENT_BEZUG_MODUS (Standard alt).`
+          : name === 'token_identitaet'
           ? `Token-Identitaet-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne intern/nach Ablauf/bei Lesefehler gilt SYNAPSE_TOKEN_IDENTITAET (Standard AUS).`
           : name === 'tray_token_weiterleitung'
           ? `Tray-Token-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne frische Intern-Bruecke/nach Ablauf gilt der Produktionsstandard aus Env/Config (Default AUS).`
@@ -315,6 +318,7 @@ export async function fuehreInternAus(
           moegliche: INTERN_SCHALTER,
           schalter: await alleSchalter(),
           token_identitaet: await (await import('./agent-identitaet.js')).leseTokenIdentitaetSchalter(),
+          agent_bezug: await (await import('./agent-bezug.js')).leseAgentBezugModus(),
         };
       case 'ollama_status':
         return { success: true, action, ...(await ollamaStatus()) };

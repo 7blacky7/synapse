@@ -1,4 +1,5 @@
 /**
+
  * MODUL: daemon-jobs-api.ts (P9-T27, Welle 1, Schritte 1 und 2)
  * ZWECK: Client-Seite des Daemon-Job-Vertrags (rest-api routes/daemon-jobs.ts). Shell- und
  *        Spezialisten-Jobs werden ueber die Synapse-API geholt und gemeldet statt per eigener
@@ -194,6 +195,7 @@ export async function meldeSpecialistAbschlussApi(id: string, daemonId: string, 
 }
 
 export interface WrapperKandidat {
+  identity_id?: string | null;
   project: string;
   path: string;
   agent_name: string;
@@ -239,9 +241,10 @@ export async function meldeShellSicherungApi(id: string, daemonId: string, speic
 // ── P9-T27 Welle 2: Spezialisten-Daten, Projekte, Heartbeat ────────────────────────
 
 /** PG-Schritt der Spezialisten-Tools ueber POST /api/daemon/specialist/daten. */
+import { daemonAuftragBindung } from './daemon-auftrag.js';
 export async function spezialistenDatenApi<T = Record<string, unknown>>(aktion: string, daten: Record<string, unknown> = {}): Promise<T> {
   return anfrage<T>('/api/daemon/specialist/daten',
-    { method: 'POST', body: { ...daten, host: DAEMON_HOST, daemon_id: DAEMON_API_ID, aktion } }, 30_000);
+    { method: 'POST', body: { ...daten, ...daemonAuftragBindung(), host: DAEMON_HOST, daemon_id: DAEMON_API_ID, aktion } }, 30_000);
 }
 
 export interface DaemonProjektZeile { name: string; path: string; enabled: boolean; setup_phase: string | null }

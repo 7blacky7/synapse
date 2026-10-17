@@ -41,6 +41,17 @@
 import { getPool } from '../db/index.js';
 import type { PoolClient } from 'pg';
 import { leseAgentMetaYaml } from './agent-meta-yaml.js';
+import { agentBezugFuer, aktuellerAgentAufruf, leseAgentBezugModus, type AgentZiel } from './agent-bezug.js';
+
+type WissensZiel = string | AgentZiel;
+function wissensBezug(project: string, agent: WissensZiel) {
+  const z = typeof agent === 'string' ? agentBezugFuer(project, agent) : agent;
+  if (z.project !== project) throw new Error('wissen_ziel_projekt_falsch');
+  if (z.art === 'identity' && aktuellerAgentAufruf()?.bezug.modus === 'alt') throw new Error('wissen_identity_im_altmodus');
+  return { tabelle: z.art === 'identity' ? 'agent_identitaet_wissen' : 'agent_wissen',
+    spalte: z.art === 'identity' ? 'identity_id' : 'agent_name',
+    wert: z.art === 'identity' ? z.identity_id : z.agent_id, name: z.agent_id, identity: z.art === 'identity' };
+}
 
 // ---------------------------------------------------------------------------
 // Typen
@@ -188,7 +199,7 @@ function rendereArt(block: string | null, eintraege: WissensEintrag[]): string {
  * auseinanderlaufen, ohne dass es auffaellt.
  */
 function baueWissensText(
-  agent: string,
+  agent: WissensZiel,
   meta: AgentMetaDaten | null,
   regeln: string,
   fehler: string,
@@ -261,14 +272,15 @@ function leseMetaAusText(roh: string, warnungen: string[]): AgentMetaDaten | nul
 // Lesen
 // ---------------------------------------------------------------------------
 
-async function leseZeilen(project: string, agent: string): Promise<ZeileRoh[]> {
+async function leseZeilen(project: string, agent: WissensZiel): Promise<ZeileRoh[]> {
+  const z = wissensBezug(project, agent);
   const { rows } = await getPool().query<ZeileRoh>(
     `SELECT id::text AS id, art, form, inhalt,
             to_char(tag, 'YYYY-MM-DD') AS tag, quelle
-       FROM agent_wissen
-      WHERE project = $1 AND agent_name = $2
+       FROM ${z.tabelle}
+      WHERE project = $1 AND ${z.spalte} = $2
       ORDER BY art, form, tag, id`,
-    [project, agent],
+    [project, z.wert],
   );
   return rows;
 }
@@ -291,7 +303,7 @@ function baueArtSicht(art: WissensArt, zeilen: ZeileRoh[]): ArtSicht {
  * Aufruferseite darueber, ob createInitialAgent laeuft; faellt sie zusammen,
  * ueberschreibt jeder Spawn die gelernten Regeln.
  */
-export async function leseAgentWissen(project: string, agent: string): Promise<AgentWissen | null> {
+export async function leseAgentWissen(project: string, agent: WissensZiel): Promise<AgentWissen | null> {
   const zeilen = await leseZeilen(project, agent);
   if (zeilen.length === 0) return null;
 
@@ -302,8 +314,9 @@ export async function leseAgentWissen(project: string, agent: string): Promise<A
   const meta = leseMetaAusText(arten.meta.text, warnungen);
   const systemPrompt = arten.system_prompt.block;
 
+  const name = typeof agent === 'string' ? agent : agent.agent_id;
   const text = baueWissensText(
-    agent,
+    name,
     meta,
     arten.regeln.text,
     arten.fehler.text,
@@ -315,7 +328,7 @@ export async function leseAgentWissen(project: string, agent: string): Promise<A
 
   return {
     project,
-    agent,
+    agent: name,
     meta,
     text,
     arten,
@@ -330,7 +343,7 @@ export async function leseAgentWissen(project: string, agent: string): Promise<A
 /** Eine einzelne Art. null = der Agent ist unbekannt (nicht: die Art ist leer). */
 export async function leseWissensArt(
   project: string,
-  agent: string,
+  agent: WissensZiel,
   art: WissensArt,
 ): Promise<ArtSicht | null> {
   const zeilen = await leseZeilen(project, agent);
@@ -339,10 +352,11 @@ export async function leseWissensArt(
 }
 
 /** Gibt es zu diesem Agenten ueberhaupt etwas? */
-export async function agentIstBekannt(project: string, agent: string): Promise<boolean> {
+export async function agentIstBekannt(project: string, agent: WissensZiel): Promise<boolean> {
+  const z = wissensBezug(project, agent);
   const { rows } = await getPool().query<{ da: boolean }>(
-    `SELECT EXISTS(SELECT 1 FROM agent_wissen WHERE project = $1 AND agent_name = $2) AS da`,
-    [project, agent],
+    `SELECT EXISTS(SELECT 1 FROM ${z.tabelle} WHERE project = $1 AND ${z.spalte} = $2) AS da`,
+    [project, z.wert],
   );
   return rows[0]?.da === true;
 }
@@ -374,21 +388,22 @@ async function inTransaktion<T>(arbeit: (client: PoolClient) => Promise<T>): Pro
  */
 export async function setzeWissen(
   project: string,
-  agent: string,
+  agent: WissensZiel,
   art: WissensArt,
   inhalt: string,
   quelle?: string | null,
 ): Promise<{ ersetzteZeilen: number; id: string }> {
+  const z = wissensBezug(project, agent);
   return inTransaktion(async (client) => {
     const geloescht = await client.query(
-      `DELETE FROM agent_wissen WHERE project = $1 AND agent_name = $2 AND art = $3`,
-      [project, agent, art],
+      `DELETE FROM ${z.tabelle} WHERE project = $1 AND ${z.spalte} = $2 AND art = $3`,
+      [project, z.wert, art],
     );
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO agent_wissen (project, agent_name, art, form, inhalt, quelle)
-       VALUES ($1, $2, $3, 'block', $4, $5)
+      `INSERT INTO ${z.tabelle} (project, ${z.spalte}, art, form, inhalt, quelle${z.identity ? ', agent_name' : ''})
+       VALUES ($1, $2, $3, 'block', $4, $5${z.identity ? ', $6' : ''})
        RETURNING id::text AS id`,
-      [project, agent, art, inhalt, quelle ?? null],
+      [project, z.wert, art, inhalt, quelle ?? null, ...(z.identity ? [z.name] : [])],
     );
     return { ersetzteZeilen: geloescht.rowCount ?? 0, id: rows[0].id };
   });
@@ -402,18 +417,19 @@ export async function setzeWissen(
  */
 export async function haengeWissenAn(
   project: string,
-  agent: string,
+  agent: WissensZiel,
   art: WissensArt,
   inhalt: string,
   quelle?: string | null,
   tag?: string | null,
 ): Promise<{ id: string; tag: string }> {
+  const z = wissensBezug(project, agent);
   const tagWert = tag && /^\d{4}-\d{2}-\d{2}$/.test(tag) ? tag : heute();
   const { rows } = await getPool().query<{ id: string; tag: string }>(
-    `INSERT INTO agent_wissen (project, agent_name, art, form, inhalt, tag, quelle)
-     VALUES ($1, $2, $3, 'eintrag', $4, $5::date, $6)
+    `INSERT INTO ${z.tabelle} (project, ${z.spalte}, art, form, inhalt, tag, quelle${z.identity ? ', agent_name' : ''})
+     VALUES ($1, $2, $3, 'eintrag', $4, $5::date, $6${z.identity ? ', $7' : ''})
      RETURNING id::text AS id, to_char(tag, 'YYYY-MM-DD') AS tag`,
-    [project, agent, art, inhalt, tagWert, quelle ?? null],
+    [project, z.wert, art, inhalt, tagWert, quelle ?? null, ...(z.identity ? [z.name] : [])],
   );
   return { id: rows[0].id, tag: rows[0].tag };
 }
@@ -426,7 +442,7 @@ export async function haengeWissenAn(
  */
 export async function entferneWissenZeilen(
   project: string,
-  agent: string,
+  agent: WissensZiel,
   art: WissensArt,
   enthaelt: string,
 ): Promise<{ entfernteZeilen: number; entfernteEintraege: number; geaenderteZeilen: number }> {
@@ -434,13 +450,14 @@ export async function entferneWissenZeilen(
     // Ein leerer Suchtext trifft JEDE Zeile — das waere ein Loeschen als Unfall.
     throw new Error('entferneWissenZeilen: "enthaelt" darf nicht leer sein');
   }
+  const z = wissensBezug(project, agent);
   return inTransaktion(async (client) => {
     const { rows } = await client.query<{ id: string; inhalt: string }>(
       `SELECT id::text AS id, inhalt
-         FROM agent_wissen
-        WHERE project = $1 AND agent_name = $2 AND art = $3
+         FROM ${z.tabelle}
+        WHERE project = $1 AND ${z.spalte} = $2 AND art = $3
         FOR UPDATE`,
-      [project, agent, art],
+      [project, z.wert, art],
     );
 
     let entfernteZeilen = 0;
@@ -455,11 +472,11 @@ export async function entferneWissenZeilen(
       entfernteZeilen += alle.length - behalten.length;
       const neu = behalten.join('\n');
       if (neu.trim().length === 0) {
-        await client.query(`DELETE FROM agent_wissen WHERE id = $1`, [zeile.id]);
+        await client.query(`DELETE FROM ${z.tabelle} WHERE id = $1`, [zeile.id]);
         entfernteEintraege += 1;
       } else {
         await client.query(
-          `UPDATE agent_wissen SET inhalt = $2, aktualisiert_am = NOW() WHERE id = $1`,
+          `UPDATE ${z.tabelle} SET inhalt = $2, aktualisiert_am = NOW() WHERE id = $1`,
           [zeile.id, neu],
         );
         geaenderteZeilen += 1;
@@ -478,20 +495,21 @@ export async function entferneWissenZeilen(
  */
 export async function legeAgentWissenAn(
   project: string,
-  agent: string,
+  agent: WissensZiel,
   meta: AgentMetaDaten,
   quelle?: string | null,
 ): Promise<{ angelegt: boolean; neueZeilen: number }> {
+  const z = wissensBezug(project, agent);
   const metaText = JSON.stringify(meta);
   const { rows } = await getPool().query<{ id: string }>(
-    `INSERT INTO agent_wissen (project, agent_name, art, form, inhalt, quelle)
+    `INSERT INTO ${z.tabelle} (project, ${z.spalte}, art, form, inhalt, quelle${z.identity ? ', agent_name' : ''})
      SELECT $1::text, $2::text, art, 'block',
-            CASE WHEN art = 'meta' THEN $3::text ELSE '' END, $4::text
+            CASE WHEN art = 'meta' THEN $3::text ELSE '' END, $4::text${z.identity ? ', $5::text' : ''}
        FROM unnest(ARRAY['meta','regeln','fehler','muster','kontext']) AS art
-     ON CONFLICT (project, agent_name, art) WHERE form = 'block'
+     ON CONFLICT (project, ${z.spalte}, art) WHERE form = 'block'
      DO NOTHING
      RETURNING id::text AS id`,
-    [project, agent, metaText, quelle ?? null],
+    [project, z.wert, metaText, quelle ?? null, ...(z.identity ? [z.name] : [])],
   );
   return { angelegt: rows.length > 0, neueZeilen: rows.length };
 }
@@ -502,11 +520,12 @@ export async function legeAgentWissenAn(
  */
 export async function loescheAgentWissen(
   project: string,
-  agent: string,
+  agent: WissensZiel,
 ): Promise<{ geloeschteZeilen: number }> {
+  const z = wissensBezug(project, agent);
   const ergebnis = await getPool().query(
-    `DELETE FROM agent_wissen WHERE project = $1 AND agent_name = $2`,
-    [project, agent],
+    `DELETE FROM ${z.tabelle} WHERE project = $1 AND ${z.spalte} = $2`,
+    [project, z.wert],
   );
   return { geloeschteZeilen: ergebnis.rowCount ?? 0 };
 }
@@ -514,7 +533,7 @@ export async function loescheAgentWissen(
 /** Alle Agenten, zu denen Wissen in der Datenbank liegt (= listAgentDirs). */
 export async function listeWissensAgenten(
   project: string,
-): Promise<Array<{ agent: string; zeilen: number; aktualisiertAm: string }>> {
+): Promise<Array<{ agent: string; identityId?: string; zeilen: number; aktualisiertAm: string }>> {
   const { rows } = await getPool().query<{ agent: string; zeilen: string; aktualisiert_am: string }>(
     `SELECT agent_name AS agent, COUNT(*)::text AS zeilen,
             to_char(MAX(aktualisiert_am), 'YYYY-MM-DD"T"HH24:MI:SSOF') AS aktualisiert_am
@@ -524,9 +543,14 @@ export async function listeWissensAgenten(
       ORDER BY agent_name`,
     [project],
   );
-  return rows.map((r) => ({
+  const aus: Array<{ agent:string; identityId?:string; zeilen:number; aktualisiertAm:string }> = [];
+  if ((aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus !== 'alt') {
+    const ids = await getPool().query('SELECT identity_id,MAX(agent_name) AS agent,COUNT(*)::text AS zeilen,MAX(aktualisiert_am)::text AS aktualisiert_am FROM agent_identitaet_wissen WHERE project=$1 GROUP BY identity_id ORDER BY identity_id',[project]);
+    for (const z of ids.rows) aus.push({ agent:z.agent,identityId:z.identity_id,zeilen:Number(z.zeilen),aktualisiertAm:z.aktualisiert_am });
+  }
+  return [...aus, ...rows.map((r) => ({
     agent: r.agent,
     zeilen: Number(r.zeilen),
     aktualisiertAm: r.aktualisiert_am,
-  }));
+  }))];
 }

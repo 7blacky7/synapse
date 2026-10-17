@@ -1,3 +1,4 @@
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { leseTopf } from './topf-ansicht.js';
 /**
  * Jev entscheidet Rueckfragen, wenn der User nicht da ist (P7-T28 / JEV-10, 29.09.2026).
@@ -204,13 +205,13 @@ export async function setzeAbwesenheit(
         return { success: false, message: 'bis muss ein ISO-Zeitpunkt in der Zukunft sein (oder stunden > 0).' };
       }
       await getPool().query(
-        `INSERT INTO jev_entscheidet (project, aktiv, seit, bis, gesetzt_von, updated_at)
-         VALUES ($1, true, NOW(), $3, $2, NOW())
+        `INSERT INTO jev_entscheidet (project, aktiv, seit, bis, gesetzt_von, updated_at, setter_identity_id)
+         VALUES ($1, true, NOW(), $3, $2, NOW(), $4)
          ON CONFLICT (project) DO UPDATE SET
            aktiv = true,
            seit = CASE WHEN jev_entscheidet.aktiv THEN jev_entscheidet.seit ELSE NOW() END,
-           bis = $3, gesetzt_von = $2, updated_at = NOW()`,
-        [project, wer, bis],
+           bis = $3, gesetzt_von = $2, updated_at = NOW(), setter_identity_id=$4`,
+        [project, wer, bis, aktuelleAgentAkteurIdentityId(wer)],
       );
       const stand = await leseAbwesenheit(project);
       return { success: true, schalter: stand, hinweis: hinweisText(stand), message: 'User abwesend: Jev entscheidet erlaubte Rueckfragen.' };
@@ -220,8 +221,8 @@ export async function setzeAbwesenheit(
     const protokoll = await holeEntscheidungsProtokoll(project, { seit: vorher.seit ?? undefined });
     // P15 E1: '*' aus = User ist fuer alle Projekte wieder da (alle Schalter aus)
     await getPool().query(
-      `UPDATE jev_entscheidet SET aktiv = false, bis = NULL, gesetzt_von = $2, updated_at = NOW() WHERE project = $1 OR ($1 = '*' AND aktiv)`,
-      [project, wer],
+      `UPDATE jev_entscheidet SET aktiv = false, bis = NULL, gesetzt_von = $2, updated_at = NOW(), setter_identity_id=$3 WHERE project = $1 OR ($1 = '*' AND aktiv)`,
+      [project, wer, aktuelleAgentAkteurIdentityId(wer)],
     );
     return {
       success: true,
@@ -323,8 +324,8 @@ async function protokolliere(project: string, e: LogEintrag): Promise<number | n
     const { rows } = await getPool().query(
       `INSERT INTO jev_entscheidungen
          (project, agent, task_id, kategorie, frage, typ, optionen, wahl, confidence, entschieden, grund, jev_aufruf,
-          runde, erste_id, offen_fuer_user, blocker, praezedenz_id, praezedenz_confidence, ohne_praezedenz, irreversibel_p)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+          runde, erste_id, offen_fuer_user, blocker, praezedenz_id, praezedenz_confidence, ohne_praezedenz, irreversibel_p, actor_identity_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
        RETURNING id, zeit`,
       [
         project, e.agent, e.task_id, e.kategorie, e.frage, e.typ,
@@ -332,7 +333,7 @@ async function protokolliere(project: string, e: LogEintrag): Promise<number | n
         e.wahl === null || e.wahl === undefined ? null : JSON.stringify(e.wahl),
         e.confidence, e.entschieden, e.grund, e.jev_aufruf,
         e.runde, e.erste_id, e.offen_fuer_user, e.blocker,
-        e.praezedenz_id ?? null, e.praezedenz_confidence ?? null, e.ohne_praezedenz === true, e.irreversibel_p ?? null,
+        e.praezedenz_id ?? null, e.praezedenz_confidence ?? null, e.ohne_praezedenz === true, e.irreversibel_p ?? null, aktuelleAgentAkteurIdentityId(e.agent),
       ],
     );
     const id = rows.length > 0 ? Number((rows[0] as { id: number | string }).id) : null;
@@ -922,9 +923,9 @@ export async function ueberstimmeEntscheidung(
   if (opt.wahl === undefined || opt.wahl === null || opt.wahl === '') return { success: false, message: 'wahl (die richtige Entscheidung) ist Pflicht.' };
   try {
     const { rows } = await getPool().query(
-      `UPDATE jev_entscheidungen SET ueberstimmt_von = $3, ueberstimmt_wahl = $4::jsonb, ueberstimmt_notiz = $5, ueberstimmt_am = NOW()
+      `UPDATE jev_entscheidungen SET ueberstimmt_von = $3, ueberstimmt_wahl = $4::jsonb, ueberstimmt_notiz = $5, ueberstimmt_am = NOW(), overrider_identity_id=$6
         WHERE project = $1 AND id = $2 RETURNING id`,
-      [project, id, wer, JSON.stringify(opt.wahl), kurz(opt.notiz, 500) || null],
+      [project, id, wer, JSON.stringify(opt.wahl), kurz(opt.notiz, 500) || null, aktuelleAgentAkteurIdentityId(wer)],
     );
     if (rows.length === 0) return { success: false, message: `Kein Protokolleintrag ${id} in Projekt ${project}.` };
     return { success: true, id, message: `Eintrag ${id} als ueberstimmt markiert. Korrektur ggf. als jev-erkenntnis-Memory festhalten.` };
@@ -1007,7 +1008,7 @@ export async function durchsichtEntscheidung(project: string, o: DurchsichtOptio
     if (!z) return { success: false, error: 'nicht_gefunden', message: `Kein Protokolleintrag ${id} in Projekt ${project}.` };
     if (!z.entschieden) return { success: false, error: 'nicht_entschieden', message: `Eintrag ${id} ist keine Entscheidung (nichts durchzusehen).` };
     if (urteil === 'ok') {
-      await getPool().query(`UPDATE jev_entscheidungen SET durchsicht = 'bestaetigt', durchsicht_am = NOW(), durchsicht_von = $2 WHERE id = $1`, [id, wer]);
+      await getPool().query(`UPDATE jev_entscheidungen SET durchsicht = 'bestaetigt', durchsicht_am = NOW(), durchsicht_von = $2, reviewer_identity_id=$3 WHERE id = $1`, [id, wer, aktuelleAgentAkteurIdentityId(wer)]);
       await zaehleTopf(z.praezedenz_id, 'bestaetigt_n');
       return { success: true, id, durchsicht: 'bestaetigt', message: `Eintrag ${id} bestaetigt.` };
     }
@@ -1029,8 +1030,8 @@ export async function durchsichtEntscheidung(project: string, o: DurchsichtOptio
       if (!neu.success) { await client.query('ROLLBACK'); return neu; }
       await client.query(
         `UPDATE jev_entscheidungen SET durchsicht = 'korrigiert', durchsicht_am = NOW(), durchsicht_von = $2,
-           ueberstimmt_von = $2, ueberstimmt_wahl = $3::jsonb, ueberstimmt_notiz = $4, ueberstimmt_am = NOW() WHERE id = $1`,
-        [id, wer, JSON.stringify(o.wahl), notiz],
+           ueberstimmt_von = $2, ueberstimmt_wahl = $3::jsonb, ueberstimmt_notiz = $4, ueberstimmt_am = NOW(), reviewer_identity_id=$5, overrider_identity_id=$5 WHERE id = $1`,
+        [id, wer, JSON.stringify(o.wahl), notiz, aktuelleAgentAkteurIdentityId(wer)],
       );
       if (z.praezedenz_id) await client.query('UPDATE jev_entscheidungstopf SET korrigiert_n = korrigiert_n + 1 WHERE id = $1', [z.praezedenz_id]);
       await client.query('COMMIT');

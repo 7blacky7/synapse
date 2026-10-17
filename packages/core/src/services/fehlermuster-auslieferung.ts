@@ -26,6 +26,7 @@
  */
 
 import { getPool } from '../db/client.js';
+import { kommunikationsKey, eigenerKommunikationsAgent } from './kommunikation-agent.js';
 import type { ErrorPatternWarning } from './error-patterns.js';
 import type { FehlerBefund } from './fehlermuster-pruefung.js';
 
@@ -103,16 +104,16 @@ const letzteAbholung = new Map<string, number>();
  */
 export function ueberholeSyntaxBefunde(agentId: string | null | undefined, datei: string, stand: number): void {
   if (!agentId) return;
-  const k = `${agentId}|${datei}`;
+  const k = `${kommunikationsKey(agentId)}|${datei}`;
   syntaxStand.delete(k);
   syntaxStand.set(k, stand);
   while (syntaxStand.size > SYNTAX_STAND_MAX) syntaxStand.delete(syntaxStand.keys().next().value as string);
-  const liste = ausstehend.get(agentId);
+  const liste = ausstehend.get(kommunikationsKey(agentId));
   if (!liste) return;
   const rest = liste.filter((a) => !(a.datei === datei && a.befund?.quelle === 'syntax' && a.stand !== undefined && a.stand < stand));
   if (rest.length === liste.length) return;
-  if (rest.length > 0) ausstehend.set(agentId, rest);
-  else ausstehend.delete(agentId);
+  if (rest.length > 0) ausstehend.set(kommunikationsKey(agentId), rest);
+  else ausstehend.delete(kommunikationsKey(agentId));
 }
 
 function schluessel(a: Ausstehend): string {
@@ -128,28 +129,29 @@ function schluessel(a: Ausstehend): string {
 export function vormerkenBefunde(agentId: string | null | undefined, datei: string, befunde: FehlerBefund[], opt: { stand?: number } = {}): void {
   if (!agentId || befunde.length === 0) return;
   // E3a: Nachlieferung zu einem inzwischen ueberholten Schreibvorgang -> verwerfen.
-  if (opt.stand !== undefined && (syntaxStand.get(`${agentId}|${datei}`) ?? -Infinity) > opt.stand) return;
+  if (opt.stand !== undefined && (syntaxStand.get(`${kommunikationsKey(agentId)}|${datei}`) ?? -Infinity) > opt.stand) return;
   const neu: Ausstehend[] = befunde.map((befund) => ({ befund, datei, zeit: Date.now(), ...(opt.stand !== undefined ? { stand: opt.stand } : {}) }));
   const neueSchluessel = new Set(neu.map(schluessel));
-  const liste = (ausstehend.get(agentId) ?? []).filter((a) => !neueSchluessel.has(schluessel(a)));
+  const liste = (ausstehend.get(kommunikationsKey(agentId)) ?? []).filter((a) => !neueSchluessel.has(schluessel(a)));
   const befundListe = [...liste.filter((a) => a.befund), ...neu];
   const rest = liste.filter((a) => !a.befund);
   const gesamt = [...befundListe, ...rest];
   while (gesamt.length > MAX_JE_AGENT) gesamt.pop();
-  ausstehend.set(agentId, gesamt);
+  ausstehend.set(kommunikationsKey(agentId), gesamt);
 }
 
 /**
  * P15-T33 E1: fertigen Hinweis des Erklaerungs-Topfs (quelle 'erklaerung': gewaehlte Erklaerung oder offener Fall)
  * vormerken - vorne, derselbe Hinweis an derselben Datei ersetzt den aelteren. Wirft nie.
  */
-export function vormerkenErklaerung(agentId: string | null | undefined, datei: string, hinweis: FehlermusterHinweis): void {
+export function vormerkenErklaerung(agentId: string | null | undefined, datei: string, hinweis: FehlermusterHinweis, identityId?: string | null): void {
   if (!agentId) return;
+  const empfaenger = identityId === undefined ? kommunikationsKey(agentId) : identityId === null ? agentId : 'identity:' + identityId;
   const neu: Ausstehend = { hinweis, datei, zeit: Date.now() };
   const k = schluessel(neu);
-  const gesamt = [neu, ...(ausstehend.get(agentId) ?? []).filter((a) => schluessel(a) !== k)];
+  const gesamt = [neu, ...(ausstehend.get(empfaenger) ?? []).filter((a) => schluessel(a) !== k)];
   while (gesamt.length > MAX_JE_AGENT) gesamt.pop();
-  ausstehend.set(agentId, gesamt);
+  ausstehend.set(empfaenger, gesamt);
 }
 
 function zahlAusEnv(name: string, standard: number): number {
@@ -182,7 +184,7 @@ export function verfolgeFehlermusterPruefung(
   const verfolgt = pruefung
     .then((treffer) => {
       if (treffer.length === 0) return;
-      const liste = ausstehend.get(agentId) ?? [];
+      const liste = ausstehend.get(kommunikationsKey(agentId)) ?? [];
       for (const warnung of treffer) {
         // Dasselbe Muster an derselben Datei nur einmal vormerken.
         if (liste.some((a) => a.warnung?.id === warnung.id && a.datei === datei)) continue;
@@ -191,15 +193,15 @@ export function verfolgeFehlermusterPruefung(
         liste.push({ warnung, datei, zeit: Date.now() });
       }
       while (liste.length > MAX_JE_AGENT) liste.shift();
-      ausstehend.set(agentId, liste);
+      ausstehend.set(kommunikationsKey(agentId), liste);
     })
     .catch(() => { /* die Pruefung loggt selbst; hier nichts vormerken */ });
-  const menge = laufend.get(agentId) ?? new Set<Promise<unknown>>();
+  const menge = laufend.get(kommunikationsKey(agentId)) ?? new Set<Promise<unknown>>();
   menge.add(verfolgt);
-  laufend.set(agentId, menge);
+  laufend.set(kommunikationsKey(agentId), menge);
   void verfolgt.finally(() => {
     menge.delete(verfolgt);
-    if (menge.size === 0 && laufend.get(agentId) === menge) laufend.delete(agentId);
+    if (menge.size === 0 && laufend.get(kommunikationsKey(agentId)) === menge) laufend.delete(kommunikationsKey(agentId));
   });
 }
 
@@ -211,16 +213,16 @@ export function verfolgeFehlermusterPruefung(
 export async function holeFehlermusterHinweise(agentId: string | undefined): Promise<FehlermusterAuslieferung | null> {
   if (!agentId) return null;
   // t61: vorige Abholung merken, bevor diese zaehlt (Zeitvergleich fuer den Bezug nachgelieferter Befunde).
-  const vorigeAbholung = letzteAbholung.get(agentId) ?? -Infinity;
-  letzteAbholung.delete(agentId);
-  letzteAbholung.set(agentId, Date.now());
+  const vorigeAbholung = letzteAbholung.get(kommunikationsKey(agentId)) ?? -Infinity;
+  letzteAbholung.delete(kommunikationsKey(agentId));
+  letzteAbholung.set(kommunikationsKey(agentId), Date.now());
   while (letzteAbholung.size > SYNTAX_STAND_MAX) letzteAbholung.delete(letzteAbholung.keys().next().value as string);
   const bezugVon = (a: Ausstehend): 'dieser_aufruf' | 'frueher' => {
     const s = a.stand ?? Date.parse(a.befund?.nachgeliefert_fuer?.geprueft_um ?? '');
     return Number.isFinite(s) && s < vorigeAbholung ? 'frueher' : 'dieser_aufruf';
   };
   try {
-    const offen = laufend.get(agentId);
+    const offen = laufend.get(kommunikationsKey(agentId));
     if (offen && offen.size > 0) {
       const warteMs = zahlAusEnv('FEHLERMUSTER_WARTE_MS', 300);
       if (warteMs > 0) {
@@ -233,14 +235,14 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
       }
     }
 
-    const liste = ausstehend.get(agentId);
+    const liste = ausstehend.get(kommunikationsKey(agentId));
     if (!liste || liste.length === 0) return null;
     const jetzt = Date.now();
     const frisch = liste.filter((a) => jetzt - a.zeit <= HALTBAR_MS);
     const jetztAus = frisch.slice(0, MAX_JE_ANTWORT);
     const rest = frisch.slice(MAX_JE_ANTWORT);
-    if (rest.length > 0) ausstehend.set(agentId, rest);
-    else ausstehend.delete(agentId);
+    if (rest.length > 0) ausstehend.set(kommunikationsKey(agentId), rest);
+    else ausstehend.delete(kommunikationsKey(agentId));
     if (jetztAus.length === 0) return null;
 
     // gesehen gilt nur fuer Themenhinweise (Embedding); Signatur-Befunde kommen bei jedem Treffer.
@@ -338,7 +340,15 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
  */
 async function vermerkeGesehen(agentId: string, patternIds: string[]): Promise<void> {
   if (patternIds.length === 0) return;
+  const z = eigenerKommunikationsAgent(agentId);
   try {
+    if (z.art === 'identity') {
+      await getPool().query(
+        `INSERT INTO agent_identitaet_error_pattern_seen(pattern_id,identity_id,session_id,shown_at)
+         SELECT id,$2,$3,NOW() FROM error_patterns WHERE id=ANY($1::uuid[])
+         ON CONFLICT(pattern_id,identity_id) DO UPDATE SET shown_at=NOW()`,[patternIds,z.identity_id,agentId]);
+      return;
+    }
     await getPool().query(
       `INSERT INTO error_pattern_seen (pattern_id, session_id, shown_at)
        SELECT p.id, $2, NOW() FROM error_patterns p WHERE p.id = ANY($1::uuid[])

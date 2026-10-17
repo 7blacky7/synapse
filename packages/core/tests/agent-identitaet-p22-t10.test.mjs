@@ -57,11 +57,22 @@ try {
   await q(schema111);
   assert.equal((await q("SELECT count(*)::int n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('agent_identitaeten','agent_identitaet_tokens','agent_identitaet_audit')",[schema])).rows[0].n,3);
   ok('Schema 111 zweimal idempotent, drei Tabellen');
+
+  // P22-T15: additive Aktor-/Rollback-Spalten fuer diesen bewusst minimalen W1a-Scope.
+  await q('ALTER TABLE agent_identitaeten ADD COLUMN IF NOT EXISTS erstellt_von_identity_id TEXT');
+  await q('ALTER TABLE agent_identitaet_tokens ADD COLUMN IF NOT EXISTS widerrufen_von_identity_id TEXT');
+  await q('ALTER TABLE agent_identitaet_audit ADD COLUMN IF NOT EXISTS actor_identity_id TEXT');
+  await q('CREATE TABLE IF NOT EXISTS agent_identitaet_sitzungen(identity_id TEXT PRIMARY KEY)');
+  await q('ALTER TABLE intern_schalter ADD COLUMN IF NOT EXISTS setter_identity_id TEXT');
   const stateTables=['agent_events','agent_event_acks','specialist_channel_members','file_reservations','file_batch_waits'];
   for(const t of stateTables) {
     await q('CREATE TABLE '+t+'(id TEXT PRIMARY KEY,payload JSONB NOT NULL)');
     await q('INSERT INTO '+t+' VALUES ($1,$2::jsonb)',['bound',JSON.stringify({open:true,cursor:17})]);
   }
+  // P22-T15: Kollisionsschutz liest Legacy-Bestand auch ohne Sitzung; Sentinels bleiben unveraendert.
+  await q('CREATE TABLE wrapper_status(agent_name TEXT,project TEXT)');
+  await q('CREATE TABLE shell_jobs(agent_id TEXT,project TEXT,owner_identity_id TEXT,status TEXT)');
+  await q('ALTER TABLE file_reservations ADD COLUMN agent_id TEXT,ADD COLUMN project TEXT,ADD COLUMN released_at TIMESTAMPTZ,ADD COLUMN expires_at TIMESTAMPTZ');
   const snapshot=async()=>Promise.all(stateTables.map(t=>q('SELECT * FROM '+t+' ORDER BY id').then(r=>r.rows)));
   const before=await snapshot();
   await DB.mitLesePool(pool,async()=>{

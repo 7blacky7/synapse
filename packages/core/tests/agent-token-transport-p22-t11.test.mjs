@@ -170,6 +170,11 @@ try {
     const {AGENT_IDENTITAET_SCHEMA_SQL}=await load('packages/core/dist/db/agent-identitaet-schema.js');
     await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);
   }
+  if (distRoot === repo) {
+    const { AGENT_BEZUG_SCHEMA_SQL } = await load('packages/core/dist/db/agent-bezug-schema.js');
+    await pool.query(AGENT_BEZUG_SCHEMA_SQL);
+    await pool.query(AGENT_BEZUG_SCHEMA_SQL);
+  }
   await pool.query('INSERT INTO memories(id,project,name,content,category,tags) VALUES($1,$2,$3,$4,$5,$6)',
     [randomUUID(),project,'testregel','Vollstaendige synthetische Regel','rules',['pflicht','alle']]);
   const ts=await transports();

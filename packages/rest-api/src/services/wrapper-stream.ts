@@ -28,7 +28,11 @@
  */
 
 import type { PoolClient } from 'pg';
-import { getPool } from '@synapse/core';
+import { getPool, aktuelleAgentIdentityId } from '@synapse/core';
+function streamAgent(project: string, agent: string): string {
+  const identity = aktuelleAgentIdentityId(project, agent);
+  return identity ? 'identity:' + identity : agent;
+}
 
 /** Basis-Kanaele, die JEDER Wrapper heute abonniert (wrapper.ts:233-236). */
 const BASIS_KANAELE = [
@@ -91,7 +95,7 @@ function zitiereBezeichner(name: string): string {
 }
 
 function wakeKanal(agent: string): string {
-  return `synapse_specialist_wake_${agent}`;
+  return agent.startsWith('identity:') ? `synapse_identity_wake_${agent.slice(9).replace(/-/g, '_')}` : `synapse_specialist_wake_${agent}`;
 }
 
 /**
@@ -275,6 +279,7 @@ export function abonniere(
   agent: string,
   sende: (ereignis: StromEreignis) => void,
 ): () => void {
+  agent = streamAgent(project, agent);
   const id = naechsteAbonnentenId++;
   abonnenten.set(id, {
     id,
@@ -332,6 +337,7 @@ export function stromSicht(project: string, agent: string): {
   listener_last_reconnect_at: string | null;
   listener_last_gap_ms: number | null;
 } {
+  agent = streamAgent(project, agent);
   let anzahl = 0;
   let letztes: Date | null = null;
   for (const abo of abonnenten.values()) {

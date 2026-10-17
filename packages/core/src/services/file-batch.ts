@@ -22,7 +22,10 @@ import {pruefeFsDrift,FsDriftFehler,fsDriftAntwort,fsPruefungNachCommit,type FsP
 import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
 import { daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
-import { resolveAgentId } from './agent-id-resolver.js';
+import { aktuellerAgentPrincipal, aktuellerAgentAufruf, leseAgentBezugModus, mitAgentAufrufKontext } from './agent-bezug.js';
+import { dateiAgentIdentityId as aktuelleAgentIdentityId, dateiAgentName, mitFileAgentBezug, fileAgentKey, fileCallerKey, fileIdentitySql, fileAgentSql, fileCallerSql, reservierungsQuelle } from './file-agent-bezug.js';
+import { resolveAgentId as resolveActorName } from './agent-id-resolver.js';
+function resolveAgentId(name?:string|null):string|null { return dateiAgentName() ?? resolveActorName(name); }
 import { resolveProjectTaskId } from './task-id-resolver.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { merkeFileTaskVersion } from './file-task-zuordnung.js';
@@ -163,6 +166,7 @@ export interface FileBatchOp {
   action: FileBatchOpAction;
   /** Serverseitig gesetzte Herkunft im gemeinsamen Plan; Input-Werte werden nie vertraut. */
   agent_id?: string;
+  author_identity_id?: string;
   /** Stabile CE-2-Quellidentitaet fuer Cross-Wait-Dedup (nur intern gespeichert). */
   coedit_source_plan_id?: string;
   coedit_source_op_index?: number;
@@ -404,6 +408,9 @@ export interface FileBatchPlanRow {
   id: string;
   project: string;
   owner_agent_id: string | null;
+  owner_identity_id?: string | null;
+  committed_by_identity_id?:string|null;
+  cancelled_by_identity_id?:string|null;
   ops: FileBatchOp[];
   expected_hashes: Record<string, string>;
   previews: OpPreview[];
@@ -434,6 +441,7 @@ export interface FileBatchPlanRow {
   coedit_waits?: Array<{
     wait_token: string;
     primary_agent: string;
+    primary_identity_id?:string|null;
     target_plan_id: string | null;
     wait_status: string;
     shared_files: string[];
@@ -445,6 +453,7 @@ export interface FileBatchPlanRow {
 
 export interface CoeditWaitGroup {
   primary_agent: string;
+  primary_identity_id?:string;
   shared_files: string[];
   wait_token: string;
   retry_after_seconds: number;
@@ -628,6 +637,8 @@ export interface SharedPlanStatusResult extends Record<string, unknown> {
   source_plan_id: string;
   primary_plan_id: string | null;
   waiting_agent: string | null;
+  waiting_identity_id?: string | null;
+  primary_identity_id?: string | null;
   primary_agent: string;
   status: CoeditWaitStatus | 'expired';
   shared_files: string[];
@@ -653,6 +664,8 @@ export interface CoeditConflictDetail {
   right_op_index: number;
   left_agent_id: string;
   right_agent_id: string;
+  left_identity_id?:string;
+  right_identity_id?:string;
   reason: 'same_anchor' | 'overlapping_range' | 'file_level_overlap' | 'composite_reapply_failed';
   message: string;
   /** Plan, in dem die beiden Ops liegen (gesetzt, wo der Plan bekannt ist). */
@@ -1327,9 +1340,37 @@ function asIso(value: Date | string): string {
  * Befund 1: committed_at nur bei status='committed' — Altzeilen, in denen
  * cancel/stale committed_at gesetzt hatten, werden in der Antwort maskiert.
  */
+function pruefePlanBezug(plan:{owner_identity_id?:string|null;ops?:FileBatchOp[]}):void {
+  if((!aktuellerAgentAufruf() || aktuellerAgentAufruf()?.bezug.modus==='alt')
+    && (plan.owner_identity_id || plan.ops?.some(op=>op.author_identity_id))) throw new Error('agent_bezug_nicht_freigegeben');
+}
+function opAgentKey(op: {agent_id?: string | null; author_identity_id?: string | null}, plan: { owner_agent_id: string | null; owner_identity_id?: string | null }): string {
+  return fileAgentKey(op.agent_id ? {agent_id:op.agent_id,identity_id:op.author_identity_id} : {agent_id:plan.owner_agent_id,identity_id:plan.owner_identity_id});
+}
+function ownerAgentKey(plan: { owner_agent_id: string | null; owner_identity_id?: string | null }): string {
+  return fileAgentKey({agent_id:plan.owner_agent_id,identity_id:plan.owner_identity_id});
+}
+function eventAgent(name: string | null, identityId?: string | null): string {
+  return identityId ? 'identity:' + identityId : name?.startsWith('identity:') || name?.startsWith('legacy:') ? 'legacy:' + JSON.stringify(name) : name ?? '';
+}
+function eventName(value:string):string { return value.startsWith('legacy:') ? JSON.parse(value.slice(7)) as string : value; }
+function eventScope(value:string):string { return value.startsWith('identity:') ? value : 'agent:' + eventName(value); }
+function opEventAgent(op: FileBatchOp, plan: {owner_agent_id:string|null;owner_identity_id?:string|null}): string {
+  return op.agent_id ? eventAgent(op.agent_id,op.author_identity_id) : eventAgent(plan.owner_agent_id,plan.owner_identity_id);
+}
+function waitAgentKey(wait: {waiting_agent: string | null;waiting_identity_id?: string | null}): string {
+  return fileAgentKey({agent_id:wait.waiting_agent,identity_id:wait.waiting_identity_id});
+}
+function primaryAgentKey(wait: {primary_agent: string;primary_identity_id?: string | null}): string {
+  return fileAgentKey({agent_id:wait.primary_agent,identity_id:wait.primary_identity_id});
+}
 function normalizePlanRow(row: FileBatchPlanRow): FileBatchPlanRow {
+  if (!row.owner_identity_id) delete row.owner_identity_id;
+  if(!row.committed_by_identity_id) delete row.committed_by_identity_id;
+  if(!row.cancelled_by_identity_id) delete row.cancelled_by_identity_id;
   return {
     ...row,
+    ...(row.owner_identity_id ? {owner_identity_id:row.owner_identity_id} : {}),
     expires_at: asIso(row.expires_at),
     created_at: asIso(row.created_at),
     committed_at: row.status === 'committed' && row.committed_at ? asIso(row.committed_at) : null,
@@ -1369,6 +1410,8 @@ export interface CoeditInsertNote {
   right_op_index: number;
   left_agent_id: string;
   right_agent_id: string;
+  left_identity_id?:string;
+  right_identity_id?:string;
   reason: 'same_insert_point' | 'builds_on';
   message: string;
   plan_id?: string;
@@ -1529,7 +1572,7 @@ function detectCrossAgentConflicts(
       const quellen = ops.flatMap((other, otherIndex) =>
         otherIndex < index && other.file_path === op.file_path && neuerTextVon(other).includes(op.search as string)
           ? [otherIndex] : []);
-      if (quellen.length !== 1 || ops[quellen[0]].agent_id !== op.agent_id) return;
+      if (quellen.length !== 1 || fileAgentKey({agent_id:ops[quellen[0]].agent_id??null,identity_id:ops[quellen[0]].author_identity_id}) !== fileAgentKey({agent_id:op.agent_id??null,identity_id:op.author_identity_id})) return;
       const quelle = quellen[0];
       regions[index] = regions[quelle].map((region) => region.kind === 'file' ? region : ({
         file_path: region.file_path,
@@ -1556,7 +1599,7 @@ function detectCrossAgentConflicts(
     const leftAgent = ops[leftIndex].agent_id ?? 'unknown';
     for (let rightIndex = leftIndex + 1; rightIndex < ops.length; rightIndex++) {
       const rightAgent = ops[rightIndex].agent_id ?? 'unknown';
-      if (leftAgent === rightAgent) continue;
+      if (fileAgentKey({agent_id:leftAgent,identity_id:ops[leftIndex].author_identity_id}) === fileAgentKey({agent_id:rightAgent,identity_id:ops[rightIndex].author_identity_id})) continue;
       for (const left of regions[leftIndex]) {
         for (const right of regions[rightIndex]) {
           if (left.file_path !== right.file_path) continue;
@@ -1569,7 +1612,9 @@ function detectCrossAgentConflicts(
           if (gleicherPunkt || aufbauend) {
             const note: Omit<CoeditInsertNote, 'message'> = {
               file_path: left.file_path, left_op_index: leftIndex, right_op_index: rightIndex,
-              left_agent_id: leftAgent, right_agent_id: rightAgent, reason: aufbauend ? 'builds_on' : 'same_insert_point',
+              left_agent_id: leftAgent, right_agent_id: rightAgent,
+              ...(ops[leftIndex].author_identity_id ? {left_identity_id:ops[leftIndex].author_identity_id} : {}),
+              ...(ops[rightIndex].author_identity_id ? {right_identity_id:ops[rightIndex].author_identity_id} : {}), reason: aufbauend ? 'builds_on' : 'same_insert_point',
             };
             hinweise?.push({ ...note, message: insertNoteText(note) });
             continue;
@@ -1581,6 +1626,8 @@ function detectCrossAgentConflicts(
             right_op_index: rightIndex,
             left_agent_id: leftAgent,
             right_agent_id: rightAgent,
+            ...(ops[leftIndex].author_identity_id ? {left_identity_id:ops[leftIndex].author_identity_id} : {}),
+            ...(ops[rightIndex].author_identity_id ? {right_identity_id:ops[rightIndex].author_identity_id} : {}),
             reason:
               left.kind === 'span' && right.kind === 'span' && left.anchor === right.anchor
                 ? 'same_anchor'
@@ -1698,39 +1745,40 @@ function gesamtWaitStatus(stati: string[]): string {
  */
 async function readyGateBlockers(
   queryable: { query: PoolClient['query'] },
-  plan: { id: string; project: string; owner_agent_id: string | null },
+  plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null },
   caller: string | null,
 ): Promise<CommitWaitingFor[]> {
   const offen = await queryable.query<{
-    waiting_agent: string; status: string; shared_files: string[]; contributed_files: string[]; no_change_files: string[];
+    waiting_agent: string; waiting_identity_id?: string | null; status: string; shared_files: string[]; contributed_files: string[]; no_change_files: string[];
   }>(
-    `SELECT waiting_agent, status::text AS status, shared_files, contributed_files, no_change_files
+    `SELECT waiting_agent, waiting_identity_id, status::text AS status, shared_files, contributed_files, no_change_files
        FROM file_batch_waits
       WHERE primary_plan_id = $1::bigint AND waiting_agent IS NOT NULL
         AND status NOT IN ('ready', 'no_changes', 'closed')
-        AND waiting_agent IS DISTINCT FROM $2 AND waiting_agent IS DISTINCT FROM $3
+        AND NOT (${fileAgentSql('waiting_agent','waiting_identity_id','$2',plan.owner_identity_id)}) AND NOT (${caller ? fileCallerSql('waiting_agent','waiting_identity_id','$3') : '$3::text IS NOT NULL'})
       ORDER BY waiting_agent`,
     [plan.id, plan.owner_agent_id, caller],
   );
   if (offen.rows.length === 0) return [];
   const minuten = coeditAktivMinuten();
   const aktiv = await queryable.query<{ agent_id: string; ts: Date | string }>(
-    `SELECT agent_id, MAX(ts) AS ts
+    `SELECT CASE WHEN identity_id IS NOT NULL THEN 'identity:'||identity_id ELSE 'legacy:'||to_json(agent_id)::text END AS agent_id, MAX(ts) AS ts
        FROM tool_calls
-      WHERE agent_id = ANY($1::text[]) AND (project = $2 OR project IS NULL)
+      WHERE (CASE WHEN identity_id IS NOT NULL THEN 'identity:'||identity_id ELSE 'legacy:'||to_json(agent_id)::text END) = ANY($1::text[]) AND (project = $2 OR project IS NULL)
         AND ts > NOW() - make_interval(secs => $3::double precision)
-      GROUP BY agent_id`,
-    [uniqueStrings(offen.rows.map((wait) => wait.waiting_agent)), plan.project, minuten * 60],
+      GROUP BY 1`,
+    [uniqueStrings(offen.rows.map(waitAgentKey)), plan.project, minuten * 60],
   );
   const letzte = new Map(aktiv.rows.map((row) => [row.agent_id, new Date(row.ts)] as const));
   const proAgent = new Map<string, CommitWaitingFor>();
   for (const wait of offen.rows) {
-    const ts = letzte.get(wait.waiting_agent);
+    const ts = letzte.get(waitAgentKey(wait));
     if (!ts) continue;
     const erledigt = new Set([...wait.contributed_files, ...wait.no_change_files]);
     const fehlend = wait.shared_files.filter((filePath) => !erledigt.has(filePath));
-    const eintrag = proAgent.get(wait.waiting_agent) ?? {
+    const eintrag = proAgent.get(waitAgentKey(wait)) ?? {
       agent_id: wait.waiting_agent,
+      ...(wait.waiting_identity_id ? {identity_id:wait.waiting_identity_id} : {}),
       wait_status: wait.status,
       letzte_aktivitaet: ts.toISOString(),
       inaktiv_ab: new Date(ts.getTime() + minuten * 60000).toISOString(),
@@ -1738,11 +1786,28 @@ async function readyGateBlockers(
     };
     eintrag.wait_status = gesamtWaitStatus([eintrag.wait_status, wait.status]);
     eintrag.dateien = uniqueStrings([...eintrag.dateien, ...(fehlend.length > 0 ? fehlend : wait.contributed_files)]);
-    proAgent.set(wait.waiting_agent, eintrag);
+    proAgent.set(waitAgentKey(wait), eintrag);
   }
   return [...proAgent.values()];
 }
 
+async function releaseIdentityCommitReservations(
+  client:{query:PoolClient['query']}, project:string, planId:string, paths:string[], identities:string[],
+  retained:string[], callerIdentity:string|null,
+):Promise<Array<{agent_id:string;identity_id:string;file_path:string}>> {
+  const result=await client.query<{agent_id:string;identity_id:string;file_path:string}>(
+    `UPDATE agent_identitaet_file_reservations SET released_at=COALESCE(
+      (SELECT committed_at FROM file_batch_plans WHERE id=$2::bigint),NOW()),plan_id=COALESCE(plan_id,$2::bigint)
+      WHERE project=$1 AND released_at IS NULL
+      AND ((file_path=ANY($3::text[]) AND identity_id=ANY($4::text[]) AND NOT(identity_id=ANY($5::text[])))
+        OR (identity_id=$6 AND plan_id IS NULL)) RETURNING agent_id,identity_id,file_path`,
+    [project,planId,paths,identities,retained.filter(x=>x.startsWith('identity:')).map(x=>x.slice(9)),callerIdentity]);
+  return result.rows;
+}
+function planIdentityIds(plan:{owner_identity_id?:string|null;ops:FileBatchOp[]}, waits:CoeditWaitRow[]=[]):string[] {
+  return uniqueStrings([plan.owner_identity_id??'',...plan.ops.map(op=>op.author_identity_id??''),
+    ...waits.flatMap(w=>[w.waiting_identity_id??'',w.primary_identity_id??''])].filter(Boolean));
+}
 function waitingForContributorsResult(planId: string, blockers: CommitWaitingFor[]): CommitBatchResult {
   const wer = blockers.map((b) => `${b.agent_id} (${b.wait_status}: ${b.dateien.join(', ')})`).join('; ');
   return {
@@ -1783,20 +1848,20 @@ async function emitPlanFolgeEvents(
 ): Promise<void> {
   const gesehen = new Set<string>();
   for (const { agent, payload } of args.empfaenger) {
-    if (!agent || agent === args.actor || gesehen.has(agent)) continue;
+    if (!agent || agent === eventAgent(args.actor,aktuelleAgentIdentityId(args.project,args.actor)) || gesehen.has(agent)) continue;
     gesehen.add(agent);
     await emitEventOnce({
       project: args.project,
       eventType: args.typ,
       priority: 'normal',
-      scope: `agent:${agent}`,
+      scope: eventScope(agent),
       sourceId: args.actor ?? 'synapse',
       payload: JSON.stringify({ plan_id: args.planId, ...payload }),
       requiresAck: true,
       dedupeKey: `${args.typ.toLowerCase()}:${args.planId}${args.dedupe ? `:${args.dedupe}` : ''}`,
     }, client);
   }
-  const quittieren = uniqueStrings(args.quittiereFuer.filter(Boolean));
+  const quittieren = uniqueStrings(args.quittiereFuer.filter(Boolean).map(agent => agent === args.actor ? eventAgent(agent,aktuelleAgentIdentityId(args.project,args.actor)) : agent));
   if (quittieren.length > 0) await resolvePlanReadyEvents(client, args.project, args.planId, args.grund, quittieren);
 }
 
@@ -1806,20 +1871,20 @@ async function emitPlanFolgeEvents(
  */
 async function planBeteiligte(
   client: PoolClient,
-  plan: { id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
+  plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
 ): Promise<{ waits: CoeditWaitRow[]; autoren: string[] }> {
   const waits = await client.query<CoeditWaitRow>(
     `${COEDIT_WAIT_SELECT}
       WHERE project = $1 AND waiting_agent IS NOT NULL AND status <> 'closed'
         AND (primary_plan_id = $2::bigint
-          OR ($3::text IS NOT NULL AND primary_plan_id IS NULL AND primary_agent = $3
+          OR ($3::text IS NOT NULL AND primary_plan_id IS NULL AND ${fileAgentSql('primary_agent','primary_identity_id','$3',plan.owner_identity_id)}
               AND status = 'waiting' AND shared_files && $4::text[]))
       ORDER BY waiting_agent, wait_token`,
     [plan.project, plan.id, plan.owner_agent_id, Object.keys(plan.expected_hashes ?? {})],
   );
   const autoren = uniqueStrings([
-    plan.owner_agent_id ?? '',
-    ...(Array.isArray(plan.ops) ? plan.ops : []).map((op) => op.agent_id ?? plan.owner_agent_id ?? ''),
+    eventAgent(plan.owner_agent_id,plan.owner_identity_id),
+    ...(Array.isArray(plan.ops) ? plan.ops : []).map((op) => opEventAgent(op,plan)),
   ].filter(Boolean));
   return { waits: waits.rows, autoren };
 }
@@ -1834,33 +1899,35 @@ type CommitAuthorReservationTransfer = {
 /** Erhaelt Reservierungen anderer Op-Autoren auf dem committed Datenstand. */
 async function rebaseCommitAuthorReservations(
   client: PoolClient,
-  plan: { id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
+  plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
   caller: string | null,
 ): Promise<Map<string, CommitAuthorReservationTransfer>> {
   const config = getReservationTtlConfig();
   const dateien = Object.keys(plan.expected_hashes ?? {});
   const autoren = uniqueStrings([
-    plan.owner_agent_id ?? '',
-    ...(Array.isArray(plan.ops) ? plan.ops : []).map((op) => op.agent_id ?? ''),
-  ].filter((agent) => agent && agent !== caller));
+    eventAgent(plan.owner_agent_id,plan.owner_identity_id),
+    ...(Array.isArray(plan.ops) ? plan.ops : []).map((op) => opEventAgent(op,plan)),
+  ].filter((agent) => agent && agent !== eventAgent(caller,aktuelleAgentIdentityId(plan.project,caller))));
   const transfers = new Map<string, CommitAuthorReservationTransfer>();
   for (const agent of autoren) {
+    const identityId = agent.startsWith('identity:') ? agent.slice(9) : null;
+    const table=identityId ? 'agent_identitaet_file_reservations' : 'file_reservations';
     const rows = await client.query<{ file_path: string; hash: string; expires_at: Date | string }>(
-      `UPDATE file_reservations r
+      `UPDATE ${table} r
           SET plan_id = NULL,
               content_hash_at_reservation = CASE WHEN cf.deleted_at IS NULL THEN cf.content_hash ELSE $5 END,
               reserved_at = NOW(),
               last_extended_at = NOW(),
               expires_at = NOW() + ($6::double precision * INTERVAL '1 second')
          FROM code_files cf
-        WHERE r.project = $1 AND r.agent_id = $2
+        WHERE r.project = $1 AND ${identityId ? 'r.identity_id' : 'r.agent_id'} = $2
           AND r.file_path = ANY($3::text[]) AND r.released_at IS NULL
           AND (r.plan_id = $4::bigint OR r.plan_id IS NULL)
           AND cf.project = r.project AND cf.file_path = r.file_path
         RETURNING r.file_path,
                   r.content_hash_at_reservation AS hash,
                   r.expires_at`,
-      [plan.project, agent, dateien, plan.id, EMPTY_CONTENT_HASH, config.planlessMinutes * 60],
+      [plan.project, identityId ?? eventName(agent), dateien, plan.id, EMPTY_CONTENT_HASH, config.planlessMinutes * 60],
     );
     const versions = await client.query<{ id: string }>(
       `SELECT id::text AS id FROM file_versions
@@ -1882,19 +1949,19 @@ async function rebaseCommitAuthorReservations(
 /** V1: PLAN_COMMITTED an alle Betroffenen ausser dem Committer, mit ihrem fehlenden Anteil. */
 async function notifyPlanCommitted(
   client: PoolClient,
-  plan: { id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
+  plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string> },
   caller: string | null,
   reservationTransfers: Map<string, CommitAuthorReservationTransfer> = new Map(),
 ): Promise<void> {
   const { waits, autoren } = await planBeteiligte(client, plan);
   const fehlt = new Map<string, string[]>(autoren.map((agent) => [agent, []] as const));
   for (const wait of waits) {
-    const agent = wait.waiting_agent as string;
+    const agent = eventAgent(wait.waiting_agent,wait.waiting_identity_id);
     const offen = wait.status === 'ready' || wait.status === 'no_changes' ? [] : remainingWaitFiles(wait);
     fehlt.set(agent, uniqueStrings([...(fehlt.get(agent) ?? []), ...offen]));
   }
   const dateien = Object.keys(plan.expected_hashes ?? {});
-  const empfaenger = [...fehlt].filter(([agent]) => agent !== caller).map(([agent, offen]) => {
+  const empfaenger = [...fehlt].filter(([agent]) => agent !== eventAgent(caller,aktuelleAgentIdentityId(plan.project,caller))).map(([agent, offen]) => {
     const transfer = reservationTransfers.get(agent);
     const hinweis = transfer
       ? 'Deine Aenderungen aus Plan ' + plan.id + ' wurden von ' + (caller ?? 'unbekannt')
@@ -1944,7 +2011,7 @@ async function commitCoeditBatch(args: {
   try {
     await client.query('BEGIN');
     const planRes = await client.query<FileBatchPlanRow>(
-      `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+      `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
               status, open_for_coedit, notify_channel, reason,
               expires_at::text AS expires_at, created_at::text AS created_at,
               committed_at::text AS committed_at
@@ -1954,6 +2021,7 @@ async function commitCoeditBatch(args: {
       [args.plan_id],
     );
     const plan = planRes.rows[0];
+    if(plan) pruefePlanBezug(plan);
     if (!plan) {
       await client.query('ROLLBACK');
       return {
@@ -2005,7 +2073,7 @@ async function commitCoeditBatch(args: {
     const commitCaller = resolveAgentId(args.agent_id);
     let eigeneFertig = false;
     for (const wait of linkedWaits.rows) {
-      if (!commitCaller || wait.waiting_agent !== commitCaller) continue;
+      if (!commitCaller || waitAgentKey(wait) !== fileCallerKey(plan.project,commitCaller)) continue;
       if (wait.status === 'ready' || wait.status === 'no_changes' || wait.status === 'closed') continue;
       const status: CoeditWaitStatus = wait.contributed_files.length === 0 ? 'no_changes' : 'ready';
       await client.query(
@@ -2023,7 +2091,7 @@ async function commitCoeditBatch(args: {
     }
     const unfinishedWaits = linkedWaits.rows.filter(
       (wait) => wait.status !== 'ready' && wait.status !== 'no_changes' && wait.status !== 'closed'
-        && wait.waiting_agent !== plan.owner_agent_id,
+        && waitAgentKey(wait) !== ownerAgentKey(plan),
     ).length;
 
     const rows = planPaths.length > 0
@@ -2108,15 +2176,16 @@ async function commitCoeditBatch(args: {
     // kompletten Dateiinhalt pro Op (500 Ops x 2 MB = 1 GB je commit). Attribution
     // bleibt erhalten — jeder beteiligte Agent hat seinen Eintrag, mit Op-Zahl.
     const snapshots = new Map<string, {
-      filePath: string; agentId: string | null; taskId: string | null; count: number; actions: Set<string>; reasons: Set<string>;
+      filePath: string; agentId: string | null; identityId: string | null; taskId: string | null; count: number; actions: Set<string>; reasons: Set<string>;
     }>();
     for (const op of plan.ops) {
       const agentId = op.agent_id ?? plan.owner_agent_id ?? resolveAgentId(args.agent_id) ?? null;
+      const identityId = op.agent_id ? op.author_identity_id ?? null : plan.owner_identity_id ?? aktuelleAgentIdentityId(plan.project,args.agent_id);
       for (const filePath of touchedPaths(op)) {
         const taskId = op.task_id ?? args.task_id ?? null;
-        const key = `${filePath}\u0000${agentId ?? ''}\u0000${taskId ?? ''}`;
+        const key = `${filePath}\u0000${fileAgentKey({agent_id:agentId,identity_id:identityId})}\u0000${taskId ?? ''}`;
         const entry = snapshots.get(key)
-          ?? { filePath, agentId, taskId, count: 0, actions: new Set<string>(), reasons: new Set<string>() };
+          ?? { filePath, agentId, identityId, taskId, count: 0, actions: new Set<string>(), reasons: new Set<string>() };
         entry.count++;
         entry.actions.add(op.action);
         // Begruendung je Autor: alle eigenen Op-reasons dieses Agenten auf dieser Datei.
@@ -2133,8 +2202,8 @@ async function commitCoeditBatch(args: {
       const marker = await client.query<{ id: string }>(
         `INSERT INTO file_versions
            (project, file_path, content, content_hash, edit_action, agent_id, batch_id,
-            size_bytes, reason, agent_note, task_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10, $11) RETURNING id::text AS id`,
+            size_bytes, reason, agent_note, task_id, author_identity_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::bigint, $8, $9, $10, $11, $12) RETURNING id::text AS id`,
         [
           plan.project,
           entry.filePath,
@@ -2146,7 +2215,7 @@ async function commitCoeditBatch(args: {
           Buffer.byteLength(before, 'utf8'),
           entry.reasons.size > 0 ? [...entry.reasons].join(' | ') : plan.reason,
           args.agent_note ?? null,
-          entry.taskId,
+          entry.taskId, entry.identityId,
         ],
       );
       for (const row of marker.rows) merkeFileTaskVersion({ id: row.id, file_path: entry.filePath, task_id: entry.taskId });
@@ -2217,15 +2286,15 @@ async function commitCoeditBatch(args: {
 
     await client.query(
       `UPDATE file_batch_plans
-          SET status = 'committed', committed_at = NOW(), previews = $2::jsonb,
+          SET status = 'committed', committed_at = NOW(), committed_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,args.agent_id))}, previews = $2::jsonb,
               reason = CONCAT_WS(' ', reason, $3::text)
         WHERE id = $1::bigint`,
       [args.plan_id, JSON.stringify(combined.previews), `[committed von ${resolveAgentId(args.agent_id) ?? 'unbekannt'}]`],
     );
     const involvedAgents = [...new Set([
-      plan.owner_agent_id,
-      ...plan.ops.map((op) => op.agent_id),
-      ...linkedWaits.rows.flatMap((wait) => [wait.primary_agent, wait.waiting_agent]),
+      plan.owner_identity_id ? null : plan.owner_agent_id,
+      ...plan.ops.filter(op=>!op.author_identity_id).map((op) => op.agent_id),
+      ...linkedWaits.rows.flatMap((wait) => [wait.primary_identity_id ? null : wait.primary_agent, wait.waiting_identity_id ? null : wait.waiting_agent]),
     ].filter((agentId): agentId is string => Boolean(agentId)))];
     const reservationTransfers = await rebaseCommitAuthorReservations(client, plan, commitCaller);
     const retainedAuthors = [...reservationTransfers.keys()];
@@ -2237,16 +2306,17 @@ async function commitCoeditBatch(args: {
             AND agent_id = ANY($3::text[]) AND NOT (agent_id = ANY($5::text[]))
             AND released_at IS NULL
           RETURNING agent_id, file_path`,
-        [plan.project, planPaths, involvedAgents, args.plan_id, retainedAuthors],
+        [plan.project, planPaths, involvedAgents, args.plan_id, retainedAuthors.filter(x=>!x.startsWith('identity:')).map(eventName)],
       )).rows;
     }
     const planlessReleased = (await client.query<{ agent_id: string; file_path: string }>(
       `UPDATE file_reservations SET released_at = NOW()
-        WHERE project = $1 AND agent_id = $2 AND plan_id IS NULL AND released_at IS NULL
+        WHERE project = $1 AND ${fileCallerSql('agent_id','NULL::text','$2')} AND plan_id IS NULL AND released_at IS NULL
         RETURNING agent_id, file_path`,
       [plan.project, commitCaller],
     )).rows.map((reservation) => ({ ...reservation, reason: 'freigegeben nach eigenem Commit' }));
     releasedReservations.push(...planlessReleased);
+    releasedReservations.push(...await releaseIdentityCommitReservations(client,plan.project,args.plan_id,planPaths,planIdentityIds(plan,linkedWaits.rows),retainedAuthors,aktuelleAgentIdentityId(plan.project,commitCaller)));
     // Leere Traegerplaene schliessen, deren Waits jetzt keinen offenen Zweck mehr haben —
     // aber NICHT den Traeger eines Agenten, der noch in einem anderen offenen Plan wartet
     // (Befund 875d6a8c: ein Traeger kann Waits auf mehrere Plaene haben).
@@ -2308,6 +2378,7 @@ interface JoinableSharedPlanRow {
   file_path: string;
   plan_id: string;
   owner_agent_id: string;
+  owner_identity_id?: string | null;
   created_at: Date | string;
 }
 
@@ -2329,12 +2400,13 @@ async function findJoinableSharedPlans(
   if (filePaths.length === 0) return [];
   const { rows } = await queryable.query<JoinableSharedPlanRow>(
     `SELECT DISTINCT ON (f.file_path)
-            f.file_path, p.id::text AS plan_id, p.owner_agent_id, p.created_at
+            f.file_path, p.id::text AS plan_id, p.owner_agent_id, p.owner_identity_id, p.created_at
        FROM unnest($3::text[]) AS f(file_path)
        JOIN file_batch_plans p
          ON p.project = $1 AND p.status = 'open' AND p.owner_agent_id IS NOT NULL
-        AND ((p.open_for_coedit = true AND p.owner_agent_id IS DISTINCT FROM $2)
-          OR ($5::boolean AND p.owner_agent_id = $2))
+        AND (${aktuellerAgentAufruf()?.bezug.modus !== 'alt' && !!aktuellerAgentAufruf() ? 'true' : "p.owner_identity_id IS NULL AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements(p.ops) ao WHERE ao->>'author_identity_id' IS NOT NULL)"})
+        AND ((p.open_for_coedit = true AND NOT (${fileCallerSql('p.owner_agent_id','p.owner_identity_id','$2')}))
+          OR ($5::boolean AND ${fileCallerSql('p.owner_agent_id','p.owner_identity_id','$2')}))
         AND p.expected_hashes ? f.file_path
         AND jsonb_array_length(p.ops) > 0
         AND NOT (p.previews @> '[{"ok": false}]'::jsonb)
@@ -2396,7 +2468,7 @@ async function lockFilesForPlanning(
  * offen, bis er committed oder per cancel verworfen wird.
  */
 export async function planBatch(args: Parameters<typeof planBatchKern>[0]):Promise<PlanBatchResult> {
-  const ops=await normalisiereOps(args.project,args.ops);
+  const ops=await normalisiereOps(args.project,args.ops.map(withoutCoeditMetadata));
   const fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));
   return {...await planBatchKern({...args,ops}),fs_pruefung};
 }
@@ -2466,7 +2538,7 @@ async function planBatchKern(args: {
   // Lesezugriff; laeuft neben der Plan-TX und wird erst fuer die Antwort abgewartet. Wirft nie.
   const pruefungLauf: Promise<PlanPruefung | null> = failedOpsOf(previews).length > 0 || !planPruefungAn()
     ? Promise.resolve(null)
-    : pruefePlanDateien(args.project, pruefDateienAus(schattenStand, args.ops, resolveAgentId(args.agent_id) ?? null)).catch(() => null);
+    : pruefePlanDateien(args.project, pruefDateienAus(schattenStand, args.ops, resolveAgentId(args.agent_id) ?? null, aktuelleAgentIdentityId(args.project,args.agent_id))).catch(() => null);
 
   // Runde 3 (Nachtrag dc2d7eac b): Pfade, die als Wait in einen offenen fremden Plan gehen, werden spaeter
   // auf den Stand DES ZIELPLANS angewendet (Platte + dessen Ops). Eine gegen die Platte gescheiterte Op
@@ -2531,15 +2603,15 @@ async function planBatchKern(args: {
     // geprueft — auch das passte nicht. Richtig ist dann plan_update auf DIESEN Plan; die Antwort nennt ihn.
     const eigenePlaeneForDraft = failedOwner
       ? groupSharedPlans((await findJoinableSharedPlans(getPool(), args.project, failedOwner, [...fileBuffers.keys()], true))
-          .filter((row) => row.owner_agent_id === failedOwner))
+          .filter((row) => ownerAgentKey(row) === fileCallerKey(args.project,failedOwner)))
       : [];
     const storedFailedOps = args.ops.map((op) => ({
       ...withoutCoeditMetadata(op),
-      ...(failedOwner ? { agent_id: failedOwner } : {}),
+      ...(failedOwner ? { agent_id: failedOwner, ...(aktuelleAgentIdentityId(args.project,failedOwner) ? {author_identity_id:aktuelleAgentIdentityId(args.project,failedOwner)!} : {}) } : {}),
     }));
     const inserted = await getPool().query<{ id: string }>(
-      `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason)
-       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
+      `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason, owner_identity_id)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, ${fileIdentitySql(aktuelleAgentIdentityId(args.project,failedOwner))})
        RETURNING id::text AS id`,
       [
         args.project,
@@ -2634,7 +2706,7 @@ async function planBatchKern(args: {
     if (ownerAgentId) {
       const tot = await client.query<{ source_plan_id: string }>(
         `UPDATE file_batch_waits w SET status = 'closed', updated_at = NOW()
-          WHERE w.project = $1 AND w.waiting_agent = $2 AND w.shared_files && $3::text[]
+          WHERE w.project = $1 AND ${fileCallerSql('w.waiting_agent','w.waiting_identity_id','$2')} AND w.shared_files && $3::text[]
             AND ${totWaitSql('w')}
             AND EXISTS (SELECT 1 FROM file_batch_plans c WHERE c.id = w.source_plan_id AND c.status = 'open')
           RETURNING w.source_plan_id::text AS source_plan_id`,
@@ -2654,8 +2726,8 @@ async function planBatchKern(args: {
       }
     }
     const joinableRows = await findJoinableSharedPlans(client, args.project, ownerAgentId, plannedPaths, true);
-    const eigeneRows = joinableRows.filter((row) => ownerAgentId && row.owner_agent_id === ownerAgentId);
-    const fremdeRows = joinableRows.filter((row) => !ownerAgentId || row.owner_agent_id !== ownerAgentId);
+    const eigeneRows = joinableRows.filter((row) => ownerAgentId && ownerAgentKey(row) === fileCallerKey(args.project,ownerAgentId));
+    const fremdeRows = joinableRows.filter((row) => !ownerAgentId || ownerAgentKey(row) !== fileCallerKey(args.project,ownerAgentId));
     const offenePlanPfade = new Set(joinableRows.map((row) => row.file_path));
     const reservationRows = (await findForeignActiveReservationPrimaries({
       project: args.project,
@@ -2670,6 +2742,7 @@ async function planBatchKern(args: {
     const planPrimaryRows: ForeignActiveReservationPrimary[] = fremdeRows.map((row) => ({
       file_path: row.file_path,
       reserved_by: row.owner_agent_id,
+      ...(row.owner_identity_id ? {reserved_identity_id:row.owner_identity_id} : {}),
       reserved_since: asIso(row.created_at),
       expires_at: new Date(Date.now() + SHARED_PLAN_WAIT_MINUTES * 60000).toISOString(),
     }));
@@ -2677,7 +2750,7 @@ async function planBatchKern(args: {
     // Reservierungen ohne Plan bleiben sichtbar, blockieren aber keine Planung.
     const planloseHinweise = reservationRows.length
       ? (await lesePlanloseReservierungen(args.project, reservationRows.map(row => row.file_path), client))
-          .filter(row => reservationRows.some(primary => primary.file_path === row.file_path && primary.reserved_by === row.reserviert_von))
+          .filter(row => reservationRows.some(primary => primary.file_path === row.file_path && primary.reserved_by === row.reserviert_von && (primary.reserved_identity_id??null)===(row.reserviert_identity_id??null)))
       : [];
     const primaryByPath = new Map(
       planPrimaryRows.map((row) => [row.file_path, row] as const),
@@ -2759,7 +2832,7 @@ async function planBatchKern(args: {
       let gesperrt;
       try {
         gesperrt = await client.query<FileBatchPlanRow>(
-          `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews, status, open_for_coedit,
+          `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews, status, open_for_coedit,
                   notify_channel, reason, expires_at::text AS expires_at, created_at::text AS created_at,
                   committed_at::text AS committed_at
              FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE NOWAIT`,
@@ -2771,7 +2844,7 @@ async function planBatchKern(args: {
       }
       const ziel = gesperrt.rows[0];
       if (!ziel || ziel.status !== 'open') return nochmalPlanen(zielId);
-      const neueOps = zielOps.map((op) => ({ ...withoutCoeditMetadata(op), ...(ownerAgentId ? { agent_id: ownerAgentId } : {}) }));
+      const neueOps = zielOps.map((op) => ({ ...withoutCoeditMetadata(op), ...(ownerAgentId ? { agent_id: ownerAgentId, ...(aktuelleAgentIdentityId(args.project,ownerAgentId) ? {author_identity_id:aktuelleAgentIdentityId(args.project,ownerAgentId)!} : {}) } : {}) }));
       const zielHashes = { ...ziel.expected_hashes };
       const pruefDateien = verbundeneDateien(neueOps.flatMap(touchedPaths), [...ziel.ops, ...neueOps]);
       const baselines = new Map<string, string>();
@@ -2810,7 +2883,7 @@ async function planBatchKern(args: {
         [ziel.id, JSON.stringify(alleOps), JSON.stringify(zielHashes), JSON.stringify(vorschau)],
       );
       await emitPlanReadyForExistingWaits(client, {
-        id: ziel.id, project: args.project, owner_agent_id: ziel.owner_agent_id,
+        id: ziel.id, project: args.project, owner_agent_id: ziel.owner_agent_id, owner_identity_id:ziel.owner_identity_id,
         expected_hashes: zielHashes, open_for_coedit: ziel.open_for_coedit,
       });
       zusammengefuehrt.push({
@@ -2849,15 +2922,15 @@ async function planBatchKern(args: {
     // neuen deferred-Indizes werden hinter die vorhandenen gesetzt (Schluessel source_plan:index).
     let traeger: { id: string; indexOffset: number } | null = null;
     if (planOps.length === 0 && sharedPaths.size > 0 && ownerAgentId) {
-      const primaere = uniqueStrings([...primaryByPath.values()].map((row) => row.reserved_by));
+      const primaere = uniqueStrings([...primaryByPath.values()].map((row) => fileAgentKey({agent_id:row.reserved_by,identity_id:row.reserved_identity_id})));
       const vorhanden = await client.query<{ id: string; max_index: number }>(
         `SELECT c.id::text AS id,
                 COALESCE((SELECT MAX(i) FROM file_batch_waits w2, unnest(w2.deferred_op_indexes) AS i
                            WHERE w2.source_plan_id = c.id), -1)::int AS max_index
            FROM file_batch_plans c
-          WHERE c.project = $1 AND c.owner_agent_id = $2 AND c.status = 'open' AND jsonb_array_length(c.ops) = 0
+          WHERE c.project = $1 AND ${fileCallerSql('c.owner_agent_id','c.owner_identity_id','$2')} AND c.status = 'open' AND jsonb_array_length(c.ops) = 0
             AND EXISTS (SELECT 1 FROM file_batch_waits w
-                         WHERE w.source_plan_id = c.id AND w.status <> 'closed' AND w.primary_agent = ANY($3::text[]))
+                         WHERE w.source_plan_id = c.id AND w.status <> 'closed' AND (CASE WHEN w.primary_identity_id IS NOT NULL THEN 'identity:'||w.primary_identity_id ELSE 'legacy:'||to_json(w.primary_agent)::text END) = ANY($3::text[]))
           ORDER BY c.created_at, c.id
           LIMIT 1`,
         [args.project, ownerAgentId, primaere],
@@ -2867,7 +2940,7 @@ async function planBatchKern(args: {
 
     const storedPlanOps = planOps.map((op) => ({
       ...withoutCoeditMetadata(op),
-      ...(ownerAgentId ? { agent_id: ownerAgentId } : {}),
+      ...(ownerAgentId ? { agent_id: ownerAgentId, ...(aktuelleAgentIdentityId(args.project,ownerAgentId) ? {author_identity_id:aktuelleAgentIdentityId(args.project,ownerAgentId)!} : {}) } : {}),
     }));
     // P15-T27 Ziel 2: der leere Traeger eines toten Waits wird zum Plan (gleiche plan_id). Nur ohne
     // neue Waits, sonst kollidierten deren Op-Indizes mit denen der geschlossenen Waits.
@@ -2885,8 +2958,8 @@ async function planBatchKern(args: {
     // P15-T17 E3: voller Plan -> Befunde gleich beim INSERT speichern (kein zweiter Roundtrip nach dem COMMIT).
     const vorabPruefung = !traeger && !umgewidmet && !geteilt && planOps.length > 0 && planPruefungAn() ? await pruefungLauf : null;
     const planRes = traeger || umgewidmet ? null : await client.query<{ id: string; expires_at: string }>(
-      `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason, befunde)
-       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb)
+      `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, open_for_coedit, reason, befunde, owner_identity_id)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb, ${fileIdentitySql(aktuelleAgentIdentityId(args.project,ownerAgentId))})
        RETURNING id::text AS id, expires_at::text AS expires_at`,
       [
         args.project,
@@ -2909,6 +2982,7 @@ async function planBatchKern(args: {
       id: planRow.id,
       project: args.project,
       owner_agent_id: ownerAgentId,
+      owner_identity_id: aktuelleAgentIdentityId(args.project,ownerAgentId),
       expected_hashes: planExpectedHashes,
       open_for_coedit: args.open_for_coedit ?? true,
     });
@@ -2920,12 +2994,14 @@ async function planBatchKern(args: {
       for (const filePath of plannedPaths) {
         const reservation = primaryByPath.get(filePath);
         if (!reservation) continue;
-        const entries = groups.get(reservation.reserved_by) ?? [];
+        const entries = groups.get(fileAgentKey({agent_id:reservation.reserved_by,identity_id:reservation.reserved_identity_id})) ?? [];
         entries.push(reservation);
-        groups.set(reservation.reserved_by, entries);
+        groups.set(fileAgentKey({agent_id:reservation.reserved_by,identity_id:reservation.reserved_identity_id}), entries);
       }
 
-      for (const [primaryAgent, reservations] of groups) {
+      for (const reservations of groups.values()) {
+        const primaryAgent = reservations[0].reserved_by;
+        const primaryIdentityId = reservations[0].reserved_identity_id;
         const groupPaths = reservations.map((entry) => entry.file_path);
         const groupPathSet = new Set(groupPaths);
         const deferredIndexes = args.ops
@@ -2947,7 +3023,7 @@ async function planBatchKern(args: {
         if (traeger) {
           const vorhandenerWait = await client.query<{ deferred_ops: FileBatchOp[] }>(
             `SELECT deferred_ops FROM file_batch_waits
-              WHERE source_plan_id = $1::bigint AND primary_agent = $2 AND status <> 'closed'
+              WHERE source_plan_id = $1::bigint AND ${fileAgentSql('primary_agent','primary_identity_id','$2',primaryIdentityId)} AND status <> 'closed'
                 AND primary_plan_id IS NOT DISTINCT FROM $3::bigint
               ORDER BY wait_token LIMIT 1`,
             [traeger.id, primaryAgent, zielVorab.length === 1 && zielVorab[0] ? zielVorab[0] : null],
@@ -2966,7 +3042,7 @@ async function planBatchKern(args: {
                       updated_at = NOW()
                 WHERE wait_token = (
                   SELECT wait_token FROM file_batch_waits
-                   WHERE source_plan_id = $1::bigint AND primary_agent = $2 AND status <> 'closed'
+                   WHERE source_plan_id = $1::bigint AND ${fileAgentSql('primary_agent','primary_identity_id','$2',primaryIdentityId)} AND status <> 'closed'
                      AND primary_plan_id IS NOT DISTINCT FROM $3::bigint
                    ORDER BY wait_token
                    LIMIT 1)
@@ -2979,9 +3055,9 @@ async function planBatchKern(args: {
         const waitRes = erweitert && erweitert.rows.length > 0 ? erweitert : await client.query<{ wait_token: string; expires_at: string }>(
           `INSERT INTO file_batch_waits (
              source_plan_id, project, waiting_agent, primary_agent, shared_files,
-             deferred_ops, deferred_op_indexes, expires_at
+             deferred_ops, deferred_op_indexes, expires_at, waiting_identity_id, primary_identity_id
            )
-           VALUES ($1::bigint, $2, $3, $4, $5::text[], $6::jsonb, $7::integer[], $8::timestamptz)
+           VALUES ($1::bigint, $2, $3, $4, $5::text[], $6::jsonb, $7::integer[], $8::timestamptz, ${fileIdentitySql(aktuelleAgentIdentityId(args.project,ownerAgentId))}, ${fileIdentitySql(primaryIdentityId)})
            RETURNING wait_token::text AS wait_token, expires_at::text AS expires_at`,
           [
             planRow.id,
@@ -3000,8 +3076,8 @@ async function planBatchKern(args: {
         const synchronizedWait = await client.query<{ wait_token: string; expires_at: string }>(
           `UPDATE file_batch_waits
               SET expires_at = COALESCE((
-                    SELECT MIN(r.expires_at) FROM file_reservations r
-                     WHERE r.project = $2 AND r.agent_id = $3
+                    SELECT MIN(r.expires_at) FROM ${reservierungsQuelle()} r
+                     WHERE r.project = $2 AND ${fileAgentSql('r.agent_id','r.identity_id','$3',primaryIdentityId)}
                        AND r.file_path = ANY($4::text[]) AND r.released_at IS NULL
                   ), expires_at),
                   updated_at = NOW()
@@ -3014,7 +3090,9 @@ async function planBatchKern(args: {
           wait_token: waitRow.wait_token,
           project: args.project,
           waiting_agent: ownerAgentId,
+          waiting_identity_id: aktuelleAgentIdentityId(args.project,ownerAgentId),
           primary_agent: primaryAgent,
+          primary_identity_id: primaryIdentityId,
           shared_files: groupPaths,
           deferred_ops: deferredOps,
         });
@@ -3029,7 +3107,7 @@ async function planBatchKern(args: {
             project: args.project,
             eventType: 'PLAN_WAITING',
             priority: 'normal',
-            scope: `agent:${primaryAgent}`,
+            scope: primaryIdentityId ? `identity:${primaryIdentityId}` : `agent:${primaryAgent}`,
             sourceId: ownerAgentId,
             payload: JSON.stringify({
               wait_token: waitRow.wait_token,
@@ -3082,6 +3160,7 @@ async function planBatchKern(args: {
         ].join(' ');
         coeditWaits.push({
           primary_agent: primaryAgent,
+          ...(primaryIdentityId ? {primary_identity_id:primaryIdentityId} : {}),
           shared_files: groupPaths,
           wait_token: waitRow.wait_token,
           retry_after_seconds: retryAfterSeconds,
@@ -3163,6 +3242,8 @@ interface CoeditWaitRow {
   source_plan_id: string;
   project: string;
   waiting_agent: string | null;
+  waiting_identity_id?: string | null;
+  primary_identity_id?: string | null;
   primary_agent: string;
   shared_files: string[];
   deferred_ops: FileBatchOp[];
@@ -3182,7 +3263,7 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function withoutCoeditMetadata(op: FileBatchOp): FileBatchOp {
-  const { agent_id: _agentId, coedit_source_plan_id: _sourcePlan, coedit_source_op_index: _sourceIndex, ...clean } = op;
+  const { agent_id: _agentId, author_identity_id: _identityId, coedit_source_plan_id: _sourcePlan, coedit_source_op_index: _sourceIndex, ...clean } = op;
   return clean;
 }
 
@@ -3260,7 +3341,7 @@ function remainingWaitFiles(wait: CoeditWaitRow): string[] {
 
 const COEDIT_WAIT_SELECT = `
   SELECT wait_token::text AS wait_token, source_plan_id::text AS source_plan_id, project,
-         waiting_agent, primary_agent, shared_files, deferred_ops, deferred_op_indexes,
+         waiting_agent, waiting_identity_id, primary_agent, primary_identity_id, shared_files, deferred_ops, deferred_op_indexes,
          primary_plan_id::text AS primary_plan_id, status, contributed_files, no_change_files,
          consumed_deferred_op_indexes, expires_at::text AS expires_at,
          ready_at::text AS ready_at, updated_at::text AS updated_at
@@ -3270,6 +3351,7 @@ interface PlanReadyPlan {
   id: string;
   project: string;
   owner_agent_id: string | null;
+  owner_identity_id?: string | null;
   expected_hashes: Record<string, string>;
   open_for_coedit: boolean;
   /** Anzahl Ops; leere Traegerplaene des Owners (0) sind nie Ziel eines Waits. */
@@ -3280,6 +3362,8 @@ interface PlanReadyWait {
   wait_token: string;
   project: string;
   waiting_agent: string | null;
+  waiting_identity_id?: string | null;
+  primary_identity_id?: string | null;
   primary_agent: string;
   shared_files: string[];
   deferred_ops: FileBatchOp[];
@@ -3323,7 +3407,7 @@ async function emitPlanReady(
     project: wait.project,
     eventType: 'PLAN_READY',
     priority: 'normal',
-    scope: `agent:${wait.waiting_agent}`,
+    scope: wait.waiting_identity_id ? `identity:${wait.waiting_identity_id}` : `agent:${wait.waiting_agent}`,
     sourceId: wait.primary_agent,
     payload: JSON.stringify({
       plan_id: plan.id,
@@ -3343,7 +3427,7 @@ async function emitPlanReadyForExistingWaits(
   if (!plan.owner_agent_id || !plan.open_for_coedit || Object.keys(plan.expected_hashes).length === 0) return;
   const waits = await client.query<CoeditWaitRow>(
     `${COEDIT_WAIT_SELECT}
-      WHERE project = $1 AND primary_agent = $2
+      WHERE project = $1 AND ${fileAgentSql('primary_agent','primary_identity_id','$2',plan.owner_identity_id)}
         AND waiting_agent IS NOT NULL
         AND primary_plan_id IS NULL
         AND status = 'waiting'
@@ -3371,10 +3455,10 @@ async function emitPlanReadyForExactlyOneExistingPlan(
 ): Promise<string | null> {
   if (!wait.waiting_agent) return null;
   const candidates = await client.query<PlanReadyPlan>(
-    `SELECT id::text AS id, project, owner_agent_id, expected_hashes, open_for_coedit,
+    `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, expected_hashes, open_for_coedit,
             jsonb_array_length(ops)::int AS op_count
        FROM file_batch_plans
-      WHERE project = $1 AND owner_agent_id = $2
+      WHERE project = $1 AND ${fileAgentSql('owner_agent_id','owner_identity_id','$2',wait.primary_identity_id)}
         AND status = 'open' AND open_for_coedit = true
         AND NOT (previews @> '[{"ok": false}]'::jsonb)
       ORDER BY created_at, id`,
@@ -3620,12 +3704,12 @@ async function notifyFollowUp(project: string, committedPlanId: string, caller: 
     const waits = await client.query<CoeditWaitRow>(
       `${COEDIT_WAIT_SELECT}
         WHERE project = $1 AND primary_plan_id = $2::bigint AND waiting_agent IS NOT NULL
-          AND waiting_agent <> $3 AND status IN ('waiting', 'linked')
+          AND NOT (${caller ? fileCallerSql('waiting_agent','waiting_identity_id','$3') : '$3::text IS NOT NULL'}) AND status IN ('waiting', 'linked')
         ORDER BY waiting_agent, wait_token`,
       [project, committedPlanId, caller],
     );
     const empfaenger = waits.rows
-      .map((wait) => ({ agent: wait.waiting_agent as string, fehlend: remainingWaitFiles(wait) }))
+      .map((wait) => ({ agent: eventAgent(wait.waiting_agent,wait.waiting_identity_id), fehlend: remainingWaitFiles(wait) }))
       .filter((eintrag) => eintrag.fehlend.length > 0)
       .map((eintrag) => ({
         agent: eintrag.agent,
@@ -3666,6 +3750,7 @@ async function followUpForLateContribution(
   args: { project: string; plan_id: string; ops: FileBatchOp[] },
   caller: string,
   committedOwner: string | null,
+  committedIdentityId?: string | null,
 ): Promise<CoeditAddResult> {
   const umgerechnet = await spaeteZeilenOpsUmrechnen(args.project, args.plan_id, args.ops.map(withoutCoeditMetadata));
   if (!umgerechnet.ok) {
@@ -3692,8 +3777,8 @@ async function followUpForLateContribution(
       WHERE status = 'open' AND jsonb_array_length(ops) = 0
         AND id IN (
           SELECT source_plan_id FROM file_batch_waits
-           WHERE project = $1 AND waiting_agent = $2
-             AND (primary_plan_id = $3::bigint OR (primary_plan_id IS NULL AND primary_agent = $4))
+           WHERE project = $1 AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')}
+             AND (primary_plan_id = $3::bigint OR (primary_plan_id IS NULL AND ${fileAgentSql('primary_agent','primary_identity_id','$4',committedIdentityId)}))
         )`,
     [args.project, caller, args.plan_id, committedOwner, `[Traegerplan geschlossen: Beitrag nach commit von Plan ${args.plan_id} in Folgeplan]`],
   );
@@ -3829,7 +3914,7 @@ async function addCoeditContributionKern(args: {
   try {
     await client.query("BEGIN");
     const planRes = await client.query<FileBatchPlanRow>(
-      `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+      `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
               status, open_for_coedit, notify_channel, reason,
               expires_at::text AS expires_at, created_at::text AS created_at,
               committed_at::text AS committed_at
@@ -3839,13 +3924,14 @@ async function addCoeditContributionKern(args: {
       [args.plan_id, args.project],
     );
     const plan = planRes.rows[0];
+    if(plan) pruefePlanBezug(plan);
     if (!plan) throw new Error(`Plan ${args.plan_id} nicht gefunden`);
     if (plan.status === "committed") {
       // Zu spaet fuer diesen Plan — kein Fehler: der Beitrag landet automatisch in einem
       // Folgeplan auf den aktuellen Dateistand. Die Plan-Zeile war waehrend des commits
       // gesperrt, dieser Aufruf hat gewartet und sieht jetzt 'committed'.
       await client.query("ROLLBACK");
-      return await followUpForLateContribution(args, caller, plan.owner_agent_id);
+      return await followUpForLateContribution(args, caller, plan.owner_agent_id, plan.owner_identity_id);
     }
     if (plan.status !== "open") throw new Error(`Plan ${args.plan_id} ist nicht offen (Status: ${plan.status})`);
     if (failedOpsOf(plan.previews).length > 0) {
@@ -3856,12 +3942,12 @@ async function addCoeditContributionKern(args: {
 
     const directWaits = await client.query<CoeditWaitRow>(
       `${COEDIT_WAIT_SELECT}
-        WHERE project = $1 AND waiting_agent = $2
+        WHERE project = $1 AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')}
           -- Befund 875d6a8c: geschlossene Waits zaehlen nie; optional genau ein Wait per Token.
           AND status <> 'closed'
           AND ($5::uuid IS NULL OR wait_token = $5::uuid)
           -- Befund 693bbf48: nach einer Owner-Uebergabe zaehlt auch der an diesen Plan gebundene Wait.
-          AND (primary_agent = $3 OR primary_plan_id = $4::bigint)
+          AND (${fileAgentSql('primary_agent','primary_identity_id','$3',plan.owner_identity_id)} OR primary_plan_id = $4::bigint)
           -- Ein wartender oder gebundener Wait bleibt fuer Beitraege gueltig, auch wenn die
           -- Reservierung des Owners (und damit expires_at) abgelaufen ist: der Plan laeuft
           -- nicht ab, also darf der Weg hinein es auch nicht (28.09.2026).
@@ -3881,7 +3967,7 @@ async function addCoeditContributionKern(args: {
     const sourcePlanIds = uniqueStrings(directWaits.rows.map((wait) => wait.source_plan_id));
     const siblingWaits = await client.query<CoeditWaitRow>(
       `${COEDIT_WAIT_SELECT}
-        WHERE project = $1 AND waiting_agent = $2
+        WHERE project = $1 AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')}
           AND source_plan_id = ANY($3::bigint[])
           AND status <> 'closed'
           AND (expires_at > NOW() OR status IN ('waiting', 'linked'))
@@ -3967,7 +4053,7 @@ async function addCoeditContributionKern(args: {
       if (elsewhere) {
         throw new Error(`Deferred Op ${source.key} (${cleanOp.action} auf ${cleanOp.file_path}) ist ueber Wait ${elsewhere.wait_token} schon an Plan ${elsewhere.primary_plan_id} gebunden — dort beitragen`);
       }
-      if (!source.waits.some((wait) => wait.primary_agent === plan.owner_agent_id || wait.primary_plan_id === args.plan_id)) {
+      if (!source.waits.some((wait) => primaryAgentKey(wait) === ownerAgentKey(plan) || wait.primary_plan_id === args.plan_id)) {
         throw new Error(`Deferred Op ${source.key} gehoert nicht zum Owner ${plan.owner_agent_id}`);
       }
 
@@ -3975,7 +4061,7 @@ async function addCoeditContributionKern(args: {
       // Nur Pfade eines ANDEREN Primaers duerfen nicht in diesen Plan wandern. Dateien, die der
       // Owner dieses Plans selbst reserviert hat, erweitern den Plan (Stresstest acc82f49).
       const sharedPaths = uniqueStrings(source.waits
-        .filter((wait) => wait.primary_agent !== plan.owner_agent_id && wait.primary_plan_id !== args.plan_id)
+        .filter((wait) => primaryAgentKey(wait) !== ownerAgentKey(plan) && wait.primary_plan_id !== args.plan_id)
         .flatMap((wait) => wait.shared_files));
       const missingSharedPaths = paths.filter((filePath) => sharedPaths.includes(filePath) && !(filePath in planExpectedHashes));
       if (missingSharedPaths.length > 0) {
@@ -3999,6 +4085,7 @@ async function addCoeditContributionKern(args: {
       additions.push({
         ...cleanOp,
         agent_id: caller,
+        ...(aktuelleAgentIdentityId(args.project,caller) ? {author_identity_id:aktuelleAgentIdentityId(args.project,caller)!} : {}),
         coedit_source_plan_id: source.sourcePlanId,
         coedit_source_op_index: source.sourceIndex,
       });
@@ -4220,7 +4307,7 @@ export async function markCoeditNoChanges(args: {
   try {
     await client.query("BEGIN");
     const planRes = await client.query<FileBatchPlanRow>(
-      `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+      `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
               status, open_for_coedit, notify_channel, reason,
               expires_at::text AS expires_at, created_at::text AS created_at,
               committed_at::text AS committed_at
@@ -4230,14 +4317,15 @@ export async function markCoeditNoChanges(args: {
       [args.plan_id, args.project],
     );
     const plan = planRes.rows[0];
+    if(plan) pruefePlanBezug(plan);
     if (!plan || plan.status !== "open" || !plan.owner_agent_id) throw new Error(`Plan ${args.plan_id} ist nicht offen`);
 
     const waitsRes = await client.query<CoeditWaitRow>(
       `${COEDIT_WAIT_SELECT}
-        WHERE project = $1 AND waiting_agent = $2
+        WHERE project = $1 AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')}
           AND status <> 'closed'
           AND (expires_at > NOW() OR status IN ('waiting', 'linked'))
-          AND (primary_plan_id = $3::bigint OR (primary_plan_id IS NULL AND primary_agent = $4))
+          AND (primary_plan_id = $3::bigint OR (primary_plan_id IS NULL AND ${fileAgentSql('primary_agent','primary_identity_id','$4',plan.owner_identity_id)}))
         ORDER BY source_plan_id, wait_token
         FOR UPDATE`,
       [args.project, caller, args.plan_id, plan.owner_agent_id],
@@ -4312,7 +4400,7 @@ export async function markCoeditReady(args: {
     await client.query("BEGIN");
     const waitsRes = await client.query<CoeditWaitRow>(
       `${COEDIT_WAIT_SELECT}
-        WHERE project = $1 AND waiting_agent = $2 AND primary_plan_id = $3::bigint
+        WHERE project = $1 AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')} AND primary_plan_id = $3::bigint
           -- Befund acc82f49 (3): zurueckgezogene (closed) Waits nie wieder aufleben lassen.
           AND status <> 'closed'
           AND (expires_at > NOW() OR status IN ('waiting', 'linked'))
@@ -4382,16 +4470,23 @@ export function notifyReservationWaiters(): void {
  * Ein Wait wird erst fällig, wenn für keine seiner Dateien mehr eine aktive Reservierung besteht.
  */
 export async function replanUnblockedReservationWaits(project: string, filePaths: readonly string[]): Promise<number> {
+  const k=aktuellerAgentAufruf();
+  if(k) return replanUnblockedReservationWaitsKern(project,filePaths);
+  const bezug=await leseAgentBezugModus();
+  return mitAgentAufrufKontext({principal:null,bezug},()=>replanUnblockedReservationWaitsKern(project,filePaths));
+}
+async function replanUnblockedReservationWaitsKern(project:string,filePaths:readonly string[]):Promise<number> {
   // P6-T38: keine projektweite Alt-Wait-Aufarbeitung als Nebenwirkung eines Writes.
   if (!project || !filePaths?.length) return 0;
   const pool = getPool();
   let planned = 0;
-  const eligible = `w.project = $1 AND w.shared_files && $2::text[]
+  const bezug=aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
+  const eligible = `(${bezug.modus === 'alt' ? 'w.waiting_identity_id IS NULL AND w.primary_identity_id IS NULL' : 'true'}) AND w.project = $1 AND w.shared_files && $2::text[]
     AND w.status = 'waiting' AND w.primary_plan_id IS NULL
     AND w.waiting_agent IS NOT NULL AND jsonb_array_length(w.deferred_ops) > 0
     AND NOT EXISTS (
       SELECT 1 FROM unnest(w.shared_files) AS shared(file_path)
-      JOIN file_reservations r ON r.project = w.project AND r.file_path = shared.file_path
+      JOIN ${reservierungsQuelle()} r ON r.project = w.project AND r.file_path = shared.file_path
         AND r.released_at IS NULL AND r.expires_at > NOW()
     )`;
   try {
@@ -4409,18 +4504,18 @@ export async function replanUnblockedReservationWaits(project: string, filePaths
           'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked', [lockKey],
         )).rows[0].locked;
         if (!locked) continue;
-        const current = await client.query<{ waiting_agent: string; source_plan_id: string; deferred_ops: FileBatchOp[] }>(
+        const current = await client.query<{ waiting_agent: string; waiting_identity_id?:string|null; source_plan_id: string; deferred_ops: FileBatchOp[] }>(
           `UPDATE file_batch_waits w SET expires_at = NOW(), updated_at = NOW()
             WHERE ${eligible} AND w.wait_token = $3::uuid
-            RETURNING w.waiting_agent, w.source_plan_id::text, w.deferred_ops`,
+            RETURNING w.waiting_agent, w.waiting_identity_id, w.source_plan_id::text, w.deferred_ops`,
           [project, [...filePaths], candidate.wait_token],
         );
         const wait = current.rows[0];
         if (!wait) continue;
         // P6-T39: der Wait-Lock schuetzt auch die Entscheidung, einen verwaisten Beitrag zu schliessen.
         const aktiv = (await client.query(
-          "SELECT 1 FROM agent_sessions WHERE id = $1 AND project = $2 AND status = 'active'",
-          [wait.waiting_agent, project],
+          `SELECT 1 FROM ${wait.waiting_identity_id ? 'agent_identitaet_sitzungen' : 'agent_sessions'} WHERE ${wait.waiting_identity_id ? 'identity_id' : 'id'} = $1 AND project = $2 AND status = 'active'`,
+          [wait.waiting_identity_id ?? wait.waiting_agent, project],
         )).rowCount;
         if (!aktiv) {
           await client.query('BEGIN');
@@ -4438,7 +4533,7 @@ export async function replanUnblockedReservationWaits(project: string, filePaths
           );
           await emitEventOnce({
             project, eventType: 'PLAN_CHANGED', priority: 'normal',
-            scope: `agent:${wait.waiting_agent}`, sourceId: 'files', requiresAck: false,
+            scope: wait.waiting_identity_id ? `identity:${wait.waiting_identity_id}` : `agent:${wait.waiting_agent}`, sourceId: 'files', requiresAck: false,
             dedupeKey: `inactive-wait-closed:${candidate.wait_token}`,
             payload: JSON.stringify({
               reason: 'inactive_wait_closed', wait_token: candidate.wait_token,
@@ -4450,7 +4545,9 @@ export async function replanUnblockedReservationWaits(project: string, filePaths
           continue;
         }
         try {
-          const result = await planBatch({ project, agent_id: wait.waiting_agent, ops: wait.deferred_ops });
+          const result = await mitAgentAufrufKontext({principal:null,bezug},()=>mitFileAgentBezug(project,
+            {agent_id:wait.waiting_agent,identity_id:wait.waiting_identity_id},
+            ()=>planBatch({ project, agent_id: wait.waiting_agent, ops: wait.deferred_ops })));
           planned += result.total_ops ?? 0;
         } catch (error) {
           if (!(error instanceof PlanBatchOpsFailedError)) throw error;
@@ -4472,7 +4569,7 @@ export async function replanUnblockedReservationWaits(project: string, filePaths
           );
           await emitEventOnce({
             project, eventType: 'PLAN_CHANGED', priority: 'normal',
-            scope: `agent:${wait.waiting_agent}`, sourceId: 'files', requiresAck: true,
+            scope: wait.waiting_identity_id ? `identity:${wait.waiting_identity_id}` : `agent:${wait.waiting_agent}`, sourceId: 'files', requiresAck: true,
             dedupeKey: `reservation-replan-failed:${candidate.wait_token}:${error.plan_id}`,
             payload: JSON.stringify({
               plan_id: error.plan_id, source_plan_id: wait.source_plan_id, wait_token: candidate.wait_token,
@@ -4565,7 +4662,7 @@ export async function getSharedPlanStatus(args: {
               -- s2-Marke: auch die Op-Zahl, sonst weckt ein Beitrag, der den Owner-Plan auf die
               -- Datei des Waits erweitert, den Long-Poll nicht.
               (SELECT string_agg(p.id::text || ':' || p.status || ':' || jsonb_array_length(p.ops), ',' ORDER BY p.id) FROM file_batch_plans p
-                WHERE p.project = w.project AND p.owner_agent_id = w.primary_agent AND p.status = 'open')) AS f
+                WHERE p.project = w.project AND p.owner_identity_id IS NOT DISTINCT FROM w.primary_identity_id AND (w.primary_identity_id IS NOT NULL OR p.owner_agent_id = w.primary_agent) AND p.status = 'open')) AS f
          FROM file_batch_waits w WHERE w.wait_token = $1::uuid`,
       [args.wait_token],
     );
@@ -4638,7 +4735,7 @@ async function sharedPlanStatusOnce(args: {
   );
   const wait = waitRes.rows[0];
   if (!wait) throw new Error(`Wait ${args.wait_token} nicht gefunden`);
-  if (caller !== wait.waiting_agent && caller !== wait.primary_agent) {
+  if (fileCallerKey(args.project,caller) !== waitAgentKey(wait) && fileCallerKey(args.project,caller) !== primaryAgentKey(wait)) {
     throw new Error(`Agent ${caller} ist an Wait ${args.wait_token} nicht beteiligt`);
   }
   let contributions: FileBatchOp[] = [];
@@ -4648,17 +4745,17 @@ async function sharedPlanStatusOnce(args: {
       [wait.primary_plan_id, args.project],
     );
     contributions = (planRes.rows[0]?.ops ?? []).filter((op) =>
-      op.agent_id === wait.waiting_agent && op.coedit_source_plan_id === wait.source_plan_id,
+      opAgentKey(op,{owner_agent_id:null}) === waitAgentKey(wait) && op.coedit_source_plan_id === wait.source_plan_id,
     );
   }
   // Befund 693bbf48 (b): Ziel-Plan schon VOR dem Beitritt nennen (vorher nur im Event PLAN_READY).
   let targetPlanId: string | null = wait.primary_plan_id;
   if (!targetPlanId) {
     const candidates = await pool.query<PlanReadyPlan>(
-      `SELECT id::text AS id, project, owner_agent_id, expected_hashes, open_for_coedit,
+      `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, expected_hashes, open_for_coedit,
               jsonb_array_length(ops)::int AS op_count
          FROM file_batch_plans
-        WHERE project = $1 AND owner_agent_id = $2 AND status = 'open' AND open_for_coedit = true
+        WHERE project = $1 AND ${fileAgentSql('owner_agent_id','owner_identity_id','$2',wait.primary_identity_id)} AND status = 'open' AND open_for_coedit = true
           AND NOT (previews @> '[{"ok": false}]'::jsonb)
         ORDER BY created_at, id`,
       [args.project, wait.primary_agent],
@@ -4672,11 +4769,11 @@ async function sharedPlanStatusOnce(args: {
       // mehr ein Ziel, seine Op ging verloren.
       const erledigt = await pool.query<{ id: string }>(
         `SELECT p.id::text AS id FROM file_batch_plans p
-          WHERE p.project = $1 AND p.owner_agent_id = $2 AND p.status = 'committed'
+          WHERE p.project = $1 AND ${fileAgentSql('p.owner_agent_id','p.owner_identity_id','$2',wait.primary_identity_id)} AND p.status = 'committed'
             AND p.committed_at >= (SELECT w.created_at FROM file_batch_waits w WHERE w.wait_token = $3::uuid)
             AND NOT EXISTS (
-              SELECT 1 FROM file_reservations r
-               WHERE r.project = $1 AND r.agent_id = $2 AND r.released_at IS NULL
+              SELECT 1 FROM ${reservierungsQuelle()} r
+               WHERE r.project = $1 AND ${fileAgentSql('r.agent_id','r.identity_id','$2',wait.primary_identity_id)} AND r.released_at IS NULL
                  AND r.file_path = ANY($4::text[])
             )
           ORDER BY p.committed_at DESC, p.id DESC LIMIT 1`,
@@ -4695,6 +4792,8 @@ async function sharedPlanStatusOnce(args: {
   return {
     success: true, wait_token: wait.wait_token, source_plan_id: wait.source_plan_id,
     primary_plan_id: wait.primary_plan_id, waiting_agent: wait.waiting_agent,
+    ...(wait.waiting_identity_id ? {waiting_identity_id:wait.waiting_identity_id} : {}),
+    ...(wait.primary_identity_id ? {primary_identity_id:wait.primary_identity_id} : {}),
     primary_agent: wait.primary_agent, status: expired && wait.status === "waiting" && !wait.primary_plan_id ? "expired" : wait.status,
     shared_files: wait.shared_files, completed_files: completedFiles,
     remaining_files: wait.shared_files.filter((filePath) => !completedFiles.includes(filePath)),
@@ -4783,12 +4882,12 @@ export async function commitBatch(args: {
       }
       const bisInaktiv = Math.min(...blockers.map((b) => new Date(b.inaktiv_ab).getTime() - Date.now()));
       await sleepOrWake(Math.max(100, Math.min(LONG_POLL_INTERVAL_MS, rest, bisInaktiv + 50)));
-      const plan = (await getPool().query<{ project: string; owner_agent_id: string | null; status: string }>(
-        `SELECT project, owner_agent_id, status::text AS status FROM file_batch_plans WHERE id = $1::bigint`,
+      const plan = (await getPool().query<{ project: string; owner_agent_id: string | null; owner_identity_id?:string|null; status: string }>(
+        `SELECT project, owner_agent_id, owner_identity_id, status::text AS status FROM file_batch_plans WHERE id = $1::bigint`,
         [args.plan_id],
       )).rows[0];
       if (!plan || plan.status !== 'open') break;
-      blockers = await readyGateBlockers(getPool(), { id: args.plan_id, project: plan.project, owner_agent_id: plan.owner_agent_id }, caller);
+      blockers = await readyGateBlockers(getPool(), { id: args.plan_id, project: plan.project, owner_agent_id: plan.owner_agent_id, owner_identity_id: plan.owner_identity_id }, caller);
       if (blockers.length === 0) break;
     }
   }
@@ -4891,7 +4990,7 @@ async function commitBatchOnce(args: {
 
   // Plan laden
   const planRes = await pool.query<FileBatchPlanRow>(
-    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+    `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
             status, open_for_coedit, notify_channel, reason,
             expires_at::text AS expires_at,
             created_at::text AS created_at,
@@ -4909,6 +5008,7 @@ async function commitBatchOnce(args: {
     };
   }
   const plan = planRes.rows[0];
+    if(plan) pruefePlanBezug(plan);
 
   if (plan.status === 'committed') {
     return {
@@ -4948,16 +5048,16 @@ async function commitBatchOnce(args: {
   }
   const caller = resolveAgentId(args.agent_id);
   const opAutoren = uniqueStrings((Array.isArray(plan.ops) ? plan.ops : [])
-    .map((op) => op.agent_id ?? plan.owner_agent_id ?? '')
+    .map((op) => opAgentKey(op,plan))
     .filter(Boolean));
-  let beteiligt = caller !== null && caller === plan.owner_agent_id;
-  if (caller && darfKoordinatorOderUser(caller)) beteiligt = true;
-  if (caller && opAutoren.includes(caller)) beteiligt = true;
+  let beteiligt = caller !== null && fileCallerKey(plan.project,caller) === ownerAgentKey(plan);
+  if (caller && (!aktuelleAgentIdentityId(plan.project,caller) || aktuellerAgentPrincipal()?.art === 'identity') && darfKoordinatorOderUser(caller)) beteiligt = true;
+  if (caller && opAutoren.includes(fileCallerKey(plan.project,caller))) beteiligt = true;
   if (caller && !beteiligt) {
     const wait = await pool.query<{ beteiligt: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM file_batch_waits
-          WHERE project = $1 AND waiting_agent = $2
+          WHERE project = $1 AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')}
             AND (source_plan_id = $3::bigint OR primary_plan_id = $3::bigint)
        ) AS beteiligt`,
       [plan.project, caller, args.plan_id],
@@ -4966,14 +5066,14 @@ async function commitBatchOnce(args: {
   }
   // Ohne agent_id gilt dieselbe Sicherheitsregel wie bei cancel: nur ein Plan
   // ohne Ops fremder Autoren darf durch den nicht zuordenbaren Aufrufer laufen.
-  const fremdeAutoren = opAutoren.filter((autor) => autor !== plan.owner_agent_id);
+  const fremdeAutoren = opAutoren.filter((autor) => autor !== ownerAgentKey(plan));
   const ohneIdentitaetErlaubt = caller === null && fremdeAutoren.length === 0;
   if (!beteiligt && !ohneIdentitaetErlaubt) {
     const eigeneOffenePlaene = caller
       ? (await pool.query<{ plan_id: string; project: string }>(
         `SELECT id::text AS plan_id, project
            FROM file_batch_plans
-          WHERE project = $1 AND owner_agent_id = $2 AND status = 'open'
+          WHERE project = $1 AND ${fileCallerSql('owner_agent_id','owner_identity_id','$2')} AND status = 'open'
           ORDER BY created_at DESC, id DESC
           LIMIT 10`,
         [plan.project, caller],
@@ -4989,7 +5089,9 @@ async function commitBatchOnce(args: {
       status: 'open',
       error: 'fremder_plan',
       owner_agent_id: plan.owner_agent_id,
+    ...(plan.owner_identity_id ? {owner_identity_id:plan.owner_identity_id} : {}),
       caller_agent_id: caller,
+      ...(aktuelleAgentIdentityId(plan.project,caller) ? {caller_identity_id:aktuelleAgentIdentityId(plan.project,caller)} : {}),
       eigene_offene_plaene: eigeneOffenePlaene,
       message: `Fremder Plan: Owner ist ${ownerText}; Aufrufer ${caller ?? 'ohne agent_id'} ist nicht beteiligt. Deine offenen Plaene: ${eigeneText}. Pruefe die Plan-ID und committe einen eigenen Plan.`,
     };
@@ -5030,7 +5132,7 @@ async function commitBatchOnce(args: {
        FROM file_batch_waits
       WHERE primary_plan_id = $1::bigint
          OR ($2::text IS NOT NULL
-             AND project = $3 AND primary_agent = $2
+             AND project = $3 AND ${fileAgentSql('primary_agent','primary_identity_id','$2',plan.owner_identity_id)}
              AND primary_plan_id IS NULL AND expires_at > NOW()
              AND shared_files && $4::text[])`,
     [args.plan_id, plan.owner_agent_id, plan.project, planPaths],
@@ -5045,7 +5147,7 @@ async function commitBatchOnce(args: {
       commitArgs = { ...args, agent_note: [args.agent_note, pruef.vermerk].filter(Boolean).join(' ') };
     }
   }
-  const distinctOpAgents = new Set(plan.ops.map((op) => op.agent_id).filter(Boolean));
+  const distinctOpAgents = new Set(plan.ops.map((op) => opAgentKey(op,plan)));
   // Mehrere Tasks an derselben Datei brauchen je Task einen atomaren Snapshot.
   const tasksJeDatei = new Map<string, Set<string | undefined>>();
   for (const op of plan.ops) for (const path of touchedPaths(op)) {
@@ -5203,8 +5305,8 @@ async function commitLegacyBody(
       const oldContent = currentBuffers.get(filePath) ?? '';
       const oldSize = Buffer.byteLength(oldContent, 'utf8');
       const marker = await pool.query<{ id: string }>(
-        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, task_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id::text AS id`,
+        `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, task_id, author_identity_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${fileIdentitySql(aktuelleAgentIdentityId(plan.project,args.agent_id))}) RETURNING id::text AS id`,
         [plan.project, filePath, oldContent, contentHash(oldContent), `batch:${args.plan_id}:delete`, resolveAgentId(args.agent_id), batchIdSafe ?? null, oldSize, effectiveReason ?? null, effectiveTaskId ?? null],
       );
       for (const row of marker.rows) merkeFileTaskVersion({ id: row.id, file_path: filePath, task_id: effectiveTaskId ?? null });
@@ -5244,7 +5346,7 @@ async function commitLegacyBody(
   // clock_timestamp statt NOW(): NOW() waere der Beginn der Sperr-Transaktion, bei grossen
   // Dateien Sekunden frueher — reservation_release vergleicht released_at mit committed_at.
   await lockClient.query(
-    `UPDATE file_batch_plans SET status = 'committed', committed_at = clock_timestamp(),
+    `UPDATE file_batch_plans SET status = 'committed', committed_at = clock_timestamp(), committed_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,args.agent_id))},
             reason = CONCAT_WS(' ', reason, $2::text), previews = $3::jsonb WHERE id = $1`,
     [
       args.plan_id,
@@ -5265,8 +5367,8 @@ async function commitLegacyBody(
   await notifyPlanCommitted(lockClient, plan, commitCaller, reservationTransfers);
   await lockClient.query('COMMIT'); notifyPlanChange();
   const legacyParticipants = [...new Set([
-    plan.owner_agent_id,
-    ...plan.ops.map((op) => op.agent_id),
+    plan.owner_identity_id ? null : plan.owner_agent_id,
+    ...plan.ops.filter(op=>!op.author_identity_id).map((op) => op.agent_id),
   ].filter((agentId): agentId is string => Boolean(agentId)))];
   const legacyPaths = Object.keys(plan.expected_hashes);
   let legacyReleased: Array<{ agent_id: string; file_path: string }> = [];
@@ -5281,16 +5383,17 @@ async function commitLegacyBody(
           AND agent_id = ANY($3::text[]) AND NOT (agent_id = ANY($5::text[]))
           AND released_at IS NULL
         RETURNING agent_id, file_path`,
-      [plan.project, legacyPaths, legacyParticipants, args.plan_id, [...reservationTransfers.keys()]],
+      [plan.project, legacyPaths, legacyParticipants, args.plan_id, [...reservationTransfers.keys()].filter(x=>!x.startsWith('identity:')).map(eventName)],
     )).rows;
   }
   const ownPlanlessReleased = (await pool.query<{ agent_id: string; file_path: string }>(
     `UPDATE file_reservations SET released_at = NOW()
-      WHERE project = $1 AND agent_id = $2 AND plan_id IS NULL AND released_at IS NULL
+      WHERE project = $1 AND ${fileCallerSql('agent_id','NULL::text','$2')} AND plan_id IS NULL AND released_at IS NULL
       RETURNING agent_id, file_path`,
     [plan.project, resolveAgentId(args.agent_id)],
   )).rows.map((reservation) => ({ ...reservation, reason: 'freigegeben nach eigenem Commit' }));
   legacyReleased.push(...ownPlanlessReleased);
+  legacyReleased.push(...await releaseIdentityCommitReservations(pool,plan.project,args.plan_id,legacyPaths,planIdentityIds(plan),[...reservationTransfers.keys()],aktuelleAgentIdentityId(plan.project,commitCaller)));
   if (legacyReleased.length > 0) {
     notifyPlanChange();
     await replanUnblockedReservationWaits(plan.project, legacyReleased.map((r) => r.file_path));
@@ -5332,6 +5435,7 @@ export interface CancelBatchResult {
   withdrawn_ops?: number;
   remaining_ops?: number;
   remaining_agents?: string[];
+  remaining_identity_ids?:string[];
   /** withdrawn: Eintrag, der die zurueckgezogenen Ops samt Begruendung haelt. */
   record_plan_id?: string;
   /** cancelled (Runde 3): so viele eigene Waits des Plans (Traeger) wurden mit geschlossen. */
@@ -5351,14 +5455,15 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
   try {
     await client.query('BEGIN');
     const res = await client.query<{
-      project: string; status: FileBatchStatus; owner_agent_id: string | null; ops: FileBatchOp[];
+      project: string; status: FileBatchStatus; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[];
       previews: OpPreview[]; expected_hashes: Record<string, string>;
     }>(
-      `SELECT project, status, owner_agent_id, ops, previews, expected_hashes
+      `SELECT project, status, owner_agent_id, owner_identity_id, ops, previews, expected_hashes
          FROM file_batch_plans WHERE id = $1::bigint FOR UPDATE`,
       [plan_id],
     );
     const plan = res.rows[0];
+    if(plan) pruefePlanBezug(plan);
     if (!plan || (plan.status !== 'open' && plan.status !== 'conflict')) {
       await client.query('ROLLBACK');
       return { ok: false, status: plan?.status ?? 'cancelled' };
@@ -5368,7 +5473,7 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
     // verworfen wuerde — dann nur, wenn KEINE fremden Ops drin sind (alles vom Owner). Vorher
     // verwarf cancel ohne agent_id den ganzen Plan samt Beitraegen anderer.
     if (!caller) {
-      const fremdeAutoren = uniqueStrings(plan.ops.map((op) => authorOf(op) ?? '').filter((agent) => agent && agent !== plan.owner_agent_id));
+      const fremdeAutoren = uniqueStrings(plan.ops.map((op) => opAgentKey(op,plan)).filter((agent) => agent !== ownerAgentKey(plan)));
       if (fremdeAutoren.length > 0) {
         await client.query('ROLLBACK');
         return {
@@ -5380,9 +5485,9 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
     }
     // V1: wer betroffen ist, VOR den Aenderungen ermitteln (danach sind Waits geschlossen).
     const beteiligte = await planBeteiligte(client, {
-      id: String(plan_id), project: plan.project, owner_agent_id: plan.owner_agent_id, ops: plan.ops, expected_hashes: plan.expected_hashes,
+      id: String(plan_id), project: plan.project, owner_agent_id: plan.owner_agent_id, owner_identity_id:plan.owner_identity_id, ops: plan.ops, expected_hashes: plan.expected_hashes,
     });
-    const foreignIdx = plan.ops.map((op, index) => ({ op, index })).filter(({ op }) => !caller || authorOf(op) !== caller);
+    const foreignIdx = plan.ops.map((op, index) => ({ op, index })).filter(({ op }) => !caller || opAgentKey(op,plan) !== fileCallerKey(plan.project,caller));
     if (caller && foreignIdx.length > 0) {
       const ownCount = plan.ops.length - foreignIdx.length;
       if (ownCount === 0) {
@@ -5404,28 +5509,30 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       // BUG 2: Zieht der Owner zurueck, geht der Plan an den Autor der ersten verbleibenden Op.
       // Sonst bliebe ein Agent ohne Ops Owner: er bekaeme beim erneuten Planen einen
       // Parallelplan statt eines Waits (eigene Plaene sind nie "beitretbar").
-      const newOwner = plan.owner_agent_id === caller
+      const ownerWechselt = ownerAgentKey(plan) === fileCallerKey(plan.project,caller);
+      const newOwnerIdentityId = ownerWechselt ? remainingOps[0].author_identity_id ?? null : plan.owner_identity_id;
+      const newOwner = ownerWechselt
         ? (authorOf(remainingOps[0]) ?? plan.owner_agent_id)
         : plan.owner_agent_id;
       await client.query(
         `UPDATE file_batch_plans
             SET ops = $2::jsonb, previews = $3::jsonb, expected_hashes = $4::jsonb, status = 'open',
-                owner_agent_id = $5
+                owner_agent_id = $5, owner_identity_id = ${fileIdentitySql(newOwnerIdentityId)}
           WHERE id = $1::bigint`,
         [plan_id, JSON.stringify(remainingOps), JSON.stringify(freshPreviews), JSON.stringify(expected), newOwner],
       );
-      if (newOwner !== plan.owner_agent_id) {
+      if (newOwner !== plan.owner_agent_id || newOwnerIdentityId !== plan.owner_identity_id) {
         await client.query(
-          `UPDATE file_batch_waits SET primary_agent = $3, updated_at = NOW()
+          `UPDATE file_batch_waits SET primary_agent = $3, primary_identity_id = ${fileIdentitySql(newOwnerIdentityId)}, updated_at = NOW()
             WHERE project = $1 AND (primary_plan_id = $2::bigint
-              OR (primary_plan_id IS NULL AND primary_agent = $4 AND status = 'waiting' AND shared_files && $5::text[]))`,
+              OR (primary_plan_id IS NULL AND ${fileAgentSql('primary_agent','primary_identity_id','$4',plan.owner_identity_id)} AND status = 'waiting' AND shared_files && $5::text[]))`,
           [plan.project, plan_id, newOwner, plan.owner_agent_id, [...keptPaths]],
         );
         // Der neue Owner wartet nicht mehr auf sich selbst: sein Wait ist erledigt
         // (Befund 036c979a-2), sein leerer Traeger schliesst unten mit.
         await client.query(
           `UPDATE file_batch_waits SET status = 'closed', updated_at = NOW()
-            WHERE primary_plan_id = $1::bigint AND waiting_agent = $2`,
+            WHERE primary_plan_id = $1::bigint AND ${fileAgentSql('waiting_agent','waiting_identity_id','$2',newOwnerIdentityId)}`,
           [plan_id, newOwner],
         );
       }
@@ -5433,7 +5540,7 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       // Traegerplan wird unten geschlossen). Erneut beitreten = neu planen (fuehrt hierher).
       await client.query(
         `UPDATE file_batch_waits SET status = 'closed', updated_at = NOW()
-          WHERE primary_plan_id = $1::bigint AND waiting_agent = $2`,
+          WHERE primary_plan_id = $1::bigint AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')}`,
         [plan_id, caller],
       );
       await client.query(
@@ -5445,10 +5552,10 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       // reason & Co. als Rueckzugsprotokoll erhalten — ein eigener, verworfener Eintrag
       // (Owner = wer, created_at = wann, reason = Grund), jede Op mit withdrawn_from.
       // Schemafrei: keine neue Spalte, nie committbar, nie beitretbar, nicht in open_plans.
-      const ownOps = plan.ops.filter((op) => authorOf(op) === caller);
+      const ownOps = plan.ops.filter((op) => opAgentKey(op,plan) === fileCallerKey(plan.project,caller));
       const record = await client.query<{ id: string }>(
-        `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, status, open_for_coedit, reason)
-         VALUES ($1, $2, $3::jsonb, '{}'::jsonb, $4::jsonb, 'cancelled', false, $5)
+        `INSERT INTO file_batch_plans (project, owner_agent_id, ops, expected_hashes, previews, status, open_for_coedit, reason, owner_identity_id)
+         VALUES ($1, $2, $3::jsonb, '{}'::jsonb, $4::jsonb, 'cancelled', false, $5, ${fileIdentitySql(aktuelleAgentIdentityId(plan.project,caller))})
          RETURNING id::text AS id`,
         [
           plan.project,
@@ -5465,10 +5572,10 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       // V1: die Verbleibenden erfahren vom Rueckzug (PLAN_CHANGED); nur das eigene PLAN_READY des
       // Zurueckziehenden wird quittiert — fuer die anderen bleibt der Plan ein gueltiges Ziel.
       const verbleibende = uniqueStrings([
-        newOwner ?? '',
-        ...remainingOps.map((op) => authorOf(op) ?? ''),
-        ...beteiligte.waits.filter((wait) => wait.primary_plan_id === String(plan_id)).map((wait) => wait.waiting_agent ?? ''),
-      ].filter((agent) => agent && agent !== caller));
+        eventAgent(newOwner,newOwnerIdentityId),
+        ...remainingOps.map((op) => opEventAgent(op,plan)),
+        ...beteiligte.waits.filter((wait) => wait.primary_plan_id === String(plan_id)).map((wait) => eventAgent(wait.waiting_agent,wait.waiting_identity_id)),
+      ].filter((agent) => agent && agent !== eventAgent(caller,aktuelleAgentIdentityId(plan.project,caller))));
       await emitPlanFolgeEvents(client, {
         project: plan.project, planId: String(plan_id), typ: 'PLAN_CHANGED', actor: caller,
         empfaenger: verbleibende.map((agent) => ({
@@ -5487,11 +5594,12 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
         ok: true, status: 'open', mode: 'withdrawn', withdrawn_ops: ownCount,
         remaining_ops: remainingOps.length,
         remaining_agents: uniqueStrings(remainingOps.map((op) => authorOf(op) ?? '').filter(Boolean)),
+        ...(remainingOps.some(op=>op.author_identity_id) ? {remaining_identity_ids:uniqueStrings(remainingOps.flatMap(op=>op.author_identity_id?[op.author_identity_id]:[]))} : {}),
       };
     }
     // Auch der ganz verworfene Plan behaelt ops und reason; der Vermerk sagt wer/wann/warum.
     await client.query(
-      `UPDATE file_batch_plans SET status = 'cancelled', reason = CONCAT_WS(E'\n', reason, $2::text) WHERE id = $1::bigint`,
+      `UPDATE file_batch_plans SET status = 'cancelled', cancelled_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,caller))}, reason = CONCAT_WS(E'\n', reason, $2::text) WHERE id = $1::bigint`,
       [plan_id, `[verworfen von ${caller ?? 'unbekannt'} am ${new Date().toISOString()}${grund ? `: ${grund}` : ''}]`],
     );
     // BUG 3: Ziel-Plan verworfen -> die daran gebundenen Waits und leeren Traegerplaene auch.
@@ -5504,10 +5612,10 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
     // leere Traeger eines Wartenden) haben keinen Zweck mehr. Vorher blieben sie offen und hielten
     // den commit des Ziel-Plans auf (coedit_incomplete / waiting_for_contributors). Schon
     // beigetragene Ops bleiben im Ziel-Plan; dessen Owner erfaehrt es wie beim Rueckzug (PLAN_CHANGED).
-    const eigeneWaits = await client.query<{ primary_plan_id: string | null; primary_agent: string; shared_files: string[] }>(
+    const eigeneWaits = await client.query<{ primary_plan_id: string | null; primary_agent: string; primary_identity_id?: string | null; shared_files: string[] }>(
       `UPDATE file_batch_waits SET status = 'closed', updated_at = NOW()
         WHERE source_plan_id = $1::bigint AND status IN ('waiting', 'linked', 'conflict')
-        RETURNING primary_plan_id::text AS primary_plan_id, primary_agent, shared_files`,
+        RETURNING primary_plan_id::text AS primary_plan_id, primary_agent, primary_identity_id, shared_files`,
       [plan_id],
     );
     for (const wait of eigeneWaits.rows) {
@@ -5515,7 +5623,7 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       await emitPlanFolgeEvents(client, {
         project: plan.project, planId: wait.primary_plan_id, typ: 'PLAN_CHANGED', actor: caller ?? null,
         empfaenger: [{
-          agent: wait.primary_agent,
+          agent: eventAgent(wait.primary_agent,wait.primary_identity_id),
           payload: {
             withdrawn_by: caller ?? null, withdrawn_ops: 0, wait_geschlossen: true, traeger_plan_id: String(plan_id), dateien: wait.shared_files,
             hinweis: `${caller ?? 'Ein Wartender'} hat seinen Plan ${plan_id} verworfen: sein Wait auf Plan ${wait.primary_plan_id} ist geschlossen und haelt den commit nicht mehr auf. Schon beigetragene Ops bleiben im Plan.`,
@@ -5527,8 +5635,8 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
     await closeOrphanCarriers(client, plan.project, `cancel von Plan ${plan_id}`);
     const betroffene = uniqueStrings([
       ...beteiligte.autoren,
-      ...beteiligte.waits.map((wait) => wait.waiting_agent ?? ''),
-    ].filter((agent) => agent && agent !== caller));
+      ...beteiligte.waits.map((wait) => eventAgent(wait.waiting_agent,wait.waiting_identity_id)),
+    ].filter((agent) => agent && agent !== eventAgent(caller,aktuelleAgentIdentityId(plan.project,caller))));
     await emitPlanFolgeEvents(client, {
       project: plan.project, planId: String(plan_id), typ: 'PLAN_CANCELLED', actor: caller ?? null,
       empfaenger: betroffene.map((agent) => ({
@@ -5617,11 +5725,12 @@ async function closeOrphanCarriers(client: PoolClient, project: string, anlass: 
  */
 export function totWaitSql(w: string): string {
   return `(${w}.status = 'waiting' AND ${w}.primary_plan_id IS NULL AND NOT EXISTS (
-    SELECT 1 FROM file_reservations tot_r
-     WHERE tot_r.project = ${w}.project AND tot_r.agent_id = ${w}.primary_agent
+    SELECT 1 FROM ${reservierungsQuelle()} tot_r
+     WHERE tot_r.project = ${w}.project AND tot_r.identity_id IS NOT DISTINCT FROM ${w}.primary_identity_id
+       AND (${w}.primary_identity_id IS NOT NULL OR tot_r.agent_id = ${w}.primary_agent)
        AND tot_r.file_path = ANY(${w}.shared_files)
        AND tot_r.released_at IS NULL AND tot_r.expires_at > NOW()
-       AND NOT EXISTS (SELECT 1 FROM agent_sessions tot_s WHERE tot_s.id = tot_r.agent_id AND tot_s.status <> 'active')))`;
+       AND NOT EXISTS (SELECT 1 FROM agent_sessions tot_s WHERE tot_r.identity_id IS NULL AND tot_s.id = tot_r.agent_id AND tot_s.status <> 'active')))`;
 }
 
 /**
@@ -5630,22 +5739,24 @@ export function totWaitSql(w: string): string {
  * ein Nachfolge-Event (emitPlanFolgeEvents). Nie mehr still fuer alle.
  */
 async function resolvePlanReadyEvents(
-  client: PoolClient,
-  project: string,
-  planId: string,
-  grund: string,
-  agenten: string[],
-): Promise<void> {
-  await client.query(
-    `INSERT INTO agent_event_acks (event_id, agent_id, reaction)
-     SELECT e.id, substring(e.scope from 7), $3
-       FROM agent_events e
-      WHERE e.project = $1 AND e.event_type = 'PLAN_READY' AND e.scope LIKE 'agent:%'
-        AND e.payload LIKE '{%' AND (e.payload::jsonb ->> 'plan_id') = $2
-        AND substring(e.scope from 7) = ANY($4::text[])
-     ON CONFLICT (event_id, agent_id) DO NOTHING`,
-    [project, String(planId), `erledigt: ${grund}`, agenten],
-  );
+  client: PoolClient, project:string, planId:string, grund:string, agenten:string[],
+):Promise<void> {
+  const legacy=agenten.filter(x=>!x.startsWith('identity:')).map(eventName);
+  const identities=agenten.filter(x=>x.startsWith('identity:')).map(x=>x.slice(9));
+  if(legacy.length) await client.query(
+    `INSERT INTO agent_event_acks(event_id,agent_id,reaction)
+     SELECT e.id,substring(e.scope from 7),$3 FROM agent_events e
+     WHERE e.project=$1 AND e.event_type='PLAN_READY' AND e.scope LIKE 'agent:%'
+       AND e.target_identity_id IS NULL AND e.payload LIKE '{%' AND e.payload::jsonb->>'plan_id'=$2
+       AND substring(e.scope from 7)=ANY($4::text[]) ON CONFLICT(event_id,agent_id) DO NOTHING`,
+    [project,String(planId),`erledigt: ${grund}`,legacy]);
+  if(identities.length) await client.query(
+    `INSERT INTO agent_identitaet_event_acks(event_id,identity_id,reaction,actor_identity_id)
+     SELECT e.id,e.target_identity_id,$3,$5 FROM agent_events e
+     WHERE e.project=$1 AND e.event_type='PLAN_READY' AND e.target_identity_id=ANY($4::text[])
+       AND e.payload LIKE '{%' AND e.payload::jsonb->>'plan_id'=$2
+     ON CONFLICT(event_id,identity_id) DO NOTHING`,
+    [project,String(planId),`erledigt: ${grund}`,identities,aktuelleAgentIdentityId(project)]);
 }
 
 /** Einheitliche cancel-Antwort fuer REST und MCP-stdio: sagt klar, was passiert ist. */
@@ -5691,7 +5802,7 @@ async function updatePlanInPlace(
   try {
     await client.query('BEGIN');
     const res = await client.query<FileBatchPlanRow>(
-      `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+      `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
               status, open_for_coedit, notify_channel, reason,
               expires_at::text AS expires_at, created_at::text AS created_at,
               committed_at::text AS committed_at
@@ -5701,17 +5812,18 @@ async function updatePlanInPlace(
       [args.plan_id, args.project],
     );
     const plan = res.rows[0];
+    if(plan) pruefePlanBezug(plan);
     if (!plan) throw new Error(`Plan ${args.plan_id} nicht gefunden`);
     // Auch ein conflict-Plan laesst sich im selben Plan reparieren (danach wieder open).
     if (plan.status !== 'open' && plan.status !== 'conflict') {
       throw new Error(`Plan ${args.plan_id} ist nicht offen (Status: ${plan.status})`);
     }
     const authorOf = (op: FileBatchOp) => op.agent_id ?? plan.owner_agent_id ?? null;
-    const replacement = args.ops.map((op) => ({ ...withoutCoeditMetadata(op), agent_id: caller }));
+    const replacement = args.ops.map((op) => ({ ...withoutCoeditMetadata(op), agent_id: caller, ...(aktuelleAgentIdentityId(args.project,caller) ? {author_identity_id:aktuelleAgentIdentityId(args.project,caller)!} : {}) }));
     let nextOps: FileBatchOp[];
     let replacedFrom: number;
     if (args.op_index === undefined || args.op_index === null) {
-      const others = plan.ops.filter((op) => authorOf(op) !== caller);
+      const others = plan.ops.filter((op) => opAgentKey(op,plan) !== fileCallerKey(plan.project,caller));
       nextOps = [...others, ...replacement];
       replacedFrom = others.length;
     } else {
@@ -5719,7 +5831,9 @@ async function updatePlanInPlace(
         throw new Error(`op_index ${args.op_index} ausserhalb 0..${plan.ops.length - 1}`);
       }
       const author = authorOf(plan.ops[args.op_index]);
-      if (author !== null && author !== caller && author !== plan.owner_agent_id) {
+      if (author !== null && (plan.ops[args.op_index].author_identity_id || aktuelleAgentIdentityId(plan.project,caller)
+        ? opAgentKey(plan.ops[args.op_index],plan) !== fileCallerKey(plan.project,caller)
+        : author !== caller && author !== plan.owner_agent_id)) {
         throw new Error(`Op ${args.op_index} ist ein Co-Edit-Beitrag von ${author} — nur der Autor darf ihn ersetzen`);
       }
       nextOps = [...plan.ops];
@@ -5795,7 +5909,7 @@ async function updatePlanInPlace(
  * von JEDEM Agenten im selben Plan geaendert (updatePlanInPlace).
  */
 export async function replanBatch(args:Parameters<typeof replanBatchKern>[0]):ReturnType<typeof replanBatchKern> {
-  const ops=await normalisiereOps(args.project,args.ops);
+  const ops=await normalisiereOps(args.project,args.ops.map(withoutCoeditMetadata));
   const fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));
   return {...await replanBatchKern({...args,ops}),fs_pruefung};
 }
@@ -5817,8 +5931,8 @@ async function replanBatchKern(args: {
   }
   const caller = resolveAgentId(args.agent_id);
   const ownDraft = failedOpsOf(plan.previews).length > 0
-    && (!plan.owner_agent_id || caller === plan.owner_agent_id)
-    && !plan.ops.some((op) => op.agent_id && op.agent_id !== plan.owner_agent_id);
+    && (!plan.owner_agent_id || fileCallerKey(plan.project,caller) === ownerAgentKey(plan))
+    && !plan.ops.some((op) => op.agent_id && opAgentKey(op,plan) !== ownerAgentKey(plan));
   if (!ownDraft) {
     const imPlan = await updatePlanInPlace(args, caller);
     // P15-T17 E3: neu pruefen, Quittierungen bleiben (Schluessel ohne Zeilen).
@@ -5882,7 +5996,7 @@ async function replanBatchKern(args: {
 export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | null> {
   const pool = getPool();
   const res = await pool.query<FileBatchPlanRow>(
-    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews,
+    `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews,
             status, open_for_coedit, notify_channel, reason,
             expires_at, created_at, committed_at
      FROM file_batch_plans WHERE id = $1`,
@@ -5890,8 +6004,8 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
   );
   const row = res.rows[0];
   if (!row) return null;
-  const records = await pool.query<{ id: string; owner_agent_id: string | null; ops: FileBatchOp[]; reason: string | null; created_at: Date | string }>(
-    `SELECT id::text AS id, owner_agent_id, ops, reason, created_at
+  const records = await pool.query<{ id: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; reason: string | null; created_at: Date | string }>(
+    `SELECT id::text AS id, owner_agent_id, owner_identity_id, ops, reason, created_at
        FROM file_batch_plans
       WHERE project = $1 AND status = 'cancelled' AND previews @> $2::jsonb
       ORDER BY id`,
@@ -5900,10 +6014,12 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
   const withdrawn: WithdrawalRecord[] = records.rows.map((record) => ({
     record_plan_id: record.id,
     by: record.owner_agent_id,
+    ...(record.owner_identity_id ? {by_identity_id:record.owner_identity_id} : {}),
     at: asIso(record.created_at),
     reason: record.reason,
     ops: (Array.isArray(record.ops) ? record.ops : []).map((op) => ({
       agent_id: op.agent_id ?? record.owner_agent_id,
+      ...(op.author_identity_id ? {author_identity_id:op.author_identity_id} : {}),
       file_path: op.file_path,
       action: op.action,
       ...(op.line_start !== undefined ? { line_start: op.line_start, line_end: op.line_end } : {}),
@@ -5914,15 +6030,15 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
   // Befund 693bbf48 (a): wer beitraegt, mit welchem Wait-/Ready-Status, und aktuelle
   // Ueberlappungen — fuer JEDEN sichtbar, der den Plan spaeter uebernimmt.
   const waitRows = await pool.query<{
-    waiting_agent: string | null; status: string; contributed_files: string[];
+    waiting_agent: string | null; waiting_identity_id?: string | null; status: string; contributed_files: string[];
     no_change_files: string[]; ready_at: Date | string | null;
   }>(
-    `SELECT waiting_agent, status, contributed_files, no_change_files, ready_at
+    `SELECT waiting_agent, waiting_identity_id, status, contributed_files, no_change_files, ready_at
        FROM file_batch_waits
       WHERE primary_plan_id = $1::bigint
         -- Befund 875d6a8c (d) / 036c979a-2: Zurueckgezogene (closed) und der Owner selbst
         -- sind keine offenen Beitragenden.
-        AND status <> 'closed' AND waiting_agent IS DISTINCT FROM $2
+        AND status <> 'closed' AND NOT (${fileAgentSql('waiting_agent','waiting_identity_id','$2',row.owner_identity_id)})
       ORDER BY waiting_agent`,
     [plan_id, row.owner_agent_id],
   );
@@ -5934,12 +6050,12 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     no_change_files: string[]; ready_at: string | null; waits: number;
   }>();
   for (const wait of waitRows.rows) {
-    const key = wait.waiting_agent ?? '';
+    const key = waitAgentKey(wait);
     const readyAt = wait.ready_at ? asIso(wait.ready_at) : null;
     const entry = proAgent.get(key);
     if (!entry) {
       proAgent.set(key, {
-        agent_id: wait.waiting_agent, wait_status: wait.status, contributed_files: [...wait.contributed_files],
+        agent_id: wait.waiting_agent, ...(wait.waiting_identity_id ? {identity_id:wait.waiting_identity_id} : {}), wait_status: wait.status, contributed_files: [...wait.contributed_files],
         no_change_files: [...wait.no_change_files], ready_at: readyAt, waits: 1,
       });
       continue;
@@ -5954,7 +6070,7 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
   // Runde 3 (46ccab5b-6): die EIGENEN Waits dieses Plans (typisch: leerer Traeger) mit ihrem Ziel —
   // auch wenn das Ziel erst nach dem plan entstanden ist (Bindung in emitPlanReadyForExistingWaits).
   const eigeneWaits = await pool.query<NonNullable<FileBatchPlanRow['coedit_waits']>[number]>(
-    `SELECT wait_token::text AS wait_token, primary_agent, primary_plan_id::text AS target_plan_id,
+    `SELECT wait_token::text AS wait_token, primary_agent, primary_identity_id, primary_plan_id::text AS target_plan_id,
             -- P15-T27: toter Wait (kein Ziel, keine lebende Reservierung des Primaeragenten) -> expired
             CASE WHEN ${totWaitSql('w')} THEN 'expired' ELSE w.status::text END AS wait_status,
             shared_files, contributed_files, no_change_files, deferred_op_indexes AS coedit_source_op_indexes
@@ -5965,12 +6081,12 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
   );
   // E1: auf wen ein commit gerade warten wuerde (aktive, noch nicht bereite Beitragende).
   const commitWartetAuf = row.status === 'open' && waitRows.rows.length > 0
-    ? await readyGateBlockers(pool, { id: String(plan_id), project: row.project, owner_agent_id: row.owner_agent_id }, null)
+    ? await readyGateBlockers(pool, { id: String(plan_id), project: row.project, owner_agent_id: row.owner_agent_id, owner_identity_id: row.owner_identity_id }, null)
     : [];
   let overlapWarnings: CoeditConflictDetail[] = [];
   let insertNotes: CoeditInsertNote[] = [];
   const planOps = Array.isArray(row.ops) ? row.ops : [];
-  if (row.status === 'open' && new Set(planOps.map((op) => op.agent_id ?? row.owner_agent_id)).size > 1) {
+  if (row.status === 'open' && new Set(planOps.map((op) => opAgentKey(op,row))).size > 1) {
     const baselines = new Map<string, string>();
     for (const filePath of uniqueStrings(planOps.flatMap(touchedPaths))) {
       baselines.set(filePath, (await getFileContentFromPg(row.project, filePath)) ?? '');
@@ -5987,7 +6103,7 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     ...(overlapWarnings.length > 0 ? { overlap_warnings: overlapWarnings } : {}),
     ...(insertNotes.length > 0 ? { insert_notes: insertNotes } : {}),
     ...(commitWartetAuf.length > 0 ? { commit_wartet_auf: commitWartetAuf } : {}),
-    ...(eigeneWaits.rows.length > 0 ? { coedit_waits: eigeneWaits.rows } : {}),
+    ...(eigeneWaits.rows.length > 0 ? { coedit_waits: eigeneWaits.rows.map(w=>{if(!w.primary_identity_id) delete w.primary_identity_id; return w;}) } : {}),
   };
 }
 
@@ -6036,10 +6152,10 @@ export async function getPlanOpsVollstaendig(args: {
 }): Promise<Record<string, unknown>> {
   const pool = getPool();
   const plan = (await pool.query<{
-    id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>;
+    id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>;
     previews: OpPreview[]; status: FileBatchStatus; reason: string | null;
   }>(
-    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, previews, status, reason
+    `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, previews, status, reason
        FROM file_batch_plans WHERE id = $1::bigint`,
     [args.plan_id],
   )).rows[0];
@@ -6062,7 +6178,7 @@ export async function getPlanOpsVollstaendig(args: {
   const dateien = 'fehler' in stand ? [] : schattenDateien(stand, ops);
   // P15-T17 E3: gespeicherte Pruefbefunde; je Op die eigenen (und Kombinationsbefunde mit beteiligt).
   const alleBefunde = (await ladePlanBefunde(plan.id))?.befunde ?? [];
-  const mehrere = new Set(ops.map((op) => op.agent_id ?? plan.owner_agent_id)).size > 1;
+  const mehrere = new Set(ops.map((op) => opAgentKey(op,plan))).size > 1;
   const label = (liste: number[]): string =>
     `op ${liste.map((i) => `${i}${mehrere ? ` (${ops[i]?.agent_id ?? plan.owner_agent_id ?? '?'})` : ''}`).join(',')}`;
   const ergebnis: Array<Record<string, unknown>> = [];
@@ -6085,6 +6201,7 @@ export async function getPlanOpsVollstaendig(args: {
     const eintrag: Record<string, unknown> = {
       op_index: index,
       agent_id: op.agent_id ?? plan.owner_agent_id,
+      ...(op.author_identity_id ? {author_identity_id:op.author_identity_id} : {}),
       status: opStatus,
       op: volleOp,
       ...(contentFenster ? { content_fenster: contentFenster } : {}),
@@ -6132,6 +6249,7 @@ export async function getPlanOpsVollstaendig(args: {
     plan_id: plan.id,
     plan_status: plan.status,
     owner_agent_id: plan.owner_agent_id,
+    ...(plan.owner_identity_id ? {owner_identity_id:plan.owner_identity_id} : {}),
     ops_count: ops.length,
     basis: plan.status === 'committed'
       ? 'Stand vor dem commit (file_versions)'
@@ -6158,6 +6276,7 @@ function kompakteOps(plan: FileBatchPlanRow, pruefBefunde: unknown[] = [], nurBe
     return {
       index,
       agent_id: op.agent_id ?? plan.owner_agent_id,
+      ...(op.author_identity_id ? {author_identity_id:op.author_identity_id} : {}),
       action: op.action,
       file_path: op.file_path,
       ...(op.new_path ? { new_path: op.new_path } : {}),
@@ -6203,7 +6322,7 @@ export async function buildCompactSharedPlanStatusResponse(
     // (sie liest den eigenen Wartezustand, nicht den ganzen Zielplan).
     const ops = kompakteOps(zielPlan, pruefBefunde, ansicht === 'befunde')
       .filter((op) => status.contributions.some((beitrag) =>
-        beitrag.file_path === op.file_path && beitrag.agent_id === op.agent_id));
+        beitrag.file_path === op.file_path && opAgentKey(beitrag,zielPlan) === opAgentKey(op,zielPlan)));
     return schwaerzeEnvWerteInAntwort(project, {
       success: true,
       wait_token: status.wait_token,
@@ -6241,7 +6360,7 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
   const opsCount = Array.isArray(plan.ops) ? plan.ops.length : 0;
   const previews = Array.isArray(plan.previews) ? plan.previews : [];
   const coeditOps = Array.isArray(plan.ops)
-    ? plan.ops.filter((op) => op.agent_id && plan.owner_agent_id && op.agent_id !== plan.owner_agent_id).length
+    ? plan.ops.filter((op) => op.agent_id && plan.owner_agent_id && opAgentKey(op,plan) !== ownerAgentKey(plan)).length
     : 0;
   return {
     success: true,
@@ -6249,6 +6368,7 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
     project: plan.project,
     status: plan.status,
     owner_agent_id: plan.owner_agent_id,
+    ...(plan.owner_identity_id ? {owner_identity_id:plan.owner_identity_id} : {}),
     open_for_coedit: plan.open_for_coedit,
     ops_count: opsCount,
     coedit_ops_count: coeditOps,
@@ -6263,6 +6383,7 @@ export function buildPlanStatusResponse(plan: FileBatchPlanRow): Record<string, 
     ops_overview: (Array.isArray(plan.ops) ? plan.ops : []).map((op, index) => ({
       index,
       agent_id: op.agent_id ?? plan.owner_agent_id,
+      ...(op.author_identity_id ? {author_identity_id:op.author_identity_id} : {}),
       file_path: op.file_path,
       action: op.action,
       ...(op.line_start !== undefined ? { line_start: op.line_start, line_end: op.line_end } : {}),
@@ -6615,16 +6736,16 @@ async function ladeSchattenStand(plan: {
  */
 export async function schreibeCommitDiffs(planId: string): Promise<number> {
   const plan = (await getPool().query<{
-    id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
+    id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
   }>(
-    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, status FROM file_batch_plans WHERE id = $1::bigint`,
+    `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, status FROM file_batch_plans WHERE id = $1::bigint`,
     [planId],
   )).rows[0];
   if (!plan || plan.status !== 'committed') return 0;
   const ops = Array.isArray(plan.ops) ? plan.ops : [];
   const stand = await ladeSchattenStand(plan);
   if ('fehler' in stand) return 0;
-  const mehrere = new Set(ops.map((op) => op.agent_id ?? plan.owner_agent_id)).size > 1;
+  const mehrere = new Set(ops.map((op) => opAgentKey(op,plan))).size > 1;
   const label = (liste: number[]): string =>
     `op ${liste.map((i) => `${i}${mehrere ? ` (${ops[i]?.agent_id ?? plan.owner_agent_id ?? '?'})` : ''}`).join(',')}`;
   let geschrieben = 0;
@@ -6701,7 +6822,7 @@ export async function buildPlanStatusResponseMitDiff(plan: FileBatchPlanRow): Pr
  * allen Ops und je Op ihre Zeilenspannen im Endstand (opBereicheImEndstand, 0-basiert halboffen). Dieselbe
  * Anwende-Schleife wie commit und Diff (ee444d99 P.2), damit der Befund an der richtigen Op landet.
  */
-function pruefDateienAus(stand: SchattenStand, ops: FileBatchOp[], owner: string | null): PruefDatei[] {
+function pruefDateienAus(stand: SchattenStand, ops: FileBatchOp[], owner: string | null, ownerIdentity?:string|null): PruefDatei[] {
   const imEnd = opBereicheImEndstand(stand.angewendet, ops);
   const out: PruefDatei[] = [];
   for (const [filePath, basis] of stand.basen) {
@@ -6714,7 +6835,8 @@ function pruefDateienAus(stand: SchattenStand, ops: FileBatchOp[], owner: string
       basis,
       ergebnis: buf.deleted ? '' : buf.finalContent,
       ...(buf.deleted ? { geloescht: true } : {}),
-      ops: opsDerDatei.map((i) => ({ op_index: i, agent_id: ops[i]?.agent_id ?? owner, spannen: imEnd.get(i) ?? [] })),
+      ops: opsDerDatei.map((i) => ({ op_index: i, agent_id: ops[i]?.agent_id ?? owner,
+        ...((ops[i]?.agent_id ? ops[i]?.author_identity_id : ownerIdentity) ? {author_identity_id:ops[i]?.agent_id ? ops[i].author_identity_id : ownerIdentity!} : {}), spannen: imEnd.get(i) ?? [] })),
     });
   }
   return out;
@@ -6723,7 +6845,7 @@ function pruefDateienAus(stand: SchattenStand, ops: FileBatchOp[], owner: string
 /** P16-T15: Code-Intel und files prüfen genau denselben Schatten/Basisstand, auch nach Drift. */
 export async function getTypPruefDateienFuerPlan(project: string, planId: string, nachOp?: number): Promise<PruefDatei[]> {
   const plan = (await getPool().query<FileBatchPlanRow>(
-    "SELECT id::text,project,ops,expected_hashes,status,owner_agent_id FROM file_batch_plans WHERE id=$1::bigint AND project=$2 AND status IN ('open','committed')",
+    "SELECT id::text,project,ops,expected_hashes,status,owner_agent_id,owner_identity_id FROM file_batch_plans WHERE id=$1::bigint AND project=$2 AND status IN ('open','committed')",
     [planId, project])).rows[0];
   if (!plan) throw new Error('Plan in diesem Projekt nicht gefunden.');
   if (nachOp !== undefined && (!Number.isInteger(nachOp) || nachOp < 0 || nachOp >= plan.ops.length))
@@ -6731,7 +6853,7 @@ export async function getTypPruefDateienFuerPlan(project: string, planId: string
   if (nachOp !== undefined) plan.ops = plan.ops.slice(0, nachOp + 1);
   const stand = await ladeSchattenStand(plan);
   if ('fehler' in stand || stand.angewendet.fehler.length) throw new Error('Plan-Schatten nicht vollständig anwendbar.');
-  return pruefDateienAus(stand, plan.ops, plan.owner_agent_id);
+  return pruefDateienAus(stand, plan.ops, plan.owner_agent_id, plan.owner_identity_id ?? null);
 }
 
 /** sha256 des Endstands je (nicht geloeschter) Datei, wie PlanPruefung.ergebnis_hashes. */
@@ -6767,16 +6889,16 @@ export async function pruefeGespeichertenPlan(
   quittierungen: Array<{ id: string; grund?: string }> = [],
 ): Promise<{ pruefung: PlanPruefung; abgelehnt: Array<{ id: string; grund: string }>; neu_geprueft: boolean } | null> {
   const plan = (await getPool().query<{
-    id: string; project: string; owner_agent_id: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
+    id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
   }>(
-    `SELECT id::text AS id, project, owner_agent_id, ops, expected_hashes, status FROM file_batch_plans WHERE id = $1::bigint`,
+    `SELECT id::text AS id, project, owner_agent_id, owner_identity_id, committed_by_identity_id, cancelled_by_identity_id, ops, expected_hashes, status FROM file_batch_plans WHERE id = $1::bigint`,
     [planId],
   )).rows[0];
   const ops = plan && Array.isArray(plan.ops) ? plan.ops : [];
   if (!plan || ops.length === 0) return null;
   const stand = await ladeSchattenStand(plan);
   if ('fehler' in stand) return null;
-  const dateien = pruefDateienAus(stand, ops, plan.owner_agent_id);
+  const dateien = pruefDateienAus(stand, ops, plan.owner_agent_id, plan.owner_identity_id ?? null);
   const vorher = await ladePlanBefunde(planId);
   let pruefung: PlanPruefung;
   let neuGeprueft = false;
@@ -6784,7 +6906,8 @@ export async function pruefeGespeichertenPlan(
   // Die Typstufe nutzt ihren eigenen Paketcache; gespeicherte Gesamtbefunde niemals blind wiederverwenden.
   if (!vorher?.typen && !vorher?.build && !dateien.some(d => /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/.test(d.file_path))
     && vorher && vorher.status === 'fertig' && Date.now() - new Date(vorher.geprueft_am).getTime() < pruefungGueltigMs()
-    && gleicheHashes(vorher.ergebnis_hashes ?? {}, ergebnisHashesAus(dateien))) {
+    && gleicheHashes(vorher.ergebnis_hashes ?? {}, ergebnisHashesAus(dateien))
+    && vorher.befunde.every(b=>(b.author_identity_id??null)===(b.op_index===null?null:ops[b.op_index]?.author_identity_id??null))) {
     pruefung = vorher;
   } else {
     pruefung = await pruefePlanDateien(plan.project, dateien, vorher?.befunde ?? []);
@@ -6814,7 +6937,12 @@ async function pruefeGespeichertenPlanSicher(
 }
 
 // P16-T16 E1: die Build-Warteschlange fuehrt eingereihte commits ueber denselben Weg aus (kein Import-Zyklus).
-registriereBuildCommitAusfuehrer((a) => commitBatch(a as unknown as Parameters<typeof commitBatch>[0]) as unknown as Promise<Record<string, unknown>>);
+registriereBuildCommitAusfuehrer((a) => {
+  const k=a.__dateiAufruf as {project:string;agent_id:string|null;identity_id:string|null;bezug:NonNullable<ReturnType<typeof aktuellerAgentAufruf>>['bezug']}|undefined;
+  const {__dateiAufruf:_,...args}=a;
+  const run=()=>commitBatch(args as unknown as Parameters<typeof commitBatch>[0]) as unknown as Promise<Record<string,unknown>>;
+  return k ? mitAgentAufrufKontext({principal:null,bezug:k.bezug},()=>mitFileAgentBezug(k.project,k,run)) : run();
+});
 
 /**
  * commit-Sperre (P15-T17 E3): vor dem Schreiben gegen den aktuellen Stand neu pruefen und befunde_quittieren
@@ -6849,7 +6977,7 @@ async function pruefeVorCommit(
   if (kontext && build?.tor && !laeuftAusBuildWarteschlange()
     && (build.status === 'laeuft' || buildWarteschlangeLaenge(kontext.project) > 0)) {
     const agentArg = typeof kontext.args.agent_id === 'string' ? kontext.args.agent_id : undefined;
-    const platz = reiheCommitEin(kontext.project, planId, kontext.args, resolveAgentId(agentArg) ?? kontext.owner);
+    const platz = reiheCommitEin(kontext.project, planId, {...kontext.args,__dateiAufruf:aktuellerAgentAufruf()?.bezug.modus !== 'alt' && aktuellerAgentAufruf() ? {project:kontext.project,agent_id:resolveAgentId(agentArg)??kontext.owner,identity_id:aktuelleAgentIdentityId(kontext.project,resolveAgentId(agentArg)??kontext.owner),bezug:aktuellerAgentAufruf()!.bezug} : undefined}, resolveAgentId(agentArg) ?? kontext.owner);
     return {
       sperre: {
         success: false,
@@ -6924,7 +7052,7 @@ export function befundeQuittierenLesen(wert: unknown): Array<{ id: string; grund
  * Beitragenden (agent_id der Op); ein Kombinationsfehler an der spaeteren Op mit beteiligt.
  */
 export async function addCoeditContribution(args: Parameters<typeof addCoeditContributionKern>[0]): Promise<CoeditAddResult> {
-  const ops=await normalisiereOps(args.project,args.ops);
+  const ops=await normalisiereOps(args.project,args.ops.map(withoutCoeditMetadata));
   let fs_pruefung:FsPruefung;
   try {fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));}
   catch(err) {
@@ -6936,7 +7064,7 @@ export async function addCoeditContribution(args: Parameters<typeof addCoeditCon
   const ergebnis = await pruefeGespeichertenPlanSicher(result.plan_id);
   if (!ergebnis) return result;
   const caller = resolveAgentId(args.agent_id) ?? null;
-  const eigene = ergebnis.pruefung.befunde.filter((b) => b.agent_id === caller && b.status === 'offen');
+  const eigene = ergebnis.pruefung.befunde.filter((b) => fileAgentKey({agent_id:b.agent_id,identity_id:b.author_identity_id}) === fileCallerKey(args.project,caller) && b.status === 'offen');
   return {
     ...result,
     pruefung: befundUebersicht(ergebnis.pruefung),

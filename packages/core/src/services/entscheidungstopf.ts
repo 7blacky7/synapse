@@ -22,6 +22,7 @@
  * KEINE HOOKS (User e7b013c2): Erfassung nur per Tool-Aufruf und aus thoughts.
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -217,14 +218,15 @@ export async function schreibeTopfEintrag(
   const kandidat = e.kandidat === false || e.kandidat === 'false' ? false : true;
   const { rows } = await (meta.db ?? getPool()).query<{ id: string }>(
     `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, frage_en, optionen, gewaehlte_option, kontext,
-       antwort_wortlaut, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, erfasst_von, aufbereitet_von)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17)
+       antwort_wortlaut, aufbereitet_de, aufbereitet_en, herkunft, quelle_ref, status, erfasst_von, aufbereitet_von, erfasst_von_identity_id, aufbereitet_von_identity_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17, $18, $19)
      RETURNING id`,
     [
       text(e.herkunft_projekt, 200) ?? null, leseThemen(e.themen) ?? [], kategorie, kandidat, frageDe ?? null, frageEn ?? null,
       JSON.stringify(leseOptionen(e.optionen)), text(e.gewaehlte_option, 200) ?? null, text(e.kontext, 1500) ?? null, wortlaut,
       aufb?.de ? JSON.stringify(aufb.de) : null, aufb?.en ? JSON.stringify(aufb.en) : null, meta.herkunft, meta.quelle_ref ?? null, status,
       meta.erfasst_von ?? null, status === 'aktiv' ? (meta.erfasst_von ?? null) : null,
+      aktuelleAgentAkteurIdentityId(meta.erfasst_von), status === 'aktiv' ? aktuelleAgentAkteurIdentityId(meta.erfasst_von) : null,
     ],
   );
   return {
@@ -292,14 +294,14 @@ export async function bereiteEntscheidungAuf(
     const { rows: neu } = await getPool().query<{ id: string; status: string }>(
       `UPDATE jev_entscheidungstopf SET frage_de = $2, frage_en = $3, optionen = $4::jsonb, gewaehlte_option = $5, kontext = $6, kategorie = $7,
          themen = $8, kandidat = $9, aufbereitet_de = $10::jsonb, aufbereitet_en = $11::jsonb, status = $12, status_grund = $13, ersetzt_durch = $14,
-         aufbereitet_von = $15, embedding_en = NULL, embedding_modell = NULL, geaendert_am = NOW()
+         aufbereitet_von = $15, aufbereitet_von_identity_id=$16, embedding_en = NULL, embedding_modell = NULL, geaendert_am = NOW()
        WHERE id = $1 RETURNING id, status`,
       [
         alt.id, textFeld(e.frage_de, alt.frage_de), textFeld(e.frage_en, alt.frage_en),
         JSON.stringify(e.optionen !== undefined ? leseOptionen(e.optionen) : alt.optionen ?? null),
         textFeld(e.gewaehlte_option, alt.gewaehlte_option, 200), textFeld(e.kontext, alt.kontext, 1500), kategorie,
         leseThemen(e.themen) ?? alt.themen ?? [], kandidatNeu, de ? JSON.stringify(de) : null, en ? JSON.stringify(en) : null, ziel,
-        text(e.status_grund, 500) ?? (ziel === alt.status ? alt.status_grund : null), text(e.ersetzt_durch, 100) ?? (ziel === 'ersetzt' ? alt.ersetzt_durch : null), w,
+        text(e.status_grund, 500) ?? (ziel === alt.status ? alt.status_grund : null), text(e.ersetzt_durch, 100) ?? (ziel === 'ersetzt' ? alt.ersetzt_durch : null), w, aktuelleAgentAkteurIdentityId(w),
       ],
     );
     return { success: true, id: neu[0].id, status: neu[0].status, message: `Eintrag ${neu[0].id} ist ${neu[0].status}.` };
@@ -350,12 +352,12 @@ export async function spiegeleThoughtInTopf(
   try {
     const erste = kurz(t.content.split('\n').find((z) => z.trim()) ?? t.content, 300);
     const { rows } = await getPool().query<{ id: string }>(
-      `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, antwort_wortlaut, herkunft, quelle_ref, status, erfasst_von)
-       VALUES ($1, $2, $3, false, $4, $5, 'thought', $6, 'roh', $7)
+      `INSERT INTO jev_entscheidungstopf (herkunft_projekt, themen, kategorie, kandidat, frage_de, antwort_wortlaut, herkunft, quelle_ref, status, erfasst_von, erfasst_von_identity_id)
+       VALUES ($1, $2, $3, false, $4, $5, 'thought', $6, 'roh', $7, $8)
        ON CONFLICT (quelle_ref) WHERE herkunft = 'thought' DO NOTHING
        RETURNING id`,
       [project, tags.filter((x) => x !== 'entscheidung' && x !== 'user').slice(0, 20), KATEGORIE_OFFEN,
-        `(aus thought ${t.id.slice(0, 8)}, Frage noch aufzubereiten) ${erste}`, t.content.slice(0, 20_000), t.id, t.source ?? null],
+        `(aus thought ${t.id.slice(0, 8)}, Frage noch aufzubereiten) ${erste}`, t.content.slice(0, 20_000), t.id, t.source ?? null, aktuelleAgentAkteurIdentityId(t.source)],
     );
     return rows.length > 0 ? { angelegt: true, id: rows[0].id } : { angelegt: false };
   } catch (err) {

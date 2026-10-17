@@ -8,6 +8,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getPool } from '../db/client.js';
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 
 export interface ArtefaktEingabe {
   sessionId: string;
@@ -36,6 +37,7 @@ export interface ArtefaktZeile {
   htmlPath: string | null;
   imagePath: string | null;
   createdBy: string | null;
+  createdByIdentityId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -85,6 +87,7 @@ function zeile(row: Record<string, unknown>): ArtefaktZeile {
     htmlPath: (row.html_path as string | null) ?? null,
     imagePath: (row.image_path as string | null) ?? null,
     createdBy: (row.created_by as string | null) ?? null,
+    ...(row.created_by_identity_id ? {createdByIdentityId:String(row.created_by_identity_id)} : {}),
     createdAt: row.created_at as Date,
     updatedAt: row.updated_at as Date,
   };
@@ -134,8 +137,8 @@ export async function speichereArtefakt(input: ArtefaktEingabe): Promise<Artefak
   const id = randomUUID();
   const result = await pool.query(
     `INSERT INTO agent_artifacts
-            (id, session_id, title, html, column_pos, column_span, row_pos, row_span, min_height, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            (id, session_id, title, html, column_pos, column_span, row_pos, row_span, min_height, created_by, created_by_identity_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       id,
@@ -148,6 +151,7 @@ export async function speichereArtefakt(input: ArtefaktEingabe): Promise<Artefak
       input.rowSpan ?? null,
       input.minHeight ?? null,
       input.createdBy ?? null,
+      aktuelleAgentAkteurIdentityId(input.createdBy),
     ],
   );
   return zeile(result.rows[0] as Record<string, unknown>);

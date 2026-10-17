@@ -22,6 +22,7 @@ import { readdir, unlink, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readStatus, updateSpecialist, removeSpecialist } from './status.js'
 import { getPool } from '@synapse/core'
+import { agentLaufSchluessel } from './agent-lauf.js'
 import type { WrapperMessage, WrapperResponse, SendMessageResult } from './types.js'
 
 // ---------------------------------------------------------------------------
@@ -52,14 +53,14 @@ class HeartbeatController {
    * Sets up data handler for JSON-RPC response correlation.
    */
   async connectToWrapper(name: string, socketPath: string): Promise<void> {
-    if (this.connections.has(name)) {
+    if (this.connections.has(agentLaufSchluessel(name))) {
       // Already connected — verify socket is still alive
-      const existing = this.connections.get(name)!
+      const existing = this.connections.get(agentLaufSchluessel(name))!
       if (!existing.socket.destroyed) {
         return
       }
       // Socket is dead, clean it up and reconnect
-      this.connections.delete(name)
+      this.connections.delete(agentLaufSchluessel(name))
     }
 
     return new Promise((resolve, reject) => {
@@ -75,7 +76,7 @@ class HeartbeatController {
       }
 
       socket.on('connect', () => {
-        this.connections.set(name, conn)
+        this.connections.set(agentLaufSchluessel(name), conn)
         resolve()
       })
 
@@ -84,7 +85,7 @@ class HeartbeatController {
       })
 
       socket.on('error', (err) => {
-        if (!this.connections.has(name)) {
+        if (!this.connections.has(agentLaufSchluessel(name))) {
           // Connection never established
           reject(err)
         } else {
@@ -93,7 +94,7 @@ class HeartbeatController {
             rejectPending(new Error(`Socket error for wrapper "${name}": ${err.message}`))
           }
           conn.pending.clear()
-          this.connections.delete(name)
+          this.connections.delete(agentLaufSchluessel(name))
         }
       })
 
@@ -103,7 +104,7 @@ class HeartbeatController {
           rejectPending(new Error(`Socket closed for wrapper "${name}"`))
         }
         conn.pending.clear()
-        this.connections.delete(name)
+        this.connections.delete(agentLaufSchluessel(name))
       })
     })
   }
@@ -112,7 +113,7 @@ class HeartbeatController {
    * Disconnect from a wrapper, destroying the socket.
    */
   async disconnectFromWrapper(name: string): Promise<void> {
-    const conn = this.connections.get(name)
+    const conn = this.connections.get(agentLaufSchluessel(name))
     if (!conn) return
 
     // Reject all pending requests
@@ -125,7 +126,7 @@ class HeartbeatController {
       conn.socket.destroy()
     }
 
-    this.connections.delete(name)
+    this.connections.delete(agentLaufSchluessel(name))
   }
 
   /**
@@ -198,7 +199,8 @@ class HeartbeatController {
 
         for (const row of pgRows) {
           // Nur Eintraege die noch nicht verarbeitet wurden
-          if (processedNames.has(row.agentName)) continue
+          const rowKey = row.identityId ? 'identity:' + row.identityId : row.agentName
+          if (processedNames.has(rowKey)) continue
           // Nur laufende Wrapper mit bekanntem PID + Socket
           if (row.status !== 'running' && row.status !== 'idle') continue
           if (!row.wrapperPid || !row.socketPath) continue
@@ -206,8 +208,8 @@ class HeartbeatController {
           const alive = isPidAlive(row.wrapperPid)
           if (alive) {
             try {
-              await this.connectToWrapper(row.agentName, row.socketPath)
-              connected.push(row.agentName)
+              await this.connectToWrapper(rowKey, row.socketPath)
+              connected.push(rowKey)
             } catch {
               // Verbindung fehlgeschlagen — PG-Eintrag bleibt (Wrapper schreibt selbst)
             }
@@ -260,7 +262,7 @@ class HeartbeatController {
    * Check whether the controller is currently connected to a wrapper.
    */
   isConnected(name: string): boolean {
-    const conn = this.connections.get(name)
+    const conn = this.connections.get(agentLaufSchluessel(name))
     return conn !== undefined && !conn.socket.destroyed
   }
 
@@ -324,7 +326,7 @@ class HeartbeatController {
     method: string,
     params?: Record<string, unknown>,
   ): Promise<any> {
-    const conn = this.connections.get(name)
+    const conn = this.connections.get(agentLaufSchluessel(name))
     if (!conn) {
       return Promise.reject(new Error(`Not connected to wrapper "${name}"`))
     }

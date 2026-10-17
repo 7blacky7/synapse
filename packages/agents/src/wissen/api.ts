@@ -18,6 +18,7 @@
  */
 
 import type { AgentMeta, SkillFile } from '../skills.js'
+import { agentLaufUmgebung } from '../agent-lauf.js'
 import type {
   AgentWissen,
   AnlegeErgebnis,
@@ -48,8 +49,8 @@ export class ApiWissen implements WissensZugriff {
   private readonly token: string
 
   constructor(private readonly umgebung: WissensUmgebung) {
-    const url = (process.env.SYNAPSE_API_URL ?? '').trim().replace(/\/+$/, '')
-    const token = (process.env.SYNAPSE_API_TOKEN ?? '').trim()
+    const url = (agentLaufUmgebung().SYNAPSE_API_URL ?? process.env.SYNAPSE_API_URL ?? '').trim().replace(/\/+$/, '')
+    const token = (agentLaufUmgebung().SYNAPSE_API_TOKEN ?? process.env.SYNAPSE_API_TOKEN ?? '').trim()
 
     if (!url || !token || !umgebung.projekt) {
       throw new Error(
@@ -70,10 +71,13 @@ export class ApiWissen implements WissensZugriff {
   }
 
   private async ruf<T>(pfad: string, optionen: RufOptionen = {}): Promise<T | null> {
+    const laufEnv = agentLaufUmgebung()
     const kopf: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       Accept: 'application/json',
     }
+    if (laufEnv.SYNAPSE_AGENT_TOKEN) kopf['x-synapse-agent-token'] = laufEnv.SYNAPSE_AGENT_TOKEN
+    if (laufEnv.SYNAPSE_AGENT_IDENTITY_ID) kopf['x-synapse-agent-identity-id'] = laufEnv.SYNAPSE_AGENT_IDENTITY_ID
     if (optionen.koerper !== undefined) kopf['Content-Type'] = 'application/json'
 
     let antwort: Response

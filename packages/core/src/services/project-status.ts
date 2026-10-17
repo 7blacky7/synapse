@@ -29,6 +29,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
+import { kommunikationsAgent, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
 
 const STATUS_DIR = '.synapse';
 const STATUS_FILE = 'status.json';
@@ -232,6 +233,8 @@ const CHANNEL_BLOCK_MAX = 5;
 /** Wer haengt in einem Channel — und woher wissen wir das. */
 export interface ChannelTeilnehmer {
   agent: string;
+  identity_id?: string | null;
+  art?: 'legacy' | 'identity';
   /** Steht in specialist_channel_members, ist also per join beigetreten. */
   mitglied: boolean;
   /** Hat mindestens eine Nachricht geschrieben. */
@@ -257,6 +260,28 @@ export async function holeChannelTeilnehmer(
   project: string,
   channel: string,
 ): Promise<ChannelTeilnehmer[]> {
+  if (agentBezugAktiv()) {
+    const {rows} = await getPool().query<ChannelTeilnehmer>(
+      `WITH ch AS (SELECT id FROM specialist_channels WHERE project=$1 AND name=$2),
+       mitglieder AS (
+         SELECT agent_name AS agent,NULL::text AS identity_id,'legacy:'||agent_name AS schluessel FROM specialist_channel_members WHERE channel_id=(SELECT id FROM ch)
+         UNION ALL SELECT agent_name,identity_id,'identity:'||identity_id FROM agent_identitaet_channel_mitglieder WHERE channel_id=(SELECT id FROM ch)),
+       absender AS (
+         SELECT max(sender) AS agent,sender_identity_id AS identity_id,
+           CASE WHEN sender_identity_id IS NULL THEN 'legacy:'||sender ELSE 'identity:'||sender_identity_id END AS schluessel,count(*)::int AS n
+         FROM specialist_channel_messages WHERE channel_id=(SELECT id FROM ch)
+         GROUP BY sender_identity_id,CASE WHEN sender_identity_id IS NULL THEN 'legacy:'||sender ELSE 'identity:'||sender_identity_id END)
+       SELECT COALESCE(m.agent,a.agent) AS agent,COALESCE(m.identity_id,a.identity_id) AS identity_id,
+         CASE WHEN COALESCE(m.identity_id,a.identity_id) IS NULL THEN 'legacy' ELSE 'identity' END AS art,
+         (m.agent IS NOT NULL OR m.identity_id IS NOT NULL) AS mitglied,
+         a.n IS NOT NULL AS hat_gepostet,COALESCE(a.n,0) AS nachrichten,
+         CASE WHEN COALESCE(m.identity_id,a.identity_id) IS NOT NULL
+           THEN EXISTS(SELECT 1 FROM agent_identitaet_sitzungen s WHERE s.identity_id=COALESCE(m.identity_id,a.identity_id) AND s.project=$1 AND s.status='active')
+           ELSE EXISTS(SELECT 1 FROM agent_sessions s WHERE s.id=COALESCE(m.agent,a.agent) AND s.project=$1 AND s.status='active') END AS aktiv
+       FROM mitglieder m FULL JOIN absender a ON a.schluessel=m.schluessel
+       ORDER BY 1,2`,[project,channel]);
+    return rows;
+  }
   const { rows } = await getPool().query<{
     agent: string;
     mitglied: boolean;
@@ -312,6 +337,7 @@ export async function baueChannelUebersicht(
   istKoordinator: boolean,
 ): Promise<ChannelUebersicht | undefined> {
   try {
+    if (agentBezugAktiv()) return baueIdentitaetsChannelUebersicht(project,istKoordinator);
     const { rows } = await getPool().query<{
       name: string;
       agenten: string[] | null;
@@ -356,6 +382,28 @@ export async function baueChannelUebersicht(
     console.warn('[Onboarding] Channel-Uebersicht nicht ermittelbar:', err);
     return undefined;
   }
+}
+
+/** Gruppiert Membership und Zustand stets über IDs; Namen bleiben Anzeige. */
+async function baueIdentitaetsChannelUebersicht(project:string,koordinator:boolean): Promise<ChannelUebersicht|undefined> {
+  const {rows}=await getPool().query<{name:string;created_at:Date|null;agenten:string[];aktive:string[]}>(
+    `WITH mitglieder AS (
+      SELECT channel_id,agent_name,'legacy:'||agent_name AS schluessel,NULL::text AS identity_id FROM specialist_channel_members
+      UNION ALL SELECT channel_id,agent_name,'identity:'||identity_id,identity_id FROM agent_identitaet_channel_mitglieder)
+     SELECT c.name,letzte.created_at,
+       COALESCE((SELECT array_agg(mem.schluessel ORDER BY mem.schluessel) FROM mitglieder mem WHERE mem.channel_id=c.id),'{}') AS agenten,
+       COALESCE((SELECT array_agg(mem.schluessel ORDER BY mem.schluessel) FROM mitglieder mem WHERE mem.channel_id=c.id AND
+         CASE WHEN mem.identity_id IS NOT NULL
+           THEN EXISTS(SELECT 1 FROM agent_identitaet_sitzungen s WHERE s.identity_id=mem.identity_id AND s.project=c.project AND s.status='active')
+           ELSE EXISTS(SELECT 1 FROM agent_sessions s WHERE s.id=mem.agent_name AND s.project=c.project AND s.status='active') END),'{}') AS aktive
+     FROM specialist_channels c LEFT JOIN LATERAL(
+       SELECT created_at FROM specialist_channel_messages m WHERE m.channel_id=c.id ORDER BY id DESC LIMIT 1) letzte ON TRUE
+     WHERE c.project=$1 ORDER BY letzte.created_at DESC NULLS LAST,c.id DESC`,[project]);
+  if (!rows.length) return undefined;
+  const channels=rows.slice(0,CHANNEL_BLOCK_MAX).map(r=>({channel:r.name,agenten:r.agenten,noch_aktiv:r.aktive,
+    ...(r.created_at ? {wann:new Date(r.created_at).toISOString()} : {})}));
+  const weitere=Math.max(0,rows.length-channels.length);
+  return {channels,weitere,hinweis:channelHinweis(weitere,koordinator)};
 }
 
 /**
@@ -410,7 +458,10 @@ async function ruheLaeuftNoch(): Promise<boolean> {
  */
 /** Prüft den dauerhaften Zustellnachweis, unabhängig vom Serverprozess. */
 export async function istOnboardingBekannt(project: string, agentId: string): Promise<boolean> {
-  const r = await getPool().query('SELECT 1 FROM agent_onboardings WHERE agent_id=$1 AND project=$2 LIMIT 1', [agentId, project]);
+  const z = kommunikationsAgent(project,agentId);
+  const r = await getPool().query(z.art === 'identity'
+    ? 'SELECT 1 FROM agent_identitaet_onboardings WHERE identity_id=$1 AND project=$2 LIMIT 1'
+    : 'SELECT 1 FROM agent_onboardings WHERE agent_id=$1 AND project=$2 LIMIT 1', [bezugsWert(z),project]);
   return r.rows.length > 0;
 }
 
@@ -418,22 +469,27 @@ export async function registerAgent(
   project: string, agentId: string, serverInstanceId: string,
   rolle?: string, rolleQuelle?: string, explizit = false,
 ): Promise<boolean> {
-  const key = `${serverInstanceId}:${agentId}:${project}`;
+  const z = kommunikationsAgent(project,agentId);
+  const identity = z.art === 'identity';
+  const table = identity ? 'agent_identitaet_onboardings' : 'agent_onboardings';
+  const column = identity ? 'identity_id' : 'agent_id';
+  const value = bezugsWert(z);
+  const key = `${serverInstanceId}:${identity ? 'identity:' + value : agentId}:${project}`;
   if (!explizit && onboardedKeys.has(key)) return false;
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
     // Kurze Claim-Transaktion: Aufbereitung erfolgt vorher, ohne belegte Verbindung.
-    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [JSON.stringify([project, agentId])]);
-    const bekannt = await client.query('SELECT 1 FROM agent_onboardings WHERE agent_id=$1 AND project=$2 LIMIT 1', [agentId, project]);
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [JSON.stringify([project, identity ? 'identity:' + value : agentId])]);
+    const bekannt = await client.query(`SELECT 1 FROM ${table} WHERE ${column}=$1 AND project=$2 LIMIT 1`, [value, project]);
     const liefern = explizit || bekannt.rows.length === 0;
     if (liefern) await client.query(
-      `INSERT INTO agent_onboardings (agent_id, project, server_instance_id, rolle, rolle_quelle)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (agent_id, project, server_instance_id) DO UPDATE
-       SET onboarded_at=NOW(), rolle=EXCLUDED.rolle, rolle_quelle=EXCLUDED.rolle_quelle`,
-      [agentId, project, serverInstanceId, rolle ?? null, rolleQuelle ?? null]);
-    await client.query(
+      `INSERT INTO ${table}(agent_id,project,server_instance_id,rolle,rolle_quelle${identity ? ',identity_id' : ''})
+       VALUES($1,$2,$3,$4,$5${identity ? ',$6' : ''})
+       ON CONFLICT(${column},project,server_instance_id) DO UPDATE
+       SET onboarded_at=NOW(),rolle=EXCLUDED.rolle,rolle_quelle=EXCLUDED.rolle_quelle`,
+      [agentId,project,serverInstanceId,rolle ?? null,rolleQuelle ?? null,...(identity ? [value] : [])]);
+    if (!identity) await client.query(
       `INSERT INTO agent_sessions (id, project, status, registered_at, sitzung_seit, aktiv_seit)
        VALUES ($1,$2,'active',NOW(),NOW(),NOW())
        ON CONFLICT (id) DO UPDATE SET status='active', sitzung_seit=NOW(), aktiv_seit=NOW()
@@ -461,13 +517,14 @@ export async function registerAgent(
  * @returns Anzahl geloeschter agent_onboardings-Zeilen
  */
 export async function vergissOnboarding(project: string, agentId: string): Promise<number> {
-  const endung = `:${agentId}:${project}`;
+  const z = kommunikationsAgent(project,agentId);
+  const endung = `:${z.art === 'identity' ? 'identity:' + z.identity_id : agentId}:${project}`;
   for (const key of [...onboardedKeys]) {
     if (key.endsWith(endung)) onboardedKeys.delete(key);
   }
   const r = await getPool().query(
-    'DELETE FROM agent_onboardings WHERE agent_id = $1 AND project = $2',
-    [agentId, project]
+    z.art === 'identity' ? 'DELETE FROM agent_identitaet_onboardings WHERE identity_id=$1 AND project=$2' : 'DELETE FROM agent_onboardings WHERE agent_id=$1 AND project=$2',
+    [bezugsWert(z),project]
   );
   return r.rowCount ?? 0;
 }
@@ -479,8 +536,10 @@ export async function isAgentKnown(project: string, agentId: string): Promise<bo
   try {
     const pool = getPool();
     const result = await pool.query(
-      `SELECT 1 FROM agent_sessions WHERE id = $1 AND project = $2 LIMIT 1`,
-      [agentId, project]
+      kommunikationsAgent(project,agentId).art === 'identity'
+        ? 'SELECT 1 FROM agent_identitaet_sitzungen WHERE identity_id=$1 AND project=$2 LIMIT 1'
+        : 'SELECT 1 FROM agent_sessions WHERE id=$1 AND project=$2 LIMIT 1',
+      [bezugsWert(kommunikationsAgent(project,agentId)),project]
     );
     return result.rows.length > 0;
   } catch {

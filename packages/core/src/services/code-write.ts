@@ -25,6 +25,7 @@
  */
 
 import * as crypto from 'crypto';
+import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { enqueueParseAndEmbed } from './code.js';
 import { deleteByFilePath } from '../qdrant/index.js';
@@ -781,8 +782,8 @@ export async function createFileInPg(
   // Der spaetere "echte" Snapshot via updateFileInPg fuegt sich nahtlos an.
   try {
     const marker = await pool.query<{ id: string }>(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note, task_id)
-       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10, $11, $12) RETURNING id::text AS id`,
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note, task_id, author_identity_id)
+       VALUES ($1, $2, '', $3, $4, $5, $6, 0, $7, $8, $9, $10, $11, $12, $13) RETURNING id::text AS id`,
       [
         project,
         filePath,
@@ -795,7 +796,7 @@ export async function createFileInPg(
         enrichment?.parent_version_id ?? null,
         enrichment?.git_commit_sha ?? null,
         enrichment?.agent_note ?? null,
-        taskId,
+        taskId, aktuelleAgentIdentityId(project, resolvedAgentId),
       ]
     );
     if (marker.rows[0]) merkeFileTaskVersion({ id: marker.rows[0].id, file_path: filePath, task_id: taskId, edit_action: editAction ?? 'create' });
@@ -891,9 +892,9 @@ export async function updateFileInPg(
     // Pruefung weiter unten den geaenderten Abschnitt, ohne eine zweite Abfrage.
     // Bleibt die Zeile aus, war der Inhalt unveraendert — dann gibt es nichts zu pruefen.
     const schnappschuss = await client.query<{ id: string; content: string }>(
-      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note, task_id)
+      `INSERT INTO file_versions (project, file_path, content, content_hash, edit_action, agent_id, batch_id, size_bytes, reason, feature_tag, parent_version_id, git_commit_sha, agent_note, task_id, author_identity_id)
        SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4, $5,
-              COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10, $11, $12
+              COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $7, $8, $9, $10, $11, $12, $13
        FROM code_files cf
        WHERE cf.project = $1
          AND cf.file_path = $2
@@ -912,7 +913,7 @@ export async function updateFileInPg(
         enrichment?.parent_version_id ?? null,
         enrichment?.git_commit_sha ?? null,
         enrichment?.agent_note ?? null,
-        taskId,
+        taskId, aktuelleAgentIdentityId(project, resolvedAgentId),
       ]
     );
 
@@ -963,11 +964,13 @@ export async function updateFileInPg(
 
 async function releasePlanlessReservationsAfterSingleWrite(project: string, agentId: string) {
   const pool = getPool();
+  const identityId = aktuelleAgentIdentityId(project,agentId);
+  const table = identityId ? 'agent_identitaet_file_reservations' : 'file_reservations';
   const { rows } = await pool.query<{ agent_id: string; file_path: string }>(
-    `UPDATE file_reservations SET released_at = NOW()
-      WHERE project = $1 AND agent_id = $2 AND plan_id IS NULL AND released_at IS NULL
+    `UPDATE ${table} SET released_at = NOW()
+      WHERE project = $1 AND ${identityId ? 'identity_id' : 'agent_id'} = $2 AND plan_id IS NULL AND released_at IS NULL
       RETURNING agent_id, file_path`,
-    [project, agentId],
+    [project, identityId ?? agentId],
   );
   if (rows.length > 0) {
     const batch = await import('./file-batch.js');
@@ -1002,13 +1005,13 @@ export async function snapshotFileVersion(
   const pool = getPool();
   const res = await pool.query<{ id: string }>(
     `INSERT INTO file_versions
-       (project, file_path, content, content_hash, edit_action, agent_id, size_bytes, reason, task_id)
+       (project, file_path, content, content_hash, edit_action, agent_id, size_bytes, reason, task_id, author_identity_id)
      SELECT cf.project, cf.file_path, cf.content, cf.content_hash, $3, $4,
-            COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $5, $6
+            COALESCE(cf.file_size, OCTET_LENGTH(cf.content)), $5, $6, $7
        FROM code_files cf
       WHERE cf.project = $1 AND cf.file_path = $2 AND cf.content IS NOT NULL
       RETURNING id::text AS id`,
-    [project, filePath, editAction, agentId, reason, taskId]
+    [project, filePath, editAction, agentId, reason, taskId, aktuelleAgentIdentityId(project, agentId)]
   );
   for (const row of res.rows) merkeFileTaskVersion({ id: row.id, file_path: filePath, task_id: taskId, edit_action: editAction });
   return (res.rowCount ?? 0) > 0;

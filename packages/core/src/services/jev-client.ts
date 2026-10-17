@@ -44,6 +44,8 @@ export interface JevAnfrage {
   funktion: JevFunktion;
   project: string | null;
   agent_id?: string | null;
+  /** Serverseitig erfasste Attribution fuer asynchrone Aufrufe; null bleibt Legacy. */
+  identity_id?: string | null;
   state: unknown;
   questions: Record<string, unknown>;
 }
@@ -95,7 +97,7 @@ export async function rufeJev(a: JevAnfrage, deps: { fetch?: typeof fetch } = {}
     return { ok: false, grund: 'budget', message: reservierung.message, wirkung: { an: false, ebene: 'budget', funktion: 'alle', grund: 'budget', text: reservierung.message } };
   }
 
-  const basis = { project: a.project, funktion: a.funktion, agent_id: a.agent_id ?? null };
+  const basis = { project: a.project, funktion: a.funktion, agent_id: a.agent_id ?? null, identity_id: a.identity_id };
   const fehlschlag = async (ms: number, fehler: string) => {
     await bucheJevBudget(reservierung, 0);
     await bucheJevAufruf({ ...basis, input_tokens: null, output_tokens: null, usd: 0, usd_quelle: 'keine', ms, ok: false, fehler });

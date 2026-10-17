@@ -5,7 +5,10 @@
 import { getPool } from '../db/client.js';
 import type { ProjectTask } from '../types/index.js';
 
-export interface TaskBeteiligter { agent_id: string; seit: string }
+export interface TaskBeteiligter { agent_id: string; seit: string; identity_id?: string; art?: 'identity' | 'legacy' }
+export function beteiligterSchluessel(x: TaskBeteiligter): string {
+  return x.identity_id ? 'identity:' + x.identity_id : 'legacy:' + x.agent_id;
+}
 export interface SichtbarerBeteiligter extends TaskBeteiligter { status: 'aktiv' | 'inaktiv' }
 
 /** Eine explizite Liste (auch []) gewinnt vor den Legacy-Feldern. */
@@ -15,24 +18,34 @@ export function taskBeteiligte(task: ProjectTask): TaskBeteiligter[] {
       ? [{ agent_id: task.zugewiesen_an, seit: task.zugewiesen_am ?? task.updatedAt ?? task.createdAt }]
       : [];
   const gesehen = new Set<string>();
-  return roh.flatMap((x) => {
-    if (!x || typeof x.agent_id !== 'string' || !x.agent_id.trim() || gesehen.has(x.agent_id.trim())) return [];
+  return (roh as TaskBeteiligter[]).flatMap((x) => {
+    if (!x || typeof x.agent_id !== 'string' || !x.agent_id.trim() || gesehen.has(beteiligterSchluessel({ ...x, agent_id: x.agent_id.trim() }))) return [];
     const agent_id = x.agent_id.trim();
-    gesehen.add(agent_id);
-    return [{ agent_id, seit: typeof x.seit === 'string' ? x.seit : task.updatedAt }];
+    gesehen.add(beteiligterSchluessel({ ...x, agent_id }));
+    return [{ agent_id, seit: typeof x.seit === 'string' ? x.seit : task.updatedAt,
+      ...(x.identity_id ? { identity_id: x.identity_id, art: 'identity' as const } : {}) }];
   });
 }
 
 /** Legacy-Felder spiegeln den ersten Beteiligten; Status wird nie persistiert. */
 export function mitTaskBeteiligten(task: ProjectTask, beteiligte: TaskBeteiligter[]): ProjectTask {
-  return { ...task, beteiligte: beteiligte.map(({ agent_id, seit }) => ({ agent_id, seit })),
-    zugewiesen_an: beteiligte[0]?.agent_id ?? null, zugewiesen_am: beteiligte[0]?.seit ?? null };
+  const legacy = beteiligte.find(x => !x.identity_id);
+  return { ...task, beteiligte: beteiligte.map(x => ({ ...x })),
+    zugewiesen_an: legacy?.agent_id ?? null, zugewiesen_am: legacy?.seit ?? null };
 }
 
 /** Eine projektgebundene Abfrage fuer alle Beteiligten der uebergebenen Tasks. */
 export async function sichtbareTaskBeteiligte(project: string, tasks: ProjectTask[]): Promise<ProjectTask[]> {
-  const ids = [...new Set(tasks.flatMap(t => taskBeteiligte(t).map(x => x.agent_id)))];
-  if (!ids.length) return tasks.map(t => ({ ...t, beteiligte: [] }));
+  const identities = [...new Set(tasks.flatMap(t => taskBeteiligte(t).flatMap(x => x.identity_id ? [x.identity_id] : [])))];
+  const idAktiv = new Set<string>();
+  if (identities.length) {
+    const r = await getPool().query<{ identity_id: string }>(
+      "SELECT identity_id FROM agent_identitaet_sitzungen WHERE project=$1 AND identity_id=ANY($2::text[]) AND status='active'",
+      [project, identities]);
+    for (const x of r.rows) idAktiv.add(x.identity_id);
+  }
+  const ids = [...new Set(tasks.flatMap(t => taskBeteiligte(t).filter(x => !x.identity_id).map(x => x.agent_id)))];
+  if (!ids.length && !identities.length) return tasks.map(t => ({ ...t, beteiligte: [] }));
   const { rows } = await getPool().query<{ agent_id: string; aktiv: boolean }>(
     `SELECT x.agent_id,
        CASE WHEN w.agent_name IS NOT NULL THEN w.status IN ('running','idle')
@@ -45,7 +58,7 @@ export async function sichtbareTaskBeteiligte(project: string, tasks: ProjectTas
   );
   const aktiv = new Set(rows.filter(r => r.aktiv).map(r => r.agent_id));
   return tasks.map(t => ({ ...t, beteiligte: taskBeteiligte(t).map(x => ({
-    ...x, status: aktiv.has(x.agent_id) ? 'aktiv' : 'inaktiv',
+    ...x, status: (x.identity_id ? idAktiv.has(x.identity_id) : aktiv.has(x.agent_id)) ? 'aktiv' : 'inaktiv',
   })) }));
 }
 

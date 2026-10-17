@@ -13,8 +13,17 @@
  */
 
 import { getPool } from '../db/client.js'
+import { agentBezugFuer, aktuellerAgentAufruf, leseAgentBezugModus, loeseAgentZiel, type AgentZiel } from './agent-bezug.js'
+
+function wrapperZiel(agent: string | AgentZiel, project: string): AgentZiel {
+  const z = typeof agent === 'string' ? agentBezugFuer(project, agent) : agent
+  if (z.project !== project) throw new Error('wrapper_ziel_projekt_falsch')
+  if (z.art === 'identity' && aktuellerAgentAufruf()?.bezug.modus === 'alt') throw new Error('wrapper_identity_im_altmodus')
+  return z
+}
 
 export interface WrapperStatusRow {
+  identityId?: string | null
   agentName: string
   project: string
   wrapperPid: number | null
@@ -48,6 +57,7 @@ export interface WrapperStatusRow {
 /** Datenbank-Row (snake_case) → WrapperStatusRow (camelCase) */
 function mapRow(row: Record<string, unknown>): WrapperStatusRow {
   return {
+    ...(row.identity_id ? { identityId: row.identity_id as string } : {}),
     agentName: row.agent_name as string,
     project: row.project as string,
     wrapperPid: row.wrapper_pid as number | null,
@@ -96,7 +106,7 @@ export type WrapperStatusEingabe = Partial<WrapperStatusRow> & {
 }
 
 /** Baut Statement + Parameter des Upserts (rein, ohne DB — testbar). */
-export function baueWrapperStatusUpsert(row: WrapperStatusEingabe): { text: string; values: unknown[] } {
+export function baueWrapperStatusUpsert(row: WrapperStatusEingabe, ziel?: AgentZiel): { text: string; values: unknown[] } {
   // Konvertiere undefined → null fuer alle optionalen Felder.
   // Im INSERT-Pfad: COALESCE($N, <default>) setzt den richtigen Default.
   // Im UPDATE-Pfad: COALESCE($N, wrapper_status.field) preserviert bestehende Werte.
@@ -159,11 +169,21 @@ export function baueWrapperStatusUpsert(row: WrapperStatusEingabe): { text: stri
       row.effort ?? null,        // null → preserve existing (Heartbeats schicken kein effort)
       row.innerPidZuruecksetzen === true,
   ]
+  const z = wrapperZiel(ziel ?? row.agentName, row.project)
+  if (z.art === 'identity') {
+    return {
+      text: text.replace(/\bwrapper_status\b/g, 'agent_identitaet_wrapper_status')
+        .replace('agent_name, project,', 'identity_id, agent_name, project,')
+        .replace('        $1, $2, $3,', '        $20, $1, $2, $3,')
+        .replace('ON CONFLICT (agent_name, project)', 'ON CONFLICT (identity_id, project)'),
+      values: [...values, z.identity_id],
+    }
+  }
   return { text, values }
 }
 
-export async function upsertWrapperStatus(row: WrapperStatusEingabe): Promise<void> {
-  const { text, values } = baueWrapperStatusUpsert(row)
+export async function upsertWrapperStatus(row: WrapperStatusEingabe, ziel?: AgentZiel): Promise<void> {
+  const { text, values } = baueWrapperStatusUpsert(row, ziel)
   await getPool().query(text, values)
 }
 
@@ -172,13 +192,17 @@ export async function upsertWrapperStatus(row: WrapperStatusEingabe): Promise<vo
  * Gibt null zurueck wenn kein Eintrag vorhanden.
  */
 export async function getWrapperStatus(
-  agentName: string,
+  agentName: string | AgentZiel,
   project: string,
 ): Promise<WrapperStatusRow | null> {
+  if (typeof agentName === 'string' && agentName.startsWith('identity:') && (aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus === 'alt') throw new Error('wrapper_identity_im_altmodus')
+  const eingabe = typeof agentName === 'string' && agentName.startsWith('identity:')
+    ? await loeseAgentZiel(project, { identity_id: agentName.slice(9) }) : agentName
+  const z = wrapperZiel(eingabe, project)
   const pool = getPool()
   const { rows } = await pool.query(
-    `SELECT * FROM wrapper_status WHERE agent_name = $1 AND project = $2`,
-    [agentName, project],
+    `SELECT * FROM ${z.art === 'identity' ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} WHERE ${z.art === 'identity' ? 'identity_id' : 'agent_name'} = $1 AND project = $2`,
+    [z.art === 'identity' ? z.identity_id : z.agent_id, project],
   )
   return rows.length > 0 ? mapRow(rows[0]) : null
 }
@@ -188,6 +212,11 @@ export async function getWrapperStatus(
  * Sortiert nach last_activity DESC.
  */
 export async function listWrapperStatusFuerAgent(agentName: string): Promise<WrapperStatusRow[]> {
+  const k = aktuellerAgentAufruf()
+  if (k?.bezug.modus !== 'alt' && k?.principal?.art === 'identity') {
+    const zeile = await getWrapperStatus(k.principal, k.principal.project)
+    return zeile ? [zeile] : []
+  }
   const pool = getPool()
   const { rows } = await pool.query(
     `SELECT * FROM wrapper_status WHERE agent_name = $1 ORDER BY last_activity DESC`,
@@ -206,6 +235,10 @@ export async function listWrapperStatus(project: string): Promise<WrapperStatusR
     `SELECT * FROM wrapper_status WHERE project = $1 ORDER BY last_activity DESC`,
     [project],
   )
+  if ((aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus !== 'alt') {
+    const identities = await pool.query('SELECT * FROM agent_identitaet_wrapper_status WHERE project=$1 ORDER BY last_activity DESC', [project])
+    return [...rows, ...identities.rows].map(mapRow).sort((a,b) => b.lastActivity.getTime() - a.lastActivity.getTime())
+  }
   return rows.map(mapRow)
 }
 
@@ -238,7 +271,7 @@ export interface HeartbeatKonfiguration {
  */
 export async function setzeHeartbeatKonfiguration(
   project: string,
-  agentNames: string[] | null,
+  agentNames: Array<string | AgentZiel> | null,
   konfiguration: HeartbeatKonfiguration,
 ): Promise<WrapperStatusRow[]> {
   const setzt: string[] = []
@@ -258,9 +291,11 @@ export async function setzeHeartbeatKonfiguration(
     throw new Error('setzeHeartbeatKonfiguration: weder enabled noch intervalMs uebergeben — nichts zu tun')
   }
 
+  const identitaeten = agentNames?.filter((a): a is Extract<AgentZiel, { art: 'identity' }> => typeof a !== 'string' && a.art === 'identity') ?? []
+  const legacyNamen = agentNames?.flatMap(a => typeof a === 'string' ? [a] : a.art === 'legacy' ? [a.agent_id] : [])
   let namensFilter = ''
   if (agentNames && agentNames.length > 0) {
-    werte.push(agentNames)
+    werte.push(legacyNamen)
     namensFilter = ` AND agent_name = ANY($${werte.length}::TEXT[])`
   }
 
@@ -271,6 +306,13 @@ export async function setzeHeartbeatKonfiguration(
       RETURNING *`,
     werte,
   )
+  if ((aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus !== 'alt' && (identitaeten.length || !agentNames?.length)) {
+    for (const ziel of identitaeten) wrapperZiel(ziel, project)
+    const idWerte = agentNames?.length ? [...werte.slice(0, -1), identitaeten.map(z => z.identity_id)] : werte
+    const idFilter = agentNames?.length ? ` AND identity_id = ANY($${idWerte.length}::TEXT[])` : ''
+    const ids = await pool.query(`UPDATE agent_identitaet_wrapper_status SET ${setzt.join(', ')} WHERE project=$1${idFilter} RETURNING *`, idWerte)
+    return [...rows, ...ids.rows].map(mapRow)
+  }
   return rows.map(mapRow)
 }
 
@@ -319,7 +361,7 @@ function beschreibeTakt(ms: number | null): string {
  */
 export async function steuereHeartbeat(
   project: string,
-  agentNames: string[] | null,
+  agentNames: Array<string | AgentZiel> | null,
   konfiguration?: HeartbeatKonfiguration,
 ): Promise<HeartbeatUebersicht> {
   const aendert = konfiguration !== undefined
@@ -337,13 +379,14 @@ export async function steuereHeartbeat(
   const zeilen = aendert && konfiguration
     ? await setzeHeartbeatKonfiguration(project, agentNames, konfiguration)
     : (await listWrapperStatus(project)).filter(
-        z => !agentNames || agentNames.length === 0 || agentNames.includes(z.agentName),
+        z => !agentNames || agentNames.length === 0 || agentNames.some(a => typeof a === 'string' ? !z.identityId && a === z.agentName : a.art === 'identity' ? a.identity_id === z.identityId : !z.identityId && a.agent_id === z.agentName),
       )
 
   return {
     project,
     geaendert: aendert,
     agenten: zeilen.map(z => ({
+      ...(z.identityId ? { identityId: z.identityId } : {}),
       name: z.agentName,
       status: z.status,
       heartbeat: z.heartbeatEnabled ? 'an' : 'aus',
@@ -358,10 +401,14 @@ export async function steuereHeartbeat(
  * Loescht den Status-Eintrag eines Spezialisten.
  * Wird bei purge/removeSpecialist aufgerufen.
  */
-export async function removeWrapperStatus(agentName: string, project: string): Promise<void> {
+export async function removeWrapperStatus(agentName: string | AgentZiel, project: string): Promise<void> {
+  if (typeof agentName === 'string' && agentName.startsWith('identity:') && (aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus === 'alt') throw new Error('wrapper_identity_im_altmodus')
+  const eingabe = typeof agentName === 'string' && agentName.startsWith('identity:')
+    ? await loeseAgentZiel(project, { identity_id: agentName.slice(9) }) : agentName
+  const z = wrapperZiel(eingabe, project)
   const pool = getPool()
   await pool.query(
-    `DELETE FROM wrapper_status WHERE agent_name = $1 AND project = $2`,
-    [agentName, project],
+    `DELETE FROM ${z.art === 'identity' ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} WHERE ${z.art === 'identity' ? 'identity_id' : 'agent_name'} = $1 AND project = $2`,
+    [z.art === 'identity' ? z.identity_id : z.agent_id, project],
   )
 }

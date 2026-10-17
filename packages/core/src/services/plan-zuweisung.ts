@@ -1,4 +1,5 @@
 /** P7-T53: Alle Agenten koennen Tasks gemeinsam bearbeiten. Profile sind nur Empfehlungen. */
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { taskBeteiligte, mitTaskBeteiligten, sichtbareTaskBeteiligte, beteiligungsHinweise } from './plan-beteiligung.js';
 import { getWrapperStatus } from './wrapper-status.js';
@@ -39,6 +40,17 @@ const ohne1M = (alias: string): string => alias.replace(/\[1m\]$/, '');
 export async function ladeAgentProfil(project: string, agentId: string): Promise<AgentProfil | string> {
   if (!agentId?.trim()) return 'agent_id ist Pflicht: die eigene Agent-ID.';
   const name = agentId.trim();
+  const identityId = aktuelleAgentIdentityId(project, name);
+  if (identityId) {
+    const p = aktuellerAgentPrincipal();
+    const r = await getPool().query<{ model: string | null }>('SELECT model FROM agent_identitaet_sitzungen WHERE identity_id=$1 AND project=$2', [identityId, project]);
+    const model = r.rows[0]?.model ?? (p?.art === 'identity' ? p.modell : null);
+    if (!model) return 'Profil unbekannt';
+    const eintrag = await getModel(model).catch(() => null);
+    return { name, project, model, familie: ohne1M(eintrag?.alias ?? model), effort: null,
+      kontext: model.endsWith('[1m]') || (eintrag?.contextWindow ?? 0) >= 1_000_000 ? '1m' : '200k',
+      effort_stufen: eintrag?.effortStufen ?? [], profil_unvollstaendig: true };
+  }
   const zeile = await getWrapperStatus(name, project);
   const session = zeile?.model ? null : (await getPool().query<{ model: string | null }>(
     'SELECT model FROM agent_sessions WHERE id = $1 AND project = $2', [name, project],
@@ -148,15 +160,17 @@ async function aendereBeteiligung(project: string, planRef: string | null | unde
     const gefunden = findeTaskInPlan(plan, taskRef.trim());
     if (typeof gefunden === 'string') return { success: false, message: gefunden };
     const id = agentId.trim();
+    const identityId = aktuelleAgentIdentityId(project, id);
+    const eigen = (x: { agent_id: string; identity_id?: string }) => identityId ? x.identity_id === identityId : !x.identity_id && x.agent_id === id;
     const r = await aendereTasks(project, plan.id, tasks => {
       const i = tasks.findIndex(t => t.id === gefunden.id);
       if (i < 0) throw new Error('Task ist waehrenddessen verschwunden.');
       const task = tasks[i], vorher = taskBeteiligte(task);
-      const dabei = vorher.some(x => x.agent_id === id);
+      const dabei = vorher.some(eigen);
       if ((anmelden && dabei) || (!anmelden && !dabei)) return { tasks, ergebnis: { bereits: dabei } };
       if (anmelden) { const grund = hinderungsgrund(task); if (grund) throw new Error(grund); }
       const jetzt = new Date().toISOString();
-      const beteiligte = anmelden ? [...vorher, { agent_id: id, seit: jetzt }] : vorher.filter(x => x.agent_id !== id);
+      const beteiligte = anmelden ? [...vorher, { agent_id: id, seit: jetzt, ...(identityId ? { identity_id: identityId, art: 'identity' as const } : {}) }] : vorher.filter(x => !eigen(x));
       const neu = [...tasks];
       neu[i] = { ...mitTaskBeteiligten(task, beteiligte),
         status: anmelden ? task.status === 'todo' ? 'in_progress' : task.status

@@ -29,7 +29,7 @@ import { embeddePlanNach, planNachzug } from './plans.js';
 import { embeddeTaskNach, taskNachzug } from './plan-suche.js';
 import { embeddeErrorPatternNach, errorPatternNachzug } from './error-patterns.js';
 import { embeddeTechDocNach, techDocNachzug } from './tech-docs.js';
-import { embeddeSkillSectionNach, skillSectionNachzug } from './skills.js';
+import { embeddeSkillSectionNach, skillSectionNachzug, identitaetsSkillSectionNachzug } from './skills.js';
 import { betteStapelEin } from './embed-nachzug.js';
 import { wissensNachzugWo } from './wissen-stuecke.js';
 import { schalterHaeltAn, embeddingNachtragAngehalten } from './intern-schalter.js';
@@ -67,6 +67,7 @@ import { sichereModellprofil } from '../embeddings/modell-profil.js';
  */
 const TABELLEN = [
   { name: 'skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', mitProjekt: true, quelle: () => skillSectionNachzug, nachtrag: embeddeSkillSectionNach },
+  { name: 'agent_identitaet_skill_sections', sortSpalte: 'aktualisiert_am', idSpalte: 'punkt_id', mitProjekt: true, quelle: () => identitaetsSkillSectionNachzug, nachtrag: embeddeSkillSectionNach },
   { name: 'memories', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, quelle: () => memoryNachzug, nachtrag: embeddeMemoryNach },
   { name: 'thoughts', sortSpalte: 'timestamp', idSpalte: 'id', mitProjekt: true, quelle: () => thoughtNachzug, nachtrag: embeddeThoughtNach },
   { name: 'proposals', sortSpalte: 'updated_at', idSpalte: 'id', mitProjekt: true, quelle: () => proposalNachzug, nachtrag: embeddeProposalNach },

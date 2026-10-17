@@ -45,7 +45,9 @@ async function functionFrom(file,name,globals={},dynamic={}){
  const source=await readFile(file,'utf8'),ast=ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true);
  const fn=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name);
  assert.ok(fn,'Produktionsfunktion '+name+' fehlt');
- const code=ts.transpileModule(fn.getText(ast).replace(/^export\s+/,''),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+ const helpers=name==='spawnSpecialistTool'?ast.statements.filter(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='spawnSpecialistMitUmgebung'):[];
+ const sourceText=[...helpers,fn].map(n=>n.getText(ast).replace(/^export\s+/,'')).join('\n');
+ const code=ts.transpileModule(sourceText,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
  const context=vm.createContext({console,Buffer,Promise,process,setTimeout,clearTimeout,...globals});
  return new vm.Script(code+'\n'+name,{importModuleDynamically:async spec=>{
   assert.ok(Object.hasOwn(dynamic,spec),'Nicht erlaubter Import '+spec);
@@ -72,7 +74,7 @@ async function spawnProbe(tree,env={},tokenEnv={}){
   mkdir:async()=>{},resolveWrapperPath:()=>'/tmp/synthetischer-wrapper.js',
   spawn:(bin,args,opts)=>{r.spawns.push({bin,args,opts});return{pid:12345,unref:noOp};},
   setTimeout:fn=>{fn();return 0;},heartbeatController:{connectToWrapper:async()=>{}},updateSpecialist:async(p,n,s)=>r.statuses.push(s),jsonResult:data=>data,
- },{'@synapse/agents':{loadFromDb:async()=>{},resolveModel:()=>model,listAliases:()=>['synthetisch']},'node:fs':{openSync:()=>7}});
+ },{'@synapse/agents':{...(await import('../packages/agents/dist/agent-lauf.js')),loadFromDb:async()=>{},resolveModel:()=>model,listAliases:()=>['synthetisch']},'node:fs':{openSync:()=>7}});
  r.result=await fn(agent,'synthetisch','Test','P22-T12',project,'/tmp/p22-sol33-fixture');return r;
 }
 try{

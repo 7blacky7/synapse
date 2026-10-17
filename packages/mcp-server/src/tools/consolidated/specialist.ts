@@ -170,6 +170,9 @@ export const specialistTool: ConsolidatedTool = {
 
   handler: async (args: Record<string, unknown>) => {
     const action = reqStr(args, 'action');
+    const { fuehreSpecialistIdentitaetsAktion } = await import('@synapse/core');
+    const identityResult = await fuehreSpecialistIdentitaetsAktion(args);
+    if (identityResult) return identityResult;
 
     switch (action) {
       case 'spawn': {

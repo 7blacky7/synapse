@@ -195,7 +195,26 @@ async function processJob(project: string): Promise<void> {
  * Tools liegen in @synapse/mcp-server — dynamic import damit der Daemon
  * nicht zwingend mcp-server im Build braucht.
  */
+import { mitDaemonAuftrag } from './daemon-auftrag.js';
+import { holeAgentStartApi } from './agent-start-api.js';
 export async function dispatchSpecialistAction(
+  job: SpecialistJobRow,
+  optionen: { lokalerProjektpfad?: string | null } = {},
+): Promise<Record<string, unknown>> {
+  // ID-Aufträge überschreiben nur ihren eigenen Datenweg, nie parallele Legacy-Jobs.
+  return mitDaemonAuftrag(job, async () => {
+    if (!job.target_identity_id) return dispatchSpecialistActionGebunden(job, optionen);
+    const agents = await import('@synapse/agents');
+    const env = await holeAgentStartApi(String(job.args.name), job.project);
+    if (env.SYNAPSE_AGENT_IDENTITY_ID !== job.target_identity_id) throw new Error('daemon_auftrag_startidentitaet_falsch');
+    const tools = await import('@synapse/mcp-server/tools');
+    const { apiSpezialistenDatenweg, holeModelleApi } = await import('./spezialisten-datenweg-api.js');
+    return agents.mitAgentLaufUmgebung(String(job.args.name), job.project, env, () =>
+      tools.mitSpezialistenDatenweg(apiSpezialistenDatenweg, () =>
+        agents.mitModellQuelle(holeModelleApi, () => dispatchSpecialistActionGebunden(job, optionen))));
+  });
+}
+async function dispatchSpecialistActionGebunden(
   job: SpecialistJobRow,
   /** P9-T27: im API-Weg liefert die API den Projektpfad dieses Hosts mit (sonst PG-Lookup wie bisher). */
   optionen: { lokalerProjektpfad?: string | null } = {},
@@ -409,7 +428,7 @@ async function startSpecialistJobWorkerApi(getActiveProjects: () => string[]): P
   const reaper = async (): Promise<number> => {
     let anzahl = 0
     for (const k of await wrapperKandidatenApi(DAEMON_ID, getActiveProjects())) {
-      if ((await pruefeWrapperProzess(Number(k.wrapper_pid), k.agent_name, k.project, k.path)).zustand !== 'tot') continue
+      if ((await pruefeWrapperProzess(Number(k.wrapper_pid), k.agent_name, k.project, k.path, k.identity_id)).zustand !== 'tot') continue
       anzahl += await wrapperAbgestuerztApi(DAEMON_ID, k)
     }
     return anzahl

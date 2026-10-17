@@ -32,6 +32,8 @@ import { lokalerProjektpfadFuerHost } from './daemon-jobs-vertrag.js';
 
 /** Daten, die die API fuer einen geclaimten Shell-Job liefert (JSON). */
 export interface ShellExecKontextDaten {
+  /** Serverseitig aus dem geclaimten Job, kein öffentlicher Parameter. */
+  agent_identity_id?:string | null;
   project: string;
   /** Projektpfad auf dem Host des Daemons. */
   project_root: string;
@@ -39,6 +41,8 @@ export interface ShellExecKontextDaten {
   projekt_db: JobDbZugang | null;
   /** true = Registry-Eintrag zeigte auf die System-DB und wurde verworfen. */
   projekt_db_verworfen?: boolean;
+  /** Serverseitig geprüft für die konkrete Job-Identität; kein Rollenprincipal. */
+  agent_koordination_erlaubt?:boolean;
   /** Passwortfreie URL der System-DB (nur Grenze, kein Zugang). */
   system_db_url?: string;
   datenbank_freigabe: ShellDbFreigabe;
@@ -69,16 +73,16 @@ export function passwortfreieDbUrl(url: string | undefined): string | undefined 
 
 export type ShellKontextFehler = 'job_unbekannt' | 'nicht_eigener_job' | 'job_nicht_laufend' | 'projekt_nicht_auf_diesem_host';
 
-async function eigenerLaufenderJob(id: string, daemonId: string): Promise<{ ok: true; project: string; command: string } | { ok: false; error: ShellKontextFehler }> {
-  const { rows } = await getPool().query<{ project: string; command: string; claimed_by: string | null; status: string }>(
-    'SELECT project, command, claimed_by, status FROM shell_jobs WHERE id::text = $1',
+async function eigenerLaufenderJob(id: string, daemonId: string): Promise<{ ok: true; project: string; command: string; owner_identity_id:string|null; agent_id:string|null } | { ok: false; error: ShellKontextFehler }> {
+  const { rows } = await getPool().query<{ project: string; command: string; owner_identity_id:string|null; agent_id:string|null; claimed_by: string | null; status: string }>(
+    'SELECT project, command, claimed_by, status,owner_identity_id,agent_id FROM shell_jobs WHERE id::text = $1',
     [id],
   );
   const job = rows[0];
   if (!job) return { ok: false, error: 'job_unbekannt' };
   if (job.claimed_by !== daemonId) return { ok: false, error: 'nicht_eigener_job' };
   if (job.status !== 'running') return { ok: false, error: 'job_nicht_laufend' };
-  return { ok: true, project: job.project, command: job.command };
+  return { ok: true, project: job.project, command: job.command,owner_identity_id:job.owner_identity_id,agent_id:job.agent_id };
 }
 
 /**
@@ -105,10 +109,18 @@ export async function ladeShellExecKontextFuerDaemon(
       else projekt_db_verworfen = true;
     }
   } catch { /* wie baueJobUmgebung: kein Zugang statt Raten */ }
+  let agent_koordination_erlaubt:boolean|undefined;
+  if (job.owner_identity_id) {
+    const profil = await getPool().query<{rolle:string;status:string}>(
+      'SELECT rolle,status FROM agent_identitaeten WHERE id=$1 AND project=$2',[job.owner_identity_id,job.project]);
+    const p=profil.rows[0];
+    agent_koordination_erlaubt=!!p && p.status==='aktiv' && /^(koordinator|coordinator)$/i.test(p.rolle);
+  }
   const [datenbank_freigabe, katalog] = await Promise.all([holeShellDbFreigabe(job.project), holeShellStartKatalog()]);
   return {
     ok: true,
     kontext: {
+      ...(job.owner_identity_id ? {agent_identity_id:job.owner_identity_id,agent_koordination_erlaubt} : {}),
       project: job.project,
       project_root,
       projekt_db,
@@ -131,6 +143,6 @@ export async function speichereShellSicherungFuerDaemon(
 ): Promise<{ ok: true; id: string | undefined } | { ok: false; error: ShellKontextFehler }> {
   const job = await eigenerLaufenderJob(id, daemonId);
   if (!job.ok) return job;
-  const r = await beginneShellSicherungsJob({ ...eingabe, project: job.project, command: job.command, job_id: id });
+  const r = await beginneShellSicherungsJob({ ...eingabe, agent_id:job.agent_id, project: job.project, command: job.command, job_id: id });
   return { ok: true, id: r };
 }

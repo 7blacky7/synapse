@@ -17,9 +17,9 @@
  * Frueher registered_at = ERSTMALS registriert: ein wiederverwendeter Name bekam alle Alt-Events.
  * @param agentParam SQL-Platzhalter der Agent-ID, z. B. '$3'
  */
-export function eventsSichtbarAbSql(agentParam: string): string {
+export function eventsSichtbarAbSql(agentParam: string, identity = false): string {
   return `COALESCE(
-           (SELECT COALESCE(aktiv_seit, registered_at) FROM agent_sessions WHERE id = ${agentParam}),
+           (SELECT COALESCE(aktiv_seit, registered_at) FROM ${identity ? 'agent_identitaet_sitzungen' : 'agent_sessions'} WHERE ${identity ? 'identity_id' : 'id'} = ${agentParam}),
            NOW() - INTERVAL '1 hour'
          )`;
 }
@@ -31,17 +31,16 @@ export function eventsSichtbarAbSql(agentParam: string): string {
  * - PLAN_READY nur mit offenem Wait und hoechstens eines je Plan (nach ACK desselben Plans keines mehr)
  * @param p SQL-Platzhalter: projekt (Projekt), scope ('agent:<id>'), agent (Agent-ID)
  */
-export function eventsOffenBedingungSql(p: { projekt: string; scope: string; agent: string }): string {
+export function eventsOffenBedingungSql(p: { projekt: string; scope: string; agent: string; identity?: boolean }): string {
   return `e.project = ${p.projekt}
        AND (e.scope = 'all' OR e.scope = ${p.scope})
        AND NOT EXISTS (
-         SELECT 1 FROM agent_event_acks
-         WHERE agent_event_acks.event_id = e.id
-           AND agent_event_acks.agent_id = ${p.agent}
+         SELECT 1 FROM ${p.identity ? 'agent_identitaet_event_acks' : 'agent_event_acks'} a
+         WHERE a.event_id = e.id AND a.${p.identity ? 'identity_id' : 'agent_id'} = ${p.agent}
        )
        AND (
          e.scope = ${p.scope}
-         OR e.created_at > ${eventsSichtbarAbSql(p.agent)}
+         OR e.created_at > ${eventsSichtbarAbSql(p.agent,p.identity)}
        )
        AND (
          e.event_type <> 'PLAN_READY'
@@ -56,7 +55,7 @@ export function eventsOffenBedingungSql(p: { projekt: string; scope: string; age
          -- (mehrere Waits -> mehrere Events), kommt kein weiteres fuer diesen Plan mehr.
          AND NOT EXISTS (
            SELECT 1 FROM agent_events e2
-             JOIN agent_event_acks a2 ON a2.event_id = e2.id AND a2.agent_id = ${p.agent}
+             JOIN ${p.identity ? 'agent_identitaet_event_acks' : 'agent_event_acks'} a2 ON a2.event_id = e2.id AND a2.${p.identity ? 'identity_id' : 'agent_id'} = ${p.agent}
             WHERE e2.project = e.project AND e2.event_type = 'PLAN_READY' AND e2.scope = e.scope AND e2.id <> e.id
               AND (CASE WHEN e2.payload LIKE '{%' THEN e2.payload::jsonb ->> 'plan_id' END)
                 = (CASE WHEN e.payload LIKE '{%' THEN e.payload::jsonb ->> 'plan_id' END)

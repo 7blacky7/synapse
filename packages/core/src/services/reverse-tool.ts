@@ -3,6 +3,7 @@
  * Originalbytes und Code/Assets werden hier niemals vom PC gelesen. RV10/RV8 ergänzen
  * diese Grenze später. Alle SQL-Werte sind gebunden; Projektinhalt bleibt getrennt.
  */
+import { aktuelleAgentAkteurIdentityId, aktuellerAgentAufruf } from './agent-bezug.js';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
@@ -181,8 +182,13 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
   }
   async function projektRecht(db:Db,a:Row):Promise<string> {
     const project=str(a.project);if(!project)fail('werkzeug_fehler','parameter_fehlt',{parameter:'project'});
-    const r=await db.query('SELECT project FROM agent_sessions WHERE id=$1',[a.agent_id]);
-    if(!darfKoordinatorOderUser(a.agent_id)&&r.rows[0]?.project!==project)fail('keine_berechtigung');
+    const k=aktuellerAgentAufruf(),p=k?.principal;
+    if(k?.bezug.modus!=='alt' && p?.art==='identity'){
+      if(p.project!==project)fail('keine_berechtigung');
+    }else{
+      const r=await db.query('SELECT project FROM agent_sessions WHERE id=$1',[a.agent_id]);
+      if(!darfKoordinatorOderUser(a.agent_id)&&r.rows[0]?.project!==project)fail('keine_berechtigung');
+    }
     if(!(await db.query('SELECT 1 FROM projects WHERE name=$1 LIMIT 1',[project])).rowCount)fail('nicht_gefunden');
     return project;
   }
@@ -263,9 +269,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         fingerabdruck:createHash('sha256').update(JSON.stringify(g.medien.map(mid=>{const m=ms.find(x=>x.id===mid)!;return [m.art,m.satz_sha256];}))).digest('hex'),
         medien:g.medien,
       }));
-      await db.query(`INSERT INTO reverse_eintraege(id,titel,status,erstellt_von,bestaetigt_von,gruppierung,analyse_policy,fingerabdruck)
-        SELECT g.id,g.titel,'bestaetigt',$2,$2,$3,jsonb_build_object('bis_schicht',$4::text,'automatisch',true),g.fingerabdruck
-        FROM jsonb_to_recordset($1::jsonb) AS g(id text,titel text,fingerabdruck text)`,[JSON.stringify(entries),a.agent_id,rid,reverseBisSchichtGrenze()]);
+      await db.query(`INSERT INTO reverse_eintraege(id,titel,status,erstellt_von,bestaetigt_von,gruppierung,analyse_policy,fingerabdruck,creator_identity_id,confirmer_identity_id)
+        SELECT g.id,g.titel,'bestaetigt',$2,$2,$3,jsonb_build_object('bis_schicht',$4::text,'automatisch',true),g.fingerabdruck,$5,$5
+        FROM jsonb_to_recordset($1::jsonb) AS g(id text,titel text,fingerabdruck text)`,[JSON.stringify(entries),a.agent_id,rid,reverseBisSchichtGrenze(),aktuelleAgentAkteurIdentityId(a.agent_id)]);
       const moves=entries.flatMap(g=>g.medien.map((mid,position)=>({id:mid,eintrag_id:g.id,position})));
       await db.query(`UPDATE reverse_medien m SET eintrag_id=g.eintrag_id,position=g.position
         FROM jsonb_to_recordset($1::jsonb) AS g(id bigint,eintrag_id text,position integer) WHERE m.id=g.id`,[JSON.stringify(moves)]);
@@ -312,8 +318,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       await katalogisiereReverseOrdner(db,rid);
     }
     const fp=createHash('sha256').update(JSON.stringify(ms.map(m=>[m.art,m.satz_sha256]))).digest('hex');
-    await db.query(`UPDATE reverse_eintraege SET titel=COALESCE($2,titel),status='bestaetigt',bestaetigt_von=$3,fingerabdruck=$4,
-      analyse_policy=analyse_policy||jsonb_build_object('bis_schicht',$5::text,'automatisch',true),updated_at=NOW() WHERE id=$1`,[rid,a.titel===undefined?null:text(a.titel),a.agent_id,fp,reverseBisSchichtGrenze()]);
+    await db.query(`UPDATE reverse_eintraege SET titel=COALESCE($2,titel),status='bestaetigt',bestaetigt_von=$3,confirmer_identity_id=$6,fingerabdruck=$4,
+      analyse_policy=analyse_policy||jsonb_build_object('bis_schicht',$5::text,'automatisch',true),updated_at=NOW() WHERE id=$1`,[rid,a.titel===undefined?null:text(a.titel),a.agent_id,fp,reverseBisSchichtGrenze(),aktuelleAgentAkteurIdentityId(a.agent_id)]);
     await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
     return {reverse_id:rid,status:'bestaetigt',eintrag:await entryDto(db,await entry(db,rid))};
   }
@@ -372,7 +378,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-queue-limit'))");
         const n=Number((await db.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE status IN ('offen','wartet','laeuft')")).rows[0].n);
         if(n>=envInt('SYNAPSE_REVERSE_QUEUE_MAX',10000))fail('warteschlange_voll');
-        job=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser) VALUES($1,$2,$3,$4,$5,'wartet',$6) RETURNING id",[rid,t.dateiId,t.mediumId,t.schicht,prio,'agent:'+str(a.agent_id)])).rows[0];
+        job=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser,trigger_identity_id) VALUES($1,$2,$3,$4,$5,'wartet',$6,$7) RETURNING id",[rid,t.dateiId,t.mediumId,t.schicht,prio,'agent:'+str(a.agent_id),aktuelleAgentAkteurIdentityId(a.agent_id)])).rows[0];
       }
       done.push({auftrag_id:job.id});
     }
@@ -484,7 +490,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(jid))fail('werkzeug_fehler','parameter_ungueltig');
         const job=(await db.query('SELECT * FROM reverse_auftraege WHERE id=$1 FOR UPDATE',[jid])).rows[0];
         if(!job)fail('nicht_gefunden');
-        if(!darfKoordinatorOderUser(a.agent_id)&&job.ausloeser!=='agent:'+str(a.agent_id))fail('keine_berechtigung');
+        if(!darfKoordinatorOderUser(a.agent_id)&&(aktuelleAgentAkteurIdentityId(a.agent_id) ? job.trigger_identity_id!==aktuelleAgentAkteurIdentityId(a.agent_id) : job.trigger_identity_id || job.ausloeser!=='agent:'+str(a.agent_id)))fail('keine_berechtigung');
         if(!await pruefeReverseBindung(db,project,str(job.eintrag_id)))fail('nicht_gebunden');
         if(!['offen','wartet','laeuft'].includes(str(job.status)))return {reverse_id:job.eintrag_id,auftrag_id:jid,status:job.status};
         if(job.p20_auftrag_id&&!hooks().abbrechen)fail('container_gesperrt','pipeline_anschluss_fehlt');
@@ -502,8 +508,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         await db.query("UPDATE reverse_eintraege SET status='archiviert',archiviert_at=COALESCE(archiviert_at,NOW()),updated_at=NOW() WHERE id=$1",[rid]);r={status:'archiviert'};
       }else if(action==='binden'||action==='loesen'){
         const project=await projektRecht(db,a);
-        if(action==='binden')await db.query(`INSERT INTO reverse_bindungen(project,eintrag_id,gebunden_von,notiz) VALUES($1,$2,$3,$4)
-          ON CONFLICT(project,eintrag_id) WHERE geloest_at IS NULL DO NOTHING`,[project,rid,a.agent_id,a.notiz===undefined?null:text(a.notiz)]);
+        if(action==='binden')await db.query(`INSERT INTO reverse_bindungen(project,eintrag_id,gebunden_von,notiz,binder_identity_id) VALUES($1,$2,$3,$4,$5)
+          ON CONFLICT(project,eintrag_id) WHERE geloest_at IS NULL DO NOTHING`,[project,rid,a.agent_id,a.notiz===undefined?null:text(a.notiz),aktuelleAgentAkteurIdentityId(a.agent_id)]);
         else await db.query('UPDATE reverse_bindungen SET geloest_at=NOW() WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[project,rid]);
         r={status:e.status,gebunden:action==='binden'};
       }else r=await analyse(db,a,e);

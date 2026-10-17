@@ -237,6 +237,9 @@ export function resolveModel(aliasOrId: string): ModelEntry | null {
 /** Zeilen der Modell-Registry, wie core listModels sie liefert. */
 export type ModellRegistryZeilen = Awaited<ReturnType<typeof import('@synapse/core')['listModels']>>;
 /** P9-T27 Welle 2: alternative Quelle (z. B. Synapse-API im Daemon ohne DATABASE_URL); null = PG. */
+import { AsyncLocalStorage } from 'node:async_hooks';
+const aufrufModellQuelle = new AsyncLocalStorage<() => Promise<ModellRegistryZeilen>>();
+export function mitModellQuelle<T>(quelle:()=>Promise<ModellRegistryZeilen>,arbeit:()=>T):T { return aufrufModellQuelle.run(quelle,arbeit); }
 let modellQuelle: (() => Promise<ModellRegistryZeilen>) | null = null;
 
 /**
@@ -259,7 +262,7 @@ async function ladeAusDb(): Promise<void> {
     // Dynamic import um circular dep zu vermeiden (core importiert agents nicht)
     const { listModels: dbListModels } = await import('@synapse/core');
     const dbModels = await Promise.race([
-      (modellQuelle ?? dbListModels)(),
+      (aufrufModellQuelle.getStore() ?? modellQuelle ?? dbListModels)(),
       new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error(`keine Antwort nach ${DB_LADE_TIMEOUT_MS} ms`)), DB_LADE_TIMEOUT_MS).unref();
       }),

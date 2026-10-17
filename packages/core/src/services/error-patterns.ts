@@ -5,7 +5,9 @@
  * Dual-Write: PostgreSQL (Source of Truth) + Qdrant (Semantische Suche).
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
+import { eigenerKommunikationsAgent } from './kommunikation-agent.js';
 import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
 import { embed, scoreSchwelleOderHinweis } from '../embeddings/index.js';
@@ -131,10 +133,10 @@ export async function addErrorPattern(
   const modelScope = deriveModelScope(foundInModel);
 
   const result = await pool.query(
-    `INSERT INTO error_patterns (description, fix, severity, model_scope, found_by, found_in_model)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO error_patterns (description, fix, severity, model_scope, found_by, found_in_model, found_by_identity_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
-    [description, fix, severity, modelScope, foundBy, foundInModel]
+    [description, fix, severity, modelScope, foundBy, foundInModel, aktuelleAgentAkteurIdentityId(foundBy)]
   );
   const id = result.rows[0].id;
 
@@ -178,7 +180,7 @@ export const errorPatternNachzug: NachzugQuelle = {
   standSql: ERROR_PATTERN_STAND,
   async lese(ids) {
     const { rows } = await getPool().query(
-      `SELECT t.id::text AS id, t.description, t.fix, t.severity, t.model_scope, t.found_by, t.found_in_model,
+      `SELECT t.id::text AS id, t.description, t.fix, t.severity, t.model_scope, t.found_by, t.found_in_model, t.found_by_identity_id,
               t.created_at, t.titel, t.beispiel_falsch, t.status, ${ERROR_PATTERN_STAND} AS stand
          FROM error_patterns t WHERE t.id = ANY($1::uuid[])`,
       [ids]
@@ -197,6 +199,7 @@ export const errorPatternNachzug: NachzugQuelle = {
         severity: row.severity,
         model_scope: row.model_scope,
         found_by: row.found_by,
+        ...(row.found_by_identity_id ? { found_by_identity_id: row.found_by_identity_id } : {}),
         found_in_model: row.found_in_model,
         created_at: new Date(row.created_at ?? Date.now()).toISOString(),
       },
@@ -314,12 +317,16 @@ export async function checkErrorPatterns(
 
       if (!scopeMatchesTier(scope, tier)) continue;
 
+      const z = eigenerKommunikationsAgent(agentId);
       const seen = await pool.query(
-        `SELECT 1 FROM error_pattern_seen
-          WHERE pattern_id = $1 AND session_id = $2
-            AND shown_at > GREATEST(NOW() - make_interval(hours => $3),
-                                    COALESCE((SELECT COALESCE(sitzung_seit, registered_at) FROM agent_sessions WHERE id = $2), '-infinity'::timestamptz))`,
-        [patternId, agentId, gesehenFensterStunden()]
+        z.art === 'identity'
+          ? `SELECT 1 FROM agent_identitaet_error_pattern_seen WHERE pattern_id=$1 AND identity_id=$2
+               AND shown_at>GREATEST(NOW()-make_interval(hours=>$3),
+                 COALESCE((SELECT COALESCE(sitzung_seit,registered_at) FROM agent_identitaet_sitzungen WHERE identity_id=$2),'-infinity'::timestamptz))`
+          : `SELECT 1 FROM error_pattern_seen WHERE pattern_id=$1 AND session_id=$2
+               AND shown_at>GREATEST(NOW()-make_interval(hours=>$3),
+                 COALESCE((SELECT COALESCE(sitzung_seit,registered_at) FROM agent_sessions WHERE id=$2),'-infinity'::timestamptz))`,
+        [patternId,z.art === 'identity' ? z.identity_id : agentId,gesehenFensterStunden()]
       );
       if (seen.rowCount && seen.rowCount > 0) continue;
 

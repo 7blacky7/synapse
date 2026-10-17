@@ -24,6 +24,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   projekteDesHosts,
+  loeseAgentZiel, leseAgentBezugModus, mitAgentAufrufKontext, type AgentZiel,
   istSyncPfad,
   pgWatcherDatenweg,
   ladeIgnoreRegelZeilen,
@@ -289,6 +290,7 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
     const p = await pruefeProjekt(request, reply, body);
     if (!p) return reply;
     const project = p.project;
+    return mitAgentAufrufKontext({principal:null,bezug:await leseAgentBezugModus()},async()=>{
     switch (body.aktion) {
       case 'history':
         return { success: true, events: await trayWatcherEreignisse(project, grenze(body.limit, 50, 1, 500)) };
@@ -297,12 +299,20 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
       case 'specialists':
         return { success: true, zeilen: await listWrapperStatus(project) };
       case 'specialist':
-        if (!istText(body.agent, 128)) return reply.code(400).send({ success: false, error: 'agent_fehlt' });
-        return { success: true, zeile: (await getWrapperStatus(body.agent, project)) ?? null };
-      case 'specialist_entfernen':
-        if (!istText(body.agent, 128)) return reply.code(400).send({ success: false, error: 'agent_fehlt' });
-        await removeWrapperStatus(body.agent, project);
-        return { success: true };
+      case 'specialist_entfernen': {
+        let ziel: string | AgentZiel;
+        if (body.identity_id !== undefined) {
+          if (!istText(body.identity_id,128) || (await leseAgentBezugModus()).modus==='alt') return reply.code(409).send({success:false,error:'identity_ziel_nicht_verfuegbar'});
+          try { ziel=await loeseAgentZiel(project,{identity_id:body.identity_id}); }
+          catch { return reply.code(404).send({success:false,error:'identity_ziel_unbekannt'}); }
+        } else {
+          if (!istText(body.agent,128)) return reply.code(400).send({success:false,error:'agent_fehlt'});
+          ziel=body.agent;
+        }
+        if(body.aktion==='specialist') return {success:true,zeile:(await getWrapperStatus(ziel,project))??null};
+        await removeWrapperStatus(ziel,project);
+        return {success:true};
+      }
       case 'channels':
         return { success: true, channels: await listChannels(project, { mitArchiv: body.mit_archiv === true }) };
       case 'feed':
@@ -333,5 +343,6 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
       default:
         return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: TRAY_AKTIONEN });
     }
+    });
   });
 }

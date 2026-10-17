@@ -12,8 +12,9 @@ import { createRequire } from 'node:module';
 import { stoppeLokalenWrapper, removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
 
 // P9-T27 Welle 2: PG-Schritte ueber austauschbaren Datenweg (Vorgabe PG; Daemon-API-Weg setzt 'api').
+import { agentLaufSchluessel } from '@synapse/agents';
 import { spezialistenDatenweg, holeAgentStartUmgebung } from './spezialisten-datenweg.js';
-export { setzeAgentStartQuelle, setzeSpezialistenDatenweg, spezialistenDatenweg, pgSpezialistenDatenweg } from './spezialisten-datenweg.js';
+export { mitSpezialistenDatenweg, setzeAgentStartQuelle, setzeSpezialistenDatenweg, spezialistenDatenweg, pgSpezialistenDatenweg } from './spezialisten-datenweg.js';
 export type { SpezialistenDatenweg, WrapperStatusZeile } from './spezialisten-datenweg.js';
 
 import {
@@ -80,6 +81,17 @@ function jsonResult(data: Record<string, unknown>) {
 // ---------------------------------------------------------------------------
 
 export async function spawnSpecialistTool(
+  name: string, model: SpecialistConfig['model'] | string, expertise: string, task: string,
+  project: string, projectPath: string, cwd?: string, channel?: string, allowedTools?: string[],
+  keepAlive?: boolean, effort?: string,
+) {
+  const { mitAgentLaufUmgebung } = await import('@synapse/agents');
+  const startEnv = { ...spezialistenDatenweg().wrapperUmgebung(), ...await holeAgentStartUmgebung(name, project) };
+  return mitAgentLaufUmgebung(name, project, startEnv, () => spawnSpecialistMitUmgebung(
+    name, model, expertise, task, project, projectPath, cwd, channel, allowedTools, keepAlive, effort, startEnv));
+}
+
+async function spawnSpecialistMitUmgebung(
   name: string,
   model: SpecialistConfig['model'] | string,
   expertise: string,
@@ -91,6 +103,7 @@ export async function spawnSpecialistTool(
   allowedTools?: string[],
   keepAlive?: boolean,
   effort?: string,
+  agentStartUmgebung: Record<string,string> = {},
 ) {
   // 1. Modell aufloesen + provider-spezifische Checks
   const { resolveModel, listAliases, loadFromDb } = await import('@synapse/agents');
@@ -208,7 +221,7 @@ export async function spawnSpecialistTool(
     effort: effortWirksam,
   };
   // Nur der Daemon installiert diese Quelle; keine Token in Job-Args/Antworten.
-  const agentStartUmgebung = await holeAgentStartUmgebung(name, project);
+  // Startumgebung wurde vor dem ersten Wissenszugriff bezogen.
   const tokenAnmeldung = !!agentStartUmgebung.SYNAPSE_AGENT_TOKEN;
   let systemPrompt = buildSpecialistPrompt(config, skill, tokenAnmeldung);
 
@@ -257,14 +270,16 @@ export async function spawnSpecialistTool(
   }
 
   // 9. Wrapper als DETACHED Prozess starten
-  const socketDir = join(projectPath, '.synapse', 'sockets');
+  const { agentLaufIdentitaet, agentLaufPfad } = await import('@synapse/agents');
+  const identityId = agentLaufIdentitaet(name);
+  const socketDir = identityId ? agentLaufPfad(projectPath, name) : join(projectPath, '.synapse', 'sockets');
   await mkdir(socketDir, { recursive: true });
   const socketPath = join(socketDir, `${name}.sock`);
 
   const wrapperPath = resolveWrapperPath();
 
   // Log-Datei fuer Wrapper-Stderr (Debugging)
-  const logDir = join(projectPath, '.synapse', 'agents', name, 'logs');
+  const logDir = join(agentLaufPfad(projectPath, name), 'logs');
   await mkdir(logDir, { recursive: true });
   const { openSync } = await import('node:fs');
   const logFd = openSync(join(logDir, 'wrapper.log'), 'a');
@@ -273,9 +288,10 @@ export async function spawnSpecialistTool(
   // Nie einen Ausweis oder dessen Varianten vom Elternprozess erben, auch bei AUS.
   // Nur die ausdrueckliche Startquelle darf den Ausweis dieses Kindes setzen.
   for (const key of Object.keys(wrapperUmgebung)) {
-    if (key === 'SYNAPSE_AGENT_TOKEN' || key.startsWith('SYNAPSE_AGENT_TOKEN_')) delete wrapperUmgebung[key];
+    if (key === 'SYNAPSE_AGENT_TOKEN' || key.startsWith('SYNAPSE_AGENT_TOKEN_') || key === 'SYNAPSE_AGENT_IDENTITY_ID') delete wrapperUmgebung[key];
   }
   if (tokenAnmeldung) wrapperUmgebung.SYNAPSE_AGENT_TOKEN = agentStartUmgebung.SYNAPSE_AGENT_TOKEN;
+  if (identityId) wrapperUmgebung.SYNAPSE_AGENT_IDENTITY_ID = identityId;
   const wrapper = spawn('node', [wrapperPath], {
     env: {
       ...wrapperUmgebung,
@@ -492,7 +508,7 @@ export async function purgeSpecialistTool(
   let wrapperPid: number | null = null;
   try {
     const status = await readStatus(projectPath);
-    wrapperPid = status.specialists[name]?.wrapperPid ?? null;
+    wrapperPid = status.specialists[agentLaufSchluessel(name)]?.wrapperPid ?? null;
   } catch { /* ignore */ }
 
   // 2. Stop wie bisher (Wrapper-Prozess beenden)
@@ -700,7 +716,7 @@ export async function specialistStatusTool(
 
   // Einzelner Spezialist
   const status = await readStatus(projectPath);
-  const specialist = status.specialists[name];
+  const specialist = status.specialists[agentLaufSchluessel(name)];
   if (!specialist) {
     return jsonResult({
       success: false,

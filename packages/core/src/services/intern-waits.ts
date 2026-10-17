@@ -25,6 +25,7 @@
  * Die entfernten Metadaten stehen darunter (META_JSON), damit auch sie nicht verloren sind.
  */
 
+import { aktuelleAgentIdentityId, aktuellerAgentAufruf, leseAgentBezugModus } from './agent-bezug.js';
 import { randomUUID } from 'node:crypto';
 import { getPool } from '../db/client.js';
 import { emitEventOnce } from './events.js';
@@ -57,6 +58,8 @@ export const WAITS_PARAMETER: Record<string, unknown> = {
 
 /** Ein toter Wait, vollstaendig. */
 export interface ToterWait {
+  waiting_identity_id?: string | null;
+  primary_identity_id?: string | null;
   wait_token: string;
   project: string;
   /** Wartender Agent: ihm gehoeren die Ops. */
@@ -83,6 +86,8 @@ export interface ToterWait {
 }
 
 interface WaitZeile {
+  waiting_identity_id?: string | null;
+  primary_identity_id?: string | null;
   wait_token: string;
   project: string;
   waiting_agent: string | null;
@@ -98,7 +103,7 @@ interface WaitZeile {
   expected_hashes: Record<string, string> | null;
 }
 
-const WAIT_SPALTEN = `w.wait_token::text AS wait_token, w.project, w.waiting_agent, w.primary_agent, w.shared_files,
+const WAIT_SPALTEN = `w.wait_token::text AS wait_token, w.project, w.waiting_agent, w.primary_agent, w.waiting_identity_id, w.primary_identity_id, w.shared_files,
   w.deferred_ops, w.deferred_op_indexes, w.source_plan_id::text AS source_plan_id, w.created_at,
   EXTRACT(EPOCH FROM (NOW() - w.created_at))::int AS alter_s,
   c.status::text AS traeger_status, jsonb_array_length(c.ops)::int AS traeger_ops, c.expected_hashes`;
@@ -123,11 +128,11 @@ async function fuelleAus(zeilen: WaitZeile[]): Promise<ToterWait[]> {
     );
     const reservierung = await pool.query<{ expires_at: Date; released_at: Date | null; abgemeldet: boolean }>(
       `SELECT r.expires_at, r.released_at,
-              EXISTS (SELECT 1 FROM agent_sessions s WHERE s.id = r.agent_id AND s.status <> 'active') AS abgemeldet
-         FROM file_reservations r
-        WHERE r.project = $1 AND r.agent_id = $2 AND r.file_path = ANY($3::text[])
+              EXISTS (SELECT 1 FROM ${z.primary_identity_id ? 'agent_identitaet_sitzungen' : 'agent_sessions'} s WHERE s.${z.primary_identity_id ? 'identity_id' : 'id'} = r.${z.primary_identity_id ? 'identity_id' : 'agent_id'} AND s.status <> 'active') AS abgemeldet
+         FROM ${z.primary_identity_id ? 'agent_identitaet_file_reservations' : 'file_reservations'} r
+        WHERE r.project = $1 AND r.${z.primary_identity_id ? 'identity_id' : 'agent_id'} = $2 AND r.file_path = ANY($3::text[])
         ORDER BY r.reserved_at DESC LIMIT 1`,
-      [z.project, z.primary_agent, z.shared_files],
+      [z.project, z.primary_identity_id ?? z.primary_agent, z.shared_files],
     );
     const r = reservierung.rows[0];
     const warumTot = !r
@@ -153,6 +158,8 @@ async function fuelleAus(zeilen: WaitZeile[]): Promise<ToterWait[]> {
       jetzt[datei] = aktuell.rows.find((row) => row.file_path === datei)?.content_hash ?? null;
     }
     ergebnis.push({
+      ...(z.waiting_identity_id ? { waiting_identity_id:z.waiting_identity_id } : {}),
+      ...(z.primary_identity_id ? { primary_identity_id:z.primary_identity_id } : {}),
       wait_token: z.wait_token,
       project: z.project,
       besitzer: z.waiting_agent,
@@ -186,10 +193,11 @@ export async function toteWaitsListe(filter: {
        FROM file_batch_waits w LEFT JOIN file_batch_plans c ON c.id = w.source_plan_id
       WHERE ${totWaitSql('w')}
         AND ($1::text IS NULL OR w.project = $1)
-        AND ($2::text IS NULL OR w.waiting_agent = $2)
+        AND ($2::text IS NULL OR (CASE WHEN $2 LIKE 'identity:%' THEN w.waiting_identity_id=substring($2 from 10) ELSE w.waiting_identity_id IS NULL AND w.waiting_agent=$2 END))
+        AND ($4::boolean OR (w.waiting_identity_id IS NULL AND w.primary_identity_id IS NULL))
         AND ($3::text[] IS NULL OR w.wait_token::text = ANY($3::text[]))
       ORDER BY w.created_at, w.wait_token`,
-    [filter.project ?? null, filter.besitzer ?? null, filter.wait_tokens && filter.wait_tokens.length > 0 ? filter.wait_tokens : null],
+    [filter.project ?? null, filter.besitzer ?? null, filter.wait_tokens && filter.wait_tokens.length > 0 ? filter.wait_tokens : null, (aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus !== 'alt'],
   );
   return fuelleAus(res.rows);
 }
@@ -278,10 +286,10 @@ export async function toteWaitsSichernUndSchliessen(filter: {
       const wait = (await fuelleAus(frisch.rows))[0] ?? kandidat;
       // 2. Sicherung
       const thoughtId = randomUUID();
-      const tags = ['wait-sicherung', wait.besitzer ?? 'besitzer-unbekannt'];
+      const tags = ['wait-sicherung', wait.waiting_identity_id ? 'identity:' + wait.waiting_identity_id : wait.besitzer ?? 'besitzer-unbekannt'];
       await client.query(
-        `INSERT INTO thoughts (id, project, source, content, tags, timestamp) VALUES ($1, $2, $3, $4, $5, NOW())`,
-        [thoughtId, wait.project, quelle, sicherungsText(wait), tags],
+        `INSERT INTO thoughts (id, project, source, content, tags, timestamp,source_identity_id) VALUES ($1, $2, $3, $4, $5, NOW(),$6)`,
+        [thoughtId, wait.project, quelle, sicherungsText(wait), tags,aktuelleAgentIdentityId(wait.project,filter.agentId)],
       );
       // 3. Besitzer informieren
       let eventId: number | null = null;
@@ -290,7 +298,7 @@ export async function toteWaitsSichernUndSchliessen(filter: {
           project: wait.project,
           eventType: 'ANNOUNCEMENT',
           priority: 'normal',
-          scope: `agent:${wait.besitzer}`,
+          scope: wait.waiting_identity_id ? `identity:${wait.waiting_identity_id}` : `agent:${wait.besitzer}`,
           sourceId: quelle,
           payload: JSON.stringify({
             art: 'WAIT_GESICHERT',

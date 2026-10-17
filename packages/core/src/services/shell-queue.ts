@@ -17,6 +17,7 @@
  *     (id mit `-` → `_` fuer LISTEN-Identifier-Kompatibilitaet)
  */
 
+import { aktuelleAgentIdentityId, loeseAgentZiel, aktuellerAgentAufruf } from './agent-bezug.js';
 import { randomUUID } from 'node:crypto';
 import { shellJobAnzeige, shellHistoryAnzeige, type ShellJobAnzeige } from './shell-job-anzeige.js';
 import {pruefeShellEinreihung,type ShellJobSicherung}from'./shell-einreihung-sicherung.js';
@@ -56,6 +57,8 @@ export interface ShellJobRow {
   id: string;
   project: string;
   agent_id: string | null;
+  owner_identity_id?: string | null;
+  cancelled_by_identity_id?: string | null;
   command: string;
   cwd_relative: string | null;
   timeout_ms: number;
@@ -205,7 +208,8 @@ export async function enqueueShellJob(
   // shell-teilbar.ts). Alles andere bekommt NULL und laeuft ungehindert doppelt —
   // ein zweites `git commit` MUSS ein zweites Mal laufen.
   // P10-T73: bestaetigte Demaskierung (Anzeige-Kontext) reist mit dem Job zum Daemon.
-  const demaskierung=aktuelleShellDemaskierung();
+  const demaskRoh=aktuelleShellDemaskierung();
+  const demaskierung=demaskRoh ? {...demaskRoh,...(aktuelleAgentIdentityId(args.project,args.agent_id) ? {actor_identity_id:aktuelleAgentIdentityId(args.project,args.agent_id)} : {})} : undefined;
   const sicherung=await pruefeShellEinreihung({...args,...(demaskierung?{demaskierung}:{})});
   const anfrage=sicherung.sicherung?await maskiereShellVorSpeichern(args.project,sicherung.sicherung):null;
   const teilbar = sicherung.wiederverwendbar && args.force !== true && istTeilbar(args.command);
@@ -247,6 +251,10 @@ export async function enqueueShellJob(
     );
     if (frueher.rows.length > 0) {
       const alt = frueher.rows[0];
+      const identityId=aktuelleAgentIdentityId(args.project,args.agent_id);
+      if(identityId) await pool.query(
+        "INSERT INTO shell_job_agent_bezuege(job_id,role,identity_id,project,agent_id) VALUES($1,'attached',$2,$3,$4) ON CONFLICT DO NOTHING",
+        [alt.id,identityId,args.project,args.agent_id]);
       return {
         id: alt.id,
         stream_id: alt.stream_id ?? streamId,
@@ -265,7 +273,7 @@ export async function enqueueShellJob(
     // sonst beide "laeuft noch nicht" sehen und beide starten. Der UNIQUE-Teil-
     // index entscheidet das Rennen; der Verlierer haengt sich unten an.
     const eingereiht = await pool.query<{ id: string }>(
-      `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, exec_key, project_state_at)
+      `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, exec_key, project_state_at, owner_identity_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
                -- ⚠️ DEN STAND IN SQL SETZEN, NICHT ALS JS-DATE DURCHREICHEN. Ein Date
                -- kann nur Millisekunden, PostgreSQL speichert Mikrosekunden: der Wert
@@ -276,7 +284,7 @@ export async function enqueueShellJob(
                -- Rundung liefen — ein Fehler, der sich selbst versteckte, solange ihn
                -- niemand von aussen gegen den echten Wert hielt.
                (SELECT MAX(updated_at) FROM code_files
-                WHERE project = $1 AND deleted_at IS NULL))
+                WHERE project = $1 AND deleted_at IS NULL), $9)
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
@@ -287,7 +295,7 @@ export async function enqueueShellJob(
         args.tail_lines ?? 5,
         streamId,
         args.agent_id ?? null,
-        execKey,
+        execKey, aktuelleAgentIdentityId(args.project, args.agent_id),
       ],
     );
     if (eingereiht.rows.length > 0) {
@@ -296,7 +304,7 @@ export async function enqueueShellJob(
 
     // Konflikt: derselbe Lauf ist schon unterwegs. Anhaengen und dessen ID melden.
     const laufend = await pool.query<{ id: string; stream_id: string | null; agent_id: string | null }>(
-      `UPDATE shell_jobs
+      `WITH job AS (UPDATE shell_jobs
        SET attached_agents = CASE
              WHEN $2::text IS NULL THEN attached_agents
              WHEN attached_agents IS NULL THEN ARRAY[$2::text]
@@ -305,8 +313,12 @@ export async function enqueueShellJob(
            END,
            updated_at = NOW()
        WHERE exec_key = $1 AND status IN ('pending', 'running')
-       RETURNING id, stream_id, agent_id`,
-      [execKey, args.agent_id ?? null],
+       RETURNING id, stream_id, agent_id),
+       bezug AS (INSERT INTO shell_job_agent_bezuege(job_id,role,identity_id,project,agent_id)
+         SELECT id,'attached',$3,$4,$5 FROM job WHERE $3::text IS NOT NULL ON CONFLICT DO NOTHING)
+       SELECT id,stream_id,agent_id FROM job`,
+      [execKey, aktuelleAgentIdentityId(args.project, args.agent_id) ? null : args.agent_id ?? null,
+       aktuelleAgentIdentityId(args.project,args.agent_id),args.project,args.agent_id??null],
     );
     if (laufend.rows.length > 0) {
       const job = laufend.rows[0];
@@ -327,8 +339,8 @@ export async function enqueueShellJob(
   }
 
   const res = await pool.query<{ id: string }>(
-    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, sicherung)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+    `INSERT INTO shell_jobs (project, command, cwd_relative, timeout_ms, tail_lines, stream_id, agent_id, sicherung, owner_identity_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
      RETURNING id`,
     [
       args.project,
@@ -340,7 +352,7 @@ export async function enqueueShellJob(
       args.tail_lines ?? 5,
       streamId,
       args.agent_id ?? null,
-      anfrage?JSON.stringify(anfrage):null,
+      anfrage?JSON.stringify(anfrage):null, aktuelleAgentIdentityId(args.project, args.agent_id),
     ],
   );
   return { id: res.rows[0].id, stream_id: streamId };
@@ -538,7 +550,10 @@ export async function hideShellJobHints(
     return { ok: false, error: 'unknown_job', message: `Job ${id} nicht gefunden.`, job_id: id, hint_agents: [] };
   }
   const job = r.rows[0];
-  const istStarter = agentId !== null && agentId === job.agent_id;
+  if(job.owner_identity_id && (!aktuellerAgentAufruf() || aktuellerAgentAufruf()?.bezug.modus==='alt')) return {
+    ok:false,error:'agent_bezug_nicht_freigegeben',message:'Token-Job bleibt im Altmodus erhalten.',job_id:id,hint_agents:[] };
+  const identityId = aktuelleAgentIdentityId(job.project, agentId);
+  const istStarter = agentId !== null && (identityId ? identityId === job.owner_identity_id : !job.owner_identity_id && agentId === job.agent_id);
 
   const fertigSeit = job.completed_at ? Date.now() - new Date(job.completed_at).getTime() : null;
   if (!istStarter) {
@@ -568,9 +583,29 @@ export async function hideShellJobHints(
 
   const gewuenscht = (forAgents ?? []).filter((a) => typeof a === 'string' && a.length > 0);
   // Der Starter wird nur dann NICHT ergaenzt, wenn er selbst ausblendet.
+  const typed = identityId !== null || !!job.owner_identity_id || (!!aktuellerAgentAufruf() && aktuellerAgentAufruf()?.bezug.modus!=='alt' && gewuenscht.some(x => x.startsWith('identity:')))
+    || (await pool.query("SELECT 1 FROM shell_job_agent_bezuege WHERE job_id=$1 AND role='hint' AND identity_id IS NOT NULL LIMIT 1",[id])).rows.length>0;
   const empfaenger = istStarter || !job.agent_id
     ? gewuenscht
-    : Array.from(new Set([...gewuenscht, job.agent_id]));
+    : Array.from(new Set([...gewuenscht, job.owner_identity_id ? 'identity:' + job.owner_identity_id : job.agent_id]));
+  if (typed) {
+    const ziele = await Promise.all(empfaenger.map(x => loeseAgentZiel(job.project,
+      x.startsWith('identity:') ? { identity_id: x.slice(9) } : { agent_id: x })));
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM shell_jobs WHERE id=$1 FOR UPDATE', [id]);
+      await client.query("DELETE FROM shell_job_agent_bezuege WHERE job_id=$1 AND role='hint'", [id]);
+      for (const z of ziele) if (z.art === 'identity') await client.query(
+        "INSERT INTO shell_job_agent_bezuege(job_id,role,identity_id,project,agent_id) VALUES($1,'hint',$2,$3,$4) ON CONFLICT DO NOTHING",
+        [id, z.identity_id, job.project, z.agent_id]);
+      await client.query('UPDATE shell_jobs SET hint_agents=$2,updated_at=NOW() WHERE id=$1',
+        [id, ziele.filter(z => z.art === 'legacy').map(z => z.agent_id)]);
+      await client.query('COMMIT');
+    } catch (e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
+    return { ok: true, job_id: id, project: job.project, hint_agents: empfaenger, message: 'Hinweisempfänger identitätsgebunden aktualisiert.' };
+  }
 
   await pool.query(
     `UPDATE shell_jobs SET hint_agents = $2, updated_at = NOW() WHERE id = $1`,
@@ -620,6 +655,8 @@ export async function cancelShellJob(
     return { ok: false, error: 'unknown_job', message: `Job ${id} nicht gefunden.`, job_id: id };
   }
   const job = r.rows[0];
+  if(job.owner_identity_id && (!aktuellerAgentAufruf() || aktuellerAgentAufruf()?.bezug.modus==='alt')) return {
+    ok:false,error:'agent_bezug_nicht_freigegeben',message:'Token-Job bleibt im Altmodus erhalten.',job_id:id };
   if (TERMINAL_STATUSES.includes(job.status)) {
     return {
       ok: false,
@@ -632,7 +669,8 @@ export async function cancelShellJob(
 
   const startedAt = job.claimed_at ? new Date(job.claimed_at).getTime() : null;
   const laeuftSeit = startedAt === null ? 0 : Date.now() - startedAt;
-  const istStarter = agentId !== null && agentId === job.agent_id;
+  const identityId = aktuelleAgentIdentityId(job.project, agentId);
+  const istStarter = agentId !== null && (identityId ? identityId === job.owner_identity_id : !job.owner_identity_id && agentId === job.agent_id);
   const schutzVorbei = startedAt !== null && laeuftSeit > CANCEL_PROTECTED_MS;
 
   if (!istStarter && !schutzVorbei) {
@@ -650,9 +688,9 @@ export async function cancelShellJob(
 
   await pool.query(
     `UPDATE shell_jobs
-     SET cancelled_by = $2, cancelled_at = NOW(), updated_at = NOW()
+     SET cancelled_by = $2, cancelled_by_identity_id = $3, cancelled_at = NOW(), updated_at = NOW()
      WHERE id = $1`,
-    [id, agentId],
+    [id, agentId, identityId],
   );
 
   // Der Daemon lauscht auf diesen Kanal und beendet den Kindprozess. Ist der Job
@@ -863,8 +901,8 @@ export async function insertCompletedShellJob(args: {
     `INSERT INTO shell_jobs (
        project, command, cwd_relative, timeout_ms, tail_lines,
        status, exit_code, tail, error, message, output, output_truncated,
-       stream_id, claimed_by, agent_id, claimed_at, completed_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW())
+       stream_id, claimed_by, agent_id, claimed_at, completed_at, owner_identity_id
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW(),$16)
      RETURNING id`,
     [
       args.project,
@@ -881,7 +919,7 @@ export async function insertCompletedShellJob(args: {
       truncated,
       args.stream_id ?? null,
       args.source,
-      args.agent_id ?? null,
+      args.agent_id ?? null, aktuelleAgentIdentityId(args.project, args.agent_id),
     ],
   );
   if(roh)await trageShellDemaskierungEin(res.rows[0].id,args.project,roh.demaskierung);
@@ -903,6 +941,8 @@ export interface ShellJobSummary {
   id: string;
   project: string;
   agent_id: string | null;
+  owner_identity_id?: string | null;
+  cancelled_by_identity_id?: string | null;
   command: string;
   cwd_relative: string | null;
   status: ShellJobRow['status'];
@@ -950,7 +990,7 @@ export async function getShellJobs(opts: {
   // length(output) - length(replace(output, E'\n', '')) zaehlt Newlines in PG
   // direkt — billig + spart Datenuebertragung des output-TEXT-Felds.
   const { rows } = await pool.query(
-    `SELECT id, project, agent_id, command, cwd_relative, status, exit_code, tail, error,
+    `SELECT id, project, agent_id, owner_identity_id, cancelled_by_identity_id, command, cwd_relative, status, exit_code, tail, error,
             message, output_truncated, stream_id, claimed_by AS source,
             created_at, completed_at,
             CASE WHEN sicherung->'audit'->>'entscheidung'='bestaetigt' THEN sicherung->'audit'->>'grund' END AS bestaetigt_grund,
@@ -968,7 +1008,7 @@ export async function getShellJobs(opts: {
     params,
   );
   // P10-T73: Gruende bestaetigter Ausfuehrung/Demaskierung nur zeigen, wenn vorhanden (sonst unveraenderte Form).
-  for(const row of rows)for(const k of ['bestaetigt_grund','demaskiert_grund'])if(row[k]===null||row[k]===undefined)delete row[k];
+  for(const row of rows)for(const k of ['bestaetigt_grund','demaskiert_grund','owner_identity_id','cancelled_by_identity_id'])if(row[k]===null||row[k]===undefined)delete row[k];
   const jobs = await Promise.all(rows.map(row=>maskiereShellAntwort(row.project,row))) as ShellJobSummary[];
   return opts.anzeige === 'kompakt' ? jobs.map(shellHistoryAnzeige) : jobs;
 }
@@ -1038,9 +1078,11 @@ export async function getShellJobById(id: string, optionen?: { anzeige: 'kompakt
   );
   if (rows.length === 0) return null;
   const row = rows[0];
+  if(!row.owner_identity_id) delete row.owner_identity_id;
+  if(!row.cancelled_by_identity_id) delete row.cancelled_by_identity_id;
   const {sicherung:gespeichert,...normal}=row;
   // P10-T73 H3: eine offene Rueckfrage-ID sieht nur der Agent, der sie ausgeloest hat (Bindung bleibt agent_id).
-  const sicherung=gespeichert&&!(optionen?.betrachter&&optionen.betrachter===row.agent_id)?ohneRueckfrageId(gespeichert):gespeichert;
+  const sicherung=gespeichert&&!(optionen?.betrachter && (aktuelleAgentIdentityId(row.project,optionen.betrachter) ? aktuelleAgentIdentityId(row.project,optionen.betrachter)===row.owner_identity_id : !row.owner_identity_id && optionen.betrachter===row.agent_id))?ohneRueckfrageId(gespeichert):gespeichert;
   const sichtbar=sicherung?.antwort||sicherung?.anfrage?.bestaetigt||sicherung?.anfrage?.shell||(sicherung as {demaskierung?:unknown}|null|undefined)?.demaskierung;
   const job = await maskiereShellAntwort(row.project,{ ...normal,...(sichtbar?{sicherung}:{}), output_line_count: countLines(row.output) });
   return optionen ? shellJobAnzeige(job, optionen.anzeige) : job;

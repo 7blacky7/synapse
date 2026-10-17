@@ -106,7 +106,7 @@ async function zaehleZeilen(art: NeuEinbettenArt, project: string | null): Promi
   }
   const q = PG_QUELLE[art];
   const { rows } = await getPool().query(
-    `SELECT count(*)::int AS n FROM ${q.tabelle} WHERE ${q.wo}`,
+    `SELECT count(*)::int AS n FROM ${art === 'skills' ? '(SELECT embedded_at FROM skill_sections UNION ALL SELECT embedded_at FROM agent_identitaet_skill_sections) skill_gesamt' : q.tabelle} WHERE ${q.wo}`,
     q.mitProjekt ? [project] : [],
   );
   return rows[0].n;
@@ -130,8 +130,13 @@ async function setzeZurueck(art: NeuEinbettenArt, project: string | null): Promi
       'DELETE FROM wissen_stueck_status WHERE quelle=$1 AND project IS NOT DISTINCT FROM $2::text',
       [q.tabelle, project],
     );
+    let identitaetsZeilen = 0;
+    if (art === 'skills') {
+      identitaetsZeilen = (await client.query('UPDATE agent_identitaet_skill_sections SET embedded_at=NULL')).rowCount ?? 0;
+      await client.query("DELETE FROM wissen_stueck_status WHERE quelle='agent_identitaet_skill_sections'");
+    }
     await client.query('COMMIT');
-    return res.rowCount ?? 0;
+    return (res.rowCount ?? 0) + identitaetsZeilen;
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw error;
@@ -162,7 +167,7 @@ async function fehlendeZiele(vorhanden: Set<string>, filter: Set<string> | null)
     if (vorhanden.has(collection) || (art === 'skills' && SKILLS_GETRENNT)) continue;
     const q = PG_QUELLE[art];
     const { rows } = await pool.query(
-      `SELECT count(*)::int AS n FROM ${q.tabelle} WHERE ${q.wo} AND embedded_at IS NOT NULL`,
+      `SELECT count(*)::int AS n FROM ${art === 'skills' ? '(SELECT embedded_at FROM skill_sections UNION ALL SELECT embedded_at FROM agent_identitaet_skill_sections) skill_gesamt' : q.tabelle} WHERE ${q.wo} AND embedded_at IS NOT NULL`,
     );
     if (rows[0].n > 0) ergebnis.push({ collection, art, project: null });
   }

@@ -49,6 +49,7 @@
  *   }
  */
 
+import { aktuellerAgentAufruf, aktuellerAgentPrincipal, aktuelleAgentIdentityId, leseAgentBezugModus, mitAgentAufrufKontext } from './agent-bezug.js';
 import { createHash } from 'crypto';
 import type { PoolClient } from 'pg';
 import { embed, embeddingModellKennung, sichereModellprofil, type EmbedOptions } from '../embeddings/index.js';
@@ -68,6 +69,29 @@ const DEFAULT_SKILL_SEARCH_TIMEOUT_MS =
 
 export type SkillScope = 'global' | 'project' | 'agent';
 
+
+function skillIdModus(): boolean { const k=aktuellerAgentAufruf();return !!k && k.bezug.modus!=='alt'; }
+function skillSchreibIdentity(e:{scope?:SkillScope;project?:string|null;agent?:string|null}):string|null {
+ return e.scope==='agent' && e.project ? aktuelleAgentIdentityId(e.project,e.agent) : null;
+}
+function skillOwnerBedingungen(project:string,agent:string):Record<string,unknown>[] {
+ const legacy=agent.startsWith('legacy:'), name=legacy?agent.slice(7):agent;
+ const id=skillIdModus()?(agent.startsWith('identity:')?agent.slice(9):!legacy?aktuelleAgentIdentityId(project,agent):null):null;
+ return id?[{key:'identity_id',match:{value:id}}]:[{key:'agent',match:{value:name}},...(skillIdModus()?[{is_empty:{key:'identity_id'}}]:[])];
+}
+async function leseSichtbareSkillSections(skillName?:string,section?:string):Promise<SkillSection[]> {
+ const p=aktuellerAgentPrincipal();if(!p)return [];
+ const {rows}=await getPool().query<SkillSection>(
+ `SELECT skill_name,section,content,tags FROM (
+ SELECT skill_name,section,content,tags,scope,project,agent,NULL::text AS identity_id FROM skill_sections
+ UNION ALL SELECT skill_name,section,content,tags,scope,project,agent,identity_id FROM agent_identitaet_skill_sections
+ ) s WHERE ($1::text IS NULL OR skill_name=$1) AND ($2::text IS NULL OR section=$2)
+ AND (COALESCE(scope,'global')='global' OR (scope='project' AND project=$3) OR
+ (scope='agent' AND project=$3 AND (($4::text IS NOT NULL AND identity_id=$4) OR ($4::text IS NULL AND identity_id IS NULL AND agent=$5))))
+ ORDER BY section,CASE scope WHEN 'agent' THEN 0 WHEN 'project' THEN 1 ELSE 2 END`,
+ [skillName??null,section??null,p.project,p.art==='identity'?p.identity_id:null,p.agent_id]);return rows;
+}
+
 /** Baut den Qdrant-Filter aus skill_name und Scope. Undefined = kein Filter. */
 export function baueSkillSichtbarkeitsFilter(opts: {
   skillName?: string;
@@ -76,7 +100,11 @@ export function baueSkillSichtbarkeitsFilter(opts: {
   agent?: string;
   visibility?: { project: string; agent: string };
 }): Record<string, unknown> | undefined {
+  const p=aktuellerAgentPrincipal();
+  if(skillIdModus()&&p&&!opts.visibility&&!opts.scope&&!opts.agent) opts={...opts,visibility:{project:p.project,agent:p.art==='identity'?'identity:'+p.identity_id:'legacy:'+p.agent_id}};
   const must: Record<string, unknown>[] = [];
+  // Rollback: vorhandene ID-Daten bleiben gespeichert, werden aber nicht als Namensdaten sichtbar.
+  if (!skillIdModus()) must.push({ is_empty: { key: 'identity_id' } });
   if (opts.skillName) must.push({ key: 'skill_name', match: { value: opts.skillName } });
   if (opts.visibility) {
     must.push({
@@ -89,14 +117,15 @@ export function baueSkillSichtbarkeitsFilter(opts: {
         { must: [
           { key: 'scope', match: { value: 'agent' } },
           { key: 'project', match: { value: opts.visibility.project } },
-          { key: 'agent', match: { value: opts.visibility.agent } },
+          ...skillOwnerBedingungen(opts.visibility.project,opts.visibility.agent),
         ] },
       ],
     });
   } else {
     if (opts.scope) must.push({ key: 'scope', match: { value: opts.scope } });
     if (opts.project) must.push({ key: 'project', match: { value: opts.project } });
-    if (opts.agent) must.push({ key: 'agent', match: { value: opts.agent } });
+    if (opts.agent) must.push(...skillOwnerBedingungen(opts.project??p?.project??'',opts.agent));
+    else if(opts.scope==='agent'&&skillIdModus()&&p) must.push(...skillOwnerBedingungen(p.project,p.art==='identity'?'identity:'+p.identity_id:'legacy:'+p.agent_id));
   }
   return must.length ? { must } : undefined;
 }
@@ -109,6 +138,7 @@ interface SkillPoint {
   scope?: SkillScope;
   project?: string | null;
   agent?: string | null;
+  identity_id?: string | null;
 }
 
 interface QdrantPoint {
@@ -167,6 +197,7 @@ export interface SkillSearchHit {
   scope?: SkillScope;
   project?: string | null;
   agent?: string | null;
+  identity_id?: string | null;
 }
 
 export interface SkillListEntry {
@@ -217,6 +248,7 @@ export async function searchSkills(
     scope: h.payload?.scope,
     project: h.payload?.project ?? null,
     agent: h.payload?.agent ?? null,
+    ...(h.payload?.identity_id ? {identity_id:h.payload.identity_id} : {}),
   }));
 }
 
@@ -235,8 +267,9 @@ export async function searchSkillsForAgents(
   const timeoutMs = Number.isFinite(opts.searchTimeoutMs) && Number(opts.searchTimeoutMs) > 0
     ? Math.floor(Number(opts.searchTimeoutMs))
     : DEFAULT_SKILL_SEARCH_TIMEOUT_MS;
+  const bezug=aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   return Promise.all(agents.map(async (agent) => {
-    const filter = baueSkillSichtbarkeitsFilter({ visibility: { project, agent } });
+    const filter = mitAgentAufrufKontext({principal:aktuellerAgentPrincipal(),bezug},()=>baueSkillSichtbarkeitsFilter({ visibility: { project, agent } }));
     const points = await qdrantSearch(vector, limit, filter, timeoutMs);
     return {
       agent,
@@ -249,6 +282,7 @@ export async function searchSkillsForAgents(
         scope: h.payload?.scope,
         project: h.payload?.project ?? null,
         agent: h.payload?.agent ?? null,
+    ...(h.payload?.identity_id ? {identity_id:h.payload.identity_id} : {}),
       })),
     };
   }));
@@ -302,16 +336,17 @@ export async function findeSkillsNachName(
   text: string,
   mindestAehnlichkeit = 0.45,
 ): Promise<string[]> {
+  const sichtbareNamen = skillIdModus() ? [...new Set((await leseSichtbareSkillSections()).map(s=>s.skill_name))] : null;
   const tiefe = text.toLowerCase().trim();
   if (tiefe.length < 3) return [];
   try {
     const { rows } = await getPool().query<{ skill_name: string }>(
-      `SELECT skill_name FROM skill_names
+      `SELECT skill_name FROM ${sichtbareNamen ? 'unnest($3::text[]) AS sicht(skill_name)' : 'skill_names'}
         WHERE position(lower(skill_name) in $1) > 0
            OR similarity(lower(skill_name), $1) >= $2
         ORDER BY similarity(lower(skill_name), $1) DESC
         LIMIT 20`,
-      [tiefe, mindestAehnlichkeit],
+      sichtbareNamen ? [tiefe, mindestAehnlichkeit, sichtbareNamen] : [tiefe, mindestAehnlichkeit],
     );
     const gefunden = new Set(rows.map((row) => row.skill_name));
 
@@ -324,9 +359,7 @@ export async function findeSkillsNachName(
     //   "playwright-e2e-testing" enthaelt "e2e-testing" -> e2e-testing-automation
     // Beide sahen mit Score 0,99 aus wie sichere Treffer. Ein Fragment mitten in einem
     // anderen Wort bedeutet nichts.
-    const { rows: alle } = await getPool().query<{ skill_name: string }>(
-      'SELECT skill_name FROM skill_names',
-    );
+    const alle = sichtbareNamen ? sichtbareNamen.map(skill_name=>({skill_name})) : (await getPool().query<{skill_name:string}>('SELECT skill_name FROM skill_names')).rows;
     // ⚠️ DER BINDESTRICH ZAEHLT NICHT ALS GRENZE. Sonst trifft jedes Fragment, das in einem
     // LAENGEREN Skillnamen steckt, der wirklich im Text steht:
     //   "playwright-e2e-testing" -> e2e-testing-automation
@@ -368,9 +401,7 @@ const NAMENS_ABGLEICH_MS = 300_000;
 
 /** Qdrant-Stand (Rueckfall): Skillname -> Sections. */
 async function qdrantSkillListe(skillName?: string): Promise<Map<string, string[]>> {
-  const filter = skillName
-    ? { must: [{ key: 'skill_name', match: { value: skillName } }] }
-    : undefined;
+  const filter = baueSkillSichtbarkeitsFilter({skillName});
   const points = await qdrantScroll(filter, 2000);
   const map = new Map<string, string[]>();
   for (const p of points) {
@@ -390,6 +421,10 @@ async function qdrantSkillListe(skillName?: string): Promise<Map<string, string[
  * quelle 'qdrant' dazu. Antwortet PG nicht, liefert Qdrant allein.
  */
 export async function listSkills(skillName?: string): Promise<SkillListEntry[]> {
+ if(skillIdModus()&&aktuellerAgentPrincipal()){
+ const groups=new Map<string,Set<string>>();for(const r of await leseSichtbareSkillSections(skillName)){const s=groups.get(r.skill_name)??new Set<string>();s.add(r.section);groups.set(r.skill_name,s);}
+ return [...groups].sort(([a],[b])=>a.localeCompare(b)).map(([skill_name,s])=>({skill_name,sections:[...s].sort(),section_count:s.size,quelle:'pg' as const}));
+ }
   const ausPg = new Map<string, string[]>();
   let pgOk = true;
   try {
@@ -439,6 +474,7 @@ export async function listSkills(skillName?: string): Promise<SkillListEntry[]> 
 
 /** Sections aus PG; null = PG nicht lesbar (dann Rueckfall auf Qdrant). */
 async function sectionsAusPg(skillName: string, section?: string): Promise<SkillSection[] | null> {
+  if(skillIdModus()&&aktuellerAgentPrincipal())return leseSichtbareSkillSections(skillName,section);
   try {
     const { rows } = await getPool().query<SkillSection>(
       `SELECT skill_name, section, content, tags
@@ -458,6 +494,7 @@ async function sectionsAusPg(skillName: string, section?: string): Promise<Skill
 export async function getSkillSection(skillName: string, section: string): Promise<SkillSection | null> {
   const pg = await sectionsAusPg(skillName, section);
   if (pg && pg.length > 0) return pg[0];
+  if(skillIdModus()&&aktuellerAgentPrincipal())return null;
   const filter = {
     must: [
       { key: 'skill_name', match: { value: skillName } },
@@ -479,6 +516,7 @@ export async function getSkillSection(skillName: string, section: string): Promi
 export async function getSkillFull(skillName: string): Promise<SkillSection[]> {
   const pg = await sectionsAusPg(skillName);
   if (pg && pg.length > 0) return pg;
+  if(skillIdModus()&&aktuellerAgentPrincipal())return [];
   const filter = { must: [{ key: 'skill_name', match: { value: skillName } }] };
   const points = await qdrantScroll(filter, 500);
   return points
@@ -503,6 +541,7 @@ export interface SkillSectionEingabe {
   scope?: SkillScope;
   project?: string | null;
   agent?: string | null;
+  identity_id?: string | null;
 }
 
 export interface SkillSchreibErgebnis {
@@ -519,6 +558,7 @@ export interface SkillSicht {
   scope?: SkillScope;
   project?: string | null;
   agent?: string | null;
+  identity_id?: string | null;
 }
 
 /** anlegen: nur neu; aendern: nur vorhandene; beides: Upsert. */
@@ -567,7 +607,7 @@ async function inSkillTransaktion<T>(arbeit: (client: PoolClient) => Promise<T>)
 /** Zaehler in skill_names nachziehen; ohne Sections verschwindet der Name. */
 async function aktualisiereSkillName(client: PoolClient, skillName: string): Promise<void> {
   const { rows } = await client.query<{ n: number }>(
-    'SELECT count(*)::int AS n FROM skill_sections WHERE skill_name = $1',
+    'SELECT count(*)::int AS n FROM (SELECT skill_name FROM skill_sections UNION ALL SELECT skill_name FROM agent_identitaet_skill_sections) s WHERE skill_name=$1',
     [skillName],
   );
   const n = rows[0]?.n ?? 0;
@@ -589,6 +629,7 @@ async function schreibeSectionInTransaktion(
   e: SkillSectionEingabe,
   modus: SkillSchreibModus = 'beides',
 ): Promise<SkillSchreibErgebnis> {
+  const identityId=skillSchreibIdentity(e), tabelle=identityId?'agent_identitaet_skill_sections':'skill_sections';
   const scope = e.scope ?? 'global';
   const project = e.project ?? null;
   const agent = e.agent ?? null;
@@ -598,11 +639,12 @@ async function schreibeSectionInTransaktion(
 
   const vorhanden = (await client.query<{ punkt_id: string; content_hash: string | null; tags: string[] | null }>(
     `SELECT punkt_id::text AS punkt_id, content_hash, tags
-       FROM skill_sections
+       FROM ${tabelle}
       WHERE skill_name = $1 AND section = $2 AND COALESCE(scope, 'global') = $3
-        AND COALESCE(project, '') = COALESCE($4, '') AND COALESCE(agent, '') = COALESCE($5, '')
+        AND COALESCE(project, '') = COALESCE($4, '') AND ($6::text IS NOT NULL OR COALESCE(agent, '') = COALESCE($5, ''))
+        AND ${identityId?'identity_id=$6':'$6::text IS NULL'}
       FOR UPDATE`,
-    [e.skill_name, e.section, scope, project, agent],
+    [e.skill_name, e.section, scope, project, agent, identityId],
   )).rows[0];
 
   if (vorhanden && modus === 'anlegen') {
@@ -618,7 +660,7 @@ async function schreibeSectionInTransaktion(
       return { punkt_id: punktId, ...basis, status: 'unveraendert', embeddings_pending: false };
     }
     await client.query(
-      `UPDATE skill_sections
+      `UPDATE ${tabelle}
           SET content = $2, tags = $3, content_hash = $4, aktualisiert_am = NOW(),
               embedded_at = NULL, embedding_modell = NULL
         WHERE punkt_id = $1`,
@@ -630,14 +672,14 @@ async function schreibeSectionInTransaktion(
   // Neue punkt_id: naechste freie Nummer, serialisiert (sonst vergaeben zwei Schreiber dieselbe).
   await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [SKILL_ID_SPERRE]);
   const punktId = Number((await client.query<{ id: string }>(
-    'SELECT (COALESCE(MAX(punkt_id), 0) + 1)::text AS id FROM skill_sections',
+    'SELECT (COALESCE(MAX(punkt_id),0)+1)::text AS id FROM (SELECT punkt_id FROM skill_sections UNION ALL SELECT punkt_id FROM agent_identitaet_skill_sections) s',
   )).rows[0].id);
   await client.query(
-    `INSERT INTO skill_sections
+    `INSERT INTO ${tabelle}
        (punkt_id, skill_name, section, content, tags, scope, project, agent, content_hash,
-        aktualisiert_am, embedded_at, embedding_modell)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NULL, NULL)`,
-    [punktId, e.skill_name, e.section, e.content, tags, scope, project, agent, hash],
+        aktualisiert_am, embedded_at, embedding_modell${identityId?', identity_id':''})
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NULL, NULL${identityId?', $10':''})`,
+    [punktId, e.skill_name, e.section, e.content, tags, scope, project, agent, hash,...(identityId?[identityId]:[])],
   );
   return { punkt_id: punktId, ...basis, status: 'neu', embeddings_pending: true };
 }
@@ -647,7 +689,7 @@ async function entferneSkillVektoren(punktIds: number[], skillNameFilter?: strin
   if (punktIds.length === 0 && !skillNameFilter) return;
   const koerper = punktIds.length > 0
     ? { points: punktIds }
-    : { filter: { must: [{ key: 'skill_name', match: { value: skillNameFilter } }] } };
+    : { filter: { must: [{ key: 'skill_name', match: { value: skillNameFilter } }, { is_empty: { key: 'identity_id' } }] } };
   try {
     const res = await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points/delete?wait=true`, {
       method: 'POST',
@@ -659,6 +701,16 @@ async function entferneSkillVektoren(punktIds: number[], skillNameFilter?: strin
     // PG ist bereits bereinigt; ein verwaister Punkt faellt beim naechsten Re-Embedding weg.
     console.error('[Skills] Qdrant-Loeschen fehlgeschlagen (PG bereits bereinigt):', (fehler as Error).message);
   }
+}
+
+
+/** Projekt-Loeschung: ausschliesslich ID-Sections dieses Projekts, nie globale/andere Agentenpunkte. */
+export async function entferneProjektIdentitaetsSkillVektoren(project:string):Promise<void> {
+  const res=await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points/delete?wait=true`,{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({filter:{must:[{key:'project',match:{value:project}},{key:'scope',match:{value:'agent'}}],must_not:[{is_empty:{key:'identity_id'}}]}}),
+  });
+  if(!res.ok && res.status!==404) throw new Error('Skill-Qdrant Projektbereinigung HTTP '+res.status);
 }
 
 /**
@@ -691,13 +743,15 @@ export async function loescheSkillSection(
   section: string,
   sicht: SkillSicht = {},
 ): Promise<{ geloescht: number }> {
+  const identityId=skillSchreibIdentity(sicht),tabelle=identityId?'agent_identitaet_skill_sections':'skill_sections';
   const ids = await inSkillTransaktion(async (client) => {
     const { rows } = await client.query<{ punkt_id: string }>(
-      `DELETE FROM skill_sections
+      `DELETE FROM ${tabelle}
         WHERE skill_name = $1 AND section = $2 AND COALESCE(scope, 'global') = $3
-          AND COALESCE(project, '') = COALESCE($4, '') AND COALESCE(agent, '') = COALESCE($5, '')
+          AND COALESCE(project, '') = COALESCE($4, '') AND ($6::text IS NOT NULL OR COALESCE(agent, '') = COALESCE($5, ''))
+          AND ${identityId?'identity_id=$6':'$6::text IS NULL'}
         RETURNING punkt_id::text AS punkt_id`,
-      [skillName, section, sicht.scope ?? 'global', sicht.project ?? null, sicht.agent ?? null],
+      [skillName, section, sicht.scope ?? 'global', sicht.project ?? null, sicht.agent ?? null,identityId],
     );
     if (rows.length > 0) await aktualisiereSkillName(client, skillName);
     return rows.map((r) => Number(r.punkt_id));
@@ -711,6 +765,13 @@ export async function loescheSkillSection(
  * auch Punkte, die skill-db.mjs bis P12-T19 nur dort angelegt hat.
  */
 export async function loescheSkill(skillName: string): Promise<{ geloescht: number }> {
+ const p=aktuellerAgentPrincipal();
+ if(skillIdModus()&&p?.art==='identity'){
+ const ids=await inSkillTransaktion(async client=>{
+ const {rows}=await client.query<{punkt_id:string}>('DELETE FROM agent_identitaet_skill_sections WHERE skill_name=$1 AND identity_id=$2 RETURNING punkt_id::text',[skillName,p.identity_id]);
+ await aktualisiereSkillName(client,skillName);return rows.map(r=>Number(r.punkt_id));});
+ await entferneSkillVektoren(ids);return {geloescht:ids.length};
+ }
   const ids = await inSkillTransaktion(async (client) => {
     const { rows } = await client.query<{ punkt_id: string }>(
       'DELETE FROM skill_sections WHERE skill_name = $1 RETURNING punkt_id::text AS punkt_id',
@@ -745,12 +806,11 @@ export async function ersetzeSkill(
       zaehler[r.status]++;
       behalten.push(r.punkt_id);
     }
-    const { rows } = await client.query<{ punkt_id: string }>(
-      `DELETE FROM skill_sections
-        WHERE skill_name = $1 AND NOT (punkt_id = ANY($2::bigint[]))
-        RETURNING punkt_id::text AS punkt_id`,
-      [skillName, behalten],
-    );
+    const rows:Array<{punkt_id:string}>=[];
+    if(eingaben.some(e=>!skillSchreibIdentity(e))) rows.push(...(await client.query<{punkt_id:string}>(
+      'DELETE FROM skill_sections WHERE skill_name=$1 AND NOT(punkt_id=ANY($2::bigint[])) RETURNING punkt_id::text',[skillName,behalten])).rows);
+    for(const identity of new Set(eingaben.map(skillSchreibIdentity).filter((id):id is string=>!!id))) rows.push(...(await client.query<{punkt_id:string}>(
+      'DELETE FROM agent_identitaet_skill_sections WHERE skill_name=$1 AND identity_id=$3 AND NOT(punkt_id=ANY($2::bigint[])) RETURNING punkt_id::text',[skillName,behalten,identity])).rows);
     await aktualisiereSkillName(client, skillName);
     return { zaehler, entfernt: rows.map((r) => Number(r.punkt_id)) };
   });
@@ -780,7 +840,8 @@ export async function embeddeSkillSectionNach(
   embedOptions = { ...embedOptions, priority: embedOptions.priority ?? 'background' };
   if (embedOptions.priority === 'background' && await embeddingNachtragAngehalten()) return;
   // P15-T4: Lesen, Payload und Upsert teilt sich der Einzelweg mit dem Stapel (skillSectionNachzug).
-  await betteEinzelnEin(skillSectionNachzug, id, embedOptions);
+  const identity=(await getPool().query('SELECT 1 FROM agent_identitaet_skill_sections WHERE punkt_id=$1::bigint',[id])).rows.length>0;
+  await betteEinzelnEin(identity?identitaetsSkillSectionNachzug:skillSectionNachzug,id,embedOptions);
 }
 
 /** Inhaltsstand einer Section: content_hash (embedded_at nur, wenn sich der Inhalt nicht erneut geaendert hat). */
@@ -791,21 +852,21 @@ const SKILL_STAND = 't.content_hash';
  * Stapel (embed-nachzug.ts). Eigener Upsert, weil die Skills in SKILL_QDRANT_URL liegen und die
  * Punkt-ID eine Zahl ist (punkt_id). embedded_at + embedding_modell setzt markiereEingebettet.
  */
-export const skillSectionNachzug: NachzugQuelle = {
-  tabelle: 'skill_sections',
+function baueSkillSectionNachzug(tabelle:'skill_sections'|'agent_identitaet_skill_sections'):NachzugQuelle { return {
+  tabelle,
   idSpalte: 'punkt_id',
   idTyp: 'bigint',
   standSql: SKILL_STAND,
   modellSpalte: true,
   async lese(ids) {
     const { rows } = await getHintergrundPool().query<{
-      punkt_id: string; skill_name: string; section: string; content: string; tags: string[] | null;
+      punkt_id: string; identity_id:string|null; skill_name: string; section: string; content: string; tags: string[] | null;
       scope: SkillScope | null; project: string | null; agent: string | null; content_hash: string | null;
       aktualisiert_am: Date; stand: string | null;
     }>(
       `SELECT t.punkt_id::text AS punkt_id, t.skill_name, t.section, t.content, t.tags, t.scope, t.project,
-              t.agent, t.content_hash, t.aktualisiert_am, ${SKILL_STAND} AS stand
-         FROM skill_sections t WHERE t.punkt_id = ANY($1::bigint[])`,
+              t.agent, ${tabelle==='skill_sections'?'NULL::text':'t.identity_id'} AS identity_id, t.content_hash, t.aktualisiert_am, ${SKILL_STAND} AS stand
+         FROM ${tabelle} t WHERE t.punkt_id = ANY($1::bigint[])`,
       [ids],
     );
     await sichereModellprofil();
@@ -823,6 +884,7 @@ export const skillSectionNachzug: NachzugQuelle = {
         ...(row.scope ? { scope: row.scope } : {}),
         project: row.project,
         agent: row.agent,
+        ...(row.identity_id?{identity_id:row.identity_id}:{}),
         updated_at: new Date(row.aktualisiert_am).toISOString(),
         content_hash: row.content_hash,
         embedding_modell: modell,
@@ -848,3 +910,6 @@ export const skillSectionNachzug: NachzugQuelle = {
     if (!res.ok) throw new Error(`Skill-Qdrant upsert ${res.status}: ${(await res.text()).slice(0, 200)}`);
   },
 };
+}
+export const skillSectionNachzug=baueSkillSectionNachzug('skill_sections');
+export const identitaetsSkillSectionNachzug=baueSkillSectionNachzug('agent_identitaet_skill_sections');

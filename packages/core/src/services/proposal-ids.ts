@@ -24,13 +24,14 @@ export interface ProposalRow {
   suggestedContent: string
   description: string
   author: string
+  author_identity_id?: string
   status: 'pending' | 'reviewed' | 'accepted' | 'rejected'
   tags: string[]
   createdAt: string
   updatedAt: string
 }
 
-const SPALTEN = 'id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at'
+const SPALTEN = 'id, project, file_path, suggested_content, description, author, status, tags, created_at, updated_at, author_identity_id'
 
 function iso(wert: unknown): string {
   if (wert instanceof Date) return wert.toISOString()
@@ -47,6 +48,7 @@ export function zeileZuProposal(row: Record<string, unknown>, mitInhalt = true):
     suggestedContent: mitInhalt ? String(row.suggested_content ?? '') : '',
     description: String(row.description ?? ''),
     author: String(row.author ?? ''),
+    ...(row.author_identity_id ? { author_identity_id: String(row.author_identity_id) } : {}),
     status: String(row.status ?? 'pending') as ProposalRow['status'],
     tags: Array.isArray(row.tags) ? (row.tags as unknown[]).map(String) : [],
     createdAt: iso(row.created_at),
@@ -176,6 +178,7 @@ export function mischeProposalTreffer<P extends Record<string, unknown>>(
       suggested_content: '',
       description: z.description,
       author: z.author,
+      ...(z.author_identity_id ? { author_identity_id: z.author_identity_id } : {}),
       status: z.status,
       tags: z.tags,
       created_at: z.createdAt,

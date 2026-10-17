@@ -51,6 +51,7 @@
  *        Aenderung von Speicher/tmpfs startet den Container neu (vor dem naechsten Auftrag abgeglichen).
  */
 
+import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
@@ -1357,11 +1358,11 @@ function zahl(v: unknown, name: string, min: number, max: number, fehler: string
 
 async function zeileSchreiben(bereich: string, werte: Werte, wer: string | null, grund: string | undefined): Promise<void> {
   await getPool().query(
-    `INSERT INTO build_pruefung_einstellungen (bereich, werte, gesetzt_von, grund, gesetzt_am)
-     VALUES ($1, $2::jsonb, $3, $4, NOW())
+    `INSERT INTO build_pruefung_einstellungen (bereich, werte, gesetzt_von, grund, gesetzt_am, setter_identity_id)
+     VALUES ($1, $2::jsonb, $3, $4, NOW(), $5)
      ON CONFLICT (bereich) DO UPDATE SET werte = build_pruefung_einstellungen.werte || EXCLUDED.werte,
-       gesetzt_von = EXCLUDED.gesetzt_von, grund = EXCLUDED.grund, gesetzt_am = NOW()`,
-    [bereich, JSON.stringify(werte), wer, grund ?? null],
+       gesetzt_von = EXCLUDED.gesetzt_von, grund = EXCLUDED.grund, gesetzt_am = NOW(), setter_identity_id=EXCLUDED.setter_identity_id`,
+    [bereich, JSON.stringify(werte), wer, grund ?? null, aktuelleAgentAkteurIdentityId(wer)],
   );
 }
 
