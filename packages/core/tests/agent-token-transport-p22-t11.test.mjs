@@ -257,7 +257,8 @@ try {
       const failure=await t.call('chat',{action:'anmelden',token:'invalid',agent_id:own,project});
       check(failure.success===false && failure.error==='agent_token_ungueltig' && !failure.agentOnboarding,'Falscher Ausweis ohne fremde Regeln abgewiesen');
       check((await t.call('chat',{action:'anmelden',token,project:'fremd'})).error==='agent_token_fremdes_projekt','Projektgrenze');
-      check((await t.call('chat',{action:'list',project})).error==='agent_token_fehlt','Kein Legacyzugriff ohne Ausweis bei EIN');
+      check((await t.call('chat',{action:'list',project})).success!==false,'P22-T16: Legacyzugriff ohne behauptete Token-ID bleibt bei EIN erhalten');
+      check((await t.call('chat',{action:'list',project,agent_id:own})).error==='agent_token_fehlt','P22-T16: Behauptete Token-ID braucht weiterhin ihren Ausweis');
       const before=(await pool.query('SELECT context_epoch FROM agent_identitaeten WHERE id=$1',[first.principal.identity_id])).rows[0].context_epoch;
       check((await t.call('chat',{action:'anmelden',token,typo:1})).error==='unbekannter_parameter','Unbekannter Parameter blockiert Anmeldung');
       check((await pool.query('SELECT context_epoch FROM agent_identitaeten WHERE id=$1',[first.principal.identity_id])).rows[0].context_epoch===before,'PA-1 ohne Epoch-Nebenwirkung');

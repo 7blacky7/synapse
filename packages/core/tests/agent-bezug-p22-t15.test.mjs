@@ -1,5 +1,6 @@
 /**
  * P22-T15 Phase4: reale PG-Vertraege im isolierten Schema, keine Modelle/Docker.
+ * Aus dem Repo-Root starten: node packages/core/tests/agent-bezug-p22-t15.test.mjs.
  * DATABASE_URL muss synapse_test:5433 sein. Golden: t107 ueber P22_BASE_ROOT.
  */
 import assert from 'node:assert/strict';

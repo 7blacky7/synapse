@@ -84,7 +84,7 @@ export async function bereiteAgentToolAufrufVor(
   const basis: AgentToolKontext = { aktiv: schalter.freigegeben, args };
   const action = feld(args, 'action');
   if (!schalter.freigegeben) {
-    if (Object.hasOwn(eingabe, 'token') || transportToken !== undefined || (tool === 'chat' && ['anmelden', 'identitaet'].includes(action ?? ''))) {
+    if (Object.hasOwn(eingabe, 'token') || !!transportToken || (tool === 'chat' && ['anmelden', 'identitaet'].includes(action ?? ''))) {
       basis.antwort = { success: false, error: 'token_identitaet_aus', schalter };
     }
     return basis;
@@ -96,7 +96,7 @@ export async function bereiteAgentToolAufrufVor(
     return basis;
   }
   try {
-    if (Object.hasOwn(eingabe, 'token') && !token) throw new AgentIdentitaetFehler('agent_token_ungueltig');
+    if ((Object.hasOwn(eingabe, 'token') || transportToken !== undefined) && !token) throw new AgentIdentitaetFehler('agent_token_ungueltig');
     // Bestehende PC-/CLI-Legacy-Sitzungen bleiben auch bei ID-Modus auf ihrem alten Pfad.
     // Keine Adoption einer Token-Sitzung und keine Identitaetsanlage fuer Alt-Agenten.
     if (bezug.modus !== 'alt' && !token && !Object.hasOwn(eingabe, 'token')) {
@@ -112,7 +112,21 @@ export async function bereiteAgentToolAufrufVor(
         }
       }
     }
-    // Erstanmeldung ist der einzige unbeglaubigte Einstieg. Selbstauskunft verleiht keine Rechte.
+    // P22-T16: Der Freigabeschalter macht Legacy-Aufrufe nicht ausweispflichtig.
+    // Nur eine explizit beanspruchte Token-Identitaet im Projekt braucht ihren Ausweis.
+    // Gleichnamige echte Legacy-Sitzungen behalten in beide/neu ihren eigenen Pfad.
+    if (!token && !(tool === 'chat' && ['register', 'anmelden', 'identitaet'].includes(action ?? ''))) {
+      const legacyId = feld(args, 'agent_id'), project = feld(args, 'project');
+      if (legacyId && project) {
+        const tokenName = await getPool().query(
+          'SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, legacyId]);
+        if (tokenName.rows.length) throw new AgentIdentitaetFehler('agent_token_fehlt');
+        const k = aktuellerAgentAufruf();
+        if (k) k.principal = { art: 'legacy', project, agent_id: legacyId };
+      }
+      return basis;
+    }
+    // Explizite Token-Erstanmeldung. Selbstauskunft verleiht keine Rechte.
     if (tool === 'chat' && action === 'register' && !token) {
       const id = feld(args, 'id'), project = feld(args, 'project');
       if (!id || !project || /^user$/i.test(id)) throw new AgentIdentitaetFehler('identitaet_parameter_ungueltig');

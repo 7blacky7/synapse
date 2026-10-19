@@ -24,7 +24,7 @@
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { validateToken } from '../services/auth.js';
 import { mainScopePasst } from '../services/agent-runtime/main-tool-profile.js';
-import { istOeffentlicherAnsichtPfad } from '@synapse/core';
+import { istOeffentlicherAnsichtPfad, logToolCall } from '@synapse/core';
 
 /**
  * Ermittelt die externe Basis-URL (HTTPS hinter Reverse-Proxy beachten) —
@@ -126,6 +126,56 @@ function requiresBearer(method: string, pathname: string): boolean {
   return false;
 }
 
+// P22-T16: oeffentlicher Auth-Pfad: feste kleine Zaehler statt INSERT je Anfrage.
+// Hoechstens ein laufender INSERT und eine Aggregatzeile je Minute/Prozess.
+// Pfade/Gruende werden auf endliche Kategorien reduziert; keine IPs/Headers/Token.
+const AUTH_AUDIT_INTERVALL_MS = 60_000;
+const authAblehnungen = new Map<string, { path: string; grund: string; count: number }>();
+let authErsteZeit: string | null = null, authLetzteZeit: string | null = null;
+let authAuditTimer: ReturnType<typeof setTimeout> | undefined;
+let authAuditLauf: Promise<void> | undefined;
+let authAuditZuletzt = 0, authHookInstanzen = 0;
+function planeAuthAudit(): void {
+  if (authAuditTimer || authAuditLauf || !authAblehnungen.size) return;
+  authAuditTimer = setTimeout(() => {
+    authAuditTimer = undefined;
+    void schreibeAuthAudit();
+  }, Math.max(AUTH_AUDIT_INTERVALL_MS, authAuditZuletzt + AUTH_AUDIT_INTERVALL_MS - Date.now()));
+  authAuditTimer.unref();
+}
+function merkeAuthAblehnung(pathname: string, message: string): void {
+  const path = pathname === '/' ? '/' : pathname === '/mcp/messages' ? '/mcp/messages' : '/mcp/*';
+  const grund = message === 'Bearer-Token fehlt' ? 'bearer_fehlt'
+    : message === 'Token ungueltig oder abgelaufen' ? 'bearer_ungueltig'
+    : message === 'Token-Typ nicht fuer API/MCP zugelassen' ? 'bearer_typ'
+    : message === 'Hauptagenten-Ausweis passt nicht zu MCP-Session und Werkzeugprofil' ? 'bearer_scope'
+    : 'unauthorized';
+  const key = path + ':' + grund;
+  const gruppe = authAblehnungen.get(key) ?? { path, grund, count: 0 };
+  gruppe.count = Math.min(Number.MAX_SAFE_INTEGER, gruppe.count + 1);
+  authAblehnungen.set(key, gruppe);
+  authLetzteZeit = new Date().toISOString();
+  authErsteZeit ??= authLetzteZeit;
+  planeAuthAudit();
+}
+async function schreibeAuthAudit(): Promise<void> {
+  if (authAuditLauf) return authAuditLauf;
+  if (!authAblehnungen.size) return;
+  if (authAuditZuletzt && Date.now() - authAuditZuletzt < AUTH_AUDIT_INTERVALL_MS) {
+    planeAuthAudit(); return;
+  }
+  const gruppen = [...authAblehnungen.values()];
+  const result = JSON.stringify({ success: false, error: 'unauthorized',
+    count: gruppen.reduce((n, g) => n + g.count, 0), gruppen,
+    first_at: authErsteZeit, last_at: authLetzteZeit, intervall_ms: AUTH_AUDIT_INTERVALL_MS });
+  authAblehnungen.clear(); authErsteZeit = null; authLetzteZeit = null;
+  authAuditZuletzt = Date.now();
+  authAuditLauf = logToolCall({ source: 'cloud', tool: 'mcp', action: 'auth',
+    ok: false, error: 'unauthorized', result });
+  try { await authAuditLauf; }
+  finally { authAuditLauf = undefined; planeAuthAudit(); }
+}
+
 function send401(
   reply: FastifyReply,
   request: FastifyRequest,
@@ -135,6 +185,7 @@ function send401(
   // MCP-Spec-PFLICHT: /mcp/* braucht WWW-Authenticate mit resource_metadata,
   // sonst findet claude.ai den AuthServer nicht.
   if (pathname.startsWith('/mcp') || pathname === '/') {
+    merkeAuthAblehnung(pathname, message);
     const baseUrl = getBaseUrl(request);
     reply.header(
       'WWW-Authenticate',
@@ -154,6 +205,13 @@ function send401(
  * registriert werden (vor den Routen-Handlern wirkt onRequest ohnehin global).
  */
 export function registerAuthHook(fastify: FastifyInstance): void {
+  authHookInstanzen++;
+  fastify.addHook('onClose', async () => {
+    if (--authHookInstanzen !== 0) return;
+    if (authAuditTimer) { clearTimeout(authAuditTimer); authAuditTimer = undefined; }
+    if (authAuditLauf) await authAuditLauf;
+    await schreibeAuthAudit();
+  });
   fastify.addHook('onRequest', async (request, reply) => {
     // ENV-Notausgang / Bootstrap-Generalschluessel.
     if (process.env.SYNAPSE_AUTH_DISABLED === '1') return;

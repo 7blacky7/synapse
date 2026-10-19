@@ -162,8 +162,11 @@ export function createServer(): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name } = request.params;
     return mitAgentToolAufruf(name, request.params.arguments ?? {}, SERVER_INSTANCE_ID, async (kontext) => {
-    if (kontext.aktiv && kontext.antwort?.success === false) {
-      void logToolCall({ agentId: kontext.principal?.agent_id ?? null, project: kontext.principal?.project ?? null,
+    if (kontext.antwort?.success === false) {
+      void logToolCall({
+      // Behaupteter Text fuer die Diagnose; identity_id stammt ausschliesslich aus geprueftem ALS.
+      agentId: kontext.principal?.agent_id ?? (typeof kontext.args.agent_id === 'string' ? kontext.args.agent_id : null),
+      project: kontext.principal?.project ?? (typeof kontext.args.project === 'string' ? kontext.args.project : null),
         source: 'stdio', tool: name, action: String(kontext.args.action ?? ''), ok: false,
         error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
       return kompaktiereTextErgebnis({ content: [{ type: 'text', text: JSON.stringify(kontext.antwort) }], isError: true }, name);

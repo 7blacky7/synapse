@@ -6225,8 +6225,11 @@ async function fuehreToolsCallAus(
   }
   return mitAgentToolAufruf(toolName, toolArgs, REST_INSTANCE_ID, async (kontext) => {
   toolArgs = kontext.args;
-  if (kontext.aktiv && kontext.antwort?.success === false) {
-    void logToolCall({ agentId: kontext.principal?.agent_id ?? null, project: kontext.principal?.project ?? null,
+  if (kontext.antwort?.success === false) {
+    void logToolCall({
+      // Behaupteter Text fuer die Diagnose; identity_id stammt ausschliesslich aus geprueftem ALS.
+      agentId: kontext.principal?.agent_id ?? (typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null),
+      project: kontext.principal?.project ?? (typeof toolArgs.project === 'string' ? toolArgs.project : null),
       source: 'cloud', tool: toolName, action: String(toolArgs.action ?? ''), ok: false,
       error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
     return baueToolErgebnis(kontext.antwort, { tool: toolName, isError: true, strukturiert: true });
