@@ -112,8 +112,13 @@ try{
   task_bindung_festlegen:()=>({bindung_task_id:'T34-m'+u(),bindung_art:'identitaet',bindung_identity_ids:['t34-z'],grund:'Test T34 Matrix'}),
   task_bindung_aendern:()=>({bindung_task_id:'T34-keine-'+u(),bindung_art:'identitaet',bindung_identity_ids:['t34-z'],grund:'Test T34 Matrix'}),
   task_bindung_entblocken:()=>({bindung_task_id:'T34-keine-'+u(),grund:'Test T34 Matrix'}),
+  // P22-T36: Hauptagent-Verwaltung nur User (bzw. Main selbst); Schalter hier AUS -> User bekommt funktion_aus/identitaet_unbekannt, nie recht_fehlt.
+  hauptagent_status:()=>({}),
+  hauptagent_auftrag:()=>({auftrag_art:'neustart',grund:'Test T34 Matrix'}),
+  hauptagent_auftraege:()=>({}),
+  hauptagent_auftrag_abbrechen:()=>({auftrag_id:'unbekannt-t34',grund:'Test T34 Matrix'}),
  };
- const NUR_USER=new Set(['web_ui_koordinator_token']);
+ const NUR_USER=new Set(['web_ui_koordinator_token','hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen']);
  const AKTEURE=[
   {name:'User',akteur:USER,agent:null,darf:a=>true},
   {name:'Koordinator mit Ausweis',akteur:Kk,agent:null,darf:a=>!NUR_USER.has(a)},

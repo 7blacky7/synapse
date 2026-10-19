@@ -11,8 +11,21 @@
  * (kommagetrennt, nur auf der API). Registry-Zeilen mit Pfad /virtual/* sind nie ein PC-Ort.
  */
 
+/**
+ * P22-T36 (W2-P1, User U1 39b8e0e9): reservierter Bereich der Hauptagenten-Identitaet. Der Hauptagent lebt nur in der
+ * Web-UI; die Pflicht-Projektbindung seiner Identitaet ist intern. Virtuell (nie PC, nie Init/Restore, nie loeschbar)
+ * und UNSICHTBAR (erscheint in keiner Projektliste, siehe istUnsichtbaresProjekt).
+ */
+export const HAUPTAGENT_PROJEKT = 'synapse-hauptagent';
+
 /** Systemprojekte, die ausschliesslich auf der API existieren (reverse-bibliothek: REVERSE_PROJEKT der rest-api). */
-export const VIRTUELLE_SYSTEMPROJEKTE: readonly string[] = Object.freeze(['reverse-bibliothek']);
+export const VIRTUELLE_SYSTEMPROJEKTE: readonly string[] = Object.freeze(['reverse-bibliothek', HAUPTAGENT_PROJEKT]);
+/** P22-T36: Systemprojekte, die in keiner Projektliste (project list, GET /api/projects, Web-UI, Graph) erscheinen. */
+export const UNSICHTBARE_SYSTEMPROJEKTE: readonly string[] = Object.freeze([HAUPTAGENT_PROJEKT]);
+
+export function istUnsichtbaresProjekt(name: unknown): boolean {
+  return typeof name === 'string' && UNSICHTBARE_SYSTEMPROJEKTE.includes(name);
+}
 /** Hostname der virtuellen Registry-Zeile (registerVirtualProject). */
 export const VIRTUELLER_HOST = 'rest-api';
 

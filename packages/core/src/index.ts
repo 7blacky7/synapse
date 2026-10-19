@@ -207,6 +207,8 @@ export { ProjectRestoreService,ProjectRestoreError } from './services/project-re
 export type { RestoreCodeEntry,RestoreJob } from './services/project-restore.js';
 // P9-T30: virtuelle API-Projekte nie an einen PC binden + Host-Bindung gezielt loesen.
 export { VIRTUELLE_SYSTEMPROJEKTE, VIRTUELLER_HOST, virtuelleProjekte, istVirtuellesProjekt, istVirtuellerRegistryPfad, VirtuellesProjektFehler, pruefeNichtVirtuell } from './services/virtuelle-projekte.js';
+// P22-T36: reservierter, unsichtbarer Bereich der Hauptagenten-Identitaet.
+export { HAUPTAGENT_PROJEKT, UNSICHTBARE_SYSTEMPROJEKTE, istUnsichtbaresProjekt } from './services/virtuelle-projekte.js';
 export { HOST_LOESEN_MODE, HostLoesenFehler, projektHostLoesen, claimHostLoesungen, schliesseHostLoesung } from './services/project-host-loesen.js';
 export type { HostLoesenAuftrag } from './services/project-host-loesen.js';
 // P9-T31: sicheres Loeschen nur mit rechnergebundenem Loesch-Code (Agent, Tray, Web-UI).
@@ -592,6 +594,14 @@ export { ProfilVerwaltungFehler, aktuellerW1bAkteur, pruefeProfilVerwalter, USER
 export { personaDienst, listePersonaVorlagen, listePersonaVersionen, legePersonaVorlageAn, legePersonaVersionAn, weisePersonaZu, entfernePersona, lesePersonaZuweisung } from './services/agent-persona.js';
 export { tokenAbrufDienst, rufeProfilTokenAb, rufeAusweisAb, loescheAusweis, rufeWebUiKoordinatorTokenAb } from './services/agent-token-abruf.js';
 export { agentVorbereiten, ausweisFuerStart } from './services/agent-ausweis-dienst.js';
+// P22-T36 (W2-P1): Hauptagent-Identitaet, Produkt-Schalter hauptagent, Rechte-Rahmen, generische Runtime-Auftraege.
+export {
+  HAUPTAGENT_FUNKTION, HAUPTAGENT_AGENT_ID, HAUPTAGENT_ROLLE, AUFTRAG_ARTEN, MAIN_SYNAPSE_MAPPING, HAUPTAGENT_ADMIN_ACTIONS, HAUPTAGENT_ADMIN_PARAMETER,
+  leseHauptagentSchalter, setzeHauptagentSchalter, stelleMainIdentitaetSicher, hauptagentIdentitaetsId, hauptagentStatus,
+  legeRuntimeAuftragAn, brecheRuntimeAuftragAb, listeRuntimeAuftraege, istHauptagentAdminAction, fuehreHauptagentAdminAus,
+} from './services/hauptagent-dienst.js';
+export type { HauptagentSchalterStand, MainIdentitaetErgebnis, AuftragEingabe, AuftragArt } from './services/hauptagent-dienst.js';
+export { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './db/agent-runtime-auftraege-schema.js';
 export type { ProfilTokenAbruf, WebUiKoordinatorToken } from './services/agent-token-abruf.js';
 export { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus, w1bFehlerStatus } from './services/agent-profil-admin.js';
 export type { W1bAdminAction } from './services/agent-profil-admin.js';

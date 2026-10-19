@@ -23,8 +23,9 @@ import {
 } from './agent-profil-verwalter.js';
 import { listePersonaVersionen } from './agent-persona.js';
 import { rufeWebUiKoordinatorTokenAb } from './agent-token-abruf.js';
+import { HAUPTAGENT_ADMIN_ACTIONS, HAUPTAGENT_ADMIN_PARAMETER, istHauptagentAdminAction, fuehreHauptagentAdminAus } from './hauptagent-dienst.js';
 
-export const W1B_ADMIN_ACTIONS = [
+const W1B_KERN_AKTIONEN = [
   'profil_schalter_status', 'profil_schalter_setzen', 'profil_uebersicht',
   'schattenprofil_liste', 'schattenprofil_korrigieren', 'schattenprofil_bestaetigen', 'schattenprofil_ablehnen',
   'typ_liste', 'typ_anlegen', 'typ_aendern', 'typ_revision_lesen',
@@ -33,7 +34,9 @@ export const W1B_ADMIN_ACTIONS = [
   'agent_vorbereiten', 'token_abrufen', 'token_loeschen', 'web_ui_koordinator_token',
   'task_bindung_lesen', 'task_bindung_festlegen', 'task_bindung_aendern', 'task_bindung_entblocken',
 ] as const;
-export type W1bAdminAction = typeof W1B_ADMIN_ACTIONS[number];
+/** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
+export const W1B_ADMIN_ACTIONS = [...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS] as const;
+export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
 export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
@@ -58,11 +61,12 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   user_zustimmung: { type: 'string', description: 'Schattenprofil: Nachweis der User-Zustimmung bzw. Freigabe zum Alleinbestaetigen' },
   anlass: { type: 'string', description: 'token_abrufen: Anlass des Abrufs (Audit, ohne Tokenwert)' },
   agent_name: { type: 'string', description: 'agent_vorbereiten: Name der neuen Identitaet (oder laufende Legacy-Sitzung -> Uebernahme); alternativ ziel_identity_id fuer Respawn' },
-  rolle: { type: 'string', description: 'agent_vorbereiten: Rolle der neuen Identitaet (Standard subagent; koordinator nur durch den User)' },
+  rolle: { type: 'string', description: 'agent_vorbereiten: Rolle der neuen Identitaet (Standard subagent; koordinator durch User oder Koordinator)' },
   startart: { type: 'string', enum: ['subagent', 'spezialist', 'codex', 'hauptagent', 'sonstiges'], description: 'agent_vorbereiten: Startart fuer die Startkonfiguration' },
   bindung_task_id: { type: 'string', description: 'Task-Bindung: Task-ID (UUID oder P<n>-T<m>)' },
   bindung_art: { type: 'string', enum: ['identitaet', 'team'], description: 'Task-Bindung: Einzelidentitaet oder Team (offen = entblocken)' },
   bindung_identity_ids: { type: 'array', items: { type: 'string' }, description: 'Task-Bindung: Identitaets-IDs (identitaet: genau eine; team: frei gewaehlte, desselben Projekts)' },
+  ...HAUPTAGENT_ADMIN_PARAMETER,
 };
 
 export function istW1bAdminAction(action: string | undefined): boolean {
@@ -362,6 +366,8 @@ export function w1bFehlerStatus(code: string): number {
 
 export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteur?: W1bAkteur | null } = {}): Promise<Record<string, unknown>> {
   const akteur = opt.akteur !== undefined ? opt.akteur : aktuellerW1bAkteur();
+  // P22-T36: Hauptagent-Verwaltung (User + Main selbst; Koordinatoren nur Kommunikation) – eigener Rechtepfad.
+  if (istHauptagentAdminAction(action)) return fuehreHauptagentAdminAus(action, args, akteur);
   if (istAusweisAktion(action)) {
     // Auch der Legacy-Koordinator ohne Ausweis darf vorbereiten/abrufen/loeschen (Vorgabe 27920).
     try {

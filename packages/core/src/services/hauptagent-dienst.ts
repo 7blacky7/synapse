@@ -1,0 +1,470 @@
+/**
+ * P22-T36 (W2-P1): Hauptagent (Main-Agent) – dauerhafte Identitaet, Produkt-Schalter 'hauptagent', Rechte-Rahmen der
+ * Selbstverwaltung und generische Runtime-Auftraege je Identitaet. Vertrag thought 0abdb238 (Freigabe Channel w2 27941),
+ * User-Entscheidungen 39b8e0e9 (U1), 60c03d56 (Selbstverwaltung, ersetzt U2), 5fc2cafa (Modell-/Runtime-Wechsel).
+ *
+ * IDENTITAET: genau EINE Identitaet agent_id 'hauptagent', rolle 'main' im reservierten, unsichtbaren Bereich
+ *   HAUPTAGENT_PROJEKT (virtuelle-projekte.ts). Angelegt ueber den bestehenden Ausweis-Kern (agentVorbereiten, Weg B,
+ *   Akteur User) beim ersten Kontakt im Web-UI-Main-Chat; danach immer derselbe Ausweis (ausweisFuerStart, keine
+ *   Rotation). Modell-/Runtime-Wechsel aendern den Ausweis nie. Der Rahmen der Selbstverwaltung (erlaubte_modelle,
+ *   erlaubte_runtimes) liegt im Startrezept der Identitaet und wird nur vom User geaendert (profil_aendern).
+ *
+ * SCHALTER 'hauptagent' (Produkt-Schalter I, regel-neue-funktionen-mit-schalter-und-debug), Standard AUS:
+ *   wirksam = intern-Override 'hauptagent' (nur SYNAPSE_INTERN_TOOL=1, befristet) > Produkt-Schalter (agent_profil_schalter,
+ *   NUR ebene global, funktion 'hauptagent'; profil_schalter_setzen und 'alle' wirken NICHT darauf) > Env SYNAPSE_HAUPTAGENT=1
+ *   > AUS. Setzen NUR der User (uebergeordnete Kontrolle, 60c03d56) – auch kein Legacy-Koordinator.
+ *   MAPPING main_synapse: AUS = Altweg unveraendert (Werkzeugprofil weiter ueber intern main_synapse bzw.
+ *   SYNAPSE_MAIN_SYNAPSE, Session-Scope). EIN = Identitaetsweg; main_synapse wird dort nicht ausgewertet.
+ *
+ * RECHTE (P1 nur User + Main ausprogrammiert, alle anderen recht_fehlt): User darf alles. Der Main-Agent (Principal aus
+ *   seinem Ausweis, Rolle 'main' in PG gegengeprueft) darf ueber die EIGENE Identitaet: Status lesen, Auftraege
+ *   neustart/update/modellwechsel/runtime_wechsel anlegen (Modell/Runtime nur innerhalb erlaubte_*; Hands-Off Pflicht),
+ *   eigene offene Auftraege abbrechen. stop nur der User. Koordinatoren (auch Legacy) haben keine Verwaltungsrechte;
+ *   sie erreichen den Main-Agenten nur ueber chat/inbox.
+ *
+ * AUFTRAEGE (Tabelle agent_runtime_auftraege, Schema 116): gewuenscht vs. tatsaechlich strikt getrennt. Bestand: das Profil-
+ *   'modell' liegt in der Spalte modell_bestaetigt (= konfiguriert/gewuenscht); modell_selbstauskunft = Selbstauskunft des
+ *   Agenten. TATSAECHLICH laufend gilt erst, was ein ACK nach erfolgreichem Neustart in auftrag.tatsaechlich schreibt
+ *   (Runtime-Daemon, spaeteres Paket). In P1 bleiben Auftraege pending, Status zeigt ausfuehrung 'ausstehend_kein_executor'.
+ */
+import { randomUUID } from 'node:crypto';
+import type { QueryConfig } from 'pg';
+import { getPool } from '../db/client.js';
+import { internToolAktiv } from './intern-tool.js';
+import { registerVirtualProject } from './project-registry.js';
+import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
+import { agentVorbereiten, ausweisFuerStart } from './agent-ausweis-dienst.js';
+import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText } from './agent-profil-verwalter.js';
+import { AUSWEIS_IM_TEXT } from './agent-ausweis-format.js';
+import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
+
+export const HAUPTAGENT_FUNKTION = 'hauptagent' as const;
+export const HAUPTAGENT_AGENT_ID = 'hauptagent';
+export const HAUPTAGENT_ROLLE = 'main';
+export const AUFTRAG_ARTEN = ['neustart', 'update', 'modellwechsel', 'runtime_wechsel', 'stop'] as const;
+export type AuftragArt = typeof AUFTRAG_ARTEN[number];
+export const AUFTRAG_OFFEN = ['pending', 'claimed', 'accepted'] as const;
+const AUSFUEHRUNG_P1 = 'ausstehend_kein_executor';
+
+type Q = QueryConfig & { query_timeout: number };
+function fehler(code: string, details?: Record<string, unknown>): never { throw new ProfilVerwaltungFehler(code, details); }
+
+// ---------------------------------------------------------------------------------------------
+// Schalter
+// ---------------------------------------------------------------------------------------------
+export type HauptagentQuelle = 'standard' | 'produkt-schalter' | 'intern';
+export interface HauptagentSchalterStand {
+  aktiv: boolean;
+  quelle: HauptagentQuelle;
+  standard: boolean;
+  bis: string | null;
+  gesetzt_von: string | null;
+  gesetzt_am: string | null;
+  grund: string | null;
+  letzter_fehler: string | null;
+  main_synapse_mapping: string;
+}
+export const MAIN_SYNAPSE_MAPPING = 'hauptagent AUS: Altweg unveraendert, Werkzeugprofil ueber intern main_synapse bzw. SYNAPSE_MAIN_SYNAPSE (Session-Scope). '
+  + 'hauptagent EIN: Identitaetsweg (Ausweis + Profil, Bearer-Scope hauptagent:identitaet:<id>); main_synapse wird dort nicht ausgewertet.';
+
+/** Frisch je Aufruf (kein Cache), damit Ablauf/Loeschen eines Overrides sofort wirkt. Lesefehler -> Produktionsstandard. */
+export async function leseHauptagentSchalter(): Promise<HauptagentSchalterStand> {
+  const standard = process.env.SYNAPSE_HAUPTAGENT === '1';
+  const basis: HauptagentSchalterStand = { aktiv: standard, quelle: 'standard', standard, bis: null, gesetzt_von: null,
+    gesetzt_am: null, grund: null, letzter_fehler: null, main_synapse_mapping: MAIN_SYNAPSE_MAPPING };
+  let letzter: string | null = null;
+  if (internToolAktiv()) {
+    try {
+      const r = await getPool().query<{ aktiv: boolean; bis: Date | null }>({
+        text: `SELECT aktiv, bis FROM intern_schalter WHERE name = $1 AND modus = 'freigegeben' AND (bis IS NULL OR bis > NOW())`,
+        values: [HAUPTAGENT_FUNKTION], query_timeout: 2000,
+      } as Q);
+      const z = r.rows[0];
+      if (z) return { ...basis, aktiv: z.aktiv, quelle: 'intern', bis: z.bis ? z.bis.toISOString() : null };
+    } catch { letzter = 'schalter_nicht_erreichbar'; }
+  }
+  try {
+    const r = await getPool().query<{ aktiv: boolean; grund: string | null; gesetzt_von: string; gesetzt_am: Date }>({
+      text: `SELECT aktiv, grund, gesetzt_von, gesetzt_am FROM agent_profil_schalter
+        WHERE ebene = 'global' AND project IS NULL AND funktion = $1`,
+      values: [HAUPTAGENT_FUNKTION], query_timeout: 2000,
+    } as Q);
+    const z = r.rows[0];
+    if (z) return { ...basis, aktiv: z.aktiv, quelle: 'produkt-schalter', gesetzt_von: z.gesetzt_von,
+      gesetzt_am: z.gesetzt_am.toISOString(), grund: z.grund, letzter_fehler: letzter };
+  } catch { letzter = letzter ?? 'produkt_schalter_nicht_lesbar'; }
+  return { ...basis, letzter_fehler: letzter };
+}
+
+/** Nur der User (authentifizierter User-Eingang). Schreibt die globale Zeile funktion 'hauptagent'. */
+export async function setzeHauptagentSchalter(akteur: AusweisAkteur | null, e: { aktiv: unknown; grund: unknown }): Promise<HauptagentSchalterStand> {
+  if (!akteur || akteur.art !== 'user') fehler('recht_fehlt', { grund: 'Schalter hauptagent setzt nur der User' });
+  if (typeof e.aktiv !== 'boolean') fehler('aktiv_fehlt');
+  const grund = pflichtText(e.grund, 'grund_fehlt');
+  await getPool().query(
+    `INSERT INTO agent_profil_schalter (ebene, project, funktion, aktiv, grund, gesetzt_von, setter_identity_id, gesetzt_am)
+     VALUES ('global', NULL, $1, $2, $3, 'user', NULL, NOW())
+     ON CONFLICT (ebene, (COALESCE(project, '')), funktion) DO UPDATE SET aktiv=EXCLUDED.aktiv, grund=EXCLUDED.grund,
+       gesetzt_von=EXCLUDED.gesetzt_von, setter_identity_id=NULL, gesetzt_am=EXCLUDED.gesetzt_am`,
+    [HAUPTAGENT_FUNKTION, e.aktiv, grund]);
+  return leseHauptagentSchalter();
+}
+
+async function pruefeHauptagentAn(): Promise<HauptagentSchalterStand> {
+  const s = await leseHauptagentSchalter();
+  if (!s.aktiv) fehler('funktion_aus', { funktion: HAUPTAGENT_FUNKTION, quelle: s.quelle, ...(s.letzter_fehler ? { letzter_fehler: s.letzter_fehler } : {}) });
+  return s;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Identitaet
+// ---------------------------------------------------------------------------------------------
+interface MainZeile {
+  id: string; agent_id: string; rolle: string; status: string; profil: Record<string, unknown>;
+  startrezept: Record<string, unknown>; profil_revision: number; modell_bestaetigt: string | null;
+  modell_selbstauskunft: string | null; zuletzt_aktiv: Date;
+}
+
+async function leseMainZeile(): Promise<MainZeile | null> {
+  const r = await getPool().query<MainZeile>(
+    `SELECT id, agent_id, rolle, status, profil, startrezept, profil_revision, modell_bestaetigt, modell_selbstauskunft, zuletzt_aktiv
+       FROM agent_identitaeten WHERE project = $1 AND agent_id = $2`, [HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID]);
+  return r.rows[0] ?? null;
+}
+
+/** Identity-ID der Main-Identitaet (oder null). Fuer Driver/Transport. */
+export async function hauptagentIdentitaetsId(): Promise<string | null> {
+  return (await leseMainZeile())?.id ?? null;
+}
+
+export interface MainIdentitaetErgebnis {
+  outcome: 'created' | 'existing';
+  identity_id: string;
+  agent_id: string;
+  project: string;
+  rolle: string;
+  /** Ausweis: NUR fuer die Weitergabe per Header an die Main-CLI; nie in Prompt, Log, Antwort an Clients. */
+  token: string;
+  erstnutzung_bis: string | null;
+}
+
+function textListeAus(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x.trim()).map(x => x.trim()) : [];
+}
+
+/**
+ * Erstkontakt (Web-UI-Main-Chat, Akteur User): legt GENAU EINE Main-Identitaet mit dauerhaftem Ausweis an oder findet sie.
+ * Idempotent: UNIQUE(project, agent_id); ein paralleler Erstkontakt endet als 'existing'.
+ */
+export async function stelleMainIdentitaetSicher(
+  akteur: AusweisAkteur | null, e: { modell?: string | null; runtime?: string | null } = {},
+): Promise<MainIdentitaetErgebnis> {
+  if (!akteur || akteur.art !== 'user') fehler('recht_fehlt', { grund: 'Erstkontakt nur durch den User' });
+  await pruefeHauptagentAn();
+  await registerVirtualProject(HAUPTAGENT_PROJEKT);
+  const vorhanden = async (z: MainZeile): Promise<MainIdentitaetErgebnis> => {
+    if (z.status !== 'aktiv') fehler('identitaet_nicht_aktiv');
+    const a = await ausweisFuerStart(HAUPTAGENT_PROJEKT, z.id, { art: 'user' });
+    return { outcome: 'existing', identity_id: z.id, agent_id: z.agent_id, project: HAUPTAGENT_PROJEKT, rolle: z.rolle,
+      token: a.token, erstnutzung_bis: a.erstnutzung_bis };
+  };
+  const z = await leseMainZeile();
+  if (z) return vorhanden(z);
+  const modell = typeof e.modell === 'string' && e.modell.trim() ? e.modell.trim() : null;
+  const runtime = typeof e.runtime === 'string' && e.runtime.trim() ? e.runtime.trim() : null;
+  // Paralleler Erstkontakt (mehrere Tabs/Prozesse): serialisiert ueber einen Sitzungs-Advisory-Lock, danach erneut pruefen.
+  const sperre = await getPool().connect();
+  try {
+    await sperre.query('SELECT pg_advisory_lock(hashtext($1))', ['synapse-hauptagent-erstkontakt']);
+    const nachSperre = await leseMainZeile();
+    if (nachSperre) return await vorhanden(nachSperre);
+    const r = await agentVorbereiten({
+      project: HAUPTAGENT_PROJEKT, name: HAUPTAGENT_AGENT_ID, rolle: HAUPTAGENT_ROLLE, startart: 'hauptagent',
+      // 5fc2cafa: Profil-modell = konfiguriert/gewuenscht (Bestand: Spalte modell_bestaetigt); tatsaechlich erst per ACK.
+      ...(modell ? { modell } : {}),
+      profil: { startrezept: { runtime, erlaubte_modelle: modell ? [modell] : [], erlaubte_runtimes: runtime ? [runtime] : [] } },
+      grund: 'Erstkontakt im Web-UI-Main-Chat (P22-T36)',
+    }, { art: 'user' });
+    return { outcome: 'created', identity_id: r.identity_id, agent_id: r.agent_id, project: HAUPTAGENT_PROJEKT, rolle: r.rolle,
+      token: r.token, erstnutzung_bis: r.erstnutzung_bis };
+  } catch (err) {
+    const code = (err as { code?: unknown })?.code;
+    if (code !== 'identitaet_existiert' && code !== '23505') throw err;
+    const neu = await leseMainZeile();
+    if (!neu) throw err;
+    return vorhanden(neu);
+  } finally {
+    await sperre.query('SELECT pg_advisory_unlock(hashtext($1))', ['synapse-hauptagent-erstkontakt']).catch(() => undefined);
+    sperre.release();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Rechte
+// ---------------------------------------------------------------------------------------------
+type Berechtigung = { art: 'user'; wer: 'user'; actor: null } | { art: 'selbst'; wer: string; actor: string };
+
+/** User, oder der Main-Agent selbst (Principal aus Ausweis, Rolle main in PG). Alle anderen: recht_fehlt. */
+async function berechtigungFuer(akteur: AusweisAkteur | null, ziel: MainZeile): Promise<Berechtigung> {
+  if (akteur?.art === 'user') return { art: 'user', wer: 'user', actor: null };
+  if (akteur?.art === 'identitaet') {
+    const p = akteur.principal;
+    if (p.identity_id === ziel.id && p.project === HAUPTAGENT_PROJEKT) {
+      const r = await getPool().query(
+        "SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2 AND rolle=$3 AND status='aktiv'", [ziel.id, HAUPTAGENT_PROJEKT, HAUPTAGENT_ROLLE]);
+      if (r.rows[0]) return { art: 'selbst', wer: ziel.id, actor: ziel.id };
+    }
+  }
+  return fehler('recht_fehlt');
+}
+
+/** Grobe Vorpruefung VOR Schalter/Ziel: nur User oder ein Principal mit Rolle main im reservierten Bereich (PG-Pruefung folgt). */
+function vorpruefeAkteur(akteur: AusweisAkteur | null): void {
+  if (akteur?.art === 'user') return;
+  if (akteur?.art === 'identitaet' && akteur.principal.project === HAUPTAGENT_PROJEKT && akteur.principal.rolle === HAUPTAGENT_ROLLE) return;
+  fehler('recht_fehlt');
+}
+
+async function zielMain(identityId: unknown): Promise<MainZeile> {
+  const z = await leseMainZeile();
+  if (!z) return fehler('identitaet_unbekannt', { grund: 'Main-Identitaet noch nicht angelegt (Erstkontakt im Web-UI-Main-Chat)' });
+  if (identityId !== undefined && identityId !== null && identityId !== z.id) {
+    // P1: Auftraege nur fuer die Main-Identitaet ausprogrammiert (Tabelle ist generisch je Identitaet).
+    fehler('ziel_nicht_unterstuetzt', { grund: 'P1: Runtime-Auftraege nur fuer die Main-Identitaet' });
+  }
+  return z;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Auftraege
+// ---------------------------------------------------------------------------------------------
+const GEWUENSCHT_FELDER = ['modell', 'provider', 'effort', 'runtime', 'cli'] as const;
+
+function normalisiereGewuenscht(v: unknown): Record<string, string> {
+  if (v === undefined || v === null) return {};
+  if (typeof v !== 'object' || Array.isArray(v)) fehler('gewuenscht_ungueltig');
+  const o = v as Record<string, unknown>;
+  const unbekannt = Object.keys(o).filter(k => !(GEWUENSCHT_FELDER as readonly string[]).includes(k));
+  if (unbekannt.length) fehler('gewuenscht_ungueltig', { felder: unbekannt });
+  const out: Record<string, string> = {};
+  for (const k of GEWUENSCHT_FELDER) {
+    const x = o[k];
+    if (x === undefined || x === null) continue;
+    if (typeof x !== 'string' || !x.trim() || x.length > 128) fehler('gewuenscht_ungueltig', { felder: [k] });
+    out[k] = (x as string).trim();
+  }
+  return out;
+}
+
+function pruefeHandsOff(v: unknown): Record<string, unknown> | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) fehler('hands_off_ungueltig');
+  const text = JSON.stringify(v);
+  if (text.length > 20_000) fehler('hands_off_zu_gross');
+  if (AUSWEIS_IM_TEXT.test(text)) fehler('inhalt_enthaelt_ausweis');
+  return v as Record<string, unknown>;
+}
+
+interface AuftragZeile {
+  id: string; identity_id: string; art: AuftragArt; status: string; gewuenscht: Record<string, unknown>;
+  tatsaechlich: Record<string, unknown> | null; hands_off: Record<string, unknown> | null; grund: string;
+  erstellt_von: string; actor_identity_id: string | null; idempotenz_schluessel: string | null; claim_revision: number;
+  letzter_fehler: string | null; erstellt_am: Date; aktualisiert_am: Date; abgeschlossen_am: Date | null; abgeschlossen_von: string | null;
+}
+const AUFTRAG_SPALTEN = `id, identity_id, art, status, gewuenscht, tatsaechlich, hands_off, grund, erstellt_von, actor_identity_id,
+  idempotenz_schluessel, claim_revision, letzter_fehler, erstellt_am, aktualisiert_am, abgeschlossen_am, abgeschlossen_von`;
+
+function auftragAus(z: AuftragZeile): Record<string, unknown> {
+  const offen = (AUFTRAG_OFFEN as readonly string[]).includes(z.status);
+  return {
+    auftrag_id: z.id, identity_id: z.identity_id, art: z.art, status: z.status, offen,
+    gewuenscht: z.gewuenscht, tatsaechlich: z.tatsaechlich, hands_off: z.hands_off, grund: z.grund,
+    erstellt_von: z.erstellt_von, idempotenz_schluessel: z.idempotenz_schluessel, claim_revision: z.claim_revision,
+    letzter_fehler: z.letzter_fehler, erstellt_am: z.erstellt_am.toISOString(), aktualisiert_am: z.aktualisiert_am.toISOString(),
+    abgeschlossen_am: z.abgeschlossen_am ? z.abgeschlossen_am.toISOString() : null, abgeschlossen_von: z.abgeschlossen_von,
+    ...(offen ? { ausfuehrung: AUSFUEHRUNG_P1 } : {}),
+  };
+}
+
+async function audit(identityId: string, b: Berechtigung, aktion: string, neu: unknown, grund: string): Promise<void> {
+  await getPool().query(
+    `INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id) VALUES ($1,$2,$3,NULL,$4::jsonb,$5,$6)`,
+    [identityId, b.wer, aktion, JSON.stringify(neu ?? null), grund, b.actor]);
+}
+
+export interface AuftragEingabe {
+  identity_id?: string | null;
+  art: unknown;
+  gewuenscht?: unknown;
+  hands_off?: unknown;
+  grund: unknown;
+  idempotenz_schluessel?: unknown;
+}
+
+export async function legeRuntimeAuftragAn(akteur: AusweisAkteur | null, e: AuftragEingabe): Promise<Record<string, unknown>> {
+  vorpruefeAkteur(akteur);
+  await pruefeHauptagentAn();
+  const ziel = await zielMain(e.identity_id);
+  const b = await berechtigungFuer(akteur, ziel);
+  if (typeof e.art !== 'string' || !(AUFTRAG_ARTEN as readonly string[]).includes(e.art)) fehler('auftrag_art_ungueltig');
+  const art = e.art as AuftragArt;
+  const grund = pflichtText(e.grund, 'grund_fehlt');
+  const gewuenscht = normalisiereGewuenscht(e.gewuenscht);
+  if (AUSWEIS_IM_TEXT.test(JSON.stringify(gewuenscht))) fehler('inhalt_enthaelt_ausweis');
+  const handsOff = pruefeHandsOff(e.hands_off);
+  const schluessel = typeof e.idempotenz_schluessel === 'string' && e.idempotenz_schluessel.trim() ? e.idempotenz_schluessel.trim().slice(0, 200) : null;
+  if (art === 'modellwechsel' && !gewuenscht.modell) fehler('gewuenscht_modell_fehlt');
+  if (art === 'runtime_wechsel' && !gewuenscht.runtime) fehler('gewuenscht_runtime_fehlt');
+  if (b.art === 'selbst') {
+    // 60c03d56: uebergeordnete Kontrolle beim User -> stop nur der User. 5fc2cafa: Modell/Runtime nur im festgelegten Rahmen.
+    if (art === 'stop') fehler('recht_fehlt', { grund: 'stop nur durch den User' });
+    const rahmen = ziel.startrezept ?? {};
+    if (gewuenscht.modell && !textListeAus(rahmen.erlaubte_modelle).includes(gewuenscht.modell)) {
+      fehler('ausserhalb_rahmen', { feld: 'modell', erlaubte_modelle: textListeAus(rahmen.erlaubte_modelle) });
+    }
+    if (gewuenscht.runtime && !textListeAus(rahmen.erlaubte_runtimes).includes(gewuenscht.runtime)) {
+      fehler('ausserhalb_rahmen', { feld: 'runtime', erlaubte_runtimes: textListeAus(rahmen.erlaubte_runtimes) });
+    }
+    if (!handsOff) fehler('hands_off_fehlt', { grund: 'Vor Neustart/Update/Wechsel Arbeitsstand als hands_off hinterlegen' });
+  }
+  if (schluessel) {
+    const alt = await getPool().query<AuftragZeile>(`SELECT ${AUFTRAG_SPALTEN} FROM agent_runtime_auftraege WHERE identity_id=$1 AND idempotenz_schluessel=$2`, [ziel.id, schluessel]);
+    if (alt.rows[0]) {
+      if (alt.rows[0].art !== art) fehler('idempotenz_konflikt', { auftrag_id: alt.rows[0].id });
+      return { auftrag: auftragAus(alt.rows[0]), idempotent: true };
+    }
+  }
+  const id = randomUUID();
+  try {
+    const r = await getPool().query<AuftragZeile>(
+      `INSERT INTO agent_runtime_auftraege (id, identity_id, art, status, gewuenscht, hands_off, grund, erstellt_von, actor_identity_id, idempotenz_schluessel)
+       VALUES ($1,$2,$3,'pending',$4::jsonb,$5::jsonb,$6,$7,$8,$9) RETURNING ${AUFTRAG_SPALTEN}`,
+      [id, ziel.id, art, JSON.stringify(gewuenscht), handsOff ? JSON.stringify(handsOff) : null, grund, b.wer, b.actor, schluessel]);
+    await audit(ziel.id, b, 'runtime_auftrag_angelegt', { auftrag_id: id, art, gewuenscht }, grund);
+    return { auftrag: auftragAus(r.rows[0]), idempotent: false };
+  } catch (err) {
+    const c = err as { code?: string; constraint?: string };
+    if (c.code === '23505' && c.constraint === 'uq_agent_runtime_auftraege_offen') {
+      const offen = await getPool().query<{ id: string }>(
+        "SELECT id FROM agent_runtime_auftraege WHERE identity_id=$1 AND art=$2 AND status IN ('pending','claimed','accepted') LIMIT 1", [ziel.id, art]);
+      fehler('auftrag_offen_vorhanden', { auftrag_id: offen.rows[0]?.id ?? null });
+    }
+    if (c.code === '23505' && c.constraint === 'uq_agent_runtime_auftraege_idem') fehler('idempotenz_konflikt');
+    throw err;
+  }
+}
+
+export async function brecheRuntimeAuftragAb(akteur: AusweisAkteur | null, e: { auftrag_id: unknown; grund: unknown }): Promise<Record<string, unknown>> {
+  vorpruefeAkteur(akteur);
+  await pruefeHauptagentAn();
+  if (typeof e.auftrag_id !== 'string' || !e.auftrag_id.trim()) fehler('auftrag_id_fehlt');
+  const grund = pflichtText(e.grund, 'grund_fehlt');
+  const z = (await getPool().query<AuftragZeile>(`SELECT ${AUFTRAG_SPALTEN} FROM agent_runtime_auftraege WHERE id=$1`, [(e.auftrag_id as string).trim()])).rows[0];
+  if (!z) return fehler('auftrag_unbekannt');
+  const ziel = await zielMain(z.identity_id);
+  const b = await berechtigungFuer(akteur, ziel);
+  if (b.art === 'selbst' && z.actor_identity_id !== b.actor) fehler('recht_fehlt', { grund: 'nur eigene Auftraege abbrechen' });
+  // Nur pending: ein beanspruchter Auftrag muss erst vom Ausfuehrer versoehnt werden (Leaseablauf beweist keinen Exit).
+  const r = await getPool().query<AuftragZeile>(
+    `UPDATE agent_runtime_auftraege SET status='cancelled', aktualisiert_am=NOW(), abgeschlossen_am=NOW(), abgeschlossen_von=$2
+      WHERE id=$1 AND status='pending' RETURNING ${AUFTRAG_SPALTEN}`, [z.id, b.wer]);
+  if (!r.rows[0]) fehler('auftrag_nicht_abbrechbar', { status: z.status });
+  await audit(ziel.id, b, 'runtime_auftrag_abgebrochen', { auftrag_id: z.id, art: z.art }, grund);
+  return { auftrag: auftragAus(r.rows[0]) };
+}
+
+export async function listeRuntimeAuftraege(akteur: AusweisAkteur | null, e: { identity_id?: string | null } = {}): Promise<Record<string, unknown>> {
+  vorpruefeAkteur(akteur);
+  const ziel = await zielMain(e.identity_id);
+  await berechtigungFuer(akteur, ziel);
+  const r = await getPool().query<AuftragZeile>(
+    `SELECT ${AUFTRAG_SPALTEN} FROM agent_runtime_auftraege WHERE identity_id=$1 ORDER BY erstellt_am DESC LIMIT 50`, [ziel.id]);
+  return { identity_id: ziel.id, auftraege: r.rows.map(auftragAus) };
+}
+
+/**
+ * Status fuer User und Main-Agent selbst: Schalter, Identitaet, gewuenscht (Profil/offener Auftrag) vs. tatsaechlich
+ * (modell_bestaetigt), Rahmen, offene Auftraege. Ohne Identitaet: identitaet null (Schalter bleibt sichtbar, nur User).
+ */
+export async function hauptagentStatus(akteur: AusweisAkteur | null): Promise<Record<string, unknown>> {
+  vorpruefeAkteur(akteur);
+  const schalter = await leseHauptagentSchalter();
+  const z = await leseMainZeile();
+  if (!z) {
+    if (akteur?.art !== 'user') fehler('recht_fehlt');
+    return { schalter, project: HAUPTAGENT_PROJEKT, identitaet: null, auftraege_offen: [] };
+  }
+  await berechtigungFuer(akteur, z);
+  const ausweis = await getPool().query<{ zustand: string }>(
+    `SELECT CASE WHEN t.gueltig_bis IS NULL THEN 'aktiv' WHEN t.gueltig_bis > NOW() THEN 'ausgestellt' ELSE 'verfallen' END AS zustand
+       FROM agent_identitaet_tokens t WHERE t.identity_id=$1 AND t.widerrufen_am IS NULL AND t.token_offen IS NOT NULL LIMIT 1`, [z.id]);
+  const offen = await getPool().query<AuftragZeile>(
+    `SELECT ${AUFTRAG_SPALTEN} FROM agent_runtime_auftraege WHERE identity_id=$1 AND status IN ('pending','claimed','accepted') ORDER BY erstellt_am`, [z.id]);
+  const rahmen = z.startrezept ?? {};
+  const ack = await getPool().query<{ modell: string | null; runtime: string | null }>(
+    `SELECT tatsaechlich->>'modell' AS modell, tatsaechlich->>'runtime' AS runtime FROM agent_runtime_auftraege
+      WHERE identity_id=$1 AND status='completed' AND tatsaechlich IS NOT NULL ORDER BY abgeschlossen_am DESC NULLS LAST LIMIT 1`, [z.id]);
+  return {
+    schalter, project: HAUPTAGENT_PROJEKT,
+    identitaet: {
+      identity_id: z.id, agent_id: z.agent_id, rolle: z.rolle, status: z.status, profil_revision: z.profil_revision,
+      ausweis_zustand: ausweis.rows[0]?.zustand ?? 'fehlt', zuletzt_aktiv: z.zuletzt_aktiv.toISOString(),
+      // Gewuenscht = konfiguriert im Profil bzw. offener Wechselauftrag; tatsaechlich = erst nach bestaetigtem Neustart.
+      modell_gewuenscht: z.modell_bestaetigt ?? ((z.profil?.modell as string | undefined) ?? null),
+      modell_tatsaechlich: ack.rows[0]?.modell ?? null, modell_selbstauskunft: z.modell_selbstauskunft,
+      runtime_gewuenscht: typeof rahmen.runtime === 'string' ? rahmen.runtime : null,
+      runtime_tatsaechlich: ack.rows[0]?.runtime ?? null,
+      rahmen: { erlaubte_modelle: textListeAus(rahmen.erlaubte_modelle), erlaubte_runtimes: textListeAus(rahmen.erlaubte_runtimes) },
+    },
+    auftraege_offen: offen.rows.map(auftragAus),
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// admin-Aktionen (MCP admin, stdio und REST) – Akteur nur aus Transport/Tokenpruefung
+// ---------------------------------------------------------------------------------------------
+export const HAUPTAGENT_ADMIN_ACTIONS = ['hauptagent_status', 'hauptagent_auftrag', 'hauptagent_auftraege', 'hauptagent_auftrag_abbrechen'] as const;
+export type HauptagentAdminAction = typeof HAUPTAGENT_ADMIN_ACTIONS[number];
+export const HAUPTAGENT_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
+  auftrag_art: { type: 'string', enum: [...AUFTRAG_ARTEN], description: 'hauptagent_auftrag: neustart|update|modellwechsel|runtime_wechsel|stop (stop nur User)' },
+  auftrag_id: { type: 'string', description: 'hauptagent_auftrag_abbrechen: Auftrags-ID' },
+  gewuenscht: { type: 'object', additionalProperties: true, description: 'hauptagent_auftrag: gewuenschter Stand {modell, provider, effort, runtime, cli}' },
+  hands_off: { type: 'object', additionalProperties: true, description: 'hauptagent_auftrag: Arbeitsstand/Uebergabe {thought_id, arbeitsstand, offene_aufgaben}; Pflicht fuer den Hauptagenten selbst' },
+  idempotenz_schluessel: { type: 'string', description: 'hauptagent_auftrag: optionaler Idempotenz-Schluessel' },
+};
+
+export function istHauptagentAdminAction(action: unknown): action is HauptagentAdminAction {
+  return typeof action === 'string' && (HAUPTAGENT_ADMIN_ACTIONS as readonly string[]).includes(action);
+}
+
+const CODE = /^[a-z][a-z0-9_]{2,80}$/;
+
+export async function fuehreHauptagentAdminAus(
+  action: HauptagentAdminAction, args: Record<string, unknown>, akteurOpt?: W1bAkteur | null,
+): Promise<Record<string, unknown>> {
+  const akteur: AusweisAkteur | null = akteurOpt !== undefined ? akteurOpt : aktuellerW1bAkteur();
+  const zid = typeof args.ziel_identity_id === 'string' && args.ziel_identity_id.trim() ? args.ziel_identity_id.trim() : null;
+  try {
+    switch (action) {
+      case 'hauptagent_status':
+        return { success: true, action, ...(await hauptagentStatus(akteur)) };
+      case 'hauptagent_auftrag':
+        return { success: true, action, ...(await legeRuntimeAuftragAn(akteur, {
+          identity_id: zid, art: args.auftrag_art, gewuenscht: args.gewuenscht, hands_off: args.hands_off,
+          grund: args.grund, idempotenz_schluessel: args.idempotenz_schluessel,
+        })) };
+      case 'hauptagent_auftraege':
+        return { success: true, action, ...(await listeRuntimeAuftraege(akteur, { identity_id: zid })) };
+      case 'hauptagent_auftrag_abbrechen':
+        return { success: true, action, ...(await brecheRuntimeAuftragAb(akteur, { auftrag_id: args.auftrag_id, grund: args.grund })) };
+    }
+  } catch (e) {
+    const code = (e as { code?: unknown })?.code;
+    if (typeof code === 'string' && CODE.test(code)) {
+      const d = (e as { details?: unknown }).details;
+      return { success: false, action, error: code, ...(d && typeof d === 'object' ? { details: d } : {}) };
+    }
+    return { success: false, action, error: 'hauptagent_fehler' };
+  }
+  return { success: false, action, error: 'aktion_unbekannt' };
+}

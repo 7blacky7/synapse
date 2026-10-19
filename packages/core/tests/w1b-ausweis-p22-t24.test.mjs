@@ -182,8 +182,12 @@ try{
   check((await pool.query("SELECT erstellt_von FROM agent_identitaeten WHERE id=$1",[v2.identity_id])).rows[0].erstellt_von==='legacy:koordinator-legacy','Herkunft im Audit: legacy:<agent_id>');
   check(await fehler(()=>V.agentVorbereiten({project:P,name:'t24-v-sub',grund:'Subagent versucht'},Ss))==='recht_fehlt','Subagent darf nicht vorbereiten');
   check(await fehler(()=>V.agentVorbereiten({project:P,name:'t24-v-daemon',grund:'Daemon versucht'},DAEMON))==='recht_fehlt','Daemon darf nicht vorbereiten');
-  check(await fehler(()=>V.agentVorbereiten({project:P,name:'koordinator',grund:'Koordinator-Name'},legacy('koordinator-legacy')))==='recht_fehlt','Koordinator-Name nur durch den User (Legacy)');
-  check(await fehler(()=>V.agentVorbereiten({project:P,name:'t24-v-k2',rolle:'koordinator',grund:'Koordinator-Rolle'},Kk))==='recht_fehlt','Koordinator-Rolle nur durch den User (Koordinator)');
+  // P22-T34 (User-Grundsatz 'User und Koordinator jederzeit'): Koordinator-Rolle auch durch Koordinator und Legacy-Koordinator.
+  const vkl=await V.agentVorbereiten({project:P,name:'t24-v-k1',rolle:'koordinator',grund:'Koordinator-Rolle (Legacy)'},legacy('koordinator-legacy'));merke(vkl.token);
+  check(vkl.rolle==='koordinator','Legacy-Koordinator darf Koordinator-Rolle vorbereiten');
+  const vkk=await V.agentVorbereiten({project:P,name:'t24-v-k2',rolle:'koordinator',grund:'Koordinator-Rolle'},Kk);merke(vkk.token);
+  check(vkk.rolle==='koordinator','Koordinator darf Koordinator-Rolle vorbereiten');
+  check(await fehler(()=>V.agentVorbereiten({project:P,name:'t24-v-k3',rolle:'koordinator',grund:'Subagent versucht Koordinator'},Ss))==='recht_fehlt','Subagent darf keine Koordinator-Rolle vorbereiten');
   const vk=await V.agentVorbereiten({project:P,name:'koordinator',grund:'User legt Koordinator an'},USER);merke(vk.token);
   check(vk.rolle==='koordinator'&&vk.agent_id.startsWith('koordinator'),'User darf Koordinator vorbereiten');
   // Eingabe

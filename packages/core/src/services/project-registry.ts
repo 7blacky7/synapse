@@ -6,6 +6,7 @@
 
 import * as os from 'os';
 import { getPool } from '../db/client.js';
+import { istUnsichtbaresProjekt } from './virtuelle-projekte.js';
 
 const HOSTNAME = os.hostname();
 
@@ -93,7 +94,7 @@ export interface ProjektEintrag {
  * zusammengefasst. Als Pfad gewinnt ein echter gegen den Platzhalter
  * '/virtual/rest-api', den die REST-API fuer sich selbst eintraegt.
  */
-export async function listeProjekte(): Promise<ProjektEintrag[]> {
+export async function listeProjekte(opt: { mitUnsichtbaren?: boolean } = {}): Promise<ProjektEintrag[]> {
   const pool = getPool();
   const { rows } = await pool.query<{
     name: string;
@@ -109,7 +110,8 @@ export async function listeProjekte(): Promise<ProjektEintrag[]> {
       GROUP BY name
       ORDER BY bool_or(enabled) DESC, MAX(last_access) DESC NULLS LAST, name`
   );
-  return rows.map((zeile) => ({
+  // P22-T36: reservierte unsichtbare Systemprojekte (synapse-hauptagent) erscheinen in keiner Liste.
+  return rows.filter((zeile) => opt.mitUnsichtbaren === true || !istUnsichtbaresProjekt(zeile.name)).map((zeile) => ({
     name: zeile.name,
     path: zeile.path,
     enabled: zeile.enabled,

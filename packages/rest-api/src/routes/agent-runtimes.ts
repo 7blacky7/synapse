@@ -3,6 +3,20 @@ import { validateToken, type TokenKind } from '../services/auth.js';
 import { getAgentRuntimeManager, shutdownAgentRuntimeManager } from '../services/agent-runtime/manager.js';
 import type { RuntimeName, RuntimeStreamEvent } from '../services/agent-runtime/types.js';
 import { countArtifacts, registerArtifactStream, unregisterArtifactStream } from '../services/agent-runtime/artifact-stream.js';
+import {
+  leseHauptagentSchalter, setzeHauptagentSchalter, hauptagentStatus, listeRuntimeAuftraege, legeRuntimeAuftragAn, brecheRuntimeAuftragAb, w1bFehlerStatus,
+} from '@synapse/core';
+
+/** P22-T36: Fachfehler (Code) mit passendem HTTP-Status, nie Ausweis-/DB-Texte. */
+function sendFachFehler(reply: FastifyReply, error: unknown): FastifyReply {
+  const code = (error as { code?: unknown })?.code;
+  if (typeof code === 'string' && /^[a-z][a-z0-9_]{2,80}$/.test(code)) {
+    const details = (error as { details?: unknown }).details;
+    return reply.status(w1bFehlerStatus(code)).send({ success: false,
+      error: { code, message: code, ...(details && typeof details === 'object' ? { details } : {}) } });
+  }
+  return sendError(reply, error);
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -223,6 +237,38 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return sendError(reply, error, 400);
     }
   });
+
+  // P22-T36 (W2-P1): Hauptagent. Diese Routen sind nur fuer den interaktiven User offen (Guard oben) -> Akteur User.
+  const USER = { art: 'user' } as const;
+  fastify.get('/api/main-agent/schalter', async (_request, reply) => {
+    try { return { success: true, schalter: await leseHauptagentSchalter() }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { aktiv?: unknown; grund?: unknown } }>('/api/main-agent/schalter', async (request, reply) => {
+    try {
+      return { success: true, schalter: await setzeHauptagentSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get('/api/main-agent/status', async (_request, reply) => {
+    try { return { success: true, ...(await hauptagentStatus(USER)) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get('/api/main-agent/auftraege', async (_request, reply) => {
+    try { return { success: true, ...(await listeRuntimeAuftraege(USER)) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.post<{ Body: { art?: unknown; gewuenscht?: unknown; hands_off?: unknown; grund?: unknown; idempotenz_schluessel?: unknown } }>(
+    '/api/main-agent/auftraege', async (request, reply) => {
+      const b = request.body ?? {};
+      try {
+        return { success: true, ...(await legeRuntimeAuftragAn(USER, {
+          art: b.art, gewuenscht: b.gewuenscht, hands_off: b.hands_off, grund: b.grund, idempotenz_schluessel: b.idempotenz_schluessel,
+        })) };
+      } catch (error) { return sendFachFehler(reply, error); }
+    });
+  fastify.post<{ Params: { auftragId: string }; Body: { grund?: unknown } }>(
+    '/api/main-agent/auftraege/:auftragId/abbrechen', async (request, reply) => {
+      try {
+        return { success: true, ...(await brecheRuntimeAuftragAb(USER, { auftrag_id: request.params.auftragId, grund: request.body?.grund })) };
+      } catch (error) { return sendFachFehler(reply, error); }
+    });
 
   fastify.post<{
     Body: { runtime?: RuntimeName };

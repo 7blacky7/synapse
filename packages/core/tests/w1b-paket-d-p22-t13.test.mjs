@@ -66,9 +66,12 @@ function norm(v){
 // Neue admin-Aktionen/-Parameter sind ADDITIV; die Golden-Projektion entfernt genau diese Namen (Muster wie admin-kontextprofil-p7-t42).
 const W1B_AKTIONEN=['profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
  'typ_liste','typ_anlegen','typ_aendern','typ_revision_lesen','profil_aendern','profil_historie','profil_rollback','persona_liste','persona_versionen','persona_anlegen','persona_neue_version',
- 'persona_zuweisen','persona_entfernen','agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken'];
+ 'persona_zuweisen','persona_entfernen','agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken',
+ // P22-T36: additive Hauptagent-Aktionen
+ 'hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen'];
 const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','zustand','erwartete_revision','ziel_revision','korrektur','profil_patch','typ_id','typ_schluessel','typ_inhalt',
- 'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids'];
+ 'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
+ 'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel'];
 const projiziere=t=>t.name!=='admin'?t:{...t,inputSchema:{...t.inputSchema,properties:Object.fromEntries(Object.entries(t.inputSchema.properties)
  .filter(([k])=>!W1B_PARAMETER.includes(k)).map(([k,v])=>[k,k==='action'?{...v,enum:v.enum.filter(a=>!W1B_AKTIONEN.includes(a))}:v]))}};
 
@@ -302,7 +305,7 @@ try{
   await section('Admin-Dispatcher (Akteur, Schalter, Isolation)',async()=>{
    const {k,sub,kid,sid,KP}=globalThis.__d;
    const adm=(a,args,akteur)=>C.fuehreW1bAdminAus(a,args,akteur===undefined?{}:{akteur});
-   check(C.W1B_ADMIN_ACTIONS.length===28&&gleich([...C.W1B_ADMIN_ACTIONS],W1B_AKTIONEN),'Aktionsliste = additive Golden-Liste');
+   check(C.W1B_ADMIN_ACTIONS.length===32&&gleich([...C.W1B_ADMIN_ACTIONS],W1B_AKTIONEN),'Aktionsliste = additive Golden-Liste');
    check(gleich(Object.keys(C.W1B_ADMIN_PARAMETER),W1B_PARAMETER),'Parameterliste = additive Golden-Liste');
    // kein Akteur aus Argumenten
    const spoof=await adm('token_abrufen',{project:P,agent_id:'sub-x',role:'koordinator',user:'user',ziel_identity_id:sid,anlass:'Spoof',akteur:'user'});

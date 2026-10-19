@@ -45,6 +45,8 @@ export interface MainAgentSession {
   status: 'ready' | 'running' | 'completed' | 'error';
   context: Record<string, unknown> | null;
   createdAt: string;
+  /** P22-T36: nur bei Schalter hauptagent EIN - Identitaetsweg oder Altweg mit Grund (nie ein Ausweiswert). */
+  hauptagent?: { weg: 'identitaet' | 'altweg'; identity_id?: string; outcome?: string; fehler?: string };
 }
 
 export interface RuntimeStreamEvent {

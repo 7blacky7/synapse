@@ -6,7 +6,8 @@ import { readFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { AgentRuntimeRepository } from './repository.js';
 import { issueServiceToken } from '../auth.js';
-import { leseMainProfil, mainProfileScope, type MainToolProfile } from './main-tool-profile.js';
+import { leseMainProfil, mainProfileScope, hauptagentIdentitaetScope, type MainToolProfile } from './main-tool-profile.js';
+import { leseHauptagentSchalter, hauptagentIdentitaetsId, ausweisFuerStart, HAUPTAGENT_PROJEKT } from '@synapse/core';
 import {
   persistentRuntimeBinds,
   validateRuntimeImage,
@@ -49,7 +50,19 @@ export function validateClaudeModel(model: string): string {
   return value;
 }
 
-export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only'): string[] {
+/**
+ * P22-T36 (W2-P1): Kontext fuer den Hauptagenten auf dem Identitaetsweg. Enthaelt NIE den Ausweis: der geht nur per
+ * Header (Env-Referenz in der MCP-Config). Profil, Regeln, Nachrichten und Fortsetzung liefert der Server bei jedem Aufruf.
+ */
+export const HAUPTAGENT_SYSTEMPROMPT = 'Du bist der Synapse-Hauptagent (Identitaet "hauptagent") und sprichst im Web-UI-Chat mit dem User. '
+  + 'Deine Identitaet ist dein Synapse-Agenten-Ausweis; die Verbindung schickt ihn bei JEDEM Synapse-Aufruf automatisch mit. '
+  + 'Gib ihn nie aus, frage nicht danach und sende kein token-Argument. '
+  + 'Zu Beginn einer Sitzung: chat(action:"identitaet") und admin(action:"hauptagent_status") aufrufen; Profil, Regeln, Nachrichten und Fortsetzung kommen mit den Antworten. '
+  + 'Nachrichten von Projektkoordinatoren erreichen dich als Hinweise bei deinen Synapse-Aufrufen; beantworte sie ueber chat oder gib sie dem User weiter. '
+  + 'Selbstverwaltung (Neustart, Update, Modell-/Runtime-Wechsel) nur ueber admin(action:"hauptagent_auftrag") im erlaubten Rahmen und mit hands_off (Arbeitsstand); '
+  + 'Stoppen und Rechteaenderungen entscheidet der User.';
+
+export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only', systemPrompt: string | null = null): string[] {
   const validatedModel = validateClaudeModel(model);
   const command = [
     'claude',
@@ -81,8 +94,31 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
     // Seite erzwingt dasselbe zusaetzlich (tools/list-Filter + Ablehnung).
     command.push('--allowedTools', profile === 'main-synapse' ? 'mcp__synapse__*' : 'mcp__synapse__artefakt');
   }
+  // P22-T36: nur auf dem Identitaetsweg; ohne systemPrompt bleibt der Befehl byte-gleich.
+  if (systemPrompt) command.push('--append-system-prompt', systemPrompt);
   command.push('--model', validatedModel);
   return runtimeSessionId ? [...command, '--resume', runtimeSessionId] : command;
+}
+
+/**
+ * P22-T36: MCP-Config des Identitaetswegs. Bearer an die Main-Identitaet gebunden; der Ausweis steht nie in der Config,
+ * sondern als Env-Referenz (die CLI expandiert ${SYNAPSE_AGENT_TOKEN}, Muster mcp-bruecke.ts baueBrueckenConfig).
+ */
+export function buildHauptagentIdentitaetMcpConfig(url: string, token: string, sessionId: string): string {
+  return JSON.stringify({
+    mcpServers: {
+      synapse: {
+        type: 'http',
+        url,
+        headers: {
+          Authorization: 'Bearer ' + token,
+          'X-Synapse-Hauptagent-Session': sessionId,
+          'X-Synapse-Werkzeugprofil': 'main-synapse',
+          'x-synapse-agent-token': '${SYNAPSE_AGENT_TOKEN}',
+        },
+      },
+    },
+  });
 }
 
 /**
@@ -421,17 +457,27 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     await this.ensureTrustStore(container);
 
     const pidPath = '/tmp/synapse-claude-' + randomUUID() + '.pid';
-    const profilStand = await leseMainProfil();
-    const profile = profilStand.profile;
-    if (profile === 'main-synapse' || profilStand.quelle === 'intern' || profilStand.letzterFehler) {
-      emit({ event: 'runtime', data: { werkzeugprofil: profilStand } });
+    // P22-T36: Identitaetsweg (Schalter hauptagent EIN, Session an die Main-Identitaet gebunden); sonst Altweg unveraendert.
+    const haupt = await this.hauptagentIdentitaet(session, emit);
+    let profile: MainToolProfile;
+    let mcpConfig: string | null;
+    if (haupt) {
+      profile = 'main-synapse';
+      emit({ event: 'runtime', data: { hauptagent: { weg: 'identitaet', identity_id: haupt.identityId } } });
+      mcpConfig = await this.hauptagentIdentitaetMcpConfig(session.id, haupt.identityId);
+    } else {
+      const profilStand = await leseMainProfil();
+      profile = profilStand.profile;
+      if (profile === 'main-synapse' || profilStand.quelle === 'intern' || profilStand.letzterFehler) {
+        emit({ event: 'runtime', data: { werkzeugprofil: profilStand } });
+      }
+      mcpConfig = await this.hauptagentMcpConfig(session.id, emit, profile);
     }
-    const mcpConfig = await this.hauptagentMcpConfig(session.id, emit, profile);
     const command = [
       '/usr/bin/env',
       '-u',
       'ANTHROPIC_API_KEY',
-      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile),
+      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile, haupt ? HAUPTAGENT_SYSTEMPROMPT : null),
     ];
     const runner = buildClaudeRunnerCommand();
     const exec = await container.exec({
@@ -441,7 +487,8 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       AttachStderr: true,
       Tty: false,
       WorkingDir: '/projects',
-      Env: [...this.runtimeEnv(), 'SYNAPSE_CLAUDE_PID_FILE=' + pidPath],
+      // P22-T36: Ausweis nur als Env fuer die Header-Referenz der MCP-Config (nie im Prompt/Befehl).
+      Env: [...this.runtimeEnv(), 'SYNAPSE_CLAUDE_PID_FILE=' + pidPath, ...(haupt ? ['SYNAPSE_AGENT_TOKEN=' + haupt.token] : [])],
     });
     const stream = await exec.start({ hijack: true, stdin: true }) as unknown as NodeJS.ReadWriteStream;
     const stdout = new PassThrough();
@@ -519,6 +566,33 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     if (runtimeFailure) throw new Error(runtimeFailure);
     if (info.ExitCode !== 0) throw new Error('Claude exec endete mit Exit-Code ' + String(info.ExitCode));
     return { runtimeSessionId, context };
+  }
+
+  /**
+   * P22-T36: Identitaetsweg nur bei Schalter hauptagent EIN und wenn die Session an die Main-Identitaet gebunden ist.
+   * Ausweis ueber den bestehenden Dienst (derselbe dauerhafte Ausweis, keine Rotation). Fehler: laut melden, Altweg.
+   */
+  private async hauptagentIdentitaet(
+    session: MainAgentSession, emit: (event: RuntimeStreamEvent) => void,
+  ): Promise<{ identityId: string; token: string } | null> {
+    if (!session.identityId) return null;
+    try {
+      if (!(await leseHauptagentSchalter()).aktiv) return null;
+      if ((await hauptagentIdentitaetsId()) !== session.identityId) return null;
+      const a = await ausweisFuerStart(HAUPTAGENT_PROJEKT, session.identityId, { art: 'user' });
+      return { identityId: session.identityId, token: a.token };
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      emit({ event: 'runtime', data: { stream: 'stderr',
+        content: 'Hauptagent-Identitaet nicht verfuegbar (' + (typeof code === 'string' ? code : 'fehler') + '); Altweg.\n' } });
+      return null;
+    }
+  }
+
+  private async hauptagentIdentitaetMcpConfig(sessionId: string, identityId: string): Promise<string> {
+    const issued = await issueServiceToken(hauptagentIdentitaetScope(identityId), 'main-identitaet', 24 * 60 * 60 * 1000);
+    const url = process.env.SYNAPSE_HAUPTAGENT_MCP_URL || 'http://synapse-api:3456/';
+    return buildHauptagentIdentitaetMcpConfig(url, issued.token, sessionId);
   }
 
   // Ein Service-Token je Prozesslauf reicht: es lebt nur in der exec-Env des

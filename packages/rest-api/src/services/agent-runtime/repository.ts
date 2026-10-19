@@ -154,7 +154,18 @@ export class AgentRuntimeRepository {
     return (result.rowCount ?? 0) === 1;
   }
 
-  async createSession(runtime: RuntimeName): Promise<MainAgentSession> {
+  async createSession(runtime: RuntimeName, hauptagentIdentityId: string | null = null): Promise<MainAgentSession> {
+    if (hauptagentIdentityId) {
+      // P22-T36: Neue Session (Reload/Neustart) derselben Main-Identitaet setzt das letzte CLI-Gespraech derselben Runtime fort.
+      const result = await getPool().query(
+        `INSERT INTO agent_runtime_sessions (id,agent_role,runtime,status,identity_id,lauf_id,runtime_session_id)
+         VALUES ($1,'main',$2,'ready',$3,NULL,(SELECT s.runtime_session_id FROM agent_runtime_sessions s
+           WHERE s.identity_id=$3 AND s.runtime=$2 AND s.agent_role='main' AND s.runtime_session_id IS NOT NULL ORDER BY s.updated_at DESC LIMIT 1))
+         RETURNING id,runtime,runtime_session_id,status,context,created_at,identity_id,lauf_id`,
+        [randomUUID(), runtime, hauptagentIdentityId],
+      );
+      return this.mapSession(result.rows[0]);
+    }
     const id = randomUUID();
     const k = aktuellerAgentAufruf();
     const principal = k?.bezug.modus !== 'alt' && k?.principal?.art === 'identity' ? k.principal : null;

@@ -8,8 +8,8 @@
  *   Ausgabe enthaelt die Startkonfiguration (Startsatz mit Ausweis, erste Aktion chat(anmelden, token)).
  * - ausweisFuerStart (Daemon agent_start): vorhandener gueltiger Ausweis -> genau dieser, keine Start-Rotation;
  *   keiner/verfallen -> neu mit Erstnutzungsfrist. Legt NIE eine Identitaet an.
- * Rechte (V4 + Koordinator-Vorgabe 27920): User und Koordinator desselben Projekts, auch Legacy-Koordinator;
- * 'koordinator' als Rolle/Name nur durch den User. Der Ausweis-Kern muss EIN sein (ausser ausweisFuerStart,
+ * Rechte (V4 + Koordinator-Vorgabe 27920): User und Koordinator desselben Projekts, auch Legacy-Koordinator,
+ * auch fuer Rolle/Name 'koordinator' (User-Grundsatz 'User und Koordinator jederzeit', P22-T34). Der Ausweis-Kern muss EIN sein (ausser ausweisFuerStart,
  * dessen Aufrufer den Altschalter token_identitaet prueft).
  */
 import { getPool } from '../db/client.js';
@@ -23,8 +23,6 @@ import {
   identitaetAudit, pruefeProfilInhalt, schreibeProfilRevision, sichtbarerTyp, spaltenAusInhalt,
 } from './agent-profil-dienst-a.js';
 import { ausweisAbrufAus, ausweisAkteurKennung, pruefeAusweisAkteur, pruefeAusweisKernEin } from './agent-token-abruf.js';
-
-const KOORDINATOR_NAME = /^(koordinator|coordinator)$/i;
 
 function principalFuer(akteur: AusweisAkteur): AgentIdentitaetPrincipal {
   if (akteur.art === 'user') return { system: 'user' };
@@ -58,7 +56,6 @@ export async function agentVorbereiten(e: AgentVorbereitenEingabe, akteur: Auswe
     if (wunsch) {
       // Profilaenderung laeuft ueber die Profilverwaltung (Schalter, CAS, Eigenprofilregel); Legacy-Koordinator kann sie nicht.
       if (akteur.art === 'legacy_koordinator' || akteur.art === 'daemon') throw new ProfilVerwaltungFehler('recht_fehlt');
-      if (e.rolle === 'koordinator' && !istUser) throw new ProfilVerwaltungFehler('recht_fehlt');
       await W1B_DIENSTE.profil.aendereProfil({
         identity_id: i.id, erwartete_revision: i.profil_revision,
         patch: { ...(e.profil ?? {}), ...(e.rolle !== undefined ? { rolle: e.rolle } : {}), ...(e.modell !== undefined ? { modell: e.modell } : {}) } as Partial<ProfilInhalt>,
@@ -72,7 +69,6 @@ export async function agentVorbereiten(e: AgentVorbereitenEingabe, akteur: Auswe
   // ---- Neue Identitaet --------------------------------------------------------------------------
   if (name.length > 256 || name.includes('#') || name.toLowerCase() === 'user') throw new ProfilVerwaltungFehler('name_ungueltig');
   const rolle = e.rolle !== undefined ? pflichtText(e.rolle, 'rolle_ungueltig', 1, 32) : undefined;
-  if ((KOORDINATOR_NAME.test(name) || rolle === 'koordinator') && !istUser) throw new ProfilVerwaltungFehler('recht_fehlt', { grund: 'koordinator nur durch den User' });
   const vorhanden = await db.query<{ id: string }>('SELECT id FROM agent_identitaeten WHERE project=$1 AND agent_id=$2', [project, name]);
   if (vorhanden.rows[0]) throw new ProfilVerwaltungFehler('identitaet_existiert', { identity_id: vorhanden.rows[0].id });
   // Laufende Legacy-Sitzung gleichen Namens im Projekt -> Uebernahme (sofort aktiv, Zustellung wie Weg A).

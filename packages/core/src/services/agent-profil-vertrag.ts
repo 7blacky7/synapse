@@ -932,7 +932,7 @@ export interface AgentVorbereitenEingabe {
   name?: string;
   /** Vorhandene Identitaet (Respawn): liefert deren gueltigen Ausweis, stellt keinen zweiten aus. */
   identity_id?: string;
-  /** Standard 'subagent'; 'koordinator' nur durch den User. */
+  /** Standard 'subagent'; 'koordinator' durch User oder Koordinator (auch Legacy). */
   rolle?: string;
   typ_id?: string | null;
   /** Profil-Override (ProfilInhalt), wird als Revision gespeichert (aendereProfil-Regeln, CAS intern). */

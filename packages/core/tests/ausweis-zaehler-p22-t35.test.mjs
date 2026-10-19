@@ -92,7 +92,7 @@ await section('A6 Quellen-Waechter: keine alte Formatpruefung, keine andere Erze
   const schw=readFileSync(join(root,'packages/core/src/services/tool-args-schwaerzen.ts'),'utf8');
   check((schw.match(/sai_\[a-z0-9\]\{1,64\}/g)||[]).length>=2,'Schwaerzung: beide Geheimmuster mit sai_[a-z0-9]{1,64}');
   const schemaTs=readFileSync(join(root,'packages/core/src/db/schema.ts'),'utf8');
-  check(/\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*`/.test(schemaTs),'schema.ts: 115 direkt nach 114');
+  check(/\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*(?:\$\{AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL\}\s*)?`/.test(schemaTs),'schema.ts: 115 direkt nach 114');
   const sql115=readFileSync(join(root,'packages/core/src/db/schema-sql/115_agent_ausweis_nr.sql'),'utf8');
   const {AGENT_AUSWEIS_NR_SCHEMA_SQL:ts115}=await load('packages/core/dist/db/agent-ausweis-nr-schema.js');
   const n=s=>s.replace(/\r/g,'').split('\n').map(z=>z.trim()).filter(Boolean).join('\n');

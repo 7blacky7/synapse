@@ -4,6 +4,7 @@ import { ClaudeRuntimeDriver } from './claude-driver.js';
 import { FreeModelPoolDriver } from './free-pool-driver.js';
 import { TerminalSessionRegistry } from './terminal-sessions.js';
 import type { AgentRuntimeDriver, MainAgentSession, RuntimeName, RuntimeStatus } from './types.js';
+import { leseHauptagentSchalter, stelleMainIdentitaetSicher } from '@synapse/core';
 
 export class AgentRuntimeManager {
   readonly terminals = new TerminalSessionRegistry();
@@ -51,7 +52,29 @@ export class AgentRuntimeManager {
     if (!assigned) throw new Error('Dem Main-Agenten ist noch keine Runtime zugewiesen');
     if (runtime && runtime !== assigned) throw new Error('Nur die aktuell zugewiesene Main-Agent-Runtime darf Sessions starten');
     await this.assertMainRuntimeReady(assigned);
-    return this.repository.createSession(assigned);
+    // P22-T36: Schalter hauptagent EIN -> Erstkontakt legt die Main-Identitaet an bzw. findet sie (Akteur User: diese
+    // Route ist nur fuer den interaktiven User offen). AUS -> unveraendert.
+    const haupt = await this.hauptagentFuerSession(assigned);
+    const session = await this.repository.createSession(assigned, haupt.identityId);
+    return haupt.info ? { ...session, hauptagent: haupt.info } : session;
+  }
+
+  private async hauptagentFuerSession(runtime: RuntimeName): Promise<{ identityId: string | null; info?: MainAgentSession['hauptagent'] }> {
+    try {
+      if (!(await leseHauptagentSchalter()).aktiv) return { identityId: null };
+    } catch {
+      return { identityId: null };
+    }
+    // P1: nur der Claude-Treiber nutzt den Identitaetsweg; codex/free-pool bleiben Altweg (benannter Rest).
+    if (runtime !== 'claude') return { identityId: null, info: { weg: 'altweg', fehler: 'runtime_nicht_umgestellt' } };
+    try {
+      const cfg = await this.repository.get(runtime);
+      const r = await stelleMainIdentitaetSicher({ art: 'user' }, { modell: cfg?.model ?? null, runtime });
+      return { identityId: r.identity_id, info: { weg: 'identitaet', identity_id: r.identity_id, outcome: r.outcome } };
+    } catch (error) {
+      const code = (error as { code?: unknown })?.code;
+      return { identityId: null, info: { weg: 'altweg', fehler: typeof code === 'string' ? code : 'hauptagent_fehler' } };
+    }
   }
 
   async assertMainRuntimeReady(runtime: RuntimeName, requireAssigned = true): Promise<RuntimeStatus> {

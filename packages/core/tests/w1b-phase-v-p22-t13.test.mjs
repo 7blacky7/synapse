@@ -171,7 +171,7 @@ try{
    const {AGENT_PROFIL_SCHEMA_SQL:s113}=await load('packages/core/dist/db/agent-profil-schema.js');
    check(readFileSync(join(root,'packages/core/src/db/schema-sql/113_agent_profil.sql'),'utf8').trim()===s113.trim(),'SQL-Spiegel 113 identisch');
    const schemaJs=readFileSync(join(root,'packages/core/dist/db/schema.js'),'utf8');
-   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*(?:\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*)?`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112, 114 (Ausweis, W12) direkt danach');
+   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*(?:\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*)?(?:\$\{AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL\}\s*)?`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112, 114 (Ausweis, W12) direkt danach');
    const ohneKommentar=s113.split('\n').filter(z=>!z.trim().startsWith('--')).join('\n');
    const alters=[...ohneKommentar.matchAll(/ALTER TABLE[^;]*;/g)].map(m=>m[0]);
    check(alters.length>0&&alters.every(a=>/^ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS /.test(a)),'nur ADD COLUMN IF NOT EXISTS');
