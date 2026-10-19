@@ -33,7 +33,7 @@ const L='t30-leg',L2='t30-leg2',K='koordinator-t30',SUB='t30-sub',X='t30-x';
 const bearer=randomUUID()+randomUUID();
 const tokens=new Set();
 const merke=t=>{if(typeof t==='string'&&t.startsWith('sai_'))tokens.add(t);return t;};
-const mask=s=>{let t=String(s);for(const x of tokens)t=t.replaceAll(x,'[AUSWEIS]');return t.replaceAll(bearer,'[BEARER]').replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]');};
+const mask=s=>{let t=String(s);for(const x of tokens)t=t.replaceAll(x,'[AUSWEIS]');return t.replaceAll(bearer,'[BEARER]').replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]');};
 const schritte={};let aktuell='vorbereitung';
 const failures=[];let checks=0;
 function check(ok,label){
@@ -41,7 +41,7 @@ function check(ok,label){
  if(ok){s.ok++;console.log('ok   ['+aktuell+'] '+label);}else{s.fail++;failures.push('['+aktuell+'] '+mask(label));console.error('FAIL ['+aktuell+'] '+mask(label));}
 }
 async function schritt(name,fn){aktuell=name;schritte[name]??={ok:0,fail:0};try{await fn();}catch(e){check(false,'Ausnahme: '+(e?.stack||String(e)));}}
-const AUS=/^sai_[a-f0-9]{64}$/;
+const AUS=/^sai_[a-z0-9]{1,64}$/;
 const txt=o=>JSON.stringify(o??null);
 const warte=ms=>new Promise(r=>setTimeout(r,ms));
 const fehler=async fn=>{try{await fn();return null;}catch(e){return e?.code??('?'+mask(e?.message));}};
@@ -77,7 +77,7 @@ try{
  const cl=await admin.connect();
  try{
   await cl.query('SET search_path TO '+schema);
-  for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
+  for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql','115_agent_ausweis_nr.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
  }finally{cl.release();}
  url.searchParams.set('options','-c search_path='+schema+',public');
 
@@ -168,7 +168,7 @@ try{
  await schritt('a',async()=>{
   const reg=await rest('chat',{action:'register',id:L,project:P,model:'opus',agent_id:L});
   check(reg.success!==false&&!reg._isError&&!reg._status,'L meldet sich mit Name+Projekt an (chat register)');
-  check(!/sai_[a-f0-9]{64}/.test(txt(reg)),'Anmeldung liefert KEINEN Ausweis');
+  check(!/sai_[a-z0-9]{1,64}/.test(txt(reg)),'Anmeldung liefert KEINEN Ausweis');
   const th=await rest('thought',{action:'add',project:P,content:'T30 Legacy-Thought von L',source:L,agent_id:L});
   check(th.success===true,'L arbeitet normal: thought add ('+txt(th).slice(0,300)+')');
   check(!txt(th).includes('Agenten-Ausweis ist bereit'),'vor Bestaetigung kein Ausweis-Hinweis');
@@ -236,7 +236,7 @@ try{
   await pool.query('DELETE FROM agent_sessions WHERE id=$1 AND project=$2',[L,P]);
   const r2=await rest('chat',{action:'register',id:L,project:P,model:'opus',agent_id:L});
   check(r2.success!==false&&!r2._isError&&!r2._status,'M1: register ohne token fuer den vorhandenen Namen L angenommen ('+txt(r2).slice(0,160)+')');
-  check(!/sai_[a-f0-9]{64}/.test(txt(r2))&&!r2.token,'M1: Antwort ohne Ausweis');
+  check(!/sai_[a-z0-9]{1,64}/.test(txt(r2))&&!r2.token,'M1: Antwort ohne Ausweis');
   check(typeof r2.neuinstanz_hinweis==='string'&&r2.neuinstanz_hinweis.includes('anmelden'),'M1: Hinweis TEXT_NEUINSTANZ (mit Ausweis chat(anmelden, token))');
   check((await pool.query('SELECT count(*)::int n FROM agent_identitaeten WHERE project=$1',[P])).rows[0].n===idsVor,'M1: keine zweite Identitaet (kein name#2)');
   check((await pool.query('SELECT count(*)::int n FROM agent_identitaet_tokens')).rows[0].n===tokVor,'M1: kein neuer Ausweis');
@@ -385,7 +385,7 @@ try{
    (await pool.query('SELECT * FROM agent_schattenprofil_audit')).rows,(await pool.query('SELECT * FROM agent_profil_revisionen')).rows]);
   const n=(await pool.query('SELECT count(*)::int n FROM tool_calls')).rows[0].n;
   check(n>0,'tool_calls wurden geschrieben ('+n+')');
-  check(!/sai_[a-f0-9]{64}/.test(dump)&&[...tokens].every(t=>!dump.includes(t)),'Ausweis-Wert nie in tool_calls/Audit/Thought/Channel/Chat');
+  check(!/sai_[a-z0-9]{1,64}/.test(dump)&&[...tokens].every(t=>!dump.includes(t)),'Ausweis-Wert nie in tool_calls/Audit/Thought/Channel/Chat');
   const r401=await rpcRoh('tools/call',{name:'thought',arguments:{action:'search',project:P,query:'x',token:tokX}},{},false);
   check(r401.statusCode===401,'REST /mcp/messages ohne Bearer -> 401 (auch mit Ausweis)');
   const u401=await ui('GET','/profile/'+iidX+'/token?anlass=x',undefined,false);

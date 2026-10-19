@@ -94,7 +94,7 @@ async function zielIdentitaet(project: string, id: string | undefined): Promise<
   return ziel;
 }
 
-function pruefeEigenprofil(akteur: W1bAkteur, project: string, identityId: string): void {
+function pruefeEigenprofil(akteur: AusweisAkteur, project: string, identityId: string): void {
   if (!darfProfilAendern(akteur, { identity_id: identityId, project })) throw new ProfilVerwaltungFehler('eigenprofil_nicht_aenderbar');
 }
 
@@ -145,8 +145,6 @@ async function pruefeSchalter(funktion: ProfilProduktFunktion, project: string):
 }
 
 const AUSWEIS_AKTIONEN = ['agent_vorbereiten', 'token_abrufen', 'token_loeschen'] as const;
-/** P22-T31: Schatten-Verwaltung; hier darf zusaetzlich der Legacy-Koordinator ohne Ausweis handeln (Vorgabe 4fd83d8f). */
-const SCHATTEN_AKTIONEN = ['schattenprofil_liste', 'schattenprofil_korrigieren', 'schattenprofil_bestaetigen', 'schattenprofil_ablehnen'] as const;
 type AusweisAktion = typeof AUSWEIS_AKTIONEN[number];
 function istAusweisAktion(a: string): a is AusweisAktion { return (AUSWEIS_AKTIONEN as readonly string[]).includes(a); }
 
@@ -185,8 +183,8 @@ async function fuehreAusweisAktionAus(action: AusweisAktion, args: Args, akteur:
 }
 
 async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, project: string, a: Args, akteurRoh: AusweisAkteur): Promise<Record<string, unknown>> {
-  // P22-T31: der Legacy-Koordinator ohne Ausweis gilt nur fuer schattenprofil_*; alle anderen Aktionen bleiben bei W1bAkteur.
-  if (akteurRoh.art === 'legacy_koordinator' && !(SCHATTEN_AKTIONEN as readonly string[]).includes(action)) throw new ProfilVerwaltungFehler('recht_fehlt');
+  // P22-T34: der Legacy-Koordinator ohne Ausweis gilt fuer ALLE Aktionen wie Koordinator mit Ausweis (Rechtepruefung in den Diensten bzw.
+  // pruefeProfilVerwalter; 'nur User' bleibt: web_ui_koordinator_token, globale Kataloge/Schalter). Die Dienste pruefen den Akteur zur Laufzeit.
   const akteur = akteurRoh as W1bAkteur;
   switch (action) {
     case 'profil_schalter_status':
@@ -196,7 +194,9 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
       const funktion = pflicht(s(a, 'profil_funktion'), 'profil_funktion_fehlt') as ProfilProduktFunktion | 'alle';
       await setzeProfilProduktSchalter(
         { ebene, project: ebene === 'projekt' ? project : null, funktion, aktiv: a.aktiv as boolean, grund: String(a.grund ?? '') },
-        akteur.art === 'user' ? { system: 'user' } : { identity_id: akteur.art === 'identitaet' ? akteur.principal.identity_id : undefined });
+        akteurRoh.art === 'user' ? { system: 'user' }
+          : akteurRoh.art === 'legacy_koordinator' ? { legacy_koordinator: akteurRoh.agent_id }
+          : { identity_id: akteurRoh.art === 'identitaet' ? akteurRoh.principal.identity_id : undefined });
       return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseProfilProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
     }
     case 'profil_uebersicht': {
@@ -370,28 +370,20 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
       return fehlerAntwort(action, e);
     }
   }
-  if (!akteur) {
-    // P22-T31 (Koordinator-Vorgabe 4fd83d8f): auch der Legacy-Koordinator ohne Ausweis verwaltet Schattenprofile.
-    const legacy = (SCHATTEN_AKTIONEN as readonly string[]).includes(action) ? legacyKoordinatorAus(args) : null;
-    if (legacy) {
-      try {
-        const project = pflicht(s(args, 'project'), 'project_fehlt');
-        await pruefeSchalter('agenten_ausweis', project);
-        return { success: true, action, ...(await ausfuehren(action as Exclude<W1bAdminAction, AusweisAktion>, project, args, legacy)) };
-      } catch (e) {
-        return fehlerAntwort(action, e);
-      }
-    }
+  // P22-T34 (User 19.10., memory entscheidung-agenten-ausweis-2026-10-19 Punkt 3a): EINE Stelle fuer die Akteur-Ermittlung. Ohne Ausweis und ohne
+  // User-Eingang gilt der Legacy-Koordinator (Rolle/Namensmuster, Name gehoert keiner Token-Identitaet) fuer ALLE Aktionen wie ein Koordinator.
+  const wer: AusweisAkteur | null = akteur ?? legacyKoordinatorAus(args);
+  if (!wer) {
     return { success: false, action, error: 'recht_fehlt',
-      message: 'Profilverwaltung nur durch den User (authentifizierter User-Eingang) oder einen Koordinator mit persoenlichem Ausweis.' };
+      message: 'Profilverwaltung nur durch den User (authentifizierter User-Eingang), einen Koordinator mit persoenlichem Ausweis oder einen Legacy-Koordinator ohne Ausweis.' };
   }
   try {
     if (!istW1bAdminAction(action)) throw new ProfilVerwaltungFehler('aktion_unbekannt');
     const project = pflicht(s(args, 'project'), 'project_fehlt');
-    await pruefeProfilVerwalter(akteur, project);
+    await pruefeProfilVerwalter(wer, project);
     const gruppe = GRUPPE[action as W1bAdminAction];
     if (gruppe) await pruefeSchalter(gruppe, project);
-    return { success: true, action, ...(await ausfuehren(action as Exclude<W1bAdminAction, AusweisAktion>, project, args, akteur)) };
+    return { success: true, action, ...(await ausfuehren(action as Exclude<W1bAdminAction, AusweisAktion>, project, args, wer)) };
   } catch (e) {
     return fehlerAntwort(action, e);
   }

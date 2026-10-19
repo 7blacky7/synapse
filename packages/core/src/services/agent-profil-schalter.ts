@@ -16,6 +16,7 @@
  */
 import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
+import { AUSWEIS_FORMAT } from './agent-ausweis-format.js';
 
 export type W1bSchalterArt = 'durchsetzung' | 'antwortanpassung' | 'anmeldung';
 export const W1B_INTERN_SCHALTER = {
@@ -167,7 +168,7 @@ export async function leseAusweisKern(project?: string | null): Promise<AusweisK
  */
 export async function leseAusweisKernFuerToken(token: string | undefined, project?: string | null): Promise<AusweisKernStand> {
   const k = await leseAusweisKern(project ?? null);
-  if (k.aktiv || project || typeof token !== 'string' || !/^sai_[a-f0-9]{64}$/.test(token)) return k;
+  if (k.aktiv || project || typeof token !== 'string' || !AUSWEIS_FORMAT.test(token)) return k;
   try {
     const r = await getPool().query<{ project: string }>({
       text: `SELECT i.project FROM agent_identitaet_tokens t JOIN agent_identitaeten i ON i.id = t.identity_id
@@ -265,6 +266,8 @@ export async function leseProfilProduktSchalter(
 export interface ProfilSchalterAkteur {
   system?: 'user';
   identity_id?: string;
+  /** P22-T34: Legacy-Koordinator ohne Ausweis (agent_id); nur Projektebene, Audit 'legacy:<id>'. */
+  legacy_koordinator?: string;
 }
 
 /**
@@ -302,6 +305,14 @@ export async function setzeProfilProduktSchalter(
     if (!r.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
     wer = akteur.identity_id;
     setter = akteur.identity_id;
+  } else if (akteur.legacy_koordinator && e.ebene === 'projekt') {
+    // P22-T34: Legacy-Koordinator (Rolle/Namensmuster koordinator, Name gehoert keiner Token-Identitaet) wie Koordinator mit Ausweis, nur Projektebene.
+    const agent = akteur.legacy_koordinator.trim();
+    const { rolleFuerAgent } = await import('./agent-rollen.js');
+    if (!agent || rolleFuerAgent(agent).rolle !== 'koordinator') throw new ProfilSchalterFehler('recht_fehlt');
+    const eigene = await getPool().query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, agent]);
+    if (eigene.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
+    wer = 'legacy:' + agent;
   } else {
     throw new ProfilSchalterFehler('recht_fehlt');
   }

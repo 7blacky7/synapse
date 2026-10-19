@@ -48,7 +48,7 @@ const bearer=randomUUID()+randomUUID(),secrets=[bearer],close=[],failures=[];
 let core,pool,chatSvc,seq=0,checks=0;
 const unwrap=r=>r.structuredContent??JSON.parse(r.content.find(c=>c.type==='text').text);
 const mask=s=>secrets.reduce((s,x)=>s.replaceAll(x,'[GEHEIM]'),String(s))
- .replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
+ .replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
 function check(ok,label){checks++;if(!ok){failures.push(label);console.error('FAIL '+label);}}
 async function section(name,fn){
  try{await fn();console.log('ABSCHNITT '+name+' durchlaufen');}
@@ -60,12 +60,12 @@ const LAUFZEIT=new Set(['ms','dauer_ms','durationMs','duration_ms','sitzung_seit
 function norm(v){
  return JSON.parse(JSON.stringify(v,(k,x)=>{
   if(LAUFZEIT.has(k))return '<laufzeit>';
-  if(typeof x==='string')return x.replace(/sai_[a-f0-9]{64}/g,'<ausweis>').replace(/sai_[a-f0-9]{8}/g,'<praefix>')
+  if(typeof x==='string')return x.replace(/sai_[a-z0-9]{1,64}/g,'<ausweis>').replace(/sai_[a-f0-9]{8}/g,'<praefix>')
    .replace(UUID,'<uuid>').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)?/g,'<ts>');
   return x;
  }));
 }
-const TOKEN=/sai_[a-f0-9]{64}/;
+const TOKEN=/sai_[a-z0-9]{1,64}/;
 
 async function transports(){
  const fastify=(await load('packages/rest-api/node_modules/fastify/fastify.js')).default;
@@ -141,7 +141,7 @@ try{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
  const schemata=['agent-identitaet-schema','agent-bezug-schema'];
- if(!goldenOut)schemata.push('agent-profil-schema','agent-ausweis-schema');
+ if(!goldenOut)schemata.push('agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema');
  for(const file of schemata){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);

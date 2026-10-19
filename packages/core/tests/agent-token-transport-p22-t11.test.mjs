@@ -37,7 +37,7 @@ const admin = new Pool({ connectionString: url.href });
 const close = [];
 let core, pool, seq = 0, checks = 0;
 const secrets = [];
-const mask = text => String(text).replace(/sai_[a-f0-9]{64}/g, '[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g, '[DB]');
+const mask = text => String(text).replace(/sai_[a-z0-9]{1,64}/g, '[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g, '[DB]');
 const out = s => console.log(mask(s));
 const check = (condition, label) => { assert.equal(Boolean(condition), true, label); checks++; };
 const unwrap = r => r.structuredContent ?? JSON.parse(r.content.find(c => c.type === 'text').text);
@@ -168,11 +168,11 @@ try {
   check((await pool.query('SELECT current_schema() s')).rows[0].s===schema,'Isolierter Test-Suchpfad');
   if (!process.argv.includes('--golden') && !process.argv.includes('--positive-only')) {
     const {AGENT_IDENTITAET_SCHEMA_SQL}=await load('packages/core/dist/db/agent-identitaet-schema.js');
-    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);
+    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-nr-schema.js')).AGENT_AUSWEIS_NR_SCHEMA_SQL);await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-nr-schema.js')).AGENT_AUSWEIS_NR_SCHEMA_SQL);
     out('OK Schema 111 zweimal angewandt');
   } else if (distRoot===repo) {
     const {AGENT_IDENTITAET_SCHEMA_SQL}=await load('packages/core/dist/db/agent-identitaet-schema.js');
-    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);
+    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-nr-schema.js')).AGENT_AUSWEIS_NR_SCHEMA_SQL);
   }
   if (distRoot === repo) {
     const { AGENT_BEZUG_SCHEMA_SQL } = await load('packages/core/dist/db/agent-bezug-schema.js');

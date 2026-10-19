@@ -31,7 +31,7 @@ try{
  u.searchParams.set('options','-c search_path='+schema+',public');
  const env={...process.env,DATABASE_URL:u.href,SYNAPSE_DATABASE_URL:'',SYNAPSE_AGENT_BEZUG_MODUS:'alt',P22_BASIS_ROOT:'/tmp/synapse-basis-89d1c7a7'};
  const child=spawnSync(process.execPath,['--experimental-vm-modules','scripts/test-agent-start-p22-t12.mjs'],{env,encoding:'utf8',maxBuffer:8*1024*1024});
- const mask=s=>String(s??'').replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
+ const mask=s=>String(s??'').replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
  console.log(mask(child.stdout));console.error(mask(child.stderr));
  assert.equal(child.status,0,'W1a-T12 muss im isolierten Schema mit111+112 gruen bleiben');
  console.log('PASS T12 isoliert, t107-Vergleich, keine echten Agenten/Modelle');

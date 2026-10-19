@@ -65,6 +65,7 @@ try{
  await q(s111);await q(s112);await q(s111);await q(s112);
  // W12 (P22-T24): Schema 114 (token_offen) fuer die Token-Ausstellung.
  const {AGENT_AUSWEIS_SCHEMA_SQL:s114}=await load('db/agent-ausweis-schema');await q(s114);await q(s114);
+ const {AGENT_AUSWEIS_NR_SCHEMA_SQL:s115}=await load('db/agent-ausweis-nr-schema');await q(s115);await q(s115);
  assert.equal((await q("SELECT count(*)::int n FROM information_schema.tables WHERE table_schema=$1 AND table_name ~ '^agent_identitaet_'",[schema])).rows[0].n,20);
  pass('111+112 zweimal idempotent; SQL-Spiegel112 exakt; nur eigener Suchpfad');
  const A=await load('services/agent-bezug'),S=await load('services/agent-identitaet');
@@ -531,7 +532,7 @@ try{
  await q("DELETE FROM intern_schalter WHERE name='agent_bezug_modus'");
  pass('Modus-Setter EIN/AUS: Standard und dauerhaft:false befristet, Obergrenze gekappt, nur dauerhaft:true ohne Frist, mehrdeutige Angaben verweigert');
  console.log('P22-T15 PASS '+checks+' Gruppen; Scope '+schema+' wird entfernt');
-}catch(e){console.error('P22-T15 FAIL',String(e.stack??e).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]'));process.exitCode=1;}
+}catch(e){console.error('P22-T15 FAIL',String(e.stack??e).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]'));process.exitCode=1;}
 finally{
  if(DB)await DB.closePool();
  await admin.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');

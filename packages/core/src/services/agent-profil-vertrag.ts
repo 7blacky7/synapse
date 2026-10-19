@@ -255,9 +255,11 @@ export interface ProfilDienst {
  * ein Koordinator sein eigenes nur im ersten User-beauftragten Startfall. Rolle aus Tokenpruefung.
  */
 export function darfProfilAendern(
-  akteur: W1bAkteur, ziel: { identity_id: string; project: string }, opt: { ersterKoordinatorStart?: boolean } = {},
+  akteur: AusweisAkteur, ziel: { identity_id: string; project: string }, opt: { ersterKoordinatorStart?: boolean } = {},
 ): boolean {
   if (akteur.art === 'user') return true;
+  // P22-T34: Legacy-Koordinator hat keine eigene Identitaet, also nie ein Eigenprofil; seine Rolle prueft pruefeProfilVerwalter/pruefeVerwalter.
+  if (akteur.art === 'legacy_koordinator') return true;
   if (akteur.art !== 'identitaet') return false;
   const p = akteur.principal;
   if (p.project !== ziel.project || p.rolle !== 'koordinator') return false;
@@ -528,13 +530,16 @@ function zeileZuBindung(z: { art: string; identity_ids: string[] }): TaskBindung
 }
 
 /** K14.3: Verwaltung nur User bzw. Koordinator desselben Projekts (Rolle aus Tokenpruefung). */
-export function darfTaskBindungVerwalten(akteur: W1bAkteur, project: string): boolean {
+export function darfTaskBindungVerwalten(akteur: AusweisAkteur, project: string): boolean {
   if (akteur.art === 'user') return true;
+  // P22-T34: Legacy-Koordinator (Namensmuster/Rolle wie P22-T18); die Abgrenzung zu Token-Identitaeten macht der Dispatcher (pruefeProfilVerwalter).
+  if (akteur.art === 'legacy_koordinator') return typeof akteur.agent_id === 'string' && rolleFuerAgent(akteur.agent_id.trim()).rolle === 'koordinator';
   return akteur.art === 'identitaet' && akteur.principal.rolle === 'koordinator' && akteur.principal.project === project;
 }
 
-function akteurKennung(akteur: W1bAkteur): { wer: string; identity: string | null } {
+function akteurKennung(akteur: AusweisAkteur): { wer: string; identity: string | null } {
   if (akteur.art === 'user') return { wer: 'user', identity: null };
+  if (akteur.art === 'legacy_koordinator') return { wer: 'legacy:' + String(akteur.agent_id ?? '').trim(), identity: null };
   if (akteur.art === 'daemon') return { wer: 'daemon', identity: null };
   return { wer: akteur.principal.identity_id, identity: akteur.principal.identity_id };
 }
@@ -603,7 +608,7 @@ async function schreibeBindungsAudit(
 
 /** festlegen / aendern / entblocken: Schalter, Recht, Pflicht-Grund, Mitglieder, Sperre + Audit in EINER Transaktion. */
 async function verwalteBindung(
-  project: string, task_id: string, akteur: W1bAkteur, aktion: TaskBindungsAktion,
+  project: string, task_id: string, akteur: AusweisAkteur, aktion: TaskBindungsAktion,
   neu: TaskBindung | null, grund: string | null,
 ): Promise<TaskBindung> {
   if (!(await leseProfilProduktSchalter('task_bindung', project)).aktiv) {
@@ -796,7 +801,7 @@ export const W1B_DIENSTE: W1bDienste = {
 // Schema: 114_agent_ausweis.sql (agent-ausweis-schema.ts). Paketzuschnitt: Vertrags-Thought zu P22-T23.
 //
 // V1 AUSWEIS = Identifikation innerhalb von Synapse, KEIN Sicherheitssystem; Bearer bleibt Pflicht.
-//    Wert 'sai_' + 64 hex, OFFEN in agent_identitaet_tokens.token_offen (unique), Lookup NUR darueber.
+//    Wert 'sai_' + fortlaufend gezaehlte Nummer (P22-T35, 1 Zeichen, dann 2, 3 ...; alte 64-hex bleiben gueltig), OFFEN in agent_identitaet_tokens.token_offen (unique), Lookup NUR darueber.
 //    token_hash / token_verschluesselt / token_schluessel_id / start_art sind stillgelegt (neue Zeilen NULL);
 //    Altzeilen ohne token_offen sind ungueltig (Koordinator stellt beim Deploy neu aus). agent-token-tresor.ts
 //    und SYNAPSE_AGENT_TOKEN_SCHLUESSEL entfallen. Wert NIE in Log/Audit/tool_calls/Channel/Thought;
@@ -847,7 +852,7 @@ export const W1B_DIENSTE: W1bDienste = {
 //      (Resolver je Aufruf, unabhaengig von der Zustellung). Typrevision ohne Neuzuweisung erhoeht
 //      profil_revision nicht (Typ-Pinning 26cf1837 B3) -> kein Hinweis; im Diff steht ein Typwechsel als
 //      'Typ <alt> -> <neu> (Rev n)'.
-//    Tool-Call-Log: sai_[a-f0-9]{64} in args UND result schwaerzen (token-Parameter je Aufruf!) - W12-B prueft
+//    Tool-Call-Log: sai_[a-z0-9]{1,64} (Wortgrenzen) in args UND result schwaerzen (token-Parameter je Aufruf!) - W12-B prueft
 //      tool-args-schwaerzen.ts und ergaenzt bei Bedarf; admin agent_vorbereiten/token_abrufen ohne result.
 // V7 SCHALTER S1 (W12-T): EIN Produkt-Schalter 'agenten_ausweis' (agent_profil_schalter, projekt > global) fuer
 //    den Ausweis-Kern; ersetzt in der Wirkung token_identitaet + w1b_anmeldung + schattenprofile + token_abruf.
@@ -887,9 +892,11 @@ export class AusweisFehler extends Error {
 }
 
 // ---- V1/V2 Ausweis-Lebenszyklus (reine Entscheidungen) ----------------------------------------
-export const AUSWEIS_FORMAT = /^sai_[a-f0-9]{64}$/;
-export const AUSWEIS_PRAEFIX_LAENGE = 12;
-export function ausweisPraefix(token: string): string { return token.slice(0, AUSWEIS_PRAEFIX_LAENGE); }
+// P22-T35: Format/Praefix kommen aus agent-ausweis-format.ts (einzige Quelle; sai_ + 1..64 Zeichen [a-z0-9]).
+import * as AUSWEIS_FMT from './agent-ausweis-format.js';
+export const AUSWEIS_FORMAT = AUSWEIS_FMT.AUSWEIS_FORMAT;
+export const AUSWEIS_PRAEFIX_LAENGE = AUSWEIS_FMT.AUSWEIS_PRAEFIX_LAENGE;
+export function ausweisPraefix(token: string): string { return AUSWEIS_FMT.ausweisPraefix(token); }
 
 export type AusweisZustand = 'ausgestellt' | 'aktiv' | 'verfallen' | 'geloescht';
 export type AusweisWeg =
@@ -1218,8 +1225,7 @@ export interface ProfilUpdateDienst {
 export const TEXT_AGENT_TOKEN_FEHLT = 'agent_token_fehlt: Dieser Agent hat einen Agenten-Ausweis. Gib ihn bei jedem Aufruf als '
   + 'token mit; neuer Kontext: chat(action:"anmelden", token:<Ausweis>). Ausweis verloren: Koordinator/User ruft ihn mit '
   + 'admin(action:"token_abrufen", project, ziel_identity_id, anlass) ab.';
-export const TEXT_NEUINSTANZ = 'Neuinstanz/Neustart/Modellwechsel mit Ausweis: chat(action:"anmelden", token:<Ausweis>), nie chat(register) '
-  + '(register mit vorhandenem Namen legt eine zweite Identitaet name#2 an).';
+export const TEXT_NEUINSTANZ = 'Neuinstanz/Neustart/Modellwechsel mit Ausweis: chat(action:"anmelden", token:<Ausweis>), nie chat(register).';
 /** Konkreter Aufruf im Koordinator-Hinweis 'Schattenprofil wartet' (ersetzt SCHATTEN_ABRUF_TEXT). */
 export function schattenBestaetigenAufruf(project: string, schattenprofil_id: string, revision: number): string {
   return `admin(action:"schattenprofil_bestaetigen", project:"${project}", schattenprofil_id:"${schattenprofil_id}", `

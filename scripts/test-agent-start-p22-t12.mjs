@@ -23,7 +23,7 @@ const {getPool,closePool}=await import('../packages/core/dist/db/client.js');
 const pool=getPool(),project='p22-sol33-'+randomUUID(),agent='p22-sol33-'+randomUUID();
 let checks=0,failed=0;
 const noOp=()=>{};
-function safe(s){return String(s).replace(/sai_[a-f0-9]{64}/g,'[MASKIERT]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB-MASKIERT]');}
+function safe(s){return String(s).replace(/sai_[a-z0-9]{1,64}/g,'[MASKIERT]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB-MASKIERT]');}
 async function check(name,fn){try{await fn();checks++;console.log('OK '+name);}catch(e){failed++;console.log('FEHLER '+name+': '+safe(e.message).slice(0,800));}}
 function synth(values,context){return new vm.SyntheticModule(Object.keys(values),function(){for(const[k,v]of Object.entries(values))this.setExport(k,v);},{context});}
 async function loadModule(file,stubs={},globals={}){
@@ -89,6 +89,7 @@ try{
   await pool.query(sql);await pool.query(sql);
   // W12 (P22-T24): Schema 114 (token_offen) gehoert zum Ausweis-Vertrag.
   const sql114=await readFile(join(root,'packages/core/src/db/schema-sql/114_agent_ausweis.sql'),'utf8');await pool.query(sql114);await pool.query(sql114);
+  const sql115=await readFile(join(root,'packages/core/src/db/schema-sql/115_agent_ausweis_nr.sql'),'utf8');await pool.query(sql115);await pool.query(sql115);
   await check('Schema 111 zweimal idempotent, Ziel synapse_test:5433',async()=>{assert.ok((await pool.query("SELECT to_regclass('agent_identitaet_tokens') AS t")).rows[0].t);});
   await check('AUS Prompt bytegleich gegen t106',async()=>{assert.equal(currentPrompts.buildSpecialistPrompt(config,'Testwissen'),oldPrompts.buildSpecialistPrompt(config,'Testwissen'));});
   await check('AUS Spawn-Env/Args/Status/Prompt/Ergebnis bytegleich gegen t106',async()=>{assert.equal(JSON.stringify(await spawnProbe(root)),JSON.stringify(await spawnProbe(baseline)));});

@@ -37,7 +37,7 @@ try{
   const cl=await admin.connect();
   try{
     await cl.query('SET search_path TO '+schema);
-    for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
+    for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql','115_agent_ausweis_nr.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
   }finally{cl.release();}
   url.searchParams.set('options','-c search_path='+schema+',public');
   process.env.DATABASE_URL=url.href;

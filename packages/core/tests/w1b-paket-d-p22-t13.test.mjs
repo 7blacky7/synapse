@@ -45,7 +45,7 @@ const bearer=randomUUID()+randomUUID(),secrets=[bearer],close=[],failures=[];
 let core,pool,seq=0,checks=0;
 const unwrap=r=>r.structuredContent??JSON.parse(r.content.find(c=>c.type==='text').text);
 const mask=s=>secrets.reduce((s,x)=>s.replaceAll(x,'[GEHEIM]'),String(s))
- .replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
+ .replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
 function check(ok,label){checks++;if(!ok){failures.push(label);console.error('FAIL '+label);}}
 function gleich(a,b){try{assert.deepEqual(a,b);return true;}catch{return false;}}
 async function section(name,fn){
@@ -58,7 +58,7 @@ const LAUFZEIT=new Set(['ms','dauer_ms','durationMs','duration_ms','sitzung_seit
 function norm(v){
  return JSON.parse(JSON.stringify(v,(k,x)=>{
   if(LAUFZEIT.has(k))return '<laufzeit>';
-  if(typeof x==='string')return x.replace(/sai_[a-f0-9]{64}/g,'<ausweis>').replace(/sai_[a-f0-9]{8}/g,'<praefix>')
+  if(typeof x==='string')return x.replace(/sai_[a-z0-9]{1,64}/g,'<ausweis>').replace(/sai_[a-f0-9]{8}/g,'<praefix>')
    .replace(UUID,'<uuid>').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)?/g,'<ts>');
   return x;
  }));
@@ -149,7 +149,7 @@ try{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
  // t109-Basis hat kein Schema 113; der neue Stand bekommt es (zweimal: idempotent).
- for(const file of goldenOut&&process.env.P22_T13_ROOT?['agent-identitaet-schema','agent-bezug-schema']:['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema']){
+ for(const file of goldenOut&&process.env.P22_T13_ROOT?['agent-identitaet-schema','agent-bezug-schema']:['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
@@ -286,7 +286,7 @@ try{
    check(au.some(x=>x.erfolg&&x.wer==='user'&&x.anlass==='Web-UI-Anzeige'),'User-Abruf auditiert');
    check(au.some(x=>!x.erfolg&&x.fehler==='recht_fehlt'),'verweigerte Abrufe auditiert');
    check(au.some(x=>!x.erfolg&&x.fehler==='ausweis_fehlt'),'Fehlerart ausweis_fehlt auditiert');
-   check(secrets.every(s=>!auText.includes(s))&&!/sai_[a-f0-9]{16}/.test(auText)&&!auText.includes(TEST_SCHLUESSEL),'Audit enthaelt nie Tokenwert, Praefix oder Schluessel');
+   check(secrets.every(s=>!auText.includes(s))&&!/sai_[a-z0-9]{1,64}/.test(auText)&&!auText.includes(TEST_SCHLUESSEL),'Audit enthaelt nie Tokenwert, Praefix oder Schluessel');
    check(!au.some(x=>x.fehler&&/sai_|:/.test(x.fehler)),'Fehlercodes ohne Werte');
    // Web-UI-Koordinatortoken
    const w=await C.rufeWebUiKoordinatorTokenAb(P,USER);
@@ -295,7 +295,7 @@ try{
    check(await fehler(()=>C.rufeWebUiKoordinatorTokenAb(P,KP))==='recht_fehlt','Koordinator sieht die Web-UI-Anzeige nicht');
    check(await fehler(()=>C.rufeWebUiKoordinatorTokenAb(Q,USER))==='web_ui_koordinator_nicht_gefunden','ohne Web-UI-Koordinator: klarer Fehler');
    check(await fehler(()=>C.rufeWebUiKoordinatorTokenAb(P,USER,sid))==='web_ui_koordinator_nicht_gefunden','nur Koordinatoren ueber die Web-UI-Anzeige');
-   check((await pool.query("SELECT count(*)::int n FROM agent_identitaet_audit WHERE alt::text ~ 'sai_[a-f0-9]{16}' OR neu::text ~ 'sai_[a-f0-9]{16}' OR grund ~ 'sai_[a-f0-9]{16}'")).rows[0].n===0,'Identitaets-Audit ohne Tokenwert');
+   check((await pool.query("SELECT count(*)::int n FROM agent_identitaet_audit WHERE alt::text ~ 'sai_[a-z0-9]{1,64}' OR neu::text ~ 'sai_[a-z0-9]{1,64}' OR grund ~ 'sai_[a-z0-9]{1,64}'")).rows[0].n===0,'Identitaets-Audit ohne Tokenwert');
    globalThis.__d={k,sub,kid,sid,KP};
   });
 
@@ -525,7 +525,7 @@ try{
    process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL=TEST_SCHLUESSEL;
    const k2=await C.stelleAgentTokenAus({project:P,name:'koordinator'},{system:'user'});secrets.push(k2.token);
    const sKoord=await T.stdio.call('admin',{...ak,token:k2.token});
-   check(sKoord.success===true&&sKoord.token===sub.token,'stdio: Koordinator-Ausweis liest Token '+JSON.stringify(sKoord).replace(/sai_[a-f0-9]{64}/g,'T').slice(0,300));
+   check(sKoord.success===true&&sKoord.token===sub.token,'stdio: Koordinator-Ausweis liest Token '+JSON.stringify(sKoord).replace(/sai_[a-z0-9]{1,64}/g,'T').slice(0,300));
    const rSub=await T.rest.call('admin',{...ak,token:sub.token});
    check(rSub.error==='recht_fehlt','REST/MCP: Subagent-Ausweis abgelehnt');
    const sSub=await T.stdio.call('admin',{...ak,token:k2.token,ziel_identity_id:kid,anlass:'MCP-Test'});
@@ -537,7 +537,7 @@ try{
    const rows=(await pool.query("SELECT tool_name,action,result,args_preview FROM tool_calls WHERE tool_name='admin' AND action='token_abrufen'")).rows;
    check(rows.length>=4&&rows.every(r=>!r.result||r.result.startsWith('[nicht protokolliert')||!r.result.includes('\"token\"')),'tool_calls: Antwort mit Token nicht protokolliert');
    const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
-   check(secrets.every(s=>!logs.includes(s))&&!/sai_[a-f0-9]{64}/.test(logs),'Token nie in tool_calls (alle Zeilen)');
+   check(secrets.every(s=>!logs.includes(s))&&!/sai_[a-z0-9]{1,64}/.test(logs),'Token nie in tool_calls (alle Zeilen)');
    const au=JSON.stringify((await pool.query('SELECT * FROM agent_token_abruf_audit')).rows);
    check(secrets.every(s=>!au.includes(s)),'Abruf-Audit ohne Tokenwert');
    check((await pool.query("SELECT count(*)::int n FROM agent_token_abruf_audit WHERE erfolg AND anlass='MCP-Test' AND wer=ANY($1)",[[kid,k2.identitaet.id]])).rows[0].n>=3,'MCP-Abrufe auditiert (Akteur = Koordinator-Identitaet)');

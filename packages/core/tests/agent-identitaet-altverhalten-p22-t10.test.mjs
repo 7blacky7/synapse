@@ -20,6 +20,7 @@ const DB=await import('../dist/db/client.js');
 const S=await import('../dist/services/agent-identitaet.js');
 const {AGENT_IDENTITAET_SCHEMA_SQL}=await import('../dist/db/agent-identitaet-schema.js');
 const {AGENT_AUSWEIS_SCHEMA_SQL}=await import('../dist/db/agent-ausweis-schema.js');
+const {AGENT_AUSWEIS_NR_SCHEMA_SQL}=await import('../dist/db/agent-ausweis-nr-schema.js');
 const require=createRequire(new URL('../package.json',import.meta.url)),{Pool}=require('pg');
 const schema='p22_t10_alt_'+process.pid+'_'+randomUUID().slice(0,8), project='p22-t10-alt-own';
 const raw=new Pool({connectionString:process.env.DATABASE_URL});
@@ -51,7 +52,7 @@ try{
  await q('CREATE TABLE chat_messages(id BIGINT,project TEXT)');
  await q('CREATE TABLE chat_lesestand(project TEXT,agent_id TEXT,letzte_id BIGINT,letzte_hinweis_id BIGINT DEFAULT 0,PRIMARY KEY(project,agent_id))');
  await q(AGENT_IDENTITAET_SCHEMA_SQL);
- await q(AGENT_AUSWEIS_SCHEMA_SQL); // P22-T31 R1: stelleAgentTokenAus braucht die Ausweis-Spalten (114)
+ await q(AGENT_AUSWEIS_SCHEMA_SQL);await q(AGENT_AUSWEIS_NR_SCHEMA_SQL); // P22-T31 R1: stelleAgentTokenAus braucht die Ausweis-Spalten (114)
 
   // P22-T15: additive Aktor-/Rollback-Spalten fuer diesen bewusst minimalen W1a-Scope.
   await q('ALTER TABLE agent_identitaeten ADD COLUMN IF NOT EXISTS erstellt_von_identity_id TEXT');

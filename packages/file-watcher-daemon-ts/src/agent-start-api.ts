@@ -31,7 +31,7 @@ export async function holeAgentStartApi(name: string, project: string): Promise<
   // Server prüft Freigabe erneut sowie Daemon-Host und Projektzuordnung.
   const a = await spezialistenDatenApi<{ freigegeben?: boolean; token?: string; neuanmeldung?: boolean; legacy_start?: boolean; identity_id?: string; agent_bezug_modus?: string }>('agent_start', { project, agent: name });
   if (a.freigegeben !== true) return {};
-  if (a.token !== undefined && (typeof a.token !== 'string' || !/^sai_[a-f0-9]{64}$/.test(a.token))) {
+  if (a.token !== undefined && (typeof a.token !== 'string' || !/^sai_[a-z0-9]{1,64}$/.test(a.token))) {
     throw new Error('agent_start: ungültige API-Antwort');
   }
   if (!a.token) {

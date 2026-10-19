@@ -31,14 +31,14 @@ const bearer=randomUUID()+randomUUID(),secrets=[bearer],close=[],failures=[];
 let core,pool,seq=0,checks=0;
 const unwrap=r=>r.structuredContent??JSON.parse(r.content.find(c=>c.type==='text').text);
 const mask=s=>secrets.reduce((s,x)=>s.replaceAll(x,'[GEHEIM]'),String(s))
- .replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
+ .replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
 function check(ok,label){checks++;if(!ok){failures.push(label);console.error('FAIL '+label);}}
 async function section(name,fn){
  try{await fn();console.log('ABSCHNITT '+name+' durchlaufen');}
  catch(e){failures.push(name+': '+mask(e.message));console.error('FAIL Abschnitt '+name+': '+mask(e.stack));}
 }
 const fehler=async fn=>{try{await fn();return null;}catch(e){return e.code??('?'+mask(e.message));}};
-const AUS=/^sai_[a-f0-9]{64}$/;
+const AUS=/^sai_[a-z0-9]{1,64}$/;
 
 try{
  await admin.query('CREATE SCHEMA '+schema);
@@ -55,7 +55,7 @@ try{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
  // Schemas 111..114 zweimal (idempotent), 114 auch ohne vorherige Kopie der Spalten.
- for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema']){
+ for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
@@ -261,7 +261,7 @@ try{
   check(lo.success===true&&lo.geloescht===true,'admin token_loeschen als Legacy-Koordinator');
   const uebersicht=await C.fuehreW1bAdminAus('profil_uebersicht',{project:P},{akteur:USER});
   const zust=Object.fromEntries(uebersicht.profile.map(x=>[x.agent_id,x.ausweis_zustand]));
-  check(uebersicht.success===true&&zust['t24-w-sub']==='aktiv'&&zust['t24-v-legacy']==='ausgestellt'&&JSON.stringify(uebersicht).search(/sai_[a-f0-9]{64}/)<0,'Uebersicht: Ausweiszustand, nie ein Wert');
+  check(uebersicht.success===true&&zust['t24-w-sub']==='aktiv'&&zust['t24-v-legacy']==='ausgestellt'&&JSON.stringify(uebersicht).search(/sai_[a-z0-9]{1,64}/)<0,'Uebersicht: Ausweiszustand, nie ein Wert');
   check(uebersicht.profile.find(x=>x.agent_id==='t24-w-sub').token_abrufbar===true,'Uebersicht: token_abrufbar aus offener Ablage');
  });
 
@@ -308,7 +308,7 @@ try{
   const z=(await zeilen(mv.identity_id))[0];
   check(z.gueltig_bis===null&&z.zuletzt_benutzt!==null,'erster Toolaufruf bestaetigt den Ausweis dauerhaft');
   const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
-  check(!/sai_[a-f0-9]{64}/.test(logs)&&secrets.every(s=>!logs.includes(s)),'Ausweiswert nie in tool_calls (args und result)');
+  check(!/sai_[a-z0-9]{1,64}/.test(logs)&&secrets.every(s=>!logs.includes(s)),'Ausweiswert nie in tool_calls (args und result)');
  });
 
  await section('Geheimnisfreiheit: Audit, Revisionen, Thoughts',async()=>{
@@ -316,7 +316,7 @@ try{
    (await pool.query('SELECT * FROM agent_identitaet_audit')).rows,(await pool.query('SELECT * FROM agent_token_abruf_audit')).rows,
    (await pool.query('SELECT * FROM agent_schattenprofil_audit')).rows,(await pool.query('SELECT * FROM agent_profil_revisionen')).rows,
    (await pool.query('SELECT * FROM agent_schattenprofile')).rows,(await pool.query('SELECT * FROM thoughts')).rows]);
-  check(!/sai_[a-f0-9]{64}/.test(dump)&&secrets.every(s=>!dump.includes(s)),'Ausweiswert nie in Audit/Revisionen/Schatten/Thoughts');
+  check(!/sai_[a-z0-9]{1,64}/.test(dump)&&secrets.every(s=>!dump.includes(s)),'Ausweiswert nie in Audit/Revisionen/Schatten/Thoughts');
   check((await pool.query('SELECT count(*)::int n FROM agent_identitaet_tokens WHERE token_offen IS NOT NULL AND token_hash IS NOT NULL')).rows[0].n===0,'neue Zeilen tragen keinen Hash');
   check((await pool.query('SELECT count(*)::int n FROM (SELECT identity_id FROM agent_identitaet_tokens WHERE widerrufen_am IS NULL AND token_offen IS NOT NULL GROUP BY identity_id HAVING count(*)>1) x')).rows[0].n===0,'nie mehr als ein nicht geloeschter Ausweis je Identitaet');
   const idx=(await pool.query("SELECT indexname FROM pg_indexes WHERE schemaname=$1 AND tablename='agent_identitaet_tokens'",[schema])).rows.map(x=>x.indexname);

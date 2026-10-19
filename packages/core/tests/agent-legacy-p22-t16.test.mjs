@@ -25,7 +25,7 @@ const bearer=randomUUID()+randomUUID(),secrets=[bearer],close=[],failures=[];
 let core,pool,seq=0,checks=0;
 const unwrap=r=>r.structuredContent??JSON.parse(r.content.find(c=>c.type==='text').text);
 const mask=s=>secrets.reduce((s,x)=>s.replaceAll(x,'[GEHEIM]'),String(s))
- .replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
+ .replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
 function check(ok,label){checks++;if(!ok){failures.push(label);console.error('FAIL '+label);}}
 function comparable(r){
  const value=structuredClone(r);
@@ -100,7 +100,7 @@ try{
  }
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
- for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-ausweis-schema']){
+ for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-ausweis-schema','agent-ausweis-nr-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }

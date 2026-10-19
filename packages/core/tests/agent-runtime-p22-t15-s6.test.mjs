@@ -35,7 +35,7 @@ const clone=async()=>{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
  eq((await pool.query('SELECT current_schema() s')).rows[0].s,schema,'isolated search path');
- for(const [file,key] of [['agent-identitaet-schema','AGENT_IDENTITAET_SCHEMA_SQL'],['agent-bezug-schema','AGENT_BEZUG_SCHEMA_SQL'],['agent-ausweis-schema','AGENT_AUSWEIS_SCHEMA_SQL']]){
+ for(const [file,key] of [['agent-identitaet-schema','AGENT_IDENTITAET_SCHEMA_SQL'],['agent-bezug-schema','AGENT_BEZUG_SCHEMA_SQL'],['agent-ausweis-schema','AGENT_AUSWEIS_SCHEMA_SQL'],['agent-ausweis-nr-schema','AGENT_AUSWEIS_NR_SCHEMA_SQL']]){
   const m=await load('packages/core/dist/db/'+file+'.js');
   await pool.query(m[key]);await pool.query(m[key]);
  }
@@ -172,7 +172,7 @@ try{
  const start=await daemon({auftrag_id:job.id,aktion:'agent_start'});
  eq(start.code,200,'claimed child start succeeds');
  eq(start.body.identity_id,b.identity_id,'start response binds child target ID');
- ok(/^sai_[a-f0-9]{64}$/.test(start.body.token),'start response contains personal proof');
+ ok(/^sai_[a-z0-9]{1,64}$/.test(start.body.token),'start response contains personal proof');
  eq(start.body.agent_bezug_modus,'beide','start reports captured mode');
  const noAdopt=await daemon({aktion:'agent_start',identity_id:undefined});
  eq(noAdopt.body.legacy_start,true,'name-only daemon start never adopts ID');
@@ -309,7 +309,7 @@ try{
  for(const f of cleanup.splice(0))f();
  console.log('P22-T15 S6 PASS '+checks+' assertions; schema111/112 twice; no model/daemon/network calls');
  }
-}catch(e){console.error('P22-T15 S6 FAIL '+String(e?.stack||e).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]'));process.exitCode=1;}
+}catch(e){console.error('P22-T15 S6 FAIL '+String(e?.stack||e).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]'));process.exitCode=1;}
 finally{
  for(const f of cleanup.splice(0))f();
  if(app)await app.close().catch(()=>{});

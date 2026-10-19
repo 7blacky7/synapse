@@ -21,6 +21,7 @@ import { registriereHinweisQuelle, type AusloeserHinweis, type HinweisKontext, t
 // W12-B (P22-T25): Ausweis-Kern (V7) und TOKEN_BEREIT-Vertrag (V6); der Tresor entfaellt (V1, Ausweis offen).
 import { leseAusweisKern, leereAusweisKernCache, ausweisAnmeldungAktiv, ausweisSchattenAktiv } from './agent-profil-schalter.js';
 import { tokenBereitEntprellungMs, tokenBereitText, TEXT_NEUINSTANZ } from './agent-profil-vertrag.js';
+import { neuesAusweisImTextMuster } from './agent-ausweis-format.js';
 import {
   W1B_DIENSTE,
   type AnmeldungsDienst, type FortsetzungsInfo, type KoordinatorListenEintrag, type SchattenSelbstangaben,
@@ -68,7 +69,7 @@ export async function schattenprofileAktiv(project: string): Promise<boolean> {
 // ---------------------------------------------------------------------------------------------
 function bereinigeOrt(s: string): string {
   // eslint-disable-next-line no-control-regex
-  return s.replace(/sai_[a-f0-9]{8,}/gi, '[maskiert]').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return s.replace(neuesAusweisImTextMuster(), '[maskiert]').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
 }
 
 /** Grobe Anzeige aus Transportkoepfen (z. B. chatgpt.com, claude.ai, CLI). Nie als Berechtigung verwenden. */

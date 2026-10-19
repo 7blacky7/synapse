@@ -9,7 +9,10 @@
  * Aufrufer mit system-Recht sind ausschliesslich bereits authentifizierte API-/Daemonadapter;
  * niemals ein Tool-Argument als solchen Principal uebernehmen.
  */
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { AUSWEIS_FORMAT, ausweisPraefix, erzeugeAusweis } from './agent-ausweis-format.js';
+/** P22-T35: zentrale Ausweis-Erzeugung (agent-ausweis-format.ts); keine andere Stelle erzeugt Ausweise. */
+export { erzeugeAusweis as erzeugeAgentAusweis } from './agent-ausweis-format.js';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
@@ -211,9 +214,9 @@ export async function stelleOderHoleAusweisTx(
       [vorhanden.id, o.wer]);
     await audit(c, identitaet.id, o.wer, 'token_widerrufen', { token_id: vorhanden.id, widerrufen: false }, { token_id: vorhanden.id, widerrufen: true }, 'erstnutzung_verfallen');
   }
-  const token = 'sai_' + randomBytes(32).toString('hex');
+  const token = await erzeugeAusweis(c);
   const tokenId = randomUUID();
-  const praefix = token.slice(0, 12);
+  const praefix = ausweisPraefix(token);
   await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_offen, token_praefix, ausweis_weg, gueltig_bis)
     VALUES ($1,$2,$3,$4,$5, CASE WHEN $6::boolean THEN NOW() + ($7::double precision * INTERVAL '1 millisecond') ELSE NULL END)`,
     [tokenId, identitaet.id, token, praefix, o.weg, o.erstnutzung, erstnutzungFristMsLokal()]);
@@ -295,7 +298,7 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
 async function tokenIdentitaet(token: string, project: string | undefined, anmelden: boolean, bezugsStand?: AgentBezugStand, selbst?: Selbstangaben): Promise<AgentTokenAnmeldung> {
   await freigabe(project ?? null, token);
   const bezug = bezugsStand ?? aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
-  if (typeof token !== 'string' || !/^sai_[a-f0-9]{64}$/.test(token)) throw new AgentIdentitaetFehler('agent_token_ungueltig');
+  if (typeof token !== 'string' || !AUSWEIS_FORMAT.test(token)) throw new AgentIdentitaetFehler('agent_token_ungueltig');
   return transaktion(async (c) => {
     // Gleiche Reihenfolge wie Widerruf/Deaktivierung: erst Identitaet, dann Ausweis.
     const r = await c.query<AgentIdentitaet>(

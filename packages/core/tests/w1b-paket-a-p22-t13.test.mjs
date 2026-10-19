@@ -29,7 +29,7 @@ const P='pa-projekt',FREMD='pa-fremd';
 function check(ok,label){checks++;if(!ok){failures.push(label);console.error('FAIL '+label);}}
 async function section(name,fn){
  try{await fn();console.log('ABSCHNITT '+name+' durchlaufen');}
- catch(e){failures.push(name+': '+String(e.stack).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]'));console.error('FAIL Abschnitt '+name+': '+e.stack);}
+ catch(e){failures.push(name+': '+String(e.stack).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]'));console.error('FAIL Abschnitt '+name+': '+e.stack);}
 }
 const code=async fn=>{try{await fn();return null;}catch(e){return e.code??('X:'+e.message);}};
 const rows=async(sql,v=[])=>(await pool.query(sql,v)).rows;
@@ -39,7 +39,7 @@ const pr=(id,rolle,p=P)=>({art:'identitaet',principal:{art:'identity',project:p,
 const anlage=(agent,extra={},p=P,art='legacy_register',akteur=daemon)=>core.W1B_DIENSTE.schatten.legeSchattenprofilAn(
  {project:p,ursprung_agent_id:agent,ursprung_art:art,selbstangaben:{name:agent,modell:'m1',...extra}},akteur);
 // W12 (P22-T24, V2 Weg A): der Schatten traegt KEINEN Token mehr; der Ausweis entsteht erst mit der Bestaetigung (token_offen).
-const AUSWEIS=/^sai_[a-f0-9]{64}$/;
+const AUSWEIS=/^sai_[a-z0-9]{1,64}$/;
 const bestaetige=(s,extra={},akteur=user)=>core.W1B_DIENSTE.schatten.bestaetigeSchattenprofil(
  {schattenprofil_id:s.id,erwartete_revision:s.revision,user_zustimmung:'User: bestaetigt im Test',grund:'Paket-A-Test',...extra},akteur);
 
@@ -57,7 +57,7 @@ try{
  }
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
- for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema']){
+ for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
@@ -306,12 +306,12 @@ try{
   dump+=JSON.stringify(await rows('SELECT selbstangaben,korrektur,grund,user_zustimmung FROM agent_schattenprofile'));
   dump+=JSON.stringify(await rows('SELECT profil,startrezept FROM agent_identitaeten'));
   check(secrets.length>=1&&secrets.every(s=>!dump.includes(s)),'kein Token in Audit, Revisionen, Profilen ('+secrets.length+' geprueft)');
-  check(!/sai_[a-f0-9]{16}/.test(dump),'kein Ausweis-Muster in Audit/Revisionen');
+  check(!/sai_[a-z0-9]{1,64}/.test(dump),'kein Ausweis-Muster in Audit/Revisionen');
   check(network===0,'keine Netzwerk-/Modellaufrufe');
  });
  console.log('P22-T13 Paket A: '+checks+' Pruefungen, '+failures.length+' Fehler');
  if(failures.length)process.exitCode=1;
-}catch(error){console.error(String(error.stack).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]'));process.exitCode=1;}
+}catch(error){console.error(String(error.stack).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]'));process.exitCode=1;}
 finally{
  if(core)await core.closePool();
  await admin.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await admin.end();

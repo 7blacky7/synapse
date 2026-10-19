@@ -46,7 +46,7 @@ const bearer=randomUUID()+randomUUID(),secrets=[bearer],close=[],failures=[];
 let core,pool,seq=0,checks=0;
 const unwrap=r=>r.structuredContent??JSON.parse(r.content.find(c=>c.type==='text').text);
 const mask=s=>secrets.reduce((s,x)=>s.replaceAll(x,'[GEHEIM]'),String(s))
- .replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
+ .replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').replace(/postgres(?:ql)?:\/\/[^\s]+/g,'[DB]');
 function check(ok,label){checks++;if(!ok){failures.push(label);console.error('FAIL '+label);}}
 function gleich(a,b){try{assert.deepEqual(a,b);return true;}catch{return false;}}
 async function section(name,fn){
@@ -59,7 +59,7 @@ const LAUFZEIT=new Set(['ms','dauer_ms','durationMs','duration_ms','sitzung_seit
 function norm(v){
  return JSON.parse(JSON.stringify(v,(k,x)=>{
   if(LAUFZEIT.has(k))return '<laufzeit>';
-  if(typeof x==='string')return x.replace(/sai_[a-f0-9]{64}/g,'<ausweis>').replace(/sai_[a-f0-9]{8}/g,'<praefix>')
+  if(typeof x==='string')return x.replace(/sai_[a-z0-9]{1,64}/g,'<ausweis>').replace(/sai_[a-f0-9]{8}/g,'<praefix>')
    .replace(UUID,'<uuid>').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)?/g,'<ts>');
   return x;
  }));
@@ -166,11 +166,12 @@ try{
  }else{
   const C=core;
   { const m114=await load('packages/core/dist/db/agent-ausweis-schema.js');const s114=Object.values(m114).find(v=>typeof v==='string');await pool.query(s114);await pool.query(s114); }
+  { const m115=await load('packages/core/dist/db/agent-ausweis-nr-schema.js');const s115=Object.values(m115).find(v=>typeof v==='string');await pool.query(s115);await pool.query(s115); }
   await section('Schema 113 additiv/idempotent',async()=>{
    const {AGENT_PROFIL_SCHEMA_SQL:s113}=await load('packages/core/dist/db/agent-profil-schema.js');
    check(readFileSync(join(root,'packages/core/src/db/schema-sql/113_agent_profil.sql'),'utf8').trim()===s113.trim(),'SQL-Spiegel 113 identisch');
    const schemaJs=readFileSync(join(root,'packages/core/dist/db/schema.js'),'utf8');
-   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112, 114 (Ausweis, W12) direkt danach');
+   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*(?:\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*)?`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112, 114 (Ausweis, W12) direkt danach');
    const ohneKommentar=s113.split('\n').filter(z=>!z.trim().startsWith('--')).join('\n');
    const alters=[...ohneKommentar.matchAll(/ALTER TABLE[^;]*;/g)].map(m=>m[0]);
    check(alters.length>0&&alters.every(a=>/^ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS /.test(a)),'nur ADD COLUMN IF NOT EXISTS');

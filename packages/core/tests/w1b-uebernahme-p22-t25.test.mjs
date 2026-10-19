@@ -38,7 +38,7 @@ try{
   const cl=await admin.connect();
   try{
     await cl.query('SET search_path TO '+schema);
-    for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
+    for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql','115_agent_ausweis_nr.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
   }finally{cl.release();}
   url.searchParams.set('options','-c search_path='+schema+',public');
   process.env.DATABASE_URL=url.href;
@@ -84,7 +84,7 @@ try{
   const best=await V.W1B_DIENSTE.schatten.bestaetigeSchattenprofil({schattenprofil_id:s.id,erwartete_revision:s.revision,user_zustimmung:'Test-Nachweis',grund:'Test W12-B'},user);
   const iid=best.identity_id;
   const tok=(await pool.query('SELECT id,token_offen,zuletzt_benutzt FROM agent_identitaet_tokens WHERE identity_id=$1 AND widerrufen_am IS NULL',[iid])).rows[0];
-  check(!!tok?.token_offen&&/^sai_[a-f0-9]{64}$/.test(tok.token_offen)&&!tok.zuletzt_benutzt,'Bestaetigung: offener, unbenutzter Ausweis');
+  check(!!tok?.token_offen&&/^sai_[a-z0-9]{1,64}$/.test(tok.token_offen)&&!tok.zuletzt_benutzt,'Bestaetigung: offener, unbenutzter Ausweis');
   const token=tok.token_offen;
   A.registriereW1bAnmeldungHinweise();
 
@@ -194,8 +194,8 @@ try{
   const sj=S.schwaerzeToolLogText(JSON.stringify({token,action:'search'}));
   const st=S.schwaerzeToolLogText('Dein Agenten-Ausweis ist bereit: '+token+'. Praefix '+token.slice(0,12));
   check(!sj.includes(token)&&!st.includes(token),'sai_-Ausweis in args und freiem Text geschwaerzt');
-  check(st.includes(token.slice(0,12)),'Praefix bleibt als Zuordnung sichtbar');
-  check(!JSON.stringify(await pool.query("SELECT args_preview,result FROM tool_calls WHERE args_preview LIKE '%sai_%' OR result LIKE '%sai_%'").then(r=>r.rows)).match(/sai_[a-f0-9]{64}/),'kein Ausweis im tool_calls-Log');
+  check(!st.includes(token.slice(0,12)),'P22-T35: auch der 12-Zeichen-Praefix (sai_+8) ist ein Ausweis-Muster und wird im Tool-Log geschwaerzt (Zuordnung ueber identity_id/token_id)');
+  check(!JSON.stringify(await pool.query("SELECT args_preview,result FROM tool_calls WHERE args_preview LIKE '%sai_%' OR result LIKE '%sai_%'").then(r=>r.rows)).match(/sai_[a-z0-9]{1,64}/),'kein Ausweis im tool_calls-Log');
 }catch(e){
   failures.push('Ausnahme: '+(e?.stack||e));console.error(e);
 }finally{

@@ -59,6 +59,9 @@ try {
   const schema114=readFileSync(new URL('../src/db/schema-sql/114_agent_ausweis.sql',import.meta.url),'utf8');
   await q(schema114);
   await q(schema114);
+  const schema115=readFileSync(new URL('../src/db/schema-sql/115_agent_ausweis_nr.sql',import.meta.url),'utf8');
+  await q(schema115);
+  await q(schema115);
   assert.equal((await q("SELECT count(*)::int n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('agent_identitaeten','agent_identitaet_tokens','agent_identitaet_audit')",[schema])).rows[0].n,3);
   ok('Schema 111 zweimal idempotent, drei Tabellen');
 

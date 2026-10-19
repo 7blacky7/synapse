@@ -10,6 +10,7 @@
  * Produkt-Schalter 'persona' (Standard AUS) gilt fuer alles ausser Entfernen und Lesen der Zuweisung.
  */
 import { randomUUID } from 'node:crypto';
+import { AUSWEIS_IM_TEXT } from './agent-ausweis-format.js';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { darfProfilAendern, type PersonaDienst, type PersonaVersion, type PersonaVorlage, type PersonaZuweisung, type W1bAkteur } from './agent-profil-vertrag.js';
@@ -28,7 +29,7 @@ function pruefeInhalt(inhalt: unknown): Record<string, unknown> {
   if (!inhalt || typeof inhalt !== 'object' || Array.isArray(inhalt) || !Object.keys(inhalt).length) throw new ProfilVerwaltungFehler('inhalt_ungueltig');
   const text = JSON.stringify(inhalt);
   // Eine Persona ist Charakter-/Stilbeschreibung; nie ein Zugangswert und nie unbegrenzt.
-  if (text.length > MAX_INHALT_ZEICHEN || /sai_[a-f0-9]{64}/.test(text)) throw new ProfilVerwaltungFehler('inhalt_ungueltig');
+  if (text.length > MAX_INHALT_ZEICHEN || AUSWEIS_IM_TEXT.test(text)) throw new ProfilVerwaltungFehler('inhalt_ungueltig');
   return inhalt as Record<string, unknown>;
 }
 

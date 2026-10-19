@@ -156,7 +156,7 @@ async function kind(name){
       if(!ops[m.op])throw Object.assign(new Error('unbekannte op '+m.op),{code:'op_unbekannt'});
       out({id:m.id,ok:true,wert:(await ops[m.op](m.args??{}))??null});
     }catch(e){
-      out({id:m.id,ok:false,fehler:{code:e?.code??'X',message:String(e?.message??e).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]').slice(0,300)}});
+      out({id:m.id,ok:false,fehler:{code:e?.code??'X',message:String(e?.message??e).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]').slice(0,300)}});
     }
   }
   await pool.end().catch(()=>undefined);
@@ -175,7 +175,7 @@ function starte(name,env){
     const m=JSON.parse(l.slice(4));const w=wartend.get(m.id);
     if(w){wartend.delete(m.id);w(m);}
   });
-  proc.stderr.on('data',d=>{err.push(String(d).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]'));if(err.length>40)err.shift();});
+  proc.stderr.on('data',d=>{err.push(String(d).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]'));if(err.length>40)err.shift();});
   proc.on('exit',c=>{for(const w of wartend.values())w({ok:false,fehler:{code:'prozess_beendet',message:'exit '+c}});});
   const roh=(op,args={})=>new Promise(res=>{
     const id=++n;wartend.set(id,res);
@@ -200,7 +200,7 @@ async function haupt(){
   const check=(ok,label)=>{checks++;if(!ok){failures.push(label);console.error('FAIL '+label);}};
   const section=async(name,fn)=>{
     try{await fn();console.log('ABSCHNITT '+name+' durchlaufen');}
-    catch(e){failures.push(name+': '+String(e.stack).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]'));console.error('FAIL Abschnitt '+name+': '+e.message);}
+    catch(e){failures.push(name+': '+String(e.stack).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]'));console.error('FAIL Abschnitt '+name+': '+e.message);}
   };
   // Beobachtung: ruft nach dem Rueckkehren des Schreibers op auf proc, bis pred wahr ist.
   const beobachte=async(stelle,proc,op,args,pred,max=FRIST_MS+TOLERANZ_MS+2000)=>{
@@ -233,7 +233,7 @@ async function haupt(){
     const cl=await admin.connect();
     try{
       await cl.query('SET search_path TO '+schema);
-      for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
+      for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql','115_agent_ausweis_nr.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
     }finally{cl.release();}
     url.searchParams.set('options','-c search_path='+schema+',public');
     const env={...process.env,DATABASE_URL:url.href,SYNAPSE_SKIP_EMBEDDINGS:'1',PARSER_LOOP_DISABLED:'1',SYNAPSE_TOKEN_IDENTITAET:'1',
@@ -416,7 +416,7 @@ async function haupt(){
     console.log('MESSUNG_JSON '+JSON.stringify({frist_ms:FRIST_MS,toleranz_ms:TOLERANZ_MS,messungen,befunde}));
     await pg.end();
   }catch(e){
-    failures.push('Setup/Lauf: '+String(e.stack).replace(/sai_[a-f0-9]{64}/g,'[AUSWEIS]'));console.error('FAIL Setup/Lauf: '+e.message);
+    failures.push('Setup/Lauf: '+String(e.stack).replace(/sai_[a-z0-9]{1,64}/g,'[AUSWEIS]'));console.error('FAIL Setup/Lauf: '+e.message);
   }finally{
     for(const p of [A,B])if(p){p.proc.stdin.end();setTimeout(()=>p.proc.kill(),3000).unref();}
     if(failures.length)for(const p of [A,B])if(p?.err.length)console.error('stderr '+p.name+': '+p.err.join('').slice(-1500));

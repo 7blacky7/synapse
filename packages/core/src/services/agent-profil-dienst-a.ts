@@ -18,7 +18,8 @@
  *   agent_identitaet_tokens.token_offen, sofort 'aktiv' (ausweis_weg schatten_bestaetigt). Kein Hash, kein Tresor.
  *   Der Tokenwert erscheint weder in Audit noch in Fehlern; der laufende Agent erhaelt ihn per Hinweis (W12-B).
  */
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
+import { AUSWEIS_IM_TEXT, ausweisPraefix, erzeugeAusweis, neuesAusweisImTextMuster } from './agent-ausweis-format.js';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { rolleFuerAgent } from './agent-rollen.js';
@@ -41,8 +42,9 @@ type Zeile = Record<string, any>;
 export interface Verwalter { wer: string; actor: string | null; user: boolean }
 
 const MAX_TEXT = 4000;
-const AUSWEIS_TEST = /sai_[a-f0-9]{16,}/i;
-const AUSWEIS_ERSETZEN = /sai_[a-f0-9]{16,}/gi;
+// P22-T35: Erkennung fuer jede Ausweislaenge (sai_ + 1..64 Zeichen, eigenstaendiges Wort).
+const AUSWEIS_TEST = AUSWEIS_IM_TEXT;
+const AUSWEIS_ERSETZEN = neuesAusweisImTextMuster();
 const GEHEIM_SCHLUESSEL = /^(token|password|passwort|secret|authorization|bearer|api[_-]?key|credential|cookie)/i;
 const URSPRUNG_ARTEN = ['legacy_register', 'koordinator_voranlage', 'koordinator_start'] as const;
 
@@ -439,10 +441,10 @@ async function bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: Ausweis
       [identityId, project, name, instanz, agentId, rolle, modell, selbstModell, JSON.stringify(profil), JSON.stringify(startrezept),
         v.wer, v.actor, typ?.id ?? null, typ?.aktuelle_revision ?? null]), 'identitaet_existiert');
     // W12 V2 Weg A: erst mit der Bestaetigung entsteht der Ausweis - offen gespeichert, sofort 'aktiv' (ausweis_weg schatten_bestaetigt).
-    const klar = 'sai_' + randomBytes(32).toString('hex');
+    const klar = await erzeugeAusweis(c);
     const tokenId = randomUUID();
     await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_offen, token_praefix, ausweis_weg)
-      VALUES ($1,$2,$3,$4,'schatten_bestaetigt')`, [tokenId, identityId, klar, klar.slice(0, 12)]);
+      VALUES ($1,$2,$3,$4,'schatten_bestaetigt')`, [tokenId, identityId, klar, ausweisPraefix(klar)]);
     await schreibeProfilRevision(c, identityId, 1, korrektur, typ?.id ?? null, typ?.aktuelle_revision ?? null, v, zustimmung, grund);
     await c.query(`UPDATE agent_schattenprofile SET zustand='bestaetigt', revision=revision+1, korrektur=$2::jsonb, typ_id=$3, identity_id=$4,
         entschieden_von=$5, entschieden_von_identity_id=$6, entschieden_am=NOW(), user_zustimmung=$7, grund=$8,
@@ -450,7 +452,7 @@ async function bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: Ausweis
       [id, JSON.stringify(korrektur), typ?.id ?? null, identityId, v.wer, v.actor, zustimmung, grund]);
     await identitaetAudit(c, identityId, v, 'ausstellen', null, { project, name, instanz_nr: instanz, rolle, schattenprofil_id: id }, grund);
     await identitaetAudit(c, identityId, v, 'profil_bestaetigt', null, { profil_revision: 1, typ_id: typ?.id ?? null, user_zustimmung: zustimmung }, grund);
-    await identitaetAudit(c, identityId, v, 'token_ausstellen', null, { token_id: tokenId, token_praefix: klar.slice(0, 12) }, grund);
+    await identitaetAudit(c, identityId, v, 'token_ausstellen', null, { token_id: tokenId, token_praefix: ausweisPraefix(klar) }, grund);
     await schattenAudit(c, id, v, 'bestaetigt', { zustand: 'pending', revision: row.revision }, { zustand: 'bestaetigt', identity_id: identityId, typ_id: typ?.id ?? null }, grund + ' | zustimmung: ' + zustimmung);
     const fertig = await c.query<Zeile>(`SELECT ${SCHATTEN_SPALTEN} FROM agent_schattenprofile WHERE id=$1`, [id]);
     return { schattenprofil: zuSchatten(fertig.rows[0]), identity_id: identityId, profil_revision: 1 };

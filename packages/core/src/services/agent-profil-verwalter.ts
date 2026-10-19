@@ -8,6 +8,7 @@ import { getPool } from '../db/client.js';
 import { aktuellerAgentPrincipal } from './agent-bezug.js';
 import { aktuelleUserHerkunft } from './user-herkunft.js';
 import type { W1bAkteur, AusweisAkteur } from './agent-profil-vertrag.js';
+import { rolleFuerAgent } from './agent-rollen.js';
 
 export type ProfilDb = Pick<PoolClient, 'query'>;
 
@@ -31,10 +32,21 @@ export function aktuellerW1bAkteur(): W1bAkteur | null {
  * nicht aus dem Principal geglaubt). nurUser: globale Kataloge.
  */
 export async function pruefeProfilVerwalter(
-  akteur: W1bAkteur, project: string | null, opt: { nurUser?: boolean; db?: ProfilDb } = {},
+  akteur: AusweisAkteur, project: string | null, opt: { nurUser?: boolean; db?: ProfilDb } = {},
 ): Promise<{ wer: string; actor_identity_id: string | null }> {
   if (akteur.art === 'user') return { wer: 'user', actor_identity_id: null };
-  if (opt.nurUser || akteur.art !== 'identitaet' || !project) throw new ProfilVerwaltungFehler('recht_fehlt');
+  if (opt.nurUser || !project) throw new ProfilVerwaltungFehler('recht_fehlt');
+  if (akteur.art === 'legacy_koordinator') {
+    // P22-T34 (User 19.10., memory entscheidung-agenten-ausweis-2026-10-19 Punkt 3a): ein Legacy-Koordinator ohne eigenen Ausweis
+    // darf alles, was Koordinator mit Ausweis darf (ausser 'nur User'). Erkennung wie P22-T18 (Rolle/Namensmuster koordinator);
+    // gehoert der Name einer Token-Identitaet, braucht der Aufruf deren Ausweis. Audit-Kennung 'legacy:<id>'.
+    const agent = typeof akteur.agent_id === 'string' ? akteur.agent_id.trim() : '';
+    if (!agent || rolleFuerAgent(agent).rolle !== 'koordinator') throw new ProfilVerwaltungFehler('recht_fehlt');
+    const eigene = await (opt.db ?? getPool()).query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, agent]);
+    if (eigene.rows[0]) throw new ProfilVerwaltungFehler('recht_fehlt');
+    return { wer: 'legacy:' + agent, actor_identity_id: null };
+  }
+  if (akteur.art !== 'identitaet') throw new ProfilVerwaltungFehler('recht_fehlt');
   const p = akteur.principal;
   if (p.project !== project || p.rolle !== 'koordinator') throw new ProfilVerwaltungFehler('recht_fehlt');
   const r = await (opt.db ?? getPool()).query(
