@@ -101,7 +101,7 @@ export const HINWEIS_KATALOG: readonly HinweisKatalogEintrag[] = [
     felder: ['jev_modus', 'agentOnboarding.jev_hinweis'], zustand: 'RAM je Prozess/Agent', bindung: BEIDE, tools: '* ausser jev', groesse: '1 Zeile', konfiguration: PROFIL },
   { schluessel: 'skill_suggestions', klasse: 'optional', quelle: 'verarbeiteSkillHinweisgeber/holeOffeneSkillVorschlaege (REST attachSkillHinweisgeber, stdio attachResponseHooks); holeChannelSkillVorschlaege/holeChannelSkillsNachBeitritt/holeSprachSkillVorschlaege (Handler)',
     zweck: 'Skill-Vorschlaege inkl. vorgeschalteter Vorschlagssuche', standard: true, kompakt: false, felder: ['skill_suggestions', 'skill_hook_metrics'],
-    zustand: 'skill_hook_preparations/deliveries (+agent_identitaet_*)', bindung: BEIDE, tools: 'memory/thought/plan, channel, files', groesse: 'mittel', konfiguration: PROFIL },
+    zustand: 'skill_hook_preparations/deliveries (+agent_identitaet_*)', bindung: BEIDE, tools: 'memory/thought/plan, channel, files, skills; 99%-Kette (P23-T1) an allen Tools', groesse: 'mittel', konfiguration: PROFIL },
   { schluessel: 'tool_guide', klasse: 'optional', quelle: 'buildFirstUseHint/attachToolGuide (stdio server.ts)', zweck: 'First-Use-Guide je Sitzung und Tool',
     standard: true, kompakt: false, felder: ['tool_guide'], zustand: 'RAM firstUseHinted (erst bei Auslieferung markiert)', bindung: BEIDE, tools: '* (erste Nutzung)', groesse: 'mittel',
     konfiguration: PROFIL + '; guide(tool_name) jederzeit' },

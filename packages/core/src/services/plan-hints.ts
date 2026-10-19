@@ -4,7 +4,8 @@
  *        normale Tool-Antworten haengen — Gegenstueck zu shell_activity
  *        (shell-hints.ts).
  *
- * WARUM: Plaene laufen seit 28.09.2026 nicht mehr ab. Ein offener Plan bleibt
+ * WARUM: Plaene liefen seit 28.09.2026 nicht mehr ab (P6-T49: jetzt nach files_plan_stunden ohne Aktivitaet,
+ * file-plan-ablauf.ts; der Hinweis nennt Wert und Quelle der Frist). Ein offener Plan bleibt
  * offen, bis er committed oder per cancel verworfen wird — auch der eines
  * abgestuerzten Agenten oder ein gescheiterter Batch. Damit so etwas nicht
  * unbemerkt liegenbleibt, sieht jeder Agent des Projekts die offenen Plaene samt
@@ -26,6 +27,7 @@ import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import { fileAgentKey, fileCallerKey } from './file-agent-bezug.js';
 import { getPool } from '../db/index.js';
 import {claimHinweis} from './hinweis-drossel.js';
+import { leseAusweisFristen } from './agent-ausweis-fristen.js';
 
 /** Mehr Plaene zeigen wir nie einzeln; der Rest steht nur als Zahl da. */
 const MAX_EINTRAEGE = 5;
@@ -168,6 +170,7 @@ export async function claimOpenPlanHints(
       if ((r.agenten ?? []).length > 1) eintrag.beitraege_von = r.agenten ?? [];
       return eintrag;
     });
+    const frist = (await leseAusweisFristen(project)).fristen.files_plan_stunden;
     const aeltesteTage = alte.length > 0
       ? Math.floor((jetzt - Math.min(...alte.map((r) => new Date(r.created_at).getTime()))) / 86400000)
       : 0;
@@ -186,9 +189,9 @@ export async function claimOpenPlanHints(
           }
         : {}),
       ...(traeger > 0 ? { wartende_traeger: traeger } : {}),
-      hinweis: 'Offene Plaene laufen nicht ab. Committen: files(action:"commit", plan_id). '
+      hinweis: `Offene Plaene laufen nach ${frist.wert} h ohne Aktivitaet ab (files_plan_stunden, Quelle ${frist.quelle}; Status expired, nichts geschrieben). Committen: files(action:"commit", plan_id). `
         + 'Einzelne Op ungekuerzt ansehen: files(action:"plan_status", plan_id, op_index). '
-        + 'Verwerfen: files(action:"cancel", plan_id). '
+        + 'Verwerfen: files(action:"cancel", plan_id); fremde Ops nur Koordinator/User mit grund. '
         + 'Plan mit fehler_ops korrigieren: files(action:"plan_update", plan_id, op_index, ops).'
         + (traeger > 0 ? ' wartende_traeger = offene leere Traegerplaene von Wartenden; sie schliessen sich, sobald ihr Ziel-Plan committed oder verworfen ist.' : ''),
     };

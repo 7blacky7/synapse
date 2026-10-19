@@ -25,6 +25,7 @@ import { listePersonaVersionen } from './agent-persona.js';
 import { rufeWebUiKoordinatorTokenAb } from './agent-token-abruf.js';
 import { HAUPTAGENT_ADMIN_ACTIONS, HAUPTAGENT_ADMIN_PARAMETER, istHauptagentAdminAction, fuehreHauptagentAdminAus } from './hauptagent-dienst.js';
 import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
+import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './files-plan-ablauf-schalter.js';
 import { listeAusweisVisa, erteileArbeitsfreigabe, entzieheArbeitsfreigabe } from './agent-ausweis-projekte.js';
 import { aktuellerAgentAufruf } from './agent-bezug.js';
 
@@ -78,6 +79,8 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   visum_minuten: { type: 'number', description: 'ausweis_fristen setzen: Visum in Minuten (1..1440, Standard 30; Agenten anderer Projekte lesen hier)' },
   arbeitsfreigabe_stunden: { type: 'number', description: 'ausweis_fristen setzen: Arbeitsfreigabe in Stunden (1..720, Standard 24; arbeitsfreigabe_erteilen)' },
   anmeldung_plaene_minuten: { type: 'number', description: 'ausweis_fristen setzen: Fenster eigener offener files-Plaene in chat(anmelden) in Minuten (1..1440, Standard 30)' },
+  files_plan_stunden: { type: 'number', description: 'ausweis_fristen setzen: offene files-Plaene ohne Aktivitaet laufen nach so vielen Stunden ab (1..720, Standard 48; P6-T49)' },
+  files_plan_ablauf_aktiv: { type: 'boolean', description: 'ausweis_fristen: Produkt-Schalter Fristablauf offener files-Plaene (Standard EIN; P6-T49). modus setzen: true|false auf ebene; modus entfernen + Parameter vorhanden: Wert dieser ebene entfernen' },
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   ...HAUPTAGENT_ADMIN_PARAMETER,
 };
@@ -361,14 +364,24 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
         const ebene = s(a, 'ebene') ?? 'projekt';
         if (ebene !== 'global' && ebene !== 'projekt') throw new ProfilVerwaltungFehler('ebene_ungueltig');
         const recht = await pruefeProfilVerwalter(akteurRoh, project);
-        await setzeAusweisFristen({
+        // P6-T49 Nachtrag 28011: Produkt-Schalter files_plan_ablauf_aktiv im selben Weg; Fristen nur, wenn welche genannt sind
+        // (ohne Schalter und ohne Fristen bleibt der bisherige Fehler fristen_fehlen).
+        const schalterDa = a.files_plan_ablauf_aktiv !== undefined;
+        const fristenDa = modus === 'setzen'
+          ? AUSWEIS_FRIST_NAMEN.some((k) => a[k] !== undefined && a[k] !== null)
+          : Array.isArray(a.frist_namen) && a.frist_namen.length > 0;
+        if (fristenDa || !schalterDa) await setzeAusweisFristen({
           ebene, project: ebene === 'projekt' ? project : null, grund: a.grund,
           ...(modus === 'setzen'
-            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden, anmeldung_plaene_minuten: a.anmeldung_plaene_minuten } }
+            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden, anmeldung_plaene_minuten: a.anmeldung_plaene_minuten, files_plan_stunden: a.files_plan_stunden } }
             : { entfernen: a.frist_namen ?? [] }),
         }, { wer: recht.wer, setter_identity_id: recht.actor_identity_id });
+        if (schalterDa) await setzeFilesPlanAblaufSchalter({
+          ebene, project: ebene === 'projekt' ? project : null, grund: a.grund,
+          ...(modus === 'setzen' ? { aktiv: a.files_plan_ablauf_aktiv } : { entfernen: true }),
+        }, { wer: recht.wer, setter_identity_id: recht.actor_identity_id });
       }
-      return { project, modus, ausweis_fristen: await leseAusweisFristen(project, { frisch: true }) };
+      return { project, modus, ausweis_fristen: await leseAusweisFristen(project, { frisch: true }), files_plan_ablauf: await leseFilesPlanAblaufSchalter(project) };
     }
     case 'ausweis_visa':
       // P22-T44: Agenten anderer Projekte mit Eintrag hier (Visum/Arbeitsfreigabe/frei), Ablauf, Fristen dieses Projekts.
@@ -407,7 +420,7 @@ function fehlerAntwort(action: string, e: unknown): Record<string, unknown> {
 export function w1bFehlerStatus(code: string): number {
   if (code === 'recht_fehlt' || code === 'eigenprofil_nicht_aenderbar' || code === 'main_rahmen_nur_user') return 403;
   if (code === 'w1b_nicht_umgesetzt') return 501;
-  if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler' || code === 'ausweis_fristen_speicher_fehler' || code === 'ausweis_projekt_speicher_fehler') return 500;
+  if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler' || code === 'ausweis_fristen_speicher_fehler' || code === 'files_plan_ablauf_speicher_fehler' || code === 'ausweis_projekt_speicher_fehler') return 500;
   if (/_unbekannt$|_nicht_gefunden$/.test(code) || code === 'keine_zuweisung' || code === 'ausweis_fehlt') return 404;
   if (code === 'ausweis_kern_aus' || code === 'agent_bezug_modus_nicht_beide' || code === 'identitaet_existiert' || code === 'ausweis_existiert') return 409;
   if (code === 'funktion_aus' || code === 'konflikt' || /_veraltet$|_belegt$|_archiviert$|^token_/.test(code) || code === 'identitaet_nicht_aktiv') return 409;

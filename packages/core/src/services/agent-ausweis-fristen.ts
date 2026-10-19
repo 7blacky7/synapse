@@ -9,6 +9,9 @@
  *   arbeitsfreigabe_stunden  Arbeitsfreigabe (P22-T44): Freigabe durch Koordinator/User des besuchten Projekts (Standard 24 h)
  *   anmeldung_plaene_minuten  chat(anmelden) (P22-T50): Zeitfenster fuer EIGENE offene files-Plaene der Identitaet in der
  *                        Anmeldeantwort (Standard 30 min); aeltere/fremde/beendete Plaene erscheinen nicht
+ *   files_plan_stunden   files-Plaene (P6-T49, User 19.10.2026 'nach 2 Tagen auf jeden Fall abgeschlossen'): offener Plan
+ *                        ohne Aktivitaet laenger als diese Frist wird vom REST-Worker files_plan_ablauf abgeschlossen
+ *                        (Status expired, nichts geschrieben; Standard 48 h). Laufende Plaene messen gegen den aktuellen Wert.
  * QUELLE: PG-Tabelle agent_ausweis_fristen (Schema 117), je Wert projekt > global > Standard. KEINE Env (die fruehere
  *   Env-Variable fuer die Erstnutzung entfaellt). Lesefehler (z. B. vor Schema 117) -> Standard mit letzter_fehler.
  * EINE LESESTELLE: leseAusweisFristen (und die Kurzformen schattenFristMs/erstnutzungFristMs). Diese Datei importiert
@@ -23,7 +26,7 @@
 import { getPool } from '../db/client.js';
 import { kernTtlMs } from './agent-profil-schalter.js';
 
-export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten'] as const;
+export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten', 'files_plan_stunden'] as const;
 export type AusweisFristName = typeof AUSWEIS_FRIST_NAMEN[number];
 export type AusweisFristQuelle = 'standard' | 'global' | 'projekt';
 type Einheit = 'stunden' | 'minuten';
@@ -41,6 +44,8 @@ export const AUSWEIS_FRIST_DEFINITIONEN: Readonly<Record<AusweisFristName, Frist
     wirkung: 'Arbeitsfreigabe (P22-T44): vom Koordinator/User dieses Projekts erteilt, Agent darf hier arbeiten; danach wieder Visum' },
   anmeldung_plaene_minuten: { standard: 30, einheit: 'minuten', min: 1, max: 1440,
     wirkung: 'chat(anmelden) (P22-T50): eigene offene files-Plaene, die juenger als dieses Fenster sind, als eine Zeile in der Anmeldung' },
+  files_plan_stunden: { standard: 48, einheit: 'stunden', min: 1, max: 720,
+    wirkung: 'files-Plaene (P6-T49): offener Plan ohne Aktivitaet laenger als diese Frist wird automatisch abgeschlossen (Status expired, nichts geschrieben, Ops bleiben lesbar)' },
 };
 const EINHEIT_MS: Readonly<Record<Einheit, number>> = { stunden: 3_600_000, minuten: 60_000 };
 
@@ -132,6 +137,10 @@ export async function schattenFristMs(project: string | null): Promise<number> {
 /** Erstnutzungsfrist (Weg B, Daemon-Start) in ms fuer das Projekt; Lesestelle leseAusweisFristen. */
 export async function erstnutzungFristMs(project: string | null): Promise<number> {
   return (await leseAusweisFristen(project)).fristen.erstnutzung_minuten.ms;
+}
+/** P6-T49: Ablauffrist offener files-Plaene (ohne Aktivitaet) in ms fuer das Projekt; Lesestelle leseAusweisFristen. */
+export async function filesPlanFristMs(project: string | null): Promise<number> {
+  return (await leseAusweisFristen(project)).fristen.files_plan_stunden.ms;
 }
 
 /**

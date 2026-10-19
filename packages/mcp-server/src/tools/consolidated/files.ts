@@ -555,7 +555,7 @@ export const filesTool: ConsolidatedTool = {
           ? `Plan ${result.plan_id}: ${result.total_ops} sofortige Op(s), ${result.deferred_ops ?? 0} Op(s) warten reservationsbasiert. Shared Ops wurden nicht geschrieben.`
           : result.merged_into?.length
             ? `${result.merged_into.map((m) => `${m.ops} Op(s) an deinen offenen Plan ${m.plan_id} angehaengt (ein Plan je Datei)`).join('; ')}. Plan ${result.plan_id}: ${result.total_ops} Op(s) — commit mit files(action: "commit", plan_id: "${result.plan_id}").`
-            : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Plaene laufen nicht ab — offen bis commit oder cancel.`,
+            : `Plan ${result.plan_id} angelegt: ${result.total_ops} Op(s) ueber ${result.files_touched.length} Datei(en). commit mit files(action: "commit", plan_id: "${result.plan_id}") oder cancel mit "cancel". Offene Plaene laufen nach files_plan_stunden (Standard 48 h) ohne Aktivitaet ab (expired).`,
       };
     }
     if (action === 'plan_update') {

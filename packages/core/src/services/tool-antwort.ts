@@ -197,8 +197,11 @@ function kuerzeAntwortAnhaenge(payload: unknown, kompakt: boolean): unknown {
   }
   if (istSchlichtesObjekt(payload.open_plans)) {
     const plaene = { ...payload.open_plans };
-    if (typeof plaene.hinweis === 'string' && plaene.hinweis.startsWith('Offene Plaene laufen nicht ab.')) {
-      plaene.hinweis = 'Offene Pläne laufen nicht ab. Prüfen: files(plan_status, plan_id); ändern: commit/cancel/plan_update.';
+    // P6-T49: der erste Satz nennt die Ablauffrist (Wert + Quelle) und bleibt; der Rest wird kompakt.
+    if (typeof plaene.hinweis === 'string' && plaene.hinweis.startsWith('Offene Plaene laufen ')) {
+      const satzEnde = plaene.hinweis.indexOf('. ');
+      const satz = (satzEnde >= 0 ? plaene.hinweis.slice(0, satzEnde + 1) : plaene.hinweis).replace('Offene Plaene', 'Offene Pläne');
+      plaene.hinweis = satz + ' Prüfen: files(plan_status, plan_id); ändern: commit/cancel/plan_update.';
     }
     if (istSchlichtesObjekt(plaene.aeltere)) {
       const alt = plaene.aeltere;

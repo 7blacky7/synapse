@@ -50,6 +50,9 @@ export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   erklaerung_en: { type: 'boolean', description: 'jev_optionen setzen: Englisch als gepflegte Erklaerungssprache an/aus (mind. eine an)' },
   entscheidung_ohne_praezedenz: { type: 'boolean', description: 'jev_optionen setzen: true = Jev waehlt auch ohne passende Praezedenz aus dem Entscheidungs-Topf (markiert, Durchsicht zuerst), false = offene Frage fuer den User (Standard true)' },
   jev_sprache: { type: 'string', enum: [...JEV_SPRACHEN], description: 'jev_optionen setzen: Sprache, die Jev angeboten bekommt (en Standard | de | mix); nur aus den gepflegten Sprachen, sonst Rueckfall mit Hinweis' },
+  // P23-T1: additive Parameter; der Beschreibungssatz oben bleibt byte-stabil (Golden admin-kontextprofil-p7-t42).
+  skill_rerank_tor: { type: 'number', description: 'jev_optionen setzen: Tor der Skill-Sinnpruefung (0..1, Standard 0.5); darunter wird ein semantischer Skill-Vorschlag nicht ausgeliefert. Die Sinnpruefung selbst ist die Jev-Funktion skill_rerank (jev_schalten), Standard AUS bis ausdruecklich an' },
+  skill_rerank_max: { type: 'number', description: 'jev_optionen setzen: hoechstens so viele semantische Skill-Kandidaten je Text gehen an Jev (1..30, Standard 8)' },
 };
 
 export function istJevAdminAction(action: string | undefined): boolean {
@@ -105,7 +108,7 @@ export async function fuehreJevAdminAus(
           kosten_31_tage: 'gesamt' in kosten ? { gesamt: kosten.gesamt, je_funktion: kosten.je_funktion } : kosten,
           jev_tool_in_tools_list: sichtbar,
           optionen: await leseJevOptionen(),
-          hinweis: 'Vorrang: global aus = ueberall aus; sonst Projekt, dann Funktion; Budget-Pause wirkt wie global aus. Ohne Zeile = an.',
+          hinweis: 'Vorrang: global aus = ueberall aus; sonst Projekt, dann Funktion; Budget-Pause wirkt wie global aus. Ohne Zeile = an, ausser Standard-AUS-Funktionen (skill_rerank): die brauchen ein ausdrueckliches an (oder befristet intern-Schalter).',
         };
       }
       case 'jev_schalten': {
@@ -169,6 +172,8 @@ export async function fuehreJevAdminAus(
           erklaerung_en: wahr(args.erklaerung_en),
           jev_sprache: text(args.jev_sprache),
           entscheidung_ohne_praezedenz: wahr(args.entscheidung_ohne_praezedenz),
+          skill_rerank_tor: zahl(args.skill_rerank_tor),
+          skill_rerank_max: zahl(args.skill_rerank_max),
           agent: wer,
         });
         return { success: true, optionen, message: 'Jev-Optionen gespeichert (wirken ab E1, Erklaerungstopf).' };

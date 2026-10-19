@@ -1209,7 +1209,7 @@ export const MCP_TOOLS = [
         action: {
           type: 'string',
           enum: ['plan', 'commit', 'cancel', 'plan_status', 'history', 'restore', 'restore_batch', 'reservation_add', 'reservation_release', 'reservation_update', 'reservation_list', 'coedit_add', 'coedit_ready', 'coedit_no_changes', 'shared_plan_status', 'plan_update', 'task_zuordnen'],
-          description: 'plan: Trockenlauf, gibt plan_id zurueck; scheitert eine Op, entsteht trotzdem ein neuer offener Plan (plan_id + failed_ops), korrigierbar per plan_update (ersetzt op_index bzw. alle Ops, neue plan_id, alter Plan verworfen). Plaene laufen nicht ab. commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
+          description: 'plan: Trockenlauf, gibt plan_id zurueck; scheitert eine Op, entsteht trotzdem ein neuer offener Plan (plan_id + failed_ops), korrigierbar per plan_update (ersetzt op_index bzw. alle Ops, neue plan_id, alter Plan verworfen). Offene Plaene laufen nach files_plan_stunden (Standard 48 h) ohne Aktivitaet ab (expired). commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
         ohne_task: { type: 'boolean', description: 'history/versions: nur Versionen ohne task_id; since/seit begrenzt Altbestand. Kein Backfill.' },
@@ -2200,7 +2200,20 @@ async function attachSkillHinweisgeber(
   if (!effectiveAgentId || typeof result !== 'object' || result === null || Array.isArray(result)) {
     return result;
   }
-  if (toolName !== 'memory' && toolName !== 'thought' && toolName !== 'plan') return result;
+  if (toolName !== 'memory' && toolName !== 'thought' && toolName !== 'plan') {
+    // P23-T1 (2c): an allen uebrigen Tools nur die 99%-Kette nachliefern (vorgegebene, verknuepfte und woertlich
+    // genannte Skills), bis der Agent sie gesehen hat. skills liefert selbst; eigene Vorschlaege bleiben.
+    if (toolName === 'skills' || 'skill_suggestions' in (result as Record<string, unknown>)) return result;
+    try {
+      const { holeOffeneSkillVorschlaege, KETTEN_SCORE } = await import('@synapse/core');
+      const kette = await holeOffeneSkillVorschlaege(effectiveAgentId, undefined, undefined, { mindestScore: KETTEN_SCORE });
+      return kette.suggestions.length === 0
+        ? result
+        : { ...result, skill_suggestions: kette.suggestions, skill_hook_metrics: kette.metrics };
+    } catch {
+      return result;
+    }
+  }
   try {
     const { verarbeiteSkillHinweisgeber, holeOffeneSkillVorschlaege } = await import('@synapse/core');
     await verarbeiteSkillHinweisgeber(
@@ -5217,6 +5230,9 @@ async function handleToolCallKern(
       if (action === 'cancel') {
         const planId = reqStr(args, 'plan_id');
         // Mit agent_id: fremde Beitraege bleiben, nur die eigenen Ops werden zurueckgezogen.
+        // P6-T49: MIT grund verwerfen Koordinator/User ausdruecklich den ganzen Plan samt fremder Ops (Pruefung im Kern).
+        const grund = str(args, 'grund');
+        if (grund !== undefined) return buildCancelResponse(planId, await cancelBatch(planId, agentId, grund, { fremdeVerwerfen: true }));
         return buildCancelResponse(planId, await cancelBatch(planId, agentId, str(args, 'reason')));
       }
       if (action === 'plan_status') {
@@ -6107,6 +6123,16 @@ async function handleToolCallKern(
           ? { skill_suggestions: weitere.suggestions, skill_hook_metrics: weitere.metrics }
           : {};
       };
+      // P23-T1 (2b): 99%-Kette beim Skill-Abruf - im gelesenen Skill woertlich genannte Skills kommen ohne
+      // Embedding in den Vorrat, der gelesene Skill gilt als gesehen. Vor naechsteVorschlaege, damit sie
+      // sofort nachruecken. Fehler bleiben im Hook (bereiteVerknuepfteSkillsVor wirft nie).
+      const verknuepfteSkills = async (skillName: string, inhalt: string) => {
+        if (!effectiveAgentId || !skillName) return;
+        const { bereiteVerknuepfteSkillsVor, aktuellerAgentPrincipal } = await import('@synapse/core');
+        await bereiteVerknuepfteSkillsVor(
+          str(args, 'project') ?? aktuellerAgentPrincipal()?.project ?? '', skillName, inhalt, effectiveAgentId,
+        );
+      };
       switch (action) {
         case 'search': {
           const query = reqStr(args, 'query');
@@ -6131,11 +6157,13 @@ async function handleToolCallKern(
         case 'get_section': {
           const sec = await getSkillSection(reqStr(args, 'skill_name'), reqStr(args, 'section'));
           if (!sec) return { success: false, experimental: true, error: 'not_found', message: 'skill_name + section nicht gefunden' };
+          await verknuepfteSkills(sec.skill_name || reqStr(args, 'skill_name'), sec.content ?? '');
           return { success: true, experimental: true, ...sec, ...(await naechsteVorschlaege()) };
         }
         case 'get_full': {
           const sections = await getSkillFull(reqStr(args, 'skill_name'));
           if (sections.length === 0) return { success: false, experimental: true, error: 'not_found', message: 'skill_name nicht gefunden' };
+          await verknuepfteSkills(sections[0].skill_name, sections.map((s) => s.content ?? '').join('\n\n'));
           return {
             success: true, experimental: true,
             skill_name: sections[0].skill_name,

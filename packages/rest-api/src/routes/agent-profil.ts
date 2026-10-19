@@ -38,7 +38,7 @@
  *   POST /tasks/:task_id/bindung/entblocken {grund}
  *   GET  /web-ui-koordinator-token?identity_id=    nur User
  *   GET  /ausweis-fristen                   ausweis_fristen modus status (P22-T45: Wert + Quelle je Frist)
- *   PUT  /ausweis-fristen                   ausweis_fristen {modus? setzen|entfernen, ebene?, schatten_stunden?, erstnutzung_minuten?, visum_minuten?, arbeitsfreigabe_stunden?, frist_namen?, grund}
+ *   PUT  /ausweis-fristen                   ausweis_fristen {modus? setzen|entfernen, ebene?, schatten_stunden?, erstnutzung_minuten?, visum_minuten?, arbeitsfreigabe_stunden?, anmeldung_plaene_minuten?, files_plan_stunden?, frist_namen?, grund}
  *   GET  /ausweis-visa                      ausweis_visa (P22-T44: Agenten anderer Projekte mit Visum/Arbeitsfreigabe hier)
  *   POST /ausweis-visa/:identity_id/arbeitsfreigabe   arbeitsfreigabe_erteilen {grund}
  *   POST /ausweis-visa/:identity_id/entziehen         arbeitsfreigabe_entziehen {grund}

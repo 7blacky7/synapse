@@ -508,6 +508,41 @@ export async function startServer(): Promise<void> {
     console.log('[Synapse API] Session-Reaper per SESSION_REAPER_DISABLED=1 ausgeschaltet');
   }
 
+  // P6-T49: offene files-Plaene laufen nach der Frist files_plan_stunden ohne Aktivitaet ab (Status expired, nichts
+  // geschrieben; Frist als Einstellung admin ausweis_fristen, projekt > global > Standard 48 h, Debug = Wert + Quelle im
+  // Ergebnis). Der erste Lauf beim Start raeumt den Altbestand ab. AN/AUS ist ein PRODUKT-SCHALTER in PG (files_plan_ablauf,
+  // projekt > global > Standard EIN; admin ausweis_fristen files_plan_ablauf_aktiv / Web-UI), den der Lauf je Projekt liest.
+  // ENV nur als Infrastruktur-Notbremse bzw. Takt:
+  //   SYNAPSE_FILES_PLAN_ABLAUF_DISABLED=1     — Notbremse: Worker startet nicht (zusaetzlich pausierbar ueber intern(worker_*))
+  //   SYNAPSE_FILES_PLAN_ABLAUF_INTERVAL_MS=N  — Lauf-Intervall (Default 15 min)
+  if (process.env.SYNAPSE_FILES_PLAN_ABLAUF_DISABLED !== '1') {
+    const { laufeFilesPlaeneAb, registriereWorker, workerPausiert, meldeWorkerArbeit } = await import('@synapse/core');
+    const roh = process.env.SYNAPSE_FILES_PLAN_ABLAUF_INTERVAL_MS;
+    const intervall = roh === undefined ? 15 * 60 * 1000 : Number(roh);
+    if (!Number.isSafeInteger(intervall) || intervall < 1000 || intervall > 2147483647) {
+      throw new Error('Ungueltiges files-Plan-Ablauf-Intervall');
+    }
+    const lauf = async () => {
+      const r = await laufeFilesPlaeneAb();
+      if (r.aus.length > 0) console.log(`[Synapse API] files-Plan-Ablauf: Produkt-Schalter AUS fuer ${r.aus.join(', ')}`);
+      if (r.abgelaufen.length > 0) {
+        meldeWorkerArbeit('files_plan_ablauf');
+        console.log(`[Synapse API] files-Plan-Ablauf: ${r.abgelaufen.length} Plan/Plaene abgelaufen (${r.abgelaufen.map((p) => `${p.project}#${p.plan_id}`).join(', ')})`);
+      }
+      return r;
+    };
+    registriereWorker({ name: 'files_plan_ablauf', beschreibung: `P6-T49 offene files-Plaene nach Frist files_plan_stunden abschliessen (Intervall ${intervall} ms)`, durchlauf: lauf });
+    const starten = (): void => {
+      if (workerPausiert('files_plan_ablauf')) return;
+      void lauf().catch((err: unknown) => console.error('[Synapse API] files-Plan-Ablauf fehlgeschlagen:', err));
+    };
+    starten(); // einmal beim Start (Altbestand)
+    setInterval(starten, intervall).unref();
+    console.log(`[Synapse API] files-Plan-Ablauf aktiv (Intervall ${intervall}ms)`);
+  } else {
+    console.log('[Synapse API] files-Plan-Ablauf per SYNAPSE_FILES_PLAN_ABLAUF_DISABLED=1 ausgeschaltet');
+  }
+
   // CE-6: skalierbare Reservierungs-TTLs im 24/7-REST-Prozess (Default an).
   if (process.env.SYNAPSE_RESERVATION_TTL_WORKER_DISABLED !== '1') {
     const { getReservationTtlConfig, renewFileReservationTtls, releaseStaleFileReservations, registriereWorker, workerPausiert } = await import('@synapse/core');

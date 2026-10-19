@@ -5440,6 +5440,19 @@ export interface CancelBatchResult {
   record_plan_id?: string;
   /** cancelled (Runde 3): so viele eigene Waits des Plans (Traeger) wurden mit geschlossen. */
   closed_waits?: number;
+  /** P6-T49: ganz verworfen durch Koordinator/User bzw. Fristablauf - Autoren fremder Ops, die mit verworfen wurden. */
+  verworfen_fremd?: string[];
+  /** P6-T49: cancel mit grund wollte fremde Ops verwerfen, durfte aber nicht (nur_koordinator_oder_user | grund_zu_kurz). */
+  fremd_verwerfen_abgelehnt?: 'nur_koordinator_oder_user' | 'grund_zu_kurz';
+}
+
+/** P6-T49: Optionen fuer cancelBatch. Ohne Angabe gilt das bisherige Verhalten (fremde Ops bleiben immer). */
+export interface CancelBatchOptionen {
+  /** files(cancel) MIT grund: Koordinator/User (darfKoordinatorOderUser) verwerfen den GANZEN Plan samt fremder Ops,
+   *  Grund mindestens 5 Zeichen. Andere Aufrufer: bisheriges Verhalten (nur eigene Ops) + fremd_verwerfen_abgelehnt. */
+  fremdeVerwerfen?: boolean;
+  /** Fristablauf (file-plan-ablauf.ts, REST-Worker): ganz verwerfen mit Zielstatus expired, ohne Rollenpruefung. */
+  ablauf?: boolean;
 }
 
 /**
@@ -5449,8 +5462,17 @@ export interface CancelBatchResult {
  * Rueckzug kann den Konflikt aufloesen). Eigene Waits werden wieder beitrittsfaehig.
  * Ganz verworfen wird der Plan nur, wenn keine fremden Ops drin sind (oder ohne agent_id).
  */
-export async function cancelBatch(plan_id: string, agent_id?: string, grund?: string): Promise<CancelBatchResult> {
+export async function cancelBatch(plan_id: string, agent_id?: string, grund?: string, opt: CancelBatchOptionen = {}): Promise<CancelBatchResult> {
   const caller = resolveAgentId(agent_id);
+  // P6-T49 (User 19.10.2026): ganz verworfen (auch fremde Ops) wird nur durch den Fristablauf oder ausdruecklich durch
+  // Koordinator/User mit Grund. Agenten ziehen weiterhin nur ihre eigenen Ops zurueck.
+  const grundOk = typeof grund === 'string' && grund.trim().length >= 5;
+  const koordinatorGanz = opt.fremdeVerwerfen === true && grundOk && !!caller && darfKoordinatorOderUser(caller);
+  const ganz = opt.ablauf === true || koordinatorGanz;
+  const zielStatus: FileBatchStatus = opt.ablauf === true ? 'expired' : 'cancelled';
+  const fremdHinweis: CancelBatchResult['fremd_verwerfen_abgelehnt'] = opt.fremdeVerwerfen === true && !ganz
+    ? (grundOk ? 'nur_koordinator_oder_user' : 'grund_zu_kurz') : undefined;
+  const fremdFeld = fremdHinweis ? { fremd_verwerfen_abgelehnt: fremdHinweis } : {};
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
@@ -5472,7 +5494,7 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
     // V3 (29.09.2026): ohne bekannten Aufrufer (keine agent_id) weiss niemand, wessen Arbeit
     // verworfen wuerde — dann nur, wenn KEINE fremden Ops drin sind (alles vom Owner). Vorher
     // verwarf cancel ohne agent_id den ganzen Plan samt Beitraegen anderer.
-    if (!caller) {
+    if (!caller && !ganz) {
       const fremdeAutoren = uniqueStrings(plan.ops.map((op) => opAgentKey(op,plan)).filter((agent) => agent !== ownerAgentKey(plan)));
       if (fremdeAutoren.length > 0) {
         await client.query('ROLLBACK');
@@ -5488,12 +5510,12 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       id: String(plan_id), project: plan.project, owner_agent_id: plan.owner_agent_id, owner_identity_id:plan.owner_identity_id, ops: plan.ops, expected_hashes: plan.expected_hashes,
     });
     const foreignIdx = plan.ops.map((op, index) => ({ op, index })).filter(({ op }) => !caller || opAgentKey(op,plan) !== fileCallerKey(plan.project,caller));
-    if (caller && foreignIdx.length > 0) {
+    if (caller && foreignIdx.length > 0 && !ganz) {
       const ownCount = plan.ops.length - foreignIdx.length;
       if (ownCount === 0) {
         await client.query('ROLLBACK');
         return {
-          ok: false, status: plan.status, mode: 'none', withdrawn_ops: 0,
+          ok: false, status: plan.status, mode: 'none', withdrawn_ops: 0, ...fremdFeld,
           remaining_ops: plan.ops.length,
           remaining_agents: uniqueStrings(plan.ops.map((op) => authorOf(op) ?? '').filter(Boolean)),
         };
@@ -5591,16 +5613,18 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       await client.query('COMMIT'); notifyPlanChange();
       return {
         record_plan_id: record.rows[0].id,
-        ok: true, status: 'open', mode: 'withdrawn', withdrawn_ops: ownCount,
+        ok: true, status: 'open', mode: 'withdrawn', withdrawn_ops: ownCount, ...fremdFeld,
         remaining_ops: remainingOps.length,
         remaining_agents: uniqueStrings(remainingOps.map((op) => authorOf(op) ?? '').filter(Boolean)),
         ...(remainingOps.some(op=>op.author_identity_id) ? {remaining_identity_ids:uniqueStrings(remainingOps.flatMap(op=>op.author_identity_id?[op.author_identity_id]:[]))} : {}),
       };
     }
+    // P6-T49: bei ganz=true (Koordinator/User mit Grund, Fristablauf) die Autoren fremder Ops fuer Antwort und Audit.
+    const fremdeAutorenGanz = ganz ? uniqueStrings(plan.ops.map((op) => authorOf(op) ?? '').filter((a) => a && a !== caller)) : [];
     // Auch der ganz verworfene Plan behaelt ops und reason; der Vermerk sagt wer/wann/warum.
     await client.query(
-      `UPDATE file_batch_plans SET status = 'cancelled', cancelled_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,caller))}, reason = CONCAT_WS(E'\n', reason, $2::text) WHERE id = $1::bigint`,
-      [plan_id, `[verworfen von ${caller ?? 'unbekannt'} am ${new Date().toISOString()}${grund ? `: ${grund}` : ''}]`],
+      `UPDATE file_batch_plans SET status = $3::file_batch_status, cancelled_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,caller))}, reason = CONCAT_WS(E'\n', reason, $2::text) WHERE id = $1::bigint`,
+      [plan_id, `[${zielStatus === 'expired' ? 'abgelaufen (Frist files_plan_stunden ohne Aktivitaet), abgeschlossen von' : 'verworfen von'} ${caller ?? 'unbekannt'} am ${new Date().toISOString()}${fremdeAutorenGanz.length > 0 ? ` inkl. fremder Ops von ${fremdeAutorenGanz.join(', ')}` : ''}${grund ? `: ${grund}` : ''}]`, zielStatus],
     );
     // BUG 3: Ziel-Plan verworfen -> die daran gebundenen Waits und leeren Traegerplaene auch.
     await client.query(
@@ -5642,15 +5666,17 @@ export async function cancelBatch(plan_id: string, agent_id?: string, grund?: st
       empfaenger: betroffene.map((agent) => ({
         agent,
         payload: {
+          ...(zielStatus === 'expired' ? { abgelaufen: true } : {}),
           cancelled_by: caller ?? null, grund: grund ?? null, dateien: Object.keys(plan.expected_hashes ?? {}),
-          hinweis: `Plan ${plan_id} ist verworfen, nichts davon geschrieben. Wer seine Ops noch braucht: neu planen (files plan) — dieser Plan ist kein Ziel mehr.`,
+          hinweis: `Plan ${plan_id} ist ${zielStatus === 'expired' ? 'nach Frist ohne Aktivitaet abgelaufen' : 'verworfen'}, nichts davon geschrieben. Wer seine Ops noch braucht: neu planen (files plan) — dieser Plan ist kein Ziel mehr.`,
         },
       })),
       grund: `Plan ${plan_id} verworfen`, quittiereFuer: [...betroffene, caller ?? ''],
     });
     await client.query('COMMIT'); notifyPlanChange();
     return {
-      ok: true, status: 'cancelled', mode: 'cancelled', withdrawn_ops: plan.ops.length, remaining_ops: 0,
+      ok: true, status: zielStatus, mode: 'cancelled', withdrawn_ops: plan.ops.length, remaining_ops: 0,
+      ...(fremdeAutorenGanz.length > 0 ? { verworfen_fremd: fremdeAutorenGanz } : {}),
       ...(eigeneWaits.rows.length > 0 ? { closed_waits: eigeneWaits.rows.length } : {}),
     };
   } catch (error) {
@@ -5769,7 +5795,7 @@ export function buildCancelResponse(planId: string, result: CancelBatchResult): 
     : result.mode === 'none'
       ? `Plan ${planId} enthaelt keine Ops von dir — nichts zurueckgezogen, fremde Arbeit (${andere}) bleibt unangetastet.`
       : result.ok
-        ? `Plan ${planId} verworfen (${result.withdrawn_ops ?? 0} Op(s), keine fremden Beitraege). Ops und Begruendung bleiben lesbar (plan_status), mit Vermerk wer/wann/warum.`
+        ? `Plan ${planId} ${result.status === 'expired' ? 'nach Frist abgelaufen (expired)' : 'verworfen'} (${result.withdrawn_ops ?? 0} Op(s), ${result.verworfen_fremd?.length ? `inkl. fremder Ops von ${result.verworfen_fremd.join(', ')}` : 'keine fremden Beitraege'}). Ops und Begruendung bleiben lesbar (plan_status), mit Vermerk wer/wann/warum.`
           + (result.closed_waits ? ` ${result.closed_waits} eigene(r) Wait(s) dieses Plans geschlossen — sie halten keinen commit mehr auf; schon beigetragene Ops bleiben im Ziel-Plan (dort per cancel mit agent_id zurueckziehen).` : '')
         : `Plan ${planId} nicht abbrechbar (Status: ${result.status}).`;
   return {
@@ -5777,6 +5803,11 @@ export function buildCancelResponse(planId: string, result: CancelBatchResult): 
     plan_id: planId,
     ...result,
     message,
+    ...(result.fremd_verwerfen_abgelehnt ? {
+      hinweis_fremd: result.fremd_verwerfen_abgelehnt === 'grund_zu_kurz'
+        ? 'Fremde Ops verwerfen (Koordinator/User) braucht einen grund mit mindestens 5 Zeichen - behandelt wurden nur deine eigenen Ops.'
+        : 'cancel mit grund verwirft fremde Ops nur fuer Koordinator/User - behandelt wurden nur deine eigenen Ops; fremde Arbeit bleibt.',
+    } : {}),
     hinweis_plan_update: `Bei fehlerhaften Ops reparieren statt verwerfen + neu planen: files(action:"plan_update", plan_id:"${planId}", op_index:<index>, ops:[<korrigierte Op>]).`,
   };
 }

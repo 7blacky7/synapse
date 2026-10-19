@@ -321,72 +321,55 @@ export async function synchronisiereSkillNamen(
 }
 
 /**
- * Unscharfe Namenssuche — ohne Embedding, ohne Qdrant.
+ * P23-T1 (User 19.10.2026): EINE Regel fuer "Skill steht beim Namen im Text".
  *
- * Zwei Wege, absichtlich in dieser Reihenfolge:
- * 1. Der Name (oder sein Anfang an einer Segmentgrenze) steht woertlich im Text.
- * 2. Trigram-Aehnlichkeit ueber der Schwelle — faengt Tippfehler und Schreibvarianten.
+ * Nur der VOLLE Name zaehlt, und er muss als eigenes Wort dastehen: links und rechts kein
+ * Buchstabe, keine Ziffer, kein '-' und kein '_' (diese Zeichen gehoeren zu Skillnamen). Ein
+ * ':' oder '.' gehoert nur dann zum Namen, wenn direkt danach (bzw. davor) ein Buchstabe oder
+ * eine Ziffer folgt ("codex:rescue", "v1.2") — am Satzende ist es eine Grenze.
+ * Damit trifft "ogame-strategie" NICHT ogame-strategie-erweitert und umgekehrt.
  *
- * ⚠️ DIE SCHWELLE IST DER GANZE UNTERSCHIED zwischen Hilfe und Rauschen. Zu niedrig, und
- * "test" zieht jeden Skill mit "testing" im Namen herbei. 0,45 ist bewusst streng: die
- * unscharfe Suche soll Vertipper auffangen, nicht Themen erraten. Dafuer gibt es das
- * Embedding.
+ * ⚠️ ZURUECKGEBAUT: Namensanfang an einer Segmentgrenze ("ki-browser" -> ki-browser-standalone)
+ * und Trigramm-Aehnlichkeit (>= 0,45). Beides war ein Notbehelf fuer das alte Qwen-Embedding,
+ * das Skills nicht fand bzw. zu langsam war. Es erzeugte Fehltreffer mit pauschal 0,99/0,95
+ * (gemessen 19.10.2026: "ogame-strategie" zog ogame-strategie-erweitert, memory-leak-debugging
+ * und database-migration kamen als "Name unscharf erkannt"). Thematische Treffer laufen
+ * ausschliesslich ueber die semantische Suche mit den kalibrierten Schwellen (P15-T3).
  */
-export async function findeSkillsNachName(
-  text: string,
-  mindestAehnlichkeit = 0.45,
-): Promise<string[]> {
-  const sichtbareNamen = skillIdModus() ? [...new Set((await leseSichtbareSkillSections()).map(s=>s.skill_name))] : null;
+export function istSkillNameImText(skillName: string | undefined | null, text: string): boolean {
+  const name = skillName?.toLowerCase().trim();
+  if (!name) return false;
+  const t = text.toLowerCase();
+  const wort = (z: string | undefined) => z !== undefined && /[a-z0-9_-]/.test(z);
+  const alnum = (z: string | undefined) => z !== undefined && /[a-z0-9]/.test(z);
+  const verbinder = (z: string | undefined) => z === ':' || z === '.';
+  let ab = t.indexOf(name);
+  while (ab !== -1) {
+    const vor = t[ab - 1];
+    const nach = t[ab + name.length];
+    const links = !wort(vor) && !(verbinder(vor) && alnum(t[ab - 2]));
+    const rechts = !wort(nach) && !(verbinder(nach) && alnum(t[ab + name.length + 1]));
+    if (links && rechts) return true;
+    ab = t.indexOf(name, ab + 1);
+  }
+  return false;
+}
+
+/**
+ * Skills, die im Text beim VOLLEN Namen genannt werden — ohne Embedding, ohne Qdrant.
+ * Vorauswahl in PG (Teilstring), Entscheidung ueber istSkillNameImText (Wortgrenze).
+ */
+export async function findeSkillsNachName(text: string): Promise<string[]> {
   const tiefe = text.toLowerCase().trim();
   if (tiefe.length < 3) return [];
   try {
+    const sichtbareNamen = skillIdModus() ? [...new Set((await leseSichtbareSkillSections()).map(s=>s.skill_name))] : null;
     const { rows } = await getPool().query<{ skill_name: string }>(
-      `SELECT skill_name FROM ${sichtbareNamen ? 'unnest($3::text[]) AS sicht(skill_name)' : 'skill_names'}
-        WHERE position(lower(skill_name) in $1) > 0
-           OR similarity(lower(skill_name), $1) >= $2
-        ORDER BY similarity(lower(skill_name), $1) DESC
-        LIMIT 20`,
-      sichtbareNamen ? [tiefe, mindestAehnlichkeit, sichtbareNamen] : [tiefe, mindestAehnlichkeit],
+      `SELECT skill_name FROM ${sichtbareNamen ? 'unnest($2::text[]) AS sicht(skill_name)' : 'skill_names'}
+        WHERE position(lower(skill_name) in $1) > 0`,
+      sichtbareNamen ? [tiefe, sichtbareNamen] : [tiefe],
     );
-    const gefunden = new Set(rows.map((row) => row.skill_name));
-
-    // Namensanfaenge: "ki-browser" meint ki-browser-standalone. Ab sechs Zeichen, nur an
-    // einer Segmentgrenze — und nur, wenn das Fragment als EIGENES WORT dasteht.
-    //
-    // ⚠️ DIE WORTGRENZE IST NICHT OPTIONAL. Ohne sie traf ein realistischer Auftragstext
-    // am 02.08.2026 zwei Skills, die niemand genannt hatte:
-    //   "Testprompt"             enthaelt "prompt"      -> prompt-engineering-patterns
-    //   "playwright-e2e-testing" enthaelt "e2e-testing" -> e2e-testing-automation
-    // Beide sahen mit Score 0,99 aus wie sichere Treffer. Ein Fragment mitten in einem
-    // anderen Wort bedeutet nichts.
-    const alle = sichtbareNamen ? sichtbareNamen.map(skill_name=>({skill_name})) : (await getPool().query<{skill_name:string}>('SELECT skill_name FROM skill_names')).rows;
-    // ⚠️ DER BINDESTRICH ZAEHLT NICHT ALS GRENZE. Sonst trifft jedes Fragment, das in einem
-    // LAENGEREN Skillnamen steckt, der wirklich im Text steht:
-    //   "playwright-e2e-testing" -> e2e-testing-automation
-    //   "frontend-design"        -> frontend-build-guardian
-    // Beide mit Score 0,99, beide nie genannt. Ein Fragment gilt nur, wenn links und rechts
-    // ein echtes Trennzeichen steht — Leerzeichen, Satzzeichen, Zeilenanfang oder -ende.
-    const grenze = (zeichen: string | undefined) =>
-      zeichen === undefined || !/[a-z0-9-]/.test(zeichen);
-    for (const { skill_name: name } of alle as Array<{ skill_name: string }>) {
-      const klein = name.toLowerCase();
-      if (gefunden.has(name)) continue;
-      for (let ende = klein.length - 1; ende >= 6; ende--) {
-        if (klein[ende] !== '-' && klein[ende] !== ':') continue;
-        const fragment = klein.slice(0, ende);
-        let ab = tiefe.indexOf(fragment);
-        let treffer = false;
-        while (ab !== -1) {
-          if (grenze(tiefe[ab - 1]) && grenze(tiefe[ab + fragment.length])) {
-            treffer = true;
-            break;
-          }
-          ab = tiefe.indexOf(fragment, ab + 1);
-        }
-        if (treffer) { gefunden.add(name); break; }
-      }
-    }
-    return [...gefunden];
+    return [...new Set(rows.map((row) => row.skill_name))].filter((name) => istSkillNameImText(name, tiefe));
   } catch {
     return [];
   }

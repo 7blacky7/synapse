@@ -347,6 +347,16 @@ export function createServer(): Server {
             parsed.skill_hook_metrics = weitere.metrics;
             first.text = JSON.stringify(parsed, null, 2);
           }
+        } else if (name !== 'skills' && agentId && !('skill_suggestions' in parsed)) {
+          // P23-T1 (2c): an allen uebrigen Tools nur die 99%-Kette nachliefern (vorgegebene, verknuepfte und
+          // woertlich genannte Skills), bis der Agent sie gesehen hat - wie im REST-Pfad.
+          const { holeOffeneSkillVorschlaege, KETTEN_SCORE } = await import('@synapse/core');
+          const kette = await holeOffeneSkillVorschlaege(agentId, undefined, undefined, { mindestScore: KETTEN_SCORE });
+          if (kette.suggestions.length > 0) {
+            parsed.skill_suggestions = kette.suggestions;
+            parsed.skill_hook_metrics = kette.metrics;
+            first.text = JSON.stringify(parsed, null, 2);
+          }
         }
       } catch { /* Response-Hooks duerfen Toolantworten nie brechen */ }
       return guided;

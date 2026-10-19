@@ -1347,7 +1347,18 @@ export {
   sammleSkillQuellen,
   baueChannelSkillSuchtext,
   waehleChannelSkillTreffer,
+  // P23-T1: 99%-Kette (Vorgabe, Skill-Abruf) und gemeinsamer Schreibweg des Vorrats
+  KETTEN_SCORE,
+  legeSkillKandidatenAb,
+  bereiteVerknuepfteSkillsVor,
+  bereiteVorgabeSkillsVor,
+  istNamentlichGenannt,
 } from './services/skill-hook.js';
+export type { SkillKandidat, SkillQuellenTyp } from './services/skill-hook.js';
+// P23-T1: Sinnpruefung semantischer Skill-Vorschlaege (Jev-Funktion skill_rerank, Standard AUS)
+export { pruefeSkillTrefferSinn, bestehtSinnpruefung, sinnpruefungsZusatz } from './services/skill-rerank.js';
+export type { SkillSinnKandidat, SkillSinnErgebnis } from './services/skill-rerank.js';
+export { istSkillNameImText, findeSkillsNachName } from './services/skills.js';
 export type {
   SkillVorschlag,
   SkillHookMetriken,
@@ -1387,6 +1398,12 @@ export {
 export type { PlanDiff, PlanDiffDatei } from './services/file-batch.js';
 export { dateiDiff, aenderungsBereiche, diffText } from './services/file-diff.js';
 export { claimOpenPlanHints } from './services/plan-hints.js';
+// P6-T49: offene files-Plaene laufen nach Frist files_plan_stunden ohne Aktivitaet ab (REST-Worker files_plan_ablauf).
+export { laufeFilesPlaeneAb, FILES_PLAN_ABLAUF_AKTEUR } from './services/file-plan-ablauf.js';
+export type { FilesPlanAblaufErgebnis, FilesPlanAblaufEintrag } from './services/file-plan-ablauf.js';
+export type { CancelBatchOptionen } from './services/file-batch.js';
+export { FILES_PLAN_ABLAUF_SCHALTER, FilesPlanAblaufSchalterFehler, leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './services/files-plan-ablauf-schalter.js';
+export type { FilesPlanAblaufSchalterStand, FilesPlanAblaufQuelle } from './services/files-plan-ablauf-schalter.js';
 export type { OpenPlanHints, OpenPlanHintEntry } from './services/plan-hints.js';
 export type {
   FileBatchOp,

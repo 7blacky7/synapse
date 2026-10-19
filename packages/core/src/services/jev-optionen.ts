@@ -10,6 +10,10 @@
  *   3) entscheidung_ohne_praezedenz (P15 E1, User e7b013c2): true = Jev waehlt auch ohne passende Praezedenz aus
  *      dem Entscheidungs-Topf unter den Optionen (markiert, Durchsicht zuerst); false = offene Frage. Standard true.
  *   Die gepflegten Sprachen gelten fuer BEIDE Toepfe (Erklaerungen und Entscheidungen).
+ *   4) skill_rerank_tor (P23-T1): Mindest-Wahrscheinlichkeit (0..1), ab der Jev einen semantischen
+ *      Skill-Vorschlag als sinnvoll bestaetigt. Standard 0.5.
+ *   5) skill_rerank_max (P23-T1): hoechstens so viele semantische Kandidaten je Text gehen an Jev
+ *      (1..30), der Rest wird bei aktiver Sinnpruefung nicht ausgeliefert. Standard 8.
  * TABELLE jev_optionen (name PK, wert JSONB). Fehlt eine Zeile, gilt der Standard. Lesefehler:
  *   Standardwerte mit Hinweis (wirft nicht).
  */
@@ -32,6 +36,10 @@ export interface JevOptionen {
   gepflegte_sprachen: Array<'de' | 'en'>;
   /** P15 E1: Jev entscheidet auch ohne Praezedenz aus dem Entscheidungs-Topf (Standard true) */
   entscheidung_ohne_praezedenz: boolean;
+  /** P23-T1: Tor der Skill-Sinnpruefung (0..1) */
+  skill_rerank_tor: number;
+  /** P23-T1: Hoechstzahl semantischer Kandidaten je Text fuer die Sinnpruefung */
+  skill_rerank_max: number;
   hinweis?: string;
   gesetzt_von: string | null;
   gesetzt_am: string | null;
@@ -46,6 +54,16 @@ export class JevOptionenFehler extends Error {
 const STANDARD_SPRACHEN: JevErklaerungSprachen = { de: true, en: true };
 const STANDARD_JEV_SPRACHE: JevSprache = 'en';
 const STANDARD_OHNE_PRAEZEDENZ = true;
+export const STANDARD_SKILL_RERANK_TOR = 0.5;
+export const STANDARD_SKILL_RERANK_MAX = 8;
+const SKILL_RERANK_MAX_GRENZE = 30;
+
+function istTor(x: unknown): x is number {
+  return typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= 1;
+}
+function istRerankMax(x: unknown): x is number {
+  return typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= SKILL_RERANK_MAX_GRENZE;
+}
 
 function istSprache(x: unknown): x is JevSprache {
   return typeof x === 'string' && (JEV_SPRACHEN as readonly string[]).includes(x);
@@ -64,7 +82,8 @@ export function wirksameJevSprache(sprachen: JevErklaerungSprachen, wunsch: JevS
   };
 }
 
-function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string | null, am: Date | null, zusatz?: string, ohnePraezedenz = STANDARD_OHNE_PRAEZEDENZ): JevOptionen {
+function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string | null, am: Date | null, zusatz?: string, ohnePraezedenz = STANDARD_OHNE_PRAEZEDENZ,
+  rerankTor = STANDARD_SKILL_RERANK_TOR, rerankMax = STANDARD_SKILL_RERANK_MAX): JevOptionen {
   const w = wirksameJevSprache(sprachen, wunsch);
   const hinweis = [zusatz, w.hinweis].filter(Boolean).join(' ');
   return {
@@ -73,6 +92,8 @@ function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string |
     jev_sprache_wirksam: w.sprache,
     gepflegte_sprachen: (['de', 'en'] as const).filter((s) => sprachen[s]),
     entscheidung_ohne_praezedenz: ohnePraezedenz,
+    skill_rerank_tor: rerankTor,
+    skill_rerank_max: rerankMax,
     ...(hinweis ? { hinweis } : {}),
     gesetzt_von: von,
     gesetzt_am: am ? new Date(am).toISOString() : null,
@@ -90,7 +111,7 @@ function leseSprachen(wert: unknown): JevErklaerungSprachen | null {
 export async function leseJevOptionen(): Promise<JevOptionen> {
   try {
     const { rows } = await getPool().query<{ name: string; wert: unknown; gesetzt_von: string | null; gesetzt_am: Date | null }>(
-      `SELECT name, wert, gesetzt_von, gesetzt_am FROM jev_optionen WHERE name IN ('erklaerung_sprachen', 'jev_sprache', 'entscheidung_ohne_praezedenz')`,
+      `SELECT name, wert, gesetzt_von, gesetzt_am FROM jev_optionen WHERE name IN ('erklaerung_sprachen', 'jev_sprache', 'entscheidung_ohne_praezedenz', 'skill_rerank_tor', 'skill_rerank_max')`,
     );
     const z = new Map(rows.map((r) => [r.name, r]));
     const sprachen = leseSprachen(z.get('erklaerung_sprachen')?.wert) ?? STANDARD_SPRACHEN;
@@ -98,8 +119,12 @@ export async function leseJevOptionen(): Promise<JevOptionen> {
     const wunsch = istSprache(roh) ? roh : STANDARD_JEV_SPRACHE;
     const juengste = [...z.values()].sort((a, b) => (b.gesetzt_am?.getTime() ?? 0) - (a.gesetzt_am?.getTime() ?? 0))[0];
     const ohneRoh = z.get('entscheidung_ohne_praezedenz')?.wert;
+    const torRoh = z.get('skill_rerank_tor')?.wert;
+    const maxRoh = z.get('skill_rerank_max')?.wert;
     return baue(sprachen, wunsch, juengste?.gesetzt_von ?? null, juengste?.gesetzt_am ?? null, undefined,
-      typeof ohneRoh === 'boolean' ? ohneRoh : STANDARD_OHNE_PRAEZEDENZ);
+      typeof ohneRoh === 'boolean' ? ohneRoh : STANDARD_OHNE_PRAEZEDENZ,
+      istTor(torRoh) ? torRoh : STANDARD_SKILL_RERANK_TOR,
+      istRerankMax(maxRoh) ? maxRoh : STANDARD_SKILL_RERANK_MAX);
   } catch (err) {
     return baue(STANDARD_SPRACHEN, STANDARD_JEV_SPRACHE, null, null,
       `Jev-Optionen nicht lesbar, es gelten die Standardwerte: ${err instanceof Error ? err.message : String(err)}.`);
@@ -110,9 +135,16 @@ export async function leseJevOptionen(): Promise<JevOptionen> {
  * Setzt einzelne Optionen (nicht genannte bleiben). Validierung: jev_sprache aus en|de|mix;
  * mindestens eine gepflegte Sprache. Wirft JevOptionenFehler (nichts geschrieben).
  */
-export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_en?: boolean; jev_sprache?: string; entscheidung_ohne_praezedenz?: boolean; agent?: string | null }): Promise<JevOptionen> {
-  if (o.erklaerung_de === undefined && o.erklaerung_en === undefined && o.jev_sprache === undefined && o.entscheidung_ohne_praezedenz === undefined) {
-    throw new JevOptionenFehler('nichts_zu_setzen', 'modus setzen braucht mindestens eines von erklaerung_de, erklaerung_en, jev_sprache, entscheidung_ohne_praezedenz.');
+export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_en?: boolean; jev_sprache?: string; entscheidung_ohne_praezedenz?: boolean; skill_rerank_tor?: number; skill_rerank_max?: number; agent?: string | null }): Promise<JevOptionen> {
+  if (o.erklaerung_de === undefined && o.erklaerung_en === undefined && o.jev_sprache === undefined && o.entscheidung_ohne_praezedenz === undefined
+    && o.skill_rerank_tor === undefined && o.skill_rerank_max === undefined) {
+    throw new JevOptionenFehler('nichts_zu_setzen', 'modus setzen braucht mindestens eines von erklaerung_de, erklaerung_en, jev_sprache, entscheidung_ohne_praezedenz, skill_rerank_tor, skill_rerank_max.');
+  }
+  if (o.skill_rerank_tor !== undefined && !istTor(o.skill_rerank_tor)) {
+    throw new JevOptionenFehler('skill_rerank_tor_ungueltig', `skill_rerank_tor "${o.skill_rerank_tor}" ungueltig. Erlaubt: Zahl 0..1.`);
+  }
+  if (o.skill_rerank_max !== undefined && !istRerankMax(o.skill_rerank_max)) {
+    throw new JevOptionenFehler('skill_rerank_max_ungueltig', `skill_rerank_max "${o.skill_rerank_max}" ungueltig. Erlaubt: ganze Zahl 1..${SKILL_RERANK_MAX_GRENZE}.`);
   }
   if (o.jev_sprache !== undefined && !istSprache(o.jev_sprache)) {
     throw new JevOptionenFehler('jev_sprache_ungueltig', `jev_sprache "${o.jev_sprache}" ungueltig. Erlaubt: ${JEV_SPRACHEN.join(', ')}.`);
@@ -137,6 +169,14 @@ export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_
       `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am, setter_identity_id) VALUES ('entscheidung_ohne_praezedenz', $1::jsonb, $2, NOW(), $3)
        ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am, setter_identity_id=EXCLUDED.setter_identity_id`,
       [JSON.stringify(o.entscheidung_ohne_praezedenz), o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
+    );
+  }
+  for (const [name, wert] of [['skill_rerank_tor', o.skill_rerank_tor], ['skill_rerank_max', o.skill_rerank_max]] as const) {
+    if (wert === undefined) continue;
+    await getPool().query(
+      `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am, setter_identity_id) VALUES ($1, $2::jsonb, $3, NOW(), $4)
+       ON CONFLICT (name) DO UPDATE SET wert = EXCLUDED.wert, gesetzt_von = EXCLUDED.gesetzt_von, gesetzt_am = EXCLUDED.gesetzt_am, setter_identity_id=EXCLUDED.setter_identity_id`,
+      [name, JSON.stringify(wert), o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
     );
   }
   return leseJevOptionen();

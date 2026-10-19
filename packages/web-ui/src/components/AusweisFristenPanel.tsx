@@ -6,7 +6,7 @@ import { apiFetch } from '../api/auth';
  * Echt angeschlossen: GET/PUT /api/projects/:project/agent-profile/ausweis-fristen (derselbe Core-Dispatcher wie
  * admin ausweis_fristen). Projektebene oder global (User und Koordinator); Wert + Quelle (standard|global|projekt) je Frist.
  */
-type FristName = 'schatten_stunden' | 'erstnutzung_minuten' | 'visum_minuten' | 'arbeitsfreigabe_stunden' | 'anmeldung_plaene_minuten';
+type FristName = 'schatten_stunden' | 'erstnutzung_minuten' | 'visum_minuten' | 'arbeitsfreigabe_stunden' | 'anmeldung_plaene_minuten' | 'files_plan_stunden';
 interface FristWert {
   name: FristName;
   wert: number;
@@ -21,6 +21,8 @@ interface FristWert {
   wirkung: string;
 }
 interface FristenStand { project: string | null; fristen: Record<FristName, FristWert>; letzter_fehler: string | null; hinweis: string }
+/** P6-T49 Nachtrag: Produkt-Schalter Fristablauf offener files-Plaene (Standard EIN), kommt in derselben Antwort. */
+interface AblaufSchalter { aktiv: boolean; quelle: 'standard' | 'global' | 'projekt'; global: boolean | null; projekt: boolean | null; letzter_fehler: string | null }
 
 const NAMEN: Array<{ name: FristName; label: string }> = [
   { name: 'schatten_stunden', label: 'Schattenprofil' },
@@ -28,6 +30,7 @@ const NAMEN: Array<{ name: FristName; label: string }> = [
   { name: 'visum_minuten', label: 'Visum' },
   { name: 'arbeitsfreigabe_stunden', label: 'Arbeitsfreigabe' },
   { name: 'anmeldung_plaene_minuten', label: 'Eigene offene Pläne in der Anmeldung' },
+  { name: 'files_plan_stunden', label: 'Offene files-Pläne laufen ab nach (ohne Aktivität)' },
 ];
 const QUELLE: Record<FristWert['quelle'], string> = { standard: 'Standard', global: 'global', projekt: 'Projekt' };
 const einheit = (f: FristWert) => (f.einheit === 'stunden' ? 'Std.' : 'Min.');
@@ -41,6 +44,7 @@ function fehlerText(daten: unknown, status: number): string {
 export function AusweisFristenPanel({ project }: { project: string }) {
   const basis = '/api/projects/' + encodeURIComponent(project) + '/agent-profile/ausweis-fristen';
   const [stand, setStand] = useState<FristenStand | null>(null);
+  const [ablauf, setAblauf] = useState<AblaufSchalter | null>(null);
   const [ebene, setEbene] = useState<'projekt' | 'global'>('projekt');
   const [eingaben, setEingaben] = useState<Partial<Record<FristName, string>>>({});
   const [grund, setGrund] = useState('');
@@ -54,6 +58,7 @@ export function AusweisFristenPanel({ project }: { project: string }) {
       const d = await r.json().catch(() => null);
       if (!r.ok) throw new Error(fehlerText(d, r.status));
       setStand((d as { ausweis_fristen: FristenStand }).ausweis_fristen);
+      setAblauf((d as { files_plan_ablauf?: AblaufSchalter }).files_plan_ablauf ?? null);
       setError('');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -71,6 +76,7 @@ export function AusweisFristenPanel({ project }: { project: string }) {
       const d = await r.json().catch(() => null);
       if (!r.ok) throw new Error(fehlerText(d, r.status));
       setStand((d as { ausweis_fristen: FristenStand }).ausweis_fristen);
+      setAblauf((d as { files_plan_ablauf?: AblaufSchalter }).files_plan_ablauf ?? null);
       setEingaben({});
       setNotice(meldung);
     } catch (reason) {
@@ -115,6 +121,17 @@ export function AusweisFristenPanel({ project }: { project: string }) {
         </div>
       </div>;
     })}
+    <div className="cp-setting-field">
+      <span>
+        <b>Fristablauf offener files-Pläne: {ablauf ? (ablauf.aktiv ? 'EIN' : 'AUS') : '…'}</b>
+        <small>{ablauf ? 'Quelle: ' + QUELLE[ablauf.quelle] + ' · Standard EIN' + (ablauf.global !== null ? ' · global ' + (ablauf.global ? 'EIN' : 'AUS') : '') + (ablauf.projekt !== null ? ' · Projekt ' + (ablauf.projekt ? 'EIN' : 'AUS') : '') + ' · Produkt-Schalter; AUS = offene Pläne laufen nicht ab' + (ablauf.letzter_fehler ? ' · Fehler: ' + ablauf.letzter_fehler : '') : 'wird geladen'}</small>
+      </span>
+      <div className="split-field">
+        <button type="button" disabled={busy || !grundOk} onClick={() => void senden({ modus: 'setzen', files_plan_ablauf_aktiv: true }, 'Fristablauf EIN (' + ziel + ').')}>Ein</button>
+        <button type="button" disabled={busy || !grundOk} onClick={() => void senden({ modus: 'setzen', files_plan_ablauf_aktiv: false }, 'Fristablauf AUS (' + ziel + ').')}>Aus</button>
+        {(ebene === 'global' ? ablauf?.global : ablauf?.projekt) != null && <button type="button" disabled={busy || !grundOk} onClick={() => void senden({ modus: 'entfernen', files_plan_ablauf_aktiv: true }, 'Schalter dieser Ebene entfernt (' + ziel + ').')} title="Wert dieser Ebene entfernen; es gilt dann die naechste Ebene">Entfernen</button>}
+      </div>
+    </div>
     <div className="cp-setting-field wide"><span><b>Grund</b><small>Pflicht, mindestens 5 Zeichen; wird mit dem Wert gespeichert.</small></span>
       <input value={grund} onChange={(event) => setGrund(event.target.value)} placeholder="z. B. Start dauert laenger" />
     </div>

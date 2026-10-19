@@ -34,9 +34,10 @@ function fakePool(aktiveAgenten = ['agent-a', 'agent-b']) {
           .map((r) => ({ source_id: String(r.source_id), agent_id: r.agent_id })) };
       }
       if (sql.includes('INSERT INTO skill_hook_preparations')) {
-        const [source_type, source_id, agent_id, skill_name, score, reason] = values;
-        prepared.set([source_type, source_id, agent_id, skill_name].join('|'),
-          { source_type, source_id, agent_id, skill_name, score, reason });
+        // P23-T1: ein Statement je Agent, Skills/Scores/Gruende als Arrays (unnest).
+        const [source_type, source_id, agent_id, namen, scores, gruende] = values;
+        namen.forEach((skill_name, i) => prepared.set([source_type, source_id, agent_id, skill_name].join('|'),
+          { source_type, source_id, agent_id, skill_name, score: scores[i], reason: gruende[i] }));
       }
       return { rows: [] };
     },
@@ -130,10 +131,11 @@ for (const [skill, text] of [
   assert.equal(istNamentlichGenannt(skill, text), false, `${skill} darf nicht auf ein Themenwort anspringen`);
 }
 
-// Der Fall, fuer den die Fragment-Regel gebaut wurde, muss weiter tragen — das Fragment ist
-// dort MEHRTEILIG und damit erkennbar der Anfang eines Namens:
-assert.equal(istNamentlichGenannt('ki-browser-standalone', 'siehe ki-browser hier'), true);
-assert.equal(istNamentlichGenannt('scarlett-audio-setup', 'siehe scarlett-audio hier'), true);
+// P23-T1 (User 19.10.2026): die Fragment-Regel (Namensanfang, Qwen-Notbehelf) ist zurueckgebaut —
+// sie zog z. B. aus "ogame-strategie" den Skill ogame-strategie-erweitert. Nur der volle Name zaehlt:
+assert.equal(istNamentlichGenannt('ki-browser-standalone', 'siehe ki-browser hier'), false);
+assert.equal(istNamentlichGenannt('scarlett-audio-setup', 'siehe scarlett-audio hier'), false);
+assert.equal(istNamentlichGenannt('ogame-strategie', 'nutze ogame-strategie-erweitert'), false);
 // Und der ausgeschriebene Name natuerlich immer:
 assert.equal(istNamentlichGenannt('kubernetes-specialist', 'wir nutzen kubernetes-specialist'), true);
 

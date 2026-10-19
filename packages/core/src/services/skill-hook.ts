@@ -29,7 +29,8 @@ function skillHandle(project: string, agent: string): string {
   const z=kommunikationsAgent(project,agent);
   return z.art === 'identity' ? 'identity:' + z.identity_id : 'legacy:' + z.agent_id;
 }
-import { findeSkillsNachName, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
+import { findeSkillsNachName, istSkillNameImText, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
+import { pruefeSkillTrefferSinn, bestehtSinnpruefung, sinnpruefungsZusatz } from './skill-rerank.js';
 import { scoreSchwelleOderHinweis } from '../embeddings/modell-profil.js';
 
 const HOOK_NAME = 'files_plan_language';
@@ -75,6 +76,8 @@ export interface SkillVorschlag {
    * fuellen.
    */
   skills?: Array<{ skill_name: string; score: number; reason: string }>;
+  /** P23-T1: so viele weitere 99%-Kandidaten (Kette) liegen noch ungezeigt im Vorrat */
+  weitere_mit_99?: number;
 }
 
 export interface SkillHookMetriken {
@@ -310,16 +313,15 @@ type ChannelSkillBatchSearch = typeof searchSkillsForAgents;
 const NAMENSTREFFER_SCORE = 0.99;
 
 /**
- * Score fuer einen Namen, den nur die UNSCHARFE Suche gefunden hat (Trigram, fuer Tippfehler
- * und Leerzeichen statt Bindestrich).
- *
- * ⚠️ NICHT DERSELBE WERT WIE EIN WOERTLICHER TREFFER (gefunden 02.08.2026). Beide auf 0,99
- * zu setzen macht sie ununterscheidbar — und weil je Abruf nur drei Vorschlaege gezeigt
- * werden und eine Sortierung bei Gleichstand nichts zu entscheiden hat, verdraengt dann der
- * unscharfe Fund den ausgeschriebenen Namen rein zufaellig. Wer einen Skill hinschreibt, muss
- * vor dem stehen, den ein Trigramm fuer aehnlich haelt.
+ * P23-T1: Score der 99%-KETTE — vorgegebene Skills (Profil), mit einem abgerufenen Skill verknuepfte
+ * Skills und woertlich (voll) genannte Skills. Sie werden nach jedem Tool-Aufruf weiter nachgeliefert
+ * (je Abruf CHANNEL_SKILL_VORSCHLAEGE), bis der Agent alle gesehen hat.
+ * Zurueckgebaut: FUZZY_NAMENSTREFFER_SCORE 0,95 fuer Trigramm-Funde ("Name unscharf erkannt").
  */
-const FUZZY_NAMENSTREFFER_SCORE = 0.95;
+export const KETTEN_SCORE = NAMENSTREFFER_SCORE;
+
+/** hook_name einer Zustellung, die durch den Abruf des Skills selbst entsteht (Skill gilt als gesehen). */
+const SKILL_ABRUF_HOOK_NAME = 'skill_abruf';
 
 /** Wie viele Treffer Qdrant je Agent liefern soll. */
 const CHANNEL_SKILL_SUCHBREITE = 30;
@@ -333,7 +335,7 @@ const CHANNEL_SKILL_VORSCHLAEGE = 3;
  * einzige — jeder Text, den ein Agent schreibt oder liest, kann einen Skill beim Namen
  * nennen.
  */
-export type SkillQuellenTyp = 'channel' | 'memory' | 'thought' | 'task';
+export type SkillQuellenTyp = 'channel' | 'memory' | 'thought' | 'task' | 'skill' | 'vorgabe';
 
 /** Klartext fuer die Begruendung — die KI soll sehen, WOHER ein Vorschlag kommt. */
 const QUELLE_KLARTEXT: Record<SkillQuellenTyp, string> = {
@@ -341,6 +343,8 @@ const QUELLE_KLARTEXT: Record<SkillQuellenTyp, string> = {
   memory: 'Memory',
   thought: 'Gedanke',
   task: 'Task',
+  skill: 'Skill-Abruf',
+  vorgabe: 'Vorgabe',
 };
 
 /**
@@ -380,61 +384,16 @@ export function baueChannelSkillSuchtext(messages: ChannelSkillNachricht[]): str
 /**
  * Ist der Skill im Text NAMENTLICH genannt?
  *
- * Zwei Richtungen, beide kommen im Alltag vor:
- * 1. Der volle Name steht im Text ("... siehe scarlett-audio-setup ...").
- * 2. Der Text nennt nur den ANFANG des Namens — genau so schreiben Menschen:
- *    "ki-browser" statt "ki-browser-standalone". Gemessen am 01.08.2026: dieser Fall
- *    lieferte gar nichts, weil die Pruefung nur Richtung 1 kannte.
- *
- * Damit daraus kein Rauschen wird, gilt Richtung 2 nur, wenn das Genannte mindestens
- * MINDESTLAENGE_FRAGMENT Zeichen hat UND an einer Segmentgrenze endet: "ki-browser" trifft
- * ki-browser-standalone, "web" trifft NICHT web-best-practices. Ein zu kurzes Fragment
- * waere sonst ein Freifahrtschein fuer jeden Skill, der zufaellig so anfaengt.
- *
- * ⚠️ EINE Regel, EINE Funktion. Sie wird an zwei Stellen gebraucht — bei der Auswahl der
- * Treffer und beim Deckeln des Vorrats. Zwei Kopien derselben Bedingung waren in dieser
- * Codebasis schon dreimal die Ursache dafuer, dass ein Fix an einer Stelle sass und an der
- * naechsten fehlte.
+ * P23-T1 (User 19.10.2026): nur der VOLLE Name mit Wortgrenze — dieselbe Regel wie
+ * findeSkillsNachName (skills.ts istSkillNameImText). EINE Regel, EINE Funktion: zwei Kopien
+ * derselben Bedingung waren in dieser Codebasis schon dreimal die Ursache dafuer, dass ein Fix an
+ * einer Stelle sass und an der naechsten fehlte.
+ * Zurueckgebaut: der Namensanfang an einer Segmentgrenze ("ki-browser" -> ki-browser-standalone),
+ * ein Notbehelf fuer das alte Qwen-Embedding. Er zog z. B. aus "ogame-strategie" den Skill
+ * ogame-strategie-erweitert mit 0,99. Thematisch passende Skills kommen ueber die Vektorsuche.
  */
-const MINDESTLAENGE_FRAGMENT = 6;
 export function istNamentlichGenannt(skillName: string | undefined | null, query: string): boolean {
-  const name = skillName?.toLowerCase();
-  if (!name) return false;
-  const lower = query.toLowerCase();
-  if (lower.includes(name)) return true;
-
-  // ⚠️ DIE WORTGRENZE MUSS AUF BEIDEN SEITEN GELTEN — im Namen UND im Text.
-  // Hier stand sie nur fuer den Namen. GEMESSEN am 02.08.2026: ein Text, der
-  // python-testing-patterns nennt, zog python-performance-optimization als angeblichen
-  // Namenstreffer mit Score 0,99. Das Fragment "python" ist genau sechs Zeichen lang,
-  // besteht die Mindestlaenge und steckt in jedem python-*-Namen — im Text steht es aber
-  // mitten in einem anderen Wort. Ein Fragment innerhalb eines fremden Wortes bedeutet nichts.
-  // DER BINDESTRICH ZAEHLT NICHT ALS GRENZE, sonst trifft jedes Fragment, das in einem
-  // laengeren Skillnamen steckt, der wirklich im Text steht.
-  // DIESELBE REGEL STEHT IN skills.ts:findeSkillsNachName. Sie war dort vollstaendig und
-  // hier verkuerzt — zwei Kopien einer Bedingung, von denen eine nur die halbe Pruefung macht.
-  const grenze = (zeichen: string | undefined) =>
-    zeichen === undefined || !/[a-z0-9-]/.test(zeichen);
-  for (let ende = name.length - 1; ende >= MINDESTLAENGE_FRAGMENT; ende--) {
-    if (name[ende] !== '-' && name[ende] !== ':') continue;
-    const fragment = name.slice(0, ende);
-    // ⚠️ EIN EINTEILIGES FRAGMENT IST EIN THEMA, KEIN NAME (gemessen 02.08.2026).
-    // Wer "unraid" schreibt, nennt keinen Skill — er nennt ein Thema, und es gibt zwei
-    // unraid-Skills. Genau so ist es passiert: ein Task-Text riss unraid-base UND
-    // unraid-projektdb mit, "claude" holte claude-session-start UND claude-desktop-linux,
-    // "docker" docker-containerization, "monorepo" monorepo-build-management — sechs
-    // vermeintlich woertliche Treffer in EINER Task, von denen keiner beim Namen genannt war.
-    // Der Fall, fuer den die Fragment-Regel gebaut wurde, sieht anders aus: "ki-browser" statt
-    // ki-browser-standalone. Dieses Fragment ist MEHRTEILIG — es traegt selbst ein
-    // Trennzeichen und ist damit erkennbar der Anfang eines Namens, nicht ein Allerweltswort.
-    if (!fragment.includes('-') && !fragment.includes(':')) continue;
-    let ab = lower.indexOf(fragment);
-    while (ab !== -1) {
-      if (grenze(lower[ab - 1]) && grenze(lower[ab + fragment.length])) return true;
-      ab = lower.indexOf(fragment, ab + 1);
-    }
-  }
-  return false;
+  return istSkillNameImText(skillName, query);
 }
 
 /** Waehlt die belastbaren Treffer und unterdrueckt Mehrdeutigkeit. */
@@ -498,12 +457,8 @@ export function waehleChannelSkillTreffer(
  * ruft sie niemals auf und erzeugt daher unter keinen Umstaenden ein Embedding.
  */
 /**
- * Sucht im Text nach Skills, die beim Namen genannt werden — ohne Embedding.
- *
- * Erkannt wird der volle Name und der Namensanfang an einer Segmentgrenze ab sechs
- * Zeichen ("ki-browser" trifft ki-browser-standalone, "web" trifft nichts). Die Namensliste
- * wird kurz zwischengespeichert, damit ein Channel mit vielen Nachrichten sie nicht bei
- * jedem Post neu holt.
+ * Sucht im Text nach Skills, die beim VOLLEN Namen genannt werden — ohne Embedding.
+ * P23-T1: kein Namensanfang, kein Trigramm mehr (siehe istNamentlichGenannt).
  */
 async function findeGenannteSkills(text: string): Promise<string[]> {
   // Die Namenssuche laeuft gegen die PG-Tabelle skill_names (Trigram), nicht gegen die
@@ -580,38 +535,20 @@ export async function bereiteSkillVorschlaegeVor(
     embedding: { priority: 'background' },
   });
 
-  // ⚠️ NAMENTLICH GENANNTE SKILLS DUERFEN NICHT VON DER VEKTORSUCHE ABHAENGEN.
-  // Bis hierher konnte ein Name nur erkannt werden, wenn Qdrant den Skill zufaellig
-  // mitlieferte. GEMESSEN am 02.08.2026: ein Text, der DREI Skills beim Namen nennt,
-  // ergab genau EINEN Kandidaten — der beste Vektortreffer lag bei Score 0,042, weil ein
-  // gemischter Text einen verwaschenen Vektor erzeugt. Auch dreissig Treffer haben daran
-  // nichts geaendert: die anderen beiden waren schlicht nicht darunter.
-  // Der ausgeschriebene Name ist aber das staerkste Signal, das es gibt. Er wird deshalb
-  // direkt gegen die Namensliste geprueft — ohne Embedding, ohne Qdrant-Abfrage.
+  // ⚠️ NAMENTLICH GENANNTE SKILLS DUERFEN NICHT VON DER VEKTORSUCHE ABHAENGEN (02.08.2026): ein
+  // gemischter Text ergibt einen verwaschenen Vektor, der ausgeschriebene Name ist das staerkste Signal.
+  // Er wird direkt gegen die Namensliste geprueft — ohne Embedding, ohne Qdrant.
+  // P23-T1: nur der VOLLE Name mit Wortgrenze; Namensanfang und Trigramm sind zurueckgebaut.
   const namensTreffer = await findeGenannteSkills(query);
-  const genannt = new Set(namensTreffer.map((name) => name.toLowerCase()));
-  const istGenannt = (name: string | undefined | null) =>
-    (!!name && genannt.has(name.toLowerCase())) || istNamentlichGenannt(name, query);
   for (const eintrag of results) {
-    // ⚠️ EIN GENANNTER SKILL BEKOMMT DEN NAMENSTREFFER-SCORE IMMER — auch dann, wenn Qdrant
-    // ihn ohnehin geliefert hat (Korrektur 02.08.2026). Vorher entschied der Zufall: fehlte er
-    // in der Vektorantwort, wurde er mit 0,99 ergaenzt; war er drin, behielt er seinen
-    // schwachen Score und landete hinter rein semantischen Treffern. Derselbe Skill, derselbe
-    // Text, zwei verschiedene Raenge — je nachdem, was Qdrant zufaellig zurueckgab.
+    // Ein genannter Skill bekommt den Namenstreffer-Score IMMER, auch wenn Qdrant ihn mitlieferte
+    // (Korrektur 02.08.2026: sonst entschied der Qdrant-Zufall ueber seinen Rang).
     for (const hit of eintrag.hits) {
-      const wunsch = istNamentlichGenannt(hit.skill_name, query)
-        ? NAMENSTREFFER_SCORE
-        : (istGenannt(hit.skill_name) ? FUZZY_NAMENSTREFFER_SCORE : 0);
-      if (wunsch > hit.score) hit.score = wunsch;
+      if (istNamentlichGenannt(hit.skill_name, query) && hit.score < NAMENSTREFFER_SCORE) hit.score = NAMENSTREFFER_SCORE;
     }
     const vorhanden = new Set(eintrag.hits.map((hit) => hit.skill_name));
     for (const name of namensTreffer) {
-      if (!vorhanden.has(name)) {
-        eintrag.hits.push({
-          skill_name: name,
-          score: istNamentlichGenannt(name, query) ? NAMENSTREFFER_SCORE : FUZZY_NAMENSTREFFER_SCORE,
-        } as SkillSearchHit);
-      }
+      if (!vorhanden.has(name)) eintrag.hits.push({ skill_name: name, score: NAMENSTREFFER_SCORE } as SkillSearchHit);
     }
   }
   // P15-T8: Schwellen des aktiven Modells; nicht kalibriert -> nur namentlich genannte Skills.
@@ -619,56 +556,155 @@ export async function bereiteSkillVorschlaegeVor(
     scoreSchwelleOderHinweis('channel_skill'),
     scoreSchwelleOderHinweis('channel_skill_abstand'),
   ]);
-  await Promise.all(results.map(async ({ agent: agentId, hits }) => {
-    const z = await skillAgent(project,agentId);
-    const identity = z.art === 'identity';
-    // MEHRERE KANDIDATEN ABLEGEN, nicht nur den besten. Ein Agent sieht jeden Skill nur
-    // einmal; sind die vorderen verbraucht, ruecken beim naechsten Abruf die naechsten
-    // nach — aber nur, wenn sie hier auch gespeichert wurden.
-    // ⚠️ NAMENTLICH GENANNTE SKILLS WERDEN NICHT GEDECKELT (Korrektur 02.08.2026).
-    // GEMESSEN an Nachricht 18288: ein Text mit ZWOELF ausgeschriebenen Skillnamen legte nur
-    // ACHT in den Vorrat. Die vier Verlorenen fielen willkuerlich heraus — alle Namenstreffer
-    // tragen denselben Score 0,99, und eine Sortierung hat bei Gleichstand nichts zu
-    // entscheiden. Wer einen Skill beim Namen nennt, bekommt ihn auch; der Deckel bleibt fuer
-    // die semantischen Treffer, die sonst beliebig lang wuerden.
+  // MEHRERE KANDIDATEN je Agent ablegen (Nachruecken beim naechsten Abruf). Genannte Skills sind
+  // ungedeckelt (Korrektur 02.08.2026), der Deckel gilt nur den semantischen Treffern.
+  const auswahl = results.map(({ agent, hits }) => {
     const gewaehlt = waehleChannelSkillTreffer(hits, query, minScore, abstand);
     const namentlich = gewaehlt.filter((hit) => istNamentlichGenannt(hit.skill_name, query));
-    const semantisch = gewaehlt.filter((hit) => !istNamentlichGenannt(hit.skill_name, query));
-    const treffer = [
-      ...namentlich,
-      ...semantisch.slice(0, Math.max(0, CHANNEL_SKILL_KANDIDATEN - namentlich.length)),
+    const semantisch = gewaehlt
+      .filter((hit) => !istNamentlichGenannt(hit.skill_name, query))
+      .slice(0, Math.max(0, CHANNEL_SKILL_KANDIDATEN - namentlich.length));
+    return { agent, namentlich, semantisch };
+  });
+  // P23-T1 (3): SINNPRUEFUNG der semantischen Treffer vor der Auslieferung (skill-rerank.ts): EIN
+  // Jev-Aufruf je Text fuer alle Empfaenger, Schalter skill_rerank (Standard AUS), Kosten in jev_kosten.
+  // Ist sie aus, bleibt alles wie bisher (kein Jev-Aufruf).
+  const inhaltJeSkill = new Map<string, string>();
+  for (const { semantisch } of auswahl) {
+    for (const hit of semantisch) if (!inhaltJeSkill.has(hit.skill_name)) inhaltJeSkill.set(hit.skill_name, hit.content ?? '');
+  }
+  const sinn = await pruefeSkillTrefferSinn({
+    project, text: query, kandidaten: [...inhaltJeSkill].map(([skill_name, inhalt]) => ({ skill_name, inhalt })),
+  });
+  await Promise.all(auswahl.map(async ({ agent, namentlich, semantisch }) => {
+    // ⚠️ BEGRUENDUNG UND SCORE AUS DERSELBEN PRUEFUNG (Korrektur 02.08.2026). P23-T1: die reason ist
+    // zugleich die Debug-Ausgabe, WARUM ein Skill vorgeschlagen wird (Name | semantisch + Score + Jev).
+    const kandidaten: SkillKandidat[] = [
+      ...namentlich.map((hit) => ({
+        skill_name: hit.skill_name, score: hit.score, reason: `Skill-Name genannt (${QUELLE_KLARTEXT[sourceType]})`,
+      })),
+      ...semantisch.filter((hit) => bestehtSinnpruefung(sinn, hit.skill_name)).map((hit) => ({
+        skill_name: hit.skill_name,
+        score: hit.score,
+        reason: `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]}, Score ${Number(hit.score).toFixed(2)}${sinnpruefungsZusatz(sinn, hit.skill_name)})`,
+      })),
     ];
-    if (treffer.length === 0) return;
-    // ⚠️ BEGRUENDUNG UND SCORE AUS DERSELBEN PRUEFUNG (Korrektur 02.08.2026).
-    // Vorher entschied ueber den Score istNamentlichGenannt (kennt auch Fragmente), ueber den
-    // Text aber ein blosses includes(name). Ein Fragment-Treffer erschien deshalb als
-    // "Semantischer Treffer" mit Score 0,99 — eine Anzeige, die sich selbst widerspricht und
-    // beim Lesen wie ein Ausrutscher des Modells aussieht, statt auf die echte Ursache zu zeigen.
-    for (const hit of treffer) {
-      await pool.query(
-        `INSERT INTO ${identity ? 'agent_identitaet_skill_preparations' : 'skill_hook_preparations'}
-           (source_type,source_id,${identity ? 'identity_id,agent_id' : 'agent_id'},skill_name,score,reason)
-         VALUES($1,$2,$3,${identity ? '$7,' : ''}$4,$5,$6)
-         ON CONFLICT(source_type,source_id,${identity ? 'identity_id' : 'agent_id'},skill_name) DO UPDATE SET
-           score = EXCLUDED.score,
-           reason = EXCLUDED.reason,
-           prepared_at = NOW()`,
-        [
-          sourceType,
-          sourceId,
-          bezugsWert(z),
-          hit.skill_name,
-          hit.score,
-          istNamentlichGenannt(hit.skill_name, query)
-            ? `Skill-Name genannt (${QUELLE_KLARTEXT[sourceType]})`
-            : (istGenannt(hit.skill_name)
-              ? `Name unscharf erkannt (${QUELLE_KLARTEXT[sourceType]})`
-              : `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]})`),
-          ...(identity ? [z.agent_id] : []),
-        ],
-      );
-    }
+    await legeSkillKandidatenAb(project, sourceType, sourceId, agent, kandidaten, pool);
   }));
+}
+
+/** Ein Kandidat fuer den Vorrat: Skill, Score und Begruendung (Debug: Kette | Name | semantisch). */
+export interface SkillKandidat { skill_name: string; score: number; reason: string }
+
+/**
+ * Legt Kandidaten fuer EINEN Agenten in den Vorrat (Upsert je Quelle + Skill, ein Statement). Ein
+ * Schreibweg fuer Namens-, semantische und Ketten-Kandidaten (P23-T1; vorher nur in
+ * bereiteSkillVorschlaegeVor, dort je Kandidat ein INSERT).
+ */
+export async function legeSkillKandidatenAb(
+  project: string,
+  sourceType: SkillQuellenTyp,
+  sourceId: string,
+  agent: string,
+  kandidaten: SkillKandidat[],
+  pool: Pool = getPool(),
+): Promise<number> {
+  if (kandidaten.length === 0 || !agent || !sourceId) return 0;
+  // Je Skill nur der hoechste Score: ON CONFLICT darf dieselbe Zeile in einem Statement nicht zweimal treffen.
+  const eindeutig = new Map<string, SkillKandidat>();
+  for (const k of kandidaten) {
+    const alt = eindeutig.get(k.skill_name);
+    if (k.skill_name && (!alt || k.score > alt.score)) eindeutig.set(k.skill_name, k);
+  }
+  const liste = [...eindeutig.values()];
+  if (liste.length === 0) return 0;
+  const z = await skillAgent(project, skillHandle(project, agent));
+  const identity = z.art === 'identity';
+  await pool.query(
+    `INSERT INTO ${identity ? 'agent_identitaet_skill_preparations' : 'skill_hook_preparations'}
+       (source_type,source_id,${identity ? 'identity_id,agent_id' : 'agent_id'},skill_name,score,reason)
+     SELECT $1,$2,$3,${identity ? '$7,' : ''}k.skill_name,k.score,k.reason
+       FROM unnest($4::text[], $5::float8[], $6::text[]) AS k(skill_name, score, reason)
+     ON CONFLICT(source_type,source_id,${identity ? 'identity_id' : 'agent_id'},skill_name) DO UPDATE SET
+       score = EXCLUDED.score,
+       reason = EXCLUDED.reason,
+       prepared_at = NOW()`,
+    [
+      sourceType, sourceId, bezugsWert(z),
+      liste.map((k) => k.skill_name), liste.map((k) => k.score), liste.map((k) => k.reason),
+      ...(identity ? [z.agent_id] : []),
+    ],
+  );
+  return liste.length;
+}
+
+/** Ein abgerufener Skill gilt als gesehen: Zustellung vermerken, damit die Kette ihn nicht mehr nachliefert. */
+async function markiereSkillGesehen(project: string, agentId: string, skillName: string, pool: Pool): Promise<void> {
+  const z = await skillAgent(project, skillHandle(project, agentId));
+  if (z.art === 'identity') {
+    await pool.query(
+      `INSERT INTO agent_identitaet_skill_deliveries (identity_id, agent_id, skill_name, hook_name, context_epoch)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT(identity_id,skill_name) DO UPDATE SET context_epoch=EXCLUDED.context_epoch,suggested_at=NOW(),hook_name=EXCLUDED.hook_name
+         WHERE agent_identitaet_skill_deliveries.context_epoch<EXCLUDED.context_epoch`,
+      [bezugsWert(z), z.agent_id, skillName, SKILL_ABRUF_HOOK_NAME, skillKontextEpoch()],
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO skill_hook_deliveries (agent_id, skill_name, hook_name) VALUES ($1, $2, $3)
+       ON CONFLICT (agent_id, skill_name) DO NOTHING`,
+      [bezugsWert(z), skillName, SKILL_ABRUF_HOOK_NAME],
+    );
+  }
+}
+
+/**
+ * P23-T1 (2b) 99%-KETTE BEIM SKILL-ABRUF: Ein Agent liest einen Skill (skills get_full/get_section).
+ * Skills, die dort WOERTLICH beim vollen Namen genannt sind, sind die zu diesem Skill wichtigen Skills.
+ * Sie kommen mit 0,99 in seinen Vorrat (Quelle skill, ohne Embedding) und werden nach jedem Tool-Aufruf
+ * nachgeliefert, bis er sie gesehen hat. Der abgerufene Skill selbst gilt als gesehen. Wirft nie.
+ */
+export async function bereiteVerknuepfteSkillsVor(
+  project: string,
+  quellSkill: string,
+  inhalt: string,
+  agentId: string | undefined | null,
+  pool: Pool = getPool(),
+): Promise<number> {
+  // project darf leer sein (skills-Tool ohne project): im Legacy-Bezug traegt nur agent_id den Vorrat.
+  if (!quellSkill || !agentId || !hinweisAktiv('skill_suggestions', agentId)) return 0;
+  try {
+    await markiereSkillGesehen(project, agentId, quellSkill, pool);
+    const namen = (await findeGenannteSkills(inhalt))
+      .filter((name) => name.toLowerCase() !== quellSkill.toLowerCase());
+    return await legeSkillKandidatenAb(project, 'skill', quellSkill, agentId,
+      namen.map((skill_name) => ({ skill_name, score: KETTEN_SCORE, reason: `Verknuepft mit Skill ${quellSkill} (Kette)` })), pool);
+  } catch (fehler) {
+    console.error(`[SkillHook] Kette fuer ${quellSkill} (${agentId}) fehlgeschlagen:`, fehler instanceof Error ? fehler.message : fehler);
+    return 0;
+  }
+}
+
+/**
+ * P23-T1 (2a) 99%-KETTE FUER VORGEGEBENE SKILLS (Profil des Agenten): mit 0,99 'Vorgabe (Profil)' in den
+ * Vorrat. Nachgeliefert wie alle Kandidaten, bis der Agent alle gesehen hat; eine neue Kontext-Epoche
+ * (Ausweis) zeigt sie erneut. Unabhaengig von Namenserkennung und Embedding. Wirft nie.
+ */
+export async function bereiteVorgabeSkillsVor(
+  project: string,
+  agentId: string | undefined | null,
+  namen: string[],
+  pool: Pool = getPool(),
+): Promise<number> {
+  const liste = [...new Set(namen.filter((n) => typeof n === 'string' && n.trim() !== '').map((n) => n.trim()))];
+  if (!project || !agentId || liste.length === 0 || !hinweisAktiv('skill_suggestions', agentId)) return 0;
+  try {
+    return await legeSkillKandidatenAb(project, 'vorgabe', 'profil', agentId,
+      liste.map((skill_name) => ({ skill_name, score: KETTEN_SCORE, reason: 'Vorgabe (Profil, Kette)' })), pool);
+  } catch (fehler) {
+    console.error(`[SkillHook] Vorgabe-Skills fuer ${agentId} fehlgeschlagen:`, fehler instanceof Error ? fehler.message : fehler);
+    return 0;
+  }
 }
 
 /**
@@ -962,18 +998,21 @@ export async function holeOffeneSkillVorschlaege(
   agentId: string | undefined | null,
   pool: Pool = getPool(),
   hoechstens = CHANNEL_SKILL_VORSCHLAEGE,
+  optionen: { mindestScore?: number } = {},
 ): Promise<SkillHookErgebnis> {
   if (!agentId || !hinweisAktiv('skill_suggestions', agentId)) return { suggestions: [], metrics: null, skipped_due_to_load: false };
   const z = eigenerKommunikationsAgent(agentId);
   const identity = z.art === 'identity';
+  // P23-T1: mindestScore = KETTEN_SCORE liefert nur die 99%-Kette (Erinnerung an allen uebrigen Tools).
+  const mindest = typeof optionen.mindestScore === 'number' && Number.isFinite(optionen.mindestScore) ? optionen.mindestScore : 0;
   try {
     const result = await queryMitHarterFrist<{
-      skill_name: string; score: number; reason: string; delivered: boolean;
+      skill_name: string; score: number; reason: string; delivered: boolean; rest_kette: number;
     }>(pool, identity ? `
       WITH kandidat AS (
         SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
           FROM agent_identitaet_skill_preparations p
-         WHERE p.identity_id = $1
+         WHERE p.identity_id = $1 AND p.score >= $6
            AND NOT EXISTS (
              SELECT 1 FROM agent_identitaet_skill_deliveries d
               WHERE d.identity_id = p.identity_id AND d.skill_name = p.skill_name AND d.context_epoch=$5
@@ -989,13 +1028,15 @@ export async function holeOffeneSkillVorschlaege(
         RETURNING skill_name
       )
       SELECT r.skill_name, r.score, r.reason,
-             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
+             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered,
+             (SELECT COUNT(*)::int FROM kandidat k WHERE k.score >= $7
+                 AND NOT EXISTS (SELECT 1 FROM rangfolge x WHERE x.skill_name = k.skill_name)) AS rest_kette
         FROM rangfolge r ORDER BY r.score DESC
     ` : `
       WITH kandidat AS (
         SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
           FROM skill_hook_preparations p
-         WHERE p.agent_id = $1
+         WHERE p.agent_id = $1 AND p.score >= $4
            AND NOT EXISTS (
              SELECT 1 FROM skill_hook_deliveries d
               WHERE d.agent_id = p.agent_id AND d.skill_name = p.skill_name
@@ -1010,26 +1051,34 @@ export async function holeOffeneSkillVorschlaege(
         RETURNING skill_name
       )
       SELECT r.skill_name, r.score, r.reason,
-             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered
+             EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered,
+             (SELECT COUNT(*)::int FROM kandidat k WHERE k.score >= $5
+                 AND NOT EXISTS (SELECT 1 FROM rangfolge x WHERE x.skill_name = k.skill_name)) AS rest_kette
         FROM rangfolge r ORDER BY r.score DESC
-    `, [bezugsWert(z), CHANNEL_HOOK_NAME, hoechstens,...(identity ? [agentId,skillKontextEpoch()] : [])]);
+    `, [bezugsWert(z), CHANNEL_HOOK_NAME, hoechstens, ...(identity ? [agentId, skillKontextEpoch()] : []), mindest, KETTEN_SCORE]);
 
     const frisch = result.rows.filter((row) => row.delivered);
     if (frisch.length === 0) return { suggestions: [], metrics: null, skipped_due_to_load: false };
+    // P23-T1: "es existieren noch weitere mit 99%" — die Kette meldet sich, bis alles gesehen ist.
+    const rest = Number(result.rows[0]?.rest_kette ?? 0);
     const kurz = frisch
       .map((row) => `${row.skill_name}(${Number(row.score).toFixed(2)})`)
       .join(', ');
+    const restZeile = rest > 0
+      ? `\nEs existieren noch ${rest} weitere Skills mit 99% (Kette) — sie folgen mit den naechsten Tool-Aufrufen.`
+      : '';
     return {
       suggestions: [{
         skill_name: frisch[0].skill_name,
         score: Number(frisch[0].score),
         reason: frisch[0].reason,
-      message: `Weitere Skills: ${kurz}\nVolltext: skills(action:'get_full', skill_name:'<name>')`,
+        message: `Weitere Skills: ${kurz}${restZeile}\nVolltext: skills(action:'get_full', skill_name:'<name>')`,
         skills: frisch.map((row) => ({
           skill_name: row.skill_name,
           score: Number(Number(row.score).toFixed(4)),
           reason: row.reason,
         })),
+        ...(rest > 0 ? { weitere_mit_99: rest } : {}),
       }],
       metrics: {
         suggested_count: frisch.length,

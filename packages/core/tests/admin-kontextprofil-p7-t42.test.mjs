@@ -26,7 +26,13 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P22-T45: additive Ausweis-Fristen-Parameter.
   'schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden',
   // P22-T50: additiver Fristwert (eigene offene Plaene in chat(anmelden)).
-  'anmeldung_plaene_minuten', 'frist_namen'];
+  'anmeldung_plaene_minuten', 'frist_namen',
+  // P6-T49: additiver Fristwert (Ablauf offener files-Plaene).
+  'files_plan_stunden', 'files_plan_ablauf_aktiv',
+  // P23-T1: additive Einstellwerte der Skill-Sinnpruefung (jev_optionen).
+  'skill_rerank_tor', 'skill_rerank_max'];
+// P23-T1: additive Werte in bestehenden Enums (Jev-Funktion skill_rerank in jev_schalten.funktion).
+const neueEnumWerte = { funktion: new Set(['skill_rerank']) };
 const neu = new Set(['kontextprofil_liste', 'kontextprofil_setzen', 'kontextprofil_entfernen', ...w1bAktionen]);
 const neueParameter = new Set(['ziel', 'kontext_budget', 'stufe', 'hinweise_aus', 'hinweise_nur', ...w1bParameter]);
 const alteSchemaProjektion = (tool) => {
@@ -34,7 +40,9 @@ const alteSchemaProjektion = (tool) => {
     .filter(([key]) => !neueParameter.has(key))
     .map(([key, value]) => [key, key === 'action'
       ? { ...value, enum: value.enum.filter((action) => !neu.has(action)) }
-      : value]));
+      : neueEnumWerte[key] && Array.isArray(value.enum)
+        ? { ...value, enum: value.enum.filter((wert) => !neueEnumWerte[key].has(wert)) }
+        : value]));
   return {
     description: tool.description,
     inputSchema: {

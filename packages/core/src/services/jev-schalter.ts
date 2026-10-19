@@ -12,7 +12,12 @@
  * FUNKTIONEN: empfehlung (plan empfehlen), entscheidung (jev entscheiden + Hinweise jev_modus,
  *   jev_hinweis, jev_entscheidet), plan_einordnen (plan einordnen), erklaerungstopf (E1),
  *   entscheidungstopf (P15 E1: Praezedenz-Schritt vor jev entscheiden; aus = alter Weg, Erfassung laeuft weiter),
- *   tool (das MCP-Tool jev selbst; global aus -> verschwindet aus tools/list).
+ *   tool (das MCP-Tool jev selbst; global aus -> verschwindet aus tools/list),
+ *   skill_rerank (P23-T1: Sinnpruefung semantischer Skill-Vorschlaege, skill-rerank.ts).
+ * STANDARD AUS (P23-T1, Regel neue-funktionen-mit-schalter): Funktionen in JEV_FUNKTIONEN_STANDARD_AUS
+ *   sind ohne ausdrueckliches "an" (global oder Projekt, genau diese Funktion) AUS. Ein befristeter
+ *   intern-Schalter gleichen Namens (freigegeben, nur mit intern-Tool) gibt sie ebenfalls frei. Ein "aus"
+ *   darueber (global/Projekt/alle, Budget) gewinnt immer. Quelle steht in JevWirkung.quelle.
  * CACHE: die ganze (kleine) Tabelle je Prozess, hoechstens alle JEV_SCHALTER_CACHE_MS (Standard
  *   5000) gelesen; setzeJevSchalter aktualisiert den Cache dieses Prozesses sofort. Andere Prozesse
  *   (stdio-MCP-Server, API) sehen eine Aenderung spaetestens nach Ablauf ihres Caches.
@@ -24,8 +29,10 @@ import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { jevBudgetPause } from './jev-kosten.js';
 
-export const JEV_FUNKTIONEN = ['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'entscheidungstopf', 'tool'] as const;
+export const JEV_FUNKTIONEN = ['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'entscheidungstopf', 'tool', 'skill_rerank'] as const;
 export type JevFunktion = (typeof JEV_FUNKTIONEN)[number];
+/** Neue Funktionen: ohne ausdrueckliches "an" (bzw. intern-Freigabe) aus. */
+export const JEV_FUNKTIONEN_STANDARD_AUS: readonly JevFunktion[] = ['skill_rerank'];
 /** Platzhalter fuer "global" (project) bzw. "alle Funktionen" (funktion) */
 export const JEV_ALLE = '*';
 
@@ -47,8 +54,10 @@ export interface JevSchalterZeile {
 
 export interface JevWirkung {
   an: boolean;
-  /** Wer abschaltet (nur bei an:false) */
-  ebene?: 'global' | 'projekt' | 'budget';
+  /** Wer abschaltet (nur bei an:false); 'standard' = Standard-AUS-Funktion ohne "an" */
+  ebene?: 'global' | 'projekt' | 'budget' | 'standard';
+  /** Nur bei Standard-AUS-Funktionen: woher das "an" kommt */
+  quelle?: 'produkt-schalter' | 'intern';
   /** Abgeschaltete Funktion ('alle' oder Name) */
   funktion?: string;
   grund?: string | null;
@@ -153,9 +162,34 @@ export async function jevWirksam(project: string | null | undefined, funktion: J
       return { an: false, ebene, funktion: funktionsName(f), grund: z.grund, text: wirkungsText(ebene, ebene === 'projekt' ? p : null, f, z.grund) };
     }
   }
+  let quelle: JevWirkung['quelle'];
+  if ((JEV_FUNKTIONEN_STANDARD_AUS as readonly string[]).includes(funktion)) {
+    const explizit = zeilen.get(schluessel(JEV_ALLE, funktion))?.aktiv === true
+      || (!!project && zeilen.get(schluessel(project, funktion))?.aktiv === true);
+    quelle = explizit ? 'produkt-schalter' : (await internFreigabe(funktion)) ? 'intern' : undefined;
+    if (!quelle) {
+      return {
+        an: false, ebene: 'standard', funktion, grund: null,
+        text: `Jev-Funktion ${funktion} ist standardmaessig aus (neue Funktion). Einschalten nur durch User/Koordinator: ` +
+          `admin(action:"jev_schalten", ebene:"global"|"projekt", funktion:"${funktion}", aktiv:true).`,
+      };
+    }
+  }
   const pause = await jevBudgetPause();
   if (pause) return { an: false, ebene: 'budget', funktion: 'alle', grund: 'budget', text: pause };
-  return { an: true };
+  return quelle ? { an: true, quelle } : { an: true };
+}
+
+/** Befristete Test-Freigabe ueber den gleichnamigen intern-Schalter (nur bei aktivem intern-Tool). Wirft nie. */
+async function internFreigabe(funktion: string): Promise<boolean> {
+  try {
+    const { internToolAktiv } = await import('./intern-tool.js');
+    if (!internToolAktiv()) return false;
+    const { leseSchalter, istSchalterName } = await import('./intern-schalter.js');
+    return istSchalterName(funktion) && (await leseSchalter(funktion)).aktiv;
+  } catch {
+    return false;
+  }
 }
 
 /** Duerfen Jev-Hinweise zu Rueckfragen (jev_modus, jev_hinweis, jev_entscheidet) erscheinen? */

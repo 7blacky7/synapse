@@ -47,6 +47,8 @@ export const INTERN_SCHALTER = {
   hauptagent: ['freigegeben'],
   // P22-T44: intern-Override des Produkt-Schalters mehrprojekt (Ausweis fuer mehrere Projekte); aktiv=true = freigegeben.
   mehrprojekt: ['freigegeben'],
+  // P23-T1: befristete Test-Freigabe der Jev-Funktion skill_rerank (Produkt-Standard AUS); aktiv=true = freigegeben.
+  skill_rerank: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 

@@ -71,6 +71,28 @@ function zustellAnzeige<T extends { fortsetzung?: unknown }>(umfang: T): Omit<T,
   return rest;
 }
 
+type HandoffZeile = { id: string; zeit: string; empfehlung: string };
+
+/**
+ * P22-T49/P22-T54: neuester session-uebergabe-Thought (End-Thought des vorigen Laufs) als Zeile {id, zeit, empfehlung}, nie Inhalt.
+ * streng=true (Nicht-Koordinator, P22-T54): nur Thoughts DIESER Identitaet (source_identity_id) - kein Legacy-Rueckfall ueber
+ * den source-Namen, damit ein Wiederverwender nie den Lauf-Thought eines anderen Agenten gleichen Namens bekommt (Vorfall
+ * D4 t116 fand t114). streng=false (Koordinator, P22-T49 unveraendert): eigene zuerst, sonst Legacy ohne Identitaet mit source=agentId.
+ */
+async function handoffFuer(project: string, identityId: string, agentId: string, streng: boolean): Promise<HandoffZeile | null> {
+  const h = (await getPool().query<{ id: string; zeit: Date | string }>(streng
+    ? `SELECT id, "timestamp" AS zeit FROM thoughts
+        WHERE project=$1 AND 'session-uebergabe' = ANY(tags) AND source_identity_id=$2
+        ORDER BY "timestamp" DESC LIMIT 1`
+    : `SELECT id, "timestamp" AS zeit FROM thoughts
+        WHERE project=$1 AND 'session-uebergabe' = ANY(tags)
+          AND (source_identity_id=$2 OR (source_identity_id IS NULL AND source=$3))
+        ORDER BY COALESCE(source_identity_id=$2, false) DESC, "timestamp" DESC LIMIT 1`,
+    streng ? [project, identityId] : [project, identityId, agentId])).rows[0];
+  // Nachtrag User (ausweis-fix 27977): Handoff immer mit Lese-Empfehlung.
+  return h ? { id: h.id, zeit: new Date(h.zeit).toISOString(), empfehlung: `Zuerst lesen: thought(action:"get", id:"${h.id}")` } : null;
+}
+
 /**
  * P22-T49 (User-Entscheidung c7ba27b4): Inhalt der kurzen Koordinator-Anmeldung. null = Produkt-Schalter
  * profilverwaltung im Projekt AUS -> Bestand (volles Onboarding). Haengt sonst am Ausweis-Kern (Aufrufer prueft w12).
@@ -78,15 +100,11 @@ function zustellAnzeige<T extends { fortsetzung?: unknown }>(umfang: T): Omit<T,
 async function baueKoordinatorKurz(
   project: string, agentId: string, identityId: string,
   regelwerk: { rules: OnboardingRegel[]; regel_verzeichnis: RegelVerzeichnis }, mitTyp: boolean,
-): Promise<{ handoff: { id: string; zeit: string; empfehlung: string } | null; aktiver_plan: unknown; aktiver_plan_hinweis?: string; top3: string[]; regeln: Record<string, unknown>;
+): Promise<{ handoff: HandoffZeile | null; aktiver_plan: unknown; aktiver_plan_hinweis?: string; top3: string[]; regeln: Record<string, unknown>;
   channels: { aktiv?: string[]; standard?: string[]; zeile?: string } | null; skills_andere: string[] } | null> {
   const { leseProfilProduktSchalter } = await import('./agent-profil-schalter.js');
   if (!(await leseProfilProduktSchalter('profilverwaltung', project)).aktiv) return null;
-  const h = (await getPool().query<{ id: string; zeit: Date | string }>(
-    `SELECT id, "timestamp" AS zeit FROM thoughts
-      WHERE project=$1 AND 'session-uebergabe' = ANY(tags)
-        AND (source_identity_id=$2 OR (source_identity_id IS NULL AND source=$3))
-      ORDER BY COALESCE(source_identity_id=$2, false) DESC, "timestamp" DESC LIMIT 1`, [project, identityId, agentId])).rows[0];
+  const handoff = await handoffFuer(project, identityId, agentId, false);
   const { koordinatorPlanKurz } = await import('./plans.js');
   const lage = await koordinatorPlanKurz(project);
   // Praezisierung User (ausweis-fix 27970/27971): nur AKTIVE Channels SEIT DEM AUSWEIS + Standardchannel + Gesamtzahl.
@@ -150,8 +168,7 @@ async function baueKoordinatorKurz(
   const voll = mitTyp ? regelwerk.rules.filter((r) => r.vollstaendig && typeof r.content === 'string') : [];
   const namen = mitTyp ? (regelwerk.regel_verzeichnis.regeln ?? []) : regelwerk.rules.map((r) => r.name);
   return {
-    // Nachtrag User (ausweis-fix 27977): Handoff immer mit Lese-Empfehlung.
-    handoff: h ? { id: h.id, zeit: new Date(h.zeit).toISOString(), empfehlung: `Zuerst lesen: thought(action:"get", id:"${h.id}")` } : null,
+    handoff,
     aktiver_plan: lage.aktiver_plan,
     ...(lage.aktiver_plan_hinweis ? { aktiver_plan_hinweis: lage.aktiver_plan_hinweis } : {}),
     top3: lage.top3,
@@ -235,9 +252,12 @@ export async function kontextVerweiseFuer(identityId: string, project: string): 
  * Legacy-Zuweisung). Keine Projekt-Uebersichten. null = Produkt-Schalter profilverwaltung im Projekt AUS -> Bestand (volles
  * Onboarding), gleiche Schaltung wie die Koordinator-Kurzform (P22-T49).
  */
-async function baueAgentKurz(project: string, agentId: string, identityId: string): Promise<{ channels: string[]; eigene_tasks: string[] } | null> {
+async function baueAgentKurz(project: string, agentId: string, identityId: string): Promise<{ handoff: HandoffZeile | null; channels: string[]; eigene_tasks: string[] } | null> {
   const { leseProfilProduktSchalter } = await import('./agent-profil-schalter.js');
   if (!(await leseProfilProduktSchalter('profilverwaltung', project)).aktiv) return null;
+  // P22-T54 (User 19.10.2026): End-Thought des vorigen Laufs DIESER Identitaet (nur ID + Zeit + Empfehlung); keiner -> Zeile weg.
+  let handoff: HandoffZeile | null = null;
+  try { handoff = await handoffFuer(project, identityId, agentId, true); } catch { /* Handoff ist Zugabe */ }
   let channels: string[] = [];
   try {
     channels = (await getPool().query<{ name: string }>(
@@ -258,7 +278,7 @@ async function baueAgentKurz(project: string, agentId: string, identityId: strin
         ORDER BY t.updated_at DESC LIMIT 10`,
       [project, identityId, agentId])).rows.map((z) => `${z.id} (${z.status}): ${(z.titel ?? '').slice(0, 60)}`);
   } catch { /* Tasks sind Zugabe */ }
-  return { channels, eigene_tasks: eigeneTasks };
+  return { handoff, channels, eigene_tasks: eigeneTasks };
 }
 
 /** P22-T43 (D5): Begruessung bei Anmeldung/Fortsetzung einer bestehenden Identitaet (kein 'neuer Agent'). */
@@ -352,6 +372,11 @@ export async function holeAgentOnboarding(e: {
   }
   // P22-T49: zugewiesene Skills (nur Namen) fuer Ausweis-Identitaeten im expliziten Onboarding.
   const skills = w12 ? await skillsFuer(w12.identity_id, project).catch(() => null) : null;
+  // P23-T1 (2a): vorgegebene Skills als 99%-Kette in den Vorrat - nachgeliefert, bis der Agent sie gesehen hat.
+  if (skills && w12) {
+    const { bereiteVorgabeSkillsVor } = await import('./skill-hook.js');
+    await bereiteVorgabeSkillsVor(project, agentId, [...skills.namen, ...(skills.identitaet ?? [])]).catch(() => 0);
+  }
   // P22-T53 (3): per Name im Profil verwiesene Memories/Tasks als EINE Zeile (ohne Volltext).
   const kontextVerweise = w12 ? await kontextVerweiseFuer(w12.identity_id, project).catch(() => null) : null;
   // P22-T49: Koordinator mit Ausweis bei chat(anmelden) -> kurze Ausgabe (Handoff, aktiver Plan, Top 3, Regelnamen).
@@ -398,6 +423,7 @@ export async function holeAgentOnboarding(e: {
         isFirstVisit: !w12.bestehend,
         message: w12.bestehend ? TEXT_ANMELDUNG : '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
         project, rolle,
+        ...(kurz.handoff ? { handoff: kurz.handoff } : {}),
         rules: regelwerk.rules,
         regel_verzeichnis: { ...(namen.length ? { regeln: namen } : {}), abruf: regelwerk.regel_verzeichnis.abruf },
         ...(kurz.channels.length ? { channels: kurz.channels } : {}),
