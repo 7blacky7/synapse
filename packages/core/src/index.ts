@@ -602,6 +602,21 @@ export {
 } from './services/hauptagent-dienst.js';
 export type { HauptagentSchalterStand, MainIdentitaetErgebnis, AuftragEingabe, AuftragArt } from './services/hauptagent-dienst.js';
 export { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './db/agent-runtime-auftraege-schema.js';
+// P22-T45: Ausweis-Fristen als Einstellung (EINE Lesestelle), Schema 117.
+export {
+  AUSWEIS_FRIST_NAMEN, AUSWEIS_FRIST_DEFINITIONEN, AusweisFristenFehler, leseAusweisFristen, setzeAusweisFristen, leereAusweisFristenCache,
+  schattenFristMs, erstnutzungFristMs,
+} from './services/agent-ausweis-fristen.js';
+export type { AusweisFristName, AusweisFristQuelle, AusweisFristWert, AusweisFristenStand } from './services/agent-ausweis-fristen.js';
+export { AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL } from './db/agent-ausweis-fristen-schema.js';
+// P22-T44: Ausweis fuer mehrere Projekte (Heimat, Visum, Arbeitsfreigabe), Schema 118, Produkt-Schalter mehrprojekt.
+export {
+  MEHRPROJEKT_FUNKTION, AUSWEIS_HINWEIS_FELD, AusweisProjektFehler, leseMehrprojektSchalter, leereMehrprojektCache, VISUM_ZUSCHNITT, visumErlaubt,
+  visumAblehnung, sichereFremdprojektZugang, ausweisProjekteHinweis, ausweisProjekteTexte, haengeAusweisHinweiseAn, ausweisProjekteStatus,
+  listeAusweisVisa, erteileArbeitsfreigabe, entzieheArbeitsfreigabe, offeneVisa,
+} from './services/agent-ausweis-projekte.js';
+export type { MehrprojektStand, FremdZugang, FremdprojektStand } from './services/agent-ausweis-projekte.js';
+export { AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL } from './db/agent-ausweis-projekte-schema.js';
 export type { ProfilTokenAbruf, WebUiKoordinatorToken } from './services/agent-token-abruf.js';
 export { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus, w1bFehlerStatus } from './services/agent-profil-admin.js';
 export type { W1bAdminAction } from './services/agent-profil-admin.js';
@@ -819,6 +834,7 @@ export {
   zurueckstelleTask,
   filtereWiedervorlageTasks,
   filtereNachTaskIds,
+  planRefFuerTaskIds,
   taskSchlaeft,
   taskBis,
   planKontext,

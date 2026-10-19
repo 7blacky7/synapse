@@ -3,7 +3,7 @@
  * Konzept: 7594a932 (4) + 85dd2b81 (4.1/K14) + 4e6327ca (4.2/K15) + 10be97e2 (4.3/K16) + 6411650a (4.3a).
  *
  * PAKETZUORDNUNG (jeder Stub nennt sein Paket im Fehler W1bNichtUmgesetzt und im Kommentar):
- *   A  Schattenprofile (24h-Frist, Bestaetigung/Ablehnung/Verfall), Typ-Katalog global/projekt mit
+ *   A  Schattenprofile (Frist einstellbar, Standard 24 h; Bestaetigung/Ablehnung/Verfall), Typ-Katalog global/projekt mit
  *      Revisionen, Profil-Override mit profil_revision/CAS, Profilhistorie/Rollback, Audit
  *   B  Voranlage/Legacy-Anmeldung -> Schattenentwurf, erster Koordinator, tokenfreie
  *      Koordinatorliste (CLI/Web-UI), Token-Aktivierung/Erstzustellung, portable Anmeldung,
@@ -56,8 +56,10 @@ export type W1bAkteur =
 // ---------------------------------------------------------------------------------------------
 export const SCHATTEN_ZUSTAENDE = ['pending', 'bestaetigt', 'abgelaufen', 'abgelehnt'] as const;
 export type SchattenZustand = typeof SCHATTEN_ZUSTAENDE[number];
-/** K3: Profil UND vorgesehener Token bleiben 24 h Schatten; Aktivitaet verlaengert nicht. */
-export const SCHATTEN_FRIST_MS = 24 * 3_600_000;
+/**
+ * K3: Profil bleibt fuer die Schattenfrist Schatten; Aktivitaet verlaengert nicht. P22-T45: die Frist ist eine Einstellung
+ * (schatten_stunden, Standard 24 h, projekt > global), EINE Lesestelle agent-ausweis-fristen.ts (schattenFristMs).
+ */
 export type SchattenUrsprung = 'legacy_register' | 'koordinator_voranlage' | 'koordinator_start';
 
 export interface SchattenSelbstangaben {
@@ -108,8 +110,9 @@ export function schattenUebergangErlaubt(von: SchattenZustand, nach: SchattenZus
   return SCHATTEN_UEBERGAENGE[von]?.includes(nach) ?? false;
 }
 
-export function schattenAblauf(erstellt: Date): Date {
-  return new Date(erstellt.getTime() + SCHATTEN_FRIST_MS);
+/** Ablaufzeitpunkt eines neuen Schattens; fristMs kommt aus schattenFristMs(project) (agent-ausweis-fristen.ts). */
+export function schattenAblauf(erstellt: Date, fristMs: number): Date {
+  return new Date(erstellt.getTime() + fristMs);
 }
 
 /** pending nach Ablauf ist wirksam abgelaufen, auch bevor ein Verfallslauf die Zeile umschreibt. */
@@ -188,6 +191,8 @@ export interface ProfilInhalt {
   kontext_stufe?: KontextStufe;
   rolle?: string;
   regeln?: string[];
+  /** P22-T49: fest zugewiesene Skill-Namen; in der Anmeldung nur als Namen + Abruf skills(get_full) */
+  skills?: string[];
   briefing?: string | null;
   arbeitsweise?: string | null;
   channels?: string[];
@@ -808,11 +813,11 @@ export const W1B_DIENSTE: W1bDienste = {
 //    Zuordnung ueber identity_id, token_id, token_praefix. Nur direkte Antworten an User/Koordinator bzw. an
 //    den betroffenen Agenten (Startkonfiguration, Abruf, TOKEN_BEREIT-Hinweis) tragen den Wert.
 // V2 LEBENSZYKLUS (ausweisZustand): ausgestellt -> aktiv -> geloescht; ausgestellt + Frist vorbei = verfallen.
-//    Weg A: Legacy-Anmeldung erzeugt nur einen SCHATTEN (24 h, kein Ausweis). Bestaetigung (admin
+//    Weg A: Legacy-Anmeldung erzeugt nur einen SCHATTEN (Frist schatten_stunden, Standard 24 h, kein Ausweis). Bestaetigung (admin
 //      schattenprofil_bestaetigen) erzeugt den Ausweis direkt 'aktiv' (ausweis_weg 'schatten_bestaetigt');
 //      der laufende Agent erhaelt ihn per Hinweis TOKEN_BEREIT (V6).
 //    Weg B: admin agent_vorbereiten erzeugt Identitaet + Profil + Ausweis 'ausgestellt' mit Erstnutzungsfrist
-//      (erstnutzungFristMs, Env SYNAPSE_AGENT_START_TOKEN_TTL_MIN, Standard 10 min). Die ERSTE erfolgreiche
+//      (Einstellung erstnutzung_minuten, Standard 10 min, Lesestelle agent-ausweis-fristen.ts). Die ERSTE erfolgreiche
 //      Pruefung (chat anmelden ODER beliebiger Toolaufruf mit token) IST die Bestaetigung: gueltig_bis = NULL,
 //      danach dauerhaft bis User/Koordinator loescht. Sonderfall: der Name hat eine laufende Legacy-Sitzung im
 //      Projekt -> sofort 'aktiv' (ausweis_weg 'uebernahme', legacy_uebernahme:true), Zustellung wie Weg A.
@@ -912,11 +917,7 @@ export function ausweisZustand(
 }
 /** Nur ausgestellt (innerhalb der Frist) und aktiv identifizieren; alles andere -> agent_token_ungueltig. */
 export function ausweisGueltig(z: AusweisZustand): boolean { return z === 'ausgestellt' || z === 'aktiv'; }
-/** Erstnutzungsfrist Weg B; Env SYNAPSE_AGENT_START_TOKEN_TTL_MIN (Minuten, > 0), Standard 10. */
-export function erstnutzungFristMs(): number {
-  const m = Number(process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN);
-  return (Number.isFinite(m) && m > 0 ? m : 10) * 60_000;
-}
+// P22-T45: Die Erstnutzungsfrist Weg B ist eine Einstellung (erstnutzung_minuten); Lesestelle agent-ausweis-fristen.ts.
 
 /** V4: User oder Koordinator MIT Ausweis desselben Projekts (wie darfTokenAbrufen; Daemon nur ausweisFuerStart). */
 export function darfAusweisVerwalten(akteur: W1bAkteur, project: string): boolean {
@@ -1139,7 +1140,7 @@ export function tokenBereitText(token: string): string {
 
 export type ProfilDiffBereich =
   | 'regeln' | 'zuschnitt' | 'hinweise' | 'kontext' | 'typ' | 'rolle' | 'channels' | 'briefing'
-  | 'arbeitsweise' | 'modell' | 'task_bindung' | 'sonstiges';
+  | 'arbeitsweise' | 'modell' | 'task_bindung' | 'skills' | 'sonstiges';
 export type ProfilDiffArt = 'neu' | 'geaendert' | 'entfernt' | 'erlaubt' | 'gesperrt' | 'aktiviert' | 'deaktiviert';
 
 export interface ProfilDiffEintrag {
@@ -1162,7 +1163,7 @@ export interface ProfilDiff {
 const DIFF_BEREICH_TEXT: Record<ProfilDiffBereich, string> = {
   regeln: 'Regel', zuschnitt: 'Werkzeug', hinweise: 'Hinweis', kontext: 'Kontext', typ: 'Typ', rolle: 'Rolle',
   channels: 'Channel', briefing: 'Briefing', arbeitsweise: 'Arbeitsweise', modell: 'Modell', task_bindung: 'Task',
-  sonstiges: 'Feld',
+  skills: 'Skill', sonstiges: 'Feld',
 };
 const DIFF_ART_TEXT: Record<ProfilDiffArt, string> = {
   neu: 'neu', geaendert: 'geaendert', entfernt: 'entfernt', erlaubt: 'erlaubt', gesperrt: 'gesperrt',

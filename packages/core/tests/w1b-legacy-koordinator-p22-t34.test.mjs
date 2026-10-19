@@ -21,7 +21,7 @@ for(const k of ['SYNAPSE_DATABASE_URL','SYNAPSE_AGENT_TOKEN','SYNAPSE_AUTH_DISAB
  'SYNAPSE_W1B_ANTWORTANPASSUNG','SYNAPSE_AGENT_TOKEN_SCHLUESSEL','SYNAPSE_MAIN_SYNAPSE'])delete process.env[k];
 Object.assign(process.env,{SYNAPSE_SHELL_JOB:'1',SYNAPSE_SKIP_EMBEDDINGS:'1',PARSER_LOOP_DISABLED:'1',
  SYNAPSE_INTERN_TOOL:'0',SYNAPSE_TOKEN_IDENTITAET:'1',SYNAPSE_W1B_ANMELDUNG:'1',SYNAPSE_ONBOARDING_RUHE_MIN:'0',
- SYNAPSE_AGENT_BEZUG_MODUS:'beide',SYNAPSE_AGENT_START_TOKEN_TTL_MIN:'10',
+ SYNAPSE_AGENT_BEZUG_MODUS:'beide',
  QDRANT_URL:'http://127.0.0.1:1',OLLAMA_URL:'http://127.0.0.1:1',EMBEDDING_BASE_URL:'http://127.0.0.1:1'});
 let network=0;
 globalThis.fetch=async()=>{network++;throw Error('Testnetz gesperrt');};
@@ -117,6 +117,12 @@ try{
   hauptagent_auftrag:()=>({auftrag_art:'neustart',grund:'Test T34 Matrix'}),
   hauptagent_auftraege:()=>({}),
   hauptagent_auftrag_abbrechen:()=>({auftrag_id:'unbekannt-t34',grund:'Test T34 Matrix'}),
+  // P22-T45: Ausweis-Fristen (Projektebene User/Koordinator/Legacy-Koordinator).
+  ausweis_fristen:()=>({modus:'setzen',erstnutzung_minuten:10,grund:'Test T34 Matrix'}),
+  // P22-T44: Ausweis fuer mehrere Projekte (Verwaltung des eigenen Projekts; Tabellen 118 hier nicht angelegt -> Fachfehler, kein recht_fehlt).
+  ausweis_visa:()=>({}),
+  arbeitsfreigabe_erteilen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
+  arbeitsfreigabe_entziehen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
  };
  const NUR_USER=new Set(['web_ui_koordinator_token','hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen']);
  const AKTEURE=[

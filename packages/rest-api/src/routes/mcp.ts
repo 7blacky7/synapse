@@ -3119,7 +3119,9 @@ async function handleToolCallKern(
       switch (action) {
         case 'search': return await suchePlanTool(args);
         case 'get': {
-          const plan = await getPlan(project, str(args, 'plan_id'));
+          // P22-T43 (D8): ohne plan_id loest die task_id (P<n>-T<m>, Alias, UUID) den Plan auf, wenn alle in EINEM Plan liegen.
+          const { planRefFuerTaskIds } = await import('@synapse/core');
+          const plan = await getPlan(project, str(args, 'plan_id') ?? (await planRefFuerTaskIds(project, strArray(args, 'task_id'))));
           if (!plan) return { message: 'Kein Plan gefunden' };
           const { planKontext } = await import('@synapse/core');
           // DX-Befund 5: Vollabwurf vermeiden — status-Filter, compact, limit.

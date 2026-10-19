@@ -271,6 +271,10 @@ export interface RegelVerzeichnis {
   anzahl: Record<AgentRolle | 'alle' | 'wissen' | 'ueberholt' | 'nur_andere_rollen', number>;
   /** Nachlesbare Wissensnamen; Regeln und Überholtes werden nur gezählt. */
   wissen: string[];
+  /** Regelnamen ohne Volltext (Folgeaufruf im Lauf bzw. P22-T48 Typ-Zustellung); Volltext über abruf. */
+  regeln?: string[];
+  /** P22-T48 Diagnose: welche Regeln aus dem Typ/Profil voll kamen, welche Namen fehlen, wie viele nur als Name. */
+  typ_regeln?: { typ: { schluessel: string; revision: number } | null; aus_typ: string[]; fehlend: string[]; als_verzeichnis: number };
 }
 
 /** Ein gemeinsamer Block für REST und stdio, auch ohne sichtbare Regeln. */
@@ -311,6 +315,56 @@ export function baueOnboardingRegelwerk(
   };
 }
 
+/** P22-T48: Regelnamen aus dem wirksamen Profil (Typ) einer Ausweis-Identitaet. */
+export interface TypRegelAuswahl {
+  /** werte.regeln des wirksamen Profils, Reihenfolge wie im Profil. */
+  namen: string[];
+  typ: { schluessel: string; revision: number } | null;
+}
+
+/**
+ * P22-T48 (User 19.10.2026 'nicht alle Regeln auf einmal'): Ein Agent MIT Ausweis UND wirksamem Typ bekommt beim
+ * Anmelden nur die Regeln seines Profils im Volltext; alle uebrigen fuer seine Rolle sichtbaren Regeln (auch
+ * 'pflicht') stehen nur als Namen unter regel_verzeichnis.regeln (Abruf memory read). Typ-Regeln gelten unabhaengig
+ * von '-only'-Tags, weil der Typ sie ausdruecklich benennt. Ein Name ohne Regel (category rules) im Projekt steht unter
+ * typ_regeln.fehlend (Diagnose). Loest KEIN Name des Typs zu einer Regel auf, bleibt das Rollen-Regelwerk (Bestand,
+ * nur typ_regeln als Diagnose): lieber die bisherigen Regeln als gar keine. Reine Funktion; ob ein Typ wirkt,
+ * entscheidet agent-lauf.ts typRegelnFuer.
+ */
+export function wendeTypRegelnAn(
+  regelwerk: { rules: OnboardingRegel[]; regel_verzeichnis: RegelVerzeichnis },
+  memories: Array<{ name: string; content: string; category: string }>,
+  auswahl: TypRegelAuswahl,
+): { rules: OnboardingRegel[]; regel_verzeichnis: RegelVerzeichnis } {
+  const katalog = new Map<string, string>();
+  for (const m of eindeutigeRegeln(memories.filter((x) => x.category === 'rules'))) katalog.set(m.name, m.content);
+  const ausTyp: string[] = [];
+  const fehlend: string[] = [];
+  const rules: OnboardingRegel[] = [];
+  for (const name of [...new Set(auswahl.namen)]) {
+    const content = katalog.get(name);
+    if (content === undefined) { fehlend.push(name); continue; }
+    ausTyp.push(name);
+    rules.push({ name, content, vollstaendig: true });
+  }
+  const v = regelwerk.regel_verzeichnis;
+  if (ausTyp.length === 0) {
+    return { rules: regelwerk.rules, regel_verzeichnis: { ...v, typ_regeln: { typ: auswahl.typ, aus_typ: [], fehlend, als_verzeichnis: 0 } } };
+  }
+  const typNamen = new Set(ausTyp);
+  const regeln = regelwerk.rules.map((r) => r.name).filter((n) => !typNamen.has(n));
+  const typText = auswahl.typ ? ` "${auswahl.typ.schluessel}" (Rev ${auswahl.typ.revision})` : '';
+  return {
+    rules,
+    regel_verzeichnis: {
+      ...v,
+      hinweis: `Volltext nur für die ${ausTyp.length} Regel(n) deines Typs${typText}; ${regeln.length} weitere Regel(n) nur als Name unter regeln, `
+        + `Volltext bei Bedarf über ${v.abruf}. Regeln zu einer Handlung kommen mit deren Ergebnis (werkzeug_regeln, je Lauf einmal). ${v.hinweis}`,
+      regeln,
+      typ_regeln: { typ: auswahl.typ, aus_typ: ausTyp, fehlend, als_verzeichnis: regeln.length },
+    },
+  };
+}
 
 /** Anfang einer Regel, an einer Wortgrenze abgeschnitten. */
 function kuerzeRegel(content: string): string {

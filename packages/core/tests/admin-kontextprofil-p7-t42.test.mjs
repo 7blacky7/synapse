@@ -12,13 +12,19 @@ const w1bAktionen = ['profil_schalter_status', 'profil_schalter_setzen', 'profil
   // P22-T33 (T1, User-Praezedenz 227150da: admin-Aktionen sichtbar ok): additive W12-Aktionen; die Golden-Hashes der alten Schemas bleiben unveraendert.
   'agent_vorbereiten', 'token_loeschen',
   // P22-T36 (W2-P1): additive Hauptagent-Aktionen.
-  'hauptagent_status', 'hauptagent_auftrag', 'hauptagent_auftraege', 'hauptagent_auftrag_abbrechen'];
+  'hauptagent_status', 'hauptagent_auftrag', 'hauptagent_auftraege', 'hauptagent_auftrag_abbrechen',
+  // P22-T45: additive Ausweis-Fristen.
+  'ausweis_fristen',
+  // P22-T44: additive Aktionen Ausweis fuer mehrere Projekte.
+  'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen'];
 const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id', 'zustand', 'erwartete_revision', 'ziel_revision', 'korrektur', 'profil_patch', 'typ_id', 'typ_schluessel', 'typ_inhalt',
   'typ_revision', 'profil_scope', 'persona_name', 'persona_inhalt', 'persona_vorlage_id', 'persona_version', 'user_auftrag', 'user_zustimmung', 'anlass', 'bindung_task_id', 'bindung_art', 'bindung_identity_ids',
   // P22-T33 (T1, 227150da): additive W12-Parameter (agent_vorbereiten).
   'agent_name', 'rolle', 'startart',
   // P22-T36 (W2-P1): additive Hauptagent-Parameter.
-  'auftrag_art', 'auftrag_id', 'gewuenscht', 'hands_off', 'idempotenz_schluessel'];
+  'auftrag_art', 'auftrag_id', 'gewuenscht', 'hands_off', 'idempotenz_schluessel',
+  // P22-T45: additive Ausweis-Fristen-Parameter.
+  'schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'frist_namen'];
 const neu = new Set(['kontextprofil_liste', 'kontextprofil_setzen', 'kontextprofil_entfernen', ...w1bAktionen]);
 const neueParameter = new Set(['ziel', 'kontext_budget', 'stufe', 'hinweise_aus', 'hinweise_nur', ...w1bParameter]);
 const alteSchemaProjektion = (tool) => {

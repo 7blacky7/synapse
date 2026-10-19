@@ -18,7 +18,6 @@ const url = new URL(process.env.DATABASE_URL || 'http://invalid');
 assert.equal(url.port, '5433'); assert.equal(url.pathname, '/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
 delete process.env.SYNAPSE_AGENT_TOKEN;
-delete process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN;
 process.env.SYNAPSE_SHELL_JOB = '1';
 process.env.SYNAPSE_SKIP_EMBEDDINGS = '1';
 process.env.PARSER_LOOP_DISABLED = '1';
@@ -124,19 +123,21 @@ async function reviewCases(ts) {
     check(attemptedEvents.success!==false && !JSON.stringify(attemptedEvents).includes('legacy-offen'),'Behauptete Legacy-ID erlaubt kein Lesen ihrer direkten Events');
     assert.deepEqual(await state(),before,'Legacy-Sitzung, Inbox, Events und ACKs exakt unveraendert');checks++;
     // W12 (P22-T24, V2): keine Start-Ausweise und keine Rotation. Start mit vorhandenem Ausweis liefert denselben;
-    // die Erstnutzungsfrist (Standard 10 Min, Env einstellbar) gilt nur fuer neu vorbereitete, noch ungenutzte Ausweise.
+    // die Erstnutzungsfrist (Standard 10 Min, Einstellung ausweis_fristen) gilt nur fuer neu vorbereitete, noch ungenutzte Ausweise.
     const same=await core.stelleAgentTokenAus({project,name:legacy,identity_id:fresh.principal.identity_id,start_art:'p22-t11-review'},{system:'daemon'});
     check(same.token===fresh.token && same.neu===false,'Start mit vorhandenem Ausweis liefert denselben (keine Rotation)');
     const start=await core.stelleAgentTokenAus({project,name:legacy+'-vorb',erstnutzung:true},{system:'daemon'});
     secrets.push(start.token);
     const ttl=Number((await pool.query('SELECT EXTRACT(epoch FROM gueltig_bis-NOW()) AS ttl FROM agent_identitaet_tokens WHERE id=$1',[start.token_id])).rows[0].ttl);
     check(ttl>590 && ttl<=600,'Ungenutzter vorbereiteter Ausweis hat Standard-Erstnutzungsfrist 10 Minuten');
-    process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN='2';
+    // P22-T45: Einstellung (admin ausweis_fristen) statt Env; Schema 117 im privaten Testschema anlegen.
+    await pool.query(core.AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL);
+    await core.setzeAusweisFristen({ebene:'projekt',project,werte:{erstnutzung_minuten:2},grund:'Test P22-T11 Frist'},{wer:'user',setter_identity_id:null});
     const configured=await core.stelleAgentTokenAus({project,name:legacy+'-vorb2',erstnutzung:true},{system:'daemon'});
     secrets.push(configured.token);
     const customTtl=Number((await pool.query('SELECT EXTRACT(epoch FROM gueltig_bis-NOW()) AS ttl FROM agent_identitaet_tokens WHERE id=$1',[configured.token_id])).rows[0].ttl);
-    check(customTtl>110 && customTtl<=120,'Start-Ausweis-Hoechstgueltigkeit ist per Env einstellbar');
-    delete process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN;
+    check(customTtl>110 && customTtl<=120,'Start-Ausweis-Erstnutzungsfrist ist per Einstellung (ausweis_fristen) einstellbar');
+    await core.setzeAusweisFristen({ebene:'projekt',project,entfernen:['erstnutzung_minuten'],grund:'Test P22-T11 zurueck'},{wer:'user',setter_identity_id:null});
     await pool.query("UPDATE agent_identitaet_tokens SET gueltig_bis=NOW()-INTERVAL '1 second' WHERE id=$1",[start.token_id]);
     const expired=await t.call('chat',{action:'anmelden',token:start.token});
     check(expired.success===false && expired.error==='agent_token_ungueltig','Verfallener (ungenutzter) Ausweis wird vom echten Transport abgewiesen');

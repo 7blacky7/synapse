@@ -54,13 +54,26 @@
  *    beim Rollen-Tag nicht moeglich, weshalb drei Monate lang niemand bemerkt hat, dass die
  *    Bindung ins Leere ging.
  *
+ * P22-T48 (User 19.10.2026) - MIT AUSWEIS (Identitaets-Principal mit lauf_id, Ausweis-Kern EIN):
+ *   - project kommt aus dem Principal, wenn der Aufruf keins traegt (Aufrufe mit Ausweis lassen project meist weg).
+ *   - ENTPRELLUNG JE LAUF: jede Regel kommt im Lauf (lauf_id = aktueller Kontext, NIE die Identitaet) nur EINMAL;
+ *     eine geaenderte Regel (anderer Inhalt) erneut. Ein neuer Lauf (chat anmelden, index_stats fortsetzung, spaeter
+ *     ein vom Wrapper erkannter Kontextwechsel) liefert alles wieder. Zustellmarke: agent_identitaet_hinweis_zustellungen
+ *     mit sitzung 'lauf:<lauf_id>', quelle_id 'werkzeug_regeln', hinweis_id '<name>#<sha256(content)[0..16]>'
+ *     (INSERT ... ON CONFLICT DO NOTHING RETURNING = atomar auch ueber mehrere Prozesse). Debug: diese Zeilen.
+ *   - Im Onboarding voll zugestellte Regeln (Typ-/Pflichtregeln) markiert agent-onboarding.ts im selben Lauf mit,
+ *     damit eine Regel nicht doppelt kommt.
+ *   - Fehler beim Markieren -> Regeln werden geliefert (lieber doppelt als gar nicht).
+ *   OHNE Ausweis (Legacy, fremdes Projekt, Kern AUS): unveraendert, Entscheidungen 1 und 2 unten gelten weiter.
+ *
  * BEKANNTE GRENZEN, hier benannt statt spaeter entdeckt:
- *   (a) OHNE project KEINE REGELN. Regeln sind projektbezogen. Ein Werkzeug ohne
+ *   (a) OHNE project KEINE REGELN (ohne Ausweis). Regeln sind projektbezogen. Ein Werkzeug ohne
  *       project-Argument kann keine Marke treffen. Bei specialist ist project Pflicht.
  *   (b) ARRAY-ANTWORTEN werden nicht angereichert (siehe die Aufrufer). Betroffen sind nur
  *       lesende Such-Aktionen, keine zerstoerende.
  */
 
+import { createHash } from 'node:crypto';
 import { getPool } from '../db/client.js';
 
 /** Eine Regel, die zu einem Werkzeug-Aufruf gehoert. */
@@ -104,7 +117,8 @@ export async function holeWerkzeugRegeln(
   toolName: string,
   action?: string | null,
 ): Promise<WerkzeugRegel[]> {
-  const projekt = String(project ?? '').trim();
+  const bezug = await laufBezug();
+  const projekt = String(project ?? '').trim() || bezug?.project || '';
   if (!projekt) return [];
   const marken = baueWerkzeugMarken(toolName, action);
   if (marken.length === 0) return [];
@@ -123,9 +137,64 @@ export async function holeWerkzeugRegeln(
         ORDER BY name`,
       [projekt, marken],
     );
-    return res.rows.map((r) => ({ name: r.name, content: r.content }));
+    const regeln = res.rows.map((r) => ({ name: r.name, content: r.content }));
+    if (!bezug || bezug.project !== projekt || regeln.length === 0) return regeln;
+    return await nurNeueImLauf(bezug, regeln);
   } catch (err) {
     console.error('[Werkzeug-Regeln] Abfrage fehlgeschlagen:', err);
     return [];
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// P22-T48: Zustellung je Lauf (nur mit Ausweis)
+// ---------------------------------------------------------------------------------------------
+/** quelle_id der Lauf-Zustellmarke in agent_identitaet_hinweis_zustellungen. */
+export const WERKZEUG_REGEL_QUELLE = 'werkzeug_regeln';
+
+/** Lauf-Bezug eines Ausweis-Aufrufs (Identitaets-Principal mit lauf_id). */
+export interface WerkzeugRegelLauf { identity_id: string; project: string; agent_id: string; lauf_id: string }
+
+const laufSitzung = (laufId: string): string => 'lauf:' + laufId;
+/** Marke = Name + Inhaltsstempel: eine geaenderte Regel hat eine neue Marke und kommt im Lauf erneut. */
+const regelMarke = (r: WerkzeugRegel): string => r.name + '#' + createHash('sha256').update(r.content ?? '').digest('hex').slice(0, 16);
+
+async function laufBezug(): Promise<WerkzeugRegelLauf | null> {
+  try {
+    // Dynamisch: agent-bezug haengt (indirekt) an vielen Diensten; diese Datei bleibt ohne festen Import-Zyklus.
+    const { aktuellerAgentAufruf } = await import('./agent-bezug.js');
+    const p = aktuellerAgentAufruf()?.principal;
+    if (!p || p.art !== 'identity' || !p.lauf_id) return null;
+    return { identity_id: p.identity_id, project: p.project, agent_id: p.agent_id, lauf_id: p.lauf_id };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Markiert Regeln im Lauf als zugestellt und liefert die Marken, die NEU waren (atomar, mehrprozessfest).
+ * Wirft bei DB-Fehlern; Aufrufer entscheiden (holeWerkzeugRegeln liefert dann alles).
+ */
+export async function markiereWerkzeugRegelnZugestellt(b: WerkzeugRegelLauf, regeln: WerkzeugRegel[]): Promise<string[]> {
+  if (regeln.length === 0) return [];
+  const r = await getPool().query<{ hinweis_id: string }>(
+    `INSERT INTO agent_identitaet_hinweis_zustellungen (project, agent_id, sitzung, quelle_id, hinweis_id, aufruf, voll, identity_id)
+     SELECT $1, $2, $3, $4, m, 0, true, $5 FROM unnest($6::text[]) AS m
+     ON CONFLICT (project, identity_id, sitzung, quelle_id, hinweis_id) DO NOTHING
+     RETURNING hinweis_id`,
+    [b.project, b.agent_id, laufSitzung(b.lauf_id), WERKZEUG_REGEL_QUELLE, b.identity_id, [...new Set(regeln.map(regelMarke))]]);
+  return r.rows.map((z) => z.hinweis_id);
+}
+
+/** Nur die im Lauf noch nicht (bzw. geaendert) zugestellten Regeln; Kern AUS oder Fehler -> alle (Bestand). */
+async function nurNeueImLauf(b: WerkzeugRegelLauf, regeln: WerkzeugRegel[]): Promise<WerkzeugRegel[]> {
+  try {
+    const { leseAusweisKern } = await import('./agent-profil-schalter.js');
+    if (!(await leseAusweisKern(b.project)).aktiv) return regeln;
+    const neu = new Set(await markiereWerkzeugRegelnZugestellt(b, regeln));
+    return regeln.filter((r) => neu.has(regelMarke(r)));
+  } catch (err) {
+    console.error('[Werkzeug-Regeln] Lauf-Zustellmarke fehlgeschlagen:', (err as { message?: string } | null)?.message?.slice(0, 80) ?? 'fehler');
+    return regeln;
   }
 }

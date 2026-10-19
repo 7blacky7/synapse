@@ -452,6 +452,44 @@ export async function planUebersicht(
     }));
 }
 
+const OFFENE_TASK_STATUS = new Set(['todo', 'in_progress', 'blocked']);
+
+/**
+ * P22-T49 (User-Entscheidung c7ba27b4): kurze Planlage fuer die Koordinator-Anmeldung mit Ausweis.
+ * aktiver_plan = der als aktiv MARKIERTE Plan (plans.aktiv, kein Rueckfall) mit seinen offenen, nicht zurueckgestellten
+ * Tasks nur als 'Kurz-ID Titel'; null ohne markierten Plan. top3 = bis zu drei offene Tasks mit priority high aus ANDEREN,
+ * nicht zurueckgestellten Plaenen (Planprioritaet hoch > mittel > niedrig, dann zuletzt geaendert), nummeriert '1 P7-Tx Titel'.
+ */
+export async function koordinatorPlanKurz(project: string, jetzt: Date = new Date()): Promise<{
+  aktiver_plan: { kurz_id: string | null; name: string; tasks: string[] } | null; top3: string[];
+  /** Nachtrag 27979: aktiver Plan abgeschlossen (mind. eine Task, alle done) -> aktiver_plan null + diese Zeile. */
+  aktiver_plan_hinweis?: string;
+}> {
+  const alle = await lesePlaene(project);
+  const aktiv = alle.find((z) => z.aktiv === true) ?? null;
+  const zeile = (t: ProjectTask): string => `${t.kurz_id ?? t.id} ${t.title ?? ''}`.trim();
+  const offen = (t: ProjectTask): boolean => OFFENE_TASK_STATUS.has(String(t.status ?? 'todo')) && !taskSchlaeft(t, jetzt);
+  const aktiver_plan = aktiv
+    ? { kurz_id: aktiv.kurz_id ?? null, name: aktiv.name, tasks: (aktiv.tasks ?? []).filter(offen).map(zeile) }
+    : null;
+  const andere = alle
+    .filter((z) => z.id !== aktiv?.id && !((bisVon(z)?.getTime() ?? 0) > jetzt.getTime()))
+    .sort((a, b) => PRIO_RANG[prioritaetVon(a.prioritaet)] - PRIO_RANG[prioritaetVon(b.prioritaet)]
+      || iso(b.updated_at).localeCompare(iso(a.updated_at)));
+  const hoch = andere.flatMap((z) => (z.tasks ?? []).filter((t) => offen(t) && t.priority === 'high'));
+  const top3 = hoch.slice(0, 3).map((t, i) => `${i + 1} ${zeile(t)}`);
+  // Nachtrag User (ausweis-fix 27979): abgeschlossener aktiver Plan wird nicht eingeblendet, stattdessen Aktivieren-Zeile
+  // (Vorschlag: erster anderer, nicht zurueckgestellter Plan mit offenen Tasks in der obigen Reihenfolge).
+  const aTasks = aktiv?.tasks ?? [];
+  if (aktiv && aTasks.length > 0 && aTasks.every((t) => t.status === 'done')) {
+    const naechster = andere.find((z) => (z.tasks ?? []).some(offen));
+    const ziel = naechster?.kurz_id ?? '<Kurz-ID>';
+    return { aktiver_plan: null, top3,
+      aktiver_plan_hinweis: `Aktiver Plan ${aktiv.kurz_id ?? aktiv.id} ist abgeschlossen – nächsten Plan aktivieren: plan(action:"aktivieren", plan_id:"${ziel}")` };
+  }
+  return { aktiver_plan, top3 };
+}
+
 const MAX_TAGE = 3650;
 
 /**
@@ -557,6 +595,28 @@ export function filtereNachTaskIds(
   const gewaehlt = tasks.filter((t) => refs.some((r) => treffer(t, r.toUpperCase())));
   const nichtGefunden = refs.filter((r) => !tasks.some((t) => treffer(t, r.toUpperCase())));
   return { tasks: gewaehlt, nichtGefunden, gefiltert: true };
+}
+
+/**
+ * P22-T43 (D8): plan(get, task_id) ohne plan_id suchte nur im aktiven Plan (tasks_nicht_gefunden). Liegen ALLE genannten
+ * Tasks (Kurz-ID P<n>-T<m>, Alias-Kurz-ID nach Verschieben, UUID) in genau EINEM Plan, ist das der Plan der Abfrage
+ * (Plan-UUID). Keine IDs, unbekannte ID oder Tasks aus mehreren Plaenen -> null (dann wie bisher der aktive Plan).
+ */
+export async function planRefFuerTaskIds(project: string, taskIds: unknown): Promise<string | null> {
+  const refs = (Array.isArray(taskIds) ? taskIds : [])
+    .filter((r): r is string => typeof r === 'string')
+    .map((r) => r.trim())
+    .filter((r) => r.length > 0);
+  if (refs.length === 0) return null;
+  const alle = await lesePlaene(project);
+  let planId: string | null = null;
+  for (const ref of refs) {
+    const fund = findeTask(project, alle, ref);
+    if (!fund) return null;
+    if (planId !== null && planId !== fund.plan.id) return null;
+    planId = fund.plan.id;
+  }
+  return planId;
 }
 
 export type ZurueckstellenTaskErgebnis =
@@ -779,18 +839,20 @@ export async function createPlan(
   const pool = getPool();
   if (!aktiv && alle.length > 0 && !alle.some((z) => z.aktiv === true)) {
     const bisher = waehleAktiven(alle)!;
-    await pool.query('UPDATE plans SET aktiv = (id = $2) WHERE project = $1', [project, bisher.id]);
+    await setzeAktivenPlan(project, bisher.id);
   }
   // 1. PostgreSQL (Write-Primary) — fail-fast
   await pool.query(
     `INSERT INTO plans (id, project, name, description, goals, architecture, tasks, created_at, updated_at,
                         kurz_id, aktiv, naechste_task_nr, prioritaet, git_branch)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+    // P22-T49: neuer Plan zunaechst inaktiv, wenn es schon Plaene gibt (sonst verletzt das INSERT idx_plans_ein_aktiver);
+    // das Umschalten macht danach setzeAktivenPlan in EINER Transaktion.
     [id, project, name, description, goals, optionen.architecture ?? null, JSON.stringify([]), now, now,
-      kurzId, aktiv, kurzId ? 1 : null, prioritaet, gitBranch ?? null],
+      kurzId, aktiv && alle.length === 0, kurzId ? 1 : null, prioritaet, gitBranch ?? null],
   );
   if (aktiv && alle.length > 0) {
-    await pool.query('UPDATE plans SET aktiv = (id = $2) WHERE project = $1', [project, id]);
+    await setzeAktivenPlan(project, id);
   }
 
   const plan = (await getPlan(project, id))!;
@@ -799,12 +861,33 @@ export async function createPlan(
   return { ...plan, ...(warning ? { warning } : {}) };
 }
 
-/** Macht planRef zum aktiven Plan des Projekts — EIN UPDATE, keine Sperre mit Client-Wartezeit. */
+/**
+ * P22-T49: Umschalten des aktiven Plans. Vorher EIN UPDATE 'aktiv = (id = $2)': der Unique-Index idx_plans_ein_aktiver
+ * (hoechstens ein aktiver Plan je Projekt, nicht aufschiebbar) wird je Zeile geprueft - wurde der neue Plan vor dem
+ * alten aktualisiert, scheiterte es live mit 'duplicate key ... idx_plans_ein_aktiver'. Jetzt in EINER kurzen
+ * Transaktion: zuerst alle anderen inaktiv, dann der Zielplan aktiv. Keine Client-Wartezeit innerhalb der Transaktion.
+ */
+async function setzeAktivenPlan(project: string, planId: string): Promise<void> {
+  const c = await getPool().connect();
+  try {
+    await c.query('BEGIN');
+    await c.query('UPDATE plans SET aktiv = false WHERE project = $1 AND id <> $2 AND aktiv IS DISTINCT FROM false', [project, planId]);
+    await c.query('UPDATE plans SET aktiv = true WHERE project = $1 AND id = $2', [project, planId]);
+    await c.query('COMMIT');
+  } catch (e) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+
+/** Macht planRef zum aktiven Plan des Projekts (setzeAktivenPlan: eine Transaktion, alter aktiver zuerst inaktiv). */
 export async function aktivierePlan(project: string, planRef: string): Promise<ProjectPlan> {
   const alle = await lesePlaene(project);
   const z = findePlan(project, alle, planRef);
   if (!z) throw new Error(`Projekt ${project} hat keinen Plan.`);
-  await getPool().query('UPDATE plans SET aktiv = (id = $2) WHERE project = $1', [project, z.id]);
+  await setzeAktivenPlan(project, z.id);
   const plan = (await getPlan(project, z.id))!;
   await indexNachziehen(plan);
   return plan;

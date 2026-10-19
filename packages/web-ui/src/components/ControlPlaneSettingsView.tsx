@@ -3,11 +3,13 @@ import type { SettingsViewModel } from '../control-plane/view-model';
 import { agentHosts, runtimeProfiles, workspaceProfiles } from '../mock/infrastructure-control-plane';
 import { AgentRuntimeControl } from './CodexRuntimeControl';
 import { ModelPoolTable } from './ModelPoolTable';
+import { AusweisFristenPanel } from './AusweisFristenPanel';
+import { AusweisVisaPanel } from './AusweisVisaPanel';
 import { PlanungsHinweis, StatusChip, type Ausbaustand } from './StatusKennzeichnung';
 import '../control-plane-settings.css';
 
 type Theme = 'dark' | 'light';
-type SettingsCategory = 'main' | 'heartbeat' | 'all-agents' | 'all-workspaces' | 'hosts' | 'runtimes' | 'model-pool' | 'auth' | 'workspace' | 'resources' | 'testsystems' | 'appearance';
+type SettingsCategory = 'main' | 'heartbeat' | 'all-agents' | 'all-workspaces' | 'hosts' | 'runtimes' | 'model-pool' | 'auth' | 'workspace' | 'resources' | 'testsystems' | 'appearance' | 'ausweis';
 
 const ACCENT_PRESETS = [
   { name: 'Orange', color: '#f97316' },
@@ -52,6 +54,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
   const categories: Array<{ id: SettingsCategory; label: string; detail: string; group: string }> = [
     { id: 'main', label: 'Main-Agent', detail: 'Identität und Austauschbarkeit', group: 'Agentensteuerung' },
     { id: 'heartbeat', label: 'Heartbeat', detail: 'Takt, Policy und Wake', group: 'Agentensteuerung' },
+    { id: 'ausweis', label: 'Agenten-Ausweis', detail: 'Fristen, Visa und Arbeitsfreigaben (mehrere Projekte)', group: 'Agentensteuerung' },
     { id: 'all-agents', label: 'Alle Agenten', detail: 'Laufend, idle und sleeping · alle Projekte', group: 'Infrastruktur' },
     { id: 'all-workspaces', label: 'Alle Workspaces', detail: 'Laufend, idle und eingefroren · alle Projekte', group: 'Infrastruktur' },
     { id: 'hosts', label: 'Agent Hosts', detail: 'Routing, Ressourcen und Terminal', group: 'Infrastruktur' },
@@ -70,6 +73,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
   // Bereich, der nur ein Entwurf ist, genauso aus wie einer, der wirkt.
   const standByCategory: Record<string, { stand: Ausbaustand; aufgabe?: string; endpunkte?: string[]; fehlt?: string }> = {
     'model-pool': { stand: 'live' },
+    ausweis: { stand: 'live' },
     appearance: { stand: 'live' },
     runtimes: {
       stand: 'teilweise',
@@ -125,6 +129,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
           {category === 'all-agents' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Agenten aller Projekte</h3><p>Projektteams bleiben im Arbeitsbereich getrennt. Hier werden nur Laufzustände projektübergreifend überwacht.</p></div><b>{allAgents.length} Agenten</b></header><div className="settings-fleet-table">{allAgents.map((agent) => <article key={agent.project + ':' + agent.name}><i className={agent.state} /><span><strong>{agent.name}</strong><small>{agent.role} · {agent.runtime}</small></span><b>{agent.project}</b><em>{agent.host}</em><mark>{agent.state}</mark></article>)}</div></div>}
           {category === 'all-workspaces' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Workspaces aller Projekte</h3><p>Laufende, wartende und eingefrorene Arbeitsstände unabhängig vom aktuell gewählten Projekt.</p></div><b>{workspaceProfiles.length} Workspaces</b></header><div className="settings-fleet-table workspace-fleet">{workspaceProfiles.map((item) => <article key={item.id}><i className={item.status} /><span><strong>{item.name}</strong><small>{item.mode} · {item.role}</small></span><b>{item.project}</b><em>{item.image}</em><mark>{item.status}</mark></article>)}</div></div>}
           {category === 'model-pool' && <ModelPoolTable />}
+          {category === 'ausweis' && <><AusweisFristenPanel project={project} /><AusweisVisaPanel project={project} /></>}
           {category === 'main' && <>
             <section aria-label="Hauptagent einrichten und zuweisen">
               <h3>Hauptagent einrichten und zuweisen</h3>

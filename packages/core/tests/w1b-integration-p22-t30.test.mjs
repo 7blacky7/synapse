@@ -94,7 +94,7 @@ try{
  await new Promise(r=>mock.listen(0,'127.0.0.1',r));
  const endpoint='http://127.0.0.1:'+mock.address().port;
  Object.assign(process.env,{DATABASE_URL:url.href,SYNAPSE_SHELL_JOB:'1',SYNAPSE_SKIP_EMBEDDINGS:'1',PARSER_LOOP_DISABLED:'1',SYNAPSE_INTERN_TOOL:'0',
-  SYNAPSE_AGENT_BEZUG_MODUS:'beide',SYNAPSE_W1B_GATE_TTL_MS:'0',SYNAPSE_ONBOARDING_RUHE_MIN:'0',SYNAPSE_AGENT_START_TOKEN_TTL_MIN:'10',
+  SYNAPSE_AGENT_BEZUG_MODUS:'beide',SYNAPSE_W1B_GATE_TTL_MS:'0',SYNAPSE_ONBOARDING_RUHE_MIN:'0',
   SYNAPSE_HINWEIS_BUDGET_MS:'5000',QDRANT_URL:endpoint,OLLAMA_URL:endpoint,EMBEDDING_BASE_URL:endpoint,SYNAPSE_API_URL:endpoint,
   OLLAMA_MODEL:'t30-fixture',EMBEDDING_PROVIDER:'ollama',EMBEDDING_TARGET_DIM:'3',EMBEDDING_PRAEFIXE:'aus',CHANNEL_SKILL_MIN_SCORE:'1.1'});
 
@@ -273,7 +273,9 @@ try{
   check(i?.typ_id===typId&&txt(i.profil?.regeln)==='["t30-regel-a","t30-regel-b"]'&&i.profil_revision===1,'Profil Rev 1 mit Typ und Regeln');
   const an=await rest('chat',{action:'anmelden',token:tokX});
   check(an.success===true&&an.principal?.identity_id===iidX,'X meldet sich innerhalb der Frist mit token an');
-  check(an.agentOnboarding?.rules?.some(r=>r.name==='regel-pflicht-t30'&&r.vollstaendig),'Anmeldung: Pflichtregel vollstaendig');
+  // P22-T48: Typ-Agent bekommt nur die Regeln seines Profils voll, die Pflichtregel nur als Name im Verzeichnis.
+  check(an.agentOnboarding?.rules?.map(r=>r.name).sort().join()==='t30-regel-a,t30-regel-b'&&an.agentOnboarding.rules.every(r=>r.vollstaendig)
+   &&an.agentOnboarding.regel_verzeichnis?.regeln?.includes('regel-pflicht-t30')&&an.agentOnboarding.zustellung?.regeln_quelle==='typ','Anmeldung: Typ-Regeln vollstaendig, Pflichtregel als Name (P22-T48)');
   check(an.fortsetzung?.profil?.profil_revision===1&&txt(an.fortsetzung.profil.regeln)==='["t30-regel-a","t30-regel-b"]'&&an.fortsetzung.profil.typ?.schluessel==='t30-tester','Anmeldung: Profilblock (Rev 1, Regeln, Typ)');
   const z=(await pool.query('SELECT gueltig_bis,zuletzt_benutzt FROM agent_identitaet_tokens WHERE identity_id=$1 AND widerrufen_am IS NULL',[iidX])).rows[0];
   check(z?.gueltig_bis===null&&z.zuletzt_benutzt!==null,'erste Anmeldung bestaetigt: Ausweis dauerhaft');
@@ -317,7 +319,8 @@ try{
   const fa=await st(sx,'chat',{action:'anmelden',token:tokX});
   check(fa.success===true&&fa.principal?.identity_id===iidX,'stdio (Modellwechsel): X meldet sich mit demselben token (Parameter) an, gleiche Identitaet');
   check((await pool.query("SELECT count(*)::int n FROM agent_identitaeten WHERE project=$1 AND name LIKE 't30-x%'",[P])).rows[0].n===1,'keine zweite Identitaet (kein name#2)');
-  check(fa.agentOnboarding?.rules?.some(r=>r.name==='regel-pflicht-t30'&&r.vollstaendig),'stdio: Pflichtregeln vollstaendig');
+  check(fa.agentOnboarding?.rules?.map(r=>r.name).sort().join()==='t30-regel-a,t30-regel-c'&&fa.agentOnboarding.rules.every(r=>r.vollstaendig)
+   &&fa.agentOnboarding.regel_verzeichnis?.regeln?.includes('regel-pflicht-t30'),'stdio: Typ-Regeln (Rev 2) vollstaendig, Pflichtregel als Name (P22-T48)');
   check(fa.fortsetzung?.profil?.profil_revision===2&&txt(fa.fortsetzung.profil.regeln)==='["t30-regel-a","t30-regel-c"]'&&fa.fortsetzung.profil.werkzeuge?.gesperrt?.includes('shell'),'stdio: Profilblock aktuell (Rev 2, Regeln, shell gesperrt)');
   const row=(await pool.query('SELECT source_identity_id FROM thoughts WHERE id=$1',[thX])).rows[0];
   check(row?.source_identity_id===iidX,'Thought von X traegt source_identity_id');

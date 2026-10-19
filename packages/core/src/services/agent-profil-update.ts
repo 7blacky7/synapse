@@ -115,7 +115,7 @@ function zuschnittDiff(za: Record<string, unknown>, zb: Record<string, unknown>)
 /** Inhaltlicher Vergleich zweier wirksamer Profile (Typinhalt + Override). */
 function diffWirksam(a: Record<string, unknown>, b: Record<string, unknown>): ProfilDiffEintrag[] {
   const out: ProfilDiffEintrag[] = [];
-  const listen: Array<['regeln' | 'channels', string]> = [['regeln', 'regeln'], ['channels', 'channels']];
+  const listen: Array<['regeln' | 'channels' | 'skills', string]> = [['regeln', 'regeln'], ['channels', 'channels'], ['skills', 'skills']];
   for (const [bereich, feld] of listen) {
     const la = strList(a[feld]), lb = strList(b[feld]);
     for (const x of lb.filter(n => !la.includes(n))) out.push({ bereich, art: 'neu', schluessel: x });
@@ -137,7 +137,7 @@ function diffWirksam(a: Record<string, unknown>, b: Record<string, unknown>): Pr
   for (const k of ['modell', 'provider', 'effort', 'kontextfenster'] as const) {
     if (!gleich(a[k], b[k])) out.push({ bereich: 'modell', art: 'geaendert', schluessel: k });
   }
-  const bekannt = new Set(['regeln', 'channels', 'rolle', 'zuschnitt', 'hinweise', 'kontext_stufe', 'kontext_budget', 'briefing', 'arbeitsweise', 'modell', 'provider', 'effort', 'kontextfenster']);
+  const bekannt = new Set(['regeln', 'channels', 'skills', 'rolle', 'zuschnitt', 'hinweise', 'kontext_stufe', 'kontext_budget', 'briefing', 'arbeitsweise', 'modell', 'provider', 'effort', 'kontextfenster']);
   for (const k of vereinigung(a, b)) {
     if (!bekannt.has(k) && !gleich(a[k], b[k])) out.push({ bereich: 'sonstiges', art: 'geaendert', schluessel: k });
   }

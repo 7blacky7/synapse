@@ -25,7 +25,8 @@ import type { AgentTokenAnmeldung } from './agent-identitaet.js';
 import { beginneIdentitaetsSitzung } from './agent-identitaet-sitzungen.js';
 import { leseAusweisKern } from './agent-profil-schalter.js';
 import { getOnboardingMemories } from './memory.js';
-import { baueOnboardingRegelwerk, rolleFuerAgent } from './agent-rollen.js';
+import { baueOnboardingRegelwerk, rolleFuerAgent, wendeTypRegelnAn, type TypRegelAuswahl } from './agent-rollen.js';
+import { leseProfilProduktSchalter, kernTtlMs } from './agent-profil-schalter.js';
 import {
   regelnStand, zustellUmfang, W12_DIENSTE, HINWEIS_QUELLE_TOKEN_BEREIT,
   type LaufBeginnArt, type LaufDienst, type LaufZustellstand, type ProfilBlock,
@@ -73,10 +74,16 @@ function sitzungsAnmeldung(i: IdentitaetZeile, epoch: number, laufId: string): A
 }
 
 // ---- Pflichtregel-Stand (Vertrag regelnStand) ---------------------------------------------------
-/** Fuer die Rolle sichtbare Pflichtregeln (Volltext im Onboarding) mit Aenderungszeitpunkt. */
-export async function aktuellePflichtregeln(project: string, rolle: string | undefined, agentId: string): Promise<Array<{ name: string; aktualisiert: string }>> {
+/**
+ * Fuer die Rolle sichtbare Pflichtregeln (Volltext im Onboarding) mit Aenderungszeitpunkt. P22-T48: mit identityId und
+ * wirksamem Typ (typRegelnFuer) sind es die Regeln des Typs - derselbe Satz, den das Onboarding voll liefert.
+ */
+export async function aktuellePflichtregeln(project: string, rolle: string | undefined, agentId: string, identityId?: string): Promise<Array<{ name: string; aktualisiert: string }>> {
   const memories = await getOnboardingMemories(project);
-  const { rules } = baueOnboardingRegelwerk(memories, project, rolleFuerAgent(agentId, rolle).rolle);
+  let regelwerk = baueOnboardingRegelwerk(memories, project, rolleFuerAgent(agentId, rolle).rolle);
+  const typ = identityId ? await typRegelnFuer(identityId, project) : null;
+  if (typ) regelwerk = wendeTypRegelnAn(regelwerk, memories, typ);
+  const { rules } = regelwerk;
   const pflicht = new Set(rules.filter(r => r.vollstaendig).map(r => r.name));
   const aus = new Map<string, string>();
   for (const m of memories) if (pflicht.has(m.name) && !aus.has(m.name)) aus.set(m.name, m.updatedAt);
@@ -85,18 +92,51 @@ export async function aktuellePflichtregeln(project: string, rolle: string | und
 
 const STAND_TTL_MS = 5_000;
 const standCache = new Map<string, { bis: number; stand: string }>();
-/** regelnStand der aktuellen Pflichtregeln, je Projekt+Rolle 5 s gepuffert (Lesung je Token-Aufruf). */
-export async function aktuellerRegelnStand(project: string, rolle: string | undefined, agentId: string): Promise<string> {
-  const key = JSON.stringify([project, rolleFuerAgent(agentId, rolle).rolle]);
+/** regelnStand der aktuellen Pflichtregeln, je Projekt+Rolle(+Identitaet, P22-T48 Typ) 5 s gepuffert (Lesung je Token-Aufruf). */
+export async function aktuellerRegelnStand(project: string, rolle: string | undefined, agentId: string, identityId?: string): Promise<string> {
+  const key = JSON.stringify([project, rolleFuerAgent(agentId, rolle).rolle, identityId ?? null]);
   const jetzt = Date.now();
   const c = standCache.get(key);
   if (c && c.bis > jetzt) return c.stand;
-  const stand = regelnStand(await aktuellePflichtregeln(project, rolle, agentId));
+  const stand = regelnStand(await aktuellePflichtregeln(project, rolle, agentId, identityId));
   standCache.set(key, { bis: jetzt + STAND_TTL_MS, stand });
   return stand;
 }
-/** Tests/Debug: Regelstand-Puffer und Bruecken-Merker verwerfen. */
-export function leereLaufPuffer(): void { standCache.clear(); geprueft.clear(); }
+
+const typCache = new Map<string, { bis: number; wert: TypRegelAuswahl | null }>();
+/**
+ * P22-T48: Regeln aus dem Typ einer Ausweis-Identitaet. Nur bei Produkt-Schaltern profilverwaltung UND typkatalog im
+ * Projekt EIN (keine neue Mechanik/kein neuer Schalter), zugewiesenem Typ und nicht leerer Regelliste (werte.regeln des
+ * wirksamen Profils). Sonst bzw. bei Lesefehlern null = Bestand (Rollen-Regelwerk). Je Identitaet so lange gepuffert
+ * wie der Ausweis-Kern (SYNAPSE_W1B_GATE_TTL_MS, Standard 5 s, 0 = aus); Lesefehler werden nicht gepuffert;
+ * leereLaufPuffer verwirft.
+ */
+export async function typRegelnFuer(identityId: string, project: string): Promise<TypRegelAuswahl | null> {
+  const key = identityId + '\u0000' + project;
+  const jetzt = Date.now();
+  const c = typCache.get(key);
+  if (c && c.bis > jetzt) return c.wert;
+  let wert: TypRegelAuswahl | null = null;
+  let fehler = false;
+  try {
+    const [pv, tk] = await Promise.all([
+      leseProfilProduktSchalter('profilverwaltung', project), leseProfilProduktSchalter('typkatalog', project)]);
+    if (pv.aktiv && tk.aktiv) {
+      // Dynamisch: agent-zuschnitt importiert den Vertrag, der diese Datei (W12_DIENSTE) einbindet.
+      const { leseWirksamesProfil } = await import('./agent-zuschnitt.js');
+      const p = await leseWirksamesProfil(identityId);
+      const roh: unknown = p.werte.regeln;
+      const namen = Array.isArray(roh)
+        ? roh.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim()) : [];
+      if (p.typ && p.project === project && namen.length) wert = { namen, typ: { schluessel: p.typ.schluessel, revision: p.typ.revision } };
+    }
+  } catch { wert = null; fehler = true; }
+  const ttl = kernTtlMs();
+  if (!fehler && ttl > 0) typCache.set(key, { bis: jetzt + ttl, wert });
+  return wert;
+}
+/** Tests/Debug: Regelstand-/Typ-Puffer und Bruecken-Merker verwerfen. */
+export function leereLaufPuffer(): void { standCache.clear(); typCache.clear(); geprueft.clear(); }
 
 // ---- Uebernahme-Bruecke -------------------------------------------------------------------------
 /** Identitaeten, deren Bruecke in diesem Prozess erledigt bzw. ohne Legacy-Ursprung geprueft ist. */
@@ -142,7 +182,7 @@ async function bruecke(c: PoolClient, i: IdentitaetZeile, q: UebernahmeQuelle, l
        AND ($3::text IS NULL OR onboarded_at >= $3::timestamptz)`, [q.agent_id, i.project, q.sitzung])).rows[0]?.zuletzt ?? null;
   let stand: string | null = null;
   if (nachweis) {
-    const regeln = await aktuellePflichtregeln(i.project, i.rolle, i.agent_id);
+    const regeln = await aktuellePflichtregeln(i.project, i.rolle, i.agent_id, i.id);
     const geaendert = regeln.some(r => new Date(r.aktualisiert).getTime() > new Date(nachweis).getTime());
     if (!geaendert) stand = regelnStand(regeln);
   }
@@ -169,13 +209,31 @@ async function bruecke(c: PoolClient, i: IdentitaetZeile, q: UebernahmeQuelle, l
        letzte_hinweis_id=LEAST(agent_identitaet_chat_lesestand.letzte_hinweis_id,EXCLUDED.letzte_hinweis_id)`,
     [i.id, i.project, q.agent_id, i.agent_id]);
   // (d) Channel-Mitgliedschaften samt Lesemarken.
+  //     P22-T43 (B1): Die Legacy-Sicht zaehlt eigene Posts (sender = Legacy-Name, ohne sender_identity_id) nie als
+  //     ungelesen; der Identitaets-Filter (sender_identity_id IS DISTINCT FROM identity_id) wuerde sie als FREMD werten.
+  //     Ohne Ausgleich kamen beim ersten Aufruf mit Ausweis alte Ungelesen-Hinweise (Archiv-Channels) erneut. Deshalb:
+  //     last_read ueber eigene Posts bis vor die erste fremde ungelesene Nachricht vorziehen; last_notified auf die
+  //     neueste Nachricht setzen, wenn die Legacy-Sitzung alle fremden Ungelesenen schon gemeldet hatte.
   const channels = await c.query(
     `INSERT INTO agent_identitaet_channel_mitglieder
        (channel_id,agent_name,joined_at,last_read_message_id,last_notified_message_id,read_initialized_at,identity_id)
-     SELECT m.channel_id,$3,m.joined_at,m.last_read_message_id,m.last_notified_message_id,m.read_initialized_at,$1
+     SELECT m.channel_id,$3,m.joined_at,
+            GREATEST(m.last_read_message_id, COALESCE(f.erste_fremde - 1, a.neueste, m.last_read_message_id)),
+            CASE WHEN COALESCE(m.last_notified_message_id, 0) >= COALESCE(f.neueste_fremde, 0)
+                 THEN GREATEST(COALESCE(m.last_notified_message_id, 0), COALESCE(a.neueste, 0))
+                 ELSE m.last_notified_message_id END,
+            m.read_initialized_at,$1
        FROM specialist_channel_members m JOIN specialist_channels ch ON ch.id=m.channel_id AND ch.project=$2
+       LEFT JOIN LATERAL (
+         SELECT MIN(x.id) AS erste_fremde, MAX(x.id) AS neueste_fremde FROM specialist_channel_messages x
+          WHERE x.channel_id=m.channel_id AND x.id > m.last_read_message_id
+            AND NOT ((x.sender_identity_id IS NULL AND x.sender=$4)
+                     OR (x.sender_identity_id IS NOT NULL AND x.sender_identity_id::text=$5::text))) f ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT MAX(x.id) AS neueste FROM specialist_channel_messages x
+          WHERE x.channel_id=m.channel_id AND x.id > m.last_read_message_id) a ON TRUE
       WHERE m.agent_name=$4
-     ON CONFLICT (channel_id,identity_id) DO NOTHING`, [i.id, i.project, i.agent_id, q.agent_id]);
+     ON CONFLICT (channel_id,identity_id) DO NOTHING`, [i.id, i.project, i.agent_id, q.agent_id, String(i.id)]);
   await c.query(
     `UPDATE agent_identitaet_laeufe SET uebernommen_aus=$2::jsonb, beginn_art='uebernahme',
        zugestellt_regeln_stand=COALESCE(zugestellt_regeln_stand,$3) WHERE id=$1`, [laufId, JSON.stringify(q), stand]);
@@ -312,6 +370,14 @@ export interface W12ZustellKontext {
   identity_id: string;
   regeln_stand: string;
   umfang: ZustellUmfang;
+  /** P22-T43 (D5): bestehende Identitaet (frueherer Lauf oder Uebernahme) -> Fortsetzungs-Text statt Begruessung. */
+  bestehend: boolean;
+  /** P22-T43 (D2): gepruefter Principal dieses Aufrufs (Profilblock im expliziten Onboarding-Pfad). */
+  principal: IdentitaetsAgentPrincipal;
+  /** P22-T43 (D10): Folgeaufruf, im Lauf wurden schon Regeln zugestellt und der Stand hat sich geaendert. */
+  regeln_geaendert: boolean;
+  /** P22-T43 (D10): letzte Zustellung im Lauf (ISO) - Regeln mit spaeterem Aenderungszeitpunkt sind 'geaendert'. */
+  zugestellt_am: string | null;
 }
 
 /**
@@ -324,9 +390,12 @@ export async function w12ZustellKontext(project: string, agentId: string, expliz
   if (!(await leseAusweisKern(project)).aktiv) return null;
   const stand = await leseZustellstand(p.lauf_id);
   if (!stand) return null;
-  const regeln_stand = await aktuellerRegelnStand(project, p.rolle, p.agent_id);
+  const regeln_stand = await aktuellerRegelnStand(project, p.rolle, p.agent_id, p.identity_id);
   return { lauf_id: p.lauf_id, identity_id: p.identity_id, regeln_stand,
-    umfang: zustellUmfang(stand, { regeln_stand }, explizit ? 'anmeldung' : 'folgeaufruf') };
+    umfang: zustellUmfang(stand, { regeln_stand }, explizit ? 'anmeldung' : 'folgeaufruf'),
+    bestehend: Number(stand.context_epoch) > 1 || stand.uebernommen_aus !== null, principal: p,
+    regeln_geaendert: !explizit && stand.zugestellt_regeln_stand !== null && stand.zugestellt_regeln_stand !== regeln_stand,
+    zugestellt_am: stand.zugestellt_am };
 }
 
 /** Profilblock (W12-C); nicht umgesetzt/Fehler -> null (dann bleibt zugestellt_profil_revision unveraendert). */

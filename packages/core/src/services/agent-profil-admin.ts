@@ -24,6 +24,9 @@ import {
 import { listePersonaVersionen } from './agent-persona.js';
 import { rufeWebUiKoordinatorTokenAb } from './agent-token-abruf.js';
 import { HAUPTAGENT_ADMIN_ACTIONS, HAUPTAGENT_ADMIN_PARAMETER, istHauptagentAdminAction, fuehreHauptagentAdminAus } from './hauptagent-dienst.js';
+import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
+import { listeAusweisVisa, erteileArbeitsfreigabe, entzieheArbeitsfreigabe } from './agent-ausweis-projekte.js';
+import { aktuellerAgentAufruf } from './agent-bezug.js';
 
 const W1B_KERN_AKTIONEN = [
   'profil_schalter_status', 'profil_schalter_setzen', 'profil_uebersicht',
@@ -33,6 +36,10 @@ const W1B_KERN_AKTIONEN = [
   'persona_liste', 'persona_versionen', 'persona_anlegen', 'persona_neue_version', 'persona_zuweisen', 'persona_entfernen',
   'agent_vorbereiten', 'token_abrufen', 'token_loeschen', 'web_ui_koordinator_token',
   'task_bindung_lesen', 'task_bindung_festlegen', 'task_bindung_aendern', 'task_bindung_entblocken',
+  // P22-T45: Ausweis-Fristen als Einstellung (modus status|setzen|entfernen).
+  'ausweis_fristen',
+  // P22-T44: Ausweis fuer mehrere Projekte - Visa/Einwanderungen in DIESEM Projekt sehen, Arbeitsfreigabe erteilen/entziehen.
+  'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
 export const W1B_ADMIN_ACTIONS = [...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS] as const;
@@ -66,6 +73,11 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   bindung_task_id: { type: 'string', description: 'Task-Bindung: Task-ID (UUID oder P<n>-T<m>)' },
   bindung_art: { type: 'string', enum: ['identitaet', 'team'], description: 'Task-Bindung: Einzelidentitaet oder Team (offen = entblocken)' },
   bindung_identity_ids: { type: 'array', items: { type: 'string' }, description: 'Task-Bindung: Identitaets-IDs (identitaet: genau eine; team: frei gewaehlte, desselben Projekts)' },
+  schatten_stunden: { type: 'number', description: 'ausweis_fristen setzen: Schattenfrist in Stunden (1..720, Standard 24)' },
+  erstnutzung_minuten: { type: 'number', description: 'ausweis_fristen setzen: Erstnutzungsfrist vorbereiteter Ausweise in Minuten (1..1440, Standard 10)' },
+  visum_minuten: { type: 'number', description: 'ausweis_fristen setzen: Visum in Minuten (1..1440, Standard 30; Agenten anderer Projekte lesen hier)' },
+  arbeitsfreigabe_stunden: { type: 'number', description: 'ausweis_fristen setzen: Arbeitsfreigabe in Stunden (1..720, Standard 24; arbeitsfreigabe_erteilen)' },
+  frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   ...HAUPTAGENT_ADMIN_PARAMETER,
 };
 
@@ -83,6 +95,10 @@ const GRUPPE: Record<W1bAdminAction, ProfilProduktFunktion | null> = {
   // W12 V7: Ausweis-Aktionen haengen am Ausweis-Kern (leseAusweisKern), nicht mehr am Produkt-Schalter token_abruf.
   agent_vorbereiten: null, token_abrufen: null, token_loeschen: null, web_ui_koordinator_token: null,
   task_bindung_lesen: 'task_bindung', task_bindung_festlegen: 'task_bindung', task_bindung_aendern: 'task_bindung', task_bindung_entblocken: 'task_bindung',
+  // P22-T45: Einstellung, kein neuer Schalter (Standardwerte = bisheriges Verhalten).
+  ausweis_fristen: null,
+  // P22-T44: Verwaltung des eigenen Projekts; ob Visa entstehen, entscheidet der Schalter mehrprojekt der Heimat des Agenten.
+  ausweis_visa: null, arbeitsfreigabe_erteilen: null, arbeitsfreigabe_entziehen: null,
 };
 
 type Args = Record<string, unknown>;
@@ -154,6 +170,9 @@ function istAusweisAktion(a: string): a is AusweisAktion { return (AUSWEIS_AKTIO
 
 /** Koordinator-Vorgabe 27920: Legacy-Koordinator ohne eigenen Ausweis (Erkennung wie P22-T18: Rolle/Namensmuster koordinator). */
 function legacyKoordinatorAus(args: Args): AusweisAkteur | null {
+  // P22-T44: mit Ausweis in einem fremden Projekt (Visum/Arbeitsfreigabe) gilt der Agent dort nie als Legacy-Koordinator.
+  const fremd = aktuellerAgentAufruf()?.fremdprojekt;
+  if (fremd && fremd.zugang !== 'frei') return null;
   const agent = s(args, 'agent_id');
   return agent && rolleFuerAgent(agent).rolle === 'koordinator' ? { art: 'legacy_koordinator', agent_id: agent } : null;
 }
@@ -332,6 +351,36 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
       const task = pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt');
       return { project, task_id: task, bindung: await W1B_DIENSTE.taskBindung.entblocke(project, task, akteur, pflichtText(a.grund, 'grund_fehlt')) };
     }
+    case 'ausweis_fristen': {
+      // P22-T45: EINE Lesestelle agent-ausweis-fristen.ts. Projekt- UND globale Ebene: User oder Koordinator des aufrufenden Projekts,
+      // auch Legacy-Koordinator (Grundsatz 3a, Vorbild jev_schalten); Subagent/Spezialist/Daemon nie. Antwort: wert + quelle je Frist.
+      const modus = s(a, 'modus') ?? 'status';
+      if (modus !== 'status') {
+        if (modus !== 'setzen' && modus !== 'entfernen') throw new ProfilVerwaltungFehler('modus_ungueltig', { erlaubt: ['status', 'setzen', 'entfernen'] });
+        const ebene = s(a, 'ebene') ?? 'projekt';
+        if (ebene !== 'global' && ebene !== 'projekt') throw new ProfilVerwaltungFehler('ebene_ungueltig');
+        const recht = await pruefeProfilVerwalter(akteurRoh, project);
+        await setzeAusweisFristen({
+          ebene, project: ebene === 'projekt' ? project : null, grund: a.grund,
+          ...(modus === 'setzen'
+            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden } }
+            : { entfernen: a.frist_namen ?? [] }),
+        }, { wer: recht.wer, setter_identity_id: recht.actor_identity_id });
+      }
+      return { project, modus, ausweis_fristen: await leseAusweisFristen(project, { frisch: true }) };
+    }
+    case 'ausweis_visa':
+      // P22-T44: Agenten anderer Projekte mit Eintrag hier (Visum/Arbeitsfreigabe/frei), Ablauf, Fristen dieses Projekts.
+      return { ...(await listeAusweisVisa(project)) };
+    case 'arbeitsfreigabe_erteilen':
+    case 'arbeitsfreigabe_entziehen': {
+      // P22-T44 (User c4ba1673 Punkt 9d/f): nur User oder Koordinator DIESES Projekts (pruefeProfilVerwalter). Ein Koordinator
+      // aus einem anderen Projekt hat hier mit Ausweis kein Recht; im fremden Projekt gilt er nie als Legacy-Koordinator.
+      const recht = await pruefeProfilVerwalter(akteurRoh, project);
+      return action === 'arbeitsfreigabe_erteilen'
+        ? { ...(await erteileArbeitsfreigabe(project, a.ziel_identity_id, a.grund, recht)) }
+        : { ...(await entzieheArbeitsfreigabe(project, a.ziel_identity_id, a.grund, recht)) };
+    }
     case 'web_ui_koordinator_token': {
       const t = await rufeWebUiKoordinatorTokenAb(project, akteur, s(a, 'ziel_identity_id'));
       return { ...t, hinweis: 'Token des Web-UI-Koordinatorprofils fuer Uebernahme/Weitergabe; nie in Channel, Thought, Log, URL oder Startrezept ablegen.' };
@@ -357,7 +406,7 @@ function fehlerAntwort(action: string, e: unknown): Record<string, unknown> {
 export function w1bFehlerStatus(code: string): number {
   if (code === 'recht_fehlt' || code === 'eigenprofil_nicht_aenderbar') return 403;
   if (code === 'w1b_nicht_umgesetzt') return 501;
-  if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler') return 500;
+  if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler' || code === 'ausweis_fristen_speicher_fehler' || code === 'ausweis_projekt_speicher_fehler') return 500;
   if (/_unbekannt$|_nicht_gefunden$/.test(code) || code === 'keine_zuweisung' || code === 'ausweis_fehlt') return 404;
   if (code === 'ausweis_kern_aus' || code === 'agent_bezug_modus_nicht_beide' || code === 'identitaet_existiert' || code === 'ausweis_existiert') return 409;
   if (code === 'funktion_aus' || code === 'konflikt' || /_veraltet$|_belegt$|_archiviert$|^token_/.test(code) || code === 'identitaet_nicht_aktiv') return 409;

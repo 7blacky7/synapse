@@ -39,6 +39,8 @@ import { AGENT_PROFIL_SCHEMA_SQL } from './agent-profil-schema.js';
 import { AGENT_AUSWEIS_SCHEMA_SQL } from './agent-ausweis-schema.js';
 import { AGENT_AUSWEIS_NR_SCHEMA_SQL } from './agent-ausweis-nr-schema.js';
 import { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './agent-runtime-auftraege-schema.js';
+import { AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL } from './agent-ausweis-fristen-schema.js';
+import { AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL } from './agent-ausweis-projekte-schema.js';
 import { AGENT_IDENTITAET_SCHEMA_SQL } from './agent-identitaet-schema.js';
 import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
 import { HINWEIS_SCHEMA_SQL } from './ausloeser-hinweise-schema.js';
@@ -3141,6 +3143,8 @@ ${AGENT_PROFIL_SCHEMA_SQL}
 ${AGENT_AUSWEIS_SCHEMA_SQL}
 ${AGENT_AUSWEIS_NR_SCHEMA_SQL}
 ${AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL}
+${AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL}
+${AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

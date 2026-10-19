@@ -17,7 +17,7 @@ import {
   activateProjectPlan,
   zurueckstellenPlan,
 } from '../plans.js';
-import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, meldeTaskAb, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks, filtereNachTaskIds, leseAbwesenheit, jevEntscheidetHinweis } from '@synapse/core';
+import { empfehleFuerPlan, ordneTasksEin, passendeTasks, uebernehmeTask, meldeTaskAb, verschiebeTasks, zurueckstelleTask, filtereWiedervorlageTasks, filtereNachTaskIds, planRefFuerTaskIds, leseAbwesenheit, jevEntscheidetHinweis } from '@synapse/core';
 import type { ProjectTask } from '@synapse/core';
 import { suchePlanTool, PLAN_SEARCH_PROPERTIES } from '@synapse/core';
 
@@ -191,7 +191,8 @@ export const planTool: ConsolidatedTool = {
     switch (action) {
       case 'search': return { ...await suchePlanTool(args) };
       case 'get': {
-        const result = await getProjectPlan(project, str(args, 'plan_id'));
+        // P22-T43 (D8): ohne plan_id loest die task_id (P<n>-T<m>, Alias, UUID) den Plan auf, wenn alle in EINEM Plan liegen.
+        const result = await getProjectPlan(project, str(args, 'plan_id') ?? (await planRefFuerTaskIds(project, strArray(args, 'task_id'))) ?? undefined);
         if (!result) return result;
         // DX-Befund 5: status-Filter, compact, limit gegen Vollabwurf.
         const a = args as Record<string, unknown>;

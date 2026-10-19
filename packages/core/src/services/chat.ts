@@ -505,8 +505,11 @@ export async function getMessages(
     paramIdx++;
   }
 
-  query += ` ORDER BY timestamp ASC, id ASC LIMIT $${paramIdx}`;
+  // P22-T43 (D6): ohne since/message_id (kein Polling) die LETZTEN N Nachrichten, ausgegeben weiterhin chronologisch.
+  const neuesteZuerst = !since && messageId === undefined;
+  query += neuesteZuerst ? ` ORDER BY timestamp DESC, id DESC LIMIT $${paramIdx}` : ` ORDER BY timestamp ASC, id ASC LIMIT $${paramIdx}`;
   params.push(limit);
+  if (!agentId && neuesteZuerst) query = `SELECT * FROM (${query}) letzte ORDER BY timestamp ASC, id ASC`;
 
   if (agentId) {
     // Lesen und Markieren teilen denselben Snapshot. Nur ausgelieferte fremde Nachrichten
@@ -573,7 +576,10 @@ async function leseIdentitaetsChat(project: string, options: {
       : 'sender_id=' + bind(sender.agent_id) + ' AND sender_identity_id IS NULL');
   }
   if (options.messageId !== undefined) conditions.push('id=' + bind(options.messageId));
-  let query = `SELECT * FROM chat_messages WHERE ${conditions.join(' AND ')} ORDER BY timestamp ASC,id ASC LIMIT ${bind(options.limit ?? 50)}`;
+  // P22-T43 (D6): ohne since/message_id die LETZTEN N Nachrichten, ausgegeben weiterhin chronologisch.
+  const neuesteZuerst = !options.since && options.messageId === undefined;
+  let query = `SELECT * FROM chat_messages WHERE ${conditions.join(' AND ')} ORDER BY ${neuesteZuerst ? 'timestamp DESC,id DESC' : 'timestamp ASC,id ASC'} LIMIT ${bind(options.limit ?? 50)}`;
+  if (!z && neuesteZuerst) query = `SELECT * FROM (${query}) letzte ORDER BY timestamp ASC,id ASC`;
   if (z) {
     const reader = bind(bezugsWert(z)), name = bind(z.agent_id);
     const table = id ? 'agent_identitaet_chat_lesestand' : 'chat_lesestand';

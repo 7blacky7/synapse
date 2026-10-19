@@ -344,12 +344,16 @@ export async function legeRuntimeAuftragAn(akteur: AusweisAkteur | null, e: Auft
     return { auftrag: auftragAus(r.rows[0]), idempotent: false };
   } catch (err) {
     const c = err as { code?: string; constraint?: string };
-    if (c.code === '23505' && c.constraint === 'uq_agent_runtime_auftraege_offen') {
+    // P22-T43: Unique-Verletzung am Zustand erkennen, nicht nur am Index-NAMEN. In kopierten Tabellen (Tests: CREATE TABLE ...
+    // (LIKE ... INCLUDING ALL)) heissen die Indizes anders; dann kam statt auftrag_offen_vorhanden ein generischer Fehler.
+    if (c.code === '23505') {
       const offen = await getPool().query<{ id: string }>(
         "SELECT id FROM agent_runtime_auftraege WHERE identity_id=$1 AND art=$2 AND status IN ('pending','claimed','accepted') LIMIT 1", [ziel.id, art]);
-      fehler('auftrag_offen_vorhanden', { auftrag_id: offen.rows[0]?.id ?? null });
+      if (c.constraint === 'uq_agent_runtime_auftraege_offen' || (c.constraint !== 'uq_agent_runtime_auftraege_idem' && offen.rows[0])) {
+        fehler('auftrag_offen_vorhanden', { auftrag_id: offen.rows[0]?.id ?? null });
+      }
+      if (c.constraint === 'uq_agent_runtime_auftraege_idem' || schluessel) fehler('idempotenz_konflikt');
     }
-    if (c.code === '23505' && c.constraint === 'uq_agent_runtime_auftraege_idem') fehler('idempotenz_konflikt');
     throw err;
   }
 }

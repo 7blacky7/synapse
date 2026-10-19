@@ -62,6 +62,8 @@ export async function leseW1bSchalter(art: W1bSchalterArt): Promise<W1bSchalterS
 
 export const PROFIL_PRODUKT_FUNKTIONEN = [
   'profilverwaltung', 'typkatalog', 'persona', 'task_bindung', 'agenten_ausweis',
+  // P22-T44: Ausweis fuer mehrere Projekte (Visum/Arbeitsfreigabe), Standard AUS; wirkt nach dem Stand der Heimat (agent-ausweis-projekte.ts).
+  'mehrprojekt',
 ] as const;
 /**
  * W12 V7: 'schattenprofile' und 'token_abruf' sind im Produkt-Schalter 'agenten_ausweis' aufgegangen. Die alten Namen
@@ -100,7 +102,8 @@ export interface AusweisKernStand {
 const KERN_PUFFER = new Map<string, { bis: number; stand: ProfilProduktSchalterStand }>();
 /** Puffer verwerfen (Tests; automatisch nach jedem Schreiben eines Produkt-Schalters im eigenen Prozess). */
 export function leereAusweisKernCache(): void { KERN_PUFFER.clear(); }
-function kernTtlMs(): number {
+/** Puffer-TTL je Prozess (Env SYNAPSE_W1B_GATE_TTL_MS, Standard 5000, 0 = aus); auch fuer die Ausweis-Fristen (P22-T45). */
+export function kernTtlMs(): number {
   const roh = process.env.SYNAPSE_W1B_GATE_TTL_MS;
   if (roh === undefined || roh.trim() === '') return 5_000;
   const n = Number(roh);
@@ -169,6 +172,16 @@ export async function leseAusweisKern(project?: string | null): Promise<AusweisK
 export async function leseAusweisKernFuerToken(token: string | undefined, project?: string | null): Promise<AusweisKernStand> {
   const k = await leseAusweisKern(project ?? null);
   if (k.aktiv || project || typeof token !== 'string' || !AUSWEIS_FORMAT.test(token)) return k;
+  const eigenes = await ausweisProjekt(token);
+  return eigenes ? await leseAusweisKern(eigenes) : k;
+}
+
+/**
+ * P22-T43 (D9): Projekt eines gueltigen (nicht widerrufenen) Ausweises; ungueltiges Format, unbekannt oder Lesefehler -> null.
+ * Nur lesend; der Ausweiswert geht nur als Abfrageparameter in PG. Aendert keinen Schalter.
+ */
+export async function ausweisProjekt(token: string | undefined): Promise<string | null> {
+  if (typeof token !== 'string' || !AUSWEIS_FORMAT.test(token)) return null;
   try {
     const r = await getPool().query<{ project: string }>({
       text: `SELECT i.project FROM agent_identitaet_tokens t JOIN agent_identitaeten i ON i.id = t.identity_id
@@ -176,9 +189,9 @@ export async function leseAusweisKernFuerToken(token: string | undefined, projec
       values: [token],
       query_timeout: 2000,
     } as import('pg').QueryConfig & { query_timeout: number });
-    return r.rows[0] ? await leseAusweisKern(r.rows[0].project) : k;
+    return r.rows[0]?.project ?? null;
   } catch {
-    return k;
+    return null;
   }
 }
 
@@ -248,7 +261,8 @@ export async function leseProfilProduktSchalter(
     const r = await getPool().query<SchalterZeile>({
       text: `SELECT ebene, project, funktion, aktiv, grund, gesetzt_von, gesetzt_am FROM agent_profil_schalter
         WHERE funktion = ANY($1::text[]) AND (ebene = 'global' OR (ebene = 'projekt' AND project = $2))`,
-      values: [[funktion, 'alle'], project ?? null],
+      // P22-T44: 'alle' schliesst 'mehrprojekt' bewusst NICHT ein (nur ausdruecklich schaltbar, Standard AUS bleibt AUS).
+      values: [funktion === 'mehrprojekt' ? [funktion] : [funktion, 'alle'], project ?? null],
       query_timeout: 2000,
     } as import('pg').QueryConfig & { query_timeout: number });
     const rang = (z: SchalterZeile) => (z.ebene === 'projekt' ? 2 : 0) + (z.funktion === funktion ? 1 : 0);

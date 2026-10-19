@@ -24,6 +24,8 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { rolleFuerAgent } from './agent-rollen.js';
 import { leseProfilProduktSchalter, leseAusweisKern, ausweisSchattenAktiv, type ProfilProduktFunktion } from './agent-profil-schalter.js';
+// P22-T45: Schattenfrist aus der EINEN Lesestelle (Einstellung schatten_stunden).
+import { schattenFristMs } from './agent-ausweis-fristen.js';
 import {
   HINWEIS_KATALOG_VOLLSTAENDIG, ProfilRevisionKonflikt, darfProfilAendern, hinweisEintrag,
   schattenAblauf, wirksamerSchattenZustand,
@@ -154,7 +156,9 @@ function tiefeSchluessel(v: unknown, tiefe = 0): string[] {
 }
 
 const PROFIL_SCHLUESSEL = ['modell', 'provider', 'effort', 'kontextfenster', 'kontext_budget', 'kontext_stufe', 'rolle', 'regeln',
-  'briefing', 'arbeitsweise', 'channels', 'zuschnitt', 'hinweise', 'startrezept'];
+  'briefing', 'arbeitsweise', 'channels', 'zuschnitt', 'hinweise', 'startrezept', 'skills'];
+/** P22-T49: Skill-Name wie in der Skill-DB (z. B. superpowers-test-driven-development, plugin:skill). */
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const ZUSCHNITT_SCHLUESSEL = ['standard', 'tools', 'aktionen', 'schreiben', 'shell_stufe_max', 'limits', 'intern_user_festgelegt'];
 const REGELN = ['erlaubt', 'verweigert'];
 function textOderNull(v: unknown, feld: string, max = 256): void {
@@ -192,6 +196,8 @@ export function pruefeProfilInhalt(inhalt: unknown): void {
   if (o.rolle !== undefined && (typeof o.rolle !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/.test(o.rolle))) throw new ProfilDienstFehler('inhalt_ungueltig', { felder: ['rolle'] });
   textListe(o.regeln, 'regeln');
   textListe(o.channels, 'channels');
+  textListe(o.skills, 'skills');
+  if (Array.isArray(o.skills) && o.skills.some(x => !SKILL_NAME.test(x as string))) throw new ProfilDienstFehler('inhalt_ungueltig', { felder: ['skills'] });
   if (o.hinweise !== undefined) {
     if (!o.hinweise || typeof o.hinweise !== 'object' || Array.isArray(o.hinweise)) throw new ProfilDienstFehler('inhalt_ungueltig', { felder: ['hinweise'] });
     for (const [k, v] of Object.entries(o.hinweise)) {
@@ -288,6 +294,8 @@ async function legeSchattenprofilAn(e: SchattenAnlage, akteur: W1bAkteur): Promi
   if (!(URSPRUNG_ARTEN as readonly string[]).includes(e.ursprung_art)) throw new ProfilDienstFehler('ursprung_art_ungueltig');
   await schalterEin('agenten_ausweis', project);
   const selbst = bereinigeSelbstangaben(e.selbstangaben);
+  // P22-T45: gilt fuer neu angelegte Schatten; laufende behalten ihr ablauf_am.
+  const schattenMs = await schattenFristMs(project);
   return transaktion(async (c) => {
     // Anlage: User, Daemon (automatische Legacy-/Startanlage) oder Koordinator des Projekts; Voranlage nie durch Daemon.
     let v: Verwalter;
@@ -316,7 +324,7 @@ async function legeSchattenprofilAn(e: SchattenAnlage, akteur: W1bAkteur): Promi
     const r = await c.query<Zeile>(`INSERT INTO agent_schattenprofile (id, project, ursprung_agent_id, ursprung_sitzung, ursprung_art, selbstangaben,
         erstellt_am, ablauf_am)
       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8) RETURNING ${SCHATTEN_SPALTEN}`,
-      [id, project, agentId, e.ursprung_sitzung ?? null, e.ursprung_art, JSON.stringify(selbst), jetzt, schattenAblauf(jetzt)]);
+      [id, project, agentId, e.ursprung_sitzung ?? null, e.ursprung_art, JSON.stringify(selbst), jetzt, schattenAblauf(jetzt, schattenMs)]);
     await schattenAudit(c, id, v, 'angelegt', null, { ursprung_art: e.ursprung_art, ablauf_am: iso(r.rows[0].ablauf_am) });
     return zuSchatten(r.rows[0]);
   });

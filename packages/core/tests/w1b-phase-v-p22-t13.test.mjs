@@ -171,7 +171,7 @@ try{
    const {AGENT_PROFIL_SCHEMA_SQL:s113}=await load('packages/core/dist/db/agent-profil-schema.js');
    check(readFileSync(join(root,'packages/core/src/db/schema-sql/113_agent_profil.sql'),'utf8').trim()===s113.trim(),'SQL-Spiegel 113 identisch');
    const schemaJs=readFileSync(join(root,'packages/core/dist/db/schema.js'),'utf8');
-   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*(?:\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*)?(?:\$\{AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL\}\s*)?`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112, 114 (Ausweis, W12) direkt danach');
+   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*(?:\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*)?(?:\$\{AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL\}\s*)?(?:\$\{AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL\}\s*)?(?:\$\{AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL\}\s*)?`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112, 114 (Ausweis, W12) direkt danach');
    const ohneKommentar=s113.split('\n').filter(z=>!z.trim().startsWith('--')).join('\n');
    const alters=[...ohneKommentar.matchAll(/ALTER TABLE[^;]*;/g)].map(m=>m[0]);
    check(alters.length>0&&alters.every(a=>/^ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS /.test(a)),'nur ADD COLUMN IF NOT EXISTS');
@@ -207,7 +207,7 @@ try{
   });
 
   await section('Vertrag (reine Helfer, Stubs)',async()=>{
-   check(C.SCHATTEN_FRIST_MS===86400000,'24 h Frist');
+   check(C.SCHATTEN_FRIST_MS===undefined&&C.schattenAblauf(new Date(0),86400000).getTime()===86400000,'24 h Frist ueber schattenAblauf(erstellt, fristMs) (P22-T45: Frist ist Einstellung)');
    check(C.schattenUebergangErlaubt('pending','bestaetigt')&&!C.schattenUebergangErlaubt('abgelaufen','bestaetigt')&&!C.schattenUebergangErlaubt('bestaetigt','pending'),'Zustandsautomat');
    check(C.wirksamerSchattenZustand({zustand:'pending',ablauf_am:new Date(Date.now()-1)})==='abgelaufen'&&C.wirksamerSchattenZustand({zustand:'pending',ablauf_am:new Date(Date.now()+60000)})==='pending','Ablauf ohne Verfallslauf wirksam');
    check(!C.vorgesehenerTokenGueltig('pending')&&C.vorgesehenerTokenGueltig('bestaetigt'),'vorgesehener Token erst nach Bestaetigung gueltig');

@@ -37,6 +37,11 @@
  *   POST /tasks/:task_id/bindung/aendern    {bindung_art, bindung_identity_ids[], grund}
  *   POST /tasks/:task_id/bindung/entblocken {grund}
  *   GET  /web-ui-koordinator-token?identity_id=    nur User
+ *   GET  /ausweis-fristen                   ausweis_fristen modus status (P22-T45: Wert + Quelle je Frist)
+ *   PUT  /ausweis-fristen                   ausweis_fristen {modus? setzen|entfernen, ebene?, schatten_stunden?, erstnutzung_minuten?, visum_minuten?, arbeitsfreigabe_stunden?, frist_namen?, grund}
+ *   GET  /ausweis-visa                      ausweis_visa (P22-T44: Agenten anderer Projekte mit Visum/Arbeitsfreigabe hier)
+ *   POST /ausweis-visa/:identity_id/arbeitsfreigabe   arbeitsfreigabe_erteilen {grund}
+ *   POST /ausweis-visa/:identity_id/entziehen         arbeitsfreigabe_entziehen {grund}
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
@@ -86,6 +91,13 @@ const ROUTEN: RouteDef[] = [
   { methode: 'POST', pfad: '/tasks/:task_id/bindung/aendern', action: 'task_bindung_aendern', quelle: req => ({ ...body(req), bindung_task_id: params(req).task_id }) },
   { methode: 'POST', pfad: '/tasks/:task_id/bindung/entblocken', action: 'task_bindung_entblocken', quelle: req => ({ ...body(req), bindung_task_id: params(req).task_id }) },
   { methode: 'GET', pfad: '/web-ui-koordinator-token', action: 'web_ui_koordinator_token', quelle: req => ({ ziel_identity_id: query(req).identity_id }) },
+  // P22-T45: Ausweis-Fristen (Einstellung, EINE Lesestelle im Core).
+  { methode: 'GET', pfad: '/ausweis-fristen', action: 'ausweis_fristen', quelle: () => ({ modus: 'status' }) },
+  { methode: 'PUT', pfad: '/ausweis-fristen', action: 'ausweis_fristen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
+  // P22-T44: Ausweis fuer mehrere Projekte - Visa/Einwanderungen in diesem Projekt, Arbeitsfreigabe (User oder Koordinator dieses Projekts).
+  { methode: 'GET', pfad: '/ausweis-visa', action: 'ausweis_visa', quelle: () => ({}) },
+  { methode: 'POST', pfad: '/ausweis-visa/:identity_id/arbeitsfreigabe', action: 'arbeitsfreigabe_erteilen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
+  { methode: 'POST', pfad: '/ausweis-visa/:identity_id/entziehen', action: 'arbeitsfreigabe_entziehen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
 ];
 
 export async function registerAgentProfilRoutes(f: FastifyInstance, o: AgentProfilRoutesDeps = {}): Promise<void> {

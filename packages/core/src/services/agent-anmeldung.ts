@@ -22,6 +22,7 @@ import { registriereHinweisQuelle, type AusloeserHinweis, type HinweisKontext, t
 import { leseAusweisKern, leereAusweisKernCache, ausweisAnmeldungAktiv, ausweisSchattenAktiv } from './agent-profil-schalter.js';
 import { tokenBereitEntprellungMs, tokenBereitText, TEXT_NEUINSTANZ } from './agent-profil-vertrag.js';
 import { neuesAusweisImTextMuster } from './agent-ausweis-format.js';
+import { offeneVisa } from './agent-ausweis-projekte.js';
 import {
   W1B_DIENSTE,
   type AnmeldungsDienst, type FortsetzungsInfo, type KoordinatorListenEintrag, type SchattenSelbstangaben,
@@ -257,7 +258,7 @@ async function fortsetzungsInfo(p: IdentitaetsAgentPrincipal): Promise<Fortsetzu
     [iid, p.lauf_id]);
   const quellen: Array<[string, () => Promise<Weg[]>]> = [
     ['handoff', async () => (await pool.query<{ id: string }>(
-      `SELECT id FROM thoughts WHERE project=$1 AND (source_identity_id=$2 OR source=$3) AND tags && ARRAY['auto-handoff','session-state']::text[]
+      `SELECT id FROM thoughts WHERE project=$1 AND (source_identity_id=$2 OR source=$3) AND tags && ARRAY['auto-handoff','session-state','session-uebergabe']::text[]
         ORDER BY "timestamp" DESC LIMIT 1`, [project, iid, aid])).rows
       .map(z => ({ art: 'handoff', id: z.id, aufruf: { tool: 'thought', action: 'get', project, id: z.id } }))],
     ['event', async () => (await pool.query<{ id: number }>(
@@ -290,10 +291,12 @@ async function fortsetzungsInfo(p: IdentitaetsAgentPrincipal): Promise<Fortsetzu
         ? [{ art: 'reservierungen', id: aid, aufruf: { tool: 'files', action: 'reservation_list', project, reservation_agent_id: aid } }] : [];
     }],
     ['channel', async () => (await pool.query<{ name: string }>(
-      `SELECT DISTINCT c.name FROM specialist_channels c
-         WHERE c.project=$1 AND (EXISTS (SELECT 1 FROM agent_identitaet_channel_mitglieder m WHERE m.channel_id=c.id AND m.identity_id=$2)
+      // P22-T43 (D4): nach letzter Aktivitaet (neueste Nachricht) statt alphabetisch; Archiv-Channels (~archiv-*) auslassen.
+      `SELECT c.name FROM specialist_channels c
+         WHERE c.project=$1 AND c.name NOT LIKE '~archiv-%'
+           AND (EXISTS (SELECT 1 FROM agent_identitaet_channel_mitglieder m WHERE m.channel_id=c.id AND m.identity_id=$2)
            OR EXISTS (SELECT 1 FROM specialist_channel_members m WHERE m.channel_id=c.id AND m.agent_name=$3))
-         ORDER BY c.name LIMIT 8`, [project, iid, aid])).rows
+         ORDER BY (SELECT MAX(x.id) FROM specialist_channel_messages x WHERE x.channel_id=c.id) DESC NULLS LAST, c.name LIMIT 8`, [project, iid, aid])).rows
       .map(z => ({ art: 'channel', id: z.name, aufruf: { tool: 'channel', action: 'feed', project, channel_name: z.name, agent_name: aid } }))],
     ['thought', async () => (await pool.query<{ id: string }>(
       `SELECT id FROM thoughts WHERE project=$1 AND (source_identity_id=$2 OR source=$3) ORDER BY "timestamp" DESC LIMIT 3`, [project, iid, aid])).rows
@@ -375,6 +378,23 @@ export const SCHATTEN_KOORDINATOR_QUELLE: HinweisQuelle = {
 };
 
 /**
+ * P22-T44 (Konzept cde685a9 Punkt 3d): Koordinator des Projekts sieht Agenten anderer Projekte mit Visum hier (optional, ohne
+ * Pflicht, einmal je Sitzung) samt Freigabe-Aufruf. Lesefehler (z. B. vor Schema 118) -> kein Hinweis.
+ */
+export const VISUM_KOORDINATOR_QUELLE: HinweisQuelle = {
+  quelle_id: 'w1b.ausweis_visum',
+  async pruefe(k: HinweisKontext): Promise<AusloeserHinweis[]> {
+    if (!k.projekt || !(await istKoordinatorAgent(k.projekt, k.agent_id))) return [];
+    return (await offeneVisa(k.projekt)).map((v): AusloeserHinweis => ({
+      hinweis_id: v.identity_id, modus: 'einmal_je_sitzung', spezifitaet: 3,
+      text: `Visum: ${kurzText(v.agent_id, 24)} (Heimat ${kurzText(v.heimat, 24)}) liest hier bis ${v.visum_bis?.slice(11, 16) ?? '?'}Z. `
+        + `Arbeitsfreigabe: admin(action:"arbeitsfreigabe_erteilen", ziel_identity_id:"${v.identity_id}", grund).`,
+      kurztext: 'Visum: ' + kurzText(v.agent_id, 24),
+    }));
+  },
+};
+
+/**
  * W12-B (P22-T25, Vertrag V6): Ausweis-Zustellung an den LAUFENDEN Legacy-Agenten ohne Neustart. Aufruf OHNE token
  * unter einer agent_id, zu der im Projekt eine Identitaet (agent_id gleich bzw. bestaetigter Schatten mit
  * ursprung_agent_id gleich) mit gueltigem Ausweis (ausgestellt|aktiv) existiert, der noch nie benutzt wurde
@@ -414,7 +434,7 @@ let abmelder: Array<() => void> = [];
 /** Idempotent. Registrierte Quellen machen die Registry nicht-leer; deshalb nur bei EIN (siehe initialisiere...). */
 export function registriereW1bAnmeldungHinweise(): void {
   if (abmelder.length) return;
-  try { abmelder = [registriereHinweisQuelle(SCHATTEN_KOORDINATOR_QUELLE), registriereHinweisQuelle(TOKEN_BEREIT_QUELLE), registriereHinweisQuelle(PROFIL_UPDATE_QUELLE)]; }
+  try { abmelder = [registriereHinweisQuelle(SCHATTEN_KOORDINATOR_QUELLE), registriereHinweisQuelle(TOKEN_BEREIT_QUELLE), registriereHinweisQuelle(PROFIL_UPDATE_QUELLE), registriereHinweisQuelle(VISUM_KOORDINATOR_QUELLE)]; }
   catch { abmelder = []; }
 }
 export function entregistriereW1bAnmeldungHinweise(): void {

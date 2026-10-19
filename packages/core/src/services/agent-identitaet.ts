@@ -17,6 +17,8 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
 import { ausweisTokenAktiv } from './agent-profil-schalter.js';
+// P22-T45: Erstnutzungsfrist aus der EINEN Lesestelle (Einstellung erstnutzung_minuten); kein Importzyklus mehr.
+import { erstnutzungFristMs } from './agent-ausweis-fristen.js';
 import { leseAgentBezugModus, aktuellerAgentAufruf, type AgentBezugStand } from './agent-bezug.js';
 import { beginneIdentitaetsSitzung } from './agent-identitaet-sitzungen.js';
 import { selbstKonflikte, type Selbstangaben } from './agent-selbstfelder.js';
@@ -107,7 +109,7 @@ export interface AgentTokenAusstellen {
   /** @deprecated W12 (V2): Start-Ausweise und Start-Rotation entfallen; wirkungslos. */
   start_art?: string;
   grund?: string;
-  /** W12 Weg B: Erstnutzungsfrist (SYNAPSE_AGENT_START_TOKEN_TTL_MIN, Standard 10 min) statt sofort aktiv. */
+  /** W12 Weg B: Erstnutzungsfrist (Einstellung erstnutzung_minuten, Standard 10 min) statt sofort aktiv. */
   erstnutzung?: boolean;
   /** W12: Herkunft des Ausweises (Anzeige/Debug); Standard 'register' bzw. 'neu_ausgestellt'. */
   ausweis_weg?: string;
@@ -192,11 +194,6 @@ export async function holeAusweis(c: Pick<PoolClient, 'query'>, identityId: stri
      WHERE identity_id=$1 AND widerrufen_am IS NULL AND token_offen IS NOT NULL${sperren ? ' FOR UPDATE' : ''}`, [identityId]);
   return r.rows[0] ?? null;
 }
-/** Erstnutzungsfrist Weg B; identisch zu erstnutzungFristMs() im Vertrag (hier lokal, um keinen Importzyklus zu erzeugen). */
-function erstnutzungFristMsLokal(): number {
-  const m = Number(process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN);
-  return (Number.isFinite(m) && m > 0 ? m : 10) * 60_000;
-}
 /**
  * Genau EIN Ausweis je Identitaet: ein gueltiger vorhandener wird zurueckgegeben (neu:false). Ein verfallener,
  * nie benutzter wird zuerst geloescht (Grund erstnutzung_verfallen). Sonst wird ein neuer ausgestellt;
@@ -214,12 +211,16 @@ export async function stelleOderHoleAusweisTx(
       [vorhanden.id, o.wer]);
     await audit(c, identitaet.id, o.wer, 'token_widerrufen', { token_id: vorhanden.id, widerrufen: false }, { token_id: vorhanden.id, widerrufen: true }, 'erstnutzung_verfallen');
   }
+  // P22-T45: Erstnutzungsfrist des Projekts der Identitaet (projekt > global > Standard); gilt nur fuer diesen neuen Ausweis.
+  const fristMs = o.erstnutzung
+    ? await erstnutzungFristMs((await c.query<{ project: string }>('SELECT project FROM agent_identitaeten WHERE id=$1', [identitaet.id])).rows[0]?.project ?? null)
+    : 0;
   const token = await erzeugeAusweis(c);
   const tokenId = randomUUID();
   const praefix = ausweisPraefix(token);
   await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_offen, token_praefix, ausweis_weg, gueltig_bis)
     VALUES ($1,$2,$3,$4,$5, CASE WHEN $6::boolean THEN NOW() + ($7::double precision * INTERVAL '1 millisecond') ELSE NULL END)`,
-    [tokenId, identitaet.id, token, praefix, o.weg, o.erstnutzung, erstnutzungFristMsLokal()]);
+    [tokenId, identitaet.id, token, praefix, o.weg, o.erstnutzung, fristMs]);
   await audit(c, identitaet.id, o.wer, 'token_ausstellen', null, { token_id: tokenId, token_praefix: praefix, ausweis_weg: o.weg, erstnutzung: o.erstnutzung }, o.grund);
   const zeile = await holeAusweis(c, identitaet.id);
   if (!zeile) throw new AgentIdentitaetFehler('identitaet_speicher_fehler');

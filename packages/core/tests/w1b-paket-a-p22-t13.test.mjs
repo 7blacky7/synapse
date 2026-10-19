@@ -115,7 +115,7 @@ try{
   const weitere={token:'sai_'+'a'.repeat(64),notiz:'x sai_'+'b'.repeat(64),anderes:'ok'};
   const s=await anlage('luna',{channels:['c1'],rolle_vorschlag:'koordinator',weitere});
   check(s.zustand==='pending'&&s.revision===1&&s.ursprung_agent_id==='luna'&&s.identity_id===null,'Schattenprofil pending');
-  check(Date.parse(s.ablauf_am)-Date.parse(s.erstellt_am)===core.SCHATTEN_FRIST_MS,'Frist exakt 24 h');
+  check(Date.parse(s.ablauf_am)-Date.parse(s.erstellt_am)===core.AUSWEIS_FRIST_DEFINITIONEN.schatten_stunden.standard*3600e3,'Frist exakt 24 h (Standard der Einstellung schatten_stunden, P22-T45)');
   check(!JSON.stringify(s).includes('sai_')&&!('vorgesehener_token' in s),'Antwort ohne Token');
   const db=await one('SELECT selbstangaben,vorgesehener_token_verschluesselt c FROM agent_schattenprofile WHERE id=$1',[s.id]);
   check(!('token' in db.selbstangaben.weitere)&&db.selbstangaben.weitere.notiz==='x [ausweis]'&&db.selbstangaben.weitere.anderes==='ok','Selbstangaben ohne Zugangswerte, Rest erhalten');
