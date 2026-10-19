@@ -35,7 +35,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { taskIndex, taskDublettenHinweis, geaenderteTaskIds } from './plan-suche.js';
-import { pruefeTaskBindungBearbeiten } from './agent-profil-vertrag.js';
+import { pruefeTaskBindungBearbeiten, type TaskBearbeiter } from './agent-profil-vertrag.js';
 import {
   ProjectPlan,
   ProjectTask,
@@ -945,6 +945,7 @@ export async function updateTask(
   taskId: string,
   updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority' | 'git_branch'>>,
   planRef?: string | null,
+  bearbeiter?: TaskBearbeiter,
 ): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
   if (updates.priority !== undefined) pruefeTaskPrioritaet(updates.priority);
   if (updates.git_branch !== undefined) pruefeGitBranch(updates.git_branch, await leseGeschuetztenHauptbranch(project));
@@ -955,7 +956,7 @@ export async function updateTask(
     return null;
   }
   const zielId = fund.task.id;
-  const sperre = await pruefeTaskBindungBearbeiten(project, zielId, fund.task.kurz_id ?? zielId);
+  const sperre = await pruefeTaskBindungBearbeiten(project, zielId, fund.task.kurz_id ?? zielId, bearbeiter);
   if (sperre) throw new Error(sperre);
   const r = await schreibePlan(project, fund.plan.id, (stand) => {
     const i = stand.tasks.findIndex((t) => t.id === zielId);

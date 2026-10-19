@@ -62,6 +62,7 @@ import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { updateTask } from './plans.js';
+import type { TaskBearbeiter } from './agent-profil-vertrag.js';
 import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import { thoughtTaskRefs } from './plan-suche.js';
 import { spiegeleThoughtInTopf } from './entscheidungstopf.js';
@@ -75,7 +76,8 @@ export async function addThought(
   content: string,
   tags: string[] = [],
   taskId?: string,
-  taskStatus?: ProjectTask['status']
+  taskStatus?: ProjectTask['status'],
+  bearbeiter?: TaskBearbeiter
 ): Promise<Thought> {
   // P10-T11: Collection-Prüfung gehört zum Index-Nachtrag, nicht vor den PG-Write.
 
@@ -123,7 +125,7 @@ export async function addThought(
   // 3. Optional: Task-Status atomar mit setzen (wenn taskId + taskStatus)
   if (taskId && taskStatus) {
     try {
-      const updated = await updateTask(project, taskId, { status: taskStatus });
+      const updated = await updateTask(project, taskId, { status: taskStatus }, undefined, bearbeiter);
       if (!updated) {
         warning = (warning ? warning + '; ' : '') + `Task ${taskId} nicht gefunden — Status nicht gesetzt`;
       }
@@ -145,7 +147,8 @@ export async function addThoughtsBatch(
   project: string,
   source: ThoughtSource,
   items: Array<{ content: string; tags?: string[]; task_id?: string }>,
-  taskStatus?: ProjectTask['status']
+  taskStatus?: ProjectTask['status'],
+  bearbeiter?: TaskBearbeiter
 ): Promise<{ thoughts: Thought[]; warning?: string }> {
   if (items.length === 0) return { thoughts: [] };
 
@@ -211,7 +214,7 @@ export async function addThoughtsBatch(
     for (const t of thoughts) {
       if (!t.task_id) continue;
       try {
-        const updated = await updateTask(project, t.task_id, { status: taskStatus });
+        const updated = await updateTask(project, t.task_id, { status: taskStatus }, undefined, bearbeiter);
         if (!updated) {
           warning = (warning ? warning + '; ' : '') + `Task ${t.task_id} nicht gefunden`;
         }

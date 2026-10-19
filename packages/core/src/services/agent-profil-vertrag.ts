@@ -28,6 +28,8 @@ import type { PoolClient } from 'pg';
 import { aktuellerAgentPrincipal } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
+// P22-T18: Rollenerkennung per Namensmuster fuer Aufrufer ohne Token (reine Funktion ohne Importe).
+import { rolleFuerAgent } from './agent-rollen.js';
 // Paket D: Persona-/Tokenabruf-Dienste sind im Eintrag lazy verdrahtet (W1B_DIENSTE), weil sie diese Datei zurueckimportieren.
 import { personaDienst } from './agent-persona.js';
 import { tokenAbrufDienst } from './agent-token-abruf.js';
@@ -581,7 +583,7 @@ export async function pruefeTaskBindungZugriff(project: string, task_id: string,
 
 async function schreibeBindungsAudit(
   c: PoolClient, project: string, task_id: string, aktion: TaskBindungsAktion,
-  alt: TaskBindung | null, neu: TaskBindung | null, wer: string, identity: string | null, grund: string | null,
+  alt: TaskBindung | null, neu: TaskBindung | (TaskBindung & { ereignis: string }) | null, wer: string, identity: string | null, grund: string | null,
 ): Promise<void> {
   await c.query(
     `INSERT INTO plan_task_bindung_audit(project,task_id,aktion,alt,neu,wer,actor_identity_id,grund)
@@ -636,18 +638,51 @@ async function verwalteBindung(
   });
 }
 
-/** update_task-Gate (Paket T): bei Schalter EIN darf nur Koordinator/User bzw. Mitglied der Bindung bearbeiten. Ohne Principal (User-Pfade) unveraendert. */
-export async function pruefeTaskBindungBearbeitenFuer(project: string, task_id: string, p: IdentitaetsAgentPrincipal | null, ref: string = task_id): Promise<string | null> {
+/**
+ * P22-T18 (User-Entscheidung 19.10.2026, thought 8aab4bcf): Angaben aus dem Aufruf, KEIN Identitaetsnachweis.
+ * agent_id = Legacy-Agent ohne Token (fehlt: reiner User-Pfad), grund = Begruendung fuer update_task auf gebundener Task.
+ */
+export interface TaskBearbeiter { agent_id?: string | null; grund?: string | null }
+
+function beschreibeBindung(b: TaskBindung): string {
+  if (b.art === 'identitaet') return 'Identitaet ' + b.identity_id;
+  if (b.art === 'team') return 'Team ' + b.identity_ids.join(', ');
+  return 'offen';
+}
+
+/**
+ * P22-T18: update_task eines Legacy-Agenten (agent_id, kein Token-Principal) bei Schalter EIN.
+ * Unveraendert (null): kein agent_id (User-Pfad), Rolle koordinator (Namensmuster wie rolleFuerAgent), Task ohne Bindung.
+ * Gebundene Task: ohne Grund Abweisung (TaskBindungFehler grund_noetig), mit getrimmtem Grund (Konvention der Bindungs-Gruende: nicht leer)
+ * erlaubt UND Eintrag in plan_task_bindung_audit: aktion 'aendern' (die CHECK-Aktionen bleiben unveraendert), Bindung unveraendert (alt = neu),
+ * wer 'legacy:<agent_id>', neu.ereignis 'update_task_legacy', grund mit Praefix '[update_task ohne Token]'.
+ */
+async function pruefeLegacyBearbeitung(project: string, task_id: string, bearbeiter: TaskBearbeiter | undefined, ref: string): Promise<string | null> {
+  const agent = typeof bearbeiter?.agent_id === 'string' ? bearbeiter.agent_id.trim() : '';
+  if (!agent) return null;
+  if (rolleFuerAgent(agent).rolle === 'koordinator') return null;
+  const b = await leseBindungRoh(project, task_id);
+  if (b.art === 'offen') return null;
+  const grund = typeof bearbeiter?.grund === 'string' ? bearbeiter.grund.trim() : '';
+  if (!grund) {
+    throw new TaskBindungFehler('grund_noetig', `grund_noetig: grund angeben (Task ${ref} ist gebunden an ${beschreibeBindung(b)}). Agenten ohne Token brauchen fuer update_task auf einer gebundenen Task einen Grund.`);
+  }
+  await mitTransaktion(c => schreibeBindungsAudit(c, project, task_id, 'aendern', b, { ...b, ereignis: 'update_task_legacy' }, 'legacy:' + agent, null, '[update_task ohne Token] ' + grund));
+  return null;
+}
+
+/** update_task-Gate (Paket T): bei Schalter EIN darf nur Koordinator/User bzw. Mitglied der Bindung bearbeiten. Ohne Principal: User-Pfade unveraendert, Legacy-Agent mit agent_id nur mit Grund (P22-T18). */
+export async function pruefeTaskBindungBearbeitenFuer(project: string, task_id: string, p: IdentitaetsAgentPrincipal | null, ref: string = task_id, bearbeiter?: TaskBearbeiter): Promise<string | null> {
   if (!(await leseProfilProduktSchalter('task_bindung', project)).aktiv) return null;
-  if (!p) return null;
+  if (!p) return pruefeLegacyBearbeitung(project, task_id, bearbeiter, ref);
   if (p.project === project && p.rolle === 'koordinator') return null;
   return bindungsSperre(project, task_id, p.project === project ? p.identity_id : null, ref);
 }
 
 /** Wie pruefeTaskBindungBearbeitenFuer, Akteur aus dem aktuellen Tokenkontext. */
-export async function pruefeTaskBindungBearbeiten(project: string, task_id: string, ref: string = task_id): Promise<string | null> {
+export async function pruefeTaskBindungBearbeiten(project: string, task_id: string, ref: string = task_id, bearbeiter?: TaskBearbeiter): Promise<string | null> {
   const p = aktuellerAgentPrincipal();
-  return pruefeTaskBindungBearbeitenFuer(project, task_id, p && p.art === 'identity' ? p : null, ref);
+  return pruefeTaskBindungBearbeitenFuer(project, task_id, p && p.art === 'identity' ? p : null, ref, bearbeiter);
 }
 
 export const taskBindungDienst: TaskBindungDienst = {

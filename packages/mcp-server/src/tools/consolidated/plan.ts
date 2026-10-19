@@ -124,6 +124,10 @@ export const planTool: ConsolidatedTool = {
           enum: ['todo', 'in_progress', 'done', 'blocked'],
           description: 'Neuer Task-Status (fuer update_task)',
         },
+        grund: {
+          type: 'string',
+          description: 'Nur fuer update_task: Grund. Pflicht fuer Agenten OHNE Token auf einer gebundenen Task, wenn der Produkt-Schalter task_bindung EIN ist (ohne Grund Abweisung grund_noetig; mit Grund erlaubt und in der Bindungs-Historie protokolliert). Sonst ohne Wirkung.',
+        },
         compact: { type: 'boolean', description: 'get: Standard true; false liefert Beschreibungen. Mit task_id standardmaessig Volltext.' },
         limit: { type: 'number', description: 'get: maximale Anzahl Tasks; ohne limit alle passenden Tasks.' },
         // fuer "add_tasks_batch"
@@ -269,7 +273,7 @@ export const planTool: ConsolidatedTool = {
         const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
         const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
         const b = str(args, 'git_branch'); if (b !== undefined) updates.git_branch = b;
-        const result = await updatePlanTask(project, taskId, updates, str(args, 'plan_id'));
+        const result = await updatePlanTask(project, taskId, updates, str(args, 'plan_id'), { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') });
         return result;
       }
 

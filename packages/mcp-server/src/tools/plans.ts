@@ -217,6 +217,7 @@ export async function updatePlanTask(
     git_branch?: string;
   },
   planRef?: string,
+  bearbeiter?: { agent_id?: string | null; grund?: string | null },
 ): Promise<{
   success: boolean;
   task: ProjectTask | null;
@@ -225,7 +226,7 @@ export async function updatePlanTask(
   hinweis_plaene?: string;
 }> {
   try {
-    const task = await updateTask(project, taskId, updates, planRef);
+    const task = await updateTask(project, taskId, updates, planRef, bearbeiter);
 
     if (!task) {
       return {

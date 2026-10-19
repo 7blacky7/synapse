@@ -103,6 +103,44 @@ try{
   await setzeSchalter(false);
   check(await gateEin(akt('b1','subagent').principal,'T-einzel')===null,'update_task AUS: unveraendert erlaubt');
   await setzeSchalter(true);
+  // P22-T18: Legacy-Agent (agent_id ohne Token-Principal) auf gebundener Task -> nur mit Grund, Audit
+  const legacy=(id,grund,agent='legacy-x')=>C.pruefeTaskBindungBearbeitenFuer(P,id,null,id,{agent_id:agent,grund});
+  const audN=async(id)=>(await pool.query('SELECT aktion,grund,wer,alt,neu,actor_identity_id FROM plan_task_bindung_audit WHERE project=$1 AND task_id=$2 ORDER BY id',[P,id])).rows;
+  const vorLeg=(await audN('T-einzel')).length;
+  await wirft(legacy('T-einzel',undefined),'grund_noetig','Legacy ohne Grund abgewiesen');
+  await wirft(legacy('T-einzel','   '),'grund_noetig','Legacy mit leerem Grund abgewiesen');
+  try{await legacy('T-einzel',undefined);}catch(e){check(/grund angeben/.test(e.message)&&e.message.includes('T-einzel')&&e.message.includes('a1'),'Legacy-Abweisung nennt Hinweis "grund angeben" und die Bindung');}
+  check((await audN('T-einzel')).length===vorLeg,'Abweisung ohne Audit');
+  check(await legacy('T-einzel','  Status nach Absprache  ')===null,'Legacy mit Grund erlaubt');
+  const audL=await audN('T-einzel');
+  const zl=audL[audL.length-1];
+  check(audL.length===vorLeg+1&&zl.aktion==='aendern'&&zl.wer==='legacy:legacy-x'&&zl.grund==='[update_task ohne Token] Status nach Absprache'&&zl.actor_identity_id===null&&zl.neu?.ereignis==='update_task_legacy'&&zl.alt?.identity_id==='a1'&&zl.neu?.identity_id==='a1','Audit: wer legacy:<id>, Grund getrimmt, Bindung unveraendert, Ereignis update_task_legacy');
+  check((await C.taskBindungDienst.leseBindung(P,'T-einzel')).identity_id==='a1','Bindung nach Legacy-Update unveraendert');
+  await C.taskBindungDienst.legeFest(P,'T-team18',{art:'team',identity_ids:['a1','b1']},user,'Team fuer T18');
+  try{await legacy('T-team18',undefined);check(false,'Legacy ohne Grund auf Team-Task abgewiesen');}catch(e){check(e?.code==='grund_noetig'&&e.message.includes('Team a1, b1'),'Legacy ohne Grund auf Team-Task abgewiesen, Hinweis nennt Team');}
+  check(await legacy('T-team18','Team-Task bearbeitet')===null,'Legacy mit Grund auf Team-Task erlaubt');
+  check(await legacy('T-offen',undefined)===null&&(await audN('T-offen')).length===0,'Legacy auf offener Task: unveraendert, kein Audit');
+  check(await legacy('T-einzel',undefined,'koordinator')===null&&await legacy('T-einzel',undefined,'koordinator-w11')===null,'Legacy-Koordinator (Namensmuster) ohne Grund unveraendert');
+  check(await C.pruefeTaskBindungBearbeitenFuer(P,'T-einzel',null,'T-einzel',{grund:'nur Grund'})===null&&await C.pruefeTaskBindungBearbeitenFuer(P,'T-einzel',null,'T-einzel',{agent_id:'  '})===null,'User-Pfad (ohne agent_id) unveraendert');
+  check(await C.pruefeTaskBindungBearbeitenFuer(P,'T-einzel',akt('a1','subagent').principal,'T-einzel',{agent_id:'legacy-x'})===null&&typeof await C.pruefeTaskBindungBearbeitenFuer(P,'T-einzel',akt('b1','subagent').principal,'T-einzel',{agent_id:'legacy-x',grund:'Grund darf die Token-Pruefung nicht umgehen'})==='string','Token-Principal: Mitglied unveraendert, fremde Identitaet trotz Grund abgelehnt');
+  check((await audN('T-einzel')).length===vorLeg+1,'Token-Pfade und Koordinator schreiben kein Legacy-Audit');
+  await setzeSchalter(false);
+  check(await legacy('T-einzel',undefined)===null&&(await audN('T-einzel')).length===vorLeg+1,'Schalter AUS: Legacy ohne Grund unveraendert erlaubt, kein Audit');
+  await setzeSchalter(true);
+  // P22-T18 End-to-End ueber plans.updateTask
+  const PL=await load('packages/core/dist/services/plans.js');
+  await pool.query(`INSERT INTO plans(id,project,name,description,goals,architecture,tasks,created_at,updated_at,kurz_id,aktiv,naechste_task_nr,prioritaet)
+    VALUES($1,$2,'E2E T18','',$3,'','[]'::jsonb,NOW(),NOW(),'P1',true,1,'mittel')`,[randomUUID(),P,[]]);
+  const et=await PL.addTask(P,'E2E T18','Legacy-Gate','medium');
+  await C.taskBindungDienst.legeFest(P,et.id,{art:'identitaet',identity_id:'a1'},user,'E2E Bindung');
+  let e2eFehler;try{await PL.updateTask(P,et.id,{status:'in_progress'},null,{agent_id:'legacy-x'});}catch(e){e2eFehler=e;}
+  check(e2eFehler?.code==='grund_noetig'&&/grund angeben/.test(e2eFehler.message),'E2E updateTask: Legacy ohne Grund abgewiesen');
+  check((await PL.getAllePlaene(P)).flatMap(p=>p.tasks).find(t=>t.id===et.id)?.status==='todo','E2E: Status nach Abweisung unveraendert');
+  const er=await PL.updateTask(P,et.id,{status:'in_progress'},null,{agent_id:'legacy-x',grund:'E2E: Task uebernommen nach Absprache'});
+  check(er?.status==='in_progress','E2E updateTask: Legacy mit Grund erlaubt, Status gesetzt');
+  const audEt=await audN(et.id);
+  check(audEt.map(r=>r.aktion).join()==='festlegen,aendern'&&audEt[1].wer==='legacy:legacy-x'&&audEt[1].grund.endsWith('E2E: Task uebernommen nach Absprache'),'E2E: Audit-Eintrag fuer das Legacy-Update');
+  check((await PL.updateTask(P,et.id,{status:'done'}))?.status==='done','E2E updateTask: reiner User-Pfad (ohne bearbeiter) unveraendert');
   // Audit
   const aud=(await pool.query('SELECT aktion,grund,alt,neu,wer FROM plan_task_bindung_audit WHERE project=$1 AND task_id=$2 ORDER BY id',[P,'T-team'])).rows;
   check(aud.map(r=>r.aktion).join()==='festlegen,aendern','Audit T-team: festlegen, aendern (Ablehnungen ohne Audit)');

@@ -466,6 +466,7 @@ export const MCP_TOOLS = [
         },
         task_id: { type: 'string', description: 'Optional fuer add: Verknuepft den Thought mit einer Plan-Task (Spalte task_id). Suche und Plan-Lookups koennen darauf filtern.' },
         task_status: { type: 'string', enum: ['todo', 'in_progress', 'done', 'blocked'], description: 'Optional fuer add/add_batch: setzt zugleich den Status der via task_id verlinkten Task. Spart einen separaten plan(update_task)-Call.' },
+        grund: { type: 'string', description: 'Optional fuer add/add_batch mit task_status: Grund. Pflicht fuer Agenten OHNE Token auf einer gebundenen Task, wenn der Produkt-Schalter task_bindung EIN ist (ohne Grund bleibt der Task-Status ungesetzt, Warnung grund_noetig; mit Grund erlaubt und in der Bindungs-Historie protokolliert).' },
         trigger_respawn: { type: 'boolean', description: 'Optional fuer add: Spezialist signalisiert sein Auto-Handoff. Server prueft Context-Stand gegen Korridor und triggert sofortigen Respawn (ohne auf 95% zu warten). Nur wirksam wenn source einem aktiven Spezialisten entspricht. Fuer Subagenten/Koordinator wirkungslos.' },
         id: {
           oneOf: [
@@ -540,6 +541,10 @@ export const MCP_TOOLS = [
           type: 'string',
           enum: ['todo', 'in_progress', 'done', 'blocked'],
           description: 'Neuer Task-Status (fuer update_task); bei action=get: optionaler Task-Filter',
+        },
+        grund: {
+          type: 'string',
+          description: 'Nur fuer update_task: Grund. Pflicht fuer Agenten OHNE Token auf einer gebundenen Task, wenn der Produkt-Schalter task_bindung EIN ist (ohne Grund Abweisung grund_noetig; mit Grund erlaubt und in der Bindungs-Historie protokolliert). Sonst ohne Wirkung.',
         },
         kandidaten: {
           oneOf: [
@@ -2075,8 +2080,13 @@ async function attachRestPendingEventHints(
   try {
     const pendingEvents = await getPendingEventHints(project, effectiveAgentId, 3);
     const warnung = await pruefeEventEskalation(project, effectiveAgentId, pendingEvents.urgent);
-    if (pendingEvents.hints.length === 0) return result;
-    return { ...result, pending_events: pendingEvents.hints, ...(warnung ? { event_warning: warnung } : {}) };
+    // P22-T21: die Eskalationswarnung (Pflichtanteil) geht auch ohne sichtbare Hinweise nie verloren (wie stdio).
+    if (pendingEvents.hints.length === 0 && !warnung) return result;
+    return {
+      ...result,
+      ...(pendingEvents.hints.length > 0 ? { pending_events: pendingEvents.hints } : {}),
+      ...(warnung ? { event_warning: warnung } : {}),
+    };
   } catch {
     // Eine Inbox-Zugabe darf den eigentlichen Tool-Aufruf nie brechen.
     return result;
@@ -2935,7 +2945,8 @@ async function handleToolCallKern(
             project, source,
             reqStr(args, 'content'), strArrayOrEmpty(args, 'tags'),
             str(args, 'task_id'),
-            str(args, 'task_status') as Parameters<typeof addThought>[5]
+            str(args, 'task_status') as Parameters<typeof addThought>[5],
+            { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') }
           );
           // Anti-Echo (DX-Befund 4): nicht den kompletten Content zurueckspielen,
           // den der Agent gerade selbst geschrieben hat — id + Preview reichen.
@@ -3002,7 +3013,8 @@ async function handleToolCallKern(
             project,
             source as Parameters<typeof addThoughtsBatch>[1],
             normalized,
-            str(args, 'task_status') as Parameters<typeof addThoughtsBatch>[3]
+            str(args, 'task_status') as Parameters<typeof addThoughtsBatch>[3],
+            { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') }
           );
           return {
             success: true,
@@ -3177,7 +3189,7 @@ async function handleToolCallKern(
           const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
           const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
           const b = str(args, 'git_branch'); if (b !== undefined) updates.git_branch = b;
-          const task = await updateTask(project, taskId, updates, str(args, 'plan_id'));
+          const task = await updateTask(project, taskId, updates, str(args, 'plan_id'), { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') });
           if (!task) return { success: false, task: null, message: `Task nicht gefunden: ${taskId}` };
           return { success: true, task, message: 'Task aktualisiert' };
         }

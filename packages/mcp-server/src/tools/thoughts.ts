@@ -25,7 +25,8 @@ export async function addThought(
   content: string,
   tags: string[] = [],
   taskId?: string,
-  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked'
+  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked',
+  bearbeiter?: { agent_id?: string | null; grund?: string | null }
 ): Promise<{
   warning?: string;
   success: boolean;
@@ -37,7 +38,7 @@ export async function addThought(
   message: string;
 }> {
   try {
-    const thought = await addThoughtCore(project, source, content, tags, taskId, taskStatus);
+    const thought = await addThoughtCore(project, source, content, tags, taskId, taskStatus, bearbeiter);
 
     // Anti-Echo (DX-Befund 4): id + Preview statt komplettem Content-Echo.
     return {
@@ -66,7 +67,8 @@ export async function addThoughtsBatchTool(
   project: string,
   source: ThoughtSource,
   items: Array<{ content: string; tags?: string[]; task_id?: string }>,
-  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked'
+  taskStatus?: 'todo' | 'in_progress' | 'done' | 'blocked',
+  bearbeiter?: { agent_id?: string | null; grund?: string | null }
 ): Promise<{
   success: boolean;
   count: number;
@@ -87,7 +89,7 @@ export async function addThoughtsBatchTool(
       return { success: false, count: 0, ids: [], thoughts: [], message: 'Keine gueltigen Items (content fehlt oder leer)' };
     }
 
-    const result = await addThoughtsBatchCore(project, source, valid, taskStatus);
+    const result = await addThoughtsBatchCore(project, source, valid, taskStatus, bearbeiter);
     // Anti-Echo (DX-Befund 4): ids + Previews statt komplettem Content-Echo.
     return {
       success: true,

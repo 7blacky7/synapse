@@ -103,6 +103,10 @@ export const thoughtTool: ConsolidatedTool = {
           enum: ['todo', 'in_progress', 'done', 'blocked'],
           description: 'Optional fuer add/add_batch: setzt zugleich den Status der via task_id verlinkten Task. Spart einen separaten plan(update_task)-Call.',
         },
+        grund: {
+          type: 'string',
+          description: 'Optional fuer add/add_batch mit task_status: Grund. Pflicht fuer Agenten OHNE Token auf einer gebundenen Task, wenn der Produkt-Schalter task_bindung EIN ist (ohne Grund bleibt der Task-Status ungesetzt, Warnung grund_noetig; mit Grund erlaubt und in der Bindungs-Historie protokolliert).',
+        },
         trigger_respawn: {
           type: 'boolean',
           description: 'Optional fuer add: Spezialist signalisiert sein Auto-Handoff. Server prueft Context-Stand gegen Korridor und triggert sofortigen Respawn (ohne auf 95% zu warten). Nur wirksam wenn source einem aktiven Spezialisten entspricht. Fuer Subagenten/Koordinator wirkungslos.',
@@ -126,7 +130,7 @@ export const thoughtTool: ConsolidatedTool = {
         const taskStatus = typeof args.task_status === 'string' ? args.task_status as Parameters<typeof addThought>[5] : undefined;
         const triggerRespawn = bool(args, 'trigger_respawn') ?? false;
 
-        const result = await addThought(project, source, content, tags, taskId, taskStatus);
+        const result = await addThought(project, source, content, tags, taskId, taskStatus, { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') });
 
         if (triggerRespawn) {
           const decision = await maybeTriggerRespawn(project, source);
@@ -156,7 +160,7 @@ export const thoughtTool: ConsolidatedTool = {
           task_id: typeof (it as { task_id?: unknown }).task_id === 'string' ? (it as { task_id: string }).task_id : undefined,
         }));
         const taskStatus = typeof args.task_status === 'string' ? args.task_status as Parameters<typeof addThought>[5] : undefined;
-        const result = await addThoughtsBatchTool(project, source, normalized, taskStatus);
+        const result = await addThoughtsBatchTool(project, source, normalized, taskStatus, { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') });
         return result;
       }
 

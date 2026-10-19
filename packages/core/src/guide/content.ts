@@ -1011,13 +1011,13 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
     actions: {
       add: {
         description: 'Neuen Thought speichern. optional task_id + task_status — verknuepft den Thought mit einer Plan-Task UND aktualisiert deren Status in einem Call (kein separater plan(update_task) noetig).',
-        params: 'project (req), source (req, deine agent_id), content (req), tags, task_id (optional, Plan-Task-ID), task_status (optional: todo|in_progress|done|blocked — setzt Status der via task_id verlinkten Task).',
+        params: 'project (req), source (req, deine agent_id), content (req), tags, task_id (optional, Plan-Task-ID), task_status (optional: todo|in_progress|done|blocked — setzt Status der via task_id verlinkten Task), grund (optional, nur mit task_status: Pflicht fuer Agenten ohne Token auf gebundener Task bei Schalter task_bindung EIN, siehe plan update_task).',
         example: 'thought({ action: "add", project: "synapse", source: "mein-agent", content: "Task abgeschlossen.", tags: ["status"], task_id: "task-uuid", task_status: "done" })',
         tips: 'source = deine agent_id. NIEMALS "claude-code". task_id allein verlinkt nur; mit task_status zusaetzlich wird gleich der Plan-Task-Status gesetzt. Findet "alle Thoughts zu Task X" via thought(search) oder Plan-Lookups via Spalte task_id.',
       },
       add_batch: {
         description: 'Mehrere Thoughts atomar speichern (1..50 Items in einem Call). items[].task_id pro Item moeglich; top-level task_status setzt einmalig den Status fuer alle in den Items verlinkten Tasks.',
-        params: 'project (req), source (req, gilt fuer alle Items), items (req, Array von { content, tags?, task_id? }), task_status (optional, top-level: todo|in_progress|done|blocked — setzt den Status fuer alle in den Items verlinkten Tasks).',
+        params: 'project (req), source (req, gilt fuer alle Items), items (req, Array von { content, tags?, task_id? }), task_status (optional, top-level: todo|in_progress|done|blocked — setzt den Status fuer alle in den Items verlinkten Tasks), grund (optional, nur mit task_status: wie bei add).',
         example: 'thought({ action: "add_batch", project: "synapse", source: "mein-agent", items: [{ content: "T1 done", task_id: "t1" }, { content: "T2 done", task_id: "t2" }], task_status: "done" })',
         tips: 'Bei >5 Thoughts IMMER add_batch statt parallele add-Calls — atomar, ein Embedding-Call, kein Cloudflare-Stress. items[].task_id pro Item; task_status global fuer den ganzen Batch.',
       },
@@ -1110,7 +1110,7 @@ export const TOOL_GUIDES: Record<string, ToolGuide> = {
         tips: 'Bei >5 Tasks IMMER add_tasks_batch statt parallele add_task-Calls — ein UPDATE, ein Qdrant-Reindex.',
       },
       update_task: {
-        description: 'Eine bestehende Task aendern (status, priority, title, description).',
+        description: 'Eine bestehende Task aendern (status, priority, title, description). grund (optional): Pflicht fuer Agenten OHNE Token auf einer GEBUNDENEN Task, wenn der Produkt-Schalter task_bindung EIN ist (ohne Grund Abweisung grund_noetig mit Hinweis auf die Bindung; mit Grund erlaubt und in der Bindungs-Historie protokolliert, wer = legacy:<agent_id>). Koordinator, User, Token-Mitglieder der Bindung und Schalter AUS: unveraendert.',
         params: 'project (req), task_id (req), title?, description?, status (todo|in_progress|done|blocked)?, priority (low|medium|high)?, git_branch? (Task-Branch; sonst Plan-Branch)',
         example: 'plan({ action: "update_task", project: "synapse", task_id: "abc-123", status: "done" })',
         tips: 'Status auf "done" setzen statt Task zu loeschen — bleibt fuer Audit erhalten.',

@@ -362,10 +362,19 @@ export async function getPendingEventHints(
   urgent: DringlicherEventHinweis[];
 }> {
   const boundedLimit = Math.max(1, Math.min(3, Math.trunc(limit)));
-  const events = await getPendingEvents(project, agentId, boundedLimit);
+  // P22-T21: Limit NICHT vor dem Pflichtanteil-Filter anwenden. Mehr holen, damit WORK_STOP/CRITICAL_REVIEW/
+  // TEAM_DISCUSSION hinter einer Flut aelterer Events nicht verdraengt werden.
+  const alle = await getPendingEvents(project, agentId, 100);
+  const istPflicht = (event: AgentEvent): boolean => PFLICHT_EVENT_TYPEN.includes(event.eventType);
+  const pflicht = alle.filter(istPflicht);
   // P22-T13 Paket C: abgeschaltete pending_events zeigen nur den Pflichtanteil (Stop/Sicherheit/Review);
-  // nichts wird quittiert, urgent (Eskalation) bleibt vollstaendig.
-  const sichtbar = hinweisAktiv('pending_events', agentId) ? events : events.filter(event => PFLICHT_EVENT_TYPEN.includes(event.eventType));
+  // nichts wird quittiert. Aktiv: bis zu 3 Hinweise wie bisher (Reihenfolge unveraendert, solange hoechstens
+  // 3 offen sind); nur bei Ueberzahl rueckt der Pflichtanteil nach vorn (stabil, sonst gleiche Reihenfolge).
+  const sichtbar = hinweisAktiv('pending_events', agentId)
+    ? (alle.length <= boundedLimit ? alle : [...pflicht, ...alle.filter(event => !istPflicht(event))].slice(0, boundedLimit))
+    : pflicht.slice(0, 10);
+  // Eskalation (urgent): wie bisher die ersten boundedLimit offenen Events, zusaetzlich jedes Pflicht-Event.
+  const events = [...alle.slice(0, boundedLimit), ...pflicht.filter(event => !alle.slice(0, boundedLimit).includes(event))];
   return {
     hints: sichtbar.map(event => ({
       event_id: event.id,
