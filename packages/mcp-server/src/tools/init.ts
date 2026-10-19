@@ -78,7 +78,8 @@ type InitResult = {
   docsIndexed?: { total: number; indexed: number; cached: number };
   isFirstVisit?: boolean;
   rules?: OnboardingRule[];
-  regel_verzeichnis?: RegelVerzeichnis;
+  /** P22-T52: kurze Ausweis-Anmeldung liefert nur regeln + abruf. */
+  regel_verzeichnis?: Partial<RegelVerzeichnis>;
   setupRequired?: {
     phase: string;
     questions: SetupQuestion[];

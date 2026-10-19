@@ -59,7 +59,8 @@ export interface OnboardingResult {
   /** Nur fuer Koordinatoren und nur bei unvollstaendigem Projekt-Setup. */
   setup_hinweis?: string;
   rules?: OnboardingRule[];
-  regel_verzeichnis?: import('@synapse/core').RegelVerzeichnis;
+  /** P22-T52: die kurze Ausweis-Anmeldung (Nicht-Koordinator) liefert nur regeln + abruf, daher Partial. */
+  regel_verzeichnis?: Partial<import('@synapse/core').RegelVerzeichnis>;
 }
 
 /** Agenten-Rollen fuer rollenspezifisches Onboarding */
