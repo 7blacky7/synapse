@@ -53,6 +53,9 @@ export const JEV_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   // P23-T1: additive Parameter; der Beschreibungssatz oben bleibt byte-stabil (Golden admin-kontextprofil-p7-t42).
   skill_rerank_tor: { type: 'number', description: 'jev_optionen setzen: Tor der Skill-Sinnpruefung (0..1, Standard 0.5); darunter wird ein semantischer Skill-Vorschlag nicht ausgeliefert. Die Sinnpruefung selbst ist die Jev-Funktion skill_rerank (jev_schalten), Standard AUS bis ausdruecklich an' },
   skill_rerank_max: { type: 'number', description: 'jev_optionen setzen: hoechstens so viele semantische Skill-Kandidaten je Text gehen an Jev (1..30, Standard 8)' },
+  // P23-T4: additive Einstellwerte (Kontext-Budget und Timeout der Skill-Sinnpruefung).
+  skill_rerank_budget_tokens: { type: 'number', description: 'jev_optionen setzen: Eingabe-Budget der Skill-Sinnpruefung in Tokens (1000..60000, Standard 10000; Jev verarbeitet hoechstens 64k). Gekuerzt wird zuerst der Skill-Abschnitt, dann der Quelltext; Skill-Zweck und Aufgabe nie' },
+  skill_rerank_timeout_ms: { type: 'number', description: 'jev_optionen setzen: Timeout des Jev-Aufrufs der Skill-Sinnpruefung in ms (1000..120000, Standard 20000)' },
 };
 
 export function istJevAdminAction(action: string | undefined): boolean {
@@ -174,6 +177,8 @@ export async function fuehreJevAdminAus(
           entscheidung_ohne_praezedenz: wahr(args.entscheidung_ohne_praezedenz),
           skill_rerank_tor: zahl(args.skill_rerank_tor),
           skill_rerank_max: zahl(args.skill_rerank_max),
+          skill_rerank_budget_tokens: zahl(args.skill_rerank_budget_tokens),
+          skill_rerank_timeout_ms: zahl(args.skill_rerank_timeout_ms),
           agent: wer,
         });
         return { success: true, optionen, message: 'Jev-Optionen gespeichert (wirken ab E1, Erklaerungstopf).' };

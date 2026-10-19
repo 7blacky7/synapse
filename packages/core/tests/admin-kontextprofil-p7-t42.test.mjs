@@ -30,7 +30,9 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P6-T49: additiver Fristwert (Ablauf offener files-Plaene).
   'files_plan_stunden', 'files_plan_ablauf_aktiv',
   // P23-T1: additive Einstellwerte der Skill-Sinnpruefung (jev_optionen).
-  'skill_rerank_tor', 'skill_rerank_max'];
+  'skill_rerank_tor', 'skill_rerank_max',
+  // P23-T4: additive Einstellwerte (Budget/Timeout der Skill-Sinnpruefung).
+  'skill_rerank_budget_tokens', 'skill_rerank_timeout_ms'];
 // P23-T1: additive Werte in bestehenden Enums (Jev-Funktion skill_rerank in jev_schalten.funktion).
 const neueEnumWerte = { funktion: new Set(['skill_rerank']) };
 const neu = new Set(['kontextprofil_liste', 'kontextprofil_setzen', 'kontextprofil_entfernen', ...w1bAktionen]);

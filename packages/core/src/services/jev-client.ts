@@ -48,6 +48,8 @@ export interface JevAnfrage {
   identity_id?: string | null;
   state: unknown;
   questions: Record<string, unknown>;
+  /** P23-T4: Timeout dieses Aufrufs in ms (Einstellwert der Funktion); ohne Angabe JEV_TIMEOUT_MS bzw. 10 s. */
+  timeout_ms?: number;
 }
 
 export interface JevAntwortDaten {
@@ -87,6 +89,7 @@ const zahlOderNull = (x: unknown): number | null => (typeof x === 'number' && Nu
 /** Der eine Jev-Aufruf. Wirft nur, wenn der Antwort-Body kein JSON ist (wie bisher). */
 export async function rufeJev(a: JevAnfrage, deps: { fetch?: typeof fetch } = {}): Promise<JevErgebnis> {
   const k = jevKonfig();
+  if (typeof a.timeout_ms === 'number' && Number.isFinite(a.timeout_ms) && a.timeout_ms > 0) k.timeoutMs = a.timeout_ms;
   if (!k.key) {
     return { ok: false, grund: 'kein_key', message: 'Jev nicht konfiguriert: JEV_OPENROUTER_API_KEY fehlt in der Umgebung dieses Prozesses (REST-API bzw. MCP-Server).' };
   }

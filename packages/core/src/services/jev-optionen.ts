@@ -14,6 +14,10 @@
  *      Skill-Vorschlag als sinnvoll bestaetigt. Standard 0.5.
  *   5) skill_rerank_max (P23-T1): hoechstens so viele semantische Kandidaten je Text gehen an Jev
  *      (1..30), der Rest wird bei aktiver Sinnpruefung nicht ausgeliefert. Standard 8.
+ *   6) skill_rerank_budget_tokens (P23-T4): Eingabe-Budget der Sinnpruefung in Tokens (1.000..60.000,
+ *      Obergrenze unter Jevs 64k-Eingabegrenze, memory wissen-jev-eingabegrenze-64k). Standard 10.000.
+ *   7) skill_rerank_timeout_ms (P23-T4): Timeout des Jev-Aufrufs der Sinnpruefung (1.000..120.000 ms).
+ *      Standard 20.000 (mehr Kontext, laeuft im Hintergrund).
  * TABELLE jev_optionen (name PK, wert JSONB). Fehlt eine Zeile, gilt der Standard. Lesefehler:
  *   Standardwerte mit Hinweis (wirft nicht).
  */
@@ -40,6 +44,10 @@ export interface JevOptionen {
   skill_rerank_tor: number;
   /** P23-T1: Hoechstzahl semantischer Kandidaten je Text fuer die Sinnpruefung */
   skill_rerank_max: number;
+  /** P23-T4: Eingabe-Budget der Sinnpruefung in Tokens */
+  skill_rerank_budget_tokens: number;
+  /** P23-T4: Timeout des Jev-Aufrufs der Sinnpruefung in ms */
+  skill_rerank_timeout_ms: number;
   hinweis?: string;
   gesetzt_von: string | null;
   gesetzt_am: string | null;
@@ -57,12 +65,25 @@ const STANDARD_OHNE_PRAEZEDENZ = true;
 export const STANDARD_SKILL_RERANK_TOR = 0.5;
 export const STANDARD_SKILL_RERANK_MAX = 8;
 const SKILL_RERANK_MAX_GRENZE = 30;
+export const STANDARD_SKILL_RERANK_BUDGET_TOKENS = 10_000;
+/** Obergrenze des Budgets: unter Jevs 64k-Eingabegrenze (Puffer fuer Schaetzfehler). */
+export const SKILL_RERANK_BUDGET_GRENZE = 60_000;
+const SKILL_RERANK_BUDGET_MIN = 1_000;
+export const STANDARD_SKILL_RERANK_TIMEOUT_MS = 20_000;
+const SKILL_RERANK_TIMEOUT_MIN = 1_000;
+const SKILL_RERANK_TIMEOUT_MAX = 120_000;
 
 function istTor(x: unknown): x is number {
   return typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= 1;
 }
 function istRerankMax(x: unknown): x is number {
   return typeof x === 'number' && Number.isInteger(x) && x >= 1 && x <= SKILL_RERANK_MAX_GRENZE;
+}
+function istRerankBudget(x: unknown): x is number {
+  return typeof x === 'number' && Number.isInteger(x) && x >= SKILL_RERANK_BUDGET_MIN && x <= SKILL_RERANK_BUDGET_GRENZE;
+}
+function istRerankTimeout(x: unknown): x is number {
+  return typeof x === 'number' && Number.isInteger(x) && x >= SKILL_RERANK_TIMEOUT_MIN && x <= SKILL_RERANK_TIMEOUT_MAX;
 }
 
 function istSprache(x: unknown): x is JevSprache {
@@ -83,7 +104,8 @@ export function wirksameJevSprache(sprachen: JevErklaerungSprachen, wunsch: JevS
 }
 
 function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string | null, am: Date | null, zusatz?: string, ohnePraezedenz = STANDARD_OHNE_PRAEZEDENZ,
-  rerankTor = STANDARD_SKILL_RERANK_TOR, rerankMax = STANDARD_SKILL_RERANK_MAX): JevOptionen {
+  rerankTor = STANDARD_SKILL_RERANK_TOR, rerankMax = STANDARD_SKILL_RERANK_MAX,
+  rerankBudget = STANDARD_SKILL_RERANK_BUDGET_TOKENS, rerankTimeout = STANDARD_SKILL_RERANK_TIMEOUT_MS): JevOptionen {
   const w = wirksameJevSprache(sprachen, wunsch);
   const hinweis = [zusatz, w.hinweis].filter(Boolean).join(' ');
   return {
@@ -94,6 +116,8 @@ function baue(sprachen: JevErklaerungSprachen, wunsch: JevSprache, von: string |
     entscheidung_ohne_praezedenz: ohnePraezedenz,
     skill_rerank_tor: rerankTor,
     skill_rerank_max: rerankMax,
+    skill_rerank_budget_tokens: rerankBudget,
+    skill_rerank_timeout_ms: rerankTimeout,
     ...(hinweis ? { hinweis } : {}),
     gesetzt_von: von,
     gesetzt_am: am ? new Date(am).toISOString() : null,
@@ -111,7 +135,7 @@ function leseSprachen(wert: unknown): JevErklaerungSprachen | null {
 export async function leseJevOptionen(): Promise<JevOptionen> {
   try {
     const { rows } = await getPool().query<{ name: string; wert: unknown; gesetzt_von: string | null; gesetzt_am: Date | null }>(
-      `SELECT name, wert, gesetzt_von, gesetzt_am FROM jev_optionen WHERE name IN ('erklaerung_sprachen', 'jev_sprache', 'entscheidung_ohne_praezedenz', 'skill_rerank_tor', 'skill_rerank_max')`,
+      `SELECT name, wert, gesetzt_von, gesetzt_am FROM jev_optionen WHERE name IN ('erklaerung_sprachen', 'jev_sprache', 'entscheidung_ohne_praezedenz', 'skill_rerank_tor', 'skill_rerank_max', 'skill_rerank_budget_tokens', 'skill_rerank_timeout_ms')`,
     );
     const z = new Map(rows.map((r) => [r.name, r]));
     const sprachen = leseSprachen(z.get('erklaerung_sprachen')?.wert) ?? STANDARD_SPRACHEN;
@@ -121,10 +145,14 @@ export async function leseJevOptionen(): Promise<JevOptionen> {
     const ohneRoh = z.get('entscheidung_ohne_praezedenz')?.wert;
     const torRoh = z.get('skill_rerank_tor')?.wert;
     const maxRoh = z.get('skill_rerank_max')?.wert;
+    const budgetRoh = z.get('skill_rerank_budget_tokens')?.wert;
+    const timeoutRoh = z.get('skill_rerank_timeout_ms')?.wert;
     return baue(sprachen, wunsch, juengste?.gesetzt_von ?? null, juengste?.gesetzt_am ?? null, undefined,
       typeof ohneRoh === 'boolean' ? ohneRoh : STANDARD_OHNE_PRAEZEDENZ,
       istTor(torRoh) ? torRoh : STANDARD_SKILL_RERANK_TOR,
-      istRerankMax(maxRoh) ? maxRoh : STANDARD_SKILL_RERANK_MAX);
+      istRerankMax(maxRoh) ? maxRoh : STANDARD_SKILL_RERANK_MAX,
+      istRerankBudget(budgetRoh) ? budgetRoh : STANDARD_SKILL_RERANK_BUDGET_TOKENS,
+      istRerankTimeout(timeoutRoh) ? timeoutRoh : STANDARD_SKILL_RERANK_TIMEOUT_MS);
   } catch (err) {
     return baue(STANDARD_SPRACHEN, STANDARD_JEV_SPRACHE, null, null,
       `Jev-Optionen nicht lesbar, es gelten die Standardwerte: ${err instanceof Error ? err.message : String(err)}.`);
@@ -135,10 +163,17 @@ export async function leseJevOptionen(): Promise<JevOptionen> {
  * Setzt einzelne Optionen (nicht genannte bleiben). Validierung: jev_sprache aus en|de|mix;
  * mindestens eine gepflegte Sprache. Wirft JevOptionenFehler (nichts geschrieben).
  */
-export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_en?: boolean; jev_sprache?: string; entscheidung_ohne_praezedenz?: boolean; skill_rerank_tor?: number; skill_rerank_max?: number; agent?: string | null }): Promise<JevOptionen> {
+export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_en?: boolean; jev_sprache?: string; entscheidung_ohne_praezedenz?: boolean; skill_rerank_tor?: number; skill_rerank_max?: number; skill_rerank_budget_tokens?: number; skill_rerank_timeout_ms?: number; agent?: string | null }): Promise<JevOptionen> {
   if (o.erklaerung_de === undefined && o.erklaerung_en === undefined && o.jev_sprache === undefined && o.entscheidung_ohne_praezedenz === undefined
-    && o.skill_rerank_tor === undefined && o.skill_rerank_max === undefined) {
-    throw new JevOptionenFehler('nichts_zu_setzen', 'modus setzen braucht mindestens eines von erklaerung_de, erklaerung_en, jev_sprache, entscheidung_ohne_praezedenz, skill_rerank_tor, skill_rerank_max.');
+    && o.skill_rerank_tor === undefined && o.skill_rerank_max === undefined
+    && o.skill_rerank_budget_tokens === undefined && o.skill_rerank_timeout_ms === undefined) {
+    throw new JevOptionenFehler('nichts_zu_setzen', 'modus setzen braucht mindestens eines von erklaerung_de, erklaerung_en, jev_sprache, entscheidung_ohne_praezedenz, skill_rerank_tor, skill_rerank_max, skill_rerank_budget_tokens, skill_rerank_timeout_ms.');
+  }
+  if (o.skill_rerank_budget_tokens !== undefined && !istRerankBudget(o.skill_rerank_budget_tokens)) {
+    throw new JevOptionenFehler('skill_rerank_budget_tokens_ungueltig', `skill_rerank_budget_tokens "${o.skill_rerank_budget_tokens}" ungueltig. Erlaubt: ganze Zahl ${SKILL_RERANK_BUDGET_MIN}..${SKILL_RERANK_BUDGET_GRENZE} (Jev verarbeitet hoechstens 64k Eingabe-Tokens).`);
+  }
+  if (o.skill_rerank_timeout_ms !== undefined && !istRerankTimeout(o.skill_rerank_timeout_ms)) {
+    throw new JevOptionenFehler('skill_rerank_timeout_ms_ungueltig', `skill_rerank_timeout_ms "${o.skill_rerank_timeout_ms}" ungueltig. Erlaubt: ganze Zahl ${SKILL_RERANK_TIMEOUT_MIN}..${SKILL_RERANK_TIMEOUT_MAX}.`);
   }
   if (o.skill_rerank_tor !== undefined && !istTor(o.skill_rerank_tor)) {
     throw new JevOptionenFehler('skill_rerank_tor_ungueltig', `skill_rerank_tor "${o.skill_rerank_tor}" ungueltig. Erlaubt: Zahl 0..1.`);
@@ -171,7 +206,8 @@ export async function setzeJevOptionen(o: { erklaerung_de?: boolean; erklaerung_
       [JSON.stringify(o.entscheidung_ohne_praezedenz), o.agent ?? null, aktuelleAgentAkteurIdentityId(o.agent)],
     );
   }
-  for (const [name, wert] of [['skill_rerank_tor', o.skill_rerank_tor], ['skill_rerank_max', o.skill_rerank_max]] as const) {
+  for (const [name, wert] of [['skill_rerank_tor', o.skill_rerank_tor], ['skill_rerank_max', o.skill_rerank_max],
+    ['skill_rerank_budget_tokens', o.skill_rerank_budget_tokens], ['skill_rerank_timeout_ms', o.skill_rerank_timeout_ms]] as const) {
     if (wert === undefined) continue;
     await getPool().query(
       `INSERT INTO jev_optionen (name, wert, gesetzt_von, gesetzt_am, setter_identity_id) VALUES ($1, $2::jsonb, $3, NOW(), $4)

@@ -569,12 +569,31 @@ export async function bereiteSkillVorschlaegeVor(
   // P23-T1 (3): SINNPRUEFUNG der semantischen Treffer vor der Auslieferung (skill-rerank.ts): EIN
   // Jev-Aufruf je Text fuer alle Empfaenger, Schalter skill_rerank (Standard AUS), Kosten in jev_kosten.
   // Ist sie aus, bleibt alles wie bisher (kein Jev-Aufruf).
-  const inhaltJeSkill = new Map<string, string>();
+  // P23-T4: je Skill der beste Treffer mit GANZEM Abschnitt, Titel, Scope, Projekt; dazu Quelle und die
+  // schon aufgeloesten Empfaenger (Rolle/Typ/Aufgabe liest skill-rerank daraus, nach Aufgabe gruppiert).
+  const besterJeSkill = new Map<string, SkillSearchHit>();
   for (const { semantisch } of auswahl) {
-    for (const hit of semantisch) if (!inhaltJeSkill.has(hit.skill_name)) inhaltJeSkill.set(hit.skill_name, hit.content ?? '');
+    for (const hit of semantisch) {
+      const alt = besterJeSkill.get(hit.skill_name);
+      if (!alt || hit.score > alt.score) besterJeSkill.set(hit.skill_name, hit);
+    }
   }
+  const empfaenger = besterJeSkill.size === 0 ? [] : await Promise.all(agents.map(async (agent) => {
+    try {
+      const z = await skillAgent(project, agent);
+      return z.art === 'identity' ? { identity_id: z.identity_id, agent_id: z.agent_id } : { agent_id: z.agent_id };
+    } catch {
+      return { agent_id: agent.replace(/^(legacy|identity):/, '') };
+    }
+  }));
   const sinn = await pruefeSkillTrefferSinn({
-    project, text: query, kandidaten: [...inhaltJeSkill].map(([skill_name, inhalt]) => ({ skill_name, inhalt })),
+    project,
+    text: query,
+    kandidaten: [...besterJeSkill.values()].map((hit) => ({
+      skill_name: hit.skill_name, inhalt: hit.content ?? '', abschnitt: hit.section ?? null, scope: hit.scope ?? null, projekt: hit.project ?? null,
+    })),
+    quelle: { art: sourceType, klartext: QUELLE_KLARTEXT[sourceType], id: sourceId },
+    empfaenger,
   });
   await Promise.all(auswahl.map(async ({ agent, namentlich, semantisch }) => {
     // ⚠️ BEGRUENDUNG UND SCORE AUS DERSELBEN PRUEFUNG (Korrektur 02.08.2026). P23-T1: die reason ist
