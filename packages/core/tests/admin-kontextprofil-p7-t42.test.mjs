@@ -34,7 +34,8 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P23-T4: additive Einstellwerte (Budget/Timeout der Skill-Sinnpruefung).
   'skill_rerank_budget_tokens', 'skill_rerank_timeout_ms'];
 // P23-T1: additive Werte in bestehenden Enums (Jev-Funktion skill_rerank in jev_schalten.funktion).
-const neueEnumWerte = { funktion: new Set(['skill_rerank']) };
+// P23-T6: additiver Enumwert skill_rerank_probe (Jev-Funktion der Diagnose intern skill_probe).
+const neueEnumWerte = { funktion: new Set(['skill_rerank', 'skill_rerank_probe']) };
 const neu = new Set(['kontextprofil_liste', 'kontextprofil_setzen', 'kontextprofil_entfernen', ...w1bAktionen]);
 const neueParameter = new Set(['ziel', 'kontext_budget', 'stufe', 'hinweise_aus', 'hinweise_nur', ...w1bParameter]);
 const alteSchemaProjektion = (tool) => {
@@ -74,7 +75,8 @@ const beobachtet = {
 const golden = {
   stdio: '6fc6f4a0072feb0e8effa2c4809a3a106ce9b15b0a959c015ade228c9cac968d',
   // P22-T33 (T1, 227150da): bewusst aktualisiert; einzige Abweichung gegenueber ff9286f6...: token.description nennt 'bei JEDEM Aufruf mitgeben' (Ausweis je Aufruf, W12); stdio und guide bleiben byte-stabil.
-  rest: '49baf297cfe775b44cbe323170a3b3e6573af5e7ed47c4a50b0507a7a93774ab',
+  // P22-T55 (20.10.2026): bewusst aktualisiert; einzige Abweichung gegenueber 49baf297...: token.description (Ausweis allein bestimmt Identitaet/Projekt/Rolle, agent_id/role weglassen), per Gegenrechnung geprueft.
+  rest: '519c4e206f39957d789a554850fcd81fcb5fc45d6ae057c3e9c9fe9ce86ece47',
   guide: '5f9399e44a5e8ec223b676ad4274a3e0abffb3508ac4e47fa659e5932de19108',
 };
 assert.deepEqual(beobachtet, golden, 'Bestehende Admin-Schemas und Guide-Actions müssen byte-stabil bleiben');

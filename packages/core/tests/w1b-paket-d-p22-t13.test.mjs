@@ -321,8 +321,8 @@ try{
    const ohneKontext=await C.fuehreW1bAdminAus('profil_schalter_status',{project:P});
    check(ohneKontext.error==='recht_fehlt','ohne User-Herkunft/Principal kein Akteur');
    const alsUser=await C.mitUserHerkunft('web-ui-chat',()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
-   // P22-T28 (V7): 5 Produkt-Schalter im Katalog (schattenprofile und token_abruf sind in agenten_ausweis aufgegangen), dazu ausweis_kern. P22-T33 (G1): die Altschalter bleiben in profil_schalter_status gelistet (additiv gegenueber t110) -> 7. P22-T44: Produkt-Schalter mehrprojekt -> 8.
-   check(alsUser.success&&alsUser.schalter.length===8&&alsUser.schalter.some(x=>x.funktion==='agenten_ausweis')&&alsUser.ausweis_kern&&typeof alsUser.ausweis_kern.aktiv==='boolean'&&alsUser.ausweis_kern.agent_bezug_modus!==undefined,'User-Herkunft aus authentifiziertem Eingang '+JSON.stringify({ok:alsUser.success,n:alsUser.schalter?.length,k:alsUser.ausweis_kern}).slice(0,240));
+   // P22-T28 (V7): 5 Produkt-Schalter im Katalog (schattenprofile und token_abruf sind in agenten_ausweis aufgegangen), dazu ausweis_kern. P22-T33 (G1): die Altschalter bleiben in profil_schalter_status gelistet (additiv gegenueber t110) -> 7. P22-T44: Produkt-Schalter mehrprojekt -> 8. P23-T5: tool_beschreibungen_kurz + fall_skill_hinweis -> 10.
+   check(alsUser.success&&alsUser.schalter.length===10&&alsUser.schalter.some(x=>x.funktion==='agenten_ausweis')&&alsUser.ausweis_kern&&typeof alsUser.ausweis_kern.aktiv==='boolean'&&alsUser.ausweis_kern.agent_bezug_modus!==undefined,'User-Herkunft aus authentifiziertem Eingang '+JSON.stringify({ok:alsUser.success,n:alsUser.schalter?.length,k:alsUser.ausweis_kern}).slice(0,240));
    const alsKoord=await C.mitAgentAufrufKontext({principal:KP.principal,bezug:{modus:'neu',standard:'alt',quelle:'standard',bis:null,letzter_fehler:null}},()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
    check(alsKoord.success===true,'Koordinator aus bezeugtem Principal');
    const alsSub=await C.mitAgentAufrufKontext({principal:akt('d-s',P,'subagent').principal,bezug:{modus:'neu',standard:'alt',quelle:'standard',bis:null,letzter_fehler:null}},()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
@@ -476,7 +476,9 @@ try{
    const an=await call('PUT','/schalter','web',{profil_funktion:'alle',aktiv:true,grund:'test p22 D REST',ebene:'global'});
    if(modusAlt===undefined)delete process.env.SYNAPSE_AGENT_BEZUG_MODUS;else process.env.SYNAPSE_AGENT_BEZUG_MODUS=modusAlt;
    // P22-T44: 'alle' schaltet mehrprojekt bewusst NICHT mit (nur ausdruecklich, Standard AUS).
-   check(an.status===200&&an.body.schalter.filter(x=>x.funktion!=='mehrprojekt').every(x=>x.aktiv)&&an.body.schalter.some(x=>x.funktion==='mehrprojekt'&&!x.aktiv),'User setzt global (PG)');
+   // P23-T5: wie mehrprojekt schliesst 'alle' auch tool_beschreibungen_kurz und fall_skill_hinweis nicht ein.
+   const nurAusdruecklich=['mehrprojekt','tool_beschreibungen_kurz','fall_skill_hinweis'];
+   check(an.status===200&&an.body.schalter.filter(x=>!nurAusdruecklich.includes(x.funktion)).every(x=>x.aktiv)&&nurAusdruecklich.every(f=>an.body.schalter.some(x=>x.funktion===f&&!x.aktiv)),'User setzt global (PG)');
    const uebersicht=await call('GET','/uebersicht','web');
    check(uebersicht.status===200&&uebersicht.body.profile.some(x=>x.identity_id===sid)&&!/sai_[a-f0-9]/.test(JSON.stringify(uebersicht.body)),'Uebersicht tokenfrei');
    const pnew=await call('POST','/persona','web',{persona_name:'rest-persona',persona_inhalt:{stil:'ruhig'}});
@@ -545,9 +547,10 @@ try{
    // W12 V3: der Ausweis gilt bei JEDEM Aufruf und ersetzt agent_id; eine abweichende agent_id wird (ohne Durchsetzung) nur auditiert, nicht gefolgt.
    check(widerspruch.success===true&&widerspruch.ziel_identity_id===sid&&widerspruch.token===sub.token,'Ausweis gewinnt ueber abweichende agent_id (Abweichung nur auditiert)');
    const rows=(await pool.query("SELECT tool_name,action,result,args_preview FROM tool_calls WHERE tool_name='admin' AND action='token_abrufen'")).rows;
-   check(rows.length>=4&&rows.every(r=>!r.result||r.result.startsWith('[nicht protokolliert')||!r.result.includes('\"token\"')),'tool_calls: Antwort mit Token nicht protokolliert');
+   // P22-T55 (User 19.10.): token_abrufen wird protokolliert, der Ausweis steht unmaskiert im Tool-Log.
+   check(rows.length>=4&&rows.some(r=>String(r.result).includes(sub.token)),'P22-T55: tool_calls protokolliert token_abrufen mit Ausweis');
    const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
-   check(secrets.every(s=>!logs.includes(s))&&!/sai_[a-z0-9]{1,64}/.test(logs),'Token nie in tool_calls (alle Zeilen)');
+   check(secrets.filter(s=>!/^sai_/.test(String(s))).every(s=>!logs.includes(s)),'kein sonstiges Geheimnis in tool_calls (Ausweis seit P22-T55 sichtbar)');
    const au=JSON.stringify((await pool.query('SELECT * FROM agent_token_abruf_audit')).rows);
    check(secrets.every(s=>!au.includes(s)),'Abruf-Audit ohne Tokenwert');
    check((await pool.query("SELECT count(*)::int n FROM agent_token_abruf_audit WHERE erfolg AND anlass='MCP-Test' AND wer=ANY($1)",[[kid,k2.identitaet.id]])).rows[0].n>=3,'MCP-Abrufe auditiert (Akteur = Koordinator-Identitaet)');

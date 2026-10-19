@@ -60,6 +60,10 @@ import {
   TOOL_CALLS_SCHWAERZEN_ACTIONS, TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG, TOOL_CALLS_SCHWAERZEN_PARAMETER,
   fuehreToolCallsSchwaerzenAus, istToolCallsSchwaerzenAction,
 } from './intern-tool-calls-schwaerzen.js';
+// P23-T6: Diagnose der Skill-Vorschlaege inkl. Jev-Sinnpruefung (intern-skill-probe.ts), nur lesend.
+import {
+  SKILL_PROBE_ACTIONS, SKILL_PROBE_BESCHREIBUNG, SKILL_PROBE_PARAMETER, fuehreSkillProbeAus, istSkillProbeAction,
+} from './intern-skill-probe.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -87,6 +91,7 @@ export const INTERN_ACTIONS = [
   ...WAITS_ACTIONS,
   ...SHELL_ALT_ACTIONS,
   ...TOOL_CALLS_SCHWAERZEN_ACTIONS,
+  ...SKILL_PROBE_ACTIONS,
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -128,6 +133,7 @@ export const INTERN_DEFINITION = {
     WAITS_BESCHREIBUNG +
     SHELL_ALT_BESCHREIBUNG +
     TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG +
+    SKILL_PROBE_BESCHREIBUNG +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -185,6 +191,7 @@ export const INTERN_DEFINITION = {
       ...WAITS_PARAMETER,
       ...SHELL_ALT_PARAMETER,
       ...TOOL_CALLS_SCHWAERZEN_PARAMETER,
+      ...SKILL_PROBE_PARAMETER,
     },
     required: ['action'],
   },
@@ -283,6 +290,8 @@ export async function fuehreInternAus(
   if (istShellAltAction(action)) return await fuehreShellAltAus(action, a, agentId);
   // P10-T74: tool_calls-Altbestand nachschwaerzen (intern-tool-calls-schwaerzen.ts) - wirft nie
   if (istToolCallsSchwaerzenAction(action)) return await fuehreToolCallsSchwaerzenAus(action, a, agentId);
+  // P23-T6: Skill-Vorschlaege diagnostizieren (intern-skill-probe.ts) - wirft nie, schreibt nichts
+  if (istSkillProbeAction(action)) return await fuehreSkillProbeAus(action, a, agentId);
   try {
     switch (action) {
       case 'schalter_setzen': {

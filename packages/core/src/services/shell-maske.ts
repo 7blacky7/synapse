@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {getPool} from '../db/client.js';
 import {darfKoordinatorOderUser}from'./rollen-pruefung.js';
+import {resolveAgentId} from './agent-id-resolver.js';
 import {getProjectRoot} from './project-registry.js';
 import {maskiereShellText,shellGeheimWerte,maskiereMcpJson} from './env-maske.js';
 export {maskiereShellText} from './env-maske.js';
@@ -142,9 +143,11 @@ export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Pr
     const meta=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.synapse','shell-streams',args.stream_id+'.meta.json'),'utf8'));
     if(typeof meta.project==='string')project=meta.project;
   }catch {/* unbekannter Stream wird vom bestehenden Handler gemeldet */}
-  if(args.maskierung===false&&!(args.bestaetigung===undefined&&darfKoordinatorOderUser(String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??''))&&
+  // P22-T55: Akteur ueber den Principal (Ausweis) zuerst, dann agent_id/SYNAPSE_AGENT_NAME (resolveAgentId).
+  const akteur=resolveAgentId(typeof args.agent_id==='string'?args.agent_id:null)??'';
+  if(args.maskierung===false&&!(args.bestaetigung===undefined&&darfKoordinatorOderUser(akteur)&&
     typeof args.grund==='string'&&args.grund.trim().length>=10)){
-    const actor=String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??'');
+    const actor=akteur;
     const action=typeof args.action==='string'?args.action:'exec';
     if(!['exec','get','log'].includes(action))throw new Error('maskierung:false gibt es nur fuer exec, get und log');
     if(!actor)throw new Error('Demaskieren erfordert eine agent_id');
@@ -183,7 +186,7 @@ export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Pr
   }
   if(args.maskierung===false){
     // Altweg (unveraendert): Koordinator/User mit grund, nur Anzeige.
-    const actor=String(args.agent_id??process.env.SYNAPSE_AGENT_NAME??'');
+    const actor=akteur;
     await logToolCall({project,agentId:actor,tool:'shell',action:'maskierung_aus',argsPreview:JSON.stringify({grund:args.grund,action:args.action,id:args.id}),ok:true});
     const antwort=await ergaenzeShellErgebnisHinweis({...args,project},await drossleShellJobHinweis(args,await sicht.run(true,lauf)));
     return antwort && typeof antwort==='object' && !Array.isArray(antwort)

@@ -30,11 +30,13 @@
  * DEBUG: Ergebnis nennt gelaufen, grund (aus | budget | kein_key | timeout | netz | http | keine_kandidaten |
  *   antwort_unlesbar | budget_tokens), tor, den Jev-Wert je Skill und budget (geschaetzte Tokens, Kuerzungen);
  *   der Aufrufer schreibt den Jev-Wert in die reason des Vorschlags.
+ * DIAGNOSE (P23-T6): intern skill_probe nutzt baueSkillSinnAnfrage/werteSkillSinnAntwort (derselbe state), ruft Jev
+ *   aber als eigene Funktion skill_rerank_probe (unabhaengig vom Schalter skill_rerank, Kosten getrennt sichtbar).
  * Wirft nie.
  */
 
 import { getPool } from '../db/client.js';
-import { jevKonfig, rufeJev } from './jev-client.js';
+import { jevKonfig, rufeJev, type JevAntwortDaten } from './jev-client.js';
 import { jevWirksam } from './jev-schalter.js';
 import { leseJevOptionen, SKILL_RERANK_BUDGET_GRENZE } from './jev-optionen.js';
 
@@ -226,7 +228,7 @@ export async function ladeEmpfaengerKontext(project: string, empfaenger: SkillSi
   return { gruppen: [...gruppen.values()], aufgaben };
 }
 
-interface StateSkill {
+export interface StateSkill {
   i: number; name: string; zweck: string | null; scope: string | null; projekt: string | null;
   abschnitt_titel: string | null; abschnitt: string; abschnitte: string[];
 }
@@ -301,6 +303,74 @@ function baueFragen(skills: StateSkill[]): Record<string, unknown> {
   return questions;
 }
 
+/** Eingabe der Sinnpruefung (Hook und intern skill_probe). */
+export interface SkillSinnEingabe {
+  project: string;
+  text: string;
+  kandidaten: SkillSinnKandidat[];
+  agent_id?: string | null;
+  /** P23-T4: Quelle/Anlass des Textes */
+  quelle?: { art: string; klartext?: string; id?: string } | null;
+  /** P23-T4: schon aufgeloeste Empfaenger (Rolle/Typ/Aufgabe werden daraus gelesen) */
+  empfaenger?: SkillSinnEmpfaenger[];
+}
+
+/** state, wie er an Jev geht (P23-T4). */
+export type SkillSinnState = {
+  projekt: string;
+  quelle: { art: string; klartext?: string; id?: string } | null;
+  text: string;
+  empfaenger: SkillSinnEmpfaengerKontext['gruppen'];
+  aufgaben: SkillSinnEmpfaengerKontext['aufgaben'];
+  skills: StateSkill[];
+};
+
+/**
+ * P23-T6: baut state + questions der Sinnpruefung samt Budgetkuerzung - OHNE Schalter-/Key-Pruefung und OHNE
+ * Jev-Aufruf. Gemeinsamer Weg fuer den Hook (pruefeSkillTrefferSinn) und die Diagnose intern skill_probe, damit
+ * die Probe genau den state zeigt, den der Betrieb senden wuerde. Wirft nie (nicht Lesbares fehlt im state).
+ */
+export async function baueSkillSinnAnfrage(
+  a: SkillSinnEingabe,
+  opt: { skill_rerank_max: number; skill_rerank_budget_tokens: number },
+): Promise<{ state: SkillSinnState; questions: Record<string, unknown>; bericht: SkillSinnBudget }> {
+  const liste = a.kandidaten.filter((k) => !!k.skill_name).slice(0, opt.skill_rerank_max);
+  const [meta, empf] = await Promise.all([
+    ladeSkillMeta(a.project, liste.map((k) => k.skill_name)),
+    ladeEmpfaengerKontext(a.project, a.empfaenger ?? []),
+  ]);
+  const skills: StateSkill[] = liste.map((k, i) => ({
+    i,
+    name: k.skill_name,
+    zweck: meta.get(k.skill_name)?.zweck ?? null,
+    scope: k.scope ?? 'global',
+    projekt: k.projekt ?? null,
+    abschnitt_titel: k.abschnitt ?? null,
+    abschnitt: flach(k.inhalt),
+    abschnitte: meta.get(k.skill_name)?.abschnitte ?? [],
+  }));
+  const state: SkillSinnState = {
+    projekt: a.project,
+    quelle: a.quelle ?? null,
+    text: flach(a.text),
+    empfaenger: empf.gruppen,
+    aufgaben: empf.aufgaben,
+    skills,
+  };
+  const bericht = kuerzeAufBudget(state, baueFragen, opt.skill_rerank_budget_tokens);
+  return { state, questions: baueFragen(state.skills), bericht };
+}
+
+/** P23-T6: gueltige Jev-Werte (noul 0..1) je Skill aus einer Antwort. */
+export function werteSkillSinnAntwort(state: SkillSinnState, daten: JevAntwortDaten | null | undefined): Map<string, number> {
+  const werte = new Map<string, number>();
+  for (const s of state.skills) {
+    const p = daten?.answers?.[`skill_${s.i}`]?.noul;
+    if (typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1) werte.set(s.name, p);
+  }
+  return werte;
+}
+
 export async function pruefeSkillTrefferSinn(
   a: {
     project: string;
@@ -325,43 +395,17 @@ export async function pruefeSkillTrefferSinn(
     if (!jevKonfig().key) return { gelaufen: false, grund: 'kein_key', tor, werte };
     const w = await jevWirksam(a.project, 'skill_rerank');
     if (!w.an) return { gelaufen: false, grund: w.ebene === 'budget' ? 'budget' : 'aus', tor, werte };
-    const [meta, empf] = await Promise.all([
-      ladeSkillMeta(a.project, liste.map((k) => k.skill_name)),
-      ladeEmpfaengerKontext(a.project, a.empfaenger ?? []),
-    ]);
-    const skills: StateSkill[] = liste.map((k, i) => ({
-      i,
-      name: k.skill_name,
-      zweck: meta.get(k.skill_name)?.zweck ?? null,
-      scope: k.scope ?? 'global',
-      projekt: k.projekt ?? null,
-      abschnitt_titel: k.abschnitt ?? null,
-      abschnitt: flach(k.inhalt),
-      abschnitte: meta.get(k.skill_name)?.abschnitte ?? [],
-    }));
-    const state = {
-      projekt: a.project,
-      quelle: a.quelle ?? null,
-      text: flach(a.text),
-      empfaenger: empf.gruppen,
-      aufgaben: empf.aufgaben,
-      skills,
-    };
-    const bericht = kuerzeAufBudget(state, baueFragen, opt.skill_rerank_budget_tokens);
+    const { state, questions, bericht } = await baueSkillSinnAnfrage(a, opt);
     if (bericht.tokens_geschaetzt > SKILL_RERANK_BUDGET_GRENZE) {
       console.error(`[skill-rerank] state passt nicht unter die Obergrenze (${bericht.tokens_geschaetzt} > ${SKILL_RERANK_BUDGET_GRENZE} Tokens), keine Pruefung.`);
       return { gelaufen: false, grund: 'budget_tokens', tor, werte, budget: bericht };
     }
-    const questions = baueFragen(state.skills);
     const r = await rufeJev({
       funktion: 'skill_rerank', project: a.project, agent_id: a.agent_id ?? null, state, questions,
       timeout_ms: opt.skill_rerank_timeout_ms,
     }, deps);
     if (!r.ok) return { gelaufen: false, grund: r.grund, tor, werte, budget: bericht };
-    for (const s of state.skills) {
-      const p = r.daten.answers?.[`skill_${s.i}`]?.noul;
-      if (typeof p === 'number' && Number.isFinite(p) && p >= 0 && p <= 1) werte.set(s.name, p);
-    }
+    for (const [name, p] of werteSkillSinnAntwort(state, r.daten)) werte.set(name, p);
     return { gelaufen: true, tor, werte, usd: r.kosten.usd, budget: bericht };
   } catch (err) {
     console.error('[skill-rerank] Sinnpruefung fehlgeschlagen, Treffer bleiben ungeprueft:', err instanceof Error ? err.message : err);

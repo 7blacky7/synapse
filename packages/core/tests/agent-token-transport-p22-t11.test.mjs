@@ -258,7 +258,7 @@ try {
       const status=await t.call('chat',{action:'identitaet',token});
       check(status.principal.context_epoch===login.principal.context_epoch,'Status erhoeht Epoch nicht');
       if(t.name==='stdio') check(!status.tool_guide,'First-Use-Hinweis innerhalb derselben Epoch nicht wiederholt');
-      check(!JSON.stringify(status).includes(token),'Diagnose enthaelt keinen Klartextausweis');
+      check(status.principal?.ausweis===token,'P22-T55: Diagnose zeigt den Ausweis im Klartext (nicht mehr maskiert)');
       const failure=await t.call('chat',{action:'anmelden',token:'invalid',agent_id:own,project});
       check(failure.success===false && failure.error==='agent_token_ungueltig' && !failure.agentOnboarding,'Falscher Ausweis ohne fremde Regeln abgewiesen');
       check((await t.call('chat',{action:'anmelden',token,project:'fremd'})).error==='agent_token_fremdes_projekt','Projektgrenze');
@@ -340,8 +340,9 @@ try {
       const rows=(await pool.query('SELECT args_preview,result,error FROM tool_calls')).rows;
       check(rows.length>10,'Transporte haben Activity-Audit geschrieben');
       const logged=JSON.stringify(rows);
-      check(secrets.every(s=>!logged.includes(s)),'Kein Klartextausweis in tool_calls');
-      check(rows.some(r=>String(r.result).includes('[WERT]')),'Ausweis-Ausgabe im Audit maskiert');
+      // P22-T55 (User 19.10.): Ausweise (sai_) stehen unmaskiert in tool_calls; andere Geheimnisse nie.
+      check(secrets.filter(s=>!/^sai_/.test(String(s))).every(s=>!logged.includes(s)),'Keine sonstigen Geheimnisse in tool_calls');
+      check(secrets.some(s=>/^sai_/.test(String(s))&&logged.includes(s)),'P22-T55: Ausweis im Audit unmaskiert');
       check((await pool.query("SELECT count(*)::int n FROM tool_calls WHERE source IN ('stdio','cloud') AND agent_id LIKE 'falsch%'")).rows[0].n===0,'tool_calls Attribution nie aus Selbstauskunft');
       out('P22-T11 PASS '+checks+' assertions; keine echten Netzwerk-/Modellaufrufe');
     }

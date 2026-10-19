@@ -1,0 +1,77 @@
+{
+  "bereich": "code-intel",
+  "skills": [
+    {
+      "skill_name": "fall-code-intel",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer code_intel (nur lesend ueber den indexierten Code: tree, functions, variables, symbols, references, rename_preview, search, search_batch, file, statements, calls, flow, entrypoints, health). Standardweg zum Lesen: search -> file(file_path, from_line, to_line) um die Stelle herum; kein grep/cat noetig." },
+        { "section": "faelle", "content": "- fall-ci-suche: Volltext vs. semantisch, file_path, Trefferzeilen, mehrere Woerter, search_batch.\n- fall-ci-kommentare: Kommentare/Strings/TODOs finden (value_contains, comment_contains).\n- fall-ci-references: Namensgleiche, Felder, rename_preview.\n- fall-ci-ausgabe-gross: Antwort zu gross, eingrenzen.\n- fall-ci-schatten: offene Plaene als Overlay, Typpruefung.\n- fall-ci-ablauf: statements, calls, flow, entrypoints.\n- fall-ci-health: Index klemmt / Datei fehlt im Index.\n- fall-ci-ansicht: Bild statt Text (ansicht)." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-suche",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: code_intel search liefert nichts, zu viel oder Treffer aus dem falschen Bereich." },
+        { "section": "regeln", "content": "1. Zwei Modi: Standard = PG-Volltext (lexikalisch, exakt); semantic:true = Embedding-Suche (konzeptuell). Antwortfeld mode.\n2. file_path: im Volltext LIKE-Teilpfad (z. B. packages/core/src), mit semantic:true VOLLSTAENDIGER Pfad (Qdrant kennt keinen Teilstring).\n3. Volltext-Treffer tragen matches:[{line,text}] (1-basiert, Standard 20 je Datei), total_matches und matches_gekappt. Blaettern: match_skip um match_limit erhoehen; match_limit:0 = nur zaehlen.\n4. Mehrere Woerter: Zeilen mit ALLEN Woertern stehen zuerst (ODER-Verknuepfung bringt Rauschen) - lieber ein praezises Wort oder Bezeichner.\n5. search_batch: 1..10 semantische Queries in EINEM Aufruf (limit_per_query, Standard 5) - nur ueber die REST-Strecke.\n6. file_type filtert nach Endung. Fuer Nicht-Code: asset_intel; fuer Notizen/Doku: search." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-kommentare",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Kommentare, Strings, TODOs oder Marken (z. B. @SYN-) suchen; name-Filter findet nichts." },
+        { "section": "regeln", "content": "1. Kommentare, Strings und TODOs haben name=NULL - symbols mit symbol_type comment|string|todo und value_contains:'<text>' suchen. Treffer tragen match_line (echte Zeile, bei Bloecken nicht line_start) und match_lines.\n2. string enthaelt auch Literale ueber 64 Zeichen (Laenge in params).\n3. tree als Suche: comment_contains:'@SYN-' listet nur Dateien mit Treffer, je Treffer Zeile und Inhalt (ohne show_comments bis 50 je Datei).\n4. tree-Fenster: show_comments (true/Zahl/'*'), comment_chars (Standard 100), comment_from (Startzeichen), comment_skip (blaettern)." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-references",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Querverweise einer Funktion/Variable/eines Feldes pruefen oder umbenennen." },
+        { "section": "regeln", "content": "1. references trennt aufgeloeste Referenzen von Namensgleichen (name_matches); include_name_matches:true mischt sie zurueck.\n2. Felder (symbol_type field, parent_symbol = Container): references liefert nur Zugriffe in DERSELBEN Datei.\n3. limit (Standard 200, 0 = alle) - Antwort traegt total und gekappt.\n4. Umbenennen: rename_preview(name, new_name) plant auf Basis der Referenzen und liefert fertige ops fuer files(plan) - schreibt selbst nichts." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-ausgabe-gross",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: sehr grosse Antwort (z. B. variables einer grossen Datei, search ueber das ganze Projekt)." },
+        { "section": "regeln", "content": "1. Immer eingrenzen: file_path, name, symbol_type, limit, path, depth.\n2. variables/functions einer sehr grossen Datei (z. B. routes/mcp.ts) sprengen den Kontext - mit name oder limit fragen.\n3. file: from_line/to_line setzen; truncate_long_lines kuerzt lange Zeilen; ueber 80k Zeichen wird automatisch reduziert.\n4. tree: depth 1-2 reicht meist; show_assets:false blendet Asset-Zeilen aus." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-schatten",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: offene files-Plaene (eigene oder fremde) im Code sehen oder Typen pruefen." },
+        { "section": "regeln", "content": "1. schatten:<plan_id> oder 'alle' legt offene Plaene als Overlay ueber file/functions/symbols/references/search/statements/calls (alle Plaene getrennt; keine semantische Suche).\n2. stand_nach_op: Zwischenstand nach Op-Index.\n3. typen:true prueft unterstuetzte Dateien aus PG auch ohne Schatten; mit schatten automatisch Typbefunde (TS, JS bei checkJs). vollstaendig:false = externe Typen fehlen.\n4. tree show_ghosts:true zeigt Ghost-Dateien [g]/[g~] mit plan_id." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-ablauf",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: verstehen, was eine Funktion Schritt fuer Schritt tut oder wer was aufruft, ohne den Code komplett zu lesen." },
+        { "section": "regeln", "content": "1. statements(file_path, scope, top_level_only): Anweisungen einer Funktion.\n2. calls(file_path, callee): Aufrufkanten.\n3. flow(file_path, scope): Ausfuehrungsablauf; ohne scope Top-Level der Datei.\n4. entrypoints: projektweite Top-Level-Seiteneffekte (include_declarations fuer Deklarationen/SQL; limit Standard 200)." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-health",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Datei/Symbol fehlt im Index, Parser-Verdacht, veraltete Treffer." },
+        { "section": "regeln", "content": "1. health(file_path): zustaendiger Parser, Parser-Version gespeichert gegen aktuell, Symbolzahlen je Typ, Zeilenabdeckung, letzter Ausfall, Klartext-Befunde.\n2. health ohne file_path: wo klemmt es je Parser.\n3. Frisch committete Dateien: Struktur sofort, Embeddings (semantische Suche) folgen im Hintergrund (index_folgt)." }
+      ]
+    },
+    {
+      "skill_name": "fall-ci-ansicht",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Bild/Datei soll angezeigt statt als Text beschrieben werden (code_intel, asset_intel, reverse)." },
+        { "section": "regeln", "content": "1. ansicht: inline = Bildblock in der Antwort, link = Link mit Timer, beides.\n2. offen_sekunden = Link-Laufzeit, einmalig:true = Link nur einmal abrufbar (nur link/beides).\n3. Ohne ansicht wird nichts gerendert (kein Token, keine Abfrage)." }
+      ]
+    }
+  ]
+}

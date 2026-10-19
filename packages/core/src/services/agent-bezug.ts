@@ -84,11 +84,47 @@ export function aktuelleAgentIdentityId(project: string, agentId?: string | null
   return k?.bezug.modus !== 'alt' && p?.art === 'identity' && p.project === project
     && (agentId === undefined || agentId === p.agent_id) ? p.identity_id : null;
 }
+/**
+ * P22-T55: Ausweis-Daten des laufenden Aufrufs fuer Schreibpfade ohne eigenen Akteur-Parameter (memories, tech_docs ...).
+ * agent_id aus jedem Principal (auch Legacy), identity_id/lauf_id nur mit Ausweis (Modus nicht 'alt', gleiches Projekt).
+ */
+export function aktuelleAusweisDaten(project?: string): { agent_id: string | null; identity_id: string | null; lauf_id: string | null } {
+  const k = aufrufe.getStore(), p = k?.principal;
+  if (!p) return { agent_id: null, identity_id: null, lauf_id: null };
+  const ident = k?.bezug.modus !== 'alt' && p.art === 'identity' && (project === undefined || p.project === project) ? p : null;
+  return { agent_id: p.agent_id, identity_id: ident ? ident.identity_id : null, lauf_id: ident ? ident.lauf_id : null };
+}
 /** Globale Auditobjekte: Actor-ID nur aus bezeugtem Request, nie aus einem Namen raten. */
 export function aktuelleAgentAkteurIdentityId(agentId?: unknown): string | null {
   const k = aufrufe.getStore(), p = k?.principal;
   return k?.bezug.modus !== 'alt' && p?.art === 'identity'
     && (agentId === undefined || agentId === p.agent_id) ? p.identity_id : null;
+}
+
+/**
+ * P22-T55: EIN Filter-Resolver fuer Lese-Filter (shell activity agent_ids, files history/versions agent_filter ...).
+ * Jeder Wert darf Name, agent_id, identity_id oder 'identity:<id>' sein. Treffer in agent_identitaeten (im Projekt, ohne
+ * Projekt projektuebergreifend) liefern identity_ids; alle Werte bleiben zusaetzlich Legacy-Namen (Zeilen ohne identity_id).
+ * SQL-Muster: (identity_spalte = ANY(identity_ids) OR (identity_spalte IS NULL AND name_spalte = ANY(namen))).
+ * Nur Lesen, keine Berechtigung. Lesefehler (z. B. ohne Schema 111) -> nur Legacy-Namen.
+ */
+export async function loeseAgentFilter(project: string | null | undefined, werte: readonly unknown[]): Promise<{ identity_ids: string[]; namen: string[] }> {
+  const roh = werte.filter((w): w is string => typeof w === 'string').map(w => w.trim()).filter(Boolean);
+  const ids = new Set<string>(roh.filter(w => w.startsWith('identity:')).map(w => w.slice(9)).filter(Boolean));
+  // Der EIGENE Name des Aufrufers (Ausweis) meint genau ihn - nicht gleichnamige andere Identitaeten oder Legacy-Zeilen (Bestand).
+  const k = aufrufe.getStore(), p = k?.principal;
+  const eigen = k?.bezug.modus !== 'alt' && p?.art === 'identity' && (!project || p.project === project) ? p : null;
+  if (eigen && roh.includes(eigen.agent_id)) ids.add(eigen.identity_id);
+  const namen = roh.filter(w => !w.startsWith('identity:') && w !== eigen?.agent_id);
+  if (namen.length) {
+    try {
+      const r = await getPool().query<{ id: string }>(
+        `SELECT id FROM agent_identitaeten WHERE ($1::text IS NULL OR project = $1)
+           AND (id = ANY($2::text[]) OR agent_id = ANY($2::text[]) OR name = ANY($2::text[]))`, [project ?? null, namen]);
+      for (const z of r.rows) ids.add(z.id);
+    } catch { /* ohne Identitaetstabellen: nur Legacy-Namen */ }
+  }
+  return { identity_ids: [...ids], namen };
 }
 
 /** Explizites Ziel ist keine Berechtigung. Nie eine ID durch passenden Namen erraten. */

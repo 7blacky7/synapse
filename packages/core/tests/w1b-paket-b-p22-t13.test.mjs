@@ -299,7 +299,8 @@ try{
    const f1=await fiVon(a1);
    check(f1?.identity_id===idn.id&&f1.project===project&&f1.profil_revision===1&&f1.letzter_lauf==null,'fortsetzungsInfo: Identitaet, Projekt, Profilrevision, noch kein Vorlauf');
    check(f1.abrufwege.some(w=>w.art==='shell_historie'&&w.aufruf.tool==='shell')&&f1.abrufwege.some(w=>w.art==='datei_historie'),'Abrufwege fuer Historien');
-   check(!sh(a1).includes(tok),'Anmeldeantwort enthaelt den Token nicht');
+   // P22-T55 (User 19.10.): der Ausweis wird nicht mehr maskiert - die Anmeldeantwort zeigt ihn im Klartext.
+   check(sh(a1).includes(tok),'P22-T55: Anmeldeantwort zeigt den Ausweis im Klartext');
    // Bestandsarbeit des Vorgaengers fuer die zweite Anmeldung
    await pool.query('INSERT INTO thoughts(id,project,source,content,tags) VALUES($1,$2,$3,$4,$5)',[randomUUID(),project,'ein-rest','Handoff B',['auto-handoff','session-state']]);
    await pool.query('INSERT INTO plan_tasks(id,project,plan_id,task,plan_kurz_id,updated_at) VALUES($1,$2,$3,$4::jsonb,$5,$6)',
@@ -393,7 +394,7 @@ try{
   const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows)
    +JSON.stringify((await pool.query('SELECT * FROM agent_identitaet_audit')).rows)
    +JSON.stringify((await pool.query('SELECT * FROM agent_schattenprofil_audit')).rows);
-  check(secrets.every(s=>!logs.includes(s)),'kein OAuth-/Agentenausweis in Tool-Log oder Audit');
+  check(secrets.filter(s=>!/^sai_/.test(String(s))).every(s=>!logs.includes(s)),'kein OAuth/sonstiges Geheimnis in Tool-Log oder Audit (Ausweis seit P22-T55 sichtbar)');
   check(network===0,'keine echten Netzwerk-/Modellaufrufe');
   console.log('P22-T13 Paket B (Modus '+modus+'): '+checks+' Pruefungen, '+failures.length+' Fehler');
  }

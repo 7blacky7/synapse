@@ -27,6 +27,7 @@ import { ensureCollection } from '../qdrant/collections.js';
 import { insertVector, deleteVector, deleteVectors, deleteByFilter, searchVectors } from '../qdrant/operations.js';
 import { COLLECTIONS } from '../types/index.js';
 import { getAgentSession } from './chat.js';
+import { aktuelleAusweisDaten } from './agent-bezug.js';
 import { getContext7Client } from './context7.js';
 import { getLanguagesForFile } from '../parser/index.js';
 import { getEmbeddingPendingHint } from './embed-backlog.js';
@@ -197,13 +198,23 @@ export async function speichereTechDoc(
   //    uq_tech_docs_project_hash — der Duplikat-Check ist damit atomar, ohne Vorab-SELECT.
   let neueId: string | null;
   try {
+    // P22-T55: Ausweis-Daten des Schreibers (agent_id, identity_id, lauf_id). Altes Schema ohne Spalten (42703): wie bisher.
+    const ausweis = aktuelleAusweisDaten(project ?? undefined);
     const res = await pool.query(
-      `INSERT INTO tech_docs (id, framework, version, section, content, type, category, content_hash, source, indexed_at, project, embedded_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL)
+      `INSERT INTO tech_docs (id, framework, version, section, content, type, category, content_hash, source, indexed_at, project, embedded_at, author_agent_id, author_identity_id, author_lauf_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, $12, $13, $14)
        ON CONFLICT DO NOTHING
        RETURNING id`,
-      [id, framework, version, section, content, type, category, contentHash, source, now, project]
-    );
+      [id, framework, version, section, content, type, category, contentHash, source, now, project, ausweis.agent_id, ausweis.identity_id, ausweis.lauf_id]
+    ).catch((fehler: { code?: string }) => {
+      if (fehler?.code !== '42703') throw fehler;
+      return pool.query(
+        `INSERT INTO tech_docs (id, framework, version, section, content, type, category, content_hash, source, indexed_at, project, embedded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [id, framework, version, section, content, type, category, contentHash, source, now, project]);
+    });
     neueId = res.rows[0]?.id ?? null;
   } catch (error) {
     console.error('[Synapse TechDocs] PostgreSQL INSERT fehlgeschlagen:', error);

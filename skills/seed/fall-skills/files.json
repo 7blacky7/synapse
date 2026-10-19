@@ -1,0 +1,165 @@
+{
+  "bereich": "files",
+  "skills": [
+    {
+      "skill_name": "fall-files",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer files und files_batch (Projektdateien lesen, versioniert schreiben, Multi-File-Plaene, Co-Edit, Rueckbau). Pfade sind projekt-relativ. Jede Aenderung erzeugt eine Version (file_versions); der FileWatcher synchronisiert auf die Platte." },
+        { "section": "faelle", "content": "- fall-files-schreibweg-waehlen: welche Aktion fuer welche Aenderung (Entscheidungs-Matrix).\n- fall-files-create-existiert: create auf bestehende Datei.\n- fall-files-anker: anchor_mismatch.\n- fall-files-suchtext: search_replace trifft 0 oder mehrfach.\n- fall-files-multi-op: mehrere Ops auf einer Datei, Zeilenbezug.\n- fall-files-plan-gescheitert: plan_failed -> plan_update.\n- fall-files-coedit: gemeinsame Plaene, contribution_failed, waiting_for_contributors.\n- fall-files-spaet: stale, late_line_ops_unmappable, Hash-Konflikt.\n- fall-files-plan-ablauf: offene Plaene laufen ab (expired).\n- fall-files-plan-lesen: plan_status, Diff, Befunde, Long-Poll.\n- fall-files-pfad: pfad_gesperrt / pfad_ungueltig.\n- fall-files-syntaxbefund: pruef_befunde, quittieren.\n- fall-files-rueckbau: restore / restore_batch.\n- fall-files-daemon-sync: wait_sync, auf_platte.\n- fall-files-versionen-task: task_id, history, task_zuordnen.\n- fall-files-reservierung: reservation_*.\n- fall-files-read: Dateien lesen.\n- fall-files-history-filter-legacy: history leer wegen agent_id-Filter.\n- fall-files-enum-cache: files_batch statt files." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-schreibweg-waehlen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Schreibaenderung an einer oder mehreren Dateien steht an." },
+        { "section": "regeln", "content": "Entscheidungs-Matrix:\n(1) Datei darf NICHT existieren -> action create (ohne upsert).\n(2) Datei gelesen, gezielt aendern -> update mit anchor_text/anchor_contains aus dem gelesenen Stand (Drift-Schutz; im Einzelweg optional, in plan/files_batch bei update PFLICHT).\n(3) Datei generieren ohne Vorab-Lesen (Templates, Migrationen, Codegen) -> create mit upsert:true (Drift-Risiko bewusst).\n(4) Punktuell statt Komplett-Rewrite -> search_replace, search_replace_batch, replace_lines, insert_after, delete_lines.\n(5) Mehrere Dateien oder sichtbarer Entwurf -> plan (Trockenlauf, Diff, Pruefung) und commit mit plan_id. Projektcode als Entwurf immer als plan OHNE auto_commit (Schatten sichtbar fuer andere), nie im Scratchpad entwerfen.\nauto_commit:true = plan+commit in einem Aufruf, aber nur Per-File-Atomicity. Nach Timeout jede Datei pruefen, nicht blind wiederholen.\ntask_id (P<n>-T<m>) bei jedem Schreiben angeben; reason/agent_note fuer Nachvollziehbarkeit.\nVerboten: Projektdateien per Shell aendern (sed -i, echo >, Formatter -w, pnpm add) - siehe fall-shell-projektdateien." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-create-existiert",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: files create auf eine bestehende Datei - Antwort applied:false mit aktueller_inhalt und vorbereitetem Plan; im Plan Fehler 'create: Datei existiert bereits'." },
+        { "section": "regeln", "content": "1. Es wurde NICHT geschrieben (Schutz vor Datenverlust). aktueller_inhalt zeigt den Bestand.\n2. Gewollt ueberschreiben: den vorbereiteten Plan pruefen und files(commit, plan_id) - oder create mit upsert:true.\n3. Sonst gezielt aendern: update mit Anker oder search_replace.\n4. War die Datei ausgeblendet (ignore), bleibt sie es nach dem Commit, bis die Regel abgeschaltet wird." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-anker",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: error anchor_mismatch (update oder Op mit anchor_text/anchor_contains)." },
+        { "section": "regeln", "content": "1. Nichts wurde geschrieben. Die Datei hat sich seit deinem Lesen geaendert (anderer Agent, Commit) oder der Anker stimmt nicht.\n2. Aktuellen Stand lesen (code_intel file bzw. files read), Aenderung neu darauf aufbauen.\n3. anchor_text = getrimmter Substring, der im aktuellen Inhalt (bzw. bei Zeilen-Ops auf der Zielzeile) vorkommen muss; anchor_contains = exakt wie angegeben.\n4. Bei update in plan/files_batch ist ein Anker Pflicht.\n5. Laeuft ein fremder Plan auf der Datei: code_intel(file, schatten:'alle') bzw. files(plan_status) ansehen und additiv aufbauen (fall-files-coedit)." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-suchtext",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: search_replace mit success:false und count/lines - Suchtext kommt 0-mal oder mehrfach vor." },
+        { "section": "regeln", "content": "1. Ohne replace_all muss search GENAU EINMAL vorkommen; sonst wird nichts geschrieben.\n2. 0 Treffer: Suchtext exakt aus dem aktuellen Inhalt kopieren (Leerzeichen, Einrueckung, CRLF). Die Antwort nennt aehnliche Zeilen.\n3. Mehrere Treffer: Suchtext um Nachbarzeilen erweitern, bis er eindeutig ist - oder replace_all:true, wenn wirklich alle Stellen gemeint sind.\n4. search_replace_batch: Edits laufen nacheinander auf dem Zwischenstand; ein frueherer Edit kann den Suchtext eines spaeteren schon ersetzt haben." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-multi-op",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: plan mit mehreren Ops, besonders mehreren Zeilen-Ops auf derselben Datei, oder Fehler ueberlappender Zeilen." },
+        { "section": "regeln", "content": "1. Op-Aktionen: create, update, search_replace, search_replace_batch, replace_lines (line_start/line_end/content), insert_after (after_line/content), delete_lines, delete (ganze Datei), move/copy (new_path). Bis 10.000 Ops.\n2. shift_mode auto (Standard): Zeilen beziehen sich auf den Stand VOR plan(); Zeilen-Ops werden intern absteigend angewendet, kein eigenes Verschieben noetig.\n3. shift_mode absolute je Op: Zeilen beziehen sich auf den Stand NACH den vorherigen Ops.\n4. Ueberlappende Zeilenbereiche sind ein harter Fehler vor jeder Aenderung.\n5. create nur als erste Op einer Datei; ops[].task_id ueberschreibt die Plan-Task; ops[].reason je Op." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-plan-gescheitert",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: error plan_failed (eine oder mehrere Ops im Trockenlauf gescheitert)." },
+        { "section": "regeln", "content": "1. Nichts geschrieben. Die Ops liegen trotzdem als NEUER offener Plan bereit (plan_id, failed_ops, previews mit ok:false).\n2. Reparieren statt neu planen: files(action:\"plan_update\", plan_id, op_index:<n>, ops:[<korrigierte Op>]) ersetzt genau diese Op; ohne op_index ersetzt ops[] alle eigenen Ops.\n3. Ganz verwerfen: files(action:\"cancel\", plan_id).\n4. Nennt die Antwort einen EIGENEN offenen Plan auf denselben Pfaden, diesen per plan_update aendern und den neuen Entwurf verwerfen.\n5. Nennt sie einen gemeinsamen Plan eines anderen, landen die Ops nach plan_update dort als Beitrag (fall-files-coedit)." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-coedit",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: mehrere Agenten aendern dieselben Dateien - overlap_warnings, coedit_waits, contribution_failed, coedit_conflict, waiting_for_contributors." },
+        { "section": "regeln", "content": "1. Co-Edit ueber Sehen, nicht Absprechen: code_intel(file|functions, schatten:<plan_id>|'alle'), files(plan_status), files(reservation_list), files(history).\n2. Liegt ein offener Plan eines anderen auf deinen Pfaden, wird dein Plan zum Beitrag: coedit_add (ops[0], optional op_index der zurueckgestellten Op, wait_token), danach coedit_ready oder coedit_no_changes (files: Dateien ohne eigenen Beitrag).\n3. contribution_failed: Beitrag passte nicht auf den gemeinsamen Stand - neu lesen, mit coedit_add op_index ersetzen.\n4. commit eines gemeinsamen Plans wartet (status waiting_for_contributors, kein Fehler) bis alle ready/no_changes oder inaktiv sind; wait_seconds bis 50 s haelt den Aufruf offen.\n5. open_for_coedit:false beim plan verhindert fremde Beitraege. Fremde Ops nie ueberschreiben." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-spaet",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: stale, Hash-Konflikt beim commit, late_line_ops_unmappable, conflict." },
+        { "section": "regeln", "content": "1. Die Datei hat sich nach plan() geaendert; der Plan passt nicht mehr (Hash-/Anker-/Zeilen-Pruefung im commit).\n2. Zeilen-Ops, die sich nicht auf den neuen Stand abbilden lassen (late_line_ops_unmappable), muessen neu geplant werden: plan_update mit search_replace oder Anker statt Zeilennummern.\n3. Folgeplan statt Gewalt: Stand lesen, plan_update/neuer Plan, dann commit. Nie mit upsert ueber fremde Aenderungen schreiben." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-plan-ablauf",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Plan-Status expired oder Hinweis open_plans mit Ablauf." },
+        { "section": "regeln", "content": "1. Offene Plaene ohne Aktivitaet laufen nach files_plan_stunden (Standard 48 h, admin ausweis_fristen) ab: Status expired, nichts geschrieben, commit nicht mehr moeglich.\n2. Ops bleiben lesbar (plan_status); bei Bedarf neu planen.\n3. Eigene Plaene nicht liegen lassen: commit oder cancel. Koordinator/User duerfen fremde verwerfen." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-plan-lesen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Plan pruefen, Diff ansehen, Befunde lesen, auf Aenderung warten." },
+        { "section": "regeln", "content": "1. plan_status(plan_id): Status, Ops gekuerzt, Diff. ansicht:'uebersicht' = Op-Metadaten ohne Inhalt, 'befunde' = nur Fehler/Befunde.\n2. op_index bzw. op_indices (auch \"0,1\"): diese Ops vollstaendig (Felder, agent_id, Unified-Diff im Gesamtbild); from_line/to_line schneiden ein Fenster aus content.\n3. wait_seconds (bis 50 s): Long-Poll bis sich Status/Wait-Stand aendert (Antwort changed, waited_seconds).\n4. shared_plan_status mit wait_token fuer gemeinsame Plaene.\n5. Entwurf im Code sehen: code_intel(file, schatten:<plan_id>), Typen: code_intel(..., schatten, typen)." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-pfad",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: error pfad_ungueltig oder pfad_gesperrt." },
+        { "section": "regeln", "content": "1. Pfade sind relativ zum Projekt-Root; '..' innerhalb des Projekts wird aufgeloest, Backslash gilt als Trenner.\n2. pfad_ungueltig: absoluter Pfad (auch unter dem Root), Ausbruch ueber den Root oder Steuerzeichen - relativen Pfad verwenden.\n3. pfad_gesperrt: Schreiben auf gesperrte Pfade (.synapse/, .env, node_modules/ ...) ist verboten; Lesen und Loeschen bleiben moeglich. Secrets/Konfiguration nicht ueber files schreiben - Koordinator fragen." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-syntaxbefund",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: error pruef_befunde beim commit oder Ablehnung im Einzelschreibweg wegen Syntaxfehler in geaenderten Zeilen." },
+        { "section": "regeln", "content": "1. Der Pruefer fand Syntaxfehler bzw. Fehlermuster der Stufe error an einer Op; commit ist gesperrt.\n2. Normalfall: Code korrigieren (plan_update) - Befund lesen: plan_status(ansicht:'befunde').\n3. quittieren (Einzelweg) bzw. befunde_quittieren:[{id, grund}] (commit) NUR bei absichtlich fehlerhaftem Inhalt (Test-Fixture, Negativbeispiel); grund mind. 5 Zeichen, landet im Audit.\n4. Erklaerung zum Syntaxfehler fehlt? code_check offene_faelle / erklaerung_ablegen (fall-cc-erklaerung)." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-rueckbau",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Aenderung soll zurueckgenommen werden." },
+        { "section": "regeln", "content": "1. Nie per git checkout/restore/reset/stash - nur ueber files.\n2. Einzelne Datei: versions(file_path) -> get_version(version_id) -> restore(version_id).\n3. Ganzer Plan/Batch: restore_batch(batch_id) - vorher vorschau:true (batch_diff = was der Batch geaendert hat, rueckgaengig = was restore jetzt aendern wuerde).\n4. Ursache finden: files(history, task_id|agent_filter|feature_tag)." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-daemon-sync",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: nach commit soll lokal gebaut/getestet werden; auf_platte unbekannt." },
+        { "section": "regeln", "content": "1. PG ist die Quelle der Wahrheit; der Daemon synchronisiert asynchron auf die Platte.\n2. commit mit wait_sync:true wartet (Standard bis 5 s, max. 30) auf den Datei-Hash beim lokalen Daemon; auf_platte zeigt das Ergebnis.\n3. Ohne Bestaetigung vor dem lokalen Build kurz warten oder den Hash pruefen. Ein nicht bestaetigter Sync rollt den PG-Commit nicht zurueck." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-versionen-task",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Aenderungen sollen einer Task zugeordnet oder spaeter nachvollzogen werden." },
+        { "section": "regeln", "content": "1. task_id (UUID oder P<n>-T<m>) am Schreibaufruf bzw. Plan; ops[].task_id hat Vorrang.\n2. history/versions filtern nach task_id, feature_tag, since/seit, ohne_task (nur Versionen ohne Task).\n3. Nachtraeglich zuordnen: task_zuordnen mit version_ids, batch_id oder plan_id; vorhandene Zuordnung nur mit ueberschreiben:true + grund.\n4. Anreicherung: reason (Begruendung), agent_note (eigene Beobachtung, ab 3 Ops empfohlen), feature_tag, parent_version_id (Korrektur-Kette), git_commit_sha." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-reservierung",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Dateien fuer laengere Arbeit sichtbar beanspruchen." },
+        { "section": "regeln", "content": "1. reservation_add(file_path: String oder Array, expires_at optional); Standarddauer skaliert mit 20 Minuten je Beteiligtem (max. 120).\n2. reservation_update: add_paths, release_paths, keep_paths; reservation_release am Ende.\n3. reservation_list: include_released, reservation_agent_id als Besitzerfilter.\n4. Reservierungen sperren nicht hart - sie machen sichtbar; Co-Edit bleibt moeglich (fall-files-coedit)." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-read",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Dateiinhalt lesen." },
+        { "section": "regeln", "content": "1. Code bevorzugt mit code_intel lesen (file, functions, symbols, search) - zeilengenau und guenstig.\n2. files read: from_line/to_line (inklusiv); bei mehr als 80k Zeichen wird automatisch gekuerzt; truncate_long_lines kuerzt lange Zeilen.\n3. ref_vergleich:true vergleicht @ref-Kommentare mit der Originalfunktion (name = Funktion).\n4. Nie ganze grosse Dateien blind lesen." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-history-filter-legacy",
+      "weg": "legacy",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: files(history) mit agent_id liefert keine Eintraege." },
+        { "section": "regeln", "content": "1. Bei action history wirkt agent_id als EXAKTER Filter, nicht als Absender.\n2. Volle Projekt-History: agent_id weglassen.\n3. Gezielt filtern: agent_filter (ausdruecklicher Agent-Filter), task_id, feature_tag, since." }
+      ]
+    },
+    {
+      "skill_name": "fall-files-enum-cache",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Client kennt neue files-Aktionen (plan/commit/cancel ...) nicht, weil er die Aktionsliste zwischenspeichert." },
+        { "section": "regeln", "content": "1. files_batch ist dieselbe Implementierung fuer plan/commit/cancel/plan_status/history/restore/Reservierungen/Co-Edit als eigenes Tool.\n2. Nur verwenden, wenn files(action:\"plan\") im eigenen Client nicht geht; sonst files." }
+      ]
+    }
+  ]
+}

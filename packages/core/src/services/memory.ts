@@ -47,6 +47,7 @@ import { getPool, getHintergrundPool } from '../db/client.js';
 import { embeddingNachtragAngehalten } from './intern-schalter.js';
 import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 import { searchCode } from './code.js';
+import { aktuelleAusweisDaten } from './agent-bezug.js';
 import { CodeChunkPayload, COLLECTIONS } from '../types/index.js';
 
 export interface Memory {
@@ -202,14 +203,26 @@ export async function writeMemory(
 
   // 1. PostgreSQL (Write-Primary) — fail-fast: wirft bei Fehler
   const pool = getPool();
+  // P22-T55: Ausweis-Daten des (letzten) Schreibers: agent_id, identity_id, lauf_id. Altes Schema ohne Spalten (42703): wie bisher.
+  const ausweis = aktuelleAusweisDaten(project);
   const gespeichert = await pool.query(
-    `INSERT INTO memories (id, project, name, category, content, tags, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO memories (id, project, name, category, content, tags, created_at, updated_at, author_agent_id, author_identity_id, author_lauf_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (project, name) DO UPDATE SET
-       content = $5, category = $4, tags = $6, updated_at = $8, embedded_at = NULL
+       content = $5, category = $4, tags = $6, updated_at = $8, embedded_at = NULL,
+       author_agent_id = $9, author_identity_id = $10, author_lauf_id = $11
      RETURNING id, created_at, updated_at, (xmax = 0) AS inserted`,
-    [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt]
-  );
+    [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt, ausweis.agent_id, ausweis.identity_id, ausweis.lauf_id]
+  ).catch((fehler: { code?: string }) => {
+    if (fehler?.code !== '42703') throw fehler;
+    return pool.query(
+      `INSERT INTO memories (id, project, name, category, content, tags, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (project, name) DO UPDATE SET
+         content = $5, category = $4, tags = $6, updated_at = $8, embedded_at = NULL
+       RETURNING id, created_at, updated_at, (xmax = 0) AS inserted`,
+      [id, project, name, category, content, tags, memory.createdAt, memory.updatedAt]);
+  });
   // P10-T12: Bei konkurrierenden Erstschreibern gilt die ID der tatsächlich gespeicherten Zeile.
   memory.id = gespeichert.rows[0].id;
   memory.createdAt = new Date(gespeichert.rows[0].created_at).toISOString();

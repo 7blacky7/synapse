@@ -24,10 +24,10 @@ import { holeAgentOnboarding } from './agent-onboarding.js';
 import { pruefeUnbekannteParameter } from './unbekannte-parameter.js';
 import { logToolCall } from './tool-call-log.js';
 import {
-  leseW1bSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv, leseAusweisKernFuerToken, ausweisProjekt,
+  leseW1bSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv, leseAusweisKernFuerToken, ausweisProjekt, ausweisIrgendwoAktiv,
   type AusweisKernStand,
 } from './agent-profil-schalter.js';
-import { feldBedeutung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder } from './agent-selbstfelder.js';
+import { feldBedeutung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder, selbstKonflikte, type Selbstangaben } from './agent-selbstfelder.js';
 import { entscheideToolAufruf, entscheideToolListe, istNichtSperrbareAktion, type TransportZugang } from './tool-gate.js';
 import { loeseToolZuschnitt, TEXT_AGENT_TOKEN_FEHLT } from './agent-profil-vertrag.js';
 import { bereiteZuschnittSnapshotVor, wendeProfilLimitsAn } from './agent-zuschnitt.js';
@@ -43,20 +43,27 @@ import { sichereW1bAnmeldungHinweise } from './agent-anmeldung.js';
 import { mitAgentAufrufKontext, leseAgentBezugModus, aktuellerAgentAufruf, agentPrincipalAusAnmeldung, type AgentAufrufKontext } from './agent-bezug.js';
 // P22-T44: Ausweis fuer mehrere Projekte (Heimat, Visum, Arbeitsfreigabe).
 import { vergissOnboarding } from './project-status.js';
+// P23-T5: kurze Tool-Beschreibungen (Produkt-Schalter tool_beschreibungen_kurz, Standard AUS).
+import { wendeKurzeBeschreibungenAn } from './fall-skills.js';
 import {
   leseMehrprojektSchalter, sichereFremdprojektZugang, visumErlaubt, visumAblehnung, ausweisProjekteHinweis, ausweisProjekteStatus,
   haengeAusweisHinweiseAn, type FremdprojektStand,
 } from './agent-ausweis-projekte.js';
 export const AGENT_TOKEN_PARAMETER = {
-  token: { type: 'string', description: 'Persoenlicher Synapse-Agentenausweis, bei JEDEM Aufruf mitgeben. chat(anmelden) erneuert den Kontext; Folgeaufrufe pruefen die Identitaet. Nie in Logs/Channels ablegen.' },
+  token: { type: 'string', description: 'Agenten-Ausweis (sai_...): bei JEDEM Aufruf mitgeben. Er allein bestimmt Identitaet, Projekt und Rolle (agent_id/role weglassen). Start/Kontextverlust: chat(action:"anmelden", token).' },
 };
+/** P22-T55: Beschreibung von agent_id, sobald der Ausweis beworben wird (getrennte Texte je Weg: Ausweis vs. Legacy). */
+export const TEXT_AGENT_ID_MIT_AUSWEIS = 'Nur OHNE Ausweis (Legacy): eigene Agent-ID. Mit Ausweis weglassen, die Identitaet kommt aus token.';
+/** P22-T55: Hinweis an einen Ausweis-Agenten, der agent_id/role (oder einen Absender-Alias) mitgibt; je Lauf einmal. */
+export const TEXT_AUSWEIS_NUR_TOKEN = 'Mit Ausweis nur token mitgeben, agent_id/role weglassen: Identitaet, Projekt und Rolle kommen allein aus dem Ausweis.';
 /** Nur Schemas erweitern; die ausgeschaltete Fachlogik bleibt unveraendert. */
 export function ergaenzeAgentTokenParameter(defs: Array<{ name?: string; inputSchema?: { properties?: Record<string, unknown> } }>): void {
   for (const d of defs) {
     if (d.inputSchema?.properties) Object.assign(d.inputSchema.properties, AGENT_TOKEN_PARAMETER);
     // P22-T13 Paket B: tokenfreie Koordinatorliste; beworbeneAgentTools blendet sie ohne W1b-Anmeldung aus.
     const action = d.name === 'chat' ? d.inputSchema?.properties?.action as { enum?: unknown[] } | undefined : undefined;
-    if (action?.enum && !action.enum.includes('koordinator_liste')) action.enum.push('koordinator_liste');
+    // P22-T55: anmelden/identitaet stehen in BEIDEN Transporten im chat-Enum (Werbung filtert sie ohne wirksamen Ausweis wieder aus).
+    for (const a of ['anmelden', 'identitaet', 'koordinator_liste']) if (action?.enum && !action.enum.includes(a)) action.enum.push(a);
   }
 }
 /** P22-T27/T28 (S2): NUR in einer tools/list-Antwort auf eine Anfrage MIT Ausweis und bei wirksamem Ausweis-Kern ist project nicht Pflicht
@@ -77,15 +84,24 @@ function ausweisProjektOptional(def: { inputSchema?: { properties?: Record<strin
 export async function beworbeneAgentTools<T extends { name: string; inputSchema?: { properties?: Record<string, unknown> } }>(
   defs: T[], opt?: { mitAusweis?: boolean; project?: string | null },
 ): Promise<T[]> {
-  const tokenAn = await ausweisTokenAktiv(opt?.project ?? null);
-  const anmeldungAn = await ausweisAnmeldungAktiv(opt?.project ?? null);
+  // P22-T55: ohne Projekt (tools/list) wird der Ausweis beworben, sobald der Ausweis-Kern IRGENDWO wirksam ist (global oder in
+  // einem Projekt). Vorher nur global -> bei projektweisem Kern fehlte token in allen Schemas, Clients verwarfen ihn.
+  const irgendwo = !opt?.project ? await ausweisIrgendwoAktiv() : false;
+  const tokenAn = irgendwo || await ausweisTokenAktiv(opt?.project ?? null);
+  const anmeldungAn = irgendwo || await ausweisAnmeldungAktiv(opt?.project ?? null);
   // S2: project nur optional, wenn die Liste MIT Ausweis abgefragt wird UND der Ausweis-Kern wirksam ist.
   const projektOptional = opt?.mitAusweis === true && (await leseAusweisKern(opt?.project ?? null)).aktiv;
   const mehrprojekt = projektOptional && (await leseMehrprojektSchalter(opt?.project ?? null)).aktiv;
-  return defs.map(def => {
+  // P23-T5: Beschreibungstexte zuerst kuerzen (Kopien, Struktur gleich); token/agent_id und die Ausweis-Anpassung danach bleiben unberuehrt.
+  const basis = await wendeKurzeBeschreibungenAn(defs, opt?.project ?? null);
+  return basis.map(def => {
     const kopie = structuredClone(def);
     if (kopie.inputSchema?.properties) {
       if (!tokenAn) delete kopie.inputSchema.properties.token;
+      else {
+        const aid = kopie.inputSchema.properties.agent_id as { description?: string } | undefined;
+        if (aid) kopie.inputSchema.properties.agent_id = { ...aid, description: TEXT_AGENT_ID_MIT_AUSWEIS + (aid.description ? ' ' + aid.description : '') };
+      }
       if (projektOptional) ausweisProjektOptional(kopie, mehrprojekt);
       if (kopie.name === 'chat') {
         const action = kopie.inputSchema.properties.action as { enum?: unknown[] } | undefined;
@@ -171,6 +187,8 @@ export async function mitAgentToolAufruf<T>(
     let ergebnis = await arbeit(kontext);
     // P22-T50: index_stats(sitzung:'fortsetzung') mit Ausweis -> Verweis auf chat(anmelden).
     if (kontext.sitzung_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.sitzung_hinweis, 'ausweis_sitzung_hinweis');
+    // P22-T55: agent_id/role mit Ausweis mitgegeben -> kurzer Hinweis (je Lauf einmal, abweichende Werte ignoriert).
+    if (kontext.angabe_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.angabe_hinweis, 'ausweis_hinweis');
     // P22-T44: Visum-/Einwanderungsanzeige (einmal je Lauf und bei Aenderung) an die fertige Antwort beider Transporte.
     return kontext.ausweis_hinweise?.length ? haengeAusweisHinweiseAn(ergebnis, kontext.ausweis_hinweise) : ergebnis;
   });
@@ -191,6 +209,21 @@ export interface AgentToolKontext {
   ausweis_hinweise?: string[];
   /** P22-T50: Verweis auf chat(anmelden) bei index_stats(sitzung:'fortsetzung') mit Ausweis (Feld ausweis_sitzung_hinweis). */
   sitzung_hinweis?: string;
+  /** P22-T55: Hinweis 'nur token mitgeben' (Feld ausweis_hinweis), je Lauf einmal. */
+  angabe_hinweis?: string;
+}
+/** P22-T55: je Lauf (und je Satz abweichender Felder) einmal gezeigt; Prozessspeicher, begrenzt. */
+const ANGABE_HINWEIS_GEZEIGT = new Set<string>();
+function ausweisAngabeHinweis(p: AgentTokenAnmeldung, s: Selbstangaben): string | null {
+  const felder = [...s.ids.map(x => x.feld), ...(s.rolle ? [s.rolle.feld] : [])];
+  if (!felder.length) return null;
+  const abweichend = selbstKonflikte({ agent_id: p.agent_id, rolle: p.rolle }, s).sort();
+  const schluessel = `${p.lauf_id ?? p.identitaet.id + ':' + p.context_epoch}|${abweichend.join(',')}`;
+  if (ANGABE_HINWEIS_GEZEIGT.has(schluessel)) return null;
+  if (ANGABE_HINWEIS_GEZEIGT.size > 5000) ANGABE_HINWEIS_GEZEIGT.clear();
+  ANGABE_HINWEIS_GEZEIGT.add(schluessel);
+  return `${TEXT_AUSWEIS_NUR_TOKEN} Du bist ${p.agent_id}.`
+    + (abweichend.length ? ` Abweichende Angabe ignoriert (${abweichend.join(', ')}), kein Fehler.` : '');
 }
 /** P22-T50 (User 19.10.): mit Ausweis gibt es keine Fortsetzung - jede Anmeldung ist eine Neuanmeldung. */
 const TEXT_AUSWEIS_KEINE_FORTSETZUNG = 'Mit Ausweis gibt es keine Fortsetzung: Start, Neustart, Compaction und Kontextverlust = '
@@ -231,10 +264,11 @@ function bezeuge(a: Record<string, unknown>, k: string, v: unknown, erlaubt?: Se
   // Deklarierte Felder ueberleben Fachadapter-Spreads; interne Rollen bleiben nur fuer Hooks sichtbar.
   Object.defineProperty(a, k, { value: v, enumerable: Object.hasOwn(a, k) || (k !== 'role' && erlaubt?.has(k) === true), writable: true, configurable: true });
 }
-function zeigePrincipal(p: AgentTokenAnmeldung): Record<string, unknown> {
+/** P22-T55 (User 19.10.): der Ausweis wird NICHT mehr maskiert - principal.ausweis ist der Klartext-Wert (derselbe wie token). */
+function zeigePrincipal(p: AgentTokenAnmeldung, ausweis?: string): Record<string, unknown> {
   return { identity_id: p.identitaet.id, agent_id: p.agent_id, project: p.project,
     rolle: p.rolle, modell: p.modell, context_epoch: p.context_epoch,
-    ...('lauf_id' in p ? { lauf_id: p.lauf_id } : {}), ausweis: '[maskiert]' };
+    ...('lauf_id' in p ? { lauf_id: p.lauf_id } : {}), ...(ausweis ? { ausweis } : {}) };
 }
 /**
  * P22-T43 (B2): wirksamer Ausweis-Schalter fuer Antworten (token_identitaet_aus, chat(identitaet)). freigegeben ist exakt
@@ -312,7 +346,11 @@ export async function bereiteAgentToolAufrufVor(
   }
   // W12-B (P22-T25): Hinweisquellen registrieren, sobald der wirksame Schalter EIN ist (registriert/gedrosselt: sofort zurueck).
   await sichereW1bAnmeldungHinweise();
-  const parameterBefund = erlaubteParameter ? pruefeUnbekannteParameter(tool, erlaubteParameter, eingabe) : null;
+  // P22-T55: mit Ausweis sind agent_id/role wirkungslose Selbstangaben -> nie 'unbekannter_parameter' (nur ausweis_hinweis);
+  // nicht deklarierte Exemplare fallen aus args, damit auch die Fachstrecke (PA-1 im Handler) sie nicht als unbekannt meldet.
+  const pruefEingabe = token ? Object.fromEntries(Object.entries(eingabe).filter(([k]) => k !== 'agent_id' && k !== 'role')) : eingabe;
+  if (token && erlaubteParameter) for (const k of ['agent_id', 'role']) if (!erlaubteParameter.has(k)) delete args[k];
+  const parameterBefund = erlaubteParameter ? pruefeUnbekannteParameter(tool, erlaubteParameter, pruefEingabe) : null;
   if (parameterBefund) {
     basis.antwort = { success: false, error: 'unbekannter_parameter', tool,
       unbekannte_parameter: parameterBefund.unbekannt, message: parameterBefund.meldung };
@@ -392,7 +430,7 @@ export async function bereiteAgentToolAufrufVor(
       const agentOnboarding = await holeAgentOnboarding({ project: p.project, agentId: p.agent_id,
         role: p.rolle, serverInstanceId, explizit: true });
       basis.antwort = { success: true, ...session, action: 'register', token: ausgabeToken,
-        principal: zeigePrincipal(p), agentOnboarding };
+        principal: zeigePrincipal(p, ausgabeToken), agentOnboarding };
       return basis;
     }
     if (!token) {
@@ -423,7 +461,9 @@ export async function bereiteAgentToolAufrufVor(
         return basis;
       }
     }
-    const selbst = strikt ? sammleSelbstangaben(tool, action, explizit, erlaubteParameter) : undefined;
+    // P22-T55 (User 19.10.): mit Ausweis zaehlt NUR die Ausweis-Identitaet. Selbstangaben (agent_id/role/Absender-Aliasse) werden
+    // in BEIDEN Modi ignoriert und nur als Hinweis gemeldet (ausweis_hinweis) - kein identitaet_konflikt mehr, kein Abbruch.
+    const selbst = sammleSelbstangaben(tool, action, explizit, erlaubteParameter);
     // P22-T44: im fremden Projekt kein Sitzungssignal (Lauf/Sitzung gehoeren der Heimat); der Ausweis wird ohne Projekt geprueft.
     if (fremdProjekt && tool === 'admin' && action === 'index_stats') delete args.sitzung;
     // P22-T50: mit Ausweis ist index_stats(sitzung:'fortsetzung') kein Sitzungssignal mehr (kein neuer Lauf, keine Epoch);
@@ -441,12 +481,14 @@ export async function bereiteAgentToolAufrufVor(
     const sitzungsSignal = tool === 'admin' && action === 'index_stats' && String(args.sitzung) === 'neu';
     const anmeldung = (tool === 'chat' && (action === 'anmelden' || action === 'register')) || sitzungsSignal;
     const tokenProjekt = fremdProjekt || alleProjekte ? undefined : feld(args, 'project');
-    const p = anmeldung ? await meldeAgentMitTokenAn(token, alleProjekte ? undefined : feld(args, 'project'), bezug, selbst)
-      : await pruefeAgentToken(token, tokenProjekt, bezug, selbst);
+    const p = anmeldung ? await meldeAgentMitTokenAn(token, alleProjekte ? undefined : feld(args, 'project'), bezug)
+      : await pruefeAgentToken(token, tokenProjekt, bezug);
     // W12-B (P22-T25, V5): aktiven Lauf + Identitaets-Sitzung sichern (erster Token-Aufruf ohne anmelden -> 'implizit',
     // Legacy-Ursprung -> 'uebernahme' mit Bruecke). Nur bei wirksamem Ausweis-Kern; Fehler lassen den Aufruf unberuehrt.
     await sichereLaufFuerAufruf(p, anmeldung ? 'anmelden' : null);
     basis.principal = p;
+    const angabeHinweis = ausweisAngabeHinweis(p, selbst);
+    if (angabeHinweis) basis.angabe_hinweis = angabeHinweis;
     let fremd: FremdprojektStand | null = null;
     if (fremdProjekt) {
       // P22-T44: Eintrag/Zugang in B (frei | visum | arbeitsfreigabe). Danach arbeitet der Agent in B im Legacy-Namensraum von B
@@ -498,7 +540,11 @@ export async function bereiteAgentToolAufrufVor(
       error: 'selbstauskunft_weicht_ab',
     });
     if (!strikt) {
-      bezeuge(args, 'agent_id', p.agent_id, erlaubteParameter); bezeuge(args, 'project', zielProjekt, erlaubteParameter); bezeuge(args, 'role', p.rolle, erlaubteParameter);
+      // P22-T55: der Exaktfilter files.history.agent_id bleibt wie gesendet - vorher wurde dort die eigene Identitaet
+      // eingesetzt (files history mit Ausweis zeigte nur eigene Versionen).
+      // chat.get braucht den Leser (DMs/Lesestand) und bekommt im Normalmodus weiter die Identitaet (Bestand t109).
+      if (!(tool === 'files' && action === 'history')) bezeuge(args, 'agent_id', p.agent_id, erlaubteParameter);
+      bezeuge(args, 'project', zielProjekt, erlaubteParameter); bezeuge(args, 'role', p.rolle, erlaubteParameter);
       if (Object.hasOwn(args, 'model')) args.model = p.modell;
       // Fachliche Absenderfelder duerfen die gepruefte Attribution nicht wieder ersetzen.
       if (tool === 'thought' && ['add', 'add_batch'].includes(action ?? '')) args.source = p.agent_id;
@@ -537,12 +583,12 @@ export async function bereiteAgentToolAufrufVor(
           role: p.rolle, serverInstanceId, explizit: true, koordinatorKurz: true, anmeldung: true });
         const abloesung = await abloesungsZeile(p);
         const eigenePlaene = await eigenePlaeneZeile(p);
-        basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p), ...(abloesung ? { abloesung } : {}),
+        basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p, token), ...(abloesung ? { abloesung } : {}),
           ...(eigenePlaene ? { offene_plaene: eigenePlaene } : {}), agentOnboarding };
       }
     } else if (tool === 'chat' && action === 'identitaet') {
       // P22-T44 (Debug): Heimat, Schalter mehrprojekt mit Quelle, Projekte im Ausweis mit Zugang und Ablauf.
-      basis.antwort = { success: true, action: 'identitaet', principal: zeigePrincipal(p), schalter,
+      basis.antwort = { success: true, action: 'identitaet', principal: zeigePrincipal(p, token), schalter,
         ausweis_projekte: await ausweisProjekteStatus(p.identitaet.id, p.project) };
     }
     // P22-T13 Paket C (K16.4/K16.8): EIN requestweiter Profil-Snapshot (eine PG-Lesung der aktuellen

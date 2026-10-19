@@ -292,7 +292,8 @@ try{
  });
 
  const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
- check(secrets.every(s=>!logs.includes(s)),'kein Ausweis im Audit');
+ // P22-T55 (User 19.10.): Ausweise sind nicht mehr maskiert; sonstige Geheimnisse (Bearer) weiter nie im Audit.
+ check(secrets.filter(s=>!/^sai_/.test(String(s))).every(s=>!logs.includes(s)),'kein sonstiges Geheimnis im Audit');
  check(network===0,'keine Netzwerk-/Modellaufrufe');
  console.log('P22-T13 Paket C: '+checks+' Pruefungen, '+failures.length+' Fehler');
  if(failures.length)process.exitCode=1;

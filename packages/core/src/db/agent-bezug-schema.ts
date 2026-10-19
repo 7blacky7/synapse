@@ -330,5 +330,14 @@ BEGIN
   || jsonb_strip_nulls(jsonb_build_object('author_identity_id',NEW.author_identity_id,'identity_id',NEW.author_identity_id)))::text);
  RETURN NEW;
 END $$ LANGUAGE plpgsql;
+-- P22-T55: Ausweis-Daten (agent_id, identity_id, lauf_id) des letzten Schreibers auch fuer Memories und Tech-Docs.
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS author_agent_id TEXT;
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS author_identity_id TEXT REFERENCES agent_identitaeten(id);
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS author_lauf_id TEXT REFERENCES agent_identitaet_laeufe(id);
+CREATE INDEX IF NOT EXISTS idx_aib_memories_author_identity_id ON memories(author_identity_id) WHERE author_identity_id IS NOT NULL;
+ALTER TABLE tech_docs ADD COLUMN IF NOT EXISTS author_agent_id TEXT;
+ALTER TABLE tech_docs ADD COLUMN IF NOT EXISTS author_identity_id TEXT REFERENCES agent_identitaeten(id);
+ALTER TABLE tech_docs ADD COLUMN IF NOT EXISTS author_lauf_id TEXT REFERENCES agent_identitaet_laeufe(id);
+CREATE INDEX IF NOT EXISTS idx_aib_tech_docs_author_identity_id ON tech_docs(author_identity_id) WHERE author_identity_id IS NOT NULL;
 
 `;

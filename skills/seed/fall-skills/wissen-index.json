@@ -1,0 +1,141 @@
+{
+  "bereich": "wissen-index",
+  "skills": [
+    {
+      "skill_name": "fall-docs",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer docs (Tech-Doku-Bibliothek: add, search, get_for_file, get, update, delete)." },
+        { "section": "faelle", "content": "- fall-docs-airbag: vor einer Dateiaenderung Warnungen holen; Doku ablegen." }
+      ]
+    },
+    {
+      "skill_name": "fall-docs-airbag",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: eine Datei soll geaendert werden (vor files plan) oder neues Framework-Wissen soll abgelegt werden." },
+        { "section": "regeln", "content": "1. Vor Aenderungen: docs(get_for_file, file_path String oder Array) - Framework-Warnungen (framework_warnungen, Standard an), memories:true fuer passende Projekt-Memories, steckbrief:true fuer Datei-Steckbrief + frische Struktur.\n2. Ablegen: add(framework, version, section, content, type feature|breaking-change|migration|gotcha|code-example|best-practice|known-issue|community, category framework|language, source research|context7|manual); docs[] (1..50) fuer mehrere.\n3. search(query, scope project|global|all, framework, type, limit); get/update/delete per id aus search." }
+      ]
+    },
+    {
+      "skill_name": "fall-memory",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer memory (dauerhaftes Projektwissen und Regeln: write, read, read_with_code, list, update, delete, find_for_file)." },
+        { "section": "faelle", "content": "- fall-memory-regeln: Regeln, Rollenbindung, Lesen per Name/ID.\n- Batch/Loeschen: fall-querschnitt-batch-statt-einzeln." }
+      ]
+    },
+    {
+      "skill_name": "fall-memory-regeln",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Regel oder dauerhaftes Wissen ablegen bzw. lesen." },
+        { "section": "regeln", "content": "1. write(name, content, category documentation|note|architecture|decision|rules|other, tags); items[] (1..50) fuer mehrere.\n2. read per name (auch Array) oder id (Praefix ab 8); read_with_code liefert passende Code-Stuecke (codeLimit, includeSemanticMatches); find_for_file(file_path) liefert Memories zu Dateien; list(names_only) fuer wenig Kontext.\n3. Regeln (category rules) erreichen Agenten ueber Onboarding/Anmeldung; Tags wie '<rolle>-only' binden eine Regel an eine Rolle, 'bei:<tool>.<aktion>' haengt sie an eine Handlung (werkzeug_regeln).\n4. Ergebnisse eines Laufs gehoeren eher in thought; memory fuer bleibendes Wissen." }
+      ]
+    },
+    {
+      "skill_name": "fall-thought",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer thought (kurze Notizen, Befunde, Uebergaben: add, add_batch, get, search, update, delete)." },
+        { "section": "faelle", "content": "- fall-thought-task-status: Bericht und Task-Status in einem Aufruf.\n- Neuester Eintrag: fall-querschnitt-neuester-eintrag. IDs: fall-querschnitt-id-praefix." }
+      ]
+    },
+    {
+      "skill_name": "fall-thought-task-status",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Bericht zu einer Task ablegen und Status setzen." },
+        { "section": "regeln", "content": "1. thought(add, content, tags, task_id, task_status) - speichert und setzt den Task-Status in einem Aufruf (spart plan update_task).\n2. add_batch(items[] mit content, tags?, task_id?) - source gilt fuer alle.\n3. search(query, volltext) liefert Vorschau (~300 Zeichen), volltext:true den ganzen Inhalt; get(id oder Array).\n4. trigger_respawn nur fuer Spezialisten (Auto-Handoff); fuer andere wirkungslos.\n5. Uebergaben am Ende mit Tag session-uebergabe." }
+      ]
+    },
+    {
+      "skill_name": "fall-search",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer search (semantische Lesesuche: code, path, code_with_path, memory, thoughts, proposals, tech_docs, media, tasks, plans)." },
+        { "section": "faelle", "content": "- fall-search-bereich-waehlen: welches Werkzeug fuer welche Suche." }
+      ]
+    },
+    {
+      "skill_name": "fall-search-bereich-waehlen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: search(action:\"code\") oder unklare Treffer." },
+        { "section": "regeln", "content": "1. Code: code_intel(search) - Volltext mit Zeilennummern oder semantic:true; search(code) ist veraltet.\n2. Notizen: search(thoughts, volltext, task_id), search(memory, category).\n3. Tasks/Plaene: search(tasks|plans) bzw. plan(search, art); plan_id leer = alle Plaene, alle:true inkl. zurueckgestellter.\n4. Pfade: search(path, path_pattern Glob, content_pattern Regex). Medien: search(media, media_type). Doku: search(tech_docs, framework, type, scope)." }
+      ]
+    },
+    {
+      "skill_name": "fall-proposal",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht fuer proposal (Code-Aenderungsvorschlaege; werden nie automatisch angewendet)." },
+        { "section": "regeln", "content": "1. create(file_path, suggested_content, description, author, tags) bzw. items[] (1..50).\n2. list(status), get(id, auch Array; Praefix ab 8), update_status, update(content, suggested_content), delete.\n3. Umsetzen immer ueber files (plan/commit)." }
+      ]
+    },
+    {
+      "skill_name": "fall-ignore",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht fuer ignore (welche Dateien Synapse indexiert und anzeigt: list, add, remove, enable, disable, test, einblenden)." },
+        { "section": "faelle", "content": "- fall-ignore-modi: ausgeblendet vs. gesperrt, einblenden auf Zeit." }
+      ]
+    },
+    {
+      "skill_name": "fall-ignore-modi",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Datei fehlt in code_intel, soll ausgeblendet oder aus der Datenbank gehalten werden." },
+        { "section": "regeln", "content": "1. modus ausgeblendet (Standard): nur unsichtbar in code_intel (lexikalisch und semantisch); die Datei synchronisiert weiter normal.\n2. modus gesperrt: Inhalt kommt nicht in die Datenbank (Daemon sendet nichts) - fuer Secrets und Paketordner. Sperren ist der Eingriff, Ausblenden das Aufraeumen.\n3. Vorbelegte Sperren (node_modules, .git, dist, .env, .mcp.json) sind nicht abschaltbar.\n4. Regeln abschalten statt loeschen: disable/enable(pattern). Brauchst du eine ausgeblendete Datei kurz: einblenden(pattern, dauer '30s'|'5m'|'2h'|'1d'|Sekunden) - danach greift die Regel von selbst wieder.\n5. test(file_path): wird der Pfad ignoriert und durch welche Regel. add mit patterns[], scope (Teilbaum), kommentar." }
+      ]
+    },
+    {
+      "skill_name": "fall-asset-intel",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht fuer asset_intel (lesender Index fuer Nicht-Code-Dateien, Gegenstueck zu code_intel): tree, inspect, objects, references, used_by, missing, graph, roots/orphans, search, search_batch, move_preview, health, geloescht, wiederherstellen, konflikte, konflikt_loesen." },
+        { "section": "faelle", "content": "- fall-asset-filter: Filter where, Paging, Listen.\n- fall-asset-konflikt: Share/PC-Konflikte und Wiederherstellen.\n- Bild anzeigen: fall-ci-ansicht." }
+      ]
+    },
+    {
+      "skill_name": "fall-asset-filter",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Assets nach Eigenschaften finden; leere oder gekappte Listen." },
+        { "section": "regeln", "content": "1. where: \"<asset_type|kind>.<schluessel><op><wert>\", op = != > >= < <= ~, max. 5 Filter, z. B. image.width>=4096.\n2. format (glb, png, uasset ...), asset_type (image, model3d, audio ...), object_type (mesh, material, export ...), kind (Verweisart).\n3. Listen tragen total und gekappt; offset/limit zum Blaettern (inspect, objects).\n4. graph(direction down|up, depth 1..10) markiert Zyklen; move_preview(file_path, new_path) zeigt, was beim Verschieben bricht.\n5. Leere Ergebnisse: health pruefen (Index-Zustand)." }
+      ]
+    },
+    {
+      "skill_name": "fall-asset-konflikt",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Hinweis auf offenen Share/PC-Konflikt oder geloeschtes Asset." },
+        { "section": "regeln", "content": "1. Share gewinnt automatisch, die PC-Revision bleibt gesichert. konflikte listet offene (asset_id als Filter).\n2. konflikt_loesen(asset_id, wahl pc|share) ueber die API - den User fragen, welche Fassung gilt.\n3. geloescht = Loeschliste; wiederherstellen(asset_id, basis_revision, event_id als Idempotenz) erzeugt eine neue Share-Revision." }
+      ]
+    },
+    {
+      "skill_name": "fall-reverse",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht fuer reverse (globale Reverse-Bibliothek). Grunddaten fuer alle, Inhalte erst nach Projektbindung. Aktionen: liste, eintrag, vorschlaege, bestaetigen/archivieren (Koordinator/User), binden/loesen/bindungen, status, analysieren, abbrechen, dateien, diagnose, entstoeren, Code-Aktionen (tree/functions/symbols/references/search/file/calls), assets_tree, inspect, ansicht." },
+        { "section": "regeln", "content": "1. Zuerst binden(reverse_id, project) - ohne Bindung keine Inhalte.\n2. Analyse laeuft asynchron: analysieren(bis_schicht, prioritaet), status (warten_sekunden bis 50 als Long-Poll; nennt offene auftrag_ids), abbrechen (eigener Auftrag/Koordinator).\n3. Code liegt in virtuellen Pfaden: <Original>@S1/strings.txt, @S2/<Funktion>.asm, @S3/<Funktion>.c; file_path ist Alias fuer datei.\n4. dateien = seitenweise Dateiliste (path als Ordnerpraefix, limit/offset).\n5. Haengt etwas: diagnose (jeder, lesend, optional reverse_id); entstoeren (Koordinator/User, Standard vorschau:true; Filter ursache/reverse_id/auftrag_id).\n6. Unbekannte Parameter werden gemeldet (fall-querschnitt-unbekannter-parameter)." }
+      ]
+    },
+    {
+      "skill_name": "fall-skills",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht fuer skills (Skill-Datenbank: search, list, get_section, get_full, add_section, update_section, delete_section, delete_skill, replace_skill). Fall-Skills heissen fall-<bereich>-<fall>; ihre Uebersicht steht in fall-<bereich>." },
+        { "section": "regeln", "content": "1. Lesen: get_full(skill_name) liefert alle Sections; get_section(skill_name, section); list (optional skill_name fuer Sections); search(query, skill_name als Filter, limit bis 20).\n2. Schreiben: PostgreSQL zuerst (Quelle der Wahrheit), der Vektor folgt (embeddings_pending). add_section (Fehler wenn vorhanden), update_section (Fehler wenn nicht da), replace_skill(sections[]) ersetzt den ganzen Skill - nicht genannte Sections werden geloescht.\n3. scope global (Standard) | project (skill_project) | agent (skill_project + skill_agent).\n4. Fall-Skills kommen aus dem Seed im Repo (skills/seed/fall-skills); Aenderungen dort pflegen, dann laden (scripts/skills-seed-laden.mjs)." }
+      ]
+    },
+    {
+      "skill_name": "fall-free-models",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht fuer free_models (lokaler MCP-Server): aufrufbare API-Modelle finden, vor allem kostenlose, als Kandidaten fuer Ersatz bei erschoepftem Kontingent." },
+        { "section": "regeln", "content": "1. list (Standard nur cost free; any = auch kostenpflichtige; unknown = Anbieter nennt keine Preise - KEINE Zusage von Kostenfreiheit). Filter provider, query, min_context, capabilities (tools fuer Agenten meist Pflicht), sort, include_deprecated, limit.\n2. usable ja = belegt aufrufbar; ungeprueft = kann beim ersten Request mit 401/403 scheitern - vorher probe(provider). include_unusable zeigt nachweislich nicht aufrufbare.\n3. detail(ref '<anbieter>/<modell>' oder Kurzname) liefert Basis-URL, Modell-ID, Format; aliases listet Kurznamen; providers zeigt eingerichtete Anbieter; refresh umgeht den 15-Minuten-Puffer.\n4. Das Tool waehlt nichts aus und schaltet nichts frei - der Wechsel laeuft ueber die Runtime-Policy." }
+      ]
+    }
+  ]
+}

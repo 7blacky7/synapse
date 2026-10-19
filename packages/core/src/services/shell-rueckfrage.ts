@@ -61,7 +61,8 @@ const gleich=(a:ShellRueckfrageBindung,b:ShellRueckfrageBindung)=>
  */
 export function loeseShellRueckfrageEin(id:unknown,grund:unknown,bindung:ShellRueckfrageBindung):{ok:true}|{ok:false;error:ShellRueckfrageFehler}{
   bindung={...bindung,identity_id:bindung.identity_id!==undefined?bindung.identity_id:aktuelleAgentIdentityId(bindung.project,bindung.agent_id)};
-  if(!bindung.agent_id)return {ok:false,error:'agent_fehlt'};
+  // P22-T55: mit Ausweis genuegt die Identitaet (identity_id aus dem Principal); agent_id ist dann nicht Pflicht.
+  if(!bindung.agent_id&&!bindung.identity_id)return {ok:false,error:'agent_fehlt'};
   if(typeof grund!=='string'||grund.trim().length<10)return {ok:false,error:'grund_fehlt'};
   if(typeof id!=='string')return {ok:false,error:'bestaetigung_unbekannt'};
   const e=offen.get(id);

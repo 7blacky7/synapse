@@ -213,7 +213,7 @@ try{
    check(!C.vorgesehenerTokenGueltig('pending')&&C.vorgesehenerTokenGueltig('bestaetigt'),'vorgesehener Token erst nach Bestaetigung gueltig');
    const pr=(rolle,id='k1',p=project)=>({art:'identitaet',principal:{art:'identity',project:p,agent_id:id,identity_id:id,rolle,modell:null,context_epoch:1,lauf_id:null}});
    check(C.darfTokenAbrufen({art:'user'},project)&&C.darfTokenAbrufen(pr('koordinator'),project)&&!C.darfTokenAbrufen(pr('subagent'),project)&&!C.darfTokenAbrufen(pr('koordinator','k1','anders'),project),'Tokenabruf nur User/Koordinator desselben Projekts');
-   check(C.darfProfilAendern(pr('koordinator'),{identity_id:'x',project})&&!C.darfProfilAendern(pr('koordinator'),{identity_id:'k1',project})
+   check(C.darfProfilAendern(pr('koordinator'),{identity_id:'x',project})&&C.darfProfilAendern(pr('koordinator'),{identity_id:'k1',project}) /* P22-T53: Koordinator aendert sein eigenes Profil */
     &&C.darfProfilAendern(pr('koordinator'),{identity_id:'k1',project},{ersterKoordinatorStart:true})&&!C.darfProfilAendern(pr('subagent'),{identity_id:'x',project}),'Eigenprofilregel');
    check(C.taskBindungErlaubt({art:'offen'},{})&&C.taskBindungErlaubt({art:'team',identity_ids:['a','b']},{identity_id:'b'})&&!C.taskBindungErlaubt({art:'identitaet',identity_id:'a'},{identity_id:'b'})&&!C.taskBindungErlaubt({art:'team',identity_ids:['a']},{}),'Task-Bindung offen|identitaet|team');
    check(C.pruefeTaskBindungsAenderung('entblocken',null,' ')==='grund_fehlt'&&C.pruefeTaskBindungsAenderung('aendern',{art:'team',identity_ids:[]},'g')==='team_leer'
@@ -333,24 +333,24 @@ try{
    for(const t of [rest,stdio]){
     check((await t.call('thought',{action:'get',project,id:thoughtId,token:tok})).success!==false,'Token ohne Selbstangabe '+t.name);
     check((await t.call('thought',{action:'get',project,id:thoughtId,token:tok,agent_id:'f3-agent',project})).success!==false,'passende Angaben still ignoriert '+t.name);
-    const vor=await zustand();
+    // P22-T55 (User 19.10.): mit Ausweis zaehlt NUR die Ausweis-Identitaet; abweichende Selbstangaben werden ignoriert
+    // (Hinweis ausweis_hinweis), kein identitaet_konflikt mehr - auch nicht im strikten Modus.
     const k=await t.call('thought',{action:'get',project,id:thoughtId,token:tok,agent_id:'jemand-anders'});
-    check(k.error==='identitaet_konflikt'&&gleich(k.felder,['agent_id'])&&!JSON.stringify(k).includes(tok),'Widerspruch agent_id abgelehnt, kein Ausweis gespiegelt '+t.name);
-    const an=await t.call('chat',{action:'anmelden',token:tok,agent_id:'jemand-anders'});
-    check(an.error==='identitaet_konflikt','Widerspruch bei Anmeldung '+t.name);
-    const si=await t.call('admin',{action:'index_stats',project,token:tok,sitzung:'fortsetzung',role:'koordinator'});
-    check(si.error==='identitaet_konflikt'&&gleich(si.felder,['role']),'Rollenwiderspruch vor Sitzungssignal '+t.name);
-    const al=await t.call('thought',{action:'add',project,content:'w1b',token:tok,source:'fremder-autor'});
-    check(al.error==='identitaet_konflikt'&&gleich(al.felder,['source']),'Actor-Alias thought.add.source '+t.name);
-    const nach=await zustand();
-    check(gleich(nach,vor),'Ablehnungen ohne Nebenwirkung (Epoch, Lauf, zuletzt_aktiv/benutzt, Audit) '+t.name);
+    check(k.success!==false&&k.error!=='identitaet_konflikt','P22-T55: Widerspruch agent_id ignoriert, kein Fehler '+t.name);
+    // (ohne index_stats: das liest Qdrant-Zaehler = Netz; der Rollen-Widerspruch wird an einem netzfreien Aufruf geprueft)
+    const si=await t.call('thought',{action:'get',project,id:thoughtId,token:tok,role:'koordinator'});
+    check(si.error!=='identitaet_konflikt','P22-T55: Rollenwiderspruch ignoriert '+t.name);
+    // Actor-Alias ohne Embedding (kein Netz im Test): event.emit.source_id statt thought.add.source.
+    const al=await t.call('event',{action:'emit',project,event_type:'ANNOUNCEMENT',priority:'normal',payload:'w1b-'+t.name,token:tok,source_id:'fremder-autor'});
+    const alz=(await pool.query('SELECT source_id FROM agent_events WHERE project=$1 AND payload::text LIKE $2',[project,'%w1b-'+t.name+'%'])).rows[0];
+    check(al.success!==false&&alz&&alz.source_id!=='fremder-autor','P22-T55: Actor-Alias event.emit.source_id durch den Ausweis ersetzt '+t.name);
     check((await t.call('chat',{action:'identitaet',token:tok,project:project+'-fremd'})).error==='agent_token_fremdes_projekt','fremdes Projekt bleibt Konflikt '+t.name);
    }
    const start=(await pool.query('SELECT COALESCE(max(id),0)::text n FROM tool_calls')).rows[0].n;
    const web=await rest.call('thought',{action:'get',project,id:thoughtId,token:tok},{'user-agent':'openai-mcp/1.0'});
    check(web.success!==false,'REST-Vorbelegung derivedAgentId zaehlt nicht als Agentenangabe');
    const webEx=await rest.call('thought',{action:'get',project,id:thoughtId,token:tok,agent_id:'gpt-web'},{'user-agent':'openai-mcp/1.0'});
-   check(webEx.error==='identitaet_konflikt','ausdrueckliche abweichende Angabe bleibt Widerspruch');
+   check(webEx.success!==false&&webEx.error!=='identitaet_konflikt','P22-T55: ausdrueckliche abweichende Angabe ignoriert (Hinweis statt Fehler)');
    const falsch=(await pool.query("SELECT count(*)::int n FROM tool_calls WHERE id>$1 AND error='selbstauskunft_weicht_ab'",[start])).rows[0].n;
    check(falsch===0,'keine falsche Abweichungsdiagnose durch Vorbelegung');
    const ka=async(tool,eingabe,opt,transport)=>C.mitAgentToolAufruf(tool,eingabe,'srv-test',async k=>({k,b:C.bestaetigterAufrufKontext()}),transport,undefined,opt);
@@ -370,7 +370,7 @@ try{
    const alt=await rest.call('thought',{action:'get',project,id:thoughtId,token:tok,agent_id:'jemand-anders'});
    check(alt.success!==false,'AUS: t109 fuehrt trotz Abweichung aus (nur Audit)');
    const {k:k6}=await ka('chat',{action:'get',project,agent_id:'filter-x',token:tok});
-   check(k6.args.agent_id==='f3-agent','AUS: t109-Bindung unveraendert');
+   check(k6.args.agent_id==='f3-agent','AUS: t109-Bindung unveraendert (chat.get liest als Ausweis-Identitaet)');
    const {k:k7}=await ka('thought',{action:'get',project,id:thoughtId,token:tok},undefined,reg2.token);
    check(!k7.antwort,'AUS: kein neuer Ausweiskonflikt (t109)');
   });
@@ -404,7 +404,8 @@ try{
    }finally{C.registriereZuschnittResolver(null);delete process.env.SYNAPSE_W1B_DURCHSETZUNG;}
   });
   const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
-  check(secrets.every(s=>!logs.includes(s)),'kein OAuth-/Agentenausweis im Audit');
+  // P22-T55 (User 19.10.): der Agenten-Ausweis wird nicht mehr maskiert; OAuth/Bearer bleibt geschwaerzt.
+  check(!logs.includes(bearer),'kein OAuth-Bearer im Audit');
   check(network===0,'keine echten Netzwerk-/Modellaufrufe');
   console.log('P22-T13 Phase V: '+checks+' Pruefungen, '+failures.length+' Fehler');
  }

@@ -173,7 +173,9 @@ try{
    await Promise.all([activity(0),activity(1),activity(null)]);
    for(const who of [0,1,null]){
     const calls=await run(who,()=>T.queryToolCalls({project,agentId:[name]}));
-    assert(calls.length>0);assert(calls.every(r=>who===null?!r.identity_id:r.identity_id===ids[who]));
+    // P22-T55 (User 19.10.): ein Name im Filter findet ohne eigenen Ausweis (Legacy/Koordinator) auch die Ausweis-Eintraege
+    // gleichnamiger Identitaeten; der eigene Name eines Ausweis-Agenten meint weiter nur ihn selbst.
+    assert(calls.length>0);assert(who===null?calls.some(r=>!r.identity_id)&&calls.every(r=>!r.identity_id||ids.includes(r.identity_id)):calls.every(r=>r.identity_id===ids[who]));
     if(who!==null){assert(calls.every(r=>r.context_epoch===who+2&&r.lauf_id===runs[who]));
      assert((await run(who,()=>T.queryToolCalls({project,agentId:['identity:'+ids[1]]}))).every(r=>r.identity_id===ids[1]));}
    }

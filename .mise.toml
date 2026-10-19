@@ -32,3 +32,11 @@ run = "pnpm run clean"
 [tasks.lint]
 description = "Run linter"
 run = "pnpm run lint"
+
+[tasks."skills-seed"]
+description = "Seed-Skills (Fall-Skills) laden: fehlende anlegen, vorhandene ueberspringen"
+run = "node scripts/skills-seed-laden.mjs --laden"
+
+[tasks."skills-seed:pruefen"]
+description = "Seed-Skills pruefen (ohne API)"
+run = "node scripts/skills-seed-laden.mjs --pruefen"

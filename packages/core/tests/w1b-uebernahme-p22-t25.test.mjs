@@ -195,8 +195,9 @@ try{
   // ---- sai_-Schwaerzung (tool_calls)
   const sj=S.schwaerzeToolLogText(JSON.stringify({token,action:'search'}));
   const st=S.schwaerzeToolLogText('Dein Agenten-Ausweis ist bereit: '+token+'. Praefix '+token.slice(0,12));
-  check(!sj.includes(token)&&!st.includes(token),'sai_-Ausweis in args und freiem Text geschwaerzt');
-  check(!st.includes(token.slice(0,12)),'P22-T35: auch der 12-Zeichen-Praefix (sai_+8) ist ein Ausweis-Muster und wird im Tool-Log geschwaerzt (Zuordnung ueber identity_id/token_id)');
+  // P22-T55 (User 19.10.): der Ausweis ist kein Geheimnis mehr und wird im Tool-Log NICHT geschwaerzt.
+  check(sj.includes(token)&&st.includes(token),'P22-T55: sai_-Ausweis in args und freiem Text sichtbar');
+  check(st.includes(token.slice(0,12)),'P22-T55: auch der 12-Zeichen-Praefix bleibt sichtbar');
   check(!JSON.stringify(await pool.query("SELECT args_preview,result FROM tool_calls WHERE args_preview LIKE '%sai_%' OR result LIKE '%sai_%'").then(r=>r.rows)).match(/sai_[a-z0-9]{1,64}/),'kein Ausweis im tool_calls-Log');
 }catch(e){
   failures.push('Ausnahme: '+(e?.stack||e));console.error(e);

@@ -49,6 +49,9 @@ export const INTERN_SCHALTER = {
   mehrprojekt: ['freigegeben'],
   // P23-T1: befristete Test-Freigabe der Jev-Funktion skill_rerank (Produkt-Standard AUS); aktiv=true = freigegeben.
   skill_rerank: ['freigegeben'],
+  // P23-T5: befristete Test-Freigabe der Fall-Skill-Funktionen (Produkt-Standard AUS); aktiv=true = freigegeben.
+  tool_beschreibungen_kurz: ['freigegeben'],
+  fall_skill_hinweis: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 

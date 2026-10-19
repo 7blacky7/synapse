@@ -24,7 +24,8 @@ function skillKontextEpoch(): number {
   const p=aktuellerAgentPrincipal();
   return p?.art === 'identity' ? p.context_epoch : 0;
 }
-function skillHandle(project: string, agent: string): string {
+/** P23-T6 exportiert: intern skill_probe loest Empfaenger genau wie der Hook auf. */
+export function skillHandle(project: string, agent: string): string {
   if (!agentBezugAktiv() || agent.startsWith('identity:') || agent.startsWith('legacy:')) return agent;
   const z=kommunikationsAgent(project,agent);
   return z.art === 'identity' ? 'identity:' + z.identity_id : 'legacy:' + z.agent_id;
@@ -524,6 +525,72 @@ export async function bereiteSkillVorschlaegeVor(
   if (!query) return;
   agents = [...new Set(agents.filter(Boolean).map(a=>skillHandle(project,a)))];
   if (agents.length === 0 || !sourceId) return;
+  // P23-T6: Suche, Namenstreffer, Schwellen und Auswahl stehen in ermittleSkillKandidaten - derselbe Weg zeigt
+  // in der Diagnose intern skill_probe, was hier abgelegt wuerde (ohne Schreiben).
+  const { auswahl, besterJeSkill } = await ermittleSkillKandidaten(project, query, agents, searchBatch);
+  // P23-T1 (3): SINNPRUEFUNG der semantischen Treffer vor der Auslieferung (skill-rerank.ts): EIN
+  // Jev-Aufruf je Text fuer alle Empfaenger, Schalter skill_rerank (Standard AUS), Kosten in jev_kosten.
+  // Ist sie aus, bleibt alles wie bisher (kein Jev-Aufruf).
+  // P23-T4: je Skill der beste Treffer mit GANZEM Abschnitt, Titel, Scope, Projekt; dazu Quelle und die
+  // schon aufgeloesten Empfaenger (Rolle/Typ/Aufgabe liest skill-rerank daraus, nach Aufgabe gruppiert).
+  const empfaenger = besterJeSkill.size === 0 ? [] : await loeseSkillEmpfaenger(project, agents);
+  const sinn = await pruefeSkillTrefferSinn({
+    project,
+    text: query,
+    kandidaten: [...besterJeSkill.values()].map((hit) => ({
+      skill_name: hit.skill_name, inhalt: hit.content ?? '', abschnitt: hit.section ?? null, scope: hit.scope ?? null, projekt: hit.project ?? null,
+    })),
+    quelle: { art: sourceType, klartext: QUELLE_KLARTEXT[sourceType], id: sourceId },
+    empfaenger,
+  });
+  await Promise.all(auswahl.map(async ({ agent, namentlich, semantisch }) => {
+    // ⚠️ BEGRUENDUNG UND SCORE AUS DERSELBEN PRUEFUNG (Korrektur 02.08.2026). P23-T1: die reason ist
+    // zugleich die Debug-Ausgabe, WARUM ein Skill vorgeschlagen wird (Name | semantisch + Score + Jev).
+    const kandidaten: SkillKandidat[] = [
+      ...namentlich.map((hit) => ({
+        skill_name: hit.skill_name, score: hit.score, reason: `Skill-Name genannt (${QUELLE_KLARTEXT[sourceType]})`,
+      })),
+      ...semantisch.filter((hit) => bestehtSinnpruefung(sinn, hit.skill_name)).map((hit) => ({
+        skill_name: hit.skill_name,
+        score: hit.score,
+        reason: `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]}, Score ${Number(hit.score).toFixed(2)}${sinnpruefungsZusatz(sinn, hit.skill_name)})`,
+      })),
+    ];
+    await legeSkillKandidatenAb(project, sourceType, sourceId, agent, kandidaten, pool);
+  }));
+}
+
+/** P23-T6: Ergebnis der Kandidatenermittlung - gemeinsamer Weg fuer den Vorrat und die Diagnose intern skill_probe. */
+export interface SkillKandidatenErmittlung {
+  /** Treffer je Agent NACH dem Namenstreffer-Ausgleich (genannte Skills mit NAMENSTREFFER_SCORE) */
+  results: Array<{ agent: string; hits: SkillSearchHit[] }>;
+  /** beim vollen Namen genannte Skills (PG-Namensliste, ohne Embedding) */
+  namensTreffer: string[];
+  /** wirksame Mindestschwelle (channel_skill); null = nicht kalibriert -> nur genannte Skills */
+  minScore: number | null;
+  /** wirksamer Mehrdeutigkeits-Abstand (channel_skill_abstand); null = nicht kalibriert */
+  abstand: number | null;
+  /** je Agent: genannte (ungedeckelt) und semantische Kandidaten (gedeckelt auf CHANNEL_SKILL_KANDIDATEN) */
+  auswahl: Array<{ agent: string; namentlich: SkillSearchHit[]; semantisch: SkillSearchHit[] }>;
+  /** je Skill der beste semantische Treffer - geht in die Sinnpruefung */
+  besterJeSkill: Map<string, SkillSearchHit>;
+}
+
+/** P23-T6: Suchbreite und Kandidatendeckel je Text (fuer die Anzeige in intern skill_probe). */
+export const SKILL_KANDIDATEN_GRENZEN = { suchbreite: CHANNEL_SKILL_SUCHBREITE, kandidaten: CHANNEL_SKILL_KANDIDATEN } as const;
+
+/**
+ * Ermittelt die Skill-Kandidaten fuer EINEN Text und mehrere Agenten - OHNE zu schreiben.
+ * P23-T6: aus bereiteSkillVorschlaegeVor ausgelagert (Verhalten unveraendert). schwellen ueberschreibt die
+ * wirksamen Werte nur fuer diesen Aufruf (Testwerte der Diagnose); ohne Angabe gelten Env/Modellprofil.
+ */
+export async function ermittleSkillKandidaten(
+  project: string,
+  query: string,
+  agents: string[],
+  searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
+  schwellen: { minScore?: number | null; abstand?: number | null } = {},
+): Promise<SkillKandidatenErmittlung> {
   // ⚠️ BREIT SUCHEN, ENG AUSLIEFERN.
   // Die Namenserkennung kann nur Skills finden, die in der Trefferliste stehen. Mit acht
   // Treffern fiel ein Text, der DREI Skills namentlich nennt, auf einen einzigen zusammen:
@@ -552,9 +619,9 @@ export async function bereiteSkillVorschlaegeVor(
     }
   }
   // P15-T8: Schwellen des aktiven Modells; nicht kalibriert -> nur namentlich genannte Skills.
-  const [{ schwelle: minScore }, { schwelle: abstand }] = await Promise.all([
-    scoreSchwelleOderHinweis('channel_skill'),
-    scoreSchwelleOderHinweis('channel_skill_abstand'),
+  const [minScore, abstand] = await Promise.all([
+    schwellen.minScore !== undefined ? schwellen.minScore : scoreSchwelleOderHinweis('channel_skill').then((r) => r.schwelle),
+    schwellen.abstand !== undefined ? schwellen.abstand : scoreSchwelleOderHinweis('channel_skill_abstand').then((r) => r.schwelle),
   ]);
   // MEHRERE KANDIDATEN je Agent ablegen (Nachruecken beim naechsten Abruf). Genannte Skills sind
   // ungedeckelt (Korrektur 02.08.2026), der Deckel gilt nur den semantischen Treffern.
@@ -566,11 +633,6 @@ export async function bereiteSkillVorschlaegeVor(
       .slice(0, Math.max(0, CHANNEL_SKILL_KANDIDATEN - namentlich.length));
     return { agent, namentlich, semantisch };
   });
-  // P23-T1 (3): SINNPRUEFUNG der semantischen Treffer vor der Auslieferung (skill-rerank.ts): EIN
-  // Jev-Aufruf je Text fuer alle Empfaenger, Schalter skill_rerank (Standard AUS), Kosten in jev_kosten.
-  // Ist sie aus, bleibt alles wie bisher (kein Jev-Aufruf).
-  // P23-T4: je Skill der beste Treffer mit GANZEM Abschnitt, Titel, Scope, Projekt; dazu Quelle und die
-  // schon aufgeloesten Empfaenger (Rolle/Typ/Aufgabe liest skill-rerank daraus, nach Aufgabe gruppiert).
   const besterJeSkill = new Map<string, SkillSearchHit>();
   for (const { semantisch } of auswahl) {
     for (const hit of semantisch) {
@@ -578,37 +640,18 @@ export async function bereiteSkillVorschlaegeVor(
       if (!alt || hit.score > alt.score) besterJeSkill.set(hit.skill_name, hit);
     }
   }
-  const empfaenger = besterJeSkill.size === 0 ? [] : await Promise.all(agents.map(async (agent) => {
+  return { results, namensTreffer, minScore, abstand, auswahl, besterJeSkill };
+}
+
+/** P23-T6: Empfaenger der Sinnpruefung aus den Handles (Identitaet mit Ausweis oder Legacy-Name). Wirft nie. */
+export async function loeseSkillEmpfaenger(project: string, agents: string[]): Promise<Array<{ identity_id?: string; agent_id: string }>> {
+  return Promise.all(agents.map(async (agent) => {
     try {
       const z = await skillAgent(project, agent);
       return z.art === 'identity' ? { identity_id: z.identity_id, agent_id: z.agent_id } : { agent_id: z.agent_id };
     } catch {
       return { agent_id: agent.replace(/^(legacy|identity):/, '') };
     }
-  }));
-  const sinn = await pruefeSkillTrefferSinn({
-    project,
-    text: query,
-    kandidaten: [...besterJeSkill.values()].map((hit) => ({
-      skill_name: hit.skill_name, inhalt: hit.content ?? '', abschnitt: hit.section ?? null, scope: hit.scope ?? null, projekt: hit.project ?? null,
-    })),
-    quelle: { art: sourceType, klartext: QUELLE_KLARTEXT[sourceType], id: sourceId },
-    empfaenger,
-  });
-  await Promise.all(auswahl.map(async ({ agent, namentlich, semantisch }) => {
-    // ⚠️ BEGRUENDUNG UND SCORE AUS DERSELBEN PRUEFUNG (Korrektur 02.08.2026). P23-T1: die reason ist
-    // zugleich die Debug-Ausgabe, WARUM ein Skill vorgeschlagen wird (Name | semantisch + Score + Jev).
-    const kandidaten: SkillKandidat[] = [
-      ...namentlich.map((hit) => ({
-        skill_name: hit.skill_name, score: hit.score, reason: `Skill-Name genannt (${QUELLE_KLARTEXT[sourceType]})`,
-      })),
-      ...semantisch.filter((hit) => bestehtSinnpruefung(sinn, hit.skill_name)).map((hit) => ({
-        skill_name: hit.skill_name,
-        score: hit.score,
-        reason: `Semantischer Treffer (${QUELLE_KLARTEXT[sourceType]}, Score ${Number(hit.score).toFixed(2)}${sinnpruefungsZusatz(sinn, hit.skill_name)})`,
-      })),
-    ];
-    await legeSkillKandidatenAb(project, sourceType, sourceId, agent, kandidaten, pool);
   }));
 }
 

@@ -13,7 +13,7 @@
  */
 
 import { getPool } from '../db/client.js';
-import { aktuelleAgentIdentityId, aktuellerAgentAufruf } from './agent-bezug.js';
+import { loeseAgentFilter } from './agent-bezug.js';
 import { resolveProjectTaskId } from './task-id-resolver.js';
 import { ergaenzeFileTasks } from './file-task-zuordnung.js';
 import { updateFileInPg, getFileContentFromPg } from './code-write.js';
@@ -157,10 +157,12 @@ async function ergaenzeDiffs<T extends FileVersionMeta>(rows: T[], opts: { max: 
   return rows;
 }
 
-function historyIdentity(project:string,name?:string):string|null {
-  if(!name || !aktuellerAgentAufruf() || aktuellerAgentAufruf()?.bezug.modus==='alt') return null;
-  return name.startsWith('identity:') ? name.slice(9) : aktuelleAgentIdentityId(project,name);
+/** P22-T55: Agent-Filter ueber den EINEN Resolver (Name/agent_id/identity_id/'identity:<id>'), auch fremde Ausweis-Agenten. */
+async function historyFilter(project:string,name?:string):Promise<{identity_ids:string[];namen:string[]}|null> {
+  return name ? loeseAgentFilter(project,[name]) : null;
 }
+const HISTORY_AGENT_SQL = (ids:string, namen:string) =>
+  `(${namen}::text[] IS NULL OR author_identity_id = ANY(${ids}::text[]) OR (author_identity_id IS NULL AND agent_id = ANY(${namen}::text[])))`;
 export interface FileVersionMeta {
   id: string;          // BIGSERIAL als String (JS Number-Limit)
   project: string;
@@ -215,6 +217,7 @@ export async function listFileVersions(
   const safeLimit = Math.max(1, Math.min(limit, 500));
   const pool = getPool();
   const taskId = taskRef !== undefined ? await resolveProjectTaskId(project, taskRef) : null;
+  const af = await historyFilter(project, opts.agent_id);
   const result = await pool.query<FileVersionMeta>(
     `SELECT id::text AS id, project, file_path, content_hash, edit_action, agent_id, author_identity_id,
             batch_id::text AS batch_id, size_bytes, created_at::text AS created_at, reason,
@@ -223,10 +226,10 @@ export async function listFileVersions(
      WHERE project = $1 AND file_path = $2 AND ($4::text IS NULL OR task_id = $4)
        AND (NOT $5::boolean OR task_id IS NULL)
        AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
-       AND ($7::text IS NULL OR ($8::text IS NOT NULL AND author_identity_id=$8) OR ($8::text IS NULL AND author_identity_id IS NULL AND agent_id=$7))
+       AND ${HISTORY_AGENT_SQL('$8', '$7')}
      ORDER BY created_at DESC, id DESC
      LIMIT $3`,
-    [project, filePath, safeLimit, taskId, opts.ohne_task === true, opts.since ?? null, opts.agent_id ?? null, opts.agent_id ? historyIdentity(project,opts.agent_id) : null]
+    [project, filePath, safeLimit, taskId, opts.ohne_task === true, opts.since ?? null, af?.namen ?? null, af?.identity_ids ?? null]
   );
   return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
 }
@@ -336,6 +339,7 @@ export async function listFileHistory(
   // Rekursiver CTE: Start ist die angegebene Version, dann jeweils parent_version_id
   // nach oben — projektgebunden (Schutz vor Cross-Project-Leak).
   if (opts.version_id) {
+    const af = opts.ohne_task ? await historyFilter(project, opts.agent_id) : null;
     const result = await pool.query<FileVersionMeta>(
       `WITH RECURSIVE chain AS (
          SELECT * FROM file_versions WHERE id = $1 AND project = $2
@@ -351,10 +355,10 @@ export async function listFileHistory(
        WHERE ($4::text IS NULL OR task_id = $4)
          AND (NOT $5::boolean OR task_id IS NULL)
          AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
-         AND ($7::text IS NULL OR ($8::text IS NOT NULL AND author_identity_id=$8) OR ($8::text IS NULL AND author_identity_id IS NULL AND agent_id=$7))
+         AND ${HISTORY_AGENT_SQL('$8', '$7')}
        ORDER BY created_at DESC, id DESC
        LIMIT $3`,
-      [opts.version_id, project, safeLimit, opts.task_id !== undefined ? await resolveProjectTaskId(project, opts.task_id) : null, opts.ohne_task === true, opts.ohne_task ? opts.since ?? null : null, opts.ohne_task ? opts.agent_id ?? null : null, opts.ohne_task && opts.agent_id ? historyIdentity(project,opts.agent_id) : null],
+      [opts.version_id, project, safeLimit, opts.task_id !== undefined ? await resolveProjectTaskId(project, opts.task_id) : null, opts.ohne_task === true, opts.ohne_task ? opts.since ?? null : null, af?.namen ?? null, af?.identity_ids ?? null],
     );
     return ergaenzeDiffs(result.rows, { max: NACHBERECHNEN_JE_AUFRUF, kurz: true });
   }
@@ -362,9 +366,10 @@ export async function listFileHistory(
   const params: unknown[] = [project];
   const conds: string[] = ['project = $1'];
   if (opts.agent_id) {
-    const identityId = historyIdentity(project,opts.agent_id);
-    params.push(identityId ?? opts.agent_id);
-    conds.push(identityId ? `author_identity_id = $${params.length}` : `author_identity_id IS NULL AND agent_id = $${params.length}`);
+    const af = (await historyFilter(project, opts.agent_id))!;
+    params.push(af.identity_ids); const ids = '$' + params.length;
+    params.push(af.namen); const namen = '$' + params.length;
+    conds.push(HISTORY_AGENT_SQL(ids, namen));
   }
   if (opts.file_path) {
     params.push(opts.file_path + '%');

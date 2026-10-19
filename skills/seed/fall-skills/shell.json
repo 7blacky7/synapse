@@ -1,0 +1,85 @@
+{
+  "bereich": "shell",
+  "skills": [
+    {
+      "skill_name": "fall-shell",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer shell (Build, Test, Git, Installation im Projekt). Quelltext wird NIE per shell geaendert, sondern ueber files. Antwort executed_via zeigt local (Daemon) oder workspace (Container)." },
+        { "section": "faelle", "content": "- fall-shell-routing: wo laeuft das Kommando (auto/local/workspace).\n- fall-shell-rueckfrage-ausweis / fall-shell-rueckfrage-legacy: gefaehrlicher Befehl, stufe rueckfrage (Auswahl automatisch nach Weg).\n- fall-shell-langer-job: status running, unterbrochen_durch, Ergebnis abholen, cancel/hide.\n- fall-shell-angehaengt: attached:true statt eigenem Lauf.\n- fall-shell-demaskieren: maskierte Ausgabe.\n- fall-shell-projektdateien: Befehle, die Projektdateien nebenbei aendern, sind verboten.\n- fall-shell-testdb: Tests nur gegen synapse_test.\n- fall-shell-aufsicht: history und activity." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-routing",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Wahl des Ausfuehrungsorts oder unerwartetes executed_via." },
+        { "section": "regeln", "content": "1. target auto (Standard): laeuft ein lokaler Daemon (Heartbeat < 30 s), geht der Job an ihn (echtes Dateisystem, native Tools, git/sudo/GPU); sonst in den Workspace-Container auf der API (isoliert, Quelltext read-only 0444).\n2. target local erzwingt den Daemon (Fehler, wenn keiner aktiv); target workspace bzw. isolated:true erzwingt den Container (isolierte Tests, Build-Sandbox).\n3. workspace:\"<name>\" waehlt einen benannten Container (Standard main; server-Container des Projekts per workspace:\"server\"), nur mit target workspace.\n4. cwd ist das Projekt-Root; cwd_relative fuer Unterordner. shell:\"bash\" fuer Bash-Syntax (Standard sh).\n5. Lange Pipelines: Exit-Code mit ${PIPESTATUS[0]} pruefen (bash)." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-rueckfrage-ausweis",
+      "weg": "ausweis",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: shell exec antwortet mit stufe rueckfrage und bestaetigung_id (gefaehrlicher Befehl laut Katalog, z. B. loeschend/ueberschreibend, Inline-Node mit Dateizugriff)." },
+        { "section": "regeln", "content": "1. Lage pruefen: die Antwort nennt Ziele und Treffer; Sicherung klaeren.\n2. Bestaetigen: DENSELBEN Aufruf (gleiches command) erneut mit bestaetigung:{id:<bestaetigung_id>, grund:<mind. 10 Zeichen>} und deinem token. Frist 60 s, danach verfaellt die Rueckfrage.\n3. Nur der aufrufende Agent kann seine eigene Rueckfrage bestaetigen - die Identitaet kommt aus dem token, agent_id nicht mitschicken.\n4. Besser: Befehl auf die Ziele begrenzen oder als sichtbare Skriptdatei (Scratchpad) statt node -e ausfuehren; ein klar lesender Befehl braucht oft keine Rueckfrage." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-rueckfrage-legacy",
+      "weg": "legacy",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: shell exec antwortet mit stufe rueckfrage und bestaetigung_id (gefaehrlicher Befehl laut Katalog), oder die Bestaetigung scheitert mit agent_fehlt." },
+        { "section": "regeln", "content": "1. Lage pruefen: die Antwort nennt Ziele und Treffer; Sicherung klaeren.\n2. Bestaetigen: DENSELBEN Aufruf (gleiches command) erneut mit bestaetigung:{id:<bestaetigung_id>, grund:<mind. 10 Zeichen>} und derselben agent_id wie beim ersten Aufruf. Frist 60 s.\n3. Ohne agent_id scheitert die Bestaetigung (agent_fehlt) - nur der aufrufende Agent darf seine Rueckfrage bestaetigen.\n4. Besser: Befehl auf die Ziele begrenzen oder als sichtbare Skriptdatei statt node -e ausfuehren." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-langer-job",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: exec kehrt mit status running zurueck, mit unterbrochen_durch (neue Nachricht in einem deiner Channels) oder der Job dauert laenger." },
+        { "section": "regeln", "content": "1. Der Job laeuft weiter. Ergebnis: shell(action:\"get\", id) bzw. shell(action:\"log\", id, from_line/to_line oder query). id = Job-UUID aus der Antwort bzw. shell(history) - NICHT stream_id.\n2. Kein sleep/until/Poll - zwischendurch anderes erledigen, die unterbrechende Nachricht lesen.\n3. cancel(id): in den ersten 10 Minuten nur der Starter, danach jeder.\n4. hide(id): blendet shell_activity-Hinweise zu einem Job aus; in den ersten 3 Minuten nach Abschluss nur der Starter; for_agents = wer ihn weiter sieht (der Starter bleibt immer Empfaenger)." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-angehaengt",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Antwort attached:true - derselbe Befehl lief schon." },
+        { "section": "regeln", "content": "1. Gleiche Befehle (z. B. Build) werden zusammengefasst: du haengst am laufenden Job und bekommst dessen Ergebnis - zwei gleiche Builds wuerden sich im selben dist/ stoeren.\n2. force:true nur, wenn wirklich ein unabhaengiger zweiter Lauf noetig ist." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-demaskieren",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Ausgabe enthaelt maskierte Werte, die fuer die Arbeit gebraucht werden." },
+        { "section": "regeln", "content": "1. Standard maskierung:true. maskierung:false (exec|get|log) erzeugt erst eine Rueckfrage mit bestaetigung_id; derselbe Aufruf mit bestaetigung:{id, grund} demaskiert.\n2. Demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden in bestaetigung kuerzer) unmaskiert gespeichert, danach automatisch nachmaskiert; maskieren(id) maskiert sofort.\n3. Tool-Calls, Embeddings und Logs bleiben immer maskiert. Geheimnisse nie in Channels/Thoughts uebernehmen." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-projektdateien",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Kommando, das Projektdateien aendert (pnpm add/remove/update, npm install <pkg>, cargo add, go get, uv add, prettier -w, gofmt -w, black, sed -i, echo >, cp/mv auf Projektdateien, Codegeneratoren ins Repo)." },
+        { "section": "regeln", "content": "1. Verboten: Aenderungen an Projektdateien laufen nur ueber files (Versionierung, Audit, Index).\n2. Abhaengigkeit hinzufuegen: package.json per files aendern, dann nur abgleichen (pnpm install), entstandene Lockfile-Aenderung per files nachziehen (Inhalt = Platte, Hash pruefen).\n3. Formatter nur pruefend (--check) oder Ausgabe per files uebernehmen.\n4. Wegwerf-Dateien in /tmp bzw. Scratchpad sind erlaubt; Projektcode dort nie entwerfen.\n5. git nur ueber shell und nur mit Auftrag; zuruecksetzen nie per git, sondern files restore." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-testdb",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Tests oder Skripte mit Datenbankzugriff." },
+        { "section": "regeln", "content": "1. Tests nur gegen die Testdatenbank synapse_test (Port 5433) mit eigenem Schema/Testprojekt; nie gegen die Produktions-DB.\n2. job_env.database_url der shell-Antwort zeigt, welche DB der Job sieht.\n3. Projekt-DB fuer eigene Experimente: project(action:\"projekt_db\", project) (fall-projekt-db)." }
+      ]
+    },
+    {
+      "skill_name": "fall-shell-aufsicht",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: fruehere Jobs oder Tool-Aufrufe anderer Agenten nachsehen." },
+        { "section": "regeln", "content": "1. history: Job-Metadaten mit Vorschau (limit bis 200, offset, status, project).\n2. activity: alle Tool-Aufrufe (nicht nur shell) zeitlich verzahnt; Filter agent_ids, tools, mutations_only, errors_only, since; detail meta (Standard) | summary | full.\n3. get detail:\"full\" liefert volle Lage und job_env." }
+      ]
+    }
+  ]
+}

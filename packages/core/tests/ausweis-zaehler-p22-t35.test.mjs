@@ -61,10 +61,10 @@ await section('A4 Schwaerzung (tool-args-schwaerzen) fuer alle Laengen',async()=
   const hex='sai_'+'0123456789abcdef'.repeat(4);
   for(const t of ['sai_2','sai_zz','sai_222','sai_2222',hex]){
     const txt=S.schwaerzeToolText('Ausweis '+t+' wird genutzt');
-    check(!txt.includes(t)&&txt.includes('[WERT]'),'freier Text geschwaerzt: '+mask(t));
+    // P22-T55 (User 19.10.): der Agenten-Ausweis ist kein Geheimnis mehr - nie schwaerzen (auch unter 'token').
+    check(txt.includes(t)&&!txt.includes('[WERT]'),'P22-T55 freier Text NICHT geschwaerzt: '+mask(t));
     const d=S.schwaerzeToolDaten({token:t,notiz:'x '+t+' y',liste:[t]});
-    check(!JSON.stringify(d).includes(t),'Daten geschwaerzt (token, Notiz, Liste): '+mask(t));
-    check(S.istGeheimMusterWert(t)===true&&S.istGeheimMusterWert('Wert '+t)===true,'Geheimmuster erkannt: '+mask(t));
+    check(JSON.stringify(d)===JSON.stringify({token:t,notiz:'x '+t+' y',liste:[t]}),'P22-T55 Daten NICHT geschwaerzt (token, Notiz, Liste): '+mask(t));
   }
   const norm='Das ist normaler Text: said, saint_x, sai_Ausweis, risk-assessment, x-sai_2, prefix_sai_2';
   check(S.schwaerzeToolText(norm)===norm,'normaler Text bleibt unveraendert (kein Fehlalarm)');
@@ -90,7 +90,7 @@ await section('A6 Quellen-Waechter: keine alte Formatpruefung, keine andere Erze
   const daemon=readFileSync(join(root,'packages/file-watcher-daemon-ts/src/agent-start-api.ts'),'utf8');
   check(daemon.includes('/^sai_[a-z0-9]{1,64}$/'),'Daemon-Formatpruefung gleich zu AUSWEIS_FORMAT');
   const schw=readFileSync(join(root,'packages/core/src/services/tool-args-schwaerzen.ts'),'utf8');
-  check((schw.match(/sai_\[a-z0-9\]\{1,64\}/g)||[]).length>=2,'Schwaerzung: beide Geheimmuster mit sai_[a-z0-9]{1,64}');
+  check((schw.match(/sai_\[a-z0-9\]\{1,64\}/g)||[]).length===0&&schw.includes('istAusweisWert'),'P22-T55: Schwaerzung ohne sai_-Muster, Ausweis ausdruecklich ausgenommen');
   const schemaTs=readFileSync(join(root,'packages/core/src/db/schema.ts'),'utf8');
   check(/\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_NR_SCHEMA_SQL\}\s*(?:\$\{AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL\}\s*)?(?:\$\{AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL\}\s*)?(?:\$\{AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL\}\s*)?`/.test(schemaTs),'schema.ts: 115 direkt nach 114');
   const sql115=readFileSync(join(root,'packages/core/src/db/schema-sql/115_agent_ausweis_nr.sql'),'utf8');

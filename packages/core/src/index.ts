@@ -580,6 +580,9 @@ export * from './services/agent-profil-vertrag.js';
 export * from './services/tool-gate.js';
 export * from './services/agent-selbstfelder.js';
 export * from './services/agent-profil-schalter.js';
+// P23-T5: Fall-Skills (kurze Tool-Beschreibungen, Fall-Skill-Hinweis bei Fehlbedienung je Weg).
+export * from './services/fall-skills.js';
+export * from './services/tool-beschreibungen-kurz.js';
 export { PAKET_A_DIENSTE, ProfilDienstFehler, pruefeProfilInhalt, leseWirksamenTypInhalt } from './services/agent-profil-dienst-a.js';
 export * from './services/agent-token-tresor.js';
 // P22-T13 Paket C: vollstaendiger Hinweiskatalog (Katalognamen zusaetzlich ueber agent-profil-vertrag),

@@ -1,0 +1,173 @@
+{
+  "bereich": "agenten-projekt",
+  "skills": [
+    {
+      "skill_name": "fall-specialist",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer specialist (persistente Helfer-Agenten als Subprozess auf dem Projekt-PC): spawn, spawn_batch, wake, status, stop, purge, update_skill, heartbeat, capabilities, selbst." },
+        { "section": "faelle", "content": "- fall-spez-spawn: Modell-Alias, Effort, keep_alive, project_path.\n- fall-spez-heartbeat: Takt an/aus, null vs. weglassen.\n- fall-spez-lebenszyklus: wake, status, stop, purge, selbst." }
+      ]
+    },
+    {
+      "skill_name": "fall-spez-spawn",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: spawn/spawn_batch abgelehnt (unbekanntes Modell, Effort ungueltig) oder Spezialist stirbt ohne Comeback." },
+        { "section": "regeln", "content": "1. Pflicht: name, model, expertise, task, project (+ project_path lokal; ueber REST aus der DB). Optional cwd, channel (Standard {project}-general), allowed_tools.\n2. model = Alias aus der Modell-Registry (capabilities -> supportedModels; unbekannt -> Fehler mit Liste). Claude immer neueste Version: opus/haiku 200k, sonnet 1M (sonnet[1m] gleich), opus[1m] 1M, fable 1M; aeltere ueber versionierte Aliase (opus-5, opus-4.8 ... je auch [1m], sonnet-5, sonnet-4.6 nur 200k, fable-5). antigravity (agy-CLI, Pro-Abo); gemini-flash-lite/-flash/-pro 1M (GOOGLE_API_KEY).\n3. effort: weglassen = default_effort des Modells (Claude medium). Stufen je Modell in supportedModels[].effort_stufen; eine nicht unterstuetzte Stufe wird abgelehnt (die CLI wiche sonst still aus); haiku kennt keinen Effort; Gemini/antigravity ohne Flag. Bleibt bei Rotation/Neustart gleich.\n4. keep_alive:true fuer langlaufende Spezialisten (Wecken im Idle + Auto-Respawn bei Crash/Context-Limit). Standard REST false, stdio true; false nur fuer One-Shot-Tasks.\n5. spawn_batch: 1..10 Items; fehlende Pflichtfelder werden mit Index gemeldet, nichts startet halb." }
+      ]
+    },
+    {
+      "skill_name": "fall-spez-heartbeat",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Spezialist soll nicht mehr von selbst schlagen oder einen festen Takt bekommen." },
+        { "section": "regeln", "content": "1. heartbeat_enabled:false = schlaegt nicht mehr selbst, bleibt per wake erreichbar; true = wieder an; weglassen = unveraendert.\n2. heartbeat_interval_ms: fester Takt (min. 5000) oder null = adaptive Leiter (10 s .. 60 min). Weglassen und null sind NICHT dasselbe." }
+      ]
+    },
+    {
+      "skill_name": "fall-spez-lebenszyklus",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Spezialist ansprechen, pruefen, pausieren oder entfernen." },
+        { "section": "regeln", "content": "1. wake(name, message) spricht an. status(name|Array); ohne name sind Leichen (last_activity > 24 h) ausgeblendet, alle:true zeigt sie.\n2. stop pausiert (keep_alive-Wrapper kann neu starten); purge = Stop + komplette Entfernung (Verzeichnis, status.json, Channel-Mitgliedschaften, Chat-Session) - danach kein Auto-Respawn.\n3. update_skill(name, skill_action add|remove, file oder section, content).\n4. selbst: Selbstauskunft (Modell, Effort, Kontext, Tokens, Schwellen, Cutoff) nur aus DB/Registry." }
+      ]
+    },
+    {
+      "skill_name": "fall-workspace",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer workspace (Lebenszyklus der Docker-Sandbox-Container je Projekt). Zum Ausfuehren immer shell verwenden." },
+        { "section": "faelle", "content": "- fall-ws-exec-ist-shell: Kommandos laufen ueber shell.\n- fall-ws-rollen: benannte Workspaces, Rollen-Vorlagen, Netz zwischen Containern, Container-Builds.\n- fall-ws-make-writable: Build-Artefakte, configure, reset_home." }
+      ]
+    },
+    {
+      "skill_name": "fall-ws-exec-ist-shell",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: workspace(exec) oder workspace(commit) wird benutzt." },
+        { "section": "regeln", "content": "1. exec ist veraltet: shell(isolated:true) bzw. shell(target:\"workspace\", workspace:<name>) - gleiche Engine, einheitliche Antwort mit executed_via.\n2. commit ist veraltet: Dateien ueber files schreiben; sie werden automatisch in den Container synchronisiert (PG LISTEN/NOTIFY). materialize (voller Sync) nur selten noetig.\n3. Lebenszyklus: list, start/stop, pin/unpin (vor Idle-Eviction schuetzen); Idle-Stop nach 10 Minuten, LRU-Eviction bei Cap." }
+      ]
+    },
+    {
+      "skill_name": "fall-ws-rollen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: mehrere Container fuer ein Projekt (Server/App/DB), Netzwerk-Integrationstest oder Container-Builds." },
+        { "section": "regeln", "content": "1. name = benannter Workspace (Standard main, Regex ^[a-z0-9][a-z0-9-]{0,19}$, Cap je Projekt per ENV, Standard 6). Alle teilen /workspace, haben eigenes Home-Volume, Caps und Image.\n2. DNS im proxynet: main = synapse-ws-<projekt>, sonst synapse-ws-<projekt>-<name>. Nie Container-IPs nutzen (wechseln beim Neustart). expose_ports liefert internal_urls.\n3. Rollen = Vorlagen: role_set(role, init_command, description, devices, security_opts), role_list, role_delete; project weglassen = global, projektbezogen schlaegt global. start/exec mit role + name instanziiert (beliebig oft). init_command laeuft nach jedem Start (120 s).\n4. Rolle container-builder: rootless Podman fuer Dockerfiles/compose. devices (/dev/fuse, /dev/kvm, /dev/net/tun) und security_opts nur fuer Rollen in SYNAPSE_WS_PRIVILEGED_ROLES; kein --privileged, kein docker.sock." }
+      ]
+    },
+    {
+      "skill_name": "fall-ws-make-writable",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Build im Container scheitert an Schreibrechten, zu wenig Ressourcen oder kaputte Caches." },
+        { "section": "regeln", "content": "1. Quelltext in /workspace ist read-only (0444, root); node_modules und dist sind schreibbar. Fuer weitere Build-Ordner: make_writable(path relativ unter /workspace, z. B. compiler/target) - kein '..', nicht '.'.\n2. configure(cpu_limit, mem_limit_mb >= 128, pids_limit >= 16, tmpfs_mb, image, name) - greift beim naechsten Start.\n3. reset_home setzt das Home-Volume zurueck (npm/pip/cargo-Caches kaputt); stoppt den Container, /workspace bleibt." }
+      ]
+    },
+    {
+      "skill_name": "fall-project",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer project (Lebenszyklus: init, init_status, complete_setup, detect_tech, cleanup, stop, status, list, enable, disable, projekt_db, host_loesen, loeschen, hinweise)." },
+        { "section": "faelle", "content": "- fall-projekt-pfad-aufloesen: welches Projekt gehoert zum Arbeitsordner.\n- fall-projekt-init: neues Projekt anlegen oder wiederherstellen.\n- fall-projekt-db: Projekt-Datenbank (Spielwiese).\n- fall-projekt-loeschen: Loeschen nur mit Code des Users; host_loesen." }
+      ]
+    },
+    {
+      "skill_name": "fall-projekt-pfad-aufloesen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Sitzungsbeginn, unbekannter oder mehrdeutiger Projektpfad." },
+        { "section": "regeln", "content": "1. project(action:\"status\", path:<absoluter Arbeitsordner>) - status.project uebernehmen; nie aus Ordnername oder letzter Sitzung raten.\n2. Unbekannt oder mehrdeutig: klaeren (Koordinator/User), NICHT automatisch init.\n3. enable/disable schalten das Projekt in PG; Parser-Worker und Daemon folgen." }
+      ]
+    },
+    {
+      "skill_name": "fall-projekt-init",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: neues Projekt anlegen oder bestehende Tray-Bindung wiederherstellen." },
+        { "section": "regeln", "content": "1. Nur mit Auftrag. init + name (ohne path): Anlage-Job an den Daemon des Ziel-PCs, Ordner unter SYNAPSE_WORKSPACE_ROOT (Standard ~/dev); name 2-64 Zeichen [a-zA-Z0-9_-]. hostname, wenn mehrere Daemons haengen. Status: init_status(job_id).\n2. mode restore_existing + name + hostname: liefert ein im Tray gebundenes Projekt per API zurueck (kein Stub, keine DB, kein Workspace-Start).\n3. index_docs (Standard true), template informativ. complete_setup(phase)." }
+      ]
+    },
+    {
+      "skill_name": "fall-projekt-db",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Projekt braucht eine eigene Datenbank fuer Tests/Experimente." },
+        { "section": "regeln", "content": "1. projekt_db(project): Host, Port, DB, User, Passwort, DATABASE_URL der Spielwiese (192.168.50.65:5433) - oder vorhanden:false mit fertigem Aufruf; erstellen:true legt an.\n2. Neue Projekte bekommen sie bei init automatisch; status zeigt nur vorhanden ja/nein.\n3. uebernehmen {database, user, passwort, host?, port?} (nur Koordinator/User) registriert eine bestehende DB; Standard vorschau, eintragen mit vorschau:false; ueberschreibt nie, nie System-DB.\n4. Nie gegen die Produktions-DB arbeiten." }
+      ]
+    },
+    {
+      "skill_name": "fall-projekt-loeschen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Projekt von einem Rechner oder aus Synapse entfernen." },
+        { "section": "regeln", "content": "1. Schritt 1: loeschen(project, hostname, umfang rechner|zentral|komplett) = Vorschau mit Zaehlung je Tabelle + loesch_auftrag_id, nichts geloescht.\n2. Schritt 2: loesch_auftrag_id + loesch_code - 6 Ziffern, die NUR der User aus seiner Authenticator-App (Synapse-Loeschen:<Rechner>) nennt, ca. 3 Minuten gueltig. Nie selbst erzeugen oder raten.\n3. Geschuetzt: synapse, reverse-bibliothek, virtuelle Projekte. Zentrale Daten erst, wenn kein anderer Rechner gebunden ist.\n4. host_loesen(project, hostname; Koordinator/User; Standard vorschau) entfernt nur die Registry-Zeile und den config.json-Eintrag dieses Hosts - keine Daten, kein disable." }
+      ]
+    },
+    {
+      "skill_name": "fall-channel",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer channel (Gruppen-Notizboards: create, join, leave, post, feed, get, list, archivieren, sichtung)." },
+        { "section": "faelle", "content": "- fall-channel-kurz-posten: was in einen Post gehoert.\n- fall-channel-feed-blaettern: aeltere Nachrichten lesen.\n- fall-channel-sichtung: Channel aufraeumen und Wissen sichern." }
+      ]
+    },
+    {
+      "skill_name": "fall-channel-kurz-posten",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: channel post mit langem Bericht." },
+        { "section": "regeln", "content": "1. Ergebnisse, Befunde und Berichte zuerst als thought (per ID lesbar) oder memory (dauerhaft) ablegen; im Channel nur ID/Name mit einer Zeile (z. B. 'T2 fertig, Ergebnis: thought ab12cd34').\n2. Ausfuehrlich nur bei Rueckfrage, Entscheidung, Blocker oder Hinweis fuer den User.\n3. sender ist nur der sichtbare Absender und ersetzt die Identitaet nicht. Mehrere Posts: messages[] (1..20)." }
+      ]
+    },
+    {
+      "skill_name": "fall-channel-feed-blaettern",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: feed zeigt nur die neuesten Nachrichten; Anfang eines langen Channels gesucht." },
+        { "section": "regeln", "content": "1. Standard order desc = die neuesten limit Nachrichten (Standard 20).\n2. Rueckwaerts: before_id auf die kleinste ID der letzten Seite setzen.\n3. Von vorne: order asc, since_id auf die letzte gelesene ID setzen und wiederholen.\n4. preview:true kuerzt Inhalte; archiv:true zeigt auch archivierte Nachrichten (nie geloescht)." }
+      ]
+    },
+    {
+      "skill_name": "fall-channel-sichtung",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Channel aufraeumen oder archivieren." },
+        { "section": "regeln", "content": "1. sichtung_status/sichtung_setzen halten fest, welche Beitraege (agent_name = wessen) ausgewertet sind: status gesichert (dann memory_name) oder nichts_verwertbares.\n2. Das Memory bekommt Herkunfts-Tags (aus-channel, channel:<name>, stand:<datum>) - es ist eine Momentaufnahme.\n3. archivieren mit bis_nachricht_id archiviert nur bis zu dieser ID (Standardchannel <projekt>-general bleibt offen); null hebt den Schnitt auf." }
+      ]
+    },
+    {
+      "skill_name": "fall-chat",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer chat (Anmeldung, Adressbuch, Direktnachrichten, Inbox). Anmeldung je Weg: fall-querschnitt-ausweis-token bzw. fall-querschnitt-agent-id-legacy." },
+        { "section": "faelle", "content": "- fall-chat-nachrichten: Direktnachricht vs. Inbox, Lesen und Filter." }
+      ]
+    },
+    {
+      "skill_name": "fall-chat-nachrichten",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Nachricht an einen Agenten senden oder lesen." },
+        { "section": "regeln", "content": "1. send(content, recipient_id String oder Array = Multicast) bzw. inbox_send(from_agent, to_agent, content).\n2. get(since ISO, sender_id_filter, limit, message_id); inbox_check(agent_name) - agent_name ist hier der Name, nicht agent_id.\n3. Bei chat(get) ist agent_id ein Filter.\n4. cutoff_date bei register: YYYY-MM-DD (YYYY-MM/YYYY werden aufgefuellt)." }
+      ]
+    },
+    {
+      "skill_name": "fall-event",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer event (Steuersignale: emit, ack, pending, get)." },
+        { "section": "faelle", "content": "- fall-event-quittieren: Event-Typen und Quittung." }
+      ]
+    },
+    {
+      "skill_name": "fall-event-quittieren",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: pending_events/event_warning in einer Antwort oder Signal senden." },
+        { "section": "regeln", "content": "1. Typen: WORK_STOP (sofort anhalten), CRITICAL_REVIEW, ARCH_DECISION, TEAM_DISCUSSION, ANNOUNCEMENT, NEW_TASK, CHECK_CHANNEL, PLAN_READY. Prioritaet critical|high|normal.\n2. Offene Events lesen (pending), danach ack(event_id, auch Array; reaction optional). Unquittierte Events bleiben ueber Compaction erhalten.\n3. emit(event_type, priority, scope all|agent:<id>, source_id, payload, requires_ack Standard true); events[] fuer mehrere." }
+      ]
+    }
+  ]
+}

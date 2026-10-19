@@ -1,0 +1,133 @@
+{
+  "bereich": "admin-jev-codecheck",
+  "skills": [
+    {
+      "skill_name": "fall-admin",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer admin (Verwaltung der eigenen Synapse-Instanz). Viele Aktionen sind Koordinator/User vorbehalten (recht_fehlt -> fall-querschnitt-recht-fehlt)." },
+        { "section": "faelle", "content": "- fall-admin-onboarding: index_stats mit sitzung neu/fortsetzung (Agenten ohne Ausweis).\n- fall-admin-jev-steuerung: jev_status, jev_schalten, jev_kosten, jev_budget, jev_optionen, Toepfe.\n- fall-admin-produkt-schalter: profil_schalter_status/setzen (u. a. fall_skill_hinweis, tool_beschreibungen_kurz).\n- fall-admin-profil-ausweis: Profile, Typen, Schattenprofile, Persona, agent_vorbereiten, token_abrufen, Fristen, Task-Bindung.\n- fall-admin-kontextprofil: Hinweisarten und Budget je Agent.\n- fall-admin-hauptagent: hauptagent_auftrag.\n- fall-admin-wartung: migrate, restore, save_idea, confirm_idea, index_media, detailed_stats." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-onboarding",
+      "weg": "legacy",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Sitzungsbeginn oder Kontextwechsel eines Agenten ohne Ausweis." },
+        { "section": "regeln", "content": "1. Echter Start: admin(action:\"index_stats\", project, agent_id, role, sitzung:\"neu\") nach chat(register). 'neu' = frisch gespawnt: Broadcasts und gesehene Fehlermuster der Vorsitzung gelten nicht, an dich adressierte Events bleiben.\n2. Compaction/Handoff/Resume: sitzung:\"fortsetzung\", onboarding:true - Regeln kommen erneut direkt in der Antwort (agentOnboarding); unquittierte Events, Channels und Co-Edit-Bindungen bleiben. Keine erneute Registrierung.\n3. Ohne sitzung bleibt die Sitzung unveraendert.\n4. role steuert rollenspezifische Regeln (Fallback: Erkennung ueber agent_id)." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-jev-steuerung",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Jev (Entscheidungsmodell ueber OpenRouter) pruefen oder steuern." },
+        { "section": "regeln", "content": "1. jev_status: wirksamer Stand je Funktion, Schalter, Budget, Monatskosten.\n2. jev_schalten (nur Koordinator/User): ebene global|projekt, funktion alle|empfehlung|entscheidung|plan_einordnen|erklaerungstopf|entscheidungstopf|tool|skill_rerank, aktiv, grund. Global aus = Jev wird nirgends aufgerufen, alle Jev-Hinweise verschwinden.\n3. jev_kosten: Summen je Tag/Monat/Projekt/Funktion in USD (seit, bis, nur_dieses_projekt).\n4. jev_budget: modus status|setzen (grenze_usd, reset_tag 1..28)|entfernen|zuruecksetzen; kontostand:true = OpenRouter-Kontostand.\n5. jev_optionen: modus status|setzen; erklaerung_de/erklaerung_en (mind. eine an), jev_sprache en|de|mix, entscheidung_ohne_praezedenz, skill_rerank_tor (0..1), skill_rerank_max (1..30).\n6. jev_entscheidungstopf / jev_erklaerungstopf: modus status | seed_laden | nachholen (nur Koordinator/User)." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-produkt-schalter",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Funktion antwortet funktion_aus oder soll freigegeben werden." },
+        { "section": "regeln", "content": "1. Neue Funktionen haben einen Produkt-Schalter, Standard AUS bis zur User-Freigabe.\n2. Status: admin(profil_schalter_status, project) bzw. REST GET /api/projects/:project/agent-profile/schalter.\n3. Setzen (User global/projekt, Koordinator nur eigenes Projekt): admin(profil_schalter_setzen, profil_funktion, aktiv, grund, ebene).\n4. Funktionen: profilverwaltung, typkatalog, persona, task_bindung, agenten_ausweis, mehrprojekt, tool_beschreibungen_kurz (kurze Tool-Beschreibungen in tools/list), fall_skill_hinweis (Fall-Skill bei Fehlbedienung). 'alle' schliesst mehrprojekt, tool_beschreibungen_kurz und fall_skill_hinweis NICHT ein.\n5. Ein intern-Schalter gleichen Namens (nur Testbetrieb, befristet) hat Vorrang." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-profil-ausweis",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Profile, Typen, Schattenprofile, Persona, Ausweise oder Task-Bindungen verwalten (Koordinator/User)." },
+        { "section": "regeln", "content": "1. Profile: profil_uebersicht, profil_aendern (profil_patch, erwartete_revision als CAS), profil_historie, profil_rollback(ziel_revision).\n2. Typen: typ_anlegen(typ_schluessel, typ_inhalt), typ_aendern, typ_revision_lesen; profil_scope global nur User.\n3. Schattenprofile: schattenprofil_liste(zustand), _korrigieren(korrektur), _bestaetigen/_ablehnen (user_zustimmung).\n4. Persona nur auf ausdruecklichen User-Wunsch, mit user_auftrag (Wortlaut).\n5. Ausweis: agent_vorbereiten(agent_name|ziel_identity_id, rolle, startart, grund), token_abrufen(anlass) - Tokenwert nie ausgeben oder loggen.\n6. ausweis_fristen: modus status|setzen|entfernen (schatten_stunden, erstnutzung_minuten, visum_minuten, arbeitsfreigabe_stunden, anmeldung_plaene_minuten, files_plan_stunden, files_plan_ablauf_aktiv, frist_namen).\n7. Task-Bindung: bindung_task_id, bindung_art identitaet|team|offen, bindung_identity_ids." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-kontextprofil",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Antworten fuer bestimmte Agenten schlanker machen (Hinweisarten abschalten)." },
+        { "section": "regeln", "content": "1. kontextprofil_setzen(ziel = Agent-ID oder Muster wie luna-*, hinweise_aus[], hinweise_nur[]); kontextprofil_liste; kontextprofil_entfernen. Nur Koordinator/User.\n2. kontext_budget und stufe sind vorbereitet, noch nicht aktiv.\n3. Pflicht-Hinweisquellen (Ausweis, Anleitung, Profil-Diff) sind nicht abschaltbar." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-hauptagent",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Hauptagent neu starten, aktualisieren, Modell/Runtime wechseln oder stoppen." },
+        { "section": "regeln", "content": "1. hauptagent_auftrag(auftrag_art neustart|update|modellwechsel|runtime_wechsel|stop (stop nur User), gewuenscht {modell, provider, effort, runtime, cli}, hands_off {thought_id, arbeitsstand, offene_aufgaben}, idempotenz_schluessel).\n2. hands_off ist Pflicht, wenn der Hauptagent den Auftrag selbst stellt.\n3. hauptagent_auftrag_abbrechen(auftrag_id). Schalter hauptagent (Produkt-Schalter, Standard AUS)." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-wartung",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Wartungsaktionen der Instanz." },
+        { "section": "regeln", "content": "1. migrate(collections?, dry_run?), restore(backup_type) - nur in der eigenen DB, vorher Koordinator fragen.\n2. save_idea(title, description, tags) / confirm_idea(idea_id, custom_name).\n3. index_media(path absolut, recursive) indexiert Mediendateien.\n4. detailed_stats: Statistiken inkl. Hinweis-Metriken." }
+      ]
+    },
+    {
+      "skill_name": "fall-jev",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer jev (entscheidet erlaubte Rueckfragen, wenn der User nicht da ist; wirkt nur bei aktivem Schalter). Aktionen: entscheiden, abwesend, protokoll, ueberstimmen, topf, durchsicht, entscheidung_ablegen, entscheidung_aufbereiten." },
+        { "section": "faelle", "content": "- fall-jev-entscheiden: Rueckfrage richtig stellen (Optionen, Runden, Kategorien).\n- fall-jev-topf: Entscheidungs-Topf pflegen und durchsehen (Koordinator/User).\n- fall-jev-abwesend: Abwesenheits-Schalter und Protokoll." }
+      ]
+    },
+    {
+      "skill_name": "fall-jev-entscheiden",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: jev(entscheiden) abgelehnt (Kategorie, Optionen, erste_id) oder Antwort 'User/Koordinator fragen'." },
+        { "section": "regeln", "content": "1. Nur bei aktivem Jev-Schalter; sonst den User bzw. Koordinator fragen.\n2. kategorie Pflicht: variante | reihenfolge | umsetzungsweg | formulierung. Verboten fuer Jev: loeschen, deploy, git, secrets, aussenwirkung, kosten, regeln, live_db, schema - auch ein Text-Scan-Treffer (z. B. das Wort token) fuehrt zur Ablehnung; dann den User fragen, nicht umformulieren.\n3. typ choice: IMMER genau 5 Optionen {key: Beschreibung} - 4 echte, je mit WANN sie richtig ist, plus Schluessel 'weitere'. Waehlt Jev 'weitere', mit runde+1, erste_id (aus der ersten Antwort) und verworfen[] erneut fragen. letzte_runde:true (Pflicht in der Grenzrunde, Standard 4): 2..5 echte Optionen ohne 'weitere'.\n4. typ noul = ja/nein, score = Skala (Standard 1..5, optionen als Anker).\n5. Unter dem Tor (Standard 0.7) entscheidet Jev nicht - keine Fragen-Variation, um ein Ja zu erzwingen.\n6. keine_plausible_option:true = offene Frage an den User; blocker:true am Kettenende = Einsprung Koordinator.\n7. kontext (max. 1500 Zeichen), task_id, hinweise (max. 500). Antwort ist als 'entschieden von Jev, nicht vom User' markiert." }
+      ]
+    },
+    {
+      "skill_name": "fall-jev-topf",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Entscheidungs-Topf (globale Vorlagen frueherer User-Entscheidungen) nutzen oder pflegen." },
+        { "section": "regeln", "content": "1. Mit aktiver Funktion entscheidungstopf sucht entscheiden zuerst eine Praezedenz (Tor 0.8) und waehlt dann in ihrem Sinn (Tor 0.7); ohne Praezedenz waehlt Jev markiert ohne_praezedenz.\n2. topf: Liste (status, kategorie, herkunft, eintrag_id); eintrag_id (Praefix ab 8) = Volltext; frage = kostenpflichtiger Bedeutungsvergleich (schwelle Standard 80, vollstaendig).\n3. entscheidung_ablegen (nur Koordinator/User): frage_de|frage_en, antwort_wortlaut (Original), kategorie, optionen, gewaehlte_option, aufbereitet {de:{entscheidung, begruendung, gilt_wenn}, en:{decision, reason, applies_when}}, themen, kandidat.\n4. entscheidung_aufbereiten(eintrag_id; status aktiv|stillgelegt|ersetzt, status_grund, ersetzt_durch).\n5. durchsicht: ohne urteil Liste offener autonomer Entscheidungen (ohne Praezedenz zuerst); urteil ok|korrigieren (dann wahl + wortlaut, wird neuer Topf-Eintrag)." }
+      ]
+    },
+    {
+      "skill_name": "fall-jev-abwesend",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: User ist weg/zurueck; Protokoll der Jev-Entscheidungen." },
+        { "section": "regeln", "content": "1. abwesend(modus an|aus|status): an/aus nur Koordinator auf Zuruf des Users; bis (ISO) oder stunden optional; project '*' = alle Projekte. aus liefert das Protokoll.\n2. protokoll(seit, nur_entschieden, limit bis 200, id) - Entscheidungen seit Schalter-Beginn.\n3. ueberstimmen(id, wahl, notiz) - nur Koordinator." }
+      ]
+    },
+    {
+      "skill_name": "fall-code-check",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer code_check (Fehlermuster-Bibliothek, Erklaerungs-Topf fuer Syntaxfehler, Build-Pruefung). Muster mit Signatur erzeugen Befunde an Schreib-Ops, ohne Signatur Themenhinweise." },
+        { "section": "faelle", "content": "- fall-cc-muster-anlegen: add_pattern/update_pattern richtig (erkennung, Selbsttest, Dubletten, severity).\n- fall-cc-erklaerung: offene Faelle erklaeren, pruefen, verwerfen.\n- fall-cc-build-tor: build_status und build_einstellungen." }
+      ]
+    },
+    {
+      "skill_name": "fall-cc-muster-anlegen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: add_pattern abgelehnt (Selbsttest, Dublette, unbekannter Parameter signatur) oder Muster soll verschaerft werden." },
+        { "section": "regeln", "content": "1. Pflicht: description (Fehler), fix (wie richtig), found_in_model (haiku/sonnet/opus/fable - leitet model_scope ab); titel (max. 80), warum, geltung {sprachen, dateimuster, projekte, frameworks}, verweise.\n2. erkennung: {art:'regex', signatur:['A','B'] (Liste = UND; ODER als 'A|B' in einem String), gegen_signatur:['C'] (einer hebt auf), flags:'imsu', fenster:'zeile'|'block'|'datei'}. Diese Felder gehoeren IN erkennung, nicht auf die oberste Ebene. Tab als \\t.\n3. Mit erkennung Pflicht: beispiel_falsch (muss treffen) und beispiel_richtig (darf nicht treffen) - Selbsttest.\n4. Dubletten werden mit ID abgelehnt; dublette_ok:true nur bei aehnlichem Titel/Beispiel, gleiche Signatur bleibt abgelehnt.\n5. Neue Muster starten als warning; error nur per update_pattern mit grund und aktiver Signatur. status stillgelegt braucht grund.\n6. update_pattern id: UUID oder Praefix ab 8; delete_pattern volle UUID. null entfernt erkennung." }
+      ]
+    },
+    {
+      "skill_name": "fall-cc-erklaerung",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Hinweis auf offenen Erklaerungs-Fall (Syntaxfehler ohne passende Erklaerung) im Schreibweg." },
+        { "section": "regeln", "content": "1. offene_faelle (project, nur_eigene) bzw. fall(fall_id) zeigen die Lage.\n2. erklaerung_ablegen(fall_id, lage_de/wieso_de/abhilfe_de und/oder lage_en/wieso_en/abhilfe_en) - generisch formulieren, in allen gepflegten Sprachen; nur der betroffene Agent oder Koordinator. Bestehende Erklaerung belegen: erklaerung_id.\n3. fall_pruefen verifiziert; fall_verwerfen nur Koordinator (andere ab 3 Monaten) mit grund >= 10 Zeichen und zustimmung_user:true.\n4. erklaerungen(familie, erklaerung_status) listen; erklaerung_bewerten(bewertung passt_nicht | stilllegen | reaktivieren)." }
+      ]
+    },
+    {
+      "skill_name": "fall-cc-build-tor",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: commit wartet auf Build-Pruefung oder Build-Tor/Pruefcontainer einstellen." },
+        { "section": "regeln", "content": "1. build_status(project): gruen/rot/laeuft/teilweise, Warteschlange eingereihter commits, Budget; pruefen:true prueft den Basisstand im Hintergrund (warten_sekunden bis 50).\n2. build_einstellungen(modus status|setzen; setzen nur Koordinator/User): aktiv (Build-Tor je Projekt bzw. global), speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s, sprachen (neben TypeScript), zuruecksetzen.\n3. Zeitlimit ueberschritten = teilweise (sperrt nicht)." }
+      ]
+    }
+  ]
+}

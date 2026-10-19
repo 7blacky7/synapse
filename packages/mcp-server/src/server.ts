@@ -6,6 +6,8 @@
 import { randomUUID } from 'crypto';
 import { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, gateToolListe } from '@synapse/core';
 import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise, initialisiereW1bAnmeldungHinweise } from '@synapse/core';
+// P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
+import { haengeFallSkillHinweisAn, haengeFallSkillTextHinweisAn, type FallSkillOptionen } from '@synapse/core';
 // P22-T13 Paket C: Hinweisentscheidung vor First-Use-Marke und gemeinsame Agentenprojektion (wie REST).
 import { hinweisAktiv, projiziereTextAntwort } from '@synapse/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -166,6 +168,14 @@ export function createServer(): Server {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name } = request.params;
     return mitAgentToolAufruf(name, request.params.arguments ?? {}, SERVER_INSTANCE_ID, async (kontext) => {
+    // P23-T5: Weg nach Principal (Ausweis/Legacy), Entprellung je Sitzung; Schalter fall_skill_hinweis (Standard AUS).
+    const fallOpt: FallSkillOptionen = {
+      weg: kontext.principal ? 'ausweis' : 'legacy',
+      schluessel: kontext.principal ? `${kontext.principal.identitaet.id}:${kontext.principal.context_epoch}`
+        : (typeof kontext.args.agent_id === 'string' && kontext.args.agent_id ? kontext.args.agent_id : SERVER_INSTANCE_ID),
+      project: kontext.principal?.project ?? (typeof kontext.args.project === 'string' ? kontext.args.project : null),
+      args: kontext.args,
+    };
     if (kontext.antwort?.success === false) {
       void logToolCall({
       // Behaupteter Text fuer die Diagnose; identity_id stammt ausschliesslich aus geprueftem ALS.
@@ -173,7 +183,7 @@ export function createServer(): Server {
       project: kontext.principal?.project ?? (typeof kontext.args.project === 'string' ? kontext.args.project : null),
         source: 'stdio', tool: name, action: String(kontext.args.action ?? ''), ok: false,
         error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
-      return kompaktiereTextErgebnis({ content: [{ type: 'text', text: JSON.stringify(kontext.antwort) }], isError: true }, name);
+      return kompaktiereTextErgebnis({ content: [{ type: 'text', text: JSON.stringify(await haengeFallSkillHinweisAn(kontext.antwort, name, fallOpt)) }], isError: true }, name);
     }
     const args = kontext.args;
     // RV9: API verantwortet DB, Audit und Antwort-Hooks; stdio reicht die fertige Antwort weiter.
@@ -181,7 +191,8 @@ export function createServer(): Server {
     const _t0 = Date.now();
 
     // Globale Parameter fuer Agent-Onboarding extrahieren
-    const agentId = args?.agent_id as string | undefined;
+    // P22-T55: mit Ausweis zaehlt der Principal, nie ein agent_id-Fachfilter (files.history/chat.get).
+    const agentId = kontext.principal?.agent_id ?? (args?.agent_id as string | undefined);
     const projectName = args?.project as string | undefined;
     const role = args?.role as import('./tools/onboarding.js').AgentRole | undefined;
 
@@ -260,6 +271,8 @@ export function createServer(): Server {
       // specialist(purge)-Aufrufen hatten 18 keine agent_id.
       await haengeWerkzeugRegelnAn(guided);
       await haengeAusloeserTextHinweiseAn(guided, name, (args ?? {}) as Record<string, unknown>, agentId);
+      // P23-T5: vor der agent_id-Schranke - der Hinweis gilt auch fuer Aufrufe ohne Identitaet.
+      await haengeFallSkillTextHinweisAn(guided, name, fallOpt);
       if (!agentId) return guided;
       const first = guided.content?.[0];
       if (!first || first.type !== 'text' || typeof first.text !== 'string') return guided;

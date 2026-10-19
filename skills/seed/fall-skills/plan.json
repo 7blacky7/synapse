@@ -1,0 +1,77 @@
+{
+  "bereich": "plan",
+  "skills": [
+    {
+      "skill_name": "fall-plan",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer plan (Projektplaene und Tasks). Ein Projekt hat mehrere Plaene (Kurz-ID P<n>), genau einer ist aktiv; Tasks haben Kurz-IDs P<n>-T<m>. Aktionen: list, create, aktivieren, get, update, search, add_task, add_tasks_batch, update_task, delete_task, passende_tasks, uebernehmen, abmelden, verschieben, einordnen, zurueckstellen, empfehlen." },
+        { "section": "faelle", "content": "- fall-plan-mehrere-plaene: plan_id, Kurz-IDs, aktiver Plan, Prioritaet.\n- fall-plan-task-status: Status setzen, einzeln vs. Array.\n- fall-plan-grund-legacy: grund_noetig bei gebundenen Tasks.\n- fall-plan-beteiligung: passende_tasks, uebernehmen, abmelden.\n- fall-plan-zurueckstellen: Wiedervorlage.\n- fall-plan-verschieben-einordnen: Tasks zwischen Plaenen.\n- fall-plan-empfehlen: Modell-/Effort-Empfehlung per Jev.\n- fall-plan-neue-tasks: wer Tasks anlegt, vorher suchen." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-mehrere-plaene",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Task/Plan nicht gefunden, falscher Plan getroffen, Arbeit an einem nicht aktiven Plan." },
+        { "section": "regeln", "content": "1. Ohne plan_id wirkt jede Aktion auf den AKTIVEN Plan. Fuer andere Plaene plan_id (UUID oder Kurz-ID P<n>) angeben; Tasks per Kurz-ID P<n>-T<m> finden auch ohne plan_id.\n2. plan(list): alle Plaene (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), sortiert aktiv zuerst, dann plan_prioritaet hoch > mittel > niedrig, dann zuletzt geaendert.\n3. create(name, description, goals, architecture, aktiv?) - der erste Plan eines Projekts ist immer aktiv; aktivieren(plan_id) wechselt.\n4. Bei update an einem inaktiven Plan ist nur die Prioritaet aenderbar. plan_prioritaet (Plan) ist nicht priority (Task).\n5. get: compact (Standard true), mit task_id Volltext; limit, status als Filter; alle:true zeigt Zurueckgestelltes.\n6. git_branch an Plan/Task = Ziel-Branch fuer den Git-Commit (nicht files commit)." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-task-status",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Task-Status setzen; update_task mit Array scheitert." },
+        { "section": "regeln", "content": "1. update_task nimmt GENAU EINE task_id (String). Mehrere: einzeln aufrufen.\n2. delete_task, verschieben, einordnen, empfehlen nehmen auch Arrays.\n3. Status todo | in_progress | done | blocked. Start: in_progress, Ende: done.\n4. Kombiniert: thought(add, content, task_id, task_status) legt den Bericht ab UND setzt den Status in einem Aufruf.\n5. Neue Tasks legt nur der Koordinator an; Agenten melden Befunde als thought/Channel." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-grund-legacy",
+      "weg": "legacy",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: grund_noetig bei plan(update_task) oder thought(add, task_status) auf einer gebundenen Task." },
+        { "section": "regeln", "content": "1. Ist der Produkt-Schalter task_bindung EIN und die Task an eine Identitaet/ein Team gebunden, brauchen Agenten ohne Ausweis einen grund.\n2. grund angeben (warum du den Status aenderst); mit Grund ist es erlaubt und wird in der Bindungs-Historie protokolliert.\n3. Ohne Grund: update_task wird abgewiesen bzw. thought speichert, setzt den Status aber nicht (Warnung grund_noetig)." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-beteiligung",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: passende Arbeit finden oder sich an einer Task beteiligen." },
+        { "section": "regeln", "content": "1. passende_tasks (plan_id optional): offene/laufende Tasks mit Beteiligten und unverbindlichem Profilhinweis.\n2. uebernehmen(plan_id, task_id): atomar und idempotent zur gemeinsamen Beteiligung anmelden; bestehende Beteiligte blockieren nie.\n3. abmelden(task_id): eigene Beteiligung entfernen; der letzte Beteiligte setzt nicht erledigte Tasks auf todo.\n4. Identitaet wie bei jedem Aufruf (dein Weg); Profile sind nur Empfehlungen." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-zurueckstellen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Plan oder Task soll bis zu einem Datum aus dem Blick." },
+        { "section": "regeln", "content": "1. zurueckstellen mit tage (N Tage, 0 = aufheben) ODER bis (Datum/ISO in der Zukunft).\n2. Mit task_id wird die Task zurueckgestellt (aus get/passende_tasks ausgeblendet), ohne task_id der Plan (aus list und Onboarding).\n3. Der AKTIVE Plan kann nicht zurueckgestellt werden.\n4. Sichtbar machen: alle:true bei list/get; plan(get, plan_id) bzw. task_id geht immer." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-verschieben-einordnen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Tasks gehoeren in einen anderen Plan." },
+        { "section": "regeln", "content": "1. verschieben(task_id String/Array, ziel = Plan-UUID oder Kurz-ID): atomar; UUID und Felder bleiben, im Zielplan neue Kurz-ID, die alte bleibt als Alias gueltig.\n2. einordnen(plan_id = Quellplan, task_id bis 200, ziele optional): Jev waehlt je Task den passenden Plan - Standard nur Vorschlag; verschieben:true verschiebt die sicheren (confidence >= confidence_tor, anderer Plan). Kostet einen Jev-Aufruf." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-empfehlen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Modell, Effort und Kontext je Task vorschlagen lassen (EXPERIMENTELL)." },
+        { "section": "regeln", "content": "1. empfehlen(plan_id, task_id - beide PFLICHT, max. 50): EIN Jev-Aufruf, schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence} (schreiben:false = nur anzeigen). Nur Empfehlung.\n2. kandidaten: Aliase (opus, sonnet, haiku, fable ...) und/oder Gruppen (abos, alle, anthropic, codex, google, legacy); Standard nur Claude-CLI.\n3. lage {claude_quota, codex_quota: plenty|low|exhausted, paid_api: allowed|not allowed}; exhausted entfernt die Gruppe.\n4. hinweise (max. 500 Zeichen) gehen an Jev; max_optionen begrenzt Modelle; unter confidence_tor (Standard 0.5) gibt es unsicher + bester_vorschlag." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-neue-tasks",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: add_task/add_tasks_batch." },
+        { "section": "regeln", "content": "1. Neue Tasks legt nur der Koordinator an (Regel). Subagenten melden Vorschlaege im Channel bzw. als thought.\n2. Vorher plan(search, query) bzw. search(tasks) - Dubletten vermeiden.\n3. add_tasks_batch: 1..50 Tasks {title, description, priority?} atomar." }
+      ]
+    }
+  ]
+}

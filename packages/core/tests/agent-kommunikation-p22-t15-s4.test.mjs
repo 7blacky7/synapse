@@ -398,7 +398,8 @@ try {
   await new Promise(resolve=>setTimeout(resolve,50));
   const audit=(await q('SELECT args_preview,result,error FROM tool_calls')).rows;
   const logged=JSON.stringify(audit);
-  assert(!logged.includes(first.token));assert(!logged.includes(second.token));
+  // P22-T55 (User 19.10.): der Ausweis wird nicht mehr maskiert - im Tool-Log sichtbar.
+  assert(logged.includes(first.token));
   process.env.SYNAPSE_TOKEN_IDENTITAET='0';process.env.SYNAPSE_AGENT_BEZUG_MODUS='alt';
  });
  assert.equal(network,0,'Keine Modell-/Netzwerkaufrufe im S4-Test');

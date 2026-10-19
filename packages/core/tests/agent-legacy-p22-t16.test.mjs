@@ -181,7 +181,8 @@ try{
  const aggregate=oauthAudit.length===1?JSON.parse(oauthAudit[0].result):{};
  check(aggregate.count===208&&Array.isArray(aggregate.gruppen)&&aggregate.gruppen.reduce((n,g)=>n+g.count,0)===208,'OAuth-Aggregat zaehlt alle Abweisungen nach Pfad und festem Grund');
  const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
- check(secrets.every(s=>!logs.includes(s)),'Kein OAuth-/Personenausweis im Audit');
+ // P22-T55 (User 19.10.): der Personenausweis ist kein Geheimnis mehr (unmaskiert im Tool-Log); OAuth bleibt geschwaerzt.
+ check(!logs.includes(bearer),'Kein OAuth-Bearer im Audit');
  check((await pool.query('SELECT identity_id FROM agent_sessions WHERE id=$1 AND project=$2',[legacy,project])).rows[0].identity_id===null,'Legacy-Sitzung bleibt ungebunden');
  check(network===0,'Keine echten Netzwerk-/Modellaufrufe');
  console.log('P22-T16 '+checks+' Pruefungen, '+failures.length+' Fehler');

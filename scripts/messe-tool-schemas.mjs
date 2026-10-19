@@ -35,11 +35,18 @@ const sammle = (x) => {
 };
 Object.values(stdioMod).forEach(sammle);
 ausgabe('stdio', messe(stdioTools));
+// P23-T5: dieselben Definitionen mit kurzen Beschreibungen (Produkt-Schalter tool_beschreibungen_kurz, Ueberlagerung aus core).
+let kuerze = null;
+try { ({ kuerzeToolDefinition: kuerze } = await import('../packages/core/dist/services/tool-beschreibungen-kurz.js')); } catch { /* aelterer Build */ }
+if (kuerze) ausgabe('stdio KURZ', messe(stdioTools.map((t) => kuerze(t))));
 
 // REST
 try {
   const restMod = await import('../packages/rest-api/dist/routes/mcp.js');
-  if (Array.isArray(restMod.MCP_TOOLS)) ausgabe('REST', messe(restMod.MCP_TOOLS));
+  if (Array.isArray(restMod.MCP_TOOLS)) {
+    ausgabe('REST', messe(restMod.MCP_TOOLS));
+    if (kuerze) ausgabe('REST KURZ', messe(restMod.MCP_TOOLS.map((t) => kuerze(t))));
+  }
   else console.log('REST: MCP_TOOLS nicht exportiert');
 } catch (err) {
   console.log(`REST: nicht messbar (${err instanceof Error ? err.message.split('\n')[0] : err})`);

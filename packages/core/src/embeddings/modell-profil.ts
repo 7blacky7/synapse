@@ -355,3 +355,20 @@ export async function scoreSchwelleOderHinweis(zweck: ScoreZweck): Promise<{ sch
     throw err;
   }
 }
+
+/**
+ * P23-T6 (Diagnose intern skill_probe): wirksame Schwelle wie scoreSchwelle MIT Quelle - 'env:<NAME>',
+ * 'modellprofil:<modell>' oder 'nicht_kalibriert' (dann schwelle null + hinweis). Gleiche Reihenfolge wie scoreSchwelle.
+ */
+export async function scoreSchwelleMitQuelle(zweck: ScoreZweck): Promise<{ schwelle: number | null; quelle: string; hinweis?: string }> {
+  for (const name of [`SCORE_SCHWELLE_${zweck.toUpperCase()}`, ALTE_SCHWELLEN_ENV[zweck]]) {
+    if (!name) continue;
+    const roh = process.env[name];
+    const n = Number(roh);
+    if (roh !== undefined && roh.trim() !== '' && Number.isFinite(n)) return { schwelle: n, quelle: `env:${name}` };
+  }
+  const r = await scoreSchwelleOderHinweis(zweck);
+  if (r.schwelle === null) return { schwelle: null, quelle: 'nicht_kalibriert', hinweis: r.hinweis };
+  const s = await aktuellerStand();
+  return { schwelle: r.schwelle, quelle: `modellprofil:${s.modell}` };
+}

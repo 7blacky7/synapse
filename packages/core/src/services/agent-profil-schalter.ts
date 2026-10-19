@@ -64,7 +64,12 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'profilverwaltung', 'typkatalog', 'persona', 'task_bindung', 'agenten_ausweis',
   // P22-T44: Ausweis fuer mehrere Projekte (Visum/Arbeitsfreigabe), Standard AUS; wirkt nach dem Stand der Heimat (agent-ausweis-projekte.ts).
   'mehrprojekt',
+  // P23-T5: Fall-Skills (fall-skills.ts) - kurze Tool-Beschreibungen in tools/list und Fall-Skill-Hinweis bei Fehlbedienung.
+  // Standard AUS bis User-Freigabe; wie mehrprojekt NICHT ueber 'alle' schaltbar (nur ausdruecklich).
+  'tool_beschreibungen_kurz', 'fall_skill_hinweis',
 ] as const;
+/** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
+const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis'];
 /**
  * W12 V7: 'schattenprofile' und 'token_abruf' sind im Produkt-Schalter 'agenten_ausweis' aufgegangen. Die alten Namen
  * bleiben nur LESBAR/setzbar (Altschalter-Rueckfall des Ausweis-Kerns, bestehende Zeilen), sind aber nicht mehr im Katalog.
@@ -216,6 +221,24 @@ export async function ausweisAnmeldungAktiv(project?: string | null): Promise<bo
   if ((await leseAusweisKern(project ?? null)).aktiv) return true;
   return (await leseW1bSchalter('anmeldung')).freigegeben && await leseAltTokenIdentitaet();
 }
+/**
+ * P22-T55: Ausweis-Kern IRGENDWO wirksam (global oder in mindestens einem Projekt) bzw. alter Einzelschalter. Nur fuer die
+ * Werbung in tools/list ohne Projekt (token-Parameter, chat anmelden/identitaet). Lesefehler -> wie bisher (nur global/alt).
+ */
+export async function ausweisIrgendwoAktiv(): Promise<boolean> {
+  if ((await leseAusweisKern(null)).aktiv) return true;
+  try {
+    const r = await getPool().query<{ project: string }>({
+      text: `SELECT DISTINCT project FROM agent_profil_schalter
+        WHERE ebene = 'projekt' AND aktiv AND project IS NOT NULL AND funktion = ANY($1::text[]) LIMIT 50`,
+      values: [[AUSWEIS_KERN_FUNKTION, 'alle']],
+      query_timeout: 2000,
+    } as import('pg').QueryConfig & { query_timeout: number });
+    for (const z of r.rows) if ((await leseAusweisKern(z.project)).aktiv) return true;
+  } catch { /* Lesefehler: Werbung wie bisher */ }
+  // Altschalter bewusst NICHT hier: die bisherigen Lesestellen (ausweisTokenAktiv/ausweisAnmeldungAktiv) bleiben fuer sie zustaendig.
+  return false;
+}
 /** Schattenprofile des Projekts (Kern oder alt: Anmeldung EIN + Produkt-Schalter schattenprofile). Lesefehler = AUS. */
 export async function ausweisSchattenAktiv(project: string, mitAnmeldung = true): Promise<boolean> {
   if ((await leseAusweisKern(project)).aktiv) return true;
@@ -262,7 +285,7 @@ export async function leseProfilProduktSchalter(
       text: `SELECT ebene, project, funktion, aktiv, grund, gesetzt_von, gesetzt_am FROM agent_profil_schalter
         WHERE funktion = ANY($1::text[]) AND (ebene = 'global' OR (ebene = 'projekt' AND project = $2))`,
       // P22-T44: 'alle' schliesst 'mehrprojekt' bewusst NICHT ein (nur ausdruecklich schaltbar, Standard AUS bleibt AUS).
-      values: [funktion === 'mehrprojekt' ? [funktion] : [funktion, 'alle'], project ?? null],
+      values: [NUR_AUSDRUECKLICH.includes(funktion) ? [funktion] : [funktion, 'alle'], project ?? null],
       query_timeout: 2000,
     } as import('pg').QueryConfig & { query_timeout: number });
     const rang = (z: SchalterZeile) => (z.ebene === 'projekt' ? 2 : 0) + (z.funktion === funktion ? 1 : 0);

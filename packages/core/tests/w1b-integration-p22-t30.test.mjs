@@ -391,14 +391,18 @@ try{
  await schritt('i',async()=>{
   await rest('channel',{action:'post',project:P,channel_name:'t30-ch',sender:X,content:'T30 Channel-Post von X',token:tokX});
   await warte(500);
+  // P22-T55 (User 19.10.): der Ausweis wird nicht mehr maskiert - in tool_calls steht er bewusst im Klartext; die
+  // Audit-/Wissenstabellen tragen ihn weiterhin nicht (dort wird er nie geschrieben).
   const dump=JSON.stringify([
-   (await pool.query('SELECT * FROM tool_calls')).rows,(await pool.query('SELECT * FROM agent_identitaet_audit')).rows,
+   (await pool.query('SELECT * FROM agent_identitaet_audit')).rows,
    (await pool.query('SELECT * FROM agent_token_abruf_audit')).rows,(await pool.query('SELECT * FROM thoughts')).rows,
    (await pool.query('SELECT * FROM specialist_channel_messages')).rows,(await pool.query('SELECT * FROM chat_messages')).rows,
    (await pool.query('SELECT * FROM agent_schattenprofil_audit')).rows,(await pool.query('SELECT * FROM agent_profil_revisionen')).rows]);
   const n=(await pool.query('SELECT count(*)::int n FROM tool_calls')).rows[0].n;
   check(n>0,'tool_calls wurden geschrieben ('+n+')');
-  check(!/sai_[a-z0-9]{1,64}/.test(dump)&&[...tokens].every(t=>!dump.includes(t)),'Ausweis-Wert nie in tool_calls/Audit/Thought/Channel/Chat');
+  check(!/sai_[a-z0-9]{1,64}/.test(dump)&&[...tokens].every(t=>!dump.includes(t)),'Ausweis-Wert nie in Audit/Thought/Channel/Chat');
+  const tcDump=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
+  check([...tokens].some(t=>tcDump.includes(t)),'P22-T55: Ausweis in tool_calls unmaskiert');
   const r401=await rpcRoh('tools/call',{name:'thought',arguments:{action:'search',project:P,query:'x',token:tokX}},{},false);
   check(r401.statusCode===401,'REST /mcp/messages ohne Bearer -> 401 (auch mit Ausweis)');
   const u401=await ui('GET','/profile/'+iidX+'/token?anlass=x',undefined,false);

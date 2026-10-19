@@ -13,7 +13,9 @@
  *   jev_hinweis, jev_entscheidet), plan_einordnen (plan einordnen), erklaerungstopf (E1),
  *   entscheidungstopf (P15 E1: Praezedenz-Schritt vor jev entscheiden; aus = alter Weg, Erfassung laeuft weiter),
  *   tool (das MCP-Tool jev selbst; global aus -> verschwindet aus tools/list),
- *   skill_rerank (P23-T1: Sinnpruefung semantischer Skill-Vorschlaege, skill-rerank.ts).
+ *   skill_rerank (P23-T1: Sinnpruefung semantischer Skill-Vorschlaege, skill-rerank.ts),
+ *   skill_rerank_probe (P23-T6: Diagnose intern skill_probe mit mit_jev:true; nur Koordinator/User, laeuft auch bei
+ *   skill_rerank AUS - ohne Zeile an wie die alten Funktionen; global/Projekt aus und Budget-Pause gelten).
  * STANDARD AUS (P23-T1, Regel neue-funktionen-mit-schalter): Funktionen in JEV_FUNKTIONEN_STANDARD_AUS
  *   sind ohne ausdrueckliches "an" (global oder Projekt, genau diese Funktion) AUS. Ein befristeter
  *   intern-Schalter gleichen Namens (freigegeben, nur mit intern-Tool) gibt sie ebenfalls frei. Ein "aus"
@@ -29,7 +31,7 @@ import { aktuelleAgentAkteurIdentityId } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { jevBudgetPause } from './jev-kosten.js';
 
-export const JEV_FUNKTIONEN = ['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'entscheidungstopf', 'tool', 'skill_rerank'] as const;
+export const JEV_FUNKTIONEN = ['empfehlung', 'entscheidung', 'plan_einordnen', 'erklaerungstopf', 'entscheidungstopf', 'tool', 'skill_rerank', 'skill_rerank_probe'] as const;
 export type JevFunktion = (typeof JEV_FUNKTIONEN)[number];
 /** Neue Funktionen: ohne ausdrueckliches "an" (bzw. intern-Freigabe) aus. */
 export const JEV_FUNKTIONEN_STANDARD_AUS: readonly JevFunktion[] = ['skill_rerank'];

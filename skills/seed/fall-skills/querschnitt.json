@@ -1,0 +1,109 @@
+{
+  "bereich": "querschnitt",
+  "skills": [
+    {
+      "skill_name": "fall-querschnitt",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Uebersicht der toolunabhaengigen Fall-Skills von Synapse. Ein Fall-Skill beschreibt EINEN typischen Fall beim Tool-Aufruf (Fehlbedienung, Sonderfall, Parameter-Detail). Bei einer Fehlbedienung nennt die Antwort im Feld fall_skill den passenden Skill (name + abruf) - einmal je Sitzung. Abruf: skills(action:\"get_full\", skill_name:\"<name>\")." },
+        { "section": "faelle", "content": "- fall-querschnitt-ausweis-token: Ausweis-Agent, token fehlt/Konflikt (agent_token_fehlt, identitaet_konflikt).\n- fall-querschnitt-agent-id-legacy: Agent ohne Ausweis, agent_id/project/role fehlen (agent_fehlt, hinweis_agent_id).\n- fall-querschnitt-unbekannter-parameter: unbekannter_parameter - Aufruf wurde NICHT ausgefuehrt.\n- fall-querschnitt-id-praefix: mehrdeutig / Kandidaten bei Kurz-IDs.\n- fall-querschnitt-recht-fehlt: recht_fehlt, funktion_aus.\n- fall-querschnitt-batch-statt-einzeln: >=3 gleiche Einzelaufrufe.\n- fall-querschnitt-aufgabe-nachschlagen: Kurz-ID P<n>-T<m> im Auftrag.\n- fall-querschnitt-aufrufweg-klaeren: Aenderung an REST- UND stdio-Strecke.\n- fall-querschnitt-abhaengige-pakete-bauen: Typaenderung in packages/core.\n- fall-querschnitt-langer-job: Warten auf lange Jobs ohne Warte-Loop.\n- fall-querschnitt-neuester-eintrag: Suche liefert alten Lauf.\n- fall-querschnitt-ids-abrufen: Ergebnisse per ID weitergeben und lesen.\nJe Tool: fall-files, fall-shell, fall-code-intel, fall-plan, fall-admin, fall-code-check, fall-jev, fall-specialist, fall-workspace, fall-project, fall-channel, fall-chat, fall-event, fall-docs, fall-memory, fall-thought, fall-search, fall-proposal, fall-ignore, fall-asset-intel, fall-reverse, fall-skills, fall-free-models." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-ausweis-token",
+      "weg": "ausweis",
+      "sections": [
+        { "section": "uebersicht", "content": "Fall fuer Agenten MIT Synapse-Ausweis (token sai_...). Ausloeser: Antwort agent_token_fehlt, identitaet_konflikt, agent_fehlt bei einem Ausweis-Agenten, oder das Client-Schema zeigt keinen token-Parameter." },
+        { "section": "regeln", "content": "1. Bei JEDEM Synapse-Aufruf token:\"<dein Ausweis>\" mitgeben. agent_id, project und role weglassen - Identitaet und Heimatprojekt kommen aus dem Ausweis (fuer ein anderes Projekt project angeben, Visum/Arbeitsfreigabe beachten).\n2. agent_token_fehlt: Du hast agent_id ohne token geschickt - token ergaenzen, agent_id weglassen.\n3. identitaet_konflikt: Ein Selbstfeld (agent_id, sender, source ...) widerspricht dem Ausweis. Feld weglassen; der Server setzt es aus dem Ausweis.\n4. Start, Neustart, Compaction, Modellwechsel: chat(action:\"anmelden\", token) - nie chat(register). Die Anmeldung liefert Regeln, Uebergabe-Thought und gebundene Tasks.\n5. Zeigt dein Client keinen token-Parameter (veraltete tools/list), trotzdem mitgeben - der Server nimmt ihn an.\n6. Den Ausweis nie in Logs, Channels, Thoughts oder Dateien schreiben." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-agent-id-legacy",
+      "weg": "legacy",
+      "sections": [
+        { "section": "uebersicht", "content": "Fall fuer Agenten OHNE Ausweis (Legacy-Weg). Ausloeser: agent_fehlt, agent_id_fehlt, Antwortfeld hinweis_agent_id, fehlendes Onboarding." },
+        { "section": "regeln", "content": "1. Bei jedem Aufruf agent_id (eigene, stabile ID) und project mitgeben; role optional fuer rollenspezifische Regeln.\n2. Echter Start: chat(action:\"register\", id, model, project) und danach admin(action:\"index_stats\", project, agent_id, role, sitzung:\"neu\").\n3. Compaction/Handoff desselben Agenten: admin(index_stats, sitzung:\"fortsetzung\", onboarding:true) - keine erneute Registrierung; offene Events, Channels und Co-Edit-Bindungen bleiben.\n4. Projekt nie aus dem Ordnernamen raten: project(action:\"status\", path:<Arbeitsordner>) liefert status.project.\n5. Achtung: bei files(history) und chat(get) wirkt agent_id als FILTER, nicht als Absender (fall-files-history-filter-legacy)." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-unbekannter-parameter",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: error unbekannter_parameter bzw. unbekannte_parameter. Der Aufruf wurde NICHT ausgefuehrt (frueher wurden unbekannte Parameter still verworfen und die Aktion mit anderer Bedeutung ausgefuehrt)." },
+        { "section": "regeln", "content": "1. message lesen: sie nennt den unbekannten Namen, oft einen Vorschlag (meintest du ...) und die erlaubten Parameter.\n2. Tippfehler korrigieren und erneut aufrufen; nie einfach weglassen, wenn der Parameter die Bedeutung aendert.\n3. Bekannte Irrtuemer: shell.timeout_ms gibt es nicht mehr (lange Jobs laufen weiter, Ergebnis per shell get/log). code_intel semantic/queries/search_batch nur ueber die REST-Strecke. code_check signatur/gegen_signatur/flags/fenster/art gehoeren in erkennung{}.\n4. Kennt der lokale MCP-Server einen neuen Parameter nicht, ist sein Stand veraltet - Koordinator melden (Neustart/Build), nicht umgehen." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-id-praefix",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: error mehrdeutig oder nicht_gefunden mit kandidaten bei thought/proposal/memory/code_check/jev-IDs; ein Praefix unter 8 Zeichen." },
+        { "section": "regeln", "content": "1. IDs (UUID) duerfen als eindeutiger Praefix ab 8 Zeichen angegeben werden (thought, proposal, memory read id, code_check update_pattern, jev eintrag_id).\n2. mehrdeutig: die Antwort nennt Kandidaten - mehr Zeichen oder die volle UUID angeben. Es wurde nichts geaendert.\n3. % und _ sind in IDs nicht erlaubt.\n4. delete_pattern verlangt die volle UUID.\n5. Plan-Tasks: Kurz-ID P<n>-T<m> statt Praefix." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-recht-fehlt",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: recht_fehlt, funktion_aus, keine_berechtigung." },
+        { "section": "regeln", "content": "1. recht_fehlt: Die Aktion ist Koordinator/User vorbehalten (z. B. Produkt-Schalter, Jev-Steuerung, Fristen, fremde Plaene verwerfen, Persona). Nicht umgehen - als eine Zeile an den Koordinator melden.\n2. funktion_aus: Der Produkt-Schalter dieser Funktion ist AUS (Standard fuer neue Funktionen bis zur User-Freigabe). Status: admin(profil_schalter_status). Einschalten nur Koordinator/User.\n3. keine_berechtigung: Transport/Token passt nicht (z. B. Hauptagenten-Verbindung nur artefakt)." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-batch-statt-einzeln",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: drei oder mehr gleichartige Einzelaufrufe hintereinander (Memories, Thoughts, Posts, Events, Tasks, Docs, Spezialisten, Proposals)." },
+        { "section": "regeln", "content": "1. Batch-Parameter: memory write items[] (1..50), thought add_batch items[] (1..50), channel post messages[] (1..20), event emit events[] (1..50), plan add_tasks_batch tasks[] (1..50), docs add docs[] (1..50), proposal create items[] (1..50), specialist spawn_batch specialists[] (1..10), chat register_batch agents[].\n2. Bulk ist best-effort: Ergebnis je Item pruefen (bei add_tasks_batch atomar).\n3. Loeschen mehrerer: name/id als Array; dry_run:true wirkt NUR bei Array (Vorschau), bei einem einzelnen String wird sofort geloescht. max_items begrenzt (Standard 10)." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-aufgabe-nachschlagen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Auftrag nennt eine Kurz-ID P<n>-T<m> (Task) oder P<n> (Plan)." },
+        { "section": "regeln", "content": "1. Zuerst plan(action:\"get\", task_id:\"P<n>-T<m>\") - liefert den Volltext der Task samt Plan-Bezug; nicht aus dem Gedaechtnis arbeiten.\n2. Der Plan muss nicht aktiv sein: die Kurz-ID genuegt; plan_id nur bei Aktionen auf Planebene.\n3. Verknuepfte Thoughts: search(action:\"thoughts\", task_id) bzw. thought get mit ID.\n4. Status beim Start auf in_progress, am Ende done (plan update_task oder thought add mit task_status)." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-aufrufweg-klaeren",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Eine Aenderung betrifft Tool-Schemas oder Tool-Logik (REST packages/rest-api/src/routes/mcp.ts UND stdio packages/mcp-server/src/tools/consolidated/*)." },
+        { "section": "regeln", "content": "1. Es gibt zwei Schemaquellen: REST MCP_TOOLS (Web-KIs, synapse-direkt) und stdio consolidated (lokaler MCP-Server). Viele Tools teilen eine Definition aus core (code_check, reverse, jev ...), andere nicht.\n2. Vor der Aenderung mit code_intel references/flow klaeren, welcher Weg den Aufruf wirklich bedient; beide Wege gleich halten.\n3. tools/list-Aufbereitung (token, project optional, kurze Beschreibungen) passiert gemeinsam in core beworbeneAgentTools.\n4. Schema-Aenderungen brauchen einen begruendeten Eintrag im Golden packages/core/tests/fixtures/tool-definitionen-p18-rv9.json." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-abhaengige-pakete-bauen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: commit mit Typ- oder Exportaenderung in packages/core, danach nur ein Teil der Pakete gebaut." },
+        { "section": "regeln", "content": "1. Nach core-Aenderungen alle abhaengigen Pakete bauen: core, mcp-server, rest-api, file-watcher-daemon-ts, agents, web-ui (falls Typen genutzt).\n2. Pro Build: EXIT-Code UND Anzahl 'error TS' pruefen (pnpm run build 2>&1 | grep -c 'error TS').\n3. Builds ueber shell, nie lokal am Synapse-Weg vorbei. Fremde Fehler (anderer Agent arbeitet gerade) im Channel nennen, nicht selbst reparieren." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-langer-job",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: shell exec kehrt mit status running zurueck (auch unterbrochen_durch bei neuer Channel-Nachricht), oder ein Agent will auf etwas warten." },
+        { "section": "regeln", "content": "1. Es gibt keinen Warte-Loop: kein sleep/until/Poll auf Logdateien, kein eigenes Hintergrund-Bash.\n2. Der Job laeuft weiter; Ergebnis spaeter mit shell(action:\"get\", id) oder shell(action:\"log\", id, query) holen. id = Job-UUID (nicht stream_id).\n3. Erlaubtes Warten nur ueber eingebaute Long-Polls: files plan_status/commit wait_seconds (bis 50 s), reverse status warten_sekunden, code_check build_status warten_sekunden.\n4. Zwischendurch andere Arbeit erledigen; Channel-Nachrichten lesen, die den Job unterbrochen haben." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-neuester-eintrag",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: thought/memory-Suche nach Tag oder Thema liefert einen alten Lauf statt des aktuellen." },
+        { "section": "regeln", "content": "1. Semantische Suche sortiert nach Aehnlichkeit, nicht nach Zeit. Zeitstempel (timestamp) der Treffer pruefen.\n2. Sicher: die ID aus Channel/Anmeldung (handoff, Uebergabe-Thought) direkt mit thought(get, id) lesen.\n3. Fuer Uebergaben: Tag session-uebergabe + Lauf-Tag verwenden und den juengsten Treffer nehmen." }
+      ]
+    },
+    {
+      "skill_name": "fall-querschnitt-ids-abrufen",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Ein Ergebnis soll weitergegeben oder eine genannte ID gelesen werden." },
+        { "section": "regeln", "content": "1. Ergebnisse als thought (Befund/Uebergabe) oder memory (dauerhaft) ablegen und nur die ID bzw. den Namen weitergeben.\n2. Lesen: thought(get, id), memory(read, name|id), docs(get, id), channel(get, message_id), event(get, event_id), chat(get, message_id), jev(protokoll, id), proposal(get, id).\n3. 8 Zeichen der UUID reichen in der Regel (fall-querschnitt-id-praefix)." }
+      ]
+    }
+  ]
+}

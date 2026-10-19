@@ -11,6 +11,8 @@ import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shel
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 import { getProjectRecordById, mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
+// P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
+import { haengeFallSkillHinweisAn, type FallSkillOptionen } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import { mainToolAccess, mainToolListeMitProfil, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
 import { leseW1bSchalter } from '@synapse/core';
@@ -1973,7 +1975,10 @@ async function attachRestOnboarding(
 ): Promise<unknown> {
   // Registrierung bereitet den Start vor; index_stats liefert dessen Regeln genau einmal.
   if (toolName === 'chat' && ['register', 'register_batch'].includes(String(args.action))) return result;
-  const agentId = typeof args.agent_id === 'string' ? args.agent_id : undefined;
+  // P22-T55: mit Ausweis zaehlt der Principal, nie ein agent_id-Fachfilter (files.history/chat.get): sonst wurde der
+  // FILTER-Name als Agent onboardet und bekam eine Legacy-Sitzung (danach ging sein Name ohne Ausweis durch).
+  const { aktuellerAgentPrincipal: principalJetzt } = await import('@synapse/core');
+  const agentId = principalJetzt()?.agent_id ?? (typeof args.agent_id === 'string' ? args.agent_id : undefined);
   const project = typeof args.project === 'string' ? args.project : undefined;
   // ⚠️ OHNE agent_id GAB ES BISHER WORTLOS NICHTS (Punkt 2.4, 02.08.2026).
   // GEMESSEN: 25 Prozent aller Tool-Aufrufe im Projekt tragen keine agent_id. Sie bekamen
@@ -6289,6 +6294,14 @@ async function fuehreToolsCallAus(
   const vorbelegt = ['agent_id'].filter(f => Object.hasOwn(toolArgs, f) && toolArgs[f] !== explizitArgs[f]);
   return mitAgentToolAufruf(toolName, toolArgs, REST_INSTANCE_ID, async (kontext) => {
   toolArgs = kontext.args;
+  // P23-T5: Weg nach Principal (Ausweis/Legacy), Entprellung je Sitzung des Aufrufers; Schalter fall_skill_hinweis (Standard AUS).
+  const fallOpt: FallSkillOptionen = {
+    weg: kontext.principal ? 'ausweis' : 'legacy',
+    schluessel: kontext.principal ? `${kontext.principal.identitaet.id}:${kontext.principal.context_epoch}`
+      : (typeof toolArgs.agent_id === 'string' && toolArgs.agent_id ? toolArgs.agent_id : null),
+    project: kontext.principal?.project ?? (typeof toolArgs.project === 'string' ? toolArgs.project : null),
+    args: toolArgs,
+  };
   if (kontext.antwort?.success === false) {
     void logToolCall({
       // Behaupteter Text fuer die Diagnose; identity_id stammt ausschliesslich aus geprueftem ALS.
@@ -6296,7 +6309,7 @@ async function fuehreToolsCallAus(
       project: kontext.principal?.project ?? (typeof toolArgs.project === 'string' ? toolArgs.project : null),
       source: 'cloud', tool: toolName, action: String(toolArgs.action ?? ''), ok: false,
       error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
-    return baueToolErgebnis(kontext.antwort, { tool: toolName, isError: true, strukturiert: true });
+    return baueToolErgebnis(await haengeFallSkillHinweisAn(kontext.antwort, toolName, fallOpt), { tool: toolName, isError: true, strukturiert: true });
   }
   const effectiveAgentId = kontext.principal?.agent_id ?? (typeof toolArgs.agent_id === 'string'
     ? toolArgs.agent_id
@@ -6351,7 +6364,7 @@ async function fuehreToolsCallAus(
     _logResult = JSON.stringify(toolResult);
     // P22-T13 Paket C (K16.7): Audit oben mit dem vollstaendigen Ergebnis; nur die Agentenauslieferung wird
     // projiziert (neues Objekt; ohne Snapshot/Schalter antwortanpassung identisch = t109).
-    const agentErgebnis = projiziereToolAntwort(toolResult, toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined);
+    const agentErgebnis = projiziereToolAntwort(await haengeFallSkillHinweisAn(toolResult, toolName, fallOpt), toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined);
     // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text (muss zum outputSchema passen).
     result = haengeMcpBilderAn(baueToolErgebnis(agentErgebnis, { tool: toolName, strukturiert: true }), bilder);
   } catch (toolErr) {
@@ -6376,7 +6389,7 @@ async function fuehreToolsCallAus(
       effectiveAgentId,
     );
     _logResult = JSON.stringify(errorPayload);
-    result = baueToolErgebnis(projiziereToolAntwort(errorPayload, toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined),
+    result = baueToolErgebnis(projiziereToolAntwort(await haengeFallSkillHinweisAn(errorPayload, toolName, fallOpt), toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined),
       { tool: toolName, isError: true, strukturiert: true });
   }
   // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.

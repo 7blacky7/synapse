@@ -63,6 +63,11 @@
  * Nur Audit-Daten: die Antwort an den Aufrufer bleibt unveraendert.
  */
 import { maskiereAnsichtLinks, maskiereUrl, URL_ZUGANGSDATEN } from './masken-katalog.js';
+import { AUSWEIS_FORMAT } from './agent-ausweis-format.js';
+/** P22-T55 (User 19.10.): der Agenten-Ausweis (sai_...) ist KEIN Geheimnis mehr - nie schwaerzen, auch unter 'token'. */
+function istAusweisWert(wert: unknown): boolean {
+  return typeof wert === 'string' && AUSWEIS_FORMAT.test(wert.trim().replace(/^(["'`])([\s\S]*)\1$/, '$2'));
+}
 
 export const TOOL_LOG_PLATZHALTER = '[WERT]';
 
@@ -195,11 +200,11 @@ const GEHEIMWORT_GANZ = /^(?:password|passwort|passwd|kennwort|pwd|secret|token|
  * Nachbesserung 2 (N3, 61ca8b09): bekannte Geheimnis-Muster. Ein Wert, der so aussieht, ist NIE harmlos — egal unter
  * welchem Schluessel (Meta-Suffix, Feldnamen-Literal, Prosa, Quellverweis zaehlen dann nicht).
  */
-const GEHEIM_MUSTER_TEIL = /(?:^|[^A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{6,}|github_pat_[A-Za-z0-9_]{6,}|xox[abprs]-[A-Za-z0-9-]{3,}|sk-[A-Za-z0-9_-]{6,}|[sr]k_(?:live|test)_[A-Za-z0-9]{6,}|(?:AKIA|ASIA)[0-9A-Z]{12,}|sai_[a-z0-9]{1,64}(?![A-Za-z0-9_]))|\b[Bb]earer\s+[A-Za-z0-9._~+/=-]{8,}/;
+const GEHEIM_MUSTER_TEIL = /(?:^|[^A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{6,}|github_pat_[A-Za-z0-9_]{6,}|xox[abprs]-[A-Za-z0-9-]{3,}|sk-[A-Za-z0-9_-]{6,}|[sr]k_(?:live|test)_[A-Za-z0-9]{6,}|(?:AKIA|ASIA)[0-9A-Z]{12,})|\b[Bb]earer\s+[A-Za-z0-9._~+/=-]{8,}/;
 /** N3: Inhalt eines PEM-Privatschluessels im freien Text (Kopf/Fuss bleiben, Regel muster). */
 const PEM_PRIVAT = /(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)(?!\[WERT\])[\s\S]*?(-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
 /** Im freien Text (Regel muster): nur eindeutig lange Formen, damit Bezeichner wie risk-assessment nicht treffen. */
-const GEHEIM_MUSTER_FREI = /(?<![A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16}|sai_[a-z0-9]{1,64})(?![A-Za-z0-9_])/g;
+const GEHEIM_MUSTER_FREI = /(?<![A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16})(?![A-Za-z0-9_])/g;
 /** Hohe Entropie: >= 20 Zeichen ohne Leerraum, Buchstaben UND Ziffern, Shannon >= 3.5 Bit/Zeichen. */
 function hoheEntropie(w: string): boolean {
   if (w.length < 20 || !/^[A-Za-z0-9+/=_.~:-]+$/.test(w) || !/\d/.test(w) || !/[A-Za-z]/.test(w)) return false;
@@ -221,6 +226,7 @@ const GEHEIM_HINWEIS_NAME = /token|secret|passw|kennwort|pwd|apikey|privatekey|a
 const BASIS_AUSNAHME = /^(?:wait_token|batch_token|stream_id)$/;
 /** N3: Schluessel ist geheim ODER deutet auf ein Geheimnis hin und der Wert hat ein Geheimnis-Muster. */
 function geheimFuerWert(name: string, wert: unknown): boolean {
+  if (istAusweisWert(wert)) return false;
   if (istToolLogGeheimSchluessel(name)) return true;
   const norm = normiere(name);
   return !BASIS_AUSNAHME.test(norm) && GEHEIM_HINWEIS_NAME.test(norm.replace(/_/g, '')) && istGeheimMusterWert(wert);
@@ -239,6 +245,7 @@ export function istHarmloserToolLogWert(name: string, wert: unknown, zeile = '')
   const kompakt = segs.join('');
   const w = typeof wert === 'string' ? wert.trim().replace(/^(["'`])([\s\S]*)\1$/, '$2') : String(wert);
   if (w === '') return true;
+  if (istAusweisWert(w)) return true; // P22-T55: Ausweis wird nicht maskiert
   if (istGeheimMusterWert(w)) return false; // N3: Geheimnis-Muster ist nie harmlos
   if (PLATZHALTER_WERT.test(w)) return true;
   const stark = istStarkerGeheimSchluessel(name);

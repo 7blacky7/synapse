@@ -15,7 +15,7 @@
  */
 
 import { getPool } from '../db/index.js';
-import { aktuelleAgentIdentityId, aktuellerAgentPrincipal, aktuellerAgentAufruf } from './agent-bezug.js';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal, loeseAgentFilter } from './agent-bezug.js';
 import {maskiereShellVorSpeichern,maskiereShellAntwort} from './shell-maske.js';
 import {schwaerzeToolLogText} from './tool-args-schwaerzen.js';
 
@@ -29,7 +29,8 @@ const RESULT_CAP = (() => {
  * P15-T33 E1: Tool-Actions, deren Antwort NIE in tool_calls.result landet. code_check(fall) liefert die
  * maskierten Schattendaten eines Erklaerungsfalls - die gehoeren nur in erklaerung_faelle, nicht ins Audit.
  */
-const OHNE_RESULT = new Set(['code_check:fall', 'admin:token_abrufen', 'admin:web_ui_koordinator_token']);
+// P22-T55 (User 19.10.): der Agenten-Ausweis wird nicht mehr maskiert; token_abrufen/web_ui_koordinator_token werden protokolliert.
+const OHNE_RESULT = new Set(['code_check:fall']);
 
 /**
  * Schreibzugriff-Heuristik aus dem Action-Namen. Verben werden als ganze
@@ -196,10 +197,9 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
   if (f.project) { where.push(`project = $${i++}`); params.push(f.project); }
   if (f.id) { where.push(`id::text = $${i++}`); params.push(f.id); }
   if (f.agentId && f.agentId.length) {
-    const idMode=!!aktuellerAgentAufruf() && aktuellerAgentAufruf()?.bezug.modus!=='alt';
-    const identities = f.agentId.flatMap(id => idMode && id.startsWith('identity:') ? [id.slice(9)] : f.project && aktuelleAgentIdentityId(f.project, id) ? [aktuelleAgentIdentityId(f.project, id)!] : []);
-    const names = f.agentId.filter(id => !(idMode && id.startsWith('identity:')) && !(f.project && aktuelleAgentIdentityId(f.project, id)));
-    where.push(`((identity_id IS NULL AND agent_id = ANY($${i++}::text[])) OR identity_id = ANY($${i++}::text[]))`); params.push(names, identities);
+    // P22-T55: EIN Resolver - Namen fremder Ausweis-Agenten und identity_ids finden deren Eintraege (vorher nur der eigene Name).
+    const z = await loeseAgentFilter(f.project ?? null, f.agentId);
+    where.push(`((identity_id IS NULL AND agent_id = ANY($${i++}::text[])) OR identity_id = ANY($${i++}::text[]))`); params.push(z.namen, z.identity_ids);
   }
   if (f.tool && f.tool.length) { where.push(`tool_name = ANY($${i++})`); params.push(f.tool); }
   if (f.status === 'error') where.push('ok = false');

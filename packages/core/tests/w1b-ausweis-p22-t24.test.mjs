@@ -312,7 +312,8 @@ try{
   const z=(await zeilen(mv.identity_id))[0];
   check(z.gueltig_bis===null&&z.zuletzt_benutzt!==null,'erster Toolaufruf bestaetigt den Ausweis dauerhaft');
   const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
-  check(!/sai_[a-z0-9]{1,64}/.test(logs)&&secrets.every(s=>!logs.includes(s)),'Ausweiswert nie in tool_calls (args und result)');
+  // P22-T55 (User 19.10.): der Ausweis ist kein Geheimnis mehr und steht unmaskiert im Tool-Log; sonstige Geheimnisse nie.
+  check(logs.includes(mv.token)&&secrets.filter(s=>!/^sai_/.test(String(s))).every(s=>!logs.includes(s)),'P22-T55: Ausweis im Tool-Log sichtbar, sonstige Geheimnisse nicht');
  });
 
  await section('Geheimnisfreiheit: Audit, Revisionen, Thoughts',async()=>{

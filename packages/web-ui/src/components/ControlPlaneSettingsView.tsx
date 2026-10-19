@@ -5,6 +5,7 @@ import { AgentRuntimeControl } from './CodexRuntimeControl';
 import { ModelPoolTable } from './ModelPoolTable';
 import { AusweisFristenPanel } from './AusweisFristenPanel';
 import { AusweisVisaPanel } from './AusweisVisaPanel';
+import { FallSkillSchalterPanel } from './FallSkillSchalterPanel';
 import { PlanungsHinweis, StatusChip, type Ausbaustand } from './StatusKennzeichnung';
 import '../control-plane-settings.css';
 
@@ -129,7 +130,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
           {category === 'all-agents' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Agenten aller Projekte</h3><p>Projektteams bleiben im Arbeitsbereich getrennt. Hier werden nur Laufzustände projektübergreifend überwacht.</p></div><b>{allAgents.length} Agenten</b></header><div className="settings-fleet-table">{allAgents.map((agent) => <article key={agent.project + ':' + agent.name}><i className={agent.state} /><span><strong>{agent.name}</strong><small>{agent.role} · {agent.runtime}</small></span><b>{agent.project}</b><em>{agent.host}</em><mark>{agent.state}</mark></article>)}</div></div>}
           {category === 'all-workspaces' && <div className="settings-fleet"><header><div><span>GLOBALER ÜBERBLICK</span><h3>Workspaces aller Projekte</h3><p>Laufende, wartende und eingefrorene Arbeitsstände unabhängig vom aktuell gewählten Projekt.</p></div><b>{workspaceProfiles.length} Workspaces</b></header><div className="settings-fleet-table workspace-fleet">{workspaceProfiles.map((item) => <article key={item.id}><i className={item.status} /><span><strong>{item.name}</strong><small>{item.mode} · {item.role}</small></span><b>{item.project}</b><em>{item.image}</em><mark>{item.status}</mark></article>)}</div></div>}
           {category === 'model-pool' && <ModelPoolTable />}
-          {category === 'ausweis' && <><AusweisFristenPanel project={project} /><AusweisVisaPanel project={project} /></>}
+          {category === 'ausweis' && <><AusweisFristenPanel project={project} /><AusweisVisaPanel project={project} /><FallSkillSchalterPanel project={project} /></>}
           {category === 'main' && <>
             <section aria-label="Hauptagent einrichten und zuweisen">
               <h3>Hauptagent einrichten und zuweisen</h3>

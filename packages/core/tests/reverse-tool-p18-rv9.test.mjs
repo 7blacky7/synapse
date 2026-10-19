@@ -32,6 +32,9 @@ try {
  await pool.query('CREATE SCHEMA '+schema);
  for(const table of ['agent_sessions','projects','tool_aktivitaet'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query(REVERSE_SCHEMA_SQL);
+ // P22-T15 (Schema 112): Akteur-ID-Spalten der Reverse-Tabellen (ohne FK, agent_identitaeten liegt nicht im Testschema).
+ for(const [t,c] of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],
+  ['reverse_uebernahmen','actor_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} TEXT`).catch(()=>{});
  await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES($1,$3,'active',NOW()),($2,$3,'active',NOW()),('koordinator',$3,'active',NOW())",[agent,other,project]);
  await pool.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_rv9',true)",[project]);
  await pool.query("INSERT INTO reverse_eintraege(id,titel,tags) VALUES($1,'Fixture A',ARRAY['demo']),($2,'Fixture B',ARRAY['andere'])",[rid,second]);
