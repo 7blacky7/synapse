@@ -9,6 +9,8 @@ import { getPool } from '../db/client.js';
 import { aktuelleAgentIdentityId, loeseAgentZiel } from './agent-bezug.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
+// W12 (Vertrag V6): Pflicht-Hinweisquellen sind nicht per hinweise_aus/hinweise_nur (Profil, Kontextprofil) abschaltbar.
+import { W12_PFLICHT_HINWEISQUELLEN } from './agent-profil-vertrag.js';
 
 export interface HinweisKontext {
   tool: string;
@@ -47,7 +49,9 @@ const lokaleFehler = new Map<string, { project: string; quelle_id: string; fehle
 const TIMEOUT = new Error('ausloeser_hinweis_zeitbudget');
 const objekt = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
 const positiv = (value: unknown, fallback: number) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback;
-const kurz = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 240);
+// W12-B (P22-T25): Pflichtquellen (Ausweis + Anleitung, Profil-Diff) bis 600 Zeichen, sonst 240 wie bisher.
+const kurz = (text: string, max = 240) => text.replace(/\s+/g, ' ').trim().slice(0, max);
+const textGrenze = (quelleId: string): number => (W12_PFLICHT_HINWEISQUELLEN.includes(quelleId) ? 600 : 240);
 
 /** Einmal beim Prozessstart registrieren; Rückgabe hebt nur diese Registrierung auf. */
 export function registriereHinweisQuelle(quelle: HinweisQuelle): () => void {
@@ -93,6 +97,7 @@ function passt(ziel: string, agent: string): boolean {
 }
 type Profil = {exact_identity_id?:string|null; ziel:string; hinweise_aus:string[]; hinweise_nur:string[]|null};
 function quelleErlaubt(id: string, profile: Profil[], agent: string, identity?: string|null): boolean {
+  if (W12_PFLICHT_HINWEISQUELLEN.includes(id)) return true;
   const profil = profile.filter(p=>p.exact_identity_id ? p.exact_identity_id===identity : passt(p.ziel,agent)).sort((a,b)=>
     Number(!!b.exact_identity_id)-Number(!!a.exact_identity_id) ||
     Number(b.ziel===agent)-Number(a.ziel===agent) || b.ziel.replace(/\*/g,'').length-a.ziel.replace(/\*/g,'').length || a.ziel.localeCompare(b.ziel))[0];
@@ -111,7 +116,7 @@ export async function haengeAusloeserHinweiseAn(
   if (!quellen.size || !agentId || (objekt(result) && 'ausloeser_hinweise' in result)) return result;
   // P22-T13 Paket C: profilseitig abgeschaltete Quellen (ausloeser.<quelle_id>) weder pruefen noch claimen;
   // sind alle aus, keine DB-Verbindung. Ohne Snapshot immer an (t109). Legacy-Profile wirken zusaetzlich.
-  if (![...quellen.keys()].some(id => hinweisAktiv('ausloeser.' + id, agentId))) return result;
+  if (![...quellen.keys()].some(id => W12_PFLICHT_HINWEISQUELLEN.includes(id) || hinweisAktiv('ausloeser.' + id, agentId))) return result;
   let project = typeof args.project === 'string' ? args.project : '';
   const daten = objekt(result) ? result : { result };
   const pool = optionen.pool ?? getPool();
@@ -150,7 +155,7 @@ export async function haengeAusloeserHinweiseAn(
     project = meta.projekt;
     const ctx = baueHinweisKontext(tool,{...args,project},daten,agentId,meta.sitzung,controller.signal);
     const kandidaten: Array<AusloeserHinweis & {quelle_id:string}> = [];
-    const aktiveQuellen = [...quellen.values()].filter(q=>!!project && meta.aktiv && quelleErlaubt(q.quelle_id,meta.profile,agentId,identity) && hinweisAktiv('ausloeser.'+q.quelle_id,agentId));
+    const aktiveQuellen = [...quellen.values()].filter(q=>!!project && meta.aktiv && quelleErlaubt(q.quelle_id,meta.profile,agentId,identity) && (W12_PFLICHT_HINWEISQUELLEN.includes(q.quelle_id) || hinweisAktiv('ausloeser.'+q.quelle_id,agentId)));
     await Promise.all(aktiveQuellen.map(async q=>{
       try {
         const hinweise = await q.pruefe(ctx);
@@ -207,7 +212,7 @@ export async function haengeAusloeserHinweiseAn(
       await client.query(`INSERT INTO ausloeser_hinweis_metriken(project,quelle_id,ausgeliefert,unterdrueckt) VALUES($1,$2,$3,$4)
         ON CONFLICT(project,quelle_id) DO UPDATE SET ausgeliefert=ausloeser_hinweis_metriken.ausgeliefert+EXCLUDED.ausgeliefert,
           unterdrueckt=ausloeser_hinweis_metriken.unterdrueckt+EXCLUDED.unterdrueckt`,[project,h.quelle_id,delivered?1:0,delivered?0:1]);
-      if (delivered) zeilen.push(kurz(claim.rows[0].voll ? h.text : h.kurztext??('Weiter offen: '+h.hinweis_id)));
+      if (delivered) zeilen.push(kurz(claim.rows[0].voll ? h.text : h.kurztext??('Weiter offen: '+h.hinweis_id), textGrenze(h.quelle_id)));
     }
     pruefeFrist();
     await client.query('COMMIT');

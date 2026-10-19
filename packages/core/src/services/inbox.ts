@@ -1,5 +1,5 @@
 import { getPool } from '../db/client.js'
-import { kommunikationsAgent, aufgeloestesKommunikationsZiel, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js'
+import { kommunikationsAgent, aufgeloestesKommunikationsZiel, aufgeloestesSendeZiel, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js'
 import type { AgentZiel } from './agent-bezug.js'
 import type { InboxMessage } from '../types/index.js'
 
@@ -16,7 +16,7 @@ function mapRow(row: Record<string, unknown>): InboxMessage {
 }
 
 export async function postToInbox(fromAgent: string | AgentZiel, toAgent: string | AgentZiel, content: string, project: string): Promise<{ id: number; createdAt: Date }> {
-  const sender = kommunikationsAgent(project, fromAgent), ziel = await aufgeloestesKommunikationsZiel(project, toAgent)
+  const sender = kommunikationsAgent(project, fromAgent), ziel = await aufgeloestesSendeZiel(project, toAgent)
   if (agentBezugAktiv()) {
     const { rows } = await getPool().query(
       `INSERT INTO specialist_inbox(from_agent,to_agent,content,project,from_identity_id,to_identity_id)

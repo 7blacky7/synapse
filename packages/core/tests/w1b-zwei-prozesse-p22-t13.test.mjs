@@ -67,6 +67,9 @@ async function kind(name){
     },
     async schattenAktiv({project=P}){return M.anmeldung.schattenprofileAktiv(project);},
     async gateCacheLeeren(){M.anmeldung.leereAnmeldungGateCache();return true;},
+    async setzeModus({m}){process.env.SYNAPSE_AGENT_BEZUG_MODUS=m;return m;},
+    async kernAktiv({project=P}){const k=await M.schalter.leseAusweisKern(project);return {aktiv:k.aktiv,quelle:k.quelle,fehler:k.letzter_fehler};},
+    async setzeGateTtl({ms}){if(ms===null)delete process.env.SYNAPSE_W1B_GATE_TTL_MS;else process.env.SYNAPSE_W1B_GATE_TTL_MS=String(ms);return M.anmeldung.gateTtlMs();},
     async internSetzen({name,aktiv}){
       await M.intern.setzeSchalter(name,{aktiv,modus:'freigegeben',dauer_min:5,grund:'Zwei-Prozess-Test P22-T20',agent:'p22-t20'});
       return true;
@@ -230,7 +233,7 @@ async function haupt(){
     const cl=await admin.connect();
     try{
       await cl.query('SET search_path TO '+schema);
-      for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
+      for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
     }finally{cl.release();}
     url.searchParams.set('options','-c search_path='+schema+',public');
     const env={...process.env,DATABASE_URL:url.href,SYNAPSE_SKIP_EMBEDDINGS:'1',PARSER_LOOP_DISABLED:'1',SYNAPSE_TOKEN_IDENTITAET:'1',
@@ -283,6 +286,7 @@ async function haupt(){
       verzoegert(rB,'Gate AUS->EIN in B');
       const imSchreiber=rA;
       check(imSchreiber.ms!==null&&imSchreiber.ms<=FRIST_MS+TOLERANZ_MS,'Gate AUS->EIN im schreibenden Prozess A spaetestens nach der Frist (gemessen '+imSchreiber.ms+' ms)');
+      check(imSchreiber.sofort,'P22-T29: Gate AUS->EIN im schreibenden Prozess A sofort (Cache nach dem Schreiben geleert)');
       if(!imSchreiber.sofort)befunde.push('setzeProfilProduktSchalter invalidiert den Gate-Cache des schreibenden Prozesses nicht (Wirkung nach '+imSchreiber.ms+' ms)');
       // Gegenrichtung EIN -> AUS: beide Caches stehen jetzt auf EIN
       check(await A.wert('schattenAktiv',{})===true&&await B.wert('schattenAktiv',{})===true,'Caches beider Prozesse mit EIN gefuellt');
@@ -292,8 +296,37 @@ async function haupt(){
         beobachte('Gate-Cache EIN->AUS, schreibender Prozess (B)',B,'schattenAktiv',{},v=>v===false)]);
       verzoegert(rA2,'Gate EIN->AUS in A');
       check(rB2.ms!==null&&rB2.ms<=FRIST_MS+TOLERANZ_MS,'Gate EIN->AUS im schreibenden Prozess B spaetestens nach der Frist (gemessen '+rB2.ms+' ms)');
+      check(rB2.sofort,'P22-T29: Gate EIN->AUS im schreibenden Prozess B sofort (Abschalten ohne Verzoegerung)');
       if(!rB2.sofort)befunde.push('Gate-Cache EIN->AUS: auch der schreibende Prozess sieht die Abschaltung erst nach '+rB2.ms+' ms (Abschalten wirkt bis zu '+FRIST_MS+' ms verzoegert)');
       await sleep(50);
+    });
+
+    await section('S3b P22-T29: TTL 0 (SYNAPSE_W1B_GATE_TTL_MS=0) = kein Cache, auch im anderen Prozess sofort',async()=>{
+      check(await A.wert('setzeGateTtl',{ms:0})===0&&await B.wert('setzeGateTtl',{ms:0})===0,'TTL 0 in beiden Prozessen gelesen');
+      await A.wert('gateCacheLeeren');await B.wert('gateCacheLeeren');
+      check(await A.wert('schattenAktiv',{})===false&&await B.wert('schattenAktiv',{})===false,'TTL 0: beide Prozesse AUS');
+      await A.wert('setzeSchalter',{funktion:'schattenprofile',aktiv:true});
+      sofort(await beobachte('TTL 0: Gate AUS->EIN, anderer Prozess (B)',B,'schattenAktiv',{},v=>v===true),'TTL 0: Gate AUS->EIN in B');
+      check(await B.wert('schattenAktiv',{})===true,'TTL 0: B bleibt EIN');
+      await A.wert('setzeSchalter',{funktion:'schattenprofile',aktiv:false});
+      sofort(await beobachte('TTL 0: Gate EIN->AUS, anderer Prozess (B)',B,'schattenAktiv',{},v=>v===false),'TTL 0: Gate EIN->AUS in B');
+      check(await A.wert('setzeGateTtl',{ms:'kaputt'})===5000&&await B.wert('setzeGateTtl',{ms:null})===5000,'TTL ungueltig oder ohne Env: Standard 5000');
+      await A.wert('setzeGateTtl',{ms:null});
+    });
+
+    await section('S3c P22-T28: Ausweis-Kern (Produkt-Schalter agenten_ausweis, Modus beide): Schreiber sofort, anderer Prozess nach TTL',async()=>{
+      await A.wert('setzeModus',{m:'beide'});await B.wert('setzeModus',{m:'beide'});
+      await A.wert('gateCacheLeeren');await B.wert('gateCacheLeeren');
+      check((await A.wert('kernAktiv',{})).aktiv===false&&(await B.wert('kernAktiv',{})).aktiv===false,'Kern AUS in beiden Prozessen (Puffer gefuellt)');
+      await A.wert('setzeSchalter',{funktion:'agenten_ausweis',aktiv:true});
+      const k=await A.wert('kernAktiv',{});
+      check(k.aktiv===true&&k.quelle==='produkt-schalter','Kern EIN im schreibenden Prozess A sofort (Puffer nach dem Schreiben geleert)');
+      const rBk=await beobachte('Kern AUS->EIN, anderer Prozess (B)',B,'kernAktiv',{},v=>v.aktiv===true);
+      verzoegert(rBk,'Kern AUS->EIN in B');
+      await B.wert('setzeSchalter',{funktion:'agenten_ausweis',aktiv:false});
+      check((await B.wert('kernAktiv',{})).aktiv===false,'Kern EIN->AUS im schreibenden Prozess B sofort');
+      await A.wert('setzeModus',{m:'alt'});await B.wert('setzeModus',{m:'alt'});
+      await A.wert('gateCacheLeeren');await B.wert('gateCacheLeeren');
     });
 
     await section('S4 Task-Bindung: Aenderungen und Gate wirken ohne Cache',async()=>{

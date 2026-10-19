@@ -32,6 +32,8 @@ for(const n of ['chat','inbox','channels','channel-unread','chat-unread','events
 const [Chat,Inbox,Ch,Read,Unread,Ev,On,H,Trigger,Skill,Pattern,Lookup,Bezug,Sitz]=modules;
 const {AGENT_IDENTITAET_SCHEMA_SQL:s111}=await import('../dist/db/agent-identitaet-schema.js');
 const {AGENT_BEZUG_SCHEMA_SQL:s112}=await import('../dist/db/agent-bezug-schema.js');
+const {AGENT_PROFIL_SCHEMA_SQL:s113}=await import('../dist/db/agent-profil-schema.js');
+const {AGENT_AUSWEIS_SCHEMA_SQL:s114}=await import('../dist/db/agent-ausweis-schema.js');
 const sql111=await readFile(new URL('../src/db/schema-sql/111_agent_identitaet.sql',import.meta.url),'utf8');
 const sql112=await readFile(new URL('../src/db/schema-sql/112_agent_bezug.sql',import.meta.url),'utf8');
 assert.equal(s111.trim(),sql111.trim());assert.equal(s112.trim(),sql112.trim());
@@ -70,6 +72,7 @@ try {
   await q('ALTER TABLE '+d.table_name+' ALTER COLUMN '+d.column_name+" SET DEFAULT nextval('"+schema+'.'+seq+"'::regclass)");
  }
  await q(sql111);await q(sql112);await q(sql111);await q(sql112);
+ await q(s113);await q(s114); // P22-T31 R2: Profil- (113) und Ausweis-Spalten (114) fuer agent_vorbereiten/anmelden
  console.log('PASS Schema111+112 je zweimal, SQL/TS-Spiegel gleich, Scope='+schema);
  if(process.argv.includes('--basis-rot')){
   await q('INSERT INTO agent_identitaeten(id,project,name,agent_id,erstellt_von) VALUES($1,$2,$3,$3,$4)',[a.identity_id,project,alias,'test']);
@@ -322,8 +325,16 @@ try {
    assert.equal(response.statusCode,200);const body=response.json();assert(body.result,'HTTP liefert Toolergebnis');return unwrap(body.result);
   };
   const h=http('/'),h2=http('/mcp/messages'),s=async(name,args)=>unwrap(await client.callTool({name,arguments:args}));
-  const first=await h('chat',{action:'register',project,id:'s4-transport'});
-  const second=await s('chat',{action:'register',project,id:'s4-transport'});
+  // P22-T31 R2: register ohne token stellt keinen Ausweis aus (Weg A: nur Legacy + Schatten). Ausweise kommen ueber agent_vorbereiten (Legacy-Koordinator) + chat(anmelden, token).
+  process.env.SYNAPSE_AGENTEN_AUSWEIS='1';
+  const vorbereitet=async(call,name)=>{
+   const v=await call('admin',{action:'agent_vorbereiten',project,agent_name:name,grund:'S4 Transport-Fixture',agent_id:'koordinator'});
+   assert(v.success,'agent_vorbereiten '+name+': '+JSON.stringify(v.error??v));
+   const l=await call('chat',{action:'anmelden',token:v.token,project});
+   return {...l,token:v.token};
+  };
+  const first=await vorbereitet(h,'s4-transport-a');
+  const second=await vorbereitet(s,'s4-transport-b');
   assert(first.success,'HTTP-Registrierung');assert(second.success,'stdio-Registrierung');
   const aid=first.principal.identity_id,bid=second.principal.identity_id;
   const aname=first.principal.agent_id,bname=second.principal.agent_id;

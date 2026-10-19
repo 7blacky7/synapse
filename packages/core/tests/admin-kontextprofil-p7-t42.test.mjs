@@ -8,9 +8,13 @@ const load = (...parts) => import(pathToFileURL(join(repo, ...parts)).href);
 // P22-T13 Paket D: additive Profilverwaltungs-Aktionen/-Parameter (agent-profil-admin.ts) sind ebenfalls neu; die Golden-Hashes bleiben unveraendert.
 const w1bAktionen = ['profil_schalter_status', 'profil_schalter_setzen', 'profil_uebersicht', 'schattenprofil_liste', 'schattenprofil_korrigieren', 'schattenprofil_bestaetigen', 'schattenprofil_ablehnen',
   'typ_liste', 'typ_anlegen', 'typ_aendern', 'typ_revision_lesen', 'profil_aendern', 'profil_historie', 'profil_rollback', 'persona_liste', 'persona_versionen', 'persona_anlegen', 'persona_neue_version',
-  'persona_zuweisen', 'persona_entfernen', 'token_abrufen', 'web_ui_koordinator_token', 'task_bindung_lesen', 'task_bindung_festlegen', 'task_bindung_aendern', 'task_bindung_entblocken'];
+  'persona_zuweisen', 'persona_entfernen', 'token_abrufen', 'web_ui_koordinator_token', 'task_bindung_lesen', 'task_bindung_festlegen', 'task_bindung_aendern', 'task_bindung_entblocken',
+  // P22-T33 (T1, User-Praezedenz 227150da: admin-Aktionen sichtbar ok): additive W12-Aktionen; die Golden-Hashes der alten Schemas bleiben unveraendert.
+  'agent_vorbereiten', 'token_loeschen'];
 const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id', 'zustand', 'erwartete_revision', 'ziel_revision', 'korrektur', 'profil_patch', 'typ_id', 'typ_schluessel', 'typ_inhalt',
-  'typ_revision', 'profil_scope', 'persona_name', 'persona_inhalt', 'persona_vorlage_id', 'persona_version', 'user_auftrag', 'user_zustimmung', 'anlass', 'bindung_task_id', 'bindung_art', 'bindung_identity_ids'];
+  'typ_revision', 'profil_scope', 'persona_name', 'persona_inhalt', 'persona_vorlage_id', 'persona_version', 'user_auftrag', 'user_zustimmung', 'anlass', 'bindung_task_id', 'bindung_art', 'bindung_identity_ids',
+  // P22-T33 (T1, 227150da): additive W12-Parameter (agent_vorbereiten).
+  'agent_name', 'rolle', 'startart'];
 const neu = new Set(['kontextprofil_liste', 'kontextprofil_setzen', 'kontextprofil_entfernen', ...w1bAktionen]);
 const neueParameter = new Set(['ziel', 'kontext_budget', 'stufe', 'hinweise_aus', 'hinweise_nur', ...w1bParameter]);
 const alteSchemaProjektion = (tool) => {
@@ -47,7 +51,8 @@ const beobachtet = {
 // der REST-Hash spiegelt deshalb den Stand seit P22-T11 wider.
 const golden = {
   stdio: '6fc6f4a0072feb0e8effa2c4809a3a106ce9b15b0a959c015ade228c9cac968d',
-  rest: 'ff9286f6164d73c74f9fd4e0df37f5b7a3aaf2adb6212b06d8e72987bfbefc33',
+  // P22-T33 (T1, 227150da): bewusst aktualisiert; einzige Abweichung gegenueber ff9286f6...: token.description nennt 'bei JEDEM Aufruf mitgeben' (Ausweis je Aufruf, W12); stdio und guide bleiben byte-stabil.
+  rest: '49baf297cfe775b44cbe323170a3b3e6573af5e7ed47c4a50b0507a7a93774ab',
   guide: '5f9399e44a5e8ec223b676ad4274a3e0abffb3508ac4e47fa659e5932de19108',
 };
 assert.deepEqual(beobachtet, golden, 'Bestehende Admin-Schemas und Guide-Actions müssen byte-stabil bleiben');

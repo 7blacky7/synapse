@@ -55,6 +55,10 @@ try {
   assert.equal(schema111.trim(),AGENT_IDENTITAET_SCHEMA_SQL.trim(),'SQL-Spiegel111 entspricht ausgeführter Migration');
   await q(schema111);
   await q(schema111);
+  // W12 (P22-T24): Schema 114 (token_offen, ausweis_weg) gehoert zum Ausweis-Vertrag.
+  const schema114=readFileSync(new URL('../src/db/schema-sql/114_agent_ausweis.sql',import.meta.url),'utf8');
+  await q(schema114);
+  await q(schema114);
   assert.equal((await q("SELECT count(*)::int n FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('agent_identitaeten','agent_identitaet_tokens','agent_identitaet_audit')",[schema])).rows[0].n,3);
   ok('Schema 111 zweimal idempotent, drei Tabellen');
 
@@ -98,12 +102,12 @@ try {
     assert.deepEqual(await snapshot(),before);
     ok('Epoch nur Anmeldung, atomar in Identität/Sitzung; positive Bindungs-Sentinels unverändert');
     const saved=(await q('SELECT * FROM agent_identitaet_tokens WHERE id=$1',[a.token_id])).rows[0];
-    assert.equal(saved.token_hash,S.hashAgentToken(a.token));assert.equal(saved.token_praefix,a.token_praefix);
-    assert(!JSON.stringify(saved).includes(a.token));
+    // W12 V1 (User 19.10.): Ausweis OFFEN gespeichert, kein Hash, kein Tresor.
+    assert.equal(saved.token_offen,a.token);assert.equal(saved.token_hash,null);assert.equal(saved.token_praefix,a.token_praefix);
     assert.equal((await q('SELECT column_name FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2 AND column_name=$3',[schema,'agent_identitaet_tokens','token'])).rows.length,0);
     await rejected(()=>S.pruefeAgentToken(a.token,'foreign-project'),'agent_token_fremdes_projekt');
     await rejected(()=>S.pruefeAgentToken('invalid'),'agent_token_ungueltig');
-    ok('Hash-only + Präfix, Projektmismatch und ungültiger Ausweis abgewiesen');
+    ok('Offen gespeichert (W12) + Präfix, Projektmismatch und ungültiger Ausweis abgewiesen');
     await rejected(()=>issue('self-promote',{rolle:'koordinator'}),'identitaet_recht_fehlt');
     await rejected(()=>issue('self-model',{modell_bestaetigt:'trusted'}),'identitaet_recht_fehlt');
     await rejected(()=>issue('self-existing',{identity_id:a.identitaet.id}),'identitaet_recht_fehlt');
@@ -160,39 +164,30 @@ try {
     assert.equal(legacyBefore.identity_id,null);
     ok('Legacy-Sitzung gleicher Projektname unverändert; Anmeldung abgelehnt, keine neue Identität');
     const main=await issue('restart');secrets.push(main.token);
+    // W12 (P22-T24, Vertrag V2): je Identitaet genau EIN Ausweis; Start-Ausweise, Rotation und 60-s-Uebergang entfallen.
     const startup=()=>issue('restart',{identity_id:main.identitaet.id,start_art:'specialist'},daemon);
-    const s1=await startup();secrets.push(s1.token);
-    const pending=(await q('SELECT gueltig_bis FROM agent_identitaet_tokens WHERE id=$1',[s1.token_id])).rows[0].gueltig_bis;
-    assert(pending instanceof Date&&pending>Date.now()&&pending.getTime()<=Date.now()+600100,'Start-Ausweis vor Anmeldung max10Min');
-    process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN='2';
-    const pendingOther=await issue('restart',{identity_id:main.identitaet.id,start_art:'pending-test'},daemon);secrets.push(pendingOther.token);
-    const custom=(await q('SELECT gueltig_bis FROM agent_identitaet_tokens WHERE id=$1',[pendingOther.token_id])).rows[0].gueltig_bis;
-    assert(custom>Date.now()&&custom.getTime()<=Date.now()+120100);
-    delete process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN;
-    await q("UPDATE agent_identitaet_tokens SET gueltig_bis=NOW()-INTERVAL '1 second' WHERE id=$1",[pendingOther.token_id]);
-    await rejected(()=>S.meldeAgentMitTokenAn(pendingOther.token),'agent_token_ungueltig');
-    const s2=await startup();secrets.push(s2.token);
-    const grace=(await q('SELECT gueltig_bis FROM agent_identitaet_tokens WHERE id=$1',[s1.token_id])).rows[0].gueltig_bis;
-    assert(grace>Date.now()&&grace.getTime()<=Date.now()+61000);
-    await S.meldeAgentMitTokenAn(s1.token);
-    await S.pruefeAgentToken(s2.token); // alte Anmeldung darf aktuellen Ausweis nicht widerrufen
-    await S.meldeAgentMitTokenAn(s2.token);
-    assert.equal((await q('SELECT gueltig_bis FROM agent_identitaet_tokens WHERE id=$1',[s2.token_id])).rows[0].gueltig_bis,null,'Erstanmeldung hebt nur Start-Höchstfrist auf');
-    await rejected(()=>S.pruefeAgentToken(s1.token),'agent_token_ungueltig');
-    await S.pruefeAgentToken(main.token);
-    const other=await issue('restart',{identity_id:main.identitaet.id,start_art:'cli'},daemon);secrets.push(other.token);
-    await S.meldeAgentMitTokenAn(other.token);await S.pruefeAgentToken(s2.token);
-    const s3=await startup();secrets.push(s3.token);
-    await q("UPDATE agent_identitaet_tokens SET gueltig_bis=NOW()-INTERVAL '1 second' WHERE id=$1",[s2.token_id]);
-    await rejected(()=>S.pruefeAgentToken(s2.token),'agent_token_ungueltig');
-    const many=await Promise.all(Array.from({length:4},startup));many.forEach(x=>secrets.push(x.token));
-    assert.equal((await q("SELECT count(*)::int n FROM agent_identitaet_tokens WHERE identity_id=$1 AND start_art='specialist' AND widerrufen_am IS NULL AND (gueltig_bis IS NULL OR gueltig_bis>NOW())",[main.identitaet.id])).rows[0].n,2);
-    const current=(await q("SELECT id FROM agent_identitaet_tokens WHERE identity_id=$1 AND start_art='specialist' AND widerrufen_am IS NULL AND NOT start_uebergang",[main.identitaet.id])).rows[0].id;
-    const latest=many.find(x=>x.token_id===current);assert(latest);
-    await S.meldeAgentMitTokenAn(latest.token);
-    assert.equal((await q("SELECT count(*)::int n FROM agent_identitaet_tokens WHERE identity_id=$1 AND start_art='specialist' AND widerrufen_am IS NULL AND (gueltig_bis IS NULL OR gueltig_bis>NOW())",[main.identitaet.id])).rows[0].n,1);
-    await S.pruefeAgentToken(main.token);
-    ok('Startrotation: max2 im Übergang, danach1; Startart/Haupttoken getrennt; alte Anmeldung unschädlich');
+    const s1=await startup();
+    assert.equal(s1.token,main.token);assert.equal(s1.neu,false,'Start mit vorhandenem Ausweis: derselbe, keine Rotation');
+    const many=await Promise.all(Array.from({length:4},startup));
+    many.forEach(x=>assert.equal(x.token,main.token));
+    assert.equal((await q('SELECT count(*)::int n FROM agent_identitaet_tokens WHERE identity_id=$1',[main.identitaet.id])).rows[0].n,1);
+    await S.meldeAgentMitTokenAn(main.token);await S.pruefeAgentToken(main.token);
+    // Weg B: ausgestellt mit Erstnutzungsfrist; die erste Anmeldung bestaetigt dauerhaft.
+    const fresh=await issue('fresh-b',{erstnutzung:true,ausweis_weg:'vorbereitet'},user);secrets.push(fresh.token);
+    const pending=(await q('SELECT gueltig_bis FROM agent_identitaet_tokens WHERE id=$1',[fresh.token_id])).rows[0].gueltig_bis;
+    assert(pending instanceof Date&&pending>Date.now()&&pending.getTime()<=Date.now()+600100,'ausgestellt: Erstnutzungsfrist max 10 Min');
+    await S.meldeAgentMitTokenAn(fresh.token);
+    assert.equal((await q('SELECT gueltig_bis FROM agent_identitaet_tokens WHERE id=$1',[fresh.token_id])).rows[0].gueltig_bis,null,'Erstanmeldung = Bestaetigung');
+    // Ungenutzt verfallen -> ungueltig; neu nur nach Loeschen des verfallenen (erstnutzung_verfallen).
+    const dead=await issue('dead-b',{erstnutzung:true},user);secrets.push(dead.token);
+    await q("UPDATE agent_identitaet_tokens SET gueltig_bis=NOW()-INTERVAL '1 second' WHERE id=$1",[dead.token_id]);
+    await rejected(()=>S.meldeAgentMitTokenAn(dead.token),'agent_token_ungueltig');
+    const dead2=await issue('dead-b',{identity_id:dead.identitaet.id,erstnutzung:true},user);secrets.push(dead2.token);
+    assert.notEqual(dead2.token,dead.token);assert.equal(dead2.neu,true);
+    assert.equal((await q('SELECT widerrufen_grund FROM agent_identitaet_tokens WHERE id=$1',[dead.token_id])).rows[0].widerrufen_grund,'erstnutzung_verfallen');
+    assert.equal((await q('SELECT count(*)::int n FROM agent_identitaet_tokens WHERE identity_id=$1 AND widerrufen_am IS NULL',[dead.identitaet.id])).rows[0].n,1);
+    await rejected(()=>S.pruefeAgentToken(dead.token),'agent_token_ungueltig');
+    ok('Ein Ausweis je Identitaet (W12): Start/Respawn derselbe, Erstnutzungsfrist, Verfall -> neu');
     const clash=await issue('clash');secrets.push(clash.token);
     await q("INSERT INTO agent_sessions(id,project) VALUES('clash','foreign')");
     await rejected(()=>S.meldeAgentMitTokenAn(clash.token),'agent_sitzung_bereits_gebunden');
@@ -203,7 +198,7 @@ try {
     for(const token of secrets) assert(!JSON.stringify(audits).includes(token));
     assert(audits.some(x=>x.aktion==='token_widerrufen'&&x.grund==='test revoke'));
     assert(audits.some(x=>x.aktion==='deaktivieren'));
-    assert(audits.some(x=>x.aktion==='start_rotation'));
+    assert(audits.some(x=>x.aktion==='ausweis_bestaetigt'));
     ok('Audit mit wer/wann/alt/neu/Grund und ohne Klartextausweise');
     await I.setzeSchalter('token_identitaet',{aktiv:false,dauer_min:1});
     process.env.SYNAPSE_TOKEN_IDENTITAET='1';

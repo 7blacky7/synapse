@@ -35,7 +35,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { taskIndex, taskDublettenHinweis, geaenderteTaskIds } from './plan-suche.js';
-import { pruefeTaskBindungBearbeiten, type TaskBearbeiter } from './agent-profil-vertrag.js';
+import { vormerkenTaskBindungBearbeiten, type TaskBearbeiter } from './agent-profil-vertrag.js';
 import {
   ProjectPlan,
   ProjectTask,
@@ -956,8 +956,9 @@ export async function updateTask(
     return null;
   }
   const zielId = fund.task.id;
-  const sperre = await pruefeTaskBindungBearbeiten(project, zielId, fund.task.kurz_id ?? zielId, bearbeiter);
-  if (sperre) throw new Error(sperre);
+  // P22-T28 (H3): Legacy-Audit erst NACH dem erfolgreichen Update (nachErfolg), nicht mehr im Gate.
+  const bindung = await vormerkenTaskBindungBearbeiten(project, zielId, fund.task.kurz_id ?? zielId, bearbeiter);
+  if (bindung.sperre) throw new Error(bindung.sperre);
   const r = await schreibePlan(project, fund.plan.id, (stand) => {
     const i = stand.tasks.findIndex((t) => t.id === zielId);
     if (i === -1) return null;
@@ -966,6 +967,9 @@ export async function updateTask(
     return { stand: { ...stand, tasks }, ergebnis: null };
   });
   if (!r) return null;
+  if (bindung.nachErfolg) {
+    try { await bindung.nachErfolg(); } catch (fehler) { console.error('[Synapse] Task-Bindungs-Audit (update_task ohne Token) fehlgeschlagen:', fehler); }
+  }
   const gespeichert = r.plan.tasks.find((t) => t.id === zielId)!;
   console.error(`[Synapse] Task aktualisiert: "${gespeichert.title}"`);
   return { ...gespeichert, ...planKontext(r.plan), ...(r.warning ? { warning: r.warning } : {}) };

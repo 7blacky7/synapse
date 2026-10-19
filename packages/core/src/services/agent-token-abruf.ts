@@ -1,36 +1,29 @@
 /**
- * P22-T13 Paket D / K10A (User 02845fc2, Abnahme-Auflage C3): verschluesselt gespeicherte Agenten-Ausweise
- * jederzeit berechtigt abrufen.
- * - Abruf nur durch den User (authentifizierter Eingang) oder einen aktiven Koordinator DESSELBEN Projekts;
- *   Nicht-Koordinatoren und fremde Projekte werden abgelehnt (und ohne Tokenwert auditiert).
- * - Entschluesselung nur dort, wo der Schluessel liegt: SYNAPSE_AGENT_TOKEN_SCHLUESSEL gibt es nur in der
- *   API-Betriebskonfiguration (agent-token-tresor.ts); stdio-/Daemon-Prozesse ohne Schluessel scheitern
- *   mit token_schluessel_fehlt (kein Klartext-Fallback, kein neuer PC-PG-Zugang).
- * - Audit (agent_token_abruf_audit): Akteur, Ziel, Projekt, Zeitpunkt, Anlass, Erfolg - NIE der Tokenwert.
- *   Der Erfolgs-Audit wird VOR der Herausgabe geschrieben; scheitert er, wird kein Token ausgegeben.
+ * P22-T24 (W12-A, Vertrag 27acb98b V1/V4, memory entscheidung-agenten-ausweis-2026-10-19 Punkt 5):
+ * Ausweise liegen OFFEN in agent_identitaet_tokens.token_offen (kein Hash, kein Tresor, kein Schluessel).
+ * - Abruf = lesen: nur User (authentifizierter Eingang) oder Koordinator DESSELBEN Projekts (auch ein
+ *   Legacy-Koordinator ohne eigenen Ausweis, Erkennung wie P22-T18). Kein eigener Schalter token_abruf;
+ *   der Ausweis-Kern (leseAusweisKern) muss EIN sein.
+ * - Loeschen = Ausweis widerrufen (widerrufen_am + Grund), die Identitaet bleibt. Idempotent.
+ * - Audit (agent_token_abruf_audit / agent_identitaet_audit): Akteur, Ziel, Projekt, Zeitpunkt, Anlass/Grund,
+ *   Erfolg - NIE der Tokenwert. Der Erfolgs-Audit wird VOR der Herausgabe geschrieben; scheitert er, wird
+ *   kein Token ausgegeben.
  * - Die direkte, berechtigte Antwort darf den echten Token enthalten; sie gehoert in keine Log-/Audit-/
  *   Channel-Ausgabe (tool-call-log: admin:token_abrufen ohne result).
- * - Hash (token_hash) bleibt die einzige Grundlage der Identifikation; der Abruf aktiviert nichts.
- * Ausweise, die vor Einfuehrung des Tresors ausgestellt wurden, haben keinen Chiffretext (token_nicht_abrufbar);
- * dort hilft nur ein neuer Ausweis fuer dieselbe Identitaet (stelleAgentTokenAus mit identity_id).
+ * - Altzeilen ohne token_offen (Hash-/Tresor-Zeit) sind kein Ausweis mehr: ausweis_fehlt, neu ausstellen
+ *   (admin agent_vorbereiten mit identity_id).
  */
 import { getPool } from '../db/client.js';
-import { darfTokenAbrufen, type TokenAbrufDienst, type W1bAkteur } from './agent-profil-vertrag.js';
-import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
-import { TokenTresorFehler, entschluesseleAgentToken, tokenSchluesselStand, verschluesseleAgentToken } from './agent-token-tresor.js';
-import { hashAgentToken } from './agent-identitaet.js';
-import { ProfilVerwaltungFehler, pflichtText, pruefeProfilVerwalter, type ProfilDb } from './agent-profil-verwalter.js';
-
-/**
- * Legt den Chiffretext zu einem frisch ausgestellten Ausweis ab (in derselben Transaktion wie das INSERT).
- * Ohne Schluessel (Standard) passiert nichts: Verhalten und Spalten bleiben exakt wie t109.
- */
-export async function speichereTokenChiffre(db: ProfilDb, tokenId: string, token: string): Promise<boolean> {
-  if (!tokenSchluesselStand().vorhanden) return false;
-  const v = verschluesseleAgentToken(token, tokenId);
-  await db.query('UPDATE agent_identitaet_tokens SET token_verschluesselt=$2, token_schluessel_id=$3 WHERE id=$1', [tokenId, v.chiffre, v.schluessel_id]);
-  return true;
-}
+import {
+  ausweisZustand, darfAusweisVerwalten,
+  type AusweisAbruf, type AusweisAkteur, type AusweisWeg, type TokenAbrufDienst,
+} from './agent-profil-vertrag.js';
+import { leseAusweisKern } from './agent-profil-schalter.js';
+import { holeAusweis, schreibeIdentitaetAudit } from './agent-identitaet.js';
+import {
+  ProfilVerwaltungFehler, pflichtText, pruefeProfilVerwalter, profilTransaktion, type ProfilDb,
+} from './agent-profil-verwalter.js';
+import { rolleFuerAgent } from './agent-rollen.js';
 
 interface AbrufAudit {
   project: string; ziel: string; tokenId: string | null; wer: string; actor: string | null;
@@ -42,51 +35,105 @@ async function schreibeAudit(db: ProfilDb, a: AbrufAudit): Promise<void> {
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [a.project, a.ziel, a.tokenId, a.wer, a.actor, a.anlass, a.erfolg, a.fehler]);
 }
 
-async function schalterEin(project: string): Promise<void> {
-  const s = await leseProfilProduktSchalter('token_abruf', project);
-  if (!s.aktiv) throw new ProfilVerwaltungFehler('funktion_aus', { funktion: 'token_abruf', quelle: s.quelle, ...(s.letzter_fehler ? { letzter_fehler: s.letzter_fehler } : {}) });
+/** Der Ausweis-Kern (Vertrag V7) muss fuer das Projekt EIN sein; sonst ausweis_kern_aus bzw. agent_bezug_modus_nicht_beide. */
+export async function pruefeAusweisKernEin(project: string): Promise<void> {
+  const k = await leseAusweisKern(project);
+  if (k.aktiv) return;
+  throw new ProfilVerwaltungFehler(k.letzter_fehler === 'agent_bezug_modus_nicht_beide' ? 'agent_bezug_modus_nicht_beide' : 'ausweis_kern_aus',
+    { quelle: k.quelle, ...(k.agent_bezug_modus ? { agent_bezug_modus: k.agent_bezug_modus } : {}), ...(k.letzter_fehler ? { letzter_fehler: k.letzter_fehler } : {}) });
 }
 
-export interface ProfilTokenAbruf { token: string; token_id: string; token_praefix: string }
+/** Kennung des Akteurs fuer Audit (kein Tokenwert). */
+export function ausweisAkteurKennung(akteur: AusweisAkteur): { wer: string; actor: string | null } {
+  if (akteur.art === 'user') return { wer: 'user', actor: null };
+  if (akteur.art === 'daemon') return { wer: 'daemon', actor: null };
+  if (akteur.art === 'legacy_koordinator') return { wer: 'legacy:' + String(akteur.agent_id ?? ''), actor: null };
+  return { wer: akteur.principal.identity_id, actor: akteur.principal.identity_id };
+}
 
-export async function rufeProfilTokenAb(
-  project: string, zielIdentityId: string, akteur: W1bAkteur, anlass: string,
-): Promise<ProfilTokenAbruf> {
+/**
+ * V4 (+ Koordinator-Vorgabe 27920): vorbereiten/abrufen/loeschen duerfen User und Koordinator desselben Projekts.
+ * Ein Koordinator ohne eigenen Ausweis (Legacy) wird wie in P22-T18 am Namensmuster/der Rolle erkannt, nie an einem
+ * Argument allein: der Name darf keiner Token-Identitaet gehoeren (dann braucht der Aufruf deren Ausweis).
+ * Der Daemon hat nur ausweisFuerStart.
+ */
+export async function pruefeAusweisAkteur(akteur: AusweisAkteur, project: string, db: ProfilDb): Promise<{ wer: string; actor: string | null }> {
+  if (akteur.art === 'legacy_koordinator') {
+    const agent = typeof akteur.agent_id === 'string' ? akteur.agent_id.trim() : '';
+    if (!agent || rolleFuerAgent(agent).rolle !== 'koordinator') throw new ProfilVerwaltungFehler('recht_fehlt');
+    const r = await db.query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, agent]);
+    if (r.rows[0]) throw new ProfilVerwaltungFehler('recht_fehlt');
+    return { wer: 'legacy:' + agent, actor: null };
+  }
+  if (akteur.art === 'daemon' || !darfAusweisVerwalten(akteur, project)) throw new ProfilVerwaltungFehler('recht_fehlt');
+  const v = await pruefeProfilVerwalter(akteur, project, { db });
+  return { wer: v.wer, actor: v.actor_identity_id };
+}
+
+const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
+
+/** AusweisAbruf aus einer Ablagezeile (Zustand allein aus den Spalten). */
+export function ausweisAbrufAus(identityId: string, z: NonNullable<Awaited<ReturnType<typeof holeAusweis>>>): AusweisAbruf {
+  const zustand = ausweisZustand({ gueltig_bis: z.gueltig_bis, widerrufen_am: null });
+  return {
+    identity_id: identityId, token: z.token, token_id: z.id, token_praefix: z.token_praefix, zustand,
+    ausweis_weg: (z.ausweis_weg as AusweisWeg | null) ?? null,
+    erstnutzung_bis: zustand === 'ausgestellt' ? iso(z.gueltig_bis) : null, zuletzt_benutzt: iso(z.zuletzt_benutzt),
+  };
+}
+
+/** V1/V4: Ausweis offen lesen. Antwort enthaelt den Wert; Audit nie. */
+export async function rufeAusweisAb(project: string, zielIdentityId: string, akteur: AusweisAkteur, anlass: string): Promise<AusweisAbruf> {
   if (typeof project !== 'string' || !project.trim()) throw new ProfilVerwaltungFehler('project_fehlt');
   if (typeof zielIdentityId !== 'string' || !zielIdentityId.trim()) throw new ProfilVerwaltungFehler('ziel_identity_id_fehlt');
   const grund = pflichtText(anlass, 'anlass_fehlt', 3, 200);
-  await schalterEin(project);
+  await pruefeAusweisKernEin(project);
   const db = getPool();
-  // Rechte: Haupttor (reine Entscheidung) + PG-Gegenpruefung von Rolle/Status/Projekt des Koordinators.
-  const wer = akteur.art === 'user' ? 'user' : akteur.art === 'identitaet' ? akteur.principal.identity_id : akteur.art;
-  const actor = akteur.art === 'identitaet' ? akteur.principal.identity_id : null;
+  const { wer, actor } = ausweisAkteurKennung(akteur);
   const ziel = await db.query<{ id: string; status: string }>('SELECT id, status FROM agent_identitaeten WHERE id=$1 AND project=$2', [zielIdentityId, project]);
   const verweigere = async (code: string, tokenId: string | null = null): Promise<never> => {
     // Fremde/unbekannte Ziele haben keine Audit-Zeile (FK) - dann bleibt nur der Fehler.
     if (ziel.rows[0]) await schreibeAudit(db, { project, ziel: zielIdentityId, tokenId, wer, actor, anlass: grund, erfolg: false, fehler: code }).catch(() => undefined);
     throw new ProfilVerwaltungFehler(code);
   };
-  if (!darfTokenAbrufen(akteur, project)) return verweigere('recht_fehlt');
-  try { await pruefeProfilVerwalter(akteur, project, { db }); } catch { return verweigere('recht_fehlt'); }
+  try { await pruefeAusweisAkteur(akteur, project, db); } catch { return verweigere('recht_fehlt'); }
   if (!ziel.rows[0]) throw new ProfilVerwaltungFehler('identitaet_unbekannt');
   if (ziel.rows[0].status !== 'aktiv') return verweigere('identitaet_nicht_aktiv');
-  // Aktueller Hauptausweis (kein befristeter Start-Ausweis) mit Chiffretext.
-  const t = await db.query<{ id: string; token_hash: string; token_praefix: string; token_verschluesselt: string | null; token_schluessel_id: string | null }>(
-    `SELECT id, token_hash, token_praefix, token_verschluesselt, token_schluessel_id FROM agent_identitaet_tokens
-      WHERE identity_id=$1 AND start_art IS NULL AND widerrufen_am IS NULL AND (gueltig_bis IS NULL OR gueltig_bis>NOW())
-      ORDER BY erstellt_am DESC`, [zielIdentityId]);
-  const zeile = t.rows.find(r => r.token_verschluesselt);
-  if (!zeile) return verweigere('token_nicht_abrufbar');
-  let token: string;
-  try {
-    token = entschluesseleAgentToken(zeile.token_verschluesselt as string, zeile.id, zeile.token_schluessel_id);
-  } catch (e) {
-    return verweigere(e instanceof TokenTresorFehler ? e.code : 'token_chiffre_ungueltig', zeile.id);
-  }
-  // Integritaet: der entschluesselte Wert muss zum gespeicherten Identifikations-Hash passen.
-  if (hashAgentToken(token) !== zeile.token_hash) return verweigere('token_chiffre_ungueltig', zeile.id);
-  await schreibeAudit(db, { project, ziel: zielIdentityId, tokenId: zeile.id, wer, actor, anlass: grund, erfolg: true, fehler: null });
-  return { token, token_id: zeile.id, token_praefix: zeile.token_praefix };
+  const z = await holeAusweis(db, zielIdentityId);
+  if (!z) return verweigere('ausweis_fehlt');
+  await schreibeAudit(db, { project, ziel: zielIdentityId, tokenId: z.id, wer, actor, anlass: grund, erfolg: true, fehler: null });
+  return ausweisAbrufAus(zielIdentityId, z);
+}
+
+/** V4: Ausweis loeschen (widerrufen); die Identitaet bleibt. Idempotent (geloescht:false = es gab keinen). */
+export async function loescheAusweis(
+  project: string, zielIdentityId: string, akteur: AusweisAkteur, grund: string,
+): Promise<{ identity_id: string; token_id: string | null; geloescht: boolean }> {
+  if (typeof project !== 'string' || !project.trim()) throw new ProfilVerwaltungFehler('project_fehlt');
+  if (typeof zielIdentityId !== 'string' || !zielIdentityId.trim()) throw new ProfilVerwaltungFehler('ziel_identity_id_fehlt');
+  const g = pflichtText(grund, 'grund_fehlt', 5, 500);
+  await pruefeAusweisKernEin(project);
+  return profilTransaktion(async (c) => {
+    const v = await pruefeAusweisAkteur(akteur, project, c);
+    const i = await c.query('SELECT id FROM agent_identitaeten WHERE id=$1 AND project=$2 FOR UPDATE', [zielIdentityId, project]);
+    if (!i.rows[0]) throw new ProfilVerwaltungFehler('identitaet_unbekannt');
+    const z = await holeAusweis(c, zielIdentityId, true);
+    if (!z) return { identity_id: zielIdentityId, token_id: null, geloescht: false };
+    await c.query(`UPDATE agent_identitaet_tokens SET widerrufen_am=NOW(), widerrufen_von=$2,
+        widerrufen_von_identity_id=(SELECT id FROM agent_identitaeten WHERE id=$2), widerrufen_grund=$3 WHERE id=$1`, [z.id, v.wer, g]);
+    await schreibeIdentitaetAudit(c, zielIdentityId, v.wer, 'token_widerrufen',
+      { token_id: z.id, token_praefix: z.token_praefix, widerrufen: false }, { token_id: z.id, widerrufen: true, ausweis_geloescht: true }, g);
+    return { identity_id: zielIdentityId, token_id: z.id, geloescht: true };
+  });
+}
+
+/** Bestandsschnittstelle (W1B_DIENSTE.tokenAbruf): wie rufeAusweisAb, nur mit der alten Ausgabeform. */
+export interface ProfilTokenAbruf { token: string; token_id: string; token_praefix: string }
+export async function rufeProfilTokenAb(
+  project: string, zielIdentityId: string, akteur: AusweisAkteur, anlass: string,
+): Promise<ProfilTokenAbruf> {
+  const a = await rufeAusweisAb(project, zielIdentityId, akteur, anlass);
+  return { token: a.token, token_id: a.token_id, token_praefix: a.token_praefix };
 }
 
 export interface WebUiKoordinatorToken extends ProfilTokenAbruf { identity_id: string; agent_id: string; name: string }
@@ -97,7 +144,7 @@ export interface WebUiKoordinatorToken extends ProfilTokenAbruf { identity_id: s
  * User-Eingang angelegt wurde (erstellt_von = 'user'); die UI kann ueber die Profiluebersicht explizit waehlen.
  */
 export async function rufeWebUiKoordinatorTokenAb(
-  project: string, akteur: W1bAkteur, identityId?: string,
+  project: string, akteur: AusweisAkteur, identityId?: string,
 ): Promise<WebUiKoordinatorToken> {
   if (akteur.art !== 'user') throw new ProfilVerwaltungFehler('recht_fehlt');
   const r = await getPool().query<{ id: string; agent_id: string; name: string }>(

@@ -141,6 +141,40 @@ try{
   const audEt=await audN(et.id);
   check(audEt.map(r=>r.aktion).join()==='festlegen,aendern'&&audEt[1].wer==='legacy:legacy-x'&&audEt[1].grund.endsWith('E2E: Task uebernommen nach Absprache'),'E2E: Audit-Eintrag fuer das Legacy-Update');
   check((await PL.updateTask(P,et.id,{status:'done'}))?.status==='done','E2E updateTask: reiner User-Pfad (ohne bearbeiter) unveraendert');
+  // P22-T29 (H5): REST-Strecke wertet auch die effektive Agent-ID (Header/Session) aus
+  const RB=await load('packages/rest-api/dist/routes/task-bearbeiter.js');
+  const et2=await PL.addTask(P,'E2E T29','REST-Header-ID','medium');
+  await C.taskBindungDienst.legeFest(P,et2.id,{art:'identitaet',identity_id:'a1'},user,'T29 Bindung');
+  check(JSON.stringify(RB.bearbeiterAusAufruf({},'hdr-agent'))===JSON.stringify({agent_id:'hdr-agent',grund:undefined}),'T29: effektive Agent-ID ohne args.agent_id uebernommen');
+  check(RB.bearbeiterAusAufruf({agent_id:'arg-agent',grund:'g'},'hdr-agent').agent_id==='hdr-agent'&&RB.bearbeiterAusAufruf({agent_id:'arg-agent'}).agent_id==='arg-agent'&&RB.bearbeiterAusAufruf({agent_id:'arg-agent'},'  ').agent_id==='arg-agent','T29: effektive ID hat Vorrang, args.agent_id bleibt Rueckfall, Leerstring zaehlt nicht');
+  check(RB.bearbeiterAusAufruf({grund:'nur Grund'}).agent_id===undefined&&RB.bearbeiterAusAufruf({agent_id:'  '},undefined).agent_id===undefined,'T29: User-Pfad = keine Agent-ID');
+  let h5Fehler;try{await PL.updateTask(P,et2.id,{status:'in_progress'},null,RB.bearbeiterAusAufruf({},'hdr-agent'));}catch(e){h5Fehler=e;}
+  check(h5Fehler?.code==='grund_noetig','T29: REST mit Header-ID ohne grund -> grund_noetig');
+  check((await PL.getAllePlaene(P)).flatMap(p=>p.tasks).find(t=>t.id===et2.id)?.status==='todo','T29: Status nach Abweisung unveraendert');
+  const h5Ok=await PL.updateTask(P,et2.id,{status:'in_progress'},null,RB.bearbeiterAusAufruf({grund:'T29: Header-ID mit Grund'},'hdr-agent'));
+  check(h5Ok?.status==='in_progress'&&(await audN(et2.id)).some(r=>r.wer==='legacy:hdr-agent'&&r.grund.endsWith('T29: Header-ID mit Grund')),'T29: REST mit Header-ID und grund erlaubt, Audit legacy:hdr-agent');
+  check((await PL.updateTask(P,et2.id,{status:'done'},null,RB.bearbeiterAusAufruf({})))?.status==='done','T29: User-Pfad ohne jede Agent-ID unveraendert');
+  // P22-T28 (H3): Audit erst NACH erfolgreichem Update, ein Eintrag je Task und Batch
+  const et3=await PL.addTask(P,'E2E T28 H3','Audit nach Update','medium');
+  await C.taskBindungDienst.legeFest(P,et3.id,{art:'identitaet',identity_id:'a1'},user,'H3 Bindung');
+  const b3={agent_id:'legacy-h3',grund:'H3: Begruendung'};
+  const merker=new Set();
+  const vor=await C.vormerkenTaskBindungBearbeitenFuer(P,et3.id,null,et3.id,{...b3,auditMerker:merker});
+  check(vor.sperre===null&&typeof vor.nachErfolg==='function'&&(await audN(et3.id)).length===1,'H3: Gate allein schreibt keinen Audit (nur festlegen)');
+  await vor.nachErfolg();
+  check((await audN(et3.id)).length===2&&merker.has(et3.id),'H3: nachErfolg schreibt genau einen Audit-Eintrag');
+  const vor2=await C.vormerkenTaskBindungBearbeitenFuer(P,et3.id,null,et3.id,{...b3,auditMerker:merker});
+  await vor2.nachErfolg();
+  check((await audN(et3.id)).length===2,'H3: gleicher Merker (Batch) -> kein zweiter Eintrag fuer dieselbe Task');
+  let g3;try{await C.vormerkenTaskBindungBearbeitenFuer(P,et3.id,null,et3.id,{agent_id:'legacy-h3'});}catch(e){g3=e;}
+  check(g3?.code==='grund_noetig'&&(await audN(et3.id)).length===2,'H3: Abweisung ohne Grund schreibt keinen Audit');
+  const TH=await load('packages/core/dist/services/thoughts.js');
+  const et4=await PL.addTask(P,'E2E T28 H3 Batch','Batch','medium');
+  await C.taskBindungDienst.legeFest(P,et4.id,{art:'identitaet',identity_id:'a1'},user,'H3 Batch Bindung');
+  const batch=await TH.addThoughtsBatch(P,'legacy-h3b',[{content:'H3 a',task_id:et4.id},{content:'H3 b',task_id:et4.id},{content:'H3 c',task_id:et4.id}],'in_progress',{agent_id:'legacy-h3b',grund:'H3: Batch-Grund'});
+  check(!batch.warning&&(await audN(et4.id)).filter(r=>r.wer==='legacy:legacy-h3b').length===1,'H3: add_batch mit 3 Items derselben Task = EIN Audit-Eintrag');
+  const eB=await TH.addThoughtsBatch(P,'legacy-h3c',[{content:'H3 x',task_id:et4.id}],'done',{agent_id:'legacy-h3c'});
+  check(/grund_noetig/.test(eB.warning||'')&&(await audN(et4.id)).filter(r=>r.wer==='legacy:legacy-h3c').length===0,'H3: Batch ohne Grund -> Warnung grund_noetig, kein Audit');
   // Audit
   const aud=(await pool.query('SELECT aktion,grund,alt,neu,wer FROM plan_task_bindung_audit WHERE project=$1 AND task_id=$2 ORDER BY id',[P,'T-team'])).rows;
   check(aud.map(r=>r.aktion).join()==='festlegen,aendern','Audit T-team: festlegen, aendern (Ablehnungen ohne Audit)');

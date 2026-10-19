@@ -123,19 +123,23 @@ async function reviewCases(ts) {
     const attemptedEvents=await t.call('event',{action:'pending',token:fresh.token,project,agent_id:legacy});
     check(attemptedEvents.success!==false && !JSON.stringify(attemptedEvents).includes('legacy-offen'),'Behauptete Legacy-ID erlaubt kein Lesen ihrer direkten Events');
     assert.deepEqual(await state(),before,'Legacy-Sitzung, Inbox, Events und ACKs exakt unveraendert');checks++;
-    const start=await core.stelleAgentTokenAus({project,name:legacy,identity_id:fresh.principal.identity_id,start_art:'p22-t11-review'},{system:'daemon'});
+    // W12 (P22-T24, V2): keine Start-Ausweise und keine Rotation. Start mit vorhandenem Ausweis liefert denselben;
+    // die Erstnutzungsfrist (Standard 10 Min, Env einstellbar) gilt nur fuer neu vorbereitete, noch ungenutzte Ausweise.
+    const same=await core.stelleAgentTokenAus({project,name:legacy,identity_id:fresh.principal.identity_id,start_art:'p22-t11-review'},{system:'daemon'});
+    check(same.token===fresh.token && same.neu===false,'Start mit vorhandenem Ausweis liefert denselben (keine Rotation)');
+    const start=await core.stelleAgentTokenAus({project,name:legacy+'-vorb',erstnutzung:true},{system:'daemon'});
     secrets.push(start.token);
     const ttl=Number((await pool.query('SELECT EXTRACT(epoch FROM gueltig_bis-NOW()) AS ttl FROM agent_identitaet_tokens WHERE id=$1',[start.token_id])).rows[0].ttl);
-    check(ttl>590 && ttl<=600,'Ungenutzter neuester Start-Ausweis hat feste Standard-Hoechstgueltigkeit 10 Minuten');
+    check(ttl>590 && ttl<=600,'Ungenutzter vorbereiteter Ausweis hat Standard-Erstnutzungsfrist 10 Minuten');
     process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN='2';
-    const configured=await core.stelleAgentTokenAus({project,name:legacy,identity_id:fresh.principal.identity_id,start_art:'p22-t11-configured'},{system:'daemon'});
+    const configured=await core.stelleAgentTokenAus({project,name:legacy+'-vorb2',erstnutzung:true},{system:'daemon'});
     secrets.push(configured.token);
     const customTtl=Number((await pool.query('SELECT EXTRACT(epoch FROM gueltig_bis-NOW()) AS ttl FROM agent_identitaet_tokens WHERE id=$1',[configured.token_id])).rows[0].ttl);
     check(customTtl>110 && customTtl<=120,'Start-Ausweis-Hoechstgueltigkeit ist per Env einstellbar');
     delete process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN;
     await pool.query("UPDATE agent_identitaet_tokens SET gueltig_bis=NOW()-INTERVAL '1 second' WHERE id=$1",[start.token_id]);
     const expired=await t.call('chat',{action:'anmelden',token:start.token});
-    check(expired.success===false && expired.error==='agent_token_ungueltig','Abgelaufener Start-Ausweis wird vom echten Transport abgewiesen');
+    check(expired.success===false && expired.error==='agent_token_ungueltig','Verfallener (ungenutzter) Ausweis wird vom echten Transport abgewiesen');
     check((await t.call('chat',{action:'identitaet',token:fresh.token})).success,'Ablauf des Start-Ausweises veraendert persoenlichen Hauptausweis nicht');
     assert.deepEqual(await state(),before,'Auch abgewiesener Start-Ausweis laesst Legacy-Zustand unveraendert');checks++;
     out('OK Abnahme '+t.name+' Legacy-Namensschutz/Inbox/Events/ACKs/Startablauf');
@@ -164,11 +168,11 @@ try {
   check((await pool.query('SELECT current_schema() s')).rows[0].s===schema,'Isolierter Test-Suchpfad');
   if (!process.argv.includes('--golden') && !process.argv.includes('--positive-only')) {
     const {AGENT_IDENTITAET_SCHEMA_SQL}=await load('packages/core/dist/db/agent-identitaet-schema.js');
-    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);
+    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);
     out('OK Schema 111 zweimal angewandt');
   } else if (distRoot===repo) {
     const {AGENT_IDENTITAET_SCHEMA_SQL}=await load('packages/core/dist/db/agent-identitaet-schema.js');
-    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);
+    await pool.query(AGENT_IDENTITAET_SCHEMA_SQL);await pool.query((await load('packages/core/dist/db/agent-ausweis-schema.js')).AGENT_AUSWEIS_SCHEMA_SQL);
   }
   if (distRoot === repo) {
     const { AGENT_BEZUG_SCHEMA_SQL } = await load('packages/core/dist/db/agent-bezug-schema.js');

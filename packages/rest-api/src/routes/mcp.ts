@@ -15,6 +15,7 @@ import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
 import { mainToolAccess, mainToolListeMitProfil, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
 import { leseW1bSchalter } from '@synapse/core';
 import { initialisiereW1bAnmeldungHinweise, herkunftsortAusKopf } from '@synapse/core';
+import { bearbeiterAusAufruf } from './task-bearbeiter.js';
 // P22-T13 Paket C: gemeinsame Agentenprojektion (K16.4 Schritt 6) nach dem vollstaendigen Audit.
 import { projiziereToolAntwort } from '@synapse/core';
 import {
@@ -2946,7 +2947,7 @@ async function handleToolCallKern(
             reqStr(args, 'content'), strArrayOrEmpty(args, 'tags'),
             str(args, 'task_id'),
             str(args, 'task_status') as Parameters<typeof addThought>[5],
-            { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') }
+            bearbeiterAusAufruf(args, effectiveAgentId)
           );
           // Anti-Echo (DX-Befund 4): nicht den kompletten Content zurueckspielen,
           // den der Agent gerade selbst geschrieben hat — id + Preview reichen.
@@ -3014,7 +3015,7 @@ async function handleToolCallKern(
             source as Parameters<typeof addThoughtsBatch>[1],
             normalized,
             str(args, 'task_status') as Parameters<typeof addThoughtsBatch>[3],
-            { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') }
+            bearbeiterAusAufruf(args, effectiveAgentId)
           );
           return {
             success: true,
@@ -3189,7 +3190,7 @@ async function handleToolCallKern(
           const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
           const p = str(args, 'priority'); if (p !== undefined) updates.priority = p as 'low' | 'medium' | 'high';
           const b = str(args, 'git_branch'); if (b !== undefined) updates.git_branch = b;
-          const task = await updateTask(project, taskId, updates, str(args, 'plan_id'), { agent_id: str(args, 'agent_id'), grund: str(args, 'grund') });
+          const task = await updateTask(project, taskId, updates, str(args, 'plan_id'), bearbeiterAusAufruf(args, effectiveAgentId));
           if (!task) return { success: false, task: null, message: `Task nicht gefunden: ${taskId}` };
           return { success: true, task, message: 'Task aktualisiert' };
         }
@@ -6441,9 +6442,9 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
           result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS), mainAccess,
+            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS, { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
               typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined)
-            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess,
+            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS), { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
               typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined) };
           break;
 
@@ -6535,9 +6536,9 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
           result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS), mainAccess,
+            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS, { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
               typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined)
-            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess,
+            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS), { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
               typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined) };
           break;
 

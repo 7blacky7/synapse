@@ -21,7 +21,7 @@
  */
 
 import { getPool } from '../db/client.js';
-import { kommunikationsAgent, aufgeloestesKommunikationsZiel, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
+import { kommunikationsAgent, aufgeloestesKommunikationsZiel, aufgeloestesSendeZiel, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
 import { aktuellerAgentAufruf, leseAgentBezugModus, type AgentZiel } from './agent-bezug.js';
 import { resolveCutoff } from './model-cutoffs.js';
 import { initialisiereChatLesestand } from './chat-unread.js';
@@ -541,7 +541,7 @@ export async function getMessages(
 /** Eine Nachricht, zwei Rollen: fehlender Empfängername macht niemals einen ID-DM zum Broadcast. */
 async function sendeIdentitaetsChat(project: string, sender: string, content: string, recipient?: string | AgentZiel): Promise<ChatMessage> {
   const a = kommunikationsAgent(project, sender);
-  const z = recipient ? await aufgeloestesKommunikationsZiel(project, recipient) : null;
+  const z = recipient ? await aufgeloestesSendeZiel(project, recipient) : null;
   const { rows } = await getPool().query(
     `INSERT INTO chat_messages(project,sender_id,recipient_id,content,timestamp,sender_identity_id,recipient_identity_id)
      VALUES($1,$2,$3,$4,NOW(),$5,$6) RETURNING *`,

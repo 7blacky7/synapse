@@ -590,7 +590,8 @@ export { leseWirksamesProfil, bereiteZuschnittSnapshotVor, wendeProfilLimitsAn, 
 // P22-T13 Paket D: Persona-Bibliothek, Tokenabruf, Verwaltungs-Dispatcher (admin + REST).
 export { ProfilVerwaltungFehler, aktuellerW1bAkteur, pruefeProfilVerwalter, USER_AUFTRAG_STANDARD } from './services/agent-profil-verwalter.js';
 export { personaDienst, listePersonaVorlagen, listePersonaVersionen, legePersonaVorlageAn, legePersonaVersionAn, weisePersonaZu, entfernePersona, lesePersonaZuweisung } from './services/agent-persona.js';
-export { tokenAbrufDienst, rufeProfilTokenAb, rufeWebUiKoordinatorTokenAb, speichereTokenChiffre } from './services/agent-token-abruf.js';
+export { tokenAbrufDienst, rufeProfilTokenAb, rufeAusweisAb, loescheAusweis, rufeWebUiKoordinatorTokenAb } from './services/agent-token-abruf.js';
+export { agentVorbereiten, ausweisFuerStart } from './services/agent-ausweis-dienst.js';
 export type { ProfilTokenAbruf, WebUiKoordinatorToken } from './services/agent-token-abruf.js';
 export { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus, w1bFehlerStatus } from './services/agent-profil-admin.js';
 export type { W1bAdminAction } from './services/agent-profil-admin.js';

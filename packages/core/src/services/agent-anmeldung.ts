@@ -9,6 +9,8 @@
  *   (b) Produkt-Schalter 'schattenprofile' (agent_profil_schalter, je Projekt/global), kurz gepuffert.
  * LEGACY: chat(register) bleibt fachlich unveraendert (registerAgent). Danach, nur bei EIN, additiv ein
  *   Schattenprofil (Paket A). Ein Ausfall der Ablage (z. B. kein Tresorschluessel) laesst die Anmeldung unberuehrt.
+ * W12-B (P22-T25): TOKEN_BEREIT liest den Ausweis offen (V1/V6), Gate leseAusweisKern; die Hinweis-Registry folgt dem
+ *   WIRKSAMEN Schalter (sichereW1bAnmeldungHinweise, auch intern-Override nach Neustart).
  * KEINE globale 'zuletzt angemeldet'-Bindung: Hinweise und Zustellung haengen an der ausdruecklich genannten
  *   agent_id und deren Sitzung (agent_sessions.sitzung_seit), nie an einem Prozess-/Verbindungsstand.
  */
@@ -16,13 +18,16 @@ import { getPool } from '../db/client.js';
 import { registerAgent, type AgentSession } from './chat.js';
 import { aktuelleAgentIdentityId, leseAgentBezugModus, type IdentitaetsAgentPrincipal } from './agent-bezug.js';
 import { registriereHinweisQuelle, type AusloeserHinweis, type HinweisKontext, type HinweisQuelle } from './ausloeser-hinweise.js';
-import { leseProfilProduktSchalter, leseW1bSchalter } from './agent-profil-schalter.js';
-import { entschluesseleAgentToken } from './agent-token-tresor.js';
-import { leseTokenIdentitaetSchalter, stelleAgentTokenAus } from './agent-identitaet.js';
+// W12-B (P22-T25): Ausweis-Kern (V7) und TOKEN_BEREIT-Vertrag (V6); der Tresor entfaellt (V1, Ausweis offen).
+import { leseAusweisKern, leereAusweisKernCache, ausweisAnmeldungAktiv, ausweisSchattenAktiv } from './agent-profil-schalter.js';
+import { tokenBereitEntprellungMs, tokenBereitText, TEXT_NEUINSTANZ } from './agent-profil-vertrag.js';
 import {
   W1B_DIENSTE,
   type AnmeldungsDienst, type FortsetzungsInfo, type KoordinatorListenEintrag, type SchattenSelbstangaben,
 } from './agent-profil-vertrag.js';
+
+// W12-C (P22-T26): Profil-Update-Quelle, Profilblock/gebundene Tasks/Profil-Channels der Anmeldeantwort.
+import { PROFIL_UPDATE_QUELLE, baueFortsetzungsErgaenzung } from './agent-profil-update.js';
 
 export class AnmeldungsFehler extends Error {
   constructor(public readonly code: string) { super(code); }
@@ -31,30 +36,31 @@ export class AnmeldungsFehler extends Error {
 export const KOORDINATOR_NAME_EXAKT = /^(koordinator|coordinator)$/i;
 export const KOORDINATOR_NAME = /^(koordinator|coordinator)(#\d+)?$/i;
 /** Abrufweg im Koordinator-Hinweis; Paket D legt die genauen admin-/REST-Aktionen fest. */
-export const SCHATTEN_ABRUF_TEXT = 'Profilverwaltung (Web-UI bzw. admin, Schattenprofile)';
+export const SCHATTEN_ABRUF_TEXT = 'admin(action:"schattenprofil_bestaetigen", project, schattenprofil_id:<ID aus diesem Hinweis>, erwartete_revision:<Revision>, user_zustimmung:"<Nachweis>", grund:"<Grund>")';
 
 // ---------------------------------------------------------------------------------------------
 // Schalter
 // ---------------------------------------------------------------------------------------------
-const GATE_TTL_MS = 5_000;
-const gateCache = new Map<string, { bis: number; aktiv: boolean }>();
-/** Fuer Tests: Produkt-Schalter-Puffer verwerfen. */
-export function leereAnmeldungGateCache(): void { gateCache.clear(); }
+const GATE_TTL_STANDARD_MS = 5_000;
+/** P22-T29: TTL des Gate-Caches per Env SYNAPSE_W1B_GATE_TTL_MS (Standard 5000, 0 = kein Cache; ungueltig -> Standard). Je Aufruf gelesen. */
+export function gateTtlMs(): number {
+  const roh = process.env.SYNAPSE_W1B_GATE_TTL_MS;
+  if (roh === undefined || roh.trim() === '') return GATE_TTL_STANDARD_MS;
+  const n = Number(roh);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : GATE_TTL_STANDARD_MS;
+}
+/** Puffer verwerfen (Tests). W12-T: der Schalter-Puffer liegt in leseAusweisKern (agent-profil-schalter.ts) und leert sich nach jedem Schreiben im eigenen Prozess selbst. */
+export function leereAnmeldungGateCache(): void { leereAusweisKernCache(); }
 
-export async function anmeldungEnvAktiv(): Promise<boolean> {
-  return (await leseW1bSchalter('anmeldung')).freigegeben && (await leseTokenIdentitaetSchalter()).freigegeben;
+/** W12 V7: wirksamer Ausweis-Kern (ein Produkt-Schalter; ohne Projekt nur globaler Stand). */
+export async function anmeldungEnvAktiv(project?: string | null): Promise<boolean> {
+  return ausweisAnmeldungAktiv(project ?? null);
 }
 
-/** Env/intern UND Produkt-Schalter 'schattenprofile' des Projekts. Lesefehler = AUS. */
+/** W12 V7: Ausweis-Kern des Projekts (ersetzt Produkt-Schalter 'schattenprofile' + Env). Lesefehler = AUS. */
 export async function schattenprofileAktiv(project: string): Promise<boolean> {
-  if (!project || !(await anmeldungEnvAktiv())) return false;
-  const jetzt = Date.now();
-  const c = gateCache.get(project);
-  if (c && c.bis > jetzt) return c.aktiv;
-  const s = await leseProfilProduktSchalter('schattenprofile', project);
-  const aktiv = s.aktiv && !s.letzter_fehler;
-  gateCache.set(project, { bis: jetzt + GATE_TTL_MS, aktiv });
-  return aktiv;
+  if (!project) return false;
+  return ausweisSchattenAktiv(project);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -141,28 +147,20 @@ export async function legeErstenKoordinatorAusgabe(project: string, user_auftrag
     const vorhanden = await c.query("SELECT 1 FROM agent_identitaeten WHERE project=$1 AND rolle='koordinator' LIMIT 1", [project]);
     if (vorhanden.rows.length) throw new AnmeldungsFehler('koordinator_vorhanden');
     const selbst: SchattenSelbstangaben = { name: 'koordinator', rolle_vorschlag: 'koordinator', startart: 'erster_koordinator', ...(modell ? { modell } : {}) };
-    let s;
-    try {
-      s = await W1B_DIENSTE.schatten.legeSchattenprofilAn(
-        { project, ursprung_agent_id: 'koordinator', ursprung_art: 'koordinator_start', selbstangaben: selbst }, { art: 'daemon' });
-    } catch (e) {
-      // Ohne Tresorschluessel (z. B. CLI ohne API-Betriebskonfiguration) bleibt der Startfall moeglich: W1a-Ausstellung unter demselben Projektlock.
-      if ((e as { code?: string } | null)?.code !== 'token_schluessel_fehlt') throw e;
-      const a = await stelleAgentTokenAus({ project, name: 'koordinator', modell_selbstauskunft: modell,
-        grund: 'Erster Koordinator des Projekts: ausdruecklicher User-Auftrag (Startfall K3C): ' + user_auftrag.trim().slice(0, 200) });
-      await c.query('COMMIT');
-      return { identity_id: a.identitaet.id, token: a.token, profil_revision: 0 };
-    }
+    // W12 V1 (P22-T33 N2): kein Tresor mehr, der Zweig token_schluessel_fehlt entfaellt.
+    const s = await W1B_DIENSTE.schatten.legeSchattenprofilAn(
+      { project, ursprung_agent_id: 'koordinator', ursprung_art: 'koordinator_start', selbstangaben: selbst }, { art: 'daemon' });
     const b = await W1B_DIENSTE.schatten.bestaetigeSchattenprofil({
       schattenprofil_id: s.id, erwartete_revision: s.revision, user_zustimmung: user_auftrag.trim().slice(0, 500),
       grund: 'Erster Koordinator des Projekts: ausdruecklicher User-Auftrag (Startfall K3C)',
     }, { art: 'daemon' });
-    const t = await c.query<{ id: string; token_verschluesselt: string | null; token_schluessel_id: string | null }>(
-      `SELECT id, token_verschluesselt, token_schluessel_id FROM agent_identitaet_tokens
-        WHERE identity_id=$1 AND widerrufen_am IS NULL ORDER BY erstellt_am, id LIMIT 1`, [b.identity_id]);
-    const z = t.rows[0];
-    if (!z?.token_verschluesselt) throw new AnmeldungsFehler('token_nicht_verfuegbar');
-    const token = entschluesseleAgentToken(z.token_verschluesselt, z.id, z.token_schluessel_id);
+    // W12 V1/V2: der Ausweis liegt offen in token_offen (kein Tresor); Herkunft: erster_koordinator.
+    const t = await c.query<{ token_offen: string | null }>(
+      `SELECT token_offen FROM agent_identitaet_tokens
+        WHERE identity_id=$1 AND widerrufen_am IS NULL AND token_offen IS NOT NULL ORDER BY erstellt_am, id LIMIT 1`, [b.identity_id]);
+    const token = t.rows[0]?.token_offen;
+    if (!token) throw new AnmeldungsFehler('token_nicht_verfuegbar');
+    await c.query("UPDATE agent_identitaet_tokens SET ausweis_weg='erster_koordinator' WHERE identity_id=$1 AND token_offen=$2", [b.identity_id, token]);
     await c.query('COMMIT');
     return { identity_id: b.identity_id, token, profil_revision: b.profil_revision };
   } catch (e) {
@@ -184,8 +182,10 @@ export async function waehleRegisterWeg(project: string, id: string): Promise<'t
   // Im Altmodus ist agent_sessions.id global eindeutig (W1a-Guard agent_sitzung_bereits_gebunden): jede gleichnamige Sitzung bleibt Legacy.
   const global = (await leseAgentBezugModus()).modus === 'alt';
   const identitaet = await pool.query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, id]);
-  // K3C: Ein Legacy-Koordinatorname allein erzeugt weder Tokenuebernahme noch automatisches koordinator#2 (ID-Modi).
-  if (identitaet.rows.length) return KOORDINATOR_NAME_EXAKT.test(id) && !global ? 'legacy' : 'token';
+  // W12 Weg A (P22-T33 M1): bei Kern EIN legt chat(register) OHNE Ausweis nie einen Ausweis an, auch nicht fuer einen Namen mit
+  // vorhandener Identitaet (Neuinstanz): Legacy; registerChatAgent haengt TEXT_NEUINSTANZ an (mit Ausweis: chat(anmelden, token)).
+  // Weg 'token' bleibt nur bei Kern AUS (Altverhalten, oben).
+  if (identitaet.rows.length) return 'legacy';
   const legacy = await pool.query('SELECT 1 FROM agent_sessions WHERE id=$1 AND ($3::boolean OR project=$2) LIMIT 1', [id, project, global]);
   if (legacy.rows.length || !KOORDINATOR_NAME_EXAKT.test(id)) return 'legacy';
   const koordinator = await pool.query("SELECT 1 FROM agent_identitaeten WHERE project=$1 AND rolle='koordinator' LIMIT 1", [project]);
@@ -226,10 +226,20 @@ export async function nachLegacyAnmeldung(e: LegacyAnmeldung): Promise<void> {
 }
 
 /** chat(register) fuer REST und stdio: Legacy-Registrierung unveraendert, danach additiv (nur bei EIN) das Schattenprofil. */
-export async function registerChatAgent(id: string, project: string, model?: string, cutoffDate?: string): Promise<AgentSession> {
+export async function registerChatAgent(id: string, project: string, model?: string, cutoffDate?: string): Promise<AgentSession & { neuinstanz_hinweis?: string }> {
   const session = await registerAgent(id, project, model, cutoffDate);
   await nachLegacyAnmeldung({ agent_id: id, project, modell: model, cutoff_date: cutoffDate });
-  return session;
+  const hinweis = await neuinstanzHinweis(project, id);
+  return hinweis ? { ...session, neuinstanz_hinweis: hinweis } : session;
+}
+
+/** P22-T33 (M1, Weg A): Anmeldung ohne Ausweis fuer einen Namen mit vorhandener Identitaet (nur bei Kern EIN) -> Hinweis auf chat(anmelden, token). Nie ein Fehler. */
+async function neuinstanzHinweis(project: string, id: string): Promise<string | null> {
+  try {
+    if (!id || /^user$/i.test(id) || !(await schattenprofileAktiv(project))) return null;
+    const r = await getPool().query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, id]);
+    return r.rows.length ? TEXT_NEUINSTANZ : null;
+  } catch { return null; }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -302,21 +312,21 @@ async function fortsetzungsInfo(p: IdentitaetsAgentPrincipal): Promise<Fortsetzu
   return {
     identity_id: iid, project, profil_revision: rev.rows[0]?.profil_revision ?? 0,
     letzter_lauf: l ? { lauf_id: l.id, abgeloest: l.status === 'abgeloest' } : null,
-    abrufwege, zaehler,
+    abrufwege, zaehler, ...(await baueFortsetzungsErgaenzung(p)),
   };
 }
 
 /** Zugabe der Anmeldeantwort (Tokenanmeldung). Nur bei EIN; ein Fehler laesst die Antwort unveraendert. */
 export async function fortsetzungFuerAntwort(p: IdentitaetsAgentPrincipal): Promise<{ fortsetzung: FortsetzungsInfo } | Record<string, never>> {
   try {
-    if (!(await anmeldungEnvAktiv())) return {};
+    // W12-C (P22-T26): fortsetzung IMMER bei Token-Anmeldung, nicht nur bei SYNAPSE_W1B_ANMELDUNG.
     return { fortsetzung: await fortsetzungsInfo(p) };
   } catch { return {}; }
 }
 
 /** Tokenlose Koordinatorliste fuer chat(koordinator_liste). Nur bei EIN. */
 export async function koordinatorListeAntwort(project: string): Promise<Record<string, unknown>> {
-  if (!(await anmeldungEnvAktiv())) return { success: false, error: 'koordinator_liste_aus' };
+  if (!(await anmeldungEnvAktiv(typeof project === 'string' ? project.trim() || null : null))) return { success: false, error: 'koordinator_liste_aus' };
   if (typeof project !== 'string' || !project.trim()) return { success: false, error: 'project_fehlt' };
   const liste = await koordinatorListe(project);
   return {
@@ -364,31 +374,37 @@ export const SCHATTEN_KOORDINATOR_QUELLE: HinweisQuelle = {
 };
 
 /**
- * K10: einmalige Token-Zustellung nach Bestaetigung an den Ursprungsagenten (agent_id + Ursprungssitzung).
- * Bindet NIE die Gueltigkeit des Tokens an diese Sitzung; Token-Agenten (Identitaet vorhanden) erhalten ihn nicht erneut.
+ * W12-B (P22-T25, Vertrag V6): Ausweis-Zustellung an den LAUFENDEN Legacy-Agenten ohne Neustart. Aufruf OHNE token
+ * unter einer agent_id, zu der im Projekt eine Identitaet (agent_id gleich bzw. bestaetigter Schatten mit
+ * ursprung_agent_id gleich) mit gueltigem Ausweis (ausgestellt|aktiv) existiert, der noch nie benutzt wurde
+ * (zuletzt_benutzt NULL). Modus bis_erledigt (entprellt, tokenBereitEntprellungMs), UNABHAENGIG von
+ * ursprung_sitzung: nach Kontextverlust (neue Legacy-Sitzung) sofort wieder voll; erledigt, sobald der Ausweis
+ * einmal benutzt wurde, danach nie wieder. Pflichtquelle (W12_PFLICHT_HINWEISQUELLEN): nicht per
+ * hinweise_aus/hinweise_nur abschaltbar. Gate: leseAusweisKern(projekt). Der Text traegt den Ausweis nur in dieser
+ * direkten Antwort; tool_calls schwaerzt sai_-Werte (tool-args-schwaerzen.ts, Regel muster).
  */
 export const TOKEN_BEREIT_QUELLE: HinweisQuelle = {
+  // Literal = HINWEIS_QUELLE_TOKEN_BEREIT: auf Modulebene kein Vertragszugriff (Importzyklus vertrag <-> anmeldung, TDZ).
   quelle_id: 'w1b.token_bereit',
   async pruefe(k: HinweisKontext): Promise<AusloeserHinweis[]> {
-    if (!k.projekt || !(await schattenprofileAktiv(k.projekt)) || aktuelleAgentIdentityId(k.projekt, k.agent_id)) return [];
-    const r = await getPool().query<{ id: string; token_id: string; token_praefix: string; token_verschluesselt: string | null; token_schluessel_id: string | null }>(
-      `SELECT s.id, t.id AS token_id, t.token_praefix, t.token_verschluesselt, t.token_schluessel_id
-         FROM agent_schattenprofile s
-         JOIN agent_identitaeten i ON i.id=s.identity_id AND i.status='aktiv'
-         JOIN agent_identitaet_tokens t ON t.identity_id=i.id AND t.widerrufen_am IS NULL AND (t.gueltig_bis IS NULL OR t.gueltig_bis>NOW())
-        WHERE s.project=$1 AND s.ursprung_agent_id=$2 AND s.zustand='bestaetigt'
-          AND (s.ursprung_sitzung IS NULL OR s.ursprung_sitzung=$3)
-        ORDER BY s.entschieden_am DESC NULLS LAST, t.erstellt_am ASC LIMIT 1`, [k.projekt, k.agent_id, k.sitzung]);
+    if (!k.projekt || aktuelleAgentIdentityId(k.projekt, k.agent_id)) return [];
+    if (!(await ausweisAnmeldungAktiv(k.projekt))) return [];
+    const r = await getPool().query<{ token_id: string; token_offen: string; zuletzt_benutzt: Date | null }>(
+      `SELECT t.id AS token_id, t.token_offen, t.zuletzt_benutzt
+         FROM agent_identitaeten i
+         JOIN agent_identitaet_tokens t ON t.identity_id=i.id AND t.widerrufen_am IS NULL AND t.token_offen IS NOT NULL
+           AND (t.gueltig_bis IS NULL OR t.gueltig_bis>NOW())
+        WHERE i.project=$1 AND i.status='aktiv'
+          AND (i.agent_id=$2 OR EXISTS (SELECT 1 FROM agent_schattenprofile s WHERE s.identity_id=i.id AND s.project=$1
+                 AND s.ursprung_agent_id=$2 AND s.zustand='bestaetigt'))
+        ORDER BY (i.agent_id=$2) DESC, t.erstellt_am DESC, t.id LIMIT 1`, [k.projekt, k.agent_id]);
     const z = r.rows[0];
     if (!z) return [];
-    let token: string | null = null;
-    try {
-      if (z.token_verschluesselt) token = entschluesseleAgentToken(z.token_verschluesselt, z.token_id, z.token_schluessel_id);
-    } catch { token = null; /* ohne Betriebsschluessel (z. B. lokaler Prozess): Hinweis ohne Tokenwert */ }
-    const text = token
-      ? `Dein Profil ist bestaetigt. Token: ${token} (portabel, jeder Client). Naechste Runde: chat(action:"anmelden", token:<Token>). Token nie in Channel/Thought/Log.`
-      : `Dein Profil ist bestaetigt, Token liegt bereit (Praefix ${z.token_praefix}). Beim Koordinator/User abholen; Anmeldung: chat(action:"anmelden", token:<Token>), portabel.`;
-    return [{ hinweis_id: z.token_id, modus: 'einmal_je_sitzung', text, kurztext: 'Profil bestaetigt: Token liegt bereit', spezifitaet: 9 }];
+    if (z.zuletzt_benutzt) return [{ hinweis_id: z.token_id, modus: 'bis_erledigt', text: '', erledigt: true }];
+    const text = tokenBereitText(z.token_offen);
+    // kurztext = voller Text: auch die entprellte Wiederholung muss den Ausweis tragen (zuverlaessig bis zur Uebernahme).
+    return [{ hinweis_id: z.token_id, modus: 'bis_erledigt', text, kurztext: text, spezifitaet: 9,
+      entprellung_ms: tokenBereitEntprellungMs() }];
   },
 };
 
@@ -397,16 +413,38 @@ let abmelder: Array<() => void> = [];
 /** Idempotent. Registrierte Quellen machen die Registry nicht-leer; deshalb nur bei EIN (siehe initialisiere...). */
 export function registriereW1bAnmeldungHinweise(): void {
   if (abmelder.length) return;
-  try { abmelder = [registriereHinweisQuelle(SCHATTEN_KOORDINATOR_QUELLE), registriereHinweisQuelle(TOKEN_BEREIT_QUELLE)]; }
+  try { abmelder = [registriereHinweisQuelle(SCHATTEN_KOORDINATOR_QUELLE), registriereHinweisQuelle(TOKEN_BEREIT_QUELLE), registriereHinweisQuelle(PROFIL_UPDATE_QUELLE)]; }
   catch { abmelder = []; }
 }
 export function entregistriereW1bAnmeldungHinweise(): void {
   for (const f of abmelder) f();
   abmelder = [];
 }
-/** Beim Prozessstart (REST und stdio): nur bei Produktionsstandard EIN, sonst bleibt die Registry unveraendert leer. */
+/**
+ * Beim Prozessstart (REST und stdio): Produktionsstandard EIN -> sofort. W12-B (P22-T25, Befund 207d2a52 4e): sonst
+ * an den WIRKSAMEN Schalter gekoppelt (ein intern-Override ueberlebt einen API-Neustart) - asynchron einmal pruefen.
+ * Bei AUS ohne intern-Tool kein PG-Lesen, die Registry bleibt leer.
+ */
 export function initialisiereW1bAnmeldungHinweise(): void {
-  if (process.env.SYNAPSE_W1B_ANMELDUNG === '1') registriereW1bAnmeldungHinweise();
+  if (process.env.SYNAPSE_W1B_ANMELDUNG === '1') { registriereW1bAnmeldungHinweise(); return; }
+  void sichereW1bAnmeldungHinweise(true);
+}
+
+const HINWEIS_PRUEF_ABSTAND_MS = 30_000;
+let letzteHinweisPruefung = 0;
+/**
+ * W12-B (P22-T25): registriert die Quellen, sobald der wirksame Schalter EIN ist (W1b-Anmeldung + Token-Identitaet
+ * bzw. Ausweis-Kern global, auch per intern-Override). Schon registriert -> sofort zurueck; sonst hoechstens alle
+ * 30 s eine Schalterlesung. Aufgerufen je Token-Toolaufruf (agent-token-tools.ts) und beim Prozessstart.
+ */
+export async function sichereW1bAnmeldungHinweise(sofort = false): Promise<void> {
+  if (abmelder.length) return;
+  const jetzt = Date.now();
+  if (!sofort && jetzt - letzteHinweisPruefung < HINWEIS_PRUEF_ABSTAND_MS) return;
+  letzteHinweisPruefung = jetzt;
+  try {
+    if ((await anmeldungEnvAktiv()) || (await leseAusweisKern(null)).aktiv) registriereW1bAnmeldungHinweise();
+  } catch { /* Schalter nicht lesbar: Registry bleibt unveraendert */ }
 }
 
 export const ANMELDUNGS_DIENSTE: AnmeldungsDienst = {

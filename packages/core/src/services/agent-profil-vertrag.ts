@@ -25,6 +25,8 @@ import { PAKET_A_DIENSTE } from './agent-profil-dienst-a.js';
 // Paket B: Anmeldung/Koordinatorliste/Fortsetzung, lazy verdrahtet (agent-anmeldung.ts importiert diese Datei zurueck).
 import { ANMELDUNGS_DIENSTE } from './agent-anmeldung.js';
 import type { PoolClient } from 'pg';
+// W12 (P22-T23): Ausweis-/Regelstand-Kennungen (reine Funktion regelnStand).
+import { createHash } from 'node:crypto';
 import { aktuellerAgentPrincipal } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
@@ -32,7 +34,7 @@ import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { rolleFuerAgent } from './agent-rollen.js';
 // Paket D: Persona-/Tokenabruf-Dienste sind im Eintrag lazy verdrahtet (W1B_DIENSTE), weil sie diese Datei zurueckimportieren.
 import { personaDienst } from './agent-persona.js';
-import { tokenAbrufDienst } from './agent-token-abruf.js';
+import { tokenAbrufDienst, rufeAusweisAb, loescheAusweis } from './agent-token-abruf.js';
 
 export type W1bPaket = 'A' | 'B' | 'C' | 'D' | 'T';
 
@@ -145,13 +147,13 @@ export interface SchattenprofilDienst {
   /** A: legt an bzw. fuehrt wiederholte Meldungen desselben Vorgangs zusammen; nur bei Produkt-Schalter schattenprofile. */
   legeSchattenprofilAn(e: SchattenAnlage, akteur: W1bAkteur): Promise<Schattenprofil>;
   /** A */
-  listeSchattenprofile(project: string, akteur: W1bAkteur, filter?: { zustand?: SchattenZustand }): Promise<Schattenprofil[]>;
+  listeSchattenprofile(project: string, akteur: AusweisAkteur, filter?: { zustand?: SchattenZustand }): Promise<Schattenprofil[]>;
   /** A: Korrekturentwurf mit CAS auf revision */
-  korrigiereSchattenprofil(id: string, erwartete_revision: number, korrektur: Partial<ProfilInhalt>, akteur: W1bAkteur, grund: string): Promise<Schattenprofil>;
+  korrigiereSchattenprofil(id: string, erwartete_revision: number, korrektur: Partial<ProfilInhalt>, akteur: AusweisAkteur, grund: string): Promise<Schattenprofil>;
   /** A: atomar Identitaet + Profilrevision 1 + Tokenaktivierung + Audit; Doppelbestaetigung idempotent */
-  bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: W1bAkteur): Promise<{ schattenprofil: Schattenprofil; identity_id: string; profil_revision: number }>;
+  bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: AusweisAkteur): Promise<{ schattenprofil: Schattenprofil; identity_id: string; profil_revision: number }>;
   /** A */
-  lehneSchattenprofilAb(id: string, erwartete_revision: number, akteur: W1bAkteur, grund: string): Promise<Schattenprofil>;
+  lehneSchattenprofilAb(id: string, erwartete_revision: number, akteur: AusweisAkteur, grund: string): Promise<Schattenprofil>;
   /** A: pending mit ablauf_am <= jetzt -> abgelaufen (verfaellt mit vorgesehenem Token); keine Datenloeschung */
   verfalleAbgelaufene(project?: string, jetzt?: Date): Promise<number>;
 }
@@ -424,6 +426,14 @@ export interface FortsetzungsInfo {
   abrufwege: Array<{ art: string; id: string; aufruf: Record<string, unknown> }>;
   /** Anzahl Abrufwege je Art (Ueberblick fuer kleine Kontexte) */
   zaehler?: Record<string, number>;
+  /** W12-C (P22-T26): kompakter Profilblock; nur wenn zustellUmfang().profilblock. */
+  profil?: ProfilBlock;
+  /** W12-C: an die Identitaet gebundene Tasks (plan_task_bindungen), zusaetzlich zu Beteiligungen. */
+  gebundene_tasks?: GebundeneTask[];
+  /** W12-C: Channels aus dem Profil, bei der Anmeldung automatisch beigetreten. */
+  profil_channels?: { beigetreten: string[]; fehlgeschlagen: string[] };
+  /** W12-B: was in dieser Antwort zugestellt wurde (Debug/Tests). */
+  zustellung?: ZustellUmfang & { lauf_id: string | null };
 }
 
 export interface AnmeldungsDienst {
@@ -642,7 +652,11 @@ async function verwalteBindung(
  * P22-T18 (User-Entscheidung 19.10.2026, thought 8aab4bcf): Angaben aus dem Aufruf, KEIN Identitaetsnachweis.
  * agent_id = Legacy-Agent ohne Token (fehlt: reiner User-Pfad), grund = Begruendung fuer update_task auf gebundener Task.
  */
-export interface TaskBearbeiter { agent_id?: string | null; grund?: string | null }
+export interface TaskBearbeiter {
+  agent_id?: string | null; grund?: string | null;
+  /** P22-T28 (H3): Merker je Aufruf (z. B. add_batch): hoechstens EIN Audit-Eintrag je Task und Aufruf. */
+  auditMerker?: Set<string>;
+}
 
 function beschreibeBindung(b: TaskBindung): string {
   if (b.art === 'identitaet') return 'Identitaet ' + b.identity_id;
@@ -657,26 +671,49 @@ function beschreibeBindung(b: TaskBindung): string {
  * erlaubt UND Eintrag in plan_task_bindung_audit: aktion 'aendern' (die CHECK-Aktionen bleiben unveraendert), Bindung unveraendert (alt = neu),
  * wer 'legacy:<agent_id>', neu.ereignis 'update_task_legacy', grund mit Praefix '[update_task ohne Token]'.
  */
-async function pruefeLegacyBearbeitung(project: string, task_id: string, bearbeiter: TaskBearbeiter | undefined, ref: string): Promise<string | null> {
+/** P22-T28 (H3): Ergebnis des update_task-Gates; nachErfolg schreibt den Legacy-Audit ERST nach erfolgreichem Task-Update. */
+export interface BindungsPruefung { sperre: string | null; nachErfolg: (() => Promise<void>) | null }
+const KEINE_VORMERKUNG: BindungsPruefung = { sperre: null, nachErfolg: null };
+async function pruefeLegacyBearbeitung(project: string, task_id: string, bearbeiter: TaskBearbeiter | undefined, ref: string): Promise<BindungsPruefung> {
   const agent = typeof bearbeiter?.agent_id === 'string' ? bearbeiter.agent_id.trim() : '';
-  if (!agent) return null;
-  if (rolleFuerAgent(agent).rolle === 'koordinator') return null;
+  if (!agent) return KEINE_VORMERKUNG;
+  if (rolleFuerAgent(agent).rolle === 'koordinator') return KEINE_VORMERKUNG;
   const b = await leseBindungRoh(project, task_id);
-  if (b.art === 'offen') return null;
+  if (b.art === 'offen') return KEINE_VORMERKUNG;
   const grund = typeof bearbeiter?.grund === 'string' ? bearbeiter.grund.trim() : '';
   if (!grund) {
     throw new TaskBindungFehler('grund_noetig', `grund_noetig: grund angeben (Task ${ref} ist gebunden an ${beschreibeBindung(b)}). Agenten ohne Token brauchen fuer update_task auf einer gebundenen Task einen Grund.`);
   }
-  await mitTransaktion(c => schreibeBindungsAudit(c, project, task_id, 'aendern', b, { ...b, ereignis: 'update_task_legacy' }, 'legacy:' + agent, null, '[update_task ohne Token] ' + grund));
-  return null;
+  const merker = bearbeiter?.auditMerker;
+  return {
+    sperre: null,
+    nachErfolg: async () => {
+      if (merker?.has(task_id)) return;
+      await mitTransaktion(c => schreibeBindungsAudit(c, project, task_id, 'aendern', b, { ...b, ereignis: 'update_task_legacy' }, 'legacy:' + agent, null, '[update_task ohne Token] ' + grund));
+      merker?.add(task_id);
+    },
+  };
 }
 
 /** update_task-Gate (Paket T): bei Schalter EIN darf nur Koordinator/User bzw. Mitglied der Bindung bearbeiten. Ohne Principal: User-Pfade unveraendert, Legacy-Agent mit agent_id nur mit Grund (P22-T18). */
-export async function pruefeTaskBindungBearbeitenFuer(project: string, task_id: string, p: IdentitaetsAgentPrincipal | null, ref: string = task_id, bearbeiter?: TaskBearbeiter): Promise<string | null> {
-  if (!(await leseProfilProduktSchalter('task_bindung', project)).aktiv) return null;
+export async function vormerkenTaskBindungBearbeitenFuer(project: string, task_id: string, p: IdentitaetsAgentPrincipal | null, ref: string = task_id, bearbeiter?: TaskBearbeiter): Promise<BindungsPruefung> {
+  if (!(await leseProfilProduktSchalter('task_bindung', project)).aktiv) return KEINE_VORMERKUNG;
   if (!p) return pruefeLegacyBearbeitung(project, task_id, bearbeiter, ref);
-  if (p.project === project && p.rolle === 'koordinator') return null;
-  return bindungsSperre(project, task_id, p.project === project ? p.identity_id : null, ref);
+  if (p.project === project && p.rolle === 'koordinator') return KEINE_VORMERKUNG;
+  return { sperre: await bindungsSperre(project, task_id, p.project === project ? p.identity_id : null, ref), nachErfolg: null };
+}
+
+/** Wie vormerkenTaskBindungBearbeitenFuer, schreibt den Legacy-Audit aber SOFORT (Altverhalten fuer Aufrufer ohne eigenes Update). */
+export async function pruefeTaskBindungBearbeitenFuer(project: string, task_id: string, p: IdentitaetsAgentPrincipal | null, ref: string = task_id, bearbeiter?: TaskBearbeiter): Promise<string | null> {
+  const r = await vormerkenTaskBindungBearbeitenFuer(project, task_id, p, ref, bearbeiter);
+  if (r.nachErfolg) await r.nachErfolg();
+  return r.sperre;
+}
+
+/** P22-T28 (H3): Gate mit Akteur aus dem Tokenkontext; der Aufrufer ruft nachErfolg() nach dem erfolgreichen Task-Update. */
+export async function vormerkenTaskBindungBearbeiten(project: string, task_id: string, ref: string = task_id, bearbeiter?: TaskBearbeiter): Promise<BindungsPruefung> {
+  const p = aktuellerAgentPrincipal();
+  return vormerkenTaskBindungBearbeitenFuer(project, task_id, p && p.art === 'identity' ? p : null, ref, bearbeiter);
 }
 
 /** Wie pruefeTaskBindungBearbeitenFuer, Akteur aus dem aktuellen Tokenkontext. */
@@ -749,5 +786,476 @@ export const W1B_DIENSTE: W1bDienste = {
   },
   antwort: {
     projiziereAgentAntwort: async (e) => (await import('./agent-zuschnitt.js')).projiziereAgentAntwort(e),
+  },
+};
+
+// =============================================================================================
+// WELLE 12 (P22-T23) - DELTA-VERTRAG AGENTEN-AUSWEIS. Verbindlich fuer W12-A/B/C/D/T (P22-T24..T28).
+// Grundlage: thoughts 498818f4 (Zielbild 1-11), eeac2976 (Lebenszyklus), 63911bc7 (offen speichern),
+// memory entscheidung-agenten-ausweis-2026-10-19 (Punkt 2: KEINE Sitzungsbindung, K1 GESTRICHEN).
+// Schema: 114_agent_ausweis.sql (agent-ausweis-schema.ts). Paketzuschnitt: Vertrags-Thought zu P22-T23.
+//
+// V1 AUSWEIS = Identifikation innerhalb von Synapse, KEIN Sicherheitssystem; Bearer bleibt Pflicht.
+//    Wert 'sai_' + 64 hex, OFFEN in agent_identitaet_tokens.token_offen (unique), Lookup NUR darueber.
+//    token_hash / token_verschluesselt / token_schluessel_id / start_art sind stillgelegt (neue Zeilen NULL);
+//    Altzeilen ohne token_offen sind ungueltig (Koordinator stellt beim Deploy neu aus). agent-token-tresor.ts
+//    und SYNAPSE_AGENT_TOKEN_SCHLUESSEL entfallen. Wert NIE in Log/Audit/tool_calls/Channel/Thought;
+//    Zuordnung ueber identity_id, token_id, token_praefix. Nur direkte Antworten an User/Koordinator bzw. an
+//    den betroffenen Agenten (Startkonfiguration, Abruf, TOKEN_BEREIT-Hinweis) tragen den Wert.
+// V2 LEBENSZYKLUS (ausweisZustand): ausgestellt -> aktiv -> geloescht; ausgestellt + Frist vorbei = verfallen.
+//    Weg A: Legacy-Anmeldung erzeugt nur einen SCHATTEN (24 h, kein Ausweis). Bestaetigung (admin
+//      schattenprofil_bestaetigen) erzeugt den Ausweis direkt 'aktiv' (ausweis_weg 'schatten_bestaetigt');
+//      der laufende Agent erhaelt ihn per Hinweis TOKEN_BEREIT (V6).
+//    Weg B: admin agent_vorbereiten erzeugt Identitaet + Profil + Ausweis 'ausgestellt' mit Erstnutzungsfrist
+//      (erstnutzungFristMs, Env SYNAPSE_AGENT_START_TOKEN_TTL_MIN, Standard 10 min). Die ERSTE erfolgreiche
+//      Pruefung (chat anmelden ODER beliebiger Toolaufruf mit token) IST die Bestaetigung: gueltig_bis = NULL,
+//      danach dauerhaft bis User/Koordinator loescht. Sonderfall: der Name hat eine laufende Legacy-Sitzung im
+//      Projekt -> sofort 'aktiv' (ausweis_weg 'uebernahme', legacy_uebernahme:true), Zustellung wie Weg A.
+//    Je Identitaet genau EIN nicht geloeschter Ausweis (Index uq_agent_identitaet_tokens_einer). Respawn,
+//      Neustart, Modellwechsel und Daemon-Start benutzen DENSELBEN Ausweis; keine Start-Rotation, kein
+//      60-s-Uebergang, keine Start-Ausweise mehr. Neu ausgestellt wird nur, wenn der vorhandene verfallen
+//      (vorher loeschen, Grund 'erstnutzung_verfallen') oder ausdruecklich geloescht ist.
+// V3 IDENTIFIKATION JE AUFRUF: Der Agent gibt token bei JEDEM Toolaufruf als Parameter mit (wie agent_id).
+//    Keine Sitzungsbindung, keine neuen Header/Env-Konzepte. Bestand x-synapse-agent-token (Spezialisten,
+//    mcp-http.json) und SYNAPSE_AGENT_TOKEN (stdio, Daemon-Spawn) bleiben unveraendert lauffaehig, werden aber
+//    nicht ausgebaut; Vorrang: Argument token > Bestand-Header/Env. Ohne token: Legacy wie heute (agent_id).
+// V4 RECHTE: agent_vorbereiten, Abruf und Loeschen nur User (authentifizierter User-Eingang) oder Koordinator
+//    MIT eigenem Ausweis desselben Projekts (darfAusweisVerwalten). Daemon: nur ausweisFuerStart fuer eine
+//    vorhandene Identitaet seines Projekts, nie Anlage. Ein Legacy-Koordinator ohne Ausweis ist kein Nachweis
+//    (erster Koordinator: legeErstenKoordinatorAn bzw. chat(register, id:'koordinator') im Modus 'beide').
+// V5 LAUF = AKTUELLER KONTEXT (lauf_id). Neuer Lauf (context_epoch+1, neue Identitaets-Sitzung):
+//    chat(anmelden, token) und admin(index_stats, sitzung:'neu'|'fortsetzung') mit token -> beginn_art
+//    'anmelden' bzw. 'fortsetzung'; erster Token-Aufruf ohne aktiven Lauf -> 'implizit'; erster Token-Aufruf
+//    einer Identitaet mit Legacy-Ursprung (gleiche agent_id bzw. Schatten-Ursprung) -> 'uebernahme' inkl.
+//    Uebernahme-Bruecke (LaufDienst.uebernehmeLegacy, einmalig, idempotent). Folgeaufrufe mit token im
+//    selben Lauf beginnen nie einen neuen Lauf. Was zugestellt wird, entscheidet zustellUmfang().
+// V6 HINWEISQUELLEN (bestehende Registry ausloeser-hinweise.ts, beide PFLICHT: durch hinweise_aus/
+//    hinweise_nur von Profil/Kontextprofil NICHT abschaltbar):
+//    w1b.token_bereit (W12-B): Aufruf OHNE token unter einer agent_id, zu der im Projekt eine Identitaet
+//      (agent_id gleich bzw. bestaetigter Schatten mit ursprung_agent_id gleich) mit gueltigem Ausweis
+//      (ausgestellt|aktiv) und zuletzt_benutzt IS NULL existiert. modus 'bis_erledigt', hinweis_id = token_id,
+//      entprellung_ms = tokenBereitEntprellungMs() (Env SYNAPSE_W1B_TOKEN_HINWEIS_MS, Standard 600000),
+//      spezifitaet 9, text = tokenBereitText(token). erledigt:true sobald zuletzt_benutzt gesetzt. UNABHAENGIG
+//      von ursprung_sitzung. Registrierung an den wirksamen Ausweis-Kern gekoppelt (auch nach API-Neustart mit
+//      intern-Override; Quelle prueft leseAusweisKern selbst), nicht nur an Env SYNAPSE_W1B_ANMELDUNG.
+//    w1b.profil_update (W12-C, eigene Datei): Aufruf MIT token, aktiver Lauf. Basis = GREATEST(
+//      lauf.zugestellt_profil_revision, hoechste schon zugestellte 'rev:<n>' dieser Quelle in der aktuellen
+//      Identitaets-Sitzung); Basis NULL -> nichts (Profilblock zustaendig). Basis < agent_identitaeten.
+//      profil_revision -> EIN Hinweis: modus 'einmal_je_sitzung', hinweis_id 'rev:<aktuell>', spezifitaet 8,
+//      text = formatiereProfilUpdate(diff), Diff aus agent_profil_revisionen (Basis vs. aktuell) plus seit
+//      lauf.zugestellt_am geaenderte Task-Bindungen (plan_task_bindung_audit). Durchsetzung bleibt SOFORT
+//      (Resolver je Aufruf, unabhaengig von der Zustellung). Typrevision ohne Neuzuweisung erhoeht
+//      profil_revision nicht (Typ-Pinning 26cf1837 B3) -> kein Hinweis; im Diff steht ein Typwechsel als
+//      'Typ <alt> -> <neu> (Rev n)'.
+//    Tool-Call-Log: sai_[a-f0-9]{64} in args UND result schwaerzen (token-Parameter je Aufruf!) - W12-B prueft
+//      tool-args-schwaerzen.ts und ergaenzt bei Bedarf; admin agent_vorbereiten/token_abrufen ohne result.
+// V7 SCHALTER S1 (W12-T): EIN Produkt-Schalter 'agenten_ausweis' (agent_profil_schalter, projekt > global) fuer
+//    den Ausweis-Kern; ersetzt in der Wirkung token_identitaet + w1b_anmeldung + schattenprofile + token_abruf.
+//    Getrennt bleiben profilverwaltung, typkatalog, persona, task_bindung, w1b_durchsetzung, w1b_antwortanpassung.
+//    Einziger Lesepunkt fuer Ausweis-Pfade: leseAusweisKern(project) (agent-profil-schalter.ts; Signatur jetzt,
+//    Rumpf = Uebergang ueber Altschalter, W12-T ersetzt). Wirksam nur bei agent_bezug_modus 'beide';
+//    Einschalten bei anderem Modus -> agent_bezug_modus_nicht_beide. AUS = Bestandsverhalten (Golden t110).
+// =============================================================================================
+
+export type W12Paket = 'W12-A' | 'W12-B' | 'W12-C' | 'W12-D' | 'W12-T';
+export class W12NichtUmgesetzt extends Error {
+  readonly code = 'w12_nicht_umgesetzt';
+  constructor(public readonly paket: W12Paket, public readonly funktion: string) {
+    super(`w12_nicht_umgesetzt:${paket}:${funktion}`);
+  }
+}
+
+/** Stabile Fehlercodes der W12-Pfade (Tool/REST: {success:false, error:<code>}). Bestehende Klassen duerfen sie tragen. */
+export const AUSWEIS_FEHLER = [
+  'agent_token_ungueltig',          // unbekannt, geloescht, verfallen, Altzeile ohne token_offen, falsches Format
+  'agent_token_fremdes_projekt',
+  'agent_token_fehlt',              // agent_id gehoert einer Identitaet, Aufruf ohne token (Text: TEXT_AGENT_TOKEN_FEHLT)
+  'identitaet_konflikt',            // Selbstangaben widersprechen dem Ausweis (F3, unveraendert)
+  'ausweis_kern_aus',               // leseAusweisKern(project).aktiv === false
+  'agent_bezug_modus_nicht_beide',
+  'recht_fehlt',
+  'identitaet_unbekannt',
+  'identitaet_nicht_aktiv',
+  'ausweis_fehlt',                  // Abruf/Start: Identitaet ohne gueltigen Ausweis
+  'name_ungueltig',
+  'grund_fehlt',
+  'anlass_fehlt',
+] as const;
+export type AusweisFehlerCode = typeof AUSWEIS_FEHLER[number];
+export class AusweisFehler extends Error {
+  constructor(public readonly code: AusweisFehlerCode, public readonly details?: Record<string, unknown>) { super(code); }
+}
+
+// ---- V1/V2 Ausweis-Lebenszyklus (reine Entscheidungen) ----------------------------------------
+export const AUSWEIS_FORMAT = /^sai_[a-f0-9]{64}$/;
+export const AUSWEIS_PRAEFIX_LAENGE = 12;
+export function ausweisPraefix(token: string): string { return token.slice(0, AUSWEIS_PRAEFIX_LAENGE); }
+
+export type AusweisZustand = 'ausgestellt' | 'aktiv' | 'verfallen' | 'geloescht';
+export type AusweisWeg =
+  | 'vorbereitet' | 'schatten_bestaetigt' | 'uebernahme' | 'register' | 'erster_koordinator' | 'daemon_start' | 'neu_ausgestellt';
+
+/** Zustand allein aus den Spalten (agent_identitaet_tokens): widerrufen_am > gueltig_bis. */
+export function ausweisZustand(
+  t: { gueltig_bis: string | Date | null | undefined; widerrufen_am: string | Date | null | undefined }, jetzt = Date.now(),
+): AusweisZustand {
+  if (t.widerrufen_am) return 'geloescht';
+  if (t.gueltig_bis === null || t.gueltig_bis === undefined) return 'aktiv';
+  return new Date(t.gueltig_bis).getTime() > jetzt ? 'ausgestellt' : 'verfallen';
+}
+/** Nur ausgestellt (innerhalb der Frist) und aktiv identifizieren; alles andere -> agent_token_ungueltig. */
+export function ausweisGueltig(z: AusweisZustand): boolean { return z === 'ausgestellt' || z === 'aktiv'; }
+/** Erstnutzungsfrist Weg B; Env SYNAPSE_AGENT_START_TOKEN_TTL_MIN (Minuten, > 0), Standard 10. */
+export function erstnutzungFristMs(): number {
+  const m = Number(process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN);
+  return (Number.isFinite(m) && m > 0 ? m : 10) * 60_000;
+}
+
+/** V4: User oder Koordinator MIT Ausweis desselben Projekts (wie darfTokenAbrufen; Daemon nur ausweisFuerStart). */
+export function darfAusweisVerwalten(akteur: W1bAkteur, project: string): boolean {
+  return darfTokenAbrufen(akteur, project);
+}
+
+// ---- Weg B: agent_vorbereiten + Startkonfiguration (W12-A) ------------------------------------
+export type Startart = 'subagent' | 'spezialist' | 'codex' | 'hauptagent' | 'sonstiges';
+
+export interface AgentVorbereitenEingabe {
+  project: string;
+  /** Neue Identitaet bzw. Name einer laufenden Legacy-Sitzung (-> Uebernahme). Genau eins von name/identity_id. */
+  name?: string;
+  /** Vorhandene Identitaet (Respawn): liefert deren gueltigen Ausweis, stellt keinen zweiten aus. */
+  identity_id?: string;
+  /** Standard 'subagent'; 'koordinator' nur durch den User. */
+  rolle?: string;
+  typ_id?: string | null;
+  /** Profil-Override (ProfilInhalt), wird als Revision gespeichert (aendereProfil-Regeln, CAS intern). */
+  profil?: Partial<ProfilInhalt>;
+  modell?: string | null;
+  startart?: Startart;
+  grund: string;
+  user_auftrag?: string;
+}
+
+export interface Startkonfiguration {
+  /** Ein Satz fuers Spawn-Prompt/Onboarding, enthaelt den Ausweis (startsatzText). */
+  startsatz: string;
+  /** Dieselbe Vorlage mit Platzhalter {TOKEN} (fuer Anzeige/Logs ohne Wert). */
+  startsatz_vorlage: string;
+  /** Erste Aktion des Agenten. */
+  erste_aktion: { tool: 'chat'; argumente: { action: 'anmelden'; token: string } };
+  /** ISO-Zeitpunkt der Erstnutzungsfrist; null = bereits aktiv. */
+  erstnutzung_bis: string | null;
+  /** Nur Daemon-Spezialisten (Bestand): Env-Name, den der Daemon selbst setzt. Kein neues Konzept. */
+  bestand_env?: 'SYNAPSE_AGENT_TOKEN';
+}
+
+export interface AgentVorbereitenAusgabe {
+  identity_id: string;
+  agent_id: string;
+  project: string;
+  rolle: string;
+  profil_revision: number;
+  neu_angelegt: boolean;
+  legacy_uebernahme: boolean;
+  token: string;
+  token_id: string;
+  token_praefix: string;
+  zustand: AusweisZustand;
+  ausweis_weg: AusweisWeg;
+  erstnutzung_bis: string | null;
+  startkonfiguration: Startkonfiguration;
+}
+
+export const STARTSATZ_VORLAGE = 'Dein Synapse-Agenten-Ausweis: {TOKEN}. Erste Aktion: chat(action:"anmelden", token:"{TOKEN}"). '
+  + 'Danach bei JEDEM Synapse-Aufruf token:"{TOKEN}" mitgeben (ersetzt agent_id, project und role). '
+  + 'Neuer Kontext/Neustart: wieder chat(anmelden, token), nie chat(register). Ausweis nie in Channel, Thought oder Log schreiben.';
+
+export function startsatzText(token: string, erstnutzung_bis: string | null): string {
+  const satz = STARTSATZ_VORLAGE.split('{TOKEN}').join(token);
+  return erstnutzung_bis ? `${satz} Erste Anmeldung bis ${erstnutzung_bis}, sonst verfaellt der Ausweis.` : satz;
+}
+
+export function baueStartkonfiguration(token: string, erstnutzung_bis: string | null, startart?: Startart): Startkonfiguration {
+  return {
+    startsatz: startsatzText(token, erstnutzung_bis),
+    startsatz_vorlage: STARTSATZ_VORLAGE,
+    erste_aktion: { tool: 'chat', argumente: { action: 'anmelden', token } },
+    erstnutzung_bis,
+    ...(startart === 'spezialist' ? { bestand_env: 'SYNAPSE_AGENT_TOKEN' as const } : {}),
+  };
+}
+
+export interface AusweisAbruf {
+  identity_id: string;
+  token: string;
+  token_id: string;
+  token_praefix: string;
+  zustand: AusweisZustand;
+  ausweis_weg: AusweisWeg | null;
+  erstnutzung_bis: string | null;
+  zuletzt_benutzt: string | null;
+}
+
+/** W12-A (Koordinator-Vorgabe 27920): zusaetzlich zu W1bAkteur der Legacy-Koordinator ohne eigenen Ausweis (Erkennung wie P22-T18). */
+export type AusweisAkteur = W1bAkteur | { art: 'legacy_koordinator'; agent_id: string };
+
+export interface AusweisDienst {
+  /** W12-A: admin agent_vorbereiten / REST POST .../agent-profile/vorbereiten. Kern AUS -> ausweis_kern_aus. */
+  agentVorbereiten(e: AgentVorbereitenEingabe, akteur: AusweisAkteur): Promise<AgentVorbereitenAusgabe>;
+  /** W12-A: admin token_abrufen (offen lesen, ohne eigenen Schalter token_abruf), Audit ohne Wert. */
+  rufeAusweisAb(project: string, identity_id: string, akteur: AusweisAkteur, anlass: string): Promise<AusweisAbruf>;
+  /** W12-A: admin token_loeschen / REST DELETE; setzt widerrufen_am (+ Grund), Identitaet bleibt. Idempotent. */
+  loescheAusweis(project: string, identity_id: string, akteur: AusweisAkteur, grund: string): Promise<{ identity_id: string; token_id: string | null; geloescht: boolean }>;
+  /**
+   * W12-A: Daemon agent_start (akteur daemon) bzw. Koordinator-Respawn. Gueltiger Ausweis -> genau dieser
+   * (neu:false). Keiner/verfallen -> verfallenen loeschen, neuen mit Erstnutzungsfrist (neu:true,
+   * ausweis_weg 'daemon_start'). Legt NIE eine Identitaet an.
+   */
+  ausweisFuerStart(project: string, identity_id: string, akteur: AusweisAkteur): Promise<AusweisAbruf & { neu: boolean }>;
+}
+
+// ---- V5 Lauf-Zustellbuchhaltung + Uebernahme-Bruecke (W12-B) -----------------------------------
+export type LaufBeginnArt = 'anmelden' | 'fortsetzung' | 'implizit' | 'uebernahme';
+
+/** Legacy-Herkunft (Spalte agent_identitaet_laeufe.uebernommen_aus). */
+export interface UebernahmeQuelle {
+  agent_id: string;
+  /** agent_sessions.sitzung_seit der Legacy-Sitzung als Text (wie Hinweis-Zustellungen), sonst null */
+  sitzung: string | null;
+  schattenprofil_id: string | null;
+}
+
+export interface LaufZustellstand {
+  lauf_id: string;
+  identity_id: string;
+  context_epoch: number;
+  beginn_art: LaufBeginnArt | null;
+  zugestellt_profil_revision: number | null;
+  zugestellt_regeln_stand: string | null;
+  zugestellt_am: string | null;
+  uebernommen_aus: UebernahmeQuelle | null;
+}
+
+/**
+ * Uebernahme-Bruecke (einmalig je Identitaet+Ursprung, in EINER Transaktion, idempotent):
+ *  (a) agent_onboardings (project, agent_id) -> agent_identitaet_onboardings (identity_id); dann
+ *      zugestellt_regeln_stand = regelnStand(aktuelle Pflichtregeln), wenn die Legacy-Sitzung sie nachweislich
+ *      erhalten hat (Onboarding-Zeile nach sitzung_seit), sonst NULL (-> voll);
+ *  (b) ausloeser_hinweis_zustellungen der Legacy-Sitzung -> agent_identitaet_hinweis_zustellungen mit der
+ *      Sitzungskennung der neuen Identitaets-Sitzung (nichts doppelt);
+ *  (c) offene chat_messages an recipient_id = agent_id (recipient_identity_id NULL) -> recipient_identity_id;
+ *  (d) specialist_channel_members des Namens -> agent_identitaet_channel_mitglieder (Lesemarken mit).
+ * Events, Reservierungen, Waits, Shell-Jobs bleiben unveraendert (Namensbezug wie bisher).
+ */
+export interface UebernahmeErgebnis {
+  lauf_id: string;
+  quelle: UebernahmeQuelle;
+  bereits_uebernommen: boolean;
+  onboarding_zeilen: number;
+  hinweis_zustellungen: number;
+  nachrichten: number;
+  channels: number;
+}
+
+export interface LaufDienst {
+  /**
+   * W12-B: im Token-Aufrufpfad (agent-token-tools.ts) nach erfolgreicher Pruefung. Aktiver Lauf vorhanden ->
+   * dessen Stand. Sonst Lauf + Identitaets-Sitzung anlegen (beginn_art 'uebernahme' mit Bruecke bei Legacy-
+   * Ursprung, sonst 'implizit'); behebt 'hinweis_identitaet_sitzung_fehlt' beim ersten Token-Aufruf.
+   */
+  sichereLauf(p: IdentitaetsAgentPrincipal): Promise<LaufZustellstand>;
+  /** W12-B: siehe UebernahmeErgebnis. */
+  uebernehmeLegacy(identity_id: string, quelle: UebernahmeQuelle, lauf_id: string): Promise<UebernahmeErgebnis>;
+  /** W12-B */
+  leseZustellstand(lauf_id: string): Promise<LaufZustellstand | null>;
+  /** W12-B/C: Werte nur erhoehen bzw. setzen, nie zuruecknehmen; zugestellt_am = NOW(). */
+  markiereZugestellt(lauf_id: string, stand: { profil_revision?: number; regeln_stand?: string }): Promise<void>;
+}
+
+/** Was eine Antwort an Regeln/Profil/Fortsetzung traegt. 'Bekanntes nicht erneut' (Zielbild 5, 7, 10). */
+export interface ZustellUmfang {
+  /** Pflichtregeln (Tag pflicht bzw. vollstaendig im Onboarding) im Volltext */
+  pflichtregeln: 'voll' | 'keine';
+  /** uebrige Regeln nur als regel_verzeichnis (Namen + Abrufaufruf) */
+  regel_verzeichnis: boolean;
+  /** kompakter Profilblock (ProfilBlock) */
+  profilblock: boolean;
+  /** fortsetzung (FortsetzungsInfo: Abrufwege, gebundene Tasks, Channels) */
+  fortsetzung: boolean;
+}
+
+/**
+ * Reine Lieferregel. anlass 'anmeldung' = neuer Lauf (anmelden, index_stats neu/fortsetzung): alles kompakt-
+ * vollstaendig. 'folgeaufruf' = derselbe Lauf: nur, was in DIESEM Lauf noch nicht zugestellt wurde;
+ * geaenderte Pflichtregeln erneut voll, Profilaenderungen ueber w1b.profil_update (nicht hier).
+ */
+export function zustellUmfang(
+  stand: Pick<LaufZustellstand, 'zugestellt_profil_revision' | 'zugestellt_regeln_stand'> | null,
+  aktuell: { regeln_stand: string },
+  anlass: 'anmeldung' | 'folgeaufruf',
+): ZustellUmfang {
+  if (anlass === 'anmeldung' || !stand) {
+    return { pflichtregeln: 'voll', regel_verzeichnis: true, profilblock: true, fortsetzung: true };
+  }
+  const regelnNeu = stand.zugestellt_regeln_stand === null;
+  const regelnGeaendert = !regelnNeu && stand.zugestellt_regeln_stand !== aktuell.regeln_stand;
+  return {
+    pflichtregeln: regelnNeu || regelnGeaendert ? 'voll' : 'keine',
+    regel_verzeichnis: regelnNeu,
+    profilblock: stand.zugestellt_profil_revision === null,
+    fortsetzung: false,
+  };
+}
+
+/** Stand der Pflichtregeln: sha256 ueber sortierte 'name<TAB>aktualisiert' (Reihenfolge-unabhaengig). */
+export function regelnStand(regeln: ReadonlyArray<{ name: string; aktualisiert?: string | Date | null }>): string {
+  const zeilen = regeln.map(r => r.name + '\t' + (r.aktualisiert ? new Date(r.aktualisiert).toISOString() : '')).sort();
+  return createHash('sha256').update(zeilen.join('\n')).digest('hex');
+}
+
+// ---- V6 Hinweisquellen ------------------------------------------------------------------------
+export const HINWEIS_QUELLE_TOKEN_BEREIT = 'w1b.token_bereit';
+export const HINWEIS_QUELLE_PROFIL_UPDATE = 'w1b.profil_update';
+/** Pflicht: nicht ueber hinweise_aus/hinweise_nur (Profil, Kontextprofil) abschaltbar. */
+export const W12_PFLICHT_HINWEISQUELLEN: readonly string[] = [HINWEIS_QUELLE_TOKEN_BEREIT, HINWEIS_QUELLE_PROFIL_UPDATE];
+
+export function tokenBereitEntprellungMs(): number {
+  const m = Number(process.env.SYNAPSE_W1B_TOKEN_HINWEIS_MS);
+  return Number.isFinite(m) && m >= 0 ? m : 600_000;
+}
+
+export function tokenBereitText(token: string): string {
+  return `Dein Agenten-Ausweis ist bereit: ${token}. Ab sofort bei JEDEM Synapse-Aufruf token:"${token}" mitgeben `
+    + '(ersetzt agent_id, project und role). Neuer Kontext: chat(action:"anmelden", token:<Ausweis>), nie chat(register). '
+    + 'Ausweis nie in Channel, Thought oder Log schreiben.';
+}
+
+export type ProfilDiffBereich =
+  | 'regeln' | 'zuschnitt' | 'hinweise' | 'kontext' | 'typ' | 'rolle' | 'channels' | 'briefing'
+  | 'arbeitsweise' | 'modell' | 'task_bindung' | 'sonstiges';
+export type ProfilDiffArt = 'neu' | 'geaendert' | 'entfernt' | 'erlaubt' | 'gesperrt' | 'aktiviert' | 'deaktiviert';
+
+export interface ProfilDiffEintrag {
+  bereich: ProfilDiffBereich;
+  art: ProfilDiffArt;
+  /** Regelname, '<tool>' / '<tool>.<action>', Hinweisart, Task-Kurz-ID, Feldname ... */
+  schluessel: string;
+  /** optionaler fertiger Teiltext (ueberschreibt die Standardformulierung), z. B. 'Typ reviewer -> tester (Rev 3)' */
+  text?: string;
+}
+
+export interface ProfilDiff {
+  identity_id: string;
+  /** null = keine bekannte Basis (dann kein Hinweis, sondern Profilblock) */
+  von_revision: number | null;
+  nach_revision: number;
+  eintraege: ProfilDiffEintrag[];
+}
+
+const DIFF_BEREICH_TEXT: Record<ProfilDiffBereich, string> = {
+  regeln: 'Regel', zuschnitt: 'Werkzeug', hinweise: 'Hinweis', kontext: 'Kontext', typ: 'Typ', rolle: 'Rolle',
+  channels: 'Channel', briefing: 'Briefing', arbeitsweise: 'Arbeitsweise', modell: 'Modell', task_bindung: 'Task',
+  sonstiges: 'Feld',
+};
+const DIFF_ART_TEXT: Record<ProfilDiffArt, string> = {
+  neu: 'neu', geaendert: 'geaendert', entfernt: 'entfernt', erlaubt: 'erlaubt', gesperrt: 'gesperrt',
+  aktiviert: 'aktiviert', deaktiviert: 'deaktiviert',
+};
+
+/** Verbindliches Format: 'Profil-Update (Revision a -> b): Regel X geaendert; Hinweis Y deaktiviert; Task Z neu.' */
+export function formatiereProfilUpdate(d: ProfilDiff, maxZeichen = 600): string {
+  const kopf = `Profil-Update (Revision ${d.von_revision ?? 0} -> ${d.nach_revision})`;
+  if (d.eintraege.length === 0) return kopf + ': keine inhaltlichen Aenderungen.';
+  const teile = d.eintraege.map(e => e.text ?? `${DIFF_BEREICH_TEXT[e.bereich]} ${e.schluessel} ${DIFF_ART_TEXT[e.art]}`);
+  let text = kopf + ': ';
+  let n = 0;
+  for (const t of teile) {
+    const naechstes = (n ? '; ' : '') + t;
+    if (text.length + naechstes.length + 1 > maxZeichen && n > 0) break;
+    text += naechstes;
+    n++;
+  }
+  const rest = teile.length - n;
+  return text + (rest > 0 ? `; +${rest} weitere (admin profil_historie)` : '') + '.';
+}
+
+// ---- W12-C: Profilblock, gebundene Tasks -----------------------------------------------------
+export interface ProfilBlock {
+  identity_id: string;
+  agent_id: string;
+  project: string;
+  profil_revision: number;
+  rolle: string;
+  typ: { schluessel: string; revision: number } | null;
+  /** Regelnamen; Volltext ueber memory(read). Pflichtregeln stehen voll im Onboarding. */
+  regeln: string[];
+  werkzeuge: { standard: ZugriffsRegel | null; gesperrt: string[]; erlaubt: string[]; schreiben: boolean | null } | null;
+  kontext: { stufe: KontextStufe | null; budget: number | null };
+  hinweise_aus: string[];
+  channels: string[];
+  /** gekuerzt auf hoechstens 500 Zeichen */
+  briefing: string | null;
+}
+
+export interface GebundeneTask {
+  task_id: string;
+  kurz_id: string | null;
+  titel: string | null;
+  status: string | null;
+  art: 'identitaet' | 'team';
+}
+
+export interface ProfilUpdateDienst {
+  /** W12-C: Diff zweier Revisionen (agent_profil_revisionen) + Task-Bindungen seit 'seit'. */
+  berechneDiff(identity_id: string, von_revision: number | null, nach_revision: number, seit: string | null): Promise<ProfilDiff>;
+  /** W12-C: aus leseWirksamesProfil, kompakt. */
+  profilBlock(identity_id: string): Promise<ProfilBlock>;
+  /** W12-C: plan_task_bindungen mit identity_id (art identitaet oder Team-Mitglied). */
+  gebundeneTasks(project: string, identity_id: string): Promise<GebundeneTask[]>;
+}
+
+// ---- W12-D: verbindliche Texte (nur Texte, keine Logik) --------------------------------------
+export const TEXT_AGENT_TOKEN_FEHLT = 'agent_token_fehlt: Dieser Agent hat einen Agenten-Ausweis. Gib ihn bei jedem Aufruf als '
+  + 'token mit; neuer Kontext: chat(action:"anmelden", token:<Ausweis>). Ausweis verloren: Koordinator/User ruft ihn mit '
+  + 'admin(action:"token_abrufen", project, ziel_identity_id, anlass) ab.';
+export const TEXT_NEUINSTANZ = 'Neuinstanz/Neustart/Modellwechsel mit Ausweis: chat(action:"anmelden", token:<Ausweis>), nie chat(register) '
+  + '(register mit vorhandenem Namen legt eine zweite Identitaet name#2 an).';
+/** Konkreter Aufruf im Koordinator-Hinweis 'Schattenprofil wartet' (ersetzt SCHATTEN_ABRUF_TEXT). */
+export function schattenBestaetigenAufruf(project: string, schattenprofil_id: string, revision: number): string {
+  return `admin(action:"schattenprofil_bestaetigen", project:"${project}", schattenprofil_id:"${schattenprofil_id}", `
+    + `erwartete_revision:${revision}, user_zustimmung:"<Nachweis>", grund:"<Grund>")`;
+}
+export const TEXT_AGENT_VORBEREITEN_AUFRUF = 'admin(action:"agent_vorbereiten", project, agent_name, rolle?, typ_id?, profil_patch?, grund)';
+
+// ---- Stub-Registry W12: Pakete ersetzen ihre Zeile durch lazy Delegation (Muster W1B_DIENSTE) ---------
+function stub12(paket: W12Paket, funktion: string): (..._a: unknown[]) => Promise<never> {
+  return async () => { throw new W12NichtUmgesetzt(paket, funktion); };
+}
+
+export interface W12Dienste {
+  ausweis: AusweisDienst;
+  lauf: LaufDienst;
+  profilUpdate: ProfilUpdateDienst;
+}
+
+export const W12_DIENSTE: W12Dienste = {
+  ausweis: {
+    // W12-A (P22-T24): lazy, weil agent-ausweis-dienst.ts diese Datei zurueckimportiert.
+    agentVorbereiten: async (e, a) => (await import('./agent-ausweis-dienst.js')).agentVorbereiten(e, a),
+    rufeAusweisAb: (p, i, a, an) => rufeAusweisAb(p, i, a, an),
+    loescheAusweis: (p, i, a, g) => loescheAusweis(p, i, a, g),
+    ausweisFuerStart: async (p, i, a) => (await import('./agent-ausweis-dienst.js')).ausweisFuerStart(p, i, a),
+  },
+  lauf: {
+    // W12-B (P22-T25): lazy, weil agent-lauf.ts diese Datei zurueckimportiert.
+    sichereLauf: async (p) => (await import('./agent-lauf.js')).LAUF_DIENST.sichereLauf(p),
+    uebernehmeLegacy: async (i, q, l) => (await import('./agent-lauf.js')).LAUF_DIENST.uebernehmeLegacy(i, q, l),
+    leseZustellstand: async (l) => (await import('./agent-lauf.js')).LAUF_DIENST.leseZustellstand(l),
+    markiereZugestellt: async (l, s) => (await import('./agent-lauf.js')).LAUF_DIENST.markiereZugestellt(l, s),
+  },
+  profilUpdate: {
+    berechneDiff: async (i, v, n, s) => (await import('./agent-profil-update.js')).berechneDiff(i, v, n, s),
+    profilBlock: async (i) => (await import('./agent-profil-update.js')).profilBlock(i),
+    gebundeneTasks: async (pr, i) => (await import('./agent-profil-update.js')).gebundeneTasks(pr, i),
   },
 };

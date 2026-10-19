@@ -28,7 +28,10 @@
  *   POST /persona/:vorlage_id/versionen     {persona_inhalt, user_auftrag?}
  *   PUT  /profile/:identity_id/persona      {persona_vorlage_id, persona_version, user_auftrag?}
  *   POST /profile/:identity_id/persona/entfernen   {grund}
- *   POST /profile/:identity_id/token-abruf  {anlass}
+ *   POST /profile/:identity_id/token-abruf  {anlass}   (alt; gleich wie GET .../token?anlass=)
+ *   POST /vorbereiten                       agent_vorbereiten {agent_name | ziel_identity_id, rolle?, typ_id?, profil_patch?, startart?, grund, user_auftrag?}
+ *   GET  /profile/:identity_id/token?anlass=   token_abrufen (Ausweis offen lesen, nur User/Koordinator)
+ *   DELETE /profile/:identity_id/token      token_loeschen {grund}
  *   GET  /tasks/:task_id/bindung            task_bindung_lesen (offen|identitaet|team)
  *   PUT  /tasks/:task_id/bindung            {bindung_art: identitaet|team, bindung_identity_ids[], grund?}
  *   POST /tasks/:task_id/bindung/aendern    {bindung_art, bindung_identity_ids[], grund}
@@ -50,7 +53,7 @@ const params = (req: FastifyRequest): Record<string, string> => (req.params ?? {
 const query = (req: FastifyRequest): Record<string, unknown> => (req.query ?? {}) as Record<string, unknown>;
 const body = (req: FastifyRequest): Record<string, unknown> => (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>;
 
-interface RouteDef { methode: 'GET' | 'POST' | 'PUT'; pfad: string; action: string; quelle: Quelle }
+interface RouteDef { methode: 'GET' | 'POST' | 'PUT' | 'DELETE'; pfad: string; action: string; quelle: Quelle }
 
 const ROUTEN: RouteDef[] = [
   { methode: 'GET', pfad: '/schalter', action: 'profil_schalter_status', quelle: () => ({}) },
@@ -75,6 +78,9 @@ const ROUTEN: RouteDef[] = [
   { methode: 'PUT', pfad: '/profile/:identity_id/persona', action: 'persona_zuweisen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'POST', pfad: '/profile/:identity_id/persona/entfernen', action: 'persona_entfernen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'POST', pfad: '/profile/:identity_id/token-abruf', action: 'token_abrufen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
+  { methode: 'POST', pfad: '/vorbereiten', action: 'agent_vorbereiten', quelle: body },
+  { methode: 'GET', pfad: '/profile/:identity_id/token', action: 'token_abrufen', quelle: req => ({ anlass: query(req).anlass, ziel_identity_id: params(req).identity_id }) },
+  { methode: 'DELETE', pfad: '/profile/:identity_id/token', action: 'token_loeschen', quelle: req => ({ ...query(req), ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'GET', pfad: '/tasks/:task_id/bindung', action: 'task_bindung_lesen', quelle: req => ({ bindung_task_id: params(req).task_id }) },
   { methode: 'PUT', pfad: '/tasks/:task_id/bindung', action: 'task_bindung_festlegen', quelle: req => ({ ...body(req), bindung_task_id: params(req).task_id }) },
   { methode: 'POST', pfad: '/tasks/:task_id/bindung/aendern', action: 'task_bindung_aendern', quelle: req => ({ ...body(req), bindung_task_id: params(req).task_id }) },

@@ -87,6 +87,8 @@ try{
  }else{
   const sql=await readFile(join(root,'packages/core/src/db/schema-sql/111_agent_identitaet.sql'),'utf8');
   await pool.query(sql);await pool.query(sql);
+  // W12 (P22-T24): Schema 114 (token_offen) gehoert zum Ausweis-Vertrag.
+  const sql114=await readFile(join(root,'packages/core/src/db/schema-sql/114_agent_ausweis.sql'),'utf8');await pool.query(sql114);await pool.query(sql114);
   await check('Schema 111 zweimal idempotent, Ziel synapse_test:5433',async()=>{assert.ok((await pool.query("SELECT to_regclass('agent_identitaet_tokens') AS t")).rows[0].t);});
   await check('AUS Prompt bytegleich gegen t106',async()=>{assert.equal(currentPrompts.buildSpecialistPrompt(config,'Testwissen'),oldPrompts.buildSpecialistPrompt(config,'Testwissen'));});
   await check('AUS Spawn-Env/Args/Status/Prompt/Ergebnis bytegleich gegen t106',async()=>{assert.equal(JSON.stringify(await spawnProbe(root)),JSON.stringify(await spawnProbe(baseline)));});
@@ -166,32 +168,18 @@ try{
    for(const visible of[r.spawns[0].args,r.prompts,r.statuses,r.logs,r.result])assert.ok(!JSON.stringify(visible).includes(first),'Kein Ausweis in beobachtbarer Ausgabe');
    assert.match(r.prompts[0],/chat\(action: "anmelden"\)/);assert.ok(!r.prompts[0].includes('admin(action: "index_stats"'));
   });
-  await check('Nur Hash in PG, Audit ohne Klartext, Haupt-Token unverändert',async()=>{
-   const rows=(await pool.query('SELECT token_hash,start_art FROM agent_identitaet_tokens WHERE identity_id=$1',[master.identitaet.id])).rows;
-   assert.ok(rows.some(r=>r.token_hash===core.hashAgentToken(first)&&r.start_art==='specialist'));assert.ok(!JSON.stringify(rows).includes(first));
+  await check('Ausweis offen in PG (W12), Audit ohne Klartext, Start liefert den Haupt-Ausweis',async()=>{
+   const rows=(await pool.query('SELECT token_offen,token_hash,start_art FROM agent_identitaet_tokens WHERE identity_id=$1',[master.identitaet.id])).rows;
+   assert.equal(rows.length,1);assert.equal(rows[0].token_offen,first);assert.equal(rows[0].token_hash,null);assert.equal(rows[0].start_art,null);assert.equal(first,master.token);
    assert.ok(!JSON.stringify((await pool.query('SELECT alt,neu,grund FROM agent_identitaet_audit WHERE identity_id=$1',[master.identitaet.id])).rows).includes(first));
    assert.equal((await core.pruefeAgentToken(master.token,project)).identitaet.id,master.identitaet.id);
   });
-  await check('Wiederholter Start: 60s Übergang, alte Anmeldung widerruft neueren Ausweis nicht',async()=>{
-   second=(await client.holeAgentStartApi(agent,project)).SYNAPSE_AGENT_TOKEN;assert.ok(second!==first);
-   await core.meldeAgentMitTokenAn(first,project);await core.pruefeAgentToken(second,project);
-   const row=(await pool.query('SELECT gueltig_bis FROM agent_identitaet_tokens WHERE identity_id=$1 AND token_hash=$2',[master.identitaet.id,core.hashAgentToken(first)])).rows[0];
-   assert.ok(row.gueltig_bis&&row.gueltig_bis.getTime()<=Date.now()+60_000);
-   await core.meldeAgentMitTokenAn(second,project);await assert.rejects(core.pruefeAgentToken(first,project),e=>e.code==='agent_token_ungueltig');await core.pruefeAgentToken(master.token,project);
-  });
-  await check('Startsturm/Ablauf: höchstens zwei gültige Start-Ausweise, einer nach Anmeldung',async()=>{
+  await check('Wiederholter und paralleler Start: derselbe Ausweis, keine Rotation, kein 60s-Uebergang',async()=>{
+   second=(await client.holeAgentStartApi(agent,project)).SYNAPSE_AGENT_TOKEN;assert.equal(second,first);
    const issued=await Promise.all(Array.from({length:4},()=>client.holeAgentStartApi(agent,project)));
-   const rows=(await pool.query("SELECT id,token_hash,gueltig_bis,start_uebergang FROM agent_identitaet_tokens WHERE identity_id=$1 AND start_art='specialist' AND widerrufen_am IS NULL AND (gueltig_bis IS NULL OR gueltig_bis>NOW())",[master.identitaet.id])).rows;
-   assert.ok(rows.length<=2);const latest=rows.find(r=>!r.start_uebergang),previous=rows.find(r=>r.start_uebergang);
-   const latestToken=issued.map(r=>r.SYNAPSE_AGENT_TOKEN).find(t=>core.hashAgentToken(t)===latest.token_hash);
-   if(previous){
-    await pool.query("UPDATE agent_identitaet_tokens SET gueltig_bis=NOW()-INTERVAL '1 second' WHERE id=$1 AND identity_id=$2",[previous.id,master.identitaet.id]);
-    const old=issued.map(r=>r.SYNAPSE_AGENT_TOKEN).find(t=>core.hashAgentToken(t)===previous.token_hash);
-    if(old)await assert.rejects(core.pruefeAgentToken(old,project),e=>e.code==='agent_token_ungueltig');
-   }
-   await core.meldeAgentMitTokenAn(latestToken,project);
-   assert.equal((await pool.query("SELECT id FROM agent_identitaet_tokens WHERE identity_id=$1 AND start_art='specialist' AND widerrufen_am IS NULL",[master.identitaet.id])).rowCount,1);
-   await core.pruefeAgentToken(master.token,project);
+   for(const e of issued)assert.equal(e.SYNAPSE_AGENT_TOKEN,first);
+   assert.equal((await pool.query('SELECT id FROM agent_identitaet_tokens WHERE identity_id=$1',[master.identitaet.id])).rowCount,1);
+   await core.meldeAgentMitTokenAn(first,project);await core.pruefeAgentToken(second,project);await core.pruefeAgentToken(master.token,project);
   });
   await check('Deaktivierte Identität wird nicht als Neuanmeldung umgangen',async()=>{
    await pool.query("UPDATE agent_identitaeten SET status='deaktiviert' WHERE id=$1",[master.identitaet.id]);assert.equal((await request()).statusCode,403);

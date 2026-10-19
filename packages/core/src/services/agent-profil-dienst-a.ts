@@ -14,22 +14,21 @@
  *   User-Auftrag). Daemon darf nur den ersten Koordinator eines Projekts bestaetigen (K3C, atomar je Projekt).
  * ATOMAR: Bestaetigung (Identitaet + Profilrevision 1 + Tokenaktivierung + Audit), Profilaenderung und
  *   Rollback je EINE Transaktion; CAS ueber revision/profil_revision; Doppelbestaetigung idempotent.
- * TOKEN: der vorgesehene Schatten-Token liegt nur als Hash + AES-GCM-Chiffre (agent-token-tresor.ts)
- *   vor und ist VOR der Bestaetigung ungueltig (keine Zeile in agent_identitaet_tokens). Weder Token noch
- *   Chiffre erscheinen in Antworten, Audit oder Fehlern. Ohne Betriebsschluessel keine Anlage (kein Klartext).
+ * TOKEN (W12 V2, Weg A): der Schatten traegt KEINEN Token. Erst die Bestaetigung erzeugt den Ausweis: offen in
+ *   agent_identitaet_tokens.token_offen, sofort 'aktiv' (ausweis_weg schatten_bestaetigt). Kein Hash, kein Tresor.
+ *   Der Tokenwert erscheint weder in Audit noch in Fehlern; der laufende Agent erhaelt ihn per Hinweis (W12-B).
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
-import { hashAgentToken } from './agent-identitaet.js';
-import { leseProfilProduktSchalter, type ProfilProduktFunktion } from './agent-profil-schalter.js';
-import { TokenTresorFehler, entschluesseleAgentToken, verschluesseleAgentToken } from './agent-token-tresor.js';
+import { rolleFuerAgent } from './agent-rollen.js';
+import { leseProfilProduktSchalter, leseAusweisKern, ausweisSchattenAktiv, type ProfilProduktFunktion } from './agent-profil-schalter.js';
 import {
   HINWEIS_KATALOG_VOLLSTAENDIG, ProfilRevisionKonflikt, darfProfilAendern, hinweisEintrag,
   schattenAblauf, wirksamerSchattenZustand,
   type AgentTyp, type AgentTypRevision, type FeldHerkunft, type ProfilAenderung, type ProfilInhalt, type ProfilRevision,
   type ProfilDienst, type SchattenAnlage, type SchattenBestaetigung, type Schattenprofil, type SchattenprofilDienst,
-  type SchattenSelbstangaben, type SchattenZustand, type TypKatalogDienst, type W1bAkteur,
+  type SchattenSelbstangaben, type SchattenZustand, type TypKatalogDienst, type W1bAkteur, type AusweisAkteur,
 } from './agent-profil-vertrag.js';
 
 export class ProfilDienstFehler extends Error {
@@ -39,7 +38,7 @@ export class ProfilDienstFehler extends Error {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Zeile = Record<string, any>;
-interface Verwalter { wer: string; actor: string | null; user: boolean }
+export interface Verwalter { wer: string; actor: string | null; user: boolean }
 
 const MAX_TEXT = 4000;
 const AUSWEIS_TEST = /sai_[a-f0-9]{16,}/i;
@@ -69,7 +68,6 @@ async function transaktion<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
   } catch (e) {
     await c.query('ROLLBACK').catch(() => undefined);
     if (e instanceof ProfilDienstFehler || e instanceof ProfilRevisionKonflikt) throw e;
-    if (e instanceof TokenTresorFehler) throw new ProfilDienstFehler(e.code);
     // DB-Fehler koennen Werte enthalten; nie weiterreichen.
     throw new ProfilDienstFehler((e as { code?: string } | null)?.code === '23505' ? 'eindeutigkeit_verletzt' : 'profil_speicher_fehler');
   } finally { c.release(); }
@@ -81,6 +79,12 @@ async function einmalig<T>(fn: () => Promise<T>, code: string): Promise<T> {
   }
 }
 async function schalterEin(funktion: ProfilProduktFunktion, project: string | null): Promise<void> {
+  if (funktion === 'agenten_ausweis') {
+    // W12 V7: Schattenprofile haengen am Ausweis-Kern.
+    const aktiv = project === null ? (await leseAusweisKern(null)).aktiv : await ausweisSchattenAktiv(project, false);
+    if (!aktiv) throw new ProfilDienstFehler('funktion_aus', { funktion });
+    return;
+  }
   const s = await leseProfilProduktSchalter(funktion, project);
   if (s.letzter_fehler) throw new ProfilDienstFehler('produkt_schalter_nicht_lesbar');
   if (!s.aktiv) throw new ProfilDienstFehler('funktion_aus', { funktion });
@@ -91,9 +95,19 @@ async function sperreName(c: PoolClient, project: string, name: string): Promise
 }
 
 /** User immer; Koordinator nur desselben Projekts und nur wenn die DB ihn als aktiven Koordinator kennt. */
-async function pruefeVerwalter(c: PoolClient, akteur: W1bAkteur, project: string, nurUser = false): Promise<Verwalter> {
+async function pruefeVerwalter(c: PoolClient, akteur: AusweisAkteur, project: string, nurUser = false): Promise<Verwalter> {
   if (akteur?.art === 'user') return { wer: 'user', actor: null, user: true };
-  if (nurUser || akteur?.art !== 'identitaet') throw new ProfilDienstFehler('recht_fehlt');
+  if (nurUser) throw new ProfilDienstFehler('recht_fehlt');
+  if (akteur?.art === 'legacy_koordinator') {
+    // P22-T31 (Koordinator-Vorgabe 4fd83d8f): Legacy-Koordinator ohne eigenen Ausweis, Erkennung wie agent-token-abruf.ts
+    // (Rolle/Namensmuster koordinator; der Name darf keiner Token-Identitaet gehoeren). Audit 'legacy:<id>'.
+    const agent = typeof akteur.agent_id === 'string' ? akteur.agent_id.trim() : '';
+    if (!agent || rolleFuerAgent(agent).rolle !== 'koordinator') throw new ProfilDienstFehler('recht_fehlt');
+    const eigene = await c.query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, agent]);
+    if (eigene.rows[0]) throw new ProfilDienstFehler('recht_fehlt');
+    return { wer: 'legacy:' + agent, actor: null, user: false };
+  }
+  if (akteur?.art !== 'identitaet') throw new ProfilDienstFehler('recht_fehlt');
   const p = akteur.principal;
   if (!p || p.project !== project || p.rolle !== 'koordinator') throw new ProfilDienstFehler('recht_fehlt');
   const r = await c.query<Zeile>("SELECT rolle FROM agent_identitaeten WHERE id=$1 AND project=$2 AND status='aktiv'", [p.identity_id, project]);
@@ -234,7 +248,7 @@ async function schattenAudit(c: PoolClient, id: string, v: { wer: string; actor:
   await c.query(`INSERT INTO agent_schattenprofil_audit (schattenprofil_id, wer, actor_identity_id, aktion, alt, neu, grund)
     VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7)`, [id, v.wer, v.actor, aktion, JSON.stringify(alt ?? null), JSON.stringify(neu ?? null), grund ?? null]);
 }
-async function identitaetAudit(c: PoolClient, identityId: string, v: { wer: string; actor: string | null }, aktion: string, alt: unknown, neu: unknown, grund?: string | null): Promise<void> {
+export async function identitaetAudit(c: PoolClient, identityId: string, v: { wer: string; actor: string | null }, aktion: string, alt: unknown, neu: unknown, grund?: string | null): Promise<void> {
   await c.query(`INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id)
     VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7)`, [identityId, v.wer, aktion, JSON.stringify(alt ?? null), JSON.stringify(neu ?? null), grund ?? null, v.actor]);
 }
@@ -270,7 +284,7 @@ async function legeSchattenprofilAn(e: SchattenAnlage, akteur: W1bAkteur): Promi
   const project = pflichtText(e?.project, 'project_fehlt', 256);
   const agentId = pflichtText(e.ursprung_agent_id, 'agent_id_fehlt', 256);
   if (!(URSPRUNG_ARTEN as readonly string[]).includes(e.ursprung_art)) throw new ProfilDienstFehler('ursprung_art_ungueltig');
-  await schalterEin('schattenprofile', project);
+  await schalterEin('agenten_ausweis', project);
   const selbst = bereinigeSelbstangaben(e.selbstangaben);
   return transaktion(async (c) => {
     // Anlage: User, Daemon (automatische Legacy-/Startanlage) oder Koordinator des Projekts; Voranlage nie durch Daemon.
@@ -296,21 +310,20 @@ async function legeSchattenprofilAn(e: SchattenAnlage, akteur: W1bAkteur): Promi
     }
     if (alt) await verfalleZeile(c, alt.id, jetzt);
     const id = randomUUID();
-    const token = 'sai_' + randomBytes(32).toString('hex');
-    const enc = verschluesseleAgentToken(token, 'schatten:' + id);
+    // W12 V2 Weg A: der Schatten traegt KEINEN Token; der Ausweis entsteht erst mit der Bestaetigung.
     const r = await c.query<Zeile>(`INSERT INTO agent_schattenprofile (id, project, ursprung_agent_id, ursprung_sitzung, ursprung_art, selbstangaben,
-        erstellt_am, ablauf_am, vorgesehener_token_hash, vorgesehener_token_verschluesselt, vorgesehener_token_schluessel_id)
-      VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11) RETURNING ${SCHATTEN_SPALTEN}`,
-      [id, project, agentId, e.ursprung_sitzung ?? null, e.ursprung_art, JSON.stringify(selbst), jetzt, schattenAblauf(jetzt),
-        hashAgentToken(token), enc.chiffre, enc.schluessel_id]);
+        erstellt_am, ablauf_am)
+      VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8) RETURNING ${SCHATTEN_SPALTEN}`,
+      [id, project, agentId, e.ursprung_sitzung ?? null, e.ursprung_art, JSON.stringify(selbst), jetzt, schattenAblauf(jetzt)]);
     await schattenAudit(c, id, v, 'angelegt', null, { ursprung_art: e.ursprung_art, ablauf_am: iso(r.rows[0].ablauf_am) });
     return zuSchatten(r.rows[0]);
   });
 }
 
-async function listeSchattenprofile(project: string, akteur: W1bAkteur, filter?: { zustand?: SchattenZustand }): Promise<Schattenprofil[]> {
+async function listeSchattenprofile(project: string, akteur: AusweisAkteur, filter?: { zustand?: SchattenZustand }): Promise<Schattenprofil[]> {
   const p = pflichtText(project, 'project_fehlt', 256);
-  await schalterEin('schattenprofile', p);
+  // P22-T31: wie alle Schatten-Pfade am Ausweis-Kern (nicht am Altschalter schattenprofile).
+  await schalterEin('agenten_ausweis', p);
   return mitClient(async (c) => {
     await pruefeVerwalter(c, akteur, p);
     const r = await c.query<Zeile>(`SELECT ${SCHATTEN_SPALTEN} FROM agent_schattenprofile WHERE project=$1 ORDER BY erstellt_am DESC, id`, [p]);
@@ -319,10 +332,10 @@ async function listeSchattenprofile(project: string, akteur: W1bAkteur, filter?:
   });
 }
 
-async function korrigiereSchattenprofil(id: string, erwartete_revision: number, korrektur: Partial<ProfilInhalt>, akteur: W1bAkteur, grund: string): Promise<Schattenprofil> {
+async function korrigiereSchattenprofil(id: string, erwartete_revision: number, korrektur: Partial<ProfilInhalt>, akteur: AusweisAkteur, grund: string): Promise<Schattenprofil> {
   const g = pflichtText(grund, 'grund_fehlt');
   const project = await projektVonSchatten(id);
-  await schalterEin('schattenprofile', project);
+  await schalterEin('agenten_ausweis', project);
   pruefeProfilInhalt(korrektur);
   return transaktion(async (c) => {
     const row = await sperreSchatten(c, id);
@@ -336,7 +349,7 @@ async function korrigiereSchattenprofil(id: string, erwartete_revision: number, 
   });
 }
 
-async function sichtbarerTyp(c: PoolClient, typId: string, project: string): Promise<Zeile> {
+export async function sichtbarerTyp(c: PoolClient, typId: string, project: string): Promise<Zeile> {
   const r = await c.query<Zeile>(`SELECT id, scope, project, schluessel, aktuelle_revision, status FROM agent_typen
     WHERE id=$1 AND (scope='global' OR project=$2)`, [typId, project]);
   if (!r.rows[0]) throw new ProfilDienstFehler('typ_unbekannt');
@@ -345,7 +358,7 @@ async function sichtbarerTyp(c: PoolClient, typId: string, project: string): Pro
 }
 
 /** Zerlegt einen Inhalt in die Identitaetsspalten (rolle, modell_bestaetigt, startrezept, Rest = profil). */
-function spaltenAusInhalt(inhalt: Record<string, unknown>): { profil: Record<string, unknown>; rolle: string; modell: string | null; startrezept: Record<string, unknown> } {
+export function spaltenAusInhalt(inhalt: Record<string, unknown>): { profil: Record<string, unknown>; rolle: string; modell: string | null; startrezept: Record<string, unknown> } {
   const { rolle, modell, startrezept, ...profil } = inhalt;
   return { profil, rolle: typeof rolle === 'string' ? rolle : 'subagent', modell: typeof modell === 'string' ? modell : null,
     startrezept: startrezept && typeof startrezept === 'object' ? startrezept as Record<string, unknown> : {} };
@@ -359,7 +372,7 @@ function inhaltAusZeile(i: Zeile): Record<string, unknown> {
 function snapshotAusInhalt(inhalt: Record<string, unknown>): Record<string, unknown> {
   return { ...inhalt, modell_bestaetigt: (inhalt.modell as string | null | undefined) ?? null };
 }
-async function schreibeProfilRevision(c: PoolClient, identityId: string, revision: number, inhalt: Record<string, unknown>,
+export async function schreibeProfilRevision(c: PoolClient, identityId: string, revision: number, inhalt: Record<string, unknown>,
   typId: string | null, typRevision: number | null, v: Verwalter, userAuftrag: string | null, grund: string): Promise<void> {
   const pz = await c.query<Zeile>('SELECT vorlage_id, version FROM agent_persona_zuweisungen WHERE identity_id=$1', [identityId]);
   await c.query(`INSERT INTO agent_profil_revisionen (identity_id, revision, snapshot, typ_id, typ_revision, persona_vorlage_id, persona_version,
@@ -368,12 +381,12 @@ async function schreibeProfilRevision(c: PoolClient, identityId: string, revisio
       pz.rows[0]?.version ?? null, v.wer, v.actor, userAuftrag, grund]);
 }
 
-async function bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: W1bAkteur): Promise<{ schattenprofil: Schattenprofil; identity_id: string; profil_revision: number }> {
+async function bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: AusweisAkteur): Promise<{ schattenprofil: Schattenprofil; identity_id: string; profil_revision: number }> {
   const id = pflichtText(b?.schattenprofil_id, 'schattenprofil_id_fehlt', 128);
   const zustimmung = pflichtText(b.user_zustimmung, 'user_zustimmung_fehlt');
   const grund = pflichtText(b.grund, 'grund_fehlt');
   const project = await projektVonSchatten(id);
-  await schalterEin('schattenprofile', project);
+  await schalterEin('agenten_ausweis', project);
   if (b.korrektur !== undefined) pruefeProfilInhalt(b.korrektur);
   return transaktion(async (c) => {
     const row = await sperreSchatten(c, id, true);
@@ -425,14 +438,11 @@ async function bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: W1bAkte
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,1,$13,$14)`,
       [identityId, project, name, instanz, agentId, rolle, modell, selbstModell, JSON.stringify(profil), JSON.stringify(startrezept),
         v.wer, v.actor, typ?.id ?? null, typ?.aktuelle_revision ?? null]), 'identitaet_existiert');
-    // Tokenaktivierung: Chiffre des Schattens wird an die neue Token-ID gebunden; erst jetzt gibt es eine Token-Zeile.
-    if (!row.vorgesehener_token_verschluesselt) throw new ProfilDienstFehler('token_nicht_verfuegbar');
-    const klar = entschluesseleAgentToken(row.vorgesehener_token_verschluesselt, 'schatten:' + id, row.vorgesehener_token_schluessel_id);
-    if (hashAgentToken(klar) !== row.vorgesehener_token_hash) throw new ProfilDienstFehler('token_inkonsistent');
+    // W12 V2 Weg A: erst mit der Bestaetigung entsteht der Ausweis - offen gespeichert, sofort 'aktiv' (ausweis_weg schatten_bestaetigt).
+    const klar = 'sai_' + randomBytes(32).toString('hex');
     const tokenId = randomUUID();
-    const enc = verschluesseleAgentToken(klar, tokenId);
-    await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_hash, token_praefix, token_verschluesselt, token_schluessel_id)
-      VALUES ($1,$2,$3,$4,$5,$6)`, [tokenId, identityId, row.vorgesehener_token_hash, klar.slice(0, 12), enc.chiffre, enc.schluessel_id]);
+    await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_offen, token_praefix, ausweis_weg)
+      VALUES ($1,$2,$3,$4,'schatten_bestaetigt')`, [tokenId, identityId, klar, klar.slice(0, 12)]);
     await schreibeProfilRevision(c, identityId, 1, korrektur, typ?.id ?? null, typ?.aktuelle_revision ?? null, v, zustimmung, grund);
     await c.query(`UPDATE agent_schattenprofile SET zustand='bestaetigt', revision=revision+1, korrektur=$2::jsonb, typ_id=$3, identity_id=$4,
         entschieden_von=$5, entschieden_von_identity_id=$6, entschieden_am=NOW(), user_zustimmung=$7, grund=$8,
@@ -447,10 +457,10 @@ async function bestaetigeSchattenprofil(b: SchattenBestaetigung, akteur: W1bAkte
   });
 }
 
-async function lehneSchattenprofilAb(id: string, erwartete_revision: number, akteur: W1bAkteur, grund: string): Promise<Schattenprofil> {
+async function lehneSchattenprofilAb(id: string, erwartete_revision: number, akteur: AusweisAkteur, grund: string): Promise<Schattenprofil> {
   const g = pflichtText(grund, 'grund_fehlt');
   const project = await projektVonSchatten(id);
-  await schalterEin('schattenprofile', project);
+  await schalterEin('agenten_ausweis', project);
   return transaktion(async (c) => {
     const row = await sperreSchatten(c, id);
     const v = await pruefeVerwalter(c, akteur, project);

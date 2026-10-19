@@ -165,11 +165,12 @@ try{
   console.log('Golden-Dump geschrieben ('+root+')');
  }else{
   const C=core;
+  { const m114=await load('packages/core/dist/db/agent-ausweis-schema.js');const s114=Object.values(m114).find(v=>typeof v==='string');await pool.query(s114);await pool.query(s114); }
   await section('Schema 113 additiv/idempotent',async()=>{
    const {AGENT_PROFIL_SCHEMA_SQL:s113}=await load('packages/core/dist/db/agent-profil-schema.js');
    check(readFileSync(join(root,'packages/core/src/db/schema-sql/113_agent_profil.sql'),'utf8').trim()===s113.trim(),'SQL-Spiegel 113 identisch');
    const schemaJs=readFileSync(join(root,'packages/core/dist/db/schema.js'),'utf8');
-   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112');
+   check(/\$\{AGENT_BEZUG_SCHEMA_SQL\}\s*\$\{AGENT_PROFIL_SCHEMA_SQL\}\s*\$\{AGENT_AUSWEIS_SCHEMA_SQL\}\s*`/.test(schemaJs),'113 im Laufzeitschema direkt nach 112, 114 (Ausweis, W12) direkt danach');
    const ohneKommentar=s113.split('\n').filter(z=>!z.trim().startsWith('--')).join('\n');
    const alters=[...ohneKommentar.matchAll(/ALTER TABLE[^;]*;/g)].map(m=>m[0]);
    check(alters.length>0&&alters.every(a=>/^ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS /.test(a)),'nur ADD COLUMN IF NOT EXISTS');
@@ -301,7 +302,7 @@ try{
    check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'projekt',project,funktion:'schattenprofile',aktiv:true,grund:'test p22'},{identity_id:'ps-f'}))==='recht_fehlt','fremder Koordinator darf nicht schalten');
    check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'global',funktion:'schattenprofile',aktiv:true,grund:'test p22'},{identity_id:'ps-k'}))==='recht_fehlt','global nur User');
    check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'global',funktion:'schattenprofile',aktiv:true,grund:' '},{system:'user'}))==='grund_fehlt','Grund Pflicht');
-   await C.setzeProfilProduktSchalter({ebene:'global',funktion:'alle',aktiv:true,grund:'test p22'},{system:'user'});
+   {const m=process.env.SYNAPSE_AGENT_BEZUG_MODUS;process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide';try{await C.setzeProfilProduktSchalter({ebene:'global',funktion:'alle',aktiv:true,grund:'test p22'},{system:'user'});}finally{if(m===undefined)delete process.env.SYNAPSE_AGENT_BEZUG_MODUS;else process.env.SYNAPSE_AGENT_BEZUG_MODUS=m;}} // P22-T31 Punkt 3: 'alle' EIN braucht Modus beide
    check((await C.leseProfilProduktSchalter('persona',project)).aktiv,'global alle EIN');
    const pk=await C.setzeProfilProduktSchalter({ebene:'projekt',project,funktion:'persona',aktiv:false,grund:'test p22'},{identity_id:'ps-k'});
    check(!pk.aktiv&&pk.ebene==='projekt'&&pk.gesetzt_von==='ps-k','Projektkoordinator: Projekt vor global');

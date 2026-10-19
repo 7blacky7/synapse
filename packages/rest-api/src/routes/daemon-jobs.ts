@@ -39,8 +39,10 @@ import { mitAgentAufrufKontext, leseAgentBezugModus, loeseAgentZiel, getWrapperS
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   DAEMON_JOB_WARTE_MAX_S,
-  leseTokenIdentitaetSchalter,
-  stelleAgentTokenAus,
+  leseAusweisKern,
+  ausweisTokenAktiv,
+  W12_DIENSTE,
+  ProfilVerwaltungFehler,
   AgentIdentitaetFehler,
   EXPIRE_PENDING_AFTER_SEC,
   expirePendingShellJobs,
@@ -443,7 +445,8 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         // Der authentifizierte Daemon darf nur eine vorhandene Identität seines
         // Host-Projekts übernehmen, niemals eine neue Identität anlegen.
         reply.header('cache-control', 'no-store');
-        const schalter = await leseTokenIdentitaetSchalter();
+        const kern = await leseAusweisKern(project);
+        const schalter = { freigegeben: await ausweisTokenAktiv(project), quelle: kern.quelle, bis: null as string | null, letzter_fehler: kern.letzter_fehler };
         if (!schalter.freigegeben) return { success: true, aktion, freigegeben: false, schalter };
         try {
           if (bezug.modus !== 'alt' && ziel.art === 'legacy') return { success: true, aktion, freigegeben: true, legacy_start: true, schalter };
@@ -453,17 +456,15 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
           const i = r.rows[0];
           if (!i) return { success: true, aktion, freigegeben: true, legacy_start: true, schalter };
           if (i.status !== 'aktiv') return reply.code(403).send({ success: false, error: 'identitaet_nicht_aktiv' });
-          const ausweis = await stelleAgentTokenAus({
-            project, name: i.name, identity_id: i.id, start_art: 'specialist',
-            grund: 'Frischstart durch authentifizierten Projekt-Daemon',
-          }, { system: 'daemon' }, bezug);
+          // W12 (P22-T24, V2): bestehende Identitaet -> deren Ausweis, keine Start-Rotation; ohne gueltigen neu mit Erstnutzungsfrist.
+          const ausweis = await W12_DIENSTE.ausweis.ausweisFuerStart(project, i.id, { art: 'daemon' });
           // Klartext nur in dieser TLS-/LAN-Antwort an den geprüften Daemon,
           // nie im Queue-Job, Completion, Wrapperstatus oder Projektordner.
           return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter,
             ...(bezug.modus !== 'alt' ? { identity_id: i.id, agent_bezug_modus: bezug.modus } : {}) };
         } catch (err) {
           return reply.code(409).send({ success: false,
-            error: err instanceof AgentIdentitaetFehler ? err.code : 'agent_start_fehlgeschlagen' });
+            error: err instanceof AgentIdentitaetFehler || err instanceof ProfilVerwaltungFehler ? err.code : 'agent_start_fehlgeschlagen' });
         }
       }
       case 'general_channel':

@@ -12,10 +12,11 @@
  */
 import { getPool } from '../db/client.js';
 import {
-  W1B_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, darfProfilAendern, type W1bAkteur, type SchattenZustand, type ProfilInhalt, type TaskBindung,
+  W1B_DIENSTE, W12_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, darfProfilAendern, type W1bAkteur, type AusweisAkteur, type Startart, type SchattenZustand, type ProfilInhalt, type TaskBindung,
 } from './agent-profil-vertrag.js';
+import { rolleFuerAgent } from './agent-rollen.js';
 import {
-  PROFIL_PRODUKT_FUNKTIONEN, leseProfilProduktSchalter, setzeProfilProduktSchalter, type ProfilProduktFunktion,
+  PROFIL_PRODUKT_FUNKTIONEN, ALT_AUSWEIS_FUNKTIONEN, leseProfilProduktSchalter, setzeProfilProduktSchalter, leseAusweisKern, ausweisSchattenAktiv, type ProfilProduktFunktion,
 } from './agent-profil-schalter.js';
 import {
   ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText, pruefeProfilVerwalter, userAuftragFuer,
@@ -29,14 +30,14 @@ export const W1B_ADMIN_ACTIONS = [
   'typ_liste', 'typ_anlegen', 'typ_aendern', 'typ_revision_lesen',
   'profil_aendern', 'profil_historie', 'profil_rollback',
   'persona_liste', 'persona_versionen', 'persona_anlegen', 'persona_neue_version', 'persona_zuweisen', 'persona_entfernen',
-  'token_abrufen', 'web_ui_koordinator_token',
+  'agent_vorbereiten', 'token_abrufen', 'token_loeschen', 'web_ui_koordinator_token',
   'task_bindung_lesen', 'task_bindung_festlegen', 'task_bindung_aendern', 'task_bindung_entblocken',
 ] as const;
 export type W1bAdminAction = typeof W1B_ADMIN_ACTIONS[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
 export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
-  profil_funktion: { type: 'string', enum: [...PROFIL_PRODUKT_FUNKTIONEN, 'alle'], description: 'Profilverwaltung: Produkt-Schalter-Funktion (profil_schalter_setzen)' },
+  profil_funktion: { type: 'string', enum: [...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN, 'alle'], description: 'Profilverwaltung: Produkt-Schalter-Funktion (profil_schalter_setzen)' },
   ziel_identity_id: { type: 'string', description: 'Profilverwaltung: Identitaets-ID des Zielprofils' },
   schattenprofil_id: { type: 'string', description: 'Profilverwaltung: ID des Schattenprofils' },
   zustand: { type: 'string', enum: [...SCHATTEN_ZUSTAENDE], description: 'Profilverwaltung: Filter schattenprofil_liste' },
@@ -56,6 +57,9 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   user_auftrag: { type: 'string', description: 'Persona/Profil: dokumentierter User-Auftrag (Wortlaut) fuer Koordinator-Aufrufe' },
   user_zustimmung: { type: 'string', description: 'Schattenprofil: Nachweis der User-Zustimmung bzw. Freigabe zum Alleinbestaetigen' },
   anlass: { type: 'string', description: 'token_abrufen: Anlass des Abrufs (Audit, ohne Tokenwert)' },
+  agent_name: { type: 'string', description: 'agent_vorbereiten: Name der neuen Identitaet (oder laufende Legacy-Sitzung -> Uebernahme); alternativ ziel_identity_id fuer Respawn' },
+  rolle: { type: 'string', description: 'agent_vorbereiten: Rolle der neuen Identitaet (Standard subagent; koordinator nur durch den User)' },
+  startart: { type: 'string', enum: ['subagent', 'spezialist', 'codex', 'hauptagent', 'sonstiges'], description: 'agent_vorbereiten: Startart fuer die Startkonfiguration' },
   bindung_task_id: { type: 'string', description: 'Task-Bindung: Task-ID (UUID oder P<n>-T<m>)' },
   bindung_art: { type: 'string', enum: ['identitaet', 'team'], description: 'Task-Bindung: Einzelidentitaet oder Team (offen = entblocken)' },
   bindung_identity_ids: { type: 'array', items: { type: 'string' }, description: 'Task-Bindung: Identitaets-IDs (identitaet: genau eine; team: frei gewaehlte, desselben Projekts)' },
@@ -69,10 +73,11 @@ export function istW1bAdminAction(action: string | undefined): boolean {
 const GRUPPE: Record<W1bAdminAction, ProfilProduktFunktion | null> = {
   profil_schalter_status: null, profil_schalter_setzen: null,
   profil_uebersicht: 'profilverwaltung', profil_aendern: 'profilverwaltung', profil_historie: 'profilverwaltung', profil_rollback: 'profilverwaltung',
-  schattenprofil_liste: 'schattenprofile', schattenprofil_korrigieren: 'schattenprofile', schattenprofil_bestaetigen: 'schattenprofile', schattenprofil_ablehnen: 'schattenprofile',
+  schattenprofil_liste: 'agenten_ausweis', schattenprofil_korrigieren: 'agenten_ausweis', schattenprofil_bestaetigen: 'agenten_ausweis', schattenprofil_ablehnen: 'agenten_ausweis',
   typ_liste: 'typkatalog', typ_anlegen: 'typkatalog', typ_aendern: 'typkatalog', typ_revision_lesen: 'typkatalog',
   persona_liste: 'persona', persona_versionen: 'persona', persona_anlegen: 'persona', persona_neue_version: 'persona', persona_zuweisen: 'persona', persona_entfernen: 'persona',
-  token_abrufen: 'token_abruf', web_ui_koordinator_token: 'token_abruf',
+  // W12 V7: Ausweis-Aktionen haengen am Ausweis-Kern (leseAusweisKern), nicht mehr am Produkt-Schalter token_abruf.
+  agent_vorbereiten: null, token_abrufen: null, token_loeschen: null, web_ui_koordinator_token: null,
   task_bindung_lesen: 'task_bindung', task_bindung_festlegen: 'task_bindung', task_bindung_aendern: 'task_bindung', task_bindung_entblocken: 'task_bindung',
 };
 
@@ -130,29 +135,78 @@ async function bindungAus(project: string, a: Args): Promise<TaskBindung> {
 }
 
 async function pruefeSchalter(funktion: ProfilProduktFunktion, project: string): Promise<void> {
+  if (funktion === 'agenten_ausweis') {
+    const k = await leseAusweisKern(project);
+    if (!k.aktiv && !(await ausweisSchattenAktiv(project, false))) throw new ProfilVerwaltungFehler('funktion_aus', { funktion, quelle: k.quelle, ...(k.letzter_fehler ? { letzter_fehler: k.letzter_fehler } : {}) });
+    return;
+  }
   const st = await leseProfilProduktSchalter(funktion, project);
   if (!st.aktiv) throw new ProfilVerwaltungFehler('funktion_aus', { funktion, quelle: st.quelle, ...(st.letzter_fehler ? { letzter_fehler: st.letzter_fehler } : {}) });
 }
 
-async function ausfuehren(action: W1bAdminAction, project: string, a: Args, akteur: W1bAkteur): Promise<Record<string, unknown>> {
+const AUSWEIS_AKTIONEN = ['agent_vorbereiten', 'token_abrufen', 'token_loeschen'] as const;
+/** P22-T31: Schatten-Verwaltung; hier darf zusaetzlich der Legacy-Koordinator ohne Ausweis handeln (Vorgabe 4fd83d8f). */
+const SCHATTEN_AKTIONEN = ['schattenprofil_liste', 'schattenprofil_korrigieren', 'schattenprofil_bestaetigen', 'schattenprofil_ablehnen'] as const;
+type AusweisAktion = typeof AUSWEIS_AKTIONEN[number];
+function istAusweisAktion(a: string): a is AusweisAktion { return (AUSWEIS_AKTIONEN as readonly string[]).includes(a); }
+
+/** Koordinator-Vorgabe 27920: Legacy-Koordinator ohne eigenen Ausweis (Erkennung wie P22-T18: Rolle/Namensmuster koordinator). */
+function legacyKoordinatorAus(args: Args): AusweisAkteur | null {
+  const agent = s(args, 'agent_id');
+  return agent && rolleFuerAgent(agent).rolle === 'koordinator' ? { art: 'legacy_koordinator', agent_id: agent } : null;
+}
+
+const AUSWEIS_HINWEIS = 'Ausweis nur direkt anzeigen oder weitergeben; nie in Channel, Thought, Log, URL oder Startrezept ablegen.';
+
+/** W12-A (V2/V4): vorbereiten / abrufen / loeschen. Rechte (User, Koordinator, Legacy-Koordinator) pruefen die Dienste selbst. */
+async function fuehreAusweisAktionAus(action: AusweisAktion, args: Args, akteur: W1bAkteur | null): Promise<Record<string, unknown>> {
+  const project = pflicht(s(args, 'project'), 'project_fehlt');
+  const wer: AusweisAkteur | null = akteur ?? legacyKoordinatorAus(args);
+  if (!wer) throw new ProfilVerwaltungFehler('recht_fehlt');
+  switch (action) {
+    case 'agent_vorbereiten': {
+      const r = await W12_DIENSTE.ausweis.agentVorbereiten({
+        project, name: s(args, 'agent_name'), identity_id: s(args, 'ziel_identity_id'), rolle: s(args, 'rolle'),
+        typ_id: args.typ_id === null ? null : s(args, 'typ_id'), profil: o(args, 'profil_patch') as Partial<ProfilInhalt> | undefined,
+        startart: s(args, 'startart') as Startart | undefined, grund: pflichtText(args.grund, 'grund_fehlt'), user_auftrag: s(args, 'user_auftrag'),
+      }, wer);
+      return { ...r, hinweis: AUSWEIS_HINWEIS };
+    }
+    case 'token_abrufen': {
+      const ziel = pflicht(s(args, 'ziel_identity_id'), 'ziel_identity_id_fehlt');
+      const t = await W12_DIENSTE.ausweis.rufeAusweisAb(project, ziel, wer, args.anlass as string);
+      return { ziel_identity_id: ziel, ...t, hinweis: AUSWEIS_HINWEIS };
+    }
+    case 'token_loeschen': {
+      const ziel = pflicht(s(args, 'ziel_identity_id'), 'ziel_identity_id_fehlt');
+      return { ...(await W12_DIENSTE.ausweis.loescheAusweis(project, ziel, wer, args.grund as string)) };
+    }
+  }
+}
+
+async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, project: string, a: Args, akteurRoh: AusweisAkteur): Promise<Record<string, unknown>> {
+  // P22-T31: der Legacy-Koordinator ohne Ausweis gilt nur fuer schattenprofil_*; alle anderen Aktionen bleiben bei W1bAkteur.
+  if (akteurRoh.art === 'legacy_koordinator' && !(SCHATTEN_AKTIONEN as readonly string[]).includes(action)) throw new ProfilVerwaltungFehler('recht_fehlt');
+  const akteur = akteurRoh as W1bAkteur;
   switch (action) {
     case 'profil_schalter_status':
-      return { project, schalter: await Promise.all(PROFIL_PRODUKT_FUNKTIONEN.map(f => leseProfilProduktSchalter(f, project))) };
+      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseProfilProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
     case 'profil_schalter_setzen': {
       const ebene = (s(a, 'ebene') ?? 'projekt') as 'global' | 'projekt';
       const funktion = pflicht(s(a, 'profil_funktion'), 'profil_funktion_fehlt') as ProfilProduktFunktion | 'alle';
       await setzeProfilProduktSchalter(
         { ebene, project: ebene === 'projekt' ? project : null, funktion, aktiv: a.aktiv as boolean, grund: String(a.grund ?? '') },
         akteur.art === 'user' ? { system: 'user' } : { identity_id: akteur.art === 'identitaet' ? akteur.principal.identity_id : undefined });
-      return { project, schalter: await Promise.all(PROFIL_PRODUKT_FUNKTIONEN.map(f => leseProfilProduktSchalter(f, project))) };
+      return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseProfilProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
     }
     case 'profil_uebersicht': {
       // Tokenfrei: nur Profil-/Teamdaten und ob ein Token abrufbar ist, nie ein Tokenwert.
       const r = await getPool().query(
         `SELECT i.id AS identity_id, i.agent_id, i.name, i.instanz_nr, i.rolle, i.status, i.profil_revision, i.typ_id, i.typ_revision,
            i.zuletzt_aktiv, i.context_epoch,
-           EXISTS (SELECT 1 FROM agent_identitaet_tokens t WHERE t.identity_id=i.id AND t.start_art IS NULL AND t.widerrufen_am IS NULL
-             AND (t.gueltig_bis IS NULL OR t.gueltig_bis>NOW()) AND t.token_verschluesselt IS NOT NULL) AS token_abrufbar,
+           EXISTS (SELECT 1 FROM agent_identitaet_tokens t WHERE t.identity_id=i.id AND t.widerrufen_am IS NULL AND t.token_offen IS NOT NULL) AS token_abrufbar,
+           (SELECT CASE WHEN t.gueltig_bis IS NULL THEN 'aktiv' WHEN t.gueltig_bis>NOW() THEN 'ausgestellt' ELSE 'verfallen' END
+              FROM agent_identitaet_tokens t WHERE t.identity_id=i.id AND t.widerrufen_am IS NULL AND t.token_offen IS NOT NULL LIMIT 1) AS ausweis_zustand,
            z.vorlage_id AS persona_vorlage_id, z.version AS persona_version
          FROM agent_identitaeten i LEFT JOIN agent_persona_zuweisungen z ON z.identity_id=i.id
          WHERE i.project=$1 ORDER BY i.rolle, i.name, i.instanz_nr`, [project]);
@@ -161,12 +215,12 @@ async function ausfuehren(action: W1bAdminAction, project: string, a: Args, akte
     case 'schattenprofil_liste': {
       const zustand = s(a, 'zustand');
       if (zustand !== undefined && !(SCHATTEN_ZUSTAENDE as readonly string[]).includes(zustand)) throw new ProfilVerwaltungFehler('zustand_ungueltig');
-      return { project, schattenprofile: await W1B_DIENSTE.schatten.listeSchattenprofile(project, akteur, zustand ? { zustand: zustand as SchattenZustand } : undefined) };
+      return { project, schattenprofile: await W1B_DIENSTE.schatten.listeSchattenprofile(project, akteurRoh, zustand ? { zustand: zustand as SchattenZustand } : undefined) };
     }
     case 'schattenprofil_korrigieren': {
       const id = await schattenprofilImProjekt(project, s(a, 'schattenprofil_id'));
       const schatten = await W1B_DIENSTE.schatten.korrigiereSchattenprofil(id, pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'),
-        pflicht(o(a, 'korrektur'), 'korrektur_fehlt') as Partial<ProfilInhalt>, akteur, pflichtText(a.grund, 'grund_fehlt'));
+        pflicht(o(a, 'korrektur'), 'korrektur_fehlt') as Partial<ProfilInhalt>, akteurRoh, pflichtText(a.grund, 'grund_fehlt'));
       return { schattenprofil: schatten };
     }
     case 'schattenprofil_bestaetigen': {
@@ -176,13 +230,13 @@ async function ausfuehren(action: W1bAdminAction, project: string, a: Args, akte
         schattenprofil_id: id, erwartete_revision: pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'),
         ...(o(a, 'korrektur') ? { korrektur: o(a, 'korrektur') as Partial<ProfilInhalt> } : {}),
         ...(typ !== undefined ? { typ_id: typ } : {}),
-        user_zustimmung: userAuftragFuer(akteur, a.user_zustimmung), grund: pflichtText(a.grund, 'grund_fehlt'),
-      }, akteur);
+        user_zustimmung: userAuftragFuer(akteurRoh, a.user_zustimmung), grund: pflichtText(a.grund, 'grund_fehlt'),
+      }, akteurRoh);
       return { ...erg };
     }
     case 'schattenprofil_ablehnen': {
       const id = await schattenprofilImProjekt(project, s(a, 'schattenprofil_id'));
-      return { schattenprofil: await W1B_DIENSTE.schatten.lehneSchattenprofilAb(id, pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'), akteur, pflichtText(a.grund, 'grund_fehlt')) };
+      return { schattenprofil: await W1B_DIENSTE.schatten.lehneSchattenprofilAb(id, pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'), akteurRoh, pflichtText(a.grund, 'grund_fehlt')) };
     }
     case 'typ_liste':
       return { project, typen: await W1B_DIENSTE.typen.listeTypen(project, akteur) };
@@ -274,11 +328,6 @@ async function ausfuehren(action: W1bAdminAction, project: string, a: Args, akte
       const task = pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt');
       return { project, task_id: task, bindung: await W1B_DIENSTE.taskBindung.entblocke(project, task, akteur, pflichtText(a.grund, 'grund_fehlt')) };
     }
-    case 'token_abrufen': {
-      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
-      const t = await W1B_DIENSTE.tokenAbruf.rufeProfilTokenAb(project, ziel, akteur, a.anlass as string);
-      return { ziel_identity_id: ziel, ...t, hinweis: 'Token nur direkt anzeigen oder weitergeben; nie in Channel, Thought, Log, URL oder Startrezept ablegen.' };
-    }
     case 'web_ui_koordinator_token': {
       const t = await rufeWebUiKoordinatorTokenAb(project, akteur, s(a, 'ziel_identity_id'));
       return { ...t, hinweis: 'Token des Web-UI-Koordinatorprofils fuer Uebernahme/Weitergabe; nie in Channel, Thought, Log, URL oder Startrezept ablegen.' };
@@ -305,14 +354,34 @@ export function w1bFehlerStatus(code: string): number {
   if (code === 'recht_fehlt' || code === 'eigenprofil_nicht_aenderbar') return 403;
   if (code === 'w1b_nicht_umgesetzt') return 501;
   if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler') return 500;
-  if (/_unbekannt$|_nicht_gefunden$/.test(code) || code === 'keine_zuweisung') return 404;
+  if (/_unbekannt$|_nicht_gefunden$/.test(code) || code === 'keine_zuweisung' || code === 'ausweis_fehlt') return 404;
+  if (code === 'ausweis_kern_aus' || code === 'agent_bezug_modus_nicht_beide' || code === 'identitaet_existiert' || code === 'ausweis_existiert') return 409;
   if (code === 'funktion_aus' || code === 'konflikt' || /_veraltet$|_belegt$|_archiviert$|^token_/.test(code) || code === 'identitaet_nicht_aktiv') return 409;
   return 400;
 }
 
 export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteur?: W1bAkteur | null } = {}): Promise<Record<string, unknown>> {
   const akteur = opt.akteur !== undefined ? opt.akteur : aktuellerW1bAkteur();
+  if (istAusweisAktion(action)) {
+    // Auch der Legacy-Koordinator ohne Ausweis darf vorbereiten/abrufen/loeschen (Vorgabe 27920).
+    try {
+      return { success: true, action, ...(await fuehreAusweisAktionAus(action, args, akteur)) };
+    } catch (e) {
+      return fehlerAntwort(action, e);
+    }
+  }
   if (!akteur) {
+    // P22-T31 (Koordinator-Vorgabe 4fd83d8f): auch der Legacy-Koordinator ohne Ausweis verwaltet Schattenprofile.
+    const legacy = (SCHATTEN_AKTIONEN as readonly string[]).includes(action) ? legacyKoordinatorAus(args) : null;
+    if (legacy) {
+      try {
+        const project = pflicht(s(args, 'project'), 'project_fehlt');
+        await pruefeSchalter('agenten_ausweis', project);
+        return { success: true, action, ...(await ausfuehren(action as Exclude<W1bAdminAction, AusweisAktion>, project, args, legacy)) };
+      } catch (e) {
+        return fehlerAntwort(action, e);
+      }
+    }
     return { success: false, action, error: 'recht_fehlt',
       message: 'Profilverwaltung nur durch den User (authentifizierter User-Eingang) oder einen Koordinator mit persoenlichem Ausweis.' };
   }
@@ -322,7 +391,7 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
     await pruefeProfilVerwalter(akteur, project);
     const gruppe = GRUPPE[action as W1bAdminAction];
     if (gruppe) await pruefeSchalter(gruppe, project);
-    return { success: true, action, ...(await ausfuehren(action as W1bAdminAction, project, args, akteur)) };
+    return { success: true, action, ...(await ausfuehren(action as Exclude<W1bAdminAction, AusweisAktion>, project, args, akteur)) };
   } catch (e) {
     return fehlerAntwort(action, e);
   }

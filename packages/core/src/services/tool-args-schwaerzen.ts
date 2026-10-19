@@ -57,6 +57,9 @@
  *  N4 Koordinator-Entscheid zu 91fd264e: C3 (pin-Flag/kurze pin-Zahl) und C5 (auth/credentials/cookie-Verfahrensname)
  *     ZURUECKGENOMMEN — pin und auth-Werte werden wie an der Basis immer geschwaerzt (pin: 123, pin: true, auth: basic).
  *  N5 Go-Zuweisung ':=' (apiKey := "x") wird wie '=' behandelt (kv-Regel), Literal unter geheimem Namen -> [WERT].
+ * W12-B (P22-T25, Vertrag V6): Agenten-Ausweise sai_ + 64 hex (token-Parameter bei JEDEM Aufruf, TOKEN_BEREIT-Hinweis,
+ *  Startkonfiguration) sind ein Geheimnis-Muster: in args, result und error immer [WERT] (Regel muster), auch im
+ *  freien Text; das Praefix (token_praefix, 12 Zeichen) bleibt als Zuordnung sichtbar.
  * Nur Audit-Daten: die Antwort an den Aufrufer bleibt unveraendert.
  */
 import { maskiereAnsichtLinks, maskiereUrl, URL_ZUGANGSDATEN } from './masken-katalog.js';
@@ -192,11 +195,11 @@ const GEHEIMWORT_GANZ = /^(?:password|passwort|passwd|kennwort|pwd|secret|token|
  * Nachbesserung 2 (N3, 61ca8b09): bekannte Geheimnis-Muster. Ein Wert, der so aussieht, ist NIE harmlos — egal unter
  * welchem Schluessel (Meta-Suffix, Feldnamen-Literal, Prosa, Quellverweis zaehlen dann nicht).
  */
-const GEHEIM_MUSTER_TEIL = /(?:^|[^A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{6,}|github_pat_[A-Za-z0-9_]{6,}|xox[abprs]-[A-Za-z0-9-]{3,}|sk-[A-Za-z0-9_-]{6,}|[sr]k_(?:live|test)_[A-Za-z0-9]{6,}|(?:AKIA|ASIA)[0-9A-Z]{12,})|\b[Bb]earer\s+[A-Za-z0-9._~+/=-]{8,}/;
+const GEHEIM_MUSTER_TEIL = /(?:^|[^A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{6,}|github_pat_[A-Za-z0-9_]{6,}|xox[abprs]-[A-Za-z0-9-]{3,}|sk-[A-Za-z0-9_-]{6,}|[sr]k_(?:live|test)_[A-Za-z0-9]{6,}|(?:AKIA|ASIA)[0-9A-Z]{12,}|sai_[a-f0-9]{64})|\b[Bb]earer\s+[A-Za-z0-9._~+/=-]{8,}/;
 /** N3: Inhalt eines PEM-Privatschluessels im freien Text (Kopf/Fuss bleiben, Regel muster). */
 const PEM_PRIVAT = /(-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----)(?!\[WERT\])[\s\S]*?(-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
 /** Im freien Text (Regel muster): nur eindeutig lange Formen, damit Bezeichner wie risk-assessment nicht treffen. */
-const GEHEIM_MUSTER_FREI = /(?<![A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16})(?![A-Za-z0-9_])/g;
+const GEHEIM_MUSTER_FREI = /(?<![A-Za-z0-9_-])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16}|sai_[a-f0-9]{64})(?![A-Za-z0-9_])/g;
 /** Hohe Entropie: >= 20 Zeichen ohne Leerraum, Buchstaben UND Ziffern, Shannon >= 3.5 Bit/Zeichen. */
 function hoheEntropie(w: string): boolean {
   if (w.length < 20 || !/^[A-Za-z0-9+/=_.~:-]+$/.test(w) || !/\d/.test(w) || !/[A-Za-z]/.test(w)) return false;

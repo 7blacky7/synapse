@@ -141,7 +141,7 @@ try{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
  const schemata=['agent-identitaet-schema','agent-bezug-schema'];
- if(!goldenOut)schemata.push('agent-profil-schema');
+ if(!goldenOut)schemata.push('agent-profil-schema','agent-ausweis-schema');
  for(const file of schemata){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
@@ -176,7 +176,7 @@ try{
     if(r.token)secrets.push(r.token);
     check(r.success===true&&TOKEN.test(r.token||''),'AUS: register liefert wie t109 sofort den Token '+t.name);
     const a=await t.call('chat',{action:'anmelden',token:r.token});
-    check(a.success===true&&a.fortsetzung===undefined,'AUS: anmelden ohne Fortsetzungsantwort '+t.name);
+    check(a.success===true&&!!a.fortsetzung&&typeof a.fortsetzung.identity_id==='string','AUS (W12-C P22-T26): anmelden liefert fortsetzung IMMER bei Token-Anmeldung '+t.name);
     const l=await t.call('chat',{action:'koordinator_liste',project});
     check(l.success!==true&&l.koordinatoren===undefined,'AUS: koordinator_liste ist eine unbekannte Aktion '+t.name);
     const th=await t.call('thought',{action:'get',project,id:thoughtId,agent_id:legacy});
@@ -210,7 +210,7 @@ try{
     check(s.length===1&&s[0].zustand==='pending'&&s[0].ursprung_art==='legacy_register','genau ein pending Schattenprofil '+t.name);
     check(s[0]?.selbstangaben?.modell==='claude-test'&&s[0]?.selbstangaben?.name===id,'Selbstangaben erhalten '+t.name);
     check(s[0]?.ursprung_sitzung===await sitzungText(id),'Ursprungssitzung = agent_sessions.sitzung_seit '+t.name);
-    check(/^[a-f0-9]{64}$/.test(s[0]?.vorgesehener_token_hash||''),'vorgesehener Token liegt (gehasht) vor '+t.name);
+    check(s[0]?.vorgesehener_token_hash===null&&s[0]?.vorgesehener_token_verschluesselt===null,'Weg A (W12): Schatten traegt keinen Token '+t.name);
     check((await pool.query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2',[project,id])).rows.length===0
      &&(await pool.query('SELECT 1 FROM agent_identitaet_tokens t JOIN agent_identitaeten i ON i.id=t.identity_id WHERE i.project=$1 AND i.agent_id=$2',[project,id])).rows.length===0,
      'vor Bestaetigung weder Identitaet noch gueltiger Token '+t.name);
@@ -223,7 +223,8 @@ try{
    // Ausfall der Entwurfsablage: Standardanmeldung bleibt erfolgreich (K3B)
    delete process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL;
    const ohneKey=await stdio.call('chat',{action:'register',id:'ein-ohne-key',project,model:'claude-test'});
-   check(ohneKey.success===true&&(await schatten('ein-ohne-key')).length===0,'Ablage faellt aus: Anmeldung trotzdem erfolgreich');
+   // W12: kein Tresorschluessel mehr noetig; der Schatten entsteht unabhaengig davon.
+   check(ohneKey.success===true&&(await schatten('ein-ohne-key')).length===1,'ohne Tresorschluessel (entfaellt): Anmeldung erfolgreich, Schatten angelegt');
    process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL=SCHLUESSEL;
    // Direkter Core-Aufruf (alle Transporte) mit Legacy-Rueckgabeform
    const s=await C.registerChatAgent('ein-core',project,'claude-test','2026-01-01');
@@ -274,10 +275,14 @@ try{
    const fremdeSitzung=await rest.call('chat',{action:'register',id:'ein-stdio',project,model:'claude-test'});
    check(fremdeSitzung.success===true,'Wiederanmeldung gleichen Namens bleibt Legacy-Anmeldung');
    const keiner=hinweise(await stdio.call('thought',{action:'get',project,id:thoughtId,agent_id:'ein-stdio'}));
-   check(!keiner.some(x=>TOKEN.test(x)),'neue Sitzung gleichen Namens erhaelt den Token-Hinweis nicht');
+   // P22-T28 (Vertrag V6): TOKEN_BEREIT ist bis_erledigt und unabhaengig von ursprung_sitzung - auch die neue Sitzung gleichen Namens
+   // (Aufruf OHNE token unter agent_id mit Identitaet, Ausweis noch nicht benutzt) bekommt den Hinweis, bis der Ausweis zum ersten Mal benutzt wurde.
+   check(keiner.some(x=>TOKEN.test(x)),'V6: neue Sitzung gleichen Namens erhaelt den Ausweis-Hinweis (bis zur ersten Nutzung, ohne Bindung an die Ursprungssitzung)');
+   {const tk=keiner.find(x=>TOKEN.test(x))?.match(TOKEN)?.[0];if(tk)secrets.push(tk);}
    const h1=hinweise(await rest.call('thought',{action:'get',project,id:thoughtId,agent_id:'ein-rest'}));
    const z=h1.find(x=>TOKEN.test(x));
-   check(!!z&&/anmelden/.test(z)&&/portabel/.test(z),'Ursprungssitzung erhaelt Token + Anmeldehinweis');
+   // P22-T28 (V6): Text laut tokenBereitText: Ausweis + 'bei JEDEM Synapse-Aufruf' + chat(anmelden, token) statt des alten 'portabel'.
+   check(!!z&&/anmelden/.test(z)&&/JEDEM Synapse-Aufruf/.test(z),'Ursprungssitzung erhaelt Token + Anmeldehinweis');
    const tok=z?.match(TOKEN)?.[0];if(tok)secrets.push(tok);
    const h2=hinweise(await rest.call('thought',{action:'get',project,id:thoughtId,agent_id:'ein-rest'}));
    check(!h2.some(x=>TOKEN.test(x)),'Token-Hinweis nur einmal je Sitzung');

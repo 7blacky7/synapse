@@ -158,7 +158,7 @@ export function createServer(): Server {
   // P15-T33 E0.5: ist Jev GLOBAL abgeschaltet (admin jev_schalten), fehlt das Tool jev in der Liste.
   // Grenze: MCP-Clients holen die Liste meist nur beim Verbinden - wirksam ab der naechsten Sitzung.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: await gateToolListe(await beworbeneAgentTools(await filtereJevTool(ALLE_DEFINITIONEN)),
+    tools: await gateToolListe(await beworbeneAgentTools(await filtereJevTool(ALLE_DEFINITIONEN), { mitAusweis: !!process.env.SYNAPSE_AGENT_TOKEN }),
       { transportToken: process.env.SYNAPSE_AGENT_TOKEN || undefined }),
   }));
 

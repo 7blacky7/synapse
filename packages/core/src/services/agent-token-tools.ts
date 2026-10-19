@@ -16,27 +16,30 @@
  */
 import {
   leseTokenIdentitaetSchalter, stelleAgentTokenAus, meldeAgentMitTokenAn,
-  pruefeAgentToken, AgentIdentitaetFehler, hashAgentToken, type AgentTokenAnmeldung,
+  pruefeAgentToken, AgentIdentitaetFehler, type AgentTokenAnmeldung,
 } from './agent-identitaet.js';
 import { registerAgent } from './chat.js';
 import { getPool } from '../db/client.js';
 import { holeAgentOnboarding } from './agent-onboarding.js';
 import { pruefeUnbekannteParameter } from './unbekannte-parameter.js';
 import { logToolCall } from './tool-call-log.js';
-import { leseW1bSchalter } from './agent-profil-schalter.js';
+import { leseW1bSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv } from './agent-profil-schalter.js';
 import { feldBedeutung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder } from './agent-selbstfelder.js';
 import { entscheideToolAufruf, entscheideToolListe, istNichtSperrbareAktion, type TransportZugang } from './tool-gate.js';
-import { loeseToolZuschnitt } from './agent-profil-vertrag.js';
+import { loeseToolZuschnitt, TEXT_AGENT_TOKEN_FEHLT } from './agent-profil-vertrag.js';
 import { bereiteZuschnittSnapshotVor, wendeProfilLimitsAn } from './agent-zuschnitt.js';
 import { zaehle as zaehleZuschnitt } from './agent-zuschnitt-kontext.js';
 import {
-  anmeldungEnvAktiv, waehleRegisterWeg, legeErstenKoordinatorAusgabe, AnmeldungsFehler, fortsetzungFuerAntwort,
+  waehleRegisterWeg, legeErstenKoordinatorAusgabe, AnmeldungsFehler, fortsetzungFuerAntwort,
   koordinatorListeAntwort, merkeHerkunftsort,
 } from './agent-anmeldung.js';
+// W12-B (P22-T25, V5/V6): Lauf-Zustellbuchhaltung + Uebernahme-Bruecke; Hinweis-Registry an den wirksamen Schalter.
+import { sichereLaufFuerAufruf } from './agent-lauf.js';
+import { sichereW1bAnmeldungHinweise } from './agent-anmeldung.js';
 
 import { mitAgentAufrufKontext, leseAgentBezugModus, aktuellerAgentAufruf, agentPrincipalAusAnmeldung, type AgentAufrufKontext } from './agent-bezug.js';
 export const AGENT_TOKEN_PARAMETER = {
-  token: { type: 'string', description: 'Persoenlicher Synapse-Agentenausweis. chat(anmelden) erneuert den Kontext; Folgeaufrufe pruefen die Identitaet. Nie in Logs/Channels ablegen.' },
+  token: { type: 'string', description: 'Persoenlicher Synapse-Agentenausweis, bei JEDEM Aufruf mitgeben. chat(anmelden) erneuert den Kontext; Folgeaufrufe pruefen die Identitaet. Nie in Logs/Channels ablegen.' },
 };
 /** Nur Schemas erweitern; die ausgeschaltete Fachlogik bleibt unveraendert. */
 export function ergaenzeAgentTokenParameter(defs: Array<{ name?: string; inputSchema?: { properties?: Record<string, unknown> } }>): void {
@@ -47,17 +50,31 @@ export function ergaenzeAgentTokenParameter(defs: Array<{ name?: string; inputSc
     if (action?.enum && !action.enum.includes('koordinator_liste')) action.enum.push('koordinator_liste');
   }
 }
+/** P22-T27/T28 (S2): NUR in einer tools/list-Antwort auf eine Anfrage MIT Ausweis und bei wirksamem Ausweis-Kern ist project nicht Pflicht
+ * (Serverseitig wird ein Aufruf mit token ohne project immer angenommen, das Projekt kommt aus dem Ausweis). Ohne Ausweis bleibt das Schema wie t110.
+ * Fachparameter bleiben unveraendert, nur die Pflichtangabe und die Parameterbeschreibung aendern sich. */
+function ausweisProjektOptional(def: { inputSchema?: { properties?: Record<string, unknown>; required?: string[] } }): void {
+  const s = def.inputSchema;
+  if (!s?.required?.includes('project')) return;
+  s.required = s.required.filter(f => f !== 'project');
+  const p = s.properties?.project as { description?: string } | undefined;
+  if (p) p.description = `${p.description ?? 'Projekt-Name'} (mit token/Ausweis optional)`;
+}
 /** Nur die Werbung ist schalterabhaengig; der interne Annahmevertrag bleibt stabil.
  * Kopien verhindern, dass ein paralleler tools/list-Aufruf andere Verbindungen veraendert.
  */
-export async function beworbeneAgentTools<T extends { name: string; inputSchema?: { properties?: Record<string, unknown> } }>(defs: T[]): Promise<T[]> {
-  const tokenAn = (await leseTokenIdentitaetSchalter()).freigegeben;
-  const anmeldungAn = await anmeldungEnvAktiv();
-  if (tokenAn && anmeldungAn) return defs;
+export async function beworbeneAgentTools<T extends { name: string; inputSchema?: { properties?: Record<string, unknown> } }>(
+  defs: T[], opt?: { mitAusweis?: boolean; project?: string | null },
+): Promise<T[]> {
+  const tokenAn = await ausweisTokenAktiv(opt?.project ?? null);
+  const anmeldungAn = await ausweisAnmeldungAktiv(opt?.project ?? null);
+  // S2: project nur optional, wenn die Liste MIT Ausweis abgefragt wird UND der Ausweis-Kern wirksam ist.
+  const projektOptional = opt?.mitAusweis === true && (await leseAusweisKern(opt?.project ?? null)).aktiv;
   return defs.map(def => {
     const kopie = structuredClone(def);
     if (kopie.inputSchema?.properties) {
       if (!tokenAn) delete kopie.inputSchema.properties.token;
+      if (projektOptional) ausweisProjektOptional(kopie);
       if (kopie.name === 'chat') {
         const action = kopie.inputSchema.properties.action as { enum?: unknown[] } | undefined;
         if (action?.enum) {
@@ -80,7 +97,7 @@ export async function gateToolListe<T extends { name: string; inputSchema?: { pr
   const basis = entscheideToolListe(tools, { transport: e.transport });
   if (!e.transportToken || e.transport?.error) return basis;
   if (!(await leseW1bSchalter('durchsetzung')).freigegeben) return basis;
-  if (!(await leseTokenIdentitaetSchalter()).freigegeben) return basis;
+  if (!(await ausweisTokenAktiv(null, e.transportToken))) return basis;
   try {
     const p = await pruefeAgentToken(e.transportToken);
     const z = await loeseToolZuschnitt(agentPrincipalAusAnmeldung(p));
@@ -168,9 +185,13 @@ export async function bereiteAgentToolAufrufVor(
   optionen?: AgentToolAufrufOptionen,
 ): Promise<AgentToolKontext> {
   const bezug = aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
-  const schalter = await leseTokenIdentitaetSchalter();
   const args = { ...eingabe };
   const token = Object.hasOwn(eingabe, 'token') ? feld(eingabe, 'token') : transportToken;
+  // W12 V7: Lesepunkt = Ausweis-Kern ODER alter Einzelschalter (siehe ausweisTokenAktiv); Antwortform wie bisher.
+  const projektHinweis = feld(eingabe, 'project') ?? null;
+  const alterSchalter = await leseTokenIdentitaetSchalter();
+  const schalter: typeof alterSchalter = { ...alterSchalter, freigegeben: await ausweisTokenAktiv(projektHinweis, token) };
+  const anmeldungAn = (): Promise<boolean> => ausweisAnmeldungAktiv(projektHinweis);
 
   delete args.token;
   const basis: AgentToolKontext = { aktiv: schalter.freigegeben, args };
@@ -181,6 +202,8 @@ export async function bereiteAgentToolAufrufVor(
     }
     return basis;
   }
+  // W12-B (P22-T25): Hinweisquellen registrieren, sobald der wirksame Schalter EIN ist (registriert/gedrosselt: sofort zurueck).
+  await sichereW1bAnmeldungHinweise();
   const parameterBefund = erlaubteParameter ? pruefeUnbekannteParameter(tool, erlaubteParameter, eingabe) : null;
   if (parameterBefund) {
     basis.antwort = { success: false, error: 'unbekannter_parameter', tool,
@@ -188,7 +211,7 @@ export async function bereiteAgentToolAufrufVor(
     return basis;
   }
   // P22-T13 Paket B (K3C): tokenfreie Koordinatorliste (der Anmeldende ist noch kein Koordinator).
-  if (tool === 'chat' && action === 'koordinator_liste' && await anmeldungEnvAktiv()) {
+  if (tool === 'chat' && action === 'koordinator_liste' && await anmeldungAn()) {
     try { basis.antwort = await koordinatorListeAntwort(feld(args, 'project') ?? ''); }
     catch { basis.antwort = { success: false, error: 'koordinator_liste_fehlgeschlagen' }; }
     return basis;
@@ -251,7 +274,7 @@ export async function bereiteAgentToolAufrufVor(
         ausgabeToken = (await stelleAgentTokenAus({ project, name: id, modell_selbstauskunft: feld(args, 'model') }, undefined, bezug)).token;
       }
       const p = await meldeAgentMitTokenAn(ausgabeToken, project, bezug);
-      if (await anmeldungEnvAktiv()) await merkeHerkunftsort(p.lauf_id, herkunftVon(optionen));
+      if (await anmeldungAn()) await merkeHerkunftsort(p.lauf_id, herkunftVon(optionen));
       basis.principal = p;
       setzeAufrufPrincipal(p);
       bezeuge(args, 'agent_id', p.agent_id, erlaubteParameter); bezeuge(args, 'project', p.project, erlaubteParameter); bezeuge(args, 'role', p.rolle, erlaubteParameter);
@@ -266,7 +289,7 @@ export async function bereiteAgentToolAufrufVor(
     }
     if (!token) {
       basis.antwort = { success: false, error: 'agent_token_fehlt',
-        message: 'Mit chat(action:"register", id, project) erstmalig registrieren; danach token verwenden.' };
+        message: TEXT_AGENT_TOKEN_FEHLT };
       return basis;
     }
     // P22-T13 K16.1: Herkunft der Angaben. Vorbelegte Selbstfelder gehoeren nicht zum Konfliktvergleich.
@@ -284,8 +307,8 @@ export async function bereiteAgentToolAufrufVor(
     // Nur lesend ueber den Hash; keine Tokenwerte in der Antwort.
     if (strikt && Object.hasOwn(eingabe, 'token') && transportToken && token !== transportToken) {
       const r = await getPool().query<{ identity_id: string }>(
-        'SELECT identity_id FROM agent_identitaet_tokens WHERE token_hash = ANY($1::text[])',
-        [[hashAgentToken(token), hashAgentToken(transportToken)]]);
+        'SELECT identity_id FROM agent_identitaet_tokens WHERE token_offen = ANY($1::text[]) AND widerrufen_am IS NULL',
+        [[token, transportToken]]);
       if (r.rows.length < 2 || new Set(r.rows.map(z => z.identity_id)).size !== 1) {
         basis.antwort = { success: false, error: 'ausweis_konflikt',
           message: 'Mitgesendeter und konfigurierter Agentenausweis bezeichnen nicht dieselbe Identitaet; nichts wurde ausgefuehrt.' };
@@ -297,6 +320,9 @@ export async function bereiteAgentToolAufrufVor(
     const anmeldung = (tool === 'chat' && (action === 'anmelden' || action === 'register')) || sitzungsSignal;
     const p = anmeldung ? await meldeAgentMitTokenAn(token, feld(args, 'project'), bezug, selbst)
       : await pruefeAgentToken(token, feld(args, 'project'), bezug, selbst);
+    // W12-B (P22-T25, V5): aktiven Lauf + Identitaets-Sitzung sichern (erster Token-Aufruf ohne anmelden -> 'implizit',
+    // Legacy-Ursprung -> 'uebernahme' mit Bruecke). Nur bei wirksamem Ausweis-Kern; Fehler lassen den Aufruf unberuehrt.
+    await sichereLaufFuerAufruf(p, !anmeldung ? null : sitzungsSignal && args.sitzung === 'fortsetzung' ? 'fortsetzung' : 'anmelden');
     basis.principal = p;
     setzeAufrufPrincipal(p);
     basis.bestaetigt = { identity_id: p.identitaet.id, agent_id: p.agent_id, project: p.project, rolle: p.rolle,
@@ -339,7 +365,7 @@ export async function bereiteAgentToolAufrufVor(
       bindeVerschachtelteActorFelder(tool, action, args, p.agent_id, erlaubteParameter);
     }
     if (anmeldung) {
-      if (await anmeldungEnvAktiv()) await merkeHerkunftsort(p.lauf_id, herkunftVon(optionen));
+      if (await anmeldungAn()) await merkeHerkunftsort(p.lauf_id, herkunftVon(optionen));
       // Auch nach Inaktivitaet die Lebensphase erhalten: offene Broadcasts bleiben adressiert.
       if (bezug.modus === 'alt') await getPool().query("UPDATE agent_sessions SET status='active', sitzung_seit=clock_timestamp() WHERE id=$1 AND project=$2 AND identity_id=$3", [p.agent_id, p.project, p.identitaet.id]);
       const agentOnboarding = await holeAgentOnboarding({ project: p.project, agentId: p.agent_id,

@@ -318,6 +318,7 @@ export async function fuehreInternAus(
           moegliche: INTERN_SCHALTER,
           schalter: await alleSchalter(),
           token_identitaet: await (await import('./agent-identitaet.js')).leseTokenIdentitaetSchalter(),
+          ausweis_kern: await (await import('./agent-profil-schalter.js')).leseAusweisKern(),
           agent_bezug: await (await import('./agent-bezug.js')).leseAgentBezugModus(),
         };
       case 'ollama_status':

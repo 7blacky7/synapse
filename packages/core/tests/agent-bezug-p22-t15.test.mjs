@@ -63,6 +63,8 @@ try{
  const {AGENT_BEZUG_SCHEMA_SQL:s112}=await load('db/agent-bezug-schema');
  assert.equal(readFileSync(new URL('../src/db/schema-sql/112_agent_bezug.sql',import.meta.url),'utf8').trim(),s112.trim());
  await q(s111);await q(s112);await q(s111);await q(s112);
+ // W12 (P22-T24): Schema 114 (token_offen) fuer die Token-Ausstellung.
+ const {AGENT_AUSWEIS_SCHEMA_SQL:s114}=await load('db/agent-ausweis-schema');await q(s114);await q(s114);
  assert.equal((await q("SELECT count(*)::int n FROM information_schema.tables WHERE table_schema=$1 AND table_name ~ '^agent_identitaet_'",[schema])).rows[0].n,20);
  pass('111+112 zweimal idempotent; SQL-Spiegel112 exakt; nur eigener Suchpfad');
  const A=await load('services/agent-bezug'),S=await load('services/agent-identitaet');
@@ -312,8 +314,10 @@ try{
  for(const table of ['agent_identitaeten','agent_identitaet_sitzungen','agent_identitaet_skill_sections','agent_runtime_sessions','agent_artifacts']){
   assert(dumps.some(x=>x.path.includes('_'+table+'_')),table+' muss in Backup enthalten sein');
  }
- assert(!dumps.some(x=>x.data.includes(one.token)||x.data.includes(two.token)));
- pass('Backup erfasst ID- und Runtime-Zustaende, keine Klartextausweise; ausschliesslich FS-/Qdrant-Fakes');
+ // W12 (P22-T24, V1): Ausweise liegen offen in agent_identitaet_tokens und gehoeren (fuer eine nutzbare Wiederherstellung) in deren Backup-Tabelle; in KEINER anderen Sicherungsdatei.
+ assert(!dumps.some(x=>!x.path.includes('_agent_identitaet_tokens_')&&(x.data.includes(one.token)||x.data.includes(two.token))));
+ assert(dumps.some(x=>x.path.includes('_agent_identitaet_tokens_')&&x.data.includes(one.token)));
+ pass('Backup erfasst ID- und Runtime-Zustaende; Ausweis nur in der Token-Tabelle (W12 offen); ausschliesslich FS-/Qdrant-Fakes');
 
  const DEL=await load('services/projekt-loeschen');
  // Der isolierte Testsuchpfad bildet public ab; nur Katalogabfragen werden auf diesen Scope gerichtet.

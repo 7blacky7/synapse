@@ -7,7 +7,7 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { aktuellerAgentPrincipal } from './agent-bezug.js';
 import { aktuelleUserHerkunft } from './user-herkunft.js';
-import type { W1bAkteur } from './agent-profil-vertrag.js';
+import type { W1bAkteur, AusweisAkteur } from './agent-profil-vertrag.js';
 
 export type ProfilDb = Pick<PoolClient, 'query'>;
 
@@ -54,7 +54,7 @@ export function pflichtText(wert: unknown, code: string, min = 5, max = 1000): s
  * K7/K10: Setzen/Aendern braucht einen dokumentierten User-Auftrag. Der User selbst darf den Wortlaut
  * weglassen (die authentifizierte Handlung ist der Auftrag); ein Koordinator nie.
  */
-export function userAuftragFuer(akteur: W1bAkteur, wert: unknown): string {
+export function userAuftragFuer(akteur: AusweisAkteur, wert: unknown): string {
   const leer = wert === undefined || wert === null || (typeof wert === 'string' && !wert.trim());
   if (leer && akteur.art === 'user') return USER_AUFTRAG_STANDARD;
   return pflichtText(wert, 'user_auftrag_fehlt');

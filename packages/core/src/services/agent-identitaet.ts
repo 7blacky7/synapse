@@ -1,6 +1,11 @@
 /**
  * P22-T10: Dauerhafte Agenten-Identitaet, projektgebundener Ausweis und Kontext-Epoch.
- * Nur API/Core: keine lokalen Credentials, keine Token in Log-/Auditdaten.
+ * W12 (P22-T24, Vertrag 27acb98b V1/V2): Der Ausweis ist eine Identifikation INNERHALB von Synapse, kein
+ * Sicherheitssystem (Bearer bleibt Pflicht). Er wird OFFEN gespeichert (agent_identitaet_tokens.token_offen,
+ * unique, Lookup NUR darueber); Hash/Tresor/Start-Rotation entfallen. Je Identitaet hoechstens EIN nicht
+ * geloeschter Ausweis. Weg B: 'ausgestellt' mit Erstnutzungsfrist; die ERSTE erfolgreiche Pruefung
+ * (anmelden oder jeder Toolaufruf mit token) ist die Bestaetigung (gueltig_bis=NULL, dauerhaft).
+ * Der Wert steht nie in Log-/Auditdaten (Audit nennt token_id/token_praefix).
  * Aufrufer mit system-Recht sind ausschliesslich bereits authentifizierte API-/Daemonadapter;
  * niemals ein Tool-Argument als solchen Principal uebernehmen.
  */
@@ -8,10 +13,10 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
+import { ausweisTokenAktiv } from './agent-profil-schalter.js';
 import { leseAgentBezugModus, aktuellerAgentAufruf, type AgentBezugStand } from './agent-bezug.js';
 import { beginneIdentitaetsSitzung } from './agent-identitaet-sitzungen.js';
 import { selbstKonflikte, type Selbstangaben } from './agent-selbstfelder.js';
-import { speichereTokenChiffre } from './agent-token-abruf.js';
 
 export interface TokenIdentitaetSchalter {
   freigegeben: boolean;
@@ -74,11 +79,18 @@ export interface AgentTokenAnmeldung {
   lauf_id: string | null;
 }
 export interface AgentTokenAusgabe {
-  /** Einmaliger Rueckgabewert; Adapter darf ihn weder protokollieren noch persistieren. */
+  /** Direkte Antwort an den berechtigten Aufrufer; Adapter darf den Wert weder protokollieren noch persistieren. */
   token: string;
   token_id: string;
   token_praefix: string;
   identitaet: AgentIdentitaet;
+  /** W12: true = neu ausgestellt, false = vorhandener gueltiger Ausweis wiederverwendet (Respawn). */
+  neu?: boolean;
+  /** W12: die Identitaet wurde mit diesem Aufruf angelegt. */
+  neu_angelegt?: boolean;
+  /** W12: Ende der Erstnutzungsfrist (ISO) oder null = dauerhaft aktiv. */
+  gueltig_bis?: string | null;
+  ausweis_weg?: string | null;
 }
 export interface AgentTokenAusstellen {
   project: string;
@@ -87,28 +99,38 @@ export interface AgentTokenAusstellen {
   /** Nur bestaetigte Principal-Rechte duerfen diese Werte setzen. */
   rolle?: string;
   modell_bestaetigt?: string;
-  /** Bestehende Identitaet: weiteren Ausweis ausstellen statt neue Instanz. */
+  /** Bestehende Identitaet: deren gueltigen Ausweis liefern (Respawn) bzw. nach Verfall/Loeschen einen neuen ausstellen. */
   identity_id?: string;
-  /** Start-Ausweis: eigene Rotation pro Startweg; nie Haupt-Ausweise ersetzen. */
+  /** @deprecated W12 (V2): Start-Ausweise und Start-Rotation entfallen; wirkungslos. */
   start_art?: string;
   grund?: string;
+  /** W12 Weg B: Erstnutzungsfrist (SYNAPSE_AGENT_START_TOKEN_TTL_MIN, Standard 10 min) statt sofort aktiv. */
+  erstnutzung?: boolean;
+  /** W12: Herkunft des Ausweises (Anzeige/Debug); Standard 'register' bzw. 'neu_ausgestellt'. */
+  ausweis_weg?: string;
+  /** W12: laeuft in der Anlage-Transaktion nach dem Identitaets-INSERT und vor dem Ausweis (nur bei neuer Identitaet). */
+  nach_anlage?: (c: PoolClient, identitaet: AgentIdentitaet) => Promise<void>;
 }
 /** Vertrauensgrenze: system NUR aus authentifiziertem Transport, identity_id aus Tokenpruefung. */
 export interface AgentIdentitaetPrincipal {
   identity_id?: string;
   system?: 'user' | 'daemon';
+  /** W12 (Koordinator-Vorgabe 27920): Legacy-Koordinator ohne Ausweis (Erkennung wie P22-T18, nur Namensmuster/Rolle). */
+  legacy_koordinator?: string;
 }
 const SPALTEN = `id, project, name, instanz_nr, agent_id, rolle, modell_bestaetigt,
   modell_selbstauskunft, profil, startrezept, status, erstellt_von, erstellt_am,
   zuletzt_aktiv, context_epoch`;
+/** Nur noch fuer Altzeilen/Fremdnutzer (z. B. Tests); die Identifikation laeuft nicht mehr ueber den Hash. */
 export function hashAgentToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 function text(wert: string): boolean {
   return typeof wert === 'string' && wert.trim().length > 0 && wert.length <= 256;
 }
-async function freigabe(): Promise<void> {
-  if (!(await leseTokenIdentitaetSchalter()).freigegeben) throw new AgentIdentitaetFehler('token_identitaet_aus');
+/** W12 V7: Lesestelle ist der Ausweis-Kern (ein Produkt-Schalter); mit Ausweis ohne Projekt wird dessen Projekt gelesen. */
+async function freigabe(project?: string | null, token?: string): Promise<void> {
+  if (!(await ausweisTokenAktiv(project, token))) throw new AgentIdentitaetFehler('token_identitaet_aus');
 }
 async function transaktion<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
   const c = await getPool().connect();
@@ -121,13 +143,17 @@ async function transaktion<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
     await c.query('ROLLBACK').catch(() => undefined);
     // DB-Fehler koennen Werte enthalten; nicht an Tool-/Logausgaben weiterreichen.
     if (e instanceof AgentIdentitaetFehler) throw e;
+    if ((e as { code?: string } | null)?.code === '23505') throw new AgentIdentitaetFehler('ausweis_existiert');
     throw new AgentIdentitaetFehler('identitaet_speicher_fehler');
   } finally { c.release(); }
 }
+/** W12: gleiche Transaktionshuelle (Fehlerabbildung) fuer die Ausweis-Dienste. */
+export const mitIdentitaetTransaktion = transaktion;
 async function berechtigung(c: PoolClient, project: string, p?: AgentIdentitaetPrincipal): Promise<{ wer: string; verwaltung: boolean; daemon: boolean }> {
   if (p?.system === 'user' || p?.system === 'daemon') {
     return { wer: p.system, verwaltung: p.system === 'user', daemon: p.system === 'daemon' };
   }
+  if (p?.legacy_koordinator) return { wer: 'legacy:' + p.legacy_koordinator, verwaltung: true, daemon: false };
   if (!p?.identity_id) return { wer: 'erstanmeldung', verwaltung: false, daemon: false };
   const r = await c.query<{ rolle: string }>(
     "SELECT rolle FROM agent_identitaeten WHERE id=$1 AND project=$2 AND status='aktiv' FOR SHARE",
@@ -136,14 +162,70 @@ async function berechtigung(c: PoolClient, project: string, p?: AgentIdentitaetP
   if (!r.rows[0]) throw new AgentIdentitaetFehler('principal_ungueltig');
   return { wer: p.identity_id, verwaltung: r.rows[0].rolle === 'koordinator', daemon: false };
 }
-async function audit(c: PoolClient, id: string, wer: string, aktion: string, alt: unknown, neu: unknown, grund?: string): Promise<void> {
+async function audit(c: Pick<PoolClient, 'query'>, id: string, wer: string, aktion: string, alt: unknown, neu: unknown, grund?: string): Promise<void> {
   await c.query(`INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id)
     VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,(SELECT id FROM agent_identitaeten WHERE id=$2))`, [id, wer, aktion, JSON.stringify(alt), JSON.stringify(neu), grund ?? null]);
+}
+/** W12: Audit-Zeile fuer die Ausweis-Dienste (ohne Tokenwert!). */
+export const schreibeIdentitaetAudit = audit;
+
+// ---- W12 Ausweis-Ablage (V1/V2) ----------------------------------------------------------------
+/** Der (hoechstens eine) nicht geloeschte offene Ausweis einer Identitaet. gueltig = ausgestellt innerhalb der Frist oder aktiv. */
+export interface AusweisZeile {
+  id: string;
+  token: string;
+  token_praefix: string;
+  gueltig_bis: Date | null;
+  zuletzt_benutzt: Date | null;
+  erstellt_am: Date;
+  ausweis_weg: string | null;
+  gueltig: boolean;
+}
+export async function holeAusweis(c: Pick<PoolClient, 'query'>, identityId: string, sperren = false): Promise<AusweisZeile | null> {
+  const r = await c.query<AusweisZeile>(
+    `SELECT id, token_offen AS token, token_praefix, gueltig_bis, zuletzt_benutzt, erstellt_am, ausweis_weg,
+       (gueltig_bis IS NULL OR gueltig_bis > NOW()) AS gueltig
+     FROM agent_identitaet_tokens
+     WHERE identity_id=$1 AND widerrufen_am IS NULL AND token_offen IS NOT NULL${sperren ? ' FOR UPDATE' : ''}`, [identityId]);
+  return r.rows[0] ?? null;
+}
+/** Erstnutzungsfrist Weg B; identisch zu erstnutzungFristMs() im Vertrag (hier lokal, um keinen Importzyklus zu erzeugen). */
+function erstnutzungFristMsLokal(): number {
+  const m = Number(process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN);
+  return (Number.isFinite(m) && m > 0 ? m : 10) * 60_000;
+}
+/**
+ * Genau EIN Ausweis je Identitaet: ein gueltiger vorhandener wird zurueckgegeben (neu:false). Ein verfallener,
+ * nie benutzter wird zuerst geloescht (Grund erstnutzung_verfallen). Sonst wird ein neuer ausgestellt;
+ * erstnutzung:true = 'ausgestellt' mit Frist, sonst sofort 'aktiv'. Die Identitaetszeile muss der Aufrufer gesperrt haben.
+ */
+export async function stelleOderHoleAusweisTx(
+  c: PoolClient, identitaet: { id: string },
+  o: { weg: string; erstnutzung: boolean; wer: string; grund?: string },
+): Promise<{ zeile: AusweisZeile; neu: boolean }> {
+  const vorhanden = await holeAusweis(c, identitaet.id, true);
+  if (vorhanden) {
+    if (vorhanden.gueltig) return { zeile: vorhanden, neu: false };
+    await c.query(`UPDATE agent_identitaet_tokens SET widerrufen_am=NOW(), widerrufen_von=$2,
+        widerrufen_von_identity_id=(SELECT id FROM agent_identitaeten WHERE id=$2), widerrufen_grund='erstnutzung_verfallen' WHERE id=$1`,
+      [vorhanden.id, o.wer]);
+    await audit(c, identitaet.id, o.wer, 'token_widerrufen', { token_id: vorhanden.id, widerrufen: false }, { token_id: vorhanden.id, widerrufen: true }, 'erstnutzung_verfallen');
+  }
+  const token = 'sai_' + randomBytes(32).toString('hex');
+  const tokenId = randomUUID();
+  const praefix = token.slice(0, 12);
+  await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_offen, token_praefix, ausweis_weg, gueltig_bis)
+    VALUES ($1,$2,$3,$4,$5, CASE WHEN $6::boolean THEN NOW() + ($7::double precision * INTERVAL '1 millisecond') ELSE NULL END)`,
+    [tokenId, identitaet.id, token, praefix, o.weg, o.erstnutzung, erstnutzungFristMsLokal()]);
+  await audit(c, identitaet.id, o.wer, 'token_ausstellen', null, { token_id: tokenId, token_praefix: praefix, ausweis_weg: o.weg, erstnutzung: o.erstnutzung }, o.grund);
+  const zeile = await holeAusweis(c, identitaet.id);
+  if (!zeile) throw new AgentIdentitaetFehler('identitaet_speicher_fehler');
+  return { zeile, neu: true };
 }
 
 /** User27698: exakte Koordinatornamen duerfen sich selbst registrieren; sonst subagent. */
 export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: AgentIdentitaetPrincipal, bezugsStand?: AgentBezugStand): Promise<AgentTokenAusgabe> {
-  await freigabe();
+  await freigabe(typeof e.project === 'string' ? e.project : null);
   const bezug = bezugsStand ?? aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   if (!text(e.project) || !text(e.name) || e.name.includes('#')) throw new AgentIdentitaetFehler('identitaet_parameter_ungueltig');
   const koordinatorSelbst = /^(koordinator|coordinator)$/i.test(e.name.trim());
@@ -155,10 +237,8 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
     if (!privilegiert && (e.identity_id || (e.rolle && e.rolle !== (koordinatorSelbst ? 'koordinator' : 'subagent')) || e.modell_bestaetigt)) {
       throw new AgentIdentitaetFehler('identitaet_recht_fehlt');
     }
-    if (e.start_art !== undefined && (!privilegiert || !e.identity_id || !text(e.start_art))) {
-      throw new AgentIdentitaetFehler('start_ausweis_recht_fehlt');
-    }
     let identitaet: AgentIdentitaet;
+    let neuAngelegt = false;
     if (e.identity_id) {
       const r = await c.query<AgentIdentitaet>(
         `SELECT ${SPALTEN} FROM agent_identitaeten WHERE id=$1 AND project=$2 AND status='aktiv' FOR UPDATE`,
@@ -193,57 +273,35 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
           privilegiert ? (e.modell_bestaetigt ?? null) : null, e.modell_selbstauskunft ?? null, recht.wer],
       );
       identitaet = r.rows[0];
+      neuAngelegt = true;
       await audit(c, id, recht.wer, 'ausstellen', null, { project: e.project, name, instanz_nr: instanz, rolle: identitaet.rolle }, e.grund);
+      if (e.nach_anlage) {
+        await e.nach_anlage(c, identitaet);
+        const frisch = await c.query<AgentIdentitaet>(`SELECT ${SPALTEN} FROM agent_identitaeten WHERE id=$1`, [id]);
+        identitaet = frisch.rows[0];
+      }
     }
-    // Wie auth.ts: 32 Zufallsbytes und SHA-256. Keine Abhaengigkeit core -> rest-api.
-    const token = 'sai_' + randomBytes(32).toString('hex');
-    const tokenId = randomUUID();
-    const praefix = token.slice(0, 12);
-    if (e.start_art) {
-      // Maximal neuer und unmittelbar vorheriger Start-Ausweis waehrend 60s Uebergang.
-      // Die Identitaetszeile ist bereits gesperrt; parallele Starts serialisieren hier.
-      await c.query(`WITH vorher AS (
-          SELECT id, row_number() OVER (ORDER BY start_uebergang ASC, erstellt_am DESC, id DESC) AS nr
-          FROM agent_identitaet_tokens WHERE identity_id=$1 AND start_art=$2
-            AND widerrufen_am IS NULL AND (gueltig_bis IS NULL OR gueltig_bis>NOW())
-        ), aenderung AS (
-          UPDATE agent_identitaet_tokens t SET
-            start_uebergang=true,
-            gueltig_bis=CASE WHEN v.nr=1 THEN LEAST(COALESCE(t.gueltig_bis,NOW()+INTERVAL '60 seconds'),NOW()+INTERVAL '60 seconds') ELSE t.gueltig_bis END,
-            widerrufen_am=CASE WHEN v.nr>1 THEN NOW() ELSE t.widerrufen_am END,
-            widerrufen_von=CASE WHEN v.nr>1 THEN $3 ELSE t.widerrufen_von END,
-            widerrufen_von_identity_id=CASE WHEN v.nr>1 THEN (SELECT id FROM agent_identitaeten WHERE id=$3) ELSE t.widerrufen_von_identity_id END,
-            widerrufen_grund=CASE WHEN v.nr>1 THEN 'start_rotation' ELSE t.widerrufen_grund END
-          FROM vorher v WHERE t.id=v.id RETURNING t.id, t.gueltig_bis, t.widerrufen_am
-        ) INSERT INTO agent_identitaet_audit (identity_id,wer,aktion,alt,neu,grund,actor_identity_id)
-          SELECT $1,$3,'start_rotation',jsonb_build_object('token_id',id),
-            jsonb_build_object('gueltig_bis',gueltig_bis,'widerrufen_am',widerrufen_am),$4,(SELECT id FROM agent_identitaeten WHERE id=$3) FROM aenderung`,
-        [identitaet.id,e.start_art,recht.wer,e.grund ?? null]);
-    }
-    // Nur der ungenutzte Start-Ausweis hat eine Bootstrap-Hoechstfrist; Hauptausweise nicht.
-    const minuten = Number(process.env.SYNAPSE_AGENT_START_TOKEN_TTL_MIN);
-    const startTtlMs = (Number.isFinite(minuten) && minuten > 0 ? minuten : 10) * 60_000;
-    const gueltigBis = e.start_art ? new Date(Date.now() + startTtlMs) : null;
-    await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_hash, token_praefix, start_art, gueltig_bis)
-      VALUES ($1,$2,$3,$4,$5,$6)`, [tokenId, identitaet.id, hashAgentToken(token), praefix, e.start_art ?? null, gueltigBis]);
-    // P22-T13 D (02845fc2): abrufbare Ablage nur fuer Hauptausweise und nur bei konfiguriertem API-Schluessel.
-    if (!e.start_art) await speichereTokenChiffre(c, tokenId, token);
-    await audit(c, identitaet.id, recht.wer, 'token_ausstellen', null, { token_id: tokenId, token_praefix: praefix }, e.grund);
-    return { token, token_id: tokenId, token_praefix: praefix, identitaet };
+    // V2: je Identitaet genau EIN Ausweis. Vorhandener gueltiger -> derselbe (Respawn/Neustart/Daemon-Start).
+    const { zeile, neu } = await stelleOderHoleAusweisTx(c, identitaet, {
+      weg: e.ausweis_weg ?? (neuAngelegt ? 'register' : 'neu_ausgestellt'),
+      erstnutzung: e.erstnutzung === true, wer: recht.wer, grund: e.grund,
+    });
+    return { token: zeile.token, token_id: zeile.id, token_praefix: zeile.token_praefix, identitaet, neu, neu_angelegt: neuAngelegt,
+      gueltig_bis: zeile.gueltig_bis ? zeile.gueltig_bis.toISOString() : null, ausweis_weg: zeile.ausweis_weg };
   });
 }
 
 /** Validiert den Ausweis bei JEDEM Aufruf; erhoeht nur bei anmelden die Epoch. */
 async function tokenIdentitaet(token: string, project: string | undefined, anmelden: boolean, bezugsStand?: AgentBezugStand, selbst?: Selbstangaben): Promise<AgentTokenAnmeldung> {
-  await freigabe();
+  await freigabe(project ?? null, token);
   const bezug = bezugsStand ?? aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   if (typeof token !== 'string' || !/^sai_[a-f0-9]{64}$/.test(token)) throw new AgentIdentitaetFehler('agent_token_ungueltig');
   return transaktion(async (c) => {
     // Gleiche Reihenfolge wie Widerruf/Deaktivierung: erst Identitaet, dann Ausweis.
     const r = await c.query<AgentIdentitaet>(
       `SELECT ${SPALTEN.split(',').map(s => 'i.' + s.trim()).join(',')}
-       FROM agent_identitaeten i WHERE i.id=(SELECT identity_id FROM agent_identitaet_tokens WHERE token_hash=$1)
-       FOR UPDATE`, [hashAgentToken(token)],
+       FROM agent_identitaeten i WHERE i.id=(SELECT identity_id FROM agent_identitaet_tokens WHERE token_offen=$1)
+       FOR UPDATE`, [token],
     );
     let i = r.rows[0];
     if (!i || i.status !== 'aktiv') throw new AgentIdentitaetFehler('agent_token_ungueltig');
@@ -283,27 +341,16 @@ async function tokenIdentitaet(token: string, project: string | undefined, anmel
       if (altbestand.rows.length) throw new AgentIdentitaetFehler('agent_legacy_zustand_bereits_gebunden');
 
     }
-    // Die Start-Hoechstfrist gilt nur bis zur erfolgreichen Erstanmeldung des aktuellen
-    // Ausweises. Danach gueltig_bis=NULL: wiederverwendbar bis Widerruf/Deaktivierung
-    // oder naechster Startrotation. Ein alter Uebergangsausweis behaelt seine 60s-Frist.
-    const t = await c.query(
-      `UPDATE agent_identitaet_tokens SET zuletzt_benutzt=NOW(),
-         gueltig_bis=CASE WHEN $2::boolean AND start_art IS NOT NULL AND NOT start_uebergang THEN NULL ELSE gueltig_bis END
-       WHERE token_hash=$1 AND widerrufen_am IS NULL AND (gueltig_bis IS NULL OR gueltig_bis>NOW())
-       RETURNING id, start_art, gueltig_bis, start_uebergang`, [hashAgentToken(token),anmelden],
-    );
+    // W12 V2: Der Ausweis muss ausgestellt (innerhalb der Erstnutzungsfrist) oder aktiv sein. Die ERSTE erfolgreiche
+    // Pruefung (anmelden oder jeder Toolaufruf) ist die Bestaetigung: gueltig_bis=NULL, dauerhaft bis Loeschen.
+    const t = await c.query<{ id: string; gueltig_bis: Date | null }>(
+      `SELECT id, gueltig_bis FROM agent_identitaet_tokens
+        WHERE token_offen=$1 AND identity_id=$2 AND widerrufen_am IS NULL AND (gueltig_bis IS NULL OR gueltig_bis>NOW()) FOR UPDATE`,
+      [token, i.id]);
     if (!t.rows[0]) throw new AgentIdentitaetFehler('agent_token_ungueltig');
-    // Nur der neue Start-Ausweis beendet den Uebergang. Ein alter Prozess darf
-    // durch eine Anmeldung innerhalb der Kulanz den neuen Ausweis nicht widerrufen.
-    if (anmelden && t.rows[0].start_art && !t.rows[0].start_uebergang) {
-      await c.query(`WITH aenderung AS (
-        UPDATE agent_identitaet_tokens SET widerrufen_am=NOW(),
-          widerrufen_von=$1, widerrufen_von_identity_id=$1, widerrufen_grund='start_angemeldet'
-        WHERE identity_id=$1 AND start_art=$2 AND id<>$3 AND widerrufen_am IS NULL RETURNING id
-      ) INSERT INTO agent_identitaet_audit (identity_id,wer,aktion,alt,neu,grund,actor_identity_id)
-        SELECT $1,$1,'start_rotation',jsonb_build_object('token_id',id),
-          '{"widerrufen":true}'::jsonb,'start_angemeldet',$1 FROM aenderung`,
-        [i.id,t.rows[0].start_art,t.rows[0].id]);
+    await c.query('UPDATE agent_identitaet_tokens SET zuletzt_benutzt=NOW(), gueltig_bis=NULL WHERE id=$1', [t.rows[0].id]);
+    if (t.rows[0].gueltig_bis !== null) {
+      await audit(c, i.id, i.id, 'ausweis_bestaetigt', { token_id: t.rows[0].id, gueltig_bis: t.rows[0].gueltig_bis }, { token_id: t.rows[0].id, gueltig_bis: null });
     }
     const neu = await c.query<AgentIdentitaet>(
       `UPDATE agent_identitaeten SET zuletzt_aktiv=NOW(), context_epoch=context_epoch+$2
@@ -355,7 +402,7 @@ export async function pruefeAgentToken(token: string, project?: string, bezug?: 
   return tokenIdentitaet(token, project, false, bezug, selbst);
 }
 export async function widerrufeAgentToken(project: string, tokenId: string, principal: AgentIdentitaetPrincipal, grund: string): Promise<void> {
-  await freigabe();
+  await freigabe(project);
   if (!text(grund)) throw new AgentIdentitaetFehler('grund_fehlt');
   await transaktion(async (c) => {
     const recht = await berechtigung(c, project, principal);
@@ -370,7 +417,7 @@ export async function widerrufeAgentToken(project: string, tokenId: string, prin
 }
 /** Ausschliesslich nach User-Auftrag im Adapter; Koordinator/User-Recht wird hier erneut geprueft. */
 export async function deaktiviereAgentIdentitaet(project: string, identityId: string, principal: AgentIdentitaetPrincipal, grund: string): Promise<void> {
-  await freigabe();
+  await freigabe(project);
   if (!text(grund)) throw new AgentIdentitaetFehler('grund_fehlt');
   await transaktion(async (c) => {
     const recht = await berechtigung(c, project, principal);

@@ -66,9 +66,9 @@ function norm(v){
 // Neue admin-Aktionen/-Parameter sind ADDITIV; die Golden-Projektion entfernt genau diese Namen (Muster wie admin-kontextprofil-p7-t42).
 const W1B_AKTIONEN=['profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
  'typ_liste','typ_anlegen','typ_aendern','typ_revision_lesen','profil_aendern','profil_historie','profil_rollback','persona_liste','persona_versionen','persona_anlegen','persona_neue_version',
- 'persona_zuweisen','persona_entfernen','token_abrufen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken'];
+ 'persona_zuweisen','persona_entfernen','agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken'];
 const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','zustand','erwartete_revision','ziel_revision','korrektur','profil_patch','typ_id','typ_schluessel','typ_inhalt',
- 'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','bindung_task_id','bindung_art','bindung_identity_ids'];
+ 'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids'];
 const projiziere=t=>t.name!=='admin'?t:{...t,inputSchema:{...t.inputSchema,properties:Object.fromEntries(Object.entries(t.inputSchema.properties)
  .filter(([k])=>!W1B_PARAMETER.includes(k)).map(([k,v])=>[k,k==='action'?{...v,enum:v.enum.filter(a=>!W1B_AKTIONEN.includes(a))}:v]))}};
 
@@ -149,7 +149,7 @@ try{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
  // t109-Basis hat kein Schema 113; der neue Stand bekommt es (zweimal: idempotent).
- for(const file of goldenOut&&process.env.P22_T13_ROOT?['agent-identitaet-schema','agent-bezug-schema']:['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema']){
+ for(const file of goldenOut&&process.env.P22_T13_ROOT?['agent-identitaet-schema','agent-bezug-schema']:['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
@@ -166,7 +166,8 @@ try{
   const ident=async(id,project,name,rolle,von='test')=>{
    await pool.query('INSERT INTO agent_identitaeten(id,project,name,instanz_nr,agent_id,rolle,erstellt_von) VALUES($1,$2,$3,1,$3,$4,$5)',[id,project,name,rolle,von]);return id;};
   const akt=(id,project,rolle)=>({art:'identitaet',principal:{art:'identity',project,agent_id:id,identity_id:id,rolle,modell:null,context_epoch:1,lauf_id:null}});
-  const alleAn=async(aktiv=true)=>C.setzeProfilProduktSchalter({ebene:'global',funktion:'alle',aktiv,grund:'test p22 D'},{system:'user'});
+  // P22-T31 Punkt 3: 'alle' EIN unterliegt der Modus-Pruefung (agent_bezug_modus beide) - nur fuer diesen Aufruf.
+  const alleAn=async(aktiv=true)=>{const m=process.env.SYNAPSE_AGENT_BEZUG_MODUS;process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide';try{return await C.setzeProfilProduktSchalter({ebene:'global',funktion:'alle',aktiv,grund:'test p22 D'},{system:'user'});}finally{if(m===undefined)delete process.env.SYNAPSE_AGENT_BEZUG_MODUS;else process.env.SYNAPSE_AGENT_BEZUG_MODUS=m;}};
   await ident('d-k',P,'d-koord','koordinator');await ident('d-k2',P,'d-koord2','koordinator');await ident('d-s',P,'d-sub','subagent');
   await ident('d-kq',Q,'d-koord-q','koordinator');await ident('d-sq',Q,'d-sub-q','subagent');
   const K=akt('d-k',P,'koordinator'),K2=akt('d-k2',P,'koordinator'),S=akt('d-s',P,'subagent'),KQ=akt('d-kq',Q,'koordinator');
@@ -236,27 +237,24 @@ try{
    check((await pool.query('SELECT count(*)::int n FROM agent_persona_versionen WHERE vorlage_id=$1',[vorlageId])).rows[0].n===2,'Bibliothek bleibt nach Entfernen unveraendert');
   });
 
-  await section('Tokenabruf (Tresor, C3)',async()=>{
+  await section('Ausweis-Abruf (offen, W12 V1/V4; frueher Tresor C3)',async()=>{
    await alleAn(true);
-   process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL=TEST_SCHLUESSEL;
+   // W12 V7: Abruf haengt am Ausweis-Kern (Modus beide + Altschalter token_identitaet/w1b_anmeldung + Schalter schattenprofile), nicht mehr an token_abruf/Tresor.
+   process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide';process.env.SYNAPSE_W1B_ANMELDUNG='1';
    const k=await C.stelleAgentTokenAus({project:P,name:'koordinator'},{system:'user'});secrets.push(k.token);
    const sub=await C.stelleAgentTokenAus({project:P,name:'tok-sub'},{system:'user'});secrets.push(sub.token);
    const sub2=await C.stelleAgentTokenAus({project:P,name:'tok-sub2'},{system:'user'});secrets.push(sub2.token);
    const fremd=await C.stelleAgentTokenAus({project:Q,name:'tok-fremd'},{system:'user'});secrets.push(fremd.token);
-   delete process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL;
-   const ohne=await C.stelleAgentTokenAus({project:P,name:'tok-ohne-schluessel'},{system:'user'});secrets.push(ohne.token);
-   process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL=TEST_SCHLUESSEL;
-   const kz=await C.stelleAgentTokenAus({project:P,name:'tok-start',identity_id:sub.identitaet.id,start_art:'cli'},{system:'user'});secrets.push(kz.token);
-   const spalte=async(id)=>(await pool.query('SELECT token_verschluesselt c,token_schluessel_id sid FROM agent_identitaet_tokens WHERE id=$1',[id])).rows[0];
+   const kz=await C.stelleAgentTokenAus({project:P,name:'tok-start',identity_id:sub.identitaet.id,start_art:'cli'},{system:'user'});
+   const spalte=async(id)=>(await pool.query('SELECT token_offen o,token_hash h,token_verschluesselt c FROM agent_identitaet_tokens WHERE id=$1',[id])).rows[0];
    const sk=await spalte(sub.token_id);
-   check(sk.c&&sk.c.startsWith('v1:')&&!sk.c.includes(sub.token)&&/^[a-f0-9]{16}$/.test(sk.sid),'Hauptausweis verschluesselt abgelegt, kein Klartext');
-   check((await spalte(ohne.token_id)).c===null,'ohne Schluessel: nur Hash (t109-Verhalten)');
-   check((await spalte(kz.token_id)).c===null,'Start-Ausweis wird nie abrufbar abgelegt');
+   check(sk.o===sub.token&&sk.h===null&&sk.c===null,'Ausweis offen abgelegt (kein Hash, kein Tresor, kein Schluessel)');
+   check(kz.token===sub.token&&kz.neu===false,'Start-Ausweis entfaellt: dieselbe Identitaet liefert denselben Ausweis');
    const kid=k.identitaet.id,sid=sub.identitaet.id,KP=akt(kid,P,'koordinator');
    const T=C.W1B_DIENSTE.tokenAbruf;
-   // Schalter
+   // Der Produkt-Schalter token_abruf entfaellt (V7): AUS aendert nichts.
    await C.setzeProfilProduktSchalter({ebene:'projekt',project:P,funktion:'token_abruf',aktiv:false,grund:'test p22 D aus'},{system:'user'});
-   check(await fehler(()=>T.rufeProfilTokenAb(P,sid,KP,'Startauftrag'))==='funktion_aus','Produkt-Schalter token_abruf AUS');
+   check((await T.rufeProfilTokenAb(P,sid,KP,'Startauftrag')).token===sub.token,'Schalter token_abruf entfaellt: Abruf unabhaengig davon');
    await C.setzeProfilProduktSchalter({ebene:'projekt',project:P,funktion:'token_abruf',aktiv:true,grund:'test p22 D an'},{system:'user'});
    // Rechte
    const r=await T.rufeProfilTokenAb(P,sid,KP,'Startauftrag fuer neuen Agenten');
@@ -270,28 +268,24 @@ try{
    check(await fehler(()=>T.rufeProfilTokenAb(P,sid,{art:'daemon'},'daemon'))==='recht_fehlt','Daemon liest keine Tokens');
    check(await fehler(()=>T.rufeProfilTokenAb(P,sid,KP,'ab'))==='anlass_fehlt','Anlass Pflicht');
    check(await fehler(()=>T.rufeProfilTokenAb(P,'gibt-es-nicht',KP,'unbekannt'))==='identitaet_unbekannt','unbekanntes Ziel');
-   check(await fehler(()=>T.rufeProfilTokenAb(P,ohne.identitaet.id,KP,'ohne Schluessel ausgestellt'))==='token_nicht_abrufbar','vor dem Tresor ausgestellt: nicht abrufbar');
-   // Schluessel
-   process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL='ef'.repeat(32);
-   check(await fehler(()=>T.rufeProfilTokenAb(P,sid,KP,'Schluesselwechsel'))==='token_schluessel_gewechselt','Schluesselwechsel erkannt');
-   delete process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL;
-   check(await fehler(()=>T.rufeProfilTokenAb(P,sid,KP,'ohne Schluessel (nicht API-Prozess)'))==='token_schluessel_fehlt','ohne Schluessel (stdio/Daemon): kein Klartext-Fallback');
-   process.env.SYNAPSE_AGENT_TOKEN_SCHLUESSEL=TEST_SCHLUESSEL;
-   // Widerruf, Deaktivierung, Integritaet
+   await ident('tok-ohne',P,'tok-ohne','subagent');
+   check(await fehler(()=>T.rufeProfilTokenAb(P,'tok-ohne',KP,'Identitaet ohne Ausweis'))==='ausweis_fehlt','Identitaet ohne Ausweis: ausweis_fehlt (W12)');
+   // Kern AUS (anderer Modus) -> kein Abruf
+   process.env.SYNAPSE_AGENT_BEZUG_MODUS='alt';
+   check(await fehler(()=>T.rufeProfilTokenAb(P,sid,KP,'Kern aus'))==='agent_bezug_modus_nicht_beide','Modus alt: Ausweis-Kern nicht wirksam');
+   process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide';
+   // Widerruf, Deaktivierung
    await pool.query('UPDATE agent_identitaet_tokens SET widerrufen_am=NOW() WHERE id=$1',[sub2.token_id]);
-   check(await fehler(()=>T.rufeProfilTokenAb(P,sub2.identitaet.id,KP,'widerrufen'))==='token_nicht_abrufbar','widerrufener Token nicht abrufbar');
+   check(await fehler(()=>T.rufeProfilTokenAb(P,sub2.identitaet.id,KP,'widerrufen'))==='ausweis_fehlt','geloeschter Ausweis nicht abrufbar');
    await pool.query("UPDATE agent_identitaeten SET status='deaktiviert' WHERE id=$1",[sub2.identitaet.id]);
    check(await fehler(()=>T.rufeProfilTokenAb(P,sub2.identitaet.id,KP,'deaktiviert'))==='identitaet_nicht_aktiv','deaktivierte Identitaet');
-   const manip=await C.stelleAgentTokenAus({project:P,name:'tok-manip'},{system:'user'});secrets.push(manip.token);
-   await pool.query('UPDATE agent_identitaet_tokens SET token_hash=$2 WHERE id=$1',[manip.token_id,createHash('sha256').update('anderer').digest('hex')]);
-   check(await fehler(()=>T.rufeProfilTokenAb(P,manip.identitaet.id,KP,'Integritaet'))==='token_chiffre_ungueltig','Hash-Gegenpruefung der Entschluesselung');
    // Audit ohne Tokenwert
    const au=(await pool.query('SELECT * FROM agent_token_abruf_audit ORDER BY id')).rows;
    const auText=JSON.stringify(au);
    check(au.some(x=>x.erfolg&&x.ziel_identity_id===sid&&x.wer===kid&&x.actor_identity_id===kid&&x.anlass==='Startauftrag fuer neuen Agenten'),'Erfolg auditiert: Akteur, Ziel, Projekt, Anlass');
    check(au.some(x=>x.erfolg&&x.wer==='user'&&x.anlass==='Web-UI-Anzeige'),'User-Abruf auditiert');
    check(au.some(x=>!x.erfolg&&x.fehler==='recht_fehlt'),'verweigerte Abrufe auditiert');
-   check(au.some(x=>!x.erfolg&&x.fehler==='token_schluessel_fehlt')&&au.some(x=>!x.erfolg&&x.fehler==='token_nicht_abrufbar'),'Fehlerarten auditiert');
+   check(au.some(x=>!x.erfolg&&x.fehler==='ausweis_fehlt'),'Fehlerart ausweis_fehlt auditiert');
    check(secrets.every(s=>!auText.includes(s))&&!/sai_[a-f0-9]{16}/.test(auText)&&!auText.includes(TEST_SCHLUESSEL),'Audit enthaelt nie Tokenwert, Praefix oder Schluessel');
    check(!au.some(x=>x.fehler&&/sai_|:/.test(x.fehler)),'Fehlercodes ohne Werte');
    // Web-UI-Koordinatortoken
@@ -308,17 +302,18 @@ try{
   await section('Admin-Dispatcher (Akteur, Schalter, Isolation)',async()=>{
    const {k,sub,kid,sid,KP}=globalThis.__d;
    const adm=(a,args,akteur)=>C.fuehreW1bAdminAus(a,args,akteur===undefined?{}:{akteur});
-   check(C.W1B_ADMIN_ACTIONS.length===26&&gleich([...C.W1B_ADMIN_ACTIONS],W1B_AKTIONEN),'Aktionsliste = additive Golden-Liste');
+   check(C.W1B_ADMIN_ACTIONS.length===28&&gleich([...C.W1B_ADMIN_ACTIONS],W1B_AKTIONEN),'Aktionsliste = additive Golden-Liste');
    check(gleich(Object.keys(C.W1B_ADMIN_PARAMETER),W1B_PARAMETER),'Parameterliste = additive Golden-Liste');
    // kein Akteur aus Argumenten
-   const spoof=await adm('token_abrufen',{project:P,agent_id:'koordinator',role:'koordinator',user:'user',ziel_identity_id:sid,anlass:'Spoof',akteur:'user'});
+   const spoof=await adm('token_abrufen',{project:P,agent_id:'sub-x',role:'koordinator',user:'user',ziel_identity_id:sid,anlass:'Spoof',akteur:'user'});
    check(spoof.success===false&&spoof.error==='recht_fehlt'&&!JSON.stringify(spoof).includes('sai_'),'agent_id/role/user in Argumenten ist kein Nachweis');
    check((await adm('profil_schalter_status',{project:P},null)).error==='recht_fehlt','expliziter Akteur null abgelehnt');
    // Akteur aus Aufrufkontext
    const ohneKontext=await C.fuehreW1bAdminAus('profil_schalter_status',{project:P});
    check(ohneKontext.error==='recht_fehlt','ohne User-Herkunft/Principal kein Akteur');
    const alsUser=await C.mitUserHerkunft('web-ui-chat',()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
-   check(alsUser.success&&alsUser.schalter.length===6,'User-Herkunft aus authentifiziertem Eingang');
+   // P22-T28 (V7): 5 Produkt-Schalter im Katalog (schattenprofile und token_abruf sind in agenten_ausweis aufgegangen), dazu ausweis_kern. P22-T33 (G1): die Altschalter bleiben in profil_schalter_status gelistet (additiv gegenueber t110) -> 7.
+   check(alsUser.success&&alsUser.schalter.length===7&&alsUser.schalter.some(x=>x.funktion==='agenten_ausweis')&&alsUser.ausweis_kern&&typeof alsUser.ausweis_kern.aktiv==='boolean'&&alsUser.ausweis_kern.agent_bezug_modus!==undefined,'User-Herkunft aus authentifiziertem Eingang '+JSON.stringify({ok:alsUser.success,n:alsUser.schalter?.length,k:alsUser.ausweis_kern}).slice(0,240));
    const alsKoord=await C.mitAgentAufrufKontext({principal:KP.principal,bezug:{modus:'neu',standard:'alt',quelle:'standard',bis:null,letzter_fehler:null}},()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
    check(alsKoord.success===true,'Koordinator aus bezeugtem Principal');
    const alsSub=await C.mitAgentAufrufKontext({principal:akt('d-s',P,'subagent').principal,bezug:{modus:'neu',standard:'alt',quelle:'standard',bis:null,letzter_fehler:null}},()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
@@ -329,11 +324,17 @@ try{
    check((await adm('profil_schalter_status',{},KP)).error==='project_fehlt'&&(await adm('gibt_es_nicht',{project:P},KP)).error==='aktion_unbekannt','project Pflicht, unbekannte Aktion');
    // Schalter-Lebenszyklus
    await pool.query('DELETE FROM agent_profil_schalter');
+   C.leereAusweisKernCache(); // P22-T28: Kern-Puffer nach direktem SQL-Loeschen verwerfen
    const st0=await adm('profil_schalter_status',{project:P},KP);
    check(st0.schalter.every(x=>!x.aktiv&&x.quelle==='standard'),'Produkt-Schalter Standard AUS');
-   for(const [a,args] of [['schattenprofil_liste',{}],['typ_liste',{}],['profil_uebersicht',{}],['persona_liste',{}],['token_abrufen',{ziel_identity_id:sid,anlass:'Test'}],['web_ui_koordinator_token',{}]]){
+   for(const [a,args] of [['schattenprofil_liste',{}],['typ_liste',{}],['profil_uebersicht',{}],['persona_liste',{}]]){
     const r=await adm(a,{project:P,...args},KP);
     check(r.success===false&&r.error==='funktion_aus'&&r.details?.funktion,'AUS: '+a+' -> funktion_aus');
+   }
+   // W12 V7: Ausweis-Aktionen haengen nicht mehr an einem eigenen Schalter (token_abruf), sondern am Ausweis-Kern.
+   for(const [a,args] of [['token_abrufen',{ziel_identity_id:sid,anlass:'Test'}],['web_ui_koordinator_token',{}]]){
+    const r=await adm(a,{project:P,...args},KP);
+    check(r.success===false&&r.error==='ausweis_kern_aus'||(a==='web_ui_koordinator_token'&&r.error==='recht_fehlt'),'Kern AUS: '+a+' -> ausweis_kern_aus (kein Schalter token_abruf)'+(r.error==='ausweis_kern_aus'?'':' [got '+JSON.stringify(r).slice(0,240)+']'));
    }
    check((await adm('profil_schalter_setzen',{project:P,profil_funktion:'persona',aktiv:true,grund:'test p22 D'},S)).error==='recht_fehlt','Subagent darf nicht schalten');
    check((await adm('profil_schalter_setzen',{project:P,profil_funktion:'persona',aktiv:true,grund:'x'},KP)).error==='grund_fehlt','Grund Pflicht');
@@ -342,7 +343,7 @@ try{
    check(set.success&&set.schalter.find(x=>x.funktion==='persona').aktiv&&set.schalter.find(x=>x.funktion==='persona').gesetzt_von===kid,'Projektkoordinator schaltet Projekt (dauerhaft in PG)');
    check(!(await C.leseProfilProduktSchalter('persona',Q)).aktiv,'anderes Projekt unberuehrt');
    check((await adm('persona_liste',{project:P},KP)).success===true,'Gruppe EIN nach Schalter');
-   await adm('profil_schalter_setzen',{project:P,ebene:'global',profil_funktion:'alle',aktiv:true,grund:'test p22 D alle'},USER);
+   {const m=process.env.SYNAPSE_AGENT_BEZUG_MODUS;process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide';try{await adm('profil_schalter_setzen',{project:P,ebene:'global',profil_funktion:'alle',aktiv:true,grund:'test p22 D alle'},USER);}finally{if(m===undefined)delete process.env.SYNAPSE_AGENT_BEZUG_MODUS;else process.env.SYNAPSE_AGENT_BEZUG_MODUS=m;}} // P22-T31 Punkt 3
    check((await adm('typ_liste',{project:P},KP)).error!=='funktion_aus','global alle EIN');
    // Isolation: Schatten, Typ
    await pool.query("INSERT INTO agent_schattenprofile(id,project,ursprung_agent_id,ablauf_am) VALUES('sp-q',$1,'x',NOW()+INTERVAL '1 day'),('sp-p',$2,'y',NOW()+INTERVAL '1 day')",[Q,P]);
@@ -416,7 +417,7 @@ try{
    // Uebersicht tokenfrei
    const ue=await adm('profil_uebersicht',{project:P},KP);
    const ueText=JSON.stringify(ue);
-   check(ue.success&&ue.profile.some(x=>x.identity_id===sid&&x.token_abrufbar===true)&&ue.profile.some(x=>x.name==='tok-ohne-schluessel'&&x.token_abrufbar===false),'Profiluebersicht: token_abrufbar ja/nein');
+   check(ue.success&&ue.profile.some(x=>x.identity_id===sid&&x.token_abrufbar===true)&&ue.profile.some(x=>x.name==='tok-ohne'&&x.token_abrufbar===false),'Profiluebersicht: token_abrufbar ja/nein');
    check(secrets.every(s=>!ueText.includes(s))&&!/sai_[a-f0-9]/.test(ueText)&&!ue.profile.some(x=>x.identity_id==='d-sq'),'Uebersicht tokenfrei und projektgebunden');
    // Persona/Token ueber Dispatcher
    const pa=await adm('persona_anlegen',{project:P,persona_name:'via-admin',persona_inhalt:{stil:'ruhig'},user_auftrag:'User: Persona via admin'},KP);
@@ -462,7 +463,9 @@ try{
    check(s0.status===200&&s0.headers['cache-control']==='no-store'&&s0.body.schalter.every(x=>!x.aktiv),'User-Sitzung: Schalter lesen, no-store, Standard AUS');
    const aus=await call('GET','/persona','web');
    check(aus.status===409&&aus.body.error.code==='funktion_aus','Schalter AUS: 409 funktion_aus');
+   const modusAlt=process.env.SYNAPSE_AGENT_BEZUG_MODUS;process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide'; // P22-T31 Punkt 3: 'alle' EIN braucht Modus beide
    const an=await call('PUT','/schalter','web',{profil_funktion:'alle',aktiv:true,grund:'test p22 D REST',ebene:'global'});
+   if(modusAlt===undefined)delete process.env.SYNAPSE_AGENT_BEZUG_MODUS;else process.env.SYNAPSE_AGENT_BEZUG_MODUS=modusAlt;
    check(an.status===200&&an.body.schalter.every(x=>x.aktiv),'User setzt global (PG)');
    const uebersicht=await call('GET','/uebersicht','web');
    check(uebersicht.status===200&&uebersicht.body.profile.some(x=>x.identity_id===sid)&&!/sai_[a-f0-9]/.test(JSON.stringify(uebersicht.body)),'Uebersicht tokenfrei');
@@ -529,7 +532,8 @@ try{
    check(sSub.success===true,'stdio: derselbe Koordinator-Ausweis wiederholt (Sitzung bleibt gebunden)');
    
    const widerspruch=await T.rest.call('admin',{...ak,token:k.token,agent_id:'jemand-anders'});
-   check(widerspruch.success!==true,'Ausweis + abweichende agent_id bleibt Konflikt/abgelehnt');
+   // W12 V3: der Ausweis gilt bei JEDEM Aufruf und ersetzt agent_id; eine abweichende agent_id wird (ohne Durchsetzung) nur auditiert, nicht gefolgt.
+   check(widerspruch.success===true&&widerspruch.ziel_identity_id===sid&&widerspruch.token===sub.token,'Ausweis gewinnt ueber abweichende agent_id (Abweichung nur auditiert)');
    const rows=(await pool.query("SELECT tool_name,action,result,args_preview FROM tool_calls WHERE tool_name='admin' AND action='token_abrufen'")).rows;
    check(rows.length>=4&&rows.every(r=>!r.result||r.result.startsWith('[nicht protokolliert')||!r.result.includes('\"token\"')),'tool_calls: Antwort mit Token nicht protokolliert');
    const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);

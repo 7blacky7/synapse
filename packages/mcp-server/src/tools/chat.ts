@@ -36,6 +36,7 @@ export async function registerChatAgent(
         cutoffDate: session.cutoffDate,
       },
       message: `Agent "${id}" registriert${session.cutoffDate ? ` (Cutoff: ${session.cutoffDate})` : ''}`,
+      ...(session.neuinstanz_hinweis ? { neuinstanz_hinweis: session.neuinstanz_hinweis } : {}),
     };
   } catch (error) {
     return {

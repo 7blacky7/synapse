@@ -211,10 +211,12 @@ export async function addThoughtsBatch(
 
   // 4. Optional: Task-Status fuer alle items mit task_id setzen
   if (taskStatus) {
+    // P22-T28 (H3): mehrere Items derselben Task = EIN Audit-Eintrag fuer den ganzen Batch.
+    const batchBearbeiter = bearbeiter ? { ...bearbeiter, auditMerker: new Set<string>() } : bearbeiter;
     for (const t of thoughts) {
       if (!t.task_id) continue;
       try {
-        const updated = await updateTask(project, t.task_id, { status: taskStatus }, undefined, bearbeiter);
+        const updated = await updateTask(project, t.task_id, { status: taskStatus }, undefined, batchBearbeiter);
         if (!updated) {
           warning = (warning ? warning + '; ' : '') + `Task ${t.task_id} nicht gefunden`;
         }

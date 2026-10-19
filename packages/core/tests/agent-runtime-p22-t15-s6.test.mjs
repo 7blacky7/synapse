@@ -35,7 +35,7 @@ const clone=async()=>{
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
  eq((await pool.query('SELECT current_schema() s')).rows[0].s,schema,'isolated search path');
- for(const [file,key] of [['agent-identitaet-schema','AGENT_IDENTITAET_SCHEMA_SQL'],['agent-bezug-schema','AGENT_BEZUG_SCHEMA_SQL']]){
+ for(const [file,key] of [['agent-identitaet-schema','AGENT_IDENTITAET_SCHEMA_SQL'],['agent-bezug-schema','AGENT_BEZUG_SCHEMA_SQL'],['agent-ausweis-schema','AGENT_AUSWEIS_SCHEMA_SQL']]){
   const m=await load('packages/core/dist/db/'+file+'.js');
   await pool.query(m[key]);await pool.query(m[key]);
  }

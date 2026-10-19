@@ -38,11 +38,8 @@ const user={art:'user'},daemon={art:'daemon'};
 const pr=(id,rolle,p=P)=>({art:'identitaet',principal:{art:'identity',project:p,agent_id:id,identity_id:id,rolle,modell:null,context_epoch:1,lauf_id:null}});
 const anlage=(agent,extra={},p=P,art='legacy_register',akteur=daemon)=>core.W1B_DIENSTE.schatten.legeSchattenprofilAn(
  {project:p,ursprung_agent_id:agent,ursprung_art:art,selbstangaben:{name:agent,modell:'m1',...extra}},akteur);
-const tokenVon=async(id)=>{
- const r=await one('SELECT vorgesehener_token_verschluesselt c,vorgesehener_token_schluessel_id k,vorgesehener_token_hash h FROM agent_schattenprofile WHERE id=$1',[id]);
- const t=core.entschluesseleAgentToken(r.c,'schatten:'+id,r.k);
- assert.equal(core.hashAgentToken(t),r.h);secrets.push(t);return t;
-};
+// W12 (P22-T24, V2 Weg A): der Schatten traegt KEINEN Token mehr; der Ausweis entsteht erst mit der Bestaetigung (token_offen).
+const AUSWEIS=/^sai_[a-f0-9]{64}$/;
 const bestaetige=(s,extra={},akteur=user)=>core.W1B_DIENSTE.schatten.bestaetigeSchattenprofil(
  {schattenprofil_id:s.id,erwartete_revision:s.revision,user_zustimmung:'User: bestaetigt im Test',grund:'Paket-A-Test',...extra},akteur);
 
@@ -60,7 +57,7 @@ try{
  }
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
- for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema']){
+ for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
@@ -78,7 +75,9 @@ try{
   const s=await anlage('nur1',{},'pa-nur');
   check(s.zustand==='pending','Projektschalter EIN: Anlage nur dort');
   check(await code(()=>anlage('nur2'))==='funktion_aus','anderes Projekt bleibt AUS');
-  await core.setzeProfilProduktSchalter({ebene:'global',funktion:'alle',aktiv:true,grund:'test p22 global'},{system:'user'});
+  // P22-T31 Punkt 3: 'alle' EIN unterliegt der Modus-Pruefung (agent_bezug_modus beide) - nur fuer diesen Aufruf.
+  process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide';
+  try{await core.setzeProfilProduktSchalter({ebene:'global',funktion:'alle',aktiv:true,grund:'test p22 global'},{system:'user'});}finally{process.env.SYNAPSE_AGENT_BEZUG_MODUS='alt';}
  });
 
  await section('Typ-Katalog: global/projekt, Revisionen, Vererbung, Rechte',async()=>{
@@ -120,10 +119,8 @@ try{
   check(!JSON.stringify(s).includes('sai_')&&!('vorgesehener_token' in s),'Antwort ohne Token');
   const db=await one('SELECT selbstangaben,vorgesehener_token_verschluesselt c FROM agent_schattenprofile WHERE id=$1',[s.id]);
   check(!('token' in db.selbstangaben.weitere)&&db.selbstangaben.weitere.notiz==='x [ausweis]'&&db.selbstangaben.weitere.anderes==='ok','Selbstangaben ohne Zugangswerte, Rest erhalten');
-  const tok=await tokenVon(s.id);
-  check(!db.c.includes(tok),'Chiffre ohne Klartext');
-  check((await one('SELECT count(*)::int n FROM agent_identitaet_tokens WHERE token_hash=$1',[core.hashAgentToken(tok)])).n===0,'vorgesehener Token: keine Token-Zeile vor Bestaetigung');
-  check(await code(()=>core.pruefeAgentToken(tok,P))==='agent_token_ungueltig','vorgesehener Token VOR Bestaetigung ungueltig');
+  check(db.c===null&&(await one('SELECT vorgesehener_token_hash h FROM agent_schattenprofile WHERE id=$1',[s.id])).h===null,'Weg A (W12): Schatten traegt keinen Token (weder Hash noch Chiffre)');
+  check((await one("SELECT count(*)::int n FROM agent_identitaet_tokens t JOIN agent_identitaeten i ON i.id=t.identity_id WHERE i.project=$1 AND i.agent_id='luna'",[P])).n===0,'keine Token-Zeile vor Bestaetigung');
   const gleich=await anlage('luna',{channels:['c1']});
   check(gleich.id===s.id&&gleich.revision===1,'wiederholte Meldung: derselbe Vorgang, keine Revision');
   const mehr=await anlage('luna',{channels:['c2'],effort:'hoch'});
@@ -154,7 +151,6 @@ try{
 
  await section('Bestaetigung: atomar, idempotent, Token aktiv, Rolle nur per Korrektur',async()=>{
   const s=globalThis.__luna,typ=globalThis.__typ;
-  const tok=await tokenVon(s.id);
   const [a,b]=await Promise.all([bestaetige(s,{typ_id:typ.id}),bestaetige(s,{typ_id:typ.id},pr('k1','koordinator'))]);
   check(a.identity_id===b.identity_id&&a.profil_revision===1,'Doppelbestaetigung (parallel): dieselbe Identitaet');
   check((await one("SELECT count(*)::int n FROM agent_identitaeten WHERE project=$1 AND agent_id='luna'",[P])).n===1,'genau eine Identitaet');
@@ -168,8 +164,9 @@ try{
   const rv=await rows('SELECT * FROM agent_profil_revisionen WHERE identity_id=$1',[a.identity_id]);
   check(rv.length===1&&rv[0].revision===1&&rv[0].snapshot.rolle==='spezialist'&&rv[0].snapshot.modell_bestaetigt==='korrigiert-modell'&&rv[0].user_auftrag==='User: bestaetigt im Test','Profilrevision 1 mit Zustimmungsnachweis');
   const t=await one('SELECT * FROM agent_identitaet_tokens WHERE identity_id=$1',[a.identity_id]);
-  check(t.gueltig_bis===null&&t.start_art===null&&core.entschluesseleAgentToken(t.token_verschluesselt,t.id,t.token_schluessel_id)===tok,'Token portabel/dauerhaft, verschluesselt abrufbar');
-  const an=await core.pruefeAgentToken(tok,P);
+  secrets.push(t.token_offen);
+  check(t.gueltig_bis===null&&t.start_art===null&&AUSWEIS.test(t.token_offen)&&t.token_hash===null&&t.token_verschluesselt===null&&t.ausweis_weg==='schatten_bestaetigt','Ausweis (W12) offen gespeichert, sofort aktiv/dauerhaft (schatten_bestaetigt)');
+  const an=await core.pruefeAgentToken(t.token_offen,P);
   check(an.agent_id==='luna'&&an.rolle==='spezialist'&&an.identitaet.id===a.identity_id,'bestaetigter Token authentifiziert');
   const sh=await one('SELECT zustand,identity_id,vorgesehener_token_verschluesselt c,entschieden_von,user_zustimmung FROM agent_schattenprofile WHERE id=$1',[s.id]);
   check(sh.zustand==='bestaetigt'&&sh.identity_id===a.identity_id&&sh.c===null&&sh.user_zustimmung==='User: bestaetigt im Test','Schatten: bestaetigt, Chiffre entfernt, Nachweis');
@@ -185,30 +182,30 @@ try{
   check(await code(()=>bestaetige(sd,{typ_id:randomUUID()}))==='typ_unbekannt','unbekannter Typ');
   // Atomaritaet: Fehler nach Identitaetsanlage -> nichts bleibt
   const sk=await anlage('kaputt');
-  await pool.query("UPDATE agent_schattenprofile SET vorgesehener_token_verschluesselt='v1:AA:AA:AA' WHERE id=$1",[sk.id]);
-  check(await code(()=>bestaetige(sk))==='token_chiffre_ungueltig','Tokenfehler bei Bestaetigung');
+  // W12: Fehler beim Schreiben des Ausweises (Trigger wirft) -> kompletter Rollback.
+  await pool.query("CREATE OR REPLACE FUNCTION w12_test_fail() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN RAISE EXCEPTION 'w12 test'; END $f$");
+  await pool.query('CREATE TRIGGER w12_test_fail BEFORE INSERT ON agent_identitaet_tokens FOR EACH ROW EXECUTE FUNCTION w12_test_fail()');
+  check(await code(()=>bestaetige(sk))==='profil_speicher_fehler','Fehler beim Ausweisschreiben bei Bestaetigung');
+  await pool.query('DROP TRIGGER w12_test_fail ON agent_identitaet_tokens');await pool.query('DROP FUNCTION w12_test_fail()');
   check((await one("SELECT count(*)::int n FROM agent_identitaeten WHERE agent_id='kaputt'")).n===0&&(await one('SELECT zustand FROM agent_schattenprofile WHERE id=$1',[sk.id])).zustand==='pending','keine halbe Identitaet (Rollback)');
   // Ablehnung
   const sa=await anlage('neinsager');
-  const taa=await tokenVon(sa.id);
   check(await code(()=>D.schatten.lehneSchattenprofilAb(sa.id,9,user,'Test'))==='profil_revision_veraltet','Ablehnung-CAS');
   const ab=await D.schatten.lehneSchattenprofilAb(sa.id,sa.revision,pr('k1','koordinator'),'nicht gewollt');
   check(ab.zustand==='abgelehnt'&&(await D.schatten.lehneSchattenprofilAb(sa.id,99,user,'nochmal')).zustand==='abgelehnt','Ablehnung, idempotent');
   check(await code(()=>bestaetige(ab))==='schattenprofil_abgelehnt','abgelehnt nicht bestaetigbar');
-  check(await code(()=>core.pruefeAgentToken(taa,P))==='agent_token_ungueltig','Token nach Ablehnung ungueltig');
+  check((await one("SELECT count(*)::int n FROM agent_identitaeten WHERE project=$1 AND agent_id='neinsager'",[P])).n===0,'nach Ablehnung weder Identitaet noch Ausweis');
   check((await one('SELECT vorgesehener_token_verschluesselt c FROM agent_schattenprofile WHERE id=$1',[sa.id])).c===null,'Ablehnung entfernt Chiffre');
  });
 
  await section('Ablauf/Verfall ohne Datenverlust',async()=>{
   const s=await anlage('alt1',{channels:['x']});
-  const tok=await tokenVon(s.id);
   await pool.query("UPDATE agent_schattenprofile SET erstellt_am=NOW()-INTERVAL '2 days', ablauf_am=NOW()-INTERVAL '1 hour' WHERE id=$1",[s.id]);
   check((await D.schatten.listeSchattenprofile(P,user)).find(x=>x.id===s.id).zustand==='abgelaufen','pending nach Frist wirksam abgelaufen (ohne Verfallslauf)');
   check(await code(()=>bestaetige(s))==='schattenprofil_abgelaufen'&&await code(()=>D.schatten.korrigiereSchattenprofil(s.id,1,{},user,'Test'))==='schattenprofil_abgelaufen','abgelaufen: nicht bestaetigbar/korrigierbar');
-  check(await code(()=>core.pruefeAgentToken(tok,P))==='agent_token_ungueltig','Token nach Ablauf ungueltig');
   const n=await D.schatten.verfalleAbgelaufene(P);
   const z=await one('SELECT zustand,selbstangaben,vorgesehener_token_verschluesselt c,vorgesehener_token_hash h FROM agent_schattenprofile WHERE id=$1',[s.id]);
-  check(n>=1&&z.zustand==='abgelaufen'&&z.c===null&&z.h&&z.selbstangaben.channels[0]==='x','Verfall: Zustand, Token-Chiffre weg, Angaben bleiben');
+  check(n>=1&&z.zustand==='abgelaufen'&&z.c===null&&z.h===null&&z.selbstangaben.channels[0]==='x','Verfall: Zustand, kein Token (W12), Angaben bleiben');
   const neu=await anlage('alt1');
   check(neu.id!==s.id&&neu.zustand==='pending','neue bewusste Anmeldung: neuer Vorgang');
   const s2=await anlage('alt2');
@@ -308,7 +305,7 @@ try{
   for(const t of tabellen)dump+=JSON.stringify(await rows('SELECT * FROM '+t));
   dump+=JSON.stringify(await rows('SELECT selbstangaben,korrektur,grund,user_zustimmung FROM agent_schattenprofile'));
   dump+=JSON.stringify(await rows('SELECT profil,startrezept FROM agent_identitaeten'));
-  check(secrets.length>=4&&secrets.every(s=>!dump.includes(s)),'kein Token in Audit, Revisionen, Profilen ('+secrets.length+' geprueft)');
+  check(secrets.length>=1&&secrets.every(s=>!dump.includes(s)),'kein Token in Audit, Revisionen, Profilen ('+secrets.length+' geprueft)');
   check(!/sai_[a-f0-9]{16}/.test(dump),'kein Ausweis-Muster in Audit/Revisionen');
   check(network===0,'keine Netzwerk-/Modellaufrufe');
  });
