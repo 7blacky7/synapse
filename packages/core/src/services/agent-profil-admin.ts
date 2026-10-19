@@ -211,7 +211,7 @@ async function fuehreAusweisAktionAus(action: AusweisAktion, args: Args, akteur:
 
 async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, project: string, a: Args, akteurRoh: AusweisAkteur): Promise<Record<string, unknown>> {
   // P22-T34: der Legacy-Koordinator ohne Ausweis gilt fuer ALLE Aktionen wie Koordinator mit Ausweis (Rechtepruefung in den Diensten bzw.
-  // pruefeProfilVerwalter; 'nur User' bleibt: web_ui_koordinator_token, globale Kataloge/Schalter). Die Dienste pruefen den Akteur zur Laufzeit.
+  // pruefeProfilVerwalter; 'nur User' bleibt: web_ui_koordinator_token, globale Kataloge; globale Produkt-Schalter seit P22-T57 auch Koordinator). Die Dienste pruefen den Akteur zur Laufzeit.
   const akteur = akteurRoh as W1bAkteur;
   switch (action) {
     case 'profil_schalter_status':
@@ -222,8 +222,8 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
       await setzeProfilProduktSchalter(
         { ebene, project: ebene === 'projekt' ? project : null, funktion, aktiv: a.aktiv as boolean, grund: String(a.grund ?? '') },
         akteurRoh.art === 'user' ? { system: 'user' }
-          : akteurRoh.art === 'legacy_koordinator' ? { legacy_koordinator: akteurRoh.agent_id }
-          : { identity_id: akteurRoh.art === 'identitaet' ? akteurRoh.principal.identity_id : undefined });
+          : akteurRoh.art === 'legacy_koordinator' ? { legacy_koordinator: akteurRoh.agent_id, aufruf_project: project }
+          : { identity_id: akteurRoh.art === 'identitaet' ? akteurRoh.principal.identity_id : undefined, aufruf_project: project });
       return { project, schalter: await Promise.all([...PROFIL_PRODUKT_FUNKTIONEN, ...ALT_AUSWEIS_FUNKTIONEN].map(f => leseProfilProduktSchalter(f, project))), ausweis_kern: await leseAusweisKern(project) };
     }
     case 'profil_uebersicht': {

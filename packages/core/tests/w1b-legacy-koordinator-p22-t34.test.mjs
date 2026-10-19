@@ -159,8 +159,12 @@ try{
   check(ss.success===true,'profil_schalter_setzen (Projekt) als Legacy-Koordinator');
   const row=(await pool.query("SELECT gesetzt_von,setter_identity_id FROM agent_profil_schalter WHERE funktion='persona' AND project=$1",[P])).rows[0];
   check(row?.gesetzt_von==='legacy:'+KOORD&&row.setter_identity_id===null,'Schalter-Audit legacy:<id>');
+  // P22-T57: global darf auch der Legacy-Koordinator (Audit legacy:<id>); danach Zeile wieder weg.
   const gl=await L({aktion:'profil_schalter_setzen',args:{ebene:'global',profil_funktion:'persona',aktiv:true,grund:'Test T34 global'}});
-  check(recht(gl),'Schalter global bleibt nur User');
+  check(gl.success===true,'Schalter global als Legacy-Koordinator (P22-T57)');
+  const grow=(await pool.query("SELECT gesetzt_von FROM agent_profil_schalter WHERE funktion='persona' AND ebene='global'")).rows[0];
+  check(grow?.gesetzt_von==='legacy:'+KOORD,'globales Schalter-Audit legacy:<id>');
+  await pool.query("DELETE FROM agent_profil_schalter WHERE ebene='global' AND funktion='persona'");
   const ty=await L({aktion:'typ_anlegen',args:{typ_schluessel:'t34-legacy',typ_inhalt:{rolle:'x'},grund:'Test T34 Legacy'}});
   check(ty.success===true,'typ_anlegen als Legacy-Koordinator');
   const tr=(await pool.query('SELECT wer,actor_identity_id FROM agent_typ_revisionen WHERE typ_id=$1',[ty.typ?.id])).rows[0];

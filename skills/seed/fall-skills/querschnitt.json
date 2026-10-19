@@ -46,7 +46,7 @@
       "weg": "beide",
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: recht_fehlt, funktion_aus, keine_berechtigung." },
-        { "section": "regeln", "content": "1. recht_fehlt: Die Aktion ist Koordinator/User vorbehalten (z. B. Produkt-Schalter, Jev-Steuerung, Fristen, fremde Plaene verwerfen, Persona). Nicht umgehen - als eine Zeile an den Koordinator melden.\n2. funktion_aus: Der Produkt-Schalter dieser Funktion ist AUS (Standard fuer neue Funktionen bis zur User-Freigabe). Status: admin(profil_schalter_status). Einschalten nur Koordinator/User.\n3. keine_berechtigung: Transport/Token passt nicht (z. B. Hauptagenten-Verbindung nur artefakt)." }
+        { "section": "regeln", "content": "1. recht_fehlt: Die Aktion ist Koordinator/User vorbehalten (z. B. Produkt-Schalter projekt und global, Jev-Steuerung, Fristen, fremde Plaene verwerfen, Persona). Als Subagent nicht umgehen - als eine Zeile an den Koordinator melden. Als Koordinator: Projekt pruefen (eigenes Projekt als project angeben); nur User bleiben globale Typ-/Persona-Kataloge, web_ui_koordinator_token und Hauptagent-Verwaltung.\n2. funktion_aus: Der Produkt-Schalter dieser Funktion ist AUS (Standard fuer neue Funktionen bis zur User-Freigabe). Status: admin(profil_schalter_status). Einschalten nur Koordinator/User.\n3. keine_berechtigung: Transport/Token passt nicht (z. B. Hauptagenten-Verbindung nur artefakt)." }
       ]
     },
     {

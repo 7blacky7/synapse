@@ -347,7 +347,7 @@ try{
    }
    check((await adm('profil_schalter_setzen',{project:P,profil_funktion:'persona',aktiv:true,grund:'test p22 D'},S)).error==='recht_fehlt','Subagent darf nicht schalten');
    check((await adm('profil_schalter_setzen',{project:P,profil_funktion:'persona',aktiv:true,grund:'x'},KP)).error==='grund_fehlt','Grund Pflicht');
-   check((await adm('profil_schalter_setzen',{project:P,ebene:'global',profil_funktion:'persona',aktiv:true,grund:'test p22 D'},KP)).error==='recht_fehlt','global nur User');
+   check((await adm('profil_schalter_setzen',{project:P,ebene:'global',profil_funktion:'persona',aktiv:true,grund:'test p22 D'},S)).error==='recht_fehlt','global: Subagent nie (P22-T57: Koordinator darf)');
    const set=await adm('profil_schalter_setzen',{project:P,profil_funktion:'persona',aktiv:true,grund:'test p22 D Koordinator'},KP);
    check(set.success&&set.schalter.find(x=>x.funktion==='persona').aktiv&&set.schalter.find(x=>x.funktion==='persona').gesetzt_von===kid,'Projektkoordinator schaltet Projekt (dauerhaft in PG)');
    check(!(await C.leseProfilProduktSchalter('persona',Q)).aktiv,'anderes Projekt unberuehrt');

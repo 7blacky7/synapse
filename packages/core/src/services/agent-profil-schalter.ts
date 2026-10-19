@@ -3,8 +3,8 @@
  *
  * (I) PRODUKT-SCHALTER agent_profil_schalter (PG, Schema 113). Standard AUS = keine Zeile.
  *     Steuert die Verwaltungsfunktionen der Pakete A/B/D/T (PROFIL_PRODUKT_FUNKTIONEN).
- *     Setzen: User (authentifizierter User-Eingang) global/projekt, bestaetigter Koordinator nur
- *     fuer sein eigenes Projekt. Vorrang: projekt+funktion > projekt+alle > global+funktion >
+ *     Setzen: User (authentifizierter User-Eingang) global/projekt, bestaetigter Koordinator (auch Legacy-Koordinator)
+ *     fuer sein eigenes Projekt UND global (P22-T57, wie jev_schalten/ausweis_fristen; Audit gesetzt_von). Vorrang: projekt+funktion > projekt+alle > global+funktion >
  *     global+alle > Standard AUS. Lesefehler (z. B. vor Schema 113) -> AUS mit letzter_fehler.
  *     Gelesen wird NUR in Verwaltungspfaden, nie pro gewoehnlichem Tool-Aufruf.
  * (II) INTERNE TEST-OVERRIDES w1b_durchsetzung (Token-Selbstfeldpruefung F3, Neutralisierung der
@@ -303,8 +303,13 @@ export async function leseProfilProduktSchalter(
 export interface ProfilSchalterAkteur {
   system?: 'user';
   identity_id?: string;
-  /** P22-T34: Legacy-Koordinator ohne Ausweis (agent_id); nur Projektebene, Audit 'legacy:<id>'. */
+  /** P22-T34: Legacy-Koordinator ohne Ausweis (agent_id); Audit 'legacy:<id>'. */
   legacy_koordinator?: string;
+  /**
+   * P22-T57: Projekt des Aufrufs (authentifiziert, nicht aus ebene/project des Schalters). Bei ebene global prueft es den
+   * Koordinator: mit Ausweis muss er aktiver Koordinator DIESES Projekts sein, als Legacy-Koordinator ist es Pflicht.
+   */
+  aufruf_project?: string | null;
 }
 
 /**
@@ -333,21 +338,25 @@ export async function setzeProfilProduktSchalter(
   }
   let wer: string;
   let setter: string | null = null;
+  // P22-T57 (User 20.10.2026): Koordinator setzt auch global, gleiche Pruefung wie auf Projektebene. Projektebene: das
+  // Schalter-Projekt; global: das Projekt des Aufrufs (ohne Angabe beim Ausweis dessen eigenes Projekt).
+  const aufruf = typeof akteur.aufruf_project === 'string' && akteur.aufruf_project.trim() ? akteur.aufruf_project.trim() : null;
+  const rechtProjekt = e.ebene === 'projekt' ? project : aufruf;
   if (akteur.system === 'user') {
     wer = 'user';
-  } else if (akteur.identity_id && e.ebene === 'projekt') {
+  } else if (akteur.identity_id) {
     const r = await getPool().query(
-      "SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2 AND status='aktiv' AND rolle='koordinator'",
-      [akteur.identity_id, project]);
+      "SELECT 1 FROM agent_identitaeten WHERE id=$1 AND ($2::text IS NULL OR project=$2) AND status='aktiv' AND rolle='koordinator'",
+      [akteur.identity_id, rechtProjekt]);
     if (!r.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
     wer = akteur.identity_id;
     setter = akteur.identity_id;
-  } else if (akteur.legacy_koordinator && e.ebene === 'projekt') {
-    // P22-T34: Legacy-Koordinator (Rolle/Namensmuster koordinator, Name gehoert keiner Token-Identitaet) wie Koordinator mit Ausweis, nur Projektebene.
+  } else if (akteur.legacy_koordinator && rechtProjekt) {
+    // P22-T34: Legacy-Koordinator (Rolle/Namensmuster koordinator, Name gehoert keiner Token-Identitaet) wie Koordinator mit Ausweis.
     const agent = akteur.legacy_koordinator.trim();
     const { rolleFuerAgent } = await import('./agent-rollen.js');
     if (!agent || rolleFuerAgent(agent).rolle !== 'koordinator') throw new ProfilSchalterFehler('recht_fehlt');
-    const eigene = await getPool().query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [project, agent]);
+    const eigene = await getPool().query('SELECT 1 FROM agent_identitaeten WHERE project=$1 AND agent_id=$2 LIMIT 1', [rechtProjekt, agent]);
     if (eigene.rows.length) throw new ProfilSchalterFehler('recht_fehlt');
     wer = 'legacy:' + agent;
   } else {

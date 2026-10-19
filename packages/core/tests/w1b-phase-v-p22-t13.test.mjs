@@ -301,7 +301,9 @@ try{
    const fehler=async(fn)=>{try{await fn();return null;}catch(e){return e.code;}};
    check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'projekt',project,funktion:'schattenprofile',aktiv:true,grund:'test p22'},{identity_id:'ps-s'}))==='recht_fehlt','Subagent darf nicht schalten');
    check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'projekt',project,funktion:'schattenprofile',aktiv:true,grund:'test p22'},{identity_id:'ps-f'}))==='recht_fehlt','fremder Koordinator darf nicht schalten');
-   check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'global',funktion:'schattenprofile',aktiv:true,grund:'test p22'},{identity_id:'ps-k'}))==='recht_fehlt','global nur User');
+   // P22-T57: global auch Koordinator des Aufrufprojekts; fremdes Aufrufprojekt bzw. Subagent nie.
+   check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'global',funktion:'schattenprofile',aktiv:true,grund:'test p22'},{identity_id:'ps-k',aufruf_project:'fremd'}))==='recht_fehlt','global: Koordinator nur mit eigenem Aufrufprojekt');
+   check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'global',funktion:'schattenprofile',aktiv:true,grund:'test p22'},{identity_id:'ps-s',aufruf_project:project}))==='recht_fehlt','global: Subagent nie');
    check(await fehler(()=>C.setzeProfilProduktSchalter({ebene:'global',funktion:'schattenprofile',aktiv:true,grund:' '},{system:'user'}))==='grund_fehlt','Grund Pflicht');
    {const m=process.env.SYNAPSE_AGENT_BEZUG_MODUS;process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide';try{await C.setzeProfilProduktSchalter({ebene:'global',funktion:'alle',aktiv:true,grund:'test p22'},{system:'user'});}finally{if(m===undefined)delete process.env.SYNAPSE_AGENT_BEZUG_MODUS;else process.env.SYNAPSE_AGENT_BEZUG_MODUS=m;}} // P22-T31 Punkt 3: 'alle' EIN braucht Modus beide
    check((await C.leseProfilProduktSchalter('persona',project)).aktiv,'global alle EIN');
