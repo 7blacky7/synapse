@@ -76,12 +76,12 @@ function writeLargeTranscript(path, size, trailingTokenCount = true) {
 }
 
 try {
-  setTokens(95, 79);
+  setTokens(95, 89);
   const below = runHook();
   assert.equal(below.status, 0, below.stderr);
-  assert.equal(below.stdout, '', 'Unter 80 % darf kein Hook-Text erscheinen.');
+  assert.equal(below.stdout, '', 'Unter 90 % darf kein Hook-Text erscheinen.');
 
-  setTokens(79, 80);
+  setTokens(89, 90);
   const crossed = runHook();
   assert.equal(crossed.status, 0, crossed.stderr);
   const result = JSON.parse(crossed.stdout);
@@ -95,7 +95,9 @@ try {
   assert.match(context, /ERLEDIGT[\s\S]*OFFEN[\s\S]*NEXT[\s\S]*Dateien[\s\S]*Plan-IDs/i);
   assert.match(context, new RegExp("CC_SEND_VON=.*cc-send " + process.pid + " '/clear'"));
   assert.match(context, /thought get <8 Zeichen>/);
-  assert.match(context, /index_stats sitzung fortsetzung onboarding true/);
+  assert.match(context, /Melde dich zuerst mit dieser Agent-ID wieder an/);
+  assert.match(context, /index_stats, project:<Projekt>, agent_id:<eigene Agent-ID>, role:<Rolle>, sitzung:fortsetzung, onboarding:true/);
+  assert.match(context, /agent_id:<eigene Agent-ID> an JEDEN weiteren Synapse-Aufruf/);
 
   const duplicate = runHook();
   assert.equal(duplicate.status, 0, duplicate.stderr);
@@ -106,7 +108,7 @@ try {
   assert.equal(secondThreshold.status, 0, secondThreshold.stderr);
   assert.match(JSON.parse(secondThreshold.stdout).hookSpecificOutput.additionalContext, /cc-send/);
 
-  setTokens(80);
+  setTokens(90);
   const noWrapper = runHook({ session: 'no-wrapper-session', listedPid: 999999 });
   assert.equal(noWrapper.status, 0, noWrapper.stderr);
   const fallback = JSON.parse(noWrapper.stdout).hookSpecificOutput.additionalContext;

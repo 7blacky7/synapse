@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Codex-PostToolUse-Hook: Handoff-Hinweis ab einer einmaligen Kontextschwelle.
-// CODEX_CONTEXT_THRESHOLD_PERCENT ändert die Schwelle (Standard: 80).
+// CODEX_CONTEXT_THRESHOLD_PERCENT ändert die Schwelle (Standard: 90).
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -135,7 +135,7 @@ function buildContext(wrapperPid, tokens, window, thresholdPercent) {
   } else {
     handoff.push('Sende danach diese beiden Zeilen an deine eigene cc-wrap-Sitzung:');
     handoff.push("CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " '/clear'");
-    handoff.push("CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " 'Du bist <eigene Agent-ID>. thought get <8 Zeichen> lesen, dann löschen, als <eigene Agent-ID> weiterarbeiten: project status per Pfad, admin index_stats sitzung fortsetzung onboarding true.'");
+    handoff.push("CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " 'Du bist <eigene Agent-ID>. Melde dich zuerst mit dieser Agent-ID wieder an: project(action:status, path:<Arbeitsordner>, agent_id:<eigene Agent-ID>), dann admin(action:index_stats, project:<Projekt>, agent_id:<eigene Agent-ID>, role:<Rolle>, sitzung:fortsetzung, onboarding:true) und agent_id:<eigene Agent-ID> an JEDEN weiteren Synapse-Aufruf. Danach thought get <8 Zeichen> lesen, dann löschen, und als <eigene Agent-ID> weiterarbeiten.'");
     handoff.push('Beende diese Runde unmittelbar nach dem zweiten cc-send.');
   }
 
@@ -146,7 +146,7 @@ async function main() {
   const input = await readInput();
   if (input.hook_event_name !== 'PostToolUse' || typeof input.session_id !== 'string' || !input.session_id) return;
 
-  let thresholdPercent = 80;
+  let thresholdPercent = 90;
   if (process.env.CODEX_CONTEXT_THRESHOLD_PERCENT !== undefined) {
     thresholdPercent = Number(process.env.CODEX_CONTEXT_THRESHOLD_PERCENT);
     if (!Number.isInteger(thresholdPercent) || thresholdPercent < 1 || thresholdPercent > 100) return;
