@@ -28,6 +28,8 @@ import { aktuelleAgentIdentityId, loeseAgentZiel, aktuellerAgentAufruf } from '.
 import { kommunikationsAgent, eigenerKommunikationsAgent, kommunikationsKey, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
 import { eventsOffenBedingungSql } from './event-sichtbarkeit.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
+import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
+import { PFLICHT_EVENT_TYPEN } from './hinweis-katalog.js';
 import { sendMessage } from './chat.js';
 
 export type EventType =
@@ -361,8 +363,11 @@ export async function getPendingEventHints(
 }> {
   const boundedLimit = Math.max(1, Math.min(3, Math.trunc(limit)));
   const events = await getPendingEvents(project, agentId, boundedLimit);
+  // P22-T13 Paket C: abgeschaltete pending_events zeigen nur den Pflichtanteil (Stop/Sicherheit/Review);
+  // nichts wird quittiert, urgent (Eskalation) bleibt vollstaendig.
+  const sichtbar = hinweisAktiv('pending_events', agentId) ? events : events.filter(event => PFLICHT_EVENT_TYPEN.includes(event.eventType));
   return {
-    hints: events.map(event => ({
+    hints: sichtbar.map(event => ({
       event_id: event.id,
       event_type: event.eventType,
       summary: summarizePendingEvent(event),

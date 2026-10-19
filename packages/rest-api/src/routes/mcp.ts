@@ -12,7 +12,11 @@ import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 import { getProjectRecordById, mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
-import { mainToolAccess, mainToolListe, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
+import { mainToolAccess, mainToolListeMitProfil, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
+import { leseW1bSchalter } from '@synapse/core';
+import { initialisiereW1bAnmeldungHinweise, herkunftsortAusKopf } from '@synapse/core';
+// P22-T13 Paket C: gemeinsame Agentenprojektion (K16.4 Schritt 6) nach dem vollstaendigen Audit.
+import { projiziereToolAntwort } from '@synapse/core';
 import {
   // Code-Suche
   searchCode,
@@ -233,6 +237,7 @@ import { REVERSE_DEFINITION, fuehreReverseAus } from '@synapse/core';
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
 // P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
 import { filtereJevTool, jevToolSperre, istJevAdminAction, fuehreJevAdminAus, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus } from '@synapse/core';
+import { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus } from '@synapse/core';
 // P15 E1: Entscheidungs-Topf am Tool jev (Definition + Dispatcher aus core, stdio identisch)
 import { fuehreJevTopfActionAus, istJevTopfAction, JEV_TOPF_ACTIONS, JEV_TOPF_BESCHREIBUNG, JEV_TOPF_PARAMETER } from '@synapse/core';
 import {
@@ -954,7 +959,7 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, ...W1B_ADMIN_ACTIONS],
           description: 'Die auszufuehrende Admin-Action',
         },
         project: { type: 'string', description: 'Projekt-Name (erforderlich fuer alle Actions ausser confirm_idea)' },
@@ -983,6 +988,7 @@ export const MCP_TOOLS = [
         // P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget)
         ...JEV_ADMIN_PARAMETER,
         ...KONTEXTPROFIL_ADMIN_PARAMETER,
+        ...W1B_ADMIN_PARAMETER,
       },
       required: ['action'],
     },
@@ -4392,6 +4398,8 @@ async function handleToolCallKern(
       // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu stdio)
       if (istKontextprofilAdminAction(action as string)) return (await fuehreHinweisprofilAdminAus(action as string, args, effectiveAgentId)) ?? fuehreKontextprofilAdminAus(action as string, args, effectiveAgentId);
       if (istJevAdminAction(action)) return await fuehreJevAdminAus(action as string, args, effectiveAgentId);
+      // P22-T13 Paket D: Profilverwaltung (Akteur nur aus User-Herkunft/Tokenpruefung, nie aus Argumenten).
+      if (istW1bAdminAction(action as string)) return await fuehreW1bAdminAus(action as string, args);
       switch (action) {
         case 'migrate':
           return { success: false, error: 'Action "migrate" ist nur ueber MCP Server (stdio) verfuegbar' };
@@ -6189,9 +6197,15 @@ async function fuehreToolsCallAus(
   hauptagentSession: string | null,
   access: MainToolAccess,
   agentTransportToken?: string,
+  herkunft?: string,
 ): Promise<unknown> {
+  // P22-T13 K16.1: Originalargumente VOR jeder serverseitigen Vorbelegung sichern.
+  const explizitArgs: Record<string, unknown> = { ...toolArgs };
+  const tokenAufruf = Object.hasOwn(toolArgs, 'token') || agentTransportToken !== undefined;
+  const striktMain = tokenAufruf && access.profile === 'main-synapse' && !access.error
+    ? (await leseW1bSchalter('durchsetzung')).freigegeben : false;
   const profilFehler = (access.profile === 'main-synapse' || access.error)
-    ? mainToolAblehnung(toolName, toolArgs, access, MCP_TOOLS) : null;
+    ? mainToolAblehnung(toolName, toolArgs, access, MCP_TOOLS, { tokenAufruf: striktMain }) : null;
   if (profilFehler) {
     return baueToolErgebnis({ success: false, error: profilFehler,
       message: 'Werkzeug durch Hauptagenten-Profil oder Sessionbindung abgelehnt.' },
@@ -6223,6 +6237,8 @@ async function fuehreToolsCallAus(
   if (derivedAgentId && !toolArgs.agent_id) {
     toolArgs.agent_id = derivedAgentId;
   }
+  // Vorbelegte Selbstfelder (access.agentId/derivedAgentId) sind Transportdaten, keine Agentenangabe.
+  const vorbelegt = ['agent_id'].filter(f => Object.hasOwn(toolArgs, f) && toolArgs[f] !== explizitArgs[f]);
   return mitAgentToolAufruf(toolName, toolArgs, REST_INSTANCE_ID, async (kontext) => {
   toolArgs = kontext.args;
   if (kontext.antwort?.success === false) {
@@ -6285,8 +6301,11 @@ async function fuehreToolsCallAus(
       effectiveAgentId,
     );
     _logResult = JSON.stringify(toolResult);
+    // P22-T13 Paket C (K16.7): Audit oben mit dem vollstaendigen Ergebnis; nur die Agentenauslieferung wird
+    // projiziert (neues Objekt; ohne Snapshot/Schalter antwortanpassung identisch = t109).
+    const agentErgebnis = projiziereToolAntwort(toolResult, toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined);
     // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text (muss zum outputSchema passen).
-    result = haengeMcpBilderAn(baueToolErgebnis(toolResult, { tool: toolName, strukturiert: true }), bilder);
+    result = haengeMcpBilderAn(baueToolErgebnis(agentErgebnis, { tool: toolName, strukturiert: true }), bilder);
   } catch (toolErr) {
     // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
     // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.
@@ -6309,7 +6328,8 @@ async function fuehreToolsCallAus(
       effectiveAgentId,
     );
     _logResult = JSON.stringify(errorPayload);
-    result = baueToolErgebnis(errorPayload, { tool: toolName, isError: true, strukturiert: true });
+    result = baueToolErgebnis(projiziereToolAntwort(errorPayload, toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined),
+      { tool: toolName, isError: true, strukturiert: true });
   }
   // Activity-Log (best-effort, non-blocking) — Cloud-Pfad.
   void logToolCall({
@@ -6326,11 +6346,12 @@ async function fuehreToolsCallAus(
     result: _logResult,
   });
   return result;
-  }, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName));
+  }, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName), { originalArgs: explizitArgs, vorbelegt, herkunft });
 }
 
 export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
   initialisiereAssetKonfliktHinweise();
+  initialisiereW1bAnmeldungHinweise();
   /**
    * GET /mcp/sse - SSE Endpoint für MCP
    */
@@ -6408,8 +6429,10 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
           result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? mainToolListe(await beworbeneAgentTools(MCP_TOOLS), mainAccess)
-            : mainToolListe(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess) };
+            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS), mainAccess,
+              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined)
+            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess,
+              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined) };
           break;
 
         case 'tools/call': {
@@ -6421,6 +6444,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             hauptagentSession,
             mainAccess,
             typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined,
+            herkunftsortAusKopf(request.headers as Record<string, unknown>),
           );
           break;
         }
@@ -6499,8 +6523,10 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
           // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
           result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? mainToolListe(await beworbeneAgentTools(MCP_TOOLS), mainAccess)
-            : mainToolListe(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess) };
+            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS), mainAccess,
+              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined)
+            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS)), mainAccess,
+              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined) };
           break;
 
         case 'tools/call': {
@@ -6512,6 +6538,7 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             hauptagentSession,
             mainAccess,
             typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined,
+            herkunftsortAusKopf(request.headers as Record<string, unknown>),
           );
           break;
         }

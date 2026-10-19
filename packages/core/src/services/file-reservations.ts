@@ -11,6 +11,7 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { aktuelleAgentIdentityId, aktuellerAgentAufruf, leseAgentBezugModus, mitAgentAufrufKontext } from './agent-bezug.js';
 import { fileAgentKey, reservierungsQuelle } from './file-agent-bezug.js';
+import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
 import { contentHash } from './code-write.js';
 
 export interface FileReservation {
@@ -988,7 +989,8 @@ export async function getDirectWriteReservationHint(args: {
   agentId?: string;
   filePaths: readonly string[];
 }): Promise<DirectWriteReservationHint | undefined> {
-  if (!args.agentId) return undefined;
+  // P22-T13 Paket C: profilseitig abgeschaltet -> keine Abfrage.
+  if (!args.agentId || !hinweisAktiv('reservation_hint', args.agentId)) return undefined;
   try {
     const files = await findForeignActiveReservationPrimaries({
       project: args.project,

@@ -1,0 +1,329 @@
+/**
+ * P22-T13 Paket D: Verwaltungsaktionen fuer Schattenprofile, Typen, Profile, Persona, Produkt-Schalter und
+ * Tokenabruf. EIN Dispatcher fuer admin(stdio), admin(REST/MCP) und die REST-Routen der aktiven Web-UI
+ * (rest-api/routes/agent-profil.ts): alles geht ueber dieselben Core-Dienste (W1B_DIENSTE) und dieselben Pruefungen.
+ *
+ * AKTEUR (K10): ausschliesslich aus dem authentifizierten User-Eingang (user-herkunft.ts) oder der Tokenpruefung
+ * (Principal). Ein Tool-Argument (agent_id, role, user ...) ist nie ein Nachweis. Verwalten darf nur der User oder
+ * ein aktiver Koordinator DESSELBEN Projekts; die Rolle wird in PG gegengeprueft.
+ * SCHALTER: jede Funktionsgruppe haengt am Produkt-Schalter (Standard AUS, agent-profil-schalter.ts) und
+ * antwortet AUS mit funktion_aus; der Schalter selbst ist immer verwaltbar. Bestehende kontextprofil_* bleiben
+ * unveraendert (kontextprofil-admin.ts).
+ */
+import { getPool } from '../db/client.js';
+import {
+  W1B_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, darfProfilAendern, type W1bAkteur, type SchattenZustand, type ProfilInhalt, type TaskBindung,
+} from './agent-profil-vertrag.js';
+import {
+  PROFIL_PRODUKT_FUNKTIONEN, leseProfilProduktSchalter, setzeProfilProduktSchalter, type ProfilProduktFunktion,
+} from './agent-profil-schalter.js';
+import {
+  ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText, pruefeProfilVerwalter, userAuftragFuer,
+} from './agent-profil-verwalter.js';
+import { listePersonaVersionen } from './agent-persona.js';
+import { rufeWebUiKoordinatorTokenAb } from './agent-token-abruf.js';
+
+export const W1B_ADMIN_ACTIONS = [
+  'profil_schalter_status', 'profil_schalter_setzen', 'profil_uebersicht',
+  'schattenprofil_liste', 'schattenprofil_korrigieren', 'schattenprofil_bestaetigen', 'schattenprofil_ablehnen',
+  'typ_liste', 'typ_anlegen', 'typ_aendern', 'typ_revision_lesen',
+  'profil_aendern', 'profil_historie', 'profil_rollback',
+  'persona_liste', 'persona_versionen', 'persona_anlegen', 'persona_neue_version', 'persona_zuweisen', 'persona_entfernen',
+  'token_abrufen', 'web_ui_koordinator_token',
+  'task_bindung_lesen', 'task_bindung_festlegen', 'task_bindung_aendern', 'task_bindung_entblocken',
+] as const;
+export type W1bAdminAction = typeof W1B_ADMIN_ACTIONS[number];
+
+/** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
+export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
+  profil_funktion: { type: 'string', enum: [...PROFIL_PRODUKT_FUNKTIONEN, 'alle'], description: 'Profilverwaltung: Produkt-Schalter-Funktion (profil_schalter_setzen)' },
+  ziel_identity_id: { type: 'string', description: 'Profilverwaltung: Identitaets-ID des Zielprofils' },
+  schattenprofil_id: { type: 'string', description: 'Profilverwaltung: ID des Schattenprofils' },
+  zustand: { type: 'string', enum: [...SCHATTEN_ZUSTAENDE], description: 'Profilverwaltung: Filter schattenprofil_liste' },
+  erwartete_revision: { type: 'number', description: 'Profilverwaltung: erwartete aktuelle Revision (CAS)' },
+  ziel_revision: { type: 'number', description: 'Profilverwaltung: profil_rollback Zielrevision' },
+  korrektur: { type: 'object', additionalProperties: true, description: 'Profilverwaltung: Korrektur am Schattenprofil' },
+  profil_patch: { type: 'object', additionalProperties: true, description: 'Profilverwaltung: profil_aendern Aenderung (keine persona)' },
+  typ_id: { type: 'string', description: 'Profilverwaltung: Typ-ID' },
+  typ_schluessel: { type: 'string', description: 'Profilverwaltung: typ_anlegen Schluessel' },
+  typ_inhalt: { type: 'object', additionalProperties: true, description: 'Profilverwaltung: Typ-Inhalt (typ_anlegen/typ_aendern)' },
+  typ_revision: { type: 'number', description: 'Profilverwaltung: typ_revision_lesen Revision (Standard aktuell)' },
+  profil_scope: { type: 'string', enum: ['global', 'projekt'], description: 'Profilverwaltung: Katalogebene fuer Typ/Persona (global nur User)' },
+  persona_name: { type: 'string', description: 'Persona (nur auf User-Wunsch): Name der Vorlage' },
+  persona_inhalt: { type: 'object', additionalProperties: true, description: 'Persona (nur auf User-Wunsch): Inhalt der Vorlage/Version' },
+  persona_vorlage_id: { type: 'string', description: 'Persona: Vorlagen-ID' },
+  persona_version: { type: 'number', description: 'Persona: zugewiesene Bibliotheksversion' },
+  user_auftrag: { type: 'string', description: 'Persona/Profil: dokumentierter User-Auftrag (Wortlaut) fuer Koordinator-Aufrufe' },
+  user_zustimmung: { type: 'string', description: 'Schattenprofil: Nachweis der User-Zustimmung bzw. Freigabe zum Alleinbestaetigen' },
+  anlass: { type: 'string', description: 'token_abrufen: Anlass des Abrufs (Audit, ohne Tokenwert)' },
+  bindung_task_id: { type: 'string', description: 'Task-Bindung: Task-ID (UUID oder P<n>-T<m>)' },
+  bindung_art: { type: 'string', enum: ['identitaet', 'team'], description: 'Task-Bindung: Einzelidentitaet oder Team (offen = entblocken)' },
+  bindung_identity_ids: { type: 'array', items: { type: 'string' }, description: 'Task-Bindung: Identitaets-IDs (identitaet: genau eine; team: frei gewaehlte, desselben Projekts)' },
+};
+
+export function istW1bAdminAction(action: string | undefined): boolean {
+  return typeof action === 'string' && (W1B_ADMIN_ACTIONS as readonly string[]).includes(action);
+}
+
+/** Funktionsgruppe je Aktion; null = Schalterverwaltung selbst (immer verwaltbar). */
+const GRUPPE: Record<W1bAdminAction, ProfilProduktFunktion | null> = {
+  profil_schalter_status: null, profil_schalter_setzen: null,
+  profil_uebersicht: 'profilverwaltung', profil_aendern: 'profilverwaltung', profil_historie: 'profilverwaltung', profil_rollback: 'profilverwaltung',
+  schattenprofil_liste: 'schattenprofile', schattenprofil_korrigieren: 'schattenprofile', schattenprofil_bestaetigen: 'schattenprofile', schattenprofil_ablehnen: 'schattenprofile',
+  typ_liste: 'typkatalog', typ_anlegen: 'typkatalog', typ_aendern: 'typkatalog', typ_revision_lesen: 'typkatalog',
+  persona_liste: 'persona', persona_versionen: 'persona', persona_anlegen: 'persona', persona_neue_version: 'persona', persona_zuweisen: 'persona', persona_entfernen: 'persona',
+  token_abrufen: 'token_abruf', web_ui_koordinator_token: 'token_abruf',
+  task_bindung_lesen: 'task_bindung', task_bindung_festlegen: 'task_bindung', task_bindung_aendern: 'task_bindung', task_bindung_entblocken: 'task_bindung',
+};
+
+type Args = Record<string, unknown>;
+const s = (a: Args, k: string): string | undefined => { const v = a[k]; return typeof v === 'string' && v.trim() ? v.trim() : undefined; };
+const n = (a: Args, k: string): number | undefined => { const v = a[k]; return typeof v === 'number' && Number.isInteger(v) ? v : undefined; };
+const o = (a: Args, k: string): Record<string, unknown> | undefined => { const v = a[k]; return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : undefined; };
+function pflicht<T>(v: T | undefined, code: string): T { if (v === undefined) throw new ProfilVerwaltungFehler(code); return v; }
+
+async function zielIdentitaet(project: string, id: string | undefined): Promise<string> {
+  const ziel = pflicht(id, 'ziel_identity_id_fehlt');
+  const r = await getPool().query('SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2', [ziel, project]);
+  if (!r.rows[0]) throw new ProfilVerwaltungFehler('identitaet_unbekannt');
+  return ziel;
+}
+
+function pruefeEigenprofil(akteur: W1bAkteur, project: string, identityId: string): void {
+  if (!darfProfilAendern(akteur, { identity_id: identityId, project })) throw new ProfilVerwaltungFehler('eigenprofil_nicht_aenderbar');
+}
+
+async function schattenprofilImProjekt(project: string, id: string | undefined): Promise<string> {
+  const sid = pflicht(id, 'schattenprofil_id_fehlt');
+  const r = await getPool().query<{ project: string }>('SELECT project FROM agent_schattenprofile WHERE id=$1', [sid]);
+  if (r.rows[0]?.project !== project) throw new ProfilVerwaltungFehler('schattenprofil_unbekannt');
+  return sid;
+}
+
+/** Typ sichtbar fuer das Projekt (global oder dieses Projekt); Schreiben auf globale Typen nur der User. */
+async function typZugriff(project: string, typId: string | undefined, schreiben: boolean, akteur: W1bAkteur): Promise<string> {
+  const id = pflicht(typId, 'typ_id_fehlt');
+  const r = await getPool().query<{ scope: string; project: string | null }>('SELECT scope, project FROM agent_typen WHERE id=$1', [id]);
+  const t = r.rows[0];
+  if (!t || (t.scope === 'projekt' && t.project !== project)) throw new ProfilVerwaltungFehler('typ_unbekannt');
+  if (schreiben && t.scope === 'global') await pruefeProfilVerwalter(akteur, null, { nurUser: true });
+  return id;
+}
+
+async function vorlageImProjekt(project: string, id: string | undefined): Promise<string> {
+  const vid = pflicht(id, 'persona_vorlage_id_fehlt');
+  const r = await getPool().query("SELECT 1 FROM agent_persona_vorlagen WHERE id=$1 AND (scope='global' OR project=$2)", [vid, project]);
+  if (!r.rows[0]) throw new ProfilVerwaltungFehler('vorlage_unbekannt');
+  return vid;
+}
+
+/** Task-Bindung: Eingabe validieren; alle Identitaeten muessen zum Projekt gehoeren (K14.2, Team = frei gewaehlt, selbes Projekt). */
+async function bindungAus(project: string, a: Args): Promise<TaskBindung> {
+  const art = s(a, 'bindung_art');
+  const ids = Array.isArray(a.bindung_identity_ids) ? [...new Set((a.bindung_identity_ids as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim()).map(x => x.trim()))] : [];
+  if (art !== 'identitaet' && art !== 'team') throw new ProfilVerwaltungFehler('bindung_ungueltig');
+  if (art === 'identitaet' && ids.length !== 1) throw new ProfilVerwaltungFehler('bindung_ungueltig');
+  if (!ids.length) throw new ProfilVerwaltungFehler('team_leer');
+  const r = await getPool().query<{ n: number }>('SELECT count(*)::int AS n FROM agent_identitaeten WHERE id=ANY($1::text[]) AND project=$2', [ids, project]);
+  if (r.rows[0].n !== ids.length) throw new ProfilVerwaltungFehler('identitaet_unbekannt');
+  return art === 'identitaet' ? { art, identity_id: ids[0] } : { art, identity_ids: ids };
+}
+
+async function pruefeSchalter(funktion: ProfilProduktFunktion, project: string): Promise<void> {
+  const st = await leseProfilProduktSchalter(funktion, project);
+  if (!st.aktiv) throw new ProfilVerwaltungFehler('funktion_aus', { funktion, quelle: st.quelle, ...(st.letzter_fehler ? { letzter_fehler: st.letzter_fehler } : {}) });
+}
+
+async function ausfuehren(action: W1bAdminAction, project: string, a: Args, akteur: W1bAkteur): Promise<Record<string, unknown>> {
+  switch (action) {
+    case 'profil_schalter_status':
+      return { project, schalter: await Promise.all(PROFIL_PRODUKT_FUNKTIONEN.map(f => leseProfilProduktSchalter(f, project))) };
+    case 'profil_schalter_setzen': {
+      const ebene = (s(a, 'ebene') ?? 'projekt') as 'global' | 'projekt';
+      const funktion = pflicht(s(a, 'profil_funktion'), 'profil_funktion_fehlt') as ProfilProduktFunktion | 'alle';
+      await setzeProfilProduktSchalter(
+        { ebene, project: ebene === 'projekt' ? project : null, funktion, aktiv: a.aktiv as boolean, grund: String(a.grund ?? '') },
+        akteur.art === 'user' ? { system: 'user' } : { identity_id: akteur.art === 'identitaet' ? akteur.principal.identity_id : undefined });
+      return { project, schalter: await Promise.all(PROFIL_PRODUKT_FUNKTIONEN.map(f => leseProfilProduktSchalter(f, project))) };
+    }
+    case 'profil_uebersicht': {
+      // Tokenfrei: nur Profil-/Teamdaten und ob ein Token abrufbar ist, nie ein Tokenwert.
+      const r = await getPool().query(
+        `SELECT i.id AS identity_id, i.agent_id, i.name, i.instanz_nr, i.rolle, i.status, i.profil_revision, i.typ_id, i.typ_revision,
+           i.zuletzt_aktiv, i.context_epoch,
+           EXISTS (SELECT 1 FROM agent_identitaet_tokens t WHERE t.identity_id=i.id AND t.start_art IS NULL AND t.widerrufen_am IS NULL
+             AND (t.gueltig_bis IS NULL OR t.gueltig_bis>NOW()) AND t.token_verschluesselt IS NOT NULL) AS token_abrufbar,
+           z.vorlage_id AS persona_vorlage_id, z.version AS persona_version
+         FROM agent_identitaeten i LEFT JOIN agent_persona_zuweisungen z ON z.identity_id=i.id
+         WHERE i.project=$1 ORDER BY i.rolle, i.name, i.instanz_nr`, [project]);
+      return { project, profile: r.rows };
+    }
+    case 'schattenprofil_liste': {
+      const zustand = s(a, 'zustand');
+      if (zustand !== undefined && !(SCHATTEN_ZUSTAENDE as readonly string[]).includes(zustand)) throw new ProfilVerwaltungFehler('zustand_ungueltig');
+      return { project, schattenprofile: await W1B_DIENSTE.schatten.listeSchattenprofile(project, akteur, zustand ? { zustand: zustand as SchattenZustand } : undefined) };
+    }
+    case 'schattenprofil_korrigieren': {
+      const id = await schattenprofilImProjekt(project, s(a, 'schattenprofil_id'));
+      const schatten = await W1B_DIENSTE.schatten.korrigiereSchattenprofil(id, pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'),
+        pflicht(o(a, 'korrektur'), 'korrektur_fehlt') as Partial<ProfilInhalt>, akteur, pflichtText(a.grund, 'grund_fehlt'));
+      return { schattenprofil: schatten };
+    }
+    case 'schattenprofil_bestaetigen': {
+      const id = await schattenprofilImProjekt(project, s(a, 'schattenprofil_id'));
+      const typ = a.typ_id === null ? null : s(a, 'typ_id');
+      const erg = await W1B_DIENSTE.schatten.bestaetigeSchattenprofil({
+        schattenprofil_id: id, erwartete_revision: pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'),
+        ...(o(a, 'korrektur') ? { korrektur: o(a, 'korrektur') as Partial<ProfilInhalt> } : {}),
+        ...(typ !== undefined ? { typ_id: typ } : {}),
+        user_zustimmung: userAuftragFuer(akteur, a.user_zustimmung), grund: pflichtText(a.grund, 'grund_fehlt'),
+      }, akteur);
+      return { ...erg };
+    }
+    case 'schattenprofil_ablehnen': {
+      const id = await schattenprofilImProjekt(project, s(a, 'schattenprofil_id'));
+      return { schattenprofil: await W1B_DIENSTE.schatten.lehneSchattenprofilAb(id, pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'), akteur, pflichtText(a.grund, 'grund_fehlt')) };
+    }
+    case 'typ_liste':
+      return { project, typen: await W1B_DIENSTE.typen.listeTypen(project, akteur) };
+    case 'typ_anlegen': {
+      const scope = (s(a, 'profil_scope') ?? 'projekt') as 'global' | 'projekt';
+      if (scope !== 'global' && scope !== 'projekt') throw new ProfilVerwaltungFehler('scope_ungueltig');
+      if (scope === 'global') await pruefeProfilVerwalter(akteur, null, { nurUser: true });
+      const typ = await W1B_DIENSTE.typen.legeTypAn({
+        scope, project: scope === 'projekt' ? project : null, schluessel: pflicht(s(a, 'typ_schluessel'), 'typ_schluessel_fehlt'),
+        inhalt: pflicht(o(a, 'typ_inhalt'), 'typ_inhalt_fehlt') as ProfilInhalt, grund: pflichtText(a.grund, 'grund_fehlt'),
+      }, akteur);
+      return { typ };
+    }
+    case 'typ_aendern': {
+      const id = await typZugriff(project, s(a, 'typ_id'), true, akteur);
+      return { typ: await W1B_DIENSTE.typen.aendereTyp(id, pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'),
+        pflicht(o(a, 'typ_inhalt'), 'typ_inhalt_fehlt') as ProfilInhalt, akteur, pflichtText(a.grund, 'grund_fehlt')) };
+    }
+    case 'typ_revision_lesen': {
+      const id = await typZugriff(project, s(a, 'typ_id'), false, akteur);
+      return { revision: await W1B_DIENSTE.typen.leseTypRevision(id, n(a, 'typ_revision')) };
+    }
+    case 'profil_aendern': {
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      pruefeEigenprofil(akteur, project, ziel);
+      const patch = pflicht(o(a, 'profil_patch'), 'profil_patch_fehlt');
+      // K7: Persona nur ueber die Persona-Bibliothek mit User-Auftrag, nie als gewoehnliches Profilfeld.
+      if (Object.hasOwn(patch, 'persona')) throw new ProfilVerwaltungFehler('persona_nur_ueber_bibliothek');
+      const typ = a.typ_id === null ? null : s(a, 'typ_id');
+      const erg = await W1B_DIENSTE.profil.aendereProfil({
+        identity_id: ziel, erwartete_revision: pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'), patch: patch as Partial<ProfilInhalt>,
+        ...(typ !== undefined ? { typ_id: typ } : {}), grund: pflichtText(a.grund, 'grund_fehlt'),
+        ...(s(a, 'user_auftrag') ? { user_auftrag: s(a, 'user_auftrag') } : {}),
+      }, akteur);
+      return { ziel_identity_id: ziel, ...erg };
+    }
+    case 'profil_historie': {
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      return { ziel_identity_id: ziel, revisionen: await W1B_DIENSTE.profil.profilHistorie(ziel, akteur) };
+    }
+    case 'profil_rollback': {
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      pruefeEigenprofil(akteur, project, ziel);
+      const erg = await W1B_DIENSTE.profil.rollbackProfil(ziel, pflicht(n(a, 'ziel_revision'), 'ziel_revision_fehlt'),
+        pflicht(n(a, 'erwartete_revision'), 'erwartete_revision_fehlt'), akteur, pflichtText(a.grund, 'grund_fehlt'));
+      return { ziel_identity_id: ziel, ...erg };
+    }
+    case 'persona_liste': {
+      const vorlagen = await W1B_DIENSTE.persona.listeVorlagen(project, akteur);
+      const ziel = s(a, 'ziel_identity_id');
+      return { project, vorlagen, ...(ziel ? { zuweisung: await W1B_DIENSTE.persona.leseZuweisung(await zielIdentitaet(project, ziel)) } : {}) };
+    }
+    case 'persona_versionen': {
+      const id = await vorlageImProjekt(project, s(a, 'persona_vorlage_id'));
+      return { vorlage_id: id, versionen: await listePersonaVersionen(id, project, akteur) };
+    }
+    case 'persona_anlegen': {
+      const scope = (s(a, 'profil_scope') ?? 'projekt') as 'global' | 'projekt';
+      const version = await W1B_DIENSTE.persona.legeVorlageAn({
+        scope, project: scope === 'projekt' ? project : null, name: s(a, 'persona_name') as string, inhalt: o(a, 'persona_inhalt') as Record<string, unknown>,
+      }, akteur, a.user_auftrag as string);
+      return { version };
+    }
+    case 'persona_neue_version': {
+      const id = await vorlageImProjekt(project, s(a, 'persona_vorlage_id'));
+      return { version: await W1B_DIENSTE.persona.neueVersion(id, o(a, 'persona_inhalt') as Record<string, unknown>, akteur, a.user_auftrag as string) };
+    }
+    case 'persona_zuweisen': {
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      const id = await vorlageImProjekt(project, s(a, 'persona_vorlage_id'));
+      return { zuweisung: await W1B_DIENSTE.persona.weiseZu(ziel, id, pflicht(n(a, 'persona_version'), 'version_ungueltig'), akteur, a.user_auftrag as string) };
+    }
+    case 'persona_entfernen': {
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      await W1B_DIENSTE.persona.entferne(ziel, akteur, a.grund as string);
+      return { ziel_identity_id: ziel, entfernt: true };
+    }
+    case 'task_bindung_lesen':
+      return { project, task_id: pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt'), bindung: await W1B_DIENSTE.taskBindung.leseBindung(project, pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt')) };
+    case 'task_bindung_festlegen': {
+      const task = pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt');
+      return { project, task_id: task, bindung: await W1B_DIENSTE.taskBindung.legeFest(project, task, await bindungAus(project, a), akteur, s(a, 'grund')) };
+    }
+    case 'task_bindung_aendern': {
+      const task = pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt');
+      return { project, task_id: task, bindung: await W1B_DIENSTE.taskBindung.aendere(project, task, await bindungAus(project, a), akteur, pflichtText(a.grund, 'grund_fehlt')) };
+    }
+    case 'task_bindung_entblocken': {
+      const task = pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt');
+      return { project, task_id: task, bindung: await W1B_DIENSTE.taskBindung.entblocke(project, task, akteur, pflichtText(a.grund, 'grund_fehlt')) };
+    }
+    case 'token_abrufen': {
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      const t = await W1B_DIENSTE.tokenAbruf.rufeProfilTokenAb(project, ziel, akteur, a.anlass as string);
+      return { ziel_identity_id: ziel, ...t, hinweis: 'Token nur direkt anzeigen oder weitergeben; nie in Channel, Thought, Log, URL oder Startrezept ablegen.' };
+    }
+    case 'web_ui_koordinator_token': {
+      const t = await rufeWebUiKoordinatorTokenAb(project, akteur, s(a, 'ziel_identity_id'));
+      return { ...t, hinweis: 'Token des Web-UI-Koordinatorprofils fuer Uebernahme/Weitergabe; nie in Channel, Thought, Log, URL oder Startrezept ablegen.' };
+    }
+  }
+}
+
+const CODE = /^[a-z][a-z0-9_]{2,80}$/;
+/** Geheimnisfreie Fehlerantwort: nur Code (und bewusst freigegebene Details), nie Meldungstexte oder DB-Fehler. */
+function fehlerAntwort(action: string, e: unknown): Record<string, unknown> {
+  if (e instanceof W1bNichtUmgesetzt) return { success: false, action, error: e.code, paket: e.paket, funktion: e.funktion };
+  const code = (e as { code?: unknown })?.code;
+  if (typeof code === 'string' && CODE.test(code)) {
+    const d = (e as { details?: unknown }).details;
+    const rev = (e as { aktuelle_revision?: unknown }).aktuelle_revision;
+    return { success: false, action, error: code,
+      ...(d && typeof d === 'object' ? { details: d } : {}), ...(typeof rev === 'number' ? { aktuelle_revision: rev } : {}) };
+  }
+  return { success: false, action, error: 'w1b_admin_fehler' };
+}
+
+/** HTTP-Status fuer die REST-Routen; der Fehlercode bleibt der Vertrag. */
+export function w1bFehlerStatus(code: string): number {
+  if (code === 'recht_fehlt' || code === 'eigenprofil_nicht_aenderbar') return 403;
+  if (code === 'w1b_nicht_umgesetzt') return 501;
+  if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler') return 500;
+  if (/_unbekannt$|_nicht_gefunden$/.test(code) || code === 'keine_zuweisung') return 404;
+  if (code === 'funktion_aus' || code === 'konflikt' || /_veraltet$|_belegt$|_archiviert$|^token_/.test(code) || code === 'identitaet_nicht_aktiv') return 409;
+  return 400;
+}
+
+export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteur?: W1bAkteur | null } = {}): Promise<Record<string, unknown>> {
+  const akteur = opt.akteur !== undefined ? opt.akteur : aktuellerW1bAkteur();
+  if (!akteur) {
+    return { success: false, action, error: 'recht_fehlt',
+      message: 'Profilverwaltung nur durch den User (authentifizierter User-Eingang) oder einen Koordinator mit persoenlichem Ausweis.' };
+  }
+  try {
+    if (!istW1bAdminAction(action)) throw new ProfilVerwaltungFehler('aktion_unbekannt');
+    const project = pflicht(s(args, 'project'), 'project_fehlt');
+    await pruefeProfilVerwalter(akteur, project);
+    const gruppe = GRUPPE[action as W1bAdminAction];
+    if (gruppe) await pruefeSchalter(gruppe, project);
+    return { success: true, action, ...(await ausfuehren(action as W1bAdminAction, project, args, akteur)) };
+  } catch (e) {
+    return fehlerAntwort(action, e);
+  }
+}

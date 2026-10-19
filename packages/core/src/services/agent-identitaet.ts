@@ -10,6 +10,8 @@ import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
 import { leseAgentBezugModus, aktuellerAgentAufruf, type AgentBezugStand } from './agent-bezug.js';
 import { beginneIdentitaetsSitzung } from './agent-identitaet-sitzungen.js';
+import { selbstKonflikte, type Selbstangaben } from './agent-selbstfelder.js';
+import { speichereTokenChiffre } from './agent-token-abruf.js';
 
 export interface TokenIdentitaetSchalter {
   freigegeben: boolean;
@@ -39,7 +41,8 @@ export async function leseTokenIdentitaetSchalter(): Promise<TokenIdentitaetScha
 }
 
 export class AgentIdentitaetFehler extends Error {
-  constructor(public readonly code: string) { super(code); }
+  /** P22-T13: optionale geheimnisfreie Details (z. B. Feldnamen eines Identitaetskonflikts). */
+  constructor(public readonly code: string, public readonly details?: Record<string, unknown>) { super(code); }
 }
 export interface AgentIdentitaet {
   id: string;
@@ -223,13 +226,15 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
     const gueltigBis = e.start_art ? new Date(Date.now() + startTtlMs) : null;
     await c.query(`INSERT INTO agent_identitaet_tokens (id, identity_id, token_hash, token_praefix, start_art, gueltig_bis)
       VALUES ($1,$2,$3,$4,$5,$6)`, [tokenId, identitaet.id, hashAgentToken(token), praefix, e.start_art ?? null, gueltigBis]);
+    // P22-T13 D (02845fc2): abrufbare Ablage nur fuer Hauptausweise und nur bei konfiguriertem API-Schluessel.
+    if (!e.start_art) await speichereTokenChiffre(c, tokenId, token);
     await audit(c, identitaet.id, recht.wer, 'token_ausstellen', null, { token_id: tokenId, token_praefix: praefix }, e.grund);
     return { token, token_id: tokenId, token_praefix: praefix, identitaet };
   });
 }
 
 /** Validiert den Ausweis bei JEDEM Aufruf; erhoeht nur bei anmelden die Epoch. */
-async function tokenIdentitaet(token: string, project: string | undefined, anmelden: boolean, bezugsStand?: AgentBezugStand): Promise<AgentTokenAnmeldung> {
+async function tokenIdentitaet(token: string, project: string | undefined, anmelden: boolean, bezugsStand?: AgentBezugStand, selbst?: Selbstangaben): Promise<AgentTokenAnmeldung> {
   await freigabe();
   const bezug = bezugsStand ?? aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   if (typeof token !== 'string' || !/^sai_[a-f0-9]{64}$/.test(token)) throw new AgentIdentitaetFehler('agent_token_ungueltig');
@@ -243,6 +248,11 @@ async function tokenIdentitaet(token: string, project: string | undefined, anmel
     let i = r.rows[0];
     if (!i || i.status !== 'aktiv') throw new AgentIdentitaetFehler('agent_token_ungueltig');
     if (project !== undefined && project !== i.project) throw new AgentIdentitaetFehler('agent_token_fremdes_projekt');
+    // P22-T13 F3: ausdruecklicher Widerspruch VOR Epoch/Lauf/Sitzung/zuletzt_benutzt -> Rollback, keine Nebenwirkung.
+    if (selbst) {
+      const felder = selbstKonflikte({ agent_id: i.agent_id, rolle: i.rolle }, selbst);
+      if (felder.length) throw new AgentIdentitaetFehler('identitaet_konflikt', { felder });
+    }
     if (bezug.modus === 'alt') {
       // Rueckwechsel adoptiert keine ausschliesslich im ID-Modus entstandenen Namenszustaende.
       // Nur eine schon vorher an GENAU diese Identitaet gebundene Legacy-Sitzung ist nutzbar.
@@ -337,12 +347,12 @@ async function tokenIdentitaet(token: string, project: string | undefined, anmel
   });
 }
 /** Neuer Kontext; keine Events, ACKs, Channels, Reservierungen oder Waits werden angefasst. */
-export async function meldeAgentMitTokenAn(token: string, project?: string, bezug?: AgentBezugStand): Promise<AgentTokenAnmeldung> {
-  return tokenIdentitaet(token, project, true, bezug);
+export async function meldeAgentMitTokenAn(token: string, project?: string, bezug?: AgentBezugStand, selbst?: Selbstangaben): Promise<AgentTokenAnmeldung> {
+  return tokenIdentitaet(token, project, true, bezug, selbst);
 }
 /** Transportbindung bei Folgeaufrufen pruefen, ohne Kontext-Epoch zu erhoehen. */
-export async function pruefeAgentToken(token: string, project?: string, bezug?: AgentBezugStand): Promise<AgentTokenAnmeldung> {
-  return tokenIdentitaet(token, project, false, bezug);
+export async function pruefeAgentToken(token: string, project?: string, bezug?: AgentBezugStand, selbst?: Selbstangaben): Promise<AgentTokenAnmeldung> {
+  return tokenIdentitaet(token, project, false, bezug, selbst);
 }
 export async function widerrufeAgentToken(project: string, tokenId: string, principal: AgentIdentitaetPrincipal, grund: string): Promise<void> {
   await freigabe();

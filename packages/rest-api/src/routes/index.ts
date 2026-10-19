@@ -29,3 +29,4 @@ export { agentWissenRoutes } from './agent-wissen.js';
 export { modelPoolRoutes } from './model-pool.js';
 export { agentRuntimeRoutes } from './agent-runtimes.js';
 export { projektDbRoutes } from './projekt-db.js';
+export { agentProfilRoutes } from './agent-profil.js';

@@ -41,6 +41,7 @@ import {
   agentRuntimeRoutes,
   modelPoolRoutes,
   projektDbRoutes,
+  agentProfilRoutes,
 } from './routes/index.js';
 import {reverseEingangRoutes} from './routes/reverse-eingang.js';
 import { internDaemonRoutes } from './routes/intern-daemon.js';
@@ -117,6 +118,8 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(specialistRoutes);
   await fastify.register(workspaceRoutes);
   await fastify.register(projektDbRoutes);
+  // P22-T13 Paket D: REST-Vertrag der Profilverwaltung fuer die aktive Web-UI (Standard: Produkt-Schalter AUS).
+  await fastify.register(agentProfilRoutes);
   // Tray-Routen (TRAY-1): read-only Endpunkte fuer den Go-Tray. Ersetzen dessen
   // eigene PG-Verbindung mit hartcodierter IP (tray.go:309). Hinter Auth-Hook (AUTH-4).
   await fastify.register(trayRoutes);

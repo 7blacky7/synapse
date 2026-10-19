@@ -27,6 +27,8 @@
 
 import { getPool } from '../db/client.js';
 import { kommunikationsKey, eigenerKommunikationsAgent } from './kommunikation-agent.js';
+import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
+import { istPflichtFehlermuster } from './hinweis-katalog.js';
 import type { ErrorPatternWarning } from './error-patterns.js';
 import type { FehlerBefund } from './fehlermuster-pruefung.js';
 
@@ -239,8 +241,12 @@ export async function holeFehlermusterHinweise(agentId: string | undefined): Pro
     if (!liste || liste.length === 0) return null;
     const jetzt = Date.now();
     const frisch = liste.filter((a) => jetzt - a.zeit <= HALTBAR_MS);
-    const jetztAus = frisch.slice(0, MAX_JE_ANTWORT);
-    const rest = frisch.slice(MAX_JE_ANTWORT);
+    // P22-T13 Paket C: abgeschaltete fehlermuster liefern nur den Pflichtanteil (severity error bzw. Syntaxbefund);
+    // der optionale Rest bleibt im Vorrat und gilt nicht als gesehen (Wiedereinschalten liefert ihn).
+    const nurPflicht = !hinweisAktiv('fehlermuster', agentId);
+    const auswahl = nurPflicht ? frisch.filter((a) => !!a.befund && istPflichtFehlermuster(a.befund)) : frisch;
+    const jetztAus = auswahl.slice(0, MAX_JE_ANTWORT);
+    const rest = frisch.filter((a) => !jetztAus.includes(a));
     if (rest.length > 0) ausstehend.set(kommunikationsKey(agentId), rest);
     else ausstehend.delete(kommunikationsKey(agentId));
     if (jetztAus.length === 0) return null;

@@ -14,16 +14,12 @@
 import type { ConsolidatedTool } from './types.js';
 import { holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus } from '@synapse/core';
 import { str, reqStr, bool, strArray } from './types.js';
-import {
-  getIndexStats,
-  getDetailedStats,
-  migrateEmbeddings,
-  restoreFromBackup,
-  saveProjectIdea,
-  confirmIdea,
-  indexMediaWrapper,
-} from '../index.js';
+import { getIndexStats, getDetailedStats } from '../stats.js';
+import { migrateEmbeddings, restoreFromBackup } from '../migration.js';
+import { saveProjectIdea, confirmIdea } from '../ideas.js';
+import { indexMediaWrapper } from '../search.js';
 import { migrateToRelativePaths, JEV_ADMIN_ACTIONS, JEV_ADMIN_BESCHREIBUNG, JEV_ADMIN_PARAMETER, istJevAdminAction, fuehreJevAdminAus, KONTEXTPROFIL_ADMIN_ACTIONS, KONTEXTPROFIL_ADMIN_PARAMETER, istKontextprofilAdminAction, fuehreKontextprofilAdminAus, wendeSitzungsSignalAn, SITZUNG_PARAMETER } from '@synapse/core';
+import { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus } from '@synapse/core';
 
 export const adminTool: ConsolidatedTool = {
   definition: {
@@ -34,7 +30,7 @@ export const adminTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS],
+          enum: ['migrate', 'restore', 'save_idea', 'confirm_idea', 'index_media', 'index_stats', 'detailed_stats', 'migrate_paths', ...JEV_ADMIN_ACTIONS, ...KONTEXTPROFIL_ADMIN_ACTIONS, ...W1B_ADMIN_ACTIONS],
           description: 'Die auszuführende Admin-Action',
         },
         // === migrate ===
@@ -103,6 +99,7 @@ export const adminTool: ConsolidatedTool = {
         // === P15-T33 E0.5: Jev-Steuerung (jev_status, jev_schalten, jev_kosten, jev_budget) ===
         ...JEV_ADMIN_PARAMETER,
         ...KONTEXTPROFIL_ADMIN_PARAMETER,
+        ...W1B_ADMIN_PARAMETER,
       },
       required: ['action'],
     },
@@ -116,6 +113,8 @@ export const adminTool: ConsolidatedTool = {
     // P15-T33 E0.5: Jev-Schalter, Kosten, Budget (Logik in core jev-admin.ts, identisch zu REST)
     if (istKontextprofilAdminAction(action)) return (await fuehreHinweisprofilAdminAus(action, args, str(args, 'agent_id'))) ?? fuehreKontextprofilAdminAus(action, args, str(args, 'agent_id'));
     if (istJevAdminAction(action)) return await fuehreJevAdminAus(action, args, str(args, 'agent_id'));
+    // P22-T13 Paket D: Profilverwaltung (Akteur nur aus User-Herkunft/Tokenpruefung, nie aus Argumenten).
+    if (istW1bAdminAction(action)) return await fuehreW1bAdminAus(action, args);
 
     switch (action) {
       // ===== MIGRATE =====

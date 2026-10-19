@@ -4,6 +4,7 @@ import { getPool } from '../db/client.js';
 import { aktuelleAgentIdentityId } from './agent-bezug.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { pruefeGitBranchName } from './git-branch.js';
+import { claimArtAktiv } from './agent-zuschnitt-kontext.js';
 
 export async function projektHinweisOption(project: string, agent: string, aktiv?: boolean): Promise<{success: true; project: string; hinweise: boolean}> {
   if (!project) throw new Error('Projekt erforderlich');
@@ -51,6 +52,8 @@ export async function claimHinweis(o: {
   intervallMs?:number|null; wiederholen?:boolean; jetzt?:number;
 }): Promise<boolean> {
   if (!o.project || !o.agentId) return false;
+  // P22-T13 Paket C: profilseitig abgeschaltete Art -> kein Claim (Zustellmarke bleibt frei; Wiedereinschalten liefert neu).
+  if (!claimArtAktiv(o.art, o.agentId)) return false;
   const identity = aktuelleAgentIdentityId(o.project,o.agentId);
   if (identity) {
     const r=await getPool().query(

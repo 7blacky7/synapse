@@ -1,6 +1,8 @@
 /** P7-T53: Alle Agenten koennen Tasks gemeinsam bearbeiten. Profile sind nur Empfehlungen. */
 import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
 import { getPool } from '../db/client.js';
+import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
+import { bindungsSperre, pruefeTaskBindungZugriff } from './agent-profil-vertrag.js';
 import { taskBeteiligte, mitTaskBeteiligten, sichtbareTaskBeteiligte, beteiligungsHinweise } from './plan-beteiligung.js';
 import { getWrapperStatus } from './wrapper-status.js';
 import { getModel } from './model-registry.js';
@@ -108,6 +110,9 @@ const kurzEmpfehlung = (e: EmpfehlungMin) => ({
 export async function passendeTasks(project: string, agentId: string, planRef?: string | null, jetzt: Date = new Date()): Promise<Record<string, unknown>> {
   if (!agentId?.trim()) return { success: false, message: 'agent_id ist Pflicht.' };
   try {
+    const identityId = aktuelleAgentIdentityId(project, agentId.trim());
+    const bindungAktiv = (await leseProfilProduktSchalter('task_bindung', project)).aktiv;
+    let gebunden = 0;
     const profil = await ladeAgentProfil(project, agentId);
     const plaene: ProjectPlan[] = planRef
       ? [await getPlan(project, planRef)].filter((p): p is ProjectPlan => !!p)
@@ -120,6 +125,7 @@ export async function passendeTasks(project: string, agentId: string, planRef?: 
       for (const t of plan.tasks) {
         if (t.status !== 'todo' && t.status !== 'in_progress') continue;
         if (taskSchlaeft(t, jetzt)) { zurueckgestellt++; continue; }
+        if (bindungAktiv && await bindungsSperre(project, t.id, identityId, t.kurz_id ?? t.id)) { gebunden++; continue; }
         const e = t.empfehlung as EmpfehlungMin | undefined;
         const grund = !e ? 'keine Empfehlung' : e.unsicher ? 'unsicher'
           : typeof profil === 'string' ? profil
@@ -144,6 +150,7 @@ export async function passendeTasks(project: string, agentId: string, planRef?: 
       success: true, profil, tasks, passend, offen_fuer_koordinator: offenFuerKoordinator,
       nicht_passend: nichtPassend,
       ...(zurueckgestellt > 0 ? { zurueckgestellt_ausgeblendet: zurueckgestellt } : {}),
+      ...(gebunden > 0 ? { gebunden_ausgeblendet: gebunden } : {}),
       message: `${tasks.length} offene/laufende Task(s). Jeder Agent darf sich per plan(uebernehmen) anmelden; Profilhinweise sind Empfehlungen.`,
     };
   } catch (err) { return { success: false, message: err instanceof Error ? err.message : String(err) }; }
@@ -161,6 +168,8 @@ async function aendereBeteiligung(project: string, planRef: string | null | unde
     if (typeof gefunden === 'string') return { success: false, message: gefunden };
     const id = agentId.trim();
     const identityId = aktuelleAgentIdentityId(project, id);
+    const sperre = await pruefeTaskBindungZugriff(project, gefunden.id, identityId, gefunden.kurz_id ?? gefunden.id);
+    if (sperre) return { success: false, message: sperre };
     const eigen = (x: { agent_id: string; identity_id?: string }) => identityId ? x.identity_id === identityId : !x.identity_id && x.agent_id === id;
     const r = await aendereTasks(project, plan.id, tasks => {
       const i = tasks.findIndex(t => t.id === gefunden.id);

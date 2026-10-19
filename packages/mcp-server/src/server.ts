@@ -4,8 +4,10 @@
  */
 
 import { randomUUID } from 'crypto';
-import { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
-import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise } from '@synapse/core';
+import { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, gateToolListe } from '@synapse/core';
+import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise, initialisiereW1bAnmeldungHinweise } from '@synapse/core';
+// P22-T13 Paket C: Hinweisentscheidung vor First-Use-Marke und gemeinsame Agentenprojektion (wie REST).
+import { hinweisAktiv, projiziereTextAntwort } from '@synapse/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -106,6 +108,7 @@ function buildFirstUseHint(toolName: string): Record<string, unknown> | null {
  */
 export function createServer(): Server {
   initialisiereAssetKonfliktHinweise();
+  initialisiereW1bAnmeldungHinweise();
   const server = new Server(
     {
       name: 'synapse-mcp',
@@ -155,7 +158,8 @@ export function createServer(): Server {
   // P15-T33 E0.5: ist Jev GLOBAL abgeschaltet (admin jev_schalten), fehlt das Tool jev in der Liste.
   // Grenze: MCP-Clients holen die Liste meist nur beim Verbinden - wirksam ab der naechsten Sitzung.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: await beworbeneAgentTools(await filtereJevTool(ALLE_DEFINITIONEN)),
+    tools: await gateToolListe(await beworbeneAgentTools(await filtereJevTool(ALLE_DEFINITIONEN)),
+      { transportToken: process.env.SYNAPSE_AGENT_TOKEN || undefined }),
   }));
 
   // Tool-Aufrufe verarbeiten
@@ -189,7 +193,8 @@ export function createServer(): Server {
       : agentId ?? SERVER_INSTANCE_ID;
     const firstUseKey = `${sessionKey}:${name}`;
     let toolGuideHint: Record<string, unknown> | null = null;
-    if (!firstUseHinted.has(firstUseKey)) {
+    // P22-T13 Paket C: abgeschalteter tool_guide wird weder gebaut noch als gezeigt markiert.
+    if (!firstUseHinted.has(firstUseKey) && hinweisAktiv('tool_guide')) {
       toolGuideHint = buildFirstUseHint(name);
       // Auch bei null markieren — kein "Retry" wenn Tool im Guide fehlt
       firstUseHinted.add(firstUseKey);
@@ -794,10 +799,12 @@ export function createServer(): Server {
     });
     // P10-T51 (K2): nach ALLEN Anhaengen einmal kompakt serialisieren (null-Felder weg, keine
     // Einrueckung, success ergaenzt) — derselbe Helfer wie auf dem REST-Weg.
+    // P22-T13 Paket C (K16.4/K16.7): Audit (logToolCall oben) bleibt vollstaendig; nur die Agentenauslieferung
+    // wird projiziert. Ohne Snapshot/Schalter antwortanpassung unveraendert (t109).
     return kompaktiereTextErgebnis(
-      await attachResponseHooks(
+      projiziereTextAntwort(await attachResponseHooks(
         baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean },
-      ),
+      ), name, typeof args?.action === 'string' ? args.action : undefined),
       name,
       typeof args?.action === 'string' ? args.action : undefined,
     );

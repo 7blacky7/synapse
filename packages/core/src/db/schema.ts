@@ -35,6 +35,7 @@ import { createHash } from 'node:crypto';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
 import { getPool } from './client.js';
 import { AGENT_BEZUG_SCHEMA_SQL } from './agent-bezug-schema.js';
+import { AGENT_PROFIL_SCHEMA_SQL } from './agent-profil-schema.js';
 import { AGENT_IDENTITAET_SCHEMA_SQL } from './agent-identitaet-schema.js';
 import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
 import { HINWEIS_SCHEMA_SQL } from './ausloeser-hinweise-schema.js';
@@ -3133,6 +3134,7 @@ ${PROJECT_RESTORE_SCHEMA_SQL}
 ${PLAN_TASK_SCHEMA_SQL}
 ${AGENT_IDENTITAET_SCHEMA_SQL}
 ${AGENT_BEZUG_SCHEMA_SQL}
+${AGENT_PROFIL_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

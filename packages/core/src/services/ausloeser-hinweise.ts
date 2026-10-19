@@ -8,6 +8,7 @@ import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { aktuelleAgentIdentityId, loeseAgentZiel } from './agent-bezug.js';
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
+import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
 
 export interface HinweisKontext {
   tool: string;
@@ -108,6 +109,9 @@ export async function haengeAusloeserHinweiseAn(
   optionen: HinweisOptionen = {},
 ): Promise<unknown> {
   if (!quellen.size || !agentId || (objekt(result) && 'ausloeser_hinweise' in result)) return result;
+  // P22-T13 Paket C: profilseitig abgeschaltete Quellen (ausloeser.<quelle_id>) weder pruefen noch claimen;
+  // sind alle aus, keine DB-Verbindung. Ohne Snapshot immer an (t109). Legacy-Profile wirken zusaetzlich.
+  if (![...quellen.keys()].some(id => hinweisAktiv('ausloeser.' + id, agentId))) return result;
   let project = typeof args.project === 'string' ? args.project : '';
   const daten = objekt(result) ? result : { result };
   const pool = optionen.pool ?? getPool();
@@ -146,7 +150,7 @@ export async function haengeAusloeserHinweiseAn(
     project = meta.projekt;
     const ctx = baueHinweisKontext(tool,{...args,project},daten,agentId,meta.sitzung,controller.signal);
     const kandidaten: Array<AusloeserHinweis & {quelle_id:string}> = [];
-    const aktiveQuellen = [...quellen.values()].filter(q=>!!project && meta.aktiv && quelleErlaubt(q.quelle_id,meta.profile,agentId,identity));
+    const aktiveQuellen = [...quellen.values()].filter(q=>!!project && meta.aktiv && quelleErlaubt(q.quelle_id,meta.profile,agentId,identity) && hinweisAktiv('ausloeser.'+q.quelle_id,agentId));
     await Promise.all(aktiveQuellen.map(async q=>{
       try {
         const hinweise = await q.pruefe(ctx);

@@ -35,6 +35,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { taskIndex, taskDublettenHinweis, geaenderteTaskIds } from './plan-suche.js';
+import { pruefeTaskBindungBearbeiten } from './agent-profil-vertrag.js';
 import {
   ProjectPlan,
   ProjectTask,
@@ -954,6 +955,8 @@ export async function updateTask(
     return null;
   }
   const zielId = fund.task.id;
+  const sperre = await pruefeTaskBindungBearbeiten(project, zielId, fund.task.kurz_id ?? zielId);
+  if (sperre) throw new Error(sperre);
   const r = await schreibePlan(project, fund.plan.id, (stand) => {
     const i = stand.tasks.findIndex((t) => t.id === zielId);
     if (i === -1) return null;

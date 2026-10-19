@@ -29,7 +29,7 @@ const RESULT_CAP = (() => {
  * P15-T33 E1: Tool-Actions, deren Antwort NIE in tool_calls.result landet. code_check(fall) liefert die
  * maskierten Schattendaten eines Erklaerungsfalls - die gehoeren nur in erklaerung_faelle, nicht ins Audit.
  */
-const OHNE_RESULT = new Set(['code_check:fall']);
+const OHNE_RESULT = new Set(['code_check:fall', 'admin:token_abrufen', 'admin:web_ui_koordinator_token']);
 
 /**
  * Schreibzugriff-Heuristik aus dem Action-Namen. Verben werden als ganze

@@ -571,7 +571,38 @@ export type { RespawnDecision } from './services/specialist-respawn.js';
 export { resolveAgentId } from './services/agent-id-resolver.js';
 
 export { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, AGENT_TOKEN_PARAMETER } from './services/agent-token-tools.js';
-export type { AgentToolKontext } from './services/agent-token-tools.js';
+export type { AgentToolKontext, AgentToolAufrufOptionen, BestaetigterAufrufKontext } from './services/agent-token-tools.js';
+// P22-T13 Phase V: W1b-Vertrag, Gate-Kern, Selbstfelder, Schalter, Tokentresor, Schema 113.
+export { gateToolListe, bestaetigterAufrufKontext } from './services/agent-token-tools.js';
+export * from './services/agent-profil-vertrag.js';
+export * from './services/tool-gate.js';
+export * from './services/agent-selbstfelder.js';
+export * from './services/agent-profil-schalter.js';
+export { PAKET_A_DIENSTE, ProfilDienstFehler, pruefeProfilInhalt, leseWirksamenTypInhalt } from './services/agent-profil-dienst-a.js';
+export * from './services/agent-token-tresor.js';
+// P22-T13 Paket C: vollstaendiger Hinweiskatalog (Katalognamen zusaetzlich ueber agent-profil-vertrag),
+// requestweiter Zuschnitt-Snapshot, Profilresolver und gemeinsame Antwortpipeline REST+stdio.
+export { HINWEIS_PRODUZENTEN, PFLICHT_EVENT_TYPEN, pflichtAnteil, istPflichtFehlermuster, katalogIdFuerClaimArt, standardFuerStufe } from './services/hinweis-katalog.js';
+export type { HinweisProduzent, HinweisFilter, HinweisStufe } from './services/hinweis-katalog.js';
+export { hinweisAktiv, claimArtAktiv, aktuellerZuschnittSnapshot, holeZuschnittMetriken, hinweisBudgetMs, _zuschnittMetrikenZuruecksetzen } from './services/agent-zuschnitt-kontext.js';
+export type { ZuschnittSnapshot, ZuschnittStufe, ZuschnittMessung, ZuschnittLimitAnpassung } from './services/agent-zuschnitt-kontext.js';
+export { leseWirksamesProfil, bereiteZuschnittSnapshotVor, wendeProfilLimitsAn, projiziereToolAntwort, projiziereTextAntwort, projiziereAgentAntwort, zuschnittDiagnose, ZuschnittFehler, wirksamerZuschnittResolver } from './services/agent-zuschnitt.js';
+// P22-T13 Paket D: Persona-Bibliothek, Tokenabruf, Verwaltungs-Dispatcher (admin + REST).
+export { ProfilVerwaltungFehler, aktuellerW1bAkteur, pruefeProfilVerwalter, USER_AUFTRAG_STANDARD } from './services/agent-profil-verwalter.js';
+export { personaDienst, listePersonaVorlagen, listePersonaVersionen, legePersonaVorlageAn, legePersonaVersionAn, weisePersonaZu, entfernePersona, lesePersonaZuweisung } from './services/agent-persona.js';
+export { tokenAbrufDienst, rufeProfilTokenAb, rufeWebUiKoordinatorTokenAb, speichereTokenChiffre } from './services/agent-token-abruf.js';
+export type { ProfilTokenAbruf, WebUiKoordinatorToken } from './services/agent-token-abruf.js';
+export { W1B_ADMIN_ACTIONS, W1B_ADMIN_PARAMETER, istW1bAdminAction, fuehreW1bAdminAus, w1bFehlerStatus } from './services/agent-profil-admin.js';
+export type { W1bAdminAction } from './services/agent-profil-admin.js';
+export { AGENT_PROFIL_SCHEMA_SQL } from './db/agent-profil-schema.js';
+// Paket B: Anmeldung/Koordinatorliste/Fortsetzung; registerChatAgent = Legacy-Register + additives Schattenprofil (nur bei EIN).
+export {
+  registerChatAgent, ANMELDUNGS_DIENSTE, AnmeldungsFehler, anmeldungEnvAktiv, schattenprofileAktiv, leereAnmeldungGateCache,
+  herkunftsortAusKopf, merkeHerkunftsort, legeErstenKoordinatorAusgabe, waehleRegisterWeg, nachLegacyAnmeldung,
+  fortsetzungFuerAntwort, koordinatorListeAntwort, initialisiereW1bAnmeldungHinweise, registriereW1bAnmeldungHinweise,
+  entregistriereW1bAnmeldungHinweise, SCHATTEN_KOORDINATOR_QUELLE, TOKEN_BEREIT_QUELLE, SCHATTEN_ABRUF_TEXT,
+} from './services/agent-anmeldung.js';
+export type { ErsterKoordinatorAusgabe, LegacyAnmeldung } from './services/agent-anmeldung.js';
 
 // PA-1: unbekannte Tool-Parameter melden statt still verwerfen.
 // Liegt in core, weil BEIDE Strecken (stdio-MCP und REST) dieselbe Pruefung brauchen —
@@ -887,7 +918,6 @@ export {
   markiereEinzelneDateiIgnoriert,
   pruefeUndBereiteSchreibenVor,
   // Chat
-  registerAgent as registerChatAgent,
   registerAgentsBatch,
   unregisterAgent as unregisterChatAgent,
   unregisterAgentsBatch,

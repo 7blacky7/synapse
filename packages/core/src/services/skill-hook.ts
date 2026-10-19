@@ -12,6 +12,7 @@ import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { getPool } from '../db/client.js';
 import { kommunikationsAgent, eigenerKommunikationsAgent, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
 import { loeseAgentZiel, aktuellerAgentPrincipal, type AgentZiel } from './agent-bezug.js';
+import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
 
 /** Nur explizite interne Handles repräsentieren fremde Identitäten. */
 async function skillAgent(project: string, agent: string): Promise<AgentZiel> {
@@ -178,7 +179,8 @@ export async function holeSprachSkillVorschlaege(
   pool: Pool = getPool(),
 ): Promise<SkillHookErgebnis> {
   const kandidaten = waehleSprachSkills(filePaths);
-  if (!agentId || kandidaten.length === 0) {
+  // P22-T13 Paket C: abgeschaltete Skill-Vorschlaege -> keine Abfrage, kein Claim.
+  if (!agentId || kandidaten.length === 0 || !hinweisAktiv('skill_suggestions', agentId)) {
     return { suggestions: [], metrics: null, skipped_due_to_load: false };
   }
 
@@ -692,7 +694,7 @@ export async function holeChannelSkillsNachBeitritt(
   searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
   hoechstens = CHANNEL_SKILL_BEITRITT_NACHRICHTEN,
 ): Promise<number> {
-  if (!agentName) return 0;
+  if (!agentName || !hinweisAktiv('skill_suggestions', agentName)) return 0;
   const z=await skillAgent(project,skillHandle(project,agentName));
   const identity=z.art === 'identity';
   const { rows } = await pool.query<{ id: number; content: string }>(
@@ -905,9 +907,16 @@ export async function verarbeiteSkillHinweisgeber(
     const quellen = sammleSkillQuellen(tool, action, args, result);
     if (quellen.length === 0) return 0;
     const schreibend = SCHREIBENDE_ACTIONS.has(action ?? '');
+    // P22-T13 Paket C: hat der Aufrufer Skill-Vorschlaege abgeschaltet, keine Vorschlagssuche fuer ihn
+    // (lesend gar keine); andere Empfaenger eines schreibenden Aufrufs bleiben unberuehrt.
+    const fuerMich = hinweisAktiv('skill_suggestions', agentId);
+    if (!fuerMich && !schreibend) return 0;
+    const ich = aktuellerAgentPrincipal();
+    const binIch = (a: string) => a === agentId || a === 'legacy:' + agentId || (ich?.art === 'identity' && a === 'identity:' + ich.identity_id);
     const empfaenger = schreibend
-      ? [...new Set([agentId, ...(await aktiveProjektAgenten(project, pool))])]
+      ? [...new Set([agentId, ...(await aktiveProjektAgenten(project, pool))])].filter(a => fuerMich || !binIch(a))
       : [agentId];
+    if (empfaenger.length === 0) return 0;
     return await holeSkillsFuerQuellen(
       project, sourceType, quellen, agentId, empfaenger, pool, searchBatch,
     );
@@ -954,7 +963,7 @@ export async function holeOffeneSkillVorschlaege(
   pool: Pool = getPool(),
   hoechstens = CHANNEL_SKILL_VORSCHLAEGE,
 ): Promise<SkillHookErgebnis> {
-  if (!agentId) return { suggestions: [], metrics: null, skipped_due_to_load: false };
+  if (!agentId || !hinweisAktiv('skill_suggestions', agentId)) return { suggestions: [], metrics: null, skipped_due_to_load: false };
   const z = eigenerKommunikationsAgent(agentId);
   const identity = z.art === 'identity';
   try {
@@ -1042,7 +1051,7 @@ export async function holeChannelSkillVorschlaege(
   const messageIds = messages
     .map((message) => Number(message.id))
     .filter((id) => Number.isSafeInteger(id) && id > 0);
-  if (!agentId || messageIds.length === 0) {
+  if (!agentId || messageIds.length === 0 || !hinweisAktiv('skill_suggestions', agentId)) {
     return { suggestions: [], metrics: null, skipped_due_to_load: false };
   }
 

@@ -17,6 +17,7 @@
 
 import { leseAbwesenheit } from './jev-entscheidung.js';
 import { jevEntscheidungsHinweiseAn } from './jev-schalter.js';
+import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
 
 export const JEV_MODUS_ZEILE =
   'User abwesend — Rueckfragen/Unstimmigkeiten: Superpowers nutzen, Entscheidungen per jev(action:entscheiden) ' +
@@ -27,6 +28,8 @@ const STANDARD_CACHE_S = 30;
 /** P7-T40: statischer Satz beim Onboarding; später nur bei konkreter Zustandsänderung. */
 const agentModus = new Map<string, string | null>();
 export async function holeJevSitzungsHinweis(project: string, agentId: string, onboarding = false): Promise<string | null> {
+  // P22-T13 Paket C: abgeschaltet -> keine Abfrage, kein Zustandsvermerk (Wiedereinschalten liefert neu).
+  if (!hinweisAktiv('jev_modus', agentId)) return null;
   const zeile = await holeJevModusHinweis(project);
   const key = JSON.stringify([project, agentId]);
   const bekannt = agentModus.has(key);

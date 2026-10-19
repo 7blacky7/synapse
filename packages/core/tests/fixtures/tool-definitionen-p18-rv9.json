@@ -796,6 +796,24 @@
   "grund": "P22-T11 ergänzt den persönlichen token-Parameter auf beiden Transporten; chat bekommt anmelden/identitaet. Server bezeugt Identität statt Selbstauskunft, Standard AUS.",
   "task": "P22-T11",
   "datum": "2026-10-17"
+},
+{
+  "strecke": "rest",
+  "tool": "admin",
+  "alt": "ebfcbe2909088d755560e2aebd2e209fac02dd4e89ea584e95a342aa2d4c1f8f",
+  "neu": "f65c0e88ed7e554c2bf35c8e0a3df99824497ebd4fdb179cd0766a5e91f8bf0c",
+  "grund": "P22-T13 Paket D ergaenzt additiv 26 admin-Aktionen und 23 Parameter fuer Profilverwaltung, Persona, Tokenabruf und Task-Bindung; bestehende Aktionen/Parameter unveraendert, Standard je Funktion AUS.",
+  "task": "P22-T13",
+  "datum": "2026-10-19"
+},
+{
+  "strecke": "stdio",
+  "tool": "admin",
+  "alt": "1b852602b26e6dd0417745d74dcb70e003f78ec034cdc134a7607cfcff6b7539",
+  "neu": "9e99dd4d85fa7dd411950c4c628c5a04ed1ff44b71d697d38481f1704d959795",
+  "grund": "P22-T13 Paket D ergaenzt additiv 26 admin-Aktionen und 23 Parameter fuer Profilverwaltung, Persona, Tokenabruf und Task-Bindung; bestehende Aktionen/Parameter unveraendert, Standard je Funktion AUS.",
+  "task": "P22-T13",
+  "datum": "2026-10-19"
 }
 ]
 }

@@ -4,7 +4,7 @@
  * Testoverride: intern/main_synapse (freigegeben), frisch gelesen; Fehler -> Basis.
  * Der Scope ist nur die minimale W2-Sessionbindung; W1 ersetzt ihn durch Run-Principals.
  */
-import { alleSchalter, getPool, type InternSchalterStand } from '@synapse/core';
+import { alleSchalter, getPool, entscheideToolListe, entscheideToolAufruf, gateToolListe, type InternSchalterStand } from '@synapse/core';
 import { getTokenRow, type AuthTokenRow } from '../auth.js';
 
 export type MainToolProfile = 'artefakt-only' | 'main-synapse';
@@ -123,21 +123,23 @@ export async function mainToolAccess(
   }
 }
 
-/** Reguläres Inventar kommt unverändert aus dem bestehenden MCP-Dispatcher. */
+/** Reguläres Inventar kommt unverändert aus dem bestehenden MCP-Dispatcher.
+ * P22-T13 K16.2: REST-Adapter des EINEN Gate-Kerns (core tool-gate.ts); Semantik unveraendert. */
 export function mainToolListe<T extends { name: string }>(tools: T[], access: MainToolAccess): T[] {
-  if (access.error) return [];
-  if (!access.sessionId) return tools;
-  return tools.filter(t => access.profile === 'main-synapse' ? t.name !== 'intern' : t.name === 'artefakt');
+  return entscheideToolListe(tools, { transport: access });
 }
 
+/** tools/list mit Profilteil (nur bei W1b-Durchsetzung und identitaetsgebundenem Transporttoken). */
+export async function mainToolListeMitProfil<T extends { name: string; inputSchema?: { properties?: Record<string, unknown> } }>(
+  tools: T[], access: MainToolAccess, transportToken?: string,
+): Promise<T[]> {
+  return gateToolListe(tools, { transport: access, transportToken });
+}
+
+/** tokenAufruf (nur unter W1b-Durchsetzung): Akteur kommt aus dem Token, keine synthetische Main-ID vergleichen (K16.1). */
 export function mainToolAblehnung(
   name: string, args: Record<string, unknown>, access: MainToolAccess, tools: { name: string }[],
+  optionen: { tokenAufruf?: boolean } = {},
 ): string | null {
-  if (access.error) return access.error;
-  if (!access.sessionId) return null;
-  if (!mainToolListe(tools, access).some(t => t.name === name)) {
-    return access.profile === 'artefakt-only' ? 'hauptagent_nur_artefakt' : 'main_werkzeug_nicht_freigegeben';
-  }
-  if (access.agentId && args.agent_id !== undefined && args.agent_id !== access.agentId) return 'main_agent_id_abweichend';
-  return null;
+  return entscheideToolAufruf(name, args, { transport: access, tokenAufruf: optionen.tokenAufruf === true }, tools)?.code ?? null;
 }

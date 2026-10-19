@@ -25,6 +25,7 @@ import { REVERSE_NULL_FELDER } from './reverse-tool.js';
 import { getUnreadChatHint } from './chat-unread.js';
 import { claimUnreadChannelHints } from './channel-unread.js';
 import { claimShellJobHints, markShellJobSeenForToolCall } from './shell-hints.js';
+import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
 
 const HINWEIS_JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -89,13 +90,14 @@ export async function ergaenzeToolHinweise(
     }
   }
   // Ausschluss VOR dem Claim: insbesondere history darf andere Hinweise nicht verbrauchen.
+  // P22-T13 Paket C: Profilentscheidung VOR Lesen/Claim (ohne Snapshot immer an = t109).
   if (project) {
-    const unreadChat = await getUnreadChatHint(project, agentId);
+    const unreadChat = hinweisAktiv('unread_chat', agentId) ? await getUnreadChatHint(project, agentId) : null;
     if (unreadChat) extras.unreadChat = unreadChat;
-    const shellHints = await claimShellJobHints(project, agentId, 3, [...ausgeschlossen]);
+    const shellHints = hinweisAktiv('shell_activity', agentId) ? await claimShellJobHints(project, agentId, 3, [...ausgeschlossen]) : [];
     if (shellHints.length > 0) extras.shell_activity = shellHints;
   }
-  const channels = await claimUnreadChannelHints(agentId);
+  const channels = hinweisAktiv('unread_channels', agentId) ? await claimUnreadChannelHints(agentId) : [];
   if (channels.length > 0) extras.unread_channels = channels.map(hint => ({
     project: hint.project, channel: hint.channel, count: hint.count, newest_id: hint.newestId,
   }));
