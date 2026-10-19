@@ -461,16 +461,19 @@ const OFFENE_TASK_STATUS = new Set(['todo', 'in_progress', 'blocked']);
  * nicht zurueckgestellten Plaenen (Planprioritaet hoch > mittel > niedrig, dann zuletzt geaendert), nummeriert '1 P7-Tx Titel'.
  */
 export async function koordinatorPlanKurz(project: string, jetzt: Date = new Date()): Promise<{
-  aktiver_plan: { kurz_id: string | null; name: string; tasks: string[] } | null; top3: string[];
+  aktiver_plan: { kurz_id: string | null; titel: string; offen: number; tasks: string[] } | null; top3: string[];
   /** Nachtrag 27979: aktiver Plan abgeschlossen (mind. eine Task, alle done) -> aktiver_plan null + diese Zeile. */
   aktiver_plan_hinweis?: string;
 }> {
   const alle = await lesePlaene(project);
   const aktiv = alle.find((z) => z.aktiv === true) ?? null;
-  const zeile = (t: ProjectTask): string => `${t.kurz_id ?? t.id} ${t.title ?? ''}`.trim();
+  // P22-T50: kompakt - kurze Titel, beim aktiven Plan nur die ersten 5 offenen Tasks + Anzahl offen.
+  const kurz = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
+  const zeile = (t: ProjectTask): string => `${t.kurz_id ?? t.id} ${kurz(t.title ?? '', 60)}`.trim();
   const offen = (t: ProjectTask): boolean => OFFENE_TASK_STATUS.has(String(t.status ?? 'todo')) && !taskSchlaeft(t, jetzt);
+  const offeneAktiv = aktiv ? (aktiv.tasks ?? []).filter(offen) : [];
   const aktiver_plan = aktiv
-    ? { kurz_id: aktiv.kurz_id ?? null, name: aktiv.name, tasks: (aktiv.tasks ?? []).filter(offen).map(zeile) }
+    ? { kurz_id: aktiv.kurz_id ?? null, titel: kurz(aktiv.name, 40), offen: offeneAktiv.length, tasks: offeneAktiv.slice(0, 5).map(zeile) }
     : null;
   const andere = alle
     .filter((z) => z.id !== aktiv?.id && !((bisVon(z)?.getTime() ?? 0) > jetzt.getTime()))
@@ -967,7 +970,7 @@ export async function addTasksBatch(
   project: string,
   tasksInput: Array<{ title: string; description: string; priority?: ProjectTask['priority'] }>,
   planRef?: string | null,
-): Promise<{ tasks: ProjectTask[]; aehnlich?: Array<{ task_id: string; aehnlich: unknown; hinweis?: unknown }>; warning?: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
+): Promise<{ tasks: ProjectTask[]; aehnlich?: Array<{ task: string; treffer: unknown[] }>; aehnlich_hinweis?: string; warning?: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
   if (tasksInput.length === 0) return { tasks: [] };
   const alle = await lesePlaene(project);
   const ziel = findePlan(project, alle, planRef);
@@ -981,9 +984,16 @@ export async function addTasksBatch(
   if (!r) return { tasks: [] };
   const aehnlich = await Promise.all(neu.map(t => taskDublettenHinweis(project, t.title, t.description, [t.id])));
   const ids = new Set(neu.map((t) => t.id));
-  const gespeichert = r.plan.tasks.filter((t) => ids.has(t.id)).map(t => ({ ...t, ...aehnlich[neu.findIndex(n => n.id === t.id)] }));
+  const gespeichert = r.plan.tasks.filter((t) => ids.has(t.id));
+  // P22-T50: aehnlich nur EINMAL (gesammelt, nicht zusaetzlich je Task) und kompakt; nur Tasks mit Treffern.
+  const gesammelt = gespeichert.flatMap((t) => {
+    const a = aehnlich[neu.findIndex(n => n.id === t.id)];
+    return a?.aehnlich.length ? [{ task: t.kurz_id ?? t.id, treffer: a.aehnlich }] : [];
+  });
+  const hinweis = aehnlich.find(a => a.aehnlich_hinweis)?.aehnlich_hinweis;
   console.error(`[Synapse] ${gespeichert.length} Tasks hinzugefuegt (Batch)`);
-  return { tasks: gespeichert, aehnlich: gespeichert.map(t => ({ task_id: t.id, aehnlich: t.aehnlich, ...(t.aehnlich_hinweis ? { hinweis: t.aehnlich_hinweis } : {}) })), ...(r.warning ? { warning: r.warning } : {}), ...planKontext(r.plan) };
+  return { tasks: gespeichert, ...(gesammelt.length ? { aehnlich: gesammelt } : {}), ...(hinweis ? { aehnlich_hinweis: hinweis } : {}),
+    ...(r.warning ? { warning: r.warning } : {}), ...planKontext(r.plan) };
 }
 
 /**

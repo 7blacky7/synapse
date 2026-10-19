@@ -7,6 +7,8 @@
  *   erstnutzung_minuten  vorbereiteter Ausweis Weg B / Daemon-Start: Frist bis zur ersten Nutzung (Standard 10 min)
  *   visum_minuten        Visum (P22-T44): automatisches Visum eines Agenten aus einem anderen Projekt, Frist des besuchten Projekts (Standard 30 min)
  *   arbeitsfreigabe_stunden  Arbeitsfreigabe (P22-T44): Freigabe durch Koordinator/User des besuchten Projekts (Standard 24 h)
+ *   anmeldung_plaene_minuten  chat(anmelden) (P22-T50): Zeitfenster fuer EIGENE offene files-Plaene der Identitaet in der
+ *                        Anmeldeantwort (Standard 30 min); aeltere/fremde/beendete Plaene erscheinen nicht
  * QUELLE: PG-Tabelle agent_ausweis_fristen (Schema 117), je Wert projekt > global > Standard. KEINE Env (die fruehere
  *   Env-Variable fuer die Erstnutzung entfaellt). Lesefehler (z. B. vor Schema 117) -> Standard mit letzter_fehler.
  * EINE LESESTELLE: leseAusweisFristen (und die Kurzformen schattenFristMs/erstnutzungFristMs). Diese Datei importiert
@@ -21,7 +23,7 @@
 import { getPool } from '../db/client.js';
 import { kernTtlMs } from './agent-profil-schalter.js';
 
-export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden'] as const;
+export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten'] as const;
 export type AusweisFristName = typeof AUSWEIS_FRIST_NAMEN[number];
 export type AusweisFristQuelle = 'standard' | 'global' | 'projekt';
 type Einheit = 'stunden' | 'minuten';
@@ -37,6 +39,8 @@ export const AUSWEIS_FRIST_DEFINITIONEN: Readonly<Record<AusweisFristName, Frist
     wirkung: 'Visum (P22-T44): Agent mit Ausweis eines anderen Projekts darf hier lesen und Channels nutzen; nach Ablauf bei der naechsten Anfrage neu' },
   arbeitsfreigabe_stunden: { standard: 24, einheit: 'stunden', min: 1, max: 720,
     wirkung: 'Arbeitsfreigabe (P22-T44): vom Koordinator/User dieses Projekts erteilt, Agent darf hier arbeiten; danach wieder Visum' },
+  anmeldung_plaene_minuten: { standard: 30, einheit: 'minuten', min: 1, max: 1440,
+    wirkung: 'chat(anmelden) (P22-T50): eigene offene files-Plaene, die juenger als dieses Fenster sind, als eine Zeile in der Anmeldung' },
 };
 const EINHEIT_MS: Readonly<Record<Einheit, number>> = { stunden: 3_600_000, minuten: 60_000 };
 

@@ -276,7 +276,10 @@ try{
   // P22-T48: Typ-Agent bekommt nur die Regeln seines Profils voll, die Pflichtregel nur als Name im Verzeichnis.
   check(an.agentOnboarding?.rules?.map(r=>r.name).sort().join()==='t30-regel-a,t30-regel-b'&&an.agentOnboarding.rules.every(r=>r.vollstaendig)
    &&an.agentOnboarding.regel_verzeichnis?.regeln?.includes('regel-pflicht-t30')&&an.agentOnboarding.zustellung?.regeln_quelle==='typ','Anmeldung: Typ-Regeln vollstaendig, Pflichtregel als Name (P22-T48)');
-  check(an.fortsetzung?.profil?.profil_revision===1&&txt(an.fortsetzung.profil.regeln)==='["t30-regel-a","t30-regel-b"]'&&an.fortsetzung.profil.typ?.schluessel==='t30-tester','Anmeldung: Profilblock (Rev 1, Regeln, Typ)');
+  // P22-T50: kein fortsetzung-Block; Profil kompakt im Onboarding, Typ-Regeln stehen in rules (nicht doppelt im Profil).
+  const pX=an.agentOnboarding?.profil;
+  check(!('open_plans' in an)&&!('fortsetzung' in an),'REST chat(anmelden): kein fortsetzung-Block, kein allgemeines open_plans (P22-T50)');
+  check(!('fortsetzung' in an)&&pX?.profil_revision===1&&!('regeln' in pX)&&!('identity_id' in pX)&&pX.typ?.schluessel==='t30-tester','Anmeldung: Profilblock im Onboarding (Rev 1, Typ, Regeln nicht doppelt)');
   const z=(await pool.query('SELECT gueltig_bis,zuletzt_benutzt FROM agent_identitaet_tokens WHERE identity_id=$1 AND widerrufen_am IS NULL',[iidX])).rows[0];
   check(z?.gueltig_bis===null&&z.zuletzt_benutzt!==null,'erste Anmeldung bestaetigt: Ausweis dauerhaft');
   const th=await rest('thought',{action:'add',project:P,content:'T30 Thought von X',token:tokX});
@@ -321,12 +324,13 @@ try{
   check((await pool.query("SELECT count(*)::int n FROM agent_identitaeten WHERE project=$1 AND name LIKE 't30-x%'",[P])).rows[0].n===1,'keine zweite Identitaet (kein name#2)');
   check(fa.agentOnboarding?.rules?.map(r=>r.name).sort().join()==='t30-regel-a,t30-regel-c'&&fa.agentOnboarding.rules.every(r=>r.vollstaendig)
    &&fa.agentOnboarding.regel_verzeichnis?.regeln?.includes('regel-pflicht-t30'),'stdio: Typ-Regeln (Rev 2) vollstaendig, Pflichtregel als Name (P22-T48)');
-  check(fa.fortsetzung?.profil?.profil_revision===2&&txt(fa.fortsetzung.profil.regeln)==='["t30-regel-a","t30-regel-c"]'&&fa.fortsetzung.profil.werkzeuge?.gesperrt?.includes('shell'),'stdio: Profilblock aktuell (Rev 2, Regeln, shell gesperrt)');
+  const pF=fa.agentOnboarding?.profil;
+  check(!('fortsetzung' in fa)&&pF?.profil_revision===2&&!('regeln' in pF)&&pF.werkzeuge?.gesperrt?.includes('shell'),'stdio: Profilblock im Onboarding aktuell (Rev 2, shell gesperrt, Regeln nur in rules)');
   const row=(await pool.query('SELECT source_identity_id FROM thoughts WHERE id=$1',[thX])).rows[0];
   check(row?.source_identity_id===iidX,'Thought von X traegt source_identity_id');
   const tg=await st(sx,'thought',{action:'get',project:P,id:thX,token:tokX});
   check(txt(tg).includes('T30 Thought von X'),'stdio: Thought von X auffindbar');
-  check(!(tg.agentOnboarding?.rules??[]).length&&!tg.fortsetzung?.profil,'keine Volluebertragung im selben Lauf (Folgeaufruf ohne Regeln/Profilblock)');
+  check(!(tg.agentOnboarding?.rules??[]).length&&!tg.agentOnboarding?.profil&&!('fortsetzung' in tg),'keine Volluebertragung im selben Lauf (Folgeaufruf ohne Regeln/Profilblock)');
   if(!fa.success)console.log('     stdio stderr: '+sx.stderr());
  });
 

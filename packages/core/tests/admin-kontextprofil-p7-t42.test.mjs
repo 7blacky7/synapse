@@ -24,7 +24,9 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P22-T36 (W2-P1): additive Hauptagent-Parameter.
   'auftrag_art', 'auftrag_id', 'gewuenscht', 'hands_off', 'idempotenz_schluessel',
   // P22-T45: additive Ausweis-Fristen-Parameter.
-  'schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'frist_namen'];
+  'schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden',
+  // P22-T50: additiver Fristwert (eigene offene Plaene in chat(anmelden)).
+  'anmeldung_plaene_minuten', 'frist_namen'];
 const neu = new Set(['kontextprofil_liste', 'kontextprofil_setzen', 'kontextprofil_entfernen', ...w1bAktionen]);
 const neueParameter = new Set(['ziel', 'kontext_budget', 'stufe', 'hinweise_aus', 'hinweise_nur', ...w1bParameter]);
 const alteSchemaProjektion = (tool) => {

@@ -212,14 +212,19 @@ export function suchePlanTool(args: Record<string, unknown>, art?: 'tasks' | 'pl
   });
 }
 
+/** P22-T50: kompakter Dubletten-Treffer - Kurz-ID (sonst UUID), Status, kurzer Titel, Score (2 Stellen). */
+export interface AehnlicheTask { task: string; status: string; titel: string; score: number }
+
 /** Kein Grenzwert im Code; fehlende Kalibrierung oder Suchfehler blockieren das Anlegen nie. */
-export async function taskDublettenHinweis(project: string, title: string, description: string, ausschluss: string[] = []) {
+export async function taskDublettenHinweis(project: string, title: string, description: string, ausschluss: string[] = []): Promise<{ aehnlich: AehnlicheTask[]; aehnlich_hinweis?: string }> {
   try {
     const threshold = await scoreSchwelleOderHinweis('tasks');
     if (threshold.schwelle === null) return { aehnlich: [], aehnlich_hinweis: threshold.hinweis };
     const found = await searchTasks([title, description].join('\n'), project, { alle: true, limit: 20 });
     return { aehnlich: found.results.filter(r => !ausschluss.includes(r.id) && r.score >= threshold.schwelle!).map(r => ({
-      id: r.id, kurz_id: r.kurz_id, title: r.title, plan: r.plan, status: r.status, score: r.score,
+      task: r.kurz_id ?? r.id, status: r.status,
+      titel: r.title.length > 60 ? r.title.slice(0, 59).trimEnd() + '…' : r.title,
+      score: Math.round(r.score * 100) / 100,
     })) };
   } catch (e) { return { aehnlich: [], aehnlich_hinweis: 'Dubletten-Suche nicht verfügbar: ' + String(e) }; }
 }

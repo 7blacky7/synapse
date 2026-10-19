@@ -291,7 +291,8 @@ export function createServer(): Server {
 
         // Offene Multi-File-Plaene (laufen seit 28.09.2026 nicht mehr ab). Gedrosselt je
         // Agent in claimOpenPlanHints: eigene Aenderungen sofort, sonst 30 Min bei files/plan.
-        if (typeof args?.project === 'string' && args.project) {
+        // P22-T50: nicht fuer '*' (alle Projekte) und nicht in chat(anmelden) (alte files-Plaene sind dort Ballast).
+        if (typeof args?.project === 'string' && args.project && args.project !== '*' && !(name === 'chat' && args.action === 'anmelden')) {
           try {
             const planHints = await claimOpenPlanHints(args.project, agentId, Date.now(), !!parsed.agentOnboarding, name);
             if (planHints) {

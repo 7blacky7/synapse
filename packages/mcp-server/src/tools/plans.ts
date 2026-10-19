@@ -134,14 +134,16 @@ export async function addPlanTask(
       };
     }
 
+    // P22-T50: aehnlich nur EINMAL (oben), nicht zusaetzlich in task; plan_ref/hinweis_plaene ebenfalls nur oben.
+    const { aehnlich, aehnlich_hinweis, plan_ref, hinweis_plaene, ...nurTask } = task as typeof task & { aehnlich?: unknown; aehnlich_hinweis?: unknown };
     return {
       success: true,
-      task,
-      aehnlich: task.aehnlich,
-      ...(task.aehnlich_hinweis ? { aehnlich_hinweis: task.aehnlich_hinweis } : {}),
+      task: nurTask as ProjectTask,
+      aehnlich,
+      ...(aehnlich_hinweis ? { aehnlich_hinweis } : {}),
       message: `Task "${title}" hinzugefuegt${task.kurz_id ? ` (${task.kurz_id})` : ''}`,
-      ...(task.plan_ref ? { plan_ref: task.plan_ref } : {}),
-      ...(task.hinweis_plaene ? { hinweis_plaene: task.hinweis_plaene } : {}),
+      ...(plan_ref ? { plan_ref } : {}),
+      ...(hinweis_plaene ? { hinweis_plaene } : {}),
     };
   } catch (error) {
     return {
@@ -187,6 +189,7 @@ export async function addPlanTasksBatch(
       count: result.tasks.length,
       tasks: result.tasks,
       aehnlich: result.aehnlich,
+      ...(result.aehnlich_hinweis ? { aehnlich_hinweis: result.aehnlich_hinweis } : {}),
       warning: result.warning,
       message: `${result.tasks.length} Tasks hinzugefuegt`,
       ...(result.plan_ref ? { plan_ref: result.plan_ref } : {}),

@@ -40,7 +40,7 @@ try{
   const cl=await admin.connect();
   try{
     await cl.query('SET search_path TO '+schema);
-    for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql','115_agent_ausweis_nr.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
+    for(const f of ['111_agent_identitaet.sql','112_agent_bezug.sql','113_agent_profil.sql','114_agent_ausweis.sql','115_agent_ausweis_nr.sql','117_agent_ausweis_fristen.sql','118_agent_ausweis_projekte.sql'])await cl.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
     // wie live: hoechstens ein aktiver Plan je Projekt (nicht aufschiebbar)
     await cl.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_plans_ein_aktiver ON plans (project) WHERE aktiv IS TRUE');
   }finally{cl.release();}
@@ -107,18 +107,46 @@ try{
   // ================= B: kurze Koordinator-Ausgabe =================
   const a1=await anmelden(tokK);
   const ob=a1?.agentOnboarding;
-  console.log('BEISPIEL '+JSON.stringify({agentOnboarding:ob,fortsetzung:a1?.fortsetzung}));
+  console.log('BEISPIEL '+JSON.stringify(a1));
   check(a1?.success===true&&ob?.zustellung?.koordinator_kurz===true,'B Anmeldung Koordinator: zustellung.koordinator_kurz');
   check(['handoff','aktiver_plan','top3','regeln'].every(k=>k in ob),'B die Felder handoff, aktiver_plan, top3, regeln vorhanden');
   check(['plaene','task_suche_hinweis','jev_hinweis','erklaerung_faelle','entscheidungen_durchsicht','volltext_hinweis','rules','regel_verzeichnis'].every(k=>!(k in ob)),'B keine Uebersichten/Hinweise/Regel-Volltexte');
-  check(Array.isArray(ob?.channels?.aktiv)&&Array.isArray(ob.channels.standard)&&/Channels insgesamt, Liste: channel\(action:"list"/.test(ob.channels.zeile??'')&&!('weitere' in ob.channels),'B channels: nur aktiv + standard + Zeile mit Gesamtzahl');
+  check(!('channels' in ob),'B/T50 channels: Identitaet ohne Channels (nie beigetreten) und ohne Standardchannel -> Feld fehlt ganz');
   check(/admin\(action:"index_stats"/.test(ob?.statistik_abruf??''),'B Statistiken/Jev nur als Abrufzeile');
   check(ob?.handoff?.id==='t49-h-neu'&&typeof ob.handoff.zeit==='string'&&ob.handoff.empfehlung==='Zuerst lesen: thought(action:"get", id:"t49-h-neu")','B handoff = neuester eigener session-uebergabe-Thought (ID + Zeit + Empfehlung Zuerst lesen)');
-  check(ob?.aktiver_plan?.kurz_id==='P1'&&JSON.stringify(ob.aktiver_plan.tasks)==='["P1-T1 Aufgabe A","P1-T3 Aufgabe C","P1-T4 Aufgabe D"]','B aktiver_plan: nur offene, nicht zurueckgestellte Tasks als Kurz-ID + Titel');
+  check(ob?.aktiver_plan?.kurz_id==='P1'&&ob.aktiver_plan.titel==='Aktiv'&&ob.aktiver_plan.offen===3&&!('name' in ob.aktiver_plan)&&JSON.stringify(ob.aktiver_plan.tasks)==='["P1-T1 Aufgabe A","P1-T3 Aufgabe C","P1-T4 Aufgabe D"]','B aktiver_plan: Kurz-ID + kurzer Titel + Anzahl offen, nur offene, nicht zurueckgestellte Tasks');
   check(JSON.stringify(ob?.top3)==='["1 P2-T1 High eins","2 P2-T2 High zwei","3 P2-T3 High drei"]','B top3: drei offene high-Tasks anderer Plaene, nummeriert, ohne zurueckgestellten Plan');
   check(ob?.regeln?.namen?.includes('regel-pflicht-x')&&ob.regeln.namen.includes('regel-normal-y')&&!ob.regeln.voll&&/memory\(action:"read"/.test(ob.regeln.abruf??''),'B regeln: nur Namen + Abrufzeile (ohne Typ kein Volltext)');
-  check(!!ob?.zustellung?.quellen?.handoff&&!!ob.zustellung.quellen.top3,'B Debug: zustellung.quellen');
-  check(!!a1?.fortsetzung&&!('abrufwege' in a1.fortsetzung)&&!('zaehler' in a1.fortsetzung),'B fortsetzung ohne abrufwege/zaehler');
+  // P22-T50: Ballast raus - kein fortsetzung-Block, keine zustellung.quellen, kein zustellung.fortsetzung, keine Leerfelder.
+  check(!('quellen' in (ob?.zustellung??{}))&&!('fortsetzung' in (ob?.zustellung??{})),'T50 zustellung ohne quellen und ohne fortsetzung');
+  check(!('fortsetzung' in a1)&&!('open_plans' in a1),'T50 Anmeldung ohne fortsetzung-Block und ohne open_plans');
+  check(!('profil' in ob)&&ob.zustellung?.profilblock===true,'T50 Profil ohne Inhalt (nur Revision) entfaellt, gilt als zugestellt');
+  const leer=v=>v===null||v===''||(Array.isArray(v)&&!v.length)||(v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===0);
+  check(Object.entries(ob??{}).every(([,v])=>!leer(v)),'T50 keine leeren Felder in der Koordinator-Anmeldung');
+  check(!('skills' in ob)&&!('skills_andere' in ob),'T50 Skills fehlen, solange keine festgelegt sind');
+
+  // ================= T50 Nachtrag: eigene offene files-Plaene im Fenster (anmeldung_plaene_minuten) =================
+  check(!('offene_plaene' in a1),'T50 keine eigenen offenen Plaene -> Zeile fehlt');
+  const fp=(id,owner,iid,status,minAlt)=>pool.query(
+    `INSERT INTO file_batch_plans(id,project,owner_agent_id,owner_identity_id,ops,expected_hashes,previews,status,created_at)
+     VALUES($1,$2,$3,$4,'[]'::jsonb,'{}'::jsonb,'[]'::jsonb,$5,NOW()-($6||' minutes')::interval)`,[id,P,owner,iid,status,String(minAlt)]);
+  await fp(495001,'koordinator','t49-koord','open',5);
+  await fp(495002,'koordinator','t49-koord','committed',5);
+  await fp(495003,'koordinator','t49-koord','cancelled',5);
+  await fp(495004,'koordinator','t49-koord','open',60);
+  await fp(495005,'fremder','t49-fremd-iid','open',5);
+  const pl1=await anmelden(tokK);
+  check(/^Eigene offene files-Plaene \(letzte 30 Min\): 495001 \(5 Min\) - pruefen: files\(action:"plan_status", plan_id\)/.test(pl1?.offene_plaene??''),'T50 offen im Fenster -> eine Zeile nur mit eigenem offenem Plan ('+pl1?.offene_plaene+')');
+  check(!/495002|495003|495004|495005/.test(pl1?.offene_plaene??''),'T50 committed/cancelled/aelter/fremd erscheinen nicht');
+  const FR=await load('packages/core/dist/services/agent-ausweis-fristen.js');
+  await FR.setzeAusweisFristen({ebene:'projekt',project:P,werte:{anmeldung_plaene_minuten:90},grund:'Test P22-T50 Fenster'},{wer:'user',setter_identity_id:null});
+  const pl2=await anmelden(tokK);
+  check(/letzte 90 Min/.test(pl2?.offene_plaene??'')&&/495001/.test(pl2.offene_plaene)&&/495004 \(60 Min\)/.test(pl2.offene_plaene)&&!/495005/.test(pl2.offene_plaene),'T50 Fenster 90 Min (Projektwert) wirkt: aelterer eigener Plan erscheint ('+pl2?.offene_plaene+')');
+  await FR.setzeAusweisFristen({ebene:'projekt',project:P,werte:{anmeldung_plaene_minuten:1},grund:'Test P22-T50 Fenster klein'},{wer:'user',setter_identity_id:null});
+  const pl3=await anmelden(tokK);
+  check(!('offene_plaene' in (pl3??{})),'T50 Fenster 1 Min: kein eigener offener Plan im Fenster -> Zeile fehlt');
+  await FR.setzeAusweisFristen({ebene:'projekt',project:P,entfernen:['anmeldung_plaene_minuten'],grund:'Test P22-T50 zurueck'},{wer:'user',setter_identity_id:null});
+  await pool.query('DELETE FROM file_batch_plans WHERE id BETWEEN 495001 AND 495005');
 
   // ================= C/D =================
   const f1=await tokenAufruf('thought',{action:'search',query:'x',token:tokK},async()=>O.holeAgentOnboarding({project:P,agentId:'koordinator',serverInstanceId:SRV}));
@@ -162,8 +190,26 @@ try{
   check(!(z1?.top3??[]).some(t=>/P8-T1|P9-/.test(t))&&JSON.stringify(z1?.top3)==='["1 P1-T4 Aufgabe D"]','Z top3: Plaene ohne offene Tasks tragen nichts bei ('+JSON.stringify(z1?.top3)+')');
   await PL.aktivierePlan(P,'P2');
   const z2=(await anmelden(tokK))?.agentOnboarding;
-  check(z2?.aktiver_plan?.kurz_id==='P2'&&z2.aktiver_plan.tasks.length===5&&!('aktiver_plan_hinweis' in z2),'Z nach Aktivieren eines anderen Plans erscheinen dessen offene Tasks');
+  check(z2?.aktiver_plan?.kurz_id==='P2'&&z2.aktiver_plan.tasks.length===5&&z2.aktiver_plan.offen===5&&!('aktiver_plan_hinweis' in z2),'Z nach Aktivieren eines anderen Plans erscheinen dessen offene Tasks');
+  // P22-T50: erste 5 + Anzahl, kurze Titel
+  await plan('t49-p7','P7','Ein sehr langer Planname, der in der Anmeldung gekuerzt werden muss',false,'niedrig',
+    Array.from({length:7},(_,i)=>task('P7-T'+(i+1),'Task '+(i+1)+' mit einem ausgesprochen langen Titel, der deutlich ueber sechzig Zeichen hinausgeht','todo','low')));
+  await PL.aktivierePlan(P,'P7');
+  const z3=(await anmelden(tokK))?.agentOnboarding;
+  check(z3?.aktiver_plan?.offen===7&&z3.aktiver_plan.tasks.length===5&&z3.aktiver_plan.titel.length<=40&&z3.aktiver_plan.tasks.every(t=>t.length<=8+60),'T50 aktiver Plan: erste 5 von 7, Titel gekuerzt ('+JSON.stringify(z3?.aktiver_plan)+')');
   await PL.aktivierePlan(P,'P1');
+
+  // ================= T50: '*' ist nie ein Projekt (jev abwesend) =================
+  await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'mehrprojekt',true,'Test P22-T50','user')",[P]);
+  const AP=await load('packages/core/dist/services/agent-ausweis-projekte.js'); AP.leereMehrprojektCache?.();
+  let kStern;
+  const stern=await tokenAufruf('jev',{action:'abwesend',modus:'status',project:'*',token:tokK},async k=>{kStern=k;return {project:k.args.project};});
+  check(!kStern?.antwort&&stern?.project==='*','T50 jev(project:"*"): Aufruf laeuft, project bleibt "*" ('+JSON.stringify(kStern?.antwort??null)+')');
+  check(!('ausweis_projekte_hinweis' in (stern??{}))&&!kStern?.bestaetigt?.ziel_project,'T50 "*" kein Fremdprojekt, kein Visum-/Koordinator-Hinweis');
+  check((await pool.query("SELECT count(*)::int n FROM agent_ausweis_projekte WHERE project='*'").catch(()=>({rows:[{n:0}]}))).rows[0].n===0,'T50 "*" nicht im Ausweis eingetragen');
+  check(await O.holeAgentOnboarding({project:'*',agentId:'koordinator',role:'koordinator',serverInstanceId:SRV,explizit:true})===null,'T50 kein Onboarding fuer "*"');
+  const sternThought=await tokenAufruf('thought',{action:'search',query:'x',project:'*',token:tokK},async k=>({project:k.args.project}));
+  check(sternThought?.project===P,'T50 anderes Tool mit "*" arbeitet in der Heimat');
 
   // ================= F: Legacy-Koordinator =================
   const lg=await O.holeAgentOnboarding({project:P,agentId:'koordinator-leg',role:'koordinator',serverInstanceId:SRV,explizit:true,koordinatorKurz:true});

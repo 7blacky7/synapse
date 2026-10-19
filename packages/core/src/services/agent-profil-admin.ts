@@ -77,6 +77,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   erstnutzung_minuten: { type: 'number', description: 'ausweis_fristen setzen: Erstnutzungsfrist vorbereiteter Ausweise in Minuten (1..1440, Standard 10)' },
   visum_minuten: { type: 'number', description: 'ausweis_fristen setzen: Visum in Minuten (1..1440, Standard 30; Agenten anderer Projekte lesen hier)' },
   arbeitsfreigabe_stunden: { type: 'number', description: 'ausweis_fristen setzen: Arbeitsfreigabe in Stunden (1..720, Standard 24; arbeitsfreigabe_erteilen)' },
+  anmeldung_plaene_minuten: { type: 'number', description: 'ausweis_fristen setzen: Fenster eigener offener files-Plaene in chat(anmelden) in Minuten (1..1440, Standard 30)' },
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   ...HAUPTAGENT_ADMIN_PARAMETER,
 };
@@ -363,7 +364,7 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
         await setzeAusweisFristen({
           ebene, project: ebene === 'projekt' ? project : null, grund: a.grund,
           ...(modus === 'setzen'
-            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden } }
+            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden, anmeldung_plaene_minuten: a.anmeldung_plaene_minuten } }
             : { entfernen: a.frist_namen ?? [] }),
         }, { wer: recht.wer, setter_identity_id: recht.actor_identity_id });
       }

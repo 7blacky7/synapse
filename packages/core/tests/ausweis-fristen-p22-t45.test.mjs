@@ -161,10 +161,17 @@ try{
  await section('Lesefehler -> Standard mit letzter_fehler; Puffer',async()=>{
   await adm({modus:'setzen',erstnutzung_minuten:4,grund:'Test Puffer'},USER);
   await pool.query('ALTER TABLE agent_ausweis_fristen RENAME TO agent_ausweis_fristen_weg');
+  // synapse_test kann public.agent_ausweis_fristen enthalten (search_path schema,public). public wird NICHT angefasst
+  // (gemeinsame Testdatenbank): eine Fehler-View gleichen Namens im privaten Schema verdeckt public und macht das Lesen
+  // unmoeglich (Spalten fehlen) - das ist der Lesefehler-Fall.
+  await pool.query('CREATE VIEW agent_ausweis_fristen AS SELECT 1 AS kein_fristen_schema');
   try{
    const st=await C.leseAusweisFristen(P,{frisch:true});
    check(st.letzter_fehler==='ausweis_fristen_nicht_lesbar'&&st.fristen.erstnutzung_minuten.wert===10&&st.fristen.erstnutzung_minuten.quelle==='standard','Tabelle fehlt -> Standard + letzter_fehler');
-  }finally{await pool.query('ALTER TABLE agent_ausweis_fristen_weg RENAME TO agent_ausweis_fristen');}
+  }finally{
+   await pool.query('DROP VIEW agent_ausweis_fristen');
+   await pool.query('ALTER TABLE agent_ausweis_fristen_weg RENAME TO agent_ausweis_fristen');
+  }
   process.env.SYNAPSE_W1B_GATE_TTL_MS='60000';C.leereAusweisFristenCache();
   try{
    check((await C.leseAusweisFristen(P)).fristen.erstnutzung_minuten.wert===4,'Puffer gefuellt (4)');
@@ -208,7 +215,10 @@ try{
   const sql=readFileSync(join(root,'packages/core/src/db/schema-sql/117_agent_ausweis_fristen.sql'),'utf8');
   const {AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL:ts}=await load('packages/core/dist/db/agent-ausweis-fristen-schema.js');
   check(sql.trim()===ts.trim(),'117 SQL-Spiegel identisch zum Laufzeitschema');
-  check(!/DROP|DELETE|TRUNCATE/i.test(sql.replace(/--.*$/gm,'')),'117 additiv');
+  // P22-T50: einzige Ausnahme = Ersetzen des Namens-CHECK (neuer Wert anmeldung_plaene_minuten); keine Daten, keine Tabelle.
+  const ohneCheckErsatz=sql.replace(/--.*$/gm,'').replace('ALTER TABLE agent_ausweis_fristen DROP CONSTRAINT IF EXISTS agent_ausweis_fristen_name_check;','');
+  check(!/DROP|DELETE|TRUNCATE/i.test(ohneCheckErsatz),'117 additiv (ausser Namens-CHECK-Ersatz P22-T50)');
+  check((sql.match(/DROP/g)||[]).length===1,'117: genau ein DROP (Namens-CHECK)');
  });
 
  check(network===0,'keine echten Netzwerk-/Modellaufrufe');

@@ -17,16 +17,59 @@ import { TEXT_NEUINSTANZ } from './agent-profil-vertrag.js';
 import { getPool } from '../db/client.js';
 import type { RegelVerzeichnis } from './agent-rollen.js';
 
-/** P22-T49: Quellen der kurzen Koordinator-Ausgabe (Debug in zustellung.quellen). */
-const KOORDINATOR_KURZ_QUELLEN = {
-  handoff: 'thoughts mit Tag session-uebergabe dieser Identitaet (source_identity_id, Rueckfall source=agent_id ohne Identitaet), neuester',
-  aktiver_plan: 'plans.aktiv (plan aktivieren), offene Tasks todo|in_progress|blocked, nicht zurueckgestellt',
-  top3: 'offene Tasks priority high aus anderen, nicht zurueckgestellten Plaenen',
-  regeln: 'Regelnamen der Rolle; Volltext nur fuer Typ-Regeln (P22-T48)',
-  channels: 'aktiv = seit Ausweis-Beginn (erster Lauf) beigetreten (ohne von der Uebernahme kopierte Legacy-Mitgliedschaften) oder mit sender_identity_id geschrieben; dazu Standardchannel <projekt>-general und Gesamtzahl',
-  statistik: 'Statistiken/Jev/Erklaerungsfaelle/Entscheidungs-Durchsicht nur als Abrufzeile (volles Onboarding)',
-  alles: 'admin(action:"index_stats", sitzung:"fortsetzung", onboarding:true) liefert das volle Onboarding',
-} as const;
+type W12Principal = NonNullable<Awaited<ReturnType<typeof w12ZustellKontext>>>['principal'];
+
+/** P22-T50: leer = null/undefined/'' / leere Liste / Objekt nur aus leeren Werten (0 und false sind Werte). */
+function istLeer(v: unknown): boolean {
+  if (v === null || v === undefined || v === '') return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') return Object.values(v as Record<string, unknown>).every(istLeer);
+  return false;
+}
+function ohneLeere(o: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => !istLeer(v)));
+}
+
+/**
+ * P22-T50 (User 19.10.): Profilblock ohne Leerfelder und ohne Doppelungen. identity_id/agent_id/project stehen im principal,
+ * die rolle im Onboarding; regeln entfallen, wenn sie als Typ-Regeln schon in rules/regeln stehen.
+ */
+function kompaktesProfil(block: object, o: { rolle: string; ohneRegeln: boolean }): Record<string, unknown> {
+  const weg = new Set(['identity_id', 'agent_id', 'project', ...(o.ohneRegeln ? ['regeln'] : [])]);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(block as Record<string, unknown>)) {
+    if (weg.has(k) || istLeer(v) || (k === 'rolle' && v === o.rolle)) continue;
+    out[k] = v && typeof v === 'object' && !Array.isArray(v) ? ohneLeere(v as Record<string, unknown>) : v;
+  }
+  return out;
+}
+
+/**
+ * P22-T50: Profilblock (einmal je Lauf), Profil-Channels und gebundene Tasks fuer das Onboarding - kompakt, nur Nichtleeres.
+ * Ein Profil ohne Inhalt ausser profil_revision entfaellt (gilt trotzdem als zugestellt: zugestellt = Profilblock im Lauf vermerkt).
+ */
+async function profilTeilFuer(principal: W12Principal, rolle: string, ohneRegeln: boolean): Promise<{ teil: Record<string, unknown>; zugestellt: boolean }> {
+  const teil: Record<string, unknown> = {};
+  let zugestellt = false;
+  try {
+    const { baueFortsetzungsErgaenzung } = await import('./agent-profil-update.js');
+    const erg = await baueFortsetzungsErgaenzung(principal);
+    if (erg.profil) {
+      zugestellt = true;
+      const p = kompaktesProfil(erg.profil, { rolle, ohneRegeln });
+      if (Object.keys(p).some((k) => k !== 'profil_revision')) teil.profil = p;
+    }
+    if (erg.profil_channels && !istLeer(erg.profil_channels)) teil.profil_channels = ohneLeere(erg.profil_channels as unknown as Record<string, unknown>);
+    if (erg.gebundene_tasks?.length) teil.gebundene_tasks = erg.gebundene_tasks;
+  } catch { /* Profilblock ist Zugabe */ }
+  return { teil, zugestellt };
+}
+
+/** P22-T50: zustellung ohne das Vertragsfeld fortsetzung (es gibt mit Ausweis keinen fortsetzung-Block mehr). */
+function zustellAnzeige<T extends { fortsetzung?: unknown }>(umfang: T): Omit<T, 'fortsetzung'> {
+  const { fortsetzung: _fortsetzung, ...rest } = umfang;
+  return rest;
+}
 
 /**
  * P22-T49 (User-Entscheidung c7ba27b4): Inhalt der kurzen Koordinator-Anmeldung. null = Produkt-Schalter
@@ -36,7 +79,7 @@ async function baueKoordinatorKurz(
   project: string, agentId: string, identityId: string,
   regelwerk: { rules: OnboardingRegel[]; regel_verzeichnis: RegelVerzeichnis }, mitTyp: boolean,
 ): Promise<{ handoff: { id: string; zeit: string; empfehlung: string } | null; aktiver_plan: unknown; aktiver_plan_hinweis?: string; top3: string[]; regeln: Record<string, unknown>;
-  channels: { aktiv: string[]; standard: string[]; zeile: string }; skills_andere: string[] } | null> {
+  channels: { aktiv?: string[]; standard?: string[]; zeile?: string } | null; skills_andere: string[] } | null> {
   const { leseProfilProduktSchalter } = await import('./agent-profil-schalter.js');
   if (!(await leseProfilProduktSchalter('profilverwaltung', project)).aktiv) return null;
   const h = (await getPool().query<{ id: string; zeit: Date | string }>(
@@ -70,11 +113,16 @@ async function baueKoordinatorKurz(
       WHERE c.project=$1 AND c.archiviert_am IS NULL AND c.name NOT LIKE '%~archiv-%'
       ORDER BY (SELECT MAX(x.id) FROM specialist_channel_messages x WHERE x.channel_id=c.id) DESC NULLS LAST, c.name`,
     [project, identityId, agentId])).rows;
-  const channels = {
-    aktiv: ch.filter((z) => z.aktiv).map((z) => z.name),
-    standard: ch.some((z) => z.name === standardName) ? [standardName] : [],
-    zeile: `${ch.length} Channels insgesamt, Liste: channel(action:"list", project:"${project}")`,
+  // P22-T50 (User 8ca302e0): leere Teile weglassen. Hat die Identitaet seit dem Ausweis keinen Channel (nie aktiv beigetreten
+  // oder geschrieben), entfaellt auch die Gesamtzeile; ganz ohne Inhalt fehlt channels.
+  const aktivNamen = ch.filter((z) => z.aktiv).map((z) => z.name);
+  const standard = ch.some((z) => z.name === standardName) ? [standardName] : [];
+  const channelTeile = {
+    ...(aktivNamen.length ? { aktiv: aktivNamen } : {}),
+    ...(standard.length ? { standard } : {}),
+    ...(aktivNamen.length ? { zeile: `${ch.length} Channels insgesamt, Liste: channel(action:"list", project:"${project}")` } : {}),
   };
+  const channels = Object.keys(channelTeile).length ? channelTeile : null;
   // Praezisierung User (ausweis-fix 27973/27974): Skills ANDERER Typen/Ausweise nur als 'Typ » Anzahl', nur Typen
   // (scope projekt) und Identitaeten DIESES Projekts, ohne globale Typen/Skills, ohne eigenen Typ und eigene Identitaet.
   let skillsAndere: string[] = [];
@@ -137,14 +185,20 @@ async function skillsFuer(identityId: string, project: string): Promise<{ namen:
 
 /** P22-T43 (D5): Begruessung bei Anmeldung/Fortsetzung einer bestehenden Identitaet (kein 'neuer Agent'). */
 const TEXT_FORTSETZUNG = '📋 FORTSETZUNG: Bestehende Identität, neuer Kontext – Projekt-Regeln zur Auffrischung (offene Events, Channels, ACKs und Bindungen bleiben erhalten):';
+/** P22-T50: chat(anmelden) mit Ausweis = Neuanmeldung (neuer Lauf), auch nach Kontextverlust. */
+const TEXT_ANMELDUNG = '📋 ANMELDUNG (Ausweis, neuer Lauf): Projekt-Regeln:';
 
 export async function holeAgentOnboarding(e: {
   project: string; agentId: string; role?: string; serverInstanceId: string;
   explizit?: boolean; vorbereiten?: () => Promise<void>;
   /** P22-T49: nur chat(anmelden) mit Ausweis setzt das; index_stats onboarding:true liefert weiter alles. */
   koordinatorKurz?: boolean;
+  /** P22-T50: chat(anmelden) mit Ausweis - jede Anmeldung ist eine Neuanmeldung (Begruessung ANMELDUNG statt FORTSETZUNG). */
+  anmeldung?: boolean;
 }) {
   const { project, agentId } = e;
+  // P22-T50: '*' (jev abwesend: alle Projekte) ist nie ein Projekt - kein Onboarding, keine Registrierung.
+  if (project === '*') return null;
   const { rolle, quelle } = rolleFuerAgent(agentId, e.role);
   // W12-B: null = Bestandsverhalten (kein Token-Agent mit Lauf, Kern AUS oder Lesefehler).
   const w12 = await w12ZustellKontext(project, agentId, !!e.explizit).catch(() => null);
@@ -188,7 +242,9 @@ export async function holeAgentOnboarding(e: {
       const nur = pflichtRegeln.filter(r => geaendert.has(r.name));
       if (nur.length) pflichtRegeln = nur;
     }
-    const profil = folge.umfang.profilblock ? await w12ProfilBlock(folge.identity_id) : null;
+    const profilRoh = folge.umfang.profilblock ? await w12ProfilBlock(folge.identity_id) : null;
+    const profilKompakt = profilRoh ? kompaktesProfil(profilRoh, { rolle, ohneRegeln: regelDiagnose.regeln_quelle === 'typ' }) : null;
+    const profil = profilKompakt && Object.keys(profilKompakt).some((k) => k !== 'profil_revision') ? profilKompakt : null;
     const delta = {
       isFirstVisit: false, message: 'Neuer Lauf: nur noch nicht zugestellte Regeln/Profil (Zustellung je Lauf).',
       project, rolle, rolle_quelle: quelle,
@@ -198,9 +254,11 @@ export async function holeAgentOnboarding(e: {
         regeln: regelwerk.regel_verzeichnis.regeln ?? regelwerk.rules.filter(r => !r.vollstaendig).map(r => r.name) } } : {}),
       ...(profil ? { profil } : {}),
       neuinstanz_hinweis: TEXT_NEUINSTANZ,
-      zustellung: { ...folge.umfang, lauf_id: folge.lauf_id, ...regelDiagnose },
+      zustellung: { ...zustellAnzeige(folge.umfang), lauf_id: folge.lauf_id, ...regelDiagnose },
     };
     if (!pflicht && !profil) {
+      // P22-T50: Profil ohne Inhalt (nur Revision) -> keine Ausgabe, aber im Lauf als zugestellt vermerken.
+      if (profilRoh) await markiereZugestellt(folge.lauf_id, { profil_revision: profilRoh.profil_revision }).catch(() => undefined);
       await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle);
       return null;
     }
@@ -209,7 +267,7 @@ export async function holeAgentOnboarding(e: {
       if (pflicht) await markiereVoll(folge.lauf_id, pflichtRegeln);
       await markiereZugestellt(folge.lauf_id, {
         ...(pflicht ? { regeln_stand: folge.regeln_stand } : {}),
-        ...(profil ? { profil_revision: profil.profil_revision } : {}),
+        ...(profilRoh ? { profil_revision: profilRoh.profil_revision } : {}),
       }).catch(() => undefined);
     }
     return geliefert ? delta : null;
@@ -220,6 +278,8 @@ export async function holeAgentOnboarding(e: {
   if (e.koordinatorKurz && e.explizit && w12 && rolle === 'koordinator') {
     const kurz = await baueKoordinatorKurz(project, agentId, w12.identity_id, regelwerk, regelDiagnose.regeln_quelle === 'typ').catch(() => null);
     if (kurz) {
+      // P22-T50: ohne fortsetzung-Block kommt der Profilblock (kompakt, einmal je Lauf) hier.
+      const profilErg = await profilTeilFuer(w12.principal, rolle, regelDiagnose.regeln_quelle === 'typ');
       const block = {
         isFirstVisit: !w12.bestehend,
         message: '📋 KOORDINATOR (Ausweis, kurz): Handoff, aktiver Plan, Top 3, Regelnamen. Volles Onboarding: admin(index_stats, sitzung:"fortsetzung", onboarding:true).',
@@ -229,12 +289,13 @@ export async function holeAgentOnboarding(e: {
         ...(kurz.aktiver_plan_hinweis ? { aktiver_plan_hinweis: kurz.aktiver_plan_hinweis } : { aktiver_plan: kurz.aktiver_plan }),
         ...(kurz.top3.length ? { top3: kurz.top3 } : {}),
         regeln: kurz.regeln,
-        channels: kurz.channels,
+        ...(kurz.channels ? { channels: kurz.channels } : {}),
+        ...profilErg.teil,
         ...(skills ? { skills } : {}),
         ...(kurz.skills_andere.length ? { skills_andere: kurz.skills_andere } : {}),
         statistik_abruf: 'Statistiken, Jev, Erklaerungsfaelle, Entscheidungs-Durchsicht: admin(action:"index_stats", sitzung:"fortsetzung", onboarding:true)',
         neuinstanz_hinweis: TEXT_NEUINSTANZ,
-        zustellung: { ...w12.umfang, profilblock: false, lauf_id: w12.lauf_id, ...regelDiagnose, koordinator_kurz: true, quellen: KOORDINATOR_KURZ_QUELLEN },
+        zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose, koordinator_kurz: true },
       };
       const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
       if (geliefert) {
@@ -253,22 +314,18 @@ export async function holeAgentOnboarding(e: {
   const durchsicht = await core.entscheidungsDurchsichtZeile({ project, koordinator });
   const plaene = await core.planUebersicht(project);
   // P22-T43 (D2): Profilblock genau einmal je Lauf. Hat der Lauf ihn (in aktueller Revision) noch nicht, kommt er HIER samt
-  // Profil-Channels und wird als zugestellt markiert (baueFortsetzungsErgaenzung prueft den Laufstand selbst). Bei
-  // chat(anmelden) liefert ihn schon die vorher gebaute fortsetzung -> hier nichts mehr, zustellung.profilblock false.
-  let profilTeil: { profil?: unknown; profil_channels?: unknown } = {};
-  if (w12) {
-    try {
-      const { baueFortsetzungsErgaenzung } = await import('./agent-profil-update.js');
-      const erg = await baueFortsetzungsErgaenzung(w12.principal);
-      profilTeil = { ...(erg.profil ? { profil: erg.profil } : {}), ...(erg.profil_channels ? { profil_channels: erg.profil_channels } : {}) };
-    } catch { /* Profilblock ist Zugabe */ }
-  }
+  // Profil-Channels und wird als zugestellt markiert (baueFortsetzungsErgaenzung prueft den Laufstand selbst).
+  // P22-T50: auch bei chat(anmelden) hier (kein fortsetzung-Block mehr), kompakt ohne Leerfelder, dazu gebundene Tasks.
+  const profilErg = w12 ? await profilTeilFuer(w12.principal, rolle, regelDiagnose.regeln_quelle === 'typ') : { teil: {}, zugestellt: false };
   // P22-T43 (D5): Anmeldung/Fortsetzung einer BESTEHENDEN Identitaet ist kein 'neuer Agent'.
   const fortsetzung = !!w12?.bestehend;
+  // P22-T50: chat(anmelden) mit Ausweis ist immer eine Neuanmeldung (auch nach Kontextverlust): bestehende Identitaet
+  // -> ANMELDUNG statt FORTSETZUNG; eine ganz neue Identitaet behaelt die Begruessung.
+  const begruessung = e.anmeldung && w12 && fortsetzung ? TEXT_ANMELDUNG : fortsetzung ? TEXT_FORTSETZUNG : '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:';
   const block = {
     // P10-T78: Begruessung wieder auf allen Strecken (REST verlor sie mit P7-T40; stdio ergaenzt sie in server.ts).
     isFirstVisit: !fortsetzung,
-    message: fortsetzung ? TEXT_FORTSETZUNG : '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:', project, rolle, rolle_quelle: quelle,
+    message: begruessung, project, rolle, rolle_quelle: quelle,
     rolle_hinweis: rollenQuelleKlartext(rolle, quelle, e.role),
     rules, regel_verzeichnis,
     task_suche_hinweis: 'Vor dem Anlegen einer Task zuerst search(tasks), search(plans) oder plan(search, art:tasks|plans) mit alle:true ohne Statusfilter. Pins zählen Thoughts/Dateiversionen; mit_verknuepfungen:true liefert jüngste IDs. aehnlich beim Anlegen ist nur ein Hinweis.',
@@ -279,9 +336,9 @@ export async function holeAgentOnboarding(e: {
     ...(durchsicht ? { entscheidungen_durchsicht: durchsicht } : {}),
     ...(plaene.length ? { plaene } : {}),
     // W12-B: nur fuer Token-Agenten mit Lauf bei Kern EIN (sonst Bestandsform unveraendert).
-    ...profilTeil,
+    ...profilErg.teil,
     ...(skills ? { skills } : {}),
-    ...(w12 ? { neuinstanz_hinweis: TEXT_NEUINSTANZ, zustellung: { ...w12.umfang, profilblock: !!profilTeil.profil, lauf_id: w12.lauf_id, ...regelDiagnose } } : {}),
+    ...(w12 ? { neuinstanz_hinweis: TEXT_NEUINSTANZ, zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose } } : {}),
   };
   const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
   if (geliefert && w12) {

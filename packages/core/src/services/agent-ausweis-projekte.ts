@@ -297,7 +297,7 @@ export async function ausweisProjekteHinweis(e: { identity_id: string; heimat: s
  * Haengt die Anzeige an eine Tool-Antwort: MCP-Ergebnis ({content:[{type:'text', text:JSON}]}, structuredContent) oder
  * einfaches Objekt. Andere Formen bleiben unveraendert. Wirft nie.
  */
-export function haengeAusweisHinweiseAn<T>(ergebnis: T, hinweise: string[]): T {
+export function haengeAusweisHinweiseAn<T>(ergebnis: T, hinweise: string[] | string, feld: string = AUSWEIS_HINWEIS_FELD): T {
   try {
     if (!hinweise.length || !ergebnis || typeof ergebnis !== 'object' || Array.isArray(ergebnis)) return ergebnis;
     const r = ergebnis as unknown as { content?: Array<{ type?: string; text?: string }>; structuredContent?: unknown };
@@ -306,15 +306,15 @@ export function haengeAusweisHinweiseAn<T>(ergebnis: T, hinweise: string[]): T {
       if (!b || b.type !== 'text' || typeof b.text !== 'string') return ergebnis;
       const roh: unknown = JSON.parse(b.text);
       if (!roh || typeof roh !== 'object' || Array.isArray(roh)) return ergebnis;
-      (roh as Record<string, unknown>)[AUSWEIS_HINWEIS_FELD] = hinweise;
+      (roh as Record<string, unknown>)[feld] = hinweise;
       b.text = /^\{\n\s/.test(b.text) ? JSON.stringify(roh, null, 2) : JSON.stringify(roh);
       if (r.structuredContent && typeof r.structuredContent === 'object' && !Array.isArray(r.structuredContent)) {
-        r.structuredContent = { ...(r.structuredContent as Record<string, unknown>), [AUSWEIS_HINWEIS_FELD]: hinweise };
+        r.structuredContent = { ...(r.structuredContent as Record<string, unknown>), [feld]: hinweise };
       }
       return ergebnis;
     }
     if ('content' in r) return ergebnis;
-    return { ...(ergebnis as unknown as Record<string, unknown>), [AUSWEIS_HINWEIS_FELD]: hinweise } as unknown as T;
+    return { ...(ergebnis as unknown as Record<string, unknown>), [feld]: hinweise } as unknown as T;
   } catch {
     return ergebnis;
   }

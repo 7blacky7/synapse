@@ -33,7 +33,7 @@ import { loeseToolZuschnitt, TEXT_AGENT_TOKEN_FEHLT } from './agent-profil-vertr
 import { bereiteZuschnittSnapshotVor, wendeProfilLimitsAn } from './agent-zuschnitt.js';
 import { zaehle as zaehleZuschnitt } from './agent-zuschnitt-kontext.js';
 import {
-  waehleRegisterWeg, legeErstenKoordinatorAusgabe, AnmeldungsFehler, fortsetzungFuerAntwort,
+  waehleRegisterWeg, legeErstenKoordinatorAusgabe, AnmeldungsFehler,
   koordinatorListeAntwort, merkeHerkunftsort,
 } from './agent-anmeldung.js';
 // W12-B (P22-T25, V5/V6): Lauf-Zustellbuchhaltung + Uebernahme-Bruecke; Hinweis-Registry an den wirksamen Schalter.
@@ -168,7 +168,9 @@ export async function mitAgentToolAufruf<T>(
 ): Promise<T> {
   return mitAgentAufrufKontext({ principal: null, bezug: await leseAgentBezugModus() }, async () => {
     const kontext = await bereiteAgentToolAufrufVor(tool, eingabe, serverInstanceId, transportToken, erlaubteParameter, optionen);
-    const ergebnis = await arbeit(kontext);
+    let ergebnis = await arbeit(kontext);
+    // P22-T50: index_stats(sitzung:'fortsetzung') mit Ausweis -> Verweis auf chat(anmelden).
+    if (kontext.sitzung_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.sitzung_hinweis, 'ausweis_sitzung_hinweis');
     // P22-T44: Visum-/Einwanderungsanzeige (einmal je Lauf und bei Aenderung) an die fertige Antwort beider Transporte.
     return kontext.ausweis_hinweise?.length ? haengeAusweisHinweiseAn(ergebnis, kontext.ausweis_hinweise) : ergebnis;
   });
@@ -187,6 +189,40 @@ export interface AgentToolKontext {
   bestaetigt?: BestaetigterAufrufKontext;
   /** P22-T44: Anzeige Visa/Einwanderungen (Feld ausweis_projekte_hinweis, mitAgentToolAufruf haengt es an). */
   ausweis_hinweise?: string[];
+  /** P22-T50: Verweis auf chat(anmelden) bei index_stats(sitzung:'fortsetzung') mit Ausweis (Feld ausweis_sitzung_hinweis). */
+  sitzung_hinweis?: string;
+}
+/** P22-T50 (User 19.10.): mit Ausweis gibt es keine Fortsetzung - jede Anmeldung ist eine Neuanmeldung. */
+const TEXT_AUSWEIS_KEINE_FORTSETZUNG = 'Mit Ausweis gibt es keine Fortsetzung: Start, Neustart, Compaction und Kontextverlust = '
+  + 'chat(action:"anmelden", token) (jede Anmeldung ist eine Neuanmeldung). index_stats hat keinen neuen Lauf begonnen.';
+/**
+ * P22-T50 Nachtrag (User): EIGENE offene files-Plaene der Identitaet (status open = weder committed noch cancelled/abgelaufen)
+ * aus dem Zeitfenster anmeldung_plaene_minuten (Ausweis-Frist, projekt > global > Standard 30) als EINE Zeile. Fremde und
+ * aeltere Plaene nicht; keiner offen -> null (Zeile entfaellt). Lesefehler -> null.
+ */
+async function eigenePlaeneZeile(p: AgentTokenAnmeldung): Promise<string | null> {
+  try {
+    const { leseAusweisFristen } = await import('./agent-ausweis-fristen.js');
+    const fenster = (await leseAusweisFristen(p.project)).fristen.anmeldung_plaene_minuten;
+    const r = await getPool().query<{ id: string; min: number }>(
+      `SELECT id::text AS id, FLOOR(EXTRACT(EPOCH FROM (NOW() - created_at)) / 60)::int AS min FROM file_batch_plans
+        WHERE project=$1 AND status='open' AND created_at > NOW() - ($4::int * INTERVAL '1 minute')
+          AND (owner_identity_id=$2 OR (owner_identity_id IS NULL AND owner_agent_id=$3))
+        ORDER BY created_at DESC LIMIT 10`, [p.project, p.identitaet.id, p.agent_id, fenster.wert]);
+    if (!r.rows.length) return null;
+    return `Eigene offene files-Plaene (letzte ${fenster.wert} Min): ${r.rows.map((z) => `${z.id} (${z.min} Min)`).join(', ')}`
+      + ' - pruefen: files(action:"plan_status", plan_id); dann commit/cancel/plan_update.';
+  } catch { return null; }
+}
+/** P22-T50: Abloesung des vorigen Laufs als hoechstens eine Zeile (statt fortsetzung.letzter_lauf). Lesefehler -> keine Zeile. */
+async function abloesungsZeile(p: AgentTokenAnmeldung): Promise<string | null> {
+  if (!p.lauf_id) return null;
+  try {
+    const r = await getPool().query<{ id: string }>(
+      'SELECT id FROM agent_identitaet_laeufe WHERE identity_id=$1 AND abgeloest_durch=$2 ORDER BY context_epoch DESC LIMIT 1',
+      [p.identitaet.id, p.lauf_id]);
+    return r.rows[0] ? `Vorheriger Lauf ${r.rows[0].id.slice(0, 8)} abgeloest.` : null;
+  } catch { return null; }
 }
 function feld(a: Record<string, unknown>, k: string): string | undefined {
   return typeof a[k] === 'string' && a[k] !== '' ? a[k] as string : undefined;
@@ -239,7 +275,9 @@ export async function bereiteAgentToolAufrufVor(
   const args = { ...eingabe };
   const token = Object.hasOwn(eingabe, 'token') ? feld(eingabe, 'token') : transportToken;
   // W12 V7: Lesepunkt = Ausweis-Kern ODER alter Einzelschalter (siehe ausweisTokenAktiv); Antwortform wie bisher.
-  const projektHinweis = feld(eingabe, 'project') ?? null;
+  // P22-T50: project '*' (jev abwesend: alle Projekte) ist nie ein Projekt - kein Fremdprojekt, kein Visum, kein Onboarding.
+  const alleProjekte = feld(eingabe, 'project') === '*';
+  const projektHinweis = alleProjekte ? null : feld(eingabe, 'project') ?? null;
   // P22-T44: Ausweis + project eines ANDEREN Projekts als der Heimat -> bei Produkt-Schalter 'mehrprojekt' (Stand der Heimat)
   // Visum/Arbeitsfreigabe statt Abweisung. Anmelde-/Identitaetsaktionen bleiben Heimataktionen. Schalter AUS = Bestand.
   const aktionRoh = feld(eingabe, 'action');
@@ -388,13 +426,21 @@ export async function bereiteAgentToolAufrufVor(
     const selbst = strikt ? sammleSelbstangaben(tool, action, explizit, erlaubteParameter) : undefined;
     // P22-T44: im fremden Projekt kein Sitzungssignal (Lauf/Sitzung gehoeren der Heimat); der Ausweis wird ohne Projekt geprueft.
     if (fremdProjekt && tool === 'admin' && action === 'index_stats') delete args.sitzung;
-    const sitzungsSignal = tool === 'admin' && action === 'index_stats' && ['neu', 'fortsetzung'].includes(String(args.sitzung));
+    // P22-T50: mit Ausweis ist index_stats(sitzung:'fortsetzung') kein Sitzungssignal mehr (kein neuer Lauf, keine Epoch);
+    // die Antwort verweist auf chat(anmelden). Mit onboarding:true bleibt das volle Onboarding als Nachschlagen erhalten.
+    const ausweisFortsetzung = tool === 'admin' && action === 'index_stats' && String(args.sitzung) === 'fortsetzung';
+    if (ausweisFortsetzung) {
+      basis.sitzung_hinweis = TEXT_AUSWEIS_KEINE_FORTSETZUNG;
+      if (args.onboarding !== true) delete args.sitzung;
+    }
+    const sitzungsSignal = tool === 'admin' && action === 'index_stats' && String(args.sitzung) === 'neu';
     const anmeldung = (tool === 'chat' && (action === 'anmelden' || action === 'register')) || sitzungsSignal;
-    const p = anmeldung ? await meldeAgentMitTokenAn(token, feld(args, 'project'), bezug, selbst)
-      : await pruefeAgentToken(token, fremdProjekt ? undefined : feld(args, 'project'), bezug, selbst);
+    const tokenProjekt = fremdProjekt || alleProjekte ? undefined : feld(args, 'project');
+    const p = anmeldung ? await meldeAgentMitTokenAn(token, alleProjekte ? undefined : feld(args, 'project'), bezug, selbst)
+      : await pruefeAgentToken(token, tokenProjekt, bezug, selbst);
     // W12-B (P22-T25, V5): aktiven Lauf + Identitaets-Sitzung sichern (erster Token-Aufruf ohne anmelden -> 'implizit',
     // Legacy-Ursprung -> 'uebernahme' mit Bruecke). Nur bei wirksamem Ausweis-Kern; Fehler lassen den Aufruf unberuehrt.
-    await sichereLaufFuerAufruf(p, !anmeldung ? null : sitzungsSignal && args.sitzung === 'fortsetzung' ? 'fortsetzung' : 'anmelden');
+    await sichereLaufFuerAufruf(p, anmeldung ? 'anmelden' : null);
     basis.principal = p;
     let fremd: FremdprojektStand | null = null;
     if (fremdProjekt) {
@@ -417,7 +463,8 @@ export async function bereiteAgentToolAufrufVor(
     } else {
       setzeAufrufPrincipal(p);
     }
-    const zielProjekt = fremdProjekt ?? p.project;
+    // P22-T50: jev bekommt '*' unveraendert (alle Projekte); andere Tools mit '*' arbeiten in der Heimat.
+    const zielProjekt = alleProjekte && tool === 'jev' ? '*' : fremdProjekt ?? p.project;
     // P22-T44: Anzeige Visa/Einwanderungen (einmal je Lauf und bei Aenderung), nur bei Schalter mehrprojekt der Heimat.
     try {
       if (tool !== 'reverse' && (await leseMehrprojektSchalter(p.project)).aktiv) {
@@ -479,18 +526,14 @@ export async function bereiteAgentToolAufrufVor(
         // zweiter, verworfener Aufruf hier wuerde den Profilblock als zugestellt markieren, ohne ihn je zu zeigen.
         args.sitzung = 'fortsetzung'; args.onboarding = true;
       } else {
-        // P22-T43 (D2): erst fortsetzung (liefert und markiert den Profilblock), danach das Onboarding ohne erneutes Profil.
-        let fortsetzung: Record<string, unknown> = await fortsetzungFuerAntwort(agentPrincipalAusAnmeldung(p));
+        // P22-T50 (User 19.10.): jede Anmeldung mit Ausweis ist eine Neuanmeldung -> kein fortsetzung-Block. Profilblock,
+        // Profil-Channels und gebundene Tasks liefert das Onboarding (einmal je Lauf); Abloesung hoechstens als eine Zeile.
         const agentOnboarding = await holeAgentOnboarding({ project: p.project, agentId: p.agent_id,
-          role: p.rolle, serverInstanceId, explizit: true, koordinatorKurz: true });
-        // P22-T49: kurze Koordinator-Ausgabe -> fortsetzung ohne abrufwege/zaehler (Handoff steht im Onboarding).
-        const kurz = (agentOnboarding as { zustellung?: { koordinator_kurz?: boolean } } | null)?.zustellung?.koordinator_kurz === true;
-        const f = fortsetzung.fortsetzung as Record<string, unknown> | undefined;
-        if (kurz && f) {
-          const { abrufwege: _abrufwege, zaehler: _zaehler, ...rest } = f;
-          fortsetzung = { fortsetzung: rest };
-        }
-        basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p), agentOnboarding, ...fortsetzung };
+          role: p.rolle, serverInstanceId, explizit: true, koordinatorKurz: true, anmeldung: true });
+        const abloesung = await abloesungsZeile(p);
+        const eigenePlaene = await eigenePlaeneZeile(p);
+        basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p), ...(abloesung ? { abloesung } : {}),
+          ...(eigenePlaene ? { offene_plaene: eigenePlaene } : {}), agentOnboarding };
       }
     } else if (tool === 'chat' && action === 'identitaet') {
       // P22-T44 (Debug): Heimat, Schalter mehrprojekt mit Quelle, Projekte im Ausweis mit Zugang und Ablauf.

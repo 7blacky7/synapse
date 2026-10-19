@@ -1,4 +1,4 @@
--- P22-T45 / 117. Additiv und idempotent: nur CREATE ... IF NOT EXISTS, nichts wird gedroppt oder umgeschrieben.
+-- P22-T45 / 117. Additiv und idempotent: nur CREATE ... IF NOT EXISTS, nichts wird gedroppt oder umgeschrieben (Ausnahme P22-T50: Namens-CHECK um einen Wert erweitert).
 -- Fristen des Agenten-Ausweises als EINSTELLUNG (User 19.10.2026 'alles einstellbar, nie Hardcode', memory
 -- regel-neue-funktionen-mit-schalter-und-debug Punkt 7). Eine Zeile je Ebene/Projekt/Wert; fehlt sie, gilt die naechste
 -- Ebene (projekt > global > Code-Standard). Lesestelle: services/agent-ausweis-fristen.ts. Keine Env.
@@ -6,10 +6,11 @@
 --   erstnutzung_minuten  vorbereiteter Ausweis Weg B / Daemon-Start (Standard 10)
 --   visum_minuten        Visum P22-T44 (Standard 30, vorgesehen, noch ohne Wirkung)
 --   arbeitsfreigabe_stunden  Arbeitsfreigabe P22-T44 (Standard 24, vorgesehen, noch ohne Wirkung)
+--   anmeldung_plaene_minuten  P22-T50: Fenster eigener offener files-Plaene in chat(anmelden) (Standard 30)
 CREATE TABLE IF NOT EXISTS agent_ausweis_fristen (
   ebene TEXT NOT NULL CHECK (ebene IN ('global','projekt')),
   project TEXT,
-  name TEXT NOT NULL CHECK (name IN ('schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden')),
+  name TEXT NOT NULL CHECK (name IN ('schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten')),
   wert INTEGER NOT NULL CHECK (wert > 0),
   grund TEXT NOT NULL,
   gesetzt_von TEXT NOT NULL,
@@ -19,3 +20,16 @@ CREATE TABLE IF NOT EXISTS agent_ausweis_fristen (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_ausweis_fristen
   ON agent_ausweis_fristen(ebene, (COALESCE(project, '')), name);
+-- P22-T50: weiterer Wert anmeldung_plaene_minuten. Bestehende Tabellen: Namens-CHECK nur erweitern, wenn er den Wert noch
+-- nicht kennt (idempotent; keine Daten werden geaendert, alle bisherigen Namen bleiben gueltig).
+DO $fristen_name$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'agent_ausweis_fristen'::regclass
+                   AND conname = 'agent_ausweis_fristen_name_check'
+                   AND pg_get_constraintdef(oid) LIKE '%anmeldung_plaene_minuten%') THEN
+    ALTER TABLE agent_ausweis_fristen DROP CONSTRAINT IF EXISTS agent_ausweis_fristen_name_check;
+    ALTER TABLE agent_ausweis_fristen ADD CONSTRAINT agent_ausweis_fristen_name_check
+      CHECK (name IN ('schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten'));
+  END IF;
+END
+$fristen_name$;

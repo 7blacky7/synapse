@@ -149,7 +149,8 @@ try{
   check(anm?.success===true&&k3.principal.lauf_id!==k1.principal.lauf_id,'chat(anmelden): neuer Lauf');
   check(anm?.agentOnboarding?.rules?.some(r=>r.name==='regel-pflicht-x'&&r.vollstaendig)&&!!anm.agentOnboarding.regel_verzeichnis,'neuer Lauf: Pflichtregeln voll + regel_verzeichnis');
   check(anm?.agentOnboarding?.neuinstanz_hinweis===V.TEXT_NEUINSTANZ,'TEXT_NEUINSTANZ im Onboarding');
-  check(!!anm?.fortsetzung?.profil,'neuer Lauf: Profilblock (W12-C)');
+  // P22-T50: kein fortsetzung-Block; Profilblock im Onboarding (leeres Profil entfaellt, gilt als zugestellt).
+  check(!('fortsetzung' in (anm??{}))&&anm?.agentOnboarding?.zustellung?.profilblock===true,'neuer Lauf: Profilblock zugestellt (W12-C, P22-T50 im Onboarding)');
   const lauf3=(await pool.query('SELECT beginn_art,zugestellt_regeln_stand FROM agent_identitaet_laeufe WHERE id=$1',[k3.principal.lauf_id])).rows[0];
   check(lauf3?.beginn_art==='anmelden'&&!!lauf3.zugestellt_regeln_stand,'Lauf beginn_art anmelden, Regelstand markiert');
   const nach=await tokenAufruf('thought',{action:'search',project:P,query:'x',token},async()=>O.holeAgentOnboarding({project:P,agentId:'leg1',serverInstanceId:SRV}));

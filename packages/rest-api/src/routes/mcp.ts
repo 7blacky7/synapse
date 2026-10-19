@@ -2035,13 +2035,17 @@ async function attachShellJobHints(
     return result;
   }
   const project = str(args, 'project');
-  if (!project) return result;
+  // P22-T50: '*' (jev abwesend: alle Projekte) ist nie ein Projekt.
+  if (!project || project === '*') return result;
 
   const extras: Record<string, unknown> = {};
-  try {
-    const plans = await claimOpenPlanHints(project, effectiveAgentId, Date.now(), 'agentOnboarding' in result, toolName);
-    if (plans) extras.open_plans = plans;
-  } catch { /* best effort */ }
+  // P22-T50: chat(anmelden) traegt keine open_plans (alte files-Plaene sind Ballast in der Anmeldung).
+  if (!(toolName === 'chat' && args.action === 'anmelden')) {
+    try {
+      const plans = await claimOpenPlanHints(project, effectiveAgentId, Date.now(), 'agentOnboarding' in result, toolName);
+      if (plans) extras.open_plans = plans;
+    } catch { /* best effort */ }
+  }
   // JEV-11 (P7-T30): bei aktivem jev-Schalter EINE kurze Zeile, sonst nichts. Das jev-Tool selbst
   // ist ausgenommen (seine Antworten tragen den Hinweis schon).
   if (toolName !== 'jev') {
@@ -3239,6 +3243,7 @@ async function handleToolCallKern(
             count: result.tasks.length,
             tasks: result.tasks,
             aehnlich: result.aehnlich,
+            ...(result.aehnlich_hinweis ? { aehnlich_hinweis: result.aehnlich_hinweis } : {}),
             warning: result.warning,
             message: `${result.tasks.length} Tasks hinzugefuegt`,
             ...(result.plan_ref ? { plan_ref: result.plan_ref } : {}),

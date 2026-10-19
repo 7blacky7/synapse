@@ -176,7 +176,7 @@ try{
     if(r.token)secrets.push(r.token);
     check(r.success===true&&TOKEN.test(r.token||''),'AUS: register liefert wie t109 sofort den Token '+t.name);
     const a=await t.call('chat',{action:'anmelden',token:r.token});
-    check(a.success===true&&!!a.fortsetzung&&typeof a.fortsetzung.identity_id==='string','AUS (W12-C P22-T26): anmelden liefert fortsetzung IMMER bei Token-Anmeldung '+t.name);
+    check(a.success===true&&!('fortsetzung' in a)&&!!a.agentOnboarding,'AUS (P22-T50): anmelden ohne fortsetzung-Block, mit Onboarding '+t.name);
     const l=await t.call('chat',{action:'koordinator_liste',project});
     check(l.success!==true&&l.koordinatoren===undefined,'AUS: koordinator_liste ist eine unbekannte Aktion '+t.name);
     const th=await t.call('thought',{action:'get',project,id:thoughtId,agent_id:legacy});
@@ -293,8 +293,12 @@ try{
    // Portabilitaet: derselbe Token auf REST (Argument), REST (Header) und stdio (Env), ohne Projekt
    const a1=await rest.call('chat',{action:'anmelden',token:tok},{'user-agent':'openai-mcp/1.0'});
    check(a1.success===true&&a1.principal.identity_id===idn.id&&a1.principal.agent_id==='ein-rest','Anmeldung nur mit Token, Projekt aus dem Token (REST)');
-   check(a1.fortsetzung?.identity_id===idn.id&&a1.fortsetzung.project===project&&a1.fortsetzung.profil_revision===1&&a1.fortsetzung.letzter_lauf==null,'Fortsetzungsantwort: Identitaet, Projekt, Profilrevision, noch kein Vorlauf');
-   check(a1.fortsetzung.abrufwege.some(w=>w.art==='shell_historie'&&w.aufruf.tool==='shell')&&a1.fortsetzung.abrufwege.some(w=>w.art==='datei_historie'),'Abrufwege fuer Historien');
+   // P22-T50: die Anmeldeantwort traegt keinen fortsetzung-Block mehr; der Dienst fortsetzungsInfo bleibt und wird direkt geprueft.
+   check(!('fortsetzung' in a1)&&!('abloesung' in a1),'P22-T50: Anmeldung ohne fortsetzung, erste Anmeldung ohne Abloesungszeile');
+   const fiVon=a=>C.W1B_DIENSTE.anmeldung.fortsetzungsInfo({art:'identity',project,agent_id:'ein-rest',identity_id:idn.id,rolle:a.principal.rolle,modell:null,context_epoch:a.principal.context_epoch,lauf_id:a.principal.lauf_id});
+   const f1=await fiVon(a1);
+   check(f1?.identity_id===idn.id&&f1.project===project&&f1.profil_revision===1&&f1.letzter_lauf==null,'fortsetzungsInfo: Identitaet, Projekt, Profilrevision, noch kein Vorlauf');
+   check(f1.abrufwege.some(w=>w.art==='shell_historie'&&w.aufruf.tool==='shell')&&f1.abrufwege.some(w=>w.art==='datei_historie'),'Abrufwege fuer Historien');
    check(!sh(a1).includes(tok),'Anmeldeantwort enthaelt den Token nicht');
    // Bestandsarbeit des Vorgaengers fuer die zweite Anmeldung
    await pool.query('INSERT INTO thoughts(id,project,source,content,tags) VALUES($1,$2,$3,$4,$5)',[randomUUID(),project,'ein-rest','Handoff B',['auto-handoff','session-state']]);
@@ -307,14 +311,16 @@ try{
    await pool.query("INSERT INTO file_batch_plans(id,project,owner_agent_id,ops,expected_hashes,previews,status) VALUES(987654,$1,'ein-rest','[]'::jsonb,'{}'::jsonb,'[]'::jsonb,'open')",[project]);
    const a2=await stdio.call('chat',{action:'anmelden'},tok);
    check(a2.success===true&&a2.principal.identity_id===idn.id&&a2.principal.context_epoch>a1.principal.context_epoch,'derselbe Token auf anderem Client (stdio/Env): dieselbe Identitaet, keine neue');
-   const w=a2.fortsetzung?.abrufwege??[];
+   check(!('fortsetzung' in a2)&&/^Vorheriger Lauf [0-9a-f-]{8} abgeloest\.$/.test(a2.abloesung??''),'P22-T50: Abloesung des vorigen Laufs als eine Zeile, kein fortsetzung-Block');
+   const f2=await fiVon(a2);
+   const w=f2?.abrufwege??[];
    const art=n=>w.filter(x=>x.art===n);
-   check(a2.fortsetzung?.letzter_lauf?.abgeloest===true,'vorheriger Lauf als abgeloest ausgewiesen');
+   check(f2?.letzter_lauf?.abgeloest===true,'vorheriger Lauf als abgeloest ausgewiesen');
    check(art('handoff').length===1&&art('handoff')[0].aufruf.tool==='thought'&&art('handoff')[0].aufruf.action==='get','letzte Uebergabe mit exaktem Abruf');
    check(art('task').length===1&&art('task')[0].id==='PB-T1'&&art('task')[0].aufruf.tool==='plan','nur offene zugeordnete Tasks');
    check(art('event').length===1&&art('event')[0].aufruf.action==='pending','offenes Ereignis mit Abruf (nicht quittiert)');
    check(art('shell_job').length===1&&art('files_plan').length===1&&art('files_plan')[0].id==='987654','laufender Job und offener Plan');
-   check(a2.fortsetzung.zaehler?.task===1&&a2.fortsetzung.zaehler?.handoff===1,'Ueberblick mit Zaehlern');
+   check(f2.zaehler?.task===1&&f2.zaehler?.handoff===1,'Ueberblick mit Zaehlern');
    check((await pool.query('SELECT count(*)::int n FROM agent_events e WHERE NOT EXISTS (SELECT 1 FROM agent_event_acks a WHERE a.event_id=e.id)')).rows[0].n>=1,'Anzeigen quittiert nichts');
    check((await pool.query("SELECT count(*)::int n FROM agent_identitaet_laeufe WHERE identity_id=$1 AND status='aktiv'",[idn.id])).rows[0].n===1,'Ein-Lauf-je-Identitaet bleibt');
    const a3=await rest.call('chat',{action:'identitaet'},{'x-synapse-agent-token':tok});

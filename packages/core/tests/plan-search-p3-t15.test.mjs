@@ -127,15 +127,20 @@ try {
  await pool.query(PLAN_TASK_SCHEMA_SQL);
  assert.deepEqual((await pool.query('SELECT embedded_at FROM plan_tasks WHERE id=$1',[existing.id])).rows[0].embedded_at,marker,'Bestandsnachzug idempotent');
  const a=await P.addTask(project,'Taskindex','Titel und Beschreibung', 'high',p1.id);
- assert.equal(a.aehnlich[0].id,existing.id,'kalibrierter Hinweis, Speicherung nicht blockiert');
+ assert.equal(a.aehnlich[0].task,existing.kurz_id,'kalibrierter Hinweis, Speicherung nicht blockiert');
+ // P22-T50: kompakt - nur Kurz-ID, Status, kurzer Titel, Score (2 Stellen)
+ assert.deepEqual(Object.keys(a.aehnlich[0]),['task','status','titel','score'],'aehnlich kompakt');
+ assert.equal(a.aehnlich[0].score,Math.round(a.aehnlich[0].score*100)/100);
  assert.equal(points.get('project_'+project+'_tasks').get(a.id).payload.plan_id,p1.id);
  assert.equal(points.get('project_'+project+'_tasks').get(a.id).payload.kurz_id,a.kurz_id);
  assert.ok(embedTexts.includes('Taskindex\nTitel und Beschreibung'),'Dokumenttext Titel+Beschreibung');
  const batch=await P.addTasksBatch(project,[{title:'Suche A',description:'finden'},{title:'Suche B',description:'auch finden'}],p1.id);
  assert.equal(batch.tasks.length,2);assert.equal(batch.aehnlich.length,2);
- assert.ok(batch.tasks.every(t=>t.aehnlich.length>0),'Batch hat je Task Hinweise');
- assert.ok(batch.tasks[0].aehnlich.some(x=>x.id===batch.tasks[1].id),'Dubletten innerhalb desselben Batches');
- assert.ok(batch.tasks.every(t=>!t.aehnlich.some(x=>x.id===t.id)),'Keine Selbsttreffer');
+ // P22-T50: aehnlich nur EINMAL (gesammelt), nicht zusaetzlich je Task
+ assert.ok(batch.tasks.every(t=>!('aehnlich' in t)&&!('aehnlich_hinweis' in t)),'Batch: aehnlich nicht je Task');
+ assert.ok(batch.aehnlich.every(e=>e.treffer.length>0)&&batch.aehnlich.map(e=>e.task).join()===batch.tasks.map(t=>t.kurz_id).join(),'Batch hat je Task mit Treffern einen Eintrag');
+ assert.ok(batch.aehnlich[0].treffer.some(x=>x.task===batch.tasks[1].kurz_id),'Dubletten innerhalb desselben Batches');
+ assert.ok(batch.aehnlich.every(e=>!e.treffer.some(x=>x.task===e.task)),'Keine Selbsttreffer');
  // PG ist autoritativ, selbst bei falscher Payload. Orphans werden gezählt.
  const taskCol=points.get('project_'+project+'_tasks'),ghost=randomUUID();
  taskCol.set(ghost,{id:ghost,payload:{project},score:0.99});
@@ -240,9 +245,9 @@ try {
   const thoughts=await call('search',{action:'thoughts',query:'Report',task_id:oldAlias});
   assert.ok(JSON.stringify(thoughts).includes(thoughtA));assert.ok(!JSON.stringify(thoughts).includes(thoughtB));
   const added=await call('plan',{action:'add_task',plan_id:'P1',title:'Transport '+mode,description:'Dublettenhinweis'});
-  assert.ok((added.aehnlich??added.task?.aehnlich)?.length>0,mode+' add_task liefert Hinweis');
+  assert.ok(added.aehnlich?.length>0&&!added.task?.aehnlich,mode+' add_task liefert Hinweis genau einmal');
   const addedBatch=await call('plan',{action:'add_tasks_batch',plan_id:'P1',tasks:[{title:'Batch '+mode,description:'Hinweis'}]});
-  assert.ok(addedBatch.aehnlich?.length>0,mode+' Batch-Hinweise');
+  assert.ok(addedBatch.aehnlich?.length>0&&addedBatch.tasks.every(t=>!('aehnlich' in t)),mode+' Batch-Hinweise genau einmal');
   console.log('PASS '+mode+': search(tasks/plans), plan(search), Filter, Pins, Alias-Thoughts, Dubletten');
  }
 

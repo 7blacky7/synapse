@@ -107,20 +107,28 @@ try{
   const anm1=await tokenAufruf('chat',{action:'anmelden',token:tokD},async k=>{kd1=k;return k.antwort;},{herkunft:'Test'});
   check(anm1?.success===true,'D2: erste Anmeldung ok');
   check(anm1?.agentOnboarding?.isFirstVisit===true&&/WILLKOMMEN/.test(anm1.agentOnboarding.message),'D5: erste Anmeldung einer neuen Identitaet = Begruessung');
-  check(!!anm1?.fortsetzung?.profil&&!('profil' in (anm1?.agentOnboarding??{})),'D2: anmelden: Profil nur in fortsetzung, nicht doppelt im Onboarding');
-  check(anm1?.agentOnboarding?.zustellung?.profilblock===false,'D2: zustellung.profilblock meldet nur Getragenes (false)');
+  // P22-T50: kein fortsetzung-Block mehr; das Profil kommt (einmal je Lauf) im Onboarding.
+  check(!('fortsetzung' in (anm1??{}))&&!('profil' in (anm1?.agentOnboarding??{})),'D2/T50: anmelden ohne fortsetzung; Profil ohne Inhalt (nur Revision) entfaellt');
+  check(anm1?.agentOnboarding?.zustellung?.profilblock===true&&!('fortsetzung' in anm1.agentOnboarding.zustellung),'D2/T50: zustellung.profilblock true, ohne zustellung.fortsetzung');
+  check(!('abloesung' in (anm1??{})),'T50: erste Anmeldung ohne Abloesungszeile');
   const folge1=await tokenAufruf('thought',{action:'search',project:P,query:'x',token:tokD},async()=>O.holeAgentOnboarding({project:P,agentId:'dneu',serverInstanceId:SRV}));
   check(folge1===null,'D2: Folgeaufruf nach anmelden ohne erneutes Profil');
   const anm2=await tokenAufruf('chat',{action:'anmelden',token:tokD},async k=>k.antwort,{herkunft:'Test'});
-  check(anm2?.agentOnboarding?.isFirstVisit===false&&/FORTSETZUNG/.test(anm2.agentOnboarding.message)&&!/neuer Agent/.test(anm2.agentOnboarding.message),'D5: Anmeldung bestehender Identitaet = Fortsetzungs-Text');
-  // Sitzungssignal (index_stats fortsetzung) -> neuer Lauf, Profil kommt im Onboarding des Handlers, danach nicht erneut
+  check(anm2?.agentOnboarding?.isFirstVisit===false&&/ANMELDUNG/.test(anm2.agentOnboarding.message)&&!/FORTSETZUNG|neuer Agent/.test(anm2.agentOnboarding.message),'D5/T50: Anmeldung bestehender Identitaet = Neuanmeldung (ANMELDUNG, nicht FORTSETZUNG)');
+  check(/^Vorheriger Lauf [0-9a-f-]{8} abgeloest\.$/.test(anm2?.abloesung??'')&&!('fortsetzung' in (anm2??{})),'T50: Abloesung des vorigen Laufs als eine Zeile ('+anm2?.abloesung+')');
+  // P22-T50: index_stats(sitzung:'fortsetzung') mit Ausweis = kein Sitzungssignal (kein neuer Lauf), Verweis auf chat(anmelden);
+  // onboarding:true liefert das volle Onboarding weiter als Nachschlagen (Profil ist im Lauf schon zugestellt).
   let ks;
   const st=await tokenAufruf('admin',{action:'index_stats',project:P,role:'subagent',sitzung:'fortsetzung',onboarding:true,token:tokD},async k=>{
     ks=k;
     return C.wendeSitzungsSignalAn({agentId:k.args.agent_id,project:k.args.project,sitzung:k.args.sitzung,role:k.args.role,onboarding:k.args.onboarding,serverInstanceId:SRV});
   });
   check(!ks.antwort&&!!st?.agentOnboarding,'D2: index_stats fortsetzung liefert Onboarding im Handler');
-  check(!!st?.agentOnboarding?.profil&&st.agentOnboarding.zustellung?.profilblock===true,'D2: Sitzungssignal: Profil im Onboarding (vorher erst beim naechsten Aufruf)');
+  check(ks.principal?.lauf_id===anm2?.principal?.lauf_id&&ks.principal?.context_epoch===anm2?.principal?.context_epoch,'T50: index_stats fortsetzung mit Ausweis beginnt keinen neuen Lauf (Epoch unveraendert)');
+  check(/chat\(action:"anmelden"/.test(st?.ausweis_sitzung_hinweis??''),'T50: Verweis auf chat(anmelden) (ausweis_sitzung_hinweis)');
+  check(!st?.agentOnboarding?.profil&&st?.agentOnboarding?.zustellung?.profilblock===false,'T50: Profil im Lauf schon zugestellt -> nicht erneut');
+  const st2=await tokenAufruf('admin',{action:'index_stats',project:P,role:'subagent',sitzung:'fortsetzung',token:tokD},async k=>({sitzung:k.args.sitzung??null}));
+  check(st2?.sitzung===null&&/chat\(action:"anmelden"/.test(st2?.ausweis_sitzung_hinweis??''),'T50: ohne onboarding:true wird sitzung entfernt, nur Verweis');
   check(st?.agentOnboarding?.isFirstVisit===false,'D5: Sitzungssignal einer bestehenden Identitaet = Fortsetzung');
   const folge2=await tokenAufruf('thought',{action:'search',project:P,query:'x',token:tokD},async()=>O.holeAgentOnboarding({project:P,agentId:'dneu',serverInstanceId:SRV}));
   check(folge2===null,'D2: nach Sitzungssignal kein erneutes Profil beim Folgeaufruf');
@@ -147,7 +155,11 @@ try{
   await post(chRuhig,'fremd'); await post(chAktiv,'fremd'); await post(chArch,'fremd');
   for(const ch of [chArch,chRuhig,chAktiv])await pool.query("INSERT INTO agent_identitaet_channel_mitglieder(channel_id,agent_name,identity_id,last_read_message_id,last_notified_message_id,read_initialized_at) VALUES($1,'dneu','t43-dneu',0,0,NOW())",[ch]);
   const anm3=await tokenAufruf('chat',{action:'anmelden',token:tokD},async k=>k.antwort,{herkunft:'Test'});
-  const wege=anm3?.fortsetzung?.abrufwege??[];
+  check(!('fortsetzung' in (anm3??{})),'T50: Anmeldung ohne fortsetzung-Block');
+  // fortsetzungsInfo bleibt als Dienst bestehen (D3/D4 dort weiter geprueft), nur die Anmeldeantwort traegt sie nicht mehr.
+  const pr=anm3?.principal??{};
+  const fz=(await A.fortsetzungFuerAntwort({art:'identity',project:P,agent_id:'dneu',identity_id:'t43-dneu',rolle:pr.rolle,modell:pr.modell??null,context_epoch:pr.context_epoch,lauf_id:pr.lauf_id})).fortsetzung;
+  const wege=fz?.abrufwege??[];
   check(wege.find(w=>w.art==='handoff')?.id===uebergabe,'D3: handoff = neueste Uebergabe mit Tag session-uebergabe');
   const chs=wege.filter(w=>w.art==='channel').map(w=>w.id);
   check(!chs.some(n=>n.startsWith('~archiv-')),'D4: Archiv-Channels ausgelassen');
