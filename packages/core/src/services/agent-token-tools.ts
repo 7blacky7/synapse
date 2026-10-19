@@ -428,7 +428,12 @@ export async function bereiteAgentToolAufrufVor(
     if (fremdProjekt && tool === 'admin' && action === 'index_stats') delete args.sitzung;
     // P22-T50: mit Ausweis ist index_stats(sitzung:'fortsetzung') kein Sitzungssignal mehr (kein neuer Lauf, keine Epoch);
     // die Antwort verweist auf chat(anmelden). Mit onboarding:true bleibt das volle Onboarding als Nachschlagen erhalten.
-    const ausweisFortsetzung = tool === 'admin' && action === 'index_stats' && String(args.sitzung) === 'fortsetzung';
+    // P22-T52: volles Onboarding mit Ausweis OHNE fortsetzung-Parameter nachschlagen: index_stats(onboarding:true) ohne sitzung
+    // laeuft intern wie sitzung:'fortsetzung' + onboarding:true (kein neuer Lauf, keine Epoch), ohne Verweis-Hinweis.
+    const nachschlagen = !fremdProjekt && tool === 'admin' && action === 'index_stats' && args.onboarding === true
+      && (args.sitzung === undefined || args.sitzung === null || args.sitzung === '');
+    if (nachschlagen) args.sitzung = 'fortsetzung';
+    const ausweisFortsetzung = !nachschlagen && tool === 'admin' && action === 'index_stats' && String(args.sitzung) === 'fortsetzung';
     if (ausweisFortsetzung) {
       basis.sitzung_hinweis = TEXT_AUSWEIS_KEINE_FORTSETZUNG;
       if (args.onboarding !== true) delete args.sitzung;

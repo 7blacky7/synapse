@@ -217,7 +217,7 @@ try{
    check(await fehler(()=>D.weiseZu('d-s',vorlageId,9,K,'User: Version 9'))==='version_unbekannt','unbekannte Version');
    check(await fehler(()=>D.weiseZu('d-s',vorlageId,2,K,''))==='user_auftrag_fehlt','Zuweisung ohne User-Auftrag abgelehnt');
    check(await fehler(()=>D.weiseZu('d-s',vorlageId,2,S,'selbst'))==='recht_fehlt','Agent weist sich nichts selbst zu');
-   check(await fehler(()=>D.weiseZu('d-k',vorlageId,1,K,'User: Koordinator selbst'))==='eigenprofil_nicht_aenderbar','Koordinator aendert eigene Persona nicht');
+   check((await D.weiseZu('d-k',vorlageId,1,K,'User: Koordinator selbst')).identity_id==='d-k','Koordinator weist sich selbst eine Persona zu (P22-T53)');
    check((await D.weiseZu('d-k',vorlageId,1,K2,'User: anderer Koordinator')).identity_id==='d-k','anderer Koordinator darf');
    check((await D.weiseZu('d-k',vorlageId,1,USER,'')).version===1,'User darf (No-op, gleiche Version)');
    check(await fehler(()=>D.weiseZu('d-sq',vorlageId,1,K,'fremde Identitaet'))==='recht_fehlt'||true,'(fremdes Ziel geprueft unten)');
@@ -383,7 +383,7 @@ try{
     check(b3.success&&bestaetigt.art==='user'&&bestaetigt.b.user_zustimmung===C.USER_AUFTRAG_STANDARD,'User ueber Web-UI: Zustimmung aus dem authentifizierten Eingang');
     C.W1B_DIENSTE.profil.aendereProfil=async()=>({profil_revision:2});
     check((await adm('profil_aendern',{project:P,ziel_identity_id:'d-s',erwartete_revision:1,profil_patch:{persona:{a:1}},grund:'Persona ueber Profil'},KP)).error==='persona_nur_ueber_bibliothek','Persona nie als Profilfeld');
-    check((await adm('profil_aendern',{project:P,ziel_identity_id:kid,erwartete_revision:1,profil_patch:{rolle:'x'},grund:'Eigenprofil'},KP)).error==='eigenprofil_nicht_aenderbar','Eigenprofilregel (a0f710e0)');
+    check((await adm('profil_aendern',{project:P,ziel_identity_id:kid,erwartete_revision:1,profil_patch:{briefing:'eigen'},grund:'Eigenprofil'},KP)).profil_revision===2,'Eigenprofil Koordinator (P22-T53, ersetzt a0f710e0 F2)');
     check((await adm('profil_aendern',{project:P,ziel_identity_id:'d-sq',erwartete_revision:1,profil_patch:{rolle:'x'},grund:'fremdes Projekt'},KP)).error==='identitaet_unbekannt','Ziel nur im eigenen Projekt');
     check((await adm('profil_aendern',{project:P,ziel_identity_id:'d-s',erwartete_revision:1,profil_patch:{kontext_stufe:'kompakt'},grund:'weniger Hinweise'},KP)).profil_revision===2,'Profil aendern ueber Dienst');
     const ur=await adm('profil_aendern',{project:P,ziel_identity_id:kid,erwartete_revision:1,profil_patch:{rolle:'x'},grund:'User-Auftrag Test'},USER);

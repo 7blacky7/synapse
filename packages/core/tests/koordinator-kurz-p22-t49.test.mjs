@@ -6,6 +6,8 @@
  * C Folgeaufruf im Lauf ohne erneute Ausgabe. D index_stats onboarding:true liefert weiter alles.
  * E ohne aktiven Plan, ohne high-Tasks, ohne Handoff. F Legacy-Koordinator unveraendert. G Subagent mit Typ wie P22-T48.
  * H profilverwaltung AUS -> volles Onboarding.
+ * P22-T52: Subagent-Anmeldung kurz (nur Typ-Regeln, Regelnamen + Abrufzeile, eigene Channels/Tasks), '*'-Datenrest weg,
+ *   volles Onboarding ohne fortsetzung-Parameter (index_stats onboarding:true), Groesse kurz vs. voll im Log (T52 GROESSE).
  */
 import assert from 'node:assert/strict';
 import {randomUUID,randomBytes} from 'node:crypto';
@@ -211,6 +213,24 @@ try{
   const sternThought=await tokenAufruf('thought',{action:'search',query:'x',project:'*',token:tokK},async k=>({project:k.args.project}));
   check(sternThought?.project===P,'T50 anderes Tool mit "*" arbeitet in der Heimat');
 
+  // ================= P22-T52: '*'-Datenrest, Nachschlagen ohne fortsetzung =================
+  await pool.query("INSERT INTO agent_ausweis_projekte(identity_id,project) VALUES('t49-koord','*') ON CONFLICT DO NOTHING");
+  const st52=await AP.ausweisProjekteStatus('t49-koord',P);
+  check(!(st52?.projekte??[]).some(x=>x.project==='*'),'T52 "*"-Altzeile erscheint nicht im Ausweis-Status');
+  const lauf52=(await pool.query("SELECT id FROM agent_identitaet_laeufe WHERE identity_id='t49-koord' ORDER BY erstellt_am DESC LIMIT 1")).rows[0]?.id;
+  await pool.query('UPDATE agent_identitaet_laeufe SET zugestellt_projekte_stand=NULL WHERE id=$1',[lauf52]);
+  const h52=await AP.ausweisProjekteHinweis({identity_id:'t49-koord',heimat:P,lauf_id:lauf52});
+  check(!!lauf52&&!(h52??[]).some(t=>t.includes('"*"')),'T52 kein Hinweis "Im Projekt * gibt es keinen Koordinator" ('+JSON.stringify(h52)+')');
+  const sql118=readFileSync(join(repo,'packages/core/src/db/schema-sql/118_agent_ausweis_projekte.sql'),'utf8');
+  await pool.query(sql118);
+  check((await pool.query("SELECT count(*)::int n FROM agent_ausweis_projekte WHERE project='*'")).rows[0].n===0,'T52 Schema 118 entfernt "*"-Altzeilen rueckwirkend');
+  await pool.query(sql118);
+  check(true,'T52 Schema 118 zweimal ausfuehrbar (idempotent)');
+  const st52b=await tokenAufruf('admin',{action:'index_stats',role:'koordinator',onboarding:true,token:tokK},async k=>
+    C.wendeSitzungsSignalAn({agentId:k.args.agent_id,project:k.args.project,sitzung:k.args.sitzung,role:k.args.role,onboarding:k.args.onboarding,serverInstanceId:SRV}));
+  check(Array.isArray(st52b?.agentOnboarding?.rules)&&!st52b.agentOnboarding.zustellung?.koordinator_kurz&&!('ausweis_sitzung_hinweis' in (st52b??{})),'T52 index_stats(onboarding:true) OHNE sitzung: volles Onboarding, kein fortsetzung-Verweis');
+  check(!/fortsetzung/.test(String(ob?.message)+String(ob?.statistik_abruf))&&/admin\(action:"index_stats", onboarding:true\)/.test(ob?.statistik_abruf??''),'T52 Koordinator-Kurzform: message/statistik_abruf ohne sitzung:"fortsetzung"');
+
   // ================= F: Legacy-Koordinator =================
   const lg=await O.holeAgentOnboarding({project:P,agentId:'koordinator-leg',role:'koordinator',serverInstanceId:SRV,explizit:true,koordinatorKurz:true});
   check(Array.isArray(lg?.rules)&&lg.rules.some(r=>r.name==='regel-pflicht-x'&&r.vollstaendig)&&!lg.zustellung&&!('handoff' in lg),'F Legacy-Koordinator (ohne Ausweis): unveraendert volles Onboarding');
@@ -222,7 +242,27 @@ try{
   await pool.query("INSERT INTO agent_identitaeten(id,project,name,agent_id,rolle,erstellt_von,typ_id) VALUES('t49-sub',$1,'sub','sub','subagent','test','t49-typ')",[P]);
   await pool.query('INSERT INTO agent_identitaet_tokens(id,identity_id,token_offen,token_praefix,ausweis_weg) VALUES($1,$2,$3,$4,$5)',[randomUUID(),'t49-sub',tokS,tokS.slice(0,12),'vorbereitet']);
   const sb=(await anmelden(tokS))?.agentOnboarding;
-  check(sb?.rules?.map(r=>r.name).join()==='regel-typ-a'&&sb.zustellung?.regeln_quelle==='typ'&&!sb.zustellung?.koordinator_kurz&&!('handoff' in sb),'G Subagent mit Typ: wie P22-T48 (nur Typ-Regel voll), keine Koordinator-Kurzform');
+  check(sb?.rules?.map(r=>r.name).join()==='regel-typ-a'&&!('zustellung' in sb)&&!('handoff' in sb),'G Subagent mit Typ: wie P22-T48 (nur Typ-Regel voll), keine Koordinator-Kurzform');
+  // P22-T52: kurze Subagent-Anmeldung
+  const WEG52=['plaene','task_suche_hinweis','zustellung','rolle_hinweis','rolle_quelle','jev_hinweis','entscheidungen_durchsicht','volltext_hinweis','statistik_abruf','handoff','top3','aktiver_plan'];
+  check(WEG52.every(k=>!(k in sb)),'T52 Subagent ohne Planliste/task_suche_hinweis/zustellung/rolle_hinweis/Uebersichten ('+Object.keys(sb??{}).join()+')');
+  check(JSON.stringify(Object.keys(sb?.regel_verzeichnis??{}).sort())==='["abruf","regeln"]'&&sb.regel_verzeichnis.regeln.includes('regel-pflicht-x')&&/memory\(action:"read"/.test(sb.regel_verzeichnis.abruf??''),'T52 regel_verzeichnis nur Regelnamen + eine Abrufzeile ('+JSON.stringify(sb?.regel_verzeichnis)+')');
+  check(!('channels' in sb)&&!('eigene_tasks' in sb),'T52 ohne eigene Channels/Tasks: Felder fehlen (fremde Channels nie)');
+  const ch52=Number((await pool.query("INSERT INTO specialist_channels(name,project,created_by) VALUES('t52-eigen',$1,'test') RETURNING id",[P])).rows[0].id);
+  await pool.query("INSERT INTO agent_identitaet_channel_mitglieder(channel_id,agent_name,identity_id,joined_at,last_read_message_id,last_notified_message_id,read_initialized_at) VALUES($1,'sub','t49-sub',NOW(),0,0,NOW())",[ch52]);
+  const pt52=(kurz,title,status,bet)=>{const id=randomUUID();return pool.query("INSERT INTO plan_tasks(id,project,plan_id,task,plan_kurz_id,updated_at) VALUES($1,$2,'t52-plan',$3,'P52',$4)",[id,P,JSON.stringify({id,kurz_id:kurz,title,status,beteiligte:bet}),new Date().toISOString()]);};
+  await pt52('P52-T1','Eigene Task','in_progress',[{agent_id:'sub',seit:'x',identity_id:'t49-sub'}]);
+  await pt52('P52-T2','Eigene erledigt','done',[{agent_id:'sub',seit:'x',identity_id:'t49-sub'}]);
+  await pt52('P52-T3','Fremde Task','todo',[{agent_id:'anderer',seit:'x'}]);
+  const sb2raw=await anmelden(tokS); const sb2=sb2raw?.agentOnboarding;
+  console.log('T52 BEISPIEL '+JSON.stringify(sb2raw));
+  check(JSON.stringify(sb2?.channels)==='["t52-eigen"]','T52 channels = nur eigene Mitgliedschaften ('+JSON.stringify(sb2?.channels)+')');
+  check(JSON.stringify(sb2?.eigene_tasks)==='["P52-T1 (in_progress): Eigene Task"]','T52 eigene offene Task (Beteiligung), keine erledigte, keine fremde ('+JSON.stringify(sb2?.eigene_tasks)+')');
+  const vollSub=await tokenAufruf('admin',{action:'index_stats',role:'subagent',onboarding:true,token:tokS},async k=>
+    C.wendeSitzungsSignalAn({agentId:k.args.agent_id,project:k.args.project,sitzung:k.args.sitzung,role:k.args.role,onboarding:k.args.onboarding,serverInstanceId:SRV}));
+  const groesse=x=>Buffer.byteLength(JSON.stringify(x??null));
+  console.log('T52 GROESSE anmelden(kurz, gesamt)='+groesse(sb2raw)+' B, agentOnboarding kurz='+groesse(sb2)+' B, volles Onboarding (Bestand)='+groesse(vollSub?.agentOnboarding)+' B');
+  check(Array.isArray(vollSub?.agentOnboarding?.rules)&&groesse(sb2)<groesse(vollSub?.agentOnboarding),'T52 kurze Subagent-Anmeldung kleiner als das volle Onboarding');
 
   // ================= S: Skills (ausweis-fix 27972-27974) =================
   const DA=await load('packages/core/dist/services/agent-profil-dienst-a.js');
@@ -240,7 +280,7 @@ try{
   check(JSON.stringify(s1?.skills?.namen)==='["superpowers-brainstorming"]'&&JSON.stringify(s1?.skills?.identitaet)==='["eigene-section"]'&&/skills\(action:"get_full"/.test(s1?.skills?.abruf??'')&&!('content' in (s1?.skills??{})),'S Koordinator: eigene Skills nur Namen (Profil + Identitaets-Section) + Abrufzeile');
   check(JSON.stringify(s1?.skills_andere)==='["t49-andere » 3","t49-sub » 2"]','S andere nur Typ » Anzahl, nur dieses Projekt, ohne globale Typen ('+JSON.stringify(s1?.skills_andere)+')');
   const s2=(await anmelden(tokS))?.agentOnboarding;
-  check(JSON.stringify(s2?.skills?.namen)==='["sub-skill"]'&&!('skills_andere' in (s2??{}))&&s2?.zustellung?.regeln_quelle==='typ','S Typ-Agent: eigene Skills als Namen, keine Uebersicht anderer');
+  check(JSON.stringify(s2?.skills?.namen)==='["sub-skill"]'&&!('skills_andere' in (s2??{}))&&s2?.rules?.map(r=>r.name).join()==='regel-typ-a','S Typ-Agent: eigene Skills als Namen, keine Uebersicht anderer');
 
   // ================= H: profilverwaltung AUS =================
   await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'profilverwaltung',false,'Test P22-T49 aus','user')",[P]);

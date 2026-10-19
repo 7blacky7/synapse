@@ -6,7 +6,8 @@
  * - Anlegen/neue Version/Zuweisen nur mit dokumentiertem User-Auftrag (User ueber den authentifizierten
  *   Eingang, oder Koordinator desselben Projekts mit Wortlaut). Globale Vorlagen nur der User.
  * - Entfernen jederzeit (auch bei Schalter AUS); Rollback eines Profils beruehrt Personas nie.
- * - Eigenprofilregel (darfProfilAendern): ein Koordinator aendert seine EIGENE Persona nicht.
+ * - Eigenprofilregel (darfProfilAendern, P22-T53 User 58c38995): ein Koordinator darf seine EIGENE Persona aendern
+ *   (weiter mit User-Auftrag); Nicht-Koordinatoren nie.
  * Produkt-Schalter 'persona' (Standard AUS) gilt fuer alles ausser Entfernen und Lesen der Zuweisung.
  */
 import { randomUUID } from 'node:crypto';

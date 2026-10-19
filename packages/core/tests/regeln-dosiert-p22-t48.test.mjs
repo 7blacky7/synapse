@@ -50,6 +50,7 @@ try{
   const L=await load('packages/core/dist/services/agent-lauf.js');
   const O=await load('packages/core/dist/services/agent-onboarding.js');
   const W=await load('packages/core/dist/services/werkzeug-regeln.js');
+  const C=await load('packages/core/dist/services/chat.js');
   const SCH=await load('packages/core/dist/services/agent-profil-schalter.js');
   const {getPool}=await load('packages/core/dist/db/client.js');
   pool=getPool();
@@ -74,6 +75,9 @@ try{
     return t;
   };
   const anmelden=tok=>tokenAufruf('chat',{action:'anmelden',token:tok},async k=>k.antwort,{herkunft:'Test'});
+  // P22-T52: Diagnose (zustellung, typ_regeln) steht nicht mehr in der kurzen Subagent-Anmeldung -> volles Onboarding nachschlagen.
+  const voll=tok=>tokenAufruf('admin',{action:'index_stats',role:'subagent',onboarding:true,token:tok},async k=>
+    (await C.wendeSitzungsSignalAn({agentId:k.args.agent_id,project:k.args.project,sitzung:k.args.sitzung,role:k.args.role,onboarding:k.args.onboarding,serverInstanceId:SRV}))?.agentOnboarding);
   const werkzeug=(tok,tool,action)=>tokenAufruf(tool,{action,token:tok},async k=>{
     if(k.antwort)return {abgelehnt:k.antwort};
     return W.holeWerkzeugRegeln(undefined,tool,action);
@@ -89,8 +93,10 @@ try{
   const vz=ob?.regel_verzeichnis;
   check(vz?.regeln?.includes('regel-pflicht-x')&&vz.regeln.includes('regel-normal-y')&&vz.regeln.includes('regel-bei-shell'),'1: uebrige Regeln (auch pflicht) nur als Namen im Verzeichnis');
   check(!vz?.regeln?.includes('regel-typ-a'),'1: Typ-Regel nicht doppelt im Verzeichnis');
-  check(JSON.stringify(vz?.typ_regeln?.fehlend)==='["regel-fehlt"]'&&vz?.typ_regeln?.typ?.schluessel==='t48-tester','1: Diagnose typ_regeln (fehlend, Typ)');
-  check(ob?.zustellung?.regeln_quelle==='typ'&&JSON.stringify(ob.zustellung.aus_typ)==='["regel-typ-a","regel-typ-b"]'&&ob.zustellung.als_verzeichnis===vz?.regeln?.length,'1: zustellung zeigt Quelle typ, aus_typ, als_verzeichnis');
+  check(!('zustellung' in (ob??{}))&&!vz?.typ_regeln,'T52: kurze Anmeldung ohne Diagnosefelder (zustellung, typ_regeln)');
+  const vv=await voll(tokT), vzv=vv?.regel_verzeichnis;
+  check(JSON.stringify(vzv?.typ_regeln?.fehlend)==='["regel-fehlt"]'&&vzv?.typ_regeln?.typ?.schluessel==='t48-tester','1: Diagnose typ_regeln (fehlend, Typ) im vollen Onboarding');
+  check(vv?.zustellung?.regeln_quelle==='typ'&&JSON.stringify(vv.zustellung.aus_typ)==='["regel-typ-a","regel-typ-b"]'&&vv.zustellung.als_verzeichnis===vzv?.regeln?.length,'1: zustellung zeigt Quelle typ, aus_typ, als_verzeichnis (volles Onboarding)');
   check(!ob?.volltext_hinweis,'1: kein Kuerzungshinweis (nichts gekuerzt geliefert)');
   const f1=await tokenAufruf('thought',{action:'search',query:'x',token:tokT},async()=>O.holeAgentOnboarding({project:P,agentId:'typagent',serverInstanceId:SRV}));
   check(f1===null,'1: Folgeaufruf im selben Lauf ohne erneute Regeln');
@@ -128,12 +134,13 @@ try{
   const lob=l1?.agentOnboarding;
   check(lob?.rules?.some(r=>r.name==='regel-pflicht-x'&&r.vollstaendig)&&lob.rules.some(r=>r.name==='regel-normal-y'&&!r.vollstaendig&&r.auszug),'2: Ausweis ohne Typ: Bestand (Pflicht voll, Rest Auszug)');
   check(!lob?.rules?.some(r=>r.name==='regel-typ-b'),'2: ohne Typ: koordinator-only bleibt verborgen (Rollenfilter wie bisher)');
-  check(lob?.zustellung?.regeln_quelle==='rolle'&&!lob?.regel_verzeichnis?.typ_regeln,'2: zustellung.regeln_quelle rolle, keine typ_regeln');
+  const lv=await voll(tokL);
+  check(lv?.zustellung?.regeln_quelle==='rolle'&&!lv?.regel_verzeichnis?.typ_regeln,'2: zustellung.regeln_quelle rolle, keine typ_regeln');
   // Schalter typkatalog im Projekt AUS -> Typ-Agent faellt auf Bestand zurueck
   await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'typkatalog',false,'Test P22-T48 aus','user')",[P]);
   L.leereLaufPuffer();
   const a3=await anmelden(tokT);
-  check(a3?.agentOnboarding?.rules?.some(r=>r.name==='regel-pflicht-x'&&r.vollstaendig)&&a3.agentOnboarding.zustellung?.regeln_quelle==='rolle','2: typkatalog AUS -> Bestand (Pflichtregeln voll, Quelle rolle)');
+  check(a3?.agentOnboarding?.rules?.some(r=>r.name==='regel-pflicht-x'&&r.vollstaendig)&&(await voll(tokT))?.zustellung?.regeln_quelle==='rolle','2: typkatalog AUS -> Bestand (Pflichtregeln voll, Quelle rolle)');
   await pool.query("DELETE FROM agent_profil_schalter WHERE ebene='projekt' AND project=$1 AND funktion='typkatalog'",[P]);
   L.leereLaufPuffer();
   // Typ, dessen Regelnamen alle fehlen -> Bestand statt leerer Zustellung (wie P22-T30 [d]), Diagnose typ_ohne_regel
@@ -141,7 +148,8 @@ try{
   await pool.query("INSERT INTO agent_typ_revisionen(typ_id,revision,inhalt,wer) VALUES('t48-leer',1,$1,'test')",[JSON.stringify({regeln:['nur-fehlend']})]);
   const tokE=await identitaet('t48-leer-agent','leeragent','t48-leer');
   const e1=(await anmelden(tokE))?.agentOnboarding;
-  check(e1?.rules?.some(r=>r.name==='regel-pflicht-x'&&r.vollstaendig)&&e1.zustellung?.regeln_quelle==='rolle'&&JSON.stringify(e1.zustellung?.typ_ohne_regel)==='["nur-fehlend"]','2: Typ ohne aufloesbare Regel -> Bestand + Diagnose typ_ohne_regel');
+  const ev=await voll(tokE);
+  check(e1?.rules?.some(r=>r.name==='regel-pflicht-x'&&r.vollstaendig)&&ev?.zustellung?.regeln_quelle==='rolle'&&JSON.stringify(ev?.zustellung?.typ_ohne_regel)==='["nur-fehlend"]','2: Typ ohne aufloesbare Regel -> Bestand + Diagnose typ_ohne_regel');
 
   // ================= 4: ohne Ausweis =================
   const o1=await W.holeWerkzeugRegeln(undefined,'shell','exec');

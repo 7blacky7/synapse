@@ -244,7 +244,7 @@ async function leseProjektZeilen(identityId: string): Promise<ProjektZeile[]> {
   const r = await getPool().query<ProjektZeile>(
     `SELECT a.project, a.visum_bis, a.arbeitsfreigabe_bis, a.arbeitsfreigabe_von, a.erster_aufruf, a.zuletzt_aufruf, a.zugang_zuletzt,
        a.visa_anzahl, EXISTS (SELECT 1 FROM agent_identitaeten k WHERE k.project=a.project AND k.rolle='koordinator' AND k.status='aktiv') AS koordinator
-     FROM agent_ausweis_projekte a WHERE a.identity_id=$1 ORDER BY a.project`, [identityId]);
+     FROM agent_ausweis_projekte a WHERE a.identity_id=$1 AND a.project <> '*' ORDER BY a.project`, [identityId]);
   return r.rows;
 }
 type Einordnung = FremdZugang | 'abgelaufen';

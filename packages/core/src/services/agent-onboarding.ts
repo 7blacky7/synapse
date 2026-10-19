@@ -183,6 +183,84 @@ async function skillsFuer(identityId: string, project: string): Promise<{ namen:
   return { namen, ...(identitaet.length ? { identitaet } : {}), abruf: 'skills(action:"get_full", skill_name:"<name>")' };
 }
 
+/**
+ * P22-T53 Punkt 3 (User 19.10.2026, ausweis-fix 27995-27997): ein Profil verweist per Name auf Memories (profil.kontext.memories)
+ * und per Kurz-ID auf Tasks (profil.kontext.tasks) - gesetzt am eigenen Profil (Koordinator/Main) oder durch Koordinator/User.
+ * Die Anmeldung nennt sie in EINER Zeile: Art + Name/ID + kurzer Titel + Abrufweg, nie Volltext. Keine neuen Tags, keine
+ * Regel-Kategorie; Regelverzeichnis anderer unveraendert. Keine Eintraege oder Schalter profilverwaltung AUS -> null (Zeile
+ * entfaellt). Titel tragen nie einen Ausweis (maskiert).
+ */
+export async function kontextVerweiseFuer(identityId: string, project: string): Promise<string | null> {
+  const { leseProfilProduktSchalter } = await import('./agent-profil-schalter.js');
+  if (!(await leseProfilProduktSchalter('profilverwaltung', project)).aktiv) return null;
+  const { leseWirksamesProfil } = await import('./agent-zuschnitt.js');
+  const k: unknown = (await leseWirksamesProfil(identityId)).werte.kontext;
+  if (!k || typeof k !== 'object' || Array.isArray(k)) return null;
+  const liste = (v: unknown): string[] => (Array.isArray(v)
+    ? [...new Set(v.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim()))].slice(0, 20) : []);
+  const memNamen = liste((k as Record<string, unknown>).memories);
+  const taskIds = liste((k as Record<string, unknown>).tasks);
+  if (!memNamen.length && !taskIds.length) return null;
+  const { neuesAusweisImTextMuster } = await import('./agent-ausweis-format.js');
+  const titel = (t: string | null | undefined): string => {
+    const zeile = (t ?? '').split('\n').map((z) => z.replace(/^[#>*\s-]+/, '').trim()).find((z) => z) ?? '';
+    const sauber = zeile.replace(neuesAusweisImTextMuster(), '[maskiert]').replace(/"/g, "'");
+    return sauber.length > 60 ? sauber.slice(0, 59) + '…' : sauber;
+  };
+  const teile: string[] = [];
+  const abruf: string[] = [];
+  if (memNamen.length) {
+    const r = await getPool().query<{ name: string; content: string }>(
+      'SELECT DISTINCT ON (name) name, content FROM memories WHERE project=$1 AND name=ANY($2::text[]) ORDER BY name, updated_at DESC', [project, memNamen]);
+    const inhalt = new Map(r.rows.map((z) => [z.name, z.content]));
+    for (const n of memNamen) teile.push(inhalt.has(n) ? `memory ${n} "${titel(inhalt.get(n))}"` : `memory ${n} (nicht gefunden)`);
+    abruf.push(`memory(action:"read", project:"${project}", name:"<name>")`);
+  }
+  if (taskIds.length) {
+    const r = await getPool().query<{ id: string; kurz: string | null; titel: string | null }>(
+      `SELECT t.id::text AS id, t.task->>'kurz_id' AS kurz, t.task->>'title' AS titel FROM plan_tasks t
+        WHERE t.project=$1 AND (t.id::text=ANY($2::text[]) OR t.task->>'kurz_id'=ANY($2::text[]))`, [project, taskIds]);
+    for (const id of taskIds) {
+      const z = r.rows.find((x) => x.id === id || x.kurz === id);
+      teile.push(z ? `task ${z.kurz ?? id} "${titel(z.titel)}"` : `task ${id} (nicht gefunden)`);
+    }
+    abruf.push('plan(action:"get", task_id:"<id>")');
+  }
+  return `${teile.join('; ')} | Abruf: ${abruf.join(', ')}`;
+}
+
+/**
+ * P22-T52 (User 19.10.2026, Live-Probe t115: Subagent-Anmeldung 10,5 KB): Inhalt der kurzen Anmeldung fuer Nicht-Koordinatoren
+ * mit Ausweis (chat(anmelden)). Nur Channels, denen die Identitaet selbst angehoert, und eigene offene Tasks (Beteiligung bzw.
+ * Legacy-Zuweisung). Keine Projekt-Uebersichten. null = Produkt-Schalter profilverwaltung im Projekt AUS -> Bestand (volles
+ * Onboarding), gleiche Schaltung wie die Koordinator-Kurzform (P22-T49).
+ */
+async function baueAgentKurz(project: string, agentId: string, identityId: string): Promise<{ channels: string[]; eigene_tasks: string[] } | null> {
+  const { leseProfilProduktSchalter } = await import('./agent-profil-schalter.js');
+  if (!(await leseProfilProduktSchalter('profilverwaltung', project)).aktiv) return null;
+  let channels: string[] = [];
+  try {
+    channels = (await getPool().query<{ name: string }>(
+      `SELECT DISTINCT c.name FROM agent_identitaet_channel_mitglieder m JOIN specialist_channels c ON c.id=m.channel_id
+        WHERE m.identity_id=$2 AND c.project=$1 AND c.archiviert_am IS NULL AND c.name NOT LIKE '%~archiv-%' ORDER BY c.name`,
+      [project, identityId])).rows.map((z) => z.name);
+  } catch { /* Channels sind Zugabe */ }
+  let eigeneTasks: string[] = [];
+  try {
+    eigeneTasks = (await getPool().query<{ id: string; titel: string | null; status: string }>(
+      `SELECT COALESCE(t.task->>'kurz_id', t.id) AS id, t.task->>'title' AS titel, COALESCE(t.task->>'status', 'todo') AS status
+         FROM plan_tasks t
+        WHERE t.project=$1 AND COALESCE(t.task->>'status', 'todo') <> 'done'
+          AND CASE WHEN jsonb_typeof(t.task->'beteiligte')='array'
+                THEN EXISTS (SELECT 1 FROM jsonb_array_elements(t.task->'beteiligte') b
+                              WHERE b->>'identity_id'=$2 OR (COALESCE(b->>'identity_id', '')='' AND b->>'agent_id'=$3))
+                ELSE COALESCE(t.task->>'zugewiesen_an', '')=$3 END
+        ORDER BY t.updated_at DESC LIMIT 10`,
+      [project, identityId, agentId])).rows.map((z) => `${z.id} (${z.status}): ${(z.titel ?? '').slice(0, 60)}`);
+  } catch { /* Tasks sind Zugabe */ }
+  return { channels, eigene_tasks: eigeneTasks };
+}
+
 /** P22-T43 (D5): Begruessung bei Anmeldung/Fortsetzung einer bestehenden Identitaet (kein 'neuer Agent'). */
 const TEXT_FORTSETZUNG = '📋 FORTSETZUNG: Bestehende Identität, neuer Kontext – Projekt-Regeln zur Auffrischung (offene Events, Channels, ACKs und Bindungen bleiben erhalten):';
 /** P22-T50: chat(anmelden) mit Ausweis = Neuanmeldung (neuer Lauf), auch nach Kontextverlust. */
@@ -274,6 +352,8 @@ export async function holeAgentOnboarding(e: {
   }
   // P22-T49: zugewiesene Skills (nur Namen) fuer Ausweis-Identitaeten im expliziten Onboarding.
   const skills = w12 ? await skillsFuer(w12.identity_id, project).catch(() => null) : null;
+  // P22-T53 (3): per Name im Profil verwiesene Memories/Tasks als EINE Zeile (ohne Volltext).
+  const kontextVerweise = w12 ? await kontextVerweiseFuer(w12.identity_id, project).catch(() => null) : null;
   // P22-T49: Koordinator mit Ausweis bei chat(anmelden) -> kurze Ausgabe (Handoff, aktiver Plan, Top 3, Regelnamen).
   if (e.koordinatorKurz && e.explizit && w12 && rolle === 'koordinator') {
     const kurz = await baueKoordinatorKurz(project, agentId, w12.identity_id, regelwerk, regelDiagnose.regeln_quelle === 'typ').catch(() => null);
@@ -282,7 +362,7 @@ export async function holeAgentOnboarding(e: {
       const profilErg = await profilTeilFuer(w12.principal, rolle, regelDiagnose.regeln_quelle === 'typ');
       const block = {
         isFirstVisit: !w12.bestehend,
-        message: '📋 KOORDINATOR (Ausweis, kurz): Handoff, aktiver Plan, Top 3, Regelnamen. Volles Onboarding: admin(index_stats, sitzung:"fortsetzung", onboarding:true).',
+        message: '📋 KOORDINATOR (Ausweis, kurz): Handoff, aktiver Plan, Top 3, Regelnamen. Volles Onboarding: admin(action:"index_stats", onboarding:true).',
         project, rolle, rolle_quelle: quelle,
         ...(kurz.handoff ? { handoff: kurz.handoff } : {}),
         // Nachtrag 27979: abgeschlossener aktiver Plan -> statt aktiver_plan nur die Aktivieren-Zeile.
@@ -291,15 +371,45 @@ export async function holeAgentOnboarding(e: {
         regeln: kurz.regeln,
         ...(kurz.channels ? { channels: kurz.channels } : {}),
         ...profilErg.teil,
-        ...(skills ? { skills } : {}),
+        ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
         ...(kurz.skills_andere.length ? { skills_andere: kurz.skills_andere } : {}),
-        statistik_abruf: 'Statistiken, Jev, Erklaerungsfaelle, Entscheidungs-Durchsicht: admin(action:"index_stats", sitzung:"fortsetzung", onboarding:true)',
+        statistik_abruf: 'Statistiken, Jev, Erklaerungsfaelle, Entscheidungs-Durchsicht: admin(action:"index_stats", onboarding:true)',
         neuinstanz_hinweis: TEXT_NEUINSTANZ,
         zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose, koordinator_kurz: true },
       };
       const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
       if (geliefert) {
         if (regelDiagnose.regeln_quelle === 'typ') await markiereVoll(w12.lauf_id, regelwerk.rules);
+        await markiereZugestellt(w12.lauf_id, { regeln_stand: w12.regeln_stand }).catch(() => undefined);
+      }
+      return geliefert ? block : null;
+    }
+  }
+  // P22-T52: Nicht-Koordinator mit Ausweis bei chat(anmelden) -> kurz: rules (Typ-Regeln voll), Regelnamen + eine Abrufzeile,
+  // eigene Channels, Profil/gebundene und eigene Tasks. Weg: fremde Channels, Planliste, task_suche_hinweis, zustellung,
+  // typ_regeln, rolle_hinweis, Wissensnamen, langer Verzeichnis-Hinweis. Schalter profilverwaltung AUS -> Bestand.
+  if (e.koordinatorKurz && e.explizit && w12 && rolle !== 'koordinator') {
+    const kurz = await baueAgentKurz(project, agentId, w12.identity_id).catch(() => null);
+    if (kurz) {
+      const profilErg = await profilTeilFuer(w12.principal, rolle, regelDiagnose.regeln_quelle === 'typ');
+      const faelle = await core.erklaerungsFaelleZeile({ project, agent_id: agentId, koordinator: false }).catch(() => null);
+      const namen = regelwerk.regel_verzeichnis.regeln ?? [];
+      const block = {
+        isFirstVisit: !w12.bestehend,
+        message: w12.bestehend ? TEXT_ANMELDUNG : '📋 WILLKOMMEN! Als neuer Agent beachte bitte folgende Projekt-Regeln:',
+        project, rolle,
+        rules: regelwerk.rules,
+        regel_verzeichnis: { ...(namen.length ? { regeln: namen } : {}), abruf: regelwerk.regel_verzeichnis.abruf },
+        ...(kurz.channels.length ? { channels: kurz.channels } : {}),
+        ...profilErg.teil,
+        ...(kurz.eigene_tasks.length ? { eigene_tasks: kurz.eigene_tasks } : {}),
+        ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
+        ...(faelle ? { erklaerung_faelle: faelle } : {}),
+        neuinstanz_hinweis: TEXT_NEUINSTANZ,
+      };
+      const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
+      if (geliefert) {
+        await markiereVoll(w12.lauf_id, regelwerk.rules);
         await markiereZugestellt(w12.lauf_id, { regeln_stand: w12.regeln_stand }).catch(() => undefined);
       }
       return geliefert ? block : null;
@@ -337,7 +447,7 @@ export async function holeAgentOnboarding(e: {
     ...(plaene.length ? { plaene } : {}),
     // W12-B: nur fuer Token-Agenten mit Lauf bei Kern EIN (sonst Bestandsform unveraendert).
     ...profilErg.teil,
-    ...(skills ? { skills } : {}),
+    ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
     ...(w12 ? { neuinstanz_hinweis: TEXT_NEUINSTANZ, zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose } } : {}),
   };
   const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);

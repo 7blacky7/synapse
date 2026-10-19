@@ -250,6 +250,21 @@ export async function wendeSitzungsSignalAn(eingabe: {
   }
   if (!art) return undefined;
   if (!eingabe.agentId) return { hinweis: `sitzung:'${art}' braucht agent_id - ohne Agent gibt es keine Sitzung. Nichts geaendert.` };
+  // P22-T52: mit Ausweis (Identitaets-Principal im Aufrufkontext) ist 'fortsetzung' + onboarding:true nur Nachschlagen des vollen
+  // Onboardings: keine Legacy-Sitzung (agent_sessions) anlegen/aendern - sonst haette der Name eine Legacy-Sitzung und DMs an den
+  // Namen erreichten die Identitaet nicht mehr (P22-T31 Punkt 4). Lauf/Epoch bleiben ohnehin unveraendert (P22-T50).
+  if (art === 'fortsetzung' && eingabe.onboarding === true && aktuellerAgentAufruf()?.principal?.art === 'identity') {
+    const { holeAgentOnboarding } = await import('./agent-onboarding.js');
+    const nachschlag = await holeAgentOnboarding({
+      project: eingabe.project, agentId: eingabe.agentId, role: eingabe.role,
+      serverInstanceId: eingabe.serverInstanceId ?? 'sitzungs-signal', explizit: true,
+    });
+    return {
+      art, project: eingabe.project, onboarding_erneut: !!nachschlag,
+      ...(nachschlag ? { agentOnboarding: nachschlag, rolle: nachschlag.rolle } : {}),
+      wirkung: 'Mit Ausweis: volles Onboarding nachgeschlagen; Sitzung und Lauf unveraendert.',
+    };
+  }
   const direkt = art === 'neu' || eingabe.onboarding === true;
   // Kein Vergessen-Fenster: ein paralleler normaler Aufruf darf den Refresh nicht übernehmen.
   const b = await beginneSitzung(eingabe.agentId, eingabe.project, art, direkt);

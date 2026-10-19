@@ -275,7 +275,13 @@ try{
   check(an.success===true&&an.principal?.identity_id===iidX,'X meldet sich innerhalb der Frist mit token an');
   // P22-T48: Typ-Agent bekommt nur die Regeln seines Profils voll, die Pflichtregel nur als Name im Verzeichnis.
   check(an.agentOnboarding?.rules?.map(r=>r.name).sort().join()==='t30-regel-a,t30-regel-b'&&an.agentOnboarding.rules.every(r=>r.vollstaendig)
-   &&an.agentOnboarding.regel_verzeichnis?.regeln?.includes('regel-pflicht-t30')&&an.agentOnboarding.zustellung?.regeln_quelle==='typ','Anmeldung: Typ-Regeln vollstaendig, Pflichtregel als Name (P22-T48)');
+   &&an.agentOnboarding.regel_verzeichnis?.regeln?.includes('regel-pflicht-t30'),'Anmeldung: Typ-Regeln vollstaendig, Pflichtregel als Name (P22-T48)');
+  // P22-T52: REST-Beleg kurze Subagent-Anmeldung (ohne Diagnose/Uebersichten), volles Onboarding ohne fortsetzung-Parameter.
+  const aob=an.agentOnboarding??{};
+  check(['zustellung','plaene','task_suche_hinweis','rolle_hinweis','jev_hinweis','volltext_hinweis'].every(k=>!(k in aob))&&JSON.stringify(Object.keys(aob.regel_verzeichnis??{}).sort())==='["abruf","regeln"]','REST T52: Subagent-Anmeldung kurz ('+Object.keys(aob).join()+')');
+  const vollX=await rest('admin',{action:'index_stats',project:P,role:'subagent',onboarding:true,token:tokX});
+  check(Array.isArray(vollX?.agentOnboarding?.rules)&&vollX.agentOnboarding.zustellung?.regeln_quelle==='typ'&&!('ausweis_sitzung_hinweis' in vollX),'REST T52: index_stats(onboarding:true) ohne sitzung liefert das volle Onboarding ohne fortsetzung-Verweis');
+  console.log('T52 REST GROESSE anmelden='+Buffer.byteLength(JSON.stringify(an))+' B, agentOnboarding kurz='+Buffer.byteLength(JSON.stringify(aob))+' B, volles Onboarding='+Buffer.byteLength(JSON.stringify(vollX?.agentOnboarding??null))+' B');
   // P22-T50: kein fortsetzung-Block; Profil kompakt im Onboarding, Typ-Regeln stehen in rules (nicht doppelt im Profil).
   const pX=an.agentOnboarding?.profil;
   check(!('open_plans' in an)&&!('fortsetzung' in an),'REST chat(anmelden): kein fortsetzung-Block, kein allgemeines open_plans (P22-T50)');

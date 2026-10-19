@@ -200,6 +200,12 @@ export interface ProfilInhalt {
   /** Schluessel aus HINWEIS_KATALOG; Pflichtklassen sind nicht abschaltbar */
   hinweise?: Record<string, boolean>;
   startrezept?: Record<string, unknown>;
+  /**
+   * P22-T53: freier Arbeitskontext (Objekt). Nur hier duerfen Ausweise stehen, und nur im Profil eines Koordinators, geschrieben
+   * von ihm selbst oder dem User (z. B. die Ausweise seiner Subagenten; offen gespeichert wie die Ausweise selbst, P22-T27).
+   * Audit und Antworten an Dritte maskiert.
+   */
+  kontext?: Record<string, unknown>;
 }
 
 export type FeldHerkunft = 'standard' | 'global_typ' | 'projekt_typ' | 'profil';
@@ -255,21 +261,26 @@ export interface ProfilDienst {
   rollbackProfil(identity_id: string, ziel_revision: number, erwartete_revision: number, akteur: W1bAkteur, grund: string): Promise<{ profil_revision: number }>;
 }
 
+/** P22-T53: Rolle des Main-Agenten (= hauptagent-dienst.ts HAUPTAGENT_ROLLE; Literal, der Vertrag importiert den Dienst nicht). */
+export const MAIN_ROLLE = 'main';
+
 /**
- * K10/a0f710e0: Profile aendern User oder Koordinator desselben Projekts; ein Agent nie sein eigenes,
- * ein Koordinator sein eigenes nur im ersten User-beauftragten Startfall. Rolle aus Tokenpruefung.
+ * K10 + P22-T53 (User 58c38995, ersetzt F2 aus a0f710e0 Punkt 4): fremde Profile aendern User oder Koordinator desselben
+ * Projekts. Das EIGENE Profil aendern ein Koordinator (jederzeit) und der Main-Agent (Rolle main); alle anderen Rollen nie.
+ * Rolle aus Tokenpruefung; die Dienste pruefen sie zusaetzlich in PG. _opt (frueher Startfenster F2) wirkt nicht mehr und
+ * bleibt nur fuer Aufrufer-Kompatibilitaet.
  */
 export function darfProfilAendern(
-  akteur: AusweisAkteur, ziel: { identity_id: string; project: string }, opt: { ersterKoordinatorStart?: boolean } = {},
+  akteur: AusweisAkteur, ziel: { identity_id: string; project: string }, _opt: { ersterKoordinatorStart?: boolean } = {},
 ): boolean {
   if (akteur.art === 'user') return true;
   // P22-T34: Legacy-Koordinator hat keine eigene Identitaet, also nie ein Eigenprofil; seine Rolle prueft pruefeProfilVerwalter/pruefeVerwalter.
   if (akteur.art === 'legacy_koordinator') return true;
   if (akteur.art !== 'identitaet') return false;
   const p = akteur.principal;
-  if (p.project !== ziel.project || p.rolle !== 'koordinator') return false;
-  if (p.identity_id === ziel.identity_id) return opt.ersterKoordinatorStart === true;
-  return true;
+  if (p.project !== ziel.project) return false;
+  if (p.identity_id === ziel.identity_id) return p.rolle === 'koordinator' || p.rolle === MAIN_ROLLE;
+  return p.rolle === 'koordinator';
 }
 
 export interface AgentTyp {

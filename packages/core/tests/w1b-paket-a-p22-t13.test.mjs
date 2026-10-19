@@ -258,7 +258,7 @@ try{
   check(await code(()=>ch({zuschnitt:{intern_user_festgelegt:{user_auftrag:'U'}}},3))==='intern_festlegung_nur_user','intern-Festlegung nur User');
   check(await code(()=>ch({kontext_stufe:'normal'},3,pr('s1','subagent'),{}))==='recht_fehlt','Subagent aendert fremdes Profil nicht');
   check(await code(()=>ch({kontext_stufe:'normal'},3,pr('kf','koordinator',FREMD)))==='recht_fehlt','fremder Koordinator nicht');
-  check(await code(()=>ch({kontext_stufe:'normal'},3,pr(luna,'spezialist')))==='recht_fehlt','Agent aendert sein eigenes Profil nicht');
+  check(await code(()=>ch({kontext_stufe:'normal'},3,pr(luna,'spezialist')))==='eigenprofil_nicht_aenderbar','Agent (kein Koordinator) aendert sein eigenes Profil nicht (P22-T53)');
   check(await code(()=>A.aendereProfil({identity_id:luna,erwartete_revision:3,patch:{effort:'z'},grund:' '},user))==='grund_fehlt','Grund Pflicht');
   const r4=await ch({zuschnitt:{standard:'erlaubt',aktionen:{'files.commit':'verweigert'},intern_user_festgelegt:{user_auftrag:'User: intern gesperrt'}}},3,user,{user_auftrag:'User: Zuschnitt'});
   check(r4.profil_revision===4,'User setzt Zuschnitt inkl. intern-Festlegung');
@@ -288,15 +288,16 @@ try{
   check(JSON.stringify(rv[7].snapshot)===JSON.stringify(rv[0].snapshot)&&rv[7].grund.startsWith('Rollback auf Revision 1'),'Rollback-Snapshot = Zielrevision');
   check(nach.modell_bestaetigt==='korrigiert-modell'&&nach.profil.kontext_stufe==='kompakt'&&!('effort' in nach.profil)&&!('hinweise' in nach.profil),'Identitaetsstand auf Zielrevision');
   check((await one('SELECT count(*)::int n FROM agent_persona_zuweisungen WHERE identity_id=$1',[luna])).n===0,'Rollback reaktiviert keine entfernte Persona (K7)');
-  // Eigenprofilregel F2: Startfall nur einmal, mit User-Auftrag
+  // Eigenprofilregel P22-T53 (User 58c38995, ersetzt F2): Koordinator aendert sein Eigenprofil jederzeit; CAS und Historie bleiben.
   const kid=globalThis.__startKoord,KS=pr(kid,'koordinator','pa-start');
-  const ca=(patch,rev,extra={})=>A.aendereProfil({identity_id:kid,erwartete_revision:rev,patch,grund:'Startfall',...extra},KS);
-  check(await code(()=>ca({briefing:'b'},1))==='eigenprofil_nicht_aenderbar','Startfall ohne User-Auftrag abgelehnt');
-  check((await ca({briefing:'Startbriefing'},1,{user_auftrag:'User: melde dich als Koordinator an'})).profil_revision===2,'erster Koordinator: Eigenprofil im Startfall mit User-Auftrag');
-  check(await code(()=>ca({briefing:'noch'},2,{user_auftrag:'User: nochmal'}))==='eigenprofil_nicht_aenderbar','Startausnahme einmalig, kein Dauerrecht');
-  check(await code(()=>A.aendereProfil({identity_id:'k1',erwartete_revision:0,patch:{effort:'x'},grund:'Test'},k1))==='eigenprofil_nicht_aenderbar','Koordinator aendert Eigenprofil sonst nicht');
+  const ca=(patch,rev,extra={})=>A.aendereProfil({identity_id:kid,erwartete_revision:rev,patch,grund:'Eigenprofil',...extra},KS);
+  check((await ca({briefing:'b'},1)).profil_revision===2,'Koordinator: Eigenprofil ohne User-Auftrag (P22-T53)');
+  check((await ca({briefing:'noch'},2)).profil_revision===3,'Koordinator: Eigenprofil dauerhaft aenderbar');
+  check(await code(()=>ca({briefing:'cas'},2))==='profil_revision_veraltet','Eigenprofil: CAS bleibt');
+  check((await A.profilHistorie(kid,KS)).at(-1).wer===kid,'Eigenprofil: Historie mit Akteur');
+  check((await A.aendereProfil({identity_id:'k1',erwartete_revision:0,patch:{effort:'x'},grund:'Test'},k1)).profil_revision===1,'Koordinator k1 aendert sein Eigenprofil');
   check((await A.aendereProfil({identity_id:'s1',erwartete_revision:0,patch:{effort:'x'},grund:'Test'},k1)).profil_revision===1,'Koordinator aendert Profil eines anderen (Revision 0 -> 1)');
-  check((await A.aendereProfil({identity_id:'k1',erwartete_revision:0,patch:{effort:'x'},grund:'Test'},user)).profil_revision===1,'User aendert Koordinatorprofil');
+  check((await A.aendereProfil({identity_id:'k1',erwartete_revision:1,patch:{effort:'y'},grund:'Test'},user)).profil_revision===2,'User aendert Koordinatorprofil');
  });
 
  await section('Keine Geheimnisse in Antworten/Audit, kein Netz',async()=>{

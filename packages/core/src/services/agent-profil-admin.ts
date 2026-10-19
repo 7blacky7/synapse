@@ -12,7 +12,7 @@
  */
 import { getPool } from '../db/client.js';
 import {
-  W1B_DIENSTE, W12_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, darfProfilAendern, type W1bAkteur, type AusweisAkteur, type Startart, type SchattenZustand, type ProfilInhalt, type TaskBindung,
+  W1B_DIENSTE, W12_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, MAIN_ROLLE, darfProfilAendern, type W1bAkteur, type AusweisAkteur, type Startart, type SchattenZustand, type ProfilInhalt, type TaskBindung,
 } from './agent-profil-vertrag.js';
 import { rolleFuerAgent } from './agent-rollen.js';
 import {
@@ -405,13 +405,27 @@ function fehlerAntwort(action: string, e: unknown): Record<string, unknown> {
 
 /** HTTP-Status fuer die REST-Routen; der Fehlercode bleibt der Vertrag. */
 export function w1bFehlerStatus(code: string): number {
-  if (code === 'recht_fehlt' || code === 'eigenprofil_nicht_aenderbar') return 403;
+  if (code === 'recht_fehlt' || code === 'eigenprofil_nicht_aenderbar' || code === 'main_rahmen_nur_user') return 403;
   if (code === 'w1b_nicht_umgesetzt') return 501;
   if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler' || code === 'ausweis_fristen_speicher_fehler' || code === 'ausweis_projekt_speicher_fehler') return 500;
   if (/_unbekannt$|_nicht_gefunden$/.test(code) || code === 'keine_zuweisung' || code === 'ausweis_fehlt') return 404;
   if (code === 'ausweis_kern_aus' || code === 'agent_bezug_modus_nicht_beide' || code === 'identitaet_existiert' || code === 'ausweis_existiert') return 409;
   if (code === 'funktion_aus' || code === 'konflikt' || /_veraltet$|_belegt$|_archiviert$|^token_/.test(code) || code === 'identitaet_nicht_aktiv') return 409;
   return 400;
+}
+
+const EIGENPROFIL_AKTIONEN: readonly string[] = ['profil_aendern', 'profil_rollback', 'profil_historie'];
+/**
+ * P22-T53 (User 58c38995): Eigenprofil vor der Verwalterpruefung. Aendern/Rollback des eigenen Profils durch eine Rolle ausser
+ * koordinator/main -> eigenprofil_nicht_aenderbar (statt recht_fehlt). true = Eigenprofil des Main-Agenten: keine Verwalterpruefung,
+ * der Dienst prueft Rolle main/aktiv in PG und den Rahmen (main_rahmen_nur_user).
+ */
+function eigenprofilOhneVerwalter(action: string, args: Args, wer: AusweisAkteur, project: string): boolean {
+  if (!EIGENPROFIL_AKTIONEN.includes(action) || wer.art !== 'identitaet') return false;
+  const p = wer.principal;
+  if (p.project !== project || s(args, 'ziel_identity_id') !== p.identity_id) return false;
+  if (action !== 'profil_historie' && !darfProfilAendern(wer, { identity_id: p.identity_id, project })) throw new ProfilVerwaltungFehler('eigenprofil_nicht_aenderbar');
+  return p.rolle === MAIN_ROLLE;
 }
 
 export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteur?: W1bAkteur | null } = {}): Promise<Record<string, unknown>> {
@@ -436,7 +450,7 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   try {
     if (!istW1bAdminAction(action)) throw new ProfilVerwaltungFehler('aktion_unbekannt');
     const project = pflicht(s(args, 'project'), 'project_fehlt');
-    await pruefeProfilVerwalter(wer, project);
+    if (!eigenprofilOhneVerwalter(action, args, wer, project)) await pruefeProfilVerwalter(wer, project);
     const gruppe = GRUPPE[action as W1bAdminAction];
     if (gruppe) await pruefeSchalter(gruppe, project);
     return { success: true, action, ...(await ausfuehren(action as Exclude<W1bAdminAction, AusweisAktion>, project, args, wer)) };

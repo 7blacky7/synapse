@@ -109,7 +109,9 @@ try{
   check(anm1?.agentOnboarding?.isFirstVisit===true&&/WILLKOMMEN/.test(anm1.agentOnboarding.message),'D5: erste Anmeldung einer neuen Identitaet = Begruessung');
   // P22-T50: kein fortsetzung-Block mehr; das Profil kommt (einmal je Lauf) im Onboarding.
   check(!('fortsetzung' in (anm1??{}))&&!('profil' in (anm1?.agentOnboarding??{})),'D2/T50: anmelden ohne fortsetzung; Profil ohne Inhalt (nur Revision) entfaellt');
-  check(anm1?.agentOnboarding?.zustellung?.profilblock===true&&!('fortsetzung' in anm1.agentOnboarding.zustellung),'D2/T50: zustellung.profilblock true, ohne zustellung.fortsetzung');
+  // P22-T52: kurze Subagent-Anmeldung ohne zustellung-Diagnose; dass der Profilblock zugestellt ist, zeigen Folgeaufruf und
+  // volles Onboarding unten (zustellung.profilblock false = im Lauf schon zugestellt).
+  check(!('zustellung' in (anm1?.agentOnboarding??{})),'D2/T52: Subagent-Anmeldung ohne zustellung (Diagnose nur im vollen Onboarding)');
   check(!('abloesung' in (anm1??{})),'T50: erste Anmeldung ohne Abloesungszeile');
   const folge1=await tokenAufruf('thought',{action:'search',project:P,query:'x',token:tokD},async()=>O.holeAgentOnboarding({project:P,agentId:'dneu',serverInstanceId:SRV}));
   check(folge1===null,'D2: Folgeaufruf nach anmelden ohne erneutes Profil');

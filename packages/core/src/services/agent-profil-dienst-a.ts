@@ -9,9 +9,11 @@
  *   Aufraeumung, ohne Schalter) und leseTypRevision/leseWirksamenTypInhalt (interne Lesewege fuer Paket C).
  * RECHTE: Akteur nur aus authentifiziertem Transport/Tokenpruefung (W1bAkteur). User immer; Koordinator
  *   nur desselben Projekts und nur wenn die DB ihn als aktiven Koordinator kennt (nie dem Principal
- *   allein glauben). Globale Typen nur User. Eigenprofilregel F2 (a0f710e0): Koordinator aendert sein
- *   EIGENES Profil nur im ersten Startfall (Schattenprofil koordinator_start, profil_revision = 1, mit
- *   User-Auftrag). Daemon darf nur den ersten Koordinator eines Projekts bestaetigen (K3C, atomar je Projekt).
+ *   allein glauben). Globale Typen nur User. Eigenprofilregel P22-T53 (User 58c38995, ersetzt F2 aus a0f710e0):
+ *   Koordinator und Main-Agent (Rolle main in PG) aendern ihr EIGENES Profil jederzeit (Main ohne den Rahmen
+ *   startrezept/rolle/zuschnitt/typ, 60c03d56), alle anderen Rollen nie. Ausweise nur unter kontext des Profils eines
+ *   Koordinators, geschrieben von ihm selbst oder dem User; Audit und profil_historie an Dritte maskiert.
+ *   Daemon darf nur den ersten Koordinator eines Projekts bestaetigen (K3C, atomar je Projekt).
  * ATOMAR: Bestaetigung (Identitaet + Profilrevision 1 + Tokenaktivierung + Audit), Profilaenderung und
  *   Rollback je EINE Transaktion; CAS ueber revision/profil_revision; Doppelbestaetigung idempotent.
  * TOKEN (W12 V2, Weg A): der Schatten traegt KEINEN Token. Erst die Bestaetigung erzeugt den Ausweis: offen in
@@ -27,7 +29,7 @@ import { leseProfilProduktSchalter, leseAusweisKern, ausweisSchattenAktiv, type 
 // P22-T45: Schattenfrist aus der EINEN Lesestelle (Einstellung schatten_stunden).
 import { schattenFristMs } from './agent-ausweis-fristen.js';
 import {
-  HINWEIS_KATALOG_VOLLSTAENDIG, ProfilRevisionKonflikt, darfProfilAendern, hinweisEintrag,
+  HINWEIS_KATALOG_VOLLSTAENDIG, MAIN_ROLLE, ProfilRevisionKonflikt, darfProfilAendern, hinweisEintrag,
   schattenAblauf, wirksamerSchattenZustand,
   type AgentTyp, type AgentTypRevision, type FeldHerkunft, type ProfilAenderung, type ProfilInhalt, type ProfilRevision,
   type ProfilDienst, type SchattenAnlage, type SchattenBestaetigung, type Schattenprofil, type SchattenprofilDienst,
@@ -156,7 +158,7 @@ function tiefeSchluessel(v: unknown, tiefe = 0): string[] {
 }
 
 const PROFIL_SCHLUESSEL = ['modell', 'provider', 'effort', 'kontextfenster', 'kontext_budget', 'kontext_stufe', 'rolle', 'regeln',
-  'briefing', 'arbeitsweise', 'channels', 'zuschnitt', 'hinweise', 'startrezept', 'skills'];
+  'briefing', 'arbeitsweise', 'channels', 'zuschnitt', 'hinweise', 'startrezept', 'skills', 'kontext'];
 /** P22-T49: Skill-Name wie in der Skill-DB (z. B. superpowers-test-driven-development, plugin:skill). */
 const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/;
 const ZUSCHNITT_SCHLUESSEL = ['standard', 'tools', 'aktionen', 'schreiben', 'shell_stufe_max', 'limits', 'intern_user_festgelegt'];
@@ -181,8 +183,12 @@ function regelMap(v: unknown, feld: string, schluesselMuster: RegExp): void {
   }
 }
 
-/** Strukturpruefung eines Profil-/Typ-Inhalts. Pflichthinweise sind nicht abschaltbar; keine Zugangswerte. */
-export function pruefeProfilInhalt(inhalt: unknown): void {
+/**
+ * Strukturpruefung eines Profil-/Typ-Inhalts. Pflichthinweise sind nicht abschaltbar; keine Zugangswerte.
+ * P22-T53: ausweisImKontext erlaubt Ausweise unter kontext (nur aendereProfil; ob sie dort stehen duerfen, entscheidet
+ * pruefeAusweisImKontext mit Ziel und Akteur aus PG). Ueberall sonst bleibt jeder Ausweis abgelehnt.
+ */
+export function pruefeProfilInhalt(inhalt: unknown, opt: { ausweisImKontext?: boolean } = {}): void {
   if (!inhalt || typeof inhalt !== 'object' || Array.isArray(inhalt)) throw new ProfilDienstFehler('inhalt_ungueltig');
   const o = inhalt as Record<string, unknown>;
   const unbekannt = Object.keys(o).filter(k => !PROFIL_SCHLUESSEL.includes(k));
@@ -228,9 +234,55 @@ export function pruefeProfilInhalt(inhalt: unknown): void {
     if (!o.startrezept || typeof o.startrezept !== 'object' || Array.isArray(o.startrezept)) throw new ProfilDienstFehler('inhalt_ungueltig', { felder: ['startrezept'] });
     if (tiefeSchluessel(o.startrezept).some(k => GEHEIM_SCHLUESSEL.test(k))) throw new ProfilDienstFehler('inhalt_enthaelt_zugangswert');
   }
-  if (AUSWEIS_TEST.test(JSON.stringify(o))) throw new ProfilDienstFehler('inhalt_enthaelt_ausweis');
+  if (o.kontext !== undefined) {
+    if (!o.kontext || typeof o.kontext !== 'object' || Array.isArray(o.kontext) || JSON.stringify(o.kontext).length > 50_000) throw new ProfilDienstFehler('inhalt_ungueltig', { felder: ['kontext'] });
+    if (tiefeSchluessel(o.kontext).some(k => GEHEIM_SCHLUESSEL.test(k))) throw new ProfilDienstFehler('inhalt_enthaelt_zugangswert');
+    // P22-T53 (3): Verweise per Name (Memories) bzw. Kurz-ID (Tasks); chat(anmelden) nennt nur Art + Name + Titel + Abrufweg.
+    const kv = o.kontext as Record<string, unknown>;
+    for (const f of ['memories', 'tasks']) {
+      const v = kv[f];
+      if (v !== undefined && (!Array.isArray(v) || v.length > 20 || v.some(x => typeof x !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9:._#-]{0,199}$/.test(x)))) {
+        throw new ProfilDienstFehler('inhalt_ungueltig', { felder: ['kontext.' + f] });
+      }
+    }
+  }
+  const { kontext, ...rest } = o;
+  if (AUSWEIS_TEST.test(JSON.stringify(rest))) throw new ProfilDienstFehler('inhalt_enthaelt_ausweis');
+  if (kontext !== undefined && !opt.ausweisImKontext && AUSWEIS_TEST.test(JSON.stringify(kontext))) throw new ProfilDienstFehler('inhalt_enthaelt_ausweis', { felder: ['kontext'] });
 }
 function textOrNullWrapper(v: unknown, feld: string): void { textOderNull(v, feld); }
+
+// ---------------------------------------------------------------------------------------------
+// P22-T53: Eigenprofil Main-Agent, Ausweise im Koordinator-Kontext, Maskierung
+// ---------------------------------------------------------------------------------------------
+/** Rahmen der Main-Selbstverwaltung: aendert nur der User (60c03d56), auch nicht per Rollback. */
+const MAIN_RAHMEN = ['startrezept', 'rolle', 'zuschnitt'] as const;
+function leerZuNull(x: unknown): unknown {
+  return x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).length === 0 ? null : x ?? null;
+}
+const gleichJson = (x: unknown, y: unknown): boolean => JSON.stringify(leerZuNull(x)) === JSON.stringify(leerZuNull(y));
+/** Der Main-Agent selbst (nicht der User) aendert sein Profil; Rolle main aus PG (i.rolle). */
+function istMainSelbst(i: Zeile, v: Verwalter): boolean { return !v.user && v.actor === i.id && i.rolle === MAIN_ROLLE; }
+function kontextHatAusweis(inhalt: Record<string, unknown>): boolean {
+  return inhalt.kontext !== undefined && inhalt.kontext !== null && AUSWEIS_TEST.test(JSON.stringify(inhalt.kontext));
+}
+/**
+ * (2) Ausweise unter kontext nur im Profil eines Koordinators (auch nach der Aenderung); hineinschreiben bzw. per Rollback
+ * zurueckholen (kontext geaendert) nur der Koordinator selbst oder der User. Andere Koordinatoren duerfen das Profil sonst
+ * wie bisher aendern, solange sie kontext nicht anfassen.
+ */
+function pruefeAusweisImKontext(neu: Record<string, unknown>, v: Verwalter, i: Zeile, kontextGeaendert: boolean): void {
+  if (!kontextHatAusweis(neu)) return;
+  if (neu.rolle !== 'koordinator' || (kontextGeaendert && !(v.user || v.actor === i.id))) {
+    throw new ProfilDienstFehler('inhalt_enthaelt_ausweis', { felder: ['kontext'] });
+  }
+}
+/** Ausweiswerte fuer Audit/Logs und Antworten an Dritte maskieren; das Profil selbst bleibt offen gespeichert. */
+export function maskiereAusweise<T>(wert: T): T {
+  if (wert === undefined || wert === null) return wert;
+  const text = JSON.stringify(wert);
+  return AUSWEIS_TEST.test(text) ? JSON.parse(text.replace(neuesAusweisImTextMuster(), '[maskiert]')) as T : wert;
+}
 
 // ---------------------------------------------------------------------------------------------
 // Zeilen <-> Vertragstypen
@@ -601,17 +653,20 @@ async function sperreIdentitaet(c: PoolClient, id: string): Promise<Zeile> {
   if (!r.rows[0]) throw new ProfilDienstFehler('identitaet_unbekannt');
   return r.rows[0];
 }
-/** F2: User/Koordinator desselben Projekts; Koordinator-Eigenprofil nur im einmaligen Startfenster mit User-Auftrag. */
-async function pruefeProfilRecht(c: PoolClient, akteur: W1bAkteur, ziel: Zeile, userAuftrag?: string): Promise<Verwalter> {
+/**
+ * P22-T53 (User 58c38995, ersetzt F2): fremde Profile User/Koordinator desselben Projekts (Rolle in PG gegengeprueft). Das EIGENE
+ * Profil aendern der Koordinator (jederzeit) und der Main-Agent (Rolle main in PG, aktiv); andere Rollen eigenprofil_nicht_aenderbar.
+ */
+async function pruefeProfilRecht(c: PoolClient, akteur: W1bAkteur, ziel: Zeile): Promise<Verwalter> {
+  const p = akteur?.art === 'identitaet' ? akteur.principal : null;
+  const selbst = !!p && p.identity_id === ziel.id && p.project === ziel.project;
+  if (selbst && !darfProfilAendern(akteur, { identity_id: ziel.id, project: ziel.project })) throw new ProfilDienstFehler('eigenprofil_nicht_aenderbar');
+  if (p && selbst && p.rolle === MAIN_ROLLE) {
+    if (ziel.rolle !== MAIN_ROLLE || ziel.status !== 'aktiv') throw new ProfilDienstFehler('recht_fehlt');
+    return { wer: ziel.id, actor: ziel.id, user: false };
+  }
   const v = await pruefeVerwalter(c, akteur, ziel.project);
-  let startfenster = false;
-  if (!v.user && v.actor === ziel.id) {
-    const s = await c.query(`SELECT 1 FROM agent_schattenprofile WHERE identity_id=$1 AND ursprung_art='koordinator_start' AND zustand='bestaetigt'`, [ziel.id]);
-    startfenster = s.rows.length > 0 && ziel.profil_revision === 1 && typeof userAuftrag === 'string' && userAuftrag.trim().length > 0;
-  }
-  if (!darfProfilAendern(akteur, { identity_id: ziel.id, project: ziel.project }, { ersterKoordinatorStart: startfenster })) {
-    throw new ProfilDienstFehler('eigenprofil_nicht_aenderbar');
-  }
+  if (!darfProfilAendern(akteur, { identity_id: ziel.id, project: ziel.project })) throw new ProfilDienstFehler('eigenprofil_nicht_aenderbar');
   return v;
 }
 function internFestlegung(z: unknown): string {
@@ -624,15 +679,22 @@ async function aendereProfil(a: ProfilAenderung, akteur: W1bAkteur): Promise<{ p
   if (!Number.isInteger(a.erwartete_revision) || a.erwartete_revision < 0) throw new ProfilDienstFehler('revision_ungueltig');
   const project = await projektVonIdentitaet(a.identity_id);
   await schalterEin('profilverwaltung', project);
-  pruefeProfilInhalt(a.patch ?? {});
+  // P22-T53: Struktur hier; ob Ausweise unter kontext stehen duerfen, entscheidet pruefeAusweisImKontext (Ziel/Akteur aus PG).
+  pruefeProfilInhalt(a.patch ?? {}, { ausweisImKontext: true });
   return transaktion(async (c) => {
     const i = await sperreIdentitaet(c, a.identity_id);
-    const v = await pruefeProfilRecht(c, akteur, i, a.user_auftrag);
+    const v = await pruefeProfilRecht(c, akteur, i);
     if (i.profil_revision !== a.erwartete_revision) throw new ProfilRevisionKonflikt(i.profil_revision);
     const alt = inhaltAusZeile(i);
     const neu: Record<string, unknown> = { ...alt };
     for (const [k, x] of Object.entries(a.patch ?? {})) if (x !== undefined) neu[k] = x;
     if (a.patch?.zuschnitt && internFestlegung(a.patch.zuschnitt) !== internFestlegung(alt.zuschnitt) && !v.user) throw new ProfilDienstFehler('intern_festlegung_nur_user');
+    if (istMainSelbst(i, v)) {
+      const patch = (a.patch ?? {}) as Record<string, unknown>;
+      const felder: string[] = [...MAIN_RAHMEN.filter(k => patch[k] !== undefined), ...(a.typ_id !== undefined ? ['typ_id'] : [])];
+      if (felder.length) throw new ProfilDienstFehler('main_rahmen_nur_user', { felder });
+    }
+    pruefeAusweisImKontext(neu, v, i, a.patch?.kontext !== undefined);
     let typId: string | null = i.typ_id ?? null;
     let typRev: number | null = i.typ_revision ?? null;
     if (a.typ_id !== undefined) {
@@ -646,7 +708,7 @@ async function aendereProfil(a: ProfilAenderung, akteur: W1bAkteur): Promise<{ p
     await c.query(`UPDATE agent_identitaeten SET profil=$2::jsonb, rolle=$3, modell_bestaetigt=$4, startrezept=$5::jsonb, profil_revision=$6, typ_id=$7, typ_revision=$8 WHERE id=$1`,
       [i.id, JSON.stringify(profil), rolle, modell, JSON.stringify(startrezept), revision, typId, typRev]);
     await schreibeProfilRevision(c, i.id, revision, neu, typId, typRev, v, a.user_auftrag?.trim() || null, grund);
-    await identitaetAudit(c, i.id, v, 'profil_geaendert', { profil_revision: i.profil_revision, inhalt: alt }, { profil_revision: revision, inhalt: neu }, grund);
+    await identitaetAudit(c, i.id, v, 'profil_geaendert', { profil_revision: i.profil_revision, inhalt: maskiereAusweise(alt) }, { profil_revision: revision, inhalt: maskiereAusweise(neu) }, grund);
     return { profil_revision: revision };
   });
 }
@@ -664,7 +726,9 @@ async function profilHistorie(identity_id: string, akteur: W1bAkteur): Promise<P
     } else await pruefeVerwalter(c, akteur, project);
     const r = await c.query<Zeile>(`SELECT identity_id, revision, snapshot, typ_id, typ_revision, persona_vorlage_id, persona_version, wer, user_auftrag, grund, wann
       FROM agent_profil_revisionen WHERE identity_id=$1 ORDER BY revision`, [identity_id]);
-    return r.rows.map((z): ProfilRevision => ({ identity_id: z.identity_id, revision: z.revision, snapshot: z.snapshot, typ_id: z.typ_id ?? null,
+    // P22-T53: Ausweise unter kontext sehen offen nur der Profilinhaber selbst und der User; Dritte bekommen sie maskiert.
+    const offen = selbst || akteur?.art === 'user';
+    return r.rows.map((z): ProfilRevision => ({ identity_id: z.identity_id, revision: z.revision, snapshot: offen ? z.snapshot : maskiereAusweise(z.snapshot), typ_id: z.typ_id ?? null,
       typ_revision: z.typ_revision ?? null, persona_vorlage_id: z.persona_vorlage_id ?? null, persona_version: z.persona_version ?? null,
       wer: z.wer, user_auftrag: z.user_auftrag ?? null, grund: z.grund, wann: iso(z.wann) as string }));
   });
@@ -692,12 +756,17 @@ async function rollbackProfil(identity_id: string, ziel_revision: number, erwart
       const t = await c.query<Zeile>("SELECT id, aktuelle_revision FROM agent_typen WHERE id=$1 AND status='aktiv'", [z.rows[0].typ_id]);
       if (t.rows[0]) { typId = t.rows[0].id; typRev = t.rows[0].aktuelle_revision; }
     }
+    if (istMainSelbst(i, v)) {
+      const felder: string[] = [...MAIN_RAHMEN.filter(k => !gleichJson(alt[k], ziel[k])), ...((i.typ_id ?? null) !== typId ? ['typ_id'] : [])];
+      if (felder.length) throw new ProfilDienstFehler('main_rahmen_nur_user', { felder });
+    }
+    pruefeAusweisImKontext(ziel, v, i, !gleichJson(alt.kontext, ziel.kontext));
     const { profil, rolle, modell, startrezept } = spaltenAusInhalt(ziel);
     const revision = i.profil_revision + 1;
     await c.query(`UPDATE agent_identitaeten SET profil=$2::jsonb, rolle=$3, modell_bestaetigt=$4, startrezept=$5::jsonb, profil_revision=$6, typ_id=$7, typ_revision=$8 WHERE id=$1`,
       [i.id, JSON.stringify(profil), rolle, modell, JSON.stringify(startrezept), revision, typId, typRev]);
     await schreibeProfilRevision(c, i.id, revision, ziel, typId, typRev, v, null, `Rollback auf Revision ${ziel_revision}: ${g}`);
-    await identitaetAudit(c, i.id, v, 'profil_rollback', { profil_revision: i.profil_revision, inhalt: alt }, { profil_revision: revision, ziel_revision, inhalt: ziel }, g);
+    await identitaetAudit(c, i.id, v, 'profil_rollback', { profil_revision: i.profil_revision, inhalt: maskiereAusweise(alt) }, { profil_revision: revision, ziel_revision, inhalt: maskiereAusweise(ziel) }, g);
     return { profil_revision: revision };
   });
 }

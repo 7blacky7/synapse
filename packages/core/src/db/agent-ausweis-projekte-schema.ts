@@ -26,4 +26,6 @@ CREATE TABLE IF NOT EXISTS agent_ausweis_projekte (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_ausweis_projekte_project ON agent_ausweis_projekte(project);
 ALTER TABLE agent_identitaet_laeufe ADD COLUMN IF NOT EXISTS zugestellt_projekte_stand TEXT;
+-- P22-T52: '*' (jev abwesend: alle Projekte) ist nie ein Projekt. Vor dem P22-T50-Fix eingetragene Zeilen entfernen (idempotent, nur '*').
+DELETE FROM agent_ausweis_projekte WHERE project = '*';
 `;
