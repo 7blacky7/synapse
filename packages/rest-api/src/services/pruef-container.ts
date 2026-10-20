@@ -47,6 +47,12 @@
  * Schalter und Warteschlange in core build-pruefung.ts; hier nur der Transport (pruefeBuild) und das Speicherbudget
  * (setzeBudget: Speicher/tmpfs aus code_check build_einstellungen; ein laufender Container wird neu gestartet).
  * Fuer die Build-Pruefung reicht das Syntax-Budget (384 MB) nicht: Budget ueber build_einstellungen anheben.
+ *
+ * NUR BENOETIGTE WERKZEUGE (P16-T22, 20.10.2026): alle Werkzeuge ausser der JVM laufen nur fuer die Dauer eines
+ * Auftrags (Unterprozess). Die JVM (Kotlin/Java/Scala/Groovy) startet erst bei der ersten Anfrage einer JVM-Sprache
+ * (PRUEFCONTAINER_JVM_VORWAERMEN=1 stellt das alte Vorwaermen beim Containerstart wieder her) und beendet sich im
+ * Container nach PRUEFCONTAINER_JVM_IDLE_S ohne Anfrage (Standard 600, an pruefserver als PRUEF_JVM_IDLE_S). Danach
+ * gilt hier wieder das JVM-Kaltbudget. Diagnose: zustand().jvm, zustand().build.laeuft (laufender Projektauftrag).
  */
 
 import Docker from 'dockerode';
@@ -148,6 +154,10 @@ export interface PruefContainerConfig {
    * Kotlin-Umgebung). 0 = aus.
    */
   jvmKaltBudgetMs: number;
+  /** P16-T22: JVM schon beim Containerstart vorwaermen (Standard aus: erst bei der ersten JVM-Anfrage). */
+  jvmVorwaermen: boolean;
+  /** P16-T22: JVM im Container nach so vielen Sekunden ohne Anfrage beenden (0 = nie). */
+  jvmIdleS: number;
 }
 
 function envZahl(name: string, standard: number): number {
@@ -176,6 +186,8 @@ export function pruefContainerConfigAusEnv(): PruefContainerConfig {
     tickMs: envZahl('PRUEFCONTAINER_TICK_MS', 60_000) || 60_000,
     kaltBudgetMs: envZahl('PRUEFCONTAINER_KALT_BUDGET_MS', 3000),
     jvmKaltBudgetMs: envZahl('PRUEFCONTAINER_JVM_KALT_BUDGET_MS', 4000),
+    jvmVorwaermen: process.env.PRUEFCONTAINER_JVM_VORWAERMEN === '1',
+    jvmIdleS: envZahl('PRUEFCONTAINER_JVM_IDLE_S', 600),
   };
 }
 
@@ -240,7 +252,20 @@ export class PruefContainer {
    * Je Sprache, weil die JVM jeden Parser erst bei seiner ersten Anfrage initialisiert (Kotlin-Umgebung, javac).
    */
   private jvmWarm = new Set<string>();
-  private jvm = { vorwaermungen: 0, letzte_vorwaermung_ms: null as number | null, fehler: 0, kalt_auftraege: 0 };
+  private jvm = { vorwaermungen: 0, letzte_vorwaermung_ms: null as number | null, fehler: 0, kalt_auftraege: 0, idle_verfallen: 0 };
+  /** P16-T22: letzte Antwort einer JVM-Sprache; danach beendet pruefserver die JVM nach cfg.jvmIdleS. */
+  private jvmZuletzt = 0;
+  /** P16-T22: laufender Projektauftrag (Build-Pruefung) fuer die Diagnose. */
+  private buildLaeuft: { art: string; seit: string; dateien: number; projekte: number } | null = null;
+
+  /** P16-T22: jvmWarm verfaellt, wenn die JVM im Container wegen Leerlauf beendet sein kann (30 s Reserve). */
+  private jvmLeerlaufPruefen(): void {
+    if (this.jvmWarm.size === 0 || this.cfg.jvmIdleS <= 0) return;
+    if (Date.now() - this.jvmZuletzt >= Math.max(0, this.cfg.jvmIdleS * 1000 - 30_000)) {
+      this.jvmWarm.clear();
+      this.jvm.idle_verfallen++;
+    }
+  }
   /**
    * Erstpruefung: Sprachen, die seit dem letzten Containerstart einmal erfolgreich geantwortet haben. Fuer alle anderen
    * gilt auch im warmen Container das Kaltbudget (erster Werkzeugstart bzw. Grammatik laden, t61: php 50 ms).
@@ -289,6 +314,7 @@ export class PruefContainer {
    */
   mindestBudgetMs(sprache?: string): number | undefined {
     if (Date.now() < this.pauseBis) return undefined;
+    this.jvmLeerlaufPruefen();
     const warm = this.zustandName === 'bereit' && !!this.stream;
     const jvm = !!sprache && JVM_SPRACHEN.has(sprache);
     // E3b: Kotlin/Java warten auch bei warmem Container den JVM-Start bzw. die Parser-Initialisierung ab.
@@ -299,12 +325,15 @@ export class PruefContainer {
     return sprache && !jvm && !this.erstGeprueft.has(sprache) ? this.cfg.kaltBudgetMs : undefined;
   }
 
-  /** E3a: Container im Hintergrund starten (API-Start), damit der erste Schreibvorgang ihn warm vorfindet. Wirft nie. */
-  vorwaermen(): void {
+  /**
+   * E3a: Container im Hintergrund starten (API-Start), damit der erste Schreibvorgang ihn warm vorfindet. Wirft nie.
+   * P16-T22: die JVM nur mit jvm (Standard cfg.jvmVorwaermen = aus) - sonst startet sie erst bei der ersten JVM-Anfrage.
+   */
+  vorwaermen(jvm = this.cfg.jvmVorwaermen): void {
     if (Date.now() < this.pauseBis) return;
     this.letzteAktivitaet = Date.now();
     this.bereitMachen()
-      .then(() => this.vorwaermenJvm())
+      .then(() => (jvm ? this.vorwaermenJvm() : undefined))
       .catch((err) => console.error(`[pruefcontainer] Vorwaermen fehlgeschlagen: ${(err as Error).message}`));
   }
 
@@ -315,6 +344,7 @@ export class PruefContainer {
     try {
       const a = await this.schicke({ vorwaermen: ['jvm'] }, this.cfg.startMs) as Antwort;
       for (const s of JVM_SPRACHEN) this.jvmWarm.add(s);
+      this.jvmZuletzt = Date.now();
       this.jvm.vorwaermungen++;
       this.jvm.letzte_vorwaermung_ms = Date.now() - t0;
       this.letzteAktivitaet = Date.now();
@@ -352,6 +382,7 @@ export class PruefContainer {
       await this.bereitMachen();
       const t0 = Date.now();
       // E3b: solange die JVM nicht laeuft, startet pruefserver sie in diesem Auftrag - dafuer gilt das Startlimit.
+      this.jvmLeerlaufPruefen();
       const jvm = JVM_SPRACHEN.has(sprache);
       const jvmKalt = jvm && !this.jvmWarm.has(sprache);
       if (jvmKalt) this.jvm.kalt_auftraege++;
@@ -362,7 +393,7 @@ export class PruefContainer {
         if (jvm) { this.jvmWarm.clear(); this.jvm.fehler++; }
         throw err;
       }
-      if (jvm) this.jvmWarm.add(sprache);
+      if (jvm) { this.jvmWarm.add(sprache); this.jvmZuletzt = Date.now(); }
       this.erstGeprueft.add(sprache);
       this.z.ms_summe += Date.now() - t0;
       this.dauern.push(Date.now() - t0);
@@ -483,7 +514,7 @@ export class PruefContainer {
       AttachStderr: true,
       NetworkDisabled: true,
       User: '65532:65532',
-      Env: [`PRUEF_PARALLEL=${this.cfg.parallel}`, `PRUEF_WERKZEUG_TIMEOUT_S=${werkzeugTimeoutS}`],
+      Env: [`PRUEF_PARALLEL=${this.cfg.parallel}`, `PRUEF_WERKZEUG_TIMEOUT_S=${werkzeugTimeoutS}`, `PRUEF_JVM_IDLE_S=${this.cfg.jvmIdleS}`],
       HostConfig: {
         NetworkMode: 'none',
         ReadonlyRootfs: true,
@@ -651,6 +682,7 @@ export class PruefContainer {
       const nachricht = auftrag.art
         ? { [auftrag.art]: { dateien: auftrag.dateien, projekte: auftrag.projekte, zeitlimit_s, heap_mb: auftrag.heap_mb, ...(auftrag.python_version ? { python_version: auftrag.python_version } : {}) } }
         : { build: { dateien: auftrag.dateien, projekte: auftrag.projekte, zeitlimit_s, heap_mb: auftrag.heap_mb } };
+      this.buildLaeuft = { art: auftrag.art ?? 'build', seit: new Date().toISOString(), dateien: auftrag.dateien.length, projekte: auftrag.projekte.length };
       const antwort = await this.schicke(nachricht, auftrag.zeitlimit_ms + 30_000) as Antwort;
       this.letzteAktivitaet = Date.now();
       const roh = auftrag.art ? antwort[auftrag.art] : antwort.build;
@@ -667,6 +699,8 @@ export class PruefContainer {
       this.buildZ.fehler++;
       this.merkeFehler(`Build-Pruefung: ${(err as Error).message}`);
       throw err;
+    } finally {
+      this.buildLaeuft = null;
     }
   }
 
@@ -709,7 +743,12 @@ export class PruefContainer {
       // Erstpruefung: Sprachen, die seit dem Containerstart geantwortet haben (fuer die uebrigen gilt kalt_budget_ms).
       erst_geprueft: [...this.erstGeprueft],
       // E3b: JVM-Hilfsprozess im Container (Kotlin/Java). bereit = hat seit dem Containerstart geantwortet.
-      jvm: { bereit: [...JVM_SPRACHEN].every((s) => this.jvmWarm.has(s)), warm: [...this.jvmWarm], kalt_budget_ms: this.cfg.jvmKaltBudgetMs, ...this.jvm, beim_start: (this.info as { jvm?: unknown } | null)?.jvm ?? null },
+      jvm: {
+        bereit: [...JVM_SPRACHEN].every((s) => this.jvmWarm.has(s)), warm: [...this.jvmWarm], kalt_budget_ms: this.cfg.jvmKaltBudgetMs, ...this.jvm,
+        // P16-T22: nur bei Bedarf - Vorwaermen beim Start, Leerlaufgrenze im Container, letzte JVM-Antwort.
+        vorwaermen: this.cfg.jvmVorwaermen, idle_s: this.cfg.jvmIdleS, zuletzt: this.jvmZuletzt ? new Date(this.jvmZuletzt).toISOString() : null,
+        beim_start: (this.info as { jvm?: unknown } | null)?.jvm ?? null,
+      },
       zustand: this.zustandName,
       container: this.containerId?.slice(0, 12) ?? null,
       image: this.cfg.image,
@@ -723,6 +762,8 @@ export class PruefContainer {
       // P16-T16 E1: projektweite Build-Pruefung
       build: {
         ...this.buildZ, werkzeug: (this.info as { tsbuild?: unknown } | null)?.tsbuild ?? null,
+        // P16-T22: laufender Projektauftrag (art, seit) und Speicher des Containers beim letzten Start (cgroup).
+        laeuft: this.buildLaeuft, speicher_beim_start: (this.info as { speicher?: unknown } | null)?.speicher ?? null,
         // P16-T16 E2: Go-/Pyright-Versionen und Grenzen, nur wenn das Image sie meldet (sonst wie in E1).
         ...((this.info as { projektpruefung?: unknown } | null)?.projektpruefung ? { projektpruefung: (this.info as { projektpruefung?: unknown }).projektpruefung } : {}),
       },
@@ -809,7 +850,8 @@ export async function registriereContainerSyntaxPruefer(opt: { docker?: Docker; 
   await synchronisiereBuildBudget(true).catch(() => false);
   if (opt.takt !== false) pc.starteTakt();
   instanz = pc;
-  if (opt.vorwaermen ?? process.env.PRUEFCONTAINER_VORWAERMEN !== '0') pc.vorwaermen();
+  // P16-T22: ausdrueckliches vorwaermen:true waermt auch die JVM; der Standardweg (API-Start) nur den Container.
+  if (opt.vorwaermen ?? process.env.PRUEFCONTAINER_VORWAERMEN !== '0') pc.vorwaermen(opt.vorwaermen === true ? true : undefined);
   return CONTAINER_SPRACHEN.map((s) => s.sprache);
 }
 

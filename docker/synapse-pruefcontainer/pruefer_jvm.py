@@ -16,6 +16,10 @@ alle folgenden Anfragen) und beim naechsten Mal neu gestartet.
 
 SPEICHER: JVM-Optionen PRUEF_JVM_OPTS (Standard -Xmx160m, SerialGC, nur C1). Die JVM teilt sich das Speicherlimit
 des Containers mit allen anderen Werkzeugen (Messung im Bericht P16-T5 E3b).
+
+NUR BEI BEDARF (P16-T22): die JVM ist das einzige dauerhaft laufende Werkzeug im Container. Ohne Kotlin-/Java-/Scala-/
+Groovy-Anfrage seit PRUEF_JVM_IDLE_S (Standard 600, 0 = nie) wird sie beendet (Zaehler idle_stops); die naechste Anfrage
+startet sie wieder (Startlimit wie beim ersten Mal). Die API waermt sie nicht mehr bei jedem Containerstart vor.
 """
 import base64
 import os
@@ -33,6 +37,7 @@ JVM_OPTS = os.environ.get(
 JVM_START_S = float(os.environ.get('PRUEF_JVM_START_S', '60'))
 JVM_MAX_STARTS = int(os.environ.get('PRUEF_JVM_MAX_STARTS', '3'))
 JVM_PAUSE_S = float(os.environ.get('PRUEF_JVM_PAUSE_S', '60'))
+JVM_IDLE_S = float(os.environ.get('PRUEF_JVM_IDLE_S', '600'))
 VERSIONEN = os.environ.get('PRUEF_VERSIONEN', '/opt/pruef/versionen')
 _START_FENSTER_S = 300
 
@@ -58,7 +63,26 @@ class JvmHelfer:
         self._starts = []
         self._pause_bis = 0.0
         self.letzter_start_ms = None
-        self.zaehler = {'starts': 0, 'abstuerze': 0, 'timeouts': 0, 'anfragen': 0}
+        self.zaehler = {'starts': 0, 'abstuerze': 0, 'timeouts': 0, 'anfragen': 0, 'idle_stops': 0}
+        self._zuletzt = time.monotonic()
+        self._waechter = None
+
+    def _waechter_lauf(self):
+        """P16-T22: beendet die JVM nach JVM_IDLE_S ohne Anfrage (keine offenen Anfragen)."""
+        while True:
+            time.sleep(min(30.0, max(1.0, JVM_IDLE_S / 4)))
+            p = self._proc
+            with self._offen_sperre:
+                offen = len(self._offen)
+            if p is None or offen or time.monotonic() - self._zuletzt < JVM_IDLE_S:
+                continue
+            with self._start_sperre:
+                if self._proc is not p or time.monotonic() - self._zuletzt < JVM_IDLE_S:
+                    continue
+                self._proc = None
+            self.zaehler['idle_stops'] += 1
+            sys.stderr.write(f'[pruefserver] JVM nach {JVM_IDLE_S:g} s ohne Anfrage beendet (Speicher frei) - naechste Anfrage startet neu\n')
+            self._beende(p)
 
     # ── Start / Ende ──
     def laeuft(self) -> bool:
@@ -102,6 +126,9 @@ class JvmHelfer:
                 raise RuntimeError(f'JVM nicht bereit nach {JVM_START_S:g} s: {erste[0][:200] if erste else b""!r}')
             self._proc = p
             threading.Thread(target=self._leser, args=(p,), daemon=True).start()
+            if JVM_IDLE_S > 0 and self._waechter is None:
+                self._waechter = threading.Thread(target=self._waechter_lauf, daemon=True)
+                self._waechter.start()
             self.letzter_start_ms = round((time.perf_counter() - t0) * 1000, 1)
             sys.stderr.write(f'[pruefserver] JVM gestartet nach {self.letzter_start_ms} ms (pid {p.pid})\n')
             return self.letzter_start_ms
@@ -149,6 +176,7 @@ class JvmHelfer:
     # ── Anfragen ──
     def anfrage(self, felder, timeout_s: float):
         """Schickt eine Anfrage, gibt die Antwortfelder ab 'ok' zurueck. Wirft RuntimeError/TimeoutError."""
+        self._zuletzt = time.monotonic()
         start_ms = self.sicherstellen()
         p = self._proc
         if p is None:
@@ -177,6 +205,7 @@ class JvmHelfer:
                 self._proc = None
             self._beende(p)
             raise TimeoutError(f'JVM nach {timeout_s:g} s abgebrochen')
+        self._zuletzt = time.monotonic()
         teile = eintrag[1]
         if teile is None:
             raise RuntimeError('JVM beendet waehrend der Pruefung (Absturz/Speicher) - Kotlin/Java voruebergehend ungeprueft')
@@ -205,7 +234,8 @@ class JvmHelfer:
 
     def zustand(self):
         return {'laeuft': self.laeuft(), 'letzter_start_ms': self.letzter_start_ms, **self.zaehler,
-                'pause': time.monotonic() < self._pause_bis}
+                'pause': time.monotonic() < self._pause_bis, 'idle_s': JVM_IDLE_S,
+                'ohne_anfrage_s': round(time.monotonic() - self._zuletzt)}
 
 
 _helfer = JvmHelfer()

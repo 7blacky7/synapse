@@ -61,6 +61,7 @@ import { darfKoordinatorOderUser } from './rollen-pruefung.js';
 import { emitEvent } from './events.js';
 import type { PruefDatei } from './plan-befunde.js';
 import type { FehlerBefund } from './fehlermuster-pruefung.js';
+import { typenBestand, typenZustand, TYPEN_LOCKFILES, type TypenBestand, type TypenInfo } from './build-typen.js';
 
 // ─── Vertrag zum Pruefcontainer (rest-api pruef-container.ts, pruefer_tsbuild.py) ───────────────────────────
 
@@ -121,6 +122,8 @@ export interface BuildProjektLauf {
   fehlende_importe?: number;
   /** E2 Pyright: analysierte Dateien. */
   dateien?: number;
+  /** P16-T22: hoechster RSS des Werkzeugs (MB, wait4) - Messwert je Projekt/Schritt. */
+  rss_mb?: number;
 }
 
 export interface BuildLaufErgebnis {
@@ -131,6 +134,10 @@ export interface BuildLaufErgebnis {
   hinweis?: string;
   /** z. B. "tsc 5.9.3 (node v24.10.0)" */
   werkzeug?: string;
+  /** P16-T22: Speicher des Pruefcontainers nach dem Lauf (cgroup memory.current/peak in MB). */
+  speicher?: { aktuell_mb?: number; peak_mb?: number; limit_mb?: number };
+  /** P16-T22: Typen-Bestand dieses Laufs (nur TypeScript). */
+  typen?: TypenInfo;
 }
 
 export interface BuildPrueferAnbindung {
@@ -161,6 +168,8 @@ export interface BuildStand {
   neue_warnungen?: number;
   /** E2: Teilstaende je Sprache, wenn mehrere Sprachen im Plan geprueft wurden. */
   teile?: BuildStand[];
+  /** P16-T22: Typen-Bestand (nur wenn er Luecken hat). */
+  typen?: TypenInfo;
 }
 
 export type BuildBefund = FehlerBefund & { op_index: number | null; agent_id: string | null; beteiligt?: number[] };
@@ -181,8 +190,9 @@ export function registriereBuildPruefer(a: BuildPrueferAnbindung | null): void {
 
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const TS_DATEI = /\.(?:ts|tsx|mts|cts)$/;
-const KONFIG_DATEI = /(?:^|\/)(?:package\.json|tsconfig[^/]*\.json)$/;
-/** Dateien, deren Aenderung eine Build-Pruefung ausloest (TypeScript-Quellen, package.json, tsconfig*.json). */
+// P16-T22: das Lockfile der Wurzel bestimmt den Typen-Bestand (build-typen.ts) und gilt wie eine gemeinsame Konfig.
+const KONFIG_DATEI = /(?:^|\/)(?:package\.json|tsconfig[^/]*\.json)$|^(?:pnpm-lock\.yaml|package-lock\.json)$/;
+/** Dateien, deren Aenderung eine Build-Pruefung ausloest (TypeScript-Quellen, package.json, tsconfig*.json, Lockfile). */
 export const istBuildRelevant = (p: string): boolean => TS_DATEI.test(p) || KONFIG_DATEI.test(p);
 const WRAPPER_NAME = 'tsconfig.synapse-build.json';
 const WURZEL = '@@WURZEL@@';
@@ -320,14 +330,14 @@ export async function synchronisiereBuildBudget(frisch = false): Promise<boolean
 
 // ─── Schnappschuss, Pakete, Projekte ─────────────────────────────────────────────────────────────────────────────
 
-/** TS-Quellen + package.json + tsconfig*.json des Projekts aus PG (ohne node_modules). */
+/** TS-Quellen + package.json + tsconfig*.json des Projekts aus PG (ohne node_modules), dazu das Lockfile der Wurzel. */
 async function ladeQuellen(project: string): Promise<Map<string, string>> {
   const rows = (await getPool().query<{ file_path: string; content: string }>(
     `SELECT file_path, content FROM code_files
       WHERE project = $1 AND deleted_at IS NULL AND ignored = false AND content IS NOT NULL
-        AND (file_path ~ $2 OR file_path ~ $3) AND file_path !~ $4
+        AND (file_path ~ $2 OR file_path ~ $3 OR file_path = ANY($5::text[])) AND file_path !~ $4
       ORDER BY file_path`,
-    [project, '\\.(ts|tsx|mts|cts)$', '(^|/)(package\\.json|tsconfig[^/]*\\.json)$', '(^|/)node_modules/'],
+    [project, '\\.(ts|tsx|mts|cts)$', '(^|/)(package\\.json|tsconfig[^/]*\\.json)$', '(^|/)node_modules/', [...TYPEN_LOCKFILES]],
   )).rows;
   return new Map(rows.map((r) => [r.file_path, r.content]));
 }
@@ -373,6 +383,8 @@ interface Paket {
   einstieg: string | null;
   /** Quellwurzel des Pakets (rootDir, sonst src). */
   quellwurzel: string;
+  /** P16-T22: exports-Unterpfade ('tools' fuer './tools') -> Projekt-relative Quelle. */
+  unterpfade: Map<string, string>;
 }
 
 function typenFeld(pkg: Json): string | undefined {
@@ -398,16 +410,31 @@ function lesePakete(quellen: Map<string, string>): Map<string, Paket> {
     const out = option(kette, 'outDir');
     const quellwurzel = root && typeof root.wert === 'string' ? verbinde(root.dir, root.wert) : verbinde(dir, 'src');
     const ausgabe = out && typeof out.wert === 'string' ? verbinde(out.dir, out.wert) : null;
-    const kandidaten: string[] = [];
-    const typen = typenFeld(pkg);
-    if (typen) {
-      let ziel = verbinde(dir, typen);
+    /** Ausgabepfad (dist/...) einer package.json-Angabe -> moegliche Quelldateien. */
+    const quelleVon = (rel: string): string[] => {
+      let ziel = verbinde(dir, rel);
       if (ausgabe && (ziel === ausgabe || ziel.startsWith(ausgabe + '/'))) ziel = quellwurzel + ziel.slice(ausgabe.length);
       const ohne = ziel.replace(/\.d\.(?:ts|mts|cts)$/, '').replace(/\.(?:js|mjs|cjs|ts|tsx|mts|cts)$/, '');
-      kandidaten.push(...['.ts', '.tsx', '.mts', '.cts', '.d.ts'].map((e) => ohne + e));
-    }
+      return ['.ts', '.tsx', '.mts', '.cts', '.d.ts'].map((e) => ohne + e);
+    };
+    const kandidaten: string[] = [];
+    const typen = typenFeld(pkg);
+    if (typen) kandidaten.push(...quelleVon(typen));
     kandidaten.push(verbinde(quellwurzel, 'index.ts'), verbinde(quellwurzel, 'index.tsx'), verbinde(dir, 'index.ts'));
-    pakete.set(pkg.name, { name: pkg.name, dir, abhaengig, einstieg: kandidaten.find((k) => quellen.has(k)) ?? null, quellwurzel });
+    // P16-T22: Unterpfade aus exports ('./tools' -> Quelle); sonst meldet tsc jeden Import '@x/y/tools' als TS2307
+    // (live synapse: @synapse/mcp-server/tools und /consolidated, dazu TS7006-Folgefehler).
+    const unterpfade = new Map<string, string>();
+    const exp = pkg.exports;
+    if (exp && typeof exp === 'object' && !Array.isArray(exp)) {
+      for (const [k, v] of Object.entries(exp as Json)) {
+        if (!k.startsWith('./') || k.includes('*')) continue;
+        const ziel = typeof v === 'string' ? v
+          : v && typeof v === 'object' ? [v.types, v.import, v.default, v.require].find((x): x is string => typeof x === 'string') : undefined;
+        const q = ziel ? quelleVon(ziel).find((c) => quellen.has(c)) : undefined;
+        if (q) unterpfade.set(k.slice(2), q);
+      }
+    }
+    pakete.set(pkg.name, { name: pkg.name, dir, abhaengig, einstieg: kandidaten.find((k) => quellen.has(k)) ?? null, quellwurzel, unterpfade });
   }
   return pakete;
 }
@@ -453,12 +480,15 @@ const wrapperPfad = (cfg: string): string => verbinde(dirOf(cfg), WRAPPER_NAME);
  * schaltet Ausgaben ab und biegt die Workspace-Pakete auf ihre Quellen um. Vorhandene paths behalten Vorrang
  * (absolut gemacht). Pfade mit @@WURZEL@@ ersetzt der Container durch sein Arbeitsverzeichnis.
  */
-function erzeugeWrapper(cfg: string, pakete: Map<string, Paket>, quellen: Map<string, string>): string {
+function erzeugeWrapper(cfg: string, pakete: Map<string, Paket>, quellen: Map<string, string>, typen: TypenBestand | null = null): string {
   const dir = dirOf(cfg);
   const kette = konfigKette(cfg, quellen);
   const paths: Record<string, string[]> = {};
   for (const p of pakete.values()) {
-    if (!p.einstieg || p.dir === dir) continue;
+    if (p.dir === dir) continue;
+    // P16-T22: exakte Unterpfade gehen in tsc vor dem Muster '<name>/*'.
+    for (const [sub, q] of p.unterpfade) paths[`${p.name}/${sub}`] = [`${WURZEL}/${q}`];
+    if (!p.einstieg) continue;
     paths[p.name] = [`${WURZEL}/${p.einstieg}`];
     paths[`${p.name}/*`] = [`${WURZEL}/${p.quellwurzel ? p.quellwurzel + '/' : ''}*`];
   }
@@ -472,10 +502,15 @@ function erzeugeWrapper(cfg: string, pakete: Map<string, Paket>, quellen: Map<st
         .map((x) => (x.startsWith('/') ? x : `${WURZEL}/${verbinde(bezug, x)}`));
     }
   }
+  // P16-T22: mit Typen-Bestand nur die @types, die das Paket bzw. die Wurzel selbst nennt (wie pnpm ohne Hoisting -
+  // gehobene transitive @types wie @types/react sollen nicht in jedes Paket wirken). Eigene types der Kette bleiben.
+  const typenListe = typen?.info.quelle && option(kette, 'types') === undefined
+    ? [...new Set([...(typen.atTypes.get(dir) ?? []), ...(typen.atTypes.get('') ?? [])])].sort() : null;
   const compilerOptions: Json = {
     noEmit: true, composite: false, incremental: false, declaration: false, declarationMap: false, emitDeclarationOnly: false,
     sourceMap: false, skipLibCheck: true, rootDir: WURZEL,
     ...(Object.keys(paths).length > 0 ? { paths } : {}),
+    ...(typenListe ? { types: typenListe } : {}),
   };
   return JSON.stringify({ extends: './tsconfig.json', compilerOptions }, null, 1) + '\n';
 }
@@ -484,28 +519,44 @@ interface Vorbereitet {
   auftrag: BuildAuftrag;
   schluessel: string;
   bytes: number;
+  /** P16-T22: Typdateien der Abhaengigkeiten (zaehlen nicht gegen max_mb, nur gegen das tmpfs). */
+  typenBytes?: number;
+  typen?: TypenInfo;
+  /** P16-T22: typescript bzw. Sprache (Fortschritt in build_status). */
+  sprache: string;
 }
 
 /** Auftrag fuer den Container: Konfigs + TS-Quellen in Projektordnern + erzeugte tsconfigs; Schluessel fuer den Cache. */
-function bereiteVor(quellen: Map<string, string>, projekte: string[], budget: BuildBudget): Vorbereitet {
+function bereiteVor(quellen: Map<string, string>, projekte: string[], budget: BuildBudget, typen: TypenBestand | null = null): Vorbereitet {
   const pakete = lesePakete(quellen);
   const ordner = tsProjekte(quellen).map(dirOf);
   const dateien: BuildDatei[] = [];
   let bytes = 0;
   for (const [pfad, inhalt] of quellen) {
+    if ((TYPEN_LOCKFILES as readonly string[]).includes(pfad)) continue; // nur fuer den Typen-Bestand, nicht im Container
     if (!KONFIG_DATEI.test(pfad) && !ordner.some((d) => unter(pfad, d))) continue;
     dateien.push({ pfad, inhalt });
     bytes += Buffer.byteLength(inhalt);
   }
   for (const c of projekte) {
-    const inhalt = erzeugeWrapper(c, pakete, quellen);
+    const inhalt = erzeugeWrapper(c, pakete, quellen, typen);
     dateien.push({ pfad: wrapperPfad(c), inhalt, wurzel_ersetzen: true });
     bytes += Buffer.byteLength(inhalt);
   }
   const wrapper = projekte.map(wrapperPfad);
   const auftrag: BuildAuftrag = { dateien, projekte: wrapper, zeitlimit_ms: budget.zeitlimit_s * 1000, heap_mb: budget.heap_mb };
-  const schluessel = sha(JSON.stringify(['e1', budget.heap_mb, budget.zeitlimit_s, wrapper, dateien.map((d) => [d.pfad, sha(d.inhalt)])]));
-  return { auftrag, schluessel, bytes };
+  // P16-T22: der Typen-Bestand geht ueber seinen Schluessel in den Cache-Schluessel (nicht je Datei gehasht).
+  const schluessel = sha(JSON.stringify(['e1', budget.heap_mb, budget.zeitlimit_s, typen?.schluessel ?? null, wrapper, dateien.map((d) => [d.pfad, sha(d.inhalt)])]));
+  if (typen) for (const d of typen.dateien) dateien.push(d);
+  return { auftrag, schluessel, bytes, sprache: 'typescript', ...(typen ? { typenBytes: typen.info.bytes, typen: typen.info } : {}) };
+}
+
+/** P16-T22: Grund, warum ein Schnappschuss nicht in den Container passt (null = passt). */
+function zuGross(v: Vorbereitet, budget: BuildBudget): string | null {
+  if (v.bytes > budget.max_mb * 1024 * 1024) return `Schnappschuss ${(v.bytes / 1048576).toFixed(1)} MB > ${budget.max_mb} MB (BUILD_PRUEFUNG_MAX_MB bzw. 80 % tmpfs)`;
+  const gesamt = v.bytes + (v.typenBytes ?? 0);
+  if (gesamt > budget.tmpfs_mb * 0.8 * 1024 * 1024) return `Schnappschuss mit Typen ${(gesamt / 1048576).toFixed(1)} MB > 80 % von tmpfs ${budget.tmpfs_mb} MB`;
+  return null;
 }
 
 // ─── Ausfuehrung (ein Auftrag zur Zeit, Ergebnis-Cache) ─────────────────────────────────────────────────────────
@@ -514,6 +565,50 @@ const ergebnisCache = new Map<string, BuildLaufErgebnis>();
 const laufend = new Map<string, Promise<BuildLaufErgebnis>>();
 let kette: Promise<unknown> = Promise.resolve();
 const projektLaeuft = new Map<string, number>();
+
+/** P16-T22: Fortschritt je Projekt fuer build_status (typen = Typen-Bestand laedt, wartet = in der Kette, laeuft = im Container). */
+interface Fortschritt {
+  sprache: string;
+  phase: 'typen' | 'wartet' | 'laeuft';
+  eingereiht_am: string;
+  gestartet_am: string | null;
+  projekte: number;
+  basis: boolean;
+}
+const fortschritt = new Map<string, Map<string, Fortschritt>>();
+/** P16-T22: letzter Basislauf ohne Ergebnis je Projekt (Container gestoppt/neu gestartet, nicht verfuegbar). */
+const letzterAbbruch = new Map<string, { zeit: string; sprache: string; grund: string }>();
+
+function merkeFortschritt(project: string, id: string, f: Fortschritt): void {
+  const m = fortschritt.get(project) ?? new Map<string, Fortschritt>();
+  m.set(id, f);
+  fortschritt.set(project, m);
+}
+
+function loescheFortschritt(project: string, id: string): void {
+  const m = fortschritt.get(project);
+  m?.delete(id);
+  if (m && m.size === 0) fortschritt.delete(project);
+}
+
+function fortschrittAnzeige(project: string): Array<Record<string, unknown>> {
+  const jetzt = Date.now();
+  return [...(fortschritt.get(project)?.values() ?? [])].map((f) => ({
+    sprache: f.sprache, phase: f.phase, basis: f.basis, projekte: f.projekte, eingereiht_am: f.eingereiht_am,
+    ...(f.gestartet_am
+      ? { gestartet_am: f.gestartet_am, laeuft_s: Math.round((jetzt - Date.parse(f.gestartet_am)) / 1000) }
+      : { wartet_s: Math.round((jetzt - Date.parse(f.eingereiht_am)) / 1000) }),
+  }));
+}
+
+/** P16-T22: Kurzform eines fertigen Laufs fuer die warten-Antwort; nicht_verfuegbar heisst dort abgebrochen + Grund. */
+function ergebnisKurz(e: BuildLaufErgebnis, fehler: number): Record<string, unknown> {
+  return {
+    status: e.status === 'nicht_verfuegbar' ? 'abgebrochen' : e.status, fehler, dauer_ms: e.dauer_ms,
+    ...(e.status !== 'fertig' && e.hinweis ? { grund: e.hinweis } : {}),
+    ...(e.typen ? { typen: e.typen } : {}),
+  };
+}
 
 interface ProjektBasis {
   status: BuildLaufErgebnis['status'];
@@ -525,6 +620,10 @@ interface ProjektBasis {
   werkzeug?: string;
   hinweis?: string;
   erste_fehler: Array<Pick<BuildDiagnose, 'datei' | 'zeile' | 'code' | 'meldung'>>;
+  /** P16-T22: Messwerte je Projekt/Schritt (Dauer, hoechster RSS), Speicher des Containers, Typen-Bestand. */
+  laeufe?: Array<{ projekt: string; schritt?: string; status: string; ms: number; rss_mb?: number }>;
+  speicher?: BuildLaufErgebnis['speicher'];
+  typen?: TypenInfo;
 }
 const projektBasis = new Map<string, ProjektBasis>();
 /** E2: Basisstand je Projekt und Sprache (Go/Python), getrennt von der TS-Basis. */
@@ -541,6 +640,11 @@ function merke(schluessel: string, e: BuildLaufErgebnis): void {
 }
 
 function merkeBasis(project: string, e: BuildLaufErgebnis, projekte: string[], vollstaendig: boolean, art?: SprachArt): void {
+  // P16-T22: ein Lauf ohne Ergebnis (Container gestoppt/neu gestartet) ersetzt keinen Basisstand, er wird als Abbruch gezeigt.
+  if (e.status === 'nicht_verfuegbar') {
+    letzterAbbruch.set(project, { zeit: new Date().toISOString(), sprache: art ? SPRACH_NAME[art] : 'TypeScript', grund: e.hinweis ?? 'nicht verfuegbar' });
+    return;
+  }
   const sprachen = art ? (sprachBasis.get(project) ?? new Map<SprachArt, ProjektBasis>()) : null;
   const alt = sprachen && art ? sprachen.get(art) : projektBasis.get(project);
   // Ein Teilblick (nur betroffene Projekte eines Plans) ueberschreibt keinen vollstaendigen Basisstand.
@@ -551,6 +655,9 @@ function merkeBasis(project: string, e: BuildLaufErgebnis, projekte: string[], v
     status: e.status, fehler: diagnosen.length, projekte, vollstaendig, geprueft_am: new Date().toISOString(), dauer_ms: e.dauer_ms,
     ...(e.werkzeug ? { werkzeug: e.werkzeug } : {}), ...(e.hinweis ? { hinweis: e.hinweis } : {}),
     erste_fehler: diagnosen.slice(0, 5).map((d) => ({ datei: d.datei, zeile: d.zeile, code: d.code, meldung: d.meldung.slice(0, 300) })),
+    laeufe: e.projekte.map((p) => ({ projekt: p.projekt, ...(p.schritt ? { schritt: p.schritt } : {}), status: p.status, ms: p.ms, ...(typeof p.rss_mb === 'number' ? { rss_mb: p.rss_mb } : {}) })),
+    ...(e.speicher ? { speicher: e.speicher } : {}),
+    ...(e.typen ? { typen: e.typen } : {}),
   };
   if (sprachen && art) {
     sprachen.set(art, eintrag);
@@ -563,18 +670,28 @@ function merkeBasis(project: string, e: BuildLaufErgebnis, projekte: string[], v
 /** Startet (bzw. teilt) einen Lauf. Nie parallel im Container: eine Kette fuer alle Projekte. Wirft nie. */
 function starteLauf(project: string, v: Vorbereitet, basis?: { projekte: string[]; vollstaendig: boolean; art?: SprachArt }): Promise<BuildLaufErgebnis> {
   const treffer = ergebnisCache.get(v.schluessel);
-  if (treffer) return Promise.resolve(treffer);
+  if (treffer) {
+    // P16-T22: auch ein Cache-Treffer ist ein Basisstand (inhaltsgleicher Stand, z. B. erneutes pruefen:true).
+    if (basis) merkeBasis(project, treffer, basis.projekte, basis.vollstaendig, basis.art);
+    return Promise.resolve(treffer);
+  }
   const offen = laufend.get(v.schluessel);
   if (offen) return offen;
   projektLaeuft.set(project, (projektLaeuft.get(project) ?? 0) + 1);
+  // P16-T22: Fortschritt fuer build_status (wartet in der Kette -> laeuft im Container).
+  const fid = v.schluessel.slice(0, 12);
+  const f: Fortschritt = { sprache: v.sprache, phase: 'wartet', eingereiht_am: new Date().toISOString(), gestartet_am: null, projekte: v.auftrag.projekte.length, basis: !!basis };
+  merkeFortschritt(project, fid, f);
   const p = kette.then(async (): Promise<BuildLaufErgebnis> => {
     const t0 = Date.now();
+    f.phase = 'laeuft';
+    f.gestartet_am = new Date().toISOString();
     try {
       await synchronisiereBuildBudget();
       if (!anbindung) return leer('nicht_verfuegbar', KEIN_PRUEFER);
       if (v.auftrag.projekte.length === 0) return { status: 'fertig', dauer_ms: 0, projekte: [], diagnosen: [] };
       const e = await anbindung.pruefe(v.auftrag);
-      return { ...e, dauer_ms: e.dauer_ms || Date.now() - t0 };
+      return { ...e, dauer_ms: e.dauer_ms || Date.now() - t0, ...(v.typen ? { typen: v.typen } : {}) };
     } catch (err) {
       return { ...leer('nicht_verfuegbar', `Pruefcontainer: ${(err as Error).message}`), dauer_ms: Date.now() - t0 };
     }
@@ -585,6 +702,7 @@ function starteLauf(project: string, v: Vorbereitet, basis?: { projekte: string[
     if (e.status !== 'nicht_verfuegbar') merke(v.schluessel, e);
     if (basis) merkeBasis(project, e, basis.projekte, basis.vollstaendig, basis.art);
   }).finally(() => {
+    loescheFortschritt(project, fid);
     laufend.delete(v.schluessel);
     const n = (projektLaeuft.get(project) ?? 1) - 1;
     if (n > 0) projektLaeuft.set(project, n); else projektLaeuft.delete(project);
@@ -683,12 +801,21 @@ async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: 
       return { stand: stand({ status: 'fertig', hinweis: 'Kein TypeScript-Projekt (tsconfig.json neben package.json) betroffen.' }), befunde: [] };
     }
     const basisProjekte = projekte.filter((c) => basisQuellen.has(c));
-    const a = bereiteVor(basisQuellen, basisProjekte, budget);
-    const b = bereiteVor(schattenQuellen, projekte, budget);
-    const groesste = Math.max(a.bytes, b.bytes);
-    if (groesste > budget.max_mb * 1024 * 1024) {
+    // P16-T22: Typen der Abhaengigkeiten aus dem Lockfile (gleiches Lockfile = derselbe Bestand aus dem Speicher).
+    const typenA = await typenBestand(basisQuellen, o);
+    const typenB = await typenBestand(schattenQuellen, o);
+    if (typenA === 'laedt' || typenB === 'laedt') {
       return {
-        stand: stand({ status: 'teilweise', projekte, hinweis: `Schnappschuss ${(groesste / 1048576).toFixed(1)} MB > ${budget.max_mb} MB (BUILD_PRUEFUNG_MAX_MB bzw. 80 % tmpfs) - nicht geprueft, nichts gesperrt. Mehr Platz: code_check(build_einstellungen, modus:'setzen', tmpfs_mb).` }),
+        stand: stand({ status: 'laeuft', projekte, hinweis: 'Typen der Abhaengigkeiten (Lockfile) werden geladen, danach laeuft die projektweite Pruefung; Ergebnis bei plan_status/commit. Ein commit wird solange eingereiht, nicht gesperrt.' }),
+        befunde: [],
+      };
+    }
+    const a = bereiteVor(basisQuellen, basisProjekte, budget, typenA);
+    const b = bereiteVor(schattenQuellen, projekte, budget, typenB);
+    const zu = zuGross(a, budget) ?? zuGross(b, budget);
+    if (zu) {
+      return {
+        stand: stand({ status: 'teilweise', projekte, hinweis: `${zu} - nicht geprueft, nichts gesperrt. Mehr Platz: code_check(build_einstellungen, modus:'setzen', tmpfs_mb).` }),
         befunde: [],
       };
     }
@@ -738,6 +865,7 @@ async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: 
       stand: stand({
         status: unvollstaendig.length > 0 ? 'teilweise' : 'fertig', neue_fehler: befunde.length, basis_fehler: basis.diagnosen.length,
         projekte, dauer_ms: basis.dauer_ms + schatten.dauer_ms, werkzeug, ...(hinweise.length > 0 ? { hinweis: hinweise.join(' ') } : {}),
+        ...(schatten.typen?.fehlend_anzahl ? { typen: schatten.typen } : {}),
       }),
       befunde,
     };
@@ -753,15 +881,27 @@ async function pruefeTsBuildBasis(project: string, wartenMs = 0): Promise<Record
   const quellen = await ladeQuellen(project);
   const projekte = tsProjekte(quellen);
   if (projekte.length === 0) return { gestartet: false, status: 'fertig', hinweis: 'Keine TypeScript-Projekte (tsconfig.json neben package.json) im Index.' };
-  const v = bereiteVor(quellen, projekte, budget);
-  if (v.bytes > budget.max_mb * 1024 * 1024) {
-    return { gestartet: false, status: 'teilweise', hinweis: `Schnappschuss ${(v.bytes / 1048576).toFixed(1)} MB > ${budget.max_mb} MB - tmpfs_mb erhoehen.` };
-  }
-  const p = starteLauf(project, v, { projekte, vollstaendig: true });
-  if (wartenMs <= 0) return { gestartet: true, projekte, hinweis: 'Laeuft im Hintergrund; Stand mit code_check(action:"build_status", project).' };
+  // P16-T22: zuerst der Typen-Bestand (beim ersten Mal Downloads, danach Cache), dann der Lauf - beides im Hintergrund,
+  // Fortschritt in build_status (Phase typen -> wartet -> laeuft).
+  const jetzt = new Date().toISOString();
+  const fid = `typen-${Date.now().toString(36)}`;
+  merkeFortschritt(project, fid, { sprache: 'typescript', phase: 'typen', eingereiht_am: jetzt, gestartet_am: jetzt, projekte: projekte.length, basis: true });
+  const p = (async (): Promise<BuildLaufErgebnis> => {
+    let typen: TypenBestand | 'laedt' | null;
+    try { typen = await typenBestand(quellen, { warten: true }); } finally { loescheFortschritt(project, fid); }
+    const v = bereiteVor(quellen, projekte, budget, typen === 'laedt' ? null : typen);
+    const zu = zuGross(v, budget);
+    if (zu) {
+      const e = leer('teilweise', `${zu} - nicht geprueft. tmpfs_mb erhoehen.`);
+      merkeBasis(project, e, projekte, true);
+      return e;
+    }
+    return starteLauf(project, v, { projekte, vollstaendig: true });
+  })().catch((err) => leer('nicht_verfuegbar', `Build-Pruefung fehlgeschlagen: ${(err as Error).message}`));
+  if (wartenMs <= 0) return { gestartet: true, projekte, hinweis: 'Laeuft im Hintergrund (zuerst Typen der Abhaengigkeiten aus dem Lockfile); Stand und Fortschritt mit code_check(action:"build_status", project).' };
   const e = await hoechstens(p, wartenMs);
-  return e ? { gestartet: true, fertig: true, projekte, status: e.status, fehler: e.diagnosen.length, dauer_ms: e.dauer_ms }
-    : { gestartet: true, fertig: false, projekte, hinweis: `Nach ${Math.round(wartenMs / 1000)} s noch nicht fertig; laeuft weiter.` };
+  return e ? { gestartet: true, fertig: true, projekte, ...ergebnisKurz(e, e.diagnosen.length) }
+    : { gestartet: true, fertig: false, projekte, laeuft: fortschrittAnzeige(project), hinweis: `Nach ${Math.round(wartenMs / 1000)} s noch nicht fertig; laeuft weiter (Fortschritt: build_status).` };
 }
 
 // ─── Etappe 2: Go und Python projektweit (pruefer_projekt.py im selben Container) ────────────────────────────────────
@@ -961,7 +1101,7 @@ function bereiteSpracheVor(s: SprachDef, quellen: Map<string, string>, wurzeln: 
     ...(python_version ? { python_version } : {}),
   };
   const schluessel = sha(JSON.stringify(['e2', s.art, budget.heap_mb, budget.zeitlimit_s, projekte, python_version ?? null, dateien.map((d) => [d.pfad, sha(d.inhalt)])]));
-  return { auftrag, schluessel, bytes };
+  return { auftrag, schluessel, bytes, sprache: s.sprache };
 }
 
 /** Alle Schritte eines Projekts (Go: build + vet) fertig? */
@@ -1173,8 +1313,8 @@ async function pruefeSpracheBasis(project: string, s: SprachDef, wartenMs: numbe
   const p = starteLauf(project, v, { projekte, vollstaendig: true, art: s.art });
   if (wartenMs <= 0) return { gestartet: true, projekte };
   const e = await hoechstens(p, wartenMs);
-  return e ? { gestartet: true, fertig: true, projekte, status: e.status, fehler: e.diagnosen.filter(istFehlerDiag).length, dauer_ms: e.dauer_ms }
-    : { gestartet: true, fertig: false, projekte, hinweis: `Nach ${Math.round(wartenMs / 1000)} s noch nicht fertig; laeuft weiter.` };
+  return e ? { gestartet: true, fertig: true, projekte, ...ergebnisKurz(e, e.diagnosen.filter(istFehlerDiag).length) }
+    : { gestartet: true, fertig: false, projekte, laeuft: fortschrittAnzeige(project), hinweis: `Nach ${Math.round(wartenMs / 1000)} s noch nicht fertig; laeuft weiter (Fortschritt: build_status).` };
 }
 
 /**
@@ -1296,11 +1436,14 @@ async function arbeiteAb(project: string): Promise<void> {
 
 // ─── Zustand / Diagnose ─────────────────────────────────────────────────────────────────────────────────────────
 
-function zustandVon(project: string): 'laeuft' | 'gruen' | 'rot' | 'teilweise' | 'unbekannt' {
-  if ((projektLaeuft.get(project) ?? 0) > 0 || inArbeit.has(project)) return 'laeuft';
+function zustandVon(project: string): 'laeuft' | 'gruen' | 'rot' | 'teilweise' | 'abgebrochen' | 'unbekannt' {
+  if ((projektLaeuft.get(project) ?? 0) > 0 || inArbeit.has(project) || fortschritt.has(project)) return 'laeuft';
   const b = projektBasis.get(project);
   // E2: Go-/Python-Basis fliesst ein (schlechtester Stand); ohne sie wie in E1.
   const alle = [...(b ? [b] : []), ...(sprachBasis.get(project)?.values() ?? [])];
+  // P16-T22: letzter Basislauf ohne Ergebnis (Container gestoppt/neu gestartet) und seitdem keine neuere Basis.
+  const abbruch = letzterAbbruch.get(project);
+  if (abbruch && alle.every((x) => x.geprueft_am < abbruch.zeit)) return 'abgebrochen';
   if (alle.length === 0) return 'unbekannt';
   if (alle.some((x) => x.status !== 'fertig')) return 'teilweise';
   return alle.every((x) => x.fehler === 0) ? 'gruen' : 'rot';
@@ -1318,6 +1461,7 @@ export function buildPruefungZustand(): Record<string, unknown> {
     laufend: laufend.size,
     cache: ergebnisCache.size,
     einstellungen_fehler: einstellungsCache?.fehler ?? null,
+    typen: typenZustand(),
     projekte: Object.fromEntries([...projekte].map((p) => [p, { zustand: zustandVon(p), warteschlange: buildWarteschlangeLaenge(p) }])),
   };
 }
@@ -1404,11 +1548,14 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
           basis: projektBasis.get(p) ?? null,
           // E2: nur wenn es eine Go-/Python-Basis gibt (sonst Antwort wie in E1).
           ...(sprachBasis.get(p)?.size ? { basis_sprachen: Object.fromEntries([...sprachBasis.get(p)!].map(([art, b]) => [SPRACHEN.find((s) => s.art === art)?.sprache ?? art, b])) } : {}),
+          ...(fortschritt.has(p) ? { laeuft: fortschrittAnzeige(p) } : {}),
+          ...(letzterAbbruch.has(p) ? { letzter_abbruch: letzterAbbruch.get(p) } : {}),
           warteschlange: warteschlangeAnzeige(p),
           letzte_commits: letzteCommits.get(p) ?? [],
         }))),
         ...(anbindung ? {} : { hinweis: KEIN_PRUEFER }),
-        legende: 'zustand: gruen = Basis ohne Fehler, rot = Basis mit Fehlern (Tor sperrt nur NEUE), laeuft, teilweise (Zeitlimit/Speicher), unbekannt (noch nie geprueft: build_status mit pruefen:true).',
+        legende: 'zustand: gruen = Basis ohne Fehler, rot = Basis mit Fehlern (Tor sperrt nur NEUE), laeuft (Fortschritt in laeuft: Phase typen/wartet/laeuft mit Zeiten), teilweise (Zeitlimit/Speicher/fehlende Abhaengigkeiten), abgebrochen (letzter Basislauf ohne Ergebnis, z. B. Container gestoppt/neu gestartet - Grund in letzter_abbruch; erneut pruefen), unbekannt (noch nie geprueft: build_status mit pruefen:true). basis.laeufe: Dauer und hoechster RSS je Projekt/Schritt, basis.speicher: Container nach dem Lauf, basis.typen: Typen-Bestand aus dem Lockfile.',
+        typen: typenZustand(),
       };
     }
     if (action === 'build_einstellungen') {

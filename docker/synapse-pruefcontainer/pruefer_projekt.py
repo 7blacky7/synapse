@@ -16,7 +16,7 @@ PROTOKOLL (pruefserver.py, eigener Thread wie E1 'build'):
   Go:      code 'go'  = Compiler-/Typfehler (go build; aus go vet die Typfehler "vet: ..." auch der _test.go), schwere error.
            code 'vet' = Befund eines vet-Analyzers (z. B. printf), schwere warning.
   Pyright: code = Pyright-Regel (reportCallIssue, reportArgumentType, ...), schwere error | warning | information.
-  Schrittstatus: fertig | zeitlimit | speicher | ausgabe | abhaengigkeiten | cgo | fehler. Alles ausser 'fertig'
+  Schrittstatus: fertig | zeitlimit | speicher | ausgabe | abhaengigkeiten | cgo | werkzeug | fehler. Alles ausser 'fertig'
            macht den Auftrag 'teilweise' (sperrt nie, User-Entscheidung db49c8d6).
   Pyright mit fehlenden Importen bleibt 'fertig' mit abdeckung 'unvollstaendig': nicht aufgeloeste Module sind dort
            Unknown und erzeugen keine Folgefehler; die uebrigen Diagnosen bleiben belastbar.
@@ -31,6 +31,11 @@ NUR PRUEFEN: Go ausschliesslich das Image-Go mit 'build -o /dev/null' und 'vet' 
 GOCACHE: geteilt unter /tmp/pruef-gocache (inhaltsadressiert, nur Compilerergebnisse, nichts davon wird gestartet),
   damit nicht jeder Lauf die Standardbibliothek neu uebersetzt. Ueber PRUEF_GO_CACHE_MAX_MB oder bei knappem tmpfs
   wird er vor dem Lauf geleert.
+GOMODCACHE (P16-T22): je Lauf leer im Auftragsverzeichnis (tmpfs, -modcacherw). Das alte Image-Verzeichnis
+  /opt/pruef/gomodcache ist zur Laufzeit read-only; Go legt darin cache/download an und meldete live je Import
+  'mkdir ...: read-only file system' als Scheinfehler. Solche Umgebungsfehler sind jetzt Schrittstatus 'werkzeug'
+  (teilweise, nie Diagnose). Module ohne vendor/ bleiben 'abhaengigkeiten' (offline, kein Modulbestand).
+MESSWERTE (P16-T22): je Schritt rss_mb (hoechster RSS ueber wait4, inkl. eingesammelter Kinder wie compile/vet).
 """
 import json
 import os
@@ -47,7 +52,8 @@ import pruefer_tsbuild as ts
 GO = os.environ.get('PRUEF_GO', '/opt/pruef/go/bin/go')
 PYRIGHT = os.environ.get('PRUEF_PYRIGHT', '/opt/pruef/pyright/index.js')
 PYTHON_ISOLIERT = os.environ.get('PRUEF_PYTHON_ISOLIERT', '/opt/pruef/bin/python-isoliert')
-GOMODCACHE = os.environ.get('PRUEF_GO_MODCACHE', '/opt/pruef/gomodcache')
+# P16-T22: ohne Angabe je Lauf leer im Auftragsverzeichnis (siehe Modulkopf).
+GOMODCACHE = os.environ.get('PRUEF_GO_MODCACHE') or None
 GOCACHE_GETEILT = os.environ.get('PRUEF_GO_CACHE', os.path.join(ts.TMP, 'pruef-gocache'))
 GOCACHE_MAX_MB = int(os.environ.get('PRUEF_GO_CACHE_MAX_MB', '256'))
 MAX_DATEIEN = int(os.environ.get('PRUEF_PROJEKT_MAX_DATEIEN', '20000'))
@@ -64,6 +70,8 @@ _DEPENDENCY = re.compile(r'module lookup disabled|import lookup disabled|cannot 
                          r'updates to go\.mod needed|requires go >=|cannot find package|is not in std|GOPROXY=off|'
                          r'no required module provides|inconsistent vendoring', re.I)
 _GO_OOM = re.compile(r'fatal error: runtime: out of memory|runtime: out of memory|cannot allocate memory', re.I)
+# P16-T22: Fehler der Pruefumgebung (Dateisystem), kein Befund des Projekts.
+_WERKZEUG = re.compile(r'read-only file system|permission denied|no space left on device|disk quota exceeded', re.I)
 # import "C" bzw. "C" als Zeile eines Importblocks: cgo-Dateien fallen mit CGO_ENABLED=0 aus der Pruefung.
 _CGO = re.compile(r'^\s*(?:import\s*)?"C"\s*(?://.*)?$', re.M)
 _VERSION = {}
@@ -91,7 +99,7 @@ def version(art):
 def info():
     return {'gobuild': version('gobuild'), 'pyright': version('pyright'), 'offline': True,
             'max_dateien': MAX_DATEIEN, 'max_bytes': MAX_BYTES, 'max_output': MAX_OUTPUT, 'max_zeit_s': MAX_ZEIT,
-            'max_heap_mb': MAX_HEAP, 'gomodcache': 'image-readonly (leer)', 'gocache_max_mb': GOCACHE_MAX_MB,
+            'max_heap_mb': MAX_HEAP, 'gomodcache': GOMODCACHE or 'je Lauf leer (tmpfs)', 'gocache_max_mb': GOCACHE_MAX_MB,
             'python_stubs': 'typeshed (Pyright) + .pyi im Schnappschuss', 'artefakte_ausfuehren': False}
 
 
@@ -167,8 +175,8 @@ def _env(art, cache, heap):
     if art == 'gobuild':
         env.update({'GOROOT': os.path.dirname(os.path.dirname(GO)), 'GOENV': 'off',
                     'GOTOOLCHAIN': 'local', 'GOWORK': 'off', 'GOPROXY': 'off', 'GOSUMDB': 'off',
-                    'GOTELEMETRY': 'off', 'GOVCS': '*:off', 'CGO_ENABLED': '0', 'GOFLAGS': '',
-                    'GOCACHE': _gocache(cache), 'GOMODCACHE': GOMODCACHE,
+                    'GOTELEMETRY': 'off', 'GOVCS': '*:off', 'CGO_ENABLED': '0', 'GOFLAGS': '-modcacherw',
+                    'GOCACHE': _gocache(cache), 'GOMODCACHE': GOMODCACHE or os.path.join(cache, 'gomodcache'),
                     'GOPATH': os.path.join(cache, 'gopath'), 'GOMEMLIMIT': str(heap) + 'MiB',
                     'GOMAXPROCS': '1'})
     else:
@@ -184,14 +192,27 @@ def _kill(p):
     p.wait()
 
 
+# P16-T22: hoechster RSS des letzten _lauf (ein Projektpruefer zur Zeit, Semaphore); None = nicht gemessen.
+_letzter_rss = {'mb': None}
+
+
+def letzter_rss_mb():
+    return _letzter_rss['mb']
+
+
 def _lauf(cmd, cwd, env, rest, logroot):
     """Ausgabe auf Tempdateien statt unbeschraenktem capture_output im RAM."""
     start = time.monotonic()
+    _letzter_rss['mb'] = None
     with tempfile.TemporaryFile(dir=logroot) as out, tempfile.TemporaryFile(dir=logroot) as err:
         p = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                              stdout=out, stderr=err, start_new_session=True)
         status = 'fertig'
-        while p.poll() is None:
+        while True:
+            fertig, rss = ts.warte_mit_rss(p)
+            if fertig:
+                _letzter_rss['mb'] = rss
+                break
             if time.monotonic() - start >= rest:
                 status = 'zeitlimit'
                 _kill(p)
@@ -342,11 +363,20 @@ def pruefe(art, auftrag):
                         status, rc, out, err, ms = _lauf(cmd, cwd, env, rest, cache)
                         diags = []
                         row = {'projekt': name, 'schritt': schritt, 'rc': rc, 'ms': ms}
+                        if letzter_rss_mb() is not None:
+                            row['rss_mb'] = letzter_rss_mb()
                         if status == 'fertig':
                             if art == 'gobuild':
                                 text = out + '\n' + err
                                 diags = _go_diagnosen(text, root, projekt, schritt)
-                                if _DEPENDENCY.search(text):
+                                umgebung = _WERKZEUG.search(text)
+                                if umgebung:
+                                    # P16-T22: Umgebungsfehler (z. B. read-only Modulcache) nie als Diagnose zaehlen.
+                                    status = 'werkzeug'
+                                    diags = []
+                                    zeile = text[text.rfind('\n', 0, umgebung.start()) + 1:].split('\n', 1)[0]
+                                    row['hinweis'] = ('Pruefumgebung: ' + zeile.replace(root + '/', '').strip())[:300]
+                                elif _DEPENDENCY.search(text):
                                     status = 'abhaengigkeiten'
                                     diags = []
                                 elif rc and not diags:

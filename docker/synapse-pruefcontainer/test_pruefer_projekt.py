@@ -79,6 +79,9 @@ elif modus == 'rc3':
     sys.stderr.write('etwas ging schief ohne Diagnose\\n'); sys.exit(3)
 elif modus == 'gross':
     sys.stdout.write('x' * 300000); sys.stdout.flush(); time.sleep(5); sys.exit(1)
+elif modus == 'readonly':
+    # P16-T22: Live-Befund 20.10. (Modulcache im read-only Image) - muss Umgebungsfehler sein, kein Befund.
+    sys.stderr.write('a.go:3:8: mkdir /opt/pruef/gomodcache/cache: read-only file system\\n'); sys.exit(1)
 elif modus == 'dep':
     sys.stderr.write('a.go:3:8: no required module provides package github.com/x/y; to add it:\\n\\tgo get github.com/x/y\\n'); sys.exit(1)
 elif modus == 'diag':
@@ -217,11 +220,33 @@ class FakeGoTest(unittest.TestCase):
         self.assertTrue(a[0]['cwd'].endswith('/quellen/m'), a[0]['cwd'])
         env = a[0]['env']
         for k, v in {'GOENV': 'off', 'GOTOOLCHAIN': 'local', 'GOWORK': 'off', 'GOPROXY': 'off', 'GOSUMDB': 'off',
-                     'GOTELEMETRY': 'off', 'GOVCS': '*:off', 'CGO_ENABLED': '0', 'GOFLAGS': '', 'GOMAXPROCS': '1',
+                     'GOTELEMETRY': 'off', 'GOVCS': '*:off', 'CGO_ENABLED': '0', 'GOFLAGS': '-modcacherw', 'GOMAXPROCS': '1',
                      'GOMODCACHE': _MODCACHE, 'GOCACHE': _GOCACHE, 'GOMEMLIMIT': '256MiB', 'HOME': _LEER}.items():
             self.assertEqual(env.get(k), v, k)
         for k in env:
             self.assertFalse(k in ('DATABASE_URL', 'PGPASSWORD') or k.startswith('SYNAPSE_'), 'keine Fremdvariable ' + k)
+
+    def test_umgebungsfehler_kein_befund_und_rss(self):
+        # P16-T22: 'read-only file system' ist ein Fehler der Pruefumgebung -> werkzeug/teilweise, keine Diagnose, kein vet.
+        self.modus('readonly')
+        r = pp.pruefe('gobuild', auftrag(go_modul()))
+        self.assertEqual(r['status'], 'teilweise', r)
+        self.assertEqual(r['diagnosen'], [], r)
+        self.assertEqual([(p['schritt'], p['status']) for p in r['projekte']], [('build', 'werkzeug')], r)
+        self.assertIn('read-only file system', r['projekte'][0]['hinweis'])
+        self.assertGreater(r['projekte'][0].get('rss_mb') or 0, 0, r)
+
+    def test_modulcache_je_lauf_ohne_angabe(self):
+        # P16-T22: ohne PRUEF_GO_MODCACHE liegt der Modulcache je Lauf im (beschreibbaren) Auftragsverzeichnis.
+        alt = pp.GOMODCACHE
+        pp.GOMODCACHE = None
+        try:
+            pp.pruefe('gobuild', auftrag(go_modul()))
+        finally:
+            pp.GOMODCACHE = alt
+        env = self.aufrufe()[0]['env']
+        self.assertTrue(env['GOMODCACHE'].startswith(_BAU + '/projektpruefung-'), env['GOMODCACHE'])
+        self.assertTrue(env['GOMODCACHE'].endswith('/cache/gomodcache'), env['GOMODCACHE'])
 
     def test_vendor(self):
         r = pp.pruefe('gobuild', auftrag(go_modul([{'pfad': 'm/vendor/modules.txt', 'inhalt': '# x\n'}])))

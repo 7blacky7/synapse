@@ -326,7 +326,12 @@ RUN python3 -m compileall -q /opt/pruef/py && mkdir -p /opt/pruef/leer && touch 
  && python3 /opt/pruef/pruefer_jvmprojekt.py \
  && python3 /opt/pruef/pruefer_rustprojekt.py \
  && python3 /opt/pruef/pruefer_cprojekt.py \
- && chmod -R a+rX /opt/pruef/cache /opt/pruef/versionen && ls -la /opt/pruef/cache/fissix/*/
+ && chmod -R a+rX /opt/pruef/cache /opt/pruef/versionen && ls -la /opt/pruef/cache/fissix/*/ \
+ && find /opt/pruef -type d ! -perm -0555 -exec chmod a+rx {} + \
+ && test "$(stat -c %a /opt/pruef)" = 555 -o "$(stat -c %a /opt/pruef)" = 755
+# P16-T22: COPY --chmod=0444 <datei> /opt/pruef/ legt einen fehlenden Zielordner mit 0444 an (BuildKit von Docker 29,
+# gemessen 20.10.2026: /opt/pruef dr--r--r--) - als User 65532 startete pruefserver.py dann nicht (Permission denied).
+# Die Proben oben laufen als root und merken das nicht; deshalb hier alle Ordner durchsuchbar machen und pruefen.
 LABEL synapse.pruefcontainer="1" org.opencontainers.image.title="synapse-pruefcontainer"
 USER 65532:65532
 WORKDIR /opt/pruef/leer

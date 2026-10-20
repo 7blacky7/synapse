@@ -22,6 +22,7 @@ KOTLIN_LIB = os.environ.get('PRUEF_KOTLIN_LIB', '/opt/pruef/jvm/lib')
 KOTLINC = os.environ.get('PRUEF_KOTLINC')  # lokale CLI für die gemeinsame Testphase
 CLASSPATH_CACHE = os.environ.get('PRUEF_JVM_CLASSPATH_CACHE', '/opt/pruef/jvm-classpath')
 ARTEN = ('kotlinc', 'javac')  # Kotlin zuerst
+VERSIONEN = os.environ.get('PRUEF_VERSIONEN', '/opt/pruef/versionen')
 _GENERATION = re.compile(r'\bkapt\b|\bksp\b|lombok|annotationProcessor|annotationProcessorPaths|compilerPlugin|compose.compiler|kotlin.plugin|kotlin-multiplatform|org.jetbrains.kotlin.multiplatform', re.I)
 _DEPENDENCY = re.compile(r'package .+ does not exist|cannot access |class file for .+ not found|compiler.err.doesnt.exist', re.I)
 _KOTLIN = re.compile(r'^(?:[ew]: )?(?:file://)?(.+?\.k(?:t|ts)):\s*(?:(\d+):(\d+)|\((\d+),\s*(\d+)\)):?\s*(?:(error|warning):\s*)?(.*)$')
@@ -42,14 +43,34 @@ def _env(base):
             'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'TMPDIR': base, 'JAVA_HOME': JDK}
 
 
+def _version_aus_datei(art):
+    """P16-T22: Version aus den Versionsdateien des Images (gleiche Kotlin-Bibliotheken bzw. JDK) - info() startet so bei
+    jedem Containerstart keine JVM mehr (der Kotlin-Compiler meldete live nur 'WARNING: A restricted method ...')."""
+    if art == 'kotlinc' and KOTLINC:
+        return None
+    try:
+        with open(os.path.join(VERSIONEN, 'kotlin' if art == 'kotlinc' else 'java'), encoding='utf-8') as f:
+            text = f.read().strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    return f'kotlinc {text.split()[-1]}' if art == 'kotlinc' else text
+
+
 def version(art):
     if art not in _VERSIONS:
+        aus_datei = _version_aus_datei(art)
+        if aus_datei:
+            _VERSIONS[art] = aus_datei
+            return aus_datei
         try:
             cmd = _kotlin_cmd(256) + ['-version'] if art == 'kotlinc' else [JAVAC, '-version']
             p = subprocess.run(cmd, env=_env(ts.TMP), cwd=ts.TMP, capture_output=True, timeout=30)
             if p.returncode:
                 return art + ' nicht verfuegbar'
-            _VERSIONS[art] = (p.stdout + p.stderr).decode('utf-8', 'replace').strip().splitlines()[0][:200]
+            zeilen = [z for z in (p.stdout + p.stderr).decode('utf-8', 'replace').strip().splitlines() if not z.startswith('WARNING')]
+            _VERSIONS[art] = zeilen[0][:200]
         except (OSError, subprocess.TimeoutExpired, IndexError):
             return art + ' nicht verfuegbar'
     return _VERSIONS[art]

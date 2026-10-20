@@ -63,6 +63,19 @@ def version():
     return _version
 
 
+def warte_mit_rss(p):
+    """P16-T22: nicht blockierend (fertig, rss_mb) ueber wait4 - hoechster RSS des Prozesses samt eingesammelter Kinder."""
+    try:
+        pid, st, ru = os.wait4(p.pid, os.WNOHANG)
+    except ChildProcessError:
+        p.poll()
+        return True, None
+    if not pid:
+        return False, None
+    p.returncode = os.waitstatus_to_exitcode(st)
+    return True, round(ru.ru_maxrss / 1024, 1)  # Linux: ru_maxrss in KiB
+
+
 def _env(heap_mb):
     return {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': LEERES_VERZEICHNIS, 'LANG': 'C.UTF-8',
             'NODE_OPTIONS': f'--max-old-space-size={int(heap_mb)}'}
@@ -145,18 +158,26 @@ def _lauf(wurzel, projekt, rest_s, heap_mb):
     cfg = _ziel(wurzel, projekt)
     cmd = [NODE, f'--max-old-space-size={int(heap_mb)}', TSC, '-p', cfg, '--noEmit', '--pretty', 'false']
     t0 = time.monotonic()
-    p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=wurzel,
-                         env=_env(heap_mb), start_new_session=True)
-    try:
-        out, err = p.communicate(timeout=max(1.0, rest_s))
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        p.communicate()
-        return {'projekt': projekt, 'status': 'zeitlimit', 'ms': round((time.monotonic() - t0) * 1000), 'rc': None,
-                'hinweis': f'nach {rest_s:.0f} s abgebrochen'}, []
+    # P16-T22: Ausgabe in Tempdateien und wait4 statt communicate - so steht der hoechste RSS von tsc je Projekt fest.
+    with tempfile.TemporaryFile(dir=TMP) as fo, tempfile.TemporaryFile(dir=TMP) as fe:
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=fo, stderr=fe, cwd=wurzel, env=_env(heap_mb),
+                             start_new_session=True)
+        while True:
+            fertig, rss = warte_mit_rss(p)
+            if fertig:
+                break
+            if time.monotonic() - t0 >= max(1.0, rest_s):
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                p.wait()
+                return {'projekt': projekt, 'status': 'zeitlimit', 'ms': round((time.monotonic() - t0) * 1000), 'rc': None,
+                        'hinweis': f'nach {rest_s:.0f} s abgebrochen'}, []
+            time.sleep(0.05)
+        fo.seek(0)
+        fe.seek(0)
+        out, err = fo.read(), fe.read()
     ms = round((time.monotonic() - t0) * 1000)
     rc = p.returncode
     fehler_text = err.decode('utf-8', 'replace')
@@ -167,7 +188,8 @@ def _lauf(wurzel, projekt, rest_s, heap_mb):
     if rc not in (0, 1, 2):
         return {'projekt': projekt, 'status': 'fehler', 'ms': ms, 'rc': rc,
                 'hinweis': (fehler_text or out.decode('utf-8', 'replace'))[:300].replace(wurzel + '/', '')}, []
-    return {'projekt': projekt, 'status': 'fertig', 'ms': ms, 'rc': rc}, parse_ausgabe(out.decode('utf-8', 'replace'), wurzel, projekt)
+    lauf = {'projekt': projekt, 'status': 'fertig', 'ms': ms, 'rc': rc, **({'rss_mb': rss} if rss is not None else {})}
+    return lauf, parse_ausgabe(out.decode('utf-8', 'replace'), wurzel, projekt)
 
 
 def pruefe(auftrag):

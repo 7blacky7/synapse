@@ -147,6 +147,8 @@ try {
       WHERE table_name='build_pruefung_einstellungen' ORDER BY ordinal_position`)).rows;
     assert.deepEqual(sp.map((c) => [c.column_name, c.data_type, c.is_nullable]), [
       ['bereich', 'text', 'NO'], ['werte', 'jsonb', 'NO'], ['gesetzt_von', 'text', 'YES'], ['grund', 'text', 'YES'], ['gesetzt_am', 'timestamp with time zone', 'NO'],
+      // P22 (Agenten-Ausweis): wer gesetzt hat, als Identitaet (zeileSchreiben in build-pruefung.ts).
+      ['setter_identity_id', 'text', 'YES'],
     ]);
     const pk = (await pool.query(`SELECT a.attname FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum = ANY(i.indkey)
       WHERE i.indrelid='build_pruefung_einstellungen'::regclass AND i.indisprimary`)).rows.map((r) => r.attname);

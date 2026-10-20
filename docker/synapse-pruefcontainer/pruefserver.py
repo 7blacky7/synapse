@@ -78,6 +78,33 @@ def schreibe(obj):
         _aus.flush()
 
 
+_CGROUP = os.environ.get('PRUEF_CGROUP', '/sys/fs/cgroup')
+
+
+def speicher():
+    """P16-T22: Speicher des Containers (cgroup v2 memory.current/peak/max) in MB; {} wenn nicht lesbar.
+    peak gilt seit dem Containerstart (alle Werkzeuge), current ist der Stand jetzt."""
+    aus = {}
+    for name, schluessel in (('memory.current', 'aktuell_mb'), ('memory.peak', 'peak_mb'), ('memory.max', 'limit_mb')):
+        try:
+            with open(os.path.join(_CGROUP, name), encoding='ascii') as f:
+                wert = f.read().strip()
+        except OSError:
+            continue
+        if wert.isdigit():
+            aus[schluessel] = round(int(wert) / 1048576, 1)
+    return aus
+
+
+def _mit_speicher(ergebnis):
+    """P16-T22: Speicherstand nach dem Lauf an ein Projektpruefer-Ergebnis haengen (Messwert je Sprache)."""
+    if isinstance(ergebnis, dict):
+        s = speicher()
+        if s:
+            ergebnis['speicher'] = s
+    return ergebnis
+
+
 def lauf(cmd, eingabe: bytes, env_extra=None):
     """Startet cmd in eigener Prozessgruppe, gibt (rc, stdout, stderr) zurueck; Zeitlimit beendet die Gruppe."""
     env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': LEERES_VERZEICHNIS, 'LANG': 'C.UTF-8'}
@@ -447,7 +474,7 @@ def info():
     return {'werkzeuge': {name: v() for name, (_f, v) in PRUEFER.items()},
             'parallel': PARALLEL, 'timeout_s': TIMEOUT_S, 'rust_edition': RUST_EDITION,
             'python2_rueckfall': bool(_py2_driver()), 'jvm': pruefer_jvm.zustand(),
-            'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version(),
+            'treesitter': pruefer_treesitter.info(), 'tsbuild': pruefer_tsbuild.version(), 'speicher': speicher(),
             'projektpruefung': {'rust': pruefer_rustprojekt.info(), **pruefer_projekt.info(), 'c_cpp': pruefer_cprojekt.info(), 'dart_csharp': pruefer_dart_csharp.info(), 'jvm': pruefer_jvmprojekt.info()}}
 
 
@@ -458,30 +485,30 @@ def bearbeite(auftrag):
             schreibe({'id': aid, 'ok': True, 'info': info()})
             return
         if auftrag.get('build') is not None:
-            schreibe({'id': aid, 'ok': True, 'build': pruefer_tsbuild.pruefe(auftrag.get('build') or {})})
+            schreibe({'id': aid, 'ok': True, 'build': _mit_speicher(pruefer_tsbuild.pruefe(auftrag.get('build') or {}))})
             return
         # --- P16-T18 E3a C/C++ ---
         for art in ('cbuild', 'cppbuild'):
             if auftrag.get(art) is not None:
-                schreibe({'id': aid, 'ok': True, art: pruefer_cprojekt.pruefe(art, auftrag.get(art))})
+                schreibe({'id': aid, 'ok': True, art: _mit_speicher(pruefer_cprojekt.pruefe(art, auftrag.get(art)))})
                 return
         # --- P16-T16 E3c Rust ---
         if auftrag.get('rustcheck') is not None:
-            schreibe({'id': aid, 'ok': True, 'rustcheck': pruefer_rustprojekt.pruefe(auftrag.get('rustcheck'))})
+            schreibe({'id': aid, 'ok': True, 'rustcheck': _mit_speicher(pruefer_rustprojekt.pruefe(auftrag.get('rustcheck')))})
             return
         # --- P16-T19 E3b Kotlin/Java ---
         for art in pruefer_jvmprojekt.ARTEN:
             if auftrag.get(art) is not None:
-                schreibe({'id': aid, 'ok': True, art: pruefer_jvmprojekt.pruefe(art, auftrag.get(art))})
+                schreibe({'id': aid, 'ok': True, art: _mit_speicher(pruefer_jvmprojekt.pruefe(art, auftrag.get(art)))})
                 return
         # --- P16-T21 E3d Dart/C# ---
         for art in ('dartbuild', 'csharpbuild'):
             if auftrag.get(art) is not None:
-                schreibe({'id': aid, 'ok': True, art: pruefer_dart_csharp.pruefe(art, auftrag.get(art))})
+                schreibe({'id': aid, 'ok': True, art: _mit_speicher(pruefer_dart_csharp.pruefe(art, auftrag.get(art)))})
                 return
         for art in ('gobuild', 'pyright'):
             if auftrag.get(art) is not None:
-                schreibe({'id': aid, 'ok': True, art: pruefer_projekt.pruefe(art, auftrag.get(art))})
+                schreibe({'id': aid, 'ok': True, art: _mit_speicher(pruefer_projekt.pruefe(art, auftrag.get(art)))})
                 return
         if auftrag.get('vorwaermen'):
             erg = {}
