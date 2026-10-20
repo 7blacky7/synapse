@@ -50,10 +50,7 @@ import {
   erlaubteArten,
   type WissensArt,
   type ArtSicht,
-  HAUPTAGENT_PROJEKT,
-  HAUPTAGENT_AGENT_ID,
-  hauptagentIdentitaetsId,
-  mainStartkontext,
+  startkontextFuer,
 } from '@synapse/core';
 
 /** Zaehler fuer GET .../agent-wissen/health. Prozesslokal, bewusst kein Speicher. */
@@ -211,18 +208,15 @@ export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void>
             },
           });
         }
-        // P22-T78: Das Gedaechtnis des Main gehoert der API. Jeder neue Main-Lauf (Spawn nach Wechsel/Failover/Neustart, jede
-        // Rotation) holt seinen Prompt hier; daran haengt der Startkontext aus seinem Verlauf in PG (Schalter main_startkontext,
-        // Standard EIN). Alle anderen Agenten bekommen den gespeicherten Prompt byte-gleich.
+        // P22-T78: Das Gedaechtnis gehoert der API. Diese Route liest ein Wrapper nur beim Start eines NEUEN Laufs (Spawn nach
+        // Wechsel/Failover/Neustart, jede Rotation) - nie je Nachricht. Daran haengt der Startkontext aus dem Verlauf in PG
+        // (startkontextFuer, Schalter startkontext, Standard EIN; heute nur der Main). Alle anderen bekommen den Prompt byte-gleich.
         let startkontext: { zuege: number; tokens: number } | null = null;
-        if (project === HAUPTAGENT_PROJEKT && agent === HAUPTAGENT_AGENT_ID) {
-          const identityId = await hauptagentIdentitaetsId().catch(() => null);
-          const sk = identityId ? await mainStartkontext(identityId) : null;
-          if (sk) {
-            inhalt = `${inhalt}\n\n${sk.text}`;
-            startkontext = { zuege: sk.zuege, tokens: sk.tokens };
-            zaehler.startkontext += 1;
-          }
+        const sk = await startkontextFuer(project, agent).catch(() => null);
+        if (sk) {
+          inhalt = `${inhalt}\n\n${sk.text}`;
+          startkontext = { zuege: sk.zuege, tokens: sk.tokens };
+          zaehler.startkontext += 1;
         }
         return {
           success: true,

@@ -670,6 +670,8 @@ export async function bereiteAgentToolAufrufVor(
           role: p.rolle, serverInstanceId, explizit: true, koordinatorKurz: true, anmeldung: true });
         const abloesung = await abloesungsZeile(p);
         const eigenePlaene = await eigenePlaeneZeile(p);
+        // P22-T78: Startkontext, den der neue Prozess mit seinem System-Prompt bekam, genau einmal auf diesen (neuen) Lauf buchen.
+        await (await import('./agent-verlauf.js')).bucheStartkontextAufLauf(p.identitaet.id, p.lauf_id).catch(() => false);
         basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p, token), ...(abloesung ? { abloesung } : {}),
           ...(eigenePlaene ? { offene_plaene: eigenePlaene } : {}), agentOnboarding };
       }

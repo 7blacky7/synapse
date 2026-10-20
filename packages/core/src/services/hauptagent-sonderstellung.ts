@@ -8,7 +8,7 @@
  *   projekt_unbekannt mit Projektliste. Keine Pflichtregeln von B (der Main arbeitet dort nicht), keine Arbeitsfreigabe.
  * LENKHINWEIS: lesende Datenaufrufe des Main im internen Bereich (dort liegen keine Projektdaten) bekommen das Antwortfeld
  *   main_hinweis mit der Projektliste; ebenso chat(anmelden) des Main.
- * SCHALTER (memory regel-neue-funktionen-mit-schalter-und-debug): Produkt-Schalter 'main_lesezugriff' und 'main_startkontext'
+ * SCHALTER (memory regel-neue-funktionen-mit-schalter-und-debug): Produkt-Schalter 'main_lesezugriff' und 'startkontext' (agent-verlauf.ts)
  *   (Katalog PROFIL_PRODUKT_FUNKTIONEN, nur ausdruecklich, STANDARD EIN wie hauptagent_verlauf: reine Lese-/Zustellrechte des
  *   Main). Wirksam = intern-Override (nur SYNAPSE_INTERN_TOOL=1, befristet) > Produkt-Schalter (ebene global) > Standard EIN.
  *   AUS = Bestand (Abweisung agent_token_fremdes_projekt bzw. kein eingespielter Startkontext).
@@ -20,8 +20,11 @@ import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 
 export const MAIN_LESEZUGRIFF_FUNKTION = 'main_lesezugriff' as const;
-export const MAIN_STARTKONTEXT_FUNKTION = 'main_startkontext' as const;
-export type MainSchalterFunktion = typeof MAIN_LESEZUGRIFF_FUNKTION | typeof MAIN_STARTKONTEXT_FUNKTION;
+/** P22-T78 F1: Schalter des generischen Startkontexts (agent-verlauf.ts), gleiche Lesestelle, Standard EIN. */
+export const STARTKONTEXT_SCHALTER = 'startkontext' as const;
+/** @deprecated Alter Name (vor F1); zeigt auf denselben Schalter 'startkontext'. Nur bis P22-T81 umgestellt ist. */
+export const MAIN_STARTKONTEXT_FUNKTION = STARTKONTEXT_SCHALTER;
+export type MainSchalterFunktion = typeof MAIN_LESEZUGRIFF_FUNKTION | typeof STARTKONTEXT_SCHALTER;
 /** Rolle des Main (= hauptagent-dienst.ts HAUPTAGENT_ROLLE; Literal, damit die Ausweis-Grenze den Dienst nicht importiert). */
 const MAIN_ROLLE = 'main';
 /** Antwortfeld des Lenkhinweises. */

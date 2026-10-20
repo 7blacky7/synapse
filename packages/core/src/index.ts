@@ -699,8 +699,14 @@ export { AGENT_CONTAINER_SCHEMA_SQL } from './db/agent-container-schema.js';
 // P22-T79: Sonderstellung des Main (Lesezugriff auf alle User-Projekte, Lenkhinweise, Schalter Standard EIN).
 export {
   leseMainSchalter, mainIdentitaetDesAusweises, istMainPrincipal, sichtbareUserProjekte, mainHinweisText, mainNurLesenAblehnung,
-  mainProjektUnbekannt, mainKommunikationErlaubt, MAIN_LESEZUGRIFF_FUNKTION, MAIN_STARTKONTEXT_FUNKTION, MAIN_DATEN_TOOLS, MAIN_HINWEIS_FELD,
+  mainProjektUnbekannt, mainKommunikationErlaubt, MAIN_LESEZUGRIFF_FUNKTION, STARTKONTEXT_SCHALTER, MAIN_DATEN_TOOLS, MAIN_HINWEIS_FELD,
 } from './services/hauptagent-sonderstellung.js';
+// P22-T78 F1: generischer Baustein Uebergabe/Startkontext je Identitaet (Nachweis je Lauf, Schema 128).
+export {
+  baueUebergabeText, baueStartkontext, startkontextFuer, bucheStartkontextAufLauf, autonomieHinweis, letzterStartkontextStand, STARTKONTEXT_FUNKTION,
+} from './services/agent-verlauf.js';
+export type { UebergabeTeile, StartkontextNachweis } from './services/agent-verlauf.js';
+export { AGENT_STARTKONTEXT_SCHEMA_SQL } from './db/agent-startkontext-schema.js';
 export type { MainSchalter, MainSchalterFunktion } from './services/hauptagent-sonderstellung.js';
 export { istSammlungFehlt } from './services/thoughts.js';
 export type { SitzungsEintragEingabe } from './services/hauptagent-verlauf.js';

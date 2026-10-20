@@ -54,7 +54,7 @@ try{
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
- for(const f of ['117_agent_ausweis_fristen.sql','118_agent_ausweis_projekte.sql','124_hauptagent_verlauf.sql'])await pool.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
+ for(const f of ['117_agent_ausweis_fristen.sql','118_agent_ausweis_projekte.sql','124_hauptagent_verlauf.sql','128_agent_startkontext.sql','128_agent_startkontext.sql'])await pool.query(readFileSync(join(repo,'packages/core/src/db/schema-sql/'+f),'utf8'));
  await pool.query("CREATE SEQUENCE IF NOT EXISTS agent_ausweis_nr");
  await pool.query("ALTER TABLE hauptagent_verlauf ALTER COLUMN rev SET DEFAULT nextval('hauptagent_verlauf_rev')");
  const C=core,USER={art:'user'};
@@ -71,7 +71,11 @@ try{
  };
 
  await section('Schalter: Standard EIN, Katalog',async()=>{
-  for(const f of ['main_lesezugriff','main_startkontext']){
+  const sql128=readFileSync(join(repo,'packages/core/src/db/schema-sql/128_agent_startkontext.sql'),'utf8');
+  check(sql128.trim()===C.AGENT_STARTKONTEXT_SCHEMA_SQL.trim(),'128 SQL-Spiegel identisch (2x idempotent angewendet)');
+  const {SCHEMA_SQL}=await load('packages/core/dist/db/schema.js');
+  check(typeof SCHEMA_SQL!=='string'||SCHEMA_SQL.includes('startkontext_offen'),'128 im ensureSchema-SQL');
+  for(const f of ['main_lesezugriff','startkontext']){
    const s=await S.leseMainSchalter(f);
    check(s.aktiv===true&&s.quelle==='standard',f+': Standard EIN',s);
    check(C.PROFIL_PRODUKT_FUNKTIONEN.includes(f)&&C.STANDARD_EIN.includes(f)&&C.NUR_AUSDRUECKLICH.includes(f),f+': Katalog, STANDARD_EIN, nur ausdruecklich');
@@ -161,9 +165,21 @@ try{
   check(sk?.text.includes('GEDAECHTNIS')&&sk.text.includes('ich heisse Moritz')&&sk.text.includes('Hallo Moritz')&&sk.text.includes(A),'Startkontext: Gedaechtnis-Kopf, Name, Antwort, Projektliste');
   const w=(await pool.query("SELECT meta FROM hauptagent_verlauf WHERE identity_id=$1 AND weg='wechsel' ORDER BY id DESC LIMIT 1",[MAIN])).rows[0]?.meta;
   check(w?.uebergabe_eingespielt===true&&w.eingespielt_zuege>=2&&w.thought_id===WECHSEL,'Nachweis am Wechsel-Eintrag (uebergabe_eingespielt)',w);
-  const st=(await pool.query("SELECT kalibrierung->'startkontext' AS s FROM hauptagent_verlauf_stand WHERE identity_id=$1",[MAIN])).rows[0]?.s;
-  check(st?.zuege>=2&&st.uebergabe_thought_id===WECHSEL,'Nachweis im Stand (kalibrierung.startkontext)',st);
+  check(sk?.text.includes('bis zum Ende')&&sk.text.includes('## Eigene Hinweise'),'Startkontext: eigene Hinweise mit Autonomie-Baustein');
+  const offen=(await pool.query('SELECT startkontext_offen o FROM agent_identitaeten WHERE id=$1',[MAIN])).rows[0]?.o;
+  check(offen?.zuege>=2&&offen.uebergabe_thought_id===WECHSEL,'Nachweis offen an der Identitaet bis zum neuen Lauf',offen);
   check((await C.verlaufStatus()).letzter_startkontext?.uebergabe_thought_id===WECHSEL,'Debug: verlaufStatus.letzter_startkontext');
+  // Nur bei NEUEM Lauf (7762d427): ein normaler Zug bucht nichts, die Anmeldung (= neuer Lauf) genau einmal.
+  await aufruf('thought',{action:'search',query:'x',token:TOK});
+  check(!!(await pool.query('SELECT startkontext_offen o FROM agent_identitaeten WHERE id=$1',[MAIN])).rows[0]?.o,'normaler Aufruf bucht nichts');
+  const {k:an}=await aufruf('chat',{action:'anmelden',token:TOK});
+  const lauf1=an.principal?.lauf_id;
+  const l1=(await pool.query('SELECT startkontext_am,startkontext_meta FROM agent_identitaet_laeufe WHERE id=$1',[lauf1])).rows[0];
+  check(!!lauf1&&!!l1?.startkontext_am&&l1.startkontext_meta?.zuege>=2,'Anmeldung: Startkontext auf den neuen Lauf gebucht',l1);
+  check(!(await pool.query('SELECT startkontext_offen o FROM agent_identitaeten WHERE id=$1',[MAIN])).rows[0]?.o,'danach nichts mehr offen');
+  const {k:an2}=await aufruf('chat',{action:'anmelden',token:TOK});
+  const l2=(await pool.query('SELECT startkontext_am FROM agent_identitaet_laeufe WHERE id=$1',[an2.principal?.lauf_id])).rows[0];
+  check(an2.principal?.lauf_id&&an2.principal.lauf_id!==lauf1&&l2&&l2.startkontext_am===null,'naechster Lauf ohne neuen Prozess: kein Startkontext gebucht (einmal je Lauf)',l2);
  });
 
  await section('T78: Prompt-Route spielt den Startkontext ein',async()=>{
@@ -183,12 +199,28 @@ try{
    check(m.laenge===m.inhalt.length&&m.startkontext?.zuege>=2,'Main: laenge passt (ApiWissen prueft), startkontext gemeldet',{laenge:m.laenge,sk:m.startkontext});
    const o=JSON.parse((await app.inject({method:'GET',url:`/api/projects/${A}/specialists/anderer/wissen/system-prompt`})).body);
    check(o.success&&o.inhalt===prompt&&!o.startkontext,'anderer Agent: Prompt byte-gleich');
-   await C.setzeProfilProduktSchalter({ebene:'global',funktion:'main_startkontext',aktiv:false,grund:'Test T78 AUS'},{system:'user'});
+   await C.setzeProfilProduktSchalter({ebene:'global',funktion:'startkontext',aktiv:false,grund:'Test T78 AUS'},{system:'user'});
    check(await C.mainStartkontext(MAIN)===null,'Schalter AUS: kein Startkontext');
    const m2=JSON.parse((await app.inject({method:'GET',url:`/api/projects/${C.HAUPTAGENT_PROJEKT}/specialists/hauptagent/wissen/system-prompt`})).body);
    check(m2.inhalt===prompt&&!m2.startkontext,'Schalter AUS: Main-Prompt wie gespeichert (Bestand)');
-   await C.setzeProfilProduktSchalter({ebene:'global',funktion:'main_startkontext',aktiv:true,grund:'Test T78 EIN'},{system:'user'});
+   await C.setzeProfilProduktSchalter({ebene:'global',funktion:'startkontext',aktiv:true,grund:'Test T78 EIN'},{system:'user'});
   }finally{await app.close();}
+ });
+
+ await section('T72/T82: Codex arbeitet selbststaendig',async()=>{
+  const X=await load('packages/agents/dist/codex-runtime.js');
+  const a=X.baueCodexArgs({threadId:null,cwd:'/p',modell:null,deaktiviert:[],mcpOverrides:[]});
+  const i=a.indexOf('approval_policy="never"');
+  check(i>0&&a[i-1]==='-c'&&a[a.indexOf('--sandbox')+1]==='read-only','Standard: approval_policy never, Sandbox read-only',a);
+  const r=X.baueCodexArgs({threadId:'th1',cwd:'/p',modell:null,deaktiviert:[],mcpOverrides:[],approval:'on-request',sandbox:'workspace-write'});
+  check(r.includes('approval_policy="on-request"')&&r[r.indexOf('--sandbox')+1]==='workspace-write'&&r.slice(-3).join(' ')==='resume th1 -','je Rolle einstellbar, resume auf demselben Thread',r);
+  check(X.baueCodexArgs({threadId:null,cwd:'/p',modell:null,deaktiviert:[],mcpOverrides:[],approval:'bogus',sandbox:'x'}).includes('approval_policy="never"'),'ungueltige Werte -> Standard');
+  check(JSON.stringify(X.codexAutonomie({}))===JSON.stringify({approval:'never',sandbox:'read-only',anstossMax:2}),'codexAutonomie Standard');
+  check(X.codexAutonomie({SYNAPSE_CODEX_ANSTOSS_MAX:'0',SYNAPSE_CODEX_SANDBOX:'workspace-write'}).anstossMax===0,'Anstoss abschaltbar');
+  for(const t of ['Ich warte auf deine Freigabe.','Soll ich fortfahren?','Ich warte auf den User.','Shall I proceed with the changes?','I am waiting for your confirmation.'])check(X.wartetAufUser(t),'wartet: '+t);
+  for(const t of ['Fertig: drei Dateien geaendert, Build gruen.','Erledigt. Sag Bescheid, wenn du noch etwas brauchst.','Done. Let me know if you need anything else.',''])check(!X.wartetAufUser(t),'wartet nicht: '+(t||'(leer)'));
+  check(/kein|niemand/i.test(X.ANSTOSS_TEXT)&&!/schritt\s*1|zuerst.*dann/i.test(X.ANSTOSS_TEXT),'Anstoss ohne Schrittfolge');
+  check(C.autonomieHinweis('subagent').includes('KEIN User anwesend')&&C.autonomieHinweis('main').includes('bis zum Ende'),'Prompt-Baustein je Rolle');
  });
 
  await section('T72: fehlende Collection = leeres Ergebnis',async()=>{

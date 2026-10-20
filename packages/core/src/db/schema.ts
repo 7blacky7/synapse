@@ -46,6 +46,7 @@ import { AGENT_VERBRAUCH_SCHEMA_SQL } from './agent-verbrauch-schema.js';
 import { AGENT_ZUSTELLUNGEN_SCHEMA_SQL } from './agent-zustellungen-schema.js';
 import { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './runtime-ueberwachung-schema.js';
 import { HAUPTAGENT_VERLAUF_SCHEMA_SQL } from './hauptagent-verlauf-schema.js';
+import { AGENT_STARTKONTEXT_SCHEMA_SQL } from './agent-startkontext-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
 import { AGENT_IDENTITAET_SCHEMA_SQL } from './agent-identitaet-schema.js';
 import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
@@ -3180,6 +3181,7 @@ ${AGENT_ZUSTELLUNGEN_SCHEMA_SQL}
 ${RUNTIME_UEBERWACHUNG_SCHEMA_SQL}
 ${HAUPTAGENT_VERLAUF_SCHEMA_SQL}
 ${MAIN_WARTESCHLANGE_SCHEMA_SQL}
+${AGENT_STARTKONTEXT_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

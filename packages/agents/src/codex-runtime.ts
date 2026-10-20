@@ -15,6 +15,12 @@
  *   MCP-Config des Wrappers (SYNAPSE_MCP_CONFIG_FILE, mcp-bruecke). Geheimnisse nie in argv: Bearer und Ausweis gehen als
  *   Env-Variablen (bearer_token_env_var, env_http_headers), die Header-Referenz ${VAR} wird auf den Env-Namen abgebildet.
  * VERBRAUCH: turn.completed.usage -> result.usage und JSONL im Claude-Format (fuer wrapper.ts syncTokensFromHistory).
+ * AUTONOMIE (P22-T72/T82, User cffe5f66/fd869466; geprueft gegen codex-cli 0.163 im Container): Codex arbeitet selbststaendig.
+ *   Je Turn -c approval_policy="never" (exec kennt kein -a; Werte untrusted|on-failure|on-request|granular|never), Sandbox je Rolle
+ *   (Env SYNAPSE_CODEX_SANDBOX, Standard read-only: Arbeit laeuft ueber die Synapse-Werkzeuge). Endet ein Turn mit einer Warte-/
+ *   Freigabefrage (wartetAufUser), stoesst die Runtime DENSELBEN Thread im selben Zug an (ANSTOSS_TEXT), hoechstens
+ *   SYNAPSE_CODEX_ANSTOSS_MAX mal (Standard 2, 0 = aus). Der Anstoss steht als eigene Eingabezeile in der JSONL (Verlauf), stderr-Log.
+ *   Keine Schrittfolge: nur Haltung und Anstoss. Je Rolle per Spawn-Env einstellbar (Main und Spezialisten).
  */
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -82,13 +88,51 @@ export function bildeMcpAufCodexAb(config: unknown): CodexMcpAbbildung {
 
 export interface CodexBefehl { args: string[] }
 
+export const CODEX_APPROVAL_WERTE = ['untrusted', 'on-failure', 'on-request', 'granular', 'never'] as const;
+export const CODEX_SANDBOX_WERTE = ['read-only', 'workspace-write', 'danger-full-access'] as const;
+export interface CodexAutonomie { approval: string; sandbox: string; anstossMax: number }
+
+/** P22-T72/T82: Autonomie-Einstellung aus der Spawn-Env (je Rolle einstellbar); ungueltige Werte -> Standard. */
+export function codexAutonomie(env: NodeJS.ProcessEnv = process.env): CodexAutonomie {
+  const a = (env.SYNAPSE_CODEX_APPROVAL ?? '').trim();
+  const s = (env.SYNAPSE_CODEX_SANDBOX ?? '').trim();
+  const n = Number(env.SYNAPSE_CODEX_ANSTOSS_MAX);
+  return {
+    approval: (CODEX_APPROVAL_WERTE as readonly string[]).includes(a) ? a : 'never',
+    sandbox: (CODEX_SANDBOX_WERTE as readonly string[]).includes(s) ? s : 'read-only',
+    anstossMax: env.SYNAPSE_CODEX_ANSTOSS_MAX !== undefined && Number.isInteger(n) && n >= 0 ? Math.min(n, 5) : 2,
+  };
+}
+
+/**
+ * P22-T72/T82: Antwort, die auf den User wartet bzw. um Freigabe bittet ('ich warte auf den User', 'soll ich fortfahren?'). Bewertet
+ * wird nur das Ende der Antwort (letzte 400 Zeichen); uebliche Schlussformeln ('sag Bescheid, wenn', 'let me know if', 'moechtest du
+ * noch ...') zaehlen bewusst NICHT, damit eine erledigte Antwort nicht erneut angestossen wird.
+ */
+export function wartetAufUser(text: string): boolean {
+  const ende = text.trim().slice(-400).toLowerCase();
+  if (!ende) return false;
+  return /warte (auf|bis)|wartet auf (den|die|deine|eine)|auf (deine|ihre|eine) (freigabe|bestaetigung|bestätigung|antwort|rueckmeldung|rückmeldung|zustimmung|genehmigung)/.test(ende)
+    || /soll ich (fortfahren|weitermachen|beginnen|starten|loslegen|das (jetzt )?(machen|tun|umsetzen))|moechtest du,? dass ich|möchtest du,? dass ich|darf ich (fortfahren|beginnen|weitermachen)/.test(ende)
+    || /waiting for (you|your|the user|user|approval|confirmation)|shall i (proceed|continue|go ahead|start)|should i (proceed|continue|go ahead)|awaiting (your|user|approval)/.test(ende);
+}
+
+/** P22-T72/T82: Anstoss an denselben Thread (keine Schrittfolge, nur die Haltung). */
+export const ANSTOSS_TEXT = 'Synapse-Hinweis: Es wartet niemand auf eine Rueckfrage. Entscheide selbst und fuehre die Aufgabe ohne weitere '
+  + 'Freigabe bis zum Ende aus. Echte Rueckfragen stellst du ueber chat oder den Channel und arbeitest am Rest weiter.';
+
 /** Argumente eines Turns (ohne Prompt, der kommt ueber stdin '-'). */
 export function baueCodexArgs(o: {
   threadId: string | null; cwd: string; modell: string | null; deaktiviert: string[]; mcpOverrides: string[];
   /** P22-T65: Reasoning-Stufe; codex-cli 0.163 kennt dafuer kein exec-Flag, nur den config-Schluessel model_reasoning_effort. */
   effort?: string | null;
+  /** P22-T72/T82: Genehmigungsregel und Sandbox (codexAutonomie); Standard never / read-only. */
+  approval?: string | null; sandbox?: string | null;
 }): string[] {
-  const args = ['exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--sandbox', 'read-only', '-C', o.cwd];
+  const sandbox = o.sandbox && (CODEX_SANDBOX_WERTE as readonly string[]).includes(o.sandbox) ? o.sandbox : 'read-only';
+  const approval = o.approval && (CODEX_APPROVAL_WERTE as readonly string[]).includes(o.approval) ? o.approval : 'never';
+  const args = ['exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--sandbox', sandbox, '-C', o.cwd,
+    '-c', `approval_policy=${tomlString(approval)}`];
   if (o.modell) args.push('-m', o.modell);
   if (o.effort && /^[a-z]{2,16}$/.test(o.effort)) args.push('-c', `model_reasoning_effort=${tomlString(o.effort)}`);
   for (const f of o.deaktiviert) args.push('--disable', f);
@@ -197,6 +241,8 @@ async function main(): Promise<void> {
   const modell = eintrag && eintrag.fullId !== CODEX_STANDARD_MODELL ? eintrag.fullId : null;
   // P22-T65: Stufe vom Spawn (spawnSpecialistTool -> Wrapper-Env SYNAPSE_AGENT_EFFORT); leer = Standard der CLI.
   const effort = process.env.SYNAPSE_AGENT_EFFORT?.trim() || null;
+  const autonomie = codexAutonomie();
+  console.error(`[codex-runtime:${agentName}] Autonomie: approval_policy=${autonomie.approval}, sandbox=${autonomie.sandbox}, anstoss_max=${autonomie.anstossMax}`);
   const deaktiviert = (process.env.SYNAPSE_CODEX_DEAKTIVIERT ?? STANDARD_DEAKTIVIERT.join(','))
     .split(',').map(s => s.trim()).filter(s => /^[a-z0-9_]+$/.test(s));
   const systemPrompt = process.env.SYNAPSE_SYSTEM_PROMPT_FILE ? await readFile(process.env.SYNAPSE_SYSTEM_PROMPT_FILE, 'utf8').catch(() => '') : '';
@@ -223,9 +269,24 @@ async function main(): Promise<void> {
     if (!line.trim()) continue;
     const nachricht = nachrichtAus(line);
     const prompt = !threadId && systemPrompt.trim() ? `${systemPrompt}\n\n---\n\n${nachricht}` : nachricht;
-    const args = baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides, effort });
+    const args = baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides, effort,
+      approval: autonomie.approval, sandbox: autonomie.sandbox });
     const r = await fuehreTurnAus(args, prompt, { ...process.env, ...mcp.env });
     if (r.threadId) threadId = r.threadId;
+    // P22-T72/T82: wartet die Antwort auf den User, denselben Thread im selben Zug anstossen (hoechstens anstossMax).
+    const anstoesse: Array<{ prompt: string; ab: number }> = [];
+    while (threadId && !r.fehler && anstoesse.length < autonomie.anstossMax && wartetAufUser(r.texte[r.texte.length - 1] ?? '')) {
+      console.error(`[codex-runtime:${agentName}] Anstoss ${anstoesse.length + 1}/${autonomie.anstossMax}: Antwort wartet auf den User`);
+      const a = await fuehreTurnAus(baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides, effort,
+        approval: autonomie.approval, sandbox: autonomie.sandbox }), ANSTOSS_TEXT, { ...process.env, ...mcp.env });
+      anstoesse.push({ prompt: ANSTOSS_TEXT, ab: r.schritte.length });
+      r.texte.push(...a.texte);
+      r.schritte.push(...a.schritte);
+      if (a.usage) r.usage = r.usage ? { input_tokens: r.usage.input_tokens + a.usage.input_tokens, output_tokens: r.usage.output_tokens + a.usage.output_tokens,
+        cached_input_tokens: r.usage.cached_input_tokens + a.usage.cached_input_tokens } : a.usage;
+      if (a.fehler) r.fehler = a.fehler;
+      if (!a.texte.length) break;
+    }
     turnNr++;
     // P22-T63: Inhalt des Turns im Claude-Format (Eingabe, Werkzeugschritte, Antwort) fuer den Verlauf des Hauptagenten
     // (wrapper.ts meldeVerlauf); nur die Antwortzeile traegt usage, also zaehlen syncTokens/meldeVerbrauch wie bisher.
@@ -233,7 +294,12 @@ async function main(): Promise<void> {
     const zeit = new Date().toISOString();
     const basis = `${sessionId}:${turnNr}`;
     const zeilen: Record<string, unknown>[] = [{ type: 'user', uuid: basis + ':u', timestamp: zeit, message: { role: 'user', content: prompt } }];
+    // P22-T72/T82: jeder Anstoss als eigene Eingabezeile (im Verlauf sichtbar) vor den Schritten, die er ausgeloest hat.
+    const anstossZeilen = (i: number) => anstoesse.forEach((a, n) => {
+      if (a.ab === i) zeilen.push({ type: 'user', uuid: `${basis}:anstoss${n + 1}`, timestamp: zeit, message: { role: 'user', content: a.prompt } });
+    });
     r.schritte.forEach((s, i) => {
+      anstossZeilen(i);
       if (s.art === 'denken') {
         zeilen.push({ type: 'assistant', uuid: `${basis}:d${i}`, timestamp: zeit, message: { role: 'assistant', model: m, content: [{ type: 'thinking', thinking: s.text }] } });
         return;
@@ -242,6 +308,7 @@ async function main(): Promise<void> {
       zeilen.push({ type: 'assistant', uuid: `${basis}:w${i}`, timestamp: zeit, message: { role: 'assistant', model: m, content: [{ type: 'tool_use', id, name: s.name, input: s.input }] } });
       zeilen.push({ type: 'user', uuid: `${basis}:r${i}`, timestamp: zeit, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: s.output, is_error: s.fehler }] } });
     });
+    anstossZeilen(r.schritte.length);
     // P22-T75 B3: echter Token-Stand aus der Rollout-Datei; ohne sie (alte CLI, Datei fehlt) bleibt die exec-usage wie bisher.
     const rollout = threadId ? await leseCodexTokenInfo(threadId).catch(() => null) : null;
     const nutzungTurn = rollout ? turnNutzung(rollout, vorherGesamt) : null;
