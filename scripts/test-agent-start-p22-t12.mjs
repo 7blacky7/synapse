@@ -72,6 +72,8 @@ async function spawnProbe(tree,env={},tokenEnv={}){
   buildSpecialistPrompt:prompts.buildSpecialistPrompt,holeAgentStartUmgebung:async()=>tokenEnv,
   bereiteMcpBrueckeVor:async()=>({aktiv:false,grund:'stdio'}),McpBrueckeFehler:BridgeError,selbsttestHinweis:()=>'',spezialistenDatenweg:()=>data,
   mkdir:async()=>{},resolveWrapperPath:()=>'/tmp/synthetischer-wrapper.js',
+  // P22-T66: Startfehler-Datei und Altwrapper-Ende (eigene Helfer der Datei) als Attrappen; t106 kennt sie nicht.
+  loescheStartFehler:async()=>{},beendeAltenIdentitaetsWrapper:async()=>{},pruefeWrapperStart:async()=>null,
   spawn:(bin,args,opts)=>{r.spawns.push({bin,args,opts});return{pid:12345,unref:noOp};},
   setTimeout:fn=>{fn();return 0;},heartbeatController:{connectToWrapper:async()=>{}},updateSpecialist:async(p,n,s)=>r.statuses.push(s),jsonResult:data=>data,
  },{'@synapse/agents':{...(await import('../packages/agents/dist/agent-lauf.js')),loadFromDb:async()=>{},resolveModel:()=>model,listAliases:()=>['synthetisch']},'node:fs':{openSync:()=>7}});
@@ -143,7 +145,8 @@ try{
   const access={validateToken:async raw=>raw==='synthetischer-daemon'?{kind:'service',scope:'daemon:synthetisch',token_hash:'test-host-binding'}:raw==='synthetischer-user'?{kind:'access',scope:null,token_hash:'user-binding'}:null,daemonHost:async hash=>hash==='test-host-binding'?'test-host':null};
   const routes=await loadModule(join(root,'packages/rest-api/src/routes/daemon-jobs.ts'),{
    '@synapse/core':{...core,projekteDesHosts:async(ps,host)=>host==='test-host'?ps.filter(p=>p===project):[]},
-   '../services/auth.js':{validateToken:access.validateToken},'./daemon-sync.js':{daemonSyncRoutes:async()=>{}},
+   '../services/auth.js':{validateToken:access.validateToken,issueServiceToken:async()=>{throw new Error('nicht im Test');}},
+   '../services/agent-runtime/main-tool-profile.js':{hauptagentIdentitaetScope:id=>'hauptagent:identitaet:'+id},'./daemon-sync.js':{daemonSyncRoutes:async()=>{}},
   });
   app=Fastify({logger:false});await routes.daemonJobsRoutes(app,access);await app.ready();
   async function request(patch={},auth='synthetischer-daemon'){return app.inject({method:'POST',url:'/api/daemon/specialist/daten',headers:{authorization:'Bearer '+auth},payload:{aktion:'agent_start',host:'test-host',daemon_id:'daemon-test-host-123',project,agent,...patch}});}
@@ -200,7 +203,7 @@ try{
     spawns.push({bin,args,opts});const c=new EventEmitter();c.stdout=new PassThrough();c.stderr=new PassThrough();c.stdin=new PassThrough();c.pid=6789;
     c.kill=()=>{queueMicrotask(()=>c.emit('exit',0,null));return true;};return c;
    }};
-   const mod=await loadModule(join(root,'packages/agents/src/process.ts'),{'node:child_process':cp,'./models.js':{resolveModel:()=>model,cliModelArg:()=>'synthetisch',effortFuerCli:()=>undefined},'./runtime-pfad.js':{loeseRuntimePfad:()=>'/tmp/fake-runtime'}},{process:{env:startEnv,cwd:()=>'/tmp'}});
+   const mod=await loadModule(join(root,'packages/agents/src/process.ts'),{'node:child_process':cp,'./models.js':{resolveModel:()=>model,cliModelArg:()=>'synthetisch',cliModelArgFuer:()=>'synthetisch',effortFuerCli:()=>undefined},'./runtime-pfad.js':{loeseRuntimePfad:()=>'/tmp/fake-runtime'}},{process:{env:startEnv,cwd:()=>'/tmp'}});
    const manager=new mod.ProcessManager();await manager.start(agent,'synthetisch',currentPrompts.buildSpecialistPrompt(config,'Testwissen',true));
    assert.ok(spawns[0].opts.env.SYNAPSE_AGENT_TOKEN===first);assert.ok(!JSON.stringify(spawns[0].args).includes(first));assert.ok(!JSON.stringify([...manager.getStatus()]).includes(first));await manager.stop(agent);
   });

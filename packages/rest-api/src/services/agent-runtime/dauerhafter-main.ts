@@ -11,6 +11,13 @@ import {
 } from '@synapse/core';
 import type { MainAgentSession, RuntimeMessageResult, RuntimeStreamEvent } from './types.js';
 
+/** P22-T66: letzter Fehler des dauerhaften Main-Wegs (Code + Ursache) fuer das Debug von GET /api/main-agent/status. */
+export interface MainWegFehler { zeit: string; runtime: string; code: string; meldung: string | null }
+let letzterFehler: MainWegFehler | null = null;
+export function letzterMainWegFehler(): MainWegFehler | null {
+  return letzterFehler;
+}
+
 export async function dauerhafterMainTurn(
   runtime: SpecialistZielRuntime, session: MainAgentSession, message: string, modell: string,
   emit: (event: RuntimeStreamEvent) => void,
@@ -53,6 +60,10 @@ export async function dauerhafterMainTurn(
     return { runtimeSessionId: session.runtimeSessionId, context: { ...(session.context ?? {}), hauptagent_weg: 'dauerhaft' } };
   } catch (error) {
     const code = error instanceof MainLaufFehler ? error.code : 'main_lauf_fehler';
-    throw new Error('Hauptagent im Container nicht erreichbar (' + code + ')');
+    // P22-T66: Ursache (z. B. "CLI-Start fehlgeschlagen: ..." aus dem Wrapper) mitgeben statt nur des Codes.
+    const roh = error instanceof MainLaufFehler ? error.details?.meldung : (error as Error)?.message;
+    const meldung = typeof roh === 'string' && roh.trim() ? roh.trim().slice(0, 500) : null;
+    letzterFehler = { zeit: new Date().toISOString(), runtime, code, meldung };
+    throw new Error('Hauptagent im Container nicht erreichbar (' + code + ')' + (meldung ? ': ' + meldung : ''));
   }
 }

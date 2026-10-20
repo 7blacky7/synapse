@@ -50,6 +50,11 @@ export interface SpezialistenDatenweg {
   inboxPost(fromAgent: string, toAgent: string, content: string, project?: string): Promise<{ id: number }>;
   /** Zusatzvariablen fuer neu gestartete Wrapper (api: Transport + Zugang). pg: keine. */
   wrapperUmgebung(): Record<string, string>;
+  /**
+   * P22-T66: MCP-Zugang der inneren CLI des Hauptagenten im Runtime-Container (Bearer an die Main-Identitaet gebunden).
+   * Nur der api-Weg des Runtime-Daemons; fehlt die Methode, gibt es diesen Zugang nicht.
+   */
+  hauptagentMcp?(name: string, project: string): Promise<{ url: string; bearer: string }>;
 }
 
 /** Bisheriges Verhalten, unveraendert. */

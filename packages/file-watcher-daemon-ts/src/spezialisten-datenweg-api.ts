@@ -67,6 +67,12 @@ export const apiSpezialistenDatenweg: SpezialistenDatenweg = {
     if (!(process.env.SYNAPSE_API_TOKEN ?? '').trim() && token) zusatz.SYNAPSE_API_TOKEN = token;
     return zusatz;
   },
+  // P22-T66: Bearer fuer die MCP-Config des Hauptagenten (Runtime-Daemon, gebundener Auftrag ueber daemonAuftragBindung).
+  hauptagentMcp: async (name, project) => {
+    const a = await spezialistenDatenApi<{ url?: string; bearer?: string }>('hauptagent_mcp', { project, agent: name });
+    if (typeof a.url !== 'string' || typeof a.bearer !== 'string' || !a.bearer) throw new Error('hauptagent_mcp: Antwort ohne url/bearer');
+    return { url: a.url, bearer: a.bearer };
+  },
 };
 
 /** Modell-Registry ueber die API (statt core listModels aus PG). */

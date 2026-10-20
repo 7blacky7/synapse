@@ -58,6 +58,9 @@ export function bildeMcpAufCodexAb(config: unknown): CodexMcpAbbildung {
       if (typeof v !== 'string') continue;
       const ref = /^\$\{([A-Z0-9_]+)\}$/.exec(v);
       if (ref) { ausEnv[k] = ref[1]; continue; }
+      // P22-T66: 'Bearer ${VAR}' (MCP-Config des Hauptagenten im Container) -> Codex liest VAR selbst, kein Kopieren.
+      const bearerRef = k.toLowerCase() === 'authorization' ? /^Bearer\s+\$\{([A-Z0-9_]+)\}$/i.exec(v) : null;
+      if (bearerRef) { overrides.push(`${p}.bearer_token_env_var=${tomlString(bearerRef[1])}`); continue; }
       if (k.toLowerCase() === 'authorization' && /^Bearer\s+/i.test(v)) {
         const envName = `SYNAPSE_CODEX_MCP_BEARER_${name.toUpperCase().replace(/-/g, '_')}`;
         env[envName] = v.replace(/^Bearer\s+/i, '');

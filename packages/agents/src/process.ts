@@ -113,6 +113,7 @@ class ProcessManager extends EventEmitter {
       // --model: reine Aliase (opus, fable ...) unveraendert = neueste Version;
       // versionierte Registry-Aliase (opus-4.7[1m]) als volle ID, sonst waeren
       // aeltere Versionen nicht waehlbar. Unbekanntes Modell: wie uebergeben.
+      const rechteContainer = process.env.SYNAPSE_CLI_RECHTE === 'container'
       const args = [
         '--print',
         '--verbose',
@@ -121,7 +122,11 @@ class ProcessManager extends EventEmitter {
         '--model', cliModelArgFuer(model, modelEntry),
         '--system-prompt', systemPrompt,
         '--session-id', sessionId,
-        '--permission-mode', 'bypassPermissions',
+        // P22-T66: im Runtime-Container laufen die Agenten als root, dort bricht die CLI bei bypassPermissions sofort ab
+        // ("--dangerously-skip-permissions cannot be used with root/sudo privileges"). Dort dieselbe Rechte-Einstellung wie
+        // der Altweg (rest-api claude-driver buildClaudeCommand): keine eingebauten Werkzeuge, dontAsk, freigeschaltet nur
+        // mcp__synapse__* (unten). Gesetzt von der Agentensteuerung des Containers; ohne die Variable bleibt der Befehl gleich.
+        ...(rechteContainer ? ['--tools', '', '--permission-mode', 'dontAsk'] : ['--permission-mode', 'bypassPermissions']),
       ]
 
       // --effort: feste Stufe statt still effortLevel aus ~/.claude/settings.json des
@@ -139,6 +144,8 @@ class ProcessManager extends EventEmitter {
         for (const tool of opts.allowedTools) {
           args.push('--allowedTools', tool)
         }
+      } else if (rechteContainer) {
+        args.push('--allowedTools', 'mcp__synapse__*')
       }
 
       // Werkzeuge des INNEREN Claude ueber eine eigene MCP-Konfiguration

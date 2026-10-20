@@ -4,7 +4,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { writeFile, mkdir, rm } from 'node:fs/promises';
+import { writeFile, mkdir, rm, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -55,6 +55,9 @@ import {
   migrateSkillMd,
   createInitialAgent,
   effortFuerCli,
+  agentLaufIdentitaet,
+  leseStartFehler,
+  loescheStartFehler,
   resolveModel as resolveModelAusCache,
   listAliases as listAliasesAusCache,
   type SkillFile,
@@ -175,6 +178,9 @@ async function spawnSpecialistMitUmgebung(
   // Bleibt auch im api-Modus: hier liegen die Wrapper-Logs (Schritt 9), und die
   // schreibt dieser Prozess, nicht der Wrapper. Das Verzeichnis ist damit kein
   // Wissensspeicher mehr, sondern nur noch ein Logordner.
+  // P22-T66: im Runtime-Container gibt es /projects/<name> ohne Checkout nicht; der Projektordner ist aber der Arbeitsordner
+  // der CLI (fehlt er, meldet Node nur "spawn claude ENOENT"). Gesetzt von der Agentensteuerung des Containers; idempotent.
+  if (process.env.SYNAPSE_PROJEKTORDNER_ANLEGEN === '1') await mkdir(join(projectPath, '.synapse', 'agents'), { recursive: true });
   await ensureAgentDir(projectPath, name);
 
   // 3b. Wissensschicht: woher kommt das Wissen dieses Spezialisten?
@@ -292,6 +298,40 @@ async function spawnSpecialistMitUmgebung(
   }
   if (tokenAnmeldung) wrapperUmgebung.SYNAPSE_AGENT_TOKEN = agentStartUmgebung.SYNAPSE_AGENT_TOKEN;
   if (identityId) wrapperUmgebung.SYNAPSE_AGENT_IDENTITY_ID = identityId;
+  // P22-T66: hoechstens EIN Wrapper je Identitaet. Ein alter (z. B. nach CLI-Startfehler haengengebliebener) liefe sonst
+  // neben dem neuen weiter; der neue loescht dessen Socket, der alte bliebe als unerreichbare Leiche stehen.
+  if (identityId) await beendeAltenIdentitaetsWrapper(projectPath, name);
+  await loescheStartFehler(projectPath, name);
+  // P22-T66: Hauptagent im Runtime-Container: Synapse-Werkzeuge wie im Altweg ueber eine eigene MCP-Config (http zur API,
+  //          Werkzeugprofil main-synapse). Die Datei traegt KEIN Geheimnis: Bearer und Ausweis stehen als Env-Referenz darin
+  //          und kommen nur ueber die Wrapper-Umgebung. Ohne Zugang kein Start - ein Main ohne Werkzeuge waere nutzlos.
+  let hauptagentMcp: { configPfad: string; bearer: string } | null = null;
+  const datenwegMcp = spezialistenDatenweg();
+  if (!mcpBruecke.aktiv && identityId && tokenAnmeldung && process.env.SYNAPSE_CLI_RECHTE === 'container' && datenwegMcp.hauptagentMcp) {
+    try {
+      const zugang = await datenwegMcp.hauptagentMcp(name, project);
+      const configPfad = join(socketDir, 'mcp-hauptagent.json');
+      await writeFile(configPfad, JSON.stringify({
+        mcpServers: {
+          synapse: {
+            type: 'http',
+            url: zugang.url,
+            headers: {
+              Authorization: 'Bearer ${SYNAPSE_HAUPTAGENT_MCP_BEARER}',
+              'X-Synapse-Werkzeugprofil': 'main-synapse',
+              'x-synapse-agent-token': '${SYNAPSE_AGENT_TOKEN}',
+            },
+          },
+        },
+      }, null, 2), { encoding: 'utf-8', mode: 0o600 });
+      hauptagentMcp = { configPfad, bearer: zugang.bearer };
+    } catch (err) {
+      return jsonResult({
+        success: false,
+        message: `Spawn abgebrochen — MCP-Zugang des Hauptagenten nicht verfuegbar: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
   const wrapper = spawn('node', [wrapperPath], {
     env: {
       ...wrapperUmgebung,
@@ -319,6 +359,10 @@ async function spawnSpecialistMitUmgebung(
       ...(mcpBruecke.aktiv && mcpBruecke.configPfad
         ? { SYNAPSE_MCP_CONFIG_FILE: mcpBruecke.configPfad, SYNAPSE_MCP_STRICT: '1' }
         : {}),
+      // P22-T66: Identitaets-MCP-Config des Hauptagenten im Container (Bearer nur hier, Referenz in der Datei).
+      ...(hauptagentMcp
+        ? { SYNAPSE_MCP_CONFIG_FILE: hauptagentMcp.configPfad, SYNAPSE_MCP_STRICT: '1', SYNAPSE_HAUPTAGENT_MCP_BEARER: hauptagentMcp.bearer }
+        : {}),
     },
     detached: true,
     stdio: ['ignore', 'ignore', logFd],
@@ -335,6 +379,17 @@ async function spawnSpecialistMitUmgebung(
   } catch (err) {
     // Verbindung fehlgeschlagen — Wrapper koennte noch starten
     console.error(`[Synapse] Konnte nicht sofort zu Wrapper "${name}" verbinden: ${err}`);
+  }
+
+  // 10b. P22-T66: Identitaets-Laeufe (Hauptagent im Container): pruefen, ob der Wrapper den CLI-Start ueberlebt. Ein
+  //      Startfehler (Rechte als root, Projektordner, Login) beendet ihn; dann den Grund melden statt eines scheinbar
+  //      gestarteten Agenten (sonst nur "main_turn_fehlgeschlagen" ohne Ursache beim naechsten Turn).
+  if (identityId && wrapperPid) {
+    const grund = await pruefeWrapperStart(projectPath, name, wrapperPid);
+    if (grund) {
+      await heartbeatController.disconnectFromWrapper(name).catch(() => undefined);
+      return jsonResult({ success: false, message: `Spawn von "${name}" fehlgeschlagen: ${grund}` });
+    }
   }
 
   // 11. Status aktualisieren — provider + modelFullId mit ablegen
@@ -427,6 +482,39 @@ function prozessLebt(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException)?.code === 'EPERM';
   }
+}
+
+/**
+ * P22-T66: Beendet einen noch lebenden Wrapper derselben Identitaet (PID aus status.json im Laufordner), bevor ein neuer
+ * startet. Nur wenn /proc die PID als Wrapper ausweist (keine fremde, wiederverwendete PID; ohne /proc nichts). SIGTERM,
+ * nach 10 s die ganze Prozessgruppe (Wrapper laeuft detached als Gruppenfuehrer, das CLI-Kind haengt darin) mit SIGKILL.
+ */
+async function beendeAltenIdentitaetsWrapper(projectPath: string, name: string): Promise<void> {
+  const pid = (await readStatus(projectPath)).specialists[agentLaufSchluessel(name)]?.wrapperPid;
+  if (!pid || pid === process.pid || !prozessLebt(pid)) return;
+  let befehl = '';
+  try { befehl = (await readFile(`/proc/${pid}/cmdline`, 'utf-8')).replace(/\0/g, ' '); } catch { return; }
+  if (!befehl.includes('wrapper.js')) return;
+  console.error(`[Synapse] Alter Wrapper von "${name}" laeuft noch (PID ${pid}) — wird vor dem Neustart beendet.`);
+  try { process.kill(pid, 'SIGTERM'); } catch { /* schon beendet */ }
+  if (await warteAufProzessTod(pid, 10_000)) return;
+  try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* schon beendet */ } }
+  await warteAufProzessTod(pid, 2000);
+}
+
+/**
+ * P22-T66: Lebt der Wrapper einige Sekunden nach dem Spawn noch? Stirbt er (Startfehler der CLI, Projektordner fehlt),
+ * kommt der Grund aus start-fehler.txt im Laufordner (agents start-fehler.ts). null = laeuft.
+ */
+async function pruefeWrapperStart(projectPath: string, name: string, pid: number, fristMs = 8000): Promise<string | null> {
+  const ende = Date.now() + fristMs;
+  while (Date.now() < ende) {
+    if (!prozessLebt(pid)) {
+      return (await leseStartFehler(projectPath, name)) ?? 'Wrapper hat sich beim Start beendet (Grund im wrapper.log des Laufordners)';
+    }
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return null;
 }
 
 /** Wartet bis zur Frist auf den Tod des Prozesses. Rueckgabe: ist er tot? */
@@ -757,9 +845,11 @@ export async function wakeSpecialistTool(
   project?: string,
 ) {
   if (!heartbeatController.isConnected(name)) {
+    // P22-T66: Identitaets-Lauf mit Startfehler -> Grund mitgeben (Laufordner haengt nur an der Identitaet, nicht am Pfad).
+    const startFehler = agentLaufIdentitaet(name) ? await leseStartFehler('', name) : null;
     return jsonResult({
       success: false,
-      message: `Spezialist "${name}" ist nicht verbunden. Verwende spawn_specialist um ihn zu starten.`,
+      message: `Spezialist "${name}" ist nicht verbunden.${startFehler ? ` Letzter Startfehler: ${startFehler}.` : ''} Verwende spawn_specialist um ihn zu starten.`,
     });
   }
 

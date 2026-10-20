@@ -16,6 +16,7 @@ import {
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
+import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
 
 /**
  * P22-T7: Art einer Runtime. CLI-Runtimes laufen mit Abo-Login im Container (nur Token-Anzeige), alle anderen sind
@@ -354,7 +355,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get('/api/main-agent/status', async (_request, reply) => {
-    try { return { success: true, ...(await hauptagentStatus(USER)) }; } catch (error) { return sendFachFehler(reply, error); }
+    // P22-T66: debug_main_weg = letzter Fehler des dauerhaften Main-Wegs mit Ursache (null = keiner seit API-Start).
+    try { return { success: true, ...(await hauptagentStatus(USER)), debug_main_weg: { letzter_fehler: letzterMainWegFehler() } }; } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get('/api/main-agent/auftraege', async (_request, reply) => {
     try { return { success: true, ...(await listeRuntimeAuftraege(USER)) }; } catch (error) { return sendFachFehler(reply, error); }

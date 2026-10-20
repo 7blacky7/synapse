@@ -47,7 +47,9 @@ import {
   type SendMessageResult,
   type SpecialistStatus,
 } from './types.js'
-import { resolveModel, kontextSchwellen, loadFromDb } from './models.js'
+import { resolveModel, kontextSchwellen, loadFromDb, setzeModellQuelle } from './models.js'
+import { modellQuelleUeberApi } from './modelle-api.js'
+import { merkeStartFehler } from './start-fehler.js'
 import { berechneTokenStand, verbrauchAusZeilen } from './token-stand.js'
 import { sitzungsEintraegeAus } from './verlauf-melden.js'
 import {
@@ -123,6 +125,13 @@ let shutdownStarted = false
 let stopDeadline: ReturnType<typeof setTimeout> | null = null
 const STOP_FRIST_MS = Math.min(120_000, Math.max(1000, Number(process.env.SYNAPSE_WRAPPER_STOP_MS) || 60_000))
 let processAlive = true
+// P22-T66: letzte stderr-Zeile der CLI und ob sie seit ihrem Start schon ein Stream-Ereignis geliefert hat. Stirbt sie
+// davor (Rechte als root, Login, Projektordner ...), ist das ein Startfehler: kein Neustart im Kreis, der Wrapper beendet
+// sich mit Grund (start-fehler.txt). Der erste Weckruf kommt erst nach 30 s, eine gesunde CLI schweigt bis dahin.
+let letzteCliMeldung = ''
+let cliGestartetUm = 0
+let cliHatGeantwortet = false
+const STARTFEHLER_FENSTER_MS = 30_000
 
 const STUCK_TIMEOUT_MS = 120_000 // 2 Minuten ohne Event-Aktivitaet = stuck
 
@@ -634,7 +643,7 @@ async function handleWake(message: string | undefined, id?: number): Promise<Wra
   if (!processAlive) {
     return {
       jsonrpc: '2.0',
-      error: { code: -32000, message: 'Agent process is not running' },
+      error: { code: -32000, message: `Agent process is not running${letzteCliMeldung ? ` (letzte CLI-Meldung: ${letzteCliMeldung})` : ''}` },
       id,
     }
   }
@@ -835,6 +844,11 @@ function startSocketServer(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function startAgentProcess(systemPrompt: string): Promise<void> {
+  // P22-T66: fehlt der Arbeitsordner, meldet Node nur "spawn claude ENOENT" - als fehle die CLI. Grund klar benennen.
+  if (!existsSync(PROJECT_PATH)) throw new Error(`Projektordner fehlt: ${PROJECT_PATH}`)
+  letzteCliMeldung = ''
+  cliHatGeantwortet = false
+  cliGestartetUm = Date.now()
   await processManager.start(AGENT_NAME, AGENT_MODEL, systemPrompt, {
     cwd: PROJECT_PATH,
     effort: AGENT_EFFORT,
@@ -1639,6 +1653,13 @@ function setupProcessManagerEvents() {
       return
     }
 
+    // P22-T66: vor dem ersten Ereignis kurz nach dem Start gestorben = Startfehler, nicht Crash-Rotation (die startet
+    // dieselbe CLI mit denselben Argumenten nur erneut in den Fehler).
+    if (!shuttingDown && !cliHatGeantwortet && Date.now() - cliGestartetUm < STARTFEHLER_FENSTER_MS) {
+      void beendeWegenStartfehler(`CLI beendet sich beim Start (code: ${code}, signal: ${signal})${letzteCliMeldung ? ': ' + letzteCliMeldung : ''}`)
+      return
+    }
+
     broadcastNotification('agent_error', {
       error: `Agent process exited (code: ${code}, signal: ${signal})`,
     })
@@ -1697,12 +1718,16 @@ function setupProcessManagerEvents() {
     } as Partial<SpecialistStatus>).catch(() => {})
     // PG: status='crashed' sofort setzen (fire-and-forget, non-fatal)
     if (PROJECT_NAME) void updateStatusPg('crashed')
+    // P22-T66: der Prozess liess sich gar nicht starten (ENOENT/EACCES). Ohne Ende blieb der Wrapper als Leiche stehen,
+    // und jeder neue Spawn derselben Identitaet startete einen weiteren daneben.
+    if (!shuttingDown) void beendeWegenStartfehler(`CLI-Prozess nicht startbar: ${err.message}`)
   })
 
   processManager.on('stderr', (_agentName: string, data: string) => {
     // Forward stderr output for debugging (write to wrapper's stderr)
     if (data.trim()) {
       log('CLI stderr: %s', data.trim())
+      letzteCliMeldung = (data.trim().split('\n').pop() ?? '').slice(0, 300)
     }
   })
 
@@ -1711,7 +1736,22 @@ function setupProcessManagerEvents() {
     if (agentName !== AGENT_NAME) return
     lastEventTs = Date.now()
     lastEventCount = eventCount
+    cliHatGeantwortet = true
   })
+}
+
+/** P22-T66: Startfehler der CLI - Grund ablegen (Spawn/Wake melden ihn weiter) und den Wrapper beenden. */
+async function beendeWegenStartfehler(grund: string): Promise<void> {
+  if (shutdownStarted) return
+  shutdownStarted = true
+  shuttingDown = true
+  log('CLI-Start fehlgeschlagen: %s — Wrapper beendet sich (kein Neustart im Kreis)', grund)
+  broadcastNotification('agent_error', { error: `CLI-Start fehlgeschlagen: ${grund}` })
+  await merkeStartFehler(PROJECT_PATH, AGENT_NAME, `CLI-Start fehlgeschlagen: ${grund}`)
+  processManager.forceStop(AGENT_NAME)
+  processAlive = false
+  await cleanup()
+  process.exit(1)
 }
 
 async function cleanup() {
@@ -1880,6 +1920,12 @@ async function main() {
   // 1b. Modell-Registry aus der DB laden (einmal; bei Fehler/Timeout bleibt
   //     STATIC_FALLBACK mit Log). Danach rechnen Ceiling und Korridor mit
   //     denselben Werten wie der Respawn-Check in core.
+  // P22-T66: ohne Datenbank (Transport api, z. B. im Runtime-Container) die Registry ueber die API lesen; sonst versucht
+  //          loadFromDb eine lokale PG und rechnet mit STATIC_FALLBACK.
+  if (transport.art === 'api') {
+    const quelle = modellQuelleUeberApi()
+    if (quelle) setzeModellQuelle(quelle)
+  }
   await loadFromDb()
   log('  Korridor: %j', kontextSchwellen(AGENT_MODEL))
 
@@ -2008,5 +2054,8 @@ async function main() {
 
 main().catch((err) => {
   log('Fatal: %s', err)
-  void cleanup().then(() => process.exit(1))
+  // P22-T66: Grund fuer Spawn/Wake ablegen (z. B. "Projektordner fehlt"), dann wie bisher beenden.
+  void merkeStartFehler(PROJECT_PATH, AGENT_NAME, `Wrapper-Start fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}`)
+    .then(() => cleanup())
+    .then(() => process.exit(1))
 })

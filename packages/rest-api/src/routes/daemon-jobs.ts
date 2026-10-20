@@ -106,6 +106,7 @@ import {
   runtimeProjektPfad,
   leseHauptagentSchalter,
   HAUPTAGENT_PROJEKT,
+  HAUPTAGENT_AGENT_ID,
   type RuntimeDaemonBindung,
   // P22-T6: Claim-Filter target_runtime, Runtime-Auftraege, Main-Heartbeat beim Spawn
   istMainLaufRuntime,
@@ -116,7 +117,8 @@ import {
   type AuftragMeldung,
 } from '@synapse/core';
 import type { ShellSicherungEingabe } from '@synapse/core';
-import { validateToken, type AuthTokenRow } from '../services/auth.js';
+import { validateToken, issueServiceToken, type AuthTokenRow } from '../services/auth.js';
+import { hauptagentIdentitaetScope } from '../services/agent-runtime/main-tool-profile.js';
 // P9-T27 letzter Schritt: Datei-Sync, Projekt-Schalter, project-init, Tray (gleiche Vorpruefung)
 import { daemonSyncRoutes } from './daemon-sync.js';
 
@@ -525,7 +527,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
   // Jede Aktion ausser 'modelle' verlangt ein Projekt, das eindeutig auf dem Token-Host liegt.
   const SPEZIALISTEN_DATEN = ['modelle', 'projektpfad', 'general_channel', 'channel_beitreten', 'sitzung_neu', 'wrapper_status',
     'heartbeat_beim_spawn', 'wrapper_pid', 'wrapper_gestoppt', 'aus_channels', 'chat_abmelden', 'wrapper_status_entfernen',
-    'inbox_entfernen', 'inbox_post', 'agent_start'] as const;
+    'inbox_entfernen', 'inbox_post', 'agent_start', 'hauptagent_mcp'] as const;
   fastify.post<{
     Body: {
       host?: string; daemon_id?: string; aktion?: string; project?: string; agent?: string; channel?: string;
@@ -610,6 +612,21 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
           return reply.code(409).send({ success: false,
             error: err instanceof AgentIdentitaetFehler || err instanceof ProfilVerwaltungFehler ? err.code : 'agent_start_fehlgeschlagen' });
         }
+      }
+      case 'hauptagent_mcp': {
+        // P22-T66: MCP-Zugang der inneren CLI des Hauptagenten im Runtime-Container, wie der Altweg (claude-driver
+        // hauptagentIdentitaetMcpConfig): Service-Token mit Scope hauptagent:identitaet:<id>. Er gilt nur zusammen mit dem
+        // Ausweis (x-synapse-agent-token) und Werkzeugprofil main-synapse (mainToolAccess). Nur Runtime-Daemon, nur Main.
+        reply.header('cache-control', 'no-store');
+        if (!d.runtime || ziel.art !== 'identity' || project !== HAUPTAGENT_PROJEKT || agent !== HAUPTAGENT_AGENT_ID) {
+          return reply.code(403).send({ success: false, error: 'hauptagent_mcp_nicht_erlaubt' });
+        }
+        const scope = hauptagentIdentitaetScope(ziel.identity_id);
+        // Ein Bearer je Lauf: der neue Spawn beendet den alten Wrapper derselben Identitaet, dessen Bearer verfaellt hier.
+        await getPool().query("DELETE FROM auth_tokens WHERE kind='service' AND scope=$1 AND label='main-identitaet-runtime'", [scope]);
+        const issued = await issueServiceToken(scope, 'main-identitaet-runtime', 30 * 24 * 60 * 60 * 1000);
+        // Klartext nur in dieser Antwort an den geprueften Daemon (wie agent_start), nie in Job, Status oder Datei.
+        return { success: true, aktion, bearer: issued.token, url: process.env.SYNAPSE_HAUPTAGENT_MCP_URL || 'http://synapse-api:3456/' };
       }
       case 'general_channel':
         if (ziel.art === 'identity') {

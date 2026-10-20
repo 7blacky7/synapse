@@ -163,6 +163,11 @@ export async function starteRuntimeAgentensteuerung(o: { runtime: string }): Pro
   // Die Wrapper erben beide Variablen beim Spawn.
   process.env.SYNAPSE_ZUSTELLUNG_DAEMON = '1';
   process.env.SYNAPSE_KEINE_HOOKS = '1';
+  // P22-T66: Agenten laufen hier als root -> Claude-CLI mit dontAsk und nur Synapse-Werkzeugen statt bypassPermissions
+  // (agents process.ts, wie der Altweg claude-driver). /projects/<name> gibt es ohne Checkout nicht -> beim Spawn anlegen
+  // (mcp-server specialists.ts). Beide nur hier gesetzt; der PC-Weg bleibt unveraendert.
+  process.env.SYNAPSE_CLI_RECHTE = 'container';
+  process.env.SYNAPSE_PROJEKTORDNER_ANLEGEN = '1';
   let projekte: string[] = [HAUPTAGENT_PROJEKT];
   let gestoppt = false;
   const ladeProjekte = async () => {
