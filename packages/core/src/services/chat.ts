@@ -26,7 +26,7 @@ import { aktuellerAgentAufruf, leseAgentBezugModus, type AgentZiel } from './age
 import { resolveCutoff } from './model-cutoffs.js';
 import { initialisiereChatLesestand } from './chat-unread.js';
 import { vergissOnboarding } from './project-status.js';
-import { legacyNichtEntfernt, ohneEntfernte, markiereRueckkehr } from './agent-entfernung.js';
+import { legacyNichtEntfernt, ohneEntfernte, markiereRueckkehr, archivSichtFuer, archivNamensBedingung, istGesperrterArchivName, ARCHIVNAME_GESPERRT } from './agent-entfernung.js';
 
 export interface ChatMessage {
   id: number;
@@ -72,6 +72,8 @@ export async function registerAgent(
   model?: string,
   cutoffDate?: string
 ): Promise<AgentSession> {
+  // P22-T80 Nachbesserung: Sperrriegel - ein archivierter Name wird nur per wiederherstellen wieder aktiv.
+  if (await istGesperrterArchivName(id)) throw new Error(`${ARCHIVNAME_GESPERRT}: "${id}" ist archiviert; nur admin agenten_aufraeumen wiederherstellen reaktiviert ihn.`);
   const pool = getPool();
 
   // Cutoff datengetrieben (model_cutoffs + model_registry, siehe model-cutoffs.ts).
@@ -201,6 +203,7 @@ export interface SitzungsBeginn {
  * "erstmals". Bewusst unabhaengig vom Onboarding-Gedaechtnis (onboardedKeys): das Signal gilt immer.
  */
 export async function beginneSitzung(id: string, project: string, art: SitzungsArt, onboardingDirekt = false): Promise<SitzungsBeginn> {
+  if (await istGesperrterArchivName(id)) throw new Error(`${ARCHIVNAME_GESPERRT}: "${id}" ist archiviert; nur admin agenten_aufraeumen wiederherstellen reaktiviert ihn.`);
   const pool = getPool();
   const r = await pool.query<{ registered_at: Date; sitzung_seit: Date; aktiv_seit: Date; vorher_status: string | null }>(
     `WITH vorher AS (SELECT status FROM agent_sessions WHERE id = $1)
@@ -501,9 +504,13 @@ export async function getMessages(
 
   // Nur Broadcasts + DMs an diesen Agenten
   if (agentId) {
-    query += ` AND ((recipient_id IS NULL AND recipient_identity_id IS NULL) OR (recipient_identity_id IS NULL AND recipient_id = $${paramIdx}) OR (sender_identity_id IS NULL AND sender_id = $${paramIdx}))`;
+    // P22-T80 Nachbesserung: DMs von/an einen frueheren Namen bis zur Umbenennung gehoeren dem Archiv-Eintrag (zeitbasiert).
+    const sicht = await archivSichtFuer(project, agentId);
+    const leser = `$${paramIdx}`;
     params.push(agentId);
-    paramIdx++;
+    const bindA = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    query += ` AND ((recipient_id IS NULL AND recipient_identity_id IS NULL) OR (recipient_identity_id IS NULL AND ${archivNamensBedingung('recipient_id', 'timestamp', leser, sicht, bindA)}) OR (sender_identity_id IS NULL AND ${archivNamensBedingung('sender_id', 'timestamp', leser, sicht, bindA)}))`;
+    paramIdx = params.length + 1;
   }
 
   if (since) {
@@ -583,10 +590,10 @@ async function leseIdentitaetsChat(project: string, options: {
   const conditions = ['project=$1'];
   const bind = (v: unknown) => { params.push(v); return '$' + params.length; };
   if (z) {
-    const p = bind(bezugsWert(z));
+    const p = bind(bezugsWert(z)), sicht = id ? null : await archivSichtFuer(project, z.agent_id);
     conditions.push(id
       ? `((recipient_id IS NULL AND recipient_identity_id IS NULL) OR recipient_identity_id=${p} OR sender_identity_id=${p})`
-      : `((recipient_id IS NULL AND recipient_identity_id IS NULL) OR (recipient_identity_id IS NULL AND recipient_id=${p}) OR (sender_identity_id IS NULL AND sender_id=${p}))`);
+      : `((recipient_id IS NULL AND recipient_identity_id IS NULL) OR (recipient_identity_id IS NULL AND ${archivNamensBedingung('recipient_id', 'timestamp', p, sicht, bind)}) OR (sender_identity_id IS NULL AND ${archivNamensBedingung('sender_id', 'timestamp', p, sicht, bind)}))`);
   }
   if (options.since) conditions.push('timestamp>' + bind(options.since));
   if (options.senderId) {

@@ -4,6 +4,7 @@ import { aktuelleAgentIdentityId, aktuellerAgentAufruf, loeseAgentZiel, type Age
 import { aktuelleUserHerkunft } from './user-herkunft.js'
 import type { ChannelMessage } from '../types/index.js'
 import { bereiteChannelSkillVorschlaegeVor, holeChannelSkillsNachBeitritt } from './skill-hook.js'
+import { archivVerweise } from './agent-entfernung.js'
 
 export async function createChannel(
   project: string,
@@ -216,7 +217,9 @@ export async function getChannelMessages(
   // Bei 'desc' holt die Abfrage das ENDE — zurueckgegeben wird trotzdem chronologisch.
   if (!aufsteigend) rows.reverse()
 
-  return rows.map((r) => ({
+  // P22-T80 Teil 3: Absender bleibt der alte Name; Nachrichten eines umbenannten (archivierten) Agenten tragen den Verweis auf den Archiv-Eintrag.
+  const verweise = await archivVerweise(project, rows, (r) => ({ name: r.sender, identity: r.sender_identity_id ?? null, zeit: r.created_at }))
+  return rows.map((r, i) => ({
     id: r.id,
     channelName: r.channel_name,
     sender: r.sender,
@@ -225,6 +228,7 @@ export async function getChannelMessages(
       opts?.preview && r.content.length > 200 ? r.content.slice(0, 200) + '...' : r.content,
     metadata: r.metadata ?? undefined,
     createdAt: r.created_at,
+    ...(verweise[i] ? { absenderArchiv: verweise[i] } : {}),
   }))
 }
 

@@ -1051,6 +1051,8 @@ export async function getChannelFeedTool(project: string, channelName: string, l
         sender: m.sender,
         content: m.content,
         createdAt: m.createdAt.toISOString(),
+        // P22-T80 Teil 3: wie REST - Nachricht eines archivierten Agenten zeigt auf den Archiv-Eintrag.
+        ...(m.absenderArchiv ? { absenderArchiv: m.absenderArchiv } : {}),
       })),
     });
   } catch (err) {

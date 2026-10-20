@@ -2,11 +2,17 @@
  * P22-T80: alte Agenten weich als 'entfernt' markieren (Entwurf thought 66c2f47d).
  * Eine Markierung je Agent in agent_entfernungen (Schema 126); KEINE Daten werden geaendert oder geloescht (Verlauf, Thoughts, Memories,
  * Tool-Calls, Skills, Ausweise bleiben). Entfernte Agenten verschwinden aus den Listen (Filter unten), solange der Produkt-Schalter
- * 'agenten_entfernung' EIN ist; ein Agent, der sich wieder meldet, wird automatisch wiederhergestellt.
+ * 'agenten_entfernung' EIN ist.
+ *
+ * Teil 3 (User 8edbc2c7): Archivieren = UMBENENNEN. Der Eintrag (Legacy: Sitzung, Wrapper-Status, Channel-Mitgliedschaften, Chat-Lesestand,
+ * Onboarding-Merker; Identitaet: agent_id/name, status 'deaktiviert', Identitaets-Channel-Mitgliedschaften) heisst danach
+ * 'archiv-<YYYYMMDD>-<alter-name>'; der alte Name steht in frueherer_name und ist FREI - wer sich danach so meldet, ist ein neuer Agent
+ * (keine automatische Rueckkehr mehr). Inhalte bleiben unter dem alten Namen; archivVerweise/archivUrsprung loesen sie zum Archiv auf.
+ * Wiederherstellen benennt zurueck, nur wenn der alte Name frei ist (sonst name_belegt).
  *
  * ALT = keine Spur des Agenten juenger als die Schwelle (Einstellung agenten_entfernung_schwelle_tage, Standard 30, Quelle sichtbar).
  * Spuren: Sitzung, Wrapper-Status, Tool-Calls, Tool-Aktivitaet, Thoughts, Channel-Nachrichten, Verbrauch, Identitaets-Aktivitaet.
- * NIE: Koordinator, Main (rolle main/Main-Identitaet), geschuetzte Namen, offene Runtime-Auftraege, aktive Dateireservierungen.
+ * NIE: Main (rolle main/Main-Identitaet), offene Runtime-Auftraege, aktive Dateireservierungen. Koordinatoren sind eingeschlossen (Teil 3).
  *
  * admin(action:'agenten_aufraeumen', aufraeumen_modus vorschau | ausfuehren | wiederherstellen | status | einstellen):
  *   vorschau/status: User und Koordinator (Koordinator nur sein Projekt, User auch alle Projekte);
@@ -21,7 +27,6 @@ import { ProfilVerwaltungFehler, pflichtText, pruefeProfilVerwalter } from './ag
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 import { MAIN_ROLLE } from './agent-profil-vertrag.js';
 import { hauptagentIdentitaetsId } from './hauptagent-dienst.js';
-import { rolleFuerAgent } from './agent-rollen.js';
 
 export const AGENT_ENTFERNUNG_FUNKTION = 'agenten_entfernung' as const;
 export const AGENT_ENTFERNUNG_STANDARD_TAGE = 30;
@@ -30,8 +35,6 @@ export const AGENT_ENTFERNUNG_MAX_TAGE = 3650;
 const SCHWELLE_NAME = 'schwelle_tage';
 const VORSCHAU_LIMIT = 500;
 const AUSFUEHREN_LIMIT = 2000;
-/** Namen, die nie entfernt werden (Koordinator-Rollen erkennt zusaetzlich rolleFuerAgent). */
-const GESCHUETZTE_IDS = new Set(['koordinator', 'hauptagent', 'user', 'main']);
 
 type Q = QueryConfig & { query_timeout: number };
 type Db = Pick<PoolClient, 'query'>;
@@ -82,7 +85,7 @@ export async function entfernungFilterAktiv(): Promise<boolean> {
   schalterCache = { bis: Date.now() + 5000, aktiv };
   return aktiv;
 }
-export function leereEntfernungCache(): void { schalterCache = null; }
+export function leereEntfernungCache(): void { schalterCache = null; sichtCache.clear(); }
 
 /** SQL-Fragment (WHERE-Teil) fuer Legacy-Agenten: 'TRUE' bei Schalter AUS, sonst "keine offene Markierung". Spalten nur als feste Bezeichner. */
 export async function legacyNichtEntfernt(projektSpalte: string, agentSpalte: string): Promise<string> {
@@ -98,14 +101,28 @@ export async function identitaetNichtEntfernt(identitySpalte: string): Promise<s
 }
 
 export interface EntferntMengen { legacy: ReadonlySet<string>; identitaet: ReadonlySet<string> }
-/** Offene Markierungen eines Projekts - nur bei EIN geschaltetem Schalter (sonst null = nichts ausblenden). Fehler -> null (lieber sichtbar als weg). */
+/**
+ * Offene Markierungen eines Projekts - nur bei EIN geschaltetem Schalter (sonst null = nichts ausblenden). Fehler -> null (lieber sichtbar als weg).
+ * Teil 3: legacy enthaelt den Archivnamen (agent_id der Markierung) und den frueheren Namen, solange ihn kein neuer Agent traegt - so verschwinden
+ * auch Listen, die Namen aus Inhalten ableiten (Wissen, Channel); ein neuer Agent mit dem alten Namen bleibt sichtbar.
+ */
 export async function ladeEntferntMengen(project: string, db: Db = getPool()): Promise<EntferntMengen | null> {
   try {
     if (!(await entfernungFilterAktiv())) return null;
-    const r = await db.query<{ art: EntfernungArt; agent_id: string; identity_id: string | null }>(q(
-      'SELECT art, agent_id, identity_id FROM agent_entfernungen WHERE project = $1 AND wiederhergestellt_am IS NULL', [project]));
+    const r = await db.query<{ art: EntfernungArt; agent_id: string; identity_id: string | null; frueherer_name: string | null; alt_frei: boolean }>(q(
+      `SELECT e.art, e.agent_id, e.identity_id, e.frueherer_name,
+              (e.frueherer_name IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM agent_sessions s WHERE s.id = e.frueherer_name AND s.project = e.project)
+                AND NOT EXISTS (SELECT 1 FROM wrapper_status w WHERE w.agent_name = e.frueherer_name AND w.project = e.project)
+                AND NOT EXISTS (SELECT 1 FROM agent_identitaeten i WHERE i.project = e.project AND i.agent_id = e.frueherer_name)) AS alt_frei
+         FROM agent_entfernungen e WHERE e.project = $1 AND e.wiederhergestellt_am IS NULL`, [project]));
     if (!r.rows.length) return null;
-    return { legacy: new Set(r.rows.filter((z) => z.art === 'legacy').map((z) => z.agent_id)), identitaet: new Set(r.rows.filter((z) => z.identity_id).map((z) => z.identity_id as string)) };
+    const legacy = new Set<string>();
+    for (const z of r.rows) {
+      if (z.art === 'legacy') legacy.add(z.agent_id);
+      if (z.frueherer_name && z.alt_frei) legacy.add(z.frueherer_name);
+    }
+    return { legacy, identitaet: new Set(r.rows.filter((z) => z.identity_id).map((z) => z.identity_id as string)) };
   } catch { return null; }
 }
 /** Schluessel der Channel-Uebersicht: 'legacy:<name>' oder 'identity:<id>'. */
@@ -125,12 +142,12 @@ export async function ohneEntfernte<T>(project: string, zeilen: T[], key: (z: T)
   });
 }
 /** Ausweis-/Profiluebersicht: Feld entfernt{am,grund} fuer markierte Identitaeten; bei wirksamem Filter ohne sie, ausser mitEntfernten. */
-export async function markiereEntfernteProfile<T extends { identity_id: string }>(project: string, zeilen: T[], mitEntfernten: boolean): Promise<Array<T & { entfernt?: { am: string; grund: string } }>> {
+export async function markiereEntfernteProfile<T extends { identity_id: string }>(project: string, zeilen: T[], mitEntfernten: boolean): Promise<Array<T & { entfernt?: { am: string; grund: string; frueherer_name?: string | null } }>> {
   try {
-    const r = await getPool().query<{ identity_id: string; entfernt_am: Date; entfernt_grund: string }>(q(
-      "SELECT identity_id, entfernt_am, entfernt_grund FROM agent_entfernungen WHERE project = $1 AND art = 'identitaet' AND wiederhergestellt_am IS NULL", [project]));
+    const r = await getPool().query<{ identity_id: string; entfernt_am: Date; entfernt_grund: string; frueherer_name: string | null }>(q(
+      "SELECT identity_id, entfernt_am, entfernt_grund, frueherer_name FROM agent_entfernungen WHERE project = $1 AND art = 'identitaet' AND wiederhergestellt_am IS NULL", [project]));
     if (!r.rows.length) return zeilen;
-    const map = new Map(r.rows.map((z) => [z.identity_id, { am: z.entfernt_am.toISOString(), grund: z.entfernt_grund }]));
+    const map = new Map(r.rows.map((z) => [z.identity_id, { am: z.entfernt_am.toISOString(), grund: z.entfernt_grund, frueherer_name: z.frueherer_name }]));
     const verstecken = !mitEntfernten && (await entfernungFilterAktiv());
     return zeilen.filter((z) => !(verstecken && map.has(z.identity_id))).map((z) => (map.has(z.identity_id) ? { ...z, entfernt: map.get(z.identity_id) } : z));
   } catch { return zeilen; }
@@ -139,12 +156,15 @@ export async function markiereEntfernteProfile<T extends { identity_id: string }
 /**
  * Rueckkehr: meldet sich ein entfernter Agent wieder (chat register / Anmeldung), schliesst das die Markierung automatisch -
  * sonst waere ein aktiver Agent unsichtbar. Wirft nie; ohne Markierung ein indizierter UPDATE ohne Treffer.
+ * Teil 3: gilt NUR fuer Markierungen ohne Umbenennung (Altbestand). Ein umbenannter Agent kehrt nicht zurueck - wer sich unter dem
+ * alten Namen meldet, ist ein neuer Agent; die archivierte Identitaet ist deaktiviert.
  */
 export async function markiereRueckkehr(project: string, agentId: string, identityId?: string | null, db: Db = getPool()): Promise<number> {
   try {
     const r = await db.query(q(
       `UPDATE agent_entfernungen SET wiederhergestellt_am = NOW(), wiederhergestellt_von = 'auto:anmeldung', wiederhergestellt_grund = 'Agent hat sich wieder gemeldet'
-        WHERE wiederhergestellt_am IS NULL AND ((art = 'legacy' AND project = $1 AND agent_id = $2) OR (art = 'identitaet' AND identity_id = $3))`,
+        WHERE wiederhergestellt_am IS NULL AND neuer_name IS NULL
+          AND ((art = 'legacy' AND project = $1 AND agent_id = $2) OR (art = 'identitaet' AND identity_id = $3))`,
       [project, agentId, identityId ?? null]));
     return r.rowCount ?? 0;
   } catch { return 0; }
@@ -159,6 +179,8 @@ export interface EntfernungKandidat {
   modell: string | null; status: string | null; letzte_aktivitaet: string | null; letzte_spur: string | null;
   /** Hinweise, die NICHT von der Entfernung ausnehmen (z. B. offene_task:P22-T75 = Beteiligter einer offenen Task). */
   warnungen: string[];
+  /** Teil 3: Name nach dem Archivieren ('archiv-<YYYYMMDD>-<alt>', belegt -> Zusatz -2 ...); die Vorschau rechnet mit heute. */
+  neuer_name: string | null;
 }
 export interface EntfernungAusnahme { art: EntfernungArt; project: string; agent_id: string; identity_id: string | null; grund: string }
 export interface EntfernungErmittlung {
@@ -294,10 +316,9 @@ async function ermittleKandidatenInt(db: Db, o: { tage: number; project: string 
     const aktiv = aktivAgent.has(key) || aktivAgent.has(schluessel(null, a.agent_id)) || sitzungAktiv.has(key)
       || (a.identity_id !== null && (aktivIdentitaet.has(a.identity_id) || aktivIdentitaetenZeile.has(a.identity_id)));
     if (aktiv) continue; // nicht alt: kein Kandidat und keine Ausnahme
-    if (GESCHUETZTE_IDS.has(a.agent_id.toLowerCase())) { ausn(a, 'geschuetzter_name'); continue; }
-    if (a.art === 'identitaet' && (a.rolle === 'koordinator' || a.rolle === MAIN_ROLLE)) { ausn(a, 'rolle_' + a.rolle); continue; }
+    // Teil 3 (User 8edbc2c7): keine Ausnahme mehr ueber Namen oder Koordinator-Rolle - nur Main, offene Runtime-Auftraege, aktive Reservierungen.
+    if (a.art === 'identitaet' && a.rolle === MAIN_ROLLE) { ausn(a, 'rolle_' + a.rolle); continue; }
     if (a.identity_id && a.identity_id === mainId) { ausn(a, 'main_identitaet'); continue; }
-    if (a.art === 'legacy' && rolleFuerAgent(a.agent_id).rolle === 'koordinator') { ausn(a, 'rolle_koordinator'); continue; }
     if (a.identity_id && offeneAuftraege.has(a.identity_id)) { ausn(a, 'offener_runtime_auftrag'); continue; }
     if (reserviert.has(key)) { ausn(a, 'aktive_dateireservierung'); continue; }
     kandidatenRoh.push(a);
@@ -325,13 +346,41 @@ async function ermittleKandidatenInt(db: Db, o: { tage: number; project: string 
     let best: { zeit: Date; spur: string } | null = l1 && l2 ? (l1.zeit > l2.zeit ? l1 : l2) : l1 ?? l2 ?? null;
     if (a.basis && (!best || a.basis > best.zeit)) best = { zeit: a.basis, spur: a.art === 'identitaet' ? 'identitaet' : 'sitzung' };
     return { art: a.art, project: a.project, agent_id: a.agent_id, identity_id: a.identity_id, name: a.name, rolle: a.rolle, modell: a.modell, status: a.status,
-      letzte_aktivitaet: best ? best.zeit.toISOString() : null, letzte_spur: best?.spur ?? null, warnungen: [] };
+      letzte_aktivitaet: best ? best.zeit.toISOString() : null, letzte_spur: best?.spur ?? null, warnungen: [], neuer_name: null };
   });
   // Eine Spur, die doch juenger als der Stichtag ist (z. B. andere Schreibweise des Projekts), macht den Agenten wieder aktiv.
   kandidaten = kandidaten.filter((k) => !k.letzte_aktivitaet || new Date(k.letzte_aktivitaet) < cutoff);
   kandidaten.sort((a, b) => (a.project + a.art + a.agent_id).localeCompare(b.project + b.art + b.agent_id));
   await haengeTaskWarnungen(db, kandidaten, o.project);
+  await vergebeArchivNamen(db, kandidaten, jetzt);
   return { tage: o.tage, stichtag: cutoff.toISOString(), kandidaten, ausgenommen, bestaetigung: bestaetigungFuer(o.tage, kandidaten) };
+}
+
+/** Teil 3: Archivname 'archiv-<YYYYMMDD>-<alter-name>' (Datum des Laufs, UTC); nr > 1 haengt '-<nr>' an. */
+export function archivNameFuer(alt: string, jetzt: Date, nr = 1): string {
+  return `archiv-${jetzt.toISOString().slice(0, 10).replace(/-/g, '')}-${alt}${nr > 1 ? '-' + nr : ''}`;
+}
+/** Belegt = Sitzung, Wrapper-Status, Identitaet (agent_id oder name) oder offene Markierung mit diesem Namen (projektuebergreifend, streng). */
+const BELEGT_SQL = `SELECT n FROM unnest($1::text[]) AS n
+  WHERE EXISTS (SELECT 1 FROM agent_sessions WHERE id = n) OR EXISTS (SELECT 1 FROM wrapper_status WHERE agent_name = n)
+     OR EXISTS (SELECT 1 FROM agent_identitaeten WHERE agent_id = n OR name = n)
+     OR EXISTS (SELECT 1 FROM agent_entfernungen WHERE agent_id = n AND wiederhergestellt_am IS NULL)`;
+
+async function vergebeArchivNamen(db: Db, kandidaten: EntfernungKandidat[], jetzt: Date): Promise<void> {
+  const vergeben = new Set<string>();
+  let offen = kandidaten;
+  for (let nr = 1; offen.length && nr <= 50; nr++) {
+    const vorschlag = offen.map((k) => archivNameFuer(k.agent_id, jetzt, nr));
+    const belegt = new Set((await db.query<{ n: string }>(q(BELEGT_SQL, [[...new Set(vorschlag)]]))).rows.map((r) => r.n));
+    const rest: EntfernungKandidat[] = [];
+    offen.forEach((k, i) => {
+      const n = vorschlag[i];
+      if (belegt.has(n) || vergeben.has(n)) rest.push(k);
+      else { k.neuer_name = n; vergeben.add(n); }
+    });
+    offen = rest;
+  }
+  if (offen.length) fehler('archivname_belegt', { agent_ids: offen.slice(0, 20).map((k) => k.agent_id) });
 }
 
 export async function ermittleEntfernungKandidaten(o: { tage?: number; project?: string | null; art?: EntfernungArt | null; ids?: readonly string[] | null; jetzt?: Date },
@@ -346,7 +395,8 @@ export async function ermittleEntfernungKandidaten(o: { tage?: number; project?:
 export interface EntfernungWer { wer: string; actor_identity_id: string | null; user_auftrag: string | null }
 
 export async function fuehreEntfernungAus(e: { tage?: number; project?: string | null; art?: EntfernungArt | null; ids?: readonly string[] | null; bestaetigung: unknown; wer: EntfernungWer; jetzt?: Date }):
-  Promise<{ lauf_id: string; entfernt: number; schon_markiert: number; tage: number; stichtag: string }> {
+  Promise<{ lauf_id: string; entfernt: number; schon_markiert: number; tage: number; stichtag: string;
+    umbenannt: Array<{ art: EntfernungArt; project: string; alt: string; neu: string }>; umbenannt_gekappt: boolean }> {
   const schalter = await leseEntfernungSchalter();
   if (!schalter.aktiv) fehler('funktion_aus', { funktion: AGENT_ENTFERNUNG_FUNKTION, quelle: schalter.quelle, hinweis: 'Produkt-Schalter agenten_entfernung ist AUS; Vorschau und Wiederherstellen gehen weiter.' });
   const pool = getPool();
@@ -359,25 +409,39 @@ export async function fuehreEntfernungAus(e: { tage?: number; project?: string |
     }
     if (erm.kandidaten.length > AUSFUEHREN_LIMIT) fehler('zu_viele_kandidaten', { anzahl: erm.kandidaten.length, grenze: AUSFUEHREN_LIMIT, hinweis: 'Nach Projekt oder art einschraenken.' });
     const lauf = randomUUID();
-    const grund = `wurde entfernt: inaktiv > ${erm.tage} Tage`;
+    const grund = `archiviert (umbenannt): inaktiv > ${erm.tage} Tage`;
+    const von = e.wer.wer + (e.wer.user_auftrag ? ' (Auftrag: ' + e.wer.user_auftrag.slice(0, 200) + ')' : '');
     let neu = 0;
+    const umbenannt: Array<{ art: EntfernungArt; project: string; alt: string; neu: string }> = [];
     for (const k of erm.kandidaten) {
+      const neuName = k.neuer_name as string;
+      let altName: string | null = null;
+      let altStatus: string | null = null;
+      if (k.identity_id) {
+        const i = await c.query<{ name: string; status: string }>(q('SELECT name, status FROM agent_identitaeten WHERE id = $1 FOR UPDATE', [k.identity_id]));
+        altName = i.rows[0]?.name ?? null;
+        altStatus = i.rows[0]?.status ?? null;
+      }
       const r = await c.query(q(
-        `INSERT INTO agent_entfernungen (project, art, agent_id, identity_id, entfernt_grund, letzte_aktivitaet, schwelle_tage, entfernt_von, lauf_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        `INSERT INTO agent_entfernungen (project, art, agent_id, identity_id, entfernt_grund, letzte_aktivitaet, schwelle_tage, entfernt_von, lauf_id,
+                                         frueherer_name, neuer_name, frueherer_identitaet_name, frueherer_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$3,$11,$12)
          ON CONFLICT (project, art, agent_id) WHERE wiederhergestellt_am IS NULL DO NOTHING`,
-        [k.project, k.art, k.agent_id, k.identity_id, grund, k.letzte_aktivitaet, erm.tage, e.wer.wer + (e.wer.user_auftrag ? ' (Auftrag: ' + e.wer.user_auftrag.slice(0, 200) + ')' : ''), lauf]));
-      if (r.rowCount) {
-        neu++;
-        if (k.identity_id) {
-          await c.query(q('INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-            [k.identity_id, e.wer.wer, 'entfernt', null, JSON.stringify({ lauf_id: lauf, letzte_aktivitaet: k.letzte_aktivitaet, schwelle_tage: erm.tage }), grund, e.wer.actor_identity_id]));
-        }
+        [k.project, k.art, neuName, k.identity_id, grund, k.letzte_aktivitaet, erm.tage, von, lauf, k.agent_id, altName, altStatus]));
+      if (!r.rowCount) continue;
+      neu++;
+      await benenneEintragUm(c, { art: k.art, project: k.project, identity_id: k.identity_id, von: k.agent_id, nach: neuName, name: k.identity_id ? neuName : null, status: k.identity_id ? 'deaktiviert' : null });
+      umbenannt.push({ art: k.art, project: k.project, alt: k.agent_id, neu: neuName });
+      if (k.identity_id) {
+        await c.query(q('INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [k.identity_id, e.wer.wer, 'archiviert', JSON.stringify({ agent_id: k.agent_id, name: altName, status: altStatus }),
+            JSON.stringify({ agent_id: neuName, name: neuName, status: 'deaktiviert', lauf_id: lauf, letzte_aktivitaet: k.letzte_aktivitaet, schwelle_tage: erm.tage }), grund, e.wer.actor_identity_id]));
       }
     }
     await c.query('COMMIT');
     leereEntfernungCache();
-    return { lauf_id: lauf, entfernt: neu, schon_markiert: erm.kandidaten.length - neu, tage: erm.tage, stichtag: erm.stichtag };
+    return { lauf_id: lauf, entfernt: neu, schon_markiert: erm.kandidaten.length - neu, tage: erm.tage, stichtag: erm.stichtag,
+      umbenannt: umbenannt.slice(0, VORSCHAU_LIMIT), umbenannt_gekappt: umbenannt.length > VORSCHAU_LIMIT };
   } catch (err) {
     await c.query('ROLLBACK').catch(() => undefined);
     throw err;
@@ -386,27 +450,86 @@ export async function fuehreEntfernungAus(e: { tage?: number; project?: string |
   }
 }
 
+/**
+ * Teil 3: benennt den EINTRAG eines Agenten um. Legacy = Sitzung, Wrapper-Status, Channel-Mitgliedschaften, Chat-Lesestand, Onboarding-Merker;
+ * Identitaet = agent_id/name/status, Identitaets-Channel-Mitgliedschaften, verknuepfte Sitzungszeile. Inhalte (Thoughts, Memories, Channel-
+ * Nachrichten, Tool-Calls, Verlauf, Plaene, Dateiversionen, Wissen, Event-Quittungen) bleiben unter dem alten Namen. Zeilen, deren Ziel-Schluessel
+ * schon belegt ist (z. B. beim Rueckbenennen), bleiben am bisherigen Namen.
+ */
+async function benenneEintragUm(c: Db, u: { art: EntfernungArt; project: string; identity_id: string | null; von: string; nach: string; name: string | null; status: string | null }): Promise<void> {
+  if (u.art === 'identitaet' && u.identity_id) {
+    await c.query(q('UPDATE agent_identitaeten SET agent_id = $2, name = COALESCE($3, name), status = COALESCE($4, status) WHERE id = $1', [u.identity_id, u.nach, u.name, u.status]));
+    await c.query(q('UPDATE agent_identitaet_channel_mitglieder SET agent_name = $2 WHERE identity_id = $1', [u.identity_id, u.nach]));
+    await c.query(q('UPDATE agent_sessions SET id = $2 WHERE id = $3 AND identity_id = $1 AND NOT EXISTS (SELECT 1 FROM agent_sessions s2 WHERE s2.id = $2)', [u.identity_id, u.nach, u.von]));
+    return;
+  }
+  const w = [u.project, u.von, u.nach];
+  await c.query(q('UPDATE agent_sessions SET id = $3 WHERE id = $2 AND project = $1 AND identity_id IS NULL AND NOT EXISTS (SELECT 1 FROM agent_sessions s2 WHERE s2.id = $3)', w));
+  await c.query(q('UPDATE wrapper_status SET agent_name = $3 WHERE agent_name = $2 AND project = $1 AND NOT EXISTS (SELECT 1 FROM wrapper_status w2 WHERE w2.agent_name = $3 AND w2.project = $1)', w));
+  await c.query(q(`UPDATE specialist_channel_members m SET agent_name = $3 FROM specialist_channels ch
+     WHERE ch.id = m.channel_id AND ch.project = $1 AND m.agent_name = $2
+       AND NOT EXISTS (SELECT 1 FROM specialist_channel_members m2 WHERE m2.channel_id = m.channel_id AND m2.agent_name = $3)`, w));
+  await c.query(q('UPDATE chat_lesestand l SET agent_id = $3 WHERE l.project = $1 AND l.agent_id = $2 AND NOT EXISTS (SELECT 1 FROM chat_lesestand l2 WHERE l2.project = $1 AND l2.agent_id = $3)', w));
+  await c.query(q(`UPDATE agent_onboardings o SET agent_id = $3 WHERE o.project = $1 AND o.agent_id = $2
+     AND NOT EXISTS (SELECT 1 FROM agent_onboardings o2 WHERE o2.project = $1 AND o2.agent_id = $3 AND o2.server_instance_id = o.server_instance_id)`, w));
+  // Nachbesserung: Postfach und Wissen sind Eigentum des Eintrags. Zum Zeitpunkt der Umbenennung liegen dort genau die Zeilen VOR der
+  // Umbenennung; sie wandern mit dem Eintrag (Inhalt, Absender, Zeitstempel bleiben). So sieht ein neuer Agent mit dem alten Namen sie auf
+  // keinem Weg (Inbox lesen/quittieren/zaehlen/purgen, Wrapper-Bruecke), und ein Wissens-Block des neuen Agenten ueberschreibt nie den alten.
+  await c.query(q('UPDATE specialist_inbox SET to_agent = $3 WHERE project = $1 AND to_agent = $2 AND to_identity_id IS NULL', w));
+  await c.query(q(`UPDATE agent_wissen aw SET agent_name = $3 WHERE aw.project = $1 AND aw.agent_name = $2
+     AND NOT (aw.form = 'block' AND EXISTS (SELECT 1 FROM agent_wissen w2 WHERE w2.project = $1 AND w2.agent_name = $3 AND w2.art = aw.art AND w2.form = 'block'))`, w));
+}
+
+interface Markierung { id: string; project: string; art: EntfernungArt; agent_id: string; identity_id: string | null; frueherer_name: string | null;
+  neuer_name: string | null; frueherer_identitaet_name: string | null; frueherer_status: string | null }
+
+/** Wer traegt den frueheren Namen inzwischen? null = frei. Identitaet: agent_id oder (name, instanz_nr) einer ANDEREN Identitaet. */
+async function nameBelegt(c: Db, m: Markierung): Promise<string | null> {
+  const r = await c.query<{ wo: string }>(q(
+    `SELECT 'sitzung' AS wo FROM agent_sessions WHERE id = $2
+     UNION ALL SELECT 'wrapper' FROM wrapper_status WHERE agent_name = $2 AND project = $1
+     UNION ALL SELECT 'identitaet' FROM agent_identitaeten
+       WHERE project = $1 AND id IS DISTINCT FROM $4::text
+         AND (agent_id = $2 OR (name = $3 AND instanz_nr = (SELECT instanz_nr FROM agent_identitaeten WHERE id = $4::text)))
+     LIMIT 1`, [m.project, m.frueherer_name, m.frueherer_identitaet_name ?? m.frueherer_name, m.identity_id]));
+  return r.rows[0]?.wo ?? null;
+}
+
 export async function stelleEntfernteWiederHer(e: { lauf_id?: string | null; ids?: readonly string[] | null; alle?: boolean; project?: string | null; grund: string; wer: EntfernungWer }):
-  Promise<{ wiederhergestellt: number }> {
+  Promise<{ wiederhergestellt: number; abgelehnt: Array<{ agent_id: string; frueherer_name: string; project: string; grund: string; belegt_durch: string }> }> {
   if (!e.lauf_id && !e.ids?.length && e.alle !== true) fehler('auswahl_fehlt', { hinweis: 'lauf_id, ids oder alle:true angeben' });
   const c = await getPool().connect();
   try {
     await c.query('BEGIN');
-    const r = await c.query<{ art: EntfernungArt; identity_id: string | null }>(q(
-      `UPDATE agent_entfernungen SET wiederhergestellt_am = NOW(), wiederhergestellt_von = $1, wiederhergestellt_grund = $2
-        WHERE wiederhergestellt_am IS NULL AND ($3::text IS NULL OR project = $3) AND ($4::text IS NULL OR lauf_id = $4)
-          AND ($5::text[] IS NULL OR agent_id = ANY($5) OR identity_id = ANY($5))
-        RETURNING art, identity_id`,
-      [e.wer.wer + (e.wer.user_auftrag ? ' (Auftrag: ' + e.wer.user_auftrag.slice(0, 200) + ')' : ''), e.grund, e.project ?? null, e.lauf_id ?? null, e.ids?.length ? [...e.ids] : null]));
-    for (const z of r.rows) {
-      if (z.identity_id) {
-        await c.query(q('INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-          [z.identity_id, e.wer.wer, 'entfernung_aufgehoben', null, null, e.grund, e.wer.actor_identity_id]));
+    const von = e.wer.wer + (e.wer.user_auftrag ? ' (Auftrag: ' + e.wer.user_auftrag.slice(0, 200) + ')' : '');
+    const r = await c.query<Markierung>(q(
+      `SELECT id, project, art, agent_id, identity_id, frueherer_name, neuer_name, frueherer_identitaet_name, frueherer_status FROM agent_entfernungen
+        WHERE wiederhergestellt_am IS NULL AND ($1::text IS NULL OR project = $1) AND ($2::text IS NULL OR lauf_id = $2)
+          AND ($3::text[] IS NULL OR agent_id = ANY($3) OR identity_id = ANY($3) OR frueherer_name = ANY($3))
+        ORDER BY id FOR UPDATE`,
+      [e.project ?? null, e.lauf_id ?? null, e.ids?.length ? [...e.ids] : null]));
+    let n = 0;
+    const abgelehnt: Array<{ agent_id: string; frueherer_name: string; project: string; grund: string; belegt_durch: string }> = [];
+    for (const m of r.rows) {
+      if (m.neuer_name && m.frueherer_name) {
+        const belegt = await nameBelegt(c, m);
+        if (belegt) { abgelehnt.push({ agent_id: m.agent_id, frueherer_name: m.frueherer_name, project: m.project, grund: 'name_belegt', belegt_durch: belegt }); continue; }
+        await benenneEintragUm(c, { art: m.art, project: m.project, identity_id: m.identity_id, von: m.agent_id, nach: m.frueherer_name,
+          name: m.art === 'identitaet' ? (m.frueherer_identitaet_name ?? m.frueherer_name) : null, status: m.art === 'identitaet' ? (m.frueherer_status ?? 'aktiv') : null });
       }
+      await c.query(q('UPDATE agent_entfernungen SET wiederhergestellt_am = NOW(), wiederhergestellt_von = $2, wiederhergestellt_grund = $3 WHERE id = $1', [m.id, von, e.grund]));
+      n++;
+      if (m.identity_id) {
+        await c.query(q('INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, alt, neu, grund, actor_identity_id) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+          [m.identity_id, e.wer.wer, 'entfernung_aufgehoben', JSON.stringify({ agent_id: m.agent_id }), JSON.stringify({ agent_id: m.frueherer_name ?? m.agent_id }), e.grund, e.wer.actor_identity_id]));
+      }
+    }
+    if (!n && abgelehnt.length) {
+      fehler('name_belegt', { abgelehnt: abgelehnt.slice(0, 50), hinweis: 'Der fruehere Name gehoert inzwischen einem anderen Agenten; Rueckbenennen erst, wenn er frei ist.' });
     }
     await c.query('COMMIT');
     leereEntfernungCache();
-    return { wiederhergestellt: r.rowCount ?? 0 };
+    return { wiederhergestellt: n, abgelehnt: abgelehnt.slice(0, VORSCHAU_LIMIT) };
   } catch (err) {
     await c.query('ROLLBACK').catch(() => undefined);
     throw err;
@@ -414,6 +537,107 @@ export async function stelleEntfernteWiederHer(e: { lauf_id?: string | null; ids
     c.release();
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Teil 3: Inhalte unter altem Namen dem Archiv-Eintrag zuordnen (nur Anzeige; Inhalte bleiben unveraendert)
+// ---------------------------------------------------------------------------------------------
+export interface ArchivVerweis { archiv_name: string; anzeige: string }
+interface ArchivMarke { frueherer_name: string; neuer_name: string; identity_id: string | null; am: Date }
+
+/**
+ * Je Zeile der Archiv-Verweis oder null. Eine Zeile gehoert zum Archiv, wenn ihr Absender der fruehere Name einer offenen Umbenennung ist und
+ * sie VOR der Umbenennung entstand (Identitaet: zusaetzlich gleiche identity_id, falls die Zeile eine traegt; Legacy: Zeile ohne identity_id).
+ * Spaetere Zeilen unter dem alten Namen stammen vom neuen Agenten. Fehler (Schema alt) -> keine Verweise.
+ */
+export async function archivVerweise<T>(project: string, zeilen: readonly T[],
+  lese: (z: T) => { name: string | null | undefined; identity?: string | null; zeit?: Date | string | null }): Promise<Array<ArchivVerweis | null>> {
+  const namen = [...new Set(zeilen.map((z) => lese(z).name).filter((n): n is string => !!n))];
+  if (!namen.length) return zeilen.map(() => null);
+  let marken: ArchivMarke[] = [];
+  try {
+    marken = (await getPool().query<ArchivMarke>(q(
+      `SELECT frueherer_name, neuer_name, identity_id, entfernt_am AS am FROM agent_entfernungen
+        WHERE project = $1 AND wiederhergestellt_am IS NULL AND neuer_name IS NOT NULL AND frueherer_name = ANY($2::text[])`, [project, namen]))).rows;
+  } catch { return zeilen.map(() => null); }
+  if (!marken.length) return zeilen.map(() => null);
+  const nachName = new Map<string, ArchivMarke[]>();
+  for (const m of marken) (nachName.get(m.frueherer_name) ?? nachName.set(m.frueherer_name, []).get(m.frueherer_name) as ArchivMarke[]).push(m);
+  return zeilen.map((z) => {
+    const k = lese(z);
+    const liste = k.name ? nachName.get(k.name) : undefined;
+    if (!liste) return null;
+    const zeit = k.zeit ? new Date(k.zeit) : null;
+    const vorher = (m: ArchivMarke) => !zeit || Number.isNaN(zeit.getTime()) || zeit <= m.am;
+    const m = liste.find((x) => (x.identity_id ? (k.identity ? k.identity === x.identity_id : vorher(x)) : !k.identity && vorher(x)));
+    return m ? { archiv_name: m.neuer_name, anzeige: `${m.frueherer_name} (archiviert)` } : null;
+  });
+}
+
+/** Suche ueber den Archivnamen: fruehere Name + Zeitpunkt der Umbenennung (Inhalte bis dahin gehoeren zum Archiv). Fehler/kein Archiv -> null. */
+export async function archivUrsprung(project: string, archivName: string): Promise<{ frueherer_name: string; identity_id: string | null; bis: Date } | null> {
+  if (!archivName.startsWith('archiv-')) return null;
+  try {
+    const r = await getPool().query<{ frueherer_name: string; identity_id: string | null; bis: Date }>(q(
+      `SELECT frueherer_name, identity_id, entfernt_am AS bis FROM agent_entfernungen
+        WHERE project = $1 AND neuer_name = $2 AND wiederhergestellt_am IS NULL AND frueherer_name IS NOT NULL ORDER BY id DESC LIMIT 1`, [project, archivName]));
+    return r.rows[0] ?? null;
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Nachbesserung: Direktnachrichten (chat_messages) zeitbasiert dem Archiv zuordnen, Sperrriegel fuer Archivnamen
+// ---------------------------------------------------------------------------------------------
+/**
+ * Sicht eines Lesenden auf Zeilen unter Namen: verdeckt_bis = er traegt einen frueheren Namen, Zeilen bis dahin gehoeren dem Archiv (fuer ihn
+ * unsichtbar); archiv = er IST ein Archiv-Eintrag und liest zusaetzlich die Zeilen unter dem frueheren Namen bis zur Umbenennung.
+ */
+export interface ArchivSicht { verdeckt_bis: Date | null; archiv: { frueherer_name: string; bis: Date } | null }
+const KEINE_SICHT: ArchivSicht = { verdeckt_bis: null, archiv: null };
+const sichtCache = new Map<string, { bis: number; sicht: ArchivSicht }>();
+
+/** Kurz gepuffert (5 s, geleert bei ausfuehren/wiederherstellen). Fehler (Schema alt) -> keine Einschraenkung. */
+export async function archivSichtFuer(project: string, name: string): Promise<ArchivSicht> {
+  if (!project || !name) return KEINE_SICHT;
+  const k = project + '|' + name;
+  const c = sichtCache.get(k);
+  if (c && c.bis > Date.now()) return c.sicht;
+  let sicht = KEINE_SICHT;
+  try {
+    const r = await getPool().query<{ verdeckt_bis: Date | null; frueherer_name: string | null; bis: Date | null }>(q(
+      `SELECT (SELECT max(entfernt_am) FROM agent_entfernungen
+                WHERE project = $1 AND frueherer_name = $2 AND neuer_name IS NOT NULL AND wiederhergestellt_am IS NULL) AS verdeckt_bis,
+              a.frueherer_name, a.entfernt_am AS bis
+         FROM (SELECT 1) x LEFT JOIN LATERAL (SELECT frueherer_name, entfernt_am FROM agent_entfernungen
+                WHERE project = $1 AND neuer_name = $2 AND frueherer_name IS NOT NULL AND wiederhergestellt_am IS NULL ORDER BY id DESC LIMIT 1) a ON TRUE`, [project, name]));
+    const z = r.rows[0];
+    if (z && (z.verdeckt_bis || z.frueherer_name)) {
+      sicht = { verdeckt_bis: z.verdeckt_bis ?? null, archiv: z.frueherer_name && z.bis ? { frueherer_name: z.frueherer_name, bis: z.bis } : null };
+    }
+  } catch { sicht = KEINE_SICHT; }
+  sichtCache.set(k, { bis: Date.now() + 5000, sicht });
+  return sicht;
+}
+
+/** SQL-Bedingung statt '<spalte> = <leser>' fuer Namensspalte + Zeitspalte (feste Bezeichner); Werte ueber bind. */
+export function archivNamensBedingung(spalte: string, zeit: string, leser: string, sicht: ArchivSicht | null, bind: (v: unknown) => string): string {
+  if (!/^[a-z_][a-z0-9_.]*$/i.test(spalte) || !/^[a-z_][a-z0-9_.]*$/i.test(zeit)) throw new Error('ungueltige Spalte');
+  if (!sicht || (!sicht.verdeckt_bis && !sicht.archiv)) return `${spalte} = ${leser}`;
+  const eigen = sicht.verdeckt_bis ? `(${spalte} = ${leser} AND ${zeit} > ${bind(sicht.verdeckt_bis)})` : `${spalte} = ${leser}`;
+  return sicht.archiv ? `(${eigen} OR (${spalte} = ${bind(sicht.archiv.frueherer_name)} AND ${zeit} <= ${bind(sicht.archiv.bis)}))` : eigen;
+}
+
+/**
+ * Sperrriegel: der Name eines offen archivierten Eintrags ist weder registrier- noch anmeldbar; nur wiederherstellen reaktiviert ihn.
+ * Nur Namen mit 'archiv-' werden geprueft (kein Aufwand sonst). Lesefehler -> gesperrt (lieber abweisen als ein Archiv beleben).
+ */
+export async function istGesperrterArchivName(name: string): Promise<boolean> {
+  if (typeof name !== 'string' || !name.startsWith('archiv-')) return false;
+  try {
+    const r = await getPool().query(q('SELECT 1 FROM agent_entfernungen WHERE agent_id = $1 AND neuer_name IS NOT NULL AND wiederhergestellt_am IS NULL LIMIT 1', [name]));
+    return (r.rowCount ?? 0) > 0;
+  } catch { return true; }
+}
+export const ARCHIVNAME_GESPERRT = 'archivname_gesperrt';
 
 export async function setzeEntfernungSchwelle(e: { tage: unknown; grund: string; wer: EntfernungWer }): Promise<EntfernungSchwelle> {
   const n = Number(e.tage);
@@ -442,7 +666,7 @@ export async function leseEntfernungStatus(project: string | null): Promise<Reco
 export const AGENT_ENTFERNUNG_ADMIN_ACTIONS = ['agenten_aufraeumen'] as const;
 export const AGENT_ENTFERNUNG_MODI = ['vorschau', 'ausfuehren', 'wiederherstellen', 'status', 'einstellen'] as const;
 export const AGENT_ENTFERNUNG_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
-  aufraeumen_modus: { type: 'string', enum: [...AGENT_ENTFERNUNG_MODI], description: 'agenten_aufraeumen: vorschau (Standard) | ausfuehren (braucht bestaetigung der Vorschau + Schalter agenten_entfernung EIN) | wiederherstellen | status | einstellen (Schwelle)' },
+  aufraeumen_modus: { type: 'string', enum: [...AGENT_ENTFERNUNG_MODI], description: 'agenten_aufraeumen: vorschau (Standard, zeigt alt -> neuer_name) | ausfuehren (benennt in archiv-<Datum>-<alt> um; braucht bestaetigung der Vorschau + Schalter agenten_entfernung EIN) | wiederherstellen (benennt zurueck, nur wenn der Name frei ist) | status | einstellen (Schwelle)' },
   aufraeumen_tage: { type: 'number', description: 'agenten_aufraeumen: Schwelle in Tagen ohne Aktivitaet (7..3650; ohne Angabe die Einstellung, Standard 30); bei einstellen der neue Dauerwert' },
   aufraeumen_art: { type: 'string', enum: ['legacy', 'identitaet'], description: 'agenten_aufraeumen: nur diese Art' },
   aufraeumen_ids: { type: 'array', items: { type: 'string' }, description: 'agenten_aufraeumen: nur diese Agenten (agent_id oder identity_id)' },
@@ -496,7 +720,8 @@ export async function fuehreAgentEntfernungAdminAus(action: string, args: Record
           kandidaten: erm.kandidaten.slice(0, VORSCHAU_LIMIT), kandidaten_gekappt: erm.kandidaten.length > VORSCHAU_LIMIT,
           ausgenommen: erm.ausgenommen.slice(0, VORSCHAU_LIMIT), bestaetigung: erm.bestaetigung,
           warnungen: erm.kandidaten.filter((k) => k.warnungen.length > 0).map((k) => ({ agent_id: k.agent_id, project: k.project, warnungen: k.warnungen })).slice(0, VORSCHAU_LIMIT),
-          hinweis: schalter.aktiv ? 'ausfuehren mit dieser bestaetigung (und denselben tage/project/art/ids) entfernt genau diese Agenten.' : 'Produkt-Schalter agenten_entfernung ist AUS: ausfuehren wird abgewiesen, bis er freigegeben ist.' };
+          hinweis: (schalter.aktiv ? 'ausfuehren mit dieser bestaetigung (und denselben tage/project/art/ids) benennt genau diese Agenten in neuer_name um (Datum = Tag des Laufs).' : 'Produkt-Schalter agenten_entfernung ist AUS: ausfuehren wird abgewiesen, bis er freigegeben ist.')
+            + ' Der alte Name wird frei; Inhalte (Thoughts, Channel, Verlauf ...) bleiben unveraendert und lesbar.' };
       }
       case 'ausfuehren': {
         const w = await schreiben();

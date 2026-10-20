@@ -305,6 +305,8 @@ export interface ChannelMessage {
   content: string;
   metadata?: Record<string, unknown>;
   createdAt: Date;
+  /** P22-T80 Teil 3: Absender ist ein archivierter (umbenannter) Agent; sender bleibt der alte Name. */
+  absenderArchiv?: { archiv_name: string; anzeige: string };
 }
 
 export interface InboxMessage {

@@ -46,7 +46,7 @@ import { AGENT_VERBRAUCH_SCHEMA_SQL } from './agent-verbrauch-schema.js';
 import { AGENT_ZUSTELLUNGEN_SCHEMA_SQL } from './agent-zustellungen-schema.js';
 import { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './runtime-ueberwachung-schema.js';
 import { HAUPTAGENT_VERLAUF_SCHEMA_SQL } from './hauptagent-verlauf-schema.js';
-import { AGENT_ENTFERNUNG_SCHEMA_SQL } from './agent-entfernung-schema.js';
+import { AGENT_ENTFERNUNG_SCHEMA_SQL, AGENT_UMBENENNUNG_SCHEMA_SQL } from './agent-entfernung-schema.js';
 import { AGENT_STARTKONTEXT_SCHEMA_SQL } from './agent-startkontext-schema.js';
 import { AGENT_CONTAINER_SCHEMA_SQL } from './agent-container-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
@@ -3184,6 +3184,7 @@ ${RUNTIME_UEBERWACHUNG_SCHEMA_SQL}
 ${HAUPTAGENT_VERLAUF_SCHEMA_SQL}
 ${MAIN_WARTESCHLANGE_SCHEMA_SQL}
 ${AGENT_ENTFERNUNG_SCHEMA_SQL}
+${AGENT_UMBENENNUNG_SCHEMA_SQL}
 ${AGENT_STARTKONTEXT_SCHEMA_SQL}
 ${AGENT_CONTAINER_SCHEMA_SQL}
 `;

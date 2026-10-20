@@ -188,6 +188,14 @@ export async function leseThoughtsAusPg(project: string, limit = 50, deps: Thoug
 
 export async function leseThoughtsNachSourceAusPg(project: string, source: string, limit = 50, deps: ThoughtIdDeps = {}): Promise<ThoughtRow[]> {
   const query = deps.query ?? standardQuery
+  // P22-T80 Teil 3: Suche ueber den Archivnamen eines umbenannten Legacy-Agenten liefert seine Thoughts unter dem frueheren Namen bis zur Umbenennung.
+  const archiv = !deps.query && source.startsWith('archiv-') ? await (await import('./agent-entfernung.js')).archivUrsprung(project, source) : null
+  if (archiv && !archiv.identity_id) {
+    const r = await query(
+      `SELECT ${SPALTEN} FROM thoughts WHERE project = $1 AND source = $2 AND source_identity_id IS NULL AND timestamp <= $4 ORDER BY timestamp DESC LIMIT $3`,
+      [project, archiv.frueherer_name, grenze(limit), archiv.bis])
+    return r.rows.map(zeileZuThought)
+  }
   const erweitert = aktuellerAgentAufruf()?.bezug.modus !== undefined && aktuellerAgentAufruf()?.bezug.modus !== 'alt'
   if(source.startsWith('identity:') && !erweitert) throw new Error('thought_identity_im_altmodus')
   const z = source.startsWith('identity:') ? await loeseAgentZiel(project,{identity_id:source.slice(9)}) : agentBezugFuer(project, source)
@@ -236,6 +244,8 @@ export async function leseThoughtsNachIdsAusPg(project: string, ids: string[], d
 export interface ThoughtMitAufloesung extends ThoughtRow {
   /** nur gesetzt, wenn ein gekuerzter Praefix angefragt wurde */
   aufgeloeste_id?: string
+  /** P22-T80 Teil 3: Absender ist ein umbenannter (archivierter) Agent; source bleibt der alte Name. */
+  absender_archiv?: { archiv_name: string; anzeige: string }
 }
 
 export interface HoleErgebnis {
@@ -263,6 +273,11 @@ export async function holeThoughtsPerEingabe(project: string, eingaben: unknown[
       continue
     }
     thoughts.push(a.gekuerzt ? { ...z, aufgeloeste_id: z.id } : z)
+  }
+  if (!deps.query && thoughts.length) {
+    const { archivVerweise } = await import('./agent-entfernung.js')
+    const v = await archivVerweise(project, thoughts, (t) => ({ name: t.source, identity: t.source_identity_id ?? null, zeit: t.timestamp }))
+    v.forEach((x, i) => { if (x) thoughts[i] = { ...thoughts[i], absender_archiv: x } })
   }
   return { thoughts, probleme }
 }

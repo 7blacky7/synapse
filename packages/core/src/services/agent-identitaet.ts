@@ -235,6 +235,8 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
   const koordinatorSelbst = /^(koordinator|coordinator)$/i.test(e.name.trim());
   const name = koordinatorSelbst ? 'koordinator' : e.name;
   if (name.trim().toLowerCase() === 'user') throw new AgentIdentitaetFehler('identitaet_parameter_ungueltig');
+  // P22-T80 Nachbesserung: Sperrriegel - kein Ausweis unter dem Namen eines archivierten Eintrags (dynamisch: kein Importzyklus).
+  if (await (await import('./agent-entfernung.js')).istGesperrterArchivName(name.trim())) throw new AgentIdentitaetFehler('archivname_gesperrt');
   return transaktion(async (c) => {
     const recht = await berechtigung(c, e.project, principal);
     const privilegiert = recht.verwaltung || recht.daemon;
