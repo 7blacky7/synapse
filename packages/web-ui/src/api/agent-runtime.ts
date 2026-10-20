@@ -132,6 +132,8 @@ export interface RuntimeStreamHandlers {
     artifacts?: number;
     artefakteEmpfangen: number;
     unbekannteEreignisse: string[];
+    /** P22-T73: Nachricht wartet serverseitig (Warteschlange); die Antwort kommt spaeter ueber den Verlauf. */
+    wartet?: { art: 'warten' | 'einwurf'; grund: string; antwort_id: string };
   }) => void;
   onError?: (data: { message: string }) => void;
 }
@@ -394,7 +396,8 @@ export interface MainAgentVerlaufEintrag {
   zaehlt: boolean;
   antwort_auf: string | null;
   gehoert_zu: string | null;
-  status: 'laeuft' | 'fertig' | 'fehler' | 'abgebrochen';
+  /** P22-T73: 'wartet' = Antwortzeile in der Warteschlange (meta.warteschlange.art/grund). */
+  status: 'laeuft' | 'fertig' | 'fehler' | 'abgebrochen' | 'wartet';
   text: string;
   werkzeuge: {
     calls: Array<{ id: string; name?: string; input?: unknown; output?: unknown; isError?: boolean; bilder?: AgentToolBild[]; start: string; ende: string | null }>;
@@ -439,6 +442,11 @@ export async function getMainAgentVerlauf(abfrage: { limit?: number; vor_id?: st
   for (const [name, wert] of Object.entries(abfrage)) if (wert !== undefined && wert !== '') params.set(name, String(wert));
   const query = params.toString();
   return jsonRequest<{ success: true } & MainAgentVerlauf>('/api/main-agent/verlauf' + (query ? '?' + query : ''));
+}
+
+/** P22-T73: Schalter der Warteschlange des Main-Chats (Standard AUS); EIN = Nachrichten warten statt Fehler. */
+export async function getMainAgentWarteschlangeSchalter(): Promise<{ aktiv: boolean; quelle: string }> {
+  return (await jsonRequest<{ success: true; schalter: { aktiv: boolean; quelle: string } }>('/api/main-agent/warteschlange/schalter')).schalter;
 }
 
 export interface GeladenesToolBild { url: string; aktuell: boolean; revision: string | null }

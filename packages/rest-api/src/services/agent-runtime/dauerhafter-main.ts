@@ -7,7 +7,7 @@
  */
 import {
   leseHauptagentSchalter, hauptagentIdentitaetsId, leseMainLaufOptionen, runtimeDaemonAngemeldet, stelleMainLaufSicher,
-  sendeMainTurn, MainLaufFehler, leseMainLauf, standardModellFuerRuntime, type SpecialistZielRuntime,
+  sendeMainTurn, MainLaufFehler, leseMainLauf, standardModellFuerRuntime, warteschlangeAktiv, type SpecialistZielRuntime,
 } from '@synapse/core';
 import type { MainAgentSession, RuntimeMessageResult, RuntimeStreamEvent } from './types.js';
 import { merkeMainTurnSession, vergissMainTurnSession } from './artifact-stream.js';
@@ -56,13 +56,25 @@ export async function dauerhafterMainTurn(
     merkeMainTurnSession(session.identityId, session.id);
     let r: Awaited<ReturnType<typeof sendeMainTurn>>;
     try {
-      r = await sendeMainTurn({ identity_id: session.identityId, runtime, nachricht: message, optionen });
+      try {
+        r = await sendeMainTurn({ identity_id: session.identityId, runtime, nachricht: message, optionen, absender: 'user' });
+      } catch (error) {
+        // P22-T71: Wrapper weg (verwaist, halber Wechsel): einmal neu sicherstellen und erneut senden statt 'nicht verbunden'.
+        if (!(error instanceof MainLaufFehler) || !['main_nicht_verbunden', 'main_laeuft_nicht'].includes(error.code)) throw error;
+        emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', schritt: 'neu_starten', grund: error.code } } });
+        const neu = await stelleMainLaufSicher({ identity_id: session.identityId, runtime, modell: startModell, modell_explizit: modellExplizit });
+        if (neu.zustand !== 'laeuft') throw new MainLaufFehler('main_start_dauert', { spawn_job_id: neu.spawn_job_id });
+        r = await sendeMainTurn({ identity_id: session.identityId, runtime, nachricht: message, optionen, absender: 'user' });
+      }
     } finally {
       vergissMainTurnSession(session.identityId, session.id);
     }
     if (r.art === 'zugestellt') {
+      // P22-T73: mit Warteschlange ist das ein Einwurf; die Route reiht die Antwortzeile ein, die Antwort kommt ueber die Zustellung.
+      const einwurf = await warteschlangeAktiv();
       emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', schritt: 'zugestellt', hinweis: r.hinweis } } });
-      emit({ event: 'delta', data: { content: r.hinweis } });
+      if (!einwurf) emit({ event: 'delta', data: { content: r.hinweis } });
+      else return { runtimeSessionId: session.runtimeSessionId, context: { ...(session.context ?? {}), hauptagent_weg: 'dauerhaft', einwurf: { inbox_id: r.inbox_id } } };
     } else {
       // O1: fertige Antwort (Live-Deltas folgen mit dem Delta-Weg des Wrappers).
       if (r.text) emit({ event: 'delta', data: { content: r.text } });
@@ -75,6 +87,7 @@ export async function dauerhafterMainTurn(
     const roh = error instanceof MainLaufFehler ? error.details?.meldung : (error as Error)?.message;
     const meldung = typeof roh === 'string' && roh.trim() ? roh.trim().slice(0, 500) : null;
     letzterFehler = { zeit: new Date().toISOString(), runtime, code, meldung };
-    throw new Error('Hauptagent im Container nicht erreichbar (' + code + ')' + (meldung ? ': ' + meldung : ''));
+    // P22-T73: code bleibt am Fehler, damit die Route nicht zugestellte Nachrichten einreihen kann (NICHT_ERREICHT_CODES).
+    throw Object.assign(new Error('Hauptagent im Container nicht erreichbar (' + code + ')' + (meldung ? ': ' + meldung : '')), { code, meldung });
   }
 }

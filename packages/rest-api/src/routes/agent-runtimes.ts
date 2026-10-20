@@ -14,6 +14,7 @@ import {
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
+  warteschlangeAktiv, mainWechselOffen, stelleInWarteschlange, NICHT_ERREICHT_CODES, warteschlangeStatus, leseWarteschlangeSchalter, setzeWarteschlangeSchalter,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
@@ -309,6 +310,18 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, schalter: await setzeVerlaufSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
     } catch (error) { return sendFachFehler(reply, error); }
   });
+  // P22-T73: Warteschlange des Main-Chats (Debug: was wartet warum, Schwelle mit Quelle, letzter Takt) und ihr Schalter.
+  fastify.get('/api/main-agent/warteschlange', async (_request, reply) => {
+    try { return { success: true, ...(await warteschlangeStatus(await hauptagentIdentitaetsId())) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get('/api/main-agent/warteschlange/schalter', async (_request, reply) => {
+    try { return { success: true, schalter: await leseWarteschlangeSchalter() }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { aktiv?: unknown; grund?: unknown } }>('/api/main-agent/warteschlange/schalter', async (request, reply) => {
+    try {
+      return { success: true, schalter: await setzeWarteschlangeSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
   fastify.get('/api/main-agent/verlauf/status', async (_request, reply) => {
     try { return { success: true, ...(await verlaufStatus()) }; } catch (error) { return sendFachFehler(reply, error); }
   });
@@ -602,10 +615,29 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     }
     let session;
     let modell: string | null = null;
+    // P22-T71: die Main-Identitaet spricht immer mit der ZUGEWIESENEN Runtime (Wechsel mitten im Gespraech), nicht mit der der
+    // Sitzung. P22-T73: mit Warteschlange wird eine Nachricht bei nicht bereiter Runtime oder offenem Wechsel eingereiht statt
+    // abgelehnt; die Antwort kommt spaeter in dieselbe Antwortzeile (Live-Abgleich des Verlaufs).
+    let runtime: RuntimeName;
+    let warteschlange = false;
+    let nichtBereit: string | null = null;
     try {
       session = await manager.getMainSession(request.params.sessionId);
-      manager.driver(session.runtime);
-      modell = (await manager.assertMainRuntimeReady(session.runtime)).model;
+      runtime = session.runtime;
+      const istMain = !!session.identityId && (await hauptagentIdentitaetsId().catch(() => null)) === session.identityId;
+      if (istMain) {
+        const zugewiesen = await manager.zugewieseneMainRuntime();
+        if (zugewiesen === 'claude' || zugewiesen === 'codex') runtime = zugewiesen;
+        warteschlange = await warteschlangeAktiv();
+      }
+      manager.driver(runtime);
+      try {
+        modell = (await manager.assertMainRuntimeReady(runtime)).model;
+      } catch (error) {
+        if (!warteschlange) throw error;
+        nichtBereit = 'runtime_nicht_bereit';
+      }
+      if (warteschlange && !nichtBereit && session.identityId && await mainWechselOffen(session.identityId)) nichtBereit = 'wechsel_offen';
       await manager.markSessionRunning(session.id);
     } catch (error) {
       return sendError(reply, error, 404);
@@ -618,20 +650,38 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
-    sse(reply, 'ready', { sessionId: session.id, runtime: session.runtime });
+    sse(reply, 'ready', { sessionId: session.id, runtime });
 
     // P22-T63: Verlauf je Main-Identitaet. User-Nachricht + laufende Antwort sofort in PG (andere Geraete sehen sie), danach
     // jedes Stromereignis gedrosselt. Nur Sitzungen der Main-Identitaet bei Schalter hauptagent_verlauf EIN; Fehler hier
     // lassen den Turn nie scheitern. 'verlauf' sagt der Web-UI, unter welchen Server-IDs die beiden Zeilen stehen.
     const turn = await legeVerlaufTurnAn({
-      identity_id: session.identityId, text: request.body.message, session_id: session.id, runtime: session.runtime, modell,
+      identity_id: session.identityId, text: request.body.message, session_id: session.id, runtime, modell,
       lauf_id: 'altweg:' + session.id, geraet: geraetAusUserAgent(request.headers['user-agent']), anhaenge: request.body.anhaenge,
     });
     const verlauf = turn.gespeichert ? starteVerlaufAntwort(turn.antwort_id, {
       // Lauf: Altweg je CLI-Sitzung; auf dem dauerhaften Weg setzt core den Lauf des Main (aktuellerMainLauf).
-      modell, identity_id: turn.identity_id, user_id: turn.user_id, user_text: request.body.message, runtime: session.runtime, lauf_id: 'altweg:' + session.id,
+      modell, identity_id: turn.identity_id, user_id: turn.user_id, user_text: request.body.message, runtime, lauf_id: 'altweg:' + session.id,
     }) : null;
     sse(reply, 'verlauf', turn.gespeichert ? { user_id: turn.user_id, antwort_id: turn.antwort_id } : { aus: turn.grund });
+
+    // P22-T73: Antwortzeile an die Warteschlange geben und den Strom ohne Fehler beenden ('done' mit wartet). false = ging nicht
+    // (Schalter aus, kein Verlauf), dann bleibt es beim bisherigen Weg.
+    const aktuelleSitzung = session;
+    const einreihen = async (grund: string, meldung: string | null, art: 'warten' | 'einwurf' = 'warten', inboxId: number | null = null): Promise<boolean> => {
+      if (!warteschlange || !verlauf) return false;
+      await verlauf.uebergeben();
+      if (!(await stelleInWarteschlange(verlauf.antwort_id, { art, grund, meldung, inbox_id: inboxId }))) return false;
+      await manager.completeSession(aktuelleSitzung.id, aktuelleSitzung.runtimeSessionId, aktuelleSitzung.context ?? null).catch(() => undefined);
+      sse(reply, 'runtime', { hauptagent: { weg: 'dauerhaft', schritt: art === 'einwurf' ? 'einwurf' : 'wartet', grund, ...(meldung ? { meldung } : {}) } });
+      sse(reply, 'done', {
+        sessionId: aktuelleSitzung.id, runtimeSessionId: aktuelleSitzung.runtimeSessionId, context: aktuelleSitzung.context ?? null,
+        wartet: { art, grund, antwort_id: verlauf.antwort_id }, artifacts: countArtifacts(aktuelleSitzung.id),
+      });
+      reply.raw.end();
+      return true;
+    };
+    if (nichtBereit && await einreihen(nichtBereit, null)) return;
 
     // Artefakt-Zustellung: solange dieser Strom offen ist, kann das artefakt-Tool
     // Events in GENAU diese Session einspeisen (kein Broadcast, artifact-stream.ts).
@@ -645,7 +695,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     reply.raw.once('close', onClose);
     let letzteUsage: Record<string, unknown> | null = null;
     try {
-      const result = await manager.driver(session.runtime).sendMessage(
+      const result = await manager.driver(runtime).sendMessage(
         session,
         request.body.message,
         (item: RuntimeStreamEvent) => {
@@ -655,6 +705,9 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         },
         controller.signal,
       );
+      // P22-T73: Main beschaeftigt -> Einwurf; die Antwort schreibt die Zustellung dieser Inbox-Nachricht in dieselbe Zeile.
+      const einwurf = (result.context as { einwurf?: { inbox_id?: number | null } } | null)?.einwurf;
+      if (einwurf && await einreihen('beschaeftigt', null, 'einwurf', einwurf.inbox_id ?? null)) return;
       await manager.completeSession(session.id, result.runtimeSessionId, result.context);
       // P22-T6: auf dem dauerhaften Container-Weg bucht der Wrapper selbst (T7 meldeVerbrauch); hier nur der Altweg.
       if (result.context?.hauptagent_weg !== 'dauerhaft') {
@@ -675,6 +728,10 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         reply.raw.end();
       }
     } catch (error) {
+      // P22-T73: hat die Nachricht den Main nicht erreicht (Start, Wechsel, Ausfall), wartet sie statt als Fehler zu enden.
+      const code = (error as { code?: unknown })?.code;
+      if (typeof code === 'string' && NICHT_ERREICHT_CODES.includes(code)
+        && await einreihen(code, typeof (error as { meldung?: unknown }).meldung === 'string' ? (error as { meldung: string }).meldung : null)) return;
       await manager.failSession(session.id, error instanceof Error ? error : new Error(String(error))).catch(() => undefined);
       await verlauf?.abschliessen(controller.signal.aborted ? 'abgebrochen' : 'fehler', { fehler: errorMessage(error) });
       if (!controller.signal.aborted) {

@@ -153,7 +153,8 @@ export interface VerlaufEintrag {
   quelle_ref: string | null;
   antwort_auf: string | null;
   gehoert_zu: string | null;
-  status: 'laeuft' | 'fertig' | 'fehler' | 'abgebrochen';
+  /** P22-T73: 'wartet' = Antwortzeile einer User-Nachricht in der Warteschlange (meta.warteschlange), Schema 125. */
+  status: 'laeuft' | 'fertig' | 'fehler' | 'abgebrochen' | 'wartet';
   text: string;
   werkzeuge: VerlaufWerkzeuge;
   artefakte: Array<Record<string, unknown>>;
@@ -473,6 +474,11 @@ export interface VerlaufAntwortSchreiber {
   verbrauchReferenz(referenz: string): void;
   /** Endstand sofort schreiben (fertig | fehler | abgebrochen) samt Zugdaten und Kontextstand. Idempotent, wirft nie. */
   abschliessen(status: 'fertig' | 'fehler' | 'abgebrochen', zusatz?: { fehler?: string; laufkontext?: unknown }): Promise<void>;
+  /**
+   * P22-T73: die Zeile geht an die Warteschlange (hauptagent-warteschlange.ts). Wartet auf laufende Schreibvorgaenge und schreibt
+   * danach nichts mehr (auch kein spaeteres abschliessen). Wirft nie.
+   */
+  uebergeben(): Promise<void>;
 }
 
 /** Daten des Zugs fuer die eigene Zaehlung (Stufe 2 B). Ohne identity_id wird nicht gezaehlt. */
@@ -559,8 +565,10 @@ async function zaehleZug(antwort_id: string, stand: VerlaufAntwortStand, modell:
  * Schreiber fuer die laufende Antwortzeile. Schreibvorgaenge laufen nacheinander (nie zwei UPDATEs derselben Zeile
  * gleichzeitig); nach abschliessen schreibt er nichts mehr. modell = tatsaechliches Modell (Kontextfenster). drossel_ms nur fuer Tests.
  */
-export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: number; modell?: string | null } & VerlaufZugKontext = {}): VerlaufAntwortSchreiber {
+export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: number; modell?: string | null; meta?: Record<string, unknown> } & VerlaufZugKontext = {}): VerlaufAntwortSchreiber {
   const stand = neuerAntwortStand();
+  // P22-T73: Zustellung aus der Warteschlange behaelt die Metadaten der Zeile (meta.warteschlange), der Schreiber ersetzt meta ganz.
+  if (o.meta) stand.meta = { ...o.meta };
   const drossel = o.drossel_ms ?? VERLAUF_DROSSEL_MS;
   const start = Date.now();
   let timer: NodeJS.Timeout | null = null;
@@ -583,6 +591,12 @@ export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: numbe
     },
     verbrauchReferenz(referenz) {
       if (!stand.verbrauch_referenzen.includes(referenz)) stand.verbrauch_referenzen.push(referenz);
+    },
+    async uebergeben() {
+      if (fertig) return;
+      fertig = true;
+      if (timer) { clearTimeout(timer); timer = null; }
+      try { await kette; } finally { aktiveAntworten.delete(antwort_id); }
     },
     async abschliessen(status, zusatz) {
       if (fertig) return;
@@ -937,8 +951,11 @@ export async function leseVerlauf(a: VerlaufAbfrage = {}): Promise<VerlaufAntwor
   if ('grund' in v) return { ...leer, grund: v.grund };
   const pool = getPool();
   // Verwaiste laufende Antworten (API neu gestartet, Strom weg) ehrlich abschliessen statt ewig "antwortet …" zu zeigen.
+  // P22-T73: kam die Zeile aus der Warteschlange (meta.warteschlange), geht sie dorthin zurueck statt verloren (lieber doppelt
+  // zugestellt als nie beantwortet).
   await pool.query(
-    `UPDATE hauptagent_verlauf SET status = 'abgebrochen', hinweise = hinweise || '["Antwort ohne Abschluss (Strom auf dem Server beendet)"]'::jsonb,
+    `UPDATE hauptagent_verlauf SET status = CASE WHEN meta ? 'warteschlange' THEN 'wartet' ELSE 'abgebrochen' END,
+       hinweise = hinweise || CASE WHEN meta ? 'warteschlange' THEN '[]'::jsonb ELSE '["Antwort ohne Abschluss (Strom auf dem Server beendet)"]'::jsonb END,
        rev = nextval('hauptagent_verlauf_rev'), aktualisiert_am = NOW()
      WHERE identity_id = $1 AND status = 'laeuft' AND aktualisiert_am < NOW() - $2::int * interval '1 second'
        AND NOT (id::text = ANY($3::text[]))`,
@@ -1009,6 +1026,8 @@ export interface VerlaufStatus {
   token_zaehlung?: { schalter: { aktiv: boolean; quelle: string; letzter_fehler: string | null }; kalibrierung: Record<string, unknown> | null; letzter_befund: { text: string; am: string } | null };
   /** P22-T63 D: letzte Uebergabe dieses Prozesses. */
   letzte_uebergabe?: { thought_id: string; anlass: string; zuege: number; tokens: number; am: string } | null;
+  /** P22-T73: Antwortzeilen in der Warteschlange (status 'wartet'). */
+  wartend?: number | null;
 }
 
 /** Debug-Stand (GET /api/main-agent/verlauf/status). */
@@ -1019,16 +1038,17 @@ export async function verlaufStatus(): Promise<VerlaufStatus> {
   try {
     const identity_id = await hauptagentIdentitaetsId();
     if (!identity_id) return basis;
-    const r = await getPool().query<{ anzahl: number; sichtbar: number; laufend: number; geleert_am: Date | null }>(
+    const r = await getPool().query<{ anzahl: number; sichtbar: number; laufend: number; wartend: number; geleert_am: Date | null }>(
       `WITH s AS (SELECT ausgeblendet_bis_id, geleert_am FROM hauptagent_verlauf_stand WHERE identity_id = $1)
        SELECT (SELECT COUNT(*)::int FROM hauptagent_verlauf WHERE identity_id = $1) AS anzahl,
               (SELECT COUNT(*)::int FROM hauptagent_verlauf WHERE identity_id = $1 AND id > COALESCE((SELECT ausgeblendet_bis_id FROM s), 0)) AS sichtbar,
               (SELECT COUNT(*)::int FROM hauptagent_verlauf WHERE identity_id = $1 AND status = 'laeuft') AS laufend,
+              (SELECT COUNT(*)::int FROM hauptagent_verlauf WHERE identity_id = $1 AND status = 'wartet') AS wartend,
               (SELECT geleert_am FROM s) AS geleert_am`, [identity_id]);
     const z = r.rows[0];
     const ts = await leseTokenZaehlSchalter();
     const kal = await getPool().query<{ kalibrierung: Record<string, unknown> }>('SELECT kalibrierung FROM hauptagent_verlauf_stand WHERE identity_id = $1', [identity_id]);
-    return { ...basis, identity_id, anzahl: z.anzahl, sichtbar: z.sichtbar, laufend: z.laufend, geleert_am: z.geleert_am ? z.geleert_am.toISOString() : null,
+    return { ...basis, identity_id, anzahl: z.anzahl, sichtbar: z.sichtbar, laufend: z.laufend, wartend: z.wartend, geleert_am: z.geleert_am ? z.geleert_am.toISOString() : null,
       token_zaehlung: { schalter: { aktiv: ts.aktiv, quelle: ts.quelle, letzter_fehler: ts.letzter_fehler }, kalibrierung: kal.rows[0]?.kalibrierung ?? null,
         letzter_befund: letzterZaehlBefund }, letzte_uebergabe: letzteUebergabe };
   } catch (error) {

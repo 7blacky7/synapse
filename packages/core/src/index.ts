@@ -696,9 +696,15 @@ export {
   ausgabetextEintrag, leseKalibrierung, kalibriere, laufSumme, setzeGrundlast,
 } from './services/verlauf-tokens.js';
 export type { ModellFamilie, ZaehlVerfahren, TokenZaehlung, TokenZaehlSchalter, Kalibrierung } from './services/verlauf-tokens.js';
-export type { MainLaufOptionen, MainLaufStand, MainStartEingabe, MainTurnErgebnis, RuntimeWechselDienste } from './services/hauptagent-lauf.js';
+export type { MainLaufOptionen, MainLaufStand, MainStartEingabe, MainTurnErgebnis, RuntimeWechselDienste, MainStopErgebnis } from './services/hauptagent-lauf.js';
+// P22-T73: Warteschlange des Main-Chats (Schalter main_warteschlange, Verlauf-Status 'wartet').
 export {
-  AUSFUEHRBARE_AUFTRAG_ARTEN, AUFTRAG_LEASE_MS, RuntimeAuftragFehler, claimeRuntimeAuftraege, meldeRuntimeAuftrag,
+  MAIN_WARTESCHLANGE_FUNKTION, NICHT_ERREICHT_CODES, leseWarteschlangeSchalter, setzeWarteschlangeSchalter, warteschlangeAktiv,
+  mainWechselOffen, stelleInWarteschlange, fuehreMainWarteschlangeAus, schliesseEinwurfAb, warteschlangeStatus, buendelText,
+} from './services/hauptagent-warteschlange.js';
+export type { WarteEintrag, WarteschlangeDienste, WarteschlangeErgebnis, WarteschlangeStatus } from './services/hauptagent-warteschlange.js';
+export {
+  AUSFUEHRBARE_AUFTRAG_ARTEN, AUFTRAG_LEASE_MS, RuntimeAuftragFehler, claimeRuntimeAuftraege, meldeRuntimeAuftrag, meldeAuftragFortschritt,
 } from './services/runtime-auftraege-ausfuehrung.js';
 export type { AusfuehrbareAuftragArt, AuftragFuerDaemon, AuftragMeldung } from './services/runtime-auftraege-ausfuehrung.js';
 export { SPECIALIST_ZIEL_RUNTIMES } from './services/specialist-queue.js';
@@ -771,6 +777,8 @@ export {
 } from './services/kontext-korridor.js';
 export type { KorridorWerte, KontextSchwellen } from './services/kontext-korridor.js';
 export { pruefeRespawnKorridor } from './services/specialist-respawn.js';
+export { setzeCliKontextQuelle, cliKontextFenster } from './services/cli-kontext.js';
+export type { CliKontextQuelle } from './services/cli-kontext.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';
 
 // shell(exec): Warten bei neuer Channel-Nachricht unterbrechen (Task b5b5304a)

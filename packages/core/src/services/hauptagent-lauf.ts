@@ -309,11 +309,14 @@ export async function stelleMainLaufSicher(e: MainStartEingabe): Promise<{ zusta
 
 export type MainTurnErgebnis =
   | { art: 'antwort'; text: string; usage: { inputTokens: number | null; outputTokens: number | null; kontextTokens?: number } }
-  | { art: 'zugestellt'; hinweis: string };
+  /** P22-T73: inbox_id = Inbox-Zeile des Einwurfs (die Zustellung ordnet die spaetere Antwort darueber zu); null bei alten Daemons. */
+  | { art: 'zugestellt'; hinweis: string; inbox_id: number | null };
 
 /** Ein Chat-Turn des Users an den laufenden Main (Job 'wake'). */
 export async function sendeMainTurn(e: {
   identity_id: string; runtime: SpecialistZielRuntime; nachricht: string; optionen?: MainLaufOptionen;
+  /** P22-T73: Absender des Inbox-Rueckfalls bei beschaeftigtem Main (Web-UI-Chat: 'user'). */
+  absender?: string;
 }): Promise<MainTurnErgebnis> {
   const opt = e.optionen ?? leseMainLaufOptionen();
   if (!e.nachricht.trim()) throw new MainLaufFehler('nachricht_leer');
@@ -324,7 +327,7 @@ export async function sendeMainTurn(e: {
   if (opt.beschaeftigt === 'fehler' && stand.wrapper?.busy) throw new MainLaufFehler('main_beschaeftigt');
   const job = await enqueueSpecialistJob({
     project: HAUPTAGENT_PROJEKT, action: 'wake',
-    args: { name: HAUPTAGENT_AGENT_ID, identity_id: e.identity_id, message: e.nachricht, target_runtime: e.runtime },
+    args: { name: HAUPTAGENT_AGENT_ID, identity_id: e.identity_id, message: e.nachricht, target_runtime: e.runtime, ...(e.absender ? { absender: e.absender } : {}) },
   });
   const r = await warteJob(job.id, opt.turn_warte_ms);
   if (r.status === 'pending' || r.status === 'running') throw new MainLaufFehler('main_turn_zeitlimit', { job_id: job.id });
@@ -344,7 +347,11 @@ export async function sendeMainTurn(e: {
     }
     throw new MainLaufFehler('main_turn_fehlgeschlagen', { job_id: job.id, meldung });
   }
-  if (erg.queued === true) return { art: 'zugestellt', hinweis: 'Hauptagent ist beschaeftigt; Nachricht in seiner Inbox zugestellt, Antwort folgt.' };
+  if (erg.queued === true) {
+    const inbox = Number(erg.inbox_id);
+    return { art: 'zugestellt', hinweis: 'Hauptagent ist beschaeftigt; Nachricht in seiner Inbox zugestellt, Antwort folgt.',
+      inbox_id: Number.isSafeInteger(inbox) && inbox > 0 ? inbox : null };
+  }
   const tokens = (erg.tokens ?? {}) as { input?: unknown; output?: unknown; kontext?: unknown };
   // P22-T70: Kontextstand misst der Wrapper (JSONL); fehlt er (altes Runtime-Image), bleibt der Kontext 'nicht gemessen'.
   const kontext = typeof tokens.kontext === 'number' && tokens.kontext > 0 ? tokens.kontext : null;

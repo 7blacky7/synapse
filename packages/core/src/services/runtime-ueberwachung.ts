@@ -166,6 +166,9 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // so lange (Minuten) gilt der letzte bestaetigte gute Stand weiter, wenn Probe-Laeufe haengen oder fehlschlagen.
   status_negativ_bestaetigung: { art: 'zahl', standard: 2, min: 1, max: 10 },
   status_guter_stand_minuten: { art: 'zahl', standard: 10, min: 1, max: 240 },
+  // P22-T73 (User 68259fd1): Warteschlange des Main-Chats. War der Main mindestens so lange nicht erreichbar (aelteste wartende
+  // Nachricht), gehen alle wartenden Nachrichten als EIN Buendel-Turn; kuerzer = einzeln in Reihenfolge. 0 = immer Buendel.
+  warteschlange_buendel_sekunden: { art: 'zahl', standard: 120, min: 0, max: 86400 },
 } as const satisfies Record<string, EinstellungDef>;
 export type RuntimeUeberwachungEinstellungName = keyof typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN;
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN = Object.keys(RUNTIME_UEBERWACHUNG_EINSTELLUNGEN) as RuntimeUeberwachungEinstellungName[];

@@ -34,7 +34,7 @@ import {
 } from '../api/control-plane-adapter';
 import { defaultSettings, navigation } from '../mock/ui-control-plane';
 import {
-  clearMainAgentVerlauf, createMainAgentSession, getMainAgentRuntime, getMainAgentVerlauf, streamMainAgentMessage,
+  clearMainAgentVerlauf, createMainAgentSession, getMainAgentRuntime, getMainAgentVerlauf, streamMainAgentMessage, getMainAgentWarteschlangeSchalter,
   type AgentArtifactEvent, type AgentRuntimeName, type AgentRuntimeStatus, type AgentToolEvent, type MainAgentVerlauf, type MainAgentVerlaufEintrag,
 } from '../api/agent-runtime';
 import type {
@@ -574,6 +574,21 @@ function haengeMetaBilderAn(items: AgentMessage[], eintrag: MainAgentVerlaufEint
 // P22-T63: Verlaufseintraege (aufsteigend) als Chat-Nachrichten. Artefakte laufen ueber setzeArtefaktBlock, damit ein
 // Block mit bekannter id auch beim Laden den frueheren ersetzt statt einen zweiten anzuhaengen. Werkzeug-Eintraege eines
 // Zugs (gehoert_zu) erscheinen dort in der Werkzeugliste, nicht als eigene Nachricht.
+// P22-T73: wartende Antwortzeile (Warteschlange des Main-Chats): Grund lesbar, die Antwort kommt von selbst in diese Zeile.
+const WARTE_GRUND: Record<string, string> = {
+  runtime_nicht_bereit: 'Runtime nicht bereit', wechsel_offen: 'Wechsel läuft', beschaeftigt: 'arbeitet noch an etwas anderem',
+  runtime_daemon_fehlt: 'Container-Daemon nicht angemeldet', runtime_daemon_nicht_erreichbar: 'Container nicht erreichbar',
+  main_start_fehlgeschlagen: 'Start fehlgeschlagen, neuer Versuch folgt', main_start_dauert: 'startet noch', main_laeuft_nicht: 'startet',
+  main_nicht_verbunden: 'wird neu verbunden', main_laeuft_auf_anderer_runtime: 'Wechsel wird abgeschlossen',
+};
+function warteText(meta: Record<string, unknown> | null | undefined): string {
+  const w = (meta?.warteschlange && typeof meta.warteschlange === 'object' ? meta.warteschlange : {}) as { art?: string; grund?: string };
+  const grund = w.grund ? (WARTE_GRUND[w.grund] ?? w.grund) : 'nicht erreichbar';
+  return w.art === 'einwurf'
+    ? '⏳ Als Einwurf zugestellt – der Hauptagent ' + grund + '. Die Antwort erscheint hier von selbst.'
+    : '⏳ Wartet auf den Hauptagenten (' + grund + '). Die Antwort erscheint hier von selbst – nicht erneut senden.';
+}
+
 function baueVerlaufNachrichten(eintraege: MainAgentVerlaufEintrag[]): AgentMessage[] {
   const auftraege = new Map(eintraege.filter((eintrag) => eintrag.rolle === 'user' || eintrag.rolle === 'nachricht').map((eintrag) => [eintrag.id, eintrag.text]));
   let items: AgentMessage[] = [];
@@ -599,8 +614,8 @@ function baueVerlaufNachrichten(eintraege: MainAgentVerlaufEintrag[]): AgentMess
       continue;
     }
     items.push({
-      id: verlaufAnzeigeId(eintrag.id), role: 'agent', kind: 'text', text: eintrag.text, info: verlaufInfo(eintrag),
-      toolRun: verlaufWerkzeuge(eintrag), laeuft: eintrag.status === 'laeuft', hinweise: eintrag.hinweise?.length ? eintrag.hinweise : undefined,
+      id: verlaufAnzeigeId(eintrag.id), role: 'agent', kind: 'text', text: eintrag.status === 'wartet' && !eintrag.text ? warteText(eintrag.meta) : eintrag.text,
+      info: verlaufInfo(eintrag), toolRun: verlaufWerkzeuge(eintrag), laeuft: eintrag.status === 'laeuft', hinweise: eintrag.hinweise?.length ? eintrag.hinweise : undefined,
       zugInfo: verlaufZugInfo(eintrag),
     });
     (eintrag.artefakte ?? []).forEach((block, index) => {
@@ -624,6 +639,8 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   const [mainRuntime, setMainRuntime] = useState<AgentRuntimeStatus | null>(null);
   const [mainRuntimeResolved, setMainRuntimeResolved] = useState(false);
   const [runtimeSessionId, setRuntimeSessionId] = useState('');
+  // P22-T73: Warteschlange EIN -> Nachrichten an den Main warten serverseitig, statt bei nicht bereiter Runtime abgelehnt zu werden.
+  const [warteschlangeAn, setWarteschlangeAn] = useState(false);
   const runtimeAbortRef = useRef<AbortController | null>(null);
   const [runtimeError, setRuntimeError] = useState('');
   const [runtimeUsage, setRuntimeUsage] = useState('');
@@ -766,6 +783,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   useEffect(() => {
     let active = true;
     const refreshRuntime = async () => {
+      void getMainAgentWarteschlangeSchalter().then((s) => { if (active) setWarteschlangeAn(s.aktiv); }, () => undefined);
       try {
         const result = await getMainAgentRuntime();
         if (active) {
@@ -786,15 +804,18 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     && mainRuntime.container.status === 'running'
     && mainRuntime.authentication.status === 'authenticated';
   const assignedRuntime = mainRuntime?.runtime ?? null;
+  // P22-T73: mit Warteschlange bleibt der Chat auch bei gestopptem Container echt (die Nachricht wartet, die Antwort kommt von selbst).
+  const mainRuntimeNutzbar = mainRuntimeReady
+    || (warteschlangeAn && mainRuntime?.assignedToMain === true && (mainRuntime.runtime === 'claude' || mainRuntime.runtime === 'codex'));
 
   useEffect(() => {
     if (!mainRuntimeResolved) return;
     runtimeAbortRef.current?.abort();
     setRuntimeSessionId('');
-    const nextRuntimeMode = mainRuntime?.runtime && mainRuntimeReady ? mainRuntime.runtime : 'mock';
+    const nextRuntimeMode = mainRuntime?.runtime && mainRuntimeNutzbar ? mainRuntime.runtime : 'mock';
     setRuntimeMode(nextRuntimeMode);
     if (nextRuntimeMode !== 'mock') setMessages((items) => items.filter((message) => !message.mock));
-  }, [mainRuntime?.runtime, mainRuntimeReady, mainRuntimeResolved]);
+  }, [mainRuntime?.runtime, mainRuntimeNutzbar, mainRuntimeResolved]);
   const registerInteraction = () => setLastInteraction(Date.now());
   // P22-T63: aeltere Seite oben anfuegen, Leseposition halten.
   const ladeAeltere = async () => {
@@ -880,7 +901,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
 
     if (runtimeMode !== 'mock') {
       const runtimeLabel = runtimeMode === 'claude' ? 'Claude Code' : 'Codex';
-      if (!mainRuntimeReady || assignedRuntime !== runtimeMode) {
+      if (!mainRuntimeNutzbar || assignedRuntime !== runtimeMode) {
         setRuntimeError(runtimeLabel + ' ist noch nicht vollständig eingerichtet, angemeldet und dem Main-Agenten zugewiesen.');
         return;
       }
@@ -940,7 +961,9 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
             setMessages((items) => setzeArtefaktBlock(items, block, { artefaktId, nummer, titel, auftrag: value }));
           },
           onUsage: (usage) => setRuntimeUsage([usage.inputTokens ? 'in ' + usage.inputTokens : '', usage.outputTokens ? 'out ' + usage.outputTokens : '', usage.cachedInputTokens ? 'cache ' + usage.cachedInputTokens : ''].filter(Boolean).join(' · ')),
-          onDone: ({ context, artifacts, artefakteEmpfangen, unbekannteEreignisse }) => {
+          onDone: ({ context, artifacts, artefakteEmpfangen, unbekannteEreignisse, wartet }) => {
+            // P22-T73: die Nachricht wartet serverseitig; die Antwort bringt der Verlauf-Abgleich in dieselbe Zeile.
+            if (wartet) setMessages((items) => items.map((message) => message.id === answerId && !message.text ? { ...message, text: warteText({ warteschlange: wartet }) } : message));
             const laufkontext = fasseLaufkontextZusammen(context);
             setRuntimeContext(laufkontext.text);
             setRuntimeContextRoh(laufkontext.roh);

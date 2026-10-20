@@ -5,6 +5,7 @@ import { FreeModelPoolDriver } from './free-pool-driver.js';
 import { TerminalSessionRegistry } from './terminal-sessions.js';
 import type { AgentRuntimeDriver, MainAgentSession, RuntimeName, RuntimeStatus } from './types.js';
 import { leseHauptagentSchalter, stelleMainIdentitaetSicher, fuehreRuntimeWechselAus, fuehreZustellungAus, hauptagentIdentitaetsId, istMainLaufRuntime } from '@synapse/core';
+import { fuehreMainWarteschlangeAus, warteschlangeAktiv } from '@synapse/core';
 import { registriereCliModellKatalog, standardModellFuerRuntime, type CliModellRuntime, type StandardModellWahl } from '@synapse/core';
 import {
   fuehreUeberwachungsTaktAus, leseRuntimeUeberwachungWerte, registriereUeberwachungsDienste, fuehreCliUpdatesAus, type UeberwachungsDienste, type UeberwachungTaktBericht,
@@ -25,6 +26,9 @@ const ZUSTELL_TAKT_MS = Math.max(500, Number(process.env.SYNAPSE_HAUPTAGENT_ZUST
 /** P22-T6c: Takt des Runtime-Wechsel-Ausfuehrers (runtime_wechsel-Auftraege des Hauptagenten). */
 const RUNTIME_WECHSEL_TAKT_MS = 10_000;
 
+/** P22-T73: Takt der Warteschlange des Main-Chats (Schalter main_warteschlange; ohne wartende Zeile nur eine Abfrage). */
+const WARTESCHLANGE_TAKT_MS = Math.max(1_000, Number(process.env.SYNAPSE_HAUPTAGENT_WARTESCHLANGE_MS) || 3_000);
+
 export class AgentRuntimeManager {
   readonly terminals = new TerminalSessionRegistry();
   private readonly repository = new AgentRuntimeRepository();
@@ -43,6 +47,8 @@ export class AgentRuntimeManager {
     this.wechselTimer.unref();
     this.zustellTimer = setInterval(() => { void this.zustellTakt(); }, ZUSTELL_TAKT_MS);
     this.zustellTimer.unref();
+    this.warteschlangeTimer = setInterval(() => { void this.warteschlangeTakt(); }, WARTESCHLANGE_TAKT_MS);
+    this.warteschlangeTimer.unref();
     // P22-T58: Ueberwachung der Runtime-Container (Container nur Prozesshalter, Entscheidungen hier in der API).
     registriereUeberwachungsDienste(this.ueberwachungsDienste);
     // P22-T62: core prueft/waehlt Main-Modelle an den ausgelesenen CLI-Listen (Schalter hauptagent_cli_modelle).
@@ -144,6 +150,33 @@ export class AgentRuntimeManager {
     }
   }
 
+  private warteschlangeTimer: NodeJS.Timeout | null = null;
+  private warteschlangeLaeuft = false;
+
+  /** P22-T73: wartende Main-Chat-Nachrichten nach der Wiederherstellung zustellen (einzeln bzw. als Buendel). */
+  private async warteschlangeTakt(): Promise<void> {
+    if (this.warteschlangeLaeuft) return;
+    this.warteschlangeLaeuft = true;
+    try {
+      if (!(await leseHauptagentSchalter()).aktiv) return;
+      const identityId = await hauptagentIdentitaetsId();
+      if (!identityId) return;
+      await fuehreMainWarteschlangeAus({
+        identity_id: identityId, runtime: (await this.repository.getAssignedMain())?.runtime ?? null,
+        dienste: { standardModell: (runtime) => this.standardModell(runtime) },
+      });
+    } catch (error) {
+      console.error('[agent-runtime] Warteschlange:', (error as Error).message);
+    } finally {
+      this.warteschlangeLaeuft = false;
+    }
+  }
+
+  /** P22-T71: zugewiesene Main-Runtime ohne Container-Status (fuer die Chat-Route). */
+  async zugewieseneMainRuntime(): Promise<RuntimeName | null> {
+    return (await this.repository.getAssignedMain())?.runtime ?? null;
+  }
+
   private wechselTimer: NodeJS.Timeout | null = null;
   private wechselLaeuft = false;
 
@@ -196,7 +229,13 @@ export class AgentRuntimeManager {
     const assigned = (await this.repository.getAssignedMain())?.runtime;
     if (!assigned) throw new Error('Dem Main-Agenten ist noch keine Runtime zugewiesen');
     if (runtime && runtime !== assigned) throw new Error('Nur die aktuell zugewiesene Main-Agent-Runtime darf Sessions starten');
-    await this.assertMainRuntimeReady(assigned);
+    try {
+      await this.assertMainRuntimeReady(assigned);
+    } catch (error) {
+      // P22-T73: mit Warteschlange darf der Chat auch ohne bereite Runtime beginnen (die erste Nachricht wartet dann).
+      const hauptagent = await leseHauptagentSchalter().then((s) => s.aktiv, () => false);
+      if (!hauptagent || !(await warteschlangeAktiv())) throw error;
+    }
     // P22-T36: Schalter hauptagent EIN -> Erstkontakt legt die Main-Identitaet an bzw. findet sie (Akteur User: diese
     // Route ist nur fuer den interaktiven User offen). AUS -> unveraendert.
     const haupt = await this.hauptagentFuerSession(assigned);
@@ -256,6 +295,7 @@ export class AgentRuntimeManager {
   shutdown(): void {
     if (this.wechselTimer) clearInterval(this.wechselTimer);
     if (this.zustellTimer) clearInterval(this.zustellTimer);
+    if (this.warteschlangeTimer) clearInterval(this.warteschlangeTimer);
     this.beendet = true;
     if (this.ueberwachungTimer) clearTimeout(this.ueberwachungTimer);
     if (this.cliUpdateTimer) clearInterval(this.cliUpdateTimer);

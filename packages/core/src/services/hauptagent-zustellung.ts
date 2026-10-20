@@ -22,6 +22,7 @@ import { HAUPTAGENT_AGENT_ID } from './hauptagent-dienst.js';
 import { enqueueSpecialistJob, waitForSpecialistJob, type SpecialistZielRuntime } from './specialist-queue.js';
 import { leseMainLauf, werkzeugErgebnis } from './hauptagent-lauf.js';
 import { schreibeZustellVerlauf } from './hauptagent-verlauf.js';
+import { schliesseEinwurfAb } from './hauptagent-warteschlange.js';
 
 export const ZUSTELL_WEGE = ['inbox', 'chat', 'channel', 'event'] as const;
 export type ZustellWeg = typeof ZUSTELL_WEGE[number];
@@ -184,8 +185,11 @@ export async function fuehreZustellungAus(o: {
       if (r.status === 'done' && e.zugestellt === true) {
         await getPool().query("UPDATE agent_zustellungen SET status='zugestellt', zugestellt_am=NOW(), job_id=$2, letzter_grund=NULL WHERE id=$1", [z.id, jobId]);
         await quittiere(o.identity_id, z.zustellung);
+        // P22-T73: Einwurf aus dem Web-UI-Chat -> Antwort in die wartende Antwortzeile der User-Nachricht (wirft nie).
+        const einwurf = z.zustellung.weg === 'inbox'
+          && await schliesseEinwurfAb(o.identity_id, z.zustellung.message_id, { response: e.response, tokens: e.tokens as { input?: unknown; output?: unknown } | null });
         // P22-T63 A2: Nachricht + Antwort des Main in den Verlauf (Schalter verlauf_alle_richtungen; wirft nie).
-        await schreibeZustellVerlauf(o.identity_id, z.id, z.zustellung, { response: e.response, tokens: e.tokens as { input?: unknown; output?: unknown } | null });
+        if (!einwurf) await schreibeZustellVerlauf(o.identity_id, z.id, z.zustellung, { response: e.response, tokens: e.tokens as { input?: unknown; output?: unknown } | null });
         erg.zugestellt++;
         continue;
       }
