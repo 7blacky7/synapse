@@ -476,7 +476,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
           .catch((error) => ({ modell: null, quelle: 'keins' as const, grund: errorMessage(error), user_wahl: wahl[rt] ?? null }));
         return {
           runtime: rt, label: d.label, bereit: !grund, zugewiesen: !!s?.assignedToMain, grund: grund ?? (liste?.modelle.length ? null : liste?.grund ?? 'keine_modelle'),
-          standard, standard_grund: standard.grund, user_wahl: wahl[rt] ?? null, quelle: liste?.quelle ?? null, quelle_detail: liste?.quelle_detail ?? null, stand: liste?.stand ?? null,
+          standard, standard_grund: standard.grund, user_wahl: wahl[rt] ?? null, pruefung: s?.pruefung ?? null, quelle: liste?.quelle ?? null, quelle_detail: liste?.quelle_detail ?? null, stand: liste?.stand ?? null,
           cli_version: liste?.cli_version ?? null, hinweise: liste?.hinweise ?? [],
           modelle: (liste?.modelle ?? []).map((m) => ({ ...m, modell: synapseModellId(rt, m.id) })),
         };

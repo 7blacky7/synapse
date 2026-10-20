@@ -88,6 +88,33 @@ export async function leseRuntimeUeberwachungSchalter(): Promise<RuntimeUeberwac
   return { ...basis, letzter_fehler: letzter ?? p.letzter_fehler };
 }
 
+/**
+ * P22-T64: Schalter 'runtime_status_stabil' (Produkt-Schalter I, Standard AUS, nur ausdruecklich) samt Einstellwerten.
+ * EIN: ein haengender/fehlgeschlagener Status-Probe-Lauf wirft einen bestaetigten guten Anmeldestand nicht um (rest-api
+ * status-stabil.ts). Wirksam = intern-Override > Produkt-Schalter global > AUS. Frisch je Aufruf; Lesefehler -> AUS.
+ */
+export async function leseRuntimeStatusStabil(): Promise<{ aktiv: boolean; quelle: 'standard' | 'produkt-schalter' | 'intern'; negativ_bestaetigung: number;
+  guter_stand_minuten: number; letzter_fehler: string | null }> {
+  const w = await leseRuntimeUeberwachungWerte();
+  const basis = { aktiv: false, quelle: 'standard' as 'standard' | 'produkt-schalter' | 'intern', negativ_bestaetigung: w.status_negativ_bestaetigung,
+    guter_stand_minuten: w.status_guter_stand_minuten, letzter_fehler: null as string | null };
+  const { internToolAktiv } = await import('./intern-tool.js');
+  if (internToolAktiv()) {
+    try {
+      const r = await getPool().query<{ aktiv: boolean }>({
+        text: `SELECT aktiv FROM intern_schalter WHERE name = 'runtime_status_stabil' AND modus = 'freigegeben' AND (bis IS NULL OR bis > NOW())`,
+        values: [], query_timeout: 2000,
+      } as Q);
+      if (r.rows[0]) return { ...basis, aktiv: r.rows[0].aktiv, quelle: 'intern' };
+    } catch { basis.letzter_fehler = 'schalter_nicht_erreichbar'; }
+  }
+  try {
+    const p = await leseProfilProduktSchalter('runtime_status_stabil', null);
+    if (p.quelle === 'produkt-schalter') return { ...basis, aktiv: p.aktiv, quelle: 'produkt-schalter' };
+    return { ...basis, letzter_fehler: basis.letzter_fehler ?? p.letzter_fehler };
+  } catch { return { ...basis, letzter_fehler: 'produkt_schalter_nicht_lesbar' }; }
+}
+
 /** REST-Weg der Web-UI (User, ebene global). Gleicher Speicher wie admin profil_schalter_setzen (dort auch Koordinatoren). */
 export async function setzeRuntimeUeberwachungSchalter(akteur: AusweisAkteur | null, e: { aktiv: unknown; grund: unknown }): Promise<RuntimeUeberwachungSchalter> {
   if (!akteur || akteur.art !== 'user') fehler('recht_fehlt', { grund: 'Dieser Weg ist der User-Eingang; Koordinatoren nutzen admin profil_schalter_setzen' });
@@ -135,6 +162,10 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // Kontingent: Meldung 'erschoepft' der Wrapper loest die Kette aus; ohne Reset-Zeit gilt dieses Fenster.
   kontingent_ausloeser: { art: 'bool', standard: true },
   kontingent_ohne_reset_minuten: { art: 'zahl', standard: 60, min: 5, max: 1440 },
+  // P22-T64 (Schalter runtime_status_stabil): so viele eindeutige 'nicht angemeldet'-Laeufe in Folge, bevor der Status umschaltet;
+  // so lange (Minuten) gilt der letzte bestaetigte gute Stand weiter, wenn Probe-Laeufe haengen oder fehlschlagen.
+  status_negativ_bestaetigung: { art: 'zahl', standard: 2, min: 1, max: 10 },
+  status_guter_stand_minuten: { art: 'zahl', standard: 10, min: 1, max: 240 },
 } as const satisfies Record<string, EinstellungDef>;
 export type RuntimeUeberwachungEinstellungName = keyof typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN;
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN = Object.keys(RUNTIME_UEBERWACHUNG_EINSTELLUNGEN) as RuntimeUeberwachungEinstellungName[];

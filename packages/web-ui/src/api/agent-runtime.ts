@@ -25,6 +25,20 @@ export interface AgentRuntimeStatus {
   lastError?: string | null;
   diagnostic?: { code: 'pid_limit' | 'probe_timeout' | 'probe_error'; message: string };
   assignedToMain: boolean;
+  /** P22-T64: Bewertung des Status-Probe-Laufs (Debug). */
+  pruefung?: RuntimeStatusPruefung;
+}
+
+/** P22-T64: letzter Probe-Lauf und ob ein bestaetigter guter Stand trotz haengender Pruefung gilt. */
+export interface RuntimeStatusPruefung {
+  schalter: { aktiv: boolean; quelle: string };
+  letzter_lauf: { zeit: string; dauer_ms: number; ergebnis: string; eindeutig: boolean; meldung: string | null };
+  quelle: 'frisch' | 'letzter_guter_stand';
+  bestaetigt_am: string | null;
+  alter_sekunden: number | null;
+  haengt: boolean;
+  negativ_in_folge: number;
+  hinweis: string | null;
 }
 
 export interface MainAgentRuntimeState {
@@ -231,6 +245,8 @@ export interface MainAgentModellRuntime {
   grund: string | null;
   standard: { modell: string | null; quelle: 'schalter_aus' | 'user_wahl' | 'profil' | 'kleinstes' | 'keins'; grund: string | null; user_wahl: string | null };
   user_wahl: string | null;
+  /** P22-T64: Status-Pruefung dieser Runtime (Debug). */
+  pruefung?: RuntimeStatusPruefung | null;
   quelle: 'cli' | 'datei' | null;
   quelle_detail: string | null;
   stand: string | null;

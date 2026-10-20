@@ -37,6 +37,26 @@ export interface RuntimeStatus {
   lastError: string | null;
   diagnostic?: { code: 'pid_limit' | 'probe_timeout' | 'probe_error'; message: string };
   assignedToMain: boolean;
+  /** P22-T64: Bewertung des Status-Probe-Laufs (Debug; status-stabil.ts). */
+  pruefung?: StatusPruefung;
+}
+
+/** P22-T64: Ergebnis eines Status-Probe-Laufs. eindeutig = ok, ausgeloggt, container_aus, nicht_installiert; unklar = timeout, fehler. */
+export type ProbeErgebnis = 'ok' | 'ausgeloggt' | 'container_aus' | 'nicht_installiert' | 'timeout' | 'fehler';
+export interface StatusPruefung {
+  /** Schalter runtime_status_stabil (Quelle) - AUS: Status ungefiltert wie der letzte Lauf. */
+  schalter: { aktiv: boolean; quelle: string };
+  letzter_lauf: { zeit: string; dauer_ms: number; ergebnis: ProbeErgebnis; eindeutig: boolean; meldung: string | null };
+  /** frisch = Status aus diesem Lauf; letzter_guter_stand = bestaetigter Stand trotz unklarem/unbestaetigtem Lauf. */
+  quelle: 'frisch' | 'letzter_guter_stand';
+  /** Zeitpunkt des letzten bestaetigten Stands 'angemeldet' (oder null). */
+  bestaetigt_am: string | null;
+  alter_sekunden: number | null;
+  /** Letzter Lauf zeitueberschritten/fehlgeschlagen, guter Stand gilt weiter. */
+  haengt: boolean;
+  /** Eindeutige 'nicht angemeldet'-Laeufe in Folge (Umschalten ab status_negativ_bestaetigung). */
+  negativ_in_folge: number;
+  hinweis: string | null;
 }
 
 export interface MainAgentSession {

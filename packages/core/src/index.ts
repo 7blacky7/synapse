@@ -635,6 +635,7 @@ export {
   RUNTIME_UEBERWACHUNG_FUNKTION, UEBERWACHTE_RUNTIMES, RUNTIME_UEBERWACHUNG_EINSTELLUNGEN, RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN,
   RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, RUNTIME_UEBERWACHUNG_MODI,
   leseRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungSchalter, leseRuntimeUeberwachungEinstellungen, leseRuntimeUeberwachungWerte, setzeRuntimeUeberwachungEinstellungen,
+  leseRuntimeStatusStabil,
   leseUeberwachungStaende, leseUeberwachungEreignisse, markiereRuntimeAngehalten, bewerteRuntime, fuehreUeberwachungsTaktAus,
   letzterUeberwachungsTakt, registriereUeberwachungsDienste, leseRuntimeUeberwachung, ueberwachungKurz, istRuntimeUeberwachungAdminAction,
   fuehreRuntimeUeberwachungAdminAus, registriereFreeAusfuehrer, fuehreCliUpdatesAus, leseUmzuege, meldeRuntimeKontingent, resetZeitMs,

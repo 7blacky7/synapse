@@ -9,6 +9,7 @@ import { dauerhafterMainTurn } from './dauerhafter-main.js';
 import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
+import { StatusStabilisierer } from './status-stabil.js';
 import type { ContainerBeobachtung } from '@synapse/core';
 import type {
   AgentRuntimeDriver,
@@ -250,8 +251,15 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     return this.status();
   }
 
+  /** P22-T64: ein haengender/fehlgeschlagener Lauf wirft den bestaetigten guten Stand nicht um (Schalter runtime_status_stabil). */
+  private readonly stabil = new StatusStabilisierer();
+
   status(): Promise<RuntimeStatus> {
-    return this.statusProbe.run(() => this.probeStatus());
+    return this.statusProbe.run(async () => {
+      const start = Date.now();
+      const { status, authEindeutig } = await this.probeStatus();
+      return this.stabil.bewerte(status, authEindeutig, Date.now() - start);
+    });
   }
 
   /** P22-T58: leichte Beobachtung fuer die Runtime-Ueberwachung (inspect + Status-Probe, ohne CLI-/Login-Proben). */
@@ -296,10 +304,11 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     this.statusProbe.invalidate();
   }
 
-  private async probeStatus(): Promise<RuntimeStatus> {
+  private async probeStatus(): Promise<{ status: RuntimeStatus; authEindeutig: boolean }> {
     const stored = await this.repository.get('codex');
+    let authEindeutig = false;
     if (!stored) {
-      return {
+      return { authEindeutig: true, status: {
         runtime: 'codex',
         role: 'main',
         configured: false,
@@ -312,7 +321,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
         version: null,
         lastError: null,
         assignedToMain: false,
-      };
+      } };
     }
     const config = stored;
     let containerState: RuntimeStatus['container']['status'] = 'not_created';
@@ -339,6 +348,8 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
           const login = await this.execCapture(container, ['codex', 'login', 'status'], 5_000);
           const loginText = (login.stdout + '\n' + login.stderr).trim();
           authStatus = login.exitCode === 0 ? 'authenticated' : 'not_authenticated';
+          // P22-T64: nur Exit 0 oder eine lesbare Abmeldung ist eindeutig; ein unter Last abgebrochener Lauf nicht.
+          authEindeutig = login.exitCode === 0 || /not logged in|logged out|please log in|codex login/i.test(loginText);
           if (login.exitCode === 0) authMethod = loginText.replace(/^Logged in using\s+/i, '').trim() || 'unknown';
         }
       }
@@ -361,7 +372,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       lastError,
     }).catch(() => undefined);
 
-    return {
+    return { authEindeutig, status: {
       runtime: 'codex',
       role: 'main',
       configured: Boolean(stored),
@@ -375,7 +386,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       version,
       lastError,
       assignedToMain: config.assignedToMain,
-    };
+    } };
   }
 
   async openTerminal(input: { cols?: number; rows?: number; command?: string } = {}): Promise<TerminalSession> {

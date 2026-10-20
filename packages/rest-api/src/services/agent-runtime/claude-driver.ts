@@ -12,6 +12,7 @@ import { dauerhafterMainTurn } from './dauerhafter-main.js';
 import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
+import { StatusStabilisierer } from './status-stabil.js';
 import type { ContainerBeobachtung } from '@synapse/core';
 import {
   persistentRuntimeBinds,
@@ -373,8 +374,15 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     return this.status();
   }
 
+  /** P22-T64: ein haengender/fehlgeschlagener Lauf wirft den bestaetigten guten Stand nicht um (Schalter runtime_status_stabil). */
+  private readonly stabil = new StatusStabilisierer();
+
   status(): Promise<RuntimeStatus> {
-    return this.statusProbe.run(() => this.probeStatus());
+    return this.statusProbe.run(async () => {
+      const start = Date.now();
+      const { status, authEindeutig } = await this.probeStatus();
+      return this.stabil.bewerte(status, authEindeutig, Date.now() - start);
+    });
   }
 
   /** P22-T58: leichte Beobachtung fuer die Runtime-Ueberwachung (inspect + Status-Probe, ohne CLI-/Auth-Proben). */
@@ -419,9 +427,10 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     this.statusProbe.invalidate();
   }
 
-  private async probeStatus(): Promise<RuntimeStatus> {
+  private async probeStatus(): Promise<{ status: RuntimeStatus; authEindeutig: boolean }> {
     const stored = await this.repository.get(this.runtime);
-    if (!stored) return this.unconfiguredStatus();
+    if (!stored) return { status: this.unconfiguredStatus(), authEindeutig: true };
+    let authEindeutig = false;
 
     let containerState: RuntimeStatus['container']['status'] = 'not_created';
     let containerId: string | null = null;
@@ -448,6 +457,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
           const auth = await this.readAuthentication(container);
           authStatus = auth.status;
           authMethod = auth.method;
+          authEindeutig = auth.eindeutig;
         }
       }
     } catch (error) {
@@ -469,7 +479,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       lastError,
     }).catch(() => undefined);
 
-    return {
+    return { authEindeutig, status: {
       runtime: this.runtime,
       role: 'main',
       configured: true,
@@ -483,7 +493,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       version,
       lastError,
       assignedToMain: stored.assignedToMain,
-    };
+    } };
   }
 
   async openTerminal(input: { cols?: number; rows?: number; command?: string } = {}): Promise<TerminalSession> {
@@ -748,9 +758,11 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     };
   }
 
+  /** eindeutig = die CLI hat lesbar geantwortet (loggedIn true/false). P22-T64: unlesbar -> 'unknown' (unklar), nicht 'nicht angemeldet'. */
   private async readAuthentication(container: Docker.Container): Promise<{
     status: RuntimeStatus['authentication']['status'];
     method?: string;
+    eindeutig: boolean;
   }> {
     const result = await this.execCapture(
       container,
@@ -764,13 +776,14 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
         return {
           status: 'authenticated',
           method: typeof auth.authMethod === 'string' ? auth.authMethod : 'account',
+          eindeutig: true,
         };
       }
-      return { status: 'not_authenticated' };
+      if (auth.loggedIn === false) return { status: 'not_authenticated', eindeutig: true };
+      return { status: 'unknown', eindeutig: false };
     } catch {
-      return result.exitCode === 0
-        ? { status: 'unknown' }
-        : { status: 'not_authenticated' };
+      // Unter Last abgebrochene/leere Ausgabe ist kein Beleg fuer 'ausgeloggt' (Befund thought 1a233265).
+      return { status: 'unknown', eindeutig: false };
     }
   }
 

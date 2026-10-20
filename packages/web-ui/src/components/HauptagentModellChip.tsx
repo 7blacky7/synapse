@@ -30,7 +30,13 @@ async function anfrage<T>(pfad: string, init?: RequestInit): Promise<T> {
 /** Kurzname fuer den Chip: Codex ohne Praefix 'codex/'. */
 const kurz = (modell: string | null | undefined): string => (modell ? modell.replace(/^codex\//, '') : '–');
 
-export function HauptagentModellChip({ kompakt = true }: { kompakt?: boolean }) {
+/**
+ * P22-T64: Mit status ersetzt der Chip die Statuspille im Chatkopf ('Claude · <modell> · bereit' mit Status-Punkt);
+ * ohne status bleibt er der reine Modell-Chip (Steuerung).
+ */
+export interface ChipStatus { text: string; real: boolean; hinweis: string | null }
+
+export function HauptagentModellChip({ kompakt = true, status: anzeige }: { kompakt?: boolean; status?: ChipStatus }) {
   const [modelle, setModelle] = useState<MainAgentModelle | null>(null);
   const [status, setStatus] = useState<StatusKurz | null>(null);
   const [offen, setOffen] = useState(false);
@@ -46,7 +52,12 @@ export function HauptagentModellChip({ kompakt = true }: { kompakt?: boolean }) 
     setModelle(m);
     setStatus(s);
   }, []);
-  useEffect(() => { void laden(); }, [laden]);
+  useEffect(() => {
+    void laden();
+    // Gewaehlt/laeuft aendert sich auch ohne Klick (Auftrag ausgefuehrt, Failover).
+    const timer = window.setInterval(() => void laden(), 15_000);
+    return () => window.clearInterval(timer);
+  }, [laden]);
   useEffect(() => {
     if (!offen) return;
     void laden();
@@ -82,9 +93,17 @@ export function HauptagentModellChip({ kompakt = true }: { kompakt?: boolean }) 
   };
 
   return <div className={'hauptagent-modell-chip' + (kompakt ? ' kompakt' : '')} ref={wurzel} onPointerDown={(event) => event.stopPropagation()}>
-    <button type="button" className={'chip' + (offen ? ' offen' : '') + (wechselOffen ? ' wechselt' : '')} title={titel} disabled={busy} onClick={() => setOffen(!offen)}>
-      {rt ? (CLI_GRUPPE[rt] ?? rt) : 'Modell'} · {kurz(gewaehlt)}{laeuft && laeuft !== gewaehlt ? ' (läuft ' + kurz(laeuft) + ')' : ''}{wechselOffen ? ' …' : ''} ▾
-    </button>
+    {anzeige
+      ? <div role="button" tabIndex={0} aria-haspopup="menu" aria-expanded={offen}
+        className={'agent-live chip-status' + (anzeige.real ? ' real' : '') + (offen ? ' offen' : '') + (wechselOffen ? ' wechselt' : '')}
+        title={titel + (anzeige.hinweis ? ' · ' + anzeige.hinweis : '')}
+        onClick={() => { if (!busy) setOffen(!offen); }}
+        onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !busy) { event.preventDefault(); setOffen(!offen); } }}>
+        <i /> {rt ? (rt === 'claude' ? 'Claude' : CLI_GRUPPE[rt] ?? rt) + ' · ' + kurz(gewaehlt) + ' · ' : ''}{anzeige.text}{anzeige.hinweis ? ' ⚠' : ''}{wechselOffen ? ' …' : ''} ▾
+      </div>
+      : <button type="button" className={'chip' + (offen ? ' offen' : '') + (wechselOffen ? ' wechselt' : '')} title={titel} disabled={busy} onClick={() => setOffen(!offen)}>
+        {rt ? (CLI_GRUPPE[rt] ?? rt) : 'Modell'} · {kurz(gewaehlt)}{laeuft && laeuft !== gewaehlt ? ' (läuft ' + kurz(laeuft) + ')' : ''}{wechselOffen ? ' …' : ''} ▾
+      </button>}
     {meldung && !offen && <small className={'chip-meldung' + (meldung.fehler ? ' fehler' : '')} title={meldung.text}>{meldung.fehler ? '⚠ ' : '✓ '}{meldung.text}</small>}
     {offen && <div className="chip-menue" role="menu">
       {!modelle && <p>Modelllisten nicht ladbar.</p>}
@@ -94,6 +113,10 @@ export function HauptagentModellChip({ kompakt = true }: { kompakt?: boolean }) 
         <small>{r.bereit
           ? 'Standard ' + kurz(r.standard.modell) + ' (' + (STANDARD_QUELLE[r.standard.quelle] ?? r.standard.quelle) + ')'
           : 'nicht verfügbar: ' + (r.grund ?? 'unbekannt')}</small>
+        {r.pruefung && (r.pruefung.hinweis || !kompakt) && <small className={r.pruefung.haengt ? 'hinweis' : ''} title={r.pruefung.letzter_lauf.meldung ?? ''}>
+          {'Prüfung: ' + r.pruefung.letzter_lauf.ergebnis + ', ' + r.pruefung.letzter_lauf.dauer_ms + ' ms'
+            + (r.pruefung.alter_sekunden !== null ? ', bestätigt vor ' + r.pruefung.alter_sekunden + ' s' : '')
+            + (r.pruefung.hinweis ? ' – ' + r.pruefung.hinweis : '') + (r.pruefung.schalter.aktiv ? '' : ' (Stabilisierung AUS)')}</small>}
         {r.bereit && r.modelle.length === 0 && <small className="hinweis">keine Modelle: {r.grund ?? 'unbekannt'}</small>}
         {r.bereit && r.modelle.filter((m) => m.sichtbar || m.modell === r.user_wahl).map((m) => {
           const aktiv = r.runtime === rt && m.modell === gewaehlt;
