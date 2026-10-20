@@ -66,12 +66,28 @@ export interface AgentArtifactEvent {
   preview_path?: string;
 }
 
+/**
+ * P8-T25: ein Werkzeugaufruf des Hauptagenten (SSE-Event `tool`). start traegt
+ * Name und Argumente, end das Ergebnis; beide teilen die id.
+ */
+export interface AgentToolEvent {
+  phase: 'start' | 'end';
+  id: string;
+  name?: string;
+  input?: unknown;
+  output?: string;
+  isError?: boolean;
+}
+
 export interface RuntimeStreamHandlers {
   onReady?: (data: { sessionId: string; runtime: AgentRuntimeName }) => void;
   onRuntime?: (data: { event: unknown }) => void;
   onDelta?: (data: { content: string }) => void;
   /** Ein Artefakt-Block. EIN Ereignis je Block, nicht ein Ereignis je Antwort. */
   onArtifact?: (data: AgentArtifactEvent) => void;
+  onTool?: (data: AgentToolEvent) => void;
+  /** Denkphase des Agenten (SSE-Event `thinking`). */
+  onThinking?: (data: { content: string }) => void;
   onUsage?: (data: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }) => void;
   /**
    * artifacts  = wie viele Bloecke der SERVER geschickt hat (er zaehlt sie beim
@@ -249,6 +265,8 @@ export async function streamMainAgentMessage(
       handlers.onArtifact?.(value);
     }
     else if (event === 'usage') handlers.onUsage?.(value);
+    else if (event === 'tool') handlers.onTool?.(value);
+    else if (event === 'thinking') handlers.onThinking?.(value);
     else if (event === 'done') {
       handlers.onDone?.({
         ...(value && typeof value === 'object' ? value : {}),

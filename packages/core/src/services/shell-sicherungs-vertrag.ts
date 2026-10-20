@@ -4,7 +4,7 @@ import type{SicherungsShell}from'./shell-sicherung-parser.js';
 import{leseShellBestaetigung,demaskierteBefehlsBestaetigung,type ShellBestaetigungEingabe}from'./shell-rueckfrage.js';
 export const SHELL_SICHERUNGS_PARAMETER={
   bestaetigung:{type:'object',additionalProperties:false,required:['id','grund'],
-    description:'Rueckfrage bestaetigen (jeder Agent, nur fuer die EIGENE Rueckfrage): id = bestaetigung_id aus der Antwort stufe:"rueckfrage", grund mind. 10 Zeichen. Gilt fuer gefaehrliche Befehle (gleicher command) und fuers Demaskieren (maskierung:false). Frist Standard 60 s, danach verfaellt die Rueckfrage ohne Spur. frist_stunden (nur Demaskieren): frueher nachmaskieren als der Standard (3 Tage).',
+    description:'Rueckfrage bestaetigen (jeder Agent, nur fuer die EIGENE Rueckfrage): id = bestaetigung_id aus der Antwort stufe:"rueckfrage", grund mind. 10 Zeichen. Gilt fuer gefaehrliche Befehle und fuers Demaskieren (maskierung:false). Kurzweg: shell(action:"bestaetigen", id, grund) bzw. nur bestaetigung ohne command fuehrt den zur Rueckfrage gespeicherten Aufruf aus; alter Weg mit gleichem command bleibt. Frist Standard 60 s, danach verfaellt die Rueckfrage ohne Spur. frist_stunden (nur Demaskieren): frueher nachmaskieren als der Standard (3 Tage).',
     properties:{id:{type:'string',pattern:'^[a-fA-F0-9]{6,32}$'},grund:{type:'string',minLength:10},frist_stunden:{type:'number',minimum:0}}},
   shell:{type:'string',enum:['sh','bash','cmd','pwsh'],description:'Native Shell; Default sh auf POSIX, cmd auf Windows.'},
   bestaetigt:{type:'object',additionalProperties:false,required:['grund','befehl_hash','lage_hash','regelversion'],

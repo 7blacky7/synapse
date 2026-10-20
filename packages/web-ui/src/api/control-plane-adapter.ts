@@ -2,13 +2,24 @@ import {
   getChannelFeed,
   getChannels,
   getProjects,
+  getSpecialists,
   postChannelMessage,
 } from './synapse-client';
 import { apiFetch } from './auth';
 import type {
+  AgentHerkunftViewModel,
+  OnlineCoordinatorViewModel,
+  ChannelMemberViewModel,
   ChannelMessageViewModel,
   ChannelViewModel,
+  EntityViewModel,
+  PersonalArtifactViewModel,
+  PersonalMemoryViewModel,
+  ProjectKnowledgeEntryViewModel,
+  ProjectKnowledgeKind,
+  ProjectTeamAgentViewModel,
   ProjectViewModel,
+  ProjectWorkspaceViewModel,
   ToolCallViewModel,
 } from '../control-plane/view-model';
 
@@ -216,6 +227,343 @@ export async function loadChannelMessageViewModels(
       source: 'api',
     }));
   }
+}
+
+async function apiJson<T>(path: string, label: string): Promise<T> {
+  const response = await apiFetch(path);
+  const data = await response.json().catch(() => ({})) as T & {
+    error?: { message?: string } | string;
+  };
+  if (!response.ok) {
+    const message = typeof data.error === 'string' ? data.error : data.error?.message;
+    throw new Error(message || label + ' HTTP ' + response.status);
+  }
+  return data;
+}
+
+function projectPath(project: string): string {
+  return '/api/projects/' + encodeURIComponent(project);
+}
+
+interface ChannelMembersResponse {
+  members?: Array<{
+    agent?: unknown;
+    identity_id?: unknown;
+    mitglied?: unknown;
+    aktiv?: unknown;
+    nachrichten?: unknown;
+    herkunft?: unknown;
+  }>;
+}
+
+const HERKUNFTS_ARTEN = ['unraid', 'pc', 'sonstig', 'unbekannt'] as const;
+
+function herkunftAus(value: unknown): AgentHerkunftViewModel {
+  const roh = (value && typeof value === 'object' ? value : {}) as { art?: unknown; ort?: unknown };
+  const art = HERKUNFTS_ARTEN.find((item) => item === roh.art) ?? 'unbekannt';
+  return { art, ort: typeof roh.ort === 'string' && roh.ort ? roh.ort : null };
+}
+
+/** P8-T25: kurzes Kennzeichen, wo ein Agent laeuft. */
+export function herkunftText(herkunft: AgentHerkunftViewModel): string {
+  if (herkunft.art === 'unraid') return 'Unraid-Container' + (herkunft.ort ? ' · ' + herkunft.ort : '');
+  if (herkunft.art === 'pc') return 'PC' + (herkunft.ort ? ' · ' + herkunft.ort : '');
+  if (herkunft.art === 'sonstig') return herkunft.ort || 'sonstiger Ort';
+  return 'unbekannt';
+}
+
+// Teilnehmer eines Channels: Mitglieder und Nur-Poster (holeChannelTeilnehmer).
+// Der User schreibt als Absender 'user' ohne Identitaet; er ist kein Agent und
+// bleibt deshalb aus der Agentenleiste draussen.
+export async function loadChannelMemberViewModels(
+  project: string,
+  channel: string,
+): Promise<ChannelMemberViewModel[]> {
+  const data = await apiJson<ChannelMembersResponse>(
+    projectPath(project) + '/channels/' + encodeURIComponent(channel) + '/members',
+    'Channel-Teilnehmer',
+  );
+  return (data.members || [])
+    .filter((row) => typeof row.agent === 'string' && row.agent)
+    .filter((row) => !(row.agent === 'user' && !row.identity_id))
+    .map<ChannelMemberViewModel>((row) => ({
+      name: row.agent as string,
+      identityId: typeof row.identity_id === 'string' && row.identity_id ? row.identity_id : undefined,
+      role: row.mitglied === true ? 'Mitglied' : 'nur Beiträge',
+      status: row.aktiv === true ? 'online' : 'idle',
+      messages: typeof row.nachrichten === 'number' ? row.nachrichten : 0,
+      herkunft: herkunftAus(row.herkunft),
+      source: 'api',
+    }));
+}
+
+interface OnlineKoordinatorenResponse {
+  koordinatoren?: Array<{ project?: unknown; name?: unknown; identity_id?: unknown; letzte_aktivitaet?: unknown; herkunft?: unknown }>;
+}
+
+// P8-T25: Koordinatoren aller Projekte mit aktuellem Lebenszeichen (Seitenleiste).
+export async function loadOnlineCoordinators(): Promise<OnlineCoordinatorViewModel[]> {
+  const data = await apiJson<OnlineKoordinatorenResponse>('/api/koordinatoren/online', 'Koordinatoren');
+  return (data.koordinatoren || []).filter((row) => text(row.identity_id)).map((row) => ({
+    id: text(row.identity_id),
+    name: text(row.name) || 'koordinator',
+    project: text(row.project),
+    lastActivity: zeit(row.letzte_aktivitaet),
+    herkunft: herkunftAus(row.herkunft),
+    source: 'api' as const,
+  }));
+}
+
+interface ProjectAgentsResponse {
+  agents?: Array<{ agent_name?: unknown; model?: unknown; status?: unknown; tokens_percent?: unknown; last_activity?: unknown }>;
+}
+
+interface ProjectPlanResponse {
+  plan?: {
+    name?: unknown;
+    kurz_id?: unknown;
+    tasks?: Array<{ id?: unknown; kurz_id?: unknown; title?: unknown; description?: unknown; status?: unknown; priority?: unknown }>;
+  };
+}
+
+interface ProjectMemoriesResponse {
+  memories?: Array<{ name?: unknown; category?: unknown; tags?: unknown; sizeChars?: unknown; updatedAt?: unknown }>;
+}
+
+interface ProjectThoughtsResponse {
+  thoughts?: Array<{ id?: unknown; source?: unknown; content?: unknown; tags?: unknown; timestamp?: unknown; task_id?: unknown }>;
+}
+
+function text(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function zeit(value: unknown): string {
+  const raw = text(value);
+  if (!raw) return '';
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? raw : date.toLocaleString('de-DE');
+}
+
+const TASK_REIHENFOLGE: Record<string, number> = { in_progress: 0, todo: 1, blocked: 2, done: 3 };
+
+// Lesende Projektdaten fuer die Unteransichten hinter dem Channel. Jede Art
+// kommt aus ihrer vorhandenen REST-Route; nichts davon ist lokal erfunden.
+export async function loadProjectKnowledgeEntries(
+  project: string,
+  kind: ProjectKnowledgeKind,
+): Promise<ProjectKnowledgeEntryViewModel[]> {
+  if (kind === 'agents') {
+    const data = await apiJson<ProjectAgentsResponse>(projectPath(project) + '/agents', 'Projektagenten');
+    return (data.agents || []).filter((row) => text(row.agent_name)).map((row) => ({
+      id: 'agent:' + text(row.agent_name),
+      title: text(row.agent_name),
+      detail: [text(row.model) || 'Modell unbekannt', 'Kontext ' + (text(row.tokens_percent) || '0') + ' %', zeit(row.last_activity) ? 'letzte Aktivität ' + zeit(row.last_activity) : ''].filter(Boolean).join(' · '),
+      status: text(row.status) || 'unbekannt',
+      source: 'Wrapper-Status',
+    }));
+  }
+  if (kind === 'tasks') {
+    let data: ProjectPlanResponse;
+    try {
+      data = await apiJson<ProjectPlanResponse>(projectPath(project) + '/plan', 'Projektplan');
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Kein Plan gefunden')) return [];
+      throw error;
+    }
+    const planName = [text(data.plan?.kurz_id), text(data.plan?.name)].filter(Boolean).join(' ');
+    return (data.plan?.tasks || [])
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => (TASK_REIHENFOLGE[text(a.row.status)] ?? 9) - (TASK_REIHENFOLGE[text(b.row.status)] ?? 9) || a.index - b.index)
+      .map(({ row, index }) => ({
+        id: 'task:' + (text(row.id) || index),
+        title: [text(row.kurz_id), text(row.title)].filter(Boolean).join(' '),
+        detail: text(row.description),
+        status: text(row.status) || 'todo',
+        source: 'Plan ' + (planName || 'aktiv') + (text(row.priority) ? ' · ' + text(row.priority) : ''),
+      }));
+  }
+  if (kind === 'memories') {
+    const data = await apiJson<ProjectMemoriesResponse>(projectPath(project) + '/memories', 'Projekt-Memories');
+    return (data.memories || []).filter((row) => text(row.name)).map((row) => ({
+      id: 'memory:' + text(row.name),
+      title: text(row.name),
+      detail: [Array.isArray(row.tags) && row.tags.length ? 'Tags: ' + row.tags.join(', ') : '', typeof row.sizeChars === 'number' ? row.sizeChars + ' Zeichen' : '', zeit(row.updatedAt) ? 'geändert ' + zeit(row.updatedAt) : ''].filter(Boolean).join('\n'),
+      status: text(row.category) || 'other',
+      source: 'Projekt-Memory',
+    }));
+  }
+  if (kind === 'thoughts') {
+    const data = await apiJson<ProjectThoughtsResponse>(projectPath(project) + '/thoughts?limit=50', 'Projekt-Thoughts');
+    return (data.thoughts || []).map((row, index) => {
+      const content = text(row.content);
+      return {
+        id: 'thought:' + (text(row.id) || index),
+        title: content.split('\n').find((line) => line.trim())?.trim().slice(0, 120) || 'Thought',
+        detail: content,
+        status: zeit(row.timestamp) || (Array.isArray(row.tags) ? row.tags.join(', ') : ''),
+        source: 'Thought · ' + (text(row.source) || 'unbekannt') + (text(row.task_id) ? ' · ' + text(row.task_id) : ''),
+      };
+    });
+  }
+  const calls = await loadToolCallViewModels(project, 50);
+  return calls.reverse().map((call) => ({
+    id: 'call:' + call.id,
+    title: call.tool + (call.action ? '.' + call.action : ''),
+    detail: [call.argsPreview, call.error || call.resultPreview].filter(Boolean).join('\n\n'),
+    status: call.status + (call.createdAt ? ' · ' + zeit(call.createdAt) : ''),
+    source: 'Tool-Aufruf · ' + call.agent,
+  }));
+}
+
+// P8-T25: Projekt-Agententeam aus wrapper_status (GET specialists).
+export async function loadProjectTeamViewModels(project: string): Promise<ProjectTeamAgentViewModel[]> {
+  const data = await getSpecialists(project);
+  return Object.values(data.specialists || {}).map((row) => ({
+    name: row.name,
+    model: row.modelFullId || row.model || '',
+    status: row.status || 'unbekannt',
+    contextPercent: row.tokens?.percent ?? 0,
+    tokensIn: row.tokens?.input ?? 0,
+    tokensOut: row.tokens?.output ?? 0,
+    channels: Array.isArray(row.channels) ? row.channels : [],
+    currentTask: row.currentTask || '',
+    busy: row.busy === true,
+    provider: row.provider || '',
+    lastActivity: row.lastActivity || '',
+    source: 'api' as const,
+  })).sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
+}
+
+// P8-T25: Agenten aller aktiven Projekte (Einstellungen · Alle Agenten). Ein
+// Projekt, dessen Abfrage scheitert, faellt heraus und wird gezaehlt.
+export async function loadAllAgentViewModels(): Promise<{ agents: Array<ProjectTeamAgentViewModel & { project: string }>; fehlgeschlagen: number }> {
+  const projekte = (await loadProjectViewModels()).filter((row) => row.isActive);
+  const ergebnisse = await Promise.allSettled(projekte.map(async (row) => (await loadProjectTeamViewModels(row.name)).map((agent) => ({ ...agent, project: row.name }))));
+  const agents = ergebnisse.flatMap((ergebnis) => ergebnis.status === 'fulfilled' ? ergebnis.value : []);
+  return { agents, fehlgeschlagen: ergebnisse.filter((ergebnis) => ergebnis.status === 'rejected').length };
+}
+
+interface WorkspacesResponse {
+  docker_available?: unknown;
+  workspaces?: Array<{
+    project?: unknown; name?: unknown; status?: unknown; image?: unknown; cpuLimit?: unknown; memLimitMb?: unknown;
+    tmpfsMb?: unknown; pinned?: unknown; lastActivityAt?: unknown; lastStartedAt?: unknown; lastStoppedAt?: unknown; lastError?: unknown;
+  }>;
+}
+
+// P8-T25: Workspaces des Projekts aus project_workspaces (GET /api/workspaces).
+export async function loadProjectWorkspaceViewModels(project: string): Promise<ProjectWorkspaceViewModel[]> {
+  return (await loadAllWorkspaceViewModels()).filter((row) => row.project === project);
+}
+
+// P8-T25: alle Workspaces aller Projekte (Einstellungen · Alle Workspaces).
+export async function loadAllWorkspaceViewModels(): Promise<ProjectWorkspaceViewModel[]> {
+  const data = await apiJson<WorkspacesResponse>('/api/workspaces', 'Workspaces');
+  const docker = data.docker_available === true;
+  return (data.workspaces || []).filter((row) => text(row.project)).map((row) => ({
+    id: text(row.project) + '::' + (text(row.name) || 'main'),
+    name: text(row.name) || 'main',
+    project: text(row.project),
+    status: text(row.status) || 'unbekannt',
+    image: text(row.image),
+    cpuLimit: typeof row.cpuLimit === 'number' ? row.cpuLimit : 0,
+    memLimitMb: typeof row.memLimitMb === 'number' ? row.memLimitMb : 0,
+    tmpfsMb: typeof row.tmpfsMb === 'number' ? row.tmpfsMb : 0,
+    pinned: row.pinned === true,
+    lastActivityAt: zeit(row.lastActivityAt),
+    lastStartedAt: zeit(row.lastStartedAt),
+    lastStoppedAt: zeit(row.lastStoppedAt),
+    lastError: text(row.lastError),
+    dockerAvailable: docker,
+    source: 'api' as const,
+  }));
+}
+
+interface StatusResponse {
+  status?: { server?: unknown; qdrant?: unknown; embeddings?: unknown; collections?: unknown; timestamp?: unknown };
+}
+
+// P8-T25: Systemstatus aus GET /api/status statt erfundener Zeilen.
+export async function loadSystemEntities(): Promise<EntityViewModel[]> {
+  const data = await apiJson<StatusResponse>('/api/status', 'Systemstatus');
+  const status = data.status ?? {};
+  const gemessen = zeit(status.timestamp) || '–';
+  const zeile = (id: string, title: string, wert: string, ok: boolean): EntityViewModel => ({
+    id,
+    title,
+    subtitle: wert,
+    status: ok ? 'in Ordnung' : 'gestört',
+    statusTone: ok ? 'ready' : 'offline',
+    source: 'api',
+    details: [
+      { label: 'Wert', value: wert },
+      { label: 'Gemessen', value: gemessen },
+      { label: 'Quelle', value: 'GET /api/status' },
+    ],
+  });
+  const embeddings = text(status.embeddings) || 'nicht verfuegbar';
+  const collections = typeof status.collections === 'number' ? status.collections : 0;
+  return [
+    zeile('server', 'API-Server', text(status.server) || 'unbekannt', status.server === 'running'),
+    zeile('qdrant', 'Qdrant', text(status.qdrant) || 'unbekannt', status.qdrant === 'connected'),
+    zeile('embeddings', 'Embedding-Provider', embeddings, embeddings !== 'nicht verfuegbar'),
+    zeile('collections', 'Collections', String(collections), collections > 0),
+  ];
+}
+
+// P8-T25: Compute-Policy des Projekts; null heisst "keine eigene gesetzt".
+export async function loadComputePolicy(project: string): Promise<Record<string, unknown> | null> {
+  const data = await apiJson<{ policy?: unknown }>('/api/projects/' + encodeURIComponent(project) + '/compute-policy', 'Compute-Policy');
+  return data.policy && typeof data.policy === 'object' ? data.policy as Record<string, unknown> : null;
+}
+
+/**
+ * P8-T25: Der persoenliche Bereich gehoert dem Hauptagenten. Seine Memories
+ * liegen im virtuellen Projekt des Hauptagenten (HAUPTAGENT_PROJEKT im Core),
+ * nicht im gerade gewaehlten Projekt.
+ */
+export const PERSOENLICHES_PROJEKT = 'synapse-hauptagent';
+
+export async function loadPersonalMemories(): Promise<PersonalMemoryViewModel[]> {
+  const data = await apiJson<ProjectMemoriesResponse>(projectPath(PERSOENLICHES_PROJEKT) + '/memories', 'Meine Memories');
+  return (data.memories || []).filter((row) => text(row.name)).map((row) => ({
+    name: text(row.name),
+    category: text(row.category) || 'other',
+    tags: Array.isArray(row.tags) ? row.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+    sizeChars: typeof row.sizeChars === 'number' ? row.sizeChars : 0,
+    updatedAt: zeit(row.updatedAt),
+    source: 'api' as const,
+  }));
+}
+
+export async function loadPersonalMemoryContent(name: string): Promise<string> {
+  const data = await apiJson<{ memory?: { content?: unknown } }>(projectPath(PERSOENLICHES_PROJEKT) + '/memories/' + encodeURIComponent(name), 'Memory');
+  return text(data.memory?.content);
+}
+
+interface ArtefakteResponse {
+  artefakte?: Array<{ id?: unknown; title?: unknown; revision?: unknown; htmlZeichen?: unknown; createdBy?: unknown; sessionId?: unknown; updatedAt?: unknown }>;
+}
+
+// P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts, artefakt-Tool).
+export async function loadPersonalArtifacts(): Promise<PersonalArtifactViewModel[]> {
+  const data = await apiJson<ArtefakteResponse>('/api/main-agent/artefakte?limit=200', 'Artefakte');
+  return (data.artefakte || []).filter((row) => text(row.id)).map((row) => ({
+    id: text(row.id),
+    title: text(row.title) || 'Ohne Titel',
+    revision: typeof row.revision === 'number' ? row.revision : 1,
+    htmlChars: typeof row.htmlZeichen === 'number' ? row.htmlZeichen : 0,
+    createdBy: text(row.createdBy) || 'Hauptagent',
+    sessionId: text(row.sessionId),
+    updatedAt: zeit(row.updatedAt),
+    source: 'api' as const,
+  }));
+}
+
+export async function loadPersonalArtifactHtml(id: string): Promise<{ html: string; revision: number }> {
+  const data = await apiJson<{ artefakt?: { html?: unknown; revision?: unknown } }>('/api/main-agent/artefakte/' + encodeURIComponent(id), 'Artefakt');
+  return { html: text(data.artefakt?.html), revision: typeof data.artefakt?.revision === 'number' ? data.artefakt.revision : 1 };
 }
 
 export async function sendChannelMessage(

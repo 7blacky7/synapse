@@ -795,6 +795,8 @@ export {holeShellStartKatalog,beginneShellSicherungsJob,beendeShellSicherungsJob
 export {stelleShellRueckfrage,loeseShellRueckfrageEin,leseShellBestaetigung,offeneShellRueckfragen,leereShellRueckfragen,
   aktuelleShellDemaskierung,mitShellDemaskierung,shellDemaskierFristStunden,isShellDemaskierung,shellRueckfrageFristMs,befehlHash as shellBefehlHash}from'./services/shell-rueckfrage.js';
 export type{ShellBestaetigungEingabe,ShellDemaskierung,ShellRueckfrageBindung}from'./services/shell-rueckfrage.js';
+// P23-T9: Rueckfrage-Aufruf zur bestaetigung_id gespeichert, Bestaetigung nur per ID + Grund.
+export {mitShellAufrufPerId,kurzerBestaetigungsAufruf,gemerkteShellAufrufe,leereGemerkteShellAufrufe}from'./services/shell-aufruf-per-id.js';
 export {maskiereFaelligeShellJobs,entferneVerworfeneShellRueckfragen,shellNachmaskierLauf,trageShellDemaskierungEin}from'./services/shell-demaskierung.js';
 export {shellRohAusgabe}from'./services/shell-exec.js';
 export {dbZielAusUrl,gleichesDbZiel} from './services/shell-db-zuordnung.js';
@@ -1317,9 +1319,13 @@ export {
   speichereArtefakt,
   aktualisiereArtefaktPfade,
   pruefeArtefaktEingabe,
+  listeArtefakte,
+  ladeArtefakt,
   ARTEFAKT_HTML_MAX,
 } from './services/artefakt.js';
-export type { ArtefaktEingabe, ArtefaktZeile } from './services/artefakt.js';
+export { herkunftAusDaemonId, ermittleAgentHerkunft, onlineKoordinatoren } from './services/agent-herkunft.js';
+export type { AgentHerkunft, HerkunftsArt, OnlineKoordinator } from './services/agent-herkunft.js';
+export type { ArtefaktEingabe, ArtefaktZeile, ArtefaktUebersicht } from './services/artefakt.js';
 export {
   setzeFreigabe,
   setzeDatenverwendung,

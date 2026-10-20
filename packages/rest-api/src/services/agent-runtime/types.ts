@@ -51,10 +51,24 @@ export interface MainAgentSession {
   hauptagent?: { weg: 'identitaet' | 'altweg'; identity_id?: string; outcome?: string; fehler?: string };
 }
 
+/**
+ * P8-T25: ein Werkzeugaufruf des Hauptagenten im Antwortstrom. start traegt Name und
+ * Argumente, end das Ergebnis; beide teilen die id der Runtime (tool_use_id bzw. item.id).
+ */
+export interface RuntimeWerkzeugSchritt {
+  phase: 'start' | 'end';
+  id: string;
+  name?: string;
+  input?: unknown;
+  output?: string;
+  isError?: boolean;
+}
+
 export interface RuntimeStreamEvent {
   // 'artifact': Zustellung eines Hauptagenten-Artefakts in den offenen Strom
   // (artifact-stream.ts); die Empfangsseite kennt den Typ seit d7a39c1.
-  event: 'runtime' | 'delta' | 'usage' | 'error' | 'artifact';
+  // 'tool'/'thinking' (P8-T25): Werkzeugaufrufe und Denkphasen fuer die Chat-Anzeige.
+  event: 'runtime' | 'delta' | 'usage' | 'error' | 'artifact' | 'tool' | 'thinking';
   data: Record<string, unknown>;
 }
 

@@ -16,6 +16,7 @@ import {
   persistentRuntimeBinds,
   validateRuntimeImage,
   validateRuntimeRoot,
+  werkzeugErgebnisText,
 } from './codex-driver.js';
 import type {
   AgentRuntimeDriver,
@@ -24,6 +25,7 @@ import type {
   RuntimeMessageResult,
   RuntimeStatus,
   RuntimeStreamEvent,
+  RuntimeWerkzeugSchritt,
   TerminalSession,
 } from './types.js';
 
@@ -39,6 +41,8 @@ const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
 export interface ParsedClaudeEvent {
   runtimeSessionId?: string;
   delta?: string;
+  tools?: RuntimeWerkzeugSchritt[];
+  thinking?: string[];
   resultText?: string;
   usage?: Record<string, unknown>;
   context?: Record<string, unknown>;
@@ -204,8 +208,27 @@ export function parseClaudeJsonLine(line: string): ParsedClaudeEvent {
   if (type === 'rate_limit_event') {
     return { runtimeSessionId: sessionId, debug: value };
   }
-  if (type === 'assistant') {
-    return { runtimeSessionId: sessionId };
+  if (type === 'assistant' || type === 'user') {
+    // P8-T25: Werkzeugaufrufe (assistant: tool_use, user: tool_result) und Denkphasen
+    // fuer die Chat-Anzeige. Text kommt weiter ueber die stream_event-Deltas.
+    const message = value.message as Record<string, unknown> | undefined;
+    const content = Array.isArray(message?.content) ? message.content as Array<Record<string, unknown>> : [];
+    const tools: RuntimeWerkzeugSchritt[] = [];
+    const thinking: string[] = [];
+    for (const block of content) {
+      if (block.type === 'tool_use' && typeof block.id === 'string') {
+        tools.push({ phase: 'start', id: block.id, name: typeof block.name === 'string' ? block.name : 'tool', input: block.input });
+      } else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        tools.push({ phase: 'end', id: block.tool_use_id, output: werkzeugErgebnisText(block.content), isError: block.is_error === true });
+      } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
+        thinking.push(block.thinking.trim());
+      }
+    }
+    const parsed: ParsedClaudeEvent = { runtimeSessionId: sessionId };
+    if (tools.length) parsed.tools = tools;
+    if (thinking.length) parsed.thinking = thinking;
+    if (type === 'user' && !tools.length) parsed.debug = value;
+    return parsed;
   }
   return { runtimeSessionId: sessionId, debug: value };
 }
@@ -569,6 +592,8 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
         emit({ event: 'delta', data: { content: parsed.resultText } });
       }
       if (parsed.usage) emit({ event: 'usage', data: parsed.usage });
+      for (const schritt of parsed.tools ?? []) emit({ event: 'tool', data: { ...schritt } });
+      for (const content of parsed.thinking ?? []) emit({ event: 'thinking', data: { content } });
       if (parsed.context) context = { ...(context ?? {}), ...parsed.context };
       if (parsed.debug) emit({ event: 'runtime', data: { event: parsed.debug } });
       if (parsed.runtimeError) runtimeFailure = parsed.runtimeError;

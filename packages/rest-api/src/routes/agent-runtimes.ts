@@ -10,6 +10,7 @@ import {
   leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
+  listeArtefakte, ladeArtefakt, onlineKoordinatoren,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 
@@ -283,6 +284,27 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   fastify.put<{ Body: { aktiv?: unknown; grund?: unknown } }>('/api/main-agent/schalter', async (request, reply) => {
     try {
       return { success: true, schalter: await setzeHauptagentSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P8-T25: Koordinatoren aller Projekte mit aktuellem Lebenszeichen (Seitenleiste der Web-UI).
+  fastify.get('/api/koordinatoren/online', async (_request, reply) => {
+    try {
+      const koordinatoren = await onlineKoordinatoren();
+      return { success: true, count: koordinatoren.length, koordinatoren };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts) fuer "Persoenliche Artefakte" – nur lesend.
+  fastify.get<{ Querystring: { limit?: string } }>('/api/main-agent/artefakte', async (request, reply) => {
+    try {
+      const artefakte = await listeArtefakte(request.query.limit ? Number(request.query.limit) : 100);
+      return { success: true, count: artefakte.length, artefakte };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get<{ Params: { id: string } }>('/api/main-agent/artefakte/:id', async (request, reply) => {
+    try {
+      const artefakt = await ladeArtefakt(request.params.id);
+      if (!artefakt) return reply.code(404).send({ success: false, error: { message: 'Artefakt nicht gefunden' } });
+      return { success: true, artefakt };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get('/api/main-agent/status', async (_request, reply) => {

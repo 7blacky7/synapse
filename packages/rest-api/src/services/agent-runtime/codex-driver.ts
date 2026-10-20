@@ -16,6 +16,7 @@ import type {
   RuntimeMessageResult,
   RuntimeStatus,
   RuntimeStreamEvent,
+  RuntimeWerkzeugSchritt,
   TerminalSession,
 } from './types.js';
 
@@ -79,8 +80,27 @@ export interface ParsedCodexEvent {
   runtimeSessionId?: string;
   messageId?: string;
   messageText?: string;
+  tool?: RuntimeWerkzeugSchritt;
+  thinking?: string;
   usage?: Record<string, unknown>;
   context?: Record<string, unknown>;
+}
+
+/** Obergrenze fuer ein Werkzeugergebnis im Strom; das vollstaendige Ergebnis steht in tool_calls. */
+const WERKZEUG_AUSGABE_MAX = 20_000;
+
+/** P8-T25: Werkzeugergebnis (Text, Textbloecke oder Objekt) als anzeigbarer Text, gekappt. */
+export function werkzeugErgebnisText(content: unknown): string {
+  let text = '';
+  if (typeof content === 'string') text = content;
+  else if (Array.isArray(content)) {
+    text = content.map((teil) => {
+      const block = teil as Record<string, unknown>;
+      if (block && typeof block.text === 'string') return block.text;
+      return typeof teil === 'string' ? teil : JSON.stringify(teil);
+    }).join('\n');
+  } else if (content !== undefined && content !== null) text = JSON.stringify(content);
+  return text.length > WERKZEUG_AUSGABE_MAX ? text.slice(0, WERKZEUG_AUSGABE_MAX) + '\n… (gekuerzt)' : text;
 }
 
 export function parseCodexJsonLine(line: string): ParsedCodexEvent {
@@ -88,6 +108,28 @@ export function parseCodexJsonLine(line: string): ParsedCodexEvent {
   const type = String(value.type || '');
   if (type === 'thread.started') {
     return { runtimeSessionId: String(value.thread_id || value.threadId || '') || undefined };
+  }
+  if (type === 'item.started' || type === 'item.completed') {
+    // P8-T25: Werkzeugaufrufe und Denkphasen fuer die Chat-Anzeige.
+    const item = value.item as Record<string, unknown> | undefined;
+    const id = String(item?.id ?? '');
+    const phase = type === 'item.started' ? 'start' : 'end';
+    if (id && item?.type === 'mcp_tool_call') {
+      const name = [item.server, item.tool].filter((teil) => typeof teil === 'string' && teil).join('__') || 'mcp';
+      const fehler = item.error ?? (item.status === 'failed' ? 'fehlgeschlagen' : undefined);
+      return { tool: phase === 'start'
+        ? { phase, id, name, input: item.arguments }
+        : { phase, id, name, output: werkzeugErgebnisText(fehler ?? item.result), isError: fehler !== undefined } };
+    }
+    if (id && item?.type === 'command_execution') {
+      const exitCode = typeof item.exit_code === 'number' ? item.exit_code : null;
+      return { tool: phase === 'start'
+        ? { phase, id, name: 'shell', input: { command: item.command } }
+        : { phase, id, name: 'shell', output: werkzeugErgebnisText(item.aggregated_output), isError: item.status === 'failed' || (exitCode !== null && exitCode !== 0) } };
+    }
+    if (type === 'item.completed' && item?.type === 'reasoning' && typeof item.text === 'string' && item.text.trim()) {
+      return { thinking: item.text.trim() };
+    }
   }
   if (type === 'item.completed' || type === 'item.updated') {
     const item = value.item as Record<string, unknown> | undefined;
@@ -417,6 +459,8 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
             if (delta) emit({ event: 'delta', data: { content: delta } });
           }
           if (parsed.usage) emit({ event: 'usage', data: parsed.usage });
+          if (parsed.tool) emit({ event: 'tool', data: { ...parsed.tool } });
+          if (parsed.thinking) emit({ event: 'thinking', data: { content: parsed.thinking } });
           if (parsed.context) context = parsed.context;
         } catch {
           // Nicht-JSON-Ausgabe wird als Runtime-Event sichtbar, aber bricht den Stream nicht.

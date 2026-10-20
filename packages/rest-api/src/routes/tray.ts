@@ -213,14 +213,19 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
     '/api/projects/:name/channels/:channel/members',
     async (request) => {
       const { name, channel } = request.params;
-      const { holeChannelTeilnehmer } = await import('@synapse/core');
+      const { holeChannelTeilnehmer, ermittleAgentHerkunft } = await import('@synapse/core');
       const teilnehmer = await mitAgentAufrufKontext({principal:null,bezug:await leseAgentBezugModus()},()=>holeChannelTeilnehmer(name, channel));
+      // P8-T25: Herkunft je Teilnehmer (Unraid-Container, PC, sonstiger Ort, unbekannt) nur als Anzeige.
+      const members = await Promise.all(teilnehmer.map(async (t) => ({
+        ...t,
+        herkunft: await ermittleAgentHerkunft(name, { agent: t.agent, identity_id: t.identity_id ?? null }),
+      })));
       return {
         success: true,
         project: name,
         channel,
-        count: teilnehmer.length,
-        members: teilnehmer,
+        count: members.length,
+        members,
       };
     }
   );

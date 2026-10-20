@@ -25,21 +25,15 @@ Die Komponenten bilden die Anmeldemaske, Projektarbeitsfläche, Dashboards, Wiss
 
 | Datei | Aufgabe |
 |---|---|
-| [ControlPlaneSettingsView.tsx](ControlPlaneSettingsView.tsx) | Zeigt Control-Plane-Einstellungen für Agenten, Hosts, Laufzeiten, Workspaces, Ressourcen und Darstellung. |
-| [CoordinatorInspector.tsx](CoordinatorInspector.tsx) | Zeigt Detailbereiche des Koordinators; die Einträge im Inspektor sind lokale Beispieldaten. |
-| [ProjectCoordinatorDock.tsx](ProjectCoordinatorDock.tsx) | Stellt das projektbezogene Koordinatorfenster mit Verlauf, Team, Channels, Plänen und Wissen dar. |
-| [ProjectKnowledgePanel.tsx](ProjectKnowledgePanel.tsx) | Ordnet Wissensbereiche eines Projekts als Detailpanel. |
-| [coordinator-inspector.css](coordinator-inspector.css) | Stile des Koordinator-Inspektors. |
-| [project-coordinator-dock.css](project-coordinator-dock.css) | Stile des Koordinatorfensters. |
+| [ControlPlaneSettingsView.tsx](ControlPlaneSettingsView.tsx) | Zeigt die wirksamen Einstellungen: Hauptagent und Runtimes, Heartbeat und Steuerung, Ausweis, alle Agenten und Workspaces, Modell-Pool und Darstellung. |
+| [ProjectKnowledgePanel.tsx](ProjectKnowledgePanel.tsx) | Zeigt Agenten, Tasks, Memories, Thoughts und Tool-Aufrufe eines Projekts aus der REST-API. |
 
 ### Hauptagent und Infrastruktur
 
 | Datei | Aufgabe |
 |---|---|
 | [MainAgentDashboard.tsx](MainAgentDashboard.tsx) | Zeigt Aktivität, Artefakte und weitere Bereiche des Hauptagenten anhand übergebener View-Daten. |
-| [MainAgentAssistantDock.tsx](MainAgentAssistantDock.tsx) | Stellt ein Assistentenfenster mit Nachrichten und Anhängen dar. |
-| [main-agent-assistant-dock.css](main-agent-assistant-dock.css) | Stile des Assistentenfensters. |
-| [InfrastructureView.tsx](InfrastructureView.tsx) | Gruppiert Ansichten zu Agent-Hosts, Runtimes, Workspaces und Testsystemen. |
+| [InfrastructureView.tsx](InfrastructureView.tsx) | Zeigt die Workspaces des gewählten Projekts aus der Workspace-Verwaltung. |
 | [CodexRuntimeControl.tsx](CodexRuntimeControl.tsx) | Zeigt die Steuerung der Hauptagenten-Runtime und bindet Status- und Kontrollaufrufe ein. |
 | [CodexTerminal.tsx](CodexTerminal.tsx) | Stellt Terminalsitzungen mit xterm dar. |
 | [ModelPoolTable.tsx](ModelPoolTable.tsx) | Listet Modelle und Provider und bietet Pool-Aktionen. |
@@ -53,11 +47,9 @@ Die Komponenten bilden die Anmeldemaske, Projektarbeitsfläche, Dashboards, Wiss
 
 | Datei | Aufgabe |
 |---|---|
-| [KnowledgeView.tsx](KnowledgeView.tsx) | Zeigt persönliche Memories oder Artefakte und verwendet die zugehörigen lokalen Beispieldaten. |
-| [PersonalArtifactsControl.tsx](PersonalArtifactsControl.tsx) | Filtert und bearbeitet Artefakt- und Memory-Zustände der Wissensansicht. |
+| [KnowledgeView.tsx](KnowledgeView.tsx) | Zeigt die Memories des Hauptagenten-Projekts und die HTML-Artefakte des Hauptagenten (nur lesend). |
 | [MemorySearch.tsx](MemorySearch.tsx) | Sucht projektbezogene Memories über den API-Client. |
 | [GraphView.tsx](GraphView.tsx) | Bindet die Graph-Engine in einen React-Container ein. |
-| [personal-artifacts-control.css](personal-artifacts-control.css) | Stile der persönlichen Artefaktverwaltung. |
 | [personal-knowledge.css](../personal-knowledge.css) | Stile der persönlichen Wissensansicht. |
 | [project-knowledge.css](../project-knowledge.css) | Stile des Projektwissenspanels. |
 | [channel-project-surface.css](../channel-project-surface.css) | Stile der Projekt- und Channel-Oberfläche. |

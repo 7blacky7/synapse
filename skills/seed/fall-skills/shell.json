@@ -22,7 +22,7 @@
       "weg": "ausweis",
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: shell exec antwortet mit stufe rueckfrage und bestaetigung_id (gefaehrlicher Befehl laut Katalog, z. B. loeschend/ueberschreibend, Inline-Node mit Dateizugriff)." },
-        { "section": "regeln", "content": "1. Lage pruefen: die Antwort nennt Ziele und Treffer; Sicherung klaeren.\n2. Bestaetigen: DENSELBEN Aufruf (gleiches command) erneut mit bestaetigung:{id:<bestaetigung_id>, grund:<mind. 10 Zeichen>} und deinem token. Frist 60 s, danach verfaellt die Rueckfrage.\n3. Nur der aufrufende Agent kann seine eigene Rueckfrage bestaetigen - die Identitaet kommt aus dem token, agent_id nicht mitschicken.\n4. Besser: Befehl auf die Ziele begrenzen oder als sichtbare Skriptdatei (Scratchpad) statt node -e ausfuehren; ein klar lesender Befehl braucht oft keine Rueckfrage." }
+        { "section": "regeln", "content": "1. Lage pruefen: die Antwort nennt Ziele und Treffer; Sicherung klaeren.\n2. Bestaetigen: shell(action:\"bestaetigen\", id:<bestaetigung_id>, grund:<mind. 10 Zeichen>) mit deinem token. Der Aufruf ist gespeichert und laeuft dann - command NICHT erneut senden. Frist 60 s, danach verfaellt die Rueckfrage; bei Drift (Lage, Regeln) kommt eine neue Rueckfrage mit neuer ID.\n3. Nur der aufrufende Agent kann seine eigene Rueckfrage bestaetigen - die Identitaet kommt aus dem token, agent_id nicht mitschicken.\n4. Besser: Befehl auf die Ziele begrenzen oder als sichtbare Skriptdatei (Scratchpad) statt node -e ausfuehren; ein klar lesender Befehl braucht oft keine Rueckfrage." }
       ]
     },
     {
@@ -30,7 +30,7 @@
       "weg": "legacy",
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: shell exec antwortet mit stufe rueckfrage und bestaetigung_id (gefaehrlicher Befehl laut Katalog), oder die Bestaetigung scheitert mit agent_fehlt." },
-        { "section": "regeln", "content": "1. Lage pruefen: die Antwort nennt Ziele und Treffer; Sicherung klaeren.\n2. Bestaetigen: DENSELBEN Aufruf (gleiches command) erneut mit bestaetigung:{id:<bestaetigung_id>, grund:<mind. 10 Zeichen>} und derselben agent_id wie beim ersten Aufruf. Frist 60 s.\n3. Ohne agent_id scheitert die Bestaetigung (agent_fehlt) - nur der aufrufende Agent darf seine Rueckfrage bestaetigen.\n4. Besser: Befehl auf die Ziele begrenzen oder als sichtbare Skriptdatei statt node -e ausfuehren." }
+        { "section": "regeln", "content": "1. Lage pruefen: die Antwort nennt Ziele und Treffer; Sicherung klaeren.\n2. Bestaetigen: shell(action:\"bestaetigen\", id:<bestaetigung_id>, grund:<mind. 10 Zeichen>) mit derselben agent_id wie beim ersten Aufruf. Der Aufruf ist gespeichert - command NICHT erneut senden. Frist 60 s; bei Drift neue Rueckfrage mit neuer ID.\n3. Ohne agent_id scheitert die Bestaetigung (agent_fehlt) - nur der aufrufende Agent darf seine Rueckfrage bestaetigen.\n4. Besser: Befehl auf die Ziele begrenzen oder als sichtbare Skriptdatei statt node -e ausfuehren." }
       ]
     },
     {
@@ -54,7 +54,7 @@
       "weg": "beide",
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: Ausgabe enthaelt maskierte Werte, die fuer die Arbeit gebraucht werden." },
-        { "section": "regeln", "content": "1. Standard maskierung:true. maskierung:false (exec|get|log) erzeugt erst eine Rueckfrage mit bestaetigung_id; derselbe Aufruf mit bestaetigung:{id, grund} demaskiert.\n2. Demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden in bestaetigung kuerzer) unmaskiert gespeichert, danach automatisch nachmaskiert; maskieren(id) maskiert sofort.\n3. Tool-Calls, Embeddings und Logs bleiben immer maskiert. Geheimnisse nie in Channels/Thoughts uebernehmen." }
+        { "section": "regeln", "content": "1. Standard maskierung:true. maskierung:false (exec|get|log) erzeugt erst eine Rueckfrage mit bestaetigung_id; shell(action:\"bestaetigen\", id, grund) demaskiert (gespeicherter Aufruf, nicht erneut senden); eigene frist_stunden per bestaetigung:{id, grund, frist_stunden}.\n2. Demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden in bestaetigung kuerzer) unmaskiert gespeichert, danach automatisch nachmaskiert; maskieren(id) maskiert sofort.\n3. Tool-Calls, Embeddings und Logs bleiben immer maskiert. Geheimnisse nie in Channels/Thoughts uebernehmen." }
       ]
     },
     {

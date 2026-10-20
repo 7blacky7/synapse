@@ -16,6 +16,7 @@
  * DEBUG: leseFallSkillSchalter('schlank', project) -> {aktiv, quelle standard|produkt-schalter|intern, bis, letzter_fehler}.
  */
 import { leseFallSkillSchalter } from './fall-skills.js';
+import { kurzerBestaetigungsAufruf } from './shell-aufruf-per-id.js';
 
 /** Wirksamer Stand des Schalters fuer das Projekt; Lesefehler -> AUS (bisheriges Verhalten). */
 export async function toolAntwortenSchlank(project?: string | null): Promise<boolean> {
@@ -37,8 +38,10 @@ export function schlankeShellRueckfrage<T extends Record<string, unknown>>(antwo
   if (!antwort || antwort.stufe !== 'rueckfrage') return antwort;
   const aus: Record<string, unknown> = { ...antwort };
   for (const feld of RUECKFRAGE_DETAILFELDER) delete aus[feld];
-  aus.bestaetigen = 'Nicht ausgefuehrt. Bestaetigen: denselben Befehl mit bestaetigung:{id:<bestaetigung_id>, grund:"<mind. 10 Zeichen>"} '
-    + 'bis gueltig_bis erneut senden.'
+  // P23-T9: der Aufruf ist zur bestaetigung_id gespeichert, bestaetigt wird nur per ID + Grund.
+  aus.bestaetigen = 'Nicht ausgefuehrt, der Aufruf ist gespeichert. Bestaetigen: '
+    + kurzerBestaetigungsAufruf(typeof antwort.bestaetigung_id === 'string' ? antwort.bestaetigung_id : '<bestaetigung_id>')
+    + ' bis gueltig_bis - den Befehl NICHT erneut senden.'
     + (typeof antwort.id === 'string' && antwort.id ? ' Lage und Details: shell(action:"get", id, detail:"full").' : '');
   return aus as T;
 }

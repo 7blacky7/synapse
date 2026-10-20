@@ -169,9 +169,10 @@ export async function mitShellAusgabe<T>(args:Record<string,unknown>,lauf:()=>Pr
       return form({success:false,status:'rueckfrage',ausgefuehrt:false,stufe:'rueckfrage',art:'demaskieren',error:fehler??'shell_rueckfrage',
         risiko:'Die Ausgabe wuerde unmaskiert (mit Geheimnissen) angezeigt'+(action==='exec'?' und bis zur Frist unmaskiert gespeichert':'')+'.',
         ...rf,
-        trotzdem:'Nicht ausgefuehrt. Bestaetigen kann nur der aufrufende Agent selbst: denselben Aufruf mit maskierung:false und bestaetigung:{id:<bestaetigung_id>,'+
-          'grund:"<mind. 10 Zeichen>"} bis gueltig_bis erneut senden'+(action==='exec'?
-          ' (optional frist_stunden: frueher nachmaskieren; Standard '+shellDemaskierFristStunden()+' h)':'')+'. Ohne Bestaetigung verfaellt die Rueckfrage ohne Spur.'});
+        trotzdem:'Nicht ausgefuehrt, der Aufruf ist gespeichert. Bestaetigen kann nur der aufrufende Agent selbst: shell(action:"bestaetigen", id:<bestaetigung_id>, '+
+          'grund:"<mind. 10 Zeichen>") bis gueltig_bis, ohne den Aufruf erneut zu senden'+(action==='exec'?
+          ' (frueher nachmaskieren: shell(action:"bestaetigen", bestaetigung:{id, grund, frist_stunden}); Standard '+shellDemaskierFristStunden()+' h)':'')+
+          ' (alter Weg: denselben Aufruf mit maskierung:false und bestaetigung:{id,grund}). Ohne Bestaetigung verfaellt die Rueckfrage ohne Spur.'});
     }
     const demask=d;
     await logToolCall({project,agentId:actor,tool:'shell',action:'demaskieren',argsPreview:JSON.stringify({grund:demask.grund,action,id:args.id,bestaetigung_id:demask.bestaetigung_id}),ok:true});

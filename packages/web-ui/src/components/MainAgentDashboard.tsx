@@ -1,22 +1,26 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ToolCallViewModel } from '../control-plane/view-model';
 import { StatusChip } from './StatusKennzeichnung';
 
 type DashboardView = 'activity' | 'dreams' | 'artifacts';
+
+/** Ein HTML-Artefakt aus dem Antwortstrom dieser Sitzung (artefakt-Tool, SSE 'artifact'). */
+export interface DashboardArtefakt {
+  id: string;
+  title: string;
+  blocks: number;
+  saved: boolean;
+}
 
 interface Props {
   project: string;
   toolCalls: ToolCallViewModel[];
   agentBusy: boolean;
   savedArtifacts: number;
+  artifacts: DashboardArtefakt[];
 }
 
 const VIEWS: DashboardView[] = ['activity', 'dreams', 'artifacts'];
-const DREAMS = [
-  ['Selbstheilende Projektkarte', 'Fehlerpfade werden nachts als alternative Abläufe simuliert.', 86],
-  ['Agenten-Gedächtnisstrom', 'Gedanken, Events und Artefakte erscheinen als zeitlicher Zusammenhang.', 72],
-  ['Unsichtbare Arbeit sichtbar machen', 'Hintergrundläufe verdichten sich zu einer lesbaren Animation.', 64],
-] as const;
 /**
  * VORLAGE fuer den spaeteren Live-Anschluss — bewusst aufgehoben (Vorgabe des
  * Nutzers vom 26.08.2026: "wir haben's ja extra als Mock gebaut, damit es
@@ -36,17 +40,10 @@ export const BEISPIEL_EREIGNISSE = [
   { id: 'e2', project: 'dream-lab', title: 'Nachtlauf vorbereitet', meta: 'vor 4 Min.', tone: 'running' },
   { id: 'e3', project: 'system', title: 'Alle Dienste erreichbar', meta: 'vor 8 Min.', tone: 'done' },
 ] as const;
-const ARTIFACTS = [
-  ['KIOS Rendering-Pipeline', 'UI-Prototyp', 96, 18],
-  ['3D-Projektgraph', 'Visualisierung', 91, 14],
-  ['Workspace-Testmatrix', 'Architektur', 84, 11],
-] as const;
-
-export default function MainAgentDashboard({ project, toolCalls, agentBusy, savedArtifacts }: Props) {
+export default function MainAgentDashboard({ project, toolCalls, agentBusy, savedArtifacts, artifacts }: Props) {
   const [view, setView] = useState<DashboardView>('activity');
   const [autoFollow, setAutoFollow] = useState(true);
   const [cycle, setCycle] = useState(0);
-  const [liked, setLiked] = useState<string[]>([]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setCycle((value) => value + 1), 9000);
@@ -57,10 +54,12 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
     if (autoFollow) setView(agentBusy ? 'activity' : VIEWS[cycle % VIEWS.length]);
   }, [agentBusy, autoFollow, cycle]);
 
-  const recentCalls = toolCalls.slice(0, 7);
+  // toolCalls ist aeltester zuerst; die neuesten stehen hinten.
+  const recentCalls = toolCalls.slice(-7).reverse();
   const completed = toolCalls.filter((call) => call.status === 'done').length;
   const failed = toolCalls.filter((call) => call.status === 'failed').length;
-  const phase = agentBusy ? 'arbeitet' : view === 'dreams' ? 'dreamt' : view === 'artifacts' ? 'rankt' : 'beobachtet';
+  // Kein Dreamer-Dienst: der Hauptagent "dreamt" nie nur wegen eines UI-Timers.
+  const phase = agentBusy ? 'arbeitet' : 'beobachtet';
   // Nur ECHTE Tool-Aufrufe. Ist die Liste leer, bleibt sie leer — der
   // Leerzustand steht weiter unten im Ereignis-Strom.
   const events = useMemo(() => recentCalls.slice(0, 5).map((call) => ({
@@ -83,10 +82,6 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
     setView(nextView);
   };
 
-  const toggleLike = (title: string) => {
-    setLiked((items) => items.includes(title) ? items.filter((item) => item !== title) : [...items, title]);
-  };
-
   return (
     <section className="agent-dashboard">
       <header className="agent-dashboard-head">
@@ -97,8 +92,8 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
         <main className="dashboard-focus">
           <nav className="dashboard-tabs">
             <button type="button" className={view === 'activity' ? 'active' : ''} onClick={() => chooseView('activity')}>Aktivitäten <span>{toolCalls.length}</span></button>
-            <button type="button" className={view === 'dreams' ? 'active' : ''} onClick={() => chooseView('dreams')}>Dreams <span>3</span></button>
-            <button type="button" className={view === 'artifacts' ? 'active' : ''} onClick={() => chooseView('artifacts')}>Top-Artefakte <span>{ARTIFACTS.length + savedArtifacts}</span></button>
+            <button type="button" className={view === 'dreams' ? 'active' : ''} onClick={() => chooseView('dreams')}>Dreams <span>0</span></button>
+            <button type="button" className={view === 'artifacts' ? 'active' : ''} onClick={() => chooseView('artifacts')}>Top-Artefakte <span>{artifacts.length}</span></button>
           </nav>
           <div className="dashboard-panel" key={view}>
             {view === 'activity' && (
@@ -118,17 +113,17 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
             {view === 'dreams' && (
               <div className="dream-board">
                 <div className="dream-sky"><i /><i /><i /><i /><i /></div>
-                <header><span>Dream-Lab · Nachtstrom</span><strong>Ideen kondensieren</strong><p>Rohideen werden getrennt von echten Projekten simuliert und später bewertet.</p></header>
-                <div className="dream-list">{DREAMS.map(([title, text, heat], index) => <article key={title}><span>0{index + 1}</span><div><strong>{title}</strong><p>{text}</p></div><em style={{ '--heat': heat + '%' } as CSSProperties}>{heat}%</em></article>)}</div>
+                <header><span>Dream-Lab · Nachtstrom</span><strong>Noch keine Dreams</strong><p>Einen Dreamer-Dienst gibt es noch nicht — keine Nachtläufe, keine Bewertungen. Hier erscheint erst etwas, wenn ein echter Lauf Ergebnisse liefert.</p></header>
+                <div className="dream-list"><p className="empty-state">Keine Dreams vorhanden.</p></div>
               </div>
             )}
             {view === 'artifacts' && (
               <div className="artifact-board">
-                <header><div><span>Durch deine Bewertungen gelernt</span><h2>Top-Artefakte</h2></div><strong>{savedArtifacts + liked.length} bestätigt</strong></header>
-                <div className="artifact-ranking">{ARTIFACTS.map(([title, kind, score, votes], index) => {
-                  const isLiked = liked.includes(title);
-                  return <article key={title}><b>#{index + 1}</b><div><strong>{title}</strong><span>{kind} · {votes + (isLiked ? 1 : 0)} Bewertungen</span></div><em>{score + (isLiked ? 1 : 0)}</em><button type="button" className={isLiked ? 'liked' : ''} onClick={() => toggleLike(title)}>{isLiked ? '✓' : '↑'}</button></article>;
-                })}</div>
+                <header><div><span>HTML-Antworten dieser Sitzung</span><h2>Top-Artefakte</h2></div><strong>{savedArtifacts} gesichert</strong></header>
+                <div className="artifact-ranking">
+                  {artifacts.map((artifact, index) => <article key={artifact.id}><b>#{index + 1}</b><div><strong>{artifact.title}</strong><span>{artifact.blocks} {artifact.blocks === 1 ? 'Block' : 'Blöcke'} · artefakt-Tool</span></div><em>{artifact.blocks}</em><button type="button" className={artifact.saved ? 'liked' : ''} disabled title={artifact.saved ? 'Im Chat gesichert' : 'Im Chat mit 👍 sichern'}>{artifact.saved ? '✓' : '↑'}</button></article>)}
+                  {!artifacts.length && <p className="empty-state">Noch keine HTML-Antworten des Hauptagenten in dieser Sitzung.</p>}
+                </div>
               </div>
             )}
           </div>

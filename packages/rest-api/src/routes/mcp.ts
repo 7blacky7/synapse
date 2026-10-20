@@ -7,7 +7,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
+import {mitShellAufrufPerId,mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 // P23-T3: schlanke Tool-Antworten (Schalter tool_antworten_schlank, Standard AUS).
 import { schlankeShellRueckfrageWennAktiv, fremderLaufFeld } from '@synapse/core';
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
@@ -1307,10 +1307,10 @@ export const MCP_TOOLS = [
       type: 'object',
       properties: {
         ...SHELL_SICHERUNGS_PARAMETER,
-        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true). false (exec|get|log, jeder Agent): erst Rueckfrage mit bestaetigung_id, dann denselben Aufruf mit bestaetigung:{id,grund} wiederholen. Bestaetigt demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden kuerzer) unmaskiert gespeichert und danach automatisch nachmaskiert. tool_calls, Embeddings und Logs bleiben maskiert.'},
-        grund: {type:'string',description:'Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
-        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide', 'maskieren'], description: 'Default: exec. Gefaehrliche Befehle (Katalog-Kennzeichen gefaehrlich) laufen nicht sofort: Antwort stufe "rueckfrage" mit bestaetigung_id; derselbe Aufruf mit bestaetigung:{id,grund} fuehrt aus (nur der aufrufende Agent, Frist 60 s). maskieren + id maskiert einen bestaetigt demaskierten Job sofort wieder. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
-        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
+        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true). false (exec|get|log, jeder Agent): erst Rueckfrage mit bestaetigung_id, dann shell(action:"bestaetigen", id, grund) (gespeicherter Aufruf; alter Weg: derselbe Aufruf mit bestaetigung:{id,grund}). Bestaetigt demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden kuerzer) unmaskiert gespeichert und danach automatisch nachmaskiert. tool_calls, Embeddings und Logs bleiben maskiert.'},
+        grund: {type:'string',description:'bestaetigen: Grund der Bestaetigung (mind. 10 Zeichen). Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
+        action: { type: 'string', enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'hide', 'maskieren', 'bestaetigen'], description: 'Default: exec. Gefaehrliche Befehle (Katalog-Kennzeichen gefaehrlich) laufen nicht sofort: Antwort stufe "rueckfrage" mit bestaetigung_id; der Aufruf ist gespeichert, bestaetigen + id (bestaetigung_id) + grund fuehrt ihn aus, ohne command erneut zu senden (nur der aufrufende Agent, Frist 60 s; alter Weg: derselbe Aufruf mit bestaetigung:{id,grund}). maskieren + id maskiert einen bestaetigt demaskierten Job sofort wieder. log + id liefert Zeilenrange (1-100); log + id + query liefert Such-Treffer mit Zeilennummern. cancel + id bricht einen laufenden Job ab — in den ersten 10 Minuten nur durch den Agenten, der ihn gestartet hat, danach durch jeden. hide + id blendet die shell_activity-Hinweise zu einem Job aus — in den ersten 3 Minuten NACH DEM ABSCHLUSS nur durch den Starter, danach durch jeden; der Starter bleibt dabei immer Empfaenger.' },
+        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get/log); bei bestaetigen die bestaetigung_id. NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
         offset: { type: 'number', description: 'history: Skip N (Default 0)' },
         status: { type: 'string', enum: ['pending', 'running', 'done', 'failed', 'rejected', 'timeout'], description: 'history: Filter auf Status' },
@@ -2278,7 +2278,8 @@ async function handleAuthentifiziertenToolCall(
   args: Record<string, unknown>,
   effectiveAgentId?: string,
 ): Promise<unknown> {
-  if(name==='shell')return mitShellAusgabe({...args,agent_id:effectiveAgentId??args.agent_id},()=>handleToolCallKern(name,args,effectiveAgentId));
+  // P23-T9: Rueckfrage-Aufruf zur bestaetigung_id merken; bestaetigen fuehrt ihn ohne erneuten Befehl aus.
+  if(name==='shell')return mitShellAufrufPerId(args,a=>mitShellAusgabe({...a,agent_id:effectiveAgentId??a.agent_id},()=>handleToolCallKern(name,a,effectiveAgentId)),undefined,effectiveAgentId);
   const antwort = name === 'files' || name === 'files_batch'
     ? await mitFileTaskWarnung(args, () => handleToolCallKern(name, args, effectiveAgentId))
     : await handleToolCallKern(name, args, effectiveAgentId);

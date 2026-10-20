@@ -157,6 +157,46 @@ export async function speichereArtefakt(input: ArtefaktEingabe): Promise<Artefak
   return zeile(result.rows[0] as Record<string, unknown>);
 }
 
+/** P8-T25: Uebersicht fuer die Web-UI – ohne HTML, juengste zuerst. */
+export interface ArtefaktUebersicht {
+  id: string;
+  sessionId: string;
+  title: string | null;
+  revision: number;
+  htmlZeichen: number;
+  imagePath: string | null;
+  createdBy: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export async function listeArtefakte(limit = 100): Promise<ArtefaktUebersicht[]> {
+  const grenze = Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
+  const result = await getPool().query(
+    `SELECT id, session_id, title, revision, length(html) AS html_zeichen, image_path, created_by, created_at, updated_at
+       FROM agent_artifacts ORDER BY updated_at DESC LIMIT $1`,
+    [grenze],
+  );
+  return result.rows.map((row: Record<string, unknown>) => ({
+    id: String(row.id),
+    sessionId: String(row.session_id),
+    title: (row.title as string | null) ?? null,
+    revision: Number(row.revision),
+    htmlZeichen: Number(row.html_zeichen),
+    imagePath: (row.image_path as string | null) ?? null,
+    createdBy: (row.created_by as string | null) ?? null,
+    createdAt: row.created_at as Date,
+    updatedAt: row.updated_at as Date,
+  }));
+}
+
+/** P8-T25: ein Artefakt samt HTML; null wenn es die id nicht gibt. */
+export async function ladeArtefakt(id: string): Promise<ArtefaktZeile | null> {
+  const result = await getPool().query('SELECT * FROM agent_artifacts WHERE id = $1', [id]);
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  return row ? zeile(row) : null;
+}
+
 /** Traegt die Abbild-Pfade nach — die Zeile selbst bleibt davon unberuehrt die Wahrheit. */
 export async function aktualisiereArtefaktPfade(id: string, htmlPath: string | null, imagePath: string | null): Promise<void> {
   await getPool().query(

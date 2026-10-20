@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs,schlankeShellRueckfrageWennAktiv,fremderLaufFeld} from '@synapse/core';
+import {mitShellAufrufPerId,mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs,schlankeShellRueckfrageWennAktiv,fremderLaufFeld} from '@synapse/core';
 import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -146,17 +146,17 @@ export const shellTool: ConsolidatedTool = {
       type: 'object',
       properties: {
         ...SHELL_SICHERUNGS_PARAMETER,
-        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true). false (exec|get|log, jeder Agent): erst Rueckfrage mit bestaetigung_id, dann denselben Aufruf mit bestaetigung:{id,grund} wiederholen. Bestaetigt demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden kuerzer) unmaskiert gespeichert und danach automatisch nachmaskiert. tool_calls, Embeddings und Logs bleiben maskiert.'},
-        grund: {type:'string',description:'Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
+        maskierung: {type:'boolean',description:'Anzeige maskieren (Default true). false (exec|get|log, jeder Agent): erst Rueckfrage mit bestaetigung_id, dann shell(action:"bestaetigen", id, grund) (gespeicherter Aufruf; alter Weg: derselbe Aufruf mit bestaetigung:{id,grund}). Bestaetigt demaskierte exec-Ausgabe wird bis zur Frist (Standard 3 Tage, frist_stunden kuerzer) unmaskiert gespeichert und danach automatisch nachmaskiert. tool_calls, Embeddings und Logs bleiben maskiert.'},
+        grund: {type:'string',description:'bestaetigen: Grund der Bestaetigung (mind. 10 Zeichen). Altweg Koordinator/User: Audit-Grund fuer maskierung:false ohne Rueckfrage (mind. 10 Zeichen, nur Anzeige)'},
         action: {
           type: 'string',
-          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'maskieren'],
-          description: 'Default: exec. history = Shell-Job-Metadaten mit kurzer Vorschau; get/log = Details und voller Output. activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
+          enum: ['exec', 'get_stream', 'history', 'get', 'log', 'activity', 'cancel', 'maskieren', 'bestaetigen'],
+          description: 'Default: exec. bestaetigen + id (bestaetigung_id) + grund fuehrt den zur Rueckfrage gespeicherten Aufruf aus (command nicht erneut senden). history = Shell-Job-Metadaten mit kurzer Vorschau; get/log = Details und voller Output. activity = Multi-Agenten-Aufsicht ueber ALLE Tool-Aufrufe (Shell + jedes andere Tool), interleaved nach Zeit.',
         },
         project: { type: 'string', description: 'Projekt-Name (Pflicht fuer exec; optional fuer history Filter)' },
         command: { type: 'string', description: 'Shell-Kommando (Pflicht fuer exec)' },
         stream_id: { type: 'string', description: 'Pflicht fuer get_stream' },
-        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get und log). NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
+        id: { type: 'string', description: 'Job-UUID (Pflicht fuer get und log); bei bestaetigen die bestaetigung_id. NICHT die stream_id aus der exec-Antwort — die Job-UUID liefert shell(history).' },
         limit: { type: 'number', description: 'history: max Jobs (Default 20, Max 200); activity: max Eintraege (Default 50, Max 500)' },
         offset: { type: 'number', description: 'history: Skip N Jobs (Default 0)' },
         status: {
@@ -193,7 +193,8 @@ export const shellTool: ConsolidatedTool = {
       required: ['action'],
     },
   },
-  handler: async (args) => mitShellAusgabe(args,async()=>{
+  // P23-T9: Rueckfrage-Aufruf zur bestaetigung_id merken; bestaetigen fuehrt ihn ohne erneuten Befehl aus.
+  handler: async (eingang) => mitShellAufrufPerId(eingang,(args)=>mitShellAusgabe(args,async()=>{
     const action = str(args, 'action') ?? 'exec';
 
     if (action === 'maskieren') {
@@ -477,5 +478,5 @@ export const shellTool: ConsolidatedTool = {
     if (result['status'] !== 'rejected') Object.assign(result, await fremderLaufFeld({ project, command, cwd_relative: cwdRel, agent_id: actor, ausser_job_id: typeof result['id'] === 'string' ? result['id'] as string : null }));
     // P23-T3: stufe rueckfrage ohne Lage-Baum (Schalter tool_antworten_schlank); persistiert wurde oben das volle Ergebnis.
     return { content: [{ type: 'text', text: JSON.stringify(await schlankeShellRueckfrageWennAktiv(project, result), null, 2) }] };
-  },o=>({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] })),
+  },o=>({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] })),o=>({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] })),
 };

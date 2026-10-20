@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { ChannelMessageViewModel } from '../control-plane/view-model';
-import {
-  AttachmentDrafts,
-  AttachmentPicker,
-  handleAttachmentDrop,
-  prepareMockChatAttachments,
-  type MockChatAttachment,
-} from './ChatAttachments';
+import { AttachmentPicker, handleAttachmentDrop } from './ChatAttachments';
 
 export interface ChannelAgentWindowState {
   key: string;
@@ -20,48 +14,51 @@ export interface ChannelAgentWindowState {
 interface Props {
   windowState: ChannelAgentWindowState;
   project: string;
+  /** Bereits auf diesen Agenten gefiltert: seine Beitraege und Erwaehnungen. */
   messages: ChannelMessageViewModel[];
   initialPosition: { x: number; y: number };
   zIndex: number;
   onActivate: () => void;
   onClose: () => void;
+  /** Echter Versand: User-Beitrag in den Channel (user-post). */
+  onSend: (content: string) => Promise<void>;
 }
+
+// P8-T25: Die Web-UI hat keinen Upload-Weg (Asset-Upload verlangt eine
+// Daemon-Identitaet). Statt erfundener Pfade wird das offen gesagt.
+const KEIN_UPLOAD = 'Die Web-UI kann noch keine Dateien hochladen — es wird nur Text gesendet.';
 
 export function ChannelAgentChatWindow({
   windowState,
-  project,
   messages,
   initialPosition,
   zIndex,
   onActivate,
   onClose,
+  onSend,
 }: Props) {
   const [minimized, setMinimized] = useState(false);
   const [position, setPosition] = useState(initialPosition);
   const [draft, setDraft] = useState('');
-  const [files, setFiles] = useState<MockChatAttachment[]>([]);
   const [dropActive, setDropActive] = useState(false);
+  const [sending, setSending] = useState(false);
   const [sendState, setSendState] = useState('');
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const streamRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     window.requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
-  const queueFiles = async (selectedFiles: FileList | File[]) => {
-    try {
-      const prepared = await prepareMockChatAttachments(selectedFiles, {
-        scope: 'agent',
-        project,
-        agentId: windowState.identityId ? 'identity:' + windowState.identityId : 'legacy:' + project + ':' + windowState.agentName,
-      });
-      setFiles((current) => [...current, ...prepared]);
-      setDropActive(false);
-      setSendState('');
-    } catch (fileError) {
-      setSendState(fileError instanceof Error ? fileError.message : String(fileError));
-    }
+  useEffect(() => {
+    const stream = streamRef.current;
+    if (stream) stream.scrollTop = stream.scrollHeight;
+  }, [messages.length]);
+
+  const rejectFiles = (selectedFiles: FileList | File[]) => {
+    setDropActive(false);
+    setSendState(Array.from(selectedFiles).length + ' Datei(en) nicht angehängt. ' + KEIN_UPLOAD);
   };
 
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -92,12 +89,23 @@ export function ChannelAgentChatWindow({
     if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
   };
 
-  const reserveMessage = () => {
-    if (!draft.trim() && !files.length) return;
-    const paths = files.map((file) => file.path).join(' · ');
-    setSendState('Für spätere Heartbeat-DM vorgemerkt' + (paths ? ' · ' + paths : ''));
-    setDraft('');
-    setFiles([]);
+  // Ein eigener DM-Weg vom User zum Agenten existiert nicht. Die Nachricht geht
+  // deshalb als User-Beitrag mit @-Erwaehnung in diesen Channel; Mitglieder
+  // erhalten dazu den ueblichen Channel-Hinweis.
+  const sendMessage = async () => {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    setSendState('');
+    try {
+      await onSend('@' + windowState.agentName + ' ' + text);
+      setDraft('');
+      setSendState('Gesendet an @' + windowState.agentName + ' in #' + windowState.channelName);
+    } catch (sendError) {
+      setSendState(sendError instanceof Error ? sendError.message : String(sendError));
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -122,7 +130,7 @@ export function ChannelAgentChatWindow({
         <div>
           <i className={windowState.status} />
           <strong>{windowState.agentName}</strong>
-          <small>#{windowState.channelName} · {windowState.role} · Channel-/Heartbeat-Terminal</small>
+          <small>#{windowState.channelName} · {windowState.role} · Beiträge und Erwähnungen</small>
         </div>
         <span>
           <button type="button" onClick={() => setMinimized((value) => !value)}>{minimized ? '□' : '—'}</button>
@@ -130,7 +138,7 @@ export function ChannelAgentChatWindow({
         </span>
       </div>
       {!minimized && <>
-        <div className="agent-terminal-stream">
+        <div className="agent-terminal-stream" ref={streamRef}>
           {messages.map((message) => (
             <article key={message.id}>
               <header>
@@ -140,7 +148,7 @@ export function ChannelAgentChatWindow({
               <pre>{message.content}</pre>
             </article>
           ))}
-          {!messages.length && <p>Keine Channel- oder Heartbeat-Ausgaben für dieses Fenster vorhanden.</p>}
+          {!messages.length && <p>Keine Beiträge von oder an {windowState.agentName} in #{windowState.channelName}.</p>}
         </div>
         <div
           className={'agent-terminal-compose' + (dropActive ? ' chat-drop-active' : '')}
@@ -149,25 +157,25 @@ export function ChannelAgentChatWindow({
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropActive(false); }}
           onDrop={(event) => {
             setDropActive(false);
-            handleAttachmentDrop(event, (selectedFiles) => void queueFiles(selectedFiles));
+            handleAttachmentDrop(event, rejectFiles);
           }}
         >
-          <AttachmentDrafts attachments={files} onRemove={(id) => setFiles((current) => current.filter((item) => item.id !== id))} />
           <div className="agent-terminal-command">
             <span>›</span>
-            <AttachmentPicker onFiles={(selectedFiles) => void queueFiles(selectedFiles)} label="＋ Datei" />
+            <AttachmentPicker onFiles={rejectFiles} label="＋ Datei" />
             <textarea
               ref={inputRef}
               rows={2}
               value={draft}
               onChange={(event) => { setDraft(event.target.value); setSendState(''); }}
-              placeholder={'Einzelnachricht an ' + windowState.agentName + ' …'}
+              onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }}
+              placeholder={'Nachricht an @' + windowState.agentName + ' in #' + windowState.channelName + ' …'}
             />
-            <button type="button" disabled={!draft.trim() && !files.length} onClick={reserveMessage}>Vormerken</button>
+            <button type="button" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? 'Sendet …' : 'Senden'}</button>
           </div>
         </div>
         <footer>
-          <small>{sendState || 'Dateien landen später am Speicherort der gespawnten Agenteninstanz · UI-Mock'}</small>
+          <small>{sendState || 'Geht als User-Beitrag mit @' + windowState.agentName + ' in #' + windowState.channelName}</small>
           <b>LIVE · 6 S</b>
         </footer>
       </>}

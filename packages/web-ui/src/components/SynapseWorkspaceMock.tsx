@@ -5,7 +5,6 @@ import AgentRenderingSurface from '../kios/AgentRenderingSurface';
 import { InfrastructureView } from './InfrastructureView';
 import { ControlPlaneSettingsView } from './ControlPlaneSettingsView';
 import { KnowledgeView } from './KnowledgeView';
-import { ProjectKnowledgePanel, type ProjectDetailSection } from './ProjectKnowledgePanel';
 import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
@@ -14,21 +13,26 @@ import { ChannelAgentChatWindow, type ChannelAgentWindowState } from './ChannelA
 import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
 import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
 import {
+  herkunftText,
+  loadChannelMemberViewModels,
   loadChannelMessageViewModels,
   loadChannelViewModels,
+  loadProjectTeamViewModels,
   loadProjectViewModels,
+  loadSystemEntities,
   loadToolCallResult,
   loadToolCallViewModels,
   sendChannelMessage,
 } from '../api/control-plane-adapter';
-import { defaultSettings, entityData, navigation } from '../mock/ui-control-plane';
-import { agentHosts } from '../mock/infrastructure-control-plane';
-import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentArtifactEvent, type AgentRuntimeName, type AgentRuntimeStatus } from '../api/agent-runtime';
+import { defaultSettings, navigation } from '../mock/ui-control-plane';
+import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentArtifactEvent, type AgentRuntimeName, type AgentRuntimeStatus, type AgentToolEvent } from '../api/agent-runtime';
 import type {
   Area,
+  ChannelMemberViewModel,
   ChannelMessageViewModel,
   ChannelViewModel,
   EntityViewModel,
+  ProjectTeamAgentViewModel,
   ProjectViewModel,
   SettingsViewModel,
   ToolCallViewModel,
@@ -43,51 +47,6 @@ type Theme = 'dark' | 'light';
 interface Props {
   project: string;
   onLogout: () => void;
-}
-
-interface StrategyTarget {
-  scope: 'project' | 'channel';
-  name: string;
-}
-
-interface WorkspaceContextMenu extends StrategyTarget {
-  project: string;
-  x: number;
-  y: number;
-}
-
-interface StrategyDraft {
-  active: string[];
-  manual: string[];
-  saved: boolean;
-}
-
-interface EnvironmentVariable {
-  id: number;
-  key: string;
-  value: string;
-  secret: boolean;
-}
-
-interface EnvironmentDraft {
-  githubToken: string;
-  variables: EnvironmentVariable[];
-  saved: boolean;
-}
-
-const STRATEGY_PRESETS = [
-  'Rückfragen bündeln',
-  'Kritische Events sofort',
-  'Ergebnisse verdichten',
-  'Nur neue Meldungen',
-];
-
-function createStrategyDraft(): StrategyDraft {
-  return { active: [], manual: [], saved: false };
-}
-
-function createEnvironmentDraft(): EnvironmentDraft {
-  return { githubToken: '', variables: [], saved: false };
 }
 
 interface AgentHtmlBlock {
@@ -119,6 +78,8 @@ interface AgentMessage {
   layout?: AgentHtmlLayout;
   saved?: boolean;
   mock?: boolean;
+  /** P8-T25: Werkzeugaufrufe und Denkphasen dieser Antwort aus dem Antwortstrom. */
+  toolRun?: { calls: ToolCallViewModel[]; phases: string[] };
 }
 
 /**
@@ -157,87 +118,6 @@ function fasseLaufkontextZusammen(context: unknown): { text: string; roh: string
   if (typeof werte.durationMs === 'number') teile.push(Math.round(werte.durationMs / 100) / 10 + ' s');
   if (typeof werte.totalCostUsd === 'number' && werte.totalCostUsd > 0) teile.push(werte.totalCostUsd.toFixed(4) + ' USD');
   return { text: teile.length ? teile.join(' · ') : 'Session fortsetzbar', roh };
-}
-
-function escapeHtml(value: string) {
-  return value
-    .split('&').join('&amp;')
-    .split('<').join('&lt;')
-    .split('>').join('&gt;')
-    .split('"').join('&quot;')
-    .split("'").join('&#039;');
-}
-
-function buildArtifactBlocks(prompt: string, theme: Theme): AgentHtmlBlock[] {
-  const dark = theme === 'dark';
-  const surface = dark ? '#191c21' : '#ffffff';
-  const ink = dark ? '#f5f1e8' : '#202126';
-  const muted = dark ? '#969089' : '#6a655f';
-  const line = dark ? '#343940' : '#ddd7ce';
-  const soft = dark ? '#111419' : '#f1eee8';
-  const safePrompt = escapeHtml(prompt);
-  const base = '<style>' +
-    ':host{display:block;height:100%;color:' + ink + ';font:13px/1.45 "IBM Plex Sans","Aptos",sans-serif}*{box-sizing:border-box}' +
-    '.surface{height:100%;padding:18px;border:1px solid ' + line + ';background:' + surface + '}' +
-    '.label{color:#f97316;font:700 9px "IBM Plex Mono",monospace;letter-spacing:.12em;text-transform:uppercase}' +
-    'h1,h2{font-family:"Syne","Aptos Display",sans-serif}h1{margin:7px 0 5px;font-size:27px;line-height:1.05;letter-spacing:-.035em}h2{margin:0 0 15px;font-size:12px;letter-spacing:.04em;text-transform:uppercase}.muted{color:' + muted + '}' +
-    '.pulse{width:8px;height:8px;border-radius:50%;background:#f97316;box-shadow:0 0 0 0 rgba(249,115,22,.5);animation:pulse 1.8s infinite}@keyframes pulse{70%{box-shadow:0 0 0 9px rgba(249,115,22,0)}}' +
-    '@media(prefers-reduced-motion:reduce){*{animation:none!important}}</style>';
-
-  return [
-    {
-      id: 'lead',
-      column: 1,
-      columnSpan: 12,
-      row: 1,
-      rowSpan: 1,
-      minHeight: 96,
-      html: base +
-        '<header style="height:100%;display:flex;align-items:center;justify-content:space-between;padding:4px 2px">' +
-        '<div><div class="label">Visuelle Antwort · frei platziert</div><h1>Projektaktivität und Arbeitsfluss</h1><div class="muted">Vier native HTML-Bereiche in einer Antwort</div></div><i class="pulse"></i></header>',
-    },
-    {
-      id: 'activity',
-      column: 1,
-      columnSpan: 8,
-      row: 2,
-      rowSpan: 3,
-      minHeight: 246,
-      html: base +
-        '<section class="surface"><h2>Aktivität · sieben Schritte</h2><div style="height:172px;display:flex;align-items:flex-end;gap:12px;border-bottom:1px solid ' + line + ';padding:12px 4px 0">' +
-        [36, 58, 44, 82, 67, 91, 72].map(function (height, index) {
-          return '<div style="flex:1;height:' + height + '%;background:' + (index % 2 ? '#f97316' : '#c9560b') + ';transform-origin:bottom;animation:rise .8s ' + (index * 70) + 'ms cubic-bezier(.2,.8,.2,1) both"></div>';
-        }).join('') +
-        '</div><style>@keyframes rise{from{transform:scaleY(0);opacity:.25}to{transform:scaleY(1);opacity:1}}</style></section>',
-    },
-    {
-      id: 'signals',
-      column: 9,
-      columnSpan: 4,
-      row: 2,
-      rowSpan: 3,
-      minHeight: 246,
-      html: base +
-        '<aside class="surface"><h2>Signale</h2><div style="display:grid;gap:14px">' +
-        '<div><span class="label">Aktivität</span><strong style="display:block;margin-top:4px;font:700 25px Syne,sans-serif">14</strong></div>' +
-        '<div style="height:1px;background:' + line + '"></div><div><span class="label">Channels</span><strong style="display:block;margin-top:4px;font:700 25px Syne,sans-serif">2</strong></div>' +
-        '<div style="height:1px;background:' + line + '"></div><div><span class="label">Darstellung</span><strong style="display:block;margin-top:4px">HTML · nativ</strong></div></div></aside>',
-    },
-    {
-      id: 'flow',
-      column: 2,
-      columnSpan: 10,
-      row: 5,
-      rowSpan: 2,
-      minHeight: 150,
-      html: base +
-        '<section class="surface"><h2>Agentenfluss</h2><div style="display:grid;grid-template-columns:1fr 32px 1fr 32px 1fr;align-items:center;gap:8px">' +
-        '<div style="padding:12px;background:' + soft + '"><span class="label">Eingabe</span><b style="display:block;margin-top:5px">User</b></div><b style="color:#f97316;text-align:center">→</b>' +
-        '<div style="padding:12px;background:' + soft + '"><span class="label">Verarbeitung</span><b style="display:block;margin-top:5px">Hauptagent</b></div><b style="color:#f97316;text-align:center">→</b>' +
-        '<div style="padding:12px;background:' + soft + '"><span class="label">Ausgabe</span><b style="display:block;margin-top:5px">Chat-Fläche</b></div></div>' +
-        '<p class="muted" style="margin:13px 0 0;border-left:2px solid #f97316;padding-left:10px"><b>Auftrag:</b> ' + safePrompt + '</p></section>',
-    },
-  ];
 }
 
 function Switch({
@@ -367,7 +247,9 @@ function ToolCallNode({ call, project }: { call: ToolCallViewModel; project: str
   const fresh = toolCallIsFresh(call);
 
   useEffect(() => {
-    if (stage !== 2) return;
+    // Aufrufe aus dem Antwortstrom bringen ihr Ergebnis selbst mit.
+    if (call.source === 'stream') setResult(call.error || call.resultPreview);
+    if (stage !== 2 || call.source === 'stream') return;
     let active = true;
     let timer: number | undefined;
 
@@ -467,8 +349,113 @@ function ToolActivity({
   );
 }
 
-function MainAgentView({ theme, project, showDashboard }: { theme: Theme; project: string; showDashboard: boolean }) {
-  const [input, setInput] = useState('Erstelle ein animiertes Schaubild zum aktuellen Projektstatus.');
+// P8-T25: Der Poll liefert immer nur die letzten N Aufrufe. Ersetzte man damit
+// die Liste, rutschte sie bei jedem Poll weiter (oben fallen Eintraege weg,
+// unten kommen welche dazu) und wirkte wie eine Endlosschleife. Deshalb bleiben
+// gezeigte Eintraege stehen und werden nur aktualisiert; neue kommen hinten dazu.
+const TOOL_LISTE_MAX = 60;
+
+function fuehreToolCallsZusammen(bisher: ToolCallViewModel[], neu: ToolCallViewModel[]): ToolCallViewModel[] {
+  const neuNachId = new Map(neu.map((call) => [call.id, call]));
+  const bekannt = new Set(bisher.map((call) => call.id));
+  let geaendert = false;
+  const aktualisiert = bisher.map((call) => {
+    const frisch = neuNachId.get(call.id);
+    if (!frisch || JSON.stringify(frisch) === JSON.stringify(call)) return call;
+    geaendert = true;
+    return frisch;
+  });
+  const dazu = neu.filter((call) => !bekannt.has(call.id));
+  if (!geaendert && !dazu.length) return bisher;
+  return [...aktualisiert, ...dazu].slice(-TOOL_LISTE_MAX);
+}
+
+function kurzeDenkphase(text: string): string {
+  const zeile = text.split('\n').find((line) => line.trim())?.trim() ?? '';
+  return zeile.length > 140 ? zeile.slice(0, 140) + ' …' : zeile || 'Denkphase';
+}
+
+// P8-T25: Werkzeugaufruf aus dem Antwortstrom in die Liste dieser Antwort übernehmen.
+// start legt den Knoten an (läuft), end setzt Ergebnis, Status und Dauer.
+function wendeWerkzeugSchrittAn(run: AgentMessage['toolRun'], schritt: AgentToolEvent): NonNullable<AgentMessage['toolRun']> {
+  const calls = run?.calls ?? [];
+  const phases = run?.phases ?? [];
+  const id = 'stream:' + schritt.id;
+  const vorhanden = calls.find((call) => call.id === id);
+  const jetzt = new Date();
+  if (schritt.phase === 'end' && vorhanden) {
+    const start = Date.parse(vorhanden.createdAt);
+    return {
+      phases,
+      calls: calls.map((call) => call.id !== id ? call : {
+        ...call,
+        status: schritt.isError ? 'failed' : 'done',
+        resultPreview: schritt.isError ? '' : schritt.output ?? '',
+        error: schritt.isError ? schritt.output || 'Fehler' : '',
+        durationMs: Number.isFinite(start) ? Math.max(0, jetzt.getTime() - start) : 0,
+      }),
+    };
+  }
+  const input = schritt.input && typeof schritt.input === 'object' ? schritt.input as Record<string, unknown> : null;
+  const neu: ToolCallViewModel = {
+    id,
+    tool: schritt.name || vorhanden?.tool || 'tool',
+    action: typeof input?.action === 'string' ? input.action : '',
+    agent: 'Hauptagent',
+    status: schritt.phase === 'start' ? 'running' : schritt.isError ? 'failed' : 'done',
+    argsPreview: schritt.input === undefined ? vorhanden?.argsPreview ?? '' : JSON.stringify(schritt.input),
+    resultPreview: schritt.phase === 'end' && !schritt.isError ? schritt.output ?? '' : '',
+    error: schritt.phase === 'end' && schritt.isError ? schritt.output || 'Fehler' : '',
+    durationMs: 0,
+    createdAt: vorhanden?.createdAt ?? jetzt.toISOString(),
+    source: 'stream',
+  };
+  return { phases, calls: vorhanden ? calls.map((call) => call.id === id ? neu : call) : [...calls, neu] };
+}
+
+function istNeuereRevision(neu: AgentHtmlBlock['revision'], alt: AgentHtmlBlock['revision']): boolean {
+  if (neu === undefined || alt === undefined) return true;
+  const a = Number(neu);
+  const b = Number(alt);
+  return Number.isFinite(a) && Number.isFinite(b) ? a >= b : true;
+}
+
+// P8-T25: Ein Artefakt mit bekannter id ersetzt seinen Block (auch in einer
+// früheren Antwort), statt einen zweiten anzuhängen; maßgeblich ist die revision.
+// Pflicht sind nur id und html, alles andere bekommt eine Vorgabe.
+function setzeArtefaktBlock(
+  items: AgentMessage[],
+  block: AgentArtifactEvent,
+  ziel: { artefaktId: number; nummer: number; titel: string; auftrag: string },
+): AgentMessage[] {
+  const id = block.id || 'block-' + ziel.nummer;
+  const baue = (alt?: AgentHtmlBlock): AgentHtmlBlock => ({
+    id,
+    html: block.html,
+    column: block.column ?? alt?.column ?? 1,
+    columnSpan: block.columnSpan ?? alt?.columnSpan ?? 12,
+    row: block.row ?? alt?.row ?? ziel.nummer,
+    rowSpan: block.rowSpan ?? alt?.rowSpan ?? 1,
+    minHeight: block.minHeight ?? alt?.minHeight ?? 220,
+    ...(block.revision === undefined ? {} : { revision: block.revision }),
+    ...(block.interactive === undefined ? {} : { interactive: block.interactive }),
+  });
+  const vorhanden = items.find((message) => message.kind === 'artifact' && message.blocks?.some((item) => item.id === id));
+  if (vorhanden) {
+    return items.map((message) => message.id !== vorhanden.id ? message : {
+      ...message,
+      title: block.title || message.title,
+      blocks: (message.blocks || []).map((item) => item.id === id && istNeuereRevision(block.revision, item.revision) ? baue(item) : item),
+    });
+  }
+  if (items.some((message) => message.id === ziel.artefaktId)) {
+    return items.map((message) => message.id === ziel.artefaktId ? { ...message, title: ziel.titel, blocks: [...(message.blocks || []), baue()] } : message);
+  }
+  return [...items, { id: ziel.artefaktId, role: 'agent', kind: 'artifact', title: ziel.titel, text: ziel.auftrag, blocks: [baue()], layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false }];
+}
+
+function MainAgentView({ project, showDashboard }: { theme: Theme; project: string; showDashboard: boolean }) {
+  const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<MockChatAttachment[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [thinking, setThinking] = useState(false);
@@ -497,12 +484,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const mainWindowDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const mainComposerRef = useRef<HTMLTextAreaElement>(null);
   const peekTimerRef = useRef<number | null>(null);
-  const [messages, setMessages] = useState<AgentMessage[]>(() => [
-    { id: 1, role: 'user', kind: 'text', text: 'Wie weit sind wir mit der Oberfläche?', mock: true },
-    { id: 2, role: 'agent', kind: 'text', text: 'Projekte, Channels und der Projektgraph sind verbunden. Die übrigen Control-Plane-Bereiche werden zuerst als vollständige Oberfläche abgestimmt und danach an ihre Runtime-Verträge angeschlossen.', mock: true },
-    { id: 3, role: 'user', kind: 'text', text: 'Zeig mir den Ablauf bitte als animiertes Schaubild.', mock: true },
-    { id: 4, role: 'agent', kind: 'artifact', title: 'Projektaktivität und Arbeitsfluss', text: 'Projektstatus und Arbeitsfluss visualisieren.', blocks: buildArtifactBlocks('Projektstatus und Arbeitsfluss visualisieren.', theme), layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false, mock: true },
-  ]);
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
   const feedRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
   const previousMessageCountRef = useRef(messages.length);
@@ -543,16 +525,13 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   }, [showDashboard]);
 
   useEffect(() => {
-    setMessages((items) => items.map((message) => message.kind === 'artifact' && message.mock ? { ...message, blocks: buildArtifactBlocks(message.text, theme) } : message));
-  }, [theme]);
-
-  useEffect(() => {
     let active = true;
+    setToolCalls([]);
     const refresh = async () => {
       if (!project) return;
       try {
         const calls = await loadToolCallViewModels(project, 12);
-        if (active) { setToolCalls(calls); setToolError(''); }
+        if (active) { setToolCalls((bisher) => fuehreToolCallsZusammen(bisher, calls)); setToolError(''); }
       } catch (error) {
         if (active) setToolError(error instanceof Error ? error.message : String(error));
       }
@@ -672,29 +651,18 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
         // Wuerde die Textnachricht umgebaut, verschwaende die Prosa des Agenten
         // stillschweigend — genau die Fehlerklasse aus `muster-stille-teilantwort`.
         const artefaktId = answerId + 1;
-        const artefaktBloecke: AgentHtmlBlock[] = [];
+        let artefaktNummer = 0;
         await streamMainAgentMessage(activeSessionId, value, {
           onDelta: ({ content }) => setMessages((items) => items.map((message) => message.id === answerId ? { ...message, text: message.text + content } : message)),
+          onTool: (schritt) => setMessages((items) => items.map((message) => message.id === answerId ? { ...message, toolRun: wendeWerkzeugSchrittAn(message.toolRun, schritt) } : message)),
+          onThinking: ({ content }) => setMessages((items) => items.map((message) => message.id === answerId
+            ? { ...message, toolRun: { calls: message.toolRun?.calls ?? [], phases: [...(message.toolRun?.phases ?? []), kurzeDenkphase(content)] } }
+            : message)),
           onArtifact: (block: AgentArtifactEvent) => {
-            // Pflicht sind nur id und html. Alles andere bekommt hier eine Vorgabe,
-            // damit der Agent im ersten Schritt nur HTML schicken muss.
-            const nummer = artefaktBloecke.length + 1;
-            artefaktBloecke.push({
-              id: block.id || 'block-' + nummer,
-              html: block.html,
-              column: block.column ?? 1,
-              columnSpan: block.columnSpan ?? 12,
-              row: block.row ?? nummer,
-              rowSpan: block.rowSpan ?? 1,
-              minHeight: block.minHeight ?? 220,
-              ...(block.revision === undefined ? {} : { revision: block.revision }),
-              ...(block.interactive === undefined ? {} : { interactive: block.interactive }),
-            });
-            const bloecke = artefaktBloecke.slice();
+            artefaktNummer += 1;
+            const nummer = artefaktNummer;
             const titel = block.title || 'HTML-Antwort des Hauptagenten';
-            setMessages((items) => items.some((message) => message.id === artefaktId)
-              ? items.map((message) => message.id === artefaktId ? { ...message, title: titel, blocks: bloecke } : message)
-              : [...items, { id: artefaktId, role: 'agent', kind: 'artifact', title: titel, text: value, blocks: bloecke, layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false }]);
+            setMessages((items) => setzeArtefaktBlock(items, block, { artefaktId, nummer, titel, auftrag: value }));
           },
           onUsage: (usage) => setRuntimeUsage([usage.inputTokens ? 'in ' + usage.inputTokens : '', usage.outputTokens ? 'out ' + usage.outputTokens : '', usage.cachedInputTokens ? 'cache ' + usage.cachedInputTokens : ''].filter(Boolean).join(' · ')),
           onDone: ({ context, artifacts, artefakteEmpfangen, unbekannteEreignisse }) => {
@@ -771,7 +739,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
 
   return (
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
-      {showDashboard && <MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} />}
+      {showDashboard && <MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} artifacts={messages.filter((message) => message.kind === 'artifact').map((message) => ({ id: String(message.id), title: message.title || 'HTML-Antwort', blocks: message.blocks?.length ?? 0, saved: message.saved === true }))} />}
       <section className={shellClass + ' floating-agent-window'} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
         {chatCollapsed && !chatPeeking && <button type="button" className="agent-side-launcher" onClick={openChat}><span>HA</span><strong>Hauptagent</strong>{chatHasUnread && <i />}</button>}
         <div className="conversation-head" onPointerDown={startMainWindowDrag} onPointerMove={moveMainWindow} onPointerUp={stopMainWindowDrag} onPointerCancel={stopMainWindowDrag}>
@@ -789,7 +757,7 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
           {runtimeMode !== 'mock' && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Letzte Toolaufrufe im Projekt" phases={[]} />}
           {visibleMessages.map((message) => <Fragment key={message.id}>
-            {message.id === 4 && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Projektstatus wird geprüft und als HTML-Antwort aufgebaut." phases={['Auftrag einordnen', 'Darstellung zusammensetzen']} />}
+            {message.toolRun && (message.toolRun.calls.length > 0 || message.toolRun.phases.length > 0) && <ToolActivity calls={message.toolRun.calls} error="" project={project} summary={message.toolRun.calls.some((call) => call.status === 'running') ? 'Hauptagent arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={message.toolRun.phases} />}
             <article className={'message ' + message.role + ' ' + message.kind}>
               <header>{message.role === 'user' ? 'Du' : 'Hauptagent'}</header>
               {message.kind === 'text' && <p>{message.text}</p>}
@@ -946,67 +914,6 @@ function OverviewView({
   );
 }
 
-function ProjectsView({
-  projects,
-  selectedProject,
-  channels,
-  onOpen,
-}: {
-  projects: ProjectViewModel[];
-  selectedProject: string;
-  channels: ChannelViewModel[];
-  onOpen: (area: Area) => void;
-}) {
-  const [tab, setTab] = useState<ProjectDetailSection>('overview');
-  const project = projects.find((item) => item.name === selectedProject);
-  const tabs: Array<{ id: ProjectDetailSection; label: string }> = [
-    { id: 'overview', label: 'Übersicht' },
-    { id: 'agents', label: 'Agenten' },
-    { id: 'tasks', label: 'Tasks / Plan' },
-    { id: 'channels', label: 'Channels' },
-    { id: 'workspaces', label: 'Workspaces' },
-    { id: 'graph', label: 'Code / Graph' },
-    { id: 'memories', label: 'Memories' },
-    { id: 'thoughts', label: 'Thoughts' },
-    { id: 'agent-knowledge', label: 'Agentenwissen' },
-    { id: 'audit', label: 'Audit' },
-    { id: 'settings', label: 'Einstellungen' },
-  ];
-  return (
-    <div className="standard-page project-page">
-      <PageHeader
-        eyebrow="Echte Projektidentitäten · Unteransichten getrennt"
-        title="Projekte"
-        description="Ein Projekt bleibt genau ein UI-Objekt; Wissen erscheint ausschließlich im gewählten Projektdetail."
-        action={<StatusChip stand="teilweise" />}
-      />
-      <PlanungsHinweis
-        aufgabe="Die Projektliste selbst ist echt. Die Kennzahlen und Unterbereiche im Projektdetail sind noch erfunden und muessen angeschlossen werden."
-        endpunkte={['GET /api/projects', 'GET /api/projects/:name/stats', 'GET /api/projects/:name/memories']}
-      />
-      <section className="project-detail-surface">
-        <div className="entity-detail project-detail">
-          <header className="project-detail-head"><div><span className="eyebrow">PROJEKTDETAIL</span><h2>{project?.name || 'Projekt auswählen'}</h2><p>Projektgebundene Inhalte wechseln ausschließlich mit diesem Projekt.</p></div><b>{project?.isActive ? '● AKTIV' : '○ INAKTIV'}</b></header>
-          <nav className="project-detail-tabs">{tabs.map((item) => <button type="button" key={item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}</button>)}</nav>
-          <section className="project-detail-body">
-            {tab === 'overview' && <div className="project-overview"><p>Ein Projekt bleibt ein einziges UI-Objekt. Memories, Thoughts, Agentenwissen, Channels und Workspaces sind Unteransichten.</p><dl><div><dt>Status</dt><dd>{project?.isActive ? 'aktiv' : 'deaktiviert'}</dd></div><div><dt>Channels</dt><dd>{channels.length}</dd></div><div><dt>Quelle</dt><dd>REST API</dd></div><div><dt>Graph</dt><dd>real verfügbar</dd></div></dl></div>}
-            {tab === 'agents' && <ProjectKnowledgePanel kind="agents" project={selectedProject} />}
-            {tab === 'tasks' && <ProjectKnowledgePanel kind="tasks" project={selectedProject} />}
-            {tab === 'channels' && <div className="project-route-panel"><h3>Channels · {selectedProject}</h3>{channels.map((channel) => <p key={channel.id}><b>#{channel.name}</b><span>{channel.description || 'Projektchannel'}</span></p>)}<button type="button" onClick={() => onOpen('channels')}>Vollständige Channel-Ansicht öffnen</button></div>}
-            {tab === 'workspaces' && <div className="project-route-panel"><h3>Workspaces · {selectedProject}</h3><p><b>main</b><span>persistent · PROJECT-Scope</span></p><p><b>ui-review</b><span>isolated · WORKSPACE-Scope</span></p><button type="button" onClick={() => onOpen('workspaces')}>Workspace-Ansicht öffnen</button></div>}
-            {tab === 'graph' && <div className="project-route-panel"><h3>Code / Graph · {selectedProject}</h3><p><b>Graph</b><span>Reale Datenverbindung bleibt erhalten</span></p><p><b>Code Intel</b><span>Projektgebundener Index</span></p><button type="button" onClick={() => onOpen('graph')}>Realen Graph öffnen</button></div>}
-            {tab === 'memories' && <ProjectKnowledgePanel kind="memories" project={selectedProject} />}
-            {tab === 'thoughts' && <ProjectKnowledgePanel kind="thoughts" project={selectedProject} />}
-            {tab === 'agent-knowledge' && <ProjectKnowledgePanel kind="agent-knowledge" project={selectedProject} />}
-            {tab === 'audit' && <ProjectKnowledgePanel kind="audit" project={selectedProject} />}
-            {tab === 'settings' && <div className="project-route-panel"><h3>Projekteinstellungen · {selectedProject}</h3><p><b>Strategien</b><span>Projektweit und je Channel getrennt</span></p><p><b>ENV / GitHub</b><span>Projektbezogene Profile · UI-Mock</span></p><button type="button" onClick={() => onOpen('settings')}>Einstellungen öffnen</button></div>}
-          </section>
-        </div>
-      </section>
-    </div>
-  );
-}
-
 const MOCK_CHANNEL_IMAGE_PATTERN = /^\[Bild:\s*(.+?)\]$/gm;
 const MOCK_CHANNEL_FILE_PATTERN = /^\[Datei:\s*(.+?)\]$/gm;
 const mockChannelImages = new Map<string, string>();
@@ -1053,9 +960,9 @@ function ChannelMessageContent({ message }: { message: ChannelMessageViewModel }
               </button>
             ) : (
               <div className="channel-image-missing" key={path}>
-                <b>Mock-Bild</b>
+                <b>Bildpfad</b>
                 <span>{path}</span>
-                <small>Nach einem Neuladen ist nur noch der zukünftige Unraid-Pfad vorhanden.</small>
+                <small>Für diesen Pfad gibt es in der Web-UI keinen Bildabruf.</small>
               </div>
             );
           })}
@@ -1076,24 +983,26 @@ function ChannelsView({
   channels,
   selectedChannel,
   messages,
+  members,
+  membersError,
   loading,
   error,
   onSelectChannel,
   onReload,
   onSend,
-  onOpenStrategy,
   onOpen,
 }: {
   project: string;
   channels: ChannelViewModel[];
   selectedChannel: string;
   messages: ChannelMessageViewModel[];
+  members: ChannelMemberViewModel[];
+  membersError: string;
   loading: boolean;
   error: string;
   onSelectChannel: (channel: string) => void;
   onReload: () => void;
   onSend: (content: string) => Promise<void>;
-  onOpenStrategy: (channel: string, x: number, y: number) => void;
   onOpen: (area: Area) => void;
 }) {
   const [content, setContent] = useState('');
@@ -1105,11 +1014,6 @@ function ChannelsView({
   const [channelHeight, setChannelHeight] = useState(100);
   const [openAgentWindows, setOpenAgentWindows] = useState<ChannelAgentWindowState[]>([]);
   const messageListRef = useRef<HTMLDivElement>(null);
-  const channelAgents: Array<{name:string;identityId?:string;role:string;status:string}> = [
-    { name: 'Koordinator', role: 'Routing', status: 'online' },
-    { name: 'Worker UI', role: 'Umsetzung', status: 'online' },
-    { name: 'Dreamer', role: 'Ideen', status: 'idle' },
-  ];
   const channel = channels.find((item) => item.name === selectedChannel);
 
   useEffect(() => {
@@ -1126,17 +1030,12 @@ function ChannelsView({
     setSendState('');
   }, [selectedChannel]);
 
+  // P8-T25: Die Web-UI hat keinen Upload-Weg (Asset-Upload verlangt eine
+  // Daemon-Identitaet). Statt erfundene Pfade in den Channel zu schreiben,
+  // wird das offen gesagt und nichts angehaengt.
   const queueChannelFiles = async (files: FileList | File[]) => {
-    setSendState('Dateien werden für den UI-Mock vorbereitet …');
-    try {
-      const prepared = await prepareMockChatAttachments(files, { scope: 'channel', project, channel: selectedChannel });
-      prepared.forEach((attachment) => { if (attachment.previewUrl) mockChannelImages.set(attachment.path, attachment.previewUrl); });
-      setChannelFiles((current) => [...current, ...prepared]);
-      setChannelDropActive(false);
-      setSendState('');
-    } catch (fileError) {
-      setSendState(fileError instanceof Error ? fileError.message : String(fileError));
-    }
+    setChannelDropActive(false);
+    setSendState(Array.from(files).length + ' Datei(en) nicht angehängt: Die Web-UI kann noch keine Dateien hochladen. Es wird nur Text gesendet.');
   };
 
   const openChannelAgent = (agent: { name: string; identityId?: string; role: string; status: string }) => {
@@ -1198,7 +1097,6 @@ function ChannelsView({
               className={selectedChannel === item.name ? 'active' : ''}
               key={item.name}
               onClick={() => onSelectChannel(item.name)}
-              onContextMenu={(event) => { event.preventDefault(); onOpenStrategy(item.name, event.clientX, event.clientY); }}
             >
               <b>#</b><div><strong>{item.name}</strong><small>{item.description}</small></div>
             </button>
@@ -1217,12 +1115,14 @@ function ChannelsView({
             </div>
           </header>
           <div className="channel-agent-bar">
-            <span>Agenten in #{selectedChannel || '—'} · Mock</span>
-            {channelAgents.map((agent) => {
+            <span>Agenten in #{selectedChannel || '—'}</span>
+            {membersError && <small>{membersError}</small>}
+            {!membersError && selectedChannel && !members.length && <small>Keine Agenten in diesem Channel.</small>}
+            {members.map((agent) => {
               const windowKey = project + '::' + selectedChannel + '::' + (agent.identityId ? 'identity:' + agent.identityId : 'legacy:' + agent.name);
               const isOpen = openAgentWindows.some((item) => item.key === windowKey);
               const isActive = openAgentWindows[openAgentWindows.length - 1]?.key === windowKey;
-              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><span><strong>{agent.name}</strong><small>{agent.role}</small></span></button>;
+              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><span><strong>{agent.name}</strong><small>{agent.role} · {herkunftText(agent.herkunft)}</small></span></button>;
             })}
           </div>
           {openAgentWindows.map((agentWindow, index) => (
@@ -1230,7 +1130,12 @@ function ChannelsView({
               key={agentWindow.key}
               windowState={agentWindow}
               project={project}
-              messages={agentWindow.channelName === selectedChannel ? messages : []}
+              messages={agentWindow.channelName === selectedChannel
+                ? messages.filter((message) => message.sender === agentWindow.agentName || message.content.includes('@' + agentWindow.agentName))
+                : []}
+              onSend={(text) => agentWindow.channelName === selectedChannel
+                ? onSend(text)
+                : Promise.reject(new Error('#' + agentWindow.channelName + ' ist nicht mehr gewählt — bitte den Channel wieder auswählen.'))}
               initialPosition={{ x: 70 + index * 34, y: 86 + index * 30 }}
               zIndex={18 + index}
               onActivate={() => activateChannelAgent(agentWindow.key)}
@@ -1299,100 +1204,124 @@ function ChannelsView({
   );
 }
 
+function agentTon(agent: ProjectTeamAgentViewModel) {
+  if (agent.status === 'running') return 'ready';
+  if (agent.status === 'idle') return 'warning';
+  return 'offline';
+}
+
+// P8-T25: Das Team kommt aus wrapper_status (GET /api/projects/:name/specialists),
+// nicht mehr aus erfundenen Host-Agenten.
 function ProjectAgentTeamView({ project }: { project: string }) {
-  const hostAgents = agentHosts.flatMap((host) => host.agents.map((agent) => ({ ...agent, host: host.name }))).filter((agent) => agent.project === project && agent.role !== 'main');
-  const agents = hostAgents.length ? hostAgents : [
-    { name: project + '-koordinator', project, role: 'project-coordinator', state: 'idle' as const, runtime: 'noch nicht zugewiesen', memory: '0 MB', heartbeat: 'bereit', host: 'automatisch' },
-    { name: project + '-worker', project, role: 'specialist', state: 'sleeping' as const, runtime: 'noch nicht zugewiesen', memory: '0 MB', heartbeat: 'pausiert', host: 'automatisch' },
-  ];
-  const [selected, setSelected] = useState(agents[0]?.name || '');
+  const [agents, setAgents] = useState<ProjectTeamAgentViewModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState('');
   const current = agents.find((agent) => agent.name === selected) ?? agents[0];
-  useEffect(() => setSelected(agents[0]?.name || ''), [project]);
   const verbrauch = useAgentVerbrauch(project);
+
+  useEffect(() => {
+    let active = true;
+    setAgents([]);
+    setSelected('');
+    setError('');
+    if (!project) return;
+    const laden = async () => {
+      setLoading(true);
+      try {
+        const rows = await loadProjectTeamViewModels(project);
+        if (!active) return;
+        setAgents(rows);
+        setError('');
+        setSelected((name) => (rows.some((row) => row.name === name) ? name : rows[0]?.name || ''));
+      } catch (loadError) {
+        if (active) setError(loadError instanceof Error ? loadError.message : String(loadError));
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void laden();
+    const timer = window.setInterval(() => void laden(), 10_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [project]);
+
   return <div className="standard-page">
-    <PageHeader eyebrow="PROJEKTGEBUNDENES TEAM · UI1–UI3" title={'Agententeam · ' + project} description="Hier erscheinen ausschließlich Agenten dieses Projekts. Der globale Hauptagent bleibt in seinem eigenen Chatfenster." action={<StatusChip stand="demo" />} />
-    <PlanungsHinweis
-      aufgabe="Die Agentenliste ist erfunden. Sie muss an die echten Projekt-Agenten angeschlossen werden — Spezialisten samt Laufzustand liefert die API bereits vollstaendig, es fehlt nur der Aufruf."
-      endpunkte={['GET /api/projects/:name/specialists', 'GET /api/projects/:name/agents']}
-    />
+    <PageHeader eyebrow="PROJEKTGEBUNDENES TEAM" title={'Agententeam · ' + project} description="Hier erscheinen ausschließlich Agenten dieses Projekts. Der globale Hauptagent bleibt in seinem eigenen Chatfenster." action={<StatusChip stand="live" />} />
     <section className="split-surface project-agent-team">
-      <div className="entity-list"><header><h2>Projekt-Agenten</h2><span>{agents.length}</span></header>{agents.map((agent) => <button type="button" className={current?.name === agent.name ? 'entity-row active' : 'entity-row'} key={agent.name} onClick={() => setSelected(agent.name)}><i className={agent.state === 'running' ? 'ready' : agent.state === 'idle' ? 'warning' : 'offline'} /><div><strong>{agent.name}</strong><small>{agent.role} · {agent.state}</small></div><span>{agent.host}</span></button>)}</div>
-      {current && <div className="entity-detail"><div className="detail-status"><i className={current.state === 'running' ? 'ready' : current.state === 'idle' ? 'warning' : 'offline'} /><span>{current.state}</span><b>PROJEKT</b></div><h2>{current.name}</h2><p>{current.role} im Projekt {project}. Kein Hauptagent und keine Agenten anderer Projekte werden hier vermischt.</p><dl><div><dt>Runtime</dt><dd>{current.runtime}</dd></div><div><dt>Host</dt><dd>{current.host}</dd></div><div><dt>Speicher</dt><dd>{current.memory}</dd></div><div><dt>Heartbeat</dt><dd>{current.heartbeat}</dd></div><div><dt>Tokens (Monat, Abo)</dt><dd>{verbrauch ? (verbrauch[current.name] ?? 0).toLocaleString('de-DE') : '–'}</dd></div></dl><div className="prepared-panel">Der vollständige projektbezogene Agentenverlauf wird später über Heartbeat und Channel-Daten verdrahtet.</div></div>}
+      <div className="entity-list">
+        <header><h2>Projekt-Agenten</h2><span>{agents.length}</span></header>
+        {agents.map((agent) => <button type="button" className={current?.name === agent.name ? 'entity-row active' : 'entity-row'} key={agent.name} onClick={() => setSelected(agent.name)}><i className={agentTon(agent)} /><div><strong>{agent.name}</strong><small>{agent.status}{agent.busy ? ' · arbeitet' : ''}</small></div><span>{agent.contextPercent} %</span></button>)}
+        {!agents.length && <p className="empty-state">{loading ? 'lädt …' : error || 'Für dieses Projekt sind keine Agenten registriert.'}</p>}
+      </div>
+      {current && <div className="entity-detail">
+        <div className="detail-status"><i className={agentTon(current)} /><span>{current.status}</span><b>PROJEKT</b></div>
+        <h2>{current.name}</h2>
+        <p>{current.currentTask ? 'Aktuelle Task: ' + current.currentTask : 'Keine aktuelle Task gemeldet.'}</p>
+        <dl>
+          <div><dt>Modell</dt><dd>{current.model || '–'}</dd></div>
+          <div><dt>Provider</dt><dd>{current.provider || '–'}</dd></div>
+          <div><dt>Kontext</dt><dd>{current.contextPercent} %</dd></div>
+          <div><dt>Tokens ein / aus</dt><dd>{current.tokensIn.toLocaleString('de-DE')} / {current.tokensOut.toLocaleString('de-DE')}</dd></div>
+          <div><dt>Channels</dt><dd>{current.channels.length ? current.channels.map((name) => '#' + name).join(', ') : '–'}</dd></div>
+          <div><dt>Letzte Aktivität</dt><dd>{current.lastActivity ? new Date(current.lastActivity).toLocaleString('de-DE') : '–'}</dd></div>
+          <div><dt>Tokens (Monat, Abo)</dt><dd>{verbrauch ? (verbrauch[current.name] ?? 0).toLocaleString('de-DE') : '–'}</dd></div>
+        </dl>
+      </div>}
     </section>
   </div>;
 }
 
+// P8-T25: Systemstatus aus GET /api/status. Dreamer und Verwalter haben keinen
+// Dienst — dort steht ehrlich, dass es nichts gibt, statt erfundener Zeilen.
 function EntityView({ area }: { area: Area }) {
-  const rows = entityData[area] || [];
-  const [selected, setSelected] = useState(rows[0]?.id || '');
+  const [rows, setRows] = useState<EntityViewModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState('');
   const current = rows.find((row) => row.id === selected) || rows[0];
+  const ohneDienst = area !== 'system';
 
   useEffect(() => {
-    setSelected(rows[0]?.id || '');
+    let active = true;
+    setRows([]);
+    setSelected('');
+    setError('');
+    if (area !== 'system') return;
+    const laden = async () => {
+      setLoading(true);
+      try {
+        const next = await loadSystemEntities();
+        if (active) { setRows(next); setError(''); }
+      } catch (loadError) {
+        if (active) setError(loadError instanceof Error ? loadError.message : String(loadError));
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void laden();
+    const timer = window.setInterval(() => void laden(), 15_000);
+    return () => { active = false; window.clearInterval(timer); };
   }, [area]);
 
   const titleByArea: Partial<Record<Area, string>> = {
-    agents: 'Agenten',
-    hosts: 'Agent Hosts',
-    runtimes: 'Runtimes',
-    workspaces: 'Workspaces',
-    testsystems: 'Testsysteme',
     dreamer: 'Dreamer',
     verwalter: 'Verwalter',
     system: 'Systemstatus',
   };
-
-  // Was an dieser Stelle noch zu tun ist. Bewusst je Bereich verschieden: bei
-  // den einen fehlt nur der Aufruf, bei den anderen der Dienst dahinter.
-  const planungByArea: Partial<Record<Area, { aufgabe: string; endpunkte?: string[]; fehlt?: string }>> = {
-    agents: {
-      aufgabe: 'An die echten Projekt-Agenten anschliessen.',
-      endpunkte: ['GET /api/projects/:name/specialists', 'GET /api/projects/:name/agents'],
-    },
-    hosts: {
-      aufgabe: 'An die echten Rechenknoten anschliessen.',
-      endpunkte: ['GET /api/embedding-nodes'],
-      fehlt: 'Ein Host ist heute nur ein Embedding-Knoten. Wer darauf Agenten laufen lassen will, braucht dafuer erst ein Datenmodell.',
-    },
-    runtimes: {
-      aufgabe: 'Die Profilliste aus der Runtime-Verwaltung ziehen statt sie fest einzutragen.',
-      endpunkte: ['GET /api/agent-runtimes', 'GET /api/agent-runtimes/:runtime/status'],
-    },
-    workspaces: {
-      aufgabe: 'An die echte Workspace-Verwaltung anschliessen.',
-      endpunkte: ['GET /api/workspaces', 'PATCH /api/projects/:name/workspace/config'],
-    },
-    testsystems: {
-      aufgabe: 'Vollstaendig offen — hier ist bisher nur die Oberflaeche entworfen.',
-      fehlt: 'Es gibt weder eine Tabelle noch eine Route fuer Testsysteme. Reservieren, Freigeben und Zuruecksetzen sind reine Klickattrappen.',
-    },
-    dreamer: {
-      aufgabe: 'Vollstaendig offen — der Dienst existiert noch nicht.',
-      fehlt: 'Kein Dreamer-Dienst, keine Tabelle, keine Route. Nur der Entwurf der Ansicht.',
-    },
-    verwalter: {
-      aufgabe: 'Vollstaendig offen — der Dienst existiert noch nicht.',
-      fehlt: 'Kein Verwalter-Dienst, keine Tabelle, keine Route. Nur der Entwurf der Ansicht.',
-    },
-    system: {
-      aufgabe: 'An die vorhandenen Statuswerte anschliessen.',
-      endpunkte: ['GET /api/status', 'GET /health', 'GET /api/projects/:name/stats'],
-    },
-  };
-  const planung = planungByArea[area];
+  const title = titleByArea[area] || 'Bereich';
 
   return (
     <div className="standard-page">
       <PageHeader
-        eyebrow="UI-2 · Modellansicht"
-        title={titleByArea[area] || 'Bereich'}
-        description="Fachliche Oberfläche vor dem produktiven Runtime-API-Vertrag."
-        action={<StatusChip stand="demo" />}
+        eyebrow={ohneDienst ? 'NOCH KEIN DIENST' : 'SYSTEM · ECHTE API'}
+        title={title}
+        description={ohneDienst ? 'Für diesen Bereich gibt es noch keinen Dienst. Hier wird nichts erfunden.' : 'Zustand von API-Server, Qdrant und Embeddings aus GET /api/status.'}
+        action={ohneDienst ? undefined : <StatusChip stand="live" />}
       />
-      {planung && <PlanungsHinweis {...planung} />}
+      {ohneDienst && <PlanungsHinweis aufgabe="Vollstaendig offen — der Dienst existiert noch nicht." fehlt={'Kein ' + title + '-Dienst, keine Tabelle, keine Route.'} />}
       <section className="split-surface">
         <div className="entity-list">
-          <header><h2>{titleByArea[area]}</h2><span>{rows.length}</span></header>
+          <header><h2>{title}</h2><span>{rows.length}</span></header>
           {rows.map((row) => (
             <button
               type="button"
@@ -1402,11 +1331,12 @@ function EntityView({ area }: { area: Area }) {
             >
               <i className={row.statusTone} />
               <div><strong>{row.title}</strong><small>{row.subtitle}</small></div>
-              <span>MOCK</span>
+              <span>LIVE</span>
             </button>
           ))}
+          {!rows.length && <p className="empty-state">{ohneDienst ? 'Keine Einträge — der Dienst existiert noch nicht.' : loading ? 'lädt …' : error || 'Keine Statuswerte.'}</p>}
         </div>
-        {current ? <EntityDetail entity={current} /> : <div className="empty-state">Noch keine Ansicht vorbereitet.</div>}
+        {current ? <EntityDetail entity={current} /> : <div className="empty-state">{ohneDienst ? 'Nichts anzuzeigen.' : 'Kein Eintrag gewählt.'}</div>}
       </section>
     </div>
   );
@@ -1415,7 +1345,7 @@ function EntityView({ area }: { area: Area }) {
 function EntityDetail({ entity }: { entity: EntityViewModel }) {
   return (
     <div className="entity-detail">
-      <div className="detail-status"><i className={entity.statusTone} /><span>{entity.status}</span><b>MOCK</b></div>
+      <div className="detail-status"><i className={entity.statusTone} /><span>{entity.status}</span><b>{entity.source === 'api' ? 'LIVE' : 'MOCK'}</b></div>
       <h2>{entity.title}</h2>
       <p>{entity.subtitle}</p>
       <dl>
@@ -1423,12 +1353,6 @@ function EntityDetail({ entity }: { entity: EntityViewModel }) {
           <div key={detail.label}><dt>{detail.label}</dt><dd>{detail.value}</dd></div>
         ))}
       </dl>
-      <div className="detail-tabs">
-        <button type="button" className="active">Übersicht</button>
-        <button type="button">Konfiguration</button>
-        <button type="button">Historie</button>
-      </div>
-      <div className="prepared-panel">Dieser Bereich ist visuell vollständig vorbereitet. Produktive Schreibaktionen folgen erst nach der UI-Abnahme.</div>
     </div>
   );
 }
@@ -1456,6 +1380,12 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
   const [channels, setChannels] = useState<ChannelViewModel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState('');
   const [messages, setMessages] = useState<ChannelMessageViewModel[]>([]);
+  const [channelMembers, setChannelMembers] = useState<ChannelMemberViewModel[]>([]);
+  const [channelMembersError, setChannelMembersError] = useState('');
+  // Antworten eines vorher gewählten Channels (laufender Poll, langsamer Fallback)
+  // dürfen den neu gewählten nicht überschreiben.
+  const activeChannelRef = useRef('');
+  activeChannelRef.current = selectedProject + '::' + selectedChannel;
   const [settings, setSettings] = useState<SettingsViewModel>(() => {
     try {
       const storedAccent = window.localStorage.getItem('synapse.appearance.accent');
@@ -1472,78 +1402,6 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
     try { window.localStorage.setItem('synapse.appearance.accent', settings.accentColor); } catch { /* Frontend-Mock funktioniert auch ohne lokalen Speicher. */ }
   }, [settings.accentColor]);
   const [apiError, setApiError] = useState('');
-  const [contextMenu, setContextMenu] = useState<WorkspaceContextMenu | null>(null);
-  const [strategyDrafts, setStrategyDrafts] = useState<Record<string, StrategyDraft>>({});
-  const [strategyManual, setStrategyManual] = useState('');
-  const [strategyMinimized, setStrategyMinimized] = useState(false);
-  const [projectWindowTab, setProjectWindowTab] = useState<'strategy' | 'environment'>('strategy');
-  const [environmentScope, setEnvironmentScope] = useState<'project' | 'global'>('project');
-  const [environmentDrafts, setEnvironmentDrafts] = useState<Record<string, EnvironmentDraft>>({});
-  const [showGithubToken, setShowGithubToken] = useState(false);
-  const strategyDragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
-
-  const openStrategyEditor = (target: StrategyTarget, x: number, y: number) => {
-    setContextMenu({
-      ...target,
-      project: selectedProject,
-      x: Math.max(12, Math.min(x, window.innerWidth - 430)),
-      y: Math.max(12, Math.min(y, window.innerHeight - 390)),
-    });
-    setStrategyManual('');
-    setStrategyMinimized(false);
-    setProjectWindowTab('strategy');
-    setEnvironmentScope('project');
-    setShowGithubToken(false);
-  };
-
-  const contextStrategyKey = contextMenu
-    ? contextMenu.scope === 'project'
-      ? `project:${contextMenu.name}`
-      : `channel:${contextMenu.project}/${contextMenu.name}`
-    : '';
-  const contextStrategy = strategyDrafts[contextStrategyKey] ?? createStrategyDraft();
-  const updateContextStrategy = (updater: (draft: StrategyDraft) => StrategyDraft) => {
-    if (!contextStrategyKey) return;
-    setStrategyDrafts((current) => ({
-      ...current,
-      [contextStrategyKey]: updater(current[contextStrategyKey] ?? createStrategyDraft()),
-    }));
-  };
-
-  const environmentKey = environmentScope === 'global'
-    ? 'global'
-    : `project:${contextMenu?.scope === 'project' ? contextMenu.name : selectedProject}`;
-  const environmentDraft = environmentDrafts[environmentKey] ?? createEnvironmentDraft();
-  const updateEnvironmentDraft = (updater: (draft: EnvironmentDraft) => EnvironmentDraft) => {
-    setEnvironmentDrafts((current) => ({
-      ...current,
-      [environmentKey]: updater(current[environmentKey] ?? createEnvironmentDraft()),
-    }));
-  };
-
-  const startStrategyWindowDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest('button')) return;
-    if (!contextMenu) return;
-    strategyDragRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: contextMenu.x, originY: contextMenu.y };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-
-  const moveStrategyWindow = (event: ReactPointerEvent<HTMLElement>) => {
-    const drag = strategyDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const windowWidth = strategyMinimized ? 360 : 520;
-    const windowHeight = strategyMinimized ? 45 : 250;
-    setContextMenu((current) => current ? {
-      ...current,
-      x: Math.min(Math.max(0, window.innerWidth - windowWidth), Math.max(0, drag.originX + event.clientX - drag.startX)),
-      y: Math.min(Math.max(0, window.innerHeight - windowHeight), Math.max(0, drag.originY + event.clientY - drag.startY)),
-    } : null);
-  };
-
-  const stopStrategyWindowDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if (strategyDragRef.current?.pointerId === event.pointerId) strategyDragRef.current = null;
-  };
-
   const reloadProjects = async () => {
     setLoadingProjects(true);
     setApiError('');
@@ -1585,14 +1443,27 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
   const reloadMessages = async () => {
     if (!selectedProject || !selectedChannel) {
       setMessages([]);
+      setChannelMembers([]);
       return;
     }
-    try {
-      setMessages(await loadChannelMessageViewModels(selectedProject, selectedChannel));
+    const channelKey = selectedProject + '::' + selectedChannel;
+    let membersError = '';
+    const [rows, members] = await Promise.all([
+      loadChannelMessageViewModels(selectedProject, selectedChannel).catch((error: unknown) => error instanceof Error ? error : new Error(String(error))),
+      loadChannelMemberViewModels(selectedProject, selectedChannel).catch((error: unknown) => {
+        membersError = 'Teilnehmer nicht abrufbar: ' + (error instanceof Error ? error.message : String(error));
+        return null;
+      }),
+    ]);
+    if (activeChannelRef.current !== channelKey) return;
+    if (rows instanceof Error) {
+      setChannelError(rows.message);
+    } else {
+      setMessages(rows);
       setChannelError('');
-    } catch (error) {
-      setChannelError(error instanceof Error ? error.message : String(error));
     }
+    if (members) setChannelMembers(members);
+    setChannelMembersError(membersError);
   };
 
   useEffect(() => {
@@ -1612,6 +1483,9 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
   }, [selectedProject]);
 
   useEffect(() => {
+    setMessages([]);
+    setChannelMembers([]);
+    setChannelMembersError('');
     void reloadMessages();
     if (!selectedChannel) return;
     const timer = window.setInterval(() => void reloadMessages(), 6000);
@@ -1643,16 +1517,6 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
         />
       );
     }
-    if (area === 'projects') {
-      return (
-        <ProjectsView
-          projects={projects}
-          selectedProject={selectedProject}
-          channels={channels}
-          onOpen={setArea}
-        />
-      );
-    }
     if (area === 'channels') {
       return (
         <ChannelsView
@@ -1660,20 +1524,19 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
           channels={channels}
           selectedChannel={selectedChannel}
           messages={messages}
+          members={channelMembers}
+          membersError={channelMembersError}
           loading={loadingChannels}
           error={channelError}
           onSelectChannel={setSelectedChannel}
           onReload={() => void reloadChannels()}
           onSend={postMessage}
-          onOpenStrategy={(channel, x, y) => openStrategyEditor({ scope: 'channel', name: channel }, x, y)}
           onOpen={setArea}
         />
       );
     }
     if (area === 'agents') return <ProjectAgentTeamView project={selectedProject} />;
-    if (area === 'hosts' || area === 'runtimes' || area === 'workspaces' || area === 'testsystems') {
-      return <InfrastructureView area={area} project={selectedProject} />;
-    }
+    if (area === 'workspaces') return <InfrastructureView project={selectedProject} />;
     if (area === 'user-memories' || area === 'personal-artifacts') {
       return <KnowledgeView section={area} onNavigate={setArea} />;
     }
@@ -1724,7 +1587,7 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
 
         <div className="sidebar-project">
           <label>Aktives Projekt</label>
-          <button type="button" title={sidebarCollapsed ? selectedProject || 'Projekt wählen' : undefined} onClick={() => setArea('overview')} onContextMenu={(event) => { event.preventDefault(); openStrategyEditor({ scope: 'project', name: selectedProject || 'Projekt' }, event.clientX, event.clientY); }}>
+          <button type="button" title={sidebarCollapsed ? selectedProject || 'Projekt wählen' : undefined} onClick={() => setArea('overview')}>
             <i className={projects.find((row) => row.name === selectedProject)?.isActive ? 'ready' : 'offline'} />
             <abbr className="collapsed-project-code">{(selectedProject || '---').slice(0, 3).toUpperCase()}</abbr>
             <div><strong>{selectedProject || 'Projekt wählen'}</strong><small>{apiError ? 'API: ' + apiError : loadingProjects ? 'lädt …' : 'ein Projekt · ein UI-Objekt'}</small></div>
@@ -1767,80 +1630,9 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
       <main className="control-main">
         <div className="control-content">{renderArea()}</div>
         <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent'} />
-        <ProjectCoordinatorDock projects={projects} selectedProject={selectedProject} />
+        <ProjectCoordinatorDock />
         <MainAgentAssistantDock />
       </main>
-      {contextMenu && <aside className={'workspace-context-menu strategy-editor strategy-window' + (strategyMinimized ? ' minimized' : '')} style={{ left: contextMenu.x, top: contextMenu.y }}>
-        <header onPointerDown={startStrategyWindowDrag} onPointerMove={moveStrategyWindow} onPointerUp={stopStrategyWindowDrag} onPointerCancel={stopStrategyWindowDrag}>
-          <div><span>{contextMenu.scope === 'project' ? projectWindowTab === 'environment' ? 'PROJEKT-ZUGÄNGE' : 'PROJEKT-STRATEGIE' : 'CHANNEL-STRATEGIE'}</span><strong>{contextMenu.scope === 'project' ? contextMenu.name : contextMenu.project + ' / #' + contextMenu.name}</strong></div>
-          <nav>
-            <button type="button" aria-label={strategyMinimized ? 'Strategie-Fenster ausklappen' : 'Strategie-Fenster minimieren'} onClick={() => setStrategyMinimized((value) => !value)}>{strategyMinimized ? '□' : '—'}</button>
-            <button type="button" aria-label="Strategie-Fenster schließen" onClick={() => setContextMenu(null)}>×</button>
-          </nav>
-        </header>
-        {!strategyMinimized && <>
-          <div className="strategy-window-content">
-            {contextMenu.scope === 'project' && <nav className="project-window-tabs">
-              <button type="button" className={projectWindowTab === 'strategy' ? 'active' : ''} onClick={() => setProjectWindowTab('strategy')}>Strategie</button>
-              <button type="button" className={projectWindowTab === 'environment' ? 'active' : ''} onClick={() => setProjectWindowTab('environment')}>Secrets & ENV</button>
-            </nav>}
-            {(contextMenu.scope === 'channel' || projectWindowTab === 'strategy') && <>
-              <p className="strategy-editor-copy">Diese Kombination gilt <b>nur für {contextMenu.scope === 'project' ? 'dieses Projekt' : 'diesen Channel'}</b>. Andere Projekte und Channels behalten eigene Entwürfe.</p>
-              <div className="strategy-chips">
-                {STRATEGY_PRESETS.map((label) => {
-                  const active = contextStrategy.active.includes(label);
-                  return <button type="button" key={label} className={'strategy-chip' + (active ? ' active' : '')} onClick={() => updateContextStrategy((draft) => ({ ...draft, active: active ? draft.active.filter((item) => item !== label) : [...draft.active, label], saved: false }))}>{active ? '✓ ' : '+ '}{label}</button>;
-                })}
-              </div>
-              {contextStrategy.manual.length > 0 && <div className="strategy-custom-list">
-                {contextStrategy.manual.map((rule) => <div key={rule}><span>{rule}</span><button type="button" aria-label={rule + ' entfernen'} onClick={() => updateContextStrategy((draft) => ({ ...draft, manual: draft.manual.filter((item) => item !== rule), saved: false }))}>×</button></div>)}
-              </div>}
-              <div className="strategy-manual">
-                <input value={strategyManual} onChange={(event) => setStrategyManual(event.target.value)} onKeyDown={(event) => {
-                  if (event.key !== 'Enter' || !strategyManual.trim()) return;
-                  updateContextStrategy((draft) => ({ ...draft, manual: [...draft.manual, strategyManual.trim()], saved: false }));
-                  setStrategyManual('');
-                }} placeholder="Eigene Regel für genau dieses Ziel …" />
-                <button type="button" disabled={!strategyManual.trim()} onClick={() => {
-                  updateContextStrategy((draft) => ({ ...draft, manual: [...draft.manual, strategyManual.trim()], saved: false }));
-                  setStrategyManual('');
-                }}>Hinzufügen</button>
-              </div>
-            </>}
-            {contextMenu.scope === 'project' && projectWindowTab === 'environment' && <div className="project-environment">
-              <div className="environment-scope">
-                <span>Reichweite</span>
-                <button type="button" className={environmentScope === 'project' ? 'active' : ''} onClick={() => setEnvironmentScope('project')}>Nur {contextMenu.name}</button>
-                <button type="button" className={environmentScope === 'global' ? 'active' : ''} onClick={() => setEnvironmentScope('global')}>Alle Projekte</button>
-              </div>
-              <label className="github-token-field">
-                <span><b>GitHub Token</b><small>{environmentScope === 'project' ? 'Projektbezogener Zugriff' : 'Globaler Fallback für alle Projekte'}</small></span>
-                <div><input type={showGithubToken ? 'text' : 'password'} value={environmentDraft.githubToken} onChange={(event) => updateEnvironmentDraft((draft) => ({ ...draft, githubToken: event.target.value, saved: false }))} placeholder="github_pat_••••••••••••" autoComplete="off" spellCheck={false} /><button type="button" onClick={() => setShowGithubToken((value) => !value)}>{showGithubToken ? 'Verbergen' : 'Anzeigen'}</button></div>
-              </label>
-              <header className="environment-list-head"><div><b>ENV-Daten</b><small>Schlüssel und Werte für diese Reichweite</small></div><button type="button" onClick={() => updateEnvironmentDraft((draft) => ({ ...draft, variables: [...draft.variables, { id: Date.now(), key: '', value: '', secret: true }], saved: false }))}>＋ Variable</button></header>
-              <div className="environment-list">
-                {environmentDraft.variables.map((variable) => <div className="environment-row" key={variable.id}>
-                  <input value={variable.key} onChange={(event) => updateEnvironmentDraft((draft) => ({ ...draft, variables: draft.variables.map((item) => item.id === variable.id ? { ...item, key: event.target.value } : item), saved: false }))} placeholder="VARIABLE_NAME" spellCheck={false} />
-                  <input type={variable.secret ? 'password' : 'text'} value={variable.value} onChange={(event) => updateEnvironmentDraft((draft) => ({ ...draft, variables: draft.variables.map((item) => item.id === variable.id ? { ...item, value: event.target.value } : item), saved: false }))} placeholder="Wert" autoComplete="off" spellCheck={false} />
-                  <button type="button" className={variable.secret ? 'active' : ''} onClick={() => updateEnvironmentDraft((draft) => ({ ...draft, variables: draft.variables.map((item) => item.id === variable.id ? { ...item, secret: !item.secret } : item), saved: false }))}>{variable.secret ? 'Geheim' : 'Offen'}</button>
-                  <button type="button" aria-label="Variable entfernen" onClick={() => updateEnvironmentDraft((draft) => ({ ...draft, variables: draft.variables.filter((item) => item.id !== variable.id), saved: false }))}>×</button>
-                </div>)}
-                {!environmentDraft.variables.length && <p>Noch keine zusätzlichen ENV-Daten für diese Reichweite.</p>}
-              </div>
-              <p className="environment-security-note">UI-Mock: Werte werden noch nicht an eine API übertragen. Später müssen Secrets verschlüsselt gespeichert und bei Abfragen immer maskiert werden.</p>
-            </div>}
-          </div>
-          <footer>
-            {contextMenu.scope === 'project' && projectWindowTab === 'environment' ? <>
-              <span>{environmentScope === 'project' ? 'Nur ' + contextMenu.name : 'Global für alle Projekte'} · {environmentDraft.variables.length} ENV-Werte</span>
-              <button type="button" onClick={() => updateEnvironmentDraft((draft) => ({ ...draft, saved: true }))}>{environmentDraft.saved ? '✓ Gesichert' : 'Zugänge sichern'}</button>
-            </> : <>
-              <span>{contextStrategy.active.length + contextStrategy.manual.length} Regeln · lokaler UI-Entwurf</span>
-              <button type="button" onClick={() => updateContextStrategy((draft) => ({ ...draft, saved: true }))}>{contextStrategy.saved ? '✓ Gesichert' : 'Entwurf sichern'}</button>
-            </>}
-          </footer>
-        </>}
-      </aside>}
     </div>
   );
 }

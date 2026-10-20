@@ -217,9 +217,9 @@ export function pruefeShellStart(o:ShellStartEingabe,k:ShellSicherungsKatalog):S
     risiko,lage:o.lage,sicher:vorschau(answer,o,k),
     danach:hard??answer?.danach??'Ziel und Wirkung mit einer harmlosen Vorschau klären.',
     trotzdem:stufe==='sperre'?'Nicht übergehbar, auch nicht durch Koordinator oder User.':
-      rueckfrage?'Nicht ausgeführt. Bestätigen kann nur der aufrufende Agent selbst: denselben Befehl mit bestaetigung:{id:<bestaetigung_id>,'+
-        'grund:"<mind. 10 Zeichen>"} bis gueltig_bis erneut senden'+(o.agent_id?'':' (agent_id erforderlich)')+
-        '. Ohne Bestätigung verfällt die Rückfrage ohne Spur. Bei Drift (Befehl, Lage, Regeln) neue Rückfrage.':
+      rueckfrage?'Nicht ausgeführt, der Aufruf ist gespeichert. Bestätigen kann nur der aufrufende Agent selbst: shell(action:"bestaetigen", id:<bestaetigung_id>, '+
+        'grund:"<mind. 10 Zeichen>") bis gueltig_bis, ohne den Befehl erneut zu senden'+(o.agent_id?'':' (agent_id erforderlich)')+
+        ' (alter Weg: denselben Befehl mit bestaetigung:{id,grund}). Ohne Bestätigung verfällt die Rückfrage ohne Spur. Bei Drift (Befehl, Lage, Regeln) neue Rückfrage.':
       'Koordinator oder User kann denselben Befehl und dieselbe Lage mit bestaetigt:{grund,...bestaetigungsdaten} bestätigen. Bei Drift erneut prüfen.',
     bestaetigungsdaten:bindings,...(rueckfrage??{})};
   return {darf_starten:allow,antwort,audit};
