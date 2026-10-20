@@ -330,7 +330,7 @@ await pruefe('SCHEMA_SQL: Spalten default_effort/effort_stufen (model_registry) 
 });
 await pruefe('SCHEMA_SQL: Nachtrag effort_stufen/default_effort == STATIC_FALLBACK je Version', () => {
   const schema = readFileSync(new URL('../packages/core/dist/db/schema.js', import.meta.url), 'utf8');
-  const m = schema.match(/UPDATE model_registry[\s\S]*?effort_stufen IS NULL[^;]*;/);
+  const m = schema.match(/UPDATE model_registry\s+SET effort_stufen = CASE[\s\S]*?effort_stufen IS NULL[^;]*;/);
   assert.ok(m, 'Anker: UPDATE fuer effort fehlt');
   // WHEN full_id IN ('a', 'b') THEN ARRAY['low', ...]
   const imSql = {};

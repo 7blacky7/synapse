@@ -70,6 +70,18 @@ import { REVERSE_ANSICHT_SCHEMA_SQL } from './reverse-ansicht-schema.js';
 import {TOOL_AKTIVITAET_SCHEMA_SQL} from './tool-aktivitaet-schema.js';
 import {TOOL_CONTAINER_SCHEMA_SQL} from './tool-container-schema.js';
 
+/**
+ * P22-T75: Der Seed (ON CONFLICT DO NOTHING) aendert eine bestehende model_registry-Zeile nie. Damit Prod den Alias haiku ohne direkten
+ * DB-Zugang auf Haiku 5.5 zieht, laeuft beim Schema-Start dieses UPDATE - NUR solange haiku noch auf Haiku 4.5 steht (gepflegte Werte
+ * werden nie ueberschrieben, zweiter Lauf aendert nichts). Werte = STATIC_FALLBACK in agents/src/models.ts (Quelle platform.claude.com).
+ * haiku-4.5 legt der Seed selbst an. Eigener Export, damit der Test genau diese Anweisung gegen eine Kopie der Tabelle ausfuehrt.
+ */
+export const MODELL_HAIKU_55_NACHZUG_SQL = `UPDATE model_registry
+   SET full_id = 'claude-haiku-5-5', context_window = 1000000, corridor_min = 80, corridor_max = 97, output_limit = 128000,
+       pricing_input_usd_per_mtok = 0.10, pricing_output_usd_per_mtok = 0.50, pricing_cache_usd_per_mtok = 0.01, cutoff_date = '2026-06-01',
+       effort_stufen = ARRAY['low', 'medium', 'high', 'xhigh', 'max'], default_effort = 'medium', updated_at = NOW()
+ WHERE alias = 'haiku' AND full_id = 'claude-haiku-4-5-20251001'`;
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
@@ -1946,6 +1958,9 @@ UPDATE model_registry
    AND full_id IN ('claude-haiku-4-5-20251001', 'claude-opus-4-6', 'claude-sonnet-4-6',
                    'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5',
                    'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-5-5');
+
+-- P22-T75: haiku (CLI-Alias = neueste Version) von Haiku 4.5 auf 5.5 ziehen, nur solange er noch auf 4.5 steht; haiku-4.5 steht im Seed oben.
+${MODELL_HAIKU_55_NACHZUG_SQL};
 
 -- ==========================================================================
 -- model_cutoffs: Wissensstand (knowledge cutoff) je Modell-ID, datengetrieben.
