@@ -62,6 +62,11 @@ try{
   check(sql.trim()===C.HAUPTAGENT_VERLAUF_SCHEMA_SQL.trim(),'124 SQL-Spiegel identisch');
   check(!C.HAUPTAGENT_VERLAUF_SCHEMA_SQL.split('\n').some(z=>z.trim().startsWith('//')),'keine //-Kommentare im SQL');
   await pool.query(C.HAUPTAGENT_VERLAUF_SCHEMA_SQL);await pool.query(C.HAUPTAGENT_VERLAUF_SCHEMA_SQL);
+  // Isolation: die Kopie aus public bekam fuer rev die private Ersatz-Sequenz (Schleife oben); Schreiben/Leeren nutzen
+  // nextval('hauptagent_verlauf_rev'). Wie im Produktivschema (124) muss EINE Sequenz zaehlen: Default auf die Sequenz des Testschemas.
+  await pool.query("ALTER TABLE hauptagent_verlauf ALTER COLUMN rev SET DEFAULT nextval('hauptagent_verlauf_rev')");
+  const revDefault=(await pool.query("SELECT column_default FROM information_schema.columns WHERE table_schema=$1 AND table_name='hauptagent_verlauf' AND column_name='rev'",[schema])).rows[0]?.column_default??'';
+  check(revDefault.includes('hauptagent_verlauf_rev')&&!revDefault.includes('private_serial'),'rev zaehlt mit derselben Sequenz wie Schreiben/Leeren',revDefault);
   const {SCHEMA_SQL}=await load('packages/core/dist/db/schema.js');
   check(typeof SCHEMA_SQL!=='string'||SCHEMA_SQL.includes('CREATE TABLE IF NOT EXISTS hauptagent_verlauf ('),'124 im ensureSchema-SQL');
   const t=await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema=$1 AND table_name IN ('hauptagent_verlauf','hauptagent_verlauf_stand') ORDER BY 1",[schema]);

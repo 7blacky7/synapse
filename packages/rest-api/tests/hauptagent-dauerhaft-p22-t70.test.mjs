@@ -25,6 +25,8 @@ for (const file of ['agent-verbrauch-schema', 'agent-zustellungen-schema']) {
   await pool.query(sql); await pool.query(sql);
 }
 await pool.query(C.HAUPTAGENT_VERLAUF_SCHEMA_SQL);
+// Isolation wie im Produktivschema: rev zaehlt mit EINER Sequenz (die Tabellenkopie bekam sonst die private Ersatz-Sequenz).
+await pool.query("ALTER TABLE hauptagent_verlauf ALTER COLUMN rev SET DEFAULT nextval('hauptagent_verlauf_rev')");
 
 const DM = await load('packages/rest-api/dist/services/agent-runtime/dauerhafter-main.js');
 const AT = await load('packages/rest-api/dist/services/agent-runtime/artefakt-tool.js');
