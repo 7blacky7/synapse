@@ -357,7 +357,10 @@ try{
    check(falsch===0,'keine falsche Abweichungsdiagnose durch Vorbelegung');
    const ka=async(tool,eingabe,opt,transport)=>C.mitAgentToolAufruf(tool,eingabe,'srv-test',async k=>({k,b:C.bestaetigterAufrufKontext()}),transport,undefined,opt);
    const {k:k1}=await ka('chat',{action:'get',project,agent_id:'filter-x',token:tok});
-   check(!k1.antwort&&k1.args.agent_id==='filter-x','chat.get.agent_id bleibt Lesefilter');
+   check(k1.args.agent_id==='filter-x','chat.get.agent_id bleibt Fachfeld (nicht bezeugt)');
+   // P22-T86 (Schalter chat_get_eigene, Standard EIN): mit Ausweis liest chat get nur Nachrichten an die eigene Identitaet;
+   // ein fremder agent_id-Filter oeffnet keine fremden DMs mehr (Befund thought 08eb5dd6).
+   check(k1.antwort?.success===true&&k1.antwort.filter?.agent_id!=='filter-x'&&k1.antwort.filter?.identity_id,'P22-T86: chat.get mit Ausweis nur eigene Nachrichten',k1.antwort);
    const {k:k2}=await ka('specialist',{action:'spawn',project,model:'ziel-modell',token:tok});
    check(k2.args.model==='ziel-modell','specialist.spawn.model bleibt Zielmodell');
    const {k:k3,b}=await ka('thought',{action:'get',project,id:thoughtId,token:tok,agent_id:'gpt-web'},{originalArgs:{action:'get',project,id:thoughtId,token:tok},vorbelegt:['agent_id']});

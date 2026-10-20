@@ -102,16 +102,19 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'agent_verlauf_alle',
   // P22-T82: Spezialisten im Runtime-Container (specialist spawn ort:'container'), je Projekt, Standard AUS, nur ausdruecklich.
   'spezialisten_container',
+  // P22-T86: chat(get) mit Ausweis nur Nachrichten an die eigene Identitaet/den eigenen Namen (chat-ausweis-lesen.ts), STANDARD EIN, nur ausdruecklich.
+  'chat_get_eigene',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
  */
 // P22-T78/T79: startkontext (Zustellung des eigenen Verlaufs je neuem Lauf) und main_lesezugriff (nur lesen, User-Grundsatz) ebenso.
 // P22-T81: agent_verlauf_alle (reine Speicherung des eigenen Verlaufs jeder Identitaet) ebenso.
-export const STANDARD_EIN: readonly string[] = ['hauptagent_verlauf', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle'];
+// P22-T86: chat_get_eigene (Fehlerkorrektur, schraenkt die Sicht von chat get mit Ausweis ein) ebenso.
+export const STANDARD_EIN: readonly string[] = ['hauptagent_verlauf', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'chat_get_eigene'];
 /**
  * W12 V7: 'schattenprofile' und 'token_abruf' sind im Produkt-Schalter 'agenten_ausweis' aufgegangen. Die alten Namen
  * bleiben nur LESBAR/setzbar (Altschalter-Rueckfall des Ausweis-Kerns, bestehende Zeilen), sind aber nicht mehr im Katalog.

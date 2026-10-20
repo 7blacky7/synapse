@@ -57,6 +57,8 @@ import {
   mainProjektUnbekannt, mainKommunikationErlaubt, MAIN_LESEZUGRIFF_FUNKTION, MAIN_DATEN_TOOLS, MAIN_HINWEIS_FELD,
 } from './hauptagent-sonderstellung.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
+// P22-T86: chat(get) mit Ausweis nur eigene Nachrichten (Produkt-Schalter chat_get_eigene, Standard EIN).
+import { leseChatGetEigeneSchalter, chatGetEigeneAntwort } from './chat-ausweis-lesen.js';
 export const AGENT_TOKEN_PARAMETER = {
   token: { type: 'string', description: 'Agenten-Ausweis (sai_...): bei JEDEM Aufruf mitgeben. Er allein bestimmt Identitaet, Projekt und Rolle (agent_id/role weglassen). Start/Kontextverlust: chat(action:"anmelden", token).' },
 };
@@ -716,6 +718,14 @@ export async function bereiteAgentToolAufrufVor(
     // P22-T13 Paket C (K15.6): Antwortdefault/Obergrenze deklarierter Mengenparameter VOR dem Handler (keine
     // verlustbehaftete Kuerzung danach); nur mit Schalter antwortanpassung und Profil-limits.
     if (anpassung && !basis.antwort) wendeProfilLimitsAn(tool, action, args, erlaubteParameter);
+    // P22-T86: chat(get) ohne message_id mit Ausweis -> nur Nachrichten an die eigene Identitaet/den eigenen Namen, neueste zuerst.
+    if (!basis.antwort && tool === 'chat' && action === 'get' && args.message_id === undefined) {
+      const schalter = await leseChatGetEigeneSchalter();
+      if (schalter.aktiv) {
+        basis.antwort = await chatGetEigeneAntwort(typeof args.project === 'string' && args.project ? args.project : zielProjekt,
+          { identity_id: p.identitaet.id, agent_id: p.agent_id }, args, schalter);
+      }
+    }
     return basis;
   } catch (e) {
     if (e instanceof AgentIdentitaetFehler && e.code === 'identitaet_konflikt') {
