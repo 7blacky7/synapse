@@ -41,6 +41,7 @@
 import { getPool } from '../db/index.js';
 import type { PoolClient } from 'pg';
 import { leseAgentMetaYaml } from './agent-meta-yaml.js';
+import { ohneEntfernte } from './agent-entfernung.js';
 import { agentBezugFuer, aktuellerAgentAufruf, leseAgentBezugModus, type AgentZiel } from './agent-bezug.js';
 
 type WissensZiel = string | AgentZiel;
@@ -548,9 +549,11 @@ export async function listeWissensAgenten(
     const ids = await getPool().query('SELECT identity_id,MAX(agent_name) AS agent,COUNT(*)::text AS zeilen,MAX(aktualisiert_am)::text AS aktualisiert_am FROM agent_identitaet_wissen WHERE project=$1 GROUP BY identity_id ORDER BY identity_id',[project]);
     for (const z of ids.rows) aus.push({ agent:z.agent,identityId:z.identity_id,zeilen:Number(z.zeilen),aktualisiertAm:z.aktualisiert_am });
   }
-  return [...aus, ...rows.map((r) => ({
+  const alle: Array<{ agent: string; identityId?: string; zeilen: number; aktualisiertAm: string }> = [...aus, ...rows.map((r) => ({
     agent: r.agent,
     zeilen: Number(r.zeilen),
     aktualisiertAm: r.aktualisiert_am,
   }))];
+  // P22-T80: weich entfernte Agenten stehen nicht mehr in der Liste (die Wissensdaten selbst bleiben).
+  return ohneEntfernte(project, alle, (z) => ({ agent: z.agent, identity: z.identityId }));
 }

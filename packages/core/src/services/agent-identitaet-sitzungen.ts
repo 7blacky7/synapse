@@ -1,6 +1,7 @@
 /** P22-T15: Token-Sitzungen, getrennt von agent_sessions; kein Name-Fallback. */
 import { getPool } from '../db/client.js';
 import type { AgentTokenAnmeldung } from './agent-identitaet.js';
+import { markiereRueckkehr } from './agent-entfernung.js';
 import type { PoolClient } from 'pg';
 export interface AgentIdentitaetSitzung {
  identity_id: string; project: string; agent_id: string; model: string | null;
@@ -21,6 +22,9 @@ export async function beginneIdentitaetsSitzung(p: AgentTokenAnmeldung, db: Sitz
  WHERE agent_identitaet_sitzungen.project=EXCLUDED.project
  RETURNING *`,[p.identitaet.id,p.project,p.agent_id,p.modell,p.context_epoch,p.lauf_id]);
  if (!r.rows[0]) throw new Error('identitaet_sitzung_projektkonflikt');
+ // P22-T80: Anmeldung eines weich entfernten Agenten hebt die Markierung auf. Bewusst NICHT ueber db: die Anmeldung laeuft in der Lauf-
+ // Transaktion, ein Fehler dort (z. B. Tabelle agent_entfernungen fehlt noch) wuerde sie abbrechen. Eigene Verbindung, Fehler ohne Wirkung.
+ await markiereRueckkehr(p.project,p.agent_id,p.identitaet.id);
  return r.rows[0];
 }
 export async function holeIdentitaetsSitzung(project: string, identityId: string, db: SitzungsDb = getPool()): Promise<AgentIdentitaetSitzung | null> {

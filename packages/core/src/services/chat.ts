@@ -26,6 +26,7 @@ import { aktuellerAgentAufruf, leseAgentBezugModus, type AgentZiel } from './age
 import { resolveCutoff } from './model-cutoffs.js';
 import { initialisiereChatLesestand } from './chat-unread.js';
 import { vergissOnboarding } from './project-status.js';
+import { legacyNichtEntfernt, ohneEntfernte, markiereRueckkehr } from './agent-entfernung.js';
 
 export interface ChatMessage {
   id: number;
@@ -118,6 +119,8 @@ export async function registerAgent(
      RETURNING registered_at, sitzung_seit`,
     [id, project, model || null, resolvedCutoff, cutoffBekannt]
   );
+  // P22-T80: ein weich entfernter Agent, der sich wieder meldet, ist wieder sichtbar.
+  await markiereRueckkehr(project, id);
   // Auch Register ohne agent_id initialisiert den Chat des registrierten Agenten.
   await initialisiereChatLesestand(project, id);
   const jetzt = new Date();
@@ -210,6 +213,7 @@ export async function beginneSitzung(id: string, project: string, art: SitzungsA
     [id, project, art]
   );
   const z = r.rows[0];
+  await markiereRueckkehr(project, id);
   console.error(`[Synapse Chat] Sitzung "${art}" fuer "${id}" (${project}), vorher: ${z?.vorher_status ?? 'unbekannt'}`);
   // P15-T32 Folge: ein Spawn bekommt die Projekt-Regeln, auch unter altem Namen (onboardedKeys/Ruhefenster).
   // 'fortsetzung' laesst das Onboarding unberuehrt. Scheitert das Zuruecksetzen, bleibt die Sitzung gesetzt.
@@ -416,13 +420,13 @@ export async function listActiveAgents(project: string): Promise<AgentSession[]>
   const result = await pool.query(
     `SELECT id, project, model, cutoff_date, status, registered_at,
             COALESCE(sitzung_seit, registered_at) AS sitzung_seit
-     FROM agent_sessions WHERE project = $1 AND status = 'active'${bezug.modus !== 'alt' ? ' AND identity_id IS NULL' : ''}
+     FROM agent_sessions WHERE project = $1 AND status = 'active' AND ${await legacyNichtEntfernt('agent_sessions.project', 'agent_sessions.id')}${bezug.modus !== 'alt' ? ' AND identity_id IS NULL' : ''}
      ORDER BY COALESCE(sitzung_seit, registered_at) DESC`,
     [project]
   );
   if (bezug.modus !== 'alt') {
     const identities = await pool.query("SELECT agent_id AS id,project,model,cutoff_date,status,registered_at,sitzung_seit,identity_id,context_epoch FROM agent_identitaet_sitzungen WHERE project=$1 AND status='active' ORDER BY sitzung_seit DESC",[project]);
-    result.rows.push(...identities.rows);
+    result.rows.push(...(await ohneEntfernte(project, identities.rows, (z) => ({ identity: z.identity_id }))));
   }
   return result.rows.map(row => ({
     ...(row.identity_id ? { identityId:row.identity_id,identity_id:row.identity_id,contextEpoch:row.context_epoch } : {}),

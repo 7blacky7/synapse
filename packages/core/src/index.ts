@@ -800,6 +800,14 @@ export type { KorridorWerte, KontextSchwellen } from './services/kontext-korrido
 export { pruefeRespawnKorridor } from './services/specialist-respawn.js';
 export { setzeCliKontextQuelle, cliKontextFenster } from './services/cli-kontext.js';
 export type { CliKontextQuelle } from './services/cli-kontext.js';
+export {
+  AGENT_ENTFERNUNG_FUNKTION, AGENT_ENTFERNUNG_ADMIN_ACTIONS, AGENT_ENTFERNUNG_ADMIN_PARAMETER, AGENT_ENTFERNUNG_MODI, istAgentEntfernungAdminAction, fuehreAgentEntfernungAdminAus,
+  leseEntfernungSchalter, leseEntfernungSchwelle, entfernungFilterAktiv, leereEntfernungCache, legacyNichtEntfernt, identitaetNichtEntfernt, markiereRueckkehr,
+  ermittleEntfernungKandidaten, fuehreEntfernungAus, stelleEntfernteWiederHer, setzeEntfernungSchwelle, leseEntfernungStatus, bestaetigungFuer,
+  ladeEntferntMengen, schluesselEntfernt, ohneEntfernte, markiereEntfernteProfile,
+} from './services/agent-entfernung.js';
+export type { EntfernungKandidat, EntfernungAusnahme, EntfernungErmittlung, EntfernungSchalter, EntfernungSchwelle } from './services/agent-entfernung.js';
+export { AGENT_ENTFERNUNG_SCHEMA_SQL } from './db/agent-entfernung-schema.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';
 
 // shell(exec): Warten bei neuer Channel-Nachricht unterbrechen (Task b5b5304a)

@@ -16,7 +16,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { getPool, resetProjectEmbeddings, reparseProject, leseAgentBezugModus, listWrapperStatus, listActiveAgents, mitAgentAufrufKontext } from '@synapse/core';
+import { getPool, resetProjectEmbeddings, reparseProject, leseAgentBezugModus, listWrapperStatus, listActiveAgents, ohneEntfernte, mitAgentAufrufKontext } from '@synapse/core';
 
 /** Obergrenze fuer alle Listen-Endpunkte — schuetzt vor versehentlichen Vollscans. */
 const MAX_LIMIT = 500;
@@ -58,7 +58,9 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
           ORDER BY last_activity DESC NULLS LAST`,
         [name]
       );
-      return { success: true, project: name, count: rows.length, agents: rows };
+      // P22-T80: weich entfernte Agenten ausblenden (auch im Altmodus).
+      const sichtbar = await ohneEntfernte(name, rows, (r: { agent_name: string }) => ({ agent: r.agent_name }));
+      return { success: true, project: name, count: sichtbar.length, agents: sichtbar };
     }
   );
 
@@ -90,7 +92,8 @@ export async function trayRoutes(fastify: FastifyInstance): Promise<void> {
           ORDER BY id`,
         [name]
       );
-      return { success: true, project: name, count: rows.length, sessions: rows };
+      const sichtbar = await ohneEntfernte(name, rows, (r: { id: string }) => ({ agent: r.id }));
+      return { success: true, project: name, count: sichtbar.length, sessions: sichtbar };
     }
   );
 

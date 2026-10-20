@@ -13,6 +13,7 @@
  */
 
 import { getPool } from '../db/client.js'
+import { ohneEntfernte } from './agent-entfernung.js'
 import { agentBezugFuer, aktuellerAgentAufruf, leseAgentBezugModus, loeseAgentZiel, type AgentZiel } from './agent-bezug.js'
 
 function wrapperZiel(agent: string | AgentZiel, project: string): AgentZiel {
@@ -237,9 +238,10 @@ export async function listWrapperStatus(project: string): Promise<WrapperStatusR
   )
   if ((aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus !== 'alt') {
     const identities = await pool.query('SELECT * FROM agent_identitaet_wrapper_status WHERE project=$1 ORDER BY last_activity DESC', [project])
-    return [...rows, ...identities.rows].map(mapRow).sort((a,b) => b.lastActivity.getTime() - a.lastActivity.getTime())
+    const alle = [...rows, ...identities.rows].map(mapRow).sort((a,b) => b.lastActivity.getTime() - a.lastActivity.getTime())
+    return ohneEntfernte(project, alle, (z) => ({ agent: z.agentName, identity: z.identityId }))
   }
-  return rows.map(mapRow)
+  return ohneEntfernte(project, rows.map(mapRow), (z) => ({ agent: z.agentName }))
 }
 
 /** Was an der Heartbeat-Konfiguration geaendert werden soll. */

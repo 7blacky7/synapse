@@ -10,6 +10,7 @@
 import * as path from 'path';
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { getPool } from '../db/client.js';
+import { ladeEntferntMengen, schluesselEntfernt } from './agent-entfernung.js';
 import { kommunikationsAgent, eigenerKommunikationsAgent, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
 import { loeseAgentZiel, aktuellerAgentPrincipal, type AgentZiel } from './agent-bezug.js';
 import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
@@ -516,7 +517,8 @@ export async function bereiteChannelSkillVorschlaegeVor(
         : `SELECT mem.agent_name FROM specialist_channel_members mem JOIN specialist_channels c ON c.id=mem.channel_id WHERE c.project=$1 AND c.name=$2`,
       [project, channelName],
     );
-    agents = [...new Set(rows.map((row) => row.agent_name).filter(Boolean))];
+    const ent = await ladeEntferntMengen(project);
+    agents = [...new Set(rows.map((row) => row.agent_name).filter(Boolean))].filter((k) => !schluesselEntfernt(ent, k));
   }
   await bereiteSkillVorschlaegeVor(
     project, 'channel', String(messageId), content, agents, pool, searchBatch,
@@ -1105,7 +1107,9 @@ export async function aktiveProjektAgenten(
       : `SELECT id FROM agent_sessions WHERE project=$1 AND status='active'`,
     [project],
   );
-  return rows.map((row) => row.id).filter(Boolean);
+  // P22-T80: weich entfernte Agenten bekommen keine Skill-Vorbereitung mehr.
+  const ent = await ladeEntferntMengen(project);
+  return rows.map((row) => row.id).filter(Boolean).filter((k) => !schluesselEntfernt(ent, k));
 }
 
 /**

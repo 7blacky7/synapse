@@ -30,6 +30,7 @@ import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getPool } from '../db/client.js';
 import { kommunikationsAgent, bezugsWert, agentBezugAktiv } from './kommunikation-agent.js';
+import { ohneEntfernte, ladeEntferntMengen, schluesselEntfernt } from './agent-entfernung.js';
 
 const STATUS_DIR = '.synapse';
 const STATUS_FILE = 'status.json';
@@ -280,7 +281,7 @@ export async function holeChannelTeilnehmer(
            ELSE EXISTS(SELECT 1 FROM agent_sessions s WHERE s.id=COALESCE(m.agent,a.agent) AND s.project=$1 AND s.status='active') END AS aktiv
        FROM mitglieder m FULL JOIN absender a ON a.schluessel=m.schluessel
        ORDER BY 1,2`,[project,channel]);
-    return rows;
+    return ohneEntfernte(project, rows, (z) => ({ agent: z.agent, identity: z.identity_id }));
   }
   const { rows } = await getPool().query<{
     agent: string;
@@ -313,7 +314,7 @@ export async function holeChannelTeilnehmer(
       ORDER BY 1`,
     [project, channel],
   );
-  return rows;
+  return ohneEntfernte(project, rows, (z) => ({ agent: z.agent }));
 }
 
 /**
@@ -368,11 +369,12 @@ export async function baueChannelUebersicht(
     );
 
     if (rows.length === 0) return undefined;
+    const ent = await ladeEntferntMengen(project);
 
     const channels = rows.slice(0, CHANNEL_BLOCK_MAX).map((r) => ({
       channel: r.name,
-      agenten: r.agenten ?? [],
-      noch_aktiv: r.aktive ?? [],
+      agenten: (r.agenten ?? []).filter((n) => !ent?.legacy.has(n)),
+      noch_aktiv: (r.aktive ?? []).filter((n) => !ent?.legacy.has(n)),
       ...(r.created_at ? { wann: new Date(r.created_at).toISOString() } : {}),
     }));
     const weitere = Math.max(0, rows.length - channels.length);
@@ -400,7 +402,8 @@ async function baueIdentitaetsChannelUebersicht(project:string,koordinator:boole
        SELECT created_at FROM specialist_channel_messages m WHERE m.channel_id=c.id ORDER BY id DESC LIMIT 1) letzte ON TRUE
      WHERE c.project=$1 ORDER BY letzte.created_at DESC NULLS LAST,c.id DESC`,[project]);
   if (!rows.length) return undefined;
-  const channels=rows.slice(0,CHANNEL_BLOCK_MAX).map(r=>({channel:r.name,agenten:r.agenten,noch_aktiv:r.aktive,
+  const ent=await ladeEntferntMengen(project);
+  const channels=rows.slice(0,CHANNEL_BLOCK_MAX).map(r=>({channel:r.name,agenten:r.agenten.filter(k=>!schluesselEntfernt(ent,k)),noch_aktiv:r.aktive.filter(k=>!schluesselEntfernt(ent,k)),
     ...(r.created_at ? {wann:new Date(r.created_at).toISOString()} : {})}));
   const weitere=Math.max(0,rows.length-channels.length);
   return {channels,weitere,hinweis:channelHinweis(weitere,koordinator)};

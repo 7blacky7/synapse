@@ -93,12 +93,14 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'main_korridor', 'verlauf_uebergabe',
   // P22-T73: Warteschlange des Main-Chats (hauptagent-warteschlange.ts), Standard AUS, nur ausdruecklich; wirkt nur mit hauptagent_verlauf.
   'main_warteschlange',
+  // P22-T80: alte Agenten (> Schwelle Tage inaktiv) weich als entfernt markieren und aus Listen ausblenden (agent-entfernung.ts), Standard AUS, nur ausdruecklich.
+  'agenten_entfernung',
   // P22-T78/T79: Startkontext aus dem Verlauf bei jedem neuen Lauf zwingend einspielen (agent-verlauf.ts, alle Identitaeten) und
   // Lesezugriff des Main auf alle User-Projekte (hauptagent-sonderstellung.ts), STANDARD EIN (STANDARD_EIN), nur ausdruecklich.
   'startkontext', 'main_lesezugriff',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'startkontext', 'main_lesezugriff'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
