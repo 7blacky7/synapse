@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../api/auth';
+import { CliModellAuswahl } from './CliModellAuswahl';
 import '../hauptagent-steuerung.css';
 
 /**
@@ -11,6 +12,7 @@ import '../hauptagent-steuerung.css';
  *   PUT     /api/main-agent/heartbeat    Heartbeat ein/aus + Takt (nur User, Standard AUS)
  *   GET     /api/main-agent/runtimes     eingerichtete Runtimes, getrennt nach Art (cli = Abo, api = Schluessel)
  *   POST    /api/main-agent/wechsel      Runtime-/Modellwechsel (Auftrag an die Identitaet bzw. Altweg Zuweisung)
+ *   GET     /api/agent-runtimes/:runtime/modelle  P22-T61: Modellliste der CLI-Runtime (Auswahl beim Wechsel)
  *   GET     /api/main-agent/verbrauch    Abo-Tokens des Hauptagenten im laufenden Monat
  *   GET/PUT /api/main-agent/ueberwachung(/schalter)  P22-T58: Ueberwachung der Runtime-Container (Zustand, letzte Ereignisse)
  *   POST    /api/main-agent/ueberwachung/takt        P22-T58: sofort pruefen (trocken = nur bewerten)
@@ -25,7 +27,7 @@ interface Status {
   };
   auftraege_offen: Array<{ auftrag_id: string; art: string; status: string; ausfuehrung?: string }>;
 }
-interface RuntimeEintrag { runtime: string; label: string; art: 'cli' | 'api'; bereit: boolean; zugewiesen: boolean }
+interface RuntimeEintrag { runtime: string; label: string; art: 'cli' | 'api'; bereit: boolean; zugewiesen: boolean; modell?: string | null }
 interface Verbrauch { je_agent: Array<{ agent_id: string; zugang: string; tokens_gesamt: number }>; schalter: { aktiv: boolean } }
 interface Ueberwachung {
   schalter: { aktiv: boolean; quelle: string };
@@ -72,6 +74,7 @@ export function HauptagentSteuerung() {
   const [zaehlung, setZaehlung] = useState<boolean | null>(null);
   const [ueberwachung, setUeberwachung] = useState<Ueberwachung | null>(null);
   const [ziel, setZiel] = useState('');
+  const [zielModell, setZielModell] = useState('');
   const [takt, setTakt] = useState('');
   const [grund, setGrund] = useState('Steuerung im Hauptagent-Chat');
   const [busy, setBusy] = useState(false);
@@ -116,13 +119,16 @@ export function HauptagentSteuerung() {
       <span><input className="takt" value={takt} inputMode="numeric" placeholder="adaptiv" title="Takt in Sekunden (mindestens 5), leer = adaptiv" onChange={(event) => setTakt(event.target.value.replace(/[^0-9]/g, ''))} />s
         <button type="button" disabled={busy || !grundOk || !i} className={hb?.gewuenscht.aktiv ? 'on' : ''} title={i ? '' : 'Erst nach dem ersten Main-Chat mit eingeschaltetem Hauptagenten; bis dahin AUS'} onClick={() => void heartbeatSetzen(!hb?.gewuenscht.aktiv)}>{hb?.gewuenscht.aktiv ? 'Heartbeat aus' : 'Heartbeat ein'}</button></span></div>
     <div><span>Runtime <b>{i ? (i.runtime_gewuenscht ?? '–') : (runtimes.find(r => r.zugewiesen)?.label ?? '–')}</b>{i && <>tatsächlich {i.runtime_tatsaechlich ?? 'unbestätigt'}</>}{(status?.auftraege_offen ?? []).map(a => <span key={a.auftrag_id}>· {a.art} {a.ausfuehrung ?? a.status}</span>)}</span>
-      <span><select value={ziel} onChange={(event) => setZiel(event.target.value)}>
+      <span><select value={ziel} onChange={(event) => { setZiel(event.target.value); setZielModell(''); }}>
         <option value="">wechseln zu …</option>
         {(['cli', 'api'] as const).map(art => <optgroup key={art} label={art === 'cli' ? 'CLI (Abo)' : 'API (Schlüssel)'}>
           {runtimes.filter(r => r.art === art).map(r => <option key={r.runtime} value={r.runtime} disabled={!r.bereit}>{r.label}{r.bereit ? '' : ' (nicht bereit)'}</option>)}
         </optgroup>)}
       </select>
-        <button type="button" disabled={busy || !grundOk || !ziel} onClick={() => void ausfuehren('Wechsel beauftragt.', () => anfrage('/api/main-agent/wechsel', json('POST', { runtime: ziel, grund })))}>Wechseln</button></span></div>
+        <button type="button" disabled={busy || !grundOk || !ziel} onClick={() => void ausfuehren('Wechsel beauftragt.', () => anfrage('/api/main-agent/wechsel', json('POST', { runtime: ziel, grund, ...(zielModell.trim() ? { modell: zielModell.trim() } : {}) })))}>Wechseln</button></span></div>
+    {(ziel === 'claude' || ziel === 'codex') && <div><span>Modell <b>{zielModell.trim() || 'Standard der Runtime'}</b>{i?.modell_tatsaechlich && <>tatsächlich {i.modell_tatsaechlich}</>}</span>
+      <span className="modell"><CliModellAuswahl runtime={ziel} value={zielModell} onChange={setZielModell} listId="hauptagent-ziel-modelle" placeholder="leer = Standardmodell der Runtime" />
+        {ziel === 'codex' && zielModell.trim() && !/^codex/.test(zielModell.trim()) && <small className="cli-modelle-hinweis">Der Codex-Start nimmt derzeit nur Registry-Aliase „codex…“; eine andere ID ersetzt der Wechsel durch das Standardmodell.</small>}</span></div>}
     <div><span>Überwachung <b>{ueberwachung ? (ueberwachung.schalter.aktiv ? 'EIN' : 'AUS') : '…'}</b>
       {(ueberwachung?.runtimes ?? []).map(r => <span key={r.runtime} title={r.ursache ?? ''}>· {r.runtime} {r.zustand}{r.ursache ? ' (' + r.ursache + ')' : ''}</span>)}</span>
       <span><button type="button" disabled={busy || !ueberwachung} onClick={() => void ausfuehren('Geprüft (nur bewertet).', () => anfrage('/api/main-agent/ueberwachung/takt', json('POST', { trocken: true })))}>Prüfen</button>

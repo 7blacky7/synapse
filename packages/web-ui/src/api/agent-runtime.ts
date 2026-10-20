@@ -191,6 +191,39 @@ export async function getAgentRuntimeStatus(runtime: AgentRuntimeName = 'codex')
   return payload.status;
 }
 
+/** P22-T61: ein Modell aus der Liste der CLI im Container (GET /api/agent-runtimes/:runtime/modelle). */
+export interface CliModell {
+  id: string;
+  name: string;
+  beschreibung: string | null;
+  standard_effort: string | null;
+  effort_stufen: string[];
+  kontext_ein: number | null;
+  kontext_aus: number | null;
+  sichtbar: boolean;
+  gruppe: string | null;
+  standard: boolean;
+}
+
+/** P22-T61: ausgelesene Modellliste; leer + grund, wenn keine Quelle lesbar war (kein Rueckfall auf feste Listen). */
+export interface CliModellListe {
+  runtime: AgentRuntimeName;
+  quelle: 'cli' | 'datei' | null;
+  quelle_detail: string | null;
+  stand: string | null;
+  veraltet_ab: string | null;
+  cli_version: string | null;
+  modelle: CliModell[];
+  hinweise: string[];
+  grund: string | null;
+  abgefragt_am: string;
+}
+
+export async function getAgentRuntimeModelle(runtime: AgentRuntimeName, neu = false): Promise<CliModellListe> {
+  const payload = await jsonRequest<{ success: true; modelle: CliModellListe }>('/api/agent-runtimes/' + runtime + '/modelle' + (neu ? '?neu=1' : ''));
+  return payload.modelle;
+}
+
 export async function configureAgentRuntime(
   runtime: AgentRuntimeName,
   config: { rootPath: string; image?: string; model?: string },

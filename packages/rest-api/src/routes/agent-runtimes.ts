@@ -367,6 +367,18 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   fastify.delete<{ Params: { runtime: string }; Body: { grund?: unknown } }>('/api/agent-runtimes/:runtime/daemon-zugang', async (request, reply) => {
     try { return { success: true, zugang: await widerrufeRuntimeDaemonZugangKomplett(containerRuntime(request.params.runtime), request.body?.grund) }; } catch (error) { return sendFachFehler(reply, error); }
   });
+  /**
+   * P22-T61: Modellliste der CLI im Container (claude: Modellkatalog der CLI, codex: app-server model/list bzw. models_cache.json).
+   * Kein Rueckfall auf feste Listen: ohne Quelle leere Liste + grund. ?neu=1 umgeht den Zwischenspeicher (60 s).
+   */
+  fastify.get<{ Params: { runtime: string }; Querystring: { neu?: string } }>('/api/agent-runtimes/:runtime/modelle', async (request, reply) => {
+    try {
+      const driver = manager.driver(containerRuntime(request.params.runtime));
+      if (!driver.modelle) throw Object.assign(new Error('runtime_ungueltig'), { code: 'runtime_ungueltig' });
+      const neu = request.query?.neu === '1' || request.query?.neu === 'true';
+      return { success: true, modelle: await driver.modelle({ neu }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
   fastify.get<{ Params: { runtime: string } }>('/api/agent-runtimes/:runtime/projekte', async (request, reply) => {
     try { return { success: true, projekte: await listeRuntimeProjekte(containerRuntime(request.params.runtime)) }; } catch (error) { return sendFachFehler(reply, error); }
   });

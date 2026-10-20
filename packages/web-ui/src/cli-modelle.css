@@ -1,0 +1,10 @@
+/* P22-T61: Modellauswahl/-liste aus der CLI der Runtime-Container */
+.cli-modell-auswahl { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.cli-modell-auswahl > small, .cli-modell-uebersicht li span { opacity: 0.8; overflow-wrap: anywhere; }
+.cli-modelle-herkunft { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.cli-modelle-herkunft > small { opacity: 0.7; overflow-wrap: anywhere; }
+.cli-modelle-herkunft > button { font-size: 0.8em; padding: 1px 8px; }
+.cli-modelle-hinweis { flex-basis: 100%; color: var(--warning, #b7791f); }
+.cli-modell-uebersicht ul { list-style: none; margin: 0 0 4px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.cli-modell-uebersicht li { display: flex; flex-wrap: wrap; gap: 0 8px; font-size: 0.85em; }
+.cli-modell-uebersicht li.versteckt { opacity: 0.55; }

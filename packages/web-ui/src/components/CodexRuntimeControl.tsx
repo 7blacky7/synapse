@@ -10,6 +10,7 @@ import {
 import { AgentRuntimeTerminal } from './CodexTerminal';
 import '../codex-runtime.css';
 import { runtimeTerminalBlockReason } from './runtime-feedback';
+import { CliModellAuswahl, CliModellUebersicht } from './CliModellAuswahl';
 
 const runtimeMeta: Record<AgentRuntimeName, {
   label: string;
@@ -32,7 +33,8 @@ const runtimeMeta: Record<AgentRuntimeName, {
     driver: 'ClaudeRuntimeDriver',
     provider: 'ANTHROPIC-ACCOUNT',
     defaultRoot: '/mnt/user/synapse-agent-runtime/claude',
-    defaultModel: 'sonnet',
+    // P22-T61: kein fester Vorschlag; das gespeicherte Modell kommt mit dem Status, die Liste aus der CLI.
+    defaultModel: '',
     loginCommand: 'claude auth login',
   },
 };
@@ -148,8 +150,9 @@ export function AgentRuntimeControl({
       <header><div><i className={tone(status)} /><span><strong>{meta.label}</strong><small>PRODUKTIV · AgentRuntime / {meta.driver}</small></span></div><b>{status?.container.status || 'prüfen …'}</b></header>
       <div className="codex-compact-grid">
         <label><span>Persistenter Runtime-Pfad</span><input value={rootPath} onChange={(event) => setRootPath(event.target.value)} /></label>
-        {runtime === 'claude' && <label><span>Claude-Modell</span><input list="claude-runtime-models" value={model} onChange={(event) => setModel(event.target.value)} placeholder="sonnet oder Modell-ID" /></label>}
-        {runtime === 'claude' && <datalist id="claude-runtime-models"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist>}
+        {runtime === 'claude'
+          ? <label><span>Claude-Modell</span><CliModellAuswahl runtime="claude" value={model} onChange={setModel} listId="claude-runtime-models-kompakt" /></label>
+          : <details><summary>Modelle der Codex-CLI</summary><CliModellUebersicht runtime="codex" /></details>}
         <span><b>{authLabel(status)}</b><small>{status?.version || 'Version wird nach Einrichtung erkannt'}{status?.model ? ' · ' + status.model : ''}</small></span>
         <div className="codex-compact-actions">
           {status?.container.status === 'running' && status.installed
@@ -179,8 +182,9 @@ export function AgentRuntimeControl({
     <label><span>Rolle</span><input value="main" readOnly /></label>
     <label className="wide"><span>Persistenter Root-Pfad</span><input value={rootPath} onChange={(event) => setRootPath(event.target.value)} placeholder={meta.defaultRoot} /></label>
     <label className="wide"><span>Container-Image</span><input value={image} onChange={(event) => setImage(event.target.value)} placeholder="Server-Default verwenden" /></label>
-    {runtime === 'claude' && <label className="wide"><span>Claude-Modell</span><input list="claude-runtime-models" value={model} onChange={(event) => setModel(event.target.value)} placeholder="sonnet oder vollständige Modell-ID" /><small>Vorschläge: sonnet, opus, haiku. Eine gültige Claude-Modell-ID kann frei eingetragen werden.</small></label>}
-    {runtime === 'claude' && <datalist id="claude-runtime-models"><option value="sonnet" /><option value="opus" /><option value="haiku" /></datalist>}
+    {runtime === 'claude'
+      ? <label className="wide"><span>Claude-Modell</span><CliModellAuswahl runtime="claude" value={model} onChange={setModel} listId="claude-runtime-models" /><small>Vorschläge aus dem Modellkatalog der Claude-CLI im Container. Eine gültige Claude-Modell-ID oder ein Alias (z. B. opus) kann frei eingetragen werden.</small></label>
+      : <div className="wide"><span>Modelle der Codex-CLI</span><CliModellUebersicht runtime="codex" /><small>Die Codex-Konfiguration speichert kein eigenes Modell; den Modellwechsel des Hauptagenten gibt es in der Steuerung im Hauptagent-Chat.</small></div>}
     <div className="runtime-path-contract wide"><span>Erzeugte Struktur</span><code>{rootPath || '…'}/home</code><code>{rootPath || '…'}/projects</code><code>{rootPath || '…'}/state</code><code>{rootPath || '…'}/attachments</code></div>
     <footer className="wide">
       <button type="button" disabled={!!busy || !rootPath.trim()} onClick={() => void saveConfiguration()}>Pfad speichern</button>

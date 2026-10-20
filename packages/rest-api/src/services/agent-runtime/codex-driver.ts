@@ -8,6 +8,7 @@ import { AgentRuntimeRepository } from './repository.js';
 import { dauerhafterMainTurn } from './dauerhafter-main.js';
 import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
+import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
 import type { ContainerBeobachtung } from '@synapse/core';
 import type {
   AgentRuntimeDriver,
@@ -171,6 +172,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
   readonly label = 'Codex CLI';
   private readonly docker: Docker;
   private readonly statusProbe = new RuntimeStatusProbe<RuntimeStatus>();
+  private readonly modellProbe = new RuntimeStatusProbe<CliModellListe>(60_000);
 
   constructor(
     private readonly repository: AgentRuntimeRepository,
@@ -267,6 +269,18 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     return fuehreCliUpdateImContainerAus(this.docker, config, 'codex', {
       ...o, env: this.runtimeEnv(),
       istEigener: (info) => { try { this.assertOwnedContainer(config!, info); return true; } catch { return false; } },
+    });
+  }
+
+  /** P22-T61: Modellliste der Codex-CLI im Container (app-server model/list, Rueckfall models_cache.json; 60 s zwischengespeichert). */
+  modelle(o: { neu?: boolean } = {}): Promise<CliModellListe> {
+    if (o.neu) this.modellProbe.invalidate();
+    return this.modellProbe.run(async () => {
+      const config = await this.repository.get('codex');
+      return leseCliModelleImContainer(this.docker, config, 'codex', {
+        env: this.runtimeEnv(),
+        istEigener: (info) => { try { this.assertOwnedContainer(config!, info); return true; } catch { return false; } },
+      });
     });
   }
 

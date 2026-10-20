@@ -1,4 +1,5 @@
 import type { ContainerBeobachtung } from '@synapse/core';
+import type { CliModellListe } from './cli-modelle.js';
 
 export type RuntimeName = 'codex' | 'claude' | 'free-pool';
 export type AgentRole = 'main' | 'specialist';
@@ -107,6 +108,8 @@ export interface AgentRuntimeDriver {
   neustart?(): Promise<void>;
   /** P22-T58 F5: CLI-Update im Container (nur Container-Runtimes mit Agent-Runtime-Image). */
   cliUpdate?(o: { timeout_ms: number }): Promise<{ ok: boolean; exit_code: number | null; ausgabe: string }>;
+  /** P22-T61: Modellliste aus der CLI im Container (nur Container-Runtimes); neu = Zwischenspeicher verwerfen. */
+  modelle?(o?: { neu?: boolean }): Promise<CliModellListe>;
   openTerminal(input?: { cols?: number; rows?: number; command?: string }): Promise<TerminalSession>;
   sendMessage(
     session: MainAgentSession,

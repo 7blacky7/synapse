@@ -11,6 +11,7 @@ import { leseHauptagentSchalter, hauptagentIdentitaetsId, ausweisFuerStart, HAUP
 import { dauerhafterMainTurn } from './dauerhafter-main.js';
 import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
+import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
 import type { ContainerBeobachtung } from '@synapse/core';
 import {
   persistentRuntimeBinds,
@@ -287,6 +288,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
   readonly label = 'Claude Code';
   private readonly docker: Docker;
   private readonly statusProbe = new RuntimeStatusProbe<RuntimeStatus>();
+  private readonly modellProbe = new RuntimeStatusProbe<CliModellListe>(60_000);
 
   constructor(
     private readonly repository: AgentRuntimeRepository,
@@ -390,6 +392,18 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     return fuehreCliUpdateImContainerAus(this.docker, config, this.runtime, {
       ...o, env: this.runtimeEnv(),
       istEigener: (info) => { try { this.assertOwnedContainer(config!, info); return true; } catch { return false; } },
+    });
+  }
+
+  /** P22-T61: Modellkatalog der CLI im Container (60 s zwischengespeichert, neu = sofort neu lesen). */
+  modelle(o: { neu?: boolean } = {}): Promise<CliModellListe> {
+    if (o.neu) this.modellProbe.invalidate();
+    return this.modellProbe.run(async () => {
+      const config = await this.repository.get(this.runtime);
+      return leseCliModelleImContainer(this.docker, config, this.runtime, {
+        env: this.runtimeEnv(),
+        istEigener: (info) => { try { this.assertOwnedContainer(config!, info); return true; } catch { return false; } },
+      });
     });
   }
 
