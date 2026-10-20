@@ -60,22 +60,19 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
   const failed = toolCalls.filter((call) => call.status === 'failed').length;
   // Kein Dreamer-Dienst: der Hauptagent "dreamt" nie nur wegen eines UI-Timers.
   const phase = agentBusy ? 'arbeitet' : 'beobachtet';
-  // Nur ECHTE Tool-Aufrufe. Ist die Liste leer, bleibt sie leer — der
+  // Nur ECHTE Tool-Aufrufe des Hauptagenten selbst (P8-T26: GET /api/main-agent/tool-calls,
+  // nie die Projektaufrufe anderer Agenten). Ist die Liste leer, bleibt sie leer — der
   // Leerzustand steht weiter unten im Ereignis-Strom.
   const events = useMemo(() => recentCalls.slice(0, 5).map((call) => ({
     id: call.id,
-    // ⚠️ Die Herkunft ist IMMER das aktuelle Projekt: die Aufrufe kommen aus
-    // GET /api/projects/<project>/tool-calls (control-plane-adapter.ts:259).
-    // Hier stand bis zum 26.08.2026 `index % 2 ? 'projektuebergreifend' : project`
-    // — jeder zweite ECHTE Aufruf bekam allein nach seiner Position in der Liste
-    // ein erfundenes Etikett. In der Oberflaeche war die Folge sauber abwechselnd
-    // zu sehen, obwohl ausnahmslos alles zu einem Projekt gehoerte. Ein
-    // erfundenes Feld an echten Daten laesst sich nicht mehr davon trennen.
-    project,
+    // ⚠️ Die Herkunft ist das Projekt, das der Aufruf selbst traegt (tool_calls.project) —
+    // der Hauptagent arbeitet projektuebergreifend. Nie ein erfundenes Etikett (bis 26.08.2026
+    // stand hier `index % 2 ? 'projektuebergreifend' : project`).
+    project: call.project || 'ohne Projekt',
     title: call.action || call.tool.split('__').pop() || 'Tool-Aufruf',
     meta: call.status === 'running' ? 'läuft gerade' : call.status === 'failed' ? 'Fehler' : 'abgeschlossen',
     tone: call.status,
-  })), [project, recentCalls]);
+  })), [recentCalls]);
 
   const chooseView = (nextView: DashboardView) => {
     setAutoFollow(false);
@@ -104,8 +101,8 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
                   {recentCalls.slice(0, 5).map((call, index) => <span className={'orbit-node n' + index} key={call.id}>{call.tool.split('__').pop()}</span>)}
                 </div>
                 <div className="activity-metrics">
-                  <article><span>Tool-Aufrufe</span><strong>{toolCalls.length}</strong><small>aktuelles Projekt</small></article>
-                  <article><span>Abgeschlossen</span><strong>{completed}</strong><small>letzter Lauf</small></article>
+                  <article><span>Tool-Aufrufe</span><strong>{toolCalls.length}</strong><small>nur Hauptagent</small></article>
+                  <article><span>Abgeschlossen</span><strong>{completed}</strong><small>letzte Aufrufe</small></article>
                   <article><span>Fehler</span><strong>{failed}</strong><small>{failed ? 'prüfen' : 'keine offenen'}</small></article>
                 </div>
               </div>
@@ -129,11 +126,11 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
           </div>
         </main>
         <aside className="dashboard-events">
-          {/* Vorher "Alle Projekte" — die Aufrufe stammen aber alle aus EINEM Projekt. */}
-          <header><div><span>Projekt {project}</span><h2>Aktivitäten & Events</h2></div><i /></header>
+          {/* P8-T26: nur Ereignisse des Hauptagenten; das Projekt steht je Ereignis. */}
+          <header><div><span>Nur Hauptagent</span><h2>Aktivitäten & Events</h2></div><i /></header>
           {/* Leer bleibt leer. Vorbild: Dashboard.tsx:391/491/522/561/589. */}
           <div className="event-stream">{events.length === 0
-            ? <p className="empty-state">Noch keine Tool-Aufrufe in diesem Projekt.</p>
+            ? <p className="empty-state">Der Hauptagent hat noch keine Tool-Aufrufe.</p>
             : events.map((event) => <article key={event.id}><i className={event.tone} /><div><span>{event.project}</span><strong>{event.title}</strong><small>{event.meta}</small></div></article>)}</div>
           {/* Die Fusszeile sagte "Events live" auch dann, wenn kein einziges Ereignis echt war. */}
           <footer><span><i /> {events.length ? 'Events live' : 'keine Ereignisse'}</span><button type="button">Alle anzeigen →</button></footer>

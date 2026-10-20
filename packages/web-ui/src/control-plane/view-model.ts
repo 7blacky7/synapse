@@ -136,6 +136,8 @@ export interface ToolCallViewModel {
   error: string;
   durationMs: number;
   createdAt: string;
+  /** P8-T26: Projekt des Aufrufs, wenn die Quelle projektuebergreifend ist (Hauptagent). */
+  project?: string;
   /** api: GET tool-calls; stream: Werkzeugaufruf aus dem Antwortstrom des Hauptagenten. */
   source: 'api' | 'stream';
 }

@@ -20,8 +20,9 @@ import {
   loadProjectTeamViewModels,
   loadProjectViewModels,
   loadSystemEntities,
+  loadMainAgentToolCallResult,
+  loadMainAgentToolCallViewModels,
   loadToolCallResult,
-  loadToolCallViewModels,
   sendChannelMessage,
 } from '../api/control-plane-adapter';
 import { defaultSettings, navigation } from '../mock/ui-control-plane';
@@ -239,7 +240,7 @@ function toolCallIsFresh(call: ToolCallViewModel) {
   return call.status === 'running' || (Number.isFinite(created) && Date.now() - created <= 10_000);
 }
 
-function ToolCallNode({ call, project }: { call: ToolCallViewModel; project: string }) {
+function ToolCallNode({ call, project, ladeErgebnis }: { call: ToolCallViewModel; project: string; ladeErgebnis?: (id: string) => Promise<string> }) {
   const [stage, setStage] = useState<0 | 1 | 2>(0);
   const [result, setResult] = useState(call.error || call.resultPreview);
   const [resultError, setResultError] = useState('');
@@ -256,7 +257,7 @@ function ToolCallNode({ call, project }: { call: ToolCallViewModel; project: str
     const refreshResult = async () => {
       setLoading(true);
       try {
-        const fullResult = await loadToolCallResult(project, call.id);
+        const fullResult = ladeErgebnis ? await ladeErgebnis(call.id) : await loadToolCallResult(project, call.id);
         if (active) {
           setResult(fullResult);
           setResultError('');
@@ -276,7 +277,7 @@ function ToolCallNode({ call, project }: { call: ToolCallViewModel; project: str
       active = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [stage, project, call.id, call.createdAt, call.status]);
+  }, [stage, project, call.id, call.createdAt, call.status, ladeErgebnis]);
 
   const advance = () => setStage((current) => current === 0 ? 1 : current === 1 ? 2 : 0);
 
@@ -312,17 +313,22 @@ function ToolActivity({
   project,
   summary,
   phases,
+  leerText,
+  ladeErgebnis,
 }: {
   calls: ToolCallViewModel[];
   error: string;
   project: string;
   summary: string;
   phases: string[];
+  leerText: string;
+  /** P8-T26: Ergebnisquelle fuer Aufrufe, die nicht aus dem gewaehlten Projekt kommen (Hauptagent). */
+  ladeErgebnis?: (id: string) => Promise<string>;
 }) {
   const [open, setOpen] = useState(true);
 
   return (
-    <section className={open ? 'tool-run is-open' : 'tool-run'} aria-label="Toolaktivität des Projekts">
+    <section className={open ? 'tool-run is-open' : 'tool-run'} aria-label={summary}>
       <button className="tool-run-summary" type="button" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
         <i />
         <strong>{summary}</strong>
@@ -340,9 +346,9 @@ function ToolActivity({
                 <strong>{phase}</strong>
               </div>
             ))}
-            {calls.map((call) => <ToolCallNode call={call} project={project} key={call.id} />)}
+            {calls.map((call) => <ToolCallNode call={call} project={project} ladeErgebnis={ladeErgebnis} key={call.id} />)}
           </div>
-          {!calls.length && !error && <p className="tool-stream-empty">Noch keine Toolaufrufe für dieses Projekt.</p>}
+          {!calls.length && !error && <p className="tool-stream-empty">{leerText}</p>}
         </div>
       )}
     </section>
@@ -524,13 +530,14 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     setChatCollapsed(!showDashboard);
   }, [showDashboard]);
 
+  // P8-T26: nur Aufrufe des Hauptagenten selbst (Server filtert nach seiner Identitaet), nie die anderer Agenten
+  // im gewaehlten Projekt. Hat er noch nichts aufgerufen, bleibt die Liste leer.
   useEffect(() => {
     let active = true;
     setToolCalls([]);
     const refresh = async () => {
-      if (!project) return;
       try {
-        const calls = await loadToolCallViewModels(project, 12);
+        const calls = await loadMainAgentToolCallViewModels(12);
         if (active) { setToolCalls((bisher) => fuehreToolCallsZusammen(bisher, calls)); setToolError(''); }
       } catch (error) {
         if (active) setToolError(error instanceof Error ? error.message : String(error));
@@ -539,7 +546,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [project]);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -755,9 +762,9 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         </div>
         {steuerungOffen && !chatCollapsed && <HauptagentSteuerung />}
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
-          {runtimeMode !== 'mock' && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Letzte Toolaufrufe im Projekt" phases={[]} />}
+          {runtimeMode !== 'mock' && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Tool-Aufrufe des Hauptagenten" phases={[]} leerText="Der Hauptagent hat noch keine Tool-Aufrufe." ladeErgebnis={loadMainAgentToolCallResult} />}
           {visibleMessages.map((message) => <Fragment key={message.id}>
-            {message.toolRun && (message.toolRun.calls.length > 0 || message.toolRun.phases.length > 0) && <ToolActivity calls={message.toolRun.calls} error="" project={project} summary={message.toolRun.calls.some((call) => call.status === 'running') ? 'Hauptagent arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={message.toolRun.phases} />}
+            {message.toolRun && (message.toolRun.calls.length > 0 || message.toolRun.phases.length > 0) && <ToolActivity calls={message.toolRun.calls} error="" project={project} summary={message.toolRun.calls.some((call) => call.status === 'running') ? 'Hauptagent arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={message.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
             <article className={'message ' + message.role + ' ' + message.kind}>
               <header>{message.role === 'user' ? 'Du' : 'Hauptagent'}</header>
               {message.kind === 'text' && <p>{message.text}</p>}

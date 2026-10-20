@@ -578,6 +578,7 @@ export async function sendChannelMessage(
 interface ToolCallResponseRow {
   id?: unknown;
   ts?: unknown;
+  project?: unknown;
   agent_id?: unknown;
   tool_name?: unknown;
   action?: unknown;
@@ -596,9 +597,19 @@ export async function loadToolCallViewModels(
   project: string,
   limit = 12,
 ): Promise<ToolCallViewModel[]> {
-  const response = await apiFetch(
-    '/api/projects/' + encodeURIComponent(project) + '/tool-calls?limit=' + limit,
-  );
+  return ladeToolCallListe('/api/projects/' + encodeURIComponent(project) + '/tool-calls?limit=' + limit);
+}
+
+/**
+ * P8-T26: NUR die Aufrufe des Hauptagenten (projektuebergreifend, Server filtert nach seiner Identitaet).
+ * Fuer Main-Chat und Arbeitsraum; dort erscheinen nie Projektaufrufe anderer Agenten.
+ */
+export async function loadMainAgentToolCallViewModels(limit = 12): Promise<ToolCallViewModel[]> {
+  return ladeToolCallListe('/api/main-agent/tool-calls?limit=' + limit);
+}
+
+async function ladeToolCallListe(pfad: string): Promise<ToolCallViewModel[]> {
+  const response = await apiFetch(pfad);
   const data = await response.json().catch(() => ({})) as ToolCallsResponse & {
     error?: { message?: string } | string;
   };
@@ -609,6 +620,7 @@ export async function loadToolCallViewModels(
 
   return (data.calls || []).map<ToolCallViewModel>((row) => ({
     id: String(row.id || ''),
+    ...(typeof row.project === 'string' && row.project ? { project: row.project } : {}),
     tool: typeof row.tool_name === 'string' ? row.tool_name : 'tool',
     action: typeof row.action === 'string' ? row.action : '',
     agent: typeof row.agent_id === 'string' && row.agent_id ? row.agent_id : 'unbekannt',
@@ -628,9 +640,16 @@ interface ToolCallDetailResponse {
 }
 
 export async function loadToolCallResult(project: string, id: string): Promise<string> {
-  const response = await apiFetch(
-    '/api/projects/' + encodeURIComponent(project) + '/tool-calls/' + encodeURIComponent(id),
-  );
+  return ladeToolCallErgebnis('/api/projects/' + encodeURIComponent(project) + '/tool-calls/' + encodeURIComponent(id));
+}
+
+/** P8-T26: volles Ergebnis eines Hauptagenten-Aufrufs (Server prueft, dass er dem Hauptagenten gehoert). */
+export async function loadMainAgentToolCallResult(id: string): Promise<string> {
+  return ladeToolCallErgebnis('/api/main-agent/tool-calls/' + encodeURIComponent(id));
+}
+
+async function ladeToolCallErgebnis(pfad: string): Promise<string> {
+  const response = await apiFetch(pfad);
   const data = await response.json().catch(() => ({})) as ToolCallDetailResponse;
   if (!response.ok) {
     const message = typeof data.error === 'string' ? data.error : data.error?.message;

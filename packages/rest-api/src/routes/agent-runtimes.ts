@@ -10,7 +10,7 @@ import {
   leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
-  listeArtefakte, ladeArtefakt, onlineKoordinatoren,
+  listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 
@@ -305,6 +305,27 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       const artefakt = await ladeArtefakt(request.params.id);
       if (!artefakt) return reply.code(404).send({ success: false, error: { message: 'Artefakt nicht gefunden' } });
       return { success: true, artefakt };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P8-T26: Tool-Aufrufe NUR des Hauptagenten (projektuebergreifend) fuer Main-Chat und Arbeitsraum. Akteur aus
+  // gespeicherten Daten: Main-Identitaet (identity_id), agent_id 'hauptagent' ohne identity_id (Identitaetsweg ausserhalb
+  // seines Bereichs) und 'main-<session>' (Altweg). Nie Aufrufe anderer Agenten als Ersatz; leer bleibt leer.
+  const hauptagentAkteure = async () => {
+    const identityId = await hauptagentIdentitaetsId();
+    return { identityIds: identityId ? [identityId] : [], agentIds: [HAUPTAGENT_AGENT_ID], mainSessions: true };
+  };
+  fastify.get<{ Querystring: { limit?: string } }>('/api/main-agent/tool-calls', async (request, reply) => {
+    const limit = Number(request.query.limit);
+    try {
+      const calls = await queryToolCalls({ akteure: await hauptagentAkteure(), limit: Number.isFinite(limit) ? limit : 12, detail: 'summary' });
+      return { success: true, count: calls.length, calls };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get<{ Params: { id: string } }>('/api/main-agent/tool-calls/:id', async (request, reply) => {
+    try {
+      const rows = await queryToolCalls({ akteure: await hauptagentAkteure(), id: request.params.id, detail: 'full', limit: 1 });
+      if (!rows.length) return reply.code(404).send({ success: false, error: { message: 'Tool-Aufruf des Hauptagenten nicht gefunden' } });
+      return { success: true, call: rows[0] };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get('/api/main-agent/status', async (_request, reply) => {

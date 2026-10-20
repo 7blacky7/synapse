@@ -151,6 +151,12 @@ export interface ActivityFilters {
   id?: string;
   /** Akzeptiert Agenten-Namen ODER IDs (gleicher Spaltenwert agent_id). */
   agentId?: string[];
+  /**
+   * P8-T26: NUR Aufrufe genau dieser Akteure, ohne Namensaufloesung ueber agent_identitaeten (Hauptagent-Ansicht).
+   * identityIds treffen identity_id; agentIds nur Zeilen OHNE identity_id; mainSessions zusaetzlich 'main-<id>' zu
+   * vorhandenen agent_runtime_sessions (Altweg des Hauptagenten). Leere Listen treffen nichts.
+   */
+  akteure?: { identityIds: string[]; agentIds: string[]; mainSessions?: boolean };
   tool?: string[];
   status?: 'ok' | 'error';
   mutationsOnly?: boolean;
@@ -200,6 +206,11 @@ export async function queryToolCalls(f: ActivityFilters): Promise<ToolCallRow[]>
     // P22-T55: EIN Resolver - Namen fremder Ausweis-Agenten und identity_ids finden deren Eintraege (vorher nur der eigene Name).
     const z = await loeseAgentFilter(f.project ?? null, f.agentId);
     where.push(`((identity_id IS NULL AND agent_id = ANY($${i++}::text[])) OR identity_id = ANY($${i++}::text[]))`); params.push(z.namen, z.identity_ids);
+  }
+  if (f.akteure) {
+    const altweg = f.akteure.mainSessions ? ` OR agent_id IN (SELECT 'main-' || id::text FROM agent_runtime_sessions)` : '';
+    where.push(`(identity_id = ANY($${i++}::text[]) OR (identity_id IS NULL AND (agent_id = ANY($${i++}::text[])${altweg})))`);
+    params.push(f.akteure.identityIds, f.akteure.agentIds);
   }
   if (f.tool && f.tool.length) { where.push(`tool_name = ANY($${i++})`); params.push(f.tool); }
   if (f.status === 'error') where.push('ok = false');
