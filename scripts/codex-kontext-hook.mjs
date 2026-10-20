@@ -135,6 +135,9 @@ function buildContext(wrapperPid, tokens, window, thresholdPercent) {
   } else {
     handoff.push('Sende danach diese beiden Zeilen an deine eigene cc-wrap-Sitzung:');
     handoff.push("CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " '/clear'");
+    // Mit Ausweis (sai_...): Neuanmeldung NUR per chat(anmelden, token); sie liefert Regeln, Uebergabe und Task.
+    handoff.push("MIT Ausweis (sai_...) stattdessen: CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " 'Dein Synapse-Agenten-Ausweis: <dein Ausweis>. Erste Aktion: chat(action:anmelden, token:<dein Ausweis>), danach token bei JEDEM Synapse-Aufruf, kein agent_id/project/role. Lies die Uebergabe aus der Anmeldung und arbeite weiter.'");
+    handoff.push('Die folgende Zeile gilt NUR OHNE Ausweis (Legacy):');
     handoff.push("CC_SEND_VON=<eigene Agent-ID> cc-send " + wrapperPid + " 'Du bist <eigene Agent-ID>. Melde dich zuerst mit dieser Agent-ID wieder an: project(action:status, path:<Arbeitsordner>, agent_id:<eigene Agent-ID>), dann admin(action:index_stats, project:<Projekt>, agent_id:<eigene Agent-ID>, role:<Rolle>, sitzung:fortsetzung, onboarding:true) und agent_id:<eigene Agent-ID> an JEDEN weiteren Synapse-Aufruf. Danach thought get <8 Zeichen> lesen, dann löschen, und als <eigene Agent-ID> weiterarbeiten.'");
     handoff.push('Beende diese Runde unmittelbar nach dem zweiten cc-send.');
   }
