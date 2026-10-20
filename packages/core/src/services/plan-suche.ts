@@ -241,3 +241,30 @@ export async function thoughtTaskFilter(project: string, ref: string): Promise<s
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.trim())) return ref.trim();
   return await resolveProjectTaskId(project, ref);
 }
+
+/** P8-T30: Verknüpfungen einer Task für die Web-UI (nur lesen); jüngste zuerst, je Art höchstens limit. */
+export interface TaskVerknuepfungen {
+  thoughts: { gesamt: number; eintraege: Array<{ id: string; source: string | null; vorschau: string; timestamp: string }> };
+  dateiversionen: { gesamt: number; eintraege: Array<{ id: string; file_path: string; agent_id: string | null; reason: string | null; created_at: string }> };
+}
+
+export async function taskVerknuepfungen(project: string, ref: string, limit = 30): Promise<TaskVerknuepfungen> {
+  const refs = (await thoughtTaskRefs(project, ref)).map(r => r.toUpperCase());
+  const grenze = Math.min(Math.max(Math.trunc(limit) || 30, 1), 200);
+  const [thoughts, versions] = await Promise.all([
+    getPool().query<{ id: string; source: string | null; vorschau: string; timestamp: Date | string; gesamt: number }>(
+      `SELECT t.id::text AS id, t.source, left(t.content, 240) AS vorschau, t.timestamp, count(*) OVER ()::int AS gesamt
+         FROM thoughts t WHERE t.project=$1 AND upper(t.task_id) = ANY($2::text[])
+        ORDER BY t.timestamp DESC, t.id DESC LIMIT $3`, [project, refs, grenze]),
+    getPool().query<{ id: string; file_path: string; agent_id: string | null; reason: string | null; created_at: Date | string; gesamt: number }>(
+      `SELECT v.id::text AS id, v.file_path, v.agent_id, v.reason, v.created_at, count(*) OVER ()::int AS gesamt
+         FROM file_versions v WHERE v.project=$1 AND upper(v.task_id) = ANY($2::text[])
+        ORDER BY v.created_at DESC, v.id DESC LIMIT $3`, [project, refs, grenze]),
+  ]);
+  const iso = (d: Date | string) => d instanceof Date ? d.toISOString() : String(d);
+  return {
+    thoughts: { gesamt: thoughts.rows[0]?.gesamt ?? 0, eintraege: thoughts.rows.map(r => ({ id: r.id, source: r.source, vorschau: r.vorschau, timestamp: iso(r.timestamp) })) },
+    dateiversionen: { gesamt: versions.rows[0]?.gesamt ?? 0, eintraege: versions.rows.map(r => ({ id: r.id, file_path: r.file_path, agent_id: r.agent_id, reason: r.reason, created_at: iso(r.created_at) })) },
+  };
+}
+

@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { loadComputePolicy } from '../api/control-plane-adapter';
 import type { Area, ChannelViewModel } from '../control-plane/view-model';
 import { ProjectKnowledgePanel, type ProjectDetailSection } from './ProjectKnowledgePanel';
+import { ProjectPlanPanel } from './ProjectPlanPanel';
+import { ProjectMemoriesPanel } from './ProjectMemoriesPanel';
+import { ProjectAgentKnowledgePanel } from './ProjectAgentKnowledgePanel';
 import '../channel-project-surface.css';
 
 interface Props {
@@ -62,12 +65,12 @@ export function ChannelProjectSurface({ project, channels, onOpen }: Props) {
     <main>
       {tab === 'overview' && <div className="channel-project-overview"><section><span>Projekt</span><b>{project}</b><small>ein Projekt · ein UI-Objekt</small></section><section><span>Channels</span><b>{channels.length}</b><small>reale API-Daten</small></section><section><span>Persönliches Wissen</span><b>getrennt</b><small>nicht Teil dieses Projekts</small></section><section><span>Graph</span><b>real</b><small>bestehende Verdrahtung</small></section></div>}
       {tab === 'agents' && <ProjectKnowledgePanel kind="agents" project={project} />}
-      {tab === 'tasks' && <ProjectKnowledgePanel kind="tasks" project={project} />}
+      {tab === 'tasks' && <ProjectPlanPanel project={project} />}
       {tab === 'workspaces' && <div className="channel-project-route"><h3>Workspaces · {project}</h3><button type="button" onClick={() => onOpen('workspaces')}>Vollständige Workspace-Ansicht</button></div>}
       {tab === 'graph' && <div className="channel-project-route"><h3>Code / Graph · {project}</h3><p><b>Projektgraph</b><span>reale API-Verbindung</span></p><p><b>Code Intel</b><span>projektgebundener Index</span></p><button type="button" onClick={() => onOpen('graph')}>Realen Graph öffnen</button></div>}
-      {tab === 'memories' && <ProjectKnowledgePanel kind="memories" project={project} />}
+      {tab === 'memories' && <ProjectMemoriesPanel project={project} />}
       {tab === 'thoughts' && <ProjectKnowledgePanel kind="thoughts" project={project} />}
-      {tab === 'agent-knowledge' && <ProjectKnowledgePanel kind="agent-knowledge" project={project} />}
+      {tab === 'agent-knowledge' && <ProjectAgentKnowledgePanel project={project} />}
       {tab === 'audit' && <ProjectKnowledgePanel kind="audit" project={project} />}
       {tab === 'settings' && <ProjectSettingsPanel project={project} onOpen={onOpen} />}
     </main>
