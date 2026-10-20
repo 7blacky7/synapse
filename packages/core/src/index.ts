@@ -171,7 +171,7 @@ export type { ShellDaemonAbruf, SpecialistDaemonJob, WrapperReapKandidat, Daemon
 export { projekteDesHosts } from './services/daemon-jobs-vertrag.js';
 export { ladeShellExecKontextFuerDaemon, speichereShellSicherungFuerDaemon, passwortfreieDbUrl, verworfenHinweis } from './services/shell-exec-kontext.js';
 export type { ShellExecKontext, ShellExecKontextDaten, ShellSicherungEingabe, ShellKontextFehler } from './services/shell-exec-kontext.js';
-export type { WrapperStopZugriff } from './services/wrapper-prozess.js';
+export type { WrapperStopZugriff, WrapperStopOptionen } from './services/wrapper-prozess.js';
 // P9-T27 letzter Schritt: Daemon ohne DATABASE_URL (Datei-Sync, Index, project-init, Tray ueber die API)
 export { sperreDbZugriff, dbZugriffGesperrt } from './db/client.js';
 export { pgWatcherDatenweg } from './watcher/datenweg.js';
@@ -651,14 +651,14 @@ export { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './db/agent-runtime-auftraege
 export {
   RUNTIME_DAEMON_SCOPE_PRAEFIX, RUNTIME_PROJEKTE_WURZEL, runtimeDaemonScope, runtimeAusScope, runtimeProjektPfad, loeseRuntimeDaemonZugang,
   projekteDerRuntime, listeRuntimeProjekte, runtimeDaemonZugangStatus, bindeRuntimeDaemonZugang, widerrufeRuntimeDaemonZugang,
-  verwerfeRuntimeDaemonToken,
+  verwerfeRuntimeDaemonToken, wrapperRuntime,
 } from './services/runtime-daemon-zugang.js';
 export type { RuntimeDaemonBindung, RuntimeProjekt, RuntimeDaemonZugangStatus } from './services/runtime-daemon-zugang.js';
 // P22-T6 (W2c): dauerhafter Main-Lauf im Container (Spawn/Wake ueber specialist_jobs mit target_runtime) + Ausfuehrung der Runtime-Auftraege.
 export {
   MainLaufFehler, leseMainLaufOptionen, istMainLaufRuntime, HAUPTAGENT_EXPERTISE, HAUPTAGENT_AUFGABE, hauptagentContainerPfad,
   leseMainLauf, runtimeDaemonAngemeldet, werkzeugErgebnis, stelleMainLaufSicher, sendeMainTurn, heartbeatBeimSpawnFuerZiel,
-  modellPasstZuRuntime, fuehreRuntimeWechselAus,
+  modellPasstZuRuntime, fuehreRuntimeWechselAus, beendeMainLauf, MAIN_STOP_FRIST_MS, MAIN_VERWAIST_MS,
 } from './services/hauptagent-lauf.js';
 // P22-T62: Modellwahl des Hauptagenten aus den CLI-Listen (Schalter hauptagent_cli_modelle).
 export {

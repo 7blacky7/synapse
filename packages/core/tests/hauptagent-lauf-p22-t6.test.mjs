@@ -69,7 +69,7 @@ try{
  }
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
- for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema','agent-runtime-auftraege-schema','agent-zustellungen-schema']){
+ for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema','agent-runtime-auftraege-schema','agent-zustellungen-schema','hauptagent-verlauf-schema','main-warteschlange-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
@@ -414,7 +414,9 @@ try{
   // P22-T63: je Turn zusaetzlich die Eingabezeile (user) fuer den Verlauf; nur die Antwortzeile traegt message.id + usage.
   const antworten=jl.filter(x=>x.message?.id);
   check(jl.length===4&&jl.map(x=>x.type).join(',')==='user,assistant,user,assistant'&&antworten.length===2
-    &&antworten[0].message.id==='sess-1:1'&&antworten[1].message.id==='sess-1:2'&&antworten.every(a=>a.message.usage?.input_tokens===100),
+    &&antworten[0].message.id==='sess-1:1'&&antworten[1].message.id==='sess-1:2'
+    // P22-T75: Codex zaehlt cached_input_tokens in input_tokens mit; die JSONL fuehrt sie getrennt (100 - 40 Cache).
+    &&antworten.every(a=>a.message.usage?.input_tokens===60&&a.message.usage?.cache_read_input_tokens===40),
     'JSONL je Turn: Eingabe + Antwort mit message.id (Verbrauchsbuchung)');
   check(!v||v.length===2,'verbrauchAusZeilen erkennt beide Turns');
  });

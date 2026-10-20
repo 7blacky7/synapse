@@ -167,7 +167,8 @@ export async function fuehreZustellungAus(o: {
   const erg: ZustellErgebnis = { gesammelt: 0, zugestellt: 0, verschoben: 0, fehler: 0 };
   if (!opt.aktiv) return erg;
   erg.gesammelt = await sammleZustellungen(o.identity_id, opt);
-  if ((await leseMainLauf(o.identity_id)).zustand !== 'laeuft') return erg;
+  // P22-T71: nur ein Wrapper auf der zugewiesenen Runtime bekommt Zustellungen (dorthin geht der Job).
+  if ((await leseMainLauf(o.identity_id, o.runtime)).zustand !== 'laeuft') return erg;
   const faellig = await getPool().query<{ id: string; zustellung: Zustellung; versuche: number }>(
     `SELECT id, zustellung, versuche FROM agent_zustellungen WHERE identity_id=$1 AND status='pending' AND naechster_versuch<=NOW()
       ORDER BY erstellt_am, id LIMIT $2`, [o.identity_id, Math.max(1, Math.min(20, o.max ?? 5))]);

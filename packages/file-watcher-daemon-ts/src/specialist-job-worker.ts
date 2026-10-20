@@ -282,8 +282,20 @@ async function dispatchSpecialistActionGebunden(
       if (!path) throw new Error('Stop: Projektpfad dieses Hosts nicht eindeutig registriert')
       const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
       const projectPath = path
+      // P22-T71: Runtime-Wechsel des Main stoppt ohne Speicher-Runde (SIGUSR2), mit Frist und nur die erwartete Wrapper-PID.
+      const stopOpt = {
+        ...(args.ohne_sicherung === true ? { signal: 'SIGUSR2' as const } : {}),
+        ...(Number.isSafeInteger(args.frist_ms) ? { frist_ms: Number(args.frist_ms) } : {}),
+        ...(Number.isSafeInteger(args.wrapper_pid) ? { erwartete_pid: Number(args.wrapper_pid) } : {}),
+      }
       if (names.length === 1) {
-        return (await tools.stopSpecialistTool(names[0], projectPath, job.project)) as Record<string, unknown>
+        const ergebnis = (await tools.stopSpecialistTool(names[0], projectPath, job.project, stopOpt)) as Record<string, unknown>
+        // P22-T71: Stop-Ergebnis im Daemon-Log sichtbar (success + message, z. B. 'Prozesstod UNGEPRUEFT: ... (cwd)').
+        const text = (ergebnis as { content?: Array<{ text?: string }> }).content?.[0]?.text ?? ''
+        let kurz = text.slice(0, 300)
+        try { const v = JSON.parse(text) as { success?: unknown; message?: unknown }; kurz = 'success=' + String(v.success) + ' ' + String(v.message ?? '') } catch { /* Rohtext */ }
+        console.error('[specialist-worker] stop ' + names[0] + ' (' + job.project + ', Job ' + job.id + '): ' + kurz)
+        return ergebnis
       }
       const results: Array<Record<string, unknown>> = []
       const errors: string[] = []
@@ -314,7 +326,9 @@ async function dispatchSpecialistActionGebunden(
       const names = Array.isArray(args.name) ? (args.name as unknown[]).map(String) : [String(args.name)]
       const message = String(args.message)
       if (names.length === 1) {
-        return (await tools.wakeSpecialistTool(names[0], message, job.project)) as Record<string, unknown>
+        // P22-T73: Absender fuer den Inbox-Rueckfall (Main-Chat: 'user').
+        const absender = typeof args.absender === 'string' && args.absender ? args.absender : undefined
+        return (await tools.wakeSpecialistTool(names[0], message, job.project, absender)) as Record<string, unknown>
       }
       const results: Array<Record<string, unknown>> = []
       const errors: string[] = []

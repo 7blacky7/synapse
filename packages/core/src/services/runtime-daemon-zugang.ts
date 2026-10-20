@@ -11,7 +11,8 @@
  *   Mit daemon[:*] wuerden Shell-Queue, daemon_heartbeats (PK project: der Container wuerde dem PC das shell-Routing
  *   desselben Projekts wegnehmen), Sync, Restore, Loeschen, Reverse und Assets den Container als PC behandeln.
  *   Ausstellen/Widerrufen nur der User; hoechstens ein wirksamer Zugang je Runtime, Neu-Ausstellen loescht den alten.
- * MAIN-BEREICH: synapse-hauptagent ist virtuell und gehoert nur zur Runtime mit assigned_to_main.
+ * MAIN-BEREICH: synapse-hauptagent ist virtuell und gehoert nur zur Runtime mit assigned_to_main. P22-T71: zusaetzlich zu der
+ *   Runtime, auf der der Main-Wrapper gerade lebt (halber Wechsel) – sonst holt ihr Daemon den Stop-Job nie ab.
  * LEBENSZEICHEN: auth_tokens.last_used_at des Zugangs (validateToken beruehrt es bei jeder Anfrage); kein daemon_heartbeats.
  */
 import { getPool } from '../db/client.js';
@@ -69,6 +70,29 @@ export async function loeseRuntimeDaemonZugang(tokenHash: string, scope: unknown
   return z ? { runtime, host: z.hostname, container_name: z.container_name, assigned_to_main: z.assigned_to_main === true } : null;
 }
 
+/**
+ * P22-T71: Runtime, auf der ein Identitaets-Wrapper lebt: Ziel seines letzten Spawn-Jobs (wie die Runtime-Ueberwachung), sonst
+ * provider/model der Statuszeile (openai = codex-runtime, anthropic/anthropic-api = Claude-Container). null = unbekannt.
+ */
+export function wrapperRuntime(ziel: string | null | undefined, provider?: string | null, modell?: string | null): 'claude' | 'codex' | null {
+  if (ziel === 'claude' || ziel === 'codex') return ziel;
+  if (provider === 'openai') return 'codex';
+  if (provider === 'anthropic' || provider === 'anthropic-api') return 'claude';
+  return modell ? (/^codex/.test(modell) ? 'codex' : 'claude') : null;
+}
+
+/** SQL-Spalte 'ziel' einer Wrapper-Zeile w: target_runtime des letzten laufenden/fertigen Spawn-Jobs dieser Identitaet. */
+export const WRAPPER_ZIEL_SQL = `(SELECT j.args->>'target_runtime' FROM specialist_jobs j WHERE j.target_identity_id = w.identity_id
+    AND j.project = w.project AND j.action = 'spawn' AND j.status IN ('running','done') ORDER BY j.created_at DESC LIMIT 1)`;
+
+/** P22-T71: lebt ein Main-Wrapper auf dieser Runtime (auch wenn sie nicht mehr Main-Runtime ist)? */
+async function mainLebtAuf(runtime: string): Promise<boolean> {
+  const r = await getPool().query<{ ziel: string | null; provider: string | null; model: string | null }>(
+    `SELECT ${WRAPPER_ZIEL_SQL} AS ziel, w.provider, w.model FROM agent_identitaet_wrapper_status w
+      WHERE w.project = $1 AND w.status IN ('running','idle')`, [HAUPTAGENT_PROJEKT]);
+  return r.rows.some(z => wrapperRuntime(z.ziel, z.provider, z.model) === runtime);
+}
+
 async function runtimeZeile(runtime: string): Promise<{ container_name: string; assigned_to_main: boolean } | null> {
   if (!RUNTIME_NAME.test(runtime)) return null;
   const r = await getPool().query<{ container_name: string; assigned_to_main: boolean }>(
@@ -87,7 +111,7 @@ export async function projekteDerRuntime(projekte: string[], runtime: string): P
   const r = await getPool().query<{ name: string }>(
     'SELECT name FROM projects WHERE name = ANY($1::text[]) GROUP BY name HAVING bool_or(enabled)', [projekte]);
   const erlaubt = new Set(r.rows.map(x => x.name).filter(p => !istVirtuellesProjekt(p)));
-  if (z.assigned_to_main) erlaubt.add(HAUPTAGENT_PROJEKT);
+  if (z.assigned_to_main || (projekte.includes(HAUPTAGENT_PROJEKT) && await mainLebtAuf(runtime))) erlaubt.add(HAUPTAGENT_PROJEKT);
   return projekte.filter(p => erlaubt.has(p));
 }
 
@@ -99,7 +123,7 @@ export interface RuntimeProjekt { name: string; path: string; enabled: boolean; 
  */
 export async function listeRuntimeProjekte(runtime: string): Promise<RuntimeProjekt[]> {
   const z = await runtimeZeile(runtime);
-  if (!z?.assigned_to_main) return [];
+  if (!z || (!z.assigned_to_main && !(await mainLebtAuf(runtime)))) return [];
   return [{ name: HAUPTAGENT_PROJEKT, path: runtimeProjektPfad(HAUPTAGENT_PROJEKT), enabled: true, setup_phase: null, implizit: true }];
 }
 

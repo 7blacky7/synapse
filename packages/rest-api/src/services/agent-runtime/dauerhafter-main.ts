@@ -43,7 +43,7 @@ export async function dauerhafterMainTurn(
     // P22-T70: die User-Wahl ist ausdruecklich und geht vor dem Profil-Modell (modell_bestaetigt) in stelleMainLaufSicher.
     let startModell = modell;
     let modellExplizit = false;
-    if ((await leseMainLauf(session.identityId)).zustand !== 'laeuft') {
+    if ((await leseMainLauf(session.identityId, runtime)).zustand !== 'laeuft') {
       const w = await standardModellFuerRuntime(runtime, async () => modell);
       if (!w.modell) throw new MainLaufFehler('standardmodell_unbestimmt', { runtime, grund: w.grund });
       startModell = w.modell;

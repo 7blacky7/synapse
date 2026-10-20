@@ -517,7 +517,7 @@ export async function fuehreUeberwachungsTaktAus(d: UeberwachungsDienste, opt: {
         let soll = { soll: false, laeuft_seit: istMain ? s.main_laeuft_seit : null as string | null };
         let ackHaengt = false;
         if (istMain && mainId) {
-          wrapper = (await leseMainLauf(mainId)).zustand;
+          wrapper = (await leseMainLauf(mainId, rt)).zustand;
           soll = await mainSollLaufen(pool, mainId, s, wrapper, jetzt);
           const a = await pool.query<{ n: number }>(
             `SELECT count(*)::int AS n FROM agent_runtime_auftraege WHERE identity_id=$1 AND status='claimed' AND aktualisiert_am < NOW() - make_interval(secs => $2)`,

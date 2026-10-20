@@ -156,6 +156,8 @@ export class AgentRuntimeManager {
         weiseMainZu: (runtime) => this.repository.assignMain(runtime),
         zugewiesen: async () => (await this.repository.getAssignedMain())?.runtime ?? null,
         standardModell: (runtime) => this.standardModell(runtime),
+        // P22-T71: ueberlebt der alte Wrapper den Stop (Prozesstod nicht nachweisbar), wird sein Container neu gestartet.
+        erzwingeStop: (runtime) => this.ueberwachungsDienste.neustartContainer(runtime),
       });
     } catch (error) {
       console.error('[agent-runtime] Runtime-Wechsel-Ausfuehrer:', (error as Error).message);

@@ -46,7 +46,7 @@ export const apiSpezialistenDatenweg: SpezialistenDatenweg = {
   sitzungNeu: async (name, project) => { await spezialistenDatenApi('sitzung_neu', { project, agent: name }); },
   wrapperStatus: async (zeile: WrapperStatusZeile) => { await spezialistenDatenApi('wrapper_status', { zeile }); },
   heartbeatBeimSpawn: async (project, name) => { await spezialistenDatenApi('heartbeat_beim_spawn', { project, agent: name }); },
-  stoppeWrapper: (name, projectPath, project) => stoppeLokalenWrapper(name, projectPath, project, stopZugriff),
+  stoppeWrapper: (name, projectPath, project, opt) => stoppeLokalenWrapper(name, projectPath, project, stopZugriff, opt),
   ausAllenChannels: async (name, project) =>
     Number((await spezialistenDatenApi<{ anzahl?: number }>('aus_channels', { project: mitProjekt(project, 'aus_channels'), agent: name })).anzahl ?? 0),
   chatAbmelden: async (name, project) => {

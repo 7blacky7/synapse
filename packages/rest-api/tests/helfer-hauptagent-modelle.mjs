@@ -61,7 +61,7 @@ export async function baueUmgebung(name) {
   const C = await load('packages/core/dist/index.js');
   const pool = C.getPool();
   for (const file of ['agent-identitaet-schema', 'agent-bezug-schema', 'agent-profil-schema', 'agent-ausweis-schema', 'agent-ausweis-nr-schema',
-    'agent-runtime-auftraege-schema', 'runtime-ueberwachung-schema']) {
+    'agent-runtime-auftraege-schema', 'hauptagent-verlauf-schema', 'main-warteschlange-schema', 'runtime-ueberwachung-schema']) {
     const mod = await load('packages/core/dist/db/' + file + '.js');
     const sql = Object.values(mod).find((v) => typeof v === 'string');
     await pool.query(sql); await pool.query(sql);

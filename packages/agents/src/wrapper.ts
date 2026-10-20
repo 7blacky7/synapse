@@ -671,9 +671,13 @@ async function handleWake(message: string | undefined, id?: number): Promise<Wra
   }
 }
 
-async function handleStop(id?: number): Promise<WrapperResponse> {
+/**
+ * P22-T71: ohneSicherung (SIGUSR2) = sofort beenden, ohne den Agenten vorher 'Wissen sichern' zu lassen. Beim Runtime-Wechsel des
+ * Main kommt die Uebergabe aus dem Verlauf (P22-T63 D); die Speicher-Runde kostete bis zu STOP_FRIST_MS und hielt den Wechsel auf.
+ */
+async function handleStop(id?: number, o: { ohneSicherung?: boolean } = {}): Promise<WrapperResponse> {
   if (shuttingDown) return { jsonrpc: '2.0', result: { stopping: true }, id }
-  log('Stop requested — asking agent to save and shutting down')
+  log(o.ohneSicherung ? 'Stop requested (ohne Sicherung) — shutting down' : 'Stop requested — asking agent to save and shutting down')
   stopDeadline = setTimeout(() => {
     processManager.forceStop(AGENT_NAME)
     process.exit(1)
@@ -686,7 +690,7 @@ async function handleStop(id?: number): Promise<WrapperResponse> {
   shuttingDown = true
 
   // Ask agent to save before stopping
-  if (processAlive && !agentBusy) {
+  if (processAlive && !agentBusy && !o.ohneSicherung) {
     try {
       let saveTimer: ReturnType<typeof setTimeout> | undefined
       try { await Promise.race([wakeAgent(
@@ -1851,6 +1855,7 @@ async function gracefulShutdown(reason: string) {
 function setupSignalHandlers() {
   process.on('SIGTERM', () => void handleStop())
   process.on('SIGINT', () => void handleStop())
+  process.on('SIGUSR2', () => void handleStop(undefined, { ohneSicherung: true }))
 
   process.on('uncaughtException', (err) => {
     log('Uncaught exception: %s', err.message)

@@ -47,7 +47,7 @@ try{
  }
  url.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=url.href;
  core=await load('packages/core/dist/index.js');pool=core.getPool();
- for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema','agent-runtime-auftraege-schema','agent-verbrauch-schema']){
+ for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema','agent-runtime-auftraege-schema','hauptagent-verlauf-schema','main-warteschlange-schema','agent-verbrauch-schema']){
   const module=await load('packages/core/dist/db/'+file+'.js');
   const sql=Object.values(module).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }

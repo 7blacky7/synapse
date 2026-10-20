@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 import { stoppeLokalenWrapper, removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
+import type { WrapperStopOptionen } from '@synapse/core';
 
 // P9-T27 Welle 2: PG-Schritte ueber austauschbaren Datenweg (Vorgabe PG; Daemon-API-Weg setzt 'api').
 import { agentLaufSchluessel } from '@synapse/agents';
@@ -364,6 +365,8 @@ async function spawnSpecialistMitUmgebung(
         ? { SYNAPSE_MCP_CONFIG_FILE: hauptagentMcp.configPfad, SYNAPSE_MCP_STRICT: '1', SYNAPSE_HAUPTAGENT_MCP_BEARER: hauptagentMcp.bearer }
         : {}),
     },
+    // P22-T71: im Projektordner starten (wie die Prozesspruefung beim Stop erwartet), nicht im cwd des Daemons.
+    cwd: projectPath,
     detached: true,
     stdio: ['ignore', 'ignore', logFd],
   });
@@ -570,8 +573,10 @@ export async function stopSpecialistTool(
   name: string,
   projectPath: string,
   project?: string,
+  /** P22-T71: z. B. Runtime-Wechsel des Main: SIGUSR2 (ohne Speicher-Runde), Frist, erwartete PID. */
+  opt?: WrapperStopOptionen,
 ) {
-  const result = await spezialistenDatenweg().stoppeWrapper(name, projectPath, project);
+  const result = await spezialistenDatenweg().stoppeWrapper(name, projectPath, project, opt);
   if (result.success === true) {
     await heartbeatController.disconnectFromWrapper(name);
     await updateSpecialist(projectPath, name, {
@@ -843,6 +848,8 @@ export async function wakeSpecialistTool(
   message: string,
   /** P9-T27 Welle 2: Projekt fuer den Inbox-Rueckfall im Daemon-API-Weg (optional). */
   project?: string,
+  /** P22-T73: Absender des Inbox-Rueckfalls (Main-Chat: 'user'); ohne Angabe wie bisher 'koordinator'. */
+  absender = 'koordinator',
 ) {
   if (!heartbeatController.isConnected(name)) {
     // P22-T66: Identitaets-Lauf mit Startfehler -> Grund mitgeben (Laufordner haengt nur an der Identitaet, nicht am Pfad).
@@ -869,10 +876,12 @@ export async function wakeSpecialistTool(
     const errMsg = err instanceof Error ? err.message : String(err);
     if (errMsg.includes('Agent is busy')) {
       try {
-        const inboxResult = await spezialistenDatenweg().inboxPost('koordinator', name, message, project);
+        const inboxResult = await spezialistenDatenweg().inboxPost(absender, name, message, project);
         return jsonResult({
           success: true,
           queued: true,
+          // P22-T73: damit der Aufrufer die spaetere Antwort auf genau diese Nachricht zuordnen kann (Einwurf im Main-Chat).
+          inbox_id: inboxResult.id,
           message: `Spezialist "${name}" ist beschaeftigt. Nachricht in Inbox zugestellt (ID: ${inboxResult.id}) — wird beim naechsten Heartbeat verarbeitet.`,
         });
       } catch (inboxErr) {

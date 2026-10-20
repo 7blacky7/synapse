@@ -37,12 +37,19 @@ export async function pruefeWrapperProzess(pid: number, name: string, project: s
     ]);
     const argv=cmd.split('\0').filter(Boolean), vars=new Map(env.split('\0').map(v=>{const i=v.indexOf('=');return [v.slice(0,i),v.slice(i+1)]}));
     // Exakt das Wrapper-Skript als Node-Einstieg, kein -e, cc-wrap, Claude/Codex oder Tray.
-    if (argv.length!==2 || await realpath(argv[1]).catch(()=>null)!==erwartet ||
-        vars.get('SYNAPSE_AGENT_NAME')!==name || vars.get('SYNAPSE_PROJECT_NAME')!==project ||
-        (vars.get('SYNAPSE_AGENT_IDENTITY_ID') || null) !== (identityId ?? null) ||
-        resolve(vars.get('SYNAPSE_PROJECT_PATH')||'')!==resolve(projectPath) ||
-        cwd!==await realpath(projectPath)) {
-      return { zustand:'ungeprueft', grund:'Kommandozeile, Projekt oder Agent stimmen nicht mit diesem Wrapper überein' };
+    // P22-T71: Identitaets-Laeufe ohne cwd-Pruefung. Der Daemon startete den Wrapper ohne cwd, er erbte also das cwd des Daemons
+    // (Container: WORKDIR /projects statt /projects/<projekt>) -> jeder Stop endete als 'Prozesstod UNGEPRUEFT' OHNE Signal
+    // (Befunde 37e3ff9d/cdf29dc3). Die Identitaet (SYNAPSE_AGENT_IDENTITY_ID) plus Skript, Name, Projekt und Projektpfad ist eindeutig.
+    // Die Pruefung nennt jetzt, WAS nicht passt (sichtbar im Stop-Ergebnis).
+    const abweichend = [
+      argv.length!==2 ? 'argv' : '', await realpath(argv[1] ?? '').catch(()=>null)!==erwartet ? 'skript' : '',
+      vars.get('SYNAPSE_AGENT_NAME')!==name ? 'agent' : '', vars.get('SYNAPSE_PROJECT_NAME')!==project ? 'projekt' : '',
+      (vars.get('SYNAPSE_AGENT_IDENTITY_ID') || null) !== (identityId ?? null) ? 'identitaet' : '',
+      resolve(vars.get('SYNAPSE_PROJECT_PATH')||'')!==resolve(projectPath) ? 'projektpfad' : '',
+      !identityId && cwd!==await realpath(projectPath).catch(()=>null) ? 'cwd' : '',
+    ].filter(Boolean);
+    if (abweichend.length) {
+      return { zustand:'ungeprueft', grund:'Kommandozeile, Projekt oder Agent stimmen nicht mit diesem Wrapper überein ('+abweichend.join(', ')+')' };
     }
     const start=fields[19]; // /proc stat Feld22: Startzeit in Ticks seit Boot.
     if (!/^\d+$/.test(start||'')) return {zustand:'ungeprueft',grund:'Startzeit fehlt'};
@@ -70,7 +77,14 @@ export interface WrapperStopZugriff {
   setzeGestoppt: (name: string, project: string, pid: number) => Promise<void>;
 }
 
-export async function stoppeLokalenWrapper(name: string, projectPath: string, project?: string, zugriff?: WrapperStopZugriff): Promise<Record<string, unknown>> {
+/**
+ * P22-T71: Stop-Optionen. signal 'SIGUSR2' = der Wrapper beendet sich ohne 'Wissen sichern'-Runde (Runtime-Wechsel: die Uebergabe
+ * kommt aus dem Verlauf). frist_ms = Wartezeit bis SIGKILL. erwartete_pid = nur genau diesen Wrapper stoppen; steht inzwischen eine
+ * andere PID in PostgreSQL (neu gestartet, ggf. in einem anderen Container), wird nichts signalisiert und nichts umgeschrieben.
+ */
+export interface WrapperStopOptionen { signal?: 'SIGTERM' | 'SIGUSR2'; frist_ms?: number; erwartete_pid?: number | null }
+
+export async function stoppeLokalenWrapper(name: string, projectPath: string, project?: string, zugriff?: WrapperStopZugriff, opt: WrapperStopOptionen = {}): Promise<Record<string, unknown>> {
   const pool=zugriff?null:getPool();
   if (!project && pool) {
     const {rows}=await pool.query<{name:string}>('SELECT DISTINCT name FROM projects WHERE hostname=$1 AND path=$2',[hostname(),projectPath]);
@@ -86,14 +100,15 @@ export async function stoppeLokalenWrapper(name: string, projectPath: string, pr
     if(rows.length===1 && rows[0].wrapper_pid)gespeichertePid=Number(rows[0].wrapper_pid);
   }
   if(!gespeichertePid)return ungeprueft('keine Wrapper-PID in PostgreSQL');
+  if(opt.erwartete_pid && gespeichertePid!==opt.erwartete_pid)return ungeprueft('Wrapper-PID in PostgreSQL ist '+gespeichertePid+' statt '+opt.erwartete_pid+' (inzwischen ersetzt), nichts gestoppt');
   const pid=gespeichertePid, vorher=await pruefeWrapperProzess(pid,name,project,projectPath,identityId);
   if(vorher.zustand==='ungeprueft')return ungeprueft(vorher.grund||'Identität unbekannt');
   let tot=vorher.zustand==='tot';
   const gleich=async()=>{const p=await pruefeWrapperProzess(pid,name,project!,projectPath,identityId);return p.zustand==='wrapper'&&p.start===vorher.start;};
   if(!tot) {
     if(!await gleich())return ungeprueft('Prozessidentität vor SIGTERM verändert');
-    process.kill(pid,'SIGTERM');
-    const frist=Math.min(120000,Math.max(1000,Number(process.env.SYNAPSE_WRAPPER_STOP_MS)||60000))+1000;
+    process.kill(pid,opt.signal ?? 'SIGTERM');
+    const frist=Math.min(120000,Math.max(1000,Number(opt.frist_ms)||Number(process.env.SYNAPSE_WRAPPER_STOP_MS)||60000))+1000;
     const ende=Date.now()+frist;
     while(Date.now()<ende) {
       const p=await pruefeWrapperProzess(pid,name,project,projectPath,identityId);

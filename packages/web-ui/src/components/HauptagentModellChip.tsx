@@ -30,6 +30,11 @@ async function anfrage<T>(pfad: string, init?: RequestInit): Promise<T> {
 /** Kurzname fuer den Chip: Codex ohne Praefix 'codex/'. */
 const kurz = (modell: string | null | undefined): string => (modell ? modell.replace(/^codex\//, '') : '–');
 
+/** P22-T71: Zwischenschritte eines laufenden Wechsels (agent_runtime_auftraege.fortschritt). */
+const SCHRITT: Record<string, string> = { stoppt_alt: 'stoppt', alt_gestoppt: 'gestoppt', startet: 'startet', laeuft: 'läuft' };
+type Auftrag = { auftrag_id: string; art: string; status: string; offen?: boolean; letzter_fehler: string | null; gewuenscht?: Record<string, unknown>;
+  erstellt_am: string; abgeschlossen_am: string | null; fortschritt?: { schritt?: string; runtime?: string } | null };
+
 /**
  * P22-T64: Mit status ersetzt der Chip die Statuspille im Chatkopf ('Claude · <modell> · bereit' mit Status-Punkt);
  * ohne status bleibt er der reine Modell-Chip (Steuerung).
@@ -45,19 +50,25 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
   // P22-T65 Bugfix: letzter abgelehnter/fehlgeschlagener Wechsel-Auftrag (Daemon lehnt z. B. eine Stufe ab) sichtbar am Chip.
   const [abgelehnt, setAbgelehnt] = useState<{ id: string; text: string } | null>(null);
   const quittiertRef = useRef<string | null>(null);
+  // P22-T71: Fortschritt des laufenden Wechsels bis 'laeuft' (bzw. bis abgelehnt).
+  const [fortschritt, setFortschritt] = useState<string | null>(null);
   const wurzel = useRef<HTMLDivElement>(null);
 
   const laden = useCallback(async () => {
     const [m, s, a] = await Promise.all([
       getMainAgentModelle().catch(() => null),
       anfrage<StatusKurz>('/api/main-agent/status').catch(() => null),
-      anfrage<{ auftraege?: Array<{ auftrag_id: string; art: string; status: string; offen?: boolean; letzter_fehler: string | null; gewuenscht?: Record<string, unknown>; erstellt_am: string; abgeschlossen_am: string | null }> }>('/api/main-agent/auftraege').catch(() => null),
+      anfrage<{ auftraege?: Auftrag[] }>('/api/main-agent/auftraege').catch(() => null),
     ]);
     setModelle(m);
     setStatus(s);
     // Neuester Wechsel-Auftrag: schlug er fehl (abgelehnt/fehlgeschlagen), zeigt der Chip den Grund, bis ein neuer Wechsel kommt oder quittiert wird.
     const wechsel = (a?.auftraege ?? []).filter((x) => x.art === 'modellwechsel' || x.art === 'runtime_wechsel')
       .sort((x, y) => Date.parse(y.erstellt_am) - Date.parse(x.erstellt_am))[0];
+    const f = wechsel?.offen ? wechsel.fortschritt ?? null : null;
+    setFortschritt(wechsel?.offen
+      ? 'Wechsel: ' + (f?.schritt ? (f.runtime ? (CLI_GRUPPE[f.runtime] ?? f.runtime) + ' ' : '') + (SCHRITT[f.schritt] ?? f.schritt) : wechsel.status === 'pending' ? 'wartet auf Ausführung' : 'beginnt') + ' …'
+      : null);
     const fehlgeschlagen = !!wechsel && !wechsel.offen && !['completed', 'cancelled'].includes(wechsel.status)
       && Date.now() - Date.parse(wechsel.abgeschlossen_am ?? wechsel.erstellt_am) < 30 * 60_000;
     if (wechsel && fehlgeschlagen && quittiertRef.current !== wechsel.auftrag_id) {
@@ -70,10 +81,10 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
   }, []);
   useEffect(() => {
     void laden();
-    // Gewaehlt/laeuft aendert sich auch ohne Klick (Auftrag ausgefuehrt, Failover).
-    const timer = window.setInterval(() => void laden(), 15_000);
+    // Gewaehlt/laeuft aendert sich auch ohne Klick (Auftrag ausgefuehrt, Failover). Waehrend eines Wechsels alle 2 s (Fortschritt).
+    const timer = window.setInterval(() => void laden(), fortschritt ? 2_000 : 15_000);
     return () => window.clearInterval(timer);
-  }, [laden]);
+  }, [laden, fortschritt !== null]);
   useEffect(() => {
     if (!offen) return;
     void laden();
@@ -163,7 +174,8 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
       </button>}
     {abgelehnt && !meldung && <small className="chip-meldung fehler" title={abgelehnt.text}
       onClick={() => { quittiertRef.current = abgelehnt.id; setAbgelehnt(null); }}>⚠ {abgelehnt.text} (Klick blendet aus)</small>}
-    {meldung && !offen && <small className={'chip-meldung' + (meldung.fehler ? ' fehler' : '')} title={meldung.text}>{meldung.fehler ? '⚠ ' : '✓ '}{meldung.text}</small>}
+    {fortschritt && !offen && <small className="chip-meldung" title={fortschritt}>{fortschritt}</small>}
+    {meldung && !offen && !fortschritt && <small className={'chip-meldung' + (meldung.fehler ? ' fehler' : '')} title={meldung.text}>{meldung.fehler ? '⚠ ' : '✓ '}{meldung.text}</small>}
     {offen && <div className="chip-menue" role="menu">
       {!modelle && <p>Modelllisten nicht ladbar.</p>}
       {modelle && !modelle.schalter.aktiv && <p className="hinweis">Modellwahl aus den CLI-Listen ist AUS (Schalter hauptagent_cli_modelle): Altverhalten, keine Listenprüfung.</p>}

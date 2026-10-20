@@ -32,6 +32,7 @@ import {
 
 /** Eingabe fuer wrapper_status (wie core upsertWrapperStatus). */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { WrapperStopOptionen } from '@synapse/core';
 import { agentLaufIdentitaet, agentLaufUmgebung } from '@synapse/agents';
 export type WrapperStatusZeile = Parameters<typeof upsertWrapperStatus>[0];
 
@@ -42,7 +43,7 @@ export interface SpezialistenDatenweg {
   sitzungNeu(name: string, project: string): Promise<void>;
   wrapperStatus(zeile: WrapperStatusZeile): Promise<void>;
   heartbeatBeimSpawn(project: string, name: string): Promise<void>;
-  stoppeWrapper(name: string, projectPath: string, project?: string): Promise<Record<string, unknown>>;
+  stoppeWrapper(name: string, projectPath: string, project?: string, opt?: WrapperStopOptionen): Promise<Record<string, unknown>>;
   ausAllenChannels(name: string, project?: string): Promise<number>;
   chatAbmelden(name: string, project?: string): Promise<void>;
   wrapperStatusEntfernen(name: string, project: string): Promise<void>;
@@ -65,7 +66,7 @@ export const pgSpezialistenDatenweg: SpezialistenDatenweg = {
   sitzungNeu: async (name, project) => { await beginneSitzung(name, project, 'neu'); },
   wrapperStatus: (zeile) => upsertWrapperStatus(zeile),
   heartbeatBeimSpawn: (project, name) => setzeHeartbeatBeimSpawn(project, name),
-  stoppeWrapper: (name, projectPath, project) => stoppeLokalenWrapper(name, projectPath, project),
+  stoppeWrapper: (name, projectPath, project, opt) => stoppeLokalenWrapper(name, projectPath, project, undefined, opt),
   // P9-T27 Nachbesserung (291473c2 Nr. 1, Altbefund seit 354135ca): mit Projekt nur dieses Projekt;
   // ohne Projekt bleibt das bisherige globale Verhalten (Aufrufer ohne project-Angabe).
   ausAllenChannels: (name, project) => project ? entferneAgentAusProjektChannels(name, project) : removeAgentFromAllChannels(name),

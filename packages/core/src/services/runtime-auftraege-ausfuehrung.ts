@@ -104,6 +104,20 @@ function textOderNull(v: unknown, max = 128): string | null {
 }
 
 /**
+ * P22-T71: Zwischenschritt eines laufenden Auftrags (Fortschritt im Chip der Web-UI, z. B. stoppt_alt -> startet -> laeuft).
+ * Fence auftrag_id + claim_revision, nur solange er offen ist. false = abgeloest/abgeschlossen; wirft nur bei DB-Fehlern.
+ */
+export async function meldeAuftragFortschritt(o: {
+  auftrag_id: string; claim_revision: number; schritt: string; details?: Record<string, unknown>;
+}): Promise<boolean> {
+  const r = await getPool().query(
+    `UPDATE agent_runtime_auftraege SET fortschritt = $3::jsonb, aktualisiert_am = NOW()
+      WHERE id = $1 AND claim_revision = $2 AND status IN ('claimed','accepted')`,
+    [o.auftrag_id, o.claim_revision, JSON.stringify({ ...(o.details ?? {}), schritt: o.schritt, seit: new Date().toISOString() })]);
+  return (r.rowCount ?? 0) > 0;
+}
+
+/**
  * Meldung des Ausfuehrers. Fence: auftrag_id + claim_revision + erwarteter Vorstatus; die Projekte (Route) begrenzen,
  * wessen Auftraege ein Daemon ueberhaupt melden darf. Kein Treffer -> auftrag_nicht_eigen (abgeloest oder fremd).
  */

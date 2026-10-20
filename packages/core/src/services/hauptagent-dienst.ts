@@ -284,9 +284,10 @@ interface AuftragZeile {
   tatsaechlich: Record<string, unknown> | null; hands_off: Record<string, unknown> | null; grund: string;
   erstellt_von: string; actor_identity_id: string | null; idempotenz_schluessel: string | null; claim_revision: number;
   letzter_fehler: string | null; erstellt_am: Date; aktualisiert_am: Date; abgeschlossen_am: Date | null; abgeschlossen_von: string | null;
+  fortschritt: Record<string, unknown> | null;
 }
 const AUFTRAG_SPALTEN = `id, identity_id, art, status, gewuenscht, tatsaechlich, hands_off, grund, erstellt_von, actor_identity_id,
-  idempotenz_schluessel, claim_revision, letzter_fehler, erstellt_am, aktualisiert_am, abgeschlossen_am, abgeschlossen_von`;
+  idempotenz_schluessel, claim_revision, letzter_fehler, erstellt_am, aktualisiert_am, abgeschlossen_am, abgeschlossen_von, fortschritt`;
 
 function auftragAus(z: AuftragZeile): Record<string, unknown> {
   const offen = (AUFTRAG_OFFEN as readonly string[]).includes(z.status);
@@ -296,6 +297,8 @@ function auftragAus(z: AuftragZeile): Record<string, unknown> {
     erstellt_von: z.erstellt_von, idempotenz_schluessel: z.idempotenz_schluessel, claim_revision: z.claim_revision,
     letzter_fehler: z.letzter_fehler, erstellt_am: z.erstellt_am.toISOString(), aktualisiert_am: z.aktualisiert_am.toISOString(),
     abgeschlossen_am: z.abgeschlossen_am ? z.abgeschlossen_am.toISOString() : null, abgeschlossen_von: z.abgeschlossen_von,
+    // P22-T71: letzter Zwischenschritt des Ausfuehrers (Schema 125), null = keiner gemeldet.
+    fortschritt: z.fortschritt ?? null,
     ...(offen ? { ausfuehrung: !([...AUSFUEHRBARE_AUFTRAG_ARTEN, 'runtime_wechsel'] as readonly string[]).includes(z.art) ? AUSFUEHRUNG_P1
       : z.status === 'pending' ? 'wartet_auf_runtime_daemon' : 'in_ausfuehrung' } : {}),
   };
