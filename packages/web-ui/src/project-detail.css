@@ -22,6 +22,7 @@
 .pd-plan strong em{margin-left:6px;color:var(--success);font:800 7px "IBM Plex Mono",monospace;font-style:normal}
 .pd-plan small,.pd-task small{display:block;margin-top:3px;color:var(--muted);font-size:7px}
 .pd-plan.snoozed{opacity:.7}
+.pd-chevron{display:inline-block;width:12px;margin-right:4px;color:var(--accent)}
 .pd-goal{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pd-tasks{border-left:2px solid var(--border);margin-left:8px}
 .pd-task{display:grid!important;grid-template-columns:auto 1fr auto;gap:6px;align-items:baseline}
