@@ -18,6 +18,7 @@
 
 import { getPool } from '../db/index.js';
 import { aktuelleAgentIdentityId, aktuellerAgentAufruf, leseAgentBezugModus, loeseAgentZiel } from './agent-bezug.js';
+import { WRAPPER_ZIEL_SQL, runtimeProjektPfad } from './runtime-daemon-zugang.js';
 
 export type SpecialistAction =
   | 'spawn'
@@ -94,6 +95,18 @@ export async function enqueueSpecialistJob(args: {
   const pool = getPool();
   let jobArgs = args.args;
   const bezug = aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
+  // P22-T82: stop eines Spezialisten im Runtime-Container per Name: Ziel ist sein Container (letzter Spawn-Job), nicht ein PC.
+  if (args.action === 'stop' && jobArgs.target_runtime === undefined && typeof jobArgs.name === 'string' && bezug.modus !== 'alt') {
+    const perId = typeof jobArgs.identity_id === 'string' ? jobArgs.identity_id : jobArgs.name.startsWith('identity:') ? jobArgs.name.slice(9) : null;
+    const c = await pool.query<{ identity_id: string; ziel: string | null }>(
+      `SELECT w.identity_id, ${WRAPPER_ZIEL_SQL} AS ziel FROM agent_identitaet_wrapper_status w JOIN agent_identitaeten i ON i.id = w.identity_id
+        WHERE w.project = $1 AND i.project = $1 AND (CASE WHEN $3::text IS NULL THEN i.agent_id = $2 ELSE i.id = $3 END)
+          AND w.status IN ('running','idle') LIMIT 1`, [args.project, jobArgs.name, perId]);
+    const z = c.rows[0];
+    if (z?.ziel && (SPECIALIST_ZIEL_RUNTIMES as readonly string[]).includes(z.ziel)) {
+      jobArgs = { ...jobArgs, identity_id: z.identity_id, target_runtime: z.ziel, project_path: runtimeProjektPfad(args.project) };
+    }
+  }
   const identityId = typeof jobArgs.identity_id === 'string' ? jobArgs.identity_id
     : typeof jobArgs.name === 'string' && jobArgs.name.startsWith('identity:') ? jobArgs.name.slice(9) : undefined;
   let targetIdentity: string | null = null;

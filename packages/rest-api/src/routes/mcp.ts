@@ -877,6 +877,11 @@ export const MCP_TOOLS = [
           maxItems: 10,
           description: 'Liste der Spezialisten fuer spawn_batch (1..10 Items). project (+ project_path, bei REST aus der Datenbank) gelten fuer alle. Fehlende Pflichtfelder werden mit Index gemeldet, nichts wird halb gestartet.',
         },
+        ort: {
+          type: 'string',
+          enum: ['pc', 'container'],
+          description: "Wo der Spezialist laeuft (spawn, spawn_batch): 'pc' (Standard, lokaler Daemon) oder 'container' (Runtime-Container auf Unraid: Claude-Modelle -> claude, Codex -> codex; Schalter spezialisten_container + Kontingent des Projekts noetig, project_path entfaellt).",
+        },
         model: { type: 'string', description: 'Modell-Alias (erforderlich fuer: spawn). Gueltige Aliase stehen in der Modell-Registry (capabilities → supportedModels; unbekannter Alias → Fehler mit Liste, geprueft beim Spawn im Daemon). CLAUDE, immer neueste Version: opus/haiku = 200k, sonnet = 1M nativ (sonnet[1m] gleichwertig), opus[1m] = 1M, fable = 1M nativ. Aeltere Versionen ueber versionierte Aliase: opus-5, opus-4.8, opus-4.7, opus-4.6 (je auch [1m]), sonnet-5(/[1m]), sonnet-4.6 (nur 200k), fable-5. ANTIGRAVITY: antigravity (agy-CLI, Pro-Abo). Mehrere 1M-Modelle gleichzeitig sind im Max-Abo moeglich (getestet 29.09.2026). GOOGLE: gemini-flash-lite/gemini-flash/gemini-pro = 1M Context, ~3-75x billiger als Claude (braucht GOOGLE_API_KEY).' },
         expertise: { type: 'string', description: 'Fachgebiet des Spezialisten (erforderlich fuer: spawn)' },
         task: { type: 'string', description: 'Aufgabe fuer den Spezialisten (erforderlich fuer: spawn)' },
@@ -4241,6 +4246,19 @@ async function handleToolCallKern(
 
       const actionStr = String(action ?? '');
       const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'update_skill'];
+
+      // P22-T82: ort 'container' -> Spawn im Runtime-Container ueber core (dieselbe Stelle wie stdio); ohne ort bzw. 'pc' unveraendert.
+      if (actionStr === 'spawn' || actionStr === 'spawn_batch') {
+        const { leseSpawnOrt, spawneImContainer, spawneBatchImContainer } = await import('@synapse/core');
+        let ort: string | null;
+        try { ort = leseSpawnOrt((args as Record<string, unknown>).ort); } catch { return { success: false, error: 'ort_ungueltig', message: "ort: 'pc' (Standard) oder 'container'" }; }
+        if (ort === 'container') {
+          const a: Record<string, unknown> = { ...(args as Record<string, unknown>), project, agent_id: effectiveAgentId ?? (args as Record<string, unknown>).agent_id };
+          return actionStr === 'spawn'
+            ? await spawneImContainer(a as unknown as Parameters<typeof spawneImContainer>[0])
+            : await spawneBatchImContainer(project, a.specialists, a.agent_id);
+        }
+      }
 
       // effort frueh pruefen: ein Tippfehler soll sofort mit den erlaubten Werten
       // zurueckkommen, nicht erst nach dem Umweg ueber Queue und Daemon. Verbindlich

@@ -311,13 +311,15 @@ async function spawnSpecialistMitUmgebung(
   if (identityId) await beendeAltenIdentitaetsWrapper(projectPath, name);
   await loescheStartFehler(projectPath, name);
   // P22-T66: Hauptagent im Runtime-Container: Synapse-Werkzeuge wie im Altweg ueber eine eigene MCP-Config (http zur API,
-  //          Werkzeugprofil main-synapse). Die Datei traegt KEIN Geheimnis: Bearer und Ausweis stehen als Env-Referenz darin
+  //          Werkzeugprofil main-synapse). P22-T82: ebenso jeder Spezialist im Container (eigener Bearer, kein Werkzeugprofil). Die Datei traegt KEIN Geheimnis: Bearer und Ausweis stehen als Env-Referenz darin
   //          und kommen nur ueber die Wrapper-Umgebung. Ohne Zugang kein Start - ein Main ohne Werkzeuge waere nutzlos.
   let hauptagentMcp: { configPfad: string; bearer: string } | null = null;
   const datenwegMcp = spezialistenDatenweg();
   if (!mcpBruecke.aktiv && identityId && tokenAnmeldung && process.env.SYNAPSE_CLI_RECHTE === 'container' && datenwegMcp.hauptagentMcp) {
     try {
       const zugang = await datenwegMcp.hauptagentMcp(name, project);
+      // P22-T82: Spezialisten im Container bekommen denselben Weg ohne Werkzeugprofil (Rechte aus dem Ausweis).
+      const profil = zugang.werkzeugprofil === undefined ? 'main-synapse' : zugang.werkzeugprofil;
       const configPfad = join(socketDir, 'mcp-hauptagent.json');
       await writeFile(configPfad, JSON.stringify({
         mcpServers: {
@@ -326,7 +328,8 @@ async function spawnSpecialistMitUmgebung(
             url: zugang.url,
             headers: {
               Authorization: 'Bearer ${SYNAPSE_HAUPTAGENT_MCP_BEARER}',
-              'X-Synapse-Werkzeugprofil': 'main-synapse',
+              ...(profil ? { 'X-Synapse-Werkzeugprofil': profil } : {}),
+              'X-Synapse-Agent': name,
               'x-synapse-agent-token': '${SYNAPSE_AGENT_TOKEN}',
             },
           },

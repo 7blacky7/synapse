@@ -118,7 +118,7 @@ import {
 } from '@synapse/core';
 import type { ShellSicherungEingabe } from '@synapse/core';
 import { validateToken, issueServiceToken, type AuthTokenRow } from '../services/auth.js';
-import { hauptagentIdentitaetScope } from '../services/agent-runtime/main-tool-profile.js';
+import { hauptagentIdentitaetScope, agentIdentitaetScope } from '../services/agent-runtime/main-tool-profile.js';
 // P9-T27 letzter Schritt: Datei-Sync, Projekt-Schalter, project-init, Tray (gleiche Vorpruefung)
 import { daemonSyncRoutes } from './daemon-sync.js';
 
@@ -618,15 +618,25 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         // hauptagentIdentitaetMcpConfig): Service-Token mit Scope hauptagent:identitaet:<id>. Er gilt nur zusammen mit dem
         // Ausweis (x-synapse-agent-token) und Werkzeugprofil main-synapse (mainToolAccess). Nur Runtime-Daemon, nur Main.
         reply.header('cache-control', 'no-store');
-        if (!d.runtime || ziel.art !== 'identity' || project !== HAUPTAGENT_PROJEKT || agent !== HAUPTAGENT_AGENT_ID) {
+        if (!d.runtime || ziel.art !== 'identity') {
           return reply.code(403).send({ success: false, error: 'hauptagent_mcp_nicht_erlaubt' });
+        }
+        // P22-T82: Spezialist im Container (jede andere Identitaet des gebundenen Auftrags): eigener Bearer agent:identitaet:<id>,
+        // gueltig nur mit SEINEM Ausweis und nur fuer den MCP-Weg (auth-hook agentScopeAusweisPasst). Kein Werkzeugprofil:
+        // der Ausweis bestimmt Rechte und Zuschnitt wie am PC.
+        if (project !== HAUPTAGENT_PROJEKT || agent !== HAUPTAGENT_AGENT_ID) {
+          if (project === HAUPTAGENT_PROJEKT) return reply.code(403).send({ success: false, error: 'hauptagent_mcp_nicht_erlaubt' });
+          const agentScope = agentIdentitaetScope(ziel.identity_id);
+          await getPool().query("DELETE FROM auth_tokens WHERE kind='service' AND scope=$1 AND label='agent-identitaet-runtime'", [agentScope]);
+          const ausgestellt = await issueServiceToken(agentScope, 'agent-identitaet-runtime', 30 * 24 * 60 * 60 * 1000);
+          return { success: true, aktion, bearer: ausgestellt.token, url: process.env.SYNAPSE_HAUPTAGENT_MCP_URL || 'http://synapse-api:3456/', werkzeugprofil: null };
         }
         const scope = hauptagentIdentitaetScope(ziel.identity_id);
         // Ein Bearer je Lauf: der neue Spawn beendet den alten Wrapper derselben Identitaet, dessen Bearer verfaellt hier.
         await getPool().query("DELETE FROM auth_tokens WHERE kind='service' AND scope=$1 AND label='main-identitaet-runtime'", [scope]);
         const issued = await issueServiceToken(scope, 'main-identitaet-runtime', 30 * 24 * 60 * 60 * 1000);
         // Klartext nur in dieser Antwort an den geprueften Daemon (wie agent_start), nie in Job, Status oder Datei.
-        return { success: true, aktion, bearer: issued.token, url: process.env.SYNAPSE_HAUPTAGENT_MCP_URL || 'http://synapse-api:3456/' };
+        return { success: true, aktion, bearer: issued.token, url: process.env.SYNAPSE_HAUPTAGENT_MCP_URL || 'http://synapse-api:3456/', werkzeugprofil: 'main-synapse' };
       }
       case 'general_channel':
         if (ziel.art === 'identity') {

@@ -23,7 +23,7 @@
 
 import { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { validateToken } from '../services/auth.js';
-import { mainScopePasst } from '../services/agent-runtime/main-tool-profile.js';
+import { mainScopePasst, agentScopeAusweisPasst } from '../services/agent-runtime/main-tool-profile.js';
 import { istOeffentlicherAnsichtPfad, logToolCall } from '@synapse/core';
 
 /**
@@ -257,6 +257,10 @@ export function registerAuthHook(fastify: FastifyInstance): void {
     }
     if (!mainScopePasst(row.scope, method, pathname, request.headers as Record<string, unknown>)) {
       return send401(reply, request, pathname, 'Hauptagenten-Ausweis passt nicht zu MCP-Session und Werkzeugprofil');
+    }
+    // P22-T82: Bearer eines Container-Spezialisten gilt nur mit dem Ausweis genau seiner Identitaet.
+    if (!(await agentScopeAusweisPasst(row.scope, request.headers as Record<string, unknown>))) {
+      return send401(reply, request, pathname, 'Agenten-Bearer passt nicht zum Ausweis');
     }
     // Nur echte Zugriffstoken duerfen API/MCP nutzen — NICHT authcode/refresh.
     // /mcp/* (claude.ai/ChatGPT-Connector): strikt nur access|service.

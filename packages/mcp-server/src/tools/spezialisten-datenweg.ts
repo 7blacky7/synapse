@@ -55,7 +55,7 @@ export interface SpezialistenDatenweg {
    * P22-T66: MCP-Zugang der inneren CLI des Hauptagenten im Runtime-Container (Bearer an die Main-Identitaet gebunden).
    * Nur der api-Weg des Runtime-Daemons; fehlt die Methode, gibt es diesen Zugang nicht.
    */
-  hauptagentMcp?(name: string, project: string): Promise<{ url: string; bearer: string }>;
+  hauptagentMcp?(name: string, project: string): Promise<{ url: string; bearer: string; werkzeugprofil?: string | null }>;
 }
 
 /** Bisheriges Verhalten, unveraendert. */

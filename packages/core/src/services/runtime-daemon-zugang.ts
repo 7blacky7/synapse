@@ -118,13 +118,33 @@ export async function projekteDerRuntime(projekte: string[], runtime: string): P
 export interface RuntimeProjekt { name: string; path: string; enabled: boolean; setup_phase: string | null; implizit: boolean }
 
 /**
- * Feste Projektliste des Container-Daemons (Form von GET /api/daemon/projekte): nur synapse-hauptagent fuer die Main-Runtime.
- * Alle anderen Projekte entstehen bei Bedarf (Ordner /projects/<name>, sobald ein Job dafuer kommt), es gibt keine Liste.
+ * P22-T82: Projekte, in denen diese Runtime gerade Agenten hat (lebender Wrapper, letzter Spawn-Job mit target_runtime = runtime)
+ * oder fuer die ein offener Job an sie wartet. Daraus holt der Container-Daemon Jobs und bindet Wrapper wieder an; ohne diese
+ * Liste kaeme ein Spawn in einem neuen Projekt nie an (der Daemon fragt nur nach Projekten, die er kennt). Virtuelle nie.
+ */
+export async function projekteMitRuntimeAgenten(runtime: string): Promise<string[]> {
+  if (!RUNTIME_NAME.test(runtime)) return [];
+  const r = await getPool().query<{ project: string }>(
+    `SELECT project FROM specialist_jobs WHERE status = 'pending' AND args->>'target_runtime' = $1 AND created_at > NOW() - interval '30 seconds'
+     UNION SELECT w.project FROM agent_identitaet_wrapper_status w WHERE w.status IN ('running','idle') AND ${WRAPPER_ZIEL_SQL} = $1`, [runtime]);
+  return r.rows.map(z => z.project).filter(p => !istVirtuellesProjekt(p));
+}
+
+/**
+ * Projektliste des Container-Daemons (Form von GET /api/daemon/projekte): synapse-hauptagent fuer die Main-Runtime, dazu (P22-T82)
+ * die Projekte mit Agenten bzw. offenen Jobs dieser Runtime. Weitere Projekte entstehen bei Bedarf (Ordner /projects/<name>).
  */
 export async function listeRuntimeProjekte(runtime: string): Promise<RuntimeProjekt[]> {
   const z = await runtimeZeile(runtime);
-  if (!z || (!z.assigned_to_main && !(await mainLebtAuf(runtime)))) return [];
-  return [{ name: HAUPTAGENT_PROJEKT, path: runtimeProjektPfad(HAUPTAGENT_PROJEKT), enabled: true, setup_phase: null, implizit: true }];
+  if (!z) return [];
+  const aus: RuntimeProjekt[] = [];
+  if (z.assigned_to_main || (await mainLebtAuf(runtime))) {
+    aus.push({ name: HAUPTAGENT_PROJEKT, path: runtimeProjektPfad(HAUPTAGENT_PROJEKT), enabled: true, setup_phase: null, implizit: true });
+  }
+  for (const p of await projekteDerRuntime(await projekteMitRuntimeAgenten(runtime), runtime)) {
+    if (p !== HAUPTAGENT_PROJEKT) aus.push({ name: p, path: runtimeProjektPfad(p), enabled: true, setup_phase: null, implizit: true });
+  }
+  return aus;
 }
 
 function pruefeUser(akteur: AusweisAkteur | null): void {

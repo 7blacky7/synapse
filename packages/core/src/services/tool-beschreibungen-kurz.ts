@@ -286,6 +286,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       channel: 'spawn: Channel.',
       allowed_tools: 'spawn: erlaubte Tools.',
       keep_alive: 'spawn: Wecken + Auto-Respawn (fall-spez-spawn).',
+      ort: "spawn: 'pc' (Standard) | 'container' (Runtime-Container).",
       effort: 'spawn: Effort-Stufe (fall-spez-spawn).',
       message: 'wake: Nachricht.',
       section: 'update_skill: Abschnitt (alt).',

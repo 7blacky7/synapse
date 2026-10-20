@@ -651,7 +651,7 @@ export { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './db/agent-runtime-auftraege
 export {
   RUNTIME_DAEMON_SCOPE_PRAEFIX, RUNTIME_PROJEKTE_WURZEL, runtimeDaemonScope, runtimeAusScope, runtimeProjektPfad, loeseRuntimeDaemonZugang,
   projekteDerRuntime, listeRuntimeProjekte, runtimeDaemonZugangStatus, bindeRuntimeDaemonZugang, widerrufeRuntimeDaemonZugang,
-  verwerfeRuntimeDaemonToken, wrapperRuntime,
+  verwerfeRuntimeDaemonToken, wrapperRuntime, projekteMitRuntimeAgenten,
 } from './services/runtime-daemon-zugang.js';
 export type { RuntimeDaemonBindung, RuntimeProjekt, RuntimeDaemonZugangStatus } from './services/runtime-daemon-zugang.js';
 // P22-T6 (W2c): dauerhafter Main-Lauf im Container (Spawn/Wake ueber specialist_jobs mit target_runtime) + Ausfuehrung der Runtime-Auftraege.

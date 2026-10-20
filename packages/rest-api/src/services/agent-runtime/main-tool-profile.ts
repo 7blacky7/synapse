@@ -17,6 +17,34 @@ export const MAIN_PROFILE_HEADER = 'x-synapse-werkzeugprofil';
  */
 export const HAUPTAGENT_IDENTITAET_SCOPE = 'hauptagent:identitaet:';
 
+/**
+ * P22-T82: Bearer der inneren CLI eines Spezialisten im Runtime-Container (daemon-jobs 'hauptagent_mcp' fuer Nicht-Main-
+ * Identitaeten). Gilt nur fuer den MCP-Weg und nur zusammen mit dem Ausweis GENAU dieser Identitaet (agentScopeAusweisPasst).
+ */
+export const AGENT_IDENTITAET_SCOPE = 'agent:identitaet:';
+
+export function agentIdentitaetScope(identityId: string): string {
+  if (!/^[a-zA-Z0-9-]{1,128}$/.test(identityId)) throw new Error('Ungueltige Agenten-Identitaet');
+  return AGENT_IDENTITAET_SCOPE + identityId;
+}
+
+/** P22-T82: Ausweis-Header gehoert zur aktiven Identitaet aus dem Scope (gueltig, nicht widerrufen). Andere Scopes: true. */
+export async function agentScopeAusweisPasst(scope: string | null, headers: Record<string, unknown>): Promise<boolean> {
+  if (!scope?.startsWith(AGENT_IDENTITAET_SCOPE)) return true;
+  const ausweis = typeof headers['x-synapse-agent-token'] === 'string' ? (headers['x-synapse-agent-token'] as string).trim() : '';
+  if (!ausweis) return false;
+  try {
+    const r = await getPool().query(
+      `SELECT 1 FROM agent_identitaeten i JOIN agent_identitaet_tokens t ON t.identity_id = i.id
+        WHERE i.id = $1 AND i.status = 'aktiv' AND t.token_offen = $2 AND t.widerrufen_am IS NULL
+          AND (t.gueltig_bis IS NULL OR t.gueltig_bis > NOW()) LIMIT 1`,
+      [scope.slice(AGENT_IDENTITAET_SCOPE.length), ausweis]);
+    return r.rows.length === 1;
+  } catch {
+    return false;
+  }
+}
+
 export function hauptagentIdentitaetScope(identityId: string): string {
   if (!/^[a-zA-Z0-9-]{1,128}$/.test(identityId)) throw new Error('Ungueltige Hauptagenten-Identitaet');
   return HAUPTAGENT_IDENTITAET_SCOPE + identityId;
@@ -89,6 +117,10 @@ export function mainScopePasst(
     return method === 'POST' && (pathname === '/' || pathname === '/mcp/messages')
       && headers[MAIN_PROFILE_HEADER] === 'main-synapse'
       && typeof headers['x-synapse-agent-token'] === 'string';
+  }
+  // P22-T82: Spezialisten-Bearer im Container nur fuer den MCP-Weg mit Ausweis (Identitaet prueft agentScopeAusweisPasst).
+  if (scope?.startsWith(AGENT_IDENTITAET_SCOPE)) {
+    return method === 'POST' && (pathname === '/' || pathname === '/mcp/messages') && typeof headers['x-synapse-agent-token'] === 'string';
   }
   if (!scope?.startsWith(MAIN_SYNAPSE_SCOPE)) return true;
   return method === 'POST' && (pathname === '/' || pathname === '/mcp/messages')

@@ -68,10 +68,13 @@ export const apiSpezialistenDatenweg: SpezialistenDatenweg = {
     return zusatz;
   },
   // P22-T66: Bearer fuer die MCP-Config des Hauptagenten (Runtime-Daemon, gebundener Auftrag ueber daemonAuftragBindung).
+  // P22-T82: dieselbe Route liefert fuer Spezialisten im Container einen eigenen Bearer ohne Werkzeugprofil.
   hauptagentMcp: async (name, project) => {
-    const a = await spezialistenDatenApi<{ url?: string; bearer?: string }>('hauptagent_mcp', { project, agent: name });
+    const a = await spezialistenDatenApi<{ url?: string; bearer?: string; werkzeugprofil?: string | null }>('hauptagent_mcp', { project, agent: name });
     if (typeof a.url !== 'string' || typeof a.bearer !== 'string' || !a.bearer) throw new Error('hauptagent_mcp: Antwort ohne url/bearer');
-    return { url: a.url, bearer: a.bearer };
+    // Alte API ohne Feld: nur der Main bekam einen Zugang -> main-synapse.
+    const werkzeugprofil = a.werkzeugprofil === undefined ? 'main-synapse' : a.werkzeugprofil;
+    return { url: a.url, bearer: a.bearer, werkzeugprofil };
   },
 };
 

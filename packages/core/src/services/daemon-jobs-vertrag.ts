@@ -38,7 +38,7 @@ import {
   type SpecialistJobRow,
   type SpecialistZielRuntime,
 } from './specialist-queue.js';
-import { runtimeProjektPfad } from './runtime-daemon-zugang.js';
+import { runtimeProjektPfad, projekteDerRuntime, projekteMitRuntimeAgenten } from './runtime-daemon-zugang.js';
 
 /** Obergrenze des Long-Polls (wie die intern-Bruecke). */
 export const DAEMON_JOB_WARTE_MAX_S = 25;
@@ -280,7 +280,11 @@ export async function holeSpecialistJobsFuerDaemon(o: DaemonAbrufOptionen): Prom
   for (;;) {
     const jobs: SpecialistJobRow[] = [];
     // Host-Filter wie bei Shell-Jobs: nur Projekte dieses Hosts (zusaetzlich zu target_hostname).
-    const projekte = o.runtime ? o.projekte : await projekteDesHosts(o.projekte, o.host);
+    // P22-T82: der Container-Daemon fragt nur nach Projekten, die er kennt; Jobs an seine Runtime in anderen Projekten (Spawn
+    // eines Spezialisten im Container) kommen ueber projekteMitRuntimeAgenten dazu, je Runde frisch.
+    const projekte = o.runtime
+      ? [...new Set([...o.projekte, ...await projekteDerRuntime(await projekteMitRuntimeAgenten(o.runtime).catch(() => []), o.runtime)])]
+      : await projekteDesHosts(o.projekte, o.host);
     for (const projekt of projekte) {
       if (jobs.length >= DAEMON_JOB_MAX_JE_ABRUF || o.istGeschlossen()) break;
       const job = await claimPendingSpecialistJob(projekt, o.daemonId, o.runtime ? undefined : o.host, o.runtime);

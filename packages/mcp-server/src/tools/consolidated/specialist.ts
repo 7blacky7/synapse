@@ -92,6 +92,11 @@ export const specialistTool: ConsolidatedTool = {
           description:
             'Aktiviert (a) periodisches Wecken im Idle UND (b) Auto-Respawn bei Crash/Context-Limit. Standard: true (sinnvoller Default fuer alle laufenden Spezialisten — Wrapper kostet kaum Tokens, Auto-Recovery ist wertvoll). Auf false setzen nur fuer One-Shot-Tasks die nach Abschluss sterben sollen.',
         },
+        ort: {
+          type: 'string',
+          enum: ['pc', 'container'],
+          description: "Wo der Spezialist laeuft (spawn, spawn_batch): 'pc' (Standard, lokaler Daemon) oder 'container' (Runtime-Container auf Unraid: Claude-Modelle -> claude, Codex -> codex; Schalter spezialisten_container + Kontingent des Projekts noetig, project_path entfaellt).",
+        },
         effort: {
           type: 'string',
           enum: [...EFFORT_STUFEN],
@@ -173,6 +178,19 @@ export const specialistTool: ConsolidatedTool = {
     const { fuehreSpecialistIdentitaetsAktion } = await import('@synapse/core');
     const identityResult = await fuehreSpecialistIdentitaetsAktion(args);
     if (identityResult) return identityResult;
+
+    // P22-T82: ort 'container' -> Spawn im Runtime-Container ueber core (derselbe Weg wie REST); ohne ort bzw. 'pc' unveraendert.
+    if (action === 'spawn' || action === 'spawn_batch') {
+      const { leseSpawnOrt, spawneImContainer, spawneBatchImContainer } = await import('@synapse/core');
+      let ort: string | null;
+      try { ort = leseSpawnOrt(args.ort); } catch { return { success: false, error: 'ort_ungueltig', message: "ort: 'pc' (Standard) oder 'container'" }; }
+      if (ort === 'container') {
+        const project = reqStr(args, 'project');
+        return action === 'spawn'
+          ? await spawneImContainer({ ...args, project } as Parameters<typeof spawneImContainer>[0])
+          : await spawneBatchImContainer(project, args.specialists, args.agent_id);
+      }
+    }
 
     switch (action) {
       case 'spawn': {

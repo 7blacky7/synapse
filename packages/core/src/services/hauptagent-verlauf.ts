@@ -45,6 +45,8 @@ import type { ThoughtSource } from '../types/index.js';
 import type { AusweisAkteur } from './agent-profil-vertrag.js';
 
 export const HAUPTAGENT_VERLAUF_FUNKTION = 'hauptagent_verlauf' as const;
+/** P22-T81: Verlauf aller aktiven Identitaeten (Produkt-Schalter global, Standard EIN). */
+export const AGENT_VERLAUF_ALLE_FUNKTION = 'agent_verlauf_alle' as const;
 /** Abstand der Zwischenstaende einer laufenden Antwort (andere Geraete sehen sie nach hoechstens Drossel + Poll). */
 export const VERLAUF_DROSSEL_MS = 1_000;
 /** Seitengroesse beim Laden (Standard/Obergrenze). Betrifft nur das Lesen, gespeichert wird immer alles. */
@@ -781,14 +783,21 @@ const SITZUNGS_ABBILD: Record<SitzungsEintragEingabe['art'], { rolle: VerlaufRol
 /**
  * Sitzungs-Eintraege des dauerhaften Main aufnehmen (quelle_ref jsonl:<ref>, idempotent), voller Inhalt, Lauf = aktuelle
  * Anmeldung. Das ist die vollstaendige Quelle fuer eigene Ausgaben (Channel-Posts/DMs sind Werkzeugaufrufe) und die Zaehlung
- * des dauerhaften Wegs; die Web-UI-/Zustell-Zeilen desselben Zugs sind dann Spiegel (zaehlt false). Nur die Main-Identitaet
- * (sonst grund nicht_main), nur bei hauptagent_verlauf und verlauf_alle_richtungen EIN (sonst funktion_aus).
+ * des dauerhaften Wegs; die Web-UI-/Zustell-Zeilen desselben Zugs sind dann Spiegel (zaehlt false). Main-Identitaet nur bei
+ * hauptagent_verlauf und verlauf_alle_richtungen EIN (sonst funktion_aus). P22-T81: jede andere AKTIVE Identitaet (Koordinatoren,
+ * Spezialisten am PC und im Container) bei Schalter agent_verlauf_alle EIN (Standard); AUS bzw. ohne/inaktive Identitaet = Bestand
+ * grund nicht_main (der Wrapper meldet dann nicht mehr).
  */
 export async function importiereSitzungsEintraege(identity_id: string | null, eintraege: unknown[], o: { runtime?: string | null } = {}):
   Promise<{ aufgenommen: number; grund: string | null }> {
   const main = await hauptagentIdentitaetsId().catch(() => null);
-  if (!identity_id || !main || identity_id !== main) return { aufgenommen: 0, grund: 'nicht_main' };
-  if (!(await leseVerlaufSchalter()).aktiv || !(await leseVerlaufStufe2Schalter('verlauf_alle_richtungen')).aktiv) {
+  if (!identity_id) return { aufgenommen: 0, grund: 'nicht_main' };
+  const istMain = !!main && identity_id === main;
+  if (!istMain) {
+    if (!(await leseProfilProduktSchalter(AGENT_VERLAUF_ALLE_FUNKTION, null)).aktiv) return { aufgenommen: 0, grund: 'nicht_main' };
+    const aktiv = await getPool().query("SELECT 1 FROM agent_identitaeten WHERE id = $1 AND status = 'aktiv'", [identity_id]);
+    if (!aktiv.rows.length) return { aufgenommen: 0, grund: 'nicht_main' };
+  } else if (!(await leseVerlaufSchalter()).aktiv || !(await leseVerlaufStufe2Schalter('verlauf_alle_richtungen')).aktiv) {
     return { aufgenommen: 0, grund: 'funktion_aus' };
   }
   const lauf = await aktuellerMainLauf(identity_id);
@@ -810,7 +819,7 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
     const r = await getPool().query(
       `INSERT INTO hauptagent_verlauf (identity_id, rolle, richtung, weg, absender, quelle_ref, status, text, meta, tokens, zaehlt, lauf_id,
          runtime, modell, hauptagent_weg, erstellt_am)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,'fertig',$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,'dauerhaft',COALESCE($14::timestamptz, NOW()))
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,'fertig',$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$15,COALESCE($14::timestamptz, NOW()))
        ON CONFLICT (identity_id, quelle_ref) DO NOTHING`,
       [identity_id, abbild.rolle, abbild.richtung, abbild.weg,
         e.art === 'werkzeug_ergebnis' ? JSON.stringify({ agent_id: 'werkzeug' }) : null, 'jsonl:' + e.ref, text,
@@ -818,7 +827,7 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
           ...(e.fehler ? { fehler: true } : {}), ...(bilder.length ? { bilder } : {}),
           ...(typeof e.inhalt === 'string' ? {} : { inhalt: e.inhalt ?? null }) }),
         JSON.stringify(berechnet ? { berechnet } : {}), abbild.zaehlt, lauf, o.runtime ?? null, modell,
-        typeof e.zeit === 'string' && !Number.isNaN(Date.parse(e.zeit)) ? e.zeit : null]);
+        typeof e.zeit === 'string' && !Number.isNaN(Date.parse(e.zeit)) ? e.zeit : null, istMain ? 'dauerhaft' : null]);
     aufgenommen += r.rowCount ?? 0;
   }
   return { aufgenommen, grund: null };
@@ -899,8 +908,19 @@ function ganzzahl(v: unknown): string | null {
 
 export async function leseVerlauf(a: VerlaufAbfrage = {}): Promise<VerlaufAntwort> {
   const v = await verfuegbareIdentitaet();
+  if ('grund' in v) {
+    return { verfuegbar: false, grund: v.grund, schalter: v.schalter, identity_id: null, eintraege: [], mehr: false, max_rev: '0', geleert_rev: '0' };
+  }
+  return leseVerlaufFuer(v.identity_id, a, v.schalter);
+}
+
+/**
+ * P22-T81: Verlauf einer beliebigen Identitaet (Seite bzw. Aenderungen seit seit_rev), dieselbe Lesestelle wie der Main-Chat.
+ * Rechte und Schalter (agent_verlauf_alle) prueft der Aufrufer (Route /api/agents/:identity_id/verlauf).
+ */
+export async function leseVerlaufFuer(identity_id: string, a: VerlaufAbfrage = {}, schalter?: VerlaufSchalter): Promise<VerlaufAntwort> {
+  const v = { identity_id, schalter: schalter ?? await leseVerlaufSchalter() };
   const leer: VerlaufAntwort = { verfuegbar: false, schalter: v.schalter, identity_id: null, eintraege: [], mehr: false, max_rev: '0', geleert_rev: '0' };
-  if ('grund' in v) return { ...leer, grund: v.grund };
   const pool = getPool();
   // Verwaiste laufende Antworten (API neu gestartet, Strom weg) ehrlich abschliessen statt ewig "antwortet …" zu zeigen.
   // P22-T73: kam die Zeile aus der Warteschlange (meta.warteschlange), geht sie dorthin zurueck statt verloren (lieber doppelt

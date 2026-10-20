@@ -14,6 +14,7 @@ import {
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
+  leseVerlaufFuer, AGENT_VERLAUF_ALLE_FUNKTION, leseProfilProduktSchalter, getPool,
   warteschlangeAktiv, mainWechselOffen, stelleInWarteschlange, NICHT_ERREICHT_CODES, warteschlangeStatus, leseWarteschlangeSchalter, setzeWarteschlangeSchalter,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
@@ -295,6 +296,24 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, schalter: await setzeHauptagentSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
     } catch (error) { return sendFachFehler(reply, error); }
   });
+  // P22-T81: Verlauf JEDER Identitaet (Koordinatoren, Spezialisten am PC und im Container) aus PG, dieselbe Lesestelle und Form wie
+  // /api/main-agent/verlauf. Ziel: identity_id ODER project + agent (Name der Identitaet). Nur der interaktive User (Guard oben).
+  fastify.get<{ Querystring: { identity_id?: string; project?: string; agent?: string; limit?: string; vor_id?: string; seit_rev?: string; ab_id?: string } }>(
+    '/api/agent-runtimes/agent-verlauf', async (request, reply) => {
+      try {
+        const q = request.query ?? {};
+        let identityId = typeof q.identity_id === 'string' ? q.identity_id.trim() : '';
+        if (!identityId && typeof q.project === 'string' && typeof q.agent === 'string') {
+          const r = await getPool().query<{ id: string }>('SELECT id FROM agent_identitaeten WHERE project = $1 AND agent_id = $2', [q.project, q.agent]);
+          identityId = r.rows[0]?.id ?? '';
+          if (!identityId) return reply.code(404).send({ success: false, error: { code: 'identitaet_unbekannt', message: 'Agent ohne Ausweis-Identitaet: kein Verlauf in PG' } });
+        }
+        if (!/^[a-f0-9-]{36}$/.test(identityId)) return reply.code(400).send({ success: false, error: { code: 'identity_id_fehlt', message: 'identity_id oder project + agent angeben' } });
+        const schalter = await leseProfilProduktSchalter(AGENT_VERLAUF_ALLE_FUNKTION, null);
+        const verlauf = await leseVerlaufFuer(identityId, { limit: q.limit, vor_id: q.vor_id, seit_rev: q.seit_rev, ab_id: q.ab_id });
+        return { success: true, ...verlauf, agent_verlauf_alle: { aktiv: schalter.aktiv, quelle: schalter.quelle } };
+      } catch (error) { return sendFachFehler(reply, error); }
+    });
   // P22-T63: Gespraechsverlauf des Hauptagenten je Main-Identitaet (geraeteuebergreifend, Vertrag thought 97d9a354).
   // Ohne seit_rev: Seite (neueste zuerst, vor_id = aeltere nachladen); mit seit_rev: nur Aenderungen fuer den Live-Abgleich.
   fastify.get<{ Querystring: { limit?: string; vor_id?: string; seit_rev?: string; ab_id?: string } }>('/api/main-agent/verlauf', async (request, reply) => {

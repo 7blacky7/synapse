@@ -48,6 +48,7 @@ import { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './runtime-ueberwachung-schema.j
 import { HAUPTAGENT_VERLAUF_SCHEMA_SQL } from './hauptagent-verlauf-schema.js';
 import { AGENT_ENTFERNUNG_SCHEMA_SQL } from './agent-entfernung-schema.js';
 import { AGENT_STARTKONTEXT_SCHEMA_SQL } from './agent-startkontext-schema.js';
+import { AGENT_CONTAINER_SCHEMA_SQL } from './agent-container-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
 import { AGENT_IDENTITAET_SCHEMA_SQL } from './agent-identitaet-schema.js';
 import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
@@ -3184,6 +3185,7 @@ ${HAUPTAGENT_VERLAUF_SCHEMA_SQL}
 ${MAIN_WARTESCHLANGE_SCHEMA_SQL}
 ${AGENT_ENTFERNUNG_SCHEMA_SQL}
 ${AGENT_STARTKONTEXT_SCHEMA_SQL}
+${AGENT_CONTAINER_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */
