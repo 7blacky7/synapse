@@ -129,8 +129,8 @@ export type VerlaufRolle = 'user' | 'agent' | 'nachricht' | 'ausgabe' | 'system'
 export type VerlaufRichtung = 'ein' | 'aus' | 'intern';
 export type VerlaufWeg = 'webui' | 'inbox' | 'chat' | 'channel' | 'event' | 'heartbeat' | 'werkzeug' | 'lauf' | 'wechsel';
 
-/** Gemessene Tokens eines Zugs (CLI usage, letzte Meldung des Zugs). */
-export interface VerlaufGemessen { input: number; output: number; cache_read: number; cache_creation: number; quelle: 'cli_usage' }
+/** Gemessene Tokens eines Zugs (CLI usage, letzte Meldung des Zugs). kontext (P22-T70): Kontextstand des Wrappers (dauerhafter Weg). */
+export interface VerlaufGemessen { input: number; output: number; cache_read: number; cache_creation: number; quelle: 'cli_usage'; kontext?: number }
 export interface VerlaufKontext {
   tokens: number;
   quelle: 'gemessen' | 'berechnet' | 'max';
@@ -396,6 +396,7 @@ export function wendeStromEreignisAn(stand: VerlaufAntwortStand, event: string, 
     stand.gemessen = {
       input: zahl(d.inputTokens), output: zahl(d.outputTokens),
       cache_read: zahl(d.cacheReadInputTokens), cache_creation: zahl(d.cacheCreationInputTokens), quelle: 'cli_usage',
+      ...(zahl(d.kontextTokens) > 0 ? { kontext: zahl(d.kontextTokens) } : {}),
     };
     stand.usage_meldungen += 1;
     stand.meta.usage = d;
@@ -417,10 +418,16 @@ export function wendeStromEreignisAn(stand: VerlaufAntwortStand, event: string, 
   return false;
 }
 
-/** Kontextstand eines Zugs aus gemessenen Tokens: dieselbe Rechnung wie Wrapper und Respawn-Check (pruefeRespawnKorridor). */
-export async function kontextAusGemessen(modell: string | null | undefined, g: VerlaufGemessen | null): Promise<VerlaufKontext | null> {
+/**
+ * Kontextstand eines Zugs aus gemessenen Tokens: dieselbe Rechnung wie Wrapper und Respawn-Check (pruefeRespawnKorridor).
+ * P22-T70: Auf dem dauerhaften Weg ist die usage des Wrappers ohne Cache (Summe ~0 %); dort zaehlt nur der Kontextstand des
+ * Wrappers (g.kontext). Fehlt er, ist der Kontext nicht gemessen (null), statt eine falsche Zahl zu zeigen.
+ */
+export async function kontextAusGemessen(modell: string | null | undefined, g: VerlaufGemessen | null,
+  o: { dauerhaft?: boolean } = {}): Promise<VerlaufKontext | null> {
   if (!modell || !g) return null;
-  const tokens = g.input + g.cache_read + g.cache_creation + g.output;
+  if (o.dauerhaft && !(g.kontext && g.kontext > 0)) return null;
+  const tokens = g.kontext && g.kontext > 0 ? g.kontext : g.input + g.cache_read + g.cache_creation + g.output;
   if (tokens <= 0) return null;
   const k = await pruefeRespawnKorridor({ model: modell, tokens });
   return {
@@ -599,7 +606,9 @@ export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: numbe
       }
       stand.spiegel = spiegel;
       let kontext: VerlaufKontext | null = null;
-      try { kontext = await kontextAusGemessen(o.modell, stand.gemessen); } catch (error) { merkeFehler('kontext_berechnen', error); }
+      try {
+        kontext = await kontextAusGemessen(o.modell, stand.gemessen, { dauerhaft: stand.meta.hauptagent_weg === 'dauerhaft' });
+      } catch (error) { merkeFehler('kontext_berechnen', error); }
       try { kontext = await zaehleZug(antwort_id, stand, o.modell, { ...o, lauf_id: lauf }, kontext); } catch (error) { merkeFehler('tokens_zaehlen', error); }
       try { await flush(status, { zug: zugAus(stand, start, zusatz?.laufkontext), kontext, lauf_id: lauf }); } finally { aktiveAntworten.delete(antwort_id); }
       // C1: Korridor des dauerhaften Main nach jedem Zug (auch bei Heartbeat AUS), Schalter main_korridor.
@@ -859,7 +868,7 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
  * verlauf_alle_richtungen EIN. Wirft nie.
  */
 export async function schreibeZustellVerlauf(identity_id: string, ledger_id: string | number, z: Zustellung,
-  ergebnis: { response?: unknown; tokens?: { input?: unknown; output?: unknown } | null } | null): Promise<{ nachricht_id: string; antwort_id: string | null } | null> {
+  ergebnis: { response?: unknown; tokens?: { input?: unknown; output?: unknown; kontext?: unknown } | null } | null): Promise<{ nachricht_id: string; antwort_id: string | null } | null> {
   try {
     if (!(await leseVerlaufSchalter()).aktiv || !(await leseVerlaufStufe2Schalter('verlauf_alle_richtungen')).aktiv) return null;
     const lauf = await aktuellerMainLauf(identity_id);
@@ -883,7 +892,7 @@ export async function schreibeZustellVerlauf(identity_id: string, ledger_id: str
     w.ereignis('runtime', { hauptagent: { weg: 'dauerhaft' } });
     w.ereignis('delta', { content: ergebnis.response });
     const t = ergebnis.tokens ?? {};
-    if (zahl(t.input) + zahl(t.output) > 0) w.ereignis('usage', { inputTokens: t.input, outputTokens: t.output });
+    if (zahl(t.input) + zahl(t.output) > 0) w.ereignis('usage', { inputTokens: t.input, outputTokens: t.output, kontextTokens: t.kontext });
     await w.abschliessen('fertig');
     return { nachricht_id, antwort_id };
   } catch (error) {

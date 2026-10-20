@@ -68,6 +68,8 @@ export interface SendMessageResult {
   content: string
   inputTokens: number
   outputTokens: number
+  /** P22-T70: Kontextstand des Wrappers nach dem Turn (Eingabe letzter Turn inkl. Cache + dessen Output, JSONL); fehlt = nicht gemessen. */
+  kontextTokens?: number
 }
 
 // Re-Export aus @synapse/core (Backward-Compat)

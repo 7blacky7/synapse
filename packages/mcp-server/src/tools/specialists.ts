@@ -861,6 +861,7 @@ export async function wakeSpecialistTool(
       tokens: {
         input: result.inputTokens,
         output: result.outputTokens,
+        ...(result.kontextTokens ? { kontext: result.kontextTokens } : {}),
       },
     });
   } catch (err) {

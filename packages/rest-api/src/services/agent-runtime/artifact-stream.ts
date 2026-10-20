@@ -32,6 +32,33 @@ export function unregisterArtifactStream(sessionId: string): void {
   streams.delete(sessionId);
 }
 
+/**
+ * P22-T70: Auf dem dauerhaften Weg kennt der Main im Container die Chat-Session nicht (MCP-Verbindung ohne Header
+ * X-Synapse-Hauptagent-Session, mainToolAccess setzt 'identitaet-<id>'). dauerhafterMainTurn merkt sich je Identitaet die
+ * Session des laufenden Turns; das artefakt-Tool bildet 'identitaet-<id>' darauf ab (Strom + Verlauf wie im Altweg).
+ */
+const IDENTITAETS_SESSION = /^identitaet-(.+)$/;
+const turnSessions = new Map<string, string>();
+
+export function merkeMainTurnSession(identityId: string, sessionId: string): void {
+  turnSessions.set(identityId, sessionId);
+}
+
+/** Nur loeschen, wenn noch dieselbe Session eingetragen ist (ein folgender Turn hat sie sonst schon ersetzt). */
+export function vergissMainTurnSession(identityId: string, sessionId: string): void {
+  if (turnSessions.get(identityId) === sessionId) turnSessions.delete(identityId);
+}
+
+/** Identitaet hinter 'identitaet-<id>' oder null (echte Session-ID). */
+export function identitaetAusSessionId(sessionId: string): string | null {
+  return IDENTITAETS_SESSION.exec(sessionId)?.[1] ?? null;
+}
+
+/** Session des laufenden Turns dieser Identitaet oder null. */
+export function aktiveMainTurnSession(identityId: string): string | null {
+  return turnSessions.get(identityId) ?? null;
+}
+
 /** true = zugestellt; false = kein offener Strom fuer diese Session (kein Fehler). */
 export function emitArtifact(sessionId: string, data: Record<string, unknown>): boolean {
   const eintrag = streams.get(sessionId);

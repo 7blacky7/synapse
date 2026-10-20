@@ -207,7 +207,7 @@ export async function stelleMainLaufSicher(e: MainStartEingabe): Promise<{ zusta
 }
 
 export type MainTurnErgebnis =
-  | { art: 'antwort'; text: string; usage: { inputTokens: number | null; outputTokens: number | null } }
+  | { art: 'antwort'; text: string; usage: { inputTokens: number | null; outputTokens: number | null; kontextTokens?: number } }
   | { art: 'zugestellt'; hinweis: string };
 
 /** Ein Chat-Turn des Users an den laufenden Main (Job 'wake'). */
@@ -234,10 +234,15 @@ export async function sendeMainTurn(e: {
   const erg = r.ergebnis ?? {};
   if (erg.success === false) throw new MainLaufFehler('main_turn_fehlgeschlagen', { job_id: job.id, meldung: erg.message ?? null });
   if (erg.queued === true) return { art: 'zugestellt', hinweis: 'Hauptagent ist beschaeftigt; Nachricht in seiner Inbox zugestellt, Antwort folgt.' };
-  const tokens = (erg.tokens ?? {}) as { input?: unknown; output?: unknown };
+  const tokens = (erg.tokens ?? {}) as { input?: unknown; output?: unknown; kontext?: unknown };
+  // P22-T70: Kontextstand misst der Wrapper (JSONL); fehlt er (altes Runtime-Image), bleibt der Kontext 'nicht gemessen'.
+  const kontext = typeof tokens.kontext === 'number' && tokens.kontext > 0 ? tokens.kontext : null;
   return {
     art: 'antwort', text: typeof erg.response === 'string' ? erg.response : '',
-    usage: { inputTokens: typeof tokens.input === 'number' ? tokens.input : null, outputTokens: typeof tokens.output === 'number' ? tokens.output : null },
+    usage: {
+      inputTokens: typeof tokens.input === 'number' ? tokens.input : null, outputTokens: typeof tokens.output === 'number' ? tokens.output : null,
+      ...(kontext ? { kontextTokens: kontext } : {}),
+    },
   };
 }
 

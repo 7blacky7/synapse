@@ -657,12 +657,15 @@ async function handleWake(message: string | undefined, id?: number): Promise<Wra
   }
 
   const result = await wakeAgent(message)
+  // P22-T70: result.inputTokens ist die CLI-usage ohne Cache (Kontext sonst ~0 %); der Kontext kommt aus syncTokensFromHistory.
+  const kontextTokens = totalInputTokens > 0 ? totalInputTokens + totalOutputTokens : 0
   return {
     jsonrpc: '2.0',
     result: {
       content: result.content,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
+      ...(kontextTokens > 0 ? { kontextTokens } : {}),
     },
     id,
   }

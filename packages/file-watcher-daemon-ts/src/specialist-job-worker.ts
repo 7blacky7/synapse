@@ -371,7 +371,7 @@ async function dispatchSpecialistActionGebunden(
       try {
         const r = await heartbeatController.sendWake(name, baueZustellText(args.zustellung as Parameters<typeof baueZustellText>[0]))
         // P22-T63: Antwort des Main mitgeben, damit der Verlauf auch Zustell-Zuege vollstaendig fuehrt.
-        return { success: true, zugestellt: true, tokens: { input: r.inputTokens, output: r.outputTokens }, response: typeof r.content === 'string' ? r.content : null }
+        return { success: true, zugestellt: true, tokens: { input: r.inputTokens, output: r.outputTokens, ...(r.kontextTokens ? { kontext: r.kontextTokens } : {}) }, response: typeof r.content === 'string' ? r.content : null }
       } catch (err) {
         const m = err instanceof Error ? err.message : String(err)
         if (m.includes('Agent is busy')) return { success: true, zugestellt: false, grund: 'beschaeftigt' }

@@ -534,7 +534,8 @@ function verlaufZugInfo(eintrag: MainAgentVerlaufEintrag): string | undefined {
     eintrag.zug?.zuege ? eintrag.zug.zuege + (eintrag.zug.zuege === 1 ? ' Zug' : ' Züge') : null,
     eintrag.zug ? (eintrag.zug.dauer_ms / 1000).toFixed(1) + ' s' : null,
     g ? 'in ' + tausender(g.input + g.cache_read + g.cache_creation) + ' / out ' + tausender(g.output) : null,
-    eintrag.kontext ? 'Kontext ' + eintrag.kontext.prozent + ' %' : null,
+    // P22-T70: ohne Kontextstand (dauerhafter Weg ohne Wrapper-Messung) ehrlich 'nicht gemessen' statt 0 %.
+    eintrag.kontext ? 'Kontext ' + eintrag.kontext.prozent + ' %' : g ? 'Kontext nicht gemessen' : null,
     eintrag.zug?.kosten ? '$' + eintrag.zug.kosten.usd.toFixed(4) : null,
     g ? 'gemessen' : null,
   ].filter(Boolean);

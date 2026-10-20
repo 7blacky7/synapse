@@ -229,10 +229,12 @@ class HeartbeatController {
    */
   async sendWake(name: string, message: string): Promise<SendMessageResult> {
     const result = await this.sendRequest(name, 'wake', { message })
+    const kontextTokens = Number(result?.kontextTokens ?? 0)
     return {
       content: String(result?.content ?? ''),
       inputTokens: Number(result?.inputTokens ?? 0),
       outputTokens: Number(result?.outputTokens ?? 0),
+      ...(Number.isFinite(kontextTokens) && kontextTokens > 0 ? { kontextTokens } : {}),
     }
   }
 

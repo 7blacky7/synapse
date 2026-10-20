@@ -23,7 +23,7 @@ import {
   aktualisiereArtefaktPfade,
   type ArtefaktZeile,
 } from '@synapse/core';
-import { emitArtifact } from './artifact-stream.js';
+import { emitArtifact, identitaetAusSessionId, aktiveMainTurnSession } from './artifact-stream.js';
 
 function meldung(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -72,6 +72,20 @@ async function ladeSessionKontext(sessionId: string): Promise<SessionKontext | n
   const row = result.rows[0] as { session_id: string; runtime: string; container_name: string } | undefined;
   if (!row) return null;
   return { sessionId: row.session_id, runtime: row.runtime, containerName: row.container_name };
+}
+
+/**
+ * P22-T70: 'identitaet-<id>' (dauerhafter Main ohne Session-Header) -> Session des laufenden Turns, sonst die zuletzt
+ * benutzte Chat-Session dieser Identitaet (Artefakt landet in PG, ohne offenen Strom). Echte Session-IDs unveraendert.
+ */
+export async function loeseArtefaktSession(sessionId: string): Promise<string | null> {
+  const identityId = identitaetAusSessionId(sessionId);
+  if (!identityId) return sessionId;
+  const aktiv = aktiveMainTurnSession(identityId);
+  if (aktiv) return aktiv;
+  const r = await getPool().query<{ id: string }>(
+    'SELECT id::text AS id FROM agent_runtime_sessions WHERE identity_id = $1 ORDER BY updated_at DESC LIMIT 1', [identityId]);
+  return r.rows[0]?.id ?? null;
 }
 
 /**
@@ -179,17 +193,18 @@ export async function zeigeArtefakt(args: Record<string, unknown>, agentId?: str
   if (action !== 'zeigen') {
     return { success: false, error: 'unbekannte_action', message: 'artefakt kennt nur action:"zeigen" (erster Schritt: EIN Block je Aufruf).' };
   }
-  const sessionId = str(args, 'session_id');
-  if (!sessionId) {
+  const angefragt = str(args, 'session_id');
+  if (!angefragt) {
     return {
       success: false,
       error: 'kein_hauptagent_kontext',
       message: 'artefakt ist nur aus einer Hauptagenten-Session aufrufbar — die Session-Bindung setzt der Server aus dem Header X-Synapse-Hauptagent-Session.',
     };
   }
-  const kontext = await ladeSessionKontext(sessionId);
-  if (!kontext) {
-    return { success: false, error: 'session_unbekannt', message: 'Session ' + sessionId + ' existiert nicht in agent_runtime_sessions.' };
+  const sessionId = await loeseArtefaktSession(angefragt);
+  const kontext = sessionId ? await ladeSessionKontext(sessionId) : null;
+  if (!sessionId || !kontext) {
+    return { success: false, error: 'session_unbekannt', message: 'Session ' + (sessionId ?? angefragt) + ' existiert nicht in agent_runtime_sessions.' };
   }
 
   // 1. PG zuerst — die Zeile ist die Wahrheit. Datei/Livebild/Strom sind Abbilder
