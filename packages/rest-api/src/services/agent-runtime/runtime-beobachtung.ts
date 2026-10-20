@@ -20,6 +20,21 @@ export interface BeobachtungsOptionen {
   jetzt?: () => number;
 }
 
+/**
+ * 'synapse-runtime status' gibt {success, ergebnis:{quelle:'daemon', erzeugt_am, ...}} aus (runtime-cli.ts), bei Fehlern {success:false, ...}.
+ * Bis P22-T71 las die Beobachtung die Huelle statt ergebnis -> quelle fehlte -> JEDER gesunde Container galt als daemon_tot
+ * ('status.json fehlt', Abloesung der Ueberwachung). Zusaetzlich die alte flache Form akzeptieren (Tests, aeltere Images).
+ */
+export function leseStatusAusgabe(stdout: string): { quelle?: unknown; erzeugt_am?: unknown } | null {
+  const zeile = stdout.trim();
+  if (!zeile) return null;
+  const roh = JSON.parse(zeile) as { success?: unknown; ergebnis?: unknown } | null;
+  if (!roh || typeof roh !== 'object') return null;
+  if (roh.success === false) return null;
+  const innen = roh.ergebnis && typeof roh.ergebnis === 'object' ? roh.ergebnis : roh;
+  return innen as { quelle?: unknown; erzeugt_am?: unknown };
+}
+
 const kurz = (e: unknown): string => ((e as Error)?.message ?? String(e)).slice(0, 300);
 
 export async function beobachteRuntimeContainer(
@@ -50,7 +65,7 @@ export async function beobachteRuntimeContainer(
   }
   if (r.exitCode === 127) return { ...stand, container: 'laeuft', prozess: 'unbekannt', fehler: 'synapse-runtime fehlt im Image' };
   let s: { quelle?: unknown; erzeugt_am?: unknown } | null = null;
-  try { s = JSON.parse(r.stdout) as { quelle?: unknown; erzeugt_am?: unknown }; } catch { s = null; }
+  try { s = leseStatusAusgabe(r.stdout); } catch { s = null; }
   if (!s || s.quelle !== 'daemon' || typeof s.erzeugt_am !== 'string' || !Number.isFinite(Date.parse(s.erzeugt_am))) {
     return { ...stand, container: 'laeuft', prozess: 'daemon_tot', fehler: r.exitCode === 0 ? 'status.json fehlt' : ('synapse-runtime status Exit ' + String(r.exitCode)) };
   }

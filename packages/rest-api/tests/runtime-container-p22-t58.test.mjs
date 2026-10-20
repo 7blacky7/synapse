@@ -110,6 +110,22 @@ test('Beobachtung: Status-Probe des Daemons', async () => {
   assert.equal((await B.beobachteRuntimeContainer(fakeDocker({ info: laufend(), exitCode: 127 }), CONFIG, O())).prozess, 'unbekannt');
 });
 
+// P22-T71 B2: die echte Ausgabe von 'synapse-runtime status' ist {success:true, ergebnis:{quelle:'daemon', ...}} (eingerueckt, runtime-cli.ts).
+// Die Beobachtung las bis dahin die Huelle -> jeder gesunde Container galt als daemon_tot ('status.json fehlt').
+test('Beobachtung: echte CLI-Ausgabe (success/ergebnis) wird entpackt', async () => {
+  const echt = (ergebnis, success = true) => JSON.stringify({ success, ergebnis }, null, 2) + '\n';
+  const frisch = await B.beobachteRuntimeContainer(fakeDocker({ info: laufend(), stdout: echt({ quelle: 'daemon', datei: '/state/executor/status.json', schema: 1, erzeugt_am: '2026-10-20T09:59:40Z' }) }), CONFIG, O());
+  assert.equal(frisch.prozess, 'ok'); assert.equal(frisch.status_alter_s, 20); assert.equal(frisch.fehler, null);
+  const alt = await B.beobachteRuntimeContainer(fakeDocker({ info: laufend(), stdout: echt({ quelle: 'daemon', erzeugt_am: '2026-10-20T09:50:00Z' }) }), CONFIG, O());
+  assert.equal(alt.prozess, 'daemon_tot'); assert.equal(alt.fehler, 'status.json veraltet');
+  const fehlt = await B.beobachteRuntimeContainer(fakeDocker({ info: laufend(), stdout: echt({ quelle: 'live', hinweis: '/state/executor/status.json fehlt', clis: [] }) }), CONFIG, O());
+  assert.equal(fehlt.prozess, 'daemon_tot'); assert.equal(fehlt.fehler, 'status.json fehlt');
+  const fehler = await B.beobachteRuntimeContainer(fakeDocker({ info: laufend(), stdout: JSON.stringify({ success: false, error: 'fehler' }), exitCode: 1 }), CONFIG, O());
+  assert.equal(fehler.prozess, 'daemon_tot');
+  assert.equal((await B.beobachteRuntimeContainer(fakeDocker({ info: laufend(), stdout: 'kein json' }), CONFIG, O())).prozess, 'daemon_tot');
+  assert.equal(B.leseStatusAusgabe('  \n'), null);
+});
+
 test('CLI-Update im Container (F5)', async () => {
   const d = fakeDocker({ info: laufend(), stdout: 'claude 2.1.305 aktiv' });
   const r = await B.fuehreCliUpdateImContainerAus(d, CONFIG, 'claude', { timeout_ms: 1000, env: [], istEigener: () => true });
