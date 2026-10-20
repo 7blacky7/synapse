@@ -50,6 +50,10 @@ import {
   erlaubteArten,
   type WissensArt,
   type ArtSicht,
+  HAUPTAGENT_PROJEKT,
+  HAUPTAGENT_AGENT_ID,
+  hauptagentIdentitaetsId,
+  mainStartkontext,
 } from '@synapse/core';
 
 /** Zaehler fuer GET .../agent-wissen/health. Prozesslokal, bewusst kein Speicher. */
@@ -69,6 +73,8 @@ const zaehler = {
   promptLesen: 0,
   promptFehlt: 0,
   promptSetzen: 0,
+  /** P22-T78: Startkontext des Main an den Prompt gehaengt. */
+  startkontext: 0,
   artUnbekannt: 0,
   fehler: 0,
   seit: new Date().toISOString(),
@@ -192,7 +198,7 @@ export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void>
       zaehler.promptLesen += 1;
       try {
         const sicht = await leseWissensArt(project, agent, 'system_prompt');
-        const inhalt = sicht?.block ?? null;
+        let inhalt = sicht?.block ?? null;
         if (inhalt === null || inhalt.length === 0) {
           zaehler.promptFehlt += 1;
           return reply.status(404).send({
@@ -205,6 +211,19 @@ export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void>
             },
           });
         }
+        // P22-T78: Das Gedaechtnis des Main gehoert der API. Jeder neue Main-Lauf (Spawn nach Wechsel/Failover/Neustart, jede
+        // Rotation) holt seinen Prompt hier; daran haengt der Startkontext aus seinem Verlauf in PG (Schalter main_startkontext,
+        // Standard EIN). Alle anderen Agenten bekommen den gespeicherten Prompt byte-gleich.
+        let startkontext: { zuege: number; tokens: number } | null = null;
+        if (project === HAUPTAGENT_PROJEKT && agent === HAUPTAGENT_AGENT_ID) {
+          const identityId = await hauptagentIdentitaetsId().catch(() => null);
+          const sk = identityId ? await mainStartkontext(identityId) : null;
+          if (sk) {
+            inhalt = `${inhalt}\n\n${sk.text}`;
+            startkontext = { zuege: sk.zuege, tokens: sk.tokens };
+            zaehler.startkontext += 1;
+          }
+        }
         return {
           success: true,
           vorhanden: true,
@@ -212,6 +231,7 @@ export async function agentWissenRoutes(fastify: FastifyInstance): Promise<void>
           agent,
           laenge: inhalt.length,
           inhalt,
+          ...(startkontext ? { startkontext } : {}),
           server_time: new Date().toISOString(),
         };
       } catch (error) {

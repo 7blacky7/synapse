@@ -739,62 +739,8 @@ export async function erzeugeVerlaufUebergabe(identity_id: string, ziel: { runti
   try {
     if (!(await leseVerlaufStufe2Schalter('verlauf_uebergabe')).aktiv) return null;
     const pool = getPool();
-    const vonModell = await aktuellesMainModell(identity_id);
-    const vonRuntime = await zugewieseneMainRuntime().catch(() => null);
-    const zielModell = ziel.modell ?? vonModell ?? 'unbekannt';
-    const familie = modellFamilie(ziel.runtime ?? vonRuntime, zielModell);
-    const faktor = (await leseKalibrierung(identity_id, familie))?.faktor ?? null;
-    const schwellen = (await pruefeRespawnKorridor({ model: zielModell, tokens: 0 })).schwellen;
-    const budget = Math.max(0, Math.min(Math.floor(schwellen.ceiling * UEBERGABE_ANTEIL_FENSTER),
-      schwellen.handoffTokens - UEBERGABE_GRUNDLAST_STANDARD - UEBERGABE_RESERVE));
-    // Kurzstand
-    const eigen = handoff_thought_id
-      ? await pool.query<{ id: string; content: string }>('SELECT id, content FROM thoughts WHERE id::text = $1', [handoff_thought_id])
-      : await pool.query<{ id: string; content: string }>(
-        `SELECT id, content FROM thoughts WHERE project = $1 AND (source_identity_id = $2 OR source = 'hauptagent')
-           AND tags && ARRAY['auto-handoff','session-state','session-uebergabe']::text[] AND NOT ('verlauf-uebergabe' = ANY(tags))
-         ORDER BY "timestamp" DESC LIMIT 1`, [HAUPTAGENT_PROJEKT, identity_id]);
-    const auftraege = await pool.query<{ art: string; status: string; gewuenscht: unknown }>(
-      `SELECT art, status, gewuenscht FROM agent_runtime_auftraege WHERE identity_id = $1 AND status IN ('pending','claimed','accepted') ORDER BY erstellt_am`,
-      [identity_id]).catch(() => ({ rows: [] as Array<{ art: string; status: string; gewuenscht: unknown }> }));
-    // Zuege: Ausloeser (Web-UI-User oder Nachricht, nicht die Sitzungs-Eintraege) mit Antwort und Werkzeugschritten dazwischen.
-    const ausloeser = (await pool.query<UebergabeZeile>(
-      `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
-         FROM hauptagent_verlauf WHERE identity_id = $1 AND rolle IN ('user','nachricht') AND (quelle_ref IS NULL OR quelle_ref NOT LIKE 'jsonl:%')
-        ORDER BY hauptagent_verlauf.id DESC LIMIT 200`, [identity_id])).rows;
-    const bloecke: string[] = [];
-    const verwiesen: string[] = [];
-    let summe = 0;
-    for (const a of ausloeser) {
-      const antwort = (await pool.query<UebergabeZeile>(
-        `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
-           FROM hauptagent_verlauf WHERE antwort_auf = $1::bigint`, [a.id])).rows[0];
-      const schritte = antwort ? (await pool.query<UebergabeZeile>(
-        `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
-           FROM hauptagent_verlauf WHERE identity_id = $1 AND quelle_ref LIKE 'jsonl:%' AND weg = 'werkzeug'
-            AND id > $2::bigint AND id < $3::bigint ORDER BY hauptagent_verlauf.id`, [identity_id, a.id, antwort.id])).rows : [];
-      const teile = [`### Zug ${a.id} · ${a.weg} · ${a.erstellt_am.toISOString()}${a.absender?.agent_id ? ' · von ' + String(a.absender.agent_id) : ''}`, a.text];
-      for (const c of antwort?.werkzeuge?.calls ?? []) teile.push(werkzeugText(c.name, c.input, c.output));
-      for (const sz of schritte) teile.push(sz.rolle === 'ausgabe' ? werkzeugText(sz.meta.name, sz.meta.inhalt ?? sz.text, undefined) : '[Ergebnis] ' + sz.text);
-      teile.push('--- Antwort ---', antwort?.text ?? '(keine Antwort)');
-      const block = teile.join('\n');
-      const t = (await zaehleTokens(block, familie, faktor)).tokens;
-      if (summe + t > budget || verwiesen.length) { verwiesen.push(a.id); continue; }
-      bloecke.unshift(block);
-      summe += t;
-    }
-    const kurz = [
-      '## Kurzstand',
-      '- Juengster eigener Handoff: ' + (eigen.rows[0] ? `(thought ${eigen.rows[0].id})\n${eigen.rows[0].content}` : 'keiner'),
-      '- Offene Auftraege: ' + (auftraege.rows.length ? auftraege.rows.map((x) => `${x.art} (${x.status}) ${JSON.stringify(x.gewuenscht)}`).join('; ') : 'keine'),
-      '- Letzte Anliegen: ' + (ausloeser.slice(0, 10).map((x) => `[${x.id}] ${x.text.split('\n').find((z) => z.trim())?.trim() ?? ''}`).join(' | ') || 'keine'),
-    ].join('\n');
-    const von = `${vonRuntime ?? '?'}/${vonModell ?? '?'}`;
-    const nach = `${ziel.runtime ?? vonRuntime ?? '?'}/${zielModell}`;
-    // P22-T65: Effort-Aenderung sichtbar ('Effort X -> Y'); X = gespeicherte Stufe des bisherigen Modells bzw. Standard.
-    const vonEffort = ziel.effort && vonModell
-      ? (await pool.query<{ e: string | null }>(`SELECT startrezept->'effort_je_modell'->>$2 AS e FROM agent_identitaeten WHERE id = $1`,
-        [identity_id, vonModell]).catch(() => ({ rows: [] as Array<{ e: string | null }> }))).rows[0]?.e ?? null : null;
+    const t = await baueUebergabeTeile(identity_id, ziel, handoff_thought_id);
+    const { kurz, bloecke, summe, verwiesen, familie, budget, von, nach, vonRuntime, zielModell, vonEffort } = t;
     const effortText = ziel.effort ? `, Effort ${vonEffort ?? 'Standard'} -> ${ziel.effort}` : '';
     const inhalt = [
       `VERLAUF-UEBERGABE (Synapse, Anlass ${anlass}, ${von} -> ${nach}, ${new Date().toISOString()})`,
@@ -817,6 +763,128 @@ export async function erzeugeVerlaufUebergabe(identity_id: string, ziel: { runti
     return null;
   }
 }
+
+interface UebergabeTeile {
+  kurz: string; bloecke: string[]; summe: number; verwiesen: string[]; familie: ReturnType<typeof modellFamilie>; budget: number;
+  von: string; nach: string; vonRuntime: string | null; zielModell: string; vonEffort: string | null;
+}
+
+/** Gemeinsamer Textbau fuer Uebergabe (Thought beim Wechsel) und Startkontext (P22-T78, beim Holen des System-Prompts). */
+async function baueUebergabeTeile(identity_id: string, ziel: { runtime?: string | null; modell?: string | null; effort?: string | null },
+  handoff_thought_id?: string | null): Promise<UebergabeTeile> {
+  const pool = getPool();
+  const vonModell = await aktuellesMainModell(identity_id);
+  const vonRuntime = await zugewieseneMainRuntime().catch(() => null);
+  const zielModell = ziel.modell ?? vonModell ?? 'unbekannt';
+  const familie = modellFamilie(ziel.runtime ?? vonRuntime, zielModell);
+  const faktor = (await leseKalibrierung(identity_id, familie))?.faktor ?? null;
+  const schwellen = (await pruefeRespawnKorridor({ model: zielModell, tokens: 0 })).schwellen;
+  const budget = Math.max(0, Math.min(Math.floor(schwellen.ceiling * UEBERGABE_ANTEIL_FENSTER),
+    schwellen.handoffTokens - UEBERGABE_GRUNDLAST_STANDARD - UEBERGABE_RESERVE));
+  // Kurzstand
+  const eigen = handoff_thought_id
+    ? await pool.query<{ id: string; content: string }>('SELECT id, content FROM thoughts WHERE id::text = $1', [handoff_thought_id])
+    : await pool.query<{ id: string; content: string }>(
+      `SELECT id, content FROM thoughts WHERE project = $1 AND (source_identity_id = $2 OR source = 'hauptagent')
+         AND tags && ARRAY['auto-handoff','session-state','session-uebergabe']::text[] AND NOT ('verlauf-uebergabe' = ANY(tags))
+       ORDER BY "timestamp" DESC LIMIT 1`, [HAUPTAGENT_PROJEKT, identity_id]);
+  const auftraege = await pool.query<{ art: string; status: string; gewuenscht: unknown }>(
+    `SELECT art, status, gewuenscht FROM agent_runtime_auftraege WHERE identity_id = $1 AND status IN ('pending','claimed','accepted') ORDER BY erstellt_am`,
+    [identity_id]).catch(() => ({ rows: [] as Array<{ art: string; status: string; gewuenscht: unknown }> }));
+  // Zuege: Ausloeser (Web-UI-User oder Nachricht, nicht die Sitzungs-Eintraege) mit Antwort und Werkzeugschritten dazwischen.
+  const ausloeser = (await pool.query<UebergabeZeile>(
+    `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
+       FROM hauptagent_verlauf WHERE identity_id = $1 AND rolle IN ('user','nachricht') AND (quelle_ref IS NULL OR quelle_ref NOT LIKE 'jsonl:%')
+      ORDER BY hauptagent_verlauf.id DESC LIMIT 200`, [identity_id])).rows;
+  const bloecke: string[] = [];
+  const verwiesen: string[] = [];
+  let summe = 0;
+  for (const a of ausloeser) {
+    const antwort = (await pool.query<UebergabeZeile>(
+      `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
+         FROM hauptagent_verlauf WHERE antwort_auf = $1::bigint`, [a.id])).rows[0];
+    const schritte = antwort ? (await pool.query<UebergabeZeile>(
+      `SELECT id::text AS id, rolle, weg, quelle_ref, antwort_auf::text AS antwort_auf, text, werkzeuge, meta, absender, erstellt_am
+         FROM hauptagent_verlauf WHERE identity_id = $1 AND quelle_ref LIKE 'jsonl:%' AND weg = 'werkzeug'
+          AND id > $2::bigint AND id < $3::bigint ORDER BY hauptagent_verlauf.id`, [identity_id, a.id, antwort.id])).rows : [];
+    const teile = [`### Zug ${a.id} · ${a.weg} · ${a.erstellt_am.toISOString()}${a.absender?.agent_id ? ' · von ' + String(a.absender.agent_id) : ''}`, a.text];
+    for (const c of antwort?.werkzeuge?.calls ?? []) teile.push(werkzeugText(c.name, c.input, c.output));
+    for (const sz of schritte) teile.push(sz.rolle === 'ausgabe' ? werkzeugText(sz.meta.name, sz.meta.inhalt ?? sz.text, undefined) : '[Ergebnis] ' + sz.text);
+    teile.push('--- Antwort ---', antwort?.text ?? '(keine Antwort)');
+    const block = teile.join('\n');
+    const t = (await zaehleTokens(block, familie, faktor)).tokens;
+    if (summe + t > budget || verwiesen.length) { verwiesen.push(a.id); continue; }
+    bloecke.unshift(block);
+    summe += t;
+  }
+  const kurz = [
+    '## Kurzstand',
+    '- Juengster eigener Handoff: ' + (eigen.rows[0] ? `(thought ${eigen.rows[0].id})\n${eigen.rows[0].content}` : 'keiner'),
+    '- Offene Auftraege: ' + (auftraege.rows.length ? auftraege.rows.map((x) => `${x.art} (${x.status}) ${JSON.stringify(x.gewuenscht)}`).join('; ') : 'keine'),
+    '- Letzte Anliegen: ' + (ausloeser.slice(0, 10).map((x) => `[${x.id}] ${x.text.split('\n').find((z) => z.trim())?.trim() ?? ''}`).join(' | ') || 'keine'),
+  ].join('\n');
+  const von = `${vonRuntime ?? '?'}/${vonModell ?? '?'}`;
+  const nach = `${ziel.runtime ?? vonRuntime ?? '?'}/${zielModell}`;
+  // P22-T65: Effort-Aenderung sichtbar ('Effort X -> Y'); X = gespeicherte Stufe des bisherigen Modells bzw. Standard.
+  const vonEffort = ziel.effort && vonModell
+    ? (await pool.query<{ e: string | null }>(`SELECT startrezept->'effort_je_modell'->>$2 AS e FROM agent_identitaeten WHERE id = $1`,
+      [identity_id, vonModell]).catch(() => ({ rows: [] as Array<{ e: string | null }> }))).rows[0]?.e ?? null : null;
+  return { kurz, bloecke, summe, verwiesen, familie, budget, von, nach, vonRuntime, zielModell, vonEffort };
+}
+
+// ---------------------------------------------------------------------------------------------
+// P22-T78: Startkontext ZWINGEND einspielen (Gedaechtnis gehoert der API, nicht dem Modell)
+// ---------------------------------------------------------------------------------------------
+/**
+ * Startkontext des Main aus seinem Verlauf in PG, frisch bei JEDEM Holen des System-Prompts (Wrapper-Start nach Wechsel/Failover/
+ * Neustart, jede Rotation; Claude: System-Prompt, Codex: vor der ersten Nachricht des neuen Threads). Vorher kam die Uebergabe nur
+ * als Lese-Hinweis in chat(anmelden); ob gelesen wurde, entschied das Modell (Haiku/Luna lasen nicht -> Name vergessen).
+ * Inhalt wie die Verlauf-Uebergabe (letzte Zuege voll + Kurzstand, Budget/Zaehlverfahren des Modells, das der Wrapper faehrt).
+ * Nachweis: hauptagent_verlauf_stand.kalibrierung.startkontext und meta.uebergabe_eingespielt an der juengsten Wechsel-Zeile.
+ * Nur Schalter main_startkontext (Standard EIN). Kein Verlauf -> null. Wirft nie.
+ */
+export async function mainStartkontext(identity_id: string): Promise<{ text: string; zuege: number; tokens: number } | null> {
+  try {
+    const { leseMainSchalter, MAIN_STARTKONTEXT_FUNKTION, sichtbareUserProjekte } = await import('./hauptagent-sonderstellung.js');
+    if (!(await leseMainSchalter(MAIN_STARTKONTEXT_FUNKTION)).aktiv) return null;
+    const pool = getPool();
+    const modell = await tatsaechlichesMainModell(identity_id).catch(() => null);
+    const runtime = await zugewieseneMainRuntime().catch(() => null);
+    const t = await baueUebergabeTeile(identity_id, { runtime, modell });
+    const projekte = await sichtbareUserProjekte();
+    const wechsel = (await pool.query<{ id: string; thought_id: string | null }>(
+      `SELECT id::text AS id, meta->>'thought_id' AS thought_id FROM hauptagent_verlauf WHERE identity_id = $1 AND weg = 'wechsel'
+        ORDER BY id DESC LIMIT 1`, [identity_id])).rows[0] ?? null;
+    const text = [
+      '## GEDAECHTNIS (von Synapse aus deinem vollstaendigen Verlauf eingespielt)',
+      'Du bist dieselbe Persona wie in den Zuegen unten - nur Modell/Runtime koennen gewechselt haben. Das ist DEIN bisheriges Gespraech '
+        + 'mit dem User (und den Agenten). Nutze es direkt (z. B. wie der User heisst, was er wollte), ohne es nachzuschlagen. '
+        + 'Ein Uebergabe-Thought, den dir die Anmeldung nennt, enthaelt dasselbe.',
+      `Projekte des Users (lesend, project:"<name>" angeben): ${projekte.length ? projekte.join(', ') : '(keine gefunden)'}.`,
+      t.kurz, `## Letzte ${t.bloecke.length} Zuege (voll, ~${t.summe} Tokens, ${t.familie})`, ...t.bloecke,
+      ...(t.verwiesen.length ? [`## Weitere Zuege im Verlauf (nicht mitgegeben, Verlaufs-IDs): ${t.verwiesen.join(', ')}`] : []),
+    ].join('\n\n');
+    const nachweis = { am: new Date().toISOString(), zuege: t.bloecke.length, tokens: t.summe, runtime, modell: t.zielModell,
+      uebergabe_thought_id: wechsel?.thought_id ?? null };
+    await pool.query(
+      `INSERT INTO hauptagent_verlauf_stand (identity_id, kalibrierung) VALUES ($1, jsonb_build_object('startkontext', $2::jsonb))
+       ON CONFLICT (identity_id) DO UPDATE SET kalibrierung = COALESCE(hauptagent_verlauf_stand.kalibrierung, '{}'::jsonb) || jsonb_build_object('startkontext', $2::jsonb)`,
+      [identity_id, JSON.stringify(nachweis)]).catch((error) => merkeFehler('startkontext_nachweis', error));
+    if (wechsel) {
+      await pool.query(
+        `UPDATE hauptagent_verlauf SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('uebergabe_eingespielt', true, 'eingespielt_am', $2::text, 'eingespielt_zuege', $3::int),
+           rev = nextval('hauptagent_verlauf_rev'), aktualisiert_am = NOW()
+         WHERE id = $1::bigint AND NOT COALESCE((meta->>'uebergabe_eingespielt')::boolean, false)`,
+        [wechsel.id, nachweis.am, t.bloecke.length]).catch((error) => merkeFehler('startkontext_nachweis', error));
+    }
+    letzterStartkontext = nachweis;
+    return { text, zuege: t.bloecke.length, tokens: t.summe };
+  } catch (error) {
+    merkeFehler('startkontext', error);
+    return null;
+  }
+}
+let letzterStartkontext: { am: string; zuege: number; tokens: number; runtime: string | null; modell: string; uebergabe_thought_id: string | null } | null = null;
 const HAUPTAGENT_AGENT_NAME = 'hauptagent';
 
 // ---------------------------------------------------------------------------------------------
@@ -1044,6 +1112,8 @@ export interface VerlaufStatus {
   token_zaehlung?: { schalter: { aktiv: boolean; quelle: string; letzter_fehler: string | null }; kalibrierung: Record<string, unknown> | null; letzter_befund: { text: string; am: string } | null };
   /** P22-T63 D: letzte Uebergabe dieses Prozesses. */
   letzte_uebergabe?: { thought_id: string; anlass: string; zuege: number; tokens: number; am: string } | null;
+  /** P22-T78: zuletzt eingespielter Startkontext dieses Prozesses (dauerhaft: kalibrierung.startkontext). */
+  letzter_startkontext?: { am: string; zuege: number; tokens: number; runtime: string | null; modell: string; uebergabe_thought_id: string | null } | null;
   /** P22-T73: Antwortzeilen in der Warteschlange (status 'wartet'). */
   wartend?: number | null;
 }
@@ -1068,7 +1138,7 @@ export async function verlaufStatus(): Promise<VerlaufStatus> {
     const kal = await getPool().query<{ kalibrierung: Record<string, unknown> }>('SELECT kalibrierung FROM hauptagent_verlauf_stand WHERE identity_id = $1', [identity_id]);
     return { ...basis, identity_id, anzahl: z.anzahl, sichtbar: z.sichtbar, laufend: z.laufend, wartend: z.wartend, geleert_am: z.geleert_am ? z.geleert_am.toISOString() : null,
       token_zaehlung: { schalter: { aktiv: ts.aktiv, quelle: ts.quelle, letzter_fehler: ts.letzter_fehler }, kalibrierung: kal.rows[0]?.kalibrierung ?? null,
-        letzter_befund: letzterZaehlBefund }, letzte_uebergabe: letzteUebergabe };
+        letzter_befund: letzterZaehlBefund }, letzte_uebergabe: letzteUebergabe, letzter_startkontext: letzterStartkontext };
   } catch (error) {
     return { ...basis, lesefehler: error instanceof Error ? error.message.slice(0, 300) : String(error) };
   }

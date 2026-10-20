@@ -686,8 +686,23 @@ export type { VerlaufBild } from './services/hauptagent-verlauf.js';
 export type { VerlaufZugKontext } from './services/hauptagent-verlauf.js';
 export {
   schreibeZustellVerlauf, aktuellerMainLauf, aktuellesMainModell, importiereSitzungsEintraege, pruefeMainKorridor, erzeugeVerlaufUebergabe,
-  zugewieseneMainRuntime, MAIN_HANDOFF_TEXT,
+  zugewieseneMainRuntime, MAIN_HANDOFF_TEXT, mainStartkontext, leseVerlaufFuer, AGENT_VERLAUF_ALLE_FUNKTION,
 } from './services/hauptagent-verlauf.js';
+// P22-T82: Spezialisten im Runtime-Container (ort container, Kontingent je Projekt, Schema 127).
+export {
+  SPEZIALISTEN_CONTAINER_FUNKTION, SPAWN_ORTE, leseSpawnOrt, runtimeFuerModell, leseContainerKontingent, belegteContainerAgenten,
+  spawneImContainer, spawneBatchImContainer, containerStatus, CONTAINER_ADMIN_ACTIONS, CONTAINER_ADMIN_PARAMETER, istContainerAdminAction,
+  fuehreContainerAdminAus,
+} from './services/agent-container.js';
+export type { SpawnOrt, ContainerKontingent, ContainerSpawnEingabe } from './services/agent-container.js';
+export { AGENT_CONTAINER_SCHEMA_SQL } from './db/agent-container-schema.js';
+// P22-T79: Sonderstellung des Main (Lesezugriff auf alle User-Projekte, Lenkhinweise, Schalter Standard EIN).
+export {
+  leseMainSchalter, mainIdentitaetDesAusweises, istMainPrincipal, sichtbareUserProjekte, mainHinweisText, mainNurLesenAblehnung,
+  mainProjektUnbekannt, mainKommunikationErlaubt, MAIN_LESEZUGRIFF_FUNKTION, MAIN_STARTKONTEXT_FUNKTION, MAIN_DATEN_TOOLS, MAIN_HINWEIS_FELD,
+} from './services/hauptagent-sonderstellung.js';
+export type { MainSchalter, MainSchalterFunktion } from './services/hauptagent-sonderstellung.js';
+export { istSammlungFehlt } from './services/thoughts.js';
 export type { SitzungsEintragEingabe } from './services/hauptagent-verlauf.js';
 export { VERLAUF_STUFE2_FUNKTIONEN, leseVerlaufStufe2Schalter } from './services/verlauf-tokens.js';
 // P22-T63 Stufe 2 B: eigene Token-Zaehlung aus dem Verlauf (Schalter verlauf_token_zaehlung, Standard AUS).
