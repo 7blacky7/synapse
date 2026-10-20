@@ -27,7 +27,9 @@ import {
   leseW1bSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv, leseAusweisKernFuerToken, ausweisProjekt, ausweisIrgendwoAktiv,
   type AusweisKernStand,
 } from './agent-profil-schalter.js';
-import { feldBedeutung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder, selbstKonflikte, type Selbstangaben } from './agent-selbstfelder.js';
+import { feldBedeutung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder, selbstKonflikte, SELBSTFELD_REGELN, type Selbstangaben } from './agent-selbstfelder.js';
+// P22-T56: tools/list je Verbindung (Variante aus entscheideToolListeVerbindung).
+import type { ToolListeEntscheidung } from './tool-liste-verbindung.js';
 import { entscheideToolAufruf, entscheideToolListe, istNichtSperrbareAktion, type TransportZugang } from './tool-gate.js';
 import { loeseToolZuschnitt, TEXT_AGENT_TOKEN_FEHLT } from './agent-profil-vertrag.js';
 import { bereiteZuschnittSnapshotVor, wendeProfilLimitsAn } from './agent-zuschnitt.js';
@@ -78,16 +80,45 @@ function ausweisProjektOptional(def: { inputSchema?: { properties?: Record<strin
   if (p) p.description = `${p.description ?? 'Projekt-Name'} (mit token/Ausweis optional`
     + `${mehrprojekt ? '; ohne project gilt dein Heimatprojekt, fuer Visa/Einwanderungen in anderen Projekten project angeben' : ''})`;
 }
+/** P22-T56: Text fuer agent_id in einer Ausweis-Verbindung, wo das Tool agent_id nur als Fachfilter kennt. */
+export const TEXT_AGENT_ID_FACHFILTER = (tool: string, aktionen: string[]) =>
+  `Nur ${tool} ${aktionen.join('/')}: Filter auf einen anderen Agenten. Die eigene Identitaet kommt aus token.`;
+/**
+ * P22-T56: Ausweis-Verbindung - agent_id/role/project-Selbstangaben ausblenden (auch aus required). agent_id bleibt, wo
+ * das Tool es laut agent-selbstfelder.ts als Fachfilter kennt (chat get, files history); project bleibt bei mehrprojekt.
+ */
+function blendeSelbstangabenAus(def: { name: string; inputSchema?: { properties?: Record<string, unknown>; required?: string[] } }, mehrprojekt: boolean): void {
+  const props = def.inputSchema?.properties;
+  if (!props) return;
+  const weg: string[] = [];
+  for (const feld of ['agent_id', 'role', 'project']) {
+    if (!(feld in props) || (feld === 'project' && mehrprojekt)) continue;
+    const fach = SELBSTFELD_REGELN.filter(r => r.tool === def.name && r.feld === feld && r.bedeutung === 'fach');
+    if (fach.length) {
+      props[feld] = { ...(props[feld] as Record<string, unknown>), description: TEXT_AGENT_ID_FACHFILTER(def.name, fach.flatMap(r => [...(r.actions ?? [])])) };
+      continue;
+    }
+    delete props[feld];
+    weg.push(feld);
+  }
+  if (def.inputSchema?.required) def.inputSchema.required = def.inputSchema.required.filter(f => !weg.includes(f));
+}
 /** Nur die Werbung ist schalterabhaengig; der interne Annahmevertrag bleibt stabil.
  * Kopien verhindern, dass ein paralleler tools/list-Aufruf andere Verbindungen veraendert.
+ * P22-T56: opt.verbindung (entscheideToolListeVerbindung) waehlt die Liste je Verbindung; ohne bzw. 'bestand'/'gemeinsam'
+ * bleibt alles wie nach P22-T55/P23-T5.
  */
 export async function beworbeneAgentTools<T extends { name: string; inputSchema?: { properties?: Record<string, unknown> } }>(
-  defs: T[], opt?: { mitAusweis?: boolean; project?: string | null },
+  defs: T[], opt?: { mitAusweis?: boolean; project?: string | null; verbindung?: ToolListeEntscheidung | null },
 ): Promise<T[]> {
+  const variante = opt?.verbindung?.variante ?? 'bestand';
+  if (variante === 'ausweis') return ausweisVerbindungTools(defs, opt?.verbindung?.ausweis_project ?? opt?.project ?? null);
   // P22-T55: ohne Projekt (tools/list) wird der Ausweis beworben, sobald der Ausweis-Kern IRGENDWO wirksam ist (global oder in
   // einem Projekt). Vorher nur global -> bei projektweisem Kern fehlte token in allen Schemas, Clients verwarfen ihn.
-  const irgendwo = !opt?.project ? await ausweisIrgendwoAktiv() : false;
-  const tokenAn = irgendwo || await ausweisTokenAktiv(opt?.project ?? null);
+  // P22-T56: Legacy-Verbindung (Web-Connector ohne Ausweis) -> keine token-Werbung.
+  const legacy = variante === 'legacy';
+  const irgendwo = !legacy && !opt?.project ? await ausweisIrgendwoAktiv() : false;
+  const tokenAn = !legacy && (irgendwo || await ausweisTokenAktiv(opt?.project ?? null));
   const anmeldungAn = irgendwo || await ausweisAnmeldungAktiv(opt?.project ?? null);
   // S2: project nur optional, wenn die Liste MIT Ausweis abgefragt wird UND der Ausweis-Kern wirksam ist.
   const projektOptional = opt?.mitAusweis === true && (await leseAusweisKern(opt?.project ?? null)).aktiv;
@@ -108,6 +139,31 @@ export async function beworbeneAgentTools<T extends { name: string; inputSchema?
         if (action?.enum) {
           action.enum = action.enum.filter(a => (tokenAn || (a !== 'anmelden' && a !== 'identitaet')) && (anmeldungAn || a !== 'koordinator_liste'));
         }
+      }
+    }
+    return kopie;
+  });
+}
+/**
+ * P22-T56: Liste einer Verbindung, die den Ausweis selbst traegt (entscheideToolListeVerbindung hat den Kern fuer diesen
+ * Ausweis bereits geprueft): nur der Ausweis-Weg. token kurz, project optional (bzw. ausgeblendet), agent_id/role weg,
+ * chat mit anmelden/identitaet. Massgeblich ist das Projekt des Ausweises.
+ */
+async function ausweisVerbindungTools<T extends { name: string; inputSchema?: { properties?: Record<string, unknown> } }>(
+  defs: T[], heimat: string | null,
+): Promise<T[]> {
+  const anmeldungAn = await ausweisAnmeldungAktiv(heimat);
+  const mehrprojekt = (await leseMehrprojektSchalter(heimat)).aktiv;
+  const basis = await wendeKurzeBeschreibungenAn(defs, heimat);
+  return basis.map(def => {
+    const kopie = structuredClone(def);
+    if (kopie.inputSchema?.properties) {
+      kopie.inputSchema.properties.token = { ...AGENT_TOKEN_PARAMETER.token };
+      ausweisProjektOptional(kopie, mehrprojekt);
+      blendeSelbstangabenAus(kopie, mehrprojekt);
+      if (kopie.name === 'chat') {
+        const action = kopie.inputSchema.properties.action as { enum?: unknown[] } | undefined;
+        if (action?.enum) action.enum = action.enum.filter(a => anmeldungAn || a !== 'koordinator_liste');
       }
     }
     return kopie;

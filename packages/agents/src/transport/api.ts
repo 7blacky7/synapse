@@ -34,6 +34,7 @@ import type {
   Faehigkeit,
   HeartbeatKonfiguration,
   InboxNachricht,
+  KontingentMeldung,
   LiveEmpfaenger,
   SammelAnfrage,
   SammelErgebnis,
@@ -41,6 +42,8 @@ import type {
   SynapseItems,
   TransportBilanz,
   TransportUmgebung,
+  VerbrauchEintrag,
+  VerbrauchErgebnis,
   Wasserstaende,
   WrapperTransport,
 } from './typen.js'
@@ -547,6 +550,23 @@ export class ApiTransport implements WrapperTransport {
       koerper: status,
     })
     this.pruefeStrom(daten)
+  }
+
+  /** P22-T7: Abo-Verbrauch ueber POST .../verbrauch; die Identitaet bestimmt der Server aus Ausweis/Agent. */
+  async bucheVerbrauch(runtime: string, eintraege: VerbrauchEintrag[]): Promise<VerbrauchErgebnis> {
+    const daten = await this.rufPflicht<{ gebucht?: unknown; grund?: unknown }>('verbrauch', '/verbrauch', {
+      methode: 'POST',
+      koerper: { runtime, eintraege },
+    })
+    return { gebucht: typeof daten.gebucht === 'number' ? daten.gebucht : 0, grund: typeof daten.grund === 'string' ? daten.grund : null }
+  }
+
+  /** P22-T58: Abo-Kontingent ueber POST .../kontingent; die Runtime-Ueberwachung der API entscheidet ueber den Wechsel. */
+  async meldeKontingent(runtime: string, meldung: KontingentMeldung): Promise<void> {
+    await this.rufPflicht<Record<string, unknown>>('kontingent', '/kontingent', {
+      methode: 'POST',
+      koerper: { runtime, ...meldung },
+    })
   }
 
   /**

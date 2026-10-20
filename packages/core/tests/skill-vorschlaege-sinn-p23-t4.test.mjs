@@ -138,7 +138,8 @@ try {
     const s = jevAufrufe.at(-1).state;
     assert.deepEqual(s.quelle, { art: 'task', klartext: 'Task', id: 'T-b' });
     assert.equal(s.text, 'Rapidfire im Kampfsimulator stimmt nicht, siehe ogame-strategie');
-    assert.deepEqual(s.skills.map((x) => x.name).sort(), ['gut-skill', 'schlecht-skill'], 'genannte Skills gehen nicht an Jev');
+    assert.deepEqual(s.skills.map((x) => x.name).sort(), ['gut-skill', 'ogame-strategie', 'schlecht-skill'], 'P23-T8: genannte Skills gehen mit an Jev');
+    assert.equal(s.skills[0].name, 'ogame-strategie', 'P23-T8: genannte zuerst (Deckel/Budget streichen vom Ende)');
     const gut = s.skills.find((x) => x.name === 'gut-skill');
     assert.equal(gut.zweck, ZWECK, 'Zweck aus dem Uebersichts-Abschnitt');
     assert.equal(gut.abschnitt, ABSCHNITT, 'GANZER Abschnitt (vorher 300 Zeichen)');
@@ -152,7 +153,7 @@ try {
     assert.equal(s.empfaenger.find((g) => g.aufgaben.length === 0).anzahl, 1);
     assert.equal(s.empfaenger.length, 2, 'nach Task gruppiert, nicht je Empfaenger');
     assert.deepEqual(s.aufgaben, [{ id: 'P99-T1', titel: 'Kampfsimulator', beschreibung: TASK_BESCHREIBUNG, status: 'in_progress' }]);
-    assert.deepEqual((await preps('agent-a', 'T-b')).map((x) => x.skill_name), ['gut-skill', 'ogame-strategie'], 'Tor filtert weiter');
+    assert.deepEqual((await preps('agent-a', 'T-b')).map((x) => x.skill_name), ['gut-skill'], 'Tor filtert weiter (P23-T8: auch den genannten)');
     assert.match(jevAufrufe.at(-1).questions.skill_0.instructions, /state\.aufgaben/);
   });
 

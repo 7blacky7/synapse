@@ -22,6 +22,8 @@ import {
   stelleSchemaSicher,
   getNewMessagesForAgent,
   getNewInboxMessages,
+  bucheAgentVerbrauch,
+  meldeRuntimeKontingent,
 } from '@synapse/core'
 
 import { Buchhaltung } from './zaehler.js'
@@ -29,6 +31,7 @@ import type {
   ChannelNachricht,
   HeartbeatKonfiguration,
   InboxNachricht,
+  KontingentMeldung,
   LiveEmpfaenger,
   SammelAnfrage,
   SammelErgebnis,
@@ -36,6 +39,8 @@ import type {
   SynapseItems,
   TransportBilanz,
   TransportUmgebung,
+  VerbrauchEintrag,
+  VerbrauchErgebnis,
   Wasserstaende,
   WrapperTransport,
 } from './typen.js'
@@ -273,6 +278,33 @@ export class PgTransport implements WrapperTransport {
   async schreibeStatus(status: StatusNutzlast): Promise<void> {
     await this.buch.messe('status', async () => {
       await upsertWrapperStatus(status)
+    })
+  }
+
+  /** P22-T7: wie der api-Weg, nur direkt ueber die eine Buchungsstelle des Core. */
+  async bucheVerbrauch(runtime: string, eintraege: VerbrauchEintrag[]): Promise<VerbrauchErgebnis> {
+    return this.buch.messe('verbrauch', async () => {
+      let gebucht = 0
+      let grund: string | null = null
+      for (const e of eintraege) {
+        const r = await bucheAgentVerbrauch({
+          project: this.umgebung.projekt, identity_id: process.env.SYNAPSE_AGENT_IDENTITY_ID || null, agent_id: this.umgebung.agentName,
+          runtime, zugang: 'abo', modell: e.modell, input_tokens: e.input_tokens, output_tokens: e.output_tokens,
+          cache_read_tokens: e.cache_read_tokens, cache_creation_tokens: e.cache_creation_tokens, quelle: 'wrapper', referenz: e.referenz,
+        })
+        if (r.gebucht) gebucht++
+        else if (r.grund === 'funktion_aus') { grund = r.grund; break }
+        else if (r.grund === 'fehler') throw new Error('verbrauch_buchung_fehler ' + (r.details ?? ''))
+      }
+      return { gebucht, grund }
+    })
+  }
+
+  /** P22-T58: wie der api-Weg, direkt ueber die Lesestelle der Runtime-Ueberwachung. */
+  async meldeKontingent(runtime: string, meldung: KontingentMeldung): Promise<void> {
+    await this.buch.messe('kontingent', async () => {
+      await meldeRuntimeKontingent({ runtime, status: meldung.status, resets_at: meldung.resets_at, art: meldung.art,
+        project: this.umgebung.projekt, agent: this.umgebung.agentName })
     })
   }
 

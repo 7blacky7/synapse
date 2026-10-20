@@ -67,9 +67,21 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P23-T5: Fall-Skills (fall-skills.ts) - kurze Tool-Beschreibungen in tools/list und Fall-Skill-Hinweis bei Fehlbedienung.
   // Standard AUS bis User-Freigabe; wie mehrprojekt NICHT ueber 'alle' schaltbar (nur ausdruecklich).
   'tool_beschreibungen_kurz', 'fall_skill_hinweis',
+  // P22-T56: tools/list je Verbindung (tool-liste-verbindung.ts), Standard AUS; nur ausdruecklich schaltbar.
+  'tool_liste_je_verbindung',
+  // P23-T3: schlanke Tool-Antworten (tool-antworten-schlank.ts), Standard AUS bis User-Freigabe, nur ausdruecklich.
+  'tool_antworten_schlank',
+  // P23-T7: ungenuegende Fall-Skill-Hinweise als offene Tool-Faelle im Erklaerungs-Topf (fall-skills.ts), Standard AUS, nur ausdruecklich.
+  'fall_skill_faelle',
+  // P23-T3 Punkt 6: fremde Shell-Ergebnisse anbieten (shell-hints.ts), Standard AUS, nur ausdruecklich.
+  'shell_fremde_ergebnisse',
+  // P22-T7: Verbrauchszaehlung der Abo-CLIs je Agent (agent-verbrauch.ts), Standard AUS, nur ausdruecklich.
+  'verbrauch',
+  // P22-T58: Ueberwachung/Neustart der Runtime-Container durch die API (runtime-ueberwachung.ts), Standard AUS, nur ausdruecklich.
+  'runtime_ueberwachung',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis'];
+const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung'];
 /**
  * W12 V7: 'schattenprofile' und 'token_abruf' sind im Produkt-Schalter 'agenten_ausweis' aufgegangen. Die alten Namen
  * bleiben nur LESBAR/setzbar (Altschalter-Rueckfall des Ausweis-Kerns, bestehende Zeilen), sind aber nicht mehr im Katalog.

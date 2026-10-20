@@ -11,15 +11,22 @@ Der Quellcode startet den Daemon, verwaltet pro Projekt die Dateiüberwachung un
 | Datei | Aufgabe |
 |---|---|
 | [api.ts](api.ts) | Erstellt die Fastify-API des Daemons und bindet deren Routen. |
+| [cli-versionen.ts](cli-versionen.ts) | Versionierte Installation von Claude Code und Codex im Runtime-Container: installieren, umschalten, Update, Rollback, Verlauf (P22-T4). |
 | [config.ts](config.ts) | Lädt Konfiguration und verwaltet Daemon-Konfigurations- und Discovery-Pfade. |
+| [daemon-api-client.ts](daemon-api-client.ts) | Gemeinsamer HTTP-Weg zur Synapse-API mit injiziertem Zugang (PC-Tray oder Runtime-Container). |
 | [daemon-heartbeat.ts](daemon-heartbeat.ts) | Meldet den Zustand des Daemons über Heartbeat-Daten. |
+| [daemon-kern.ts](daemon-kern.ts) | Gemeinsamer Lebenszyklus der Startprofile: Komponentenstatus, Stoppreihenfolge, Signale, harter Exit. |
 | [enabled-sync.ts](enabled-sync.ts) | Synchronisiert aktivierte Projekte mit dem laufenden Watcher-Manager. |
 | [gpu-helfer-datei.ts](gpu-helfer-datei.ts) | `gpuHelferStatus` liest Einstellungen und Status; `gpuHelferEinstellen` setzt die GPU-Helfer-Einstellungen. |
 | [intern-bruecke.ts](intern-bruecke.ts) | Verbindet interne Daemon-Abfragen mit den zuständigen Diensten. |
 | [logpflege.ts](logpflege.ts) | Verwaltet die Rotation und Bereinigung lokaler Synapse-Logs. |
-| [main.ts](main.ts) | Bootstrapped den Prozess, startet API, Manager und Worker und behandelt den Shutdown. |
+| [main.ts](main.ts) | Wählt das Startprofil (`SYNAPSE_DAEMON_PROFIL`, Standard `pc`) und startet es. |
 | [manager.ts](manager.ts) | Verwaltet Watcher je Projekt und steuert Synchronisations- und Indexier-Slots. |
 | [project-init-worker.ts](project-init-worker.ts) | Verarbeitet Projektinitialisierungs-Aufträge. |
+| [runtime-cli.ts](runtime-cli.ts) | Befehl `synapse-runtime` im Runtime-Container: Status und CLI-Versionen bedienen. |
+| [runtime-main.ts](runtime-main.ts) | Einstieg des Daemons im Runtime-Container (immer Startprofil `runtime`). |
+| [startprofile/pc.ts](startprofile/pc.ts) | Startprofil PC: bisherige Komposition mit Watchern, Workern, Fastify-API und Tray-Discovery. |
+| [startprofile/runtime.ts](startprofile/runtime.ts) | Startprofil runtime: nur Runtime-Fähigkeiten, kein PC-Dienst, DB gesperrt, Statusdatei. |
 | [reverse-bibliothek.ts](reverse-bibliothek.ts) | Überwacht den Reverse-Bibliotheksordner, hasht stabile Dateien und meldet sie über die API (P18-T16). |
 | [shell-job-worker.ts](shell-job-worker.ts) | Verarbeitet eingereihte Shell-Jobs für Projekte mit aktivem Watcher. |
 | [skills-proxy.ts](skills-proxy.ts) | Stellt die lokale Weiterleitung von Skill-Abfragen bereit. |
@@ -28,6 +35,10 @@ Der Quellcode startet den Daemon, verwaltet pro Projekt die Dateiüberwachung un
 ## Funktionsweise
 
 ![TypeScript-Daemon: Prozessstart, Dateisynchronisation und Job-Verarbeitung](../../../docs/bilder/daemon.svg)
+
+### Startprofile
+
+[main.ts](main.ts) liest `SYNAPSE_DAEMON_PROFIL` (`pc` oder `runtime`, leer = `pc`, unbekannter Wert = Startfehler) und lädt das passende Profil dynamisch. Das Profil `pc` ([startprofile/pc.ts](startprofile/pc.ts)) ist der bisherige Ablauf, unten beschrieben. Das Profil `runtime` ([startprofile/runtime.ts](startprofile/runtime.ts)) läuft im [Agenten-Runtime-Image](../../../docker/synapse-agent-runtime/README.md) und startet nur Runtime-Fähigkeiten. Beide teilen den Lebenszyklus aus [daemon-kern.ts](daemon-kern.ts).
 
 ### Start, Steuerdateien und Projektzustände
 
@@ -67,7 +78,7 @@ Bei SIGTERM oder SIGINT schließt der Daemon HTTP-Server, Worker, Heartbeat und 
 
 ## Schnittstellen nach außen
 
-[main.ts](main.ts) startet den [Fastify-Endpunkt](api.ts) und den [WatcherManager](manager.ts). Core-Module registrieren Daemon-Worker und stellen Datenbankzugriff sowie Dateisynchronisation bereit. Die API und Worker verbinden den lokalen Prozess mit der REST-API, ohne den Tray in denselben Prozess einzubetten.
+Das Startprofil PC startet den [Fastify-Endpunkt](api.ts) und den [WatcherManager](manager.ts). Core-Module registrieren Daemon-Worker und stellen Datenbankzugriff sowie Dateisynchronisation bereit. Die API und Worker verbinden den lokalen Prozess mit der REST-API, ohne den Tray in denselben Prozess einzubetten.
 
 ## Abhängigkeiten
 

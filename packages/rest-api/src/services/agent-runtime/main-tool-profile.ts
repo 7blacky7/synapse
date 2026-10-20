@@ -83,6 +83,9 @@ export function mainScopePasst(
 ): boolean {
   // P22-T36: der Identitaets-Bearer gilt nur fuer den MCP-Weg mit Werkzeugprofil und Ausweis.
   if (scope?.startsWith(HAUPTAGENT_IDENTITAET_SCOPE)) {
+    // P22-T8: derselbe Bearer darf den API-Transport des Hauptagenten nutzen (Ausweis Pflicht; Identitaet prueft die Route).
+    if (((method === 'POST' && pathname === '/api/agent-api/messages') || (method === 'GET' && pathname === '/api/agent-api/rahmen'))
+      && typeof headers['x-synapse-agent-token'] === 'string') return true;
     return method === 'POST' && (pathname === '/' || pathname === '/mcp/messages')
       && headers[MAIN_PROFILE_HEADER] === 'main-synapse'
       && typeof headers['x-synapse-agent-token'] === 'string';

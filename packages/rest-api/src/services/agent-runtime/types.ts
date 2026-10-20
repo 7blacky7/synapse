@@ -1,3 +1,5 @@
+import type { ContainerBeobachtung } from '@synapse/core';
+
 export type RuntimeName = 'codex' | 'claude' | 'free-pool';
 export type AgentRole = 'main' | 'specialist';
 export type RuntimeContainerState = 'not_created' | 'created' | 'running' | 'stopped' | 'error';
@@ -85,6 +87,12 @@ export interface AgentRuntimeDriver {
   start(): Promise<RuntimeStatus>;
   stop(): Promise<RuntimeStatus>;
   status(): Promise<RuntimeStatus>;
+  /** P22-T58: leichte Beobachtung fuer die Runtime-Ueberwachung (nur Container-Runtimes). */
+  beobachte?(o: { probe_timeout_ms: number; daemon_frisch_ms: number }): Promise<ContainerBeobachtung>;
+  /** P22-T58: docker restart des eigenen Containers (nur Container-Runtimes). */
+  neustart?(): Promise<void>;
+  /** P22-T58 F5: CLI-Update im Container (nur Container-Runtimes mit Agent-Runtime-Image). */
+  cliUpdate?(o: { timeout_ms: number }): Promise<{ ok: boolean; exit_code: number | null; ausgabe: string }>;
   openTerminal(input?: { cols?: number; rows?: number; command?: string }): Promise<TerminalSession>;
   sendMessage(
     session: MainAgentSession,

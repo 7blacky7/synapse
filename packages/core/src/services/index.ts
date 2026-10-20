@@ -56,8 +56,8 @@ export * from './channels.js';
 export * from './channel-unread.js';
 export * from './chat-unread.js';
 export * from './inbox.js';
-export { claimShellJobHints, markShellJobSeenForToolCall, pruneShellJobNotices } from './shell-hints.js';
-export type { ShellJobHint } from './shell-hints.js';
+export { claimShellJobHints, markShellJobSeenForToolCall, pruneShellJobNotices, fremderLaufFeld } from './shell-hints.js';
+export type { ShellJobHint, FremderLauf } from './shell-hints.js';
 export {
   enqueueShellJob,
   claimPendingShellJob,

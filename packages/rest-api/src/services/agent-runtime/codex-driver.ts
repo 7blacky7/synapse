@@ -5,6 +5,10 @@ import { PassThrough } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { AgentRuntimeRepository } from './repository.js';
+import { dauerhafterMainTurn } from './dauerhafter-main.js';
+import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
+import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
+import type { ContainerBeobachtung } from '@synapse/core';
 import type {
   AgentRuntimeDriver,
   MainAgentSession,
@@ -206,6 +210,36 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     return this.statusProbe.run(() => this.probeStatus());
   }
 
+  /** P22-T58: leichte Beobachtung fuer die Runtime-Ueberwachung (inspect + Status-Probe, ohne CLI-/Login-Proben). */
+  async beobachte(o: { probe_timeout_ms: number; daemon_frisch_ms: number }): Promise<ContainerBeobachtung> {
+    const config = await this.repository.get('codex');
+    return beobachteRuntimeContainer(this.docker, config, {
+      ...o, env: this.runtimeEnv(),
+      istEigener: (info) => { try { this.assertOwnedContainer(config!, info); return true; } catch { return false; } },
+    });
+  }
+
+  /** P22-T58 F5: CLI-Update aus der API (synapse-runtime cli update codex latest). */
+  async cliUpdate(o: { timeout_ms: number }): Promise<{ ok: boolean; exit_code: number | null; ausgabe: string }> {
+    const config = await this.repository.get('codex');
+    return fuehreCliUpdateImContainerAus(this.docker, config, 'codex', {
+      ...o, env: this.runtimeEnv(),
+      istEigener: (info) => { try { this.assertOwnedContainer(config!, info); return true; } catch { return false; } },
+    });
+  }
+
+  /** P22-T58: docker restart des eigenen Containers; die Spezifikation (Envs, Mounts, Rechte) bleibt erhalten. */
+  async neustart(): Promise<void> {
+    this.statusProbe.invalidate();
+    const config = await this.ensureConfig();
+    const container = this.docker.getContainer(config.containerName);
+    const info = await container.inspect();
+    this.assertOwnedContainer(config, info);
+    await container.restart({ t: 20 });
+    await this.repository.updateObserved('codex', { containerId: info.Id, status: 'running', lastError: null });
+    this.statusProbe.invalidate();
+  }
+
   private async probeStatus(): Promise<RuntimeStatus> {
     const stored = await this.repository.get('codex');
     if (!stored) {
@@ -331,6 +365,10 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
   ): Promise<RuntimeMessageResult> {
     if (!message.trim()) throw new Error('message darf nicht leer sein');
     const config = await this.ensureConfig();
+    // P22-T6b: dauerhafter Codex-Main im Container (Wrapper mit codex-runtime), sobald der Runtime-Daemon angemeldet ist.
+    // Registry-Alias 'codex' = Codex-CLI-Standardmodell; ein konfiguriertes Profil-Modell der Identitaet geht vor.
+    const dauerhaft = await dauerhafterMainTurn(this.runtime, session, message, 'codex', emit);
+    if (dauerhaft) return dauerhaft;
     const container = await this.ensureContainer(config);
     await this.ensureRunning(container);
     await this.ensureTrustStore(container);
@@ -441,6 +479,11 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       const root = validateRuntimeRoot(config.rootPath);
       // ⭐ Persistenz-Wache: NIE wieder still eine Runtime ins RAM legen (19208).
       await pruefeRuntimeRootPersistenz(this.docker, config.image, root);
+      if (istAgentRuntimeImage(config.image)) {
+        // P22-T58 (Nachtrag 5045840e): Agent-Runtime-Image wie U4 anlegen – sonst liefe im Container kein Daemon.
+        return this.docker.createContainer(runtimeContainerSpez('codex',
+          { containerName: config.containerName, image: config.image, root, binds: persistentRuntimeBinds(root) }, await leseRuntimeContainerGrenzen()));
+      }
       return this.docker.createContainer({
         name: config.containerName,
         Image: config.image,
@@ -482,7 +525,9 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
       && labels['synapse.runtime'] === this.runtime
       && labels['synapse.agent-role'] === 'main'
       && labels['synapse.runtime-root'] === config.rootPath
-      && info.Config?.Image === config.image
+      // P22-T4 U4: der auf synapse-agent-runtime umgestellte Container (gleiche Labels/Binds, Label
+      // synapse.runtime-image=agent-runtime) bleibt eigener, auch solange agent_runtime_instances.image noch alt ist.
+      && (info.Config?.Image === config.image || labels['synapse.runtime-image'] === 'agent-runtime')
       && JSON.stringify(actualBinds) === JSON.stringify(expectedBinds);
     if (!owned) throw new Error('Containername ist durch einen fremden oder abweichend konfigurierten Container belegt');
   }

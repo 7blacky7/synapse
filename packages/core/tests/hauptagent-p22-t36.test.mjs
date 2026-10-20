@@ -132,7 +132,7 @@ try{
   const MA=akt(MAIN,HP,'main','hauptagent');
   check((await adm('hauptagent_auftrag',{auftrag_art:'neustart',grund:'Test T36 ohne HO'},MA)).error==='hands_off_fehlt','Main ohne hands_off -> hands_off_fehlt');
   const n1=await adm('hauptagent_auftrag',{auftrag_art:'neustart',grund:'Test T36 neustart',hands_off:{arbeitsstand:'Stand A',thought_id:'abc'}},MA);
-  check(n1.success===true&&n1.auftrag.status==='pending'&&n1.auftrag.ausfuehrung==='ausstehend_kein_executor'&&n1.auftrag.tatsaechlich===null,'Main legt Neustart an: pending, tatsaechlich null');
+  check(n1.success===true&&n1.auftrag.status==='pending'&&n1.auftrag.ausfuehrung==='wartet_auf_runtime_daemon'&&n1.auftrag.tatsaechlich===null,'Main legt Neustart an: pending (wartet auf Runtime-Daemon, P22-T6), tatsaechlich null');
   const n2=await adm('hauptagent_auftrag',{auftrag_art:'neustart',grund:'Test T36 doppelt',hands_off:{arbeitsstand:'B'}},MA);
   check(n2.error==='auftrag_offen_vorhanden'&&n2.details?.auftrag_id===n1.auftrag.auftrag_id,'zweiter offener Neustart -> auftrag_offen_vorhanden');
   check((await adm('hauptagent_auftrag',{auftrag_art:'modellwechsel',gewuenscht:{modell:'sonnet'},grund:'Test T36 Rahmen',hands_off:{arbeitsstand:'x'}},MA)).error==='ausserhalb_rahmen','Modell ausserhalb Rahmen -> ausserhalb_rahmen');

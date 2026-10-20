@@ -582,6 +582,10 @@ export * from './services/agent-selbstfelder.js';
 export * from './services/agent-profil-schalter.js';
 // P23-T5: Fall-Skills (kurze Tool-Beschreibungen, Fall-Skill-Hinweis bei Fehlbedienung je Weg).
 export * from './services/fall-skills.js';
+// P23-T3: schlanke Tool-Antworten (Produkt-Schalter tool_antworten_schlank, Standard AUS).
+export * from './services/tool-antworten-schlank.js';
+// P22-T56: tools/list je Verbindung (Ausweis / Legacy / gemeinsam), Schalter tool_liste_je_verbindung.
+export * from './services/tool-liste-verbindung.js';
 export * from './services/tool-beschreibungen-kurz.js';
 export { PAKET_A_DIENSTE, ProfilDienstFehler, pruefeProfilInhalt, leseWirksamenTypInhalt } from './services/agent-profil-dienst-a.js';
 export * from './services/agent-token-tresor.js';
@@ -604,7 +608,68 @@ export {
   legeRuntimeAuftragAn, brecheRuntimeAuftragAb, listeRuntimeAuftraege, istHauptagentAdminAction, fuehreHauptagentAdminAus,
 } from './services/hauptagent-dienst.js';
 export type { HauptagentSchalterStand, MainIdentitaetErgebnis, AuftragEingabe, AuftragArt } from './services/hauptagent-dienst.js';
+// P22-T7 (W2d): Heartbeat des Hauptagenten (Einstellung im Startrezept, nur User) + Verbrauch je Agent/Projekt/Monat (Schema 119).
+export {
+  HEARTBEAT_TAKT_MIN_MS, HEARTBEAT_STANDARD, hauptagentHeartbeatAusStartrezept, leseHauptagentHeartbeat, setzeHauptagentHeartbeat,
+} from './services/hauptagent-dienst.js';
+export type { HauptagentHeartbeatEinstellung } from './services/hauptagent-dienst.js';
+export {
+  VERBRAUCH_FUNKTION, VERBRAUCH_ZUGAENGE, VERBRAUCH_QUELLEN, leseVerbrauchSchalter, setzeVerbrauchSchalter, bucheAgentVerbrauch, leseAgentVerbrauch,
+} from './services/agent-verbrauch.js';
+export type { VerbrauchSchalterStand, VerbrauchBuchung, VerbrauchBuchungsErgebnis, VerbrauchZugang, VerbrauchQuelle } from './services/agent-verbrauch.js';
+export { AGENT_VERBRAUCH_SCHEMA_SQL } from './db/agent-verbrauch-schema.js';
+// P22-T8: kostenpflichtiger API-Agent (Schalter hauptagent Funktion api, globales Budget, Reservierung, Kosten), Schema 120.
+export {
+  HAUPTAGENT_API_FUNKTION, API_ANBIETER, API_ZEITRAEUME, API_EINSTELLUNG_NAMEN, API_EINSTELLUNG_STANDARD, API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER,
+  leseApiFunktion, leseApiSchalter, setzeApiSchalter, leseApiEinstellungen, setzeApiEinstellungen, leseApiModelle, leseApiBudget, setzeApiBudget,
+  entferneApiBudget, apiZeitraumBeginn, reserviereApiAufruf, schliesseApiAufrufAb, apiKostenAusUsage, apiKostenUebersicht, apiRahmenFuerAgent,
+  apiAgentStatus, istApiAgentAdminAction, fuehreApiAgentAdminAus,
+} from './services/api-agent-dienst.js';
+export type {
+  ApiZeitraum, ApiFunktionStand, ApiSchalterStand, ApiEinstellungName, ApiEinstellungen, ApiModellPreis, ApiBudgetStand, ApiReservierungEingabe,
+  ApiReservierung, ApiUsage, ApiAbschlussEingabe, ApiAbschluss, ApiAgentAdminAction,
+} from './services/api-agent-dienst.js';
+export { AGENT_API_BUDGET_SCHEMA_SQL } from './db/agent-api-budget-schema.js';
+// P22-T58 (W2e): Ueberwachung/Neustart der Runtime-Container durch die API (Schalter runtime_ueberwachung), Schema 122.
+export {
+  RUNTIME_UEBERWACHUNG_FUNKTION, UEBERWACHTE_RUNTIMES, RUNTIME_UEBERWACHUNG_EINSTELLUNGEN, RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN,
+  RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, RUNTIME_UEBERWACHUNG_MODI,
+  leseRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungSchalter, leseRuntimeUeberwachungEinstellungen, leseRuntimeUeberwachungWerte, setzeRuntimeUeberwachungEinstellungen,
+  leseUeberwachungStaende, leseUeberwachungEreignisse, markiereRuntimeAngehalten, bewerteRuntime, fuehreUeberwachungsTaktAus,
+  letzterUeberwachungsTakt, registriereUeberwachungsDienste, leseRuntimeUeberwachung, ueberwachungKurz, istRuntimeUeberwachungAdminAction,
+  fuehreRuntimeUeberwachungAdminAus, registriereFreeAusfuehrer, fuehreCliUpdatesAus, leseUmzuege, meldeRuntimeKontingent, resetZeitMs,
+} from './services/runtime-ueberwachung.js';
+export type {
+  UeberwachteRuntime, RuntimeUeberwachungSchalter, RuntimeUeberwachungEinstellungName, RuntimeUeberwachungWerte, RuntimeUeberwachungEinstellungen,
+  UeberwachungZustand, Massnahme as UeberwachungMassnahme, UeberwachungStand, UeberwachungEreignis, ContainerBeobachtung, RuntimeBeobachtung,
+  Entscheidung as UeberwachungEntscheidung, UeberwachungsDienste, TaktBericht as UeberwachungTaktBericht, FreeAusfuehrer, KettenRuntime, KettenSchritt,
+} from './services/runtime-ueberwachung.js';
+export { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './db/runtime-ueberwachung-schema.js';
 export { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './db/agent-runtime-auftraege-schema.js';
+// P22-T5 (W2b): Runtime-Daemon-Zugang (Service-Token je Runtime, Hostbindung wie Tray), Projekte des Container-Hosts.
+export {
+  RUNTIME_DAEMON_SCOPE_PRAEFIX, RUNTIME_PROJEKTE_WURZEL, runtimeDaemonScope, runtimeAusScope, runtimeProjektPfad, loeseRuntimeDaemonZugang,
+  projekteDerRuntime, listeRuntimeProjekte, runtimeDaemonZugangStatus, bindeRuntimeDaemonZugang, widerrufeRuntimeDaemonZugang,
+  verwerfeRuntimeDaemonToken,
+} from './services/runtime-daemon-zugang.js';
+export type { RuntimeDaemonBindung, RuntimeProjekt, RuntimeDaemonZugangStatus } from './services/runtime-daemon-zugang.js';
+// P22-T6 (W2c): dauerhafter Main-Lauf im Container (Spawn/Wake ueber specialist_jobs mit target_runtime) + Ausfuehrung der Runtime-Auftraege.
+export {
+  MainLaufFehler, leseMainLaufOptionen, istMainLaufRuntime, HAUPTAGENT_EXPERTISE, HAUPTAGENT_AUFGABE, hauptagentContainerPfad,
+  leseMainLauf, runtimeDaemonAngemeldet, werkzeugErgebnis, stelleMainLaufSicher, sendeMainTurn, heartbeatBeimSpawnFuerZiel,
+  modellPasstZuRuntime, fuehreRuntimeWechselAus,
+} from './services/hauptagent-lauf.js';
+export type { MainLaufOptionen, MainLaufStand, MainStartEingabe, MainTurnErgebnis, RuntimeWechselDienste } from './services/hauptagent-lauf.js';
+export {
+  AUSFUEHRBARE_AUFTRAG_ARTEN, AUFTRAG_LEASE_MS, RuntimeAuftragFehler, claimeRuntimeAuftraege, meldeRuntimeAuftrag,
+} from './services/runtime-auftraege-ausfuehrung.js';
+export type { AusfuehrbareAuftragArt, AuftragFuerDaemon, AuftragMeldung } from './services/runtime-auftraege-ausfuehrung.js';
+export { SPECIALIST_ZIEL_RUNTIMES } from './services/specialist-queue.js';
+// P22-T6: Nachrichten-Zustellung an Agenten im Runtime-Container ueber den Container-Daemon (Schema 123).
+export { ZUSTELL_WEGE, leseZustellOptionen, sammleZustellungen, fuehreZustellungAus } from './services/hauptagent-zustellung.js';
+export type { ZustellWeg, ZustellOptionen, Zustellung, ZustellErgebnis } from './services/hauptagent-zustellung.js';
+export { AGENT_ZUSTELLUNGEN_SCHEMA_SQL } from './db/agent-zustellungen-schema.js';
+export type { SpecialistZielRuntime } from './services/specialist-queue.js';
 // P22-T45: Ausweis-Fristen als Einstellung (EINE Lesestelle), Schema 117.
 export {
   AUSWEIS_FRIST_NAMEN, AUSWEIS_FRIST_DEFINITIONEN, AusweisFristenFehler, leseAusweisFristen, setzeAusweisFristen, leereAusweisFristenCache,
@@ -1034,6 +1099,8 @@ export {
   claimShellJobHints,
   markShellJobSeenForToolCall,
   pruneShellJobNotices,
+  // P23-T3 Punkt 6b: gleicher beendeter Lauf eines anderen Agenten (Schalter shell_fremde_ergebnisse).
+  fremderLaufFeld,
   CANCEL_PROTECTED_MS,
   EXPIRE_PENDING_AFTER_SEC,
   DETACH_AFTER_MS,
@@ -1347,6 +1414,9 @@ export {
   holeSkillsFuerQuellen,
   aktiveProjektAgenten,
   verarbeiteSkillHinweisgeber,
+  // P23-T8: Hinweisgeber + Abruf je Aufruf (Namenstreffer nur mit Bezug), Kettenquellen
+  holeSkillVorschlaegeFuerAufruf,
+  KETTEN_QUELLEN,
   sammleSkillQuellen,
   baueChannelSkillSuchtext,
   waehleChannelSkillTreffer,

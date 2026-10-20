@@ -33,6 +33,17 @@
  *   daemon-<eigener Host>-<pid> sein. Geclaimt/gemeldet/gereapt wird nur fuer Projekte dieses Hosts
  *   (projekteDesHosts im Core). Access-/OAuth-/Session-/GPU-Token -> 403 daemon_token_erforderlich.
  * ADDITIV: keine bestehende Route aendert sich; der PG-Weg des Daemons bleibt Vorgabe.
+ *
+ * P22-T5 (W2b, Vertrag thought 462ccb13 + User-Korrektur): Principal runtime-daemon = Daemon IM Runtime-Container, ein
+ *   Host wie ein PC. Hostbindung wie beim Tray (daemon_restore_host_bindings, Host = Container-Hostname = container_name),
+ *   je Container, nicht je Projekt; daemon_id daemon-<host>-<pid>. Projekte: jedes bestehende aktive Projekt ohne Eintrag
+ *   je Projekt (User w2 28059, API-seitiger Weg), Pfad /projects/<name> bei Bedarf. Abweichungen (technisch zwingend):
+ *   scope 'runtime-daemon:<runtime>' statt daemon[:*] (sonst wuerden shell/sync/Restore/Loeschen/Reverse/Assets den
+ *   Container als PC behandeln), synapse-hauptagent (virtuell) implizit fuer assigned_to_main, /heartbeat schreibt KEIN
+ *   daemon_heartbeats (PK project: der Container wuerde dem PC das shell-Routing desselben Projekts wegnehmen).
+ *   Nur bei Produkt-Schalter hauptagent EIN. Freigegeben: specialist/daten, /projekte, /heartbeat. specialist/jobs|abschluss|wartung (P22-T6): nur Jobs mit args.target_runtime = eigene Runtime, Projekte
+ *   der Runtime, Pfad /projects/<name>. P22-T6: POST /api/daemon/runtime-auftraege {aktion:'claim'|'melden'} nur fuer ihn.
+ *   Alle anderen Daemon-Routen (shell, sync, Restore ...) lehnen ihn wie bisher mit daemon_token_erforderlich ab.
  */
 
 import { mitAgentAufrufKontext, leseAgentBezugModus, loeseAgentZiel, getWrapperStatus, setzeHeartbeatKonfiguration, beendeIdentitaetsSitzung, type AgentZiel } from '@synapse/core';
@@ -87,6 +98,22 @@ import {
   clearDaemonHeartbeat,
   istVirtuellesProjekt,
   istVirtuellerRegistryPfad,
+  // P22-T5: Runtime-Daemon-Principal
+  runtimeAusScope,
+  loeseRuntimeDaemonZugang,
+  projekteDerRuntime,
+  listeRuntimeProjekte,
+  runtimeProjektPfad,
+  leseHauptagentSchalter,
+  HAUPTAGENT_PROJEKT,
+  type RuntimeDaemonBindung,
+  // P22-T6: Claim-Filter target_runtime, Runtime-Auftraege, Main-Heartbeat beim Spawn
+  istMainLaufRuntime,
+  heartbeatBeimSpawnFuerZiel,
+  claimeRuntimeAuftraege,
+  meldeRuntimeAuftrag,
+  RuntimeAuftragFehler,
+  type AuftragMeldung,
 } from '@synapse/core';
 import type { ShellSicherungEingabe } from '@synapse/core';
 import { validateToken, type AuthTokenRow } from '../services/auth.js';
@@ -99,6 +126,10 @@ const SHELL_STATUS = ['done', 'failed', 'rejected', 'timeout'] as const;
 export interface DaemonJobsRoutesOptionen {
   validateToken?: (token: string) => Promise<AuthTokenRow | null>;
   daemonHost?: (tokenHash: string) => Promise<string | null>;
+  /** P22-T5: Bindung eines runtime-daemon-Tokens an Runtime + Container-Hostname (Standard: Hostbindung + agent_runtime_instances). */
+  runtimeDaemon?: (tokenHash: string, scope: string | null) => Promise<RuntimeDaemonBindung | null>;
+  /** P22-T5: Produkt-Schalter hauptagent (Standard: leseHauptagentSchalter). */
+  hauptagentAktiv?: () => Promise<boolean>;
 }
 
 /** Daemon-/Tray-Zugang wie in routes/project-restore.ts: nur Service-Token mit Scope daemon[:*]. */
@@ -107,15 +138,22 @@ function istDaemonToken(row: AuthTokenRow): boolean {
 }
 
 type Pruefer = (request: FastifyRequest, reply: FastifyReply, host: unknown, daemonId: unknown) => Promise<{ host: string; daemonId: string } | null>;
+/** P22-T5: runtime gesetzt = Runtime-Daemon (Container); host = gebundener Container-Hostname wie beim PC. */
+type DaemonPrincipal = { host: string; daemonId: string; runtime?: RuntimeDaemonBindung };
+type PrueferMitRuntime = (request: FastifyRequest, reply: FastifyReply, host: unknown, daemonId: unknown) => Promise<DaemonPrincipal | null>;
 
 /**
  * Gemeinsame Vorpruefung: Daemon-Token, Host AUS DEM TOKEN, daemon_id. Liefert null, wenn bereits
  * geantwortet wurde. Ein vom Client genanntes host ist nur noch eine Gegenprobe.
  */
-function erstellePruefer(o: DaemonJobsRoutesOptionen): Pruefer {
+function erstellePruefer(o: DaemonJobsRoutesOptionen): Pruefer;
+function erstellePruefer(o: DaemonJobsRoutesOptionen, mitRuntime: true): PrueferMitRuntime;
+function erstellePruefer(o: DaemonJobsRoutesOptionen, mitRuntime = false): PrueferMitRuntime {
   const validate = o.validateToken ?? validateToken;
   let service: ProjectRestoreService | null = null;
   const daemonHost = o.daemonHost ?? ((hash: string) => (service ??= new ProjectRestoreService()).daemonHost(hash));
+  const runtimeDaemon = o.runtimeDaemon ?? loeseRuntimeDaemonZugang;
+  const hauptagentAktiv = o.hauptagentAktiv ?? (async () => (await leseHauptagentSchalter()).aktiv);
   return async (request, reply, host, daemonId) => {
     const raw = request.headers.authorization;
     const token = typeof raw === 'string' ? /^Bearer\s+(.+)$/i.exec(raw.trim())?.[1]?.trim() : undefined;
@@ -123,6 +161,36 @@ function erstellePruefer(o: DaemonJobsRoutesOptionen): Pruefer {
     if (!row) {
       reply.code(401).send({ success: false, error: 'unauthorized' });
       return null;
+    }
+    // P22-T5: eigener Zweig fuer den Runtime-Daemon; der PC-Zweig darunter bleibt unveraendert.
+    if (mitRuntime && row.kind === 'service' && runtimeAusScope(row.scope)) {
+      const bindung = await runtimeDaemon(row.token_hash, row.scope).catch(() => null);
+      if (!bindung) {
+        reply.code(403).send({ success: false, error: 'runtime_daemon_nicht_gebunden', message: 'Dieser Runtime-Daemon-Zugang ist widerrufen oder ersetzt.' });
+        return null;
+      }
+      if (!(await hauptagentAktiv().catch(() => false))) {
+        reply.code(403).send({ success: false, error: 'funktion_aus', funktion: 'hauptagent' });
+        return null;
+      }
+      // Ab hier wie der PC-Zweig: Host aus der Hostbindung, nie vom Client.
+      if (host !== undefined && host !== '' && !istGueltigerHost(host)) {
+        reply.code(400).send({ success: false, error: 'host_ungueltig' });
+        return null;
+      }
+      if (!istGueltigerHost(bindung.host)) {
+        reply.code(403).send({ success: false, error: 'daemon_host_ungueltig' });
+        return null;
+      }
+      if (host !== undefined && host !== '' && host !== bindung.host) {
+        reply.code(403).send({ success: false, error: 'host_verboten', message: 'host passt nicht zur Hostbindung dieses Daemon-Zugangs.' });
+        return null;
+      }
+      if (!istGueltigeDaemonId(daemonId, bindung.host)) {
+        reply.code(400).send({ success: false, error: 'daemon_id_ungueltig', message: 'daemon_id muss daemon-<host>-<pid> sein.' });
+        return null;
+      }
+      return { host: bindung.host, daemonId, runtime: bindung };
     }
     if (!istDaemonToken(row)) {
       reply.code(403).send({ success: false, error: 'daemon_token_erforderlich', message: 'Nur der Daemon-/Tray-Zugang (Service-Token daemon) darf Daemon-Jobs holen und melden.' });
@@ -175,6 +243,10 @@ function istShellAbschluss(a: unknown): a is ShellJobCompletion {
 export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: DaemonJobsRoutesOptionen = {}): Promise<void> {
   fastify.addHook('onClose', async () => { await schliesseDaemonJobWecker(); });
   const pruefeDaemon = erstellePruefer(optionen ?? {});
+  // P22-T5: nur fuer die Routen, die der Runtime-Daemon nutzen darf.
+  const pruefeDaemonOderRuntime = erstellePruefer(optionen ?? {}, true);
+  const runtimeGesperrt = (reply: FastifyReply) => reply.code(403).send({ success: false, error: 'runtime_daemon_route_gesperrt',
+    message: 'Diese Daemon-Route ist fuer den Runtime-Daemon noch nicht freigegeben.' });
 
   // ── Shell ────────────────────────────────────────────────────────────────
   fastify.get<{ Querystring: { host?: string; daemon_id?: string; projekte?: string; frei?: string; warte?: string } }>(
@@ -269,8 +341,10 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
   fastify.get<{ Querystring: { host?: string; daemon_id?: string } }>(
     '/api/daemon/projekte',
     async (request, reply) => {
-      const d = await pruefeDaemon(request, reply, request.query.host, request.query.daemon_id);
+      const d = await pruefeDaemonOderRuntime(request, reply, request.query.host, request.query.daemon_id);
       if (!d) return reply;
+      // P22-T5: Projekte des Container-Hosts (wie unten) plus synapse-hauptagent fuer die Main-Runtime.
+      if (d.runtime) return { success: true, host: d.host, runtime: d.runtime.runtime, projekte: await listeRuntimeProjekte(d.runtime.runtime) };
       const res = await getPool().query<{ name: string; path: string; enabled: boolean; setup_phase: string | null }>(
         `SELECT p.name, p.path, p.enabled, s.setup_phase
            FROM projects p
@@ -288,8 +362,16 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     '/api/daemon/heartbeat',
     async (request, reply) => {
       const body = request.body ?? {};
-      const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+      const d = await pruefeDaemonOderRuntime(request, reply, body.host, body.daemon_id);
       if (!d) return reply;
+      // P22-T5: kein daemon_heartbeats-Eintrag fuer den Container (PK project -> wuerde dem PC das shell-Routing nehmen).
+      // Lebenszeichen ist auth_tokens.last_used_at des Zugangs (die Pruefung oben hat es beruehrt).
+      if (d.runtime) {
+        const projekte = await projekteDerRuntime(leseProjektListe(body.projekte), d.runtime.runtime);
+        if (body.aktion === 'melden') return { success: true, aktion: 'melden', projekte };
+        if (body.aktion === 'loeschen') return { success: true, aktion: 'loeschen', projekte };
+        return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: ['melden', 'loeschen'] });
+      }
       const projekte = await projekteDesHosts(leseProjektListe(body.projekte), d.host);
       if (body.aktion === 'melden') {
         const pid = Number.isSafeInteger(body.pid) ? Number(body.pid) : Number(d.daemonId.slice(`daemon-${d.host}-`.length));
@@ -310,16 +392,21 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
   fastify.get<{ Querystring: { host?: string; daemon_id?: string; projekte?: string; warte?: string } }>(
     '/api/daemon/specialist/jobs',
     async (request, reply) => {
-      const d = await pruefeDaemon(request, reply, request.query.host, request.query.daemon_id);
+      const d = await pruefeDaemonOderRuntime(request, reply, request.query.host, request.query.daemon_id);
       if (!d) return reply;
+      // P22-T6: Runtime-Daemon claimt nur Jobs seiner Runtime (args.target_runtime) in den Projekten der Runtime.
+      const runtime = d.runtime ? d.runtime.runtime : undefined;
+      if (runtime !== undefined && !istMainLaufRuntime(runtime)) return runtimeGesperrt(reply);
       let geschlossen = false;
       request.raw.on('close', () => { geschlossen = true; });
+      const projekte = leseProjektListe(request.query.projekte);
       const jobs = await holeSpecialistJobsFuerDaemon({
         daemonId: d.daemonId,
         host: d.host,
-        projekte: leseProjektListe(request.query.projekte),
+        projekte: runtime ? await projekteDerRuntime(projekte, runtime) : projekte,
         warteMs: warteMsAus(request.query.warte),
         istGeschlossen: () => geschlossen || reply.raw.destroyed,
+        ...(runtime && istMainLaufRuntime(runtime) ? { runtime } : {}),
       });
       if (geschlossen || reply.raw.destroyed) return reply;
       return { success: true, jobs, server_zeit: new Date().toISOString() };
@@ -330,8 +417,9 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     '/api/daemon/specialist/abschluss',
     async (request, reply) => {
       const body = request.body ?? {};
-      const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+      const d = await pruefeDaemonOderRuntime(request, reply, body.host, body.daemon_id);
       if (!d) return reply;
+      // P22-T6: schliesseSpecialistJobFuerDaemon prueft claimed_by = daemon_id; das gilt fuer den Runtime-Daemon genauso.
       if (typeof body.id !== 'string' || !body.id) return reply.code(400).send({ success: false, error: 'id_fehlt' });
       const a = body.abschluss;
       if (!a || typeof a !== 'object' || !(SHELL_STATUS as readonly string[]).includes(String(a.status))) {
@@ -355,8 +443,10 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     };
   }>('/api/daemon/specialist/wartung', async (request, reply) => {
     const body = request.body ?? {};
-    const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+    const d = await pruefeDaemonOderRuntime(request, reply, body.host, body.daemon_id);
     if (!d) return reply;
+    // P22-T6: Runtime-Daemon: Projekte der Runtime, Wrapper-Pfad = Ordner im Container.
+    const rt = d.runtime?.runtime;
     switch (body.aktion) {
       case 'expire': {
         // P10-T78 (Abnahme 61ca8b09): expire wirkt hostuebergreifend auf alle pending Spezialisten-Jobs. Untergrenze
@@ -370,7 +460,10 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         return {
           success: true,
           aktion: 'wrapper_kandidaten',
-          kandidaten: await wrapperReapKandidaten(leseProjektListe(body.projekte), d.host, Number.isFinite(alter) && alter > 0 ? alter : 300_000),
+          kandidaten: rt
+            ? await wrapperReapKandidaten(await projekteDerRuntime(leseProjektListe(body.projekte), rt), d.host,
+              Number.isFinite(alter) && alter > 0 ? alter : 300_000, (p) => runtimeProjektPfad(p))
+            : await wrapperReapKandidaten(leseProjektListe(body.projekte), d.host, Number.isFinite(alter) && alter > 0 ? alter : 300_000),
         };
       }
       case 'wrapper_abgestuerzt': {
@@ -379,7 +472,8 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
           return reply.code(400).send({ success: false, error: 'kandidat_ungueltig' });
         }
         // Nur Wrapper von Projekten, die eindeutig auf DIESEM Host liegen (wie reapLokaleWrapper).
-        if (!(await lokalerProjektpfadFuerHost(k.project, d.host))) {
+        const eigenesProjekt = rt ? (await projekteDerRuntime([k.project], rt)).length === 1 : !!(await lokalerProjektpfadFuerHost(k.project, d.host));
+        if (!eigenesProjekt) {
           return reply.code(409).send({ success: false, error: 'projekt_nicht_auf_diesem_host' });
         }
         return {
@@ -391,6 +485,40 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
       default:
         return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: ['expire', 'wrapper_kandidaten', 'wrapper_abgestuerzt'] });
     }
+  });
+
+  // P22-T6: Runtime-Auftraege (agent_runtime_auftraege) – nur der Runtime-Daemon, nur Identitaeten der Projekte seiner Runtime.
+  fastify.post<{
+    Body: {
+      host?: string; daemon_id?: string; aktion?: string; auftrag_id?: string; claim_revision?: number;
+      schritt?: string; tatsaechlich?: { modell?: string; runtime?: string }; fehler?: string; max?: number;
+    };
+  }>('/api/daemon/runtime-auftraege', async (request, reply) => {
+    const body = request.body ?? {};
+    const d = await pruefeDaemonOderRuntime(request, reply, body.host, body.daemon_id);
+    if (!d) return reply;
+    if (!d.runtime) return reply.code(403).send({ success: false, error: 'nur_runtime_daemon' });
+    const projekte = (await listeRuntimeProjekte(d.runtime.runtime)).map(p => p.name);
+    try {
+      if (body.aktion === 'claim') {
+        return { success: true, aktion: 'claim', runtime: d.runtime.runtime,
+          auftraege: await claimeRuntimeAuftraege({ projekte, max: Number.isSafeInteger(body.max) ? body.max : undefined }) };
+      }
+      if (body.aktion === 'melden') {
+        const meldung: AuftragMeldung = body.schritt === 'completed' ? { schritt: 'completed', tatsaechlich: body.tatsaechlich ?? {} }
+          : body.schritt === 'rejected' ? { schritt: 'rejected', fehler: String(body.fehler ?? '') }
+          : body.schritt === 'accepted' ? { schritt: 'accepted' } : ({ schritt: body.schritt } as unknown as AuftragMeldung);
+        return { success: true, aktion: 'melden',
+          ...(await meldeRuntimeAuftrag({ projekte, auftrag_id: body.auftrag_id, claim_revision: body.claim_revision, meldung,
+            wer: 'runtime-daemon:' + d.runtime.runtime })) };
+      }
+    } catch (err) {
+      if (err instanceof RuntimeAuftragFehler) {
+        return reply.code(err.code === 'auftrag_nicht_eigen' ? 409 : 400).send({ success: false, error: err.code });
+      }
+      throw err;
+    }
+    return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: ['claim', 'melden'] });
   });
 
   // P9-T27 Welle 2: PG-Schritte der Spezialisten-Tools (spawn/stop/purge/wake), ausgefuehrt im Daemon.
@@ -406,7 +534,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     };
   }>('/api/daemon/specialist/daten', async (request, reply) => {
     const body = request.body ?? {};
-    const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+    const d = await pruefeDaemonOderRuntime(request, reply, body.host, body.daemon_id);
     if (!d) return reply;
     const aktion = body.aktion;
     if (!aktion || !(SPEZIALISTEN_DATEN as readonly string[]).includes(aktion)) {
@@ -417,8 +545,16 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
     if (typeof project !== 'string' || leseProjektListe(project).length !== 1) {
       return reply.code(400).send({ success: false, error: 'project_fehlt' });
     }
-    if (aktion === 'projektpfad') return { success: true, aktion, pfad: await lokalerProjektpfadFuerHost(project, d.host) };
-    if ((await projekteDesHosts([project], d.host)).length !== 1) {
+    // P22-T5: Container-Daemon: jedes bestehende aktive Projekt ohne Eintrag je Projekt (projekteDerRuntime), PC: projekteDesHosts.
+    const projektDesDaemons = async (): Promise<boolean> => d.runtime
+      ? (await projekteDerRuntime([project], d.runtime.runtime)).length === 1
+      : (await projekteDesHosts([project], d.host)).length === 1;
+    if (aktion === 'projektpfad') {
+      // Container: Pfad immer /projects/<name> (bei Bedarf angelegt), nie projects.path eines PCs.
+      if (d.runtime) return { success: true, aktion, pfad: (await projektDesDaemons()) ? runtimeProjektPfad(project) : null };
+      return { success: true, aktion, pfad: await lokalerProjektpfadFuerHost(project, d.host) };
+    }
+    if (!(await projektDesDaemons())) {
       return reply.code(409).send({ success: false, error: 'projekt_nicht_auf_diesem_host' });
     }
     const agent = aktion === 'wrapper_status' ? body.zeile?.agentName : aktion === 'inbox_post' ? body.to : body.agent;
@@ -436,6 +572,14 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
       const bindung = await getPool().query(
         "SELECT j.actor_identity_id,i.agent_id AS actor_name FROM specialist_jobs j LEFT JOIN agent_identitaeten i ON i.id=j.actor_identity_id AND i.project=j.project WHERE j.id=$1 AND j.project=$2 AND j.target_identity_id=$3 AND j.claimed_by=$4 AND j.status='running'",
         [body.auftrag_id, project, body.identity_id, d.daemonId]);
+      // P22-T6: der Runtime-Daemon fuehrt auch Runtime-Auftraege (Neustart/Modellwechsel/Stop) ueber dieselben Tools aus;
+      // gebunden ist dann der von ihm geclaimte Auftrag mit gueltiger Lease (Projekt der Runtime ist oben geprueft).
+      if (!bindung.rows.length && d.runtime) {
+        const ra = await getPool().query(
+          "SELECT 1 FROM agent_runtime_auftraege a JOIN agent_identitaeten i ON i.id=a.identity_id WHERE a.id=$1 AND a.identity_id=$2 AND i.project=$3 AND a.status IN ('claimed','accepted') AND a.lease_bis > NOW()",
+          [body.auftrag_id, body.identity_id, project]);
+        if (ra.rows.length) bindung.rows.push({ actor_identity_id: null, actor_name: null });
+      }
       if (!bindung.rows.length) return reply.code(403).send({ success: false, error: 'daemon_identity_auftrag_falsch' });
       const a = bindung.rows[0];
       if (a.actor_identity_id && a.actor_name) actor = { art:'identity',project,agent_id:a.actor_name,identity_id:a.actor_identity_id };
@@ -490,7 +634,8 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         await upsertWrapperStatus(body.zeile as unknown as Parameters<typeof upsertWrapperStatus>[0], ziel);
         return { success: true, aktion };
       case 'heartbeat_beim_spawn':
-        if (ziel.art === 'identity') await setzeHeartbeatKonfiguration(project, [ziel], { enabled: true, intervalMs: null });
+        // P22-T6: Identitaeten ueber heartbeatBeimSpawnFuerZiel (Main: startrezept.heartbeat, Standard AUS; sonst an/adaptiv).
+        if (ziel.art === 'identity') await heartbeatBeimSpawnFuerZiel(project, ziel);
         else await setzeHeartbeatBeimSpawn(project, agent);
         return { success: true, aktion };
       case 'wrapper_pid': {

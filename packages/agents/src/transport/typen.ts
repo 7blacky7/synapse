@@ -135,9 +135,41 @@ export const FAEHIGKEITEN = [
   'inbox-quittung',
   'items',
   'status',
+  'verbrauch',
+  // P22-T58: Abo-Kontingent der Runtime (erschoepft/frei) fuer die Runtime-Ueberwachung der API.
+  'kontingent',
 ] as const
 
 export type Faehigkeit = (typeof FAEHIGKEITEN)[number]
+
+/**
+ * P22-T7: Verbrauch EINER Modellantwort einer Abo-CLI. referenz ist je Antwort eindeutig (z. B. claude:<message.id>);
+ * der Server bucht jede Referenz genau einmal, ein erneutes Melden nach Neustart zaehlt also nicht doppelt.
+ */
+export interface VerbrauchEintrag {
+  referenz: string
+  modell: string | null
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+}
+
+/**
+ * P22-T58: Abo-Kontingent der Runtime laut CLI. rejected = erschoepft (Claude rate_limit_event status 'rejected', Codex
+ * Usage-Limit-Fehler), allowed = wieder frei. resets_at wie von der CLI geliefert (Sekunden seit Epoch) oder null.
+ */
+export interface KontingentMeldung {
+  status: 'rejected' | 'allowed'
+  resets_at: number | string | null
+  art: string | null
+}
+
+export interface VerbrauchErgebnis {
+  gebucht: number
+  /** Grund, warum nichts gebucht wurde (z. B. funktion_aus = Produkt-Schalter verbrauch AUS). */
+  grund: string | null
+}
 
 export interface FaehigkeitsZaehler {
   aufrufe: number
@@ -270,6 +302,10 @@ export interface WrapperTransport {
   leseNeueInboxNachrichten(seitId: number): Promise<InboxNachricht[]>
   quittiereInbox(ids: number[]): Promise<void>
   leseSynapseItems(): Promise<SynapseItems>
+  /** P22-T7: Abo-Verbrauch melden (runtime z. B. 'claude'). Wirft bei Transportfehlern; der Aufrufer meldet spaeter erneut. */
+  bucheVerbrauch(runtime: string, eintraege: VerbrauchEintrag[]): Promise<VerbrauchErgebnis>
+  /** P22-T58: Wechsel des Abo-Kontingents melden (nur Zustandswechsel). Wirft bei Transportfehlern. */
+  meldeKontingent?(runtime: string, meldung: KontingentMeldung): Promise<void>
   schreibeStatus(status: StatusNutzlast): Promise<void>
 
   /** Beschleuniger, kein Fundament. Faellt er aus, laeuft der Poll-Takt weiter. */

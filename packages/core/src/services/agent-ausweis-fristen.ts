@@ -12,6 +12,8 @@
  *   files_plan_stunden   files-Plaene (P6-T49, User 19.10.2026 'nach 2 Tagen auf jeden Fall abgeschlossen'): offener Plan
  *                        ohne Aktivitaet laenger als diese Frist wird vom REST-Worker files_plan_ablauf abgeschlossen
  *                        (Status expired, nichts geschrieben; Standard 48 h). Laufende Plaene messen gegen den aktuellen Wert.
+ *   shell_hinweis_minuten  shell_activity (P23-T3, User 20.10.2026): beendete Shell-Jobs ALLER Agenten werden bis so viele
+ *                        Minuten nach Abschluss als Fertig-Hinweis zugestellt, laufende immer (Standard 60; vorher fest 8).
  * QUELLE: PG-Tabelle agent_ausweis_fristen (Schema 117), je Wert projekt > global > Standard. KEINE Env (die fruehere
  *   Env-Variable fuer die Erstnutzung entfaellt). Lesefehler (z. B. vor Schema 117) -> Standard mit letzter_fehler.
  * EINE LESESTELLE: leseAusweisFristen (und die Kurzformen schattenFristMs/erstnutzungFristMs). Diese Datei importiert
@@ -26,7 +28,7 @@
 import { getPool } from '../db/client.js';
 import { kernTtlMs } from './agent-profil-schalter.js';
 
-export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten', 'files_plan_stunden'] as const;
+export const AUSWEIS_FRIST_NAMEN = ['schatten_stunden', 'erstnutzung_minuten', 'visum_minuten', 'arbeitsfreigabe_stunden', 'anmeldung_plaene_minuten', 'files_plan_stunden', 'shell_hinweis_minuten'] as const;
 export type AusweisFristName = typeof AUSWEIS_FRIST_NAMEN[number];
 export type AusweisFristQuelle = 'standard' | 'global' | 'projekt';
 type Einheit = 'stunden' | 'minuten';
@@ -46,6 +48,8 @@ export const AUSWEIS_FRIST_DEFINITIONEN: Readonly<Record<AusweisFristName, Frist
     wirkung: 'chat(anmelden) (P22-T50): eigene offene files-Plaene, die juenger als dieses Fenster sind, als eine Zeile in der Anmeldung' },
   files_plan_stunden: { standard: 48, einheit: 'stunden', min: 1, max: 720,
     wirkung: 'files-Plaene (P6-T49): offener Plan ohne Aktivitaet laenger als diese Frist wird automatisch abgeschlossen (Status expired, nichts geschrieben, Ops bleiben lesbar)' },
+  shell_hinweis_minuten: { standard: 60, einheit: 'minuten', min: 1, max: 1440,
+    wirkung: 'shell_activity (P23-T3): beendete Shell-Jobs aller Agenten erscheinen bis so viele Minuten nach Abschluss als Fertig-Hinweis (laufende immer); aeltere fallen weg' },
 };
 const EINHEIT_MS: Readonly<Record<Einheit, number>> = { stunden: 3_600_000, minuten: 60_000 };
 

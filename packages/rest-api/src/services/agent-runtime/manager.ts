@@ -4,7 +4,25 @@ import { ClaudeRuntimeDriver } from './claude-driver.js';
 import { FreeModelPoolDriver } from './free-pool-driver.js';
 import { TerminalSessionRegistry } from './terminal-sessions.js';
 import type { AgentRuntimeDriver, MainAgentSession, RuntimeName, RuntimeStatus } from './types.js';
-import { leseHauptagentSchalter, stelleMainIdentitaetSicher } from '@synapse/core';
+import { leseHauptagentSchalter, stelleMainIdentitaetSicher, fuehreRuntimeWechselAus, fuehreZustellungAus, hauptagentIdentitaetsId, istMainLaufRuntime } from '@synapse/core';
+import {
+  fuehreUeberwachungsTaktAus, leseRuntimeUeberwachungWerte, registriereUeberwachungsDienste, fuehreCliUpdatesAus, type UeberwachungsDienste, type UeberwachungTaktBericht,
+} from '@synapse/core';
+
+/**
+ * P22-T58 F5: Pruefraster fuer faellige CLI-Updates; ob eins faellig ist, entscheidet die Einstellung cli_update_stunden.
+ * P22-T60: laeuft unabhaengig vom Schalter runtime_ueberwachung (abschaltbar nur ueber cli_update_automatisch).
+ */
+const CLI_UPDATE_PRUEF_MS = 10 * 60_000;
+
+/** P22-T58: erster Ueberwachungstakt nach dem Start; danach Einstellung takt_sekunden (Schalter runtime_ueberwachung, Standard AUS). */
+const UEBERWACHUNG_START_MS = 15_000;
+
+/** P22-T6: Takt der Nachrichten-Zustellung an den Hauptagenten im Container (Ledger agent_zustellungen). */
+const ZUSTELL_TAKT_MS = Math.max(500, Number(process.env.SYNAPSE_HAUPTAGENT_ZUSTELL_MS) || 2_000);
+
+/** P22-T6c: Takt des Runtime-Wechsel-Ausfuehrers (runtime_wechsel-Auftraege des Hauptagenten). */
+const RUNTIME_WECHSEL_TAKT_MS = 10_000;
 
 export class AgentRuntimeManager {
   readonly terminals = new TerminalSessionRegistry();
@@ -19,6 +37,111 @@ export class AgentRuntimeManager {
     this.drivers.set(codex.runtime, codex);
     this.drivers.set(claude.runtime, claude);
     this.drivers.set(freePool.runtime, freePool);
+    // P22-T6c: runtime_wechsel braucht beide Container-Daemons (alte Runtime stoppt, neue startet) - die API fuehrt ihn aus.
+    this.wechselTimer = setInterval(() => { void this.runtimeWechselTakt(); }, RUNTIME_WECHSEL_TAKT_MS);
+    this.wechselTimer.unref();
+    this.zustellTimer = setInterval(() => { void this.zustellTakt(); }, ZUSTELL_TAKT_MS);
+    this.zustellTimer.unref();
+    // P22-T58: Ueberwachung der Runtime-Container (Container nur Prozesshalter, Entscheidungen hier in der API).
+    registriereUeberwachungsDienste(this.ueberwachungsDienste);
+    this.planeUeberwachung(UEBERWACHUNG_START_MS);
+    this.cliUpdateTimer = setInterval(() => { void fuehreCliUpdatesAus(this.ueberwachungsDienste).catch(() => undefined); }, CLI_UPDATE_PRUEF_MS);
+    this.cliUpdateTimer.unref();
+  }
+
+  private cliUpdateTimer: NodeJS.Timeout | null = null;
+
+  private ueberwachungTimer: NodeJS.Timeout | null = null;
+  private beendet = false;
+
+  /** P22-T58: Docker-Seite der Runtime-Ueberwachung (core fuehrt Bewertung, Stand und Ereignisse). */
+  private readonly ueberwachungsDienste: UeberwachungsDienste = {
+    beobachte: (runtime, o) => {
+      const d = this.driver(runtime);
+      if (!d.beobachte) throw new Error('Runtime ohne Container: ' + runtime);
+      return d.beobachte(o);
+    },
+    starteContainer: async (runtime) => { await this.driver(runtime).start(); },
+    neustartContainer: async (runtime) => {
+      const d = this.driver(runtime);
+      if (!d.neustart) throw new Error('Runtime ohne Container: ' + runtime);
+      await d.neustart();
+    },
+    mainRuntime: async () => (await this.repository.getAssignedMain())?.runtime ?? null,
+    standardModell: (runtime) => this.standardModell(runtime),
+    stoppeContainer: async (runtime) => { await this.driver(runtime).stop(); },
+    cliUpdate: async (runtime, o) => {
+      const d = this.driver(runtime);
+      if (!d.cliUpdate) throw new Error('Runtime ohne Container: ' + runtime);
+      return d.cliUpdate(o);
+    },
+  };
+
+  private planeUeberwachung(ms: number): void {
+    if (this.beendet) return;
+    this.ueberwachungTimer = setTimeout(() => { void this.ueberwachungTakt(); }, ms);
+    this.ueberwachungTimer.unref();
+  }
+
+  private async ueberwachungTakt(): Promise<void> {
+    let naechster = UEBERWACHUNG_START_MS;
+    try {
+      await fuehreUeberwachungsTaktAus(this.ueberwachungsDienste);
+      naechster = (await leseRuntimeUeberwachungWerte()).takt_sekunden * 1000;
+    } catch (error) {
+      console.error('[agent-runtime] Runtime-Ueberwachung:', (error as Error).message);
+    } finally {
+      this.planeUeberwachung(naechster);
+    }
+  }
+
+  /** P22-T58: Takt sofort (REST/Web-UI); trocken = nur bewerten. */
+  ueberwachungJetzt(trocken: boolean): Promise<UeberwachungTaktBericht> {
+    return fuehreUeberwachungsTaktAus(this.ueberwachungsDienste, { trocken });
+  }
+
+  private async standardModell(runtime: string): Promise<string> {
+    return runtime === 'codex' ? 'codex' : ((await this.repository.get('claude'))?.model ?? 'sonnet');
+  }
+
+  private zustellTimer: NodeJS.Timeout | null = null;
+  private zustellLaeuft = false;
+
+  /** P22-T6: Nachrichten an den Main (inbox/chat/channel/event) ueber den Container-Daemon zustellen. */
+  private async zustellTakt(): Promise<void> {
+    if (this.zustellLaeuft) return;
+    this.zustellLaeuft = true;
+    try {
+      if (!(await leseHauptagentSchalter()).aktiv) return;
+      const identityId = await hauptagentIdentitaetsId();
+      const runtime = (await this.repository.getAssignedMain())?.runtime;
+      if (!identityId || !istMainLaufRuntime(runtime)) return;
+      await fuehreZustellungAus({ identity_id: identityId, runtime });
+    } catch (error) {
+      console.error('[agent-runtime] Zustellung:', (error as Error).message);
+    } finally {
+      this.zustellLaeuft = false;
+    }
+  }
+
+  private wechselTimer: NodeJS.Timeout | null = null;
+  private wechselLaeuft = false;
+
+  private async runtimeWechselTakt(): Promise<void> {
+    if (this.wechselLaeuft) return;
+    this.wechselLaeuft = true;
+    try {
+      if (!(await leseHauptagentSchalter()).aktiv) return;
+      await fuehreRuntimeWechselAus({
+        weiseMainZu: (runtime) => this.repository.assignMain(runtime),
+        zugewiesen: async () => (await this.repository.getAssignedMain())?.runtime ?? null,
+        standardModell: (runtime) => this.standardModell(runtime),
+      });
+    } catch (error) {
+      console.error('[agent-runtime] Runtime-Wechsel-Ausfuehrer:', (error as Error).message);
+    } finally {
+      this.wechselLaeuft = false;
+    }
   }
 
   driver(runtime: string): AgentRuntimeDriver {
@@ -65,8 +188,9 @@ export class AgentRuntimeManager {
     } catch {
       return { identityId: null };
     }
-    // P1: nur der Claude-Treiber nutzt den Identitaetsweg; codex/free-pool bleiben Altweg (benannter Rest).
-    if (runtime !== 'claude') return { identityId: null, info: { weg: 'altweg', fehler: 'runtime_nicht_umgestellt' } };
+    // P1: nur der Claude-Treiber nutzt den Identitaetsweg; free-pool bleibt Altweg (benannter Rest).
+    // P22-T6b: Codex-Main laeuft ueber denselben dauerhaften Container-Weg (codex-runtime im Wrapper).
+    if (runtime !== 'claude' && runtime !== 'codex') return { identityId: null, info: { weg: 'altweg', fehler: 'runtime_nicht_umgestellt' } };
     try {
       const cfg = await this.repository.get(runtime);
       const r = await stelleMainIdentitaetSicher({ art: 'user' }, { modell: cfg?.model ?? null, runtime });
@@ -108,6 +232,12 @@ export class AgentRuntimeManager {
   }
 
   shutdown(): void {
+    if (this.wechselTimer) clearInterval(this.wechselTimer);
+    if (this.zustellTimer) clearInterval(this.zustellTimer);
+    this.beendet = true;
+    if (this.ueberwachungTimer) clearTimeout(this.ueberwachungTimer);
+    if (this.cliUpdateTimer) clearInterval(this.cliUpdateTimer);
+    registriereUeberwachungsDienste(null);
     this.terminals.closeAll();
   }
 }

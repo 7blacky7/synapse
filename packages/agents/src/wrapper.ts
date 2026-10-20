@@ -48,7 +48,7 @@ import {
   type SpecialistStatus,
 } from './types.js'
 import { resolveModel, kontextSchwellen, loadFromDb } from './models.js'
-import { berechneTokenStand } from './token-stand.js'
+import { berechneTokenStand, verbrauchAusZeilen } from './token-stand.js'
 import {
   createState as createHeartbeatState,
   onEvent as onHeartbeatEvent,
@@ -89,6 +89,9 @@ const SOCKET_PATH = process.env.SYNAPSE_SOCKET_PATH!
 const SYSTEM_PROMPT_FILE = process.env.SYNAPSE_SYSTEM_PROMPT_FILE ?? ''
 const POLL_INTERVAL = parseInt(process.env.SYNAPSE_POLL_INTERVAL || '15000', 10)
 const KEEP_ALIVE = process.env.SYNAPSE_KEEP_ALIVE === '1'
+// P22-T6: im Runtime-Container stellt der Daemon Inbox/Chat/Channel/Event-Nachrichten selbst zu (Ledger in der API).
+// Der Wrapper verarbeitet diese Inhalte dann nicht noch einmal: er rueckt nur die Wasserstaende vor, quittiert nichts.
+const ZUSTELLUNG_DAEMON = process.env.SYNAPSE_ZUSTELLUNG_DAEMON === '1'
 // P7-T18: nach so vielen Leer-Antworten (HEARTBEAT_OK) auf Leer-Weckrufe hintereinander
 // gibt es keinen Leer-Weckruf mehr, bis ein echter Anlass kommt. 0 = wie bisher (nie Pause).
 const LEERLAUF_SCHWELLE = leseLeerlaufSchwelle()
@@ -455,6 +458,7 @@ async function syncTokensFromHistory(): Promise<void> {
     const lines = content.trimEnd().split('\n')
 
     const stand = berechneTokenStand(lines)
+    void meldeVerbrauch(lines)
 
     if (stand.kontextInput > 0 || stand.kumulierterOutput > 0) {
       // Kontext = Eingabe des letzten Turns + NUR dessen Output (siehe token-stand.ts, P7-T29)
@@ -465,6 +469,67 @@ async function syncTokensFromHistory(): Promise<void> {
     }
   } catch (err) {
     log('syncTokens: Fehler beim Lesen von %s: %s', jsonlPath, err instanceof Error ? err.message : String(err))
+  }
+}
+
+/**
+ * P22-T7: Abo-Verbrauch (nur Claude-CLI, provider anthropic) je Modellantwort aus derselben JSONL melden. Bereits
+ * gemeldete Antworten merkt sich der Wrapper; nach einem Neustart meldet er erneut, der Server bucht jede Referenz aber
+ * nur einmal. Schlaegt das Melden fehl, bleibt die Antwort offen und geht mit dem naechsten Abgleich wieder mit.
+ * Produkt-Schalter verbrauch AUS (grund funktion_aus): die Antworten gelten als erledigt, es wird nichts nachgebucht.
+ */
+const gemeldeteVerbrauche = new Set<string>()
+let verbrauchMeldungLaeuft = false
+async function meldeVerbrauch(zeilen: readonly string[]): Promise<void> {
+  // P22-T6b: Codex-Runtime (provider openai) schreibt dieselbe JSONL-Form und bucht als runtime 'codex'.
+  const anbieter = resolveModel(AGENT_MODEL)?.provider
+  const runtimeArt = anbieter === 'anthropic' ? 'claude' : anbieter === 'openai' ? 'codex' : null
+  if (!PROJECT_NAME || verbrauchMeldungLaeuft || !runtimeArt) return
+  const offen = verbrauchAusZeilen(zeilen).filter(v => !gemeldeteVerbrauche.has(v.id))
+  if (!offen.length) return
+  verbrauchMeldungLaeuft = true
+  try {
+    for (let i = 0; i < offen.length; i += 200) {
+      const teil = offen.slice(i, i + 200)
+      const r = await transport.bucheVerbrauch(runtimeArt, teil.map(v => ({
+        referenz: runtimeArt + ':' + v.id, modell: v.modell, input_tokens: v.input_tokens, output_tokens: v.output_tokens,
+        cache_read_tokens: v.cache_read_tokens, cache_creation_tokens: v.cache_creation_tokens,
+      })))
+      for (const v of teil) gemeldeteVerbrauche.add(v.id)
+      if (r.gebucht) log('verbrauch: %d Antwort(en) gebucht', r.gebucht)
+      if (r.grund === 'funktion_aus') { for (const v of offen) gemeldeteVerbrauche.add(v.id); break }
+    }
+  } catch (err) {
+    log('verbrauch: Melden fehlgeschlagen, naechster Abgleich versucht es erneut: %s', err instanceof Error ? err.message : String(err))
+  } finally {
+    verbrauchMeldungLaeuft = false
+  }
+}
+
+/**
+ * P22-T58: Abo-Kontingent der Runtime an die API melden (Claude rate_limit_event, Codex Usage-Limit ueber codex-runtime). Nur
+ * Zustandswechsel gehen raus: rejected, und allowed erst nach einem rejected, nicht jedes 'allowed' eines Turns. Die Runtime-
+ * Ueberwachung der API entscheidet daraus ueber den Wechsel aller Agenten (Kette) und die Rueckkehr nach der Reset-Zeit.
+ */
+let letzterKontingentStatus = 'allowed'
+async function meldeKontingent(info: Record<string, unknown> | undefined): Promise<void> {
+  const status = typeof info?.status === 'string' ? info.status : null
+  const anbieter = resolveModel(AGENT_MODEL)?.provider
+  const runtimeArt = anbieter === 'anthropic' ? 'claude' : anbieter === 'openai' ? 'codex' : null
+  if ((status !== 'rejected' && status !== 'allowed') || !runtimeArt || !PROJECT_NAME || !transport.meldeKontingent) return
+  if (status === letzterKontingentStatus) return
+  letzterKontingentStatus = status
+  const reset = info?.resetsAt
+  try {
+    await transport.meldeKontingent(runtimeArt, {
+      status, resets_at: typeof reset === 'number' || typeof reset === 'string' ? reset : null,
+      art: typeof info?.rateLimitType === 'string' ? info.rateLimitType : null,
+    })
+    log('kontingent: %s fuer %s gemeldet', status, runtimeArt)
+  } catch (err) {
+    // Beim naechsten Ereignis erneut melden.
+    letzterKontingentStatus = status === 'rejected' ? 'allowed' : 'rejected'
+    log('kontingent: Melden fehlgeschlagen: %s', err instanceof Error ? err.message : String(err))
   }
 }
 
@@ -1153,6 +1218,7 @@ async function recoverStuckAgent(): Promise<void> {
  * Das Abfragen ist hier herausgewandert (Schritt 3) — der Prompt-Bau nicht.
  */
 async function pollChannelMessages(newMsgs: ChannelNachricht[]): Promise<boolean> {
+  if (ZUSTELLUNG_DAEMON) { if (newMsgs.length) lastChannelMsgId = newMsgs[newMsgs.length - 1].id; return false }
   if (agentBusy) return false
   if (newMsgs.length === 0) return false
 
@@ -1217,6 +1283,7 @@ Wenn du weiterarbeitest und keine Pause machst, kann der Wrapper dich nicht rech
 
 /** Wie pollChannelMessages: geholt wurde schon, hier wird nur verarbeitet und quittiert. */
 async function pollInboxMessages(newMsgs: InboxNachricht[]): Promise<boolean> {
+  if (ZUSTELLUNG_DAEMON) { if (newMsgs.length) lastInboxMsgId = newMsgs[newMsgs.length - 1].id; return false }
   if (agentBusy) return false
   if (newMsgs.length === 0) return false
 
@@ -1245,6 +1312,8 @@ async function pollSynapseItems(geholt: SynapseItems | null): Promise<boolean> {
   if (agentBusy || !PROJECT_NAME) return false
   // null = in diesem Takt nicht abgefragt (abgeschaltet oder beschaeftigt).
   if (!geholt) return false
+  // P22-T6: Events stellt im Container der Daemon zu.
+  if (ZUSTELLUNG_DAEMON) geholt = { ...geholt, events: [] }
 
   const items: string[] = []
 
@@ -1571,6 +1640,11 @@ function setupProcessManagerEvents() {
         void cleanup().then(() => process.exit(1))
       }
     }
+  })
+
+  processManager.on('kontingent', (agentName: string, info: Record<string, unknown> | undefined) => {
+    if (agentName !== AGENT_NAME) return
+    void meldeKontingent(info)
   })
 
   processManager.on('error', (agentName: string, err: Error) => {

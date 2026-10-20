@@ -13,6 +13,9 @@
  *   4) mit_jev:true: ECHTER Jev-Aufruf als eigene Funktion skill_rerank_probe (jev-schalter.ts) - unabhaengig vom
  *      Schalter skill_rerank (laeuft auch bei AUS), Kosten in jev_aufrufe -> admin jev_kosten. Jev global/Projekt aus
  *      oder Budget-Pause gelten weiter. Ergebnis je Kandidat: Wert, Tor, durchgelassen/verworfen.
+ *   5) P23-T8: namentlich_erkannt zeigt die Namenserkennung - je genanntem Skill Regel, Fundstellen im Text, ob er
+ *      in die Sinnpruefung geht, die Begruendung im Vorrat und die Zustellregel (nur mit Bezug, keine Kette);
+ *      zustellung_regeln fasst Kette (KETTEN_QUELLEN), Namenstreffer und Altbestand zusammen.
  * RECHTE: nur User (authentifizierter Eingang) oder Koordinator DIESES Projekts (pruefeProfilVerwalter; auch
  *   Legacy-Koordinator ohne Ausweis wie bei admin). Sonst recht_fehlt.
  * ANTWORT: { success, action, ... }; fuehreSkillProbeAus wirft nie.
@@ -24,8 +27,9 @@ import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pruefeProfilVerwalter } fro
 import type { AusweisAkteur } from './agent-profil-vertrag.js';
 import {
   SKILL_KANDIDATEN_GRENZEN, baueChannelSkillSuchtext, ermittleSkillKandidaten, istNamentlichGenannt, loeseSkillEmpfaenger, skillHandle,
+  KETTEN_QUELLEN, NAMENSTREFFER_SCORE, NAMENS_GRUND, NAMENS_GRUND_MARKE,
 } from './skill-hook.js';
-import { searchSkillsForAgents, type SkillSearchHit } from './skills.js';
+import { istSkillNameImText, searchSkillsForAgents, type SkillSearchHit } from './skills.js';
 import { baueSkillSinnAnfrage, schaetzeTokens, werteSkillSinnAntwort } from './skill-rerank.js';
 import { leseJevOptionen, SKILL_RERANK_BUDGET_GRENZE } from './jev-optionen.js';
 import { rufeJev } from './jev-client.js';
@@ -42,6 +46,7 @@ export function istSkillProbeAction(action: string): boolean {
 export const SKILL_PROBE_BESCHREIBUNG =
   'skill_probe (text, project, empfaenger, schwelle, abstand, mit_jev, limit; nur Koordinator/User, schreibt nichts): Diagnose der Skill-Vorschlaege fuer einen Text - ' +
   'semantische Kandidaten je Empfaenger mit Score und Ergebnis (namentlich | kandidat | unter_schwelle | mehrdeutig | nicht_bester | deckel), ' +
+  'namentlich erkannte Skills mit Regel, Fundstelle, Sinnpruefung und Zustellregel (nur mit Bezug, keine Kette), ' +
   'wirksame Schwellen channel_skill/channel_skill_abstand mit Quelle (schwelle/abstand = Testwerte nur fuer diese Probe), ' +
   'Jev-state der Sinnpruefung (Tokens + gekuerzter Auszug je Teil); mit_jev:true = ECHTER Jev-Aufruf als Funktion skill_rerank_probe ' +
   '(Kosten in jev_kosten) mit Wert, Tor und Ergebnis je Kandidat, auch wenn skill_rerank AUS ist. ';
@@ -67,6 +72,21 @@ export interface SkillProbeDeps {
 
 const AUSZUG_ZEICHEN = 300;
 const MAX_EMPFAENGER = 10;
+const MAX_FUNDSTELLEN = 5;
+const FUNDSTELLE_UMFELD = 40;
+
+/** P23-T8: wo der Name im Text steht - dieselbe Regel wie der Hook (istSkillNameImText), je Fundstelle mit Umfeld. */
+function fundstellen(name: string, text: string): Array<{ position: number; auszug: string }> {
+  const t = text.toLowerCase();
+  const n = name.toLowerCase();
+  const aus: Array<{ position: number; auszug: string }> = [];
+  for (let ab = t.indexOf(n); ab !== -1 && aus.length < MAX_FUNDSTELLEN; ab = t.indexOf(n, ab + 1)) {
+    // Fenster mit zwei Zeichen Umfeld je Seite: genau so weit schaut die Wortgrenzen-Regel.
+    if (!istSkillNameImText(n, t.slice(Math.max(0, ab - 2), ab + n.length + 2))) continue;
+    aus.push({ position: ab, auszug: text.slice(Math.max(0, ab - FUNDSTELLE_UMFELD), ab + n.length + FUNDSTELLE_UMFELD) });
+  }
+  return aus;
+}
 
 function text(a: Record<string, unknown>, k: string): string | undefined {
   const v = a[k];
@@ -197,6 +217,20 @@ export async function skillProbe(
     };
   });
 
+  // P23-T8: der Weg der Namenserkennung. Genannt = PG-Namensliste (findeSkillsNachName) plus Vektortreffer, deren Name
+  // im Text steht - beide nach derselben Regel. Was danach passiert, steht dabei: Sinnpruefung, Begruendung, Zustellung.
+  const genannteNamen = [...new Set([...erm.namensTreffer, ...erm.auswahl.flatMap((x) => x.namentlich.map((h) => h.skill_name))])].sort();
+  const namentlichErkannt = genannteNamen.map((name) => ({
+    skill_name: name,
+    regel: 'voller Name mit Wortgrenze (istSkillNameImText); Namensanfang und Trigramm ("Name unscharf erkannt") sind zurueckgebaut',
+    quelle: erm.namensTreffer.includes(name) ? 'namensliste' : 'vektortreffer',
+    score: NAMENSTREFFER_SCORE,
+    fundstellen: fundstellen(name, query),
+    sinnpruefung: erm.besterJeSkill.has(name),
+    begruendung_im_vorrat: `${NAMENS_GRUND} (<Quelle>, ${NAMENS_GRUND_MARKE}<Jev-Zusatz>)`,
+    zustellung: 'nur an Aufrufe, die genau diese Quelle lesen oder schreiben - keine Kette ueber Folgeaufrufe',
+  }));
+
   // Jev-Teil: derselbe state wie im Betrieb (baueSkillSinnAnfrage); geht im Betrieb nur bei skill_rerank an Jev.
   const opt = await leseJevOptionen();
   const schalter = await jevWirksam(project, 'skill_rerank');
@@ -214,7 +248,7 @@ export async function skillProbe(
   if (kandidaten.length === 0) {
     jev.state = null;
     jev.grund = 'keine_kandidaten';
-    jev.hinweis = 'Keine semantischen Kandidaten - genannte Skills (Kette 0,99) laufen nie durch die Sinnpruefung.';
+    jev.hinweis = 'Keine Kandidaten fuer die Sinnpruefung - weder genannt noch semantisch ueber der Schwelle.';
     if (mitJev) jev.ergebnis = { gelaufen: false, grund: 'keine_kandidaten' };
   } else {
     const { state, questions, bericht } = await baueSkillSinnAnfrage({
@@ -259,7 +293,7 @@ export async function skillProbe(
                 ...state.skills.map((s) => {
                   const w = werte.get(s.name);
                   return {
-                    skill_name: s.name, wert: w ?? null,
+                    skill_name: s.name, art: genannteNamen.includes(s.name) ? 'namentlich' : 'semantisch', wert: w ?? null,
                     ergebnis: w === undefined ? 'verworfen (ohne Wert)' : w >= tor ? 'durchgelassen' : 'verworfen',
                   };
                 }),
@@ -287,6 +321,13 @@ export async function skillProbe(
     },
     grenzen: SKILL_KANDIDATEN_GRENZEN,
     namentlich_genannt: erm.namensTreffer,
+    namentlich_erkannt: namentlichErkannt,
+    zustellung_regeln: {
+      kette_quellen: [...KETTEN_QUELLEN],
+      kette: 'Vorgabe (Profil) und Skill-Abruf werden an allen Folgeaufrufen nachgeliefert, bis gesehen',
+      namenstreffer: 'nur mit Bezug: der Aufruf liest oder schreibt die Quelle, in der der Name steht; vorher Jev-Sinnpruefung, wenn skill_rerank an',
+      altbestand: `nie ausgeliefert: "Name unscharf erkannt" und "${NAMENS_GRUND}" ohne "${NAMENS_GRUND_MARKE}" (alte Namensregel)`,
+    },
     je_empfaenger: jeEmpfaenger,
     sinnpruefung_kandidaten: kandidaten.map((k) => k.skill_name),
     jev,

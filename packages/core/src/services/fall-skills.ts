@@ -8,6 +8,10 @@
  *    (agent_id/project/role). Wo der Inhalt je Weg verschieden ist, gibt es getrennte Fall-Skills; die Tabelle waehlt
  *    automatisch nach dem Principal. Nie beide Varianten zugleich.
  * 3. KURZE TOOL-BESCHREIBUNGEN (tool-beschreibungen-kurz.ts) in tools/list.
+ * 4. P23-T7 TOOL-FAELLE (Schalter 'fall_skill_faelle'): reicht ein Hinweis nicht (derselbe Fehlercode im selben Lauf erneut
+ *    NACH dem Hinweis) oder gibt es fuer einen strukturierten Fehlercode keinen Fall-Skill, entsteht ein offener Fall im
+ *    Erklaerungs-Topf (Familie tool:<tool>:<code>, erklaerungen.ts) - einmal je Lauf, Tool und Code, asynchron. Der Koordinator
+ *    beantwortet ihn (code_check erklaerung_ablegen); die Antwort waehlt Jev kuenftig und sie ergaenzt den Fall-Skill.
  *
  * SCHALTER (memory regel-neue-funktionen-mit-schalter-und-debug), je Funktion getrennt, Standard AUS bis User-Freigabe:
  *   (I) Produkt-Schalter agent_profil_schalter funktion 'fall_skill_hinweis' bzw. 'tool_beschreibungen_kurz'
@@ -22,8 +26,14 @@ import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool.js';
 import { leseProfilProduktSchalter, kernTtlMs, registriereSchalterGeschrieben } from './agent-profil-schalter.js';
 import { kuerzeToolDefinition } from './tool-beschreibungen-kurz.js';
+import { aktuellerAgentPrincipal } from './agent-bezug.js';
+import { meldeFehlerfall, toolFamilie, type ToolFallKontext } from './erklaerungen.js';
 
-export const FALL_SKILL_FUNKTIONEN = { kurz: 'tool_beschreibungen_kurz', hinweis: 'fall_skill_hinweis' } as const;
+// P23-T3: 'schlank' = schlanke Tool-Antworten (tool-antworten-schlank.ts), gleiche Lesestelle und Schalterart.
+// P23-T7: 'faelle' = ungenuegende Fall-Skill-Hinweise als offene Tool-Faelle im Erklaerungs-Topf.
+export const FALL_SKILL_FUNKTIONEN = { kurz: 'tool_beschreibungen_kurz', hinweis: 'fall_skill_hinweis', schlank: 'tool_antworten_schlank', faelle: 'fall_skill_faelle',
+  // P23-T3 Punkt 6: fremde Shell-Ergebnisse anbieten (shell-hints.ts), gleiche Lesestelle und Schalterart.
+  fremd: 'shell_fremde_ergebnisse' } as const;
 export type FallSkillSchalterArt = keyof typeof FALL_SKILL_FUNKTIONEN;
 export type FallSkillWeg = 'ausweis' | 'legacy';
 
@@ -169,17 +179,115 @@ export function ermittleFallSkill(tool: string, antwort: unknown, weg: FallSkill
 
 export const FALL_SKILL_FELD = 'fall_skill' as const;
 const GEZEIGT = new Set<string>();
+/** P23-T7: Sitzung + Tool + Fehlercode, zu denen der Agent den Fall-Skill schon hat (gezeigt bzw. entprellt). */
+const GEZEIGT_CODE = new Set<string>();
+/** P23-T7: Sitzung + Tool + Fehlercode, die schon als Tool-Fall gemeldet wurden (einmal je Lauf). */
+const GEMELDET = new Set<string>();
 const GEZEIGT_MAX = 20_000;
-const zaehler = { geprueft: 0, getroffen: 0, ausgeliefert: 0, entprellt: 0, schalter_aus: 0 };
+const zaehler = { geprueft: 0, getroffen: 0, ausgeliefert: 0, entprellt: 0, schalter_aus: 0,
+  fall_wiederholt: 0, fall_ohne_skill: 0, fall_schalter_aus: 0 };
 
 /** Debug: Zaehler und Tabelle (fuer admin/intern-Diagnose und Tests). */
 export function fallSkillDiagnose(): Record<string, unknown> {
-  return { zaehler: { ...zaehler }, gemerkt: GEZEIGT.size, tabelle: FALL_SKILL_TABELLE };
+  return { zaehler: { ...zaehler }, gemerkt: GEZEIGT.size, gemeldet: GEMELDET.size, tabelle: FALL_SKILL_TABELLE };
 }
 /** Tests: Entprellung und Zaehler zuruecksetzen. */
 export function leereFallSkillEntprellung(): void {
   GEZEIGT.clear();
+  GEZEIGT_CODE.clear();
+  GEMELDET.clear();
   for (const k of Object.keys(zaehler) as Array<keyof typeof zaehler>) zaehler[k] = 0;
+}
+const merke = (menge: Set<string>, key: string): void => {
+  if (menge.size >= GEZEIGT_MAX) menge.clear();
+  menge.add(key);
+};
+
+const CODE_EXAKT = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const ALLGEMEINE_CODES = new Set(['fehler', 'error', 'unbekannt', 'unknown', 'false', 'true', 'null']);
+
+/** P23-T7: strukturierter Fehlercode einer Fehlerantwort (error_code/fehlercode/error/fehler/code als reiner Code), sonst null. */
+export function primaererFehlercode(antwort: Record<string, unknown>): string | null {
+  if (antwort.success !== false) return null;
+  for (const k of ['error_code', 'fehlercode', 'error', 'fehler', 'code']) {
+    const v = antwort[k];
+    const roh = typeof v === 'string' ? v : v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>).code : undefined;
+    const c = typeof roh === 'string' ? roh.trim() : '';
+    if (c.length >= 3 && c.length <= 64 && CODE_EXAKT.test(c) && !ALLGEMEINE_CODES.has(c)) return c;
+  }
+  return null;
+}
+
+const GEHEIM_SCHLUESSEL = /token|passw|secret|geheim|api_?key|cookie|authori|bestaetig|credential/i;
+/** Anhaenge anderer Hinweisquellen gehoeren nicht in den Fall. */
+const FREMDE_FELDER = new Set([FALL_SKILL_FELD, 'skill_suggestions', 'skill_hook_metrics', 'shell_activity', 'unread_channels', 'unreadChat',
+  'agentOnboarding', 'tool_guide', 'werkzeug_regeln', 'fehlermuster', 'open_plans', 'pending_events', 'hinweis_agent_id']);
+
+/** Werte kuerzen und begrenzen; Geheimnis-Schluessel entfernen (geschwaerzt wird zusaetzlich im Erklaerungs-Topf). */
+function schlank(v: unknown, tiefe = 0): unknown {
+  if (typeof v === 'string') return v.length > 200 ? v.slice(0, 199) + '…' : v;
+  if (Array.isArray(v)) {
+    if (tiefe >= 3) return `[${v.length} Eintraege]`;
+    return [...v.slice(0, 5).map((x) => schlank(x, tiefe + 1)), ...(v.length > 5 ? [`… +${v.length - 5}`] : [])];
+  }
+  if (v && typeof v === 'object') {
+    if (tiefe >= 3) return '{…}';
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).slice(0, 20)
+      .map(([k, x]) => [k, GEHEIM_SCHLUESSEL.test(k) ? '[ENTFERNT]' : schlank(x, tiefe + 1)]));
+  }
+  return v;
+}
+
+/** Ausschnitt eines Tool-Falls: Kopf, dann je Argument und je Antwortfeld eine Zeile (je hoechstens 15). */
+export function toolFallText(k: ToolFallKontext, args: Record<string, unknown>, antwort: Record<string, unknown>): string {
+  const zeile = (n: string, w: unknown) => `  ${n}: ${GEHEIM_SCHLUESSEL.test(n) ? '[ENTFERNT]' : String(JSON.stringify(schlank(w)) ?? '')}`;
+  return [
+    `Tool: ${k.tool}`, `Aktion: ${k.aktion ?? '-'}`, `Fehlercode: ${k.code}`,
+    `Fall-Skill: ${k.fall_skill ? `${k.fall_skill} (gezeigt; derselbe Fehlercode trat danach im selben Lauf erneut auf)` : 'keiner fuer diesen Fehlercode und Weg'}`,
+    `Weg: ${k.weg}`, `Agent: ${k.agent_id ?? '-'} | Identitaet: ${k.identity_id ?? '-'} | Lauf: ${k.lauf_id ?? '-'}`,
+    'Argumente:', ...Object.entries(args).slice(0, 15).map(([n, w]) => zeile(n, w)),
+    'Fehlerantwort:', ...Object.entries(antwort).filter(([n]) => !FREMDE_FELDER.has(n)).slice(0, 15).map(([n, w]) => zeile(n, w)),
+  ].join('\n');
+}
+
+/**
+ * P23-T7: meldet einen Tool-Fall an den Erklaerungs-Topf (Familie tool:<tool>:<code>) - einmal je Lauf, Tool und Code.
+ * Asynchron und nur bei wirksamem Schalter fall_skill_faelle; die Antwort an den Agenten wartet nie darauf. Wirft nie.
+ */
+function meldeToolFall(tool: string, code: string, skill: string | null, art: ToolFallKontext['art'], antwort: Record<string, unknown>, opt: FallSkillOptionen): void {
+  const lauf = opt.schluessel ? opt.schluessel + '\u0000' + tool + '\u0000' + code : null;
+  if (lauf && GEMELDET.has(lauf)) return;
+  const principal = aktuellerAgentPrincipal();
+  void (async () => {
+    try {
+      const project = opt.project ?? principal?.project ?? null;
+      if (!project) return;
+      if (!(await leseFallSkillSchalter('faelle', project)).aktiv) { zaehler.fall_schalter_aus++; return; }
+      if (lauf) {
+        if (GEMELDET.has(lauf)) return;
+        merke(GEMELDET, lauf);
+      }
+      const args = opt.args ?? {};
+      const ident = principal?.art === 'identity' ? principal : null;
+      const agentId = principal?.agent_id ?? (typeof args.agent_id === 'string' && args.agent_id ? args.agent_id : null);
+      const kontext: ToolFallKontext = {
+        tool, aktion: typeof args.action === 'string' ? args.action : null, code, fall_skill: skill, art, weg: opt.weg,
+        agent_id: agentId, identity_id: ident?.identity_id ?? null, lauf_id: ident?.lauf_id ?? null,
+      };
+      const ergebnis = toolFallText(kontext, args, antwort);
+      meldeFehlerfall({
+        project, agent_id: agentId, owner_identity_id: kontext.identity_id, familie: toolFamilie(tool, code), weg: 'einzelweg',
+        basis: '', ergebnis, tool_fall: kontext,
+        befund: {
+          quelle: 'muster', pruefer: 'fall-skill', severity: 'error', datei: `tool-fall/${tool}/${code}`, zeilen: [1, 1], code, wo: [],
+          bemerkt_bei: { zeile: ergebnis.split('\n').length },
+          was: `${tool}${kontext.aktion ? '.' + kontext.aktion : ''}: ${code} - `
+            + (skill ? `Fall-Skill ${skill} reichte nicht (erneut im selben Lauf)` : 'kein Fall-Skill fuer diesen Fehlercode'),
+        },
+      });
+      zaehler[art === 'wiederholt' ? 'fall_wiederholt' : 'fall_ohne_skill']++;
+    } catch { /* Sammeln darf die fachliche Antwort nie brechen. */ }
+  })();
 }
 
 export interface FallSkillOptionen {
@@ -201,14 +309,26 @@ export async function haengeFallSkillHinweisAn<T>(antwort: T, tool: string, opt:
     if (FALL_SKILL_FELD in (antwort as Record<string, unknown>)) return antwort;
     zaehler.geprueft++;
     const treffer = ermittleFallSkill(tool, antwort, opt.weg, opt.args ?? {});
-    if (!treffer) return antwort;
+    if (!treffer) {
+      // P23-T7: strukturierter Fehlercode ohne Fall-Skill (fuer diesen Weg) -> offener Tool-Fall.
+      const code = primaererFehlercode(antwort as Record<string, unknown>);
+      if (code) meldeToolFall(tool, code, null, 'ohne_skill', antwort as Record<string, unknown>, opt);
+      return antwort;
+    }
     zaehler.getroffen++;
     if (!(await leseFallSkillSchalter('hinweis', opt.project ?? null)).aktiv) { zaehler.schalter_aus++; return antwort; }
     if (opt.schluessel) {
       const key = opt.schluessel + '\u0000' + treffer.name;
-      if (GEZEIGT.has(key)) { zaehler.entprellt++; return antwort; }
-      if (GEZEIGT.size >= GEZEIGT_MAX) GEZEIGT.clear();
-      GEZEIGT.add(key);
+      const codeKey = opt.schluessel + '\u0000' + tool + '\u0000' + treffer.ausloeser;
+      if (GEZEIGT.has(key)) {
+        zaehler.entprellt++;
+        // P23-T7: derselbe Fehlercode trotz Hinweis im selben Lauf erneut -> der Fall-Skill reichte nicht.
+        if (GEZEIGT_CODE.has(codeKey)) meldeToolFall(tool, treffer.ausloeser, treffer.name, 'wiederholt', antwort as Record<string, unknown>, opt);
+        else merke(GEZEIGT_CODE, codeKey);
+        return antwort;
+      }
+      merke(GEZEIGT, key);
+      merke(GEZEIGT_CODE, codeKey);
     }
     zaehler.ausgeliefert++;
     return { ...(antwort as Record<string, unknown>), [FALL_SKILL_FELD]: {

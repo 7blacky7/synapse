@@ -39,17 +39,19 @@
 
 import { getPool } from '../db/index.js';
 import { aktuelleAgentIdentityId, aktuellerAgentPrincipal } from './agent-bezug.js';
+import { leseAusweisFristen } from './agent-ausweis-fristen.js';
+import { leseFallSkillSchalter } from './fall-skills.js';
 
 /** Laenge, auf die der Befehl im Hinweis gekuerzt wird. */
 const BEFEHL_MAX = 60;
 
-/**
- * Wie lange eine Fertigmeldung zugestellt werden darf (User-Vorgabe: 8 Minuten).
- * Danach verfaellt der HINWEIS — das ERGEBNIS bleibt dauerhaft via shell(get)
- * bzw. shell(log) abrufbar. Die Frist begrenzt also nur das Nachlaufen alter
- * Meldungen, sie verliert keine Daten.
+/*
+ * Wie lange eine Fertigmeldung zugestellt werden darf: EINSTELLUNG shell_hinweis_minuten (agent-ausweis-fristen.ts,
+ * projekt > global > Standard 60; P23-T3, User 20.10.2026 "laufende plus beendete der letzten Stunde", vorher fest
+ * 8 Minuten). Jobs ALLER Agenten bleiben sichtbar (memory entscheidung-fremde-plaene-und-jobs-sichtbar): keiner fuehrt
+ * doppelt aus, die anderen lesen das Ergebnis ab. Danach verfaellt der HINWEIS — das ERGEBNIS bleibt dauerhaft via
+ * shell(get) bzw. shell(log) abrufbar. Die Frist begrenzt also nur das Nachlaufen alter Meldungen, sie verliert keine Daten.
  */
-const FERTIG_FENSTER_MIN = 8;
 
 /**
  * Ab welchem Alter ein 'running'-Job nicht mehr als laufend gemeldet wird.
@@ -74,6 +76,8 @@ export interface ShellJobHint {
   exit_code?: number;
   /** Nur bei kind='done': knapper Klartext, ob das Ergebnis brauchbar ist. */
   hinweis?: string;
+  /** P23-T3 Punkt 6a (Schalter shell_fremde_ergebnisse): Job eines ANDEREN Agenten - Ergebnis abrufen statt neu ausfuehren. */
+  fremd_hinweis?: string;
 }
 
 /**
@@ -129,10 +133,14 @@ export async function claimShellJobHints(
   const identityId = aktuelleAgentIdentityId(project, agentId);
   const notices = identityId ? 'agent_identitaet_shell_job_notices' : 'shell_job_notices';
   const noticeActor = identityId ? 'identity_id' : 'agent_id';
+  // P23-T3: Fenster fuer Fertigmeldungen aus der Einstellung (Lesefehler -> Standard 60); fremde Jobs ggf. mit Abruf-Hinweis.
+  const fertigFensterMin = (await leseAusweisFristen(project)).fristen.shell_hinweis_minuten.wert;
+  const fremdHinweisAn = (await leseFallSkillSchalter('fremd', project)).aktiv;
   try {
     const { rows } = await getPool().query<{
       job_id: string;
       kind: 'start' | 'done';
+      sortzeit: Date;
       agent_id: string | null;
       owner_identity_id?:string|null;
       command: string;
@@ -189,7 +197,7 @@ export async function claimShellJobHints(
          ON CONFLICT DO NOTHING
          RETURNING job_id, kind
        )
-       SELECT k.job_id, k.kind, k.agent_id, k.owner_identity_id, k.command, k.status, k.exit_code, k.error,
+       SELECT k.job_id, k.kind, k.agent_id, k.owner_identity_id, k.command, k.status, k.exit_code, k.error, k.sortzeit,
               -- Pruefbar nur, wenn der Befehl teilbar ist (ein zweiter 'git commit' waere
               -- ein anderer Vorgang, keine Wiederholung) UND es einen Bezugspunkt gibt.
               (k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL) AS pruefbar,
@@ -217,7 +225,7 @@ export async function claimShellJobHints(
            AND tc.ts > k.project_state_at
        ) m ON k.exec_key IS NOT NULL AND k.project_state_at IS NOT NULL
        ORDER BY k.sortzeit DESC`,
-      [project, identityId ?? agentId, limit, FERTIG_FENSTER_MIN, LAUFEND_PLAUSIBEL_MIN, excludeJobIds, ...(identityId ? [agentId] : [])],
+      [project, identityId ?? agentId, limit, fertigFensterMin, LAUFEND_PLAUSIBEL_MIN, excludeJobIds, ...(identityId ? [agentId] : [])],
     );
 
     return rows.map((r) => {
@@ -243,12 +251,82 @@ export async function claimShellJobHints(
               ? gueltigkeitsText(r)
               : 'Fehlgeschlagen. Details: shell(log, id).';
       }
+      // P23-T3 Punkt 6a: Starter = eigene Identitaet (sonst agent_id); alles andere ist fremd.
+      const fremd = identityId && r.owner_identity_id ? r.owner_identity_id !== identityId : r.agent_id !== agentId;
+      if (fremdHinweisAn && fremd && r.error !== 'cancelled') {
+        const wer = r.agent_id ? `Agent ${r.agent_id}` : 'Ein anderer Agent';
+        const vorMin = Math.max(0, Math.round((Date.now() - new Date(r.sortzeit).getTime()) / 60000));
+        basis.fremd_hinweis = r.kind === 'start'
+          ? `Laeuft bei ${wer} - nicht doppelt starten; derselbe Befehl haengt sich an, das Ergebnis kommt als Fertigmeldung bzw. shell(get, id).`
+          : `${wer} hat das bereits ausgefuehrt (${r.status === 'done' ? 'Exit ' + (r.exit_code ?? 0) : r.status}, vor ${vorMin} Min) - `
+            + 'Ergebnis per shell(get, id) abrufen, nicht erneut ausfuehren, wenn du es brauchst.';
+      }
       return basis;
     });
   } catch (error) {
     // Hinweise duerfen eine Tool-Antwort NIE zum Scheitern bringen.
     console.error('[ShellHints] Hinweise konnten nicht ermittelt werden:', error);
     return [];
+  }
+}
+
+/** P23-T3 Punkt 6b: letzter beendeter gleicher Lauf eines ANDEREN Agenten. */
+export interface FremderLauf {
+  job_id: string;
+  agent: string | null;
+  status: string;
+  exit_code?: number;
+  vor_min: number;
+  abruf: string;
+  hinweis: string;
+}
+
+/**
+ * P23-T3 Punkt 6b (Schalter shell_fremde_ergebnisse, Standard AUS): Gibt es DENSELBEN Befehl (+ cwd_relative) als
+ * beendeten Job eines ANDEREN Agenten im Fenster shell_hinweis_minuten, nennt die exec-Antwort ihn samt Abrufweg
+ * (Feld fremder_lauf). NUR HINWEIS, KEINE RUECKFRAGE: gruene, teilbare Laeufe ohne Aenderung verwendet enqueueShellJob
+ * schon wieder (reused, SH-5), laufende haengen sich an (attached, SH-4). Uebrig bleiben rote Laeufe, nicht teilbare
+ * Befehle (ein zweites git commit ist ein anderer Vorgang) und Laeufe auf geaendertem Stand - dort waere ein Abfangen
+ * falsch, und eine Rueckfrage kostet jeden Aufruf einen weiteren Umlauf (Agenten koennen nicht warten). Schalter AUS,
+ * kein Treffer, eigener Job oder Lesefehler -> {} (kein Feld).
+ */
+export async function fremderLaufFeld(o: {
+  project: string; command: string; cwd_relative?: string | null; agent_id?: string | null; ausser_job_id?: string | null;
+}): Promise<{ fremder_lauf?: FremderLauf }> {
+  if (!o.project || !o.command) return {};
+  try {
+    if (!(await leseFallSkillSchalter('fremd', o.project)).aktiv) return {};
+    const fenster = (await leseAusweisFristen(o.project)).fristen.shell_hinweis_minuten.wert;
+    const identityId = o.agent_id ? aktuelleAgentIdentityId(o.project, o.agent_id) : null;
+    const ausser = typeof o.ausser_job_id === 'string' && SHELL_JOB_ID_PATTERN.test(o.ausser_job_id) ? o.ausser_job_id : null;
+    const { rows } = await getPool().query<{ id: string; agent_id: string | null; status: string; exit_code: number | null; vor_min: number }>(
+      `SELECT id, agent_id, status::text AS status, exit_code,
+              FLOOR(EXTRACT(EPOCH FROM (NOW() - completed_at)) / 60)::int AS vor_min
+         FROM shell_jobs
+        WHERE project = $1 AND command = $2 AND COALESCE(cwd_relative, '') = COALESCE($3::text, '')
+          AND status IN ('done', 'failed', 'timeout')
+          AND error IS DISTINCT FROM 'daemon_restart' AND error IS DISTINCT FROM 'cancelled'
+          AND completed_at > NOW() - ($4::integer * interval '1 minute')
+          AND ($5::uuid IS NULL OR id <> $5::uuid)
+          AND NOT (CASE WHEN $6::text IS NOT NULL AND owner_identity_id IS NOT NULL THEN owner_identity_id = $6::text
+                        ELSE agent_id IS NOT DISTINCT FROM $7::text END)
+        ORDER BY completed_at DESC
+        LIMIT 1`,
+      [o.project, o.command, o.cwd_relative ?? null, fenster, ausser, identityId, o.agent_id ?? null],
+    );
+    const z = rows[0];
+    if (!z) return {};
+    const wer = z.agent_id ? `Agent ${z.agent_id}` : 'Ein anderer Agent';
+    return { fremder_lauf: {
+      job_id: z.id, agent: z.agent_id, status: z.status, ...(z.exit_code !== null ? { exit_code: z.exit_code } : {}), vor_min: z.vor_min,
+      abruf: `shell(action:"get", id:"${z.id}")`,
+      hinweis: `${wer} hat denselben Befehl vor ${z.vor_min} Min ausgefuehrt (${z.status === 'done' ? 'Exit ' + (z.exit_code ?? 0) : z.status}). `
+        + 'Sein Ergebnis per shell(get, id) abrufen statt erneut ausfuehren, solange sich am Stand nichts geaendert hat.',
+    } };
+  } catch (error) {
+    // Hinweise duerfen eine Tool-Antwort NIE zum Scheitern bringen.
+    console.error('[ShellHints] Fremder Lauf konnte nicht ermittelt werden:', (error as { message?: string } | null)?.message?.slice(0, 80) ?? 'fehler');
+    return {};
   }
 }
 

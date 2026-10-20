@@ -311,15 +311,39 @@ type ChannelSkillBatchSearch = typeof searchSkillsForAgents;
  * Ersatzwert fuer einen Skill, der im Text beim Namen genannt wird, aber in der
  * Vektorsuche fehlt. Bewusst hoch: wer den Namen schreibt, meint den Skill.
  */
-const NAMENSTREFFER_SCORE = 0.99;
+export const NAMENSTREFFER_SCORE = 0.99;
 
 /**
- * P23-T1: Score der 99%-KETTE — vorgegebene Skills (Profil), mit einem abgerufenen Skill verknuepfte
- * Skills und woertlich (voll) genannte Skills. Sie werden nach jedem Tool-Aufruf weiter nachgeliefert
- * (je Abruf CHANNEL_SKILL_VORSCHLAEGE), bis der Agent alle gesehen hat.
+ * P23-T1: Score der 99%-KETTE — vorgegebene Skills (Profil) und mit einem abgerufenen Skill verknuepfte
+ * Skills. Sie werden nach jedem Tool-Aufruf weiter nachgeliefert (je Abruf CHANNEL_SKILL_VORSCHLAEGE),
+ * bis der Agent alle gesehen hat.
  * Zurueckgebaut: FUZZY_NAMENSTREFFER_SCORE 0,95 fuer Trigramm-Funde ("Name unscharf erkannt").
  */
 export const KETTEN_SCORE = NAMENSTREFFER_SCORE;
+
+/**
+ * P23-T8: NUR DIESE QUELLEN SIND KETTE. Woertlich genannte Skills (Memory, Gedanke, Task, Channel) haben
+ * zwar ebenfalls 0,99, gehoeren aber nicht dazu.
+ * ⚠️ GEMESSEN 20.10.2026: Bis hierher lief jeder Namenstreffer als Kette — er wurde an JEDEM Folgeaufruf
+ * nachgeliefert, egal welches Tool, egal welcher Text. Der Vorrat sammelt Namenstreffer aus allem, was ein
+ * Agent je gelesen hat, und beim Schreiben fuer alle angemeldeten Projekt-Agenten. Tasks und Gedanken, die
+ * Skill-Namen als BEISPIELE eines Fehlers aufzaehlen, fuellten so den Vorrat aller Agenten: memory(read)
+ * lieferte memory-leak-debugging und ogame-strategie, admin(task_bindung_festlegen) lieferte unraid-base.
+ * Ein Namenstreffer wird deshalb nur noch mit Bezug ausgeliefert: wenn der aktuelle Aufruf genau die
+ * Quelle liest oder schreibt, in der der Name steht (holeSkillVorschlaegeFuerAufruf).
+ */
+export const KETTEN_QUELLEN: readonly SkillQuellenTyp[] = ['vorgabe', 'skill'];
+
+/**
+ * P23-T8: Begruendung eines Namenstreffers im Vorrat und ihre Marke. Zeilen mit dem Praefix ohne die Marke
+ * stammen aus der alten Namensregel (Namensanfang/Trigramm, ohne Sinnpruefung) und werden nie mehr
+ * ausgeliefert; "Name unscharf erkannt" (Trigramm, 0,95) ebenso. Kein Schemawechsel: der Vorrat ist ein
+ * Zwischenstand, der Altbestand bleibt liegen und wird nur nicht mehr gezeigt.
+ */
+export const NAMENS_GRUND = 'Skill-Name genannt';
+export const NAMENS_GRUND_MARKE = 'voller Name';
+const SQL_NAMENSTREFFER = `p.reason LIKE '${NAMENS_GRUND}%'`;
+const SQL_ALTBESTAND = `(p.reason LIKE 'Name unscharf erkannt%' OR (p.reason LIKE '${NAMENS_GRUND}%' AND p.reason NOT LIKE '%${NAMENS_GRUND_MARKE}%'))`;
 
 /** hook_name einer Zustellung, die durch den Abruf des Skills selbst entsteht (Skill gilt als gesehen). */
 const SKILL_ABRUF_HOOK_NAME = 'skill_abruf';
@@ -528,9 +552,9 @@ export async function bereiteSkillVorschlaegeVor(
   // P23-T6: Suche, Namenstreffer, Schwellen und Auswahl stehen in ermittleSkillKandidaten - derselbe Weg zeigt
   // in der Diagnose intern skill_probe, was hier abgelegt wuerde (ohne Schreiben).
   const { auswahl, besterJeSkill } = await ermittleSkillKandidaten(project, query, agents, searchBatch);
-  // P23-T1 (3): SINNPRUEFUNG der semantischen Treffer vor der Auslieferung (skill-rerank.ts): EIN
+  // P23-T1 (3): SINNPRUEFUNG der Treffer vor der Auslieferung (skill-rerank.ts): EIN
   // Jev-Aufruf je Text fuer alle Empfaenger, Schalter skill_rerank (Standard AUS), Kosten in jev_kosten.
-  // Ist sie aus, bleibt alles wie bisher (kein Jev-Aufruf).
+  // Ist sie aus, bleibt alles wie bisher (kein Jev-Aufruf). P23-T8: genannte Skills laufen mit durch.
   // P23-T4: je Skill der beste Treffer mit GANZEM Abschnitt, Titel, Scope, Projekt; dazu Quelle und die
   // schon aufgeloesten Empfaenger (Rolle/Typ/Aufgabe liest skill-rerank daraus, nach Aufgabe gruppiert).
   const empfaenger = besterJeSkill.size === 0 ? [] : await loeseSkillEmpfaenger(project, agents);
@@ -547,8 +571,12 @@ export async function bereiteSkillVorschlaegeVor(
     // ⚠️ BEGRUENDUNG UND SCORE AUS DERSELBEN PRUEFUNG (Korrektur 02.08.2026). P23-T1: die reason ist
     // zugleich die Debug-Ausgabe, WARUM ein Skill vorgeschlagen wird (Name | semantisch + Score + Jev).
     const kandidaten: SkillKandidat[] = [
-      ...namentlich.map((hit) => ({
-        skill_name: hit.skill_name, score: hit.score, reason: `Skill-Name genannt (${QUELLE_KLARTEXT[sourceType]})`,
+      // P23-T8: auch ein GENANNTER Skill muss die Sinnpruefung bestehen - der Name im Text belegt nur, dass er
+      // dasteht. Die Marke (NAMENS_GRUND_MARKE) unterscheidet ihn vom Altbestand der alten Namensregel.
+      ...namentlich.filter((hit) => bestehtSinnpruefung(sinn, hit.skill_name)).map((hit) => ({
+        skill_name: hit.skill_name,
+        score: hit.score,
+        reason: `${NAMENS_GRUND} (${QUELLE_KLARTEXT[sourceType]}, ${NAMENS_GRUND_MARKE}${sinnpruefungsZusatz(sinn, hit.skill_name)})`,
       })),
       ...semantisch.filter((hit) => bestehtSinnpruefung(sinn, hit.skill_name)).map((hit) => ({
         skill_name: hit.skill_name,
@@ -572,7 +600,7 @@ export interface SkillKandidatenErmittlung {
   abstand: number | null;
   /** je Agent: genannte (ungedeckelt) und semantische Kandidaten (gedeckelt auf CHANNEL_SKILL_KANDIDATEN) */
   auswahl: Array<{ agent: string; namentlich: SkillSearchHit[]; semantisch: SkillSearchHit[] }>;
-  /** je Skill der beste semantische Treffer - geht in die Sinnpruefung */
+  /** je Skill der beste Treffer - geht in die Sinnpruefung (P23-T8: genannte zuerst, dann semantische) */
   besterJeSkill: Map<string, SkillSearchHit>;
 }
 
@@ -633,11 +661,16 @@ export async function ermittleSkillKandidaten(
       .slice(0, Math.max(0, CHANNEL_SKILL_KANDIDATEN - namentlich.length));
     return { agent, namentlich, semantisch };
   });
+  // P23-T8: GENANNTE SKILLS GEHEN MIT IN DIE SINNPRUEFUNG, und zwar zuerst: Deckel (skill_rerank_max) und
+  // Budgetkuerzung streichen vom Ende. Vorher liefen sie an ihr vorbei - Tasks und Gedanken, die Skill-Namen
+  // als Beispiele aufzaehlen, ergaben so 0,99-Vorschlaege ohne jeden Bezug zur Arbeit.
   const besterJeSkill = new Map<string, SkillSearchHit>();
-  for (const { semantisch } of auswahl) {
-    for (const hit of semantisch) {
-      const alt = besterJeSkill.get(hit.skill_name);
-      if (!alt || hit.score > alt.score) besterJeSkill.set(hit.skill_name, hit);
+  for (const teil of ['namentlich', 'semantisch'] as const) {
+    for (const eintrag of auswahl) {
+      for (const hit of eintrag[teil]) {
+        const alt = besterJeSkill.get(hit.skill_name);
+        if (!alt || hit.score > alt.score) besterJeSkill.set(hit.skill_name, hit);
+      }
     }
   }
   return { results, namensTreffer, minScore, abstand, auswahl, besterJeSkill };
@@ -1027,6 +1060,40 @@ export async function verarbeiteSkillHinweisgeber(
   }
 }
 
+/**
+ * P23-T8: Hinweisgeber UND Abruf fuer EINEN memory/thought/plan-Aufruf - der Weg der Antwort-Hooks (REST
+ * attachSkillHinweisgeber, stdio attachResponseHooks).
+ *
+ * ⚠️ NAMENSTREFFER NUR MIT BEZUG. Ausgeliefert werden die Quellen DIESES Aufrufs (genannt + semantisch),
+ * die Kette (KETTEN_QUELLEN) und semantische Treffer aus dem uebrigen Vorrat - aber kein Namenstreffer aus
+ * einer Quelle, die der Aufruf gar nicht beruehrt. Vorher holte holeOffeneSkillVorschlaege(agentId) die
+ * besten drei aus dem GANZEN Vorrat; bei 0,99 fuer jeden Namenstreffer waren das immer Namen aus irgendeinem
+ * frueher gelesenen Text.
+ * Wirft nie (Fehler bleiben in verarbeiteSkillHinweisgeber bzw. holeOffeneSkillVorschlaege).
+ */
+export async function holeSkillVorschlaegeFuerAufruf(
+  tool: string,
+  action: string | undefined,
+  args: Record<string, unknown>,
+  result: unknown,
+  agentId: string | undefined | null,
+  pool: Pool = getPool(),
+  searchBatch: ChannelSkillBatchSearch = searchSkillsForAgents,
+): Promise<SkillHookErgebnis> {
+  if (!agentId) return { suggestions: [], metrics: null, skipped_due_to_load: false };
+  await verarbeiteSkillHinweisgeber(tool, action, args, result, agentId, pool, searchBatch);
+  const sourceType = TOOL_QUELLE[tool];
+  let quellen: Array<{ source_type: string; source_id: string }> = [];
+  try {
+    quellen = sourceType
+      ? sammleSkillQuellen(tool, action, args, result).map((q) => ({ source_type: sourceType, source_id: q.id }))
+      : [];
+  } catch {
+    quellen = [];
+  }
+  return holeOffeneSkillVorschlaege(agentId, pool, CHANNEL_SKILL_VORSCHLAEGE, { quellen });
+}
+
 export async function aktiveProjektAgenten(
   project: string,
   pool: Pool = getPool(),
@@ -1060,52 +1127,71 @@ export async function holeOffeneSkillVorschlaege(
   agentId: string | undefined | null,
   pool: Pool = getPool(),
   hoechstens = CHANNEL_SKILL_VORSCHLAEGE,
-  optionen: { mindestScore?: number } = {},
+  optionen: {
+    mindestScore?: number;
+    /** P23-T8: Quellen des AKTUELLEN Aufrufs - nur deren Namenstreffer werden ausgeliefert (siehe KETTEN_QUELLEN) */
+    quellen?: Array<{ source_type: string; source_id: string }>;
+  } = {},
 ): Promise<SkillHookErgebnis> {
   if (!agentId || !hinweisAktiv('skill_suggestions', agentId)) return { suggestions: [], metrics: null, skipped_due_to_load: false };
   const z = eigenerKommunikationsAgent(agentId);
   const identity = z.art === 'identity';
   // P23-T1: mindestScore = KETTEN_SCORE liefert nur die 99%-Kette (Erinnerung an allen uebrigen Tools).
+  // P23-T8: Kette = KETTEN_QUELLEN; Namenstreffer nur mit Bezug (optionen.quellen), Altbestand nie.
   const mindest = typeof optionen.mindestScore === 'number' && Number.isFinite(optionen.mindestScore) ? optionen.mindestScore : 0;
+  const bezug = (optionen.quellen ?? []).filter((q) => !!q?.source_type && q.source_id !== undefined && q.source_id !== null && String(q.source_id) !== '');
+  // P23-T8: WER DARF AUS DEM VORRAT? (Tabellenalias p; $4 mindest, $5 KETTEN_SCORE, $6 KETTEN_QUELLEN, $7/$8 Bezug)
+  //   - nie der Altbestand ("Name unscharf erkannt", Namenstreffer der alten Regel ohne Marke)
+  //   - die Kette (Vorgabe, Skill-Abruf) immer
+  //   - Zeilen aus den Quellen DIESES Aufrufs (genannt und semantisch)
+  //   - semantische Zeilen aus dem uebrigen Vorrat nur im Normalabruf (mindest unter KETTEN_SCORE);
+  //     Namenstreffer ohne Bezug nie - das war die "Kette" ueber Folgeaufrufe ohne jeden Bezug.
+  const MIT_BEZUG = `EXISTS (SELECT 1 FROM unnest($7::text[], $8::text[]) AS b(t, i) WHERE b.t = p.source_type AND b.i = p.source_id)`;
+  const zulaessig = `p.score >= $4::float8
+           AND NOT ${SQL_ALTBESTAND}
+           AND (p.source_type = ANY($6::text[]) OR ${MIT_BEZUG}
+                OR ($4::float8 < $5::float8 AND NOT ${SQL_NAMENSTREFFER}))`;
+  // Treffer mit Bezug zuerst: sie gehoeren zu dem, was der Agent gerade liest oder schreibt.
+  const restKette = `(SELECT COUNT(*)::int FROM kandidat k WHERE k.score >= $5::float8 AND k.source_type = ANY($6::text[])
+                 AND NOT EXISTS (SELECT 1 FROM rangfolge x WHERE x.skill_name = k.skill_name)) AS rest_kette`;
   try {
     const result = await queryMitHarterFrist<{
       skill_name: string; score: number; reason: string; delivered: boolean; rest_kette: number;
     }>(pool, identity ? `
       WITH kandidat AS (
-        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
+        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason, p.source_type, ${MIT_BEZUG} AS mit_bezug
           FROM agent_identitaet_skill_preparations p
-         WHERE p.identity_id = $1 AND p.score >= $6
+         WHERE p.identity_id = $1 AND ${zulaessig}
            AND NOT EXISTS (
              SELECT 1 FROM agent_identitaet_skill_deliveries d
-              WHERE d.identity_id = p.identity_id AND d.skill_name = p.skill_name AND d.context_epoch=$5
+              WHERE d.identity_id = p.identity_id AND d.skill_name = p.skill_name AND d.context_epoch=$10
            )
-         ORDER BY p.skill_name, p.score DESC
+         ORDER BY p.skill_name, ${MIT_BEZUG} DESC, p.score DESC
       ), rangfolge AS (
-        SELECT * FROM kandidat ORDER BY score DESC LIMIT $3
+        SELECT * FROM kandidat ORDER BY mit_bezug DESC, score DESC LIMIT $3
       ), eingefuegt AS (
         INSERT INTO agent_identitaet_skill_deliveries (identity_id, agent_id, skill_name, hook_name, context_epoch)
-        SELECT $1, $4, skill_name, $2, $5 FROM rangfolge
+        SELECT $1, $9, skill_name, $2, $10 FROM rangfolge
         ON CONFLICT(identity_id,skill_name) DO UPDATE SET context_epoch=EXCLUDED.context_epoch,suggested_at=NOW(),hook_name=EXCLUDED.hook_name
           WHERE agent_identitaet_skill_deliveries.context_epoch<EXCLUDED.context_epoch
         RETURNING skill_name
       )
       SELECT r.skill_name, r.score, r.reason,
              EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered,
-             (SELECT COUNT(*)::int FROM kandidat k WHERE k.score >= $7
-                 AND NOT EXISTS (SELECT 1 FROM rangfolge x WHERE x.skill_name = k.skill_name)) AS rest_kette
-        FROM rangfolge r ORDER BY r.score DESC
+             ${restKette}
+        FROM rangfolge r ORDER BY r.mit_bezug DESC, r.score DESC
     ` : `
       WITH kandidat AS (
-        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason
+        SELECT DISTINCT ON (p.skill_name) p.skill_name, p.score, p.reason, p.source_type, ${MIT_BEZUG} AS mit_bezug
           FROM skill_hook_preparations p
-         WHERE p.agent_id = $1 AND p.score >= $4
+         WHERE p.agent_id = $1 AND ${zulaessig}
            AND NOT EXISTS (
              SELECT 1 FROM skill_hook_deliveries d
               WHERE d.agent_id = p.agent_id AND d.skill_name = p.skill_name
            )
-         ORDER BY p.skill_name, p.score DESC
+         ORDER BY p.skill_name, ${MIT_BEZUG} DESC, p.score DESC
       ), rangfolge AS (
-        SELECT * FROM kandidat ORDER BY score DESC LIMIT $3
+        SELECT * FROM kandidat ORDER BY mit_bezug DESC, score DESC LIMIT $3
       ), eingefuegt AS (
         INSERT INTO skill_hook_deliveries (agent_id, skill_name, hook_name)
         SELECT $1, skill_name, $2 FROM rangfolge
@@ -1114,10 +1200,13 @@ export async function holeOffeneSkillVorschlaege(
       )
       SELECT r.skill_name, r.score, r.reason,
              EXISTS (SELECT 1 FROM eingefuegt e WHERE e.skill_name = r.skill_name) AS delivered,
-             (SELECT COUNT(*)::int FROM kandidat k WHERE k.score >= $5
-                 AND NOT EXISTS (SELECT 1 FROM rangfolge x WHERE x.skill_name = k.skill_name)) AS rest_kette
-        FROM rangfolge r ORDER BY r.score DESC
-    `, [bezugsWert(z), CHANNEL_HOOK_NAME, hoechstens, ...(identity ? [agentId, skillKontextEpoch()] : []), mindest, KETTEN_SCORE]);
+             ${restKette}
+        FROM rangfolge r ORDER BY r.mit_bezug DESC, r.score DESC
+    `, [
+      bezugsWert(z), CHANNEL_HOOK_NAME, hoechstens, mindest, KETTEN_SCORE, [...KETTEN_QUELLEN],
+      bezug.map((q) => q.source_type), bezug.map((q) => String(q.source_id)),
+      ...(identity ? [agentId, skillKontextEpoch()] : []),
+    ]);
 
     const frisch = result.rows.filter((row) => row.delivered);
     if (frisch.length === 0) return { suggestions: [], metrics: null, skipped_due_to_load: false };
@@ -1181,6 +1270,7 @@ export async function holeChannelSkillVorschlaege(
          WHERE p.identity_id = $1
            AND p.source_type = 'channel'
            AND p.source_id = ANY($2::text[])
+           AND NOT ${SQL_ALTBESTAND}
          ORDER BY p.skill_name, p.score DESC
       ), rangfolge AS (
         SELECT * FROM kandidat ORDER BY score DESC LIMIT $4
@@ -1202,6 +1292,7 @@ export async function holeChannelSkillVorschlaege(
          WHERE p.agent_id = $1
            AND p.source_type = 'channel'
            AND p.source_id = ANY($2::text[])
+           AND NOT ${SQL_ALTBESTAND}
          ORDER BY p.skill_name, p.score DESC
       ), rangfolge AS (
         SELECT * FROM kandidat ORDER BY score DESC LIMIT $4

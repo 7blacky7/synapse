@@ -131,6 +131,10 @@ class ProcessManager extends EventEmitter {
       const effort = effortFuerCli(modelEntry, opts?.effort)
       if (effort) args.push('--effort', effort)
 
+      // P22-T6 (User): im Runtime-Container keine Claude-Code-Hooks (Nachrichten stellt der Daemon zu). Gesetzt von der
+      // Agentensteuerung des Containers; ohne die Variable bleibt der Befehl unveraendert.
+      if (process.env.SYNAPSE_KEINE_HOOKS === '1') args.push('--settings', JSON.stringify({ disableAllHooks: true }))
+
       if (opts?.allowedTools?.length) {
         for (const tool of opts.allowedTools) {
           args.push('--allowedTools', tool)
@@ -326,6 +330,16 @@ class ProcessManager extends EventEmitter {
 
         // Emit activity event for wrapper to track
         this.emit('activity', agent.agentName, event.type, eventCount)
+
+        // P22-T58: Abo-Kontingent an den Wrapper (Claude stream-json rate_limit_event; codex-runtime sendet dasselbe Format).
+        if (event.type === 'rate_limit_event') {
+          this.emit('kontingent', agent.agentName, (event as unknown as { rate_limit_info?: Record<string, unknown> }).rate_limit_info)
+        } else if (event.type === 'result' && (event as unknown as { is_error?: boolean }).is_error && typeof event.result === 'string'
+          && /usage limit reached/i.test(event.result)) {
+          // Aelteres Textformat "Claude AI usage limit reached|<epoch>" ohne strukturiertes Event.
+          const reset = /\|(\d{9,13})/.exec(event.result)
+          this.emit('kontingent', agent.agentName, { status: 'rejected', resetsAt: reset ? Number(reset[1]) : null, rateLimitType: 'usage_limit_text' })
+        }
 
         if (event.type === 'assistant' && event.message?.content) {
           for (const block of event.message.content) {

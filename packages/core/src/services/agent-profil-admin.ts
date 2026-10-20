@@ -24,6 +24,8 @@ import {
 import { listePersonaVersionen } from './agent-persona.js';
 import { rufeWebUiKoordinatorTokenAb } from './agent-token-abruf.js';
 import { HAUPTAGENT_ADMIN_ACTIONS, HAUPTAGENT_ADMIN_PARAMETER, istHauptagentAdminAction, fuehreHauptagentAdminAus } from './hauptagent-dienst.js';
+import { API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER, istApiAgentAdminAction, fuehreApiAgentAdminAus } from './api-agent-dienst.js';
+import { RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, istRuntimeUeberwachungAdminAction, fuehreRuntimeUeberwachungAdminAus } from './runtime-ueberwachung.js';
 import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
 import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './files-plan-ablauf-schalter.js';
 import { listeAusweisVisa, erteileArbeitsfreigabe, entzieheArbeitsfreigabe } from './agent-ausweis-projekte.js';
@@ -43,7 +45,7 @@ const W1B_KERN_AKTIONEN = [
   'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = [...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = [...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -80,9 +82,12 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   arbeitsfreigabe_stunden: { type: 'number', description: 'ausweis_fristen setzen: Arbeitsfreigabe in Stunden (1..720, Standard 24; arbeitsfreigabe_erteilen)' },
   anmeldung_plaene_minuten: { type: 'number', description: 'ausweis_fristen setzen: Fenster eigener offener files-Plaene in chat(anmelden) in Minuten (1..1440, Standard 30)' },
   files_plan_stunden: { type: 'number', description: 'ausweis_fristen setzen: offene files-Plaene ohne Aktivitaet laufen nach so vielen Stunden ab (1..720, Standard 48; P6-T49)' },
+  shell_hinweis_minuten: { type: 'number', description: 'ausweis_fristen setzen: beendete Shell-Jobs aller Agenten erscheinen so viele Minuten nach Abschluss in shell_activity (1..1440, Standard 60; P23-T3)' },
   files_plan_ablauf_aktiv: { type: 'boolean', description: 'ausweis_fristen: Produkt-Schalter Fristablauf offener files-Plaene (Standard EIN; P6-T49). modus setzen: true|false auf ebene; modus entfernen + Parameter vorhanden: Wert dieser ebene entfernen' },
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   ...HAUPTAGENT_ADMIN_PARAMETER,
+  ...API_AGENT_ADMIN_PARAMETER,
+  ...RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER,
 };
 
 export function istW1bAdminAction(action: string | undefined): boolean {
@@ -373,7 +378,7 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
         if (fristenDa || !schalterDa) await setzeAusweisFristen({
           ebene, project: ebene === 'projekt' ? project : null, grund: a.grund,
           ...(modus === 'setzen'
-            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden, anmeldung_plaene_minuten: a.anmeldung_plaene_minuten, files_plan_stunden: a.files_plan_stunden } }
+            ? { werte: { schatten_stunden: a.schatten_stunden, erstnutzung_minuten: a.erstnutzung_minuten, visum_minuten: a.visum_minuten, arbeitsfreigabe_stunden: a.arbeitsfreigabe_stunden, anmeldung_plaene_minuten: a.anmeldung_plaene_minuten, files_plan_stunden: a.files_plan_stunden, shell_hinweis_minuten: a.shell_hinweis_minuten } }
             : { entfernen: a.frist_namen ?? [] }),
         }, { wer: recht.wer, setter_identity_id: recht.actor_identity_id });
         if (schalterDa) await setzeFilesPlanAblaufSchalter({
@@ -444,7 +449,13 @@ function eigenprofilOhneVerwalter(action: string, args: Args, wer: AusweisAkteur
 export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteur?: W1bAkteur | null } = {}): Promise<Record<string, unknown>> {
   const akteur = opt.akteur !== undefined ? opt.akteur : aktuellerW1bAkteur();
   // P22-T36: Hauptagent-Verwaltung (User + Main selbst; Koordinatoren nur Kommunikation) – eigener Rechtepfad.
-  if (istHauptagentAdminAction(action)) return fuehreHauptagentAdminAus(action, args, akteur);
+  // P22-T7: hauptagent_heartbeat (auf User-Anweisung) und agent_verbrauch kennen auch den Legacy-Koordinator; die uebrigen
+  // hauptagent_*-Aktionen lehnen ihn wie bisher mit recht_fehlt ab.
+  if (istHauptagentAdminAction(action)) return fuehreHauptagentAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
+  // P22-T8: kostenpflichtiger API-Agent (Setzen nur User, Lesen User + Hauptagent) – eigener Rechtepfad in api-agent-dienst.ts.
+  if (istApiAgentAdminAction(action)) return fuehreApiAgentAdminAus(action, args, akteur);
+  // P22-T58: Runtime-Ueberwachung (User und Koordinator inkl. Legacy-Koordinator) – eigener Rechtepfad in runtime-ueberwachung.ts.
+  if (istRuntimeUeberwachungAdminAction(action)) return fuehreRuntimeUeberwachungAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   if (istAusweisAktion(action)) {
     // Auch der Legacy-Koordinator ohne Ausweis darf vorbereiten/abrufen/loeschen (Vorgabe 27920).
     try {

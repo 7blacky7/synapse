@@ -6,7 +6,7 @@ import { apiFetch } from '../api/auth';
  * Echt angeschlossen: GET/PUT /api/projects/:project/agent-profile/ausweis-fristen (derselbe Core-Dispatcher wie
  * admin ausweis_fristen). Projektebene oder global (User und Koordinator); Wert + Quelle (standard|global|projekt) je Frist.
  */
-type FristName = 'schatten_stunden' | 'erstnutzung_minuten' | 'visum_minuten' | 'arbeitsfreigabe_stunden' | 'anmeldung_plaene_minuten' | 'files_plan_stunden';
+type FristName = 'schatten_stunden' | 'erstnutzung_minuten' | 'visum_minuten' | 'arbeitsfreigabe_stunden' | 'anmeldung_plaene_minuten' | 'files_plan_stunden' | 'shell_hinweis_minuten';
 interface FristWert {
   name: FristName;
   wert: number;
@@ -31,6 +31,7 @@ const NAMEN: Array<{ name: FristName; label: string }> = [
   { name: 'arbeitsfreigabe_stunden', label: 'Arbeitsfreigabe' },
   { name: 'anmeldung_plaene_minuten', label: 'Eigene offene Pläne in der Anmeldung' },
   { name: 'files_plan_stunden', label: 'Offene files-Pläne laufen ab nach (ohne Aktivität)' },
+  { name: 'shell_hinweis_minuten', label: 'Beendete Shell-Jobs in shell_activity zeigen bis' },
 ];
 const QUELLE: Record<FristWert['quelle'], string> = { standard: 'Standard', global: 'global', projekt: 'Projekt' };
 const einheit = (f: FristWert) => (f.einheit === 'stunden' ? 'Std.' : 'Min.');

@@ -27,11 +27,24 @@ import type { ShellJobCompletion, ShellJobRow, SpecialistJobCompletion, Speciali
 import type { ShellExecKontextDaten, ShellSicherungEingabe } from '@synapse/core';
 import { loadConfig } from './config.js';
 import { leseApiZugang } from './skills-proxy.js';
+// P22-T4: gemeinsamer API-Client (PC/Runtime); hier immer der PC-Zugang aus der Tray-Config.
+import { DaemonApiFehler, apiAnfrage, pcApiZugang } from './daemon-api-client.js';
 
 export type DaemonJobsWeg = 'pg' | 'api';
 
-/** Hostname wie in der Daemon-ID (daemon-<hostname>-<pid>) und in reapOrphanedRunningJobs. */
-export const DAEMON_HOST = os.hostname();
+/**
+ * Hostname wie in der Daemon-ID (daemon-<hostname>-<pid>) und in reapOrphanedRunningJobs.
+ * P22-T4/T5 (w2 28066): Im Runtime-Container meldet sich der Daemon NICHT mit dem OS-Hostnamen (ohne --hostname waere
+ * das die Container-ID), sondern mit dem container_name seiner Runtime: 'synapse-runtime-' + SYNAPSE_RUNTIME_NAME. Daran
+ * bindet der Server den Runtime-Daemon-Zugang (host == container_name). Am PC ist SYNAPSE_RUNTIME_NAME nicht gesetzt.
+ */
+export function daemonHost(env: NodeJS.ProcessEnv = process.env): string {
+  const runtime = (env.SYNAPSE_RUNTIME_NAME ?? '').trim();
+  if (!runtime) return os.hostname();
+  if (runtime !== 'claude' && runtime !== 'codex') throw new Error(`SYNAPSE_RUNTIME_NAME="${runtime}" ist unbekannt – erlaubt: claude, codex.`);
+  return `synapse-runtime-${runtime}`;
+}
+export const DAEMON_HOST = daemonHost();
 /** Long-Poll-Dauer je Abruf (API deckelt auf 25 s). */
 export const DAEMON_JOBS_POLL_S = 25;
 
@@ -79,39 +92,13 @@ export function pruefeApiWeg(): void {
   if (!token) throw new Error('daemon_jobs_weg=api verlangt synapse_api_token in config.json (Tray: Verbindung einrichten).');
 }
 
-export class DaemonJobsApiFehler extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
-    super(message);
-  }
-}
+/** Bisheriger Name der Fehlerklasse (daemon-sync-api.ts, instanceof-Pruefungen); identisch mit DaemonApiFehler. */
+export { DaemonApiFehler as DaemonJobsApiFehler };
+const DaemonJobsApiFehler = DaemonApiFehler;
 
 /** P9-T27 letzter Schritt: auch von daemon-sync-api.ts genutzt (gleicher Zugang, gleiche Fehlerform). */
 export async function anfrage<T>(pfad: string, init: { method: 'GET' | 'POST'; body?: unknown }, timeoutMs: number, signal?: AbortSignal): Promise<T> {
-  const { url, token } = leseApiZugang();
-  if (!token) throw new DaemonJobsApiFehler('kein synapse_api_token in config.json (Tray: Verbindung einrichten)', 0, 'kein_token');
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const weiter = () => controller.abort();
-  signal?.addEventListener('abort', weiter, { once: true });
-  try {
-    const res = await fetch(`${url}${pfad}`, {
-      method: init.method,
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
-      signal: controller.signal,
-    });
-    let daten: Record<string, unknown> = {};
-    try { daten = (await res.json()) as Record<string, unknown>; } catch { /* leerer Body */ }
-    if (!res.ok) {
-      const code = typeof daten.error === 'string' ? daten.error : undefined;
-      const hinweis = res.status === 404 && !code ? ' (API ohne Daemon-Job-Routen — veralteter Stand?)' : '';
-      throw new DaemonJobsApiFehler(`HTTP ${res.status}${code ? ` ${code}` : ''} bei ${pfad}${hinweis}`, res.status, code);
-    }
-    return daten as T;
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', weiter);
-  }
+  return apiAnfrage<T>(pcApiZugang, pfad, init, timeoutMs, signal);
 }
 
 function query(werte: Record<string, string | number>): string {

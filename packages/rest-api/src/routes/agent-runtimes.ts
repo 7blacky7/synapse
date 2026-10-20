@@ -1,11 +1,42 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { validateToken, type TokenKind } from '../services/auth.js';
 import { getAgentRuntimeManager, shutdownAgentRuntimeManager } from '../services/agent-runtime/manager.js';
-import type { RuntimeName, RuntimeStreamEvent } from '../services/agent-runtime/types.js';
+import type { MainAgentSession, RuntimeName, RuntimeStreamEvent } from '../services/agent-runtime/types.js';
 import { countArtifacts, registerArtifactStream, unregisterArtifactStream } from '../services/agent-runtime/artifact-stream.js';
+import { agentApiRoutes } from './agent-api.js';
 import {
   leseHauptagentSchalter, setzeHauptagentSchalter, hauptagentStatus, listeRuntimeAuftraege, legeRuntimeAuftragAn, brecheRuntimeAuftragAb, w1bFehlerStatus,
+  listeRuntimeProjekte,
+  leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
+  bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
+  leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
 } from '@synapse/core';
+import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
+
+/**
+ * P22-T7: Art einer Runtime. CLI-Runtimes laufen mit Abo-Login im Container (nur Token-Anzeige), alle anderen sind
+ * API-Zugaenge (eigene Anmeldung/Konfiguration, Kosten). Getrennt halten, nie vermischen (User 88f80455 Punkt 2).
+ */
+export function runtimeArt(runtime: string): 'cli' | 'api' {
+  return runtime === 'claude' || runtime === 'codex' ? 'cli' : 'api';
+}
+
+function zahl(v: unknown): number {
+  const n = typeof v === 'string' ? Number(v) : v;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+/** P22-T7: Turn-Verbrauch des Web-UI-Main-Chats (Altweg docker exec je Turn); letzte usage-Meldung des Turns zaehlt. */
+async function bucheMainChatVerbrauch(session: MainAgentSession, modell: string | null, usage: Record<string, unknown> | null): Promise<void> {
+  if (!usage) return;
+  await bucheAgentVerbrauch({
+    project: HAUPTAGENT_PROJEKT, identity_id: session.identityId ?? null, agent_id: HAUPTAGENT_AGENT_ID, runtime: session.runtime,
+    zugang: runtimeArt(session.runtime) === 'cli' ? 'abo' : 'api', modell,
+    input_tokens: zahl(usage.inputTokens), output_tokens: zahl(usage.outputTokens),
+    cache_read_tokens: zahl(usage.cacheReadInputTokens ?? usage.cachedInputTokens), cache_creation_tokens: zahl(usage.cacheCreationInputTokens),
+    quelle: 'main_chat', lauf_id: session.laufId ?? null,
+  }).catch(() => undefined);
+}
 
 /** P22-T36: Fachfehler (Code) mit passendem HTTP-Status, nie Ausweis-/DB-Texte. */
 function sendFachFehler(reply: FastifyReply, error: unknown): FastifyReply {
@@ -72,6 +103,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
 
   fastify.addHook('onRequest', guardInteractiveRuntimeRequest);
   fastify.addHook('onClose', async () => shutdownAgentRuntimeManager());
+  // P22-T8: API-Agent - User-Routen unter /api/main-agent/api* (Guard oben), Transport /api/agent-api/* (Ausweis).
+  await agentApiRoutes(fastify);
 
   fastify.get('/api/agent-runtimes', async (_request, reply) => {
     try {
@@ -106,6 +139,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         image: request.body.image,
         model: request.body.model,
       });
+      // P22-T58: configure kann den Container entfernen (Image-/Root-Wechsel) - die Ueberwachung legt ihn dann nicht selbst neu an.
+      if (status.container.status !== 'running') await markiereRuntimeAngehalten(request.params.runtime, 'user:configure');
       return { success: true, status };
     } catch (error) {
       return sendError(reply, error, 400);
@@ -121,6 +156,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
           : action === 'start'
             ? await driver.start()
             : await driver.stop();
+        // P22-T58: vom User angehalten -> die Runtime-Ueberwachung startet den Container nicht wieder.
+        if (action === 'stop') await markiereRuntimeAngehalten(request.params.runtime, 'user:stop');
         return { success: true, status };
       } catch (error) {
         return sendError(reply, error);
@@ -270,6 +307,126 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       } catch (error) { return sendFachFehler(reply, error); }
     });
 
+  // P22-T5 (W2b): Runtime-Daemon-Zugang (Client-Zugang des Daemons im Container, NICHT der Agenten-Ausweis) und Projekte
+  // des Container-Hosts (projects.hostname, nur lesen). Nur der interaktive User (Guard oben); Klartext erscheint in keiner Antwort.
+  const CONTAINER_RUNTIMES = ['claude', 'codex'];
+  const containerRuntime = (r: string): string => {
+    if (!CONTAINER_RUNTIMES.includes(r)) throw Object.assign(new Error('runtime_ungueltig'), { code: 'runtime_ungueltig' });
+    return r;
+  };
+  fastify.get<{ Params: { runtime: string } }>('/api/agent-runtimes/:runtime/daemon-zugang', async (request, reply) => {
+    try { return { success: true, zugang: await leseRuntimeDaemonZugang(containerRuntime(request.params.runtime)) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.post<{ Params: { runtime: string }; Body: { grund?: unknown } }>('/api/agent-runtimes/:runtime/daemon-zugang', async (request, reply) => {
+    reply.header('cache-control', 'no-store');
+    try { return { success: true, zugang: await stelleRuntimeDaemonZugangAus(containerRuntime(request.params.runtime), request.body?.grund) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.delete<{ Params: { runtime: string }; Body: { grund?: unknown } }>('/api/agent-runtimes/:runtime/daemon-zugang', async (request, reply) => {
+    try { return { success: true, zugang: await widerrufeRuntimeDaemonZugangKomplett(containerRuntime(request.params.runtime), request.body?.grund) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get<{ Params: { runtime: string } }>('/api/agent-runtimes/:runtime/projekte', async (request, reply) => {
+    try { return { success: true, projekte: await listeRuntimeProjekte(containerRuntime(request.params.runtime)) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+
+  // P22-T7 (W2d): Heartbeat des Hauptagenten (nur User), Runtime-Wechsel, Runtime-Liste getrennt nach Art, Verbrauch.
+  fastify.get('/api/main-agent/heartbeat', async (_request, reply) => {
+    try { return { success: true, ...(await leseHauptagentHeartbeat(USER)) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { aktiv?: unknown; intervall_ms?: unknown; grund?: unknown } }>('/api/main-agent/heartbeat', async (request, reply) => {
+    const b = request.body ?? {};
+    try {
+      return { success: true, ...(await setzeHauptagentHeartbeat(USER, { aktiv: b.aktiv, intervall_ms: b.intervall_ms, grund: b.grund })) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get('/api/main-agent/runtimes', async (_request, reply) => {
+    try {
+      const statuses = await manager.listStatuses();
+      return {
+        success: true,
+        runtimes: manager.listDrivers().map((d) => {
+          const s = statuses.find((x) => x.runtime === d.runtime);
+          const bereit = !!s && s.installed && s.container.status === 'running' && s.authentication.status === 'authenticated';
+          return { runtime: d.runtime, label: d.label, art: runtimeArt(d.runtime), bereit, zugewiesen: !!s?.assignedToMain, modell: s?.model ?? null };
+        }),
+      };
+    } catch (error) { return sendError(reply, error); }
+  });
+  /**
+   * Wechsel jederzeit (User 88f80455 Punkt 3). Schalter hauptagent EIN + Identitaet: Auftrag runtime_wechsel bzw. modellwechsel
+   * an die Identitaet (Ausweis bleibt, Ausfuehrung durch den Runtime-Daemon, P22-T6). Sonst Altweg: Zuweisung assigned_to_main.
+   */
+  fastify.post<{ Body: { runtime?: unknown; modell?: unknown; grund?: unknown; hands_off?: unknown } }>('/api/main-agent/wechsel', async (request, reply) => {
+    const b = request.body ?? {};
+    const runtime = typeof b.runtime === 'string' ? b.runtime : '';
+    const modell = typeof b.modell === 'string' && b.modell.trim() ? b.modell.trim() : null;
+    if (!manager.listDrivers().some((d) => d.runtime === runtime)) {
+      return reply.status(400).send({ success: false, error: { code: 'runtime_unbekannt', message: 'runtime_unbekannt' } });
+    }
+    try {
+      await manager.assertMainRuntimeReady(runtime as RuntimeName, false);
+    } catch {
+      return reply.status(409).send({ success: false, error: { code: 'runtime_nicht_bereit', message: 'Runtime ist nicht installiert, laufend und angemeldet' } });
+    }
+    try {
+      const identitaet = (await leseHauptagentSchalter()).aktiv ? await hauptagentIdentitaetsId() : null;
+      if (identitaet) {
+        const status = await hauptagentStatus(USER) as { identitaet?: { runtime_tatsaechlich?: string | null; runtime_gewuenscht?: string | null } };
+        const aktuell = status.identitaet?.runtime_tatsaechlich ?? status.identitaet?.runtime_gewuenscht ?? null;
+        const nurModell = !!modell && aktuell === runtime;
+        const ergebnis = await legeRuntimeAuftragAn(USER, {
+          art: nurModell ? 'modellwechsel' : 'runtime_wechsel',
+          gewuenscht: nurModell ? { modell } : { runtime, ...(modell ? { modell } : {}) },
+          hands_off: b.hands_off, grund: b.grund,
+        });
+        return { success: true, weg: 'auftrag', art: runtimeArt(runtime), ...ergebnis };
+      }
+      if (modell) {
+        return reply.status(400).send({ success: false, error: { code: 'modellwechsel_nur_identitaetsweg', message: 'Modellwechsel braucht den Schalter hauptagent und die Main-Identitaet' } });
+      }
+      return { success: true, weg: 'zuweisung', art: runtimeArt(runtime), ...(await manager.assignMain(runtime as RuntimeName)) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get('/api/main-agent/verbrauch/schalter', async (_request, reply) => {
+    try { return { success: true, schalter: await leseVerbrauchSchalter() }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { aktiv?: unknown; grund?: unknown } }>('/api/main-agent/verbrauch/schalter', async (request, reply) => {
+    try {
+      return { success: true, schalter: await setzeVerbrauchSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  /**
+   * P22-T58: Runtime-Ueberwachung (Steuerung in der API). Lesen: Schalter, Stand je Runtime, letzte Ereignisse, Einstellungen.
+   * Schalter/Einstellungen setzt hier der User; Koordinatoren nutzen admin (profil_schalter_setzen, runtime_ueberwachung).
+   */
+  fastify.get<{ Querystring: { ereignisse?: string } }>('/api/main-agent/ueberwachung', async (request, reply) => {
+    try {
+      const n = Number(request.query?.ereignisse);
+      return { success: true, ...(await leseRuntimeUeberwachung({ ereignisse: Number.isFinite(n) && n > 0 ? n : 20 })) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { aktiv?: unknown; grund?: unknown } }>('/api/main-agent/ueberwachung/schalter', async (request, reply) => {
+    try {
+      return { success: true, schalter: await setzeRuntimeUeberwachungSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { werte?: unknown; entfernen?: unknown; grund?: unknown } }>('/api/main-agent/ueberwachung/einstellungen', async (request, reply) => {
+    const b = request.body ?? {};
+    try {
+      return { success: true, einstellungen: await setzeRuntimeUeberwachungEinstellungen(USER, null, { werte: b.werte, entfernen: b.entfernen, grund: b.grund }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.post<{ Body: { trocken?: unknown } }>('/api/main-agent/ueberwachung/takt', async (request, reply) => {
+    try {
+      return { success: true, bericht: await manager.ueberwachungJetzt(request.body?.trocken !== false) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  /** Verbrauch aller Agenten (nicht nur des Hauptagenten) je Agent/Projekt/Monat; User sieht alle Projekte. */
+  fastify.get<{ Querystring: { monat?: string; project?: string } }>('/api/main-agent/verbrauch', async (request, reply) => {
+    try {
+      return { success: true, ...(await leseAgentVerbrauch(USER, { monat: request.query?.monat, project: request.query?.project })) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+
   fastify.post<{
     Body: { runtime?: RuntimeName };
   }>('/api/main-agent/sessions', async (request, reply) => {
@@ -289,10 +446,11 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return sendError(reply, new Error('message ist erforderlich'), 400);
     }
     let session;
+    let modell: string | null = null;
     try {
       session = await manager.getMainSession(request.params.sessionId);
       manager.driver(session.runtime);
-      await manager.assertMainRuntimeReady(session.runtime);
+      modell = (await manager.assertMainRuntimeReady(session.runtime)).model;
       await manager.markSessionRunning(session.id);
     } catch (error) {
       return sendError(reply, error, 404);
@@ -314,14 +472,20 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     const controller = new AbortController();
     const onClose = (): void => controller.abort();
     reply.raw.once('close', onClose);
+    let letzteUsage: Record<string, unknown> | null = null;
     try {
       const result = await manager.driver(session.runtime).sendMessage(
         session,
         request.body.message,
-        (item: RuntimeStreamEvent) => sse(reply, item.event, item.data),
+        (item: RuntimeStreamEvent) => {
+          if (item.event === 'usage') letzteUsage = item.data;
+          sse(reply, item.event, item.data);
+        },
         controller.signal,
       );
       await manager.completeSession(session.id, result.runtimeSessionId, result.context);
+      // P22-T6: auf dem dauerhaften Container-Weg bucht der Wrapper selbst (T7 meldeVerbrauch); hier nur der Altweg.
+      if (result.context?.hauptagent_weg !== 'dauerhaft') await bucheMainChatVerbrauch(session, modell, letzteUsage);
       if (!controller.signal.aborted) {
         sse(reply, 'done', {
           sessionId: session.id,

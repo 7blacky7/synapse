@@ -16,7 +16,13 @@ const w1bAktionen = ['profil_schalter_status', 'profil_schalter_setzen', 'profil
   // P22-T45: additive Ausweis-Fristen.
   'ausweis_fristen',
   // P22-T44: additive Aktionen Ausweis fuer mehrere Projekte.
-  'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen'];
+  'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen',
+  // P22-T7: additive Hauptagent-Heartbeat- und Verbrauchsaktionen.
+  'hauptagent_heartbeat', 'agent_verbrauch',
+  // P22-T8: additive Aktionen des kostenpflichtigen API-Agenten.
+  'api_status', 'api_schalter', 'api_budget', 'api_einstellungen', 'api_kosten',
+  // P22-T58: additive Aktion der Runtime-Ueberwachung.
+  'runtime_ueberwachung'];
 const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id', 'zustand', 'erwartete_revision', 'ziel_revision', 'korrektur', 'profil_patch', 'typ_id', 'typ_schluessel', 'typ_inhalt',
   'typ_revision', 'profil_scope', 'persona_name', 'persona_inhalt', 'persona_vorlage_id', 'persona_version', 'user_auftrag', 'user_zustimmung', 'anlass', 'bindung_task_id', 'bindung_art', 'bindung_identity_ids',
   // P22-T33 (T1, 227150da): additive W12-Parameter (agent_vorbereiten).
@@ -32,7 +38,15 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P23-T1: additive Einstellwerte der Skill-Sinnpruefung (jev_optionen).
   'skill_rerank_tor', 'skill_rerank_max',
   // P23-T4: additive Einstellwerte (Budget/Timeout der Skill-Sinnpruefung).
-  'skill_rerank_budget_tokens', 'skill_rerank_timeout_ms'];
+  'skill_rerank_budget_tokens', 'skill_rerank_timeout_ms',
+  // P23-T3: additiver Fristwert (beendete Shell-Jobs in shell_activity).
+  'shell_hinweis_minuten',
+  // P22-T7: additive Parameter (Heartbeat-Takt, Verbrauchsmonat).
+  'intervall_ms', 'monat',
+  // P22-T8: additive Parameter des API-Agenten (Budget, Modelle, Einstellwerte).
+  'api_zeitraum', 'erlaubte_modelle', 'api_einstellungen', 'einstellung_namen',
+  // P22-T58: additive Parameter der Runtime-Ueberwachung.
+  'ueberwachung_modus', 'ueberwachung_werte', 'ueberwachung_namen'];
 // P23-T1: additive Werte in bestehenden Enums (Jev-Funktion skill_rerank in jev_schalten.funktion).
 // P23-T6: additiver Enumwert skill_rerank_probe (Jev-Funktion der Diagnose intern skill_probe).
 const neueEnumWerte = { funktion: new Set(['skill_rerank', 'skill_rerank_probe']) };

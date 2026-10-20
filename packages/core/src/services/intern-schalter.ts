@@ -45,6 +45,8 @@ export const INTERN_SCHALTER = {
   agenten_ausweis: ['freigegeben'],
   // P22-T36 (W2-P1): intern-Override des Produkt-Schalters hauptagent (nur Tests, befristet); aktiv=true = freigegeben.
   hauptagent: ['freigegeben'],
+  // P22-T8: intern-Override der Funktion api des Hauptagenten (kostenpflichtiger API-Agent; nur Tests, befristet).
+  hauptagent_api: ['freigegeben'],
   // P22-T44: intern-Override des Produkt-Schalters mehrprojekt (Ausweis fuer mehrere Projekte); aktiv=true = freigegeben.
   mehrprojekt: ['freigegeben'],
   // P23-T1: befristete Test-Freigabe der Jev-Funktion skill_rerank (Produkt-Standard AUS); aktiv=true = freigegeben.
@@ -52,6 +54,18 @@ export const INTERN_SCHALTER = {
   // P23-T5: befristete Test-Freigabe der Fall-Skill-Funktionen (Produkt-Standard AUS); aktiv=true = freigegeben.
   tool_beschreibungen_kurz: ['freigegeben'],
   fall_skill_hinweis: ['freigegeben'],
+  // P22-T56: befristete Test-Freigabe von tools/list je Verbindung (Produkt-Standard AUS); aktiv=true = freigegeben.
+  tool_liste_je_verbindung: ['freigegeben'],
+  // P23-T3: befristete Test-Freigabe schlanker Tool-Antworten (Produkt-Standard AUS); aktiv=true = freigegeben.
+  tool_antworten_schlank: ['freigegeben'],
+  // P23-T7: befristete Test-Freigabe der Tool-Faelle (ungenuegende Fall-Skill-Hinweise, Produkt-Standard AUS); aktiv=true = freigegeben.
+  fall_skill_faelle: ['freigegeben'],
+  // P23-T3 Punkt 6: befristete Test-Freigabe fremder Shell-Ergebnisse (Produkt-Standard AUS); aktiv=true = freigegeben.
+  shell_fremde_ergebnisse: ['freigegeben'],
+  // P22-T7: befristete Test-Freigabe der Verbrauchszaehlung (Abo-Quellen, Produkt-Standard AUS); aktiv=true = freigegeben.
+  verbrauch: ['freigegeben'],
+  // P22-T58: befristete Test-Freigabe der Runtime-Ueberwachung (Produkt-Standard AUS); aktiv=true = freigegeben.
+  runtime_ueberwachung: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 
@@ -126,7 +140,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
       dauerhaft: false, grund: null, gesetzt_von: null, gesetzt_am: null,
     };
   }
-  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'mehrprojekt') && z.bis !== null && z.bis.getTime() <= jetzt;
+  const abgelaufen = (z.aktiv || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt') && z.bis !== null && z.bis.getTime() <= jetzt;
   return {
     name,
     aktiv: z.aktiv && !abgelaufen,
@@ -134,7 +148,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
     abgelaufen,
     modus: z.modus,
     bis: z.bis ? z.bis.toISOString() : null,
-    dauerhaft: (z.aktiv || name === 'agent_bezug_modus' || ((name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'mehrprojekt') && z.modus === 'freigegeben')) && z.bis === null,
+    dauerhaft: (z.aktiv || name === 'agent_bezug_modus' || ((name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt') && z.modus === 'freigegeben')) && z.bis === null,
     grund: z.grund,
     gesetzt_von: z.gesetzt_von,
     gesetzt_am: z.gesetzt_am ? z.gesetzt_am.toISOString() : null,

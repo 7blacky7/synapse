@@ -48,6 +48,8 @@ import {
   getThoughtsByTag,
   getPlan,
   getPendingEvents,
+  bucheAgentVerbrauch,
+  meldeRuntimeKontingent,
 } from '@synapse/core';
 import { abonniere, stromSicht, stromGesundheit } from '../services/wrapper-stream.js';
 
@@ -596,6 +598,70 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
         stream: stromSicht(project, agent),
         server_time: new Date().toISOString(),
       };
+    } catch (error) {
+      zaehler.fehler += 1;
+      return reply.status(500).send({ success: false, error: { message: String(error) } });
+    }
+  });
+
+  /**
+   * P22-T7: POST .../verbrauch — Abo-Verbrauch des Wrappers je Modellantwort (Body {runtime, eintraege[]}, max. 500).
+   * Identitaet aus dem Transportkontext (Ausweis), nie aus dem Body. Jede referenz bucht genau einmal (quelle wrapper).
+   * grund funktion_aus = Produkt-Schalter verbrauch AUS: nichts gebucht, kein Fehler.
+   */
+  fastify.post<{
+    Params: { name: string; specName: string };
+    Body: { runtime?: unknown; eintraege?: unknown };
+  }>(`${BASIS}/verbrauch`, async (request, reply) => {
+    const { name: project, specName: agent } = request.params;
+    const runtime = alsText(request.body?.runtime);
+    const eintraege = Array.isArray(request.body?.eintraege) ? (request.body?.eintraege as unknown[]) : null;
+    if (!runtime || !eintraege || eintraege.length > 500) {
+      return reply.status(400).send({ success: false, error: { code: 'verbrauch_ungueltig', message: 'runtime und eintraege (1..500) erforderlich' } });
+    }
+    try {
+      const identity = aktuelleAgentIdentityId(project, agent);
+      let gebucht = 0;
+      let doppelt = 0;
+      let grund: string | null = null;
+      for (const roh of eintraege) {
+        const e = (roh ?? {}) as Record<string, unknown>;
+        const r = await bucheAgentVerbrauch({
+          project, identity_id: identity ?? null, agent_id: agent, runtime, zugang: 'abo', modell: alsText(e.modell),
+          input_tokens: alsZahl(e.input_tokens), output_tokens: alsZahl(e.output_tokens),
+          cache_read_tokens: alsZahl(e.cache_read_tokens), cache_creation_tokens: alsZahl(e.cache_creation_tokens),
+          quelle: 'wrapper', referenz: alsText(e.referenz),
+        });
+        if (r.gebucht) gebucht++;
+        else if (r.grund === 'doppelt') doppelt++;
+        else if (r.grund === 'funktion_aus') { grund = r.grund; break; }
+        else if (r.grund === 'fehler') throw new Error('verbrauch_buchung_fehler');
+      }
+      return { success: true, project, agent, gebucht, doppelt, grund };
+    } catch (error) {
+      zaehler.fehler += 1;
+      return reply.status(500).send({ success: false, error: { message: String(error) } });
+    }
+  });
+
+  /**
+   * P22-T58: POST .../kontingent — der Wrapper meldet ein erschoepftes bzw. wieder freies Abo-Kontingent seiner Runtime
+   * (Body {runtime, status rejected|allowed, resets_at?, art?}). Die Runtime-Ueberwachung zieht daraufhin alle Agenten dieser Runtime
+   * um und holt sie nach der Reset-Zeit zurueck. Nur Zustandswechsel kommen hier an.
+   */
+  fastify.post<{
+    Params: { name: string; specName: string };
+    Body: { runtime?: unknown; status?: unknown; resets_at?: unknown; art?: unknown };
+  }>(`${BASIS}/kontingent`, async (request, reply) => {
+    const { name: project, specName: agent } = request.params;
+    const runtime = alsText(request.body?.runtime);
+    const status = alsText(request.body?.status);
+    if (!runtime || (status !== 'rejected' && status !== 'allowed')) {
+      return reply.status(400).send({ success: false, error: { code: 'kontingent_ungueltig', message: 'runtime und status (rejected|allowed) erforderlich' } });
+    }
+    try {
+      const r = await meldeRuntimeKontingent({ runtime, status, resets_at: request.body?.resets_at, art: alsText(request.body?.art), project, agent });
+      return { success: true, project, agent, ...r };
     } catch (error) {
       zaehler.fehler += 1;
       return reply.status(500).send({ success: false, error: { message: String(error) } });

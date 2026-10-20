@@ -6,7 +6,9 @@
   "types": "./dist/main.d.ts",
   "type": "module",
   "bin": {
-    "synapse-file-watcher-daemon": "./dist/main.js"
+    "synapse-file-watcher-daemon": "./dist/main.js",
+    "synapse-runtime-daemon": "./dist/runtime-main.js",
+    "synapse-runtime": "./dist/runtime-cli.js"
   },
   "scripts": {
     "build": "tsc",

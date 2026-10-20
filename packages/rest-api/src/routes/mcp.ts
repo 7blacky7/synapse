@@ -8,8 +8,12 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
+// P23-T3: schlanke Tool-Antworten (Schalter tool_antworten_schlank, Standard AUS).
+import { schlankeShellRueckfrageWennAktiv, fremderLaufFeld } from '@synapse/core';
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 import { getProjectRecordById, mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
+// P22-T56: tools/list je Verbindung (Ausweis im Header / Legacy-Connector / gemeinsame Verbindung).
+import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 // P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
 import { haengeFallSkillHinweisAn, type FallSkillOptionen } from '@synapse/core';
@@ -2172,7 +2176,7 @@ async function attachWerkzeugRegeln(
     if (WERKZEUG_REGEL_FELD in (result as Record<string, unknown>)) return result;
     const project = typeof args.project === 'string' ? args.project : undefined;
     const action = typeof args.action === 'string' ? args.action : undefined;
-    const regeln = await holeWerkzeugRegeln(project, toolName, action);
+    const regeln = await holeWerkzeugRegeln(project, toolName, action, typeof args.agent_id === 'string' ? args.agent_id : undefined);
     if (regeln.length === 0) return result;
     return { ...result, [WERKZEUG_REGEL_FELD]: regeln };
   } catch {
@@ -2206,8 +2210,9 @@ async function attachSkillHinweisgeber(
     return result;
   }
   if (toolName !== 'memory' && toolName !== 'thought' && toolName !== 'plan') {
-    // P23-T1 (2c): an allen uebrigen Tools nur die 99%-Kette nachliefern (vorgegebene, verknuepfte und woertlich
-    // genannte Skills), bis der Agent sie gesehen hat. skills liefert selbst; eigene Vorschlaege bleiben.
+    // P23-T1 (2c): an allen uebrigen Tools nur die 99%-Kette nachliefern (vorgegebene und verknuepfte Skills),
+    // bis der Agent sie gesehen hat. skills liefert selbst; eigene Vorschlaege bleiben.
+    // P23-T8: woertlich genannte Skills sind KEINE Kette mehr (KETTEN_QUELLEN) - sie kamen hier ohne Bezug an.
     if (toolName === 'skills' || 'skill_suggestions' in (result as Record<string, unknown>)) return result;
     try {
       const { holeOffeneSkillVorschlaege, KETTEN_SCORE } = await import('@synapse/core');
@@ -2220,11 +2225,11 @@ async function attachSkillHinweisgeber(
     }
   }
   try {
-    const { verarbeiteSkillHinweisgeber, holeOffeneSkillVorschlaege } = await import('@synapse/core');
-    await verarbeiteSkillHinweisgeber(
+    // P23-T8: Namenstreffer nur aus den Quellen DIESES Aufrufs (holeSkillVorschlaegeFuerAufruf).
+    const { holeSkillVorschlaegeFuerAufruf } = await import('@synapse/core');
+    const weitere = await holeSkillVorschlaegeFuerAufruf(
       toolName, str(args, 'action'), args, result, effectiveAgentId,
     );
-    const weitere = await holeOffeneSkillVorschlaege(effectiveAgentId);
     if (weitere.suggestions.length === 0) return result;
     return {
       ...result,
@@ -5727,7 +5732,8 @@ async function handleToolCallKern(
           const tail = tailLines && r.stdout
             ? r.stdout.split('\n').slice(-tailLines)
             : r.stdout.split('\n');
-          return {
+          // P23-T3: stufe rueckfrage ohne Lage-Baum (Schalter tool_antworten_schlank).
+          return await schlankeShellRueckfrageWennAktiv(project, {
             success: r.exitCode === 0 && !r.timedOut,
             executed_via: 'workspace',
             status: r.status??(r.timedOut ? 'timeout' : (r.exitCode === 0 ? 'done' : 'failed')),
@@ -5749,7 +5755,7 @@ async function handleToolCallKern(
                     `target:"local" verwenden — dort loest sich der Aufruf ab und der Job laeuft zu Ende.`,
                 }
               : {}),
-          };
+          });
         } catch (err) {
           return {
             success: false,
@@ -5786,7 +5792,8 @@ async function handleToolCallKern(
       // sofort (status 'running', unterbrochen_durch) — der Job laeuft weiter.
       const result = await waitForShellJob(id, DETACH_AFTER_MS, { agentId: resolveAgentId(str(args, 'agent_id')) });
 
-      return {
+      // P23-T3: stufe rueckfrage ohne Lage-Baum (Schalter tool_antworten_schlank).
+      return await schlankeShellRueckfrageWennAktiv(project, {
         success: !result.error,
         executed_via: 'local',
         ...shellSicherungsAntwortAus(result as unknown as Record<string,unknown>),
@@ -5806,7 +5813,9 @@ async function handleToolCallKern(
         ...(attached ? { attached: true, attached_to } : {}),
         ...(reused ? { reused: true } : {}),
         ...(result.unterbrochen_durch ? { unterbrochen_durch: result.unterbrochen_durch } : {}),
-      };
+        // P23-T3 Punkt 6b (Schalter shell_fremde_ergebnisse): gleicher beendeter Lauf eines anderen Agenten -> Abrufweg.
+        ...(attached || reused ? {} : await fremderLaufFeld({ project, command, cwd_relative: cwdRel, agent_id: resolveAgentId(str(args, 'agent_id')), ausser_job_id: id })),
+      });
     }
 
     // =================================================================
@@ -6237,6 +6246,25 @@ async function handleToolCallKern(
 }
 
 /**
+ * EIN tools/list-Weg fuer POST / und POST /mcp/messages (vorher zweimal in den Routen).
+ * Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
+ * P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
+ * P22-T56: die Variante (ausweis/legacy/gemeinsam) haengt an der Verbindung; Debug unter _meta nur bei Schalter EIN.
+ */
+async function toolsListeErgebnis(headers: Record<string, unknown>, mainAccess: MainToolAccess): Promise<Record<string, unknown>> {
+  const ausweis = typeof headers['x-synapse-agent-token'] === 'string' ? headers['x-synapse-agent-token'] as string : undefined;
+  const verbindung = await entscheideToolListeVerbindung({
+    transport: 'rest', transportToken: ausweis,
+    userAgent: typeof headers['user-agent'] === 'string' ? headers['user-agent'] as string : undefined,
+  });
+  const basis = mainAccess.profile === 'artefakt-only' && mainAccess.sessionId ? MCP_TOOLS : await filtereJevTool(MCP_TOOLS);
+  return {
+    tools: await mainToolListeMitProfil(await beworbeneAgentTools(basis, { mitAusweis: ausweis !== undefined, verbindung }), mainAccess, ausweis),
+    ...toolListeMeta(verbindung),
+  };
+}
+
+/**
  * P10-T51 (K2, N5): EIN tools/call-Weg fuer POST / und POST /mcp/messages.
  * Vorher stand derselbe Block zweimal in den Routen; dem Root-Weg fehlte attachWerkzeugRegeln.
  * Die Huelle (Text + structuredContent aus demselben Objekt, kompakt, null-Felder weg,
@@ -6487,13 +6515,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           break;
 
         case 'tools/list':
-          // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
-          // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
-          result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS, { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
-              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined)
-            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS), { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
-              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined) };
+          // Siehe toolsListeErgebnis (Hauptagent, Jev, P22-T56 je Verbindung).
+          result = await toolsListeErgebnis(request.headers as Record<string, unknown>, mainAccess);
           break;
 
         case 'tools/call': {
@@ -6581,13 +6604,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
           break;
 
         case 'tools/list':
-          // Hauptagenten-Aufrufer sehen GENAU EIN Werkzeug (Auflage 26.08.2026).
-          // P15-T33 E0.5: bei GLOBAL abgeschaltetem Jev fehlt das Tool jev.
-          result = { tools: mainAccess.profile === 'artefakt-only' && mainAccess.sessionId
-            ? await mainToolListeMitProfil(await beworbeneAgentTools(MCP_TOOLS, { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
-              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined)
-            : await mainToolListeMitProfil(await beworbeneAgentTools(await filtereJevTool(MCP_TOOLS), { mitAusweis: typeof request.headers['x-synapse-agent-token'] === 'string' }), mainAccess,
-              typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined) };
+          // Siehe toolsListeErgebnis (Hauptagent, Jev, P22-T56 je Verbindung).
+          result = await toolsListeErgebnis(request.headers as Record<string, unknown>, mainAccess);
           break;
 
         case 'tools/call': {

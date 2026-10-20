@@ -72,12 +72,20 @@ const W1B_AKTIONEN=['profil_schalter_status','profil_schalter_setzen','profil_ue
  // P22-T44: additive Aktionen Ausweis fuer mehrere Projekte
  'ausweis_visa','arbeitsfreigabe_erteilen','arbeitsfreigabe_entziehen',
  // P22-T36: additive Hauptagent-Aktionen
- 'hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen'];
+ 'hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen',
+ // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Aktionen
+ 'hauptagent_heartbeat','agent_verbrauch','api_status','api_schalter','api_budget','api_einstellungen','api_kosten',
+ // P22-T58: additive Aktion der Runtime-Ueberwachung
+ 'runtime_ueberwachung'];
 const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','zustand','erwartete_revision','ziel_revision','korrektur','profil_patch','typ_id','typ_schluessel','typ_inhalt',
  'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
- 'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','files_plan_ablauf_aktiv','frist_namen',
- 'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel'];
+ 'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','shell_hinweis_minuten','files_plan_ablauf_aktiv','frist_namen',
+ 'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel',
+ // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Parameter
+ 'intervall_ms','monat','api_zeitraum','erlaubte_modelle','api_einstellungen','einstellung_namen',
+ // P22-T58: additive Parameter der Runtime-Ueberwachung
+ 'ueberwachung_modus','ueberwachung_werte','ueberwachung_namen'];
 const projiziere=t=>t.name!=='admin'?t:{...t,inputSchema:{...t.inputSchema,properties:Object.fromEntries(Object.entries(t.inputSchema.properties)
  .filter(([k])=>!W1B_PARAMETER.includes(k)).map(([k,v])=>[k,k==='action'?{...v,enum:v.enum.filter(a=>!W1B_AKTIONEN.includes(a))}:v]))}};
 
@@ -311,7 +319,7 @@ try{
   await section('Admin-Dispatcher (Akteur, Schalter, Isolation)',async()=>{
    const {k,sub,kid,sid,KP}=globalThis.__d;
    const adm=(a,args,akteur)=>C.fuehreW1bAdminAus(a,args,akteur===undefined?{}:{akteur});
-   check(C.W1B_ADMIN_ACTIONS.length===36&&gleich([...C.W1B_ADMIN_ACTIONS],W1B_AKTIONEN),'Aktionsliste = additive Golden-Liste');
+   check(C.W1B_ADMIN_ACTIONS.length===W1B_AKTIONEN.length&&gleich([...C.W1B_ADMIN_ACTIONS],W1B_AKTIONEN),'Aktionsliste = additive Golden-Liste');
    check(gleich(Object.keys(C.W1B_ADMIN_PARAMETER),W1B_PARAMETER),'Parameterliste = additive Golden-Liste');
    // kein Akteur aus Argumenten
    const spoof=await adm('token_abrufen',{project:P,agent_id:'sub-x',role:'koordinator',user:'user',ziel_identity_id:sid,anlass:'Spoof',akteur:'user'});
@@ -321,8 +329,8 @@ try{
    const ohneKontext=await C.fuehreW1bAdminAus('profil_schalter_status',{project:P});
    check(ohneKontext.error==='recht_fehlt','ohne User-Herkunft/Principal kein Akteur');
    const alsUser=await C.mitUserHerkunft('web-ui-chat',()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
-   // P22-T28 (V7): 5 Produkt-Schalter im Katalog (schattenprofile und token_abruf sind in agenten_ausweis aufgegangen), dazu ausweis_kern. P22-T33 (G1): die Altschalter bleiben in profil_schalter_status gelistet (additiv gegenueber t110) -> 7. P22-T44: Produkt-Schalter mehrprojekt -> 8. P23-T5: tool_beschreibungen_kurz + fall_skill_hinweis -> 10.
-   check(alsUser.success&&alsUser.schalter.length===10&&alsUser.schalter.some(x=>x.funktion==='agenten_ausweis')&&alsUser.ausweis_kern&&typeof alsUser.ausweis_kern.aktiv==='boolean'&&alsUser.ausweis_kern.agent_bezug_modus!==undefined,'User-Herkunft aus authentifiziertem Eingang '+JSON.stringify({ok:alsUser.success,n:alsUser.schalter?.length,k:alsUser.ausweis_kern}).slice(0,240));
+   // P22-T28 (V7): 5 Produkt-Schalter im Katalog (schattenprofile und token_abruf sind in agenten_ausweis aufgegangen), dazu ausweis_kern. P22-T33 (G1): die Altschalter bleiben in profil_schalter_status gelistet (additiv gegenueber t110) -> 7. P22-T44: Produkt-Schalter mehrprojekt -> 8. P23-T5: tool_beschreibungen_kurz + fall_skill_hinweis -> 10. P22-T56: tool_liste_je_verbindung -> 11. P23-T3/P23-T7: weitere Funktionen - Zahl aus dem Katalog (+2 Altschalter).
+   check(alsUser.success&&alsUser.schalter.length===C.PROFIL_PRODUKT_FUNKTIONEN.length+C.ALT_AUSWEIS_FUNKTIONEN.length&&alsUser.schalter.some(x=>x.funktion==='agenten_ausweis')&&alsUser.ausweis_kern&&typeof alsUser.ausweis_kern.aktiv==='boolean'&&alsUser.ausweis_kern.agent_bezug_modus!==undefined,'User-Herkunft aus authentifiziertem Eingang '+JSON.stringify({ok:alsUser.success,n:alsUser.schalter?.length,k:alsUser.ausweis_kern}).slice(0,240));
    const alsKoord=await C.mitAgentAufrufKontext({principal:KP.principal,bezug:{modus:'neu',standard:'alt',quelle:'standard',bis:null,letzter_fehler:null}},()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
    check(alsKoord.success===true,'Koordinator aus bezeugtem Principal');
    const alsSub=await C.mitAgentAufrufKontext({principal:akt('d-s',P,'subagent').principal,bezug:{modus:'neu',standard:'alt',quelle:'standard',bis:null,letzter_fehler:null}},()=>C.fuehreW1bAdminAus('profil_schalter_status',{project:P}));
@@ -476,8 +484,12 @@ try{
    const an=await call('PUT','/schalter','web',{profil_funktion:'alle',aktiv:true,grund:'test p22 D REST',ebene:'global'});
    if(modusAlt===undefined)delete process.env.SYNAPSE_AGENT_BEZUG_MODUS;else process.env.SYNAPSE_AGENT_BEZUG_MODUS=modusAlt;
    // P22-T44: 'alle' schaltet mehrprojekt bewusst NICHT mit (nur ausdruecklich, Standard AUS).
-   // P23-T5: wie mehrprojekt schliesst 'alle' auch tool_beschreibungen_kurz und fall_skill_hinweis nicht ein.
-   const nurAusdruecklich=['mehrprojekt','tool_beschreibungen_kurz','fall_skill_hinweis'];
+   // P23-T5: wie mehrprojekt schliesst 'alle' auch tool_beschreibungen_kurz und fall_skill_hinweis nicht ein (P22-T56: tool_liste_je_verbindung).
+   // P23-T7: fall_skill_faelle ebenso.
+   // P23-T3: tool_antworten_schlank und shell_fremde_ergebnisse ebenso nur ausdruecklich.
+   // P22-T7: verbrauch ebenfalls nur ausdruecklich.
+   // P22-T58: runtime_ueberwachung ebenfalls nur ausdruecklich.
+   const nurAusdruecklich=['mehrprojekt','tool_beschreibungen_kurz','fall_skill_hinweis','fall_skill_faelle','tool_liste_je_verbindung','tool_antworten_schlank','shell_fremde_ergebnisse','verbrauch','runtime_ueberwachung'];
    check(an.status===200&&an.body.schalter.filter(x=>!nurAusdruecklich.includes(x.funktion)).every(x=>x.aktiv)&&nurAusdruecklich.every(f=>an.body.schalter.some(x=>x.funktion===f&&!x.aktiv)),'User setzt global (PG)');
    const uebersicht=await call('GET','/uebersicht','web');
    check(uebersicht.status===200&&uebersicht.body.profile.some(x=>x.identity_id===sid)&&!/sai_[a-f0-9]/.test(JSON.stringify(uebersicht.body)),'Uebersicht tokenfrei');

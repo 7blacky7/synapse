@@ -13,6 +13,7 @@ Der Ordner bündelt Docker-Images für zwei unterschiedliche Aufgaben: die isoli
 | [Prüfcontainer](synapse-pruefcontainer/README.md) | Enthält das Image und die Parser-Hilfsprogramme für Syntaxprüfungen außerhalb des Node-Prozesses. |
 | [Workspace](synapse-workspace/README.md) | Beschreibt das Basis-Image mit Werkzeugen für Build-, Analyse- und Laufzeitaufgaben in einer Projektsandbox. |
 | [Workspace mit Podman](synapse-workspace-podman/README.md) | Erweitert das Workspace-Image um rootless Podman für Container-Szenarien innerhalb der Sandbox. |
+| [Agenten-Runtime](synapse-agent-runtime/README.md) | Image für Hauptagent und Spezialisten: Daemon im Startprofil runtime plus versionierte Claude-/Codex-CLI mit Update und Rollback. |
 
 ## Schnittstellen nach außen
 

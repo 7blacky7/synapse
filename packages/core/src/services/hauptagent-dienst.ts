@@ -26,6 +26,8 @@
  *   'modell' liegt in der Spalte modell_bestaetigt (= konfiguriert/gewuenscht); modell_selbstauskunft = Selbstauskunft des
  *   Agenten. TATSAECHLICH laufend gilt erst, was ein ACK nach erfolgreichem Neustart in auftrag.tatsaechlich schreibt
  *   (Runtime-Daemon, spaeteres Paket). In P1 bleiben Auftraege pending, Status zeigt ausfuehrung 'ausstehend_kein_executor'.
+ *   P22-T6: neustart/modellwechsel/stop fuehrt der Runtime-Daemon aus (runtime-auftraege-ausfuehrung.ts): ausfuehrung
+ *   'wartet_auf_runtime_daemon' (pending) bzw. 'in_ausfuehrung' (claimed/accepted); runtime_wechsel/update weiter ohne Ausfuehrer.
  */
 import { randomUUID } from 'node:crypto';
 import type { QueryConfig } from 'pg';
@@ -34,8 +36,12 @@ import { internToolAktiv } from './intern-tool.js';
 import { registerVirtualProject } from './project-registry.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 import { agentVorbereiten, ausweisFuerStart } from './agent-ausweis-dienst.js';
-import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText } from './agent-profil-verwalter.js';
+import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText, pruefeProfilVerwalter } from './agent-profil-verwalter.js';
 import { AUSWEIS_IM_TEXT } from './agent-ausweis-format.js';
+import { AUSFUEHRBARE_AUFTRAG_ARTEN } from './runtime-auftraege-ausfuehrung.js';
+import { identitaetAudit, schreibeProfilRevision, spaltenAusInhalt } from './agent-profil-dienst-a.js';
+import { setzeHeartbeatKonfiguration } from './wrapper-status.js';
+import { leseAgentVerbrauch } from './agent-verbrauch.js';
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 
 export const HAUPTAGENT_FUNKTION = 'hauptagent' as const;
@@ -122,13 +128,15 @@ async function pruefeHauptagentAn(): Promise<HauptagentSchalterStand> {
 interface MainZeile {
   id: string; agent_id: string; rolle: string; status: string; profil: Record<string, unknown>;
   startrezept: Record<string, unknown>; profil_revision: number; modell_bestaetigt: string | null;
-  modell_selbstauskunft: string | null; zuletzt_aktiv: Date;
+  modell_selbstauskunft: string | null; zuletzt_aktiv: Date; typ_id: string | null; typ_revision: number | null;
 }
+
+const MAIN_SPALTEN = `id, agent_id, rolle, status, profil, startrezept, profil_revision, modell_bestaetigt, modell_selbstauskunft, zuletzt_aktiv,
+  typ_id, typ_revision`;
 
 async function leseMainZeile(): Promise<MainZeile | null> {
   const r = await getPool().query<MainZeile>(
-    `SELECT id, agent_id, rolle, status, profil, startrezept, profil_revision, modell_bestaetigt, modell_selbstauskunft, zuletzt_aktiv
-       FROM agent_identitaeten WHERE project = $1 AND agent_id = $2`, [HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID]);
+    `SELECT ${MAIN_SPALTEN} FROM agent_identitaeten WHERE project = $1 AND agent_id = $2`, [HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID]);
   return r.rows[0] ?? null;
 }
 
@@ -238,7 +246,8 @@ async function zielMain(identityId: unknown): Promise<MainZeile> {
 // ---------------------------------------------------------------------------------------------
 // Auftraege
 // ---------------------------------------------------------------------------------------------
-const GEWUENSCHT_FELDER = ['modell', 'provider', 'effort', 'runtime', 'cli'] as const;
+// P22-T6/T58: failover (nur true) = alter Container ist bereits gestoppt; runtime_wechsel ohne Stop an die alte Runtime.
+const GEWUENSCHT_FELDER = ['modell', 'provider', 'effort', 'runtime', 'cli', 'failover'] as const;
 
 function normalisiereGewuenscht(v: unknown): Record<string, string> {
   if (v === undefined || v === null) return {};
@@ -250,6 +259,11 @@ function normalisiereGewuenscht(v: unknown): Record<string, string> {
   for (const k of GEWUENSCHT_FELDER) {
     const x = o[k];
     if (x === undefined || x === null) continue;
+    if (k === 'failover') {
+      if (x !== true) fehler('gewuenscht_ungueltig', { felder: [k] });
+      out[k] = 'ja';
+      continue;
+    }
     if (typeof x !== 'string' || !x.trim() || x.length > 128) fehler('gewuenscht_ungueltig', { felder: [k] });
     out[k] = (x as string).trim();
   }
@@ -282,7 +296,8 @@ function auftragAus(z: AuftragZeile): Record<string, unknown> {
     erstellt_von: z.erstellt_von, idempotenz_schluessel: z.idempotenz_schluessel, claim_revision: z.claim_revision,
     letzter_fehler: z.letzter_fehler, erstellt_am: z.erstellt_am.toISOString(), aktualisiert_am: z.aktualisiert_am.toISOString(),
     abgeschlossen_am: z.abgeschlossen_am ? z.abgeschlossen_am.toISOString() : null, abgeschlossen_von: z.abgeschlossen_von,
-    ...(offen ? { ausfuehrung: AUSFUEHRUNG_P1 } : {}),
+    ...(offen ? { ausfuehrung: !([...AUSFUEHRBARE_AUFTRAG_ARTEN, 'runtime_wechsel'] as readonly string[]).includes(z.art) ? AUSFUEHRUNG_P1
+      : z.status === 'pending' ? 'wartet_auf_runtime_daemon' : 'in_ausfuehrung' } : {}),
   };
 }
 
@@ -315,9 +330,11 @@ export async function legeRuntimeAuftragAn(akteur: AusweisAkteur | null, e: Auft
   const schluessel = typeof e.idempotenz_schluessel === 'string' && e.idempotenz_schluessel.trim() ? e.idempotenz_schluessel.trim().slice(0, 200) : null;
   if (art === 'modellwechsel' && !gewuenscht.modell) fehler('gewuenscht_modell_fehlt');
   if (art === 'runtime_wechsel' && !gewuenscht.runtime) fehler('gewuenscht_runtime_fehlt');
+  if (gewuenscht.failover && art !== 'runtime_wechsel') fehler('gewuenscht_ungueltig', { felder: ['failover'] });
   if (b.art === 'selbst') {
     // 60c03d56: uebergeordnete Kontrolle beim User -> stop nur der User. 5fc2cafa: Modell/Runtime nur im festgelegten Rahmen.
     if (art === 'stop') fehler('recht_fehlt', { grund: 'stop nur durch den User' });
+    if (gewuenscht.failover) fehler('recht_fehlt', { grund: 'failover nur durch User/Ueberwachung' });
     const rahmen = ziel.startrezept ?? {};
     if (gewuenscht.modell && !textListeAus(rahmen.erlaubte_modelle).includes(gewuenscht.modell)) {
       fehler('ausserhalb_rahmen', { feld: 'modell', erlaubte_modelle: textListeAus(rahmen.erlaubte_modelle) });
@@ -405,6 +422,11 @@ export async function hauptagentStatus(akteur: AusweisAkteur | null): Promise<Re
   const offen = await getPool().query<AuftragZeile>(
     `SELECT ${AUFTRAG_SPALTEN} FROM agent_runtime_auftraege WHERE identity_id=$1 AND status IN ('pending','claimed','accepted') ORDER BY erstellt_am`, [z.id]);
   const rahmen = z.startrezept ?? {};
+  // P22-T7: ein offener Wechselauftrag ist der gewuenschte Stand, bis der Ausfuehrer (T6) ihn bestaetigt.
+  const offenGewuenscht = (feld: 'modell' | 'runtime'): string | null => {
+    const a = offen.rows.find(o => (o.art === 'modellwechsel' || o.art === 'runtime_wechsel') && typeof o.gewuenscht?.[feld] === 'string');
+    return a ? a.gewuenscht[feld] as string : null;
+  };
   const ack = await getPool().query<{ modell: string | null; runtime: string | null }>(
     `SELECT tatsaechlich->>'modell' AS modell, tatsaechlich->>'runtime' AS runtime FROM agent_runtime_auftraege
       WHERE identity_id=$1 AND status='completed' AND tatsaechlich IS NOT NULL ORDER BY abgeschlossen_am DESC NULLS LAST LIMIT 1`, [z.id]);
@@ -414,20 +436,157 @@ export async function hauptagentStatus(akteur: AusweisAkteur | null): Promise<Re
       identity_id: z.id, agent_id: z.agent_id, rolle: z.rolle, status: z.status, profil_revision: z.profil_revision,
       ausweis_zustand: ausweis.rows[0]?.zustand ?? 'fehlt', zuletzt_aktiv: z.zuletzt_aktiv.toISOString(),
       // Gewuenscht = konfiguriert im Profil bzw. offener Wechselauftrag; tatsaechlich = erst nach bestaetigtem Neustart.
-      modell_gewuenscht: z.modell_bestaetigt ?? ((z.profil?.modell as string | undefined) ?? null),
+      modell_gewuenscht: offenGewuenscht('modell') ?? z.modell_bestaetigt ?? ((z.profil?.modell as string | undefined) ?? null),
       modell_tatsaechlich: ack.rows[0]?.modell ?? null, modell_selbstauskunft: z.modell_selbstauskunft,
-      runtime_gewuenscht: typeof rahmen.runtime === 'string' ? rahmen.runtime : null,
+      runtime_gewuenscht: offenGewuenscht('runtime') ?? (typeof rahmen.runtime === 'string' ? rahmen.runtime : null),
       runtime_tatsaechlich: ack.rows[0]?.runtime ?? null,
       rahmen: { erlaubte_modelle: textListeAus(rahmen.erlaubte_modelle), erlaubte_runtimes: textListeAus(rahmen.erlaubte_runtimes) },
     },
+    heartbeat: await heartbeatStand(z),
     auftraege_offen: offen.rows.map(auftragAus),
+    // P22-T58: Runtime-Ueberwachung kurz (dynamisch: runtime-ueberwachung.ts importiert diese Datei).
+    ueberwachung: await (await import('./runtime-ueberwachung.js')).ueberwachungKurz(),
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// P22-T7: Heartbeat des Hauptagenten (User 88f80455, 423dc69e). Einstellung im Startrezept der Identitaet
+// (startrezept.heartbeat {aktiv, intervall_ms}); fehlt sie, gilt der Code-Standard AUS. Setzen NUR der User. Der Main-Spawn
+// (T6) liest sie ueber hauptagentHeartbeatAusStartrezept statt setzeHeartbeatBeimSpawn. Laeuft schon ein Wrapper der
+// Identitaet, wird seine Zeile sofort nachgezogen (Bestand-Trigger weckt den Wrapper).
+// ---------------------------------------------------------------------------------------------
+export const HEARTBEAT_TAKT_MIN_MS = 5_000;
+export const HEARTBEAT_STANDARD = { aktiv: false, intervall_ms: null } as const;
+
+export interface HauptagentHeartbeatEinstellung {
+  aktiv: boolean;
+  /** null = adaptive Ladder des Wrappers (wie lokale Spezialisten). */
+  intervall_ms: number | null;
+  quelle: 'standard' | 'einstellung';
+  gesetzt_am: string | null;
+}
+
+/** Eine Lesestelle fuer die Heartbeat-Einstellung (auch fuer den Main-Spawn in T6). */
+export function hauptagentHeartbeatAusStartrezept(startrezept: unknown): HauptagentHeartbeatEinstellung {
+  const h = startrezept && typeof startrezept === 'object' ? (startrezept as Record<string, unknown>).heartbeat : undefined;
+  if (!h || typeof h !== 'object' || typeof (h as Record<string, unknown>).aktiv !== 'boolean') {
+    return { ...HEARTBEAT_STANDARD, quelle: 'standard', gesetzt_am: null };
+  }
+  const o = h as Record<string, unknown>;
+  const takt = typeof o.intervall_ms === 'number' && Number.isInteger(o.intervall_ms) && o.intervall_ms >= HEARTBEAT_TAKT_MIN_MS ? o.intervall_ms : null;
+  return { aktiv: o.aktiv as boolean, intervall_ms: takt, quelle: 'einstellung', gesetzt_am: typeof o.gesetzt_am === 'string' ? o.gesetzt_am : null };
+}
+
+async function heartbeatStand(z: MainZeile): Promise<Record<string, unknown>> {
+  const w = await getPool().query<{ heartbeat_enabled: boolean; heartbeat_interval_ms: number | null; status: string }>(
+    'SELECT heartbeat_enabled, heartbeat_interval_ms, status FROM agent_identitaet_wrapper_status WHERE identity_id=$1 AND project=$2',
+    [z.id, HAUPTAGENT_PROJEKT]).catch(() => ({ rows: [] as Array<{ heartbeat_enabled: boolean; heartbeat_interval_ms: number | null; status: string }> }));
+  const lauf = w.rows[0];
+  return {
+    gewuenscht: hauptagentHeartbeatAusStartrezept(z.startrezept),
+    // Tatsaechlich = Zeile des laufenden Wrappers; ohne Lauf gibt es keinen tatsaechlichen Stand.
+    tatsaechlich: lauf
+      ? { lauf: true, status: lauf.status, aktiv: lauf.heartbeat_enabled, intervall_ms: lauf.heartbeat_interval_ms != null ? Number(lauf.heartbeat_interval_ms) : null }
+      : { lauf: false, status: 'kein_lauf', aktiv: null, intervall_ms: null },
+  };
+}
+
+/**
+ * P22-T7 / User de950bab: Wer den Main-Heartbeat setzen darf. User immer. Ein bestaetigter Koordinator (mit Ausweis, Rolle in PG
+ * gegengeprueft, oder Legacy-Koordinator) und der Main-Agent selbst NUR auf Anweisung des Users: dann ist user_auftrag (Wortlaut der
+ * Anweisung) Pflicht und landet mit dem Grund in Revision und Audit. Von sich aus aendern ihn weder Koordinator noch Main (88f80455).
+ * Alle anderen: recht_fehlt. Lesen duerfen dieselben Akteure ohne user_auftrag.
+ */
+type HeartbeatAkteur = { wer: string; actor: string | null; user: boolean; rolle: 'user' | 'koordinator' | 'main' };
+async function heartbeatAkteur(akteur: AusweisAkteur | null, z: MainZeile | null): Promise<HeartbeatAkteur> {
+  if (akteur?.art === 'user') return { wer: 'user', actor: null, user: true, rolle: 'user' };
+  if (akteur?.art === 'identitaet' && akteur.principal.project === HAUPTAGENT_PROJEKT && akteur.principal.rolle === HAUPTAGENT_ROLLE) {
+    if (!z) return fehler('recht_fehlt');
+    const b = await berechtigungFuer(akteur, z);
+    return { wer: b.wer, actor: b.actor, user: false, rolle: 'main' };
+  }
+  if (akteur?.art === 'identitaet' && akteur.principal.rolle === 'koordinator') {
+    const v = await pruefeProfilVerwalter(akteur, akteur.principal.project);
+    return { wer: v.wer, actor: v.actor_identity_id, user: false, rolle: 'koordinator' };
+  }
+  if (akteur?.art === 'legacy_koordinator') {
+    // Gehoert der Name einer Token-Identitaet (auch im Bereich des Main), braucht der Aufruf deren Ausweis (wie pruefeProfilVerwalter).
+    const v = await pruefeProfilVerwalter(akteur, HAUPTAGENT_PROJEKT);
+    return { wer: v.wer, actor: null, user: false, rolle: 'koordinator' };
+  }
+  return fehler('recht_fehlt');
+}
+
+export async function leseHauptagentHeartbeat(akteur: AusweisAkteur | null): Promise<Record<string, unknown>> {
+  const z = await leseMainZeile();
+  await heartbeatAkteur(akteur, z);
+  if (!z) {
+    return { identitaet: null, gewuenscht: { ...HEARTBEAT_STANDARD, quelle: 'standard', gesetzt_am: null }, tatsaechlich: { lauf: false, status: 'keine_identitaet', aktiv: null, intervall_ms: null } };
+  }
+  return { identitaet: z.id, ...(await heartbeatStand(z)) };
+}
+
+/**
+ * Setzen: User, oder Koordinator/Main selbst auf User-Anweisung (user_auftrag Pflicht, de950bab). Schreibt eine neue Profil-
+ * Revision (Historie + Audit wie profil_aendern) und zieht einen laufenden Wrapper nach. Ohne Identitaet: identitaet_unbekannt
+ * (vor dem Erstkontakt gilt der Standard AUS).
+ */
+export async function setzeHauptagentHeartbeat(
+  akteur: AusweisAkteur | null, e: { aktiv: unknown; intervall_ms?: unknown; grund: unknown; user_auftrag?: unknown },
+): Promise<Record<string, unknown>> {
+  const wer = await heartbeatAkteur(akteur, await leseMainZeile());
+  const userAuftrag = wer.user ? null : pflichtText(e.user_auftrag, 'user_auftrag_fehlt');
+  if (typeof e.aktiv !== 'boolean') fehler('aktiv_fehlt');
+  let takt: number | null = null;
+  if (e.intervall_ms !== undefined && e.intervall_ms !== null) {
+    if (typeof e.intervall_ms !== 'number' || !Number.isInteger(e.intervall_ms) || e.intervall_ms < HEARTBEAT_TAKT_MIN_MS || e.intervall_ms > 24 * 3_600_000) {
+      fehler('intervall_ungueltig', { min_ms: HEARTBEAT_TAKT_MIN_MS, max_ms: 24 * 3_600_000 });
+    }
+    takt = e.intervall_ms as number;
+  }
+  const grund = pflichtText(e.grund, 'grund_fehlt');
+  const vorher = await leseMainZeile();
+  if (!vorher) fehler('identitaet_unbekannt', { grund: 'Main-Identitaet noch nicht angelegt; bis dahin gilt Heartbeat AUS (Standard)' });
+  const heartbeat = { aktiv: e.aktiv, intervall_ms: takt, gesetzt_am: new Date().toISOString(), gesetzt_von: wer.rolle };
+  const c = await getPool().connect();
+  try {
+    await c.query('BEGIN');
+    const z = (await c.query<MainZeile>(`SELECT ${MAIN_SPALTEN} FROM agent_identitaeten WHERE id=$1 FOR UPDATE`, [vorher.id])).rows[0];
+    const alt: Record<string, unknown> = { ...(z.profil ?? {}), rolle: z.rolle, ...(z.modell_bestaetigt != null ? { modell: z.modell_bestaetigt } : {}),
+      ...(z.startrezept && Object.keys(z.startrezept).length ? { startrezept: z.startrezept } : {}) };
+    const neu = { ...alt, startrezept: { ...(z.startrezept ?? {}), heartbeat } };
+    const { startrezept } = spaltenAusInhalt(neu);
+    const revision = z.profil_revision + 1;
+    await c.query('UPDATE agent_identitaeten SET startrezept=$2::jsonb, profil_revision=$3 WHERE id=$1', [z.id, JSON.stringify(startrezept), revision]);
+    const v = { wer: wer.wer, actor: wer.actor, user: wer.user };
+    await schreibeProfilRevision(c, z.id, revision, neu, z.typ_id ?? null, z.typ_revision ?? null, v, userAuftrag, grund);
+    await identitaetAudit(c, z.id, v, 'hauptagent_heartbeat', { heartbeat: (z.startrezept ?? {}).heartbeat ?? null },
+      { heartbeat, akteur: wer.rolle, ...(userAuftrag ? { user_auftrag: userAuftrag } : {}) }, grund);
+    await c.query('COMMIT');
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
+  // Laufender Wrapper: Zeile nachziehen (der eine Weg setzeHeartbeatKonfiguration). Ohne Zeile ist nichts zu tun.
+  let nachgezogen = false;
+  try {
+    const r = await setzeHeartbeatKonfiguration(HAUPTAGENT_PROJEKT,
+      [{ art: 'identity', project: HAUPTAGENT_PROJEKT, agent_id: HAUPTAGENT_AGENT_ID, identity_id: vorher.id }],
+      { enabled: e.aktiv, intervalMs: takt });
+    nachgezogen = r.some(x => x.identityId === vorher.id);
+  } catch { nachgezogen = false; }
+  const jetzt = await leseMainZeile();
+  return { identitaet: vorher.id, wrapper_nachgezogen: nachgezogen, ...(await heartbeatStand(jetzt ?? vorher)) };
 }
 
 // ---------------------------------------------------------------------------------------------
 // admin-Aktionen (MCP admin, stdio und REST) – Akteur nur aus Transport/Tokenpruefung
 // ---------------------------------------------------------------------------------------------
-export const HAUPTAGENT_ADMIN_ACTIONS = ['hauptagent_status', 'hauptagent_auftrag', 'hauptagent_auftraege', 'hauptagent_auftrag_abbrechen'] as const;
+export const HAUPTAGENT_ADMIN_ACTIONS = ['hauptagent_status', 'hauptagent_auftrag', 'hauptagent_auftraege', 'hauptagent_auftrag_abbrechen',
+  // P22-T7: Heartbeat des Hauptagenten (ohne aktiv lesen, mit aktiv setzen - nur User) und Verbrauch je Agent/Projekt/Monat.
+  'hauptagent_heartbeat', 'agent_verbrauch'] as const;
 export type HauptagentAdminAction = typeof HAUPTAGENT_ADMIN_ACTIONS[number];
 export const HAUPTAGENT_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   auftrag_art: { type: 'string', enum: [...AUFTRAG_ARTEN], description: 'hauptagent_auftrag: neustart|update|modellwechsel|runtime_wechsel|stop (stop nur User)' },
@@ -435,6 +594,8 @@ export const HAUPTAGENT_ADMIN_PARAMETER: Record<string, Record<string, unknown>>
   gewuenscht: { type: 'object', additionalProperties: true, description: 'hauptagent_auftrag: gewuenschter Stand {modell, provider, effort, runtime, cli}' },
   hands_off: { type: 'object', additionalProperties: true, description: 'hauptagent_auftrag: Arbeitsstand/Uebergabe {thought_id, arbeitsstand, offene_aufgaben}; Pflicht fuer den Hauptagenten selbst' },
   idempotenz_schluessel: { type: 'string', description: 'hauptagent_auftrag: optionaler Idempotenz-Schluessel' },
+  intervall_ms: { type: 'number', description: 'hauptagent_heartbeat: fester Takt in ms (>= 5000), weglassen/null = adaptiv; setzen User, Koordinator/Main nur auf User-Anweisung (user_auftrag Pflicht)' },
+  monat: { type: 'string', description: 'agent_verbrauch: Kalendermonat YYYY-MM (Standard aktueller Monat); Koordinator nur mit project (eigenes)' },
 };
 
 export function istHauptagentAdminAction(action: unknown): action is HauptagentAdminAction {
@@ -444,7 +605,7 @@ export function istHauptagentAdminAction(action: unknown): action is HauptagentA
 const CODE = /^[a-z][a-z0-9_]{2,80}$/;
 
 export async function fuehreHauptagentAdminAus(
-  action: HauptagentAdminAction, args: Record<string, unknown>, akteurOpt?: W1bAkteur | null,
+  action: HauptagentAdminAction, args: Record<string, unknown>, akteurOpt?: AusweisAkteur | null,
 ): Promise<Record<string, unknown>> {
   const akteur: AusweisAkteur | null = akteurOpt !== undefined ? akteurOpt : aktuellerW1bAkteur();
   const zid = typeof args.ziel_identity_id === 'string' && args.ziel_identity_id.trim() ? args.ziel_identity_id.trim() : null;
@@ -461,6 +622,12 @@ export async function fuehreHauptagentAdminAus(
         return { success: true, action, ...(await listeRuntimeAuftraege(akteur, { identity_id: zid })) };
       case 'hauptagent_auftrag_abbrechen':
         return { success: true, action, ...(await brecheRuntimeAuftragAb(akteur, { auftrag_id: args.auftrag_id, grund: args.grund })) };
+      case 'hauptagent_heartbeat':
+        return { success: true, action, ...(args.aktiv === undefined
+          ? await leseHauptagentHeartbeat(akteur)
+          : await setzeHauptagentHeartbeat(akteur, { aktiv: args.aktiv, intervall_ms: args.intervall_ms, grund: args.grund, user_auftrag: args.user_auftrag })) };
+      case 'agent_verbrauch':
+        return { success: true, action, ...(await leseAgentVerbrauch(akteur, { monat: args.monat, project: args.project })) };
     }
   } catch (e) {
     const code = (e as { code?: unknown })?.code;

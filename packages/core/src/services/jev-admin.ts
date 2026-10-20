@@ -22,6 +22,8 @@ import { erklaerungstopfStatus, holeErklaerungsEreignisseNach, ladeErklaerungsto
 
 export const JEV_ADMIN_ACTIONS = ['jev_status', 'jev_schalten', 'jev_kosten', 'jev_budget', 'jev_optionen', 'jev_entscheidungstopf', 'jev_erklaerungstopf'] as const;
 import { darfKoordinatorOderUser } from './rollen-pruefung.js';
+// P23-T7: Zaehler der Tool-Faelle (Fall-Skill reichte nicht) im Status des Erklaerungs-Topfs.
+import { fallSkillDiagnose } from './fall-skills.js';
 
 /** Beschreibungssatz fuer die admin-Tool-Definition (REST und stdio). */
 export const JEV_ADMIN_BESCHREIBUNG =
@@ -195,7 +197,7 @@ export async function fuehreJevAdminAus(
       case 'jev_erklaerungstopf': {
         // P15-T33 E2: Erklaerungs-Topf - Stand, Startbestand, Nachholen liegengebliebener Fehlersituationen
         const modus = text(args.modus) ?? 'status';
-        if (modus === 'status') return { success: true, topf: await erklaerungstopfStatus() };
+        if (modus === 'status') return { success: true, topf: await erklaerungstopfStatus(), fall_skill_zaehler: fallSkillDiagnose().zaehler };
         if (modus !== 'seed_laden' && modus !== 'nachholen') {
           return { success: false, error: 'modus_ungueltig', message: 'jev_erklaerungstopf: modus status | seed_laden | nachholen.' };
         }

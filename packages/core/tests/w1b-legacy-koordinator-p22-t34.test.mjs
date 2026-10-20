@@ -123,8 +123,22 @@ try{
   ausweis_visa:()=>({}),
   arbeitsfreigabe_erteilen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
   arbeitsfreigabe_entziehen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
+  // P22-T8: kostenpflichtiger API-Agent - Setzen nur User, Lesen User + Hauptagent selbst; Koordinatoren nie (Tabellen 120 hier
+  // nicht angelegt -> User bekommt Fachfehler, kein recht_fehlt).
+  api_status:()=>({}),
+  api_schalter:()=>({modus:'setzen',aktiv:false,grund:'Test T34 Matrix'}),
+  api_budget:()=>({modus:'setzen',grenze_usd:1,erlaubte_modelle:['api-opus'],grund:'Test T34 Matrix'}),
+  api_einstellungen:()=>({modus:'setzen',api_einstellungen:{toolrunden_max:5},grund:'Test T34 Matrix'}),
+  api_kosten:()=>({}),
+  // P22-T7: Heartbeat lesen (User, Koordinator, Legacy-Koordinator; Main selbst), Setzen braucht ausserdem user_auftrag;
+  // Verbrauch lesen (User alle, Koordinator eigenes Projekt). Subagent nie.
+  hauptagent_heartbeat:()=>({aktiv:false,grund:'Test T34 Matrix',user_auftrag:'User: Test T34 Heartbeat aus'}),
+  agent_verbrauch:()=>({monat:'2026-10'}),
+  // P22-T58: Runtime-Ueberwachung lesen/setzen: User und Koordinator inkl. Legacy (F6); Tabellen 122 hier nicht angelegt -> Fachfehler.
+  runtime_ueberwachung:()=>({ueberwachung_modus:'status'}),
  };
- const NUR_USER=new Set(['web_ui_koordinator_token','hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen']);
+ const NUR_USER=new Set(['web_ui_koordinator_token','hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen',
+  'api_status','api_schalter','api_budget','api_einstellungen','api_kosten']);
  const AKTEURE=[
   {name:'User',akteur:USER,agent:null,darf:a=>true},
   {name:'Koordinator mit Ausweis',akteur:Kk,agent:null,darf:a=>!NUR_USER.has(a)},

@@ -3,7 +3,8 @@
  * ZWECK: Semantische Skill-Treffer (Embedding + kalibrierte Schwelle) werden VOR der Auslieferung von Jev
  *        auf Sinn geprueft: "Hilft dieser Skill den Empfaengern bei ihrer Arbeit an diesem Text wirklich?"
  *        EIN Jev-Aufruf je Quelltext (eine noul-Frage je Kandidat), fuer alle Empfaenger zusammen.
- *        Namentlich genannte, vorgegebene und verknuepfte Skills (Kette, 0,99) laufen NICHT hier durch.
+ *        Vorgegebene und verknuepfte Skills (Kette, 0,99) laufen NICHT hier durch. P23-T8: namentlich genannte
+ *        Skills (0,99) laufen mit durch - ein Name im Text belegt nicht, dass der Skill bei dieser Arbeit hilft.
  * STATE (P23-T4, User 19.10.2026 "Jev braucht mehr Kontext"):
  *   quelle    Art/Anlass (thought | memory | task | channel ...) + Klartext + ID
  *   text      der Quelltext

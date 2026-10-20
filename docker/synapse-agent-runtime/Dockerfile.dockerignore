@@ -1,0 +1,22 @@
+# Build-Kontext ist der Repo-Root (docker build -f docker/synapse-agent-runtime/Dockerfile .).
+# BuildKit nimmt diese Datei statt einer .dockerignore im Root. Gebaut wird im Image, nie aus dem Arbeitsbaum.
+**/node_modules
+**/dist
+**/.synapse
+**/*.log
+.git
+.claude
+.env
+.env.*
+ui-screenshots
+parser-fixtures
+test-fixtures
+docker/synapse-workspace*
+docker/synapse-pruefcontainer
+docker/synapse-reverse
+packages/web-ui
+packages/rest-api
+packages/agents-antigravity
+packages/agents-gemini
+packages/compute-node-agent
+packages/file-watcher-daemon

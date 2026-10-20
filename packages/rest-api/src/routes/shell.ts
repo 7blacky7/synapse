@@ -16,7 +16,7 @@
 import { FastifyInstance } from 'fastify';
 import {
   enqueueShellJob,
-  shellSicherungsParameter,shellSicherungsAntwortAus,resolveAgentId,
+  shellSicherungsParameter,shellSicherungsAntwortAus,resolveAgentId,schlankeShellRueckfrageWennAktiv,fremderLaufFeld,
   waitForShellJob,
   DETACH_AFTER_MS,
   HARD_LIMIT_MS,
@@ -144,7 +144,8 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
         const result = await waitForShellJob(id, DETACH_AFTER_MS);
         // success-Flag + message sind Pflicht: Web-KI-Connectors brauchen
         // ein klares Fehlersignal, sonst hangt der Call stillschweigend.
-        return reply.status(statusFor(result as unknown as Record<string, unknown>)).send({
+        // P23-T3: stufe rueckfrage ohne Lage-Baum (Schalter tool_antworten_schlank).
+        return reply.status(statusFor(result as unknown as Record<string, unknown>)).send(await schlankeShellRueckfrageWennAktiv(body.project, {
           success: !result.error,
           ...shellSicherungsAntwortAus(result as unknown as Record<string,unknown>),
           status: result.status,
@@ -155,7 +156,9 @@ export async function shellRoutes(fastify: FastifyInstance): Promise<void> {
           message: (attached || reused) ? anhaengMeldung : result.message,
           ...(attached ? { attached: true, attached_to } : {}),
           ...(reused ? { reused: true } : {}),
-        });
+          // P23-T3 Punkt 6b (Schalter shell_fremde_ergebnisse): gleicher beendeter Lauf eines anderen Agenten -> Abrufweg.
+          ...(attached || reused ? {} : await fremderLaufFeld({ project: body.project, command: body.command, cwd_relative: body.cwd_relative, agent_id: resolveAgentId(body.agent_id), ausser_job_id: id })),
+        }));
       }
 
       return reply.status(400).send({ error: 'unknown_action', message: `action: ${action}` });

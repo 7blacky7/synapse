@@ -124,7 +124,7 @@ try {
     const erg = Object.fromEntries(a.treffer.map((t) => [t.skill_name, t.ergebnis]));
     assert.deepEqual(erg, { 'ogame-strategie': 'namentlich', 'gut-skill': 'kandidat', 'schlecht-skill': 'kandidat', 'leise-skill': 'unter_schwelle' });
     assert.equal(a.treffer.find((t) => t.skill_name === 'gut-skill').score, 0.8);
-    assert.deepEqual(r.sinnpruefung_kandidaten.sort(), ['gut-skill', 'schlecht-skill']);
+    assert.deepEqual(r.sinnpruefung_kandidaten.sort(), ['gut-skill', 'ogame-strategie', 'schlecht-skill'], 'P23-T8: genannte gehen mit in die Sinnpruefung');
     assert.equal(r.jev.skill_rerank.an, false); assert.equal(r.jev.skill_rerank.ebene, 'standard');
     assert.equal(r.jev.ergebnis, undefined, 'ohne mit_jev kein Ergebnis');
     assert(r.jev.tokens.gesamt > 0 && r.jev.tokens.gesamt <= r.jev.budget_tokens);
@@ -163,10 +163,11 @@ try {
     const e = r.jev.ergebnis;
     assert.equal(e.gelaufen, true, JSON.stringify(r.jev)); assert.equal(e.funktion, 'skill_rerank_probe'); assert.equal(e.tor, 0.5);
     const je = Object.fromEntries(e.je_kandidat.map((k) => [k.skill_name, k]));
-    assert.deepEqual(je['gut-skill'], { skill_name: 'gut-skill', wert: 0.9, ergebnis: 'durchgelassen' });
-    assert.deepEqual(je['schlecht-skill'], { skill_name: 'schlecht-skill', wert: 0.1, ergebnis: 'verworfen' });
+    assert.deepEqual(je['gut-skill'], { skill_name: 'gut-skill', art: 'semantisch', wert: 0.9, ergebnis: 'durchgelassen' });
+    assert.deepEqual(je['schlecht-skill'], { skill_name: 'schlecht-skill', art: 'semantisch', wert: 0.1, ergebnis: 'verworfen' });
+    assert.deepEqual(je['ogame-strategie'], { skill_name: 'ogame-strategie', art: 'namentlich', wert: 0.1, ergebnis: 'verworfen' }, 'P23-T8');
     assert.equal(e.input_tokens, 77); assert(e.usd > 0);
-    assert.deepEqual(jevAufrufe[0].state.skills.map((s) => s.name).sort(), ['gut-skill', 'schlecht-skill'], 'genannte Skills gehen nicht an Jev');
+    assert.deepEqual(jevAufrufe[0].state.skills.map((s) => s.name).sort(), ['gut-skill', 'ogame-strategie', 'schlecht-skill'], 'P23-T8: genannte Skills gehen mit an Jev');
     assert.equal(jevAufrufe[0].state.quelle.art, 'probe');
     const z = (await q("SELECT funktion, ok, input_tokens FROM jev_aufrufe WHERE project=$1 ORDER BY id DESC LIMIT 1", [P])).rows[0];
     assert.deepEqual(z, { funktion: 'skill_rerank_probe', ok: true, input_tokens: 77 });

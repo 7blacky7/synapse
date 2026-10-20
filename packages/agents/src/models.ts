@@ -12,7 +12,8 @@ import {
   istEffortStufe, pruefeEffort, waehleEffort, type EffortStufe,
 } from '@synapse/core';
 
-export type Provider = 'anthropic' | 'google' | 'antigravity';
+/** 'anthropic-api' (P22-T8): Claude per API-Key ueber den Synapse-Transport, getrennt von den Abo-CLIs ('anthropic'). */
+export type Provider = 'anthropic' | 'anthropic-api' | 'google' | 'antigravity' | 'openai';
 
 export interface ModelEntry {
   /** User-facing Alias z.B. "opus", "gemini-flash-lite" */
@@ -132,6 +133,26 @@ function claude(alias: string, fullId: string): ModelEntry {
   };
 }
 
+/**
+ * P22-T8: Claude per API-Key (kostenpflichtig, Budget serverseitig). Node-Runtime api-worker im Wrapper statt claude-CLI;
+ * Kontext = API-Kontext der Version (1M, Haiku 4.5 200k), Preise je Version wie oben. Gleiche Werte im Seed (core db/schema.ts).
+ */
+function claudeApi(alias: string, fullId: string, kontext: number): ModelEntry {
+  const version = CLAUDE_VERSIONEN[fullId];
+  const korridor = kontext >= 1_000_000 ? KORRIDOR_1M : KORRIDOR_200K;
+  return {
+    alias, fullId, provider: 'anthropic-api',
+    contextWindow: kontext,
+    outputLimit: version.outputLimit,
+    envRequired: [], binary: 'node', runtimePath: '@synapse/agents/api-worker',
+    corridorMin: korridor.corridorMin, corridorMax: korridor.corridorMax,
+    pricingInputUsdPerMtok: version.preis[0],
+    pricingOutputUsdPerMtok: version.preis[1],
+    pricingCacheUsdPerMtok: version.preis[2],
+    cutoffDate: version.cutoffDate,
+  };
+}
+
 // Claude-Korridore je Groessenklasse: 200k = 73/88, 1M = 80/97 (Token-Budget und
 // Begruendung: core services/kontext-korridor.ts, gleiche Werte im Seed schema.ts).
 export const STATIC_FALLBACK: Record<string, ModelEntry> = {
@@ -158,6 +179,11 @@ export const STATIC_FALLBACK: Record<string, ModelEntry> = {
   'opus-4.6': claude('opus-4.6', 'claude-opus-4-6'),
   'opus-4.6[1m]': claude('opus-4.6[1m]', 'claude-opus-4-6'),
   'sonnet-4.6': claude('sonnet-4.6', 'claude-sonnet-4-6'),
+  // P22-T8: API-Zugang (Anthropic API-Key, Budget api_agent_budget) - eigene Runtime-Art, nie still statt des Abos.
+  'api-opus': claudeApi('api-opus', 'claude-opus-5-5', 1_000_000),
+  'api-sonnet': claudeApi('api-sonnet', 'claude-sonnet-5-5', 1_000_000),
+  'api-haiku': claudeApi('api-haiku', 'claude-haiku-4-5-20251001', 200_000),
+  'api-fable': claudeApi('api-fable', 'claude-fable-5-1', 1_000_000),
   'gemini-flash-lite': {
     alias: 'gemini-flash-lite', fullId: 'gemini-3.1-flash-lite-preview', provider: 'google',
     contextWindow: 1_000_000, envRequired: ['GOOGLE_API_KEY'], binary: 'node',
@@ -187,6 +213,15 @@ export const STATIC_FALLBACK: Record<string, ModelEntry> = {
     contextWindow: 1_000_000, envRequired: [], binary: 'node',
     runtimePath: '@synapse/agents-antigravity/runtime',
     corridorMin: 95, corridorMax: 99,
+  },
+  // P22-T6b: Codex-CLI (ChatGPT-Abo per Device-Auth im Codex-Container, kein API-Key) als node-Runtime im Wrapper
+  // (agents/src/codex-runtime.ts: codex exec --json + resume derselben Thread-ID). fullId 'codex-cli-standard' = kein -m,
+  // die CLI nimmt ihr konfiguriertes Standardmodell. Kontext/Korridor: Annahme 272k (Codex-Modelle), bis gemessen.
+  codex: {
+    alias: 'codex', fullId: 'codex-cli-standard', provider: 'openai',
+    contextWindow: 272_000, envRequired: [], binary: 'node',
+    runtimePath: '@synapse/agents/codex-runtime',
+    corridorMin: 80, corridorMax: 90,
   },
 };
 

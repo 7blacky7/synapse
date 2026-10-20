@@ -41,12 +41,15 @@ import {
   wrapperAbgestuerztApi,
   schlafe,
   DAEMON_JOBS_POLL_S,
+  DAEMON_API_ID,
   type SpecialistApiJob,
 } from './daemon-jobs-api.js'
 // P9-T27 Welle 2: PG-Schritte der Spezialisten-Tools ueber die API
 import { installiereSpezialistenApiWeg } from './spezialisten-datenweg-api.js'
 
-const DAEMON_ID = `daemon-${os.hostname()}-${process.pid}`
+// P22-T6: dieselbe ID wie der API-Weg (DAEMON_API_ID); am PC identisch mit daemon-<os.hostname>-<pid>, im Runtime-Profil
+// daemon-<container_name>-<pid> (Bindung des Runtime-Zugangs, w2 28066).
+const DAEMON_ID = DAEMON_API_ID
 
 /**
  * Schreibt den Rotations-Marker, den der Wrapper im Heartbeat prueft
@@ -356,6 +359,23 @@ async function dispatchSpecialistActionGebunden(
       const name = String(args.name)
       const marker = schreibeRotationsMarker(name)
       return { success: true, name, marker, message: `Rotations-Marker fuer "${name}" geschrieben` }
+    }
+
+    case 'zustellen': {
+      // P22-T6: Nachricht direkt ueber den Wrapper ans Modell (auch bei Heartbeat AUS). Kein Inbox-Rueckfall wie bei wake:
+      // die API stellt beschaeftigt/nicht verbunden spaeter erneut zu (Ledger agent_zustellungen).
+      const { baueZustellText } = await import('./zustell-text.js')
+      const { heartbeatController } = await import('@synapse/agents')
+      const name = String(args.name)
+      if (!heartbeatController.isConnected(name)) return { success: true, zugestellt: false, grund: 'nicht_verbunden' }
+      try {
+        const r = await heartbeatController.sendWake(name, baueZustellText(args.zustellung as Parameters<typeof baueZustellText>[0]))
+        return { success: true, zugestellt: true, tokens: { input: r.inputTokens, output: r.outputTokens } }
+      } catch (err) {
+        const m = err instanceof Error ? err.message : String(err)
+        if (m.includes('Agent is busy')) return { success: true, zugestellt: false, grund: 'beschaeftigt' }
+        return { success: false, zugestellt: false, grund: 'fehler', message: m.slice(0, 300) }
+      }
     }
 
     default:

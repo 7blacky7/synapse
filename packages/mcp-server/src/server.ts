@@ -5,6 +5,8 @@
 
 import { randomUUID } from 'crypto';
 import { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, gateToolListe } from '@synapse/core';
+// P22-T56: tools/list je Verbindung (stdio: Ausweis in SYNAPSE_AGENT_TOKEN oder gemeinsame CLI-Verbindung).
+import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
 import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise, initialisiereW1bAnmeldungHinweise } from '@synapse/core';
 // P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
 import { haengeFallSkillHinweisAn, haengeFallSkillTextHinweisAn, type FallSkillOptionen } from '@synapse/core';
@@ -159,10 +161,15 @@ export function createServer(): Server {
   // EINE Quelle fuer beides: was hier ausgeliefert wird, ist genau das, wogegen PA-1 prueft.
   // P15-T33 E0.5: ist Jev GLOBAL abgeschaltet (admin jev_schalten), fehlt das Tool jev in der Liste.
   // Grenze: MCP-Clients holen die Liste meist nur beim Verbinden - wirksam ab der naechsten Sitzung.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: await gateToolListe(await beworbeneAgentTools(await filtereJevTool(ALLE_DEFINITIONEN), { mitAusweis: !!process.env.SYNAPSE_AGENT_TOKEN }),
-      { transportToken: process.env.SYNAPSE_AGENT_TOKEN || undefined }),
-  }));
+  // P22-T56: Variante je Verbindung (stdio ohne Ausweis = gemeinsame CLI-Verbindung); Debug unter _meta nur bei Schalter EIN.
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const verbindung = await entscheideToolListeVerbindung({ transport: 'stdio', transportToken: process.env.SYNAPSE_AGENT_TOKEN || undefined });
+    return {
+      tools: await gateToolListe(await beworbeneAgentTools(await filtereJevTool(ALLE_DEFINITIONEN), { mitAusweis: !!process.env.SYNAPSE_AGENT_TOKEN, verbindung }),
+        { transportToken: process.env.SYNAPSE_AGENT_TOKEN || undefined }),
+      ...toolListeMeta(verbindung),
+    };
+  });
 
   // Tool-Aufrufe verarbeiten
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -254,6 +261,7 @@ export function createServer(): Server {
           projectName,
           name,
           typeof args?.action === 'string' ? args.action : undefined,
+          agentId,
         );
         if (regeln.length === 0) return;
         parsed[WERKZEUG_REGEL_FELD] = regeln;
@@ -346,23 +354,23 @@ export function createServer(): Server {
         // anlegt und ein anderer den Auftrag bekommt, genau sie abzurufen.
         // Die Dedup bleibt global je Agent — kein Skill wird zweimal gezeigt, egal woher.
         if (name === 'memory' || name === 'thought' || name === 'plan') {
-          const { verarbeiteSkillHinweisgeber, holeOffeneSkillVorschlaege } = await import('@synapse/core');
-          await verarbeiteSkillHinweisgeber(
+          // P23-T8: Namenstreffer nur aus den Quellen DIESES Aufrufs (holeSkillVorschlaegeFuerAufruf).
+          const { holeSkillVorschlaegeFuerAufruf } = await import('@synapse/core');
+          const weitere = await holeSkillVorschlaegeFuerAufruf(
             name,
             args?.action as string | undefined,
             (args ?? {}) as Record<string, unknown>,
             parsed,
             agentId,
           );
-          const weitere = await holeOffeneSkillVorschlaege(agentId);
           if (weitere.suggestions.length > 0) {
             parsed.skill_suggestions = weitere.suggestions;
             parsed.skill_hook_metrics = weitere.metrics;
             first.text = JSON.stringify(parsed, null, 2);
           }
         } else if (name !== 'skills' && agentId && !('skill_suggestions' in parsed)) {
-          // P23-T1 (2c): an allen uebrigen Tools nur die 99%-Kette nachliefern (vorgegebene, verknuepfte und
-          // woertlich genannte Skills), bis der Agent sie gesehen hat - wie im REST-Pfad.
+          // P23-T1 (2c): an allen uebrigen Tools nur die 99%-Kette nachliefern (vorgegebene und verknuepfte
+          // Skills, P23-T8 KETTEN_QUELLEN), bis der Agent sie gesehen hat - wie im REST-Pfad.
           const { holeOffeneSkillVorschlaege, KETTEN_SCORE } = await import('@synapse/core');
           const kette = await holeOffeneSkillVorschlaege(agentId, undefined, undefined, { mindestScore: KETTEN_SCORE });
           if (kette.suggestions.length > 0) {

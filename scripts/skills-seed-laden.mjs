@@ -6,6 +6,8 @@
  * WEG: ueber das skills-Tool der Synapse-API (replace_skill; PostgreSQL zuerst, Vektor folgt). Kein DB-Direktzugriff.
  * REGEL: Vorhandene Skills werden UEBERSPRUNGEN (Deploy-Standard, auch fuer fremde Installationen).
  *   --aktualisieren ersetzt zusaetzlich vorhandene Seed-Skills, deren Inhalt abweicht (fuer uns nach Seed-Aenderungen).
+ *   P23-T7: DB-Sections mit Tag 'vorschlag' (Koordinator-Antworten auf Tool-Faelle), die noch nicht im Seed stehen, zaehlen
+ *   nicht als Abweichung, bleiben beim Ersetzen erhalten und werden als 'Vorschlag noch nicht im Seed' gelistet.
  * AUFRUF:
  *   node scripts/skills-seed-laden.mjs                 Trockenlauf: zeigt fehlend / vorhanden / abweichend
  *   node scripts/skills-seed-laden.mjs --laden         laedt fehlende
@@ -73,9 +75,16 @@ export async function ladeSeed(verzeichnis) {
 
 const norm = (t) => String(t ?? '').replace(/\r\n/g, '\n').trim();
 
-/** Vergleicht Seed-Skill mit DB-Stand (get_full). true = gleich. */
-function gleich(seed, voll) {
-  const db = new Map((voll?.sections ?? []).map((s) => [s.section, norm(s.content)]));
+/** P23-T7: Vorschlag-Sections (Tag vorschlag) im DB-Stand, die der Seed noch nicht enthaelt. */
+export function offeneVorschlaege(seed, voll) {
+  const imSeed = new Set(seed.sections.map((s) => s.section));
+  return (voll?.sections ?? []).filter((s) => Array.isArray(s.tags) && s.tags.includes('vorschlag') && !imSeed.has(s.section));
+}
+
+/** Vergleicht Seed-Skill mit DB-Stand (get_full); offene Vorschlaege zaehlen nicht. true = gleich. */
+export function gleich(seed, voll) {
+  const offen = new Set(offeneVorschlaege(seed, voll).map((s) => s.section));
+  const db = new Map((voll?.sections ?? []).filter((s) => !offen.has(s.section)).map((s) => [s.section, norm(s.content)]));
   if (db.size !== seed.sections.length) return false;
   return seed.sections.every((s) => db.get(s.section) === norm(s.content));
 }
@@ -99,12 +108,16 @@ export async function main(argv = process.argv.slice(2)) {
   const fehlend = skills.filter((s) => !vorhanden.has(s.skill_name));
   const da = skills.filter((s) => vorhanden.has(s.skill_name));
   const abweichend = [];
+  const vorschlaege = new Map();
   if (argv.includes('--aktualisieren')) {
     for (const s of da) {
       const voll = await callMcpTool(config, 'skills', { action: 'get_full', skill_name: s.skill_name }, { timeoutMs: 30000 });
+      const offen = offeneVorschlaege(s, voll);
+      if (offen.length) vorschlaege.set(s.skill_name, offen.map((v) => ({ section: v.section, content: v.content, tags: v.tags })));
       if (!gleich(s, voll)) abweichend.push(s);
     }
   }
+  for (const [name, liste] of vorschlaege) for (const v of liste) console.log(`  Vorschlag noch nicht im Seed: ${name}/${v.section}`);
   console.log(`fehlend: ${fehlend.length}, vorhanden: ${da.length}${argv.includes('--aktualisieren') ? `, abweichend: ${abweichend.length}` : ' (uebersprungen)'}`);
   if (!argv.includes('--laden')) {
     for (const s of fehlend) console.log('  fehlt: ' + s.skill_name);
@@ -116,7 +129,9 @@ export async function main(argv = process.argv.slice(2)) {
   const probleme = [];
   for (const s of [...fehlend, ...abweichend]) {
     try {
-      await callMcpTool(config, 'skills', { action: 'replace_skill', skill_name: s.skill_name, sections: s.sections }, { timeoutMs: 60000 });
+      // P23-T7: offene Vorschlag-Sections beim Ersetzen behalten (replace_skill loescht nicht genannte).
+      const sections = [...s.sections, ...(vorschlaege.get(s.skill_name) ?? [])];
+      await callMcpTool(config, 'skills', { action: 'replace_skill', skill_name: s.skill_name, sections }, { timeoutMs: 60000 });
       ok++;
       console.log('  geladen: ' + s.skill_name);
     } catch (e) {

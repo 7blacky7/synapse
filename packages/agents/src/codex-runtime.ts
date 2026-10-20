@@ -1,0 +1,247 @@
+#!/usr/bin/env node
+/**
+ * MODUL: codex-runtime (P22-T6b, W2c; Vertrag thought 825fcb16, Konzept e7ed9291 Abschn. 8b / U3)
+ * ZWECK: Codex-CLI als Agent im Synapse-Wrapper – nach demselben Muster wie die Gemini-Runtime (agents-gemini, WRAPPER_MODE):
+ *        der Wrapper startet diesen node-Prozess ueber process.ts (binary 'node', runtimePath '@synapse/agents/codex-runtime')
+ *        und spricht mit ihm das Claude-CLI-Stream-JSON-Protokoll (stdin: {type:'user', message}, stdout: system/init,
+ *        assistant, result). Damit gelten Wake, Heartbeat, Rotation, Respawn und Stop des Wrappers unveraendert.
+ *
+ * GEDAECHTNIS: je Turn `codex exec --json`; der erste Turn startet einen Thread (Event thread.started), jeder weitere Turn
+ *   laeuft als `codex exec resume <thread_id>` auf DEMSELBEN Thread. Ein Prozessneustart (Rotation/Neustart-Auftrag) beginnt
+ *   wie beim Claude-Spezialisten (neue --session-id) einen neuen Thread; der Arbeitsstand kommt ueber Handoff/Synapse.
+ * SYSTEM-PROMPT: steht vor der ersten Nachricht eines neuen Threads (Codex hat keinen --system-prompt; resume behaelt ihn).
+ * WERKZEUGE (Werkzeugprofil Hauptagent: nur Synapse-Tools, kein eingebautes Bash): --ignore-user-config, --sandbox read-only,
+ *   eingebaute Werkzeuge per --disable abgeschaltet (Liste SYNAPSE_CODEX_DEAKTIVIERT), genau EIN MCP-Server 'synapse' aus der
+ *   MCP-Config des Wrappers (SYNAPSE_MCP_CONFIG_FILE, mcp-bruecke). Geheimnisse nie in argv: Bearer und Ausweis gehen als
+ *   Env-Variablen (bearer_token_env_var, env_http_headers), die Header-Referenz ${VAR} wird auf den Env-Namen abgebildet.
+ * VERBRAUCH: turn.completed.usage -> result.usage und JSONL im Claude-Format (fuer wrapper.ts syncTokensFromHistory).
+ */
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { readFile, mkdir, appendFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { resolveModel } from './models.js';
+
+const STANDARD_DEAKTIVIERT = ['shell_tool', 'computer_use', 'browser_use', 'browser_use_external', 'in_app_browser',
+  'image_generation', 'multi_agent', 'apps', 'plugins'];
+/** Codex-Standardmodell (kein -m): Registry-Eintrag mit diesem fullId. */
+export const CODEX_STANDARD_MODELL = 'codex-cli-standard';
+
+export interface CodexMcpAbbildung {
+  /** -c Overrides (ohne Geheimnisse). */
+  overrides: string[];
+  /** Zusaetzliche Env-Variablen fuer den codex-Prozess (Geheimnisse). */
+  env: Record<string, string>;
+}
+
+function tomlString(s: string): string {
+  return JSON.stringify(s);
+}
+
+/**
+ * Bildet die MCP-Config des Wrappers ({mcpServers:{synapse:{type:'http',url,headers}}}) auf Codex-Overrides ab.
+ * Authorization 'Bearer <x>' -> Env SYNAPSE_CODEX_MCP_BEARER + bearer_token_env_var; Header-Wert '${VAR}' ->
+ * env_http_headers (Codex liest VAR selbst aus der Umgebung); andere Literale -> http_headers.
+ */
+export function bildeMcpAufCodexAb(config: unknown): CodexMcpAbbildung {
+  const servers = (config as { mcpServers?: Record<string, { type?: string; url?: string; headers?: Record<string, string> }> } | null)?.mcpServers ?? {};
+  const overrides: string[] = [];
+  const env: Record<string, string> = {};
+  for (const [name, s] of Object.entries(servers)) {
+    if (!/^[A-Za-z0-9_-]+$/.test(name) || !s || typeof s.url !== 'string') continue;
+    const p = `mcp_servers.${name}`;
+    overrides.push(`${p}.url=${tomlString(s.url)}`);
+    const literal: Record<string, string> = {};
+    const ausEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(s.headers ?? {})) {
+      if (typeof v !== 'string') continue;
+      const ref = /^\$\{([A-Z0-9_]+)\}$/.exec(v);
+      if (ref) { ausEnv[k] = ref[1]; continue; }
+      if (k.toLowerCase() === 'authorization' && /^Bearer\s+/i.test(v)) {
+        const envName = `SYNAPSE_CODEX_MCP_BEARER_${name.toUpperCase().replace(/-/g, '_')}`;
+        env[envName] = v.replace(/^Bearer\s+/i, '');
+        overrides.push(`${p}.bearer_token_env_var=${tomlString(envName)}`);
+        continue;
+      }
+      literal[k] = v;
+    }
+    const tabelle = (o: Record<string, string>) => '{' + Object.entries(o).map(([k, v]) => `${tomlString(k)}=${tomlString(v)}`).join(',') + '}';
+    if (Object.keys(literal).length) overrides.push(`${p}.http_headers=${tabelle(literal)}`);
+    if (Object.keys(ausEnv).length) overrides.push(`${p}.env_http_headers=${tabelle(ausEnv)}`);
+  }
+  return { overrides, env };
+}
+
+export interface CodexBefehl { args: string[] }
+
+/** Argumente eines Turns (ohne Prompt, der kommt ueber stdin '-'). */
+export function baueCodexArgs(o: {
+  threadId: string | null; cwd: string; modell: string | null; deaktiviert: string[]; mcpOverrides: string[];
+}): string[] {
+  const args = ['exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--sandbox', 'read-only', '-C', o.cwd];
+  if (o.modell) args.push('-m', o.modell);
+  for (const f of o.deaktiviert) args.push('--disable', f);
+  for (const c of o.mcpOverrides) args.push('-c', c);
+  return o.threadId ? [...args, 'resume', o.threadId, '-'] : [...args, '-'];
+}
+
+export interface CodexEreignis {
+  threadId?: string;
+  text?: string;
+  usage?: { input_tokens: number; output_tokens: number; cached_input_tokens: number };
+  fehler?: string;
+}
+
+/** Eine JSON-Zeile von `codex exec --json` (Form wie rest-api codex-driver parseCodexJsonLine). */
+export function leseCodexZeile(line: string): CodexEreignis {
+  let v: Record<string, unknown>;
+  try { v = JSON.parse(line) as Record<string, unknown>; } catch { return {}; }
+  const type = String(v.type ?? '');
+  if (type === 'thread.started') {
+    const id = String(v.thread_id ?? v.threadId ?? '');
+    return id ? { threadId: id } : {};
+  }
+  if (type === 'item.completed') {
+    const item = v.item as Record<string, unknown> | undefined;
+    if (item?.type === 'agent_message') {
+      const text = item.text ?? item.content;
+      if (typeof text === 'string') return { text };
+    }
+  }
+  if (type === 'turn.completed') {
+    const u = (v.usage ?? {}) as Record<string, unknown>;
+    const n = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
+    return { usage: { input_tokens: n(u.input_tokens), output_tokens: n(u.output_tokens), cached_input_tokens: n(u.cached_input_tokens) } };
+  }
+  if (type === 'turn.failed' || type === 'error') {
+    const e = (v.error ?? {}) as Record<string, unknown>;
+    return { fehler: String(e.message ?? v.message ?? type) };
+  }
+  return {};
+}
+
+/**
+ * P22-T58: Codex meldet ein erschoepftes Abo nur als Fehlertext (exec --json: turn.failed/error), z. B. "You've hit your usage
+ * limit ... Try again in 2 days 3 hours" bzw. "Usage limit reached". resetsAt (Sekunden seit Epoch) nur bei relativer Angabe
+ * "in ..."; sonst null (die API nimmt dann kontingent_ohne_reset_minuten).
+ */
+export function codexLimitAus(text: string, jetzt = Date.now()): { resetsAt: number | null } | null {
+  if (!/usage limit|out of credits|rate limit reached/i.test(text)) return null;
+  const rel = /try again in ([^.]+)/i.exec(text);
+  if (!rel) return { resetsAt: null };
+  const faktor: Record<string, number> = { day: 86_400, hour: 3_600, minute: 60, min: 60, second: 1, sec: 1 };
+  let sek = 0;
+  for (const m of rel[1].matchAll(/(\d+)\s*(day|hour|minute|min|second|sec)s?/gi)) sek += Number(m[1]) * (faktor[m[2].toLowerCase()] ?? 0);
+  return { resetsAt: sek > 0 ? Math.round(jetzt / 1000) + sek : null };
+}
+
+function emit(obj: Record<string, unknown>): void {
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function nachrichtAus(line: string): string {
+  try {
+    const msg = JSON.parse(line) as unknown;
+    if (typeof msg === 'string') return msg;
+    const content = (msg as { message?: { content?: Array<{ type: string; text?: string }> } }).message?.content;
+    if (Array.isArray(content)) return content.filter(b => b.type === 'text').map(b => b.text ?? '').join('');
+    return JSON.stringify(msg);
+  } catch {
+    return line;
+  }
+}
+
+async function main(): Promise<void> {
+  const agentName = process.env.SYNAPSE_AGENT_NAME ?? 'codex';
+  const alias = process.env.SYNAPSE_AGENT_MODEL ?? '';
+  const projectPath = process.env.SYNAPSE_PROJECT_PATH ?? process.cwd();
+  const sessionId = process.env.SYNAPSE_SESSION_ID ?? String(Date.now());
+  const eintrag = resolveModel(alias);
+  const modell = eintrag && eintrag.fullId !== CODEX_STANDARD_MODELL ? eintrag.fullId : null;
+  const deaktiviert = (process.env.SYNAPSE_CODEX_DEAKTIVIERT ?? STANDARD_DEAKTIVIERT.join(','))
+    .split(',').map(s => s.trim()).filter(s => /^[a-z0-9_]+$/.test(s));
+  const systemPrompt = process.env.SYNAPSE_SYSTEM_PROMPT_FILE ? await readFile(process.env.SYNAPSE_SYSTEM_PROMPT_FILE, 'utf8').catch(() => '') : '';
+  let mcp: CodexMcpAbbildung = { overrides: [], env: {} };
+  if (process.env.SYNAPSE_MCP_CONFIG_FILE) {
+    try { mcp = bildeMcpAufCodexAb(JSON.parse(await readFile(process.env.SYNAPSE_MCP_CONFIG_FILE, 'utf8'))); }
+    catch (err) { console.error(`[codex-runtime] MCP-Config nicht lesbar: ${(err as Error).message}`); }
+  }
+
+  emit({ type: 'system', subtype: 'init', session_id: sessionId, cwd: projectPath, model: modell ?? CODEX_STANDARD_MODELL });
+
+  // JSONL im Claude-Format fuer wrapper.ts syncTokensFromHistory (wie agents-gemini).
+  const jsonlDir = join(homedir(), '.claude', 'projects', projectPath.replace(/\//g, '-'));
+  await mkdir(jsonlDir, { recursive: true });
+  const jsonlPath = join(jsonlDir, `${sessionId}.jsonl`);
+  await writeFile(jsonlPath, '');
+
+  let threadId: string | null = null;
+  let turnNr = 0;
+  const stdin = createInterface({ input: process.stdin });
+  for await (const line of stdin) {
+    if (!line.trim()) continue;
+    const nachricht = nachrichtAus(line);
+    const prompt = !threadId && systemPrompt.trim() ? `${systemPrompt}\n\n---\n\n${nachricht}` : nachricht;
+    const args = baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides });
+    const r = await fuehreTurnAus(args, prompt, { ...process.env, ...mcp.env });
+    if (r.threadId) threadId = r.threadId;
+    turnNr++;
+    if (r.usage) {
+      // message.id je Turn: wrapper.ts meldeVerbrauch bucht jede Referenz genau einmal (P22-T7).
+      await appendFile(jsonlPath, JSON.stringify({ message: { id: `${sessionId}:${turnNr}`, model: modell ?? CODEX_STANDARD_MODELL, usage: {
+        input_tokens: r.usage.input_tokens, output_tokens: r.usage.output_tokens,
+        cache_read_input_tokens: r.usage.cached_input_tokens, cache_creation_input_tokens: 0 } } }) + '\n').catch(() => undefined);
+    }
+    for (const t of r.texte) emit({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: t }] } });
+    // P22-T58: Kontingent im Claude-Format (rate_limit_event) an den Wrapper; der Wrapper meldet nur Zustandswechsel.
+    const limit = r.fehler ? codexLimitAus(r.fehler) : null;
+    if (limit) emit({ type: 'rate_limit_event', session_id: sessionId, rate_limit_info: { status: 'rejected', resetsAt: limit.resetsAt, rateLimitType: 'codex_usage_limit' } });
+    else if (!r.fehler) emit({ type: 'rate_limit_event', session_id: sessionId, rate_limit_info: { status: 'allowed', rateLimitType: 'codex_usage_limit' } });
+    emit({
+      type: 'result', session_id: sessionId,
+      result: r.fehler && !r.texte.length ? `Codex-Fehler: ${r.fehler}` : r.texte.join('\n\n'),
+      is_error: !!r.fehler && !r.texte.length,
+      usage: { input_tokens: r.usage?.input_tokens ?? 0, output_tokens: r.usage?.output_tokens ?? 0 },
+    });
+    console.error(`[codex-runtime:${agentName}] Turn fertig (thread ${threadId ?? '-'}, ${r.texte.length} Antwort(en)${r.fehler ? `, Fehler ${r.fehler}` : ''})`);
+  }
+}
+
+async function fuehreTurnAus(args: string[], prompt: string, env: NodeJS.ProcessEnv): Promise<{
+  threadId: string | null; texte: string[]; usage: CodexEreignis['usage'] | null; fehler: string | null;
+}> {
+  return new Promise((resolve) => {
+    const proc = spawn('codex', args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const texte: string[] = [];
+    let threadId: string | null = null;
+    let usage: CodexEreignis['usage'] | null = null;
+    let fehler: string | null = null;
+    let stderr = '';
+    // Lebenszeichen fuer den Wrapper (Sliding-Timeout in process.ts), solange Codex arbeitet.
+    const ping = setInterval(() => emit({ type: 'ping' }), 30_000);
+    createInterface({ input: proc.stdout }).on('line', (l) => {
+      const e = leseCodexZeile(l);
+      if (e.threadId) threadId = e.threadId;
+      if (e.text) texte.push(e.text);
+      if (e.usage) usage = e.usage;
+      if (e.fehler) fehler = e.fehler;
+    });
+    proc.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-2000); });
+    proc.on('error', (err) => { fehler = err.message; });
+    proc.on('close', (code) => {
+      clearInterval(ping);
+      if (code !== 0 && !fehler) fehler = `codex endete mit Exit-Code ${code}${stderr ? ': ' + stderr.trim().split('\n').slice(-3).join(' | ') : ''}`;
+      resolve({ threadId, texte, usage, fehler });
+    });
+    proc.stdin.end(prompt);
+  });
+}
+
+// Nur als Programm starten, nicht beim Import (Tests importieren die reinen Funktionen).
+if (process.env.SYNAPSE_WRAPPER_MODE === '1') {
+  main().catch((err) => {
+    console.error('[codex-runtime] Fataler Fehler:', err);
+    process.exit(1);
+  });
+}

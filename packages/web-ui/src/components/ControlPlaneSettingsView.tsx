@@ -6,6 +6,7 @@ import { ModelPoolTable } from './ModelPoolTable';
 import { AusweisFristenPanel } from './AusweisFristenPanel';
 import { AusweisVisaPanel } from './AusweisVisaPanel';
 import { FallSkillSchalterPanel } from './FallSkillSchalterPanel';
+import { ApiBudgetPanel } from './ApiBudgetPanel';
 import { PlanungsHinweis, StatusChip, type Ausbaustand } from './StatusKennzeichnung';
 import '../control-plane-settings.css';
 
@@ -138,6 +139,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
               <div className="runtime-settings-list"><AgentRuntimeControl runtime="claude" compact /><AgentRuntimeControl runtime="codex" compact /></div>
               <button type="button" onClick={() => setCategory('runtimes')}>Alle Runtime-Einstellungen öffnen</button>
             </section>
+            <ApiBudgetPanel />
             <section aria-label="Main-Agent-Entwurf">
               <h3>Main-Agent-Entwurf · DEMO</h3>
               <p>Die folgenden Identitäts- und Profilfelder sind lokale Entwürfe. „UI-Entwurf speichern“ ändert keine Runtime und keine Hauptagent-Zuweisung.</p>

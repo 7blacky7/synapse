@@ -12,7 +12,7 @@
  */
 
 import type { ConsolidatedTool } from './types.js';
-import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs} from '@synapse/core';
+import {mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus,completeShellJob,shellRohAusgabe,maskiereFaelligeShellJobs,schlankeShellRueckfrageWennAktiv,fremderLaufFeld} from '@synapse/core';
 import { str, num, reqStr, strArray, bool } from './types.js';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -473,6 +473,9 @@ export const shellTool: ConsolidatedTool = {
       if (id) (result as Record<string, unknown>)['id'] = id;
     }
 
-    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    // P23-T3 Punkt 6b (Schalter shell_fremde_ergebnisse): gleicher beendeter Lauf eines anderen Agenten -> Abrufweg.
+    if (result['status'] !== 'rejected') Object.assign(result, await fremderLaufFeld({ project, command, cwd_relative: cwdRel, agent_id: actor, ausser_job_id: typeof result['id'] === 'string' ? result['id'] as string : null }));
+    // P23-T3: stufe rueckfrage ohne Lage-Baum (Schalter tool_antworten_schlank); persistiert wurde oben das volle Ergebnis.
+    return { content: [{ type: 'text', text: JSON.stringify(await schlankeShellRueckfrageWennAktiv(project, result), null, 2) }] };
   },o=>({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] })),
 };

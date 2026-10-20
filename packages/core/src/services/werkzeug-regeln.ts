@@ -66,6 +66,11 @@
  *   - Fehler beim Markieren -> Regeln werden geliefert (lieber doppelt als gar nicht).
  *   OHNE Ausweis (Legacy, fremdes Projekt, Kern AUS): unveraendert, Entscheidungen 1 und 2 unten gelten weiter.
  *
+ * P23-T3 (Schalter tool_antworten_schlank, Standard AUS): OHNE Ausweis, aber mit agent_id eines REGISTRIERTEN Agenten
+ *   (agent_sessions) kommt jede Regel je Sitzung nur einmal; neue Registrierung oder geaenderte Regel -> erneut.
+ *   Zustellmarke: hinweis_gesehen art 'werkzeug_regel:<name>', fingerprint = Marke. Unregistriert/ohne agent_id/Fehler
+ *   -> alle Regeln (Entscheidung 1 und 2 bleiben dort gueltig).
+ *
  * BEKANNTE GRENZEN, hier benannt statt spaeter entdeckt:
  *   (a) OHNE project KEINE REGELN (ohne Ausweis). Regeln sind projektbezogen. Ein Werkzeug ohne
  *       project-Argument kann keine Marke treffen. Bei specialist ist project Pflicht.
@@ -75,6 +80,7 @@
 
 import { createHash } from 'node:crypto';
 import { getPool } from '../db/client.js';
+import { toolAntwortenSchlank } from './tool-antworten-schlank.js';
 
 /** Eine Regel, die zu einem Werkzeug-Aufruf gehoert. */
 export interface WerkzeugRegel {
@@ -116,6 +122,8 @@ export async function holeWerkzeugRegeln(
   project: string | undefined | null,
   toolName: string,
   action?: string | null,
+  /** P23-T3: Legacy-agent_id fuer die Zustellung je Sitzung (nur mit Schalter tool_antworten_schlank). */
+  agentId?: string | null,
 ): Promise<WerkzeugRegel[]> {
   const bezug = await laufBezug();
   const projekt = String(project ?? '').trim() || bezug?.project || '';
@@ -138,8 +146,10 @@ export async function holeWerkzeugRegeln(
       [projekt, marken],
     );
     const regeln = res.rows.map((r) => ({ name: r.name, content: r.content }));
-    if (!bezug || bezug.project !== projekt || regeln.length === 0) return regeln;
-    return await nurNeueImLauf(bezug, regeln);
+    if (regeln.length === 0) return regeln;
+    if (bezug) return bezug.project === projekt ? await nurNeueImLauf(bezug, regeln) : regeln;
+    if (agentId && await toolAntwortenSchlank(projekt)) return await nurNeueInSitzung(projekt, agentId, regeln);
+    return regeln;
   } catch (err) {
     console.error('[Werkzeug-Regeln] Abfrage fehlgeschlagen:', err);
     return [];
@@ -184,6 +194,36 @@ export async function markiereWerkzeugRegelnZugestellt(b: WerkzeugRegelLauf, reg
      RETURNING hinweis_id`,
     [b.project, b.agent_id, laufSitzung(b.lauf_id), WERKZEUG_REGEL_QUELLE, b.identity_id, [...new Set(regeln.map(regelMarke))]]);
   return r.rows.map((z) => z.hinweis_id);
+}
+
+/** Praefix der Legacy-Zustellmarke in hinweis_gesehen.art (P23-T3). */
+const SITZUNG_ART_PRAEFIX = 'werkzeug_regel:';
+
+/**
+ * P23-T3: Legacy-Zustellung je Sitzung eines registrierten Agenten (agent_sessions.sitzung_seit). Bewusst OHNE
+ * hinweis_optionen: Werkzeugregeln sind Pflicht und nicht abschaltbar. Unregistriert oder Fehler -> alle Regeln.
+ */
+async function nurNeueInSitzung(project: string, agentId: string, regeln: WerkzeugRegel[]): Promise<WerkzeugRegel[]> {
+  try {
+    const s = await getPool().query<{ sitzung: string | null }>(
+      'SELECT COALESCE(sitzung_seit, registered_at)::text AS sitzung FROM agent_sessions WHERE id = $1', [agentId]);
+    const sitzung = s.rows[0]?.sitzung;
+    if (!sitzung) return regeln;
+    const r = await getPool().query<{ art: string }>(
+      `INSERT INTO hinweis_gesehen (project, agent_id, art, sitzung, fingerprint, gezeigt_am)
+       SELECT $1, $2, $3 || u.name, $4, u.marke, NOW() FROM unnest($5::text[], $6::text[]) AS u(name, marke)
+       ON CONFLICT (project, agent_id, art) DO UPDATE SET
+         sitzung = EXCLUDED.sitzung, fingerprint = EXCLUDED.fingerprint, gezeigt_am = EXCLUDED.gezeigt_am
+       WHERE hinweis_gesehen.sitzung IS DISTINCT FROM EXCLUDED.sitzung
+          OR hinweis_gesehen.fingerprint IS DISTINCT FROM EXCLUDED.fingerprint
+       RETURNING art`,
+      [project, agentId, SITZUNG_ART_PRAEFIX, sitzung, regeln.map((x) => x.name), regeln.map(regelMarke)]);
+    const neu = new Set(r.rows.map((z) => z.art.slice(SITZUNG_ART_PRAEFIX.length)));
+    return regeln.filter((x) => neu.has(x.name));
+  } catch (err) {
+    console.error('[Werkzeug-Regeln] Sitzungs-Zustellmarke fehlgeschlagen:', (err as { message?: string } | null)?.message?.slice(0, 80) ?? 'fehler');
+    return regeln;
+  }
 }
 
 /** Nur die im Lauf noch nicht (bzw. geaendert) zugestellten Regeln; Kern AUS oder Fehler -> alle (Bestand). */

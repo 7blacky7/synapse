@@ -9,6 +9,7 @@ import { ProjectKnowledgePanel, type ProjectDetailSection } from './ProjectKnowl
 import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
+import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
 import { ChannelAgentChatWindow, type ChannelAgentWindowState } from './ChannelAgentChatWindow';
 import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
 import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
@@ -487,6 +488,8 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [chatPeeking, setChatPeeking] = useState(false);
   const [chatHasUnread, setChatHasUnread] = useState(false);
+  // P22-T7: Steuerung des Hauptagenten (Heartbeat, Schalter, Wechsel, Verbrauch) als aufklappbarer Zusatz.
+  const [steuerungOffen, setSteuerungOffen] = useState(false);
   const [collapseDelay, setCollapseDelay] = useState(5);
   const [collapseUnit, setCollapseUnit] = useState<'ms' | 'sec' | 'min'>('min');
   const [lastInteraction, setLastInteraction] = useState(() => Date.now());
@@ -777,10 +780,12 @@ function MainAgentView({ theme, project, showDashboard }: { theme: Theme; projec
             {chatHasUnread && <i className="chat-unread-dot" title="Neue Nachricht" />}
             {thinking && runtimeMode !== 'mock' && <button type="button" className="main-runtime-stop" onClick={() => runtimeAbortRef.current?.abort()}>■ Abbrechen</button>}
             {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={collapseUnit === 'ms' ? 100 : 1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'ms' | 'sec' | 'min')}><option value="ms">ms</option><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
+            <button type="button" className={steuerungOffen ? 'active' : ''} onClick={() => setSteuerungOffen(!steuerungOffen)} title="Hauptagent steuern: Heartbeat, Schalter, Runtime, Verbrauch">⚙ Steuerung</button>
             <button type="button" className="chat-mode-cycle active" onClick={cycleChatMode} title="Auto → Fixiert → Minimiert">{chatCollapsed ? '□ Öffnen' : chatMode === 'auto' ? '◌ Auto · weiter' : '● Fixiert · weiter'}</button>
             <div className={'agent-live' + (runtimeMode === 'claude' || runtimeMode === 'codex' ? ' real' : '')}><i /> {runtimeMode === 'unknown' ? 'Runtime wird geprüft' : runtimeMode === 'mock' ? 'Kein Agent' : thinking ? 'streaming' : runtimeMode === 'claude' ? 'Claude bereit' : 'Codex bereit'}</div>
           </div>
         </div>
+        {steuerungOffen && !chatCollapsed && <HauptagentSteuerung />}
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
           {runtimeMode !== 'mock' && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Letzte Toolaufrufe im Projekt" phases={[]} />}
           {visibleMessages.map((message) => <Fragment key={message.id}>
@@ -1303,6 +1308,7 @@ function ProjectAgentTeamView({ project }: { project: string }) {
   const [selected, setSelected] = useState(agents[0]?.name || '');
   const current = agents.find((agent) => agent.name === selected) ?? agents[0];
   useEffect(() => setSelected(agents[0]?.name || ''), [project]);
+  const verbrauch = useAgentVerbrauch(project);
   return <div className="standard-page">
     <PageHeader eyebrow="PROJEKTGEBUNDENES TEAM · UI1–UI3" title={'Agententeam · ' + project} description="Hier erscheinen ausschließlich Agenten dieses Projekts. Der globale Hauptagent bleibt in seinem eigenen Chatfenster." action={<StatusChip stand="demo" />} />
     <PlanungsHinweis
@@ -1311,7 +1317,7 @@ function ProjectAgentTeamView({ project }: { project: string }) {
     />
     <section className="split-surface project-agent-team">
       <div className="entity-list"><header><h2>Projekt-Agenten</h2><span>{agents.length}</span></header>{agents.map((agent) => <button type="button" className={current?.name === agent.name ? 'entity-row active' : 'entity-row'} key={agent.name} onClick={() => setSelected(agent.name)}><i className={agent.state === 'running' ? 'ready' : agent.state === 'idle' ? 'warning' : 'offline'} /><div><strong>{agent.name}</strong><small>{agent.role} · {agent.state}</small></div><span>{agent.host}</span></button>)}</div>
-      {current && <div className="entity-detail"><div className="detail-status"><i className={current.state === 'running' ? 'ready' : current.state === 'idle' ? 'warning' : 'offline'} /><span>{current.state}</span><b>PROJEKT</b></div><h2>{current.name}</h2><p>{current.role} im Projekt {project}. Kein Hauptagent und keine Agenten anderer Projekte werden hier vermischt.</p><dl><div><dt>Runtime</dt><dd>{current.runtime}</dd></div><div><dt>Host</dt><dd>{current.host}</dd></div><div><dt>Speicher</dt><dd>{current.memory}</dd></div><div><dt>Heartbeat</dt><dd>{current.heartbeat}</dd></div></dl><div className="prepared-panel">Der vollständige projektbezogene Agentenverlauf wird später über Heartbeat und Channel-Daten verdrahtet.</div></div>}
+      {current && <div className="entity-detail"><div className="detail-status"><i className={current.state === 'running' ? 'ready' : current.state === 'idle' ? 'warning' : 'offline'} /><span>{current.state}</span><b>PROJEKT</b></div><h2>{current.name}</h2><p>{current.role} im Projekt {project}. Kein Hauptagent und keine Agenten anderer Projekte werden hier vermischt.</p><dl><div><dt>Runtime</dt><dd>{current.runtime}</dd></div><div><dt>Host</dt><dd>{current.host}</dd></div><div><dt>Speicher</dt><dd>{current.memory}</dd></div><div><dt>Heartbeat</dt><dd>{current.heartbeat}</dd></div><div><dt>Tokens (Monat, Abo)</dt><dd>{verbrauch ? (verbrauch[current.name] ?? 0).toLocaleString('de-DE') : '–'}</dd></div></dl><div className="prepared-panel">Der vollständige projektbezogene Agentenverlauf wird später über Heartbeat und Channel-Daten verdrahtet.</div></div>}
     </section>
   </div>;
 }

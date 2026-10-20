@@ -5,6 +5,7 @@ import { apiFetch } from '../api/auth';
  * P23-T5: Produkt-Schalter der Fall-Skills (Standard AUS bis User-Freigabe, 'alle' schaltet sie nicht mit):
  *   fall_skill_hinweis       - Fehlerantworten nennen beim ersten Auftreten je Sitzung den passenden Fall-Skill (je Weg Ausweis/Legacy).
  *   tool_beschreibungen_kurz - tools/list liefert kurze Tool-Beschreibungen, die auf die Fall-Skills verweisen.
+ *   fall_skill_faelle        - P23-T7: reichte ein Fall-Skill nicht, entsteht ein offener Tool-Fall fuer den Koordinator.
  * Echt angeschlossen (derselbe Core-Dispatcher wie admin profil_schalter_status/_setzen):
  *   GET/PUT /api/projects/:project/agent-profile/schalter  {profil_funktion, aktiv, grund, ebene}
  */
@@ -13,6 +14,15 @@ interface SchalterStand { funktion: string; aktiv: boolean; quelle: string; eben
 const FUNKTIONEN: Array<{ funktion: string; titel: string; text: string }> = [
   { funktion: 'fall_skill_hinweis', titel: 'Fall-Skill bei Fehlbedienung', text: 'Fehlerantworten nennen einmal je Sitzung den passenden Fall-Skill (Feld fall_skill), getrennt nach Ausweis- und Legacy-Agenten.' },
   { funktion: 'tool_beschreibungen_kurz', titel: 'Kurze Tool-Beschreibungen', text: 'tools/list liefert nur Zweck und Ausloeser; Details stehen in den Fall-Skills (Seed: mise run skills-seed). Wirkt ab der naechsten Verbindung des Clients.' },
+  // P22-T56
+  { funktion: 'tool_liste_je_verbindung', titel: 'Tool-Liste je Verbindung', text: 'Verbindung mit Ausweis (Header/Env) bekommt nur den Ausweis-Weg (ohne agent_id/role), Web-Connector ohne Ausweis nur den Legacy-Weg, gemeinsame Verbindungen (stdio, Claude Code) beide. Begruendung in tools/list unter _meta. Wirkt ab der naechsten Verbindung des Clients.' },
+  // P23-T3
+  // P23-T7
+  { funktion: 'fall_skill_faelle', titel: 'Tool-Faelle sammeln', text: 'Tritt derselbe Fehlercode nach dem Fall-Skill-Hinweis im selben Lauf erneut auf (oder gibt es keinen Fall-Skill), entsteht ein offener Fall im Erklaerungs-Topf (Familie tool:<tool>:<code>). Der Koordinator beantwortet ihn (code_check offene_faelle familie tool:, erklaerung_ablegen); die Antwort waehlt Jev kuenftig und sie ergaenzt den Fall-Skill. Stand: admin jev_erklaerungstopf (tool_faelle).' },
+  { funktion: 'tool_antworten_schlank', titel: 'Schlanke Tool-Antworten', text: 'Shell-Rueckfrage ohne Lage-Baum (Details per shell get detail full), werkzeug_regeln auch ohne Ausweis je Sitzung einmal.' },
+  // P22-T7
+  { funktion: 'verbrauch', titel: 'Verbrauchszaehlung (Abo-CLIs)', text: 'Zaehlt den Token-Verbrauch je Agent fuer Claude Code im Abo (je Antwort genau einmal, lokal und im Container). Anzeige im Hauptagent-Chat unter Steuerung und im Agententeam. Keine Grenze, keine Kosten.' },
+  { funktion: 'shell_fremde_ergebnisse', titel: 'Fremde Shell-Ergebnisse anbieten', text: 'shell_activity nennt bei Jobs anderer Agenten den Abrufweg shell(get, id); shell exec meldet einen schon beendeten gleichen Lauf eines anderen Agenten (fremder_lauf).' },
 ];
 
 function fehlerText(daten: unknown, status: number): string {

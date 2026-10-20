@@ -41,6 +41,10 @@ import { AGENT_AUSWEIS_NR_SCHEMA_SQL } from './agent-ausweis-nr-schema.js';
 import { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './agent-runtime-auftraege-schema.js';
 import { AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL } from './agent-ausweis-fristen-schema.js';
 import { AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL } from './agent-ausweis-projekte-schema.js';
+import { AGENT_API_BUDGET_SCHEMA_SQL } from './agent-api-budget-schema.js';
+import { AGENT_VERBRAUCH_SCHEMA_SQL } from './agent-verbrauch-schema.js';
+import { AGENT_ZUSTELLUNGEN_SCHEMA_SQL } from './agent-zustellungen-schema.js';
+import { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './runtime-ueberwachung-schema.js';
 import { AGENT_IDENTITAET_SCHEMA_SQL } from './agent-identitaet-schema.js';
 import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
 import { HINWEIS_SCHEMA_SQL } from './ausloeser-hinweise-schema.js';
@@ -1904,7 +1908,13 @@ VALUES
   ('gemini-flash',      'gemini-3-flash-preview',         'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  0.50,  3.00, 0.05,  '2025-01-01', NULL),
   ('gemini-pro',        'gemini-2.5-pro',                 'google',    1000000, ARRAY['GOOGLE_API_KEY'],  'node',   '@synapse/agents-gemini/runtime',    80, 88,  1.25, 10.00, 0.13,  '2025-01-01', NULL),
   -- agy-CLI: Pro-Abo via Keyring, KEIN API-Key (env_required leer), provider 'antigravity' (getrennt von 'google')
-  ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL, NULL)
+  ('antigravity',       'agy-1.0.2',                      'antigravity', 1000000, ARRAY[]::TEXT[],         'node',   '@synapse/agents-antigravity/runtime', 95, 99, NULL,  NULL,  NULL,  NULL, NULL),
+  -- P22-T8: Claude per API-Key (kostenpflichtig, Budget api_agent_budget). Provider 'anthropic-api' getrennt von den Abo-CLIs
+  -- ('anthropic'); node-Runtime = API-Worker im Wrapper. Preise = API-Listenpreise je Version (wie die Claude-Zeilen oben).
+  ('api-opus',          'claude-opus-5-5',                'anthropic-api', 1000000, ARRAY[]::TEXT[],       'node',   '@synapse/agents/api-worker',          80, 97,  4.00, 20.00, 0.20, '2026-06-01', 128000),
+  ('api-sonnet',        'claude-sonnet-5-5',              'anthropic-api', 1000000, ARRAY[]::TEXT[],       'node',   '@synapse/agents/api-worker',          80, 97,  2.00, 10.00, 0.20, '2026-06-01', 128000),
+  ('api-haiku',         'claude-haiku-4-5-20251001',      'anthropic-api',  200000, ARRAY[]::TEXT[],       'node',   '@synapse/agents/api-worker',          73, 88,  1.00,  5.00, 0.10, '2025-02-28',  64000),
+  ('api-fable',         'claude-fable-5-1',               'anthropic-api', 1000000, ARRAY[]::TEXT[],       'node',   '@synapse/agents/api-worker',          80, 97, 10.00, 50.00, 0.25, '2026-06-01', 128000)
 ON CONFLICT (alias) DO NOTHING;
 
 -- Effort je Modell (29.09.2026): Stufen fuer claude --effort und Standard, wenn der Spawn
@@ -3145,6 +3155,10 @@ ${AGENT_AUSWEIS_NR_SCHEMA_SQL}
 ${AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL}
 ${AGENT_AUSWEIS_FRISTEN_SCHEMA_SQL}
 ${AGENT_AUSWEIS_PROJEKTE_SCHEMA_SQL}
+${AGENT_VERBRAUCH_SCHEMA_SQL}
+${AGENT_API_BUDGET_SCHEMA_SQL}
+${AGENT_ZUSTELLUNGEN_SCHEMA_SQL}
+${RUNTIME_UEBERWACHUNG_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

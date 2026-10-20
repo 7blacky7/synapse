@@ -29,7 +29,9 @@ export type SpecialistAction =
   | 'status'
   // Neustart-Aufforderung aus maybeTriggerRespawn (REST-Weg): der Daemon schreibt
   // den Rotations-Marker auf dem Rechner, auf dem der Wrapper laeuft.
-  | 'rotate';
+  | 'rotate'
+  // P22-T6: Nachricht an einen Agenten im Runtime-Container zustellen (Container-Daemon -> Wrapper -> Modell).
+  | 'zustellen';
 
 export interface SpecialistJobRow {
   actor_identity_id?: string | null;
@@ -104,7 +106,12 @@ export async function enqueueSpecialistJob(args: {
     targetIdentity = ziel.identity_id;
     jobArgs = { ...jobArgs, name: ziel.agent_id, identity_id: ziel.identity_id };
   }
-  if (args.action === 'stop') {
+  if (jobArgs.target_runtime !== undefined
+    && (typeof jobArgs.target_runtime !== 'string' || !(SPECIALIST_ZIEL_RUNTIMES as readonly string[]).includes(jobArgs.target_runtime))) {
+    throw new Error('specialist_ziel_runtime_ungueltig');
+  }
+  // P22-T6: Container-Ziel (target_runtime) braucht keinen PC-Zielhost; der Pfad kommt vom Aufrufer.
+  if (args.action === 'stop' && jobArgs.target_runtime === undefined) {
     const pfad = typeof jobArgs.project_path === 'string' ? jobArgs.project_path : null;
     const { rows } = await pool.query<{ hostname: string; path: string }>(
       "SELECT DISTINCT hostname,path FROM projects WHERE name=$1 AND path NOT LIKE '/virtual/%' AND ($2::text IS NULL OR path=$2)",
@@ -127,14 +134,21 @@ export async function enqueueSpecialistJob(args: {
   return { id: res.rows[0].id };
 }
 
+/** P22-T6: Runtimes, deren Container-Daemon Spezialisten-Jobs ausfuehrt (args.target_runtime). */
+export const SPECIALIST_ZIEL_RUNTIMES = ['claude', 'codex'] as const;
+export type SpecialistZielRuntime = typeof SPECIALIST_ZIEL_RUNTIMES[number];
+
 /**
  * Daemon-Seite: claimt aeltesten pending Job atomar via SELECT FOR UPDATE
  * SKIP LOCKED. Nur Jobs juenger als 30s — sonst expired.
+ * P22-T6: ohne runtime (PC-Daemon) nie Jobs mit args.target_runtime; mit runtime (Container-Daemon)
+ * NUR Jobs mit args.target_runtime = runtime (target_hostname spielt dort keine Rolle).
  */
 export async function claimPendingSpecialistJob(
   project: string,
   daemonId: string,
   hostname?: string,
+  runtime?: SpecialistZielRuntime,
 ): Promise<SpecialistJobRow | null> {
   const pool = getPool();
   const client = await pool.connect();
@@ -144,12 +158,14 @@ export async function claimPendingSpecialistJob(
       `SELECT * FROM specialist_jobs
        WHERE project = $1
          AND status = 'pending'
-         AND (args->>'target_hostname' IS NULL OR args->>'target_hostname'=$2::text)
+         AND (($3::text IS NULL AND args->>'target_runtime' IS NULL
+               AND (args->>'target_hostname' IS NULL OR args->>'target_hostname'=$2::text))
+           OR ($3::text IS NOT NULL AND args->>'target_runtime'=$3::text))
          AND created_at > NOW() - interval '30 seconds'
        ORDER BY created_at ASC
        LIMIT 1
        FOR UPDATE SKIP LOCKED`,
-      [project, hostname ?? null],
+      [project, hostname ?? null, runtime ?? null],
     );
     if (res.rows.length === 0) {
       await client.query('ROLLBACK');

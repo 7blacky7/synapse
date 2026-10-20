@@ -129,7 +129,7 @@ try {
     const r = await preps('agent-c', 'T-c');
     assert.deepEqual(r.map((x) => x.skill_name), ['gut-skill', 'ogame-strategie', 'schlecht-skill']);
     const og = r.find((x) => x.skill_name === 'ogame-strategie');
-    assert.equal(og.score, 0.99); assert.equal(og.reason, 'Skill-Name genannt (Task)');
+    assert.equal(og.score, 0.99); assert.equal(og.reason, 'Skill-Name genannt (Task, voller Name)', 'P23-T8: Marke der neuen Namensregel');
     assert.equal(r.find((x) => x.skill_name === 'gut-skill').reason, 'Semantischer Treffer (Task, Score 0.80)');
     assert.equal(jevAufrufe.length, 0, 'Standard AUS: kein Jev-Aufruf');
     const w = await JS.jevWirksam(P, 'skill_rerank');
@@ -143,9 +143,9 @@ try {
     assert.equal(w.an, true); assert.equal(w.quelle, 'produkt-schalter');
     await SH.bereiteSkillVorschlaegeVor(P, 'task', 'T-d', 'Plane mit ogame-strategie die Flotte', ['agent-d', 'agent-d2'], pool, fakeSuche(hits));
     assert.equal(jevAufrufe.length, 1, 'EIN Aufruf fuer alle Empfaenger');
-    assert.deepEqual(jevAufrufe[0].state.skills.map((s) => s.name).sort(), ['gut-skill', 'schlecht-skill'], 'genannte Skills gehen nicht an Jev');
+    assert.deepEqual(jevAufrufe[0].state.skills.map((s) => s.name).sort(), ['gut-skill', 'ogame-strategie', 'schlecht-skill'], 'P23-T8: genannte Skills gehen mit an Jev');
     const r = await preps('agent-d', 'T-d');
-    assert.deepEqual(r.map((x) => x.skill_name), ['gut-skill', 'ogame-strategie']);
+    assert.deepEqual(r.map((x) => x.skill_name), ['gut-skill'], 'P23-T8: genannter Skill mit 0.1 verworfen');
     assert.match(r[0].reason, /Jev-Sinnpruefung 0\.90 \(Tor 0\.5\)/);
     const kosten = (await q("SELECT funktion, ok, usd::float8 AS usd FROM jev_aufrufe WHERE project=$1", [P])).rows;
     assert.deepEqual(kosten.map((k) => [k.funktion, k.ok]), [['skill_rerank', true]]);
@@ -155,7 +155,7 @@ try {
     await JO.setzeJevOptionen({ skill_rerank_tor: 0.95, agent: 'koordinator' });
     assert.equal((await JO.leseJevOptionen()).skill_rerank_tor, 0.95);
     await SH.bereiteSkillVorschlaegeVor(P, 'task', 'T-d3', 'Plane mit ogame-strategie die Flotte', ['agent-d3'], pool, fakeSuche(hits));
-    assert.deepEqual((await preps('agent-d3', 'T-d3')).map((x) => x.skill_name), ['ogame-strategie'], '0.9 < Tor 0.95');
+    assert.deepEqual((await preps('agent-d3', 'T-d3')).map((x) => x.skill_name), [], '0.9 < Tor 0.95; P23-T8: auch der genannte (0.1) faellt');
     await assert.rejects(JO.setzeJevOptionen({ skill_rerank_tor: 1.5 }), (e) => e.code === 'skill_rerank_tor_ungueltig');
     await assert.rejects(JO.setzeJevOptionen({ skill_rerank_max: 0 }), (e) => e.code === 'skill_rerank_max_ungueltig');
     await JO.setzeJevOptionen({ skill_rerank_tor: 0.5, agent: 'koordinator' });
@@ -211,7 +211,7 @@ try {
 
   await pruefe('E Hinweisgeber (thought): genannter langer Name, nicht der kurze', async () => {
     await SH.verarbeiteSkillHinweisgeber('thought', 'add', { project: P, content: 'ogame-strategie-erweitert ist gemeint' }, { success: true, id: 'th-1' }, 'agent-h', pool, fakeSuche([]));
-    assert.deepEqual((await preps('agent-h')).map((x) => [x.skill_name, x.reason]), [['ogame-strategie-erweitert', 'Skill-Name genannt (Gedanke)']]);
+    assert.deepEqual((await preps('agent-h')).map((x) => [x.skill_name, x.reason]), [['ogame-strategie-erweitert', 'Skill-Name genannt (Gedanke, voller Name)']]);
   });
 } finally {
   await q('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE').catch((e) => console.error('Aufraeumen: ' + e.message));

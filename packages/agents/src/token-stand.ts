@@ -54,3 +54,41 @@ export function berechneTokenStand(zeilen: readonly string[]): TokenStand {
 
   return { kontextInput, letzterOutput, kumulierterOutput, turns };
 }
+
+/** P22-T7: Verbrauch je Modellantwort (eine Antwort = eine message.id). */
+export interface AntwortVerbrauch {
+  id: string;
+  modell: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+}
+
+/**
+ * P22-T7: Verbrauch aus denselben JSONL-Zeilen wie berechneTokenStand. Die Claude-CLI schreibt je Inhaltsblock einer
+ * Antwort eine eigene Zeile mit DERSELBEN usage; gezaehlt wird daher jede message.id genau einmal (erste Zeile).
+ * Zeilen ohne message.id werden uebersprungen (keine verlaessliche Referenz). Rein, ohne Dateizugriff.
+ */
+export function verbrauchAusZeilen(zeilen: readonly string[]): AntwortVerbrauch[] {
+  const gesehen = new Set<string>();
+  const aus: AntwortVerbrauch[] = [];
+  const zahl = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.round(v) : 0);
+  for (const zeile of zeilen) {
+    if (!zeile.trim()) continue;
+    try {
+      const obj = JSON.parse(zeile);
+      const msg = obj?.message;
+      const usage = msg?.usage;
+      const id = typeof msg?.id === 'string' ? msg.id : null;
+      if (!usage || !id || gesehen.has(id)) continue;
+      gesehen.add(id);
+      aus.push({
+        id, modell: typeof msg.model === 'string' ? msg.model : null,
+        input_tokens: zahl(usage.input_tokens), output_tokens: zahl(usage.output_tokens),
+        cache_read_tokens: zahl(usage.cache_read_input_tokens), cache_creation_tokens: zahl(usage.cache_creation_input_tokens),
+      });
+    } catch { /* Nicht-JSON-Zeilen ueberspringen */ }
+  }
+  return aus;
+}

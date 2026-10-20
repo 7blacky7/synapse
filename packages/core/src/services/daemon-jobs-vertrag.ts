@@ -36,7 +36,9 @@ import {
   completeSpecialistJob,
   type SpecialistJobCompletion,
   type SpecialistJobRow,
+  type SpecialistZielRuntime,
 } from './specialist-queue.js';
+import { runtimeProjektPfad } from './runtime-daemon-zugang.js';
 
 /** Obergrenze des Long-Polls (wie die intern-Bruecke). */
 export const DAEMON_JOB_WARTE_MAX_S = 25;
@@ -149,6 +151,11 @@ export interface DaemonAbrufOptionen {
   warteMs: number;
   /** true = Verbindung des Daemons ist weg; dann nichts mehr claimen und Geclaimtes zurueckgeben. */
   istGeschlossen: () => boolean;
+  /**
+   * P22-T6: Container-Daemon (Principal runtime-daemon). projekte hat die Route bereits auf die Projekte
+   * dieser Runtime geprueft; geclaimt werden nur Jobs mit args.target_runtime = runtime. Ohne Wert: PC-Weg.
+   */
+  runtime?: SpecialistZielRuntime;
 }
 
 // ── Shell-Jobs ──────────────────────────────────────────────────────────────
@@ -273,9 +280,10 @@ export async function holeSpecialistJobsFuerDaemon(o: DaemonAbrufOptionen): Prom
   for (;;) {
     const jobs: SpecialistJobRow[] = [];
     // Host-Filter wie bei Shell-Jobs: nur Projekte dieses Hosts (zusaetzlich zu target_hostname).
-    for (const projekt of await projekteDesHosts(o.projekte, o.host)) {
+    const projekte = o.runtime ? o.projekte : await projekteDesHosts(o.projekte, o.host);
+    for (const projekt of projekte) {
       if (jobs.length >= DAEMON_JOB_MAX_JE_ABRUF || o.istGeschlossen()) break;
-      const job = await claimPendingSpecialistJob(projekt, o.daemonId, o.host);
+      const job = await claimPendingSpecialistJob(projekt, o.daemonId, o.runtime ? undefined : o.host, o.runtime);
       if (job) jobs.push(job);
     }
     if (o.istGeschlossen()) {
@@ -284,7 +292,7 @@ export async function holeSpecialistJobsFuerDaemon(o: DaemonAbrufOptionen): Prom
     }
     if (jobs.length > 0) {
       const aus: SpecialistDaemonJob[] = [];
-      for (const j of jobs) aus.push({ ...j, lokaler_projektpfad: await lokalerProjektpfadFuerHost(j.project, o.host) });
+      for (const j of jobs) aus.push({ ...j, lokaler_projektpfad: o.runtime ? runtimeProjektPfad(j.project) : await lokalerProjektpfadFuerHost(j.project, o.host) });
       return aus;
     }
     const rest = ende - Date.now();
@@ -324,10 +332,14 @@ export interface WrapperReapKandidat {
  * Datenteil von reapLokaleWrapper: alte running/idle-Zeilen der Projekte, die eindeutig auf
  * diesem Host liegen. Die Prozesspruefung (/proc) macht der Daemon selbst (pruefeWrapperProzess).
  */
-export async function wrapperReapKandidaten(projekte: string[], host: string, alterMs = 300_000): Promise<WrapperReapKandidat[]> {
+export async function wrapperReapKandidaten(
+  projekte: string[], host: string, alterMs = 300_000,
+  /** P22-T6: Container-Daemon – Ordner im Container statt PC-Projektpfad (projekte vorher auf die Runtime geprueft). */
+  pfadFuer?: (project: string) => string | null,
+): Promise<WrapperReapKandidat[]> {
   const aus: WrapperReapKandidat[] = [];
   for (const project of projekte) {
-    const path = await lokalerProjektpfadFuerHost(project, host);
+    const path = pfadFuer ? pfadFuer(project) : await lokalerProjektpfadFuerHost(project, host);
     if (!path) continue;
     const { rows } = await getPool().query<{ agent_name: string; wrapper_pid: number; last_activity: string }>(
       "SELECT agent_name,wrapper_pid,last_activity::text AS last_activity FROM wrapper_status WHERE project=$1 AND status IN ('running','idle') AND last_activity < NOW()-($2::double precision * interval '1 millisecond')",
