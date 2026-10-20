@@ -27,7 +27,10 @@ import {
   sendChannelMessage,
 } from '../api/control-plane-adapter';
 import { defaultSettings, navigation } from '../mock/ui-control-plane';
-import { createMainAgentSession, getMainAgentRuntime, streamMainAgentMessage, type AgentArtifactEvent, type AgentRuntimeName, type AgentRuntimeStatus, type AgentToolEvent } from '../api/agent-runtime';
+import {
+  clearMainAgentVerlauf, createMainAgentSession, getMainAgentRuntime, getMainAgentVerlauf, streamMainAgentMessage,
+  type AgentArtifactEvent, type AgentRuntimeName, type AgentRuntimeStatus, type AgentToolEvent, type MainAgentVerlauf, type MainAgentVerlaufEintrag,
+} from '../api/agent-runtime';
 import type {
   Area,
   ChannelMemberViewModel,
@@ -43,6 +46,7 @@ import '../workspace-mock.css';
 import '../main-agent-dashboard.css';
 import '../workspace-extensions.css';
 import '../ui-scale.css';
+import '../hauptagent-verlauf.css';
 
 type Theme = 'dark' | 'light';
 
@@ -82,6 +86,20 @@ interface AgentMessage {
   mock?: boolean;
   /** P8-T25: Werkzeugaufrufe und Denkphasen dieser Antwort aus dem Antwortstrom. */
   toolRun?: { calls: ToolCallViewModel[]; phases: string[] };
+  /** P22-T63: Kopfzeilen-Zusatz aus dem Verlauf (Geraet · Zeit). */
+  info?: string;
+  /** P22-T63: Antwort laeuft noch (aus dem Verlauf, z. B. auf einem anderen Geraet gestartet). */
+  laeuft?: boolean;
+  /** P22-T63: Fehler-/Hinweiszeilen der Antwort aus dem Verlauf. */
+  hinweise?: string[];
+  /** P22-T63: nur in diesem Tab (Verlauf aus bzw. noch ohne Server-ID). */
+  lokal?: boolean;
+  /** P22-T63: eigener Turn dieses Tabs mit Server-ID; bleibt stehen, bis der Verlauf ihn selbst liefert. */
+  eigen?: boolean;
+  /** P22-T63: Kopfzeile statt Du/Hauptagent (Nachrichten anderer Absender, Systemzeilen). */
+  kopf?: string;
+  /** P22-T63: Zugdaten der Antwort (Modell · Zuege · Dauer · in/out · Kontext). */
+  zugInfo?: string;
 }
 
 /**
@@ -461,6 +479,99 @@ function setzeArtefaktBlock(
   return [...items, { id: ziel.artefaktId, role: 'agent', kind: 'artifact', title: ziel.titel, text: ziel.auftrag, blocks: [baue()], layout: { columns: 12, rowHeight: 72, gap: 12 }, saved: false }];
 }
 
+// P22-T63: Anzeige-IDs aus den Server-IDs des Verlaufs (Text 2n, Artefakt der Antwort 2n+1), damit Verlauf und eigener
+// Strom dieselbe Nachricht treffen. Lokale Nachrichten ohne Server-ID behalten Date.now()-IDs (groesser, also hinten).
+const verlaufAnzeigeId = (serverId: string, artefakt = false): number => Number(serverId) * 2 + (artefakt ? 1 : 0);
+
+function verlaufInfo(eintrag: MainAgentVerlaufEintrag): string {
+  const zeit = new Date(eintrag.erstellt_am);
+  const wann = Number.isNaN(zeit.getTime()) ? '' : zeit.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  return [eintrag.rolle === 'user' ? eintrag.geraet : null, wann].filter(Boolean).join(' · ');
+}
+
+function verlaufWerkzeuge(eintrag: MainAgentVerlaufEintrag): AgentMessage['toolRun'] {
+  const calls = (eintrag.werkzeuge?.calls ?? []).map((call): ToolCallViewModel => {
+    const input = call.input && typeof call.input === 'object' ? call.input as Record<string, unknown> : null;
+    const start = Date.parse(call.start);
+    const ende = call.ende ? Date.parse(call.ende) : Number.NaN;
+    const offen = !call.ende;
+    const ausgabe = call.output === undefined || call.output === null ? '' : typeof call.output === 'string' ? call.output : JSON.stringify(call.output);
+    return {
+      id: 'stream:' + call.id,
+      tool: call.name || 'tool',
+      action: typeof input?.action === 'string' ? input.action : '',
+      agent: 'Hauptagent',
+      status: offen ? (eintrag.status === 'laeuft' ? 'running' : 'failed') : call.isError ? 'failed' : 'done',
+      argsPreview: call.input === undefined ? '' : typeof call.input === 'string' ? call.input : JSON.stringify(call.input),
+      resultPreview: !offen && !call.isError ? ausgabe : '',
+      error: call.isError ? ausgabe || 'Fehler' : offen && eintrag.status !== 'laeuft' ? 'ohne Ergebnis beendet' : '',
+      durationMs: Number.isFinite(start) && Number.isFinite(ende) ? Math.max(0, ende - start) : 0,
+      createdAt: call.start,
+      source: 'stream',
+    };
+  });
+  const phases = eintrag.werkzeuge?.phasen ?? [];
+  return calls.length || phases.length ? { calls, phases } : undefined;
+}
+
+const tausender = (n: number): string => n >= 1000 ? (n / 1000).toFixed(n >= 10_000 ? 0 : 1) + 'k' : String(n);
+
+// P22-T63: Token-Zeile je Antwort: Modell · Zuege · Dauer · in/out · Kontext (gemessen = CLI usage).
+function verlaufZugInfo(eintrag: MainAgentVerlaufEintrag): string | undefined {
+  const g = eintrag.tokens?.gemessen;
+  const teile = [
+    eintrag.modell,
+    eintrag.zug?.zuege ? eintrag.zug.zuege + (eintrag.zug.zuege === 1 ? ' Zug' : ' Züge') : null,
+    eintrag.zug ? (eintrag.zug.dauer_ms / 1000).toFixed(1) + ' s' : null,
+    g ? 'in ' + tausender(g.input + g.cache_read + g.cache_creation) + ' / out ' + tausender(g.output) : null,
+    eintrag.kontext ? 'Kontext ' + eintrag.kontext.prozent + ' %' : null,
+    eintrag.zug?.kosten ? '$' + eintrag.zug.kosten.usd.toFixed(4) : null,
+    g ? 'gemessen' : null,
+  ].filter(Boolean);
+  return teile.length ? teile.join(' · ') : undefined;
+}
+
+// P22-T63: Verlaufseintraege (aufsteigend) als Chat-Nachrichten. Artefakte laufen ueber setzeArtefaktBlock, damit ein
+// Block mit bekannter id auch beim Laden den frueheren ersetzt statt einen zweiten anzuhaengen. Werkzeug-Eintraege eines
+// Zugs (gehoert_zu) erscheinen dort in der Werkzeugliste, nicht als eigene Nachricht.
+function baueVerlaufNachrichten(eintraege: MainAgentVerlaufEintrag[]): AgentMessage[] {
+  const auftraege = new Map(eintraege.filter((eintrag) => eintrag.rolle === 'user' || eintrag.rolle === 'nachricht').map((eintrag) => [eintrag.id, eintrag.text]));
+  let items: AgentMessage[] = [];
+  for (const eintrag of eintraege) {
+    // Sitzungs-Eintraege (Eingaben, Werkzeugschritte der CLI-Sitzung) sind Zaehl- und Uebergabebasis, keine Chatnachrichten.
+    if (eintrag.gehoert_zu || eintrag.quelle_ref?.startsWith('jsonl:')) {
+      continue;
+    }
+    if (eintrag.rolle === 'user') {
+      items.push({ id: verlaufAnzeigeId(eintrag.id), role: 'user', kind: 'text', text: eintrag.text, info: verlaufInfo(eintrag) });
+      continue;
+    }
+    if (eintrag.rolle === 'nachricht') {
+      const von = eintrag.absender?.agent_id || 'unbekannt';
+      items.push({ id: verlaufAnzeigeId(eintrag.id), role: 'user', kind: 'text', text: eintrag.text, info: verlaufInfo(eintrag),
+        kopf: von + ' · ' + eintrag.weg + (eintrag.absender?.channel ? ' #' + eintrag.absender.channel : '') });
+      continue;
+    }
+    if (eintrag.rolle === 'system' || eintrag.rolle === 'ausgabe') {
+      items.push({ id: verlaufAnzeigeId(eintrag.id), role: 'agent', kind: 'text', text: eintrag.text, info: verlaufInfo(eintrag),
+        kopf: eintrag.rolle === 'system' ? 'System · ' + eintrag.weg : 'Hauptagent · ' + eintrag.weg, hinweise: eintrag.hinweise?.length ? eintrag.hinweise : undefined });
+      continue;
+    }
+    items.push({
+      id: verlaufAnzeigeId(eintrag.id), role: 'agent', kind: 'text', text: eintrag.text, info: verlaufInfo(eintrag),
+      toolRun: verlaufWerkzeuge(eintrag), laeuft: eintrag.status === 'laeuft', hinweise: eintrag.hinweise?.length ? eintrag.hinweise : undefined,
+      zugInfo: verlaufZugInfo(eintrag),
+    });
+    (eintrag.artefakte ?? []).forEach((block, index) => {
+      items = setzeArtefaktBlock(items, block, {
+        artefaktId: verlaufAnzeigeId(eintrag.id, true), nummer: index + 1, titel: block.title || 'HTML-Antwort des Hauptagenten',
+        auftrag: (eintrag.antwort_auf && auftraege.get(eintrag.antwort_auf)) || '',
+      });
+    });
+  }
+  return items;
+}
+
 function MainAgentView({ project, showDashboard }: { theme: Theme; project: string; showDashboard: boolean }) {
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<MockChatAttachment[]>([]);
@@ -496,10 +607,30 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   const atBottomRef = useRef(true);
   const previousMessageCountRef = useRef(messages.length);
   const [unseenMessages, setUnseenMessages] = useState(0);
+  // P22-T63: Verlauf je Main-Identitaet (geraeteuebergreifend). verlaufRef = alle geladenen Server-Eintraege nach id.
+  const verlaufRef = useRef(new Map<string, MainAgentVerlaufEintrag>());
+  const verlaufStandRef = useRef<{ maxRev: string; geleertRev: string | null; aeltesteId: string | null; laeuft: boolean }>({ maxRev: '0', geleertRev: null, aeltesteId: null, laeuft: false });
+  /** Antwort-IDs, deren Strom DIESER Tab gerade empfaengt; der Abgleich ueberschreibt sie nicht. */
+  const eigeneLaufendeRef = useRef(new Set<string>());
+  /** Aeltere Nachrichten wurden oben eingefuegt: kein Sprung nach unten, kein "neue Antworten". */
+  const aeltereGeladenRef = useRef(false);
+  const [verlauf, setVerlauf] = useState<{ verfuegbar: boolean | null; grund?: string; mehr: boolean; laedt: boolean; fehler: string }>({ verfuegbar: null, mehr: false, laedt: false, fehler: '' });
+  const uebernehmeVerlauf = (eintraege: MainAgentVerlaufEintrag[]) => {
+    for (const eintrag of eintraege) verlaufRef.current.set(eintrag.id, eintrag);
+    const sichtbar = [...verlaufRef.current.values()]
+      .filter((eintrag) => !eigeneLaufendeRef.current.has(eintrag.id))
+      .sort((a, b) => Number(a.id) - Number(b.id));
+    const gebaut = baueVerlaufNachrichten(sichtbar);
+    const gebauteIds = new Set(gebaut.map((message) => message.id));
+    // Eigene Nachrichten dieses Tabs bleiben, bis der Verlauf sie selbst liefert (gleiche Anzeige-ID).
+    setMessages((prev) => [...gebaut, ...prev.filter((message) => (message.lokal || message.eigen) && !gebauteIds.has(message.id))]
+      .sort((a, b) => a.id - b.id));
+  };
 
   useEffect(() => {
     const added = messages.length - previousMessageCountRef.current;
     previousMessageCountRef.current = messages.length;
+    if (aeltereGeladenRef.current) { aeltereGeladenRef.current = false; return; }
     if (added <= 0) return;
     const latest = messages[messages.length - 1];
     if (chatCollapsed && latest?.role === 'agent') {
@@ -549,6 +680,48 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
+  // P22-T63: Verlauf beim Oeffnen laden (neueste Seite) und alle 2 s abgleichen (neue/geaenderte Eintraege, auch laufende
+  // Antworten anderer Geraete). Auf einem anderen Geraet geleert -> Anzeige verwerfen.
+  useEffect(() => {
+    let active = true;
+    const stand = verlaufStandRef.current;
+    const anwenden = (r: MainAgentVerlauf, seite: boolean) => {
+      if (!r.verfuegbar) {
+        setVerlauf((v) => ({ ...v, verfuegbar: false, grund: r.grund, mehr: false, laedt: false, fehler: '' }));
+        return;
+      }
+      if (stand.geleertRev !== null && Number(r.geleert_rev) > Number(stand.geleertRev)) {
+        verlaufRef.current.clear();
+        stand.aeltesteId = null;
+        stand.maxRev = '0';
+        setMessages((prev) => prev.filter((message) => message.lokal));
+      }
+      stand.geleertRev = r.geleert_rev;
+      if (Number(r.max_rev) > Number(stand.maxRev)) stand.maxRev = r.max_rev;
+      if (seite && r.eintraege.length && (stand.aeltesteId === null || Number(r.eintraege[0].id) < Number(stand.aeltesteId))) stand.aeltesteId = r.eintraege[0].id;
+      if (r.eintraege.length) uebernehmeVerlauf(r.eintraege);
+      setVerlauf((v) => ({ ...v, verfuegbar: true, grund: undefined, mehr: seite ? r.mehr : v.mehr && stand.aeltesteId !== null, fehler: '' }));
+    };
+    const abgleich = async () => {
+      if (stand.laeuft) return;
+      stand.laeuft = true;
+      try {
+        const ersteSeite = stand.aeltesteId === null && verlaufRef.current.size === 0;
+        const r = ersteSeite
+          ? await getMainAgentVerlauf({ limit: 50 })
+          : await getMainAgentVerlauf({ seit_rev: stand.maxRev, ab_id: stand.aeltesteId ?? '0' });
+        if (active) anwenden(r, ersteSeite);
+      } catch (error) {
+        if (active) setVerlauf((v) => ({ ...v, fehler: error instanceof Error ? error.message : String(error) }));
+      } finally {
+        stand.laeuft = false;
+      }
+    };
+    void abgleich();
+    const timer = window.setInterval(() => void abgleich(), 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
   useEffect(() => {
     let active = true;
     const refreshRuntime = async () => {
@@ -582,6 +755,43 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     if (nextRuntimeMode !== 'mock') setMessages((items) => items.filter((message) => !message.mock));
   }, [mainRuntime?.runtime, mainRuntimeReady, mainRuntimeResolved]);
   const registerInteraction = () => setLastInteraction(Date.now());
+  // P22-T63: aeltere Seite oben anfuegen, Leseposition halten.
+  const ladeAeltere = async () => {
+    const stand = verlaufStandRef.current;
+    if (!stand.aeltesteId || verlauf.laedt) return;
+    registerInteraction();
+    setVerlauf((v) => ({ ...v, laedt: true }));
+    try {
+      const r = await getMainAgentVerlauf({ limit: 50, vor_id: stand.aeltesteId });
+      if (!r.verfuegbar) { setVerlauf((v) => ({ ...v, laedt: false })); return; }
+      const feed = feedRef.current;
+      const hoeheVorher = feed?.scrollHeight ?? 0;
+      if (r.eintraege.length) {
+        stand.aeltesteId = r.eintraege[0].id;
+        aeltereGeladenRef.current = true;
+        uebernehmeVerlauf(r.eintraege);
+        window.requestAnimationFrame(() => { if (feed) feed.scrollTop += feed.scrollHeight - hoeheVorher; });
+      }
+      setVerlauf((v) => ({ ...v, mehr: r.mehr, laedt: false, fehler: '' }));
+    } catch (error) {
+      setVerlauf((v) => ({ ...v, laedt: false, fehler: error instanceof Error ? error.message : String(error) }));
+    }
+  };
+  // P22-T63: Leeren nur durch den User mit Rueckfrage; wirkt auf allen Geraeten.
+  const leereVerlaufMitRueckfrage = async () => {
+    registerInteraction();
+    if (thinking) { setRuntimeError('Bitte erst die laufende Antwort abwarten oder abbrechen.'); return; }
+    if (!window.confirm('Den bisherigen Verlauf des Hauptagenten-Chats auf allen Geräten ausblenden? Gespeichert bleibt er trotzdem vollständig (Token-Zählung, Kontext, Übergabe beim Wechsel), ebenso der Verbrauch.')) return;
+    try {
+      const r = await clearMainAgentVerlauf();
+      verlaufRef.current.clear();
+      Object.assign(verlaufStandRef.current, { geleertRev: r.geleert_rev, maxRev: r.geleert_rev, aeltesteId: null });
+      setMessages([]);
+      setVerlauf((v) => ({ ...v, mehr: false, fehler: '' }));
+    } catch (error) {
+      setRuntimeError('Verlauf leeren fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
+    }
+  };
   const queueMainFiles = async (files: FileList | File[]) => {
     const prepared = await prepareMockChatAttachments(files, { scope: 'main-agent' });
     setPendingFiles((current) => [...current, ...prepared]);
@@ -637,9 +847,11 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         setRuntimeError('Dateien werden in dieser ersten produktiven Runtime-Stufe noch nicht an ' + runtimeLabel + ' übertragen. Bitte ohne Anhang senden.');
         return;
       }
-      const userId = Date.now();
-      const answerId = userId + 1;
-      setMessages((items) => [...items, { id: userId, role: 'user', kind: 'text', text: value }, { id: answerId, role: 'agent', kind: 'text', text: '' }]);
+      // P22-T63: zunaechst lokale IDs; das Ereignis 'verlauf' ordnet beide Nachrichten ihren Server-IDs zu.
+      let userId = Date.now();
+      let answerId = userId + 1;
+      let eigeneAntwortId: string | null = null;
+      setMessages((items) => [...items, { id: userId, role: 'user', kind: 'text', text: value, lokal: true }, { id: answerId, role: 'agent', kind: 'text', text: '', lokal: true }]);
       setThinking(true);
       setInput('');
       setRuntimeError('');
@@ -658,9 +870,23 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         // NativeHtmlMessage (:278ff) stellt `text` nicht dar, es rendert nur `blocks`.
         // Wuerde die Textnachricht umgebaut, verschwaende die Prosa des Agenten
         // stillschweigend — genau die Fehlerklasse aus `muster-stille-teilantwort`.
-        const artefaktId = answerId + 1;
+        let artefaktId = answerId + 1;
         let artefaktNummer = 0;
         await streamMainAgentMessage(activeSessionId, value, {
+          onVerlauf: (zeilen) => {
+            if (!zeilen.user_id || !zeilen.antwort_id) return;
+            const umbenannt = new Map([[userId, verlaufAnzeigeId(zeilen.user_id)], [answerId, verlaufAnzeigeId(zeilen.antwort_id)], [artefaktId, verlaufAnzeigeId(zeilen.antwort_id, true)]]);
+            userId = verlaufAnzeigeId(zeilen.user_id);
+            answerId = verlaufAnzeigeId(zeilen.antwort_id);
+            artefaktId = verlaufAnzeigeId(zeilen.antwort_id, true);
+            eigeneAntwortId = zeilen.antwort_id;
+            eigeneLaufendeRef.current.add(zeilen.antwort_id);
+            // Hat der Abgleich die beiden Zeilen schon gebracht, weichen dessen Fassungen dem eigenen Strom.
+            setMessages((items) => items
+              .filter((message) => umbenannt.has(message.id) || (message.id !== userId && message.id !== answerId && message.id !== artefaktId))
+              .map((message) => umbenannt.has(message.id) ? { ...message, id: umbenannt.get(message.id)!, lokal: false, eigen: true } : message)
+              .sort((a, b) => a.id - b.id));
+          },
           onDelta: ({ content }) => setMessages((items) => items.map((message) => message.id === answerId ? { ...message, text: message.text + content } : message)),
           onTool: (schritt) => setMessages((items) => items.map((message) => message.id === answerId ? { ...message, toolRun: wendeWerkzeugSchrittAn(message.toolRun, schritt) } : message)),
           onThinking: ({ content }) => setMessages((items) => items.map((message) => message.id === answerId
@@ -701,6 +927,8 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
       } finally {
         runtimeAbortRef.current = null;
         setThinking(false);
+        // P22-T63: ab jetzt liefert der Abgleich den Endstand dieser Antwort.
+        if (eigeneAntwortId) eigeneLaufendeRef.current.delete(eigeneAntwortId);
       }
       return;
     }
@@ -772,12 +1000,27 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         </div>
         {steuerungOffen && !chatCollapsed && <HauptagentSteuerung />}
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
+          {verlauf.verfuegbar === true && (verlauf.mehr || messages.length > 0) && <div className="verlauf-leiste">
+            {verlauf.mehr
+              ? <button type="button" onClick={() => void ladeAeltere()} disabled={verlauf.laedt}>{verlauf.laedt ? 'Lädt …' : '↑ Ältere Nachrichten laden'}</button>
+              : <span>Anfang des Verlaufs</span>}
+            <button type="button" onClick={() => void leereVerlaufMitRueckfrage()} title="Bisherigen Verlauf auf allen Geräten ausblenden (mit Rückfrage); gespeichert bleibt alles">Verlauf leeren</button>
+          </div>}
+          {verlauf.verfuegbar === false && <div className="verlauf-leiste verlauf-aus"><span>{verlauf.grund === 'schalter_aus'
+            ? 'Verlauf-Speicherung ist ausgeschaltet – dieser Chat bleibt nur in diesem Tab.'
+            : verlauf.grund === 'keine_hauptagent_identitaet'
+              ? 'Verlauf nur mit Hauptagent-Identität (Schalter „hauptagent“) – dieser Chat bleibt nur in diesem Tab.'
+              : 'Verlauf gerade nicht lesbar – dieser Chat bleibt vorerst nur in diesem Tab.'}</span></div>}
+          {verlauf.fehler && <div className="verlauf-leiste verlauf-aus"><span>Verlauf: {verlauf.fehler}</span></div>}
           {runtimeMode !== 'mock' && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Tool-Aufrufe des Hauptagenten" phases={[]} leerText="Der Hauptagent hat noch keine Tool-Aufrufe." ladeErgebnis={loadMainAgentToolCallResult} />}
           {visibleMessages.map((message) => <Fragment key={message.id}>
             {message.toolRun && (message.toolRun.calls.length > 0 || message.toolRun.phases.length > 0) && <ToolActivity calls={message.toolRun.calls} error="" project={project} summary={message.toolRun.calls.some((call) => call.status === 'running') ? 'Hauptagent arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={message.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
             <article className={'message ' + message.role + ' ' + message.kind}>
-              <header>{message.role === 'user' ? 'Du' : 'Hauptagent'}</header>
-              {message.kind === 'text' && <p>{message.text}</p>}
+              <header>{message.kopf ?? (message.role === 'user' ? 'Du' : 'Hauptagent')}{message.info && <small className="message-info">{message.info}</small>}</header>
+              {message.kind === 'text' && (message.text || !message.laeuft) && <p>{message.text}</p>}
+              {message.laeuft && <div className="message-laeuft"><i /><i /><i /><span>Hauptagent antwortet …</span></div>}
+              {message.hinweise?.map((hinweis) => <small key={hinweis} className="message-hinweis">{hinweis}</small>)}
+              {message.zugInfo && <small className="message-zug">{message.zugInfo}</small>}
               {message.kind === 'artifact' && <NativeHtmlMessage message={message} onSave={() => saveArtifact(message.id)} />}
               {message.kind === 'attachment' && message.attachment && <AttachmentMessage attachment={message.attachment} />}
             </article>

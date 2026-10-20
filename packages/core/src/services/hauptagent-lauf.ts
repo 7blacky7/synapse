@@ -291,6 +291,11 @@ async function wechsleRuntime(a: AuftragFuerDaemon, d: RuntimeWechselDienste): P
     const r = await warteJob(stop.id, warte);
     if (r.status !== 'done') throw new MainLaufFehler('stop_alte_runtime_fehlgeschlagen', { job_id: stop.id, status: r.status });
   }
+  // P22-T63 D: Uebergabe aus dem Verlauf als Startkontext des neuen Laufs (User-/Selbstwechsel, Failover; wirft nie).
+  const { erzeugeVerlaufUebergabe } = await import('./hauptagent-verlauf.js');
+  const handsOff = (a as { hands_off?: { thought_id?: unknown } | null }).hands_off;
+  await erzeugeVerlaufUebergabe(a.identity_id, { runtime: ziel, modell, effort }, failover ? 'failover' : 'runtime_wechsel',
+    typeof handsOff?.thought_id === 'string' ? handsOff.thought_id : null);
   // 2) Zuweisung umstellen, 3) auf der neuen Runtime starten (derselbe Ausweis, dieselbe Identitaet).
   if (quelle !== ziel) await d.weiseMainZu(ziel);
   const start = await stelleMainLaufSicher({ identity_id: a.identity_id, runtime: ziel, modell, warte_ms: warte, modell_explizit: ein && !!gew });

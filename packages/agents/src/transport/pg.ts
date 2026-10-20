@@ -24,6 +24,7 @@ import {
   getNewInboxMessages,
   bucheAgentVerbrauch,
   meldeRuntimeKontingent,
+  importiereSitzungsEintraege,
 } from '@synapse/core'
 
 import { Buchhaltung } from './zaehler.js'
@@ -41,6 +42,7 @@ import type {
   TransportUmgebung,
   VerbrauchEintrag,
   VerbrauchErgebnis,
+  SitzungsEintrag,
   Wasserstaende,
   WrapperTransport,
 } from './typen.js'
@@ -298,6 +300,12 @@ export class PgTransport implements WrapperTransport {
       }
       return { gebucht, grund }
     })
+  }
+
+  /** P22-T63: wie der api-Weg, direkt ueber die eine Schreibstelle des Verlaufs. */
+  async meldeVerlauf(runtime: string, eintraege: SitzungsEintrag[]): Promise<{ aufgenommen: number; grund: string | null }> {
+    return this.buch.messe('verlauf', async () =>
+      importiereSitzungsEintraege(process.env.SYNAPSE_AGENT_IDENTITY_ID || null, eintraege, { runtime }))
   }
 
   /** P22-T58: wie der api-Weg, direkt ueber die Lesestelle der Runtime-Ueberwachung. */

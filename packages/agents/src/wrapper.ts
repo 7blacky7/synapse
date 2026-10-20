@@ -49,6 +49,7 @@ import {
 } from './types.js'
 import { resolveModel, kontextSchwellen, loadFromDb } from './models.js'
 import { berechneTokenStand, verbrauchAusZeilen } from './token-stand.js'
+import { sitzungsEintraegeAus } from './verlauf-melden.js'
 import {
   createState as createHeartbeatState,
   onEvent as onHeartbeatEvent,
@@ -459,6 +460,7 @@ async function syncTokensFromHistory(): Promise<void> {
 
     const stand = berechneTokenStand(lines)
     void meldeVerbrauch(lines)
+    void meldeVerlauf(lines)
 
     if (stand.kontextInput > 0 || stand.kumulierterOutput > 0) {
       // Kontext = Eingabe des letzten Turns + NUR dessen Output (siehe token-stand.ts, P7-T29)
@@ -503,6 +505,38 @@ async function meldeVerbrauch(zeilen: readonly string[]): Promise<void> {
     log('verbrauch: Melden fehlgeschlagen, naechster Abgleich versucht es erneut: %s', err instanceof Error ? err.message : String(err))
   } finally {
     verbrauchMeldungLaeuft = false
+  }
+}
+
+/**
+ * P22-T63: vollstaendige Sitzung (Eingaben, Texte, Werkzeug-Aufrufe/-Ergebnisse) an den Verlauf des Hauptagenten melden,
+ * aus derselben JSONL wie syncTokensFromHistory. Gemeldete refs merkt sich der Wrapper; der Server nimmt jede ref genau
+ * einmal auf. grund nicht_main: dieser Wrapper fuehrt nicht den Hauptagenten -> nie wieder melden. funktion_aus: die
+ * Eintraege gelten als erledigt (Schalter AUS heisst nicht aufnehmen). Transportfehler: naechster Abgleich versucht es erneut.
+ */
+const gemeldeteVerlaufsEintraege = new Set<string>()
+let verlaufMeldungLaeuft = false
+let verlaufNichtMain = false
+async function meldeVerlauf(zeilen: readonly string[]): Promise<void> {
+  if (verlaufNichtMain || verlaufMeldungLaeuft || !transport.meldeVerlauf || !PROJECT_NAME) return
+  const offen = sitzungsEintraegeAus(zeilen).filter(e => !gemeldeteVerlaufsEintraege.has(e.ref))
+  if (!offen.length) return
+  const anbieter = resolveModel(AGENT_MODEL)?.provider
+  const runtimeArt = anbieter === 'anthropic' ? 'claude' : anbieter === 'openai' ? 'codex' : (anbieter ?? '')
+  verlaufMeldungLaeuft = true
+  try {
+    for (let i = 0; i < offen.length; i += 200) {
+      const teil = offen.slice(i, i + 200)
+      const r = await transport.meldeVerlauf(runtimeArt, teil)
+      for (const e of teil) gemeldeteVerlaufsEintraege.add(e.ref)
+      if (r.grund === 'nicht_main') { verlaufNichtMain = true; break }
+      if (r.grund === 'funktion_aus') { for (const e of offen) gemeldeteVerlaufsEintraege.add(e.ref); break }
+      if (r.aufgenommen) log('verlauf: %d Eintrag/Eintraege aufgenommen', r.aufgenommen)
+    }
+  } catch (err) {
+    log('verlauf: Melden fehlgeschlagen, naechster Abgleich versucht es erneut: %s', err instanceof Error ? err.message : String(err))
+  } finally {
+    verlaufMeldungLaeuft = false
   }
 }
 

@@ -358,6 +358,13 @@ export async function legeRuntimeAuftragAn(akteur: AusweisAkteur | null, e: Auft
        VALUES ($1,$2,$3,'pending',$4::jsonb,$5::jsonb,$6,$7,$8,$9) RETURNING ${AUFTRAG_SPALTEN}`,
       [id, ziel.id, art, JSON.stringify(gewuenscht), handsOff ? JSON.stringify(handsOff) : null, grund, b.wer, b.actor, schluessel]);
     await audit(ziel.id, b, 'runtime_auftrag_angelegt', { auftrag_id: id, art, gewuenscht }, grund);
+    // P22-T63 D: Modellwechsel/Neustart startet einen neuen Lauf ohne --resume -> Uebergabe aus dem Verlauf (Schalter
+    // verlauf_uebergabe; wirft nie). runtime_wechsel uebergibt der Ausfuehrer (wechsleRuntime).
+    if (art === 'modellwechsel' || art === 'neustart') {
+      const { erzeugeVerlaufUebergabe } = await import('./hauptagent-verlauf.js');
+      await erzeugeVerlaufUebergabe(ziel.id, { modell: gewuenscht.modell ?? null, runtime: gewuenscht.runtime ?? null, effort: gewuenscht.effort ?? null }, art,
+        typeof handsOff?.thought_id === 'string' ? handsOff.thought_id : null);
+    }
     return { auftrag: auftragAus(r.rows[0]), idempotent: false };
   } catch (err) {
     const c = err as { code?: string; constraint?: string };

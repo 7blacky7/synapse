@@ -81,11 +81,24 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'runtime_ueberwachung',
   // P22-T62: Modellwahl des Hauptagenten aus den CLI-Listen (hauptagent-modelle.ts), Standard AUS, nur ausdruecklich.
   'hauptagent_cli_modelle',
+  // P22-T63: Gespraechsverlauf des Hauptagenten-Chats serverseitig (hauptagent-verlauf.ts), STANDARD EIN (STANDARD_EIN), nur ausdruecklich.
+  'hauptagent_verlauf',
   // P22-T64: stabile Bewertung des Runtime-Status (ein haengender Probe-Lauf wirft den guten Stand nicht um), Standard AUS, nur ausdruecklich.
   'runtime_status_stabil',
+  // P22-T63 Stufe 2 B: eigene Token-Zaehlung aus dem Verlauf (verlauf-tokens.ts), Standard AUS, nur ausdruecklich.
+  'verlauf_token_zaehlung',
+  // P22-T63 Stufe 2 A: alle Richtungen des Main im Verlauf (Zustellungen, eigene Ausgaben), Standard AUS, nur ausdruecklich.
+  'verlauf_alle_richtungen',
+  // P22-T63 Stufe 2 C/D: Korridor des Main ueber die API und Uebergabe aus dem Verlauf beim Wechsel, Standard AUS, nur ausdruecklich.
+  'main_korridor', 'verlauf_uebergabe',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'runtime_status_stabil'];
+const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe'];
+/**
+ * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
+ * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
+ */
+const STANDARD_EIN: readonly string[] = ['hauptagent_verlauf'];
 /**
  * W12 V7: 'schattenprofile' und 'token_abruf' sind im Produkt-Schalter 'agenten_ausweis' aufgegangen. Die alten Namen
  * bleiben nur LESBAR/setzbar (Altschalter-Rueckfall des Ausweis-Kerns, bestehende Zeilen), sind aber nicht mehr im Katalog.
@@ -293,7 +306,7 @@ function istFunktion(f: string): f is ProfilProduktFunktion {
 export async function leseProfilProduktSchalter(
   funktion: ProfilProduktFunktion, project?: string | null,
 ): Promise<ProfilProduktSchalterStand> {
-  const basis: ProfilProduktSchalterStand = { funktion, project: project ?? null, aktiv: false, quelle: 'standard',
+  const basis: ProfilProduktSchalterStand = { funktion, project: project ?? null, aktiv: STANDARD_EIN.includes(funktion), quelle: 'standard',
     ebene: null, regel_funktion: null, gesetzt_von: null, gesetzt_am: null, grund: null, letzter_fehler: null };
   if (!istFunktion(funktion)) return { ...basis, letzter_fehler: 'funktion_unbekannt' };
   try {

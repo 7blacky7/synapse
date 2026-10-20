@@ -138,9 +138,14 @@ export const FAEHIGKEITEN = [
   'verbrauch',
   // P22-T58: Abo-Kontingent der Runtime (erschoepft/frei) fuer die Runtime-Ueberwachung der API.
   'kontingent',
+  // P22-T63: vollstaendige Sitzung des Hauptagenten fuer seinen Verlauf.
+  'verlauf',
 ] as const
 
 export type Faehigkeit = (typeof FAEHIGKEITEN)[number]
+
+export type { SitzungsEintrag } from '../verlauf-melden.js'
+import type { SitzungsEintrag } from '../verlauf-melden.js'
 
 /**
  * P22-T7: Verbrauch EINER Modellantwort einer Abo-CLI. referenz ist je Antwort eindeutig (z. B. claude:<message.id>);
@@ -306,6 +311,11 @@ export interface WrapperTransport {
   bucheVerbrauch(runtime: string, eintraege: VerbrauchEintrag[]): Promise<VerbrauchErgebnis>
   /** P22-T58: Wechsel des Abo-Kontingents melden (nur Zustandswechsel). Wirft bei Transportfehlern. */
   meldeKontingent?(runtime: string, meldung: KontingentMeldung): Promise<void>
+  /**
+   * P22-T63: Sitzungs-Eintraege (verlauf-melden.ts) an den Verlauf des Hauptagenten. grund nicht_main = dieser Agent ist
+   * nicht der Hauptagent (nie wieder melden), funktion_aus = Schalter AUS. Wirft bei Transportfehlern.
+   */
+  meldeVerlauf?(runtime: string, eintraege: SitzungsEintrag[]): Promise<{ aufgenommen: number; grund: string | null }>
   schreibeStatus(status: StatusNutzlast): Promise<void>
 
   /** Beschleuniger, kein Fundament. Faellt er aus, laeuft der Poll-Takt weiter. */

@@ -98,6 +98,8 @@ export interface VerbrauchBuchung {
   lauf_id?: string | null;
   /** Idempotenz je Quelle: dieselbe Referenz bucht nur einmal. */
   referenz?: string | null;
+  /** P22-T63: 'berechnet' = eigene Token-Zaehlung, wenn die CLI fuer den Zug keine usage geliefert hat (Standard gemessen). */
+  messart?: 'gemessen' | 'berechnet';
 }
 
 export type VerbrauchBuchungsErgebnis =
@@ -134,10 +136,12 @@ export async function bucheAgentVerbrauch(b: VerbrauchBuchung, db?: Db): Promise
     if (!s?.aktiv) return { gebucht: false, grund: 'funktion_aus' };
   }
   try {
+    // P22-T63: messart (Schema 124) nur, wenn berechnet gebucht wird; gemessen bleibt der unveraenderte Standard der Spalte.
+    const berechnet = b.messart === 'berechnet';
     const r = await (db ?? getPool()).query<{ id: string }>(
       `INSERT INTO agent_verbrauch (project, identity_id, agent_id, runtime, zugang, modell, input_tokens, output_tokens, cache_read_tokens,
-         cache_creation_tokens, usd, usd_quelle, quelle, lauf_id, referenz)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         cache_creation_tokens, usd, usd_quelle, quelle, lauf_id, referenz${berechnet ? ', messart' : ''})
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15${berechnet ? ", 'berechnet'" : ''})
        ON CONFLICT (quelle, referenz) WHERE referenz IS NOT NULL DO NOTHING RETURNING id::text AS id`,
       [werte.project, text(b.identity_id, 64), werte.agent_id, werte.runtime, b.zugang, text(b.modell, 128), werte.input, werte.output,
         werte.cread, werte.ccreate, usd, usd !== null ? (b.usd_quelle ?? null) : null, b.quelle, text(b.lauf_id, 64), text(b.referenz, 200)]);

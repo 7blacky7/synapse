@@ -49,6 +49,7 @@ import {
   getPlan,
   getPendingEvents,
   bucheAgentVerbrauch,
+  importiereSitzungsEintraege,
   meldeRuntimeKontingent,
 } from '@synapse/core';
 import { abonniere, stromSicht, stromGesundheit } from '../services/wrapper-stream.js';
@@ -638,6 +639,29 @@ export async function wrapperBridgeRoutes(fastify: FastifyInstance): Promise<voi
         else if (r.grund === 'fehler') throw new Error('verbrauch_buchung_fehler');
       }
       return { success: true, project, agent, gebucht, doppelt, grund };
+    } catch (error) {
+      zaehler.fehler += 1;
+      return reply.status(500).send({ success: false, error: { message: String(error) } });
+    }
+  });
+
+  /**
+   * P22-T63: POST .../verlauf — vollstaendige Sitzungs-Eintraege des Hauptagenten (Body {runtime, eintraege[]}, max. 500).
+   * Identitaet aus dem Transportkontext (Ausweis), nie aus dem Body. Nur die Main-Identitaet wird aufgenommen (sonst grund
+   * nicht_main); Schalter AUS -> grund funktion_aus. Jede ref genau einmal.
+   */
+  fastify.post<{
+    Params: { name: string; specName: string };
+    Body: { runtime?: unknown; eintraege?: unknown };
+  }>(`${BASIS}/verlauf`, async (request, reply) => {
+    const { name: project, specName: agent } = request.params;
+    const eintraege = Array.isArray(request.body?.eintraege) ? (request.body?.eintraege as unknown[]) : null;
+    if (!eintraege || eintraege.length > 500) {
+      return reply.status(400).send({ success: false, error: { code: 'verlauf_ungueltig', message: 'eintraege (1..500) erforderlich' } });
+    }
+    try {
+      const r = await importiereSitzungsEintraege(aktuelleAgentIdentityId(project, agent) ?? null, eintraege, { runtime: alsText(request.body?.runtime) });
+      return { success: true, project, agent, ...r };
     } catch (error) {
       zaehler.fehler += 1;
       return reply.status(500).send({ success: false, error: { message: String(error) } });

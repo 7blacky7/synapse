@@ -102,6 +102,8 @@ export interface RuntimeStreamHandlers {
   onTool?: (data: AgentToolEvent) => void;
   /** Denkphase des Agenten (SSE-Event `thinking`). */
   onThinking?: (data: { content: string }) => void;
+  /** P22-T63: Server-IDs der beiden Verlaufszeilen dieses Turns (bzw. aus = Grund, warum nichts gespeichert wird). */
+  onVerlauf?: (data: { user_id?: string; antwort_id?: string; aus?: string }) => void;
   onUsage?: (data: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }) => void;
   /**
    * artifacts  = wie viele Bloecke der SERVER geschickt hat (er zaehlt sie beim
@@ -346,6 +348,7 @@ export async function streamMainAgentMessage(
     else if (event === 'usage') handlers.onUsage?.(value);
     else if (event === 'tool') handlers.onTool?.(value);
     else if (event === 'thinking') handlers.onThinking?.(value);
+    else if (event === 'verlauf') handlers.onVerlauf?.(value);
     else if (event === 'done') {
       handlers.onDone?.({
         ...(value && typeof value === 'object' ? value : {}),
@@ -361,6 +364,73 @@ export async function streamMainAgentMessage(
     else if (!unbekannteEreignisse.includes(event)) unbekannteEreignisse.push(event);
   });
   if (streamError) throw new Error(streamError);
+}
+
+/** P22-T63: ein Eintrag des Hauptagenten-Verlaufs (GET /api/main-agent/verlauf); Feldnamen wie core VerlaufEintrag. */
+export interface MainAgentVerlaufEintrag {
+  id: string;
+  rolle: 'user' | 'agent' | 'nachricht' | 'ausgabe' | 'system';
+  richtung: 'ein' | 'aus' | 'intern';
+  weg: 'webui' | 'inbox' | 'chat' | 'channel' | 'event' | 'heartbeat' | 'werkzeug' | 'lauf' | 'wechsel';
+  absender: { agent_id?: string; identity_id?: string | null; rolle?: string | null; project?: string | null; channel?: string | null } | null;
+  /** jsonl:<ref> = Sitzungs-Eintrag des Wrappers (Zaehl-/Uebergabebasis, nicht als Chatnachricht gezeigt). */
+  quelle_ref: string | null;
+  zaehlt: boolean;
+  antwort_auf: string | null;
+  gehoert_zu: string | null;
+  status: 'laeuft' | 'fertig' | 'fehler' | 'abgebrochen';
+  text: string;
+  werkzeuge: {
+    calls: Array<{ id: string; name?: string; input?: unknown; output?: unknown; isError?: boolean; start: string; ende: string | null }>;
+    phasen: string[];
+  };
+  tokens: {
+    gemessen?: { input: number; output: number; cache_read: number; cache_creation: number; quelle: string } | null;
+    berechnet?: Record<string, unknown> | null;
+  };
+  kontext: { tokens: number; quelle: string; modell: string; fenster: number; prozent: number } | null;
+  zug: { zuege: number | null; dauer_ms: number; kosten: { usd: number; quelle: string } | null } | null;
+  modell: string | null;
+  hauptagent_weg: string | null;
+  lauf_id: string | null;
+  artefakte: AgentArtifactEvent[];
+  anhaenge: Array<{ name: string; typ: string | null; groesse: number | null }>;
+  hinweise: string[];
+  meta: Record<string, unknown>;
+  session_id: string | null;
+  runtime: string | null;
+  geraet: string | null;
+  rev: string;
+  erstellt_am: string;
+  aktualisiert_am: string;
+}
+
+export interface MainAgentVerlauf {
+  verfuegbar: boolean;
+  grund?: 'schalter_aus' | 'keine_hauptagent_identitaet' | 'fehler';
+  identity_id: string | null;
+  /** Aufsteigend nach id. */
+  eintraege: MainAgentVerlaufEintrag[];
+  /** Nur Seite: es gibt aeltere Eintraege. */
+  mehr: boolean;
+  max_rev: string;
+  geleert_rev: string;
+}
+
+/** P22-T63: Seite (limit, vor_id) oder Aenderungen seit einem Stand (seit_rev, ab_id). */
+export async function getMainAgentVerlauf(abfrage: { limit?: number; vor_id?: string; seit_rev?: string; ab_id?: string } = {}): Promise<MainAgentVerlauf> {
+  const params = new URLSearchParams();
+  for (const [name, wert] of Object.entries(abfrage)) if (wert !== undefined && wert !== '') params.set(name, String(wert));
+  const query = params.toString();
+  return jsonRequest<{ success: true } & MainAgentVerlauf>('/api/main-agent/verlauf' + (query ? '?' + query : ''));
+}
+
+/** P22-T63: Verlauf auf allen Geraeten ausblenden (nur nach Rueckfrage aufrufen); gespeichert bleibt alles. */
+export async function clearMainAgentVerlauf(): Promise<{ ausgeblendet: number; ausgeblendet_bis_id: string; geleert_rev: string }> {
+  return jsonRequest<{ success: true; ausgeblendet: number; ausgeblendet_bis_id: string; geleert_rev: string }>('/api/main-agent/verlauf', {
+    method: 'DELETE',
+    body: JSON.stringify({ bestaetigt: true }),
+  });
 }
 
 export async function createTerminalSession(

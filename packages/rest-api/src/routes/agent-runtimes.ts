@@ -12,6 +12,7 @@ import {
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
   listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
+  leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 
@@ -29,9 +30,11 @@ function zahl(v: unknown): number {
 }
 
 /** P22-T7: Turn-Verbrauch des Web-UI-Main-Chats (Altweg docker exec je Turn); letzte usage-Meldung des Turns zaehlt. */
-async function bucheMainChatVerbrauch(session: MainAgentSession, modell: string | null, usage: Record<string, unknown> | null): Promise<void> {
+async function bucheMainChatVerbrauch(session: MainAgentSession, modell: string | null, usage: Record<string, unknown> | null, referenz: string | null = null): Promise<void> {
   if (!usage) return;
   await bucheAgentVerbrauch({
+    // P22-T63: referenz verlauf:<antwort_id> verknuepft die Buchung mit dem Verlauf und bucht sie genau einmal.
+    referenz,
     project: HAUPTAGENT_PROJEKT, identity_id: session.identityId ?? null, agent_id: HAUPTAGENT_AGENT_ID, runtime: session.runtime,
     zugang: runtimeArt(session.runtime) === 'cli' ? 'abo' : 'api', modell,
     input_tokens: zahl(usage.inputTokens), output_tokens: zahl(usage.outputTokens),
@@ -287,6 +290,26 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, schalter: await setzeHauptagentSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
     } catch (error) { return sendFachFehler(reply, error); }
   });
+  // P22-T63: Gespraechsverlauf des Hauptagenten je Main-Identitaet (geraeteuebergreifend, Vertrag thought 97d9a354).
+  // Ohne seit_rev: Seite (neueste zuerst, vor_id = aeltere nachladen); mit seit_rev: nur Aenderungen fuer den Live-Abgleich.
+  fastify.get<{ Querystring: { limit?: string; vor_id?: string; seit_rev?: string; ab_id?: string } }>('/api/main-agent/verlauf', async (request, reply) => {
+    try { return { success: true, ...(await leseVerlauf(request.query)) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // Leeren nur durch den User mit ausdruecklicher Bestaetigung (Knopf mit Rueckfrage), nie automatisch.
+  fastify.delete<{ Body: { bestaetigt?: unknown } }>('/api/main-agent/verlauf', async (request, reply) => {
+    try { return { success: true, ...(await leereVerlauf(USER, { bestaetigt: request.body?.bestaetigt })) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get('/api/main-agent/verlauf/schalter', async (_request, reply) => {
+    try { return { success: true, schalter: await leseVerlaufSchalter() }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { aktiv?: unknown; grund?: unknown } }>('/api/main-agent/verlauf/schalter', async (request, reply) => {
+    try {
+      return { success: true, schalter: await setzeVerlaufSchalter(USER, { aktiv: request.body?.aktiv, grund: request.body?.grund }) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get('/api/main-agent/verlauf/status', async (_request, reply) => {
+    try { return { success: true, ...(await verlaufStatus()) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
   // P8-T25: Koordinatoren aller Projekte mit aktuellem Lebenszeichen (Seitenleiste der Web-UI).
   fastify.get('/api/koordinatoren/online', async (_request, reply) => {
     try {
@@ -538,7 +561,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
 
   fastify.post<{
     Params: { sessionId: string };
-    Body: { message?: string };
+    Body: { message?: string; anhaenge?: unknown };
   }>('/api/main-agent/sessions/:sessionId/messages', async (request, reply) => {
     if (typeof request.body?.message !== 'string' || !request.body.message.trim()) {
       return sendError(reply, new Error('message ist erforderlich'), 400);
@@ -563,9 +586,25 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     });
     sse(reply, 'ready', { sessionId: session.id, runtime: session.runtime });
 
+    // P22-T63: Verlauf je Main-Identitaet. User-Nachricht + laufende Antwort sofort in PG (andere Geraete sehen sie), danach
+    // jedes Stromereignis gedrosselt. Nur Sitzungen der Main-Identitaet bei Schalter hauptagent_verlauf EIN; Fehler hier
+    // lassen den Turn nie scheitern. 'verlauf' sagt der Web-UI, unter welchen Server-IDs die beiden Zeilen stehen.
+    const turn = await legeVerlaufTurnAn({
+      identity_id: session.identityId, text: request.body.message, session_id: session.id, runtime: session.runtime, modell,
+      lauf_id: 'altweg:' + session.id, geraet: geraetAusUserAgent(request.headers['user-agent']), anhaenge: request.body.anhaenge,
+    });
+    const verlauf = turn.gespeichert ? starteVerlaufAntwort(turn.antwort_id, {
+      // Lauf: Altweg je CLI-Sitzung; auf dem dauerhaften Weg setzt core den Lauf des Main (aktuellerMainLauf).
+      modell, identity_id: turn.identity_id, user_id: turn.user_id, user_text: request.body.message, runtime: session.runtime, lauf_id: 'altweg:' + session.id,
+    }) : null;
+    sse(reply, 'verlauf', turn.gespeichert ? { user_id: turn.user_id, antwort_id: turn.antwort_id } : { aus: turn.grund });
+
     // Artefakt-Zustellung: solange dieser Strom offen ist, kann das artefakt-Tool
     // Events in GENAU diese Session einspeisen (kein Broadcast, artifact-stream.ts).
-    registerArtifactStream(session.id, (item: RuntimeStreamEvent) => sse(reply, item.event, item.data));
+    registerArtifactStream(session.id, (item: RuntimeStreamEvent) => {
+      verlauf?.ereignis(item.event, item.data);
+      sse(reply, item.event, item.data);
+    });
 
     const controller = new AbortController();
     const onClose = (): void => controller.abort();
@@ -577,13 +616,19 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         request.body.message,
         (item: RuntimeStreamEvent) => {
           if (item.event === 'usage') letzteUsage = item.data;
+          verlauf?.ereignis(item.event, item.data);
           sse(reply, item.event, item.data);
         },
         controller.signal,
       );
       await manager.completeSession(session.id, result.runtimeSessionId, result.context);
       // P22-T6: auf dem dauerhaften Container-Weg bucht der Wrapper selbst (T7 meldeVerbrauch); hier nur der Altweg.
-      if (result.context?.hauptagent_weg !== 'dauerhaft') await bucheMainChatVerbrauch(session, modell, letzteUsage);
+      if (result.context?.hauptagent_weg !== 'dauerhaft') {
+        const referenz = verlauf && letzteUsage ? 'verlauf:' + verlauf.antwort_id : null;
+        await bucheMainChatVerbrauch(session, modell, letzteUsage, referenz);
+        if (referenz) verlauf?.verbrauchReferenz(referenz);
+      }
+      await verlauf?.abschliessen(controller.signal.aborted ? 'abgebrochen' : 'fertig', { laufkontext: result.context });
       if (!controller.signal.aborted) {
         sse(reply, 'done', {
           sessionId: session.id,
@@ -597,6 +642,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       }
     } catch (error) {
       await manager.failSession(session.id, error instanceof Error ? error : new Error(String(error))).catch(() => undefined);
+      await verlauf?.abschliessen(controller.signal.aborted ? 'abgebrochen' : 'fehler', { fehler: errorMessage(error) });
       if (!controller.signal.aborted) {
         sse(reply, 'error', { message: errorMessage(error) });
         reply.raw.end();
@@ -604,6 +650,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     } finally {
       unregisterArtifactStream(session.id);
       reply.raw.off('close', onClose);
+      // Idempotent: nur wirksam, wenn oben kein Endstand geschrieben wurde.
+      void verlauf?.abschliessen('abgebrochen');
     }
   });
 }

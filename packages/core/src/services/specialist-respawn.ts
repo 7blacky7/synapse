@@ -35,6 +35,8 @@ import { getWrapperStatus } from './wrapper-status.js';
 import { getModel } from './model-registry.js';
 import { enqueueSpecialistJob } from './specialist-queue.js';
 import { berechneKontextSchwellen, type KontextSchwellen } from './kontext-korridor.js';
+import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
+import { getPool } from '../db/client.js';
 
 const MARKER_PREFIX = '/tmp/.specialist-rotate-pending-';
 
@@ -86,6 +88,35 @@ export async function pruefeRespawnKorridor(stand: {
   };
 }
 
+/**
+ * P22-T63 C2: trigger_respawn des Hauptagenten. Stand aus agent_identitaet_wrapper_status (identity:<Main>), derselbe
+ * Korridor-Check; dann Uebergabe aus dem Verlauf (Schalter verlauf_uebergabe) und Job 'rotate' mit target_runtime der
+ * zugewiesenen Main-Runtime, damit der Container-Daemon (nicht ein PC-Daemon) den Marker schreibt.
+ */
+async function mainTriggerRespawn(source: string): Promise<RespawnDecision> {
+  const { hauptagentIdentitaetsId } = await import('./hauptagent-dienst.js');
+  const identityId = await hauptagentIdentitaetsId().catch(() => null);
+  if (!identityId) return { triggered: false, message: 'Trigger ignoriert — keine Hauptagent-Identitaet.' };
+  const zeile = await getWrapperStatus('identity:' + identityId, HAUPTAGENT_PROJEKT).catch(() => null);
+  if (!zeile || zeile.status === 'stopped' || zeile.status === 'crashed') {
+    return { triggered: false, message: 'Trigger ignoriert — der Hauptagent laeuft nicht.' };
+  }
+  const pruefung = await pruefeRespawnKorridor({ model: zeile.model ?? 'sonnet', tokens: (zeile.tokensInput ?? 0) + (zeile.tokensOutput ?? 0),
+    percent: zeile.tokensPercent ?? 0, contextCeiling: zeile.contextCeiling });
+  if (!pruefung.ausloesen) return { triggered: false, message: `Handoff nicht ausgefuehrt — du bist erst bei ${pruefung.prozent}%. Arbeite weiter.` };
+  const r = await getPool().query<{ runtime: string }>('SELECT runtime FROM agent_runtime_instances WHERE assigned_to_main LIMIT 1');
+  const runtime = r.rows[0]?.runtime;
+  if (!runtime) return { triggered: false, message: 'Neustart nicht moeglich — dem Hauptagenten ist keine Runtime zugewiesen.' };
+  const { erzeugeVerlaufUebergabe } = await import('./hauptagent-verlauf.js');
+  await erzeugeVerlaufUebergabe(identityId, { runtime, modell: zeile.model ?? null }, 'korridor_neustart');
+  try {
+    await enqueueSpecialistJob({ project: HAUPTAGENT_PROJEKT, action: 'rotate', args: { name: source, identity_id: identityId, target_runtime: runtime } });
+  } catch (err) {
+    return { triggered: false, message: `Neustart-Auftrag an den Daemon konnte nicht eingereiht werden (${err instanceof Error ? err.message : String(err)}).` };
+  }
+  return { triggered: true, message: 'Handoff registriert. Du wirst neugestartet.' };
+}
+
 async function readStatusFile(projectPath: string): Promise<StatusFileShape | null> {
   try {
     const raw = await readFile(join(projectPath, '.synapse', 'agents', 'status.json'), 'utf-8');
@@ -100,6 +131,8 @@ export async function maybeTriggerRespawn(
   source: string,
   optionen: { ueberDaemon?: boolean } = {},
 ): Promise<RespawnDecision> {
+  // P22-T63 C2: der Hauptagent hat kein Projektverzeichnis und laeuft im Runtime-Container -> eigener Weg (PC-Weg unveraendert).
+  if (project === HAUPTAGENT_PROJEKT) return mainTriggerRespawn(source);
   const projectPath = await getProjectRoot(project);
   if (!projectPath) {
     return { triggered: false, message: `Trigger ignoriert — Projekt "${project}" unbekannt.` };

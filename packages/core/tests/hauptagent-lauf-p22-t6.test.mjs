@@ -411,7 +411,11 @@ try{
   const jl=(await readFile(join(jsonlDir,jd,'sess-1.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
   const A=await load('packages/agents/dist/index.js');
   const v=A.verbrauchAusZeilen?A.verbrauchAusZeilen(jl.map(x=>JSON.stringify(x))):null;
-  check(jl.length===2&&jl[0].message.id==='sess-1:1'&&jl[1].message.id==='sess-1:2','JSONL je Turn mit message.id (Verbrauchsbuchung)');
+  // P22-T63: je Turn zusaetzlich die Eingabezeile (user) fuer den Verlauf; nur die Antwortzeile traegt message.id + usage.
+  const antworten=jl.filter(x=>x.message?.id);
+  check(jl.length===4&&jl.map(x=>x.type).join(',')==='user,assistant,user,assistant'&&antworten.length===2
+    &&antworten[0].message.id==='sess-1:1'&&antworten[1].message.id==='sess-1:2'&&antworten.every(a=>a.message.usage?.input_tokens===100),
+    'JSONL je Turn: Eingabe + Antwort mit message.id (Verbrauchsbuchung)');
   check(!v||v.length===2,'verbrauchAusZeilen erkennt beide Turns');
  });
 

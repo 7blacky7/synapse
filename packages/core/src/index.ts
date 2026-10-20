@@ -667,6 +667,30 @@ export {
   standardModellFuerRuntime, leseUserModellWahl,
 } from './services/hauptagent-modelle.js';
 export type { CliModellRuntime, CliKatalog, KatalogModell, ModellPruefung, StandardModellWahl, CliModelleSchalter } from './services/hauptagent-modelle.js';
+// P22-T63: Gespraechsverlauf des Hauptagenten-Chats je Main-Identitaet (Schalter hauptagent_verlauf, Standard EIN).
+export {
+  HAUPTAGENT_VERLAUF_FUNKTION, VERLAUF_DROSSEL_MS, VERLAUF_SEITE_STANDARD, leseVerlaufSchalter, setzeVerlaufSchalter, geraetAusUserAgent,
+  legeVerlaufTurnAn, neuerAntwortStand, wendeStromEreignisAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, kontextAusGemessen,
+} from './services/hauptagent-verlauf.js';
+export type {
+  VerlaufSchalter, VerlaufWerkzeug, VerlaufWerkzeuge, VerlaufAnhang, VerlaufEintrag, VerlaufNichtVerfuegbar, VerlaufTurnEingabe, VerlaufTurn,
+  VerlaufAntwortStand, VerlaufAntwortSchreiber, VerlaufAbfrage, VerlaufAntwort, VerlaufStatus, VerlaufRolle, VerlaufRichtung, VerlaufWeg,
+  VerlaufGemessen, VerlaufKontext, VerlaufZug,
+} from './services/hauptagent-verlauf.js';
+export { HAUPTAGENT_VERLAUF_SCHEMA_SQL } from './db/hauptagent-verlauf-schema.js';
+export type { VerlaufZugKontext } from './services/hauptagent-verlauf.js';
+export {
+  schreibeZustellVerlauf, aktuellerMainLauf, aktuellesMainModell, importiereSitzungsEintraege, pruefeMainKorridor, erzeugeVerlaufUebergabe,
+  zugewieseneMainRuntime, MAIN_HANDOFF_TEXT,
+} from './services/hauptagent-verlauf.js';
+export type { SitzungsEintragEingabe } from './services/hauptagent-verlauf.js';
+export { VERLAUF_STUFE2_FUNKTIONEN, leseVerlaufStufe2Schalter } from './services/verlauf-tokens.js';
+// P22-T63 Stufe 2 B: eigene Token-Zaehlung aus dem Verlauf (Schalter verlauf_token_zaehlung, Standard AUS).
+export {
+  VERLAUF_TOKEN_FUNKTION, ANTHROPIC_START_FAKTOR, ABWEICHUNG_BEFUND_PROZENT, leseTokenZaehlSchalter, modellFamilie, zaehleTokens, zaehltextEintrag,
+  ausgabetextEintrag, leseKalibrierung, kalibriere, laufSumme, setzeGrundlast,
+} from './services/verlauf-tokens.js';
+export type { ModellFamilie, ZaehlVerfahren, TokenZaehlung, TokenZaehlSchalter, Kalibrierung } from './services/verlauf-tokens.js';
 export type { MainLaufOptionen, MainLaufStand, MainStartEingabe, MainTurnErgebnis, RuntimeWechselDienste } from './services/hauptagent-lauf.js';
 export {
   AUSFUEHRBARE_AUFTRAG_ARTEN, AUFTRAG_LEASE_MS, RuntimeAuftragFehler, claimeRuntimeAuftraege, meldeRuntimeAuftrag,

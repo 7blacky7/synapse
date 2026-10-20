@@ -44,6 +44,7 @@ import type {
   TransportUmgebung,
   VerbrauchEintrag,
   VerbrauchErgebnis,
+  SitzungsEintrag,
   Wasserstaende,
   WrapperTransport,
 } from './typen.js'
@@ -559,6 +560,15 @@ export class ApiTransport implements WrapperTransport {
       koerper: { runtime, eintraege },
     })
     return { gebucht: typeof daten.gebucht === 'number' ? daten.gebucht : 0, grund: typeof daten.grund === 'string' ? daten.grund : null }
+  }
+
+  /** P22-T63: Sitzungs-Eintraege ueber POST .../verlauf; die Identitaet bestimmt der Server aus Ausweis/Agent. */
+  async meldeVerlauf(runtime: string, eintraege: SitzungsEintrag[]): Promise<{ aufgenommen: number; grund: string | null }> {
+    const daten = await this.rufPflicht<{ aufgenommen?: unknown; grund?: unknown }>('verlauf', '/verlauf', {
+      methode: 'POST',
+      koerper: { runtime, eintraege },
+    })
+    return { aufgenommen: typeof daten.aufgenommen === 'number' ? daten.aufgenommen : 0, grund: typeof daten.grund === 'string' ? daten.grund : null }
   }
 
   /** P22-T58: Abo-Kontingent ueber POST .../kontingent; die Runtime-Ueberwachung der API entscheidet ueber den Wechsel. */

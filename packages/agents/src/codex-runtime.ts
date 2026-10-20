@@ -86,9 +86,15 @@ export function baueCodexArgs(o: {
   return o.threadId ? [...args, 'resume', o.threadId, '-'] : [...args, '-'];
 }
 
+/** P22-T63: ein Werkzeugschritt bzw. eine Denkphase eines Codex-Turns (fuer die Inhalts-Zeilen der JSONL). */
+export type CodexSchritt =
+  | { art: 'werkzeug'; name: string; input: unknown; output: unknown; fehler: boolean }
+  | { art: 'denken'; text: string };
+
 export interface CodexEreignis {
   threadId?: string;
   text?: string;
+  schritt?: CodexSchritt;
   usage?: { input_tokens: number; output_tokens: number; cached_input_tokens: number };
   fehler?: string;
 }
@@ -108,6 +114,16 @@ export function leseCodexZeile(line: string): CodexEreignis {
       const text = item.text ?? item.content;
       if (typeof text === 'string') return { text };
     }
+    // P22-T63: Werkzeugschritte vollstaendig (MCP-Aufruf, Befehl) und Denkphasen fuer den Verlauf des Hauptagenten.
+    if (item?.type === 'mcp_tool_call') {
+      return { schritt: { art: 'werkzeug', name: String(item.server ? item.server + '.' : '') + String(item.tool ?? 'werkzeug'),
+        input: item.arguments ?? null, output: item.result ?? item.error ?? null, fehler: item.status === 'failed' || !!item.error } };
+    }
+    if (item?.type === 'command_execution') {
+      return { schritt: { art: 'werkzeug', name: 'command', input: item.command ?? null, output: item.aggregated_output ?? null,
+        fehler: typeof item.exit_code === 'number' && item.exit_code !== 0 } };
+    }
+    if (item?.type === 'reasoning' && typeof item.text === 'string') return { schritt: { art: 'denken', text: item.text } };
   }
   if (type === 'turn.completed') {
     const u = (v.usage ?? {}) as Record<string, unknown>;
@@ -187,12 +203,27 @@ async function main(): Promise<void> {
     const r = await fuehreTurnAus(args, prompt, { ...process.env, ...mcp.env });
     if (r.threadId) threadId = r.threadId;
     turnNr++;
-    if (r.usage) {
-      // message.id je Turn: wrapper.ts meldeVerbrauch bucht jede Referenz genau einmal (P22-T7).
-      await appendFile(jsonlPath, JSON.stringify({ message: { id: `${sessionId}:${turnNr}`, model: modell ?? CODEX_STANDARD_MODELL, usage: {
-        input_tokens: r.usage.input_tokens, output_tokens: r.usage.output_tokens,
-        cache_read_input_tokens: r.usage.cached_input_tokens, cache_creation_input_tokens: 0 } } }) + '\n').catch(() => undefined);
-    }
+    // P22-T63: Inhalt des Turns im Claude-Format (Eingabe, Werkzeugschritte, Antwort) fuer den Verlauf des Hauptagenten
+    // (wrapper.ts meldeVerlauf); nur die Antwortzeile traegt usage, also zaehlen syncTokens/meldeVerbrauch wie bisher.
+    const m = modell ?? CODEX_STANDARD_MODELL;
+    const zeit = new Date().toISOString();
+    const basis = `${sessionId}:${turnNr}`;
+    const zeilen: Record<string, unknown>[] = [{ type: 'user', uuid: basis + ':u', timestamp: zeit, message: { role: 'user', content: prompt } }];
+    r.schritte.forEach((s, i) => {
+      if (s.art === 'denken') {
+        zeilen.push({ type: 'assistant', uuid: `${basis}:d${i}`, timestamp: zeit, message: { role: 'assistant', model: m, content: [{ type: 'thinking', thinking: s.text }] } });
+        return;
+      }
+      const id = `codex-${basis}-${i}`;
+      zeilen.push({ type: 'assistant', uuid: `${basis}:w${i}`, timestamp: zeit, message: { role: 'assistant', model: m, content: [{ type: 'tool_use', id, name: s.name, input: s.input }] } });
+      zeilen.push({ type: 'user', uuid: `${basis}:r${i}`, timestamp: zeit, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: s.output, is_error: s.fehler }] } });
+    });
+    // message.id je Turn: wrapper.ts meldeVerbrauch bucht jede Referenz genau einmal (P22-T7).
+    zeilen.push({ type: 'assistant', uuid: basis + ':a', timestamp: zeit, message: { id: basis, role: 'assistant', model: m,
+      content: [{ type: 'text', text: r.texte.join('\n\n') }],
+      ...(r.usage ? { usage: { input_tokens: r.usage.input_tokens, output_tokens: r.usage.output_tokens,
+        cache_read_input_tokens: r.usage.cached_input_tokens, cache_creation_input_tokens: 0 } } : {}) } });
+    await appendFile(jsonlPath, zeilen.map((z) => JSON.stringify(z)).join('\n') + '\n').catch(() => undefined);
     for (const t of r.texte) emit({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: t }] } });
     // P22-T58: Kontingent im Claude-Format (rate_limit_event) an den Wrapper; der Wrapper meldet nur Zustandswechsel.
     const limit = r.fehler ? codexLimitAus(r.fehler) : null;
@@ -209,11 +240,12 @@ async function main(): Promise<void> {
 }
 
 async function fuehreTurnAus(args: string[], prompt: string, env: NodeJS.ProcessEnv): Promise<{
-  threadId: string | null; texte: string[]; usage: CodexEreignis['usage'] | null; fehler: string | null;
+  threadId: string | null; texte: string[]; usage: CodexEreignis['usage'] | null; fehler: string | null; schritte: CodexSchritt[];
 }> {
   return new Promise((resolve) => {
     const proc = spawn('codex', args, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     const texte: string[] = [];
+    const schritte: CodexSchritt[] = [];
     let threadId: string | null = null;
     let usage: CodexEreignis['usage'] | null = null;
     let fehler: string | null = null;
@@ -224,6 +256,7 @@ async function fuehreTurnAus(args: string[], prompt: string, env: NodeJS.Process
       const e = leseCodexZeile(l);
       if (e.threadId) threadId = e.threadId;
       if (e.text) texte.push(e.text);
+      if (e.schritt) schritte.push(e.schritt);
       if (e.usage) usage = e.usage;
       if (e.fehler) fehler = e.fehler;
     });
@@ -232,7 +265,7 @@ async function fuehreTurnAus(args: string[], prompt: string, env: NodeJS.Process
     proc.on('close', (code) => {
       clearInterval(ping);
       if (code !== 0 && !fehler) fehler = `codex endete mit Exit-Code ${code}${stderr ? ': ' + stderr.trim().split('\n').slice(-3).join(' | ') : ''}`;
-      resolve({ threadId, texte, usage, fehler });
+      resolve({ threadId, texte, usage, fehler, schritte });
     });
     proc.stdin.end(prompt);
   });
