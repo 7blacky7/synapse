@@ -24,6 +24,7 @@ import type {
 } from './types.js';
 
 import { agentRuntimeBasisRoot, pruefeRuntimeRootPersistenz } from './runtime-root.js';
+import { bilderFeld, neuerBildVerweisMerker, ohneBilddaten } from './werkzeug-bilder.js';
 
 const DEFAULT_IMAGE = 'node:22-bookworm-slim';
 // EINE Quelle (runtime-root.ts) — /mnt/user war rootfs=RAM (Channel 19208).
@@ -94,6 +95,8 @@ const WERKZEUG_AUSGABE_MAX = 20_000;
 
 /** P8-T25: Werkzeugergebnis (Text, Textbloecke oder Objekt) als anzeigbarer Text, gekappt. */
 export function werkzeugErgebnisText(content: unknown): string {
+  // P22-T67: Bilddaten (Base64) gehoeren nicht in den Text; sie werden durch eine Zeile ersetzt, das Bild kommt ueber bilder.
+  content = ohneBilddaten(content);
   let text = '';
   if (typeof content === 'string') text = content;
   else if (Array.isArray(content)) {
@@ -122,7 +125,7 @@ export function parseCodexJsonLine(line: string): ParsedCodexEvent {
       const fehler = item.error ?? (item.status === 'failed' ? 'fehlgeschlagen' : undefined);
       return { tool: phase === 'start'
         ? { phase, id, name, input: item.arguments }
-        : { phase, id, name, output: werkzeugErgebnisText(fehler ?? item.result), isError: fehler !== undefined } };
+        : { phase, id, name, output: werkzeugErgebnisText(fehler ?? item.result), isError: fehler !== undefined, ...bilderFeld(fehler === undefined ? item.result : undefined) } };
     }
     if (id && item?.type === 'command_execution') {
       const exitCode = typeof item.exit_code === 'number' ? item.exit_code : null;
@@ -475,6 +478,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     let runtimeSessionId = session.runtimeSessionId;
     let context: Record<string, unknown> | null = session.context;
     const messageSnapshots = new Map<string, string>();
+    const merkeBildVerweis = neuerBildVerweisMerker();
     let pending = '';
     stdout.on('data', (chunk: Buffer) => {
       pending += chunk.toString('utf8');
@@ -499,7 +503,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
             if (delta) emit({ event: 'delta', data: { content: delta } });
           }
           if (parsed.usage) emit({ event: 'usage', data: parsed.usage });
-          if (parsed.tool) emit({ event: 'tool', data: { ...parsed.tool } });
+          if (parsed.tool) emit({ event: 'tool', data: { ...merkeBildVerweis(parsed.tool) } });
           if (parsed.thinking) emit({ event: 'thinking', data: { content: parsed.thinking } });
           if (parsed.context) context = parsed.context;
         } catch {

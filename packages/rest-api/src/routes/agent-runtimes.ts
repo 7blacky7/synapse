@@ -13,7 +13,7 @@ import {
   listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl,
-  leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent,
+  leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
@@ -352,6 +352,15 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       const rows = await queryToolCalls({ akteure: await hauptagentAkteure(), id: request.params.id, detail: 'full', limit: 1 });
       if (!rows.length) return reply.code(404).send({ success: false, error: { message: 'Tool-Aufruf des Hauptagenten nicht gefunden' } });
       return { success: true, call: rows[0] };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T67: Bild zu einem Werkzeugaufruf (Verweis project + file_path [+ revision] aus dem Verlauf); Rechte wie die Web-UI-Sitzung.
+  fastify.get<{ Querystring: { project?: string; file_path?: string; revision?: string } }>('/api/main-agent/tool-bild', async (request, reply) => {
+    try {
+      const bild = await rendereToolBild({ project: request.query.project, file_path: request.query.file_path, revision: request.query.revision });
+      if (!bild.ok) return reply.code(bild.status).send({ success: false, error: { code: bild.fehlercode, message: bild.grund } });
+      return reply.code(200).type('image/png').header('Cache-Control', 'private, max-age=300').header('X-Bild-Revision', bild.revision)
+        .header('X-Bild-Aktuell', bild.aktuell ? '1' : '0').header('X-Bild-Breite', String(bild.breite)).header('X-Bild-Hoehe', String(bild.hoehe)).send(bild.png);
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get('/api/main-agent/status', async (_request, reply) => {

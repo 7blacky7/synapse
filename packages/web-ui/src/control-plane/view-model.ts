@@ -138,6 +138,8 @@ export interface ToolCallViewModel {
   createdAt: string;
   /** P8-T26: Projekt des Aufrufs, wenn die Quelle projektuebergreifend ist (Hauptagent). */
   project?: string;
+  /** P22-T67: Bilder des Ergebnisses als Asset-Verweis (kein Base64). */
+  bilder?: Array<{ mime_type: string; bytes: number; project?: string; file_path?: string; revision?: string; breite?: number; hoehe?: number }>;
   /** api: GET tool-calls; stream: Werkzeugaufruf aus dem Antwortstrom des Hauptagenten. */
   source: 'api' | 'stream';
 }

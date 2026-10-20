@@ -108,8 +108,19 @@ export interface VerlaufWerkzeug {
   input?: unknown;
   output?: unknown;
   isError?: boolean;
+  /** P22-T67: Bilder des Ergebnisses als Asset-Verweis (nie Base64); die Web-UI laedt sie ueber /api/main-agent/tool-bild. */
+  bilder?: VerlaufBild[];
   start: string;
   ende: string | null;
+}
+export interface VerlaufBild {
+  mime_type: string;
+  bytes: number;
+  project?: string;
+  file_path?: string;
+  revision?: string;
+  breite?: number;
+  hoehe?: number;
 }
 export interface VerlaufWerkzeuge { calls: VerlaufWerkzeug[]; phasen: string[] }
 export interface VerlaufAnhang { name: string; typ: string | null; groesse: number | null }
@@ -306,6 +317,28 @@ function neueHinweiszeile(stand: VerlaufAntwortStand, zeile: string): void {
   if (!stand.hinweise.includes(zeile)) stand.hinweise.push(zeile);
 }
 
+/** P22-T67: nur die bekannten Verweisfelder uebernehmen (nie Daten/Base64), hoechstens 8 Bilder je Aufruf. */
+export function bilderAusStrom(v: unknown): VerlaufBild[] {
+  if (!Array.isArray(v)) return [];
+  const text = (x: unknown) => (typeof x === 'string' && x ? x : undefined);
+  const mass = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) && x > 0 ? Math.round(x) : undefined);
+  return v.slice(0, 8).flatMap((b): VerlaufBild[] => {
+    const o = b && typeof b === 'object' ? b as Record<string, unknown> : null;
+    if (!o) return [];
+    const bild: VerlaufBild = { mime_type: text(o.mime_type) ?? 'image/png', bytes: mass(o.bytes) ?? 0 };
+    const project = text(o.project);
+    const pfad = text(o.file_path);
+    const revision = text(o.revision);
+    if (project && pfad) { bild.project = project; bild.file_path = pfad; }
+    if (revision && /^[1-9][0-9]*$/.test(revision)) bild.revision = revision;
+    const breite = mass(o.breite);
+    const hoehe = mass(o.hoehe);
+    if (breite) bild.breite = breite;
+    if (hoehe) bild.hoehe = hoehe;
+    return [bild];
+  });
+}
+
 function zahl(v: unknown): number {
   const n = typeof v === 'string' ? Number(v) : v;
   return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
@@ -340,6 +373,8 @@ export function wendeStromEreignisAn(stand: VerlaufAntwortStand, event: string, 
       call.ende = jetzt;
       call.isError = d.isError === true;
       if (d.output !== undefined) call.output = d.output;
+      const bilder = bilderAusStrom(d.bilder);
+      if (bilder.length) call.bilder = bilder;
     }
     if (!vorhanden) stand.werkzeuge.calls.push(call);
     return true;
@@ -755,6 +790,8 @@ export interface SitzungsEintragEingabe {
   zeit?: string | null;
   modell?: string | null;
   fehler?: boolean;
+  /** P22-T67: Bilder eines Werkzeug-Ergebnisses als Asset-Verweis; uebernommen nur ueber bilderAusStrom (nie Daten). */
+  bilder?: unknown;
 }
 
 const SITZUNGS_ABBILD: Record<SitzungsEintragEingabe['art'], { rolle: VerlaufRolle; richtung: VerlaufRichtung; weg: VerlaufWeg; zaehlt: boolean }> = {
@@ -787,6 +824,7 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
     if (typeof e.ref !== 'string' || !e.ref || !e.art || !(e.art in SITZUNGS_ABBILD)) continue;
     const abbild = SITZUNGS_ABBILD[e.art];
     const text = typeof e.inhalt === 'string' ? e.inhalt : JSON.stringify(e.inhalt ?? null);
+    const bilder = e.art === 'werkzeug_ergebnis' ? bilderAusStrom(e.bilder) : [];
     const modell = typeof e.modell === 'string' ? e.modell : await aktuellesMainModell(identity_id);
     let berechnet: Record<string, unknown> | null = null;
     if (zaehlen) {
@@ -802,7 +840,8 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
       [identity_id, abbild.rolle, abbild.richtung, abbild.weg,
         e.art === 'werkzeug_ergebnis' ? JSON.stringify({ agent_id: 'werkzeug' }) : null, 'jsonl:' + e.ref, text,
         JSON.stringify({ quelle: 'jsonl', art: e.art, ...(e.name ? { name: e.name } : {}), ...(e.werkzeug_id ? { werkzeug_id: e.werkzeug_id } : {}),
-          ...(e.fehler ? { fehler: true } : {}), ...(typeof e.inhalt === 'string' ? {} : { inhalt: e.inhalt ?? null }) }),
+          ...(e.fehler ? { fehler: true } : {}), ...(bilder.length ? { bilder } : {}),
+          ...(typeof e.inhalt === 'string' ? {} : { inhalt: e.inhalt ?? null }) }),
         JSON.stringify(berechnet ? { berechnet } : {}), abbild.zaehlt, lauf, o.runtime ?? null, modell,
         typeof e.zeit === 'string' && !Number.isNaN(Date.parse(e.zeit)) ? e.zeit : null]);
     aufgenommen += r.rowCount ?? 0;

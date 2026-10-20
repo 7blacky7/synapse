@@ -680,6 +680,9 @@ export type {
   VerlaufGemessen, VerlaufKontext, VerlaufZug,
 } from './services/hauptagent-verlauf.js';
 export { HAUPTAGENT_VERLAUF_SCHEMA_SQL } from './db/hauptagent-verlauf-schema.js';
+export { rendereToolBild, type ToolBildEingabe, type ToolBildErgebnis, type ToolBildDienste } from './services/hauptagent-bilder.js';
+export { werkzeugBilder, ohneBilddaten, bildVerweisAusAufruf } from './services/werkzeug-bilder.js';
+export type { VerlaufBild } from './services/hauptagent-verlauf.js';
 export type { VerlaufZugKontext } from './services/hauptagent-verlauf.js';
 export {
   schreibeZustellVerlauf, aktuellerMainLauf, aktuellesMainModell, importiereSitzungsEintraege, pruefeMainKorridor, erzeugeVerlaufUebergabe,

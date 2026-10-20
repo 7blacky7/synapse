@@ -7,6 +7,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { AgentRuntimeRepository } from './repository.js';
 import { issueServiceToken } from '../auth.js';
 import { leseMainProfil, mainProfileScope, hauptagentIdentitaetScope, type MainToolProfile } from './main-tool-profile.js';
+import { bilderFeld, neuerBildVerweisMerker } from './werkzeug-bilder.js';
 import { leseHauptagentSchalter, hauptagentIdentitaetsId, ausweisFuerStart, HAUPTAGENT_PROJEKT } from '@synapse/core';
 import { dauerhafterMainTurn } from './dauerhafter-main.js';
 import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez } from './runtime-container-spez.js';
@@ -224,7 +225,7 @@ export function parseClaudeJsonLine(line: string): ParsedClaudeEvent {
       if (block.type === 'tool_use' && typeof block.id === 'string') {
         tools.push({ phase: 'start', id: block.id, name: typeof block.name === 'string' ? block.name : 'tool', input: block.input });
       } else if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        tools.push({ phase: 'end', id: block.tool_use_id, output: werkzeugErgebnisText(block.content), isError: block.is_error === true });
+        tools.push({ phase: 'end', id: block.tool_use_id, output: werkzeugErgebnisText(block.content), isError: block.is_error === true, ...(block.is_error === true ? {} : bilderFeld(block.content)) });
       } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim()) {
         thinking.push(block.thinking.trim());
       }
@@ -602,6 +603,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
     if (signal?.aborted) abort();
     signal?.addEventListener('abort', abort, { once: true });
 
+    const merkeBildVerweis = neuerBildVerweisMerker();
     const processLine = (line: string): void => {
       if (!line.trim()) return;
       const parsed = parseClaudeJsonLine(line);
@@ -621,7 +623,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
         emit({ event: 'delta', data: { content: parsed.resultText } });
       }
       if (parsed.usage) emit({ event: 'usage', data: parsed.usage });
-      for (const schritt of parsed.tools ?? []) emit({ event: 'tool', data: { ...schritt } });
+      for (const schritt of parsed.tools ?? []) emit({ event: 'tool', data: { ...merkeBildVerweis(schritt) } });
       for (const content of parsed.thinking ?? []) emit({ event: 'thinking', data: { content } });
       if (parsed.context) context = { ...(context ?? {}), ...parsed.context };
       if (parsed.debug) emit({ event: 'runtime', data: { event: parsed.debug } });

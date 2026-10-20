@@ -91,6 +91,19 @@ export interface AgentToolEvent {
   input?: unknown;
   output?: string;
   isError?: boolean;
+  /** P22-T67: Bilder im Ergebnis als Asset-Verweis (kein Base64); Anzeige ueber ladeToolBild. */
+  bilder?: AgentToolBild[];
+}
+
+/** P22-T67: ein Bild eines Werkzeugergebnisses; project + file_path (+ revision) zeigen auf das Asset. */
+export interface AgentToolBild {
+  mime_type: string;
+  bytes: number;
+  project?: string;
+  file_path?: string;
+  revision?: string;
+  breite?: number;
+  hoehe?: number;
 }
 
 export interface RuntimeStreamHandlers {
@@ -384,7 +397,7 @@ export interface MainAgentVerlaufEintrag {
   status: 'laeuft' | 'fertig' | 'fehler' | 'abgebrochen';
   text: string;
   werkzeuge: {
-    calls: Array<{ id: string; name?: string; input?: unknown; output?: unknown; isError?: boolean; start: string; ende: string | null }>;
+    calls: Array<{ id: string; name?: string; input?: unknown; output?: unknown; isError?: boolean; bilder?: AgentToolBild[]; start: string; ende: string | null }>;
     phasen: string[];
   };
   tokens: {
@@ -426,6 +439,18 @@ export async function getMainAgentVerlauf(abfrage: { limit?: number; vor_id?: st
   for (const [name, wert] of Object.entries(abfrage)) if (wert !== undefined && wert !== '') params.set(name, String(wert));
   const query = params.toString();
   return jsonRequest<{ success: true } & MainAgentVerlauf>('/api/main-agent/verlauf' + (query ? '?' + query : ''));
+}
+
+export interface GeladenesToolBild { url: string; aktuell: boolean; revision: string | null }
+
+/** P22-T67: Bild eines Werkzeugaufrufs ueber die Ansicht-Route laden (Blob-URL; Rechte der Web-UI-Sitzung). */
+export async function ladeToolBild(bild: Pick<AgentToolBild, 'project' | 'file_path' | 'revision'>): Promise<GeladenesToolBild> {
+  const params = new URLSearchParams({ project: bild.project ?? '', file_path: bild.file_path ?? '' });
+  if (bild.revision) params.set('revision', bild.revision);
+  const response = await apiFetch('/api/main-agent/tool-bild?' + params.toString());
+  if (!response.ok) throw new Error(await readError(response));
+  const blob = await response.blob();
+  return { url: URL.createObjectURL(blob), aktuell: response.headers.get('X-Bild-Aktuell') === '1', revision: response.headers.get('X-Bild-Revision') };
 }
 
 /** P22-T63: Verlauf auf allen Geraeten ausblenden (nur nach Rueckfrage aufrufen); gespeichert bleibt alles. */

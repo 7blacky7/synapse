@@ -83,6 +83,19 @@ export interface RuntimeWerkzeugSchritt {
   input?: unknown;
   output?: string;
   isError?: boolean;
+  /** P22-T67: Bilder im Ergebnis (ohne Daten); Verweis auf das Asset, die Web-UI laedt ueber GET /api/main-agent/tool-bild nach. */
+  bilder?: RuntimeWerkzeugBild[];
+}
+
+/** P22-T67: ein Bild eines Werkzeugergebnisses. Kein Base64: project + file_path (+ revision, Masse) zeigen auf das Asset. */
+export interface RuntimeWerkzeugBild {
+  mime_type: string;
+  bytes: number;
+  project?: string;
+  file_path?: string;
+  revision?: string;
+  breite?: number;
+  hoehe?: number;
 }
 
 export interface RuntimeStreamEvent {

@@ -10,6 +10,7 @@ import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
 import { HauptagentModellChip } from './HauptagentModellChip';
+import { ToolBilder } from './ToolBild';
 import { ChannelAgentChatWindow, type ChannelAgentWindowState } from './ChannelAgentChatWindow';
 import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, SendenIcon, handleAttachmentDrop, istSendeTaste, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
 import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
@@ -310,6 +311,7 @@ function ToolCallNode({ call, project, ladeErgebnis }: { call: ToolCallViewModel
         <b>{call.status === 'failed' ? 'Fehler' : call.durationMs + ' ms'}</b>
         <span className="tool-click-hint">{stage === 0 ? 'Command' : stage === 1 ? 'Ausgabe' : 'Schließen'}</span>
       </button>
+      {call.bilder?.length ? <ToolBilder bilder={call.bilder} /> : null}
       {stage >= 1 && (
         <div className="tool-payload command">
           <label>Command · Klick 1</label>
@@ -417,6 +419,7 @@ function wendeWerkzeugSchrittAn(run: AgentMessage['toolRun'], schritt: AgentTool
         status: schritt.isError ? 'failed' : 'done',
         resultPreview: schritt.isError ? '' : schritt.output ?? '',
         error: schritt.isError ? schritt.output || 'Fehler' : '',
+        ...(schritt.bilder?.length ? { bilder: schritt.bilder } : {}),
         durationMs: Number.isFinite(start) ? Math.max(0, jetzt.getTime() - start) : 0,
       }),
     };
@@ -431,6 +434,7 @@ function wendeWerkzeugSchrittAn(run: AgentMessage['toolRun'], schritt: AgentTool
     argsPreview: schritt.input === undefined ? vorhanden?.argsPreview ?? '' : JSON.stringify(schritt.input),
     resultPreview: schritt.phase === 'end' && !schritt.isError ? schritt.output ?? '' : '',
     error: schritt.phase === 'end' && schritt.isError ? schritt.output || 'Fehler' : '',
+    ...(schritt.bilder?.length ? { bilder: schritt.bilder } : {}),
     durationMs: 0,
     createdAt: vorhanden?.createdAt ?? jetzt.toISOString(),
     source: 'stream',
@@ -506,6 +510,7 @@ function verlaufWerkzeuge(eintrag: MainAgentVerlaufEintrag): AgentMessage['toolR
       resultPreview: !offen && !call.isError ? ausgabe : '',
       error: call.isError ? ausgabe || 'Fehler' : offen && eintrag.status !== 'laeuft' ? 'ohne Ergebnis beendet' : '',
       durationMs: Number.isFinite(start) && Number.isFinite(ende) ? Math.max(0, ende - start) : 0,
+      ...(call.bilder?.length ? { bilder: call.bilder } : {}),
       createdAt: call.start,
       source: 'stream',
     };
@@ -531,6 +536,35 @@ function verlaufZugInfo(eintrag: MainAgentVerlaufEintrag): string | undefined {
   return teile.length ? teile.join(' · ') : undefined;
 }
 
+// P22-T67: Bilder des dauerhaften Wegs: Sitzungs-Eintraege (jsonl:) tragen den Asset-Verweis in meta.bilder. Sie erscheinen als
+// Bild-Aufruf in der Werkzeugliste der zugehoerigen (sonst der letzten) Agent-Antwort, ueber dieselbe Komponente wie der Altweg.
+function verlaufMetaBilder(eintrag: MainAgentVerlaufEintrag): NonNullable<ToolCallViewModel['bilder']> {
+  const roh = eintrag.meta?.bilder;
+  if (!Array.isArray(roh)) return [];
+  return roh.filter((b): b is NonNullable<ToolCallViewModel['bilder']>[number] => !!b && typeof b === 'object' && typeof (b as { mime_type?: unknown }).mime_type === 'string');
+}
+
+function haengeMetaBilderAn(items: AgentMessage[], eintrag: MainAgentVerlaufEintrag): AgentMessage[] {
+  const bilder = verlaufMetaBilder(eintrag);
+  if (!bilder.length) return items;
+  const zielId = eintrag.gehoert_zu ? verlaufAnzeigeId(eintrag.gehoert_zu) : null;
+  let ziel = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].role === 'agent' && items[i].kind === 'text' && (zielId === null || items[i].id === zielId)) { ziel = i; break; }
+  }
+  if (ziel < 0 && zielId !== null) {
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].role === 'agent' && items[i].kind === 'text') { ziel = i; break; }
+  }
+  if (ziel < 0) return items;
+  const call: ToolCallViewModel = {
+    id: 'bild:' + eintrag.id, tool: 'Bild', action: '', agent: 'Hauptagent', status: 'done', argsPreview: '', resultPreview: '', error: '',
+    durationMs: 0, createdAt: eintrag.erstellt_am, bilder, source: 'stream',
+  };
+  const lauf = items[ziel].toolRun ?? { calls: [], phases: [] };
+  if (lauf.calls.some((c) => c.id === call.id)) return items;
+  return items.map((m, i) => i === ziel ? { ...m, toolRun: { ...lauf, calls: [...lauf.calls, call] } } : m);
+}
+
 // P22-T63: Verlaufseintraege (aufsteigend) als Chat-Nachrichten. Artefakte laufen ueber setzeArtefaktBlock, damit ein
 // Block mit bekannter id auch beim Laden den frueheren ersetzt statt einen zweiten anzuhaengen. Werkzeug-Eintraege eines
 // Zugs (gehoert_zu) erscheinen dort in der Werkzeugliste, nicht als eigene Nachricht.
@@ -540,6 +574,7 @@ function baueVerlaufNachrichten(eintraege: MainAgentVerlaufEintrag[]): AgentMess
   for (const eintrag of eintraege) {
     // Sitzungs-Eintraege (Eingaben, Werkzeugschritte der CLI-Sitzung) sind Zaehl- und Uebergabebasis, keine Chatnachrichten.
     if (eintrag.gehoert_zu || eintrag.quelle_ref?.startsWith('jsonl:')) {
+      items = haengeMetaBilderAn(items, eintrag);
       continue;
     }
     if (eintrag.rolle === 'user') {
