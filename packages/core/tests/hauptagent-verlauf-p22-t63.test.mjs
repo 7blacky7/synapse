@@ -359,6 +359,28 @@ try{
   for(const f of ['verlauf_alle_richtungen','verlauf_token_zaehlung','main_korridor'])await C.setzeProfilProduktSchalter({ebene:'global',funktion:f,aktiv:false,grund:'Test T63 Stufe 2 AUS'},{system:'user'});
  });
 
+ await section('P22-T75 B4: Zug-Info zeigt das Modell, das der Wrapper faehrt',async()=>{
+  const setze=(modell,status)=>pool.query("INSERT INTO agent_identitaet_wrapper_status (identity_id,project,model,status) VALUES ($1,$2,$3,$4) ON CONFLICT (identity_id,project) DO UPDATE SET model=EXCLUDED.model,status=EXCLUDED.status",[MAIN,C.HAUPTAGENT_PROJEKT,modell,status]);
+  const zug=async(konfig)=>{
+   const t=await C.legeVerlaufTurnAn({identity_id:MAIN,text:'welches Modell',runtime:'claude',modell:konfig});
+   const w=C.starteVerlaufAntwort(t.antwort_id,{modell:konfig,identity_id:MAIN,user_id:t.user_id,runtime:'claude',drossel_ms:5});
+   w.ereignis('runtime',{hauptagent:{weg:'dauerhaft'}});w.ereignis('usage',{inputTokens:10,outputTokens:5,kontextTokens:50000});
+   await w.abschliessen('fertig');
+   return (await pool.query('SELECT modell,kontext FROM hauptagent_verlauf WHERE id=$1',[t.antwort_id])).rows[0];
+  };
+  await setze('claude-haiku-5-5','idle');
+  check(await C.tatsaechlichesMainModell(MAIN)==='claude-haiku-5-5','B4: Modell aus dem Wrapper-Status');
+  const h=await zug('sonnet');
+  check(h.modell==='claude-haiku-5-5'&&h.kontext?.modell==='claude-haiku-5-5','B4: Haiku-Zug zeigt claude-haiku-5-5 statt des Konfigmodells sonnet',h);
+  await setze('codex/gpt-6-luna','running');
+  const l=await zug('sonnet');
+  check(l.modell==='codex/gpt-6-luna'&&l.kontext?.modell==='codex/gpt-6-luna','B4: Luna-Zug zeigt codex/gpt-6-luna',l);
+  await setze('claude-haiku-5-5','stopped');
+  const bestaetigt=(await pool.query('SELECT COALESCE(modell_bestaetigt,modell_selbstauskunft) AS m FROM agent_identitaeten WHERE id=$1',[MAIN])).rows[0].m;
+  const s=await zug('sonnet');
+  check(s.modell===(bestaetigt??'sonnet')&&s.modell!=='claude-haiku-5-5','B4: Wrapper gestoppt -> bestaetigtes Modell der Identitaet bzw. Konfigmodell, nicht das alte Wrapper-Modell',{s,bestaetigt});
+ });
+
  await section('Reine Funktionen',async()=>{
   const st=C.neuerAntwortStand();
   check(C.wendeStromEreignisAn(st,'unbekannt',{})===false&&C.wendeStromEreignisAn(st,'delta',{content:''})===false,'unbekannt/leer aendert nichts');

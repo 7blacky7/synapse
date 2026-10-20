@@ -31,6 +31,7 @@ import { leseProfilProduktSchalter, setzeProfilProduktSchalter } from './agent-p
 import { ProfilVerwaltungFehler, pflichtText } from './agent-profil-verwalter.js';
 import { hauptagentIdentitaetsId } from './hauptagent-dienst.js';
 import { pruefeRespawnKorridor } from './specialist-respawn.js';
+import { getWrapperStatus } from './wrapper-status.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 import { bucheAgentVerbrauch } from './agent-verbrauch.js';
 import {
@@ -449,18 +450,18 @@ function zugAus(stand: VerlaufAntwortStand, start: number, laufkontext: unknown)
 }
 
 async function schreibeAntwort(antwort_id: string, stand: VerlaufAntwortStand, status: VerlaufEintrag['status'],
-  ende?: { zug: VerlaufZug; kontext: VerlaufKontext | null; lauf_id?: string | null }): Promise<void> {
+  ende?: { zug: VerlaufZug; kontext: VerlaufKontext | null; lauf_id?: string | null; modell?: string | null }): Promise<void> {
   await getPool().query({
     text: `UPDATE hauptagent_verlauf SET text = $2, werkzeuge = $3::jsonb, artefakte = $4::jsonb, hinweise = $5::jsonb, meta = $6::jsonb,
              status = $7, tokens = jsonb_set(jsonb_set(tokens, '{gemessen}', $8::jsonb), '{berechnet}', $13::jsonb), verbrauch_referenzen = $9::text[],
              zug = COALESCE($10::jsonb, zug), kontext = COALESCE($11::jsonb, kontext), hauptagent_weg = COALESCE($12, hauptagent_weg),
-             lauf_id = COALESCE($14, lauf_id), zaehlt = NOT $15,
+             lauf_id = COALESCE($14, lauf_id), zaehlt = NOT $15, modell = COALESCE($16, modell),
              rev = nextval('hauptagent_verlauf_rev'), aktualisiert_am = NOW()
            WHERE id = $1::bigint AND rolle = 'agent'`,
     values: [antwort_id, stand.text, JSON.stringify(stand.werkzeuge), JSON.stringify(stand.artefakte), JSON.stringify(stand.hinweise),
       JSON.stringify(stand.meta), status, JSON.stringify(stand.gemessen), stand.verbrauch_referenzen,
       ende ? JSON.stringify(ende.zug) : null, ende?.kontext ? JSON.stringify(ende.kontext) : null,
-      typeof stand.meta.hauptagent_weg === 'string' ? stand.meta.hauptagent_weg : null, JSON.stringify(stand.berechnet), ende?.lauf_id ?? null, stand.spiegel === true],
+      typeof stand.meta.hauptagent_weg === 'string' ? stand.meta.hauptagent_weg : null, JSON.stringify(stand.berechnet), ende?.lauf_id ?? null, stand.spiegel === true, ende?.modell ?? null],
     query_timeout: 5000,
   } as Q);
 }
@@ -576,7 +577,7 @@ export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: numbe
   let kette: Promise<void> = Promise.resolve();
   let fertig = false;
   aktiveAntworten.add(antwort_id);
-  const flush = (status: VerlaufEintrag['status'], ende?: { zug: VerlaufZug; kontext: VerlaufKontext | null; lauf_id?: string | null }): Promise<void> => {
+  const flush = (status: VerlaufEintrag['status'], ende?: { zug: VerlaufZug; kontext: VerlaufKontext | null; lauf_id?: string | null; modell?: string | null }): Promise<void> => {
     kette = kette.then(async () => {
       try { await schreibeAntwort(antwort_id, stand, status, ende); } catch (error) { merkeFehler('antwort_schreiben', error); }
     });
@@ -620,12 +621,18 @@ export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: numbe
         }
       }
       stand.spiegel = spiegel;
+      // P22-T75 B4: auf dem dauerhaften Weg zaehlt das Modell, das der Wrapper wirklich faehrt (Haiku/Luna/Sonnet nach einem Wechsel), nicht das
+      // Konfigmodell der Runtime, das die Route beim Start der Antwort kannte ('sonnet' bei JEDEM Zug).
+      let modell = o.modell;
+      if (stand.meta.hauptagent_weg === 'dauerhaft' && o.identity_id) {
+        try { modell = (await tatsaechlichesMainModell(o.identity_id)) ?? modell; } catch (error) { merkeFehler('modell_lesen', error); }
+      }
       let kontext: VerlaufKontext | null = null;
       try {
-        kontext = await kontextAusGemessen(o.modell, stand.gemessen, { dauerhaft: stand.meta.hauptagent_weg === 'dauerhaft' });
+        kontext = await kontextAusGemessen(modell, stand.gemessen, { dauerhaft: stand.meta.hauptagent_weg === 'dauerhaft' });
       } catch (error) { merkeFehler('kontext_berechnen', error); }
-      try { kontext = await zaehleZug(antwort_id, stand, o.modell, { ...o, lauf_id: lauf }, kontext); } catch (error) { merkeFehler('tokens_zaehlen', error); }
-      try { await flush(status, { zug: zugAus(stand, start, zusatz?.laufkontext), kontext, lauf_id: lauf }); } finally { aktiveAntworten.delete(antwort_id); }
+      try { kontext = await zaehleZug(antwort_id, stand, modell, { ...o, lauf_id: lauf }, kontext); } catch (error) { merkeFehler('tokens_zaehlen', error); }
+      try { await flush(status, { zug: zugAus(stand, start, zusatz?.laufkontext), kontext, lauf_id: lauf, modell: modell ?? null }); } finally { aktiveAntworten.delete(antwort_id); }
       // C1: Korridor des dauerhaften Main nach jedem Zug (auch bei Heartbeat AUS), Schalter main_korridor.
       if (stand.meta.hauptagent_weg === 'dauerhaft' && o.identity_id && kontext) {
         await pruefeMainKorridor(o.identity_id, kontext, lauf).catch((error) => merkeFehler('korridor', error));
@@ -638,6 +645,16 @@ export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: numbe
 export async function aktuellerMainLauf(identity_id: string): Promise<string | null> {
   const r = await getPool().query<{ lauf_id: string | null }>('SELECT lauf_id FROM agent_identitaet_sitzungen WHERE identity_id = $1', [identity_id]);
   return r.rows[0]?.lauf_id ?? null;
+}
+
+/**
+ * P22-T75 B4: Modell, das der Wrapper des Main gerade faehrt (wrapper_status identity:<id>, AGENT_MODEL); lebt kein Wrapper oder fehlt
+ * das Modell, das bestaetigte/selbstgemeldete Modell der Identitaet.
+ */
+export async function tatsaechlichesMainModell(identity_id: string): Promise<string | null> {
+  const z = await getWrapperStatus('identity:' + identity_id, HAUPTAGENT_PROJEKT).catch(() => null);
+  const m = z && (z.status === 'running' || z.status === 'idle') ? (z.model ?? '').trim() : '';
+  return m || (await aktuellesMainModell(identity_id));
 }
 
 /** Tatsaechliches Modell des Main (bestaetigt, sonst Selbstauskunft). */

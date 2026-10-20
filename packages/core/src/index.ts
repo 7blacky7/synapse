@@ -672,7 +672,7 @@ export type { CliModellRuntime, CliKatalog, KatalogModell, ModellPruefung, Stand
 // P22-T63: Gespraechsverlauf des Hauptagenten-Chats je Main-Identitaet (Schalter hauptagent_verlauf, Standard EIN).
 export {
   HAUPTAGENT_VERLAUF_FUNKTION, VERLAUF_DROSSEL_MS, VERLAUF_SEITE_STANDARD, leseVerlaufSchalter, setzeVerlaufSchalter, geraetAusUserAgent,
-  legeVerlaufTurnAn, neuerAntwortStand, wendeStromEreignisAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, kontextAusGemessen,
+  legeVerlaufTurnAn, neuerAntwortStand, wendeStromEreignisAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, kontextAusGemessen, tatsaechlichesMainModell,
 } from './services/hauptagent-verlauf.js';
 export type {
   VerlaufSchalter, VerlaufWerkzeug, VerlaufWerkzeuge, VerlaufAnhang, VerlaufEintrag, VerlaufNichtVerfuegbar, VerlaufTurnEingabe, VerlaufTurn,

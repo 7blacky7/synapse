@@ -22,6 +22,7 @@ import { readFile, mkdir, appendFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { resolveModel } from './models.js';
+import { leseCodexTokenInfo, turnNutzung, type CodexNutzung } from './codex-rollout.js';
 
 const STANDARD_DEAKTIVIERT = ['shell_tool', 'computer_use', 'browser_use', 'browser_use_external', 'in_app_browser',
   'image_generation', 'multi_agent', 'apps', 'plugins'];
@@ -215,6 +216,8 @@ async function main(): Promise<void> {
 
   let threadId: string | null = null;
   let turnNr = 0;
+  // P22-T75 B3: Thread-Summe nach dem letzten Turn (Abrechnung = Zuwachs), Rollout-Datei der CLI als Quelle.
+  let vorherGesamt: CodexNutzung | null = null;
   const stdin = createInterface({ input: process.stdin });
   for await (const line of stdin) {
     if (!line.trim()) continue;
@@ -239,10 +242,17 @@ async function main(): Promise<void> {
       zeilen.push({ type: 'assistant', uuid: `${basis}:w${i}`, timestamp: zeit, message: { role: 'assistant', model: m, content: [{ type: 'tool_use', id, name: s.name, input: s.input }] } });
       zeilen.push({ type: 'user', uuid: `${basis}:r${i}`, timestamp: zeit, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: s.output, is_error: s.fehler }] } });
     });
+    // P22-T75 B3: echter Token-Stand aus der Rollout-Datei; ohne sie (alte CLI, Datei fehlt) bleibt die exec-usage wie bisher.
+    const rollout = threadId ? await leseCodexTokenInfo(threadId).catch(() => null) : null;
+    const nutzungTurn = rollout ? turnNutzung(rollout, vorherGesamt) : null;
+    if (rollout) vorherGesamt = rollout.gesamt;
     // message.id je Turn: wrapper.ts meldeVerbrauch bucht jede Referenz genau einmal (P22-T7).
     zeilen.push({ type: 'assistant', uuid: basis + ':a', timestamp: zeit, message: { id: basis, role: 'assistant', model: m,
       content: [{ type: 'text', text: r.texte.join('\n\n') }],
-      ...(r.usage ? { usage: jsonlUsageAusCodex(r.usage) } : {}) } });
+      ...(nutzungTurn ? { usage: nutzungTurn.abrechnung } : r.usage ? { usage: jsonlUsageAusCodex(r.usage) } : {}) } });
+    // Kontextzeile: ohne uuid (Verlauf ueberspringt sie) und ohne message.id (Abrechnung ueberspringt sie); token-stand.ts nimmt die LETZTE
+    // Zeile mit usage = die letzte Anfrage des Turns.
+    if (nutzungTurn) zeilen.push({ type: 'assistant', timestamp: zeit, message: { role: 'assistant', model: m, content: [], usage: nutzungTurn.kontext } });
     await appendFile(jsonlPath, zeilen.map((z) => JSON.stringify(z)).join('\n') + '\n').catch(() => undefined);
     for (const t of r.texte) emit({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: t }] } });
     // P22-T58: Kontingent im Claude-Format (rate_limit_event) an den Wrapper; der Wrapper meldet nur Zustandswechsel.
