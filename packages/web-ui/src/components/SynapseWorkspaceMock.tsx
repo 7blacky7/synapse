@@ -11,7 +11,7 @@ import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
 import { HauptagentModellChip } from './HauptagentModellChip';
 import { ChannelAgentChatWindow, type ChannelAgentWindowState } from './ChannelAgentChatWindow';
-import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
+import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, SendenIcon, handleAttachmentDrop, istSendeTaste, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
 import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
 import {
   herkunftText,
@@ -744,6 +744,8 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     + (chatPeeking ? ' is-peeking' : '')
     + (chatHasUnread ? ' has-new' : '')
     + (chatCollapsed && !chatPeeking ? ' external-collapsed' : '');
+  // P8-T28: gleiche Sperre fuer Senden-Knopf und Enter, damit Enter nicht am Knopf vorbei sendet.
+  const sendenGesperrt = runtimeMode === 'unknown' || runtimeMode === 'mock' || thinking || (!input.trim() && !pendingFiles.length);
 
   return (
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
@@ -783,12 +785,16 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         {unseenMessages > 0 && <button className="agent-new-content" type="button" onClick={jumpToNewestMessage}>↓ {unseenMessages} neue {unseenMessages === 1 ? 'Antwort' : 'Antworten'}</button>}
         <form className={'agent-composer' + (dropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropActive(false); }} onDrop={(event) => { setDropActive(false); handleAttachmentDrop(event, (files) => void queueMainFiles(files)); }}>
           <AttachmentDrafts attachments={pendingFiles} onRemove={(id) => setPendingFiles((current) => current.filter((item) => item.id !== id))} />
-          <textarea ref={mainComposerRef} rows={chatCollapsed ? 1 : 3} value={input} onChange={(event) => { setInput(event.target.value); registerInteraction(); }} placeholder="Nachricht oder Auftrag an den Hauptagenten …" />
-          <footer>
-            <AttachmentPicker onFiles={(files) => void queueMainFiles(files)} label="＋ Datei / Bild" />
-            <span className="composer-hint">{runtimeMode === 'unknown' ? 'Runtime wird geprüft …' : runtimeMode === 'mock' ? 'Kein Agent verbunden — Runtime zuweisen und anmelden.' : runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Dateien hierher ziehen · später privates Main-Agent-Volume.'}</span>
+          <div className="composer-field">
+            <textarea ref={mainComposerRef} rows={chatCollapsed ? 1 : 3} value={input} onChange={(event) => { setInput(event.target.value); registerInteraction(); }} onKeyDown={(event) => { if (!istSendeTaste(event)) return; event.preventDefault(); if (!sendenGesperrt) event.currentTarget.form?.requestSubmit(); }} placeholder="Nachricht oder Auftrag an den Hauptagenten …" />
+            <div className="composer-tools">
+              <AttachmentPicker icon onFiles={(files) => void queueMainFiles(files)} label="Datei oder Bild anhängen" />
+              <button className="composer-send" type="submit" disabled={sendenGesperrt} title="Senden (Enter)" aria-label="Senden"><SendenIcon /></button>
+            </div>
+          </div>
+          <footer className="composer-foot">
+            <span className="composer-hint">{runtimeMode === 'unknown' ? 'Runtime wird geprüft …' : runtimeMode === 'mock' ? 'Kein Agent verbunden — Runtime zuweisen und anmelden.' : runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Enter sendet · Shift+Enter neue Zeile · Dateien hierher ziehen'}</span>
             {chatCollapsed && <button type="button" className="chat-open-action" onClick={openChat}>Verlauf öffnen{chatHasUnread ? ' · neu' : ''}</button>}
-            <button className="primary-action" type="submit" disabled={runtimeMode === 'unknown' || runtimeMode === 'mock' || thinking || (!input.trim() && !pendingFiles.length)}>Senden</button>
           </footer>
         </form>
       </section>
@@ -1177,7 +1183,7 @@ function ChannelsView({
                     event.currentTarget.value = '';
                   }}
                 />
-                <span>＋ Datei</span>
+                <span>+ Datei</span>
               </label>
               <div className="channel-input">
                 <textarea
@@ -1191,7 +1197,7 @@ function ChannelsView({
                     if (event.clipboardData.files.length) void queueChannelFiles(event.clipboardData.files);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter' && !event.shiftKey) {
+                    if (istSendeTaste(event)) {
                       event.preventDefault();
                       event.currentTarget.form?.requestSubmit();
                     }

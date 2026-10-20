@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { ChannelMessageViewModel } from '../control-plane/view-model';
-import { AttachmentPicker, handleAttachmentDrop } from './ChatAttachments';
+import { AttachmentPicker, handleAttachmentDrop, istSendeTaste } from './ChatAttachments';
 
 export interface ChannelAgentWindowState {
   key: string;
@@ -162,13 +162,13 @@ export function ChannelAgentChatWindow({
         >
           <div className="agent-terminal-command">
             <span>›</span>
-            <AttachmentPicker onFiles={rejectFiles} label="＋ Datei" />
+            <AttachmentPicker onFiles={rejectFiles} />
             <textarea
               ref={inputRef}
               rows={2}
               value={draft}
               onChange={(event) => { setDraft(event.target.value); setSendState(''); }}
-              onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }}
+              onKeyDown={(event) => { if (istSendeTaste(event)) { event.preventDefault(); void sendMessage(); } }}
               placeholder={'Nachricht an @' + windowState.agentName + ' in #' + windowState.channelName + ' …'}
             />
             <button type="button" disabled={!draft.trim() || sending} onClick={() => void sendMessage()}>{sending ? 'Sendet …' : 'Senden'}</button>

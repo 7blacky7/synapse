@@ -1,4 +1,4 @@
-import { useState, type DragEvent, type InputHTMLAttributes } from 'react';
+import { useState, type DragEvent, type InputHTMLAttributes, type KeyboardEvent } from 'react';
 import './chat-attachments.css';
 
 export interface MockChatAttachment {
@@ -79,8 +79,23 @@ export function AttachmentMessage({ attachment }: { attachment: MockChatAttachme
   </section>;
 }
 
-export function AttachmentPicker({ onFiles, label = '＋ Datei', accept }: { onFiles: (files: FileList) => void; label?: string; accept?: InputHTMLAttributes<HTMLInputElement>['accept'] }) {
-  return <label className="chat-attachment-picker"><input type="file" multiple accept={accept} onChange={(event) => { if (event.currentTarget.files?.length) onFiles(event.currentTarget.files); event.currentTarget.value = ''; }} /><span>{label}</span></label>;
+// P8-T28: Icons als SVG – das Vollbreiten-Plus (U+FF0B) fehlte in der UI-Schrift und erschien als leeres Kaestchen.
+export function BueroklammerIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 11.5 12.6 19.9a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8" /></svg>;
+}
+
+export function SendenIcon() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5" /><path d="m5 12 7-7 7 7" /></svg>;
+}
+
+export function AttachmentPicker({ onFiles, label = '+ Datei', accept, icon = false }: { onFiles: (files: FileList) => void; label?: string; accept?: InputHTMLAttributes<HTMLInputElement>['accept']; icon?: boolean }) {
+  return <label className={'chat-attachment-picker' + (icon ? ' is-icon' : '')} title={icon ? label : undefined}><input type="file" multiple accept={accept} aria-label={icon ? label : undefined} onChange={(event) => { if (event.currentTarget.files?.length) onFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />{icon ? <BueroklammerIcon /> : <span>{label}</span>}</label>;
+}
+
+// Enter sendet, Shift+Enter bricht um. Waehrend einer IME-Komposition bestaetigt
+// Enter nur das Zeichen (isComposing; keyCode 229 fuer Safari).
+export function istSendeTaste(event: KeyboardEvent<HTMLTextAreaElement>) {
+  return event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229;
 }
 
 export function handleAttachmentDrop(event: DragEvent<HTMLElement>, onFiles: (files: FileList) => void) {
