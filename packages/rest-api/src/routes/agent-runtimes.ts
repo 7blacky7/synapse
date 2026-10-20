@@ -12,12 +12,14 @@ import {
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
   listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
-  pruefeEffortFuerModell, leseEffortWahl,
+  pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
   warteschlangeAktiv, mainWechselOffen, stelleInWarteschlange, NICHT_ERREICHT_CODES, warteschlangeStatus, leseWarteschlangeSchalter, setzeWarteschlangeSchalter,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
+import { gleicheCliListeMitRegistry } from '../services/agent-runtime/registry-abgleich.js';
+import type { CliModellListe } from '../services/agent-runtime/cli-modelle.js';
 
 /**
  * P22-T7: Art einer Runtime. CLI-Runtimes laufen mit Abo-Login im Container (nur Token-Anzeige), alle anderen sind
@@ -420,12 +422,31 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
    * P22-T61: Modellliste der CLI im Container (claude: Modellkatalog der CLI, codex: app-server model/list bzw. models_cache.json).
    * Kein Rueckfall auf feste Listen: ohne Quelle leere Liste + grund. ?neu=1 umgeht den Zwischenspeicher (60 s).
    */
+  // P22-T75: Kontextfenster aus der CLI-Liste fuer Modelle, die die Registry nicht kennt (codex/<slug>, neue claude-ID); core fragt
+  // beim Kontextstand des Main hier nach (quelle 'cli' im Chip). Liste je Runtime 5 Min gemerkt (30 s, wenn sie leer war).
+  const cliFensterCache = new Map<'claude' | 'codex', { bis: number; liste: CliModellListe | null }>();
+  setzeCliKontextQuelle(async (modell) => {
+    const codex = /^codex\/(.+)$/.exec(modell);
+    const rt: 'claude' | 'codex' | null = codex ? 'codex' : /^claude-/.test(modell) ? 'claude' : null;
+    if (!rt) return null;
+    const id = codex ? codex[1] : modell.replace(/\[1m\]$/, '');
+    let c = cliFensterCache.get(rt);
+    if (!c || c.bis < Date.now()) {
+      const d = manager.driver(rt);
+      const liste = d.modelle ? await d.modelle().catch(() => null) : null;
+      c = { bis: Date.now() + (liste?.modelle.length ? 300_000 : 30_000), liste };
+      cliFensterCache.set(rt, c);
+    }
+    return c.liste?.modelle.find((m) => m.id === id)?.kontext_ein ?? null;
+  });
   fastify.get<{ Params: { runtime: string }; Querystring: { neu?: string } }>('/api/agent-runtimes/:runtime/modelle', async (request, reply) => {
     try {
       const driver = manager.driver(containerRuntime(request.params.runtime));
       if (!driver.modelle) throw Object.assign(new Error('runtime_ungueltig'), { code: 'runtime_ungueltig' });
       const neu = request.query?.neu === '1' || request.query?.neu === 'true';
-      return { success: true, modelle: await driver.modelle({ neu }) };
+      const liste = await driver.modelle({ neu });
+      // P22-T75: Abgleich CLI-Liste <-> model_registry als Befund (nie stille Anlage).
+      return { success: true, modelle: { ...liste, registry_abgleich: gleicheCliListeMitRegistry(liste, await listModels().catch(() => null)) } };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get<{ Params: { runtime: string } }>('/api/agent-runtimes/:runtime/projekte', async (request, reply) => {
@@ -535,6 +556,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         leseCliModelleSchalter(), manager.listStatuses(), leseUserModellWahl().catch(() => ({} as Partial<Record<CliModellRuntime, string>>)),
         leseEffortWahl().catch(() => ({} as Record<string, string>)),
       ]);
+      const registryZeilen = await listModels().catch(() => null);
       const runtimes = await Promise.all(CLI_MODELL_RUNTIMES.map(async (rt) => {
         const d = manager.driver(rt);
         const s = statuses.find((x) => x.runtime === rt);
@@ -547,6 +569,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
           runtime: rt, label: d.label, bereit: !grund, zugewiesen: !!s?.assignedToMain, grund: grund ?? (liste?.modelle.length ? null : liste?.grund ?? 'keine_modelle'),
           standard, standard_grund: standard.grund, user_wahl: wahl[rt] ?? null, pruefung: s?.pruefung ?? null, quelle: liste?.quelle ?? null, quelle_detail: liste?.quelle_detail ?? null, stand: liste?.stand ?? null,
           cli_version: liste?.cli_version ?? null, hinweise: liste?.hinweise ?? [],
+          // P22-T75: Abgleich CLI-Liste <-> model_registry (Befund, keine Anlage).
+          registry_abgleich: liste ? gleicheCliListeMitRegistry(liste, registryZeilen) : null,
           // P22-T65: effort_wahl = gespeicherte Stufe des Modells (sonst gilt standard_effort).
           modelle: (liste?.modelle ?? []).map((m) => ({ ...m, modell: synapseModellId(rt, m.id), effort_wahl: effortWahl[synapseModellId(rt, m.id)] ?? null })),
         };

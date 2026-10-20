@@ -41,11 +41,13 @@ export interface KorridorWerte {
   contextWindow: number;
   corridorMin: number;
   corridorMax: number;
+  /** P22-T75: Herkunft des Fensters, wenn nicht die Registry (cli = ausgelesene CLI-Liste/Cache, fallback = feste Annahme). Fehlt = registry. */
+  kontextQuelle?: 'registry' | 'cli' | 'fallback';
 }
 
 export interface KontextSchwellen {
-  /** registry = aus einem Registry-Eintrag, fallback = Modell unbekannt */
-  quelle: 'registry' | 'fallback';
+  /** registry = aus einem Registry-Eintrag, cli = Fenster aus der CLI-Liste (P22-T75), fallback = Modell unbekannt bzw. feste Annahme */
+  quelle: 'registry' | 'cli' | 'fallback';
   /** Kontextfenster in Tokens */
   ceiling: number;
   /** Ab hier: Warnung, Auto-Handoff-Hinweis, trigger_respawn wird angenommen */
@@ -89,6 +91,7 @@ export function berechneKontextSchwellen(
   eintrag: KorridorWerte | null | undefined,
   modell: string,
   fensterRueckfall?: number | null,
+  fensterQuelle?: 'cli' | null,
 ): KontextSchwellen {
   let werte: KorridorWerte;
   if (eintrag) {
@@ -105,7 +108,7 @@ export function berechneKontextSchwellen(
     Math.min(Math.floor((ceiling * werte.corridorMin) / 100), rotationTokens - HANDOFF_VORLAUF_TOKENS),
   );
   return {
-    quelle: eintrag ? 'registry' : 'fallback',
+    quelle: eintrag ? (eintrag.kontextQuelle ?? 'registry') : fensterQuelle === 'cli' && fensterRueckfall && fensterRueckfall > 0 ? 'cli' : 'fallback',
     ceiling,
     handoffTokens,
     rotationTokens,

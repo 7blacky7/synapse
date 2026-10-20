@@ -57,6 +57,7 @@ export function CliModellHerkunft({ liste, fehler, laedt, onNeu }: { liste: CliM
     </small>
     <button type="button" disabled={laedt} onClick={onNeu}>{laedt ? 'liest …' : 'neu lesen'}</button>
     {(liste?.hinweise ?? []).map((h) => <small key={h} className="cli-modelle-hinweis">{h}</small>)}
+    {(liste?.registry_abgleich?.meldungen ?? []).map((h) => <small key={h} className="cli-modelle-hinweis">Abgleich Registry: {h}</small>)}
   </div>;
 }
 

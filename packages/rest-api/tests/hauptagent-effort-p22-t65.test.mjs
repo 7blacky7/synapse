@@ -158,8 +158,12 @@ await section('G CLI-Argumente', async () => {
   check(x[x.indexOf('-c') + 1] === 'model_reasoning_effort="high"', 'Altweg Codex: -c model_reasoning_effort');
   const e = M.resolveModel('codex/gpt-6-luna');
   check(e?.fullId === 'gpt-6-luna' && M.effortFuerCli(e, 'ultra') === 'ultra' && M.effortFuerCli(e, undefined) === undefined, 'effortFuerCli Codex: Stufe durchreichen, ohne -> kein Flag');
-  const k = M.resolveModel('claude-haiku-5-5');
-  check(k?.ausCliKatalog === true && M.effortFuerCli(k, 'xhigh') === 'xhigh' && M.cliModelArgFuer('claude-haiku-5-5', k) === 'claude-haiku-5-5', 'Katalog-Claude: --effort durchgereicht, --model unveraendert');
+  // P22-T75: claude-haiku-5-5 steht jetzt in der Registry (alias haiku, 1M, Stufen low..max); der Katalogweg gilt fuer IDs, die die
+  // Registry NICHT kennt (neue CLI-Version).
+  const h = M.resolveModel('claude-haiku-5-5');
+  check(h?.alias === 'haiku' && !h.ausCliKatalog && h.contextWindow === 1_000_000 && M.effortFuerCli(h, 'xhigh') === 'xhigh' && M.cliModelArgFuer('claude-haiku-5-5', h) === 'claude-haiku-5-5', 'Registry-Claude haiku 5.5: Stufe aus der Registry, --model unveraendert');
+  const k = M.resolveModel('claude-haiku-9-9');
+  check(k?.ausCliKatalog === true && M.effortFuerCli(k, 'xhigh') === 'xhigh' && M.cliModelArgFuer('claude-haiku-9-9', k) === 'claude-haiku-9-9', 'Katalog-Claude: --effort durchgereicht, --model unveraendert');
   check(M.cliModelArgFuer('claude-opus-5-5', M.resolveModel('claude-opus-5-5')) === 'claude-opus-5-5', 'Katalog-ID nicht auf Kurznamen zurueckgefallen');
   let geworfen = false; try { M.effortFuerCli(e, 'HIGH!'); } catch { geworfen = true; }
   check(geworfen, 'ungueltige Form -> Fehler vor dem Start');

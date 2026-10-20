@@ -27,6 +27,7 @@
  *
  * Spezialist sieht NIEMALS die Korridor-Grenzen, nur seinen aktuellen %-Stand.
  */
+import { cliKontextFenster } from './cli-kontext.js';
 
 import { writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -75,8 +76,16 @@ export async function pruefeRespawnKorridor(stand: {
   contextCeiling?: number | null;
 }): Promise<KorridorPruefung> {
   const eintrag = await getModel(stand.model).catch(() => null);
-  const schwellen = berechneKontextSchwellen(eintrag, stand.model, stand.contextCeiling);
-  const fenster = stand.contextCeiling && stand.contextCeiling > 0 ? stand.contextCeiling : schwellen.ceiling;
+  // P22-T75: kennt die Registry das Modell nicht (Codex-Slug, neue Claude-ID) und meldet der Wrapper kein Fenster, gilt das
+  // Fenster der CLI-Liste (quelle 'cli'); ohne beides der sichtbare Rueckfall.
+  let ceilingQuelle: number | null | undefined = stand.contextCeiling;
+  let ceilingHerkunft: 'cli' | null = null;
+  if (!eintrag && !(ceilingQuelle && ceilingQuelle > 0)) {
+    const cli = await cliKontextFenster(stand.model);
+    if (cli) { ceilingQuelle = cli; ceilingHerkunft = 'cli'; }
+  }
+  const schwellen = berechneKontextSchwellen(eintrag, stand.model, ceilingQuelle, ceilingHerkunft);
+  const fenster = ceilingQuelle && ceilingQuelle > 0 ? ceilingQuelle : schwellen.ceiling;
   const tokens = stand.tokens && stand.tokens > 0
     ? stand.tokens
     : Math.round(((stand.percent ?? 0) / 100) * fenster);

@@ -7,6 +7,7 @@
  * dient als Last-Resort-Fallback.
  */
 
+import { leseCodexKontext } from './cli-kontext.js';
 import {
   berechneKontextSchwellen, KORRIDOR_1M, KORRIDOR_200K, type KontextSchwellen,
   istEffortStufe, pruefeEffort, waehleEffort, type EffortStufe,
@@ -47,6 +48,8 @@ export interface ModelEntry {
   defaultEffort?: EffortStufe;
   /** P22-T65: Eintrag aus den ausgelesenen CLI-Listen (cliKatalogEintrag); seine Stufen prueft die API gegen die Liste. */
   ausCliKatalog?: boolean;
+  /** P22-T75: Herkunft des Kontextfensters: registry (Standard), cli (CLI-Liste/Cache) oder fallback (feste Annahme, im Chip sichtbar). */
+  kontextQuelle?: 'registry' | 'cli' | 'fallback';
 }
 
 /**
@@ -98,6 +101,9 @@ const CLAUDE_VERSIONEN: Record<string, ClaudeVersion> = {
   'claude-sonnet-5': { outputLimit: 128_000, preis: [2, 10, 0.2], cutoffDate: '2026-01-31', effort: ALLE_STUFEN },
   // K: low,medium,high,max; K6e schliesst claude-sonnet-4-6 aus; R: xhigh -> high (still), max bleibt
   'claude-sonnet-4-6': { outputLimit: 128_000, preis: [3, 15, 0.3], cutoffDate: '2025-08-31', effort: OHNE_XHIGH },
+  // Haiku 5.5 (7.10.2026, platform.claude.com): 1M Kontext, 128K Output, Adaptive Thinking, Standard-Effort medium; Preise = Basis bis 100k
+  // Prompt ($0.10/$0.50, Cache-Read $0.01), darueber $0.50/$2.50/$0.05. Effort-Stufen wie sonnet-5-5 (nicht im eingebetteten Katalog).
+  'claude-haiku-5-5': { outputLimit: 128_000, preis: [0.1, 0.5, 0.01], cutoffDate: '2026-06-01', effort: ALLE_STUFEN },
   // K: kein effort_levels (thinking type none); VS schliesst claude-haiku-4-5 aus; R: kein output_config
   'claude-haiku-4-5-20251001': { outputLimit: 64_000, preis: [1, 5, 0.1], cutoffDate: '2025-02-28', effort: KEINE_STUFEN },
 };
@@ -118,7 +124,7 @@ function claude(alias: string, fullId: string): ModelEntry {
   const version = CLAUDE_VERSIONEN[fullId];
   // sonnet (CLI-Alias, Sonnet 5.5) ist nativ 1M (gemessen 29.09.2026: 229-236k ohne [1m], kein
   // API-Fehler). Versionierte Aliase (sonnet-5, sonnet-4.6) und opus ohne [1m] bleiben 200k.
-  const einsM = alias.endsWith('[1m]') || alias.startsWith('fable') || alias === 'sonnet';
+  const einsM = alias.endsWith('[1m]') || alias.startsWith('fable') || alias === 'sonnet' || alias === 'haiku';
   const korridor = einsM ? KORRIDOR_1M : KORRIDOR_200K;
   return {
     alias, fullId, provider: 'anthropic',
@@ -161,7 +167,9 @@ export const STATIC_FALLBACK: Record<string, ModelEntry> = {
   // Reine Aliase: immer die neueste Version (die CLI loest sie selbst auf)
   opus: claude('opus', 'claude-opus-5-5'),
   sonnet: claude('sonnet', 'claude-sonnet-5-5'),
-  haiku: claude('haiku', 'claude-haiku-4-5-20251001'),
+  haiku: claude('haiku', 'claude-haiku-5-5'),
+  // Haiku 4.5 bleibt waehlbar (200k, kein Effort)
+  'haiku-4.5': claude('haiku-4.5', 'claude-haiku-4-5-20251001'),
   'opus[1m]': claude('opus[1m]', 'claude-opus-5-5'),
   'sonnet[1m]': claude('sonnet[1m]', 'claude-sonnet-5-5'),
   // fable: 1M nativ ([1m] nimmt die CLI an, ignoriert es aber)
@@ -223,7 +231,7 @@ export const STATIC_FALLBACK: Record<string, ModelEntry> = {
     alias: 'codex', fullId: 'codex-cli-standard', provider: 'openai',
     contextWindow: 272_000, envRequired: [], binary: 'node',
     runtimePath: '@synapse/agents/codex-runtime',
-    corridorMin: 80, corridorMax: 90,
+    corridorMin: 80, corridorMax: 90, kontextQuelle: 'fallback',
   },
 };
 
@@ -273,14 +281,19 @@ const CLAUDE_KATALOG_ID = /^claude-[a-z0-9][a-z0-9.-]{0,63}(\[1m\])?$/;
  */
 function cliKatalogEintrag(id: string): ModelEntry | null {
   const codex = CODEX_KATALOG_ID.exec(id);
-  if (codex) return { ...STATIC_FALLBACK.codex, alias: id, fullId: codex[1], ausCliKatalog: true };
+  if (codex) {
+    // P22-T75: Fenster je Slug aus dem Modell-Cache der Codex-CLI (gpt-6.1-sol 500k, gpt-6-luna 272k) statt fest 272k.
+    const kontext = leseCodexKontext(codex[1]);
+    return { ...STATIC_FALLBACK.codex, alias: id, fullId: codex[1], ausCliKatalog: true,
+      ...(kontext ? { contextWindow: kontext, kontextQuelle: 'cli' as const } : { kontextQuelle: 'fallback' as const }) };
+  }
   if (!CLAUDE_KATALOG_ID.test(id)) return null;
   const einsM = id.endsWith('[1m]');
   const korridor = einsM ? KORRIDOR_1M : KORRIDOR_200K;
   return {
     alias: id, fullId: id.replace(/\[1m\]$/, ''), provider: 'anthropic',
     contextWindow: einsM ? 1_000_000 : 200_000, envRequired: [], binary: 'claude',
-    corridorMin: korridor.corridorMin, corridorMax: korridor.corridorMax, effortStufen: KEINE_STUFEN, ausCliKatalog: true,
+    corridorMin: korridor.corridorMin, corridorMax: korridor.corridorMax, effortStufen: KEINE_STUFEN, ausCliKatalog: true, kontextQuelle: 'fallback',
   };
 }
 

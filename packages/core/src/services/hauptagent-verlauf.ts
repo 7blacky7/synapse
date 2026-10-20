@@ -140,7 +140,7 @@ export interface VerlaufKontext {
   handoff: number;
   rotation: number;
   hard: number;
-  schwellen_quelle: 'registry' | 'fallback';
+  schwellen_quelle: 'registry' | 'cli' | 'fallback';
 }
 export interface VerlaufZug { zuege: number | null; dauer_ms: number; kosten: { usd: number; quelle: 'cli' } | null }
 

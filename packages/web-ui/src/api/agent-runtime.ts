@@ -252,6 +252,17 @@ export interface CliModellListe {
   hinweise: string[];
   grund: string | null;
   abgefragt_am: string;
+  /** P22-T75: Abgleich gegen model_registry (nur Befunde; meldungen leer = alles stimmt). */
+  registry_abgleich?: RegistryAbgleich | null;
+}
+
+/** P22-T75: Befund CLI-Liste <-> model_registry. */
+export interface RegistryAbgleich {
+  geprueft: boolean;
+  grund: string | null;
+  anzahl: { ok: number; fehlt_in_registry: number; kontext_abweichend: number; kontext_fehlt: number };
+  registry_ohne_cli: string[];
+  meldungen: string[];
 }
 
 /** P22-T62: Modelle beider CLI-Runtimes fuer die Hauptagent-Steuerung (GET /api/main-agent/modelle). */
@@ -407,7 +418,7 @@ export interface MainAgentVerlaufEintrag {
     gemessen?: { input: number; output: number; cache_read: number; cache_creation: number; quelle: string } | null;
     berechnet?: Record<string, unknown> | null;
   };
-  kontext: { tokens: number; quelle: string; modell: string; fenster: number; prozent: number } | null;
+  kontext: { tokens: number; quelle: string; modell: string; fenster: number; prozent: number; schwellen_quelle?: 'registry' | 'cli' | 'fallback' } | null;
   zug: { zuege: number | null; dauer_ms: number; kosten: { usd: number; quelle: string } | null } | null;
   modell: string | null;
   hauptagent_weg: string | null;

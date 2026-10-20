@@ -184,15 +184,15 @@ await pruefe('claude-Zweig: versionierter Alias (opus-4.7[1m]) bekommt die Stufe
   const argv = await argvVon('opus-4.7[1m]', { effort: 'max' });
   assert.equal(effortIn(argv), 'max');
 });
-await pruefe('haiku (keine Effort-Stufen): ohne Angabe kein --effort', async () => {
-  const argv = await argvVon('haiku');
+await pruefe('haiku-4.5 (keine Effort-Stufen): ohne Angabe kein --effort', async () => {
+  const argv = await argvVon('haiku-4.5');
   assert.ok(argv.includes('--model'), 'Anker: kein --model im Argumentvektor');
   assert.equal(argv.includes('--effort'), false);
 });
 await pruefe('haiku mit effort: Fehler statt still verworfen', async () => {
   const pm = new processMod.ProcessManager();
   await assert.rejects(
-    () => pm.start('effort-haiku', 'haiku', 'Testprompt', { cwd: dir, effort: 'high' }),
+    () => pm.start('effort-haiku', 'haiku-4.5', 'Testprompt', { cwd: dir, effort: 'high' }),
     (err) => /haiku/.test(err.message) && /kein/i.test(err.message),
   );
 });
@@ -276,7 +276,8 @@ await pruefe('core model-registry: default_effort/effort_stufen kommen aus der Z
   const sonnet = await coreRegistry.getModel('sonnet');
   assert.equal(sonnet.defaultEffort, 'high');
   assert.deepEqual(sonnet.effortStufen, STUFEN);
-  const haiku = await coreRegistry.getModel('haiku');
+  // Die Test-DB kann noch den alten Seed fuehren ('haiku' = 4.5, ON CONFLICT DO NOTHING): haiku-4.5 bevorzugen
+  const haiku = (await coreRegistry.getModel('haiku-4.5')) ?? (await coreRegistry.getModel('haiku'));
   assert.deepEqual(haiku.effortStufen, []);
   const opus46 = await coreRegistry.getModel('opus-4.6');
   assert.deepEqual(opus46.effortStufen, OHNE_XHIGH);
@@ -311,8 +312,8 @@ await pruefe('capabilities (lokal): Effort-Stufen und default_effort je Modell',
   const je = Object.fromEntries((daten.models ?? []).map((m) => [m.alias, m]));
   assert.equal(je.opus?.defaultEffort, 'medium');
   assert.equal(je.sonnet?.defaultEffort, 'high');
-  assert.equal(je.haiku?.effortSupported, false);
-  assert.deepEqual(je.haiku?.effortStufen, []);
+  assert.equal(je['haiku-4.5']?.effortSupported, false);
+  assert.deepEqual(je['haiku-4.5']?.effortStufen, []);
   assert.deepEqual(je['opus-4.6']?.effortStufen, OHNE_XHIGH);
   assert.deepEqual(je.fable?.effortStufen, STUFEN);
 });

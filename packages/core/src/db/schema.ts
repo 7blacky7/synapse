@@ -1885,7 +1885,8 @@ INSERT INTO model_registry
 VALUES
   ('opus',              'claude-opus-5-5',                'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  4.00, 20.00, 0.20, '2026-06-01', 128000),
   ('sonnet',            'claude-sonnet-5-5',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  2.00, 10.00, 0.20, '2026-06-01', 128000),
-  ('haiku',             'claude-haiku-4-5-20251001',      'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  1.00,  5.00, 0.10, '2025-02-28',  64000),
+  ('haiku',             'claude-haiku-5-5',               'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  0.10,  0.50, 0.01, '2026-06-01', 128000),
+  ('haiku-4.5',         'claude-haiku-4-5-20251001',      'anthropic',  200000, ARRAY[]::TEXT[],          'claude', NULL,                                73, 88,  1.00,  5.00, 0.10, '2025-02-28',  64000),
   ('opus[1m]',          'claude-opus-5-5',                'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  4.00, 20.00, 0.20, '2026-06-01', 128000),
   ('sonnet[1m]',        'claude-sonnet-5-5',              'anthropic', 1000000, ARRAY[]::TEXT[],          'claude', NULL,                                80, 97,  2.00, 10.00, 0.20, '2026-06-01', 128000),
   -- fable: 1M nativ ([1m] nimmt die CLI an, ignoriert es aber)
@@ -1937,14 +1938,14 @@ UPDATE model_registry
          WHEN full_id IN ('claude-opus-4-6', 'claude-sonnet-4-6')
            THEN ARRAY['low', 'medium', 'high', 'max']
          WHEN full_id IN ('claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5',
-                          'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5-5', 'claude-sonnet-5')
+                          'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-5-5')
            THEN ARRAY['low', 'medium', 'high', 'xhigh', 'max']
        END,
        default_effort = CASE WHEN full_id IN ('claude-haiku-4-5-20251001') THEN NULL ELSE 'medium' END
  WHERE runtime_binary = 'claude' AND effort_stufen IS NULL
    AND full_id IN ('claude-haiku-4-5-20251001', 'claude-opus-4-6', 'claude-sonnet-4-6',
                    'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5',
-                   'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5-5', 'claude-sonnet-5');
+                   'claude-opus-4-8', 'claude-opus-4-7', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-5-5');
 
 -- ==========================================================================
 -- model_cutoffs: Wissensstand (knowledge cutoff) je Modell-ID, datengetrieben.
@@ -1965,6 +1966,7 @@ INSERT INTO model_cutoffs (model_id, cutoff_date, quelle) VALUES
   ('claude-fable-5-1',       '2026-06-01', 'platform.claude.com'),
   ('claude-opus-5-5',        '2026-06-01', 'platform.claude.com'),
   ('claude-sonnet-5-5',      '2026-06-01', 'platform.claude.com'),
+  ('claude-haiku-5-5',       '2026-06-01', 'platform.claude.com'),
   ('claude-haiku-4-5',       '2025-02-28', 'platform.claude.com'),
   ('claude-opus-5',          '2026-05-01', 'models.dev'),
   ('claude-sonnet-5',        '2026-01-31', 'models.dev'),

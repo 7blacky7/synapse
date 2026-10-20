@@ -88,7 +88,8 @@ const ERWARTET = {
   'opus':          { ceiling: 200_000,   handoffTokens: 146_000, rotationTokens: 176_000, hardRotationTokens: 176_000 },
   'opus-4.7[1m]':  { ceiling: 1_000_000, handoffTokens: 800_000, rotationTokens: 950_000, hardRotationTokens: 970_000 },
   'fable':         { ceiling: 1_000_000, handoffTokens: 800_000, rotationTokens: 950_000, hardRotationTokens: 970_000 },
-  'haiku':         { ceiling: 200_000,   handoffTokens: 146_000, rotationTokens: 176_000, hardRotationTokens: 176_000 },
+  'haiku':         { ceiling: 1_000_000, handoffTokens: 800_000, rotationTokens: 950_000, hardRotationTokens: 970_000 },
+  'haiku-4.5':     { ceiling: 200_000,   handoffTokens: 146_000, rotationTokens: 176_000, hardRotationTokens: 176_000 },
   'eigenbau-llm':  { ceiling: 200_000,   handoffTokens: 146_000, rotationTokens: 176_000, hardRotationTokens: 176_000 },
 };
 // Token-Budget: zwischen Handoff und Rotation Platz fuer Handoff-Turn (MEMORY sichern +
@@ -172,7 +173,7 @@ await pruefe('Seed im SCHEMA_SQL: Claude-Zeilen der model_registry == STATIC_FAL
 await pruefe('Registry: 200k ohne [1m], 1M fuer alle [1m]-Aliase, fable/fable-5 und sonnet (nativ)', () => {
   for (const [alias, e] of Object.entries(models.STATIC_FALLBACK)) {
     if (e.provider !== 'anthropic') continue;
-    const soll = alias.endsWith('[1m]') || alias.startsWith('fable') || alias === 'sonnet' ? 1_000_000 : 200_000;
+    const soll = alias.endsWith('[1m]') || alias.startsWith('fable') || alias === 'sonnet' || alias === 'haiku' ? 1_000_000 : 200_000;
     assert.equal(e.contextWindow, soll, alias);
   }
 });

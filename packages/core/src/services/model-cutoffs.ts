@@ -34,6 +34,7 @@ export const MODEL_CUTOFF_SEED: ReadonlyArray<readonly [string, string, string]>
   ['claude-fable-5-1', '2026-06-01', 'platform.claude.com'],
   ['claude-opus-5-5', '2026-06-01', 'platform.claude.com'],
   ['claude-sonnet-5-5', '2026-06-01', 'platform.claude.com'],
+  ['claude-haiku-5-5', '2026-06-01', 'platform.claude.com'],
   ['claude-haiku-4-5', '2025-02-28', 'platform.claude.com'],
   // Claude — aeltere Versionen (claude-fable-5: Anthropic nennt keinen Wert, models.dev ueber Vertex)
   ['claude-opus-5', '2026-05-01', 'models.dev'],

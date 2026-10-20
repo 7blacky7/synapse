@@ -108,6 +108,16 @@ export interface CodexEreignis {
   fehler?: string;
 }
 
+/**
+ * P22-T75: usage einer Antwortzeile der Claude-JSONL aus der Codex-usage. Codex zaehlt cached_input_tokens bereits IN input_tokens
+ * mit; token-stand.ts summiert input + cache_read (Claude-Form, dort getrennt) -> ohne Abzug stuende der Cache doppelt im Kontext.
+ */
+export function jsonlUsageAusCodex(u: { input_tokens: number; output_tokens: number; cached_input_tokens: number }):
+  { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number } {
+  return { input_tokens: Math.max(0, u.input_tokens - u.cached_input_tokens), output_tokens: u.output_tokens,
+    cache_read_input_tokens: u.cached_input_tokens, cache_creation_input_tokens: 0 };
+}
+
 /** Eine JSON-Zeile von `codex exec --json` (Form wie rest-api codex-driver parseCodexJsonLine). */
 export function leseCodexZeile(line: string): CodexEreignis {
   let v: Record<string, unknown>;
@@ -232,8 +242,7 @@ async function main(): Promise<void> {
     // message.id je Turn: wrapper.ts meldeVerbrauch bucht jede Referenz genau einmal (P22-T7).
     zeilen.push({ type: 'assistant', uuid: basis + ':a', timestamp: zeit, message: { id: basis, role: 'assistant', model: m,
       content: [{ type: 'text', text: r.texte.join('\n\n') }],
-      ...(r.usage ? { usage: { input_tokens: r.usage.input_tokens, output_tokens: r.usage.output_tokens,
-        cache_read_input_tokens: r.usage.cached_input_tokens, cache_creation_input_tokens: 0 } } : {}) } });
+      ...(r.usage ? { usage: jsonlUsageAusCodex(r.usage) } : {}) } });
     await appendFile(jsonlPath, zeilen.map((z) => JSON.stringify(z)).join('\n') + '\n').catch(() => undefined);
     for (const t of r.texte) emit({ type: 'assistant', session_id: sessionId, message: { content: [{ type: 'text', text: t }] } });
     // P22-T58: Kontingent im Claude-Format (rate_limit_event) an den Wrapper; der Wrapper meldet nur Zustandswechsel.

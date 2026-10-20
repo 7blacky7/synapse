@@ -526,6 +526,8 @@ function verlaufWerkzeuge(eintrag: MainAgentVerlaufEintrag): AgentMessage['toolR
 
 const tausender = (n: number): string => n >= 1000 ? (n / 1000).toFixed(n >= 10_000 ? 0 : 1) + 'k' : String(n);
 
+const fensterQuelleText = (q: 'registry' | 'cli' | 'fallback' | undefined): string => q === 'cli' ? 'CLI' : q === 'fallback' ? 'Rückfall' : q === 'registry' ? 'Registry' : 'Quelle unbekannt';
+
 // P22-T63: Token-Zeile je Antwort: Modell · Zuege · Dauer · in/out · Kontext (gemessen = CLI usage).
 function verlaufZugInfo(eintrag: MainAgentVerlaufEintrag): string | undefined {
   const g = eintrag.tokens?.gemessen;
@@ -535,7 +537,8 @@ function verlaufZugInfo(eintrag: MainAgentVerlaufEintrag): string | undefined {
     eintrag.zug ? (eintrag.zug.dauer_ms / 1000).toFixed(1) + ' s' : null,
     g ? 'in ' + tausender(g.input + g.cache_read + g.cache_creation) + ' / out ' + tausender(g.output) : null,
     // P22-T70: ohne Kontextstand (dauerhafter Weg ohne Wrapper-Messung) ehrlich 'nicht gemessen' statt 0 %.
-    eintrag.kontext ? 'Kontext ' + eintrag.kontext.prozent + ' %' : g ? 'Kontext nicht gemessen' : null,
+    // P22-T75: Obergrenze und ihre Quelle sichtbar (Registry | CLI | Rückfall), damit eine falsche Annahme auffaellt.
+    eintrag.kontext ? 'Kontext ' + eintrag.kontext.prozent + ' % von ' + tausender(eintrag.kontext.fenster) + ' (' + fensterQuelleText(eintrag.kontext.schwellen_quelle) + ')' : g ? 'Kontext nicht gemessen' : null,
     eintrag.zug?.kosten ? '$' + eintrag.zug.kosten.usd.toFixed(4) : null,
     g ? 'gemessen' : null,
   ].filter(Boolean);

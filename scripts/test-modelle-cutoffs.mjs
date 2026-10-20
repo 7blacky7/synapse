@@ -88,7 +88,9 @@ await pruefe('Registry: aktuelle Claude-Versionen hinter den Aliasen', () => {
   assert.equal(models.resolveModel('opus').fullId, 'claude-opus-5-5');
   assert.equal(models.resolveModel('opus[1m]').contextWindow, 1_000_000);
   assert.equal(models.resolveModel('sonnet').fullId, 'claude-sonnet-5-5');
-  assert.equal(models.resolveModel('haiku').fullId, 'claude-haiku-4-5-20251001');
+  assert.equal(models.resolveModel('haiku').fullId, 'claude-haiku-5-5');
+  assert.equal(models.resolveModel('haiku').contextWindow, 1_000_000);
+  assert.equal(models.resolveModel('haiku-4.5').fullId, 'claude-haiku-4-5-20251001');
   assert.equal(models.resolveModel('fable').fullId, 'claude-fable-5-1');
   assert.equal(models.resolveModel('fable').contextWindow, 1_000_000);
 });
@@ -110,6 +112,7 @@ const JE_VERSION = {
   'claude-sonnet-5-5': [128_000, 2, 10, 0.2, '2026-06-01'],
   'claude-sonnet-5': [128_000, 2, 10, 0.2, '2026-01-31'],
   'claude-sonnet-4-6': [128_000, 3, 15, 0.3, '2025-08-31'],
+  'claude-haiku-5-5': [128_000, 0.1, 0.5, 0.01, '2026-06-01'],
   'claude-haiku-4-5-20251001': [64_000, 1, 5, 0.1, '2025-02-28'],
 };
 await pruefe('Registry: Output-Limit, Preise und Cutoff je Version (models.dev) fuer JEDEN Claude-Alias', () => {
