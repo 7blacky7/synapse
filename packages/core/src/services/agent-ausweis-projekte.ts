@@ -196,8 +196,9 @@ async function transaktion<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
 /**
  * Je Aufruf in B: Eintrag sichern (erster Aufruf traegt B dauerhaft ein), Zugang bestimmen, Visum bei Bedarf (neu) ausstellen,
  * Regel-Zustellung je Lauf vormerken. Eine Transaktion; Audit 'projekt_eingetragen' / 'visum_ausgestellt' (ohne Ausweiswert).
+ * P22-T79: nur_lesen (Main) = Zugang IMMER 'visum', auch ohne Koordinator und trotz Arbeitsfreigabe.
  */
-export async function sichereFremdprojektZugang(e: { identity_id: string; heimat: string; project: string; lauf_id: string | null }): Promise<FremdprojektStand> {
+export async function sichereFremdprojektZugang(e: { identity_id: string; heimat: string; project: string; lauf_id: string | null; nur_lesen?: boolean }): Promise<FremdprojektStand> {
   const visumMs = (await leseAusweisFristen(e.project)).fristen.visum_minuten.ms;
   return transaktion(async (c) => {
     const koord = await koordinatorVorhanden(c, e.project);
@@ -208,7 +209,7 @@ export async function sichereFremdprojektZugang(e: { identity_id: string; heimat
          (visum_bis IS NOT NULL AND visum_bis > NOW()) AS visum_aktiv
        FROM agent_ausweis_projekte WHERE identity_id=$1 AND project=$2 FOR UPDATE`, [e.identity_id, e.project])).rows[0];
     if (!z) throw new AusweisProjektFehler('ausweis_projekt_speicher_fehler');
-    const zugang: FremdZugang = !koord ? 'frei' : z.freigabe_aktiv ? 'arbeitsfreigabe' : 'visum';
+    const zugang: FremdZugang = e.nur_lesen ? 'visum' : !koord ? 'frei' : z.freigabe_aktiv ? 'arbeitsfreigabe' : 'visum';
     let visumNeu = false;
     if (zugang === 'visum' && !z.visum_aktiv) {
       visumNeu = true;
@@ -377,9 +378,11 @@ function pruefeGrund(grund: unknown): string {
 }
 async function fremdeIdentitaet(c: Pick<PoolClient, 'query'>, project: string, identityId: unknown): Promise<string> {
   if (typeof identityId !== 'string' || !identityId.trim()) throw new AusweisProjektFehler('ziel_identity_id_fehlt');
-  const r = await c.query<{ project: string; status: string }>('SELECT project, status FROM agent_identitaeten WHERE id=$1', [identityId.trim()]);
+  const r = await c.query<{ project: string; status: string; rolle: string }>('SELECT project, status, rolle FROM agent_identitaeten WHERE id=$1', [identityId.trim()]);
   const i = r.rows[0];
   if (!i) throw new AusweisProjektFehler('identitaet_unbekannt');
+  // P22-T79: der Main arbeitet nicht in Projekten (nur lesen + Channels), eine Arbeitsfreigabe waere wirkungslos.
+  if (i.rolle === 'main') throw new AusweisProjektFehler('main_nur_lesen', { hinweis: 'Der Main liest in Projekten nur; Arbeit macht der Koordinator.' });
   if (i.project === project) throw new AusweisProjektFehler('identitaet_im_eigenen_projekt', { hinweis: 'Agenten dieses Projekts brauchen keine Arbeitsfreigabe.' });
   if (i.status !== 'aktiv') throw new AusweisProjektFehler('identitaet_nicht_aktiv');
   return identityId.trim();

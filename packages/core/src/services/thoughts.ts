@@ -274,12 +274,22 @@ export async function searchThoughts(
     if (!rows.length) return [];
     (filter.must as unknown[]).push({ has_id: rows.map(r => r.id) });
   }
-  const treffer = await searchVectors<ThoughtPayload>(
-    collectionName,
-    queryVector,
-    limit,
-    filter
-  );
+  let treffer: Awaited<ReturnType<typeof searchVectors<ThoughtPayload>>>;
+  try {
+    treffer = await searchVectors<ThoughtPayload>(
+      collectionName,
+      queryVector,
+      limit,
+      filter
+    );
+  } catch (error) {
+    // P22-T72: ein Projekt ohne Thought-Collection (z. B. der interne Bereich synapse-hauptagent) hat schlicht keine Treffer.
+    // Vorher kam Qdrants 404 als 'Fehler bei Gedanken-Suche: Error: Not Found' beim Agenten an.
+    if (!istSammlungFehlt(error)) throw error;
+    const leer: ThoughtSearchResult[] & { sammlung_fehlt?: boolean } = [];
+    leer.sammlung_fehlt = true;
+    return leer;
+  }
 
   // Qdrant liefert nur ids + score; Inhalt/Tags/source/timestamp kommen aus PostgreSQL.
   // Treffer ohne PG-Zeile (verwaister Vektor) werden verworfen und gezaehlt.
@@ -295,6 +305,12 @@ export async function searchThoughts(
     (ergebnis as ThoughtSearchResult[] & { verworfen_ohne_pg?: number }).verworfen_ohne_pg = gemischt.verworfen;
   }
   return ergebnis;
+}
+
+/** P22-T72: Qdrant meldet eine fehlende Collection mit HTTP 404 ('Not Found'). */
+export function istSammlungFehlt(error: unknown): boolean {
+  const e = error as { status?: unknown; message?: unknown } | null;
+  return !!e && (e.status === 404 || (typeof e.message === 'string' && /^not found$|doesn't exist|not found: collection/i.test(e.message.trim())));
 }
 
 /** P10-T51 (N2): Laenge der Vorschau je Suchtreffer. */

@@ -51,6 +51,12 @@ import {
   leseMehrprojektSchalter, sichereFremdprojektZugang, visumErlaubt, visumAblehnung, ausweisProjekteHinweis, ausweisProjekteStatus,
   haengeAusweisHinweiseAn, type FremdprojektStand,
 } from './agent-ausweis-projekte.js';
+// P22-T79: Sonderstellung des Main (liest alle User-Projekte, arbeitet nicht darin; Lenkhinweis im internen Bereich).
+import {
+  leseMainSchalter, mainIdentitaetDesAusweises, istMainPrincipal, sichtbareUserProjekte, mainHinweisText, mainNurLesenAblehnung,
+  mainProjektUnbekannt, mainKommunikationErlaubt, MAIN_LESEZUGRIFF_FUNKTION, MAIN_DATEN_TOOLS, MAIN_HINWEIS_FELD,
+} from './hauptagent-sonderstellung.js';
+import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 export const AGENT_TOKEN_PARAMETER = {
   token: { type: 'string', description: 'Agenten-Ausweis (sai_...): bei JEDEM Aufruf mitgeben. Er allein bestimmt Identitaet, Projekt und Rolle (agent_id/role weglassen). Start/Kontextverlust: chat(action:"anmelden", token).' },
 };
@@ -245,6 +251,8 @@ export async function mitAgentToolAufruf<T>(
     if (kontext.sitzung_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.sitzung_hinweis, 'ausweis_sitzung_hinweis');
     // P22-T55: agent_id/role mit Ausweis mitgegeben -> kurzer Hinweis (je Lauf einmal, abweichende Werte ignoriert).
     if (kontext.angabe_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.angabe_hinweis, 'ausweis_hinweis');
+    // P22-T79: Lenkhinweis des Main (interner Bereich ohne Projektdaten).
+    if (kontext.main_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.main_hinweis, MAIN_HINWEIS_FELD);
     // P22-T44: Visum-/Einwanderungsanzeige (einmal je Lauf und bei Aenderung) an die fertige Antwort beider Transporte.
     return kontext.ausweis_hinweise?.length ? haengeAusweisHinweiseAn(ergebnis, kontext.ausweis_hinweise) : ergebnis;
   });
@@ -267,6 +275,8 @@ export interface AgentToolKontext {
   sitzung_hinweis?: string;
   /** P22-T55: Hinweis 'nur token mitgeben' (Feld ausweis_hinweis), je Lauf einmal. */
   angabe_hinweis?: string;
+  /** P22-T79: Lenkhinweis des Main im internen Bereich (Feld main_hinweis). */
+  main_hinweis?: string;
 }
 /** P22-T55: je Lauf (und je Satz abweichender Felder) einmal gezeigt; Prozessspeicher, begrenzt. */
 const ANGABE_HINWEIS_GEZEIGT = new Set<string>();
@@ -376,8 +386,12 @@ export async function bereiteAgentToolAufrufVor(
   const fremdKandidat = !!token && !!projektHinweis && tool !== 'reverse'
     && !(tool === 'chat' && ['anmelden', 'register', 'identitaet', 'koordinator_liste'].includes(aktionRoh ?? ''));
   const heimatDesAusweises = fremdKandidat ? await ausweisProjekt(token) : null;
+  // P22-T79: der Main (Rolle main im internen Bereich) liest jedes User-Projekt, unabhaengig von mehrprojekt (Schalter
+  // main_lesezugriff, Standard EIN); Zugang dort immer nur Visum.
+  const mainLesend = !!heimatDesAusweises && heimatDesAusweises === HAUPTAGENT_PROJEKT && heimatDesAusweises !== projektHinweis
+    && (await leseMainSchalter(MAIN_LESEZUGRIFF_FUNKTION)).aktiv && !!(await mainIdentitaetDesAusweises(token));
   const fremdProjekt = heimatDesAusweises && heimatDesAusweises !== projektHinweis
-    && (await leseMehrprojektSchalter(heimatDesAusweises)).aktiv ? projektHinweis : null;
+    && (mainLesend || (await leseMehrprojektSchalter(heimatDesAusweises)).aktiv) ? projektHinweis : null;
   // P22-T43 (B2): Anzeige aus der WIRKSAMEN Quelle; freigegeben unveraendert = ausweisTokenAktiv (Kern ODER Altschalter).
   // P22-T44: im fremden Projekt gilt der Stand der Heimat.
   const schalter = await wirksamerAusweisSchalter(fremdProjekt ? heimatDesAusweises : projektHinweis, token);
@@ -549,8 +563,16 @@ export async function bereiteAgentToolAufrufVor(
     if (fremdProjekt) {
       // P22-T44: Eintrag/Zugang in B (frei | visum | arbeitsfreigabe). Danach arbeitet der Agent in B im Legacy-Namensraum von B
       // (wie Legacy heute); der Profilzuschnitt seiner Heimat-Identitaet gilt weiter (Gate unten mit p).
+      if (mainLesend) {
+        const projekte = await sichtbareUserProjekte();
+        if (!projekte.includes(fremdProjekt)) {
+          basis.antwort = mainProjektUnbekannt(fremdProjekt, projekte);
+          return basis;
+        }
+      }
       try {
-        fremd = await sichereFremdprojektZugang({ identity_id: p.identitaet.id, heimat: p.project, project: fremdProjekt, lauf_id: p.lauf_id });
+        fremd = await sichereFremdprojektZugang({ identity_id: p.identitaet.id, heimat: p.project, project: fremdProjekt, lauf_id: p.lauf_id,
+          nur_lesen: mainLesend });
       } catch {
         basis.antwort = { success: false, error: 'fremdprojekt_nicht_pruefbar', project: fremdProjekt,
           message: `Der Zugang zum Projekt "${fremdProjekt}" konnte nicht geprueft werden; nichts wurde ausgefuehrt.` };
@@ -562,15 +584,23 @@ export async function bereiteAgentToolAufrufVor(
         k.fremdprojekt = { project: fremdProjekt, heimat: p.project, zugang: fremd.zugang, identity_id: p.identitaet.id };
       }
       // Pflichtregeln von B einmal je Lauf: Onboarding-Nachweis des Namens in B vergessen -> das Bestands-Onboarding liefert sie.
-      if (fremd.regeln_neu) await vergissOnboarding(fremdProjekt, p.agent_id).catch(() => 0);
+      // P22-T79: nicht fuer den Main (er arbeitet in B nicht).
+      if (fremd.regeln_neu && !mainLesend) await vergissOnboarding(fremdProjekt, p.agent_id).catch(() => 0);
     } else {
       setzeAufrufPrincipal(p);
     }
     // P22-T50: jev bekommt '*' unveraendert (alle Projekte); andere Tools mit '*' arbeiten in der Heimat.
     const zielProjekt = alleProjekte && tool === 'jev' ? '*' : fremdProjekt ?? p.project;
+    // P22-T79: lesende Datenaufrufe des Main im internen Bereich (und seine Anmeldung) bekommen den Lenkhinweis mit Projektliste.
+    if (!fremd && zielProjekt === HAUPTAGENT_PROJEKT && istMainPrincipal(p)
+      && (anmeldung || (MAIN_DATEN_TOOLS.has(tool) && visumErlaubt(tool, action)))
+      && (await leseMainSchalter(MAIN_LESEZUGRIFF_FUNKTION)).aktiv) {
+      basis.main_hinweis = mainHinweisText(await sichtbareUserProjekte());
+    }
     // P22-T44: Anzeige Visa/Einwanderungen (einmal je Lauf und bei Aenderung), nur bei Schalter mehrprojekt der Heimat.
     try {
-      if (tool !== 'reverse' && (await leseMehrprojektSchalter(p.project)).aktiv) {
+      // P22-T79: der Main bekommt statt der Visum-Anzeige (dort stuende 'frei = alles') den main_hinweis.
+      if (tool !== 'reverse' && !mainLesend && !istMainPrincipal(p) && (await leseMehrprojektSchalter(p.project)).aktiv) {
         const h = await ausweisProjekteHinweis({ identity_id: p.identitaet.id, heimat: p.project, lauf_id: p.lauf_id });
         if (h) basis.ausweis_hinweise = h;
       }
@@ -619,8 +649,9 @@ export async function bereiteAgentToolAufrufVor(
       bindeVerschachtelteActorFelder(tool, action, args, p.agent_id, erlaubteParameter);
     }
     // P22-T44: Visum = nur lesende Aktionen + Channels; Schreiben braucht die Arbeitsfreigabe durch den Koordinator von B.
-    if (fremd?.zugang === 'visum' && !visumErlaubt(tool, action)) {
-      basis.antwort = visumAblehnung(tool, action, fremd.project, fremd.heimat, fremd.identity_id, fremd.visum_bis);
+    if (fremd?.zugang === 'visum' && !visumErlaubt(tool, action) && !(mainLesend && mainKommunikationErlaubt(tool, action))) {
+      // P22-T79: der Main bekommt keine Arbeitsfreigabe, nur den Hinweis auf den Koordinator.
+      basis.antwort = mainLesend ? mainNurLesenAblehnung(tool, action, fremd.project) : visumAblehnung(tool, action, fremd.project, fremd.heimat, fremd.identity_id, fremd.visum_bis);
       return basis;
     }
     if (anmeldung) {

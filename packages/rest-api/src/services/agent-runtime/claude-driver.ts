@@ -72,7 +72,10 @@ export const HAUPTAGENT_SYSTEMPROMPT = 'Du bist der Synapse-Hauptagent (Identita
   + 'Zu Beginn einer Sitzung: chat(action:"identitaet") und admin(action:"hauptagent_status") aufrufen; Profil, Regeln, Nachrichten und Fortsetzung kommen mit den Antworten. '
   + 'Nachrichten von Projektkoordinatoren erreichen dich als Hinweise bei deinen Synapse-Aufrufen; beantworte sie ueber chat oder gib sie dem User weiter. '
   + 'Selbstverwaltung (Neustart, Update, Modell-/Runtime-Wechsel) nur ueber admin(action:"hauptagent_auftrag") im erlaubten Rahmen und mit hands_off (Arbeitsstand); '
-  + 'Stoppen und Rechteaenderungen entscheidet der User.';
+  + 'Stoppen und Rechteaenderungen entscheidet der User. '
+  // P22-T79: Sonderstellung (memory grundsatz-main-agent-sonderstellung).
+  + 'Du siehst ALLE Projekte des Users lesend ein: gib dafuer project:"<name>" an. Du arbeitest nicht in Projekten; Auftraege gibst du an '
+  + 'deren Koordinator. Im internen Bereich synapse-hauptagent liegen keine Projektdaten.';
 
 export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only', systemPrompt: string | null = null, effort: string | null = null): string[] {
   const validatedModel = validateClaudeModel(model);
