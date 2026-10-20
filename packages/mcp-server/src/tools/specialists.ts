@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { stoppeLokalenWrapper, removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung } from '@synapse/core';
+import { stoppeLokalenWrapper, removeInboxForAgent, removeWrapperStatus, upsertWrapperStatus, setzeHeartbeatBeimSpawn, EFFORT_STUFEN, beginneSitzung, registriereWrapperSkript } from '@synapse/core';
 import type { WrapperStopOptionen } from '@synapse/core';
 
 // P9-T27 Welle 2: PG-Schritte ueber austauschbaren Datenweg (Vorgabe PG; Daemon-API-Weg setzt 'api').
@@ -74,6 +74,13 @@ function resolveWrapperPath(): string {
   // ESM-compatible resolution: use createRequire to locate the wrapper binary
   const require = createRequire(import.meta.url);
   return require.resolve('@synapse/agents/dist/wrapper.js');
+}
+
+// P22-T71 B1: die Prozesspruefung beim Stop erwartet genau das Skript, das der Spawn startet (pnpm-Layout im Runtime-Image).
+try {
+  registriereWrapperSkript(resolveWrapperPath());
+} catch (err) {
+  console.error(`[Synapse] Wrapper-Skript nicht aufloesbar, Stop-Pruefung nutzt den Monorepo-Pfad: ${err}`);
 }
 
 function jsonResult(data: Record<string, unknown>) {

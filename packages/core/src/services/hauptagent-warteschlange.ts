@@ -300,6 +300,8 @@ export async function schliesseEinwurfAb(identity_id: string, inbox_id: number,
     const w = starteVerlaufAntwort(z.id, {
       modell: await aktuellesMainModell(identity_id).catch(() => null), identity_id, user_id: z.user_id, user_text: z.user_text, runtime,
       meta: { ...z.meta, warteschlange: { ...warteMeta(z.meta), zugestellt_am: new Date().toISOString() } },
+      // B5: Dauer ab dem Einwurf statt '0.0 s' (die Antwort entstand waehrend des laufenden Zugs).
+      ...(warteMeta(z.meta).seit && Number.isFinite(Date.parse(warteMeta(z.meta).seit!)) ? { start_ms: Date.parse(warteMeta(z.meta).seit!) } : {}),
     });
     w.ereignis('runtime', { hauptagent: { weg: 'dauerhaft', schritt: 'einwurf_beantwortet' } });
     if (typeof e.response === 'string' && e.response) w.ereignis('delta', { content: e.response });

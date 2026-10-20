@@ -565,12 +565,13 @@ async function zaehleZug(antwort_id: string, stand: VerlaufAntwortStand, modell:
  * Schreiber fuer die laufende Antwortzeile. Schreibvorgaenge laufen nacheinander (nie zwei UPDATEs derselben Zeile
  * gleichzeitig); nach abschliessen schreibt er nichts mehr. modell = tatsaechliches Modell (Kontextfenster). drossel_ms nur fuer Tests.
  */
-export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: number; modell?: string | null; meta?: Record<string, unknown> } & VerlaufZugKontext = {}): VerlaufAntwortSchreiber {
+export function starteVerlaufAntwort(antwort_id: string, o: { drossel_ms?: number; modell?: string | null; meta?: Record<string, unknown>; start_ms?: number } & VerlaufZugKontext = {}): VerlaufAntwortSchreiber {
   const stand = neuerAntwortStand();
   // P22-T73: Zustellung aus der Warteschlange behaelt die Metadaten der Zeile (meta.warteschlange), der Schreiber ersetzt meta ganz.
   if (o.meta) stand.meta = { ...o.meta };
   const drossel = o.drossel_ms ?? VERLAUF_DROSSEL_MS;
-  const start = Date.now();
+  // P22-T71 B5: Einwurf-Antwort zaehlt ab dem Einwurf (der Schreiber startet erst bei der Zustellung).
+  const start = o.start_ms ?? Date.now();
   let timer: NodeJS.Timeout | null = null;
   let kette: Promise<void> = Promise.resolve();
   let fertig = false;

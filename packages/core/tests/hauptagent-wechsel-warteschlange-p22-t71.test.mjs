@@ -16,10 +16,10 @@
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
-import {readFileSync} from 'node:fs';
+import {readFileSync,realpathSync} from 'node:fs';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {mkdtemp,mkdir,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {spawn} from 'node:child_process';
 
@@ -221,8 +221,30 @@ try{
    const p3=await C.pruefeWrapperProzess(k2.pid,'hauptagent',HP,proj,null);
    check(p3.zustand==='ungeprueft'&&p3.grund?.includes('cwd'),'Legacy-Lauf behaelt die cwd-Pruefung (Abweichung cwd benannt)',p3);
   }finally{try{process.kill(k2.pid,'SIGKILL');}catch{/* Prozess schon beendet */}}
+  // B1: pnpm-Layout des Runtime-Images (core und agents in getrennten .pnpm-Ordnern). Das gestartete Skript liegt dort, wo der Spawn
+  // es per require.resolve findet; der Monorepo-relative Pfad von core aus existiert nicht -> frueher JEDER Stop 'UNGEPRUEFT'.
+  const pnpmWrapper=join(tmp,'opt','node_modules','.pnpm','@synapse+agents@file+packages+agents_ws@8.20.0','node_modules','@synapse','agents','dist','wrapper.js');
+  await mkdir(dirname(pnpmWrapper),{recursive:true});
+  await writeFile(pnpmWrapper,'setInterval(()=>{},1000);\n');
+  const k4=spawn(process.execPath,[pnpmWrapper],{cwd:tmp,detached:true,stdio:'ignore',
+   env:{PATH:process.env.PATH,SYNAPSE_AGENT_NAME:'hauptagent',SYNAPSE_PROJECT_NAME:HP,SYNAPSE_PROJECT_PATH:proj,SYNAPSE_AGENT_IDENTITY_ID:id}});
+  try{
+   await pause(300);
+   C.registriereWrapperSkript(null);
+   const p4=await C.pruefeWrapperProzess(k4.pid,'hauptagent',HP,proj,id);
+   check(p4.zustand==='ungeprueft'&&p4.grund?.includes('skript'),'ohne Registrierung: Skript im pnpm-Layout nicht erkannt (Befund B1 nachgestellt)',p4);
+   C.registriereWrapperSkript(pnpmWrapper);
+   check((await C.erwarteteWrapperSkripte()).includes(realpathSync(pnpmWrapper)),'registrierter Spawn-Pfad zaehlt zu den erwarteten Skripten');
+   const p5=await C.pruefeWrapperProzess(k4.pid,'hauptagent',HP,proj,id);
+   check(p5.zustand==='wrapper','mit registriertem Spawn-Pfad: pnpm-Skript erkannt',p5);
+   let gestoppt=null;
+   const zugriff={identityId:()=>id,projektpfad:async()=>proj,wrapperPid:async()=>k4.pid,setzeGestoppt:async(n,p,pid)=>{gestoppt=pid;}};
+   const st=await C.stoppeLokalenWrapper('hauptagent',proj,HP,zugriff,{signal:'SIGTERM',frist_ms:3000,erwartete_pid:k4.pid});
+   check(st.success===true&&st.steps?.prozess_beendet===true&&gestoppt===k4.pid,'Stop im pnpm-Layout: Signal gesendet, Prozesstod nachgewiesen, Zeile per PID gestoppt',st);
+  }finally{C.registriereWrapperSkript(null);try{process.kill(k4.pid,'SIGKILL');}catch{/* Prozess schon beendet */}}
   const src=readFileSync(join(repo,'packages/mcp-server/dist/tools/specialists.js'),'utf8');
   check(/cwd:\s*projectPath,\s*detached:\s*true/.test(src),'Spawn startet den Wrapper im Projektordner');
+  check(src.includes('registriereWrapperSkript(resolveWrapperPath())'),'mcp-server registriert den Spawn-Pfad beim Laden');
   const w=readFileSync(join(repo,'packages/agents/dist/wrapper.js'),'utf8');
   check(w.includes("process.on('SIGUSR2'")&&w.includes('ohneSicherung'),'Wrapper: SIGUSR2 = Stop ohne Speicher-Runde');
  });
@@ -387,10 +409,14 @@ try{
    const absender=(await pool.query('SELECT from_agent FROM specialist_inbox WHERE id=$1',[tb.inbox_id])).rows[0]?.from_agent;
    check(absender==='user','Inbox-Absender user statt koordinator',absender);
    const ew=await neuerTurn('Einwurf bitte',0,'einwurf',tb.inbox_id);
+   // B5: Einwurf vor 5 s -> die Antwortzeile zaehlt ihre Dauer ab dem Einwurf (nicht '0.0 s').
+   await pool.query("UPDATE hauptagent_verlauf SET meta=jsonb_set(meta,'{warteschlange,seit}',to_jsonb(to_char((NOW()-interval '5 seconds') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))) WHERE id=$1::bigint",[ew.antwort_id]);
    check((await C.fuehreMainWarteschlangeAus({identity_id:MAIN,runtime:'claude',dienste})).grund==='nur_einwuerfe','Einwurf wartet auf die Zustellung, nicht auf den Takt');
    const zu=await C.fuehreZustellungAus({identity_id:MAIN,runtime:'claude',optionen:opt});
    const ze=await zeile(ew.antwort_id);
    check(zu.zugestellt>=1&&ze.status==='fertig'&&ze.text==='Antwort auf den Einwurf','Einwurf: Antwort in der wartenden Zeile',{zu,ze});
+   const zugE=(await pool.query('SELECT zug FROM hauptagent_verlauf WHERE id=$1::bigint',[ew.antwort_id])).rows[0]?.zug;
+   check(zugE?.dauer_ms>=4_000,'Einwurf-Antwort: Dauer ab dem Einwurf',zugE);
    const paar=(await pool.query("SELECT count(*)::int n FROM hauptagent_verlauf WHERE identity_id=$1 AND rolle='nachricht'",[MAIN])).rows[0].n;
    check(paar===0,'kein zusaetzliches Nachricht/Antwort-Paar');
    // Einwurf, den der Main anders gelesen hat -> aufgeraeumt statt ewig wartend

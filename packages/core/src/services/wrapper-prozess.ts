@@ -20,6 +20,25 @@ export async function lokalerProjektpfad(project: string): Promise<string | null
   return rows.length === 1 && rows[0].hostname === hostname() ? rows[0].path : null;
 }
 
+/**
+ * P22-T71 B1: das Wrapper-Skript, wie der Spawn es aufloest (mcp-server registriert require.resolve('@synapse/agents/dist/wrapper.js')
+ * beim Laden). Relativ zu core ('../../../agents/dist/wrapper.js') stimmt es nur im Monorepo: im pnpm-Layout des Runtime-Images liegt
+ * core unter node_modules/.pnpm/@synapse+core.../node_modules/@synapse/core, agents aber unter .pnpm/@synapse+agents... -> der relative
+ * Pfad existiert nicht, realpath warf ENOENT und JEDER Stop endete als 'Prozesstod UNGEPRUEFT: Prozessidentitaet nicht vollstaendig lesbar'.
+ */
+let registriertesWrapperSkript: string | null = null;
+export function registriereWrapperSkript(pfad: string | null): void {
+  registriertesWrapperSkript = pfad;
+}
+
+/** Echte Pfade aller bekannten Wrapper-Skripte (registriert, SYNAPSE_WRAPPER_SKRIPT, Monorepo-relativ); nicht vorhandene fallen weg. */
+export async function erwarteteWrapperSkripte(): Promise<string[]> {
+  const kandidaten = [registriertesWrapperSkript, process.env.SYNAPSE_WRAPPER_SKRIPT || null,
+    fileURLToPath(new URL('../../../agents/dist/wrapper.js', import.meta.url))].filter((k): k is string => !!k);
+  const echt = await Promise.all(kandidaten.map(k => realpath(k).catch(() => null)));
+  return [...new Set(echt.filter((k): k is string => !!k))];
+}
+
 export async function pruefeWrapperProzess(pid: number, name: string, project: string, projectPath: string, identityId?: string | null): Promise<WrapperIdentitaet> {
   if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid || process.platform !== 'linux') {
     return { zustand: 'ungeprueft', grund: 'PID oder Betriebssystem nicht sicher prüfbar' };
@@ -32,7 +51,7 @@ export async function pruefeWrapperProzess(pid: number, name: string, project: s
     const [cmd, env, erwartet, cwd] = await Promise.all([
       readFile('/proc/'+pid+'/cmdline','utf8'),
       readFile('/proc/'+pid+'/environ','utf8'),
-      realpath(fileURLToPath(new URL('../../../agents/dist/wrapper.js', import.meta.url))),
+      erwarteteWrapperSkripte(),
       realpath('/proc/'+pid+'/cwd'),
     ]);
     const argv=cmd.split('\0').filter(Boolean), vars=new Map(env.split('\0').map(v=>{const i=v.indexOf('=');return [v.slice(0,i),v.slice(i+1)]}));
@@ -42,7 +61,7 @@ export async function pruefeWrapperProzess(pid: number, name: string, project: s
     // (Befunde 37e3ff9d/cdf29dc3). Die Identitaet (SYNAPSE_AGENT_IDENTITY_ID) plus Skript, Name, Projekt und Projektpfad ist eindeutig.
     // Die Pruefung nennt jetzt, WAS nicht passt (sichtbar im Stop-Ergebnis).
     const abweichend = [
-      argv.length!==2 ? 'argv' : '', await realpath(argv[1] ?? '').catch(()=>null)!==erwartet ? 'skript' : '',
+      argv.length!==2 ? 'argv' : '', !erwartet.includes(await realpath(argv[1] ?? '').catch(()=>'')) ? 'skript' : '',
       vars.get('SYNAPSE_AGENT_NAME')!==name ? 'agent' : '', vars.get('SYNAPSE_PROJECT_NAME')!==project ? 'projekt' : '',
       (vars.get('SYNAPSE_AGENT_IDENTITY_ID') || null) !== (identityId ?? null) ? 'identitaet' : '',
       resolve(vars.get('SYNAPSE_PROJECT_PATH')||'')!==resolve(projectPath) ? 'projektpfad' : '',
