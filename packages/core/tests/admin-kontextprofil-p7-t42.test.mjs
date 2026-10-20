@@ -17,6 +17,8 @@ const w1bAktionen = ['profil_schalter_status', 'profil_schalter_setzen', 'profil
   'ausweis_fristen',
   // P22-T44: additive Aktionen Ausweis fuer mehrere Projekte.
   'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen',
+  // P22-T68: additive Aktionen der Web-UI-Ausweisverwaltung.
+  'profil_lesen', 'identitaet_deaktivieren', 'identitaet_reaktivieren',
   // P22-T7: additive Hauptagent-Heartbeat- und Verbrauchsaktionen.
   'hauptagent_heartbeat', 'agent_verbrauch',
   // P22-T8: additive Aktionen des kostenpflichtigen API-Agenten.

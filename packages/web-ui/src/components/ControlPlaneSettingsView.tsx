@@ -5,6 +5,8 @@ import { AgentRuntimeControl } from './CodexRuntimeControl';
 import { ModelPoolTable } from './ModelPoolTable';
 import { AusweisFristenPanel } from './AusweisFristenPanel';
 import { AusweisVisaPanel } from './AusweisVisaPanel';
+import { AusweisIdentitaetenPanel } from './AusweisIdentitaetenPanel';
+import { AUSWEIS_OEFFNEN_EVENT, nimmWartendesAusweisZiel, type AusweisZiel } from '../ausweis-deeplink';
 import { FallSkillSchalterPanel } from './FallSkillSchalterPanel';
 import { ApiBudgetPanel } from './ApiBudgetPanel';
 import { HauptagentSteuerung } from './HauptagentSteuerung';
@@ -75,12 +77,24 @@ function AllWorkspacesPanel() {
 }
 
 export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, project }: { settings: SettingsViewModel; onChange: (patch: Partial<SettingsViewModel>) => void; theme: Theme; onTheme: (theme: Theme) => void; project: string }) {
-  const [category, setCategory] = useState<SettingsCategory>('main');
+  const [ausweisZiel, setAusweisZiel] = useState<AusweisZiel | null>(() => nimmWartendesAusweisZiel());
+  const [category, setCategory] = useState<SettingsCategory>(() => (ausweisZiel ? 'ausweis' : 'main'));
+  // P22-T68: Deep-Link aus Agententeam/Channel, auch wenn die Einstellungen schon offen sind.
+  useEffect(() => {
+    const oeffnen = () => {
+      const ziel = nimmWartendesAusweisZiel();
+      if (!ziel) return;
+      setAusweisZiel(ziel);
+      setCategory('ausweis');
+    };
+    window.addEventListener(AUSWEIS_OEFFNEN_EVENT, oeffnen);
+    return () => window.removeEventListener(AUSWEIS_OEFFNEN_EVENT, oeffnen);
+  }, []);
   const [settingsQuery, setSettingsQuery] = useState('');
   const categories: Array<{ id: SettingsCategory; label: string; detail: string; group: string }> = [
     { id: 'main', label: 'Main-Agent', detail: 'Runtime einrichten, zuweisen, API-Budget', group: 'Agentensteuerung' },
     { id: 'heartbeat', label: 'Heartbeat & Steuerung', detail: 'Heartbeat, Schalter, Wechsel, Verbrauch', group: 'Agentensteuerung' },
-    { id: 'ausweis', label: 'Agenten-Ausweis', detail: 'Fristen, Visa und Arbeitsfreigaben (mehrere Projekte)', group: 'Agentensteuerung' },
+    { id: 'ausweis', label: 'Agenten-Ausweis', detail: 'Ausweise und Profile verwalten, Fristen, Visa und Arbeitsfreigaben', group: 'Agentensteuerung' },
     { id: 'all-agents', label: 'Alle Agenten', detail: 'Laufzustände aller aktiven Projekte', group: 'Infrastruktur' },
     { id: 'all-workspaces', label: 'Alle Workspaces', detail: 'Workspaces aller Projekte', group: 'Infrastruktur' },
     { id: 'runtimes', label: 'Runtimes', detail: 'Claude Code und Codex steuern', group: 'Infrastruktur' },
@@ -102,7 +116,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
           {category === 'all-agents' && <AllAgentsPanel />}
           {category === 'all-workspaces' && <AllWorkspacesPanel />}
           {category === 'model-pool' && <ModelPoolTable />}
-          {category === 'ausweis' && <><AusweisFristenPanel project={project} /><AusweisVisaPanel project={project} /><FallSkillSchalterPanel project={project} /></>}
+          {category === 'ausweis' && <><AusweisIdentitaetenPanel project={project} ziel={ausweisZiel} /><AusweisFristenPanel project={project} /><AusweisVisaPanel project={project} /><FallSkillSchalterPanel project={project} /></>}
           {category === 'main' && <>
             <section aria-label="Hauptagent einrichten und zuweisen">
               <h3>Hauptagent einrichten und zuweisen</h3>

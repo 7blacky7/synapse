@@ -71,6 +71,8 @@ const W1B_AKTIONEN=['profil_schalter_status','profil_schalter_setzen','profil_ue
  'ausweis_fristen',
  // P22-T44: additive Aktionen Ausweis fuer mehrere Projekte
  'ausweis_visa','arbeitsfreigabe_erteilen','arbeitsfreigabe_entziehen',
+ // P22-T68: additive Aktionen der Web-UI-Ausweisverwaltung
+ 'profil_lesen','identitaet_deaktivieren','identitaet_reaktivieren',
  // P22-T36: additive Hauptagent-Aktionen
  'hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen',
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Aktionen
@@ -343,7 +345,7 @@ try{
    await pool.query('DELETE FROM agent_profil_schalter');
    C.leereAusweisKernCache(); // P22-T28: Kern-Puffer nach direktem SQL-Loeschen verwerfen
    const st0=await adm('profil_schalter_status',{project:P},KP);
-   check(st0.schalter.every(x=>!x.aktiv&&x.quelle==='standard'),'Produkt-Schalter Standard AUS');
+   check(st0.schalter.every(x=>x.aktiv===C.STANDARD_EIN.includes(x.funktion)&&x.quelle==='standard'),'Produkt-Schalter Standard AUS (ausser den Funktionen mit Standard EIN laut Katalog im Code)');
    for(const [a,args] of [['schattenprofil_liste',{}],['typ_liste',{}],['profil_uebersicht',{}],['persona_liste',{}]]){
     const r=await adm(a,{project:P,...args},KP);
     check(r.success===false&&r.error==='funktion_aus'&&r.details?.funktion,'AUS: '+a+' -> funktion_aus');
@@ -477,7 +479,7 @@ try{
    const spoofBody=await call('PUT','/schalter','access',{profil_funktion:'persona',aktiv:true,grund:'Spoof',herkunft:{akteur:'user',kanal:'web-ui-chat'},agent_id:'user'});
    check(spoofBody.status===403,'Herkunft im Body erzeugt keinen User');
    const s0=await call('GET','/schalter','web');
-   check(s0.status===200&&s0.headers['cache-control']==='no-store'&&s0.body.schalter.every(x=>!x.aktiv),'User-Sitzung: Schalter lesen, no-store, Standard AUS');
+   check(s0.status===200&&s0.headers['cache-control']==='no-store'&&s0.body.schalter.every(x=>x.aktiv===C.STANDARD_EIN.includes(x.funktion)),'User-Sitzung: Schalter lesen, no-store, Standard AUS (Katalog im Code)');
    const aus=await call('GET','/persona','web');
    check(aus.status===409&&aus.body.error.code==='funktion_aus','Schalter AUS: 409 funktion_aus');
    const modusAlt=process.env.SYNAPSE_AGENT_BEZUG_MODUS;process.env.SYNAPSE_AGENT_BEZUG_MODUS='beide'; // P22-T31 Punkt 3: 'alle' EIN braucht Modus beide
@@ -489,8 +491,9 @@ try{
    // P23-T3: tool_antworten_schlank und shell_fremde_ergebnisse ebenso nur ausdruecklich.
    // P22-T7: verbrauch ebenfalls nur ausdruecklich.
    // P22-T58: runtime_ueberwachung ebenfalls nur ausdruecklich.
-   const nurAusdruecklich=['mehrprojekt','tool_beschreibungen_kurz','fall_skill_hinweis','fall_skill_faelle','tool_liste_je_verbindung','tool_antworten_schlank','shell_fremde_ergebnisse','verbrauch','runtime_ueberwachung'];
-   check(an.status===200&&an.body.schalter.filter(x=>!nurAusdruecklich.includes(x.funktion)).every(x=>x.aktiv)&&nurAusdruecklich.every(f=>an.body.schalter.some(x=>x.funktion===f&&!x.aktiv)),'User setzt global (PG)');
+   // P22-T68: gegen den Katalog im Code (NUR_AUSDRUECKLICH, STANDARD_EIN) statt gegen eine feste Liste; neue Funktionen brauchen keine Testpflege.
+   const nurAusdruecklich=[...C.NUR_AUSDRUECKLICH];
+   check(an.status===200&&an.body.schalter.filter(x=>!nurAusdruecklich.includes(x.funktion)).every(x=>x.aktiv)&&nurAusdruecklich.every(f=>an.body.schalter.some(x=>x.funktion===f&&x.aktiv===C.STANDARD_EIN.includes(f)))&&nurAusdruecklich.every(f=>C.PROFIL_PRODUKT_FUNKTIONEN.includes(f)),'User setzt global (PG)');
    const uebersicht=await call('GET','/uebersicht','web');
    check(uebersicht.status===200&&uebersicht.body.profile.some(x=>x.identity_id===sid)&&!/sai_[a-f0-9]/.test(JSON.stringify(uebersicht.body)),'Uebersicht tokenfrei');
    const pnew=await call('POST','/persona','web',{persona_name:'rest-persona',persona_inhalt:{stil:'ruhig'}});

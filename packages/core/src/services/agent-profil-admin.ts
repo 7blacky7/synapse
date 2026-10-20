@@ -30,6 +30,8 @@ import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './
 import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './files-plan-ablauf-schalter.js';
 import { listeAusweisVisa, erteileArbeitsfreigabe, entzieheArbeitsfreigabe } from './agent-ausweis-projekte.js';
 import { aktuellerAgentAufruf } from './agent-bezug.js';
+import { deaktiviereAgentIdentitaet, reaktiviereAgentIdentitaet } from './agent-identitaet.js';
+import { HINWEIS_KATALOG } from './hinweis-katalog.js';
 
 const W1B_KERN_AKTIONEN = [
   'profil_schalter_status', 'profil_schalter_setzen', 'profil_uebersicht',
@@ -43,6 +45,8 @@ const W1B_KERN_AKTIONEN = [
   'ausweis_fristen',
   // P22-T44: Ausweis fuer mehrere Projekte - Visa/Einwanderungen in DIESEM Projekt sehen, Arbeitsfreigabe erteilen/entziehen.
   'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen',
+  // P22-T68: Web-UI-Ausweisverwaltung - Detail lesen, Identitaet deaktivieren/reaktivieren.
+  'profil_lesen', 'identitaet_deaktivieren', 'identitaet_reaktivieren',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
 export const W1B_ADMIN_ACTIONS = [...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS] as const;
@@ -108,6 +112,8 @@ const GRUPPE: Record<W1bAdminAction, ProfilProduktFunktion | null> = {
   ausweis_fristen: null,
   // P22-T44: Verwaltung des eigenen Projekts; ob Visa entstehen, entscheidet der Schalter mehrprojekt der Heimat des Agenten.
   ausweis_visa: null, arbeitsfreigabe_erteilen: null, arbeitsfreigabe_entziehen: null,
+  // P22-T68: Lesen haengt an profilverwaltung; (De-)Aktivieren wie die Ausweis-Aktionen am Ausweis-Kern (freigabe() im Dienst).
+  profil_lesen: 'profilverwaltung', identitaet_deaktivieren: null, identitaet_reaktivieren: null,
 };
 
 type Args = Record<string, unknown>;
@@ -173,6 +179,55 @@ async function pruefeSchalter(funktion: ProfilProduktFunktion, project: string):
   if (!st.aktiv) throw new ProfilVerwaltungFehler('funktion_aus', { funktion, quelle: st.quelle, ...(st.letzter_fehler ? { letzter_fehler: st.letzter_fehler } : {}) });
 }
 
+/** P22-T68: Principal fuer die Identitaetsdienste aus dem Akteur (User, Legacy-Koordinator, Identitaet). */
+function identitaetsPrincipal(akteur: AusweisAkteur): Parameters<typeof deaktiviereAgentIdentitaet>[2] {
+  if (akteur.art === 'user') return { system: 'user' };
+  if (akteur.art === 'legacy_koordinator') return { legacy_koordinator: akteur.agent_id };
+  if (akteur.art === 'daemon') return { system: 'daemon' };
+  return akteur.principal;
+}
+
+/** Tokenfreie Detailsicht einer Identitaet (P22-T68): keine Hashes, keine Tokenwerte, kein Freitext-Kontext (kann Ausweise enthalten). */
+async function leseIdentitaetDetail(project: string, ziel: string, akteur: W1bAkteur): Promise<Record<string, unknown>> {
+  const db = getPool();
+  const ohneKontext = (v: unknown): { wert: unknown; kontext_vorhanden: boolean } => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return { wert: v, kontext_vorhanden: false };
+    const { kontext, ...rest } = v as Record<string, unknown>;
+    return { wert: rest, kontext_vorhanden: kontext !== undefined && kontext !== null };
+  };
+  const ident = await db.query(
+    `SELECT id AS identity_id, agent_id, name, instanz_nr, rolle, status, profil, startrezept, typ_id, typ_revision, profil_revision,
+            modell_bestaetigt, modell_selbstauskunft, erstellt_von, erstellt_am, zuletzt_aktiv, context_epoch
+       FROM agent_identitaeten WHERE id=$1 AND project=$2`, [ziel, project]);
+  const zeile = ident.rows[0];
+  if (!zeile) throw new ProfilVerwaltungFehler('identitaet_unbekannt');
+  const [lauf, tokens, auditZeilen, persona, bindungen] = await Promise.all([
+    db.query('SELECT id, context_epoch, erstellt_am FROM agent_identitaet_laeufe WHERE identity_id=$1 AND status=$2 ORDER BY erstellt_am DESC LIMIT 1', [ziel, 'aktiv']),
+    db.query(`SELECT id, token_praefix, start_art, gueltig_bis, erstellt_am, zuletzt_benutzt, widerrufen_am, widerrufen_grund, (token_offen IS NOT NULL) AS abrufbar
+                FROM agent_identitaet_tokens WHERE identity_id=$1 ORDER BY erstellt_am DESC LIMIT 10`, [ziel]),
+    db.query('SELECT wer, wann, aktion, grund FROM agent_identitaet_audit WHERE identity_id=$1 ORDER BY wann DESC, id DESC LIMIT 20', [ziel]),
+    db.query('SELECT vorlage_id, version FROM agent_persona_zuweisungen WHERE identity_id=$1', [ziel]),
+    db.query('SELECT task_id, art FROM plan_task_bindungen WHERE project=$1 AND position($2 in identity_ids::text) > 0 ORDER BY task_id LIMIT 50', [project, ziel]).catch(() => ({ rows: [] as unknown[] })),
+  ]);
+  let wirksam: unknown = null;
+  try {
+    const w = await W1B_DIENSTE.profil.leseWirksamesProfil(ziel, akteur);
+    wirksam = { profil_revision: w.profil_revision, typ: w.typ, werte: ohneKontext(w.werte).wert, herkunft: w.herkunft };
+  } catch { wirksam = null; }
+  const profil = ohneKontext(zeile.profil);
+  return {
+    identitaet: { ...zeile, profil: profil.wert, kontext_vorhanden: profil.kontext_vorhanden, startrezept: ohneKontext(zeile.startrezept).wert },
+    wirksam,
+    lauf: lauf.rows[0] ?? null,
+    tokens: tokens.rows,
+    audit: auditZeilen.rows,
+    persona: persona.rows[0] ?? null,
+    gebundene_tasks: bindungen.rows,
+    // P22-T68: Hinweisarten fuer das Formular (an/aus je Art; Pflichtarten sind nicht abschaltbar).
+    hinweis_katalog: HINWEIS_KATALOG.map((e) => ({ schluessel: e.schluessel, klasse: e.klasse, zweck: e.zweck, standard: e.standard })),
+  };
+}
+
 const AUSWEIS_AKTIONEN = ['agent_vorbereiten', 'token_abrufen', 'token_loeschen'] as const;
 type AusweisAktion = typeof AUSWEIS_AKTIONEN[number];
 function istAusweisAktion(a: string): a is AusweisAktion { return (AUSWEIS_AKTIONEN as readonly string[]).includes(a); }
@@ -235,7 +290,8 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
       // Tokenfrei: nur Profil-/Teamdaten und ob ein Token abrufbar ist, nie ein Tokenwert.
       const r = await getPool().query(
         `SELECT i.id AS identity_id, i.agent_id, i.name, i.instanz_nr, i.rolle, i.status, i.profil_revision, i.typ_id, i.typ_revision,
-           i.zuletzt_aktiv, i.context_epoch,
+           i.zuletzt_aktiv, i.context_epoch, i.modell_bestaetigt, i.modell_selbstauskunft,
+           EXISTS (SELECT 1 FROM agent_identitaet_laeufe l WHERE l.identity_id=i.id AND l.status='aktiv') AS lauf_aktiv,
            EXISTS (SELECT 1 FROM agent_identitaet_tokens t WHERE t.identity_id=i.id AND t.widerrufen_am IS NULL AND t.token_offen IS NOT NULL) AS token_abrufbar,
            (SELECT CASE WHEN t.gueltig_bis IS NULL THEN 'aktiv' WHEN t.gueltig_bis>NOW() THEN 'ausgestellt' ELSE 'verfallen' END
               FROM agent_identitaet_tokens t WHERE t.identity_id=i.id AND t.widerrufen_am IS NULL AND t.token_offen IS NOT NULL LIMIT 1) AS ausweis_zustand,
@@ -400,6 +456,22 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
         ? { ...(await erteileArbeitsfreigabe(project, a.ziel_identity_id, a.grund, recht)) }
         : { ...(await entzieheArbeitsfreigabe(project, a.ziel_identity_id, a.grund, recht)) };
     }
+    case 'profil_lesen': {
+      // P22-T68: Detail fuer die Web-UI; Rechte wie profil_historie (Verwalter oder eigenes Profil).
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      return { project, ziel_identity_id: ziel, ...(await leseIdentitaetDetail(project, ziel, akteur)) };
+    }
+    case 'identitaet_deaktivieren': {
+      // P22-T68: Verwalter (User, Koordinator dieses Projekts) laut pruefeProfilVerwalter im Dispatcher; Dienst prueft erneut.
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      await deaktiviereAgentIdentitaet(project, ziel, identitaetsPrincipal(akteurRoh), pflichtText(a.grund, 'grund_fehlt'));
+      return { project, ziel_identity_id: ziel, status: 'deaktiviert' };
+    }
+    case 'identitaet_reaktivieren': {
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      await reaktiviereAgentIdentitaet(project, ziel, identitaetsPrincipal(akteurRoh), pflichtText(a.grund, 'grund_fehlt'));
+      return { project, ziel_identity_id: ziel, status: 'aktiv', hinweis: 'Kein neuer Ausweis: bei Bedarf agent_vorbereiten mit ziel_identity_id.' };
+    }
     case 'web_ui_koordinator_token': {
       const t = await rufeWebUiKoordinatorTokenAb(project, akteur, s(a, 'ziel_identity_id'));
       return { ...t, hinweis: 'Token des Web-UI-Koordinatorprofils fuer Uebernahme/Weitergabe; nie in Channel, Thought, Log, URL oder Startrezept ablegen.' };
@@ -423,7 +495,7 @@ function fehlerAntwort(action: string, e: unknown): Record<string, unknown> {
 
 /** HTTP-Status fuer die REST-Routen; der Fehlercode bleibt der Vertrag. */
 export function w1bFehlerStatus(code: string): number {
-  if (code === 'recht_fehlt' || code === 'eigenprofil_nicht_aenderbar' || code === 'main_rahmen_nur_user') return 403;
+  if (code === 'recht_fehlt' || code === 'identitaet_recht_fehlt' || code === 'eigenprofil_nicht_aenderbar' || code === 'main_rahmen_nur_user') return 403;
   if (code === 'w1b_nicht_umgesetzt') return 501;
   if (code === 'w1b_admin_fehler' || code === 'verwaltung_speicher_fehler' || code === 'ausweis_fristen_speicher_fehler' || code === 'files_plan_ablauf_speicher_fehler' || code === 'ausweis_projekt_speicher_fehler') return 500;
   if (/_unbekannt$|_nicht_gefunden$/.test(code) || code === 'keine_zuweisung' || code === 'ausweis_fehlt') return 404;
@@ -432,7 +504,7 @@ export function w1bFehlerStatus(code: string): number {
   return 400;
 }
 
-const EIGENPROFIL_AKTIONEN: readonly string[] = ['profil_aendern', 'profil_rollback', 'profil_historie'];
+const EIGENPROFIL_AKTIONEN: readonly string[] = ['profil_aendern', 'profil_rollback', 'profil_historie', 'profil_lesen'];
 /**
  * P22-T53 (User 58c38995): Eigenprofil vor der Verwalterpruefung. Aendern/Rollback des eigenen Profils durch eine Rolle ausser
  * koordinator/main -> eigenprofil_nicht_aenderbar (statt recht_fehlt). true = Eigenprofil des Main-Agenten: keine Verwalterpruefung,
@@ -442,7 +514,7 @@ function eigenprofilOhneVerwalter(action: string, args: Args, wer: AusweisAkteur
   if (!EIGENPROFIL_AKTIONEN.includes(action) || wer.art !== 'identitaet') return false;
   const p = wer.principal;
   if (p.project !== project || s(args, 'ziel_identity_id') !== p.identity_id) return false;
-  if (action !== 'profil_historie' && !darfProfilAendern(wer, { identity_id: p.identity_id, project })) throw new ProfilVerwaltungFehler('eigenprofil_nicht_aenderbar');
+  if (action !== 'profil_historie' && action !== 'profil_lesen' && !darfProfilAendern(wer, { identity_id: p.identity_id, project })) throw new ProfilVerwaltungFehler('eigenprofil_nicht_aenderbar');
   return p.rolle === MAIN_ROLLE;
 }
 

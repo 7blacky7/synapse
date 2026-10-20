@@ -4,6 +4,7 @@ import MainAgentDashboard from './MainAgentDashboard';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
 import { InfrastructureView } from './InfrastructureView';
 import { ControlPlaneSettingsView } from './ControlPlaneSettingsView';
+import { AUSWEIS_OEFFNEN_EVENT, oeffneAusweisVerwaltung, type AusweisZiel } from '../ausweis-deeplink';
 import { KnowledgeView } from './KnowledgeView';
 import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ChannelRailListe } from './ChannelRailListe';
@@ -20,6 +21,7 @@ import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
 import {
   herkunftText,
   loadChannelMemberViewModels,
+  PERSOENLICHES_PROJEKT,
   loadChannelMessageViewModels,
   loadChannelViewModels,
   loadProjectTeamViewModels,
@@ -1412,7 +1414,7 @@ function ChannelsView({
               const windowKey = project + '::' + selectedChannel + '::' + (agent.identityId ? 'identity:' + agent.identityId : 'legacy:' + agent.name);
               const isOpen = openAgentWindows.some((item) => item.key === windowKey);
               const isActive = openAgentWindows[openAgentWindows.length - 1]?.key === windowKey;
-              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} title={agent.name + ' · ' + agent.role + ' · ' + herkunftText(agent.herkunft)} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><strong>{agent.name}</strong></button>;
+              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} title={agent.name + ' · ' + agent.role + ' · ' + herkunftText(agent.herkunft)} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><strong>{agent.name}</strong>{agent.identityId && <span role="link" tabIndex={0} className="channel-agent-ausweis" title="Ausweis und Profil verwalten" onClick={(event) => { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); } }}>Ausweis</span>}</button>;
             })}
           </div>
           {openAgentWindows.map((agentWindow, index) => (
@@ -1521,6 +1523,7 @@ function ProjectAgentTeamView({ project }: { project: string }) {
       {current && <div className="entity-detail">
         <div className="detail-status"><i className={agentTon(current)} /><span>{current.status}</span><b>PROJEKT</b></div>
         <h2>{current.name}</h2>
+        <p><button type="button" onClick={() => oeffneAusweisVerwaltung({ project, agentId: current.name })}>Ausweis und Profil verwalten</button></p>
         <p>{current.currentTask ? 'Aktuelle Task: ' + current.currentTask : 'Keine aktuelle Task gemeldet.'}</p>
         <dl>
           <div><dt>Modell</dt><dd>{current.model || '–'}</dd></div>
@@ -1633,6 +1636,16 @@ function accentContrast(hexColor: string) {
 function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
   const [theme, setTheme] = useState<Theme>('dark');
   const [area, setArea] = useState<Area>('main-agent');
+  // P22-T68: Deep-Link zur Ausweis-Verwaltung (Agententeam, Channel-Chips): Projekt setzen und Einstellungen oeffnen.
+  useEffect(() => {
+    const oeffnen = (event: Event) => {
+      const ziel = (event as CustomEvent<AusweisZiel>).detail;
+      if (ziel?.project && ziel.project !== PERSOENLICHES_PROJEKT) setSelectedProject(ziel.project);
+      setArea('settings');
+    };
+    window.addEventListener(AUSWEIS_OEFFNEN_EVENT, oeffnen);
+    return () => window.removeEventListener(AUSWEIS_OEFFNEN_EVENT, oeffnen);
+  }, []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return window.localStorage.getItem('synapse.sidebar.collapsed') === '1';

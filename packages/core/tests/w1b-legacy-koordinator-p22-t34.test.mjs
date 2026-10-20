@@ -123,6 +123,10 @@ try{
   ausweis_visa:()=>({}),
   arbeitsfreigabe_erteilen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
   arbeitsfreigabe_entziehen:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
+  // P22-T68: Detail lesen, Identitaet (de)aktivieren (Verwalter: User, Koordinator, Legacy-Koordinator). Deaktivieren steht vor Reaktivieren, t34-z bleibt am Ende aktiv.
+  profil_lesen:()=>({ziel_identity_id:'t34-z'}),
+  identitaet_deaktivieren:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
+  identitaet_reaktivieren:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
   // P22-T8: kostenpflichtiger API-Agent - Setzen nur User, Lesen User + Hauptagent selbst; Koordinatoren nie (Tabellen 120 hier
   // nicht angelegt -> User bekommt Fachfehler, kein recht_fehlt).
   api_status:()=>({}),

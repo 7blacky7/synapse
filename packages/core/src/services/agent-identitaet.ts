@@ -434,3 +434,20 @@ export async function deaktiviereAgentIdentitaet(project: string, identityId: st
     await audit(c, identityId, recht.wer, 'deaktivieren', { status: r.rows[0].status }, { status: 'deaktiviert' }, grund);
   });
 }
+/**
+ * P22-T68: Gegenstueck zu deaktiviereAgentIdentitaet. Nur status deaktiviert -> aktiv mit Audit; es entsteht kein Lauf und kein Ausweis
+ * (widerrufene/geloeschte Ausweise bleiben es, der Agent bekommt per agent_vorbereiten einen neuen). Schon aktiv: keine Aenderung.
+ */
+export async function reaktiviereAgentIdentitaet(project: string, identityId: string, principal: AgentIdentitaetPrincipal, grund: string): Promise<void> {
+  await freigabe(project);
+  if (!text(grund)) throw new AgentIdentitaetFehler('grund_fehlt');
+  await transaktion(async (c) => {
+    const recht = await berechtigung(c, project, principal);
+    if (!recht.verwaltung) throw new AgentIdentitaetFehler('identitaet_recht_fehlt');
+    const r = await c.query<{ status: string }>('SELECT status FROM agent_identitaeten WHERE id=$1 AND project=$2 FOR UPDATE', [identityId, project]);
+    if (!r.rows[0]) throw new AgentIdentitaetFehler('identitaet_unbekannt');
+    if (r.rows[0].status === 'aktiv') return;
+    await c.query("UPDATE agent_identitaeten SET status='aktiv' WHERE id=$1", [identityId]);
+    await audit(c, identityId, recht.wer, 'reaktivieren', { status: r.rows[0].status }, { status: 'aktiv' }, grund);
+  });
+}

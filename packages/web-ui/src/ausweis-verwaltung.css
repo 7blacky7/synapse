@@ -1,0 +1,65 @@
+.ausweis-verwaltung{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
+.ausweis-verwaltung>header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.ausweis-verwaltung>header span{color:var(--accent);font:800 7px "IBM Plex Mono",monospace}
+.ausweis-verwaltung>header h3{margin:4px 0 3px;font-size:15px}
+.ausweis-verwaltung>header p{margin:0;color:var(--muted);font-size:9px}
+.ausweis-verwaltung button{border:1px solid var(--border);background:var(--strong);color:var(--text);padding:6px 9px;cursor:pointer;font-size:9px}
+.ausweis-verwaltung button:disabled{opacity:.5;cursor:default}
+.ausweis-verwaltung button.aktiv{border-color:var(--accent);color:var(--accent)}
+.ausweis-verwaltung button.gefahr{border-color:var(--danger,#e74c3c);color:var(--danger,#e74c3c)}
+.av-kopf-knoepfe{display:flex;gap:6px;flex:0 0 auto}
+.av-hinweis{margin:0;border:1px solid var(--border);border-left:2px solid var(--warning,#f59e0b);background:var(--panel);padding:8px;font-size:9px}
+.av-grund label{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;align-items:center;border:1px solid var(--border);border-left:2px solid var(--accent);background:var(--panel);padding:8px}
+.av-grund small{grid-column:1/-1;color:var(--muted);font-size:8px}
+.av-grund input,.av-filter,.av-neu input,.av-neu select,.av-formular input,.av-formular select,.av-formular textarea,.av-frage input{min-width:0;border:1px solid var(--border);background:var(--strong);color:var(--text);padding:6px 7px;font-size:9px;font-family:inherit}
+.av-fehler{margin:0;border:1px solid var(--danger,#e74c3c);padding:8px;font-size:9px;color:var(--danger,#e74c3c)}
+.av-meldung{margin:0;border:1px solid var(--success);padding:8px;font-size:9px;color:var(--success)}
+.av-inhalt{display:grid;grid-template-columns:minmax(240px,34%) 1fr;border:1px solid var(--border);min-height:340px}
+.av-inhalt>aside{border-right:1px solid var(--border);min-width:0;display:flex;flex-direction:column}
+.av-inhalt>main{min-width:0;padding:12px;overflow:auto}
+.av-filter{margin:8px}
+.av-zeile{display:grid!important;grid-template-columns:1fr auto;gap:3px 6px;text-align:left;border:0!important;border-bottom:1px solid var(--border)!important;background:transparent!important;padding:8px 10px!important}
+.av-zeile.aktiv{background:var(--panel)!important;box-shadow:inset 3px 0 var(--accent)}
+.av-zeile.aus{opacity:.65}
+.av-zeile small{grid-column:1/-1;color:var(--muted);font-size:8px}
+.av-chip{font:800 7px "IBM Plex Mono",monospace;border:1px solid var(--border);padding:2px 5px;color:var(--muted)}
+.av-chip.av-aktiv{color:var(--success);border-color:var(--success)}
+.av-chip.av-deaktiviert{color:var(--danger,#e74c3c);border-color:var(--danger,#e74c3c)}
+.av-neu{display:grid;gap:6px;padding:10px;margin-top:auto;border-top:1px solid var(--border)}
+.av-neu b{font-size:9px}
+.av-titel{display:flex;align-items:center;gap:8px}
+.av-titel h4{margin:0;font-size:14px}
+.av-fakten{display:grid;grid-template-columns:repeat(2,1fr);margin:10px 0;border:1px solid var(--border)}
+.av-fakten div{padding:7px;border-right:1px solid var(--border);border-bottom:1px solid var(--border)}
+.av-fakten dt{color:var(--muted);font-size:7px}
+.av-fakten dd{margin:3px 0 0;font-size:9px;overflow-wrap:anywhere}
+.ausweis-verwaltung h5{margin:14px 0 6px;font-size:9px;color:var(--muted)}
+.av-leer{margin:4px 0;color:var(--muted);font-size:9px}
+.av-token{display:flex;gap:10px;margin:2px 0;font-size:9px}
+.av-token b{font-family:"IBM Plex Mono",monospace}
+.av-aktionen{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.av-frage{display:grid;gap:6px;border:1px solid var(--accent);background:var(--panel);padding:10px;margin:8px 0;font-size:9px}
+.av-frage>div{display:flex;gap:6px}
+.av-frage.av-gefahr{border-color:var(--danger,#e74c3c)}
+.av-offen code{display:block;padding:8px;background:var(--strong);overflow-wrap:anywhere;user-select:all;font-family:"IBM Plex Mono",monospace}
+.av-formular{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.av-formular label{display:grid;gap:3px;font-size:8px;color:var(--muted)}
+.av-formular label.breit,.av-formular fieldset.breit{grid-column:1/-1}
+.av-formular label small{color:var(--accent)}
+.av-formular fieldset{border:1px solid var(--border);padding:8px}
+.av-regelzeile{display:flex;gap:6px;align-items:center;margin:4px 0}
+.av-regelzeile input{flex:1}
+.av-bindung-task{flex:1;font-size:9px}
+.av-zuschnitt small,.av-formular fieldset small{display:block;color:var(--muted);font-size:8px;margin-bottom:4px}
+.av-kataloge{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.av-katalog{border:1px solid var(--border);padding:10px;min-width:0}
+.av-katalog h4{margin:0 0 8px;font-size:12px}
+.av-hinweisliste{max-height:240px;overflow:auto;border:1px solid var(--border);padding:4px}
+@media(max-width:1100px){.av-kataloge{grid-template-columns:1fr}}
+.av-zusatz{margin-top:6px}
+.av-checks{display:flex;gap:12px;flex-wrap:wrap;margin:4px 0}
+.av-checks label{display:flex;align-items:center;gap:4px;font-size:9px;color:var(--text)}
+.channel-agent-ausweis{margin-left:6px;padding:1px 5px;border:1px solid var(--border);font:700 7px "IBM Plex Mono",monospace;color:var(--accent);cursor:pointer}
+.channel-agent-ausweis:hover{border-color:var(--accent)}
+.av-text{border:1px solid var(--border);background:var(--panel);padding:8px;font-size:9px}
+@media(max-width:1100px){.av-inhalt{grid-template-columns:1fr}.av-inhalt>aside{border-right:0;border-bottom:1px solid var(--border)}.av-formular{grid-template-columns:1fr}}
