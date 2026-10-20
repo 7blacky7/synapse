@@ -116,7 +116,7 @@ try{
   check(!('channels' in ob),'B/T50 channels: Identitaet ohne Channels (nie beigetreten) und ohne Standardchannel -> Feld fehlt ganz');
   check(/admin\(action:"index_stats"/.test(ob?.statistik_abruf??''),'B Statistiken/Jev nur als Abrufzeile');
   check(ob?.handoff?.id==='t49-h-neu'&&typeof ob.handoff.zeit==='string'&&ob.handoff.empfehlung==='Zuerst lesen: thought(action:"get", id:"t49-h-neu")','B handoff = neuester eigener session-uebergabe-Thought (ID + Zeit + Empfehlung Zuerst lesen)');
-  check(ob?.aktiver_plan?.kurz_id==='P1'&&ob.aktiver_plan.titel==='Aktiv'&&ob.aktiver_plan.offen===3&&!('name' in ob.aktiver_plan)&&JSON.stringify(ob.aktiver_plan.tasks)==='["P1-T1 Aufgabe A","P1-T3 Aufgabe C","P1-T4 Aufgabe D"]','B aktiver_plan: Kurz-ID + kurzer Titel + Anzahl offen, nur offene, nicht zurueckgestellte Tasks');
+  check(ob?.aktiver_plan?.kurz_id==='P1'&&ob.aktiver_plan.titel==='Aktiv'&&ob.aktiver_plan.offen===3&&!('name' in ob.aktiver_plan)&&JSON.stringify(ob.aktiver_plan.tasks)==='["P1-T4 Aufgabe D","P1-T3 Aufgabe C","P1-T1 Aufgabe A"]','B aktiver_plan: Kurz-ID + kurzer Titel + Anzahl offen, nur offene, nicht zurueckgestellte Tasks (P22-T83: nach Prioritaet)');
   check(JSON.stringify(ob?.top3)==='["1 P2-T1 High eins","2 P2-T2 High zwei","3 P2-T3 High drei"]','B top3: drei offene high-Tasks anderer Plaene, nummeriert, ohne zurueckgestellten Plan');
   check(ob?.regeln?.namen?.includes('regel-pflicht-x')&&ob.regeln.namen.includes('regel-normal-y')&&!ob.regeln.voll&&/memory\(action:"read"/.test(ob.regeln.abruf??''),'B regeln: nur Namen + Abrufzeile (ohne Typ kein Volltext)');
   // P22-T50: Ballast raus - kein fortsetzung-Block, keine zustellung.quellen, kein zustellung.fortsetzung, keine Leerfelder.

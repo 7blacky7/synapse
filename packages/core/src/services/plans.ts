@@ -454,6 +454,26 @@ export async function planUebersicht(
 
 const OFFENE_TASK_STATUS = new Set(['todo', 'in_progress', 'blocked']);
 
+const TASK_PRIO_RANG: Record<string, number> = { high: 0, hoch: 0, medium: 1, mittel: 1, low: 2, niedrig: 2 };
+
+/**
+ * P22-T83 (User 20.10.2026, Nachtrag 5bbf7852): reine ANZEIGE-Reihenfolge der Tasks des aktiven Plans in der
+ * Koordinator-Anmeldung. Prioritaet high > medium > low (ohne = zuletzt); bei gleicher Prioritaet zuletzt angefasste
+ * zuerst (updatedAt > createdAt, juengstes vorn); nie angefasste und Gleichstand in Planreihenfolge (stabil).
+ * Liefert ein neues Array, die gespeicherte Reihenfolge bleibt unveraendert.
+ */
+export function onboardingTaskReihenfolge(tasks: ProjectTask[]): ProjectTask[] {
+  const zeit = (x: unknown): number => { const n = Date.parse(String(x ?? '')); return Number.isNaN(n) ? 0 : n; };
+  const angefasst = (t: ProjectTask): number => {
+    const u = zeit(t.updatedAt ?? t.updated_at);
+    return u > zeit(t.createdAt ?? t.created_at) ? u : 0;
+  };
+  return tasks
+    .map((t, i) => ({ t, i, rang: TASK_PRIO_RANG[String(t.priority ?? '').trim().toLowerCase()] ?? 3, am: angefasst(t) }))
+    .sort((a, b) => a.rang - b.rang || b.am - a.am || a.i - b.i)
+    .map((x) => x.t);
+}
+
 /**
  * P22-T49 (User-Entscheidung c7ba27b4): kurze Planlage fuer die Koordinator-Anmeldung mit Ausweis.
  * aktiver_plan = der als aktiv MARKIERTE Plan (plans.aktiv, kein Rueckfall) mit seinen offenen, nicht zurueckgestellten
@@ -467,13 +487,14 @@ export async function koordinatorPlanKurz(project: string, jetzt: Date = new Dat
 }> {
   const alle = await lesePlaene(project);
   const aktiv = alle.find((z) => z.aktiv === true) ?? null;
-  // P22-T50: kompakt - kurze Titel, beim aktiven Plan nur die ersten 5 offenen Tasks + Anzahl offen.
+  // P22-T50: kompakt - kurze Titel, beim aktiven Plan nur 5 offene Tasks + Anzahl offen.
+  // P22-T83: diese 5 nach onboardingTaskReihenfolge (nur Anzeige; top3 und alle anderen Listen unveraendert).
   const kurz = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
   const zeile = (t: ProjectTask): string => `${t.kurz_id ?? t.id} ${kurz(t.title ?? '', 60)}`.trim();
   const offen = (t: ProjectTask): boolean => OFFENE_TASK_STATUS.has(String(t.status ?? 'todo')) && !taskSchlaeft(t, jetzt);
   const offeneAktiv = aktiv ? (aktiv.tasks ?? []).filter(offen) : [];
   const aktiver_plan = aktiv
-    ? { kurz_id: aktiv.kurz_id ?? null, titel: kurz(aktiv.name, 40), offen: offeneAktiv.length, tasks: offeneAktiv.slice(0, 5).map(zeile) }
+    ? { kurz_id: aktiv.kurz_id ?? null, titel: kurz(aktiv.name, 40), offen: offeneAktiv.length, tasks: onboardingTaskReihenfolge(offeneAktiv).slice(0, 5).map(zeile) }
     : null;
   const andere = alle
     .filter((z) => z.id !== aktiv?.id && !((bisVon(z)?.getTime() ?? 0) > jetzt.getTime()))
