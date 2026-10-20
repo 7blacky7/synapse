@@ -64,7 +64,8 @@ function norm(v){
  }));
 }
 // Neue admin-Aktionen/-Parameter sind ADDITIV; die Golden-Projektion entfernt genau diese Namen (Muster wie admin-kontextprofil-p7-t42).
-const W1B_AKTIONEN=['profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
+const W1B_AKTIONEN=[
+ 'profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
  'typ_liste','typ_anlegen','typ_aendern','typ_revision_lesen','profil_aendern','profil_historie','profil_rollback','persona_liste','persona_versionen','persona_anlegen','persona_neue_version',
  'persona_zuweisen','persona_entfernen','agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken',
  // P22-T45: additive Ausweis-Fristen (Kernaktion, im Schema vor den Hauptagent-Aktionen)
@@ -78,7 +79,9 @@ const W1B_AKTIONEN=['profil_schalter_status','profil_schalter_setzen','profil_ue
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Aktionen
  'hauptagent_heartbeat','agent_verbrauch','api_status','api_schalter','api_budget','api_einstellungen','api_kosten',
  // P22-T58: additive Aktion der Runtime-Ueberwachung
- 'runtime_ueberwachung'];
+ 'runtime_ueberwachung',
+ // P22-T80: alte Agenten archivieren; P22-T82: Kontingent Spezialisten im Container; P22-T87: Anmelde-Uebersicht
+ 'agenten_aufraeumen','container_kontingent','anmeldungen'];
 const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','zustand','erwartete_revision','ziel_revision','korrektur','profil_patch','typ_id','typ_schluessel','typ_inhalt',
  'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
@@ -87,7 +90,13 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Parameter
  'intervall_ms','monat','api_zeitraum','erlaubte_modelle','api_einstellungen','einstellung_namen',
  // P22-T58: additive Parameter der Runtime-Ueberwachung
- 'ueberwachung_modus','ueberwachung_werte','ueberwachung_namen'];
+ 'ueberwachung_modus','ueberwachung_werte','ueberwachung_namen',
+ // P22-T80: agenten_aufraeumen (+ mit_entfernten fuer profil_uebersicht)
+ 'aufraeumen_modus','aufraeumen_tage','aufraeumen_art','aufraeumen_ids','aufraeumen_bestaetigung','aufraeumen_lauf_id','mit_entfernten','aufraeumen_alle',
+ // P22-T82: container_kontingent
+ 'kontingent_modus','container_agenten_max',
+ // P22-T87: anmeldungen
+ 'anmeldung_agent','anmeldung_seit','anmeldung_limit','anmeldung_nur_letzte','anmeldung_weg','anmeldung_debug'];
 const projiziere=t=>t.name!=='admin'?t:{...t,inputSchema:{...t.inputSchema,properties:Object.fromEntries(Object.entries(t.inputSchema.properties)
  .filter(([k])=>!W1B_PARAMETER.includes(k)).map(([k,v])=>[k,k==='action'?{...v,enum:v.enum.filter(a=>!W1B_AKTIONEN.includes(a))}:v]))}};
 

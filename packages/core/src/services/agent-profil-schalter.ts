@@ -104,9 +104,11 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'spezialisten_container',
   // P22-T86: chat(get) mit Ausweis nur Nachrichten an die eigene Identitaet/den eigenen Namen (chat-ausweis-lesen.ts), STANDARD EIN, nur ausdruecklich.
   'chat_get_eigene',
+  // P22-T87 S1: Anmelde-Uebersicht je Agent (admin anmeldungen, agent-anmeldungen.ts), Standard AUS bis Abnahme, nur ausdruecklich.
+  'agent_anmeldungen',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.

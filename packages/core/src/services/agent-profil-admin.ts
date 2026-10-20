@@ -28,6 +28,7 @@ import { API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER, istApiAgentAdminAct
 import { markiereEntfernteProfile } from './agent-entfernung.js';
 import { AGENT_ENTFERNUNG_ADMIN_ACTIONS, AGENT_ENTFERNUNG_ADMIN_PARAMETER, istAgentEntfernungAdminAction, fuehreAgentEntfernungAdminAus } from './agent-entfernung.js';
 import { CONTAINER_ADMIN_ACTIONS, CONTAINER_ADMIN_PARAMETER, istContainerAdminAction, fuehreContainerAdminAus } from './agent-container.js';
+import { AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, istAgentAnmeldungenAdminAction, fuehreAgentAnmeldungenAdminAus } from './agent-anmeldungen.js';
 import { RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, istRuntimeUeberwachungAdminAction, fuehreRuntimeUeberwachungAdminAus } from './runtime-ueberwachung.js';
 import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
 import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './files-plan-ablauf-schalter.js';
@@ -52,7 +53,7 @@ const W1B_KERN_AKTIONEN = [
   'profil_lesen', 'identitaet_deaktivieren', 'identitaet_reaktivieren',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = [...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = [...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -97,6 +98,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   ...RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER,
   ...AGENT_ENTFERNUNG_ADMIN_PARAMETER,
   ...CONTAINER_ADMIN_PARAMETER,
+  ...AGENT_ANMELDUNGEN_ADMIN_PARAMETER,
 };
 
 export function istW1bAdminAction(action: string | undefined): boolean {
@@ -538,6 +540,8 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   if (istAgentEntfernungAdminAction(action)) return fuehreAgentEntfernungAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P22-T82: Kontingent fuer Spezialisten im Runtime-Container (status: User + Koordinator inkl. Legacy; setzen: nur User).
   if (istContainerAdminAction(action)) return fuehreContainerAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
+  // P22-T87 S1: Anmelde-Uebersicht (lesend: User, Koordinator inkl. Legacy, Main) – eigener Rechtepfad in agent-anmeldungen.ts.
+  if (istAgentAnmeldungenAdminAction(action)) return fuehreAgentAnmeldungenAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   if (istAusweisAktion(action)) {
     // Auch der Legacy-Koordinator ohne Ausweis darf vorbereiten/abrufen/loeschen (Vorgabe 27920).
     try {

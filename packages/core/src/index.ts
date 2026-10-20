@@ -808,6 +808,12 @@ export {
 } from './services/agent-entfernung.js';
 export type { EntfernungKandidat, EntfernungAusnahme, EntfernungErmittlung, EntfernungSchalter, EntfernungSchwelle, ArchivVerweis } from './services/agent-entfernung.js';
 export { AGENT_ENTFERNUNG_SCHEMA_SQL, AGENT_UMBENENNUNG_SCHEMA_SQL } from './db/agent-entfernung-schema.js';
+// P22-T87 S1: Anmelde-Uebersicht je Agent (admin anmeldungen, Schalter agent_anmeldungen).
+export {
+  AGENT_ANMELDUNGEN_FUNKTION, AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, ANMELDUNG_WEGE,
+  istAgentAnmeldungenAdminAction, fuehreAgentAnmeldungenAdminAus, leseAnmeldungen, leseAnmeldungenSchalter,
+} from './services/agent-anmeldungen.js';
+export type { AnmeldungWeg, AnmeldungKontext, AnmeldungenAbfrage, AnmeldungenSchalter } from './services/agent-anmeldungen.js';
 export type { KorridorPruefung } from './services/specialist-respawn.js';
 
 // shell(exec): Warten bei neuer Channel-Nachricht unterbrechen (Task b5b5304a)
