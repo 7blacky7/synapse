@@ -78,9 +78,12 @@ export interface CodexBefehl { args: string[] }
 /** Argumente eines Turns (ohne Prompt, der kommt ueber stdin '-'). */
 export function baueCodexArgs(o: {
   threadId: string | null; cwd: string; modell: string | null; deaktiviert: string[]; mcpOverrides: string[];
+  /** P22-T65: Reasoning-Stufe; codex-cli 0.163 kennt dafuer kein exec-Flag, nur den config-Schluessel model_reasoning_effort. */
+  effort?: string | null;
 }): string[] {
   const args = ['exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--sandbox', 'read-only', '-C', o.cwd];
   if (o.modell) args.push('-m', o.modell);
+  if (o.effort && /^[a-z]{2,16}$/.test(o.effort)) args.push('-c', `model_reasoning_effort=${tomlString(o.effort)}`);
   for (const f of o.deaktiviert) args.push('--disable', f);
   for (const c of o.mcpOverrides) args.push('-c', c);
   return o.threadId ? [...args, 'resume', o.threadId, '-'] : [...args, '-'];
@@ -175,6 +178,8 @@ async function main(): Promise<void> {
   const sessionId = process.env.SYNAPSE_SESSION_ID ?? String(Date.now());
   const eintrag = resolveModel(alias);
   const modell = eintrag && eintrag.fullId !== CODEX_STANDARD_MODELL ? eintrag.fullId : null;
+  // P22-T65: Stufe vom Spawn (spawnSpecialistTool -> Wrapper-Env SYNAPSE_AGENT_EFFORT); leer = Standard der CLI.
+  const effort = process.env.SYNAPSE_AGENT_EFFORT?.trim() || null;
   const deaktiviert = (process.env.SYNAPSE_CODEX_DEAKTIVIERT ?? STANDARD_DEAKTIVIERT.join(','))
     .split(',').map(s => s.trim()).filter(s => /^[a-z0-9_]+$/.test(s));
   const systemPrompt = process.env.SYNAPSE_SYSTEM_PROMPT_FILE ? await readFile(process.env.SYNAPSE_SYSTEM_PROMPT_FILE, 'utf8').catch(() => '') : '';
@@ -199,7 +204,7 @@ async function main(): Promise<void> {
     if (!line.trim()) continue;
     const nachricht = nachrichtAus(line);
     const prompt = !threadId && systemPrompt.trim() ? `${systemPrompt}\n\n---\n\n${nachricht}` : nachricht;
-    const args = baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides });
+    const args = baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides, effort });
     const r = await fuehreTurnAus(args, prompt, { ...process.env, ...mcp.env });
     if (r.threadId) threadId = r.threadId;
     turnNr++;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../api/auth';
 import { getMainAgentModelle, type MainAgentModelle } from '../api/agent-runtime';
+import { HauptagentModellChip } from './HauptagentModellChip';
 import '../hauptagent-steuerung.css';
 
 /**
@@ -149,6 +150,8 @@ export function HauptagentSteuerung() {
     {modelle && <div><span>{modelle.runtimes.map(r => <span key={r.runtime} title={(r.hinweise ?? []).join(' | ')}>· {CLI_GRUPPE[r.runtime] ?? r.label}: {r.bereit
       ? 'Standard ' + (r.standard.modell ?? 'keins') + ' (' + (STANDARD_QUELLE[r.standard.quelle] ?? r.standard.quelle) + (r.standard.grund ? ', ' + r.standard.grund : '') + ')'
       : 'nicht verfügbar (' + (r.grund ?? 'unbekannt') + ')'}</span>)}</span></div>}
+    {/* P22-T65: Modell + Effort-Stufe je Modell (dieselbe Komponente wie im Chatkopf, ausfuehrlich). */}
+    <div><span>Modell &amp; Effort</span><HauptagentModellChip kompakt={false} /></div>
     <div><span>Überwachung <b>{ueberwachung ? (ueberwachung.schalter.aktiv ? 'EIN' : 'AUS') : '…'}</b>
       {(ueberwachung?.runtimes ?? []).map(r => <span key={r.runtime} title={r.ursache ?? ''}>· {r.runtime} {r.zustand}{r.ursache ? ' (' + r.ursache + ')' : ''}</span>)}</span>
       <span><button type="button" disabled={busy || !ueberwachung} onClick={() => void ausfuehren('Geprüft (nur bewertet).', () => anfrage('/api/main-agent/ueberwachung/takt', json('POST', { trocken: true })))}>Prüfen</button>

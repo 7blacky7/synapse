@@ -45,6 +45,8 @@ export interface ModelEntry {
   effortStufen?: EffortStufe[];
   /** Stufe fuer --effort, wenn der Spawn keine nennt — fest statt effortLevel aus den User-Settings */
   defaultEffort?: EffortStufe;
+  /** P22-T65: Eintrag aus den ausgelesenen CLI-Listen (cliKatalogEintrag); seine Stufen prueft die API gegen die Liste. */
+  ausCliKatalog?: boolean;
 }
 
 /**
@@ -271,15 +273,23 @@ const CLAUDE_KATALOG_ID = /^claude-[a-z0-9][a-z0-9.-]{0,63}(\[1m\])?$/;
  */
 function cliKatalogEintrag(id: string): ModelEntry | null {
   const codex = CODEX_KATALOG_ID.exec(id);
-  if (codex) return { ...STATIC_FALLBACK.codex, alias: id, fullId: codex[1] };
+  if (codex) return { ...STATIC_FALLBACK.codex, alias: id, fullId: codex[1], ausCliKatalog: true };
   if (!CLAUDE_KATALOG_ID.test(id)) return null;
   const einsM = id.endsWith('[1m]');
   const korridor = einsM ? KORRIDOR_1M : KORRIDOR_200K;
   return {
     alias: id, fullId: id.replace(/\[1m\]$/, ''), provider: 'anthropic',
     contextWindow: einsM ? 1_000_000 : 200_000, envRequired: [], binary: 'claude',
-    corridorMin: korridor.corridorMin, corridorMax: korridor.corridorMax, effortStufen: KEINE_STUFEN,
+    corridorMin: korridor.corridorMin, corridorMax: korridor.corridorMax, effortStufen: KEINE_STUFEN, ausCliKatalog: true,
   };
+}
+
+/** P22-T65: Effort-Stufe aus den CLI-Listen (claude low..max, codex low..ultra) - Form pruefen, Gueltigkeit prueft die API. */
+const KATALOG_STUFE = /^[a-z]{2,16}$/;
+
+/** P22-T65: laeuft dieser Eintrag ueber die Codex-Runtime (codex exec)? */
+export function istCodexEintrag(entry: ModelEntry | null): boolean {
+  return !!entry && entry.runtimePath === '@synapse/agents/codex-runtime';
 }
 
 /**
@@ -390,6 +400,13 @@ export function cliModelArgFuer(model: string, entry: ModelEntry | null): string
  * unbekannte Modelle; dort wird nur die Stufe selbst geprueft.
  */
 export function effortFuerCli(entry: ModelEntry | null, gewuenscht?: unknown): EffortStufe | undefined {
+  // P22-T65: Katalog-Modelle (claude-* aus der CLI-Liste) und Codex: Stufe aus den ausgelesenen Listen durchreichen; ohne
+  // Angabe kein Flag (die CLI nimmt ihren eigenen Standard). Die Gueltigkeit je Modell prueft die API (hauptagent-modelle.ts).
+  if (entry && (entry.ausCliKatalog || istCodexEintrag(entry))) {
+    if (gewuenscht === undefined || gewuenscht === null || gewuenscht === '') return undefined;
+    if (typeof gewuenscht !== 'string' || !KATALOG_STUFE.test(gewuenscht)) throw new Error(`effort "${String(gewuenscht)}" ist keine gueltige Stufe`);
+    return gewuenscht as EffortStufe;
+  }
   if (!entry || entry.binary !== 'claude') {
     pruefeEffort(gewuenscht);
     return undefined;

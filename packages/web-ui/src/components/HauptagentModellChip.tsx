@@ -72,17 +72,21 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
   const rtEintrag = modelle?.runtimes.find((r) => r.runtime === rt) ?? null;
   const gewaehlt = i?.modell_gewuenscht ?? rtEintrag?.standard.modell ?? null;
   const laeuft = i?.modell_tatsaechlich ?? null;
+  // P22-T65: Effort des gewaehlten Modells = gespeicherte Stufe, sonst standard_effort aus dem Katalog.
+  const effortVon = (m: { effort_wahl?: string | null; standard_effort: string | null }): string | null => m.effort_wahl ?? m.standard_effort ?? null;
+  const gewaehltEintrag = rtEintrag?.modelle.find((m) => m.modell === gewaehlt) ?? null;
+  const aktuellerEffort = gewaehltEintrag ? effortVon(gewaehltEintrag) : null;
   const wechselOffen = (status?.auftraege_offen ?? []).some((a) => a.art === 'runtime_wechsel' || a.art === 'modellwechsel');
   const titel = 'Gewählt: ' + (rt ? (CLI_GRUPPE[rt] ?? rt) + ' · ' + (gewaehlt ?? 'Standard') : 'keine Runtime')
     + ' · läuft: ' + (i?.runtime_tatsaechlich ? (CLI_GRUPPE[i.runtime_tatsaechlich] ?? i.runtime_tatsaechlich) + ' · ' + (laeuft ?? '?') : 'unbestätigt')
     + (wechselOffen ? ' · Wechsel läuft' : '');
 
-  const waehle = async (runtime: string, modell: string) => {
+  const waehle = async (runtime: string, modell: string, effort?: string) => {
     setBusy(true);
     try {
       await anfrage('/api/main-agent/wechsel', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runtime, modell, grund: 'Modellwahl im Hauptagent-Chat' }) });
-      setMeldung({ text: 'Wechsel zu ' + (CLI_GRUPPE[runtime] ?? runtime) + ' · ' + kurz(modell) + ' beauftragt.', fehler: false });
+        body: JSON.stringify({ runtime, modell, ...(effort ? { effort } : {}), grund: 'Modellwahl im Hauptagent-Chat' }) });
+      setMeldung({ text: 'Wechsel zu ' + (CLI_GRUPPE[runtime] ?? runtime) + ' · ' + kurz(modell) + (effort ? ' · ' + effort : '') + ' beauftragt.', fehler: false });
       setOffen(false);
       await laden();
     } catch (reason) {
@@ -99,10 +103,10 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
         title={titel + (anzeige.hinweis ? ' · ' + anzeige.hinweis : '')}
         onClick={() => { if (!busy) setOffen(!offen); }}
         onKeyDown={(event) => { if ((event.key === 'Enter' || event.key === ' ') && !busy) { event.preventDefault(); setOffen(!offen); } }}>
-        <i /> {rt ? (rt === 'claude' ? 'Claude' : CLI_GRUPPE[rt] ?? rt) + ' · ' + kurz(gewaehlt) + ' · ' : ''}{anzeige.text}{anzeige.hinweis ? ' ⚠' : ''}{wechselOffen ? ' …' : ''} ▾
+        <i /> {rt ? (rt === 'claude' ? 'Claude' : CLI_GRUPPE[rt] ?? rt) + ' · ' + kurz(gewaehlt) + (aktuellerEffort ? ' · ' + aktuellerEffort : '') + ' · ' : ''}{anzeige.text}{anzeige.hinweis ? ' ⚠' : ''}{wechselOffen ? ' …' : ''} ▾
       </div>
       : <button type="button" className={'chip' + (offen ? ' offen' : '') + (wechselOffen ? ' wechselt' : '')} title={titel} disabled={busy} onClick={() => setOffen(!offen)}>
-        {rt ? (CLI_GRUPPE[rt] ?? rt) : 'Modell'} · {kurz(gewaehlt)}{laeuft && laeuft !== gewaehlt ? ' (läuft ' + kurz(laeuft) + ')' : ''}{wechselOffen ? ' …' : ''} ▾
+        {rt ? (CLI_GRUPPE[rt] ?? rt) : 'Modell'} · {kurz(gewaehlt)}{aktuellerEffort ? ' · ' + aktuellerEffort : ''}{laeuft && laeuft !== gewaehlt ? ' (läuft ' + kurz(laeuft) + ')' : ''}{wechselOffen ? ' …' : ''} ▾
       </button>}
     {meldung && !offen && <small className={'chip-meldung' + (meldung.fehler ? ' fehler' : '')} title={meldung.text}>{meldung.fehler ? '⚠ ' : '✓ '}{meldung.text}</small>}
     {offen && <div className="chip-menue" role="menu">
@@ -120,12 +124,28 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
         {r.bereit && r.modelle.length === 0 && <small className="hinweis">keine Modelle: {r.grund ?? 'unbekannt'}</small>}
         {r.bereit && r.modelle.filter((m) => m.sichtbar || m.modell === r.user_wahl).map((m) => {
           const aktiv = r.runtime === rt && m.modell === gewaehlt;
-          return <button key={m.modell} type="button" role="menuitem" className={aktiv ? 'aktiv' : ''} disabled={busy || aktiv} title={m.beschreibung ?? ''}
-            onClick={() => void waehle(r.runtime, m.modell)}>
-            <span>{m.name}</span><code>{m.id}</code>
-            <em>{[m.modell === r.standard.modell ? 'Standard' : '', m.modell === r.user_wahl ? 'deine Wahl' : '',
-              r.runtime === i?.runtime_tatsaechlich && m.modell === laeuft ? 'läuft' : ''].filter(Boolean).join(' · ')}</em>
-          </button>;
+          const stufeJetzt = effortVon(m);
+          // P22-T65: Stufen ausschliesslich aus der ausgelesenen Liste; Hinweise der CLI (Badge/Tooltip/Beschreibung) im Titel.
+          const details = new Map((m.effort_details ?? []).map((d) => [d.stufe, d]));
+          const hinweise = (m.effort_details ?? []).filter((d) => d.hinweis).map((d) => d.stufe + ': ' + d.hinweis);
+          return <div key={m.modell} className={'modell-zeile' + (aktiv ? ' aktiv' : '')}>
+            <button type="button" role="menuitem" className={aktiv ? 'aktiv' : ''} disabled={busy || aktiv} title={m.beschreibung ?? ''}
+              onClick={() => void waehle(r.runtime, m.modell)}>
+              <span>{m.name}</span><code>{m.id}</code>
+              <em>{[m.modell === r.standard.modell ? 'Standard' : '', m.modell === r.user_wahl ? 'deine Wahl' : '',
+                r.runtime === i?.runtime_tatsaechlich && m.modell === laeuft ? 'läuft' : ''].filter(Boolean).join(' · ')}</em>
+            </button>
+            {modelle?.schalter.aktiv && m.effort_stufen.length > 0 && <div className="efforts" role="group" aria-label={'Effort ' + m.name}>
+              {m.effort_stufen.map((s) => {
+                const d = details.get(s);
+                const an = s === stufeJetzt;
+                return <button key={s} type="button" className={'effort' + (an ? ' an' : '') + (s === m.standard_effort ? ' std' : '')}
+                  disabled={busy || (aktiv && an)} title={[d?.name, s === m.standard_effort ? 'Standard der CLI' : '', d?.hinweis].filter(Boolean).join(' – ')}
+                  onClick={() => void waehle(r.runtime, m.modell, s)}>{s}{d?.hinweis && /recommended/i.test(d.hinweis) ? ' ★' : ''}</button>;
+              })}
+            </div>}
+            {aktiv && hinweise.length > 0 && <small className="effort-hinweise">{hinweise.join(' · ')}</small>}
+          </div>;
         })}
       </div>)}
       {!kompakt && modelle && <small>Schalter {modelle.schalter.aktiv ? 'EIN' : 'AUS'} ({modelle.schalter.quelle})</small>}

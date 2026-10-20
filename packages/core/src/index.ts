@@ -665,6 +665,8 @@ export {
   HAUPTAGENT_CLI_MODELLE_FUNKTION, CLI_MODELL_RUNTIMES, CODEX_MODELL_PRAEFIX, CODEX_CLI_STANDARD, leseCliModelleSchalter,
   registriereCliModellKatalog, leseCliKatalog, synapseModellId, codexSlugAus, pruefeModellFuerRuntime, waehleKleinstesModell,
   standardModellFuerRuntime, leseUserModellWahl,
+  // P22-T65: Effort-Stufe je Modell
+  pruefeEffortFuerModell, leseEffortWahl, effortFuerStart, loeseClaudeKurznamenAuf, modellFamilie as katalogModellFamilie, FAMILIEN_ORDNUNG,
 } from './services/hauptagent-modelle.js';
 export type { CliModellRuntime, CliKatalog, KatalogModell, ModellPruefung, StandardModellWahl, CliModelleSchalter } from './services/hauptagent-modelle.js';
 // P22-T63: Gespraechsverlauf des Hauptagenten-Chats je Main-Identitaet (Schalter hauptagent_verlauf, Standard EIN).

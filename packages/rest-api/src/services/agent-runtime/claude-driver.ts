@@ -13,6 +13,7 @@ import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
 import { StatusStabilisierer } from './status-stabil.js';
+import { effortFuerStart } from '@synapse/core';
 import type { ContainerBeobachtung } from '@synapse/core';
 import {
   persistentRuntimeBinds,
@@ -72,7 +73,7 @@ export const HAUPTAGENT_SYSTEMPROMPT = 'Du bist der Synapse-Hauptagent (Identita
   + 'Selbstverwaltung (Neustart, Update, Modell-/Runtime-Wechsel) nur ueber admin(action:"hauptagent_auftrag") im erlaubten Rahmen und mit hands_off (Arbeitsstand); '
   + 'Stoppen und Rechteaenderungen entscheidet der User.';
 
-export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only', systemPrompt: string | null = null): string[] {
+export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only', systemPrompt: string | null = null, effort: string | null = null): string[] {
   const validatedModel = validateClaudeModel(model);
   const command = [
     'claude',
@@ -107,6 +108,8 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
   // P22-T36: nur auf dem Identitaetsweg; ohne systemPrompt bleibt der Befehl byte-gleich.
   if (systemPrompt) command.push('--append-system-prompt', systemPrompt);
   command.push('--model', validatedModel);
+  // P22-T65: Effort-Stufe (Schalter hauptagent_cli_modelle); ohne Stufe bleibt der Befehl byte-gleich.
+  if (effort && /^[a-z]{2,16}$/.test(effort)) command.push('--effort', effort);
   return runtimeSessionId ? [...command, '--resume', runtimeSessionId] : command;
 }
 
@@ -561,7 +564,9 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       '/usr/bin/env',
       '-u',
       'ANTHROPIC_API_KEY',
-      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile, haupt ? HAUPTAGENT_SYSTEMPROMPT : null),
+      ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile, haupt ? HAUPTAGENT_SYSTEMPROMPT : null,
+        // P22-T65: gespeicherte Stufe bzw. standard_effort des Modells (Schalter AUS -> null).
+        (await effortFuerStart('claude', config.model ?? DEFAULT_MODEL).catch(() => null))?.effort ?? null),
     ];
     const runner = buildClaudeRunnerCommand();
     const exec = await container.exec({

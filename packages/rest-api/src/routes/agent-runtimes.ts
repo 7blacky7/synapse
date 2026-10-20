@@ -12,6 +12,7 @@ import {
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
   listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
+  pruefeEffortFuerModell, leseEffortWahl,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
@@ -434,7 +435,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
    * Wechsel jederzeit (User 88f80455 Punkt 3). Schalter hauptagent EIN + Identitaet: Auftrag runtime_wechsel bzw. modellwechsel
    * an die Identitaet (Ausweis bleibt, Ausfuehrung durch den Runtime-Daemon, P22-T6). Sonst Altweg: Zuweisung assigned_to_main.
    */
-  fastify.post<{ Body: { runtime?: unknown; modell?: unknown; grund?: unknown; hands_off?: unknown } }>('/api/main-agent/wechsel', async (request, reply) => {
+  fastify.post<{ Body: { runtime?: unknown; modell?: unknown; effort?: unknown; grund?: unknown; hands_off?: unknown } }>('/api/main-agent/wechsel', async (request, reply) => {
     const b = request.body ?? {};
     const runtime = typeof b.runtime === 'string' ? b.runtime : '';
     let modell = typeof b.modell === 'string' && b.modell.trim() ? b.modell.trim() : null;
@@ -463,12 +464,32 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     try {
       const identitaet = (await leseHauptagentSchalter()).aktiv ? await hauptagentIdentitaetsId() : null;
       if (identitaet) {
-        const status = await hauptagentStatus(USER) as { identitaet?: { runtime_tatsaechlich?: string | null; runtime_gewuenscht?: string | null } };
+        const status = await hauptagentStatus(USER) as { identitaet?: { runtime_tatsaechlich?: string | null; runtime_gewuenscht?: string | null; modell_gewuenscht?: string | null } };
         const aktuell = status.identitaet?.runtime_tatsaechlich ?? status.identitaet?.runtime_gewuenscht ?? null;
+        // P22-T65 (Schalter hauptagent_cli_modelle EIN): Effort-Stufe je Modell. Ohne Modell gilt das aktuelle Modell derselben
+        // Runtime (Effort-Wechsel ohne Modellwechsel = modellwechsel). Ungueltige Stufe -> ehrliche Meldung. Ohne Stufe beim
+        // Modellwechsel bleibt die gespeicherte Stufe dieses Modells (sonst Standard der CLI).
+        const effortRoh = typeof b.effort === 'string' && b.effort.trim() ? b.effort.trim() : null;
+        const cliEin = (runtime === 'claude' || runtime === 'codex') && (await leseCliModelleSchalter()).aktiv;
+        let effort: string | null = null;
+        if (effortRoh) {
+          if (!cliEin) return reply.status(400).send({ success: false, error: { code: 'effort_nur_mit_modellwahl', message: 'Effort-Wahl braucht den Schalter hauptagent_cli_modelle' } });
+          const zielModell = modell ?? (aktuell === runtime ? status.identitaet?.modell_gewuenscht ?? null : null);
+          if (!zielModell) return reply.status(400).send({ success: false, error: { code: 'effort_ohne_modell', message: 'Fuer die Effort-Stufe ein Modell waehlen' } });
+          const pe = await pruefeEffortFuerModell(runtime as CliModellRuntime, zielModell, effortRoh);
+          if (!pe.ok) {
+            return reply.status(400).send({ success: false, error: { code: pe.grund ?? 'effort_ungueltig', message: pe.grund ?? 'effort_ungueltig',
+              details: { effort: effortRoh, modell: zielModell, stufen: pe.stufen } } });
+          }
+          effort = pe.effort;
+          modell = zielModell;
+        } else if (cliEin && modell) {
+          effort = (await leseEffortWahl().catch(() => ({} as Record<string, string>)))[modell] ?? null;
+        }
         const nurModell = !!modell && aktuell === runtime;
         const ergebnis = await legeRuntimeAuftragAn(USER, {
           art: nurModell ? 'modellwechsel' : 'runtime_wechsel',
-          gewuenscht: nurModell ? { modell } : { runtime, ...(modell ? { modell } : {}) },
+          gewuenscht: nurModell ? { modell, ...(effort ? { effort } : {}) } : { runtime, ...(modell ? { modell } : {}), ...(effort ? { effort } : {}) },
           hands_off: b.hands_off, grund: b.grund,
         });
         return { success: true, weg: 'auftrag', art: runtimeArt(runtime), ...ergebnis };
@@ -486,8 +507,9 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
    */
   fastify.get('/api/main-agent/modelle', async (_request, reply) => {
     try {
-      const [schalter, statuses, wahl] = await Promise.all([
+      const [schalter, statuses, wahl, effortWahl] = await Promise.all([
         leseCliModelleSchalter(), manager.listStatuses(), leseUserModellWahl().catch(() => ({} as Partial<Record<CliModellRuntime, string>>)),
+        leseEffortWahl().catch(() => ({} as Record<string, string>)),
       ]);
       const runtimes = await Promise.all(CLI_MODELL_RUNTIMES.map(async (rt) => {
         const d = manager.driver(rt);
@@ -501,7 +523,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
           runtime: rt, label: d.label, bereit: !grund, zugewiesen: !!s?.assignedToMain, grund: grund ?? (liste?.modelle.length ? null : liste?.grund ?? 'keine_modelle'),
           standard, standard_grund: standard.grund, user_wahl: wahl[rt] ?? null, pruefung: s?.pruefung ?? null, quelle: liste?.quelle ?? null, quelle_detail: liste?.quelle_detail ?? null, stand: liste?.stand ?? null,
           cli_version: liste?.cli_version ?? null, hinweise: liste?.hinweise ?? [],
-          modelle: (liste?.modelle ?? []).map((m) => ({ ...m, modell: synapseModellId(rt, m.id) })),
+          // P22-T65: effort_wahl = gespeicherte Stufe des Modells (sonst gilt standard_effort).
+          modelle: (liste?.modelle ?? []).map((m) => ({ ...m, modell: synapseModellId(rt, m.id), effort_wahl: effortWahl[synapseModellId(rt, m.id)] ?? null })),
         };
       }));
       return { success: true, schalter, runtimes };

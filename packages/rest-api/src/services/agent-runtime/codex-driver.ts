@@ -10,6 +10,7 @@ import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
 import { StatusStabilisierer } from './status-stabil.js';
+import { effortFuerStart, leseCliKatalog, synapseModellId } from '@synapse/core';
 import type { ContainerBeobachtung } from '@synapse/core';
 import type {
   AgentRuntimeDriver,
@@ -161,8 +162,10 @@ export function parseCodexJsonLine(line: string): ParsedCodexEvent {
   return {};
 }
 
-export function buildCodexCommand(runtimeSessionId: string | null): string[] {
+export function buildCodexCommand(runtimeSessionId: string | null, effort: string | null = null): string[] {
   const common = ['codex', 'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '-C', '/projects'];
+  // P22-T65: codex-cli 0.163 hat kein exec-Flag fuer die Stufe, nur den config-Schluessel; ohne Stufe byte-gleich.
+  if (effort && /^[a-z]{2,16}$/.test(effort)) common.push('-c', 'model_reasoning_effort=' + JSON.stringify(effort));
   return runtimeSessionId
     ? [...common, 'resume', runtimeSessionId, '-']
     : [...common, '-'];
@@ -249,6 +252,18 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     await this.repository.clearContainer('codex');
     this.statusProbe.invalidate();
     return this.status();
+  }
+
+  /**
+   * P22-T65: Effort des Altwegs (ohne -m = Standardmodell der CLI): gespeicherte Stufe bzw. standard_effort des Modells, das
+   * die CLI als Standard markiert. Schalter hauptagent_cli_modelle AUS oder keine Liste -> null (Befehl unveraendert).
+   */
+  private async altwegEffort(): Promise<string | null> {
+    try {
+      const k = await leseCliKatalog('codex');
+      const std = k.modelle.find((m) => m.standard);
+      return std ? (await effortFuerStart('codex', synapseModellId('codex', std.id))).effort : null;
+    } catch { return null; }
   }
 
   /** P22-T64: ein haengender/fehlgeschlagener Lauf wirft den bestaetigten guten Stand nicht um (Schalter runtime_status_stabil). */
@@ -441,7 +456,7 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     await this.ensureTrustStore(container);
 
     const exec = await container.exec({
-      Cmd: buildCodexCommand(session.runtimeSessionId),
+      Cmd: buildCodexCommand(session.runtimeSessionId, await this.altwegEffort()),
       AttachStdin: true,
       AttachStdout: true,
       AttachStderr: true,

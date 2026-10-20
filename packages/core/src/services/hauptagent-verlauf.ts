@@ -658,7 +658,7 @@ function werkzeugText(name: unknown, input: unknown, output: unknown): string {
  * verlauf-uebergabe) -> chat(anmelden) liefert ihn dem neuen Lauf als Handoff. Dazu Verlaufseintrag 'Wechsel X -> Y'.
  * Nur Schalter verlauf_uebergabe EIN. Wirft nie.
  */
-export async function erzeugeVerlaufUebergabe(identity_id: string, ziel: { runtime?: string | null; modell?: string | null }, anlass: string,
+export async function erzeugeVerlaufUebergabe(identity_id: string, ziel: { runtime?: string | null; modell?: string | null; effort?: string | null }, anlass: string,
   handoff_thought_id?: string | null): Promise<{ thought_id: string; zuege: number; tokens: number } | null> {
   try {
     if (!(await leseVerlaufStufe2Schalter('verlauf_uebergabe')).aktiv) return null;
@@ -715,6 +715,11 @@ export async function erzeugeVerlaufUebergabe(identity_id: string, ziel: { runti
     ].join('\n');
     const von = `${vonRuntime ?? '?'}/${vonModell ?? '?'}`;
     const nach = `${ziel.runtime ?? vonRuntime ?? '?'}/${zielModell}`;
+    // P22-T65: Effort-Aenderung sichtbar ('Effort X -> Y'); X = gespeicherte Stufe des bisherigen Modells bzw. Standard.
+    const vonEffort = ziel.effort && vonModell
+      ? (await pool.query<{ e: string | null }>(`SELECT startrezept->'effort_je_modell'->>$2 AS e FROM agent_identitaeten WHERE id = $1`,
+        [identity_id, vonModell]).catch(() => ({ rows: [] as Array<{ e: string | null }> }))).rows[0]?.e ?? null : null;
+    const effortText = ziel.effort ? `, Effort ${vonEffort ?? 'Standard'} -> ${ziel.effort}` : '';
     const inhalt = [
       `VERLAUF-UEBERGABE (Synapse, Anlass ${anlass}, ${von} -> ${nach}, ${new Date().toISOString()})`,
       'Startkontext aus deinem vollstaendigen Verlauf: die letzten Zuege in voller Laenge, darunter ein Kurzstand. Arbeite daran weiter.',
@@ -726,8 +731,8 @@ export async function erzeugeVerlaufUebergabe(identity_id: string, ziel: { runti
     await pool.query(
       `INSERT INTO hauptagent_verlauf (identity_id, rolle, richtung, weg, status, text, meta, zaehlt, runtime, modell)
        VALUES ($1,'system','intern','wechsel','fertig',$2,$3::jsonb,false,$4,$5)`,
-      [identity_id, `Wechsel ${von} -> ${nach}, Kontext uebergeben (${bloecke.length} Zuege, ~${summe} Tokens)`,
-        JSON.stringify({ von, nach, anlass, thought_id: thought.id, zuege: bloecke.length, tokens: summe, verfahren: familie, budget, verwiesen: verwiesen.length }),
+      [identity_id, `Wechsel ${von} -> ${nach}${effortText}, Kontext uebergeben (${bloecke.length} Zuege, ~${summe} Tokens)`,
+        JSON.stringify({ von, nach, ...(ziel.effort ? { effort_von: vonEffort, effort: ziel.effort } : {}), anlass, thought_id: thought.id, zuege: bloecke.length, tokens: summe, verfahren: familie, budget, verwiesen: verwiesen.length }),
         ziel.runtime ?? vonRuntime, zielModell]);
     letzteUebergabe = { thought_id: thought.id, anlass, zuege: bloecke.length, tokens: summe, am: new Date().toISOString() };
     return { thought_id: thought.id, zuege: bloecke.length, tokens: summe };

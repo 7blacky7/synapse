@@ -48,8 +48,8 @@ export class AgentRuntimeManager {
     // P22-T62: core prueft/waehlt Main-Modelle an den ausgelesenen CLI-Listen (Schalter hauptagent_cli_modelle).
     registriereCliModellKatalog(async (runtime) => {
       const l = await this.driver(runtime).modelle!();
-      return { grund: l.grund, modelle: l.modelle.map((m) => ({ id: m.id, name: m.name, beschreibung: m.beschreibung, sichtbar: m.sichtbar,
-        gruppe: m.gruppe, familie: m.familie, standard: m.standard })) };
+      return { grund: l.grund, alias_ziele: l.alias_ziele, modelle: l.modelle.map((m) => ({ id: m.id, name: m.name, beschreibung: m.beschreibung, sichtbar: m.sichtbar,
+        gruppe: m.gruppe, familie: m.familie, standard: m.standard, effort_stufen: m.effort_stufen, standard_effort: m.standard_effort })) };
     });
     this.planeUeberwachung(UEBERWACHUNG_START_MS);
     this.cliUpdateTimer = setInterval(() => { void fuehreCliUpdatesAus(this.ueberwachungsDienste).catch(() => undefined); }, CLI_UPDATE_PRUEF_MS);

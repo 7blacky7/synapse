@@ -220,6 +220,8 @@ export interface CliModell {
   gruppe: string | null;
   /** P22-T62: claude runtime.family; codex null. */
   familie?: string | null;
+  /** P22-T65: je Stufe Name und Hinweis der CLI (z. B. 'Recommended', '3.5× or more usage'). */
+  effort_details?: Array<{ stufe: string; name: string | null; hinweis: string | null }>;
   standard: boolean;
 }
 
@@ -255,7 +257,8 @@ export interface MainAgentModellRuntime {
   cli_version: string | null;
   hinweise: string[];
   /** modell = Synapse-ID fuer den Wechsel (codex: 'codex/<slug>'). */
-  modelle: Array<CliModell & { modell: string }>;
+  /** effort_wahl (P22-T65) = gespeicherte Stufe dieses Modells; sonst gilt standard_effort. */
+  modelle: Array<CliModell & { modell: string; effort_wahl?: string | null }>;
 }
 export interface MainAgentModelle {
   schalter: { aktiv: boolean; quelle: string; bis: string | null; letzter_fehler: string | null };

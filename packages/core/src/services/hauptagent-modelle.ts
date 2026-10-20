@@ -78,8 +78,16 @@ export interface KatalogModell {
   familie: string | null;
   /** codex: von der CLI als Standard markiert. */
   standard: boolean;
+  /** P22-T65: Effort-Stufen der CLI fuer dieses Modell und ihr Standard (claude default_effort, codex default_reasoning_level). */
+  effort_stufen?: string[];
+  standard_effort?: string | null;
 }
-export interface CliKatalog { modelle: KatalogModell[]; grund: string | null }
+export interface CliKatalog {
+  modelle: KatalogModell[];
+  grund: string | null;
+  /** P22-T65: claude config.provider_alias_targets (Kurzname -> Katalog-ID). */
+  alias_ziele?: Record<string, string>;
+}
 export type CliKatalogQuelle = (runtime: CliModellRuntime) => Promise<CliKatalog>;
 
 let katalogQuelle: CliKatalogQuelle | null = null;
@@ -89,7 +97,7 @@ export async function leseCliKatalog(runtime: CliModellRuntime): Promise<CliKata
   if (!katalogQuelle) return { modelle: [], grund: 'katalog_quelle_fehlt' };
   try {
     const k = await katalogQuelle(runtime);
-    return { modelle: Array.isArray(k?.modelle) ? k.modelle : [], grund: k?.grund ?? null };
+    return { modelle: Array.isArray(k?.modelle) ? k.modelle : [], grund: k?.grund ?? null, alias_ziele: k?.alias_ziele ?? {} };
   } catch (err) {
     return { modelle: [], grund: 'katalog_fehler: ' + ((err as Error)?.message ?? String(err)).slice(0, 200) };
   }
@@ -284,6 +292,83 @@ export async function standardModellFuerRuntime(runtime: CliModellRuntime, altSt
 }
 
 function merkeHinweis(liste: string[], text: string): void { if (!liste.includes(text)) liste.push(text); }
+
+// ---------------------------------------------------------------------------------------------
+// P22-T65: Effort-Stufe je Modell (Schalter hauptagent_cli_modelle)
+// ---------------------------------------------------------------------------------------------
+/**
+ * Claude-Kurzname (opus, sonnet[1m], haiku, fable) -> aktuelle Katalog-ID: config.provider_alias_targets des Katalogs, sonst die
+ * neueste ID der Familie (erstes Modell der Familie in der Listenreihenfolge). Kein Kurzname / nichts gefunden -> null.
+ */
+export function loeseClaudeKurznamenAuf(modell: string, k: CliKatalog): string | null {
+  const kurz = /^(opus|sonnet|haiku|fable)(\[1m\])?$/.exec(modell.trim());
+  if (!kurz) return null;
+  const ziel = k.alias_ziele?.[kurz[1]];
+  if (ziel && k.modelle.some(m => m.id === ziel)) return ziel;
+  return k.modelle.find(m => (m.familie ?? '').toLowerCase() === kurz[1])?.id ?? null;
+}
+
+/** Katalogeintrag eines Synapse-Modells (codex/<slug> -> slug; claude ohne [1m], Kurzname ueber loeseClaudeKurznamenAuf) oder null. */
+async function katalogEintrag(runtime: CliModellRuntime, modell: string): Promise<{ eintrag: KatalogModell | null; liste_lesbar: boolean; grund: string | null }> {
+  const k = await leseCliKatalog(runtime);
+  if (!k.modelle.length) return { eintrag: null, liste_lesbar: false, grund: k.grund };
+  const id = runtime === 'codex' ? (codexSlugAus(modell) ?? modell) : (loeseClaudeKurznamenAuf(modell, k) ?? modell.replace(/\[1m\]$/, ''));
+  return { eintrag: k.modelle.find(m => m.id === id) ?? null, liste_lesbar: true, grund: null };
+}
+
+export interface EffortPruefung {
+  ok: boolean;
+  effort: string;
+  /** Stufen laut Liste (leer = unbekannt). */
+  stufen: string[];
+  grund: string | null;
+}
+
+/**
+ * Ist die Stufe fuer dieses Modell gueltig? Nur gegen die ausgelesene Liste; ist sie nicht lesbar oder das Modell nicht gelistet
+ * (Registry-Alias), wird die Stufe mit Hinweis angenommen (die CLI meldet einen Fehler selbst). Unbekannte Stufe -> ok false.
+ */
+export async function pruefeEffortFuerModell(runtime: CliModellRuntime, modell: string, effortRoh: string): Promise<EffortPruefung> {
+  const effort = effortRoh.trim().toLowerCase();
+  if (!/^[a-z]{2,16}$/.test(effort)) return { ok: false, effort, stufen: [], grund: 'effort_ungueltig' };
+  const k = await katalogEintrag(runtime, modell);
+  if (!k.liste_lesbar) return { ok: true, effort, stufen: [], grund: HINWEIS_LISTE_NICHT_LESBAR + ' (' + (k.grund ?? 'leer') + ')' };
+  const stufen = k.eintrag?.effort_stufen ?? [];
+  if (!k.eintrag) return { ok: true, effort, stufen: [], grund: 'modell_ohne_katalogeintrag: Stufe ungeprueft' };
+  if (!stufen.length) return { ok: false, effort, stufen, grund: 'modell_ohne_effort_stufen' };
+  return stufen.includes(effort) ? { ok: true, effort, stufen, grund: null } : { ok: false, effort, stufen, grund: 'effort_nicht_fuer_modell' };
+}
+
+/** Effort-Wahl je Modell (Synapse-ID) aus dem Startrezept der Main-Identitaet. */
+export async function leseEffortWahl(): Promise<Record<string, string>> {
+  const r = await getPool().query<{ wahl: Record<string, unknown> | null }>(
+    `SELECT startrezept->'effort_je_modell' AS wahl FROM agent_identitaeten WHERE project = $1 AND agent_id = 'hauptagent'`, [HAUPTAGENT_PROJEKT]);
+  const w = r.rows[0]?.wahl;
+  const aus: Record<string, string> = {};
+  if (w && typeof w === 'object') for (const [k, v] of Object.entries(w)) if (typeof v === 'string' && v.trim()) aus[k] = v.trim();
+  return aus;
+}
+
+export interface EffortWahl { effort: string | null; quelle: 'schalter_aus' | 'user_wahl' | 'standard_effort' | 'keins'; grund: string | null }
+
+/**
+ * Effort fuer den Start eines Modells (Schalter EIN): gespeicherte Wahl dieses Modells (gueltig) vor standard_effort des Katalogs.
+ * Schalter AUS -> null (Altverhalten: kein Effort aus der Modellwahl).
+ */
+export async function effortFuerStart(runtime: CliModellRuntime, modell: string): Promise<EffortWahl> {
+  if (!(await leseCliModelleSchalter()).aktiv) return { effort: null, quelle: 'schalter_aus', grund: null };
+  const wahl = (await leseEffortWahl().catch(() => ({} as Record<string, string>)))[modell] ?? null;
+  let hinweis: string | null = null;
+  if (wahl) {
+    const p = await pruefeEffortFuerModell(runtime, modell, wahl);
+    if (p.ok) return { effort: p.effort, quelle: 'user_wahl', grund: p.grund };
+    hinweis = 'effort_wahl_ungueltig: ' + wahl + ' (' + (p.grund ?? '') + ')';
+  }
+  const k = await katalogEintrag(runtime, modell);
+  const std = k.eintrag?.standard_effort ?? null;
+  if (std) return { effort: std, quelle: 'standard_effort', grund: hinweis };
+  return { effort: null, quelle: 'keins', grund: hinweis ?? (k.liste_lesbar ? 'kein standard_effort im Katalog' : 'modellliste_fehlt') };
+}
 
 /**
  * Nach einem completed Wechsel durch User/Main: Wahl je Runtime im Startrezept festhalten (ueberlebt Neustart/Deploy).

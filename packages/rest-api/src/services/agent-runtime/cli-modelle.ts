@@ -22,6 +22,8 @@ export interface CliModell {
   beschreibung: string | null;
   standard_effort: string | null;
   effort_stufen: string[];
+  /** P22-T65: je Stufe Name und Hinweis der CLI (claude: name + badge/tooltip; codex: description). */
+  effort_details: Array<{ stufe: string; name: string | null; hinweis: string | null }>;
   kontext_ein: number | null;
   kontext_aus: number | null;
   sichtbar: boolean;
@@ -47,6 +49,8 @@ export interface CliModellListe {
   /** Gesetzt, wenn keine Liste gelesen werden konnte (Container aus, Datei fehlt, ...). */
   grund: string | null;
   abgefragt_am: string;
+  /** P22-T65: claude config.provider_alias_targets (Kurzname -> Katalog-ID, Standardanbieter); codex leer. */
+  alias_ziele: Record<string, string>;
 }
 
 /** Skript fuer 'node -e' im Container; argv[1] = runtime. Ausgabe: genau eine JSON-Zeile. */
@@ -73,8 +77,12 @@ export const CLI_MODELLE_SKRIPT = [
   "  r.katalog = { datei: best.f, version: best.k.version ?? null, fetchedAt: best.k.fetchedAt ?? null, staleAt: best.k.staleAt ?? null,",
   "    models: best.k.catalog.config.models.map((m) => ({ id: m.id, name: m.name, short_name: m.short_name, description: m.description, section: m.section,",
   "      effort_options: ((m.thinking && m.thinking.effort_options) || []).map((o) => o && o.id).filter(Boolean),",
+  "      effort_details: ((m.thinking && m.thinking.effort_options) || []).filter((o) => o && o.id).map((o) => ({ stufe: o.id, name: o.name || null,",
+  "        hinweis: [o.badge && o.badge.message, o.tooltip && o.tooltip.content].filter(Boolean).join(' – ') || null })),",
   "      runtime: m.runtime ? { max_input_tokens: m.runtime.max_input_tokens, max_output_tokens: m.runtime.max_output_tokens, effort_levels: m.runtime.effort_levels, default_effort: m.runtime.default_effort, family: m.runtime.family } : null,",
   "      min_claude_code_version: m.min_claude_code_version })) };",
+  "  const at = best.k.catalog.config.provider_alias_targets || {};",
+  "  r.katalog.alias_ziele = Object.fromEntries(Object.entries(at).filter(([, v]) => v && typeof v.default === 'string').map(([a, v]) => [a, v.default]));",
   "  return r;",
   "}",
   "function codexCache() {",
@@ -84,6 +92,7 @@ export const CLI_MODELLE_SKRIPT = [
   "    return { datei, fetched_at: c.fetched_at ?? null, client_version: c.client_version ?? null, fehler: null,",
   "      models: (Array.isArray(c.models) ? c.models : []).map((m) => ({ slug: m.slug, display_name: m.display_name, description: m.description,",
   "        default_reasoning_level: m.default_reasoning_level, efforts: (m.supported_reasoning_levels || []).map((x) => x && x.effort).filter(Boolean),",
+  "        effort_details: (m.supported_reasoning_levels || []).filter((x) => x && x.effort).map((x) => ({ stufe: x.effort, name: null, hinweis: x.description || null })),",
   "        visibility: m.visibility, priority: m.priority, context_window: m.context_window, max_context_window: m.max_context_window })) };",
   "  } catch (e) { return { datei, fehler: kurz(e), models: [] }; }",
   "}",
@@ -113,7 +122,8 @@ export const CLI_MODELLE_SKRIPT = [
   "        if (m.error) return schluss('model/list: ' + kurz(m.error.message || JSON.stringify(m.error)));",
   "        const d = (m.result && Array.isArray(m.result.data)) ? m.result.data : [];",
   "        for (const x of d) r.data.push({ id: x.id, model: x.model, displayName: x.displayName, description: x.description, hidden: x.hidden,",
-  "          efforts: (x.supportedReasoningEfforts || []).map((e) => e && e.reasoningEffort).filter(Boolean), defaultReasoningEffort: x.defaultReasoningEffort, isDefault: x.isDefault });",
+  "          efforts: (x.supportedReasoningEfforts || []).map((e) => e && e.reasoningEffort).filter(Boolean), defaultReasoningEffort: x.defaultReasoningEffort, isDefault: x.isDefault,",
+  "          effort_details: (x.supportedReasoningEfforts || []).filter((e) => e && e.reasoningEffort).map((e) => ({ stufe: e.reasoningEffort, name: null, hinweis: e.description || null })) });",
   "        const weiter = m.result && m.result.nextCursor;",
   "        if (weiter && ++seite < 10) senden({ method: 'model/list', id: seite + 1, params: { cursor: weiter } });",
   "        else { r.ok = true; return schluss(null); }",
@@ -133,6 +143,10 @@ const zahlOderNull = (v: unknown): number | null => {
 };
 const textOderNull = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 const textListe = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && !!x.trim()) : []);
+/** P22-T65: Effort-Details aus der Rohausgabe (nur Eintraege mit Stufe). */
+const effortDetails = (v: unknown): CliModell['effort_details'] => (Array.isArray(v) ? v : [])
+  .filter((d): d is Record<string, unknown> => !!d && typeof d === 'object' && typeof (d as Record<string, unknown>).stufe === 'string')
+  .map((d) => ({ stufe: String(d.stufe), name: textOderNull(d.name), hinweis: textOderNull(d.hinweis) }));
 const isoOderNull = (v: unknown): string | null => {
   if (v === null || v === undefined || v === '') return null;
   const t = typeof v === 'number' ? v : (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : Date.parse(String(v)));
@@ -142,7 +156,7 @@ const isoOderNull = (v: unknown): string | null => {
 function leer(runtime: 'claude' | 'codex', grund: string, jetzt: Date, extra: Partial<CliModellListe> = {}): CliModellListe {
   return {
     runtime, quelle: null, quelle_detail: null, stand: null, veraltet_ab: null, cli_version: null, modelle: [], hinweise: [], grund,
-    abgefragt_am: jetzt.toISOString(), ...extra,
+    abgefragt_am: jetzt.toISOString(), alias_ziele: {}, ...extra,
   };
 }
 
@@ -162,6 +176,7 @@ export function normalisiereClaudeModelle(roh: Record<string, unknown>, jetzt = 
     modelle.push({
       id, name: textOderNull(m.name) ?? id, beschreibung: textOderNull(m.description),
       standard_effort: textOderNull(rt.default_effort), effort_stufen: stufen.length ? stufen : textListe(m.effort_options),
+      effort_details: effortDetails(m.effort_details),
       kontext_ein: zahlOderNull(rt.max_input_tokens), kontext_aus: zahlOderNull(rt.max_output_tokens),
       sichtbar: true, gruppe: textOderNull(m.section), familie: textOderNull(rt.family), standard: false,
     });
@@ -175,6 +190,8 @@ export function normalisiereClaudeModelle(roh: Record<string, unknown>, jetzt = 
     runtime: 'claude', quelle: 'datei', quelle_detail: 'model-catalog/' + String(katalog.datei ?? '?'),
     stand: isoOderNull(katalog.fetchedAt), veraltet_ab: veraltetAb, cli_version: cliVersion, modelle, hinweise,
     grund: modelle.length ? null : 'katalog_ohne_modelle', abgefragt_am: jetzt.toISOString(),
+    alias_ziele: Object.fromEntries(Object.entries((katalog.alias_ziele ?? {}) as Record<string, unknown>)
+      .filter((e): e is [string, string] => typeof e[1] === 'string' && !!e[1].trim())),
   };
 }
 
@@ -205,13 +222,13 @@ export function normalisiereCodexModelle(roh: Record<string, unknown>, jetzt = n
       if (!id) continue;
       modelle.push({
         id, name: textOderNull(m.displayName) ?? id, beschreibung: textOderNull(m.description),
-        standard_effort: textOderNull(m.defaultReasoningEffort), effort_stufen: textListe(m.efforts),
+        standard_effort: textOderNull(m.defaultReasoningEffort), effort_stufen: textListe(m.efforts), effort_details: effortDetails(m.effort_details),
         kontext_ein: kontextJeSlug.get(id) ?? null, kontext_aus: null, sichtbar: m.hidden !== true, gruppe: null, familie: null, standard: m.isDefault === true,
       });
     }
     return {
       runtime: 'codex', quelle: 'cli', quelle_detail: 'codex app-server model/list', stand: meldungen.length ? null : stand,
-      veraltet_ab: null, cli_version: cliVersion, modelle, hinweise, grund: null, abgefragt_am: jetzt.toISOString(),
+      veraltet_ab: null, cli_version: cliVersion, modelle, hinweise, grund: null, abgefragt_am: jetzt.toISOString(), alias_ziele: {},
     };
   }
 
@@ -225,13 +242,13 @@ export function normalisiereCodexModelle(roh: Record<string, unknown>, jetzt = n
       if (!id) continue;
       modelle.push({
         id, name: textOderNull(m.display_name) ?? id, beschreibung: textOderNull(m.description),
-        standard_effort: textOderNull(m.default_reasoning_level), effort_stufen: textListe(m.efforts),
+        standard_effort: textOderNull(m.default_reasoning_level), effort_stufen: textListe(m.efforts), effort_details: effortDetails(m.effort_details),
         kontext_ein: zahlOderNull(m.context_window), kontext_aus: null, sichtbar: m.visibility !== 'hide', gruppe: null, familie: null, standard: false,
       });
     }
     return {
       runtime: 'codex', quelle: 'datei', quelle_detail: 'models_cache.json', stand, veraltet_ab: null, cli_version: cliVersion,
-      modelle, hinweise, grund: null, abgefragt_am: jetzt.toISOString(),
+      modelle, hinweise, grund: null, abgefragt_am: jetzt.toISOString(), alias_ziele: {},
     };
   }
   const cacheFehler = textOderNull(cache.fehler);

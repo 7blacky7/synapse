@@ -27,7 +27,7 @@ import { runtimeProjektPfad, runtimeDaemonZugangStatus } from './runtime-daemon-
 import { setzeHeartbeatKonfiguration } from './wrapper-status.js';
 import { claimeRuntimeAuftraege, meldeRuntimeAuftrag, type AuftragFuerDaemon } from './runtime-auftraege-ausfuehrung.js';
 import type { AgentZiel } from './agent-bezug.js';
-import { leseCliModelleSchalter, pruefeModellFuerRuntime } from './hauptagent-modelle.js';
+import { leseCliModelleSchalter, pruefeModellFuerRuntime, effortFuerStart, pruefeEffortFuerModell } from './hauptagent-modelle.js';
 
 export class MainLaufFehler extends Error {
   constructor(readonly code: string, readonly details?: Record<string, unknown>) { super(code); }
@@ -177,12 +177,15 @@ export async function stelleMainLaufSicher(e: MainStartEingabe): Promise<{ zusta
           if (pr.passt) modell = pr.modell;
         }
       }
+      // P22-T65 (Schalter EIN): ohne ausdrueckliche Stufe die gespeicherte Wahl dieses Modells bzw. sein standard_effort.
+      let effort = e.effort ?? null;
+      if (ein && !effort && (e.runtime === 'claude' || e.runtime === 'codex')) effort = (await effortFuerStart(e.runtime, modell)).effort;
       const job = await enqueueSpecialistJob({
         project: HAUPTAGENT_PROJEKT, action: 'spawn',
         args: {
           name: HAUPTAGENT_AGENT_ID, identity_id: e.identity_id, model: modell, expertise: HAUPTAGENT_EXPERTISE,
           task: HAUPTAGENT_AUFGABE, project: HAUPTAGENT_PROJEKT, project_path: hauptagentContainerPfad(), keep_alive: true,
-          target_runtime: e.runtime, ...(e.effort ? { effort: e.effort } : {}),
+          target_runtime: e.runtime, ...(effort ? { effort } : {}),
         },
       });
       jobId = job.id;
@@ -269,6 +272,14 @@ async function wechsleRuntime(a: AuftragFuerDaemon, d: RuntimeWechselDienste): P
   } else {
     modell = gew && !ein && modellPasstZuRuntime(gew, ziel) ? gew : await d.standardModell(ziel);
   }
+  // P22-T65 (Schalter EIN): gewuenschte Effort-Stufe muss zum Modell passen (ausgelesene Stufen), sonst ehrliche Ablehnung.
+  const gewEffort = typeof a.gewuenscht.effort === 'string' ? a.gewuenscht.effort : null;
+  let effort: string | null = null;
+  if (ein && gewEffort) {
+    const pe = await pruefeEffortFuerModell(ziel, modell, gewEffort);
+    if (!pe.ok) throw new MainLaufFehler(pe.grund ?? 'effort_ungueltig', { effort: gewEffort, modell, stufen: pe.stufen });
+    effort = pe.effort;
+  }
   if (!(await runtimeDaemonAngemeldet(ziel))) throw new MainLaufFehler('runtime_daemon_fehlt', { runtime: ziel });
   const failover = a.gewuenscht.failover === 'ja';
   // P22-T58-Failover: der alte Container ist schon gestoppt (docker stop). Kein Stop-Job; die Wrapper-Zeile steht aber noch
@@ -298,7 +309,7 @@ async function wechsleRuntime(a: AuftragFuerDaemon, d: RuntimeWechselDienste): P
     typeof handsOff?.thought_id === 'string' ? handsOff.thought_id : null);
   // 2) Zuweisung umstellen, 3) auf der neuen Runtime starten (derselbe Ausweis, dieselbe Identitaet).
   if (quelle !== ziel) await d.weiseMainZu(ziel);
-  const start = await stelleMainLaufSicher({ identity_id: a.identity_id, runtime: ziel, modell, warte_ms: warte, modell_explizit: ein && !!gew });
+  const start = await stelleMainLaufSicher({ identity_id: a.identity_id, runtime: ziel, modell, warte_ms: warte, modell_explizit: ein && !!gew, effort });
   if (start.zustand !== 'laeuft') throw new MainLaufFehler('main_start_dauert', { spawn_job_id: start.spawn_job_id });
   return { modell, runtime: ziel };
 }

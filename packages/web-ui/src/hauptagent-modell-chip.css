@@ -18,3 +18,9 @@
 .hauptagent-modell-chip .gruppe button code{color:var(--muted);font-size:8px}
 .hauptagent-modell-chip .gruppe button em{grid-column:1/-1;color:var(--muted);font-style:normal;font-size:8px}
 .hauptagent-modell-chip .gruppe button em:empty{display:none}
+.hauptagent-modell-chip .modell-zeile{display:grid;gap:2px}
+.hauptagent-modell-chip .modell-zeile .efforts{display:flex;flex-wrap:wrap;gap:3px;padding:0 6px}
+.hauptagent-modell-chip .modell-zeile .efforts button.effort{display:inline-block;padding:1px 6px;border:1px solid var(--border);border-radius:9px;font:8px "IBM Plex Mono",monospace;color:var(--muted)}
+.hauptagent-modell-chip .modell-zeile .efforts button.effort.std{border-style:dashed}
+.hauptagent-modell-chip .modell-zeile.aktiv .efforts button.effort.an,.hauptagent-modell-chip .modell-zeile .efforts button.effort:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.hauptagent-modell-chip .modell-zeile .effort-hinweise{padding:0 6px;color:var(--muted);font-size:8px}

@@ -343,6 +343,29 @@ export async function legeRuntimeAuftragAn(akteur: AusweisAkteur | null, e: Auft
       fehler('ausserhalb_rahmen', { feld: 'runtime', erlaubte_runtimes: textListeAus(rahmen.erlaubte_runtimes) });
     }
     if (!handsOff) fehler('hands_off_fehlt', { grund: 'Vor Neustart/Update/Wechsel Arbeitsstand als hands_off hinterlegen' });
+    // P22-T62/T65 (Schalter hauptagent_cli_modelle EIN): Selbstwechsel zusaetzlich zum Rahmen gegen die ausgelesene Liste
+    // pruefen - gleiche Pruefung wie beim User-Wechsel, ehrliche Ablehnung statt stillem Ersetzen.
+    if (gewuenscht.modell || gewuenscht.effort) {
+      const hm = await import('./hauptagent-modelle.js');
+      if ((await hm.leseCliModelleSchalter()).aktiv) {
+        const rt = gewuenscht.runtime ?? (typeof rahmen.runtime === 'string' ? rahmen.runtime : null);
+        if (rt === 'claude' || rt === 'codex') {
+          let modell = gewuenscht.modell ?? ziel.modell_bestaetigt ?? null;
+          if (gewuenscht.modell) {
+            const p = await hm.pruefeModellFuerRuntime(gewuenscht.modell, rt, { schalter: true });
+            if (!p.passt) fehler(p.grund?.startsWith('modellliste_fehlt') ? 'modellliste_fehlt' : (p.grund ?? 'modell_passt_nicht'), { modell: gewuenscht.modell, runtime: rt, gelistet: p.gelistet });
+            gewuenscht.modell = p.modell;
+            modell = p.modell;
+          }
+          if (gewuenscht.effort) {
+            if (!modell) fehler('effort_ohne_modell');
+            const pe = await hm.pruefeEffortFuerModell(rt, modell!, gewuenscht.effort);
+            if (!pe.ok) fehler(pe.grund ?? 'effort_ungueltig', { effort: gewuenscht.effort, modell, stufen: pe.stufen });
+            gewuenscht.effort = pe.effort;
+          }
+        }
+      }
+    }
   }
   if (schluessel) {
     const alt = await getPool().query<AuftragZeile>(`SELECT ${AUFTRAG_SPALTEN} FROM agent_runtime_auftraege WHERE identity_id=$1 AND idempotenz_schluessel=$2`, [ziel.id, schluessel]);

@@ -45,6 +45,8 @@ interface RuntimeAuftrag {
   gewuenscht: Record<string, unknown>;
   claim_revision: number;
   modell_konfiguriert: string | null;
+  /** P22-T65: gespeicherte Effort-Stufe des konfigurierten Modells (fehlt bei aelterer API). */
+  effort_konfiguriert?: string | null;
   versoehnen: boolean;
 }
 
@@ -128,7 +130,9 @@ export async function fuehreRuntimeAuftragAus(a: RuntimeAuftrag, runtime: string
       ? (typeof a.gewuenscht.modell === 'string' ? a.gewuenscht.modell : null)
       : a.modell_konfiguriert;
     if (!modell) throw new Error('modell_fehlt: kein konfiguriertes bzw. gewuenschtes Modell');
-    const effort = typeof a.gewuenscht.effort === 'string' ? a.gewuenscht.effort : undefined;
+    // P22-T65: modellwechsel mit gewuenschter Stufe; neustart behaelt die gespeicherte Stufe des konfigurierten Modells.
+    const effort = typeof a.gewuenscht.effort === 'string' ? a.gewuenscht.effort
+      : a.art === 'neustart' && typeof a.effort_konfiguriert === 'string' && a.effort_konfiguriert ? a.effort_konfiguriert : undefined;
     const spawn = erfolg(await dispatchSpecialistAction(alsJob(a, 'spawn', {
       model: modell, expertise: HAUPTAGENT_EXPERTISE, task: HAUPTAGENT_AUFGABE, project: a.project, project_path: pfad,
       keep_alive: true, target_runtime: runtime, ...(effort ? { effort } : {}),

@@ -39,6 +39,8 @@ export interface AuftragFuerDaemon {
   lease_bis: string;
   /** Konfiguriertes Profil-Modell (modell_bestaetigt) fuer einen Neustart mit gleichem Rezept. */
   modell_konfiguriert: string | null;
+  /** P22-T65: gespeicherte Effort-Stufe dieses Modells (startrezept.effort_je_modell) fuer einen Neustart. */
+  effort_konfiguriert: string | null;
   /** true = war schon accepted, Lease abgelaufen: erst Wrapperstand pruefen, dann melden. */
   versoehnen: boolean;
 }
@@ -50,7 +52,7 @@ export class RuntimeAuftragFehler extends Error {
 interface Zeile {
   id: string; identity_id: string; project: string; agent_id: string; art: AusfuehrbareAuftragArt; status: 'claimed' | 'accepted';
   gewuenscht: Record<string, unknown>; hands_off: Record<string, unknown> | null; claim_revision: number; lease_bis: Date;
-  war_accepted: boolean; modell_bestaetigt: string | null;
+  war_accepted: boolean; modell_bestaetigt: string | null; effort_konfiguriert: string | null;
 }
 
 /**
@@ -81,12 +83,14 @@ export async function claimeRuntimeAuftraege(o: {
        FROM kandidaten k, agent_identitaeten i
       WHERE a.id = k.id AND i.id = a.identity_id
       RETURNING a.id, a.identity_id, i.project, i.agent_id, a.art, a.status, a.gewuenscht, a.hands_off, a.claim_revision,
-                a.lease_bis, k.war_accepted, i.modell_bestaetigt`,
+                a.lease_bis, k.war_accepted, i.modell_bestaetigt,
+                i.startrezept->'effort_je_modell'->>i.modell_bestaetigt AS effort_konfiguriert`,
     [o.projekte, [...(o.arten ?? AUSFUEHRBARE_AUFTRAG_ARTEN)], max, lease]);
   return r.rows.map(z => ({
     auftrag_id: z.id, identity_id: z.identity_id, project: z.project, agent_id: z.agent_id, art: z.art, status: z.status,
     gewuenscht: z.gewuenscht ?? {}, hands_off: z.hands_off, claim_revision: z.claim_revision,
-    lease_bis: z.lease_bis.toISOString(), modell_konfiguriert: z.modell_bestaetigt, versoehnen: z.war_accepted,
+    lease_bis: z.lease_bis.toISOString(), modell_konfiguriert: z.modell_bestaetigt,
+    effort_konfiguriert: z.effort_konfiguriert ?? null, versoehnen: z.war_accepted,
   }));
 }
 
@@ -130,7 +134,7 @@ export async function meldeRuntimeAuftrag(o: {
   try {
     await client.query('BEGIN');
     const vorher = m.schritt === 'accepted' ? ['claimed'] : ['claimed', 'accepted'];
-    const r = await client.query<{ id: string; identity_id: string; art: string; status: string; tatsaechlich: Record<string, unknown> | null; erstellt_von: string | null }>(
+    const r = await client.query<{ id: string; identity_id: string; art: string; status: string; tatsaechlich: Record<string, unknown> | null; erstellt_von: string | null; gewuenscht: Record<string, unknown> | null }>(
       `UPDATE agent_runtime_auftraege a
           SET status = $4,
               tatsaechlich = CASE WHEN $4 = 'completed' THEN $5::jsonb ELSE a.tatsaechlich END,
@@ -142,7 +146,7 @@ export async function meldeRuntimeAuftrag(o: {
         FROM agent_identitaeten i
        WHERE a.id = $1 AND a.claim_revision = $2 AND a.status = ANY($3::text[])
          AND i.id = a.identity_id AND i.project = ANY($9::text[])
-       RETURNING a.id, a.identity_id, a.art, a.status, a.tatsaechlich, a.erstellt_von`,
+       RETURNING a.id, a.identity_id, a.art, a.status, a.tatsaechlich, a.erstellt_von, a.gewuenscht`,
       [o.auftrag_id.trim(), o.claim_revision, vorher, m.schritt, tatsaechlich ? JSON.stringify(tatsaechlich) : null, fehlerText,
         wer, AUFTRAG_LEASE_MS, o.projekte]);
     const z = r.rows[0];
@@ -169,6 +173,14 @@ export async function meldeRuntimeAuftrag(o: {
         `UPDATE agent_identitaeten SET startrezept = jsonb_set(COALESCE(startrezept, '{}'::jsonb), '{modell_je_runtime}',
             COALESCE(startrezept->'modell_je_runtime', '{}'::jsonb) || jsonb_build_object(COALESCE($2::text, startrezept->>'runtime', 'claude'), $3::text))
           WHERE id = $1`, [z.identity_id, tatsaechlich.runtime ?? null, tatsaechlich.modell]);
+      // P22-T65: Effort-Wahl je Modell (Synapse-ID) daneben festhalten.
+      const effort = typeof z.gewuenscht?.effort === 'string' && z.gewuenscht.effort.trim() ? z.gewuenscht.effort.trim() : null;
+      if (effort) {
+        await client.query(
+          `UPDATE agent_identitaeten SET startrezept = jsonb_set(COALESCE(startrezept, '{}'::jsonb), '{effort_je_modell}',
+              COALESCE(startrezept->'effort_je_modell', '{}'::jsonb) || jsonb_build_object($2::text, $3::text))
+            WHERE id = $1`, [z.identity_id, tatsaechlich.modell, effort]);
+      }
     }
     if (m.schritt !== 'accepted') {
       await client.query(
