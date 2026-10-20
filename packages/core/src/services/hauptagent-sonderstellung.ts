@@ -22,8 +22,6 @@ import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 export const MAIN_LESEZUGRIFF_FUNKTION = 'main_lesezugriff' as const;
 /** P22-T78 F1: Schalter des generischen Startkontexts (agent-verlauf.ts), gleiche Lesestelle, Standard EIN. */
 export const STARTKONTEXT_SCHALTER = 'startkontext' as const;
-/** @deprecated Alter Name (vor F1); zeigt auf denselben Schalter 'startkontext'. Nur bis P22-T81 umgestellt ist. */
-export const MAIN_STARTKONTEXT_FUNKTION = STARTKONTEXT_SCHALTER;
 export type MainSchalterFunktion = typeof MAIN_LESEZUGRIFF_FUNKTION | typeof STARTKONTEXT_SCHALTER;
 /** Rolle des Main (= hauptagent-dienst.ts HAUPTAGENT_ROLLE; Literal, damit die Ausweis-Grenze den Dienst nicht importiert). */
 const MAIN_ROLLE = 'main';

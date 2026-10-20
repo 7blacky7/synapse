@@ -2,8 +2,8 @@
  * P22-T78 + P22-T79 + Rest P22-T72 (Entwurf thought 67e6d433). Nur synapse_test:5433, eigenes privates Schema, keine Modelle/Netz.
  *   node packages/core/tests/hauptagent-sonderstellung-p22-t78.test.mjs
  * T78: Startkontext aus dem Verlauf (enthaelt 'ich heisse X' nach einem Wechsel), Nachweis am Wechsel-Eintrag und im Stand, Schalter
- *      main_startkontext (Standard EIN, AUS = kein Anhang), Prompt-Route: Main bekommt Prompt + Startkontext (laenge passt), andere
- *      Agenten byte-gleich.
+ *      startkontext (Standard EIN, AUS = kein Anhang), Nachweis einmal je Lauf (Schema 128), Prompt-Route: Main bekommt Prompt +
+ *      Startkontext (laenge passt), Agent OHNE Identitaet byte-gleich.
  * T79: Main liest in Projekten mit und ohne Koordinator (immer Visum), Schreiben -> main_nur_lesen, unbekanntes Projekt ->
  *      projekt_unbekannt, main_hinweis im internen Bereich (lesend ja, schreibend nein), Schalter main_lesezugriff AUS = Bestand,
  *      Nicht-Main unveraendert (fremdes_projekt), keine Arbeitsfreigabe fuer den Main.
