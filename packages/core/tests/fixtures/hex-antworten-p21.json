@@ -1,0 +1,584 @@
+{
+  "version": 1,
+  "task": "P21-T13",
+  "grund": "Additiver Hex-Antwortvertrag nach Teil2-Befund (Nullfix27961). Bestehende W1B/RV9-Baselines bleiben eingefroren. Quellen: hex-formate.ts, hex-adressen.ts und HexStand. Fachliche null-Werte bleiben in Text und structuredContent; die Ausnahme gilt nur fuer hex.",
+  "faelle": [
+    {
+      "id": "format_liste_ende",
+      "grund": "Eine vollstaendige Liste hat explizit keinen Folgeschluessel.",
+      "payload": {
+        "success": true,
+        "action": "format_liste",
+        "formate": [],
+        "vollstaendig": true,
+        "liste_nach": null
+      },
+      "erwartet": {
+        "success": true,
+        "action": "format_liste",
+        "formate": [],
+        "vollstaendig": true,
+        "liste_nach": null
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "format_liste",
+        "formate": [],
+        "vollstaendig": true
+      }
+    },
+    {
+      "id": "format_entwurf_ohne_basis",
+      "grund": "Keine Ableitungsbasis und keine Freigabe sind Aussagen zur Formatversion.",
+      "payload": {
+        "success": true,
+        "action": "format_speichern",
+        "format_id": "fixture-format",
+        "format_version": 1,
+        "basis": null,
+        "freigegeben_am": null,
+        "status": "entwurf"
+      },
+      "erwartet": {
+        "success": true,
+        "action": "format_speichern",
+        "format_id": "fixture-format",
+        "format_version": 1,
+        "basis": null,
+        "freigegeben_am": null,
+        "status": "entwurf"
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "format_speichern",
+        "format_id": "fixture-format",
+        "format_version": 1,
+        "status": "entwurf"
+      }
+    },
+    {
+      "id": "format_baum_ende",
+      "grund": "Vollstaendiger Baum ohne Cursor/Abbruchgrund; eine Arrayknotenlaenge kann unbekannt sein, Enumwert ohne Namen bleibt explizit.",
+      "payload": {
+        "success": true,
+        "action": "format_anwenden",
+        "vollstaendig": true,
+        "cursor": null,
+        "grund": null,
+        "baum": [
+          {
+            "pfad": "$.werte",
+            "art": "array",
+            "offset": "0",
+            "laenge": null
+          },
+          {
+            "pfad": "$.werte[0]",
+            "art": "zahl",
+            "offset": "0",
+            "laenge": "1",
+            "wert": "0",
+            "enum_name": null
+          }
+        ]
+      },
+      "erwartet": {
+        "success": true,
+        "action": "format_anwenden",
+        "vollstaendig": true,
+        "cursor": null,
+        "grund": null,
+        "baum": [
+          {
+            "pfad": "$.werte",
+            "art": "array",
+            "offset": "0",
+            "laenge": null
+          },
+          {
+            "pfad": "$.werte[0]",
+            "art": "zahl",
+            "offset": "0",
+            "laenge": "1",
+            "wert": "0",
+            "enum_name": null
+          }
+        ]
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "format_anwenden",
+        "vollstaendig": true,
+        "baum": [
+          {
+            "pfad": "$.werte",
+            "art": "array",
+            "offset": "0"
+          },
+          {
+            "pfad": "$.werte[0]",
+            "art": "zahl",
+            "offset": "0",
+            "laenge": "1",
+            "wert": "0"
+          }
+        ]
+      }
+    },
+    {
+      "id": "adressen_bss",
+      "grund": "BSS liefert Speicheradressen, hat aber keine Dateibytes. Fehlende segmentierte Adresse ist keine Nulladresse.",
+      "payload": {
+        "success": true,
+        "action": "adressen",
+        "basis": {
+          "dezimal": "4194304",
+          "hex": "0x400000"
+        },
+        "bevorzugte_basis": {
+          "dezimal": "4194304",
+          "hex": "0x400000"
+        },
+        "eingabe": {
+          "von": "rva",
+          "adresse": {
+            "dezimal": "4352",
+            "hex": "0x1100"
+          },
+          "adress_bytes": "1",
+          "segment": null
+        },
+        "zuordnungen": [
+          {
+            "bereich": {
+              "art": "sektion",
+              "index": 0,
+              "name": ".bss",
+              "segment": null,
+              "kopf_offset": "376",
+              "kopf_bytes": 40
+            },
+            "datei_offset": null,
+            "rva": {
+              "dezimal": "4352",
+              "hex": "0x1100"
+            },
+            "va": {
+              "dezimal": "4198656",
+              "hex": "0x401100"
+            },
+            "quell_va": {
+              "dezimal": "4198656",
+              "hex": "0x401100"
+            },
+            "segment_offset": null,
+            "status": "nur_speicher"
+          }
+        ]
+      },
+      "erwartet": {
+        "success": true,
+        "action": "adressen",
+        "basis": {
+          "dezimal": "4194304",
+          "hex": "0x400000"
+        },
+        "bevorzugte_basis": {
+          "dezimal": "4194304",
+          "hex": "0x400000"
+        },
+        "eingabe": {
+          "von": "rva",
+          "adresse": {
+            "dezimal": "4352",
+            "hex": "0x1100"
+          },
+          "adress_bytes": "1",
+          "segment": null
+        },
+        "zuordnungen": [
+          {
+            "bereich": {
+              "art": "sektion",
+              "index": 0,
+              "name": ".bss",
+              "segment": null,
+              "kopf_offset": "376",
+              "kopf_bytes": 40
+            },
+            "datei_offset": null,
+            "rva": {
+              "dezimal": "4352",
+              "hex": "0x1100"
+            },
+            "va": {
+              "dezimal": "4198656",
+              "hex": "0x401100"
+            },
+            "quell_va": {
+              "dezimal": "4198656",
+              "hex": "0x401100"
+            },
+            "segment_offset": null,
+            "status": "nur_speicher"
+          }
+        ]
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "adressen",
+        "basis": {
+          "dezimal": "4194304",
+          "hex": "0x400000"
+        },
+        "bevorzugte_basis": {
+          "dezimal": "4194304",
+          "hex": "0x400000"
+        },
+        "eingabe": {
+          "von": "rva",
+          "adresse": {
+            "dezimal": "4352",
+            "hex": "0x1100"
+          },
+          "adress_bytes": "1"
+        },
+        "zuordnungen": [
+          {
+            "bereich": {
+              "art": "sektion",
+              "index": 0,
+              "name": ".bss",
+              "kopf_offset": "376",
+              "kopf_bytes": 40
+            },
+            "rva": {
+              "dezimal": "4352",
+              "hex": "0x1100"
+            },
+            "va": {
+              "dezimal": "4198656",
+              "hex": "0x401100"
+            },
+            "quell_va": {
+              "dezimal": "4198656",
+              "hex": "0x401100"
+            },
+            "status": "nur_speicher"
+          }
+        ]
+      }
+    },
+    {
+      "id": "adressen_ne_ohne_flache_basis",
+      "grund": "NE-Segmentadressen besitzen keine erfundene flache VA oder RVA.",
+      "payload": {
+        "success": true,
+        "action": "adressen",
+        "basis": null,
+        "bevorzugte_basis": null,
+        "zuordnungen": [
+          {
+            "datei_offset": {
+              "dezimal": "512",
+              "hex": "0x200"
+            },
+            "rva": null,
+            "va": null,
+            "quell_va": null,
+            "segment_offset": {
+              "dezimal": "0",
+              "hex": "0x0"
+            },
+            "status": "datei"
+          }
+        ]
+      },
+      "erwartet": {
+        "success": true,
+        "action": "adressen",
+        "basis": null,
+        "bevorzugte_basis": null,
+        "zuordnungen": [
+          {
+            "datei_offset": {
+              "dezimal": "512",
+              "hex": "0x200"
+            },
+            "rva": null,
+            "va": null,
+            "quell_va": null,
+            "segment_offset": {
+              "dezimal": "0",
+              "hex": "0x0"
+            },
+            "status": "datei"
+          }
+        ]
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "adressen",
+        "zuordnungen": [
+          {
+            "datei_offset": {
+              "dezimal": "512",
+              "hex": "0x200"
+            },
+            "segment_offset": {
+              "dezimal": "0",
+              "hex": "0x0"
+            },
+            "status": "datei"
+          }
+        ]
+      }
+    },
+    {
+      "id": "symbol_unbekannte_spans",
+      "grund": "Symbole ohne Adresse/Groesse bzw. Quellzeilen-Ende behalten ihre fachlichen Unbekanntwerte.",
+      "payload": {
+        "success": true,
+        "action": "adressen",
+        "symbole": [
+          {
+            "name": "fixture_symbol",
+            "adresse": null,
+            "groesse_bytes": null,
+            "line_end": null
+          }
+        ],
+        "naechster_symbol_offset": null
+      },
+      "erwartet": {
+        "success": true,
+        "action": "adressen",
+        "symbole": [
+          {
+            "name": "fixture_symbol",
+            "adresse": null,
+            "groesse_bytes": null,
+            "line_end": null
+          }
+        ],
+        "naechster_symbol_offset": null
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "adressen",
+        "symbole": [
+          {
+            "name": "fixture_symbol"
+          }
+        ]
+      }
+    },
+    {
+      "id": "status_keine_overrides",
+      "grund": "Kein PG-Override und kein Fehler sind ausdrueckliche Diagnosewerte; 0/false/leere Arrays bleiben erhalten.",
+      "payload": {
+        "success": true,
+        "action": "status",
+        "formate": null,
+        "schalter": {
+          "aktiv": false,
+          "quelle": "standard",
+          "bis": null,
+          "letzter_fehler": null
+        },
+        "werte": {
+          "seiten_bytes": {
+            "wert": 4096,
+            "quelle": "standard",
+            "global": null,
+            "projekt": null
+          }
+        },
+        "anzahl": 0,
+        "hinweis": "",
+        "warnungen": []
+      },
+      "erwartet": {
+        "success": true,
+        "action": "status",
+        "formate": null,
+        "schalter": {
+          "aktiv": false,
+          "quelle": "standard",
+          "bis": null,
+          "letzter_fehler": null
+        },
+        "werte": {
+          "seiten_bytes": {
+            "wert": 4096,
+            "quelle": "standard",
+            "global": null,
+            "projekt": null
+          }
+        },
+        "anzahl": 0,
+        "hinweis": "",
+        "warnungen": []
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "status",
+        "schalter": {
+          "aktiv": false,
+          "quelle": "standard"
+        },
+        "werte": {
+          "seiten_bytes": {
+            "wert": 4096,
+            "quelle": "standard"
+          }
+        },
+        "anzahl": 0,
+        "hinweis": "",
+        "warnungen": []
+      }
+    },
+    {
+      "id": "rv27_kandidat_ende_unbekannt",
+      "tool": "reverse",
+      "grund": "Nur neue Aktion reverse.struktur: ein plausibler PNG-Kandidat hat noch keine gesicherte Endposition.",
+      "payload": {
+        "success": true,
+        "action": "struktur",
+        "gruppen": [
+          {
+            "files": [
+              {
+                "path": "embedded.bin",
+                "eingebettete_kandidaten": [
+                  {
+                    "format": "png",
+                    "candidate": true,
+                    "offset": "80",
+                    "length": null,
+                    "stored": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "erwartet": {
+        "success": true,
+        "action": "struktur",
+        "gruppen": [
+          {
+            "files": [
+              {
+                "path": "embedded.bin",
+                "eingebettete_kandidaten": [
+                  {
+                    "format": "png",
+                    "candidate": true,
+                    "offset": "80",
+                    "length": null,
+                    "stored": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "struktur",
+        "gruppen": [
+          {
+            "files": [
+              {
+                "path": "embedded.bin",
+                "eingebettete_kandidaten": [
+                  {
+                    "format": "png",
+                    "candidate": true,
+                    "offset": "80",
+                    "stored": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rv27_leere_entropie",
+      "tool": "reverse",
+      "grund": "Nur neue Aktion reverse.struktur: keine Byteprobe bedeutet unbekannte Entropie, nicht Entropie null Bit.",
+      "payload": {
+        "success": true,
+        "action": "struktur",
+        "gruppen": [
+          {
+            "files": [
+              {
+                "path": "empty.dat",
+                "entropie_gesamt": {
+                  "wert": null,
+                  "bytes": 0,
+                  "vollstaendig": true
+                },
+                "entropie_stichprobe_4096": {
+                  "wert": null,
+                  "bytes": 0
+                },
+                "entropie_bloecke": []
+              }
+            ]
+          }
+        ]
+      },
+      "erwartet": {
+        "success": true,
+        "action": "struktur",
+        "gruppen": [
+          {
+            "files": [
+              {
+                "path": "empty.dat",
+                "entropie_gesamt": {
+                  "wert": null,
+                  "bytes": 0,
+                  "vollstaendig": true
+                },
+                "entropie_stichprobe_4096": {
+                  "wert": null,
+                  "bytes": 0
+                },
+                "entropie_bloecke": []
+              }
+            ]
+          }
+        ]
+      },
+      "legacy_erwartet": {
+        "success": true,
+        "action": "struktur",
+        "gruppen": [
+          {
+            "files": [
+              {
+                "path": "empty.dat",
+                "entropie_gesamt": {
+                  "bytes": 0,
+                  "vollstaendig": true
+                },
+                "entropie_stichprobe_4096": {
+                  "bytes": 0
+                },
+                "entropie_bloecke": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

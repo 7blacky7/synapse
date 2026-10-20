@@ -754,6 +754,32 @@ export class AssetSpeicher {
     await this.journal(k,op);if(held)await this.entferne(k,lockKey);return op;
   }
 
+  /** P21-T15: unveraenderliche Analysebytes im bestehenden internen FD-Speicher. PG publiziert erst nach sync. */
+  private hexAnalyseKey(k:Kontext,id:string):string {
+    if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id))return fail('pfad_ungueltig','Ungueltige Analyse-ID.');
+    return this.intern(k,'hex-analysen',id+'.bin');
+  }
+  async schreibeHexAnalyse(adresse:AssetAdresse,id:string,bytes:Buffer,maxBytes:number):Promise<void>{
+    const k=await this.kontext(adresse),key=this.hexAnalyseKey(k,id);
+    if(!Number.isSafeInteger(maxBytes)||maxBytes<0||bytes.length>Math.min(maxBytes,k.maxDatei))return fail('zu_gross','Analysebudget ueberschritten.');
+    await this.mitEltern(k,key,true,async p=>{
+      const h=await fs.open(p.pfad,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
+      try{await this.write(h,bytes);await h.sync();}finally{await h.close();}
+      await p.handle.sync();
+    });
+  }
+  async leseHexAnalyse(adresse:AssetAdresse,id:string,offset:number,laenge:number,groesse:number):Promise<Buffer>{
+    const k=await this.kontext(adresse);
+    if(![offset,laenge,groesse].every(Number.isSafeInteger)||offset<0||laenge<0||offset>groesse||laenge>groesse-offset)return fail('bereich_ungueltig','Ungueltiger Analysebereich.');
+    const h=await this.open(k,this.hexAnalyseKey(k,id));
+    try{
+      if((await h.stat()).size!==groesse)return fail('hash_falsch','Analysegroesse geaendert.');
+      const b=Buffer.alloc(laenge);let at=0;
+      while(at<laenge){const n=(await h.read(b,at,laenge-at,offset+at)).bytesRead;if(!n)return fail('hash_falsch','Analyse unvollstaendig.');at+=n;}
+      return b;
+    }finally{await h.close();}
+  }
+
   /** A14: interne Previewdateien benutzen dieselben FD-/Symlinkgrenzen wie Originalbytes. */
   private previewKey(k: Kontext,key: string): string {
     if(!/^[a-f0-9]{64}$/.test(key))return fail('pfad_ungueltig','Ungültiger Previewschlüssel.');

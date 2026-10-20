@@ -1,0 +1,179 @@
+{
+  "bereich": "hex",
+  "skills": [
+    {
+      "skill_name": "fall-hex",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "Hex ist das Agenten-Bytewerkzeug (MCP/REST), Standard AUS bis Freigabe. action status zeigt Schalter, Quelle und PG-Budgets. hex liest nur ein Fenster; Zeilen haben Offset hex/dez, Hex und ASCII, Quelle/Revision/SHA-256 sind explizit."
+        },
+        {
+          "section": "faelle",
+          "content": "fall-hex-bereich: Offsets/Laenge/Budget. fall-hex-quelle: Projekt-/Reverse-Referenz, Rechte und bytegetreue PG-Texte. fall-hex-fortsetzung: Cursor und Revision. deuten, suchen und vergleichen sind implementiert; Suche nutzt Hexmuster mit ??, ASCII/UTF-8/UTF-16 oder Zahlen typ+Endian. vergleichen v1 ist offsetgleich und ordnet Verschiebungen nicht zu. fall-hex-formate: kaitai-read-v1, Formatversionen, Freigabe, Unterbaeume und Cursor. fall-hex-adressen: Exe-Formate, Dateioffset/RVA/VA und Reverse-Funktionen."
+        }
+      ]
+    },
+    {
+      "skill_name": "fall-hex-bereich",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "Ausloeser: offset_ungueltig, bereich_ausserhalb oder budget_ueberschritten. Bytefenster und Ausgabegrenzen richtig angeben."
+        },
+        {
+          "section": "regeln",
+          "content": "Offset ist eine nichtnegative Byteposition: sichere Zahl, Dezimalstring oder 0x-Hexstring. laenge muss positiv sein. Keine gerundeten grossen JSON-Zahlen. Bei budget_ueberschritten die gemeldete Grenze verwenden; status zeigt wirksame Werte/Quelle. hex darf am EOF die Seite verkuerzen; Offset genau am Ende liefert leere EOF-Seite, dahinter bereich_ausserhalb. Standardfenster 4096 Bytes, konfigurierbare Obergrenze; nie alle grossen Bytes in den Kontext holen. ASCII-Punkte stehen fuer nicht druckbare Bytes."
+        }
+      ]
+    },
+    {
+      "skill_name": "fall-hex-quelle",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "Ausloeser: Quelle fehlt/ist mehrdeutig, Reverse-Bindung fehlt, Hex ist aus oder API erforderlich. Autorisierte Bytequelle eindeutig angeben."
+        },
+        {
+          "section": "regeln",
+          "content": "ref.art ist projekt_asset, projekt_text, reverse_datei oder reverse_asset. Projektasset: id oder exakter file_path, optional revision. Projekttext: file_path, optional files-version_id (Stand VOR der abloesenden Aenderung). Reverse: reverse_id und id oder exakter file_path; aktive Projektbindung erforderlich. Keine lokalen/absoluten Pfade, storage_keys oder URLs. id/file_path muessen bei gemeinsamer Angabe dieselbe Quelle meinen. Mehrdeutigkeiten mit ID aufloesen. PG-Text wird als unveraenderte UTF-8-Bytefolge untersucht (bytebasis pg_text_utf8); Originalencoding/BOM sind daraus nicht rekonstruierbar. User-Entscheidung Memory 528b2644 erlaubt Hex-Rohzugriff auch auf sonst maskierte Textdateien. Sonstige Tools werden dadurch nicht umgestellt. Main liest, veraendert keine fremden Projektdateien."
+        }
+      ]
+    },
+    {
+      "skill_name": "fall-hex-fortsetzung",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "Ausloeser: Cursor ungueltig/abgelaufen oder Quellrevision geaendert. Revisionsgebunden und ohne gemischte Seiten fortsetzen."
+        },
+        {
+          "section": "regeln",
+          "content": "Bei cursor ausschliesslich action hex + cursor senden, keine ref/offset/laenge gleichzeitig. Cursor ist projekt-, akteurs-, revisions- und zeitgebunden. Zugriffsrechte/Reverse-Bindung gelten bei jedem Aufruf erneut. Nach Ablauf neuen Aufruf mit der zurueckgegebenen gepinnten ref und naechster_offset starten; quelle_geaendert bedeutet neue Revision bewusst aufloesen. eof kennzeichnet Dateiende; vollstaendig beschreibt das angefragte Fenster, nicht eine Vollanalyse. Fortsetzungen speichern nur Referenz/Position, keine Byteinhalte."
+        }
+      ]
+    },
+    {
+      "skill_name": "fall-hex-suche",
+      "weg": "beide",
+      "sections": [
+        {"section":"uebersicht","content":"Ausloeser: Hex-Muster/String/Zahl ungültig, Suche hat noch weitere Treffer oder Scanbudget ist erreicht."},
+        {"section":"regeln","content":"suchen braucht ref. art=hex akzeptiert Byte-Tokens wie '4D 5A ??'; art=ascii|utf8|utf16le|utf16be sucht muster als String; art=zahl braucht typ, wert und fuer Mehrbytewerte endianness=le|be. ausrichtung ist ein positiver Byteabstand. Treffer liefern Offset und bis zu 16 Kontextbytes vor/nach dem Treffer. Fortsetzen mit gleicher gepinnter ref und offset=naechster_offset; offset ist der naechste Kandidatenstart. naechster_offset null + eof true bedeutet Dateiende. Scan- und Trefferbudgets stehen in der Antwort; keine komplette Datei wird geladen."}
+      ]
+    },
+    {
+      "skill_name": "fall-hex-vergleichen",
+      "weg": "beide",
+      "sections": [
+        {"section":"uebersicht","content":"Ausloeser: Quelle fehlt/ist nicht gebunden, Offset liegt hinter beiden Dateien oder Vergleich braucht weitere Seiten."},
+        {"section":"regeln","content":"vergleichen braucht ref_a und ref_b. v1 vergleicht strikt gleiche Byteoffsets; Einfügungen/Verschiebungen werden nicht zugeordnet. Das Ergebnis nennt modus offsetgleich-v1, beide Revisionen und SHA-256, Groessen und Groessendifferenz. Differenzbloecke enthalten Offset, Laenge und Bytes a/b; ?? kennzeichnet Bytes, die wegen eines Groessenunterschieds nur auf einer Seite existieren. Mit gleicher gepinnter ref_a/ref_b und offset=naechster_offset fortsetzen. Scanbudget und max_diff_bloecke gelten je Seite."}
+      ]
+    },
+    {
+      "skill_name": "fall-hex-deuten",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "Ausloeser: typ_ungueltig/typ_unbekannt, Endianness-Konflikt, Stringgrenze oder Struktur-/Pruefsummenfehler. deuten liest Typwerte exakt und berechnet Offsets/Pruefsummen selbst."
+        },
+        {
+          "section": "regeln",
+          "content": "typen enthaelt Typnamen oder Beschreibungen mit typ,name,offset,endianness,anzahl,schrittweite. Mehrbytezahlen ohne Endianness liefern LE/BE getrennt; u64/i64 sind exakte Dezimalstrings, wert_hex ist das originale Bitmuster. Typnamen z. B. u16le/i64be/f32. typen sind alternative Deutungen am selben Basisoffset; ein struct mit felder liest Felder standardmaessig aufeinanderfolgend (Feld-offset relativ zum Elternfeld). string hat kodierung ascii|latin1|utf8|utf16le, laenge als festes Bytefenster und optional nullterminiert:true; danach folgt das naechste Strukturfeld erst nach dem Fenster. terminiert sagt, ob die Null gefunden wurde; ungueltiges Encoding ist ein Fehler. Arrays: anzahl und optionale schrittweite, Ausgabe mit feld_offset/feld_limit paginieren, naechstes_feld zeigt die Fortsetzung. Fuer jede Seite die gepinnte ref weitergeben. pruefsummen:[{algorithmus:'crc32'|'adler32'|'md5'|'sha1'|'sha256',offset,laenge}] bezieht sich auf absolute Dateibytes; fehlende Grenzen verwenden Basisoffset und Restbereich bzw. top-level laenge. Gleiche Bereiche werden fuer mehrere Algorithmen einmal gestreamt. Budgetabbruch liefert keine vermeintlich fertige Teil-Pruefsumme."
+        }
+      ]
+    }
+,
+    {
+      "skill_name": "fall-hex-formate",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "Formatbeschreibungen: format_speichern, format_liste, format_anwenden. Profil kaitai-read-v1 ist eine begrenzte Kaitai-Lese-Teilmenge als JSON, kein vollstaendiger Kaitai-Compiler und kein YAML-Import. hex_lesen UND hex_formate muessen freigegeben sein. status zeigt beide Schalter, Ablauf/Fehler und PG-Budgets; admin hex_einstellungen und Web-UI verwalten die Grenzen."
+        },
+        {
+          "section": "speichern",
+          "content": "format_speichern(format:{profil:'kaitai-read-v1',meta:{id:'demo',endian:'le'},seq:[{id:'magic',contents:[68,69,77,79]},{id:'anzahl',type:'u2'},{id:'werte',type:'u4',repeat:'expr','repeat-expr':'anzahl'}]},format_name:'Demo',beschreibung:'...',erkennung:{magic:[{offset:0,hex:'44454d4f'}],endungen:['demo']},herkunft:{reverse_id:'rev-...',thought_id:'UUID'}) legt einen projektlokalen Entwurf an. Herkunftsreferenzen sind optional und werden auf Projekt/Bibliotheksbindung geprueft. Weitere Version: format_id und basis_version der aktuellen letzten Version mitgeben, gleicher format_name; jeder Aufruf erzeugt eine neue unveraenderliche Version. format_versionskonflikt: erst aktuelle Version lesen. basis_format:{format_id,version} dokumentiert Ableitung aus einer lesbaren Version. veroeffentlichen:true nur im bestehenden Verwaltungsrahmen (User/Koordinator, aktiver Main im eigenen Projekt); mit format_id+format_version ohne format wird genau diese Version freigegeben. Freigabe ist unveraenderlich und startet keinen globalen Nachzug. Fremdprojekt-Main/Visum schreibt keine Formate."
+        },
+        {
+          "section": "sprache",
+          "content": "Strenger Kern: meta.id, optional meta.endian le|be; seq mit id, type, size, contents, encoding, enum, if, repeat:'expr' und repeat-expr. Typen u1/u2/u4/u8, s1/s2/s4/s8, f4/f8, optional le/be-Suffix; Mehrbytefelder verlangen explizite Endianness. bytes/str verlangen size, str verlangt encoding utf-8|ascii|utf-16le|utf-16be; size ist bei Zahlen exakt die Typbreite. contents ist ein UTF-8-String oder Bytearray und wird als Magic validiert. types sind lokale {seq,instances}; keine Zyklen, Imports, externen Typen, process, eval oder Skripte. enums sind globale Zuordnungen von Ganzzahlstrings zu Namen. type kann {'switch-on':'kind',cases:{'1':'lokaler_typ','_':'bytes'}} sein. instances sind benannte Felder mit explizitem pos und size (relativ zum Substream); sie bleiben lazy, bis ihr Feldpfad angefordert wird. Unbekannte Konstrukte werden mit praezisem Pfad abgewiesen."
+        },
+        {
+          "section": "ausdruecke",
+          "content": "Expressions sind sichere Ganzzahlen, Booleans oder geparste Strings: fruehere lokale Ganzzahlfelder, _root.feld, _index, _io.size und _io.pos, true/false; + - * / % & | ^ << >>, Vergleiche == != < <= > >=, && ||, unäres + - ! ~ und Klammern. Kein Zugriff auf beliebige Eigenschaften/Funktionen. _io-Position und -Groesse beziehen sich auf den aktuellen begrenzten Substream. Keine vorwaerts gerichteten lokalen Referenzen. Konditional fehlende/nicht verfuegbare Zahlenreferenzen ergeben einen Fehler. Exakter Bereich i64..u64; Division null/Overflow werden gemeldet. Float-Sonderwerte sind NaN/+Infinity/-Infinity/-0 als Strings, Ganzzahlen als dezimal+hex."
+        },
+        {
+          "section": "anwenden",
+          "content": "format_liste listet eigene Entwuerfe und explizit freigegebene Versionen anderer Projekte. limit und liste_nach blaettern ueber stabile Versionsschluessel. Einzeldefinition: format_id+format_version+mit_format:true. format_anwenden verlangt ref, format_id und exakte format_version; optional offset, feldpfad:'$.werte', array_start/array_anzahl. baum ist ein paginierter Baum als Pfadknoten mit elternpfad, absoluten Byteoffsets, Typ, Laenge und begrenzten Originalbytes. Struktur-/Arraylaengen koennen bis zur Auswertung unbekannt (null) sein. Nicht angeforderte Teilbaeume werden uebersprungen, wenn ihre Groesse feststeht. Magic/Endungen sind Erkennungsmerkmale, kein Korrektheitsbeweis. Validierung nennt ihren selektiven Umfang; lazy Instanzen werden nicht automatisch gelesen."
+        },
+        {
+          "section": "fortsetzen",
+          "content": "Eine teilweise Anwendung liefert cursor und Budgetgrund. Folgeaufruf nur action:'format_anwenden',cursor (plus Transport-/Projektidentitaet), keine Quelle/Format/Auswahl erneut. Cursor pinnt Quellrevision, Format-ID/Version/Hash und Auswahl; Berechtigung/Reverse-Bindung werden jedes Mal erneut geprueft. Kontrollstand enthaelt nur Feldadressen und Traversalpositionen, keine Bytefenster oder dekodierten Werte. Nach Ablauf bewusst neu mit gepinnter ref und Formatversion starten. Bei budget_ueberschritten status lesen und erlaubte PG-Grenzen anpassen; keine riesigen Dumps anfordern. Formate und Cursor fuehren niemals Leser-Code aus. RV26/RV28 sind eine getrennte spaetere Leser-Laufzeit/Registry; Format-Version und Hash koennen dort als Herkunft referenziert werden."
+        }
+      ]
+    },
+    {
+      "skill_name": "fall-hex-entschluesseln",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "entschluesseln erfordert hex_lesen UND hex_entschluesseln. status nennt beide Schalter, Verfahren, Parameter, PG-Budgets und Worker-Verfuegbarkeit. Neue Analyse-ref arbeitet direkt mit hex/deuten/suchen/vergleichen/format_anwenden. Keine Originalaenderung."
+        },
+        {
+          "section": "schluessel",
+          "content": "Genau einer von schluessel_ref:{ref,offset,laenge,kodierung:'raw'|'hex'|'base64'} und schluessel_inline:{wert,kodierung}. ref darf Projekt-/Reverse-/Analysequelle sein; Offset/Laenge sind Bytebereich der Schluesselquelle, gleiche Rechte/Bindung wie Hex. raw inline ist Bytearray oder UTF-8-String; hex/base64 sind strikt kodierte Strings. Inline nur Aufrufparameter, nie Format/Thought/Memory/Logs. Herkunft nennt nur Art inline bzw. gepinnte Ref/Hash/Bereich/Kodierung, keine Schluesselbytes. Geheimnisse aus Betriebs-/Provider-Tresoren werden nicht als Entschluesselungsschluessel missbraucht."
+        },
+        {
+          "section": "verfahren",
+          "content": "ref,offset,laenge definieren das Chiffre-/Kompressionsfenster explizit. xor wiederholt Key, parameter.phase Startindex Standard0; xor_rolling v1 P[i]=C[i] XOR ((K[(i+phase)%N]+i*schritt)%256), phase0/schritt1 Standard, i ab Bereichsanfang. AES-CBC/CTR/GCM: 16/24/32 Byte Key, parameter.iv als Hex (CBC/CTR16 Byte, GCM12); CBC braucht padding none|pkcs7, GCM tag16 Byte Hex und optional aad Hex. GCM gibt erst nach erfolgreicher Tagpruefung ein Ergebnis frei. zlib/deflate transformieren zlib-umhuelltes bzw. rohes DEFLATE, ohne Key/Parameter. Keine Passwortableitung, kein Erraten unbekannter Kryptografie."
+        },
+        {
+          "section": "analyse",
+          "content": "Ergebnis ist ref:{art:'analyse',id,sha256,revision} mit Ursprungshash, Verfahrensversion, oeffentlichen Parametern, Ergebnis-SHA256 und Offset-Abbildung verfuegbar ja/nein. Laengenbewahrende Verfahren haben lineare Abbildung, Kompression/CBC-Padding keine. Folgeaktionen pruefen urspruengliche Quellenrechte/Reverse-Bindungen erneut, inklusive Schluesselquellen. Gueltigkeit analyse_minuten, Kettentiefe/Quellenzahl und gesamter reservierter Speicher sind PG-beschraenkt. Ablauf gibt keinen Speicher automatisch frei; volle Quote meldet analyse_speicher_voll, kein ungefragtes Loeschen."
+        },
+        {
+          "section": "worker",
+          "content": "Feste native Verfahren laufen API-seitig als Work-Job in einem terminierbaren Worker-Thread, keine Skripte. Kein Ausfuehrer => kein_hex_ausfuehrer; fehlende Compute-/Ressourcen-Zulassung => hex_worker_nicht_zugelassen. Job speichert nur Analyse-ID und Ursprungshash, keine Aufrufgeheimnisse; bei Prozessverlust keine automatische Wiederholung mit verlorenem Inline-Key. Status und Work-Job-ID helfen der Diagnose. Budget-/Zeit-/Tagfehler publizieren keine vermeintlich fertigen Teil-Ergebnisse."
+        }
+      ]
+    }
+,
+    {
+      "skill_name": "fall-hex-adressen",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "adressen rechnet exakte Dateioffsets/RVA/VA fuer PE, MZ, NE, LE/LX und ELF; Programme werden nie ausgefuehrt. Voraussetzung hex_lesen UND hex_adressen; Standard AUS. status zeigt Quelle/Ablauf/Fehler der Freigaben und max_adress_eintraege (PG, Default 4096). Fuer Strukturbaeume braucht format_anwenden zusaetzlich hex_formate."
+        },
+        {
+          "section": "aufruf",
+          "content": "Beispiel: hex(action:'adressen',ref:<gepinnt>,von:'rva',adresse:'0x1010'). von=datei_offset|rva|va|segment_offset; adresse als sichere Zahl, Dezimalstring oder 0x-String bis u64, grosse Zahlen nicht als gerundete JSON-Zahl. adress_bytes verlangt eine vollstaendig abbildbare Bereichslaenge (Default 1). Ausgabe: Originalref/Revision/SHA/Bytebasis, Basis, alle Zuordnungen mit Sektion/Segment/Objekt, exakte Adressen dezimal+hex und Header-Bytebezug. Mehrdeutige/ueberlappende Bereiche werden als mehrere Kandidaten ausgewiesen, nie still auf den ersten reduziert. BSS und Nullseiten haben keine Dateibytes; kodierte/iterierte/komprimierte/ungueltige Seiten werden nicht linear umgerechnet. Programme/Relokationen werden nicht ausgefuehrt."
+        },
+        {
+          "section": "basen",
+          "content": "PE verwendet die bevorzugte ImageBase; ladebasis ersetzt sie ausdruecklich, ohne ASLR zu raten. ELF verwendet nur PT_LOAD fuer Speicherabbildung und exakte 64-Bit-Headerwerte; RVA ist hier bewusst relativ zur niedrigsten PT_LOAD-Adresse definiert, ladebasis ersetzt diese Basis. ELF-Dateisektionen ausserhalb PT_LOAD bleiben als datei_sektionen sichtbar, bekommen keine erfundene VA. ET_REL hat ohne Loader keine feste VA. MZ-RVA ist relativ zum DOS-Lademodul, Header/Overlay bleiben ausserhalb; VA braucht ladebasis. MZ segment_offset benutzt ein relatives Paragraphensegment. NE hat nur Segmentindex:Offset (segment ab 1), RVA/VA werden nicht geraten. LE/LX segment meint Objektindex ab 1 und benutzt die Objektseitenkarte; lineare bevorzugte VA folgt Objektbasis, nicht physischer Seitenfolge."
+        },
+        {
+          "section": "formate",
+          "content": "Mitgelieferte unveraenderliche kaitai-read-v1-Formate (Version 1) werden ueber die H5-PG-Lieferung 133_hex_exe_formate.sql ausgeliefert; global lesbar, kein automatischer Leser-/Analyse-Nachzug. format_liste nennt IDs/Hashes und mit_format:true liefert einzelne Definitionen. Namen exe-mz, exe-pe, exe-ne, exe-le, exe-lx, exe-elf32le, exe-elf32be, exe-elf64le, exe-elf64be sowie passende ELF-Symbolrecords. PE hat zusaetzlich exe-pe-import, exe-pe-export, exe-pe-resource, exe-pe-resource-data, exe-pe-reloc. adressen liefert das Hauptformat und bei PE-Verzeichnissen gepinnte Folgeaufrufe mit berechnetem Dateioffset. Importformate lesen je einen 20-Byte-Deskriptor, Export einen Verzeichnisheader, Ressourcen eine Ebene und Reloc einen Block; weitere Records gezielt per Offset lesen. Keine vollstaendige automatische Ressourcenrekursion behaupten. ELF section_zero legt erweiterte Zaehler offen; keine geratene automatische Fortsetzung bei PN_XNUM."
+        },
+        {
+          "section": "herkunft",
+          "content": "Bestehende PE-/ELF-Inspektoren liefern denselben Header-/Tabellen-Leseweg; der Adressmodus spart Entropie, Imports und Programmausfuehrung. Bei gebundener reverse_datei werden passende aktuelle S1/S3-Funktionen aus derselben Ursprungsrevision und aktuellem Fingerabdruck verknuepft. Ohne Groesse wird nur die exakte Startadresse zugeordnet, keine naechste Funktion geraten. symbol_offset/symbol_limit blaettern ueber gespeicherte Symbole, jeweils mit gepinnter Originalref fortsetzen. Eine Analyse-ref erhaelt keine ungepruefte 1:1-Symbolzuordnung zur verschluesselten Quelle. Quelle und Reverse-Bindung werden vor/nach der Operation erneut geprueft."
+        },
+        {
+          "section": "grenzen",
+          "content": "vollstaendig beschreibt die gelesene Adresskarte. Abgeschnittene Header, zu viele Tabellenzeilen, unplausible Verweise und nicht unterstuetzte erweiterte ELF-Programmheaderzaehler liefern Teilstatus/Warnungen. karte_unvollstaendig ist kein Beweis fuer eine fehlende Zuordnung. Scan-/RAM-/Laufzeit-/Treffer-/Antwortbudgets gelten zusaetzlich; bei Budgetfehler die gemeldete PG-Grenze pruefen, keinen Voll-Dump anfordern. Die Operatorobergrenzen bestehender Inspektoren (z.B. PE 96 Loadersektionen) bleiben zusaetzlich erhalten. Security-Datenverzeichnis von PE ist Dateioffset, keine RVA. ELF-Symbole und PE-Import/Export/Ressourcen/Reloc-Records sind deklarative Strukturvorlagen, kein ausfuehrbarer Code."
+        }
+      ]
+    }
+  ]
+}

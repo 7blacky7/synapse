@@ -98,6 +98,8 @@ const ROUTEN: RouteDef[] = [
   { methode: 'POST', pfad: '/tasks/:task_id/bindung/entblocken', action: 'task_bindung_entblocken', quelle: req => ({ ...body(req), bindung_task_id: params(req).task_id }) },
   { methode: 'GET', pfad: '/web-ui-koordinator-token', action: 'web_ui_koordinator_token', quelle: req => ({ ziel_identity_id: query(req).identity_id }) },
   // P22-T45: Ausweis-Fristen (Einstellung, EINE Lesestelle im Core).
+  { methode: 'GET', pfad: '/hex-einstellungen', action: 'hex_einstellungen', quelle: () => ({ modus: 'status' }) },
+  { methode: 'PUT', pfad: '/hex-einstellungen', action: 'hex_einstellungen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
   { methode: 'GET', pfad: '/ausweis-fristen', action: 'ausweis_fristen', quelle: () => ({ modus: 'status' }) },
   { methode: 'PUT', pfad: '/ausweis-fristen', action: 'ausweis_fristen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
   // P22-T44: Ausweis fuer mehrere Projekte - Visa/Einwanderungen in diesem Projekt, Arbeitsfreigabe (User oder Koordinator dieses Projekts).

@@ -34,6 +34,8 @@
 import { createHash } from 'node:crypto';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
 import { getPool } from './client.js';
+import {HEX_EXE_FORMATE_SCHEMA_SQL} from './hex-exe-formate-schema.js';
+import {HEX_FORMATE_SCHEMA_SQL} from './hex-formate-schema.js';
 import { AGENT_BEZUG_SCHEMA_SQL } from './agent-bezug-schema.js';
 import { AGENT_PROFIL_SCHEMA_SQL } from './agent-profil-schema.js';
 import { AGENT_AUSWEIS_SCHEMA_SQL } from './agent-ausweis-schema.js';
@@ -49,6 +51,8 @@ import { HAUPTAGENT_VERLAUF_SCHEMA_SQL } from './hauptagent-verlauf-schema.js';
 import { AGENT_ENTFERNUNG_SCHEMA_SQL, AGENT_UMBENENNUNG_SCHEMA_SQL } from './agent-entfernung-schema.js';
 import { AGENT_STARTKONTEXT_SCHEMA_SQL } from './agent-startkontext-schema.js';
 import { AGENT_CONTAINER_SCHEMA_SQL } from './agent-container-schema.js';
+import { HEX_SCHEMA_SQL } from './hex-schema.js';
+import {HEX_ANALYSEN_SCHEMA_SQL} from './hex-analysen-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
 import { AGENT_IDENTITAET_SCHEMA_SQL } from './agent-identitaet-schema.js';
 import {COMPUTE_POLICY_SCHEMA_SQL} from './compute-policy-schema.js';
@@ -3187,6 +3191,10 @@ ${AGENT_ENTFERNUNG_SCHEMA_SQL}
 ${AGENT_UMBENENNUNG_SCHEMA_SQL}
 ${AGENT_STARTKONTEXT_SCHEMA_SQL}
 ${AGENT_CONTAINER_SCHEMA_SQL}
+${HEX_SCHEMA_SQL}
+${HEX_ANALYSEN_SCHEMA_SQL}
+${HEX_FORMATE_SCHEMA_SQL}
+${HEX_EXE_FORMATE_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

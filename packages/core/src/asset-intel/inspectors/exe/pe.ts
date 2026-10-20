@@ -13,6 +13,7 @@
  * Authenticode wird NICHT validiert, nur als vorhanden/nicht vorhanden gemeldet.
  */
 
+import type {ExeAdressOption,ExeAdresskarte} from './adressvertrag.js';
 import { BinaryReader } from '../../binary-reader.js';
 import { erzeugeAssetResult } from '../../types.js';
 import type {
@@ -204,7 +205,7 @@ function parseVersion(buf: Buffer): { strings: Record<string, string>; datei_ver
   return aus;
 }
 
-async function inspectPe(src: AssetSource, ctx: AssetContext): Promise<AssetResult> {
+async function inspectPe(src: AssetSource, ctx: AssetContext, adressen?:ExeAdressOption): Promise<AssetResult> {
   const w = new WarnSammler();
   const metadata: Record<string, unknown> = {};
   const spezifisch: Record<string, unknown> = {};
@@ -380,6 +381,7 @@ async function inspectPe(src: AssetSource, ctx: AssetContext): Promise<AssetResu
 
   // --- Sektionstabelle ---
   let nSekt = sektionenAngabe;
+  if (adressen && nSekt > adressen.maxEintraege) {w.add('adresskarte_gekappt','Sektionszahl ueber Adressbudget');nSekt=adressen.maxEintraege;}
   if (nSekt > MAX_SEKTIONEN) {
     w.add('sektionszahl_unplausibel', `NumberOfSections=${sektionenAngabe} (Loader-Grenze ${MAX_SEKTIONEN}); gelesen werden hoechstens ${MAX_SEKTIONEN}.`);
     nSekt = MAX_SEKTIONEN;
@@ -427,7 +429,7 @@ async function inspectPe(src: AssetSource, ctx: AssetContext): Promise<AssetResu
       abschnitte.push(s);
 
       let entro: number | null = null;
-      if (rawLaenge > 0 && i < ENTROPIE_MAX_SEKTIONEN) {
+      if (!adressen && rawLaenge > 0 && i < ENTROPIE_MAX_SEKTIONEN) {
         const stich = await src.readRange(rawPtr, Math.min(ENTROPIE_STICHPROBE, rawLaenge));
         entro = entropie(stich);
         if (entro >= ENTROPIE_PACKER && stich.length >= 512) hohe.push(name);
@@ -457,6 +459,13 @@ async function inspectPe(src: AssetSource, ctx: AssetContext): Promise<AssetResu
     metadata.packer_hinweis = hohe.length > 0 ? { sektionen_mit_hoher_entropie: hohe, schwelle: ENTROPIE_PACKER } : null;
   });
 
+  if(adressen){
+    const karte:ExeAdresskarte={format:'pe',basis:optBekannt?imageBase.toString():null,bereiche:[],verzeichnisse:verz.map((v,index)=>({index,rva:String(v.rva),bytes:String(v.size),...(index===4?{ist_dateioffset:true}:{})})),vollstaendig:optBekannt&&abschnitte.length===sektionenAngabe,warnungen:w.liste()};
+    if(sizeOfHeaders>0)karte.bereiche.push({art:'header',index:-1,name:'PE-Header',datei_offset:'0',datei_bytes:String(Math.min(sizeOfHeaders,src.size)),va:imageBase.toString(),speicher_bytes:String(sizeOfHeaders),kopf_offset:0,kopf_bytes:Math.min(sizeOfHeaders,src.size)});
+    for(const s of abschnitte)karte.bereiche.push({art:'sektion',index:s.index,name:s.name,datei_offset:String(s.rawPtr),datei_bytes:String(s.rawSize),va:(imageBase+BigInt(s.va)).toString(),speicher_bytes:String(Math.max(s.virtualSize,s.rawSize)),kopf_offset:sektStart+s.index*40,kopf_bytes:40});
+    if(w.anzahl>0)karte.vollstaendig=false;
+    adressen.karte(karte);return ergebnis();
+  }
   // --- RVA-Aufloesung ---
   const rvaZuOffset = (rva: number): { offset: number; verfuegbar: number } | null => {
     if (!Number.isSafeInteger(rva) || rva < 0) return null;
@@ -910,6 +919,10 @@ async function inspectPe(src: AssetSource, ctx: AssetContext): Promise<AssetResu
 }
 
 /** PE-Inspektor: Magic 'MZ' am Dateianfang, Endungen der Windows-Programmdateien. */
+export async function lesePeAdresskarte(src:AssetSource,ctx:AssetContext):Promise<ExeAdresskarte>{
+ let karte:ExeAdresskarte|undefined;const r=await inspectPe(src,ctx,{maxEintraege:ctx.limits.maxObjects,karte:k=>{karte=k;}});
+ return karte??{format:'pe',basis:null,bereiche:[],vollstaendig:false,warnungen:r.warnings};
+}
 export const peInspector: AssetInspector = {
   id: 'exe-pe',
   formats: ['pe'],

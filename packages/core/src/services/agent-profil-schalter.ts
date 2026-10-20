@@ -64,6 +64,8 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'profilverwaltung', 'typkatalog', 'persona', 'task_bindung', 'agenten_ausweis',
   // P22-T44: Ausweis fuer mehrere Projekte (Visum/Arbeitsfreigabe), Standard AUS; wirkt nach dem Stand der Heimat (agent-ausweis-projekte.ts).
   'mehrprojekt',
+  // P21-T3/T13: Bytewerkzeug, Standard AUS, nur ausdruecklich freigeben.
+  'hex_lesen', 'hex_adressen', 'hex_formate', 'hex_entschluesseln',
   // P23-T5: Fall-Skills (fall-skills.ts) - kurze Tool-Beschreibungen in tools/list und Fall-Skill-Hinweis bei Fehlbedienung.
   // Standard AUS bis User-Freigabe; wie mehrprojekt NICHT ueber 'alle' schaltbar (nur ausdruecklich).
   'tool_beschreibungen_kurz', 'fall_skill_hinweis',
@@ -108,7 +110,7 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'agent_anmeldungen',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.

@@ -6,7 +6,7 @@
  */
 import {constants} from 'node:fs';
 import {open} from 'node:fs/promises';
-import {getPool,computeResourceBinding,parseComputeNodeExtension,createServerExecutorIdentity,
+import {konfiguriereHexWorkIdentitaet,getPool,computeResourceBinding,parseComputeNodeExtension,createServerExecutorIdentity,
   startServerExecutor,configureLocalComputeAdmission,type ServerExecutorIdentity,type ServerExecutorFence,type ComputeResources} from '@synapse/core';
 import {validateToken} from './auth.js';
 import {cpuNodeRequested,registerCpuNode} from './cpu-nodes.js';
@@ -95,7 +95,10 @@ export class ServerExecutor {
     const released=await startServerExecutor(fence,db=>this.cpuOnly
       ?registerCpuNode(input,auth.token_hash,'1',db)
       :registerEmbeddingNode(auth.token_hash,input as unknown as EmbeddingNodeRegistration,db));
-    if(this.lokaleAdmission)configureLocalComputeAdmission({nodeId:fence.nodeId,bootId:fence.bootId,authHash:fence.tokenHash});
+    if(this.lokaleAdmission){
+      configureLocalComputeAdmission({nodeId:fence.nodeId,bootId:fence.bootId,authHash:fence.tokenHash});
+      konfiguriereHexWorkIdentitaet({nodeId:fence.nodeId,bootGeneration:fence.bootId,authHash:fence.tokenHash});
+    }
     this.fence=fence;this.ready=true;return released;
   }
   /** Ein alter Prozess aktualisiert nie die neue Generation. Probe-I/O vor jedem PG-Zugriff. */

@@ -322,6 +322,15 @@ export type {
   SuchOptionen,
 } from './services/asset-intel-abfragen.js';
 export { ASSET_INTEL_DEFINITION, ASSET_INTEL_ACTIONS, fuehreAssetIntelAus } from './services/asset-intel-tool.js';
+export {hexTypBreite,deuteHexPrimitive,fuehreHexDeutenAus} from './services/hex-deuten.js';
+export {HEX_ANALYSEN_SCHEMA_SQL} from './db/hex-analysen-schema.js';
+export {konfiguriereHexWorkIdentitaet,hexWorkStatus} from './services/hex-work-job.js';
+export {HEX_DEFINITION, HEX_ACTIONS, fuehreHexAus, hexZeilen} from './services/hex-tool.js';
+export {HexFehler, hexGanzzahl, hexAkteur, pruefeHexZugang, pruefeHexRef, oeffneHexQuelle, mitHexQuelle} from './services/hex-quellen.js';
+export type {HexRef, HexQuelle, HexQuellenArt} from './services/hex-quellen.js';
+export {HEX_EINSTELLUNGEN, HEX_ADMIN_ACTIONS, HEX_ADMIN_PARAMETER, leseHexEinstellungen, fuehreHexAdminAus} from './services/hex-einstellungen.js';
+export type {HexStand, HexWert, HexEinstellungName} from './services/hex-einstellungen.js';
+export {HEX_SCHEMA_SQL} from './db/hex-schema.js';
 export type { AssetIntelAction } from './services/asset-intel-tool.js';
 // P13-T34/A16: Parameter ansicht (inline|link|beides) + MCP-Bildblock-Transport (REST + stdio).
 export { ANSICHT_MODI, ANSICHT_PARAMETER, ANSICHT_SCHEMA_PROPERTIES, setzeMcpBilder, trenneMcpBilder, haengeMcpBilderAn, hatAnsichtParameter, pruefeAnsichtParameter, setzeAnsichtAusgabeDienste, ergaenzeAnsicht, mitCodeIntelAnsicht } from './services/asset-ansicht-ausgabe.js';

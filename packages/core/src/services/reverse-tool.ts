@@ -17,9 +17,10 @@ import { uebernehmeReverseAsset, ReverseUebernahmeFehler } from './reverse-ueber
 import { fuehreReverseAnsichtAus } from './reverse-ansicht-ausgabe.js';
 import { ANSICHT_SCHEMA_PROPERTIES, setzeMcpBilder, trenneMcpBilder } from './asset-ansicht-ausgabe.js';
 import { zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
+import { gruppiereRv27Dateien } from './hex-rv27.js';
 import { diagnoseReverse, entstoereReverse, REVERSE_ENTSTOERBAR } from './reverse-entstoerer.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen'] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -76,7 +77,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   eintrag:['reverse_id'],bestaetigen:['reverse_id','titel','medien','zusammenfuehren_mit','aufteilen'],
   archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
   status:['reverse_id','datei','file_path','warten_sekunden'],analysieren:['reverse_id','datei','file_path','bis_schicht','prioritaet'],
-  abbrechen:['auftrag_id'],dateien:['reverse_id','path','limit','offset'],
+  abbrechen:['auftrag_id'],dateien:['reverse_id','path','limit','offset'],struktur:['reverse_id','limit','offset'],
   diagnose:['reverse_id','limit'],entstoeren:['reverse_id','ursache','auftrag_id','vorschau'],
   tree:['reverse_id','file_path','path','limit','offset','depth','recursive','show_functions','show_counts','show_lines','file_type'],
   functions:['reverse_id','file_path','name','exported_only','limit','offset'],
@@ -424,6 +425,21 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
       if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
       return {...data,container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s}};
+    }
+    if(action==='struktur'){
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id);await entry(pool,rid);
+      if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
+      const limit=integer(a.limit,envInt('SYNAPSE_REVERSE_LIST_LIMIT',50),envInt('SYNAPSE_REVERSE_MAX_LIMIT',200));if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
+      const offset=integer(a.offset,0,2147483647),total=Number((await pool.query('SELECT count(*)::int AS n FROM reverse_dateien WHERE eintrag_id=$1',[rid])).rows[0].n);
+      const rows=(await pool.query("SELECT id::text AS id,pfad,groesse,sha256,metadaten->'rv27' AS rv27 FROM reverse_dateien WHERE eintrag_id=$1 ORDER BY pfad,id LIMIT $2 OFFSET $3",[rid,limit,offset])).rows;
+      const analysed:Row[]=[],unanalysiert:string[]=[];
+      for(const row of rows){if(!row.rv27||typeof row.rv27!=='object'||Array.isArray(row.rv27)){unanalysiert.push(maskiereMitKatalog(str(row.pfad),'reverse').text);continue;}
+       const rv=row.rv27 as Row;analysed.push({...rv,id:row.id,path:maskiereMitKatalog(str(row.pfad),'reverse').text,groesse:Number(row.groesse),sha256:row.sha256});}
+      const groups=gruppiereRv27Dateien(analysed),max=envInt('SYNAPSE_REVERSE_ANTWORT_MAX',80000);let used=JSON.stringify({reverse_id:rid,offset,total}).length,kept:Row[]=[];
+      for(const group of groups){const n=JSON.stringify(group).length+1;if(used+n>max)break;kept.push(group);used+=n;}
+      if(kept.length<groups.length)fail('zu_gross','Seite verkleinern');
+      await tx(db=>activity(db,a));const weiter=offset+rows.length<total;
+      return {reverse_id:rid,status:unanalysiert.length?'teilweise':'fertig',gruppen:kept,gruppen_gekappt:kept.length<groups.length,nicht_analysiert:unanalysiert,gesamt_dateien:total,analysiert:analysed.length,gekappt:weiter,naechster_offset:weiter?offset+rows.length:null,hinweis:'Eingebettete Formate sind Kandidaten mit Bytebelegen; in dieser Welle werden keine reverse_assets angelegt.'};
     }
     if(action==='dateien'){
       // P18-T61: Inhalte nur nach Projektbindung; Pfade und Texte maskiert wie die übrigen Ausgaben.

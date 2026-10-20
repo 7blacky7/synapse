@@ -154,6 +154,7 @@ const ZUGANG_CONTAINER = new Map<string, Set<string>>([['uebernehmen', new Set([
 /** true, wenn unter diesem Schluessel ein Geheimnis steht. */
 export function istToolLogGeheimSchluessel(name: string): boolean {
   const norm = normiere(name);
+  if (norm.replace(/_/g,'')==='schluesselinline') return true;
   if (AUSNAHME.test(norm)) return false;
   const kompakt = norm.replace(/_/g, '');
   // P10-T73 H3: Rueckfrage-IDs sind Einmal-Berechtigungen und duerfen nicht dauerhaft lesbar sein.
@@ -176,6 +177,7 @@ export function istStarkerGeheimSchluessel(name: string): boolean {
   if (!istToolLogGeheimSchluessel(name)) return false;
   const norm = normiere(name);
   const kompakt = norm.replace(/_/g, '');
+  if (kompakt==='schluesselinline') return true;
   if (STARK_TEIL.test(kompakt) || PASS_ENDE.test(kompakt)) return true;
   if (kompakt === 'loeschcode') return true; // P9-T31: auch als Zahl schwaerzen
   if (/^(?:ssh|db|pg|mysql|sql|smtp|mail|user|admin|root|redis|ftp|ldap|proxy|api)pw$/.test(kompakt)) return true;
@@ -226,6 +228,7 @@ const GEHEIM_HINWEIS_NAME = /token|secret|passw|kennwort|pwd|apikey|privatekey|a
 const BASIS_AUSNAHME = /^(?:wait_token|batch_token|stream_id)$/;
 /** N3: Schluessel ist geheim ODER deutet auf ein Geheimnis hin und der Wert hat ein Geheimnis-Muster. */
 function geheimFuerWert(name: string, wert: unknown): boolean {
+  if (normiere(name).replace(/_/g,'')==='schluesselinline') return true;
   if (istAusweisWert(wert)) return false;
   if (istToolLogGeheimSchluessel(name)) return true;
   const norm = normiere(name);
@@ -238,6 +241,7 @@ function geheimFuerWert(name: string, wert: unknown): boolean {
  * schwachem Schluessel ("tokens: 12k"), Feldnamen-Literal (C6, zeile = umgebende Zeile fuer die Codezeilen-Pruefung).
  */
 export function istHarmloserToolLogWert(name: string, wert: unknown, zeile = ''): boolean {
+  if (normiere(name).replace(/_/g,'')==='schluesselinline') return false;
   if (wert === null || wert === undefined) return true;
   if (typeof wert !== 'string' && typeof wert !== 'number' && typeof wert !== 'boolean') return false;
   const norm = normiere(name);
@@ -497,7 +501,33 @@ const ersetzeWert = (regel: SchwaerzRegel) => (_t: string, vor: string, wert: st
 };
 
 /** Textweg (auch fuer abgeschnittene JSON-Vorschauen und freie Fehlertexte). */
+/** P21-T15: auch abgeschnittene/nicht-JSON-Fehler maskieren den ganzen Inline-Key-Container. */
+function maskiereHexInlineText(text:string):string{
+ const re=/(^|[^A-Za-z0-9_])(["']?schluessel_?inline["']?\s*[:=]\s*)/gim;
+ let out='',von=0,m:RegExpExecArray|null;
+ while((m=re.exec(text))){
+  if(m.index<von)continue;
+  const start=re.lastIndex;let ende=start;
+  const erstes=text[start],stack:string[]=[];
+  let quote='',escape=false;
+  if(erstes==='{'||erstes==='['){
+   for(;ende<text.length;ende++){
+    const c=text[ende];
+    if(quote){if(escape)escape=false;else if(c==='\\')escape=true;else if(c===quote)quote='';continue;}
+    if(c==='"'||c==="'"){quote=c;continue;}
+    if(c==='{'||c==='[')stack.push(c==='{'?'}':']');
+    else if(c==='}'||c===']'){if(c!==stack.pop()){ende=text.length;break;}if(!stack.length){ende++;break;}}
+   }
+  }else if(erstes==='"'||erstes==="'"){
+   for(ende=start+1;ende<text.length;ende++){const c=text[ende];if(escape)escape=false;else if(c==='\\')escape=true;else if(c===erstes){ende++;break;}}
+  }else{while(ende<text.length&&!/[,}\]\n]/.test(text[ende]))ende++;}
+  out+=text.slice(von,start)+JSON.stringify(TOOL_LOG_PLATZHALTER);von=ende;re.lastIndex=ende;zaehle('struktur','schluessel_inline');
+ }
+ return out+text.slice(von);
+}
+
 export function schwaerzeToolText(text: string): string {
+  if(typeof text==='string')text=maskiereHexInlineText(text);
   if (typeof text !== 'string' || text === '') return text;
   let aus = text;
   if (aktiv('json_feld')) {
@@ -574,6 +604,10 @@ export function schwaerzeToolDaten<T>(wert: T, tiefe = 0): T {
   if (Array.isArray(wert)) return wert.map((w) => schwaerzeToolDaten(w, tiefe + 1)) as unknown as T;
   if (wert && typeof wert === 'object' && !(wert instanceof Date)) {
     return Object.fromEntries(Object.entries(wert as Record<string, unknown>).map(([k, v]) => {
+      if(normiere(k).replace(/_/g,'')==='schluesselinline'){
+        if(veraendert(v,TOOL_LOG_PLATZHALTER))zaehle('struktur',k);
+        return [k,TOOL_LOG_PLATZHALTER];
+      }
       const container = ZUGANG_CONTAINER.get(k);
       if (container && aktiv('zugang_container')) {
         const neu = schwaerzeContainer(v, container, tiefe);

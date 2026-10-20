@@ -240,6 +240,7 @@ import { mitCodeIntelSchatten } from '@synapse/core';
 // P13-T34/A16: Parameter ansicht + MCP-Bildbloecke (Base64 nie in Text, structuredContent oder Log).
 import { ANSICHT_SCHEMA_PROPERTIES, mitCodeIntelAnsicht, trenneMcpBilder, haengeMcpBilderAn, type McpBild } from '@synapse/core';
 import { REVERSE_DEFINITION, fuehreReverseAus } from '@synapse/core';
+import { HEX_DEFINITION, fuehreHexAus } from '@synapse/core';
 // intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
 import { INTERN_DEFINITION, INTERN_TOOL_AUS, internToolAktiv, fuehreInternAus } from '@synapse/core';
 // P15-T33 E0.5: Jev-Schalter (tools/list-Filter, Sperre des Tools jev) und Jev-Steuerung am admin-Tool
@@ -1085,6 +1086,7 @@ export const MCP_TOOLS = [
   { ...ASSET_INTEL_DEFINITION },
   // P18-T19/RV9: nur additive neue Definition; Legacy-Verträge bleiben gleich.
   { ...REVERSE_DEFINITION },
+  { ...HEX_DEFINITION },
 
   // 15. files
   {
@@ -4638,6 +4640,9 @@ async function handleToolCallKern(
     // 14b. ASSET_INTEL — Dispatcher aus core, identisch zur stdio-Strecke (P4-T70).
     // Unbekannte Parameter hat PA-1 oben schon abgewiesen; fuehreAssetIntelAus wirft nie.
     // =================================================================
+    case 'hex':
+      return fuehreHexAus(args, {apiAusfuehrung:true});
+
     case 'asset_intel':
       return fuehreAssetIntelAus(args, {apiAusfuehrung:true,agentId:effectiveAgentId??(typeof args.agent_id==='string'?args.agent_id:undefined)});
 

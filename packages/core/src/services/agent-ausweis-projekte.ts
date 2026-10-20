@@ -124,6 +124,7 @@ const VISUM_AKTIONEN: Record<string, readonly string[]> = {
   shell: ['history', 'get', 'log', 'activity'],
   project: ['status', 'list'],
   admin: ['detailed_stats'],
+  hex: ['adressen', 'entschluesseln', 'format_liste', 'format_anwenden', 'deuten', 'hex', 'status', 'suchen', 'vergleichen'],
 };
 /**
  * Positivliste des Visums (lesen + Channels). Nicht genannte Tools/Aktionen sind verweigert (fail-closed). Anmelde-/Sitzungs-

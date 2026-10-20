@@ -61,6 +61,7 @@ import {
   adminTool,
   codeIntelTool,
   assetIntelTool,
+  hexTool,
   reverseTool,
   codeCheckTool,
   ignoreTool,
@@ -141,6 +142,7 @@ export function createServer(): Server {
     adminTool.definition,
     codeIntelTool.definition,
     assetIntelTool.definition,
+    hexTool.definition,
     reverseTool.definition,
     codeCheckTool.definition,
     ignoreTool.definition,
@@ -193,6 +195,8 @@ export function createServer(): Server {
       return kompaktiereTextErgebnis({ content: [{ type: 'text', text: JSON.stringify(await haengeFallSkillHinweisAn(kontext.antwort, name, fallOpt)) }], isError: true }, name);
     }
     const args = kontext.args;
+    // P21: derselbe API-Core und dieselben Hooks; den geprueften Transportausweis erneut bezeugen.
+    if (name === 'hex' && !kontext.antwort) return await hexTool.handler(kontext.aktiv ? { ...args, token: request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : args) as { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
     // RV9: API verantwortet DB, Audit und Antwort-Hooks; stdio reicht die fertige Antwort weiter.
     if (name === 'reverse' && !kontext.antwort) return await reverseTool.handler(kontext.aktiv ? { ...args, project: args.project, agent_id: args.agent_id, token: request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : args) as { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
     const _t0 = Date.now();

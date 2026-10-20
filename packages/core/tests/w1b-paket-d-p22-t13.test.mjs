@@ -58,13 +58,17 @@ const LAUFZEIT=new Set(['ms','dauer_ms','durationMs','duration_ms','sitzung_seit
 function norm(v){
  return JSON.parse(JSON.stringify(v,(k,x)=>{
   if(LAUFZEIT.has(k))return '<laufzeit>';
+  if(k==='abloesung'&&typeof x==='string')return x.replace(/^(Vorheriger Lauf )[a-f0-9]{8}( abgeloest\.)$/,(_m,a,b)=>a+'<lauf>'+b);
   if(typeof x==='string')return x.replace(/sai_[a-z0-9]{1,64}/g,'<ausweis>').replace(/sai_[a-f0-9]{8}/g,'<praefix>')
    .replace(UUID,'<uuid>').replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:?\d\d)?/g,'<ts>');
   return x;
  }));
 }
+// P21-T13: Nur das neue Tool hex aus der Altlisten-Projektion entfernen; bestehende Definitionen bleiben vollstaendig verglichen.
 // Neue admin-Aktionen/-Parameter sind ADDITIV; die Golden-Projektion entfernt genau diese Namen (Muster wie admin-kontextprofil-p7-t42).
 const W1B_AKTIONEN=[
+ // P21-T3/T13: Hex-Einstellungen stehen im Schema VOR den Kernaktionen
+ 'hex_einstellungen',
  'profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
  'typ_liste','typ_anlegen','typ_aendern','typ_revision_lesen','profil_aendern','profil_historie','profil_rollback','persona_liste','persona_versionen','persona_anlegen','persona_neue_version',
  'persona_zuweisen','persona_entfernen','agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken',
@@ -86,6 +90,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
  'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','shell_hinweis_minuten','files_plan_ablauf_aktiv','frist_namen',
+ // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)
+ 'hex_werte','hex_namen',
  'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel',
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Parameter
  'intervall_ms','monat','api_zeitraum','erlaubte_modelle','api_einstellungen','einstellung_namen',
@@ -97,7 +103,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'kontingent_modus','container_agenten_max',
  // P22-T87: anmeldungen
  'anmeldung_agent','anmeldung_seit','anmeldung_limit','anmeldung_nur_letzte','anmeldung_weg','anmeldung_debug'];
-const projiziere=t=>t.name!=='admin'?t:{...t,inputSchema:{...t.inputSchema,properties:Object.fromEntries(Object.entries(t.inputSchema.properties)
+// P21-T1: nur die additive reverse.struktur-Deklaration aus dem Altvertrag nehmen; RV9 prueft den vollen neuen Schema-Hash.
+const projiziere=t=>t.name==='reverse'?{...t,inputSchema:{...t.inputSchema,properties:{...t.inputSchema.properties,action:{...t.inputSchema.properties.action,enum:t.inputSchema.properties.action.enum.filter(a=>a!=='struktur')}}}}:t.name!=='admin'?t:{...t,inputSchema:{...t.inputSchema,properties:Object.fromEntries(Object.entries(t.inputSchema.properties)
  .filter(([k])=>!W1B_PARAMETER.includes(k)).map(([k,v])=>[k,k==='action'?{...v,enum:v.enum.filter(a=>!W1B_AKTIONEN.includes(a))}:v]))}};
 
 async function transports(){
@@ -138,8 +145,8 @@ const ohneGuide=r=>{if(r&&typeof r==='object'){const {tool_guide,...rest}=r;retu
 /** AUS-Vertrag: Altverhalten identisch zwischen t109 und neuem Stand (admin-Schema ohne die additiven W1b-Namen). */
 async function goldenFaelle({rest,stdio}){
  const g={};
- g['rest.tools/list']=(await rest.list()).map(projiziere);
- g['stdio.tools/list']=(await stdio.list()).map(projiziere);
+ g['rest.tools/list']=(await rest.list()).filter(t=>t.name!=='hex').map(projiziere);
+ g['stdio.tools/list']=(await stdio.list()).filter(t=>t.name!=='hex').map(projiziere);
  for(const t of [rest,stdio]){
   const n=t.name;
   g[n+'.legacy.thought.get']=await t.call('thought',{action:'get',project:P,id:thoughtId,agent_id:legacy});
@@ -155,8 +162,8 @@ async function goldenFaelle({rest,stdio}){
   g[n+'.token.ungueltig']=await t.call('thought',{action:'get',project:P,id:thoughtId,token:'sai_'+'0'.repeat(64)});
   g[n+'.epoch']=(await pool.query('SELECT context_epoch FROM agent_identitaeten WHERE agent_id=$1 AND project=$2',['golden-'+n,P])).rows;
   g[n+'.token_spalten']=(await pool.query("SELECT count(*)::int n FROM information_schema.columns WHERE table_schema=$1 AND table_name='agent_identitaet_tokens' AND column_name='token_verschluesselt'",[schema])).rows.length;
-  if(n==='rest')g['rest.list.mit_ausweis']=(await rest.list({'x-synapse-agent-token':reg.token})).map(x=>projiziere(x).name);
-  else g['stdio.list.mit_ausweis']=(await stdio.list(reg.token)).map(x=>projiziere(x).name);
+  if(n==='rest')g['rest.list.mit_ausweis']=(await rest.list({'x-synapse-agent-token':reg.token})).filter(t=>t.name!=='hex').map(x=>projiziere(x).name);
+  else g['stdio.list.mit_ausweis']=(await stdio.list(reg.token)).filter(t=>t.name!=='hex').map(x=>projiziere(x).name);
  }
  g['audit.token-identitaet']=(await pool.query("SELECT tool_name,action,error,ok FROM tool_calls WHERE source='token-identitaet' ORDER BY id")).rows;
  return norm(g);

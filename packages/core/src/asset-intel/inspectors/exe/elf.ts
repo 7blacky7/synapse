@@ -16,6 +16,7 @@
  * nicht ermittelt (DT_NEEDED, SONAME usw. bleiben davon unberuehrt).
  */
 
+import type {ExeAdressOption,ExeAdresskarte,ExeBereich} from './adressvertrag.js';
 import { BinaryReader } from '../../binary-reader.js';
 import { erzeugeAssetResult } from '../../types.js';
 import type {
@@ -177,7 +178,7 @@ function vergleiche(a: number[], b: number[]): number {
   return 0;
 }
 
-async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetResult> {
+async function inspectElf(src: AssetSource, ctx: AssetContext, adressen?:ExeAdressOption): Promise<AssetResult> {
   const w = new WarnSammler();
   const metadata: Record<string, unknown> = {};
   const spezifisch: Record<string, unknown> = {};
@@ -311,6 +312,8 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
 
   // --- Programm-Header ---
   const segmente: Segment[] = [];
+  const adressBereiche:ExeBereich[]=[];
+  const exakt=(b:Buffer,o:number):bigint=>is64?(le?b.readBigUInt64LE(o):b.readBigUInt64BE(o)):BigInt(rd32(b,o));
   await phase('programm_header', w, async () => {
     if (phoff === 0 || phnum === 0) return;
     const minEnt = is64 ? 56 : 32;
@@ -319,6 +322,7 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
       return;
     }
     let n = phnum;
+    if(adressen&&n>adressen.maxEintraege){w.add('adresskarte_gekappt','Programmheader ueber Adressbudget');n=adressen.maxEintraege;}
     if (n > MAX_PHNUM) {
       w.add('phnum_unplausibel', `e_phnum=${phnum} (Grenze ${MAX_PHNUM}); gelesen werden hoechstens ${MAX_PHNUM}.`);
       n = MAX_PHNUM;
@@ -339,6 +343,7 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
         ? { index: i, typ: rd32(buf, o), flags: rd32(buf, o + 4), offset: rd64(buf, o + 8), vaddr: rd64(buf, o + 16), filesz: rd64(buf, o + 32), memsz: rd64(buf, o + 40), align: rd64(buf, o + 48) }
         : { index: i, typ: rd32(buf, o), offset: rd32(buf, o + 4), vaddr: rd32(buf, o + 8), filesz: rd32(buf, o + 16), memsz: rd32(buf, o + 20), flags: rd32(buf, o + 24), align: rd32(buf, o + 28) };
       segmente.push(s);
+      if(adressen&&s.typ===1)adressBereiche.push({art:'segment',index:i,name:'PT_LOAD['+i+']',datei_offset:exakt(buf,o+(is64?8:4)).toString(),datei_bytes:exakt(buf,o+(is64?32:16)).toString(),va:exakt(buf,o+(is64?16:8)).toString(),speicher_bytes:exakt(buf,o+(is64?40:20)).toString(),kopf_offset:phoff+o,kopf_bytes:minEnt});
       const inDatei = s.filesz > 0 && imDatei(s.offset, s.filesz);
       if (s.filesz > 0 && !inDatei) ausserhalb++;
       addObj({
@@ -364,7 +369,7 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
   // PT_INTERP, Stack, RELRO
   let interpreter: string | null = null;
   const interpSeg = segmente.find(s => s.typ === 3);
-  if (interpSeg) {
+  if (interpSeg && !adressen) {
     await phase('interpreter', w, async () => {
       const b = await leseBereich(interpSeg.offset, Math.min(interpSeg.filesz, MAX_NAME), MAX_NAME);
       if (!b) {
@@ -412,6 +417,7 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
         if (shstrndx === 0xffff) strIdx = s0.link;
       }
     }
+    if(adressen&&n>adressen.maxEintraege){w.add('adresskarte_gekappt','Sektionsheader ueber Adressbudget');n=adressen.maxEintraege;}
     if (n > MAX_SHNUM) {
       w.add('shnum_unplausibel', `Sektionszahl ${n} (Grenze ${MAX_SHNUM}); gelesen werden hoechstens ${MAX_SHNUM}.`);
       n = MAX_SHNUM;
@@ -428,6 +434,10 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
       ctx.pruefeAbbruch();
       const o = i * shentsize;
       sekt.push(lese(buf, o, i));
+      if(adressen){
+       const a=exakt(buf,o+(is64?16:12)),offset=exakt(buf,o+(is64?24:16)),size=exakt(buf,o+(is64?32:20)),flags=exakt(buf,o+8),typ=rd32(buf,o+4);
+       adressBereiche.push({art:'sektion',index:i,name:'Sektion['+i+']',datei_offset:typ===SHT_NOBITS?null:offset.toString(),datei_bytes:typ===SHT_NOBITS?'0':size.toString(),va:eTyp===1||(flags&2n)===0n?null:a.toString(),speicher_bytes:size.toString(),kopf_offset:shoff+o,kopf_bytes:minEnt,abbildung:typ===SHT_NOBITS?'virtuell':'linear'});
+      }
       nameOffs.push(rd32(buf, o));
     }
     // Namenstabelle
@@ -455,6 +465,7 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
           w.add('sektionsname_ausserhalb', 'Ein Sektionsname zeigt hinter die Namenstabelle.');
         }
       }
+      if(adressen){const a=adressBereiche.find(a=>a.art==='sektion'&&a.index===i);if(a)a.name=s.name||a.name;}
       const hatDaten = s.typ !== SHT_NOBITS && s.typ !== 0 && s.size > 0;
       const inDatei = hatDaten && imDatei(s.offset, s.size);
       if (hatDaten && !inDatei) ausserhalb++;
@@ -478,6 +489,13 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
     }
     if (ausserhalb > 0) w.add('sektion_ausserhalb_datei', `${ausserhalb} Sektion(en) mit Daten ausserhalb der Datei (${src.size} Bytes).`);
   });
+  if(adressen){
+    const loads=adressBereiche.filter(b=>b.art==='segment');
+    const basis=loads.length?loads.reduce((v,b)=>BigInt(b.va!)<v?BigInt(b.va!):v,BigInt(loads[0].va!)).toString():null;
+    const warnungen=w.liste();
+    adressen.karte({format:'elf',basis,bereiche:adressBereiche,vollstaendig:warnungen.length===0&&phnum!==65535,warnungen});
+    return ergebnis();
+  }
   const sektNachName = (name: string): ElfSektion | undefined => sekt.find(s => s.name === name);
 
   /** Virtuelle Adresse -> Dateioffset ueber die LOAD-Segmente. */
@@ -905,6 +923,10 @@ async function inspectElf(src: AssetSource, ctx: AssetContext): Promise<AssetRes
 }
 
 /** ELF-Inspektor: Magic 7F 'E' 'L' 'F', Endungen der Linux-Binaerdateien. */
+export async function leseElfAdresskarte(src:AssetSource,ctx:AssetContext):Promise<ExeAdresskarte>{
+ let karte:ExeAdresskarte|undefined;const r=await inspectElf(src,ctx,{maxEintraege:ctx.limits.maxObjects,karte:k=>{karte=k;}});
+ return karte??{format:'elf',basis:null,bereiche:[],vollstaendig:false,warnungen:r.warnings};
+}
 export const elfInspector: AssetInspector = {
   id: 'exe-elf',
   formats: ['elf'],

@@ -18,6 +18,7 @@ import {createWorkJobService,validateWorkResources,type WorkResourceNeed} from '
 import {starteApiAuftragsLoop,type ApiAuftragsLoop} from './api-auftrags-loop.js';
 import {reverseKindAusfuehrbar,reverseFehlerDeterministisch} from './reverse-ausfuehrer.js';
 import {starteReverseEntstoerer} from './reverse-entstoerer.js';
+import {analysiereRv27} from './hex-rv27.js';
 
 type Row=Record<string,unknown>;
 interface AnalysePayload {result:Omit<AssetResult,'file_path'>;strings:string[];metadata:Row;status:string;dauer_ms:number}
@@ -306,6 +307,7 @@ export class ReversePipelineDienst{
     }
     let entropy=0;const counts=new Uint32Array(256);for(const b of sample)counts[b]++;
     for(const n of counts)if(n){const p=n/sample.length;entropy-=p*Math.log2(p);}
+    const rv27=j.schicht==='S1'&&(!r.format||r.format==='unbekannt')?await analysiereRv27({size:source.size,path:String(d.pfad),readRange:(off,len)=>source!.readRange(off,len)},{scanBytes:this.cfg.inspektion.maxReadBytes,ramBytes:this.cfg.inspektion.maxReadBytes,blockBytes:Math.min(65536,this.cfg.inspektion.maxReadBytes),sampleBytes:4096,maxCandidates:this.cfg.inspektion.maxObjects}):null;
     const strings:string[]=[];
     if(j.schicht==='S1'){
      const maxBytes=Math.min(source.size,this.stringsBytes),min=num('SYNAPSE_REVERSE_STRINGS_MIN',4);
@@ -325,7 +327,7 @@ export class ReversePipelineDienst{
     if(r.status==='teilweise'||j.schicht==='S1'&&source.size>this.stringsBytes)merkmale.push('teilweise');
     const {file_path:_path,...result}=r;
     const masked=maskiereReverseAnalyse({result,strings,metadata:{...r.metadata,inspektor_merkmale:r.metadata.merkmale,merkmale,
-     format_specific:r.format_specific,warnings:r.warnings,magic_hex:sample.subarray(0,32).toString('hex'),entropie:entropy,packer_verdacht:merkmale.includes('packer_verdacht')},
+     format_specific:r.format_specific,warnings:r.warnings,magic_hex:sample.subarray(0,32).toString('hex'),entropie:entropy,entropie_stichprobe_4096:{wert:entropy,bytes:sample.length,bereich:'[0,min(groesse,4096))'},rv27,packer_verdacht:merkmale.includes('packer_verdacht')},
      status:r.status==='ok'&&!merkmale.includes('teilweise')?'fertig':'teilweise',dauer_ms:Date.now()-started});
     payload=masked.wert as AnalysePayload;payload.metadata.maskiert_anzahl=masked.treffer;
     if(Buffer.byteLength(JSON.stringify(payload))>num('SYNAPSE_REVERSE_CACHE_BYTES',8388608))throw new Error('Reverse-Metadatenlimit');

@@ -99,6 +99,11 @@ export interface FallSkillEintrag {
 
 const FILES = ['files', 'files_batch'];
 export const FALL_SKILL_TABELLE: readonly FallSkillEintrag[] = [
+  {codes:['verfahren_unbekannt','verfahren_parameter_ungueltig','schluessel_ungueltig','entschluesselung_fehlgeschlagen','hex_entschluesseln_deaktiviert','kein_hex_ausfuehrer','hex_worker_nicht_zugelassen','hex_job_lease_verloren','analyse_kette_zu_tief','analyse_speicher_voll','analyse_abgelaufen','analyse_nicht_publiziert','analyse_nicht_gefunden_oder_abgelaufen'],tools:['hex'],skill:'fall-hex-entschluesseln'},
+  {codes:['typ_ungueltig','typ_unbekannt','endianness_ungueltig','endianness_konflikt','endianness_nicht_verwendet','struktur_ungueltig','string_ungueltig','string_laenge_ungerade','beschreibung_zu_gross','pruefsumme_ungueltig','typen_fehlen','feld_offset_ungueltig'],tools:['hex'],skill:'fall-hex-deuten'},
+  {codes:['offset_ungueltig','bereich_ausserhalb','budget_ueberschritten'],tools:['hex'],skill:'fall-hex-bereich'},
+  {codes:['quelle_fehlt','quelle_ungueltig','quelle_mehrdeutig','quelle_nicht_gefunden','pfad_ungueltig','nicht_gebunden','hex_deaktiviert','api_erforderlich'],tools:['hex'],skill:'fall-hex-quelle'},
+  {codes:['cursor_ungueltig','cursor_abgelaufen','quelle_geaendert'],tools:['hex'],skill:'fall-hex-fortsetzung'},
   // Identitaet / Weg
   { codes: ['agent_token_fehlt', 'identitaet_konflikt', 'token_ungueltig', 'token_abgelaufen'], skill: 'fall-querschnitt-ausweis-token' },
   { codes: ['shell_rueckfrage'], tools: ['shell'], ausweis: 'fall-shell-rueckfrage-ausweis', legacy: 'fall-shell-rueckfrage-legacy' },

@@ -37,6 +37,8 @@ import { codeIntelTool } from './code-intel.js';
 export { codeIntelTool };
 import { assetIntelTool } from './asset-intel.js';
 export { assetIntelTool };
+import { hexTool } from './hex.js';
+export { hexTool };
 import { reverseTool } from './reverse.js';
 export { reverseTool };
 import { codeCheckTool } from './code-check.js';
@@ -56,4 +58,4 @@ export { jevTool };
 
 // P22-T11: Vertrag auch beim direkten Import identisch zur ausgelieferten Tool-Liste.
 import { ergaenzeAgentTokenParameter } from '@synapse/core';
-ergaenzeAgentTokenParameter([projectTool.definition, searchTool.definition, memoryTool.definition, thoughtTool.definition, proposalTool.definition, planTool.definition, chatTool.definition, channelTool.definition, eventTool.definition, specialistTool.definition, docsTool.definition, adminTool.definition, watcherTool.definition, codeIntelTool.definition, assetIntelTool.definition, reverseTool.definition, codeCheckTool.definition, filesTool.definition, shellTool.definition, guideTool.definition, ignoreTool.definition, freeModelsTool.definition, jevTool.definition]);
+ergaenzeAgentTokenParameter([projectTool.definition, searchTool.definition, memoryTool.definition, thoughtTool.definition, proposalTool.definition, planTool.definition, chatTool.definition, channelTool.definition, eventTool.definition, specialistTool.definition, docsTool.definition, adminTool.definition, watcherTool.definition, codeIntelTool.definition, assetIntelTool.definition, hexTool.definition, reverseTool.definition, codeCheckTool.definition, filesTool.definition, shellTool.definition, guideTool.definition, ignoreTool.definition, freeModelsTool.definition, jevTool.definition]);

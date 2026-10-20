@@ -93,6 +93,7 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
   const principal = identityId ? aktuellerAgentPrincipal() : null;
   try {
     if(entry.tool==='shell')entry=await maskiereShellVorSpeichern(entry.project??undefined,entry);
+    if(entry.tool==='hex')entry={...entry,argsPreview:JSON.stringify({action:entry.action}),result:'[Hex-Byteergebnis nur beim Aufrufer; keine Bytefenster im Audit]'};
     // P10-T72 B1: fuer ALLE Tools und jedes Ergebnis (auch abgelehnt) Geheimnisse vor dem INSERT schwaerzen.
     entry = {
       ...entry,

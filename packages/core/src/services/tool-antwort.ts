@@ -113,6 +113,11 @@ export const TOOL_ANTWORT_NULL_BEHALTEN: Readonly<Record<string, readonly string
   // P10-T18: total null = nicht bestimmbar, nicht 0.
   asset_intel: ['total'],
   reverse: REVERSE_NULL_FELDER,
+  // P21-T7/T9: null ist fachlich (kein Dateibyte/keine flache Adresse, kein Cursor,
+  // keine Ableitungsbasis/Enumbezeichnung), nicht bloss ein leerer Anzeigeanhang.
+  hex: ['basis','bevorzugte_basis','datei_offset','rva','va','quell_va','segment_offset','segment',
+    'cursor','liste_nach','grund','laenge','enum_name','freigegeben_am','naechster_symbol_offset',
+    'adresse','groesse_bytes','line_end','formate','bis','letzter_fehler','global','projekt'],
 };
 
 /** Schalter: Standard an. 0/false/aus/off/nein = altes Format. */
@@ -128,10 +133,12 @@ function istSchlichtesObjekt(wert: unknown): wert is Record<string, unknown> {
 }
 
 /** Entfernt null/undefined-Felder rekursiv (ausser den Ausnahmen). Aendert das Eingabeobjekt nicht. */
-export function kompaktiereToolAntwort(wert: unknown, tool?: string): unknown {
+export function kompaktiereToolAntwort(wert: unknown, tool?: string, action?: string): unknown {
   const behalten = new Set<string>([
     ...(TOOL_ANTWORT_NULL_BEHALTEN['*'] ?? []),
     ...((tool ? TOOL_ANTWORT_NULL_BEHALTEN[tool] : undefined) ?? []),
+    // P21-T1: unbekanntes Kandidatenende und Entropie ohne Bytes nur im neuen Strukturvertrag.
+    ...(tool === 'reverse' && action === 'struktur' ? ['length', 'wert'] : []),
   ]);
   const lauf = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(lauf);
@@ -234,7 +241,9 @@ export function baueToolErgebnis(payload: unknown, optionen: ToolErgebnisOptione
   const kompakt = toolAntwortKompaktAktiv();
   const normal = kompakt ? entpackeInnereHuelle(payload, optionen) : ohneInnereMetriken(payload, optionen);
   const anzeige = kuerzeAntwortAnhaenge(normal, kompakt);
-  let objekt: unknown = kompakt ? kompaktiereToolAntwort(anzeige, optionen.tool) : anzeige;
+  // REST uebergibt die Aktion bisher im Fachpayload; nur der neue RV27-Vertrag nutzt diesen Rueckfall.
+  const action = optionen.action ?? (optionen.tool === 'reverse' && istSchlichtesObjekt(anzeige) && anzeige.action === 'struktur' ? 'struktur' : undefined);
+  let objekt: unknown = kompakt ? kompaktiereToolAntwort(anzeige, optionen.tool, action) : anzeige;
   if (kompakt && !optionen.isError && istSchlichtesObjekt(objekt) && !('success' in objekt)) {
     objekt = { success: true, ...objekt };
   }

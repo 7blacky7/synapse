@@ -90,7 +90,7 @@ const liste = (xs: string[]): string => (xs.length ? xs.map(x => `"${x}"`).join(
 
 /** Tools mit Projektdaten; lesende Aufrufe davon im internen Bereich bekommen den Lenkhinweis. */
 export const MAIN_DATEN_TOOLS: ReadonlySet<string> = new Set([
-  'thought', 'plan', 'memory', 'search', 'code_intel', 'files', 'files_batch', 'docs', 'asset_intel', 'project', 'shell',
+  'thought', 'plan', 'memory', 'search', 'code_intel', 'hex', 'files', 'files_batch', 'docs', 'asset_intel', 'project', 'shell',
 ]);
 
 /**
