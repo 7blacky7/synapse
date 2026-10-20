@@ -1,0 +1,24 @@
+/* P8-T32: ruhige Channel-Ansicht; Akzentfarbe nur fuer aktive/wichtige Zustaende. */
+.channel-composer .composer-field.chat-eingabefeld textarea{width:100%;min-height:0;resize:none;border:0;outline:0;background:transparent;color:var(--text);padding:4px 0;font-size:12px;line-height:1.5;font-family:inherit}
+.synapse-control .channel-thread .channel-composer{padding:8px 12px 6px;display:block}
+.channel-composer .chat-eingabefeld{border:1px solid var(--border);padding:4px 6px 4px 10px;background:var(--panel)}
+.channel-composer .chat-eingabefeld:focus-within{border-color:color-mix(in srgb,var(--accent) 55%,var(--border))}
+.channel-composer .composer-foot{display:flex;align-items:center;margin-top:4px}
+.channel-composer .composer-hint{color:var(--faint);font:9px ui-monospace,monospace}
+.channel-composer .composer-hint.success{color:var(--success)}
+
+.synapse-control .channel-thread>header{min-height:44px;padding-inline:14px}
+.channel-thread .channel-head-actions{gap:4px;color:var(--muted)}
+.channel-thread .channel-head-actions .channel-height-range{width:56px;height:3px;opacity:.55;accent-color:var(--muted)}
+.channel-thread .channel-head-actions .channel-height-range:hover{opacity:1;accent-color:var(--accent)}
+.channel-thread .channel-head-actions button.channel-fold{display:grid;place-items:center;width:26px;height:26px;padding:0;border-color:transparent;background:transparent;color:var(--muted)}
+.channel-thread .channel-head-actions button.channel-fold:hover{border-color:var(--border);color:var(--accent)}
+.channel-thread .channel-head-actions button.channel-fold svg{width:14px;height:14px}
+.channel-thread .channel-head-actions .channel-live{margin-left:2px;color:var(--faint);font:9px ui-monospace,monospace;white-space:nowrap}
+
+.channel-thread .channel-agent-bar{gap:5px;padding:5px 12px}
+.channel-thread .channel-agent-bar>span{font-weight:600;opacity:.7}
+.channel-thread .channel-agent-card{gap:6px;padding:3px 8px;border-color:transparent;background:var(--soft,var(--strong))}
+.channel-thread .channel-agent-card:hover{border-color:var(--border)}
+.channel-thread .channel-agent-card.is-open,.channel-thread .channel-agent-card.active{border-color:color-mix(in srgb,var(--accent) 55%,var(--border))}
+.channel-thread .channel-agent-card strong{font-size:10px;font-weight:600}

@@ -7,6 +7,7 @@ import { ControlPlaneSettingsView } from './ControlPlaneSettingsView';
 import { KnowledgeView } from './KnowledgeView';
 import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ChannelRailListe } from './ChannelRailListe';
+import { ChatEingabefeld } from './ChatEingabefeld';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
@@ -1400,9 +1401,9 @@ function ChannelsView({
           <header>
             <div><span>#</span><div><h2>{channel?.name || 'Channel auswählen'}</h2><p>{channel?.description}</p></div></div>
             <div className="channel-head-actions">
-              {!channelCollapsed && <label>Höhe <input type="range" min="45" max="100" step="5" value={channelHeight} onChange={(event) => setChannelHeight(Number(event.target.value))} /></label>}
-              <button type="button" onClick={() => setChannelCollapsed((value) => !value)}>{channelCollapsed ? 'Ausklappen' : 'Einklappen'}</button>
-              <small>{loading ? 'lädt …' : 'live · 6 s'}</small>
+              {!channelCollapsed && <input type="range" className="channel-height-range" min="45" max="100" step="5" value={channelHeight} title={'Höhe ' + channelHeight + ' %'} aria-label="Höhe des Channel-Fensters" onChange={(event) => setChannelHeight(Number(event.target.value))} />}
+              <button type="button" className="channel-fold" title={channelCollapsed ? 'Ausklappen' : 'Einklappen'} aria-label={channelCollapsed ? 'Channel ausklappen' : 'Channel einklappen'} onClick={() => setChannelCollapsed((value) => !value)}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{channelCollapsed ? <path d="m6 9 6 6 6-6" /> : <path d="m6 15 6-6 6 6" />}</svg></button>
+              <small className="channel-live">{loading ? 'lädt …' : 'live · 6 s'}</small>
             </div>
           </header>
           <div className="channel-agent-bar">
@@ -1413,7 +1414,7 @@ function ChannelsView({
               const windowKey = project + '::' + selectedChannel + '::' + (agent.identityId ? 'identity:' + agent.identityId : 'legacy:' + agent.name);
               const isOpen = openAgentWindows.some((item) => item.key === windowKey);
               const isActive = openAgentWindows[openAgentWindows.length - 1]?.key === windowKey;
-              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><span><strong>{agent.name}</strong><small>{agent.role} · {herkunftText(agent.herkunft)}</small></span></button>;
+              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} title={agent.name + ' · ' + agent.role + ' · ' + herkunftText(agent.herkunft)} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><strong>{agent.name}</strong></button>;
             })}
           </div>
           {openAgentWindows.map((agentWindow, index) => (
@@ -1448,45 +1449,19 @@ function ChannelsView({
           </div>
           <form className={'channel-composer' + (channelDropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setChannelDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setChannelDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setChannelDropActive(false); }} onDrop={(event) => { setChannelDropActive(false); handleAttachmentDrop(event, (files) => void queueChannelFiles(files)); }}>
             <AttachmentDrafts attachments={channelFiles} onRemove={(id) => setChannelFiles((current) => current.filter((item) => item.id !== id))} />
-            <div className="channel-compose-row">
-              <label className="channel-attach">
-                <input
-                  type="file"
-                  multiple
-                  onChange={(event) => {
-                    if (event.currentTarget.files?.length) void queueChannelFiles(event.currentTarget.files);
-                    event.currentTarget.value = '';
-                  }}
-                />
-                <span>+ Datei</span>
-              </label>
-              <div className="channel-input">
-                <textarea
-                  rows={2}
-                  value={content}
-                  onChange={(event) => {
-                    setContent(event.target.value);
-                    setSendState('');
-                  }}
-                  onPaste={(event) => {
-                    if (event.clipboardData.files.length) void queueChannelFiles(event.clipboardData.files);
-                  }}
-                  onKeyDown={(event) => {
-                    if (istSendeTaste(event)) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                  placeholder={'Nachricht an #' + (selectedChannel || 'channel') + ' …'}
-                />
-                <small className={sendState === 'Gesendet' ? 'success' : ''}>
-                  {sendState || 'Enter sendet · Dateien ziehen, auswählen oder einfügen'}
-                </small>
-              </div>
-              <button className="channel-send" type="submit" disabled={!selectedChannel || (!content.trim() && !channelFiles.length) || sending}>
-                {sending ? 'Sendet …' : 'Senden'}
-              </button>
-            </div>
+            <ChatEingabefeld
+              value={content}
+              onChange={(text) => { setContent(text); setSendState(''); }}
+              onPaste={(event) => { if (event.clipboardData.files.length) void queueChannelFiles(event.clipboardData.files); }}
+              onFiles={(files) => void queueChannelFiles(files)}
+              placeholder={'Nachricht an #' + (selectedChannel || 'channel') + ' …'}
+              sendeGesperrt={!selectedChannel || (!content.trim() && !channelFiles.length) || sending}
+            />
+            <footer className="composer-foot">
+              <span className={'composer-hint' + (sendState === 'Gesendet' ? ' success' : '')}>
+                {sending ? 'Sendet …' : sendState || 'Enter sendet · Shift+Enter neue Zeile · Dateien hierher ziehen'}
+              </span>
+            </footer>
           </form>
           </section>
         </div>
