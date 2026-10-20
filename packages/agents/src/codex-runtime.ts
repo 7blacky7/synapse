@@ -43,6 +43,8 @@ function tomlString(s: string): string {
  * Bildet die MCP-Config des Wrappers ({mcpServers:{synapse:{type:'http',url,headers}}}) auf Codex-Overrides ab.
  * Authorization 'Bearer <x>' -> Env SYNAPSE_CODEX_MCP_BEARER + bearer_token_env_var; Header-Wert '${VAR}' ->
  * env_http_headers (Codex liest VAR selbst aus der Umgebung); andere Literale -> http_headers.
+ * P22-T72: codex exec ist nicht interaktiv und kann MCP-Aufrufe nicht genehmigen -> default_tools_approval_mode="approve"
+ * je Server (Befund d372d83f; derselbe Weg wie im Test tool-antwort-kompakt-p10-t51).
  */
 export function bildeMcpAufCodexAb(config: unknown): CodexMcpAbbildung {
   const servers = (config as { mcpServers?: Record<string, { type?: string; url?: string; headers?: Record<string, string> }> } | null)?.mcpServers ?? {};
@@ -52,6 +54,7 @@ export function bildeMcpAufCodexAb(config: unknown): CodexMcpAbbildung {
     if (!/^[A-Za-z0-9_-]+$/.test(name) || !s || typeof s.url !== 'string') continue;
     const p = `mcp_servers.${name}`;
     overrides.push(`${p}.url=${tomlString(s.url)}`);
+    overrides.push(`${p}.default_tools_approval_mode=${tomlString('approve')}`);
     const literal: Record<string, string> = {};
     const ausEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(s.headers ?? {})) {
