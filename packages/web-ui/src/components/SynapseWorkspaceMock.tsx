@@ -6,6 +6,7 @@ import { InfrastructureView } from './InfrastructureView';
 import { ControlPlaneSettingsView } from './ControlPlaneSettingsView';
 import { KnowledgeView } from './KnowledgeView';
 import { ChannelProjectSurface } from './ChannelProjectSurface';
+import { ChannelRailListe } from './ChannelRailListe';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
@@ -1390,16 +1391,7 @@ function ChannelsView({
       <section className="channel-layout">
         <aside className="channel-rail">
           <header><h2>{project || 'Kein Projekt'}</h2><span>{channels.length}</span></header>
-          {channels.map((item) => (
-            <button
-              type="button"
-              className={selectedChannel === item.name ? 'active' : ''}
-              key={item.name}
-              onClick={() => onSelectChannel(item.name)}
-            >
-              <b>#</b><div><strong>{item.name}</strong><small>{item.description}</small></div>
-            </button>
-          ))}
+          <ChannelRailListe channels={channels} selectedChannel={selectedChannel} onSelectChannel={onSelectChannel} />
           {!channels.length && <p className="empty-state">Keine Channels für dieses Projekt.</p>}
         </aside>
         <div className="channel-project-stage">

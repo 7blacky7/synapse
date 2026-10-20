@@ -408,8 +408,11 @@ export async function setzeSichtung(opts: {
 export async function listChannels(
   project?: string,
   opts: { mitArchiv?: boolean } = {},
-): Promise<Array<{ name: string; project: string; description: string | null; archiviert_am?: string | null }>> {
+): Promise<Array<{ name: string; project: string; description: string | null; archiviert_am?: string | null; letzte_aktivitaet?: string | null }>> {
   const pool = getPool()
+  // P8-T29: Zeit der juengsten Nachricht je Channel (eine Abfrage, kein N+1); NULL = noch keine Nachricht.
+  const letzteAktivitaet = `(SELECT to_char(MAX(m.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+       FROM specialist_channel_messages m WHERE m.channel_id = specialist_channels.id) AS letzte_aktivitaet`
   const archivFilter = opts.mitArchiv ? '' : 'AND archiviert_am IS NULL'
   if (project) {
     const { rows } = await pool.query<{
@@ -417,8 +420,9 @@ export async function listChannels(
       project: string
       description: string | null
       archiviert_am: string | null
+      letzte_aktivitaet: string | null
     }>(
-      `SELECT name, project, description, archiviert_am
+      `SELECT name, project, description, archiviert_am, ${letzteAktivitaet}
        FROM specialist_channels
        WHERE project = $1 ${archivFilter}
        ORDER BY name`,
@@ -427,9 +431,9 @@ export async function listChannels(
     return rows
   }
   const { rows } = await pool.query<{
-    name: string; project: string; description: string | null; archiviert_am: string | null
+    name: string; project: string; description: string | null; archiviert_am: string | null; letzte_aktivitaet: string | null
   }>(
-    `SELECT name, project, description, archiviert_am
+    `SELECT name, project, description, archiviert_am, ${letzteAktivitaet}
      FROM specialist_channels
      ${opts.mitArchiv ? '' : 'WHERE archiviert_am IS NULL'}
      ORDER BY project, name`,

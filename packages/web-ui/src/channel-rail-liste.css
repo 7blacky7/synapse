@@ -1,0 +1,4 @@
+.channel-rail .channel-rail-sort{padding:8px 15px;border-bottom:1px solid var(--border)}
+.channel-rail .channel-rail-sort label{display:flex;flex-direction:column;gap:4px;font-size:10px;opacity:.8}
+.channel-rail .channel-rail-sort select{width:100%;font:inherit;font-size:11px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:transparent;color:inherit}
+.channel-rail .channel-rail-zeit{display:block;margin-top:2px;font-size:9px;opacity:.6}

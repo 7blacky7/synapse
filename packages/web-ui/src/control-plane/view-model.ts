@@ -26,6 +26,8 @@ export interface ChannelViewModel {
   description: string;
   createdBy: string;
   createdAt: string;
+  /** P8-T29: Zeit der juengsten Nachricht (ISO), fehlt bei Channels ohne Nachricht. */
+  letzteAktivitaet?: string;
   source: 'api';
 }
 

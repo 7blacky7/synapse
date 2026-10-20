@@ -38,6 +38,7 @@ interface WatcherChannel {
   name?: unknown;
   project?: unknown;
   description?: unknown;
+  letzte_aktivitaet?: unknown;
 }
 
 interface WatcherChannelMessage {
@@ -172,6 +173,7 @@ async function loadWatcherChannels(project: string): Promise<ChannelViewModel[]>
       : 'Keine Beschreibung',
     createdBy: 'GoTray',
     createdAt: '',
+    letzteAktivitaet: typeof row.letzte_aktivitaet === 'string' && row.letzte_aktivitaet ? row.letzte_aktivitaet : undefined,
     source: 'api' as const,
   })).filter((row) => Boolean(row.name));
 }
@@ -189,6 +191,7 @@ export async function loadChannelViewModels(project: string): Promise<ChannelVie
       description: row.description || 'Keine Beschreibung',
       createdBy: row.createdBy || 'unbekannt',
       createdAt: row.createdAt || '',
+      letzteAktivitaet: row.letzte_aktivitaet || undefined,
       source: 'api' as const,
     }));
   }

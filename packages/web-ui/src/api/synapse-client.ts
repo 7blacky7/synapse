@@ -368,6 +368,7 @@ export interface ChannelInfo {
   description: string | null;
   createdBy: string | null;
   createdAt: string;
+  letzte_aktivitaet?: string | null;
 }
 
 /**
