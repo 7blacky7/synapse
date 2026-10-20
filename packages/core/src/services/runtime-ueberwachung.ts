@@ -42,6 +42,7 @@ import { leseMainLauf, runtimeDaemonAngemeldet, stelleMainLaufSicher, modellPass
 import { enqueueSpecialistJob } from './specialist-queue.js';
 import { RUNTIME_PROJEKTE_WURZEL, runtimeProjektPfad } from './runtime-daemon-zugang.js';
 import { randomUUID } from 'node:crypto';
+import { pruefeModellFuerRuntime } from './hauptagent-modelle.js';
 
 export const RUNTIME_UEBERWACHUNG_FUNKTION = 'runtime_ueberwachung' as const;
 export const UEBERWACHTE_RUNTIMES = ['claude', 'codex'] as const;
@@ -649,7 +650,12 @@ async function letzteSpawnArgs(db: Db, identityId: string, project: string): Pro
 }
 
 async function modellFuer(ziel: UeberwachteRuntime, gewuenscht: string | null, d: UeberwachungsDienste): Promise<string> {
-  return gewuenscht && modellPasstZuRuntime(gewuenscht, ziel) ? gewuenscht : d.standardModell(ziel);
+  // P22-T62: Schalter hauptagent_cli_modelle EIN -> Ursprungsmodell nur, wenn es in der Liste der Ziel-Runtime steht
+  // (AUS: Altregel modellPasstZuRuntime). Sonst Standard der Ziel-Runtime (User-Wahl bzw. kleinstes Modell).
+  if (!gewuenscht) return d.standardModell(ziel);
+  const p = await pruefeModellFuerRuntime(gewuenscht, ziel);
+  if (p.quelle === 'schalter_aus') return modellPasstZuRuntime(gewuenscht, ziel) ? gewuenscht : d.standardModell(ziel);
+  return p.passt ? p.modell : d.standardModell(ziel);
 }
 
 /** Main: Auftrag runtime_wechsel als System (Ausfuehrung T6c). Offener Auftrag gleicher Art -> null. Ausweis/Profil bleiben. */

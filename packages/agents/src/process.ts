@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { loeseRuntimePfad } from './runtime-pfad.js'
 import type { StreamEvent, SendMessageResult } from './types.js'
-import { resolveModel, cliModelArg, effortFuerCli } from './models.js'
+import { resolveModel, cliModelArgFuer, effortFuerCli } from './models.js'
 
 interface AgentProcess {
   agentName: string
@@ -118,7 +118,7 @@ class ProcessManager extends EventEmitter {
         '--verbose',
         '--output-format', 'stream-json',
         '--input-format', 'stream-json',
-        '--model', modelEntry ? cliModelArg(modelEntry) : model,
+        '--model', cliModelArgFuer(model, modelEntry),
         '--system-prompt', systemPrompt,
         '--session-id', sessionId,
         '--permission-mode', 'bypassPermissions',

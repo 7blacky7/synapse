@@ -255,7 +255,31 @@ export function resolveModel(aliasOrId: string): ModelEntry | null {
   for (const entry of Object.values(STATIC_FALLBACK)) {
     if (entry.fullId === aliasOrId) return entry;
   }
-  return null;
+  // 3. P22-T62: Modelle aus den ausgelesenen CLI-Listen (Gueltigkeit prueft die API, core hauptagent-modelle.ts)
+  return cliKatalogEintrag(aliasOrId);
+}
+
+/** P22-T62: Codex-Modell in Synapse = 'codex/<slug>' (slug = ID der Codex-CLI). */
+const CODEX_KATALOG_ID = /^codex\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
+/** P22-T62: Katalog-ID der Claude-CLI (claude-haiku-5-5), optional mit [1m]. */
+const CLAUDE_KATALOG_ID = /^claude-[a-z0-9][a-z0-9.-]{0,63}(\[1m\])?$/;
+
+/**
+ * Eintrag fuer eine Modell-ID aus den CLI-Listen, die weder Registry noch STATIC_FALLBACK kennen:
+ * 'codex/<slug>' -> Codex-Runtime (codex-runtime.ts: codex exec -m <slug>); 'claude-*' -> claude-CLI mit genau dieser ID.
+ * Kontext/Korridor: Annahme wie beim Codex-Standard bzw. Claude 200k ([1m] = 1M), Effort ohne Flag (Stufen unbekannt).
+ */
+function cliKatalogEintrag(id: string): ModelEntry | null {
+  const codex = CODEX_KATALOG_ID.exec(id);
+  if (codex) return { ...STATIC_FALLBACK.codex, alias: id, fullId: codex[1] };
+  if (!CLAUDE_KATALOG_ID.test(id)) return null;
+  const einsM = id.endsWith('[1m]');
+  const korridor = einsM ? KORRIDOR_1M : KORRIDOR_200K;
+  return {
+    alias: id, fullId: id.replace(/\[1m\]$/, ''), provider: 'anthropic',
+    contextWindow: einsM ? 1_000_000 : 200_000, envRequired: [], binary: 'claude',
+    corridorMin: korridor.corridorMin, corridorMax: korridor.corridorMax, effortStufen: KEINE_STUFEN,
+  };
 }
 
 /**
@@ -345,6 +369,16 @@ const CLI_ALIAS_OHNE_VERSION = /^(opus|sonnet|haiku|fable)(\[1m\])?$/;
 export function cliModelArg(entry: ModelEntry): string {
   if (CLI_ALIAS_OHNE_VERSION.test(entry.alias)) return entry.alias;
   return entry.alias.endsWith('[1m]') ? `${entry.fullId}[1m]` : entry.fullId;
+}
+
+/**
+ * P22-T62: Wert fuer `claude --model` zu einer angefragten Modell-ID. Eine Katalog-ID der CLI (claude-opus-5-5) geht
+ * UNVERAENDERT durch, auch wenn sie ueber fullId auf einen reinen Alias ('opus' = immer die neueste Version) faellt;
+ * sonst wie cliModelArg.
+ */
+export function cliModelArgFuer(model: string, entry: ModelEntry | null): string {
+  if (CLAUDE_KATALOG_ID.test(model)) return model;
+  return entry ? cliModelArg(entry) : model;
 }
 
 /**

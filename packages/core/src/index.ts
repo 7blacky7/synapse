@@ -659,6 +659,13 @@ export {
   leseMainLauf, runtimeDaemonAngemeldet, werkzeugErgebnis, stelleMainLaufSicher, sendeMainTurn, heartbeatBeimSpawnFuerZiel,
   modellPasstZuRuntime, fuehreRuntimeWechselAus,
 } from './services/hauptagent-lauf.js';
+// P22-T62: Modellwahl des Hauptagenten aus den CLI-Listen (Schalter hauptagent_cli_modelle).
+export {
+  HAUPTAGENT_CLI_MODELLE_FUNKTION, CLI_MODELL_RUNTIMES, CODEX_MODELL_PRAEFIX, CODEX_CLI_STANDARD, leseCliModelleSchalter,
+  registriereCliModellKatalog, leseCliKatalog, synapseModellId, codexSlugAus, pruefeModellFuerRuntime, waehleKleinstesModell,
+  standardModellFuerRuntime, leseUserModellWahl,
+} from './services/hauptagent-modelle.js';
+export type { CliModellRuntime, CliKatalog, KatalogModell, ModellPruefung, StandardModellWahl, CliModelleSchalter } from './services/hauptagent-modelle.js';
 export type { MainLaufOptionen, MainLaufStand, MainStartEingabe, MainTurnErgebnis, RuntimeWechselDienste } from './services/hauptagent-lauf.js';
 export {
   AUSFUEHRBARE_AUFTRAG_ARTEN, AUFTRAG_LEASE_MS, RuntimeAuftragFehler, claimeRuntimeAuftraege, meldeRuntimeAuftrag,

@@ -5,6 +5,7 @@ import { FreeModelPoolDriver } from './free-pool-driver.js';
 import { TerminalSessionRegistry } from './terminal-sessions.js';
 import type { AgentRuntimeDriver, MainAgentSession, RuntimeName, RuntimeStatus } from './types.js';
 import { leseHauptagentSchalter, stelleMainIdentitaetSicher, fuehreRuntimeWechselAus, fuehreZustellungAus, hauptagentIdentitaetsId, istMainLaufRuntime } from '@synapse/core';
+import { registriereCliModellKatalog, standardModellFuerRuntime, type CliModellRuntime, type StandardModellWahl } from '@synapse/core';
 import {
   fuehreUeberwachungsTaktAus, leseRuntimeUeberwachungWerte, registriereUeberwachungsDienste, fuehreCliUpdatesAus, type UeberwachungsDienste, type UeberwachungTaktBericht,
 } from '@synapse/core';
@@ -44,6 +45,12 @@ export class AgentRuntimeManager {
     this.zustellTimer.unref();
     // P22-T58: Ueberwachung der Runtime-Container (Container nur Prozesshalter, Entscheidungen hier in der API).
     registriereUeberwachungsDienste(this.ueberwachungsDienste);
+    // P22-T62: core prueft/waehlt Main-Modelle an den ausgelesenen CLI-Listen (Schalter hauptagent_cli_modelle).
+    registriereCliModellKatalog(async (runtime) => {
+      const l = await this.driver(runtime).modelle!();
+      return { grund: l.grund, modelle: l.modelle.map((m) => ({ id: m.id, name: m.name, beschreibung: m.beschreibung, sichtbar: m.sichtbar,
+        gruppe: m.gruppe, familie: m.familie, standard: m.standard })) };
+    });
     this.planeUeberwachung(UEBERWACHUNG_START_MS);
     this.cliUpdateTimer = setInterval(() => { void fuehreCliUpdatesAus(this.ueberwachungsDienste).catch(() => undefined); }, CLI_UPDATE_PRUEF_MS);
     this.cliUpdateTimer.unref();
@@ -100,8 +107,21 @@ export class AgentRuntimeManager {
     return fuehreUeberwachungsTaktAus(this.ueberwachungsDienste, { trocken });
   }
 
-  private async standardModell(runtime: string): Promise<string> {
+  /** Altstandard (Schalter hauptagent_cli_modelle AUS): codex = CLI-Standard, claude = Runtime-Modell bzw. 'sonnet'. */
+  private async altStandardModell(runtime: string): Promise<string> {
     return runtime === 'codex' ? 'codex' : ((await this.repository.get('claude'))?.model ?? 'sonnet');
+  }
+
+  /** P22-T62: Standard ohne ausdrueckliches Modell; EIN = User-Wahl der Runtime bzw. kleinstes Modell der CLI-Liste. */
+  standardModellWahl(runtime: CliModellRuntime): Promise<StandardModellWahl> {
+    return standardModellFuerRuntime(runtime, () => this.altStandardModell(runtime));
+  }
+
+  private async standardModell(runtime: string): Promise<string> {
+    if (runtime !== 'claude' && runtime !== 'codex') return this.altStandardModell(runtime);
+    const w = await this.standardModellWahl(runtime);
+    if (!w.modell) throw new Error('standardmodell_unbestimmt: ' + (w.grund ?? runtime));
+    return w.modell;
   }
 
   private zustellTimer: NodeJS.Timeout | null = null;
@@ -238,6 +258,7 @@ export class AgentRuntimeManager {
     if (this.ueberwachungTimer) clearTimeout(this.ueberwachungTimer);
     if (this.cliUpdateTimer) clearInterval(this.cliUpdateTimer);
     registriereUeberwachungsDienste(null);
+    registriereCliModellKatalog(null);
     this.terminals.closeAll();
   }
 }

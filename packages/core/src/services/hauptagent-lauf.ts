@@ -27,6 +27,7 @@ import { runtimeProjektPfad, runtimeDaemonZugangStatus } from './runtime-daemon-
 import { setzeHeartbeatKonfiguration } from './wrapper-status.js';
 import { claimeRuntimeAuftraege, meldeRuntimeAuftrag, type AuftragFuerDaemon } from './runtime-auftraege-ausfuehrung.js';
 import type { AgentZiel } from './agent-bezug.js';
+import { leseCliModelleSchalter, pruefeModellFuerRuntime } from './hauptagent-modelle.js';
 
 export class MainLaufFehler extends Error {
   constructor(readonly code: string, readonly details?: Record<string, unknown>) { super(code); }
@@ -63,6 +64,7 @@ export function istMainLaufRuntime(runtime: unknown): runtime is SpecialistZielR
 /**
  * P22-T6c: passt ein Registry-Alias zur Runtime? Codex-Container: nur 'codex*' (codex-runtime); Claude-Container: alles
  * andere (claude-CLI-Aliase und api-* Node-Runtimes). Verhindert, dass nach einem Wechsel das Modell der alten Runtime startet.
+ * P22-T62: Altregel (Schalter hauptagent_cli_modelle AUS); EIN prueft pruefeModellFuerRuntime gegen die CLI-Liste.
  */
 export function modellPasstZuRuntime(modell: string | null | undefined, runtime: SpecialistZielRuntime): boolean {
   if (!modell) return false;
@@ -143,6 +145,8 @@ export interface MainStartEingabe {
   effort?: string | null;
   /** Wie lange auf den Start-Job gewartet wird (Standard 90 s). 0 = nur einreihen. */
   warte_ms?: number;
+  /** P22-T62 (Schalter hauptagent_cli_modelle EIN): ausdruecklich gewaehltes Modell geht vor dem konfigurierten Profil-Modell. */
+  modell_explizit?: boolean;
 }
 
 /**
@@ -163,7 +167,16 @@ export async function stelleMainLaufSicher(e: MainStartEingabe): Promise<{ zusta
       // Konfiguriertes Profil-Modell (modell_bestaetigt, nach completed modellwechsel nachgezogen) vor dem Runtime-Standard.
       const p = await getPool().query<{ modell_bestaetigt: string | null }>('SELECT modell_bestaetigt FROM agent_identitaeten WHERE id=$1', [e.identity_id]);
       const konfiguriert = p.rows[0]?.modell_bestaetigt?.trim() || null;
-      const modell = konfiguriert && modellPasstZuRuntime(konfiguriert, e.runtime) ? konfiguriert : e.modell;
+      // P22-T62: Schalter EIN -> Profil-Modell nur, wenn es in der Liste der Ziel-Runtime steht; ausdrueckliche Wahl geht vor.
+      const ein = (await leseCliModelleSchalter()).aktiv;
+      let modell = e.modell;
+      if (konfiguriert && !(ein && e.modell_explizit)) {
+        if (!ein) modell = modellPasstZuRuntime(konfiguriert, e.runtime) ? konfiguriert : e.modell;
+        else {
+          const pr = await pruefeModellFuerRuntime(konfiguriert, e.runtime, { schalter: true });
+          if (pr.passt) modell = pr.modell;
+        }
+      }
       const job = await enqueueSpecialistJob({
         project: HAUPTAGENT_PROJEKT, action: 'spawn',
         args: {
@@ -245,7 +258,17 @@ async function wechsleRuntime(a: AuftragFuerDaemon, d: RuntimeWechselDienste): P
   const quelle = await d.zugewiesen();
   const warte = d.warte_ms ?? 90_000;
   const gew = typeof a.gewuenscht.modell === 'string' ? a.gewuenscht.modell : null;
-  const modell = gew && modellPasstZuRuntime(gew, ziel) ? gew : await d.standardModell(ziel);
+  // P22-T62: Schalter EIN -> gewuenschtes Modell muss in der Liste der Ziel-Runtime stehen; sonst ehrliche Ablehnung statt
+  // stillem Ersetzen. Ohne Wunsch: Standard (User-Wahl der Runtime bzw. kleinstes Modell).
+  const ein = (await leseCliModelleSchalter()).aktiv;
+  let modell: string;
+  if (ein && gew) {
+    const pr = await pruefeModellFuerRuntime(gew, ziel, { schalter: true });
+    if (!pr.passt) throw new MainLaufFehler(pr.grund ?? 'modell_passt_nicht', { modell: gew, runtime: ziel, gelistet: pr.gelistet });
+    modell = pr.modell;
+  } else {
+    modell = gew && !ein && modellPasstZuRuntime(gew, ziel) ? gew : await d.standardModell(ziel);
+  }
   if (!(await runtimeDaemonAngemeldet(ziel))) throw new MainLaufFehler('runtime_daemon_fehlt', { runtime: ziel });
   const failover = a.gewuenscht.failover === 'ja';
   // P22-T58-Failover: der alte Container ist schon gestoppt (docker stop). Kein Stop-Job; die Wrapper-Zeile steht aber noch
@@ -270,7 +293,7 @@ async function wechsleRuntime(a: AuftragFuerDaemon, d: RuntimeWechselDienste): P
   }
   // 2) Zuweisung umstellen, 3) auf der neuen Runtime starten (derselbe Ausweis, dieselbe Identitaet).
   if (quelle !== ziel) await d.weiseMainZu(ziel);
-  const start = await stelleMainLaufSicher({ identity_id: a.identity_id, runtime: ziel, modell, warte_ms: warte });
+  const start = await stelleMainLaufSicher({ identity_id: a.identity_id, runtime: ziel, modell, warte_ms: warte, modell_explizit: ein && !!gew });
   if (start.zustand !== 'laeuft') throw new MainLaufFehler('main_start_dauert', { spawn_job_id: start.spawn_job_id });
   return { modell, runtime: ziel };
 }

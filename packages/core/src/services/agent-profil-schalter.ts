@@ -79,9 +79,11 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'verbrauch',
   // P22-T58: Ueberwachung/Neustart der Runtime-Container durch die API (runtime-ueberwachung.ts), Standard AUS, nur ausdruecklich.
   'runtime_ueberwachung',
+  // P22-T62: Modellwahl des Hauptagenten aus den CLI-Listen (hauptagent-modelle.ts), Standard AUS, nur ausdruecklich.
+  'hauptagent_cli_modelle',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung'];
+const NUR_AUSDRUECKLICH: readonly string[] = ['mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle'];
 /**
  * W12 V7: 'schattenprofile' und 'token_abruf' sind im Produkt-Schalter 'agenten_ausweis' aufgegangen. Die alten Namen
  * bleiben nur LESBAR/setzbar (Altschalter-Rueckfall des Ausweis-Kerns, bestehende Zeilen), sind aber nicht mehr im Katalog.

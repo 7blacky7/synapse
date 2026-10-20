@@ -27,6 +27,8 @@ export interface CliModell {
   sichtbar: boolean;
   /** claude: section (main/overflow); codex: null. */
   gruppe: string | null;
+  /** P22-T62: claude runtime.family des Katalogs (opus, sonnet, ...); codex: null. */
+  familie: string | null;
   /** codex: von der CLI als Standard markiert. */
   standard: boolean;
 }
@@ -71,7 +73,7 @@ export const CLI_MODELLE_SKRIPT = [
   "  r.katalog = { datei: best.f, version: best.k.version ?? null, fetchedAt: best.k.fetchedAt ?? null, staleAt: best.k.staleAt ?? null,",
   "    models: best.k.catalog.config.models.map((m) => ({ id: m.id, name: m.name, short_name: m.short_name, description: m.description, section: m.section,",
   "      effort_options: ((m.thinking && m.thinking.effort_options) || []).map((o) => o && o.id).filter(Boolean),",
-  "      runtime: m.runtime ? { max_input_tokens: m.runtime.max_input_tokens, max_output_tokens: m.runtime.max_output_tokens, effort_levels: m.runtime.effort_levels, default_effort: m.runtime.default_effort } : null,",
+  "      runtime: m.runtime ? { max_input_tokens: m.runtime.max_input_tokens, max_output_tokens: m.runtime.max_output_tokens, effort_levels: m.runtime.effort_levels, default_effort: m.runtime.default_effort, family: m.runtime.family } : null,",
   "      min_claude_code_version: m.min_claude_code_version })) };",
   "  return r;",
   "}",
@@ -161,7 +163,7 @@ export function normalisiereClaudeModelle(roh: Record<string, unknown>, jetzt = 
       id, name: textOderNull(m.name) ?? id, beschreibung: textOderNull(m.description),
       standard_effort: textOderNull(rt.default_effort), effort_stufen: stufen.length ? stufen : textListe(m.effort_options),
       kontext_ein: zahlOderNull(rt.max_input_tokens), kontext_aus: zahlOderNull(rt.max_output_tokens),
-      sichtbar: true, gruppe: textOderNull(m.section), standard: false,
+      sichtbar: true, gruppe: textOderNull(m.section), familie: textOderNull(rt.family), standard: false,
     });
   }
   const veraltetAb = isoOderNull(katalog.staleAt);
@@ -204,7 +206,7 @@ export function normalisiereCodexModelle(roh: Record<string, unknown>, jetzt = n
       modelle.push({
         id, name: textOderNull(m.displayName) ?? id, beschreibung: textOderNull(m.description),
         standard_effort: textOderNull(m.defaultReasoningEffort), effort_stufen: textListe(m.efforts),
-        kontext_ein: kontextJeSlug.get(id) ?? null, kontext_aus: null, sichtbar: m.hidden !== true, gruppe: null, standard: m.isDefault === true,
+        kontext_ein: kontextJeSlug.get(id) ?? null, kontext_aus: null, sichtbar: m.hidden !== true, gruppe: null, familie: null, standard: m.isDefault === true,
       });
     }
     return {
@@ -224,7 +226,7 @@ export function normalisiereCodexModelle(roh: Record<string, unknown>, jetzt = n
       modelle.push({
         id, name: textOderNull(m.display_name) ?? id, beschreibung: textOderNull(m.description),
         standard_effort: textOderNull(m.default_reasoning_level), effort_stufen: textListe(m.efforts),
-        kontext_ein: zahlOderNull(m.context_window), kontext_aus: null, sichtbar: m.visibility !== 'hide', gruppe: null, standard: false,
+        kontext_ein: zahlOderNull(m.context_window), kontext_aus: null, sichtbar: m.visibility !== 'hide', gruppe: null, familie: null, standard: false,
       });
     }
     return {

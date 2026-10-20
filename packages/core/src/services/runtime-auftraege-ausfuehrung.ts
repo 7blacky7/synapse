@@ -18,6 +18,7 @@
  */
 import { getPool } from '../db/client.js';
 import { AUSWEIS_IM_TEXT } from './agent-ausweis-format.js';
+import { istUserWahlAuftrag, leseCliModelleSchalter } from './hauptagent-modelle.js';
 
 export const AUSFUEHRBARE_AUFTRAG_ARTEN = ['neustart', 'modellwechsel', 'stop'] as const;
 export type AusfuehrbareAuftragArt = typeof AUSFUEHRBARE_AUFTRAG_ARTEN[number] | 'runtime_wechsel';
@@ -129,7 +130,7 @@ export async function meldeRuntimeAuftrag(o: {
   try {
     await client.query('BEGIN');
     const vorher = m.schritt === 'accepted' ? ['claimed'] : ['claimed', 'accepted'];
-    const r = await client.query<{ id: string; identity_id: string; art: string; status: string; tatsaechlich: Record<string, unknown> | null }>(
+    const r = await client.query<{ id: string; identity_id: string; art: string; status: string; tatsaechlich: Record<string, unknown> | null; erstellt_von: string | null }>(
       `UPDATE agent_runtime_auftraege a
           SET status = $4,
               tatsaechlich = CASE WHEN $4 = 'completed' THEN $5::jsonb ELSE a.tatsaechlich END,
@@ -141,7 +142,7 @@ export async function meldeRuntimeAuftrag(o: {
         FROM agent_identitaeten i
        WHERE a.id = $1 AND a.claim_revision = $2 AND a.status = ANY($3::text[])
          AND i.id = a.identity_id AND i.project = ANY($9::text[])
-       RETURNING a.id, a.identity_id, a.art, a.status, a.tatsaechlich`,
+       RETURNING a.id, a.identity_id, a.art, a.status, a.tatsaechlich, a.erstellt_von`,
       [o.auftrag_id.trim(), o.claim_revision, vorher, m.schritt, tatsaechlich ? JSON.stringify(tatsaechlich) : null, fehlerText,
         wer, AUFTRAG_LEASE_MS, o.projekte]);
     const z = r.rows[0];
@@ -159,6 +160,15 @@ export async function meldeRuntimeAuftrag(o: {
       await client.query(
         `UPDATE agent_identitaeten SET startrezept = jsonb_set(COALESCE(startrezept, '{}'::jsonb), '{runtime}', to_jsonb($2::text))
           WHERE id = $1`, [z.identity_id, tatsaechlich.runtime]);
+    }
+    // P22-T62 (Schalter hauptagent_cli_modelle EIN): Wahl von User/Main je Runtime im Startrezept festhalten (ueberlebt
+    // Neustart/Deploy). Auftraege der Ueberwachung (Failover/Kontingent/Rueckkehr) schreiben nie.
+    if (m.schritt === 'completed' && (z.art === 'modellwechsel' || z.art === 'runtime_wechsel') && tatsaechlich?.modell
+      && istUserWahlAuftrag(z.erstellt_von) && (await leseCliModelleSchalter()).aktiv) {
+      await client.query(
+        `UPDATE agent_identitaeten SET startrezept = jsonb_set(COALESCE(startrezept, '{}'::jsonb), '{modell_je_runtime}',
+            COALESCE(startrezept->'modell_je_runtime', '{}'::jsonb) || jsonb_build_object(COALESCE($2::text, startrezept->>'runtime', 'claude'), $3::text))
+          WHERE id = $1`, [z.identity_id, tatsaechlich.runtime ?? null, tatsaechlich.modell]);
     }
     if (m.schritt !== 'accepted') {
       await client.query(

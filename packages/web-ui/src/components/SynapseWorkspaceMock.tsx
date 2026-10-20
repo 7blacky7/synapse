@@ -9,6 +9,7 @@ import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
+import { HauptagentModellChip } from './HauptagentModellChip';
 import { ChannelAgentChatWindow, type ChannelAgentWindowState } from './ChannelAgentChatWindow';
 import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
 import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
@@ -757,6 +758,8 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
             {chatMode === 'auto' && <label className="chat-auto-time">nach <input type="number" min="1" step={collapseUnit === 'ms' ? 100 : 1} value={collapseDelay} onChange={(event) => setCollapseDelay(Math.max(1, Number(event.target.value)))} /><select value={collapseUnit} onChange={(event) => setCollapseUnit(event.target.value as 'ms' | 'sec' | 'min')}><option value="ms">ms</option><option value="sec">Sek.</option><option value="min">Min.</option></select></label>}
             <button type="button" className={steuerungOffen ? 'active' : ''} onClick={() => setSteuerungOffen(!steuerungOffen)} title="Hauptagent steuern: Heartbeat, Schalter, Runtime, Verbrauch">⚙ Steuerung</button>
             <button type="button" className="chat-mode-cycle active" onClick={cycleChatMode} title="Auto → Fixiert → Minimiert">{chatCollapsed ? '□ Öffnen' : chatMode === 'auto' ? '◌ Auto · weiter' : '● Fixiert · weiter'}</button>
+            {/* P22-T62: Modell-/Runtime-Wahl direkt im Chatkopf */}
+            {!chatCollapsed && <HauptagentModellChip />}
             <div className={'agent-live' + (runtimeMode === 'claude' || runtimeMode === 'codex' ? ' real' : '')}><i /> {runtimeMode === 'unknown' ? 'Runtime wird geprüft' : runtimeMode === 'mock' ? 'Kein Agent' : thinking ? 'streaming' : runtimeMode === 'claude' ? 'Claude bereit' : 'Codex bereit'}</div>
           </div>
         </div>

@@ -202,6 +202,8 @@ export interface CliModell {
   kontext_aus: number | null;
   sichtbar: boolean;
   gruppe: string | null;
+  /** P22-T62: claude runtime.family; codex null. */
+  familie?: string | null;
   standard: boolean;
 }
 
@@ -217,6 +219,34 @@ export interface CliModellListe {
   hinweise: string[];
   grund: string | null;
   abgefragt_am: string;
+}
+
+/** P22-T62: Modelle beider CLI-Runtimes fuer die Hauptagent-Steuerung (GET /api/main-agent/modelle). */
+export interface MainAgentModellRuntime {
+  runtime: 'claude' | 'codex';
+  label: string;
+  bereit: boolean;
+  zugewiesen: boolean;
+  /** Warum keine Liste da ist (Container aus, nicht angemeldet, ...); null = Liste vorhanden. */
+  grund: string | null;
+  standard: { modell: string | null; quelle: 'schalter_aus' | 'user_wahl' | 'profil' | 'kleinstes' | 'keins'; grund: string | null; user_wahl: string | null };
+  user_wahl: string | null;
+  quelle: 'cli' | 'datei' | null;
+  quelle_detail: string | null;
+  stand: string | null;
+  cli_version: string | null;
+  hinweise: string[];
+  /** modell = Synapse-ID fuer den Wechsel (codex: 'codex/<slug>'). */
+  modelle: Array<CliModell & { modell: string }>;
+}
+export interface MainAgentModelle {
+  schalter: { aktiv: boolean; quelle: string; bis: string | null; letzter_fehler: string | null };
+  runtimes: MainAgentModellRuntime[];
+}
+
+export async function getMainAgentModelle(): Promise<MainAgentModelle> {
+  const payload = await jsonRequest<{ success: true } & MainAgentModelle>('/api/main-agent/modelle');
+  return { schalter: payload.schalter, runtimes: payload.runtimes };
 }
 
 export async function getAgentRuntimeModelle(runtime: AgentRuntimeName, neu = false): Promise<CliModellListe> {

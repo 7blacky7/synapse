@@ -11,6 +11,7 @@ import {
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
   listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls,
+  leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 
@@ -413,7 +414,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   fastify.post<{ Body: { runtime?: unknown; modell?: unknown; grund?: unknown; hands_off?: unknown } }>('/api/main-agent/wechsel', async (request, reply) => {
     const b = request.body ?? {};
     const runtime = typeof b.runtime === 'string' ? b.runtime : '';
-    const modell = typeof b.modell === 'string' && b.modell.trim() ? b.modell.trim() : null;
+    let modell = typeof b.modell === 'string' && b.modell.trim() ? b.modell.trim() : null;
     if (!manager.listDrivers().some((d) => d.runtime === runtime)) {
       return reply.status(400).send({ success: false, error: { code: 'runtime_unbekannt', message: 'runtime_unbekannt' } });
     }
@@ -421,6 +422,20 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       await manager.assertMainRuntimeReady(runtime as RuntimeName, false);
     } catch {
       return reply.status(409).send({ success: false, error: { code: 'runtime_nicht_bereit', message: 'Runtime ist nicht installiert, laufend und angemeldet' } });
+    }
+    // P22-T62 (Schalter hauptagent_cli_modelle EIN): Modell muss in der Liste der Ziel-Runtime stehen; ehrliche Meldung statt
+    // stillem Ersetzen. Codex-slug ohne Praefix wird zu 'codex/<slug>'.
+    if (modell && (runtime === 'claude' || runtime === 'codex')) {
+      try {
+        const p = await pruefeModellFuerRuntime(modell, runtime);
+        if (p.quelle !== 'schalter_aus') {
+          if (!p.passt) {
+            const code = p.grund?.startsWith('modellliste_fehlt') ? 'modellliste_fehlt' : (p.grund ?? 'modell_passt_nicht');
+            return reply.status(400).send({ success: false, error: { code, message: p.grund ?? code, details: { modell, runtime, gelistet: p.gelistet } } });
+          }
+          modell = p.modell;
+        }
+      } catch (error) { return sendFachFehler(reply, error); }
     }
     try {
       const identitaet = (await leseHauptagentSchalter()).aktiv ? await hauptagentIdentitaetsId() : null;
@@ -439,6 +454,34 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         return reply.status(400).send({ success: false, error: { code: 'modellwechsel_nur_identitaetsweg', message: 'Modellwechsel braucht den Schalter hauptagent und die Main-Identitaet' } });
       }
       return { success: true, weg: 'zuweisung', art: runtimeArt(runtime), ...(await manager.assignMain(runtime as RuntimeName)) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  /**
+   * P22-T62: Modelle BEIDER CLI-Runtimes fuer die Hauptagent-Steuerung. Nur bereite Runtimes (installiert, laufend, angemeldet)
+   * liefern ihre Liste; die andere steht mit ehrlichem Grund da. Je Runtime: Standard ohne Wahl (quelle user_wahl|kleinstes|
+   * schalter_aus|keins, grund), gespeicherte User-Wahl, Synapse-ID je Modell (codex: 'codex/<slug>'). Schalter mit Quelle (Debug).
+   */
+  fastify.get('/api/main-agent/modelle', async (_request, reply) => {
+    try {
+      const [schalter, statuses, wahl] = await Promise.all([
+        leseCliModelleSchalter(), manager.listStatuses(), leseUserModellWahl().catch(() => ({} as Partial<Record<CliModellRuntime, string>>)),
+      ]);
+      const runtimes = await Promise.all(CLI_MODELL_RUNTIMES.map(async (rt) => {
+        const d = manager.driver(rt);
+        const s = statuses.find((x) => x.runtime === rt);
+        const grund = !s || !s.configured ? 'nicht_konfiguriert' : !s.installed ? 'cli_nicht_installiert'
+          : s.container.status !== 'running' ? 'container_' + s.container.status : s.authentication.status !== 'authenticated' ? 'nicht_angemeldet' : null;
+        const liste = grund ? null : await d.modelle!();
+        const standard = await manager.standardModellWahl(rt)
+          .catch((error) => ({ modell: null, quelle: 'keins' as const, grund: errorMessage(error), user_wahl: wahl[rt] ?? null }));
+        return {
+          runtime: rt, label: d.label, bereit: !grund, zugewiesen: !!s?.assignedToMain, grund: grund ?? (liste?.modelle.length ? null : liste?.grund ?? 'keine_modelle'),
+          standard, standard_grund: standard.grund, user_wahl: wahl[rt] ?? null, quelle: liste?.quelle ?? null, quelle_detail: liste?.quelle_detail ?? null, stand: liste?.stand ?? null,
+          cli_version: liste?.cli_version ?? null, hinweise: liste?.hinweise ?? [],
+          modelle: (liste?.modelle ?? []).map((m) => ({ ...m, modell: synapseModellId(rt, m.id) })),
+        };
+      }));
+      return { success: true, schalter, runtimes };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get('/api/main-agent/verbrauch/schalter', async (_request, reply) => {

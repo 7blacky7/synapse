@@ -7,7 +7,7 @@
  */
 import {
   leseHauptagentSchalter, hauptagentIdentitaetsId, leseMainLaufOptionen, runtimeDaemonAngemeldet, stelleMainLaufSicher,
-  sendeMainTurn, MainLaufFehler, type SpecialistZielRuntime,
+  sendeMainTurn, MainLaufFehler, leseMainLauf, standardModellFuerRuntime, type SpecialistZielRuntime,
 } from '@synapse/core';
 import type { MainAgentSession, RuntimeMessageResult, RuntimeStreamEvent } from './types.js';
 
@@ -30,7 +30,15 @@ export async function dauerhafterMainTurn(
   }
   try {
     emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', identity_id: session.identityId, schritt: 'start_pruefen' } } });
-    const start = await stelleMainLaufSicher({ identity_id: session.identityId, runtime, modell });
+    // P22-T62: Start noetig -> Standard aus core (Schalter hauptagent_cli_modelle EIN: User-Wahl der Runtime bzw. kleinstes
+    // Modell der CLI-Liste; AUS: das uebergebene Treiber-Modell). Ein konfiguriertes Profil-Modell geht in stelleMainLaufSicher vor.
+    let startModell = modell;
+    if ((await leseMainLauf(session.identityId)).zustand !== 'laeuft') {
+      const w = await standardModellFuerRuntime(runtime, async () => modell);
+      if (!w.modell) throw new MainLaufFehler('standardmodell_unbestimmt', { runtime, grund: w.grund });
+      startModell = w.modell;
+    }
+    const start = await stelleMainLaufSicher({ identity_id: session.identityId, runtime, modell: startModell });
     if (start.zustand !== 'laeuft') throw new MainLaufFehler('main_start_dauert', { spawn_job_id: start.spawn_job_id });
     emit({ event: 'runtime', data: { hauptagent: { weg: 'dauerhaft', schritt: 'arbeitet', neu_gestartet: start.neu } } });
     const r = await sendeMainTurn({ identity_id: session.identityId, runtime, nachricht: message, optionen });
