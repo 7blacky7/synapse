@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { ChannelMessageViewModel } from '../control-plane/view-model';
 import { AttachmentPicker, handleAttachmentDrop, istSendeTaste } from './ChatAttachments';
+import { VerweisText } from './Lesefenster';
 
 export interface ChannelAgentWindowState {
   key: string;
@@ -30,6 +31,7 @@ const KEIN_UPLOAD = 'Die Web-UI kann noch keine Dateien hochladen — es wird nu
 
 export function ChannelAgentChatWindow({
   windowState,
+  project,
   messages,
   initialPosition,
   zIndex,
@@ -145,7 +147,7 @@ export function ChannelAgentChatWindow({
                 <time>{message.createdAt ? new Date(message.createdAt).toLocaleTimeString('de-DE') : '--:--:--'}</time>
                 <strong>{message.sender}</strong>
               </header>
-              <pre>{message.content}</pre>
+              <pre><VerweisText project={project} text={message.content} /></pre>
             </article>
           ))}
           {!messages.length && <p>Keine Beiträge von oder an {windowState.agentName} in #{windowState.channelName}.</p>}

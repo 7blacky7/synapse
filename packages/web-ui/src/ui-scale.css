@@ -79,8 +79,8 @@
 .synapse-control .channel-messages{padding:15px 18px}.synapse-control .channel-messages article{gap:12px;padding-block:12px}
 .synapse-control .channel-messages article header strong{font-size:13px}.synapse-control .channel-messages article time{font-size:10px}
 .synapse-control .channel-message-text p{font-size:13px;line-height:1.65}
-.synapse-control .channel-message-text>button,.synapse-control .channel-attach,.synapse-control .channel-send{font-size:11px}
-.synapse-control .channel-composer{padding:12px}.synapse-control .channel-compose-row{grid-template-columns:84px minmax(0,1fr) 96px;gap:10px}
+.synapse-control .channel-message-text>button{font-size:11px}
+.synapse-control .channel-composer{padding:12px}
 .synapse-control .channel-image-grid span,.synapse-control .channel-image-missing span,.synapse-control .channel-image-missing small{font-size:10px}
 .synapse-control .channel-image-draft strong{font-size:11px}.synapse-control .channel-image-draft small{font-size:10px}
 
@@ -167,4 +167,4 @@
 .synapse-control.sidebar-collapsed .control-sidebar nav button>span,
 .synapse-control.sidebar-collapsed .control-sidebar footer>button>span{font-size:19px}
 .synapse-control.sidebar-collapsed .control-sidebar footer>button.logout{font-size:15px}
-@media(max-width:900px){.synapse-control .channel-compose-row{grid-template-columns:72px minmax(0,1fr) 82px}}
+

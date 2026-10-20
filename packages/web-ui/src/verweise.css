@@ -1,0 +1,27 @@
+.verweis-link{all:unset;cursor:pointer;color:var(--accent);text-decoration:underline dotted;text-underline-offset:2px;border-radius:3px}
+.verweis-link:hover,.verweis-link:focus-visible{text-decoration-style:solid;background:rgba(255,255,255,.07)}
+.verweis-mehrdeutig{position:relative;display:inline-block}
+.verweis-auswahl{position:absolute;z-index:40;left:0;top:100%;min-width:260px;max-width:360px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--panel,var(--strong,#15181d));box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.verweis-auswahl button{all:unset;cursor:pointer;padding:6px 10px;font-size:11px;line-height:1.35;border-bottom:1px solid var(--border)}
+.verweis-auswahl button:last-child{border-bottom:0}
+.verweis-auswahl button:hover{background:rgba(255,255,255,.07)}
+.verweis-auswahl small{display:block;opacity:.65}
+.verweis-fenster{position:fixed;left:0;top:0;width:min(560px,calc(100vw - 16px));height:min(520px,calc(100vh - 120px));min-width:320px;min-height:200px;display:flex;flex-direction:column;resize:both;overflow:hidden;border:1px solid var(--border);border-radius:8px;background:var(--panel,var(--strong,#15181d));box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.verweis-titel{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 8px 8px 12px;border-bottom:1px solid var(--border);background:var(--strong);cursor:grab;touch-action:none}
+.verweis-titel>div{min-width:0;display:flex;flex-direction:column}
+.verweis-titel small{font-size:10px;opacity:.65;text-transform:uppercase;letter-spacing:.05em}
+.verweis-titel strong{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.verweis-titel button{all:unset;cursor:pointer;padding:2px 9px;font-size:16px;border:1px solid var(--border);border-radius:4px}
+.verweis-titel button:hover{border-color:var(--accent);color:var(--accent)}
+.verweis-inhalt{flex:1;min-height:0;overflow:auto;padding:12px 14px}
+.verweis-meta{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0 0 12px;padding-bottom:10px;border-bottom:1px solid var(--border);font-size:11px}
+.verweis-meta div{display:flex;gap:6px;min-width:0}
+.verweis-meta dt{opacity:.6}
+.verweis-meta dd{margin:0;overflow-wrap:anywhere}
+.verweis-fehler{color:#e5736b;font-size:12px}
+.klartext{font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.klartext p{margin:0 0 .8em;white-space:pre-wrap}
+.klartext h4{margin:1em 0 .4em;font-size:13px}
+.klartext ul,.klartext ol{margin:0 0 .8em;padding-left:1.4em}
+.klartext pre{margin:0 0 .8em;padding:8px 10px;overflow:auto;border:1px solid var(--border);border-radius:5px;background:rgba(0,0,0,.25);font-size:12px}
+.klartext-leer{opacity:.6;font-size:12px}

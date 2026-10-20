@@ -8,13 +8,14 @@ import { KnowledgeView } from './KnowledgeView';
 import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ChannelRailListe } from './ChannelRailListe';
 import { ChatEingabefeld } from './ChatEingabefeld';
+import { VerweisFensterProvider, VerweisText } from './Lesefenster';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
 import { HauptagentModellChip } from './HauptagentModellChip';
 import { ToolBilder } from './ToolBild';
 import { ChannelAgentChatWindow, type ChannelAgentWindowState } from './ChannelAgentChatWindow';
-import { AttachmentDrafts, AttachmentMessage, AttachmentPicker, SendenIcon, handleAttachmentDrop, istSendeTaste, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
+import { AttachmentDrafts, AttachmentMessage, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
 import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
 import {
   herkunftText,
@@ -1013,6 +1014,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   const sendenGesperrt = runtimeMode === 'unknown' || runtimeMode === 'mock' || thinking || (!input.trim() && !pendingFiles.length);
 
   return (
+    <VerweisFensterProvider>
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
       {showDashboard && <MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} artifacts={messages.filter((message) => message.kind === 'artifact').map((message) => ({ id: String(message.id), title: message.title || 'HTML-Antwort', blocks: message.blocks?.length ?? 0, saved: message.saved === true }))} />}
       <section className={shellClass + ' floating-agent-window'} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
@@ -1054,7 +1056,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
             {message.toolRun && (message.toolRun.calls.length > 0 || message.toolRun.phases.length > 0) && <ToolActivity calls={message.toolRun.calls} error="" project={project} summary={message.toolRun.calls.some((call) => call.status === 'running') ? 'Hauptagent arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={message.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
             <article className={'message ' + message.role + ' ' + message.kind}>
               <header>{message.kopf ?? (message.role === 'user' ? 'Du' : 'Hauptagent')}{message.info && <small className="message-info">{message.info}</small>}</header>
-              {message.kind === 'text' && (message.text || !message.laeuft) && <p>{message.text}</p>}
+              {message.kind === 'text' && (message.text || !message.laeuft) && <p>{message.laeuft ? message.text : <VerweisText project={project} text={message.text} />}</p>}
               {message.laeuft && <div className="message-laeuft"><i /><i /><i /><span>Hauptagent antwortet …</span></div>}
               {message.hinweise?.map((hinweis) => <small key={hinweis} className="message-hinweis">{hinweis}</small>)}
               {message.zugInfo && <small className="message-zug">{message.zugInfo}</small>}
@@ -1070,13 +1072,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         {unseenMessages > 0 && <button className="agent-new-content" type="button" onClick={jumpToNewestMessage}>↓ {unseenMessages} neue {unseenMessages === 1 ? 'Antwort' : 'Antworten'}</button>}
         <form className={'agent-composer' + (dropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropActive(false); }} onDrop={(event) => { setDropActive(false); handleAttachmentDrop(event, (files) => void queueMainFiles(files)); }}>
           <AttachmentDrafts attachments={pendingFiles} onRemove={(id) => setPendingFiles((current) => current.filter((item) => item.id !== id))} />
-          <div className="composer-field">
-            <textarea ref={mainComposerRef} rows={chatCollapsed ? 1 : 3} value={input} onChange={(event) => { setInput(event.target.value); registerInteraction(); }} onKeyDown={(event) => { if (!istSendeTaste(event)) return; event.preventDefault(); if (!sendenGesperrt) event.currentTarget.form?.requestSubmit(); }} placeholder="Nachricht oder Auftrag an den Hauptagenten …" />
-            <div className="composer-tools">
-              <AttachmentPicker icon onFiles={(files) => void queueMainFiles(files)} label="Datei oder Bild anhängen" />
-              <button className="composer-send" type="submit" disabled={sendenGesperrt} title="Senden (Enter)" aria-label="Senden"><SendenIcon /></button>
-            </div>
-          </div>
+          <ChatEingabefeld textareaRef={mainComposerRef} rows={chatCollapsed ? 1 : 3} value={input} onChange={(text) => { setInput(text); registerInteraction(); }} onFiles={(files) => void queueMainFiles(files)} sendeGesperrt={sendenGesperrt} placeholder="Nachricht oder Auftrag an den Hauptagenten …" />
           <footer className="composer-foot">
             <span className="composer-hint">{runtimeMode === 'unknown' ? 'Runtime wird geprüft …' : runtimeMode === 'mock' ? 'Kein Agent verbunden — Runtime zuweisen und anmelden.' : runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Enter sendet · Shift+Enter neue Zeile · Dateien hierher ziehen'}</span>
             {chatCollapsed && <button type="button" className="chat-open-action" onClick={openChat}>Verlauf öffnen{chatHasUnread ? ' · neu' : ''}</button>}
@@ -1084,6 +1080,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         </form>
       </section>
     </div>
+    </VerweisFensterProvider>
   );
 }
 
@@ -1231,7 +1228,7 @@ function splitChannelMessageContent(content: string) {
   return { text, imagePaths, filePaths };
 }
 
-function ChannelMessageContent({ message }: { message: ChannelMessageViewModel }) {
+function ChannelMessageContent({ message, project }: { message: ChannelMessageViewModel; project: string }) {
   const [expanded, setExpanded] = useState(false);
   const [openImage, setOpenImage] = useState('');
   const parsed = splitChannelMessageContent(message.content);
@@ -1241,7 +1238,7 @@ function ChannelMessageContent({ message }: { message: ChannelMessageViewModel }
     <>
       {parsed.text && (
         <div className="channel-message-text">
-          <p className={isLong && !expanded ? 'is-collapsed' : ''}>{parsed.text}</p>
+          <p className={isLong && !expanded ? 'is-collapsed' : ''}><VerweisText project={project} text={parsed.text} /></p>
           {isLong && (
             <button type="button" onClick={() => setExpanded((current) => !current)}>
               {expanded ? 'Weniger anzeigen' : 'Ganze Nachricht anzeigen'}
@@ -1382,6 +1379,7 @@ function ChannelsView({
   };
 
   return (
+    <VerweisFensterProvider>
     <div className="standard-page channel-page">
       <PageHeader
         eyebrow="GoTray-Funktion · echte API"
@@ -1441,7 +1439,7 @@ function ChannelsView({
                 <div className="message-avatar">{message.sender.slice(0, 2).toUpperCase()}</div>
                 <div>
                   <header><strong>{message.sender}</strong><time>{message.createdAt ? new Date(message.createdAt).toLocaleString('de-DE') : ''}</time></header>
-                  <ChannelMessageContent message={message} />
+                  <ChannelMessageContent message={message} project={project} />
                 </div>
               </article>
             ))}
@@ -1467,6 +1465,7 @@ function ChannelsView({
         </div>
       </section>
     </div>
+    </VerweisFensterProvider>
   );
 }
 

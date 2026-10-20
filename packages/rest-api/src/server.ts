@@ -44,6 +44,7 @@ import {
   agentProfilRoutes,
 } from './routes/index.js';
 import {reverseEingangRoutes} from './routes/reverse-eingang.js';
+import { verweiseRoutes } from './routes/verweise.js';
 import { internDaemonRoutes } from './routes/intern-daemon.js';
 // P9-T27: Shell-/Spezialisten-Jobs des lokalen Daemons ueber die API
 import { daemonJobsRoutes } from './routes/daemon-jobs.js';
@@ -107,6 +108,8 @@ export async function createServer(): Promise<FastifyInstance> {
   await fastify.register(searchRoutes);
   await fastify.register(thoughtsRoutes);
   await fastify.register(memoryRoutes);
+  // P8-T31: Verweise in Channel-Nachrichten aufloesen und als Klartext lesen (rein lesend).
+  await fastify.register(verweiseRoutes);
   await fastify.register(statsRoutes);
   await fastify.register(ideasRoutes);
   await fastify.register(techRoutes);
