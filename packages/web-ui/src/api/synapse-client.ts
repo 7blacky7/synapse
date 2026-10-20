@@ -391,6 +391,8 @@ export interface ChannelMessage {
   content: string;
   metadata: any;
   createdAt: string;
+  /** P22-T80/T88: Absender ist ein archivierter (umbenannter) Agent; anzeige = '<alter Name> (archiviert)'. */
+  absenderArchiv?: { archiv_name: string; anzeige: string };
 }
 
 /**

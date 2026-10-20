@@ -9,6 +9,7 @@ import {
   getThoughts,
   searchThoughts,
   deleteThought,
+  archivVerweise,
 } from '@synapse/core';
 
 export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
@@ -24,7 +25,14 @@ export async function thoughtsRoutes(fastify: FastifyInstance): Promise<void> {
     const limit = parseInt(request.query.limit || '50', 10);
 
     try {
-      const thoughts = await getThoughts(name, limit);
+      const roh = await getThoughts(name, limit);
+      // P22-T88: Absender archivierter (umbenannter) Agenten wie in thought(get) kennzeichnen; source bleibt der alte Name.
+      const verweise = await archivVerweise(name, roh, (t) => ({
+        name: t.source,
+        identity: (t as { source_identity_id?: string | null }).source_identity_id ?? null,
+        zeit: t.timestamp,
+      }));
+      const thoughts = roh.map((t, i) => (verweise[i] ? { ...t, absender_archiv: verweise[i] } : t));
 
       return {
         success: true,

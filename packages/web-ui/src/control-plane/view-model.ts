@@ -34,6 +34,8 @@ export interface ChannelViewModel {
 export interface ChannelMessageViewModel {
   id: number;
   sender: string;
+  /** P22-T88: Anzeige eines archivierten (umbenannten) Absenders, z. B. 'runtime-review (archiviert)'; sender bleibt der alte Name. */
+  senderAnzeige?: string;
   content: string;
   createdAt: string;
   source: 'api';
@@ -86,6 +88,22 @@ export interface ProjectTeamAgentViewModel {
   busy: boolean;
   provider: string;
   lastActivity: string;
+  /** P22-T89: eindeutiger Schluessel ('identity:<id>' | 'wrapper:<name>'); fehlt er, gilt name. */
+  key?: string;
+  agentId?: string;
+  identityId?: string;
+  art?: 'identitaet' | 'wrapper';
+  rolle?: string;
+  typ?: string;
+  ausweis?: 'gueltig' | 'keiner';
+  laufStatus?: string;
+  /** Quelle des Kontextstands; '' = nicht verfuegbar. */
+  contextQuelle?: string;
+  letzteAnmeldung?: string;
+  anmeldungAnlass?: string;
+  /** Schalter agent_anmeldungen ist AUS: keine Anmeldedaten. */
+  anmeldungAus?: boolean;
+  herkunft?: AgentHerkunftViewModel;
   source: 'api';
 }
 

@@ -145,7 +145,7 @@ export function ChannelAgentChatWindow({
             <article key={message.id}>
               <header>
                 <time>{message.createdAt ? new Date(message.createdAt).toLocaleTimeString('de-DE') : '--:--:--'}</time>
-                <strong>{message.sender}</strong>
+                <strong>{message.senderAnzeige ?? message.sender}</strong>
               </header>
               <pre><VerweisText project={project} text={message.content} /></pre>
             </article>

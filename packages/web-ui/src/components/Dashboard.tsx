@@ -592,7 +592,7 @@ function Dashboard({ project }: DashboardProps) {
                   channelFeed.map((msg) => (
                     <div key={msg.id} style={styles.chatMessageItem}>
                       <div style={styles.chatMessageMeta}>
-                        <span style={styles.chatMessageSender}>{msg.sender}</span>
+                        <span style={styles.chatMessageSender}>{msg.absenderArchiv?.anzeige ?? msg.sender}</span>
                         <span style={styles.chatMessageTime}>
                           {new Date(msg.createdAt).toLocaleTimeString()}
                         </span>

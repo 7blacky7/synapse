@@ -22,6 +22,7 @@ import {
 } from '@synapse/core';
 
 import { validateToken } from '../services/auth.js';
+import { ladeAgentenTeam } from '../services/agenten-team.js';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
   /**
@@ -75,6 +76,23 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         ausgeblendet: auswahl.ausgeblendetAnzahl,
         lastUpdate: rows[0]?.lastActivity?.toISOString() ?? new Date().toISOString(),
       };
+    } catch (error) {
+      return reply.status(500).send({
+        success: false,
+        error: { message: String(error) },
+      });
+    }
+  });
+
+  /**
+   * GET /api/projects/:name/agenten-team
+   * P22-T89: Agententeam der Web-UI - aktive Identitaeten (Ausweis) des Projekts plus Wrapper-Spezialisten (services/agenten-team.ts)
+   */
+  fastify.get<{
+    Params: { name: string };
+  }>('/api/projects/:name/agenten-team', async (request, reply) => {
+    try {
+      return await ladeAgentenTeam(request.params.name);
     } catch (error) {
       return reply.status(500).send({
         success: false,

@@ -2,7 +2,6 @@ import {
   getChannelFeed,
   getChannels,
   getProjects,
-  getSpecialists,
   postChannelMessage,
 } from './synapse-client';
 import { apiFetch } from './auth';
@@ -47,6 +46,7 @@ interface WatcherChannelMessage {
   sender?: unknown;
   content?: unknown;
   createdAt?: unknown;
+  absenderArchiv?: unknown;
 }
 
 interface WatcherChannelsResponse {
@@ -61,6 +61,12 @@ function channelAbsender(sender: unknown, metadata: unknown): string {
   const h = (metadata as { herkunft?: { akteur?: string; kanal?: string } } | undefined)?.herkunft;
   if (h?.akteur === 'user' && (h.kanal === 'tray' || h.kanal === 'web-ui-chat')) return h.kanal === 'tray' ? 'User (Tray)' : 'User (Web-UI)';
   return typeof sender === 'string' && sender ? sender : 'unbekannt';
+}
+
+/** P22-T88: Anzeige eines archivierten (umbenannten) Absenders aus absenderArchiv/absender_archiv des Servers. */
+function archivAnzeige(value: unknown): string | undefined {
+  const anzeige = (value as { anzeige?: unknown } | null | undefined)?.anzeige;
+  return typeof anzeige === 'string' && anzeige ? anzeige : undefined;
 }
 
 const RELATION_SUFFIX = /_(code|memories|thoughts|plans|proposals|docs|media)$/i;
@@ -208,6 +214,7 @@ async function loadWatcherMessages(
   return (data.messages || []).map((row, index) => ({
     id: typeof row.id === 'number' ? row.id : index + 1,
     sender: channelAbsender(row.sender, row.metadata),
+    senderAnzeige: archivAnzeige(row.absenderArchiv),
     content: typeof row.content === 'string' ? row.content : '',
     createdAt: typeof row.createdAt === 'string' ? row.createdAt : '',
     source: 'api' as const,
@@ -225,6 +232,7 @@ export async function loadChannelMessageViewModels(
     return rows.map((row) => ({
       id: row.id,
       sender: channelAbsender(row.sender, row.metadata),
+      senderAnzeige: archivAnzeige(row.absenderArchiv),
       content: row.content,
       createdAt: row.createdAt,
       source: 'api',
@@ -334,7 +342,7 @@ interface ProjectMemoriesResponse {
 }
 
 interface ProjectThoughtsResponse {
-  thoughts?: Array<{ id?: unknown; source?: unknown; content?: unknown; tags?: unknown; timestamp?: unknown; task_id?: unknown }>;
+  thoughts?: Array<{ id?: unknown; source?: unknown; content?: unknown; tags?: unknown; timestamp?: unknown; task_id?: unknown; absender_archiv?: unknown }>;
 }
 
 function text(value: unknown): string {
@@ -405,7 +413,7 @@ export async function loadProjectKnowledgeEntries(
         title: content.split('\n').find((line) => line.trim())?.trim().slice(0, 120) || 'Thought',
         detail: content,
         status: zeit(row.timestamp) || (Array.isArray(row.tags) ? row.tags.join(', ') : ''),
-        source: 'Thought · ' + (text(row.source) || 'unbekannt') + (text(row.task_id) ? ' · ' + text(row.task_id) : ''),
+        source: 'Thought · ' + (archivAnzeige(row.absender_archiv) || text(row.source) || 'unbekannt') + (text(row.task_id) ? ' · ' + text(row.task_id) : ''),
       };
     });
   }
@@ -419,23 +427,60 @@ export async function loadProjectKnowledgeEntries(
   }));
 }
 
-// P8-T25: Projekt-Agententeam aus wrapper_status (GET specialists).
+interface AgentenTeamResponse {
+  agenten?: Array<Record<string, unknown>>;
+  anmeldungen?: { aktiv?: unknown };
+}
+
+function zahl(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function objekt(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+// P22-T89: Projekt-Agententeam aus GET agenten-team: aktive Identitaeten (Ausweis) des Projekts
+// plus Wrapper-Spezialisten ohne Identitaet. Archivierte blendet der Server aus.
 export async function loadProjectTeamViewModels(project: string): Promise<ProjectTeamAgentViewModel[]> {
-  const data = await getSpecialists(project);
-  return Object.values(data.specialists || {}).map((row) => ({
-    name: row.name,
-    model: row.modelFullId || row.model || '',
-    status: row.status || 'unbekannt',
-    contextPercent: row.tokens?.percent ?? 0,
-    tokensIn: row.tokens?.input ?? 0,
-    tokensOut: row.tokens?.output ?? 0,
-    channels: Array.isArray(row.channels) ? row.channels : [],
-    currentTask: row.currentTask || '',
-    busy: row.busy === true,
-    provider: row.provider || '',
-    lastActivity: row.lastActivity || '',
-    source: 'api' as const,
-  })).sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
+  const data = await apiJson<AgentenTeamResponse>(projectPath(project) + '/agenten-team', 'Agententeam');
+  const anmeldungAus = data.anmeldungen?.aktiv === false;
+  return (data.agenten || []).filter((row) => text(row.name)).map((row) => {
+    const wrapper = objekt(row.wrapper);
+    const tokens = objekt(wrapper?.tokens);
+    const kontext = objekt(row.kontext);
+    const anmeldung = objekt(row.letzte_anmeldung);
+    const art = row.art === 'identitaet' ? 'identitaet' as const : 'wrapper' as const;
+    const laufStatus = text(anmeldung?.lauf_status) || text(row.lauf_status);
+    const status = wrapper ? text(wrapper.status) || 'unbekannt' : laufStatus === 'aktiv' ? 'angemeldet' : laufStatus || 'nicht angemeldet';
+    return {
+      key: text(row.schluessel) || text(row.name),
+      name: text(row.name),
+      agentId: text(row.agent_id) || text(row.name),
+      identityId: text(row.identity_id) || undefined,
+      art,
+      rolle: text(row.rolle),
+      typ: text(row.typ),
+      ausweis: row.ausweis === 'gueltig' ? 'gueltig' as const : row.ausweis === 'keiner' ? 'keiner' as const : undefined,
+      model: text(row.modell),
+      status,
+      laufStatus,
+      contextPercent: zahl(kontext?.prozent) ?? 0,
+      contextQuelle: kontext ? text(kontext.quelle) : '',
+      tokensIn: zahl(tokens?.input) ?? 0,
+      tokensOut: zahl(tokens?.output) ?? 0,
+      channels: Array.isArray(wrapper?.channels) ? wrapper.channels.filter((name): name is string => typeof name === 'string') : [],
+      currentTask: text(wrapper?.current_task),
+      busy: wrapper?.busy === true,
+      provider: text(wrapper?.provider),
+      lastActivity: text(wrapper?.last_activity) || text(row.zuletzt_aktiv),
+      letzteAnmeldung: text(objekt(anmeldung?.zeit)?.iso),
+      anmeldungAnlass: text(anmeldung?.anlass),
+      anmeldungAus: art === 'identitaet' && anmeldungAus,
+      herkunft: herkunftAus(row.herkunft),
+      source: 'api' as const,
+    };
+  }).sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));
 }
 
 // P8-T25: Agenten aller aktiven Projekte (Einstellungen · Alle Agenten). Ein
