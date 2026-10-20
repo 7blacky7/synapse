@@ -126,7 +126,7 @@ async function spawnSpecialistMitUmgebung(
   //     oder default_effort des Modells; undefined = kein Flag (haiku, Gemini).
   let effortWirksam: string | undefined;
   try {
-    effortWirksam = effortFuerCli(modelEntry, effort);
+    effortWirksam = effortFuerCli(modelEntry, effort, typeof model === 'string' ? model : undefined);
   } catch (err) {
     return jsonResult({ success: false, message: err instanceof Error ? err.message : String(err) });
   }

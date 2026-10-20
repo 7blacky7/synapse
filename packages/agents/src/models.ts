@@ -399,10 +399,14 @@ export function cliModelArgFuer(model: string, entry: ModelEntry | null): string
  * (core waehleEffort). Kein Flag fuer node-Runtimes (Gemini/agy kennen es nicht) und
  * unbekannte Modelle; dort wird nur die Stufe selbst geprueft.
  */
-export function effortFuerCli(entry: ModelEntry | null, gewuenscht?: unknown): EffortStufe | undefined {
+export function effortFuerCli(entry: ModelEntry | null, gewuenscht?: unknown, angefragtesModell?: string | null): EffortStufe | undefined {
+  // P22-T65 Bugfix: Wird eine Katalog-ID der CLI (claude-haiku-5-5) angefragt und die Registry/STATIC_FALLBACK trifft sie nur ueber
+  // fullId auf einen Alias (haiku: effortStufen leer), duerfen deren feste Stufen NICHT gelten: massgeblich ist die ausgelesene
+  // CLI-Liste, deren Gueltigkeit die API vor dem Auftrag prueft (hauptagent-modelle.ts). Registry nur als Rueckfall ohne Katalog-ID.
+  const katalogAngefragt = !!entry && entry.binary === 'claude' && typeof angefragtesModell === 'string' && CLAUDE_KATALOG_ID.test(angefragtesModell);
   // P22-T65: Katalog-Modelle (claude-* aus der CLI-Liste) und Codex: Stufe aus den ausgelesenen Listen durchreichen; ohne
   // Angabe kein Flag (die CLI nimmt ihren eigenen Standard). Die Gueltigkeit je Modell prueft die API (hauptagent-modelle.ts).
-  if (entry && (entry.ausCliKatalog || istCodexEintrag(entry))) {
+  if (entry && (entry.ausCliKatalog || istCodexEintrag(entry) || katalogAngefragt)) {
     if (gewuenscht === undefined || gewuenscht === null || gewuenscht === '') return undefined;
     if (typeof gewuenscht !== 'string' || !KATALOG_STUFE.test(gewuenscht)) throw new Error(`effort "${String(gewuenscht)}" ist keine gueltige Stufe`);
     return gewuenscht as EffortStufe;

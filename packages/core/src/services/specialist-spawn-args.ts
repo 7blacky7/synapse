@@ -185,6 +185,9 @@ export interface SpawnEffortDeps {
 export async function pruefeSpawnEffort(model: unknown, effort: unknown, deps: SpawnEffortDeps = {}): Promise<void> {
   const stufe = pruefeEffort(effort)
   if (!stufe || typeof model !== 'string') return
+  // P22-T65 Bugfix: Katalog-ID der CLI (claude-haiku-5-5): Stufen kommen aus der ausgelesenen CLI-Liste (API prueft sie vor dem Auftrag),
+  // nicht aus den festen Registry-Stufen eines Alias, dessen fullId zufaellig gleich lautet.
+  if (/^claude-[a-z0-9][a-z0-9.-]{0,63}(\[1m\])?$/.test(model)) return
   const getModel = deps.getModel ?? (async (alias: string) => (await import('./model-registry.js')).getModel(alias))
   const eintrag = await getModel(model).catch(() => null)
   if (eintrag && eintrag.binary === 'claude') {

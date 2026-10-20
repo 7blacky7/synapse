@@ -42,15 +42,31 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
   const [offen, setOffen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [meldung, setMeldung] = useState<{ text: string; fehler: boolean } | null>(null);
+  // P22-T65 Bugfix: letzter abgelehnter/fehlgeschlagener Wechsel-Auftrag (Daemon lehnt z. B. eine Stufe ab) sichtbar am Chip.
+  const [abgelehnt, setAbgelehnt] = useState<{ id: string; text: string } | null>(null);
+  const quittiertRef = useRef<string | null>(null);
   const wurzel = useRef<HTMLDivElement>(null);
 
   const laden = useCallback(async () => {
-    const [m, s] = await Promise.all([
+    const [m, s, a] = await Promise.all([
       getMainAgentModelle().catch(() => null),
       anfrage<StatusKurz>('/api/main-agent/status').catch(() => null),
+      anfrage<{ auftraege?: Array<{ auftrag_id: string; art: string; status: string; offen?: boolean; letzter_fehler: string | null; gewuenscht?: Record<string, unknown>; erstellt_am: string; abgeschlossen_am: string | null }> }>('/api/main-agent/auftraege').catch(() => null),
     ]);
     setModelle(m);
     setStatus(s);
+    // Neuester Wechsel-Auftrag: schlug er fehl (abgelehnt/fehlgeschlagen), zeigt der Chip den Grund, bis ein neuer Wechsel kommt oder quittiert wird.
+    const wechsel = (a?.auftraege ?? []).filter((x) => x.art === 'modellwechsel' || x.art === 'runtime_wechsel')
+      .sort((x, y) => Date.parse(y.erstellt_am) - Date.parse(x.erstellt_am))[0];
+    const fehlgeschlagen = !!wechsel && !wechsel.offen && !['completed', 'cancelled'].includes(wechsel.status)
+      && Date.now() - Date.parse(wechsel.abgeschlossen_am ?? wechsel.erstellt_am) < 30 * 60_000;
+    if (wechsel && fehlgeschlagen && quittiertRef.current !== wechsel.auftrag_id) {
+      const g = wechsel.gewuenscht ?? {};
+      const was = [typeof g.modell === 'string' ? kurz(g.modell) : '', typeof g.effort === 'string' ? g.effort : ''].filter(Boolean).join(' · ');
+      setAbgelehnt({ id: wechsel.auftrag_id, text: 'Wechsel' + (was ? ' zu ' + was : '') + ' ' + (wechsel.status === 'rejected' ? 'abgelehnt' : 'fehlgeschlagen') + ': ' + (wechsel.letzter_fehler ?? 'ohne Angabe') });
+    } else {
+      setAbgelehnt(null);
+    }
   }, []);
   useEffect(() => {
     void laden();
@@ -87,6 +103,7 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
       await anfrage('/api/main-agent/wechsel', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ runtime, modell, ...(effort ? { effort } : {}), grund: 'Modellwahl im Hauptagent-Chat' }) });
       setMeldung({ text: 'Wechsel zu ' + (CLI_GRUPPE[runtime] ?? runtime) + ' · ' + kurz(modell) + (effort ? ' · ' + effort : '') + ' beauftragt.', fehler: false });
+      setAbgelehnt(null);
       setOffen(false);
       await laden();
     } catch (reason) {
@@ -94,6 +111,42 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
     } finally {
       setBusy(false);
     }
+  };
+
+  type Gruppe = NonNullable<typeof modelle>['runtimes'][number];
+  type ModellEintrag = Gruppe['modelle'][number];
+
+  // P22-T65 Nachtrag: Modellwechsel. Gilt die bisherige Stufe beim neuen Modell nicht, wird dessen Standard gesetzt (mit Hinweis).
+  const waehleModell = async (r: Gruppe, m: ModellEintrag) => {
+    const bisher = r.runtime === rt ? aktuellerEffort : null;
+    const ungueltig = !!bisher && m.effort_stufen.length > 0 && !m.effort_stufen.includes(bisher);
+    await waehle(r.runtime, m.modell, ungueltig ? (m.standard_effort ?? undefined) : undefined);
+    if (ungueltig) setMeldung({ text: 'Effort ' + bisher + ' gibt es bei ' + m.name + ' nicht, Standard ' + (m.standard_effort ?? '–') + ' gesetzt.', fehler: false });
+  };
+
+  // P22-T65 Nachtrag: EINE Effort-Leiste je Gruppe, direkt unter der Kopfzeile, fuer das gewaehlte bzw. (andere Gruppe) vorgemerkte
+  // Modell, mit genau den Stufen dieses Modells laut CLI-Liste. Hinweise der CLI nur zur gewaehlten Stufe, sonst im Tooltip.
+  const EffortLeiste = ({ r }: { r: Gruppe }) => {
+    const modellId = r.runtime === rt ? gewaehlt : (r.user_wahl ?? r.standard.modell);
+    const m = r.modelle.find((x) => x.modell === modellId);
+    if (!m || m.effort_stufen.length === 0) return null;
+    const aktivGruppe = r.runtime === rt;
+    const jetzt = effortVon(m);
+    const details = new Map((m.effort_details ?? []).map((d) => [d.stufe, d]));
+    const hinweis = jetzt ? details.get(jetzt)?.hinweis : null;
+    return <div className="effort-leiste">
+      <div className="efforts" role="group" aria-label={'Effort ' + m.name}>
+        <small>Effort · {m.name}</small>
+        {m.effort_stufen.map((s) => {
+          const d = details.get(s);
+          const an = s === jetzt;
+          return <button key={s} type="button" className={'effort' + (an ? ' an' : '') + (s === m.standard_effort ? ' std' : '')}
+            disabled={busy || (aktivGruppe && an)} title={[d?.name, s === m.standard_effort ? 'Standard der CLI' : '', d?.hinweis].filter(Boolean).join(' – ')}
+            onClick={() => void waehle(r.runtime, m.modell, s)}>{s}{d?.hinweis && /recommended/i.test(d.hinweis) ? ' ★' : ''}</button>;
+        })}
+      </div>
+      {hinweis && <small className="effort-hinweise">{jetzt}: {hinweis}</small>}
+    </div>;
   };
 
   return <div className={'hauptagent-modell-chip' + (kompakt ? ' kompakt' : '')} ref={wurzel} onPointerDown={(event) => event.stopPropagation()}>
@@ -108,6 +161,8 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
       : <button type="button" className={'chip' + (offen ? ' offen' : '') + (wechselOffen ? ' wechselt' : '')} title={titel} disabled={busy} onClick={() => setOffen(!offen)}>
         {rt ? (CLI_GRUPPE[rt] ?? rt) : 'Modell'} · {kurz(gewaehlt)}{aktuellerEffort ? ' · ' + aktuellerEffort : ''}{laeuft && laeuft !== gewaehlt ? ' (läuft ' + kurz(laeuft) + ')' : ''}{wechselOffen ? ' …' : ''} ▾
       </button>}
+    {abgelehnt && !meldung && <small className="chip-meldung fehler" title={abgelehnt.text}
+      onClick={() => { quittiertRef.current = abgelehnt.id; setAbgelehnt(null); }}>⚠ {abgelehnt.text} (Klick blendet aus)</small>}
     {meldung && !offen && <small className={'chip-meldung' + (meldung.fehler ? ' fehler' : '')} title={meldung.text}>{meldung.fehler ? '⚠ ' : '✓ '}{meldung.text}</small>}
     {offen && <div className="chip-menue" role="menu">
       {!modelle && <p>Modelllisten nicht ladbar.</p>}
@@ -122,29 +177,16 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
             + (r.pruefung.alter_sekunden !== null ? ', bestätigt vor ' + r.pruefung.alter_sekunden + ' s' : '')
             + (r.pruefung.hinweis ? ' – ' + r.pruefung.hinweis : '') + (r.pruefung.schalter.aktiv ? '' : ' (Stabilisierung AUS)')}</small>}
         {r.bereit && r.modelle.length === 0 && <small className="hinweis">keine Modelle: {r.grund ?? 'unbekannt'}</small>}
+        {r.bereit && modelle?.schalter.aktiv && <EffortLeiste r={r} />}
         {r.bereit && r.modelle.filter((m) => m.sichtbar || m.modell === r.user_wahl).map((m) => {
           const aktiv = r.runtime === rt && m.modell === gewaehlt;
-          const stufeJetzt = effortVon(m);
-          // P22-T65: Stufen ausschliesslich aus der ausgelesenen Liste; Hinweise der CLI (Badge/Tooltip/Beschreibung) im Titel.
-          const details = new Map((m.effort_details ?? []).map((d) => [d.stufe, d]));
-          const hinweise = (m.effort_details ?? []).filter((d) => d.hinweis).map((d) => d.stufe + ': ' + d.hinweis);
           return <div key={m.modell} className={'modell-zeile' + (aktiv ? ' aktiv' : '')}>
             <button type="button" role="menuitem" className={aktiv ? 'aktiv' : ''} disabled={busy || aktiv} title={m.beschreibung ?? ''}
-              onClick={() => void waehle(r.runtime, m.modell)}>
+              onClick={() => void waehleModell(r, m)}>
               <span>{m.name}</span><code>{m.id}</code>
               <em>{[m.modell === r.standard.modell ? 'Standard' : '', m.modell === r.user_wahl ? 'deine Wahl' : '',
                 r.runtime === i?.runtime_tatsaechlich && m.modell === laeuft ? 'läuft' : ''].filter(Boolean).join(' · ')}</em>
             </button>
-            {modelle?.schalter.aktiv && m.effort_stufen.length > 0 && <div className="efforts" role="group" aria-label={'Effort ' + m.name}>
-              {m.effort_stufen.map((s) => {
-                const d = details.get(s);
-                const an = s === stufeJetzt;
-                return <button key={s} type="button" className={'effort' + (an ? ' an' : '') + (s === m.standard_effort ? ' std' : '')}
-                  disabled={busy || (aktiv && an)} title={[d?.name, s === m.standard_effort ? 'Standard der CLI' : '', d?.hinweis].filter(Boolean).join(' – ')}
-                  onClick={() => void waehle(r.runtime, m.modell, s)}>{s}{d?.hinweis && /recommended/i.test(d.hinweis) ? ' ★' : ''}</button>;
-              })}
-            </div>}
-            {aktiv && hinweise.length > 0 && <small className="effort-hinweise">{hinweise.join(' · ')}</small>}
           </div>;
         })}
       </div>)}

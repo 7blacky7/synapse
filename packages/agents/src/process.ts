@@ -133,7 +133,7 @@ class ProcessManager extends EventEmitter {
       // Users. Angefragt (opts.effort) oder default_effort des Modells, geprueft gegen
       // dessen effortStufen (effortFuerCli): nicht unterstuetzt = Fehler vor dem Start,
       // kein stilles Ausweichen der CLI. Modelle ohne Stufen (haiku) bekommen kein Flag.
-      const effort = effortFuerCli(modelEntry, opts?.effort)
+      const effort = effortFuerCli(modelEntry, opts?.effort, model)
       if (effort) args.push('--effort', effort)
 
       // P22-T6 (User): im Runtime-Container keine Claude-Code-Hooks (Nachrichten stellt der Daemon zu). Gesetzt von der
