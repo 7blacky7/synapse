@@ -53,6 +53,8 @@ import '../main-agent-dashboard.css';
 import '../workspace-extensions.css';
 import '../ui-scale.css';
 import '../hauptagent-verlauf.css';
+import '../ui-version.css';
+import { WEB_UI_VERSION } from '../web-ui-version';
 
 type Theme = 'dark' | 'light';
 
@@ -1949,6 +1951,7 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
             <Switch checked={theme === 'dark'} onChange={(value) => setTheme(value ? 'dark' : 'light')} label="Dunkles Design" />
           </div>
           <button type="button" className="logout" title={sidebarCollapsed ? 'Abmelden' : undefined} onClick={onLogout}>{sidebarCollapsed ? '↪' : 'Abmelden'}</button>
+          <small className="ui-version" title={'Web-UI-Version ' + WEB_UI_VERSION + ' (nicht die Synapse-Version)'}><span>Web-UI</span>v{WEB_UI_VERSION}</small>
         </footer>
       </aside>
 

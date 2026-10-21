@@ -1,0 +1,5 @@
+/* P22-T94: Web-UI-Version unauffaellig im Seitenleisten-Fuss; eingeklappt nur die Nummer. */
+.control-sidebar footer .ui-version{display:block;margin:6px 10px 0;overflow:hidden;color:var(--faint);font:500 10px ui-monospace,monospace;letter-spacing:.04em;text-overflow:ellipsis;white-space:nowrap;user-select:text}
+.control-sidebar footer .ui-version>span{margin-right:4px}
+.sidebar-collapsed .control-sidebar footer .ui-version{margin:6px 0 0;text-align:center;font-size:9px}
+.sidebar-collapsed .control-sidebar footer .ui-version>span{display:none}

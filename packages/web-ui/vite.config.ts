@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 interface LocalSynapseConfig {
   synapse_api_url?: unknown;
@@ -45,8 +46,17 @@ const watcherTarget = resolveWatcherTarget(localConfig);
 console.info('[web-ui] API-Proxy -> ' + apiTarget);
 console.info('[web-ui] GoTray-Projektquelle -> ' + watcherTarget);
 
+/** P22-T94: eigene Web-UI-Version (nicht Synapse/API) aus package.json, wird beim Build eingebettet. */
+const webUiVersion = String(
+  (JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'package.json'), 'utf8')) as { version?: unknown }).version ?? '0.0.0',
+);
+console.info('[web-ui] Version ' + webUiVersion);
+
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __WEB_UI_VERSION__: JSON.stringify(webUiVersion),
+  },
   server: {
     port: 5173,
     proxy: {
