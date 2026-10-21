@@ -152,7 +152,10 @@ const fehlercode=(roh:unknown,detail?:unknown):string=>{
  const c=String(roh??'');
  if(c==='deadline')return 'zeitlimit';
  if(c==='format_nicht_unterstuetzt'){const d=String(detail??'').replace(/[^a-zA-Z0-9_.-]/g,'').slice(0,64);return d?c+':'+d:c;}
- return (REVERSE_FEHLERCODES as readonly string[]).includes(c)?c:'werkzeug_fehler';
+ if((REVERSE_FEHLERCODES as readonly string[]).includes(c))return c;
+ // P18-T66/E2: unbekannte Runner-Codes als Detail behalten statt einzuebnen (zerlegeReverseFehlercode trennt sie wieder).
+ const d=c.replace(/[^a-zA-Z0-9_.-]/g,'').slice(0,64);
+ return d?'werkzeug_fehler:'+d:'werkzeug_fehler';
 };
 /**
  * P18-T64: Formate, die der Runner (noch) nicht kann, VOR dem Containerlauf klar benennen statt 'nicht_unterstuetzt'.

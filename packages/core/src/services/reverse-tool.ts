@@ -25,7 +25,7 @@ export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
 const TEXTE: Record<ReverseFehlercode,string> = {
-  nicht_gefunden:'Eintrag, Datei oder Auftrag nicht gefunden.',nicht_gebunden:'Eintrag zuerst für dieses Projekt binden.',
+  nicht_gefunden:'Eintrag, Datei oder Auftrag nicht gefunden.',nicht_gebunden:'Eintrag zuerst für dieses Projekt binden: reverse(action:"binden", reverse_id).',
   nicht_unterstuetzt:'Aktion oder Format wird nicht unterstützt.',gepackt:'Datei ist gepackt.',verschluesselt:'Datei ist verschlüsselt.',
   beschaedigt:'Datei ist beschädigt.',zu_gross:'Größenlimit überschritten.',bombe_verdacht:'Verdacht auf eine Archivbombe.',
   pfad_gefahr:'Nur sichere relative Reverse-Pfade sind erlaubt.',zeitlimit:'Zeitlimit überschritten.',speicherlimit:'Speicherlimit überschritten.',
@@ -337,6 +337,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       WHERE s.aktuell AND COALESCE(d.eintrag_id,m.eintrag_id)=$1 AND ($2::bigint IS NULL OR s.datei_id=$2) ORDER BY s.schicht,s.id`,[rid,f?.id??null])).rows;
     // P18-T64: ALLE offenen Aufträge (nicht nur den jüngsten), damit abbrechen/entstoeren jede ID kennt.
     const jobs=(await pool.query("SELECT id,schicht,status,fehlercode,to_jsonb(r)->>'ausfuehrung' AS ausfuehrung,p20_auftrag_id FROM reverse_auftraege r WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) AND status IN ('offen','wartet','laeuft') ORDER BY created_at DESC,id DESC LIMIT $3",[rid,f?.id??null,envInt('SYNAPSE_REVERSE_STATUS_AUFTRAEGE_MAX',100)])).rows;
+    // P18-T66/E3: ohne offenen Auftrag den zuletzt beendeten zeigen, damit ein endgültiger Fehler nicht als 'wartet' erscheint.
+    const letzter=jobs.length?null:(await pool.query("SELECT id,schicht,status,fehlercode FROM reverse_auftraege WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) ORDER BY updated_at DESC,id DESC LIMIT 1",[rid,f?.id??null])).rows[0]??null;
+    const letzterFehler=letzter?.status==='fehler'?letzter:null;
     const rank=(s:unknown)=>stages.indexOf(s as typeof stages[number]);
     const finished=ls.filter(l=>l.status==='fertig'||l.status==='teilweise').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0];
     const active=ls.filter(l=>l.status!=='fertig'&&l.status!=='uebersprungen').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0]??finished;
@@ -344,13 +347,14 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const features=Array.isArray(meta.merkmale)?meta.merkmale.filter(x=>typeof x==='string').map(x=>maskiereMitKatalog(x as string,'reverse').text):[];
     const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
     if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
-    const zerlegt=zerlegeReverseFehlercode(active?.fehlercode);
+    const zerlegt=zerlegeReverseFehlercode(active?.fehlercode??letzterFehler?.fehlercode);
     const error=zerlegt.code&&REVERSE_FEHLERCODES.includes(zerlegt.code as ReverseFehlercode)?zerlegt.code:null;
     return {reverse_id:rid,datei:path,format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,schicht:finished?.schicht??null,
-      schicht_angefragt:jobs[0]?.schicht??active?.schicht??null,status:jobs[0]?.status??active?.status??f?.status??'offen',fehlercode:error,
+      schicht_angefragt:jobs[0]?.schicht??active?.schicht??null,status:jobs[0]?.status??(letzterFehler&&active?.status!=='fertig'&&active?.status!=='teilweise'?'fehler':undefined)??active?.status??f?.status??'offen',fehlercode:error,
       werkzeug:active?.werkzeug??null,merkmale:features,fortschritt:{gesamt:Number(active?.funktionen_gesamt??ls.length),fertig:Number(active?.funktionen_fertig??ls.filter(l=>l.status==='fertig').length)},
       container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s},...(jobs[0]?{auftrag_id:jobs[0].id,eta:null}:{}),
       ...(error&&zerlegt.detail?{fehler_detail:zerlegt.detail}:{}),
+      ...(letzter?{letzter_auftrag:{auftrag_id:letzter.id,schicht:letzter.schicht,status:letzter.status,fehlercode:zerlegeReverseFehlercode(letzter.fehlercode).code}}:{}),
       auftraege:jobs.map(j=>{const z=zerlegeReverseFehlercode(j.fehlercode);return {auftrag_id:j.id,schicht:j.schicht,status:j.status,ausfuehrung:j.ausfuehrung,p20_auftrag_id:j.p20_auftrag_id??null,fehlercode:z.code,...(z.detail?{fehler_detail:z.detail}:{})};}),
       schichten:ls.map(l=>{const z=zerlegeReverseFehlercode(l.fehlercode);return {schicht:l.schicht,status:l.status,fehlercode:z.code,...(z.detail?{fehler_detail:z.detail}:{})};})};
   }
@@ -547,7 +551,12 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     }catch(e){
       if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler||e instanceof ReverseAssetFehler||e instanceof ReverseUebernahmeFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
       const code=(e as {code?:string})?.code;
-      return baueReverseAntwort(a,{},code==='23505'?'ziel_belegt':code==='57014'?'zeitlimit':'werkzeug_fehler');
+      if(code==='23505')return baueReverseAntwort(a,{},'ziel_belegt');
+      if(code==='57014')return baueReverseAntwort(a,{},'zeitlimit');
+      // P18-T66/F3: unerwartete Ausnahme sichtbar machen (z. B. idempotency_conflict); als Detail nur kurze Kennungen.
+      const m=String((e as Error)?.message??'');
+      console.error('[reverse-tool] Unerwarteter Fehler bei',String(a.action),':',m.slice(0,300));
+      return baueReverseAntwort(a,{},'werkzeug_fehler',/^[a-z][a-z0-9_]{2,63}$/.test(m)?m:'interner_fehler');
     }
   }
   return {ausfuehren};
