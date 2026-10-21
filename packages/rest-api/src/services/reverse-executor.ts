@@ -134,6 +134,9 @@ export function reverseToolDescriptor(k:ReverseExecutorKonfig):ToolDescriptor{
    start_timeout_ms:120000,max_starts:20,start_window_ms:600000,pause_ms:300000}});
 }
 const RUNNER_UID=65532;
+/** P18-T69: Dateisystemzugriffe der Rechte-Helfer; Tests ohne root ersetzen chown. */
+export interface ReverseRechteOps {lstat:typeof lstat;chown:typeof chown;chmod:typeof chmod}
+const RECHTE_OPS:ReverseRechteOps={lstat,chown,chmod};
 /** K4: als root Eigentümer 65532 + 0700; ohne root (Tests/Entwicklung) bleibt nur 0777 übrig. */
 async function runnerOrdner(dir:string):Promise<void>{
  await mkdir(dir,{recursive:true,mode:0o700});
@@ -153,20 +156,52 @@ export async function sperreArbeitsOrdner(dir:string):Promise<boolean>{
  * P18-T66: Eingabedateien eines Mediums für den Runner (uid/gid 65532) lesbar machen: root:65532, 0640. Der Inhalt bleibt
  * unverändert; gilt auch für Originale, die vor dieser Regel mit 0600 abgelegt wurden. Liefert null oder einen Fehlercode;
  * fehlt das Recht für chown/chmod, kommt 'keine_berechtigung:eingabe_rechte' (mit Logzeile) statt eines stillen Runner-Fehlers.
+ * P18-T69: Mit wurzel werden zusätzlich die Ordner zwischen wurzel und Datei für den Runner durchquerbar (reverseOrdnerDurchquerbar).
+ * Entpackte Dateien liegen unter Ordnern 0750 root:root (E-Übernahme vor P18-T69), die der Runner sonst nicht betreten kann.
  */
-export async function reverseEingabeLesbar(pfade:string[]):Promise<string|null>{
+export async function reverseEingabeLesbar(pfade:string[],wurzel?:string,ops:ReverseRechteOps=RECHTE_OPS):Promise<string|null>{
  for(const p of pfade){
+  if(wurzel!==undefined){const f=await reverseOrdnerDurchquerbar(wurzel,p,ops);if(f)return f;}
   let st;
-  try{st=await lstat(p);}catch{return 'nicht_gefunden';}
+  try{st=await ops.lstat(p);}catch{return 'nicht_gefunden';}
   if(!st.isFile())return 'pfad_gefahr';
   if(st.uid===0&&st.gid===RUNNER_UID&&(st.mode&0o777)===0o640)continue;
-  try{await chown(p,0,RUNNER_UID);await chmod(p,0o640);}
+  try{await ops.chown(p,0,RUNNER_UID);await ops.chmod(p,0o640);}
   catch(e){
    console.error('[reverse-executor] Eingaberechte nicht setzbar:',p,(e as NodeJS.ErrnoException).code??(e as Error).message);
    return 'keine_berechtigung:eingabe_rechte';
   }
  }
  return null;
+}
+/**
+ * P18-T69: Ordner zwischen wurzel und Datei für den Runner (gid 65532) durchquerbar machen: root:65532 0710 (betreten ja,
+ * auflisten nein). Ordner, die schon jeder betreten darf (o+x, z. B. 755 der Eintragswurzel), oder die bereits root:65532 mit
+ * g+x sind, bleiben unverändert. Links und Nicht-Ordner im Pfad sowie Pfade außerhalb der Wurzel -> 'pfad_gefahr'.
+ */
+export async function reverseOrdnerDurchquerbar(wurzel:string,datei:string,ops:ReverseRechteOps=RECHTE_OPS):Promise<string|null>{
+ const rel=path.relative(wurzel,path.dirname(datei));
+ if(rel===''||rel==='.')return null;
+ if(path.isAbsolute(rel)||rel.split(path.sep).some(t=>!t||t==='.'||t==='..'))return 'pfad_gefahr';
+ let p=wurzel;
+ for(const t of rel.split(path.sep)){
+  p=path.join(p,t);
+  let st;
+  try{st=await ops.lstat(p);}catch{return 'nicht_gefunden';}
+  if(!st.isDirectory())return 'pfad_gefahr';
+  if(st.mode&0o001||(st.uid===0&&st.gid===RUNNER_UID&&st.mode&0o010))continue;
+  try{await ops.chown(p,0,RUNNER_UID);await ops.chmod(p,0o710);}
+  catch(e){
+   console.error('[reverse-executor] Ordnerrechte nicht setzbar:',p,(e as NodeJS.ErrnoException).code??(e as Error).message);
+   return 'keine_berechtigung:eingabe_rechte';
+  }
+ }
+ return null;
+}
+/** P18-T69: Runner-Meldung eines gescheiterten Laufs ins Log (z. B. ungueltiger_auftrag); sonst bliebe nur der Fehlercode. */
+function meldeRunnerFehler(kind:string,jobId:string,e:Record<string,unknown>):void{
+ console.warn('[reverse-executor] Lauf gescheitert:',kind,jobId,'status',String(e.status),'fehlercode',String(e.fehlercode??'-'),
+  'meldung',String(e.meldung??'').slice(0,500));
 }
 /** Arbeitsordner je Auftrag; der Container läuft als 65532 und muss hinein schreiben. */
 export async function reverseArbeitsOrdner(k:ReverseExecutorKonfig,jobId:string):Promise<string>{
@@ -249,7 +284,7 @@ export interface ReverseExecutorDeps {
  uebernahme?:typeof uebernehmeEErgebnis;
  uebernahmeOptionen?:Parameters<typeof uebernehmeEErgebnis>[2];
  /** P18-T69: Eingaberechte setzen (Standard reverseEingabeLesbar; Tests ohne root ersetzen sie). */
- eingabeLesbar?:(pfade:string[])=>Promise<string|null>;
+ eingabeLesbar?:(pfade:string[],wurzel?:string)=>Promise<string|null>;
  registriereProjekt?:(name:string)=>Promise<void>;
 }
 export interface ReverseDurchlauf {geprueft:true;geweckt:number;gestartet:number;hinweis?:string}
@@ -502,6 +537,7 @@ export class ReverseExecutor {
     return;
    }
    if(!lebt){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
+   meldeRunnerFehler(job.kind,job.id,ergebnis);
    aufraeumen=await this.scheitern(job,wer,status==='teilweise'?'zeitlimit':fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
   }finally{
    clearInterval(timer);
@@ -545,7 +581,8 @@ export class ReverseExecutor {
   if(job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
   const quelle=await this.s3Quelle(job);
   if(!quelle){await this.scheitern(job,wer,'nicht_gefunden');return;}
-  const rechte=await (this.deps.eingabeLesbar??reverseEingabeLesbar)([path.join(this.k.reverseRoot,quelle.storageKey)]);
+  // P18-T69: Datei 0640 root:65532 und die Ordner darueber durchquerbar (entpackte Dateien liegen unter 0750 root:root).
+  const rechte=await (this.deps.eingabeLesbar??reverseEingabeLesbar)([path.join(this.k.reverseRoot,quelle.storageKey)],this.k.reverseRoot);
   if(rechte){await this.scheitern(job,wer,rechte);return;}
   const alt=this.altScope;
   const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
@@ -592,6 +629,7 @@ export class ReverseExecutor {
     return;
    }
    if(!lebt){console.warn('[reverse-executor] Lease verloren, S3-Ergebnis verworfen:',job.id);return;}
+   meldeRunnerFehler(job.kind,job.id,ergebnis);
    aufraeumen=await this.scheitern(job,wer,status==='teilweise'?'zeitlimit':fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
   }finally{
    clearInterval(timer);

@@ -65,10 +65,21 @@ async function sichereEltern(wurzel:string,rel:string):Promise<boolean>{
   }
   return true;
 }
+/** P18-T69: Gruppe des Reverse-Runners (uid/gid 65532 im Container). */
+const REVERSE_RUNNER_GID=65532;
 async function zielOrdner(root:string,dir:string):Promise<void>{
-  await fs.mkdir(dir,{recursive:true,mode:0o750});
+  const erster=await fs.mkdir(dir,{recursive:true,mode:0o750});
   const real=await fs.realpath(dir);
   if(real!==dir||!innerhalb(root,real))fehler('pfad_gefahr','Zielordner verlässt die Reverse-Bibliothek.');
+  // P18-T69: neu angelegte Ordner gleich fuer den Runner durchquerbar (root:65532 0710, betreten ja, auflisten nein). Sonst
+  // scheitert die erste S3-Analyse einer entpackten Datei am Ordner; Altbestand richtet der Executor vor dem Lauf.
+  if(!erster||process.getuid?.()!==0)return;
+  try{
+    for(let p=dir;p!==root&&innerhalb(root,p);p=path.dirname(p)){
+      await fs.chown(p,0,REVERSE_RUNNER_GID);await fs.chmod(p,0o710);
+      if(p===erster)break;
+    }
+  }catch(e){console.warn('[reverse-e-uebernahme] Ordnerrechte fuer den Runner nicht setzbar:',dir,(e as NodeJS.ErrnoException).code??(e as Error).message);}
 }
 
 /**

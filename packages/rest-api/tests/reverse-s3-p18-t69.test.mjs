@@ -5,6 +5,8 @@
  *  C Executor-Konfig/Descriptor mit S3-Budget; Ausfuehrung ueber Fake-Lebenszyklus mit echtem Lease/Stage/Complete und
  *    echter Uebernahme: S2+S3-Schicht, Code-Dateien, Funktionssymbole mit Adresse/Groesse/Zeilen, Pipeline danach fertig.
  *  D Importer direkt: Idempotenz, SHA-Pruefung (nichts geschrieben), 50-MB-Budget je Eintrag (teilweise/zu_gross).
+ *  E Ordnerrechte (E6-Befund): Ordner unter der Wurzel root:65532 0710, Datei 0640; Link/fehlend/ausserhalb/EPERM klar benannt;
+ *    Executor ohne Eingaberechte ohne Runner-Lauf; Runnerfehler mit echter Meldung im Log.
  * Nur synapse_test:5433, privates Schema, temporaere Dateien. Kein Docker, kein Ghidra.
  */
 import assert from 'node:assert/strict';
@@ -111,12 +113,14 @@ try{
  const fakeLc={
   async execute(tool,projekt,id,_w,_t,bauen){
    const req=await bauen();aufrufe.push({tool,projekt,id,req});
+   if(lcAntwort)return lcAntwort;
    await writeFile(join(konfig.arbeitRoot,id,'functions.jsonl'),JSONL);
    return {status:'fertig',fehlercode:null,werkzeug_version:'11.4.3',dauer_s:1.5,manifest:manifest(JSONL),ausgabe_bytes:Buffer.byteLength(JSONL)};
   },
   async wake(){},async status(){return {status:'warm'};},async neustart(){return {neu_gestartet:false,zustand:'warm'};},
  };
- const executor=new ex.ReverseExecutor({pool,konfig,lifecycle:()=>fakeLc,identitaet:async()=>wer,eingabeLesbar:async()=>null});
+ const lesbar=[];let lesbarAntwort=null,lcAntwort=null;
+ const executor=new ex.ReverseExecutor({pool,konfig,lifecycle:()=>fakeLc,identitaet:async()=>wer,eingabeLesbar:async(pfade,wurzel)=>{lesbar.push([pfade,wurzel]);return lesbarAntwort;}});
  executor.wer=wer;
  unhook=ex.registriereWorkJobHooks(ex.REVERSE_CAPABILITY,executor.hooks());
  const jobs=core.createWorkJobService({pool});
@@ -131,6 +135,7 @@ try{
  ok(claim?.claimToken,'C: Auftrag geleast');
  await executor.fuehreAus(fakeLc,wer,claim);
  eq(aufrufe.length,1,'C: genau ein Runner-Aufruf');
+ eq(lesbar,[[[join(reverseRoot,RID+'/entpackt/m'+mid+'/S3/AUTORUN.EXE')],reverseRoot]],'C: Eingaberechte mit Wurzel (Ordner durchquerbar)');
  eq(aufrufe[0].req,{werkzeug:'analyzeHeadless',schicht:'S3',eingabe:'/bib/'+RID+'/entpackt/m'+mid+'/S3/AUTORUN.EXE',ausgabe:'/arbeit/'+jobId,
   grenzen:{zeitlimit_s:3600,max_bytes:268435456,max_dateien:16}},'C: Runner-Auftrag fuer Ghidra');
  eq((await pool.query('SELECT state FROM work_jobs WHERE id=$1',[jobId])).rows[0].state,'completed','C: Work-Job completed (stage+complete ueber die Hooks)');
@@ -173,6 +178,47 @@ try{
  eq(await zahl("SELECT count(*)::int n FROM reverse_code_symbole WHERE datei_id=$1",[D2]),1,'D: nur gespeicherte Funktionen als Symbol');
  ok((await pool.query("SELECT content FROM reverse_code_dateien WHERE datei_id=$1 AND schicht='S2'",[D2])).rows[0].content.includes('FUN_00401030'),'D: S2 listet alle Funktionen');
  console.log('PASS D Importer');
+
+ // E Ordnerrechte: entpackte Dateien liegen unter 0750-Ordnern, der Runner (65532) muss hindurch.
+ const {lstat:fsLstat,chmod:fsChmod,stat:fsStat,symlink}=await import('node:fs/promises');
+ const rw=join(temp,'rechte'),rk='rev-x/entpackt/m1/S3/X.EXE';
+ for(const t of ['rev-x','rev-x/entpackt','rev-x/entpackt/m1','rev-x/entpackt/m1/S3']){await mkdir(join(rw,t),{recursive:true});await fsChmod(join(rw,t),t==='rev-x'?0o755:0o750);}
+ await writeFile(join(rw,rk),'MZ');await fsChmod(join(rw,rk),0o600);
+ const gesetzt=[];
+ const ops={lstat:fsLstat,chmod:fsChmod,chown:async(p,u,g)=>{gesetzt.push([p.slice(rw.length+1),u,g]);}};
+ eq(await ex.reverseEingabeLesbar([join(rw,rk)],rw,ops),null,'E: Rechte gesetzt');
+ eq(gesetzt,[['rev-x/entpackt',0,65532],['rev-x/entpackt/m1',0,65532],['rev-x/entpackt/m1/S3',0,65532],[rk,0,65532]],'E: Ordner unter der Eintragswurzel (755 bleibt) und Datei an Gruppe 65532');
+ eq(await Promise.all(['rev-x','rev-x/entpackt','rev-x/entpackt/m1','rev-x/entpackt/m1/S3',rk].map(async t=>(await fsStat(join(rw,t))).mode&0o777)),
+  [0o755,0o710,0o710,0o710,0o640],'E: Ordner 0710 (betreten, nicht auflisten), Datei 0640');
+ eq(await ex.reverseEingabeLesbar([join(rw,'rev-x/entpackt/m9/Y.EXE')],rw,ops),'nicht_gefunden','E: fehlender Ordner');
+ await symlink(join(rw,'rev-x/entpackt/m1'),join(rw,'rev-x/entpackt/link'));
+ eq(await ex.reverseEingabeLesbar([join(rw,'rev-x/entpackt/link/S3/X.EXE')],rw,ops),'pfad_gefahr','E: Link im Pfad');
+ eq(await ex.reverseOrdnerDurchquerbar(rw,join(temp,'anderswo/X.EXE'),ops),'pfad_gefahr','E: Pfad ausserhalb der Wurzel');
+ await fsChmod(join(rw,'rev-x/entpackt'),0o750);
+ eq(await ex.reverseEingabeLesbar([join(rw,rk)],rw,{...ops,chown:async()=>{throw Object.assign(Error('nein'),{code:'EPERM'});}}),
+  'keine_berechtigung:eingabe_rechte','E: chown verweigert -> klarer Fehlercode');
+ const leasen=async id=>{
+  await pool.query(`UPDATE work_jobs SET state='leased',owner_node=$2,boot_generation=$3::uuid,owner_auth_hash=$4,claim_token=$5::uuid,
+   lease_until=clock_timestamp()+interval '5 minutes',resource_domain=$6,attempt=1,updated_at=clock_timestamp() WHERE id=$1`,
+   [id,wer.nodeId,wer.bootGeneration,wer.authHash,randomUUID(),'reverse:'+wer.nodeId]);
+  return jobs.get(id,'reverse-bibliothek');
+ };
+ const s3Job=async name=>{
+  const d=await datei(name,Buffer.from('MZ-'+name));await vorstufen(d);await anfordern(d,'S3');
+  return (await pool.query("SELECT p20_auftrag_id::text AS job FROM reverse_auftraege WHERE datei_id=$1 AND schicht='S3'",[d])).rows[0].job;
+ };
+ const job3=await s3Job('RECHTE.EXE'),vorher=aufrufe.length;
+ lesbarAntwort='keine_berechtigung:eingabe_rechte';
+ try{await executor.fuehreAus(fakeLc,wer,await leasen(job3));}finally{lesbarAntwort=null;}
+ eq(aufrufe.length,vorher,'E: ohne Eingaberechte kein Runner-Lauf');
+ eq(Object.values((await pool.query('SELECT state,error_code FROM work_jobs WHERE id=$1',[job3])).rows[0]),['failed','keine_berechtigung:eingabe_rechte'],'E: Auftrag scheitert mit dem Rechte-Code');
+ const job4=await s3Job('MELDUNG.EXE');
+ lcAntwort={status:'fehler',fehlercode:'ungueltiger_auftrag',meldung:"[Errno 13] Permission denied: '/bib/x'"};
+ const warn=console.warn,zeilen=[];console.warn=(...a)=>{zeilen.push(a.join(' '));};
+ try{await executor.fuehreAus(fakeLc,wer,await leasen(job4));}finally{console.warn=warn;lcAntwort=null;}
+ ok(zeilen.some(z=>z.includes(job4)&&z.includes('ungueltiger_auftrag')&&z.includes('Permission denied')),'E: Logzeile mit echter Runner-Meldung');
+ eq((await pool.query('SELECT state FROM work_jobs WHERE id=$1',[job4])).rows[0].state,'failed','E: Runnerfehler beendet den Work-Job');
+ console.log('PASS E Ordnerrechte + Runner-Meldung');
  console.log('P18-T69 S3: '+checks+' Pruefungen, 0 Fehler');
 }catch(e){fehler=e;console.error('FAIL',e);}
 finally{
