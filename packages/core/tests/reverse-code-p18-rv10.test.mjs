@@ -64,6 +64,17 @@ try{
  const strings=ok(await call('file',{file_path:'game.exe@S1/strings.txt',limit:2,min_laenge:5}));assert.equal(strings.total,4);assert.equal(strings.strings.length,2);assert.equal(strings.naechster_offset,2);
  const stringTail=ok(await call('file',{file_path:'game.exe@S1/strings.txt',limit:2,offset:2,min_laenge:5}));assert.equal(stringTail.strings.length,2);assert.equal(stringTail.naechster_offset,null);
  ok(await call('symbols',{symbol_type:'string',min_laenge:5}));
+ // F4/T73: addresses and sizes remain exact beyond the JS safe integer range.
+ await pool.query("UPDATE reverse_code_symbole SET adresse=4211504,groesse_bytes=372 WHERE id='rv10-fn-0'");
+ await pool.query("UPDATE reverse_code_symbole SET adresse=9007199254740993,groesse_bytes=9007199254740995 WHERE id='rv10-fn-1'");
+ const mainSymbol=ok(await call('symbols',{symbol_type:'function',name:'Main'})).symbols[0];
+ assert.equal(mainSymbol.adresse,'0x404330');assert.equal(mainSymbol.groesse_bytes,'372');
+ const hugeSymbol=ok(await call('symbols',{symbol_type:'function',name:'Function001'})).symbols[0];
+ assert.equal(hugeSymbol.adresse,'0x20000000000001');assert.equal(hugeSymbol.groesse_bytes,'9007199254740995');
+ const noAddress=ok(await call('symbols',{symbol_type:'string'})).symbols[0];
+ assert.equal(noAddress.adresse,null);assert.equal(noAddress.groesse_bytes,null);
+ const pageSymbols=ok(await call('symbols',{symbol_type:'function',offset:1,limit:1}));
+ assert.equal(pageSymbols.symbols[0].id,'rv10-fn-1');assert.equal(pageSymbols.total,300);assert.equal(pageSymbols.naechster_offset,2);
  const refs=ok(await call('references',{name:'Main',limit:1}));assert.equal(refs.references.length,1);assert.equal(refs.total,4);
  const {mitReverseCodeLeser,REVERSE_BEREICH}=await import('../dist/services/intel-bereich.js');
  const {getReferences}=await import('../dist/services/code-intel.js');
@@ -117,7 +128,7 @@ try{
   http.listen(0,'127.0.0.1');await once(http,'listening');
   process.env.SYNAPSE_API_URL='http://127.0.0.1:'+http.address().port+'/';process.env.SYNAPSE_API_TOKEN='rv10-fixture';
   const [ct,st]=InMemoryTransport.createLinkedPair();await mcp.connect(st);await client.connect(ct);
-  for(const [action,extra] of [['tree',{limit:2}],['functions',{name:'Main',limit:2}],['symbols',{symbol_type:'string',limit:2}],['references',{name:'Main',limit:2}],['search',{query:'SearchNeedle',limit:2}],['file',{file_path:'game.exe@S1/strings.txt',limit:2}],['calls',{callee:'Main',limit:2}]]){
+  for(const [action,extra] of [['tree',{limit:2}],['functions',{name:'Main',limit:2}],['symbols',{symbol_type:'function',name:'Main',limit:2}],['references',{name:'Main',limit:2}],['search',{query:'SearchNeedle',limit:2}],['file',{file_path:'game.exe@S1/strings.txt',limit:2}],['calls',{callee:'Main',limit:2}]]){
    const args={action,project,agent_id:agent,reverse_id:rid,...extra};
    const api=core.baueToolErgebnis(await service.ausfuehren(args),{tool:'reverse',strukturiert:true});
    const viaStdio=await client.callTool({name:'reverse',arguments:args});

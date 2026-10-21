@@ -111,7 +111,12 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
    case 'functions':result=page('functions',await getFunctions(rid,file,adressName===undefined?name:undefined,a.exported_only===true,limit,REVERSE_BEREICH));break;
    case 'symbols':{
     const type=optionalText(a.symbol_type);if(!type)fail('werkzeug_fehler','parameter_fehlt',{parameter:'symbol_type'});
-    result=page('symbols',await getSymbols(rid,type,file,name,limit,optionalText(a.value_contains),REVERSE_BEREICH));break;
+    const symbols=await getSymbols(rid,type,file,name,limit,optionalText(a.value_contains),REVERSE_BEREICH);
+    // Reverse-only metadata: preserve bigint precision, and scope the lookup to this page
+    // and the same current-layer view. The shared project symbol response stays unchanged.
+    const addresses=symbols.length?(await k.db.query("SELECT id,CASE WHEN adresse IS NULL THEN NULL ELSE '0x'||to_hex(adresse) END AS adresse,groesse_bytes::text FROM "+views.reverse_code_symbole+" s WHERE eintrag_id=$1 AND id=ANY($2::text[])",[rid,symbols.map(s=>s.id)])).rows:[];
+    const byId=new Map(addresses.map(s=>[s.id,s]));
+    result=page('symbols',symbols.map(s=>({...s,adresse:byId.get(s.id)?.adresse??null,groesse_bytes:byId.get(s.id)?.groesse_bytes??null})));break;
    }
    case 'search':{
     if(!query?.trim())fail('werkzeug_fehler','parameter_fehlt',{parameter:'query'});
