@@ -1,6 +1,7 @@
 export { NETZWERK_FUNKTION, NETZWERK_EINSTELLUNGEN, NETZWERK_ADMIN_PARAMETER, leseNetzwerkKonfiguration, fuehreNetzwerkAdminAus, netzwerkEreignis, netzwerkArgumente, netzwerkText } from './services/agentennetzwerk.js';
 export type { NetzwerkEinstellung, NetzwerkWerte, NetzwerkEreignis } from './services/agentennetzwerk.js';
 export {leseReversePeRessourcenSchalter} from './services/reverse-pe-schalter.js';
+export {leseReverseSiedler3Schalter} from './services/reverse-siedler3-schalter.js';
 
 
 /**

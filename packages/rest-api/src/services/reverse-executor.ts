@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import Docker from 'dockerode';
 import type {Pool} from 'pg';
-import {leseReversePeRessourcenSchalter,getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
+import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
  reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
@@ -498,11 +498,11 @@ export class ReverseExecutor {
   try{
    let ergebnis:Record<string,unknown>;
    try{
-    const peStand=await leseReversePeRessourcenSchalter();
+    const [peStand,siedlerStand]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter()]);
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
-     optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand},
+     optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand,siedler3:siedlerStand.aktiv,siedler3_stand:siedlerStand},
      grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung}}));
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);

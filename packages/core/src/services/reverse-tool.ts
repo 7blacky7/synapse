@@ -469,7 +469,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const prefix=gesetzt(a.path)?pruefeReversePfad(a.path):null;
       const where=" WHERE eintrag_id=$1 AND ($2::text IS NULL OR pfad=$2 OR left(pfad,length($2)+1)=$2||'/')";
       const total=Number((await pool.query('SELECT count(*)::int AS n FROM reverse_dateien'+where,[rid,prefix])).rows[0].n);
-      const rows=(await pool.query("SELECT id::text AS id,medium_id::text AS medium_id,pfad,art,format,arch,bits,groesse,sha256,status,entpackt_mit,storage_key,metadaten->'herkunft' AS quelle,metadaten->'pe_ressource' AS pe_ressource,metadaten->'pe_ressourcen' AS pe_ressourcen,metadaten->'verschachtelt' AS verschachtelt,metadaten->>'e_pfad' AS e_pfad FROM reverse_dateien"+where+' ORDER BY pfad,id LIMIT $3 OFFSET $4',[rid,prefix,limit,offset])).rows;
+      const rows=(await pool.query("SELECT id::text AS id,medium_id::text AS medium_id,pfad,art,format,arch,bits,groesse,sha256,status,entpackt_mit,storage_key,metadaten->'herkunft' AS quelle,metadaten->'siedler3' AS siedler3,metadaten->'pe_ressource' AS pe_ressource,metadaten->'pe_ressourcen' AS pe_ressourcen,metadaten->'verschachtelt' AS verschachtelt,metadaten->>'e_pfad' AS e_pfad FROM reverse_dateien"+where+' ORDER BY pfad,id LIMIT $3 OFFSET $4',[rid,prefix,limit,offset])).rows;
       const mask=(v:unknown)=>typeof v==='string'?maskiereMitKatalog(v,'reverse').text:null;
       const items:Row[]=[];const max=envInt('SYNAPSE_REVERSE_ANTWORT_MAX',80000);let laenge=2;
       for(const r of rows){
@@ -479,6 +479,12 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         // P18-T71: Herkunft aus verschachtelten Containern und Zustand erkannter Container; Pfade wie 'pfad' (Medium-Label vorn).
         const basis=typeof r.e_pfad==='string'&&str(r.pfad).endsWith(r.e_pfad)?str(r.pfad).slice(0,str(r.pfad).length-r.e_pfad.length):'';
         if(object(r.quelle))item.quelle={archiv:mask(basis+str(r.quelle.archiv)),pfad:mask(r.quelle.pfad),tiefe:Number(r.quelle.tiefe)||null};
+        // P18-T72: flat decoded-container provenance, masked like other original-derived metadata.
+        if(object(r.siedler3)){
+          const v=r.siedler3;item.siedler3=Object.fromEntries(
+            ['format','offset','laenge','quellbereich_sha256','typ','breite','hoehe','versatz_x','versatz_y','darstellung','gruppe','variante','samplerate','kanaele','bits','fehler']
+              .filter(k=>v[k]!==undefined).map(k=>[k,typeof v[k]==='number'?v[k]:mask(v[k])]));
+        }
         // P18-T76: byte-exact resource provenance and extraction diagnostics.
         if(object(r.pe_ressource)){
           const v=r.pe_ressource,wert=(x:unknown)=>typeof x==='number'?x:mask(x);

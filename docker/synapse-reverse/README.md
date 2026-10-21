@@ -57,3 +57,49 @@ Use existing reverse(calls/references/functions/file) to read the results. A fai
 Tests: node packages/core/tests/reverse-rea1-p18-t74-rv14.test.mjs uses a private schema in synapse_test:5433; optional P18_REA_NORMAL_JSONL / P18_REA_FALLBACK_JSONL point to the coordinator's generated AUTORUN test exports, with S1 raw files beside them. uv run --no-project python -B -m unittest discover -s docker/synapse-reverse -p 'test_*.py' covers runner and extractor contracts.
 
 Coordinator probe: probe-ghidra.sh <existing-image> <original-exe> <working-sources>, with FORCE_FALLBACK=1 for the test-only subclass that forces entry to fail while retaining real Ghidra instructions/graph. Originals mount read-only; all container output is tmpfs. TESTEXPORT_TAR=1 emits generated analysis files as a tar stream; pipe stdout directly into a local scratch directory, never a tool log. A rebuilt reverse image is needed to use the new exporter in production.
+
+
+## Siedler 3 GFX/SND/MAP (P18-T72)
+
+The global product switch `reverse_siedler3` defaults to OFF and is excluded from `alle`.
+Use the existing admin product-switch action or Settings → Reverse-Bibliothek to enable it
+for new E jobs. The optional internal switch of the same name, mode `freigegeben`, can
+temporarily override ON or OFF only while the intern tool is enabled and its deadline
+has not expired. Runner results report `siedler3.aktiv/stand/ergebnisse/fehlercode`.
+
+`siedler3.py` is a static, read-only parser in the existing E runner. Both directly
+submitted and nested containers use the same manifest/import, output count/bytes/depth,
+expansion ratio, parser RAM and job deadline. No additional storage or executable loader
+is introduced. Existing originals stay intact. Output is placed in a collision-free
+`<source>~inhalt/` directory and gets `herkunft` plus `siedler3` metadata (source
+offset, length, SHA-256 of that range, format and image/audio properties).
+`reverse(dateien)` returns this provenance; the normal asset inspect/ansicht paths
+consume PNG and WAV outputs.
+
+* GFX magic 041304000c000000: six index tables, absolute sequence offsets and relative
+  frame offsets. Landscape, GUI and sprite RGB565/RGB555 RLE images become RGBA PNG.
+  Torso indices become grayscale masks and shadows translucent masks, not falsely
+  labelled fully coloured/composited sprites. Width/height and displacement stay in
+  metadata. Unknown record kinds and two auxiliary metadata blocks remain raw BIN.
+  The JSON index preserves table pointers; malformed independent image records remain
+  raw with a partial-result error instead of suppressing later valid images.
+* SND magic 4415010002000000: table count is read from the file (the examined original
+  has 119 groups). Absolute variant offsets lead to PCM records with a 16-byte format
+  header. The record length includes the 4-byte length and format header. Outputs are
+  RIFF/WAVE PCM with correct data length/padding, channels, rate and sample depth.
+  Some original records end with an incomplete PCM frame: full frames become WAV,
+  the complete original record also becomes BIN with an explicit partial-result error.
+  Unsupported format headers remain BIN; subsequent variants are still processed.
+* MAP has no fixed magic: extension .map, version 10/11 and plausible block header are
+  required. The clear block directory is reported in struktur.json. Encrypted payloads
+  are neither decrypted nor represented as decoded map assets. Result is explicitly
+  `teilweise/verschluesselt`.
+
+Format evidence was read through the KI browser from the MIT-licensed
+[JSettlers reader](https://github.com/jsettlers/settlers-remake/tree/master/jsettlers.graphics/src/main/java/jsettlers/graphics/image/reader),
+[SoundManager](https://github.com/jsettlers/settlers-remake/blob/master/jsettlers.graphics/src/main/java/jsettlers/graphics/sound/SoundManager.java)
+and [OriginalMapFileContentReader](https://github.com/jsettlers/settlers-remake/blob/master/jsettlers.logic/src/main/java/jsettlers/logic/map/loading/original/OriginalMapFileContentReader.java).
+Header/offset assumptions were checked with the Synapse hex API against the Siedler 3
+library (GFX id755, SND id492, MAP id103). GFX header descriptor:
+`3ae70584-66b7-4cf9-8cd4-df3d3501c29e`, version1. Decoder implementation is independent;
+no Java runtime or JSettlers package is installed.

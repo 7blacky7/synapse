@@ -24,3 +24,20 @@
 Debian copyright texts are retained in /usr/share/doc/<package>/copyright in the image. Ghidra's upstream LICENSE is in /opt/ghidra. The runner and Ghidra export script are new Synapse files. No third-party source is copied into them.
 
 Die Paketliste wird gegen den datierten Debian-Snapshot gebaut. FFmpeg-Codecs hängen von der Debian-Buildkonfiguration ab; für eine Lizenzänderung muss die Paketkonfiguration geprüft und diese Liste aktualisiert werden.
+
+
+## Siedler-3-Formatrecherche (P18-T72)
+
+Der eigenständige Python-Decoder wurde anhand der im KI-Browser gelesenen
+JSettlers-Formatbeschreibung und Original-Header entwickelt. Quellen: 
+https://github.com/jsettlers/settlers-remake (AdvancedDatFileReader,
+DatBitmapReader, Übersetzer, SoundManager, OriginalMapFileContentReader).
+Der folgende MIT-Hinweis bleibt zur Attribution der Format-/Algorithmusquelle erhalten:
+
+Copyright (c) 2015 - 2018
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

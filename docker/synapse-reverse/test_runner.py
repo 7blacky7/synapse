@@ -602,7 +602,7 @@ class VerschachteltTests(unittest.TestCase):
         self.assertEqual(art["DATA2.CAB"], ("installshield", None, "teil_eines_satzes:DATA1.CAB"))
         self.assertEqual(art["setup.msi"], ("msi", "msiextract", ""))
         self.assertIsNone(art["brief.doc"])
-        self.assertEqual(art["SIEDLER.DAT"][:2], ("siedler3-dat", None))
+        self.assertEqual(art["SIEDLER.DAT"][:2], ("siedler3-dat", "siedler3"))
         self.assertIsNone(art["plain.exe"])
         self.assertEqual(art["sfx7z.exe"], ("pe-7z", "7zz", ""))
         self.assertEqual(art["inno.exe"], ("inno", "innoextract", ""))
