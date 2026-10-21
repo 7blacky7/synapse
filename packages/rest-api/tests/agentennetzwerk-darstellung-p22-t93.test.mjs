@@ -103,8 +103,9 @@ try{
    if(!namen&&i%5===3)await call('chat',{action:'send',recipient_id:'koordinator-sued',sender_id:team[5+i%3][0],content:'Test-DM P22 T93'},team[5+i%3][0]);
    if(!namen&&i%4===2)await call('channel',{action:'post',channel_name:i%8===2?'kern-sync':'review',sender:team[i%10][0],content:'Test P22 T93'},team[i%10][0]);
    if(!namen&&i%6===4)await call('channel',{action:'feed',channel_name:'kern-sync'},team[(i+3)%10][0]);
-   if(!namen&&i%2===0)await pool.query("INSERT INTO tool_calls(project,agent_id,tool_name,action,ok,args_preview) VALUES($1,$2,'files','plan_status',true,$3)",
-    [P,i%4===0?'codex-hex':['claude-ui','codex-api','claude-docs'][i%3],JSON.stringify({action:'plan_status',plan_id:i%4===0?planB:planA})]);
+   if(!namen&&i%6===1)await pool.query("INSERT INTO tool_calls(project,agent_id,tool_name,action,ok,args_preview,result) VALUES($1,$2,'code_intel','search',true,'{}',$3)",[P,team[i%10][0],'{"success":true,"results":[],"count":0}']);
+   if(!namen&&i%2===0)await pool.query("INSERT INTO tool_calls(project,agent_id,tool_name,action,ok,args_preview,result_bytes) VALUES($1,$2,'files','plan_status',true,$3,$4)",
+    [P,i%4===0?'codex-hex':['claude-ui','codex-api','claude-docs'][i%3],JSON.stringify({action:'plan_status',plan_id:i%4===0?planB:planA}),200*(i%10+1)**2]);
    i++;await sleep(140);
   }
  };
@@ -138,6 +139,8 @@ try{
  const kn=await page.evaluate(()=>{const c=document.querySelector('canvas.nw-gl');return {knoten:Number(c.dataset.knoten),channels:Number(c.dataset.channelCount),sprites:Number(c.dataset.sprites),plaene:Number(c.dataset.plaene)};});
  ok(kn.channels===2,'zwei aktive Channels als Synapsen: '+JSON.stringify(kn));
  ok(kn.plaene===4,'vier offene files-Plaene als Schattenplan-Knoten');
+ ok(Number(await page.locator('canvas.nw-gl').getAttribute('data-leer'))>0,'P22-T97: leere Ergebnisse zerplatzen unterwegs');
+ ok(Number(await page.locator('canvas.nw-gl').getAttribute('data-rueck'))>0,'P22-T97: Ergebnisse fliessen sichtbar zum Agenten zurueck');
  ok(messung.plan_impulse>0,'Aufrufe mit plan_id laufen in den Schattenplan ('+messung.plan_impulse+' Impulse gleichzeitig)');
  // Hover-Karte auf Koordinator nord
  const bildschirm=async name=>page.evaluate(async name=>{

@@ -12,11 +12,11 @@ export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
  * Daten nur aus dem API-Vertrag; Dekor (Sterne/Nebel) ist fest und traegt keine Aktivitaet.
  */
 interface Partikel { e: NetzEreignis; start: number; impuls?: Impuls | null; gestartet?: boolean }
-interface Impuls { art: 'aufruf' | 'fehler' | 'dm' | 'post' | 'lesen' | 'kern' | 'plan'; pfad: Float32Array; laenge: number; von: string; nach: string; dauer: number; farbe: Rgb; form: number; icon: string; seed: number; angekommen: boolean }
+interface Impuls { art: 'aufruf' | 'fehler' | 'dm' | 'post' | 'lesen' | 'kern' | 'plan'; pfad: Float32Array; laenge: number; von: string; nach: string; dauer: number; farbe: Rgb; form: number; icon: string; seed: number; angekommen: boolean; bytes: number; leer: boolean }
 interface Messung { fps: number; ms: number; rate: number; ausgelassen: number; gezeichnet: number; eingang: number; sprites: number; stufe: number }
 interface Lage { x: number; y: number; a: number }
 const LEER: Messung = { fps: 0, ms: 0, rate: 0, ausgelassen: 0, gezeichnet: 0, eingang: 0, sprites: 0, stufe: 0 };
-const GOLD: Rgb = rgb('#fcd34d'), GLUT_HELL: Rgb = rgb('#fff1b0'), GLUT_ROT: Rgb = rgb('#f2401f');
+const RUECK: Rgb = rgb('#bff4ff'), GOLD: Rgb = rgb('#fcd34d'), GLUT_HELL: Rgb = rgb('#fff1b0'), GLUT_ROT: Rgb = rgb('#f2401f');
 const WEISS: Rgb = [1, 1, 1], KERN: Rgb = rgb('#F97316'), KERN_HEISS: Rgb = rgb('#ffd3a1'), BLITZ: Rgb = rgb('#cfefff'), FEHLER: Rgb = rgb('#f87171');
 
 export function gruppiereEreignisse(ereignisse: NetzEreignis[]) {
@@ -122,13 +122,22 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   // P22-T95: verschwundene Schattenplaene: committet -> fliesst ins Projekt, sonst (cancel/expired) -> Explosion.
   const abgaenge: Array<{ art: 'commit' | 'explosion'; x: number; y: number; start: number; name: string; seed: number; angekommen?: boolean }> = [];
   const zaehler = { commit: 0, explosion: 0 };
+  // P22-T97: Rueckfluss des Ergebnisses vom Ziel (Projekt/Schattenplan/Channel) zum aufrufenden Agenten.
+  const rueck: Array<{ pfad: Float32Array; start: number; dauer: number; staerke: number; fehler: boolean; farbe: Rgb; seed: number; ab: number; leer: boolean }> = [];
+  let rueckZahl = 0, leerZahl = 0;
+  const zurueck = (i: Impuls, ab: number, zeit: number, ms: number) => {
+   const p = i.pfad, n = p.length / 2, r = new Float32Array(p.length);
+   for (let k = 0; k < n; k++) { r[k * 2] = p[(n - 1 - k) * 2]; r[k * 2 + 1] = p[(n - 1 - k) * 2 + 1]; }
+   rueck.push({ pfad: r, start: zeit, dauer: ms * 0.7, staerke: Math.max(0.12, Math.min(1, Math.log10(i.bytes + 1) / 5)), fehler: i.art === 'fehler', farbe: mische(i.farbe, RUECK, 0.6), seed: i.seed, ab, leer: i.leer && i.art !== 'fehler' });
+   rueckZahl++; if (i.leer && i.art !== 'fehler') leerZahl++; if (rueck.length > 120) rueck.shift();
+  };
   const reduz = window.matchMedia('(prefers-reduced-motion: reduce)');
   const pos = (k: Knoten): Punkt => lage.current.get(k.id) ?? k;
   const woelbung = (k: Knoten) => (Math.sin(k.winkel * 3 + 0.7) >= 0 ? 0.13 : -0.13);
   const baue = (e: NetzEreignis, g: Szene, w: Record<string, number>): Impuls | null => {
    const q = g.alias.get(e.identity_id || e.agent) || g.alias.get(e.agent); if (!q) return null;
    const tool = werkzeugName(e.tool), st = stil(e.tool), farbe = e.ok ? rgb(st.farbe) : FEHLER, seed = hash(e.id);
-   const basis = { farbe, form: st.form, icon: st.icon, seed, angekommen: false };
+   const basis = { farbe, form: st.form, icon: st.icon, seed, angekommen: false, bytes: e.ergebnis_bytes ?? 0, leer: e.ergebnis_leer === true };
    // P22-T95: Aufruf mit Planbezug (Argument plan_id/schatten, sonst files-Aufruf eines Beitragenden) endet im Schattenplan.
    const planId = e.plan_id ?? (/^files/.test(tool) ? g.planVonAgent.get(q.id) : undefined), pk = planId ? g.alias.get('plan:' + planId) : undefined;
    if (pk && pk !== q) { const p = gleichmaessig(kurve(pos(q), pos(pk), 0.2, 18), 40); return { ...basis, ...p, art: e.ok ? 'plan' : 'fehler', von: q.id, nach: pk.id, dauer: w.animation_ms * 0.8 }; }
@@ -299,12 +308,13 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      if (i.art === 'post') schreibend++; else if (i.art === 'plan') planend++;
     } else if (!fehlt) {
      const u = Math.min(1, (t - ankunft) / (1.3 - ankunft)), z = punkt(i.pfad, 1);
-     if (!i.angekommen) { i.angekommen = true; if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); }
+     if (!i.angekommen) { i.angekommen = true; if (i.art !== 'lesen') zurueck(i, 0, zeit, s.werte.animation_ms); if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); }
      licht.sprite(z.x, z.y, 18 + u * (i.art === 'aufruf' ? 46 : 90), r, gg, b, (1 - u) * 0.75, 1);
      if (i.art === 'post' || i.art === 'plan') { licht.sprite(z.x, z.y, 10 + u * 150, r, gg, b, (1 - u) * 0.35, 1); schreibend++; }
      licht.sprite(z.x, z.y, 40, heiss[0], heiss[1], heiss[2], (1 - u) * 0.4, 0);
     } else {
      const q = punkt(i.pfad, kopf), u = (t - 1) / 0.3;
+     if (!i.angekommen) { i.angekommen = true; zurueck(i, 0.45, zeit, s.werte.animation_ms); }
      for (let j = 0; j < 6; j++) { const wkl = j * 1.047 + i.seed, d = 6 + u * 22; licht.sprite(q.x + Math.cos(wkl) * d, q.y + Math.sin(wkl) * d, 4, FEHLER[0], FEHLER[1], FEHLER[2], 1 - u, 4); }
     }
    }
@@ -370,6 +380,31 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      knotenLicht(l.x, l.y, (20 + act * 8) * zf, hf[0], hf[1], hf[2], (0.6 + 0.4 * Math.min(1, act)) * a, zf < 0.8 ? 0 : 7, 1, 0.05 + 0.05 * act, ph, 2 + act * 4);
      if (sel) knotenLicht(l.x, l.y, 40, 1, 0.75, 0.45, 0.7, 1);
     }
+   }
+   // P22-T97: Rueckfluss als Kette hohler Ringe (mehr/groessere Ringe = groesseres Ergebnis); Fehler als rote Flackerfunken.
+   for (let i = rueck.length - 1; i >= 0; i--) {
+    const r0 = rueck[i], t = (zeit - r0.start) / r0.dauer;
+    if (t >= 1 || still) { rueck.splice(i, 1); continue; }
+    if (r0.leer) {
+     // Leeres Ergebnis: kleine Glutkugel startet Richtung Agent und zerplatzt auf halbem Weg (Mini-Explosion).
+     const halb = r0.ab + (1 - r0.ab) * 0.5;
+     if (t < 0.45) { const q = punkt(r0.pfad, r0.ab + (halb - r0.ab) * glatt(t / 0.45)); licht.sprite(q.x, q.y, 14, GLUT_HELL[0], GLUT_HELL[1], GLUT_HELL[2], 0.95, 2); licht.sprite(q.x, q.y, 34, 1, 0.55, 0.2, 0.3, 0); }
+     else {
+      const u = (t - 0.45) / 0.55, z = punkt(r0.pfad, halb), fl = Math.max(0, 1 - u * 4), fc = mische(GLUT_HELL, GLUT_ROT, u);
+      licht.sprite(z.x, z.y, 30 + fl * 50, GLUT_HELL[0], GLUT_HELL[1], GLUT_HELL[2], fl, 0);
+      licht.sprite(z.x, z.y, 8 + glatt(u) * 90, 1, 0.6, 0.25, (1 - u) * 0.75, 1);
+      for (let j = 0; j < 14; j++) { const wk = j * 2.399 + (r0.seed % 5), d = (25 + (hash(r0.seed + '/' + j) % 30)) * glatt(Math.min(1, u * 1.3)); licht.sprite(z.x + Math.cos(wk) * d, z.y + Math.sin(wk) * d, 4.5 * (1 - u * 0.5), fc[0], fc[1], fc[2], 1 - u, j % 4 ? 0 : 4); }
+     }
+     continue;
+    }
+    const f0 = r0.ab + (1 - r0.ab) * glatt(t), n = r0.fehler ? 3 : 2 + Math.round(r0.staerke * 6), [cr, cg, cb] = r0.fehler ? FEHLER : r0.farbe;
+    for (let j = 0; j < n; j++) {
+     const f = f0 - j * 0.035; if (f < r0.ab) break;
+     const q = punkt(r0.pfad, f), m = 1 - j / n;
+     if (r0.fehler) { const tk = Math.floor(zeit / 60); licht.sprite(q.x + zitter(r0.seed, j, tk) * 5, q.y + zitter(r0.seed, j + 9, tk) * 5, 10 * m, cr, cg, cb, (0.45 + 0.55 * Math.abs(Math.sin(zeit * 0.03 + j))) * m, 4); }
+     else { licht.sprite(q.x, q.y, (8 + r0.staerke * 14) * m, cr, cg, cb, 0.9 * m, 1); if (!j) licht.sprite(q.x, q.y, 24 + r0.staerke * 32, cr, cg, cb, 0.22, 0); }
+    }
+    if (t > 0.85 && !r0.fehler) { const z = punkt(r0.pfad, 1), u = (t - 0.85) / 0.15; licht.sprite(z.x, z.y, 14 + u * (30 + r0.staerke * 40), cr, cg, cb, (1 - u) * 0.6, 1); }
    }
    // P22-T95: Plan-Abgaenge. Commit fliesst auf einer Bahn ins Projekt und geht darin auf; Verwerfen explodiert mit Schockwelle.
    const kz = lage.current.get(g.kern.id) ?? g.kern;
@@ -445,7 +480,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const kp = lage.current.get(g.kern.id) ?? g.kern;
    el.dataset.mainX = String(sx(kp.x)); el.dataset.mainY = String(sy(kp.y)); el.dataset.camX = String(k.x); el.dataset.camY = String(k.y); el.dataset.zoom = String(k.zoom);
    el.dataset.channelCount = String(g.channels); el.dataset.channelWriteCount = String(schreibend); el.dataset.animationCount = String(partikel.current.length);
-   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion);
+   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
    frames++; summe += performance.now() - start;
    if (zeit - statAm >= 1000) {
     const m = { fps: Math.round(frames * 1000 / (zeit - statAm)), ms: Number((summe / frames).toFixed(2)), rate: Number((neu.current * 1000 / (zeit - statAm)).toFixed(1)), ausgelassen: abgewiesen.current, gezeichnet, eingang: seen.current.size, sprites, stufe };
@@ -490,7 +525,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   <header className="nw-head"><div><span className={'nw-signal ' + (status === 'live' ? 'live' : '')} /><strong>Agentennetzwerk</strong>{erklaerungen && <small>{status}</small>}</div><div>
    {an && <><button onClick={() => setPause(p => !p)} aria-pressed={pause}>{pause ? 'Animation fortsetzen' : 'Animation pausieren'}</button><button className="nw-toggle" role="switch" aria-label="Erklärungen" aria-checked={erklaerungen} onClick={() => setErklaerungen(v => !v)}><span className="nw-toggle-track"><i /></span>Erklärungen <b>{erklaerungen ? 'Ein' : 'Aus'}</b></button>
     <span className="nw-help"><button aria-label="Icon-Legende" aria-expanded={legende} onClick={() => setLegende(v => !v)}>?</button>{legende && <div className="nw-legend" role="dialog" aria-label="Werkzeug-Icons">
-     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = offener files-Plan, dunkler Stern = ruhiger Agent.</p>
+     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = offener files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; rote Flackerfunken = Fehler; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt.</p>
      {Object.entries(STILE).map(([key, s]) => <span key={key} style={{ color: s.farbe }}><b>{s.icon}</b>{s.name}</span>)}</div>}</span></>}
    <button onClick={() => setEinstellungen(v => !v)} aria-expanded={einstellungen}>Einstellungen</button>
    <button disabled={busy || !snapshot} onClick={() => void aktion(() => schalteNetzwerk(project, !an))}>{an ? 'Ausschalten' : 'Einschalten'}</button>

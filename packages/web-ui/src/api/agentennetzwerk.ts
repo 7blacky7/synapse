@@ -5,6 +5,10 @@ export interface NetzEreignis {
  interaktion:'senden'|'lesen'|'aufruf'; quelle:'tool_calls'; routing:string;
  /** P22-T95: offener files-Plan aus Top-Level-Argument plan_id/schatten, sonst null. */
  plan_id?:string|null;
+ /** P22-T97: Groesse des Ergebnisses in Bytes (ohne Inhalt). */
+ ergebnis_bytes?:number;
+ /** P22-T97: erfolgreicher Aufruf mit leerem Ergebnis (0 Treffer). */
+ ergebnis_leer?:boolean;
 }
 /** P22-T95: offener (oder gerade committeter) files-Plan als Schattenplan-Knoten; nur Metadaten. */
 export interface NetzPlan { id:string; besitzer:string|null; besitzer_name:string|null; status:string; coedit:boolean; erstellt:string; committed:string|null; ops:number; dateien:number; dateien_beispiele:string[]; beitraege:string[] }

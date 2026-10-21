@@ -9,9 +9,10 @@ export async function ladeAgentennetzwerk(project: string) {
  const mainId = await hauptagentIdentitaetsId();
  const [team, r, starts, mainTeam, frequenz, channelCalls] = await Promise.all([
   ladeAgentenTeam(project),
-  getPool().query<ToolCallRow & { gesamt: string; ist_main: boolean }>(`
+  getPool().query<ToolCallRow & { gesamt: string; ist_main: boolean; ergebnis_bytes: number; ergebnis_leer: boolean }>(`
    SELECT c.id::text,c.ts,c.project,c.agent_id,c.identity_id,c.lauf_id,c.context_epoch,c.source,
-          c.tool_name,c.action,c.args_preview,c.ok,c.error,c.duration_ms,c.is_mutation,COUNT(*) OVER()::text AS gesamt,
+          c.tool_name,c.action,c.args_preview,c.ok,c.error,c.duration_ms,c.is_mutation,COALESCE(c.result_bytes,octet_length(c.result),0)::int AS ergebnis_bytes,
+          (c.ok AND c.result IS NOT NULL AND (c.result ~ '"(count|total|total_matches|anzahl)"\\s*:\\s*0\\s*[,}]' OR c.result ~ '"(results|matches|symbols|functions|treffer|items)"\\s*:\\s*\\[\\s*\\]')) AS ergebnis_leer,COUNT(*) OVER()::text AS gesamt,
           (c.identity_id=$2 OR (c.identity_id IS NULL AND (c.agent_id=$3 OR c.agent_id IN (SELECT 'main-'||id::text FROM agent_runtime_sessions)))) AS ist_main
    FROM tool_calls c LEFT JOIN agent_identitaeten i ON i.id=c.identity_id
    WHERE (c.project=$1 OR c.identity_id=$2 OR (c.identity_id IS NULL AND
@@ -66,7 +67,8 @@ export async function ladeAgentennetzwerk(project: string) {
   if (!/files|code_intel/.test(row.tool_name ?? '')) return null;
   try { const a = JSON.parse(String(row.args_preview ?? '')), v = a?.plan_id ?? a?.schatten; return /^\d+$/.test(String(v ?? '')) ? String(v) : null; } catch { return null; }
  };
- const ereignisse = r.rows.reverse().map(row => ({ ...netzwerkEreignis(row), plan_id: planBezug(row) }));
+ // P22-T97: nur die Groesse des Ergebnisses (Bytes), nie der Inhalt.
+ const ereignisse = r.rows.reverse().map(row => ({ ...netzwerkEreignis(row), plan_id: planBezug(row), ergebnis_bytes: Number(row.ergebnis_bytes ?? 0), ergebnis_leer: row.ergebnis_leer === true }));
  const channel_ereignisse=channelCalls.rows.reverse().map(netzwerkEreignis);
  // Legacy main-session-Namen sind Anzeige-Aliase derselben Hauptidentitaet.
  for (const [index, e] of ereignisse.entries()) if (r.rows[index].ist_main) e.agent = main.agent;
@@ -108,7 +110,8 @@ export async function ladeAgentennetzwerk(project: string) {
   ORDER BY p.created_at DESC LIMIT 40`, [project])).rows;
  // P22-T95: Endstatus der zuletzt beendeten Plaene (nur id/status), damit die Grafik Commit und Verwerfen unterscheiden kann.
  const plaene_ende = (await getPool().query<{ id: string; status: string }>(
-  `SELECT id::text, status::text AS status FROM file_batch_plans WHERE project=$1 AND status<>'open' ORDER BY id DESC LIMIT 60`, [project])).rows;
+  // Sortierung ueber die bigint-Spalte p.id (der Alias id::text wuerde als Text sortieren: '9' vor '28051').
+  `SELECT p.id::text AS id, p.status::text AS status FROM file_batch_plans p WHERE p.project=$1 AND p.status<>'open' ORDER BY p.id DESC LIMIT 60`, [project])).rows;
  const agentVon = (x: string | null) => x ? (alias.get(x)?.id ?? netzwerkText(x)) : null;
  const plaene = plaeneRows.map(p => {
   const besitzer = agentVon(p.owner_identity_id) ?? agentVon(p.owner_agent_id);
