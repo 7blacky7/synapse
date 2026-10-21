@@ -64,6 +64,8 @@ import {
 import {
   SKILL_PROBE_ACTIONS, SKILL_PROBE_BESCHREIBUNG, SKILL_PROBE_PARAMETER, fuehreSkillProbeAus, istSkillProbeAction,
 } from './intern-skill-probe.js';
+// P22-T98: Produktionsdatenbank nur lesend (intern-db-lesen.ts).
+import { DB_LESEN_ACTIONS, DB_LESEN_BESCHREIBUNG, DB_LESEN_PARAMETER, fuehreDbLesenAus, istDbLesenAction } from './intern-db-lesen.js';
 
 const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
 
@@ -92,6 +94,7 @@ export const INTERN_ACTIONS = [
   ...SHELL_ALT_ACTIONS,
   ...TOOL_CALLS_SCHWAERZEN_ACTIONS,
   ...SKILL_PROBE_ACTIONS,
+  ...DB_LESEN_ACTIONS,
 ] as const;
 export type InternAction = (typeof INTERN_ACTIONS)[number];
 
@@ -134,6 +137,7 @@ export const INTERN_DEFINITION = {
     SHELL_ALT_BESCHREIBUNG +
     TOOL_CALLS_SCHWAERZEN_BESCHREIBUNG +
     SKILL_PROBE_BESCHREIBUNG +
+    DB_LESEN_BESCHREIBUNG +
     'Keine Aktion beendet Prozesse/Sitzungen oder loescht PG-Daten; nur neu_einbetten leert Qdrant-Collections (aus PG wiederherstellbar).',
   inputSchema: {
     type: 'object',
@@ -175,7 +179,7 @@ export const INTERN_DEFINITION = {
       vergleich_seit: { type: 'string', description: 'nutzung: Beginn des optionalen Vergleichszeitraums (nur zusammen mit vergleich_bis)' },
       vergleich_bis: { type: 'string', description: 'nutzung: Ende des optionalen Vergleichszeitraums (nur zusammen mit vergleich_seit)' },
       minuten: { type: 'number', description: 'langsam: Zeitfenster in Minuten (Standard 30)' },
-      limit: { type: 'number', description: 'langsam: hoechstens so viele Aufrufe (Standard 20, max 200); nachzug_jetzt: so viele Eintraege (Standard 20, max 500)' },
+      limit: { type: 'number', description: 'langsam: hoechstens so viele Aufrufe (Standard 20, max 200); nachzug_jetzt: so viele Eintraege (Standard 20, max 500); db_lesen: hoechstens so viele Zeilen (Standard 200, max 2000)' },
       tabelle: { type: 'string', enum: [...BACKLOG_TABELLEN], description: 'nachzug_jetzt: nur diese Tabelle (sonst alle)' },
       ausfuehren: { type: 'boolean', description: 'neu_einbetten / waits_tot: true = wirklich ausfuehren (Standard: nur Vorschau)' },
       arten: { type: 'array', items: { type: 'string', enum: [...NEU_EINBETTEN_ARTEN] }, description: 'neu_einbetten: nur diese Arten (Standard alle)' },
@@ -192,6 +196,7 @@ export const INTERN_DEFINITION = {
       ...SHELL_ALT_PARAMETER,
       ...TOOL_CALLS_SCHWAERZEN_PARAMETER,
       ...SKILL_PROBE_PARAMETER,
+      ...DB_LESEN_PARAMETER,
     },
     required: ['action'],
   },
@@ -292,6 +297,8 @@ export async function fuehreInternAus(
   if (istToolCallsSchwaerzenAction(action)) return await fuehreToolCallsSchwaerzenAus(action, a, agentId);
   // P23-T6: Skill-Vorschlaege diagnostizieren (intern-skill-probe.ts) - wirft nie, schreibt nichts
   if (istSkillProbeAction(action)) return await fuehreSkillProbeAus(action, a, agentId);
+  // P22-T98: Produktionsdatenbank nur lesend (intern-db-lesen.ts) - wirft nie, schreibt nur das Audit
+  if (istDbLesenAction(action)) return await fuehreDbLesenAus(action, a, agentId);
   try {
     switch (action) {
       case 'schalter_setzen': {

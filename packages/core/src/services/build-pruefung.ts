@@ -33,6 +33,20 @@
  *        Persistenz waere riskanter: die gespeicherten commit-Argumente muessten nach dem Neustart ohne den urspruenglichen
  *        Aufrufkontext erneut ausgefuehrt werden.
  *
+ * NACHLAUF (P16-T23, User 21.10.2026): Mit Schalter 'nachlauf' schreibt ein commit SOFORT - die projektweite Stufe
+ *        laeuft weder beim plan noch sperrt oder reiht sie den commit ein. Nach dem Schreiben stoesst file-batch sie nur
+ *        an (stosseBuildNachlaufAn): je Projekt werden die Anstoesse gesammelt (nachlauf_buendel_ms), EIN Lauf prueft den
+ *        Stand vor dem ersten gegen den nach dem letzten commit des Buendels (Basis = PruefDatei.basis, Schatten =
+ *        geschriebener Stand), nur betroffene Pakete. Kommen waehrenddessen commits dazu, folgt genau ein weiterer Lauf.
+ *        Das Ergebnis geht je Plan an den Committer als Feld build_nachlauf in der Antwort seines NAECHSTEN Tool-Aufrufs
+ *        (tool-antwort.ts, genau einmal, egal welches Tool), an den Plan (plan_status: pruefung.build mit nachlauf_befunde)
+ *        und in build_status (nachlauf.letzte, neue Fehler mit Plan-Zuordnung). Neue Fehler sperren nichts (geschrieben).
+ *        SCHALTER (regel-neue-funktionen-mit-schalter-und-debug): Produkt-Schalter werte.nachlauf (Projekt > global,
+ *        code_check build_einstellungen nachlauf, Koordinator/User); intern-Override 'build_nachlauf' (nur
+ *        SYNAPSE_INTERN_TOOL=1, befristet) hat Vorrang. Standard AUS = Warteschlange wie oben. Debug: build_status
+ *        (nachlauf: schalter mit quelle, laeuft, wartend, letzte), intern(status) quellen.build_pruefung.nachlauf (Zaehler,
+ *        letzter Fehler). Wie die Warteschlange nur im Speicher: ein Neustart verwirft offene Laeufe und Hinweise.
+ *
  * BASIS-CACHE je Commit: Ergebnis je Inhalts-Schnappschuss (sha256 ueber Pfad + Inhalt der gesendeten Dateien,
  *        Projektmenge, Budget). Nach einem commit ist der neue PG-Stand inhaltsgleich zum geprueften Schatten - dessen
  *        Ergebnis ist ohne neuen Lauf die Basis des naechsten Plans.
@@ -62,6 +76,7 @@ import { emitEvent } from './events.js';
 import type { PruefDatei } from './plan-befunde.js';
 import type { FehlerBefund } from './fehlermuster-pruefung.js';
 import { typenBestand, typenZustand, TYPEN_LOCKFILES, type TypenBestand, type TypenInfo } from './build-typen.js';
+import { leseSchalter } from './intern-schalter.js';
 
 // ─── Vertrag zum Pruefcontainer (rest-api pruef-container.ts, pruefer_tsbuild.py) ───────────────────────────
 
@@ -170,6 +185,10 @@ export interface BuildStand {
   teile?: BuildStand[];
   /** P16-T22: Typen-Bestand (nur wenn er Luecken hat). */
   typen?: TypenInfo;
+  /** P16-T23: Stand aus dem Nachlauf (nach dem commit geprueft, sperrt nicht). */
+  nachlauf?: boolean;
+  /** P16-T23: neue Befunde des Nachlaufs am Plan (plan_status), Kurzform. */
+  nachlauf_befunde?: Array<{ datei: string; zeile: number; code?: string; severity: string; was: string; op_index: number | null }>;
 }
 
 export type BuildBefund = FehlerBefund & { op_index: number | null; agent_id: string | null; beteiligt?: number[] };
@@ -177,6 +196,24 @@ export type BuildBefund = FehlerBefund & { op_index: number | null; agent_id: st
 export interface BuildPlanErgebnis {
   stand: BuildStand;
   befunde: BuildBefund[];
+}
+
+export interface BuildPlanOptionen {
+  /** auf das Resultat warten (Warteschlange, Nachlauf) statt status laeuft */
+  warten?: boolean;
+  /** P16-T23: nach dem commit - PG traegt schon den geschriebenen Stand, die Basis kommt aus PruefDatei.basis. */
+  nachlauf?: boolean;
+}
+
+/** P16-T23: Folgetext neuer Fehler im Nachlauf (der commit ist schon geschrieben). */
+const NACHLAUF_FOLGE = 'schon geschrieben (Nachlauf, sperrt nicht) - im naechsten Plan korrigieren.';
+
+/** P16-T23: Basis des Nachlaufs = Stand vor dem commit (PG hat schon den geschriebenen Stand); neue Dateien fehlen dort. */
+function stelleBasisHer(quellen: Map<string, string>, relevant: PruefDatei[]): void {
+  for (const d of relevant) {
+    if (d.basis) quellen.set(d.file_path, d.basis);
+    else quellen.delete(d.file_path);
+  }
 }
 
 let anbindung: BuildPrueferAnbindung | null = null;
@@ -243,6 +280,10 @@ interface Werte {
   zeitlimit_s?: number;
   /** E2: Sprachen neben TypeScript (go, python); [] = nur TypeScript. */
   sprachen?: string[];
+  /** P16-T23: Nachlauf statt Warteschlange (Projekt/global; Standard AUS). */
+  nachlauf?: boolean;
+  /** P16-T23: Sammelzeit vor einem Nachlauf in ms (nur global; Standard NACHLAUF_BUENDEL_MS). */
+  nachlauf_buendel_ms?: number;
 }
 
 interface EinstellungsZeile {
@@ -282,6 +323,43 @@ export async function buildAktiv(project: string): Promise<{ aktiv: boolean; que
   const g = z.get('global')?.werte.aktiv;
   if (typeof g === 'boolean') return { aktiv: g, quelle: 'global' };
   return { aktiv: process.env.BUILD_PRUEFUNG === '1', quelle: 'env' };
+}
+
+/** P16-T23: Standard der Sammelzeit vor einem Nachlauf (Einstellwert global werte.nachlauf_buendel_ms). */
+const NACHLAUF_BUENDEL_MS = 3000;
+
+export interface BuildNachlaufStand {
+  aktiv: boolean;
+  quelle: 'standard' | 'projekt' | 'global' | 'intern';
+  /** Ablauf des intern-Overrides */
+  bis: string | null;
+  buendel_ms: number;
+  buendel_quelle: 'standard' | 'global';
+  letzter_fehler: string | null;
+}
+
+/**
+ * P16-T23: wirksamer Nachlauf-Schalter. Vorrang intern-Override 'build_nachlauf' (nur SYNAPSE_INTERN_TOOL=1, modus
+ * freigegeben, befristet) > Projekt-Eintrag > global > Standard AUS (= Warteschlange). Wirft nie.
+ */
+export async function buildNachlaufAktiv(project?: string | null): Promise<BuildNachlaufStand> {
+  const z = await ladeEinstellungen();
+  const ms = z.get('global')?.werte.nachlauf_buendel_ms;
+  const basis: BuildNachlaufStand = {
+    aktiv: false, quelle: 'standard', bis: null,
+    buendel_ms: typeof ms === 'number' ? ms : NACHLAUF_BUENDEL_MS, buendel_quelle: typeof ms === 'number' ? 'global' : 'standard',
+    letzter_fehler: einstellungsCache?.fehler ?? null,
+  };
+  // Gleiche Bedingung wie internToolAktiv() (intern-tool.ts), ohne dessen Modulbaum zu laden.
+  if (process.env.SYNAPSE_INTERN_TOOL === '1') {
+    const s = await leseSchalter('build_nachlauf');
+    if (s.aktiv && s.modus === 'freigegeben') return { ...basis, aktiv: true, quelle: 'intern', bis: s.bis };
+  }
+  const p = project ? z.get('projekt:' + project)?.werte.nachlauf : undefined;
+  if (typeof p === 'boolean') return { ...basis, aktiv: p, quelle: 'projekt' };
+  const g = z.get('global')?.werte.nachlauf;
+  if (typeof g === 'boolean') return { ...basis, aktiv: g, quelle: 'global' };
+  return basis;
 }
 
 export interface BuildBudget {
@@ -781,7 +859,7 @@ function alsBefund(d: BuildDiagnose, dateien: PruefDatei[], werkzeug: string, ar
  * starten und status 'laeuft'. warten:true (Warteschlange): auf das Resultat warten. Wirft nie.
  * E2: TypeScript-Teil; der exportierte pruefeBuildFuerPlan (unten) ergaenzt Go/Python.
  */
-async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: { warten?: boolean } = {}): Promise<BuildPlanErgebnis | null> {
+async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: BuildPlanOptionen = {}): Promise<BuildPlanErgebnis | null> {
   const relevant = dateien.filter((d) => istBuildRelevant(d.file_path));
   if (relevant.length === 0) return null;
   const t0 = Date.now();
@@ -791,6 +869,7 @@ async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: 
     if (!anbindung) return { stand: stand({ status: 'nicht_verfuegbar', hinweis: KEIN_PRUEFER }), befunde: [] };
     const budget = await wirksamesBuildBudget();
     const basisQuellen = await ladeQuellen(project);
+    if (o.nachlauf) stelleBasisHer(basisQuellen, relevant);
     const schattenQuellen = new Map(basisQuellen);
     for (const d of relevant) {
       if (d.geloescht) schattenQuellen.delete(d.file_path);
@@ -822,8 +901,9 @@ async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: 
     let basis = ergebnisCache.get(a.schluessel);
     let schatten = ergebnisCache.get(b.schluessel);
     if (!basis || !schatten) {
-      const pa = starteLauf(project, a, { projekte: basisProjekte, vollstaendig: false });
-      const pb = starteLauf(project, b);
+      // P16-T23: im Nachlauf ist der Schatten der geschriebene Stand und damit die neue Basis.
+      const pa = starteLauf(project, a, o.nachlauf ? undefined : { projekte: basisProjekte, vollstaendig: false });
+      const pb = starteLauf(project, b, o.nachlauf ? { projekte, vollstaendig: false } : undefined);
       if (!o.warten) {
         return {
           stand: stand({ status: 'laeuft', projekte, laufend: laufend.size, hinweis: 'Projektweite Build-Pruefung laeuft im Pruefcontainer (Basis und Plan-Stand); Ergebnis bei plan_status/commit. Ein commit wird solange eingereiht, nicht gesperrt.' }),
@@ -859,7 +939,7 @@ async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: 
     const befunde = eindeutig.map((d) => alsBefund(d, relevant, werkzeug));
     const hinweise = [
       ...(unvollstaendig.length > 0 ? [`Teilweise geprueft (sperrt nicht): ${unvollstaendig.join('; ')}. Budget: code_check(build_einstellungen).`] : []),
-      ...(befunde.length > 0 ? [`${befunde.length} neue(r) Build-Fehler gegenueber dem Basisstand - sperrt den commit; korrigieren oder quittieren.`] : []),
+      ...(befunde.length > 0 ? [`${befunde.length} neue(r) Build-Fehler gegenueber dem Basisstand - ${o.nachlauf ? NACHLAUF_FOLGE : 'sperrt den commit; korrigieren oder quittieren.'}`] : []),
     ];
     return {
       stand: stand({
@@ -1146,7 +1226,7 @@ function alsSprachBefund(d: BuildDiagnose, dateien: PruefDatei[], werkzeug: stri
 }
 
 /** Go- bzw. Python-Teil der Build-Stufe eines Plans; Verhalten wie der TypeScript-Teil. null = nichts zu pruefen. */
-async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: PruefDatei[], o: { warten?: boolean }): Promise<BuildPlanErgebnis | null> {
+async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: PruefDatei[], o: BuildPlanOptionen): Promise<BuildPlanErgebnis | null> {
   const relevant = dateien.filter((d) => s.relevant.test(d.file_path));
   if (relevant.length === 0) return null;
   const t0 = Date.now();
@@ -1157,6 +1237,7 @@ async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: Pru
     if (!anbindung) return { stand: stand({ status: 'nicht_verfuegbar', hinweis: KEIN_PRUEFER }), befunde: [] };
     const budget = await wirksamesBuildBudget();
     const basisQuellen = await ladeSprachQuellen(project, s);
+    if (o.nachlauf) stelleBasisHer(basisQuellen, relevant);
     const schattenQuellen = new Map(basisQuellen);
     for (const d of relevant) {
       if (d.geloescht) schattenQuellen.delete(d.file_path);
@@ -1191,8 +1272,8 @@ async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: Pru
     let basis = ergebnisCache.get(a.schluessel);
     let schatten = ergebnisCache.get(b.schluessel);
     if (!basis || !schatten) {
-      const pa = starteLauf(project, a, { projekte: basisWurzeln.map(projektName), vollstaendig: false, art: s.art });
-      const pb = starteLauf(project, b);
+      const pa = starteLauf(project, a, o.nachlauf ? undefined : { projekte: basisWurzeln.map(projektName), vollstaendig: false, art: s.art });
+      const pb = starteLauf(project, b, o.nachlauf ? { projekte, vollstaendig: false, art: s.art } : undefined);
       if (!o.warten) {
         return {
           stand: stand({ status: 'laeuft', projekte, laufend: laufend.size, hinweis: `Projektweite ${SPRACH_NAME[s.art]}-Pruefung laeuft im Pruefcontainer (Basis und Plan-Stand); Ergebnis bei plan_status/commit. Ein commit wird solange eingereiht, nicht gesperrt.` }),
@@ -1239,7 +1320,7 @@ async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: Pru
     const hinweise = [
       ...(unvollstaendig.length > 0 ? [`Teilweise geprueft (sperrt nicht): ${unvollstaendig.join('; ')}.`] : []),
       ...(abdeckung.length > 0 ? [`Abdeckung unvollstaendig (dort Unknown, keine Folgefehler): ${abdeckung.join('; ')}.`] : []),
-      ...(fehler > 0 ? [`${fehler} neue(r) ${SPRACH_NAME[s.art]}-Fehler gegenueber dem Basisstand - sperrt den commit; korrigieren oder quittieren.`] : []),
+      ...(fehler > 0 ? [`${fehler} neue(r) ${SPRACH_NAME[s.art]}-Fehler gegenueber dem Basisstand - ${o.nachlauf ? NACHLAUF_FOLGE : 'sperrt den commit; korrigieren oder quittieren.'}`] : []),
       ...(warnungen > 0 ? [`${warnungen} neue go-vet-Warnung(en) (sperren nicht).`] : []),
     ];
     return {
@@ -1288,7 +1369,7 @@ function kombiniere(teile: BuildPlanErgebnis[]): BuildPlanErgebnis | null {
  * Build-Stufe eines Plans (plan-befunde.ts): TypeScript (E1) plus Go/Python (E2). null = Schalter aus oder keine
  * relevante Datei. Ohne Go-/Python-Datei im Plan exakt das E1-Ergebnis. Wirft nie.
  */
-export async function pruefeBuildFuerPlan(project: string, dateien: PruefDatei[], o: { warten?: boolean } = {}): Promise<BuildPlanErgebnis | null> {
+export async function pruefeBuildFuerPlan(project: string, dateien: PruefDatei[], o: BuildPlanOptionen = {}): Promise<BuildPlanErgebnis | null> {
   const tsTeil = await pruefeTsBuildFuerPlan(project, dateien, o);
   if (!dateien.some((d) => istSprachRelevant(d.file_path))) return tsTeil;
   const teile: BuildPlanErgebnis[] = tsTeil ? [tsTeil] : [];
@@ -1434,10 +1515,240 @@ async function arbeiteAb(project: string): Promise<void> {
   }
 }
 
+// ─── P16-T23: Nachlauf (commit schreibt sofort, Pruefung danach gebuendelt) ─────────────────────────────────────
+
+/** Hinweis an den Committer (Feld build_nachlauf der naechsten Tool-Antwort, tool-antwort.ts). */
+export interface BuildNachlaufHinweis {
+  plan_id: string;
+  project: string;
+  status: BuildStand['status'] | 'nicht_geprueft';
+  neue_fehler: number;
+  neue_warnungen?: number;
+  fertig_am: string;
+  hinweis: string;
+  befunde?: Array<{ datei: string; zeile: number; code?: string; was: string }>;
+  abruf: string;
+}
+
+/** Ergebnis je Plan an file-batch (am Plan speichern); null = nichts geprueft (Build-Tor aus, keine relevante Datei). */
+export type BuildNachlaufRueckruf = (e: BuildPlanErgebnis | null) => Promise<void> | void;
+
+interface NachlaufAuftrag {
+  project: string;
+  plan_id: string;
+  agent: string | null;
+  dateien: PruefDatei[];
+  angestossen_am: string;
+  rueckruf?: BuildNachlaufRueckruf;
+}
+
+interface NachlaufLauf {
+  plaene: Array<{ plan_id: string; agent: string | null }>;
+  gestartet_am: string;
+  fertig_am?: string;
+  status?: BuildNachlaufHinweis['status'];
+  neue_fehler?: number;
+  dauer_ms?: number;
+  hinweis?: string;
+  /** neue Befunde mit Plan-Zuordnung (build_status) */
+  befunde?: Array<{ plan_ids: string[]; datei: string; zeile: number; code?: string; severity: string; was: string }>;
+}
+
+const nachlaufWartend = new Map<string, NachlaufAuftrag[]>();
+const nachlaufLaeuft = new Map<string, NachlaufLauf>();
+const nachlaufTimer = new Map<string, ReturnType<typeof setTimeout>>();
+const nachlaufLetzte = new Map<string, NachlaufLauf[]>();
+const nachlaufHinweise = new Map<string, BuildNachlaufHinweis[]>();
+/** Schon angestossene Plaene: ein Plan wird nur einmal committet (Wiederholungsweg commitLegacyLocked -> commitBatchOnce). */
+const nachlaufAngestossen = new Set<string>();
+const nachlaufZaehler = { angestossen: 0, laeufe: 0, gebuendelt: 0, hinweise_zugestellt: 0, fehler: 0 };
+let nachlaufLetzterFehler: { zeit: string; fehler: string } | null = null;
+const NACHLAUF_HINWEISE_MAX = 20;
+
+/** Anstoesse eines Buendels zu einer Pruefdatei je Pfad: Basis vom ersten, Endstand vom letzten commit. */
+function vereineNachlaufDateien(auftraege: NachlaufAuftrag[]): PruefDatei[] {
+  const je = new Map<string, PruefDatei>();
+  for (const a of auftraege) {
+    for (const d of a.dateien) {
+      const alt = je.get(d.file_path);
+      je.set(d.file_path, alt
+        ? { file_path: d.file_path, basis: alt.basis, ergebnis: d.ergebnis, ...(d.geloescht ? { geloescht: true } : {}), ops: [...alt.ops, ...d.ops] }
+        : { ...d, ops: [...d.ops] });
+    }
+  }
+  return [...je.values()];
+}
+
+/** Befund gehoert zum Plan: in seinen Dateien, oder Folgefehler ausserhalb aller Plaene des Buendels (dann alle). */
+function gehoertZu(a: NachlaufAuftrag, b: BuildBefund, imBuendel: Set<string>): boolean {
+  return a.dateien.some((d) => d.file_path === b.datei) || !imBuendel.has(b.datei);
+}
+
+function nachlaufBefundeFuer(a: NachlaufAuftrag, alle: NachlaufAuftrag[], imBuendel: Set<string>, befunde: BuildBefund[]): BuildBefund[] {
+  return befunde.filter((b) => gehoertZu(a, b, imBuendel)).map((b) => {
+    // Mehrere Plaene im Buendel: op_index gilt nur, wenn dieser Plan die Op an der Datei hat.
+    if (alle.length === 1 || b.op_index === null) return b;
+    const d = a.dateien.find((x) => x.file_path === b.datei);
+    return d?.ops.some((o) => o.op_index === b.op_index) ? b : { ...b, op_index: null, agent_id: null };
+  });
+}
+
+function nachlaufHinweis(planId: string, project: string, e: BuildPlanErgebnis | null): BuildNachlaufHinweis {
+  const abruf = `files(action:"plan_status", plan_id:"${planId}", ansicht:"befunde") bzw. code_check(action:"build_status", project:"${project}")`;
+  const fertig_am = new Date().toISOString();
+  if (!e) {
+    return { plan_id: planId, project, status: 'nicht_geprueft', neue_fehler: 0, fertig_am, abruf,
+      hinweis: `Deine grosse Pruefung zu Plan ${planId}: nicht geprueft (Build-Tor aus oder keine betroffene Datei).` };
+  }
+  const s = e.stand;
+  const fehler = e.befunde.filter((b) => b.severity === 'error');
+  const ergebnis = s.status === 'nicht_verfuegbar' ? `nicht verfuegbar (${s.hinweis ?? KEIN_PRUEFER})`
+    : fehler.length === 0 ? (s.status === 'teilweise' ? 'gruen, aber nur teilweise geprueft' : 'gruen')
+      : `${fehler.length} neue(r) Fehler${s.status === 'teilweise' ? ' (teilweise geprueft)' : ''}`;
+  return {
+    plan_id: planId, project, status: s.status, neue_fehler: fehler.length,
+    ...(s.neue_warnungen ? { neue_warnungen: s.neue_warnungen } : {}),
+    fertig_am,
+    hinweis: `Deine grosse Pruefung zu Plan ${planId} ist durch: ${ergebnis} - abrufen mit ${abruf}.`,
+    ...(fehler.length > 0 ? { befunde: fehler.slice(0, 3).map((b) => ({ datei: b.datei, zeile: b.zeilen[0], ...(b.code ? { code: b.code } : {}), was: b.was.slice(0, 200) })) } : {}),
+    abruf,
+  };
+}
+
+function planeNachlauf(project: string, ms: number): void {
+  if (nachlaufLaeuft.has(project) || nachlaufTimer.has(project)) return;
+  const t = setTimeout(() => {
+    nachlaufTimer.delete(project);
+    void fuehreNachlaufAus(project);
+  }, Math.max(0, ms));
+  t.unref?.();
+  nachlaufTimer.set(project, t);
+}
+
+/**
+ * P16-T23: nach einem GESCHRIEBENEN commit die projektweite Pruefung anstossen (nur bei wirksamem Nachlauf-Schalter und
+ * Build-Tor, nur bei build-relevanten Dateien). Buendelt je Projekt; Ergebnis ueber rueckruf und als Hinweis an agent.
+ * null = nichts angestossen (Antwort unveraendert). Wirft nie.
+ */
+export async function stosseBuildNachlaufAn(
+  project: string, planId: string, agent: string | null, dateien: PruefDatei[], rueckruf?: BuildNachlaufRueckruf,
+): Promise<Record<string, unknown> | null> {
+  try {
+    if (!dateien.some((d) => istBuildRelevant(d.file_path) || istSprachRelevant(d.file_path))) return null;
+    const schalter = await buildNachlaufAktiv(project);
+    if (!schalter.aktiv || !(await buildAktiv(project)).aktiv) return null;
+    if (nachlaufAngestossen.has(planId)) return { angestossen: true, plan_id: planId, wiederholt: true };
+    nachlaufAngestossen.add(planId);
+    if (nachlaufAngestossen.size > 500) nachlaufAngestossen.delete(nachlaufAngestossen.values().next().value as string);
+    const liste = nachlaufWartend.get(project) ?? [];
+    liste.push({ project, plan_id: planId, agent, dateien, angestossen_am: new Date().toISOString(), ...(rueckruf ? { rueckruf } : {}) });
+    nachlaufWartend.set(project, liste);
+    nachlaufZaehler.angestossen++;
+    const laeuft = nachlaufLaeuft.get(project);
+    planeNachlauf(project, schalter.buendel_ms);
+    return {
+      angestossen: true, plan_id: planId, wartend: liste.length,
+      ...(laeuft ? { laeuft_seit: laeuft.gestartet_am } : {}),
+      hinweis: `Geschrieben. Die projektweite Pruefung laeuft nur noch im Hintergrund (${laeuft ? 'nach dem laufenden Durchgang' : `gebuendelt nach ${Math.round(schalter.buendel_ms / 100) / 10} s`}) und sperrt nichts; `
+        + `das Ergebnis kommt als Feld build_nachlauf in deiner naechsten Tool-Antwort (egal welches Tool). Stand: code_check(action:"build_status", project:"${project}").`,
+    };
+  } catch (err) {
+    nachlaufZaehler.fehler++;
+    nachlaufLetzterFehler = { zeit: new Date().toISOString(), fehler: (err as Error).message };
+    return null;
+  }
+}
+
+/** Ein Lauf fuer alle bis jetzt angestossenen commits des Projekts; danach hoechstens ein weiterer. Wirft nie. */
+async function fuehreNachlaufAus(project: string): Promise<void> {
+  const auftraege = nachlaufWartend.get(project) ?? [];
+  nachlaufWartend.delete(project);
+  if (auftraege.length === 0) return;
+  const lauf: NachlaufLauf = { plaene: auftraege.map((a) => ({ plan_id: a.plan_id, agent: a.agent })), gestartet_am: new Date().toISOString() };
+  nachlaufLaeuft.set(project, lauf);
+  nachlaufZaehler.laeufe++;
+  nachlaufZaehler.gebuendelt += auftraege.length - 1;
+  const t0 = Date.now();
+  try {
+    let ergebnis: BuildPlanErgebnis | null;
+    try {
+      ergebnis = await pruefeBuildFuerPlan(project, vereineNachlaufDateien(auftraege), { warten: true, nachlauf: true });
+    } catch (err) {
+      nachlaufZaehler.fehler++;
+      nachlaufLetzterFehler = { zeit: new Date().toISOString(), fehler: (err as Error).message };
+      ergebnis = { stand: { status: 'nicht_verfuegbar', tor: true, neue_fehler: 0, projekte: [], dauer_ms: Date.now() - t0, hinweis: `Nachlauf fehlgeschlagen: ${(err as Error).message}` }, befunde: [] };
+    }
+    const imBuendel = new Set(auftraege.flatMap((a) => a.dateien.map((d) => d.file_path)));
+    for (const a of auftraege) {
+      let teil: BuildPlanErgebnis | null = null;
+      if (ergebnis) {
+        const eigene = nachlaufBefundeFuer(a, auftraege, imBuendel, ergebnis.befunde);
+        teil = { stand: { ...ergebnis.stand, nachlauf: true, neue_fehler: eigene.filter((b) => b.severity === 'error').length }, befunde: eigene };
+      }
+      try {
+        await a.rueckruf?.(teil);
+      } catch (err) {
+        console.error(`[build-pruefung] P16-T23: Nachlauf-Ergebnis an Plan ${a.plan_id} nicht gespeichert: ${(err as Error).message}`);
+      }
+      if (a.agent) {
+        const liste = nachlaufHinweise.get(a.agent) ?? [];
+        liste.push(nachlaufHinweis(a.plan_id, project, teil));
+        nachlaufHinweise.set(a.agent, liste.slice(-NACHLAUF_HINWEISE_MAX));
+      }
+    }
+    const alle = ergebnis?.befunde ?? [];
+    Object.assign(lauf, {
+      fertig_am: new Date().toISOString(), dauer_ms: Date.now() - t0,
+      status: ergebnis?.stand.status ?? 'nicht_geprueft', neue_fehler: alle.filter((b) => b.severity === 'error').length,
+      ...(ergebnis?.stand.hinweis ? { hinweis: ergebnis.stand.hinweis } : {}),
+      befunde: alle.slice(0, 20).map((b) => ({
+        plan_ids: auftraege.filter((a) => gehoertZu(a, b, imBuendel)).map((a) => a.plan_id),
+        datei: b.datei, zeile: b.zeilen[0], ...(b.code ? { code: b.code } : {}), severity: b.severity, was: b.was.slice(0, 300),
+      })),
+    });
+  } finally {
+    nachlaufLaeuft.delete(project);
+    const letzte = nachlaufLetzte.get(project) ?? [];
+    letzte.unshift(lauf);
+    nachlaufLetzte.set(project, letzte.slice(0, 10));
+    // Waehrend des Laufs angestossene commits: genau ein weiterer Lauf fuer alle.
+    if ((nachlaufWartend.get(project)?.length ?? 0) > 0) planeNachlauf(project, 0);
+  }
+}
+
+/** P16-T23: offene Nachlauf-Hinweise eines Agenten abholen - genau einmal (tool-antwort.ts, beide Transporte). */
+export function holeBuildNachlaufHinweise(agent: string | null | undefined): BuildNachlaufHinweis[] {
+  if (!agent) return [];
+  const liste = nachlaufHinweise.get(agent);
+  if (!liste || liste.length === 0) return [];
+  nachlaufHinweise.delete(agent);
+  nachlaufZaehler.hinweise_zugestellt += liste.length;
+  return liste;
+}
+
+/** build_status: Nachlauf eines Projekts (nur bei Schalter EIN oder vorhandenem Stand; sonst Antwort unveraendert). */
+async function nachlaufAnzeige(project: string): Promise<Record<string, unknown>> {
+  const schalter = await buildNachlaufAktiv(project);
+  const wartend = nachlaufWartend.get(project) ?? [];
+  const laeuft = nachlaufLaeuft.get(project);
+  const letzte = nachlaufLetzte.get(project) ?? [];
+  if (!schalter.aktiv && wartend.length === 0 && !laeuft && letzte.length === 0) return {};
+  return {
+    nachlauf: {
+      schalter,
+      ...(laeuft ? { laeuft } : {}),
+      wartend: wartend.map((a) => ({ plan_id: a.plan_id, agent: a.agent, angestossen_am: a.angestossen_am })),
+      letzte,
+      legende: 'Nachlauf (P16-T23): commit schreibt sofort, die projektweite Pruefung laeuft danach gebuendelt. letzte = Laeufe (neueste zuerst) mit plaene und neuen Befunden samt plan_ids; Ergebnis je Plan als build_nachlauf in der naechsten Tool-Antwort des Committers.',
+    },
+  };
+}
+
 // ─── Zustand / Diagnose ─────────────────────────────────────────────────────────────────────────────────────────
 
 function zustandVon(project: string): 'laeuft' | 'gruen' | 'rot' | 'teilweise' | 'abgebrochen' | 'unbekannt' {
-  if ((projektLaeuft.get(project) ?? 0) > 0 || inArbeit.has(project) || fortschritt.has(project)) return 'laeuft';
+  if ((projektLaeuft.get(project) ?? 0) > 0 || inArbeit.has(project) || fortschritt.has(project)
+    || nachlaufLaeuft.has(project) || (nachlaufWartend.get(project)?.length ?? 0) > 0) return 'laeuft';
   const b = projektBasis.get(project);
   // E2: Go-/Python-Basis fliesst ein (schlechtester Stand); ohne sie wie in E1.
   const alle = [...(b ? [b] : []), ...(sprachBasis.get(project)?.values() ?? [])];
@@ -1455,7 +1766,7 @@ function warteschlangeAnzeige(project: string): Array<Record<string, unknown>> {
 
 /** intern(status) -> quellen.build_pruefung */
 export function buildPruefungZustand(): Record<string, unknown> {
-  const projekte = new Set([...projektBasis.keys(), ...sprachBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys()]);
+  const projekte = new Set([...projektBasis.keys(), ...sprachBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys(), ...nachlaufLetzte.keys(), ...nachlaufWartend.keys()]);
   return {
     pruefer_verfuegbar: !!anbindung,
     laufend: laufend.size,
@@ -1463,6 +1774,14 @@ export function buildPruefungZustand(): Record<string, unknown> {
     einstellungen_fehler: einstellungsCache?.fehler ?? null,
     typen: typenZustand(),
     projekte: Object.fromEntries([...projekte].map((p) => [p, { zustand: zustandVon(p), warteschlange: buildWarteschlangeLaenge(p) }])),
+    // P16-T23: Debug des Nachlaufs (Zaehler, letzter Fehler, nicht abgeholte Hinweise).
+    nachlauf: {
+      zaehler: { ...nachlaufZaehler },
+      letzter_fehler: nachlaufLetzterFehler,
+      laufend: [...nachlaufLaeuft.keys()],
+      wartend: Object.fromEntries([...nachlaufWartend].map(([p, l]) => [p, l.length])),
+      offene_hinweise: [...nachlaufHinweise.values()].reduce((n, l) => n + l.length, 0),
+    },
   };
 }
 
@@ -1481,6 +1800,8 @@ export const BUILD_PARAMETER: Record<string, Record<string, unknown>> = {
   heap_mb: { type: 'number', description: 'build_einstellungen setzen: Heap von tsc in MB (128..16384; Standard Speicher - 192)' },
   zeitlimit_s: { type: 'number', description: 'build_einstellungen setzen: Zeitlimit je Build-Lauf in s (10..3600); danach teilweise (sperrt nicht)' },
   sprachen: { type: 'array', items: { type: 'string', enum: ['kotlin', 'java', 'rust', 'go', 'python', 'c', 'cpp', 'dart', 'csharp', 'keine'] }, description: 'build_einstellungen setzen: Sprachen der projektweiten Pruefung neben TypeScript (kotlin, java, rust, go, python, c, cpp, dart, csharp; keine = nur TypeScript) - mit project fuer dieses Projekt, ohne global. Standard go+python (Env BUILD_PRUEFUNG_SPRACHEN). Dart/C# offline, fehlender SDK-/Paketkontext teilweise; F# nicht unterstützt.' },
+  nachlauf: { type: 'boolean', description: 'build_einstellungen setzen (P16-T23): commit schreibt sofort, die projektweite Pruefung laeuft danach gebuendelt im Hintergrund, Ergebnis als Hinweis build_nachlauf beim naechsten Tool-Aufruf (statt Warteschlange) - mit project fuer dieses Projekt, ohne global. Standard aus.' },
+  nachlauf_buendel_s: { type: 'number', description: 'build_einstellungen setzen (P16-T23): Sammelzeit in s vor einem Nachlauf (0..120, global, Standard 3)' },
   zuruecksetzen: { type: 'string', enum: ['projekt', 'global', 'budget'], description: 'build_einstellungen setzen: Eintrag entfernen (projekt braucht project) - danach gilt die naechste Ebene bzw. Env' },
 };
 
@@ -1518,6 +1839,7 @@ async function einstellungenAnzeige(project: string | undefined): Promise<Record
     pruefcontainer: z.get('pruefcontainer') ?? null,
     budget: await wirksamesBuildBudget(),
     sprachen_wirksam: await sprachenAktiv(project),
+    nachlauf: await buildNachlaufAktiv(project),
     ...(anbindung ? { container_jetzt: anbindung.budget() } : {}),
     env: { BUILD_PRUEFUNG: process.env.BUILD_PRUEFUNG ?? null },
     ...(einstellungsCache?.fehler ? { tabelle_fehler: einstellungsCache.fehler } : {}),
@@ -1535,7 +1857,7 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
         const sek = Math.max(0, Math.min(50, Number(args.warten_sekunden) || 0));
         pruefung = await pruefeBuildBasis(project, sek * 1000);
       }
-      const projekte = project ? [project] : [...new Set([...projektBasis.keys(), ...sprachBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys()])].sort();
+      const projekte = project ? [project] : [...new Set([...projektBasis.keys(), ...sprachBasis.keys(), ...warteschlangen.keys(), ...projektLaeuft.keys(), ...nachlaufLetzte.keys(), ...nachlaufWartend.keys()])].sort();
       return {
         success: true,
         pruefer_verfuegbar: !!anbindung,
@@ -1552,6 +1874,7 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
           ...(letzterAbbruch.has(p) ? { letzter_abbruch: letzterAbbruch.get(p) } : {}),
           warteschlange: warteschlangeAnzeige(p),
           letzte_commits: letzteCommits.get(p) ?? [],
+          ...(await nachlaufAnzeige(p)),
         }))),
         ...(anbindung ? {} : { hinweis: KEIN_PRUEFER }),
         legende: 'zustand: gruen = Basis ohne Fehler, rot = Basis mit Fehlern (Tor sperrt nur NEUE), laeuft (Fortschritt in laeuft: Phase typen/wartet/laeuft mit Zeiten), teilweise (Zeitlimit/Speicher/fehlende Abhaengigkeiten), abgebrochen (letzter Basislauf ohne Ergebnis, z. B. Container gestoppt/neu gestartet - Grund in letzter_abbruch; erneut pruefen), unbekannt (noch nie geprueft: build_status mit pruefen:true). basis.laeufe: Dauer und hoechster RSS je Projekt/Schritt, basis.speicher: Container nach dem Lauf, basis.typen: Typen-Bestand aus dem Lockfile.',
@@ -1577,6 +1900,9 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
       if (heap !== undefined) budget.heap_mb = heap;
       if (zeit !== undefined) budget.zeitlimit_s = zeit;
       const aktiv = args.aktiv === true || args.aktiv === 'true' ? true : args.aktiv === false || args.aktiv === 'false' ? false : undefined;
+      // P16-T23: Nachlauf-Schalter (Projekt/global) und Sammelzeit (global).
+      const nachlauf = args.nachlauf === true || args.nachlauf === 'true' ? true : args.nachlauf === false || args.nachlauf === 'false' ? false : undefined;
+      const buendelS = zahl(args.nachlauf_buendel_s, 'nachlauf_buendel_s', 0, 120, fehler);
       // E2: sprachen als Liste oder Komma-Text; 'keine' bzw. [] = nur TypeScript.
       let sprachen: string[] | undefined;
       if (args.sprachen !== undefined && args.sprachen !== null) {
@@ -1589,7 +1915,7 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
       const zurueck = text(args.zuruecksetzen);
       if (zurueck && !['projekt', 'global', 'budget'].includes(zurueck)) fehler.push('zuruecksetzen nur projekt | global | budget');
       if (zurueck === 'projekt' && !project) fehler.push('zuruecksetzen projekt braucht project');
-      if (aktiv === undefined && sprachen === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, sprachen, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s oder zuruecksetzen)');
+      if (aktiv === undefined && sprachen === undefined && nachlauf === undefined && buendelS === undefined && Object.keys(budget).length === 0 && !zurueck) fehler.push('nichts zu setzen (aktiv, sprachen, nachlauf, nachlauf_buendel_s, speicher_mb, tmpfs_mb, heap_mb, zeitlimit_s oder zuruecksetzen)');
       if (fehler.length > 0) return { success: false, error: 'ungueltig', message: fehler.join('; '), fehler };
       const geaendert: string[] = [];
       if (zurueck) {
@@ -1606,6 +1932,15 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
         const bereich = project ? 'projekt:' + project : 'global';
         await zeileSchreiben(bereich, { sprachen }, agent, grund);
         geaendert.push(`${bereich}: sprachen ${sprachen.length > 0 ? sprachen.join(', ') : 'keine (nur TypeScript)'}`);
+      }
+      if (nachlauf !== undefined) {
+        const bereich = project ? 'projekt:' + project : 'global';
+        await zeileSchreiben(bereich, { nachlauf }, agent, grund);
+        geaendert.push(`${bereich}: nachlauf ${nachlauf}`);
+      }
+      if (buendelS !== undefined) {
+        await zeileSchreiben('global', { nachlauf_buendel_ms: buendelS * 1000 }, agent, grund);
+        geaendert.push(`global: nachlauf_buendel_ms ${buendelS * 1000}`);
       }
       if (Object.keys(budget).length > 0) {
         await zeileSchreiben('pruefcontainer', budget, agent, grund);

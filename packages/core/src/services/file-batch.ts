@@ -64,7 +64,7 @@ import {
 import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText, zeilenZuordnung, type Bereich, type DateiDiff } from './file-diff.js';
 import { normalisiereOps } from './projekt-pfad.js';
 import { meldeFehlerfall } from './erklaerungen.js';
-import { registriereBuildCommitAusfuehrer, reiheCommitEin, buildWarteschlangeLaenge, laeuftAusBuildWarteschlange } from './build-pruefung.js';
+import { registriereBuildCommitAusfuehrer, reiheCommitEin, buildWarteschlangeLaenge, laeuftAusBuildWarteschlange, stosseBuildNachlaufAn, type BuildPlanErgebnis } from './build-pruefung.js';
 import {
   findForeignActiveReservationPrimaries,
   getReservationTtlConfig,
@@ -690,7 +690,7 @@ function mitVerweis<T extends { left_op_index: number; right_op_index: number }>
   }));
 }
 
-export type CommitBatchResult = {fs_pruefung?:FsPruefung} & (
+export type CommitBatchResult = {fs_pruefung?:FsPruefung; /** P16-T23: projektweite Pruefung nach dem commit angestossen (Nachlauf). */ build_angestossen?: Record<string, unknown>} & (
   | {
       success: true;
       plan_id: string;
@@ -5140,9 +5140,12 @@ async function commitBatchOnce(args: {
   // P15-T17 E3: Pruefbefunde gegen den aktuellen Stand neu bauen (Drift, neue Beitraege, Quittierungen) -
   // ein offener error-Befund an einer Op sperrt den commit, BEVOR etwas geschrieben wird.
   let commitArgs = args;
+  // P16-T23: Pruefdateien des Plans fuer den Nachlauf nach dem Schreiben (nur bei Schalter EIN wirksam).
+  let nachlaufDateien: PruefDatei[] | undefined;
   if (Array.isArray(plan.ops) && plan.ops.length > 0) {
     const pruef = await pruefeVorCommit(args.plan_id, args.befunde_quittieren, { project: plan.project, owner: plan.owner_agent_id, args: { ...args } });
     if (pruef.sperre) return pruef.sperre;
+    nachlaufDateien = pruef.dateien;
     if (pruef.vermerk && !(args.agent_note ?? '').includes(pruef.vermerk)) {
       commitArgs = { ...args, agent_note: [args.agent_note, pruef.vermerk].filter(Boolean).join(' ') };
     }
@@ -5164,7 +5167,11 @@ async function commitBatchOnce(args: {
   }
   const result=Number(coeditWaitCount.rows[0]?.count ?? 0)>0||distinctOpAgents.size>1||mehrereTasks
     ? await commitCoeditBatch(commitArgs,JSON.stringify([plan.ops,plan.expected_hashes])) : await commitLegacyLocked(commitArgs,plan);
-  return {...result,fs_pruefung};
+  // P16-T23: geschrieben -> die projektweite Pruefung nur anstossen (Nachlauf-Schalter; sonst null, Antwort unveraendert).
+  const angestossen = result.success && nachlaufDateien
+    ? await stosseBuildNachlaufAn(plan.project, args.plan_id, caller ?? plan.owner_agent_id, nachlaufDateien, (e) => speichereNachlaufErgebnis(args.plan_id, e))
+    : null;
+  return {...result,fs_pruefung,...(angestossen ? { build_angestossen: angestossen } : {})};
 }
 
 /**
@@ -6918,7 +6925,7 @@ function pruefungGueltigMs(): number {
 export async function pruefeGespeichertenPlan(
   planId: string,
   quittierungen: Array<{ id: string; grund?: string }> = [],
-): Promise<{ pruefung: PlanPruefung; abgelehnt: Array<{ id: string; grund: string }>; neu_geprueft: boolean } | null> {
+): Promise<{ pruefung: PlanPruefung; abgelehnt: Array<{ id: string; grund: string }>; neu_geprueft: boolean; dateien: PruefDatei[] } | null> {
   const plan = (await getPool().query<{
     id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; ops: FileBatchOp[]; expected_hashes: Record<string, string>; status: FileBatchStatus;
   }>(
@@ -6951,7 +6958,7 @@ export async function pruefeGespeichertenPlan(
     abgelehnt = q.abgelehnt;
   }
   if (neuGeprueft || quittierungen.length > 0) await speicherePlanBefunde(planId, pruefung);
-  return { pruefung, abgelehnt, neu_geprueft: neuGeprueft };
+  return { pruefung, abgelehnt, neu_geprueft: neuGeprueft, dateien };
 }
 
 async function pruefeGespeichertenPlanSicher(
@@ -6985,7 +6992,7 @@ async function pruefeVorCommit(
   quittierungen: Array<{ id: string; grund?: string }> = [],
   /** P16-T16 E1: fuer das Einreihen in die Build-Warteschlange (Projekt, Owner, commit-Argumente). */
   kontext?: { project: string; owner: string | null; args: Record<string, unknown> },
-): Promise<{ sperre: CommitBatchResult | null; vermerk?: string }> {
+): Promise<{ sperre: CommitBatchResult | null; vermerk?: string; dateien?: PruefDatei[] }> {
   const ergebnis = await pruefeGespeichertenPlanSicher(planId, Array.isArray(quittierungen) ? quittierungen : []);
   if (!ergebnis) return { sperre: null };
   const { pruefung, abgelehnt } = ergebnis;
@@ -7030,11 +7037,29 @@ async function pruefeVorCommit(
     };
   }
   const quittiert = pruefung.befunde.filter((b) => b.status === 'quittiert' && b.severity === 'error');
-  if (quittiert.length === 0) return { sperre: null };
+  if (quittiert.length === 0) return { sperre: null, dateien: ergebnis.dateien };
   return {
     sperre: null,
+    dateien: ergebnis.dateien,
     vermerk: quittiert.map((b) => `[Befund quittiert: ${b.pruefer} ${b.datei}:${b.zeilen[0]} op ${b.op_index ?? '-'} - ${b.quittiert_grund ?? ''}]`).join(' '),
   };
+}
+
+/**
+ * P16-T23: Nachlauf-Ergebnis an den (schon committeten) Plan haengen - plan_status zeigt es in pruefung.build
+ * (nachlauf, nachlauf_befunde). Bewusst NICHT in befunde: die sperren nur vor dem Schreiben.
+ */
+async function speichereNachlaufErgebnis(planId: string, e: BuildPlanErgebnis | null): Promise<void> {
+  if (!e) return;
+  const vorher = await ladePlanBefunde(planId);
+  const basis: PlanPruefung = vorher ?? { status: 'fertig', dauer_ms: 0, befunde: [], altlasten: 0, ergebnis_hashes: {}, geprueft_am: new Date().toISOString() };
+  await speicherePlanBefunde(planId, {
+    ...basis,
+    build: {
+      ...e.stand, nachlauf: true,
+      nachlauf_befunde: e.befunde.map((b) => ({ datei: b.datei, zeile: b.zeilen[0], ...(b.code ? { code: b.code } : {}), severity: b.severity, was: b.was, op_index: b.op_index })),
+    },
+  });
 }
 
 /** Befunde im Unified-Diff direkt unter ihrer Zeile im Endstand ("+"- bzw. Umfeld-Zeile): "!! befund <id> ...". */

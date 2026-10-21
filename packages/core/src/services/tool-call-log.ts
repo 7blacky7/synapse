@@ -106,6 +106,10 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
     if (result != null && OHNE_RESULT.has(`${entry.tool}:${entry.action ?? ''}`)) {
       result = '[nicht protokolliert: Antwort enthaelt Schattendaten eines Erklaerungsfalls]';
     }
+    // P22-T98: ein bestaetigtes, unmaskiertes intern db_lesen-Ergebnis nie speichern (Grund/Agent/Spalten stehen in intern/db_lesen_audit).
+    if (result != null && entry.tool === 'intern' && /\\?"demaskiert\\?"\s*:\s*true/.test(result)) {
+      result = '[nicht protokolliert: demaskiertes db_lesen-Ergebnis, siehe intern/db_lesen_audit]';
+    }
     let resultBytes: number | null = null;
     let truncated = false;
     if (result != null) {

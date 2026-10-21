@@ -67,10 +67,14 @@ export const INTERN_SCHALTER = {
   fall_skill_faelle: ['freigegeben'],
   // P23-T3 Punkt 6: befristete Test-Freigabe fremder Shell-Ergebnisse (Produkt-Standard AUS); aktiv=true = freigegeben.
   shell_fremde_ergebnisse: ['freigegeben'],
+  // P16-T23: befristete Test-Freigabe des Build-Nachlaufs (Produkt-Standard AUS, build_einstellungen nachlauf); aktiv=true = freigegeben.
+  build_nachlauf: ['freigegeben'],
   // P22-T7: befristete Test-Freigabe der Verbrauchszaehlung (Abo-Quellen, Produkt-Standard AUS); aktiv=true = freigegeben.
   verbrauch: ['freigegeben'],
   // P22-T58: befristete Test-Freigabe der Runtime-Ueberwachung (Produkt-Standard AUS); aktiv=true = freigegeben.
   runtime_ueberwachung: ['freigegeben'],
+  // P22-T98: befristete Test-Freigabe von intern db_lesen/db_schema (Produkt-Standard AUS); aktiv=true = freigegeben.
+  db_lesen: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 

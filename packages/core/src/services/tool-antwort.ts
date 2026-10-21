@@ -26,6 +26,7 @@ import { getUnreadChatHint } from './chat-unread.js';
 import { claimUnreadChannelHints } from './channel-unread.js';
 import { claimShellJobHints, markShellJobSeenForToolCall } from './shell-hints.js';
 import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
+import { holeBuildNachlaufHinweise } from './build-pruefung.js';
 
 const HINWEIS_JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -101,6 +102,9 @@ export async function ergaenzeToolHinweise(
   if (channels.length > 0) extras.unread_channels = channels.map(hint => ({
     project: hint.project, channel: hint.channel, count: hint.count, newest_id: hint.newestId,
   }));
+  // P16-T23: Ergebnis der eigenen grossen Pruefung nach dem commit (Nachlauf) - genau einmal, bei jedem Tool.
+  const nachlauf = hinweisAktiv('build_nachlauf', agentId) ? holeBuildNachlaufHinweise(agentId) : [];
+  if (nachlauf.length > 0) extras.build_nachlauf = nachlauf;
   if (Object.keys(extras).length === 0) return result;
   // Eine fachliche Liste bleibt vollständig; nur bei echten Hinweisen braucht sie eine Hülle.
   return Array.isArray(result) ? { result, ...extras } : { ...result, ...extras };

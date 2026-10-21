@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { getPool } from '../db/client.js';
 import { meldeFehlerfall } from './erklaerungen.js';
 import { pruefePlanTypen, type TypPruefung } from './typen-pruefung.js';
-import { pruefeBuildFuerPlan, laeuftAusBuildWarteschlange, type BuildStand } from './build-pruefung.js';
+import { pruefeBuildFuerPlan, laeuftAusBuildWarteschlange, buildNachlaufAktiv, type BuildStand } from './build-pruefung.js';
 import {
   pruefeSignaturen,
   pruefeSyntaxEinzelweg,
@@ -180,7 +180,8 @@ export async function pruefePlanDateien(
   const typen = typPruefung ? (({ befunde: _befunde, ...meta }) => meta)(typPruefung) : undefined;
   // P16-T16 E1: projektweite Build-Pruefung (null = Schalter aus bzw. keine relevante Datei -> Antwort unveraendert).
   // Aus der Warteschlange wird auf das Resultat gewartet, sonst laeuft es im Hintergrund (status laeuft).
-  const build = await pruefeBuildFuerPlan(project, dateien, { warten: laeuftAusBuildWarteschlange() });
+  // P16-T23: im Nachlauf-Modell keine Build-Stufe vor dem commit (sie laeuft danach, build-pruefung stosseBuildNachlaufAn).
+  const build = (await buildNachlaufAktiv(project)).aktiv ? null : await pruefeBuildFuerPlan(project, dateien, { warten: laeuftAusBuildWarteschlange() });
   for (const roh of build?.befunde ?? []) {
     const ursache = roh.op_index !== null ? dateien.find((d) => d.ops.some((o) => o.op_index === roh.op_index)) : undefined;
     const ergebnisHash = hash(ursache?.ergebnis ?? '');
