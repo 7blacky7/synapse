@@ -26,6 +26,7 @@ try{
  await raw.query('CREATE SCHEMA '+schema);made=true;
  for(const table of ['projects','agent_sessions','tool_aktivitaet','code_files'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  const core=await import('../dist/index.js');
+ const {mitLesePool}=await import('../dist/db/client.js');
  const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
  const {REVERSE_PIPELINE_SCHEMA_SQL}=await import('../dist/db/reverse-pipeline-schema.js');
  await pool.query(REVERSE_SCHEMA_SQL);await pool.query(REVERSE_PIPELINE_SCHEMA_SQL);
@@ -49,7 +50,7 @@ try{
     await writeFile(join(work,p),content);e.manifest.push({pfad:p,sha256:sha(content),groesse:Buffer.byteLength(content)});
    }
   }
-  const result=await tx(db=>core.uebernehmeS3Ergebnis(db,e,maxPgBytes===undefined?{}:{maxPgBytes}));
+  const result=await mitLesePool(pool,()=>tx(db=>core.uebernehmeS3Ergebnis(db,e,maxPgBytes===undefined?{}:{maxPgBytes})));
   return {did,e,result,name};
  };
  const rows=[
@@ -83,7 +84,7 @@ try{
  eq((await pool.query("SELECT schicht FROM reverse_code_symbole WHERE datei_id=$1 AND name='Broken' AND symbol_type='function'",[f.did])).rows.map(x=>x.schicht),['S2'],'no duplicate fallback function');
  const dump=JSON.stringify((await pool.query("SELECT content FROM reverse_code_dateien WHERE datei_id=$1 UNION ALL SELECT value FROM reverse_code_symbole WHERE datei_id=$1 UNION ALL SELECT context FROM reverse_code_verweise WHERE datei_id=$1",[f.did])).rows);
  ok(!dump.includes(secret),'all PG text masked');ok(Number((await pool.query("SELECT metadaten->>'maskiert_anzahl' n FROM reverse_dateien WHERE id=$1",[f.did])).rows[0].n)>0,'mask counter');
- await tx(db=>core.uebernehmeS3Ergebnis(db,f.e));
+ await mitLesePool(pool,()=>tx(db=>core.uebernehmeS3Ergebnis(db,f.e)));
  eq((await call('calls',{file_path:'fixture.exe@S3'})).total,4,'idempotent edges');
  eq((await pool.query("SELECT count(*)::int n FROM reverse_code_verweise WHERE datei_id=$1",[f.did])).rows[0].n,4,'idempotent refs');
  const bad={...f.e,jobId:randomUUID()};await assert.rejects(()=>tx(db=>core.uebernehmeS3Ergebnis(db,bad)),x=>x.code==='nicht_gefunden');checks++;

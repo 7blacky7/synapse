@@ -420,8 +420,11 @@ export class ReverseExecutor {
   try{namen=(await readdir(this.k.arbeitRoot)).filter(n=>UUID.test(n)&&!this.laufend.has(n));}catch{return 0;}
   if(!namen.length)return 0;
   const offen=new Set((await this.pool.query("SELECT id::text FROM work_jobs WHERE id=ANY($1::uuid[]) AND state IN ('pending','leased','staged')",[namen])).rows.map(r=>String(r.id)));
+  // Fertige S3-Manifeste bleiben für Budget-Nachzüge erhalten. Nur das jeweils referenzierte Artefakt wird gebunden.
+  const behalten=new Set((await this.pool.query("SELECT DISTINCT lower(metadaten#>>'{s3_artefakt,job_id}') AS id FROM reverse_dateien WHERE metadaten#>>'{s3_artefakt,job_id}'=ANY($1::text[])",[namen])).rows.map(r=>String(r.id)));
   let n=0;
   for(const name of namen){
+   if(behalten.has(name.toLowerCase())){if(!this.altScope)await sperreArbeitsOrdner(path.join(this.k.arbeitRoot,name));continue;}
    if(!offen.has(name.toLowerCase())){await rm(path.join(this.k.arbeitRoot,name),{recursive:true,force:true});n++;}
    else if(!this.altScope)await sperreArbeitsOrdner(path.join(this.k.arbeitRoot,name)); // M1: nicht laufender Auftrag -> für den Runner gesperrt
   }
@@ -621,7 +624,7 @@ export class ReverseExecutor {
      return;
     }
     if(!r){console.warn('[reverse-executor] Spaete S3-Rueckmeldung nach Lease-Ablauf verworfen:',job.id);return;}
-    aufraeumen=true;
+    aufraeumen=false; // Das geprüfte Manifest ist für einen späteren Budget-Nachzug gebunden.
     console.log('[reverse-executor] S3 fertig:',job.id,'datei',quelle.dateiId,'status',r.status,'funktionen',r.funktionen,'gespeichert',r.gespeichert,'dauer_ms',dauer);
     const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:createHash('sha256').update(JSON.stringify(manifest)).digest('hex')};
     if(!await this.jobs.stage(wer,job.id,token,out)){console.warn('[reverse-executor] S3-Staging abgewiesen:',job.id);return;}

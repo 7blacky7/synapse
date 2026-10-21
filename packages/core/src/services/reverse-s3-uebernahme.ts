@@ -6,7 +6,7 @@
  * - Text (Namen, Prototypen, C) geht durch maskiereMitKatalog('reverse').
  * - S3: <datei>@S3/dekompiliert-NNNN.c in Stücken (tsvector-Grenze), je Funktion ein Symbol mit Adresse und Größe.
  *   S2: <datei>@S2/funktionen-NNNN.txt (Adresse, Größe, Name, Prototyp), ohne Symbole (sonst doppelte Funktionen).
- * - Budget: Dekompilat je Eintrag höchstens SYNAPSE_REVERSE_S3_PG_MAX_BYTES (Standard 50 MB, User da83be67); darüber
+ * - Budget: Dekompilat je Eintrag höchstens reverse_einstellungen.s3_pg_budget_bytes (Standard 1 GiB); darüber
  *   wird nicht mehr gespeichert, die Schicht ist dann 'teilweise' (fehlercode zu_gross). Einzelne nicht dekompilierte
  *   Funktionen machen S3 ebenfalls 'teilweise'.
  * - REA1/RV14: Ghidra graph, failed decompilations as S2 assembly, and manifest-verified S1 raw sidecars.
@@ -21,6 +21,8 @@ import {createInterface} from 'node:readline';
 import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-konfig.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
 import {reverseAnalyseFingerabdruck,maskiereReverseAnalyse} from './reverse-pipeline.js';
+import {reverseTextSammler,teileReverseText} from './reverse-code-stuecke.js';
+import {leseReverseEinstellungen} from './reverse-einstellungen.js';
 import {uebernehmeRohWerkzeuge} from './reverse-normalisierer/rohausgaben.js';
 import type {ReverseEManifestEintrag} from './reverse-e-uebernahme.js';
 
@@ -30,8 +32,11 @@ export class ReverseS3UebernahmeFehler extends Error {
 export interface ReverseS3UebernahmeOptionen {
   /** Nur für Tests/Serverstart; Standard ist die Asset-Konfiguration der API. */
   konfiguration?:AssetKonfiguration;
-  /** Dekompilat je Eintrag in PG (Bytes); Standard Env SYNAPSE_REVERSE_S3_PG_MAX_BYTES bzw. 50 MB. */
+  /** Dekompilat je Eintrag in PG (Bytes); Standard aus reverse_einstellungen.s3_pg_budget_bytes (1 GiB). */
   maxPgBytes?:number;
+  /** Reimport retained manifest after a budget increase; never invokes Ghidra. */
+  nachzug?:boolean;
+  budgetProjekt?:string;
 }
 export interface ReverseS3Ergebnis {status:'fertig'|'teilweise';funktionen:number;dekompiliert:number;gespeichert:number;verworfen:number}
 type Db={query:Function};
@@ -39,8 +44,6 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SEGMENT=/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/;
 const DATEI='functions.jsonl';
 /** Je virtueller Datei; deutlich unter der tsvector-Grenze von 1 MB. */
-const STUECK_BYTES=262144;
-const ZEILE_MAX=8*1048576;
 const fehler=(code:ReverseS3UebernahmeFehler['code'],m:string):never=>{throw new ReverseS3UebernahmeFehler(code,m);};
 const sha=(s:string|Buffer)=>createHash('sha256').update(s).digest('hex');
 const hash=(v:unknown)=>sha(JSON.stringify(v));
@@ -51,9 +54,9 @@ const maske=(s:string)=>maskiereMitKatalog(s,'reverse').text;
 export function reverseS3AusgabeKey(reverseId:string,dateiId:string,jobId:string):string{
   return reverseId+'/analyse/d'+dateiId+'/'+jobId.toLowerCase();
 }
-function pgMax(o:ReverseS3UebernahmeOptionen):number{
-  const n=o.maxPgBytes??Number(process.env.SYNAPSE_REVERSE_S3_PG_MAX_BYTES??52428800);
-  if(!Number.isSafeInteger(n)||n<1)fehler('parameter_ungueltig','SYNAPSE_REVERSE_S3_PG_MAX_BYTES ist keine positive Ganzzahl.');
+function pgMax(o:ReverseS3UebernahmeOptionen,standard:number):number{
+  const n=o.maxPgBytes??standard;
+  if(!Number.isSafeInteger(n)||n<1)fehler('parameter_ungueltig','s3_pg_budget_bytes ist keine positive Ganzzahl.');
   return n;
 }
 interface Ziel {name:string;adresse:number;extern:boolean;raum:string}
@@ -86,21 +89,7 @@ function leseFunktion(zeile:string):Funktion|null{
 }
 const hex=(n:number)=>'0x'+n.toString(16).padStart(8,'0');
 
-interface Stueck {inhalt:string[];bytes:number;zeilen:number}
-function stuecke(){
-  const fertig:Stueck[]=[];let akt:Stueck={inhalt:[],bytes:0,zeilen:0};
-  return {
-    /** Hängt Text an; liefert Index des Stücks und Startzeile (1-basiert). */
-    add(text:string):{stueck:number;zeile:number}{
-      const b=Buffer.byteLength(text);
-      if(akt.bytes>0&&akt.bytes+b>STUECK_BYTES){fertig.push(akt);akt={inhalt:[],bytes:0,zeilen:0};}
-      const r={stueck:fertig.length,zeile:akt.zeilen+1};
-      akt.inhalt.push(text);akt.bytes+=b;akt.zeilen+=text.split('\n').length-1;
-      return r;
-    },
-    ende():string[]{if(akt.bytes>0)fertig.push(akt);akt={inhalt:[],bytes:0,zeilen:0};return fertig.map(s=>s.inhalt.join(''));},
-  };
-}
+const stuecke=reverseTextSammler;
 
 /**
  * Übernimmt das S3-Ergebnis eines Auftrags in den übergebenen Client (eine Transaktion des Aufrufers).
@@ -114,17 +103,19 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   if(typeof e.arbeitsWurzel!=='string'||!path.isAbsolute(e.arbeitsWurzel))fehler('pfad_gefahr','arbeitsWurzel muss absolut sein.');
   if(!Array.isArray(e.manifest))fehler('parameter_ungueltig','Manifest fehlt.');
   const cfg=o.konfiguration??getAssetKonfiguration();
-  const budget=pgMax(o);
   const job=e.jobId.toLowerCase(),rid=e.reverseId,did=e.dateiId,key=reverseS3AusgabeKey(rid,did,job);
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-s3-budget:'+rid]);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-s3-uebernahme:'+did]);
-  const datei=(await db.query('SELECT id::text AS id,pfad,sha256 FROM reverse_dateien WHERE id=$1::bigint AND eintrag_id=$2',[did,rid])).rows[0];
+  const datei=(await db.query('SELECT id::text AS id,pfad,sha256,metadaten FROM reverse_dateien WHERE id=$1::bigint AND eintrag_id=$2',[did,rid])).rows[0];
   if(!datei||!/^[a-f0-9]{64}$/.test(String(datei.sha256??'')))fehler('nicht_gefunden','Datei gehört nicht zum Reverse-Eintrag.');
-  const auftrag=(await db.query(`SELECT id,fingerabdruck,werkzeug_version,profil_version FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2::bigint
+  const auftrag=(await db.query(`SELECT id,fingerabdruck,werkzeug_version,profil_version,projekt FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2::bigint
     AND schicht='S3' AND (p20_auftrag_id::text=$3 OR id::text=$3) ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,[rid,did,job])).rows[0];
   if(!auftrag||!auftrag.fingerabdruck)fehler('nicht_gefunden','Kein S3-Auftrag zu diesem Work-Job.');
+  const einstellungen=await leseReverseEinstellungen(o.budgetProjekt??auftrag.projekt??null),budget=pgMax(o,einstellungen.werte.s3_pg_budget_bytes.wert);
+  const speicherAlt=datei.metadaten?.s3_speicher;
   const vorher=(await db.query(`SELECT status,funktionen_gesamt,funktionen_fertig FROM reverse_schichten WHERE datei_id=$1::bigint AND schicht='S3'
     AND ausgabe_key=$2 AND status IN ('fertig','teilweise') ORDER BY id DESC LIMIT 1`,[did,key])).rows[0];
-  if(vorher){
+  if(vorher&&(vorher.status==='fertig'||!o.nachzug&&speicherAlt?.version===2&&speicherAlt?.budget_bytes===budget)){
     const n=Number(vorher.funktionen_gesamt??0),f=Number(vorher.funktionen_fertig??0);
     return {status:vorher.status,funktionen:n,dekompiliert:f,gespeichert:f,verworfen:0};
   }
@@ -140,7 +131,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   if(!eintrag||typeof eintrag.sha256!=='string'||!/^[a-f0-9]{64}$/.test(eintrag.sha256)||!Number.isSafeInteger(eintrag.groesse)||eintrag.groesse<0)
     fehler('beschaedigt','Manifest ohne gültiges functions.jsonl.');
 
-  const altBytes=Number((await db.query("SELECT COALESCE(sum(file_size),0)::bigint AS n FROM reverse_code_dateien WHERE eintrag_id=$1 AND (schicht='S3' OR file_type='asm') AND datei_id<>$2::bigint",[rid,did])).rows[0]?.n??0);
+  const altBytes=Number((await db.query("SELECT COALESCE(sum(CASE WHEN metadaten#>>'{s3_speicher,verbrauch_bytes}' ~ '^[0-9]+$' THEN (metadaten#>>'{s3_speicher,verbrauch_bytes}')::bigint ELSE (SELECT COALESCE(sum(file_size),0) FROM reverse_code_dateien c WHERE c.datei_id=d.id AND c.schicht IN ('S2','S3')) END),0)::bigint AS n FROM reverse_dateien d WHERE d.eintrag_id=$1 AND d.id<>$2::bigint",[rid,did])).rows[0]?.n??0);
   const frei=Math.max(0,budget-altBytes);
   const s2=stuecke(),s3=stuecke(),referenzTexte=stuecke();
   const assembler:{pfad:string;c:string;name:string;adresse:number;groesse:number}[]=[];
@@ -149,6 +140,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   const adressen=new Set<number>();
   s2.add('# adresse\tgroesse\tname\tprototyp\n');
   const symbole:{stueck:number;start:number;ende:number;name:string;prototyp:string;adresse:number;groesse:number}[]=[];
+  const fehlend:{name:string;adresse:string;benoetigt_bytes:number}[]=[];
   let gesamt=0,ok=0,verworfen=0,gespeichert=0,dekompiliert=0,bytes=0,gekappt=false;
   const h=await (async()=>{
     try{return await fs.open(path.join(arbeit,DATEI),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);}
@@ -162,20 +154,18 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     strom.on('data',(b:Buffer|string)=>pruef.update(b));
     for await(const zeile of createInterface({input:strom,crlfDelay:Infinity})){
       if(!zeile.trim())continue;
-      const f=zeile.length>ZEILE_MAX?null:leseFunktion(zeile);
+      const f=leseFunktion(zeile);
       if(!f||adressen.has(f.adresse)){verworfen++;continue;}
       adressen.add(f.adresse);maskiert+=f.maskiert;
       gesamt++;if(f.status==='ok')ok++;exportGekappt ||= f.gekappt;
       const name=maske(f.name),prototyp=maske(f.prototyp);
       s2.add(hex(f.adresse)+'\t'+f.groesse+'\t'+name+'\t'+prototyp.replace(/[\t\n\r]+/g,' ')+'\n');
-      if(gekappt)continue;
       const koerper=f.status==='ok'&&f.c.trim()?maske(f.c.replace(/^\s*\n/,'').replace(/\s+$/,'')):'/* kein Dekompilat: '+maske(f.status)+' */';
       const text='/* '+name+' @ '+hex(f.adresse)+' groesse '+f.groesse+' */\n'+koerper+'\n\n';
       const asm=f.status!=='ok'&&f.asm.trim()?maske(f.asm):'';
       const graphBytes=Buffer.byteLength(JSON.stringify([f.calls,f.refs]));
       const b=Buffer.byteLength(text)+Buffer.byteLength(asm)+graphBytes;
-      if(Buffer.byteLength(text)>STUECK_BYTES||Buffer.byteLength(asm)>STUECK_BYTES){exportGekappt=true;verworfen++;continue;}
-      if(bytes+b>frei){gekappt=true;continue;}
+      if(bytes+b>frei){gekappt=true;fehlend.push({name,adresse:hex(f.adresse),benoetigt_bytes:b});continue;}
       const pos=s3.add(text);bytes+=b;
       graph.push({symbol:symbole.length,f});
       if(asm)assembler.push({pfad:datei.pfad+'@S2/'+hex(f.adresse).slice(2)+'_'+sha(name).slice(0,12)+'.asm',c:asm,name,adresse:f.adresse,groesse:f.groesse});
@@ -195,27 +185,31 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     const key=r.art+':'+r.adresse+':'+r.name;
     if(targets.has(key))continue;
     const text=hex(r.adresse)+' '+r.art+' '+r.name+' '+r.wert.replace(/[\r\n]+/g,' ')+'\n';
-    if(Buffer.byteLength(text)>STUECK_BYTES){exportGekappt=true;continue;}
     const p=referenzTexte.add(text);
     targets.set(key,{id:hash([rid,did,fp3,'ref',key]),ziel:r,stueck:p.stueck,zeile:p.zeile});
   }
   const s2Texte=s2.ende(),s3Texte=s3.ende(),refTexte=referenzTexte.ende();
+  const pfadFuer=(stage:string,praefix:string,i:number)=>datei.pfad+'@'+stage+'/'+praefix+String(i+1).padStart(4,'0')+(stage==='S3'&&praefix==='dekompiliert-'?'.c':'.txt');
+  const mapStuecke=(parts:ReturnType<typeof s3.ende>,schicht:string,praefix:string,typ:string,fp:string)=>parts.map((p,i)=>({
+   pfad:pfadFuer(schicht,praefix,i),logisch:pfadFuer(schicht,praefix,p.haupt),teil:p.teil,offset:p.zeilenOffset,typ,schicht,fp,c:p.inhalt,
+  }));
+  const asmDateien=assembler.flatMap(a=>{let offset=0;return teileReverseText(a.c).map((c,i)=>{
+   const d={pfad:i===0?a.pfad:a.pfad+'.teil-'+String(i+1).padStart(4,'0'),logisch:a.pfad,teil:i,offset,typ:'asm',schicht:'S2',fp:fp2,c};
+   offset+=c.split('\n').length-1;return d;
+  });});
   const dateien=[
-    ...s2Texte.map((c,i)=>({pfad:datei.pfad+'@S2/funktionen-'+String(i+1).padStart(4,'0')+'.txt',typ:'txt',schicht:'S2',fp:fp2,c})),
-    ...s3Texte.map((c,i)=>({pfad:datei.pfad+'@S3/dekompiliert-'+String(i+1).padStart(4,'0')+'.c',typ:'c',schicht:'S3',fp:fp3,c})),
-    ...refTexte.map((c,i)=>({pfad:datei.pfad+'@S3/referenzen-'+String(i+1).padStart(4,'0')+'.txt',typ:'txt',schicht:'S3',fp:fp3,c})),
-    ...assembler.map(a=>({pfad:a.pfad,typ:'asm',schicht:'S2',fp:fp2,c:a.c})),
+   ...mapStuecke(s2Texte,'S2','funktionen-','txt',fp2),
+   ...mapStuecke(s3Texte,'S3','dekompiliert-','c',fp3),
+   ...mapStuecke(refTexte,'S3','referenzen-','txt',fp3),
+   ...asmDateien,
   ].map(d=>({...d,id:hash([rid,d.pfad]),name:d.pfad.split('/').pop() as string}));
-  // Alte S2/S3-Stände dieser Datei weg (Symbole hängen per FK daran); fremde Dateien bleiben.
   await db.query("DELETE FROM reverse_code_dateien WHERE eintrag_id=$1 AND datei_id=$2::bigint AND schicht IN ('S2','S3')",[rid,did]);
-  if(dateien.length)await db.query(`INSERT INTO reverse_code_dateien(id,eintrag_id,file_path,file_name,file_type,file_size,content,content_hash,datei_id,schicht,fingerabdruck,tsv,tsv_zerlegt)
-    SELECT u.id,$1,u.pfad,u.name,u.typ,u.groesse,u.inhalt,u.hash,$2::bigint,u.schicht,u.fp,to_tsvector('simple',u.inhalt),to_tsvector('simple',u.inhalt)
-    FROM unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::int[],$8::text[],$9::text[],$10::text[],$11::text[]) AS u(id,pfad,name,typ,groesse,inhalt,hash,schicht,fp)
-    ON CONFLICT(eintrag_id,file_path) DO UPDATE SET content=EXCLUDED.content,content_hash=EXCLUDED.content_hash,file_size=EXCLUDED.file_size,
-      datei_id=EXCLUDED.datei_id,schicht=EXCLUDED.schicht,fingerabdruck=EXCLUDED.fingerabdruck,tsv=EXCLUDED.tsv,tsv_zerlegt=EXCLUDED.tsv_zerlegt,updated_at=clock_timestamp()`,
+  if(dateien.length)await db.query(`INSERT INTO reverse_code_dateien(id,eintrag_id,file_path,file_name,file_type,file_size,content,content_hash,datei_id,schicht,fingerabdruck,tsv,tsv_zerlegt,logischer_pfad,teil_nr,zeilen_offset)
+    SELECT u.id,$1,u.pfad,u.name,u.typ,u.groesse,u.inhalt,u.hash,$2::bigint,u.schicht,u.fp,to_tsvector('simple',u.inhalt),to_tsvector('simple',u.inhalt),u.logisch,u.teil,u.versatz
+    FROM unnest($3::text[],$4::text[],$5::text[],$6::text[],$7::int[],$8::text[],$9::text[],$10::text[],$11::text[],$12::text[],$13::int[],$14::int[]) AS u(id,pfad,name,typ,groesse,inhalt,hash,schicht,fp,logisch,teil,versatz)`,
     [rid,did,dateien.map(d=>d.id),dateien.map(d=>d.pfad),dateien.map(d=>d.name),dateien.map(d=>d.typ),dateien.map(d=>Buffer.byteLength(d.c)),
-      dateien.map(d=>d.c),dateien.map(d=>sha(d.c)),dateien.map(d=>d.schicht),dateien.map(d=>d.fp)]);
-  const s3Pfad=(i:number)=>dateien[s2Texte.length+i].pfad;
+     dateien.map(d=>d.c),dateien.map(d=>sha(d.c)),dateien.map(d=>d.schicht),dateien.map(d=>d.fp),dateien.map(d=>d.logisch),dateien.map(d=>d.teil),dateien.map(d=>d.offset)]);
+  const s3Pfad=(i:number)=>pfadFuer('S3','dekompiliert-',i);
   if(symbole.length)await db.query(`INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,symbol_type,name,value,line_start,line_end,datei_id,schicht,fingerabdruck,adresse,groesse_bytes)
     SELECT u.id,$1,u.pfad,'function',u.name,u.wert,u.von,u.bis,$2::bigint,'S3',$3,u.adresse,u.groesse
     FROM unnest($4::text[],$5::text[],$6::text[],$7::text[],$8::int[],$9::int[],$10::bigint[],$11::bigint[]) AS u(id,pfad,name,wert,von,bis,adresse,groesse)`,
@@ -289,5 +283,10 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     [auftrag.id,s3Status,gekappt||exportGekappt?'zu_gross':null]);
   await db.query("UPDATE reverse_dateien SET metadaten=jsonb_set(COALESCE(metadaten,'{}'::jsonb),'{maskiert_anzahl}',to_jsonb(COALESCE((metadaten->>'maskiert_anzahl')::bigint,0)+$2::bigint)) WHERE id=$1::bigint",[did,maskiert]);
   await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
+  const speicher={version:2,budget_bytes:budget,budget_quelle:o.maxPgBytes===undefined?einstellungen.werte.s3_pg_budget_bytes.quelle:'test',
+   verbrauch_bytes:bytes,verbrauch_eintrag_bytes:altBytes+bytes,fehlend_gesamt:fehlend.length,fehlende_funktionen:fehlend,
+   hinweis:fehlend.length?'Budget erhöhen, dann reverse analysieren (S3): Nachzug aus erhaltenem Artefakt, ohne Ghidra.':null};
+  await db.query("UPDATE reverse_dateien SET metadaten=metadaten||$2::jsonb WHERE id=$1::bigint",[did,JSON.stringify({
+   s3_speicher:speicher,s3_artefakt:{job_id:job,arbeits_wurzel:arbeit,manifest:e.manifest,dauer_ms:e.dauerMs??null,sha256:datei.sha256,fingerabdruck:fp3}})]);
   return {status:s3Status,funktionen:gesamt,dekompiliert,gespeichert,verworfen};
 }

@@ -6,6 +6,7 @@ import {aktuellerW1bAkteur,pruefeProfilVerwalter,ProfilVerwaltungFehler,pflichtT
 import type {AusweisAkteur} from './agent-profil-vertrag.js';
 
 export const REVERSE_EINSTELLUNGEN={
+ s3_pg_budget_bytes:1073741824,s3_nachzug_lease_ms:300000,
  antwort_bytes:80000,seiten_limit:50,max_limit:200,max_pfad_zeichen:4096,analyse_verweise:10000,analyse_dateien:30000,
  analyse_funktionen:50000,analyse_kanten:100000,max_ziele:200,
  aufrufer_tiefe:3,aufrufer_max:100,konfidenz_prozent:80,max_muster_zeichen:512,laufzeit_ms:5000,
@@ -37,6 +38,11 @@ export async function leseReverseEinstellungen(project:string|null):Promise<Reve
   }catch{schalter.letzter_fehler='reverse_override_nicht_lesbar';}
  }
  return {project,werte,letzter_fehler:fehler,schalter};
+}
+/** Nutzdatenbudget: maskierter C/ASM-Text und Referenzdaten, ohne PostgreSQL-Index-/Zeilenoverhead. */
+export async function leseReverseSpeicherVerbrauch(db:{query:Function},reverseId:string|null):Promise<{verbrauch_bytes:number;fehlend_gesamt:number;eintraege:number}>{
+ const r=(await db.query("SELECT COALESCE(sum(CASE WHEN metadaten#>>'{s3_speicher,verbrauch_bytes}' ~ '^[0-9]+$' THEN (metadaten#>>'{s3_speicher,verbrauch_bytes}')::bigint ELSE 0 END),0)::text AS bytes,COALESCE(sum(CASE WHEN metadaten#>>'{s3_speicher,fehlend_gesamt}' ~ '^[0-9]+$' THEN (metadaten#>>'{s3_speicher,fehlend_gesamt}')::bigint ELSE 0 END),0)::text AS fehlend,count(DISTINCT eintrag_id)::int AS eintraege FROM reverse_dateien WHERE ($1::text IS NULL OR eintrag_id=$1) AND metadaten ? 's3_speicher'",[reverseId])).rows[0];
+ return {verbrauch_bytes:Number(r?.bytes??0),fehlend_gesamt:Number(r?.fehlend??0),eintraege:Number(r?.eintraege??0)};
 }
 export const REVERSE_ADMIN_ACTIONS=['reverse_einstellungen'] as const;
 export const REVERSE_ADMIN_PARAMETER={
@@ -80,6 +86,6 @@ export async function fuehreReverseAdminAus(args:Record<string,unknown>,wer:Ausw
     await c.query('COMMIT');
    }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}finally{c.release();}
   }
-  return {success:true,action:'reverse_einstellungen',modus,...await leseReverseEinstellungen(project)};
+  return {success:true,action:'reverse_einstellungen',modus,...await leseReverseEinstellungen(project),verbrauch:await leseReverseSpeicherVerbrauch(getPool(),null)};
  }catch(e){return {success:false,action:'reverse_einstellungen',error:e instanceof ProfilVerwaltungFehler?e.code:'reverse_einstellungen_speicher_fehler'};}
 }

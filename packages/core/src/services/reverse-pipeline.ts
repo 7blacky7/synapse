@@ -17,6 +17,7 @@ import {configureReverseRuntime,reverseBisSchichtGrenze,begrenzeReverseSchicht,t
 import {createWorkJobService,validateWorkResources,type WorkResourceNeed} from './work-jobs.js';
 import {starteApiAuftragsLoop,type ApiAuftragsLoop} from './api-auftrags-loop.js';
 import {reverseKindAusfuehrbar,reverseFehlerDeterministisch,zerlegeReverseFehlercode,reverseResourceNeedRoh} from './reverse-ausfuehrer.js';
+import {leseReverseEinstellungen} from './reverse-einstellungen.js';
 import {leseProfilProduktSchalter} from './agent-profil-schalter.js';
 import {starteReverseEntstoerer} from './reverse-entstoerer.js';
 import {analysiereRv27} from './hex-rv27.js';
@@ -211,13 +212,65 @@ export class ReversePipelineDienst{
   }
   return {auftrag_id:j.id,status:j.status??'wartet',schicht_angefragt:a.bisSchicht,eta:null,...(!local?{fehlercode:'container_ruht'}:{})};
  }
+ /** Ungültige Artefakte dürfen einen frischen Lauf nicht dauerhaft verdrängen; nur PG, keine FS-Arbeit im Tool. */
+ private async verwerfeS3Artefakt(db:PoolClient,rid:string,did:string,grund:string):Promise<void>{
+  await db.query("UPDATE reverse_dateien SET metadaten=(metadaten-'s3_artefakt')||jsonb_build_object('s3_nachzug_fehler',$3::text) WHERE id=$1 AND eintrag_id=$2",[did,rid,grund]);
+  await db.query("UPDATE reverse_analyse_cache SET status='wartet',p20_auftrag_id=NULL,versuche=0 WHERE fingerabdruck IN (SELECT fingerabdruck FROM reverse_schichten WHERE datei_id=$1 AND schicht='S3' AND aktuell)",[did]);
+  await db.query("UPDATE reverse_schichten SET status='fehler',fehlercode='werkzeug_fehler' WHERE datei_id=$1 AND schicht='S3' AND aktuell",[did]);
+ }
+ /** Ein Budget-Nachzug übernimmt das bereits geprüfte Manifest; kein neuer Containerauftrag. */
+ private async reiheS3NachzugEin(db:PoolClient,a:ReverseAnalyseAnfrage):Promise<Row|null>{
+  if(!a.dateiId||!['S2','S3'].includes(a.bisSchicht))return null;
+  const d=(await db.query("SELECT d.sha256,d.metadaten,s.fingerabdruck FROM reverse_dateien d JOIN reverse_schichten s ON s.datei_id=d.id AND s.schicht='S3' AND s.aktuell WHERE d.id=$1 AND d.eintrag_id=$2",[a.dateiId,a.reverseId])).rows[0];
+  const artefakt=d?.metadaten?.s3_artefakt,speicher=d?.metadaten?.s3_speicher;
+  if(!speicher?.fehlend_gesamt)return null;
+  if(!artefakt||artefakt.sha256!==d.sha256||artefakt.fingerabdruck!==d.fingerabdruck){
+   await this.verwerfeS3Artefakt(db,a.reverseId,a.dateiId,!artefakt?'s3_artefakt_fehlt':'s3_artefakt_veraltet');return null;
+  }
+  const schalter=await leseProfilProduktSchalter('reverse_s3',a.project);
+  if(!schalter.aktiv)return {status:'fehler',fehlercode:'kein_ausfuehrer',fehler_detail:'reverse_s3_aus',auftrag_id:null};
+  const stand=await leseReverseEinstellungen(a.project),budget=stand.werte.s3_pg_budget_bytes.wert;
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-pipeline:'+a.reverseId+':'+a.dateiId+':S3']);
+  const aktiv=(await db.query("SELECT id,status FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2 AND schicht='S3' AND status IN ('offen','wartet','laeuft') ORDER BY created_at LIMIT 1 FOR UPDATE",[a.reverseId,a.dateiId])).rows[0];
+  if(aktiv)return {auftrag_id:aktiv.id,status:aktiv.status,nachzug:true,schicht_angefragt:a.bisSchicht};
+  const fp=hash([d.fingerabdruck,'nachzug',budget]);
+  const j=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,schicht,prioritaet,status,ausloeser,trigger_identity_id,ausfuehrung,fingerabdruck,ziel_schicht,projekt,werkzeug,werkzeug_version,profil_version) VALUES($1,$2,'S3',$3,'wartet',$4,$5,'api',$6,$7,$8,'reverse-S3-nachzug','1',$9) RETURNING id",[a.reverseId,a.dateiId,a.prioritaet,'agent:'+a.agentId,aktuelleAgentAkteurIdentityId(a.agentId),fp,a.bisSchicht,a.project,this.profile])).rows[0];
+  return {auftrag_id:j.id,status:'wartet',nachzug:true,schicht_angefragt:a.bisSchicht,eta:null};
+ }
+ private async uebernehmeS3Nachzug(j:Job):Promise<void>{
+  try{
+   const schalter=await leseProfilProduktSchalter('reverse_s3',j.projekt);
+   if(!schalter.aktiv)throw Error('reverse_s3_aus');
+   await this.tx(async db=>{
+    const live=(await db.query("SELECT id FROM reverse_auftraege WHERE id=$1 AND lease_token=$2 AND status='laeuft' AND lease_bis>clock_timestamp() FOR UPDATE",[j.id,j.lease_token])).rows[0];
+    if(!live)return;
+    const stand=await leseReverseEinstellungen(j.projekt);
+    await db.query("UPDATE reverse_auftraege SET versuch=versuch+1,lease_bis=clock_timestamp()+$3::double precision*interval '1 millisecond' WHERE id=$1 AND lease_token=$2",[j.id,j.lease_token,stand.werte.s3_nachzug_lease_ms.wert]);
+    const d=(await db.query("SELECT d.sha256,d.metadaten,s.fingerabdruck FROM reverse_dateien d JOIN reverse_schichten s ON s.datei_id=d.id AND s.schicht='S3' AND s.aktuell WHERE d.id=$1 AND d.eintrag_id=$2",[j.datei_id,j.eintrag_id])).rows[0],artefakt=d?.metadaten?.s3_artefakt;
+    if(!artefakt||artefakt.sha256!==d.sha256||artefakt.fingerabdruck!==d.fingerabdruck)throw Error('s3_artefakt_veraltet');
+    const {uebernehmeS3Ergebnis}=await import('./reverse-s3-uebernahme.js');
+    const r=await uebernehmeS3Ergebnis(db,{jobId:artefakt.job_id,reverseId:j.eintrag_id,dateiId:String(j.datei_id),arbeitsWurzel:artefakt.arbeits_wurzel,manifest:artefakt.manifest,dauerMs:artefakt.dauer_ms},{nachzug:true,konfiguration:this.cfg,budgetProjekt:j.projekt});
+    // Row lock fences concurrent claims; an expired lease never publishes a successful API job.
+    const done=await db.query("UPDATE reverse_auftraege SET status=$3,fehlercode=$4,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_token=$2 AND lease_bis>clock_timestamp() RETURNING id",[j.id,j.lease_token,r.status,r.status==='teilweise'?'zu_gross':null]);
+    if(!done.rowCount)throw Error('s3_nachzug_lease_abgelaufen');
+   });
+  }catch(e){
+   const code=(e as {code?:string}).code,ungueltig=['nicht_gefunden','beschaedigt','pfad_gefahr'].includes(code??'')||(e as Error).message==='s3_artefakt_veraltet';
+   await this.tx(async db=>{
+    const live=(await db.query("SELECT 1 FROM reverse_auftraege WHERE id=$1 AND lease_token=$2 AND status='laeuft' FOR UPDATE",[j.id,j.lease_token])).rows[0];if(!live)return;
+    if(ungueltig)await this.verwerfeS3Artefakt(db,j.eintrag_id,String(j.datei_id),'s3_artefakt_nicht_nutzbar');
+    await db.query("UPDATE reverse_auftraege SET status='fehler',fehlercode='werkzeug_fehler',versuch=CASE WHEN $3 THEN $4 ELSE versuch+1 END,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_token=$2",[j.id,j.lease_token,ungueltig,this.retry]);
+   });
+  }
+ }
  /** Caller holds the same Fachtransaction as tool audit; PG only. */
  async analysieren(a:ReverseAnalyseAnfrage,db:PoolClient):Promise<Row>{
+  const nachzug=await this.reiheS3NachzugEin(db,a);if(nachzug)return nachzug;
   // Manueller Neuversuch: auch fachlich gescheiterte Container-Aufträge bekommen einen frischen Work-Job.
   await db.query("UPDATE reverse_analyse_cache SET versuche=0,status='wartet',p20_auftrag_id=NULL WHERE status='fehler' AND fingerabdruck IN (SELECT fingerabdruck FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND status='fehler')",[a.reverseId,a.dateiId]);
   if(!STAGES.includes(a.bisSchicht as typeof STAGES[number]))throw new Error('Ungültige Schicht');
   // A manual retry can re-open exhausted light jobs, but never running or cancelled work.
-  await db.query("UPDATE reverse_auftraege SET status='wartet',versuch=0,fehlercode=NULL,lease_token=NULL,lease_bis=NULL WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND status='fehler'",[a.reverseId,a.dateiId]);
+  await db.query("UPDATE reverse_auftraege SET status='wartet',versuch=0,fehlercode=NULL,lease_token=NULL,lease_bis=NULL WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND status='fehler' AND werkzeug IS DISTINCT FROM 'reverse-S3-nachzug'",[a.reverseId,a.dateiId]);
   const r=await this.queue(db,a);
   if(a.prioritaet==='interaktiv')await db.query("UPDATE work_jobs SET priority='interaktiv',updated_at=clock_timestamp() WHERE id IN (SELECT p20_auftrag_id FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint) AND state='pending'",[a.reverseId,a.dateiId]);
   return r;
@@ -248,9 +301,10 @@ export class ReversePipelineDienst{
  }
  private async claim():Promise<Job|undefined>{
   return this.tx(async db=>{
-   const j=(await db.query("SELECT j.* FROM reverse_auftraege j JOIN reverse_dateien d ON d.id=j.datei_id JOIN reverse_eintraege e ON e.id=j.eintrag_id WHERE j.ausfuehrung='api' AND e.status='bestaetigt' AND j.fingerabdruck IS NOT NULL AND j.versuch<$1 AND (j.status='wartet' OR j.status='laeuft' AND j.lease_bis<clock_timestamp() OR j.status='fehler' AND j.updated_at<clock_timestamp()-$2::double precision*interval '1 millisecond') AND (j.schicht='S0' OR EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S0' AND s.aktuell AND s.status IN ('fertig','teilweise'))) ORDER BY CASE j.prioritaet WHEN 'interaktiv' THEN 0 WHEN 'hintergrund' THEN 1 ELSE 2 END,j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1",[this.retry,this.cfg.sync.retryIntervallMs])).rows[0];
+   const j=(await db.query("SELECT j.* FROM reverse_auftraege j JOIN reverse_dateien d ON d.id=j.datei_id JOIN reverse_eintraege e ON e.id=j.eintrag_id WHERE j.ausfuehrung='api' AND e.status='bestaetigt' AND j.fingerabdruck IS NOT NULL AND j.versuch<$1 AND (j.status='wartet' OR j.status='laeuft' AND j.lease_bis<clock_timestamp() OR j.status='fehler' AND j.updated_at<clock_timestamp()-$2::double precision*interval '1 millisecond') AND (j.schicht='S0' OR j.werkzeug='reverse-S3-nachzug' OR EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S0' AND s.aktuell AND s.status IN ('fertig','teilweise'))) ORDER BY CASE j.prioritaet WHEN 'interaktiv' THEN 0 WHEN 'hintergrund' THEN 1 ELSE 2 END,j.created_at,j.id FOR UPDATE OF j SKIP LOCKED LIMIT 1",[this.retry,this.cfg.sync.retryIntervallMs])).rows[0];
    if(!j)return;
-   const token=randomUUID();await db.query("UPDATE reverse_auftraege SET status='laeuft',lease_token=$2,lease_bis=clock_timestamp()+$3::double precision*interval '1 millisecond',updated_at=clock_timestamp() WHERE id=$1",[j.id,token,this.leaseMs]);
+   const leaseMs=j.werkzeug==='reverse-S3-nachzug'?(await leseReverseEinstellungen(j.projekt)).werte.s3_nachzug_lease_ms.wert:this.leaseMs;
+   const token=randomUUID();await db.query("UPDATE reverse_auftraege SET status='laeuft',lease_token=$2,lease_bis=clock_timestamp()+$3::double precision*interval '1 millisecond',updated_at=clock_timestamp() WHERE id=$1",[j.id,token,leaseMs]);
    await db.query("UPDATE reverse_schichten SET status='laeuft',gestartet_at=clock_timestamp(),fehlercode=NULL WHERE auftrag_id=$1 AND aktuell AND fingerabdruck=$2",[j.id,j.fingerabdruck]);
    return {...j,lease_token:token} as Job;
   });
@@ -293,6 +347,7 @@ export class ReversePipelineDienst{
   await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[j.eintrag_id]);
  }
  private async bearbeite(worker:AssetInspektionsWorker,j:Job):Promise<void>{
+  if(j.werkzeug==='reverse-S3-nachzug'){await this.uebernehmeS3Nachzug(j);return;}
   let source:Awaited<ReturnType<AssetSpeicher['oeffneInspektionsQuelle']>>|undefined;
   let ownsCache=false;
   try{

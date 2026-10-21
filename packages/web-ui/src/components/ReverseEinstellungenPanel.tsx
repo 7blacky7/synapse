@@ -3,13 +3,13 @@ import {apiFetch} from '../api/auth';
 
 interface Stand {funktion:string;aktiv:boolean;quelle:string;ebene:string|null;letzter_fehler:string|null}
 interface Wert {wert:number;quelle:string;standard:number}
-interface Budgets {werte:Record<string,Wert>;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};letzter_fehler:string|null}
+interface Budgets {verbrauch?:{verbrauch_bytes:number;fehlend_gesamt:number;eintraege:number};werte:Record<string,Wert>;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};letzter_fehler:string|null}
 const funktionen=[
  {name:'reverse_siedler3',titel:'Siedler 3: Datencontainer',text:'Grafiken und Sounds aus GFX/SND als einzelne Dateien ablegen; verschlüsselte MAP-Blöcke nur melden. Gilt global für neue Entpackaufträge.'} ,
  {name:'reverse_pe_ressourcen',titel:'PE-Ressourcen',text:'Icons, Bitmaps, Dialoge, Stringtabellen und Versionsinfo aus EXE/DLL ablegen. Gilt global für neue Entpackaufträge.'},
  {name:'reverse_verknuepfungen',titel:'Code und Dateien verknüpfen',text:'Statische Dateimuster in Strings mit Dateien und aufrufenden Funktionen verbinden. Eine Referenz beweist noch keinen Ladevorgang.'},
 ];
-const namen:Record<string,string>={antwort_bytes:'Antwortgröße (Bytes)',seiten_limit:'Standard-Seitengröße',max_pfad_zeichen:'Maximale Pfadlänge (Zeichen)',max_limit:'Maximale Seitengröße',analyse_verweise:'Stringreferenzen je Analyse',
+const namen:Record<string,string>={s3_pg_budget_bytes:'S3-Speicherbudget je Eintrag (Bytes)',s3_nachzug_lease_ms:'S3-Nachzug: Auftragsfrist (ms)',antwort_bytes:'Antwortgröße (Bytes)',seiten_limit:'Standard-Seitengröße',max_pfad_zeichen:'Maximale Pfadlänge (Zeichen)',max_limit:'Maximale Seitengröße',analyse_verweise:'Verweise je Stapel',
  analyse_dateien:'Dateien je Analyse',analyse_funktionen:'Funktionen je Analyse',analyse_kanten:'Aufrufkanten je Analyse',max_ziele:'Dateiziele je Referenz',
  aufrufer_tiefe:'Aufrufer: maximale Tiefe',aufrufer_max:'Aufrufer je Funktion',konfidenz_prozent:'Mindestkonfidenz (%)',max_muster_zeichen:'Musterlänge (Zeichen)',laufzeit_ms:'Analysezeit (ms)'};
 export function ReverseEinstellungenPanel({project}:{project:string}){
@@ -48,6 +48,9 @@ export function ReverseEinstellungenPanel({project}:{project:string}){
   <label className="cp-setting-field wide"><span><b>Grund</b><small>Mindestens 5 Zeichen.</small></span><input value={grund} onChange={e=>setGrund(e.target.value)}/></label>
   {budgets&&<div className="scope-warning wide"><b>Wirksame Verknüpfungsanalyse: {budgets.schalter.aktiv?'EIN':'AUS'}</b>
    <span>Quelle: {budgets.schalter.quelle}{budgets.schalter.bis?' · bis '+budgets.schalter.bis:''}{budgets.letzter_fehler?' · '+budgets.letzter_fehler:''}{budgets.schalter.letzter_fehler?' · '+budgets.schalter.letzter_fehler:''}</span></div>}
+  {budgets?.verbrauch&&<div className="scope-warning wide"><b>S3-Nutzdaten: {budgets.verbrauch.verbrauch_bytes.toLocaleString('de-DE')} Bytes in {budgets.verbrauch.eintraege} Einträgen</b>
+   <span>{budgets.verbrauch.fehlend_gesamt} Funktionen warten wegen des Budgets. Verbrauch und fehlende Funktionen eines Eintrags: reverse status mit Datei; die Liste ist seitenweise abrufbar. Nach Budgeterhöhung: reverse analysieren bis S3 übernimmt das gespeicherte Ergebnis erneut.</span>
+   <span>Das Budget gilt je Eintrag für maskierten C/ASM-Text und Referenzdaten, ohne Datenbank-Indizes.</span></div>}
   {budgets&&Object.entries(budgets.werte).map(([n,v])=><label className="cp-setting-field" key={n}>
    <span><b>{namen[n]??n}</b><small>Quelle: {v.quelle} · Standard: {v.standard}</small></span>
    <input type="number" min={1} max={n==='konfidenz_prozent'?100:2147483647} value={werte[n]??v.wert}

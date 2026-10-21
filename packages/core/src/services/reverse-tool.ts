@@ -20,7 +20,7 @@ import { zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
 import { gruppiereRv27Dateien } from './hex-rv27.js';
 import { diagnoseReverse, entstoereReverse, REVERSE_ENTSTOERBAR } from './reverse-entstoerer.js';
 import {leseReverseVerknuepfungen} from './reverse-verknuepfungen.js';
-import {leseReverseEinstellungen} from './reverse-einstellungen.js';
+import {leseReverseEinstellungen,leseReverseSpeicherVerbrauch} from './reverse-einstellungen.js';
 import { vorhandeneZielfelder, zielinhaltHerkunft } from './zielinhalt.js';
 
 export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
@@ -82,7 +82,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   liste:['status','tag','query','limit','offset'],vorschlaege:['tag','query','limit','offset'],
   eintrag:['reverse_id'],bestaetigen:['reverse_id','titel','medien','zusammenfuehren_mit','aufteilen'],
   archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
-  status:['reverse_id','datei','file_path','warten_sekunden'],analysieren:['reverse_id','datei','file_path','bis_schicht','prioritaet'],
+  status:['reverse_id','datei','file_path','warten_sekunden','limit','offset'],analysieren:['reverse_id','datei','file_path','bis_schicht','prioritaet'],
   abbrechen:['auftrag_id'],dateien:['reverse_id','path','limit','offset'],struktur:['reverse_id','limit','offset'],
   diagnose:['reverse_id','limit'],entstoeren:['reverse_id','ursache','auftrag_id','vorschau'],
   tree:['reverse_id','file_path','path','limit','offset','depth','recursive','show_functions','show_counts','show_lines','file_type'],
@@ -102,6 +102,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
 /** P21-T16: Aktionen, deren Antwort Inhalt aus dem Analyseziel traegt, mit Kandidatenfeldern. */
 const REVERSE_ZIELINHALT: Partial<Record<ReverseAction,readonly string[]>> = {
+  status:['s3_speicher.fehlende_funktionen[]'],
   verknuepfungen:['links[]'],
   vergleichen:['unterschiede[]','paar','diff[]'],
   tree:['baum'],functions:['functions[]'],symbols:['symbols[]'],references:['references[]','string_occurrences[]','name_matches[]'],
@@ -360,12 +361,31 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const finished=ls.filter(l=>l.status==='fertig'||l.status==='teilweise').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0];
     const active=ls.filter(l=>l.status!=='fertig'&&l.status!=='uebersprungen').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0]??finished;
     const meta=object(f?.metadaten)?f.metadaten:{};
+    let s3Speicher:Row|undefined;
+    if(object(meta.s3_speicher)){
+      const stand=await leseReverseEinstellungen(str(a.project)||null),v=stand.werte;
+      const offset=integer(a.offset,0,2147483647),limit=integer(a.limit,Math.min(v.seiten_limit.wert,v.max_limit.wert),v.max_limit.wert);
+      if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
+      const alle=Array.isArray(meta.s3_speicher.fehlende_funktionen)?meta.s3_speicher.fehlende_funktionen:[],items:unknown[]=[];
+      let bytes=0;
+      for(const item of alle.slice(offset,offset+limit)){
+        const masked=JSON.parse(maskiereMitKatalog(JSON.stringify(item),'reverse').text),b=Buffer.byteLength(JSON.stringify(masked));
+        if(bytes+b>Math.floor(v.antwort_bytes.wert/2))break;items.push(masked);bytes+=b;
+      }
+      if(alle.length>offset&&!items.length)fail('zu_gross');
+      s3Speicher={antwort_bytes:v.antwort_bytes.wert,budget_bytes:v.s3_pg_budget_bytes.wert,budget_quelle:v.s3_pg_budget_bytes.quelle,
+        budget_beim_import_bytes:meta.s3_speicher.budget_bytes,verbrauch_datei_bytes:meta.s3_speicher.verbrauch_bytes,
+        ...await leseReverseSpeicherVerbrauch(pool,rid),fehlend_datei_gesamt:alle.length,fehlende_funktionen:items,
+        gekappt:offset+items.length<alle.length,naechster_offset:offset+items.length<alle.length?offset+items.length:null,
+        artefakt_vorhanden:object(meta.s3_artefakt),hinweis:meta.s3_speicher.hinweis,
+        budget_art:'Maskierter C/ASM-Text und Referenzdaten; ohne PostgreSQL-Index-/Zeilenoverhead.'};
+    }
     const features=Array.isArray(meta.merkmale)?meta.merkmale.filter(x=>typeof x==='string').map(x=>maskiereMitKatalog(x as string,'reverse').text):[];
     const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
     if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
     const zerlegt=zerlegeReverseFehlercode(active?.fehlercode??letzterFehler?.fehlercode);
     const error=zerlegt.code&&REVERSE_FEHLERCODES.includes(zerlegt.code as ReverseFehlercode)?zerlegt.code:null;
-    return {reverse_id:rid,datei:path,format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,schicht:finished?.schicht??null,
+    return {reverse_id:rid,datei:path,...(s3Speicher?{s3_speicher:s3Speicher}:{}),format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,schicht:finished?.schicht??null,
       schicht_angefragt:jobs[0]?.schicht??active?.schicht??null,status:jobs[0]?.status??(letzterFehler&&active?.status!=='fertig'&&active?.status!=='teilweise'?'fehler':undefined)??active?.status??f?.status??'offen',fehlercode:error,
       werkzeug:active?.werkzeug??null,merkmale:features,fortschritt:{gesamt:Number(active?.funktionen_gesamt??ls.length),fertig:Number(active?.funktionen_fertig??ls.filter(l=>l.status==='fertig').length)},
       container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s},...(jobs[0]?{auftrag_id:jobs[0].id,eta:null}:{}),
@@ -603,9 +623,16 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const unused=Object.keys(a).filter(k=>!['action','agent_id','project',...JE_ACTION[action]].includes(k)&&gesetzt(a[k]));
       const data=await execute(a,action);
       // P21-T16: Ziel-Inhalt nur bei Erfolg kennzeichnen; Werte und Maskierung bleiben unveraendert.
-      const zielfelder=data.fehlercode==null?vorhandeneZielfelder(data,REVERSE_ZIELINHALT[action]??[]):[];
+      const zielfelder=data.fehlercode==null||action==='status'?vorhandeneZielfelder(data,REVERSE_ZIELINHALT[action]??[]):[];
       const antwortBauen=()=>baueReverseAntwort(a,{...data,...(zielfelder.length?{provenance:zielinhaltHerkunft(zielfelder)}:{}),...(unused.length?{nicht_verwendet:unused}:{})},action==='ansicht'?data.fehlercode as ReverseFehlercode|undefined:undefined);
       let antwort=antwortBauen();
+      if(action==='status'&&object(data.s3_speicher)&&Array.isArray(data.s3_speicher.fehlende_funktionen)){
+        const s=data.s3_speicher,max=Number(s.antwort_bytes),items=s.fehlende_funktionen as unknown[];
+        while(Buffer.byteLength(JSON.stringify(antwort))>max&&items.length){
+          items.pop();s.gekappt=true;s.naechster_offset=Number(a.offset??0)+items.length;antwort=antwortBauen();
+        }
+        if(Buffer.byteLength(JSON.stringify(antwort))>max||Number(s.fehlend_datei_gesamt)>Number(a.offset??0)&&!items.length)fail('zu_gross','antwort_bytes zu klein für Antwortkontext');
+      }
       if(action==='verknuepfungen'&&object(data.diagnose)&&object(data.diagnose.einstellungen)&&object(data.diagnose.einstellungen.antwort_bytes)&&Array.isArray(data.links)){
         const max=Number(data.diagnose.einstellungen.antwort_bytes.wert);
         // Include the common response envelope and provenance in the UTF-8 budget.

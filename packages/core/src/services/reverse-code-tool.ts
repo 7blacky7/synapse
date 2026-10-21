@@ -2,6 +2,7 @@
 import {getProjectTree,getFunctions,getSymbols,getReferences,fullTextSearchCode,getFileContent,getCallEdges} from './code-intel.js';
 import {REVERSE_BEREICH,mitReverseCodeLeser,type CodeLeserDb} from './intel-bereich.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
+import {reverseLogischeDateien,reverseStueckSuchPraedikat} from './reverse-code-stuecke.js';
 import {fuehreReverseVergleichAus} from './reverse-vergleichen.js';
 type Row=Record<string,unknown>;
 export const REVERSE_CODE_ACTIONS=['tree','functions','symbols','references','search','file','calls','vergleichen'] as const;
@@ -61,7 +62,7 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
  if(Number(available.n)===0)return pending(virtual?.[1],virtual?.[2]??'S1');
  // Dieselbe SQL-Engine sieht nur aktuelle, fertige Ergebnisse; alte/halbe Fingerprints bleiben unsichtbar.
  const views:Record<string,string>={
-  reverse_code_dateien:'(SELECT d.* FROM reverse_code_dateien d WHERE '+ready+')',
+  reverse_code_dateien:reverseLogischeDateien(ready),
  };
  for(const table of ['reverse_code_symbole','reverse_code_verweise','reverse_code_kanten']){
   views[table]='(SELECT x.* FROM '+table+' x WHERE EXISTS(SELECT 1 FROM reverse_code_dateien d WHERE d.eintrag_id=x.eintrag_id AND d.file_path=x.file_path AND '+ready+')'+
@@ -77,7 +78,14 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
    queryParams=[...params,'%'+file+'%'];
    view=Object.fromEntries(Object.entries(views).map(([name,source])=>[name,source.slice(0,-1)+' AND '+(name==='reverse_code_dateien'?'d':'x')+'.file_path LIKE $'+queryParams.length+')']));
   }
-  const safe=sql.replace(/\breverse_code_(?:dateien|symbole|verweise|kanten)\b/g,name=>view[name]);
+  if(action==='search'&&main)view={...view,reverse_code_dateien:view.reverse_code_dateien+' AS rvf'};
+  let safe=sql.replace(/\breverse_code_(?:dateien|symbole|verweise|kanten)\b/g,name=>view[name]);
+  if(action==='search'&&main){
+   safe=safe.replace("tsv @@ plainto_tsquery('english', $2)",reverseStueckSuchPraedikat('tsv',"plainto_tsquery('english',$2)"))
+    .replace("tsv_zerlegt @@ plainto_tsquery('simple', regexp_replace($2, '[^A-Za-z0-9]+', ' ', 'g'))",
+      reverseStueckSuchPraedikat('tsv_zerlegt',"plainto_tsquery('simple',regexp_replace($2,'[^A-Za-z0-9]+',' ','g'))"))
+    .replace('ORDER BY rank DESC','ORDER BY rank DESC,file_path');
+  }
   if(!main)return k.db.query(safe,queryParams);
   const m=safe.match(/\s+LIMIT\s+(\$\d+|\d+)\s*$/i),unlimited=m?safe.slice(0,m.index):safe;
   const countParams=[...params];if(m?.[1].startsWith('$')&&Number(m[1].slice(1))===countParams.length)countParams.pop();

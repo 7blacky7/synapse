@@ -157,6 +157,8 @@ try{
  ok(files.find(f=>f.schicht==='S2').content.includes('0x00401010\t32\tentry\tint entry(void)'),'C: Funktionsliste S2');
  eq(await zahl("SELECT count(*)::int n FROM reverse_code_dateien d WHERE d.eintrag_id=$1 AND d.schicht IN ('S2','S3') AND EXISTS(SELECT 1 FROM reverse_schichten rs WHERE rs.datei_id=d.datei_id AND rs.schicht=d.schicht AND rs.fingerabdruck=d.fingerabdruck AND rs.aktuell AND rs.status IN ('fertig','teilweise'))",[RID]),2,'C: fuer den Code-Leser sichtbar (fertige Schicht, gleicher Fingerabdruck)');
  r=await anfordern(D1,'S3');eq(r.status,'fertig','C: Pipeline danach fertig, kein neuer Auftrag');
+ eq(await (await import('node:fs/promises')).readFile(join(konfig.arbeitRoot,jobId,'functions.jsonl'),'utf8'),JSONL,'T77: successful S3 artifact retained for resume');
+ eq(await executor.raeumeArbeitAuf(),0,'T77: cleanup preserves referenced S3 artifact');
  console.log('PASS C Executor + Uebernahme');
 
  // D Importer direkt
