@@ -5,8 +5,8 @@ interface Stand {funktion:string;aktiv:boolean;quelle:string;ebene:string|null;l
 interface Wert {wert:number;quelle:string;standard:number}
 interface Budgets {verbrauch?:{verbrauch_bytes:number;fehlend_gesamt:number;eintraege:number};werte:Record<string,Wert>;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};letzter_fehler:string|null}
 const funktionen=[
- {name:'reverse_siedler3',titel:'Siedler 3: Datencontainer',text:'Grafiken und Sounds aus GFX/SND als einzelne Dateien ablegen; verschlüsselte MAP-Blöcke nur melden. Gilt global für neue Entpackaufträge.'} ,
- {name:'reverse_pe_ressourcen',titel:'PE-Ressourcen',text:'Icons, Bitmaps, Dialoge, Stringtabellen und Versionsinfo aus EXE/DLL ablegen. Gilt global für neue Entpackaufträge.'},
+ {name:'reverse_siedler3',titel:'Siedler 3: Datencontainer',text:'Grafiken und Sounds aus GFX/SND als einzelne Dateien ablegen; verschlüsselte MAP-Blöcke nur melden. Gilt global. Jede Änderung startet das vollständige Entpacken aller automatisch analysierten Medien neu. Bereits erzeugte Dateien bleiben beim Ausschalten erhalten.'} ,
+ {name:'reverse_pe_ressourcen',titel:'PE-Ressourcen',text:'Icons, Bitmaps, Dialoge, Stringtabellen und Versionsinfo aus EXE/DLL ablegen. Gilt global. Jede Änderung startet das vollständige Entpacken aller automatisch analysierten Medien neu. Bereits erzeugte Dateien bleiben beim Ausschalten erhalten.'},
  {name:'reverse_verknuepfungen',titel:'Code und Dateien verknüpfen',text:'Statische Dateimuster in Strings mit Dateien und aufrufenden Funktionen verbinden. Eine Referenz beweist noch keinen Ladevorgang.'},
 ];
 const namen:Record<string,string>={s3_pg_budget_bytes:'S3-Speicherbudget je Eintrag (Bytes)',s3_nachzug_lease_ms:'S3-Nachzug: Auftragsfrist (ms)',antwort_bytes:'Antwortgröße (Bytes)',seiten_limit:'Standard-Seitengröße',max_pfad_zeichen:'Maximale Pfadlänge (Zeichen)',max_limit:'Maximale Seitengröße',analyse_verweise:'Verweise je Stapel',
