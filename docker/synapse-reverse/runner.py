@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -314,12 +315,96 @@ def limit_violation(files: int, dirs: int, total: int, cap: dict[str, int], inpu
     return None
 
 
-def scan_output(root: Path, cap: dict[str, int], input_size: int) -> tuple[str, str] | None:
-    """P18-T62: laufende Pruefung der Ausgabe (Groesse, Anzahl, Tiefe) mit fruehem Abbruch; folgt keinen Symlinks."""
+# P18-T87 (XP-SP2-Befund): Nach max_dateien lief der Runner ohne zu schreiben bis weit ueber das Zeitlimit, weil je
+# verschachteltem Container bzw. je PE-Datei der GANZE Ausgabebaum neu gezaehlt wurde (O(n^2) bei 20000 Dateien) und die
+# Frist nur beim Start eines Werkzeugs galt. Jetzt: Bestand einmal zaehlen und nur um Neues ergaenzen, vor jeder Datei Frist
+# und Grenzen pruefen, bei Erreichen sofort enden (_STOPP); das bis dahin Entpackte kommt ins Manifest.
+_STOPP: dict[str, Any] | None = None
+
+
+def halte_an(grund: str, fehlercode: str, phase: str, pfad: str | None, meldung: str, offen: int | None = None) -> dict[str, Any]:
+    """Ersten Abbruchgrund des Auftrags festhalten (grund: deadline | grenze); spaetere Gruende aendern ihn nicht."""
+    global _STOPP
+    if _STOPP is None:
+        _STOPP = {"grund": grund, "fehlercode": fehlercode, "phase": phase, "pfad": kurz_pfad(pfad) if pfad else None,
+                  "offen": offen, "meldung": meldung}
+    return _STOPP
+
+
+def abbruch_code(abgebrochen: bool) -> str | None:
+    """Endcode eines vorzeitig beendeten Laufs: Frist -> deadline, Grenze -> deren Code (zu_gross/bombe_verdacht)."""
+    if _STOPP is not None:
+        return str(_STOPP["fehlercode"])
+    return "deadline" if abgebrochen else None
+
+
+def lauf_ende(started: float, cap: dict[str, int]) -> float:
+    """Harte Frist des ganzen Laufs inklusive Manifest."""
+    return cap["zeitlimit_s"] + started
+
+
+def arbeitsende(started: float, cap: dict[str, int]) -> float:
+    """Frist fuer alle Entpack-/Analysephasen: zeitlimit_s minus Nachlauf fuer Manifest und Hashing."""
+    return lauf_ende(started, cap) - min(int(cap.get("nachlauf_s", 0)), cap["zeitlimit_s"] // 4)
+
+
+def restzeit(deadline: float) -> int:
+    """Ganze Sekunden bis zur Frist, aufgerundet (der Start des Werkzeugs soll keine Sekunde kosten), mindestens 1."""
+    return max(1, int(deadline - time.monotonic() + 0.999))
+
+
+def baum_zaehlen(root: Path) -> tuple[int, int, int]:
+    """Dateien, Ordner und Bytes unter root (wie scan_output, folgt keinen Symlinks); einmal je Teilbaum."""
     files = dirs = total = 0
+    stack = [str(root)]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    dirs += 1
+                    stack.append(entry.path)
+                    continue
+                total += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                continue
+            files += 1
+    return files, dirs, total
+
+
+class Bestand:
+    """P18-T87: Zaehlstand der Ausgabe; einmal gezaehlt, danach nur um neu Entpacktes ergaenzt."""
+
+    def __init__(self, root: Path) -> None:
+        self.dateien, self.ordner, self.bytes = baum_zaehlen(root)
+
+    def plus(self, dateien: int, ordner: int, groesse: int) -> None:
+        self.dateien += dateien
+        self.ordner += ordner
+        self.bytes += groesse
+
+    def zahlen(self) -> tuple[int, int, int]:
+        return self.dateien, self.ordner, self.bytes
+
+    def voll(self, cap: dict[str, int], input_size: int) -> tuple[str, str] | None:
+        """Grenze, sobald nicht einmal eine weitere Datei samt Ordner Platz hat."""
+        return limit_violation(self.dateien + 1, self.ordner + 1, self.bytes, cap, input_size)
+
+
+def scan_output(root: Path, cap: dict[str, int], input_size: int, basis: tuple[int, int, int] = (0, 0, 0),
+                tiefe0: int = 0, anzeige: Path | None = None) -> tuple[str, str] | None:
+    """P18-T62: laufende Pruefung der Ausgabe (Groesse, Anzahl, Tiefe) mit fruehem Abbruch; folgt keinen Symlinks.
+
+    P18-T87: mit basis/tiefe0 wird nur ein Teilbaum (der gerade entpackte Container) auf dem bekannten Bestand der uebrigen
+    Ausgabe geprueft, statt alle GUARD_INTERVAL_S den ganzen Ausgabebaum zu durchlaufen.
+    """
+    files, dirs, total = basis
     neueste: str | None = None
     neueste_ns = -1
-    stack: list[tuple[str, int]] = [(str(root), 0)]
+    stack: list[tuple[str, int]] = [(str(root), tiefe0)]
     while stack:
         here, depth = stack.pop()
         if depth > cap["max_tiefe"]:
@@ -353,7 +438,7 @@ def scan_output(root: Path, cap: dict[str, int], input_size: int) -> tuple[str, 
         violation = limit_violation(files, dirs, total, cap, input_size)
         if violation:
             return violation
-    fortschritt_stand(files, total, os.path.relpath(neueste, root) if neueste else None)
+    fortschritt_stand(files, total, os.path.relpath(neueste, anzeige or root) if neueste else None)
     return None
 
 
@@ -541,6 +626,8 @@ def limits(req: dict[str, Any]) -> dict[str, int]:
         "parser_ram_mb": min(max(int(raw.get("parser_ram_mb", 2048)), 256), 65536),
         # P18-T71: Tiefe verschachtelter Container (Archiv im Archiv); 0 schaltet das rekursive Entpacken ab.
         "max_verschachtelung": min(max(int((raw or {}).get("max_verschachtelung", 8)), 0), 32),
+        # P18-T87: Teil des Zeitlimits fuer Manifest/Hashing nach dem Entpacken (hoechstens ein Viertel, siehe arbeitsende).
+        "nachlauf_s": min(max(int(raw.get("nachlauf_s", 300)), 0), 86400),
     }
 
 
@@ -585,7 +672,8 @@ def tool_version(tool: str) -> str:
     return "unbekannt"
 
 
-def output_manifest(root: Path, cap: dict[str, int], input_size: int) -> tuple[list[dict[str, Any]], int]:
+def output_manifest(root: Path, cap: dict[str, int], input_size: int,
+                    frist: float | None = None) -> tuple[list[dict[str, Any]], int]:
     entries: list[dict[str, Any]] = []
     total = 0
     fortschritt_phase("manifest")
@@ -601,6 +689,11 @@ def output_manifest(root: Path, cap: dict[str, int], input_size: int) -> tuple[l
             raise GrenzeUeberschritten("bombe_verdacht", "max_tiefe ueberschritten")
         for name in sorted(files):
             path = here / name
+            if frist is not None and time.monotonic() >= frist:
+                # P18-T87: Frist im Manifest -> nur die bis hier gepruefte Ausgabe wird uebernommen, kein Leerlauf.
+                halte_an("deadline", "deadline", "manifest", path.relative_to(root).as_posix(),
+                         f"Zeitlimit {cap['zeitlimit_s']} s im Manifest erreicht; {len(entries)} Dateien uebernommen")
+                return entries, total
             if path.is_symlink() or not path.is_file():
                 raise ValueError("Symlinks und Nicht-Dateien sind verboten")
             size = path.stat().st_size
@@ -718,7 +811,7 @@ def disc_grenzen(cap: dict[str, int], input_size: int) -> Callable[[], None]:
 
 
 def entpacke_iso(out: Path, eintrag: dict[str, Any], cap: dict[str, int], input_size: int, env: dict[str, str],
-                 job_tmp: Path, hinweise: list[dict[str, Any]]) -> bool:
+                 job_tmp: Path, hinweise: list[dict[str, Any]], deadline: float | None = None) -> bool:
     """P18-T49: ISO aus dem Extraktor -> E-Profil ISO/UDF (RV13) per 7-Zip nach inhalt/<abbild>/. False = nicht entpackt."""
     iso = out / eintrag["pfad"]
     fmt = detect_format(iso)
@@ -735,7 +828,7 @@ def entpacke_iso(out: Path, eintrag: dict[str, Any], cap: dict[str, int], input_
         hinweise.append({"code": "iso_nicht_entpackt", "pfad": eintrag["pfad"], "meldung": "7-Zip nicht verfuegbar"})
         ziel.rmdir()
         return False
-    code, meldung = run_isolated(command, cap["zeitlimit_s"], env, ziel, job_tmp,
+    code, meldung = run_isolated(command, restzeit(deadline) if deadline is not None else cap["zeitlimit_s"], env, ziel, job_tmp,
                                  guard=lambda: scan_output(out, cap, input_size),
                                  preexec=file_size_limit(per_file_limit(cap, input_size)))
     final = scan_output(out, cap, input_size)
@@ -988,7 +1081,7 @@ def inhalt_ordner(source: Path) -> Path:
 
 
 def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, int], input_size: int,
-                       env: dict[str, str], job_tmp: Path, deadline: float) -> dict[str, Any]:
+                       env: dict[str, str], job_tmp: Path, deadline: float, stand: Bestand | None = None) -> dict[str, Any]:
     """Einen Container nach <name>~inhalt/ entpacken. Grenzverletzung/Fehler betreffen nur diesen Container."""
     source = out / rel
     rest = deadline - time.monotonic()
@@ -996,6 +1089,15 @@ def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, 
         return {"status": "fehler", "grund": "zeitlimit"}
     ziel = inhalt_ordner(source)
     ziel.mkdir()
+    if stand is not None:
+        # P18-T87: nur den neuen Teilbaum pruefen, auf dem bekannten Bestand (+1 fuer den Zielordner selbst).
+        basis, tiefe0 = (stand.dateien, stand.ordner + 1, stand.bytes), len(ziel.relative_to(out).parts)
+
+        def pruefe() -> tuple[str, str] | None:
+            return scan_output(ziel, cap, input_size, basis, tiefe0, out)
+    else:
+        def pruefe() -> tuple[str, str] | None:
+            return scan_output(out, cap, input_size)
 
     def verwerfen(grund: str, meldung: str = "") -> dict[str, Any]:
         clear_output(ziel)
@@ -1007,13 +1109,12 @@ def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, 
         return verwerfen("nicht_unterstuetzt:" + fmt, f"Werkzeug {tool} nicht verfuegbar")
     try:
         code, meldung = run_isolated(command, max(1, int(rest)), env, ziel, job_tmp,
-                                     guard=lambda: scan_output(out, cap, input_size),
-                                     preexec=file_size_limit(per_file_limit(cap, input_size)))
+                                     guard=pruefe, preexec=file_size_limit(per_file_limit(cap, input_size)))
     except GrenzeUeberschritten as exc:
         return verwerfen(exc.code, str(exc))
     except subprocess.TimeoutExpired:
         return verwerfen("zeitlimit")
-    final = scan_output(out, cap, input_size)
+    final = pruefe()
     if final:
         return verwerfen(*final)
     if code == -signal.SIGXFSZ or (code and "File too large" in meldung):
@@ -1051,12 +1152,12 @@ def siedler3_modul() -> Any:
 
 
 def siedler3_entpacken(source: Path, out: Path, rel: str, cap: dict[str, int], input_size: int,
-                       deadline: float, meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    paths = dateien_unter(out)
-    dirs = sum(len(names) for _, names, _ in os.walk(out, followlinks=False))
-    total = sum((out / p).stat().st_size for p in paths)
-    result = siedler3_modul().extract(source, out, rel, cap, input_size, deadline,
-                                     limit_violation, (len(paths), dirs, total))
+                       deadline: float, meta: dict[str, dict[str, Any]], stand: Bestand | None = None) -> dict[str, Any]:
+    stand = stand or Bestand(out)
+    result = siedler3_modul().extract(source, out, rel, cap, input_size, deadline, limit_violation, stand.zahlen())
+    # P18-T87: Bestand nur um die neuen Dateien (und ihren einen Ordner) ergaenzen statt die Ausgabe neu zu zaehlen.
+    if result["metadaten"]:
+        stand.plus(len(result["metadaten"]), 1, sum((out / p).stat().st_size for p in result["metadaten"]))
     depth = int(meta.get(rel, {}).get("herkunft", {}).get("tiefe", 0)) + 1
     for item in result["metadaten"].values():
         item["herkunft"]["tiefe"] = depth
@@ -1087,12 +1188,12 @@ def pe_ressourcen_modul() -> Any:
 
 
 def pe_ressourcen(source: Path, out: Path, rel: str, cap: dict[str, int], input_size: int,
-                  deadline: float, meta: dict[str, dict[str, Any]]) -> bool:
-    paths = dateien_unter(out)
-    dirs = sum(len(names) for _, names, _ in os.walk(out, followlinks=False))
-    total = sum((out / p).stat().st_size for p in paths)
-    result = pe_ressourcen_modul().extract(source, out, rel, cap, input_size, deadline,
-                                          limit_violation, (len(paths), dirs, total))
+                  deadline: float, meta: dict[str, dict[str, Any]], stand: Bestand | None = None) -> bool:
+    stand = stand or Bestand(out)
+    result = pe_ressourcen_modul().extract(source, out, rel, cap, input_size, deadline, limit_violation, stand.zahlen())
+    # P18-T87: Bestand nur um die neuen Dateien (und ihren einen Ordner) ergaenzen statt die Ausgabe neu zu zaehlen.
+    if result["metadaten"]:
+        stand.plus(len(result["metadaten"]), 1, sum((out / p).stat().st_size for p in result["metadaten"]))
     parent_depth = int(meta.get(rel, {}).get("herkunft", {}).get("tiefe", 0))
     for item in result["metadaten"].values():
         item["herkunft"]["tiefe"] = parent_depth + 1
@@ -1110,56 +1211,78 @@ def pe_ressourcen_status(meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
 def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
                            started: float, ueberspringen: frozenset[str] = frozenset(),
                            pe_aktiv: bool = False, siedler_aktiv: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
-    """Rekursiv bis keine neuen Container auftauchen. Rueckgabe: Zusatzmetadaten je Pfad, Zeitlimit erreicht."""
+    """Rekursiv bis keine neuen Container auftauchen. Rueckgabe: Zusatzmetadaten je Pfad, vorzeitig beendet.
+
+    P18-T87: Die Ausgabe wird einmal gezaehlt (Bestand) und nur um neu Entpacktes ergaenzt; Dateien aus einem entpackten
+    Container kommen in die Warteschlange, statt die Ausgabe je Runde neu zu lesen. Vor jeder Datei gelten Frist
+    (arbeitsende) und Grenzen: ist die Frist um oder passt keine weitere Datei, endet die Phase sofort (_STOPP mit Phase,
+    Pfad und Anzahl offener Dateien). Das bis dahin Entpackte bleibt und kommt ins Manifest.
+    """
+    global _STOPP
+    _STOPP = None
     meta: dict[str, dict[str, Any]] = {}
     if cap["max_verschachtelung"] < 1:
         return meta, False
     utf8_namen(out)
     tiefe: dict[str, int] = {}
-    gesehen = set(ueberspringen)
-    deadline = started + cap["zeitlimit_s"]
-    abgebrochen = False
-    while True:
-        neu = [rel for rel in dateien_unter(out) if rel not in gesehen]
-        if not neu:
-            return meta, abgebrochen
-        for rel in neu:
-            gesehen.add(rel)
-            if pe_aktiv and head_bytes(out / rel, 2) == b"MZ":
-                fortschritt_phase("pe_ressourcen", rel)
-                pe_ressourcen(out / rel, out, rel, cap, input_size, deadline, meta)
-                gesehen.update(p for p, m in meta.items() if "pe_ressource" in m)
-            art = container_art(out / rel)
-            if art is None:
-                continue
-            fmt, tool, grund = art
-            eintrag: dict[str, Any] = {"format": fmt}
-            if tool == "siedler3" and not siedler_aktiv:
-                tool, grund = None, "Produktschalter reverse_siedler3 ist AUS"
-            if tool is None and grund.startswith("teil_eines_satzes:"):
-                eintrag.update(status="teil", grund=grund)
-            elif tool is None:
-                eintrag.update(status="vorgemerkt" if fmt in SPIEL_FORMATE else "nicht_unterstuetzt",
-                               grund="nicht_unterstuetzt:" + fmt, hinweis=grund)
-            elif abgebrochen:
-                eintrag.update(status="fehler", grund="zeitlimit")
-            elif tiefe.get(rel, 0) >= cap["max_verschachtelung"]:
-                eintrag.update(status="fehler", grund="tiefenlimit")
-            elif tool == "siedler3":
-                fortschritt_phase("siedler3", rel)
-                eintrag.update(siedler3_entpacken(out / rel, out, rel, cap, input_size, deadline, meta))
-                gesehen.update(p for p, m in meta.items() if "siedler3" in m)
-                abgebrochen = abgebrochen or eintrag.get("grund") == "zeitlimit"
-            else:
-                fortschritt_phase("verschachtelt", rel)
-                eintrag.update(entpacke_container(out, rel, fmt, tool, cap, input_size, env, job_tmp, deadline))
-                abgebrochen = abgebrochen or eintrag.get("grund") == "zeitlimit"
-                if eintrag.get("inhalt"):
-                    for inner in dateien_unter(out / eintrag["inhalt"]):
-                        pfad = eintrag["inhalt"] + "/" + inner
-                        tiefe[pfad] = tiefe.get(rel, 0) + 1
-                        meta.setdefault(pfad, {})["herkunft"] = {"archiv": rel, "pfad": inner, "tiefe": tiefe[pfad]}
-            meta.setdefault(rel, {})["verschachtelt"] = eintrag
+    deadline = arbeitsende(started, cap)
+    stand = Bestand(out)
+    warteschlange = deque(rel for rel in dateien_unter(out) if rel not in ueberspringen)
+    while warteschlange:
+        rel = warteschlange[0]
+        if time.monotonic() >= deadline:
+            halte_an("deadline", "deadline", "verschachtelt", rel,
+                     f"Zeitlimit {cap['zeitlimit_s']} s erreicht; {len(warteschlange)} Dateien nicht mehr geprueft",
+                     len(warteschlange))
+            return meta, True
+        voll = stand.voll(cap, input_size)
+        if voll:
+            halte_an("grenze", voll[0], "verschachtelt", rel,
+                     f"Grenze erreicht ({stand.dateien} Dateien, {stand.ordner} Ordner, {stand.bytes} Bytes): {voll[1]}; "
+                     f"{len(warteschlange)} Dateien nicht mehr geprueft", len(warteschlange))
+            return meta, True
+        warteschlange.popleft()
+        if pe_aktiv and head_bytes(out / rel, 2) == b"MZ":
+            fortschritt_phase("pe_ressourcen", rel)
+            pe_ressourcen(out / rel, out, rel, cap, input_size, deadline, meta, stand)
+            if meta.get(rel, {}).get("pe_ressourcen", {}).get("fehlercode") == "zeitlimit":
+                halte_an("deadline", "deadline", "pe_ressourcen", rel, f"Zeitlimit {cap['zeitlimit_s']} s erreicht",
+                         len(warteschlange))
+                return meta, True
+        art = container_art(out / rel)
+        if art is None:
+            continue
+        fmt, tool, grund = art
+        eintrag: dict[str, Any] = {"format": fmt}
+        if tool == "siedler3" and not siedler_aktiv:
+            tool, grund = None, "Produktschalter reverse_siedler3 ist AUS"
+        if tool is None and grund.startswith("teil_eines_satzes:"):
+            eintrag.update(status="teil", grund=grund)
+        elif tool is None:
+            eintrag.update(status="vorgemerkt" if fmt in SPIEL_FORMATE else "nicht_unterstuetzt",
+                           grund="nicht_unterstuetzt:" + fmt, hinweis=grund)
+        elif tiefe.get(rel, 0) >= cap["max_verschachtelung"]:
+            eintrag.update(status="fehler", grund="tiefenlimit")
+        elif tool == "siedler3":
+            fortschritt_phase("siedler3", rel)
+            eintrag.update(siedler3_entpacken(out / rel, out, rel, cap, input_size, deadline, meta, stand))
+        else:
+            fortschritt_phase("verschachtelt", rel)
+            eintrag.update(entpacke_container(out, rel, fmt, tool, cap, input_size, env, job_tmp, deadline, stand))
+            if eintrag.get("inhalt"):
+                f, d, t = baum_zaehlen(out / eintrag["inhalt"])
+                stand.plus(f, d + 1, t)
+                for inner in dateien_unter(out / eintrag["inhalt"]):
+                    pfad = eintrag["inhalt"] + "/" + inner
+                    tiefe[pfad] = tiefe.get(rel, 0) + 1
+                    meta.setdefault(pfad, {})["herkunft"] = {"archiv": rel, "pfad": inner, "tiefe": tiefe[pfad]}
+                    warteschlange.append(pfad)
+        meta.setdefault(rel, {})["verschachtelt"] = eintrag
+        if eintrag.get("grund") == "zeitlimit":
+            halte_an("deadline", "deadline", "verschachtelt", rel, f"Zeitlimit {cap['zeitlimit_s']} s erreicht",
+                     len(warteschlange))
+            return meta, True
+    return meta, False
 
 
 def verschachtelt_zusammenfassung(meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -1167,7 +1290,7 @@ def verschachtelt_zusammenfassung(meta: dict[str, dict[str, Any]]) -> dict[str, 
     offen = [{"pfad": pfad, "format": v["format"], "status": v["status"], "grund": v.get("grund")}
              for pfad, v in sorted(container.items()) if v["status"] not in ("entpackt", "teil")]
     return {"container": len(container), "entpackt": sum(v["status"] == "entpackt" for v in container.values()),
-            "nicht_entpackt": offen[:200], "nicht_entpackt_gesamt": len(offen)}
+            "nicht_entpackt": offen[:200], "nicht_entpackt_gesamt": len(offen), **({"abbruch": _STOPP} if _STOPP else {})}
 
 
 def merge_verschachtelt(files: list[dict[str, Any]], meta: dict[str, dict[str, Any]]) -> None:
@@ -1205,8 +1328,10 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
              erkennung: Any, nur_tabelle: bool = False) -> list[dict[str, Any]]:
     """P18-T49/RV34: Parser (Registry) -> Spurtabelle -> gemeinsamer Extraktor im eigenen Prozess mit Zeit-, RAM- und
     Dateigroessen-Grenzen; danach ISO -> E-Profil. Das Ergebnis traegt Spurtabelle, Hinweise und je Datei art/metadaten."""
+    global _STOPP
     disc = disc_modul()
     started = time.monotonic()
+    _STOPP = None
     if not erkennung.parser:
         return [{"status": "fehler", "fehlercode": "format_nicht_unterstuetzt", "format_detail": erkennung.format,
                  "meldung": "Format " + erkennung.format + " wird noch nicht unterstuetzt (kein Parser verfuegbar)",
@@ -1248,7 +1373,7 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
                 "optionen": {"wav_pregap": optionen.get("wav_pregap") is True}}), encoding="utf-8")
             guard = (lambda: scan_output(out, cap, input_size)) if out else None
             fortschritt_phase("iso_entpacken")
-            code, meldung = run_isolated([sys.executable, "-I", str(DISC_PY), str(auftrag_pfad)], cap["zeitlimit_s"],
+            code, meldung = run_isolated([sys.executable, "-I", str(DISC_PY), str(auftrag_pfad)], restzeit(arbeitsende(started, cap)),
                                          env, job_tmp, job_tmp, guard=guard, preexec=disc_grenzen(cap, input_size))
             if out:
                 final = scan_output(out, cap, input_size)
@@ -1277,7 +1402,8 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
             if out:
                 for eintrag in list(meta.values()):
                     if (eintrag.get("metadaten") or {}).get("rolle") == "iso":
-                        teilweise = not entpacke_iso(out, eintrag, cap, input_size, env, job_tmp, hinweise) or teilweise
+                        teilweise = not entpacke_iso(out, eintrag, cap, input_size, env, job_tmp, hinweise,
+                                                     arbeitsende(started, cap)) or teilweise
                 iso = frozenset(p for p, e in meta.items() if (e.get("metadaten") or {}).get("rolle") == "iso")
                 verschachtelt, abgebrochen = entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, iso, optionen.get("pe_ressourcen") is True, optionen.get("siedler3") is True)
         finally:
@@ -1293,7 +1419,7 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
         if out is None:
             return [{"status": "fertig", "fehlercode": None, "werkzeug_version": version, "format": erkennung.format,
                      "spurtabelle": tabelle, "manifest": [], "dauer_s": round(time.monotonic() - started, 3)}]
-        files, size = output_manifest(out, cap, input_size)
+        files, size = output_manifest(out, cap, input_size, lauf_ende(started, cap))
     except GrenzeUeberschritten as exc:
         if out:
             clear_output(out)
@@ -1308,10 +1434,12 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
     pe_status = pe_ressourcen_status(verschachtelt)
     siedler_status = siedler3_status(verschachtelt)
     teilweise = teilweise or bool(pe_status["fehlercode"] or siedler_status["fehlercode"])
+    abgebrochen = abgebrochen or _STOPP is not None
     return [
         {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
         {"status": "teilweise" if teilweise or abgebrochen else "fertig",
-         "fehlercode": pe_status["fehlercode"] or siedler_status["fehlercode"] or ("werkzeug_fehler" if teilweise else "deadline" if abgebrochen else None),
+         "fehlercode": pe_status["fehlercode"] or siedler_status["fehlercode"] or ("werkzeug_fehler" if teilweise else abbruch_code(abgebrochen)),
+         **({"abbruch": _STOPP} if _STOPP else {}),
          "pe_ressourcen": {"aktiv": optionen.get("pe_ressourcen") is True, "stand": optionen.get("pe_ressourcen_stand"), **pe_status},
          "siedler3": {"aktiv": optionen.get("siedler3") is True, "stand": optionen.get("siedler3_stand"), **siedler_status},
          "werkzeug_version": version, "format": erkennung.format, "spurtabelle": tabelle, "hinweise": hinweise,
@@ -1369,6 +1497,8 @@ def normalisierer_rohausgaben(source: Path, out: Path, cap: dict[str, int], env:
 
 
 def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
+    global _STOPP
+    _STOPP = None
     job = job_id(req)
     cap = limits(req)
     source = path_under(str(req.get("eingabe", "")), BIB, True)
@@ -1443,9 +1573,9 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
                 code, meldung = 0, ""  # ordinary PE: resources are not an archive for 7zz
             else:
                 fortschritt_phase("iso_entpacken" if fmt in SEVENZIP_TYPES else "werkzeug")
-                code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp, guard=guard, preexec=preexec)
+                code, meldung = run_isolated(command, restzeit(arbeitsende(started, cap)), env, out, job_tmp, guard=guard, preexec=preexec)
                 if tool == "analyzeHeadless" and code == 0:
-                    normalisierer_rohausgaben(source, out, cap, env, job_tmp, started + cap["zeitlimit_s"])
+                    normalisierer_rohausgaben(source, out, cap, env, job_tmp, arbeitsende(started, cap))
         finally:
             rest = sweep_processes()
             clean_tmp(job_tmp)
@@ -1471,22 +1601,25 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
         if extract and fmt == "pe" and pe_aktiv:
             rel = Path(str(req.get("eingabe_name") or source.name)).name
             fortschritt_phase("pe_ressourcen", rel)
-            pe_ressourcen(source, out, rel, cap, input_size, started + cap["zeitlimit_s"], verschachtelt)
+            pe_ressourcen(source, out, rel, cap, input_size, arbeitsende(started, cap), verschachtelt)
         if siedler_only:
             rel = Path(str(req.get("eingabe_name") or source.name)).name
             fortschritt_phase("siedler3", rel)
-            result = siedler3_entpacken(source, out, rel, cap, input_size, started + cap["zeitlimit_s"], verschachtelt)
+            result = siedler3_entpacken(source, out, rel, cap, input_size, arbeitsende(started, cap), verschachtelt)
             verschachtelt.setdefault(rel, {})["verschachtelt"] = {"format": siedler_fmt, **result}
-        files, size = output_manifest(out, cap, input_size)
+        files, size = output_manifest(out, cap, input_size, lauf_ende(started, cap))
     except GrenzeUeberschritten as exc:
         clear_output(out)
         return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
                  "dauer_s": round(time.monotonic() - started, 3)}]
     version = "siedler3 P18-T72" if siedler_only else "pe-ressourcen P18-T76" if pe_only else tool_version(tool)
     merge_verschachtelt(files, verschachtelt)
-    ende: dict[str, Any] = {"status": "teilweise" if abgebrochen else "fertig", "fehlercode": "deadline" if abgebrochen else None,
+    abgebrochen = abgebrochen or _STOPP is not None
+    ende: dict[str, Any] = {"status": "teilweise" if abgebrochen else "fertig", "fehlercode": abbruch_code(abgebrochen),
                             "werkzeug_version": version, "format": fmt or None,
                             "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size}
+    if _STOPP is not None:
+        ende["abbruch"] = _STOPP
     if extract:
         pe_status = pe_ressourcen_status(verschachtelt)
         if pe_status["fehlercode"]:

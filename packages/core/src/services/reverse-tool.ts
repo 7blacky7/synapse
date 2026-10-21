@@ -139,7 +139,8 @@ export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:
 export interface ReverseRuntime {
   /** PG-only, derselbe Client wie Fachauftrag und Aktivität. Kein Wake/FS/Docker unter Lock. */
   analysieren?: (anfrage:ReverseAnalyseAnfrage,db:PoolClient)=>Promise<Row>;
-  abbrechen?: (auftrag:Row,agentId:string,db:PoolClient)=>Promise<void>;
+  /** P18-T87: darf Zusatzfelder liefern (z. B. storno:'angefordert' bei laufender Containerarbeit). */
+  abbrechen?: (auftrag:Row,agentId:string,db:PoolClient)=>Promise<Row|void>;
   /** Nur lesen; nach der PG-Transaktion, keine Lebenszyklusänderung. */
   containerStatus?: (reverseId:string)=>Promise<ReverseContainerInfo>;
 }
@@ -612,9 +613,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         if(!await pruefeReverseBindung(db,project,str(job.eintrag_id)))fail('nicht_gebunden');
         if(!['offen','wartet','laeuft'].includes(str(job.status)))return {reverse_id:job.eintrag_id,auftrag_id:jid,status:job.status};
         if(job.p20_auftrag_id&&!hooks().abbrechen)fail('container_gesperrt','pipeline_anschluss_fehlt');
-        if(hooks().abbrechen)await hooks().abbrechen!(job,str(a.agent_id),db);
+        const zusatz=hooks().abbrechen?await hooks().abbrechen!(job,str(a.agent_id),db):undefined;
         await db.query("UPDATE reverse_auftraege SET status='abgebrochen',updated_at=NOW() WHERE id=$1 AND status IN ('offen','wartet','laeuft')",[jid]);
-        await activity(db,{...a,reverse_id:job.eintrag_id});return {reverse_id:job.eintrag_id,auftrag_id:jid,status:'abgebrochen'};
+        await activity(db,{...a,reverse_id:job.eintrag_id});return {reverse_id:job.eintrag_id,auftrag_id:jid,status:'abgebrochen',...(zusatz??{})};
       }
       if(action==='bestaetigen')await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-gruppierung'))");
       const rid=id(a.reverse_id),e=await entry(db,rid,['bestaetigen','archivieren','analysieren'].includes(action));

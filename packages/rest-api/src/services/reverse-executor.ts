@@ -21,7 +21,8 @@ import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getA
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
  reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
- leseReverseFortschrittSchalter,normalisiereReverseFortschritt,speichereReverseFortschritt,
+ leseReverseFortschrittSchalter,normalisiereReverseFortschritt,speichereReverseFortschritt,reverseStornoAngefordert,
+ leseReverseAufsicht,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
@@ -91,6 +92,12 @@ export function reverseContainerBedarf(k:ReverseExecutorKonfig):WorkResourceNeed
  return {cpu:Math.max(k.resourceNeed.cpu,k.s3ResourceNeed.cpu),ram:Math.max(k.resourceNeed.ram,k.s3ResourceNeed.ram),vram:0,gpu:false};
 }
 const reverseZeitlimitMax=(k:ReverseExecutorKonfig)=>k.kinds.includes('reverse-S3')?Math.max(k.zeitlimitS,k.s3ZeitlimitS):k.zeitlimitS;
+/** P18-T87: Zeitlimit je Kind. */
+export const reverseZeitlimitS=(k:ReverseExecutorKonfig,kind:string):number=>kind==='reverse-S3'?k.s3ZeitlimitS:k.zeitlimitS;
+/** P18-T87: harte Frist eines Laufs in Sekunden = Zeitlimit + Einstellwert hart_puffer_s; danach beendet der Executor den Lauf selbst. */
+export function reverseHarteFrist(k:ReverseExecutorKonfig,kind:string,pufferS:number):number{
+ return reverseZeitlimitS(k,kind)+pufferS;
+}
 /** Liest die Executor-Umgebung; null = aus. Ungültige Werte werfen (der Start bleibt dann aus). */
 export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:string|null):ReverseExecutorKonfig|null{
  if(env.SYNAPSE_REVERSE_ENABLED!=='1'||!reverseRoot)return null;
@@ -290,6 +297,9 @@ export interface ReverseExecutorDeps {
 }
 export interface ReverseDurchlauf {geprueft:true;geweckt:number;gestartet:number;hinweis?:string}
 interface ReverseQuelle {reverseId:string;mediumId:string;storageKey:string;dateien:{storageKey:string;rolle:string;name:string}[]}
+/** P18-T87: Eingriff der Aufsicht in einen laufenden Containerlauf. */
+type LaufEnde='zeitlimit'|'storno';
+interface Aufsicht {grund:()=>LaufEnde|null;beende:(g:LaufEnde)=>void;ende:()=>void}
 export class ReverseExecutor {
  private readonly pool:Db;private readonly k:ReverseExecutorKonfig;private readonly jobs:WorkJobService;
  private readonly laufend=new Map<string,Promise<void>>();
@@ -440,13 +450,19 @@ export class ReverseExecutor {
   return r.rows.length>0;
  }
  /** Übernahme nur, solange die eigene Lease gilt; späte Ergebnisse werden verworfen. */
- private async uebernimmUnterFence(job:WorkJob,wer:WorkIdentity,e:Parameters<typeof uebernehmeEErgebnis>[1]):Promise<{dateien:number;verworfen:number}|null>{
+ private async uebernimmUnterFence(job:WorkJob,wer:WorkIdentity,e:Parameters<typeof uebernehmeEErgebnis>[1],
+  ende?:{status:string;fehlercode:string|null}):Promise<{dateien:number;verworfen:number}|null>{
   const c=await this.pool.connect();
   try{
    await c.query('BEGIN');
    if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return null;}
    // Ohne connect(): die Übernahme läuft in dieser Transaktion unter dem Lease-Fence.
    const r=await (this.deps.uebernahme??uebernehmeEErgebnis)({query:c.query.bind(c)},e,this.deps.uebernahmeOptionen);
+   if(ende?.status==='teilweise'){
+    // P18-T87: vorzeitig beendeter Lauf (Frist/Grenze): Uebernommenes bleibt, Auftrag und E-Schicht zeigen teilweise mit Code.
+    await c.query("UPDATE reverse_auftraege SET status='teilweise',fehlercode=$2,updated_at=clock_timestamp() WHERE p20_auftrag_id=$1 AND status IN ('fertig','teilweise')",[job.id,ende.fehlercode]);
+    await c.query("UPDATE reverse_schichten SET status='teilweise',fehlercode=$2 WHERE aktuell AND schicht='E' AND datei_id IS NULL AND status IN ('fertig','teilweise') AND auftrag_id IN (SELECT id FROM reverse_auftraege WHERE p20_auftrag_id=$1)",[job.id,ende.fehlercode]);
+   }
    await c.query('COMMIT');return r;
   }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
   finally{c.release();}
@@ -470,6 +486,45 @@ export class ReverseExecutor {
     await c.query("UPDATE reverse_schichten SET status='fehler',fehlercode=$2 WHERE aktuell AND status IN ('offen','wartet','laeuft') AND auftrag_id IN (SELECT id FROM reverse_auftraege WHERE p20_auftrag_id=$1)",[job.id,code]);
     await c.query("UPDATE reverse_analyse_cache SET status='fehler',fehlercode=$2 WHERE p20_auftrag_id=$1",[job.id,code]);
    }
+   await c.query('COMMIT');return true;
+  }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
+  finally{c.release();}
+ }
+ /**
+  * P18-T87: Aufsicht ueber einen laufenden Containerlauf. Harte Frist (zeitlimit + Puffer): ohne Endmeldung wird der Lauf ueber den
+  * Lebenszyklus beendet (Container-Neustart) und endgueltig als zeitlimit gemeldet. Storno-Wunsch aus reverse(abbrechen)
+  * (work_job_audit 'storno_angefordert'), geprueft im Executor-Takt: Lauf beenden, Work-Job cancelled, Auftrag abgebrochen.
+  */
+ private aufsicht(lc:ToolLifecycle,job:WorkJob,fristS:number):Aufsicht{
+  let grund:LaufEnde|null=null;
+  const beende=(g:LaufEnde)=>{
+   if(grund)return;
+   grund=g;
+   console.warn('[reverse-executor] Lauf wird beendet:',job.id,'kind',job.kind,'grund',g,'frist_s',fristS);
+   void lc.neustart(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id).catch(e=>console.error('[reverse-executor] Lauf beenden fehlgeschlagen:',job.id,(e as Error).message));
+  };
+  const hart=setTimeout(()=>beende('zeitlimit'),fristS*1000);hart.unref();
+  const storno=setInterval(()=>{void reverseStornoAngefordert(this.pool,job.id).then(ja=>{if(ja)beende('storno');},()=>undefined);},this.k.tickMs);
+  storno.unref();
+  return {grund:()=>grund,beende,ende:()=>{clearTimeout(hart);clearInterval(storno);}};
+ }
+ /** P18-T87: Ende nach Eingriff: Storno -> cancelled/abgebrochen, Frist -> endgueltig zeitlimit (deterministisch, kein Neuversuch). */
+ private async eingriffBeenden(job:WorkJob,wer:WorkIdentity,g:LaufEnde):Promise<boolean>{
+  await this.pool.query("INSERT INTO work_job_audit(id,job_id,event,detail) VALUES(gen_random_uuid(),$1,'reverse_lauf_beendet',$2::jsonb)",[job.id,JSON.stringify({grund:g,kind:job.kind})])
+   .catch(e=>console.error('[reverse-executor] Audit fehlgeschlagen:',job.id,(e as Error).message));
+  return g==='storno'?this.stornieren(job,wer):this.scheitern(job,wer,'zeitlimit');
+ }
+ /** P18-T87: Storno unter Lease-Fence: Work-Job cancelled, alle offenen Fachauftraege abgebrochen, ihre Schichten fehler/abgebrochen. */
+ private async stornieren(job:WorkJob,wer:WorkIdentity):Promise<boolean>{
+  console.warn('[reverse-executor] Auftrag storniert:',job.id,'kind',job.kind,'eintrag',job.inputRef.id);
+  const c=await this.pool.connect();
+  try{
+   await c.query('BEGIN');
+   if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return false;}
+   await c.query(`UPDATE work_jobs SET state='cancelled',error_code='abgebrochen',lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1`,[job.id]);
+   await c.query("INSERT INTO work_job_audit(id,job_id,event,detail) VALUES(gen_random_uuid(),$1,'cancelled',$2::jsonb)",[job.id,JSON.stringify({grund:'storno',executor:'reverse'})]);
+   await c.query("UPDATE reverse_auftraege SET status='abgebrochen',lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE p20_auftrag_id=$1 AND status IN ('offen','wartet','laeuft')",[job.id]);
+   await c.query("UPDATE reverse_schichten SET status='fehler',fehlercode='abgebrochen' WHERE aktuell AND status IN ('offen','wartet','laeuft') AND auftrag_id IN (SELECT id FROM reverse_auftraege WHERE p20_auftrag_id=$1)",[job.id]);
    await c.query('COMMIT');return true;
   }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
   finally{c.release();}
@@ -517,7 +572,11 @@ export class ReverseExecutor {
   // Der Runner verlangt einen leeren Ausgabeordner; Reste eines verlorenen Versuchs entfernen.
   await rm(ausgabe,{recursive:true,force:true});
   await runnerOrdner(ausgabe);
+  // P18-T87: Puffer der harten Frist und Nachlauf fuer das Manifest: Einstellwerte (reverse_einstellungen, Code-Wert nur Standard).
+  const einst=await leseReverseAufsicht();
+  const nachlaufS=einst.nachlauf_s.wert;
   let lebt=true,aufraeumen=false;
+  const aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,einst.hart_puffer_s.wert));
   const timer=setInterval(()=>{void this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).then(ok=>{if(!ok)lebt=false;},()=>{lebt=false;});},this.k.renewMs);
   timer.unref();
   try{
@@ -528,10 +587,15 @@ export class ReverseExecutor {
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand,siedler3:siedlerStand.aktiv,siedler3_stand:siedlerStand},
-     grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung}}),live?.melde);
+     grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung,
+      nachlauf_s:nachlaufS}}),live?.melde);
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     const m=(e as Error).message;
+    // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
+    if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
+    const eingriff=aufsicht.grund();
+    if(eingriff){aufraeumen=await this.eingriffBeenden(job,wer,eingriff);return;}
     // Nicht abgesetzt: sauber zurückgeben. Sonst bleibt der Auftrag bis zum Lease-Ablauf gesperrt.
     if(m==='tool_not_ready'||m==='tool_runner_capacity'){await this.jobs.release(wer,job.id,token);aufraeumen=true;}
     else console.error('[reverse-executor] Ausführung ohne sicheres Ende:',job.id,m);
@@ -540,13 +604,18 @@ export class ReverseExecutor {
    clearInterval(timer);
    // M1: Lauf beendet -> Ordner gehört wieder root; der Runner kann ihn nicht mehr verändern (Übernahme liest als root).
    if(!alt)await sperreArbeitsOrdner(arbeit);
+   aufsicht.ende();
    const status=String(ergebnis.status);
+   // P18-T87: Storno kam vor dem Ergebnis an -> Ergebnis verwerfen, der Auftrag bleibt abgebrochen.
+   if(aufsicht.grund()==='storno'){aufraeumen=await this.eingriffBeenden(job,wer,'storno');return;}
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if((status==='fertig'||(status==='teilweise'&&manifest.length>0))&&lebt){
+    if(ergebnis.abbruch)console.warn('[reverse-executor] Lauf vorzeitig beendet, Teilergebnis wird uebernommen:',job.id,JSON.stringify(ergebnis.abbruch).slice(0,500));
     // K7: Lease vor der Übernahme einmal auffrischen (Hashing großer Ergebnisse unter dem Fence).
     if(!await this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).catch(()=>false)){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
     let r:{dateien:number;verworfen:number}|null;
-    try{r=await this.uebernimmUnterFence(job,wer,{jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,arbeitsWurzel:ausgabe,manifest});}
+    try{r=await this.uebernimmUnterFence(job,wer,{jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,arbeitsWurzel:ausgabe,manifest},
+     {status,fehlercode:status==='teilweise'?fehlercode(ergebnis.fehlercode??'deadline'):null});}
     catch(e){
      // W5: fachlicher Fehler -> endgültig; sonst freigeben, bis der Versuchszähler erreicht ist.
      console.error('[reverse-executor] Übernahme fehlgeschlagen:',job.id,(e as Error).message);
@@ -564,9 +633,9 @@ export class ReverseExecutor {
    }
    if(!lebt){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
    meldeRunnerFehler(job.kind,job.id,ergebnis);
-   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?'zeitlimit':fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
+   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?fehlercode(ergebnis.fehlercode??'deadline'):fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
   }finally{
-   clearInterval(timer);
+   clearInterval(timer);aufsicht.ende();
    // Nur mit gültigem Abschluss aufräumen: ein Folgeversuch nutzt denselben Auftragsordner.
    if(aufraeumen)await rm(arbeit,{recursive:true,force:true}).catch(()=>undefined);
   }
@@ -614,7 +683,11 @@ export class ReverseExecutor {
   const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
   await rm(ausgabe,{recursive:true,force:true});
   await runnerOrdner(ausgabe);
+  // P18-T87: Puffer der harten Frist und Nachlauf fuer das Manifest: Einstellwerte (reverse_einstellungen, Code-Wert nur Standard).
+  const einst=await leseReverseAufsicht();
+  const nachlaufS=einst.nachlauf_s.wert;
   let lebt=true,aufraeumen=false;
+  const aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,einst.hart_puffer_s.wert));
   const timer=setInterval(()=>{void this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).then(ok=>{if(!ok)lebt=false;},()=>{lebt=false;});},this.k.renewMs);
   timer.unref();
   try{
@@ -623,17 +696,25 @@ export class ReverseExecutor {
     const live=await this.liveFortschritt(job,token);
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({werkzeug:'analyzeHeadless',schicht:'S3',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
-     grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien}}),live?.melde);
+     grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien,
+      nachlauf_s:nachlaufS}}),live?.melde);
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     const m=(e as Error).message;
+    // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
+    if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
+    const eingriff=aufsicht.grund();
+    if(eingriff){aufraeumen=await this.eingriffBeenden(job,wer,eingriff);return;}
     if(m==='tool_not_ready'||m==='tool_runner_capacity'){await this.jobs.release(wer,job.id,token);aufraeumen=true;}
     else console.error('[reverse-executor] S3-Ausfuehrung ohne sicheres Ende:',job.id,m);
     return;
    }
    clearInterval(timer);
    if(!alt)await sperreArbeitsOrdner(arbeit);
+   aufsicht.ende();
    const status=String(ergebnis.status);
+   // P18-T87: Storno kam vor dem Ergebnis an -> Ergebnis verwerfen, der Auftrag bleibt abgebrochen.
+   if(aufsicht.grund()==='storno'){aufraeumen=await this.eingriffBeenden(job,wer,'storno');return;}
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if(status==='fertig'&&lebt){
     if(!await this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).catch(()=>false)){console.warn('[reverse-executor] Lease verloren, S3-Ergebnis verworfen:',job.id);return;}
@@ -657,9 +738,9 @@ export class ReverseExecutor {
    }
    if(!lebt){console.warn('[reverse-executor] Lease verloren, S3-Ergebnis verworfen:',job.id);return;}
    meldeRunnerFehler(job.kind,job.id,ergebnis);
-   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?'zeitlimit':fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
+   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?fehlercode(ergebnis.fehlercode??'deadline'):fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
   }finally{
-   clearInterval(timer);
+   clearInterval(timer);aufsicht.ende();
    if(aufraeumen)await rm(arbeit,{recursive:true,force:true}).catch(()=>undefined);
   }
  }
@@ -729,6 +810,7 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const ohneStatus=ergaenzeReverseRuntime({containerStatus:rid=>executor.containerStatus(rid)});
  // P18-T64: Ausführer anmelden – Pipeline reiht nur noch diese Kinds ein, Diagnose/Entstörer sehen Kapazität und können neu starten.
  const abmeldenAusfuehrer=meldeReverseAusfuehrer({kinds:konfig.kinds,parallel:konfig.parallel,
+  zeitlimits:Object.fromEntries(konfig.kinds.map(kind=>[kind,reverseZeitlimitS(konfig,kind)])),
   kapazitaet:async()=>{const lc=getToolLifecycle();if(!lc)throw Error('tool_lifecycle_aus');return lc.kapazitaet();},
   containerNeustart:async(jobId?:string|null)=>{const lc=getToolLifecycle();if(!lc)return {neu_gestartet:false,zustand:'tool_lifecycle_aus'};return lc.neustart(REVERSE_TOOL_ID,REVERSE_PROJEKT,jobId??null);}});
  let running:Promise<ReverseDurchlauf>|null=null;

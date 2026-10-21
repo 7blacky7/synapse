@@ -16,7 +16,7 @@ import {maskiereMitKatalog} from './masken-katalog.js';
 import {configureReverseRuntime,reverseBisSchichtGrenze,begrenzeReverseSchicht,type ReverseAnalyseAnfrage} from './reverse-tool.js';
 import {createWorkJobService,validateWorkResources,type WorkResourceNeed} from './work-jobs.js';
 import {starteApiAuftragsLoop,type ApiAuftragsLoop} from './api-auftrags-loop.js';
-import {reverseKindAusfuehrbar,reverseFehlerDeterministisch,zerlegeReverseFehlercode,reverseResourceNeedRoh} from './reverse-ausfuehrer.js';
+import {reverseKindAusfuehrbar,reverseFehlerDeterministisch,zerlegeReverseFehlercode,reverseResourceNeedRoh,reverseStornoAnfordern} from './reverse-ausfuehrer.js';
 import {leseReverseEinstellungen} from './reverse-einstellungen.js';
 import {leseReversePeRessourcenSchalter} from './reverse-pe-schalter.js';
 import {leseReverseSiedler3Schalter} from './reverse-siedler3-schalter.js';
@@ -292,12 +292,20 @@ export class ReversePipelineDienst{
   if(a.prioritaet==='interaktiv')await db.query("UPDATE work_jobs SET priority='interaktiv',updated_at=clock_timestamp() WHERE id IN (SELECT p20_auftrag_id FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint) AND state='pending'",[a.reverseId,a.dateiId]);
   return r;
  }
- async abbrechen(j:Row,_agent:string,db:PoolClient):Promise<void>{
+ async abbrechen(j:Row,agent:string,db:PoolClient):Promise<Row|void>{
   if(j.p20_auftrag_id){
    // Running leases require RV12's physical cancellation proof; do not fake a release.
    const others=(await db.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE p20_auftrag_id=$1 AND id<>$2 AND status IN ('offen','wartet','laeuft')",[j.p20_auftrag_id,j.id])).rows[0];
    if(Number(others.n)>0){await db.query('UPDATE reverse_auftraege SET lease_token=NULL,lease_bis=NULL WHERE id=$1',[j.id]);return;}
    const w=(await db.query('SELECT state FROM work_jobs WHERE id=$1 FOR UPDATE',[j.p20_auftrag_id])).rows[0];
+   if(w?.state==='leased'||w?.state==='staged'){
+    // P18-T87: laufende Containerarbeit nicht vortaeuschen freizugeben, sondern als Storno-Wunsch am Work-Job hinterlegen. Der
+    // Executor beendet den Lauf im naechsten Takt (Work-Job cancelled, Auftrag abgebrochen); entdecke reiht nicht neu ein.
+    await reverseStornoAnfordern(db,String(j.p20_auftrag_id),{auftrag_id:j.id,agent});
+    await db.query('UPDATE reverse_auftraege SET lease_token=NULL,lease_bis=NULL WHERE id=$1',[j.id]);
+    return {storno:'angefordert',p20_auftrag_id:String(j.p20_auftrag_id),
+     hinweis:'Der laufende Containerlauf wird im naechsten Executor-Takt beendet (Work-Job cancelled). Eine neue Analyse nur ueber reverse analysieren.'};
+   }
    if(w&&!['pending','completed','failed','cancelled'].includes(w.state))throw new Error('Aktive Containerarbeit benötigt Executor-Storno');
    await db.query("UPDATE work_jobs SET state='cancelled',updated_at=clock_timestamp() WHERE id=$1 AND state='pending'",[j.p20_auftrag_id]);
   }
@@ -312,10 +320,12 @@ export class ReversePipelineDienst{
   const verwaist=(await this.pool.query("SELECT r.eintrag_id,r.medium_id::text,r.projekt,r.ziel_schicht,r.prioritaet FROM reverse_auftraege r JOIN work_jobs w ON w.id=r.p20_auftrag_id JOIN reverse_eintraege e ON e.id=r.eintrag_id WHERE r.schicht='E' AND r.datei_id IS NULL AND r.status IN ('offen','wartet') AND w.state='completed' AND e.status='bestaetigt' ORDER BY r.created_at,r.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100)])).rows;
   for(const j of verwaist)await this.tx(db=>this.queue(db,{reverseId:j.eintrag_id,dateiId:null,mediumId:j.medium_id,project:j.projekt??'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:j.ziel_schicht??reverseBisSchichtGrenze(),prioritaet:j.prioritaet}));
   const eProfil=await this.eProfil();
-  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht=(CASE WHEN array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3)) IS NULL OR array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3))>array_position(ARRAY['E','S0','S1','S2','S3'],$3::text) THEN $3::text ELSE COALESCE(e.analyse_policy->>'bis_schicht',$3::text) END) AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100),this.profile,reverseBisSchichtGrenze()])).rows;
+  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht=(CASE WHEN array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3)) IS NULL OR array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3))>array_position(ARRAY['E','S0','S1','S2','S3'],$3::text) THEN $3::text ELSE COALESCE(e.analyse_policy->>'bis_schicht',$3::text) END) AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.datei_id=d.id AND nz.created_at>ab.created_at)) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100),this.profile,reverseBisSchichtGrenze()])).rows;
   for(const d of files)await this.tx(async db=>{await db.query('UPDATE reverse_dateien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[d.id]);return this.queue(db,{reverseId:d.eintrag_id,dateiId:d.id,mediumId:d.medium_id,
    project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:begrenzeReverseSchicht(d.analyse_policy?.bis_schicht),prioritaet:'hintergrund'});});
-  const media=(await this.pool.query("SELECT m.id::text,m.eintrag_id FROM reverse_medien m JOIN reverse_eintraege e ON e.id=m.eintrag_id WHERE e.status='bestaetigt' AND m.status='vollstaendig' AND m.art<>'ordner' AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.medium_id=m.id AND s.schicht='E' AND s.aktuell AND s.status IN ('fertig','teilweise') AND s.werkzeug_version IS NOT DISTINCT FROM $2 AND s.profil_version IS NOT DISTINCT FROM $3) ORDER BY m.pipeline_gesehen_at NULLS FIRST,m.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100),reverseContainerWerkzeugVersion(),eProfil])).rows;
+  const media=(await this.pool.query("SELECT m.id::text,m.eintrag_id FROM reverse_medien m JOIN reverse_eintraege e ON e.id=m.eintrag_id WHERE e.status='bestaetigt' AND m.status='vollstaendig' AND m.art<>'ordner' AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.medium_id=m.id AND s.schicht='E' AND s.aktuell AND s.status IN ('fertig','teilweise') AND s.werkzeug_version IS NOT DISTINCT FROM $2 AND s.profil_version IS NOT DISTINCT FROM $3) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.medium_id=m.id AND ab.datei_id IS NULL AND ab.schicht='E' AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.medium_id=m.id AND nz.datei_id IS NULL AND nz.schicht='E' AND nz.created_at>ab.created_at)) ORDER BY m.pipeline_gesehen_at NULLS FIRST,m.id LIMIT $1",[num('SYNAPSE_REVERSE_DISCOVERY_BATCH',100),reverseContainerWerkzeugVersion(),eProfil])).rows;
+  // P18-T87: Ist der juengste Auftrag einer Datei bzw. eines Mediums (E) abgebrochen, reiht die Automatik nichts neu ein (beide
+  // Abfragen oben); eine neue Analyse gibt es dann nur ueber ein ausdrueckliches reverse(analysieren).
   // P18-T71: Ein neues Reverse-Image (anderer Werkzeugstand) reiht E fertiger Medien einmal neu ein (verschachtelte Container);
   // gibt es schon einen E-Auftrag mit diesem Stand (auch gescheitert), bleibt es dabei - keine Endlosschleife.
   for(const m of media)await this.tx(async db=>{await db.query('UPDATE reverse_medien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[m.id]);return this.queue(db,{reverseId:m.eintrag_id,dateiId:null,mediumId:m.id,project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:reverseBisSchichtGrenze(),prioritaet:'hintergrund'});});

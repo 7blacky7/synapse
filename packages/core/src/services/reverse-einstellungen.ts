@@ -13,6 +13,9 @@ export const REVERSE_EINSTELLUNGEN={
  aufrufer_tiefe:3,aufrufer_max:100,konfidenz_prozent:80,max_muster_zeichen:512,laufzeit_ms:5000,
  // P18-T85: Live-Fortschritt: Meldetakt des Runners (s, hoechstens 600) und Schwelle fuer den Haenger-Hinweis (s, kein Abbruch).
  fortschritt_takt_s:10,fortschritt_haenger_s:180,
+ // P18-T87: Puffer der harten Executor-Frist (s, hoechstens 55: Transportfrist = Zeitlimit + 60 s) und Nachlauf fuer das Manifest
+ // innerhalb des Zeitlimits (s; der Runner kuerzt auf hoechstens ein Viertel des Zeitlimits).
+ hart_puffer_s:30,nachlauf_s:300,
 } as const;
 export type ReverseEinstellungName=keyof typeof REVERSE_EINSTELLUNGEN;
 export interface ReverseWert {wert:number;quelle:'standard'|'global'|'projekt';standard:number;global:number|null;projekt:number|null}

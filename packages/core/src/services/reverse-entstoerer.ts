@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
-import { reverseAusfuehrer, zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
+import { reverseAusfuehrer, zerlegeReverseFehlercode, leseReverseAufsicht } from './reverse-ausfuehrer.js';
 import { registriereWorker, workerPausiert } from './worker-steuerung.js';
 
 type Row = Record<string, unknown>;
@@ -18,7 +18,7 @@ type Db = Pick<Pool, 'query' | 'connect'>;
 
 export const REVERSE_URSACHEN = ['kein_ausfuehrer', 'wartet_auf_platz', 'wartet_auf_start', 'in_warteschlange', 'laeuft',
   'lease_abgelaufen', 'container_haengt', 'container_gesperrt', 'container_verwaist', 'auftrag_verwaist', 'werkzeug_fehler',
-  'fachlicher_fehler'] as const;
+  'fachlicher_fehler', 'ueber_zeitlimit', 'storno_angefordert'] as const;
 export type ReverseUrsache = typeof REVERSE_URSACHEN[number];
 /** Ursachen, die entstoeren behandelt (Rest ist Normalbetrieb oder nur sichtbar). */
 export const REVERSE_ENTSTOERBAR: readonly ReverseUrsache[] = ['kein_ausfuehrer', 'lease_abgelaufen', 'container_haengt', 'container_verwaist'];
@@ -36,6 +36,9 @@ const TEXT: Record<ReverseUrsache, { text: string; schritt: string }> = {
   auftrag_verwaist: { text: 'Reverse-Auftrag offen, der zugehörige Container-Auftrag ist aber schon beendet.', schritt: 'Pipeline legt beim nächsten Scan einen neuen Versuch an; sonst reverse analysieren.' },
   werkzeug_fehler: { text: 'Das Werkzeug ist gescheitert (wiederholbarer Fehler, Versuche erschöpft).', schritt: 'reverse analysieren für einen neuen Versuch.' },
   fachlicher_fehler: { text: 'Fachlicher Fehler: bei gleicher Eingabe scheitert der Auftrag identisch (siehe fehlercode/fehler_detail).', schritt: 'Kein automatischer Neuversuch; Formatunterstützung bzw. Eingabe klären.' },
+  // P18-T87: Debug-Sichtbarkeit der harten Frist und des Stornos laufender Containerarbeit.
+  ueber_zeitlimit: { text: 'Der Containerlauf läuft länger als seine harte Frist (zeitlimit + Puffer, frist_s), obwohl die Lease erneuert wird.', schritt: 'Der Executor beendet ihn selbst; bleibt er stehen: reverse abbrechen (Koordinator/User).' },
+  storno_angefordert: { text: 'Abbruch angefordert; der Executor beendet den laufenden Containerlauf im nächsten Takt.', schritt: 'Kurz warten; danach ist der Work-Job cancelled und der Auftrag abgebrochen.' },
 };
 
 function envZahl(name: string, fallback: number, min = 0): number {
@@ -73,11 +76,24 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
   // Dynamisch: reverse-fortschritt zieht intern-tool nach; statisch entstuende ein Importzyklus ueber intern-schalter.
   const { leseReverseFortschrittSchalter, reverseFortschrittAnzeige, REVERSE_FORTSCHRITT_SQL } = await import('./reverse-fortschritt.js');
   const live = await leseReverseFortschrittSchalter().catch(() => null);
-  const liveVon = (w: Row | undefined) => { const l = live?.aktiv && w ? reverseFortschrittAnzeige(w, live.haenger_s) : null; return l ? { live: l } : {}; };
+  // P18-T87: harte Frist = Zeitlimit des Ausfuehrers + Einstellwert hart_puffer_s (gleiche Lesestelle wie der Executor).
+  const einst = await leseReverseAufsicht().catch(() => null);
+  const einstellung = (n: 'hart_puffer_s' | 'nachlauf_s') => einst ? einst[n] : null;
+  const puffer = einstellung('hart_puffer_s');
+  const fristVon = (kind: string) => { const z = aus?.zeitlimits?.[kind]; return z !== undefined && puffer ? z + puffer.wert : undefined; };
+  const liveVon = (w: Row | undefined) => {
+    const l = live?.aktiv && w ? reverseFortschrittAnzeige(w, live.haenger_s) : null;
+    // P18-T87: Frist und Storno-Wunsch je laufendem Work-Job sichtbar.
+    const frist = w ? fristVon(String(w.kind)) : undefined;
+    return { ...(l ? { live: l } : {}), ...(w?.storno_at ? { storno_angefordert_at: iso(w.storno_at) } : {}),
+      ...(w && w.state === 'leased' && frist ? { frist_s: frist, lauf_s: zahl(w.lauf_s) } : {}) };
+  };
   const jobs = (await db.query(`SELECT w.id::text AS id,w.kind,w.state,w.attempt,w.error_code,w.owner_node,w.lease_until,w.input_ref->>'id' AS reverse_id,
      (w.lease_until IS NOT NULL AND w.lease_until<=clock_timestamp()-($3*interval '1 second')) AS lease_abgelaufen,
      (w.lease_until IS NOT NULL AND w.lease_until<=clock_timestamp()) AS lease_ueberfaellig,
-     EXTRACT(EPOCH FROM clock_timestamp()-w.created_at)::int AS alter_s,${REVERSE_FORTSCHRITT_SQL}
+     EXTRACT(EPOCH FROM clock_timestamp()-w.created_at)::int AS alter_s,${REVERSE_FORTSCHRITT_SQL},
+     EXTRACT(EPOCH FROM clock_timestamp()-w.claimed_at)::int AS lauf_s,
+     (SELECT max(a.created_at) FROM work_job_audit a WHERE a.job_id=w.id AND a.event='storno_angefordert') AS storno_at
     FROM work_jobs w WHERE w.capability='reverse_bibliothek' AND w.kind<>'tool-warmup' AND w.state IN ('pending','leased','staged')
      AND ($1::text IS NULL OR w.input_ref->>'id'=$1) ORDER BY w.created_at,w.id LIMIT $2`, [rid, limit, gnade])).rows;
   // N5: ausfuehrung/lease_bis/werkzeug kommen erst mit dem Pipeline-Schema -> tolerant über to_jsonb lesen.
@@ -121,6 +137,10 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     const mit = (ursache: ReverseUrsache) => ({ ursache, container_zustand: cz, container_instanz: eigen ? String(eigen.instance) : null, container_job: (eigen?.work_job_id ?? null) as string | null });
     // N2: erst der Job-Zustand. Nur ein pending Job ohne Ausführer ist 'kein_ausfuehrer'; geleaste laufen aus bzw. werden über die Lease behandelt.
     if (w.lease_abgelaufen) return mit('lease_abgelaufen');
+    // P18-T87: Storno-Wunsch bzw. Lauf ueber der harten Frist (die Lease wird dabei weiter erneuert).
+    if (w.state === 'leased' && w.storno_at) return mit('storno_angefordert');
+    const frist = fristVon(String(w.kind));
+    if (w.state === 'leased' && frist && Number(w.lauf_s) > frist) return mit('ueber_zeitlimit');
     if (w.state !== 'pending') return mit(eigen?.ursache === 'container_haengt' ? 'container_haengt' : 'laeuft');
     if (!kinds.includes(String(w.kind))) return mit('kein_ausfuehrer');
     if (eigen?.ursache === 'container_haengt' || eigen?.ursache === 'container_gesperrt') return mit(eigen.ursache as ReverseUrsache);
@@ -161,6 +181,7 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     container: { belegt, max, reverse_container: containerInfo.filter(c => c.zustand !== 'blocked').length, instanzen: containerInfo.map(({ _instance_id, ...c }) => c) },
     auftraege: eintraege, ursachen, anzahl: eintraege.length,
     fortschritt_live: live ?? { aktiv: false, letzter_fehler: 'reverse_fortschritt_schalter_nicht_lesbar' },
+    aufsicht: { zeitlimits_s: aus?.zeitlimits ?? null, hart_puffer_s: puffer, nachlauf_s: einstellung('nachlauf_s'), einstellungen_fehler: einst?.letzter_fehler ?? (einst ? null : 'reverse_einstellungen_nicht_lesbar'), hinweis: 'P18-T87: harte Frist und Storno setzt der Executor durch; diagnose zeigt ueber_zeitlimit/storno_angefordert.' },
     haenger_verdacht: eintraege.filter(e => (e.live as Row | undefined)?.haenger_verdacht === true).length,
     automatik: { aktiv: entstoererAktiv(), letzter_lauf: letzterAutoLauf, massnahmen: verlauf.slice(0, 20) },
   };

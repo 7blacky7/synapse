@@ -207,7 +207,8 @@ class RunnerContractTests(unittest.TestCase):
             command, timeout, env = run.call_args.args[0], run.call_args.args[1], run.call_args.args[2]
             self.assertEqual(env["TMPDIR"], str(Path(tmp_root) / "job-env"))
             self.assertEqual(env["HOME"], env["TMPDIR"])
-            self.assertEqual(timeout, 5)
+            # P18-T87: Werkzeugfrist = zeitlimit_s minus Nachlauf fuer das Manifest (hoechstens ein Viertel: 5 - 1).
+            self.assertEqual(timeout, 4)
             self.assertIn("-tiso", command)
             self.assertEqual(command[-2:], [f"-o{box.work / 'job-env'}", str(box.bib / "r1/original/disc.bin")])
             self.assertEqual(events[-1]["status"], "fertig")
@@ -236,7 +237,7 @@ class RunnerContractTests(unittest.TestCase):
             job_tmp = str(Path(tmp_root) / "job-ghidra")
             self.assertTrue(seen["project_exists"], "Projektordner existiert vor dem Start")
             self.assertEqual(env["JAVA_TOOL_OPTIONS"], f"-Duser.home={job_tmp} -Djava.io.tmpdir={job_tmp} -Xmx3g")
-            self.assertEqual(timeout, 7)
+            self.assertEqual(timeout, 6, "P18-T87: zeitlimit_s 7 minus Nachlauf 1")
             self.assertEqual(command[command.index("-scriptPath") + 1], str(runner.GHIDRA_SCRIPTS))
             self.assertEqual(command[1], str(box.work / "job-ghidra" / "ghidra-project"))
             self.assertEqual(events[-1]["status"], "fertig")
@@ -735,6 +736,122 @@ class VerschachteltTests(unittest.TestCase):
             meta, _ = self.lauf(out, self.cap(), fake)
             self.assertEqual(runner.dateien_unter(out), ["set.zip", "set.zip~inhalt/Müller.txt"])
         self.assertEqual(meta["set.zip"]["verschachtelt"]["namen_umkodiert"], 1)
+
+
+class GrenzenFristT87Tests(unittest.TestCase):
+    """P18-T87 (XP-SP2): harte Frist in allen Phasen, sofortiger Stopp an der Grenze, kein Vollscan je Container."""
+
+    def setUp(self):
+        runner._STOPP = None
+
+    def cap(self, **extra):
+        return {**runner.limits({"grenzen": extra}), "zeitlimit_s": extra.get("zeitlimit_s", 60)}
+
+    def lauf(self, out, cap, fake=None, started=None, pe_aktiv=False):
+        with tempfile.TemporaryDirectory() as tmp_root, patch.object(runner, "TMP_ROOT", Path(tmp_root)):
+            job_tmp = Path(tmp_root) / "job"
+            job_tmp.mkdir()
+            env = {"PATH": "/usr/bin:/bin", "TMPDIR": str(job_tmp), "HOME": str(job_tmp)}
+            beginn = time.monotonic() if started is None else started
+            with patch.object(runner, "verschachtelt_kommando", side_effect=fake or (lambda *a: ["true"])):
+                return runner.entpacke_verschachtelt(out, cap, 10_000_000, env, job_tmp, beginn, pe_aktiv=pe_aktiv)
+
+    def test_max_dateien_stoppt_sofort_und_zaehlt_nur_neue_container(self):
+        def fake(tool, source, ziel, fmt):
+            return ["sh", "-c", "printf x > inhalt.txt"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for i in range(1, 6):
+                (out / f"a{i}.zip").write_bytes(b"PK\x03\x04" + b"\x00" * 10)
+            zaehlungen, original = [], runner.baum_zaehlen
+
+            def zaehle(root):
+                zaehlungen.append(Path(root))
+                return original(root)
+            with patch.object(runner, "baum_zaehlen", side_effect=zaehle):
+                meta, abgebrochen = self.lauf(out, self.cap(max_dateien=10), fake)
+            stopp = runner._STOPP
+        self.assertTrue(abgebrochen)
+        self.assertEqual((stopp["grund"], stopp["fehlercode"], stopp["phase"], stopp["offen"]),
+                         ("grenze", "zu_gross", "verschachtelt", 5), stopp)
+        self.assertIn("max_dateien", stopp["meldung"])
+        self.assertEqual([meta[f"a{i}.zip"]["verschachtelt"]["status"] for i in range(1, 6)], ["entpackt"] * 5)
+        self.assertEqual(zaehlungen[0], out, "die Ausgabe wird genau einmal ganz gezaehlt")
+        self.assertEqual(len(zaehlungen), 6)
+        self.assertTrue(all(p.name.endswith("~inhalt") for p in zaehlungen[1:]), zaehlungen)
+
+    def test_pe_ressourcen_nach_erreichter_grenze_keine_weiteren_laeufe(self):
+        aufrufe = []
+
+        def extract(source, out, rel, cap, input_size, deadline, violation, initial):
+            aufrufe.append(initial)
+            if violation(initial[0] + 2, initial[1] + 1, initial[2] + 2, cap, input_size):
+                return {"metadaten": {}, "status": "teilweise", "fehlercode": "zu_gross", "dateien": 0}
+            ordner = out / (rel + "~ressourcen")
+            ordner.mkdir()
+            meta = {}
+            for name in ("0.bin", "1.bin"):
+                (ordner / name).write_bytes(b"r")
+                meta[rel + "~ressourcen/" + name] = {"herkunft": {"archiv": rel, "pfad": name, "tiefe": 1}, "pe_ressource": {}}
+            return {"metadaten": meta, "status": "fertig", "fehlercode": None, "dateien": 2}
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for i in range(50):
+                (out / f"m{i:02d}.dll").write_bytes(b"MZ" + b"\x00" * 62)
+            with patch.object(runner.pe_ressourcen_modul(), "extract", side_effect=extract):
+                _, abgebrochen = self.lauf(out, self.cap(max_dateien=60), pe_aktiv=True)
+            stopp = runner._STOPP
+        self.assertTrue(abgebrochen)
+        self.assertEqual((stopp["fehlercode"], stopp["offen"]), ("zu_gross", 45), stopp)
+        self.assertEqual(len(aufrufe), 5, "nach erreichter Grenze keine weiteren PE-Laeufe (XP: CPU-Leerlauf bis zur Frist)")
+        self.assertEqual([a[0] for a in aufrufe], [50, 52, 54, 56, 58], "Bestand inkrementell statt Neuzaehlung je PE")
+
+    def test_frist_beendet_verschachtelt_ohne_weitere_dateien_zu_lesen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for i in range(3):
+                (out / f"a{i}.zip").write_bytes(b"PK\x03\x04" + b"\x00" * 10)
+            with patch.object(runner, "container_art", wraps=runner.container_art) as art:
+                meta, abgebrochen = self.lauf(out, self.cap(), started=time.monotonic() - 3600)
+            stopp = runner._STOPP
+        self.assertTrue(abgebrochen)
+        self.assertEqual((meta, art.call_count), ({}, 0))
+        self.assertEqual((stopp["grund"], stopp["fehlercode"], stopp["offen"]), ("deadline", "deadline", 3))
+
+    def test_manifest_endet_an_der_frist_mit_teilergebnis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            for i in range(3):
+                (out / f"d{i}.bin").write_bytes(b"x")
+            cap = runner.limits({})
+            alle, _ = runner.output_manifest(out, cap, 100)
+            self.assertEqual((len(alle), runner._STOPP), (3, None))
+            teil = runner.output_manifest(out, cap, 100, time.monotonic() - 1)
+        self.assertEqual(teil, ([], 0))
+        self.assertEqual((runner._STOPP["phase"], runner._STOPP["fehlercode"]), ("manifest", "deadline"))
+
+    def test_arbeitsende_laesst_dem_manifest_hoechstens_ein_viertel(self):
+        self.assertEqual(runner.arbeitsende(100.0, {"zeitlimit_s": 3600, "nachlauf_s": 300}), 3400.0)
+        self.assertEqual(runner.arbeitsende(0.0, {"zeitlimit_s": 40, "nachlauf_s": 300}), 30.0)
+        self.assertEqual(runner.lauf_ende(0.0, {"zeitlimit_s": 40, "nachlauf_s": 300}), 40.0)
+
+    def test_run_request_endet_teilweise_zu_gross_und_behaelt_das_entpackte(self):
+        def fake(tool, source, ziel, fmt):
+            return ["sh", "-c", "printf a > x1.txt; printf b > x2.txt"]
+        haupt = ["sh", "-c", "for i in 1 2 3; do printf 'PK\\003\\004xxxxxxxx' > z$i.zip; done"]
+        with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, \
+             patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+             patch.object(runner, "command_for", return_value=haupt), \
+             patch.object(runner, "verschachtelt_kommando", side_effect=fake):
+            source = box.put("rev/original/dateien/aa/set.zip", b"PK\x03\x04" + b"\x00" * 96)
+            events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-voll",
+                                         "grenzen": {"max_dateien": 5}})
+        ende = events[-1]
+        self.assertEqual((ende["status"], ende["fehlercode"]), ("teilweise", "zu_gross"), ende)
+        self.assertEqual((ende["abbruch"]["phase"], ende["abbruch"]["offen"]), ("verschachtelt", 4))
+        self.assertEqual(sorted(e["pfad"] for e in ende["manifest"]),
+                         ["z1.zip", "z1.zip~inhalt/x1.txt", "z1.zip~inhalt/x2.txt", "z2.zip", "z3.zip"])
+        self.assertEqual(ende["verschachtelt"]["abbruch"]["grund"], "grenze")
 
 
 class LiveFortschrittT85Tests(unittest.TestCase):
