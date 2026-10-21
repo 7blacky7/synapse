@@ -80,6 +80,7 @@ export const INTERN_SCHALTER = {
   db_lesen: ['freigegeben'],
   // P18-T75: nur S3-Funktionsvergleich befristet freigeben; Produktbasis reverse_s3.
   reverse_vergleichen: ['freigegeben'],
+  reverse_verknuepfungen: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 
@@ -154,7 +155,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
       dauerhaft: false, grund: null, gesetzt_von: null, gesetzt_am: null,
     };
   }
-  const abgelaufen = (z.aktiv || name === 'reverse_siedler3' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.bis !== null && z.bis.getTime() <= jetzt;
+  const abgelaufen = (z.aktiv || name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.bis !== null && z.bis.getTime() <= jetzt;
   return {
     name,
     aktiv: z.aktiv && !abgelaufen,
@@ -162,7 +163,7 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
     abgelaufen,
     modus: z.modus,
     bis: z.bis ? z.bis.toISOString() : null,
-    dauerhaft: (z.aktiv || name === 'agent_bezug_modus' || ((name === 'reverse_siedler3' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.modus === 'freigegeben')) && z.bis === null,
+    dauerhaft: (z.aktiv || name === 'agent_bezug_modus' || ((name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.modus === 'freigegeben')) && z.bis === null,
     grund: z.grund,
     gesetzt_von: z.gesetzt_von,
     gesetzt_am: z.gesetzt_am ? z.gesetzt_am.toISOString() : null,
@@ -193,7 +194,7 @@ export async function setzeSchalter(
   let hinweis: string | undefined;
 
   // Der Freigabeschalter braucht auch fuer einen AUS-Override einen Ablauf.
-  if (opt.aktiv || name === 'reverse_siedler3' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) {
+  if (opt.aktiv || name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) {
     modus = opt.modus ?? erlaubt[0];
     if (!erlaubt.includes(modus)) {
       throw new InternSchalterFehler('modus_ungueltig', `Modus "${modus}" passt nicht zu "${name}". Erlaubt: ${erlaubt.join(', ')}.`);

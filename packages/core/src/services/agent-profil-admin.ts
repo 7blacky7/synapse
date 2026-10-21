@@ -12,6 +12,7 @@
  */
 import { getPool } from '../db/client.js';
 import { NETZWERK_ADMIN_PARAMETER, fuehreNetzwerkAdminAus } from './agentennetzwerk.js';
+import {REVERSE_ADMIN_ACTIONS,REVERSE_ADMIN_PARAMETER,fuehreReverseAdminAus} from './reverse-einstellungen.js';
 import {HEX_ADMIN_ACTIONS, HEX_ADMIN_PARAMETER, fuehreHexAdminAus} from './hex-einstellungen.js';
 import {
   W1B_DIENSTE, W12_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, MAIN_ROLLE, darfProfilAendern, type W1bAkteur, type AusweisAkteur, type Startart, type SchattenZustand, type ProfilInhalt, type TaskBindung,
@@ -55,7 +56,7 @@ const W1B_KERN_AKTIONEN = [
   'profil_lesen', 'identitaet_deaktivieren', 'identitaet_reaktivieren',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = ['agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = ['agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -97,6 +98,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
   ...NETZWERK_ADMIN_PARAMETER,
   ...HEX_ADMIN_PARAMETER,
+  ...REVERSE_ADMIN_PARAMETER,
   ...HAUPTAGENT_ADMIN_PARAMETER,
   ...API_AGENT_ADMIN_PARAMETER,
   ...RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER,
@@ -533,6 +535,7 @@ function eigenprofilOhneVerwalter(action: string, args: Args, wer: AusweisAkteur
 export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteur?: W1bAkteur | null } = {}): Promise<Record<string, unknown>> {
   const akteur = opt.akteur !== undefined ? opt.akteur : aktuellerW1bAkteur();
   if (action === 'agentennetzwerk') return fuehreNetzwerkAdminAus(args, akteur ?? legacyKoordinatorAus(args));
+  if (action === 'reverse_einstellungen') return fuehreReverseAdminAus(args, akteur ?? legacyKoordinatorAus(args));
   if (action === 'hex_einstellungen') return fuehreHexAdminAus(args, akteur ?? legacyKoordinatorAus(args));
   // P22-T36: Hauptagent-Verwaltung (User + Main selbst; Koordinatoren nur Kommunikation) – eigener Rechtepfad.
   // P22-T7: hauptagent_heartbeat (auf User-Anweisung) und agent_verbrauch kennen auch den Legacy-Koordinator; die uebrigen

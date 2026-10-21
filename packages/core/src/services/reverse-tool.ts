@@ -19,9 +19,11 @@ import { ANSICHT_SCHEMA_PROPERTIES, setzeMcpBilder, trenneMcpBilder } from './as
 import { zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
 import { gruppiereRv27Dateien } from './hex-rv27.js';
 import { diagnoseReverse, entstoereReverse, REVERSE_ENTSTOERBAR } from './reverse-entstoerer.js';
+import {leseReverseVerknuepfungen} from './reverse-verknuepfungen.js';
+import {leseReverseEinstellungen} from './reverse-einstellungen.js';
 import { vorhandeneZielfelder, zielinhaltHerkunft } from './zielinhalt.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur'] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -40,7 +42,7 @@ const TEXTE: Record<ReverseFehlercode,string> = {
 };
 const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: vergleichen(datei_a,datei_b) vergleicht S3-Funktionen mit Unsicherheitskennzeichnung und Paging; funktion = Symbol-ID für Diff. tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: verknuepfungen(datei|gruppe|funktion) ordnet Stringreferenzen an Dateien zu, nennt Funktionen und rückwärtige Aufrufer (Produkt reverse_verknuepfungen, Standard AUS); gruppe z.B. GFX oder .dat; struktur ergänzt geladen_von. vergleichen(datei_a,datei_b) vergleicht S3-Funktionen mit Unsicherheitskennzeichnung und Paging; funktion = Symbol-ID für Diff. tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -52,7 +54,8 @@ export const REVERSE_DEFINITION = {
     aufteilen:{type:'array',items:{type:'object',properties:{titel:{type:'string'},medien:{type:'array',items:{type:'string'}}},required:['titel','medien'],additionalProperties:false},description:'Vorschlag vor der Analyse in vollständige disjunkte Mediengruppen aufteilen'},
     notiz:{type:'string'},datei:{type:'string',description:'Relativer Reverse-Dateipfad'},file_path:{type:'string',description:'Alias für datei bei status/analysieren; Code-Aktionen nutzen virtuelle Pfade <Original>@S1/strings.txt, @S2/<Funktion>.asm oder @S3/<Funktion>.c'},
     datei_a:{type:'string',description:'vergleichen: erster Originalpfad im Reverse-Eintrag'},datei_b:{type:'string',description:'vergleichen: zweiter Originalpfad; beide brauchen S3 (reverse_s3)'},
-    funktion:{type:'string',description:'vergleichen: Symbol-ID aus unterschiede für Rohtext-Diff; from_line/to_line paginieren Diff-Zeilen'},
+    gruppe:{type:'string',description:'verknuepfungen: Dateimuster, Endung (.dat) oder Ordnergruppe (GFX)'},
+    funktion:{type:'string',description:'verknuepfungen: exakter Funktionsname oder Symbol-ID (auch rückwärtige Aufrufer); vergleichen: Symbol-ID aus unterschiede für Rohtext-Diff; from_line/to_line paginieren Diff-Zeilen'},
     warten_sekunden:{type:'number',minimum:0,maximum:50},
     ursache:{type:'array',items:{type:'string',enum:[...REVERSE_ENTSTOERBAR]},description:'entstoeren: nur diese Ursachen (Standard alle entstörbaren)'},
     vorschau:{type:'boolean',description:'entstoeren: Standard true = nur zeigen; false = ausführen'},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
@@ -89,6 +92,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   search:['reverse_id','file_path','query','file_type','semantic','match_limit','match_skip','limit','offset'],
   file:['reverse_id','file_path','from_line','to_line','truncate_long_lines','min_laenge','limit','offset'],
   calls:['reverse_id','file_path','callee','limit','offset'],
+  verknuepfungen:['reverse_id','datei','file_path','gruppe','funktion','limit','offset'],
   vergleichen:['reverse_id','datei_a','datei_b','limit','offset','funktion','from_line','to_line'],
   assets_tree:['reverse_id','path','depth','recursive','limit','format','asset_type'],
   inspect:['reverse_id','datei','file_path','objects_offset','objects_limit','object_type','references_limit'],
@@ -98,10 +102,11 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
 /** P21-T16: Aktionen, deren Antwort Inhalt aus dem Analyseziel traegt, mit Kandidatenfeldern. */
 const REVERSE_ZIELINHALT: Partial<Record<ReverseAction,readonly string[]>> = {
+  verknuepfungen:['links[]'],
   vergleichen:['unterschiede[]','paar','diff[]'],
   tree:['baum'],functions:['functions[]'],symbols:['symbols[]'],references:['references[]','string_occurrences[]','name_matches[]'],
   search:['results[]'],file:['content','strings[]'],calls:['calls[]'],assets_tree:['baum'],inspect:['inspektion'],
-  dateien:['dateien[]','container_nicht_entpackt[]'],struktur:['gruppen[]','nicht_analysiert[]'],ansicht:['ansicht'],
+  dateien:['dateien[]','container_nicht_entpackt[]'],struktur:['gruppen[]','nicht_analysiert[]','geladen_von[]'],ansicht:['ansicht'],
 };
 export const REVERSE_AKTIVITAET_DESCRIPTOR = Object.freeze({toolId:'reverse',tool:'reverse',aktivitaetsAktionen:REVERSE_ACTIONS.filter(a=>a!=='status')});
 type Db = Pick<Pool|PoolClient,'query'>;
@@ -443,6 +448,14 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
       return {...data,container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s}};
     }
+    if(action==='verknuepfungen'){
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id);await entry(pool,rid);
+      if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
+      const path=fileArg(a);
+      const data=await leseReverseVerknuepfungen(pool,rid,project,{...a,datei:path??undefined,file_path:undefined});
+      if(data.fehlercode)fail(data.fehlercode as ReverseFehlercode,String(data.fehler_detail??''));
+      await tx(db=>activity(db,a,data.fehlercode==null));return data;
+    }
     if(action==='struktur'){
       const project=await projektRecht(pool,a),rid=id(a.reverse_id);await entry(pool,rid);
       if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
@@ -455,8 +468,12 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const groups=gruppiereRv27Dateien(analysed),max=envInt('SYNAPSE_REVERSE_ANTWORT_MAX',80000);let used=JSON.stringify({reverse_id:rid,offset,total}).length,kept:Row[]=[];
       for(const group of groups){const n=JSON.stringify(group).length+1;if(used+n>max)break;kept.push(group);used+=n;}
       if(kept.length<groups.length)fail('zu_gross','Seite verkleinern');
+      const rv30Stand=await leseReverseEinstellungen(project);
+      const rv30=rv30Stand.schalter.aktiv?await leseReverseVerknuepfungen(pool,rid,project,{},rows.map(r=>str(r.pfad)),rv30Stand):null;
+      if(rv30?.fehlercode)fail(rv30.fehlercode as ReverseFehlercode,String(rv30.fehler_detail??''));
+      if(rv30&&JSON.stringify(kept).length+JSON.stringify(rv30).length>max)fail('zu_gross','Seite verkleinern');
       await tx(db=>activity(db,a));const weiter=offset+rows.length<total;
-      return {reverse_id:rid,status:unanalysiert.length?'teilweise':'fertig',gruppen:kept,gruppen_gekappt:kept.length<groups.length,nicht_analysiert:unanalysiert,gesamt_dateien:total,analysiert:analysed.length,gekappt:weiter,naechster_offset:weiter?offset+rows.length:null,hinweis:'Eingebettete Formate sind Kandidaten mit Bytebelegen; in dieser Welle werden keine reverse_assets angelegt.'};
+      return {reverse_id:rid,status:unanalysiert.length?'teilweise':'fertig',gruppen:kept,...(rv30?{geladen_von:rv30.links,geladen_von_gekappt:rv30.gekappt,geladen_von_diagnose:rv30.diagnose}:{}),gruppen_gekappt:kept.length<groups.length,nicht_analysiert:unanalysiert,gesamt_dateien:total,analysiert:analysed.length,gekappt:weiter,naechster_offset:weiter?offset+rows.length:null,hinweis:'Eingebettete Formate sind Kandidaten mit Bytebelegen; in dieser Welle werden keine reverse_assets angelegt.'};
     }
     if(action==='dateien'){
       // P18-T61: Inhalte nur nach Projektbindung; Pfade und Texte maskiert wie die übrigen Ausgaben.
@@ -587,7 +604,18 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const data=await execute(a,action);
       // P21-T16: Ziel-Inhalt nur bei Erfolg kennzeichnen; Werte und Maskierung bleiben unveraendert.
       const zielfelder=data.fehlercode==null?vorhandeneZielfelder(data,REVERSE_ZIELINHALT[action]??[]):[];
-      return setzeMcpBilder(baueReverseAntwort(a,{...data,...(zielfelder.length?{provenance:zielinhaltHerkunft(zielfelder)}:{}),...(unused.length?{nicht_verwendet:unused}:{})},action==='ansicht'?data.fehlercode as ReverseFehlercode|undefined:undefined),trenneMcpBilder(data).bilder);
+      const antwortBauen=()=>baueReverseAntwort(a,{...data,...(zielfelder.length?{provenance:zielinhaltHerkunft(zielfelder)}:{}),...(unused.length?{nicht_verwendet:unused}:{})},action==='ansicht'?data.fehlercode as ReverseFehlercode|undefined:undefined);
+      let antwort=antwortBauen();
+      if(action==='verknuepfungen'&&object(data.diagnose)&&object(data.diagnose.einstellungen)&&object(data.diagnose.einstellungen.antwort_bytes)&&Array.isArray(data.links)){
+        const max=Number(data.diagnose.einstellungen.antwort_bytes.wert);
+        // Include the common response envelope and provenance in the UTF-8 budget.
+        while(Buffer.byteLength(JSON.stringify(antwort))>max&&data.links.length){
+          data.links.pop();data.gekappt=true;data.antwort_gekappt=true;
+          data.naechster_offset=data.links.length?Number(a.offset??0)+data.links.length:null;antwort=antwortBauen();
+        }
+        if(Buffer.byteLength(JSON.stringify(antwort))>max)fail('zu_gross','antwort_bytes zu klein für Antwortkontext');
+      }
+      return setzeMcpBilder(antwort,trenneMcpBilder(data).bilder);
     }catch(e){
       if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler||e instanceof ReverseAssetFehler||e instanceof ReverseUebernahmeFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
       const code=(e as {code?:string})?.code;

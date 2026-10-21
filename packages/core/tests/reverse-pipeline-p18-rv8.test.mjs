@@ -17,6 +17,7 @@ process.env.SYNAPSE_REVERSE_RESOURCE_NEED='{"cpu":1,"ram":64,"vram":0,"gpu":fals
 const core=await import('../dist/index.js');
 const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
 const {WORK_JOBS_SCHEMA_SQL}=await import('../dist/db/work-jobs-schema.js');
+const {mitLesePool}=await import('../dist/db/client.js');
 const require=createRequire(new URL('../package.json',import.meta.url)),{Pool}=require('pg');
 const raw=new Pool({connectionString:process.env.DATABASE_URL}),schema='p18_rv8_'+process.pid,project='p18_rv8';
 const pool={async connect(){const db=await raw.connect();try{await db.query('SET search_path TO '+schema+',public');return db;}catch(e){db.release();throw e;}},
@@ -73,6 +74,10 @@ try{
  await pool.query('BEGIN');await pool.query(core.REVERSE_PIPELINE_SCHEMA_SQL);await pool.query('ROLLBACK');
  assert.equal((await pool.query("SELECT to_regclass($1) AS x",[schema+'.reverse_analyse_cache'])).rows[0].x,null,'schema probe rollback');
  await pool.query(core.REVERSE_PIPELINE_SCHEMA_SQL);await pool.query(core.REVERSE_PIPELINE_SCHEMA_SQL);
+ // Current runtime inserts identity attribution (migration 112), also in private test fixtures.
+ // Only the Reverse columns from migration 112; never migrate unrelated public test tables.
+ for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
+ await pool.query('CREATE TABLE agent_profil_schalter (LIKE public.agent_profil_schalter INCLUDING DEFAULTS INCLUDING INDEXES)');
  const elfPath=join(root,'elf-fixture');
  execFileSync('gcc',['-x','c','-o',elfPath,'-'],{input:'const char *fixture = "password = \\"'+secret+'\\""; int main(void){return fixture[0] == 0;}',stdio:['pipe','pipe','pipe']});
  const elf=await readFile(elfPath);
@@ -81,7 +86,8 @@ try{
   jar:await add(rid,'hello.jar',jar()),wasm:await add(rid,'hello.wasm',Buffer.from([0,97,115,109,1,0,0,0])),unknown:await add(rid,'unknown.bin',Buffer.from('unknown\0password = "'+secret+'";'))};
  // P18-T64: ohne angemeldeten Ausführer würden Container-Kinds als kein_ausfuehrer enden; RV8 prüft Dedup/Reihenfolge mit simuliertem Ausführer.
  const service=new core.ReversePipelineDienst({pool,konfiguration:cfg,ausfuehrbareKinds:['reverse-E','reverse-S1','reverse-S2','reverse-S3']});services.push(service);
- for(let i=0;i<30;i++)await service.durchlauf();
+ const durchlauf=()=>mitLesePool(pool,()=>service.durchlauf());
+ for(let i=0;i<30;i++)await durchlauf();
  const rows=(await pool.query('SELECT id::int,format,arch,bits,metadaten FROM reverse_dateien ORDER BY id')).rows;
  const row=id=>rows.find(r=>r.id===id);
  assert.equal(row(ids.elf).format,'elf');assert.match(row(ids.elf).arch,/x86|AMD64|x64/i);assert.equal(row(ids.elf).bits,64);
@@ -96,9 +102,12 @@ try{
  assert(texts.length>0);assert(texts.every(r=>!String(r.s).includes(secret)),'no synthetic secret in ANY stored analysis field');
  assert((await pool.query("SELECT count(*)::int AS n FROM reverse_dateien WHERE (metadaten->>'maskiert_anzahl')::int>0")).rows[0].n>0);
  assert((await pool.query("SELECT count(*)::int AS n FROM reverse_code_dateien WHERE file_path LIKE '%@S1/strings.txt'")).rows[0].n>=7);
- const dupeJobs=(await pool.query("SELECT j.p20_auftrag_id FROM reverse_auftraege j WHERE j.datei_id=ANY($1::bigint[]) AND j.schicht='S2'",[[ids.elf,ids.duplicate]])).rows;
+ assert.equal((await pool.query("SELECT count(*)::int n FROM reverse_auftraege WHERE schicht IN ('S2','S3')")).rows[0].n,0,'reverse_s3 default OFF queues no Ghidra work');
+ await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('global',NULL,'reverse_s3',true,'RV8 fixture','fixture')");
+ for(let i=0;i<8;i++)await durchlauf();
+ const dupeJobs=(await pool.query("SELECT j.p20_auftrag_id FROM reverse_auftraege j WHERE j.datei_id=ANY($1::bigint[]) AND j.schicht='S3'",[[ids.elf,ids.duplicate]])).rows;
  assert.equal(dupeJobs.length,2);assert(dupeJobs[0].p20_auftrag_id);assert.equal(dupeJobs[0].p20_auftrag_id,dupeJobs[1].p20_auftrag_id,'one container job across entries');
- assert.equal((await pool.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE schicht='S3'")).rows[0].n,0,'S3 never before finished S2');
+ assert.equal((await pool.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE schicht='S2'")).rows[0].n,0,'S2 list and S3 decompilation use one Ghidra job (T69)');
  assert((await pool.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE schicht='S1' AND ausfuehrung='container'")).rows[0].n>=7,'S1 tools remain durable waiting work');
  assert.equal((await core.createWorkJobService({pool}).claim({nodeId:'fixture',bootGeneration:randomUUID(),authHash:'fixture'})).length,0,'no executable leases without authority hooks');
  // Interactive work overtakes an older background request; no implicit S2 execution.
@@ -110,13 +119,13 @@ try{
  await pool.query("UPDATE reverse_auftraege SET status='abgebrochen',lease_token=NULL,lease_bis=NULL WHERE id=$1",[claimed.id]);
  const missingRid='rev-missing-000004',missing=await add(missingRid,'missing.bin',Buffer.from('not-present'),{write:false,policy:false});
  await requested(service,missingRid,missing);
- for(let i=0;i<8;i++){await service.durchlauf();await pool.query("UPDATE reverse_auftraege SET updated_at=clock_timestamp()-interval '1 hour' WHERE datei_id=$1",[missing]);}
+ for(let i=0;i<8;i++){await durchlauf();await pool.query("UPDATE reverse_auftraege SET updated_at=clock_timestamp()-interval '1 hour' WHERE datei_id=$1",[missing]);}
  const exhausted=(await pool.query("SELECT status,versuch FROM reverse_auftraege WHERE datei_id=$1 AND ausfuehrung='api'",[missing])).rows;
  assert.equal(exhausted.length,1);assert.equal(exhausted[0].status,'fehler');assert.equal(exhausted[0].versuch,2,'bounded retries');
  const retry=await requested(service,missingRid,missing);assert(retry.auftrag_id);assert.equal((await pool.query('SELECT versuch FROM reverse_auftraege WHERE id=$1',[retry.auftrag_id])).rows[0].versuch,0);
  const masked=core.maskiereReverseAnalyse({content:'password = "'+secret+'"',nested:{value:'Bearer abcdefghijklmnopqrstuvwxyz123456'}});assert(masked.treffer>0);assert(!JSON.stringify(masked.wert).includes(secret));
  assert.throws(()=>core.maskiereReverseAnalyse(Buffer.from('bytes')),/Bytes/);
- console.log('RV8 PASS: schema rollback/idempotency, ELF/PE/.NET/JAR/WASM/unknown, real workers, mask all PG text, cross-entry inspector+P20 dedup, sequential S3, interactive priority, retry limit/manual reset');
+ console.log('RV8 PASS: schema rollback/idempotency, ELF/PE/.NET/JAR/WASM/unknown, real workers, mask all PG text, cross-entry inspector+P20 dedup, product OFF and single Ghidra S3, interactive priority, retry limit/manual reset');
 }catch(error){console.error(error);process.exitCode=1;}
 finally{core.AssetInspektionsWorker.prototype.inspiziereQuelle=original;await Promise.all(services.map(s=>s.beende()));await pool.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await raw.end();await core.closePool();await rm(root,{recursive:true,force:true});}
 process.exit(process.exitCode||0);
