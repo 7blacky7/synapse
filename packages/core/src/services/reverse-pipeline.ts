@@ -368,7 +368,12 @@ export class ReversePipelineDienst{
  }
  async durchlauf():Promise<void>{
   if(this.beendet)return;await this.entdecke();
-  await Promise.all(this.workers.map(async w=>{if(this.beendet)return;const j=await this.claim();if(j)await this.bearbeite(w,j);}));
+  // P18-T68: je Worker so lange Aufträge holen, bis keiner mehr wartet oder das Zeitbudget des Durchlaufs um ist.
+  // Vorher genau EIN Auftrag je Worker und Scanintervall (gemessen: 1 Datei/60 s bei ~0,3 s Inspektion).
+  const ende=Date.now()+num('SYNAPSE_REVERSE_DURCHLAUF_MS',Math.max(1000,Math.floor(this.cfg.sync.scanIntervallMs*0.8)));
+  await Promise.all(this.workers.map(async w=>{
+   while(!this.beendet&&Date.now()<ende){const j=await this.claim();if(!j)break;await this.bearbeite(w,j);}
+  }));
  }
  async beende():Promise<void>{this.beendet=true;await Promise.all(this.workers.map(w=>w.beende()));}
 }
