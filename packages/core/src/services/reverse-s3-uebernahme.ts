@@ -22,7 +22,7 @@ import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-kon
 import {maskiereMitKatalog} from './masken-katalog.js';
 import {reverseAnalyseFingerabdruck,maskiereReverseAnalyse} from './reverse-pipeline.js';
 import {reverseTextSammler,teileReverseText} from './reverse-code-stuecke.js';
-import {leseReverseEinstellungen} from './reverse-einstellungen.js';
+import {leseReverseEinstellwerte,reverseZahl,reverseBudget} from './reverse-einstellwerte.js';
 import {uebernehmeRohWerkzeuge} from './reverse-normalisierer/rohausgaben.js';
 import type {ReverseEManifestEintrag} from './reverse-e-uebernahme.js';
 
@@ -62,18 +62,20 @@ function pgMax(o:ReverseS3UebernahmeOptionen,standard:number):number{
 interface Ziel {name:string;adresse:number;extern:boolean;raum:string}
 interface Verweis extends Ziel {art:'string'|'import'|'data';wert:string;von:number}
 interface Funktion {name:string;adresse:number;groesse:number;prototyp:string;c:string;status:string;asm:string;calls:Ziel[];refs:Verweis[];gekappt:boolean;maskiert:number}
-function ziel(v:unknown):Ziel|null{
+/** P18-T86: Ausgabe-/Indexfenster aus reverse_einstellungen (s3_name_zeichen, s3_prototyp_zeichen, s3_status_zeichen). */
+interface S3Grenzen {name:number;prototyp:number;status:number}
+function ziel(v:unknown,g:S3Grenzen):Ziel|null{
   if(!v||typeof v!=='object')return null;const x=v as Record<string,unknown>;
   if(typeof x.name!=='string'||!x.name||typeof x.address_offset!=='number'||!Number.isSafeInteger(x.address_offset)||x.address_offset<0)return null;
-  return {name:maske(x.name.slice(0,512)),adresse:x.address_offset,extern:x.external===true||x.address_space==='EXTERNAL',raum:maske(typeof x.address_space==='string'?x.address_space:x.external===true?'EXTERNAL':'ram')};
+  return {name:maske(x.name.slice(0,g.name)),adresse:x.address_offset,extern:x.external===true||x.address_space==='EXTERNAL',raum:maske(typeof x.address_space==='string'?x.address_space:x.external===true?'EXTERNAL':'ram')};
 }
-function verweis(v:unknown):Verweis|null{
-  const z=ziel(v);if(!z)return null;const x=v as Record<string,unknown>;
+function verweis(v:unknown,g:S3Grenzen):Verweis|null{
+  const z=ziel(v,g);if(!z)return null;const x=v as Record<string,unknown>;
   if(!['string','import','data'].includes(String(x.kind))||typeof x.from_offset!=='number'||!Number.isSafeInteger(x.from_offset)||x.from_offset<0)return null;
   return {...z,art:x.kind as Verweis['art'],wert:maske(typeof x.value==='string'?x.value:z.name),von:x.from_offset};
 }
 /** Eine JSONL-Zeile; Adressen jenseits Number.MAX_SAFE_INTEGER (JSON-Rundung) werden verworfen, nie geraten. */
-function leseFunktion(zeile:string):Funktion|null{
+function leseFunktion(zeile:string,g:S3Grenzen):Funktion|null{
   let roh:unknown;
   try{roh=JSON.parse(zeile);}catch{return null;}
   if(!roh||typeof roh!=='object'||Array.isArray(roh))return null;
@@ -82,10 +84,10 @@ function leseFunktion(zeile:string):Funktion|null{
   const adresse=x.address_offset,groesse=x.size;
   if(typeof x.name!=='string'||!x.name||typeof adresse!=='number'||!Number.isSafeInteger(adresse)||adresse<0||
     typeof groesse!=='number'||!Number.isSafeInteger(groesse)||groesse<0)return null;
-  return {name:x.name.slice(0,512),adresse,groesse,prototyp:typeof x.prototype==='string'?x.prototype.slice(0,2048):'',
-    c:typeof x.decompiled==='string'?x.decompiled:'',status:typeof x.decompile_status==='string'&&x.decompile_status?x.decompile_status.slice(0,200):'fehler',
-    asm:typeof x.assembly==='string'?x.assembly:'',calls:Array.isArray(x.callees)?x.callees.map(ziel).filter((v):v is Ziel=>v!==null):[],
-    refs:Array.isArray(x.references)?x.references.map(verweis).filter((v):v is Verweis=>v!==null):[],gekappt:x.export_truncated===true,maskiert:masked.treffer};
+  return {name:x.name.slice(0,g.name),adresse,groesse,prototyp:typeof x.prototype==='string'?x.prototype.slice(0,g.prototyp):'',
+    c:typeof x.decompiled==='string'?x.decompiled:'',status:typeof x.decompile_status==='string'&&x.decompile_status?x.decompile_status.slice(0,g.status):'fehler',
+    asm:typeof x.assembly==='string'?x.assembly:'',calls:Array.isArray(x.callees)?x.callees.map(c=>ziel(c,g)).filter((v):v is Ziel=>v!==null):[],
+    refs:Array.isArray(x.references)?x.references.map(r=>verweis(r,g)).filter((v):v is Verweis=>v!==null):[],gekappt:x.export_truncated===true,maskiert:masked.treffer};
 }
 const hex=(n:number)=>'0x'+n.toString(16).padStart(8,'0');
 
@@ -111,7 +113,9 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   const auftrag=(await db.query(`SELECT id,fingerabdruck,werkzeug_version,profil_version,projekt FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2::bigint
     AND schicht='S3' AND (p20_auftrag_id::text=$3 OR id::text=$3) ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,[rid,did,job])).rows[0];
   if(!auftrag||!auftrag.fingerabdruck)fehler('nicht_gefunden','Kein S3-Auftrag zu diesem Work-Job.');
-  const einstellungen=await leseReverseEinstellungen(o.budgetProjekt??auftrag.projekt??null),budget=pgMax(o,einstellungen.werte.s3_pg_budget_bytes.wert);
+  // P18-T86: Budget und Fenster gelten je Eintrag (GE); kein Projektwert verändert den gemeinsamen Analysebestand.
+  const einstellungen=await leseReverseEinstellwerte({project:o.budgetProjekt??auftrag.projekt??null,eintrag_id:rid}),budget=pgMax(o,reverseBudget(einstellungen,'s3_pg_budget_bytes'));
+  const grenzen:S3Grenzen={name:reverseZahl(einstellungen,'s3_name_zeichen'),prototyp:reverseZahl(einstellungen,'s3_prototyp_zeichen'),status:reverseZahl(einstellungen,'s3_status_zeichen')};
   const speicherAlt=datei.metadaten?.s3_speicher;
   const vorher=(await db.query(`SELECT status,funktionen_gesamt,funktionen_fertig FROM reverse_schichten WHERE datei_id=$1::bigint AND schicht='S3'
     AND ausgabe_key=$2 AND status IN ('fertig','teilweise') ORDER BY id DESC LIMIT 1`,[did,key])).rows[0];
@@ -133,7 +137,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
 
   const altBytes=Number((await db.query("SELECT COALESCE(sum(CASE WHEN metadaten#>>'{s3_speicher,verbrauch_bytes}' ~ '^[0-9]+$' THEN (metadaten#>>'{s3_speicher,verbrauch_bytes}')::bigint ELSE (SELECT COALESCE(sum(file_size),0) FROM reverse_code_dateien c WHERE c.datei_id=d.id AND c.schicht IN ('S2','S3')) END),0)::bigint AS n FROM reverse_dateien d WHERE d.eintrag_id=$1 AND d.id<>$2::bigint",[rid,did])).rows[0]?.n??0);
   const frei=Math.max(0,budget-altBytes);
-  const s2=stuecke(),s3=stuecke(),referenzTexte=stuecke();
+  const stueckBytes=reverseZahl(einstellungen,'s1_textstueck_bytes'),s2=stuecke(stueckBytes),s3=stuecke(stueckBytes),referenzTexte=stuecke(stueckBytes);
   const assembler:{pfad:string;c:string;name:string;adresse:number;groesse:number}[]=[];
   const graph:{symbol:number;f:Funktion}[]=[];
   let exportGekappt=false,maskiert=0;
@@ -154,7 +158,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     strom.on('data',(b:Buffer|string)=>pruef.update(b));
     for await(const zeile of createInterface({input:strom,crlfDelay:Infinity})){
       if(!zeile.trim())continue;
-      const f=leseFunktion(zeile);
+      const f=leseFunktion(zeile,grenzen);
       if(!f||adressen.has(f.adresse)){verworfen++;continue;}
       adressen.add(f.adresse);maskiert+=f.maskiert;
       gesamt++;if(f.status==='ok')ok++;exportGekappt ||= f.gekappt;
@@ -258,7 +262,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   if(e.manifest.some(m=>m.pfad.startsWith('s1-')||m.pfad==='normalisierer-status.json')){
     if(frei>bytes){
       try{normal=await uebernehmeRohWerkzeuge(db,{arbeit,manifest:e.manifest,reverseId:rid,dateiId:did,pfad:datei.pfad,fp2},
-        {maxBytes:frei-bytes,maxEintraege:cfg.inspektion.maxObjects});}
+        {maxBytes:frei-bytes,maxEintraege:reverseZahl(einstellungen,'inspektion_objekte_block'),stueckBytes});}
       catch{fehler('beschaedigt','S1-Werkzeugausgabe passt nicht zum Manifest.');}
       exportGekappt ||= normal!.status==='teilweise';maskiert+=normal!.maskiert;
       await db.query("UPDATE reverse_dateien SET metadaten=jsonb_set(COALESCE(metadaten,'{}'::jsonb),'{normalisierer}',$2::jsonb) WHERE id=$1::bigint",[did,JSON.stringify(normal)]);
@@ -283,7 +287,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     [auftrag.id,s3Status,gekappt||exportGekappt?'zu_gross':null]);
   await db.query("UPDATE reverse_dateien SET metadaten=jsonb_set(COALESCE(metadaten,'{}'::jsonb),'{maskiert_anzahl}',to_jsonb(COALESCE((metadaten->>'maskiert_anzahl')::bigint,0)+$2::bigint)) WHERE id=$1::bigint",[did,maskiert]);
   await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
-  const speicher={version:2,budget_bytes:budget,budget_quelle:o.maxPgBytes===undefined?einstellungen.werte.s3_pg_budget_bytes.quelle:'test',
+  const speicher={version:2,budget_bytes:budget,budget_quelle:o.maxPgBytes===undefined?einstellungen.werte.s3_pg_budget_bytes.ebene??'standard':'test',
    verbrauch_bytes:bytes,verbrauch_eintrag_bytes:altBytes+bytes,fehlend_gesamt:fehlend.length,fehlende_funktionen:fehlend,
    hinweis:fehlend.length?'Budget erhöhen, dann reverse analysieren (S3): Nachzug aus erhaltenem Artefakt, ohne Ghidra.':null};
   await db.query("UPDATE reverse_dateien SET metadaten=metadaten||$2::jsonb WHERE id=$1::bigint",[did,JSON.stringify({

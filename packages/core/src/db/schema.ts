@@ -32,6 +32,7 @@
 
 
 import { createHash } from 'node:crypto';
+import {REVERSE_EINSTELLWERTE_SCHEMA_SQL} from './reverse-einstellwerte-schema.js';
 import {REVERSE_ERKENNTNISSE_SCHEMA_SQL} from './reverse-erkenntnisse-schema.js';
 import {REVERSE_CODE_STUECKE_SCHEMA_SQL} from './reverse-code-stuecke-schema.js';
 import {REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL} from './reverse-verknuepfungen-schema.js';
@@ -3203,6 +3204,7 @@ ${AGENTENNETZWERK_SCHEMA_SQL}
 ${REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL}
 ${REVERSE_CODE_STUECKE_SCHEMA_SQL}
 ${REVERSE_ERKENNTNISSE_SCHEMA_SQL}
+${REVERSE_EINSTELLWERTE_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

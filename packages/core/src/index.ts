@@ -1,6 +1,11 @@
 export { NETZWERK_FUNKTION, NETZWERK_EINSTELLUNGEN, NETZWERK_ADMIN_PARAMETER, leseNetzwerkKonfiguration, fuehreNetzwerkAdminAus, netzwerkEreignis, netzwerkArgumente, netzwerkText } from './services/agentennetzwerk.js';
 export type { NetzwerkEinstellung, NetzwerkWerte, NetzwerkEreignis } from './services/agentennetzwerk.js';
 export {leseReversePeRessourcenSchalter} from './services/reverse-pe-schalter.js';
+export {leseReverseEinstellwerte,leseReverseBlockSchalter,leseReverseProduktSchalter,reverseZahl,reverseWert,reverseBigInt,reverseBudget} from './services/reverse-einstellwerte.js';
+export type {ReverseEinstellSnapshot} from './services/reverse-einstellwerte.js';
+export {uebernehmeEInBloecken} from './services/reverse-e-bloecke.js';
+export {reverseManifestVerweis,pruefeReverseManifest,leseReverseManifest} from './services/reverse-manifest.js';
+export {REVERSE_EINSTELLKATALOG} from './services/reverse-einstellkatalog.js';
 export {leseReverseSiedler3Schalter} from './services/reverse-siedler3-schalter.js';
 export {leseReverseFortschrittSchalter,normalisiereReverseFortschritt,speichereReverseFortschritt,reverseFortschrittAnzeige,REVERSE_FORTSCHRITT_PHASEN,REVERSE_FORTSCHRITT_SQL} from './services/reverse-fortschritt.js';
 export type {ReverseFortschrittStand} from './services/reverse-fortschritt.js';

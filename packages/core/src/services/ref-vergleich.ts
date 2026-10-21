@@ -2,6 +2,7 @@
 import {getPool} from '../db/client.js';
 import {fuehreReverseAus} from './reverse-tool.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
+import {leseReverseEinstellwerte,reverseZahl} from './reverse-einstellwerte.js';
 type Row=Record<string,unknown>;
 export interface RefVergleichDb {query(sql:string,values?:unknown[]):Promise<{rows:Row[]}>;}
 export interface RefVergleichOptionen {
@@ -12,11 +13,6 @@ export const REF_VERGLEICH_PARAMETER={
  ref_vergleich:{type:'boolean',description:'Nur read: @ref-Kommentare mit der Originalfunktion vergleichen; Standard aus.'},
  name:{type:'string',description:'read mit ref_vergleich: optional exakter Name der neuen Funktion.'},
 } as const;
-function grenze(name:string,fallback:number):number {
- const n=Number(process.env[name]??fallback);
- if(!Number.isSafeInteger(n)||n<1)throw new Error('Ungültige Vergleichsgrenze '+name);
- return n;
-}
 function daten(r:Row):Row {
  if(r.structuredContent&&typeof r.structuredContent==='object')return r.structuredContent as Row;
  if(Array.isArray(r.content)){
@@ -29,8 +25,10 @@ const maske=(s:unknown)=>maskiereMitKatalog(String(s??''),'reverse').text;
 /** Beide files(read)-Wege rufen nur bei explizitem true hierher. Kein Schreiben. */
 export async function refVergleich(a:{project:string;file_path:string;content:string;agent_id?:string;name?:string},o:RefVergleichOptionen={}):Promise<Row>{
  const db=o.db??getPool(),reverse=o.reverse??fuehreReverseAus;
- const max=grenze('SYNAPSE_REF_VERGLEICH_MAX_MARKEN',10),budget=grenze('SYNAPSE_REVERSE_ANTWORT_MAX',80000);
- const fenster=grenze('SYNAPSE_REF_VERGLEICH_FENSTER_ZEILEN',200);
+ // P18-T86: Grenzen aus reverse_einstellungen des lesenden Projekts (ref_marken_max, ref_fenster_zeilen, antwort_bytes).
+ const s=await leseReverseEinstellwerte({project:a.project});
+ const max=reverseZahl(s,'ref_marken_max'),budget=reverseZahl(s,'antwort_bytes');
+ const fenster=reverseZahl(s,'ref_fenster_zeilen');
  const comments=(await db.query("SELECT line_start,value FROM code_symbols WHERE project=$1 AND file_path=$2 AND symbol_type='comment' AND value ILIKE '%@ref%' ORDER BY line_start,id LIMIT $3",[a.project,a.file_path,max+1])).rows;
  const vergleiche:Row[]=[],lines=a.content.split('\n'),seen=new Set<string>();let gekappt=comments.length>max;
  let marken=0;
@@ -70,7 +68,7 @@ export async function refVergleich(a:{project:string;file_path:string;content:st
     if(!funktion||m[2].includes('@S')||m[2].startsWith('/')||m[2].split('/').some(x=>!x||x==='.'||x==='..')){item.fehlercode='ref_ungueltig';original.status='fehler';}
     else{
      const prefix=m[2]+'@'+schicht;
-     const funcs=daten(await reverse({...base,action:'functions',file_path:prefix,name:funktion,limit:Math.min(200,grenze('SYNAPSE_REVERSE_CODE_MAX_LIMIT',500))}));
+     const funcs=daten(await reverse({...base,action:'functions',file_path:prefix,name:funktion,limit:Math.min(reverseZahl(s,'code_seiten_limit'),reverseZahl(s,'code_max_limit'))}));
      if(funcs.fehlercode){item.fehlercode=funcs.fehlercode;original.status=funcs.status??'fehler';for(const k of ['auftrag_id','eta','container','schicht_angefragt'])if(funcs[k]!==undefined)original[k]=funcs[k];}
      else{
       const address=/^0x[0-9a-f]+$/i.test(funktion);

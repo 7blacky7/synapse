@@ -4,6 +4,7 @@
  * gemeinsame Extraktor im Container macht daraus ISO je Session, WAV je Audiospur und Rohspuren (MODE2 Form2/formless).
  * Hier: Typen + dieselbe Pruefung (Spur ausserhalb der Datei, Ueberlappung, Sektorgroessen) fuer API und Tests.
  */
+import {REVERSE_EINSTELLKATALOG} from './reverse-einstellkatalog.js';
 export const REVERSE_SPURTABELLE_VERSION=1;
 export const REVERSE_SPUR_MODI=['MODE0','AUDIO','MODE1','MODE2_FORM1','MODE2_FORM2','MODE2_FORMLESS','MODE2_MIXED'] as const;
 export type ReverseSpurModus=typeof REVERSE_SPUR_MODI[number];
@@ -35,7 +36,11 @@ export interface ReverseSpurtabelle {
 export class ReverseSpurtabellenFehler extends Error {
   constructor(readonly code:'beschaedigt'|'nicht_unterstuetzt'|'nicht_gefunden',message:string){super(message);}
 }
-const LBA_MIN=-45150,LBA_MAX=10_000_000;
+/** P18-T86: Sicherheitsfenster als Reverse-Einstellwerte (disc_*); Spur-/Sessionnummern 1..99 bleiben Formatgrenzen. */
+export interface ReverseSpurGrenzen {sessions_max:number;abschnitte_max:number;lba_vorlauf_max:number;lba_max:number}
+const K=REVERSE_EINSTELLKATALOG;
+export const REVERSE_SPUR_STANDARD:ReverseSpurGrenzen={sessions_max:Number(K.disc_sessions_max.standard),abschnitte_max:Number(K.disc_abschnitte_max.standard),
+  lba_vorlauf_max:Number(K.disc_lba_vorlauf_max.standard),lba_max:Number(K.disc_lba_max.standard)};
 const fehler=(code:ReverseSpurtabellenFehler['code'],m:string):never=>{throw new ReverseSpurtabellenFehler(code,m);};
 const ganz=(w:unknown,feld:string,lo:number,hi:number):number=>{
   if(typeof w!=='number'||!Number.isSafeInteger(w)||w<lo||w>hi)fehler('beschaedigt',`Spurtabelle: ${feld} ungueltig (${String(w)})`);
@@ -46,9 +51,10 @@ export function reverseSpurSchritt(a:Pick<ReverseSpurAbschnitt,'sektorgroesse'|'
   return a.sektorgroesse+(a.subchannel?.art==='verschachtelt'?a.subchannel.groesse:0);
 }
 /** Gleiche Pruefung wie pruefe_spurtabelle im Runner. dateigroessen: Name im Medium -> Bytes. */
-export function pruefeReverseSpurtabelle(t:ReverseSpurtabelle,dateigroessen:Record<string,number>):void{
+export function pruefeReverseSpurtabelle(t:ReverseSpurtabelle,dateigroessen:Record<string,number>,g:ReverseSpurGrenzen=REVERSE_SPUR_STANDARD):void{
+  const LBA_MIN=-g.lba_vorlauf_max,LBA_MAX=g.lba_max;
   if(!t||t.version!==REVERSE_SPURTABELLE_VERSION)fehler('beschaedigt','Spurtabelle: unbekannte Version');
-  if(!Array.isArray(t.sessions)||t.sessions.length<1||t.sessions.length>99)fehler('beschaedigt','Spurtabelle: keine oder zu viele Sessions');
+  if(!Array.isArray(t.sessions)||t.sessions.length<1||t.sessions.length>g.sessions_max)fehler('beschaedigt','Spurtabelle: keine oder zu viele Sessions');
   const nummern=new Set<number>();let vorherEnde:number|null=null,vorherSession=0;
   for(const s of t.sessions){
     const sn=ganz(s.nummer,'session.nummer',1,99);
@@ -68,7 +74,7 @@ export function pruefeReverseSpurtabelle(t:ReverseSpurtabelle,dateigroessen:Reco
       const anfang=start-pregap;
       if(vorherEnde!==null&&anfang<vorherEnde)fehler('beschaedigt',`Spur ${nr} ueberlappt die vorherige Spur`);
       vorherEnde=start+laenge;
-      if(!Array.isArray(sp.abschnitte)||sp.abschnitte.length<1||sp.abschnitte.length>1000)fehler('beschaedigt',`Spur ${nr}: Abschnitte fehlen`);
+      if(!Array.isArray(sp.abschnitte)||sp.abschnitte.length<1||sp.abschnitte.length>g.abschnitte_max)fehler('beschaedigt',`Spur ${nr}: Abschnitte fehlen`);
       let cursor=anfang;
       for(const a of sp.abschnitte){
         const lba=ganz(a.lba,'abschnitt.lba',LBA_MIN,LBA_MAX),n=ganz(a.sektoren,'abschnitt.sektoren',1,LBA_MAX);

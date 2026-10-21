@@ -310,7 +310,7 @@ def limit_violation(files: int, dirs: int, total: int, cap: dict[str, int], inpu
                                   f"{input_size} Bytes Eingabe (max_kompressionsfaktor {cap['max_kompressionsfaktor']})")
     if total > cap["max_bytes"]:
         return "zu_gross", f"max_bytes ueberschritten: mehr als {cap['max_bytes']} Bytes Ausgabe"
-    if files > cap["max_dateien"] or dirs > cap["max_dateien"]:
+    if not cap.get("blockuebernahme") and (files > cap["max_dateien"] or dirs > cap["max_dateien"]):
         return "zu_gross", f"max_dateien ueberschritten: mehr als {cap['max_dateien']} Eintraege"
     return None
 
@@ -444,7 +444,7 @@ def scan_output(root: Path, cap: dict[str, int], input_size: int, basis: tuple[i
 
 def per_file_limit(cap: dict[str, int], input_size: int) -> int:
     """RLIMIT_FSIZE fuer das Werkzeug: eine einzelne Datei darf die Gesamtgrenze nur um 1 Byte ueberschreiten."""
-    threshold = cap["max_bytes"]
+    threshold = min(cap["max_bytes"], cap.get("max_datei_bytes", cap["max_bytes"]))
     if input_size:
         threshold = min(threshold, input_size * cap["max_kompressionsfaktor"])
     return threshold + 1
@@ -614,8 +614,49 @@ def path_under(value: str, root: Path, must_exist: bool) -> Path:
 
 
 def limits(req: dict[str, Any]) -> dict[str, int]:
+    """P18-T86/T88: Mit Einstellungs-Snapshot (reverse_einstellungen, version 1) kommen alle Grenzen vom Executor; sie sind
+    dort gegen den Katalog validiert. Fehlt ein Wert, ist der Auftrag ungueltig (keine stillen Runner-Standards).
+    Nur das alte Protokoll ohne Snapshot (altes API-/Image-Paar, Blockuebernahme AUS) nutzt die technischen Notgrenzen unten."""
     candidate = req.get("grenzen")
     raw: dict[str, Any] = candidate if isinstance(candidate, dict) else {}
+    snapshot = req.get("einstellungen")
+    if isinstance(snapshot, dict) and snapshot.get("version") == 1:
+        values = snapshot.get("werte")
+        if not isinstance(values, dict):
+            raise ValueError("konfiguration_unvollstaendig:einstellungen")
+
+        def value(name: str) -> int:
+            row = values.get(name)
+            raw_value = row.get("wert") if isinstance(row, dict) else None
+            if not isinstance(raw_value, str) or not raw_value.isascii() or not raw_value.isdigit():
+                raise ValueError("konfiguration_unvollstaendig:" + name)
+            number = int(raw_value)
+            if number > 9223372036854775807:
+                raise ValueError("konfiguration_unvollstaendig:" + name)
+            return number
+
+        is_s3 = req.get("schicht") == "S3"
+        # Die Transportfrist des Executors ist die harte Obergrenze; ein kleineres Zeitlimit aus grenzen gewinnt.
+        zeitlimit = value("s3_zeitlimit_s" if is_s3 else "e_zeitlimit_s")
+        if isinstance(raw.get("zeitlimit_s"), int) and 0 < raw["zeitlimit_s"] < zeitlimit:
+            zeitlimit = raw["zeitlimit_s"]
+        return {
+            "zeitlimit_s": zeitlimit,
+            "max_dateien": value("e_schritt_dateien"),
+            "max_bytes": value("s3_lauf_bytes" if is_s3 else "e_lauf_bytes"),
+            "max_tiefe": value("pfad_tiefe_max"),
+            "max_kompressionsfaktor": value("kompressionsfaktor_max"),
+            "parser_ram_mb": value("parser_ram_mib"),
+            "max_verschachtelung": value("verschachtelung_max"),
+            "nachlauf_s": value("nachlauf_s"),
+            "max_datei_bytes": value("max_datei_bytes"),
+            "lese_block_bytes": value("lese_block_bytes"),
+            "manifest_record_bytes": value("manifest_record_bytes"),
+            "manifest_segment_zeilen": value("manifest_segment_zeilen"),
+            # Blockuebernahme: Dateianzahl ist keine Grenze; das Manifest geht als JSONL-Datei an die API.
+            "blockuebernahme": int(req.get("blockuebernahme") is True and not is_s3),
+        }
+    # Altprotokoll: technische Notgrenzen (Kompatibilitaet), keine fachliche Quelle.
     return {
         "zeitlimit_s": min(max(int(raw.get("zeitlimit_s", 3600)), 1), 86400),
         "max_dateien": min(max(int(raw.get("max_dateien", 20000)), 1), 200000),
@@ -672,9 +713,42 @@ def tool_version(tool: str) -> str:
     return "unbekannt"
 
 
+_MANIFEST: Any = None
+
+
+def manifest_modul() -> Any:
+    """P18-T88: manifest.py liegt neben runner.py (Dockerfile); erst bei Blockuebernahme geladen."""
+    global _MANIFEST
+    if _MANIFEST is None:
+        spec = importlib.util.spec_from_file_location("reverse_manifest", Path(__file__).with_name("manifest.py"))
+        if spec is None or spec.loader is None:
+            raise ValueError("manifest.py fehlt")
+        _MANIFEST = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_MANIFEST)
+    return _MANIFEST
+
+
+def manifest_wire(files: Any) -> dict[str, Any]:
+    """Blockuebernahme: Antwort nur mit Verweis und Hash, nie die ganze Liste."""
+    if hasattr(files, "descriptor"):
+        return {"manifest": [], "manifest_datei": files.descriptor()}
+    return {"manifest": files}
+
+
 def output_manifest(root: Path, cap: dict[str, int], input_size: int,
-                    frist: float | None = None) -> tuple[list[dict[str, Any]], int]:
-    entries: list[dict[str, Any]] = []
+                    frist: float | None = None) -> tuple[Any, int]:
+    entries: Any = (manifest_modul().ManifestListe(root, cap["manifest_record_bytes"], cap["manifest_segment_zeilen"])
+                    if cap.get("blockuebernahme") else [])
+    try:
+        return manifest_fuellen(root, cap, input_size, frist, entries)
+    finally:
+        # Auch bei Frist/Abbruch: die bis hier geschriebenen Zeilen bleiben ein abgeschlossenes, gehashtes Manifest.
+        if hasattr(entries, "finish") and not entries.sha256:
+            entries.finish()
+
+
+def manifest_fuellen(root: Path, cap: dict[str, int], input_size: int, frist: float | None,
+                     entries: Any) -> tuple[Any, int]:
     total = 0
     fortschritt_phase("manifest")
     if _FORTSCHRITT is not None:
@@ -688,6 +762,8 @@ def output_manifest(root: Path, cap: dict[str, int], input_size: int,
         if len(here.relative_to(root).parts) > cap["max_tiefe"]:
             raise GrenzeUeberschritten("bombe_verdacht", "max_tiefe ueberschritten")
         for name in sorted(files):
+            if cap.get("blockuebernahme") and here == root and name.startswith(".e-"):
+                continue
             path = here / name
             if frist is not None and time.monotonic() >= frist:
                 # P18-T87: Frist im Manifest -> nur die bis hier gepruefte Ausgabe wird uebernommen, kein Leerlauf.
@@ -704,7 +780,7 @@ def output_manifest(root: Path, cap: dict[str, int], input_size: int,
             fortschritt_stand(len(entries), total, path.relative_to(root).as_posix())
             digest = hashlib.sha256()
             with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                for chunk in iter(lambda: stream.read(cap.get("lese_block_bytes", 1024 * 1024)), b""):
                     digest.update(chunk)
             entries.append({"pfad": path.relative_to(root).as_posix(),
                             "groesse": size, "sha256": digest.hexdigest()})
@@ -1293,8 +1369,8 @@ def verschachtelt_zusammenfassung(meta: dict[str, dict[str, Any]]) -> dict[str, 
             "nicht_entpackt": offen[:200], "nicht_entpackt_gesamt": len(offen), **({"abbruch": _STOPP} if _STOPP else {})}
 
 
-def merge_verschachtelt(files: list[dict[str, Any]], meta: dict[str, dict[str, Any]]) -> None:
-    for datei in files:
+def merge_verschachtelt(files: Any, meta: dict[str, dict[str, Any]]) -> None:
+    def update(datei: dict[str, Any]) -> None:
         zusatz = meta.get(datei["pfad"])
         if zusatz:
             datei["metadaten"] = {**(datei.get("metadaten") or {}), **zusatz}
@@ -1306,6 +1382,13 @@ def merge_verschachtelt(files: list[dict[str, Any]], meta: dict[str, dict[str, A
             elif "pe_ressource" in zusatz:
                 mime = zusatz.get("mime_type", "")
                 datei["art"] = "asset" if mime.startswith("image/") else "text" if mime.startswith("text/") else "binaer"
+
+    # P18-T88: das Dateimanifest wird zeilenweise ergaenzt, nie als ganze Liste im Speicher.
+    if hasattr(files, "augment"):
+        files.augment(update)
+    else:
+        for datei in files:
+            update(datei)
 
 
 def verschachtelt_isoliert(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
@@ -1425,11 +1508,16 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
             clear_output(out)
         return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
                  "dauer_s": round(time.monotonic() - started, 3)}]
-    for datei in files:
+    def disc_meta(datei: dict[str, Any]) -> None:
         zusatz = meta.get(datei["pfad"])
         if zusatz:
             datei["art"] = zusatz.get("art")
             datei["metadaten"] = zusatz.get("metadaten") or {}
+    if hasattr(files, "augment"):
+        files.augment(disc_meta)
+    else:
+        for datei in files:
+            disc_meta(datei)
     merge_verschachtelt(files, verschachtelt)
     pe_status = pe_ressourcen_status(verschachtelt)
     siedler_status = siedler3_status(verschachtelt)
@@ -1444,7 +1532,7 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
          "siedler3": {"aktiv": optionen.get("siedler3") is True, "stand": optionen.get("siedler3_stand"), **siedler_status},
          "werkzeug_version": version, "format": erkennung.format, "spurtabelle": tabelle, "hinweise": hinweise,
          "verschachtelt": verschachtelt_zusammenfassung(verschachtelt),
-         "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size},
+         "dauer_s": round(time.monotonic() - started, 3), **manifest_wire(files), "ausgabe_bytes": str(size) if cap.get("blockuebernahme") else size},
     ]
 
 
@@ -1617,7 +1705,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     abgebrochen = abgebrochen or _STOPP is not None
     ende: dict[str, Any] = {"status": "teilweise" if abgebrochen else "fertig", "fehlercode": abbruch_code(abgebrochen),
                             "werkzeug_version": version, "format": fmt or None,
-                            "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size}
+                            "dauer_s": round(time.monotonic() - started, 3), **manifest_wire(files), "ausgabe_bytes": str(size) if cap.get("blockuebernahme") else size}
     if _STOPP is not None:
         ende["abbruch"] = _STOPP
     if extract:

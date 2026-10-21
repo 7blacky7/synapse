@@ -57,7 +57,7 @@ try{
  const ex=await import('../dist/services/reverse-executor.js');
  const pool=core.getPool();
  eq((await pool.query('SELECT current_database() d,current_schema() s')).rows[0],{d:'synapse_test',s:schema},'privates Testschema');
- for(const file of ['reverse-schema','reverse-pipeline-schema','work-jobs-schema']){
+ for(const file of ['reverse-schema','reverse-pipeline-schema','work-jobs-schema','reverse-verknuepfungen-schema','reverse-einstellwerte-schema']){
   const mod=await import('../../core/dist/db/'+file+'.js');for(const sql of Object.values(mod).filter(v=>typeof v==='string'))await pool.query(sql);
  }
  const row=async(table,values)=>{
@@ -136,8 +136,11 @@ try{
  await executor.fuehreAus(fakeLc,wer,claim);
  eq(aufrufe.length,1,'C: genau ein Runner-Aufruf');
  eq(lesbar,[[[join(reverseRoot,RID+'/entpackt/m'+mid+'/S3/AUTORUN.EXE')],reverseRoot]],'C: Eingaberechte mit Wurzel (Ordner durchquerbar)');
- eq(aufrufe[0].req,{werkzeug:'analyzeHeadless',schicht:'S3',eingabe:'/bib/'+RID+'/entpackt/m'+mid+'/S3/AUTORUN.EXE',ausgabe:'/arbeit/'+jobId,
-  grenzen:{zeitlimit_s:3600,max_bytes:268435456,max_dateien:konfig.maxDateien}},'C: Runner-Auftrag fuer Ghidra');
+ // P18-T86: der Executor gibt den revisionsgebundenen Einstellungs-Snapshot (reverse_einstellungen) an den Runner weiter.
+ const {einstellungen:snap,...runnerReq}=aufrufe[0].req;
+ eq(runnerReq,{werkzeug:'analyzeHeadless',schicht:'S3',eingabe:'/bib/'+RID+'/entpackt/m'+mid+'/S3/AUTORUN.EXE',ausgabe:'/arbeit/'+jobId,
+  grenzen:{zeitlimit_s:3600,max_bytes:268435456,max_dateien:konfig.maxDateien,nachlauf_s:300}},'C: Runner-Auftrag fuer Ghidra');
+ ok(snap?.version===1&&/^[a-f0-9]{64}$/.test(snap.revision)&&snap.werte.s3_zeitlimit_s.wert==='3600','C: Einstellungs-Snapshot geht mit');
  eq((await pool.query('SELECT state FROM work_jobs WHERE id=$1',[jobId])).rows[0].state,'completed','C: Work-Job completed (stage+complete ueber die Hooks)');
  const schichten=Object.fromEntries((await pool.query("SELECT schicht,status,fehlercode,funktionen_gesamt,funktionen_fertig,fingerabdruck,werkzeug,werkzeug_version,profil_version,ausgabe_key FROM reverse_schichten WHERE datei_id=$1 AND aktuell",[D1])).rows.map(x=>[x.schicht,x]));
  eq([schichten.S3.status,schichten.S3.funktionen_gesamt,schichten.S3.funktionen_fertig,schichten.S3.fehlercode],['teilweise',3,2,null],'C: S3 teilweise (eine Funktion ohne Dekompilat)');

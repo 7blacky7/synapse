@@ -9,9 +9,7 @@ import {createRequire} from 'node:module';
 const dsn=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(dsn.port,'5433');assert.equal(dsn.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
 process.env.SYNAPSE_SKIP_EMBEDDINGS='1';process.env.QDRANT_URL='http://127.0.0.1:1';
-process.env.SYNAPSE_REVERSE_PARALLEL='1';process.env.SYNAPSE_REVERSE_RETRY_MAX='2';
-// P18-T61/E4: Standard-Obergrenze ist S1; dieser Test prüft die S2/S3-Folge und hebt sie ausdrücklich an.
-process.env.SYNAPSE_REVERSE_BIS_SCHICHT='S3';
+// P18-T86: Parallelitaet, Versuche und Schichtgrenze sind Einstellwerte (reverse_einstellungen im privaten Schema, siehe unten).
 process.env.SYNAPSE_REVERSE_CONTAINER_PROFIL='fixture-reverse';process.env.SYNAPSE_REVERSE_WERKZEUG_VERSION='fixture-1';
 process.env.SYNAPSE_REVERSE_RESOURCE_NEED='{"cpu":1,"ram":64,"vram":0,"gpu":false}';
 const core=await import('../dist/index.js');
@@ -81,6 +79,9 @@ try{
  // Only the Reverse columns from migration 112; never migrate unrelated public test tables.
  for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
  await pool.query('CREATE TABLE agent_profil_schalter (LIKE public.agent_profil_schalter INCLUDING DEFAULTS INCLUDING INDEXES)');
+ // P18-T61/E4: Standard-Obergrenze ist S1; dieser Test prueft die S2/S3-Folge und hebt sie ausdruecklich an (global, privat).
+ await pool.query('CREATE TABLE reverse_einstellungen(ebene text NOT NULL,project text,eintrag_id text,name text NOT NULL,wert numeric,wert_text text,grund text,gesetzt_von text,gesetzt_am timestamptz DEFAULT now())');
+ await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert,wert_text,grund,gesetzt_von) VALUES('global','pipeline_parallel',1,NULL,'RV8','fixture'),('global','retry_max',2,NULL,'RV8','fixture'),('global','analyse_bis_schicht',NULL,'S3','RV8','fixture')");
  const elfPath=join(root,'elf-fixture');
  execFileSync('gcc',['-x','c','-o',elfPath,'-'],{input:'const char *fixture = "password = \\"'+secret+'\\""; int main(void){return fixture[0] == 0;}',stdio:['pipe','pipe','pipe']});
  const elf=await readFile(elfPath);

@@ -36,7 +36,7 @@ export function createReverseEingangRoutes(o:{eingang?:ReverseEingang;validateTo
   }));
   // RV6: Policy für den Bibliotheks-Watcher des Daemons (gleicher Gate/Hostbindung).
   fastify.get<{Querystring:{host?:string}}>('/api/reverse/sync-optionen',async(req,reply)=>run(reply,async()=>{
-   const h=await host(req,req.query.host);return {success:true,contractVersion:1,...kern().syncOptionen(h)};
+   const h=await host(req,req.query.host);return {success:true,contractVersion:1,...(await kern().syncOptionen(h))};
   }));
   // RV6: lokal gelöscht/verschoben melden; das Original bleibt in der Bibliothek.
   fastify.post<{Body:{host?:string;dateien:ReverseAbmeldung[]}}>('/api/reverse/fundstellen/abmelden',async(req,reply)=>run(reply,async()=>{

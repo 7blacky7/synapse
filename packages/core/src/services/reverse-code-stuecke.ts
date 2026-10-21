@@ -1,5 +1,7 @@
 /** P18-T77: byte-bounded physical pieces, exact concatenation and one logical file. */
-export const REVERSE_TEXTSTUECK_BYTES=262144;
+import {REVERSE_EINSTELLKATALOG} from './reverse-einstellkatalog.js';
+/** P18-T86: Katalogstandard von s1_textstueck_bytes; Aufrufer mit Eintragskontext übergeben den wirksamen Wert. */
+export const REVERSE_TEXTSTUECK_BYTES=Number(REVERSE_EINSTELLKATALOG.s1_textstueck_bytes.standard);
 export interface ReverseTextStueck {inhalt:string;haupt:number;teil:number;zeilenOffset:number}
 export function teileReverseText(text:string,maxBytes=REVERSE_TEXTSTUECK_BYTES):string[]{
  if(!Number.isSafeInteger(maxBytes)||maxBytes<4)throw Error('stueck_budget_ungueltig');
@@ -20,20 +22,20 @@ export function teileReverseText(text:string,maxBytes=REVERSE_TEXTSTUECK_BYTES):
  }
  return out.length?out:[''];
 }
-export function reverseTextSammler(){
+export function reverseTextSammler(maxBytes=REVERSE_TEXTSTUECK_BYTES){
  const fertig:ReverseTextStueck[]=[];let akt='',zeilen=0,aktBytes=0;
  const flush=()=>{if(!akt)return;fertig.push({inhalt:akt,haupt:fertig.length,teil:0,zeilenOffset:0});akt='';zeilen=0;aktBytes=0;};
  return {
   add(text:string):{stueck:number;zeile:number}{
    const bytes=Buffer.byteLength(text);
-   if(bytes>REVERSE_TEXTSTUECK_BYTES){
+   if(bytes>maxBytes){
     flush();const haupt=fertig.length;let offset=0;
-    for(const [teil,inhalt]of teileReverseText(text).entries()){
+    for(const [teil,inhalt]of teileReverseText(text,maxBytes).entries()){
      fertig.push({inhalt,haupt,teil,zeilenOffset:offset});offset+=inhalt.split('\n').length-1;
     }
     return {stueck:haupt,zeile:1};
    }
-   if(akt&&aktBytes+bytes>REVERSE_TEXTSTUECK_BYTES)flush();
+   if(akt&&aktBytes+bytes>maxBytes)flush();
    const pos={stueck:fertig.length,zeile:zeilen+1};akt+=text;aktBytes+=bytes;zeilen+=text.split('\n').length-1;return pos;
   },
   ende():ReverseTextStueck[]{flush();return fertig;},

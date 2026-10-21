@@ -5,7 +5,9 @@ import {getPool} from '../db/client.js';
 import {getAssetKonfiguration} from '../config/asset-konfig.js';
 import type {AssetKonfiguration} from '../config/asset-konfig.js';
 import {ladeReverseEingangKonfiguration} from '../config/reverse-eingang.js';
-import type {ReverseEingangKonfiguration} from '../config/reverse-eingang.js';
+import type {ReverseEingangKonfiguration,ReverseLoeschVerhalten} from '../config/reverse-eingang.js';
+import {leseReverseEinstellwerte,reverseZahl,reverseWert,reverseBudget,type ReverseEinstellSnapshot,type ReverseEinstellKontext} from './reverse-einstellwerte.js';
+import {REVERSE_EINSTELLKATALOG} from './reverse-einstellkatalog.js';
 import {AssetSpeicher,erzeugeReverseId,normalisiereSpeicherPfad} from './asset-speicher.js';
 import {AssetUploadKern,AssetUploadFehler} from './asset-upload.js';
 import type {AssetUploadDb,AssetUploadKontext,AssetUploadFinalisierer} from './asset-upload.js';
@@ -22,13 +24,33 @@ const UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 export class ReverseEingang {
  readonly upload:AssetUploadKern; readonly speicher:AssetSpeicher;
  private readonly db:AssetUploadDb; private readonly cfg:AssetKonfiguration;private readonly regeln:ReverseEingangKonfiguration;
- constructor(o:{db?:AssetUploadDb;konfiguration?:AssetKonfiguration;regeln?:ReverseEingangKonfiguration;speicher?:AssetSpeicher}={}){
-  this.db=o.db??getPool() as unknown as AssetUploadDb;this.cfg=o.konfiguration??getAssetKonfiguration();this.regeln=o.regeln??ladeReverseEingangKonfiguration();
+ private readonly einstellwerte:(k:ReverseEinstellKontext)=>Promise<ReverseEinstellSnapshot>;
+ private pfadMax=Number(REVERSE_EINSTELLKATALOG.speicher_pfad_zeichen.standard);
+ constructor(o:{db?:AssetUploadDb;konfiguration?:AssetKonfiguration;regeln?:ReverseEingangKonfiguration;speicher?:AssetSpeicher;einstellwerte?:(k:ReverseEinstellKontext)=>Promise<ReverseEinstellSnapshot>}={}){
+  this.db=o.db??getPool() as unknown as AssetUploadDb;
+  // P18-T86: eigene Kopie; grenzen() trägt je Aufruf die wirksamen Reverse-Werte ein. Projekt-Assets bleiben unberührt.
+  const basis=o.konfiguration??getAssetKonfiguration();
+  this.cfg={...basis,speicher:{...basis.speicher},sync:{...basis.sync},reverse:{...basis.reverse}};
+  this.regeln={...(o.regeln??ladeReverseEingangKonfiguration())};
+  this.einstellwerte=o.einstellwerte??(k=>leseReverseEinstellwerte(k));
   this.speicher=o.speicher??new AssetSpeicher({konfiguration:this.cfg,layout:a=>a.bereich==='reverse'?a.ziel_ref+'/original/dateien/'+a.logischer_pfad:undefined});
   this.upload=new AssetUploadKern({db:this.db,konfiguration:this.cfg,speicher:this.speicher});
   this.upload.registriereFinalisierer('reverse',this.finalisierer());
  }
  private gate(host:string){if(!this.cfg.reverse.aktiv)fail('deaktiviert',503,'Reverse ist deaktiviert.');if(typeof host!=='string'||!host||host.length>200)fail('host_ungueltig',403,'Hostbindung fehlt.');}
+ /** P18-T86: eine Lesestelle (global); trägt die wirksamen Werte in die eigene Konfigurationskopie ein, die Upload und Speicher lesen.
+  * Eintragswerte (eintrag_bytes, descriptor_bytes, Warnschwelle) werden je Eintrag gelesen und nie in die Kopie geschrieben. */
+ private async grenzen():Promise<ReverseEinstellSnapshot>{
+  const s=await this.einstellwerte({});
+  Object.assign(this.cfg.speicher,{chunkBytes:reverseZahl(s,'speicher_chunk_bytes'),parallelTransfers:reverseZahl(s,'speicher_parallel_transfers'),timeoutMs:reverseZahl(s,'speicher_timeout_ms')});
+  Object.assign(this.cfg.sync,{scanIntervallMs:reverseZahl(s,'eingang_scan_ms'),retryIntervallMs:reverseZahl(s,'eingang_retry_ms')});
+  // Dateianzahl je Eintrag ist nur noch Warnschwelle (eintrag_dateien_warnung), keine Ablehnung.
+  Object.assign(this.cfg.reverse,{maxDateiBytes:reverseBudget(s,'max_datei_bytes'),maxProjektBytes:reverseBudget(s,'eintrag_bytes'),maxProjektDateien:Number.MAX_SAFE_INTEGER});
+  Object.assign(this.regeln,{maxBatch:reverseZahl(s,'eingang_block_dateien'),maxDescriptorBytes:reverseZahl(s,'descriptor_bytes'),stabilMs:reverseZahl(s,'eingang_stabil_ms'),
+   loeschVerhalten:reverseWert(s,'eingang_loeschverhalten') as ReverseLoeschVerhalten});
+  this.pfadMax=reverseZahl(s,'speicher_pfad_zeichen');
+  return s;
+ }
  private async tx<T>(fn:(db:AssetUploadDb)=>Promise<T>,snapshot=false):Promise<T>{
   const db=await this.db.connect();try{await db.query(snapshot?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN');
    await db.query("SELECT set_config('statement_timeout',$1,true)",[String(this.cfg.speicher.timeoutMs)]);
@@ -61,17 +83,18 @@ export class ReverseEingang {
   };
  }
  async fundstellen(host:string,input:ReverseFundDatei[],quelle:'tray'|'unraid_eingang'='tray'){
-  this.gate(host);
+  this.gate(host);await this.grenzen();
   if(!Array.isArray(input)||!input.length||input.length>this.regeln.maxBatch)fail('eingang_ungueltig',400,'Dateiliste überschreitet Batchgrenze.');
   const paths=new Set<string>();
   const files=input.map(f=>{
    if(!f||typeof f!=='object'||typeof f.sha256!=='string'||!/^[a-f0-9]{64}$/.test(f.sha256)||!Number.isSafeInteger(f.groesse)||f.groesse<0||f.groesse>this.cfg.reverse.maxDateiBytes)fail('eingang_ungueltig',400,'Dateimetadaten oder Größe ungültig.');
    if(f.host!==undefined&&f.host!==host)fail('host_ungueltig',403,'Host weicht von Authentifizierung ab.');
-   const p=normalisiereSpeicherPfad(f.rel_pfad);if(p.length>4096||paths.has(p))fail('eingang_ungueltig',400,'Doppelter/zu langer Pfad.');paths.add(p);
+   const p=normalisiereSpeicherPfad(f.rel_pfad);if(p.length>this.pfadMax||paths.has(p))fail('eingang_ungueltig',400,'Doppelter/zu langer Pfad.');paths.add(p);
    if(f.mtime!==undefined&&(typeof f.mtime!=='string'||!Number.isFinite(Date.parse(f.mtime))))fail('eingang_ungueltig',400,'mtime muss ISO-Datum sein.');
    return {rel_pfad:p,groesse:f.groesse,sha256:f.sha256,mtime:f.mtime};
   });
-  const rids=new Set<string>();
+  const rids=new Set<string>(),warnungen=new Set<string>(),eintragWerte=new Map<string,ReverseEinstellSnapshot>();
+  const fuerEintrag=async(rid:string)=>{let s=eintragWerte.get(rid);if(!s){s=await this.einstellwerte({eintrag_id:rid});eintragWerte.set(rid,s);}return s;};
   await this.tx(async db=>{
    await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-gruppierung'))");
    for(const group of reverseGruppieren(files,this.regeln)){
@@ -103,7 +126,9 @@ export class ReverseEingang {
      if(previous){rids.add(String(previous.eintrag_id));continue;}
      await db.query('DELETE FROM reverse_eingang_dateien WHERE eintrag_id=$1 AND rel_pfad=$2 AND sha256<>$3',[rid,f.rel_pfad,f.sha256]);
      const quota=(await db.query('SELECT COALESCE(sum(groesse),0)::text AS bytes,count(*)::int AS n FROM reverse_eingang_dateien WHERE eintrag_id=$1',[rid])).rows[0];
-     if(BigInt(String(quota.bytes))+BigInt(f.groesse)>BigInt(this.cfg.reverse.maxProjektBytes)||Number(quota.n)>=this.cfg.reverse.maxProjektDateien)fail('quote',413,'Reverse-Eintragsquote überschritten.');
+     const es=await fuerEintrag(rid);
+     if(BigInt(String(quota.bytes))+BigInt(f.groesse)>BigInt(reverseWert(es,'eintrag_bytes')))fail('quote',413,'Reverse-Eintragsquote überschritten.');
+     const warnAb=reverseZahl(es,'eintrag_dateien_warnung');if(warnAb&&Number(quota.n)+1>=warnAb)warnungen.add(rid);
      const logical=f.sha256+'/'+path.posix.basename(f.rel_pfad);
      await db.query("INSERT INTO reverse_eingang_bytes(sha256,groesse,ziel_ref,logischer_pfad,host_id) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",[f.sha256,f.groesse,rid,logical,host]);
      const b=(await db.query('SELECT groesse FROM reverse_eingang_bytes WHERE sha256=$1',[f.sha256])).rows[0];
@@ -134,11 +159,11 @@ export class ReverseEingang {
    await this.db.query("UPDATE reverse_eingang_bytes SET upload_id=$2 WHERE sha256=$1 AND status='offen' AND (upload_id IS NULL OR upload_id=$2)",[f.sha256,s.id]);
    results.push({rel_pfad:f.rel_pfad,status:'upload_noetig',upload_id:s.id,ziel_ref:s.ziel_ref,offset:s.offset,lease_bis:s.lease_bis,reverse_id:b.eintrag_id});
   }
-  return {dateien:results,reverse_ids:[...rids]};
+  return {dateien:results,reverse_ids:[...rids],...(warnungen.size?{warnungen:[...warnungen].map(r=>({reverse_id:r,grund:'eintrag_dateien_warnung'}))}:{})};
  }
  /** RV6: Transferbudgets und Katalog für den Bibliotheks-Watcher; nie Serverpfade oder Speicherschlüssel. */
- syncOptionen(host:string){
-  this.gate(host);
+ async syncOptionen(host:string){
+  this.gate(host);await this.grenzen();
   return {host,chunkBytes:this.cfg.speicher.chunkBytes,timeoutMs:this.cfg.speicher.timeoutMs,retryMs:this.cfg.sync.retryIntervallMs,scanMs:this.cfg.sync.scanIntervallMs,
    maxDateiBytes:this.cfg.reverse.maxDateiBytes,parallelTransfers:this.cfg.speicher.parallelTransfers,maxBatch:this.regeln.maxBatch,stabilMs:this.regeln.stabilMs,
    loesch_verhalten:this.regeln.loeschVerhalten,endungen:{images:[...this.regeln.imageEndungen],companions:this.regeln.companions.map(r=>({...r}))},erlaubt_alle_dateien:true};
@@ -148,13 +173,13 @@ export class ReverseEingang {
   const seen=new Set<string>();
   return input.map(f=>{
    if(!f||typeof f!=='object')fail('eingang_ungueltig',400,'Eintrag ungültig.');
-   const p=normalisiereSpeicherPfad(f.rel_pfad);if(p.length>4096||seen.has(p))fail('eingang_ungueltig',400,'Doppelter/zu langer Pfad.');seen.add(p);
+   const p=normalisiereSpeicherPfad(f.rel_pfad);if(p.length>this.pfadMax||seen.has(p))fail('eingang_ungueltig',400,'Doppelter/zu langer Pfad.');seen.add(p);
    return {...f,rel_pfad:p};
   });
  }
  /** RV6: setzt reverse_fundstellen.status für lokal gelöschte/verschobene Dateien. Keine Byte-Löschung. */
  async abmelden(host:string,input:ReverseAbmeldung[],quelle:'tray'='tray'){
-  this.gate(host);
+  this.gate(host);await this.grenzen();
   const files=this.eingabePfade(input);
   for(const f of files)if(f.status!=='geloescht_lokal'&&f.status!=='fehlt')fail('eingang_ungueltig',400,'status geloescht_lokal oder fehlt erwartet.');
   const results:Row[]=[];
@@ -182,7 +207,7 @@ export class ReverseEingang {
  }
  /** RV6: Original einer eigenen Fundstelle zum Zurückholen; nur bestätigte Bytes, optional ab offset. */
  async original(host:string,relPfad:string,offset=0,quelle:'tray'='tray'){
-  this.gate(host);
+  this.gate(host);await this.grenzen();
   const p=normalisiereSpeicherPfad(relPfad);
   const b=(await this.db.query(`SELECT b.* FROM reverse_eingang_dateien d JOIN reverse_eingang_bytes b USING(sha256)
    WHERE d.host_id=$1 AND d.rel_pfad=$2 AND d.quelle=$3 ORDER BY d.id DESC LIMIT 1`,[host,p,quelle])).rows[0];
@@ -204,7 +229,7 @@ export class ReverseEingang {
  async recoveryDirekt(id:string,istVerwaist:()=>Promise<boolean>){
   const b=(await this.db.query("SELECT b.*,d.rel_pfad FROM reverse_eingang_bytes b JOIN reverse_eingang_dateien d USING(sha256) WHERE b.upload_id=$1 AND b.host_id='unraid_eingang' AND d.quelle='unraid_eingang' ORDER BY d.id LIMIT 1",[id])).rows[0];
   if(!b)fail('scope_verboten',403,'Keine Direktübernahme für diesen Auftrag.');
-  const c=this.ctx(b);this.gate(c.host_id);
+  const c=this.ctx(b);this.gate(c.host_id);await this.grenzen();
   if(!await istVerwaist())fail('recovery_unbestaetigt',409,'Physischer Stillstand nicht belegt.');
   if(b.status==='ready')return this.finalisieren(c,id);
   const renewed=await this.db.query("UPDATE asset_upload_sitzungen SET lease_bis=clock_timestamp()+$2*interval '1 millisecond' WHERE id=$1 AND bereich='reverse' AND host_id='unraid_eingang' AND status IN('offen','laeuft') AND publish_operation IS NULL RETURNING id",[id,this.cfg.speicher.timeoutMs]);
@@ -222,7 +247,7 @@ export class ReverseEingang {
   });
  }
  async finalisieren(ctx:AssetUploadKontext,id:string){
-  this.gate(ctx.host_id);const s=await this.upload.finalisieren(ctx,id);
+  this.gate(ctx.host_id);await this.grenzen();const s=await this.upload.finalisieren(ctx,id);
   await this.bytesErkannt(s.sha256);
   const rids=(await this.db.query('SELECT DISTINCT eintrag_id FROM reverse_eingang_dateien WHERE sha256=$1',[s.sha256])).rows;
   for(const r of rids)await this.aktualisieren(String(r.eintrag_id));
@@ -230,11 +255,12 @@ export class ReverseEingang {
  }
  private async bytesErkannt(sha:string){
   const b=(await this.db.query("SELECT * FROM reverse_eingang_bytes WHERE sha256=$1 AND status='ready'",[sha])).rows[0];if(!b||b.erkannt)return;
-  const max=Math.min(Number(b.groesse),this.regeln.maxDescriptorBytes),chunks:Buffer[]=[];
+  const descriptorMax=reverseZahl(await this.einstellwerte({eintrag_id:String(b.ziel_ref)}),'descriptor_bytes');
+  const max=Math.min(Number(b.groesse),descriptorMax),chunks:Buffer[]=[];
   const stream=await this.speicher.readStorageStream({bereich:'reverse',ziel_ref:String(b.ziel_ref),storage_kind:'binaries',logischer_pfad:String(b.logischer_pfad)},String(b.storage_key),0,max);
   for await(const chunk of stream)chunks.push(Buffer.from(chunk));
   const data=Buffer.concat(chunks),referenzen:string[]=[];
-  if(Number(b.groesse)<=this.regeln.maxDescriptorBytes){
+  if(Number(b.groesse)<=descriptorMax){
    const re=/^[ \t]*(?:FILE|DATAFILE|AUDIOFILE)[ \t]+(?:"([^"]+)"|([^\s]+))/gmi;let m:RegExpExecArray|null;
    while((m=re.exec(data.toString('utf8'))))referenzen.push(normalisiereSpeicherPfad(m[1]??m[2]));
   }
@@ -298,11 +324,11 @@ export class ReverseEingang {
   });
  }
  async status(host:string,o:{cursor?:string;limit?:number}={}){
-  this.gate(host);const limit=o.limit??Math.min(200,this.cfg.reverse.maxErgebnisse);
-  if(!Number.isSafeInteger(limit)||limit<1||limit>this.cfg.reverse.maxErgebnisse)fail('limit_ungueltig',400,'Seitenlimit ungültig.');
+  this.gate(host);const s=await this.grenzen(),maxLimit=reverseZahl(s,'eingang_status_max_limit');const limit=o.limit??reverseZahl(s,'eingang_status_limit');
+  if(!Number.isSafeInteger(limit)||limit<1||limit>maxLimit)fail('limit_ungueltig',400,'Seitenlimit ungültig.');
   let id:string,last='0';
   if(o.cursor){
-   let c:Row;try{if(o.cursor.length>2048)throw new Error();c=JSON.parse(Buffer.from(o.cursor,'base64url').toString());if(!c||typeof c!=='object'||Array.isArray(c))throw new Error();}catch{return fail('cursor_ungueltig',400,'Cursor ungültig.');}
+   let c:Row;try{if(o.cursor.length>reverseZahl(s,'cursor_zeichen'))throw new Error();c=JSON.parse(Buffer.from(o.cursor,'base64url').toString());if(!c||typeof c!=='object'||Array.isArray(c))throw new Error();}catch{return fail('cursor_ungueltig',400,'Cursor ungültig.');}
    if(c.art!=='reverse-fundstellen'||c.host!==host||typeof c.id!=='string'||!UUID.test(c.id)||typeof c.last!=='string'||!/^\d+$/.test(c.last))fail('cursor_ungueltig',400,'Cursor gehört anderem Host/Vertrag.');
    id=String(c.id);last=String(c.last);
   }else{

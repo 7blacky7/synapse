@@ -119,9 +119,14 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'reverse_siedler3',
   // P18-T85: Live-Fortschritt laufender Reverse-Container-Auftraege (reverse-fortschritt.ts), global, Standard AUS bis Abnahme, nur ausdruecklich.
   'reverse_fortschritt_live',
+  // P18-T86/T88: fortsetzbare Blockübernahme; explizit global, Standard AUS.
+  'reverse_blockuebernahme',
+  // P18-T86: automatischer Reverse-Entstoerer (bisher Env SYNAPSE_REVERSE_ENTSTOERER, STANDARD EIN wie bisher) und WAV-Pregap
+  // beim Audio-CD-Entpacken (bisher Env SYNAPSE_REVERSE_WAV_PREGAP, Standard AUS); beide global, nur ausdruecklich.
+  'reverse_entstoerer_auto', 'reverse_wav_pregap',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_entstoerer_auto', 'reverse_wav_pregap'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -129,7 +134,7 @@ export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lese
 // P22-T78/T79: startkontext (Zustellung des eigenen Verlaufs je neuem Lauf) und main_lesezugriff (nur lesen, User-Grundsatz) ebenso.
 // P22-T81: agent_verlauf_alle (reine Speicherung des eigenen Verlaufs jeder Identitaet) ebenso.
 // P22-T86: chat_get_eigene (Fehlerkorrektur, schraenkt die Sicht von chat get mit Ausweis ein) ebenso.
-export const STANDARD_EIN: readonly string[] = ['hauptagent_verlauf', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'chat_get_eigene'];
+export const STANDARD_EIN: readonly string[] = ['hauptagent_verlauf', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'chat_get_eigene', 'reverse_entstoerer_auto'];
 /**
  * W12 V7: 'schattenprofile' und 'token_abruf' sind im Produkt-Schalter 'agenten_ausweis' aufgegangen. Die alten Namen
  * bleiben nur LESBAR/setzbar (Altschalter-Rueckfall des Ausweis-Kerns, bestehende Zeilen), sind aber nicht mehr im Katalog.
@@ -337,7 +342,7 @@ function istFunktion(f: string): f is ProfilProduktFunktion {
 export async function leseProfilProduktSchalter(
   funktion: ProfilProduktFunktion, project?: string | null,
 ): Promise<ProfilProduktSchalterStand> {
-  if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3'||funktion==='reverse_fortschritt_live')project=null; // global library, same value in every project
+  if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3'||funktion==='reverse_fortschritt_live'||funktion==='reverse_blockuebernahme'||funktion==='reverse_entstoerer_auto'||funktion==='reverse_wav_pregap')project=null; // global library, same value in every project
   const basis: ProfilProduktSchalterStand = { funktion, project: project ?? null, aktiv: STANDARD_EIN.includes(funktion), quelle: 'standard',
     ebene: null, regel_funktion: null, gesetzt_von: null, gesetzt_am: null, grund: null, letzter_fehler: null };
   if (!istFunktion(funktion)) return { ...basis, letzter_fehler: 'funktion_unbekannt' };
@@ -387,7 +392,7 @@ export async function setzeProfilProduktSchalter(
 ): Promise<ProfilProduktSchalterStand> {
   if (e.funktion !== 'alle' && !istFunktion(e.funktion)) throw new ProfilSchalterFehler('funktion_unbekannt');
   if (e.ebene !== 'global' && e.ebene !== 'projekt') throw new ProfilSchalterFehler('ebene_ungueltig');
-  if((e.funktion==='reverse_pe_ressourcen'||e.funktion==='reverse_siedler3'||e.funktion==='reverse_fortschritt_live')&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
+  if((e.funktion==='reverse_pe_ressourcen'||e.funktion==='reverse_siedler3'||e.funktion==='reverse_fortschritt_live'||e.funktion==='reverse_blockuebernahme')&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
   const project = e.ebene === 'projekt' ? (e.project ?? '').trim() : null;
   if (e.ebene === 'projekt' && !project) throw new ProfilSchalterFehler('project_fehlt');
   if (typeof e.grund !== 'string' || e.grund.trim().length < 5) throw new ProfilSchalterFehler('grund_fehlt');

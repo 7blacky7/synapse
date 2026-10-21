@@ -4,46 +4,37 @@
  * der Executor speichert das letzte Ereignis in work_jobs.fortschritt (nur unter eigener Lease) und reverse(status)/reverse(diagnose)
  * zeigen es je laufendem Auftrag. Kommt laenger als fortschritt_haenger_s nichts, steht dort ein Haenger-Hinweis; abgebrochen wird nie.
  * Produkt-Schalter reverse_fortschritt_live (global, Standard AUS bis Abnahme), intern-Schalter gleichen Namens befristet als Test-Override.
- * Takt und Schwelle sind Reverse-Einstellungen (fortschritt_takt_s, fortschritt_haenger_s).
+ * Takt, Schwelle und Dateianzeige sind Reverse-Einstellungen (fortschritt_takt_s, fortschritt_haenger_s, fortschritt_datei_zeichen);
+ * ihre Bereiche prueft der Katalog, hier wird nichts nochmals gekappt (P18-T86).
  */
 import type {Pool} from 'pg';
-import {getPool} from '../db/client.js';
-import {leseProfilProduktSchalter} from './agent-profil-schalter.js';
-import {internToolAktiv} from './intern-tool.js';
-import {leseReverseEinstellungen} from './reverse-einstellungen.js';
+import {leseReverseEinstellwerte,leseReverseProduktSchalter,reverseZahl} from './reverse-einstellwerte.js';
+import {REVERSE_EINSTELLKATALOG} from './reverse-einstellkatalog.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
 
-export const REVERSE_FORTSCHRITT_PHASEN=['start','iso_entpacken','verschachtelt','pe_ressourcen','siedler3','manifest','werkzeug'] as const;
-/** Obergrenze des Runner-Takts (runner.py FORTSCHRITT_TAKT_MAX_S). */
-const TAKT_MAX_S=600;
-const DATEI_ZEICHEN=200;
+/** P18-T88: inventarisieren/uebernahme/s1_materialisieren melden die fortsetzbaren Blockschritte. */
+export const REVERSE_FORTSCHRITT_PHASEN=['start','iso_entpacken','verschachtelt','pe_ressourcen','siedler3','manifest','werkzeug','inventarisieren','uebernahme','s1_materialisieren'] as const;
 
 export interface ReverseFortschrittStand {
- aktiv:boolean;quelle:'standard'|'produkt-schalter'|'intern';bis:string|null;letzter_fehler:string|null;takt_s:number;haenger_s:number;
+ aktiv:boolean;quelle:'standard'|'produkt-schalter'|'intern';bis:string|null;letzter_fehler:string|null;takt_s:number;haenger_s:number;datei_zeichen:number;
 }
 
 export async function leseReverseFortschrittSchalter():Promise<ReverseFortschrittStand>{
- const produkt=await leseProfilProduktSchalter('reverse_fortschritt_live',null);
- let stand:Omit<ReverseFortschrittStand,'takt_s'|'haenger_s'>={aktiv:produkt.aktiv,quelle:produkt.quelle,bis:null,letzter_fehler:produkt.letzter_fehler};
- if(internToolAktiv()){
-  try{
-   const r=await getPool().query({text:"SELECT aktiv,bis FROM intern_schalter WHERE name='reverse_fortschritt_live' AND modus='freigegeben' AND bis>NOW()",query_timeout:2000} as import('pg').QueryConfig & {query_timeout:number});
-   const z=r.rows[0];
-   if(z)stand={aktiv:z.aktiv,quelle:'intern',bis:new Date(z.bis).toISOString(),letzter_fehler:null};
-  }catch{stand.letzter_fehler='reverse_fortschritt_override_nicht_lesbar';}
- }
- const werte=(await leseReverseEinstellungen(null)).werte;
- return {...stand,takt_s:Math.min(werte.fortschritt_takt_s.wert,TAKT_MAX_S),haenger_s:werte.fortschritt_haenger_s.wert};
+ const stand=await leseReverseProduktSchalter('reverse_fortschritt_live',null);
+ const s=await leseReverseEinstellwerte({});
+ return {...stand,letzter_fehler:stand.letzter_fehler==='reverse_fortschritt_live_override_nicht_lesbar'?'reverse_fortschritt_override_nicht_lesbar':stand.letzter_fehler,
+  takt_s:reverseZahl(s,'fortschritt_takt_s'),haenger_s:reverseZahl(s,'fortschritt_haenger_s'),datei_zeichen:reverseZahl(s,'fortschritt_datei_zeichen')};
 }
 
 const ganz=(v:unknown):number|null=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=0?v:null;
 const objekt=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 
-/** Runner-Zeile -> gespeichertes Ereignis. Nur Zeilen mit phase (das alte Endereignis funktionen_fertig bleibt aussen vor). */
-export function normalisiereReverseFortschritt(ev:Record<string,unknown>):Record<string,unknown>|null{
+/** Runner-Zeile -> gespeichertes Ereignis. Nur Zeilen mit phase (das alte Endereignis funktionen_fertig bleibt aussen vor).
+ * dateiZeichen: wirksamer Wert aus leseReverseFortschrittSchalter (Standard nur der Katalogstandard). */
+export function normalisiereReverseFortschritt(ev:Record<string,unknown>,dateiZeichen=Number(REVERSE_EINSTELLKATALOG.fortschritt_datei_zeichen.standard)):Record<string,unknown>|null{
  if(ev.status!=='fortschritt'||typeof ev.phase!=='string')return null;
  const phase=(REVERSE_FORTSCHRITT_PHASEN as readonly string[]).includes(ev.phase)?ev.phase:'unbekannt';
- const datei=typeof ev.aktuelle_datei==='string'&&ev.aktuelle_datei?maskiereMitKatalog(ev.aktuelle_datei.slice(-DATEI_ZEICHEN),'reverse').text:null;
+ const datei=typeof ev.aktuelle_datei==='string'&&ev.aktuelle_datei?maskiereMitKatalog(ev.aktuelle_datei.slice(-dateiZeichen),'reverse').text:null;
  return {phase,dateien_bisher:ganz(ev.dateien_bisher),bytes_geschrieben:ganz(ev.bytes_geschrieben),aktuelle_datei:datei,gesamt:ganz(ev.gesamt),
   runner_seit_s:typeof ev.seit_s==='number'&&Number.isFinite(ev.seit_s)?Math.round(ev.seit_s):null};
 }

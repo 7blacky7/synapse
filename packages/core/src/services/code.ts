@@ -38,6 +38,7 @@
  */
 
 import * as fs from 'fs';
+import {indexBloecke} from './index-bloecke.js';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
@@ -873,8 +874,7 @@ async function parseAndEmbedLauf(
       // Batch-INSERT Symbole (Sub-Batching wg. PG-Parameter-Limit; 12 Params/Row).
       const SYM_COLS = 12;
       const SYM_BATCH = 2000; // 2000 * 12 = 24000 < 65535
-      for (let i = 0; i < symbolTuples.length; i += SYM_BATCH) {
-        const slice = symbolTuples.slice(i, i + SYM_BATCH);
+      for (const slice of indexBloecke(symbolTuples,{zeilen:SYM_BATCH})) {
         const vals: unknown[] = [];
         const rows = slice.map((t, j) => {
           const b = j * SYM_COLS;
@@ -893,8 +893,7 @@ async function parseAndEmbedLauf(
       // Batch-INSERT Referenzen (6 Params/Row).
       const REF_COLS = 6;
       const REF_BATCH = 5000; // 5000 * 6 = 30000 < 65535
-      for (let i = 0; i < refTuples.length; i += REF_BATCH) {
-        const slice = refTuples.slice(i, i + REF_BATCH);
+      for (const slice of indexBloecke(refTuples,{zeilen:REF_BATCH})) {
         const vals: unknown[] = [];
         const rows = slice.map((t, j) => {
           const b = j * REF_COLS;

@@ -12,6 +12,7 @@ import type { Pool, PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { reverseAusfuehrer, zerlegeReverseFehlercode, leseReverseAufsicht } from './reverse-ausfuehrer.js';
 import { registriereWorker, workerPausiert } from './worker-steuerung.js';
+import { REVERSE_EINSTELLKATALOG } from './reverse-einstellkatalog.js';
 
 type Row = Record<string, unknown>;
 type Db = Pick<Pool, 'query' | 'connect'>;
@@ -59,8 +60,10 @@ export interface ReverseMassnahme extends Row { zeit: string; quelle: string; ur
 
 /** Letzte automatische und manuelle Maßnahmen dieses Prozesses (zusätzlich dauerhaft in work_job_audit). */
 const verlauf: ReverseMassnahme[] = [];
-let letzterAutoLauf: { am: string; massnahmen: number; fehler?: string } | null = null;
-function merke(m: ReverseMassnahme): void { verlauf.unshift(m); if (verlauf.length > 50) verlauf.length = 50; }
+let letzterAutoLauf: { am: string; massnahmen: number; fehler?: string; uebersprungen?: string } | null = null;
+/** P18-T86: diagnose_verlauf_speicher; jede Diagnose aktualisiert den wirksamen Wert. */
+let verlaufMax = Number(REVERSE_EINSTELLKATALOG.diagnose_verlauf_speicher.standard);
+function merke(m: ReverseMassnahme): void { verlauf.unshift(m); if (verlauf.length > verlaufMax) verlauf.length = verlaufMax; }
 
 async function tabelleDa(db: Pick<Pool, 'query'>, name: string): Promise<boolean> {
   return !!(await db.query('SELECT to_regclass($1) AS t', [name])).rows[0]?.t;
@@ -68,10 +71,15 @@ async function tabelleDa(db: Pick<Pool, 'query'>, name: string): Promise<boolean
 
 export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<Row> {
   const db = o.pool ?? getPool();
-  const rid = o.reverseId ?? null, limit = Math.min(Math.max(o.limit ?? 200, 1), 1000);
+  // P18-T86: Fristen und Grenzen aus reverse_einstellungen (dynamisch importiert wie reverse-fortschritt, kein Importzyklus).
+  const { leseReverseEinstellwerte, reverseZahl, leseReverseProduktSchalter } = await import('./reverse-einstellwerte.js');
+  const s = await leseReverseEinstellwerte({});
+  verlaufMax = reverseZahl(s, 'diagnose_verlauf_speicher');
+  const rid = o.reverseId ?? null, limit = Math.min(Math.max(o.limit ?? reverseZahl(s, 'diagnose_seiten_limit'), 1), reverseZahl(s, 'diagnose_max_limit'));
   const aus = reverseAusfuehrer(), kinds = aus?.kinds ?? [];
-  const gnade = envZahl('SYNAPSE_REVERSE_ENTSTOERER_GNADE_S', 300);
-  const fehlerStunden = envZahl('SYNAPSE_REVERSE_DIAGNOSE_FEHLER_STUNDEN', 24, 1);
+  const gnade = reverseZahl(s, 'entstoerer_gnade_s');
+  const fehlerStunden = reverseZahl(s, 'diagnose_fehler_stunden');
+  const auto = await leseReverseProduktSchalter('reverse_entstoerer_auto').catch(() => null);
   // P18-T85: Live-Fortschritt je laufendem Work-Job (nur mit Schalter reverse_fortschritt_live; nur Hinweis, nie Abbruch).
   // Dynamisch: reverse-fortschritt zieht intern-tool nach; statisch entstuende ein Importzyklus ueber intern-schalter.
   const { leseReverseFortschrittSchalter, reverseFortschrittAnzeige, REVERSE_FORTSCHRITT_SQL } = await import('./reverse-fortschritt.js');
@@ -183,7 +191,8 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     fortschritt_live: live ?? { aktiv: false, letzter_fehler: 'reverse_fortschritt_schalter_nicht_lesbar' },
     aufsicht: { zeitlimits_s: aus?.zeitlimits ?? null, hart_puffer_s: puffer, nachlauf_s: einstellung('nachlauf_s'), einstellungen_fehler: einst?.letzter_fehler ?? (einst ? null : 'reverse_einstellungen_nicht_lesbar'), hinweis: 'P18-T87: harte Frist und Storno setzt der Executor durch; diagnose zeigt ueber_zeitlimit/storno_angefordert.' },
     haenger_verdacht: eintraege.filter(e => (e.live as Row | undefined)?.haenger_verdacht === true).length,
-    automatik: { aktiv: entstoererAktiv(), letzter_lauf: letzterAutoLauf, massnahmen: verlauf.slice(0, 20) },
+    automatik: { aktiv: entstoererAktiv() && !!auto?.aktiv, worker_gestartet: entstoererAktiv(), schalter: auto, letzter_lauf: letzterAutoLauf,
+      massnahmen: verlauf.slice(0, reverseZahl(s, 'diagnose_verlauf_anzeige')) },
   };
 }
 
@@ -207,7 +216,8 @@ async function audit(c: Pick<PoolClient, 'query'>, jobId: string | null, detail:
 export async function entstoereReverse(o: ReverseEntstoerOptionen = {}): Promise<Row> {
   const db = o.pool ?? getPool(), quelle = o.quelle ?? 'automatik', ausfuehren = o.ausfuehren === true, mindest = o.mindestAlterS ?? 0;
   const filter = new Set((o.ursachen?.length ? o.ursachen : REVERSE_ENTSTOERBAR).filter(u => (REVERSE_ENTSTOERBAR as readonly string[]).includes(u)));
-  const d = await diagnoseReverse({ reverseId: o.reverseId, pool: db, limit: 1000 });
+  // Intern ohne Seitengrenze: diagnoseReverse kappt auf diagnose_max_limit.
+  const d = await diagnoseReverse({ reverseId: o.reverseId, pool: db, limit: Number.MAX_SAFE_INTEGER });
   const kandidaten = (d.auftraege as ReverseDiagnoseEintrag[]).filter(e => e.automatisch && filter.has(e.ursache)
     && (!o.auftragId || e.auftrag_id === o.auftragId || e.p20_auftrag_id === o.auftragId) && (e.alter_s ?? 0) >= mindest);
   const instanzen = ((d.container as Row).instanzen as Row[]).filter(c => c.ursache && filter.has(String(c.ursache)) && !o.auftragId && Number(c.alter_s ?? 0) >= mindest);
@@ -287,21 +297,27 @@ let timerAktiv = false;
 function entstoererAktiv(): boolean { return timerAktiv; }
 
 /**
- * Automatischer Entstörer im API-Prozess. Aus: SYNAPSE_REVERSE_ENTSTOERER=0.
- * Intervall SYNAPSE_REVERSE_ENTSTOERER_MS (60000), Gnadenfrist SYNAPSE_REVERSE_ENTSTOERER_GNADE_S (300) für
- * Leases/Container, SYNAPSE_REVERSE_ENTSTOERER_KEIN_AUSFUEHRER_S (60) für ausführerlose Aufträge.
+ * Automatischer Entstörer im API-Prozess. Startfähigkeit (Infrastruktur): SYNAPSE_REVERSE_ENTSTOERER=0 startet den Worker nicht.
+ * P18-T86: Ob er wirkt, steuert der Produkt-Schalter reverse_entstoerer_auto (Standard EIN wie bisher, intern-Override).
+ * Intervall, Gnadenfrist (Leases/Container) und Frist für ausführerlose Aufträge sind Reverse-Einstellungen
+ * (entstoerer_intervall_ms, entstoerer_gnade_s, entstoerer_ohne_ausfuehrer_s) und gelten ab dem nächsten Durchlauf.
  */
 export function starteReverseEntstoerer(o: { pool?: Db } = {}): { durchlauf: () => Promise<Row>; beende: () => void } | null {
   if (process.env.SYNAPSE_REVERSE_ENTSTOERER === '0') return null;
-  const intervall = envZahl('SYNAPSE_REVERSE_ENTSTOERER_MS', 60000, 1000);
-  const gnade = envZahl('SYNAPSE_REVERSE_ENTSTOERER_GNADE_S', 300);
-  const ohne = envZahl('SYNAPSE_REVERSE_ENTSTOERER_KEIN_AUSFUEHRER_S', 60);
   let laeuft: Promise<Row> | null = null;
   const durchlauf = async (): Promise<Row> => {
     if (laeuft) return laeuft;
     laeuft = (async () => {
       const ergebnis: Row = { kein_ausfuehrer: null, rest: null };
       try {
+        const { leseReverseEinstellwerte, reverseZahl, leseReverseProduktSchalter } = await import('./reverse-einstellwerte.js');
+        const schalter = await leseReverseProduktSchalter('reverse_entstoerer_auto');
+        if (!schalter.aktiv) {
+          letzterAutoLauf = { am: new Date().toISOString(), massnahmen: 0, uebersprungen: 'reverse_entstoerer_auto_aus' };
+          return { ...ergebnis, schalter };
+        }
+        const s = await leseReverseEinstellwerte({});
+        const gnade = reverseZahl(s, 'entstoerer_gnade_s'), ohne = reverseZahl(s, 'entstoerer_ohne_ausfuehrer_s');
         ergebnis.kein_ausfuehrer = await entstoereReverse({ pool: o.pool, ausfuehren: true, quelle: 'automatik', ursachen: ['kein_ausfuehrer'], mindestAlterS: ohne });
         ergebnis.rest = await entstoereReverse({ pool: o.pool, ausfuehren: true, quelle: 'automatik', ursachen: ['lease_abgelaufen', 'container_haengt', 'container_verwaist'], mindestAlterS: gnade });
         const n = Number((ergebnis.kein_ausfuehrer as Row).anzahl) + Number((ergebnis.rest as Row).anzahl);
@@ -316,8 +332,19 @@ export function starteReverseEntstoerer(o: { pool?: Db } = {}): { durchlauf: () 
     return laeuft;
   };
   registriereWorker({ name: 'reverse-entstoerer', beschreibung: 'P18-T64 Reverse-Aufträge ohne Ausführer, abgelaufene Leases und hängende Container automatisch entstören', durchlauf });
-  const timer = setInterval(() => { if (!workerPausiert('reverse-entstoerer')) void durchlauf(); }, intervall);
-  timer.unref();
+  // Selbst neu planender Takt: das Intervall wird je Runde aus reverse_einstellungen gelesen.
+  let timer: NodeJS.Timeout | null = null, beendet = false;
+  const planen = async (): Promise<void> => {
+    let intervall = Number(REVERSE_EINSTELLKATALOG.entstoerer_intervall_ms.standard);
+    try {
+      const { leseReverseEinstellwerte, reverseZahl } = await import('./reverse-einstellwerte.js');
+      intervall = reverseZahl(await leseReverseEinstellwerte({}), 'entstoerer_intervall_ms');
+    } catch { /* Katalogstandard */ }
+    if (beendet) return;
+    timer = setTimeout(() => { if (!workerPausiert('reverse-entstoerer')) void durchlauf(); void planen(); }, intervall);
+    timer.unref();
+  };
+  void planen();
   timerAktiv = true;
-  return { durchlauf, beende: () => { clearInterval(timer); timerAktiv = false; } };
+  return { durchlauf, beende: () => { beendet = true; if (timer) clearTimeout(timer); timerAktiv = false; } };
 }

@@ -1,10 +1,12 @@
 /** RV14: bounded, masked records for the EXISTING reverse_code_* tables. No tool execution. */
 import {createHash} from 'node:crypto';
 import {maskiereMitKatalog} from '../masken-katalog.js';
+import {teileReverseText,REVERSE_TEXTSTUECK_BYTES} from '../reverse-code-stuecke.js';
 export interface NormalSymbol {art:string;name:string|null;wert:string|null;zeile:number;ende:number;adresse:number|null;groesse:number|null}
 export interface NormalDatei {pfad:string;schicht:'S1'|'S2';typ:string;inhalt:string;symbole:NormalSymbol[];kanten:{caller:string;callee:string;zeile:number}[]}
 export interface NormalErgebnis {dateien:NormalDatei[];dateiKandidaten:string[];maskiert:number;gekappt:boolean}
-export interface NormalBudget {maxBytes:number;maxEintraege:number}
+/** stueckBytes: wirksames s1_textstueck_bytes (P18-T86); ohne Angabe der Katalogstandard. */
+export interface NormalBudget {maxBytes:number;maxEintraege:number;stueckBytes?:number}
 export const adresse=(v:unknown):number|null=>{
  const n=typeof v==='number'?v:typeof v==='string'&&/^(?:0x[0-9a-f]+|\d+)$/i.test(v)?Number(v):NaN;
  return Number.isSafeInteger(n)&&n>=0?n:null;
@@ -26,7 +28,7 @@ export function normalSammler(b:NormalBudget){
   }};
 }
 export function normalisiereS1(input:{strings:{text:string;adresse?:number|null}[];importe:{name:string;adresse?:number|null}[]},b:NormalBudget):NormalErgebnis{
- const s=normalSammler(b);
+ const s=normalSammler(b),stueck=b.stueckBytes??REVERSE_TEXTSTUECK_BYTES;
  for(const [pfad,art,rows] of [
   ['strings.txt','string',input.strings.map(x=>({wert:x.text,name:null,adresse:x.adresse??null}))],
   ['imports.txt','import',input.importe.map(x=>({wert:x.name,name:x.name,adresse:x.adresse??null}))]
@@ -35,10 +37,14 @@ export function normalisiereS1(input:{strings:{text:string;adresse?:number|null}
   const flush=()=>{if(!content.length&&part>0)return;s.add({pfad:part===0?pfad:pfad.replace('.txt','-'+String(part+1).padStart(4,'0')+'.txt'),
     schicht:'S1',typ:'txt',inhalt:content.join('\n'),symbole:symbols,kanten:[]});part++;content=[];symbols=[];size=0;};
   for(const row of rows){
-   const value=row.wert.replace(/[\r\n]+/g,' '),n=Buffer.byteLength(value)+1;
-   if(n>262144){s.r.gekappt=true;continue;}
-   if(size+n>262144)flush();
-   content.push(value);symbols.push({art,name:row.name,wert:value,adresse:row.adresse,groesse:null,zeile:content.length,ende:content.length});size+=n;
+   const value=row.wert.replace(/[\r\n]+/g,' ');
+   // P18-T86/T88: überlange Einzelwerte UTF-8-sicher in Teile zerlegen statt verwerfen; jeder Teil bleibt suchbar.
+   const teile=Buffer.byteLength(value)+1>stueck?teileReverseText(value,stueck-1):[value];
+   for(const teil of teile){
+    const n=Buffer.byteLength(teil)+1;
+    if(size+n>stueck)flush();
+    content.push(teil);symbols.push({art,name:row.name,wert:teil,adresse:row.adresse,groesse:null,zeile:content.length,ende:content.length});size+=n;
+   }
   }
   flush();
  }

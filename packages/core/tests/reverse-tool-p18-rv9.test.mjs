@@ -33,6 +33,9 @@ try {
  for(const table of ['agent_sessions','projects','tool_aktivitaet'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query(REVERSE_SCHEMA_SQL);
  await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
+ // P18-T86: analyse_bis_schicht kommt aus reverse_einstellungen (Env nur Migrationsvorschlag); diese Fixture arbeitet bis S3.
+ for(const f of ['reverse-verknuepfungen-schema','reverse-einstellwerte-schema'])await pool.query(Object.values(await import('../dist/db/'+f+'.js')).find(x=>typeof x==='string'));
+ await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert_text,grund,gesetzt_von) VALUES('global','analyse_bis_schicht','S3','RV9 fixture','fixture')");
  await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);
  // P22-T15 (Schema 112): Akteur-ID-Spalten der Reverse-Tabellen (ohne FK, agent_identitaeten liegt nicht im Testschema).
  for(const [t,c] of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],
@@ -103,7 +106,7 @@ try {
  assert.equal(split.success,true,JSON.stringify(split));assert.equal(split.aufgeteilt.length,2);
  assert.equal((await call('eintrag',{reverse_id:splitRid})).eintrag.status,'archiviert');
  const children=(await pool.query('SELECT id,fingerabdruck,bestaetigt_von,analyse_policy FROM reverse_eintraege WHERE id=ANY($1::text[])',[split.aufgeteilt])).rows;
- assert(children.every(c=>c.fingerabdruck?.length===64&&c.bestaetigt_von==='koordinator'&&c.analyse_policy.bis_schicht==='S3'));
+ assert(children.every(c=>c.fingerabdruck?.length===64&&c.bestaetigt_von==='koordinator'&&c.analyse_policy.bis_schicht==='S3'),JSON.stringify(children.map(c=>({fp:c.fingerabdruck?.length,von:c.bestaetigt_von,policy:c.analyse_policy}))));
  const merged=await call('bestaetigen',{reverse_id:mergeRid,zusammenfuehren_mit:split.aufgeteilt[0]},'koordinator');
  assert.equal(merged.success,true,JSON.stringify(merged));assert.equal(merged.eintrag.medien.length,2);
  assert.equal((await call('eintrag',{reverse_id:mergeRid})).eintrag.status,'archiviert');
@@ -111,10 +114,11 @@ try {
  assert.equal((await call('bestaetigen',{reverse_id:lockedRid,zusammenfuehren_mit:split.aufgeteilt[1]},'koordinator')).fehlercode,'ziel_belegt','E-Historie schützt Gruppierung');
  // Vier konkurrierende Analysen desselben Mediums deduplizieren; globale Queuegrenze gilt über Einträge.
  for(const child of split.aufgeteilt)assert.equal((await call('binden',{reverse_id:child})).success,true);
- process.env.SYNAPSE_REVERSE_QUEUE_MAX='1';
+ // P18-T86: Queuegrenze aus reverse_einstellungen (queue_offene_max), nicht mehr aus der Env.
+ await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert,grund,gesetzt_von) VALUES('global','queue_offene_max',1,'RV9 fixture','fixture')");
  const raced=await Promise.all(split.aufgeteilt.map(child=>call('analysieren',{reverse_id:child,bis_schicht:'S3'})));
  assert.equal(raced.filter(r=>r.success).length,1);assert.equal(raced.filter(r=>r.fehlercode==='warteschlange_voll').length,1);
- delete process.env.SYNAPSE_REVERSE_QUEUE_MAX;
+ await pool.query("DELETE FROM reverse_einstellungen WHERE ebene='global' AND name='queue_offene_max'");
  const winner=raced.find(r=>r.success),winnerRid=winner.reverse_id;
  const dedups=await Promise.all(Array.from({length:4},()=>call('analysieren',{reverse_id:winnerRid,bis_schicht:'S3'})));
  assert(dedups.every(r=>r.auftrag_id===winner.auftrag_id));

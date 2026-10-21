@@ -58,8 +58,8 @@ function unterschiede(p:Paar):string[] {
 }
 const dto=(f:Funktion|null)=>f?{id:f.id,name:maske(f.name),adresse:f.adresse===null?null:'0x'+BigInt(f.adresse).toString(16),
  groesse_bytes:f.groesse,file_path:maske(f.file_path),line_start:f.line_start,line_end:f.line_end,c_hash:f.hash,dekompiliert:f.hash!==null}:null;
-function pfad(v:unknown):string {
- if(typeof v!=='string'||!v||v.length>4096||v.startsWith('/')||v.includes('\\')||/[\x00-\x1f]/.test(v)||/^[a-z]:/i.test(v)||v.split('/').some(x=>!x||x==='.'||x==='..'))
+function pfad(v:unknown,max:number):string {
+ if(typeof v!=='string'||!v||v.length>max||v.startsWith('/')||v.includes('\\')||/[\x00-\x1f]/.test(v)||/^[a-z]:/i.test(v)||v.split('/').some(x=>!x||x==='.'||x==='..'))
   throw new ReverseCodeFehler('pfad_gefahr');
  return v;
 }
@@ -78,9 +78,10 @@ async function schalter(k:ReverseCodeKontext,project:string):Promise<Row> {
  }
  return stand;
 }
-export async function fuehreReverseVergleichAus(a:Row,k:ReverseCodeKontext,limit:number,budget:number):Promise<Row> {
- const dateiA=pfad(a.datei_a),dateiB=pfad(a.datei_b),rid=String(a.reverse_id),offset=ganz(a.offset,0);
- if(a.funktion!==undefined&&(typeof a.funktion!=='string'||!a.funktion||a.funktion.length>4096))fail('parameter_ungueltig');
+/** limit/budget/pfadMax: wirksame Reverse-Einstellwerte des Aufrufers (reverse-code-tool). */
+export async function fuehreReverseVergleichAus(a:Row,k:ReverseCodeKontext,limit:number,budget:number,pfadMax:number):Promise<Row> {
+ const dateiA=pfad(a.datei_a,pfadMax),dateiB=pfad(a.datei_b,pfadMax),rid=String(a.reverse_id),offset=ganz(a.offset,0);
+ if(a.funktion!==undefined&&(typeof a.funktion!=='string'||!a.funktion||a.funktion.length>pfadMax))fail('parameter_ungueltig');
  const from=ganz(a.from_line,1),to=a.to_line===undefined?undefined:ganz(a.to_line,1);
  if(!from||(to!==undefined&&to<from))fail('parameter_ungueltig');
  const stand=await schalter(k,String(a.project));

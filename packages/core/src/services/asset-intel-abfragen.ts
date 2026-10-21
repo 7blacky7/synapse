@@ -24,9 +24,18 @@
 import * as path from 'path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Pool } from 'pg';
-const reverseAssetLeser = new AsyncLocalStorage<Pool>();
+/** P18-T86: wirksame Reverse-Lesegrenzen (reverse_einstellungen) je Anfrage; Projekt-Assets behalten ihre Standards. */
+export interface ReverseAssetGrenzen {
+  lese_timeout_ms: number; lock_timeout_ms: number; idle_tx_timeout_ms: number; pfad_zeichen: number; baum_tiefe: number;
+  seiten_limit: number; max_limit: number; objekt_limit: number; objekt_max: number; verweis_limit: number; verweis_max: number;
+}
+const reverseAssetLeser = new AsyncLocalStorage<{ pool: Pool; grenzen?: ReverseAssetGrenzen }>();
 /** RV16: injizierter, request-scoped Reverse-Leser; Projektausgabe unverändert. */
-export function mitReverseAssetLeser<T>(pool: Pool, run: () => T): T { return reverseAssetLeser.run(pool, run); }
+export function mitReverseAssetLeser<T>(pool: Pool, run: () => T, grenzen?: ReverseAssetGrenzen): T { return reverseAssetLeser.run({ pool, grenzen }, run); }
+/** Grenzen gelten nur im Reverse-Bereich und nur innerhalb von mitReverseAssetLeser. */
+function reverseGrenzen(bereich: AssetBereich): ReverseAssetGrenzen | undefined {
+  return bereich === REVERSE_ASSET_BEREICH ? reverseAssetLeser.getStore()?.grenzen : undefined;
+}
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
 import { assetBereichSql, pruefeAssetBereich, ASSET_BEREICH, REVERSE_ASSET_BEREICH } from './intel-bereich.js';
@@ -87,12 +96,13 @@ function leseTimeoutMs(): number {
 
 async function mitLeser<T>(bereich: AssetBereich, fn: (q: Leser) => Promise<T>): Promise<T> {
   pruefeAssetBereich(bereich);
-  const client: PoolClient = await (bereich === REVERSE_ASSET_BEREICH ? reverseAssetLeser.getStore() ?? getPool() : getPool()).connect();
-  const timeout = leseTimeoutMs();
+  const client: PoolClient = await (bereich === REVERSE_ASSET_BEREICH ? reverseAssetLeser.getStore()?.pool ?? getPool() : getPool()).connect();
+  const g = reverseGrenzen(bereich);
+  const timeout = g?.lese_timeout_ms ?? leseTimeoutMs();
   try {
     await client.query(
-      'SET statement_timeout = ' + timeout + '; SET lock_timeout = ' + LOCK_TIMEOUT_MS +
-        '; SET idle_in_transaction_session_timeout = ' + Math.max(timeout, ASSET_LESE_TIMEOUT_MS)
+      'SET statement_timeout = ' + timeout + '; SET lock_timeout = ' + (g?.lock_timeout_ms ?? LOCK_TIMEOUT_MS) +
+        '; SET idle_in_transaction_session_timeout = ' + (g?.idle_tx_timeout_ms ?? Math.max(timeout, ASSET_LESE_TIMEOUT_MS))
     );
     const q: Leser = async (sql, params = []) => (await client.query(assetBereichSql(sql, bereich), params)).rows as Zeile[];
     return await fn(q);
@@ -140,8 +150,8 @@ function text(wert: unknown, name: string, max = 500): string | undefined {
   return wert;
 }
 
-function pfadParam(wert: unknown, name = 'file_path'): string {
-  const roh = text(wert, name, 2000);
+function pfadParam(wert: unknown, name = 'file_path', bereich: AssetBereich = ASSET_BEREICH): string {
+  const roh = text(wert, name, reverseGrenzen(bereich)?.pfad_zeichen ?? 2000);
   if (roh === undefined) throw new AssetIntelFehler('parameter_fehlt', name + ' fehlt.', name + ' projekt-relativ angeben, z. B. "Content/Held.uasset".');
   try {
     return normalisiereAssetPfad(roh);
@@ -407,11 +417,12 @@ function groesse(b: number): string {
 
 /** Asset-Baum als Text (wie code_intel tree) plus Zahlen. */
 export async function holeAssetBaum(project: string, o: BaumOptionen = {}, bereich: AssetBereich = ASSET_BEREICH): Promise<{ baum: string; dateien: number; total: number; gekappt: boolean }> {
-  const basisRoh = text(o.path, 'path', 2000);
-  const basis = basisRoh === undefined || basisRoh.replace(/[\\/]+$/, '') === '' || basisRoh === '.' ? '' : pfadParam(basisRoh.replace(/[\\/]+$/, ''), 'path');
+  const g = reverseGrenzen(bereich);
+  const basisRoh = text(o.path, 'path', g?.pfad_zeichen ?? 2000);
+  const basis = basisRoh === undefined || basisRoh.replace(/[\\/]+$/, '') === '' || basisRoh === '.' ? '' : pfadParam(basisRoh.replace(/[\\/]+$/, ''), 'path', bereich);
   const rekursiv = o.recursive === undefined || o.recursive === null ? true : o.recursive === true || o.recursive === 'true';
-  const tiefe = rekursiv ? (o.depth === undefined || o.depth === null ? null : zahl(o.depth, 'depth', 0, 0, 100)) : 0;
-  const limit = zahl(o.limit, 'limit', 500, 1, 5000);
+  const tiefe = rekursiv ? (o.depth === undefined || o.depth === null ? null : zahl(o.depth, 'depth', 0, 0, g?.baum_tiefe ?? 100)) : 0;
+  const limit = zahl(o.limit, 'limit', g?.seiten_limit ?? 500, 1, g?.max_limit ?? 5000);
   const p = new Parameter([project]);
   const wo = ['project = $1'];
   if (basis) wo.push('file_path LIKE ' + p.add(escapeLike(basis) + '/%'));
@@ -477,10 +488,11 @@ export interface AssetInspektion {
 
 /** Inhalt einer Asset-Zeile samt Objekten/Verweisen seitenweise; null wenn nicht im Index. */
 export async function inspiziereAusDb(project: string, filePath: unknown, o: InspektionsOptionen = {}, bereich: AssetBereich = ASSET_BEREICH): Promise<AssetInspektion | null> {
-  const pfad = pfadParam(filePath);
+  const g = reverseGrenzen(bereich);
+  const pfad = pfadParam(filePath, 'file_path', bereich);
   const offset = zahl(o.objects_offset, 'offset', 0, 0, 1_000_000);
-  const limit = zahl(o.objects_limit, 'limit', 50, 0, 500);
-  const refLimit = zahl(o.references_limit, 'limit', 50, 0, 500);
+  const limit = zahl(o.objects_limit, 'limit', g?.objekt_limit ?? 50, 0, g?.objekt_max ?? 500);
+  const refLimit = zahl(o.references_limit, 'limit', g?.verweis_limit ?? 50, 0, g?.verweis_max ?? 500);
   const art = text(o.object_type, 'object_type', 64);
   return mitLeser(bereich, async q => {
     const a = await findeAsset(q, project, pfad);
@@ -1156,23 +1168,23 @@ export async function assetHealth(project: string, filePath?: unknown, bereich: 
 const KUERZBARE_SCHLUESSEL = new Set(['data', 'metadata', 'format_specific']);
 
 /** Kuerzt in data/metadata/format_specific jeden Wert, dessen JSON laenger als max ist. */
-function kuerzeDatenWerte(wert: unknown, max: number, inDaten = false, tiefe = 0): unknown {
-  if (tiefe > 50) return wert;
+function kuerzeDatenWerte(wert: unknown, max: number, inDaten = false, tiefe = 0, rekursionMax = 50): unknown {
+  if (tiefe > rekursionMax) return wert;
   if (inDaten) {
     const json = JSON.stringify(wert) ?? '';
     if (json.length > max) return (typeof wert === 'string' ? wert : json).slice(0, max) + GEKUERZT;
     return wert;
   }
-  if (Array.isArray(wert)) return wert.map(w => kuerzeDatenWerte(w, max, false, tiefe + 1));
+  if (Array.isArray(wert)) return wert.map(w => kuerzeDatenWerte(w, max, false, tiefe + 1, rekursionMax));
   if (wert && typeof wert === 'object' && !(wert instanceof Date)) {
     const aus: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(wert as Record<string, unknown>)) {
       if (KUERZBARE_SCHLUESSEL.has(k) && v && typeof v === 'object' && !Array.isArray(v)) {
         const d: Record<string, unknown> = {};
-        for (const [dk, dv] of Object.entries(v as Record<string, unknown>)) d[dk] = kuerzeDatenWerte(dv, max, true, tiefe + 1);
+        for (const [dk, dv] of Object.entries(v as Record<string, unknown>)) d[dk] = kuerzeDatenWerte(dv, max, true, tiefe + 1, rekursionMax);
         aus[k] = d;
       } else {
-        aus[k] = kuerzeDatenWerte(v, max, false, tiefe + 1);
+        aus[k] = kuerzeDatenWerte(v, max, false, tiefe + 1, rekursionMax);
       }
     }
     return aus;
@@ -1207,26 +1219,30 @@ function groessteListe(obj: unknown, tiefe = 0): { liste: unknown[]; laenge: num
  * ASSET_DATA_WERT_MAX kuerzen, 2. die groesste Liste halbieren (wiederholt), 3. langen Baumtext
  * abschneiden. Setzt gekappt:true und antwort_gekuerzt mit Erklaerung. total bleibt unveraendert.
  */
-export function kappeAntwort<T extends Record<string, unknown>>(antwort: T, max = ASSET_ANTWORT_MAX): T {
-  if (JSON.stringify(antwort).length <= max) return antwort;
-  const a = kuerzeDatenWerte(antwort, ASSET_DATA_WERT_MAX) as Record<string, unknown>;
-  const schritte: string[] = ['Werte in data/metadata auf ' + ASSET_DATA_WERT_MAX + ' Zeichen gekuerzt'];
+/** P18-T86: Reverse misst in UTF-8-Bytes mit eigenen Einstellwerten; ohne o bleibt das Projektverhalten unveraendert. */
+export interface KappOptionen { bytes?: boolean; wertZeichen?: number; rekursionMax?: number; reserve?: number }
+export function kappeAntwort<T extends Record<string, unknown>>(antwort: T, max = ASSET_ANTWORT_MAX, o: KappOptionen = {}): T {
+  const laenge = (x: unknown) => (o.bytes ? Buffer.byteLength(JSON.stringify(x)) : JSON.stringify(x).length);
+  const wertMax = o.wertZeichen ?? ASSET_DATA_WERT_MAX;
+  if (laenge(antwort) <= max) return antwort;
+  const a = kuerzeDatenWerte(antwort, wertMax, false, 0, o.rekursionMax ?? 50) as Record<string, unknown>;
+  const schritte: string[] = ['Werte in data/metadata auf ' + wertMax + ' Zeichen gekuerzt'];
   a.gekappt = true;
   let halbiert = 0;
-  while (JSON.stringify(a).length > max) {
+  while (laenge(a) > max) {
     const g = groessteListe(a);
     if (!g || g.liste.length <= 1) break;
     g.liste.splice(Math.ceil(g.liste.length / 2));
     halbiert++;
   }
   if (halbiert > 0) schritte.push('Listen ' + halbiert + 'x halbiert');
-  if (JSON.stringify(a).length > max && typeof a.baum === 'string') {
-    const rest = max - (JSON.stringify({ ...a, baum: '' }).length + 200);
+  if (laenge(a) > max && typeof a.baum === 'string') {
+    const rest = max - (laenge({ ...a, baum: '' }) + (o.reserve ?? 200));
     a.baum = (a.baum as string).slice(0, Math.max(0, rest)) + '\n' + GEKUERZT;
     schritte.push('Baum abgeschnitten');
   }
   a.antwort_gekuerzt = 'Antwort ueber ' + max + ' Zeichen: ' + schritte.join(', ') + '. Mit limit/offset/object_type einengen.';
-  if (JSON.stringify(a).length > max) {
+  if (laenge(a) > max) {
     // letzte Sicherung: nur Kopf + Zahlen
     const kopf: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(a)) if (v === null || typeof v !== 'object') kopf[k] = typeof v === 'string' ? v.slice(0, 2000) : v;

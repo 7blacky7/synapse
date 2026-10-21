@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { REVERSE_DEFINITION, baueReverseAntwort, baueToolErgebnis } from '@synapse/core';
+import { REVERSE_DEFINITION, REVERSE_EINSTELLKATALOG, baueReverseAntwort, baueToolErgebnis } from '@synapse/core';
 import type { ConsolidatedTool } from './types.js';
 
 export interface ReverseApiOptionen {url?:string;token?:string;fetchImpl?:typeof fetch;timeoutMs?:number}
@@ -22,13 +22,16 @@ export async function rufeReverseApi(args:Record<string,unknown>,optionen:Revers
     if(typeof raw!=='string'||!raw||typeof secret!=='string'||!secret)throw new Error('API-Konfiguration fehlt');
     const url=new URL(raw);
     if(!['http:','https:'].includes(url.protocol)||url.username||url.password)throw new Error('API-Adresse ungültig');
-    const wait=typeof args.warten_sekunden==='number'?Math.min(50,Math.max(0,args.warten_sekunden)):0;
-    const timeout=optionen.timeoutMs??Number(process.env.SYNAPSE_REVERSE_API_TIMEOUT_MS??60000);
+    // P18-T86: Transportfristen aus dem Einstellkatalog (api_timeout_ms, api_timeout_zuschlag_ms). Der Server begrenzt
+    // warten_sekunden selbst auf longpoll_max_s; hier nur auf dessen Katalog-Obergrenze, damit der Client nie vorher abbricht.
+    const K=REVERSE_EINSTELLKATALOG;
+    const wait=typeof args.warten_sekunden==='number'?Math.min(Number(K.longpoll_max_s.max),Math.max(0,args.warten_sekunden)):0;
+    const timeout=optionen.timeoutMs??Number(K.api_timeout_ms.standard);
     if(!Number.isSafeInteger(timeout)||timeout<1)throw new Error('API-Zeitlimit ungültig');
     const response=await (optionen.fetchImpl??fetch)(url.toString(),{method:'POST',
       headers:{'content-type':'application/json',accept:'application/json','authorization':'Bearer '+secret},
       body:JSON.stringify({jsonrpc:'2.0',id:randomUUID(),method:'tools/call',params:{name:'reverse',arguments:args}}),
-      signal:AbortSignal.timeout(Math.max(timeout,wait*1000+5000))});
+      signal:AbortSignal.timeout(Math.max(timeout,wait*1000+Number(K.api_timeout_zuschlag_ms.standard)))});
     if(response.status===401||response.status===403)return baueToolErgebnis(baueReverseAntwort(args,{},'keine_berechtigung'),{tool:'reverse',strukturiert:true}) as unknown as Record<string,unknown>;
     if(!response.ok)throw new Error('API nicht erreichbar');
     const rpc=await response.json() as {result?:unknown;error?:unknown};

@@ -45,19 +45,19 @@ async function existiert(p:string):Promise<boolean>{
   try{await fs.lstat(p);return true;}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return false;throw e;}
 }
 /** Hash über einen O_NOFOLLOW-FD; nur einzelne reguläre Dateien mit erwarteter Größe. */
-async function pruefeDatei(p:string,e:ReverseEManifestEintrag,chunk:number):Promise<boolean>{
+export async function pruefeEDatei(p:string,e:{groesse:number|string;sha256:string},chunk:number):Promise<boolean>{
   let h;
   try{h=await fs.open(p,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);}catch{return false;}
   try{
-    const st=await h.stat();
-    if(!st.isFile()||st.nlink!==1||st.size!==e.groesse)return false;
-    const hash=createHash('sha256');let n=0;
-    for await(const b of h.createReadStream({autoClose:false,highWaterMark:chunk})){n+=b.length;if(n>e.groesse)return false;hash.update(b);}
-    return n===e.groesse&&hash.digest('hex')===e.sha256;
+    const st=await h.stat({bigint:true});
+    if(!st.isFile()||st.nlink!==1n||st.size!==BigInt(e.groesse))return false;
+    const hash=createHash('sha256');let n=0n;
+    for await(const b of h.createReadStream({autoClose:false,highWaterMark:chunk})){n+=BigInt(b.length);if(n>BigInt(e.groesse))return false;hash.update(b);}
+    return n===BigInt(e.groesse)&&hash.digest('hex')===e.sha256;
   }finally{await h.close();}
 }
 /** Jede Komponente unterhalb der Wurzel muss ein echtes Verzeichnis sein (keine Links). */
-async function sichereEltern(wurzel:string,rel:string):Promise<boolean>{
+export async function sichereEEltern(wurzel:string,rel:string):Promise<boolean>{
   const teile=rel.split('/');let p=wurzel;
   for(const t of teile.slice(0,-1)){
     p=path.join(p,t);
@@ -67,7 +67,7 @@ async function sichereEltern(wurzel:string,rel:string):Promise<boolean>{
 }
 /** P18-T69: Gruppe des Reverse-Runners (uid/gid 65532 im Container). */
 const REVERSE_RUNNER_GID=65532;
-async function zielOrdner(root:string,dir:string):Promise<void>{
+export async function eZielOrdner(root:string,dir:string):Promise<void>{
   const erster=await fs.mkdir(dir,{recursive:true,mode:0o750});
   const real=await fs.realpath(dir);
   if(real!==dir||!innerhalb(root,real))fehler('pfad_gefahr','Zielordner verlässt die Reverse-Bibliothek.');
@@ -148,21 +148,21 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
     if(!innerhalb(zielBasis,ziel)){verworfen++;continue;}
     // Wiederholung nach Absturz: Ziel liegt schon korrekt da.
     if(await existiert(ziel)){
-      if(await sichereEltern(zielBasis,d.pfad)&&await pruefeDatei(ziel,d,chunk))uebernommen.push(d);else verworfen++;
+      if(await sichereEEltern(zielBasis,d.pfad)&&await pruefeEDatei(ziel,d,chunk))uebernommen.push(d);else verworfen++;
       continue;
     }
     if(!arbeit){verworfen++;continue;}
     const quelle=path.join(arbeit,d.pfad);
-    if(!innerhalb(arbeit,quelle)||!await sichereEltern(arbeit,d.pfad)){verworfen++;continue;}
+    if(!innerhalb(arbeit,quelle)||!await sichereEEltern(arbeit,d.pfad)){verworfen++;continue;}
     let st;
     try{st=await fs.lstat(quelle);}catch{verworfen++;continue;}
     if(!st.isFile()||st.nlink!==1||st.size!==d.groesse){verworfen++;continue;}
-    if(!stagingAngelegt){await zielOrdner(root,path.dirname(staging));await fs.mkdir(staging,{recursive:true,mode:0o700});stagingAngelegt=true;}
+    if(!stagingAngelegt){await eZielOrdner(root,path.dirname(staging));await fs.mkdir(staging,{recursive:true,mode:0o700});stagingAngelegt=true;}
     // Erst aus dem beschreibbaren Auftragsordner herausnehmen, dann prüfen: kein TOCTOU.
     const zwischen=path.join(staging,String(i));
     try{await fs.rename(quelle,zwischen);}catch{verworfen++;continue;}
-    if(!await pruefeDatei(zwischen,d,chunk)){await fs.rm(zwischen,{force:true});verworfen++;continue;}
-    await zielOrdner(root,path.dirname(ziel));
+    if(!await pruefeEDatei(zwischen,d,chunk)){await fs.rm(zwischen,{force:true});verworfen++;continue;}
+    await eZielOrdner(root,path.dirname(ziel));
     // link schlägt bei belegtem Ziel fehl (kein Überschreiben), danach Zwischenstand entfernen.
     try{await fs.link(zwischen,ziel);}catch{await fs.rm(zwischen,{force:true});verworfen++;continue;}
     await fs.unlink(zwischen);
@@ -189,33 +189,41 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
        uebernommen.map(d=>rid+'/entpackt/'+gruppe+'/'+d.pfad),uebernommen.map(d=>d.pfad),
        uebernommen.map(d=>eArt(d.art)),uebernommen.map(d=>eMeta(d.metadaten))]):{rowCount:0};
     const neu=Number(r.rowCount??0);
-    const dateien=neu,weg=verworfen+(uebernommen.length-neu),gesamt=dateien+weg;
+    const result=await finalisiereEErgebnis(client,e,neu,verworfen+(uebernommen.length-neu));
+    if(eigen)await client.query('COMMIT');
+    return result;
+  }catch(err){
+    if(eigen)await client.query('ROLLBACK').catch(()=>undefined);
+    throw err;
+  }finally{if(eigen)client.release?.();}
+}
+
+/** PG-Abschluss gemeinsam für Altübernahme und den bestätigten letzten Block; Aufrufer hält die Lease. */
+export async function finalisiereEErgebnis(db:Db,e:{jobId:string;reverseId:string;mediumId:string},dateien:number,weg:number){
+ const job=e.jobId.toLowerCase(),rid=e.reverseId,mid=e.mediumId,gruppe=reverseEGruppe(mid);
+ const gesamt=dateien+weg;
     const status=gesamt===0||weg===0?'fertig':dateien>0?'teilweise':'fehler';
     const fehlercode=status==='fehler'?'beschaedigt':null;
-    const auftrag=(await client.query(`SELECT id,fingerabdruck FROM reverse_auftraege WHERE eintrag_id=$1 AND medium_id=$2 AND schicht='E'
+    const auftrag=(await db.query(`SELECT id,fingerabdruck FROM reverse_auftraege WHERE eintrag_id=$1 AND medium_id=$2 AND schicht='E'
       AND (id::text=$3 OR p20_auftrag_id::text=$3) ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,[rid,mid,job])).rows[0];
     const ausgabe=rid+'/entpackt/'+gruppe+'/'+job;
     let aktualisiert=0;
     if(auftrag){
-      aktualisiert=(await client.query(`UPDATE reverse_schichten SET status=$2,fehlercode=$3,funktionen_gesamt=$4,funktionen_fertig=$5,ausgabe_key=$6,
+      aktualisiert=(await db.query(`UPDATE reverse_schichten SET status=$2,fehlercode=$3,funktionen_gesamt=$4,funktionen_fertig=$5,ausgabe_key=$6,
         beendet_at=clock_timestamp(),gestartet_at=COALESCE(gestartet_at,clock_timestamp()) WHERE auftrag_id=$1 AND schicht='E' AND datei_id IS NULL AND aktuell`,
         [auftrag.id,status,fehlercode,gesamt,dateien,ausgabe])).rowCount??0;
-      await client.query("UPDATE reverse_auftraege SET status=$2,fehlercode=$3,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1",[auftrag.id,status,fehlercode]);
+      await db.query("UPDATE reverse_auftraege SET status=$2,fehlercode=$3,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1",[auftrag.id,status,fehlercode]);
     }
     if(!aktualisiert){
       const fp=String(auftrag?.fingerabdruck??'reverse-E:'+job);
-      await client.query('UPDATE reverse_schichten SET aktuell=false WHERE medium_id=$1 AND datei_id IS NULL AND schicht=\'E\' AND aktuell AND fingerabdruck<>$2',[mid,fp]);
-      await client.query(`INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,aktuell,status,fehlercode,werkzeug,funktionen_gesamt,funktionen_fertig,ausgabe_key,auftrag_id,gestartet_at,beendet_at)
+      await db.query('UPDATE reverse_schichten SET aktuell=false WHERE medium_id=$1 AND datei_id IS NULL AND schicht=\'E\' AND aktuell AND fingerabdruck<>$2',[mid,fp]);
+      await db.query(`INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,aktuell,status,fehlercode,werkzeug,funktionen_gesamt,funktionen_fertig,ausgabe_key,auftrag_id,gestartet_at,beendet_at)
         VALUES($1,'E',$2,true,$3,$4,'reverse-E',$5,$6,$7,$8,clock_timestamp(),clock_timestamp())
         ON CONFLICT(medium_id,schicht,fingerabdruck) WHERE datei_id IS NULL DO UPDATE SET aktuell=true,status=EXCLUDED.status,fehlercode=EXCLUDED.fehlercode,
           funktionen_gesamt=EXCLUDED.funktionen_gesamt,funktionen_fertig=EXCLUDED.funktionen_fertig,ausgabe_key=EXCLUDED.ausgabe_key,beendet_at=EXCLUDED.beendet_at`,
         [mid,fp,status,fehlercode,gesamt,dateien,ausgabe,auftrag?.id??null]);
     }
-    await client.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
-    if(eigen)await client.query('COMMIT');
-    return {dateien,verworfen:weg};
-  }catch(err){
-    if(eigen)await client.query('ROLLBACK').catch(()=>undefined);
-    throw err;
-  }finally{if(eigen)client.release?.();}
+    await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
+
+ return {dateien,verworfen:weg};
 }

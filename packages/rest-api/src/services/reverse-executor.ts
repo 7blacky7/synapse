@@ -22,7 +22,8 @@ import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getA
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
  reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
  leseReverseFortschrittSchalter,normalisiereReverseFortschritt,speichereReverseFortschritt,reverseStornoAngefordert,
- leseReverseAufsicht,
+ leseReverseAufsicht,leseReverseEinstellwerte,leseReverseBlockSchalter,leseReverseProduktSchalter,reverseZahl,reverseBudget,
+ uebernehmeEInBloecken,reverseManifestVerweis,pruefeReverseManifest,leseReverseManifest,REVERSE_EINSTELLKATALOG,type ReverseEinstellSnapshot,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
@@ -73,6 +74,36 @@ export interface ReverseExecutorKonfig {
  maxVerschachtelung?:number;
  /** P18-T69: reverse-S3 (Ghidra) je Lauf; User da83be67: 4 GB RAM, 2 CPU, 1 h. */
  s3ResourceNeed:WorkResourceNeed;s3ZeitlimitS:number;s3MaxBytes:number;
+ /** P18-T86: Lebenszyklus-, Transport- und Eingabewerte des Descriptors aus reverse_einstellungen (ohne Angabe: Katalogstandard). */
+ lebenszyklus?:ReverseLebenszyklus;zuschlagS?:number;inputBytes?:number;
+ /** P18-T86: true = Ressourcenbedarf kam als Betreiberwert aus der Env und wird nicht durch e_cpu/e_ram_mib bzw. s3_* ersetzt (U4). */
+ ressourcenAusEnv?:{e:boolean;s3:boolean};
+}
+export interface ReverseLebenszyklus {activity_lookback_seconds:number;cpu_idle_percent:number;gpu_idle_percent:number;measurement_max_age_ms:number;
+ start_timeout_ms:number;max_starts:number;start_window_ms:number;pause_ms:number}
+const kat=(n:keyof typeof REVERSE_EINSTELLKATALOG)=>Number(REVERSE_EINSTELLKATALOG[n].standard);
+const LEBENSZYKLUS_STANDARD=():ReverseLebenszyklus=>({activity_lookback_seconds:kat('container_aktivitaet_fenster_s'),cpu_idle_percent:kat('container_cpu_idle_prozent'),
+ gpu_idle_percent:kat('container_gpu_idle_prozent'),measurement_max_age_ms:kat('container_messung_max_alter_ms'),start_timeout_ms:kat('container_start_timeout_ms'),
+ max_starts:kat('container_max_starts'),start_window_ms:kat('container_start_fenster_ms'),pause_ms:kat('container_pause_ms')});
+/**
+ * P18-T86: wirksame Betriebswerte aus reverse_einstellungen (global) in die Executor-Konfiguration uebernehmen. Die Env-Werte aus
+ * ladeReverseExecutorKonfig sind danach nur noch Startwerte fuer Tests/alte Pfade. Lease-Obergrenze bleibt der P20-Wert.
+ * Liefert, ob sich der Descriptor geaendert hat (dann registriert der Executor ihn beim naechsten geordneten Durchlauf neu).
+ */
+export function reverseKonfigAusEinstellungen(k:ReverseExecutorKonfig,s:ReverseEinstellSnapshot,env:NodeJS.ProcessEnv=process.env):{descriptorGeaendert:boolean}{
+ const z=(n:Parameters<typeof reverseZahl>[1])=>reverseZahl(s,n);
+ const vorher=JSON.stringify(reverseToolDescriptor(k));
+ const leaseSeconds=Math.min(z('executor_lease_s'),ganz(env,'SYNAPSE_WORK_MAX_LEASE_SECONDS',900));
+ Object.assign(k,{parallel:z('executor_parallel'),leaseSeconds,renewMs:Math.max(z('executor_renew_min_ms'),Math.floor(leaseSeconds*1000/3)),
+  tickMs:z('executor_tick_ms'),zeitlimitS:z('e_zeitlimit_s'),maxBytes:reverseBudget(s,'e_lauf_bytes'),tmpfsMb:z('container_tmpfs_mib'),pids:z('container_pids'),
+  outputBytes:z('runner_output_bytes'),retryMax:z('retry_max'),idleMs:z('container_idle_ms'),maxVerschachtelung:z('verschachtelung_max'),
+  s3ZeitlimitS:z('s3_zeitlimit_s'),s3MaxBytes:reverseBudget(s,'s3_lauf_bytes'),zuschlagS:z('container_zeit_zuschlag_s'),inputBytes:z('runner_input_bytes'),
+  lebenszyklus:{activity_lookback_seconds:z('container_aktivitaet_fenster_s'),cpu_idle_percent:z('container_cpu_idle_prozent'),gpu_idle_percent:z('container_gpu_idle_prozent'),
+   measurement_max_age_ms:z('container_messung_max_alter_ms'),start_timeout_ms:z('container_start_timeout_ms'),max_starts:z('container_max_starts'),
+   start_window_ms:z('container_start_fenster_ms'),pause_ms:z('container_pause_ms')}});
+ if(!k.ressourcenAusEnv?.e)k.resourceNeed={cpu:z('e_cpu'),ram:z('e_ram_mib'),vram:0,gpu:false};
+ if(!k.ressourcenAusEnv?.s3)k.s3ResourceNeed={cpu:z('s3_cpu'),ram:z('s3_ram_mib'),vram:0,gpu:false};
+ return {descriptorGeaendert:JSON.stringify(reverseToolDescriptor(k))!==vorher};
 }
 function ganz(env:NodeJS.ProcessEnv,name:string,fallback:number,min=1,max=2147483647):number{
  const n=Number(env[name]??fallback);
@@ -104,9 +135,9 @@ export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:stri
  const bild=(env.SYNAPSE_REVERSE_IMAGE??'').trim();
  const m=bild.match(/^([a-zA-Z0-9][a-zA-Z0-9._/:-]*)@(sha256:[a-f0-9]{64})$/);
  if(!m)throw Error('reverse_executor_konfig:SYNAPSE_REVERSE_IMAGE (name@sha256:<64 hex> erwartet)');
+ // P18-T86/U4: Betreiberwert aus der Env hat Vorrang; ohne ihn gilt e_cpu/e_ram_mib (reverse_einstellungen, Standard 2 CPU/4096 MiB).
  const roh=env.SYNAPSE_REVERSE_RESOURCE_NEED;
- if(!roh)throw Error('reverse_executor_konfig:SYNAPSE_REVERSE_RESOURCE_NEED');
- const need=validateWorkResources(JSON.parse(roh));
+ const need=roh?validateWorkResources(JSON.parse(roh)):{cpu:kat('e_cpu'),ram:kat('e_ram_mib'),vram:0,gpu:false};
  if(need.gpu||need.cpu<=0||need.ram<=0)throw Error('reverse_executor_konfig:SYNAPSE_REVERSE_RESOURCE_NEED (CPU/RAM, keine GPU)');
  const gewuenscht=(env.SYNAPSE_REVERSE_EXECUTOR_KINDS??'reverse-E').split(',').map(s=>s.trim()).filter(Boolean);
  const kinds=gewuenscht.filter(k=>UNTERSTUETZTE_KINDS.includes(k));
@@ -124,7 +155,8 @@ export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:stri
   maxBytes:ganz(env,'SYNAPSE_REVERSE_MAX_BYTES',2000000000,1,Number.MAX_SAFE_INTEGER),tmpfsMb:ganz(env,'SYNAPSE_REVERSE_TMPFS_MB',512,16),
   pids:ganz(env,'SYNAPSE_REVERSE_PIDS',256,16),outputBytes:ganz(env,'SYNAPSE_REVERSE_OUTPUT_BYTES',33554432,65536),
   retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100),wavPregap:env.SYNAPSE_REVERSE_WAV_PREGAP==='1',idleMs:ganz(env,'SYNAPSE_REVERSE_IDLE_MS',300000,10000,86400000),
-  maxVerschachtelung:ganz(env,'SYNAPSE_REVERSE_MAX_VERSCHACHTELUNG',8,0,32),...s3Konfig(env)};
+  maxVerschachtelung:ganz(env,'SYNAPSE_REVERSE_MAX_VERSCHACHTELUNG',8,0,32),...s3Konfig(env),
+  ressourcenAusEnv:{e:!!roh,s3:env.SYNAPSE_REVERSE_S3_RESOURCE_NEED!==undefined}};
 }
 /**
  * E2 (P18-T64): EIN globaler Container (instance_scope 'project'; das Projekt ist immer reverse-bibliothek), kein Netz,
@@ -137,9 +169,8 @@ export function reverseToolDescriptor(k:ReverseExecutorKonfig):ToolDescriptor{
   instance_scope:'project',network:'none',allow_project_share:false,
   mounts:[{role:'bibliothek',target:'/bib',write:false},{role:'arbeit',target:'/arbeit',write:true}],
   resources:{cpu:reverseContainerBedarf(k).cpu,ram:reverseContainerBedarf(k).ram,vram:0,gpu:false,pids:k.pids,tmpfs:k.tmpfsMb,concurrency:k.parallel},
-  limits:{time_ms:(reverseZeitlimitMax(k)+60)*1000,output_bytes:k.outputBytes,input_bytes:65536},
-  lifecycle:{idle_ms:k.idleMs,activity_lookback_seconds:300,cpu_idle_percent:5,gpu_idle_percent:100,measurement_max_age_ms:60000,
-   start_timeout_ms:120000,max_starts:20,start_window_ms:600000,pause_ms:300000}});
+  limits:{time_ms:(reverseZeitlimitMax(k)+(k.zuschlagS??kat('container_zeit_zuschlag_s')))*1000,output_bytes:k.outputBytes,input_bytes:k.inputBytes??kat('runner_input_bytes')},
+  lifecycle:{idle_ms:k.idleMs,...(k.lebenszyklus??LEBENSZYKLUS_STANDARD())}});
 }
 const RUNNER_UID=65532;
 /** P18-T69: Dateisystemzugriffe der Rechte-Helfer; Tests ohne root ersetzen chown. */
@@ -306,6 +337,8 @@ export class ReverseExecutor {
  private wer:WorkIdentity|null=null;private eingerichtet=false;private beendet=false;
  /** P18-T64: true, solange noch der alte Descriptor je Auftrag gilt (Migration). */
  private altScope=false;private altGemeldet=false;
+ /** P18-T86: geaenderter Descriptor (Einstellungen) -> beim naechsten Durchlauf geordnet neu registrieren (Migrationsweg). */
+ descriptorNeu():void{this.eingerichtet=false;}
  constructor(private readonly deps:ReverseExecutorDeps){
   this.pool=deps.pool??getPool();this.k=deps.konfig;
   this.jobs=deps.jobs??createWorkJobService({pool:this.pool as unknown as WorkJobPool});
@@ -433,6 +466,9 @@ export class ReverseExecutor {
   const offen=new Set((await this.pool.query("SELECT id::text FROM work_jobs WHERE id=ANY($1::uuid[]) AND state IN ('pending','leased','staged')",[namen])).rows.map(r=>String(r.id)));
   // Fertige S3-Manifeste bleiben für Budget-Nachzüge erhalten. Nur das jeweils referenzierte Artefakt wird gebunden.
   const behalten=new Set((await this.pool.query("SELECT DISTINCT lower(metadaten#>>'{s3_artefakt,job_id}') AS id FROM reverse_dateien WHERE metadaten#>>'{s3_artefakt,job_id}'=ANY($1::text[])",[namen])).rows.map(r=>String(r.id)));
+  // P18-T88: bestaetigte E-Manifeste (Blockuebernahme) bleiben fuer die Wiederaufnahme erhalten; keine neue Aufraeumfunktion.
+  const eArtefakte=(await this.pool.query("SELECT p20_auftrag_id::text AS id FROM reverse_auftraege WHERE p20_auftrag_id=ANY($1::uuid[]) AND uebernahme->'artefakt' IS NOT NULL",[namen])).rows;
+  for(const row of eArtefakte)behalten.add(String(row.id).toLowerCase());
   let n=0;
   for(const name of namen){
    if(behalten.has(name.toLowerCase())){if(!this.altScope)await sperreArbeitsOrdner(path.join(this.k.arbeitRoot,name));continue;}
@@ -470,10 +506,10 @@ export class ReverseExecutor {
  /**
   * Endgültiger Fehlschlag unter Lease-Fence. P18-T64: immer eine Logzeile; fachliche Fehler (deterministisch) setzen
   * Auftrag und Schicht sofort auf 'fehler' mit echtem Code, sonst legt die Pipeline einen neuen Versuch an.
+  * Review 028940c6/B1: endgueltig=true erzwingt das Ende auch fuer nicht fachliche Codes (Versuchsgrenze des Blockwegs).
   */
- private async scheitern(job:WorkJob,wer:WorkIdentity,code:string):Promise<boolean>{
-  const endgueltig=reverseFehlerDeterministisch(code);
-  console.warn('[reverse-executor] Auftrag gescheitert:',job.id,'kind',job.kind,'eintrag',job.inputRef.id,'medium',job.inputRef.revision,'versuch',job.attempt,'code',code,endgueltig?'(fachlich, kein Neuversuch)':'(Neuversuch durch Pipeline)');
+ private async scheitern(job:WorkJob,wer:WorkIdentity,code:string,endgueltig=reverseFehlerDeterministisch(code)):Promise<boolean>{
+  console.warn('[reverse-executor] Auftrag gescheitert:',job.id,'kind',job.kind,'eintrag',job.inputRef.id,'medium',job.inputRef.revision,'versuch',job.attempt,'code',code,endgueltig?(reverseFehlerDeterministisch(code)?'(fachlich, kein Neuversuch)':'(Versuchsgrenze erreicht, kein Neuversuch)'):'(Neuversuch durch Pipeline)');
   const c=await this.pool.connect();
   try{
    await c.query('BEGIN');
@@ -550,14 +586,134 @@ export class ReverseExecutor {
    zuletzt=Date.now();speichern(f);
   }};
  }
+ /**
+  * P18-T86/T88: E mit fortsetzbarer Blockuebernahme. Der Runner schreibt das Manifest als JSONL-Datei auf Unraid (nur Verweis
+  * und Hash in der Antwort); die API uebernimmt es in Bloecken (e_uebernahme_block_zeilen / materialisierung_tx_bytes) mit
+  * Checkpoint am Fachauftrag. Einstellungen werden beim ersten Versuch am Auftrag gepinnt. Wiederaufnahme importiert den
+  * bestaetigten Rest, ohne erneut zu entpacken. P18-T87 bleibt: harte Frist, Storno, kein Neueinreihen.
+  * Fehlerbudget: retry_max Versuche OHNE Fortschritt; deterministische Fehler (Manifest geaendert, Eintragsquote) sofort.
+  */
+ private async fuehreEBlockAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob,quelle:ReverseQuelle):Promise<void>{
+  const token=job.claimToken!,alt=this.altScope,arbeit=path.join(this.k.arbeitRoot,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
+  const fach=(await this.pool.query("SELECT id::text,uebernahme FROM reverse_auftraege WHERE p20_auftrag_id=$1 AND eintrag_id=$2 AND medium_id=$3 AND schicht='E' ORDER BY created_at DESC LIMIT 1",[job.id,quelle.reverseId,quelle.mediumId])).rows[0];
+  if(!fach){await this.scheitern(job,wer,'nicht_gefunden');return;}
+  let checkpoint=fach.uebernahme as Record<string,unknown>|null;
+  const einst=(checkpoint?.einstellungen as ReverseEinstellSnapshot|undefined)??await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
+  if(einst.letzter_fehler){console.error('[reverse-executor] Einstellungen nicht verwendbar:',job.id,einst.letzter_fehler);await this.jobs.release(wer,job.id,token);return;}
+  const fehlversuche=Number(checkpoint?.fehlversuche??0),startPosition=String(checkpoint?.position??'0'),retryMax=reverseZahl(einst,'retry_max');
+  // Review 028940c6/B1 (W5/K3 im Blockweg): Grenze retry_max aus dem Einstellkatalog. Erreicht -> endgueltig wie P18-T87, kein Neueinreihen.
+  const aufgeben=async(code:string)=>{if(await this.scheitern(job,wer,code,true))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true}).catch(()=>undefined);};
+  if(fehlversuche>=retryMax){await aufgeben(String(checkpoint?.letzter_fehler??'werkzeug_fehler'));return;}
+  const tx=async<T>(fn:(c:import('pg').PoolClient)=>Promise<T>)=>{
+   const c=await this.pool.connect();
+   try{await c.query('BEGIN');if(!await this.leaseLebt(c,job,wer,true))throw new Error('reverse_e_lease_verloren');
+    const r=await fn(c);await c.query('COMMIT');return r;
+   }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}finally{c.release();}
+  };
+  let lebt=true,aufsicht:Aufsicht|null=null;
+  const timer=setInterval(()=>{void this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).then(ok=>{if(!ok)lebt=false;},()=>{lebt=false;});},this.k.renewMs);timer.unref();
+  try{
+   if(!checkpoint?.artefakt){
+    // Review B1: Jeder Entpackversuch vor dem bestaetigten Manifest zaehlt vorab als Fehlversuch. So zaehlen auch Runner ohne sicheres
+    // Ende, Lease-Verlust nach dem Runner und Abstuerze; der Manifest-Checkpoint setzt den Zaehler auf den Stand davor zurueck.
+    await tx(async c=>{
+     await c.query("UPDATE reverse_auftraege SET uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('version',1,'einstellungen',$2::jsonb,'fehlversuche',$3::int,'letzter_fehler',$4::text) WHERE id=$1",
+      [fach.id,JSON.stringify(einst),fehlversuche+1,'werkzeug_fehler:entpacken_ohne_ende']);
+    });
+    // Nur ein Versuch ohne bestaetigtes Manifest darf einen frischen Arbeitsordner erzeugen.
+    await mkdir(this.k.arbeitRoot,{recursive:true,mode:0o711});
+    await rm(ausgabe,{recursive:true,force:true});await runnerOrdner(ausgabe);
+    const aufs=await leseReverseAufsicht();
+    aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,aufs.hart_puffer_s.wert));
+    let ergebnis:Record<string,unknown>;
+    try{
+     const [pe,siedler,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
+     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({
+      kommando:'extrahieren',schicht:'E',blockuebernahme:true,einstellungen:einst,
+      // Transportfrist (Descriptor) und Nachlauf; der Runner nimmt das kleinere Zeitlimit.
+      grenzen:{zeitlimit_s:this.k.zeitlimitS,nachlauf_s:aufs.nachlauf_s.wert},
+      ...(live?{fortschritt:{takt_s:live.takt_s}}:{}),eingabe:'/bib/'+quelle.storageKey,
+      eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
+      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
+      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:pe.aktiv,pe_ressourcen_stand:pe,siedler3:siedler.aktiv,siedler3_stand:siedler},
+     }),live?.melde);
+    }catch(e){
+     if(!alt)await sperreArbeitsOrdner(arbeit);
+     const m=(e as Error).message;
+     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
+     const eingriff=aufsicht.grund();
+     if(eingriff){await this.eingriffBeenden(job,wer,eingriff);return;}
+     if(m==='tool_not_ready'||m==='tool_runner_capacity'){
+      // Nicht abgesetzt: kein Versuch, Zaehler zuruecknehmen.
+      await this.pool.query("UPDATE reverse_auftraege SET uebernahme=uebernahme||jsonb_build_object('fehlversuche',$2::int,'letzter_fehler',$3::text) WHERE id=$1",
+       [fach.id,fehlversuche,checkpoint?.letzter_fehler??null]).catch(()=>undefined);
+      await this.jobs.release(wer,job.id,token);
+     }else console.error('[reverse-executor] Ausführung ohne sicheres Ende:',job.id,m);
+     return;
+    }
+    if(!alt)await sperreArbeitsOrdner(arbeit);
+    aufsicht.ende();
+    if(aufsicht.grund()==='storno'){await this.eingriffBeenden(job,wer,'storno');return;}
+    if(!lebt){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
+    if(!['fertig','teilweise'].includes(String(ergebnis.status))||!ergebnis.manifest_datei){
+     meldeRunnerFehler(job.kind,job.id,ergebnis);await this.scheitern(job,wer,fehlercode(ergebnis.fehlercode,ergebnis.format_detail));return;
+    }
+    if(ergebnis.abbruch)console.warn('[reverse-executor] Lauf vorzeitig beendet, Teilergebnis wird uebernommen:',job.id,JSON.stringify(ergebnis.abbruch).slice(0,500));
+    const artefakt=reverseManifestVerweis(ergebnis.manifest_datei);
+    await pruefeReverseManifest(ausgabe,artefakt,reverseZahl(einst,'lese_block_bytes'));
+    checkpoint={version:1,einstellungen:einst,artefakt,runner_status:ergebnis.status,
+     runner_fehlercode:ergebnis.status==='teilweise'?fehlercode(ergebnis.fehlercode??'deadline'):null,fehlversuche};
+    await tx(async c=>{await c.query('UPDATE reverse_auftraege SET uebernahme=$2::jsonb WHERE id=$1',[fach.id,JSON.stringify(checkpoint)]);});
+   }else if(!alt)await sperreArbeitsOrdner(arbeit);
+   const artefakt=reverseManifestVerweis(checkpoint.artefakt);
+   await pruefeReverseManifest(ausgabe,artefakt,reverseZahl(einst,'lese_block_bytes'));
+   await uebernehmeEInBloecken(this.pool as Pool,{
+    jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,arbeitsWurzel:ausgabe,reverseRoot:this.k.reverseRoot,
+    manifestSha:artefakt.sha256,manifest:leseReverseManifest(ausgabe,artefakt,reverseZahl(einst,'manifest_record_bytes'),reverseZahl(einst,'lese_block_bytes')),
+    einstellungen:einst,pruefeLease:c=>this.leaseLebt(c,job,wer,true),
+    fortschritt:async p=>{
+     // P18-T87: Storno auch waehrend der Uebernahme; bestaetigte Bloecke bleiben.
+     if(await reverseStornoAngefordert(this.pool,job.id))throw new Error('reverse_e_storno');
+     await speichereReverseFortschritt(this.pool,job.id,token,{phase:'uebernahme',dateien_bisher:Number(p.dateien),
+      bytes_geschrieben:null,aktuelle_datei:null,gesamt:Number(artefakt.zeilen),uebernahme_position:p.position},job.attempt);
+    }
+   });
+   if(!lebt)return;
+   const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:artefakt.sha256};
+   if(!await this.jobs.stage(wer,job.id,token,out)){console.warn('[reverse-executor] Staging abgewiesen:',job.id);return;}
+   const done=await this.jobs.complete(wer,job.id,token,job.inputRef);
+   if(!done.completed)console.warn('[reverse-executor] Blockabschluss abgewiesen:',job.id);
+  }catch(e){
+   const m=(e as Error).message;
+   if(m==='reverse_e_storno'){await this.stornieren(job,wer);return;}
+   console.error('[reverse-executor] E-Blockübernahme unterbrochen:',job.id,m);
+   // Deterministisch: geaendertes/kaputtes Manifest bzw. Eintragsquote -> sofort mit Code; sonst Fehlerbudget ohne Fortschritt.
+   const code=m==='reverse_e_eintrag_bytes'?'speicherlimit':/^reverse_(e_manifest_geaendert|manifest_)/.test(m)?'beschaedigt':null;
+   if(code){await this.scheitern(job,wer,code);return;}
+   const jetzt=(await this.pool.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1',[fach.id]).catch(()=>({rows:[]}))).rows[0]?.uebernahme as Record<string,unknown>|undefined;
+   const fortschritt=jetzt&&String(jetzt.position??'0')!==startPosition;
+   const zaehler=fortschritt?1:fehlversuche+1,letzter='werkzeug_fehler:'+m.replace(/[^a-zA-Z0-9_.-]/g,'').slice(0,64);
+   await this.pool.query("UPDATE reverse_auftraege SET uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('fehlversuche',$2::int,'letzter_fehler',$3::text) WHERE id=$1",
+    [fach.id,zaehler,letzter]).catch(()=>undefined);
+   if(!lebt)return;
+   if(zaehler>=retryMax){await aufgeben(letzter);return;}
+   await this.jobs.release(wer,job.id,token);
+  }finally{clearInterval(timer);aufsicht?.ende();}
+ }
+
  private async fuehreAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
   const token=job.claimToken!;
   if(job.capability!==REVERSE_CAPABILITY||job.project!==REVERSE_PROJEKT||!this.k.kinds.includes(job.kind)){
    await this.jobs.release(wer,job.id,token);return;
   }
   if(job.kind==='reverse-S3')return this.fuehreS3Aus(lc,wer,job);
+  // P18-T88: Blockuebernahme (Produkt-Schalter reverse_blockuebernahme, Standard AUS) oder bereits angefangener Blockauftrag.
+  // Dort zaehlt ein eigenes Fehlerbudget ohne Fortschritt; erfolgreiche Bloecke gehen nicht auf die alte Versuchsgrenze.
+  const blockStand=await leseReverseBlockSchalter();
+  const blockRest=(await this.pool.query("SELECT 1 FROM reverse_auftraege WHERE p20_auftrag_id=$1 AND uebernahme->>'version'='1' LIMIT 1",[job.id])).rows.length>0;
+  const block=blockStand.aktiv||blockRest;
   // W5/K3: kein Endlos-Neuentpacken nach wiederholtem Lease-Verlust oder Übernahmefehler.
-  if(job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
+  if(!block&&job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
   const quelle=await this.eingabe(job);
   if(!quelle){await this.scheitern(job,wer,'nicht_gefunden');return;}
   // P18-T64: bekannte, noch nicht unterstützte Formate ohne Containerlauf klar benennen.
@@ -566,6 +722,7 @@ export class ReverseExecutor {
   // P18-T66: Originale liegen ggf. als 0600 root; der Runner (65532) muss sie lesen dürfen.
   const rechte=await reverseEingabeLesbar(quelle.dateien.map(d=>path.join(this.k.reverseRoot,d.storageKey)));
   if(rechte){await this.scheitern(job,wer,rechte);return;}
+  if(block)return this.fuehreEBlockAus(lc,wer,job,quelle);
   // Globaler Container: /arbeit=_arbeit, Ausgabe /arbeit/<jobId>. Alter Descriptor: /arbeit=_arbeit/<jobId>, Ausgabe darin.
   const alt=this.altScope;
   const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
@@ -694,7 +851,10 @@ export class ReverseExecutor {
    let ergebnis:Record<string,unknown>;
    try{
     const live=await this.liveFortschritt(job,token);
+    // P18-T86: S3-Grenzen (s3_zeitlimit_s, s3_lauf_bytes, ...) als Einstellungs-Snapshot des Eintrags; grenzen nur Transportfrist/Nachlauf.
+    const s3Einst=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({werkzeug:'analyzeHeadless',schicht:'S3',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
+     ...(s3Einst.letzter_fehler?{}:{einstellungen:s3Einst}),
      eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
      grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien,
       nachlauf_s:nachlaufS}}),live?.melde);
@@ -809,15 +969,30 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  // K5: reverse(status) liest den echten Containerzustand über die Reverse-Runtime (nach starteReversePipeline gesetzt).
  const ohneStatus=ergaenzeReverseRuntime({containerStatus:rid=>executor.containerStatus(rid)});
  // P18-T64: Ausführer anmelden – Pipeline reiht nur noch diese Kinds ein, Diagnose/Entstörer sehen Kapazität und können neu starten.
+ const zeitlimits:Record<string,number>=Object.fromEntries(konfig.kinds.map(kind=>[kind,reverseZeitlimitS(konfig,kind)]));
  const abmeldenAusfuehrer=meldeReverseAusfuehrer({kinds:konfig.kinds,parallel:konfig.parallel,
-  zeitlimits:Object.fromEntries(konfig.kinds.map(kind=>[kind,reverseZeitlimitS(konfig,kind)])),
+  zeitlimits,
   kapazitaet:async()=>{const lc=getToolLifecycle();if(!lc)throw Error('tool_lifecycle_aus');return lc.kapazitaet();},
   containerNeustart:async(jobId?:string|null)=>{const lc=getToolLifecycle();if(!lc)return {neu_gestartet:false,zustand:'tool_lifecycle_aus'};return lc.neustart(REVERSE_TOOL_ID,REVERSE_PROJEKT,jobId??null);}});
+ // P18-T86: Betriebswerte je Takt aus reverse_einstellungen (eine Lesestelle); geaenderter Descriptor wird geordnet neu registriert.
+ const einstellungenAnwenden=async():Promise<void>=>{
+  const s=await leseReverseEinstellwerte({});
+  if(s.letzter_fehler){console.warn('[reverse-executor] Einstellungen nicht verwendbar, bisherige Werte bleiben:',s.letzter_fehler);return;}
+  if(reverseKonfigAusEinstellungen(konfig,s).descriptorGeaendert)executor.descriptorNeu();
+  konfig.wavPregap=(await leseReverseProduktSchalter('reverse_wav_pregap')).aktiv;
+  for(const kind of konfig.kinds)zeitlimits[kind]=reverseZeitlimitS(konfig,kind);
+ };
  let running:Promise<ReverseDurchlauf>|null=null;
- const tick=async()=>{if(!running)running=executor.durchlauf().finally(()=>{running=null;});return running;};
+ const tick=async()=>{if(!running)running=(async()=>{
+  await einstellungenAnwenden().catch(e=>console.error('[reverse-executor] Einstellungen nicht lesbar:',(e as Error).message));
+  return executor.durchlauf();
+ })().finally(()=>{running=null;});return running;};
  registriereWorker({name:'reverse-executor',beschreibung:'RV12 reverse-E-Aufträge im Reverse-Container ausführen',durchlauf:tick});
  const run=()=>{if(workerPausiert('reverse-executor'))return;void tick().catch(e=>console.error('[reverse-executor] Durchlauf fehlgeschlagen:',(e as Error).message));};
- const timer=setInterval(run,konfig.tickMs);timer.unref();
+ // Takt aus executor_tick_ms, je Runde neu gelesen.
+ let timer:NodeJS.Timeout|null=null,beendet=false;
+ const planen=()=>{if(beendet)return;timer=setTimeout(()=>{run();planen();},konfig.tickMs);timer.unref();};
+ planen();
  console.log('[reverse-executor] aktiv: Kinds '+konfig.kinds.join(',')+', parallel '+konfig.parallel);
- return {beende:async()=>{clearInterval(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();await executor.beende();}};
+ return {beende:async()=>{beendet=true;if(timer)clearTimeout(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();await executor.beende();}};
 }

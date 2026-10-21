@@ -36,6 +36,9 @@ try{
  assert.equal((await pool.query('SELECT current_database() AS d')).rows[0].d,'synapse_test');
  for(const table of ['agent_sessions','projects','tool_aktivitaet'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query(WORK_JOBS_SCHEMA_SQL);await pool.query(REVERSE_SCHEMA_SQL);await pool.query(core.REVERSE_PIPELINE_SCHEMA_SQL);
+ for(const f of ['reverse-verknuepfungen-schema','reverse-einstellwerte-schema'])await pool.query(Object.values(await import('../dist/db/'+f+'.js')).find(x=>typeof x==='string'));
+ // Akteur-Spalten wie in den übrigen Reverse-Fixtures (in Produktion aus dem Identitätsschema).
+ for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
  await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES('koordinator',$1,'active',NOW())",[project]);
  await pool.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_t61',true)",[project]);
  await pool.query("INSERT INTO reverse_eintraege(id,titel,status) VALUES($1,'T61 Fixture','bestaetigt')",[rid]);
@@ -87,14 +90,18 @@ try{
  await assert.rejects(core.uebernehmeEErgebnis(pool,{jobId:randomUUID(),reverseId:rid,mediumId:'99',arbeitsWurzel:dir,manifest:[]},{konfiguration:cfg}),e=>e.code==='nicht_gefunden');
  await new Promise(r=>setTimeout(r,200));
  assert(notes.includes(rid),'pg_notify synapse_reverse_changed gesendet');
- // 5) bis_schicht-Obergrenze: Standard S1, per Env änderbar, ungültig = Fehler.
+ // 5) bis_schicht-Obergrenze (P18-T86): Standard S1 aus dem Katalog, Wert aus reverse_einstellungen (Snapshot), Env wirkt nicht mehr.
  assert.equal(core.reverseBisSchichtGrenze(),'S1');assert.equal(core.begrenzeReverseSchicht('S3'),'S1');assert.equal(core.begrenzeReverseSchicht('S0'),'S0');assert.equal(core.begrenzeReverseSchicht(undefined),'S1');
- process.env.SYNAPSE_REVERSE_BIS_SCHICHT='S3';assert.equal(core.begrenzeReverseSchicht('S2'),'S2');
- process.env.SYNAPSE_REVERSE_BIS_SCHICHT='S9';assert.throws(()=>core.reverseBisSchichtGrenze(),/SYNAPSE_REVERSE_BIS_SCHICHT/);
- delete process.env.SYNAPSE_REVERSE_BIS_SCHICHT;
+ const {reverseEinstellSnapshot}=await import('../dist/services/reverse-einstellwerte.js');
+ const bis=w=>reverseEinstellSnapshot([{ebene:'global',name:'analyse_bis_schicht',wert:w}]);
+ process.env.SYNAPSE_REVERSE_BIS_SCHICHT='S3';assert.equal(core.begrenzeReverseSchicht('S2'),'S1','Env ist nur noch Migrationsvorschlag');delete process.env.SYNAPSE_REVERSE_BIS_SCHICHT;
+ assert.equal(core.begrenzeReverseSchicht('S2',bis('S3')),'S2');
+ const falsch=bis('S9');assert.equal(core.reverseBisSchichtGrenze(falsch),'S1','ungültiger PG-Wert: Katalogstandard');
+ assert.ok(falsch.migrationsbedarf.some(m=>m.name==='analyse_bis_schicht'),'ungültiger PG-Wert sichtbar als Migrationsbedarf');
+
  const service=core.createReverseToolService({pool});
  const call=(action,extra={})=>service.ausfuehren({action,agent_id:agent,project,reverse_id:rid,...extra});
- assert.equal((await call('bestaetigen',{},agent)).success,true);
+ {const b=await call('bestaetigen',{},agent);assert.equal(b.success,true,JSON.stringify(b).slice(0,600));}
  assert.equal((await pool.query('SELECT analyse_policy FROM reverse_eintraege WHERE id=$1',[rid])).rows[0].analyse_policy.bis_schicht,'S1','confirm schreibt die Obergrenze');
  // 6) Tool dateien: Bindung Pflicht, Seiten, Präfix, Maskierung, keine storage_key.
  assert.equal((await call('dateien')).fehlercode,'nicht_gebunden');

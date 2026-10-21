@@ -44,7 +44,6 @@ try{
  const {mitLesePool}=await import('../dist/db/client.js');
  const {leseReverseEinstellungen,fuehreReverseAdminAus}=await import('../dist/services/reverse-einstellungen.js');
  const {REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL}=await import('../dist/db/reverse-verknuepfungen-schema.js');
- await pool.query(REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL);await pool.query(REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL);
  for(const table of ['agent_profil_schalter','intern_schalter'])await pool.query('CREATE TABLE '+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query('CREATE TABLE agent_identitaeten(id TEXT PRIMARY KEY,project TEXT,rolle TEXT,status TEXT)');
  const inDb=fn=>mitLesePool(pool,fn);
@@ -52,6 +51,9 @@ try{
  const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
  const {REVERSE_PIPELINE_SCHEMA_SQL}=await import('../dist/db/reverse-pipeline-schema.js');
  await pool.query(REVERSE_SCHEMA_SQL);
+ // P18-T86: Einstellungsschema nach reverse_eintraege (Eintrags-FK im privaten Schema), dazu Migration 139 (Katalog, Prüftrigger).
+ await pool.query(REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL);await pool.query(REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL);
+ await pool.query((await import('../dist/db/reverse-einstellwerte-schema.js')).REVERSE_EINSTELLWERTE_SCHEMA_SQL);
  // P18-T84: current schema for origin filters; no production migration from this fixture.
  await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
  await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);await pool.query(REVERSE_PIPELINE_SCHEMA_SQL);
@@ -87,7 +89,7 @@ try{
  }
  eq((await admin({modus:'setzen',reverse_werte:{max_limit:12},grund:'RV30 denied'},akt('subagent'))).error,'recht_fehlt','foreign role denied');
  eq((await admin({modus:'status'},akt('main','another'))).error,'recht_fehlt','foreign main denied');
- eq((await admin({modus:'setzen',reverse_werte:{konfidenz_prozent:101},grund:'RV30 invalid'})).error,'reverse_wert_ungueltig','threshold validation');
+ eq((await admin({modus:'setzen',reverse_werte:{konfidenz_prozent:101},grund:'RV30 invalid'})).error,'reverse_wert_ausserhalb:konfidenz_prozent','threshold validation (P18-T86: Katalogfehler nennt den Schluessel)');
  let settings=await inDb(()=>leseReverseEinstellungen(project));eq(settings.werte.max_limit.wert,123,'persistent setting');eq(settings.werte.max_limit.quelle,'projekt','source');
  await admin({modus:'entfernen',reverse_namen:['max_limit'],grund:'RV30 reset'});eq((await inDb(()=>leseReverseEinstellungen(project))).werte.max_limit.quelle,'standard','remove override');
  await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'reverse_verknuepfungen',true,'RV30 fixture','fixture')",[project]);
@@ -160,7 +162,9 @@ try{
  const vor=Date.now();eq(stress.test('a'.repeat(200)+'b.dat'),false,'hostile glob does not match');ok(Date.now()-vor<1000,'no regex backtracking');
  eq((await call('verknuepfungen',{limit:-1})).success,false,'invalid paging is an error');
  eq((await call('verknuepfungen',{datei:'../x.dat'})).fehlercode,'pfad_gefahr','unsafe path rejected');
- await admin({modus:'setzen',reverse_werte:{antwort_bytes:1},grund:'RV30 tiny response'});
+ // P18-T86: Katalogminimum antwort_bytes = 1024; ein kleinerer Wert wird abgewiesen.
+ eq((await admin({modus:'setzen',reverse_werte:{antwort_bytes:1},grund:'RV30 tiny response'})).success,false,'unter Katalogminimum abgewiesen');
+ ok((await admin({modus:'setzen',reverse_werte:{antwort_bytes:1024},grund:'RV30 tiny response'})).success,'kleinster zulaessiger Wert');
  eq((await call('verknuepfungen')).fehlercode,'zu_gross','tiny response limit is error');
  await admin({modus:'entfernen',reverse_namen:['antwort_bytes'],grund:'RV30 response reset'});
  const s1=await prepare('s1.exe',JSON.stringify(rows[0])+'\n',undefined,{

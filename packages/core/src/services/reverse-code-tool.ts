@@ -4,6 +4,7 @@ import {REVERSE_BEREICH,mitReverseCodeLeser,type CodeLeserDb} from './intel-bere
 import {maskiereMitKatalog} from './masken-katalog.js';
 import {reverseLogischeDateien,reverseStueckSuchPraedikat} from './reverse-code-stuecke.js';
 import {fuehreReverseVergleichAus} from './reverse-vergleichen.js';
+import {leseReverseEinstellwerte,reverseZahl} from './reverse-einstellwerte.js';
 type Row=Record<string,unknown>;
 export const REVERSE_CODE_ACTIONS=['tree','functions','symbols','references','search','file','calls','vergleichen'] as const;
 export type ReverseCodeAction=typeof REVERSE_CODE_ACTIONS[number];
@@ -12,15 +13,14 @@ export class ReverseCodeFehler extends Error{
 }
 function fail(code:ReverseCodeFehler['code'],detail?:string,extra:Row={}):never{throw new ReverseCodeFehler(code,detail,extra);}
 export interface ReverseCodeKontext {db:CodeLeserDb;anfordern:(datei:string|undefined,schicht:string)=>Promise<Row>}
-function config(name:string,standard:number):number{const v=Number(process.env[name]??standard);if(!Number.isSafeInteger(v)||v<1)fail('werkzeug_fehler','konfiguration_ungueltig');return v;}
 function integer(v:unknown,standard:number,max=2147483647):number{
  const n=v===undefined?standard:v;if(typeof n!=='number'||!Number.isSafeInteger(n)||n<0||n>max)fail('werkzeug_fehler','parameter_ungueltig');return n;
 }
-function optionalText(v:unknown):string|undefined{
- if(v===undefined)return undefined;if(typeof v!=='string'||v.length>4096)fail('werkzeug_fehler','parameter_ungueltig');return v;
+function optionalText(v:unknown,max:number):string|undefined{
+ if(v===undefined)return undefined;if(typeof v!=='string'||v.length>max)fail('werkzeug_fehler','parameter_ungueltig');return v;
 }
-function pfad(v:unknown):string{
- const p=optionalText(v);if(!p||p.startsWith('/')||p.includes('\\')||/[\x00-\x1f]/.test(p)||/^[a-z]:/i.test(p)||p.split('/').some(x=>!x||x==='.'||x==='..'))fail('pfad_gefahr');return p;
+function pfad(v:unknown,max:number):string{
+ const p=optionalText(v,max);if(!p||p.startsWith('/')||p.includes('\\')||/[\x00-\x1f]/.test(p)||/^[a-z]:/i.test(p)||p.split('/').some(x=>!x||x==='.'||x==='..'))fail('pfad_gefahr');return p;
 }
 function maske(v:unknown):unknown{
  if(typeof v==='string')return maskiereMitKatalog(v,'reverse').text;
@@ -31,12 +31,16 @@ function maske(v:unknown):unknown{
 /** Der Scope kommt nur vom bereits berechtigten Dispatcher. Keine dynamischen Tabellen. */
 export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<Row>{
  const action=a.action as ReverseCodeAction,rid=String(a.reverse_id);
- const max=config('SYNAPSE_REVERSE_CODE_MAX_LIMIT',500),limit=integer(a.limit,action==='search'?20:200,max),offset=integer(a.offset,0);
+ // P18-T86: Seiten-, Antwort- und Textgrenzen aus reverse_einstellungen (Projekt vor global), keine Env-Kopien.
+ const s=await leseReverseEinstellwerte({project:typeof a.project==='string'?a.project:null});
+ const textMax=reverseZahl(s,'parameter_text_zeichen'),pfadMax=reverseZahl(s,'max_pfad_zeichen');
+ const txt=(v:unknown)=>optionalText(v,textMax),datei=(v:unknown)=>pfad(v,pfadMax);
+ const max=reverseZahl(s,'code_max_limit'),limit=integer(a.limit,Math.min(reverseZahl(s,action==='search'?'code_such_seiten_limit':'code_seiten_limit'),max),max),offset=integer(a.offset,0);
  if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
- const budget=config('SYNAPSE_REVERSE_ANTWORT_MAX',80000),min=integer(a.min_laenge,4,4096);
- if(action==='vergleichen')return fuehreReverseVergleichAus(a,k,limit,budget);
+ const budget=reverseZahl(s,'antwort_bytes'),min=integer(a.min_laenge,reverseZahl(s,'code_string_min_zeichen'),4096);
+ if(action==='vergleichen')return fuehreReverseVergleichAus(a,k,limit,budget,pfadMax);
  if(a.semantic===true)fail('semantik_nicht_verfuegbar');
- const file=a.file_path===undefined?undefined:pfad(a.file_path);
+ const file=a.file_path===undefined?undefined:datei(a.file_path);
  const virtual=file?.match(/^(.*)@(S[0-3])(?:\/(.+))?$/);
  if(action==='file'&&!virtual)fail('pfad_gefahr','virtueller_pfad_erforderlich');
  let context:Row={},layerStatus:string|undefined;
@@ -45,7 +49,7 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
   return fail('schicht_nicht_fertig',undefined,{...context,...job,schicht_angefragt:stage,status:job.status??'wartet',eta:job.eta??null});
  }
  if(virtual){
-  const original=pfad(virtual[1]),stage=virtual[2];
+  const original=datei(virtual[1]),stage=virtual[2];
   const row=(await k.db.query('SELECT id::text,pfad,format,arch,bits,metadaten FROM reverse_dateien WHERE eintrag_id=$1 AND pfad=$2',[rid,original])).rows[0];
   if(!row)fail('nicht_gefunden');
   const layer=(await k.db.query('SELECT status,werkzeug,fehlercode,funktionen_gesamt,funktionen_fertig FROM reverse_schichten WHERE datei_id=$1 AND schicht=$2 AND aktuell',[row.id,stage])).rows[0];
@@ -101,17 +105,17 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
  }
  return mitReverseCodeLeser(reader,async()=>{
   let result:Row;
-  const name=optionalText(a.name),query=optionalText(a.query),fileType=optionalText(a.file_type);
+  const name=txt(a.name),query=txt(a.query),fileType=txt(a.file_type);
   switch(action){
    case 'tree':{
-    const tree=await getProjectTree(rid,{path:file??optionalText(a.path),depth:a.depth===undefined?undefined:integer(a.depth,0,100),recursive:a.recursive!==false,show_assets:false,show_functions:a.show_functions===true,show_counts:a.show_counts!==false,show_lines:a.show_lines!==false,file_type:fileType},REVERSE_BEREICH);
+    const tree=await getProjectTree(rid,{path:file??txt(a.path),depth:a.depth===undefined?undefined:integer(a.depth,0,reverseZahl(s,'baum_tiefe')),recursive:a.recursive!==false,show_assets:false,show_functions:a.show_functions===true,show_counts:a.show_counts!==false,show_lines:a.show_lines!==false,file_type:fileType},REVERSE_BEREICH);
     const masked=String(maske(tree)),cut=masked.length>budget;
     result={baum:cut?masked.slice(0,budget):masked,total,gekappt:cut||offset+limit<total,naechster_offset:offset+limit<total?offset+limit:null};break;
    }
    case 'functions':result=page('functions',await getFunctions(rid,file,adressName===undefined?name:undefined,a.exported_only===true,limit,REVERSE_BEREICH));break;
    case 'symbols':{
-    const type=optionalText(a.symbol_type);if(!type)fail('werkzeug_fehler','parameter_fehlt',{parameter:'symbol_type'});
-    const symbols=await getSymbols(rid,type,file,name,limit,optionalText(a.value_contains),REVERSE_BEREICH);
+    const type=txt(a.symbol_type);if(!type)fail('werkzeug_fehler','parameter_fehlt',{parameter:'symbol_type'});
+    const symbols=await getSymbols(rid,type,file,name,limit,txt(a.value_contains),REVERSE_BEREICH);
     // Reverse-only metadata: preserve bigint precision, and scope the lookup to this page
     // and the same current-layer view. The shared project symbol response stays unchanged.
     const addresses=symbols.length?(await k.db.query("SELECT id,CASE WHEN adresse IS NULL THEN NULL ELSE '0x'||to_hex(adresse) END AS adresse,groesse_bytes::text FROM "+views.reverse_code_symbole+" s WHERE eintrag_id=$1 AND id=ANY($2::text[])",[rid,symbols.map(s=>s.id)])).rows:[];
@@ -120,10 +124,10 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
    }
    case 'search':{
     if(!query?.trim())fail('werkzeug_fehler','parameter_fehlt',{parameter:'query'});
-    result={...page('results',await fullTextSearchCode(rid,query,fileType,limit,file,{match_limit:integer(a.match_limit,20,200),match_skip:integer(a.match_skip,0)},REVERSE_BEREICH)),mode:'fulltext'};break;
+    result={...page('results',await fullTextSearchCode(rid,query,fileType,limit,file,{match_limit:integer(a.match_limit,reverseZahl(s,'code_match_limit'),reverseZahl(s,'code_match_max')),match_skip:integer(a.match_skip,0)},REVERSE_BEREICH)),mode:'fulltext'};break;
    }
    case 'calls':{
-    const calls=await getCallEdges(rid,file,optionalText(a.callee),limit,REVERSE_BEREICH);
+    const calls=await getCallEdges(rid,file,txt(a.callee),limit,REVERSE_BEREICH);
     result=page('calls',calls.calls);break;
    }
    case 'references':{

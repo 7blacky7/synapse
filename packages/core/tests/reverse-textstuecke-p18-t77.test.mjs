@@ -30,16 +30,18 @@ try{
  const {mitLesePool}=await import('../dist/db/client.js');
  const inDb=fn=>mitLesePool(pool,fn);
  const {REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL}=await import('../dist/db/reverse-verknuepfungen-schema.js');
- await pool.query(REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL);
  for(const table of ['agent_profil_schalter','intern_schalter'])await pool.query('CREATE TABLE '+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  const {leseReverseEinstellungen,fuehreReverseAdminAus}=await import('../dist/services/reverse-einstellungen.js');
  const admin=args=>inDb(()=>fuehreReverseAdminAus({project,...args},{art:'user'}));
  const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
  const {REVERSE_PIPELINE_SCHEMA_SQL}=await import('../dist/db/reverse-pipeline-schema.js');
  await pool.query(REVERSE_SCHEMA_SQL);
+ // P18-T86: Einstellungsschema erst nach reverse_eintraege, sonst zeigt der Eintrags-FK auf public.reverse_eintraege.
+ await pool.query(REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL);
  // P18-T84: current schema for origin filters; no production migration from this fixture.
  await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
  await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);await pool.query(REVERSE_PIPELINE_SCHEMA_SQL);
+ await pool.query((await import('../dist/db/reverse-einstellwerte-schema.js')).REVERSE_EINSTELLWERTE_SCHEMA_SQL);
  for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
  await pool.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_t77',true)",[project]);
  await pool.query("INSERT INTO agent_sessions(id,project,status) VALUES($1,$2,'active')",[agent,project]);
@@ -118,8 +120,9 @@ try{
  const denied=await call('analysieren',{datei:'budget.exe',bis_schicht:'S3'});eq(denied.fehlercode,'kein_ausfuehrer','product OFF prevents resume');
  await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'reverse_s3',true,'T77 fixture','fixture')",[project]);
  let settings=await inDb(()=>leseReverseEinstellungen(project));eq(settings.werte.s3_pg_budget_bytes.wert,1073741824,'default 1GiB');
- ok((await admin({modus:'setzen',ebene:'projekt',reverse_werte:{s3_pg_budget_bytes:1500000000},grund:'T77 budget increase'})).success,'budget writable through admin');
- settings=await inDb(()=>leseReverseEinstellungen(project));eq(settings.werte.s3_pg_budget_bytes.quelle,'projekt','budget source visible');
+ // P18-T86: s3_pg_budget_bytes ist ein Eintragswert (GE), kein Projektwert mehr.
+ {const a=await admin({modus:'setzen',ebene:'eintrag',reverse_id:rid,reverse_werte:{s3_pg_budget_bytes:1500000000},grund:'T77 budget increase'});ok(a.success,'budget writable through admin '+JSON.stringify(a).slice(0,600));}
+ settings=await inDb(()=>leseReverseEinstellungen(project,undefined,rid));eq(settings.werte.s3_pg_budget_bytes.quelle,'eintrag','budget source visible');
  const queued=await call('analysieren',{datei:'budget.exe',bis_schicht:'S3'});ok(queued.success&&queued.nachzug,JSON.stringify(queued));
  const duplicate=await call('analysieren',{datei:'budget.exe',bis_schicht:'S3'});eq(duplicate.auftrag_id,queued.auftrag_id,'active resume deduplicated');
  const job=await inDb(()=>pipeline.claim());eq(job.id,queued.auftrag_id,'normal API worker claims resume');

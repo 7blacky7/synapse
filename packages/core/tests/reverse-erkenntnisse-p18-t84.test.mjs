@@ -53,7 +53,7 @@ const snapshot=async()=>JSON.stringify((await pool.query("SELECT row_to_json(r) 
 try{
  await raw.query('CREATE SCHEMA '+schema);
  for(const t of ['projects','agent_sessions','agent_identitaeten','agent_profil_schalter','intern_schalter','tool_aktivitaet','plan_tasks','thoughts','asset_upload_sitzungen','code_symbols'])await pool.query('CREATE TABLE '+t+' (LIKE public.'+t+' INCLUDING DEFAULTS INCLUDING INDEXES)');
- for(const file of ['work-jobs-schema','reverse-schema','reverse-pipeline-schema','reverse-eingang-schema','reverse-verknuepfungen-schema','reverse-code-stuecke-schema','hex-schema','hex-formate-schema','reverse-erkenntnisse-schema']){
+ for(const file of ['work-jobs-schema','reverse-schema','reverse-pipeline-schema','reverse-eingang-schema','reverse-verknuepfungen-schema','reverse-code-stuecke-schema','hex-schema','hex-formate-schema','reverse-erkenntnisse-schema','reverse-einstellwerte-schema']){
   const mod=await import('../dist/db/'+file+'.js'),sql=Object.values(mod).find(x=>typeof x==='string');
   await pool.query(sql);await pool.query(sql);
  }
