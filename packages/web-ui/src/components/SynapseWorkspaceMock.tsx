@@ -54,9 +54,13 @@ import '../workspace-extensions.css';
 import '../ui-scale.css';
 import '../hauptagent-verlauf.css';
 import '../ui-version.css';
+import '../workspace-mobil.css';
 import { WEB_UI_VERSION } from '../web-ui-version';
 
 type Theme = 'dark' | 'light';
+
+/** P22-T96: gleiche Grenze wie die Media Query in workspace-mobil.css. */
+const MOBIL_ABFRAGE = '(max-width: 768px)';
 
 interface Props {
   project: string;
@@ -1702,8 +1706,36 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
       return false;
     }
   });
+  // P22-T96: unter 768 px ist die Seitenleiste eine Schublade; das Einklappen gilt dort nicht.
+  const [istMobil, setIstMobil] = useState(() => {
+    try {
+      return window.matchMedia(MOBIL_ABFRAGE).matches;
+    } catch {
+      return false;
+    }
+  });
+  const [mobileNavOffen, setMobileNavOffen] = useState(false);
+  const eingeklappt = sidebarCollapsed && !istMobil;
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const abfrage = window.matchMedia(MOBIL_ABFRAGE);
+    const aendern = () => {
+      setIstMobil(abfrage.matches);
+      if (!abfrage.matches) setMobileNavOffen(false);
+    };
+    abfrage.addEventListener('change', aendern);
+    return () => abfrage.removeEventListener('change', aendern);
+  }, []);
+  useEffect(() => {
+    if (!mobileNavOffen) return;
+    const taste = (event: KeyboardEvent) => { if (event.key === 'Escape') setMobileNavOffen(false); };
+    window.addEventListener('keydown', taste);
+    return () => window.removeEventListener('keydown', taste);
+  }, [mobileNavOffen]);
   const [projects, setProjects] = useState<ProjectViewModel[]>([]);
   const [selectedProject, setSelectedProject] = useState(initialProject);
+  // Jede Navigation schliesst die Schublade.
+  useEffect(() => setMobileNavOffen(false), [area, selectedProject]);
   const [channels, setChannels] = useState<ChannelViewModel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState('');
   const [messages, setMessages] = useState<ChannelMessageViewModel[]>([]);
@@ -1896,7 +1928,7 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
 
   return (
     <div
-      className={'synapse-control' + (settings.compactDensity ? ' compact' : '') + (sidebarCollapsed ? ' sidebar-collapsed' : '')}
+      className={'synapse-control' + (settings.compactDensity ? ' compact' : '') + (eingeklappt ? ' sidebar-collapsed' : '') + (mobileNavOffen ? ' mobile-nav-open' : '')}
       data-theme={theme}
       data-animations={settings.animationsEnabled ? 'on' : 'off'}
       style={{
@@ -1905,16 +1937,18 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
         '--accent-contrast': accentContrast(settings.accentColor),
       } as CSSProperties}
     >
-      <aside className="control-sidebar">
+      <aside className="control-sidebar" id="synapse-seitenleiste">
         <div className="brand">
           <span>S</span>
           <div><strong>Synapse</strong><small>Control Plane</small></div>
-          <button type="button" className="sidebar-toggle" onClick={() => setSidebarCollapsed((value) => !value)} title={sidebarCollapsed ? 'Seitenleiste ausklappen' : 'Seitenleiste einklappen'} aria-label={sidebarCollapsed ? 'Seitenleiste ausklappen' : 'Seitenleiste einklappen'} aria-expanded={!sidebarCollapsed}>{sidebarCollapsed ? '›' : '‹'}</button>
+          {istMobil
+            ? <button type="button" className="sidebar-toggle" onClick={() => setMobileNavOffen(false)} title="Navigation schließen" aria-label="Navigation schließen">×</button>
+            : <button type="button" className="sidebar-toggle" onClick={() => setSidebarCollapsed((value) => !value)} title={eingeklappt ? 'Seitenleiste ausklappen' : 'Seitenleiste einklappen'} aria-label={sidebarCollapsed ? 'Seitenleiste ausklappen' : 'Seitenleiste einklappen'} aria-expanded={!sidebarCollapsed}>{sidebarCollapsed ? '›' : '‹'}</button>}
         </div>
 
         <div className="sidebar-project">
           <label>Aktives Projekt</label>
-          <button type="button" title={sidebarCollapsed ? selectedProject || 'Projekt wählen' : undefined} onClick={() => setArea('overview')}>
+          <button type="button" title={eingeklappt ? selectedProject || 'Projekt wählen' : undefined} onClick={() => setArea('overview')}>
             <i className={projects.find((row) => row.name === selectedProject)?.isActive ? 'ready' : 'offline'} />
             <abbr className="collapsed-project-code">{(selectedProject || '---').slice(0, 3).toUpperCase()}</abbr>
             <div><strong>{selectedProject || 'Projekt wählen'}</strong><small>{apiError ? 'API: ' + apiError : loadingProjects ? 'lädt …' : 'ein Projekt · ein UI-Objekt'}</small></div>
@@ -1931,7 +1965,7 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
                   type="button"
                   className={area === item.area ? 'active' : ''}
                   key={item.area}
-                  title={sidebarCollapsed ? item.label : undefined}
+                  title={eingeklappt ? item.label : undefined}
                   onClick={() => setArea(item.area)}
                 >
                   <span>{item.glyph}</span>
@@ -1945,17 +1979,22 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
         </nav>
 
         <footer>
-          <button type="button" className={area === 'settings' ? 'active' : ''} title={sidebarCollapsed ? 'Einstellungen' : undefined} onClick={() => setArea('settings')}><span>⚙</span>Einstellungen</button>
+          <button type="button" className={area === 'settings' ? 'active' : ''} title={eingeklappt ? 'Einstellungen' : undefined} onClick={() => setArea('settings')}><span>⚙</span>Einstellungen</button>
           <div className="theme-row">
             <div><strong>Darstellung</strong><small>{theme === 'dark' ? 'Dunkel' : 'Hell'} · {settings.accentColor.toUpperCase()}</small></div>
             <Switch checked={theme === 'dark'} onChange={(value) => setTheme(value ? 'dark' : 'light')} label="Dunkles Design" />
           </div>
-          <button type="button" className="logout" title={sidebarCollapsed ? 'Abmelden' : undefined} onClick={onLogout}>{sidebarCollapsed ? '↪' : 'Abmelden'}</button>
+          <button type="button" className="logout" title={eingeklappt ? 'Abmelden' : undefined} onClick={onLogout}>{eingeklappt ? '↪' : 'Abmelden'}</button>
           <small className="ui-version" title={'Web-UI-Version ' + WEB_UI_VERSION + ' (nicht die Synapse-Version)'}><span>Web-UI</span>v{WEB_UI_VERSION}</small>
         </footer>
       </aside>
+      {mobileNavOffen && <button type="button" className="mobile-nav-backdrop" aria-label="Navigation schließen" onClick={() => setMobileNavOffen(false)} />}
 
       <main className="control-main">
+        <header className="mobile-bar">
+          <button type="button" className="mobile-nav-toggle" onClick={() => setMobileNavOffen(true)} aria-label="Navigation öffnen" aria-controls="synapse-seitenleiste" aria-expanded={mobileNavOffen}>☰</button>
+          <div><strong>{area === 'settings' ? 'Einstellungen' : navigation.flatMap((group) => group.items).find((item) => item.area === area)?.label ?? 'Synapse'}</strong><small>{selectedProject || 'Projekt wählen'}</small></div>
+        </header>
         <div className="control-content">{renderArea()}</div>
         <MainAgentView theme={theme} project={selectedProject} showDashboard={area === 'main-agent'} />
         <ProjectCoordinatorDock />

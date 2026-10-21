@@ -1,0 +1,95 @@
+/* P22-T96: Arbeitsraum unter 768 px – Seitenleiste als Schublade, eine Spalte, kein Querüberlauf.
+ * Alles Mobile steht in der Media Query; ausserhalb nur das Ausblenden der Mobil-Elemente, damit der Desktop unverändert bleibt.
+ * Wird als letzte Stilquelle geladen und nutzt dieselbe Spezifität wie ui-scale.css (.synapse-control …). */
+.mobile-bar,.mobile-nav-backdrop{display:none}
+@media(max-width:768px){
+body{min-width:0}
+.synapse-control,.synapse-control.sidebar-collapsed{grid-template-columns:minmax(0,1fr);height:100vh;height:100dvh}
+
+/* Seitenleiste als Schublade */
+.synapse-control .control-sidebar{position:fixed;z-index:120;left:0;top:0;bottom:0;width:min(304px,86vw);height:100vh;height:100dvh;transform:translateX(-100%);visibility:hidden;transition:transform .22s ease,visibility 0s linear .22s;overscroll-behavior:contain}
+.synapse-control.mobile-nav-open .control-sidebar{transform:none;visibility:visible;transition:transform .22s ease;box-shadow:0 0 60px rgba(0,0,0,.6)}
+.synapse-control .mobile-nav-backdrop{display:block;position:fixed;z-index:110;inset:0;padding:0;border:0;background:rgba(5,6,8,.58);cursor:pointer}
+.synapse-control .brand{height:64px}
+.synapse-control .sidebar-toggle{width:40px;height:40px}
+.synapse-control .control-sidebar nav button,.synapse-control .control-sidebar footer>button{min-height:46px}
+.synapse-control .control-sidebar footer{padding-bottom:max(12px,env(safe-area-inset-bottom))}
+/* Die ganze Schublade scrollt; so bleibt die Navigation nicht hinter dem Fuss eingeklemmt. */
+.synapse-control .control-sidebar{overflow-y:auto}
+.synapse-control .control-sidebar nav{flex:0 0 auto;overflow:visible}
+
+/* Kopfleiste mit Schubladen-Knopf */
+.synapse-control .control-main{grid-column:1;height:100vh;height:100dvh}
+.synapse-control .mobile-bar{position:relative;z-index:45;display:flex;align-items:center;gap:10px;height:52px;padding:0 12px;border-bottom:1px solid var(--border);background:var(--panel)}
+.synapse-control .mobile-nav-toggle{flex:0 0 40px;width:40px;height:40px;padding:0;border:1px solid var(--border);background:var(--soft);color:var(--accent);font-size:20px;line-height:1;cursor:pointer}
+.synapse-control .mobile-nav-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.synapse-control .mobile-bar>div{min-width:0}
+.synapse-control .mobile-bar strong,.synapse-control .mobile-bar small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.synapse-control .mobile-bar strong{font-size:14px}
+.synapse-control .mobile-bar small{margin-top:2px;color:var(--muted);font:10px ui-monospace,monospace}
+.synapse-control .control-main>.control-content{height:calc(100% - 52px);overflow-x:hidden}
+.synapse-control .agent-stage.is-dashboard,.synapse-control .agent-stage.is-overlay{top:52px}
+
+/* Seiten: eine Spalte */
+.synapse-control .standard-page,.synapse-control .agent-workspace,.synapse-control .graph-page{padding:14px}
+.synapse-control .page-header{flex-direction:column;gap:12px}
+.synapse-control .page-header h1{font-size:23px}
+.synapse-control .overview-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+.synapse-control .overview-strip>div:nth-child(2){border-right:0}
+.synapse-control .overview-strip>div:nth-child(-n+2){border-bottom:1px solid var(--border)}
+.synapse-control .split-surface{grid-template-columns:minmax(0,1fr);min-height:0}
+.synapse-control .entity-list{border-right:0;border-bottom:1px solid var(--border)}
+.synapse-control .entity-detail,.synapse-control .overview-detail{padding:16px}
+.synapse-control .entity-detail dl,.synapse-control .overview-detail dl{grid-template-columns:minmax(0,1fr)}
+.synapse-control .detail-tabs{overflow-x:auto}
+.synapse-control .detail-actions{flex-wrap:wrap}
+.synapse-control .settings-section{grid-template-columns:minmax(0,1fr);gap:14px}
+.synapse-control .settings-fields{grid-template-columns:minmax(0,1fr)}
+.synapse-control .graph-host{min-height:420px;overflow:hidden}
+
+/* Channels: Liste oben, Verlauf darunter */
+.synapse-control .channel-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+.synapse-control .channel-rail{max-height:30vh;border-right:0;border-bottom:1px solid var(--border)}
+.synapse-control .channel-messages{padding:12px}
+.synapse-control .channel-agent-window{min-width:0;width:calc(100% - 16px)}
+.synapse-control .channel-agent-window.minimized{width:min(360px,calc(100% - 16px));min-width:0}
+.workspace-context-menu.strategy-editor{min-width:0}
+.workspace-context-menu.strategy-editor.minimized{width:min(360px,calc(100vw - 24px));min-width:0}
+
+/* Hauptagent-Chat: volle Breite statt verschiebbarem Fenster */
+.synapse-control .agent-chat-shell:not(.is-collapsed):not(.is-full):not(.is-peeking){left:8px;right:8px;top:auto;bottom:8px;width:auto;transform:none;resize:none}
+.synapse-control .agent-chat-shell:not(.is-collapsed):not(.is-full):not(.is-peeking) .conversation-head{cursor:default}
+.synapse-control .conversation-head{height:auto;min-height:56px;flex-wrap:wrap;gap:8px;padding:8px 10px}
+.synapse-control .chat-display-controls{flex-wrap:wrap;justify-content:flex-end;min-width:0}
+.synapse-control .message-feed{padding:12px}
+.synapse-control .agent-composer{margin:0}
+.synapse-control .agent-chat-shell.is-collapsed .agent-composer{margin:auto 0}
+.synapse-control .tool-call summary{grid-template-columns:9px minmax(0,1fr) auto}
+.synapse-control .tool-call summary>:nth-child(n+4):not(b){display:none}
+.synapse-control .tool-call-detail{grid-template-columns:minmax(0,1fr)}
+.synapse-control .tool-stream{margin-left:4px}
+
+/* Channel-Kopf und Projekt-Reiter umbrechen bzw. quer scrollen statt abschneiden */
+.synapse-control .channel-thread>header{height:auto;min-height:54px;flex-wrap:wrap;gap:8px;padding:8px 12px}
+.synapse-control .channel-thread>header>div{min-width:0}
+.synapse-control .channel-head-actions{flex-wrap:wrap;max-width:100%}
+.synapse-control .channel-project-surface>nav{overflow-x:auto}
+
+/* Seiten mit Seitenspalte (Wissen, Workspaces, Einstellungen): Spalte oben, Inhalt darunter */
+.synapse-control .knowledge-page,.synapse-control .cp-settings-page{overflow:visible}
+.synapse-control .knowledge-page-header,.synapse-control .cp-settings-head,.synapse-control .infra-page-header{flex-direction:column;gap:10px}
+.synapse-control .knowledge-scope-banner{grid-template-columns:minmax(0,1fr)}
+.synapse-control .knowledge-workbench,.synapse-control .infra-workbench,.synapse-control .cp-settings-workbench{grid-template-columns:minmax(0,1fr);height:auto}
+.synapse-control .knowledge-rail,.synapse-control .infra-rail,.synapse-control .cp-settings-workbench>aside{max-height:38vh;overflow:auto;border-right:0;border-bottom:1px solid var(--border)}
+.synapse-control .knowledge-workbench>main,.synapse-control .infra-detail,.synapse-control .cp-settings-workbench>main{min-height:60vh}
+.synapse-control .host-summary-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+.synapse-control .infra-form,.synapse-control .auth-workbench,.synapse-control .scope-detail-grid,.synapse-control .cp-fields,.synapse-control .resource-grid{grid-template-columns:minmax(0,1fr)}
+.synapse-control .scope-contract{grid-template-columns:minmax(0,1fr)}
+.synapse-control .host-agent-table,.synapse-control .infra-tabs{overflow-x:auto}
+.synapse-control .memory-browser,.synapse-control .artifact-browser{grid-template-columns:minmax(0,1fr);height:auto}
+.synapse-control .memory-browser>aside,.synapse-control .artifact-browser>aside{border-right:0;border-bottom:1px solid var(--border)}
+.synapse-control .memory-metadata dl,.synapse-control .artifact-detail>dl,.synapse-control .separated-knowledge dl,.synapse-control .memory-editor-grid,.synapse-control .artifact-import>div,.synapse-control .separated-knowledge>section{grid-template-columns:minmax(0,1fr)}
+
+/* Koordinator-/Assistenten-Docks: nur die Griffe, keine Hinweistexte ueber dem Inhalt */
+.synapse-control .dock-empty{display:none}
+}
