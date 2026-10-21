@@ -6,8 +6,19 @@
  * Alles prozesslokal (API-Prozess); der stdio-Weg ruft die API.
  */
 
-/** Kinds, die der Reverse-Executor überhaupt beherrscht. S1..S3-Container folgen mit eigenen Tasks. */
-export const REVERSE_EXECUTOR_UNTERSTUETZT = ['reverse-E'] as const;
+/** Kinds, die der Reverse-Executor überhaupt beherrscht. P18-T69: reverse-S3 = Ghidra, liefert S2 und S3 aus einem Lauf. */
+export const REVERSE_EXECUTOR_UNTERSTUETZT = ['reverse-E', 'reverse-S3'] as const;
+
+/** P18-T69: Ghidra-Budget je S3-Lauf (User da83be67): 4 GB RAM, 2 CPU. */
+export const REVERSE_S3_RESOURCE_NEED_STANDARD = { cpu: 2, ram: 4096, vram: 0, gpu: false } as const;
+/**
+ * Roher Ressourcenbedarf (JSON) je Container-Kind. Work-Job (Pipeline) und Container-Budget (Executor) lesen dieselbe
+ * Stelle: reverse-S3 aus SYNAPSE_REVERSE_S3_RESOURCE_NEED (Standard 4 GB/2 CPU), alle anderen aus SYNAPSE_REVERSE_RESOURCE_NEED.
+ */
+export function reverseResourceNeedRoh(kind: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (kind === 'reverse-S3') return env.SYNAPSE_REVERSE_S3_RESOURCE_NEED?.trim() || JSON.stringify(REVERSE_S3_RESOURCE_NEED_STANDARD);
+  return env.SYNAPSE_REVERSE_RESOURCE_NEED;
+}
 
 export interface ReverseAusfuehrerInfo {
   kinds: string[];

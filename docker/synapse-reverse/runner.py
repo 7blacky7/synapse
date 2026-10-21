@@ -30,6 +30,10 @@ TOOL_PACKAGES = {
     "libmirage": "libmirage11",
 }
 UPSTREAM_TOOLS = {"rizin": "rizin", "rz-bin": "rizin", "analyzeHeadless": "ghidra"}
+# P18-T69: Ghidra-Post-Skripte und JVM-Heap. Container-Budget je S3-Lauf 4 GB (User-Entscheidung): 3 GB Heap,
+# der Rest bleibt fuer den nativen Decompiler-Prozess und die JVM selbst.
+GHIDRA_SCRIPTS = Path("/opt/reverse/ghidra_scripts")
+GHIDRA_HEAP = "3g"
 JOB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 TOOLS: dict[str, tuple[str, ...]] = {
     "7zz": ("7zz", "x", "-y", "-snld", "-aoa"),
@@ -439,6 +443,8 @@ def limits(req: dict[str, Any]) -> dict[str, int]:
         "max_kompressionsfaktor": min(max(int(raw.get("max_kompressionsfaktor", 200)), 1), 1000),
         # P18-T49: Adressraum-Grenze fuer den Parser-Prozess (libmirage liest fremde, evtl. defekte Images).
         "parser_ram_mb": min(max(int(raw.get("parser_ram_mb", 2048)), 256), 65536),
+        # P18-T71: Tiefe verschachtelter Container (Archiv im Archiv); 0 schaltet das rekursive Entpacken ab.
+        "max_verschachtelung": min(max(int((raw or {}).get("max_verschachtelung", 8)), 0), 32),
     }
 
 
@@ -553,7 +559,17 @@ def command_for(tool: str, source: Path, out: Path, req: dict[str, Any], fmt: st
         return [*TOOLS[tool], "-w", str(cue_image(source, companions(req))), str(source), str(out / "track")]
     if tool == "cabextract":
         return [*TOOLS[tool], str(out), str(source)]
-    if tool in ("msiextract", "innoextract", "unar", "lhasa", "arj", "unshield"):
+    if tool == "msiextract":
+        # P18-T71: msiextract kennt nur -C/--directory; mit -d scheiterte jedes MSI als Medium.
+        return [*TOOLS[tool], "-C", str(out), str(source)]
+    # P18-T71: Zielverzeichnis je Werkzeug (laut --help im Image): lhasa w=<dir>, arj x <archiv> <dir>/, unar -o <dir>.
+    if tool == "lhasa":
+        return [TOOLS[tool][0], f"-xw={out}", str(source)]
+    if tool == "arj":
+        return [*TOOLS[tool], "-y", str(source), str(out) + os.sep]
+    if tool == "unar":
+        return [*TOOLS[tool], "-o", str(out), str(source)]
+    if tool in ("innoextract", "unshield"):
         return [*TOOLS[tool], str(source), "-d", str(out)]
     if tool == "wasm2wat":
         return [*TOOLS[tool], str(source), "-o", str(out / "module.wat")]
@@ -563,7 +579,7 @@ def command_for(tool: str, source: Path, out: Path, req: dict[str, Any], fmt: st
         project = out / "ghidra-project"
         export = out / "functions.jsonl"
         return [*TOOLS[tool], str(project), "analysis", "-import", str(source),
-                "-scriptPath", "/opt/reverse/ghidra_scripts",
+                "-scriptPath", str(GHIDRA_SCRIPTS),
                 "-postScript", "ExportFunctions.java", str(export), "-deleteProject"]
     if tool == "rizin":
         return [*TOOLS[tool], "-c", "aaa;afl", str(source)]
@@ -633,6 +649,359 @@ def entpacke_iso(out: Path, eintrag: dict[str, Any], cap: dict[str, int], input_
     return True
 
 
+# P18-T71: verschachtelte Container. Nach dem Entpacken wird jede Datei der Ausgabe am Inhalt geprueft; bekannte
+# Container werden daneben nach '<name>~inhalt/' entpackt, deren Inhalte wieder, bis nur Nutzdaten bleiben. Grenzen
+# wie E (ganze Ausgabe gegen das Medium), dazu max_verschachtelung (0 = aus). Nichts wird still verworfen: jeder
+# erkannte Container traegt metadaten.verschachtelt (status, format, grund), jede Datei daraus metadaten.herkunft
+# (archiv, pfad, tiefe). Kopierschutz/Verschluesselung wird nur gemeldet (Werkzeugfehler), nie umgangen.
+INHALT_SUFFIX = "~inhalt"
+VERSCHACHTELT_TOOLS = {
+    "iso9660": "7zz", "udf": "7zz", "7z": "7zz", "rar": "7zz", "zip": "7zz", "gzip": "7zz", "bzip2": "7zz",
+    "xz": "7zz", "lha": "7zz", "arj": "7zz", "tar": "bsdtar", "cab": "cabextract", "pe-cab": "cabextract",
+    "msi": "msiextract", "installshield": "unshield", "inno": "innoextract", "pe-7z": "7zz", "pe-zip": "7zz",
+    "pe-rar": "7zz",
+}
+ISC_MAGIC = b"ISc("
+# Root-CLSID {000C1084|000C1086-0000-0000-C000-000000000046}: Installer-Paket bzw. Patch (OLE-Verzeichniseintrag 0).
+MSI_CLSID_REST = b"\x10\x0c\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46"
+INNO_MARKER = b"Inno Setup Setup Data ("
+CAB_MARKER = b"MSCF\x00\x00\x00\x00"
+PE_SCAN_BYTES = 64 * 1024 * 1024
+PE_OVERLAY_MIN = 64 * 1024
+# Spieleigene Daten-Container: erkannt und als Folgeschritt (Parser/Inspektor) vorgemerkt, nicht entpackt.
+SPIEL_CONTAINER = (
+    (b"MPQ\x1a", "mpq"), (b"IWAD", "wad"), (b"PWAD", "wad"), (b"PACK", "quake-pak"), (b"BIGF", "ea-big"),
+    (b"\x04\x13\x04\x00\x0c\x00\x00\x00", "siedler3-dat"),
+)
+SPIEL_FORMATE = frozenset(name for _, name in SPIEL_CONTAINER)
+SATZ_RE = re.compile(r"^(.*?)(\d+)$")
+
+
+def pe_overlay(path: Path) -> tuple[int, int]:
+    """(Beginn, Groesse) der Daten hinter dem letzten Abschnitt (ohne Signaturtabelle); (0, 0) ohne Overlay."""
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(4096)
+            size = os.fstat(stream.fileno()).st_size
+    except OSError:
+        return 0, 0
+    if len(head) < 0x40:
+        return 0, 0
+    pe = int.from_bytes(head[0x3C:0x40], "little")
+    if pe + 24 > len(head) or head[pe:pe + 4] != b"PE\x00\x00":
+        return 0, 0
+    sections = int.from_bytes(head[pe + 6:pe + 8], "little")
+    optional = int.from_bytes(head[pe + 20:pe + 22], "little")
+    table = pe + 24 + optional
+    end = 0
+    for index in range(min(sections, 96)):
+        entry = head[table + index * 40:table + index * 40 + 40]
+        if len(entry) < 40:
+            break
+        raw_size, raw_ptr = int.from_bytes(entry[16:20], "little"), int.from_bytes(entry[20:24], "little")
+        end = max(end, raw_ptr + raw_size)
+    magic = int.from_bytes(head[pe + 24:pe + 26], "little")
+    dirs = pe + 24 + (96 if magic == 0x10B else 112 if magic == 0x20B else 0)
+    if dirs > pe + 24 and dirs + 40 <= len(head):
+        sec_off = int.from_bytes(head[dirs + 32:dirs + 36], "little")
+        sec_len = int.from_bytes(head[dirs + 36:dirs + 40], "little")
+        if sec_off and sec_off <= end + 8 and sec_off + sec_len <= size:
+            end = max(end, sec_off + sec_len)
+    if not end or end >= size:
+        return 0, 0
+    return end, size - end
+
+
+def marker_in(path: Path, markers: tuple[bytes, ...], limit: int = PE_SCAN_BYTES) -> set[bytes]:
+    """Welche Marker in den ersten limit Bytes vorkommen (ein Durchlauf, blockweise mit Ueberlappung)."""
+    gefunden: set[bytes] = set()
+    rest, gelesen, ueberlappung = b"", 0, max(len(m) for m in markers)
+    with path.open("rb") as stream:
+        while gelesen < limit and len(gefunden) < len(markers):
+            block = stream.read(min(4 * 1024 * 1024, limit - gelesen))
+            if not block:
+                break
+            gelesen += len(block)
+            fenster = rest + block
+            gefunden.update(m for m in markers if m in fenster)
+            rest = fenster[-ueberlappung:]
+    return gefunden
+
+
+def pe_container(path: Path) -> tuple[str, str | None, str] | None:
+    """Selbstentpackende EXE/Installer-Stub: (format, werkzeug|None, grund); None = gewoehnliches Programm."""
+    try:
+        marker = marker_in(path, (INNO_MARKER, CAB_MARKER, b"InstallShield"))
+        if INNO_MARKER in marker:
+            return "inno", VERSCHACHTELT_TOOLS["inno"], ""
+        start, laenge = pe_overlay(path)
+        kopf = b""
+        if laenge:
+            with path.open("rb") as stream:
+                stream.seek(start)
+                kopf = stream.read(64)
+    except OSError:
+        return None
+    for magic, name in ((b"7z\xbc\xaf\x27\x1c", "pe-7z"), (b"PK\x03\x04", "pe-zip"), (b"Rar!\x1a\x07", "pe-rar")):
+        if kopf.startswith(magic):
+            return name, VERSCHACHTELT_TOOLS[name], ""
+    if kopf.startswith(ISC_MAGIC) or (laenge and b"InstallShield" in marker):
+        return "installshield-sfx", None, "InstallShield-Selbstentpacker, kein Werkzeug im Image"
+    if CAB_MARKER in marker:
+        return "pe-cab", VERSCHACHTELT_TOOLS["pe-cab"], ""
+    if laenge >= PE_OVERLAY_MIN:
+        return "pe-overlay", None, f"{laenge} Bytes unbekannte Daten hinter dem Programm"
+    return None
+
+
+def ist_msi(path: Path) -> bool:
+    """OLE-Verbunddatei mit Installer-CLSID im Wurzeleintrag (sonst z. B. Office-Dokument, kein Container)."""
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(512)
+            shift = int.from_bytes(head[0x1E:0x20], "little")
+            if not 7 <= shift <= 16:
+                return False
+            stream.seek((int.from_bytes(head[0x30:0x34], "little") + 1) << shift)
+            root = stream.read(128)
+    except OSError:
+        return False
+    clsid = root[0x50:0x60]
+    return len(clsid) == 16 and clsid[0] in (0x84, 0x86) and clsid[1:] == MSI_CLSID_REST
+
+
+def installshield_satz(path: Path) -> str:
+    """Name des Satzanfangs, wenn path nur ein Teil ist (DATA1.HDR zu DATA1.CAB, DATA2.CAB zu DATA1.CAB), sonst ''.
+    unshield findet Header und Folgebaende selbst ueber die Namen; entpackt wird nur der erste Band."""
+    stem, endung = path.stem, path.suffix.lower()
+    try:
+        nachbarn = {p.name.lower(): p.name for p in path.parent.iterdir() if p.is_file() and not p.is_symlink()}
+    except OSError:
+        return ""
+    if endung == ".hdr" and (stem + ".cab").lower() in nachbarn:
+        return nachbarn[(stem + ".cab").lower()]
+    satz = SATZ_RE.match(stem)
+    if satz and int(satz.group(2)) > 1 and (satz.group(1) + "1.cab").lower() in nachbarn:
+        return nachbarn[(satz.group(1) + "1.cab").lower()]
+    return ""
+
+
+def container_art(path: Path) -> tuple[str, str | None, str] | None:
+    """(format, werkzeug|None, grund) am Inhalt, nie an der Endung; None = Nutzdaten."""
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(HEAD_BYTES)
+    except OSError:
+        return None
+    if head.startswith(ISC_MAGIC):
+        satz = installshield_satz(path)
+        if satz:
+            return "installshield", None, "teil_eines_satzes:" + satz
+        return "installshield", VERSCHACHTELT_TOOLS["installshield"], ""
+    fmt = detect_format(path)
+    if fmt == "pe":
+        return pe_container(path)
+    if fmt == "ole":
+        return ("msi", VERSCHACHTELT_TOOLS["msi"], "") if ist_msi(path) else None
+    if fmt == "cue":
+        return "cue", None, "Disc-Steuerdatei in einem Archiv"
+    if fmt in VERSCHACHTELT_TOOLS:
+        return fmt, VERSCHACHTELT_TOOLS[fmt], ""
+    for magic, name in SPIEL_CONTAINER:
+        if head.startswith(magic):
+            return name, None, "spieleigener Container, Parser/Inspektor als Folgeschritt"
+    return None
+
+
+def verschachtelt_kommando(tool: str, source: Path, ziel: Path, fmt: str) -> list[str]:
+    if tool == "unshield":
+        return [TOOLS[tool][0], "-d", str(ziel), "x", str(source)]
+    if tool == "msiextract":
+        return [TOOLS[tool][0], "-C", str(ziel), str(source)]
+    if tool == "innoextract":
+        return [*TOOLS[tool], "--output-dir", str(ziel), str(source)]
+    return command_for(tool, source, ziel, {}, fmt)
+
+
+def dateien_unter(root: Path) -> list[str]:
+    """Regulaere Dateien relativ zu root (posix), ohne Symlinks zu folgen."""
+    result = []
+    for current, dirs, files in os.walk(root, followlinks=False):
+        here = Path(current)
+        dirs[:] = sorted(d for d in dirs if not (here / d).is_symlink())
+        for name in sorted(files):
+            path = here / name
+            if path.is_file() and not path.is_symlink():
+                result.append(path.relative_to(root).as_posix())
+    return result
+
+
+def entferne_nicht_dateien(root: Path) -> int:
+    """Symlinks, Geraete und Pipes aus einem entpackten Container entfernen (das Manifest erlaubt nur Dateien)."""
+    weg = 0
+    for current, dirs, files in os.walk(root, followlinks=False):
+        here = Path(current)
+        for name in [*dirs, *files]:
+            path = here / name
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                try:
+                    path.unlink()
+                    weg += 1
+                except OSError:
+                    pass
+    return weg
+
+
+def utf8_namen(root: Path) -> int:
+    """Nicht-UTF-8-Namen (alte Installer/Archive, meist CP1252) umbenennen; sonst scheitert die JSON-Ausgabe."""
+    umbenannt = 0
+    for current, dirs, files in os.walk(root, topdown=False, followlinks=False):
+        for name in [*files, *dirs]:
+            try:
+                name.encode("utf-8")
+                continue
+            except UnicodeEncodeError:
+                pass
+            neu = Path(current) / os.fsencode(name).decode("cp1252", "replace")
+            if not neu.exists() and not neu.is_symlink():
+                try:
+                    os.rename(Path(current) / name, neu)
+                    umbenannt += 1
+                except OSError:
+                    pass
+    return umbenannt
+
+
+def inhalt_ordner(source: Path) -> Path:
+    ziel = source.with_name(source.name + INHALT_SUFFIX)
+    nummer = 2
+    while ziel.exists() or ziel.is_symlink():
+        ziel = source.with_name(f"{source.name}{INHALT_SUFFIX}{nummer}")
+        nummer += 1
+    return ziel
+
+
+def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, int], input_size: int,
+                       env: dict[str, str], job_tmp: Path, deadline: float) -> dict[str, Any]:
+    """Einen Container nach <name>~inhalt/ entpacken. Grenzverletzung/Fehler betreffen nur diesen Container."""
+    source = out / rel
+    rest = deadline - time.monotonic()
+    if rest < 1:
+        return {"status": "fehler", "grund": "zeitlimit"}
+    ziel = inhalt_ordner(source)
+    ziel.mkdir()
+
+    def verwerfen(grund: str, meldung: str = "") -> dict[str, Any]:
+        clear_output(ziel)
+        shutil.rmtree(ziel, ignore_errors=True)
+        return {"status": "fehler", "grund": grund, **({"meldung": meldung[-300:]} if meldung else {})}
+    try:
+        command = verschachtelt_kommando(tool, source, ziel, fmt)
+    except ValueError:
+        return verwerfen("nicht_unterstuetzt:" + fmt, f"Werkzeug {tool} nicht verfuegbar")
+    try:
+        code, meldung = run_isolated(command, max(1, int(rest)), env, ziel, job_tmp,
+                                     guard=lambda: scan_output(out, cap, input_size),
+                                     preexec=file_size_limit(per_file_limit(cap, input_size)))
+    except GrenzeUeberschritten as exc:
+        return verwerfen(exc.code, str(exc))
+    except subprocess.TimeoutExpired:
+        return verwerfen("zeitlimit")
+    final = scan_output(out, cap, input_size)
+    if final:
+        return verwerfen(*final)
+    if code == -signal.SIGXFSZ or (code and "File too large" in meldung):
+        return verwerfen(*file_limit_violation(cap, input_size))
+    entfernt = entferne_nicht_dateien(ziel)
+    umbenannt = utf8_namen(ziel)
+    anzahl = len(dateien_unter(ziel))
+    if not anzahl:
+        return verwerfen("werkzeug_fehler", meldung or f"{tool} lieferte keine Dateien")
+    eintrag: dict[str, Any] = {"status": "entpackt" if code == 0 else "teilweise", "werkzeug": tool,
+                               "inhalt": ziel.relative_to(out).as_posix(), "dateien": anzahl}
+    if code:
+        eintrag["meldung"] = meldung[-300:]
+    if entfernt:
+        eintrag["nicht_dateien_entfernt"] = entfernt
+    if umbenannt:
+        eintrag["namen_umkodiert"] = umbenannt
+    return eintrag
+
+
+def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
+                           started: float, ueberspringen: frozenset[str] = frozenset()) -> tuple[dict[str, dict[str, Any]], bool]:
+    """Rekursiv bis keine neuen Container auftauchen. Rueckgabe: Zusatzmetadaten je Pfad, Zeitlimit erreicht."""
+    meta: dict[str, dict[str, Any]] = {}
+    if cap["max_verschachtelung"] < 1:
+        return meta, False
+    utf8_namen(out)
+    tiefe: dict[str, int] = {}
+    gesehen = set(ueberspringen)
+    deadline = started + cap["zeitlimit_s"]
+    abgebrochen = False
+    while True:
+        neu = [rel for rel in dateien_unter(out) if rel not in gesehen]
+        if not neu:
+            return meta, abgebrochen
+        for rel in neu:
+            gesehen.add(rel)
+            art = container_art(out / rel)
+            if art is None:
+                continue
+            fmt, tool, grund = art
+            eintrag: dict[str, Any] = {"format": fmt}
+            if tool is None and grund.startswith("teil_eines_satzes:"):
+                eintrag.update(status="teil", grund=grund)
+            elif tool is None:
+                eintrag.update(status="vorgemerkt" if fmt in SPIEL_FORMATE else "nicht_unterstuetzt",
+                               grund="nicht_unterstuetzt:" + fmt, hinweis=grund)
+            elif abgebrochen:
+                eintrag.update(status="fehler", grund="zeitlimit")
+            elif tiefe.get(rel, 0) >= cap["max_verschachtelung"]:
+                eintrag.update(status="fehler", grund="tiefenlimit")
+            else:
+                eintrag.update(entpacke_container(out, rel, fmt, tool, cap, input_size, env, job_tmp, deadline))
+                abgebrochen = abgebrochen or eintrag.get("grund") == "zeitlimit"
+                if eintrag.get("inhalt"):
+                    for inner in dateien_unter(out / eintrag["inhalt"]):
+                        pfad = eintrag["inhalt"] + "/" + inner
+                        tiefe[pfad] = tiefe.get(rel, 0) + 1
+                        meta.setdefault(pfad, {})["herkunft"] = {"archiv": rel, "pfad": inner, "tiefe": tiefe[pfad]}
+            meta.setdefault(rel, {})["verschachtelt"] = eintrag
+
+
+def verschachtelt_zusammenfassung(meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    container = {pfad: m["verschachtelt"] for pfad, m in meta.items() if "verschachtelt" in m}
+    offen = [{"pfad": pfad, "format": v["format"], "status": v["status"], "grund": v.get("grund")}
+             for pfad, v in sorted(container.items()) if v["status"] not in ("entpackt", "teil")]
+    return {"container": len(container), "entpackt": sum(v["status"] == "entpackt" for v in container.values()),
+            "nicht_entpackt": offen[:200], "nicht_entpackt_gesamt": len(offen)}
+
+
+def merge_verschachtelt(files: list[dict[str, Any]], meta: dict[str, dict[str, Any]]) -> None:
+    for datei in files:
+        zusatz = meta.get(datei["pfad"])
+        if zusatz:
+            datei["metadaten"] = {**(datei.get("metadaten") or {}), **zusatz}
+            if "verschachtelt" in zusatz:
+                datei["art"] = "archiv"
+
+
+def verschachtelt_isoliert(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
+                           started: float) -> tuple[dict[str, dict[str, Any]], bool]:
+    """Wie entpacke_verschachtelt, mit eigenem TMPDIR und Prozess-Sweep danach (nach dem Hauptwerkzeug)."""
+    job_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        return entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started)
+    finally:
+        rest = sweep_processes()
+        clean_tmp(job_tmp)
+        if rest:
+            print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
+                              "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
+            raise SystemExit(3)
+
+
 def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int, medium: list[tuple[str, Path]],
              erkennung: Any, nur_tabelle: bool = False) -> list[dict[str, Any]]:
     """P18-T49/RV34: Parser (Registry) -> Spurtabelle -> gemeinsamer Extraktor im eigenen Prozess mit Zeit-, RAM- und
@@ -656,7 +1025,8 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
     env = {**os.environ, "HOME": str(job_tmp), "TMPDIR": str(job_tmp), "LC_ALL": "C.UTF-8"}
     optionen = req.get("optionen") if isinstance(req.get("optionen"), dict) else {}
     hinweise: list[dict[str, Any]] = []
-    teilweise = False
+    teilweise = abgebrochen = False
+    verschachtelt: dict[str, dict[str, Any]] = {}
     try:
         try:
             ordner = job_tmp / "medium"
@@ -707,6 +1077,8 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
                 for eintrag in list(meta.values()):
                     if (eintrag.get("metadaten") or {}).get("rolle") == "iso":
                         teilweise = not entpacke_iso(out, eintrag, cap, input_size, env, job_tmp, hinweise) or teilweise
+                iso = frozenset(p for p, e in meta.items() if (e.get("metadaten") or {}).get("rolle") == "iso")
+                verschachtelt, abgebrochen = entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, iso)
         finally:
             rest = sweep_processes()
             clean_tmp(job_tmp)
@@ -730,10 +1102,13 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
         if zusatz:
             datei["art"] = zusatz.get("art")
             datei["metadaten"] = zusatz.get("metadaten") or {}
+    merge_verschachtelt(files, verschachtelt)
     return [
         {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
-        {"status": "teilweise" if teilweise else "fertig", "fehlercode": "werkzeug_fehler" if teilweise else None,
+        {"status": "teilweise" if teilweise or abgebrochen else "fertig",
+         "fehlercode": "werkzeug_fehler" if teilweise else "deadline" if abgebrochen else None,
          "werkzeug_version": version, "format": erkennung.format, "spurtabelle": tabelle, "hinweise": hinweise,
+         "verschachtelt": verschachtelt_zusammenfassung(verschachtelt),
          "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size},
     ]
 
@@ -790,6 +1165,11 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     job_tmp.mkdir(mode=0o700, parents=True)
     env = {**os.environ, "HOME": str(job_tmp), "TMPDIR": str(job_tmp),
            "LC_ALL": "C.UTF-8", "GHIDRA_HOME": "/opt/ghidra"}
+    if tool == "analyzeHeadless":
+        # P18-T69/E0: Java nimmt user.home aus passwd (/nonexistent, read-only rootfs), HOME wirkt nicht. Ghidra
+        # verlangt ausserdem einen vorhandenen Projektordner (sonst 'Directory not found').
+        env["JAVA_TOOL_OPTIONS"] = f"-Duser.home={job_tmp} -Djava.io.tmpdir={job_tmp} -Xmx{GHIDRA_HEAP}"
+        (out / "ghidra-project").mkdir()
     # P18-T62: beim Entpacken laufende Pruefung + Groessengrenze je Datei; Analysewerkzeuge wie bisher.
     guard = (lambda: scan_output(out, cap, input_size)) if extract else None
     preexec = file_size_limit(per_file_limit(cap, input_size)) if extract else None
@@ -815,17 +1195,21 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
                 raise GrenzeUeberschritten(*file_limit_violation(cap, input_size))
         if code:
             return [{"status": "fehler", "fehlercode": "werkzeug_fehler", "meldung": meldung}]
+        verschachtelt, abgebrochen = (verschachtelt_isoliert(out, cap, input_size, env, job_tmp, started)
+                                      if extract else ({}, False))
         files, size = output_manifest(out, cap, input_size)
     except GrenzeUeberschritten as exc:
         clear_output(out)
         return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
                  "dauer_s": round(time.monotonic() - started, 3)}]
     version = tool_version(tool)
-    return [
-        {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
-        {"status": "fertig", "fehlercode": None, "werkzeug_version": version, "format": fmt or None,
-         "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size},
-    ]
+    merge_verschachtelt(files, verschachtelt)
+    ende: dict[str, Any] = {"status": "teilweise" if abgebrochen else "fertig", "fehlercode": "deadline" if abgebrochen else None,
+                            "werkzeug_version": version, "format": fmt or None,
+                            "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size}
+    if extract:
+        ende["verschachtelt"] = verschachtelt_zusammenfassung(verschachtelt)
+    return [{"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)}, ende]
 
 
 def main() -> int:

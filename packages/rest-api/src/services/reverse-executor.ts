@@ -20,7 +20,7 @@ import type {Pool} from 'pg';
 import {getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
- reverseFehlerDeterministisch,
+ reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
@@ -67,12 +67,29 @@ export interface ReverseExecutorKonfig {
  zeitlimitS:number;maxDateien:number;maxBytes:number;tmpfsMb:number;pids:number;outputBytes:number;retryMax:number;wavPregap:boolean;
  /** P18-T64: Leerlauf, nach dem der globale Reverse-Container schläft. */
  idleMs:number;
+ /** P18-T71: Tiefe verschachtelter Container beim Entpacken (SYNAPSE_REVERSE_MAX_VERSCHACHTELUNG); 0 = aus. Ohne Wert gilt der Runner-Standard. */
+ maxVerschachtelung?:number;
+ /** P18-T69: reverse-S3 (Ghidra) je Lauf; User da83be67: 4 GB RAM, 2 CPU, 1 h. */
+ s3ResourceNeed:WorkResourceNeed;s3ZeitlimitS:number;s3MaxBytes:number;
 }
 function ganz(env:NodeJS.ProcessEnv,name:string,fallback:number,min=1,max=2147483647):number{
  const n=Number(env[name]??fallback);
  if(!Number.isSafeInteger(n)||n<min||n>max)throw Error('reverse_executor_konfig:'+name);
  return n;
 }
+/** P18-T69: S3-Grenzen (SYNAPSE_REVERSE_S3_RESOURCE_NEED, _S3_ZEITLIMIT_S, _S3_MAX_BYTES). */
+function s3Konfig(env:NodeJS.ProcessEnv):Pick<ReverseExecutorKonfig,'s3ResourceNeed'|'s3ZeitlimitS'|'s3MaxBytes'>{
+ const need=validateWorkResources(JSON.parse(reverseResourceNeedRoh('reverse-S3',env)!));
+ if(need.gpu||need.cpu<=0||need.ram<=0)throw Error('reverse_executor_konfig:SYNAPSE_REVERSE_S3_RESOURCE_NEED (CPU/RAM, keine GPU)');
+ return {s3ResourceNeed:need,s3ZeitlimitS:ganz(env,'SYNAPSE_REVERSE_S3_ZEITLIMIT_S',3600,60,86400),
+  s3MaxBytes:ganz(env,'SYNAPSE_REVERSE_S3_MAX_BYTES',268435456,1048576,Number.MAX_SAFE_INTEGER)};
+}
+/** P18-T69: Container- und Work-Budget = Maximum aus E und (falls aktiv) S3; es gibt nur EINEN Reverse-Container. */
+export function reverseContainerBedarf(k:ReverseExecutorKonfig):WorkResourceNeed{
+ if(!k.kinds.includes('reverse-S3'))return k.resourceNeed;
+ return {cpu:Math.max(k.resourceNeed.cpu,k.s3ResourceNeed.cpu),ram:Math.max(k.resourceNeed.ram,k.s3ResourceNeed.ram),vram:0,gpu:false};
+}
+const reverseZeitlimitMax=(k:ReverseExecutorKonfig)=>k.kinds.includes('reverse-S3')?Math.max(k.zeitlimitS,k.s3ZeitlimitS):k.zeitlimitS;
 /** Liest die Executor-Umgebung; null = aus. Ungültige Werte werfen (der Start bleibt dann aus). */
 export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:string|null):ReverseExecutorKonfig|null{
  if(env.SYNAPSE_REVERSE_ENABLED!=='1'||!reverseRoot)return null;
@@ -98,7 +115,8 @@ export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:stri
   zeitlimitS:ganz(env,'SYNAPSE_REVERSE_ZEITLIMIT_S',3600,1,86400),maxDateien:ganz(env,'SYNAPSE_REVERSE_MAX_DATEIEN',20000,1,200000),
   maxBytes:ganz(env,'SYNAPSE_REVERSE_MAX_BYTES',2000000000,1,Number.MAX_SAFE_INTEGER),tmpfsMb:ganz(env,'SYNAPSE_REVERSE_TMPFS_MB',512,16),
   pids:ganz(env,'SYNAPSE_REVERSE_PIDS',256,16),outputBytes:ganz(env,'SYNAPSE_REVERSE_OUTPUT_BYTES',33554432,65536),
-  retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100),wavPregap:env.SYNAPSE_REVERSE_WAV_PREGAP==='1',idleMs:ganz(env,'SYNAPSE_REVERSE_IDLE_MS',300000,10000,86400000)};
+  retryMax:ganz(env,'SYNAPSE_REVERSE_RETRY_MAX',3,1,100),wavPregap:env.SYNAPSE_REVERSE_WAV_PREGAP==='1',idleMs:ganz(env,'SYNAPSE_REVERSE_IDLE_MS',300000,10000,86400000),
+  maxVerschachtelung:ganz(env,'SYNAPSE_REVERSE_MAX_VERSCHACHTELUNG',8,0,32),...s3Konfig(env)};
 }
 /**
  * E2 (P18-T64): EIN globaler Container (instance_scope 'project'; das Projekt ist immer reverse-bibliothek), kein Netz,
@@ -110,8 +128,8 @@ export function reverseToolDescriptor(k:ReverseExecutorKonfig):ToolDescriptor{
  return validateToolDescriptor({tool_id:REVERSE_TOOL_ID,tool:'reverse',capability:REVERSE_CAPABILITY,image:k.image,digest:k.digest,
   instance_scope:'project',network:'none',allow_project_share:false,
   mounts:[{role:'bibliothek',target:'/bib',write:false},{role:'arbeit',target:'/arbeit',write:true}],
-  resources:{cpu:k.resourceNeed.cpu,ram:k.resourceNeed.ram,vram:0,gpu:false,pids:k.pids,tmpfs:k.tmpfsMb,concurrency:k.parallel},
-  limits:{time_ms:(k.zeitlimitS+60)*1000,output_bytes:k.outputBytes,input_bytes:65536},
+  resources:{cpu:reverseContainerBedarf(k).cpu,ram:reverseContainerBedarf(k).ram,vram:0,gpu:false,pids:k.pids,tmpfs:k.tmpfsMb,concurrency:k.parallel},
+  limits:{time_ms:(reverseZeitlimitMax(k)+60)*1000,output_bytes:k.outputBytes,input_bytes:65536},
   lifecycle:{idle_ms:k.idleMs,activity_lookback_seconds:300,cpu_idle_percent:5,gpu_idle_percent:100,measurement_max_age_ms:60000,
    start_timeout_ms:120000,max_starts:20,start_window_ms:600000,pause_ms:300000}});
 }
@@ -230,6 +248,8 @@ export interface ReverseExecutorDeps {
  jobs?:WorkJobService;
  uebernahme?:typeof uebernehmeEErgebnis;
  uebernahmeOptionen?:Parameters<typeof uebernehmeEErgebnis>[2];
+ /** P18-T69: Eingaberechte setzen (Standard reverseEingabeLesbar; Tests ohne root ersetzen sie). */
+ eingabeLesbar?:(pfade:string[])=>Promise<string|null>;
  registriereProjekt?:(name:string)=>Promise<void>;
 }
 export interface ReverseDurchlauf {geprueft:true;geweckt:number;gestartet:number;hinweis?:string}
@@ -254,11 +274,18 @@ export class ReverseExecutor {
     if(!w||this.beendet||node.node_id!==w.nodeId||String(node.boot_id)!==w.bootGeneration||node.service_token_hash!==w.authHash)return null;
     if(job.capability!==REVERSE_CAPABILITY||job.project!==REVERSE_PROJEKT||job.scope!=='reverse'||!this.k.kinds.includes(job.kind)||job.resourceNeed.gpu)return null;
     const max=this.k.parallel+ganz(process.env,'SYNAPSE_WORK_INTERACTIVE_RESERVE',1,0);
-    const n=this.k.resourceNeed;
+    const n=reverseContainerBedarf(this.k);
     return {resourceDomain:this.domain(w.nodeId),maxConcurrent:max,budget:{cpu:n.cpu*max,ram:n.ram*max,vram:0,gpu:false}};
    },
    inputStillCurrent:async(job:WorkJob,client:WorkJobClient)=>this.eingabeAktuell(job,client),
    outputIsStaged:async(job:WorkJob,out:Ref,client:WorkJobClient)=>{
+    // P18-T69: S3 gilt als gestaged, wenn die S3-Schicht der Datei den Marker dieses Auftrags traegt.
+    if(job.kind==='reverse-S3'){
+     if(out.scope!=='reverse'||out.id!==job.id)return false;
+     const s=await client.query(`SELECT 1 FROM reverse_schichten WHERE datei_id=$1::bigint AND schicht='S3' AND aktuell
+      AND status IN ('fertig','teilweise') AND ausgabe_key=$2`,[job.inputRef.revision,reverseS3AusgabeKey(job.inputRef.id,job.inputRef.revision,job.id)]);
+     return s.rows.length>0;
+    }
     if(out.scope!=='reverse'||out.id!==job.id||job.kind!=='reverse-E')return false;
     const r=await client.query(`SELECT 1 FROM reverse_schichten s JOIN reverse_medien m ON m.id=s.medium_id
      WHERE s.medium_id=$1::bigint AND m.eintrag_id=$2 AND s.datei_id IS NULL AND s.schicht='E' AND s.aktuell
@@ -270,6 +297,7 @@ export class ReverseExecutor {
  }
  private async eingabeAktuell(job:WorkJob,client:Pick<WorkJobClient,'query'>):Promise<boolean>{
   const ref=job.inputRef;
+  if(job.kind==='reverse-S3')return this.dateiAktuell(job,client);
   if(job.kind!=='reverse-E'||ref.scope!=='reverse'||!/^[1-9][0-9]{0,18}$/.test(ref.revision))return false;
   const r=await client.query(`SELECT 1 FROM reverse_medien m JOIN reverse_eintraege e ON e.id=m.eintrag_id
    WHERE m.id=$1::bigint AND m.eintrag_id=$2 AND m.satz_sha256=$3 AND e.status='bestaetigt' FOR SHARE OF m`,[ref.revision,ref.id,ref.sha256]);
@@ -412,6 +440,7 @@ export class ReverseExecutor {
   if(job.capability!==REVERSE_CAPABILITY||job.project!==REVERSE_PROJEKT||!this.k.kinds.includes(job.kind)){
    await this.jobs.release(wer,job.id,token);return;
   }
+  if(job.kind==='reverse-S3')return this.fuehreS3Aus(lc,wer,job);
   // W5/K3: kein Endlos-Neuentpacken nach wiederholtem Lease-Verlust oder Übernahmefehler.
   if(job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
   const quelle=await this.eingabe(job);
@@ -438,7 +467,7 @@ export class ReverseExecutor {
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap},
-     grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes}}));
+     grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung}}));
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     const m=(e as Error).message;
@@ -477,6 +506,95 @@ export class ReverseExecutor {
   }finally{
    clearInterval(timer);
    // Nur mit gültigem Abschluss aufräumen: ein Folgeversuch nutzt denselben Auftragsordner.
+   if(aufraeumen)await rm(arbeit,{recursive:true,force:true}).catch(()=>undefined);
+  }
+ }
+ /** P18-T69/E3: Datei-Eingabe eines reverse-S3-Auftrags (inputRef.revision = reverse_dateien.id, sha256 = Dateiinhalt). */
+ private async dateiAktuell(job:WorkJob,client:Pick<WorkJobClient,'query'>):Promise<boolean>{
+  const ref=job.inputRef;
+  if(ref.scope!=='reverse'||!/^[1-9][0-9]{0,18}$/.test(ref.revision))return false;
+  const r=await client.query(`SELECT 1 FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id
+   WHERE d.id=$1::bigint AND d.eintrag_id=$2 AND d.sha256=$3 AND d.storage_key IS NOT NULL AND e.status='bestaetigt' FOR SHARE OF d`,[ref.revision,ref.id,ref.sha256]);
+  return r.rows.length>0;
+ }
+ private async s3Quelle(job:WorkJob):Promise<{reverseId:string;dateiId:string;storageKey:string}|null>{
+  const ref=job.inputRef;
+  if(!/^[1-9][0-9]{0,18}$/.test(ref.revision))return null;
+  const d=(await this.pool.query(`SELECT d.id::text AS id,d.eintrag_id,d.storage_key FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id
+   WHERE d.id=$1::bigint AND d.eintrag_id=$2 AND d.sha256=$3 AND e.status='bestaetigt'`,[ref.revision,ref.id,ref.sha256])).rows[0];
+  const key=String(d?.storage_key??'');
+  if(!d||!key||key.startsWith('/')||key.includes('\\')||key.split('/').some(t=>!t||t==='.'||t==='..'))return null;
+  return {reverseId:String(d.eintrag_id),dateiId:String(d.id),storageKey:key};
+ }
+ private async uebernimmS3UnterFence(job:WorkJob,wer:WorkIdentity,e:Parameters<typeof uebernehmeS3Ergebnis>[1]):Promise<Awaited<ReturnType<typeof uebernehmeS3Ergebnis>>|null>{
+  const c=await this.pool.connect();
+  try{
+   await c.query('BEGIN');
+   if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return null;}
+   const r=await uebernehmeS3Ergebnis({query:c.query.bind(c)},e,this.deps.uebernahmeOptionen);
+   await c.query('COMMIT');return r;
+  }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
+  finally{c.release();}
+ }
+ /**
+  * P18-T69/E3: reverse-S3 = ein Ghidra-Lauf (Runner werkzeug analyzeHeadless) fuer EINE Datei; die Uebernahme schreibt S2 und S3.
+  * Gleicher Ablauf wie E: Lease-Erneuerung, Auftragsordner, Uebernahme unter Lease-Fence, stage, complete.
+  */
+ private async fuehreS3Aus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
+  const token=job.claimToken!;
+  if(job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
+  const quelle=await this.s3Quelle(job);
+  if(!quelle){await this.scheitern(job,wer,'nicht_gefunden');return;}
+  const rechte=await (this.deps.eingabeLesbar??reverseEingabeLesbar)([path.join(this.k.reverseRoot,quelle.storageKey)]);
+  if(rechte){await this.scheitern(job,wer,rechte);return;}
+  const alt=this.altScope;
+  const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
+  await rm(ausgabe,{recursive:true,force:true});
+  await runnerOrdner(ausgabe);
+  let lebt=true,aufraeumen=false;
+  const timer=setInterval(()=>{void this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).then(ok=>{if(!ok)lebt=false;},()=>{lebt=false;});},this.k.renewMs);
+  timer.unref();
+  try{
+   let ergebnis:Record<string,unknown>;
+   try{
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({werkzeug:'analyzeHeadless',schicht:'S3',
+     eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
+     grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:16}}));
+   }catch(e){
+    if(!alt)await sperreArbeitsOrdner(arbeit);
+    const m=(e as Error).message;
+    if(m==='tool_not_ready'||m==='tool_runner_capacity'){await this.jobs.release(wer,job.id,token);aufraeumen=true;}
+    else console.error('[reverse-executor] S3-Ausfuehrung ohne sicheres Ende:',job.id,m);
+    return;
+   }
+   clearInterval(timer);
+   if(!alt)await sperreArbeitsOrdner(arbeit);
+   const status=String(ergebnis.status);
+   const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
+   if(status==='fertig'&&lebt){
+    if(!await this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).catch(()=>false)){console.warn('[reverse-executor] Lease verloren, S3-Ergebnis verworfen:',job.id);return;}
+    const dauer=typeof ergebnis.dauer_s==='number'&&Number.isFinite(ergebnis.dauer_s)?Math.round(ergebnis.dauer_s*1000):null;
+    let r:Awaited<ReturnType<typeof uebernehmeS3Ergebnis>>|null;
+    try{r=await this.uebernimmS3UnterFence(job,wer,{jobId:job.id,reverseId:quelle.reverseId,dateiId:quelle.dateiId,arbeitsWurzel:ausgabe,manifest,dauerMs:dauer});}
+    catch(e){
+     console.error('[reverse-executor] S3-Uebernahme fehlgeschlagen:',job.id,(e as Error).message);
+     if(e instanceof ReverseS3UebernahmeFehler||job.attempt>=this.k.retryMax)aufraeumen=await this.scheitern(job,wer,e instanceof ReverseS3UebernahmeFehler?fehlercode(e.code):'werkzeug_fehler');
+     else aufraeumen=await this.jobs.release(wer,job.id,token);
+     return;
+    }
+    if(!r){console.warn('[reverse-executor] Spaete S3-Rueckmeldung nach Lease-Ablauf verworfen:',job.id);return;}
+    aufraeumen=true;
+    console.log('[reverse-executor] S3 fertig:',job.id,'datei',quelle.dateiId,'status',r.status,'funktionen',r.funktionen,'gespeichert',r.gespeichert,'dauer_ms',dauer);
+    const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:createHash('sha256').update(JSON.stringify(manifest)).digest('hex')};
+    if(!await this.jobs.stage(wer,job.id,token,out)){console.warn('[reverse-executor] S3-Staging abgewiesen:',job.id);return;}
+    const done=await this.jobs.complete(wer,job.id,token,job.inputRef);
+    if(!done.completed)console.warn('[reverse-executor] S3-Abschluss abgewiesen:',job.id);
+    return;
+   }
+   if(!lebt){console.warn('[reverse-executor] Lease verloren, S3-Ergebnis verworfen:',job.id);return;}
+   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?'zeitlimit':fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
+  }finally{
+   clearInterval(timer);
    if(aufraeumen)await rm(arbeit,{recursive:true,force:true}).catch(()=>undefined);
   }
  }

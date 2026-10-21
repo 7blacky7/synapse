@@ -367,7 +367,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const prio=(str(a.prioritaet)||'interaktiv') as ReverseAnalyseAnfrage['prioritaet'];
     if(!['interaktiv','hintergrund','nachzug'].includes(prio))fail('werkzeug_fehler','parameter_ungueltig');
     const f=path?await datei(db,rid,path):null;
+    // P18-T71: bis_schicht 'E' ohne datei = E (Entpacken) fuer alle Medien des Eintrags neu anstossen, auch wenn schon Dateien existieren.
     const targets:{dateiId:string|null;mediumId:string|null;schicht:string}[]=f?[{dateiId:str(f.id),mediumId:str(f.medium_id),schicht:bis}]
+      : bis==='E'?[]
       : (await db.query('SELECT id::text AS id FROM reverse_dateien WHERE eintrag_id=$1 ORDER BY id',[rid])).rows.map(d=>({dateiId:str(d.id),mediumId:null,schicht:bis}));
     if(!targets.length)for(const m of await medien(db,rid))targets.push({dateiId:null,mediumId:str(m.id),schicht:'E'});
     if(!targets.length)fail('nicht_gefunden');
@@ -456,19 +458,28 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const prefix=gesetzt(a.path)?pruefeReversePfad(a.path):null;
       const where=" WHERE eintrag_id=$1 AND ($2::text IS NULL OR pfad=$2 OR left(pfad,length($2)+1)=$2||'/')";
       const total=Number((await pool.query('SELECT count(*)::int AS n FROM reverse_dateien'+where,[rid,prefix])).rows[0].n);
-      const rows=(await pool.query('SELECT id::text AS id,medium_id::text AS medium_id,pfad,art,format,arch,bits,groesse,sha256,status,entpackt_mit,storage_key FROM reverse_dateien'+where+' ORDER BY pfad,id LIMIT $3 OFFSET $4',[rid,prefix,limit,offset])).rows;
+      const rows=(await pool.query("SELECT id::text AS id,medium_id::text AS medium_id,pfad,art,format,arch,bits,groesse,sha256,status,entpackt_mit,storage_key,metadaten->'herkunft' AS quelle,metadaten->'verschachtelt' AS verschachtelt,metadaten->>'e_pfad' AS e_pfad FROM reverse_dateien"+where+' ORDER BY pfad,id LIMIT $3 OFFSET $4',[rid,prefix,limit,offset])).rows;
       const mask=(v:unknown)=>typeof v==='string'?maskiereMitKatalog(v,'reverse').text:null;
       const items:Row[]=[];const max=envInt('SYNAPSE_REVERSE_ANTWORT_MAX',80000);let laenge=2;
       for(const r of rows){
         const item:Row={id:r.id,medium_id:r.medium_id,pfad:mask(r.pfad),art:r.art,format:mask(r.format),arch:mask(r.arch),bits:r.bits??null,
           groesse:Number(r.groesse??0),sha256:r.sha256??null,status:mask(r.status),entpackt_mit:mask(r.entpackt_mit),
           herkunft:str(r.storage_key).startsWith(rid+'/entpackt/')?'entpackt':'original'};
+        // P18-T71: Herkunft aus verschachtelten Containern und Zustand erkannter Container; Pfade wie 'pfad' (Medium-Label vorn).
+        const basis=typeof r.e_pfad==='string'&&str(r.pfad).endsWith(r.e_pfad)?str(r.pfad).slice(0,str(r.pfad).length-r.e_pfad.length):'';
+        if(object(r.quelle))item.quelle={archiv:mask(basis+str(r.quelle.archiv)),pfad:mask(r.quelle.pfad),tiefe:Number(r.quelle.tiefe)||null};
+        if(object(r.verschachtelt)){const v=r.verschachtelt;item.verschachtelt={status:mask(v.status),format:mask(v.format),grund:mask(v.grund),
+          ...(typeof v.inhalt==='string'?{inhalt:mask(basis+v.inhalt)}:{}),...(typeof v.meldung==='string'?{meldung:mask(v.meldung)}:{})};}
         laenge+=JSON.stringify(item).length+1;if(laenge>max)break;items.push(item);
       }
       if(rows.length&&!items.length)fail('zu_gross');
       await tx(db=>activity(db,a));
       const weiter=offset+items.length<total;
-      return {reverse_id:rid,path:prefix,dateien:items,total,gekappt:weiter,naechster_offset:weiter?offset+items.length:null};
+      // P18-T71: erkannte, aber nicht entpackte Container (Grund sichtbar, nie still verworfen); Teile eines Satzes zählen nicht.
+      const offen=(await pool.query("SELECT pfad,metadaten->'verschachtelt' AS v FROM reverse_dateien"+where+" AND metadaten->'verschachtelt'->>'status' NOT IN ('entpackt','teil') ORDER BY pfad,id LIMIT 50",[rid,prefix])).rows;
+      const containerOffen=offen.map((o:Row)=>{const v=object(o.v)?o.v:{};return {pfad:mask(o.pfad),status:mask(v.status),format:mask(v.format),grund:mask(v.grund)};});
+      return {reverse_id:rid,path:prefix,dateien:items,total,gekappt:weiter,naechster_offset:weiter?offset+items.length:null,
+        ...(containerOffen.length?{container_nicht_entpackt:containerOffen}:{})};
     }
     if(action==='diagnose'){
       // P18-T64: lesend für jeden Agenten; nur Auftrags-/Containerzustände, keine Inhalte.

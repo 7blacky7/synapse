@@ -213,6 +213,41 @@ class RunnerContractTests(unittest.TestCase):
             self.assertEqual(events[-1]["format"], "iso9660")
             self.assertEqual(events[-1]["manifest"], [])
 
+    def test_ghidra_gets_writable_user_home_heap_and_existing_project_dir(self):
+        """P18-T69/E0: ohne -Duser.home bricht analyzeHeadless als uid 65532 ab, ohne Projektordner ebenfalls."""
+        with Sandbox() as box:
+            request = {"werkzeug": "analyzeHeadless", "eingabe": box.put("r1/entpackt/m1/AUTORUN.EXE", b"MZ" + bytes(62)),
+                       "ausgabe": "/arbeit/job-ghidra", "grenzen": {"zeitlimit_s": 7}}
+            seen = {}
+
+            def fake_run(command, timeout, env, cwd, job_tmp, **_kw):
+                seen["project_exists"] = (box.work / "job-ghidra" / "ghidra-project").is_dir()
+                return 0, ""
+            with tempfile.TemporaryDirectory() as tmp_root, \
+                 patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+                 patch.object(runner.shutil, "which", return_value="/opt/reverse/bin/analyzeHeadless"), \
+                 patch.object(runner, "run_isolated", side_effect=fake_run) as run:
+                events = runner.run_request(request)
+            command, timeout, env = run.call_args.args[0], run.call_args.args[1], run.call_args.args[2]
+            job_tmp = str(Path(tmp_root) / "job-ghidra")
+            self.assertTrue(seen["project_exists"], "Projektordner existiert vor dem Start")
+            self.assertEqual(env["JAVA_TOOL_OPTIONS"], f"-Duser.home={job_tmp} -Djava.io.tmpdir={job_tmp} -Xmx3g")
+            self.assertEqual(timeout, 7)
+            self.assertEqual(command[command.index("-scriptPath") + 1], str(runner.GHIDRA_SCRIPTS))
+            self.assertEqual(command[1], str(box.work / "job-ghidra" / "ghidra-project"))
+            self.assertEqual(events[-1]["status"], "fertig")
+
+    def test_other_tools_get_no_java_options(self):
+        with Sandbox() as box:
+            request = {"werkzeug": "rizin", "eingabe": box.put("r1/x.exe", b"MZ"), "ausgabe": "/arbeit/job-rz"}
+            with tempfile.TemporaryDirectory() as tmp_root, \
+                 patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+                 patch.object(runner.shutil, "which", return_value="/opt/reverse/bin/rizin"), \
+                 patch.object(runner, "run_isolated", return_value=(0, "")) as run:
+                runner.run_request(request)
+            self.assertNotIn("JAVA_TOOL_OPTIONS", run.call_args.args[2])
+            self.assertFalse((box.work / "job-rz" / "ghidra-project").exists())
+
     def test_e2e_mini_iso_from_xorriso_extracts_with_manifest(self):
         seven = shutil.which("7zz") or shutil.which("7z")
         if not shutil.which("xorriso") or not seven:
@@ -498,6 +533,204 @@ class ReverseT62BombTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 30)
             self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
             self.assert_no_output(box)
+
+
+def mini_pe(overlay=b"", extra=b""):
+    """Minimales PE32: ein Abschnitt (0x200..0x400), danach optional ein Overlay."""
+    data = bytearray(0x400)
+    data[0:2] = b"MZ"
+    data[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    data[0x40:0x44] = b"PE\x00\x00"
+    data[0x46:0x48] = (1).to_bytes(2, "little")
+    data[0x54:0x56] = (0xE0).to_bytes(2, "little")
+    data[0x58:0x5A] = (0x10B).to_bytes(2, "little")
+    section = 0x58 + 0xE0
+    data[section:section + 5] = b".text"
+    data[section + 16:section + 20] = (0x200).to_bytes(4, "little")
+    data[section + 20:section + 24] = (0x200).to_bytes(4, "little")
+    data[0x200:0x200 + len(extra)] = extra
+    return bytes(data) + overlay
+
+
+def mini_ole(clsid):
+    """OLE-Kopf (Sektor 512) mit Verzeichnis in Sektor 0 und gegebener Wurzel-CLSID."""
+    data = bytearray(1024)
+    data[0:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    data[0x1E:0x20] = (9).to_bytes(2, "little")
+    data[0x30:0x34] = (0).to_bytes(4, "little")
+    data[512 + 0x50:512 + 0x60] = clsid
+    return bytes(data)
+
+
+class VerschachteltTests(unittest.TestCase):
+    """P18-T71: rekursives Entpacken nach E mit Herkunft, Grenzen je Container und sichtbaren Gruenden."""
+
+    def cap(self, **extra):
+        return {**runner.limits({"grenzen": extra}), "zeitlimit_s": extra.get("zeitlimit_s", 60)}
+
+    def lauf(self, out, cap, fake=None):
+        with tempfile.TemporaryDirectory() as tmp_root, patch.object(runner, "TMP_ROOT", Path(tmp_root)):
+            job_tmp = Path(tmp_root) / "job"
+            job_tmp.mkdir()
+            env = {"PATH": "/usr/bin:/bin", "TMPDIR": str(job_tmp), "HOME": str(job_tmp)}
+            if fake is None:
+                return runner.entpacke_verschachtelt(out, cap, 10_000_000, env, job_tmp, time.monotonic())
+            with patch.object(runner, "verschachtelt_kommando", side_effect=fake):
+                return runner.entpacke_verschachtelt(out, cap, 10_000_000, env, job_tmp, time.monotonic())
+
+    def test_container_art_erkennt_am_inhalt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "DATA1.CAB").write_bytes(b"ISc(" + b"\x00" * 60)
+            (root / "data1.hdr").write_bytes(b"ISc(" + b"\x00" * 60)
+            (root / "DATA2.CAB").write_bytes(b"ISc(" + b"\x00" * 60)
+            (root / "setup.msi").write_bytes(mini_ole(b"\x84" + runner.MSI_CLSID_REST))
+            (root / "brief.doc").write_bytes(mini_ole(b"\x06\x09\x02\x00" + b"\x00" * 12))
+            (root / "SIEDLER.DAT").write_bytes(b"\x04\x13\x04\x00\x0c\x00\x00\x00" + b"\x00" * 64)
+            (root / "plain.exe").write_bytes(mini_pe())
+            (root / "sfx7z.exe").write_bytes(mini_pe(overlay=b"7z\xbc\xaf\x27\x1c" + b"\x00" * 100))
+            (root / "inno.exe").write_bytes(mini_pe(overlay=b"Inno Setup Setup Data (5.1.2)" + b"\x00" * 64))
+            (root / "iexpress.exe").write_bytes(mini_pe(extra=b"MSCF\x00\x00\x00\x00" + b"\x00" * 32))
+            (root / "unbekannt.exe").write_bytes(mini_pe(overlay=b"\x55" * runner.PE_OVERLAY_MIN))
+            (root / "text.txt").write_bytes(b"nur Nutzdaten\n")
+            art = {p.name: runner.container_art(p) for p in root.iterdir()}
+        self.assertEqual(art["DATA1.CAB"], ("installshield", "unshield", ""))
+        self.assertEqual(art["data1.hdr"], ("installshield", None, "teil_eines_satzes:DATA1.CAB"))
+        self.assertEqual(art["DATA2.CAB"], ("installshield", None, "teil_eines_satzes:DATA1.CAB"))
+        self.assertEqual(art["setup.msi"], ("msi", "msiextract", ""))
+        self.assertIsNone(art["brief.doc"])
+        self.assertEqual(art["SIEDLER.DAT"][:2], ("siedler3-dat", None))
+        self.assertIsNone(art["plain.exe"])
+        self.assertEqual(art["sfx7z.exe"], ("pe-7z", "7zz", ""))
+        self.assertEqual(art["inno.exe"], ("inno", "innoextract", ""))
+        self.assertEqual(art["iexpress.exe"], ("pe-cab", "cabextract", ""))
+        self.assertEqual(art["unbekannt.exe"][:2], ("pe-overlay", None))
+        self.assertIsNone(art["text.txt"])
+
+    def test_installshield_satz_wird_einmal_entpackt_und_herkunft_steht_an_jeder_datei(self):
+        aufrufe = []
+
+        def fake(tool, source, ziel, fmt):
+            aufrufe.append((tool, source.name))
+            return ["sh", "-c", "mkdir -p 'Program Files' && printf exe > 'Program Files/S3.EXE' && printf d > GFX.DAT"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            install = out / "inhalt" / "S3" / "INSTALL"
+            install.mkdir(parents=True)
+            for name in ("DATA1.CAB", "DATA1.HDR", "DATA2.CAB"):
+                (install / name).write_bytes(b"ISc(" + b"\x00" * 60)
+            (install / "S3.DAT").write_bytes(b"\x04\x13\x04\x00\x0c\x00\x00\x00" + b"\x00" * 8)
+            meta, abgebrochen = self.lauf(out, self.cap(), fake)
+            self.assertTrue((install / "DATA1.CAB~inhalt" / "Program Files" / "S3.EXE").is_file())
+        self.assertFalse(abgebrochen)
+        self.assertEqual(aufrufe, [("unshield", "DATA1.CAB")])
+        basis = "inhalt/S3/INSTALL/"
+        self.assertEqual(meta[basis + "DATA1.CAB"]["verschachtelt"]["status"], "entpackt")
+        self.assertEqual(meta[basis + "DATA1.CAB"]["verschachtelt"]["inhalt"], basis + "DATA1.CAB~inhalt")
+        self.assertEqual(meta[basis + "DATA2.CAB"]["verschachtelt"], {"format": "installshield", "status": "teil",
+                                                                       "grund": "teil_eines_satzes:DATA1.CAB"})
+        self.assertEqual(meta[basis + "DATA1.CAB~inhalt/Program Files/S3.EXE"]["herkunft"],
+                         {"archiv": basis + "DATA1.CAB", "pfad": "Program Files/S3.EXE", "tiefe": 1})
+        s3 = meta[basis + "S3.DAT"]["verschachtelt"]
+        self.assertEqual((s3["status"], s3["grund"]), ("vorgemerkt", "nicht_unterstuetzt:siedler3-dat"))
+        summary = runner.verschachtelt_zusammenfassung(meta)
+        self.assertEqual(summary["entpackt"], 1)
+        self.assertEqual([x["pfad"] for x in summary["nicht_entpackt"]], [basis + "S3.DAT"])
+
+    def test_bombe_im_inneren_container_verwirft_nur_diesen(self):
+        def fake(tool, source, ziel, fmt):
+            return ["sh", "-c", "head -c 3000000 /dev/zero > null.bin"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "bombe.zip").write_bytes(b"PK\x03\x04" + b"\x00" * 100)
+            (out / "bleibt.txt").write_bytes(b"x")
+            meta, _ = self.lauf(out, self.cap(max_bytes=1_000_000), fake)
+            self.assertEqual(sorted(runner.dateien_unter(out)), ["bleibt.txt", "bombe.zip"])
+        eintrag = meta["bombe.zip"]["verschachtelt"]
+        self.assertEqual((eintrag["status"], eintrag["grund"]), ("fehler", "zu_gross"))
+
+    def test_tiefenlimit_und_schalter(self):
+        def fake(tool, source, ziel, fmt):
+            return ["sh", "-c", "printf 'PK\\003\\004xxxx' > innen.zip"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "aussen.zip").write_bytes(b"PK\x03\x04" + b"\x00" * 10)
+            meta, _ = self.lauf(out, self.cap(max_verschachtelung=2), fake)
+        self.assertEqual(meta["aussen.zip"]["verschachtelt"]["status"], "entpackt")
+        self.assertEqual(meta["aussen.zip~inhalt/innen.zip"]["verschachtelt"]["status"], "entpackt")
+        tief = meta["aussen.zip~inhalt/innen.zip~inhalt/innen.zip"]
+        self.assertEqual(tief["herkunft"]["tiefe"], 2)
+        self.assertEqual(tief["verschachtelt"]["grund"], "tiefenlimit")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "aussen.zip").write_bytes(b"PK\x03\x04" + b"\x00" * 10)
+            self.assertEqual(self.lauf(out, self.cap(max_verschachtelung=0), fake), ({}, False))
+
+    def test_werkzeugfehler_ohne_dateien_ist_sichtbar(self):
+        def fake(tool, source, ziel, fmt):
+            return ["sh", "-c", "echo 'Datei ist verschluesselt' >&2; exit 2"]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "geheim.rar").write_bytes(b"Rar!\x1a\x07\x00" + b"\x00" * 10)
+            meta, _ = self.lauf(out, self.cap(), fake)
+            self.assertEqual(runner.dateien_unter(out), ["geheim.rar"])
+        eintrag = meta["geheim.rar"]["verschachtelt"]
+        self.assertEqual((eintrag["status"], eintrag["grund"]), ("fehler", "werkzeug_fehler"))
+        self.assertIn("verschluesselt", eintrag["meldung"])
+
+    def test_e2e_zip_mit_tar_gz_wird_rekursiv_entpackt(self):
+        seven = shutil.which("7zz") or shutil.which("7z")
+        tar = shutil.which("bsdtar")
+        if not seven or not tar:
+            self.skipTest("7-Zip oder bsdtar fehlt")
+        inner = io.BytesIO()
+        with tarfile.open(fileobj=inner, mode="w:gz") as archive:
+            info = tarfile.TarInfo("spiel/daten.txt")
+            payload = b"Nutzdaten" * 10
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        outer = io.BytesIO()
+        with zipfile.ZipFile(outer, "w") as archive:
+            archive.writestr("setup/inner.tar.gz", inner.getvalue())
+            archive.writestr("liesmich.txt", b"hallo")
+        with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, \
+             patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+             patch.dict(runner.TOOLS, {"7zz": (seven, *runner.TOOLS["7zz"][1:]), "bsdtar": (tar, *runner.TOOLS["bsdtar"][1:])}):
+            source = box.put("rev/original/dateien/aa/outer.zip", outer.getvalue())
+            events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-nest"})
+        ende = events[-1]
+        self.assertEqual(ende["status"], "fertig", ende)
+        dateien = {d["pfad"]: d for d in ende["manifest"]}
+        daten = [p for p in dateien if p.endswith("spiel/daten.txt")]
+        self.assertEqual(len(daten), 1, sorted(dateien))
+        herkunft = dateien[daten[0]]["metadaten"]["herkunft"]
+        self.assertEqual(herkunft["tiefe"], 2)
+        self.assertEqual(herkunft["pfad"], "spiel/daten.txt")
+        self.assertEqual(dateien["setup/inner.tar.gz"]["art"], "archiv")
+        self.assertEqual(ende["verschachtelt"]["entpackt"], 2)
+        self.assertNotIn("metadaten", dateien["liesmich.txt"])
+
+    def test_zielverzeichnis_je_werkzeug(self):
+        src, out = Path("/bib/x"), Path("/arbeit/job")
+        with patch.object(runner.shutil, "which", return_value="/usr/bin/x"):
+            kommando = {tool: runner.command_for(tool, src, out, {}) for tool in
+                        ("lhasa", "arj", "unar", "msiextract", "innoextract", "unshield")}
+        self.assertEqual(kommando["lhasa"], ["lhasa", "-xw=/arbeit/job", "/bib/x"])
+        self.assertEqual(kommando["arj"], ["arj", "x", "-y", "/bib/x", "/arbeit/job/"])
+        self.assertEqual(kommando["unar"], ["unar", "-no-directory", "-o", "/arbeit/job", "/bib/x"])
+        self.assertEqual(kommando["msiextract"], ["msiextract", "-C", "/arbeit/job", "/bib/x"])
+        self.assertEqual(kommando["innoextract"], ["innoextract", "--extract", "/bib/x", "-d", "/arbeit/job"])
+        self.assertEqual(kommando["unshield"], ["unshield", "x", "/bib/x", "-d", "/arbeit/job"])
+
+    def test_cp1252_namen_werden_umkodiert(self):
+        def fake(tool, source, ziel, fmt):
+            return ["sh", "-c", "printf x > \"$(printf 'M\\374ller.txt')\""]
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "set.zip").write_bytes(b"PK\x03\x04" + b"\x00" * 10)
+            meta, _ = self.lauf(out, self.cap(), fake)
+            self.assertEqual(runner.dateien_unter(out), ["set.zip", "set.zip~inhalt/Müller.txt"])
+        self.assertEqual(meta["set.zip"]["verschachtelt"]["namen_umkodiert"], 1)
 
 
 if __name__ == "__main__":

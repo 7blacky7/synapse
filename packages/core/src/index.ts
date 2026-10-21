@@ -56,6 +56,10 @@ export { ergaenzeReverseRuntime } from './services/reverse-tool.js';
 // P18-T61/R1-C: E-Ergebnis eines Reverse-Container-Auftrags in die Bibliothek übernehmen.
 export { uebernehmeEErgebnis, reverseEGruppe, ReverseEUebernahmeFehler } from './services/reverse-e-uebernahme.js';
 export type { ReverseEManifestEintrag, ReverseEUebernahmeOptionen } from './services/reverse-e-uebernahme.js';
+// P18-T69: reverse-S3 (Ghidra) -> S2/S3 in die Code-Tabellen; Ressourcenbedarf je Container-Kind.
+export { uebernehmeS3Ergebnis, reverseS3AusgabeKey, ReverseS3UebernahmeFehler } from './services/reverse-s3-uebernahme.js';
+export type { ReverseS3Ergebnis, ReverseS3UebernahmeOptionen } from './services/reverse-s3-uebernahme.js';
+export { reverseResourceNeedRoh, REVERSE_S3_RESOURCE_NEED_STANDARD } from './services/reverse-ausfuehrer.js';
 // P18-T49/RV34: Spurtabelle der Disc-Images (identisch zu docker/synapse-reverse/disc.py).
 export { REVERSE_SPURTABELLE_VERSION, REVERSE_SPUR_MODI, REVERSE_SPUR_SEKTORGROESSEN, ReverseSpurtabellenFehler, pruefeReverseSpurtabelle, reverseSpurSchritt } from './services/reverse-spurtabelle.js';
 export type { ReverseSpurtabelle, ReverseSpurSession, ReverseSpur, ReverseSpurAbschnitt, ReverseSpurIndex, ReverseSubchannel, ReverseSpurModus } from './services/reverse-spurtabelle.js';
