@@ -14,7 +14,7 @@ export interface ToolContainerExecutor {
  observe(id:string):Promise<ToolObservation>;
  stop(id:string):Promise<void>;
  cleanup?(id:string):Promise<void>;
- command(id:string,request:Record<string,unknown>,timeoutMs:number,maxBytes:number,onTerminal?:()=>void,maxInputBytes?:number):Promise<Record<string,unknown>>;
+ command(id:string,request:Record<string,unknown>,timeoutMs:number,maxBytes:number,onTerminal?:()=>void,maxInputBytes?:number,onZwischen?:(response:Record<string,unknown>)=>void):Promise<Record<string,unknown>>;
 }
 export interface ToolResourceAdapter {
  acquire(d:ToolDescriptor,ctx:ToolInstanceContext):Promise<string|null>;
@@ -281,8 +281,8 @@ export class ToolLifecycle {
    } catch(e) {console.error('[tool-lifecycle] Instanzprüfung fehlgeschlagen:',e);}
   }
  }
- /** Nur geleaste, ausweis-/boot-/inputgebundene Work-Jobs; Auftrag bleibt bei unklarem Ende gesperrt. */
- async execute(toolId:string,project:string,jobId:string,who:WorkIdentity,claimToken:string,buildCommand:(job:Record<string,unknown>)=>Promise<Record<string,unknown>>){
+ /** Nur geleaste, ausweis-/boot-/inputgebundene Work-Jobs; Auftrag bleibt bei unklarem Ende gesperrt. P18-T85: onZwischen erhaelt nicht-terminale Runner-Zeilen. */
+ async execute(toolId:string,project:string,jobId:string,who:WorkIdentity,claimToken:string,buildCommand:(job:Record<string,unknown>)=>Promise<Record<string,unknown>>,onZwischen?:(response:Record<string,unknown>)=>void){
   const d=await this.descriptor(toolId),id=this.key(d,project,d.instance_scope==='job'?jobId:null);
   const accepted=await this.tx(async c=>{
    const r=await this.row(c,id);if(!r||r.state!=='warm'||!r.container_id||!await this.allowed(c,d,project))throw Error('tool_not_ready');
@@ -306,7 +306,7 @@ export class ToolLifecycle {
    const still=await this.pool.query("SELECT 1 FROM work_jobs WHERE id=$1 AND state='leased' AND claim_token=$2 AND attempt=$3 AND lease_until>clock_timestamp() AND (deadline IS NULL OR deadline>clock_timestamp())",[jobId,claimToken,accepted.job.attempt]);
    if(!still.rows.length)throw Error('tool_job_fenced');
    dispatched=true;
-   const result=await this.executor.command(accepted.r.container_id!,{...payload,auftrag_id:jobId},d.limits.time_ms,d.limits.output_bytes,terminal,d.limits.input_bytes);
+   const result=await this.executor.command(accepted.r.container_id!,{...payload,auftrag_id:jobId},d.limits.time_ms,d.limits.output_bytes,terminal,d.limits.input_bytes,onZwischen);
    await this.pool.query("UPDATE tool_container_runs SET state='done',updated_at=clock_timestamp() WHERE job_id=$1 AND attempt=$2 AND generation=$3",[jobId,accepted.job.attempt,accepted.r.generation]);
    return result; // Fachadapter staged/publiziert anschließend mit R2.1-Output-Fence.
   }catch(e){

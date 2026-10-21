@@ -21,6 +21,7 @@ import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getA
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
  reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
+ leseReverseFortschrittSchalter,normalisiereReverseFortschritt,speichereReverseFortschritt,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
@@ -473,6 +474,27 @@ export class ReverseExecutor {
   }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
   finally{c.release();}
  }
+ /**
+  * P18-T85: Live-Fortschritt (Schalter reverse_fortschritt_live). Liefert den Runner-Takt und den Empfaenger fuer nicht-terminale
+  * Runner-Zeilen; das letzte Ereignis landet unter der eigenen Lease in work_jobs.fortschritt (hoechstens eine Schreibung je Sekunde).
+  * Aus: null, der Runner bekommt keine Option und meldet wie bisher nur das Ende.
+  */
+ private async liveFortschritt(job:WorkJob,token:string):Promise<{takt_s:number;melde:(r:Record<string,unknown>)=>void}|null>{
+  const stand=await leseReverseFortschrittSchalter().catch(()=>null);
+  if(!stand?.aktiv)return null;
+  let zuletzt=0,schreibt=false;
+  const speichern=(f:Record<string,unknown>)=>{
+   schreibt=true;
+   void speichereReverseFortschritt(this.pool,job.id,token,f,job.attempt)
+    .catch(e=>console.warn('[reverse-executor] Fortschritt nicht gespeichert:',job.id,(e as Error).message)).finally(()=>{schreibt=false;});
+  };
+  speichern({phase:'start',dateien_bisher:0,bytes_geschrieben:0,aktuelle_datei:null,gesamt:null,runner_seit_s:0});
+  return {takt_s:stand.takt_s,melde:r=>{
+   const f=normalisiereReverseFortschritt(r);
+   if(!f||schreibt||Date.now()-zuletzt<1000)return;
+   zuletzt=Date.now();speichern(f);
+  }};
+ }
  private async fuehreAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
   const token=job.claimToken!;
   if(job.capability!==REVERSE_CAPABILITY||job.project!==REVERSE_PROJEKT||!this.k.kinds.includes(job.kind)){
@@ -501,12 +523,12 @@ export class ReverseExecutor {
   try{
    let ergebnis:Record<string,unknown>;
    try{
-    const [peStand,siedlerStand]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter()]);
-    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',
+    const [peStand,siedlerStand,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand,siedler3:siedlerStand.aktiv,siedler3_stand:siedlerStand},
-     grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung}}));
+     grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung}}),live?.melde);
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     const m=(e as Error).message;
@@ -598,9 +620,10 @@ export class ReverseExecutor {
   try{
    let ergebnis:Record<string,unknown>;
    try{
-    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({werkzeug:'analyzeHeadless',schicht:'S3',
+    const live=await this.liveFortschritt(job,token);
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({werkzeug:'analyzeHeadless',schicht:'S3',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
-     grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien}}));
+     grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien}}),live?.melde);
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     const m=(e as Error).message;

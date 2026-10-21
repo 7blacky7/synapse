@@ -51,8 +51,8 @@ export async function uebernehmeRohWerkzeuge(db:Db,e:{arbeit:string;manifest:Rev
    if(werkzeuge.includes('rz-bin')&&stage==='S1')await db.query("DELETE FROM reverse_code_dateien WHERE eintrag_id=$1 AND datei_id=$2::bigint AND schicht='S1' AND (file_name LIKE 'strings%' OR file_name LIKE 'imports%' OR file_name='symbols.txt')",[e.reverseId,e.dateiId]);
    await uebernehmeNormalisiert(db,{reverseId:e.reverseId,dateiId:e.dateiId,pfad:e.pfad,fingerabdruck:fp},{...r,dateien});
    if(stage==='S1'&&r.dateiKandidaten.length){
-    await db.query("DELETE FROM reverse_verweise WHERE datei_id=$1::bigint AND kind='string_datei'",[e.dateiId]);
-    await db.query("INSERT INTO reverse_verweise(datei_id,eintrag_id,ordnung,kind,target,aufloesung) SELECT $1::bigint,$2,(SELECT COALESCE(max(ordnung),-1) FROM reverse_verweise WHERE datei_id=$1::bigint)+u.i,'string_datei',u.target,'unbekannt' FROM unnest($3::text[]) WITH ORDINALITY AS u(target,i)",
+    await db.query("DELETE FROM reverse_verweise WHERE datei_id=$1::bigint AND ursprung='analyse' AND kind='string_datei'",[e.dateiId]);
+    await db.query("INSERT INTO reverse_verweise(datei_id,eintrag_id,ordnung,kind,target,aufloesung) SELECT $1::bigint,$2,(SELECT COALESCE(max(ordnung),-1) FROM reverse_verweise WHERE datei_id=$1::bigint AND ursprung='analyse')+u.i,'string_datei',u.target,'unbekannt' FROM unnest($3::text[]) WITH ORDINALITY AS u(target,i)",
       [e.dateiId,e.reverseId,r.dateiKandidaten]);
    }
   }

@@ -7,9 +7,12 @@ import type {AusweisAkteur} from './agent-profil-vertrag.js';
 
 export const REVERSE_EINSTELLUNGEN={
  s3_pg_budget_bytes:1073741824,s3_nachzug_lease_ms:300000,
+ erkenntnis_bytes:60000,erkenntnis_belege:100,erkenntnis_aussagen:100,
  antwort_bytes:80000,seiten_limit:50,max_limit:200,max_pfad_zeichen:4096,analyse_verweise:10000,analyse_dateien:30000,
  analyse_funktionen:50000,analyse_kanten:100000,max_ziele:200,
  aufrufer_tiefe:3,aufrufer_max:100,konfidenz_prozent:80,max_muster_zeichen:512,laufzeit_ms:5000,
+ // P18-T85: Live-Fortschritt: Meldetakt des Runners (s, hoechstens 600) und Schwelle fuer den Haenger-Hinweis (s, kein Abbruch).
+ fortschritt_takt_s:10,fortschritt_haenger_s:180,
 } as const;
 export type ReverseEinstellungName=keyof typeof REVERSE_EINSTELLUNGEN;
 export interface ReverseWert {wert:number;quelle:'standard'|'global'|'projekt';standard:number;global:number|null;projekt:number|null}
@@ -17,7 +20,7 @@ export interface ReverseStand {
  project:string|null;werte:Record<ReverseEinstellungName,ReverseWert>;letzter_fehler:string|null;
  schalter:{aktiv:boolean;quelle:'standard'|'produkt-schalter'|'intern';bis:string|null;letzter_fehler:string|null};
 }
-export async function leseReverseEinstellungen(project:string|null):Promise<ReverseStand>{
+export async function leseReverseEinstellungen(project:string|null,funktion:'reverse_verknuepfungen'|'reverse_erkenntnisse'='reverse_verknuepfungen'):Promise<ReverseStand>{
  const werte={} as ReverseStand['werte'];let fehler:string|null=null;
  let rows:Array<{ebene:string;name:string;wert:string}>=[];
  try{rows=(await getPool().query("SELECT ebene,name,wert::text FROM reverse_einstellungen WHERE ebene='global' OR (ebene='projekt' AND project=$1)",[project])).rows;}
@@ -29,11 +32,11 @@ export async function leseReverseEinstellungen(project:string|null):Promise<Reve
   werte[name]={wert:gueltig?n:REVERSE_EINSTELLUNGEN[name],quelle:gueltig&&z?(p?'projekt':'global'):'standard',
    standard:REVERSE_EINSTELLUNGEN[name],global:g?Number(g.wert):null,projekt:p?Number(p.wert):null};
  }
- const produkt=await leseProfilProduktSchalter('reverse_verknuepfungen',project);
+ const produkt=await leseProfilProduktSchalter(funktion,project);
  let schalter:ReverseStand['schalter']={aktiv:produkt.aktiv,quelle:produkt.quelle,bis:null,letzter_fehler:produkt.letzter_fehler};
  if(internToolAktiv()){
   try{
-   const r=await getPool().query({text:"SELECT aktiv,bis FROM intern_schalter WHERE name='reverse_verknuepfungen' AND modus='freigegeben' AND bis>NOW()",query_timeout:2000} as import('pg').QueryConfig & {query_timeout:number});
+   const r=await getPool().query({text:"SELECT aktiv,bis FROM intern_schalter WHERE name=$1 AND modus='freigegeben' AND bis>NOW()",values:[funktion],query_timeout:2000} as import('pg').QueryConfig & {query_timeout:number});
    const z=r.rows[0];if(z)schalter={aktiv:z.aktiv,quelle:'intern',bis:new Date(z.bis).toISOString(),letzter_fehler:null};
   }catch{schalter.letzter_fehler='reverse_override_nicht_lesbar';}
  }

@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -113,6 +114,93 @@ class GrenzeUeberschritten(ValueError):
     def __init__(self, code: str, meldung: str) -> None:
         super().__init__(meldung)
         self.code = code
+
+
+# P18-T85: Live-Fortschritt. Mit 'fortschritt': {'takt_s': n} im Auftrag meldet ein Hintergrund-Thread alle n Sekunden
+# {status:'fortschritt', phase, dateien_bisher, bytes_geschrieben, aktuelle_datei, gesamt, seit_s}. Die Zahlen stammen aus der
+# ohnehin laufenden Grenzpruefung (scan_output) bzw. dem Manifest, nie aus einem eigenen Vollscan; gesamt ist nur in der Phase
+# manifest bekannt, sonst null. Ohne die Option bleibt alles beim Alten (nur Endmeldungen).
+FORTSCHRITT_TAKT_MAX_S = 600
+FORTSCHRITT_DATEI_ZEICHEN = 160
+_AUSGABE = threading.Lock()
+
+
+def ausgabe(event: dict[str, Any]) -> None:
+    """Eine JSON-Zeile auf stdout; der Fortschritts-Thread schreibt parallel, deshalb unter Sperre."""
+    line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+    with _AUSGABE:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
+
+def kurz_pfad(pfad: str) -> str:
+    return pfad if len(pfad) <= FORTSCHRITT_DATEI_ZEICHEN else "..." + pfad[-(FORTSCHRITT_DATEI_ZEICHEN - 3):]
+
+
+class Fortschritt:
+    """P18-T85: Stand des laufenden Auftrags; der Thread liest ihn nur (GIL), die Arbeit schreibt ihn nebenbei."""
+
+    def __init__(self, takt_s: float) -> None:
+        self.takt_s = takt_s
+        self.start = time.monotonic()
+        self.phase = "start"
+        self.datei: str | None = None
+        self.dateien = 0
+        self.bytes = 0
+        self.gesamt: int | None = None
+        self._stopp = threading.Event()
+        self._thread = threading.Thread(target=self._lauf, name="fortschritt", daemon=True)
+
+    @staticmethod
+    def aus_auftrag(req: Any) -> Fortschritt | None:
+        raw = req.get("fortschritt") if isinstance(req, dict) else None
+        takt = raw.get("takt_s") if isinstance(raw, dict) else None
+        if isinstance(takt, bool) or not isinstance(takt, (int, float)) or not 1 <= takt <= FORTSCHRITT_TAKT_MAX_S:
+            return None
+        return Fortschritt(float(takt))
+
+    def ereignis(self) -> dict[str, Any]:
+        return {"status": "fortschritt", "phase": self.phase, "dateien_bisher": self.dateien,
+                "bytes_geschrieben": self.bytes, "aktuelle_datei": self.datei, "gesamt": self.gesamt,
+                "seit_s": round(time.monotonic() - self.start, 1)}
+
+    def _lauf(self) -> None:
+        while not self._stopp.wait(self.takt_s):
+            try:
+                ausgabe(self.ereignis())
+            except (OSError, ValueError):
+                return
+
+    def starten(self) -> None:
+        self._thread.start()
+
+    def stoppen(self) -> None:
+        self._stopp.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5)
+
+
+_FORTSCHRITT: Fortschritt | None = None
+
+
+def fortschritt_phase(phase: str, datei: str | None = None) -> None:
+    if _FORTSCHRITT is not None:
+        _FORTSCHRITT.phase = phase
+        _FORTSCHRITT.datei = kurz_pfad(datei) if datei else None
+
+
+def fortschritt_stoppen() -> None:
+    """P18-T85: vor einer Endmeldung aus der Tiefe (danach SystemExit) darf keine Fortschrittszeile mehr folgen."""
+    if _FORTSCHRITT is not None:
+        _FORTSCHRITT.stoppen()
+
+
+def fortschritt_stand(dateien: int, total: int, datei: str | None = None) -> None:
+    if _FORTSCHRITT is not None:
+        _FORTSCHRITT.dateien = dateien
+        _FORTSCHRITT.bytes = total
+        if datei:
+            _FORTSCHRITT.datei = kurz_pfad(datei)
 
 
 def disc_format(head: bytes) -> str:
@@ -229,6 +317,8 @@ def limit_violation(files: int, dirs: int, total: int, cap: dict[str, int], inpu
 def scan_output(root: Path, cap: dict[str, int], input_size: int) -> tuple[str, str] | None:
     """P18-T62: laufende Pruefung der Ausgabe (Groesse, Anzahl, Tiefe) mit fruehem Abbruch; folgt keinen Symlinks."""
     files = dirs = total = 0
+    neueste: str | None = None
+    neueste_ns = -1
     stack: list[tuple[str, int]] = [(str(root), 0)]
     while stack:
         here, depth = stack.pop()
@@ -252,13 +342,18 @@ def scan_output(root: Path, cap: dict[str, int], input_size: int) -> tuple[str, 
                     dirs += 1
                     stack.append((entry.path, depth + 1))
                     continue
-                total += entry.stat(follow_symlinks=False).st_size
+                info = entry.stat(follow_symlinks=False)
+                total += info.st_size
+                # P18-T85: juengste Datei = die gerade geschriebene (Werkzeuge setzen Archivzeiten erst beim Schliessen).
+                if info.st_mtime_ns > neueste_ns:
+                    neueste, neueste_ns = entry.path, info.st_mtime_ns
             except OSError:
                 continue
             files += 1
         violation = limit_violation(files, dirs, total, cap, input_size)
         if violation:
             return violation
+    fortschritt_stand(files, total, os.path.relpath(neueste, root) if neueste else None)
     return None
 
 
@@ -493,6 +588,9 @@ def tool_version(tool: str) -> str:
 def output_manifest(root: Path, cap: dict[str, int], input_size: int) -> tuple[list[dict[str, Any]], int]:
     entries: list[dict[str, Any]] = []
     total = 0
+    fortschritt_phase("manifest")
+    if _FORTSCHRITT is not None:
+        _FORTSCHRITT.gesamt = _FORTSCHRITT.dateien or None
     for current, dirs, files in os.walk(root, followlinks=False):
         here = Path(current)
         symlink_dirs = [d for d in dirs if (here / d).is_symlink()]
@@ -510,6 +608,7 @@ def output_manifest(root: Path, cap: dict[str, int], input_size: int) -> tuple[l
             violation = limit_violation(len(entries) + 1, 0, total, cap, input_size)
             if violation:
                 raise GrenzeUeberschritten(*violation)
+            fortschritt_stand(len(entries), total, path.relative_to(root).as_posix())
             digest = hashlib.sha256()
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -628,6 +727,7 @@ def entpacke_iso(out: Path, eintrag: dict[str, Any], cap: dict[str, int], input_
                          "meldung": "Datenspur ohne erkanntes ISO9660/UDF; nur das Abbild liegt vor"})
         return True
     ziel = out / "inhalt" / Path(eintrag["pfad"]).stem
+    fortschritt_phase("iso_entpacken", eintrag["pfad"])
     ziel.mkdir(parents=True, exist_ok=True)
     try:
         command = command_for("7zz", iso, ziel, {}, fmt)
@@ -1026,6 +1126,7 @@ def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env:
         for rel in neu:
             gesehen.add(rel)
             if pe_aktiv and head_bytes(out / rel, 2) == b"MZ":
+                fortschritt_phase("pe_ressourcen", rel)
                 pe_ressourcen(out / rel, out, rel, cap, input_size, deadline, meta)
                 gesehen.update(p for p, m in meta.items() if "pe_ressource" in m)
             art = container_art(out / rel)
@@ -1045,10 +1146,12 @@ def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env:
             elif tiefe.get(rel, 0) >= cap["max_verschachtelung"]:
                 eintrag.update(status="fehler", grund="tiefenlimit")
             elif tool == "siedler3":
+                fortschritt_phase("siedler3", rel)
                 eintrag.update(siedler3_entpacken(out / rel, out, rel, cap, input_size, deadline, meta))
                 gesehen.update(p for p, m in meta.items() if "siedler3" in m)
                 abgebrochen = abgebrochen or eintrag.get("grund") == "zeitlimit"
             else:
+                fortschritt_phase("verschachtelt", rel)
                 eintrag.update(entpacke_container(out, rel, fmt, tool, cap, input_size, env, job_tmp, deadline))
                 abgebrochen = abgebrochen or eintrag.get("grund") == "zeitlimit"
                 if eintrag.get("inhalt"):
@@ -1092,8 +1195,9 @@ def verschachtelt_isoliert(out: Path, cap: dict[str, int], input_size: int, env:
         rest = sweep_processes()
         clean_tmp(job_tmp)
         if rest:
-            print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
-                              "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
+            fortschritt_stoppen()
+            ausgabe({"status": "fehler", "fehlercode": "werkzeug_fehler",
+                     "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"})
             raise SystemExit(3)
 
 
@@ -1143,6 +1247,7 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
                 "ausgabe": str(out or job_tmp), "ergebnis": str(ergebnis_pfad),
                 "optionen": {"wav_pregap": optionen.get("wav_pregap") is True}}), encoding="utf-8")
             guard = (lambda: scan_output(out, cap, input_size)) if out else None
+            fortschritt_phase("iso_entpacken")
             code, meldung = run_isolated([sys.executable, "-I", str(DISC_PY), str(auftrag_pfad)], cap["zeitlimit_s"],
                                          env, job_tmp, job_tmp, guard=guard, preexec=disc_grenzen(cap, input_size))
             if out:
@@ -1179,8 +1284,9 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
             rest = sweep_processes()
             clean_tmp(job_tmp)
             if rest:
-                print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
-                                  "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
+                fortschritt_stoppen()
+                ausgabe({"status": "fehler", "fehlercode": "werkzeug_fehler",
+                         "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"})
                 raise SystemExit(3)
         parser = tabelle.get("parser") or {}
         version = f"disc-registry {disc.REGISTRY_VERSION}; {parser.get('id', erkennung.parser)} {parser.get('version', '')}".strip()
@@ -1336,6 +1442,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
             if pe_only or siedler_only:
                 code, meldung = 0, ""  # ordinary PE: resources are not an archive for 7zz
             else:
+                fortschritt_phase("iso_entpacken" if fmt in SEVENZIP_TYPES else "werkzeug")
                 code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp, guard=guard, preexec=preexec)
                 if tool == "analyzeHeadless" and code == 0:
                     normalisierer_rohausgaben(source, out, cap, env, job_tmp, started + cap["zeitlimit_s"])
@@ -1345,8 +1452,9 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
             if rest:
                 # Isolation nicht wiederhergestellt: Auftrag scheitert, Runner beendet sich -> der Lebenszyklus
                 # erkennt den toten Container (container_crashed) und startet beim naechsten Auftrag frisch.
-                print(json.dumps({"status": "fehler", "fehlercode": "werkzeug_fehler",
-                                  "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"}), flush=True)
+                fortschritt_stoppen()
+                ausgabe({"status": "fehler", "fehlercode": "werkzeug_fehler",
+                         "meldung": f"{rest} Prozess(e) ueberlebten den Auftrag"})
                 raise SystemExit(3)
         if extract:
             # Endpruefung nach Prozessende (auch nach RLIMIT_FSIZE-Abbruch des Werkzeugs).
@@ -1362,9 +1470,11 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
                                       if extract else ({}, False))
         if extract and fmt == "pe" and pe_aktiv:
             rel = Path(str(req.get("eingabe_name") or source.name)).name
+            fortschritt_phase("pe_ressourcen", rel)
             pe_ressourcen(source, out, rel, cap, input_size, started + cap["zeitlimit_s"], verschachtelt)
         if siedler_only:
             rel = Path(str(req.get("eingabe_name") or source.name)).name
+            fortschritt_phase("siedler3", rel)
             result = siedler3_entpacken(source, out, rel, cap, input_size, started + cap["zeitlimit_s"], verschachtelt)
             verschachtelt.setdefault(rel, {})["verschachtelt"] = {"format": siedler_fmt, **result}
         files, size = output_manifest(out, cap, input_size)
@@ -1391,6 +1501,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def main() -> int:
+    global _FORTSCHRITT
     if sys.argv[1:] == ["--self-probe"]:
         result = self_probe()
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), flush=True)
@@ -1402,14 +1513,22 @@ def main() -> int:
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("JSON-Zeile muss ein Objekt sein")
-            events = run_request(request)
+            # P18-T85: Live-Fortschritt nur fuer die Dauer dieses Auftrags; gestoppt vor jeder Endmeldung.
+            _FORTSCHRITT = Fortschritt.aus_auftrag(request)
+            if _FORTSCHRITT is not None:
+                _FORTSCHRITT.starten()
+            try:
+                events = run_request(request)
+            finally:
+                if _FORTSCHRITT is not None:
+                    _FORTSCHRITT.stoppen()
+                _FORTSCHRITT = None
             for event in events:
-                print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+                ausgabe(event)
         except subprocess.TimeoutExpired:
-            print(json.dumps({"status": "teilweise", "fehlercode": "deadline", "manifest": []}), flush=True)
+            ausgabe({"status": "teilweise", "fehlercode": "deadline", "manifest": []})
         except (ValueError, OSError, json.JSONDecodeError, TypeError) as exc:
-            print(json.dumps({"status": "fehler", "fehlercode": "ungueltiger_auftrag",
-                              "meldung": str(exc)}, ensure_ascii=False), flush=True)
+            ausgabe({"status": "fehler", "fehlercode": "ungueltiger_auftrag", "meldung": str(exc)})
     return 0
 
 

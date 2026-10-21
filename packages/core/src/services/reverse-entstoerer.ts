@@ -69,10 +69,15 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
   const aus = reverseAusfuehrer(), kinds = aus?.kinds ?? [];
   const gnade = envZahl('SYNAPSE_REVERSE_ENTSTOERER_GNADE_S', 300);
   const fehlerStunden = envZahl('SYNAPSE_REVERSE_DIAGNOSE_FEHLER_STUNDEN', 24, 1);
+  // P18-T85: Live-Fortschritt je laufendem Work-Job (nur mit Schalter reverse_fortschritt_live; nur Hinweis, nie Abbruch).
+  // Dynamisch: reverse-fortschritt zieht intern-tool nach; statisch entstuende ein Importzyklus ueber intern-schalter.
+  const { leseReverseFortschrittSchalter, reverseFortschrittAnzeige, REVERSE_FORTSCHRITT_SQL } = await import('./reverse-fortschritt.js');
+  const live = await leseReverseFortschrittSchalter().catch(() => null);
+  const liveVon = (w: Row | undefined) => { const l = live?.aktiv && w ? reverseFortschrittAnzeige(w, live.haenger_s) : null; return l ? { live: l } : {}; };
   const jobs = (await db.query(`SELECT w.id::text AS id,w.kind,w.state,w.attempt,w.error_code,w.owner_node,w.lease_until,w.input_ref->>'id' AS reverse_id,
      (w.lease_until IS NOT NULL AND w.lease_until<=clock_timestamp()-($3*interval '1 second')) AS lease_abgelaufen,
      (w.lease_until IS NOT NULL AND w.lease_until<=clock_timestamp()) AS lease_ueberfaellig,
-     EXTRACT(EPOCH FROM clock_timestamp()-w.created_at)::int AS alter_s
+     EXTRACT(EPOCH FROM clock_timestamp()-w.created_at)::int AS alter_s,${REVERSE_FORTSCHRITT_SQL}
     FROM work_jobs w WHERE w.capability='reverse_bibliothek' AND w.kind<>'tool-warmup' AND w.state IN ('pending','leased','staged')
      AND ($1::text IS NULL OR w.input_ref->>'id'=$1) ORDER BY w.created_at,w.id LIMIT $2`, [rid, limit, gnade])).rows;
   // N5: ausfuehrung/lease_bis/werkzeug kommen erst mit dem Pipeline-Schema -> tolerant über to_jsonb lesen.
@@ -136,7 +141,7 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
       eintrag({ ...basis, ursache: f.code === 'kein_ausfuehrer' ? 'kein_ausfuehrer' : f.code && f.code !== 'werkzeug_fehler' && f.code !== 'zeitlimit' ? 'fachlicher_fehler' : 'werkzeug_fehler', automatisch: false });
       continue;
     }
-    if (w) { eintrag({ ...basis, ...jobUrsache(w) }); continue; }
+    if (w) { eintrag({ ...basis, ...jobUrsache(w), ...liveVon(w) }); continue; }
     if (a.ausfuehrung === 'api') { eintrag({ ...basis, ursache: a.status === 'laeuft' ? 'laeuft' : 'in_warteschlange' }); continue; }
     if (a.p20 && a.work_state && !['pending', 'leased', 'staged'].includes(String(a.work_state))) { eintrag({ ...basis, ursache: 'auftrag_verwaist' }); continue; }
     if (!kinds.includes(String(basis.kind))) { eintrag({ ...basis, ursache: 'kein_ausfuehrer' }); continue; }
@@ -146,7 +151,7 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     if (gesehen.has(String(w.id))) continue;
     eintrag({ p20_auftrag_id: String(w.id), reverse_id: (w.reverse_id ?? null) as string | null, kind: String(w.kind), zustand: String(w.state),
       work_zustand: String(w.state), alter_s: zahl(w.alter_s), lease_bis: iso(w.lease_until), owner: (w.owner_node ?? null) as string | null,
-      ...jobUrsache(w) });
+      ...jobUrsache(w), ...liveVon(w) });
   }
   const ursachen: Record<string, number> = {};
   for (const e of eintraege) ursachen[e.ursache] = (ursachen[e.ursache] ?? 0) + 1;
@@ -155,6 +160,8 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     ausfuehrer: aus ? { aktiv: true, kinds, parallel: aus.parallel } : { aktiv: false, kinds: [], hinweis: 'Kein Reverse-Executor angemeldet (SYNAPSE_REVERSE_ENABLED/Konfiguration prüfen).' },
     container: { belegt, max, reverse_container: containerInfo.filter(c => c.zustand !== 'blocked').length, instanzen: containerInfo.map(({ _instance_id, ...c }) => c) },
     auftraege: eintraege, ursachen, anzahl: eintraege.length,
+    fortschritt_live: live ?? { aktiv: false, letzter_fehler: 'reverse_fortschritt_schalter_nicht_lesbar' },
+    haenger_verdacht: eintraege.filter(e => (e.live as Row | undefined)?.haenger_verdacht === true).length,
     automatik: { aktiv: entstoererAktiv(), letzter_lauf: letzterAutoLauf, massnahmen: verlauf.slice(0, 20) },
   };
 }

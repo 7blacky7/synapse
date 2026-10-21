@@ -36,7 +36,10 @@ try{
  const admin=args=>inDb(()=>fuehreReverseAdminAus({project,...args},{art:'user'}));
  const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
  const {REVERSE_PIPELINE_SCHEMA_SQL}=await import('../dist/db/reverse-pipeline-schema.js');
- await pool.query(REVERSE_SCHEMA_SQL);await pool.query(REVERSE_PIPELINE_SCHEMA_SQL);
+ await pool.query(REVERSE_SCHEMA_SQL);
+ // P18-T84: current schema for origin filters; no production migration from this fixture.
+ await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
+ await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);await pool.query(REVERSE_PIPELINE_SCHEMA_SQL);
  for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
  await pool.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_t77',true)",[project]);
  await pool.query("INSERT INTO agent_sessions(id,project,status) VALUES($1,$2,'active')",[agent,project]);

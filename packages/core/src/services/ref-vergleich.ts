@@ -42,6 +42,19 @@ export async function refVergleich(a:{project:string;file_path:string;content:st
    const line=Number(comment.line_start)+value.slice(0,m.index).split('\n').length-1;
    const key=line+':'+m[0];if(seen.has(key))continue;seen.add(key);
    if(++marken>max){gekappt=true;break;}
+   if(m[2]==='erkenntnis'){
+    const v=/^([1-9][0-9]*)@v([1-9][0-9]*)$/.exec(m[3]);
+    const item:Row={marke:maske(m[0]),art:'erkenntnis',original:{reverse_id:m[1]},neue_funktion:null};
+    if(!v)item.fehlercode='ref_ungueltig';
+    else{
+     try{
+      const r=daten(await reverse({project:a.project,agent_id:a.agent_id,action:'erkenntnis_get',reverse_id:m[1],verweis_id:v[1],version:v[2]}));
+      if(r.fehlercode)item.fehlercode=r.erkenntnis_fehler??r.fehlercode;
+      else item.original={...r.erkenntnis as Row,neueste_version:r.neueste_version,neuester_status:r.neuester_status};
+     }catch{item.fehlercode='werkzeug_fehler';}
+    }
+    vergleiche.push(item);continue;
+   }
    let funktion=m[3],schicht='S3';
    if(funktion.endsWith(':S2')){funktion=funktion.slice(0,-3);schicht='S2';}
    const original:Row={reverse_id:m[1],datei:m[2],funktion,schicht,status:'offen'};

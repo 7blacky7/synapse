@@ -33,7 +33,7 @@ export function buildToolContainerOptions(d:ToolDescriptor,ctx:ToolInstanceConte
 }
 interface Session {
  stream:Duplex;tail:Promise<void>;buffer:string;maxFrameBytes:number;
- current?:{resolve:(r:Record<string,unknown>)=>void;reject:(e:Error)=>void;finish:()=>void;bytes:number;maxBytes:number;terminal?:()=>void};
+ current?:{resolve:(r:Record<string,unknown>)=>void;reject:(e:Error)=>void;finish:()=>void;bytes:number;maxBytes:number;terminal?:()=>void;zwischen?:(r:Record<string,unknown>)=>void};
 }
 const TERMINAL=new Set(['ok','fertig','completed','failed','fehler','teilweise','error']);
 export class DockerToolContainerExecutor implements ToolContainerExecutor {
@@ -90,13 +90,15 @@ export class DockerToolContainerExecutor implements ToolContainerExecutor {
     let response:Record<string,unknown>;try{response=JSON.parse(line);}catch{current.reject(Error('tool_runner_invalid_json'));continue;}
     if(!response||typeof response!=='object'||Array.isArray(response)){current.reject(Error('tool_runner_invalid_json'));continue;}
     if(TERMINAL.has(String(response.status))){current.terminal?.();current.resolve(response);current.finish();session.current=undefined;}
+    // P18-T85: nicht-terminale Zeilen (Live-Fortschritt) nur weiterreichen; ein Fehler dort stoert den Lauf nie.
+    else if(current.zwischen){try{current.zwischen(response);}catch{/* nur Anzeige */}}
    }
   });
   err.on('data',()=>{}); // Keine unmaskierten Nutzdaten in Logs.
   const end=()=>{session.current?.reject(Error('tool_runner_disconnected'));session.current?.finish();if(this.sessions.get(id)===session)this.sessions.delete(id);};
   stream.on('end',end);stream.on('error',end);stream.on('close',end);
  }
- async command(id:string,request:Record<string,unknown>,timeoutMs:number,maxBytes:number,onTerminal?:()=>void,maxInputBytes=65536):Promise<Record<string,unknown>>{
+ async command(id:string,request:Record<string,unknown>,timeoutMs:number,maxBytes:number,onTerminal?:()=>void,maxInputBytes=65536,onZwischen?:(response:Record<string,unknown>)=>void):Promise<Record<string,unknown>>{
   const session=this.sessions.get(id);if(!session)throw Error('tool_runner_not_attached');
   const previous=session.tail;let unlock!:()=>void;session.tail=new Promise<void>(r=>{unlock=r;});
   await previous;
@@ -105,7 +107,7 @@ export class DockerToolContainerExecutor implements ToolContainerExecutor {
    const ok=(response:Record<string,unknown>)=>{if(!settled){settled=true;clearTimeout(timer);resolve(response);}};
    const bad=(e:Error)=>{if(!settled){settled=true;clearTimeout(timer);reject(e);}};
    const serialized=JSON.stringify(request)+'\n';
-   session.current={resolve:ok,reject:bad,finish:()=>{clearTimeout(timer);unlock();},bytes:0,maxBytes,terminal:onTerminal};
+   session.current={resolve:ok,reject:bad,finish:()=>{clearTimeout(timer);unlock();},bytes:0,maxBytes,terminal:onTerminal,zwischen:onZwischen};
    if(Buffer.byteLength(serialized)>maxInputBytes){bad(Error('tool_input_limit'));session.current.finish();session.current=undefined;return;}
    session.stream.write(serialized);
    // Timeout/Fehler löst die Transportfolge NICHT: erst echtes Terminal oder Disconnect.

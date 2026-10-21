@@ -344,7 +344,7 @@ export class ReversePipelineDienst{
     r.asset_type==='archive'?'archiv':r.asset_type==='executable'?'binaer':r.asset_type==='unbekannt'?'sonstig':'asset',JSON.stringify(metadata),payload.status]);
   if(j.schicht==='S1'){
    await db.query('DELETE FROM reverse_objekte WHERE datei_id=$1',[d.id]);
-   await db.query('DELETE FROM reverse_verweise WHERE datei_id=$1',[d.id]);
+   await db.query("DELETE FROM reverse_verweise WHERE datei_id=$1 AND ursprung='analyse'",[d.id]);
    for(const [i,o] of r.objects.entries()){
     const range=o.source_range;
     await db.query('INSERT INTO reverse_objekte(datei_id,eintrag_id,ordnung,kind,name,data,byte_offset,byte_length,line_start,line_end) VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10)',

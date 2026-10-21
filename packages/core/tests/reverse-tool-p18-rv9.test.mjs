@@ -32,6 +32,8 @@ try {
  await pool.query('CREATE SCHEMA '+schema);
  for(const table of ['agent_sessions','projects','tool_aktivitaet'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query(REVERSE_SCHEMA_SQL);
+ await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
+ await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);
  // P22-T15 (Schema 112): Akteur-ID-Spalten der Reverse-Tabellen (ohne FK, agent_identitaeten liegt nicht im Testschema).
  for(const [t,c] of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],
   ['reverse_uebernahmen','actor_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} TEXT`).catch(()=>{});

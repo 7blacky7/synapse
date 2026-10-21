@@ -41,6 +41,8 @@ CREATE INDEX IF NOT EXISTS idx_work_jobs_node_lease ON work_jobs(owner_node,leas
 CREATE INDEX IF NOT EXISTS idx_work_jobs_domain_lease ON work_jobs(resource_domain,lease_until)
   WHERE state IN ('leased','staged');
 CREATE INDEX IF NOT EXISTS idx_work_jobs_project ON work_jobs(project,state,created_at);
+-- P18-T85: letztes Live-Fortschrittsereignis eines laufenden Auftrags (Reverse-Runner); nur Anzeige, nie Steuerung.
+ALTER TABLE work_jobs ADD COLUMN IF NOT EXISTS fortschritt JSONB;
 CREATE TABLE IF NOT EXISTS work_job_audit (
   id UUID PRIMARY KEY,
   job_id UUID REFERENCES work_jobs(id),

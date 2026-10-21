@@ -71,6 +71,9 @@ async function requested(service,rid,id,priority='interaktiv',target='S3'){
 try{
  await pool.query('CREATE SCHEMA '+schema);assert.equal((await pool.query('SELECT current_database() AS d')).rows[0].d,'synapse_test');
  await pool.query(WORK_JOBS_SCHEMA_SQL);await pool.query(REVERSE_SCHEMA_SQL);
+ // P18-T84: current schema for origin filters; no production migration from this fixture.
+ await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
+ await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);
  await pool.query('BEGIN');await pool.query(core.REVERSE_PIPELINE_SCHEMA_SQL);await pool.query('ROLLBACK');
  assert.equal((await pool.query("SELECT to_regclass($1) AS x",[schema+'.reverse_analyse_cache'])).rows[0].x,null,'schema probe rollback');
  await pool.query(core.REVERSE_PIPELINE_SCHEMA_SQL);await pool.query(core.REVERSE_PIPELINE_SCHEMA_SQL);

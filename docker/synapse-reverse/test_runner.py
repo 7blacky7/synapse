@@ -2,6 +2,7 @@ import gzip
 import hashlib
 import importlib.util
 import io
+import json
 import shutil
 import subprocess
 import tarfile
@@ -734,6 +735,88 @@ class VerschachteltTests(unittest.TestCase):
             meta, _ = self.lauf(out, self.cap(), fake)
             self.assertEqual(runner.dateien_unter(out), ["set.zip", "set.zip~inhalt/Müller.txt"])
         self.assertEqual(meta["set.zip"]["verschachtelt"]["namen_umkodiert"], 1)
+
+
+class LiveFortschrittT85Tests(unittest.TestCase):
+    """P18-T85: gedrosselte Fortschrittszeilen waehrend des Laufs, nie nach der Endmeldung; ohne Option Altverhalten."""
+
+    SKRIPT = "for i in 1 2 3 4 5 6; do printf xy > datei$i.bin; sleep 0.4; done"
+    FELDER = {"status", "phase", "dateien_bisher", "bytes_geschrieben", "aktuelle_datei", "gesamt", "seit_s"}
+
+    def lauf(self, extra):
+        with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, \
+             patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+             patch.object(runner, "command_for", return_value=["sh", "-c", self.SKRIPT]), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            source = box.put("rev/original/dateien/aa/set.zip", b"PK\x03\x04" + b"\x00" * 96)
+            auftrag = {"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-live", **extra}
+            with patch("sys.stdin", io.StringIO(json.dumps(auftrag) + "\n")):
+                self.assertEqual(runner.main(), 0)
+            self.assertIsNone(runner._FORTSCHRITT, "Thread-Stand nach dem Auftrag geraeumt")
+            return [json.loads(z) for z in out.getvalue().splitlines() if z.strip()]
+
+    def test_live_fortschritt_waehrend_des_laufs_und_nie_nach_dem_ende(self):
+        zeilen = self.lauf({"fortschritt": {"takt_s": 1}})
+        ende = [i for i, z in enumerate(zeilen) if z["status"] in ("fertig", "teilweise", "fehler")]
+        self.assertEqual(ende, [len(zeilen) - 1], zeilen)
+        self.assertEqual(zeilen[-1]["status"], "fertig")
+        live = [z for z in zeilen if z["status"] == "fortschritt" and "phase" in z]
+        self.assertGreaterEqual(len(live), 1, zeilen)
+        for z in live:
+            self.assertEqual(set(z), self.FELDER)
+            if z["phase"] != "manifest":
+                self.assertIsNone(z["gesamt"], "unbekannte Gesamtzahl ist null, nicht 0")
+        self.assertTrue(any(z["phase"] == "werkzeug" and z["dateien_bisher"] > 0 and z["bytes_geschrieben"] > 0
+                            and str(z["aktuelle_datei"]).startswith("datei") for z in live), live)
+        self.assertEqual(sorted(e["pfad"] for e in zeilen[-1]["manifest"]), [f"datei{i}.bin" for i in range(1, 7)])
+
+    def test_ohne_option_altverhalten(self):
+        zeilen = self.lauf({})
+        self.assertEqual([z["status"] for z in zeilen], ["fortschritt", "fertig"])
+        self.assertNotIn("phase", zeilen[0])
+        self.assertEqual(zeilen[0]["funktionen_fertig"], 6)
+
+    def test_prozess_fehlerpfad_stoppt_thread_vor_der_endmeldung(self):
+        """Review B2: 'Prozess(e) ueberlebten den Auftrag' endet mit SystemExit; der Thread ist dann schon gestoppt."""
+        original, zustand = runner.ausgabe, []
+
+        def spion(event):
+            if event.get("status") == "fehler":
+                zustand.append(runner._FORTSCHRITT is not None and runner._FORTSCHRITT._thread.is_alive())
+            original(event)
+        with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, \
+             patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+             patch.object(runner, "command_for", return_value=["sh", "-c", "printf x > a.bin; sleep 1.6"]), \
+             patch.object(runner, "sweep_processes", return_value=1), \
+             patch.object(runner, "ausgabe", spion), \
+             patch("sys.stdout", new_callable=io.StringIO) as out:
+            source = box.put("rev/original/dateien/aa/set.zip", b"PK\x03\x04" + b"\x00" * 96)
+            auftrag = {"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-rest",
+                       "fortschritt": {"takt_s": 1}}
+            with patch("sys.stdin", io.StringIO(json.dumps(auftrag) + "\n")):
+                with self.assertRaises(SystemExit) as ende:
+                    runner.main()
+            self.assertEqual(ende.exception.code, 3)
+            self.assertIsNone(runner._FORTSCHRITT)
+            time.sleep(1.2)
+            zeilen = [json.loads(z) for z in out.getvalue().splitlines() if z.strip()]
+        self.assertEqual(zustand, [False], "Thread vor der Endmeldung gestoppt")
+        self.assertEqual(zeilen[-1]["status"], "fehler", zeilen)
+        self.assertIn("ueberlebten", zeilen[-1]["meldung"])
+        self.assertTrue(any(z.get("phase") for z in zeilen[:-1]), "vorher kamen Live-Zeilen")
+
+    def test_takt_wird_geprueft(self):
+        for falsch in (0, 601, True, "5", None, -1):
+            self.assertIsNone(runner.Fortschritt.aus_auftrag({"fortschritt": {"takt_s": falsch}}), falsch)
+        self.assertIsNone(runner.Fortschritt.aus_auftrag({"fortschritt": 5}))
+        self.assertEqual(runner.Fortschritt.aus_auftrag({"fortschritt": {"takt_s": 10}}).takt_s, 10.0)
+
+    def test_lange_pfade_werden_hinten_behalten(self):
+        lang = "a/" * 200 + "I386/DRIVER.CA_"
+        kurz = runner.kurz_pfad(lang)
+        self.assertEqual(len(kurz), runner.FORTSCHRITT_DATEI_ZEICHEN)
+        self.assertTrue(kurz.startswith("...") and kurz.endswith("I386/DRIVER.CA_"))
+        self.assertEqual(runner.kurz_pfad("x/y"), "x/y")
 
 
 if __name__ == "__main__":

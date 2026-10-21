@@ -115,11 +115,13 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'reverse_s3',
   // P18-T76: PE resources through E; global library, standard AUS, explicit opt-in.
   'reverse_pe_ressourcen',
-  'reverse_verknuepfungen',
+  'reverse_verknuepfungen', 'reverse_erkenntnisse',
   'reverse_siedler3',
+  // P18-T85: Live-Fortschritt laufender Reverse-Container-Auftraege (reverse-fortschritt.ts), global, Standard AUS bis Abnahme, nur ausdruecklich.
+  'reverse_fortschritt_live',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -335,7 +337,7 @@ function istFunktion(f: string): f is ProfilProduktFunktion {
 export async function leseProfilProduktSchalter(
   funktion: ProfilProduktFunktion, project?: string | null,
 ): Promise<ProfilProduktSchalterStand> {
-  if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3')project=null; // global library, same value in every project
+  if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3'||funktion==='reverse_fortschritt_live')project=null; // global library, same value in every project
   const basis: ProfilProduktSchalterStand = { funktion, project: project ?? null, aktiv: STANDARD_EIN.includes(funktion), quelle: 'standard',
     ebene: null, regel_funktion: null, gesetzt_von: null, gesetzt_am: null, grund: null, letzter_fehler: null };
   if (!istFunktion(funktion)) return { ...basis, letzter_fehler: 'funktion_unbekannt' };
@@ -385,7 +387,7 @@ export async function setzeProfilProduktSchalter(
 ): Promise<ProfilProduktSchalterStand> {
   if (e.funktion !== 'alle' && !istFunktion(e.funktion)) throw new ProfilSchalterFehler('funktion_unbekannt');
   if (e.ebene !== 'global' && e.ebene !== 'projekt') throw new ProfilSchalterFehler('ebene_ungueltig');
-  if((e.funktion==='reverse_pe_ressourcen'||e.funktion==='reverse_siedler3')&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
+  if((e.funktion==='reverse_pe_ressourcen'||e.funktion==='reverse_siedler3'||e.funktion==='reverse_fortschritt_live')&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
   const project = e.ebene === 'projekt' ? (e.project ?? '').trim() : null;
   if (e.ebene === 'projekt' && !project) throw new ProfilSchalterFehler('project_fehlt');
   if (typeof e.grund !== 'string' || e.grund.trim().length < 5) throw new ProfilSchalterFehler('grund_fehlt');

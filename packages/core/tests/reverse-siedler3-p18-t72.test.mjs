@@ -33,6 +33,9 @@ const eq=(a,b,msg)=>{assert.deepEqual(a,b,msg);checks++;};
 try{
  for(const table of ['agent_sessions','projects','tool_aktivitaet'])await db.query('CREATE TABLE '+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await db.query(WORK_JOBS_SCHEMA_SQL);await db.query(REVERSE_SCHEMA_SQL);await db.query(core.REVERSE_PIPELINE_SCHEMA_SQL);
+ // T84: inspect uses the analysis-only reference view, which requires migration 138.
+ await db.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
+ await db.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);
  for(const [t,c] of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await db.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
  await db.query('CREATE TABLE agent_profil_schalter(ebene text,project text,funktion text,aktiv boolean,grund text,gesetzt_von text,setter_identity_id uuid,gesetzt_am timestamptz DEFAULT now())');
  await db.query("CREATE UNIQUE INDEX ON agent_profil_schalter(ebene,(COALESCE(project,'')),funktion)");

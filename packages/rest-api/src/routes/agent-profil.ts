@@ -50,6 +50,7 @@ import {
   agentPrincipalAusAnmeldung, fuehreW1bAdminAus, leseAgentBezugModus, mitUserHerkunft, pruefeAgentToken, w1bFehlerStatus, type W1bAkteur,
 } from '@synapse/core';
 import { validateToken } from '../services/auth.js';
+import {reverseErkenntnisseRoutes} from './reverse-erkenntnisse.js';
 
 export interface AgentProfilRoutesDeps { validateToken?: typeof validateToken }
 
@@ -114,6 +115,7 @@ const ROUTEN: RouteDef[] = [
 
 export async function registerAgentProfilRoutes(f: FastifyInstance, o: AgentProfilRoutesDeps = {}): Promise<void> {
   const validate = o.validateToken ?? validateToken;
+  await reverseErkenntnisseRoutes(f,o);
 
   async function akteur(req: FastifyRequest, project: string): Promise<{ akteur: W1bAkteur; user: boolean }> {
     const text = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization ?? ''))?.[1];

@@ -1,17 +1,21 @@
 import {useCallback,useEffect,useState} from 'react';
 import {apiFetch} from '../api/auth';
+import {ReverseErkenntnissePanel} from './ReverseErkenntnissePanel';
 
 interface Stand {funktion:string;aktiv:boolean;quelle:string;ebene:string|null;letzter_fehler:string|null}
 interface Wert {wert:number;quelle:string;standard:number}
 interface Budgets {verbrauch?:{verbrauch_bytes:number;fehlend_gesamt:number;eintraege:number};werte:Record<string,Wert>;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};letzter_fehler:string|null}
 const funktionen=[
+ {name:'reverse_erkenntnisse',titel:'Erkenntnisse am Eintrag',text:'Manuelle Aussagen mit Quellen und unveränderlicher Versionsgeschichte. Gebundene Projekte können gemeinsam daran arbeiten.'},
  {name:'reverse_siedler3',titel:'Siedler 3: Datencontainer',text:'Grafiken und Sounds aus GFX/SND als einzelne Dateien ablegen; verschlüsselte MAP-Blöcke nur melden. Gilt global. Jede Änderung startet das vollständige Entpacken aller automatisch analysierten Medien neu. Bereits erzeugte Dateien bleiben beim Ausschalten erhalten.'} ,
  {name:'reverse_pe_ressourcen',titel:'PE-Ressourcen',text:'Icons, Bitmaps, Dialoge, Stringtabellen und Versionsinfo aus EXE/DLL ablegen. Gilt global. Jede Änderung startet das vollständige Entpacken aller automatisch analysierten Medien neu. Bereits erzeugte Dateien bleiben beim Ausschalten erhalten.'},
+ {name:'reverse_fortschritt_live',titel:'Live-Fortschritt laufender Aufträge',text:'Der Reverse-Container meldet beim Entpacken und Analysieren laufend Phase, Dateien, Bytes und aktuelle Datei; reverse status und diagnose zeigen das und warnen bei Stillstand (ohne Abbruch). Gilt global. Wirkt ab dem nächsten gestarteten Auftrag.'},
  {name:'reverse_verknuepfungen',titel:'Code und Dateien verknüpfen',text:'Statische Dateimuster in Strings mit Dateien und aufrufenden Funktionen verbinden. Eine Referenz beweist noch keinen Ladevorgang.'},
 ];
-const namen:Record<string,string>={s3_pg_budget_bytes:'S3-Speicherbudget je Eintrag (Bytes)',s3_nachzug_lease_ms:'S3-Nachzug: Auftragsfrist (ms)',antwort_bytes:'Antwortgröße (Bytes)',seiten_limit:'Standard-Seitengröße',max_pfad_zeichen:'Maximale Pfadlänge (Zeichen)',max_limit:'Maximale Seitengröße',analyse_verweise:'Verweise je Stapel',
+const namen:Record<string,string>={erkenntnis_bytes:'Erkenntnisgröße (Bytes)',erkenntnis_belege:'Belege und Ziele je Erkenntnis',erkenntnis_aussagen:'Aussagen je Erkenntnis',s3_pg_budget_bytes:'S3-Speicherbudget je Eintrag (Bytes)',s3_nachzug_lease_ms:'S3-Nachzug: Auftragsfrist (ms)',antwort_bytes:'Antwortgröße (Bytes)',seiten_limit:'Standard-Seitengröße',max_pfad_zeichen:'Maximale Pfadlänge (Zeichen)',max_limit:'Maximale Seitengröße',analyse_verweise:'Verweise je Stapel',
  analyse_dateien:'Dateien je Analyse',analyse_funktionen:'Funktionen je Analyse',analyse_kanten:'Aufrufkanten je Analyse',max_ziele:'Dateiziele je Referenz',
- aufrufer_tiefe:'Aufrufer: maximale Tiefe',aufrufer_max:'Aufrufer je Funktion',konfidenz_prozent:'Mindestkonfidenz (%)',max_muster_zeichen:'Musterlänge (Zeichen)',laufzeit_ms:'Analysezeit (ms)'};
+ aufrufer_tiefe:'Aufrufer: maximale Tiefe',aufrufer_max:'Aufrufer je Funktion',konfidenz_prozent:'Mindestkonfidenz (%)',max_muster_zeichen:'Musterlänge (Zeichen)',laufzeit_ms:'Analysezeit (ms)',
+ fortschritt_takt_s:'Live-Fortschritt: Meldetakt (s)',fortschritt_haenger_s:'Live-Fortschritt: Hänger-Hinweis nach (s)'};
 export function ReverseEinstellungenPanel({project}:{project:string}){
  const basis='/api/projects/'+encodeURIComponent(project)+'/agent-profile';
  const [stand,setStand]=useState<Stand[]>([]),[budgets,setBudgets]=useState<Budgets|null>(null);
@@ -36,12 +40,13 @@ export function ReverseEinstellungenPanel({project}:{project:string}){
   catch(e){setFehler(e instanceof Error?e.message:String(e));}finally{setBusy(false);}
  };
  return <div className="cp-fields">
+  <div className="wide"><ReverseErkenntnissePanel project={project}/></div>
   <div className="scope-warning wide"><b>Reverse-Bibliothek</b><span>Neue Funktionen sind standardmäßig AUS. Einstellungen gelten auf der gewählten Ebene.</span></div>
   {funktionen.map(f=>{const s=stand.find(x=>x.funktion===f.name);return <div className="cp-setting-field wide" key={f.name}>
    <span><b>{f.titel}: {s?(s.aktiv?'EIN':'AUS'):'…'}</b><small>{f.text}</small>
     {s&&<small>Quelle: {s.quelle}{s.ebene?' ('+s.ebene+')':''}{s.letzter_fehler?' · '+s.letzter_fehler:''}</small>}</span>
    <button type="button" disabled={busy||!s||grund.trim().length<5} onClick={()=>void speichern('/schalter',{
-    profil_funktion:f.name,aktiv:!s?.aktiv,ebene:['reverse_pe_ressourcen','reverse_siedler3'].includes(f.name)?'global':ebene,grund})}>{s?.aktiv?'Ausschalten':'Einschalten'}</button>
+    profil_funktion:f.name,aktiv:!s?.aktiv,ebene:['reverse_pe_ressourcen','reverse_siedler3','reverse_fortschritt_live'].includes(f.name)?'global':ebene,grund})}>{s?.aktiv?'Ausschalten':'Einschalten'}</button>
   </div>;})}
   <label className="cp-setting-field wide"><span><b>Ebene</b></span><select value={ebene} onChange={e=>setEbene(e.target.value as 'global'|'projekt')}>
    <option value="projekt">Dieses Projekt</option><option value="global">Global</option></select></label>

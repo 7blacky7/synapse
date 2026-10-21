@@ -93,7 +93,7 @@ const REVERSE_DATEI_SICHT = `(SELECT
   COALESCE(to_jsonb(d)->'format_specific', d.metadaten->'format_specific', '{}'::jsonb) AS format_specific,
   COALESCE(to_jsonb(d)->'warnings', d.metadaten->'warnings', '[]'::jsonb) AS warnings,
   (SELECT count(*)::int FROM reverse_objekte o WHERE o.datei_id = d.id) AS n_objects,
-  (SELECT count(*)::int FROM reverse_verweise r WHERE r.datei_id = d.id) AS n_references,
+  (SELECT count(*)::int FROM reverse_verweise r WHERE r.ursprung = 'analyse' AND r.datei_id = d.id) AS n_references,
   COALESCE((to_jsonb(d)->>'objekte_gekappt')::boolean, false) AS objekte_gekappt,
   (to_jsonb(d)->>'extracted_at')::timestamptz AS extracted_at,
   (to_jsonb(d)->>'quelle_fehlt_seit')::timestamptz AS quelle_fehlt_seit,
@@ -107,7 +107,7 @@ export function assetBereichSql(sql: string, bereich: AssetBereich = ASSET_BEREI
   return bezeichnerSql(sql, {
     asset_files: REVERSE_DATEI_SICHT,
     asset_objects: '(SELECT o.*, o.datei_id AS asset_id FROM reverse_objekte o)',
-    asset_references: '(SELECT r.*, r.datei_id AS asset_id FROM reverse_verweise r)',
+    asset_references: "(SELECT r.*, r.datei_id AS asset_id FROM reverse_verweise r WHERE r.ursprung='analyse')",
     project: bereich.scope_spalte,
   });
 }

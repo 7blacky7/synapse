@@ -168,6 +168,7 @@ try {
         for (const [a,b] of [['file_path','pfad'],['file_size','groesse'],['metadata','metadaten']]) await pool.query('ALTER TABLE '+to+' RENAME COLUMN '+a+' TO '+b);
       } else if (from.startsWith('asset_')) await pool.query('ALTER TABLE '+to+' RENAME COLUMN asset_id TO datei_id');
     }
+    await pool.query("ALTER TABLE reverse_verweise ADD COLUMN ursprung TEXT NOT NULL DEFAULT 'analyse'");
     assert.deepEqual(normal(await coreCases(ci.REVERSE_BEREICH,ai.REVERSE_ASSET_BEREICH)),actual.core);
     const sql = await load('packages/core/dist/services/intel-bereich.js');
     const literal = "SELECT 'project code_files', \"project\" FROM code_files WHERE project=$1 -- project code_files";

@@ -134,7 +134,7 @@ try{
  dbUrl.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=dbUrl.href;
  core=await import('../dist/index.js');pool=core.getPool();
  eq((await pool.query('SELECT current_database() d,current_schema() s')).rows[0],{d:'synapse_test',s:schema},'privates Testschema');
- for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema','agent-ausweis-fristen-schema','agent-ausweis-projekte-schema','hex-schema','hex-formate-schema','hex-exe-formate-schema','hex-analysen-schema','work-jobs-schema']){
+ for(const file of ['agent-identitaet-schema','agent-bezug-schema','agent-profil-schema','agent-ausweis-schema','agent-ausweis-nr-schema','agent-ausweis-fristen-schema','agent-ausweis-projekte-schema','hex-schema','hex-formate-schema','reverse-erkenntnisse-schema','hex-exe-formate-schema','hex-analysen-schema','work-jobs-schema']){
   const mod=await import('../dist/db/'+file+'.js'),sql=Object.values(mod).find(v=>typeof v==='string');await pool.query(sql);await pool.query(sql);
  }
  // Keine Sequenz aus public verwenden, auch fuer die Ausweis-Numerierung nicht.
@@ -465,6 +465,50 @@ try{
   const keys=Object.keys(expected),fach=x=>Object.fromEntries(keys.map(k=>[k,x[k]]));
   eq(normal(fach(r2)),normal(fach(s2)),'Baumfortsetzung REST/stdio fachlich gleich');
   await resetBudgets();
+ });
+
+
+ await section('P18-T84: identischer Reverse-Vertrag auf REST, SDK/stdio und Web',async()=>{
+  await override('reverse_erkenntnisse');
+  const input={action:'erkenntnis_speichern',reverse_id:RID,titel:'Transport evidence',kategorie:'notiz',idempotency_key:'t84-transport',inhalt:{text:'Transport fixture',status:'aktiv',aussagen:[{schluessel:'fixture',text:'Synthetic observation',konfidenz:'vermutet',begruendung:'No binary claim',belege:[]}],belege:[],ziele:[]},token:transport.token};
+  const saved=success(await transport.rest('reverse',input),'REST writes knowledge');
+  const id=saved.erkenntnis.verweis_id;
+  eq((await transport.stdio('reverse',input)).erkenntnis.canonical_hash,saved.erkenntnis.canonical_hash,'stdio retry same immutable version');
+  const {mitAgentToolAufruf}=await import('../dist/services/agent-token-tools.js');
+  for(const a of [
+   {action:'erkenntnis_liste',reverse_id:RID},
+   {action:'erkenntnis_get',reverse_id:RID,verweis_id:id,version:1},
+   {action:'erkenntnis_get',reverse_id:RID,verweis_id:id,historie:true}
+  ]){
+   const args={...a,token:transport.token};
+   const expected=await mitAgentToolAufruf('reverse',args,'t84-parity',async k=>k.antwort??core.fuehreReverseAus(k.args));
+   const rest=await transport.rest('reverse',args),stdio=await transport.stdio('reverse',args);
+   const wire=unwrap(core.baueToolErgebnis(expected,{tool:'reverse',strukturiert:true}));
+   const keys=Object.keys(wire),fach=x=>Object.fromEntries(keys.map(k=>[k,x[k]]));
+   eq(normal(fach(rest)),normal(wire),'REST knowledge parity '+a.action);
+   eq(normal(fach(stdio)),normal(wire),'stdio knowledge parity '+a.action);
+  }
+  const fastify=(await import('../../rest-api/node_modules/fastify/fastify.js')).default;
+  const {reverseErkenntnisseRoutes}=await import('../../rest-api/dist/routes/reverse-erkenntnisse.js');
+  const web=fastify({logger:false});close.push(()=>web.close());
+  await reverseErkenntnisseRoutes(web,{validateToken:async token=>token==='fixture-session'?{kind:'session',scope:null}:token==='fixture-connector'?{kind:'access',scope:'mcp:tools'}:null});
+  const url='/api/projects/'+P+'/reverse-erkenntnisse';
+  const a={action:'erkenntnis_get',reverse_id:RID,verweis_id:id,version:1};
+  eq((await web.inject({method:'POST',url,payload:a})).statusCode,401,'Web without session denied');
+  eq((await web.inject({method:'POST',url,headers:{authorization:'Bearer fixture-session'},payload:{...a,agent_id:'spoof'}})).statusCode,400,'Web rejects asserted identity');
+  const w=(await web.inject({method:'POST',url,headers:{authorization:'Bearer fixture-session'},payload:a})).json();
+  success(w,'Web bound read');eq(w.erkenntnis.canonical_hash,saved.erkenntnis.canonical_hash,'Web reads same immutable content');
+  const t=(await web.inject({method:'POST',url,headers:{authorization:'Bearer fixture-connector','x-synapse-agent-token':transport.token},payload:a})).json();
+  success(t,'Web agent transport uses verified wrapper');eq(t.erkenntnis.canonical_hash,w.erkenntnis.canonical_hash,'Web agent/session parity');
+  const update={...input,verweis_id:id,basis_version:1,idempotency_key:'t84-web',titel:'Web correction'};delete update.token;
+  const changed=(await web.inject({method:'POST',url,headers:{authorization:'Bearer fixture-session'},payload:update})).json();
+  success(changed,'Web appends new version');eq(changed.erkenntnis.autor,'user','Web author comes from authenticated session');
+  eq(changed.erkenntnis.version,2,'Web preserves v1');
+  const stale=(await web.inject({method:'POST',url,headers:{authorization:'Bearer fixture-session'},payload:{...update,idempotency_key:'t84-stale'}})).json();
+  eq(stale.erkenntnis_fehler,'erkenntnis_versionskonflikt','Web CAS conflict matches tool');
+  await override('reverse_erkenntnisse',false);
+  eq((await transport.rest('reverse',{...a,token:transport.token})).erkenntnis_fehler,'erkenntnisse_deaktiviert','REST switch OFF');
+  await override('reverse_erkenntnisse');
  });
 
  await section('Echter Fremdprojekt-Ausweis: Visum lesend, Arbeitsfreigabe schreibend und sofortiger Entzug',async()=>{

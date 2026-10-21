@@ -31,7 +31,7 @@ function text(v:unknown,p:string,max:number,leer=false):string{if(typeof v!=='st
 function antwort(r:Record<string,unknown>,stand:HexStand):Record<string,unknown>{
  if(JSON.stringify(r).length>stand.werte.antwort_zeichen.wert)throw new HexFehler('budget_ueberschritten',{parameter:'antwort_zeichen'});return r;
 }
-async function verwalter(project:string):Promise<void>{
+export async function hexFormatVerwalter(project:string):Promise<void>{
  const wer=aktuellerW1bAkteur(),p=aktuellerAgentAufruf()?.principal;
  if(wer?.art==='identitaet'&&wer.principal.rolle==='main'&&wer.principal.project===project){
   if(!(await getPool().query("SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2 AND rolle='main' AND status='aktiv'",[wer.principal.identity_id,project])).rows[0])throw new HexFehler('keine_berechtigung');return;
@@ -39,7 +39,7 @@ async function verwalter(project:string):Promise<void>{
  try{await pruefeProfilVerwalter(wer??(p?.art==='legacy'?{art:'legacy_koordinator',agent_id:p.agent_id}:null)!,project);}
  catch{throw new HexFehler('keine_berechtigung');}
 }
-async function schreibrecht(project:string):Promise<void>{
+export async function hexFormatSchreibrecht(project:string):Promise<void>{
  const k=aktuellerAgentAufruf();
  if(k?.fremdprojekt){
   if(k.fremdprojekt.zugang==='visum')throw new HexFehler('visum_nur_lesen');
@@ -49,13 +49,13 @@ async function schreibrecht(project:string):Promise<void>{
  hexAkteur(project);
 }
 async function lade(project:string,id:string,v:number):Promise<Record<string,any>>{
- const r=await getPool().query("SELECT f.project,f.name,v.*,g.freigegeben_am,g.freigegeben_von FROM hex_formate f JOIN hex_format_versionen v ON v.format_id=f.id LEFT JOIN hex_format_freigaben g ON g.format_id=v.format_id AND g.version=v.version WHERE f.id=$1 AND v.version=$2 AND (f.project=$3 OR g.format_id IS NOT NULL)",[id,v,project]);
+ const r=await getPool().query("SELECT f.project,f.name,v.*,g.freigegeben_am,g.freigegeben_von,EXISTS(SELECT 1 FROM hex_format_freigaben rg JOIN reverse_bindungen b ON b.eintrag_id=rg.eintrag_id AND b.project=$3 AND b.geloest_at IS NULL WHERE rg.format_id=v.format_id AND rg.version=v.version AND rg.bereich='reverse') AS reverse_freigegeben FROM hex_formate f JOIN hex_format_versionen v ON v.format_id=f.id LEFT JOIN hex_format_freigaben g ON g.format_id=v.format_id AND g.version=v.version AND g.eintrag_id IS NULL WHERE f.id=$1 AND v.version=$2 AND (f.project=$3 OR g.format_id IS NOT NULL OR EXISTS (SELECT 1 FROM hex_format_freigaben rg JOIN reverse_bindungen b ON b.eintrag_id=rg.eintrag_id AND b.project=$3 AND b.geloest_at IS NULL WHERE rg.format_id=v.format_id AND rg.version=v.version AND rg.bereich='reverse'))",[id,v,project]);
  if(!r.rows[0])throw new HexFehler('format_nicht_gefunden');return r.rows[0];
 }
 function meta(row:Record<string,any>):Record<string,unknown>{
  return {format_id:row.format_id,format_version:row.version,name:row.name,project:row.project,profil:row.profil,
  canonical_hash:row.canonical_hash,beschreibung:row.beschreibung,erkennung:row.erkennung,herkunft:row.herkunft,basis:row.basis,
- autor:row.autor,erstellt_am:row.erstellt_am,status:row.freigegeben_am?'freigegeben':'entwurf',freigegeben_am:row.freigegeben_am??null};
+ autor:row.autor,erstellt_am:row.erstellt_am,status:row.freigegeben_am?'freigegeben':row.reverse_freigegeben?'reverse_freigegeben':'entwurf',freigegeben_am:row.freigegeben_am??null};
 }
 function erkennung(raw:unknown,stand:HexStand):Record<string,unknown>{
  if(raw===undefined)return {};
@@ -74,9 +74,9 @@ function erkennung(raw:unknown,stand:HexStand):Record<string,unknown>{
  }return e;
 }
 async function speichern(project:string,a:Record<string,unknown>,stand:HexStand):Promise<Record<string,unknown>>{
- await schreibrecht(project);
+ await hexFormatSchreibrecht(project);
  if(a.veroeffentlichen!==undefined&&typeof a.veroeffentlichen!=='boolean')formatFehler('veroeffentlichen','Boolean erwartet');
- if(a.veroeffentlichen)await verwalter(project);
+ if(a.veroeffentlichen)await hexFormatVerwalter(project);
  const id=a.format_id===undefined?randomUUID():uuid(a.format_id),autor=hexAkteur(project);
  if(a.format===undefined){
   if(['format_name','beschreibung','erkennung','herkunft','basis_format','basis_version'].some(k=>a[k]!==undefined))throw new HexFehler('parameter_nicht_verwendet');
@@ -84,7 +84,7 @@ async function speichern(project:string,a:Record<string,unknown>,stand:HexStand)
   const v=version(a.format_version),row=await lade(project,id,v);if(row.project!==project)throw new HexFehler('format_fremdes_projekt');
   const preview=antwort({success:true,action:a.action,...meta(row),status:'freigegeben',freigegeben_am:new Date().toISOString()},stand);
   await getPool().query("INSERT INTO hex_format_freigaben(format_id,version,freigegeben_von) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",[id,v,autor]);
-  const freigabe=(await getPool().query('SELECT freigegeben_am FROM hex_format_freigaben WHERE format_id=$1 AND version=$2',[id,v])).rows[0];
+  const freigabe=(await getPool().query('SELECT freigegeben_am FROM hex_format_freigaben WHERE format_id=$1 AND version=$2 AND eintrag_id IS NULL',[id,v])).rows[0];
   preview.freigegeben_am=freigabe.freigegeben_am;return preview;
  }
  if(a.format_version!==undefined)throw new HexFehler('parameter_nicht_verwendet');
@@ -135,10 +135,10 @@ async function liste(project:string,a:Record<string,unknown>,stand:HexStand):Pro
  const id=a.format_id===undefined?null:uuid(a.format_id),v=a.format_version===undefined?null:version(a.format_version);
  if(v!==null&&!id)throw new HexFehler('format_id_ungueltig');
  // Definitionen werden fuer die Uebersicht nicht geladen. Einzelne Metadaten ebenso begrenzen.
- const rows=(await getPool().query("SELECT v.id::text,v.format_id,v.version,v.profil,v.canonical_hash,v.autor,v.erstellt_am,f.name,f.project,g.freigegeben_am FROM hex_format_versionen v JOIN hex_formate f ON f.id=v.format_id LEFT JOIN hex_format_freigaben g ON g.format_id=v.format_id AND g.version=v.version WHERE (f.project=$1 OR g.format_id IS NOT NULL) AND ($2::uuid IS NULL OR f.id=$2) AND ($3::integer IS NULL OR v.version=$3) AND v.id>$4::bigint ORDER BY v.id LIMIT $5",[project,id,v,after,limit+1])).rows;
+ const rows=(await getPool().query("SELECT v.id::text,v.format_id,v.version,v.profil,v.canonical_hash,v.autor,v.erstellt_am,f.name,f.project,g.freigegeben_am,EXISTS(SELECT 1 FROM hex_format_freigaben rg JOIN reverse_bindungen b ON b.eintrag_id=rg.eintrag_id AND b.project=$1 AND b.geloest_at IS NULL WHERE rg.format_id=v.format_id AND rg.version=v.version AND rg.bereich='reverse') AS reverse_freigegeben FROM hex_format_versionen v JOIN hex_formate f ON f.id=v.format_id LEFT JOIN hex_format_freigaben g ON g.format_id=v.format_id AND g.version=v.version AND g.eintrag_id IS NULL WHERE (f.project=$1 OR g.format_id IS NOT NULL OR EXISTS (SELECT 1 FROM hex_format_freigaben rg JOIN reverse_bindungen b ON b.eintrag_id=rg.eintrag_id AND b.project=$1 AND b.geloest_at IS NULL WHERE rg.format_id=v.format_id AND rg.version=v.version AND rg.bereich='reverse')) AND ($2::uuid IS NULL OR f.id=$2) AND ($3::integer IS NULL OR v.version=$3) AND v.id>$4::bigint ORDER BY v.id LIMIT $5",[project,id,v,after,limit+1])).rows;
  const out:Record<string,unknown>[]=[],reply:Record<string,unknown>={success:true,action:a.action,formate:out,vollstaendig:false,liste_nach:after};
  for(const row of rows.slice(0,limit)){
-  const item={format_id:row.format_id,format_version:row.version,profil:row.profil,canonical_hash:row.canonical_hash,name:row.name,project:row.project,autor:row.autor,erstellt_am:row.erstellt_am,status:row.freigegeben_am?'freigegeben':'entwurf'};
+  const item={format_id:row.format_id,format_version:row.version,profil:row.profil,canonical_hash:row.canonical_hash,name:row.name,project:row.project,autor:row.autor,erstellt_am:row.erstellt_am,status:row.freigegeben_am?'freigegeben':row.reverse_freigegeben?'reverse_freigegeben':'entwurf'};
   out.push(item);if(JSON.stringify(reply).length>stand.werte.antwort_zeichen.wert){out.pop();break;}reply.liste_nach=row.id;
  }
  if(rows.length&&!out.length)throw new HexFehler('budget_ueberschritten',{parameter:'antwort_zeichen'});
