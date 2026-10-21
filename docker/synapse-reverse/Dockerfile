@@ -46,6 +46,7 @@ RUN curl --fail --location --retry 3 --output /tmp/rizin.tar.xz "https://github.
 COPY --chmod=0444 runner.py /opt/reverse/runner.py
 # P18-T49/RV34: Spurtabelle, Parser-Registry (libmirage via GObject-Introspection) und gemeinsamer Extraktor.
 COPY --chmod=0444 disc.py /opt/reverse/disc.py
+COPY --chmod=0444 pe_ressourcen.py /opt/reverse/pe_ressourcen.py
 COPY --chmod=0444 LIZENZEN.md /opt/reverse/licenses/README.md
 COPY --chmod=0444 ghidra/ExportFunctions.java /opt/reverse/ghidra_scripts/ExportFunctions.java
 RUN set -eu; { printf 'debian_snapshot=%s\n' "${DEBIAN_SNAPSHOT}"; printf '7zip=%s\n' "$(7zz i 2>&1 | grep -m1 '^7-Zip')"; printf 'ffmpeg=%s\n' "$(ffmpeg -version | head -1)"; printf 'rizin=%s\n' "$(rizin -v | head -1)"; printf 'python=%s\n' "$(python3 --version)"; printf 'java=%s\n' "$(java -version 2>&1 | head -1)"; printf 'ghidra=%s sha256=%s\n' "${GHIDRA_VERSION}" "${GHIDRA_SHA256}"; } > /opt/reverse/versionen.txt \

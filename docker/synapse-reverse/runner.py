@@ -434,7 +434,8 @@ def path_under(value: str, root: Path, must_exist: bool) -> Path:
 
 
 def limits(req: dict[str, Any]) -> dict[str, int]:
-    raw = req.get("grenzen") if isinstance(req.get("grenzen"), dict) else {}
+    candidate = req.get("grenzen")
+    raw: dict[str, Any] = candidate if isinstance(candidate, dict) else {}
     return {
         "zeitlimit_s": min(max(int(raw.get("zeitlimit_s", 3600)), 1), 86400),
         "max_dateien": min(max(int(raw.get("max_dateien", 20000)), 1), 200000),
@@ -928,8 +929,46 @@ def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, 
     return eintrag
 
 
+
+# P18-T76: same E budgets and manifest/import path; no PE loader or subprocess.
+_PE_RES: Any = None
+
+
+def pe_ressourcen_modul() -> Any:
+    global _PE_RES
+    if _PE_RES is None:
+        spec = importlib.util.spec_from_file_location("reverse_pe_ressourcen", Path(__file__).with_name("pe_ressourcen.py"))
+        if spec is None or spec.loader is None:
+            raise ValueError("pe_ressourcen.py fehlt")
+        _PE_RES = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_PE_RES)
+    return _PE_RES
+
+
+def pe_ressourcen(source: Path, out: Path, rel: str, cap: dict[str, int], input_size: int,
+                  deadline: float, meta: dict[str, dict[str, Any]]) -> bool:
+    paths = dateien_unter(out)
+    dirs = sum(len(names) for _, names, _ in os.walk(out, followlinks=False))
+    total = sum((out / p).stat().st_size for p in paths)
+    result = pe_ressourcen_modul().extract(source, out, rel, cap, input_size, deadline,
+                                          limit_violation, (len(paths), dirs, total))
+    parent_depth = int(meta.get(rel, {}).get("herkunft", {}).get("tiefe", 0))
+    for item in result["metadaten"].values():
+        item["herkunft"]["tiefe"] = parent_depth + 1
+    meta.update(result["metadaten"])
+    meta.setdefault(rel, {})["pe_ressourcen"] = {k: v for k, v in result.items() if k != "metadaten"}
+    return result["status"] == "teilweise"
+
+
+def pe_ressourcen_status(meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    results = {p: m["pe_ressourcen"] for p, m in meta.items() if "pe_ressourcen" in m}
+    errors = [v.get("fehlercode") for v in results.values() if v.get("status") == "teilweise"]
+    return {"ergebnisse": results, "fehlercode": errors[0] if errors else None}
+
+
 def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
-                           started: float, ueberspringen: frozenset[str] = frozenset()) -> tuple[dict[str, dict[str, Any]], bool]:
+                           started: float, ueberspringen: frozenset[str] = frozenset(),
+                           pe_aktiv: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
     """Rekursiv bis keine neuen Container auftauchen. Rueckgabe: Zusatzmetadaten je Pfad, Zeitlimit erreicht."""
     meta: dict[str, dict[str, Any]] = {}
     if cap["max_verschachtelung"] < 1:
@@ -945,6 +984,9 @@ def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env:
             return meta, abgebrochen
         for rel in neu:
             gesehen.add(rel)
+            if pe_aktiv and head_bytes(out / rel, 2) == b"MZ":
+                pe_ressourcen(out / rel, out, rel, cap, input_size, deadline, meta)
+                gesehen.update(p for p, m in meta.items() if "pe_ressource" in m)
             art = container_art(out / rel)
             if art is None:
                 continue
@@ -985,14 +1027,17 @@ def merge_verschachtelt(files: list[dict[str, Any]], meta: dict[str, dict[str, A
             datei["metadaten"] = {**(datei.get("metadaten") or {}), **zusatz}
             if "verschachtelt" in zusatz:
                 datei["art"] = "archiv"
+            elif "pe_ressource" in zusatz:
+                mime = zusatz.get("mime_type", "")
+                datei["art"] = "asset" if mime.startswith("image/") else "text" if mime.startswith("text/") else "binaer"
 
 
 def verschachtelt_isoliert(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
-                           started: float) -> tuple[dict[str, dict[str, Any]], bool]:
+                           started: float, pe_aktiv: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
     """Wie entpacke_verschachtelt, mit eigenem TMPDIR und Prozess-Sweep danach (nach dem Hauptwerkzeug)."""
     job_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        return entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started)
+        return entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, pe_aktiv=pe_aktiv)
     finally:
         rest = sweep_processes()
         clean_tmp(job_tmp)
@@ -1078,7 +1123,7 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
                     if (eintrag.get("metadaten") or {}).get("rolle") == "iso":
                         teilweise = not entpacke_iso(out, eintrag, cap, input_size, env, job_tmp, hinweise) or teilweise
                 iso = frozenset(p for p, e in meta.items() if (e.get("metadaten") or {}).get("rolle") == "iso")
-                verschachtelt, abgebrochen = entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, iso)
+                verschachtelt, abgebrochen = entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, iso, optionen.get("pe_ressourcen") is True)
         finally:
             rest = sweep_processes()
             clean_tmp(job_tmp)
@@ -1103,10 +1148,13 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
             datei["art"] = zusatz.get("art")
             datei["metadaten"] = zusatz.get("metadaten") or {}
     merge_verschachtelt(files, verschachtelt)
+    pe_status = pe_ressourcen_status(verschachtelt)
+    teilweise = teilweise or bool(pe_status["fehlercode"])
     return [
         {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
         {"status": "teilweise" if teilweise or abgebrochen else "fertig",
-         "fehlercode": "werkzeug_fehler" if teilweise else "deadline" if abgebrochen else None,
+         "fehlercode": pe_status["fehlercode"] or ("werkzeug_fehler" if teilweise else "deadline" if abgebrochen else None),
+         "pe_ressourcen": {"aktiv": optionen.get("pe_ressourcen") is True, "stand": optionen.get("pe_ressourcen_stand"), **pe_status},
          "werkzeug_version": version, "format": erkennung.format, "spurtabelle": tabelle, "hinweise": hinweise,
          "verschachtelt": verschachtelt_zusammenfassung(verschachtelt),
          "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size},
@@ -1120,6 +1168,9 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     if not source.is_file():
         raise ValueError("Eingabe ist keine regulaere Datei")
     extract = req.get("kommando") == "extrahieren"
+    raw_options = req.get("optionen")
+    optionen: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
+    pe_aktiv = optionen.get("pe_ressourcen") is True
     input_size = source.stat().st_size
     if req.get("kommando") == "spurtabelle" and not req.get("werkzeug"):
         # P18-T49: nur die Spurtabelle (kein Schreiben in /arbeit); mit 'werkzeug' bleibt der bisherige Weg.
@@ -1158,7 +1209,8 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     out.mkdir(parents=True, exist_ok=True)
     if any(out.iterdir()):
         raise ValueError("Ausgabeordner muss leer sein")
-    command = command_for(tool, source, out, req, fmt)
+    pe_only = extract and fmt == "pe" and pe_aktiv and pe_container(source) is None
+    command = [] if pe_only else command_for(tool, source, out, req, fmt)
     started = time.monotonic()
     job_tmp = TMP_ROOT / job
     shutil.rmtree(job_tmp, ignore_errors=True)
@@ -1175,7 +1227,10 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     preexec = file_size_limit(per_file_limit(cap, input_size)) if extract else None
     try:
         try:
-            code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp, guard=guard, preexec=preexec)
+            if pe_only:
+                code, meldung = 0, ""  # ordinary PE: resources are not an archive for 7zz
+            else:
+                code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp, guard=guard, preexec=preexec)
         finally:
             rest = sweep_processes()
             clean_tmp(job_tmp)
@@ -1195,19 +1250,26 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
                 raise GrenzeUeberschritten(*file_limit_violation(cap, input_size))
         if code:
             return [{"status": "fehler", "fehlercode": "werkzeug_fehler", "meldung": meldung}]
-        verschachtelt, abgebrochen = (verschachtelt_isoliert(out, cap, input_size, env, job_tmp, started)
+        verschachtelt, abgebrochen = (verschachtelt_isoliert(out, cap, input_size, env, job_tmp, started, pe_aktiv)
                                       if extract else ({}, False))
+        if extract and fmt == "pe" and pe_aktiv:
+            rel = Path(str(req.get("eingabe_name") or source.name)).name
+            pe_ressourcen(source, out, rel, cap, input_size, started + cap["zeitlimit_s"], verschachtelt)
         files, size = output_manifest(out, cap, input_size)
     except GrenzeUeberschritten as exc:
         clear_output(out)
         return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
                  "dauer_s": round(time.monotonic() - started, 3)}]
-    version = tool_version(tool)
+    version = "pe-ressourcen P18-T76" if pe_only else tool_version(tool)
     merge_verschachtelt(files, verschachtelt)
     ende: dict[str, Any] = {"status": "teilweise" if abgebrochen else "fertig", "fehlercode": "deadline" if abgebrochen else None,
                             "werkzeug_version": version, "format": fmt or None,
                             "dauer_s": round(time.monotonic() - started, 3), "manifest": files, "ausgabe_bytes": size}
     if extract:
+        pe_status = pe_ressourcen_status(verschachtelt)
+        if pe_status["fehlercode"]:
+            ende.update(status="teilweise", fehlercode=pe_status["fehlercode"])
+        ende["pe_ressourcen"] = {"aktiv": pe_aktiv, "stand": optionen.get("pe_ressourcen_stand"), **pe_status}
         ende["verschachtelt"] = verschachtelt_zusammenfassung(verschachtelt)
     return [{"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)}, ende]
 

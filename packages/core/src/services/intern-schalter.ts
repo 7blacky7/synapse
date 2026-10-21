@@ -26,6 +26,8 @@ import { getPool } from '../db/client.js';
 
 /** Bekannte Schalter und ihre Modi; der erste Modus ist der Standard. */
 export const INTERN_SCHALTER = {
+  // P18-T76: temporary opt-in to PE resource extraction; production uses product switch.
+  reverse_pe_ressourcen: ['freigegeben'],
   agentennetzwerk: ['freigegeben'],
   hex_lesen: ['freigegeben'],
   hex_adressen: ['freigegeben'],
