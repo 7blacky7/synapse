@@ -32,8 +32,10 @@ try {
   await Promise.all([mkdir(successPath), mkdir(failurePath)]);
 
   const configured = [];
+  const discovered = [];
   const manager = {
     register: async (name, projectPath) => { configured.push({ name, projectPath }); },
+    discoverFromRegistry: (rows) => { discovered.push(...rows); },
   };
   const queueJob = async (name) => {
     const result = await db.query(
@@ -73,6 +75,7 @@ try {
   await enabledSync.synchronisiereProjektCache(manager, [
     { name: successName, path: successPath, enabled: true, setup_phase: 'complete' },
   ]);
+  assert.deepEqual(discovered, [{ name: successName, pfad: successPath, enabled: true }], 'PG-Snapshot muss an die Registry-Entdeckung des Daemons gehen');
   const completedStatus = JSON.parse(await readFile(statusPath, 'utf8'));
   assert.equal(completedStatus.setupPhase, 'complete', 'Daemon-Sync aktualisiert den status.json-Cache aus PG');
 
