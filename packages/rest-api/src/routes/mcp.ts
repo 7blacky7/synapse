@@ -197,6 +197,7 @@ import {
   createChannel,
   joinChannel,
   leaveChannel,
+  leaveChannels,
   postChannelMessage,
   getChannelMessages,
   listChannels,
@@ -3663,6 +3664,7 @@ async function handleToolCallKern(
           const chParam = args.channel_name;
           const agName = reqStr(args, 'agent_name');
           if (Array.isArray(chParam)) {
+            if (chParam.length === 0) throw new Error('channel_name darf nicht leer sein');
             const results = await Promise.all(chParam.map((ch: string) => joinChannel(project, ch, agName)));
             return { success: true, results, action: 'join' };
           }
@@ -3673,7 +3675,9 @@ async function handleToolCallKern(
           const chParam2 = args.channel_name;
           const agName2 = reqStr(args, 'agent_name');
           if (Array.isArray(chParam2)) {
-            const results = await Promise.all(chParam2.map((ch: string) => leaveChannel(project, ch, agName2)));
+            if (chParam2.length === 0) throw new Error('channel_name darf nicht leer sein');
+            // P22-T105 C1: Ergebnis je Channel (verlassen | abgewiesen mit grund), wie stdio.
+            const results = await leaveChannels(project, chParam2 as string[], agName2);
             return { success: true, results, action: 'leave' };
           }
           const left = await leaveChannel(project, reqStr(args, 'channel_name'), agName2);

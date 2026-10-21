@@ -88,6 +88,8 @@ export const INTERN_SCHALTER = {
   // P18-T86: befristeter EIN/AUS-Testoverride (aktiv=true = EIN) der Produkt-Schalter reverse_entstoerer_auto / reverse_wav_pregap.
   reverse_entstoerer_auto: ['freigegeben'],
   reverse_wav_pregap: ['freigegeben'],
+  // P22-T105: befristete Test-Freigabe der Ausweis-Channels (Produkt-Standard AUS, ausweis-channels.ts); aktiv=true = freigegeben.
+  ausweis_channels: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 

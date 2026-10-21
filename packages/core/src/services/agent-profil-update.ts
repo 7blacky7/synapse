@@ -343,10 +343,17 @@ export async function baueFortsetzungsErgaenzung(p: IdentitaetsAgentPrincipal, o
   const out: FortsetzungsErgaenzung = {};
   let block: ProfilBlock | null = null;
   let will = false;
+  // P22-T105: mit Schalter ausweis_channels traegt JEDE Anmeldung fehlende Ausweis-Channels nach (eine Lesestelle, Typ ungepinnt).
+  let abgleich: Awaited<ReturnType<typeof import('./ausweis-channels.js').gleicheAusweisChannelsAb>> = null;
+  try {
+    const { gleicheAusweisChannelsAb } = await import('./ausweis-channels.js');
+    abgleich = await gleicheAusweisChannelsAb(p, { lesestand: 'jetzt' });
+  } catch { /* Zugabe; ohne Abgleich gilt der Beitritt unten */ }
   try {
     const s = await ladeLaufProfilStand(p, null);
     will = opt.profilblock ?? (s === null || s.zugestellt_profil_revision === null || s.zugestellt_profil_revision < s.profil_revision);
     block = await profilBlock(p.identity_id);
+    if (abgleich) block.channels = abgleich.channels;
     if (will) {
       out.profil = block;
       if (s?.lauf_id) await markiereProfilZugestellt(s.lauf_id, block.profil_revision);
@@ -357,7 +364,9 @@ export async function baueFortsetzungsErgaenzung(p: IdentitaetsAgentPrincipal, o
     if (t.length) out.gebundene_tasks = t;
   } catch { /* Zugabe */ }
   // Profil-Channels gehoeren zum Profilblock: im selben Lauf nicht erneut (Beitritt ist idempotent und wurde schon gemeldet).
-  if (block && will && block.channels.length) {
+  if (abgleich) {
+    if (block && will && abgleich.channels.length) out.profil_channels = { beigetreten: abgleich.mitglied, fehlgeschlagen: abgleich.fehlend };
+  } else if (block && will && block.channels.length) {
     const beigetreten: string[] = [], fehlgeschlagen: string[] = [];
     for (const c of block.channels) {
       try { (await trittChannelBei(p, c) ? beigetreten : fehlgeschlagen).push(c); } catch { fehlgeschlagen.push(c); }

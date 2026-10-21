@@ -39,16 +39,20 @@ export async function deleteChannel(project: string, name: string): Promise<bool
   return rows.length > 0
 }
 
-export async function joinChannel(project: string, channelName: string, agentName: string | AgentZiel): Promise<boolean> {
+/**
+ * opt.lesestandBis (P22-T105, Ausweis-Channels im laufenden Lauf): Lesestand = juengster Post bis zu diesem Zeitpunkt statt
+ * bis jetzt, damit Posts seit der Ausweisaenderung als ungelesen erscheinen. Ohne Angabe wie bisher.
+ */
+export async function joinChannel(project: string, channelName: string, agentName: string | AgentZiel, opt: { lesestandBis?: Date | null } = {}): Promise<boolean> {
   const z = await aufgeloestesKommunikationsZiel(project, agentName, true)
   agentName = z.agent_id
   const pool = getPool()
   const { rows } = await pool.query<{ id: number; max_message_id: string | number }>(
-    `SELECT c.id, COALESCE(MAX(msg.id), 0)::bigint AS max_message_id
+    `SELECT c.id, COALESCE(MAX(msg.id) FILTER (WHERE $3::timestamptz IS NULL OR msg.created_at <= $3::timestamptz), 0)::bigint AS max_message_id
        FROM specialist_channels c
        LEFT JOIN specialist_channel_messages msg ON msg.channel_id = c.id
       WHERE c.name = $1 AND c.project = $2
-      GROUP BY c.id`, [channelName, project])
+      GROUP BY c.id`, [channelName, project, opt.lesestandBis ?? null])
   if (rows.length === 0) return false
 
   const channelId = rows[0].id
@@ -107,6 +111,11 @@ export async function leaveChannel(project: string, channelName: string, agentNa
     [channelName, project],
   )
   if (channelRows.length === 0) return false
+  // P22-T105: Channels aus dem Ausweis sind nicht verlassbar (Schalter ausweis_channels); wirft AusweisChannelFehler.
+  if (z.art === 'identity') {
+    const { pruefeAusweisChannelVerlassen } = await import('./ausweis-channels.js')
+    await pruefeAusweisChannelVerlassen(project, channelName, z.identity_id)
+  }
 
   const channelId = channelRows[0].id
   const { rows } = await pool.query(
@@ -116,6 +125,23 @@ export async function leaveChannel(project: string, channelName: string, agentNa
     [channelId,bezugsWert(z)],
   )
   return rows.length > 0
+}
+
+export interface ChannelVerlassenErgebnis { channel: string; status: 'verlassen' | 'abgewiesen'; grund?: string }
+
+/**
+ * P22-T105 (Review 5d4e7bed C1): mehrere Channels verlassen, je Channel ein Ergebnis. Ein abgewiesener Channel (z. B.
+ * channel_im_ausweis_festgelegt) haelt die anderen nicht auf, und die Antwort nennt alle tatsaechlich verlassenen.
+ * Gemeinsam fuer REST und stdio.
+ */
+export async function leaveChannels(project: string, channelNames: string[], agentName: string | AgentZiel): Promise<ChannelVerlassenErgebnis[]> {
+  const settled = await Promise.allSettled(channelNames.map(ch => leaveChannel(project, ch, agentName)))
+  return settled.map((r, i): ChannelVerlassenErgebnis => {
+    const channel = channelNames[i]
+    if (r.status === 'fulfilled') return r.value ? { channel, status: 'verlassen' } : { channel, status: 'abgewiesen', grund: 'nicht_mitglied' }
+    const e = r.reason as { code?: unknown; message?: unknown } | null
+    return { channel, status: 'abgewiesen', grund: typeof e?.code === 'string' ? e.code : String(e?.message ?? e) }
+  })
 }
 
 export async function postChannelMessage(

@@ -19,6 +19,7 @@ import {
   markChannelRead,
   resolveAgentId,
   getProjectRecordById,
+  leaveChannels,
 } from '@synapse/core';
 import {
   createChannel,
@@ -368,8 +369,9 @@ export const channelTool: ConsolidatedTool = {
         return await handleCreate(args);
       case 'join': {
         // Array-Support: Mehreren Channels beitreten
-        const channelNames = strArray(args, 'channel_name');
-        if (channelNames && channelNames.length > 1) {
+        const channelNames = Array.isArray(args.channel_name) ? args.channel_name as string[] : undefined;
+        if (channelNames) {
+          if (channelNames.length === 0) throw new Error('channel_name darf nicht leer sein');
           const project = reqStr(args, 'project');
           const agentName = reqStr(args, 'agent_name');
           const settled = await Promise.allSettled(
@@ -397,30 +399,14 @@ export const channelTool: ConsolidatedTool = {
       }
       case 'leave': {
         // Array-Support: Mehrere Channels verlassen
-        const channelNames = strArray(args, 'channel_name');
-        if (channelNames && channelNames.length > 1) {
+        const channelNames = Array.isArray(args.channel_name) ? args.channel_name as string[] : undefined;
+        if (channelNames) {
+          if (channelNames.length === 0) throw new Error('channel_name darf nicht leer sein');
           const project = reqStr(args, 'project');
           const agentName = reqStr(args, 'agent_name');
-          const settled = await Promise.allSettled(
-            channelNames.map(cn => leaveChannel(project, cn, agentName))
-          );
-          const results: Array<Record<string, unknown>> = [];
-          const errors: string[] = [];
-          for (let i = 0; i < settled.length; i++) {
-            const r = settled[i];
-            if (r.status === 'fulfilled') {
-              results.push({
-                success: !!r.value,
-                channel: channelNames[i],
-                message: r.value
-                  ? `"${agentName}" hat Channel "${channelNames[i]}" verlassen.`
-                  : `"${agentName}" war nicht in Channel "${channelNames[i]}".`,
-              });
-            } else {
-              errors.push(`${channelNames[i]}: ${r.reason}`);
-            }
-          }
-          return jsonResult({ results, count: results.length, errors });
+          // P22-T105 C1: Ergebnis je Channel (verlassen | abgewiesen mit grund), gleiche Form wie REST.
+          const results = await leaveChannels(project, channelNames, agentName);
+          return jsonResult({ success: true, results, action: 'leave' });
         }
         return await handleLeave(args);
       }

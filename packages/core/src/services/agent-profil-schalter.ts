@@ -124,9 +124,12 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P18-T86: automatischer Reverse-Entstoerer (bisher Env SYNAPSE_REVERSE_ENTSTOERER, STANDARD EIN wie bisher) und WAV-Pregap
   // beim Audio-CD-Entpacken (bisher Env SYNAPSE_REVERSE_WAV_PREGAP, Standard AUS); beide global, nur ausdruecklich.
   'reverse_entstoerer_auto', 'reverse_wav_pregap',
+  // P22-T105: Ausweis-Channels still beitreten (auch im laufenden Lauf) und nicht verlassbar (ausweis-channels.ts), je Projekt,
+  // Standard AUS bis Abnahme, nur ausdruecklich.
+  'ausweis_channels',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_entstoerer_auto', 'reverse_wav_pregap'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'ausweis_channels'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.

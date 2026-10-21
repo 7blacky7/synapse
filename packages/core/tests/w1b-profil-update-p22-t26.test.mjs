@@ -4,6 +4,8 @@
  *   node packages/core/tests/w1b-profil-update-p22-t26.test.mjs
  * Schemas 111-114 werden im privaten Schema eingespielt. Testbetrieb (Vertrag W12): Modus 'beide', SYNAPSE_TOKEN_IDENTITAET=1,
  * SYNAPSE_W1B_ANMELDUNG=1, Produkt-Schalter schattenprofile EIN.
+ * P22-T105: Ausweis-Channels (Schalter ausweis_channels) - still beitreten im laufenden Lauf, nur additiv, Ausweis-Channels nicht
+ * verlassbar, selbst beigetretene und entfernte jederzeit; Typ-Pinning (Channels aus der aktuellen Typrevision); Schalter AUS = Bestand.
  */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -48,6 +50,8 @@ try{
   const H=await load('packages/core/dist/services/ausloeser-hinweise.js');
   const Z=await load('packages/core/dist/services/agent-zuschnitt.js');
   const CH=await load('packages/core/dist/services/channels.js');
+  const TA=await load('packages/core/dist/services/tool-antwort.js');
+  const AC=await load('packages/core/dist/services/ausweis-channels.js');
   const {getPool}=await load('packages/core/dist/db/client.js');
   pool=getPool();
 
@@ -171,11 +175,94 @@ try{
   check(update(await aufruf(principal2)).length===0,'neuer Lauf: kein separater Diff-Hinweis');
   check(await marker('lauf-c1b')===8,'Marke des neuen Laufs 8');
 
+  // ---- P22-T105: Ausweis-Channels im laufenden Lauf (Schalter ausweis_channels)
+  for(const n of ['ch-a','ch-b','ch-c','ch-typ'])await CH.createChannel(P,n,null,'test');
+  const zielC1={art:'identity',project:P,agent_id:'c1',identity_id:'c1'};
+  const imLauf=(pr,fn)=>B.mitAgentAufrufKontext(ctx(pr),fn);
+  const toolAufruf=(pr=principal2)=>imLauf(pr,()=>TA.ergaenzeToolHinweise({success:true},'thought',{project:P,action:'get'},pr.agent_id));
+  const istMitglied=async(id,ch)=>(await pool.query('SELECT 1 FROM agent_identitaet_channel_mitglieder m JOIN specialist_channels c ON c.id=m.channel_id WHERE m.identity_id=$1 AND c.name=$2 AND c.project=$3',[id,ch,P])).rowCount===1;
+  const verlasse=(pr,ziel,ch)=>imLauf(pr,()=>CH.leaveChannel(P,ch,ziel)).then(ok=>({ok}),e=>({fehler:String(e?.message||e)}));
+  check(await imLauf(principal2,()=>CH.joinChannel(P,'ch-a',zielC1))===true,'T105: ch-a selbst beigetreten');
+  // Schalter AUS: Bestand (kein Beitritt im laufenden Lauf, leave unbeschraenkt)
+  check((await AC.leseAusweisChannelsSchalter(P)).aktiv===false&&(await AC.leseAusweisChannelsSchalter(P)).quelle==='standard','T105: Schalter Standard AUS');
+  await aendere(8,{channels:['profil-ch','ch-b']});
+  await toolAufruf();
+  check(!(await istMitglied('c1','ch-b')),'T105 AUS: kein Beitritt im laufenden Lauf (Altverhalten)');
+  check((await verlasse(principal2,zielC1,'profil-ch')).ok===true,'T105 AUS: Profil-Channel verlassbar (Altverhalten)');
+  // Schalter EIN (Produkt-Schalter, projekt)
+  await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('projekt',$1,'ausweis_channels',true,'Test P22-T105','user')",[P]);
+  AC.leereAusweisChannelsPuffer();
+  const sch=await AC.leseAusweisChannelsSchalter(P);
+  check(sch.aktiv===true&&sch.quelle==='produkt-schalter','T105: Schalter EIN ueber Produkt-Schalter');
+  // a) Ausweis bekommt B und C; Posts danach (vor dem naechsten Aufruf) in A, B, C
+  await warte(30);
+  await aendere(9,{channels:['profil-ch','ch-b','ch-c']});
+  await warte(30);
+  for(const n of ['ch-a','ch-b','ch-c'])await CH.postChannelMessage(P,n,'fremd','Anweisung '+n);
+  const ra=await toolAufruf();
+  const unread=(ra.unread_channels||[]).filter(u=>u.project===P).map(u=>u.channel+':'+u.count).sort();
+  check(JSON.stringify(unread)==='["ch-a:1","ch-b:1","ch-c:1"]','T105 a) naechster Aufruf: unread aus A, B, C: '+JSON.stringify(unread));
+  check(Object.keys(ra).every(k=>['success','unread_channels'].includes(k)),'T105 a) kein Join-Hinweis in der Antwort: '+Object.keys(ra).join(','));
+  check(await istMitglied('c1','ch-b')&&await istMitglied('c1','ch-c')&&await istMitglied('c1','profil-ch'),'T105 a) Mitgliedschaft B, C und wieder profil-ch in PG');
+  check(await istMitglied('c1','ch-a'),'T105 a) selbst beigetretener Channel A bleibt');
+  // b) leave B (im Ausweis) abgewiesen
+  const lb=await verlasse(principal2,zielC1,'ch-b');
+  check(lb.fehler?.startsWith('channel_im_ausweis_festgelegt')&&await istMitglied('c1','ch-b'),'T105 b) leave B abgewiesen: '+JSON.stringify(lb));
+  // c) leave A (selbst beigetreten) klappt
+  check((await verlasse(principal2,zielC1,'ch-a')).ok===true&&!(await istMitglied('c1','ch-a')),'T105 c) leave A klappt');
+  await toolAufruf();
+  check(!(await istMitglied('c1','ch-a')),'T105 c) Abgleich tritt A nicht wieder bei');
+  // d) Ausweis entfernt C: bleibt Mitglied, leave C klappt danach
+  await aendere(10,{channels:['profil-ch','ch-b']});
+  await toolAufruf();
+  check(await istMitglied('c1','ch-c'),'T105 d) C aus dem Ausweis entfernt: kein Kick');
+  check((await verlasse(principal2,zielC1,'ch-c')).ok===true&&!(await istMitglied('c1','ch-c')),'T105 d) leave C klappt danach');
+  check(await istMitglied('c1','ch-b'),'T105 d) B bleibt');
+  // e) Review C1: leave mit gemischten Channels -> Ergebnis je Channel, der Ausweis-Channel stoppt die anderen nicht
+  check(await imLauf(principal2,()=>CH.joinChannel(P,'ch-a',zielC1))===true,'T105 e) ch-a wieder beigetreten');
+  const gemischt=await imLauf(principal2,()=>CH.leaveChannels(P,['ch-a','ch-b','ch-c'],zielC1));
+  check(JSON.stringify(gemischt)===JSON.stringify([{channel:'ch-a',status:'verlassen'},{channel:'ch-b',status:'abgewiesen',grund:'channel_im_ausweis_festgelegt'},{channel:'ch-c',status:'abgewiesen',grund:'nicht_mitglied'}]),
+   'T105 e) Ergebnis je Channel: '+JSON.stringify(gemischt));
+  check(!(await istMitglied('c1','ch-a'))&&await istMitglied('c1','ch-b'),'T105 e) A verlassen, B (Ausweis) bleibt');
+  // Typ-Pinning: c2 auf Typ t2 Rev 1 (ohne channels) gepinnt; Typrevision 2 bringt ch-typ -> Channels der aktuellen Revision
+  await pool.query("INSERT INTO agent_identitaeten(id,project,name,agent_id,rolle,erstellt_von) VALUES('c2',$1,'c2','c2','subagent','test')",[P]);
+  await pool.query("INSERT INTO agent_identitaet_laeufe(id,identity_id,context_epoch,status) VALUES('lauf-c2','c2',1,'aktiv')");
+  await pool.query("INSERT INTO agent_identitaet_sitzungen(identity_id,project,agent_id,status,context_epoch,lauf_id) VALUES('c2',$1,'c2','active',1,'lauf-c2')",[P]);
+  await pool.query("INSERT INTO agent_typen(id,scope,project,schluessel,aktuelle_revision,erstellt_von) VALUES('t2','projekt',$1,'kanaltyp',1,'test')",[P]);
+  await pool.query("INSERT INTO agent_typ_revisionen(typ_id,revision,inhalt,wer) VALUES('t2',1,$1::jsonb,'test')",[JSON.stringify({kontext_stufe:'normal'})]);
+  await V.W1B_DIENSTE.profil.aendereProfil({identity_id:'c2',erwartete_revision:0,patch:{},typ_id:'t2',grund:'Test P22-T105'},user);
+  const pc2={...principal,agent_id:'c2',identity_id:'c2',lauf_id:'lauf-c2'};
+  const fc2=(await A.fortsetzungFuerAntwort(pc2)).fortsetzung;
+  check(fc2?.profil_channels===undefined&&JSON.stringify(fc2?.profil?.channels)==='[]','T105 Pinning: Typ Rev 1 ohne Channels');
+  await warte(30);
+  await pool.query("INSERT INTO agent_typ_revisionen(typ_id,revision,inhalt,wer) VALUES('t2',2,$1::jsonb,'test')",[JSON.stringify({kontext_stufe:'minimal',channels:['ch-typ']})]);
+  await pool.query("UPDATE agent_typen SET aktuelle_revision=2 WHERE id='t2'");
+  await warte(30);
+  await CH.postChannelMessage(P,'ch-typ','fremd','Typ-Anweisung');
+  const rc2=await toolAufruf(pc2);
+  check(await istMitglied('c2','ch-typ'),'T105 Pinning: gepinnte Identitaet tritt Channel der aktuellen Typrevision bei');
+  check(JSON.stringify((rc2.unread_channels||[]).map(u=>u.channel+':'+u.count))==='["ch-typ:1"]','T105 Pinning: Post seit Typaenderung ungelesen');
+  const gep=await Z.leseWirksamesProfil('c2');
+  check(gep.typ?.revision===1&&gep.werte.kontext_stufe==='normal','T105 Pinning: uebrige Felder bleiben gepinnt (Rev 1)');
+  const ac2=await AC.leseAusweisChannels('c2');
+  check(ac2?.herkunft==='projekt_typ'&&ac2.typ_revision===2&&JSON.stringify(ac2.channels)==='["ch-typ"]','T105 Lesestelle: Herkunft/Typrevision sichtbar');
+  check((await verlasse(pc2,{art:'identity',project:P,agent_id:'c2',identity_id:'c2'},'ch-typ')).fehler?.startsWith('channel_im_ausweis_festgelegt'),'T105 Pinning: Typ-Channel nicht verlassbar');
+  // Anmeldung (neuer Lauf c2) nutzt dieselbe Lesestelle: Profilblock/Profil-Channels zeigen ch-typ
+  await pool.query("UPDATE agent_identitaet_laeufe SET status='abgeloest', abgeloest_am=NOW() WHERE id='lauf-c2'");
+  await pool.query("INSERT INTO agent_identitaet_laeufe(id,identity_id,context_epoch,status) VALUES('lauf-c2b','c2',2,'aktiv')");
+  const pc2b={...pc2,context_epoch:2,lauf_id:'lauf-c2b'};
+  const fc2b=(await A.fortsetzungFuerAntwort(pc2b)).fortsetzung;
+  check(JSON.stringify(fc2b?.profil?.channels)==='["ch-typ"]'&&JSON.stringify(fc2b?.profil_channels)==='{"beigetreten":["ch-typ"],"fehlgeschlagen":[]}','T105 Anmeldung: Profilblock und Profil-Channels aus derselben Lesestelle: '+JSON.stringify(fc2b?.profil_channels));
+  // Schalter wieder AUS: leave B erlaubt (Bestand)
+  await pool.query("UPDATE agent_profil_schalter SET aktiv=false WHERE funktion='ausweis_channels'");
+  AC.leereAusweisChannelsPuffer();
+  check((await verlasse(principal2,zielC1,'ch-b')).ok===true,'T105 AUS: leave B wieder erlaubt');
+
   // ---- Dienst-Delegation des Vertrags
   const d=await V.W12_DIENSTE.profilUpdate.berechneDiff('c1',1,2,null);
   check(d.von_revision===1&&d.nach_revision===2&&d.eintraege.some(e=>e.bereich==='regeln'&&e.art==='entfernt'&&e.schluessel==='regel-b'),'W12_DIENSTE.profilUpdate.berechneDiff delegiert');
   const pb=await V.W12_DIENSTE.profilUpdate.profilBlock('c1');
-  check(pb.profil_revision===8&&pb.typ?.schluessel==='tester','W12_DIENSTE.profilUpdate.profilBlock delegiert');
+  check(pb.profil_revision===11&&pb.typ?.schluessel==='tester','W12_DIENSTE.profilUpdate.profilBlock delegiert');
   check((await V.W12_DIENSTE.profilUpdate.gebundeneTasks(P,'c1')).length===1&&(await V.W12_DIENSTE.profilUpdate.gebundeneTasks(P,'fremd')).length===0,'W12_DIENSTE.profilUpdate.gebundeneTasks delegiert');
   const lang=V.formatiereProfilUpdate({identity_id:'c1',von_revision:1,nach_revision:2,eintraege:Array.from({length:40},(_,i)=>({bereich:'regeln',art:'entfernt',schluessel:'regel-'+i}))},U.PROFIL_UPDATE_HINWEIS_ZEICHEN);
   check(lang.length<=240&&lang.includes('weitere'),'Hinweistext bleibt unter der Registry-Kuerzung (240) und nennt den Rest');

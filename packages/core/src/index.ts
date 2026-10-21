@@ -1163,6 +1163,7 @@ export {
   deleteChannel,
   joinChannel,
   leaveChannel,
+  leaveChannels,
   removeAgentFromAllChannels,
 
   postChannelMessage,

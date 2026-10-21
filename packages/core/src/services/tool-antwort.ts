@@ -27,6 +27,7 @@ import { claimUnreadChannelHints } from './channel-unread.js';
 import { claimShellJobHints, markShellJobSeenForToolCall } from './shell-hints.js';
 import { hinweisAktiv } from './agent-zuschnitt-kontext.js';
 import { holeBuildNachlaufHinweise } from './build-pruefung.js';
+import { gleicheAusweisChannelsImAufrufAb } from './ausweis-channels.js';
 
 const HINWEIS_JOB_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -98,6 +99,8 @@ export async function ergaenzeToolHinweise(
     const shellHints = hinweisAktiv('shell_activity', agentId) ? await claimShellJobHints(project, agentId, 3, [...ausgeschlossen]) : [];
     if (shellHints.length > 0) extras.shell_activity = shellHints;
   }
+  // P22-T105: Ausweis-Channels still nachtragen (Schalter ausweis_channels), VOR dem Claim, damit ihre Posts sofort zaehlen.
+  await gleicheAusweisChannelsImAufrufAb(agentId);
   const channels = hinweisAktiv('unread_channels', agentId) ? await claimUnreadChannelHints(agentId) : [];
   if (channels.length > 0) extras.unread_channels = channels.map(hint => ({
     project: hint.project, channel: hint.channel, count: hint.count, newest_id: hint.newestId,
