@@ -39,7 +39,9 @@ export function reverseKindAusfuehrbar(kind: string, kinds?: readonly string[]):
  * nicht automatisch wiederholt; ein manuelles reverse(analysieren) bleibt möglich.
  */
 const DETERMINISTISCH = new Set(['nicht_unterstuetzt', 'format_nicht_unterstuetzt', 'nicht_gefunden', 'gepackt',
-  'verschluesselt', 'beschaedigt', 'zu_gross', 'bombe_verdacht', 'pfad_gefahr', 'kein_ausfuehrer']);
+  'verschluesselt', 'beschaedigt', 'zu_gross', 'bombe_verdacht', 'pfad_gefahr', 'kein_ausfuehrer',
+  // P18-T66: z. B. keine_berechtigung:eingabe_rechte (API darf Eingaberechte nicht setzen) scheitert bis zur Korrektur identisch.
+  'keine_berechtigung']);
 
 /** 'format_nicht_unterstuetzt:clonecd' -> {code:'format_nicht_unterstuetzt', detail:'clonecd'}. */
 export function zerlegeReverseFehlercode(roh: unknown): { code: string | null; detail: string | null } {

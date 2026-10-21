@@ -12,7 +12,7 @@
  * Alles aus, solange SYNAPSE_REVERSE_ENABLED nicht '1' ist.
  */
 import {createHash} from 'node:crypto';
-import {mkdir,chmod,chown,rm,readdir,open} from 'node:fs/promises';
+import {mkdir,chmod,chown,rm,readdir,open,lstat} from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import Docker from 'dockerode';
@@ -130,6 +130,25 @@ async function runnerOrdner(dir:string):Promise<void>{
 export async function sperreArbeitsOrdner(dir:string):Promise<boolean>{
  if(process.getuid?.()!==0)return false;
  try{await chown(dir,0,0);await chmod(dir,0o700);return true;}catch{return false;}
+}
+/**
+ * P18-T66: Eingabedateien eines Mediums für den Runner (uid/gid 65532) lesbar machen: root:65532, 0640. Der Inhalt bleibt
+ * unverändert; gilt auch für Originale, die vor dieser Regel mit 0600 abgelegt wurden. Liefert null oder einen Fehlercode;
+ * fehlt das Recht für chown/chmod, kommt 'keine_berechtigung:eingabe_rechte' (mit Logzeile) statt eines stillen Runner-Fehlers.
+ */
+export async function reverseEingabeLesbar(pfade:string[]):Promise<string|null>{
+ for(const p of pfade){
+  let st;
+  try{st=await lstat(p);}catch{return 'nicht_gefunden';}
+  if(!st.isFile())return 'pfad_gefahr';
+  if(st.uid===0&&st.gid===RUNNER_UID&&(st.mode&0o777)===0o640)continue;
+  try{await chown(p,0,RUNNER_UID);await chmod(p,0o640);}
+  catch(e){
+   console.error('[reverse-executor] Eingaberechte nicht setzbar:',p,(e as NodeJS.ErrnoException).code??(e as Error).message);
+   return 'keine_berechtigung:eingabe_rechte';
+  }
+ }
+ return null;
 }
 /** Arbeitsordner je Auftrag; der Container läuft als 65532 und muss hinein schreiben. */
 export async function reverseArbeitsOrdner(k:ReverseExecutorKonfig,jobId:string):Promise<string>{
@@ -400,6 +419,9 @@ export class ReverseExecutor {
   // P18-T64: bekannte, noch nicht unterstützte Formate ohne Containerlauf klar benennen.
   const vorab=await reverseFormatVorpruefung(quelle.dateien.map(d=>({pfad:path.join(this.k.reverseRoot,d.storageKey),rolle:d.rolle,name:d.name})));
   if(vorab){await this.scheitern(job,wer,vorab);return;}
+  // P18-T66: Originale liegen ggf. als 0600 root; der Runner (65532) muss sie lesen dürfen.
+  const rechte=await reverseEingabeLesbar(quelle.dateien.map(d=>path.join(this.k.reverseRoot,d.storageKey)));
+  if(rechte){await this.scheitern(job,wer,rechte);return;}
   // Globaler Container: /arbeit=_arbeit, Ausgabe /arbeit/<jobId>. Alter Descriptor: /arbeit=_arbeit/<jobId>, Ausgabe darin.
   const alt=this.altScope;
   const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;

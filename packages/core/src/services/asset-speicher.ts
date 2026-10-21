@@ -134,6 +134,8 @@ export async function erzeugeReverseId(titel: string,schluessel: string,
   }
   return fail('konflikt','Reverse-ID konnte nicht kollisionsfrei reserviert werden.');
 }
+/** P18-T66: Gruppe des Reverse-Runners (uid/gid 65532 im Reverse-Container); Reverse-Originale liegen root:65532 0640. */
+const REVERSE_RUNNER_GID=65532;
 function reverseLayoutKey(a: AssetAdresse): string | undefined {
   if(!a.reverse_layout)return undefined;
   if(a.bereich!=='reverse')return fail('bereich_ungueltig','Reverse-Layout gehört nur zur Reverse-Bibliothek.');
@@ -416,6 +418,12 @@ export class AssetSpeicher {
           const computed=hash.digest('hex');
           if(erwartet.sha256!==undefined && computed!==erwartet.sha256) fail('hash_falsch','Uploadhash stimmt nicht.');
           op.sha256=computed;
+          // P18-T66: nur Reverse-Originale für den Reverse-Runner lesbar; alle anderen Bereiche bleiben 0600.
+          if(k.adresse.bereich==='reverse'){
+            await h.chmod(0o640);
+            try { await h.chown(0,REVERSE_RUNNER_GID); }
+            catch(e) { console.warn('[asset-speicher] Reverse-Original: Gruppe nicht setzbar ('+String((e as NodeJS.ErrnoException).code ?? e)+'), der Reverse-Executor setzt sie vor dem Lauf.'); }
+          }
           await h.sync(); await p.handle.sync();
         } finally { await h.close(); }
       });
