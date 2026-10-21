@@ -44,6 +44,11 @@ export interface AssetSource {
   /** Dateigroesse in Bytes zum Zeitpunkt des Oeffnens. */
   readonly size: number;
   /**
+   * P18-T70: echter, fuer externe Leser (ffprobe) oeffenbarer Pfad derselben Datei, wenn filePath nur ein
+   * logischer Pfad ist (FD-gebundene Share-/Reverse-Quellen). Fehlt er, gilt filePath.
+   */
+  readonly lokalerPfad?: string;
+  /**
    * Liest hoechstens length Bytes ab offset. Am Dateiende kuerzer, hinter dem Ende
    * ein leerer Buffer. Negative/nicht ganzzahlige Argumente: AssetReadError.
    * Ueberschreitet die Summe aller Lesungen maxReadBytes: AssetLimitError.

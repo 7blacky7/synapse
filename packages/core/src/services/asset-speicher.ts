@@ -875,7 +875,7 @@ export class AssetSpeicher {
   }
   /** A12: ein FD für eine ganze Inspektion; Umbenennen tauscht die Quelle nicht aus. */
   async oeffneInspektionsQuelle(adresse: AssetAdresse,storageKey: string): Promise<{
-    filePath:string; size:number; readRange:(offset:number,length:number)=>Promise<Buffer>;
+    filePath:string; lokalerPfad?:string; size:number; readRange:(offset:number,length:number)=>Promise<Buffer>;
     pruefeUnveraendert:()=>Promise<void>; schliessen:()=>Promise<void>;
   }> {
     const k=await this.kontext(adresse),key=normalisiereSpeicherPfad(storageKey);
@@ -888,6 +888,8 @@ export class AssetSpeicher {
       const budget=this.cfg.inspektion.maxHashBytes+this.cfg.inspektion.maxReadBytes+4096;
       return {
         filePath:adresse.logischer_pfad,size:st.size,
+        // P18-T70: ffprobe (Kindprozess) braucht einen echten Pfad; das offene FD dieses Prozesses zeigt auf genau die gepruefte Datei.
+        ...(process.platform==='linux'?{lokalerPfad:'/proc/'+process.pid+'/fd/'+h.fd}:{}),
         readRange:async(offset,length)=>{
           if(geschlossen||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<0||length>Math.max(4096,Math.min(1024*1024,this.cfg.inspektion.maxHashBytes),this.cfg.inspektion.maxReadBytes))return fail('bereich_ungueltig','Ungültige Range-Anfrage.');
           const n=Math.min(length,Math.max(0,st.size-offset));

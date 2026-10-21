@@ -136,7 +136,8 @@ async function inspiziere(src: AssetSource, ctx: AssetContext, opts: MedienOptio
   if (ffprobePfad === null) {
     zusatz.push({ code: 'ffprobe_nicht_verfuegbar', message: 'ffprobe ist abgeschaltet (ffprobePfad: null); es wurde nur der Header gelesen.' });
   } else {
-    const r = await starteFfprobe(ffprobePfad, src.filePath, ctx);
+    // P18-T70: FD-Quellen tragen einen echten Pfad; filePath ist dort nur der logische Pfad.
+    const r = await starteFfprobe(ffprobePfad, src.lokalerPfad ?? src.filePath, ctx);
     if (r.ok) {
       befund = uebersetzeFfprobe(r.json, ctx);
       if (befund) quelle = 'ffprobe';

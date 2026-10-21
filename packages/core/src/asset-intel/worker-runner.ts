@@ -36,7 +36,7 @@ const WORKER_MARKE = 'synapse-asset-intel-worker';
 interface Auftrag {
   id: number;
   pfad: string;
-  quelle?: { size: number };
+  quelle?: { size: number; lokalerPfad?: string };
   grenzen?: Partial<AssetLimits>;
   timeoutMs?: number;
   /** Modul (Pfad oder file:-URL) mit Export `registry` — nur fuer Tests. */
@@ -68,7 +68,7 @@ async function bearbeite(a: Auftrag): Promise<Antwort> {
       registry = m.registry ?? m.default;
     }
     const opts = { ...a.grenzen, ...(a.timeoutMs ? { timeoutMs: a.timeoutMs } : {}), ...(registry ? { registry } : {}) };
-    const source: AssetSource | undefined = a.quelle ? { filePath: a.pfad, size: a.quelle.size,
+    const source: AssetSource | undefined = a.quelle ? { filePath: a.pfad, size: a.quelle.size, ...(a.quelle.lokalerPfad ? { lokalerPfad: a.quelle.lokalerPfad } : {}),
       readRange: (offset, length) => new Promise<Buffer>((resolve, reject) => {
         const requestId = naechsterRange++;
         rangeWartend.set(requestId, { resolve, reject });
@@ -231,7 +231,7 @@ export class AssetInspektionsWorker {
       }, timeoutMs + gnade);
       this.laufend = { id, pfad: absPfad, erledige: resolve, timer, quelle };
       w.ref();
-      const auftrag: Auftrag = { id, pfad: absPfad, timeoutMs, ...(quelle ? { quelle: { size: quelle.size } } : {}), ...(opts.grenzen ? { grenzen: opts.grenzen } : {}), ...(opts.registryModul ? { registryModul: opts.registryModul } : {}) };
+      const auftrag: Auftrag = { id, pfad: absPfad, timeoutMs, ...(quelle ? { quelle: { size: quelle.size, ...(quelle.lokalerPfad ? { lokalerPfad: quelle.lokalerPfad } : {}) } } : {}), ...(opts.grenzen ? { grenzen: opts.grenzen } : {}), ...(opts.registryModul ? { registryModul: opts.registryModul } : {}) };
       w.postMessage(auftrag);
     });
   }

@@ -62,7 +62,9 @@ class DateiQuelle implements AssetSource {
     private readonly handle: AssetLeser,
     private readonly grenzen: AssetLimits,
     private readonly signal: AbortSignal,
-    private readonly frist: number
+    private readonly frist: number,
+    /** P18-T70: echter Pfad fuer externe Leser (ffprobe), falls filePath nur logisch ist. */
+    readonly lokalerPfad?: string
   ) {}
 
   async readRange(offset: number, length: number): Promise<Buffer> {
@@ -268,7 +270,7 @@ async function inspectQuelle(filePath: string, opts?: InspectAssetOptions, sourc
           return;
         }
 
-        const quelle = new DateiQuelle(pfad, st.size, h, grenzen, abbruch.signal, frist);
+        const quelle = new DateiQuelle(pfad, st.size, h, grenzen, abbruch.signal, frist, source?.lokalerPfad);
         const ctx = baueKontext(erkennung.format, grenzen, abbruch.signal, frist, 0, warn);
         const roh = await inspektor.inspect(quelle, ctx);
         if (!roh || typeof roh !== 'object') {
