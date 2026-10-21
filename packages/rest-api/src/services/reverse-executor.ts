@@ -14,6 +14,8 @@
 import {createHash} from 'node:crypto';
 import {mkdir,chmod,chown,rm,readdir,open} from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
+import Docker from 'dockerode';
 import type {Pool} from 'pg';
 import {getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
@@ -58,7 +60,9 @@ export function registriereWorkJobHooks(capability:string,hooks:WorkJobHooks):()
 
 // ---------------------------------------------------------------------------------------------
 export interface ReverseExecutorKonfig {
- reverseRoot:string;arbeitRoot:string;image:string;digest:string;kinds:string[];parallel:number;
+ reverseRoot:string;arbeitRoot:string;
+ /** P18-T66: Host-Pfad der Reverse-Wurzel für Docker-Binds (SYNAPSE_REVERSE_HOST_ROOT); null = automatisch ermitteln. */
+ hostRoot:string|null;image:string;digest:string;kinds:string[];parallel:number;
  leaseSeconds:number;renewMs:number;tickMs:number;resourceNeed:WorkResourceNeed;resourceDomain:string|null;
  zeitlimitS:number;maxDateien:number;maxBytes:number;tmpfsMb:number;pids:number;outputBytes:number;retryMax:number;wavPregap:boolean;
  /** P18-T64: Leerlauf, nach dem der globale Reverse-Container schläft. */
@@ -85,7 +89,9 @@ export function ladeReverseExecutorKonfig(env:NodeJS.ProcessEnv,reverseRoot:stri
  if(!kinds.length)throw Error('reverse_executor_konfig:SYNAPSE_REVERSE_EXECUTOR_KINDS');
  const leaseSeconds=ganz(env,'SYNAPSE_REVERSE_EXECUTOR_LEASE_SECONDS',300,10,ganz(env,'SYNAPSE_WORK_MAX_LEASE_SECONDS',900));
  const root=path.resolve(reverseRoot);
- return {reverseRoot:root,arbeitRoot:path.join(root,'_arbeit'),image:m[1],digest:m[2],kinds,
+ const host=env.SYNAPSE_REVERSE_HOST_ROOT?.trim()||null;
+ if(host&&(!path.isAbsolute(host)||host.includes(':')))throw Error('reverse_executor_konfig:SYNAPSE_REVERSE_HOST_ROOT (absoluter Host-Pfad erwartet)');
+ return {reverseRoot:root,arbeitRoot:path.join(root,'_arbeit'),hostRoot:host?path.resolve(host):null,image:m[1],digest:m[2],kinds,
   parallel:ganz(env,'SYNAPSE_REVERSE_EXECUTOR_PARALLEL',1,1,16),leaseSeconds,renewMs:Math.max(1000,Math.floor(leaseSeconds*1000/3)),
   tickMs:ganz(env,'SYNAPSE_REVERSE_EXECUTOR_TICK_MS',5000,100),resourceNeed:need,
   resourceDomain:env.SYNAPSE_REVERSE_RESOURCE_DOMAIN?.trim()||null,
@@ -133,13 +139,34 @@ export async function reverseArbeitsOrdner(k:ReverseExecutorKonfig,jobId:string)
  await runnerOrdner(dir);
  return dir;
 }
-export function reverseMountResolver(k:ReverseExecutorKonfig):(d:ToolDescriptor,ctx:ToolInstanceContext)=>Promise<ResolvedToolMount[]>{
+/**
+ * P18-T66: Host-Pfad der Reverse-Wurzel. SYNAPSE_REVERSE_HOST_ROOT hat Vorrang; sonst liest die API (im Container) ihren eigenen
+ * Mount mit Ziel = Reverse-Wurzel. Ohne Treffer (API nicht im Container) gilt der eigene Pfad. Ergebnis wird einmal ermittelt.
+ */
+export function reverseHostWurzel(k:ReverseExecutorKonfig,docker:Pick<Docker,'getContainer'>,selbst:string=os.hostname()):()=>Promise<string|null>{
+ let ergebnis:Promise<string|null>|null=null;
+ return ()=>ergebnis??=(async()=>{
+  if(k.hostRoot)return k.hostRoot;
+  try{
+   const info=await docker.getContainer(selbst).inspect();
+   const m=(info.Mounts??[]).find(x=>!!x.Destination&&path.resolve(x.Destination)===k.reverseRoot);
+   if(m?.Source&&path.isAbsolute(m.Source)&&!m.Source.includes(':')){console.log('[reverse-executor] Host-Pfad der Bibliothek: '+m.Source);return m.Source;}
+   console.warn('[reverse-executor] Kein Mount fuer '+k.reverseRoot+' im eigenen Container gefunden, Binds nutzen den API-Pfad.');
+  }catch{/* nicht im Container oder kein Zugriff: eigener Pfad */}
+  return null;
+ })();
+}
+export function reverseMountResolver(k:ReverseExecutorKonfig,hostWurzel:()=>Promise<string|null>=async()=>k.hostRoot??null):(d:ToolDescriptor,ctx:ToolInstanceContext)=>Promise<ResolvedToolMount[]>{
  return async(d,ctx)=>{
   if(d.tool_id!==REVERSE_TOOL_ID)return [];
-  const mounts:ResolvedToolMount[]=[{role:'bibliothek',source:k.reverseRoot,root:k.reverseRoot,allowWrite:false,allowProjectShare:false}];
+  // P18-T66: Docker bindet Host-Pfade. Ohne Übersetzung legt Docker auf dem Host einen leeren Ordner unter dem API-Pfad an,
+  // der Runner findet /bib/<eintrag> nicht (ungueltiger_auftrag) und Ausgaben landeten ausserhalb der Bibliothek.
+  const host=await hostWurzel();
+  const aufHost=(p:string)=>host?path.join(host,path.relative(k.reverseRoot,p)):p;
+  const mounts:ResolvedToolMount[]=[{role:'bibliothek',source:k.reverseRoot,hostSource:aufHost(k.reverseRoot),root:k.reverseRoot,allowWrite:false,allowProjectShare:false}];
   // Alter Descriptor (je Auftrag, während der Migration): nur dessen Ordner. Globaler Container: ganz _arbeit.
-  if(ctx.job_id)mounts.push({role:'arbeit',source:await reverseArbeitsOrdner(k,ctx.job_id),root:k.arbeitRoot,allowWrite:true,allowProjectShare:false});
-  else{await mkdir(k.arbeitRoot,{recursive:true,mode:0o711});mounts.push({role:'arbeit',source:k.arbeitRoot,root:k.arbeitRoot,allowWrite:true,allowProjectShare:false});}
+  if(ctx.job_id){const quelle=await reverseArbeitsOrdner(k,ctx.job_id);mounts.push({role:'arbeit',source:quelle,hostSource:aufHost(quelle),root:k.arbeitRoot,allowWrite:true,allowProjectShare:false});}
+  else{await mkdir(k.arbeitRoot,{recursive:true,mode:0o711});mounts.push({role:'arbeit',source:k.arbeitRoot,hostSource:aufHost(k.arbeitRoot),root:k.arbeitRoot,allowWrite:true,allowProjectShare:false});}
   return mounts;
  };
 }
@@ -484,7 +511,7 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  catch(e){console.error('[reverse-executor] Konfiguration ungültig, Executor bleibt aus:',(e as Error).message);return null;}
  if(!k)return null;
  const konfig=k;
- try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:reverseMountResolver(konfig),
+ try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:reverseMountResolver(konfig,reverseHostWurzel(konfig,new Docker({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET??'/var/run/docker.sock'}))),
   lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:reverseRessourcen});}
  catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
  const identitaet=reverseServerIdentitaet();

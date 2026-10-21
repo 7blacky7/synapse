@@ -6,7 +6,8 @@ import {realpath,lstat} from 'node:fs/promises';
 import {resolve,relative,isAbsolute} from 'node:path';
 import type {ToolDescriptor} from '@synapse/core';
 import type {ToolContainerExecutor,ToolInstanceContext,ToolObservation} from './tool-lifecycle.js';
-export interface ResolvedToolMount {role:string;source:string;root:string;allowWrite:boolean;allowProjectShare:boolean}
+/** hostSource (P18-T66): Pfad desselben Ordners aus Sicht des Docker-Hosts, wenn die API selbst im Container läuft; geprüft wird source. */
+export interface ResolvedToolMount {role:string;source:string;hostSource?:string;root:string;allowWrite:boolean;allowProjectShare:boolean}
 export function buildToolContainerOptions(d:ToolDescriptor,ctx:ToolInstanceContext,mounts:ResolvedToolMount[]):Docker.ContainerCreateOptions {
  const binds:string[]=[];
  for(const m of d.mounts){
@@ -15,8 +16,9 @@ export function buildToolContainerOptions(d:ToolDescriptor,ctx:ToolInstanceConte
    (m.write&&!source.allowWrite)||(m.project_share&&(!d.allow_project_share||!source.allowProjectShare)))throw Error('tool_mount_forbidden');
   const rel=relative(resolve(source.root),resolve(source.source));
   if(rel==='..'||rel.startsWith('../')||isAbsolute(rel)||source.source.includes(':')||
+   (source.hostSource!==undefined&&(!isAbsolute(source.hostSource)||source.hostSource.includes(':')))||
    (m.job_only&&m.write&&!resolve(source.source).split('/').includes(ctx.job_id!)))throw Error('tool_mount_scope');
-  binds.push(source.source+':'+m.target+':'+(m.write?'rw':'ro'));
+  binds.push((source.hostSource??source.source)+':'+m.target+':'+(m.write?'rw':'ro'));
  }
  return {name:ctx.name,Image:d.image+'@'+d.digest,Cmd:d.command,
   Labels:{'synapse.tool':d.tool_id,'synapse.instance':ctx.instance_id,'synapse.generation':ctx.generation},
