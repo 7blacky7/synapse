@@ -714,6 +714,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       zuruecksetzen: 'build_einstellungen: Eintrag entfernen.',
       nachlauf: 'build_einstellungen: Nachlauf statt Warteschlange.',
       nachlauf_buendel_s: 'build_einstellungen: Sammelzeit Nachlauf (s).',
+      plan_id: 'build_pruefen: geschriebener Plan.',
       project: 'Projekt (offene_faelle: Filter).',
       nur_eigene: 'offene_faelle: nur eigene.',
       fall_id: 'erklaerung_ablegen: Fall (fall-cc-erklaerung).',

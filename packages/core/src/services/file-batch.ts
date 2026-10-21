@@ -64,7 +64,7 @@ import {
 import { aenderungsBereiche, dateiDiff, diffMaxZeichen, diffMaxZeilen, diffText, zeilenZuordnung, type Bereich, type DateiDiff } from './file-diff.js';
 import { normalisiereOps } from './projekt-pfad.js';
 import { meldeFehlerfall } from './erklaerungen.js';
-import { registriereBuildCommitAusfuehrer, reiheCommitEin, buildWarteschlangeLaenge, laeuftAusBuildWarteschlange, stosseBuildNachlaufAn, type BuildPlanErgebnis } from './build-pruefung.js';
+import { registriereBuildCommitAusfuehrer, reiheCommitEin, buildWarteschlangeLaenge, laeuftAusBuildWarteschlange, merkeBuildNachlaufVor, type BuildPlanErgebnis } from './build-pruefung.js';
 import {
   findForeignActiveReservationPrimaries,
   getReservationTtlConfig,
@@ -690,7 +690,7 @@ function mitVerweis<T extends { left_op_index: number; right_op_index: number }>
   }));
 }
 
-export type CommitBatchResult = {fs_pruefung?:FsPruefung; /** P16-T23: projektweite Pruefung nach dem commit angestossen (Nachlauf). */ build_angestossen?: Record<string, unknown>} & (
+export type CommitBatchResult = {fs_pruefung?:FsPruefung; /** P16-T23: Plan zur grossen Pruefung vorgemerkt, fertiger Aufruf build_pruefen (Nachlauf). */ build_pruefen?: Record<string, unknown>} & (
   | {
       success: true;
       plan_id: string;
@@ -5167,11 +5167,12 @@ async function commitBatchOnce(args: {
   }
   const result=Number(coeditWaitCount.rows[0]?.count ?? 0)>0||distinctOpAgents.size>1||mehrereTasks
     ? await commitCoeditBatch(commitArgs,JSON.stringify([plan.ops,plan.expected_hashes])) : await commitLegacyLocked(commitArgs,plan);
-  // P16-T23: geschrieben -> die projektweite Pruefung nur anstossen (Nachlauf-Schalter; sonst null, Antwort unveraendert).
-  const angestossen = result.success && nachlaufDateien
-    ? await stosseBuildNachlaufAn(plan.project, args.plan_id, caller ?? plan.owner_agent_id, nachlaufDateien, (e) => speichereNachlaufErgebnis(args.plan_id, e))
+  // P16-T23: geschrieben -> nichts starten, nur vormerken; die Antwort nennt den fertigen Aufruf build_pruefen
+  // (Nachlauf-Schalter; sonst null, Antwort unveraendert).
+  const vorgemerkt = result.success && nachlaufDateien
+    ? await merkeBuildNachlaufVor(plan.project, args.plan_id, caller ?? plan.owner_agent_id, nachlaufDateien, (e) => speichereNachlaufErgebnis(args.plan_id, e))
     : null;
-  return {...result,fs_pruefung,...(angestossen ? { build_angestossen: angestossen } : {})};
+  return {...result,fs_pruefung,...(vorgemerkt ? { build_pruefen: vorgemerkt } : {})};
 }
 
 /**

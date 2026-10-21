@@ -3,7 +3,9 @@
  * (kein Docker). Gegen synapse_test (DATABASE_URL des Shell-Jobs), eigenes Testprojekt, wird am Ende entfernt.
  *
  * Geprueft: Standard AUS = Altverhalten (Build-Stufe am Plan, Warteschlange), Rechte/Validierung, Produkt-Schalter
- * je Projekt, plan ohne Build-Stufe, commit schreibt SOFORT trotz laufender grosser Pruefung (build_angestossen),
+ * je Projekt, plan ohne Build-Stufe, commit schreibt SOFORT trotz laufender grosser Pruefung und startet NICHTS (nur
+ * vorgemerkt, fertiger Aufruf build_pruefen), erst code_check(build_pruefen) stoesst an; laufender Lauf auf seinem Abbild
+ * bleibt von spaeteren commits unberuehrt, die kommen in den Folgelauf; offener Plan -> erst committen,
  * Nachlauf mit Basis vor dem commit (neuer Folgefehler mit Plan-Zuordnung in build_status), Hinweis build_nachlauf
  * beim naechsten beliebigen Tool-Aufruf genau einmal, Ergebnis am Plan (sperrt nicht), zwei commits -> EIN Lauf,
  * intern-Override hat Vorrang (nur SYNAPSE_INTERN_TOOL=1), Ablauf -> Produkt-Schalter.
@@ -145,7 +147,7 @@ try {
     assert.equal(p.pruefung?.build?.status, 'laeuft', JSON.stringify(p.pruefung));
     const c = await batch.commitBatch({ plan_id: p.plan_id, agent_id: agent });
     assert.equal(c.error, 'build_pruefung_eingereiht', JSON.stringify(c).slice(0, 500));
-    assert.equal(c.build_angestossen, undefined);
+    assert.equal(c.build_pruefen, undefined);
     fake.freigeben();
     const fertig = await warteBis(async () => ((await status()).letzte_commits.find((l) => l.plan_id === p.plan_id)));
     assert.equal(fertig?.ergebnis, 'geschrieben');
@@ -176,10 +178,19 @@ try {
     assert.equal(p1.pruefung?.build, undefined, 'keine Build-Stufe beim plan: ' + JSON.stringify(p1.pruefung?.build));
     const c1 = await batch.commitBatch({ plan_id: p1.plan_id, agent_id: agent });
     assert.equal(c1.success, true, JSON.stringify(c1).slice(0, 800));
-    assert.equal(c1.build_angestossen?.angestossen, true, JSON.stringify(c1.build_angestossen));
-    assert.match(c1.build_angestossen.hinweis, /build_nachlauf/);
+    assert.equal(c1.build_pruefen?.vorgemerkt, true, JSON.stringify(c1.build_pruefen));
+    assert.equal(c1.build_pruefen.aufruf, `code_check(action:"build_pruefen", project:"${project}", plan_id:"${p1.plan_id}")`);
+    assert.match(c1.build_pruefen.hinweis, /build_nachlauf/);
     assert.equal(await inhalt('packages/c/src/index.ts'), 'export const c = 2;\n');
     planC = p1.plan_id;
+    // Nach dem commit startet NICHTS automatisch (laenger als die Sammelzeit warten).
+    await sleep(3500);
+    const s0 = await status();
+    assert.ok(!s0.nachlauf.laeuft && s0.nachlauf.wartend.length === 0, 'keine Automatik: ' + JSON.stringify(s0.nachlauf));
+    assert.deepEqual(s0.nachlauf.vorgemerkt.map((v) => v.plan_id), [planC]);
+    const a1 = await aktion('build_pruefen', { plan_id: planC }, agent);
+    assert.equal(a1.success, true, JSON.stringify(a1));
+    assert.equal(a1.angestossen, true);
     // Lauf startet nach der Sammelzeit (3 s) und haengt im Fake.
     const laeuft = await warteBis(async () => (await status()).nachlauf?.laeuft, 15000);
     assert.ok(laeuft, 'Nachlauf laeuft');
@@ -187,19 +198,25 @@ try {
     assert.equal((await status()).zustand, 'laeuft');
     const p2 = await ersetze('packages/b/src/index.ts', B_GUT, B_ZWEI);
     assert.equal(p2.pruefung?.build, undefined);
+    const vorC2 = fake.aufrufe.length;
     const t0 = Date.now();
     const c2 = await batch.commitBatch({ plan_id: p2.plan_id, agent_id: agent });
     assert.equal(c2.success, true, 'commit trotz laufender Pruefung: ' + JSON.stringify(c2).slice(0, 800));
     assert.ok(Date.now() - t0 < 10000, 'commit wartet nicht auf die Pruefung');
-    assert.ok(c2.build_angestossen?.laeuft_seit, JSON.stringify(c2.build_angestossen));
+    assert.equal(c2.build_pruefen?.vorgemerkt, true, JSON.stringify(c2.build_pruefen));
     assert.equal(await inhalt('packages/b/src/index.ts'), B_ZWEI);
     planB = p2.plan_id;
+    const a2 = await aktion('build_pruefen', { plan_id: planB }, agent);
+    assert.ok(a2.laeuft_seit, 'Anstoss waehrend des Laufs: ' + JSON.stringify(a2));
     assert.deepEqual((await status()).nachlauf.wartend.map((w) => w.plan_id), [planB]);
     fake.freigeben();
     assert.ok(await ruhig(), 'beide Laeufe fertig');
     const letzte = (await status()).nachlauf.letzte;
     assert.deepEqual(letzte.map((l) => l.plaene.map((x) => x.plan_id)), [[planB], [planC]], 'genau ein Folgelauf');
+    assert.equal(letzte[1].status, 'fertig', 'erster Lauf nicht abgebrochen');
     assert.equal(letzte[1].neue_fehler, 0);
+    // Abbild: die Auftraege des ersten Laufs (vor dem zweiten commit gezogen) kennen B_ZWEI nicht.
+    assert.ok(vorC2 > 0 && fake.aufrufe.slice(0, vorC2).every((a) => !a.dateien.some((d) => d.pfad === 'packages/b/src/index.ts' && d.inhalt.includes('b: number'))), 'erster Lauf auf altem Abbild');
     assert.equal(letzte[0].neue_fehler, 1, JSON.stringify(letzte[0]));
     const bf = letzte[0].befunde[0];
     assert.equal(bf.datei, 'packages/a/src/index.ts');
@@ -240,6 +257,8 @@ try {
     const p2 = await ersetze('packages/b/src/index.ts', B_ZWEI, B_GUT);
     assert.equal((await batch.commitBatch({ plan_id: p1.plan_id, agent_id: agent })).success, true);
     assert.equal((await batch.commitBatch({ plan_id: p2.plan_id, agent_id: agent })).success, true);
+    assert.equal((await aktion('build_pruefen', { plan_id: p1.plan_id }, agent)).success, true);
+    assert.equal((await aktion('build_pruefen', { plan_id: p2.plan_id }, agent)).success, true);
     assert.ok(await ruhig());
     const nachher = bp.buildPruefungZustand().nachlauf.zaehler;
     assert.equal(nachher.laeufe - vorher.laeufe, 1, JSON.stringify({ vorher, nachher }));
@@ -251,6 +270,17 @@ try {
     assert.deepEqual(h.map((x) => x.plan_id), [p1.plan_id, p2.plan_id]);
     assert.ok(h.every((x) => x.neue_fehler === 0 && /gruen/.test(x.hinweis)));
     assert.deepEqual(bp.holeBuildNachlaufHinweise(agent), []);
+  });
+
+  await check('build_pruefen: offener Plan -> erst committen; ohne plan_id/unbekannt -> Fehler; zweiter Anstoss -> wiederholt', async () => {
+    const p = await ersetze('packages/c/src/index.ts', 'export const c = 3;\n', 'export const c = 5;\n');
+    const r = await aktion('build_pruefen', { plan_id: p.plan_id }, agent);
+    assert.equal(r.error, 'plan_offen', JSON.stringify(r));
+    assert.match(r.message, /erst committen/);
+    await batch.cancelBatch(p.plan_id, agent, 'Testende');
+    assert.equal((await aktion('build_pruefen', {}, agent)).error, 'ungueltig');
+    assert.equal((await aktion('build_pruefen', { plan_id: '999999999' }, agent)).error, 'nicht_vorgemerkt');
+    assert.equal((await aktion('build_pruefen', { plan_id: planB }, agent)).wiederholt, true);
   });
 
   // ─── intern-Override ──────────────────────────────────────────────────────────────────────────────────────────

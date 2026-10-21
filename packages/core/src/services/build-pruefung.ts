@@ -34,8 +34,11 @@
  *        Aufrufkontext erneut ausgefuehrt werden.
  *
  * NACHLAUF (P16-T23, User 21.10.2026): Mit Schalter 'nachlauf' schreibt ein commit SOFORT - die projektweite Stufe
- *        laeuft weder beim plan noch sperrt oder reiht sie den commit ein. Nach dem Schreiben stoesst file-batch sie nur
- *        an (stosseBuildNachlaufAn): je Projekt werden die Anstoesse gesammelt (nachlauf_buendel_ms), EIN Lauf prueft den
+ *        laeuft weder bei plan/plan_status noch sperrt oder reiht sie den commit ein. Nach dem Schreiben startet NICHTS
+ *        (User-Korrektur): file-batch merkt den Plan nur vor (merkeBuildNachlaufVor), die commit-Antwort nennt den fertigen
+ *        Aufruf code_check(build_pruefen, plan_id). Erst der stoesst an (stosseBuildNachlaufAn; offener Plan -> erst
+ *        committen): je Projekt werden die Anstoesse gesammelt (nachlauf_buendel_ms), EIN Lauf auf dem beim Start gezogenen
+ *        Abbild prueft den
  *        Stand vor dem ersten gegen den nach dem letzten commit des Buendels (Basis = PruefDatei.basis, Schatten =
  *        geschriebener Stand), nur betroffene Pakete. Kommen waehrenddessen commits dazu, folgt genau ein weiterer Lauf.
  *        Das Ergebnis geht je Plan an den Committer als Feld build_nachlauf in der Antwort seines NAECHSTEN Tool-Aufrufs
@@ -869,9 +872,12 @@ async function pruefeTsBuildFuerPlan(project: string, dateien: PruefDatei[], o: 
     if (!anbindung) return { stand: stand({ status: 'nicht_verfuegbar', hinweis: KEIN_PRUEFER }), befunde: [] };
     const budget = await wirksamesBuildBudget();
     const basisQuellen = await ladeQuellen(project);
+    // P16-T23: im Nachlauf ist der Schatten das beim Laufstart gezogene Abbild des geschriebenen PG-Stands (auch spaetere
+    // commits derselben Dateien); die Basis ist dasselbe Abbild mit dem Stand vor dem Buendel.
+    const geschrieben = o.nachlauf ? new Map(basisQuellen) : null;
     if (o.nachlauf) stelleBasisHer(basisQuellen, relevant);
-    const schattenQuellen = new Map(basisQuellen);
-    for (const d of relevant) {
+    const schattenQuellen = geschrieben ?? new Map(basisQuellen);
+    for (const d of geschrieben ? [] : relevant) {
       if (d.geloescht) schattenQuellen.delete(d.file_path);
       else schattenQuellen.set(d.file_path, d.ergebnis);
     }
@@ -1237,9 +1243,10 @@ async function pruefeSpracheFuerPlan(project: string, s: SprachDef, dateien: Pru
     if (!anbindung) return { stand: stand({ status: 'nicht_verfuegbar', hinweis: KEIN_PRUEFER }), befunde: [] };
     const budget = await wirksamesBuildBudget();
     const basisQuellen = await ladeSprachQuellen(project, s);
+    const geschrieben = o.nachlauf ? new Map(basisQuellen) : null;
     if (o.nachlauf) stelleBasisHer(basisQuellen, relevant);
-    const schattenQuellen = new Map(basisQuellen);
-    for (const d of relevant) {
+    const schattenQuellen = geschrieben ?? new Map(basisQuellen);
+    for (const d of geschrieben ? [] : relevant) {
       if (d.geloescht) schattenQuellen.delete(d.file_path);
       else schattenQuellen.set(d.file_path, d.ergebnis);
     }
@@ -1561,7 +1568,7 @@ const nachlaufLetzte = new Map<string, NachlaufLauf[]>();
 const nachlaufHinweise = new Map<string, BuildNachlaufHinweis[]>();
 /** Schon angestossene Plaene: ein Plan wird nur einmal committet (Wiederholungsweg commitLegacyLocked -> commitBatchOnce). */
 const nachlaufAngestossen = new Set<string>();
-const nachlaufZaehler = { angestossen: 0, laeufe: 0, gebuendelt: 0, hinweise_zugestellt: 0, fehler: 0 };
+const nachlaufZaehler = { vorgemerkt: 0, angestossen: 0, laeufe: 0, gebuendelt: 0, hinweise_zugestellt: 0, fehler: 0 };
 let nachlaufLetzterFehler: { zeit: string; fehler: string } | null = null;
 const NACHLAUF_HINWEISE_MAX = 20;
 
@@ -1625,37 +1632,90 @@ function planeNachlauf(project: string, ms: number): void {
   nachlaufTimer.set(project, t);
 }
 
+/** P16-T23: geschriebene Plaene mit ihren Pruefdateien, bis build_pruefen sie anstoesst (nur im Speicher, begrenzt). */
+const nachlaufVorgemerkt = new Map<string, Omit<NachlaufAuftrag, 'angestossen_am'> & { vorgemerkt_am: string }>();
+const NACHLAUF_VORMERK_MAX = 200;
+
+/** Fertig ausgefuellter Aufruf der grossen Pruefung eines geschriebenen Plans (Hinweis in der commit-Antwort). */
+export function buildPruefenAufruf(project: string, planId: string): string {
+  return `code_check(action:"build_pruefen", project:"${project}", plan_id:"${planId}")`;
+}
+
 /**
- * P16-T23: nach einem GESCHRIEBENEN commit die projektweite Pruefung anstossen (nur bei wirksamem Nachlauf-Schalter und
- * Build-Tor, nur bei build-relevanten Dateien). Buendelt je Projekt; Ergebnis ueber rueckruf und als Hinweis an agent.
- * null = nichts angestossen (Antwort unveraendert). Wirft nie.
+ * P16-T23 (User-Korrektur 21.10.2026: keine Automatik): nach einem GESCHRIEBENEN commit startet NICHTS. Der Plan wird
+ * nur vorgemerkt (wirksamer Nachlauf-Schalter und Build-Tor, build-relevante Dateien); die commit-Antwort bekommt den
+ * fertigen Aufruf build_pruefen. null = nichts vorgemerkt (Antwort unveraendert). Wirft nie.
  */
-export async function stosseBuildNachlaufAn(
+export async function merkeBuildNachlaufVor(
   project: string, planId: string, agent: string | null, dateien: PruefDatei[], rueckruf?: BuildNachlaufRueckruf,
 ): Promise<Record<string, unknown> | null> {
   try {
     if (!dateien.some((d) => istBuildRelevant(d.file_path) || istSprachRelevant(d.file_path))) return null;
-    const schalter = await buildNachlaufAktiv(project);
-    if (!schalter.aktiv || !(await buildAktiv(project)).aktiv) return null;
-    if (nachlaufAngestossen.has(planId)) return { angestossen: true, plan_id: planId, wiederholt: true };
-    nachlaufAngestossen.add(planId);
-    if (nachlaufAngestossen.size > 500) nachlaufAngestossen.delete(nachlaufAngestossen.values().next().value as string);
-    const liste = nachlaufWartend.get(project) ?? [];
-    liste.push({ project, plan_id: planId, agent, dateien, angestossen_am: new Date().toISOString(), ...(rueckruf ? { rueckruf } : {}) });
-    nachlaufWartend.set(project, liste);
-    nachlaufZaehler.angestossen++;
-    const laeuft = nachlaufLaeuft.get(project);
-    planeNachlauf(project, schalter.buendel_ms);
+    if (!(await buildNachlaufAktiv(project)).aktiv || !(await buildAktiv(project)).aktiv) return null;
+    nachlaufVorgemerkt.set(planId, { project, plan_id: planId, agent, dateien, vorgemerkt_am: new Date().toISOString(), ...(rueckruf ? { rueckruf } : {}) });
+    while (nachlaufVorgemerkt.size > NACHLAUF_VORMERK_MAX) nachlaufVorgemerkt.delete(nachlaufVorgemerkt.keys().next().value as string);
+    nachlaufZaehler.vorgemerkt++;
+    const aufruf = buildPruefenAufruf(project, planId);
     return {
-      angestossen: true, plan_id: planId, wartend: liste.length,
-      ...(laeuft ? { laeuft_seit: laeuft.gestartet_am } : {}),
-      hinweis: `Geschrieben. Die projektweite Pruefung laeuft nur noch im Hintergrund (${laeuft ? 'nach dem laufenden Durchgang' : `gebuendelt nach ${Math.round(schalter.buendel_ms / 100) / 10} s`}) und sperrt nichts; `
-        + `das Ergebnis kommt als Feld build_nachlauf in deiner naechsten Tool-Antwort (egal welches Tool). Stand: code_check(action:"build_status", project:"${project}").`,
+      vorgemerkt: true, plan_id: planId, aufruf,
+      hinweis: `Geschrieben. Die grosse projektweite Pruefung startet nur auf Anstoss: ${aufruf} - sie laeuft dann im Hintergrund auf einem Abbild `
+        + 'des geschriebenen Stands, sperrt nichts, und das Ergebnis kommt als Feld build_nachlauf in deiner naechsten Tool-Antwort.',
     };
   } catch (err) {
     nachlaufZaehler.fehler++;
     nachlaufLetzterFehler = { zeit: new Date().toISOString(), fehler: (err as Error).message };
     return null;
+  }
+}
+
+/**
+ * P16-T23: code_check(build_pruefen, plan_id) - startet die grosse Pruefung eines geschriebenen, vorgemerkten Plans im
+ * Hintergrund (je Projekt gebuendelt, Sammelzeit buendel_ms). Offener Plan -> erst committen. agent = Empfaenger des
+ * Ergebnis-Hinweises (Aufrufer, sonst Committer). Wirft nie.
+ */
+export async function stosseBuildNachlaufAn(planId: string, agent: string | null): Promise<Record<string, unknown>> {
+  try {
+    const v = nachlaufVorgemerkt.get(planId);
+    if (!v) {
+      if (nachlaufAngestossen.has(planId)) {
+        return { success: true, plan_id: planId, angestossen: true, wiederholt: true, hinweis: 'Schon angestossen; das Ergebnis kommt als build_nachlauf in der naechsten Tool-Antwort, Stand in build_status.' };
+      }
+      const r = await getPool().query<{ status: string; project: string }>('SELECT status::text AS status, project FROM file_batch_plans WHERE id = $1::bigint', [planId]);
+      const plan = r.rows[0];
+      if (plan?.status === 'open') {
+        return {
+          success: false, error: 'plan_offen', plan_id: planId,
+          message: `Plan ${planId} ist noch offen - erst committen: files(action:"commit", plan_id:"${planId}"). Fuer offene Plaene gilt nur die schnelle Pruefung der `
+            + 'geaenderten Dateien; die grosse Pruefung prueft nur den geschriebenen Stand. Die commit-Antwort nennt danach den fertigen Aufruf.',
+        };
+      }
+      return {
+        success: false, error: 'nicht_vorgemerkt', plan_id: planId,
+        message: `Plan ${planId} (${plan?.status ?? 'unbekannt'}) ist nicht zur grossen Pruefung vorgemerkt: beim commit Nachlauf-Schalter oder Build-Tor aus, keine `
+          + `build-relevante Datei, oder die API ist seitdem neu gestartet. Stattdessen den Basisstand pruefen: code_check(action:"build_status"${plan ? `, project:"${plan.project}"` : ''}, pruefen:true).`,
+      };
+    }
+    nachlaufVorgemerkt.delete(planId);
+    nachlaufAngestossen.add(planId);
+    if (nachlaufAngestossen.size > 500) nachlaufAngestossen.delete(nachlaufAngestossen.values().next().value as string);
+    const liste = nachlaufWartend.get(v.project) ?? [];
+    liste.push({ project: v.project, plan_id: v.plan_id, agent: agent ?? v.agent, dateien: v.dateien, angestossen_am: new Date().toISOString(), ...(v.rueckruf ? { rueckruf: v.rueckruf } : {}) });
+    nachlaufWartend.set(v.project, liste);
+    nachlaufZaehler.angestossen++;
+    const schalter = await buildNachlaufAktiv(v.project);
+    const laeuft = nachlaufLaeuft.get(v.project);
+    planeNachlauf(v.project, schalter.buendel_ms);
+    return {
+      success: true, plan_id: planId, project: v.project, angestossen: true, wartend: liste.length,
+      ...(laeuft ? { laeuft_seit: laeuft.gestartet_am } : {}),
+      hinweis: `Grosse Pruefung angestossen (${laeuft ? 'nach dem laufenden Durchgang' : `gebuendelt nach ${Math.round(schalter.buendel_ms / 100) / 10} s`}) auf einem Abbild des `
+        + 'geschriebenen Stands - normal weiterarbeiten, nichts wird gesperrt. Das Ergebnis kommt als Feld build_nachlauf in deiner naechsten Tool-Antwort; '
+        + `Stand: code_check(action:"build_status", project:"${v.project}").`,
+    };
+  } catch (err) {
+    nachlaufZaehler.fehler++;
+    nachlaufLetzterFehler = { zeit: new Date().toISOString(), fehler: (err as Error).message };
+    return { success: false, error: 'fehler', plan_id: planId, message: (err as Error).message };
   }
 }
 
@@ -1732,14 +1792,16 @@ async function nachlaufAnzeige(project: string): Promise<Record<string, unknown>
   const wartend = nachlaufWartend.get(project) ?? [];
   const laeuft = nachlaufLaeuft.get(project);
   const letzte = nachlaufLetzte.get(project) ?? [];
-  if (!schalter.aktiv && wartend.length === 0 && !laeuft && letzte.length === 0) return {};
+  const vorgemerkt = [...nachlaufVorgemerkt.values()].filter((v) => v.project === project);
+  if (!schalter.aktiv && wartend.length === 0 && !laeuft && letzte.length === 0 && vorgemerkt.length === 0) return {};
   return {
     nachlauf: {
       schalter,
+      vorgemerkt: vorgemerkt.map((v) => ({ plan_id: v.plan_id, agent: v.agent, vorgemerkt_am: v.vorgemerkt_am, aufruf: buildPruefenAufruf(project, v.plan_id) })),
       ...(laeuft ? { laeuft } : {}),
       wartend: wartend.map((a) => ({ plan_id: a.plan_id, agent: a.agent, angestossen_am: a.angestossen_am })),
       letzte,
-      legende: 'Nachlauf (P16-T23): commit schreibt sofort, die projektweite Pruefung laeuft danach gebuendelt. letzte = Laeufe (neueste zuerst) mit plaene und neuen Befunden samt plan_ids; Ergebnis je Plan als build_nachlauf in der naechsten Tool-Antwort des Committers.',
+      legende: 'Nachlauf (P16-T23): commit schreibt sofort und merkt den Plan nur vor (vorgemerkt); die projektweite Pruefung startet erst mit code_check(build_pruefen, plan_id) und laeuft gebuendelt. letzte = Laeufe (neueste zuerst) mit plaene und neuen Befunden samt plan_ids; Ergebnis je Plan als build_nachlauf in der naechsten Tool-Antwort des Committers.',
     },
   };
 }
@@ -1779,6 +1841,7 @@ export function buildPruefungZustand(): Record<string, unknown> {
       zaehler: { ...nachlaufZaehler },
       letzter_fehler: nachlaufLetzterFehler,
       laufend: [...nachlaufLaeuft.keys()],
+      vorgemerkt: nachlaufVorgemerkt.size,
       wartend: Object.fromEntries([...nachlaufWartend].map(([p, l]) => [p, l.length])),
       offene_hinweise: [...nachlaufHinweise.values()].reduce((n, l) => n + l.length, 0),
     },
@@ -1787,7 +1850,7 @@ export function buildPruefungZustand(): Record<string, unknown> {
 
 // ─── code_check-Actions ─────────────────────────────────────────────────────────────────────────────────────────
 
-export const BUILD_ACTIONS = ['build_status', 'build_einstellungen'] as const;
+export const BUILD_ACTIONS = ['build_status', 'build_einstellungen', 'build_pruefen'] as const;
 
 /** Zusaetzliche Schema-Properties fuer code_check (REST und stdio aus EINER Quelle). project/grund stehen schon dort. */
 export const BUILD_PARAMETER: Record<string, Record<string, unknown>> = {
@@ -1800,6 +1863,7 @@ export const BUILD_PARAMETER: Record<string, Record<string, unknown>> = {
   heap_mb: { type: 'number', description: 'build_einstellungen setzen: Heap von tsc in MB (128..16384; Standard Speicher - 192)' },
   zeitlimit_s: { type: 'number', description: 'build_einstellungen setzen: Zeitlimit je Build-Lauf in s (10..3600); danach teilweise (sperrt nicht)' },
   sprachen: { type: 'array', items: { type: 'string', enum: ['kotlin', 'java', 'rust', 'go', 'python', 'c', 'cpp', 'dart', 'csharp', 'keine'] }, description: 'build_einstellungen setzen: Sprachen der projektweiten Pruefung neben TypeScript (kotlin, java, rust, go, python, c, cpp, dart, csharp; keine = nur TypeScript) - mit project fuer dieses Projekt, ohne global. Standard go+python (Env BUILD_PRUEFUNG_SPRACHEN). Dart/C# offline, fehlender SDK-/Paketkontext teilweise; F# nicht unterstützt.' },
+  plan_id: { type: 'string', description: 'build_pruefen (P16-T23): geschriebener Plan, dessen Stand projektweit im Hintergrund geprueft wird (Aufruf steht fertig in der commit-Antwort); offener Plan -> erst committen' },
   nachlauf: { type: 'boolean', description: 'build_einstellungen setzen (P16-T23): commit schreibt sofort, die projektweite Pruefung laeuft danach gebuendelt im Hintergrund, Ergebnis als Hinweis build_nachlauf beim naechsten Tool-Aufruf (statt Warteschlange) - mit project fuer dieses Projekt, ohne global. Standard aus.' },
   nachlauf_buendel_s: { type: 'number', description: 'build_einstellungen setzen (P16-T23): Sammelzeit in s vor einem Nachlauf (0..120, global, Standard 3)' },
   zuruecksetzen: { type: 'string', enum: ['projekt', 'global', 'budget'], description: 'build_einstellungen setzen: Eintrag entfernen (projekt braucht project) - danach gilt die naechste Ebene bzw. Env' },
@@ -1880,6 +1944,11 @@ export async function fuehreBuildActionAus(action: string, args: Record<string, 
         legende: 'zustand: gruen = Basis ohne Fehler, rot = Basis mit Fehlern (Tor sperrt nur NEUE), laeuft (Fortschritt in laeuft: Phase typen/wartet/laeuft mit Zeiten), teilweise (Zeitlimit/Speicher/fehlende Abhaengigkeiten), abgebrochen (letzter Basislauf ohne Ergebnis, z. B. Container gestoppt/neu gestartet - Grund in letzter_abbruch; erneut pruefen), unbekannt (noch nie geprueft: build_status mit pruefen:true). basis.laeufe: Dauer und hoechster RSS je Projekt/Schritt, basis.speicher: Container nach dem Lauf, basis.typen: Typen-Bestand aus dem Lockfile.',
         typen: typenZustand(),
       };
+    }
+    if (action === 'build_pruefen') {
+      const planId = text(args.plan_id);
+      if (!planId) return { success: false, error: 'ungueltig', message: 'build_pruefen braucht plan_id eines geschriebenen Plans (die commit-Antwort nennt den fertigen Aufruf).' };
+      return await stosseBuildNachlaufAn(planId, agent);
     }
     if (action === 'build_einstellungen') {
       const modus = text(args.modus) ?? 'status';
