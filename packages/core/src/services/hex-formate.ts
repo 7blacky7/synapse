@@ -5,6 +5,7 @@ import {aktuellerAgentAufruf} from './agent-bezug.js';
 import {aktuellerW1bAkteur,pruefeProfilVerwalter} from './agent-profil-verwalter.js';
 import {HexFehler,hexAkteur,hexGanzzahl,mitHexQuelle} from './hex-quellen.js';
 import type {HexStand} from './hex-einstellungen.js';
+import {zielinhaltHerkunft} from './zielinhalt.js';
 import {pruefeHexFormat,formatFehler} from './hex-format-sprache.js';
 import {interpretiereHexFormat,neuerFormatZustand,type FormatZustand} from './hex-format-interpreter.js';
 import {pruefeReverseAnsichtBindung} from './reverse-ansicht-retention.js';
@@ -165,7 +166,7 @@ async function anwenden(project:string,a:Record<string,unknown>,stand:HexStand):
   const cursor=randomUUID();
   const reply:Record<string,unknown>={success:true,action:a.action,project,beantwortet_von:'hex',format_id:id,format_version:v,canonical_hash:p.hash,profil:p.format.profil,
    ref:q.ref,file_path:q.file_path,revision:q.revision,sha256:q.sha256,groesse:q.groesse,bytebasis:q.bytebasis,
-   baum:[],baum_darstellung:'pfade_mit_elternpfad',vollstaendig:false,cursor,budget:{},grund:null,
+   baum:[],provenance:zielinhaltHerkunft(['baum[]']),baum_darstellung:'pfade_mit_elternpfad',vollstaendig:false,cursor,budget:{},grund:null,
    validierung:'Angeforderter Unterbaum und fuer seine Offsets benoetigte Felder; lazy instances nur auf Anforderung.',
    schalter:stand.formate_schalter};
   // Exakte Huelle + Budgetdiagnose reservieren; JSON wird niemals abgeschnitten.

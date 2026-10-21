@@ -2,6 +2,7 @@
 import type {HexQuelle} from './hex-quellen.js';
 import {HexFehler,hexGanzzahl} from './hex-quellen.js';
 import type {HexStand} from './hex-einstellungen.js';
+import {zielinhaltHerkunft} from './zielinhalt.js';
 const hex=(b:ArrayLike<number>)=>Array.from(b,x=>x<0?'??':x.toString(16).padStart(2,'0')).join(' ');
 export async function vergleicheHex(a:HexQuelle,b:HexQuelle,args:Record<string,unknown>,stand:HexStand,signal:AbortSignal):Promise<Record<string,unknown>>{
  const start=hexGanzzahl(args.offset,'offset',0),gesamt=Math.max(a.groesse,b.groesse);
@@ -14,7 +15,7 @@ export async function vergleicheHex(a:HexQuelle,b:HexQuelle,args:Record<string,u
  const ende=Math.min(gesamt,start+scan),bloecke:Array<Record<string,unknown>>=[];
  let pos=start,unvollstaendig=false,vergleiche=0,bytesA=0,bytesB=0,runStart:number|null=null,aa:number[]=[],bb:number[]=[],ramPeak=0;
  const flush=()=>{if(runStart===null)return;bloecke.push({offset:String(runStart),offset_hex:'0x'+runStart.toString(16),laenge:aa.length,bytes_a:hex(aa),bytes_b:hex(bb)});runStart=null;aa=[];bb=[];};
- const result=(next:number|null,eof:boolean)=>({success:true,action:'vergleichen',beantwortet_von:'hex',modus:'offsetgleich-v1',ref_a:a.ref,ref_b:b.ref,datei_a:a.file_path,datei_b:b.file_path,revision_a:a.revision,revision_b:b.revision,sha256_a:a.sha256,sha256_b:b.sha256,groesse_a:a.groesse,groesse_b:b.groesse,groessendifferenz:a.groesse-b.groesse,offset:String(start),verglichene_bytes:vergleiche,differenzen:bloecke,anzahl_bloecke:bloecke.length,naechster_offset:next===null?null:String(next),eof,vollstaendig:eof,budget:{max_scan_bytes:scan,max_diff_bloecke:maxBloecke,seitenlimit:limit,max_block_bytes:maxBlockBytes,bytes_a:bytesA,bytes_b:bytesB,ram_bytes:ram,ram_schaetzung_peak:ramPeak,max_antwort_zeichen:antwort}});
+ const result=(next:number|null,eof:boolean)=>({success:true,action:'vergleichen',beantwortet_von:'hex',modus:'offsetgleich-v1',ref_a:a.ref,ref_b:b.ref,datei_a:a.file_path,datei_b:b.file_path,revision_a:a.revision,revision_b:b.revision,sha256_a:a.sha256,sha256_b:b.sha256,groesse_a:a.groesse,groesse_b:b.groesse,groessendifferenz:a.groesse-b.groesse,offset:String(start),verglichene_bytes:vergleiche,differenzen:bloecke,provenance:zielinhaltHerkunft(['differenzen[].bytes_a','differenzen[].bytes_b']),anzahl_bloecke:bloecke.length,naechster_offset:next===null?null:String(next),eof,vollstaendig:eof,budget:{max_scan_bytes:scan,max_diff_bloecke:maxBloecke,seitenlimit:limit,max_block_bytes:maxBlockBytes,bytes_a:bytesA,bytes_b:bytesB,ram_bytes:ram,ram_schaetzung_peak:ramPeak,max_antwort_zeichen:antwort}});
  const baseSize=JSON.stringify(result(null,false)).length;
  if(baseSize>antwort)throw new HexFehler('budget_ueberschritten',{parameter:'antwort_zeichen',min:baseSize,max:antwort});
  while(pos<ende){

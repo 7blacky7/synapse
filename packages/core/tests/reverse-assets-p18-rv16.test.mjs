@@ -27,6 +27,9 @@ try {
  await pool.query('CREATE SCHEMA '+schema);created=true;
  for(const table of ['projects','agent_sessions','tool_aktivitaet'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query(REVERSE_SCHEMA_SQL);
+ // P22-T15 (Schema 112): Akteur-ID-Spalten wie in RV9 nachziehen (agent_identitaeten liegt nicht im Testschema).
+ for(const [t,c] of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],
+  ['reverse_uebernahmen','actor_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} TEXT`).catch(()=>{});
  await pool.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_rv16',true)",[project]);
  await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES($1,$2,'active',NOW())",[agent,project]);
  await pool.query("INSERT INTO reverse_eintraege(id,titel) VALUES($1,'RV16'),($2,'anderer Scope')",[rid,other]);
@@ -43,6 +46,10 @@ try {
  const inspect=await call('inspect',{file_path:'gfx/menu.bmp',objects_offset:1,objects_limit:1,references_limit:0});
  assert.equal(inspect.success,true,JSON.stringify(inspect));assert.equal(inspect.datei,'gfx/menu.bmp');assert.equal(inspect.format,'bmp');assert.equal(inspect.inspektion.objekte_total,2);assert.equal(inspect.inspektion.objekte.length,1);assert.equal(inspect.inspektion.objekte[0].name,'andere');assert.equal(inspect.inspektion.verweise_total,1);assert.equal(inspect.inspektion.verweise.length,0);
  assert.equal((await call('inspect',{datei:'gfx/menu.bmp'})).success,true);
+ // P21-T16: Ziel-Inhalt (Asset-Baum, Inspektion) ist gekennzeichnet, Fehler nicht.
+ assert.deepEqual(inspect.provenance?.felder,['inspektion']);assert.equal(inspect.provenance.untrusted_content,true);
+ assert.deepEqual(paged.provenance?.felder,['baum']);
+ assert.equal((await call('inspect',{file_path:'menu.bmp'})).provenance,undefined);
  for(const key of core.REVERSE_DEFINITION.outputSchema.required)assert(Object.hasOwn(inspect,key),'Pflichtfeld '+key);
  assert(!JSON.stringify(inspect).includes('storage_key'));assert(!JSON.stringify(inspect).includes('data:image'));
  assert.equal((await call('inspect',{file_path:'menu.bmp'})).fehlercode,'nicht_gefunden','kein Suffixraten');

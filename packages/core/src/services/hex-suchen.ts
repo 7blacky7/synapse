@@ -2,6 +2,7 @@
 import type {HexQuelle} from './hex-quellen.js';
 import {HexFehler, hexGanzzahl} from './hex-quellen.js';
 import type {HexStand} from './hex-einstellungen.js';
+import {zielinhaltHerkunft} from './zielinhalt.js';
 interface Pattern {bytes:Buffer;mask:boolean[];label:string}
 function zahlMuster(args:Record<string,unknown>):Buffer{
  const typ=String(args.typ??''),wert=args.wert,le=args.endianness==='le';
@@ -49,7 +50,7 @@ export async function sucheHex(q:HexQuelle,args:Record<string,unknown>,stand:Hex
  const chunk=Math.max(p.bytes.length,chunkMax),maxStart=size-p.bytes.length,scanEnd=Math.min(size,start+scan),hits:Array<Record<string,unknown>>=[];
  let readAt=start,readBytes=0,next=start,eof=start>maxStart,stopped=false,carry:Uint8Array=Buffer.alloc(0),ramPeak=0;
  const make=(cursor:number|null,finished:boolean)=>({success:true,action:'suchen',beantwortet_von:'hex',ref:q.ref,file_path:q.file_path,revision:q.revision,sha256:q.sha256,groesse:size,bytebasis:q.bytebasis,
-  art:args.art??'hex',muster:p.label,offset:String(start),fundstellen:hits,anzahl:hits.length,naechster_offset:cursor===null?null:String(cursor),eof:finished,vollstaendig:finished,
+  art:args.art??'hex',muster:p.label,offset:String(start),fundstellen:hits,provenance:zielinhaltHerkunft(['fundstellen[].kontext.hex','fundstellen[].kontext.ascii']),anzahl:hits.length,naechster_offset:cursor===null?null:String(cursor),eof:finished,vollstaendig:finished,
   budget:{max_fundstellen:cap,seitenlimit:limit,max_scan_bytes:scan,gelesen_bytes:readBytes,gescannt_bytes:Math.max(0,next-start),ram_bytes:ram,ram_schaetzung_peak:ramPeak,max_antwort_zeichen:maxAntwort}});
  const baseSize=JSON.stringify(make(null,false)).length;
  if(baseSize>maxAntwort)throw new HexFehler('budget_ueberschritten',{parameter:'antwort_zeichen',min:baseSize,max:maxAntwort});

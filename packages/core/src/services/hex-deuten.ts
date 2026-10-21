@@ -2,6 +2,7 @@
 import {createHash,type Hash} from 'node:crypto';
 import {HexFehler,hexGanzzahl,mitHexQuelle,type HexQuelle} from './hex-quellen.js';
 import type {HexStand} from './hex-einstellungen.js';
+import {zielinhaltHerkunft} from './zielinhalt.js';
 type R=Record<string,unknown>;
 type Endian='le'|'be';
 interface Knoten {name:string;typ:string;offset:number;anzahl:number;schritt:number;breite:number;span:number;blaetter:number;einzeln:number;endians:Endian[];felder:Knoten[];kodierung:string;nullterminiert:boolean}
@@ -108,7 +109,7 @@ export async function fuehreHexDeutenAus(args:R,project:string,stand:HexStand):P
   let gelesen=0,stopp=false;
   const felder:R[]=[],pruefsummen:R[]=[];
   const antwort:R={success:true,action:'deuten',project,beantwortet_von:'hex',ref:q.ref,revision:q.revision,sha256:q.sha256,groesse:q.groesse,bytebasis:q.bytebasis,
-   offset:String(start),feld_offset:ab,total_felder:total,felder,pruefsummen,vollstaendig:false,naechstes_feld:ab,
+   offset:String(start),feld_offset:ab,total_felder:total,felder,provenance:zielinhaltHerkunft(['felder[].wert','felder[].bytes']),pruefsummen,vollstaendig:false,naechstes_feld:ab,
    layout:'typen_am_selben_offset; struct_felder_relativ; string_laenge_ist_festes_fenster',budget:{scan_bytes:stand.werte.scan_bytes.wert,antwort_zeichen:stand.werte.antwort_zeichen.wert,gelesene_bytes:0}};
   const read=async(offset:number,len:number)=>{
    if(signal.aborted)throw new HexFehler('zeitlimit');

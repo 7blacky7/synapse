@@ -2,6 +2,7 @@
 import {getPool} from '../db/client.js';
 import {HexFehler,mitHexQuelle,type HexQuelle} from './hex-quellen.js';
 import type {HexStand} from './hex-einstellungen.js';
+import {vorhandeneZielfelder,zielinhaltHerkunft} from './zielinhalt.js';
 import type {AssetSource,AssetContext} from '../asset-intel/types.js';
 import {AssetLimitError} from '../asset-intel/errors.js';
 import {lesePeAdresskarte} from '../asset-intel/inspectors/exe/pe.js';
@@ -140,6 +141,8 @@ export async function fuehreHexAdressenAus(project:string,a:Record<string,unknow
    });
   }
   antwort.reverse=await reverseSymbole(q,a,mapping.zuordnungen as Record<string,unknown>[],stand);
+  // P21-T16: Sektions-/Symbolnamen stammen aus dem Analyseziel; vor der Budgetpruefung ergaenzen.
+  antwort.provenance=zielinhaltHerkunft(vorhandeneZielfelder(antwort,['zuordnungen[]','verzeichnisse[]','reverse']));
   if(JSON.stringify(antwort).length>stand.werte.antwort_zeichen.wert)throw new HexFehler('budget_ueberschritten',{parameter:'antwort_zeichen'});
   return antwort;
  });

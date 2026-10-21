@@ -13,6 +13,7 @@ import {HEX_ENTSCHLUESSEL_PARAMETER,fuehreHexEntschluesselnAus,hexEntschluesselS
 import {HexFehler,hexGanzzahl,hexAkteur,pruefeHexZugang,mitHexQuelle} from './hex-quellen.js';
 import {sucheHex} from './hex-suchen.js';
 import {vergleicheHex} from './hex-vergleichen.js';
+import {zielinhaltHerkunft} from './zielinhalt.js';
 
 export const HEX_ACTIONS=['adressen','entschluesseln',...HEX_FORMAT_ACTIONS,'deuten','status','hex','suchen','vergleichen'] as const;
 const position={type:['number','string'],description:'Nichtnegative Byteposition, dezimal oder 0x-Hex; keine gerundeten Zahlen'};
@@ -101,7 +102,7 @@ export async function fuehreHexAus(args:Record<string,unknown>,opt:{apiAusfuehru
    const zeilen=hexZeilen(bytes,offset),cursor=randomUUID();
    const reply:Record<string,unknown>={
     success:true,action,project,beantwortet_von:'hex',ref:q.ref,file_path:q.file_path,revision:q.revision,sha256:q.sha256,groesse:q.groesse,bytebasis:q.bytebasis,
-    offset:String(offset),offset_hex:'0x'+offset.toString(16),laenge:bytes.length,zeilen,
+    offset:String(offset),offset_hex:'0x'+offset.toString(16),laenge:bytes.length,zeilen,provenance:zielinhaltHerkunft(['zeilen[].hex','zeilen[].ascii']),
     eof:offset+bytes.length===q.groesse,vollstaendig:true,naechster_offset:null,cursor:null,
     budget:{max_bytes:max,max_zeichen:stand.werte.antwort_zeichen.wert,gelesene_bytes:bytes.length,ausgabe_bytes:bytes.length},
     schalter:stand.schalter,dauer_ms:Date.now()-started,

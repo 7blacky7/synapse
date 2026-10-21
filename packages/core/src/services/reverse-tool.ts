@@ -19,6 +19,7 @@ import { ANSICHT_SCHEMA_PROPERTIES, setzeMcpBilder, trenneMcpBilder } from './as
 import { zerlegeReverseFehlercode } from './reverse-ausfuehrer.js';
 import { gruppiereRv27Dateien } from './hex-rv27.js';
 import { diagnoseReverse, entstoereReverse, REVERSE_ENTSTOERBAR } from './reverse-entstoerer.js';
+import { vorhandeneZielfelder, zielinhaltHerkunft } from './zielinhalt.js';
 
 export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
@@ -92,6 +93,12 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   uebernehmen:['reverse_id','file_path','ziel_pfad','ueberschreiben'],
 };
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
+/** P21-T16: Aktionen, deren Antwort Inhalt aus dem Analyseziel traegt, mit Kandidatenfeldern. */
+const REVERSE_ZIELINHALT: Partial<Record<ReverseAction,readonly string[]>> = {
+  tree:['baum'],functions:['functions[]'],symbols:['symbols[]'],references:['references[]','string_occurrences[]','name_matches[]'],
+  search:['results[]'],file:['content','strings[]'],calls:['calls[]'],assets_tree:['baum'],inspect:['inspektion'],
+  dateien:['dateien[]','container_nicht_entpackt[]'],struktur:['gruppen[]','nicht_analysiert[]'],ansicht:['ansicht'],
+};
 export const REVERSE_AKTIVITAET_DESCRIPTOR = Object.freeze({toolId:'reverse',tool:'reverse',aktivitaetsAktionen:REVERSE_ACTIONS.filter(a=>a!=='status')});
 type Db = Pick<Pool|PoolClient,'query'>;
 type Row = Record<string,unknown>;
@@ -558,7 +565,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       const action=a.action as ReverseAction;
       const unused=Object.keys(a).filter(k=>!['action','agent_id','project',...JE_ACTION[action]].includes(k)&&gesetzt(a[k]));
       const data=await execute(a,action);
-      return setzeMcpBilder(baueReverseAntwort(a,{...data,...(unused.length?{nicht_verwendet:unused}:{})},action==='ansicht'?data.fehlercode as ReverseFehlercode|undefined:undefined),trenneMcpBilder(data).bilder);
+      // P21-T16: Ziel-Inhalt nur bei Erfolg kennzeichnen; Werte und Maskierung bleiben unveraendert.
+      const zielfelder=data.fehlercode==null?vorhandeneZielfelder(data,REVERSE_ZIELINHALT[action]??[]):[];
+      return setzeMcpBilder(baueReverseAntwort(a,{...data,...(zielfelder.length?{provenance:zielinhaltHerkunft(zielfelder)}:{}),...(unused.length?{nicht_verwendet:unused}:{})},action==='ansicht'?data.fehlercode as ReverseFehlercode|undefined:undefined),trenneMcpBilder(data).bilder);
     }catch(e){
       if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler||e instanceof ReverseAssetFehler||e instanceof ReverseUebernahmeFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
       const code=(e as {code?:string})?.code;
