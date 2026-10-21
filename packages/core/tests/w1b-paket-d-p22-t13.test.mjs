@@ -67,6 +67,8 @@ function norm(v){
 // P21-T13: Nur das neue Tool hex aus der Altlisten-Projektion entfernen; bestehende Definitionen bleiben vollstaendig verglichen.
 // Neue admin-Aktionen/-Parameter sind ADDITIV; die Golden-Projektion entfernt genau diese Namen (Muster wie admin-kontextprofil-p7-t42).
 const W1B_AKTIONEN=[
+ // P22-T93: parallele additive Netzwerk-Verwaltung; voller Vertrag separat ueber RV9-Hashkette.
+ 'agentennetzwerk',
  // P21-T3/T13: Hex-Einstellungen stehen im Schema VOR den Kernaktionen
  'hex_einstellungen',
  'profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
@@ -90,6 +92,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
  'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','shell_hinweis_minuten','files_plan_ablauf_aktiv','frist_namen',
+ // P22-T93: additive Netzwerkparameter zwischen Fristen und Hex.
+ 'netzwerk_modus','netzwerk_werte',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)
  'hex_werte','hex_namen',
  'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel',

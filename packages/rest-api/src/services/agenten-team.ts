@@ -74,7 +74,7 @@ SELECT i.id AS identity_id, i.agent_id, i.name, i.rolle, COALESCE(i.modell_besta
                 WHERE k.identity_id = i.id AND k.widerrufen_am IS NULL AND (k.gueltig_bis IS NULL OR k.gueltig_bis > NOW())) AS ausweis_gueltig
   FROM agent_identitaeten i
   LEFT JOIN agent_typen t ON t.id = i.typ_id
- WHERE i.project = $1 AND i.status = 'aktiv' AND i.rolle <> 'main' AND i.agent_id NOT LIKE 'archiv-%'
+ WHERE i.project = $1 AND i.status = 'aktiv' AND ($2::boolean OR i.rolle <> 'main') AND i.agent_id NOT LIKE 'archiv-%'
  ORDER BY i.zuletzt_aktiv DESC NULLS LAST, i.name`;
 
 function wrapperAus(row: Awaited<ReturnType<typeof listWrapperStatus>>[number], kennz: Record<string, unknown>): TeamWrapper {
@@ -95,8 +95,8 @@ function wrapperKontext(w: TeamWrapper | null): Record<string, unknown> | null {
   return w ? { quelle: 'wrapper_status', stand: 'aktuell', prozent: w.tokens.percent, tokens: w.tokens.input, modell: w.model } : null;
 }
 
-export async function ladeAgentenTeam(project: string): Promise<Record<string, unknown>> {
-  const ident = await markiereEntfernteProfile(project, (await getPool().query<IdentZeile>(IDENT_SQL, [project])).rows, false);
+export async function ladeAgentenTeam(project: string, optionen: { hauptagent?: boolean } = {}): Promise<Record<string, unknown>> {
+  const ident = await markiereEntfernteProfile(project, (await getPool().query<IdentZeile>(IDENT_SQL, [project, optionen.hauptagent === true])).rows, false);
 
   const auswahl = waehleSpezialisten(await listWrapperStatus(project), { alle: true });
   const wrapperZeilen = await ohneEntfernte(project, auswahl.sichtbar.filter((z) => !z.row.agentName.startsWith('archiv-')),

@@ -21,10 +21,13 @@ import {
   logToolCall,
 } from '@synapse/core';
 
+import { agentennetzwerkRoutes } from './agentennetzwerk.js';
+import { leseNetzwerkKonfiguration, hauptagentIdentitaetsId } from '@synapse/core';
 import { validateToken } from '../services/auth.js';
 import { ladeAgentenTeam } from '../services/agenten-team.js';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
+  await agentennetzwerkRoutes(fastify);
   /**
    * GET /api/projects/:name/specialists
    * Alle Spezialisten eines Projekts auflisten (aus wrapper_status)
@@ -477,8 +480,12 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
    */
   fastify.get<{
     Params: { name: string };
+    Querystring: { netzwerk?: string };
   }>('/api/projects/:name/events', async (request, reply) => {
     const { name: project } = request.params;
+    const netzwerkStand = request.query.netzwerk === '1' ? await leseNetzwerkKonfiguration(project) : null;
+    const netzwerk = netzwerkStand?.schalter.aktiv === true;
+    const mainId = netzwerk ? await hauptagentIdentitaetsId() : null;
 
     // Set correct headers for SSE
     reply.raw.writeHead(200, {
@@ -496,6 +503,8 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
 
     let client: any = null;
     let isClosed = false;
+    let netzwerkTimer: ReturnType<typeof setTimeout> | null = null;
+    let benachrichtigung: ((msg: { channel: string; payload?: string }) => void) | null = null;
 
     // Periodic heartbeat to keep connection alive
     const heartbeatInterval = setInterval(() => {
@@ -508,11 +517,14 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       if (isClosed) return;
       isClosed = true;
       clearInterval(heartbeatInterval);
+      if (netzwerkTimer) clearTimeout(netzwerkTimer);
 
       if (client) {
+        if (benachrichtigung) client.removeListener('notification', benachrichtigung);
         try {
           await client.query('UNLISTEN synapse_specialist_status_change');
           await client.query('UNLISTEN synapse_channel');
+          if (netzwerk) await client.query('UNLISTEN synapse_tool_activity');
         } catch (e) {
           // ignore
         } finally {
@@ -521,35 +533,46 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       }
     };
 
-    request.raw.on('close', () => {
+    reply.raw.on('close', () => {
       cleanup();
     });
 
     try {
       client = await getPool().connect();
+      if (isClosed) { client.release(); return; }
 
-      client.on('notification', (msg: any) => {
+      benachrichtigung = (msg: { channel: string; payload?: string }) => {
         if (isClosed) return;
 
         try {
           const payload = JSON.parse(msg.payload || '{}');
           // Only send if it matches the current project
-          if (payload.project === project) {
-            reply.raw.write(`data: ${JSON.stringify({
-              channel: msg.channel,
-              payload
-            })}\n\n`);
+          if (payload.project === project || (netzwerk && msg.channel === 'synapse_tool_activity' && mainId && payload.identity_id === mainId)) {
+            if (netzwerk) {
+              // Ein Hinweis pro Buendel, kein Inhalt und kein wachsender Schreibpuffer bei Last.
+              if (!netzwerkTimer) netzwerkTimer = setTimeout(() => {
+                netzwerkTimer = null;
+                if (!isClosed) reply.raw.write('data: ' + JSON.stringify({channel:'synapse_tool_activity',payload:{project}}) + '\n\n');
+              }, netzwerkStand!.werte.buendel_ms);
+            } else {
+              reply.raw.write(`data: ${JSON.stringify({channel: msg.channel, payload})}\n\n`);
+            }
           }
         } catch (err) {
           reply.raw.write(`data: ${JSON.stringify({
             channel: msg.channel,
-            raw: msg.payload
+            ...(netzwerk ? {} : { raw: msg.payload })
           })}\n\n`);
         }
-      });
+      };
+      client.on('notification', benachrichtigung);
 
       await client.query('LISTEN synapse_specialist_status_change');
       await client.query('LISTEN synapse_channel');
+      if (netzwerk) {
+        await client.query('LISTEN synapse_tool_activity');
+        if (!isClosed) reply.raw.write('data: ' + JSON.stringify({type:'netzwerk_bereit',project}) + '\n\n');
+      }
     } catch (error) {
       clearInterval(heartbeatInterval);
       if (client) {

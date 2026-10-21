@@ -19,3 +19,9 @@
 .control-main>.control-content{height:100%}
 @keyframes dash-pulse{70%{box-shadow:0 0 0 8px transparent}}@keyframes dash-enter{from{opacity:.25;transform:translateY(5px)}}@keyframes node-float{50%{transform:translateY(-5px)}}@keyframes dream-drift{50%{transform:translate(8px,-7px);opacity:.35}}
 @media(max-width:1100px){.agent-dashboard-grid{grid-template-columns:1fr}.dashboard-events{display:none}.activity-board{grid-template-columns:1fr}.activity-metrics{grid-template-columns:repeat(3,1fr)}}@media(max-width:760px){.agent-dashboard{padding:14px}.agent-dashboard-head{align-items:start;flex-direction:column}.agent-chat-shell{left:8px;right:8px;bottom:8px}.chat-display-controls label{display:none}}
+
+/* P22-T93: Tabs und Steuerung bleiben auch bei 390 px innerhalb des Arbeitsraums. */
+.dashboard-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;max-width:100%}
+.dashboard-tabs button{min-width:0;white-space:normal;overflow-wrap:anywhere;padding:7px 5px}
+.agent-dashboard-head>div,.dashboard-mode{min-width:0;max-width:100%}.dashboard-mode{flex-wrap:wrap}
+@media(max-width:760px){.dashboard-tabs{height:auto;min-height:43px}.dashboard-tabs button{font-size:9px}.dashboard-tabs button span{margin-left:4px}.agent-dashboard-head{gap:14px}.activity-board{padding:12px;grid-template-columns:minmax(0,1fr)}}

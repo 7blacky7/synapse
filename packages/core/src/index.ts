@@ -1,3 +1,6 @@
+export { NETZWERK_FUNKTION, NETZWERK_EINSTELLUNGEN, NETZWERK_ADMIN_PARAMETER, leseNetzwerkKonfiguration, fuehreNetzwerkAdminAus, netzwerkEreignis, netzwerkArgumente, netzwerkText } from './services/agentennetzwerk.js';
+export type { NetzwerkEinstellung, NetzwerkWerte, NetzwerkEreignis } from './services/agentennetzwerk.js';
+
 /**
  * Synapse Core
  * Gemeinsamer Kern fuer MCP Server und REST API

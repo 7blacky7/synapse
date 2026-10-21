@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ToolCallViewModel } from '../control-plane/view-model';
 import { StatusChip } from './StatusKennzeichnung';
+import Agentennetzwerk from './Agentennetzwerk';
 
 type DashboardView = 'activity' | 'dreams' | 'artifacts';
 
@@ -20,7 +21,7 @@ interface Props {
   artifacts: DashboardArtefakt[];
 }
 
-const VIEWS: DashboardView[] = ['activity', 'dreams', 'artifacts'];
+
 /**
  * VORLAGE fuer den spaeteren Live-Anschluss — bewusst aufgehoben (Vorgabe des
  * Nutzers vom 26.08.2026: "wir haben's ja extra als Mock gebaut, damit es
@@ -43,16 +44,9 @@ export const BEISPIEL_EREIGNISSE = [
 export default function MainAgentDashboard({ project, toolCalls, agentBusy, savedArtifacts, artifacts }: Props) {
   const [view, setView] = useState<DashboardView>('activity');
   const [autoFollow, setAutoFollow] = useState(true);
-  const [cycle, setCycle] = useState(0);
-
   useEffect(() => {
-    const timer = window.setInterval(() => setCycle((value) => value + 1), 9000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (autoFollow) setView(agentBusy ? 'activity' : VIEWS[cycle % VIEWS.length]);
-  }, [agentBusy, autoFollow, cycle]);
+    if (autoFollow && agentBusy) setView('activity');
+  }, [agentBusy, autoFollow]);
 
   // toolCalls ist aeltester zuerst; die neuesten stehen hinten.
   const recentCalls = toolCalls.slice(-7).reverse();
@@ -94,6 +88,7 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
           </nav>
           <div className="dashboard-panel" key={view}>
             {view === 'activity' && (
+              <Agentennetzwerk project={project} fallback={
               <div className="activity-board">
                 <div className="activity-orbit">
                   <div className="orbit-ring one" /><div className="orbit-ring two" />
@@ -106,6 +101,7 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
                   <article><span>Fehler</span><strong>{failed}</strong><small>{failed ? 'prüfen' : 'keine offenen'}</small></article>
                 </div>
               </div>
+              } />
             )}
             {view === 'dreams' && (
               <div className="dream-board">

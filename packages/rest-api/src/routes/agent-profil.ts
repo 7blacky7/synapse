@@ -63,6 +63,8 @@ const body = (req: FastifyRequest): Record<string, unknown> => (req.body && type
 interface RouteDef { methode: 'GET' | 'POST' | 'PUT' | 'DELETE'; pfad: string; action: string; quelle: Quelle }
 
 const ROUTEN: RouteDef[] = [
+  { methode: 'GET', pfad: '/agentennetzwerk', action: 'agentennetzwerk', quelle: () => ({}) },
+  { methode: 'PUT', pfad: '/agentennetzwerk', action: 'agentennetzwerk', quelle: req => ({ ...body(req), netzwerk_modus: 'einstellen' }) },
   { methode: 'GET', pfad: '/schalter', action: 'profil_schalter_status', quelle: () => ({}) },
   { methode: 'PUT', pfad: '/schalter', action: 'profil_schalter_setzen', quelle: body },
   { methode: 'GET', pfad: '/uebersicht', action: 'profil_uebersicht', quelle: () => ({}) },

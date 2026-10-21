@@ -627,7 +627,14 @@ export function schwaerzeToolDaten<T>(wert: T, tiefe = 0): T {
 
 /** Kurzform fuer die Aufrufer von logToolCall: Args schwaerzen, dann serialisieren und kuerzen. */
 export function toolArgsVorschau(args: unknown, max = 500): string {
-  return JSON.stringify(schwaerzeToolDaten(args ?? {})).slice(0, max);
+  const daten = schwaerzeToolDaten(args ?? {});
+  // Routing vor Freitext: auch eine gekappte Vorschau behaelt abgeschlossene Metadaten.
+  if (daten && typeof daten === 'object' && !Array.isArray(daten)) {
+    const o = daten as Record<string, unknown>, route: Record<string, unknown> = {};
+    for (const k of ['action','recipient_id','to_agent','channel_name','name']) if (k in o) route[k] = o[k];
+    return JSON.stringify({ ...route, ...o }).slice(0, max);
+  }
+  return JSON.stringify(daten).slice(0, max);
 }
 
 /** Fuer gespeicherte Strings (args_preview, result, error): JSON strukturiert, sonst Textweg. */

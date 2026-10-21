@@ -32,6 +32,7 @@
 
 
 import { createHash } from 'node:crypto';
+import { AGENTENNETZWERK_SCHEMA_SQL } from './agentennetzwerk-schema.js';
 import {SHELL_ALT_SCHEMA_SQL} from './shell-altbestand-schema.js';
 import { getPool } from './client.js';
 import {HEX_EXE_FORMATE_SCHEMA_SQL} from './hex-exe-formate-schema.js';
@@ -3195,6 +3196,7 @@ ${HEX_SCHEMA_SQL}
 ${HEX_ANALYSEN_SCHEMA_SQL}
 ${HEX_FORMATE_SCHEMA_SQL}
 ${HEX_EXE_FORMATE_SCHEMA_SQL}
+${AGENTENNETZWERK_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */
