@@ -59,9 +59,9 @@ try{
  for(const name of ['claude-ui','codex-api'])await ident('d93-'+name,name,'subagent',name==='claude-ui'?'claude-test':'gpt-test');
  await C.setzeProfilProduktSchalter({ebene:'projekt',project:P,funktion:'agentennetzwerk',aktiv:true,grund:'T102 private fixture'},{system:'user'});
  const cfg=await C.leseNetzwerkKonfiguration(P);
- ok(cfg.werte.plan_nachleuchten_sekunden===30&&cfg.werte.plan_mindestanzeige_sekunden===3,'setting defaults 30s/3s');
+ ok(cfg.werte.plan_nachleuchten_sekunden===3&&cfg.werte.plan_nachleuchten_auto_sekunden===3&&cfg.werte.plan_mindestanzeige_sekunden===3,'setting defaults 3s/auto 3s/3s (P22-T104)');
  const setting=await app.inject({method:'PUT',url:'/api/projects/'+P+'/agent-profile/agentennetzwerk',headers:{authorization:'Bearer p22-user'},
-  payload:{netzwerk_werte:{plan_nachleuchten_sekunden:8,plan_mindestanzeige_sekunden:3,abgleich_sekunden:3},grund:'T102 bounded browser test'}});
+  payload:{netzwerk_werte:{plan_nachleuchten_sekunden:8,plan_nachleuchten_auto_sekunden:8,plan_mindestanzeige_sekunden:3,abgleich_sekunden:3},grund:'T102 bounded browser test'}});
  assert.equal(setting.statusCode,200,setting.body);ok(setting.json().einstellungen.plan_nachleuchten_sekunden.quelle==='einstellung','setting persists and exposes source');
  const call=async(args,agent='claude-ui')=>{
   const r=await app.inject({method:'POST',url:'/',payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'files',arguments:{project:P,agent_id:agent,...args}}}});

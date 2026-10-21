@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ladeNetzwerk, schalteNetzwerk, stelleNetzwerkEin, type NetzSnapshot, type NetzEreignis } from '../api/agentennetzwerk';
 import { netzwerkSzene, STILE, stil, rgb, kurve, gleichmaessig, werkzeugName, type Knoten, type Szene, type Rgb, type Punkt } from './netzwerk/nerven-szene';
-import {PlanNachleuchten,planZustand,PLAN_FARBEN} from './netzwerk/plan-nachleuchten';
+import {PlanNachleuchten,planZustand,planAnimation,planAbklingen,PLAN_FARBEN} from './netzwerk/plan-nachleuchten';
 import { erstelleLicht, type Licht, type Kamera } from './netzwerk/nerven-renderer';
 import '../agentennetzwerk.css';
 export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
@@ -15,7 +15,7 @@ export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
 interface Partikel { e: NetzEreignis; start: number; impuls?: Impuls | null; gestartet?: boolean }
 interface Impuls { art: 'aufruf' | 'fehler' | 'dm' | 'post' | 'lesen' | 'kern' | 'plan'; pfad: Float32Array; laenge: number; von: string; nach: string; dauer: number; farbe: Rgb; form: number; icon: string; seed: number; angekommen: boolean; bytes: number; leer: boolean }
 interface Messung { fps: number; ms: number; rate: number; ausgelassen: number; gezeichnet: number; eingang: number; sprites: number; stufe: number }
-interface Lage { x: number; y: number; a: number }
+interface Lage { x: number; y: number; a: number; abklingen?: boolean }
 const LEER: Messung = { fps: 0, ms: 0, rate: 0, ausgelassen: 0, gezeichnet: 0, eingang: 0, sprites: 0, stufe: 0 };
 const RUECK: Rgb = rgb('#bff4ff'), GOLD: Rgb = rgb('#fcd34d'), GLUT_HELL: Rgb = rgb('#fff1b0'), GLUT_ROT: Rgb = rgb('#f2401f');
 const WEISS: Rgb = [1, 1, 1], KERN: Rgb = rgb('#F97316'), KERN_HEISS: Rgb = rgb('#ffd3a1'), BLITZ: Rgb = rgb('#cfefff'), FEHLER: Rgb = rgb('#f87171');
@@ -192,13 +192,14 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     ids.add(k.id);
     let l = lage.current.get(k.id);
     if (!l) { const e = k.eltern ? lage.current.get(k.eltern.id) ?? { x: k.eltern.x * streckX, y: k.eltern.y * streckY } : { x: k.x * streckX, y: k.y * streckY }; l = { x: e.x, y: e.y, a: 0 }; lage.current.set(k.id, l); }
-    l.x += (k.x * streckX - l.x) * ease; l.y += (k.y * streckY - l.y) * ease; l.a += (1 - l.a) * ease;
+    l.x += (k.x * streckX - l.x) * ease; l.y += (k.y * streckY - l.y) * ease; l.a += (1 - l.a) * ease; l.abklingen = !!k.plan && planAnimation(k.plan) === 'abklingen';
    }
    for (const [id, l] of lage.current) if (!ids.has(id)) {
     if (id.startsWith('plan:') && l.a > 0.5) {
      // Nur mit belegtem Endstatus; ein Plan, der nur aus der Anzeigegrenze faellt, verschwindet still.
+     // P22-T104: ein bereits ruhig abgeklungener Commit fliesst danach nicht noch einmal hell ins Projekt.
      const pid = id.slice(5), st = s.plaene_ende?.find(p => p.id === pid)?.status ?? s.plaene?.find(p => p.id === pid)?.status;
-     if (st && st !== 'open') { const art = st === 'committed' ? 'commit' : 'explosion'; abgaenge.push({ art, x: l.x, y: l.y, start: zeit, name: 'Plan ' + pid, seed: hash(pid) }); zaehler[art]++; }
+     if (st && st !== 'open' && !(st === 'committed' && l.abklingen)) { const art = st === 'committed' ? 'commit' : 'explosion'; abgaenge.push({ art, x: l.x, y: l.y, start: zeit, name: 'Plan ' + pid, seed: hash(pid) }); zaehler[art]++; }
     }
     lage.current.delete(id);
    }
@@ -206,7 +207,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    for (const [id, v] of hitze) { const n = v * zerfall; if (n < 0.01) hitze.delete(id); else hitze.set(id, n); }
    kernPuls *= Math.exp(-dt / 0.9);
    const fenster = s.werte.aktivitaet_sekunden * 1000;
-   const aktivitaet = (k: Knoten) => Math.min(1.4, Math.max(k.letzte ? Math.exp(-(jetzt - k.letzte) / (fenster * 0.55)) * 0.85 : 0, hitze.get(k.id) ?? 0));
+   // P22-T104: committete Plaene zaehlen nicht als aktiv (kein Aktivitaetshalo, keine fliessenden Bahnen).
+   const aktivitaet = (k: Knoten) => k.plan && planAnimation(k.plan) !== 'puls' ? 0 : Math.min(1.4, Math.max(k.letzte ? Math.exp(-(jetzt - k.letzte) / (fenster * 0.55)) * 0.85 : 0, hitze.get(k.id) ?? 0));
    // Kamera
    const fit = Math.min(w / streckX, h / streckY) / (2 * g.radius), k = kamera.current, v = sicht.current;
    let tx = 0, ty = 0, tz = fit * v.faktor;
@@ -252,12 +254,13 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    // Dendriten: Channel zu seinen echten Teilnehmern im Zeitfenster.
    // P22-T95: Schattenplaene binden ihre Beitragenden mit goldenen Faeden; Co-Edit (mehrere Agenten) leuchtet staerker.
    for (const c of g.knoten) if ((c.rolle === 'plan' ? stufe < 3 : stufe < 2 && c.rolle === 'channel') && c.teilnehmer) {
-    const a = pos(c), act = aktivitaet(c), gold = c.rolle === 'plan', staerke = gold ? (c.fade ?? 1) * (c.teilnehmer.length > 1 ? 2.4 : 1.3) : 1;
+    const a = pos(c), act = aktivitaet(c), gold = c.rolle === 'plan', ruhig = gold && !!c.plan && planAnimation(c.plan) === 'abklingen';
+    const staerke = gold ? (ruhig ? planAbklingen(c.fade ?? 0) : 1) * (c.teilnehmer.length > 1 ? 2.4 : 1.3) : 1;
     const [cr, cg, cb] = gold ? rgb(c.farbe) : rgb('#a78bfa');
     for (const id of c.teilnehmer) {
      const t = g.alias.get(id); if (!t || t.rolle === 'cluster') continue;
      const b = pos(t), len = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(4, Math.min(50, Math.round(len / 9))), pts = kurve(a, b, -0.18, n);
-     for (let i = 2; i < pts.length - 2; i += 2) licht.sprite(pts[i], pts[i + 1], gold ? 3 : 2.2, cr, cg, cb, (0.05 + 0.16 * Math.min(1, act)) * staerke, 0, 1, 0.3, -i * 0.2, 2.6);
+     for (let i = 2; i < pts.length - 2; i += 2) licht.sprite(pts[i], pts[i + 1], gold ? 3 : 2.2, cr, cg, cb, (0.05 + 0.16 * Math.min(1, act)) * staerke, 0, 1, ruhig ? 0 : 0.3, -i * 0.2, 2.6);
     }
    }
    // Impulse (Budget je Frame). Herkunft blitzt auf, Kopf mit Schweif, Ankunft flammt am Ziel.
@@ -362,8 +365,16 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      for (let i = 0; i < n; i++) { const r2 = 4 * Math.sqrt(i + 1), wkl = i * 2.399; licht.sprite(l.x + Math.cos(wkl) * r2, l.y + Math.sin(wkl) * r2, 4.5, f[0], f[1], f[2], 0.55 * a, 8, 1, 0.3, i, 2); }
      continue;
     }
+    if (kn.rolle === 'plan' && kn.plan && planAnimation(kn.plan) === 'abklingen') {
+     // P22-T104: committet/auto-committet klingt ruhig ab: kein Puls, kein Aktivitaetshalo; Raute und Schein schrumpfen mit.
+     const fa = planAbklingen(kn.fade ?? 0) * a;
+     knotenLicht(l.x, l.y, 34 + 30 * fa, f[0], f[1], f[2], 0.12 * fa, 0);
+     knotenLicht(l.x, l.y, 18 + 10 * fa, f[0], f[1], f[2], 0.7 * fa, 2);
+     if (sel) knotenLicht(l.x, l.y, 66, 1, 1, 1, 0.4, 1);
+     continue;
+    }
     if (kn.rolle === 'plan') {
-     // Schattenplan: goldene Raute mit Halo; gerade committete Plaene leuchten aus.
+     // Offener Schattenplan: goldene Raute mit pulsierendem Halo.
      const fa = (kn.fade ?? 1) * a, co = (kn.teilnehmer?.length ?? 0) > 1;
      knotenLicht(l.x, l.y, 72 + act * 50, f[0], f[1], f[2], (0.08 + 0.25 * Math.min(1, act)) * fa, 0, 1, 0.06, ph, 1.6);
      knotenLicht(l.x, l.y, 30 + act * 6, f[0], f[1], f[2], (0.55 + 0.4 * Math.min(1, act)) * fa, 2, 1, 0.05, ph, 2.2);
@@ -483,7 +494,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const kp = lage.current.get(g.kern.id) ?? g.kern;
    el.dataset.mainX = String(sx(kp.x)); el.dataset.mainY = String(sy(kp.y)); el.dataset.camX = String(k.x); el.dataset.camY = String(k.y); el.dataset.zoom = String(k.zoom);
    el.dataset.channelCount = String(g.channels); el.dataset.channelWriteCount = String(schreibend); el.dataset.animationCount = String(partikel.current.length);
-   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planZustaende = JSON.stringify(g.knoten.filter(n=>n.plan).map(n=>({id:n.plan!.id,status:planZustand(n.plan!),farbe:n.farbe,fade:n.fade,beitraege:n.teilnehmer?.length??0}))); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
+   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planZustaende = JSON.stringify(g.knoten.filter(n=>n.plan).map(n=>({id:n.plan!.id,status:planZustand(n.plan!),farbe:n.farbe,fade:n.fade,animation:planAnimation(n.plan!),beitraege:n.teilnehmer?.length??0}))); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
    frames++; summe += performance.now() - start;
    if (zeit - statAm >= 1000) {
     const m = { fps: Math.round(frames * 1000 / (zeit - statAm)), ms: Number((summe / frames).toFixed(2)), rate: Number((neu.current * 1000 / (zeit - statAm)).toFixed(1)), ausgelassen: abgewiesen.current, gezeichnet, eingang: seen.current.size, sprites, stufe };
@@ -537,7 +548,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   {fehler && <p className="nw-error" role="alert">{fehler} <button onClick={() => void refresh.current()}>Erneut laden</button></p>}
   {einstellungen && snapshot && <form className="nw-settings" onSubmit={e => { e.preventDefault(); void aktion(() => stelleNetzwerkEin(project, werte)); }}>
    <p>Freigabe: {snapshot.schalter.quelle}{snapshot.schalter.bis ? ' · bis ' + new Date(snapshot.schalter.bis).toLocaleTimeString('de-DE') : ''}. Einstellungen gelten global.</p>
-   {Object.entries(snapshot.einstellungen).map(([name, e]) => <label key={name}>{({ aktivitaet_sekunden: 'Aktivitätsfenster (Sekunden)', inaktiv_sekunden: 'Inaktiv nach (Sekunden)', sichtbare_agenten: 'Sichtbare Agenten', sichtbare_channels: 'Sichtbare Channels', ereignis_limit: 'Ereignisse im Fenster', animation_limit: 'Gleichzeitige Animationen', animation_ms: 'Animationsdauer (ms)', bilder_pro_sekunde: 'Bilder pro Sekunde', frame_budget_ms: 'Animationsbudget (ms)', buendel_ms: 'Ereignisse bündeln (ms)', abgleich_sekunden: 'Wiederabgleich (Sekunden)', plan_nachleuchten_sekunden: 'Pläne nachleuchten (Sekunden)', plan_mindestanzeige_sekunden: 'Pläne mindestens anzeigen (Sekunden)' } as Record<string, string>)[name] || name}<input type="number" required min={e.min} max={e.max} value={werte[name] ?? e.wert} onChange={ev => setWerte(w => ({ ...w, [name]: Number(ev.target.value) }))} /><small>{e.quelle}</small></label>)}
+   {Object.entries(snapshot.einstellungen).map(([name, e]) => <label key={name}>{({ aktivitaet_sekunden: 'Aktivitätsfenster (Sekunden)', inaktiv_sekunden: 'Inaktiv nach (Sekunden)', sichtbare_agenten: 'Sichtbare Agenten', sichtbare_channels: 'Sichtbare Channels', ereignis_limit: 'Ereignisse im Fenster', animation_limit: 'Gleichzeitige Animationen', animation_ms: 'Animationsdauer (ms)', bilder_pro_sekunde: 'Bilder pro Sekunde', frame_budget_ms: 'Animationsbudget (ms)', buendel_ms: 'Ereignisse bündeln (ms)', abgleich_sekunden: 'Wiederabgleich (Sekunden)', plan_nachleuchten_sekunden: 'Committete Pläne sichtbar (Sekunden)', plan_nachleuchten_auto_sekunden: 'Auto-committete Pläne sichtbar (Sekunden)', plan_mindestanzeige_sekunden: 'Pläne mindestens anzeigen (Sekunden)' } as Record<string, string>)[name] || name}<input type="number" required min={e.min} max={e.max} value={werte[name] ?? e.wert} onChange={ev => setWerte(w => ({ ...w, [name]: Number(ev.target.value) }))} /><small>{e.quelle}</small></label>)}
    <button disabled={busy}>Speichern</button>
   </form>}
   {!an ? <>{fallback}<p className="nw-off">{snapshot ? 'Netzwerk ausgeschaltet · bestehende Hauptagent-Ansicht' : 'Netzwerk wird geladen …'}</p></> : <>

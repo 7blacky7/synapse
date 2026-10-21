@@ -107,7 +107,7 @@ export async function ladeAgentennetzwerk(project: string) {
    (SELECT array_agg(DISTINCT COALESCE(o->>'author_identity_id',o->>'agent_id')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END) o WHERE COALESCE(o->>'author_identity_id',o->>'agent_id') IS NOT NULL) AS beitraege
   FROM file_batch_plans p
   WHERE p.project=$1 AND (p.status='open' OR (p.status='committed' AND p.committed_at>=NOW()-($2::int * INTERVAL '1 second')))
-  ORDER BY p.created_at DESC LIMIT 40`, [project,Math.max(konfiguration.werte.plan_nachleuchten_sekunden,konfiguration.werte.abgleich_sekunden)])).rows;
+  ORDER BY p.created_at DESC LIMIT 40`, [project,Math.max(konfiguration.werte.plan_nachleuchten_sekunden,konfiguration.werte.plan_nachleuchten_auto_sekunden,konfiguration.werte.abgleich_sekunden)])).rows;
  // P22-T95: Endstatus der zuletzt beendeten Plaene (nur id/status), damit die Grafik Commit und Verwerfen unterscheiden kann.
  const plaene_ende = (await getPool().query<{ id: string; status: string }>(
   // Sortierung ueber die bigint-Spalte p.id (der Alias id::text wuerde als Text sortieren: '9' vor '28051').
