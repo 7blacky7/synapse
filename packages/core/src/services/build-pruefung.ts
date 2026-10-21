@@ -38,8 +38,7 @@
  *        (User-Korrektur): file-batch merkt den Plan nur vor (merkeBuildNachlaufVor), die commit-Antwort nennt den fertigen
  *        Aufruf code_check(build_pruefen, plan_id). Erst der stoesst an (stosseBuildNachlaufAn; offener Plan -> erst
  *        committen): je Projekt werden die Anstoesse gesammelt (nachlauf_buendel_ms), EIN Lauf auf dem beim Start gezogenen
- *        Abbild prueft den
- *        Stand vor dem ersten gegen den nach dem letzten commit des Buendels (Basis = PruefDatei.basis, Schatten =
+ *        Abbild prueft den Stand vor dem ersten gegen den nach dem letzten commit des Buendels (Basis = PruefDatei.basis, Schatten =
  *        geschriebener Stand), nur betroffene Pakete. Kommen waehrenddessen commits dazu, folgt genau ein weiterer Lauf.
  *        Das Ergebnis geht je Plan an den Committer als Feld build_nachlauf in der Antwort seines NAECHSTEN Tool-Aufrufs
  *        (tool-antwort.ts, genau einmal, egal welches Tool), an den Plan (plan_status: pruefung.build mit nachlauf_befunde)
