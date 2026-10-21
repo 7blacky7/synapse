@@ -3,12 +3,16 @@ export interface NetzEreignis {
  id:string; zeit:string; project:string; agent:string; identity_id:string|null; lauf_id:string|null;
  tool:string; action:string; ok:boolean; empfaenger:string[]; channel:string|null;
  interaktion:'senden'|'lesen'|'aufruf'; quelle:'tool_calls'; routing:string;
+ /** P22-T95: offener files-Plan aus Top-Level-Argument plan_id/schatten, sonst null. */
+ plan_id?:string|null;
 }
+/** P22-T95: offener (oder gerade committeter) files-Plan als Schattenplan-Knoten; nur Metadaten. */
+export interface NetzPlan { id:string; besitzer:string|null; besitzer_name:string|null; status:string; coedit:boolean; erstellt:string; committed:string|null; ops:number; dateien:number; dateien_beispiele:string[]; beitraege:string[] }
 export interface NetzAgent { id:string;agent:string;name:string;rolle:string;project:string;identity_id:string|null;zuletzt_aktiv:string|null;kanaele:string[];aufrufe_im_fenster?:number;letzter_aufruf?:{zeit:string;tool:string;action:string}|null;typ?:string|null;modell?:string|null;ort?:string|null;ort_quelle?:string|null;letzte_anmeldung?:string|null;metadaten_quelle?:string;koordination?:{koordinator_id:string;quelle:string;beleg_id:string}|null }
 export interface NetzSnapshot {
  version:number;stand:string;project:string;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};
  werte:Record<string,number>;einstellungen:Record<string,{wert:number;quelle:string;min:number;max:number}>;
- agenten:NetzAgent[];ereignisse:NetzEreignis[];channel_ereignisse?:NetzEreignis[];begrenzt:number;letzter_fehler:string|null;
+ agenten:NetzAgent[];ereignisse:NetzEreignis[];plaene?:NetzPlan[];plaene_ende?:Array<{id:string;status:string}>;channel_ereignisse?:NetzEreignis[];begrenzt:number;letzter_fehler:string|null;
 }
 async function json<T>(path:string, init?:RequestInit):Promise<T> {
  const r=await apiFetch(path,init), d=await r.json();

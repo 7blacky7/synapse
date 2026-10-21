@@ -61,7 +61,12 @@ export async function ladeAgentennetzwerk(project: string) {
  }));
  const main = { ...meta((mainTeam.agenten as TeamAgent[]).find(a=>a.identity_id===mainId||a.agent_id===HAUPTAGENT_AGENT_ID)), id: mainId || HAUPTAGENT_AGENT_ID, agent: HAUPTAGENT_AGENT_ID, name: 'Hauptagent', rolle: 'main',
   project: 'synapse-hauptagent', identity_id: mainId, zuletzt_aktiv: null, kanaele: [] };
- const ereignisse = r.rows.reverse().map(netzwerkEreignis);
+ // P22-T95: Planbezug nur aus vollstaendig lesbaren Top-Level-Argumenten (plan_id/schatten), nie aus Inhalten geraten.
+ const planBezug = (row: ToolCallRow): string | null => {
+  if (!/files|code_intel/.test(row.tool_name ?? '')) return null;
+  try { const a = JSON.parse(String(row.args_preview ?? '')), v = a?.plan_id ?? a?.schatten; return /^\d+$/.test(String(v ?? '')) ? String(v) : null; } catch { return null; }
+ };
+ const ereignisse = r.rows.reverse().map(row => ({ ...netzwerkEreignis(row), plan_id: planBezug(row) }));
  const channel_ereignisse=channelCalls.rows.reverse().map(netzwerkEreignis);
  // Legacy main-session-Namen sind Anzeige-Aliase derselben Hauptidentitaet.
  for (const [index, e] of ereignisse.entries()) if (r.rows[index].ist_main) e.agent = main.agent;
@@ -92,11 +97,31 @@ export async function ladeAgentennetzwerk(project: string) {
   const alt=frequenzen.get(id),neu={anzahl:Number(f.anzahl)+(alt?.anzahl??0),zeit:f.letzte.toISOString(),tool:netzwerkText(f.tool.split('__').pop()),action:netzwerkText(f.action)};
   frequenzen.set(id,alt&&alt.zeit>neu.zeit?{...alt,anzahl:neu.anzahl}:neu);
  }
- return { ...basis, agenten: alle.map(a=>({...a,
+ // P22-T95: offene files-Plaene (Schattenplaene) nur lesend; frisch committete leuchten 30 s nach. Keine Op-Inhalte.
+ const plaeneRows = (await getPool().query<{ id: string; owner_agent_id: string | null; owner_identity_id: string | null; status: string; open_for_coedit: boolean; created_at: Date; committed_at: Date | null; ops: number; dateien: string[] | null; beitraege: string[] | null }>(`
+  SELECT p.id::text,p.owner_agent_id,p.owner_identity_id,p.status::text AS status,p.open_for_coedit,p.created_at,p.committed_at,
+   (SELECT COUNT(*)::int FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END)) AS ops,
+   (SELECT array_agg(DISTINCT o->>'file_path') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END) o WHERE o->>'file_path' IS NOT NULL) AS dateien,
+   (SELECT array_agg(DISTINCT COALESCE(o->>'author_identity_id',o->>'agent_id')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END) o WHERE COALESCE(o->>'author_identity_id',o->>'agent_id') IS NOT NULL) AS beitraege
+  FROM file_batch_plans p
+  WHERE p.project=$1 AND (p.status='open' OR (p.status='committed' AND p.committed_at>=NOW()-INTERVAL '30 seconds'))
+  ORDER BY p.created_at DESC LIMIT 40`, [project])).rows;
+ // P22-T95: Endstatus der zuletzt beendeten Plaene (nur id/status), damit die Grafik Commit und Verwerfen unterscheiden kann.
+ const plaene_ende = (await getPool().query<{ id: string; status: string }>(
+  `SELECT id::text, status::text AS status FROM file_batch_plans WHERE project=$1 AND status<>'open' ORDER BY id DESC LIMIT 60`, [project])).rows;
+ const agentVon = (x: string | null) => x ? (alias.get(x)?.id ?? netzwerkText(x)) : null;
+ const plaene = plaeneRows.map(p => {
+  const besitzer = agentVon(p.owner_identity_id) ?? agentVon(p.owner_agent_id);
+  return { id: p.id, besitzer, besitzer_name: p.owner_agent_id ? netzwerkText(p.owner_agent_id) : null, status: p.status, coedit: p.open_for_coedit,
+   erstellt: p.created_at.toISOString(), committed: p.committed_at?.toISOString() ?? null, ops: p.ops, dateien: (p.dateien ?? []).length,
+   dateien_beispiele: (p.dateien ?? []).slice(0, 3).map(d => netzwerkText(d.split('/').pop() ?? d)),
+   beitraege: [...new Set([besitzer, ...(p.beitraege ?? []).map(agentVon)].filter((x): x is string => !!x))] };
+ });
+ return { ...basis, plaene, plaene_ende, agenten: alle.map(a=>({...a,
   aufrufe_im_fenster:frequenzen.get(a.id)?.anzahl??0,
   letzter_aufruf:frequenzen.get(a.id)??null,
   zuletzt_aktiv:frequenzen.get(a.id)?.zeit??a.zuletzt_aktiv,
   koordination:koordinierung.get(a.id)??kommunikation.get(a.id)??null})), ereignisse, channel_ereignisse,
   begrenzt: Math.max(0, Number(r.rows[0]?.gesamt ?? 0) - r.rows.length),
-  quellen: ['tool_calls','agenten-team','hauptagentIdentitaetsId','specialist_jobs.spawn','tool_calls.chat'], cursor: ereignisse.at(-1)?.id ?? null };
+  quellen: ['tool_calls','agenten-team','hauptagentIdentitaetsId','specialist_jobs.spawn','tool_calls.chat','file_batch_plans'], cursor: ereignisse.at(-1)?.id ?? null };
 }

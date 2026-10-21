@@ -1,9 +1,9 @@
 /**
  * P22-T93 Darstellung "Nervensystem": deterministisches Layout aus dem API-Vertrag /agentennetzwerk.
- * Kern = Hauptagent (Synapse selbst), innerer Ring = Koordinatoren, aeussere Zellen = Arbeitsagenten.
+ * Kern = Projekt (P22-T95), innerer Ring = Hauptagent und Koordinatoren, dazwischen Schattenplaene, aeussere Zellen = Arbeitsagenten.
  * Positionen haengen nur von IDs und Gruppengroessen ab, nie von Zufall; Zuordnung nur aus API-Belegen.
  */
-import type { NetzAgent, NetzEreignis, NetzSnapshot } from '../../api/agentennetzwerk';
+import type { NetzAgent, NetzEreignis, NetzPlan, NetzSnapshot } from '../../api/agentennetzwerk';
 
 export type Rgb = [number, number, number];
 /** form: 0 Glut, 1 Ring, 2 Raute, 3 Quadrat, 4 Funke, 5 Sechseck, 6 Dreieck, 7 Zelle, 8 Stern, 9 Kern */
@@ -49,6 +49,8 @@ export interface Knoten {
  farbe: string; letzte: number; aufrufe: number; avatar: string;
  agent?: NetzAgent; letzterAufruf?: NetzEreignis; info?: string; count?: number; zuordnung?: string;
  eltern?: Knoten; teilnehmer?: string[];
+ /** P22-T95: Schattenplan-Metadaten; fade < 1 = gerade committet, leuchtet aus. */
+ plan?: NetzPlan; fade?: number;
 }
 export interface Konstellation { name: string; x: number; y: number; winkel: number }
 export interface Szene {
@@ -56,11 +58,23 @@ export interface Szene {
  kern: Knoten; radius: number; breite: number; hoehe: number; verborgen: number; inaktiv: number; channels: number;
  /** Zellabstand der Arbeitsagenten in Weltpunkten (dichte Netze = kleiner). */
  zelle: number;
+ /** P22-T95: Knoten-ID eines Agenten -> juengster offener Plan, an dem er beitraegt. */
+ planVonAgent: Map<string, string>; plaene: number;
 }
 
 const PHI = 0.6180339887, TAU = Math.PI * 2;
 const frac = (x: number) => x - Math.floor(x);
 const polar = (r: number, w: number) => ({ x: Math.cos(w) * r, y: Math.sin(w) * r });
+const mittelwinkel = (punkte: Knoten[], ersatz: number) => punkte.length ? Math.atan2(punkte.reduce((n, k) => n + Math.sin(k.winkel), 0), punkte.reduce((n, k) => n + Math.cos(k.winkel), 0)) : ersatz;
+/** Schiebt Knoten auf einem Ring auseinander, bis benachbarte Winkel mindestens den Abstand halten. */
+function verteile(liste: Array<{ w: number }>, max: number) {
+ const abstand = Math.min(max, TAU / Math.max(1, liste.length));
+ for (let lauf = 0; lauf < 6; lauf++) for (let i = 0; i < liste.length; i++) {
+  const a = liste[i], b = liste[(i + 1) % liste.length]; if (a === b) continue;
+  let d = b.w - a.w; if (i === liste.length - 1) d += TAU;
+  if (d < abstand) { a.w -= (abstand - d) / 2; b.w += (abstand - d) / 2; }
+ }
+}
 
 interface Gruppe { project: string; koordinator?: NetzAgent; sichtbar: NetzAgent[]; versteckt: NetzAgent[]; spanne: number; mitte: number }
 
@@ -96,13 +110,14 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
   farbe: a.rolle === 'main' ? '#F97316' : agentFarbe(a), letzte: letzte(a), aufrufe: a.aufrufe_im_fenster ?? raten.get(a.id) ?? 0,
   avatar: agentAvatar(a.name), agent: a, letzterAufruf: letzterAufruf.get(a.id),
  }, [a.id, a.agent, a.name]);
- const kern = main ? ausAgent(main, 0, 0, 34, 0)
-  : merke({ id: 'synapse:kern', name: 'Synapse', rolle: 'main', project: s.project, x: 0, y: 0, radius: 34, winkel: 0, farbe: '#F97316', letzte: 0, aufrufe: 0, avatar: 'SY' }, ['synapse:kern']);
+ // P22-T95: das Projekt ist der Kern; der Hauptagent ist ein normaler Knoten auf dem inneren Ring.
+ const kern = merke({ id: 'projekt:' + s.project, name: s.project, rolle: 'zentrum', project: s.project, x: 0, y: 0, radius: 34, winkel: 0, farbe: '#F97316', letzte: 0, aufrufe: 0, avatar: agentAvatar(s.project) }, ['projekt:' + s.project, 'workspace:' + s.project]);
  knoten.push(kern);
 
  // Gruppen: je Koordinator eine, dazu die Projektgruppe fuer Agenten ohne Start-/Kommunikationsbeleg.
  const projekte = [...new Set([s.project, ...koord.map(a => a.project), ...arbeiter.map(a => a.project)])].sort();
  const gruppen: Gruppe[] = [];
+ if (main) gruppen.push({ project: s.project, koordinator: main, sichtbar: [], versteckt: [], spanne: 0, mitte: 0 });
  for (const project of projekte) {
   const kp = koord.filter(a => a.project === project), wp = arbeiter.filter(a => a.project === project);
   const belegt = (a: NetzAgent) => kp.find(k => k.id === a.koordination?.koordinator_id);
@@ -131,11 +146,11 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  const mehrere = projekte.length > 1, naben = new Map<string, Knoten>(), konstellationen: Konstellation[] = [];
  for (const project of projekte) {
   const eigene = gruppen.filter(g => g.project === project);
+  if (project === s.project) { naben.set(project, kern); konstellationen.push({ name: project, winkel: 0, ...polar(R0, 0) }); continue; }
   const w = eigene.length ? Math.atan2(eigene.reduce((n, g) => n + Math.sin(g.mitte), 0), eigene.reduce((n, g) => n + Math.cos(g.mitte), 0)) : 0;
   const p = mehrere ? polar(RK * 0.58, w) : { x: 0, y: 0 };
   const nabe = merke({ id: 'projekt:' + project, name: project, rolle: 'projekt', project, x: p.x, y: p.y, radius: 18, winkel: w, farbe: '#F97316', letzte: 0, aufrufe: 0, avatar: '' }, ['projekt:' + project, 'workspace:' + project]);
-  if (mehrere) knoten.push(nabe);
-  naben.set(project, mehrere ? nabe : kern);
+  knoten.push(nabe); naben.set(project, nabe);
   konstellationen.push({ name: project, winkel: w, ...polar(R0, w) });
  }
  let verborgen = 0, aussen = R0;
@@ -167,20 +182,15 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  }
  // Channels sind Synapsen zwischen Kern und Koordinatoren, ausgerichtet auf ihre echten Teilnehmer.
  const kanalNamen = [...new Set(alleEreignisse.filter(e => e.ok && e.channel && jetzt - Date.parse(e.zeit) <= schwelle).map(e => e.channel!))].sort();
- const sichtbar = kanalNamen.slice(0, s.werte.sichtbare_channels), RC = RK * 0.6;
+ const sichtbar = kanalNamen.slice(0, s.werte.sichtbare_channels), RC = RK * 0.74;
  const kanaele = sichtbar.map((name, i) => {
   const calls = alleEreignisse.filter(e => e.ok && e.channel === name && jetzt - Date.parse(e.zeit) <= schwelle);
   const teilnehmer = [...new Set(calls.map(e => (alias.get(e.identity_id || e.agent) || alias.get(e.agent))?.id).filter((id): id is string => !!id && id !== kern.id))];
   const punkte = teilnehmer.map(id => alias.get(id)!).filter(k => k.rolle !== 'main');
-  const w = punkte.length ? Math.atan2(punkte.reduce((n, k) => n + Math.sin(k.winkel), 0), punkte.reduce((n, k) => n + Math.cos(k.winkel), 0)) : -Math.PI / 2 + i * TAU / Math.max(1, sichtbar.length);
+  const w = mittelwinkel(punkte, -Math.PI / 2 + i * TAU / Math.max(1, sichtbar.length));
   return { name, w, calls, teilnehmer };
  }).sort((a, b) => a.w - b.w);
- const abstand = Math.min(0.62, TAU / Math.max(1, kanaele.length));
- for (let lauf = 0; lauf < 6; lauf++) for (let i = 0; i < kanaele.length; i++) {
-  const a = kanaele[i], b = kanaele[(i + 1) % kanaele.length]; if (a === b) continue;
-  let d = b.w - a.w; if (i === kanaele.length - 1) d += TAU;
-  if (d < abstand) { a.w -= (abstand - d) / 2; b.w += (abstand - d) / 2; }
- }
+ verteile(kanaele, 0.62);
  for (const c of kanaele) {
   const fenstercalls = c.calls.filter(e => jetzt - Date.parse(e.zeit) <= fenster), schreiber = new Set(fenstercalls.filter(e => e.action === 'post').map(e => e.agent));
   const p = polar(RC, c.w);
@@ -189,13 +199,31 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
    info: Math.round(fenstercalls.length * 60 / s.werte.aktivitaet_sekunden) + '/min · ' + schreiber.size + ' Schreiber' };
   knoten.push(k); alias.set(k.id, k);
  }
+ // P22-T95: offene files-Plaene (Schattenplaene) als Knoten zwischen Projekt und Agenten, ausgerichtet auf ihre Beitragenden.
+ const planVonAgent = new Map<string, string>();
+ // Beendete Plaene zeigt die Grafik nicht als Knoten, sondern als Abgang (Einfliessen bzw. Explosion).
+ const plaene = (s.plaene ?? []).filter(p => p.status === 'open').slice(0, 16);
+ const planItems = plaene.map((p, i) => {
+  const teilnehmer = [...new Set(p.beitraege.map(id => alias.get(id)?.id).filter((id): id is string => !!id && id !== kern.id))];
+  return { w: mittelwinkel(teilnehmer.map(id => alias.get(id)!), Math.PI / 2 + i * TAU / Math.max(1, plaene.length)), plan: p, teilnehmer };
+ }).sort((a, b) => a.w - b.w);
+ verteile(planItems, 0.5);
+ for (const it of planItems) {
+  const p = polar(RK * 0.54, it.w), offen = it.plan.status === 'open', co = it.teilnehmer.length > 1;
+  const k: Knoten = { id: 'plan:' + it.plan.id, name: 'Plan ' + it.plan.id, rolle: 'plan', project: s.project, x: p.x, y: p.y, radius: 13, winkel: it.w, avatar: 'P', farbe: '#fcd34d',
+   letzte: Date.parse(it.plan.committed ?? it.plan.erstellt), aufrufe: it.plan.ops, teilnehmer: it.teilnehmer, plan: it.plan, eltern: kern,
+   fade: offen ? 1 : Math.max(0, 1 - (jetzt - Date.parse(it.plan.committed ?? '')) / 30000),
+   info: it.plan.ops + ' Ops · ' + it.plan.dateien + ' Dateien' + (co ? ' · Co-Edit ' + it.teilnehmer.length : '') + (offen ? '' : ' · committet') };
+  knoten.push(k); alias.set(k.id, k); kanten.push([kern, k]);
+  if (offen) for (const id of it.teilnehmer) { const alt = planVonAgent.get(id); if (!alt || Number(alt) < Number(it.plan.id)) planVonAgent.set(id, it.plan.id); }
+ }
  if (kanalNamen.length > sichtbar.length) {
   const k: Knoten = { id: 'channels', name: 'Weitere aktive Channels', rolle: 'channel-cluster', project: s.project, x: 0, y: RC * 0.45, radius: 14, winkel: Math.PI / 2, letzte: jetzt, avatar: '+' + (kanalNamen.length - sichtbar.length), farbe: '#a78bfa', aufrufe: 0, count: kanalNamen.length - sichtbar.length };
   knoten.push(k); for (const name of kanalNamen.slice(sichtbar.length)) alias.set('channel:' + name, k);
  }
  const radius = Math.max(R0 + 60, aussen + 56);
  return { knoten, alias, kanten, projekte: mehrere ? konstellationen.map(k => ({ ...k, ...polar(radius - 18, k.winkel) })) : [], kern, radius, breite: radius * 2, hoehe: radius * 2,
-  verborgen, inaktiv: alle.length - (main ? 1 : 0) - koord.length - arbeiter.length, channels: kanalNamen.length, zelle: ZELLE };
+  verborgen, inaktiv: alle.length - (main ? 1 : 0) - koord.length - arbeiter.length, channels: kanalNamen.length, zelle: ZELLE, planVonAgent, plaene: planItems.length };
 }
 
 export interface Punkt { x: number; y: number }

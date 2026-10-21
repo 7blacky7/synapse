@@ -12,10 +12,11 @@ export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
  * Daten nur aus dem API-Vertrag; Dekor (Sterne/Nebel) ist fest und traegt keine Aktivitaet.
  */
 interface Partikel { e: NetzEreignis; start: number; impuls?: Impuls | null; gestartet?: boolean }
-interface Impuls { art: 'aufruf' | 'fehler' | 'dm' | 'post' | 'lesen' | 'kern'; pfad: Float32Array; laenge: number; von: string; nach: string; dauer: number; farbe: Rgb; form: number; icon: string; seed: number; angekommen: boolean }
+interface Impuls { art: 'aufruf' | 'fehler' | 'dm' | 'post' | 'lesen' | 'kern' | 'plan'; pfad: Float32Array; laenge: number; von: string; nach: string; dauer: number; farbe: Rgb; form: number; icon: string; seed: number; angekommen: boolean }
 interface Messung { fps: number; ms: number; rate: number; ausgelassen: number; gezeichnet: number; eingang: number; sprites: number; stufe: number }
 interface Lage { x: number; y: number; a: number }
 const LEER: Messung = { fps: 0, ms: 0, rate: 0, ausgelassen: 0, gezeichnet: 0, eingang: 0, sprites: 0, stufe: 0 };
+const GOLD: Rgb = rgb('#fcd34d'), GLUT_HELL: Rgb = rgb('#fff1b0'), GLUT_ROT: Rgb = rgb('#f2401f');
 const WEISS: Rgb = [1, 1, 1], KERN: Rgb = rgb('#F97316'), KERN_HEISS: Rgb = rgb('#ffd3a1'), BLITZ: Rgb = rgb('#cfefff'), FEHLER: Rgb = rgb('#f87171');
 
 export function gruppiereEreignisse(ereignisse: NetzEreignis[]) {
@@ -32,7 +33,7 @@ const zitter = (seed: number, k: number, takt: number) => (hash(seed + ':' + k +
 const mische = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const glatt = (t: number) => t * t * (3 - 2 * t);
 /** Beschriftungsreihenfolge: wichtige Knoten zuerst, Rest nur dort, wo Platz frei ist. */
-const RANG: Record<string, number> = { main: 0, koordinator: 1, channel: 2, 'channel-cluster': 2, cluster: 2, arbeitsagent: 3 };
+const RANG: Record<string, number> = { zentrum: 0, main: 1, koordinator: 1, plan: 2, channel: 2, 'channel-cluster': 2, cluster: 2, arbeitsagent: 3 };
 
 /** Festes Dekor (konstanter Startwert): Sternenstaub auf drei Parallaxe-Ebenen und Nebelwolken. */
 function dekor(radius: number) {
@@ -118,6 +119,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   const wellen: Array<{ t: number; f: Rgb }> = [];
   const welle = (t: number, f: Rgb) => { if (wellen.length < 4 && (!wellen.length || t - wellen[wellen.length - 1].t > 320)) wellen.push({ t, f }); };
   const hitze = new Map<string, number>();
+  // P22-T95: verschwundene Schattenplaene: committet -> fliesst ins Projekt, sonst (cancel/expired) -> Explosion.
+  const abgaenge: Array<{ art: 'commit' | 'explosion'; x: number; y: number; start: number; name: string; seed: number; angekommen?: boolean }> = [];
+  const zaehler = { commit: 0, explosion: 0 };
   const reduz = window.matchMedia('(prefers-reduced-motion: reduce)');
   const pos = (k: Knoten): Punkt => lage.current.get(k.id) ?? k;
   const woelbung = (k: Knoten) => (Math.sin(k.winkel * 3 + 0.7) >= 0 ? 0.13 : -0.13);
@@ -125,6 +129,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const q = g.alias.get(e.identity_id || e.agent) || g.alias.get(e.agent); if (!q) return null;
    const tool = werkzeugName(e.tool), st = stil(e.tool), farbe = e.ok ? rgb(st.farbe) : FEHLER, seed = hash(e.id);
    const basis = { farbe, form: st.form, icon: st.icon, seed, angekommen: false };
+   // P22-T95: Aufruf mit Planbezug (Argument plan_id/schatten, sonst files-Aufruf eines Beitragenden) endet im Schattenplan.
+   const planId = e.plan_id ?? (/^files/.test(tool) ? g.planVonAgent.get(q.id) : undefined), pk = planId ? g.alias.get('plan:' + planId) : undefined;
+   if (pk && pk !== q) { const p = gleichmaessig(kurve(pos(q), pos(pk), 0.2, 18), 40); return { ...basis, ...p, art: e.ok ? 'plan' : 'fehler', von: q.id, nach: pk.id, dauer: w.animation_ms * 0.8 }; }
    if (e.ok && tool === 'chat' && e.interaktion === 'senden') {
     const z = e.empfaenger.map(x => g.alias.get(x)).find((k): k is Knoten => !!k && k !== q);
     if (z) { const a = pos(q), b = pos(z), p = gleichmaessig([a.x, a.y, b.x, b.y], 24); return { ...basis, ...p, art: 'dm', von: q.id, nach: z.id, dauer: w.animation_ms * 0.75 }; }
@@ -136,7 +143,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      return { ...basis, ...p, art: lesen ? 'lesen' : 'post', von: lesen ? c.id : q.id, nach: lesen ? q.id : c.id, dauer: w.animation_ms * (lesen ? 0.65 : 0.85) };
     }
    }
-   if (q.rolle === 'main') return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
+   if (q === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
    const punkte: number[] = [];
    for (let k: Knoten = q; ; k = k.eltern!) {
     const ziel = k.eltern ?? g.kern; if (ziel === k) break;
@@ -175,7 +182,14 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     if (!l) { const e = k.eltern ? lage.current.get(k.eltern.id) ?? { x: k.eltern.x * streckX, y: k.eltern.y * streckY } : { x: k.x * streckX, y: k.y * streckY }; l = { x: e.x, y: e.y, a: 0 }; lage.current.set(k.id, l); }
     l.x += (k.x * streckX - l.x) * ease; l.y += (k.y * streckY - l.y) * ease; l.a += (1 - l.a) * ease;
    }
-   for (const id of lage.current.keys()) if (!ids.has(id)) lage.current.delete(id);
+   for (const [id, l] of lage.current) if (!ids.has(id)) {
+    if (id.startsWith('plan:') && l.a > 0.5) {
+     // Nur mit belegtem Endstatus; ein Plan, der nur aus der Anzeigegrenze faellt, verschwindet still.
+     const pid = id.slice(5), st = s.plaene_ende?.find(p => p.id === pid)?.status ?? s.plaene?.find(p => p.id === pid)?.status;
+     if (st && st !== 'open') { const art = st === 'committed' ? 'commit' : 'explosion'; abgaenge.push({ art, x: l.x, y: l.y, start: zeit, name: 'Plan ' + pid, seed: hash(pid) }); zaehler[art]++; }
+    }
+    lage.current.delete(id);
+   }
    const zerfall = Math.exp(-dt / 1.8);
    for (const [id, v] of hitze) { const n = v * zerfall; if (n < 0.01) hitze.delete(id); else hitze.set(id, n); }
    kernPuls *= Math.exp(-dt / 0.9);
@@ -186,7 +200,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    let tx = 0, ty = 0, tz = fit * v.faktor;
    if (v.modus === 'auto') {
     let sx = 0, sy = 0, sw = 0;
-    for (const [id, hz] of hitze) { const kn = g.alias.get(id); if (!kn || kn.rolle === 'main') continue; const p = pos(kn); sx += p.x * hz; sy += p.y * hz; sw += hz; }
+    for (const [id, hz] of hitze) { const kn = g.alias.get(id); if (!kn || kn === g.kern) continue; const p = pos(kn); sx += p.x * hz; sy += p.y * hz; sw += hz; }
     if (sw > 0.2 && !reduz.matches) { tx = sx / sw * 0.26; ty = sy / sw * 0.26; tz = fit * 1.06; }
    } else { tx = v.x; ty = v.y; }
    const ke = reduz.matches ? 1 : 1 - Math.exp(-dt * 1.1);
@@ -201,7 +215,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const wolken = new Map<string, { x: number; y: number; n: number; f: Rgb; p: Punkt; act: number }>();
    for (const [p, c] of g.kanten) {
     const a = pos(p), b = pos(c), lc = lage.current.get(c.id)?.a ?? 1, act = Math.max(aktivitaet(c), c.rolle === 'koordinator' ? 0.25 : 0);
-    if (p.rolle !== 'main') { const wo = wolken.get(p.id) ?? { x: 0, y: 0, n: 0, f: rgb(p.farbe), p: a, act: 0 }; wo.x += b.x; wo.y += b.y; wo.n++; wo.act = Math.max(wo.act, act); wolken.set(p.id, wo); }
+    if (p !== g.kern) { const wo = wolken.get(p.id) ?? { x: 0, y: 0, n: 0, f: rgb(p.farbe), p: a, act: 0 }; wo.x += b.x; wo.y += b.y; wo.n++; wo.act = Math.max(wo.act, act); wolken.set(p.id, wo); }
     if (stufe > 1 && act <= (stufe > 2 ? 0.3 : 0.1)) continue;
     const len = Math.hypot(b.x - a.x, b.y - a.y), schritt = (act > 0.1 ? 3.4 : 7) * (stufe > 2 ? 4 : stufe ? 2 : 1), n = Math.max(6, Math.min(130, Math.round(len / schritt)));
     const wb = woelbung(c), mx = (a.x + b.x) / 2 - (b.y - a.y) * wb, my = (a.y + b.y) / 2 + (b.x - a.x) * wb;
@@ -224,17 +238,19 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     licht.sprite(0, 0, r, f[0], f[1], f[2], (1 - u) * (1 - u) * 0.16, 1);
    }
    // Dendriten: Channel zu seinen echten Teilnehmern im Zeitfenster.
-   for (const c of g.knoten) if (stufe < 2 && c.rolle === 'channel' && c.teilnehmer) {
-    const a = pos(c), act = aktivitaet(c);
+   // P22-T95: Schattenplaene binden ihre Beitragenden mit goldenen Faeden; Co-Edit (mehrere Agenten) leuchtet staerker.
+   for (const c of g.knoten) if ((c.rolle === 'plan' ? stufe < 3 : stufe < 2 && c.rolle === 'channel') && c.teilnehmer) {
+    const a = pos(c), act = aktivitaet(c), gold = c.rolle === 'plan', staerke = gold ? (c.fade ?? 1) * (c.teilnehmer.length > 1 ? 2.4 : 1.3) : 1;
+    const [cr, cg, cb] = gold ? [1, 0.82, 0.32] : [0.66, 0.55, 0.98];
     for (const id of c.teilnehmer) {
      const t = g.alias.get(id); if (!t || t.rolle === 'cluster') continue;
      const b = pos(t), len = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(4, Math.min(50, Math.round(len / 9))), pts = kurve(a, b, -0.18, n);
-     for (let i = 2; i < pts.length - 2; i += 2) licht.sprite(pts[i], pts[i + 1], 2.2, 0.66, 0.55, 0.98, 0.05 + 0.16 * act, 0, 1, 0.3, -i * 0.2, 2.6);
+     for (let i = 2; i < pts.length - 2; i += 2) licht.sprite(pts[i], pts[i + 1], gold ? 3 : 2.2, cr, cg, cb, (0.05 + 0.16 * Math.min(1, act)) * staerke, 0, 1, 0.3, -i * 0.2, 2.6);
     }
    }
    // Impulse (Budget je Frame). Herkunft blitzt auf, Kopf mit Schweif, Ankunft flammt am Ziel.
    partikel.current = partikel.current.filter(p => !p.impuls || zeit - p.start < p.impuls.dauer * 1.3);
-   let schreibend = 0, imp = 0;
+   let schreibend = 0, planend = 0, imp = 0;
    const koepfe: Array<{ x: number; y: number; i: Impuls; e: NetzEreignis }> = [];
    if (!still) for (const p of partikel.current) {
     if (((++imp & 15) === 0 && performance.now() - start > s.werte.frame_budget_ms) || (stufe > 1 && imp > 60)) { abgewiesen.current++; break; }
@@ -280,12 +296,12 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      licht.sprite(q.x, q.y, lesen ? 10 : 17, heiss[0], heiss[1], heiss[2], flacker, lesen ? 0 : i.form);
      licht.sprite(q.x, q.y, lesen ? 18 : 36, r, gg, b, 0.32 * flacker, 0);
      if (!lesen) koepfe.push({ x: q.x, y: q.y, i, e: p.e });
-     if (i.art === 'post') schreibend++;
+     if (i.art === 'post') schreibend++; else if (i.art === 'plan') planend++;
     } else if (!fehlt) {
      const u = Math.min(1, (t - ankunft) / (1.3 - ankunft)), z = punkt(i.pfad, 1);
-     if (!i.angekommen) { i.angekommen = true; if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'post' ? 0.8 : 0.4))); }
-     licht.sprite(z.x, z.y, 18 + u * (i.art === 'post' ? 90 : 46), r, gg, b, (1 - u) * 0.75, 1);
-     if (i.art === 'post') { licht.sprite(z.x, z.y, 10 + u * 150, r, gg, b, (1 - u) * 0.35, 1); schreibend++; }
+     if (!i.angekommen) { i.angekommen = true; if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); }
+     licht.sprite(z.x, z.y, 18 + u * (i.art === 'aufruf' ? 46 : 90), r, gg, b, (1 - u) * 0.75, 1);
+     if (i.art === 'post' || i.art === 'plan') { licht.sprite(z.x, z.y, 10 + u * 150, r, gg, b, (1 - u) * 0.35, 1); schreibend++; }
      licht.sprite(z.x, z.y, 40, heiss[0], heiss[1], heiss[2], (1 - u) * 0.4, 0);
     } else {
      const q = punkt(i.pfad, kopf), u = (t - 1) / 0.3;
@@ -299,7 +315,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     const l = lage.current.get(kn.id); if (!l) continue;
     const act = aktivitaet(kn), f = rgb(kn.farbe), sel = kn.id === auswahl || kn.id === karte, ph = (hash(kn.id) % 628) / 100;
     const a = l.a;
-    if (kn.rolle === 'main') {
+    if (kn === g.kern) {
      const schlag = 0.5 + 0.5 * Math.sin(uhr * 1.7), glut = 0.75 + kernPuls * 0.5;
      knotenLicht(l.x, l.y, 360 + kernPuls * 120, f[0], f[1], f[2], 0.16 * glut, 0, 1, 0.05, 0, 1.7);
      knotenLicht(l.x, l.y, 150 + schlag * 14 + kernPuls * 40, f[0], f[1], f[2], 0.42 * glut, 0);
@@ -313,7 +329,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      if (sel) knotenLicht(l.x, l.y, 200, 1, 1, 1, 0.3, 1);
      continue;
     }
-    if (kn.rolle === 'koordinator') {
+    if (kn.rolle === 'koordinator' || kn.rolle === 'main') {
      const hf = mische(f, WEISS, 0.35);
      knotenLicht(l.x, l.y, 110 + act * 50, f[0], f[1], f[2], (0.12 + 0.3 * act) * a, 0, 1, 0.06, ph, 1.3);
      knotenLicht(l.x, l.y, 46, hf[0], hf[1], hf[2], 0.95 * a, 7, 1, 0.04 + act * 0.05, ph, 2 + act * 3);
@@ -333,6 +349,15 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      for (let i = 0; i < n; i++) { const r2 = 4 * Math.sqrt(i + 1), wkl = i * 2.399; licht.sprite(l.x + Math.cos(wkl) * r2, l.y + Math.sin(wkl) * r2, 4.5, f[0], f[1], f[2], 0.55 * a, 8, 1, 0.3, i, 2); }
      continue;
     }
+    if (kn.rolle === 'plan') {
+     // Schattenplan: goldene Raute mit Halo; gerade committete Plaene leuchten aus.
+     const fa = (kn.fade ?? 1) * a, co = (kn.teilnehmer?.length ?? 0) > 1;
+     knotenLicht(l.x, l.y, 72 + act * 50, f[0], f[1], f[2], (0.08 + 0.25 * Math.min(1, act)) * fa, 0, 1, 0.06, ph, 1.6);
+     knotenLicht(l.x, l.y, 30 + act * 6, f[0], f[1], f[2], (0.55 + 0.4 * Math.min(1, act)) * fa, 2, 1, 0.05, ph, 2.2);
+     knotenLicht(l.x, l.y, 46, 1, 0.95, 0.8, (co ? 0.35 : 0.14) * fa, 1, 1, co ? 0.08 : 0.03, ph, 3);
+     if (sel) knotenLicht(l.x, l.y, 66, 1, 1, 1, 0.4, 1);
+     continue;
+    }
     if (kn.rolle === 'projekt') { knotenLicht(l.x, l.y, 150, KERN[0], KERN[1], KERN[2], 0.07 * a, 0); continue; }
     // Arbeitsagent: aktiv leuchtende Zelle, ruhig ein dunkler Stern; in dichten Netzen kleiner.
     const zf = Math.min(1, Math.max(0.5, g.zelle / 42));
@@ -344,6 +369,37 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      if (stufe < 3) knotenLicht(l.x, l.y, (36 + act * 36) * zf, f[0], f[1], f[2], (0.1 + 0.32 * act) * a * (zf < 0.8 ? 0.6 : 1), 0);
      knotenLicht(l.x, l.y, (20 + act * 8) * zf, hf[0], hf[1], hf[2], (0.6 + 0.4 * Math.min(1, act)) * a, zf < 0.8 ? 0 : 7, 1, 0.05 + 0.05 * act, ph, 2 + act * 4);
      if (sel) knotenLicht(l.x, l.y, 40, 1, 0.75, 0.45, 0.7, 1);
+    }
+   }
+   // P22-T95: Plan-Abgaenge. Commit fliesst auf einer Bahn ins Projekt und geht darin auf; Verwerfen explodiert mit Schockwelle.
+   const kz = lage.current.get(g.kern.id) ?? g.kern;
+   for (let i = abgaenge.length - 1; i >= 0; i--) {
+    const ab = abgaenge[i], t = (zeit - ab.start) / (ab.art === 'commit' ? 1600 : 1900);
+    if (t >= 1) { abgaenge.splice(i, 1); continue; }
+    if (reduz.matches || pause) { licht.sprite(ab.x, ab.y, 34, GOLD[0], GOLD[1], GOLD[2], (1 - t) * 0.6, ab.art === 'commit' ? 2 : 1); continue; }
+    if (ab.art === 'commit') {
+     const u = glatt(Math.min(1, t / 0.75)), mx = (ab.x + kz.x) / 2 - (kz.y - ab.y) * 0.25, my = (ab.y + kz.y) / 2 + (kz.x - ab.x) * 0.25;
+     if (t < 0.75) for (let j = 10; j >= 0; j--) {
+      const f = Math.max(0, u - j * 0.03), v = 1 - f, x = v * v * ab.x + 2 * v * f * mx + f * f * kz.x, y = v * v * ab.y + 2 * v * f * my + f * f * kz.y, m = 1 - j / 11;
+      licht.sprite(x, y, (j ? 8 : 32) * (1 - u * 0.6) * (0.5 + m * 0.5), GOLD[0], GOLD[1], GOLD[2], j ? 0.55 * m * m : 1, j ? 0 : 2);
+      if (!j) licht.sprite(x, y, 70 * (1 - u * 0.5), GOLD[0], GOLD[1], GOLD[2], 0.35, 0);
+     } else {
+      const w2 = (t - 0.75) / 0.25;
+      licht.sprite(kz.x, kz.y, 90 + w2 * 240, GOLD[0], GOLD[1], GOLD[2], (1 - w2) * 0.75, 1); licht.sprite(kz.x, kz.y, 170, GLUT_HELL[0], GLUT_HELL[1], GLUT_HELL[2], (1 - w2) * 0.5, 0);
+      if (!ab.angekommen) { ab.angekommen = true; kernPuls = Math.min(1.8, kernPuls + 0.9); welle(zeit, GOLD); }
+     }
+    } else {
+     // Explosion: Blitz, zwei Schockwellen, 64 Truemmerfunken mit Schweif, nachgluehende rote Glut.
+     const blitz = Math.max(0, 1 - t * 5);
+     licht.sprite(ab.x, ab.y, 60 + blitz * 160, GLUT_HELL[0], GLUT_HELL[1], GLUT_HELL[2], blitz, 0);
+     licht.sprite(ab.x, ab.y, 20 + glatt(Math.min(1, t * 1.6)) * 340, 1, 0.6, 0.25, (1 - t) * (1 - t) * 0.85, 1);
+     if (t > 0.12) { const u = (t - 0.12) / 0.88; licht.sprite(ab.x, ab.y, 10 + glatt(u) * 210, GLUT_ROT[0], GLUT_ROT[1], GLUT_ROT[2], (1 - u) * 0.55, 1); }
+     licht.sprite(ab.x, ab.y, 100, GLUT_ROT[0], GLUT_ROT[1], GLUT_ROT[2], (1 - t) * 0.4, 0);
+     const flug = 1 - Math.pow(1 - Math.min(1, t * 1.15), 3), farbe = mische(GLUT_HELL, GLUT_ROT, Math.min(1, t * 1.4));
+     for (let j = 0; j < 64; j++) {
+      const wk = j * 2.399 + (ab.seed % 7), weg = (120 + (hash(ab.seed + ':' + j) % 220)) * flug, gross = j % 6 === 0;
+      for (let s2 = 0; s2 < 4; s2++) { const d = Math.max(0, weg - s2 * 12); licht.sprite(ab.x + Math.cos(wk) * d, ab.y + Math.sin(wk) * d, (s2 ? 4.5 : gross ? 16 : 8) * (1 - t * 0.4), farbe[0], farbe[1], farbe[2], (1 - t * 0.85) * (s2 ? 0.45 / s2 : 1), !s2 && gross ? 4 : 0); }
+     }
     }
    }
    const ergebnis = licht.end(); sprites = ergebnis.sprites; abgewiesen.current += ergebnis.verworfen;
@@ -371,8 +427,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    for (const { kn, l: lg, act } of reihe) {
     const l = lg!, x = sx(l.x), y = sy(l.y); if (x < -80 || y < -40 || x > w + 80 || y > h + 40) continue;
     const sel = kn.id === auswahl || kn.id === karte, max = kompakt ? 14 : 22, name = kn.name.length > max ? kn.name.slice(0, max - 1) + '…' : kn.name;
-    if (kn.rolle === 'main') { etikett('HAUPTAGENT', x, y + Math.max(28, 52 * k.zoom), '#fed7aa', '600 10px "IBM Plex Mono", monospace', 0.95, true); continue; }
-    if (kn.rolle === 'koordinator') { etikett(name, x, y + Math.max(18, 32 * k.zoom), sel ? '#F97316' : '#fde3c8', '600 11px "IBM Plex Mono", monospace', 0.95 * l.a, true); continue; }
+    if (kn === g.kern) { etikett(kn.name.toUpperCase(), x, y + Math.max(28, 52 * k.zoom), '#fed7aa', '600 10px "IBM Plex Mono", monospace', 0.95, true); continue; }
+    if (kn.rolle === 'koordinator' || kn.rolle === 'main') { etikett(name, x, y + Math.max(18, 32 * k.zoom), sel ? '#F97316' : '#fde3c8', '600 11px "IBM Plex Mono", monospace', 0.95 * l.a, true); continue; }
+    if (kn.rolle === 'plan') { etikett(kn.name, x, y + Math.max(15, 24 * k.zoom), sel ? '#F97316' : '#fde68a', '500 10px "IBM Plex Mono", monospace', (0.6 + 0.4 * Math.min(1, act)) * l.a * (kn.fade ?? 1), sel); continue; }
     if (kn.rolle === 'channel' || kn.rolle === 'channel-cluster') { etikett(kn.rolle === 'channel' ? name : kn.avatar + ' Channels', x, y + Math.max(15, 28 * k.zoom), sel ? '#F97316' : '#d8ccff', '500 10px "IBM Plex Mono", monospace', (0.55 + 0.45 * Math.min(1, act)) * l.a, sel); continue; }
     if (kn.rolle === 'cluster') { etikett('+' + kn.count, x, y, '#ffedd5', '700 12px "IBM Plex Mono", monospace', l.a, true); etikett('aktive Agenten', x, y + Math.max(16, 34 * k.zoom), '#fdba74', '9px "IBM Plex Mono", monospace', 0.7 * l.a); continue; }
     if (kn.rolle === 'arbeitsagent' && (sel || ((alleNamen || act > (kompakt ? 0.5 : 0.15)) && namenFrei-- > 0))) etikett(name, x, y + Math.max(13, 20 * k.zoom), sel ? '#F97316' : '#cbd5e1', '10px "IBM Plex Mono", monospace', (sel ? 1 : 0.4 + 0.6 * Math.min(1, act)) * l.a, sel);
@@ -383,11 +440,12 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     schreibe(kp.i.icon, x + 11, y - 12, 'rgb(' + kp.i.farbe.map(c => c * 255 | 0).join(',') + ')', '700 11px "IBM Plex Mono", monospace', 0.95);
     if (erklaerungen) schreibe(werkzeugName(kp.e.tool) + '.' + kp.e.action, x + 12, y + 12, '#94a3b8', '9px "IBM Plex Mono", monospace', 0.85);
    }
+   for (const ab of abgaenge) { const t = (zeit - ab.start) / (ab.art === 'commit' ? 1600 : 1900); if (t < 1) schreibe(ab.name + (ab.art === 'commit' ? ' · committet' : ' · verworfen'), sx(ab.x), sy(ab.y) - 28, ab.art === 'commit' ? '#fde68a' : '#fca5a5', '600 10px "IBM Plex Mono", monospace', Math.max(0, 1 - t * 1.2)); }
    ctx.globalAlpha = 1;
    const kp = lage.current.get(g.kern.id) ?? g.kern;
    el.dataset.mainX = String(sx(kp.x)); el.dataset.mainY = String(sy(kp.y)); el.dataset.camX = String(k.x); el.dataset.camY = String(k.y); el.dataset.zoom = String(k.zoom);
    el.dataset.channelCount = String(g.channels); el.dataset.channelWriteCount = String(schreibend); el.dataset.animationCount = String(partikel.current.length);
-   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY);
+   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion);
    frames++; summe += performance.now() - start;
    if (zeit - statAm >= 1000) {
     const m = { fps: Math.round(frames * 1000 / (zeit - statAm)), ms: Number((summe / frames).toFixed(2)), rate: Number((neu.current * 1000 / (zeit - statAm)).toFixed(1)), ausgelassen: abgewiesen.current, gezeichnet, eingang: seen.current.size, sprites, stufe };
@@ -432,7 +490,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   <header className="nw-head"><div><span className={'nw-signal ' + (status === 'live' ? 'live' : '')} /><strong>Agentennetzwerk</strong>{erklaerungen && <small>{status}</small>}</div><div>
    {an && <><button onClick={() => setPause(p => !p)} aria-pressed={pause}>{pause ? 'Animation fortsetzen' : 'Animation pausieren'}</button><button className="nw-toggle" role="switch" aria-label="Erklärungen" aria-checked={erklaerungen} onClick={() => setErklaerungen(v => !v)}><span className="nw-toggle-track"><i /></span>Erklärungen <b>{erklaerungen ? 'Ein' : 'Aus'}</b></button>
     <span className="nw-help"><button aria-label="Icon-Legende" aria-expanded={legende} onClick={() => setLegende(v => !v)}>?</button>{legende && <div className="nw-legend" role="dialog" aria-label="Werkzeug-Icons">
-     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Kern. Blitz = Direktnachricht, Sechseck = Channel, dunkler Stern = ruhiger Agent.</p>
+     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = offener files-Plan, dunkler Stern = ruhiger Agent.</p>
      {Object.entries(STILE).map(([key, s]) => <span key={key} style={{ color: s.farbe }}><b>{s.icon}</b>{s.name}</span>)}</div>}</span></>}
    <button onClick={() => setEinstellungen(v => !v)} aria-expanded={einstellungen}>Einstellungen</button>
    <button disabled={busy || !snapshot} onClick={() => void aktion(() => schalteNetzwerk(project, !an))}>{an ? 'Ausschalten' : 'Einschalten'}</button>
@@ -447,7 +505,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    {erklaerungen && <div className="nw-stats"><span><b>{(g?.knoten.filter(k => ['main', 'koordinator', 'arbeitsagent'].includes(k.rolle)).length) || 0}</b> sichtbar</span><span><b>{g?.verborgen || 0}</b> im Cluster</span><span><b>{g?.inaktiv || 0}</b> inaktiv ausgeblendet</span><span><b>{snapshot.ereignisse.length}</b> echte Aufrufe</span><span className="nw-provenance">SYNAPSE · LIVE METADATEN</span></div>}
    <div className="nw-stage">
     <canvas ref={glCanvas} className="nw-gl" aria-hidden="true" />
-    <canvas ref={textCanvas} className="nw-text" role="img" style={{ touchAction: sicht.current.modus === 'user' ? 'none' : 'pan-y' }} aria-label="Nervensystem der Agenten: Hauptagent als Kern, Koordinatoren als helle Knoten, aktive Arbeitsagenten als Zellen. Ereignisse sind unten als Text zugänglich."
+    <canvas ref={textCanvas} className="nw-text" role="img" style={{ touchAction: sicht.current.modus === 'user' ? 'none' : 'pan-y' }} aria-label="Nervensystem des Projekts: Projekt im Zentrum, Schattenpläne als goldene Rauten, Hauptagent und Koordinatoren als helle Knoten, aktive Arbeitsagenten als Zellen. Ereignisse sind unten als Text zugänglich."
      onPointerDown={ev => { if (ev.pointerType === 'mouse' || sicht.current.modus === 'user') { zug.current = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, bewegt: false }; ev.currentTarget.setPointerCapture(ev.pointerId); } }}
      onPointerUp={() => { if (zug.current?.bewegt) window.setTimeout(() => { zug.current = null; }, 0); else zug.current = null; }}
      onPointerCancel={() => { zug.current = null; }}
@@ -473,6 +531,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      <div><strong>{kartenKnoten.name}</strong><button aria-label="Knotenkarte schließen" onClick={() => { setKarte(''); setAuswahl(''); }}>×</button></div>
      <dl><dt>Rolle</dt><dd>{kartenKnoten.rolle}</dd>
       {kartenKnoten.agent ? <><dt>Typ</dt><dd>{kartenKnoten.agent.typ || 'Legacy / nicht erfasst'}</dd><dt>Modell</dt><dd>{kartenKnoten.agent.modell || 'Nicht erfasst'}</dd><dt>Ort</dt><dd>{kartenKnoten.agent.ort || 'Nicht erfasst'}</dd><dt>Letzte Anmeldung</dt><dd>{datum(kartenKnoten.agent.letzte_anmeldung)}</dd><dt>Aufrufe</dt><dd>{kartenKnoten.aufrufe} im Fenster</dd></> : <><dt>Aktivität</dt><dd>{kartenKnoten.info || kartenKnoten.aufrufe + ' Aufrufe'}</dd></>}
+      {kartenKnoten.plan && <><dt>Status</dt><dd>{kartenKnoten.plan.status}{kartenKnoten.plan.coedit ? ' · Co-Edit offen' : ''}</dd><dt>Besitzer</dt><dd>{kartenKnoten.plan.besitzer_name || 'Nicht erfasst'}</dd><dt>Beitragende</dt><dd>{kartenKnoten.plan.beitraege.length}</dd><dt>Dateien</dt><dd>{kartenKnoten.plan.dateien}{kartenKnoten.plan.dateien_beispiele.length ? ' · ' + kartenKnoten.plan.dateien_beispiele.join(', ') : ''}</dd><dt>Erstellt</dt><dd>{datum(kartenKnoten.plan.erstellt)}</dd></>}
       <dt>Letzter Aufruf</dt><dd>{kartenAufruf ? kartenAufruf.tool + '.' + kartenAufruf.action + ' · ' + datum(kartenAufruf.zeit) : 'Nicht im Zeitfenster'}</dd>
       {kartenKnoten.zuordnung && <><dt>Zuordnung</dt><dd>{kartenKnoten.zuordnung}</dd></>}
      </dl><small>Quelle: {kartenKnoten.agent?.metadaten_quelle || 'tool_calls'} · Aktivität {snapshot.werte.aktivitaet_sekunden}s</small>

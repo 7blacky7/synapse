@@ -75,6 +75,14 @@ try{
   await call('channel',{action:'create',name,description:'Testdaten P22 T93',created_by:von},von);
   await call('channel',{action:'post',channel_name:name,sender:von,content:'Testimpuls'},von);
  }
+ // P22-T95: zwei offene files-Plaene im Testschema (A mit Co-Edit dreier Agenten, B allein); nur Metadaten.
+ const planNeu=async(owner,beitraege,dateien)=>(await pool.query(`INSERT INTO file_batch_plans(project,owner_agent_id,owner_identity_id,ops,expected_hashes,previews,status,open_for_coedit,expires_at)
+  VALUES($1,$2,$3,$4::jsonb,'{}'::jsonb,'[]'::jsonb,'open',true,NOW()+INTERVAL '1 hour') RETURNING id::text`,
+  [P,owner,'d93-'+owner,JSON.stringify(dateien.map((file_path,i)=>({file_path,action:'update',agent_id:beitraege[i%beitraege.length],author_identity_id:'d93-'+beitraege[i%beitraege.length]})))])).rows[0].id;
+ const planA=await planNeu('claude-ui',['claude-ui','codex-api','claude-docs'],['packages/web-ui/src/a.tsx','packages/web-ui/src/b.css','docs/c.md']);
+ const planB=await planNeu('codex-hex',['codex-hex'],['packages/core/src/hex.ts']);
+ const planC=await planNeu('codex-netz',['codex-netz','claude-review'],['packages/rest-api/src/x.ts','packages/rest-api/src/y.ts']);
+ const planD=await planNeu('sol-parser',['sol-parser'],['packages/core/src/z.ts']);
  const WERKZEUGE=['shell','plan','files','code_intel','memory','thought','docs','specialist','skills','asset_intel','event','admin'];
  const alleAgenten=['koordinator-nord','koordinator-sued',...team.map(t=>t[0])];
  let takt=0;
@@ -95,6 +103,8 @@ try{
    if(!namen&&i%5===3)await call('chat',{action:'send',recipient_id:'koordinator-sued',sender_id:team[5+i%3][0],content:'Test-DM P22 T93'},team[5+i%3][0]);
    if(!namen&&i%4===2)await call('channel',{action:'post',channel_name:i%8===2?'kern-sync':'review',sender:team[i%10][0],content:'Test P22 T93'},team[i%10][0]);
    if(!namen&&i%6===4)await call('channel',{action:'feed',channel_name:'kern-sync'},team[(i+3)%10][0]);
+   if(!namen&&i%2===0)await pool.query("INSERT INTO tool_calls(project,agent_id,tool_name,action,ok,args_preview) VALUES($1,$2,'files','plan_status',true,$3)",
+    [P,i%4===0?'codex-hex':['claude-ui','codex-api','claude-docs'][i%3],JSON.stringify({action:'plan_status',plan_id:i%4===0?planB:planA})]);
    i++;await sleep(140);
   }
  };
@@ -121,10 +131,14 @@ try{
  const lauf=leben(9000);
  await sleep(5200);await shot('01-desktop-live.png');
  await sleep(900);await shot('02-desktop-live-b.png');
+ messung.plan_impulse=0;
+ for(let i=0;i<15;i++){messung.plan_impulse=Math.max(messung.plan_impulse,Number(await page.locator('canvas.nw-gl').getAttribute('data-plan-impulse')));await sleep(100);}
  messung.desktop_fps=await fps(3);
  await lauf;
- const kn=await page.evaluate(()=>{const c=document.querySelector('canvas.nw-gl');return {knoten:Number(c.dataset.knoten),channels:Number(c.dataset.channelCount),sprites:Number(c.dataset.sprites)};});
+ const kn=await page.evaluate(()=>{const c=document.querySelector('canvas.nw-gl');return {knoten:Number(c.dataset.knoten),channels:Number(c.dataset.channelCount),sprites:Number(c.dataset.sprites),plaene:Number(c.dataset.plaene)};});
  ok(kn.channels===2,'zwei aktive Channels als Synapsen: '+JSON.stringify(kn));
+ ok(kn.plaene===4,'vier offene files-Plaene als Schattenplan-Knoten');
+ ok(messung.plan_impulse>0,'Aufrufe mit plan_id laufen in den Schattenplan ('+messung.plan_impulse+' Impulse gleichzeitig)');
  // Hover-Karte auf Koordinator nord
  const bildschirm=async name=>page.evaluate(async name=>{
   const c=document.querySelector('canvas.nw-gl'),r=c.getBoundingClientRect(),s=await(await fetch('/api/projects/p22-t93-browser/agentennetzwerk')).json(),g=window.p22szene(s,Date.now()),k=g.alias.get(name);
@@ -138,12 +152,32 @@ try{
  ok((await page.locator('.nw-card').textContent()).includes('claude-test'),'Hover-Karte zeigt Modell aus agenten-team');
  await shot('03-desktop-karte.png');
  await page.mouse.move(5,5);
+ const pp=await bildschirm('plan:'+planA);await page.mouse.move(pp.x,pp.y);
+ await page.getByRole('dialog',{name:'Knoten Plan '+planA,exact:true}).waitFor({timeout:5000});
+ ok((await page.locator('.nw-card').textContent()).includes('Beitragende'),'Schattenplan-Karte zeigt Status, Besitzer und Beitragende');
+ await shot('03b-desktop-schattenplan.png');
+ await page.mouse.move(5,5);
  await page.getByRole('switch',{name:'Erklärungen',exact:true}).click();
  await page.getByRole('button',{name:'Icon-Legende',exact:true}).click();
  const lauf2=leben(4000);await sleep(2600);await shot('04-desktop-erklaerungen.png');await lauf2;
  ok(await page.locator('.nw-debug').isVisible(),'Erklaerungen EIN zeigen Diagnose');
  await page.getByRole('button',{name:'Icon-Legende',exact:true}).click();
  await page.getByRole('switch',{name:'Erklärungen',exact:true}).click();
+ // P22-T95: Commit von Plan B fliesst ins Projekt, Verwerfen von Plan C explodiert (Bildfolgen der Buehne).
+ const stage=page.locator('.nw-stage'),folge=async(name,art)=>{
+  const vorher=Number(await page.locator('canvas.nw-gl').getAttribute('data-abgang-'+art));
+  await pool.query("INSERT INTO tool_calls(project,agent_id,tool_name,action,ok,args_preview) VALUES($1,'claude-ui','files','plan_status',true,'{}')",[P]);
+  await page.waitForFunction(([a,v])=>Number(document.querySelector('canvas.nw-gl')?.getAttribute('data-abgang-'+a))>v,[art,vorher],{timeout:15000});
+  for(const [i,ms] of [[1,120],[2,380],[3,420],[4,500]]){await sleep(ms);await stage.screenshot({path:join(folder,name+'-'+i+'.png')});}
+ };
+ await pool.query("UPDATE file_batch_plans SET status='committed',committed_at=NOW() WHERE id=$1::bigint",[planB]);
+ await folge('09-commit','commit');
+ ok(true,'Commit: Schattenplan B fliesst ins Projekt (Bildfolge 09-commit-1..4)');
+ await pool.query("UPDATE file_batch_plans SET status='cancelled' WHERE id=$1::bigint",[planC]);
+ await folge('10-explosion','explosion');
+ ok(true,'Verworfen: Schattenplan C explodiert (Bildfolge 10-explosion-1..4)');
+ const ende=(await app.inject({method:'GET',url:'/api/projects/'+P+'/agentennetzwerk'})).json().plaene_ende;
+ ok(ende.some(p=>p.id===planB&&p.status==='committed')&&ende.some(p=>p.id===planC&&p.status==='cancelled'),'Snapshot liefert Endstatus nur lesend (plaene_ende)');
  // Mobil 390 px
  await page.setViewportSize({width:390,height:844});
  await page.getByRole('button',{name:'Einpassen',exact:true}).click();
@@ -151,6 +185,9 @@ try{
  const mobil=await page.evaluate(()=>({seite:document.documentElement.scrollWidth,vw:innerWidth,canvas:document.querySelector('canvas.nw-gl').clientWidth}));
  ok(mobil.seite<=mobil.vw&&mobil.canvas<=390,'390 px ohne horizontalen Ueberlauf '+JSON.stringify(mobil));
  messung.mobil_fps=await fps(2);await lauf3;
+ await pool.query("UPDATE file_batch_plans SET status='expired' WHERE id=$1::bigint",[planD]);
+ await folge('11-mobil-explosion','explosion');
+ ok(true,'Mobil: abgelaufener Plan D explodiert (Bildfolge 11-mobil-explosion-1..4)');
  const pm=await bildschirm('claude-ui');await page.mouse.click(pm.x,pm.y);
  await page.getByRole('dialog',{name:'Knoten claude-ui',exact:true}).waitFor({timeout:5000});
  await shot('06-mobil-karte.png');
