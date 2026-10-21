@@ -162,6 +162,24 @@ try{
  await admin({modus:'entfernen',reverse_namen:['antwort_bytes'],grund:'RV30 response reset'});
  const s1=await prepare('s1.exe',JSON.stringify(rows[0])+'\n',undefined,{
   's1-rz-strings.json':JSON.stringify([{vaddr:123,string:'CD1/GFX/0001.dat'}]),'s1-rz-imports.json':'[]','s1-rz-symbols.json':'[]','normalisierer-status.json':'{"status":"fertig"}'});
+ // F1: retain all parser forms across the SQL prefilter (including trim/path wrappers).
+ const corpus=['.dat','.\u005cGFX',' \u00a0"gfx\u005c%04d.dat"\u3000','GFX/','"0001.DAT"','SND','./snd/','missing.zzz','random'];
+ for(let i=0;i<corpus.length;i++)await pool.query("INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,symbol_type,value,line_start,datei_id,schicht,fingerabdruck) SELECT $1,eintrag_id,file_path,'string',$2,1,datei_id,schicht,fingerabdruck FROM reverse_code_symbole WHERE datei_id=$3 AND schicht='S1' LIMIT 1",['rv30-corpus-'+i,corpus[i],s1.did]);
+ const corpusLinks=await call('verknuepfungen');
+ for(const rawValue of corpus){
+  const pattern=reverseDateiMuster(rawValue,512);
+  if(pattern&&['cd1/gfx/0001.dat','cd1/snd/0001.dat'].some(p=>pattern.test(p)))
+   ok(corpusLinks.links.some(x=>x.quelle==='S1'&&x.muster===pattern.text),'prefilter preserves '+JSON.stringify(rawValue));
+ }
+ // More than one STANDARD batch of relevant references; a last candidate must not disappear.
+ await pool.query("INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,symbol_type,value,line_start,datei_id,schicht,fingerabdruck) SELECT 'rv30-bulk-'||lpad(n::text,6,'0'),s.eintrag_id,s.file_path,'string',CASE WHEN n=10001 THEN 'snd/0001.dat' ELSE 'CD1/GFX/0001.dat' END,1,s.datei_id,s.schicht,s.fingerabdruck FROM (SELECT * FROM reverse_code_symbole WHERE datei_id=$1 AND schicht='S1' LIMIT 1) s CROSS JOIN generate_series(1,10001) n",[s1.did]);
+ const bigBatch=await call('verknuepfungen');
+ ok(bigBatch.success&&!bigBatch.analyse_gekappt,'more than 10000 relevant refs finish');
+ ok(bigBatch.diagnose.verweis_stapel>=2&&bigBatch.diagnose.verweise_gelesen>=10001,'standard keyset crosses 10000');
+ ok(bigBatch.links.some(x=>x.verweis_id==='rv30-bulk-010001'),'last reference beyond first batch retained');
+ const functionWithS1=await call('verknuepfungen',{funktion:'LoadGfx'});
+ ok(functionWithS1.success&&functionWithS1.links.every(x=>x.quelle==='S3')&&functionWithS1.diagnose.verweise_gelesen<10000,'function query skips irrelevant S1');
+ await pool.query("DELETE FROM reverse_code_symbole WHERE id LIKE 'rv30-bulk-%' OR id LIKE 'rv30-corpus-%'");
  const s1Links=await call('verknuepfungen');
  ok(s1Links.links.some(x=>x.quelle==='S1'&&x.quell_datei_id===s1.did&&x.funktion===null),'S1 candidate has no invented function');
  await admin({modus:'setzen',reverse_werte:{analyse_verweise:1},grund:'RV30 canonical S1 plus legacy keyset'});
@@ -177,6 +195,14 @@ try{
  eq(mixedBatches.links,legacy.links,'S3 to S1 candidate keyset transition preserves all links');
  eq(mixedBatches.diagnose.verweise_gelesen,legacy.diagnose.verweise_gelesen,'mixed source reference counts match');
  await admin({modus:'entfernen',reverse_namen:['analyse_verweise'],grund:'RV30 source transition reset'});
+ // S1-only executable formats remain eligible; non-code data does not supply loader hints.
+ const codeLayers=await pool.query("UPDATE reverse_schichten SET aktuell=false WHERE datei_id=$1 AND schicht IN ('S2','S3') AND aktuell RETURNING id",[s1.did]);
+ ok((await call('verknuepfungen')).links.some(x=>x.quell_datei_id===s1.did),'S1-only PE loader hint retained');
+ await pool.query("UPDATE reverse_dateien SET format='gif' WHERE id=$1",[s1.did]);
+ ok(!(await call('verknuepfungen')).links.some(x=>x.quell_datei_id===s1.did),'legacy data-image hints excluded');
+ await pool.query('UPDATE reverse_schichten SET aktuell=true WHERE id=ANY($1::bigint[])',[codeLayers.rows.map(x=>x.id)]);
+ ok((await call('verknuepfungen')).links.some(x=>x.quell_datei_id===s1.did),'current code layer overrides unrecognized format');
+ await pool.query("UPDATE reverse_dateien SET format='pe' WHERE id=$1",[s1.did]);
  const langerPfad='CD1/'+'deep/'.repeat(110)+'gfx/0001.dat';await target(langerPfad);
  ok((await call('verknuepfungen',{datei:langerPfad})).links.some(x=>x.funktion?.name==='LoadGfx'),'file filter uses configured path limit, not pattern limit');
  const beforeBudget=await call('verknuepfungen'),maxAntwort=Buffer.byteLength(JSON.stringify(beforeBudget))-Math.floor(Buffer.byteLength(JSON.stringify(beforeBudget.links[0]))/2);
@@ -225,6 +251,16 @@ try{
   const real=await prepare('medium-1/inhalt/session1/S3/s3.ex_',await readFile(input,'utf8'),undefined,sidecars);
   const targets=JSON.parse(await readFile(process.env.P18_RV30_REAL_FILES,'utf8'));
   for(const p of targets)await target(p);
+  if(process.env.P18_RV30_S1_NOISE){
+   const n=Number(process.env.P18_RV30_S1_NOISE);assert.ok(Number.isSafeInteger(n)&&n>=0&&n<=3000000);
+   const noiseDid=await target('noise/assets.dat'),noisePath='noise/assets.dat@S1/strings.txt';
+   await pool.query("INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,aktuell,status,werkzeug) VALUES($1,'S1','rv30-noise-fp',true,'fertig','fixture')",[noiseDid]);
+   await pool.query("INSERT INTO reverse_code_dateien(id,eintrag_id,file_path,file_name,file_type,datei_id,schicht,fingerabdruck) VALUES('rv30-noise-file',$1,$2,'strings.txt','txt',$3,'S1','rv30-noise-fp')",[rid,noisePath,noiseDid]);
+   await pool.query("INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,symbol_type,value,line_start,datei_id,schicht,fingerabdruck) SELECT 'rv30-noise-'||i,$1,$2,'string',CASE WHEN i=$4 THEN 'GFX' WHEN i%10=0 THEN 'noise.'||i||'.invalid' ELSE 'noise-'||i END,1,$3,'S1','rv30-noise-fp' FROM generate_series(1,$4) i",[rid,noisePath,noiseDid,n]);
+   const excluded=await call('verknuepfungen',{gruppe:'GFX'});
+   ok(excluded.success&&!excluded.links.some(x=>x.quell_datei_id===noiseDid),'data container strings excluded even when they match GFX');
+   console.log('REAL_RV30_S1_NOISE '+n);
+  }
   const defaultSettings=await inDb(()=>leseReverseEinstellungen(project));
   ok(Object.values(defaultSettings.werte).every(x=>x.quelle==='standard'),'real probe uses only standard settings');
   profileReal=true;
@@ -238,10 +274,16 @@ try{
   eq(realLinks.analyse_gekappt,false,'real GFX standard scan is complete');
   eq(soundLinks.analyse_gekappt,false,'real SND standard scan is complete');
   ok(gfxMs<defaultSettings.werte.laufzeit_ms.wert&&sndMs<defaultSettings.werte.laufzeit_ms.wert,'real standard time budget');
-  ok(realLinks.diagnose.verweis_stapel>=2,'real references span multiple standard batches');
+  ok(realLinks.diagnose.verweis_stapel>=1,'real candidate scan reported');
   ok(soundLinks.success&&soundLinks.links.some(x=>x.muster==='snd'),'real s3.ex_ SND function');
   ok(realLinks.links.some(x=>x.ziele.some(z=>z.pfad.includes('DATA1.CAB~inhalt/GFX/'))),'real GFX target path');
   ok(soundLinks.links.some(x=>x.ziele.some(z=>z.pfad.includes('DATA1.CAB~inhalt/EXE/SND/'))),'real SND target path');
+  const groupTimes={};
+  for(const gruppe of [undefined,'GFX','SND']){
+   const t=Date.now(),r=await call('verknuepfungen',{gruppe,limit:5});groupTimes[gruppe]=Date.now()-t;
+   ok(r.success&&r.links.length>0&&!r.analyse_gekappt&&groupTimes[gruppe]<defaultSettings.werte.laufzeit_ms.wert,'real group '+gruppe+' within standard budget '+JSON.stringify({ms:groupTimes[gruppe],success:r.success,fehlercode:r.fehlercode,fehler_detail:r.fehler_detail,links:r.links?.length,analyse_gekappt:r.analyse_gekappt,diagnose:r.diagnose}));
+  }
+  console.log('REAL_RV30_GROUPS '+JSON.stringify(groupTimes));
   console.log('REAL_RV30 '+JSON.stringify({import:real.result,gfx:realLinks.links,snd:soundLinks.links,analyse_gekappt:realLinks.analyse_gekappt,gfx_ms:gfxMs,snd_ms:sndMs,diagnose:realLinks.diagnose}));
  }
  console.log('RV30 PASS '+checks+' checks');

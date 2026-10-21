@@ -70,6 +70,9 @@ export async function leseReverseVerknuepfungen(db:Db,rid:string,project:string,
  if((datei!==null&&(!datei.trim()||datei.length>w.max_pfad_zeichen.wert))||[gruppe,fn].some(s=>s!==null&&(!s.trim()||s.length>w.max_muster_zeichen.wert)))
   return {fehlercode:'werkzeug_fehler',fehler_detail:'parameter_ungueltig',diagnose};
  if(Buffer.byteLength(JSON.stringify(diagnose))+512>w.antwort_bytes.wert)return {fehlercode:'zu_gross',fehler_detail:'antwort_bytes zu klein für Diagnose'};
+ const gruppeMatch=gruppe?reverseDateiMuster(/^[a-z0-9_-]+$/i.test(gruppe)?gruppe.toUpperCase():gruppe,w.max_muster_zeichen.wert):null;
+ if(gruppe&&!gruppeMatch)return {fehlercode:'werkzeug_fehler',fehler_detail:'gruppe_ungueltig',diagnose};
+ const pathSet=nurPfade?new Set(nurPfade.map(norm)):null;
  const start=Date.now(),abgelaufen=()=>Date.now()-start>w.laufzeit_ms.wert;
  const client=await db.connect();
  try{
@@ -84,15 +87,35 @@ export async function leseReverseVerknuepfungen(db:Db,rid:string,project:string,
  };
  const dateien=(await query("SELECT id::text,left(pfad,$3+1) AS pfad FROM reverse_dateien WHERE eintrag_id=$1 ORDER BY pfad,id LIMIT $2",[rid,w.analyse_dateien.wert+1,w.max_pfad_zeichen.wert])).rows;
  const funktionen=(await query("SELECT s.id,s.datei_id::text,s.file_path,s.name,s.adresse::text,s.groesse_bytes::text,s.line_start,s.line_end FROM reverse_code_symbole s WHERE s.eintrag_id=$1 AND s.symbol_type='function' AND "+aktuell('s')+" ORDER BY s.datei_id,s.schicht DESC,s.file_path,s.line_start,s.id LIMIT $2",[rid,w.analyse_funktionen.wert+1])).rows;
- // Keyset batches share one snapshot, so concurrent imports cannot move rows between pages.
- // LATERAL LIMIT 1 preserves the unique symbol lookup per reference even before PG statistics refresh;
- // a reordered join otherwise intersects the whole entry bitmap for every string symbol.
+ // Only candidates that can hit the current file index need to cross the DB boundary.
+ // This is deliberately a superset: the authoritative parser/mask/matcher still runs below.
+ // Trim includes JS whitespace plus path/quote wrappers; .dat and ./GFX must both survive.
+ const randzeichen=" ./\\\"'\t\n\r\u000b\f                 　﻿";
+ const endungen=new Set<string>(),ordner=new Set<string>();
+ for(const d of dateien.slice(0,w.analyse_dateien.wert)){
+  if(d.pfad.length>w.max_pfad_zeichen.wert)continue;
+  const normal=norm(d.pfad);
+  if((datei&&normal!==norm(datei))||(gruppeMatch&&!gruppeMatch.test(normal))||(pathSet&&!pathSet.has(normal)))continue;
+  const teile=normal.split('/'),ende=/\.([a-z0-9]{1,8})$/.exec(teile.pop()!);
+  if(ende)endungen.add(ende[1]);
+  for(const teil of teile)if(/^[a-z0-9_-]{3,}$/.test(teil))ordner.add(teil);
+ }
+ const kandidat=(wert:string)=>"CASE WHEN strpos(btrim("+wert+",$6),'.')>0 THEN lower(reverse(split_part(reverse(btrim("+wert+",$6)),'.',1)))=ANY($7::text[]) ELSE lower(btrim("+wert+",$6))=ANY($7::text[] || $8::text[]) END";
+ // Keyset batches share one snapshot. S1 has no source function, so it cannot satisfy fn.
+ // LATERAL LIMIT 1 keeps symbol lookup on the primary key even with stale PG statistics.
+ const s3="SELECT v.id,v.datei_id::text,v.file_path,v.line_number,v.adresse::text,s.value AS wert,'S3' AS quelle FROM reverse_code_verweise v JOIN LATERAL (SELECT s.value,s.eintrag_id,s.datei_id,s.fingerabdruck,s.symbol_type FROM reverse_code_symbole s WHERE s.id=v.symbol_id LIMIT 1) s ON s.eintrag_id=v.eintrag_id AND s.datei_id=v.datei_id AND s.fingerabdruck=v.fingerabdruck WHERE v.eintrag_id=$1 AND v.schicht='S3' AND s.symbol_type='string' AND "+aktuell('v')+" AND length(s.value)<=$3 AND "+kandidat('s.value');
+ // Materialize the filtered S1 set once: stale statistics otherwise rescan millions per current layer.
+ // S1 loader hints come from code sources, not arbitrary data/image/container strings.
+ const codeQuelle=(alias:string)=>"("+alias+".format IN ('pe','elf','macho','mach-o','wasm','class','dex') OR EXISTS(SELECT 1 FROM reverse_schichten c WHERE c.datei_id="+alias+".id AND c.schicht IN ('S2','S3') AND c.aktuell AND c.status IN ('fertig','teilweise')))";
+ const s1="(WITH s1_kandidaten AS MATERIALIZED (SELECT s.id,s.datei_id,s.file_path,s.line_start,s.adresse,s.value FROM reverse_code_dateien d JOIN reverse_dateien q ON q.id=d.datei_id AND q.eintrag_id=d.eintrag_id JOIN LATERAL (SELECT s.id,s.datei_id,s.file_path,s.line_start,s.adresse,s.value FROM reverse_code_symbole s WHERE s.eintrag_id=d.eintrag_id AND s.file_path=d.file_path AND s.datei_id=d.datei_id AND s.schicht=d.schicht AND s.fingerabdruck=d.fingerabdruck AND s.symbol_type='string' OFFSET 0) s ON true WHERE d.eintrag_id=$1 AND d.schicht='S1' AND "+aktuell('d')+" AND "+codeQuelle('q')+" AND length(s.value)<=$3 AND "+kandidat('s.value')+") SELECT s.id,s.datei_id::text,s.file_path,s.line_start,s.adresse::text,s.value AS wert,'S1' AS quelle FROM s1_kandidaten s)";
+ const legacy="SELECT 'kandidat:'||v.id::text,v.datei_id::text,d.pfad,NULL::integer,NULL::text,v.target AS wert,'S1' AS quelle FROM reverse_verweise v JOIN reverse_dateien d ON d.id=v.datei_id AND d.eintrag_id=v.eintrag_id WHERE v.eintrag_id=$1 AND v.kind='string_datei' AND length(v.target)<=$3 AND "+kandidat('v.target')+" AND "+codeQuelle('d')+" AND EXISTS(SELECT 1 FROM reverse_schichten z WHERE z.datei_id=v.datei_id AND z.schicht='S1' AND z.aktuell AND z.status IN ('fertig','teilweise'))";
+ const kandidaten=fn?s3:[s3,s1,legacy].join(' UNION ALL ');
  const statistik={verweise_gelesen:0,verweis_stapel:0};
  async function* verweise():AsyncGenerator<Row>{
   let letzteQuelle:string|null=null,letzteId:string|null=null;
   while(true){
-   const rows:Row[]=(await query("WITH kandidaten AS ("+"SELECT v.id,v.datei_id::text,v.file_path,v.line_number,v.adresse::text,s.value AS wert,'S3' AS quelle FROM reverse_code_verweise v JOIN LATERAL (SELECT s.value,s.eintrag_id,s.datei_id,s.fingerabdruck,s.symbol_type FROM reverse_code_symbole s WHERE s.id=v.symbol_id LIMIT 1) s ON s.eintrag_id=v.eintrag_id AND s.datei_id=v.datei_id AND s.fingerabdruck=v.fingerabdruck WHERE v.eintrag_id=$1 AND v.schicht='S3' AND s.symbol_type='string' AND "+aktuell('v')+" AND length(s.value)<=$3 UNION ALL SELECT s.id,s.datei_id::text,s.file_path,s.line_start,s.adresse::text,s.value AS wert,'S1' AS quelle FROM reverse_code_symbole s WHERE s.eintrag_id=$1 AND s.schicht='S1' AND s.symbol_type='string' AND "+aktuell('s')+" AND length(s.value)<=$3 UNION ALL SELECT 'kandidat:'||v.id::text,v.datei_id::text,d.pfad,NULL::integer,NULL::text,v.target AS wert,'S1' AS quelle FROM reverse_verweise v JOIN reverse_dateien d ON d.id=v.datei_id AND d.eintrag_id=v.eintrag_id WHERE v.eintrag_id=$1 AND v.kind='string_datei' AND length(v.target)<=$3 AND EXISTS(SELECT 1 FROM reverse_schichten z WHERE z.datei_id=v.datei_id AND z.schicht='S1' AND z.aktuell AND z.status IN ('fertig','teilweise'))"+") SELECT * FROM kandidaten WHERE ($4::text IS NULL OR quelle<$4 OR (quelle=$4 AND id>$5)) ORDER BY quelle DESC,id LIMIT $2",
-    [rid,w.analyse_verweise.wert,w.max_muster_zeichen.wert,letzteQuelle,letzteId])).rows;
+   const rows:Row[]=(await query("WITH kandidaten AS ("+kandidaten+") SELECT * FROM kandidaten WHERE ($4::text IS NULL OR quelle<$4 OR (quelle=$4 AND id>$5)) ORDER BY quelle DESC,id LIMIT $2",
+    [rid,w.analyse_verweise.wert,w.max_muster_zeichen.wert,letzteQuelle,letzteId,randzeichen,[...endungen],[...ordner]])).rows;
    statistik.verweis_stapel++;statistik.verweise_gelesen+=rows.length;
    for(const row of rows)yield row;
    if(rows.length<w.analyse_verweise.wert)return;
@@ -141,17 +164,12 @@ export async function leseReverseVerknuepfungen(db:Db,rid:string,project:string,
   }
   const value={aufrufer:out,gekappt};aufCache.set(f.id,value);return value;
  };
- const gruppeMatch=gruppe?reverseDateiMuster(/^[a-z0-9_-]+$/i.test(gruppe)?gruppe.toUpperCase():gruppe,w.max_muster_zeichen.wert):null;
- if(gruppe&&!gruppeMatch)return {fehlercode:'werkzeug_fehler',fehler_detail:'gruppe_ungueltig',diagnose};
- const pathSet=nurPfade?new Set(nurPfade.map(norm)):null;
  const links:Row[]=[];let total=0,bytes=Buffer.byteLength(JSON.stringify(diagnose))+512,antwortGekappt=false;
  const gefunden=new Set<string>();
  for await(const r of verweise()){ 
   if(abgelaufen()){analyseGekappt=true;break;}
   const muster=reverseDateiMuster(String(r.wert??''),w.max_muster_zeichen.wert);
   if(!muster||muster.konfidenz<w.konfidenz_prozent.wert)continue;
-  const f=r.quelle==='S3'?source(r):null,au=f?aufrufer(f):{aufrufer:[],gekappt:false};
-  if(fn&&!(f&&(f.id===fn||norm(f.name??'')===norm(fn)))&&!au.aufrufer.some(a=>a.id===fn||norm(a.name??'')===norm(fn)))continue;
   const ziele:Row[]=[];let zielAnzahl=0;
   for(const z of index.get(muster.schluessel)??[]){
    if(abgelaufen()){analyseGekappt=true;break;}
@@ -159,6 +177,8 @@ export async function leseReverseVerknuepfungen(db:Db,rid:string,project:string,
    zielAnzahl++;if(ziele.length<w.max_ziele.wert)ziele.push({datei_id:z.id,pfad:mask(z.pfad)});
   }
   if(!zielAnzahl)continue;
+  const f=r.quelle==='S3'?source(r):null,au=f?aufrufer(f):{aufrufer:[],gekappt:false};
+  if(fn&&!(f&&(f.id===fn||norm(f.name??'')===norm(fn)))&&!au.aufrufer.some(a=>a.id===fn||norm(a.name??'')===norm(fn)))continue;
   const key=[r.datei_id,f?.id??(r.quelle==='S1'?'S1':r.id),muster.text].join(':');if(gefunden.has(key))continue;gefunden.add(key);
   const item={verweis_id:r.id,quelle:r.quelle,string:mask(r.wert),muster:muster.text,art:muster.art,konfidenz:muster.konfidenz/100,
    funktion:f?publicFn(f):null,quell_datei_id:r.datei_id,quell_pfad:mask(r.file_path),quell_zeile:r.line_number,quell_adresse:r.adresse,
