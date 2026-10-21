@@ -2,8 +2,9 @@
 import {getProjectTree,getFunctions,getSymbols,getReferences,fullTextSearchCode,getFileContent,getCallEdges} from './code-intel.js';
 import {REVERSE_BEREICH,mitReverseCodeLeser,type CodeLeserDb} from './intel-bereich.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
+import {fuehreReverseVergleichAus} from './reverse-vergleichen.js';
 type Row=Record<string,unknown>;
-export const REVERSE_CODE_ACTIONS=['tree','functions','symbols','references','search','file','calls'] as const;
+export const REVERSE_CODE_ACTIONS=['tree','functions','symbols','references','search','file','calls','vergleichen'] as const;
 export type ReverseCodeAction=typeof REVERSE_CODE_ACTIONS[number];
 export class ReverseCodeFehler extends Error{
  constructor(readonly code:'werkzeug_fehler'|'pfad_gefahr'|'nicht_gefunden'|'semantik_nicht_verfuegbar'|'schicht_nicht_fertig'|'zu_gross',readonly detail?:string,readonly extra:Row={}){super(code);}
@@ -32,6 +33,7 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
  const max=config('SYNAPSE_REVERSE_CODE_MAX_LIMIT',500),limit=integer(a.limit,action==='search'?20:200,max),offset=integer(a.offset,0);
  if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
  const budget=config('SYNAPSE_REVERSE_ANTWORT_MAX',80000),min=integer(a.min_laenge,4,4096);
+ if(action==='vergleichen')return fuehreReverseVergleichAus(a,k,limit,budget);
  if(a.semantic===true)fail('semantik_nicht_verfuegbar');
  const file=a.file_path===undefined?undefined:pfad(a.file_path);
  const virtual=file?.match(/^(.*)@(S[0-3])(?:\/(.+))?$/);

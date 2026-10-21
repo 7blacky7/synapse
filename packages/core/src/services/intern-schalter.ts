@@ -75,6 +75,8 @@ export const INTERN_SCHALTER = {
   runtime_ueberwachung: ['freigegeben'],
   // P22-T98: befristete Test-Freigabe von intern db_lesen/db_schema (Produkt-Standard AUS); aktiv=true = freigegeben.
   db_lesen: ['freigegeben'],
+  // P18-T75: nur S3-Funktionsvergleich befristet freigeben; Produktbasis reverse_s3.
+  reverse_vergleichen: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 

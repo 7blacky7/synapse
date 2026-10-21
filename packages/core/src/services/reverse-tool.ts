@@ -40,7 +40,7 @@ const TEXTE: Record<ReverseFehlercode,string> = {
 };
 const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: vergleichen(datei_a,datei_b) vergleicht S3-Funktionen mit Unsicherheitskennzeichnung und Paging; funktion = Symbol-ID für Diff. tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -51,6 +51,8 @@ export const REVERSE_DEFINITION = {
     zusammenfuehren_mit:{type:'string',description:'Unanalysierten Vorschlag in diesen Ziel-Eintrag zusammenführen'},
     aufteilen:{type:'array',items:{type:'object',properties:{titel:{type:'string'},medien:{type:'array',items:{type:'string'}}},required:['titel','medien'],additionalProperties:false},description:'Vorschlag vor der Analyse in vollständige disjunkte Mediengruppen aufteilen'},
     notiz:{type:'string'},datei:{type:'string',description:'Relativer Reverse-Dateipfad'},file_path:{type:'string',description:'Alias für datei bei status/analysieren; Code-Aktionen nutzen virtuelle Pfade <Original>@S1/strings.txt, @S2/<Funktion>.asm oder @S3/<Funktion>.c'},
+    datei_a:{type:'string',description:'vergleichen: erster Originalpfad im Reverse-Eintrag'},datei_b:{type:'string',description:'vergleichen: zweiter Originalpfad; beide brauchen S3 (reverse_s3)'},
+    funktion:{type:'string',description:'vergleichen: Symbol-ID aus unterschiede für Rohtext-Diff; from_line/to_line paginieren Diff-Zeilen'},
     warten_sekunden:{type:'number',minimum:0,maximum:50},
     ursache:{type:'array',items:{type:'string',enum:[...REVERSE_ENTSTOERBAR]},description:'entstoeren: nur diese Ursachen (Standard alle entstörbaren)'},
     vorschau:{type:'boolean',description:'entstoeren: Standard true = nur zeigen; false = ausführen'},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
@@ -87,6 +89,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   search:['reverse_id','file_path','query','file_type','semantic','match_limit','match_skip','limit','offset'],
   file:['reverse_id','file_path','from_line','to_line','truncate_long_lines','min_laenge','limit','offset'],
   calls:['reverse_id','file_path','callee','limit','offset'],
+  vergleichen:['reverse_id','datei_a','datei_b','limit','offset','funktion','from_line','to_line'],
   assets_tree:['reverse_id','path','depth','recursive','limit','format','asset_type'],
   inspect:['reverse_id','datei','file_path','objects_offset','objects_limit','object_type','references_limit'],
   ansicht:['reverse_id','datei','file_path','ansicht','offen_sekunden','einmalig'],
@@ -95,6 +98,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
 export const REVERSE_NULL_FELDER = ['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','fehlercode','werkzeug','kaltstart_s','naechster_offset','eta'] as const;
 /** P21-T16: Aktionen, deren Antwort Inhalt aus dem Analyseziel traegt, mit Kandidatenfeldern. */
 const REVERSE_ZIELINHALT: Partial<Record<ReverseAction,readonly string[]>> = {
+  vergleichen:['unterschiede[]','paar','diff[]'],
   tree:['baum'],functions:['functions[]'],symbols:['symbols[]'],references:['references[]','string_occurrences[]','name_matches[]'],
   search:['results[]'],file:['content','strings[]'],calls:['calls[]'],assets_tree:['baum'],inspect:['inspektion'],
   dateien:['dateien[]','container_nicht_entpackt[]'],struktur:['gruppen[]','nicht_analysiert[]'],ansicht:['ansicht'],
