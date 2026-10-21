@@ -20,6 +20,7 @@ import {reverseKindAusfuehrbar,reverseFehlerDeterministisch,zerlegeReverseFehler
 import {leseProfilProduktSchalter} from './agent-profil-schalter.js';
 import {starteReverseEntstoerer} from './reverse-entstoerer.js';
 import {analysiereRv27} from './hex-rv27.js';
+import {normalisiereS1,uebernehmeNormalisiert} from './reverse-normalisierer/s1.js';
 
 type Row=Record<string,unknown>;
 interface AnalysePayload {result:Omit<AssetResult,'file_path'>;strings:string[];metadata:Row;status:string;dauer_ms:number}
@@ -74,7 +75,7 @@ export class ReversePipelineDienst{
   this.retry=num('SYNAPSE_REVERSE_RETRY_MAX',3);
   this.version=hash(standardRegistry.list().map(i=>[i.id,i.version]).sort());
   this.stringsBytes=Math.min(num('SYNAPSE_REVERSE_STRINGS_BYTES',4194304),Math.floor(this.cfg.inspektion.maxReadBytes/2));
-  this.profile=hash({engine:'reverse-api-s0s1-v1',version:process.env.SYNAPSE_REVERSE_PROFIL_VERSION??'1',limits:this.cfg.inspektion,
+  this.profile=hash({engine:'reverse-api-s0s1-v2-rv14',version:process.env.SYNAPSE_REVERSE_PROFIL_VERSION??'1',limits:this.cfg.inspektion,
    stringsBytes:this.stringsBytes,stringsMin:num('SYNAPSE_REVERSE_STRINGS_MIN',4)});
   this.leaseMs=this.cfg.inspektion.timeoutMs*2+WORKER_GNADENFRIST_MS+this.cfg.speicher.timeoutMs;
   this.workers=Array.from({length:num('SYNAPSE_REVERSE_PARALLEL',this.cfg.sync.parallelInspektionen)},()=>new AssetInspektionsWorker());
@@ -275,14 +276,16 @@ export class ReversePipelineDienst{
      [d.id,j.eintrag_id,i,o.kind,o.name,JSON.stringify(o.data),range&&'offset'in range?range.offset:null,range&&'length'in range?range.length:null,range&&'line_start'in range?range.line_start:null,range&&'line_end'in range?range.line_end:null]);
    }
    for(const [i,r] of (payload.result as AssetResult).references.entries())await db.query("INSERT INTO reverse_verweise(datei_id,eintrag_id,ordnung,kind,target,aufloesung,inspektor_resolved) VALUES($1,$2,$3,$4,$5,'unbekannt',$6)",[d.id,j.eintrag_id,i,r.kind,r.target,r.resolved??null]);
-   const imports=r.references.map(x=>x.target).join('\n');
-   for(const [name,content] of [['strings.txt',payload.strings.join('\n')],['imports.txt',imports]]){
-    const virtual=d.pfad+'@S1/'+name,id=hash([j.eintrag_id,virtual]);
-    await db.query("INSERT INTO reverse_code_dateien(id,eintrag_id,file_path,file_name,file_type,file_size,content,content_hash,datei_id,schicht,fingerabdruck,tsv,tsv_zerlegt) VALUES($1,$2,$3,$4,'txt',$5,$6,$7,$8,'S1',$9,to_tsvector('simple',$6),to_tsvector('simple',$6)) ON CONFLICT(eintrag_id,file_path) DO UPDATE SET content=EXCLUDED.content,content_hash=EXCLUDED.content_hash,file_size=EXCLUDED.file_size,fingerabdruck=EXCLUDED.fingerabdruck,tsv=EXCLUDED.tsv,tsv_zerlegt=EXCLUDED.tsv_zerlegt,updated_at=clock_timestamp()",
-     [id,j.eintrag_id,virtual,name,Buffer.byteLength(content),content,hash(content),d.id,j.fingerabdruck]);
-    await db.query('DELETE FROM reverse_code_symbole WHERE eintrag_id=$1 AND file_path=$2',[j.eintrag_id,virtual]);
-    const lines=content.split('\n');
-    for(const [i,line] of lines.entries())if(line)await db.query("INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,symbol_type,name,value,line_start,line_end,datei_id,schicht,fingerabdruck) VALUES($1,$2,$3,$4,$5,$6,$7,$7,$8,'S1',$9)",[hash([id,i]),j.eintrag_id,virtual,name==='strings.txt'?'string':'import',name==='strings.txt'?null:line,line,i+1,d.id,j.fingerabdruck]);
+   const normal=normalisiereS1({strings:payload.strings.map(text=>({text})),importe:r.references.map(x=>({name:x.target}))},
+    {maxBytes:num('SYNAPSE_REVERSE_CACHE_BYTES',8388608),maxEintraege:this.cfg.inspektion.maxObjects});
+   // Old chunks may have disappeared when a new fingerprint yields fewer strings.
+   await db.query("DELETE FROM reverse_code_dateien WHERE eintrag_id=$1 AND datei_id=$2::bigint AND schicht='S1' AND (file_name LIKE 'strings%' OR file_name LIKE 'imports%')",[j.eintrag_id,d.id]);
+   await uebernehmeNormalisiert(db,{reverseId:j.eintrag_id,dateiId:String(d.id),pfad:d.pfad,fingerabdruck:j.fingerabdruck},normal);
+   if(normal.dateiKandidaten.length)await db.query("INSERT INTO reverse_verweise(datei_id,eintrag_id,ordnung,kind,target,aufloesung) SELECT $1,$2,$3+u.i,'string_datei',u.target,'unbekannt' FROM unnest($4::text[]) WITH ORDINALITY AS u(target,i)",
+    [d.id,j.eintrag_id,r.references.length,normal.dateiKandidaten]);
+   if(normal.gekappt){
+    payload.status='teilweise';
+    await db.query("UPDATE reverse_dateien SET status='teilweise' WHERE id=$1",[d.id]);
    }
   }
   await db.query("UPDATE reverse_schichten SET status=$3,funktionen_gesamt=$4,funktionen_fertig=$4,beendet_at=clock_timestamp(),dauer_ms=$5 WHERE datei_id=$1 AND schicht=$2 AND fingerabdruck=$6 AND aktuell",[d.id,j.schicht,payload.status,r.objects.length,payload.dauer_ms,j.fingerabdruck]);

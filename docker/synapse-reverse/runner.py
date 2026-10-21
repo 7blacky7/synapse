@@ -581,7 +581,9 @@ def command_for(tool: str, source: Path, out: Path, req: dict[str, Any], fmt: st
         export = out / "functions.jsonl"
         return [*TOOLS[tool], str(project), "analysis", "-import", str(source),
                 "-scriptPath", str(GHIDRA_SCRIPTS),
-                "-postScript", "ExportFunctions.java", str(export), "-deleteProject"]
+                "-postScript", "ExportFunctions.java", str(export),
+                str(limits(req)["max_dateien"]), str(min(limits(req)["max_bytes"], 2147483647)),
+                str(limits(req)["zeitlimit_s"]), "-deleteProject"]
     if tool == "rizin":
         return [*TOOLS[tool], "-c", "aaa;afl", str(source)]
     return [*TOOLS[tool], str(source)]
@@ -1161,6 +1163,54 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
     ]
 
 
+
+def normalisierer_rohausgaben(source: Path, out: Path, cap: dict[str, int], env: dict[str, str],
+                              job_tmp: Path, deadline: float) -> None:
+    """RV14: static S1 tools in the SAME requested S3 job; original is read-only.
+    Raw stdout stays on the dataset; only manifest-verified normalization enters PG.
+    """
+    magic = head_bytes(source, 8)
+    if magic.startswith(b"\0asm"):
+        commands = [("wasm-objdump", "s1-wasm.txt", ["wasm-objdump", "-x", "-d", str(source)])]
+    elif magic.startswith(b"\xca\xfe\xba\xbe"):
+        commands = [("javap", "s1-javap.txt", ["javap", "-c", "-p", source.as_uri()])]
+    elif magic.startswith((b"MZ", b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xce")):
+        commands = [("rz-bin", "s1-rz-" + name + ".json", ["rz-bin", "-" + flag + "j", str(source)])
+                    for name, flag in (("strings", "z"), ("imports", "i"), ("symbols", "s"))]
+    else:
+        return
+    failures, tools = [], []
+    for tool, filename, command in commands:
+        remaining = int(deadline - time.monotonic())
+        if remaining < 1 or not shutil.which(tool):
+            failures.append("zeitlimit" if remaining < 1 else "werkzeug_fehlt:" + tool)
+            continue
+        try:
+            code, _ = run_isolated(command, remaining, env, out, job_tmp,
+                                   preexec=file_size_limit(cap["max_bytes"]))
+            stdout = job_tmp / ".stdout"
+            if code or not stdout.is_file():
+                failures.append("werkzeug_fehler:" + tool)
+                continue
+            size = stdout.stat().st_size
+            if size > cap["max_bytes"]:
+                failures.append("zu_gross:" + tool)
+                continue
+            # No logs/metadata carry the unmasked raw values.
+            payload = stdout.read_bytes()
+            if limit_violation(len(dateien_unter(out)) + 1, 0,
+                               sum((out / p).stat().st_size for p in dateien_unter(out)) + size,
+                               cap, source.stat().st_size):
+                failures.append("zu_gross:" + tool)
+                continue
+            (out / filename).write_bytes(payload)
+            tools.append(tool)
+        except subprocess.TimeoutExpired:
+            failures.append("zeitlimit:" + tool)
+    (out / "normalisierer-status.json").write_text(json.dumps({
+        "status": "teilweise" if failures else "fertig", "werkzeuge": sorted(set(tools)), "fehler": failures}), encoding="utf-8")
+
+
 def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     job = job_id(req)
     cap = limits(req)
@@ -1231,6 +1281,8 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
                 code, meldung = 0, ""  # ordinary PE: resources are not an archive for 7zz
             else:
                 code, meldung = run_isolated(command, cap["zeitlimit_s"], env, out, job_tmp, guard=guard, preexec=preexec)
+                if tool == "analyzeHeadless" and code == 0:
+                    normalisierer_rohausgaben(source, out, cap, env, job_tmp, started + cap["zeitlimit_s"])
         finally:
             rest = sweep_processes()
             clean_tmp(job_tmp)

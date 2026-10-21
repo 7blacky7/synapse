@@ -597,7 +597,7 @@ export class ReverseExecutor {
    try{
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({werkzeug:'analyzeHeadless',schicht:'S3',
      eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
-     grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:16}}));
+     grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien}}));
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     const m=(e as Error).message;

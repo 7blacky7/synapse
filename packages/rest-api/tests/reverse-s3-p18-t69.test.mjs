@@ -137,7 +137,7 @@ try{
  eq(aufrufe.length,1,'C: genau ein Runner-Aufruf');
  eq(lesbar,[[[join(reverseRoot,RID+'/entpackt/m'+mid+'/S3/AUTORUN.EXE')],reverseRoot]],'C: Eingaberechte mit Wurzel (Ordner durchquerbar)');
  eq(aufrufe[0].req,{werkzeug:'analyzeHeadless',schicht:'S3',eingabe:'/bib/'+RID+'/entpackt/m'+mid+'/S3/AUTORUN.EXE',ausgabe:'/arbeit/'+jobId,
-  grenzen:{zeitlimit_s:3600,max_bytes:268435456,max_dateien:16}},'C: Runner-Auftrag fuer Ghidra');
+  grenzen:{zeitlimit_s:3600,max_bytes:268435456,max_dateien:konfig.maxDateien}},'C: Runner-Auftrag fuer Ghidra');
  eq((await pool.query('SELECT state FROM work_jobs WHERE id=$1',[jobId])).rows[0].state,'completed','C: Work-Job completed (stage+complete ueber die Hooks)');
  const schichten=Object.fromEntries((await pool.query("SELECT schicht,status,fehlercode,funktionen_gesamt,funktionen_fertig,fingerabdruck,werkzeug,werkzeug_version,profil_version,ausgabe_key FROM reverse_schichten WHERE datei_id=$1 AND aktuell",[D1])).rows.map(x=>[x.schicht,x]));
  eq([schichten.S3.status,schichten.S3.funktionen_gesamt,schichten.S3.funktionen_fertig,schichten.S3.fehlercode],['teilweise',3,2,null],'C: S3 teilweise (eine Funktion ohne Dekompilat)');

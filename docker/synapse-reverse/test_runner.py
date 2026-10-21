@@ -228,7 +228,10 @@ class RunnerContractTests(unittest.TestCase):
                  patch.object(runner.shutil, "which", return_value="/opt/reverse/bin/analyzeHeadless"), \
                  patch.object(runner, "run_isolated", side_effect=fake_run) as run:
                 events = runner.run_request(request)
-            command, timeout, env = run.call_args.args[0], run.call_args.args[1], run.call_args.args[2]
+            ghidra_call = next(call for call in run.call_args_list if "ExportFunctions.java" in call.args[0])
+            command, timeout, env = ghidra_call.args[0], ghidra_call.args[1], ghidra_call.args[2]
+            pos = command.index("ExportFunctions.java")
+            self.assertEqual(command[pos + 2:pos + 5], ["20000", "2000000000", "7"])
             job_tmp = str(Path(tmp_root) / "job-ghidra")
             self.assertTrue(seen["project_exists"], "Projektordner existiert vor dem Start")
             self.assertEqual(env["JAVA_TOOL_OPTIONS"], f"-Duser.home={job_tmp} -Djava.io.tmpdir={job_tmp} -Xmx3g")

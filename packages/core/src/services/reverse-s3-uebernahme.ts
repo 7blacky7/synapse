@@ -9,6 +9,9 @@
  * - Budget: Dekompilat je Eintrag höchstens SYNAPSE_REVERSE_S3_PG_MAX_BYTES (Standard 50 MB, User da83be67); darüber
  *   wird nicht mehr gespeichert, die Schicht ist dann 'teilweise' (fehlercode zu_gross). Einzelne nicht dekompilierte
  *   Funktionen machen S3 ebenfalls 'teilweise'.
+ * - REA1/RV14: Ghidra graph, failed decompilations as S2 assembly, and manifest-verified S1 raw sidecars.
+ *   References point at the source function header; context retains the exact machine address.
+ *   EXTERNAL-space offsets are labelled imports and never linked to a RAM symbol by numeric coincidence.
  * - Idempotent je Auftrag (ausgabe_key); läuft im Client des Aufrufers (Executor: unter dem Lease-Fence).
  */
 import {createHash} from 'node:crypto';
@@ -17,7 +20,8 @@ import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-konfig.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
-import {reverseAnalyseFingerabdruck} from './reverse-pipeline.js';
+import {reverseAnalyseFingerabdruck,maskiereReverseAnalyse} from './reverse-pipeline.js';
+import {uebernehmeRohWerkzeuge} from './reverse-normalisierer/rohausgaben.js';
 import type {ReverseEManifestEintrag} from './reverse-e-uebernahme.js';
 
 export class ReverseS3UebernahmeFehler extends Error {
@@ -52,18 +56,33 @@ function pgMax(o:ReverseS3UebernahmeOptionen):number{
   if(!Number.isSafeInteger(n)||n<1)fehler('parameter_ungueltig','SYNAPSE_REVERSE_S3_PG_MAX_BYTES ist keine positive Ganzzahl.');
   return n;
 }
-interface Funktion {name:string;adresse:number;groesse:number;prototyp:string;c:string;status:string}
+interface Ziel {name:string;adresse:number;extern:boolean;raum:string}
+interface Verweis extends Ziel {art:'string'|'import'|'data';wert:string;von:number}
+interface Funktion {name:string;adresse:number;groesse:number;prototyp:string;c:string;status:string;asm:string;calls:Ziel[];refs:Verweis[];gekappt:boolean;maskiert:number}
+function ziel(v:unknown):Ziel|null{
+  if(!v||typeof v!=='object')return null;const x=v as Record<string,unknown>;
+  if(typeof x.name!=='string'||!x.name||typeof x.address_offset!=='number'||!Number.isSafeInteger(x.address_offset)||x.address_offset<0)return null;
+  return {name:maske(x.name.slice(0,512)),adresse:x.address_offset,extern:x.external===true||x.address_space==='EXTERNAL',raum:maske(typeof x.address_space==='string'?x.address_space:x.external===true?'EXTERNAL':'ram')};
+}
+function verweis(v:unknown):Verweis|null{
+  const z=ziel(v);if(!z)return null;const x=v as Record<string,unknown>;
+  if(!['string','import','data'].includes(String(x.kind))||typeof x.from_offset!=='number'||!Number.isSafeInteger(x.from_offset)||x.from_offset<0)return null;
+  return {...z,art:x.kind as Verweis['art'],wert:maske(typeof x.value==='string'?x.value:z.name),von:x.from_offset};
+}
 /** Eine JSONL-Zeile; Adressen jenseits Number.MAX_SAFE_INTEGER (JSON-Rundung) werden verworfen, nie geraten. */
 function leseFunktion(zeile:string):Funktion|null{
   let roh:unknown;
   try{roh=JSON.parse(zeile);}catch{return null;}
   if(!roh||typeof roh!=='object'||Array.isArray(roh))return null;
-  const x=roh as Record<string,unknown>;
+  const masked=maskiereReverseAnalyse(roh);
+  const x=masked.wert as Record<string,unknown>;
   const adresse=x.address_offset,groesse=x.size;
   if(typeof x.name!=='string'||!x.name||typeof adresse!=='number'||!Number.isSafeInteger(adresse)||adresse<0||
     typeof groesse!=='number'||!Number.isSafeInteger(groesse)||groesse<0)return null;
   return {name:x.name.slice(0,512),adresse,groesse,prototyp:typeof x.prototype==='string'?x.prototype.slice(0,2048):'',
-    c:typeof x.decompiled==='string'?x.decompiled:'',status:typeof x.decompile_status==='string'&&x.decompile_status?x.decompile_status.slice(0,200):'fehler'};
+    c:typeof x.decompiled==='string'?x.decompiled:'',status:typeof x.decompile_status==='string'&&x.decompile_status?x.decompile_status.slice(0,200):'fehler',
+    asm:typeof x.assembly==='string'?x.assembly:'',calls:Array.isArray(x.callees)?x.callees.map(ziel).filter((v):v is Ziel=>v!==null):[],
+    refs:Array.isArray(x.references)?x.references.map(verweis).filter((v):v is Verweis=>v!==null):[],gekappt:x.export_truncated===true,maskiert:masked.treffer};
 }
 const hex=(n:number)=>'0x'+n.toString(16).padStart(8,'0');
 
@@ -121,9 +140,13 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   if(!eintrag||typeof eintrag.sha256!=='string'||!/^[a-f0-9]{64}$/.test(eintrag.sha256)||!Number.isSafeInteger(eintrag.groesse)||eintrag.groesse<0)
     fehler('beschaedigt','Manifest ohne gültiges functions.jsonl.');
 
-  const altBytes=Number((await db.query("SELECT COALESCE(sum(file_size),0)::bigint AS n FROM reverse_code_dateien WHERE eintrag_id=$1 AND schicht='S3' AND datei_id<>$2::bigint",[rid,did])).rows[0]?.n??0);
+  const altBytes=Number((await db.query("SELECT COALESCE(sum(file_size),0)::bigint AS n FROM reverse_code_dateien WHERE eintrag_id=$1 AND (schicht='S3' OR file_type='asm') AND datei_id<>$2::bigint",[rid,did])).rows[0]?.n??0);
   const frei=Math.max(0,budget-altBytes);
-  const s2=stuecke(),s3=stuecke();
+  const s2=stuecke(),s3=stuecke(),referenzTexte=stuecke();
+  const assembler:{pfad:string;c:string;name:string;adresse:number;groesse:number}[]=[];
+  const graph:{symbol:number;f:Funktion}[]=[];
+  let exportGekappt=false,maskiert=0;
+  const adressen=new Set<number>();
   s2.add('# adresse\tgroesse\tname\tprototyp\n');
   const symbole:{stueck:number;start:number;ende:number;name:string;prototyp:string;adresse:number;groesse:number}[]=[];
   let gesamt=0,ok=0,verworfen=0,gespeichert=0,dekompiliert=0,bytes=0,gekappt=false;
@@ -140,16 +163,22 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     for await(const zeile of createInterface({input:strom,crlfDelay:Infinity})){
       if(!zeile.trim())continue;
       const f=zeile.length>ZEILE_MAX?null:leseFunktion(zeile);
-      if(!f){verworfen++;continue;}
-      gesamt++;if(f.status==='ok')ok++;
+      if(!f||adressen.has(f.adresse)){verworfen++;continue;}
+      adressen.add(f.adresse);maskiert+=f.maskiert;
+      gesamt++;if(f.status==='ok')ok++;exportGekappt ||= f.gekappt;
       const name=maske(f.name),prototyp=maske(f.prototyp);
       s2.add(hex(f.adresse)+'\t'+f.groesse+'\t'+name+'\t'+prototyp.replace(/[\t\n\r]+/g,' ')+'\n');
       if(gekappt)continue;
       const koerper=f.status==='ok'&&f.c.trim()?maske(f.c.replace(/^\s*\n/,'').replace(/\s+$/,'')):'/* kein Dekompilat: '+maske(f.status)+' */';
       const text='/* '+name+' @ '+hex(f.adresse)+' groesse '+f.groesse+' */\n'+koerper+'\n\n';
-      const b=Buffer.byteLength(text);
+      const asm=f.status!=='ok'&&f.asm.trim()?maske(f.asm):'';
+      const graphBytes=Buffer.byteLength(JSON.stringify([f.calls,f.refs]));
+      const b=Buffer.byteLength(text)+Buffer.byteLength(asm)+graphBytes;
+      if(Buffer.byteLength(text)>STUECK_BYTES||Buffer.byteLength(asm)>STUECK_BYTES){exportGekappt=true;verworfen++;continue;}
       if(bytes+b>frei){gekappt=true;continue;}
       const pos=s3.add(text);bytes+=b;
+      graph.push({symbol:symbole.length,f});
+      if(asm)assembler.push({pfad:datei.pfad+'@S2/'+hex(f.adresse).slice(2)+'_'+sha(name).slice(0,12)+'.asm',c:asm,name,adresse:f.adresse,groesse:f.groesse});
       symbole.push({stueck:pos.stueck,start:pos.zeile,ende:pos.zeile+text.split('\n').length-3,name,prototyp,adresse:f.adresse,groesse:f.groesse});
       gespeichert++;if(f.status==='ok')dekompiliert++;
     }
@@ -159,10 +188,23 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
 
   const fp3=String(auftrag.fingerabdruck),wv=String(auftrag.werkzeug_version??''),pv=String(auftrag.profil_version??'');
   const fp2=reverseAnalyseFingerabdruck(String(datei.sha256),'S2','reverse-S3',wv,pv);
-  const s2Texte=s2.ende(),s3Texte=s3.ende();
+  // Definitions of referenced strings/data/imports live in the same S3 fingerprint. Every source location
+  // points at the calling function header; context retains the exact machine address (no guessed C line).
+  const targets=new Map<string,{id:string;ziel:Verweis;stueck:number;zeile:number}>();
+  for(const g of graph)for(const r of g.f.refs){
+    const key=r.art+':'+r.adresse+':'+r.name;
+    if(targets.has(key))continue;
+    const text=hex(r.adresse)+' '+r.art+' '+r.name+' '+r.wert.replace(/[\r\n]+/g,' ')+'\n';
+    if(Buffer.byteLength(text)>STUECK_BYTES){exportGekappt=true;continue;}
+    const p=referenzTexte.add(text);
+    targets.set(key,{id:hash([rid,did,fp3,'ref',key]),ziel:r,stueck:p.stueck,zeile:p.zeile});
+  }
+  const s2Texte=s2.ende(),s3Texte=s3.ende(),refTexte=referenzTexte.ende();
   const dateien=[
     ...s2Texte.map((c,i)=>({pfad:datei.pfad+'@S2/funktionen-'+String(i+1).padStart(4,'0')+'.txt',typ:'txt',schicht:'S2',fp:fp2,c})),
     ...s3Texte.map((c,i)=>({pfad:datei.pfad+'@S3/dekompiliert-'+String(i+1).padStart(4,'0')+'.c',typ:'c',schicht:'S3',fp:fp3,c})),
+    ...refTexte.map((c,i)=>({pfad:datei.pfad+'@S3/referenzen-'+String(i+1).padStart(4,'0')+'.txt',typ:'txt',schicht:'S3',fp:fp3,c})),
+    ...assembler.map(a=>({pfad:a.pfad,typ:'asm',schicht:'S2',fp:fp2,c:a.c})),
   ].map(d=>({...d,id:hash([rid,d.pfad]),name:d.pfad.split('/').pop() as string}));
   // Alte S2/S3-Stände dieser Datei weg (Symbole hängen per FK daran); fremde Dateien bleiben.
   await db.query("DELETE FROM reverse_code_dateien WHERE eintrag_id=$1 AND datei_id=$2::bigint AND schicht IN ('S2','S3')",[rid,did]);
@@ -180,8 +222,56 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     [rid,did,fp3,symbole.map((s,i)=>hash([rid,s3Pfad(s.stueck),s.adresse,i])),symbole.map(s=>s3Pfad(s.stueck)),symbole.map(s=>s.name),
       symbole.map(s=>s.prototyp||null),symbole.map(s=>s.start),symbole.map(s=>Math.max(s.start,s.ende)),symbole.map(s=>s.adresse),symbole.map(s=>s.groesse)]);
 
-  const s3Status:'fertig'|'teilweise'=gekappt||verworfen>0||ok<gesamt?'teilweise':'fertig';
-  const s2Status:'fertig'|'teilweise'=verworfen>0?'teilweise':'fertig';
+
+  const symbolId=(i:number)=>hash([rid,s3Pfad(symbole[i].stueck),symbole[i].adresse,i]);
+  const funktionsZiele=new Map(symbole.map((s,i)=>[s.adresse,symbolId(i)]));
+  const targetList=[...targets.values()];
+  const refPfad=(i:number)=>datei.pfad+'@S3/referenzen-'+String(i+1).padStart(4,'0')+'.txt';
+  if(targetList.length)await db.query(`INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,symbol_type,name,value,line_start,line_end,datei_id,schicht,fingerabdruck,adresse)
+    SELECT u.id,$1,u.pfad,u.art,u.name,u.wert,u.zeile,u.zeile,$2::bigint,'S3',$3,u.adresse
+    FROM unnest($4::text[],$5::text[],$6::text[],$7::text[],$8::text[],$9::int[],$10::bigint[]) AS u(id,pfad,art,name,wert,zeile,adresse)`,
+    [rid,did,fp3,targetList.map(t=>t.id),targetList.map(t=>refPfad(t.stueck)),targetList.map(t=>t.ziel.art==='data'?'variable':t.ziel.art),
+      targetList.map(t=>t.ziel.name),targetList.map(t=>t.ziel.wert),targetList.map(t=>t.zeile),targetList.map(t=>t.ziel.extern?null:t.ziel.adresse)]);
+  const kanten=graph.flatMap(g=>[...new Map(g.f.calls.map(c=>[c.adresse+':'+c.name,c])).values()].map(c=>({g,c})));
+  if(kanten.length)await db.query(`INSERT INTO reverse_code_kanten(eintrag_id,file_path,caller_scope,callee_name,target_symbol_id,line_number,call_kind,callee_receiver,confidence,datei_id,schicht,fingerabdruck,adresse)
+    SELECT $1,u.pfad,u.caller,u.callee,u.ziel,u.zeile,u.art,u.raum,1.0,$2::bigint,'S3',$3,u.adresse
+    FROM unnest($4::text[],$5::text[],$6::text[],$7::text[],$8::int[],$9::bigint[],$10::text[],$11::text[]) AS u(pfad,caller,callee,ziel,zeile,adresse,art,raum)`,
+    [rid,did,fp3,kanten.map(({g})=>s3Pfad(symbole[g.symbol].stueck)),kanten.map(({g})=>symbole[g.symbol].name),kanten.map(({c})=>c.name),
+      kanten.map(({c})=>c.extern?null:funktionsZiele.get(c.adresse)??null),kanten.map(({g})=>symbole[g.symbol].start),kanten.map(({c})=>c.extern?null:c.adresse),
+      kanten.map(({c})=>c.extern?'import':'call'),kanten.map(({c})=>c.extern?c.raum+':'+hex(c.adresse):null)]);
+  const verweise=graph.flatMap(g=>[...new Map(g.f.refs.map(r=>[r.von+':'+r.art+':'+r.adresse+':'+r.name,r])).values()]
+    .flatMap(r=>{const t=targets.get(r.art+':'+r.adresse+':'+r.name);return t?[{g,r,t}]:[];}));
+  if(verweise.length)await db.query(`INSERT INTO reverse_code_verweise(id,eintrag_id,symbol_id,file_path,line_number,context,datei_id,schicht,fingerabdruck,adresse)
+    SELECT u.id,$1,u.ziel,u.pfad,u.zeile,u.kontext,$2::bigint,'S3',$3,u.adresse
+    FROM unnest($4::text[],$5::text[],$6::text[],$7::int[],$8::text[],$9::bigint[]) AS u(id,ziel,pfad,zeile,kontext,adresse)`,
+    [rid,did,fp3,verweise.map(({g,r,t})=>hash([rid,did,fp3,g.f.adresse,r.von,t.id])),verweise.map(({t})=>t.id),
+      verweise.map(({g})=>s3Pfad(symbole[g.symbol].stueck)),verweise.map(({g})=>symbole[g.symbol].start),
+      verweise.map(({g,r})=>maske(g.f.name)+' @ '+hex(r.von)+' -> '+r.art+' '+r.name+': '+r.wert),verweise.map(({r})=>r.von)]);
+  // Batch fallback symbols: one symbol per function, S2 instead of the S3 placeholder.
+  if(assembler.length){
+    await db.query("DELETE FROM reverse_code_symbole WHERE eintrag_id=$1 AND datei_id=$2::bigint AND schicht='S3' AND symbol_type='function' AND adresse=ANY($3::bigint[])",[rid,did,assembler.map(a=>a.adresse)]);
+    await db.query(`INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,symbol_type,name,line_start,line_end,datei_id,schicht,fingerabdruck,adresse,groesse_bytes)
+      SELECT u.id,$1,u.pfad,'function',u.name,1,u.ende,$2::bigint,'S2',$3,u.adresse,u.groesse
+      FROM unnest($4::text[],$5::text[],$6::text[],$7::int[],$8::bigint[],$9::bigint[]) AS u(id,pfad,name,ende,adresse,groesse)`,
+      [rid,did,fp2,assembler.map(a=>hash([rid,a.pfad,a.adresse])),assembler.map(a=>a.pfad),assembler.map(a=>a.name),
+        assembler.map(a=>a.c.trimEnd().split('\n').length),assembler.map(a=>a.adresse),assembler.map(a=>a.groesse)]);
+    await db.query(`UPDATE reverse_code_kanten k SET target_symbol_id=s.id FROM reverse_code_symbole s
+      WHERE k.eintrag_id=$1 AND k.datei_id=$2::bigint AND s.eintrag_id=k.eintrag_id AND s.datei_id=k.datei_id
+        AND s.symbol_type='function' AND s.schicht='S2' AND s.adresse=k.adresse
+        AND k.call_kind='call' AND k.callee_receiver IS NULL`,[rid,did]);
+  }
+  let normal:{status:string;werkzeuge:string[];fehler:string[];maskiert:number}|null=null;
+  if(e.manifest.some(m=>m.pfad.startsWith('s1-')||m.pfad==='normalisierer-status.json')){
+    if(frei>bytes){
+      try{normal=await uebernehmeRohWerkzeuge(db,{arbeit,manifest:e.manifest,reverseId:rid,dateiId:did,pfad:datei.pfad,fp2},
+        {maxBytes:frei-bytes,maxEintraege:cfg.inspektion.maxObjects});}
+      catch{fehler('beschaedigt','S1-Werkzeugausgabe passt nicht zum Manifest.');}
+      exportGekappt ||= normal!.status==='teilweise';maskiert+=normal!.maskiert;
+      await db.query("UPDATE reverse_dateien SET metadaten=jsonb_set(COALESCE(metadaten,'{}'::jsonb),'{normalisierer}',$2::jsonb) WHERE id=$1::bigint",[did,JSON.stringify(normal)]);
+    }else exportGekappt=true;
+  }
+  const s3Status:'fertig'|'teilweise'=gekappt||exportGekappt||verworfen>0||ok<gesamt?'teilweise':'fertig';
+  const s2Status:'fertig'|'teilweise'=verworfen>0||exportGekappt?'teilweise':'fertig';
   const schicht=async(stufe:'S2'|'S3',fp:string,status:string,code:string|null,fertig:number)=>{
     await db.query('UPDATE reverse_schichten SET aktuell=false WHERE datei_id=$1::bigint AND schicht=$2 AND aktuell AND fingerabdruck<>$3',[did,stufe,fp]);
     await db.query(`INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,aktuell,status,fehlercode,werkzeug,werkzeug_version,profil_version,auftrag_id,
@@ -193,10 +283,11 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
         beendet_at=EXCLUDED.beendet_at,dauer_ms=EXCLUDED.dauer_ms`,
       [did,stufe,fp,status,code,wv,pv,auftrag.id,gesamt,fertig,key,Number.isSafeInteger(e.dauerMs)?e.dauerMs:null]);
   };
-  await schicht('S2',fp2,s2Status,null,gesamt);
-  await schicht('S3',fp3,s3Status,gekappt?'zu_gross':null,dekompiliert);
+  await schicht('S2',fp2,s2Status,exportGekappt?'zu_gross':null,gesamt);
+  await schicht('S3',fp3,s3Status,gekappt||exportGekappt?'zu_gross':null,dekompiliert);
   await db.query("UPDATE reverse_auftraege SET status=$2,fehlercode=$3,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1",
-    [auftrag.id,s3Status,gekappt?'zu_gross':null]);
+    [auftrag.id,s3Status,gekappt||exportGekappt?'zu_gross':null]);
+  await db.query("UPDATE reverse_dateien SET metadaten=jsonb_set(COALESCE(metadaten,'{}'::jsonb),'{maskiert_anzahl}',to_jsonb(COALESCE((metadaten->>'maskiert_anzahl')::bigint,0)+$2::bigint)) WHERE id=$1::bigint",[did,maskiert]);
   await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
   return {status:s3Status,funktionen:gesamt,dekompiliert,gespeichert,verworfen};
 }
