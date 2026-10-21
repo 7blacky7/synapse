@@ -327,7 +327,7 @@ export type {
 export { ASSET_INTEL_DEFINITION, ASSET_INTEL_ACTIONS, fuehreAssetIntelAus } from './services/asset-intel-tool.js';
 export {hexTypBreite,deuteHexPrimitive,fuehreHexDeutenAus} from './services/hex-deuten.js';
 export {HEX_ANALYSEN_SCHEMA_SQL} from './db/hex-analysen-schema.js';
-export {konfiguriereHexWorkIdentitaet,hexWorkStatus} from './services/hex-work-job.js';
+export {konfiguriereHexWorkIdentitaet,loeseHexWorkIdentitaet,hexWorkStatus} from './services/hex-work-job.js';
 export {HEX_DEFINITION, HEX_ACTIONS, fuehreHexAus, hexZeilen} from './services/hex-tool.js';
 export {HexFehler, hexGanzzahl, hexAkteur, pruefeHexZugang, pruefeHexRef, oeffneHexQuelle, mitHexQuelle} from './services/hex-quellen.js';
 export type {HexRef, HexQuelle, HexQuellenArt} from './services/hex-quellen.js';

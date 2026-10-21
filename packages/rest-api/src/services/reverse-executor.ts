@@ -453,11 +453,14 @@ export class ReverseExecutor {
  * B1: eigener CPU-Knoten über denselben R4.3-Registryvertrag, aber eigener Env-Namensraum SYNAPSE_REVERSE_*
  * (NODE_ID, EXECUTOR_OWNER, COMPUTE_TOKEN, NODE_REGISTRATION, HOST_PROBE_FILE). Parser-Knoten (SYNAPSE_SERVER_*)
  * und dessen lokale GPU-Admission bleiben unberührt; claimOwner/Fence sind je node_id eindeutig.
+ * P21-T15: dieselbe Identität ist Ersatz-Ausführer für Hex (live gibt es keinen Parser-Serverknoten). Gleichzeitige
+ * Aufrufe (Reverse-Takt und Hex-Anbindung) teilen sich einen Lauf, damit start() nie doppelt rotiert.
  */
 export function reverseServerIdentitaet(env:NodeJS.ProcessEnv=process.env):()=>Promise<WorkIdentity|null>{
- const server=new ServerExecutor({envPrefix:'SYNAPSE_REVERSE_',nurCpu:true,lokaleAdmission:false});let gestartet=false,gemeldet=false;
+ const server=new ServerExecutor({envPrefix:'SYNAPSE_REVERSE_',nurCpu:true,lokaleAdmission:false,hex:'ersatz'});let gestartet=false,gemeldet=false;
  const konflikt=!!server.identity.nodeId&&server.identity.nodeId===env.SYNAPSE_SERVER_NODE_ID?.trim();
- return async()=>{
+ let lauf:Promise<WorkIdentity|null>|null=null;
+ const einmal=async():Promise<WorkIdentity|null>=>{
   if(!server.identity.nodeId){if(!gemeldet){gemeldet=true;console.warn('[reverse-executor] SYNAPSE_REVERSE_NODE_ID fehlt – keine Claims.');}return null;}
   if(konflikt){if(!gemeldet){gemeldet=true;console.error('[reverse-executor] SYNAPSE_REVERSE_NODE_ID darf nicht SYNAPSE_SERVER_NODE_ID sein – keine Claims.');}return null;}
   try{
@@ -467,6 +470,7 @@ export function reverseServerIdentitaet(env:NodeJS.ProcessEnv=process.env):()=>P
   const f=server.fence;
   return f?{nodeId:f.nodeId,bootGeneration:f.bootId,authHash:f.tokenHash}:null;
  };
+ return ()=>lauf??=einmal().finally(()=>{lauf=null;});
 }
 /**
  * Vor initToolLifecycle aufrufen: konfiguriert Docker-Mounts/Ressourcen, Hooks und die Abholschleife.
@@ -483,7 +487,11 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:reverseMountResolver(konfig),
   lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:reverseRessourcen});}
  catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
- const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet:reverseServerIdentitaet()});
+ const identitaet=reverseServerIdentitaet();
+ const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet});
+ // P21-T15: Hex bindet sofort und hält den Knoten frisch, auch ohne Docker/Lebenszyklus und ohne Reverse-Aufträge.
+ const hexAnbinden=()=>{void identitaet().catch(e=>console.error('[reverse-executor] Hex-Anbindung fehlgeschlagen:',(e as Error).message));};
+ hexAnbinden();const hexTimer=setInterval(hexAnbinden,konfig.tickMs);hexTimer.unref();
  const abmelden=registriereWorkJobHooks(REVERSE_CAPABILITY,executor.hooks());
  // K5: reverse(status) liest den echten Containerzustand über die Reverse-Runtime (nach starteReversePipeline gesetzt).
  const ohneStatus=ergaenzeReverseRuntime({containerStatus:rid=>executor.containerStatus(rid)});
@@ -497,5 +505,5 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const run=()=>{if(workerPausiert('reverse-executor'))return;void tick().catch(e=>console.error('[reverse-executor] Durchlauf fehlgeschlagen:',(e as Error).message));};
  const timer=setInterval(run,konfig.tickMs);timer.unref();
  console.log('[reverse-executor] aktiv: Kinds '+konfig.kinds.join(',')+', parallel '+konfig.parallel);
- return {beende:async()=>{clearInterval(timer);abmelden();ohneStatus();abmeldenAusfuehrer();await executor.beende();}};
+ return {beende:async()=>{clearInterval(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();await executor.beende();}};
 }

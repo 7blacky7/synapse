@@ -8,6 +8,8 @@ import type {HexStand} from './hex-einstellungen.js';
 let identitaet:WorkIdentity|null=null;
 /** Ausschliesslich der verifizierte ServerExecutor setzt diese Prozessbindung; kein Tool-/HTTP-Parameter. */
 export function konfiguriereHexWorkIdentitaet(w:WorkIdentity|null):void{identitaet=w?{...w}:null;}
+/** Loest nur die eigene Bindung (gleicher Knoten und Boot); eine inzwischen anders gesetzte Bindung bleibt. */
+export function loeseHexWorkIdentitaet(w:WorkIdentity):void{if(identitaet?.nodeId===w.nodeId&&identitaet.bootGeneration===w.bootGeneration)identitaet=null;}
 export function hexWorkStatus(){return {bereit:!!identitaet,ausfuehrung:'work-job+worker-thread',schluessel_persistiert:false};}
 export async function mitHexWorkJob<T>(project:string,id:string,sourceSha:string,stand:HexStand,signal:AbortSignal,
  arbeit:()=>Promise<T>,stagen:(r:T,jobId:string)=>Promise<string>,verwerfen:(r:T)=>void):Promise<{wert:T;job_id:string}>{

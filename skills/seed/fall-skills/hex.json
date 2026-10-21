@@ -7,11 +7,15 @@
       "sections": [
         {
           "section": "uebersicht",
-          "content": "Hex ist das Agenten-Bytewerkzeug (MCP/REST), Standard AUS bis Freigabe. action status zeigt Schalter, Quelle und PG-Budgets. hex liest nur ein Fenster; Zeilen haben Offset hex/dez, Hex und ASCII, Quelle/Revision/SHA-256 sind explizit."
+          "content": "Hex ist das Agenten-Bytewerkzeug (MCP/REST), Standard AUS bis Freigabe. Eigene Schalter: hex_lesen (Grundlage fuer alles), hex_formate, hex_adressen, hex_entschluesseln. action status zeigt alle Schalter mit Quelle/Ablauf, PG-Budgets, Entschluesselungsverfahren und worker.bereit (Hex-Ausfuehrer fuer entschluesseln). hex liest nur ein Fenster; Zeilen haben Offset hex/dez, Hex und ASCII, Quelle/Revision/SHA-256 sind explizit."
         },
         {
           "section": "faelle",
-          "content": "fall-hex-bereich: Offsets/Laenge/Budget. fall-hex-quelle: Projekt-/Reverse-Referenz, Rechte und bytegetreue PG-Texte. fall-hex-fortsetzung: Cursor und Revision. deuten, suchen und vergleichen sind implementiert; Suche nutzt Hexmuster mit ??, ASCII/UTF-8/UTF-16 oder Zahlen typ+Endian. vergleichen v1 ist offsetgleich und ordnet Verschiebungen nicht zu. fall-hex-formate: kaitai-read-v1, Formatversionen, Freigabe, Unterbaeume und Cursor. fall-hex-adressen: Exe-Formate, Dateioffset/RVA/VA und Reverse-Funktionen."
+          "content": "Alle Actions sind verfuegbar: status, hex, suchen, vergleichen, deuten, entschluesseln, adressen, format_speichern, format_liste, format_anwenden. Fall-Skills: fall-hex-bereich (Offsets/Laenge/Budget), fall-hex-quelle (Projekt-/Reverse-/Analyse-Referenz, Rechte, bytegetreue PG-Texte), fall-hex-fortsetzung (Cursor und Revision), fall-hex-parameter (parameter_nicht_verwendet: welche Parameter je Action gelten), fall-hex-suche (Hexmuster mit ??, ASCII/UTF-8/UTF-16, Zahlen typ+Endian), fall-hex-vergleichen (offsetgleich v1, ordnet Verschiebungen nicht zu, Seiten), fall-hex-deuten (Typwerte, Strukturen, Strings, Pruefsummen), fall-hex-entschluesseln (XOR/AES/zlib/deflate als neue Analyse-ref, Worker-Ausfuehrer), fall-hex-formate (kaitai-read-v1, Versionen, Freigabe, Unterbaeume, Cursor), fall-hex-adressen (Exe-Formate, Dateioffset/RVA/VA, Reverse-Funktionen)."
+        },
+        {
+          "section": "folgeaktionen",
+          "content": "Jede Antwort liefert eine gepinnte ref (Quelle, Revision, SHA-256); diese ref unveraendert an die naechste Action geben. Typische Kette: hex (Fenster ansehen) -> suchen (Magic/String/Zahl finden, offset der Fundstelle) -> deuten an diesem offset (Felder/Struktur/Pruefsumme) oder format_anwenden (Formatbaum) -> adressen (bei EXE: Dateioffset <-> RVA/VA). entschluesseln liefert ref:{art:'analyse',...}; damit funktionieren hex, deuten, suchen, vergleichen und format_anwenden direkt weiter. vergleichen nimmt zwei refs (ref_a/ref_b), z. B. Original gegen Analyse oder zwei Revisionen."
         }
       ]
     },
@@ -54,6 +58,28 @@
         {
           "section": "regeln",
           "content": "Bei cursor ausschliesslich action hex + cursor senden, keine ref/offset/laenge gleichzeitig. Cursor ist projekt-, akteurs-, revisions- und zeitgebunden. Zugriffsrechte/Reverse-Bindung gelten bei jedem Aufruf erneut. Nach Ablauf neuen Aufruf mit der zurueckgegebenen gepinnten ref und naechster_offset starten; quelle_geaendert bedeutet neue Revision bewusst aufloesen. eof kennzeichnet Dateiende; vollstaendig beschreibt das angefragte Fenster, nicht eine Vollanalyse. Fortsetzungen speichern nur Referenz/Position, keine Byteinhalte."
+        }
+      ]
+    },
+    {
+      "skill_name": "fall-hex-parameter",
+      "weg": "beide",
+      "sections": [
+        {
+          "section": "uebersicht",
+          "content": "Ausloeser: parameter_nicht_verwendet. Der Parameter gehoert zum hex-Schema, wirkt aber fuer diese action nicht; der Aufruf wurde NICHT ausgefuehrt. Parameter weglassen oder an die richtige Stelle (Unterstruktur/andere action) verschieben und erneut senden. details.parameter nennt ihn, wenn bekannt."
+        },
+        {
+          "section": "deuten",
+          "content": "deuten kennt nur ref, offset (Basisoffset), typen, pruefsummen, feld_offset, feld_limit und laenge. Endianness steht NIE top-level, sondern je Typ: typen:[{typ:'u32',endianness:'be',offset:0},{typ:'u32',endianness:'be',offset:4}] oder Typname 'u32be'. Top-level laenge gilt nur zusammen mit pruefsummen (Restbereich fuer Pruefsummen ohne eigene Grenze); fuer Typen ergibt sich die Laenge aus dem Typ, fuer Strings aus typen[].laenge. Beispiel PNG-IHDR: deuten(ref, offset:16, typen:[{typ:'u32',endianness:'be',offset:0},{typ:'u32',endianness:'be',offset:4}])."
+        },
+        {
+          "section": "vergleichen",
+          "content": "vergleichen kennt ref_a, ref_b, offset und limit. Kein ref, kein laenge, kein cursor, keine Such-/Typparameter. offset ist nur der Startpunkt bzw. die Fortsetzung (naechster_offset der letzten Antwort); verglichen wird bis Dateiende im Scanbudget, limit begrenzt die Differenzbloecke. Einen Teilbereich nicht ueber laenge eingrenzen, sondern ab offset vergleichen und nach den gewuenschten Bloecken aufhoeren."
+        },
+        {
+          "section": "andere-actions",
+          "content": "status: nur action/project. hex: ref, offset, laenge oder allein cursor. suchen: ref, art, muster bzw. typ/wert/endianness, ausrichtung, offset, limit (kein laenge/cursor/ref_a/ref_b). entschluesseln: ref, offset, laenge, verfahren, parameter, schluessel_ref oder schluessel_inline. adressen: ref, von, adresse, adress_bytes, ladebasis, segment (nur MZ/NE/LE/LX), symbol_offset, symbol_limit. typen/pruefsummen/feld_offset/feld_limit nur bei deuten, Adressparameter nur bei adressen, Entschluesselungsparameter nur bei entschluesseln, Formatparameter nur bei format_*."
         }
       ]
     },

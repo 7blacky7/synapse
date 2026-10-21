@@ -6,7 +6,7 @@
  */
 import {constants} from 'node:fs';
 import {open} from 'node:fs/promises';
-import {konfiguriereHexWorkIdentitaet,getPool,computeResourceBinding,parseComputeNodeExtension,createServerExecutorIdentity,
+import {konfiguriereHexWorkIdentitaet,loeseHexWorkIdentitaet,hexWorkStatus,getPool,computeResourceBinding,parseComputeNodeExtension,createServerExecutorIdentity,
   startServerExecutor,configureLocalComputeAdmission,type ServerExecutorIdentity,type ServerExecutorFence,type ComputeResources} from '@synapse/core';
 import {validateToken} from './auth.js';
 import {cpuNodeRequested,registerCpuNode} from './cpu-nodes.js';
@@ -43,8 +43,10 @@ export async function readServerHostProbe(nodeId:string,cpuOnly=false,probeFile=
 /**
  * P18-T59: envPrefix trennt weitere Server-Knoten (Reverse: SYNAPSE_REVERSE_) vom Parser-Knoten (Default SYNAPSE_SERVER_).
  * nurCpu verlangt eine CPU-only-Registrierung; lokaleAdmission:false lässt die prozessweite GPU-Admission unberührt.
+ * P21-T15: hex bestimmt die Hex-Work-Bindung: 'bindet' immer, 'ersatz' nur solange kein anderer Knoten gebunden ist
+ * (live gibt es oft keinen Parser-Serverknoten, nur den Reverse-CPU-Knoten), 'aus' nie. Standard: 'bindet' mit lokaler Admission.
  */
-export interface ServerExecutorOptionen {envPrefix?:string;nurCpu?:boolean;lokaleAdmission?:boolean}
+export interface ServerExecutorOptionen {envPrefix?:string;nurCpu?:boolean;lokaleAdmission?:boolean;hex?:'bindet'|'ersatz'|'aus'}
 export class ServerExecutor {
   readonly identity:ServerExecutorIdentity;
   fence:ServerExecutorFence|undefined;
@@ -53,8 +55,11 @@ export class ServerExecutor {
   private readonly prefix:string;
   private readonly nurCpu:boolean;
   private readonly lokaleAdmission:boolean;
+  private readonly hex:'bindet'|'ersatz'|'aus';
+  private hexGebunden=false;
   constructor(o:ServerExecutorOptionen={}){
     this.prefix=o.envPrefix??'SYNAPSE_SERVER_';this.nurCpu=o.nurCpu===true;this.lokaleAdmission=o.lokaleAdmission!==false;
+    this.hex=o.hex??(this.lokaleAdmission?'bindet':'aus');
     this.identity=createServerExecutorIdentity(process.env,this.prefix);
   }
   private env(name:string):string|undefined{return process.env[this.prefix+name];}
@@ -95,11 +100,12 @@ export class ServerExecutor {
     const released=await startServerExecutor(fence,db=>this.cpuOnly
       ?registerCpuNode(input,auth.token_hash,'1',db)
       :registerEmbeddingNode(auth.token_hash,input as unknown as EmbeddingNodeRegistration,db));
-    if(this.lokaleAdmission){
-      configureLocalComputeAdmission({nodeId:fence.nodeId,bootId:fence.bootId,authHash:fence.tokenHash});
-      konfiguriereHexWorkIdentitaet({nodeId:fence.nodeId,bootGeneration:fence.bootId,authHash:fence.tokenHash});
-    }
+    if(this.lokaleAdmission)configureLocalComputeAdmission({nodeId:fence.nodeId,bootId:fence.bootId,authHash:fence.tokenHash});
+    if(this.hex==='bindet'||this.hex==='ersatz'&&!hexWorkStatus().bereit)this.bindeHex(fence);
     this.fence=fence;this.ready=true;return released;
+  }
+  private bindeHex(f:ServerExecutorFence):void{
+    konfiguriereHexWorkIdentitaet({nodeId:f.nodeId,bootGeneration:f.bootId,authHash:f.tokenHash});this.hexGebunden=true;
   }
   /** Ein alter Prozess aktualisiert nie die neue Generation. Probe-I/O vor jedem PG-Zugriff. */
   async refresh():Promise<boolean>{
@@ -113,6 +119,10 @@ export class ServerExecutor {
         AND EXISTS(SELECT 1 FROM auth_tokens a WHERE a.token_hash=$4 AND a.kind='service'
           AND a.scope=$6 AND (a.expires_at IS NULL OR a.expires_at>NOW())) RETURNING n.node_id`,
       [f.nodeId,f.bootId,f.executorOwner,f.tokenHash,JSON.stringify(resources),'compute-node:'+f.nodeId]);
-    return (r.rowCount??0)>0;
+    const ok=(r.rowCount??0)>0;
+    // P21-T15: abgeloeste Generation nimmt ihre Hex-Bindung zurueck; ein Ersatzknoten springt ein, wenn keiner gebunden ist.
+    if(!ok&&this.hexGebunden){loeseHexWorkIdentitaet({nodeId:f.nodeId,bootGeneration:f.bootId,authHash:f.tokenHash});this.hexGebunden=false;}
+    else if(ok&&this.hex==='ersatz'&&!hexWorkStatus().bereit)this.bindeHex(f);
+    return ok;
   }
 }
