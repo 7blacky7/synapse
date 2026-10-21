@@ -29,7 +29,7 @@ export async function fuehreReverseAnsichtAus(a:Row,pool:Pool):Promise<Row>{
  if(await pruefeReverseAnsichtBindung(pool,{projekt:project,eintrag_id:rid,sha256:row.sha256})!=='ok')return {fehlercode:'nicht_gebunden'};
  const modus=a.ansicht;
  const result:Row={modus},bilder:McpBild[]=[];
- const quellFormat=String(row.format??row.pfad.split('.').pop()??'').toLowerCase();
+ const quellFormat=String(row.format&&row.format!=='unbekannt'?row.format:row.pfad.split('.').pop()??'').toLowerCase();
  let gelungen=false;
  if(modus==='inline'||modus==='beides'){
    const [r]=await (ersatz.ansicht??gemeinsamerAnsichtDienst()).ansichten([ref]);
@@ -45,7 +45,7 @@ export async function fuehreReverseAnsichtAus(a:Row,pool:Pool):Promise<Row>{
    }
  }
  if(modus==='link'||modus==='beides'){
-   const format=String(row.format??row.pfad.split('.').pop()??'').toLowerCase();
+   const format=quellFormat;
    const art=String(row.mime??'').startsWith('audio/')||!getAssetKonfiguration().vorschau.formate.includes(format)?'original':'ansicht';
    const l=await (ersatz.link??standardAnsichtLinkDienst()).erzeugen({...ref,art,offen_sekunden:a.offen_sekunden,einmalig:a.einmalig,agent_id:String(a.agent_id),projekt:project});
    result.link=l.success?l:{success:false,fehlercode:l.fehlercode,grund:l.grund,hinweis:HINWEIS};
@@ -53,7 +53,7 @@ export async function fuehreReverseAnsichtAus(a:Row,pool:Pool):Promise<Row>{
  }
  // Bindung und Hash nach Render/Token-Erzeugung erneut prüfen; kein Bild nach einer inzwischen gelösten Bindung.
  if(await pruefeReverseAnsichtBindung(pool,{projekt:project,eintrag_id:rid,sha256:row.sha256})!=='ok')return {fehlercode:'nicht_gebunden'};
- return setzeMcpBilder({datei:row.pfad,format:row.format??'unbekannt',arch:row.arch??'unbekannt',bits:row.bits??null,status:gelungen?'fertig':'fehler',ansicht:result,
+ return setzeMcpBilder({datei:row.pfad,format:quellFormat||'unbekannt',arch:row.arch??'unbekannt',bits:row.bits??null,status:gelungen?'fertig':'fehler',ansicht:result,
    ...(gelungen?{}:{fehlercode:'ansicht_nicht_darstellbar',hinweis:HINWEIS})},bilder);
  }catch(e){
    const code=(e as {code?:unknown})?.code;

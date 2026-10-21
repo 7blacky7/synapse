@@ -90,7 +90,7 @@ export class AssetRegistry {
    * Ordnet eine Datei zu. headBytes sind die ersten Bytes der Datei (mehr als ein paar KiB
    * braucht niemand); leer ist erlaubt, dann entscheidet nur die Endung.
    */
-  detect(filePath: string, headBytes: Uint8Array): AssetDetection {
+  detect(filePath: string, headBytes: Uint8Array, size?: number): AssetDetection {
     const warnings: AssetWarning[] = [];
     const ext = path.extname(filePath).toLowerCase();
     const nachEndung = ext ? this.list().filter(i => i.extensions.some(e => normalisiereEndung(e) === ext)) : [];
@@ -104,7 +104,7 @@ export class AssetRegistry {
       for (const m of insp.magic ?? []) {
         if (magicPasst(headBytes, m) && (!bestes || m.bytes.length > bestes.bytes.length)) bestes = m;
       }
-      if (bestes) magicTreffer.push({ insp, format: (bestes.format ?? insp.formats[0]).toLowerCase() });
+      if (bestes && (!insp.pruefeMagic || insp.pruefeMagic(filePath, headBytes, size))) magicTreffer.push({ insp, format: (bestes.format ?? insp.formats[0]).toLowerCase() });
     }
 
     if (magicTreffer.length === 1) {

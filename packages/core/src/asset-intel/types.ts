@@ -76,6 +76,8 @@ export interface AssetInspector {
   extensions: string[];
   /** OPTIONAL: Magic-Bytes. Haben Vorrang vor der Endung. */
   magic?: AssetMagic[];
+  /** Optional bounded head check for weak magic; size is the known total file size, if supplied. */
+  pruefeMagic?(filePath:string,headBytes:Uint8Array,size?:number):boolean;
   /**
    * Version dieses Inspektors (ganze Zahl, ab 1). Wie LanguageParser.version: bei jeder
    * INHALTLICHEN Aenderung der Ausgabe erhoehen, damit veraltete Ergebnisse auffallen.

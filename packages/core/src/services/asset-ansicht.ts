@@ -58,7 +58,7 @@ export function projektAnsichtAdapter(o:{db?:AssetUploadDb;speicher:AssetSpeiche
     const adresse:AssetAdresse={bereich:'projekt',ziel_ref:ref.ziel_ref,storage_kind:row.storage_kind as 'assets'|'binaries',logischer_pfad:String(row.file_path)};
     const opts=(await db.query('SELECT erlaubte_typen FROM asset_projekt_optionen WHERE project=$1',[ref.ziel_ref])).rows[0];
     return {bereich:'projekt',id:ref.id,revision:String(row.revision),sha256:String(row.sha256),adresse,
-      groesse:Number(row.groesse),format:String(row.format??standardRegistry.detect(String(row.file_path),new Uint8Array()).format??'').toLowerCase(),mimeType:String(row.mime_type??'application/octet-stream'),
+      groesse:Number(row.groesse),format:String(row.format&&row.format!=='unbekannt'?row.format:standardRegistry.detect(String(row.file_path),new Uint8Array()).format??'').toLowerCase(),mimeType:String(row.mime_type??'application/octet-stream'),
       optionen:opts?.erlaubte_typen?{erlaubteTypen:opts.erlaubte_typen as string[]}:undefined,
       lesen:async signal=>{
         const stream=await o.speicher.readStorageStream(adresse,String(row.storage_key));

@@ -11,6 +11,7 @@ import type { AssetInspector } from '../../types.js';
 import { ddsInspector } from './dds.js';
 import { exrInspector } from './exr.js';
 import { hdrInspector } from './hdr.js';
+import { icoInspector } from './ico.js';
 import { jpegInspector } from './jpeg.js';
 import { ktxInspector } from './ktx.js';
 import { ktx2Inspector } from './ktx2.js';
@@ -18,6 +19,7 @@ import { pngInspector } from './png.js';
 import { webpInspector } from './webp.js';
 
 export const assetTexturInspektoren: AssetInspector[] = [
+  icoInspector,
   pngInspector,
   jpegInspector,
   webpInspector,
@@ -28,4 +30,4 @@ export const assetTexturInspektoren: AssetInspector[] = [
   hdrInspector,
 ];
 
-export { ddsInspector, exrInspector, hdrInspector, jpegInspector, ktxInspector, ktx2Inspector, pngInspector, webpInspector };
+export { ddsInspector, exrInspector, hdrInspector, icoInspector, jpegInspector, ktxInspector, ktx2Inspector, pngInspector, webpInspector };

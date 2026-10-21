@@ -232,7 +232,7 @@ async function inspectQuelle(filePath: string, opts?: InspectAssetOptions, sourc
           const { bytesRead } = await h.read(kopf, 0, kopfLen, 0);
           kopf = kopf.subarray(0, bytesRead);
         }
-        const erkennung = registry.detect(pfad, kopf);
+        const erkennung = registry.detect(pfad, kopf, st.size);
         for (const w of erkennung.warnings) res.warnings.push(w);
         const inspektor = erkennung.inspector;
         if (inspektor) {
