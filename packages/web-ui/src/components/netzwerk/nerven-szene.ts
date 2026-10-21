@@ -3,6 +3,7 @@
  * Kern = Projekt (P22-T95), innerer Ring = Hauptagent und Koordinatoren, dazwischen Schattenplaene, aeussere Zellen = Arbeitsagenten.
  * Positionen haengen nur von IDs und Gruppengroessen ab, nie von Zufall; Zuordnung nur aus API-Belegen.
  */
+import {planFade,planFarbe,planZustand} from './plan-nachleuchten';
 import type { NetzAgent, NetzEreignis, NetzPlan, NetzSnapshot } from '../../api/agentennetzwerk';
 
 export type Rgb = [number, number, number];
@@ -201,8 +202,8 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  }
  // P22-T95: offene files-Plaene (Schattenplaene) als Knoten zwischen Projekt und Agenten, ausgerichtet auf ihre Beitragenden.
  const planVonAgent = new Map<string, string>();
- // Beendete Plaene zeigt die Grafik nicht als Knoten, sondern als Abgang (Einfliessen bzw. Explosion).
- const plaene = (s.plaene ?? []).filter(p => p.status === 'open').slice(0, 16);
+ // Auch zwischen Snapshots sofort committete Plaene bleiben als Metadaten-Knoten sichtbar.
+ const plaene = (s.plaene ?? []).filter(p => planFade(p,jetzt,s)>0);
  const planItems = plaene.map((p, i) => {
   const teilnehmer = [...new Set(p.beitraege.map(id => alias.get(id)?.id).filter((id): id is string => !!id && id !== kern.id))];
   return { w: mittelwinkel(teilnehmer.map(id => alias.get(id)!), Math.PI / 2 + i * TAU / Math.max(1, plaene.length)), plan: p, teilnehmer };
@@ -210,10 +211,10 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  verteile(planItems, 0.5);
  for (const it of planItems) {
   const p = polar(RK * 0.54, it.w), offen = it.plan.status === 'open', co = it.teilnehmer.length > 1;
-  const k: Knoten = { id: 'plan:' + it.plan.id, name: 'Plan ' + it.plan.id, rolle: 'plan', project: s.project, x: p.x, y: p.y, radius: 13, winkel: it.w, avatar: 'P', farbe: '#fcd34d',
+  const k: Knoten = { id: 'plan:' + it.plan.id, name: 'Plan ' + it.plan.id + (offen ? '' : it.plan.auto_commit ? ' · auto' : ' · ✓'), rolle: 'plan', project: s.project, x: p.x, y: p.y, radius: 13, winkel: it.w, avatar: 'P', farbe: planFarbe(it.plan),
    letzte: Date.parse(it.plan.committed ?? it.plan.erstellt), aufrufe: it.plan.ops, teilnehmer: it.teilnehmer, plan: it.plan, eltern: kern,
-   fade: offen ? 1 : Math.max(0, 1 - (jetzt - Date.parse(it.plan.committed ?? '')) / 30000),
-   info: it.plan.ops + ' Ops · ' + it.plan.dateien + ' Dateien' + (co ? ' · Co-Edit ' + it.teilnehmer.length : '') + (offen ? '' : ' · committet') };
+   fade: planFade(it.plan,jetzt,s),
+   info: it.plan.ops + ' Ops · ' + it.plan.dateien + ' Dateien' + (co ? ' · Co-Edit ' + it.teilnehmer.length : '') + ' · ' + planZustand(it.plan) };
   knoten.push(k); alias.set(k.id, k); kanten.push([kern, k]);
   if (offen) for (const id of it.teilnehmer) { const alt = planVonAgent.get(id); if (!alt || Number(alt) < Number(it.plan.id)) planVonAgent.set(id, it.plan.id); }
  }

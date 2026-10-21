@@ -529,7 +529,7 @@ export const filesTool: ConsolidatedTool = {
       }
       const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
       if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
-        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
+        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, auto_commit: true });
         if (c.success) {
           return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.` };
         }
@@ -588,7 +588,7 @@ export const filesTool: ConsolidatedTool = {
         return { ...n, plan: result, ...(result.in_place ? {} : { superseded_plan_id: planId }), auto_committed: false };
       }
       if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
-        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined });
+        const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: typeof args.agent_note === 'string' ? args.agent_note : undefined, auto_commit: true });
         return {
           ...c,
           plan: result,

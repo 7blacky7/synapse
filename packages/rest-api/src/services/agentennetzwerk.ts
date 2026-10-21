@@ -99,15 +99,15 @@ export async function ladeAgentennetzwerk(project: string) {
   const alt=frequenzen.get(id),neu={anzahl:Number(f.anzahl)+(alt?.anzahl??0),zeit:f.letzte.toISOString(),tool:netzwerkText(f.tool.split('__').pop()),action:netzwerkText(f.action)};
   frequenzen.set(id,alt&&alt.zeit>neu.zeit?{...alt,anzahl:neu.anzahl}:neu);
  }
- // P22-T95: offene files-Plaene (Schattenplaene) nur lesend; frisch committete leuchten 30 s nach. Keine Op-Inhalte.
- const plaeneRows = (await getPool().query<{ id: string; owner_agent_id: string | null; owner_identity_id: string | null; status: string; open_for_coedit: boolean; created_at: Date; committed_at: Date | null; ops: number; dateien: string[] | null; beitraege: string[] | null }>(`
-  SELECT p.id::text,p.owner_agent_id,p.owner_identity_id,p.status::text AS status,p.open_for_coedit,p.created_at,p.committed_at,
+ // P22-T95: offene files-Plaene (Schattenplaene) nur lesend; frisch committete leuchten konfiguriert nach (mindestens ein Snapshot-Abstand). Keine Op-Inhalte.
+ const plaeneRows = (await getPool().query<{ id: string; owner_agent_id: string | null; owner_identity_id: string | null; status: string; auto_commit: boolean; open_for_coedit: boolean; created_at: Date; committed_at: Date | null; ops: number; dateien: string[] | null; beitraege: string[] | null }>(`
+  SELECT p.id::text,p.owner_agent_id,p.owner_identity_id,p.status::text AS status,p.auto_commit,p.open_for_coedit,p.created_at,p.committed_at,
    (SELECT COUNT(*)::int FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END)) AS ops,
    (SELECT array_agg(DISTINCT o->>'file_path') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END) o WHERE o->>'file_path' IS NOT NULL) AS dateien,
    (SELECT array_agg(DISTINCT COALESCE(o->>'author_identity_id',o->>'agent_id')) FROM jsonb_array_elements(CASE WHEN jsonb_typeof(p.ops)='array' THEN p.ops ELSE '[]'::jsonb END) o WHERE COALESCE(o->>'author_identity_id',o->>'agent_id') IS NOT NULL) AS beitraege
   FROM file_batch_plans p
-  WHERE p.project=$1 AND (p.status='open' OR (p.status='committed' AND p.committed_at>=NOW()-INTERVAL '30 seconds'))
-  ORDER BY p.created_at DESC LIMIT 40`, [project])).rows;
+  WHERE p.project=$1 AND (p.status='open' OR (p.status='committed' AND p.committed_at>=NOW()-($2::int * INTERVAL '1 second')))
+  ORDER BY p.created_at DESC LIMIT 40`, [project,Math.max(konfiguration.werte.plan_nachleuchten_sekunden,konfiguration.werte.abgleich_sekunden)])).rows;
  // P22-T95: Endstatus der zuletzt beendeten Plaene (nur id/status), damit die Grafik Commit und Verwerfen unterscheiden kann.
  const plaene_ende = (await getPool().query<{ id: string; status: string }>(
   // Sortierung ueber die bigint-Spalte p.id (der Alias id::text wuerde als Text sortieren: '9' vor '28051').
@@ -115,7 +115,7 @@ export async function ladeAgentennetzwerk(project: string) {
  const agentVon = (x: string | null) => x ? (alias.get(x)?.id ?? netzwerkText(x)) : null;
  const plaene = plaeneRows.map(p => {
   const besitzer = agentVon(p.owner_identity_id) ?? agentVon(p.owner_agent_id);
-  return { id: p.id, besitzer, besitzer_name: p.owner_agent_id ? netzwerkText(p.owner_agent_id) : null, status: p.status, coedit: p.open_for_coedit,
+  return { id: p.id, besitzer, besitzer_name: p.owner_agent_id ? netzwerkText(p.owner_agent_id) : null, status: p.status, auto_commit: p.auto_commit === true, coedit: p.open_for_coedit,
    erstellt: p.created_at.toISOString(), committed: p.committed_at?.toISOString() ?? null, ops: p.ops, dateien: (p.dateien ?? []).length,
    dateien_beispiele: (p.dateien ?? []).slice(0, 3).map(d => netzwerkText(d.split('/').pop() ?? d)),
    beitraege: [...new Set([besitzer, ...(p.beitraege ?? []).map(agentVon)].filter((x): x is string => !!x))] };

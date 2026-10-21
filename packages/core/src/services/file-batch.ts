@@ -2001,6 +2001,7 @@ async function notifyPlanCommitted(
 }
 
 async function commitCoeditBatch(args: {
+  auto_commit?: boolean;
   plan_id: string;
   agent_id?: string;
   task_id?: string;
@@ -2286,7 +2287,7 @@ async function commitCoeditBatch(args: {
 
     await client.query(
       `UPDATE file_batch_plans
-          SET status = 'committed', committed_at = NOW(), committed_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,args.agent_id))}, previews = $2::jsonb,
+          SET status = 'committed', ${args.auto_commit === true ? 'auto_commit = true, ' : ''}committed_at = clock_timestamp(), committed_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,args.agent_id))}, previews = $2::jsonb,
               reason = CONCAT_WS(' ', reason, $3::text)
         WHERE id = $1::bigint`,
       [args.plan_id, JSON.stringify(combined.previews), `[committed von ${resolveAgentId(args.agent_id) ?? 'unbekannt'}]`],
@@ -4816,6 +4817,8 @@ async function sharedPlanStatusOnce(args: {
  * zurueckgeliefert. KI kann ein neues plan() machen.
  */
 export async function commitBatch(args: {
+  /** Internal call provenance, set only by the auto_commit tool branch. */
+  auto_commit?: boolean;
   plan_id: string;
   task_id?: string;
   agent_id?: string;
@@ -4980,6 +4983,7 @@ export async function nichtsGeschriebenBefund(
 }
 
 async function commitBatchOnce(args: {
+  auto_commit?: boolean;
   plan_id: string;
   agent_id?: string;
   task_id?: string;
@@ -5184,7 +5188,7 @@ async function commitBatchOnce(args: {
  * beginnt der commit neu (Routing wird neu entschieden).
  */
 async function commitLegacyLocked(
-  args: { plan_id: string; agent_id?: string; task_id?: string; agent_note?: string },
+  args: { plan_id: string; agent_id?: string; task_id?: string; agent_note?: string; auto_commit?: boolean },
   plan: FileBatchPlanRow,
 ): Promise<CommitBatchResult> {
   const lockClient = await getPool().connect();
@@ -5213,7 +5217,7 @@ async function commitLegacyLocked(
 }
 
 async function commitLegacyBody(
-  args: { plan_id: string; agent_id?: string; task_id?: string; agent_note?: string },
+  args: { plan_id: string; agent_id?: string; task_id?: string; agent_note?: string; auto_commit?: boolean },
   plan: FileBatchPlanRow,
   lockClient: PoolClient,
 ): Promise<CommitBatchResult> {
@@ -5354,7 +5358,7 @@ async function commitLegacyBody(
   // clock_timestamp statt NOW(): NOW() waere der Beginn der Sperr-Transaktion, bei grossen
   // Dateien Sekunden frueher — reservation_release vergleicht released_at mit committed_at.
   await lockClient.query(
-    `UPDATE file_batch_plans SET status = 'committed', committed_at = clock_timestamp(), committed_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,args.agent_id))},
+    `UPDATE file_batch_plans SET status = 'committed', ${args.auto_commit === true ? 'auto_commit = true, ' : ''}committed_at = clock_timestamp(), committed_by_identity_id=${fileIdentitySql(aktuelleAgentIdentityId(plan.project,args.agent_id))},
             reason = CONCAT_WS(' ', reason, $2::text), previews = $3::jsonb WHERE id = $1`,
     [
       args.plan_id,

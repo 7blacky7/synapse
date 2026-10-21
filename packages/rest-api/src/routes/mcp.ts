@@ -5029,7 +5029,7 @@ async function handleToolCallKern(
                   ergebnisse[index] = { art: 'ok', wert: null, traeger: plan.plan_id, waits, deferred };
                   continue;
                 }
-                const c = await commitBatch({ plan_id: plan.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
+                const c = await commitBatch({ plan_id: plan.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note'), auto_commit: true });
                 if (c.success) {
                   ergebnisse[index] = {
                     art: 'ok',
@@ -5168,7 +5168,7 @@ async function handleToolCallKern(
         // auto_commit:true -> direkt commit, ABER nur wenn alle Previews ok sind.
         const allPreviewsOk = result.previews?.every(p => p.ok) ?? true;
         if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
-          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
+          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note'), auto_commit: true });
           if (c.success) {
             return { ...c, plan: result, auto_committed: true, message: `Plan ${result.plan_id} angelegt + sofort committed (auto_commit) — ${c.committed} Datei(en), ${c.committed_ops ?? '?'} Op(s) geaendert. batch_id=${c.batch_id}.` };
           }
@@ -5227,7 +5227,7 @@ async function handleToolCallKern(
           return { ...n, plan: result, ...(result.in_place ? {} : { superseded_plan_id: planId }), auto_committed: false };
         }
         if (bool(args, 'auto_commit') === true && allPreviewsOk && result.total_ops > 0) {
-          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note') });
+          const c = await commitBatch({ plan_id: result.plan_id, agent_id: agentId, agent_note: str(args, 'agent_note'), auto_commit: true });
           return {
             ...c,
             plan: result,

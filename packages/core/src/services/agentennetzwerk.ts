@@ -21,12 +21,14 @@ export const NETZWERK_EINSTELLUNGEN = {
  frame_budget_ms: { standard: 8, min: 2, max: 20 },
  buendel_ms: { standard: 180, min: 50, max: 2000 },
  abgleich_sekunden: { standard: 15, min: 3, max: 120 },
+ plan_nachleuchten_sekunden: { standard: 30, min: 3, max: 300 },
+ plan_mindestanzeige_sekunden: { standard: 3, min: 1, max: 30 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;
 export const NETZWERK_ADMIN_PARAMETER = {
  netzwerk_modus: { type: 'string', enum: ['status','einstellen'], description: 'agentennetzwerk: Diagnose oder persistente globale Einstellungen (User/Koordinator)' },
- netzwerk_werte: { type: 'object', additionalProperties: { type: 'number' }, description: 'agentennetzwerk einstellen: aktivitaet_sekunden, inaktiv_sekunden, sichtbare_agenten, sichtbare_channels, ereignis_limit, animation_limit, animation_ms, bilder_pro_sekunde, frame_budget_ms, buendel_ms, abgleich_sekunden' },
+ netzwerk_werte: { type: 'object', additionalProperties: { type: 'number' }, description: 'agentennetzwerk einstellen: aktivitaet_sekunden, inaktiv_sekunden, sichtbare_agenten, sichtbare_channels, ereignis_limit, animation_limit, animation_ms, bilder_pro_sekunde, frame_budget_ms, buendel_ms, abgleich_sekunden, plan_nachleuchten_sekunden, plan_mindestanzeige_sekunden' },
 };
 export async function leseNetzwerkKonfiguration(project: string) {
  const produkt = await leseProfilProduktSchalter(NETZWERK_FUNKTION, project);

@@ -1,4 +1,6 @@
 -- P22-T93: Metadaten-Signal fuer den bestehenden Projekt-SSE-Weg; niemals Inhalte.
+-- P22-T102: successful automatic commit, never inferred from timestamps or user text.
+ALTER TABLE file_batch_plans ADD COLUMN IF NOT EXISTS auto_commit BOOLEAN NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS agentennetzwerk_einstellungen (
  name TEXT PRIMARY KEY, wert JSONB NOT NULL, grund TEXT NOT NULL,
  gesetzt_von TEXT NOT NULL, gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()

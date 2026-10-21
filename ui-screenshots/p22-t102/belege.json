@@ -1,0 +1,35 @@
+{
+  "checks": 24,
+  "farben": [
+    {
+      "beitraege": 1,
+      "fade": 1,
+      "farbe": "#fcd34d",
+      "id": "2",
+      "status": "offen"
+    },
+    {
+      "beitraege": 1,
+      "fade": 0.9973611460165872,
+      "farbe": "#38bdf8",
+      "id": "4",
+      "status": "auto-committet"
+    },
+    {
+      "beitraege": 1,
+      "fade": 0.9973316391359592,
+      "farbe": "#38bdf8",
+      "id": "3",
+      "status": "auto-committet"
+    },
+    {
+      "beitraege": 1,
+      "fade": 0.9973447970666328,
+      "farbe": "#86efac",
+      "id": "1",
+      "status": "committet"
+    }
+  ],
+  "tooltip": "Plan 4 · auto\n×\nRolle\nplan\nAktivität\n1 Ops · 1 Dateien · auto-committet\nStatus\nauto-committet\nBesitzer\nclaude-ui\nBeitragende\n1\nDateien\n1 · legacy.txt\nErstellt\n21.10.2026, 17:09:45\nLetzter Aufruf\nNicht im Zeitfenster\nQuelle: file_batch_plans · Aktivität 60s",
+  "legende": "Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; rote Flackerfunken = Fehler; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt.\n\nPläne: offen (gold) · committet (grün, verblassend) · auto-committet (blau, verblassend) · verworfen (rote Explosion).\n\n↗\nChat\n#\nChannel\n>_\nShell\n☷\nPlan\n▱\nDateien\n⌘\nCode\n◇\nWissen\n✦\nThought\n▤\nDoku\nϟ\nEvents\n◎\nAdmin\n⌂\nProjekt\n♧\nAgenten\n✧\nSkills\n01\nHex\n▧\nAssets\n◈\nJev\n⚙\nTools"
+}

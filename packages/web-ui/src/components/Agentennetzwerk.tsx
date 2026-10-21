@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ladeNetzwerk, schalteNetzwerk, stelleNetzwerkEin, type NetzSnapshot, type NetzEreignis } from '../api/agentennetzwerk';
 import { netzwerkSzene, STILE, stil, rgb, kurve, gleichmaessig, werkzeugName, type Knoten, type Szene, type Rgb, type Punkt } from './netzwerk/nerven-szene';
+import {PlanNachleuchten,planZustand,PLAN_FARBEN} from './netzwerk/plan-nachleuchten';
 import { erstelleLicht, type Licht, type Kamera } from './netzwerk/nerven-renderer';
 import '../agentennetzwerk.css';
 export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
@@ -64,6 +65,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
  anzeige.current = { pause, auswahl, karte, erklaerungen };
  useEffect(() => { try { localStorage.setItem('synapse.agentennetzwerk.erklaerungen.v1', erklaerungen ? '1' : '0'); } catch { /* Anzeige funktioniert auch ohne Storage */ } if (!erklaerungen) setLegende(false); }, [erklaerungen]);
  useEffect(() => {
+  const planAnzeige=new PlanNachleuchten();
   let ende = false, laeuft = false, nochmal = false, timer = 0, abgleich = 0, source: EventSource | null = null;
   seen.current.clear(); partikel.current = []; daten.current = null; setSnapshot(null); setFehler(''); setStatus('verbinden');
   const stream = () => {
@@ -79,7 +81,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    if (ende || document.hidden) return;
    if (laeuft) { nochmal = true; return; } laeuft = true;
    try {
-    const s = await ladeNetzwerk(project); if (ende) return;
+    const empfangen = await ladeNetzwerk(project); if (ende) return;
+    const s = planAnzeige.aktualisiere(empfangen,Date.now());
     const vorher = daten.current;
     daten.current = s;
     const jetzt = performance.now(), alle = [...new Map([...s.ereignisse, ...(s.channel_ereignisse ?? [])].map(e => [e.id, e])).values()], frisch = alle.filter(e => !seen.current.has(e.id));
@@ -223,7 +226,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    // Nervenbahnen: kaum sichtbar in Ruhe, aktive Bahnen schimmern zum Kern hin.
    const wolken = new Map<string, { x: number; y: number; n: number; f: Rgb; p: Punkt; act: number }>();
    for (const [p, c] of g.kanten) {
-    const a = pos(p), b = pos(c), lc = lage.current.get(c.id)?.a ?? 1, act = Math.max(aktivitaet(c), c.rolle === 'koordinator' ? 0.25 : 0);
+    const a = pos(p), b = pos(c), lc = (lage.current.get(c.id)?.a ?? 1) * (c.fade ?? 1), act = Math.max(aktivitaet(c), c.rolle === 'koordinator' ? 0.25 : 0);
     if (p !== g.kern) { const wo = wolken.get(p.id) ?? { x: 0, y: 0, n: 0, f: rgb(p.farbe), p: a, act: 0 }; wo.x += b.x; wo.y += b.y; wo.n++; wo.act = Math.max(wo.act, act); wolken.set(p.id, wo); }
     if (stufe > 1 && act <= (stufe > 2 ? 0.3 : 0.1)) continue;
     const len = Math.hypot(b.x - a.x, b.y - a.y), schritt = (act > 0.1 ? 3.4 : 7) * (stufe > 2 ? 4 : stufe ? 2 : 1), n = Math.max(6, Math.min(130, Math.round(len / schritt)));
@@ -250,7 +253,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    // P22-T95: Schattenplaene binden ihre Beitragenden mit goldenen Faeden; Co-Edit (mehrere Agenten) leuchtet staerker.
    for (const c of g.knoten) if ((c.rolle === 'plan' ? stufe < 3 : stufe < 2 && c.rolle === 'channel') && c.teilnehmer) {
     const a = pos(c), act = aktivitaet(c), gold = c.rolle === 'plan', staerke = gold ? (c.fade ?? 1) * (c.teilnehmer.length > 1 ? 2.4 : 1.3) : 1;
-    const [cr, cg, cb] = gold ? [1, 0.82, 0.32] : [0.66, 0.55, 0.98];
+    const [cr, cg, cb] = gold ? rgb(c.farbe) : rgb('#a78bfa');
     for (const id of c.teilnehmer) {
      const t = g.alias.get(id); if (!t || t.rolle === 'cluster') continue;
      const b = pos(t), len = Math.hypot(b.x - a.x, b.y - a.y), n = Math.max(4, Math.min(50, Math.round(len / 9))), pts = kurve(a, b, -0.18, n);
@@ -464,7 +467,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     const sel = kn.id === auswahl || kn.id === karte, max = kompakt ? 14 : 22, name = kn.name.length > max ? kn.name.slice(0, max - 1) + '…' : kn.name;
     if (kn === g.kern) { etikett(kn.name.toUpperCase(), x, y + Math.max(28, 52 * k.zoom), '#fed7aa', '600 10px "IBM Plex Mono", monospace', 0.95, true); continue; }
     if (kn.rolle === 'koordinator' || kn.rolle === 'main') { etikett(name, x, y + Math.max(18, 32 * k.zoom), sel ? '#F97316' : '#fde3c8', '600 11px "IBM Plex Mono", monospace', 0.95 * l.a, true); continue; }
-    if (kn.rolle === 'plan') { etikett(kn.name, x, y + Math.max(15, 24 * k.zoom), sel ? '#F97316' : '#fde68a', '500 10px "IBM Plex Mono", monospace', (0.6 + 0.4 * Math.min(1, act)) * l.a * (kn.fade ?? 1), sel); continue; }
+    if (kn.rolle === 'plan') { etikett(kn.name, x, y + Math.max(15, 24 * k.zoom), sel ? '#F97316' : kn.farbe, '500 10px "IBM Plex Mono", monospace', (0.6 + 0.4 * Math.min(1, act)) * l.a * (kn.fade ?? 1), sel); continue; }
     if (kn.rolle === 'channel' || kn.rolle === 'channel-cluster') { etikett(kn.rolle === 'channel' ? name : kn.avatar + ' Channels', x, y + Math.max(15, 28 * k.zoom), sel ? '#F97316' : '#d8ccff', '500 10px "IBM Plex Mono", monospace', (0.55 + 0.45 * Math.min(1, act)) * l.a, sel); continue; }
     if (kn.rolle === 'cluster') { etikett('+' + kn.count, x, y, '#ffedd5', '700 12px "IBM Plex Mono", monospace', l.a, true); etikett('aktive Agenten', x, y + Math.max(16, 34 * k.zoom), '#fdba74', '9px "IBM Plex Mono", monospace', 0.7 * l.a); continue; }
     if (kn.rolle === 'arbeitsagent' && (sel || ((alleNamen || act > (kompakt ? 0.5 : 0.15)) && namenFrei-- > 0))) etikett(name, x, y + Math.max(13, 20 * k.zoom), sel ? '#F97316' : '#cbd5e1', '10px "IBM Plex Mono", monospace', (sel ? 1 : 0.4 + 0.6 * Math.min(1, act)) * l.a, sel);
@@ -480,7 +483,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const kp = lage.current.get(g.kern.id) ?? g.kern;
    el.dataset.mainX = String(sx(kp.x)); el.dataset.mainY = String(sy(kp.y)); el.dataset.camX = String(k.x); el.dataset.camY = String(k.y); el.dataset.zoom = String(k.zoom);
    el.dataset.channelCount = String(g.channels); el.dataset.channelWriteCount = String(schreibend); el.dataset.animationCount = String(partikel.current.length);
-   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
+   el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planZustaende = JSON.stringify(g.knoten.filter(n=>n.plan).map(n=>({id:n.plan!.id,status:planZustand(n.plan!),farbe:n.farbe,fade:n.fade,beitraege:n.teilnehmer?.length??0}))); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
    frames++; summe += performance.now() - start;
    if (zeit - statAm >= 1000) {
     const m = { fps: Math.round(frames * 1000 / (zeit - statAm)), ms: Number((summe / frames).toFixed(2)), rate: Number((neu.current * 1000 / (zeit - statAm)).toFixed(1)), ausgelassen: abgewiesen.current, gezeichnet, eingang: seen.current.size, sprites, stufe };
@@ -525,7 +528,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   <header className="nw-head"><div><span className={'nw-signal ' + (status === 'live' ? 'live' : '')} /><strong>Agentennetzwerk</strong>{erklaerungen && <small>{status}</small>}</div><div>
    {an && <><button onClick={() => setPause(p => !p)} aria-pressed={pause}>{pause ? 'Animation fortsetzen' : 'Animation pausieren'}</button><button className="nw-toggle" role="switch" aria-label="Erklärungen" aria-checked={erklaerungen} onClick={() => setErklaerungen(v => !v)}><span className="nw-toggle-track"><i /></span>Erklärungen <b>{erklaerungen ? 'Ein' : 'Aus'}</b></button>
     <span className="nw-help"><button aria-label="Icon-Legende" aria-expanded={legende} onClick={() => setLegende(v => !v)}>?</button>{legende && <div className="nw-legend" role="dialog" aria-label="Werkzeug-Icons">
-     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = offener files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; rote Flackerfunken = Fehler; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt.</p>
+     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; rote Flackerfunken = Fehler; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt.</p>
+     <p className="nw-legend-text">Pläne: <span style={{color:PLAN_FARBEN.offen}}>offen (gold)</span> · <span style={{color:PLAN_FARBEN.committet}}>committet (grün, verblassend)</span> · <span style={{color:PLAN_FARBEN.auto}}>auto-committet (blau, verblassend)</span> · <span style={{color:PLAN_FARBEN.verworfen}}>verworfen (rote Explosion)</span>.</p>
      {Object.entries(STILE).map(([key, s]) => <span key={key} style={{ color: s.farbe }}><b>{s.icon}</b>{s.name}</span>)}</div>}</span></>}
    <button onClick={() => setEinstellungen(v => !v)} aria-expanded={einstellungen}>Einstellungen</button>
    <button disabled={busy || !snapshot} onClick={() => void aktion(() => schalteNetzwerk(project, !an))}>{an ? 'Ausschalten' : 'Einschalten'}</button>
@@ -533,7 +537,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   {fehler && <p className="nw-error" role="alert">{fehler} <button onClick={() => void refresh.current()}>Erneut laden</button></p>}
   {einstellungen && snapshot && <form className="nw-settings" onSubmit={e => { e.preventDefault(); void aktion(() => stelleNetzwerkEin(project, werte)); }}>
    <p>Freigabe: {snapshot.schalter.quelle}{snapshot.schalter.bis ? ' · bis ' + new Date(snapshot.schalter.bis).toLocaleTimeString('de-DE') : ''}. Einstellungen gelten global.</p>
-   {Object.entries(snapshot.einstellungen).map(([name, e]) => <label key={name}>{({ aktivitaet_sekunden: 'Aktivitätsfenster (Sekunden)', inaktiv_sekunden: 'Inaktiv nach (Sekunden)', sichtbare_agenten: 'Sichtbare Agenten', sichtbare_channels: 'Sichtbare Channels', ereignis_limit: 'Ereignisse im Fenster', animation_limit: 'Gleichzeitige Animationen', animation_ms: 'Animationsdauer (ms)', bilder_pro_sekunde: 'Bilder pro Sekunde', frame_budget_ms: 'Animationsbudget (ms)', buendel_ms: 'Ereignisse bündeln (ms)', abgleich_sekunden: 'Wiederabgleich (Sekunden)' } as Record<string, string>)[name] || name}<input type="number" required min={e.min} max={e.max} value={werte[name] ?? e.wert} onChange={ev => setWerte(w => ({ ...w, [name]: Number(ev.target.value) }))} /><small>{e.quelle}</small></label>)}
+   {Object.entries(snapshot.einstellungen).map(([name, e]) => <label key={name}>{({ aktivitaet_sekunden: 'Aktivitätsfenster (Sekunden)', inaktiv_sekunden: 'Inaktiv nach (Sekunden)', sichtbare_agenten: 'Sichtbare Agenten', sichtbare_channels: 'Sichtbare Channels', ereignis_limit: 'Ereignisse im Fenster', animation_limit: 'Gleichzeitige Animationen', animation_ms: 'Animationsdauer (ms)', bilder_pro_sekunde: 'Bilder pro Sekunde', frame_budget_ms: 'Animationsbudget (ms)', buendel_ms: 'Ereignisse bündeln (ms)', abgleich_sekunden: 'Wiederabgleich (Sekunden)', plan_nachleuchten_sekunden: 'Pläne nachleuchten (Sekunden)', plan_mindestanzeige_sekunden: 'Pläne mindestens anzeigen (Sekunden)' } as Record<string, string>)[name] || name}<input type="number" required min={e.min} max={e.max} value={werte[name] ?? e.wert} onChange={ev => setWerte(w => ({ ...w, [name]: Number(ev.target.value) }))} /><small>{e.quelle}</small></label>)}
    <button disabled={busy}>Speichern</button>
   </form>}
   {!an ? <>{fallback}<p className="nw-off">{snapshot ? 'Netzwerk ausgeschaltet · bestehende Hauptagent-Ansicht' : 'Netzwerk wird geladen …'}</p></> : <>
@@ -566,10 +570,10 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      <div><strong>{kartenKnoten.name}</strong><button aria-label="Knotenkarte schließen" onClick={() => { setKarte(''); setAuswahl(''); }}>×</button></div>
      <dl><dt>Rolle</dt><dd>{kartenKnoten.rolle}</dd>
       {kartenKnoten.agent ? <><dt>Typ</dt><dd>{kartenKnoten.agent.typ || 'Legacy / nicht erfasst'}</dd><dt>Modell</dt><dd>{kartenKnoten.agent.modell || 'Nicht erfasst'}</dd><dt>Ort</dt><dd>{kartenKnoten.agent.ort || 'Nicht erfasst'}</dd><dt>Letzte Anmeldung</dt><dd>{datum(kartenKnoten.agent.letzte_anmeldung)}</dd><dt>Aufrufe</dt><dd>{kartenKnoten.aufrufe} im Fenster</dd></> : <><dt>Aktivität</dt><dd>{kartenKnoten.info || kartenKnoten.aufrufe + ' Aufrufe'}</dd></>}
-      {kartenKnoten.plan && <><dt>Status</dt><dd>{kartenKnoten.plan.status}{kartenKnoten.plan.coedit ? ' · Co-Edit offen' : ''}</dd><dt>Besitzer</dt><dd>{kartenKnoten.plan.besitzer_name || 'Nicht erfasst'}</dd><dt>Beitragende</dt><dd>{kartenKnoten.plan.beitraege.length}</dd><dt>Dateien</dt><dd>{kartenKnoten.plan.dateien}{kartenKnoten.plan.dateien_beispiele.length ? ' · ' + kartenKnoten.plan.dateien_beispiele.join(', ') : ''}</dd><dt>Erstellt</dt><dd>{datum(kartenKnoten.plan.erstellt)}</dd></>}
+      {kartenKnoten.plan && <><dt>Status</dt><dd>{planZustand(kartenKnoten.plan)}{kartenKnoten.plan.status==='open'&&kartenKnoten.plan.coedit ? ' · Co-Edit offen' : ''}</dd><dt>Besitzer</dt><dd>{kartenKnoten.plan.besitzer_name || 'Nicht erfasst'}</dd><dt>Beitragende</dt><dd>{kartenKnoten.plan.beitraege.length}</dd><dt>Dateien</dt><dd>{kartenKnoten.plan.dateien}{kartenKnoten.plan.dateien_beispiele.length ? ' · ' + kartenKnoten.plan.dateien_beispiele.join(', ') : ''}</dd><dt>Erstellt</dt><dd>{datum(kartenKnoten.plan.erstellt)}</dd></>}
       <dt>Letzter Aufruf</dt><dd>{kartenAufruf ? kartenAufruf.tool + '.' + kartenAufruf.action + ' · ' + datum(kartenAufruf.zeit) : 'Nicht im Zeitfenster'}</dd>
       {kartenKnoten.zuordnung && <><dt>Zuordnung</dt><dd>{kartenKnoten.zuordnung}</dd></>}
-     </dl><small>Quelle: {kartenKnoten.agent?.metadaten_quelle || 'tool_calls'} · Aktivität {snapshot.werte.aktivitaet_sekunden}s</small>
+     </dl><small>Quelle: {kartenKnoten.plan?'file_batch_plans':kartenKnoten.agent?.metadaten_quelle || 'tool_calls'} · Aktivität {snapshot.werte.aktivitaet_sekunden}s</small>
     </aside>}
     {!snapshot.ereignisse.length && <p className="nw-empty">Stille im Netz. Jeder echte Aufruf wird hier als Impuls sichtbar.</p>}
    </div>
