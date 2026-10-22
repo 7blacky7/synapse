@@ -26,7 +26,7 @@ export interface ReverseAusfuehrerInfo {
   /** Lesend: belegte/maximale Plätze des Tool-Lebenszyklus (alle Tools). */
   kapazitaet?: () => Promise<{ belegt: number; max: number }>;
   /** Koordinator/Entstörer: festsitzenden Reverse-Container über den Lebenszyklus anhalten (nächster Tick startet neu). */
-  containerNeustart?: (jobId?: string | null) => Promise<{ neu_gestartet: boolean; zustand: string | null }>;
+  containerNeustart?: (jobId?: string | null, beleg?: {instance_id:string;generation:string;container_id:string|null;job_id?:string|null;attempt?:number;tool_id?:string;descriptor_hash?:string}) => Promise<{ neu_gestartet: boolean; zustand: string | null }>;
   /** P18-T87: Zeitlimit je Kind in Sekunden; harte Frist = Zeitlimit + Einstellwert hart_puffer_s (diagnose: ueber_zeitlimit). */
   zeitlimits?: Record<string, number>;
 }

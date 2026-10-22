@@ -13,6 +13,8 @@ import {planeReverseLeserNachzug,reverseLeserNachzugFreigegeben,reverseLeserProj
 import {pruefeLeserRuntimeSnapshot} from '@synapse/core';
 import type {ToolLifecycle,ToolInstanceContext,ToolResourceAdapter} from './tool-lifecycle.js';
 import type {ResolvedToolMount} from './tool-container-docker.js';
+import {ReverseContainerRecovery,type ReverseStopBeleg} from './reverse-container-recovery.js';
+import {reverseNichtGesendet,ReverseEntfernungAusstehend} from './reverse-container-transport.js';
 
 export const LESER_TOOL='reverse-leser',LESER_CAPABILITY='reverse_leser';
 const PROJEKT='reverse-bibliothek',PROTOKOLL='.leser-protokoll.jsonl';
@@ -204,6 +206,10 @@ export class ReverseLeserExecutor {
  private wer:WorkIdentity|null=null;
  private s:ReverseEinstellSnapshot|null=null;
  private beendet=false;
+ private recovery?:ReverseContainerRecovery;
+ private readonly stopBelege=new Map<string,ReverseStopBeleg>();
+ private readonly stopLaeufe=new Map<string,Promise<void>>();
+ recoveryAnbinden(recovery:ReverseContainerRecovery){this.recovery=recovery;}
  constructor(private readonly k:LeserExecutorKonfig){
   this.pool=k.pool??getPool();
   // Lokale Hooks: der unveränderte E-Executor darf Leseraufträge NICHT claimen.
@@ -423,6 +429,12 @@ export class ReverseLeserExecutor {
    if(geweckt>=frei)break;
    const job=await this.jobs.get(String(row.id),PROJEKT),l=job?await this.lauf(job):null;
    if(!l||job?.priority==='nachzug'&&await reverseLeserProjektarbeitVorrang(this.pool))continue;
+   const alterTransport=(await this.pool.query("SELECT diagnose->'transport' AS transport FROM reverse_leser_laeufe WHERE id=$1",[l.id])).rows[0]?.transport;
+   if(!l.host_validiert&&['ausfuehrung','stop'].includes(alterTransport?.phase)){
+    const s=await leseReverseEinstellwerte({eintrag_id:l.eintrag_id},this.pool);
+    await this.fehlerAbschliessen(job!,l.id,s,'leser_transport_ende_unbestaetigt',{physisches_ende:false,rueckhalt:true,transport:alterTransport},null);
+    continue;
+   }
    if(l?.host_validiert&&['fertig','teilweise'].includes(l.status)){
     // Bereits bestätigter Materialisierungspunkt: kein erneuter Sandboxstart.
     // Veralteten pending-Kopf terminal abschließen; unveränderten Lauf anschließend claimen.
@@ -432,12 +444,14 @@ export class ReverseLeserExecutor {
     const s=await leseReverseEinstellwerte({eintrag_id:l.eintrag_id},this.pool);
     if(s.letzter_fehler)fail(s.letzter_fehler);
     await this.runtime(s,l); // schlechte Pins vor wake terminalisieren: kein haengender Pending-Kopf
+    if(this.recovery&&!await this.recovery.before(LESER_TOOL,String(row.id)))continue;
     await lc.wake(LESER_TOOL,PROJEKT,String(row.id));geweckt++;
    }catch(e){
+    if(e instanceof ReverseEntfernungAusstehend){console.warn('[reverse-leser] Entfernung ausstehend:',row.id);continue;}
     const code=(e as Error).message;
     if(code==='leser_einstellungen_veraendert')await this.veraltetenJobAbschliessen(String(row.id));
     else if(code.startsWith('leser_runtime_')||code.startsWith('leser_laufzeit_'))await this.veraltetenJobAbschliessen(String(row.id),code);
-    else throw e;
+    else console.error('[reverse-leser] Start bleibt offen:',row.id,code);
    }
   }
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:reverseZahl(this.s,'executor_lease_s')});
@@ -489,6 +503,11 @@ export class ReverseLeserExecutor {
   const hart=setTimeout(()=>{if(!physischBeendet){verloren=true;void this.stop(lc,job.id).then(()=>{physischBeendet=true;},()=>{});}},harteMs);
   hart.unref();
   try{
+   if(this.recovery){
+    const b=await this.recovery.current(LESER_TOOL,job.id);if(!b)fail('leser_transportbindung_fehlt');
+    this.stopBelege.set(job.id,{instance_id:b.instance_id,generation:b.generation,container_id:b.container_id,tool_id:LESER_TOOL,descriptor_hash:b.descriptor_hash,job_id:job.id,attempt:job.attempt});
+    await this.transportMerken(job,wer,s,l.id,'ausfuehrung');
+   }
    const antwort=await lc.execute(LESER_TOOL,PROJEKT,job.id,wer,token,async()=>{
     if(!await this.lauf(job))fail('leser_aus');
     return {kommando:'leser_ausfuehren',leser_entrypoint:r.manifest.entrypoint,
@@ -500,6 +519,7 @@ export class ReverseLeserExecutor {
       eingabe_bytes:String(reverseBigInt(s,'runner_input_bytes')),lese_bytes:String(reverseZahl(s,'lese_block_bytes')),
       tiefe:String(reverseZahl(s,'pfad_tiefe_max')),poll_ms:String(reverseZahl(s,'guard_intervall_ms')),wait_ms:String(reverseZahl(s,'prozess_wait_ms'))}};
    });
+   if(this.recovery)await this.transportMerken(job,wer,s,l.id,'stop');
    await this.stop(lc,job.id);physischBeendet=true;
    if(verloren)fail('leser_lease_verloren');
    const result=await pruefeLeserAusgabe(v.ausgabe,s,r.manifest,l.groesse,antwort);
@@ -518,6 +538,10 @@ export class ReverseLeserExecutor {
    const out={scope:'reverse-leser',id:l.id,revision:l.datei_id,sha256:result.manifest.sha256};
    if(!await this.jobs.stage(wer,job.id,token,out)||!(await this.jobs.complete(wer,job.id,token,job.inputRef)).completed)fail('leser_publikation_fenced');
   }catch(e){
+   if(reverseNichtGesendet(e)){
+    await this.recovery?.releaseNotSent(e,job,wer,this.jobs,()=>this.transportMerken(job,wer,s,l.id,'nicht_gesendet'));
+    return;
+   }
    await this.stop(lc,job.id).then(()=>{physischBeendet=true;},()=>{});
    const code=(e as Error).message.startsWith('leser_')?(e as Error).message:'leser_ausfuehrung_fehlgeschlagen';
    let rueckhaltBytes:string|null=null;
@@ -528,9 +552,25 @@ export class ReverseLeserExecutor {
     ausgabe_key:v.key,physisches_ende:physischBeendet,ausgabe_bytes_bekannt:rueckhaltBytes!==null,
    },rueckhaltBytes,wer);
    throw e;
-  }finally{clearInterval(timer);clearTimeout(hart);}
+  }finally{clearInterval(timer);clearTimeout(hart);this.stopBelege.delete(job.id);}
+ }
+ private async transportMerken(job:WorkJob,wer:WorkIdentity,s:ReverseEinstellSnapshot,laufId:string,phase:string){
+  const beleg=this.stopBelege.get(job.id),params=[laufId,job.id,JSON.stringify({phase,versuch:job.attempt,...beleg})];
+  await this.statusTx(s,params,async c=>{await this.fence(c,job,wer);
+   await c.query("UPDATE reverse_leser_laeufe SET diagnose=diagnose||jsonb_build_object('transport',$3::jsonb) WHERE id=$1 AND work_job_id=$2 AND status IN('offen','laeuft')",params);
+  });
  }
  private async stop(lc:ToolLifecycle,id:string){
+  if(this.recovery){
+   const existing=this.stopLaeufe.get(id);if(existing)return existing;
+   const p=(async()=>{
+    const b=this.stopBelege.get(id)??await this.recovery!.current(LESER_TOOL,id);
+    if(!b)fail('leser_stop_bindung_fehlt');
+    const s=this.vorbereitet.get(id)?.s??this.s;if(!s)fail('leser_stop_budget_fehlt');
+    await this.recovery!.waitStopped(b,reverseZahl(s,'container_start_timeout_ms'),reverseZahl(s,'guard_intervall_ms'));
+   })().finally(()=>{if(this.stopLaeufe.get(id)===p)this.stopLaeufe.delete(id);});
+   this.stopLaeufe.set(id,p);return p;
+  }
   await lc.neustart(LESER_TOOL,PROJEKT,id);
   const status=await lc.status(LESER_TOOL,PROJEKT,id);
   if(status.status!=='cold'||status.container_id!==null)fail('leser_stop_unbestaetigt');

@@ -28,7 +28,9 @@ import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getA
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
-import {DockerToolContainerExecutor,type ResolvedToolMount} from './tool-container-docker.js';
+import {type ResolvedToolMount} from './tool-container-docker.js';
+import {ReverseContainerTransport,reverseNichtGesendet} from './reverse-container-transport.js';
+import {ReverseContainerRecovery} from './reverse-container-recovery.js';
 import {configureToolLifecycleAdapters,getToolLifecycle} from './tool-lifecycle-runtime.js';
 import {ServerExecutor} from './server-executor.js';
 import {ReverseLeserExecutor,LESER_TOOL} from './reverse-leser-executor.js';
@@ -319,6 +321,7 @@ export async function reverseFormatVorpruefung(dateien:{pfad:string;rolle:string
 export interface ReverseExecutorDeps {
  pool?:Db;konfig:ReverseExecutorKonfig;
  lifecycle:()=>ToolLifecycle|null;
+ recovery?:ReverseContainerRecovery;
  /** Server-Identität (ServerExecutor); null = noch keine registrierte Bootgeneration. */
  identitaet:()=>Promise<WorkIdentity|null>;
  jobs?:WorkJobService;
@@ -453,7 +456,7 @@ export class ReverseExecutor {
    try{await this.policyPruefen(job);freigegeben.push(row);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,this.wer,e.code);}}
   let geweckt=0;
   // P18-T64: der globale Container wird einmal geweckt; nur der alte Descriptor braucht einen Container je Auftrag.
-  for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
+  for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{if(this.deps.recovery&&!await this.deps.recovery.before(REVERSE_TOOL_ID,String(row.id)))continue;await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:this.k.leaseSeconds});
   const wer=this.wer;
   for(const job of claims){
@@ -776,6 +779,9 @@ export class ReverseExecutor {
    if(!alt)await sperreArbeitsOrdner(arbeit);
    if(!lebt)return;
    if(istReversePolicyFehler(err)){await this.policyHalten(job,wer,err.code);return;}
+   if(reverseNichtGesendet(err)){
+    await this.deps.recovery?.releaseNotSent(err,job,wer,this.jobs);return;
+   }
    const m=(err as Error).message;
    if(m==='tool_runner_timeout')aufsicht?.beende('zeitlimit');
    if(m==='reverse_e_storno'||aufsicht?.grund()){await this.eHalten(job,wer,m==='reverse_e_storno'?'storno':aufsicht!.grund()!);return;}
@@ -865,6 +871,9 @@ export class ReverseExecutor {
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
+    if(reverseNichtGesendet(e)){
+     await this.deps.recovery?.releaseNotSent(e,job,wer,this.jobs);return;
+    }
     const m=(e as Error).message;
     // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
@@ -999,6 +1008,9 @@ export class ReverseExecutor {
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
+    if(reverseNichtGesendet(e)){
+     await this.deps.recovery?.releaseNotSent(e,job,wer,this.jobs);return;
+    }
     const m=(e as Error).message;
     // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
@@ -1069,21 +1081,39 @@ export class ReverseExecutor {
  * P21-T15: dieselbe Identität ist Ersatz-Ausführer für Hex (live gibt es keinen Parser-Serverknoten). Gleichzeitige
  * Aufrufe (Reverse-Takt und Hex-Anbindung) teilen sich einen Lauf, damit start() nie doppelt rotiert.
  */
-export function reverseServerIdentitaet(env:NodeJS.ProcessEnv=process.env):()=>Promise<WorkIdentity|null>{
- const server=new ServerExecutor({envPrefix:'SYNAPSE_REVERSE_',nurCpu:true,lokaleAdmission:false,hex:'ersatz'});let gestartet=false,gemeldet=false;
+/** Refresh darf I/O ausführen; snapshot ist synchron und im Claim strikt I/O-frei. */
+export interface ReverseIdentitaetsProvider {
+ ():Promise<WorkIdentity|null>;
+ snapshot():Readonly<WorkIdentity>|null;
+ beende():void;
+}
+export function reverseServerIdentitaet(env:NodeJS.ProcessEnv=process.env,
+ server:Pick<ServerExecutor,'identity'|'fence'|'start'|'refresh'>=new ServerExecutor({envPrefix:'SYNAPSE_REVERSE_',nurCpu:true,lokaleAdmission:false,hex:'ersatz'})):ReverseIdentitaetsProvider{
+ let gestartet=false,gemeldet=false,beendet=false;
+ let snapshot:Readonly<WorkIdentity>|null=null;
  const konflikt=!!server.identity.nodeId&&server.identity.nodeId===env.SYNAPSE_SERVER_NODE_ID?.trim();
  let lauf:Promise<WorkIdentity|null>|null=null;
  const einmal=async():Promise<WorkIdentity|null>=>{
-  if(!server.identity.nodeId){if(!gemeldet){gemeldet=true;console.warn('[reverse-executor] SYNAPSE_REVERSE_NODE_ID fehlt – keine Claims.');}return null;}
-  if(konflikt){if(!gemeldet){gemeldet=true;console.error('[reverse-executor] SYNAPSE_REVERSE_NODE_ID darf nicht SYNAPSE_SERVER_NODE_ID sein – keine Claims.');}return null;}
+  if(beendet)return null;
+  if(!server.identity.nodeId){snapshot=null;if(!gemeldet){gemeldet=true;console.warn('[reverse-executor] SYNAPSE_REVERSE_NODE_ID fehlt – keine Claims.');}return null;}
+  if(konflikt){snapshot=null;if(!gemeldet){gemeldet=true;console.error('[reverse-executor] SYNAPSE_REVERSE_NODE_ID darf nicht SYNAPSE_SERVER_NODE_ID sein – keine Claims.');}return null;}
   try{
    if(!gestartet){await server.start();gestartet=true;}
-   else if(!await server.refresh())return null;
-  }catch(e){if(!gemeldet){gemeldet=true;console.error('[reverse-executor] Server-Identität abgelehnt:',(e as Error).message);}return null;}
+   else if(!await server.refresh()){snapshot=null;return null;}
+  }catch(e){snapshot=null;if(!gemeldet){gemeldet=true;console.error('[reverse-executor] Server-Identität abgelehnt:',(e as Error).message);}return null;}
   const f=server.fence;
-  return f?{nodeId:f.nodeId,bootGeneration:f.bootId,authHash:f.tokenHash}:null;
+  snapshot=!beendet&&f?Object.freeze({nodeId:f.nodeId,bootGeneration:f.bootId,authHash:f.tokenHash}):null;
+  return snapshot;
  };
- return ()=>lauf??=einmal().finally(()=>{lauf=null;});
+ return Object.assign(()=>beendet?Promise.resolve(null):(lauf??=einmal().finally(()=>{lauf=null;})),{
+  snapshot:():Readonly<WorkIdentity>|null=>{
+   // Keine Promise des laufenden Refresh abwarten: dieser kann hinter dem Claim-FOR-SHARE warten.
+   const f=server.fence;
+   if(beendet||!f||snapshot&&(snapshot.nodeId!==f.nodeId||snapshot.bootGeneration!==f.bootId||snapshot.authHash!==f.tokenHash))snapshot=null;
+   return snapshot;
+  },
+  beende:()=>{beendet=true;snapshot=null;},
+ });
 }
 /**
  * Vor initToolLifecycle aufrufen: konfiguriert Docker-Mounts/Ressourcen, Hooks und die Abholschleife.
@@ -1102,11 +1132,16 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const leser=new ReverseLeserExecutor({reverseRoot:konfig.reverseRoot,image:konfig.image,digest:konfig.digest,resourceDomain:konfig.resourceDomain,
   hostRoot,lifecycle:getToolLifecycle,identitaet});
  const alteMounts=reverseMountResolver(konfig,hostRoot);
- try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:(d,c)=>d.tool_id===LESER_TOOL?leser.mounts(d,c):alteMounts(d,c),
-  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:{acquire:(d,c)=>d.tool_id===LESER_TOOL?leser.ressourcen.acquire(d,c):reverseRessourcen.acquire(d,c),
+ let transport:ReverseContainerTransport;
+ const recovery=new ReverseContainerRecovery({identity:identitaet,claimIdentity:identitaet.snapshot,ready:b=>transport?.ready(b)??false});
+ transport=new ReverseContainerTransport({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:(d,c)=>d.tool_id===LESER_TOOL?leser.mounts(d,c):alteMounts(d,c),
+  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1',binding:(id,job)=>recovery.binding(id,job),stopSeconds:()=>recovery.stopSeconds()});
+ leser.recoveryAnbinden(recovery);
+ try{configureToolLifecycleAdapters({executor:transport,resources:{acquire:(d,c)=>d.tool_id===LESER_TOOL?leser.ressourcen.acquire(d,c):reverseRessourcen.acquire(d,c),
    release:t=>t.startsWith('reverse-leser:')?leser.ressourcen.release(t):reverseRessourcen.release(t)}});}
  catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
- const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet});
+ const ohneTransportGuard=recovery.register();
+ const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet,recovery});
  // P21-T15: Hex bindet sofort und hält den Knoten frisch, auch ohne Docker/Lebenszyklus und ohne Reverse-Aufträge.
  const hexAnbinden=()=>{void identitaet().catch(e=>console.error('[reverse-executor] Hex-Anbindung fehlgeschlagen:',(e as Error).message));};
  hexAnbinden();const hexTimer=setInterval(hexAnbinden,konfig.tickMs);hexTimer.unref();
@@ -1119,7 +1154,11 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const abmeldenAusfuehrer=meldeReverseAusfuehrer({kinds:konfig.kinds,parallel:konfig.parallel,
   zeitlimits,
   kapazitaet:async()=>{const lc=getToolLifecycle();if(!lc)throw Error('tool_lifecycle_aus');return lc.kapazitaet();},
-  containerNeustart:async(jobId?:string|null)=>{const lc=getToolLifecycle();if(!lc)return {neu_gestartet:false,zustand:'tool_lifecycle_aus'};return lc.neustart(REVERSE_TOOL_ID,REVERSE_PROJEKT,jobId??null);}});
+  containerNeustart:async(jobId,beleg)=>{
+   if(!getToolLifecycle())return {neu_gestartet:false,zustand:'tool_lifecycle_aus'};
+   if(!beleg)return {neu_gestartet:false,zustand:'reverse_generation_beleg_fehlt'};
+   return recovery.requestStop({...beleg,job_id:jobId??beleg.job_id},false,true);
+  }});
  // P18-T86: Betriebswerte je Takt aus reverse_einstellungen (eine Lesestelle); geaenderter Descriptor wird geordnet neu registriert.
  const einstellungenAnwenden=async():Promise<void>=>{
   const s=await leseReverseEinstellwerte({});
@@ -1142,5 +1181,5 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const planen=()=>{if(beendet)return;timer=setTimeout(()=>{run();planen();},konfig.tickMs);timer.unref();};
  planen();
  console.log('[reverse-executor] aktiv: Kinds '+konfig.kinds.join(',')+', parallel '+konfig.parallel);
- return {beende:async()=>{beendet=true;if(timer)clearTimeout(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();await Promise.all([executor.beende(),leser.beende()]);}};
+ return {beende:async()=>{beendet=true;identitaet.beende();if(timer)clearTimeout(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();ohneTransportGuard();await Promise.all([executor.beende(),leser.beende()]);}};
 }
