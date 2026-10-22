@@ -28,7 +28,9 @@ import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getA
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
 import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool-lifecycle.js';
-import {DockerToolContainerExecutor,type ResolvedToolMount} from './tool-container-docker.js';
+import {type ResolvedToolMount} from './tool-container-docker.js';
+import {ReverseContainerTransport,reverseNichtGesendet} from './reverse-container-transport.js';
+import {ReverseContainerRecovery} from './reverse-container-recovery.js';
 import {configureToolLifecycleAdapters,getToolLifecycle} from './tool-lifecycle-runtime.js';
 import {ServerExecutor} from './server-executor.js';
 import {ReverseLeserExecutor,LESER_TOOL} from './reverse-leser-executor.js';
@@ -319,6 +321,7 @@ export async function reverseFormatVorpruefung(dateien:{pfad:string;rolle:string
 export interface ReverseExecutorDeps {
  pool?:Db;konfig:ReverseExecutorKonfig;
  lifecycle:()=>ToolLifecycle|null;
+ recovery?:ReverseContainerRecovery;
  /** Server-Identität (ServerExecutor); null = noch keine registrierte Bootgeneration. */
  identitaet:()=>Promise<WorkIdentity|null>;
  jobs?:WorkJobService;
@@ -453,7 +456,7 @@ export class ReverseExecutor {
    try{await this.policyPruefen(job);freigegeben.push(row);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,this.wer,e.code);}}
   let geweckt=0;
   // P18-T64: der globale Container wird einmal geweckt; nur der alte Descriptor braucht einen Container je Auftrag.
-  for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
+  for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{if(this.deps.recovery&&!await this.deps.recovery.before(REVERSE_TOOL_ID,String(row.id)))continue;await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:this.k.leaseSeconds});
   const wer=this.wer;
   for(const job of claims){
@@ -776,6 +779,9 @@ export class ReverseExecutor {
    if(!alt)await sperreArbeitsOrdner(arbeit);
    if(!lebt)return;
    if(istReversePolicyFehler(err)){await this.policyHalten(job,wer,err.code);return;}
+   if(reverseNichtGesendet(err)){
+    await this.deps.recovery?.releaseNotSent(err,job,wer,this.jobs);return;
+   }
    const m=(err as Error).message;
    if(m==='tool_runner_timeout')aufsicht?.beende('zeitlimit');
    if(m==='reverse_e_storno'||aufsicht?.grund()){await this.eHalten(job,wer,m==='reverse_e_storno'?'storno':aufsicht!.grund()!);return;}
@@ -865,6 +871,9 @@ export class ReverseExecutor {
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
+    if(reverseNichtGesendet(e)){
+     await this.deps.recovery?.releaseNotSent(e,job,wer,this.jobs);return;
+    }
     const m=(e as Error).message;
     // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
@@ -999,6 +1008,9 @@ export class ReverseExecutor {
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
+    if(reverseNichtGesendet(e)){
+     await this.deps.recovery?.releaseNotSent(e,job,wer,this.jobs);return;
+    }
     const m=(e as Error).message;
     // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
@@ -1102,11 +1114,16 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const leser=new ReverseLeserExecutor({reverseRoot:konfig.reverseRoot,image:konfig.image,digest:konfig.digest,resourceDomain:konfig.resourceDomain,
   hostRoot,lifecycle:getToolLifecycle,identitaet});
  const alteMounts=reverseMountResolver(konfig,hostRoot);
- try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:(d,c)=>d.tool_id===LESER_TOOL?leser.mounts(d,c):alteMounts(d,c),
-  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:{acquire:(d,c)=>d.tool_id===LESER_TOOL?leser.ressourcen.acquire(d,c):reverseRessourcen.acquire(d,c),
+ let transport:ReverseContainerTransport;
+ const recovery=new ReverseContainerRecovery({identity:identitaet,ready:b=>transport?.ready(b)??false});
+ transport=new ReverseContainerTransport({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:(d,c)=>d.tool_id===LESER_TOOL?leser.mounts(d,c):alteMounts(d,c),
+  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1',binding:(id,job)=>recovery.binding(id,job),stopSeconds:()=>recovery.stopSeconds()});
+ leser.recoveryAnbinden(recovery);
+ try{configureToolLifecycleAdapters({executor:transport,resources:{acquire:(d,c)=>d.tool_id===LESER_TOOL?leser.ressourcen.acquire(d,c):reverseRessourcen.acquire(d,c),
    release:t=>t.startsWith('reverse-leser:')?leser.ressourcen.release(t):reverseRessourcen.release(t)}});}
  catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
- const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet});
+ const ohneTransportGuard=recovery.register();
+ const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet,recovery});
  // P21-T15: Hex bindet sofort und hält den Knoten frisch, auch ohne Docker/Lebenszyklus und ohne Reverse-Aufträge.
  const hexAnbinden=()=>{void identitaet().catch(e=>console.error('[reverse-executor] Hex-Anbindung fehlgeschlagen:',(e as Error).message));};
  hexAnbinden();const hexTimer=setInterval(hexAnbinden,konfig.tickMs);hexTimer.unref();
@@ -1119,7 +1136,11 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const abmeldenAusfuehrer=meldeReverseAusfuehrer({kinds:konfig.kinds,parallel:konfig.parallel,
   zeitlimits,
   kapazitaet:async()=>{const lc=getToolLifecycle();if(!lc)throw Error('tool_lifecycle_aus');return lc.kapazitaet();},
-  containerNeustart:async(jobId?:string|null)=>{const lc=getToolLifecycle();if(!lc)return {neu_gestartet:false,zustand:'tool_lifecycle_aus'};return lc.neustart(REVERSE_TOOL_ID,REVERSE_PROJEKT,jobId??null);}});
+  containerNeustart:async(jobId,beleg)=>{
+   if(!getToolLifecycle())return {neu_gestartet:false,zustand:'tool_lifecycle_aus'};
+   if(!beleg)return {neu_gestartet:false,zustand:'reverse_generation_beleg_fehlt'};
+   return recovery.requestStop({...beleg,job_id:jobId??beleg.job_id},false,true);
+  }});
  // P18-T86: Betriebswerte je Takt aus reverse_einstellungen (eine Lesestelle); geaenderter Descriptor wird geordnet neu registriert.
  const einstellungenAnwenden=async():Promise<void>=>{
   const s=await leseReverseEinstellwerte({});
@@ -1142,5 +1163,5 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const planen=()=>{if(beendet)return;timer=setTimeout(()=>{run();planen();},konfig.tickMs);timer.unref();};
  planen();
  console.log('[reverse-executor] aktiv: Kinds '+konfig.kinds.join(',')+', parallel '+konfig.parallel);
- return {beende:async()=>{beendet=true;if(timer)clearTimeout(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();await Promise.all([executor.beende(),leser.beende()]);}};
+ return {beende:async()=>{beendet=true;if(timer)clearTimeout(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();ohneTransportGuard();await Promise.all([executor.beende(),leser.beende()]);}};
 }
