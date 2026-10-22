@@ -5,7 +5,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {getPool,createWorkJobService,registerToolDescriptor,setToolActivation,validateToolDescriptor,
- leseReverseLeserSchalter,leseReverseLeserRevision,leseReverseEinstellwerte,reverseZahl,reverseBigInt,
+ materialisiereReverseLeser,leseReverseLeserSchalter,leseReverseLeserRevision,leseReverseEinstellwerte,reverseZahl,reverseBigInt,
  reverseLeserDezimal,reverseLeserPfad,reverseLeserKanonisch,reverseLeserHash,pruefeReverseLeserManifest,reverseLeserSchrittBudget,
  type ReverseLeserRevision,type ReverseLeserManifest,type ReverseEinstellSnapshot,
  type ToolDescriptor,type WorkIdentity,type WorkJob,type WorkJobHooks,type WorkJobPool} from '@synapse/core';
@@ -177,6 +177,7 @@ export interface LeserExecutorKonfig {
 interface Lauf {
  id:string;eintrag_id:string;datei_id:string;quell_sha256:string;generation:string;
  leser_id:string;einstellungen_revision:string;storage_key:string;groesse:string;cursor_key:string|null;status:string;
+ testmodus:boolean;paket_key:string|null;host_validiert:boolean;
 }
 interface Vorbereitet {lauf:Lauf;s:ReverseEinstellSnapshot;r:ReverseLeserRevision;ausgabe:string;key:string;eingabe:string;paket:string;runtime:string}
 export function leserDescriptor(k:LeserExecutorKonfig,s:ReverseEinstellSnapshot):ToolDescriptor{
@@ -214,11 +215,18 @@ export class ReverseLeserExecutor {
    ||job.inputRef.scope!=='reverse'||!await this.aktiv(db))return null;
   const r=await db.query<Lauf>(
    "SELECT l.id::text,l.eintrag_id,l.datei_id::text,l.quell_sha256,l.generation::text,l.leser_id,"+
-   "l.einstellungen_revision,l.cursor_key,l.status,d.storage_key,d.groesse::text "+
+   "l.einstellungen_revision,l.cursor_key,l.status,d.storage_key,d.groesse::text,"+
+   "(l.diagnose->>'testmodus'='true') AS testmodus,l.diagnose->>'paket_key' AS paket_key,"+
+   "(l.diagnose->>'host_validiert'='true') AS host_validiert "+
    "FROM reverse_leser_laeufe l JOIN reverse_dateien d ON d.id=l.datei_id AND d.eintrag_id=l.eintrag_id "+
    "JOIN reverse_eintraege e ON e.id=l.eintrag_id JOIN reverse_leser_zustaende z ON z.leser_id=l.leser_id "+
+   "JOIN reverse_leser r ON r.id=l.leser_id "+
    "WHERE l.work_job_id=$1 AND l.eintrag_id=$2 AND l.datei_id::text=$3 AND l.quell_sha256=$4 "+
-   "AND d.sha256=l.quell_sha256 AND d.storage_key IS NOT NULL AND e.status='bestaetigt' AND z.status='aktiv' "+
+   "AND d.sha256=l.quell_sha256 AND d.storage_key IS NOT NULL AND e.status='bestaetigt' "+
+   "AND (z.status='aktiv' OR (l.diagnose->>'testmodus'='true' "+
+   "AND l.diagnose->>'paket_key'='.intern/leser/'||r.id||'/'||r.paket_sha256)) "+
+   "AND (l.diagnose->>'testmodus' IS DISTINCT FROM 'true' OR "+
+   "EXISTS(SELECT 1 FROM reverse_bindungen b WHERE b.eintrag_id=l.eintrag_id AND b.project=l.diagnose->>'quellprojekt' AND b.geloest_at IS NULL)) "+
    "AND EXISTS(SELECT 1 FROM reverse_schichten es WHERE es.medium_id=d.medium_id AND es.schicht='E' AND es.aktuell AND es.status IN('fertig','teilweise')) "+
    (lock?'FOR SHARE OF l,d,e,z':''),[job.id,job.inputRef.id,job.inputRef.revision,job.inputRef.sha256]);
   return r.rows.length===1&&r.rows[0].status!=='fehler'?r.rows[0]:null;
@@ -228,8 +236,10 @@ export class ReverseLeserExecutor {
   return {
    resourceDomain:n=>this.wer?.nodeId===n?domain(n):undefined,
    authorizeJob:async(n,j,c)=>{
+    const l=await this.lauf(j,c as unknown as Db);
+    const materialisierung=l?.host_validiert&&['fertig','teilweise'].includes(l.status);
     if(!this.s||!this.wer||n.node_id!==this.wer.nodeId||String(n.boot_id)!==this.wer.bootGeneration||n.service_token_hash!==this.wer.authHash
-     ||(j.state==='pending'&&!this.vorbereitet.has(j.id))||!await this.lauf(j,c as unknown as Db)||j.resourceNeed.gpu)return null;
+     ||(j.state==='pending'&&!this.vorbereitet.has(j.id)&&!materialisierung)||!l||j.resourceNeed.gpu)return null;
     const cpu=reverseZahl(this.s,'e_cpu'),ram=reverseZahl(this.s,'e_ram_mib'),parallel=reverseZahl(this.s,'executor_parallel');
     if(j.resourceNeed.cpu!==cpu||j.resourceNeed.ram!==ram||j.resourceNeed.vram!==0)return null;
     return {resourceDomain:domain(n.node_id),maxConcurrent:parallel,budget:{cpu:cpu*parallel,ram:ram*parallel,vram:0,gpu:false}};
@@ -246,10 +256,11 @@ export class ReverseLeserExecutor {
   acquire:async(d,c)=>d.tool_id===LESER_TOOL&&await this.aktiv()?'reverse-leser:'+c.instance_id+':'+c.generation:null,
   release:async()=>{},
  };
- private async paket(r:ReverseLeserRevision,s:ReverseEinstellSnapshot){
-  if(r.status!=='aktiv'||!r.storage_key)fail('leser_revision_inaktiv');
-  if(!r.storage_key.startsWith('.intern/leser/'+r.id+'/'))fail('leser_paket_scope');
-  const root=await leserSichererPfad(this.k.reverseRoot,r.storage_key,s);
+ private async paket(r:ReverseLeserRevision,s:ReverseEinstellSnapshot,testKey:string|null=null){
+  const key=testKey??r.storage_key;
+  if((!testKey&&r.status!=='aktiv')||!key)fail('leser_revision_inaktiv');
+  if(key!=='.intern/leser/'+r.id+'/'+r.paket_sha256)fail('leser_paket_scope');
+  const root=await leserSichererPfad(this.k.reverseRoot,key,s);
   const bestand=await baum(root,s,BigInt(r.manifest.dateien.length),reverseBigInt(s,'leser_paket_bytes'));
   if(bestand.files.size!==r.manifest.dateien.length||r.quelle.dateien.length!==r.manifest.dateien.length)fail('leser_paket_dateien');
   const index=[];
@@ -294,8 +305,8 @@ export class ReverseLeserExecutor {
   if(!l.storage_key.startsWith(l.eintrag_id+'/'))fail('leser_eingabe_scope');
   const eingabe=await leserSichererPfad(this.k.reverseRoot,l.storage_key,s),b=await datei(eingabe,BigInt(l.groesse),s);
   if(b.sha256!==l.quell_sha256||b.bytes!==l.groesse)fail('leser_eingabe_hash');
-  const paket=await this.paket(r,s),runtime=await this.runtime(s);
-  const key=l.eintrag_id+'/.intern/leser/'+l.generation+'/'+job.id+'/'+String(job.attempt);
+  const paket=await this.paket(r,s,l.testmodus?l.paket_key:null),runtime=await this.runtime(s);
+  const key=l.eintrag_id+(l.testmodus?'/.intern/leser-tests/':'/.intern/leser/')+l.generation+'/'+job.id+'/'+String(job.attempt);
   let parent=await leserSichererPfad(this.k.reverseRoot,l.eintrag_id,s);
   for(const part of key.split('/').slice(1)){
    const next=path.join(parent,part);
@@ -344,7 +355,7 @@ export class ReverseLeserExecutor {
    if(!own.rows.length)return;
    // Die immutable Laufbindung verhindert Fremdeintrag-/Dateiabschluss.
    await c.query("UPDATE reverse_leser_laeufe SET status='fehler',fehlercode=$6,diagnose=diagnose||$7::jsonb,ausgabe_bytes=COALESCE($8::bigint,ausgabe_bytes),beendet_at=clock_timestamp() "+
-    "WHERE work_job_id=$1 AND eintrag_id=$2 AND datei_id::text=$3 AND quell_sha256=$4 AND id=$9 AND (status IN('offen','laeuft') OR ($10::boolean AND status IN('fertig','teilweise'))) AND $5::integer>=0",params);
+    "WHERE work_job_id=$1 AND eintrag_id=$2 AND datei_id::text=$3 AND quell_sha256=$4 AND id=$9 AND (status IN('offen','laeuft') OR (($10::boolean OR diagnose->>'host_validiert'='true') AND status IN('fertig','teilweise'))) AND $5::integer>=0",params);
   });
   await this.fehlerFortsetzen(job.id,s);
  }
@@ -370,7 +381,7 @@ export class ReverseLeserExecutor {
   const s=await leseReverseEinstellwerte({eintrag_id:l.eintrag_id},this.pool);
   if(s.letzter_fehler)fail(s.letzter_fehler);
   if(s.revision===l.einstellungen_revision)return;
-  await this.fehlerAbschliessen(job,l.id,s,'konfiguration_veraltet',{
+  await this.fehlerAbschliessen(job,l.id,s,l.host_validiert?'leser_einstellungen_geaendert':'konfiguration_veraltet',{
    physisches_ende:true,keine_neue_ausgabe:true,
    einstellungen_revision_alt:l.einstellungen_revision,einstellungen_revision_aktuell:s.revision,
   },null);
@@ -397,6 +408,12 @@ export class ReverseLeserExecutor {
   const frei=reverseZahl(this.s,'executor_parallel')-this.laufend.size;if(frei<=0)return {gestartet:0};
   const rows=await this.pool.query("SELECT id FROM work_jobs WHERE capability=$1 AND project=$2 AND kind='reverse-leser' AND state='pending' AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY created_at,id LIMIT $3",[LESER_CAPABILITY,PROJEKT,frei]);
   for(const row of rows.rows){
+   const job=await this.jobs.get(String(row.id),PROJEKT),l=job?await this.lauf(job):null;
+   if(l?.host_validiert&&['fertig','teilweise'].includes(l.status)){
+    // Bereits bestätigter Materialisierungspunkt: kein erneuter Sandboxstart.
+    // Veralteten pending-Kopf terminal abschließen; unveränderten Lauf anschließend claimen.
+    await this.veraltetenJobAbschliessen(String(row.id));continue;
+   }
    try{await lc.wake(LESER_TOOL,PROJEKT,String(row.id));}
    catch(e){
     if((e as Error).message!=='leser_einstellungen_veraendert')throw e;
@@ -418,7 +435,27 @@ export class ReverseLeserExecutor {
   if(!r.rows.length||!await this.lauf(job,c,true))fail('leser_job_fenced');
  }
  private async ausfuehren(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob){
-  const v=this.vorbereitet.get(job.id);if(!v)fail('leser_mountbindung_fehlt');
+  const v=this.vorbereitet.get(job.id);
+  if(!v){
+   // Wiederanlauf genau am neuen Materialisierungspunkt: Host-Validierung/physisches Ende
+   // sind bereits bestätigt. Niemals Sandbox/Leser erneut starten oder den Cursor ersetzen.
+   const l=await this.lauf(job);
+   const saved=l?(await this.pool.query("SELECT manifest_sha256,diagnose FROM reverse_leser_laeufe WHERE id=$1 AND status IN('fertig','teilweise') AND diagnose->>'host_validiert'='true'",[l.id])).rows[0]:null;
+   if(!l||!saved)fail('leser_mountbindung_fehlt');
+   const s=await leseReverseEinstellwerte({eintrag_id:l.eintrag_id},this.pool);
+   try{
+    if(s.letzter_fehler)fail(s.letzter_fehler);
+    if(s.revision!==l.einstellungen_revision)fail('leser_einstellungen_geaendert');
+    if(!l.testmodus)await materialisiereReverseLeser(this.pool,{lauf_id:l.id,root:this.k.reverseRoot,fence:c=>this.fence(c,job,wer)});
+    const out={scope:'reverse-leser',id:l.id,revision:l.datei_id,sha256:String(saved.manifest_sha256)};
+    if(!await this.jobs.stage(wer,job.id,job.claimToken!,out)||!(await this.jobs.complete(wer,job.id,job.claimToken!,job.inputRef)).completed)fail('leser_publikation_fenced');
+   }catch(e){
+    const code=(e as Error).message.startsWith('leser_')?(e as Error).message:'leser_materialisierung_fehlgeschlagen';
+    await this.fehlerAbschliessen(job,l.id,s,code,{physisches_ende:true,fortsetzung_materialisierung:true,einstellungen_revision_alt:l.einstellungen_revision,einstellungen_revision_aktuell:s.revision},null,wer);
+    throw e;
+   }
+   return;
+  }
   const {s,lauf:l,r}=v,budget=reverseLeserSchrittBudget(r.manifest,s),token=job.claimToken!;
   let verloren=false,erneuert=false,physischBeendet=false;
   const timer=setInterval(()=>{
@@ -451,10 +488,13 @@ export class ReverseLeserExecutor {
     await c.query('BEGIN');await this.fence(c,job,wer);
     const params=[l.id,l.eintrag_id,job.id,result.status,v.key+'/'+PROTOKOLL,result.manifest.sha256,result.objekte,result.bytes,result.offen,result.grund,result.cursor];
     if(BigInt(Buffer.byteLength(JSON.stringify(params)))>reverseBigInt(s,'materialisierung_tx_bytes'))fail('leser_checkpoint_tx_zu_gross');
-    const upd=await c.query("UPDATE reverse_leser_laeufe SET status=$4,manifest_key=$5,manifest_sha256=$6,ausgabe_anzahl=$7::bigint,ausgabe_bytes=$8::bigint,offen=$9::bigint,fehlercode=$10,cursor_key=NULL,diagnose=jsonb_build_object('cursor',$11::text,'host_validiert',true),beendet_at=clock_timestamp() WHERE id=$1 AND eintrag_id=$2 AND work_job_id=$3 AND status IN('offen','laeuft')",params);
+    const upd=await c.query("UPDATE reverse_leser_laeufe SET status=$4,manifest_key=$5,manifest_sha256=$6,ausgabe_anzahl=$7::bigint,ausgabe_bytes=$8::bigint,offen=$9::bigint,fehlercode=$10,cursor_key=NULL,diagnose=diagnose||jsonb_build_object('cursor',$11::text,'host_validiert',true),beendet_at=clock_timestamp() WHERE id=$1 AND eintrag_id=$2 AND work_job_id=$3 AND status IN('offen','laeuft')",params);
     if(upd.rowCount!==1)fail('leser_generation_bereits_abgeschlossen');
     await c.query('COMMIT');
    }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+   if(!l.testmodus)await materialisiereReverseLeser(this.pool,{
+    lauf_id:l.id,root:this.k.reverseRoot,fence:c=>this.fence(c,job,wer),
+   });
    const out={scope:'reverse-leser',id:l.id,revision:l.datei_id,sha256:result.manifest.sha256};
    if(!await this.jobs.stage(wer,job.id,token,out)||!(await this.jobs.complete(wer,job.id,token,job.inputRef)).completed)fail('leser_publikation_fenced');
   }catch(e){

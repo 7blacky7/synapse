@@ -58,6 +58,15 @@ export {ReverseEingang,reverseEingang} from './services/reverse-eingang.js';
 export type {ReverseAbmeldung} from './services/reverse-eingang.js';
 export type {ReverseFundDatei,ReverseGruppenDatei,ReverseMediumVorschlag,ReverseGruppenvorschlag} from './services/reverse-gruppierung.js';
 export {reverseGruppieren,reverseOrdnerFingerabdruck,reverseArchivMagic} from './services/reverse-gruppierung.js';
+// P18-T40/T42 Teil A: nur Vertrag und Registry-Persistenz; keine Leser-Ausführung/Tool-Aktionen.
+export {REVERSE_LESER_SCHNITTSTELLE,REVERSE_LESER_TYPEN,ReverseLeserFehler,pruefeReverseLeserManifest,reverseLeserSchrittBudget,reverseLeserKanonisch,reverseLeserHash,reverseLeserPfad,reverseLeserDezimal} from './services/reverse-leser-vertrag.js';
+export type {ReverseLeserManifest,ReverseLeserQuelle,ReverseLeserQuellbeleg,ReverseLeserEingabe,ReverseLeserEreignis,ReverseLeserObjektTyp} from './services/reverse-leser-vertrag.js';
+export {registriereReverseLeserEntwurf,leseReverseLeserRevision,listeReverseLeserRevisionen,leseReverseLeserSchalter} from './services/reverse-leser-registry.js';
+export type {ReverseLeserDb,ReverseLeserRevision} from './services/reverse-leser-registry.js';
+export {REVERSE_LESER_SCHEMA_SQL} from './db/reverse-leser-schema.js';
+export {LESER_ACTIONS,LESER_PARAMETER,LESER_FELDER,fuehreReverseLeserAus,pruefeReverseLeserVerwalter} from './services/reverse-leser-tool.js';
+export {materialisiereReverseLeser,stelleReverseLeserPaketBereit,reverseLeserDateipfad,pruefeReverseLeserDatei,reverseLeserTxBudget} from './services/reverse-leser-materialisierung.js';
+export type {ReverseLeserMaterialisierung} from './services/reverse-leser-materialisierung.js';
 // P18-T19/RV9: eine Reverse-Definition, der Dispatcher läuft serverseitig.
 export { REVERSE_DEFINITION, REVERSE_ACTIONS, REVERSE_FEHLERCODES, REVERSE_NULL_FELDER, REVERSE_AKTIVITAET_DESCRIPTOR, ReverseFehler, baueReverseAntwort, pruefeReversePfad, pruefeReverseBindung, createReverseToolService, fuehreReverseAus, configureReverseRuntime } from './services/reverse-tool.js';
 export type { ReverseAction, ReverseFehlercode, ReverseContainerInfo, ReverseAnalyseAnfrage, ReverseRuntime, ReverseToolDependencies } from './services/reverse-tool.js';

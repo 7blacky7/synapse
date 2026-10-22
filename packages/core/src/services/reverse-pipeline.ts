@@ -395,7 +395,7 @@ export class ReversePipelineDienst{
     r.metadata.architektur??d.arch,typeof r.metadata.bits==='number'?r.metadata.bits:d.bits,
     r.asset_type==='archive'?'archiv':r.asset_type==='executable'?'binaer':unbekannt?d.art:'asset',JSON.stringify(ergaenzung),payload.status]);
   if(j.schicht==='S1'){
-   await db.query('DELETE FROM reverse_objekte WHERE datei_id=$1',[d.id]);
+   await db.query("DELETE FROM reverse_objekte WHERE datei_id=$1 AND data->>'ursprung' IS DISTINCT FROM 'leser'",[d.id]);
    await db.query("DELETE FROM reverse_verweise WHERE datei_id=$1 AND ursprung='analyse'",[d.id]);
    for(const [i,o] of r.objects.entries()){
     const range=o.source_range;

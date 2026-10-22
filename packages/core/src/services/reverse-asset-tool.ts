@@ -22,6 +22,8 @@ function maske(v:unknown):unknown {
 /** Autorisierung und Projektbindung übernimmt der Dispatcher vor jeglicher Asset-Abfrage. */
 export async function fuehreReverseAssetAus(a:Row,pool:Pool):Promise<Row> {
   const rid=String(a.reverse_id);
+  const {reverseLeserLesepool}=await import('./reverse-leser-lesesicht.js');
+  pool=await reverseLeserLesepool(pool,a.action==='inspect');
   // P18-T86: Antwort-, Seiten- und Zeitgrenzen aus reverse_einstellungen des lesenden Projekts (eine Lesestelle).
   const s=await leseReverseEinstellwerte({project:typeof a.project==='string'?a.project:null});
   const budget=reverseZahl(s,'antwort_bytes'),pfadMax=reverseZahl(s,'max_pfad_zeichen');

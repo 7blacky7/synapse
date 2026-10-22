@@ -28,7 +28,10 @@ import { vorhandeneZielfelder, zielinhaltHerkunft } from './zielinhalt.js';
 
 import {ERKENNTNIS_ACTIONS,ERKENNTNIS_PARAMETER,ERKENNTNIS_FELDER,fuehreErkenntnisAus,ErkenntnisFehler} from './reverse-erkenntnisse.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...ERKENNTNIS_ACTIONS,...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
+import {LESER_ACTIONS,LESER_PARAMETER,LESER_FELDER,fuehreReverseLeserAus} from './reverse-leser-tool.js';
+import {ReverseLeserFehler} from './reverse-leser-vertrag.js';
+
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...ERKENNTNIS_ACTIONS,...LESER_ACTIONS,...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -47,7 +50,7 @@ const TEXTE: Record<ReverseFehlercode,string> = {
 };
 const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: verknuepfungen(datei|gruppe|funktion) ordnet Stringreferenzen an Dateien zu, nennt Funktionen und rückwärtige Aufrufer (Produkt reverse_verknuepfungen, Standard AUS); gruppe z.B. GFX oder .dat; struktur ergänzt geladen_von. vergleichen(datei_a,datei_b) vergleicht S3-Funktionen mit Unsicherheitskennzeichnung und Paging; funktion = Symbol-ID für Diff. tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: verknuepfungen(datei|gruppe|funktion) ordnet Stringreferenzen an Dateien zu, nennt Funktionen und rückwärtige Aufrufer (Produkt reverse_verknuepfungen, Standard AUS); gruppe z.B. GFX oder .dat; struktur ergänzt geladen_von. vergleichen(datei_a,datei_b) vergleicht S3-Funktionen mit Unsicherheitskennzeichnung und Paging; funktion = Symbol-ID für Diff. tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Leser: leser_liste/get lesen registrierte Versionen; leser_registrieren pinnt files-Versionen, leser_testen führt isolierte Tests ohne Publikation aus (reverse_leser EIN); leser_aktivieren/deaktivieren nur Verwaltung; leser_nachziehen bereitet ausschließlich vor. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -74,6 +77,7 @@ export const REVERSE_DEFINITION = {
     ziel_pfad:{type:'string',description:'Projektpfad 1:1; Übernahme ausschließlich von Assets'},ueberschreiben:{type:'boolean',default:false},
     ...ANSICHT_SCHEMA_PROPERTIES,
     ...ERKENNTNIS_PARAMETER,
+    ...LESER_PARAMETER,
   },required:['action','agent_id']},
   outputSchema:{type:'object',properties:{
     success:{type:'boolean'},reverse_id:{type:['string','null']},datei:{type:['string','null']},
@@ -86,6 +90,7 @@ export const REVERSE_DEFINITION = {
 } as const;
 const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   ...ERKENNTNIS_FELDER,
+  ...LESER_FELDER,
   liste:['status','tag','query','limit','offset'],vorschlaege:['tag','query','limit','offset'],
   eintrag:['reverse_id'],bestaetigen:['reverse_id','titel','medien','zusammenfuehren_mit','aufteilen'],
   archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
@@ -441,6 +446,10 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
   }
   async function execute(a:Row,action:ReverseAction,ein:ReverseEinstellSnapshot):Promise<Row> {
     const pfadMax=reverseZahl(ein,'max_pfad_zeichen');
+    if((LESER_ACTIONS as readonly string[]).includes(action)){
+      await projektRecht(pool,a);
+      const data=await fuehreReverseLeserAus(pool,a);await tx(db=>activity(db,a));return data;
+    }
     if((ERKENNTNIS_ACTIONS as readonly string[]).includes(action)){
       await projektRecht(pool,a);
       const data=await fuehreErkenntnisAus(pool,a);await tx(db=>activity(db,a));return data;
@@ -669,6 +678,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       }
       return setzeMcpBilder(antwort,trenneMcpBilder(data).bilder);
     }catch(e){
+      if(e instanceof ReverseLeserFehler)return baueReverseAntwort(a,{},['nicht_gefunden','nicht_gebunden','keine_berechtigung'].includes(e.code)?e.code as ReverseFehlercode:'werkzeug_fehler',e.code);
       if(e instanceof ErkenntnisFehler)return baueReverseAntwort(a,{...e.extra,erkenntnis_fehler:e.kennung},e.kennung==='nicht_gebunden'?'nicht_gebunden':e.kennung==='keine_berechtigung'?'keine_berechtigung':e.kennung==='nicht_gefunden'?'nicht_gefunden':'werkzeug_fehler',e.kennung);
       if(e instanceof ReverseFehler||e instanceof ReverseCodeFehler||e instanceof ReverseAssetFehler||e instanceof ReverseUebernahmeFehler)return baueReverseAntwort(a,e.extra,e.code,e.detail);
       const code=(e as {code?:string})?.code;
