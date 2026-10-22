@@ -30,6 +30,7 @@ import {ERKENNTNIS_ACTIONS,ERKENNTNIS_PARAMETER,ERKENNTNIS_FELDER,fuehreErkenntn
 
 import {LESER_ACTIONS,LESER_PARAMETER,LESER_FELDER,fuehreReverseLeserAus} from './reverse-leser-tool.js';
 import {ReverseLeserFehler} from './reverse-leser-vertrag.js';
+import {ergaenzeReverseLeserHinweisKontext} from './reverse-leser-hinweis.js';
 
 export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...ERKENNTNIS_ACTIONS,...LESER_ACTIONS,...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
@@ -676,6 +677,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         }
         if(Buffer.byteLength(JSON.stringify(antwort))>max)fail('zu_gross','antwort_bytes zu klein für Antwortkontext');
       }
+      antwort=await ergaenzeReverseLeserHinweisKontext(pool,a,antwort).catch(()=>antwort);
       return setzeMcpBilder(antwort,trenneMcpBilder(data).bilder);
     }catch(e){
       if(e instanceof ReverseLeserFehler)return baueReverseAntwort(a,{},['nicht_gefunden','nicht_gebunden','keine_berechtigung'].includes(e.code)?e.code as ReverseFehlercode:'werkzeug_fehler',e.code);
