@@ -1,0 +1,27 @@
+{
+  "schnittstelle_version": 1,
+  "name": "quake-pak",
+  "version": "1.0.0",
+  "runtime": "python3",
+  "entrypoint": "leser.py",
+  "dateien": [
+    "leser.py"
+  ],
+  "erkennung": {
+    "magic": [
+      {
+        "offset": "0",
+        "hex": "5041434b"
+      }
+    ],
+    "endungen": [
+      ".pak"
+    ],
+    "min_bytes": "12",
+    "max_bytes": null
+  },
+  "ausgabetypen": [
+    "struktur",
+    "binaer"
+  ]
+}
