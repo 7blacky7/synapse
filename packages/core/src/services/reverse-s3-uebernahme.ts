@@ -14,6 +14,7 @@
  *   EXTERNAL-space offsets are labelled imports and never linked to a RAM symbol by numeric coincidence.
  * - Idempotent je Auftrag (ausgabe_key); läuft im Client des Aufrufers (Executor: unter dem Lease-Fence).
  */
+import {pruefeReversePolicyAuftrag} from './reverse-analyse-policy.js';
 import {createHash} from 'node:crypto';
 import {constants,promises as fs} from 'node:fs';
 import path from 'node:path';
@@ -39,6 +40,8 @@ export interface ReverseS3UebernahmeOptionen {
   maxPgBytes?:number;
   /** Reimport retained manifest after a budget increase; never invokes Ghidra. */
   nachzug?:boolean;
+  /** Current explicit request authorizing a retained artifact import. */
+  policyAuftragId?:string;
   budgetProjekt?:string;
 }
 export interface ReverseS3Ergebnis {status:'fertig'|'teilweise';funktionen:number;dekompiliert:number;gespeichert:number;verworfen:number}
@@ -109,6 +112,7 @@ export const uebernehmeS3Ergebnis=Object.assign(async function uebernehmeS3Ergeb
   if(!Array.isArray(e.manifest))fehler('parameter_ungueltig','Manifest fehlt.');
   const cfg=o.konfiguration??getAssetKonfiguration();
   const job=e.jobId.toLowerCase(),rid=e.reverseId,did=e.dateiId,key=reverseS3AusgabeKey(rid,did,job);
+  await pruefeReversePolicyAuftrag(db,o.policyAuftragId??job,rid,'S3',did);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-s3-budget:'+rid]);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-s3-uebernahme:'+did]);
   const datei=(await db.query('SELECT id::text AS id,pfad,sha256,metadaten FROM reverse_dateien WHERE id=$1::bigint AND eintrag_id=$2',[did,rid])).rows[0];
@@ -378,6 +382,7 @@ async function starteReverseS3Bloecke(pool:Db,e:S3Eingang,o:ReverseS3UebernahmeO
  return {
   async bereit(){while(!queue.length&&!fertig)await new Promise<void>(r=>{signal=r;});if(fehler)throw fehler;return !!queue.length||pubStart;},
   async schritt(c){
+   await pruefeReversePolicyAuftrag(c,o.policyAuftragId??e.jobId,e.reverseId,'S3',e.dateiId);
    block++;let bytes=0,rows=0;
    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-s3-budget:'+e.reverseId]);
    const d=(await c.query('SELECT sha256 FROM reverse_dateien WHERE eintrag_id=$1 AND id=$2::bigint FOR SHARE',[e.reverseId,e.dateiId])).rows[0];

@@ -8,6 +8,7 @@
  *   veroeffentlicheS1Generation tauscht alt gegen neu mengenbasiert in der Abschluss-TX (kein Node-RAM proportional zur Gesamtmenge).
  * - Manuelle Erkenntnisse (reverse_verweise.ursprung<>'analyse') werden nie gelöscht. Keine Originalbytes in PG.
  */
+import {pruefeReversePolicyAuftrag} from './reverse-analyse-policy.js';
 import type {Pool,PoolClient} from 'pg';
 import {leseReverseParserSchalter} from './reverse-parser-adapter.js';
 export {materialisiereReverseParser as materialisiereParserS1InBloecken} from './reverse-parser-adapter.js';
@@ -39,6 +40,7 @@ async function tx<T>(pool:Pool,fn:(db:PoolClient)=>Promise<T>):Promise<T>{
 async function beginne(pool:Pool,a:ReverseS1BlockAuftrag):Promise<ReverseS1Checkpoint>{
  const st=reverseS1Staging(a.auftragId);
  return tx(pool,async db=>{
+  await pruefeReversePolicyAuftrag(db,a.auftragId,a.reverseId,'S1',a.dateiId);
   const r=(await db.query("SELECT uebernahme->'s1' AS s1 FROM reverse_auftraege WHERE id=$1 AND lease_token=$2 AND status='laeuft' AND lease_bis>clock_timestamp() FOR UPDATE",[a.auftragId,a.leaseToken])).rows[0];
   if(!r)throw new Error('reverse_s1_lease_verloren');
   const alt=r.s1 as ReverseS1Checkpoint|null;
@@ -54,6 +56,7 @@ async function beginne(pool:Pool,a:ReverseS1BlockAuftrag):Promise<ReverseS1Check
 async function schreibeBlock(pool:Pool,a:ReverseS1BlockAuftrag,dateien:NormalDatei[],cp:ReverseS1Checkpoint,importeNeu:boolean):Promise<void>{
  const st=reverseS1Staging(a.auftragId);
  await tx(pool,async db=>{
+  await pruefeReversePolicyAuftrag(db,a.auftragId,a.reverseId,'S1',a.dateiId);
   if((await leseReverseParserSchalter(db)).aktiv)throw Error('reverse_parser_alter_stringblock_gesperrt');
   const l=await db.query("UPDATE reverse_auftraege SET lease_bis=clock_timestamp()+$3::double precision*interval '1 millisecond',versuch=LEAST(versuch,1),updated_at=clock_timestamp(),"+
    "uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('s1',$4::jsonb) WHERE id=$1 AND lease_token=$2 AND status='laeuft' AND lease_bis>clock_timestamp()"+
@@ -141,6 +144,7 @@ export async function materialisiereS1InBloecken(pool:Pool,q:ReverseS1Quelle,a:R
  * Dateikandidaten mengenbasiert aus den veröffentlichten Strings. Wirft, wenn die Generation nicht vollständig bestätigt ist.
  */
 export async function veroeffentlicheS1Generation(db:PoolClient,v:{auftragId:string;reverseId:string;dateiId:string;fingerabdruck:string;ordnungAb:number}):Promise<{symbole:string;dateien:string}>{
+ await pruefeReversePolicyAuftrag(db,v.auftragId,v.reverseId,'S1',v.dateiId);
  if((await leseReverseParserSchalter(db)).aktiv)throw Error('reverse_parser_alte_publikation_gesperrt');
  const st=reverseS1Staging(v.auftragId);
  const cp=(await db.query("SELECT uebernahme->'s1' AS s1 FROM reverse_auftraege WHERE id=$1 FOR UPDATE",[v.auftragId])).rows[0]?.s1 as ReverseS1Checkpoint|undefined;

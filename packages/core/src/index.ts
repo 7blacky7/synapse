@@ -67,6 +67,7 @@ export {leseReverseLeserNachzugSchalter} from './services/reverse-leser-registry
 export {reverseLeserEintragAktiv,reverseLeserNachziehen,planeReverseLeserNachzug,reverseLeserNachzugFreigegeben,reverseLeserProjektarbeitVorrang,meldeReverseLeserKandidat} from './services/reverse-leser-nachzug.js';
 export {REVERSE_LESER_SCHEMA_SQL} from './db/reverse-leser-schema.js';
 export {REVERSE_LESER_RUNTIME_SCHEMA_SQL} from './db/reverse-leser-runtime-schema.js';
+export {ReversePolicyFehler,istReversePolicyFehler,sperreReversePolicy,bereiteReversePolicyPin,pruefeReversePolicyAuftrag,halteReversePolicyAuftrag,reversePolicyMinimum} from './services/reverse-analyse-policy.js';
 export {LESER_RUNTIME_DATEIEN,LESER_RUNTIME_VERTRAG,pruefeLeserRuntimeImage,pruefeLeserRuntimePin,pruefeLeserRuntimeIndex,pruefeLeserRuntimeQuelle,leserRuntimePin} from './services/reverse-leser-runtime-vertrag.js';
 export type {LeserRuntimeImage,LeserRuntimeIndex,LeserRuntimeQuelle,LeserRuntimePin} from './services/reverse-leser-runtime-vertrag.js';
 export {LESER_RUNTIME_ACTIONS,LESER_RUNTIME_PARAMETER,LESER_RUNTIME_FELDER,fuehreLeserRuntimeAus} from './services/reverse-leser-runtime-tool.js';

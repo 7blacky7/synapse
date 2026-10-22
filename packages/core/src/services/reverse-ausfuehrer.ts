@@ -88,7 +88,7 @@ const DETERMINISTISCH = new Set(['nicht_unterstuetzt', 'format_nicht_unterstuetz
   // P18-T66: z. B. keine_berechtigung:eingabe_rechte (API darf Eingaberechte nicht setzen) scheitert bis zur Korrektur identisch.
   'keine_berechtigung',
   // P18-T87: Frist erreicht (Runner bzw. harte Executor-Frist): ein automatischer Neuversuch liefe wieder bis zum Limit.
-  'zeitlimit']);
+  'zeitlimit','policy_pin_fehlt','policy_geaendert','policy_grenze','policy_nicht_lesbar']);
 
 /** 'format_nicht_unterstuetzt:clonecd' -> {code:'format_nicht_unterstuetzt', detail:'clonecd'}. */
 export function zerlegeReverseFehlercode(roh: unknown): { code: string | null; detail: string | null } {

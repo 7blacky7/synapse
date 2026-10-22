@@ -11,6 +11,7 @@
  * lifecycle.execute {kommando:'extrahieren'} -> uebernehmeEErgebnis unter Lease-Fence -> stage -> complete.
  * Alles aus, solange SYNAPSE_REVERSE_ENABLED nicht '1' ist.
  */
+import {sperreReversePolicy,pruefeReversePolicyAuftrag,halteReversePolicyAuftrag,istReversePolicyFehler} from '@synapse/core';
 import {createHash} from 'node:crypto';
 import {mkdir,chmod,chown,rm,readdir,open,lstat} from 'node:fs/promises';
 import path from 'node:path';
@@ -447,9 +448,12 @@ export class ReverseExecutor {
   const offen=(await this.pool.query(`SELECT id FROM work_jobs WHERE capability=$1 AND project=$2 AND kind=ANY($3::text[])
    AND state='pending' AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY created_at,id LIMIT $4`,
    [REVERSE_CAPABILITY,REVERSE_PROJEKT,this.k.kinds,frei])).rows;
+  const freigegeben:typeof offen=[];
+  for(const row of offen){const job=await this.jobs.get(String(row.id),REVERSE_PROJEKT);if(!job)continue;
+   try{await this.policyPruefen(job);freigegeben.push(row);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,this.wer,e.code);}}
   let geweckt=0;
   // P18-T64: der globale Container wird einmal geweckt; nur der alte Descriptor braucht einen Container je Auftrag.
-  for(const row of this.altScope?offen:offen.slice(0,1)){try{await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
+  for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:this.k.leaseSeconds});
   const wer=this.wer;
   for(const job of claims){
@@ -474,6 +478,8 @@ export class ReverseExecutor {
   // S3 bleibt in beiden bisherigen Abfragen und im Aufräumpfad unverändert.
   const eRest=(await this.pool.query("SELECT DISTINCT p20_auftrag_id::text AS id FROM reverse_auftraege WHERE p20_auftrag_id=ANY($1::uuid[]) AND schicht='E' AND (uebernahme->>'e_abgeschlossen' IS DISTINCT FROM 'true' OR uebernahme->>'retention'='true' OR uebernahme->'rueckhalt' IS NOT NULL OR uebernahme->>'cursor_unbestaetigt'='true')",[namen])).rows;
   for(const row of eRest)behalten.add(String(row.id).toLowerCase());
+  const policyRest=(await this.pool.query("SELECT DISTINCT p20_auftrag_id::text AS id FROM reverse_auftraege WHERE p20_auftrag_id=ANY($1::uuid[]) AND (policy_pin IS NULL OR fehlercode LIKE 'policy_%')",[namen])).rows;
+  for(const row of policyRest)behalten.add(String(row.id).toLowerCase());
   let n=0;
   for(const name of namen){
    if(behalten.has(name.toLowerCase())){if(!this.altScope)await sperreArbeitsOrdner(path.join(this.k.arbeitRoot,name));continue;}
@@ -484,6 +490,40 @@ export class ReverseExecutor {
  }
  /** Wartet auf laufende Aufträge (Tests, geordnetes Herunterfahren). */
  async leerlauf():Promise<void>{await Promise.allSettled([...this.laufend.values()]);}
+ /** P18-T104: policy checks are read-only, on the caller's transaction when supplied. */
+ private async policyPruefen(job:WorkJob,c?:Pick<WorkJobClient,'query'>):Promise<void>{
+  if(c){await pruefeReversePolicyAuftrag(c,job.id,job.inputRef.id,job.kind==='reverse-S3'?'S3':'E');return;}
+  const db=await this.pool.connect();
+  try{await db.query('BEGIN');await this.policyPruefen(job,db);await db.query('COMMIT');}
+  catch(e){await db.query('ROLLBACK').catch(()=>undefined);throw e;}finally{db.release();}
+ }
+ /** One Reverse metadata row per TX, then the existing constant P20 status/audit pair. No file cleanup. */
+ private async policyHalten(job:WorkJob,wer:WorkIdentity,code:'policy_pin_fehlt'|'policy_geaendert'|'policy_grenze'|'policy_nicht_lesbar'):Promise<void>{
+  const fence=async(c:Pick<WorkJobClient,'query'>)=>{
+   await sperreReversePolicy(c,job.inputRef.id,true);
+   const r=await c.query("SELECT 1 FROM work_jobs WHERE id=$1 AND capability=$2 AND project=$3 AND (state='pending' OR state IN ('leased','staged') AND claim_token=$4 AND owner_node=$5 AND boot_generation=$6::uuid AND owner_auth_hash=$7 AND lease_until>clock_timestamp()) FOR UPDATE",
+    [job.id,REVERSE_CAPABILITY,REVERSE_PROJEKT,job.claimToken??null,wer.nodeId,wer.bootGeneration,wer.authHash]);
+   return r.rows.length>0;
+  };
+  for(;;){
+   const c=await this.pool.connect();
+   try{
+    await c.query('BEGIN');if(!await fence(c)){await c.query('ROLLBACK');return;}
+    const r=(await c.query("SELECT id::text FROM reverse_auftraege WHERE p20_auftrag_id=$1 AND eintrag_id=$2 AND status IN ('offen','wartet','laeuft','fehler') AND (status<>'fehler' OR fehlercode IS DISTINCT FROM $3) ORDER BY id LIMIT 1 FOR UPDATE",[job.id,job.inputRef.id,code])).rows[0];
+    if(!r){await c.query('COMMIT');break;}
+    await halteReversePolicyAuftrag(c,String(r.id),job.inputRef.id,code);
+    await c.query('COMMIT');
+   }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}finally{c.release();}
+  }
+  const c=await this.pool.connect();
+  try{
+   await c.query('BEGIN');if(!await fence(c)){await c.query('ROLLBACK');return;}
+   // P20 control exception: constant two rows per job, never per source file or import block.
+   await c.query("UPDATE work_jobs SET state='failed',error_code=$2,lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1",[job.id,code]);
+   await c.query("INSERT INTO work_job_audit(id,job_id,event,detail) VALUES(gen_random_uuid(),$1,'failed',$2::jsonb)",[job.id,JSON.stringify({fehlercode:code,executor:'reverse',retention:true})]);
+   await c.query('COMMIT');
+  }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}finally{c.release();}
+ }
  private async leaseLebt(c:Pick<WorkJobClient,'query'>,job:WorkJob,wer:WorkIdentity,sperren:boolean):Promise<boolean>{
   const r=await c.query(`SELECT 1 FROM work_jobs WHERE id=$1 AND claim_token=$2 AND owner_node=$3 AND boot_generation=$4::uuid AND owner_auth_hash=$5
    AND state='leased' AND lease_until>clock_timestamp() AND (deadline IS NULL OR deadline>clock_timestamp())${sperren?' FOR UPDATE':''}`,
@@ -497,6 +537,7 @@ export class ReverseExecutor {
   let r:Awaited<ReturnType<typeof uebernehmeEErgebnis>>;
   try{
    await c.query('BEGIN');
+   await this.policyPruefen(job,c);
    if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return null;}
    r=await (this.deps.uebernahme??uebernehmeEErgebnis)({query:c.query.bind(c)},e,this.deps.uebernahmeOptionen);
    await c.query('COMMIT');
@@ -506,7 +547,7 @@ export class ReverseExecutor {
   if(wert.rueckhalt||ende?.status==='teilweise'){
    const {eAbschluss,eCheckpoint}=await import('@synapse/core');
    const einstellungen=await leseReverseEinstellwerte({eintrag_id:e.reverseId},this.pool);
-   const kontext={...e,einstellungen,pruefeLease:(db:import('pg').PoolClient)=>this.leaseLebt(db,job,wer,true)};
+   const kontext={...e,einstellungen,pruefeLease:async(db:import('pg').PoolClient)=>{await this.policyPruefen(job,db);return this.leaseLebt(db,job,wer,true);}};
    // Jede Phase trägt ihren Lease-Fence; ein Crash lässt den FS-Beleg bzw. den abgeschlossenen Import bestehen.
    if(wert.rueckhalt)await eCheckpoint(this.pool as Pool,kontext,{retention:true,fortsetzung_gesperrt:true,rueckhalt:wert.rueckhalt});
    await eAbschluss(this.pool as Pool,kontext,{dateien:String(r.dateien),abgewiesen:String(r.verworfen),
@@ -608,7 +649,7 @@ export class ReverseExecutor {
  private async eHalten(job:WorkJob,wer:WorkIdentity,grund:string,extra:Record<string,unknown>={}):Promise<void>{
   const {eAbschluss,eCheckpoint,eFachauftrag,eRetentionsJournal,eRueckhaltBeleg,eMutation}=await import('@synapse/core');
   const einstellungen=await leseReverseEinstellwerte({eintrag_id:job.inputRef.id},this.pool);
-  const e={jobId:job.id,reverseId:job.inputRef.id,mediumId:job.inputRef.revision,einstellungen,pruefeLease:(c:import('pg').PoolClient)=>this.leaseLebt(c,job,wer,true)};
+  const e={jobId:job.id,reverseId:job.inputRef.id,mediumId:job.inputRef.revision,einstellungen,pruefeLease:async(c:import('pg').PoolClient)=>{await this.policyPruefen(job,c);return this.leaseLebt(c,job,wer,true);}};
   const arbeit=path.join(this.k.arbeitRoot,job.id),ausgabe=this.altScope?path.join(arbeit,job.id):arbeit;
   let rueckhalt:Record<string,unknown>;
   try{
@@ -654,7 +695,7 @@ export class ReverseExecutor {
    await this.eHalten(job,wer,'konfiguration_veraltet');return;
   }
   const e={jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,einstellungen:einst,
-   pruefeLease:(c:import('pg').PoolClient)=>this.leaseLebt(c,job,wer,true)};
+   pruefeLease:async(c:import('pg').PoolClient)=>{await this.policyPruefen(job,c);return this.leaseLebt(c,job,wer,true);}};
   const failed=Number(cp.fehlversuche??0),retryMax=reverseZahl(einst,'retry_max'),start=String(cp.position??'0');
   if(cp.fortsetzung_gesperrt||cp.retention){await this.eHalten(job,wer,String(cp.letzter_fehler??'fortsetzung_gesperrt'));return;}
   if(failed>=retryMax){await this.eHalten(job,wer,'retry_erschoepft');return;}
@@ -673,7 +714,7 @@ export class ReverseExecutor {
     const aufs=await leseReverseAufsicht();
     aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,aufs.hart_puffer_s.wert));
     const [pe,siedler,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
-    const ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({
+    const ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.policyPruefen(job);return ({
      kommando:'extrahieren',schicht:'E',blockuebernahme:true,einstellungen:einst,
      fortsetzung:{bindung:{job_id:job.id,eintrag_id:quelle.reverseId,medium_id:quelle.mediumId,quellhash:job.inputRef.sha256,
       werkzeug:f.werkzeug,werkzeug_version:f.werkzeug_version,profil_version:f.profil_version},
@@ -683,7 +724,7 @@ export class ReverseExecutor {
      eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:pe.aktiv,pe_ressourcen_stand:pe,siedler3:siedler.aktiv,siedler3_stand:siedler},
-    }),live?.melde);
+    });},live?.melde);
     if(!alt)await sperreArbeitsOrdner(arbeit);
     aufsicht.ende();
     if(!lebt)return;
@@ -734,6 +775,7 @@ export class ReverseExecutor {
   }catch(err){
    if(!alt)await sperreArbeitsOrdner(arbeit);
    if(!lebt)return;
+   if(istReversePolicyFehler(err)){await this.policyHalten(job,wer,err.code);return;}
    const m=(err as Error).message;
    if(m==='tool_runner_timeout')aufsicht?.beende('zeitlimit');
    if(m==='reverse_e_storno'||aufsicht?.grund()){await this.eHalten(job,wer,m==='reverse_e_storno'?'storno':aufsicht!.grund()!);return;}
@@ -755,7 +797,7 @@ export class ReverseExecutor {
   const {eAbschluss,eMutation}=await import('@synapse/core');
   const einstellungen=await leseReverseEinstellwerte({eintrag_id:job.inputRef.id},this.pool);
   const e={jobId:job.id,reverseId:job.inputRef.id,mediumId:job.inputRef.revision,einstellungen,
-   pruefeLease:(c:import('pg').PoolClient)=>this.leaseLebt(c,job,wer,true)};
+   pruefeLease:async(c:import('pg').PoolClient)=>{await this.policyPruefen(job,c);return this.leaseLebt(c,job,wer,true);}};
   await eAbschluss(this.pool as Pool,e,{dateien:'0',abgewiesen:'0',offen:'0',grund:code,fertig:false,status:'fehler'});
   await eMutation(this.pool as Pool,e,"INSERT INTO work_job_audit(id,job_id,event,detail) SELECT gen_random_uuid(),$1,'failed',$2::jsonb WHERE NOT EXISTS(SELECT 1 FROM work_job_audit WHERE job_id=$1 AND event='failed' AND detail->>'versuch'=$3)",
    [job.id,JSON.stringify({fehlercode:code,executor:'reverse',versuch:String(job.attempt)}),String(job.attempt)]);
@@ -763,10 +805,14 @@ export class ReverseExecutor {
  }
 
  private async fuehreAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
+  try{await this.fuehreAusMitPolicy(lc,wer,job);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,wer,e.code);}
+ }
+ private async fuehreAusMitPolicy(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
   const token=job.claimToken!;
   if(job.capability!==REVERSE_CAPABILITY||job.project!==REVERSE_PROJEKT||!this.k.kinds.includes(job.kind)){
    await this.jobs.release(wer,job.id,token);return;
   }
+  try{await this.policyPruefen(job);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,wer,e.code);return;}
   if(job.kind==='reverse-S3')return this.fuehreS3Aus(lc,wer,job);
   // P18-T88: Blockuebernahme (Produkt-Schalter reverse_blockuebernahme, Standard AUS) oder bereits angefangener Blockauftrag.
   // Dort zaehlt ein eigenes Fehlerbudget ohne Fortschritt; erfolgreiche Bloecke gehen nicht auf die alte Versuchsgrenze.
@@ -810,14 +856,15 @@ export class ReverseExecutor {
     // P18-T93: Auch E-AUS verwendet den eintragsspezifischen PG-Snapshot im Runner.
     const eEinstellungen=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
     if(eEinstellungen.letzter_fehler)throw new Error(eEinstellungen.letzter_fehler);
-    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',einstellungen:eEinstellungen,...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.policyPruefen(job);return ({kommando:'extrahieren',schicht:'E',einstellungen:eEinstellungen,...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand,siedler3:siedlerStand.aktiv,siedler3_stand:siedlerStand},
      grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung,
-      nachlauf_s:nachlaufS}}),live?.melde);
+      nachlauf_s:nachlaufS}});},live?.melde);
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
+    if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
     const m=(e as Error).message;
     // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
@@ -845,6 +892,7 @@ export class ReverseExecutor {
     try{r=await this.uebernimmUnterFence(job,wer,{jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,arbeitsWurzel:ausgabe,manifest},
      {status,fehlercode:status==='teilweise'?fehlercode(ergebnis.fehlercode??'deadline'):null});}
     catch(e){
+     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
      // W5: fachlicher Fehler -> endgültig; sonst freigeben, bis der Versuchszähler erreicht ist.
      console.error('[reverse-executor] Übernahme fehlgeschlagen:',job.id,(e as Error).message);
      if(e instanceof ReverseEUebernahmeFehler||job.attempt>=this.k.retryMax)await this.eHalten(job,wer,e instanceof ReverseEUebernahmeFehler?fehlercode(e.code):'werkzeug_fehler');
@@ -893,6 +941,7 @@ export class ReverseExecutor {
      const c=await this.pool.connect();
      try{
       await c.query('BEGIN');
+      await this.policyPruefen(job,c);
       if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return null;}
       const r=await lauf.schritt(c);
       await c.query('COMMIT');
@@ -906,6 +955,7 @@ export class ReverseExecutor {
   const c=await this.pool.connect();
   try{
    await c.query('BEGIN');
+   await this.policyPruefen(job,c);
    if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return null;}
    const r=await uebernehmeS3Ergebnis({query:c.query.bind(c)},e,this.deps.uebernahmeOptionen);
    await c.query('COMMIT');return r;
@@ -941,13 +991,14 @@ export class ReverseExecutor {
     const live=await this.liveFortschritt(job,token);
     // P18-T86: S3-Grenzen (s3_zeitlimit_s, s3_lauf_bytes, ...) als Einstellungs-Snapshot des Eintrags; grenzen nur Transportfrist/Nachlauf.
     const s3Einst=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
-    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({werkzeug:'analyzeHeadless',schicht:'S3',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.policyPruefen(job);return ({werkzeug:'analyzeHeadless',schicht:'S3',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      ...(s3Einst.letzter_fehler?{}:{einstellungen:s3Einst}),
      eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
      grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien,
-      nachlauf_s:nachlaufS}}),live?.melde);
+      nachlauf_s:nachlaufS}});},live?.melde);
    }catch(e){
     if(!alt)await sperreArbeitsOrdner(arbeit);
+    if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
     const m=(e as Error).message;
     // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
@@ -970,6 +1021,7 @@ export class ReverseExecutor {
     let r:Awaited<ReturnType<typeof uebernehmeS3Ergebnis>>|null;
     try{r=await this.uebernimmS3UnterFence(job,wer,{jobId:job.id,reverseId:quelle.reverseId,dateiId:quelle.dateiId,arbeitsWurzel:ausgabe,manifest,dauerMs:dauer});}
     catch(e){
+     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
      console.error('[reverse-executor] S3-Uebernahme fehlgeschlagen:',job.id,(e as Error).message);
      if(e instanceof ReverseS3UebernahmeFehler||job.attempt>=this.k.retryMax)aufraeumen=await this.scheitern(job,wer,e instanceof ReverseS3UebernahmeFehler?fehlercode(e.code):'werkzeug_fehler');
      else aufraeumen=await this.jobs.release(wer,job.id,token);

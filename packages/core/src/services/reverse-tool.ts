@@ -36,9 +36,10 @@ import {ergaenzeReverseLeserHinweisKontext} from './reverse-leser-hinweis.js';
 
 export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...ERKENNTNIS_ACTIONS,...LESER_ACTIONS,...LESER_RUNTIME_ACTIONS,...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
-export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt'] as const;
+export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt','policy_pin_fehlt','policy_geaendert','policy_grenze','policy_nicht_lesbar'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
 const TEXTE: Record<ReverseFehlercode,string> = {
+  policy_pin_fehlt:'Analyse gehalten: Altauftrag ohne verlässlichen Policy-Pin. Neuen Auftrag ausdrücklich anfordern.',policy_geaendert:'Analyse gehalten: Policy oder Quellstand geändert.',policy_grenze:'Analyse durch Eintrags-/Auftragsgrenze begrenzt.',policy_nicht_lesbar:'Analyse gehalten: Policy nicht zuverlässig lesbar.',
   nicht_gefunden:'Eintrag, Datei oder Auftrag nicht gefunden.',nicht_gebunden:'Eintrag zuerst für dieses Projekt binden: reverse(action:"binden", reverse_id).',
   nicht_unterstuetzt:'Aktion oder Format wird nicht unterstützt.',gepackt:'Datei ist gepackt.',verschluesselt:'Datei ist verschlüsselt.',
   beschaedigt:'Datei ist beschädigt.',zu_gross:'Größenlimit überschritten.',bombe_verdacht:'Verdacht auf eine Archivbombe.',
@@ -146,7 +147,7 @@ export function begrenzeReverseSchicht(wunsch:unknown,ein?:ReverseEinstellSnapsh
   return stages.indexOf(wunsch as typeof stages[number])>stages.indexOf(grenze)?grenze:wunsch as typeof stages[number];
 }
 export interface ReverseContainerInfo {zustand:'laeuft'|'startet'|'ruht';kaltstart_s:number|null;container_id?:string}
-export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:string;dateiId:string|null;mediumId:string|null;bisSchicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug'}
+export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:string;dateiId:string|null;mediumId:string|null;bisSchicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug';policyManuell?:boolean;policyElternId?:string}
 export interface ReverseRuntime {
   /** PG-only, derselbe Client wie Fachauftrag und Aktivität. Kein Wake/FS/Docker unter Lock. */
   analysieren?: (anfrage:ReverseAnalyseAnfrage,db:PoolClient)=>Promise<Row>;
@@ -354,8 +355,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       await katalogisiereReverseOrdner(db,rid);
     }
     const fp=createHash('sha256').update(JSON.stringify(ms.map(m=>[m.art,m.satz_sha256]))).digest('hex');
-    await db.query(`UPDATE reverse_eintraege SET titel=COALESCE($2,titel),status='bestaetigt',bestaetigt_von=$3,confirmer_identity_id=$6,fingerabdruck=$4,
-      analyse_policy=analyse_policy||jsonb_build_object('bis_schicht',$5::text,'automatisch',true),updated_at=NOW() WHERE id=$1`,[rid,a.titel===undefined?null:text(a.titel,tmax),a.agent_id,fp,reverseBisSchichtGrenze(ein),aktuelleAgentAkteurIdentityId(a.agent_id)]);
+    await db.query(`UPDATE reverse_eintraege SET titel=COALESCE($2,titel),status='bestaetigt',bestaetigt_von=$3,confirmer_identity_id=$5,fingerabdruck=$4,
+      analyse_policy=(analyse_policy-'bis_schicht')||jsonb_build_object('automatisch',true),updated_at=NOW() WHERE id=$1`,[rid,a.titel===undefined?null:text(a.titel,tmax),a.agent_id,fp,aktuelleAgentAkteurIdentityId(a.agent_id)]);
     await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
     return {reverse_id:rid,status:'bestaetigt',eintrag:await entryDto(db,await entry(db,rid))};
   }
@@ -371,13 +372,13 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     const ls=(await pool.query(`SELECT s.* FROM reverse_schichten s LEFT JOIN reverse_dateien d ON d.id=s.datei_id LEFT JOIN reverse_medien m ON m.id=s.medium_id
       WHERE s.aktuell AND COALESCE(d.eintrag_id,m.eintrag_id)=$1 AND ($2::bigint IS NULL OR s.datei_id=$2) ORDER BY s.schicht,s.id`,[rid,f?.id??null])).rows;
     // P18-T64: ALLE offenen Aufträge (nicht nur den jüngsten), damit abbrechen/entstoeren jede ID kennt.
-    const jobs=(await pool.query("SELECT id,schicht,status,fehlercode,to_jsonb(r)->>'ausfuehrung' AS ausfuehrung,p20_auftrag_id FROM reverse_auftraege r WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) AND status IN ('offen','wartet','laeuft') ORDER BY created_at DESC,id DESC LIMIT $3",[rid,f?.id??null,reverseZahl(ein,'status_auftraege_max')])).rows;
+    const jobs=(await pool.query("SELECT id,schicht,status,fehlercode,policy_pin,to_jsonb(r)->>'ausfuehrung' AS ausfuehrung,p20_auftrag_id FROM reverse_auftraege r WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) AND status IN ('offen','wartet','laeuft') ORDER BY created_at DESC,id DESC LIMIT $3",[rid,f?.id??null,reverseZahl(ein,'status_auftraege_max')])).rows;
     // P18-T85: Live-Fortschritt je laufendem Container-Auftrag (Work-Job), nur mit Schalter reverse_fortschritt_live.
     const p20=live?.aktiv?jobs.map(j=>j.p20_auftrag_id).filter(Boolean).map(String):[];
     const work=new Map((p20.length?(await pool.query(`SELECT w.id::text AS id,w.state,w.attempt,w.lease_until,${REVERSE_FORTSCHRITT_SQL} FROM work_jobs w WHERE w.id=ANY($1::uuid[])`,[p20])).rows:[]).map(w=>[String(w.id),w as Row] as const));
     const liveVon=(p:unknown)=>{const w=work.get(String(p??''));const l=w&&live?reverseFortschrittAnzeige(w,live.haenger_s):null;return l?{live:l}:{};};
     // P18-T66/E3: ohne offenen Auftrag den zuletzt beendeten zeigen, damit ein endgültiger Fehler nicht als 'wartet' erscheint.
-    const letzter=jobs.length?null:(await pool.query("SELECT id,schicht,status,fehlercode FROM reverse_auftraege WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) ORDER BY updated_at DESC,id DESC LIMIT 1",[rid,f?.id??null])).rows[0]??null;
+    const letzter=jobs.length?null:(await pool.query("SELECT id,schicht,status,fehlercode,policy_pin FROM reverse_auftraege WHERE eintrag_id=$1 AND ($2::bigint IS NULL OR datei_id=$2) ORDER BY updated_at DESC,id DESC LIMIT 1",[rid,f?.id??null])).rows[0]??null;
     const letzterFehler=letzter?.status==='fehler'?letzter:null;
     const rank=(s:unknown)=>stages.indexOf(s as typeof stages[number]);
     const finished=ls.filter(l=>l.status==='fertig'||l.status==='teilweise').sort((a,b)=>rank(b.schicht)-rank(a.schicht))[0];
@@ -412,8 +413,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       werkzeug:active?.werkzeug??null,merkmale:features,fortschritt:{gesamt:Number(active?.funktionen_gesamt??ls.length),fertig:Number(active?.funktionen_fertig??ls.filter(l=>l.status==='fertig').length)},
       container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s},...(jobs[0]?{auftrag_id:jobs[0].id,eta:null,...liveVon(jobs[0].p20_auftrag_id)}:{}),
       ...(error&&zerlegt.detail?{fehler_detail:zerlegt.detail}:{}),
-      ...(letzter?{letzter_auftrag:{auftrag_id:letzter.id,schicht:letzter.schicht,status:letzter.status,fehlercode:zerlegeReverseFehlercode(letzter.fehlercode).code}}:{}),
-      auftraege:jobs.map(j=>{const z=zerlegeReverseFehlercode(j.fehlercode);return {auftrag_id:j.id,schicht:j.schicht,status:j.status,ausfuehrung:j.ausfuehrung,p20_auftrag_id:j.p20_auftrag_id??null,fehlercode:z.code,...(z.detail?{fehler_detail:z.detail}:{}),...liveVon(j.p20_auftrag_id)};}),
+      ...(letzter?{letzter_auftrag:{auftrag_id:letzter.id,schicht:letzter.schicht,status:letzter.status,policy_pin:letzter.policy_pin??null,fehlercode:zerlegeReverseFehlercode(letzter.fehlercode).code}}:{}),
+      auftraege:jobs.map(j=>{const z=zerlegeReverseFehlercode(j.fehlercode);return {auftrag_id:j.id,schicht:j.schicht,status:j.status,ausfuehrung:j.ausfuehrung,policy_pin:j.policy_pin??null,p20_auftrag_id:j.p20_auftrag_id??null,fehlercode:z.code,...(z.detail?{fehler_detail:z.detail}:{}),...liveVon(j.p20_auftrag_id)};}),
       schichten:ls.map(l=>{const z=zerlegeReverseFehlercode(l.fehlercode);return {schicht:l.schicht,status:l.status,fehlercode:z.code,...(z.detail?{fehler_detail:z.detail}:{})};})};
   }
   async function analyse(db:PoolClient,a:Row,e:Row,ein:ReverseEinstellSnapshot):Promise<Row> {
@@ -435,17 +436,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     for(const t of targets){
       const request:ReverseAnalyseAnfrage={reverseId:rid,project,agentId:str(a.agent_id),dateiId:t.dateiId,mediumId:t.mediumId,bisSchicht:bis,prioritaet:prio};
       if(hooks().analysieren){done.push(await hooks().analysieren!(request,db));continue;}
-      // RV8-Anschluss folgt W3. Wartende Fachaufträge sind niemals ausführbare Work-Leases.
-      await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-analyse:'+rid+':'+(t.dateiId??'medium:'+t.mediumId)+':'+t.schicht]);
-      let job=(await db.query("SELECT id,prioritaet FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND medium_id IS NOT DISTINCT FROM $3::bigint AND schicht=$4 AND status IN ('offen','wartet','laeuft') FOR UPDATE",[rid,t.dateiId,t.mediumId,t.schicht])).rows[0];
-      if(job){if(prio==='interaktiv')await db.query("UPDATE reverse_auftraege SET prioritaet='interaktiv',updated_at=NOW() WHERE id=$1",[job.id]);}
-      else {
-        await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-queue-limit'))");
-        const n=Number((await db.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE status IN ('offen','wartet','laeuft')")).rows[0].n);
-        if(n>=reverseZahl(ein,'queue_offene_max'))fail('warteschlange_voll');
-        job=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser,trigger_identity_id) VALUES($1,$2,$3,$4,$5,'wartet',$6,$7) RETURNING id",[rid,t.dateiId,t.mediumId,t.schicht,prio,'agent:'+str(a.agent_id),aktuelleAgentAkteurIdentityId(a.agent_id)])).rows[0];
-      }
-      done.push({auftrag_id:job.id});
+      fail('kein_ausfuehrer','policy_runtime_fehlt');
     }
     return {reverse_id:rid,datei:path,format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,status:'wartet',schicht_angefragt:bis,
       auftrag_id:done[0].auftrag_id,auftraege:done,eta:null,

@@ -1,4 +1,5 @@
 /** P18-T95 Teil 1: scoped, append-only generations. No project tables, cleanup or embeddings. */
+import {pruefeReversePolicyAuftrag} from './reverse-analyse-policy.js';
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import type {ParseResult} from '../parser/types.js';
@@ -22,6 +23,7 @@ export async function parserTransaktion<T>(pool:Pool,a:ParserAuftrag,fn:(db:Pool
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
+  await pruefeReversePolicyAuftrag(db,a.auftragId,a.reverseId,'S1',a.dateiId);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-s3-budget:'+a.reverseId]);
   const live=await db.query("UPDATE reverse_auftraege SET lease_bis=clock_timestamp()+$3::double precision*interval '1 millisecond' WHERE id=$1 AND eintrag_id=$4 AND datei_id=$5::bigint AND lease_token=$2 AND status='laeuft' AND lease_bis>clock_timestamp() RETURNING id",
    [a.auftragId,a.leaseToken,a.leaseMs,a.reverseId,a.dateiId]);
@@ -114,6 +116,7 @@ export async function bestaetigeParserOffset(db:PoolClient,a:ParserAuftrag,alt:n
  await db.query("UPDATE reverse_auftraege SET uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('parser',jsonb_build_object('generation',$2::text,'offset',$3::text)) WHERE id=$1",[a.auftragId,a.generation,String(neu)]);
 }
 export async function veroeffentlicheParserGeneration(db:PoolClient,a:ParserAuftrag):Promise<void>{
+ await pruefeReversePolicyAuftrag(db,a.auftragId,a.reverseId,'S1',a.dateiId);
  const g=(await db.query("SELECT status,diagnose FROM reverse_parser_generationen WHERE id=$1 AND eintrag_id=$2 AND datei_id=$3 FOR UPDATE",[a.generation,a.reverseId,a.dateiId])).rows[0];
  if(!g||g.status==='laeuft')throw Error('reverse_parser_generation_unvollstaendig');
  await db.query("UPDATE reverse_parser_generationen SET aktuell=false WHERE eintrag_id=$1 AND datei_id=$2 AND schicht='S1' AND aktuell AND id<>$3",[a.reverseId,a.dateiId,a.generation]);
