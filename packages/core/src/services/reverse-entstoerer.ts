@@ -110,28 +110,25 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
     FROM reverse_auftraege a LEFT JOIN work_jobs w ON w.id=a.p20_auftrag_id
     WHERE (a.status IN ('offen','wartet','laeuft') OR (a.status='fehler' AND a.updated_at>clock_timestamp()-($3*interval '1 hour')))
      AND ($1::text IS NULL OR a.eintrag_id=$1) ORDER BY a.created_at,a.id LIMIT $2`, [rid, limit, fehlerStunden])).rows;
-  let container: Row[] = [], runs: Row[] = [], belegt = 0;
+  let container: Row[] = [], belegt = 0;
   if (await tabelleDa(db, 'tool_containers')) {
-    container = (await db.query(`SELECT t.instance_id,t.generation,t.container_id,t.tool_id,d.descriptor_hash,t.state,t.work_job_id::text AS work_job_id,t.last_error,t.blocked_until,
+    container = (await db.query(`SELECT t.instance_id,t.state,t.work_job_id::text AS work_job_id,t.last_error,t.blocked_until,
        EXTRACT(EPOCH FROM clock_timestamp()-COALESCE(t.operation_at,t.ready_at,t.updated_at))::int AS alter_s,
-       (SELECT count(*) FROM tool_container_runs r WHERE r.instance_id=t.instance_id AND r.generation=t.generation AND r.state='unknown')::int AS runs_unbekannt,
-       (SELECT count(*) FROM tool_container_runs r WHERE r.instance_id=t.instance_id AND r.generation=t.generation AND r.state='running')::int AS runs_laufend,
+       (SELECT count(*) FROM tool_container_runs r WHERE r.instance_id=t.instance_id AND r.state='unknown')::int AS runs_unbekannt,
+       (SELECT count(*) FROM tool_container_runs r WHERE r.instance_id=t.instance_id AND r.state='running')::int AS runs_laufend,
        (t.work_job_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM work_jobs w WHERE w.id=t.work_job_id AND w.state IN ('pending','leased','staged'))) AS job_beendet
-      FROM tool_containers t JOIN tool_descriptors d USING(tool_id) WHERE t.project='reverse-bibliothek' AND t.tool_id IN('reverse-e','reverse-leser') AND t.state<>'cold' ORDER BY t.instance_id`)).rows;
-    runs=(await db.query(`SELECT r.job_id::text,r.attempt,r.instance_id,r.generation,r.state FROM tool_container_runs r
-      JOIN work_jobs w ON w.id=r.job_id AND w.attempt=r.attempt
-      WHERE w.project='reverse-bibliothek' AND w.id=ANY($1::uuid[])`,[jobs.map(w=>w.id)])).rows;
+      FROM tool_containers t WHERE t.tool_id='reverse-e' AND t.state<>'cold' ORDER BY t.instance_id`)).rows;
     belegt = Number((await db.query("SELECT count(*)::int AS n FROM tool_containers WHERE state IN('warm','stopping') OR (state='waiting' AND operation_token IS NOT NULL)")).rows[0].n);
   }
   let max = envZahl('SYNAPSE_TOOL_MAX_CONTAINERS', 4, 1);
   if (aus?.kapazitaet) { try { const k = await aus.kapazitaet(); belegt = k.belegt; max = k.max; } catch { /* Schätzung aus PG bleibt */ } }
-  // Ein belegter alter Versuch erhält nie die neue globale Instanz als Ersatzzuordnung.
+  const reverseWarm = container.find(c => c.state === 'warm' && !c.work_job_id) ?? container.find(c => c.state === 'warm');
   const containerInfo = container.map(c => {
     const haengt = Number(c.runs_unbekannt) > 0 && Number(c.runs_laufend) === 0 && Number(c.alter_s) >= gnade
       || (c.state === 'waiting' && Number(c.alter_s) >= gnade);
     const ursache: ReverseUrsache | null = c.state === 'blocked' ? 'container_gesperrt' : haengt ? 'container_haengt'
       : c.state === 'warm' && c.job_beendet ? 'container_verwaist' : null;
-    return { instance: String(c.instance_id).slice(0, 12), instance_id: String(c.instance_id), generation: String(c.generation), container_id: c.container_id as string | null, tool_id: String(c.tool_id), descriptor_hash: String(c.descriptor_hash), zustand: c.state, scope: c.work_job_id ? 'auftrag' : 'global', work_job_id: c.work_job_id,
+    return { instance: String(c.instance_id).slice(0, 12), zustand: c.state, scope: c.work_job_id ? 'auftrag' : 'global', work_job_id: c.work_job_id,
       alter_s: zahl(c.alter_s), runs_unbekannt: Number(c.runs_unbekannt), letzter_fehler: c.last_error ?? null, gesperrt_bis: iso(c.blocked_until),
       ...(ursache ? { ursache, ursache_text: TEXT[ursache].text, empfohlen: TEXT[ursache].schritt } : {}), _instance_id: c.instance_id };
   });
@@ -141,16 +138,11 @@ export async function diagnoseReverse(o: ReverseDiagnoseOptionen = {}): Promise<
       alter_s: null, lease_bis: null, owner: null, container_zustand: null, fehlercode: null, fehler_detail: null, ...x,
       ursache_text: TEXT[x.ursache].text, empfohlen: TEXT[x.ursache].schritt, automatisch: x.automatisch ?? REVERSE_ENTSTOERBAR.includes(x.ursache) } as ReverseDiagnoseEintrag);
   };
-  const jobUrsache = (w: Row) => {
-    const run=runs.find(r=>r.job_id===w.id&&Number(r.attempt)===Number(w.attempt));
-    const eigen=run?containerInfo.find(c=>c._instance_id===run.instance_id&&c.generation===run.generation):
-      w.state==='pending'?containerInfo.find(c=>c.tool_id==='reverse-e'&&(c.work_job_id===w.id||!c.work_job_id)):undefined;
-    const cz = eigen ? String(eigen.zustand) : run ? 'alte_generation' : 'cold';
-    const mit = (ursache: ReverseUrsache) => ({ ursache, container_zustand: cz,
-      container_instanz: eigen?.instance_id??null, container_job: (eigen?.work_job_id??null) as string|null,
-      container_generation: eigen?.generation??run?.generation??null, container_id:eigen?.container_id??null,
-      container_tool:eigen?.tool_id??null, container_descriptor_hash:eigen?.descriptor_hash??null,
-      container_versuch:Number(w.attempt), run_instanz:run?.instance_id??null });
+  const jobUrsache = (w: Row): { ursache: ReverseUrsache; container_zustand: string | null; container_instanz: string | null; container_job: string | null } => {
+    const eigen = containerInfo.find(c => c.work_job_id === w.id) ?? (reverseWarm ? containerInfo.find(c => c._instance_id === reverseWarm.instance_id) : undefined)
+      ?? containerInfo.find(c => !c.work_job_id);
+    const cz = eigen ? String(eigen.zustand) : 'cold';
+    const mit = (ursache: ReverseUrsache) => ({ ursache, container_zustand: cz, container_instanz: eigen ? String(eigen.instance) : null, container_job: (eigen?.work_job_id ?? null) as string | null });
     // N2: erst der Job-Zustand. Nur ein pending Job ohne Ausführer ist 'kein_ausfuehrer'; geleaste laufen aus bzw. werden über die Lease behandelt.
     if (w.lease_abgelaufen) return mit('lease_abgelaufen');
     // P18-T87: Storno-Wunsch bzw. Lauf ueber der harten Frist (die Lease wird dabei weiter erneuert).
@@ -279,27 +271,25 @@ export async function entstoereReverse(o: ReverseEntstoerOptionen = {}): Promise
       const key = 'i:' + String(e.container_instanz ?? 'global');
       if (erledigt.has(key)) continue;
       erledigt.add(key);
-      neu(e.ursache, 'container_neustart', ziel, ausfuehren ? await neustart(db, quelle, e.p20_auftrag_id, {
-        instance_id:String(e.container_instanz),generation:String(e.container_generation),container_id:e.container_id as string|null,
-        job_id:e.p20_auftrag_id,attempt:Number(e.container_versuch),tool_id:String(e.container_tool),descriptor_hash:String(e.container_descriptor_hash) }) : 'vorschau');
+      neu(e.ursache, 'container_neustart', ziel, ausfuehren ? await neustart(db, quelle, e.container_job ?? null) : 'vorschau');
     }
   }
   for (const c of instanzen) {
-    const key = 'i:' + String(c.instance_id);
+    const key = 'i:' + String(c.instance);
     if (erledigt.has(key)) continue;
     erledigt.add(key);
-    neu(String(c.ursache), 'container_neustart', 'instanz:' + String(c.instance), ausfuehren ? await neustart(db, quelle, (c.work_job_id ?? null) as string | null, {instance_id:String(c.instance_id),generation:String(c.generation),container_id:c.container_id as string|null,tool_id:String(c.tool_id),descriptor_hash:String(c.descriptor_hash)}) : 'vorschau');
+    neu(String(c.ursache), 'container_neustart', 'instanz:' + String(c.instance), ausfuehren ? await neustart(db, quelle, (c.work_job_id ?? null) as string | null) : 'vorschau');
   }
   return { vorschau: !ausfuehren, massnahmen, anzahl: massnahmen.length, ...(massnahmen.length ? {} : { hinweis: 'Nichts zu entstören.' }) };
 }
 
-async function neustart(db: Db, quelle: string, jobId: string | null, beleg: {instance_id:string;generation:string;container_id:string|null;job_id?:string|null;attempt?:number;tool_id?:string;descriptor_hash?:string}): Promise<string> {
+async function neustart(db: Db, quelle: string, jobId: string | null): Promise<string> {
   const hook = reverseAusfuehrer()?.containerNeustart;
   if (!hook) return 'nicht_moeglich: kein Reverse-Executor/Lebenszyklus angemeldet';
   try {
-    const r = await hook(jobId,beleg);
+    const r = await hook(jobId);
     await tx(db, c => audit(c, null, { quelle, ursache: 'container_haengt', massnahme: 'container_neustart', ergebnis: r, job: jobId }));
-    return r.neu_gestartet || r.zustand==='stopping' ? 'ausstehend: generationsgebundene Beendigung im Lebenszyklus' : 'unveraendert: ' + String(r.zustand ?? 'kein Container');
+    return r.neu_gestartet ? 'gestoppt: Lebenszyklus startet neu' : 'unveraendert: ' + String(r.zustand ?? 'kein Container');
   } catch (e) { return 'fehler: ' + (e as Error).message; }
 }
 
