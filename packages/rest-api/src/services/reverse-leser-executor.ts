@@ -9,6 +9,7 @@ import {getPool,createWorkJobService,registerToolDescriptor,setToolActivation,va
  reverseLeserDezimal,reverseLeserPfad,reverseLeserKanonisch,reverseLeserHash,pruefeReverseLeserManifest,reverseLeserSchrittBudget,
  type ReverseLeserRevision,type ReverseLeserManifest,type ReverseEinstellSnapshot,
  type ToolDescriptor,type WorkIdentity,type WorkJob,type WorkJobHooks,type WorkJobPool} from '@synapse/core';
+import {planeReverseLeserNachzug,reverseLeserNachzugFreigegeben,reverseLeserProjektarbeitVorrang,leseReverseLeserNachzugSchalter,reverseLeserEintragAktiv as reverseEintragAktiv} from '@synapse/core';
 import type {ToolLifecycle,ToolInstanceContext,ToolResourceAdapter} from './tool-lifecycle.js';
 import type {ResolvedToolMount} from './tool-container-docker.js';
 
@@ -229,13 +230,16 @@ export class ReverseLeserExecutor {
    "EXISTS(SELECT 1 FROM reverse_bindungen b WHERE b.eintrag_id=l.eintrag_id AND b.project=l.diagnose->>'quellprojekt' AND b.geloest_at IS NULL)) "+
    "AND EXISTS(SELECT 1 FROM reverse_schichten es WHERE es.medium_id=d.medium_id AND es.schicht='E' AND es.aktuell AND es.status IN('fertig','teilweise')) "+
    (lock?'FOR SHARE OF l,d,e,z':''),[job.id,job.inputRef.id,job.inputRef.revision,job.inputRef.sha256]);
-  return r.rows.length===1&&r.rows[0].status!=='fehler'?r.rows[0]:null;
+  if(r.rows.length!==1||r.rows[0].status==='fehler'||!await reverseEintragAktiv(db,r.rows[0].eintrag_id))return null;
+  if(!await reverseLeserNachzugFreigegeben(db,job.id))return null;
+  return r.rows[0];
  }
  private hooks():WorkJobHooks{
   const domain=(n:string)=>this.k.resourceDomain??'reverse:'+n;
   return {
    resourceDomain:n=>this.wer?.nodeId===n?domain(n):undefined,
    authorizeJob:async(n,j,c)=>{
+    if(j.priority==='nachzug'&&await reverseLeserProjektarbeitVorrang(c as unknown as Db))return null;
     const l=await this.lauf(j,c as unknown as Db);
     const materialisierung=l?.host_validiert&&['fertig','teilweise'].includes(l.status);
     if(!this.s||!this.wer||n.node_id!==this.wer.nodeId||String(n.boot_id)!==this.wer.bootGeneration||n.service_token_hash!==this.wer.authHash
@@ -406,15 +410,32 @@ export class ReverseLeserExecutor {
    await this.fehlerFortsetzen(String(row.id),s);
   }
   const frei=reverseZahl(this.s,'executor_parallel')-this.laufend.size;if(frei<=0)return {gestartet:0};
-  const rows=await this.pool.query("SELECT id FROM work_jobs WHERE capability=$1 AND project=$2 AND kind='reverse-leser' AND state='pending' AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY created_at,id LIMIT $3",[LESER_CAPABILITY,PROJEKT,frei]);
+  const nachzug:Record<string,unknown>=await planeReverseLeserNachzug(this.pool,this.k.reverseRoot).catch(e=>({status:'fehler',fehlercode:(e as Error).message}));
+  const nz=await leseReverseLeserNachzugSchalter(this.pool);
+  if(nz.aktiv&&!nz.letzter_fehler){
+   const pins=await this.pool.query("SELECT j.id,l.id AS lauf_id,l.eintrag_id,l.einstellungen_revision FROM work_jobs j JOIN reverse_leser_laeufe l ON l.work_job_id=j.id WHERE j.kind='reverse-leser' AND j.capability=$1 AND j.project=$2 AND j.state='pending' AND l.diagnose->>'nachzug'='true' ORDER BY j.created_at,j.id LIMIT $3",
+    [LESER_CAPABILITY,PROJEKT,reverseZahl(this.s,'leser_nachzug_block_zeilen')]);
+   for(const pin of pins.rows){
+    const job=await this.jobs.get(String(pin.id),PROJEKT);if(!job||job.state!=='pending')continue;
+    const s=await leseReverseEinstellwerte({eintrag_id:String(pin.eintrag_id)},this.pool);if(s.letzter_fehler)continue;
+    const code=!await reverseEintragAktiv(this.pool,String(pin.eintrag_id))?'leser_eintrag_inaktiv':
+     !await reverseLeserNachzugFreigegeben(this.pool,job.id)||s.revision!==pin.einstellungen_revision?'leser_einstellungen_geaendert':
+     !await this.lauf(job)?'leser_quellstand_oder_revision_geaendert':null;
+    if(code)await this.fehlerAbschliessen(job,String(pin.lauf_id),s,code,{physisches_ende:true,keine_neue_ausgabe:true},null);
+   }
+  }
+  const rows=await this.pool.query("SELECT j.id FROM work_jobs j JOIN reverse_leser_laeufe l ON l.work_job_id=j.id WHERE j.capability=$1 AND j.project=$2 AND j.kind='reverse-leser' AND j.state='pending' AND (j.deadline IS NULL OR j.deadline>clock_timestamp()) AND (l.diagnose->>'nachzug' IS DISTINCT FROM 'true' OR $4) ORDER BY CASE j.priority WHEN 'interaktiv' THEN 0 WHEN 'hintergrund' THEN 1 ELSE 2 END,j.created_at,j.id LIMIT $3",[LESER_CAPABILITY,PROJEKT,reverseZahl(this.s,'leser_nachzug_block_zeilen'),nz.aktiv&&!nz.letzter_fehler]);
+  let geweckt=0;
   for(const row of rows.rows){
+   if(geweckt>=frei)break;
    const job=await this.jobs.get(String(row.id),PROJEKT),l=job?await this.lauf(job):null;
+   if(!l||job?.priority==='nachzug'&&await reverseLeserProjektarbeitVorrang(this.pool))continue;
    if(l?.host_validiert&&['fertig','teilweise'].includes(l.status)){
     // Bereits bestätigter Materialisierungspunkt: kein erneuter Sandboxstart.
     // Veralteten pending-Kopf terminal abschließen; unveränderten Lauf anschließend claimen.
     await this.veraltetenJobAbschliessen(String(row.id));continue;
    }
-   try{await lc.wake(LESER_TOOL,PROJEKT,String(row.id));}
+   try{await lc.wake(LESER_TOOL,PROJEKT,String(row.id));geweckt++;}
    catch(e){
     if((e as Error).message!=='leser_einstellungen_veraendert')throw e;
     await this.veraltetenJobAbschliessen(String(row.id));
@@ -427,7 +448,7 @@ export class ReverseLeserExecutor {
     .finally(()=>{this.laufend.delete(job.id);this.vorbereitet.delete(job.id);});
    this.laufend.set(job.id,p);
   }
-  return {gestartet:claims.length};
+  return {gestartet:claims.length,nachzug};
  }
  private async fence(c:PoolClient,job:WorkJob,wer:WorkIdentity){
   const r=await c.query("SELECT 1 FROM work_jobs WHERE id=$1 AND state='leased' AND claim_token=$2 AND owner_node=$3 AND boot_generation=$4 AND owner_auth_hash=$5 AND lease_until>clock_timestamp() AND (deadline IS NULL OR deadline>clock_timestamp()) FOR UPDATE",

@@ -21,7 +21,7 @@ export const LESER_FELDER={
  leser_liste:['limit','leser_cursor'],leser_get:['leser_id','leser_lauf_id','reverse_id','limit','offset'],
  leser_testen:['leser_id','reverse_id','datei','file_path','test_schluessel'],
  leser_registrieren:['leser_quelle'],leser_aktivieren:['leser_id'],leser_deaktivieren:['leser_id'],
- leser_nachziehen:['leser_id','reverse_id'],
+ leser_nachziehen:['leser_id','reverse_id','vorschau'],
 } as const;
 type Row=Record<string,unknown>;
 function fail(code:string):never {throw new ReverseLeserFehler(code);}
@@ -101,7 +101,12 @@ export async function fuehreReverseLeserAus(pool:Pool,a:Row):Promise<Row>{
   return result({status:a.action==='leser_aktivieren'?'aktiv':'deaktiviert',leser_id:r.id,ausfuehrung_freigegeben:schalter.aktiv});
  }
  const rid=await bindung();
- if(a.action==='leser_nachziehen')return result({status:'vorbereitet',reverse_id:rid,leser_id:r.id,automatischer_lauf:false,abhaengigkeit:'Teil E',eintrag_aktiv:await reverseEintragAktiv(pool,rid)});
+ if(a.action==='leser_nachziehen'){
+  await pruefeReverseLeserVerwalter(pool,project);
+  if(a.vorschau!==undefined&&typeof a.vorschau!=='boolean')fail('leser_parameter_ungueltig');
+  const {reverseLeserNachziehen}=await import('./reverse-leser-nachzug.js');
+  return result(await reverseLeserNachziehen(pool,{eintrag_id:rid,leser_id:r.id,vorschau:a.vorschau!==false}));
+ }
  if(a.action!=='leser_testen')fail('leser_action_ungueltig');
  if(!schalter.aktiv||schalter.letzter_fehler)fail('leser_aus');
  if(!await reverseEintragAktiv(pool,rid))fail('leser_eintrag_inaktiv');

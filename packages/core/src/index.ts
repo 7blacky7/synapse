@@ -63,6 +63,8 @@ export {REVERSE_LESER_SCHNITTSTELLE,REVERSE_LESER_TYPEN,ReverseLeserFehler,pruef
 export type {ReverseLeserManifest,ReverseLeserQuelle,ReverseLeserQuellbeleg,ReverseLeserEingabe,ReverseLeserEreignis,ReverseLeserObjektTyp} from './services/reverse-leser-vertrag.js';
 export {registriereReverseLeserEntwurf,leseReverseLeserRevision,listeReverseLeserRevisionen,leseReverseLeserSchalter} from './services/reverse-leser-registry.js';
 export type {ReverseLeserDb,ReverseLeserRevision} from './services/reverse-leser-registry.js';
+export {leseReverseLeserNachzugSchalter} from './services/reverse-leser-registry.js';
+export {reverseLeserEintragAktiv,reverseLeserNachziehen,planeReverseLeserNachzug,reverseLeserNachzugFreigegeben,reverseLeserProjektarbeitVorrang,meldeReverseLeserKandidat} from './services/reverse-leser-nachzug.js';
 export {REVERSE_LESER_SCHEMA_SQL} from './db/reverse-leser-schema.js';
 export {LESER_ACTIONS,LESER_PARAMETER,LESER_FELDER,fuehreReverseLeserAus,pruefeReverseLeserVerwalter} from './services/reverse-leser-tool.js';
 export {materialisiereReverseLeser,stelleReverseLeserPaketBereit,reverseLeserDateipfad,pruefeReverseLeserDatei,reverseLeserTxBudget} from './services/reverse-leser-materialisierung.js';

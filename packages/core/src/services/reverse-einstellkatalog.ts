@@ -62,6 +62,7 @@ export const REVERSE_EINSTELLKATALOG = {
  // P18-T40: Leserpaket und Magic-Probe; nur PG, kein Env-Fallback.
  leser_paket_bytes:b('Bytes je Leserpaket',1,67108864,16777216,G),
  leser_magic_bytes:b('Bytes je Magic-Probe',1,1048576,65536,GE),
+ leser_nachzug_block_zeilen:i('Dateizeilen je Nachzugschritt',1,50000,1000,G),
  // P18-T45: Format-Hinweise; keine Analyse oder Leser-Ausführung.
  leser_hinweis_min_dateien:i('Dateien je RV27-Gruppe',1,1000000,1,GP),
  leser_hinweis_funktionen:i('RV30-Funktionen je Hinweis',0,100,3,GP,'Funktionsliste aus'),

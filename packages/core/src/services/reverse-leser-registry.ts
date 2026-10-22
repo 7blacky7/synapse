@@ -34,6 +34,10 @@ const SPALTEN=`l.id,l.name,l.version,l.schnittstelle_version,l.runtime,l.manifes
 export async function leseReverseLeserSchalter(db:ReverseLeserDb=getPool()){
  return leseReverseProduktSchalter('reverse_leser',null,db);
 }
+/** Globaler Nachzug-Produktstandard AUS, unabhängig von Registrierung und Vorschau. */
+export async function leseReverseLeserNachzugSchalter(db:ReverseLeserDb=getPool()){
+ return leseReverseProduktSchalter('reverse_leser_nachzug',null,db);
+}
 async function einstellungen(db:QueryDb){
  const s=await leseReverseEinstellwerte({},db);
  if(s.letzter_fehler)fail(s.letzter_fehler);
