@@ -815,6 +815,23 @@ export class ReverseExecutor {
   return {reverseId:String(d.eintrag_id),dateiId:String(d.id),storageKey:key};
  }
  private async uebernimmS3UnterFence(job:WorkJob,wer:WorkIdentity,e:Parameters<typeof uebernehmeS3Ergebnis>[1]):Promise<Awaited<ReturnType<typeof uebernehmeS3Ergebnis>>|null>{
+  if(await uebernehmeS3Ergebnis.parserAktiv(this.pool)){
+   const lauf=await uebernehmeS3Ergebnis.bloecke(this.pool,e,this.deps.uebernahmeOptionen);
+   try{
+    while(await lauf.bereit()){
+     const c=await this.pool.connect();
+     try{
+      await c.query('BEGIN');
+      if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return null;}
+      const r=await lauf.schritt(c);
+      await c.query('COMMIT');
+      if(r.fertig)return r.ergebnis;
+     }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
+     finally{c.release();}
+    }
+    return lauf.ergebnis();
+   }finally{await lauf.beenden();}
+  }
   const c=await this.pool.connect();
   try{
    await c.query('BEGIN');

@@ -68,6 +68,7 @@ import { COMPUTE_CONTROL_SCHEMA_SQL } from './compute-control-schema.js';
 import { CPU_NODES_SCHEMA_SQL } from './cpu-nodes-schema.js';
 import { SERVER_EXECUTOR_SCHEMA_SQL } from './server-executor-schema.js';
 import { REVERSE_SCHEMA_SQL } from './reverse-schema.js';
+import {REVERSE_PARSER_SCHEMA_SQL} from './reverse-parser-schema.js';
 import {REVERSE_PIPELINE_SCHEMA_SQL} from './reverse-pipeline-schema.js';
 import { PROJECT_RESTORE_SCHEMA_SQL } from './project-restore-schema.js';
 import { PLAN_TASK_SCHEMA_SQL } from './plan-task-schema.js';
@@ -3205,6 +3206,7 @@ ${REVERSE_VERKNUEPFUNGEN_SCHEMA_SQL}
 ${REVERSE_CODE_STUECKE_SCHEMA_SQL}
 ${REVERSE_ERKENNTNISSE_SCHEMA_SQL}
 ${REVERSE_EINSTELLWERTE_SCHEMA_SQL}
+${REVERSE_PARSER_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */

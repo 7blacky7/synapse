@@ -19,7 +19,8 @@ import {starteApiAuftragsLoop,type ApiAuftragsLoop} from './api-auftrags-loop.js
 import {reverseKindAusfuehrbar,reverseFehlerDeterministisch,zerlegeReverseFehlercode,reverseResourceNeedRoh,reverseStornoAnfordern} from './reverse-ausfuehrer.js';
 import {leseReverseEinstellungen} from './reverse-einstellungen.js';
 import {reverseEinstellSnapshot,leseReverseEinstellwerte,leseReverseBlockSchalter,reverseZahl,reverseBudget,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
-import {materialisiereS1InBloecken,veroeffentlicheS1Generation} from './reverse-s1-bloecke.js';
+import {materialisiereS1InBloecken,veroeffentlicheS1Generation,materialisiereParserS1InBloecken} from './reverse-s1-bloecke.js';
+import {leseReverseParserSchalter,publiziereReverseParser,REVERSE_PARSER_VERSION} from './reverse-parser-adapter.js';
 import {leseReversePeRessourcenSchalter} from './reverse-pe-schalter.js';
 import {leseReverseSiedler3Schalter} from './reverse-siedler3-schalter.js';
 import {leseProfilProduktSchalter} from './agent-profil-schalter.js';
@@ -76,6 +77,7 @@ export class ReversePipelineDienst{
  private ein:ReverseEinstellSnapshot=reverseEinstellSnapshot([]);
  /** P18-T88: Produkt-Schalter reverse_blockuebernahme (Standard AUS), je Durchlauf gelesen. Nur S1 bekommt damit ein eigenes Profil. */
  private s1Bloecke=false;
+ private parserAdapter=false;
  private readonly kinds?:string[];
  private beendet=false;
  constructor(o:ReversePipelineOptionen={}){
@@ -102,7 +104,8 @@ export class ReversePipelineDienst{
  }
  /** Je Durchlauf die globalen Werte neu lesen; nicht lesbar oder inkonsistent: bisherige Werte bleiben. */
  private async einstellungen():Promise<void>{
-  this.s1Bloecke=(await leseReverseBlockSchalter(this.pool)).aktiv;
+   this.s1Bloecke=(await leseReverseBlockSchalter(this.pool)).aktiv;
+   this.parserAdapter=(await leseReverseParserSchalter(this.pool)).aktiv;
   const s=await leseReverseEinstellwerte({},this.pool);
   if(s.letzter_fehler){console.warn('[Reverse-Pipeline] Einstellungen nicht verwendbar, bisherige Werte bleiben:',s.letzter_fehler);return;}
   if(s.revision!==this.ein.revision)this.uebernehmeWerte(s);
@@ -118,7 +121,8 @@ export class ReversePipelineDienst{
  }
  /** P18-T88: S1 im Blockweg ist ein anderes (vollständiges) Ergebnis und bekommt einen eigenen Fingerabdruck; S0/S2/S3 bleiben unverändert. */
  private s1BlockProfil():string{return hash([this.profile,'s1-bloecke-v1']);}
- private profilFuer(stage:string):string{return stage==='S1'&&this.s1Bloecke?this.s1BlockProfil():this.profile;}
+ private s1ParserProfil():string{return 'parser-s1:'+hash([this.profile,REVERSE_PARSER_VERSION]);}
+ private profilFuer(stage:string):string{return stage==='S1'&&this.parserAdapter?this.s1ParserProfil():stage==='S1'&&this.s1Bloecke?this.s1BlockProfil():this.profile;}
  private async naechste(db:PoolClient,rid:string,file:string|null,medium:string|null,target:string):Promise<string|null>{
   if(!file)return 'E';
   const layers=(await db.query('SELECT schicht,status,werkzeug_version,profil_version FROM reverse_schichten WHERE datei_id=$1 AND aktuell',[file])).rows;
@@ -234,7 +238,7 @@ export class ReversePipelineDienst{
    [j.id,fp,a.bisSchicht,a.project,local?'api':'container',tool,version,profil,a.prioritaet]);
   const prior=(await db.query('SELECT * FROM reverse_schichten WHERE datei_id IS NOT DISTINCT FROM $1::bigint AND medium_id IS NOT DISTINCT FROM $2::bigint AND schicht=$3 AND aktuell',[a.dateiId,a.dateiId?null:a.mediumId,stage])).rows[0];
   // P18-T88: Im S1-Blockweg bleibt eine lesbare alte S1-Schicht aktuell, bis veroeffentlicheS1Generation in einer TX umschaltet.
-  const vorlauf=stage==='S1'&&profil===this.s1BlockProfil()&&!!prior&&prior.fingerabdruck!==fp&&OK.includes(prior.status);
+  const vorlauf=stage==='S1'&&(profil===this.s1BlockProfil()||profil.startsWith('parser-s1:'))&&!!prior&&prior.fingerabdruck!==fp&&OK.includes(prior.status);
   if(prior&&prior.fingerabdruck!==fp&&!vorlauf)await db.query('UPDATE reverse_schichten SET aktuell=false WHERE id=$1',[prior.id]);
   await db.query("INSERT INTO reverse_schichten(datei_id,medium_id,schicht,fingerabdruck,status,werkzeug,werkzeug_version,profil_version,auftrag_id,aktuell) VALUES($1,$2,$3,$4,'wartet',$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING",
    [a.dateiId,a.dateiId?null:a.mediumId,stage,fp,tool,version,profil,j.id,!vorlauf]);
@@ -349,7 +353,7 @@ export class ReversePipelineDienst{
   const verwaist=(await this.pool.query("SELECT r.eintrag_id,r.medium_id::text,r.projekt,r.ziel_schicht,r.prioritaet FROM reverse_auftraege r JOIN work_jobs w ON w.id=r.p20_auftrag_id JOIN reverse_eintraege e ON e.id=r.eintrag_id WHERE r.schicht='E' AND r.datei_id IS NULL AND r.status IN ('offen','wartet') AND w.state='completed' AND e.status='bestaetigt' ORDER BY r.created_at,r.id LIMIT $1",[this.w.discovery])).rows;
   for(const j of verwaist)await this.tx(db=>this.queue(db,{reverseId:j.eintrag_id,dateiId:null,mediumId:j.medium_id,project:j.projekt??'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:j.ziel_schicht??reverseBisSchichtGrenze(this.ein),prioritaet:j.prioritaet}));
   const eProfil=await this.eProfil();
-  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND (NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht=(CASE WHEN array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3)) IS NULL OR array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3))>array_position(ARRAY['E','S0','S1','S2','S3'],$3::text) THEN $3::text ELSE COALESCE(e.analyse_policy->>'bis_schicht',$3::text) END) AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) OR $4::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten s1 WHERE s1.datei_id=d.id AND s1.schicht='S1' AND s1.aktuell AND s1.status IN ('fertig','teilweise') AND s1.profil_version<>$4)) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.datei_id=d.id AND nz.created_at>ab.created_at)) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[this.w.discovery,this.profile,reverseBisSchichtGrenze(this.ein),this.s1Bloecke?this.s1BlockProfil():null])).rows;
+  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND (NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht=(CASE WHEN array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3)) IS NULL OR array_position(ARRAY['E','S0','S1','S2','S3'],COALESCE(e.analyse_policy->>'bis_schicht',$3))>array_position(ARRAY['E','S0','S1','S2','S3'],$3::text) THEN $3::text ELSE COALESCE(e.analyse_policy->>'bis_schicht',$3::text) END) AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) OR $4::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten s1 WHERE s1.datei_id=d.id AND s1.schicht='S1' AND s1.aktuell AND s1.status IN ('fertig','teilweise') AND s1.profil_version<>$4)) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.datei_id=d.id AND nz.created_at>ab.created_at)) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[this.w.discovery,this.profile,reverseBisSchichtGrenze(this.ein),this.parserAdapter?this.s1ParserProfil():this.s1Bloecke?this.s1BlockProfil():null])).rows;
   // P18-T88: $4 = S1-Blockprofil bei Schalter AN - vorhandene S1-Ergebnisse des anderen Profils laufen einmal neu (auch bei Ziel S2/S3).
   for(const d of files)await this.tx(async db=>{await db.query('UPDATE reverse_dateien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[d.id]);return this.queue(db,{reverseId:d.eintrag_id,dateiId:d.id,mediumId:d.medium_id,
    project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:begrenzeReverseSchicht(d.analyse_policy?.bis_schicht,this.ein),prioritaet:'hintergrund'});});
@@ -376,6 +380,7 @@ export class ReversePipelineDienst{
   return {bereich:'reverse',ziel_ref:rid,storage_kind:'binaries',logischer_pfad:m[4],reverse_layout:{art:m[2] as 'original'|'entpackt',gruppe:m[3]}};
  }
  private async materialisiere(db:PoolClient,j:Job,payload:AnalysePayload,block=false):Promise<void>{
+  if(payload.metadata.reverse_parser_adapter===true)await db.query('SELECT id FROM reverse_eintraege WHERE id=$1 FOR UPDATE',[j.eintrag_id]);
   const d=(await db.query('SELECT * FROM reverse_dateien WHERE id=$1 AND eintrag_id=$2 FOR UPDATE',[j.datei_id,j.eintrag_id])).rows[0];
   const r=payload.result as AssetResult,metadata=payload.metadata;
   if(!d||reverseAnalyseFingerabdruck(d.sha256,j.schicht,j.werkzeug,j.werkzeug_version,j.profil_version)!==j.fingerabdruck)throw new Error('Reverse-Revision geändert');
@@ -399,7 +404,8 @@ export class ReversePipelineDienst{
    }
    for(const [i,r] of (payload.result as AssetResult).references.entries())await db.query("INSERT INTO reverse_verweise(datei_id,eintrag_id,ordnung,kind,target,aufloesung,inspektor_resolved) VALUES($1,$2,$3,$4,$5,'unbekannt',$6)",[d.id,j.eintrag_id,i,r.kind,r.target,r.resolved??null]);
    // P18-T88: Blockweg - Strings/Importe liegen schon bestätigt in der Staging-Generation; hier nur atomar veröffentlichen.
-   if(block)await veroeffentlicheS1Generation(db,{auftragId:j.id,reverseId:j.eintrag_id,dateiId:String(d.id),fingerabdruck:j.fingerabdruck,ordnungAb:r.references.length});
+   if(payload.metadata.reverse_parser_adapter===true){if(await publiziereReverseParser(db,{auftragId:j.id,reverseId:j.eintrag_id,dateiId:String(d.id),fingerabdruck:j.fingerabdruck})==='teilweise')payload.status='teilweise';}
+   else if(block)await veroeffentlicheS1Generation(db,{auftragId:j.id,reverseId:j.eintrag_id,dateiId:String(d.id),fingerabdruck:j.fingerabdruck,ordnungAb:r.references.length});
    else{
    const normal=normalisiereS1({strings:payload.strings.map(text=>({text})),importe:r.references.map(x=>({name:x.target}))},
     {maxBytes:this.w.spoolBytes,maxEintraege:this.cfg.inspektion.maxObjects});
@@ -422,10 +428,12 @@ export class ReversePipelineDienst{
   if(j.werkzeug==='reverse-S3-nachzug'){await this.uebernehmeS3Nachzug(j);return;}
   let source:Awaited<ReturnType<AssetSpeicher['oeffneInspektionsQuelle']>>|undefined;
   let ownsCache=false;
-  const block=j.schicht==='S1'&&j.profil_version!==this.profile&&j.profil_version===this.s1BlockProfil();
+  const parser=j.schicht==='S1'&&j.profil_version.startsWith('parser-s1:');
+  const block=!parser&&j.schicht==='S1'&&j.profil_version!==this.profile&&j.profil_version===this.s1BlockProfil();
   try{
    const d=(await this.pool.query('SELECT * FROM reverse_dateien WHERE id=$1 AND eintrag_id=$2',[j.datei_id,j.eintrag_id])).rows[0];
    if(!d)throw new Error('Reverse-Datei fehlt');
+   if(j.schicht==='S1'&&!parser&&(await leseReverseParserSchalter(this.pool)).aktiv)throw Error('reverse_parser_altlauf_angehalten');
    const cache=await this.tx(async db=>{
     await db.query("INSERT INTO reverse_analyse_cache(fingerabdruck,sha256,schicht,werkzeug,werkzeug_version,profil_version) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",[j.fingerabdruck,d.sha256,j.schicht,j.werkzeug,j.werkzeug_version,j.profil_version]);
     const c=(await db.query('SELECT * FROM reverse_analyse_cache WHERE fingerabdruck=$1 FOR UPDATE',[j.fingerabdruck])).rows[0];
@@ -446,7 +454,7 @@ export class ReversePipelineDienst{
     const layout=d.storage_key?.startsWith(j.eintrag_id+'/entpackt/')?this.adresse(j.eintrag_id,d.pfad,d.storage_key):address.adresse;
     source=await this.speicher.oeffneInspektionsQuelle(layout,d.storage_key);
     if(source.size!==Number(d.groesse))throw new Error('Reverse-Größe geändert');
-    const stringsBudget=j.schicht==='S1'&&!block?Math.min(source.size,this.stringsBytes):0;
+    const stringsBudget=j.schicht==='S1'&&!block&&!parser?Math.min(source.size,this.stringsBytes):0;
     const readBudget=this.cfg.inspektion.maxReadBytes-stringsBudget;
     if(readBudget<1)throw new Error('Reverse-Lesebudget zu klein für Inspektion und Strings');
     const started=Date.now(),r=await worker.inspiziereQuelle(source,{grenzen:{...this.cfg.inspektion,maxReadBytes:readBudget},timeoutMs:this.cfg.inspektion.timeoutMs});
@@ -468,7 +476,7 @@ export class ReversePipelineDienst{
     for(const n of counts)if(n){const p=n/sample.length;entropy-=p*Math.log2(p);}
     const rv27=j.schicht==='S1'&&(!r.format||r.format==='unbekannt')?await analysiereRv27({size:source.size,path:String(d.pfad),readRange:(off,len)=>source!.readRange(off,len)},{scanBytes:this.cfg.inspektion.maxReadBytes,ramBytes:this.cfg.inspektion.maxReadBytes,blockBytes:Math.min(65536,this.cfg.inspektion.maxReadBytes),sampleBytes:4096,maxCandidates:this.cfg.inspektion.maxObjects}):null;
     const strings:string[]=[];
-    if(j.schicht==='S1'&&!block){
+    if(j.schicht==='S1'&&!block&&!parser){
      const maxBytes=Math.min(source.size,this.stringsBytes),min=this.w.stringsMin;
      let run='';const add=()=>{if(run.length>=min&&strings.length<this.cfg.inspektion.maxObjects)strings.push(run);run='';};
      for(let off=0;off<maxBytes&&strings.length<this.cfg.inspektion.maxObjects;off+=65536){
@@ -484,7 +492,7 @@ export class ReversePipelineDienst{
     if(r.metadata.gestrippt===true)merkmale.push('gestrippt');
     const packer=this.w.entropieMilli/1000;
     if(entropy>packer||r.objects.some(o=>o.kind==='sektion'&&Number(o.data.entropie)>packer))merkmale.push('packer_verdacht');
-    if(r.status==='teilweise'||j.schicht==='S1'&&!block&&source.size>this.stringsBytes)merkmale.push('teilweise');
+    if(r.status==='teilweise'||j.schicht==='S1'&&!block&&!parser&&source.size>this.stringsBytes)merkmale.push('teilweise');
     const {file_path:_path,...result}=r;
     const masked=maskiereReverseAnalyse({result,strings,metadata:{...r.metadata,inspektor_merkmale:r.metadata.merkmale,merkmale,
      format_specific:r.format_specific,warnings:r.warnings,magic_hex:sample.subarray(0,32).toString('hex'),entropie:entropy,entropie_stichprobe_4096:{wert:entropy,bytes:sample.length,bereich:'[0,min(groesse,'+this.w.stichprobe+'))'},rv27,packer_verdacht:merkmale.includes('packer_verdacht')},
@@ -492,6 +500,20 @@ export class ReversePipelineDienst{
     payload=masked.wert as AnalysePayload;payload.metadata.maskiert_anzahl=masked.treffer;
     if(Buffer.byteLength(JSON.stringify(payload))>this.w.spoolBytes)throw new Error('Reverse-Metadatenlimit');
     await source.pruefeUnveraendert();
+   }
+   if(parser){
+    if(!source){
+     const address=await reverseDateiSpeicherAdresse(this.pool,j.eintrag_id,String(d.id));
+     const layout=d.storage_key?.startsWith(j.eintrag_id+'/entpackt/')?this.adresse(j.eintrag_id,d.pfad,d.storage_key):address.adresse;
+     source=await this.speicher.oeffneInspektionsQuelle(layout,d.storage_key);
+     if(source.size!==Number(d.groesse))throw Error('Reverse-Größe geändert');
+    }
+    const quelle=source,r=payload!.result as AssetResult;
+    await materialisiereParserS1InBloecken(this.pool,{size:quelle.size,readRange:(off,len)=>quelle.readRange(off,len)},{
+     auftragId:j.id,leaseToken:j.lease_token,leaseMs:this.leaseMs,reverseId:j.eintrag_id,dateiId:String(d.id),fingerabdruck:j.fingerabdruck,cacheLease:ownsCache,
+     datei:{pfad:String(d.pfad),sha256:String(d.sha256),format:r.format,art:String(d.art),metadaten:{...d.metadaten,...payload!.metadata}},abbrechen:()=>this.beendet});
+    payload!.strings=[];payload!.metadata.reverse_parser_adapter=true;
+    await quelle.pruefeUnveraendert();
    }
    if(block){
     // P18-T88: ganze Datei in bestätigten Blöcken (Checkpoint am Auftrag); sichtbar erst mit der Veröffentlichung in materialisiere.
@@ -512,6 +534,8 @@ export class ReversePipelineDienst{
    await this.tx(async db=>{
     const live=(await db.query("SELECT 1 FROM reverse_auftraege WHERE id=$1 AND lease_token=$2 AND status='laeuft' AND lease_bis>clock_timestamp() FOR UPDATE",[j.id,j.lease_token])).rows[0];
     if(!live)return;
+    // Recheck after inspector/cache/resume, before publishing any old payload or cache result.
+    if(j.schicht==='S1'&&!parser&&(await leseReverseParserSchalter(db)).aktiv)throw Error('reverse_parser_altlauf_angehalten');
     if(ownsCache){
      const c=await db.query("UPDATE reverse_analyse_cache SET status=$3,ergebnis=$4::jsonb,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE fingerabdruck=$1 AND lease_token=$2 AND lease_bis>clock_timestamp() RETURNING fingerabdruck",[j.fingerabdruck,j.lease_token,payload.status,JSON.stringify(payload)]);
      if(!c.rowCount)throw new Error('Reverse-Cachelease verloren');
@@ -520,7 +544,16 @@ export class ReversePipelineDienst{
     if(j.schicht==='S1')await this.s1Werkzeuge(db,j);
     await this.queue(db,{reverseId:j.eintrag_id,dateiId:j.datei_id,mediumId:j.medium_id,project:j.projekt??'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:j.ziel_schicht??reverseBisSchichtGrenze(this.ein),prioritaet:j.prioritaet});
    });
-  }catch{
+  }catch(e){
+   if(e instanceof Error&&e.message==='reverse_parser_altlauf_angehalten'){
+    // A fenced mode change is not an inspector failure. The new profile can revive this job.
+    await this.tx(async db=>{
+     const gestoppt=await db.query("UPDATE reverse_auftraege SET status='fehler',fehlercode='reverse_parser_altlauf_angehalten',lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_token=$2",[j.id,j.lease_token]);
+     if(ownsCache)await db.query("UPDATE reverse_analyse_cache SET status='wartet',ergebnis=NULL,fehlercode=NULL,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE fingerabdruck=$1 AND lease_token=$2",[j.fingerabdruck,j.lease_token]);
+     if(gestoppt.rowCount)await db.query("UPDATE reverse_schichten SET status='fehler',fehlercode='reverse_parser_altlauf_angehalten' WHERE auftrag_id=$1 AND status IN ('offen','wartet','laeuft')",[j.id]);
+    });
+    return;
+   }
    const failed=await this.pool.query("UPDATE reverse_auftraege SET status='fehler',fehlercode='werkzeug_fehler',lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1 AND lease_token=$2",[j.id,j.lease_token]);
    if(ownsCache)await this.pool.query("UPDATE reverse_analyse_cache SET status='fehler',fehlercode='werkzeug_fehler',lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE fingerabdruck=$1 AND lease_token=$2",[j.fingerabdruck,j.lease_token]);
    if(failed.rowCount)await this.pool.query("UPDATE reverse_schichten SET status='fehler',fehlercode='werkzeug_fehler' WHERE auftrag_id=$1 AND aktuell AND status IN ('offen','wartet','laeuft')",[j.id]);

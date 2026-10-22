@@ -3,6 +3,7 @@ import {getProjectTree,getFunctions,getSymbols,getReferences,fullTextSearchCode,
 import {REVERSE_BEREICH,mitReverseCodeLeser,type CodeLeserDb} from './intel-bereich.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
 import {reverseLogischeDateien,reverseStueckSuchPraedikat} from './reverse-code-stuecke.js';
+import {leseReverseParserSchalter} from './reverse-parser-adapter.js';
 import {fuehreReverseVergleichAus} from './reverse-vergleichen.js';
 import {leseReverseEinstellwerte,reverseZahl} from './reverse-einstellwerte.js';
 type Row=Record<string,unknown>;
@@ -61,9 +62,21 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
   if(!['fertig','teilweise'].includes(layerStatus??''))return pending(original,stage);
  }
  const adressName=action==='functions'&&typeof a.name==='string'&&/^0x[0-9a-f]{1,16}$/i.test(a.name)?BigInt(a.name).toString():undefined;
- const ready="EXISTS(SELECT 1 FROM reverse_schichten rs WHERE rs.datei_id=d.datei_id AND rs.schicht=d.schicht AND rs.fingerabdruck=d.fingerabdruck AND rs.aktuell AND rs.status IN ('fertig','teilweise'))";
+ const parserModus=(await leseReverseParserSchalter(k.db)).aktiv;
+ const altReady="EXISTS(SELECT 1 FROM reverse_schichten rs WHERE rs.datei_id=d.datei_id AND rs.schicht=d.schicht AND rs.fingerabdruck=d.fingerabdruck AND rs.aktuell AND rs.status IN ('fertig','teilweise'))";
+ const ready=parserModus?"EXISTS(SELECT 1 FROM reverse_schichten rs WHERE rs.datei_id=d.datei_id AND rs.schicht=d.schicht AND rs.aktuell AND rs.status IN ('fertig','teilweise') AND ((d.parser_generation_id IS NULL AND rs.fingerabdruck=d.fingerabdruck AND (d.file_path LIKE '%@S1/parser-sidecar/%' OR NOT EXISTS(SELECT 1 FROM reverse_parser_generationen g WHERE g.eintrag_id=d.eintrag_id AND g.datei_id=d.datei_id AND g.schicht=d.schicht AND g.aktuell AND g.quell_fingerabdruck=rs.fingerabdruck))) OR EXISTS(SELECT 1 FROM reverse_parser_generationen g JOIN reverse_dateien quelle ON quelle.id=g.datei_id AND quelle.eintrag_id=g.eintrag_id WHERE g.id=d.parser_generation_id AND g.eintrag_id=d.eintrag_id AND g.datei_id=d.datei_id AND g.aktuell AND g.status IN ('fertig','teilweise') AND g.quell_fingerabdruck=rs.fingerabdruck AND g.quell_sha256=quelle.sha256 AND (g.adapter_version NOT LIKE 'ghidra-%' OR (EXISTS(SELECT 1 FROM reverse_code_abbildungen m WHERE m.eintrag_id=d.eintrag_id AND m.parser_generation_id=g.id AND m.file_path=COALESCE(d.logischer_pfad,d.file_path)) AND (d.fundstelle->>'quelle'<>'ghidra-graph' OR EXISTS(SELECT 1 FROM reverse_code_symbole marker WHERE marker.eintrag_id=d.eintrag_id AND marker.file_path=COALESCE(d.logischer_pfad,d.file_path) AND marker.parser_generation_id=g.id AND marker.symbol_type='ghidra_graph')))))))":altReady;
  const available=(await k.db.query('SELECT count(*)::int AS n FROM reverse_code_dateien d WHERE d.eintrag_id=$1 AND '+ready,[rid])).rows[0];
- if(Number(available.n)===0)return pending(virtual?.[1],virtual?.[2]??'S1');
+ if(Number(available.n)===0){
+  if(parserModus){
+   const done=await k.db.query("SELECT 1 FROM reverse_parser_generationen g JOIN reverse_schichten rs ON rs.datei_id=g.datei_id AND rs.schicht=g.schicht AND rs.fingerabdruck=g.quell_fingerabdruck JOIN reverse_dateien d ON d.id=g.datei_id AND d.eintrag_id=g.eintrag_id WHERE g.eintrag_id=$1 AND g.aktuell AND rs.aktuell AND rs.status IN ('fertig','teilweise') AND g.quell_sha256=d.sha256 LIMIT 1",[rid]);
+   if(done.rows.length){
+    if(action==='file')fail('nicht_gefunden');
+    const key=action==='tree'?'baum':action==='functions'?'functions':action==='calls'?'calls':action==='references'?'references':action==='symbols'?'symbols':'results';
+    return {...context,[key]:key==='baum'?'':[],total:0,gekappt:false,naechster_offset:null,diagnose:{grund:'kein_qualifizierter_code'}};
+   }
+  }
+  return pending(virtual?.[1],virtual?.[2]??'S1');
+ }
  // Dieselbe SQL-Engine sieht nur aktuelle, fertige Ergebnisse; alte/halbe Fingerprints bleiben unsichtbar.
  const views:Record<string,string>={
   reverse_code_dateien:reverseLogischeDateien(ready),
@@ -90,6 +103,7 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
       reverseStueckSuchPraedikat('tsv_zerlegt',"plainto_tsquery('simple',regexp_replace($2,'[^A-Za-z0-9]+',' ','g'))"))
     .replace('ORDER BY rank DESC','ORDER BY rank DESC,file_path');
   }
+  if(parserModus&&action==='functions')safe=safe.replace(/cs\.name ILIKE (\$\d+)/g,(_m,p)=>"(cs.name ILIKE "+p+" OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(COALESCE(cs.fundstelle->'aliases','[]'::jsonb)) AS alias(name) WHERE alias.name ILIKE "+p+"))");
   if(!main)return k.db.query(safe,queryParams);
   const m=safe.match(/\s+LIMIT\s+(\$\d+|\d+)\s*$/i),unlimited=m?safe.slice(0,m.index):safe;
   const countParams=[...params];if(m?.[1].startsWith('$')&&Number(m[1].slice(1))===countParams.length)countParams.pop();
@@ -112,15 +126,21 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
     const masked=String(maske(tree)),cut=masked.length>budget;
     result={baum:cut?masked.slice(0,budget):masked,total,gekappt:cut||offset+limit<total,naechster_offset:offset+limit<total?offset+limit:null};break;
    }
-   case 'functions':result=page('functions',await getFunctions(rid,file,adressName===undefined?name:undefined,a.exported_only===true,limit,REVERSE_BEREICH));break;
+   case 'functions':{
+    const rows=await getFunctions(rid,file,adressName===undefined?name:undefined,a.exported_only===true,limit,REVERSE_BEREICH);
+    if(!parserModus){result=page('functions',rows);break;}
+    const metadata=rows.length?(await k.db.query("SELECT id,CASE WHEN adresse IS NULL THEN NULL ELSE '0x'||to_hex(adresse) END AS adresse,groesse_bytes::text,fundstelle FROM "+views.reverse_code_symbole+" s WHERE eintrag_id=$1 AND id=ANY($2::text[])",[rid,rows.map(r=>r.id)])).rows:[];
+    const byId=new Map(metadata.map(r=>[r.id,r]));
+    result=page('functions',rows.map(r=>({...r,...byId.get(r.id)})));break;
+   }
    case 'symbols':{
     const type=txt(a.symbol_type);if(!type)fail('werkzeug_fehler','parameter_fehlt',{parameter:'symbol_type'});
     const symbols=await getSymbols(rid,type,file,name,limit,txt(a.value_contains),REVERSE_BEREICH);
     // Reverse-only metadata: preserve bigint precision, and scope the lookup to this page
     // and the same current-layer view. The shared project symbol response stays unchanged.
-    const addresses=symbols.length?(await k.db.query("SELECT id,CASE WHEN adresse IS NULL THEN NULL ELSE '0x'||to_hex(adresse) END AS adresse,groesse_bytes::text FROM "+views.reverse_code_symbole+" s WHERE eintrag_id=$1 AND id=ANY($2::text[])",[rid,symbols.map(s=>s.id)])).rows:[];
+    const addresses=symbols.length?(await k.db.query("SELECT id,CASE WHEN adresse IS NULL THEN NULL ELSE '0x'||to_hex(adresse) END AS adresse,groesse_bytes::text"+(parserModus?",fundstelle":"")+" FROM "+views.reverse_code_symbole+" s WHERE eintrag_id=$1 AND id=ANY($2::text[])",[rid,symbols.map(s=>s.id)])).rows:[];
     const byId=new Map(addresses.map(s=>[s.id,s]));
-    result=page('symbols',symbols.map(s=>({...s,adresse:byId.get(s.id)?.adresse??null,groesse_bytes:byId.get(s.id)?.groesse_bytes??null})));break;
+    result=page('symbols',symbols.map(s=>({...s,adresse:byId.get(s.id)?.adresse??null,groesse_bytes:byId.get(s.id)?.groesse_bytes??null,...(parserModus?{fundstelle:byId.get(s.id)?.fundstelle??{}}:{})})));break;
    }
    case 'search':{
     if(!query?.trim())fail('werkzeug_fehler','parameter_fehlt',{parameter:'query'});
@@ -128,7 +148,10 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
    }
    case 'calls':{
     const calls=await getCallEdges(rid,file,txt(a.callee),limit,REVERSE_BEREICH);
-    result=page('calls',calls.calls);break;
+    if(!parserModus){result=page('calls',calls.calls);break;}
+    const metadata=calls.calls.length?(await k.db.query("SELECT id::text,fundstelle,CASE WHEN adresse IS NULL THEN NULL ELSE '0x'||to_hex(adresse) END AS adresse FROM "+views.reverse_code_kanten+" k WHERE eintrag_id=$1 AND id=ANY($2::bigint[])",[rid,calls.calls.map(c=>c.id)])).rows:[];
+    const byId=new Map(metadata.map(r=>[r.id,r]));
+    result=page('calls',calls.calls.map(c=>({...c,...byId.get(String(c.id))})));break;
    }
    case 'references':{
     if(!name)fail('werkzeug_fehler','parameter_fehlt',{parameter:'name'});
@@ -150,6 +173,10 @@ export async function fuehreReverseCodeAus(a:Row,k:ReverseCodeKontext):Promise<R
     }else{
      const text=String(maske(content.content)),cut=text.length>budget;
      result={...content,content:cut?text.slice(0,budget):text,gekappt:cut||!content.returned_range.eof};
+     if(parserModus){
+      const provenance=(await k.db.query("SELECT d.fundstelle,g.diagnose-'funktionen' AS diagnose FROM reverse_code_dateien d JOIN reverse_parser_generationen g ON g.id=d.parser_generation_id AND g.eintrag_id=d.eintrag_id AND g.datei_id=d.datei_id WHERE d.eintrag_id=$1 AND d.file_path=$2 AND g.aktuell AND "+ready,[rid,file])).rows[0];
+      if(provenance)result={...result,...provenance};
+     }
      if(cut)result.returned_range={...content.returned_range,to:content.returned_range.from+text.slice(0,budget).split('\n').length-1,eof:false};
     }
     break;

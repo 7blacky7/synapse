@@ -23,6 +23,9 @@ import {maskiereMitKatalog} from './masken-katalog.js';
 import {reverseAnalyseFingerabdruck,maskiereReverseAnalyse} from './reverse-pipeline.js';
 import {reverseTextSammler,teileReverseText} from './reverse-code-stuecke.js';
 import {leseReverseEinstellwerte,reverseZahl,reverseBudget} from './reverse-einstellwerte.js';
+import {leseReverseParserSchalter} from './reverse-parser-adapter.js';
+import {uebernehmeGhidraAdapter} from './reverse-parser-ghidra.js';
+import {mitReverseParserBudget,messeReverseParserVerbrauch,ReverseParserBudgetFehler,reverseParserBudgetQuery,type ReverseParserBudget} from './reverse-parser-store.js';
 import {uebernehmeRohWerkzeuge} from './reverse-normalisierer/rohausgaben.js';
 import type {ReverseEManifestEintrag} from './reverse-e-uebernahme.js';
 
@@ -39,7 +42,7 @@ export interface ReverseS3UebernahmeOptionen {
   budgetProjekt?:string;
 }
 export interface ReverseS3Ergebnis {status:'fertig'|'teilweise';funktionen:number;dekompiliert:number;gespeichert:number;verworfen:number}
-type Db={query:Function};
+type Db={query:Function;parserGesteuert?:boolean;parserBudget?:(b:ReverseParserBudget)=>void;publikation?:()=>Promise<void>;vormerken?:(sql:string,params:unknown[])=>Promise<unknown>};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SEGMENT=/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/;
 const DATEI='functions.jsonl';
@@ -61,7 +64,7 @@ function pgMax(o:ReverseS3UebernahmeOptionen,standard:number):number{
 }
 interface Ziel {name:string;adresse:number;extern:boolean;raum:string}
 interface Verweis extends Ziel {art:'string'|'import'|'data';wert:string;von:number}
-interface Funktion {name:string;adresse:number;groesse:number;prototyp:string;c:string;status:string;asm:string;calls:Ziel[];refs:Verweis[];gekappt:boolean;maskiert:number}
+interface Funktion {name:string;adresse:number;groesse:number;prototyp:string;c:string;status:string;asm:string;calls:Ziel[];refs:Verweis[];gekappt:boolean;maskiert:number;raum?:string}
 /** P18-T86: Ausgabe-/Indexfenster aus reverse_einstellungen (s3_name_zeichen, s3_prototyp_zeichen, s3_status_zeichen). */
 interface S3Grenzen {name:number;prototyp:number;status:number}
 function ziel(v:unknown,g:S3Grenzen):Ziel|null{
@@ -75,19 +78,19 @@ function verweis(v:unknown,g:S3Grenzen):Verweis|null{
   return {...z,art:x.kind as Verweis['art'],wert:maske(typeof x.value==='string'?x.value:z.name),von:x.from_offset};
 }
 /** Eine JSONL-Zeile; Adressen jenseits Number.MAX_SAFE_INTEGER (JSON-Rundung) werden verworfen, nie geraten. */
-function leseFunktion(zeile:string,g:S3Grenzen):Funktion|null{
+function leseFunktion(zeile:string,g:S3Grenzen,parserModus=false):Funktion|null{
   let roh:unknown;
   try{roh=JSON.parse(zeile);}catch{return null;}
   if(!roh||typeof roh!=='object'||Array.isArray(roh))return null;
   const masked=maskiereReverseAnalyse(roh);
-  const x=masked.wert as Record<string,unknown>;
+  const x=(parserModus?roh:masked.wert) as Record<string,unknown>;
   const adresse=x.address_offset,groesse=x.size;
   if(typeof x.name!=='string'||!x.name||typeof adresse!=='number'||!Number.isSafeInteger(adresse)||adresse<0||
     typeof groesse!=='number'||!Number.isSafeInteger(groesse)||groesse<0)return null;
   return {name:x.name.slice(0,g.name),adresse,groesse,prototyp:typeof x.prototype==='string'?x.prototype.slice(0,g.prototyp):'',
     c:typeof x.decompiled==='string'?x.decompiled:'',status:typeof x.decompile_status==='string'&&x.decompile_status?x.decompile_status.slice(0,g.status):'fehler',
     asm:typeof x.assembly==='string'?x.assembly:'',calls:Array.isArray(x.callees)?x.callees.map(c=>ziel(c,g)).filter((v):v is Ziel=>v!==null):[],
-    refs:Array.isArray(x.references)?x.references.map(r=>verweis(r,g)).filter((v):v is Verweis=>v!==null):[],gekappt:x.export_truncated===true,maskiert:masked.treffer};
+    refs:Array.isArray(x.references)?x.references.map(r=>verweis(r,g)).filter((v):v is Verweis=>v!==null):[],gekappt:x.export_truncated===true,maskiert:masked.treffer,...(parserModus?{raum:typeof x.address_space==='string'?maske(x.address_space):'ram'}:{})};
 }
 const hex=(n:number)=>'0x'+n.toString(16).padStart(8,'0');
 
@@ -97,7 +100,7 @@ const stuecke=reverseTextSammler;
  * Übernimmt das S3-Ergebnis eines Auftrags in den übergebenen Client (eine Transaktion des Aufrufers).
  * arbeitsWurzel muss unter <reverseRoot>/_arbeit/ liegen.
  */
-export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:string;dateiId:string;arbeitsWurzel:string;
+export const uebernehmeS3Ergebnis=Object.assign(async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:string;dateiId:string;arbeitsWurzel:string;
   manifest:ReverseEManifestEintrag[];dauerMs?:number|null},o:ReverseS3UebernahmeOptionen={}):Promise<ReverseS3Ergebnis>{
   if(!e||typeof e.jobId!=='string'||!UUID.test(e.jobId))fehler('parameter_ungueltig','jobId muss eine UUID sein.');
   if(typeof e.reverseId!=='string'||!SEGMENT.test(e.reverseId))fehler('parameter_ungueltig','Ungültige Reverse-ID.');
@@ -116,6 +119,8 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   // P18-T86: Budget und Fenster gelten je Eintrag (GE); kein Projektwert verändert den gemeinsamen Analysebestand.
   const einstellungen=await leseReverseEinstellwerte({project:o.budgetProjekt??auftrag.projekt??null,eintrag_id:rid}),budget=pgMax(o,reverseBudget(einstellungen,'s3_pg_budget_bytes'));
   const grenzen:S3Grenzen={name:reverseZahl(einstellungen,'s3_name_zeichen'),prototyp:reverseZahl(einstellungen,'s3_prototyp_zeichen'),status:reverseZahl(einstellungen,'s3_status_zeichen')};
+  const parserModus=(await leseReverseParserSchalter(db)).aktiv;
+  if(parserModus){db=begrenzeParserTransaktion(db,reverseZahl(einstellungen,'materialisierung_tx_bytes'),reverseZahl(einstellungen,'s1_materialisierung_block_zeilen'));db=await mitReverseParserBudget(db,rid,did,budget);}
   const speicherAlt=datei.metadaten?.s3_speicher;
   const vorher=(await db.query(`SELECT status,funktionen_gesamt,funktionen_fertig FROM reverse_schichten WHERE datei_id=$1::bigint AND schicht='S3'
     AND ausgabe_key=$2 AND status IN ('fertig','teilweise') ORDER BY id DESC LIMIT 1`,[did,key])).rows[0];
@@ -141,7 +146,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
   const assembler:{pfad:string;c:string;name:string;adresse:number;groesse:number}[]=[];
   const graph:{symbol:number;f:Funktion}[]=[];
   let exportGekappt=false,maskiert=0;
-  const adressen=new Set<number>();
+  const adressen=new Set<string|number>();
   s2.add('# adresse\tgroesse\tname\tprototyp\n');
   const symbole:{stueck:number;start:number;ende:number;name:string;prototyp:string;adresse:number;groesse:number}[]=[];
   const fehlend:{name:string;adresse:string;benoetigt_bytes:number}[]=[];
@@ -158,9 +163,10 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
     strom.on('data',(b:Buffer|string)=>pruef.update(b));
     for await(const zeile of createInterface({input:strom,crlfDelay:Infinity})){
       if(!zeile.trim())continue;
-      const f=leseFunktion(zeile,grenzen);
-      if(!f||adressen.has(f.adresse)){verworfen++;continue;}
-      adressen.add(f.adresse);maskiert+=f.maskiert;
+      const f=leseFunktion(zeile,grenzen,parserModus);
+      const adressKey=f?(parserModus?(f.raum??'ram')+':'+f.adresse:f.adresse):'';
+      if(!f||adressen.has(adressKey)){verworfen++;continue;}
+      adressen.add(adressKey);maskiert+=f.maskiert;
       gesamt++;if(f.status==='ok')ok++;exportGekappt ||= f.gekappt;
       const name=maske(f.name),prototyp=maske(f.prototyp);
       s2.add(hex(f.adresse)+'\t'+f.groesse+'\t'+name+'\t'+prototyp.replace(/[\t\n\r]+/g,' ')+'\n');
@@ -170,7 +176,7 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
       const graphBytes=Buffer.byteLength(JSON.stringify([f.calls,f.refs]));
       const b=Buffer.byteLength(text)+Buffer.byteLength(asm)+graphBytes;
       if(bytes+b>frei){gekappt=true;fehlend.push({name,adresse:hex(f.adresse),benoetigt_bytes:b});continue;}
-      const pos=s3.add(text);bytes+=b;
+      const pos=parserModus?{stueck:0,zeile:1}:s3.add(text);bytes+=b;
       graph.push({symbol:symbole.length,f});
       if(asm)assembler.push({pfad:datei.pfad+'@S2/'+hex(f.adresse).slice(2)+'_'+sha(name).slice(0,12)+'.asm',c:asm,name,adresse:f.adresse,groesse:f.groesse});
       symbole.push({stueck:pos.stueck,start:pos.zeile,ende:pos.zeile+text.split('\n').length-3,name,prototyp,adresse:f.adresse,groesse:f.groesse});
@@ -182,6 +188,13 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
 
   const fp3=String(auftrag.fingerabdruck),wv=String(auftrag.werkzeug_version??''),pv=String(auftrag.profil_version??'');
   const fp2=reverseAnalyseFingerabdruck(String(datei.sha256),'S2','reverse-S3',wv,pv);
+  let adapterTeilweise=false,s2Fertig=gesamt;
+  if((await leseReverseParserSchalter(db)).aktiv!==parserModus)throw Error('reverse_parser_modus_geaendert');
+  if(parserModus){
+    const adapter=await uebernehmeGhidraAdapter(db,{reverseId:rid,dateiId:did,pfad:datei.pfad,sha256:datei.sha256,auftragId:String(auftrag.id),fp2,fp3,manifestSha:eintrag!.sha256},graph.map(g=>g.f),einstellungen,budget);
+    adapterTeilweise=adapter.teilweise;s2Fertig=adapter.s2Gespeichert;bytes=adapter.verbrauch;gespeichert=adapter.gespeichert;dekompiliert=adapter.dekompiliert;
+    if(adapter.fehlend.length){gekappt=true;fehlend.push(...adapter.fehlend);}
+  }else{
   // Definitions of referenced strings/data/imports live in the same S3 fingerprint. Every source location
   // points at the calling function header; context retains the exact machine address (no guessed C line).
   const targets=new Map<string,{id:string;ziel:Verweis;stueck:number;zeile:number}>();
@@ -258,18 +271,24 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
         AND s.symbol_type='function' AND s.schicht='S2' AND s.adresse=k.adresse
         AND k.call_kind='call' AND k.callee_receiver IS NULL`,[rid,did]);
   }
+  }
   let normal:{status:string;werkzeuge:string[];fehler:string[];maskiert:number}|null=null;
   if(e.manifest.some(m=>m.pfad.startsWith('s1-')||m.pfad==='normalisierer-status.json')){
     if(frei>bytes){
       try{normal=await uebernehmeRohWerkzeuge(db,{arbeit,manifest:e.manifest,reverseId:rid,dateiId:did,pfad:datei.pfad,fp2},
         {maxBytes:frei-bytes,maxEintraege:reverseZahl(einstellungen,'inspektion_objekte_block'),stueckBytes});}
-      catch{fehler('beschaedigt','S1-Werkzeugausgabe passt nicht zum Manifest.');}
+      catch(err){if(err instanceof ReverseParserBudgetFehler)normal={status:'teilweise',werkzeuge:[],fehler:['pg_budget'],maskiert:0};else fehler('beschaedigt','S1-Werkzeugausgabe passt nicht zum Manifest.');}
       exportGekappt ||= normal!.status==='teilweise';maskiert+=normal!.maskiert;
       await db.query("UPDATE reverse_dateien SET metadaten=jsonb_set(COALESCE(metadaten,'{}'::jsonb),'{normalisierer}',$2::jsonb) WHERE id=$1::bigint",[did,JSON.stringify(normal)]);
     }else exportGekappt=true;
   }
-  const s3Status:'fertig'|'teilweise'=gekappt||exportGekappt||verworfen>0||ok<gesamt?'teilweise':'fertig';
-  const s2Status:'fertig'|'teilweise'=verworfen>0||exportGekappt?'teilweise':'fertig';
+  // Completion guard also covers an old import that began while the adapter was OFF.
+  if((await leseReverseParserSchalter(db)).aktiv!==parserModus)throw Error('reverse_parser_modus_geaendert');
+  const s3Status:'fertig'|'teilweise'=adapterTeilweise||gekappt||exportGekappt||verworfen>0||ok<gesamt?'teilweise':'fertig';
+  const s2Status:'fertig'|'teilweise'=verworfen>0||exportGekappt||parserModus&&s2Fertig<gesamt?'teilweise':'fertig';
+  if(parserModus)bytes=await messeReverseParserVerbrauch(db,rid,did);
+  const eintragBytes=parserModus?await messeReverseParserVerbrauch(db,rid):altBytes+bytes;
+  await db.publikation?.();
   const schicht=async(stufe:'S2'|'S3',fp:string,status:string,code:string|null,fertig:number)=>{
     await db.query('UPDATE reverse_schichten SET aktuell=false WHERE datei_id=$1::bigint AND schicht=$2 AND aktuell AND fingerabdruck<>$3',[did,stufe,fp]);
     await db.query(`INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,aktuell,status,fehlercode,werkzeug,werkzeug_version,profil_version,auftrag_id,
@@ -281,16 +300,151 @@ export async function uebernehmeS3Ergebnis(db:Db,e:{jobId:string;reverseId:strin
         beendet_at=EXCLUDED.beendet_at,dauer_ms=EXCLUDED.dauer_ms`,
       [did,stufe,fp,status,code,wv,pv,auftrag.id,gesamt,fertig,key,Number.isSafeInteger(e.dauerMs)?e.dauerMs:null]);
   };
-  await schicht('S2',fp2,s2Status,exportGekappt?'zu_gross':null,gesamt);
+  await schicht('S2',fp2,s2Status,exportGekappt||parserModus&&s2Fertig<gesamt?'zu_gross':null,s2Fertig);
   await schicht('S3',fp3,s3Status,gekappt||exportGekappt?'zu_gross':null,dekompiliert);
   await db.query("UPDATE reverse_auftraege SET status=$2,fehlercode=$3,lease_token=NULL,lease_bis=NULL,updated_at=clock_timestamp() WHERE id=$1",
     [auftrag.id,s3Status,gekappt||exportGekappt?'zu_gross':null]);
   await db.query("UPDATE reverse_dateien SET metadaten=jsonb_set(COALESCE(metadaten,'{}'::jsonb),'{maskiert_anzahl}',to_jsonb(COALESCE((metadaten->>'maskiert_anzahl')::bigint,0)+$2::bigint)) WHERE id=$1::bigint",[did,maskiert]);
   await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
   const speicher={version:2,budget_bytes:budget,budget_quelle:o.maxPgBytes===undefined?einstellungen.werte.s3_pg_budget_bytes.ebene??'standard':'test',
-   verbrauch_bytes:bytes,verbrauch_eintrag_bytes:altBytes+bytes,fehlend_gesamt:fehlend.length,fehlende_funktionen:fehlend,
+   verbrauch_bytes:bytes,verbrauch_eintrag_bytes:eintragBytes,fehlend_gesamt:fehlend.length,fehlende_funktionen:fehlend,
    hinweis:fehlend.length?'Budget erhöhen, dann reverse analysieren (S3): Nachzug aus erhaltenem Artefakt, ohne Ghidra.':null};
   await db.query("UPDATE reverse_dateien SET metadaten=metadaten||$2::jsonb WHERE id=$1::bigint",[did,JSON.stringify({
    s3_speicher:speicher,s3_artefakt:{job_id:job,arbeits_wurzel:arbeit,manifest:e.manifest,dauer_ms:e.dauerMs??null,sha256:datei.sha256,fingerabdruck:fp3}})]);
   return {status:s3Status,funktionen:gesamt,dekompiliert,gespeichert,verworfen};
+},{parserAktiv:async(db:Db)=>(await leseReverseParserSchalter(db)).aktiv,bloecke:starteReverseS3Bloecke});
+
+export interface ReverseS3BlockLauf {
+ bereit():Promise<boolean>;
+ schritt(db:Db):Promise<{fertig:boolean;ergebnis:ReverseS3Ergebnis|null}>;
+ beenden():Promise<void>;
+ ergebnis():ReverseS3Ergebnis|null;
 }
+type S3Eingang={jobId:string;reverseId:string;dateiId:string;arbeitsWurzel:string;manifest:ReverseEManifestEintrag[];dauerMs?:number|null};
+type SQLAnfrage={sql:string;params:unknown[];original?:unknown;resolve:(r:any)=>void;reject:(e:unknown)=>void;rest?:unknown[];slot?:number;summe?:any};
+function parserSchreibKosten(sql:string,params:unknown[]){
+ const write=/^\s*(INSERT|UPDATE|DELETE)\b/i.test(sql);
+ const record=/jsonb_to_recordset\(\$(\d+)::jsonb\)/i.exec(sql);
+ const slot=record?Number(record[1])-1:undefined;
+ const rows=slot===undefined?(/LIMIT \$(\d+)/i.test(sql)?Number(params[Number(/LIMIT \$(\d+)/i.exec(sql)![1])-1]):1):JSON.parse(String(params[slot])).length;
+ return {write,slot,rows:write?rows:0,bytes:write?Buffer.byteLength(JSON.stringify(params))+(slot===undefined&&/reverse_alias/.test(sql)?rows*(hash(null).length+2):0):0};
+}
+/** Held-client compatibility: never silently exceed one TX when no executor block owner was supplied. */
+function begrenzeParserTransaktion(db:Db,bytes:number,rows:number):Db{
+ if(db.parserGesteuert)return db;
+ let benutzt=0,zeilen=0;
+ return {query:(sql:any,params?:unknown[])=>{
+  const k=parserSchreibKosten(typeof sql==='string'?sql:sql.text,params??sql.values??[]);
+  if(benutzt+k.bytes>bytes||zeilen+k.rows>rows)throw Error('reverse_parser_blocksteuerung_erforderlich');
+  benutzt+=k.bytes;zeilen+=k.rows;return db.query(sql,params);
+ }};
+}
+/** Producer never owns a client. Only the executor executes/checkpoints bounded SQL groups. */
+async function starteReverseS3Bloecke(pool:Db,e:S3Eingang,o:ReverseS3UebernahmeOptionen={}):Promise<ReverseS3BlockLauf>{
+ const s=await leseReverseEinstellwerte({eintrag_id:e.reverseId},pool);if(s.letzter_fehler)throw Error(s.letzter_fehler);
+ const limit=reverseZahl(s,'materialisierung_tx_bytes'),maxRows=reverseZahl(s,'s1_materialisierung_block_zeilen');
+ const reserve=Buffer.byteLength(JSON.stringify([e.reverseId,e.dateiId,e.jobId,Number.MAX_SAFE_INTEGER,Number.MAX_SAFE_INTEGER,[hash(null),hash(null)]]));
+ const nutz=limit-reserve,nutzRows=maxRows-2;
+ if(nutz<1||nutzRows<1)throw Error('reverse_parser_blockgrenze_zu_klein');
+ let budget:ReverseParserBudget|undefined,geschlossen=false,fertig=false,fehler:unknown,ergebnis:ReverseS3Ergebnis|null=null,signal:(()=>void)|undefined;
+ let pub=false,pubStart=false,block=0,quellSha:string|undefined;
+ const queue:SQLAnfrage[]=[],publikation:SQLAnfrage[]=[];
+ // Exactly the pair requested by this producer, never generations from an older budget attempt.
+ const generationen=new Map<'S2'|'S3',string>();
+ const wecken=()=>{signal?.();signal=undefined;};
+ const db:Db={parserGesteuert:true,parserBudget:b=>{budget=b;},
+  async vormerken(sql,params){publikation.push({sql,params,resolve:()=>{},reject:()=>{}});return {rows:[],rowCount:1};},
+  async publikation(){pub=true;pubStart=true;wecken();},
+  query(sql:any,params?:unknown[]){
+   if(geschlossen)return Promise.reject(Error('reverse_parser_block_abgebrochen'));
+   const text=typeof sql==='string'?sql:sql.text,werte=params??sql.values??[];
+   if(pub){
+    if(!/^\s*(INSERT|UPDATE|DELETE|SELECT pg_notify)\b/i.test(text))throw Error('reverse_parser_lesezugriff_in_publikation');
+    publikation.push({sql:text,params:werte,resolve:()=>{},reject:()=>{}});return Promise.resolve({rows:[],rowCount:1});
+   }
+   return new Promise((resolve,reject)=>{queue.push({sql:text,params:werte,original:typeof sql==='string'?undefined:sql,resolve,reject});wecken();});
+  }};
+ const producer:Promise<void>=Promise.resolve().then(async()=>{try{ergebnis=await uebernehmeS3Ergebnis(db,e,o);fertig=true;}catch(err){fehler=err;fertig=true;}finally{wecken();}});
+ const footer=(bytes:number)=>[e.reverseId,e.dateiId,e.jobId,block,bytes,[...generationen.values()]];
+ const checkpoint=async(c:Db,bytes:number,rows:number)=>{
+  if(!generationen.size)return;
+  const params=footer(bytes);
+  if(bytes+Buffer.byteLength(JSON.stringify(params))>limit||rows+generationen.size>maxRows)throw Error('reverse_parser_checkpoint_zu_gross');
+  const r=await c.query(`UPDATE reverse_parser_generationen g SET checkpoint=(SELECT count(*) FROM reverse_code_abbildungen a WHERE a.parser_generation_id=g.id),
+   diagnose=diagnose||jsonb_build_object('materialisierung',jsonb_build_object('bloecke',$4::int,'parameter_bytes_letzter_block',$5::bigint))
+   WHERE g.eintrag_id=$1 AND g.datei_id=$2 AND g.auftrag_id IN (SELECT id FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2 AND (id::text=$3 OR p20_auftrag_id::text=$3)) AND g.status='laeuft' AND g.id=ANY($6::text[])`,params);
+  if(rows+Number(r.rowCount??0)>maxRows)throw Error('reverse_parser_checkpoint_zu_gross');
+ };
+ return {
+  async bereit(){while(!queue.length&&!fertig)await new Promise<void>(r=>{signal=r;});if(fehler)throw fehler;return !!queue.length||pubStart;},
+  async schritt(c){
+   block++;let bytes=0,rows=0;
+   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-s3-budget:'+e.reverseId]);
+   const d=(await c.query('SELECT sha256 FROM reverse_dateien WHERE eintrag_id=$1 AND id=$2::bigint FOR SHARE',[e.reverseId,e.dateiId])).rows[0];
+   if(!d||quellSha&&d.sha256!==quellSha)throw Error('reverse_parser_quellrevision_geaendert');quellSha=String(d.sha256);
+   if(!(await leseReverseParserSchalter(c)).aktiv)throw Error('reverse_parser_angehalten');
+   if(budget)budget.verbrauch=await messeReverseParserVerbrauch(c,e.reverseId);
+   if(pubStart&&fertig&&!queue.length){
+    // Another file may have committed between preparation and publication. Measure under this block's entry lock.
+    const dateiBytes=await messeReverseParserVerbrauch(c,e.reverseId,e.dateiId),eintragBytes=await messeReverseParserVerbrauch(c,e.reverseId);
+    for(const q of publikation){
+     if(q.sql.startsWith('UPDATE reverse_dateien SET metadaten=metadaten||')){
+      const meta=JSON.parse(String(q.params[1]));
+      if(meta.s3_speicher){meta.s3_speicher.verbrauch_bytes=dateiBytes;meta.s3_speicher.verbrauch_eintrag_bytes=eintragBytes;q.params[1]=JSON.stringify(meta);}
+     }else if(q.sql.startsWith('UPDATE reverse_parser_generationen SET aktuell=true')){
+      const diagnose=JSON.parse(String(q.params[3]));diagnose.verbrauch_bytes=dateiBytes;q.params[3]=JSON.stringify(diagnose);
+     }
+    }
+    const kosten=publikation.map(q=>parserSchreibKosten(q.sql,q.params));
+    if(kosten.reduce((n,k)=>n+k.bytes,0)>limit||kosten.reduce((n,k)=>n+k.rows,0)>maxRows)throw Error('reverse_parser_publikation_zu_gross');
+    if(!(await leseReverseParserSchalter(c)).aktiv)throw Error('reverse_parser_angehalten');
+    let publikationsZeilen=0;
+    for(const q of publikation){
+     const r=await c.query(q.sql,q.params);
+     if(parserSchreibKosten(q.sql,q.params).write)publikationsZeilen+=Number(r.rowCount??0);
+     if(publikationsZeilen>maxRows)throw Error('reverse_parser_publikation_zu_gross');
+    }
+    pubStart=false;return {fertig:true,ergebnis};
+   }
+   while(queue.length){
+    const q=queue[0];let werte=q.params,k=parserSchreibKosten(q.sql,werte),teil:unknown[]|undefined;
+    if(k.slot!==undefined){
+     if(!q.rest)q.rest=JSON.parse(String(werte[k.slot]));
+     if(q.rest!.length){
+      teil=[];for(const row of q.rest!){
+       const next:unknown[]=[...(teil??[]),row],p=[...werte];p[k.slot]=JSON.stringify(next);const n=parserSchreibKosten(q.sql,p);
+       if(n.bytes>nutz-bytes||n.rows>nutzRows-rows)break;teil=next;
+      }
+      if(teil?.length){werte=[...werte];werte[k.slot]=JSON.stringify(teil);k=parserSchreibKosten(q.sql,werte);}
+     }
+    }
+    if(k.bytes>nutz-bytes||k.rows>nutzRows-rows||q.rest?.length&&!teil?.length){
+     if(bytes||rows)break;
+     q.reject(Error('reverse_parser_einzelzeile_zu_gross'));queue.shift();await Promise.resolve();continue;
+    }
+    bytes+=k.bytes;rows+=k.rows;
+    try{
+     const r=budget&&typeof q.original!=='object'?await reverseParserBudgetQuery(c,q.sql,werte,budget):await c.query(q.original??q.sql,q.original?undefined:werte);
+     if(q.sql.startsWith('INSERT INTO reverse_parser_generationen(')){
+      const stage=String(werte[3]);if(stage==='S2'||stage==='S3')generationen.set(stage,String(werte[0]));
+     }
+     if(teil){
+      q.rest=q.rest!.slice(teil.length);
+      q.summe??={...r,rows:[],rowCount:0};q.summe.rows.push(...r.rows);q.summe.rowCount+=r.rowCount??0;
+      if(q.rest.length)continue;
+     }
+     queue.shift();q.resolve(q.summe??r);
+    }catch(err){queue.shift();q.reject(err);}
+    // CPU/parser/file preparation continues without holding the next block's client.
+    await Promise.resolve();await Promise.resolve();
+    if(fehler)throw fehler;
+   }
+   if(fehler)throw fehler;
+   await checkpoint(c,bytes,rows);
+   return {fertig:false,ergebnis:null};
+  },
+  ergebnis(){return ergebnis;},
+  async beenden(){geschlossen=true;const err=Error('reverse_parser_block_abgebrochen');for(const q of queue.splice(0))q.reject(err);wecken();await producer;}
+ };
+}
+

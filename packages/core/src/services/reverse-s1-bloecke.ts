@@ -9,6 +9,8 @@
  * - Manuelle Erkenntnisse (reverse_verweise.ursprung<>'analyse') werden nie gelöscht. Keine Originalbytes in PG.
  */
 import type {Pool,PoolClient} from 'pg';
+import {leseReverseParserSchalter} from './reverse-parser-adapter.js';
+export {materialisiereReverseParser as materialisiereParserS1InBloecken} from './reverse-parser-adapter.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
 import {teileReverseText} from './reverse-code-stuecke.js';
 import {uebernehmeNormalisiert,type NormalDatei,type NormalSymbol} from './reverse-normalisierer/s1.js';
@@ -52,6 +54,7 @@ async function beginne(pool:Pool,a:ReverseS1BlockAuftrag):Promise<ReverseS1Check
 async function schreibeBlock(pool:Pool,a:ReverseS1BlockAuftrag,dateien:NormalDatei[],cp:ReverseS1Checkpoint,importeNeu:boolean):Promise<void>{
  const st=reverseS1Staging(a.auftragId);
  await tx(pool,async db=>{
+  if((await leseReverseParserSchalter(db)).aktiv)throw Error('reverse_parser_alter_stringblock_gesperrt');
   const l=await db.query("UPDATE reverse_auftraege SET lease_bis=clock_timestamp()+$3::double precision*interval '1 millisecond',versuch=LEAST(versuch,1),updated_at=clock_timestamp(),"+
    "uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('s1',$4::jsonb) WHERE id=$1 AND lease_token=$2 AND status='laeuft' AND lease_bis>clock_timestamp()"+
    " AND (uebernahme->'s1'->>'bloecke')::int=$5::int AND uebernahme->'s1'->>'fingerabdruck'=$6",
@@ -73,6 +76,7 @@ async function schreibeBlock(pool:Pool,a:ReverseS1BlockAuftrag,dateien:NormalDat
  * Ein Wiederanlauf (gleicher Auftrag, gleicher Fingerabdruck) setzt exakt am letzten bestätigten Block fort.
  */
 export async function materialisiereS1InBloecken(pool:Pool,q:ReverseS1Quelle,a:ReverseS1BlockAuftrag):Promise<ReverseS1Checkpoint>{
+ if((await leseReverseParserSchalter(pool)).aktiv)throw Error('reverse_parser_alter_stringlauf_gesperrt');
  const s=a.einstellungen;
  const maxZeilen=reverseZahl(s,'s1_materialisierung_block_zeilen'),maxBytes=reverseZahl(s,'materialisierung_tx_bytes'),stueck=reverseZahl(s,'s1_textstueck_bytes'),
   schritt=reverseBudget(s,'s1_strings_schritt_bytes'),lese=reverseZahl(s,'lese_block_bytes'),min=reverseZahl(s,'s1_strings_min_zeichen');
@@ -137,6 +141,7 @@ export async function materialisiereS1InBloecken(pool:Pool,q:ReverseS1Quelle,a:R
  * Dateikandidaten mengenbasiert aus den veröffentlichten Strings. Wirft, wenn die Generation nicht vollständig bestätigt ist.
  */
 export async function veroeffentlicheS1Generation(db:PoolClient,v:{auftragId:string;reverseId:string;dateiId:string;fingerabdruck:string;ordnungAb:number}):Promise<{symbole:string;dateien:string}>{
+ if((await leseReverseParserSchalter(db)).aktiv)throw Error('reverse_parser_alte_publikation_gesperrt');
  const st=reverseS1Staging(v.auftragId);
  const cp=(await db.query("SELECT uebernahme->'s1' AS s1 FROM reverse_auftraege WHERE id=$1 FOR UPDATE",[v.auftragId])).rows[0]?.s1 as ReverseS1Checkpoint|undefined;
  if(!cp||cp.version!==1||cp.fingerabdruck!==v.fingerabdruck||!cp.eof||!cp.importe)throw new Error('reverse_s1_generation_unvollstaendig');
