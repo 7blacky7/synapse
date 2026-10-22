@@ -10,6 +10,7 @@ import {getPool,createWorkJobService,registerToolDescriptor,setToolActivation,va
  type ReverseLeserRevision,type ReverseLeserManifest,type ReverseEinstellSnapshot,
  type ToolDescriptor,type WorkIdentity,type WorkJob,type WorkJobHooks,type WorkJobPool} from '@synapse/core';
 import {planeReverseLeserNachzug,reverseLeserNachzugFreigegeben,reverseLeserProjektarbeitVorrang,leseReverseLeserNachzugSchalter,reverseLeserEintragAktiv as reverseEintragAktiv} from '@synapse/core';
+import {pruefeLeserRuntimeSnapshot} from '@synapse/core';
 import type {ToolLifecycle,ToolInstanceContext,ToolResourceAdapter} from './tool-lifecycle.js';
 import type {ResolvedToolMount} from './tool-container-docker.js';
 
@@ -172,13 +173,14 @@ export async function pruefeLeserAusgabe(root:string,s:ReverseEinstellSnapshot,m
 export interface LeserExecutorKonfig {
  reverseRoot:string;image:string;digest:string;resourceDomain?:string|null;
  /** Infrastruktur-Pin, nicht vom Leser/Job bestimmbar. Paketbereitstellung folgt in Teil D/V6. */
- runtimeSha256:string|null;hostRoot:()=>Promise<string|null>;
+ hostRoot:()=>Promise<string|null>;
  lifecycle:()=>ToolLifecycle|null;identitaet:()=>Promise<WorkIdentity|null>;pool?:Pool;
 }
 interface Lauf {
  id:string;eintrag_id:string;datei_id:string;quell_sha256:string;generation:string;
  leser_id:string;einstellungen_revision:string;storage_key:string;groesse:string;cursor_key:string|null;status:string;
  testmodus:boolean;paket_key:string|null;host_validiert:boolean;
+ runtime_sha256:string|null;runtime_image_digest:string|null;
 }
 interface Vorbereitet {lauf:Lauf;s:ReverseEinstellSnapshot;r:ReverseLeserRevision;ausgabe:string;key:string;eingabe:string;paket:string;runtime:string}
 export function leserDescriptor(k:LeserExecutorKonfig,s:ReverseEinstellSnapshot):ToolDescriptor{
@@ -216,7 +218,7 @@ export class ReverseLeserExecutor {
    ||job.inputRef.scope!=='reverse'||!await this.aktiv(db))return null;
   const r=await db.query<Lauf>(
    "SELECT l.id::text,l.eintrag_id,l.datei_id::text,l.quell_sha256,l.generation::text,l.leser_id,"+
-   "l.einstellungen_revision,l.cursor_key,l.status,d.storage_key,d.groesse::text,"+
+   "l.einstellungen_revision,l.runtime_sha256,l.runtime_image_digest,l.cursor_key,l.status,d.storage_key,d.groesse::text,"+
    "(l.diagnose->>'testmodus'='true') AS testmodus,l.diagnose->>'paket_key' AS paket_key,"+
    "(l.diagnose->>'host_validiert'='true') AS host_validiert "+
    "FROM reverse_leser_laeufe l JOIN reverse_dateien d ON d.id=l.datei_id AND d.eintrag_id=l.eintrag_id "+
@@ -279,23 +281,14 @@ export class ReverseLeserExecutor {
   return root;
  }
  /** V6: vertrauenswürdiger generischer Runtime-Index, kein Plugin darf den Runner liefern. */
- private async runtime(s:ReverseEinstellSnapshot){
-  const pin=this.k.runtimeSha256;if(!pin||!SHA.test(pin))fail('leser_laufzeit_pin_fehlt');
-  const root=await leserSichererPfad(this.k.reverseRoot,'.intern/leser-runtime/'+pin,s);
-  const index=await jsonDatei(await leserSichererPfad(root,'index.json',s),reverseBigInt(s,'leser_paket_bytes'),s);
-  fields(index,['dateien']);
-  if(reverseLeserHash(reverseLeserKanonisch(index))!==pin||!Array.isArray(index.dateien))fail('leser_laufzeit_hash');
-  const keys=new Set<string>(['index.json']);
-  for(const v of index.dateien){
-   fields(v,['pfad','sha256','bytes']);const key=reverseLeserPfad(v.pfad,s);
-   if(keys.has(key))fail('leser_laufzeit_doppelt');keys.add(key);
-   const b=await datei(await leserSichererPfad(root,key,s),reverseBigInt(s,'leser_paket_bytes'),s);
-   if(b.sha256!==hash(v.sha256)||b.bytes!==reverseLeserDezimal(v.bytes))fail('leser_laufzeit_hash');
+ private async runtime(s:ReverseEinstellSnapshot,l:Lauf){
+  if(!l.runtime_sha256||!l.runtime_image_digest)fail('leser_laufzeit_pin_fehlt');
+  try{return (await pruefeLeserRuntimeSnapshot(this.pool,{
+   runtime_sha256:l.runtime_sha256,runtime_image_digest:l.runtime_image_digest},s,this.k.reverseRoot,this.k.digest)).root;}
+  catch(e){
+   const code=(e as Error).message;
+   fail(code.startsWith('leser_runtime_')||code.startsWith('leser_laufzeit_')?code:'leser_runtime_snapshot_ungueltig');
   }
-  if(!keys.has('runner.py')||!keys.has('leser.py'))fail('leser_laufzeit_unvollstaendig');
-  const bestand=await baum(root,s,BigInt(keys.size),reverseBigInt(s,'leser_paket_bytes'));
-  if([...bestand.files.keys()].some(x=>!keys.has(x)))fail('leser_laufzeit_zusatzdatei');
-  return root;
  }
  private async vorbereiten(job:WorkJob):Promise<Vorbereitet>{
   const l=await this.lauf(job);if(!l||!['offen','laeuft'].includes(l.status))fail('leser_lauf_nicht_freigegeben');
@@ -309,7 +302,7 @@ export class ReverseLeserExecutor {
   if(!l.storage_key.startsWith(l.eintrag_id+'/'))fail('leser_eingabe_scope');
   const eingabe=await leserSichererPfad(this.k.reverseRoot,l.storage_key,s),b=await datei(eingabe,BigInt(l.groesse),s);
   if(b.sha256!==l.quell_sha256||b.bytes!==l.groesse)fail('leser_eingabe_hash');
-  const paket=await this.paket(r,s,l.testmodus?l.paket_key:null),runtime=await this.runtime(s);
+  const paket=await this.paket(r,s,l.testmodus?l.paket_key:null),runtime=await this.runtime(s,l);
   const key=l.eintrag_id+(l.testmodus?'/.intern/leser-tests/':'/.intern/leser/')+l.generation+'/'+job.id+'/'+String(job.attempt);
   let parent=await leserSichererPfad(this.k.reverseRoot,l.eintrag_id,s);
   for(const part of key.split('/').slice(1)){
@@ -379,13 +372,13 @@ export class ReverseLeserExecutor {
    await c.query("UPDATE work_jobs SET state='failed',error_code=$2,resource_unconfirmed=$3,lease_until=NULL,updated_at=clock_timestamp() WHERE id=$1",params);
   });
  }
- private async veraltetenJobAbschliessen(id:string){
+ private async veraltetenJobAbschliessen(id:string,runtimeCode?:string){
   const job=await this.jobs.get(id,PROJEKT);if(!job||job.state!=='pending')return;
   const l=await this.lauf(job);if(!l)return;
   const s=await leseReverseEinstellwerte({eintrag_id:l.eintrag_id},this.pool);
   if(s.letzter_fehler)fail(s.letzter_fehler);
-  if(s.revision===l.einstellungen_revision)return;
-  await this.fehlerAbschliessen(job,l.id,s,l.host_validiert?'leser_einstellungen_geaendert':'konfiguration_veraltet',{
+  if(s.revision===l.einstellungen_revision&&!runtimeCode)return;
+  await this.fehlerAbschliessen(job,l.id,s,runtimeCode??(l.host_validiert?'leser_einstellungen_geaendert':'konfiguration_veraltet'),{
    physisches_ende:true,keine_neue_ausgabe:true,
    einstellungen_revision_alt:l.einstellungen_revision,einstellungen_revision_aktuell:s.revision,
   },null);
@@ -410,7 +403,7 @@ export class ReverseLeserExecutor {
    await this.fehlerFortsetzen(String(row.id),s);
   }
   const frei=reverseZahl(this.s,'executor_parallel')-this.laufend.size;if(frei<=0)return {gestartet:0};
-  const nachzug:Record<string,unknown>=await planeReverseLeserNachzug(this.pool,this.k.reverseRoot).catch(e=>({status:'fehler',fehlercode:(e as Error).message}));
+  const nachzug:Record<string,unknown>=await planeReverseLeserNachzug(this.pool,this.k.reverseRoot,{image:this.k.image,digest:this.k.digest}).catch(e=>({status:'fehler',fehlercode:(e as Error).message}));
   const nz=await leseReverseLeserNachzugSchalter(this.pool);
   if(nz.aktiv&&!nz.letzter_fehler){
    const pins=await this.pool.query("SELECT j.id,l.id AS lauf_id,l.eintrag_id,l.einstellungen_revision FROM work_jobs j JOIN reverse_leser_laeufe l ON l.work_job_id=j.id WHERE j.kind='reverse-leser' AND j.capability=$1 AND j.project=$2 AND j.state='pending' AND l.diagnose->>'nachzug'='true' ORDER BY j.created_at,j.id LIMIT $3",
@@ -435,10 +428,16 @@ export class ReverseLeserExecutor {
     // Veralteten pending-Kopf terminal abschließen; unveränderten Lauf anschließend claimen.
     await this.veraltetenJobAbschliessen(String(row.id));continue;
    }
-   try{await lc.wake(LESER_TOOL,PROJEKT,String(row.id));geweckt++;}
-   catch(e){
-    if((e as Error).message!=='leser_einstellungen_veraendert')throw e;
-    await this.veraltetenJobAbschliessen(String(row.id));
+   try{
+    const s=await leseReverseEinstellwerte({eintrag_id:l.eintrag_id},this.pool);
+    if(s.letzter_fehler)fail(s.letzter_fehler);
+    await this.runtime(s,l); // schlechte Pins vor wake terminalisieren: kein haengender Pending-Kopf
+    await lc.wake(LESER_TOOL,PROJEKT,String(row.id));geweckt++;
+   }catch(e){
+    const code=(e as Error).message;
+    if(code==='leser_einstellungen_veraendert')await this.veraltetenJobAbschliessen(String(row.id));
+    else if(code.startsWith('leser_runtime_')||code.startsWith('leser_laufzeit_'))await this.veraltetenJobAbschliessen(String(row.id),code);
+    else throw e;
    }
   }
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:reverseZahl(this.s,'executor_lease_s')});

@@ -1048,7 +1048,7 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const identitaet=reverseServerIdentitaet();
  const hostRoot=reverseHostWurzel(konfig,new Docker({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET??'/var/run/docker.sock'}));
  const leser=new ReverseLeserExecutor({reverseRoot:konfig.reverseRoot,image:konfig.image,digest:konfig.digest,resourceDomain:konfig.resourceDomain,
-  runtimeSha256:process.env.SYNAPSE_REVERSE_LESER_RUNTIME_SHA256??null,hostRoot,lifecycle:getToolLifecycle,identitaet});
+  hostRoot,lifecycle:getToolLifecycle,identitaet});
  const alteMounts=reverseMountResolver(konfig,hostRoot);
  try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:(d,c)=>d.tool_id===LESER_TOOL?leser.mounts(d,c):alteMounts(d,c),
   lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:{acquire:(d,c)=>d.tool_id===LESER_TOOL?leser.ressourcen.acquire(d,c):reverseRessourcen.acquire(d,c),
@@ -1060,7 +1060,8 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  hexAnbinden();const hexTimer=setInterval(hexAnbinden,konfig.tickMs);hexTimer.unref();
  const abmelden=registriereWorkJobHooks(REVERSE_CAPABILITY,executor.hooks());
  // K5: reverse(status) liest den echten Containerzustand über die Reverse-Runtime (nach starteReversePipeline gesetzt).
- const ohneStatus=ergaenzeReverseRuntime({containerStatus:rid=>executor.containerStatus(rid)});
+ const ohneStatus=ergaenzeReverseRuntime({containerStatus:rid=>executor.containerStatus(rid),
+  leserRuntimeImage:async()=>({image:konfig.image,digest:konfig.digest})});
  // P18-T64: Ausführer anmelden – Pipeline reiht nur noch diese Kinds ein, Diagnose/Entstörer sehen Kapazität und können neu starten.
  const zeitlimits:Record<string,number>=Object.fromEntries(konfig.kinds.map(kind=>[kind,reverseZeitlimitS(konfig,kind)]));
  const abmeldenAusfuehrer=meldeReverseAusfuehrer({kinds:konfig.kinds,parallel:konfig.parallel,

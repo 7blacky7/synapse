@@ -11,17 +11,20 @@ import {leseReverseLeserSchalter,leseReverseLeserNachzugSchalter,leseReverseLese
 import {leseReverseEinstellwerte,reverseZahl,reverseBigInt,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
 import {reverseLeserHash,reverseLeserKanonisch,ReverseLeserFehler} from './reverse-leser-vertrag.js';
 import {reverseLeserDateipfad,reverseLeserRoot,reverseLeserTxBudget} from './reverse-leser-materialisierung.js';
+import {waehleLeserRuntimePin,pruefeLeserRuntimeBindung} from './reverse-leser-runtime.js';
+import type {LeserRuntimePin,LeserRuntimeImage} from './reverse-leser-runtime-vertrag.js';
 export {reverseEintragAktiv as reverseLeserEintragAktiv};
 type Db=Pick<PoolClient,'query'>;
 interface Datei {id:string;eintrag_id:string;sha256:string;storage_key:string;pfad:string;groesse:string}
 interface Punkt {
  eintrag_id:string;leser_id:string;datei_cursor:string;hash_cursor:string|null;scan_bis:string;scan_id:string;
+ runtime_sha256:string|null;runtime_image_digest:string|null;
  einstellungen_revision:string;policy_revision:string;status:string;geprueft:string;passend:string;auftraege:string;offen:string;
 }
 function fail(code:string):never {throw new ReverseLeserFehler(code);}
 const hash=(v:unknown)=>reverseLeserHash(reverseLeserKanonisch(v));
 const uuid=(h:string)=>h.slice(0,8)+'-'+h.slice(8,12)+'-4'+h.slice(13,16)+'-a'+h.slice(17,20)+'-'+h.slice(20,32);
-const PUNKT='eintrag_id,leser_id,datei_cursor::text,hash_cursor,scan_bis::text,scan_id::text,einstellungen_revision,policy_revision,status,geprueft::text,passend::text,auftraege::text,offen::text';
+const PUNKT='eintrag_id,leser_id,datei_cursor::text,hash_cursor,scan_bis::text,scan_id::text,einstellungen_revision,policy_revision,runtime_sha256,runtime_image_digest,status,geprueft::text,passend::text,auftraege::text,offen::text';
 /** B1: gehaltene Clients nie neu verbinden und keine fremde TX abschließen. */
 async function tx<T>(db:ReverseLeserDb,run:(c:PoolClient)=>Promise<T>):Promise<T>{
  if(!(db instanceof Pool))return run(db as PoolClient);
@@ -99,10 +102,12 @@ async function stand(db:Db,id:string){
 }
 /** Eine Zeile je Phase. Crash nach enqueue: deterministischer Key bindet denselben Job beim Resume.
  * Claim-Auswahl nimmt ausschließlich Aufträge MIT bestätigter Laufbindung. */
-async function auftrag(db:ReverseLeserDb,d:Datei,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,p:string){
- const identity=hash([d.eintrag_id,d.id,d.sha256,r.id]),id=uuid(identity),generation=id;
- const alt=(await db.query("SELECT id,work_job_id,status,einstellungen_revision,diagnose FROM reverse_leser_laeufe WHERE id=$1 AND eintrag_id=$2",[id,d.eintrag_id])).rows[0];
+async function auftrag(db:ReverseLeserDb,d:Datei,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,p:string,pin:LeserRuntimePin){
+ await pruefeLeserRuntimeBindung(db,pin);
+ const identity=hash([d.eintrag_id,d.id,d.sha256,r.id,pin.runtime_sha256,pin.runtime_image_digest]),id=uuid(identity),generation=id;
+ const alt=(await db.query("SELECT id,work_job_id,status,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest FROM reverse_leser_laeufe WHERE id=$1 AND eintrag_id=$2",[id,d.eintrag_id])).rows[0];
  if(alt){
+  if(alt.runtime_sha256!==pin.runtime_sha256||alt.runtime_image_digest!==pin.runtime_image_digest)fail('leser_runtime_laufpin_geaendert');
   if(alt.einstellungen_revision!==s.revision||alt.diagnose.policy_revision!==p)fail('leser_nachzug_laufpin_veraltet');
   return {id:alt.id,job:alt.work_job_id,neu:false};
  }
@@ -114,25 +119,28 @@ async function auftrag(db:ReverseLeserDb,d:Datei,r:ReverseLeserRevision,s:Revers
  const jobParams=[id,input.kind,input.capability,null,input.project,input.scope,JSON.stringify(input.inputRef),JSON.stringify(input.resourceNeed),input.priority,input.idempotencyKey,'0'.repeat(64),null];
  const job=await mutation(db,d.eintrag_id,r,s,p,jobParams,c=>jobs.enqueue(input,c as unknown as WorkJobClient),d);
  const diagnose={nachzug:true,nachzug_identitaet:identity,policy_revision:p,quell_storage_key:d.storage_key};
- const params=[id,d.eintrag_id,d.id,r.id,d.sha256,generation,job.id,s.revision,diagnose];
+ const params=[id,d.eintrag_id,d.id,r.id,d.sha256,generation,job.id,s.revision,diagnose,pin.runtime_sha256,pin.runtime_image_digest];
  const row=await mutation(db,d.eintrag_id,r,s,p,params,c=>c.query(`INSERT INTO reverse_leser_laeufe
-  (id,eintrag_id,datei_id,leser_id,quell_sha256,generation,work_job_id,einstellungen_revision,diagnose)
-  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) ON CONFLICT(id) DO NOTHING RETURNING id`,params),d);
+  (id,eintrag_id,datei_id,leser_id,quell_sha256,generation,work_job_id,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest)
+  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11) ON CONFLICT(id) DO NOTHING RETURNING id`,params),d);
  return {id,job:job.id,neu:!!row.rowCount};
 }
-async function punkt(db:ReverseLeserDb,id:string,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,p:string,neu=false):Promise<Punkt>{
+async function punkt(db:ReverseLeserDb,id:string,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,p:string,neu=false,image?:LeserRuntimeImage):Promise<Punkt>{
  const alt=(await db.query<Punkt>('SELECT '+PUNKT+' FROM reverse_leser_nachzug WHERE eintrag_id=$1 AND leser_id=$2',[id,r.id])).rows[0];
  if(alt&&!neu){
+  await pruefeLeserRuntimeBindung(db,{runtime_sha256:alt.runtime_sha256??undefined,runtime_image_digest:alt.runtime_image_digest??undefined},image?.digest);
   if(alt.einstellungen_revision!==s.revision||alt.policy_revision!==p)fail('leser_einstellungen_geaendert');
   if(alt.hash_cursor&&!(await db.query('SELECT 1 FROM reverse_dateien WHERE eintrag_id=$1 AND id=$2::bigint AND sha256=$3',[id,alt.datei_cursor,alt.hash_cursor])).rows.length)fail('leser_nachzug_quellcursor_geaendert');
   return alt;
  }
- const st=await stand(db,id),params=[id,r.id,randomUUID(),st.bis,st.zeit,s.revision,p,alt?.scan_id??null];
+ const pin=await waehleLeserRuntimePin(db,image);
+ const st=await stand(db,id),params=[id,r.id,randomUUID(),st.bis,st.zeit,s.revision,p,alt?.scan_id??null,pin.runtime_sha256,pin.runtime_image_digest];
  return mutation(db,id,r,s,p,params,async c=>(await c.query<Punkt>(`INSERT INTO reverse_leser_nachzug
-  (eintrag_id,leser_id,scan_id,scan_bis,quellstand,einstellungen_revision,policy_revision)
-  VALUES($1,$2,$3,$4::bigint,$5::timestamptz,$6,$7)
+  (eintrag_id,leser_id,scan_id,scan_bis,quellstand,einstellungen_revision,policy_revision,runtime_sha256,runtime_image_digest)
+  VALUES($1,$2,$3,$4::bigint,$5::timestamptz,$6,$7,$9,$10)
   ON CONFLICT(eintrag_id,leser_id) DO UPDATE SET datei_cursor=0,hash_cursor=NULL,scan_id=EXCLUDED.scan_id,scan_bis=EXCLUDED.scan_bis,
    quellstand=EXCLUDED.quellstand,einstellungen_revision=EXCLUDED.einstellungen_revision,policy_revision=EXCLUDED.policy_revision,
+   runtime_sha256=EXCLUDED.runtime_sha256,runtime_image_digest=EXCLUDED.runtime_image_digest,
    status='offen',geprueft=0,passend=0,auftraege=0,offen=0,fehlercode=NULL,fehler_datei=NULL,scan_start=clock_timestamp(),updated_at=clock_timestamp()
   WHERE reverse_leser_nachzug.status<>'offen' AND reverse_leser_nachzug.scan_id=$8::uuid
   RETURNING ${PUNKT}`,params)).rows[0]??(await c.query<Punkt>('SELECT '+PUNKT+' FROM reverse_leser_nachzug WHERE eintrag_id=$1 AND leser_id=$2',[id,r.id])).rows[0]);
@@ -149,7 +157,7 @@ async function fortschritt(db:ReverseLeserDb,c:Punkt,r:ReverseLeserRevision,s:Re
  });
 }
 /** Ein begrenzter Schritt; Vorschau schreibt weder Checkpoint noch Auftrag, auch bei AUS. */
-export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:string;leser_id:string;vorschau?:boolean;root?:string;automatisch?:boolean}){
+export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:string;leser_id:string;vorschau?:boolean;root?:string;automatisch?:boolean;image?:LeserRuntimeImage}){
  const id=o.eintrag_id,s=await snapshot(db,id),sch=await schalter(db);
  if(!await reverseEintragAktiv(db,id))return {status:'uebersprungen_inaktiv',eintrag_id:id,schalter:sch};
  const r=await leseReverseLeserRevision(db,o.leser_id);
@@ -162,7 +170,7 @@ export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:str
   // Ein fremder äußerer TX-Kontext kann mehrere Phasen zusammenziehen: fail closed statt reconnect/Commit.
   if(!(db instanceof Pool))fail('leser_nachzug_pool_erforderlich');
   const alt=(await db.query<Punkt>('SELECT '+PUNKT+' FROM reverse_leser_nachzug WHERE eintrag_id=$1 AND leser_id=$2',[id,r.id])).rows[0];
-  c=await punkt(db,id,r,s,p,!o.automatisch&&alt?.status==='teilweise');
+  c=await punkt(db,id,r,s,p,!o.automatisch&&alt?.status==='teilweise',o.image);
  }
  const st=await stand(db,id),rows=await seite(db,id,c?.datei_cursor??'0',c?.scan_bis??st.bis,limit);
  let geprueft=0,passend=0,neu=0,offen=0;
@@ -175,7 +183,10 @@ export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:str
   let match=false,jobNeu=false,fehler:string|null=null;
   try{
    match=await pruefeReverseLeserKandidat(o.root??reverseLeserRoot(),d,r,s);
-   if(match&&!preview)jobNeu=(await auftrag(db,d,r,s,p)).neu;
+   if(match&&!preview){
+    if(!c?.runtime_sha256||!c.runtime_image_digest)fail('leser_laufzeit_pin_fehlt');
+    jobNeu=(await auftrag(db,d,r,s,p,{runtime_sha256:c.runtime_sha256,runtime_image_digest:c.runtime_image_digest})).neu;
+   }
   }catch(e){
    const code=(e as {code?:string}).code??(e as Error).message;
    if(['leser_nachzug_aus','leser_eintrag_inaktiv','leser_einstellungen_geaendert','leser_revision_inaktiv'].includes(code))throw e;
@@ -192,7 +203,7 @@ export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:str
 }
 /** Durable Polling aus dem vorhandenen Takt. Ein Paar und höchstens PG-Blockzeilen pro Aufruf.
  * Neue Registryrevisionen besitzen einen eigenen Checkpoint; fertige Scans werden bei neuen Quelldaten neu gestartet. */
-export async function planeReverseLeserNachzug(db:ReverseLeserDb,root?:string){
+export async function planeReverseLeserNachzug(db:ReverseLeserDb,root?:string,image?:LeserRuntimeImage){
  const sch=await schalter(db);if(!sch.aktiv)return {status:'leser_nachzug_aus'};
  if(!(db instanceof Pool))fail('leser_nachzug_pool_erforderlich');
  if(await reverseLeserProjektarbeitVorrang(db))return {status:'projektarbeit_hat_vorrang'};
@@ -210,9 +221,9 @@ export async function planeReverseLeserNachzug(db:ReverseLeserDb,root?:string){
  if(pair.status&&pair.status!=='offen'){
   const r=await leseReverseLeserRevision(db,pair.leser_id);if(!r)fail('leser_revision_inaktiv');
   const s=await snapshot(db,pair.eintrag_id),p=await policy(db,pair.eintrag_id);
-  await punkt(db,pair.eintrag_id,r,s,p,true);
+  await punkt(db,pair.eintrag_id,r,s,p,true,image);
  }
- try{return await reverseLeserNachziehen(db,{eintrag_id:pair.eintrag_id,leser_id:pair.leser_id,vorschau:false,root,automatisch:true});}
+ try{return await reverseLeserNachziehen(db,{eintrag_id:pair.eintrag_id,leser_id:pair.leser_id,vorschau:false,root,automatisch:true,image});}
  catch(e){
   // Ein veralteter Scan blockiert keine anderen Paare oder gesunden Folgejobs (F1).
   const code=(e as Error).message,s=await snapshot(db,pair.eintrag_id);

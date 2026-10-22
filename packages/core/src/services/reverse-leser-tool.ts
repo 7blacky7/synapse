@@ -8,6 +8,8 @@ import {leseReverseEinstellwerte,reverseZahl} from './reverse-einstellwerte.js';
 import {reverseEintragAktiv} from './reverse-asset-registrierung.js';
 import {leseReverseLeserSchalter,leseReverseLeserRevision,listeReverseLeserRevisionen,registriereReverseLeserEntwurf,type ReverseLeserRevision} from './reverse-leser-registry.js';
 import {ReverseLeserFehler,reverseLeserHash,reverseLeserKanonisch,type ReverseLeserQuelle} from './reverse-leser-vertrag.js';
+import {waehleLeserRuntimePin} from './reverse-leser-runtime.js';
+import type {LeserRuntimeImage} from './reverse-leser-runtime-vertrag.js';
 import {stelleReverseLeserPaketBereit,reverseLeserTx,reverseLeserTxBudget} from './reverse-leser-materialisierung.js';
 export const LESER_ACTIONS=['leser_liste','leser_get','leser_testen','leser_registrieren','leser_aktivieren','leser_deaktivieren','leser_nachziehen'] as const;
 export const LESER_PARAMETER={
@@ -50,7 +52,7 @@ function revisionMeta(r:ReverseLeserRevision){
   quell_bytes:r.quell_bytes,registriert_von:r.registriert_von,registriert_at:r.registriert_at};
 }
 /** Dispatcher hat zuvor das authentifizierte Projekt geprüft. Bindung immer erneut für Lauf-/Dateiinhalte. */
-export async function fuehreReverseLeserAus(pool:Pool,a:Row):Promise<Row>{
+export async function fuehreReverseLeserAus(pool:Pool,a:Row,image?:LeserRuntimeImage):Promise<Row>{
  const project=String(a.project),s=await leseReverseEinstellwerte({eintrag_id:typeof a.reverse_id==='string'?a.reverse_id:null},pool);
  if(s.letzter_fehler)fail(s.letzter_fehler);
  const max=reverseZahl(s,'parameter_text_zeichen'),wer=akteur(a),schalter=await leseReverseLeserSchalter(pool);
@@ -70,7 +72,7 @@ export async function fuehreReverseLeserAus(pool:Pool,a:Row):Promise<Row>{
   if(a.leser_lauf_id!==undefined){
    const rid=await bindung(),id=text(a.leser_lauf_id,max);
    if(!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id))fail('leser_lauf_ungueltig');
-   const l=(await pool.query('SELECT id,eintrag_id,datei_id::text,leser_id,generation,status,position::text,ausgabe_anzahl::text,ausgabe_bytes::text,offen::text,abgewiesen::text,fehlercode,diagnose,einstellungen_revision,created_at,beendet_at FROM reverse_leser_laeufe WHERE id=$1 AND eintrag_id=$2 AND ($3::text IS NULL OR leser_id=$3)',[id,rid,r?.id??null])).rows[0];
+   const l=(await pool.query('SELECT id,eintrag_id,datei_id::text,leser_id,generation,status,position::text,ausgabe_anzahl::text,ausgabe_bytes::text,offen::text,abgewiesen::text,fehlercode,diagnose,einstellungen_revision,runtime_sha256,runtime_image_digest,created_at,beendet_at FROM reverse_leser_laeufe WHERE id=$1 AND eintrag_id=$2 AND ($3::text IS NULL OR leser_id=$3)',[id,rid,r?.id??null])).rows[0];
    if(!l)fail('nicht_gefunden');return result({status:l.status,lauf:l});
   }
   if(!r)fail('leser_revision_fehlt');
@@ -105,7 +107,7 @@ export async function fuehreReverseLeserAus(pool:Pool,a:Row):Promise<Row>{
   await pruefeReverseLeserVerwalter(pool,project);
   if(a.vorschau!==undefined&&typeof a.vorschau!=='boolean')fail('leser_parameter_ungueltig');
   const {reverseLeserNachziehen}=await import('./reverse-leser-nachzug.js');
-  return result(await reverseLeserNachziehen(pool,{eintrag_id:rid,leser_id:r.id,vorschau:a.vorschau!==false}));
+  return result(await reverseLeserNachziehen(pool,{eintrag_id:rid,leser_id:r.id,vorschau:a.vorschau!==false,image}));
  }
  if(a.action!=='leser_testen')fail('leser_action_ungueltig');
  if(!schalter.aktiv||schalter.letzter_fehler)fail('leser_aus');
@@ -123,17 +125,18 @@ export async function fuehreReverseLeserAus(pool:Pool,a:Row):Promise<Row>{
  const lauf=await reverseLeserTx(pool,async c=>{
   // Paketbereitschaft ändert niemals den Aktivzeiger. Testrevision wird separat im Lauf gepinnt.
   await c.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-leser-test:'+identity]);
-  const old=(await c.query("SELECT id,generation,work_job_id,status FROM reverse_leser_laeufe WHERE diagnose->>'test_identitaet'=$1 AND eintrag_id=$2 AND datei_id=$3 AND leser_id=$4",[identity,rid,d.id,r!.id])).rows[0];
-  if(old)return old;
+  const old=(await c.query("SELECT id,generation,work_job_id,status,runtime_sha256,runtime_image_digest FROM reverse_leser_laeufe WHERE diagnose->>'test_identitaet'=$1 AND eintrag_id=$2 AND datei_id=$3 AND leser_id=$4",[identity,rid,d.id,r!.id])).rows[0];
+  if(old)return old; // Retry behält seine ursprüngliche Runtime, auch nach Standardwechsel.
+  const pin=await waehleLeserRuntimePin(c,image);
   const live=await leseReverseLeserSchalter(c);if(!live.aktiv||live.letzter_fehler)fail('leser_aus');
   const id=randomUUID(),generation=randomUUID();
   const diagnose={testmodus:true,test_identitaet:identity,angefordert_von:wer,quellprojekt:project,paket_key:paket.storage_key};
   const input={kind:'reverse-leser',capability:'reverse_leser',project:'reverse-bibliothek',scope:'reverse',priority:'interaktiv' as const,
    inputRef:{scope:'reverse',id:rid,revision:d.id,sha256:d.sha256},resourceNeed:{cpu:reverseZahl(s,'e_cpu'),ram:reverseZahl(s,'e_ram_mib'),vram:0,gpu:false},idempotencyKey:'reverse-leser-test:'+identity};
-  reverseLeserTxBudget(s,2,[input,[id,rid,d.id,r!.id,d.sha256,generation,s.revision,diagnose]]);
+  reverseLeserTxBudget(s,2,[input,[id,rid,d.id,r!.id,d.sha256,generation,s.revision,diagnose,pin.runtime_sha256,pin.runtime_image_digest]]);
   const job=await jobs.enqueue(input,c);
-  const row=(await c.query(`INSERT INTO reverse_leser_laeufe(id,eintrag_id,datei_id,leser_id,quell_sha256,generation,work_job_id,einstellungen_revision,diagnose)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING id,generation,work_job_id,status`,[id,rid,d.id,r!.id,d.sha256,generation,job.id,s.revision,diagnose])).rows[0];
+  const row=(await c.query(`INSERT INTO reverse_leser_laeufe(id,eintrag_id,datei_id,leser_id,quell_sha256,generation,work_job_id,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11) RETURNING id,generation,work_job_id,status,runtime_sha256,runtime_image_digest`,[id,rid,d.id,r!.id,d.sha256,generation,job.id,s.revision,diagnose,pin.runtime_sha256,pin.runtime_image_digest])).rows[0];
   return row;
  });
  return result({status:lauf.status,reverse_id:rid,leser_id:r.id,lauf,testmodus:true,aktive_generation_ersetzt:false});

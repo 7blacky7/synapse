@@ -140,14 +140,41 @@ Das bestehende Image startet bereits `/opt/reverse/runner.py`. Ein RO-Bindmount
 dieses Verzeichnisses stellt den generischen Adapter ohne Image-Neubau bereit.
 Das Dockerfile wird erst beim abschließenden, gemeinsamen Build geändert.
 
-Der Betreiber stellt einen unveränderlichen Laufzeit-Snapshot unter
-`<reverseRoot>/.intern/leser-runtime/<sha256>/` bereit. `index.json` enthält
-`{dateien:[{pfad,sha256,bytes}]}` (Bytes als Dezimalstrings); sein kanonischer
-SHA-256 wird in der Infrastrukturkonfiguration
-`SYNAPSE_REVERSE_LESER_RUNTIME_SHA256` gepinnt. Er umfasst mindestens
-`runner.py` und `leser.py`. Alle Dateien werden erneut gehasht; zusätzliche
-Dateien, Symlinks und Hardlinks sind unzulässig. Dieser Pin ist keine
-Verhaltensgrenze und kann nicht aus einem Leserauftrag übernommen werden.
+Der Snapshot wird ausschließlich über die gemeinsame Reverse-API bereitgestellt:
+`leser_runtime_liste/get` zeigen Registry, Standardrevision, Imagebezug und
+Share-Prüfung. `leser_runtime_bereitstellen` liest exakt drei `file_versions`
+des Projekts synapse: checkpoint.py, leser.py und runner.py aus
+docker/synapse-reverse/. `runtime_quelle` enthält
+`{project:"synapse",dateien:[{pfad,version_id}]}`; keine freien Zielpfade.
+Vorschau ist Standard; Schreiben verlangt `vorschau:false`, `grund` und
+`runtime_schluessel`. User oder bestätigter Koordinator benötigen dafür den
+globalen Produkt-Schalter `reverse_leser_runtime_verwaltung` (Standard AUS).
+Die Leser-Ausführung darf während der Bereitstellung weiter AUS bleiben.
+
+Die API hasht die unveränderten UTF-8-Quellen. `index.json` ist exakt
+`{dateien:[{pfad,sha256,bytes}]}`, Liste nach Pfad sortiert, Bytes als
+Dezimalstrings. Der kanonische SHA-256 dieses Index pinnt den kompletten
+RO-Snapshot unter `<reverseRoot>/.intern/leser-runtime/<pin>/`.
+Versionen/Herkunft, Image-Digest und Audit stehen gesondert in PG.
+Dateien/Verzeichnisse sind 0444/0555; Extras, Symlinks und Hardlinks sind
+unzulässig. Vorhandene Snapshots werden geprüft und nie ersetzt.
+Abgebrochene Bereitstellungsreste bleiben als Diagnose erhalten.
+
+Bereitstellen aktiviert nichts. `leser_runtime_aktivieren/deaktivieren`
+verlangen `runtime_basis_revision` aus get und einen Idempotenzschlüssel;
+die append-only Aktivierungsrevision ist zugleich der globale Standard
+für das serverseitig konfigurierte Image. Neue Leserläufe und Nachzugscans
+pinnen ihn in PG. Retry/Resume übernimmt keine neue Runtime. Fehlender
+oder inkompatibler Pin endet sichtbar; der Folgejob bleibt bearbeitbar.
+Der Executor prüft Registry, Imagebezug und den gesamten Baum vor dem
+RO-Mount. `SYNAPSE_REVERSE_LESER_RUNTIME_SHA256` hat keine Autorität mehr.
+
+Ein API-/Core-Deploy genügt, solange das bestehende Image Python3 und den
+Entrypoint `python3 -u /opt/reverse/runner.py` bereitstellt. Native
+Abhängigkeiten und Image-Digest bleiben Infrastruktur; die Datei-Bytes
+kommen aus den freigegebenen Versionen, nicht aus einer Image-Extraktion.
+Der Snapshot gilt nur für den Lesercontainer; E/S3 behalten ihren Altweg.
+Die echte Sandbox-/Mount-Abnahme erfolgt gesondert in V6.
 
 Leserpakete liegen separat unter `<reverseRoot>/.intern/leser/<revision>/…`.
 Der registrierte `storage_key` bezeichnet einen Ordner mit exakt den in
