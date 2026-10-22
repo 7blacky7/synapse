@@ -30,6 +30,7 @@ import type {ToolLifecycle,ToolResourceAdapter,ToolInstanceContext} from './tool
 import {DockerToolContainerExecutor,type ResolvedToolMount} from './tool-container-docker.js';
 import {configureToolLifecycleAdapters,getToolLifecycle} from './tool-lifecycle-runtime.js';
 import {ServerExecutor} from './server-executor.js';
+import {ReverseLeserExecutor,LESER_TOOL} from './reverse-leser-executor.js';
 
 export const REVERSE_PROJEKT='reverse-bibliothek';
 export const REVERSE_CAPABILITY='reverse_bibliothek';
@@ -977,10 +978,15 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  catch(e){console.error('[reverse-executor] Konfiguration ungültig, Executor bleibt aus:',(e as Error).message);return null;}
  if(!k)return null;
  const konfig=k;
- try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:reverseMountResolver(konfig,reverseHostWurzel(konfig,new Docker({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET??'/var/run/docker.sock'}))),
-  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:reverseRessourcen});}
- catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
  const identitaet=reverseServerIdentitaet();
+ const hostRoot=reverseHostWurzel(konfig,new Docker({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET??'/var/run/docker.sock'}));
+ const leser=new ReverseLeserExecutor({reverseRoot:konfig.reverseRoot,image:konfig.image,digest:konfig.digest,resourceDomain:konfig.resourceDomain,
+  runtimeSha256:process.env.SYNAPSE_REVERSE_LESER_RUNTIME_SHA256??null,hostRoot,lifecycle:getToolLifecycle,identitaet});
+ const alteMounts=reverseMountResolver(konfig,hostRoot);
+ try{configureToolLifecycleAdapters({executor:new DockerToolContainerExecutor({socketPath:process.env.SYNAPSE_TOOL_DOCKER_SOCKET,resolveMounts:(d,c)=>d.tool_id===LESER_TOOL?leser.mounts(d,c):alteMounts(d,c),
+  lokaleImages:process.env.SYNAPSE_REVERSE_IMAGE_LOKAL==='1'}),resources:{acquire:(d,c)=>d.tool_id===LESER_TOOL?leser.ressourcen.acquire(d,c):reverseRessourcen.acquire(d,c),
+   release:t=>t.startsWith('reverse-leser:')?leser.ressourcen.release(t):reverseRessourcen.release(t)}});}
+ catch(e){console.error('[reverse-executor] Tool-Lebenszyklus bereits gestartet, Executor bleibt aus:',(e as Error).message);return null;}
  const executor=new ReverseExecutor({konfig,lifecycle:getToolLifecycle,identitaet});
  // P21-T15: Hex bindet sofort und hält den Knoten frisch, auch ohne Docker/Lebenszyklus und ohne Reverse-Aufträge.
  const hexAnbinden=()=>{void identitaet().catch(e=>console.error('[reverse-executor] Hex-Anbindung fehlgeschlagen:',(e as Error).message));};
@@ -1005,7 +1011,9 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  let running:Promise<ReverseDurchlauf>|null=null;
  const tick=async()=>{if(!running)running=(async()=>{
   await einstellungenAnwenden().catch(e=>console.error('[reverse-executor] Einstellungen nicht lesbar:',(e as Error).message));
-  return executor.durchlauf();
+  const ergebnis=await executor.durchlauf();
+  await leser.durchlauf().catch(e=>console.error('[reverse-leser] Durchlauf fehlgeschlagen:',(e as Error).message));
+  return ergebnis;
  })().finally(()=>{running=null;});return running;};
  registriereWorker({name:'reverse-executor',beschreibung:'RV12 reverse-E-Aufträge im Reverse-Container ausführen',durchlauf:tick});
  const run=()=>{if(workerPausiert('reverse-executor'))return;void tick().catch(e=>console.error('[reverse-executor] Durchlauf fehlgeschlagen:',(e as Error).message));};
@@ -1014,5 +1022,5 @@ export function starteReverseExecutor():{beende:()=>Promise<void>}|null{
  const planen=()=>{if(beendet)return;timer=setTimeout(()=>{run();planen();},konfig.tickMs);timer.unref();};
  planen();
  console.log('[reverse-executor] aktiv: Kinds '+konfig.kinds.join(',')+', parallel '+konfig.parallel);
- return {beende:async()=>{beendet=true;if(timer)clearTimeout(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();await executor.beende();}};
+ return {beende:async()=>{beendet=true;if(timer)clearTimeout(timer);clearInterval(hexTimer);abmelden();ohneStatus();abmeldenAusfuehrer();await Promise.all([executor.beende(),leser.beende()]);}};
 }

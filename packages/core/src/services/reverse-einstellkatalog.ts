@@ -59,6 +59,9 @@ export const REVERSE_EINSTELLKATALOG = {
  nachlauf_s:i('s',1,86400,300,G),
  status_auftraege_max:i('Aufträge',1,10000,100,GP,null,'SYNAPSE_REVERSE_STATUS_AUFTRAEGE_MAX'),
  container_offen_anzeige:i('Container',1,10000,50,GP),
+ // P18-T40: Leserpaket und Magic-Probe; nur PG, kein Env-Fallback.
+ leser_paket_bytes:b('Bytes je Leserpaket',1,67108864,16777216,G),
+ leser_magic_bytes:b('Bytes je Magic-Probe',1,1048576,65536,GE),
  // E / S3 / Speicher: kein Gesamtdateilimit, nur Schritt-, Block- und Schutzgrenzen.
  // P18-T93: E-AUS hält zu große Batches offen zurück; MAX_RESULTS entfällt.
  // Importer/Speicher lesen PG-Grenzen; der E-AUS-Runner folgt gesondert in Teil B.

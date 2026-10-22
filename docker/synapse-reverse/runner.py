@@ -1585,6 +1585,10 @@ def normalisierer_rohausgaben(source: Path, out: Path, cap: dict[str, int], env:
 
 
 def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
+    # P18-T40: separater Vertragsadapter vor jedem E-/S3-/BIB-Pfad.
+    if req.get("kommando") == "leser_ausfuehren":
+        from leser import ausfuehren
+        return [ausfuehren(req)]
     global _STOPP
     _STOPP = None
     job = job_id(req)

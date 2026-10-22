@@ -20,7 +20,7 @@ Expected JSON reports UID 65532, blocked DNS/TCP, and an empty forbidden-tools l
 
 ## Runner
 
-Runner accepts one JSON request per input line, e.g. the executor format `{"kommando":"extrahieren","eingabe":"/bib/<storage_key>","ausgabe":"/arbeit/<jobId>","grenzen":{...}}`. `auftrag_id` is optional; without it the job id is the folder name of `ausgabe` (if both are given they must match). Commands include spurtabelle, extrahieren, leser_ausfuehren (the latter two kinds take `werkzeug`). Each request returns progress and a completion record `{status:"fertig", werkzeug_version, format, dauer_s, manifest:[{pfad,groesse,sha256}], ausgabe_bytes}`. Supported limits are zeitlimit_s, max_dateien, max_bytes, max_tiefe, max_kompressionsfaktor.
+Runner accepts one JSON request per input line, e.g. the executor format `{"kommando":"extrahieren","eingabe":"/bib/<storage_key>","ausgabe":"/arbeit/<jobId>","grenzen":{...}}`. `auftrag_id` is optional; without it the job id is the folder name of `ausgabe` (if both are given they must match). Commands include spurtabelle and extrahieren. The separate leser_ausfuehren command uses the external reader contract documented below. Each request returns progress and a completion record `{status:"fertig", werkzeug_version, format, dauer_s, manifest:[{pfad,groesse,sha256}], ausgabe_bytes}`. Supported limits are zeitlimit_s, max_dateien, max_bytes, max_tiefe, max_kompressionsfaktor.
 
 `extrahieren` picks the extractor from the file content only, never from the extension: ISO9660 (`CD001` at 0x8001/0x8801/0x9001), UDF (`NSR02`/`NSR03` in the volume recognition sequence), 7z, RAR, ZIP/JAR/APK, PE, CAB, OLE/MSI, gzip, bzip2, xz, tar, LHA, ARJ and CUE sheets (text with a `FILE ... BINARY` line). Anything else, e.g. a raw `.img`/`.bin` without these markers, returns `{status:"fehler", fehlercode:"nicht_unterstuetzt", manifest:[]}` without guessing. Tools run with `TMPDIR=/tmp` and `HOME=/tmp`; with a read-only rootfs P20 must mount `/tmp` as tmpfs.
 
@@ -109,3 +109,74 @@ Header/offset assumptions were checked with the Synapse hex API against the Sied
 library (GFX id755, SND id492, MAP id103). GFX header descriptor:
 `3ae70584-66b7-4cf9-8cd4-df3d3501c29e`, version1. Decoder implementation is independent;
 no Java runtime or JSettlers package is installed.
+
+## Externe Leser: Teil B (noch standardmäßig AUS)
+
+Der Produkt-Schalter `reverse_leser` ist erforderlich. Teil B erzeugt selbst keine
+Aufträge und stellt keine neuen Tool-Aktionen bereit. Teil D liefert autorisierte
+P20-Jobs (`reverse-leser` / `reverse_leser`) mit genau einer Bindung in
+`reverse_leser_laeufe`. Claims verwenden den vorhandenen P20-Dienst, eigene
+Capability-Hooks und die bestehende Reverse-Serveridentität.
+
+Jeder Job bekommt eine eigene Lifecycle-Instanz. Gemountet werden ausschließlich:
+- die hashgebundene Eingabedatei nach `/eingabe:ro`,
+- die freigegebene Leserrevision nach `/leser:ro`,
+- der vertrauenswürdige generische Adapter nach `/opt/reverse:ro`,
+- ein eigener Versuch nach `/arbeit:rw`.
+
+Kein Gesamtmount von `/bib`, kein Projekt-Share. Ausgabe liegt unter
+`<reverseRoot>/<eintrag>/.intern/leser/<generation>/<job>/<versuch>/`.
+Vorhandene Ausgaben werden weder geleert noch überschrieben.
+Docker erzwingt network none, readonly root, UID/GID 65532, CapDrop ALL,
+no-new-privileges sowie CPU/RAM/PIDs/tmpfs aus dem PG-Einstellungssnapshot.
+Zeit-, Datei-, Protokoll- und Metadatengrenzen kommen ebenfalls aus PG.
+Der Kindprozess läuft als isolierter Python-Interpreter ohne Installation.
+Die zusätzliche Baumaufsicht ist eine Abbruchgrenze, keine Dateisystemquote:
+zwischen zwei Messungen sind Überschreitungen möglich.
+
+### Ein-Build-Weg für V6
+
+Das bestehende Image startet bereits `/opt/reverse/runner.py`. Ein RO-Bindmount
+dieses Verzeichnisses stellt den generischen Adapter ohne Image-Neubau bereit.
+Das Dockerfile wird erst beim abschließenden, gemeinsamen Build geändert.
+
+Der Betreiber stellt einen unveränderlichen Laufzeit-Snapshot unter
+`<reverseRoot>/.intern/leser-runtime/<sha256>/` bereit. `index.json` enthält
+`{dateien:[{pfad,sha256,bytes}]}` (Bytes als Dezimalstrings); sein kanonischer
+SHA-256 wird in der Infrastrukturkonfiguration
+`SYNAPSE_REVERSE_LESER_RUNTIME_SHA256` gepinnt. Er umfasst mindestens
+`runner.py` und `leser.py`. Alle Dateien werden erneut gehasht; zusätzliche
+Dateien, Symlinks und Hardlinks sind unzulässig. Dieser Pin ist keine
+Verhaltensgrenze und kann nicht aus einem Leserauftrag übernommen werden.
+
+Leserpakete liegen separat unter `<reverseRoot>/.intern/leser/<revision>/…`.
+Der registrierte `storage_key` bezeichnet einen Ordner mit exakt den in
+`manifest.dateien` genannten Quelldateien. Die Hashes müssen den unveränderlichen
+Quellbelegen der Registry entsprechen. Materialisierung/Freigabe erfolgen erst
+in Teil D. RO-Pakete und Eingabedateien müssen für UID 65532 lesbar sein;
+der Adapter verändert keine Originalrechte.
+
+### Protokoll und Publikation
+
+`leser_ausfuehren` startet nur den gepinnten Python-Einstiegspunkt. Er erhält
+eine Vertragszeile auf stdin und schreibt UTF-8-JSONL auf stdout. stdout bleibt
+in `.leser-protokoll.jsonl` auf dem Share; stderr wird begrenzt verworfen.
+`schritt.segment` verweist auf JSONL mit ausschließlich Objekt-Records.
+Member-ID, Objektpfad und Artefaktpfad sind innerhalb eines Schritts eindeutig.
+Ausgabe- und Segmentdateien müssen vollständig deklariert sein.
+
+Nach dem Prozessende stoppt der Host den gesamten Jobcontainer über P20,
+einschließlich entkoppelter Kindprozesse. Erst nach bestätigtem Containerende
+prüft er JSONL, Pfade, Links, Quellbereiche, Typen, Länge/Hash jeder Datei,
+Zähler und genau einen letzten Endmarker. Exit 0 allein genügt nicht.
+Ein leeres Ergebnis wird derzeit als fehlender Datenbeleg abgelehnt.
+Bei `teilweise` sind Grund, offene Menge und Cursor verpflichtend.
+Protokoll-/Artefaktbytes bleiben auf dem Share; PG bekommt nur Status,
+Manifestverweis, Hash, Cursor und exakte Zähler unter dem P20-Lease-Fence.
+Alte Generationen werden nicht gelöscht. Member-Resume und die gesicherte
+Übergabe eines früheren Checkpoints gehören zu Teil C; ein gesetzter
+`cursor_key` wird bis dahin ausdrücklich abgelehnt.
+
+Abnahme muss Transport-/DB-Proben von echten Unraid-Sandboxproben unterscheiden.
+Erforderlich: Netzversuch, Fremdschreiben, Endlosschleife, Riesenausgabe,
+Symlink, fehlendes/kaputtes Ende, falsche Hashes sowie zwei isolierte Jobs.
