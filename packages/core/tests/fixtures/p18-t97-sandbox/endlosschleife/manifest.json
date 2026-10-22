@@ -1,0 +1,32 @@
+{
+  "schnittstelle_version": 1,
+  "name": "v6-p18-t97-endlosschleife",
+  "version": "1.0.0",
+  "runtime": "python3",
+  "entrypoint": "leser.py",
+  "dateien": [
+    "leser.py"
+  ],
+  "erkennung": {
+    "magic": [
+      {
+        "offset": "0",
+        "hex": "5636503138543937"
+      }
+    ],
+    "endungen": [
+      ".v6"
+    ],
+    "min_bytes": "18",
+    "max_bytes": "18"
+  },
+  "ausgabetypen": [
+    "struktur"
+  ],
+  "budgetwuensche": {
+    "zeit_ms": "5000",
+    "ram_mib": "128",
+    "dateien": "16",
+    "bytes": "65536"
+  }
+}

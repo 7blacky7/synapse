@@ -1,0 +1,280 @@
+{
+  "schema_version": 1,
+  "task_id": "P18-T97",
+  "entwurf": "bcbb38c6-6f5f-4161-abda-a056eb6c34bc",
+  "status": "vorbereitet_nicht_ausgefuehrt",
+  "dateianzahl": 27,
+  "tar": {
+    "pfad": "v6-sandbox-test.tar",
+    "format": "ustar",
+    "bytes": 3072,
+    "sha256": "ba09685451845396c4021a3b2a2108d5de99023916f77cb0f594f14aa1eb0739",
+    "base64": "YS52NgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAwMDA2NDQAMDAwMDAwMAAwMDAwMDAwADAwMDAwMDAwMDIyADAwMDAwMDAwMDAwADAxMDQyNAAgMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB1c3RhcgAwMHY2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAdjYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMDAwMDAwADAwMDAwMDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABWNlAxOFQ5NwptYXJrZXI9QQoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGIudjYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwMDAwNjQ0ADAwMDAwMDAAMDAwMDAwMAAwMDAwMDAwMDAyMgAwMDAwMDAwMDAwMAAwMTA0MjUAIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAdXN0YXIAMDB2NgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHY2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDAwMDAwMAAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVjZQMThUOTcKbWFya2VyPUIKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "mtime": 0,
+    "uid": 0,
+    "gid": 0,
+    "modus": "0644",
+    "ende_nullbloecke": 2
+  },
+  "eingaben": [
+    {
+      "path": "a.v6",
+      "content": "V6P18T97\nmarker=A\n",
+      "bytes": 18,
+      "sha256": "99ea0b61a7683f67a529f45a0a108d11d39d08376c634a19d63edf857b38051f"
+    },
+    {
+      "path": "b.v6",
+      "content": "V6P18T97\nmarker=B\n",
+      "bytes": 18,
+      "sha256": "a36058941d1ab1bf34a63ceef09fa71b1cf3cf969c56310cfb87751b07dafb20"
+    }
+  ],
+  "referenz_artefakte": [
+    {
+      "eingabe": "a.v6",
+      "pfad": "beleg.bin",
+      "bytes": 18,
+      "sha256": "99ea0b61a7683f67a529f45a0a108d11d39d08376c634a19d63edf857b38051f"
+    },
+    {
+      "eingabe": "b.v6",
+      "pfad": "beleg.bin",
+      "bytes": 18,
+      "sha256": "a36058941d1ab1bf34a63ceef09fa71b1cf3cf969c56310cfb87751b07dafb20"
+    }
+  ],
+  "dateien": [
+    "referenz/manifest.json",
+    "referenz/leser.py",
+    "netz/manifest.json",
+    "netz/leser.py",
+    "fremdschreiben/manifest.json",
+    "fremdschreiben/leser.py",
+    "endlosschleife/manifest.json",
+    "endlosschleife/leser.py",
+    "ausgabeflut/manifest.json",
+    "ausgabeflut/leser.py",
+    "symlink/manifest.json",
+    "symlink/leser.py",
+    "hardlink/manifest.json",
+    "hardlink/leser.py",
+    "ende-fehlt/manifest.json",
+    "ende-fehlt/leser.py",
+    "ende-falsch/manifest.json",
+    "ende-falsch/leser.py",
+    "fork/manifest.json",
+    "fork/leser.py",
+    "parallel/manifest.json",
+    "parallel/leser.py",
+    "signal/manifest.json",
+    "signal/leser.py",
+    "README.md",
+    "erwartungen.json",
+    "v6-sandbox-test.tar"
+  ],
+  "faelle": [
+    {
+      "fall": "referenz",
+      "eingaben": [
+        "a.v6",
+        "b.v6"
+      ],
+      "soll": "fertig",
+      "objekte": 1,
+      "pruefen": [
+        "Artefakthash gleich Quelle",
+        "fsync",
+        "aktive_generation_ersetzt=false"
+      ]
+    },
+    {
+      "fall": "netz",
+      "eingaben": [
+        "a.v6"
+      ],
+      "soll": "fertig nur mit isoliert=true",
+      "pruefen": [
+        "NetworkMode=none",
+        "TCP und UDP errno in 1/13/101/113",
+        "Timeout allein kein Erfolg",
+        "Exit42 bei unbewiesener Isolation"
+      ]
+    },
+    {
+      "fall": "fremdschreiben",
+      "eingaben": [
+        "a.v6"
+      ],
+      "soll": "fertig nur mit sicher=true",
+      "pruefen": [
+        "Verbotene Schreibziele errno 1/2/13/30",
+        "Quellhash unveraendert",
+        "RO-Mounts",
+        "/arbeit und /tmp positive Kontrolle"
+      ]
+    },
+    {
+      "fall": "endlosschleife",
+      "eingaben": [
+        "a.v6"
+      ],
+      "soll": "fehler",
+      "diagnosen": [
+        "leser_zeitlimit",
+        "leser_exit_fehler"
+      ],
+      "pruefen": [
+        "Signal/Wallclock belegen",
+        "kein Erfolg durch Fixture-Notbremse",
+        "keine Nachkommen",
+        "Folgejob claimbar"
+      ]
+    },
+    {
+      "fall": "ausgabeflut",
+      "eingaben": [
+        "a.v6",
+        "b.v6"
+      ],
+      "varianten": {
+        "A": "zeile",
+        "B": "datei",
+        "neue_gepinnte_revision": [
+          "stderr",
+          "protokoll"
+        ]
+      },
+      "soll": "fehler",
+      "diagnosen": [
+        "leser_zeile_limit",
+        "leser_protokoll_limit",
+        "leser_stderr_limit",
+        "leser_schrittgrenze",
+        "leser_datei_zu_gross",
+        "leser_exit_fehler"
+      ],
+      "pruefen": [
+        "fruehesten tatsaechlich erreichten Guard benennen",
+        "nicht alle Guards allein aus einem Fehler ableiten"
+      ]
+    },
+    {
+      "fall": "symlink",
+      "eingaben": [
+        "a.v6"
+      ],
+      "soll": "fehler",
+      "diagnosen": [
+        "leser_ausgabe_spezialdatei",
+        "leser_pfad_spezialdatei",
+        "leser_pfad_symlink"
+      ]
+    },
+    {
+      "fall": "hardlink",
+      "eingaben": [
+        "a.v6"
+      ],
+      "soll": "fehler",
+      "diagnosen": [
+        "leser_ausgabe_spezialdatei",
+        "leser_hardlink"
+      ]
+    },
+    {
+      "fall": "ende-fehlt",
+      "eingaben": [
+        "a.v6",
+        "b.v6"
+      ],
+      "soll": "fehler",
+      "diagnosen_A": [
+        "leser_endmarker_fehlt"
+      ],
+      "diagnosen_B": [
+        "leser_ende_unvollstaendig"
+      ],
+      "exit_reader": 0
+    },
+    {
+      "fall": "ende-falsch",
+      "eingaben": [
+        "a.v6",
+        "b.v6"
+      ],
+      "soll": "fehler",
+      "diagnosen_A": [
+        "leser_ende_ohne_daten"
+      ],
+      "diagnosen_B": [
+        "leser_record_nach_ende"
+      ],
+      "neue_gepinnte_revision": "VARIANTE=leer: leser_ende_ohne_daten",
+      "exit_reader": 0
+    },
+    {
+      "fall": "fork",
+      "eingaben": [
+        "a.v6"
+      ],
+      "soll": "fertig nur mit begrenzt=true und kinder_beendet=true",
+      "pruefen": [
+        "cgroup pids.max",
+        "EAGAIN",
+        "PIDs-Peak",
+        "maximal pids.max+2 nichtrekursive Versuche",
+        "keine Nachkommen"
+      ]
+    },
+    {
+      "fall": "parallel",
+      "eingaben": [
+        "a.v6",
+        "b.v6"
+      ],
+      "soll": "zwei fertig",
+      "pruefen": [
+        "zwei Container",
+        "Zeitintervalle ueberlappen",
+        "getrennte RW-Mountquellen",
+        "gleicher-name.bin verschieden je Generation/Marker",
+        "eigener_marker_unveraendert=true"
+      ]
+    },
+    {
+      "fall": "signal",
+      "eingaben": [
+        "a.v6"
+      ],
+      "soll": "OFFEN bis P18-T103 und Steuerweg freigegeben",
+      "pruefen": [
+        "fsync-Marker vor TERM",
+        "TERM vs. KILL getrennt",
+        "idle braucht dedizierten Lifecycle-Steuerweg",
+        "nicht fertig ohne Ende"
+      ]
+    }
+  ],
+  "uebergreifend": [
+    "nur synthetischer eigener Reverse-Testeintrag",
+    "kein aktiver Leser",
+    "testmodus=true",
+    "aktive_generation_ersetzt=false",
+    "PG-Snapshot unveraendert gepinnt",
+    "alle Schaerfungen nur Koordinator",
+    "keine lokalen Leserstarts",
+    "keine Projektimporte",
+    "keine fremden Jobs",
+    "Signalpunkte derzeit OFFEN"
+  ],
+  "test_sicherungen": {
+    "stdin_bytes_max": 65536,
+    "quell_bytes": 18,
+    "ausgabeflut_datei_max": 8388608,
+    "ausgabeflut_stream_max": 67108864,
+    "pids_max_fuer_probe": 64,
+    "notbremse_sekunden_max": 62
+  },
+  "bereinigung": "Testleser deaktivieren, Testeintrag archivieren; physische Entfernung erst T99. Keine manuelle Loeschung produktiver Daten."
+}
