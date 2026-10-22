@@ -6,7 +6,7 @@ export const LESER_RUNTIME_DATEIEN=['checkpoint.py','leser.py','runner.py'] as c
 export interface LeserRuntimeImage {image:string;digest:string}
 export interface LeserRuntimeBeleg {pfad:string;sha256:string;bytes:string}
 export interface LeserRuntimeIndex {dateien:LeserRuntimeBeleg[]}
-export interface LeserRuntimeQuelle {project:string;dateien:Array<{pfad:string;version_id:string}>}
+export interface LeserRuntimeQuelle {project:string;stand:'nachher';dateien:Array<LeserRuntimeBeleg&{version_id:string}>}
 export interface LeserRuntimePin {runtime_sha256:string;runtime_image_digest:string}
 export function runtimeFail(code:string):never {throw new ReverseLeserFehler(code);}
 const objekt=(x:unknown):x is Record<string,unknown>=>!!x&&typeof x==='object'&&!Array.isArray(x);
@@ -30,14 +30,16 @@ export function pruefeLeserRuntimeIndex(x:unknown,s:ReverseEinstellSnapshot):Les
 }
 export const leserRuntimePin=(i:LeserRuntimeIndex)=>reverseLeserHash(reverseLeserKanonisch(i));
 export function pruefeLeserRuntimeQuelle(x:unknown,s:ReverseEinstellSnapshot):LeserRuntimeQuelle {
- if(!objekt(x)||Object.keys(x).sort().join()!=='dateien,project'||x.project!=='synapse'
+ if(!objekt(x)||Object.keys(x).sort().join()!=='dateien,project,stand'||x.project!=='synapse'||x.stand!=='nachher'
   ||!Array.isArray(x.dateien)||x.dateien.length!==LESER_RUNTIME_DATEIEN.length)runtimeFail('leser_runtime_quelle_ungueltig');
  const dateien=x.dateien.map((q:unknown)=>{
-  if(!objekt(q)||Object.keys(q).sort().join()!=='pfad,version_id'||!(LESER_RUNTIME_DATEIEN as readonly unknown[]).includes(q.pfad)
+  if(!objekt(q)||Object.keys(q).sort().join()!=='bytes,pfad,sha256,version_id'||!(LESER_RUNTIME_DATEIEN as readonly unknown[]).includes(q.pfad)
    ||typeof q.version_id!=='string'||!(/^[1-9][0-9]*$/).test(q.version_id)||BigInt(q.version_id)>9223372036854775807n) return runtimeFail('leser_runtime_quelle_ungueltig');
-  return {pfad:q.pfad as string,version_id:q.version_id};
+  if(typeof q.bytes!=='string'||!(/^[1-9][0-9]*$/).test(q.bytes)||BigInt(q.bytes)>reverseBigInt(s,'leser_paket_bytes'))return runtimeFail('leser_runtime_quelle_ungueltig');
+  return {pfad:q.pfad as string,version_id:q.version_id,sha256:pruefeLeserRuntimePin(q.sha256),bytes:q.bytes};
  }).sort((a,b)=>a.pfad.localeCompare(b.pfad,'en'));
  if(dateien.some((q,i)=>q.pfad!==LESER_RUNTIME_DATEIEN[i]))runtimeFail('leser_runtime_quelle_ungueltig');
  if(Buffer.byteLength(reverseLeserKanonisch(x))>reverseZahl(s,'parameter_text_zeichen'))runtimeFail('leser_runtime_quelle_zu_gross');
- return {project:'synapse',dateien};
+ pruefeLeserRuntimeIndex({dateien:dateien.map(({pfad,sha256,bytes})=>({pfad,sha256,bytes}))},s);
+ return {project:'synapse',stand:'nachher',dateien};
 }

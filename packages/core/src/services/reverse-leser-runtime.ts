@@ -122,6 +122,8 @@ async function ereignis(c:PoolClient,s:ReverseEinstellSnapshot,o:RuntimeSchreiba
   return (await c.query('SELECT id::text,phase,pin FROM reverse_leser_runtime_ereignisse WHERE request_key=$1 AND phase=$2',[k.key,phase])).rows[0];
  });
 }
+/** Ausschliesslich Nachher: erster fremder Nachfolgerbatch, sonst der aktuelle PG-Stand.
+ * Erwartete Bytes/Hash sind Pflicht im Request; keine Diff-/Dateisystem-Rekonstruktion. */
 async function quellen(c:PoolClient,q:LeserRuntimeQuelle,s:ReverseEinstellSnapshot){
  const daten=new Map<string,string>(),belege:Row[]=[];let bytes=0n;
  await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -129,17 +131,53 @@ async function quellen(c:PoolClient,q:LeserRuntimeQuelle,s:ReverseEinstellSnapsh
   await c.query("SELECT set_config('statement_timeout',$1,true)",[String(reverseZahl(s,'leser_statement_timeout_ms'))]);
   for(const d of q.dateien){
    const pfad='docker/synapse-reverse/'+d.pfad;
-   const row=(await c.query("SELECT content_hash,octet_length(content)::text AS bytes,CASE WHEN octet_length(content)<=$4::bigint THEN content ELSE NULL END AS content FROM file_versions WHERE id=$1 AND project=$2 AND file_path=$3",
+   const row=(await c.query(`SELECT v.id::text AS version_id,v.batch_id::text AS anker_batch_id,v.edit_action AS anker_aktion,
+    n.id::text AS snapshot_version_id,n.batch_id::text AS snapshot_batch_id,
+    CASE WHEN n.id IS NOT NULL THEN 'naechste_version' ELSE 'aktueller_stand' END AS gelesen_aus,
+    CASE WHEN n.id IS NULL THEN cf.id::text END AS code_file_id,
+    CASE WHEN n.id IS NULL THEN cf.updated_at::text END AS code_updated_at,
+    CASE WHEN n.id IS NOT NULL THEN n.content_hash ELSE cf.content_hash END AS content_hash,
+    octet_length(CASE WHEN n.id IS NOT NULL THEN n.content ELSE cf.content END)::text AS bytes,
+    CASE WHEN octet_length(CASE WHEN n.id IS NOT NULL THEN n.content ELSE cf.content END)<=$4::bigint
+     THEN CASE WHEN n.id IS NOT NULL THEN n.content ELSE cf.content END END AS content,
+    EXISTS(SELECT 1 FROM file_versions z WHERE n.batch_id IS NOT NULL AND z.project=v.project AND z.file_path=v.file_path
+     AND z.batch_id=n.batch_id AND z.id>v.id AND z.content_hash IS DISTINCT FROM n.content_hash) AS batch_konflikt
+    FROM file_versions v
+    LEFT JOIN LATERAL(SELECT id,batch_id,content,content_hash FROM file_versions n
+     WHERE n.project=v.project AND n.file_path=v.file_path AND n.id>v.id
+      AND (v.batch_id IS NULL OR n.batch_id IS DISTINCT FROM v.batch_id) ORDER BY n.id LIMIT 1)n ON TRUE
+    LEFT JOIN code_files cf ON n.id IS NULL AND cf.project=v.project AND cf.file_path=v.file_path AND cf.deleted_at IS NULL
+    WHERE v.id=$1 AND v.project=$2 AND v.file_path=$3`,
     [d.version_id,q.project,pfad,String(reverseBigInt(s,'leser_paket_bytes')-bytes)])).rows[0];
-   if(!row||typeof row.content!=='string')runtimeFail('leser_runtime_quellversion_fehlt_oder_zu_gross');
-   bytes+=BigInt(row.bytes);
-   if(bytes>reverseBigInt(s,'leser_paket_bytes')||reverseLeserHash(row.content)!==row.content_hash)runtimeFail('leser_runtime_quellhash');
-   daten.set(d.pfad,row.content);belege.push({pfad:d.pfad,quell_pfad:pfad,version_id:d.version_id,sha256:row.content_hash,bytes:row.bytes});
+   if(!row||row.anker_aktion?.startsWith('ignore_'))runtimeFail('leser_runtime_nachher_anker_fehlt');
+   if(row.batch_konflikt)runtimeFail('leser_runtime_nachher_batch_konflikt');
+   if(row.bytes==null)runtimeFail('leser_runtime_nachher_fehlt');
+   if(typeof row.content!=='string')runtimeFail('leser_runtime_paket_zu_gross');
+   const actualBytes=String(Buffer.byteLength(row.content)),actualHash=reverseLeserHash(row.content);
+   if(actualBytes!==row.bytes||actualHash!==row.content_hash)runtimeFail('leser_runtime_quellhash');
+   if(actualBytes!==d.bytes||actualHash!==d.sha256)runtimeFail('leser_runtime_nachher_geaendert');
+   bytes+=BigInt(actualBytes);
+   daten.set(d.pfad,row.content);
+   belege.push({pfad:d.pfad,quell_pfad:pfad,version_id:d.version_id,anker_batch_id:row.anker_batch_id,anker_aktion:row.anker_aktion,
+    gelesen_aus:row.gelesen_aus,snapshot_version_id:row.snapshot_version_id,snapshot_batch_id:row.snapshot_batch_id,
+    code_file_id:row.code_file_id,code_updated_at:row.code_updated_at,sha256:actualHash,bytes:actualBytes});
   }
   await c.query('COMMIT');
  }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}
- const index=pruefeLeserRuntimeIndex({dateien:belege.map(({pfad,sha256,bytes})=>({pfad,sha256,bytes}))},s);
- return {daten,quelle:{project:q.project,dateien:belege},index,pin:leserRuntimePin(index)};
+ return {daten,quelle:{quellvertrag:'files-nachher-v1',project:q.project,stand:q.stand,dateien:belege}};
+}
+/** Nur eigene zuvor bestaetigte Aufloesung, nie ein dynamisches nachher-Metadatum. */
+function quellbeleg(details:Row,q:LeserRuntimeQuelle,pin:string,s:ReverseEinstellSnapshot):Row{
+ const quelle=details.quelle;
+ if(details.erwarteter_pin!==pin||hash(details.anfrage)!==hash(q)||quelle?.quellvertrag!=='files-nachher-v1'
+  ||quelle.project!==q.project||quelle.stand!==q.stand||!Array.isArray(quelle.dateien)||quelle.dateien.length!==q.dateien.length)runtimeFail('leser_runtime_quellbeleg_ungueltig');
+ for(const [i,d] of q.dateien.entries()){
+  const b=quelle.dateien[i];
+  if(!b||b.pfad!==d.pfad||b.quell_pfad!=='docker/synapse-reverse/'+d.pfad||b.version_id!==d.version_id||b.sha256!==d.sha256||b.bytes!==d.bytes
+   ||!['naechste_version','aktueller_stand'].includes(b.gelesen_aus)
+   ||(b.gelesen_aus==='naechste_version'?!/^[1-9][0-9]*$/.test(b.snapshot_version_id??''):!b.code_file_id))runtimeFail('leser_runtime_quellbeleg_ungueltig');
+ }
+ reverseLeserTxBudget(s,1,details);return quelle;
 }
 async function schreibeSnapshot(root:string,request:string,pin:string,index:LeserRuntimeIndex,daten:Map<string,string>,s:ReverseEinstellSnapshot,vorPublikation:()=>Promise<void>){
  const parent=await runtimeOrdner(root,'.intern/leser-runtime',s);
@@ -164,33 +202,57 @@ async function schreibeSnapshot(root:string,request:string,pin:string,index:Lese
 export async function stelleLeserRuntimeBereit(pool:Pool,roh:unknown,o:RuntimeSchreibauftrag,vorschau=false){
  if(!(pool instanceof Pool))runtimeFail('leser_runtime_pool_erforderlich');
  await o.pruefeRecht();const s=await snapshot(pool),q=pruefeLeserRuntimeQuelle(roh,s);
+ const index=pruefeLeserRuntimeIndex({dateien:q.dateien.map(({pfad,sha256,bytes})=>({pfad,sha256,bytes}))},s),pin=leserRuntimePin(index);
+ const k=auftrag(o,'bereitstellen',{quelle:q,image:o.image,grund:o.grund});
+ const basis=(quelle:Row)=>({pin,index,quelle,image:o.image,vertrag:LESER_RUNTIME_VERTRAG,
+  bytes:String(index.dateien.reduce((n,b)=>n+BigInt(b.bytes),BigInt(Buffer.byteLength(reverseLeserKanonisch(index)))))});
  const c=await pool.connect();let lock:string|null=null,kaputt=false;
  try{
   if(!vorschau)await freigabe(c,s,o);
-  const v=await quellen(c,q,s),k=auftrag(o,'bereitstellen',{quelle:q,image:o.image,grund:o.grund});
-  const basis={pin:v.pin,index:v.index,quelle:v.quelle,image:o.image,vertrag:LESER_RUNTIME_VERTRAG,
-   bytes:String(v.index.dateien.reduce((n,b)=>n+BigInt(b.bytes),BigInt(Buffer.byteLength(reverseLeserKanonisch(v.index)))))};
-  if(vorschau)return {status:'vorschau',...basis,aktiviert:false};
-  lock='leser-runtime:'+v.pin;
-  if(!(await c.query('SELECT pg_try_advisory_lock(hashtext($1)) AS ok',[lock])).rows[0]?.ok){lock=null;runtimeFail('leser_runtime_bereitstellung_laeuft');}
-  await ereignis(c,s,o,k,'begonnen',null,null,{quelle:v.quelle,erwarteter_pin:v.pin});
+  await requestPruefen(c,k); // geaenderter Payload scheitert vor jeder Quelle/Share-Schreibphase
+  if(!vorschau){
+   lock='leser-runtime:'+pin;
+   if(!(await c.query('SELECT pg_try_advisory_lock(hashtext($1)) AS ok',[lock])).rows[0]?.ok){lock=null;runtimeFail('leser_runtime_bereitstellung_laeuft');}
+   const fertig=(await c.query("SELECT pin,details FROM reverse_leser_runtime_ereignisse WHERE request_key=$1 AND phase='bereitgestellt'",[k.key])).rows[0];
+   if(fertig){
+    if(fertig.pin!==pin)runtimeFail('leser_runtime_quellbeleg_ungueltig');
+    const quelle=quellbeleg(fertig.details,q,pin,s);
+    await pruefeLeserRuntimeSnapshot(c,{runtime_sha256:pin,runtime_image_digest:o.image.digest},s,o.root,o.image.digest);
+    await freigabe(c,s,o);
+    return {status:'bereitgestellt',...basis(quelle),aktiviert:false,idempotent:true};
+   }
+  }
+  let v:{daten:Map<string,string>;quelle:Row}|undefined;
+  if(!vorschau){
+   const begonnen=(await c.query("SELECT details FROM reverse_leser_runtime_ereignisse WHERE request_key=$1 AND phase='begonnen'",[k.key])).rows[0];
+   if(begonnen){
+    const quelle=quellbeleg(begonnen.details,q,pin,s);
+    // Ein vollstaendiges Ziel plus eigener Aufloesungsbeleg ueberlebt Quelldatei-Aenderung/-Loeschung.
+    try{await pruefeRuntimeBaum(o.root??reverseLeserRoot(),pin,index,s);v={daten:new Map(),quelle};}
+    catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+   }
+  }
+  v??=await quellen(c,q,s);
+  if(vorschau)return {status:'vorschau',...basis(v.quelle),aktiviert:false};
+  const details={anfrage:q,quelle:v.quelle,erwarteter_pin:pin};
+  await ereignis(c,s,o,k,'begonnen',null,null,details);
   await freigabe(c,s,o);
-  const fs=await schreibeSnapshot(o.root??reverseLeserRoot(),k.key,v.pin,v.index,v.daten,s,()=>freigabe(c,s,o));
-  const rp=[v.pin,LESER_RUNTIME_VERTRAG,v.index,'.intern/leser-runtime/'+v.pin,v.quelle,basis.bytes,o.akteur];
+  let fs:{vorhanden:boolean};
+  if(v.daten.size===0){
+   await pruefeRuntimeBaum(o.root??reverseLeserRoot(),pin,index,s);await freigabe(c,s,o);fs={vorhanden:true};
+  }else fs=await schreibeSnapshot(o.root??reverseLeserRoot(),k.key,pin,index,v.daten,s,()=>freigabe(c,s,o));
+  const rp=[pin,LESER_RUNTIME_VERTRAG,index,'.intern/leser-runtime/'+pin,v.quelle,basis(v.quelle).bytes,o.akteur];
   await mutation(c,s,o,rp,()=>c.query("INSERT INTO reverse_leser_runtimes(pin,vertrag,inhaltsindex,storage_key,quelle,bytes,erstellt_von) VALUES($1,$2,$3::jsonb,$4,$5::jsonb,$6::bigint,$7) ON CONFLICT(pin) DO NOTHING",rp));
-  const saved=await leseLeserRuntime(c,v.pin);
-  if(!saved||reverseLeserKanonisch(saved.inhaltsindex)!==reverseLeserKanonisch(v.index)||saved.storage_key!=='.intern/leser-runtime/'+v.pin||saved.bytes!==basis.bytes)runtimeFail('leser_runtime_registry_konflikt');
-  const ip=[v.pin,o.image.digest,o.image.image,o.akteur];
+  const saved=await leseLeserRuntime(c,pin);
+  if(!saved||reverseLeserKanonisch(saved.inhaltsindex)!==reverseLeserKanonisch(index)||saved.storage_key!=='.intern/leser-runtime/'+pin||saved.bytes!==basis(v.quelle).bytes)runtimeFail('leser_runtime_registry_konflikt');
+  const ip=[pin,o.image.digest,o.image.image,o.akteur];
   await mutation(c,s,o,ip,()=>c.query('INSERT INTO reverse_leser_runtime_images(pin,image_digest,image,erstellt_von) VALUES($1,$2,$3,$4) ON CONFLICT(pin,image_digest) DO NOTHING',ip));
-  await pruefeLeserRuntimeSnapshot(c,{runtime_sha256:v.pin,runtime_image_digest:o.image.digest},s,o.root);
-  await ereignis(c,s,o,k,'bereitgestellt',v.pin,null,{quelle:v.quelle,share_verifiziert:true});
-  return {status:'bereitgestellt',...basis,aktiviert:false,idempotent:fs.vorhanden};
+  await pruefeLeserRuntimeSnapshot(c,{runtime_sha256:pin,runtime_image_digest:o.image.digest},s,o.root);
+  await ereignis(c,s,o,k,'bereitgestellt',pin,null,{...details,share_verifiziert:true});
+  return {status:'bereitgestellt',...basis(v.quelle),aktiviert:false,idempotent:fs.vorhanden};
  }catch(e){
-  // Ein Fehler wird als neue Auditphase geschrieben, nie durch UPDATE eines alten Ereignisses.
-  // Vor einem begonnenen Request oder bei verlorener Freigabe bleibt der Transport-Audit zustaendig.
   const code=(e as Error).message;
   if(lock)try{
-   const k=auftrag(o,'bereitstellen',{quelle:q,image:o.image,grund:o.grund});
    await ereignis(c,s,o,k,'fehler',null,null,{code:/^[a-zA-Z0-9_]+$/.test(code)?code:'leser_runtime_bereitstellung_fehler'});
   }catch{/* Kein Erfolg vortaeuschen, wenn Freigabe/Audit nicht mehr schreibbar ist. */}
   throw e;

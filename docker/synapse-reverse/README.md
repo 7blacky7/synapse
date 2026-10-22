@@ -142,10 +142,36 @@ Das Dockerfile wird erst beim abschließenden, gemeinsamen Build geändert.
 
 Der Snapshot wird ausschließlich über die gemeinsame Reverse-API bereitgestellt:
 `leser_runtime_liste/get` zeigen Registry, Standardrevision, Imagebezug und
-Share-Prüfung. `leser_runtime_bereitstellen` liest exakt drei `file_versions`
-des Projekts synapse: checkpoint.py, leser.py und runner.py aus
-docker/synapse-reverse/. `runtime_quelle` enthält
-`{project:"synapse",dateien:[{pfad,version_id}]}`; keine freien Zielpfade.
+Share-Prüfung. `leser_runtime_bereitstellen` liest ausschließlich den PG-Nachher-Stand
+von checkpoint.py, leser.py und runner.py unter docker/synapse-reverse/ des
+Projekts synapse. `runtime_quelle` enthält zwingend
+`{project:"synapse",stand:"nachher",dateien:[{pfad,version_id,sha256,bytes}]}`;
+SHA-256 und positive dezimale UTF8-Bytezahl sind Erwartungen des Aufrufers.
+Keine freien Pfade und kein impliziter Vorher-/Aktuell-Fallback.
+
+`version_id` ist der Änderungsanker: file_versions.content speichert den Stand
+VOR der Änderung. Der Dienst liest für NACHHER den Vorher-Inhalt der nächsten
+Version aus einem anderen Batch; Co-Edit-Zeilen desselben Batches zählen nicht.
+Fehlt ein Nachfolger, liest er den nicht gelöschten aktuellen code_files-Inhalt
+derselben Datei. Alle drei Quellen stammen aus einer READ-ONLY/REPEATABLE-READ-Sicht.
+Tatsächliche UTF8-Bytes werden gegen Hashmetadaten UND Request-SHA/Bytes geprüft.
+Abweichung liefert `leser_runtime_nachher_geaendert`, fehlender Nachher-Stand
+`leser_runtime_nachher_fehlt`. Keine Diff-Rekonstruktion, FS-/SSH-Lesequelle
+oder Änderung der Quelltabellen. Alte Quellenblöcke ohne die Pflichtfelder
+werden abgewiesen; bereits registrierte Runtimes bleiben verwendbar.
+
+Die logische Identität ist Projekt/Pfad/Nachher-Anker/SHA/Bytes. Der unveränderliche
+Runtime-/Requestbeleg nennt zusätzlich die physische Lesestelle (nächste Versions-ID
+oder code_file_id/updated_at), Ankerbatch und tatsächlich berechneten Hash/Bytes.
+Eigene begonnen-/bereitgestellt-Ereignisse halten den Beleg append-only fest;
+die Registry behält den ersten Quellenbeleg. Spätere gleichwertige Quellenbelege
+stehen im zugehörigen Requestereignis. Der Inhaltspin enthält keine Versions-IDs.
+Ein bestätigter Retry prüft eigenen gespeicherten Requestbeleg und komplettes
+RO-Paket statt inzwischen veränderte Projektquellen erneut aufzulösen.
+Ein Crash nach Rename kann mit eigenem begonnen-Beleg und vollständig geprüftem
+Ziel fortgesetzt werden. Fehlt das Ziel, wird derselbe Nachher-Bezug erneut
+geprüft; andere Bytes werden niemals still übernommen. Ein anderer Payload
+unter demselben Akteur/Idempotenzschlüssel wird als Konflikt abgewiesen.
 Vorschau ist Standard; Schreiben verlangt `vorschau:false`, `grund` und
 `runtime_schluessel`. User oder bestätigter Koordinator benötigen dafür den
 globalen Produkt-Schalter `reverse_leser_runtime_verwaltung` (Standard AUS).
@@ -172,7 +198,7 @@ RO-Mount. `SYNAPSE_REVERSE_LESER_RUNTIME_SHA256` hat keine Autorität mehr.
 Ein API-/Core-Deploy genügt, solange das bestehende Image Python3 und den
 Entrypoint `python3 -u /opt/reverse/runner.py` bereitstellt. Native
 Abhängigkeiten und Image-Digest bleiben Infrastruktur; die Datei-Bytes
-kommen aus den freigegebenen Versionen, nicht aus einer Image-Extraktion.
+kommen aus dem hashgebundenen Nachher-Stand der Änderungsanker, nicht aus einer Image-Extraktion.
 Der Snapshot gilt nur für den Lesercontainer; E/S3 behalten ihren Altweg.
 Die echte Sandbox-/Mount-Abnahme erfolgt gesondert in V6.
 

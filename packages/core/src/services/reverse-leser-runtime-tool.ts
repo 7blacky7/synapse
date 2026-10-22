@@ -8,7 +8,7 @@ import {leseLeserRuntimeVerwaltung,leseLeserRuntime,leseLeserRuntimeStandard,pru
 import {runtimeFail,pruefeLeserRuntimeImage,pruefeLeserRuntimePin,type LeserRuntimeImage} from './reverse-leser-runtime-vertrag.js';
 export const LESER_RUNTIME_ACTIONS=['leser_runtime_liste','leser_runtime_get','leser_runtime_bereitstellen','leser_runtime_aktivieren','leser_runtime_deaktivieren'] as const;
 export const LESER_RUNTIME_PARAMETER={
- runtime_quelle:{type:'object',description:'Exakt {project:"synapse",dateien:[{pfad,version_id}]}; V1 exakt checkpoint.py/leser.py/runner.py aus docker/synapse-reverse, unveränderliche files-Versionen'},
+ runtime_quelle:{type:'object',description:'Exakt {project:"synapse",stand:"nachher",dateien:[{pfad,version_id,sha256,bytes}]}; V1 exakt checkpoint.py/leser.py/runner.py aus docker/synapse-reverse. version_id ist der Aenderungsanker; SHA256/UTF8-Bytezahl pinnen dessen Nachher-Stand.'},
  runtime_pin:{type:'string',description:'Exakter SHA-256 des kanonischen Runtime-Inhaltsindex'},
  runtime_basis_revision:{type:'string',description:'CAS-Revision des Image-Standards aus leser_runtime_get, anfangs "0"'},
  runtime_cursor:{type:'string',description:'Keyset-Cursor aus leser_runtime_liste'},
