@@ -13,10 +13,14 @@ export interface ReverseLeserManifest {
  budgetwuensche?:{zeit_ms?:string;ram_mib?:string;dateien?:string;bytes?:string};
 }
 export interface ReverseLeserQuelle {
- project:string; manifest_pfad:string; manifest_version_id:string;
- dateien:Array<{pfad:string;version_id:string}>;
+ project:string;stand:'nachher';manifest_pfad:string;manifest_version_id:string;manifest_sha256:string;manifest_bytes:string;
+ dateien:Array<{pfad:string;version_id:string;sha256:string;bytes:string}>;
 }
-export interface ReverseLeserQuellbeleg {pfad:string;version_id:string;sha256:string;bytes:string}
+export interface ReverseLeserQuellbeleg {
+ pfad:string;version_id:string;sha256:string;bytes:string;quell_pfad?:string;
+ anker_batch_id?:string|null;anker_aktion?:string|null;gelesen_aus?:'naechste_version'|'aktueller_stand';
+ snapshot_version_id?:string|null;snapshot_batch_id?:string|null;code_file_id?:string|null;code_updated_at?:string|null;
+}
 export interface ReverseLeserEingabe {
  schnittstelle_version:1; eintrag_id:string; datei_id:string; quell_sha256:string; groesse:string;
  leser_revision:string; code_sha256:string; generation:string; eingabe:string; ausgabe:string;

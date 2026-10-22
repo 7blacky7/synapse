@@ -6,6 +6,39 @@ packages/rest-api/src/services/reverse-leser-executor.ts. Manifest und Quellen
 werden getrennt von Nutzdaten als unveränderliche registrierte Revision gepinnt.
 Diese Pakete sind noch nicht global registriert/aktiviert. Produktstandard AUS.
 
+Registrierung verlangt explizite Nachher-Erwartungen:
+`leser_quelle={project,stand:"nachher",manifest_pfad,manifest_version_id,
+manifest_sha256,manifest_bytes,dateien:[{pfad,version_id,sha256,bytes}]}`.
+Manifestpfad ist ein sicherer relativer Projektpfad; Codedateien sind relativ
+zu dessen Ordner. SHA256 und UTF8-Bytezahl sind für Manifest und jede Datei
+Pflicht. Eine absichtlich leere Code-Nebendatei verwendet bytes:"0" samt
+Leerhash. Manifest und Einstiegspunkt werden unabhängig validiert.
+
+version_id bezeichnet die Änderung, deren NACHHER-Stand gemeint ist.
+file_versions.content selbst ist der VORHER-Stand. Der gemeinsame Reverse-
+Nachher-Resolver liest die erste nächste Version aus einem anderen Batch,
+sonst den nicht gelöschten aktuellen PG-Inhalt exakt desselben Projektpfads.
+Er prüft tatsächliche Bytes/Hash gegen Quellenmetadaten UND Erwartungen.
+Nur Manifest und explizit angegebene, mit manifest.dateien identische Pfade
+sind lesbar; es gibt keinen Vorher-, Diff-, FS- oder SSH-Fallback.
+Alte Registrierungsblöcke ohne stand/Erwartungen werden abgewiesen.
+
+Die Registry speichert den normalisierten Request und seine geprüften
+Quellbelege unveränderlich. Die Revisionsidentität enthält logische
+Anker/Hash/Bytes; eine spätere andere physische Lesestelle ändert sie nicht.
+Ein bestätigter gleicher Registrierungsretry bleibt auch nach Quellenlöschung
+gültig. Gleicher Lesername und Version mit anderer Quelle sind ein Konflikt.
+Registrierung erzeugt nur einen Entwurf, keine Jobs oder Aktivierung.
+
+Die spätere Paketbereitstellung nutzt denselben Resolver. Vorhandene
+hashgeprüfte eigene Pakete werden wiederverwendet; für fehlende Bytes muss
+die historische Nachher-Quelle weiterhin nachweisbar sein. Eine Registry-
+Bestätigung allein garantiert daher keine spätere Rekonstruktion gelöschter
+Projektquellen. Bereits gespeicherte alte Leserrevisionen behalten ihren
+expliziten Legacy-Vorher-Beleg; neue Aufrufe können diesen Weg nicht wählen.
+Neue Paketdateien sind umask-unabhängig0444, neue eigene Paketordner0555.
+Unlesbare bestehende Pakete werden abgewiesen und nicht still repariert.
+
 Der Einstiegspunkt liest eine JSON-Zeile auf stdin: Schnittstelle, Eintrag/Datei,
 Quellhash/-größe, Leserrevision/Codehash, Generation, Einstellungsrevision,
 RO-Eingabepfad, eigener RW-Ausgabepfad, cursor und grenzen. Der Ausgabebereich

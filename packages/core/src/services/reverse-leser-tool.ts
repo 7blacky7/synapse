@@ -14,7 +14,7 @@ import {stelleReverseLeserPaketBereit,reverseLeserTx,reverseLeserTxBudget} from 
 export const LESER_ACTIONS=['leser_liste','leser_get','leser_testen','leser_registrieren','leser_aktivieren','leser_deaktivieren','leser_nachziehen'] as const;
 export const LESER_PARAMETER={
  leser_id:{type:'string',description:'Exakte registrierte Leserrevision (SHA-256)'},
- leser_quelle:{type:'object',description:'Registrierung: {project,manifest_pfad,manifest_version_id,dateien:[{pfad,version_id}]}; ausschließlich exakte files-Versionen'},
+ leser_quelle:{type:'object',description:'Registrierung: {project,stand:"nachher",manifest_pfad,manifest_version_id,manifest_sha256,manifest_bytes,dateien:[{pfad,version_id,sha256,bytes}]}; exakte Nachher-Erwartungen je Aenderungsanker, kein Vorher-Fallback'},
  leser_cursor:{type:'string',description:'Keyset-Cursor aus leser_liste'},
  leser_lauf_id:{type:'string',description:'leser_get: exakter Lauf im gebundenen Eintrag'},
  test_schluessel:{type:'string',description:'leser_testen: Wiederholungsschlüssel; unveränderte Anfrage liefert denselben isolierten Testlauf'},
@@ -79,7 +79,7 @@ export async function fuehreReverseLeserAus(pool:Pool,a:Row,image?:LeserRuntimeI
   const limit=a.limit??reverseZahl(s,'seiten_limit'),offset=a.offset??0;
   if(!Number.isSafeInteger(limit)||Number(limit)<1||Number(limit)>reverseZahl(s,'max_limit')||!Number.isSafeInteger(offset)||Number(offset)<0)fail('leser_limit_ungueltig');
   const dateien=r.quelle.dateien.slice(Number(offset),Number(offset)+Number(limit));
-  return result({status:'fertig',leser:revisionMeta(r),quelle:{project:r.quelle.project,manifest:r.quelle.manifest,dateien},
+  return result({status:'fertig',leser:revisionMeta(r),quelle:{project:r.quelle.project,stand:r.quelle.stand??'vorher',quellvertrag:r.quelle.quellvertrag??'files-vorher-legacy',manifest:r.quelle.manifest,dateien},
    gesamt:r.quelle.dateien.length,naechster_offset:Number(offset)+dateien.length<r.quelle.dateien.length?Number(offset)+dateien.length:null});
  }
  if(a.action==='leser_registrieren'){

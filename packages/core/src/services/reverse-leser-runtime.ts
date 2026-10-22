@@ -11,6 +11,7 @@ import {reverseLeserRoot,reverseLeserDateipfad,pruefeReverseLeserDatei,reverseLe
 import {LESER_RUNTIME_DATEIEN,LESER_RUNTIME_VERTRAG,runtimeFail,pruefeLeserRuntimeImage,pruefeLeserRuntimePin,
  pruefeLeserRuntimeIndex,pruefeLeserRuntimeQuelle,leserRuntimePin,
  type LeserRuntimeImage,type LeserRuntimeQuelle,type LeserRuntimeIndex,type LeserRuntimePin} from './reverse-leser-runtime-vertrag.js';
+import {loeseReverseLeserNachher,mitReverseNachherLesesicht,ReverseNachherFehler} from './reverse-leser-nachher.js';
 type Db=Pick<PoolClient,'query'>;
 type Row=Record<string,any>;
 export interface RuntimeSchreibauftrag {
@@ -122,48 +123,26 @@ async function ereignis(c:PoolClient,s:ReverseEinstellSnapshot,o:RuntimeSchreiba
   return (await c.query('SELECT id::text,phase,pin FROM reverse_leser_runtime_ereignisse WHERE request_key=$1 AND phase=$2',[k.key,phase])).rows[0];
  });
 }
-/** Ausschliesslich Nachher: erster fremder Nachfolgerbatch, sonst der aktuelle PG-Stand.
- * Erwartete Bytes/Hash sind Pflicht im Request; keine Diff-/Dateisystem-Rekonstruktion. */
+/** Runtime-Scope bleibt exakt synapse + drei feste Pfade; SQL-/Hashregeln liegen nur im gemeinsamen Resolver. */
 async function quellen(c:PoolClient,q:LeserRuntimeQuelle,s:ReverseEinstellSnapshot){
  const daten=new Map<string,string>(),belege:Row[]=[];let bytes=0n;
+ const erlaubt=new Set(LESER_RUNTIME_DATEIEN.map(p=>'docker/synapse-reverse/'+p));
+ // Runtime haelt bereits den Sessionlock-Client; Lesesicht lokal beginnen, niemals reconnect.
  await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
  try{
   await c.query("SELECT set_config('statement_timeout',$1,true)",[String(reverseZahl(s,'leser_statement_timeout_ms'))]);
-  for(const d of q.dateien){
-   const pfad='docker/synapse-reverse/'+d.pfad;
-   const row=(await c.query(`SELECT v.id::text AS version_id,v.batch_id::text AS anker_batch_id,v.edit_action AS anker_aktion,
-    n.id::text AS snapshot_version_id,n.batch_id::text AS snapshot_batch_id,
-    CASE WHEN n.id IS NOT NULL THEN 'naechste_version' ELSE 'aktueller_stand' END AS gelesen_aus,
-    CASE WHEN n.id IS NULL THEN cf.id::text END AS code_file_id,
-    CASE WHEN n.id IS NULL THEN cf.updated_at::text END AS code_updated_at,
-    CASE WHEN n.id IS NOT NULL THEN n.content_hash ELSE cf.content_hash END AS content_hash,
-    octet_length(CASE WHEN n.id IS NOT NULL THEN n.content ELSE cf.content END)::text AS bytes,
-    CASE WHEN octet_length(CASE WHEN n.id IS NOT NULL THEN n.content ELSE cf.content END)<=$4::bigint
-     THEN CASE WHEN n.id IS NOT NULL THEN n.content ELSE cf.content END END AS content,
-    EXISTS(SELECT 1 FROM file_versions z WHERE n.batch_id IS NOT NULL AND z.project=v.project AND z.file_path=v.file_path
-     AND z.batch_id=n.batch_id AND z.id>v.id AND z.content_hash IS DISTINCT FROM n.content_hash) AS batch_konflikt
-    FROM file_versions v
-    LEFT JOIN LATERAL(SELECT id,batch_id,content,content_hash FROM file_versions n
-     WHERE n.project=v.project AND n.file_path=v.file_path AND n.id>v.id
-      AND (v.batch_id IS NULL OR n.batch_id IS DISTINCT FROM v.batch_id) ORDER BY n.id LIMIT 1)n ON TRUE
-    LEFT JOIN code_files cf ON n.id IS NULL AND cf.project=v.project AND cf.file_path=v.file_path AND cf.deleted_at IS NULL
-    WHERE v.id=$1 AND v.project=$2 AND v.file_path=$3`,
-    [d.version_id,q.project,pfad,String(reverseBigInt(s,'leser_paket_bytes')-bytes)])).rows[0];
-   if(!row||row.anker_aktion?.startsWith('ignore_'))runtimeFail('leser_runtime_nachher_anker_fehlt');
-   if(row.batch_konflikt)runtimeFail('leser_runtime_nachher_batch_konflikt');
-   if(row.bytes==null)runtimeFail('leser_runtime_nachher_fehlt');
-   if(typeof row.content!=='string')runtimeFail('leser_runtime_paket_zu_gross');
-   const actualBytes=String(Buffer.byteLength(row.content)),actualHash=reverseLeserHash(row.content);
-   if(actualBytes!==row.bytes||actualHash!==row.content_hash)runtimeFail('leser_runtime_quellhash');
-   if(actualBytes!==d.bytes||actualHash!==d.sha256)runtimeFail('leser_runtime_nachher_geaendert');
-   bytes+=BigInt(actualBytes);
-   daten.set(d.pfad,row.content);
-   belege.push({pfad:d.pfad,quell_pfad:pfad,version_id:d.version_id,anker_batch_id:row.anker_batch_id,anker_aktion:row.anker_aktion,
-    gelesen_aus:row.gelesen_aus,snapshot_version_id:row.snapshot_version_id,snapshot_batch_id:row.snapshot_batch_id,
-    code_file_id:row.code_file_id,code_updated_at:row.code_updated_at,sha256:actualHash,bytes:actualBytes});
-  }
+  await mitReverseNachherLesesicht(c,s,async db=>{
+   for(const d of q.dateien){
+    const v=await loeseReverseLeserNachher(db,q.project,{...d,pfad:'docker/synapse-reverse/'+d.pfad},erlaubt,reverseBigInt(s,'leser_paket_bytes')-bytes,s);
+    daten.set(d.pfad,v.content);bytes+=BigInt(v.beleg.bytes);belege.push({...v.beleg,pfad:d.pfad});
+   }
+  });
   await c.query('COMMIT');
- }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}
+ }catch(e){
+  await c.query('ROLLBACK').catch(()=>undefined);
+  if(e instanceof ReverseNachherFehler)runtimeFail('leser_runtime_'+e.grund);
+  throw e;
+ }
  return {daten,quelle:{quellvertrag:'files-nachher-v1',project:q.project,stand:q.stand,dateien:belege}};
 }
 /** Nur eigene zuvor bestaetigte Aufloesung, nie ein dynamisches nachher-Metadatum. */

@@ -6,9 +6,10 @@ import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {getAssetKonfiguration} from '../config/asset-konfig.js';
 import {reverseBigInt,reverseZahl,leseReverseEinstellwerte,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
-import {leseReverseLeserSchalter,leseReverseLeserRevision,type ReverseLeserRevision} from './reverse-leser-registry.js';
+import {leseReverseLeserSchalter,leseReverseLeserRevision,pruefeReverseLeserQuelle,type ReverseLeserRevision} from './reverse-leser-registry.js';
 import {reverseEintragAktiv,leseReverseAssetRegistrierungSchalter,registriereReverseAssetBlock} from './reverse-asset-registrierung.js';
 import {reverseLeserPfad,reverseLeserHash,reverseLeserKanonisch,ReverseLeserFehler,type ReverseLeserEreignis} from './reverse-leser-vertrag.js';
+import {loeseReverseLeserNachher,mitReverseNachherLesesicht} from './reverse-leser-nachher.js';
 type Db=Pick<PoolClient,'query'>;
 type Objekt=Extract<ReverseLeserEreignis,{art:'objekt'}>;
 function fail(code:string):never {throw new ReverseLeserFehler(code);}
@@ -40,18 +41,84 @@ export async function pruefeReverseLeserDatei(root:string,key:string,sha:string,
 async function unveraenderlich(root:string,key:string,text:string,sha:string,s:ReverseEinstellSnapshot){
  const p=await reverseLeserDateipfad(root,key,s,true);let h;
  try{h=await open(p,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o444);}
- catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;await pruefeReverseLeserDatei(root,key,sha,String(Buffer.byteLength(text)),s);return;}
- try{await h.writeFile(text);await h.sync();}finally{await h.close();}
+ catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;await pruefePaketDatei(root,key,sha,String(Buffer.byteLength(text)),s);return;}
+ try{await h.writeFile(text);await h.chmod(0o444);await h.sync();}finally{await h.close();}
+ await pruefePaketDatei(root,key,sha,String(Buffer.byteLength(text)),s);
 }
-/** Exakte file_versions, niemals aktuelle Projektdateien; keine Projekt-Schreiboperation. */
+async function pruefePaketDatei(root:string,key:string,sha:string,bytes:string,s:ReverseEinstellSnapshot){
+ const p=await reverseLeserDateipfad(root,key,s),st=await lstat(p);
+ if((st.mode&0o004)===0)fail('leser_paket_container_nicht_lesbar');
+ if((st.mode&0o7777)!==0o444)fail('leser_paket_modus_ungueltig');
+ return pruefeReverseLeserDatei(root,key,sha,bytes,s);
+}
+async function pruefePaketOrdner(p:string,versiegelt=false){
+ const st=await lstat(p);
+ if(!st.isDirectory()||st.isSymbolicLink())fail('leser_pfad_ungueltig');
+ if((st.mode&0o005)!==0o005)fail('leser_paket_container_nicht_lesbar');
+ if(versiegelt&&(st.mode&0o7777)!==0o555)fail('leser_paket_modus_ungueltig');
+}
+async function syncPaketOrdner(p:string,mode:number){
+ const h=await open(p,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+ try{await h.chmod(mode);await h.sync();}finally{await h.close();}
+}
+/** Neue eigene Ordner explizit lesbar; vorhandene Snapshotrechte werden niemals repariert. */
+async function neuePaketOrdner(root:string,key:string,s:ReverseEinstellSnapshot,neu:Set<string>,versiegelt=false){
+ try{await mkdir(path.join(root,key),{mode:0o755});neu.add(path.join(root,key));await syncPaketOrdner(path.join(root,key),0o755);}
+ catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
+ await pruefePaketOrdner(path.join(root,key),versiegelt&&!neu.has(path.join(root,key)));
+}
+/** Nur eigene Paketdateien; neue Revisionen nutzen denselben Nachher-Resolver wie Runtime/Registry. */
 export async function stelleReverseLeserPaketBereit(db:Db,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,root=reverseLeserRoot()){
  const storage_key='.intern/leser/'+r.id+'/'+r.paket_sha256,base=r.quelle.manifest.pfad.replace(/[^/]+$/,'');
+ const nachher=r.quelle.quellvertrag==='files-nachher-v1';
+ const anfrage=nachher?pruefeReverseLeserQuelle(r.quelle.anfrage,s):null;
+ if(nachher&&(anfrage!.project!==r.quelle.project||anfrage!.manifest_pfad!==r.quelle.manifest.pfad
+  ||anfrage!.dateien.length!==r.quelle.dateien.length))fail('leser_quellbeleg_ungueltig');
+ const erlaubt=new Set([r.quelle.manifest.pfad,...(anfrage?.dateien.map(q=>base+q.pfad)??r.quelle.dateien.map(q=>base+q.pfad))]);
+ const missing:typeof r.quelle.dateien=[];const ordner=new Set<string>([storage_key]);
  for(const q of r.quelle.dateien){
-  const row=(await db.query('SELECT content FROM file_versions WHERE id=$1 AND project=$2 AND file_path=$3 AND content_hash=$4 AND octet_length(content)=$5::bigint',
-   [q.version_id,r.quelle.project,base+q.pfad,q.sha256,q.bytes])).rows[0];
-  if(typeof row?.content!=='string'||reverseLeserHash(row.content)!==q.sha256)fail('leser_quellversion_veraendert');
-  await unveraenderlich(root,storage_key+'/'+q.pfad,row.content,q.sha256,s);
+  reverseLeserPfad(q.pfad,s);
+  const relative=q.pfad.split('/').slice(0,-1);let key=storage_key;
+  for(const part of relative){key+='/'+part;ordner.add(key);}
+  if(anfrage){
+   const d=anfrage.dateien.find(d=>d.pfad===q.pfad);
+   if(!d||d.version_id!==q.version_id||d.sha256!==q.sha256||d.bytes!==q.bytes)fail('leser_quellbeleg_ungueltig');
+  }
  }
+ // Bestehende eigene Verzeichnisse zuerst pruefen, damit fehlendes Search-Recht klar erkennbar bleibt.
+ let vorhandeneWurzel=false;
+ for(const key of ordner)try{await pruefePaketOrdner(path.join(root,key),nachher);if(key===storage_key)vorhandeneWurzel=true;}
+ catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
+ for(const q of r.quelle.dateien)try{await pruefePaketDatei(root,storage_key+'/'+q.pfad,q.sha256,q.bytes,s);}
+ catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;missing.push(q);}
+ if(nachher&&vorhandeneWurzel&&missing.length)fail('leser_paket_unvollstaendig');
+ const daten=await mitReverseNachherLesesicht(db,s,async c=>{
+  const result=new Map<string,string>();let bytes=BigInt(r.quelle.manifest.bytes);
+  for(const q of r.quelle.dateien){
+   bytes+=BigInt(q.bytes);if(bytes>reverseBigInt(s,'leser_paket_bytes'))fail('leser_paket_zu_gross');
+   if(!missing.includes(q))continue;
+   if(nachher){
+    const v=await loeseReverseLeserNachher(c,r.quelle.project,{...q,pfad:base+q.pfad},erlaubt,reverseBigInt(s,'leser_paket_bytes')-(bytes-BigInt(q.bytes)),s);
+    result.set(q.pfad,v.content);
+   }else{
+    // Ausschliesslich alte, bereits gespeicherte Revisionen behalten ihren Vorher-Snapshot.
+    const row=(await c.query({text:'SELECT content FROM file_versions WHERE id=$1 AND project=$2 AND file_path=$3 AND content_hash=$4 AND octet_length(content)=$5::bigint',
+     values:[q.version_id,r.quelle.project,base+q.pfad,q.sha256,q.bytes],query_timeout:reverseZahl(s,'leser_statement_timeout_ms')} as import('pg').QueryConfig)).rows[0];
+    if(typeof row?.content!=='string'||reverseLeserHash(row.content)!==q.sha256)fail('leser_quellversion_veraendert');
+    result.set(q.pfad,row.content);
+   }
+  }return result;
+ });
+ if(missing.length){
+  // Nur Eltern des eigenen storage_key vorbereiten, keine Projektpfade oder alten Snapshots chmodden.
+  await reverseLeserDateipfad(root,'.intern/leser/'+r.id+'/.paket-pfadprobe',s,true);
+  const neu=new Set<string>();
+  for(const key of ordner)await neuePaketOrdner(root,key,s,neu,nachher);
+  for(const q of missing)await unveraenderlich(root,storage_key+'/'+q.pfad,daten.get(q.pfad)!,q.sha256,s);
+  for(const p of [...neu].sort((a,b)=>b.length-a.length))await syncPaketOrdner(p,0o555);
+ }
+ for(const key of ordner)await pruefePaketOrdner(path.join(root,key),nachher);
+ for(const q of r.quelle.dateien)await pruefePaketDatei(root,storage_key+'/'+q.pfad,q.sha256,q.bytes,s);
  return {storage_key,paket_bytes:r.quelle.dateien.reduce((n,q)=>n+BigInt(q.bytes),0n).toString()};
 }
 export function reverseLeserTxBudget(s:ReverseEinstellSnapshot,zeilen:number,params:unknown):void{
