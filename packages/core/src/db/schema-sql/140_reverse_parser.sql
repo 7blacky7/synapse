@@ -21,12 +21,14 @@ CREATE TABLE IF NOT EXISTS reverse_code_abbildungen (
  FOREIGN KEY(parser_generation_id,eintrag_id,datei_id) REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT
 );
 CREATE INDEX IF NOT EXISTS idx_reverse_code_abbildung ON reverse_code_abbildungen(eintrag_id,datei_id,parser_generation_id,file_path);
+-- Bestandszeilen bleiben ungeprüft (Generation bisher NULL); neue Zeilen werden sofort geprüft.
+-- Kein VALIDATE CONSTRAINT im Startpfad.
 ALTER TABLE reverse_code_dateien ADD COLUMN IF NOT EXISTS parser_generation_id TEXT;
 ALTER TABLE reverse_code_dateien ADD COLUMN IF NOT EXISTS fundstelle JSONB NOT NULL DEFAULT '{}'::jsonb;
 DO $fk$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='reverse_code_dateien'::regclass AND conname='reverse_dateien_parser_generation_fk') THEN
  ALTER TABLE reverse_code_dateien ADD CONSTRAINT reverse_dateien_parser_generation_fk FOREIGN KEY(parser_generation_id,eintrag_id,datei_id)
- REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT;
+ REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT NOT VALID;
  END IF;
 END $fk$;
 ALTER TABLE reverse_code_symbole ADD COLUMN IF NOT EXISTS parser_generation_id TEXT;
@@ -34,7 +36,7 @@ ALTER TABLE reverse_code_symbole ADD COLUMN IF NOT EXISTS fundstelle JSONB NOT N
 DO $fk$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='reverse_code_symbole'::regclass AND conname='reverse_symbole_parser_generation_fk') THEN
  ALTER TABLE reverse_code_symbole ADD CONSTRAINT reverse_symbole_parser_generation_fk FOREIGN KEY(parser_generation_id,eintrag_id,datei_id)
- REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT;
+ REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT NOT VALID;
  END IF;
 END $fk$;
 ALTER TABLE reverse_code_verweise ADD COLUMN IF NOT EXISTS parser_generation_id TEXT;
@@ -42,7 +44,7 @@ ALTER TABLE reverse_code_verweise ADD COLUMN IF NOT EXISTS fundstelle JSONB NOT 
 DO $fk$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='reverse_code_verweise'::regclass AND conname='reverse_verweise_parser_generation_fk') THEN
  ALTER TABLE reverse_code_verweise ADD CONSTRAINT reverse_verweise_parser_generation_fk FOREIGN KEY(parser_generation_id,eintrag_id,datei_id)
- REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT;
+ REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT NOT VALID;
  END IF;
 END $fk$;
 ALTER TABLE reverse_code_statements ADD COLUMN IF NOT EXISTS parser_generation_id TEXT;
@@ -50,7 +52,7 @@ ALTER TABLE reverse_code_statements ADD COLUMN IF NOT EXISTS fundstelle JSONB NO
 DO $fk$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='reverse_code_statements'::regclass AND conname='reverse_statements_parser_generation_fk') THEN
  ALTER TABLE reverse_code_statements ADD CONSTRAINT reverse_statements_parser_generation_fk FOREIGN KEY(parser_generation_id,eintrag_id,datei_id)
- REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT;
+ REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT NOT VALID;
  END IF;
 END $fk$;
 ALTER TABLE reverse_code_kanten ADD COLUMN IF NOT EXISTS parser_generation_id TEXT;
@@ -58,6 +60,6 @@ ALTER TABLE reverse_code_kanten ADD COLUMN IF NOT EXISTS fundstelle JSONB NOT NU
 DO $fk$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='reverse_code_kanten'::regclass AND conname='reverse_kanten_parser_generation_fk') THEN
  ALTER TABLE reverse_code_kanten ADD CONSTRAINT reverse_kanten_parser_generation_fk FOREIGN KEY(parser_generation_id,eintrag_id,datei_id)
- REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT;
+ REFERENCES reverse_parser_generationen(id,eintrag_id,datei_id) ON DELETE RESTRICT NOT VALID;
  END IF;
 END $fk$;
