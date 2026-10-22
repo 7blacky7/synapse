@@ -199,6 +199,20 @@ CREATE TABLE IF NOT EXISTS reverse_assets (
 );
 CREATE INDEX IF NOT EXISTS idx_reverse_assets_pfad ON reverse_assets(eintrag_id,pfad);
 CREATE INDEX IF NOT EXISTS idx_reverse_assets_sha ON reverse_assets(sha256);
+-- P18-T94: additive, wiederholbare Registry-Erweiterung. Keine Bestandszeile umschreiben.
+-- NULL-Schlüssel kennzeichnen die bisherigen manuellen Übernahmen (bleiben unverändert).
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS quell_sha256 TEXT;
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS objektpfad TEXT;
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS leser_plugin TEXT;
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS leser_version TEXT;
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS variante TEXT NOT NULL DEFAULT 'original';
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS registrierung_key TEXT;
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS aktuell BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS metadaten JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE reverse_assets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reverse_assets_registrierung ON reverse_assets(eintrag_id,registrierung_key) WHERE registrierung_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_reverse_assets_aktuell ON reverse_assets(eintrag_id,datei_id,variante) WHERE aktuell AND registrierung_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_reverse_assets_versionen ON reverse_assets(eintrag_id,datei_id,created_at,id);
 CREATE TABLE IF NOT EXISTS reverse_bindungen (
  id BIGSERIAL PRIMARY KEY, project TEXT NOT NULL,
  eintrag_id TEXT NOT NULL REFERENCES reverse_eintraege(id) ON DELETE RESTRICT,

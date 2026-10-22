@@ -9,8 +9,10 @@
 import {createHash} from 'node:crypto';
 import {constants,promises as fs} from 'node:fs';
 import path from 'node:path';
+import {Client as PgClient} from 'pg';
 import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-konfig.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
+import {registriereReverseAssetsInTransaktion,leseReverseAssetRegistrierungSchalter} from './reverse-asset-registrierung.js';
 
 export interface ReverseEManifestEintrag {pfad:string;sha256:string;groesse:number;
   /** P18-T49: optionale Einordnung aus dem Runner (Disc-Extraktor): reverse_dateien.art + Zusatzmetadaten. */
@@ -32,6 +34,12 @@ export class ReverseEUebernahmeFehler extends Error {
 }
 type Db={query:Function};
 type Client={query:Function;release?:()=>void};
+/** pg.Client und ausgecheckter PoolClient besitzen ebenfalls connect(). Nur Pool/Pooladapter auschecken.
+ * Query-Fassaden (Executor-Lease) und gehaltene Clients bleiben vollständig im Aufrufer-Kontext. */
+async function uebernahmeClient(db:Db):Promise<Client>{
+  if(db instanceof PgClient||typeof (db as {connect?:unknown}).connect!=='function')return db as Client;
+  return (db as Db&{connect:()=>Promise<Client>}).connect();
+}
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SEGMENT=/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/;
 const fehler=(code:ReverseEUebernahmeFehler['code'],m:string):never=>{throw new ReverseEUebernahmeFehler(code,m);};
@@ -113,7 +121,16 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
   const job=e.jobId.toLowerCase(),rid=e.reverseId,mid=e.mediumId,gruppe=reverseEGruppe(mid);
   const medium=(await db.query('SELECT id::text AS id,position,bezeichnung FROM reverse_medien WHERE id=$1 AND eintrag_id=$2',[mid,rid])).rows[0];
   if(!medium)fehler('nicht_gefunden','Medium gehört nicht zum Reverse-Eintrag.');
-  const alt=await bisherigesErgebnis(db,e);if(alt)return alt;
+  const alt=await bisherigesErgebnis(db,e);
+  if(alt){
+    // P18-T94/B1: AUS behält den früheren Resume-Kurzschluss, ohne Checkout/TX/Registry-Zugriffe.
+    if(!(await leseReverseAssetRegistrierungSchalter(db)).aktiv)return alt;
+    // EIN holt nach; ein gehaltener Client bleibt dabei in seiner bestehenden Transaktion.
+    const c=await uebernahmeClient(db);
+    try{if(c!==db)await c.query('BEGIN');await registriereReverseAssetsInTransaktion(c,{eintrag_id:rid,medium_id:mid});if(c!==db)await c.query('COMMIT');}
+    catch(err){if(c!==db)await c.query('ROLLBACK').catch(()=>undefined);throw err;}finally{if(c!==db)c.release?.();}
+    return alt;
+  }
 
   if(!cfg.reverse.aktiv||!cfg.speicher.reverseRoot)fehler('parameter_ungueltig','Reverse-Bibliothek ist nicht konfiguriert.');
   const root=await fs.realpath(cfg.speicher.reverseRoot as string);
@@ -170,13 +187,13 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
   }
   if(stagingAngelegt)await fs.rm(staging,{recursive:true,force:true});
 
-  const client:Client=typeof (db as {connect?:unknown}).connect==='function'?await (db as unknown as {connect:()=>Promise<Client>}).connect():db as Client;
+  const client=await uebernahmeClient(db);
   const eigen=client!==db;
   try{
     if(eigen)await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-e-uebernahme:'+job]);
     const nochmal=await bisherigesErgebnis(client,e);
-    if(nochmal){if(eigen)await client.query('COMMIT');return nochmal;}
+    if(nochmal){await registriereReverseAssetsInTransaktion(client,{eintrag_id:rid,medium_id:mid});if(eigen)await client.query('COMMIT');return nochmal;}
     const label=typeof medium.bezeichnung==='string'&&SEGMENT.test(medium.bezeichnung.trim())?medium.bezeichnung.trim():'medium-'+(Number(medium.position)+1);
     // Ein Stapel-Statement; ein fremder Eintrag mit gleichem Pfad wird nie überschrieben.
     const r=uebernommen.length?await client.query(`INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,sha256,groesse,art,storage_key,entpackt_mit,metadaten,status)
@@ -190,6 +207,8 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
        uebernommen.map(d=>eArt(d.art)),uebernommen.map(d=>eMeta(d.metadaten))]):{rowCount:0};
     const neu=Number(r.rowCount??0);
     const result=await finalisiereEErgebnis(client,e,neu,verworfen+(uebernommen.length-neu));
+    // E ist jetzt tatsächlich fertig/teilweise; Registrierung bleibt im bestehenden Lease-Fence.
+    await registriereReverseAssetsInTransaktion(client,{eintrag_id:rid,medium_id:mid});
     if(eigen)await client.query('COMMIT');
     return result;
   }catch(err){

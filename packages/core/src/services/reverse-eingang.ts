@@ -12,6 +12,7 @@ import {AssetSpeicher,erzeugeReverseId,normalisiereSpeicherPfad} from './asset-s
 import {AssetUploadKern,AssetUploadFehler} from './asset-upload.js';
 import type {AssetUploadDb,AssetUploadKontext,AssetUploadFinalisierer} from './asset-upload.js';
 import {registriereShareScannerBereich} from './share-scanner.js';
+import {registriereReverseAssetsInTransaktion} from './reverse-asset-registrierung.js';
 import type {ShareScanDatei} from './share-scanner.js';
 import {reverseGruppieren,reverseOrdnerFingerabdruck,reverseArchivMagic} from './reverse-gruppierung.js';
 import type {ReverseFundDatei,ReverseGruppenDatei} from './reverse-gruppierung.js';
@@ -383,6 +384,9 @@ export async function katalogisiereReverseOrdner(db:Pick<AssetUploadDb,'query'>,
  await db.query(`INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,status,werkzeug,beendet_at)
   SELECT id,'E',satz_sha256,'uebersprungen','ordner-upload',clock_timestamp() FROM reverse_medien WHERE id=ANY($1::bigint[])
   ON CONFLICT DO NOTHING`,[ids]);
+ // P18-T94: vor Bestätigung bzw. ohne abgeschlossene E-Schicht nur uebersprungen_inaktiv.
+ // T99 aktiviert explizit; die Eingangsdaten bleiben bis dahin vollständig erhalten.
+ await registriereReverseAssetsInTransaktion(db,{eintrag_id:rid});
 }
 let singleton:ReverseEingang|undefined;
 export function reverseEingang():ReverseEingang{return singleton??=new ReverseEingang();}

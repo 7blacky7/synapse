@@ -379,9 +379,16 @@ export class ReversePipelineDienst{
   const d=(await db.query('SELECT * FROM reverse_dateien WHERE id=$1 AND eintrag_id=$2 FOR UPDATE',[j.datei_id,j.eintrag_id])).rows[0];
   const r=payload.result as AssetResult,metadata=payload.metadata;
   if(!d||reverseAnalyseFingerabdruck(d.sha256,j.schicht,j.werkzeug,j.werkzeug_version,j.profil_version)!==j.fingerabdruck)throw new Error('Reverse-Revision geändert');
+  // P18-T94: fehlender Inspektor entwertet weder eine erkannte Art noch deren Format/MIME.
+  const unbekannt=r.asset_type==='unbekannt';
+  const ergaenzung={...metadata};
+  if(unbekannt)for(const key of ['asset_type','mime','format']){
+   const wert=ergaenzung[key];if(wert===undefined||wert===null||wert==='unbekannt')delete ergaenzung[key];
+  }
   await db.query('UPDATE reverse_dateien SET format=$2,arch=$3,bits=$4,art=$5,metadaten=metadaten||$6::jsonb,status=$7,updated_at=clock_timestamp() WHERE id=$1',
-   [d.id,r.format??'unbekannt',r.metadata.architektur??'unbekannt',typeof r.metadata.bits==='number'?r.metadata.bits:null,
-    r.asset_type==='archive'?'archiv':r.asset_type==='executable'?'binaer':r.asset_type==='unbekannt'?'sonstig':'asset',JSON.stringify(metadata),payload.status]);
+   [d.id,unbekannt&&(r.format==null||r.format==='unbekannt')?d.format:r.format??d.format,
+    r.metadata.architektur??d.arch,typeof r.metadata.bits==='number'?r.metadata.bits:d.bits,
+    r.asset_type==='archive'?'archiv':r.asset_type==='executable'?'binaer':unbekannt?d.art:'asset',JSON.stringify(ergaenzung),payload.status]);
   if(j.schicht==='S1'){
    await db.query('DELETE FROM reverse_objekte WHERE datei_id=$1',[d.id]);
    await db.query("DELETE FROM reverse_verweise WHERE datei_id=$1 AND ursprung='analyse'",[d.id]);

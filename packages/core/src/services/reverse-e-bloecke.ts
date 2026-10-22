@@ -5,6 +5,7 @@ import path from 'node:path';
 import type {Pool,PoolClient} from 'pg';
 import {inTransaktionMitRetry} from '../db/transient-retry.js';
 import {indexBloeckeAsync} from './index-bloecke.js';
+import {zieheReverseAssetsNach} from './reverse-asset-registrierung.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
 import {pruefeEDatei,sichereEEltern,eZielOrdner,reverseEGruppe,finalisiereEErgebnis} from './reverse-e-uebernahme.js';
 import {reverseBigInt,reverseZahl,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
@@ -78,7 +79,10 @@ export async function uebernehmeEInBloecken(pool:Pool,e:ReverseEBlockAuftrag):Pr
  // Review 028940c6/B5: Eintragssumme einmal je Lauf lesen, danach je bestaetigtem Block um die tatsaechlich geschriebenen Bytes
  // fortschreiben (kein Vollscan je Block). Parallele Laeufe anderer Medien desselben Eintrags sieht der naechste Lauf.
  let cp=auftrag.cp,eintragBytes=BigInt(auftrag.bytes);
- if(cp.fertig)return {dateien:sicher(cp.dateien),verworfen:sicher(cp.verworfen)};
+ // P18-T94: Registry in eigenen begrenzten TXs nach E; Wiederholung nach Crash holt fehlende Blöcke nach.
+ const assetsNachziehen=()=>zieheReverseAssetsNach(pool,{eintrag_id:e.reverseId,medium_id:e.mediumId,einstellungen:e.einstellungen,
+  pruefeLease:db=>e.pruefeLease(db as PoolClient)});
+ if(cp.fertig){await assetsNachziehen();return {dateien:sicher(cp.dateien),verworfen:sicher(cp.verworfen)};}
  await eZielOrdner(root,staging);
  const maxRecord=reverseZahl(e.einstellungen,'manifest_record_bytes'),chunk=reverseZahl(e.einstellungen,'lese_block_bytes');
  const maxDatei=reverseBigInt(e.einstellungen,'max_datei_bytes'),tiefe=reverseZahl(e.einstellungen,'pfad_tiefe_max');
@@ -138,7 +142,7 @@ export async function uebernehmeEInBloecken(pool:Pool,e:ReverseEBlockAuftrag):Pr
   cp=naechster;eintragBytes+=geschriebenBytes;
   await e.fortschritt?.(cp);
  }
- return tx(async db=>{
+ const ergebnis=await tx(async db=>{
   const alt=(await db.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1 FOR UPDATE',[auftrag.id])).rows[0]?.uebernahme as Checkpoint;
   if(!alt||alt.manifest_sha!==e.manifestSha||alt.position!==cp.position)throw new Error('reverse_e_checkpoint_geaendert');
   const r=await finalisiereEErgebnis(db,e,sicher(cp.dateien),sicher(cp.verworfen));
@@ -150,4 +154,6 @@ export async function uebernehmeEInBloecken(pool:Pool,e:ReverseEBlockAuftrag):Pr
   await db.query("UPDATE reverse_auftraege SET uebernahme=$2::jsonb WHERE id=$1",[auftrag.id,JSON.stringify({...cp,fertig:true})]);
   return r;
  });
+ await assetsNachziehen();
+ return ergebnis;
 }
