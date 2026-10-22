@@ -14,6 +14,7 @@ const core=await import('../dist/index.js');
 assert.equal(typeof core.fuehreReverseAus,'function','RV9 Dispatcher fehlt (rote Kontrolle)');
 const {REVERSE_DEFINITION,createReverseToolService,REVERSE_FEHLERCODES}=core;
 const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
+const {mitLesePool}=await import('../dist/db/client.js');
 const require=createRequire(new URL('../package.json',import.meta.url));
 const {Pool}=require('pg');
 const pgPool=new Pool({connectionString:process.env.DATABASE_URL}),project='p18_rv9',agent='p18_rv9-agent',other='p18_rv9-other',rid='rev-fixture-000001',second='rev-fixture-000002';
@@ -24,14 +25,22 @@ const pool={
 };
 const hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const required=['reverse_id','datei','format','arch','bits','schicht','schicht_angefragt','status','fehlercode','werkzeug','merkmale','fortschritt','container'];
-let sequence=0;
-const service=createReverseToolService({pool});
-const call=(action,extra={},who=agent)=>service.ausfuehren({action,agent_id:who,project,reverse_id:rid,...extra});
+const pipeline=new core.ReversePipelineDienst({pool,konfiguration:core.ladeAssetKonfiguration({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:'/unused-rv9'}),ausfuehrbareKinds:[]});
+// T104: echte PG-Pipeline, nur Planung; kein starte()/durchlauf(), kein Runner oder Share-Zugriff.
+let service=createReverseToolService({pool});
+const call=(action,extra={},who=agent)=>mitLesePool(pool,()=>service.ausfuehren({action,agent_id:who,project,reverse_id:rid,...extra}));
+const tx=async fn=>{const c=await pool.connect();try{await c.query('BEGIN');const r=await fn(c);await c.query('COMMIT');return r;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}};
+const automatisch=(entry,file,medium)=>mitLesePool(pool,()=>tx(c=>pipeline.queue(c,{reverseId:entry,dateiId:file,mediumId:medium,project,agentId:'reverse-pipeline',bisSchicht:'S3',prioritaet:'hintergrund'})));
 const check=r=>{for(const key of required)assert(Object.hasOwn(r,key),'Pflichtfeld '+key);for(const key of required)assert(Object.hasOwn(r.felder,key),'Hinweisfeld '+key);return r;};
 try {
  await pool.query('CREATE SCHEMA '+schema);
- for(const table of ['agent_sessions','projects','tool_aktivitaet'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
+ for(const table of ['agent_sessions','projects','tool_aktivitaet','work_jobs','work_job_audit','agent_profil_schalter','intern_schalter'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query(REVERSE_SCHEMA_SQL);
+ await pool.query((await import('../dist/db/reverse-pipeline-schema.js')).REVERSE_PIPELINE_SCHEMA_SQL);
+ // T104: privates Schema braucht dieselbe additive Migration144; zweimal belegt Idempotenz.
+ const policyDdl=(await import('../dist/db/reverse-analyse-policy-schema.js')).REVERSE_ANALYSE_POLICY_SCHEMA_SQL;
+ await pool.query(policyDdl);await pool.query(policyDdl);
+ assert.equal((await pool.query("SELECT is_nullable FROM information_schema.columns WHERE table_schema=$1 AND table_name='reverse_auftraege' AND column_name='policy_pin'",[schema])).rows[0].is_nullable,'YES');
  await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
  // P18-T86: analyse_bis_schicht kommt aus reverse_einstellungen (Env nur Migrationsvorschlag); diese Fixture arbeitet bis S3.
  for(const f of ['reverse-verknuepfungen-schema','reverse-einstellwerte-schema'])await pool.query(Object.values(await import('../dist/db/'+f+'.js')).find(x=>typeof x==='string'));
@@ -54,8 +63,10 @@ try {
  assert.equal((await call('bestaetigen')).fehlercode,'keine_berechtigung');
  const confirm=await call('bestaetigen',{titel:'Titel neu',medien:[{id:'2',bezeichnung:'DiscB'},{id:'1',bezeichnung:'DiscA'}]},'koordinator');
  assert.equal(confirm.success,true);assert.equal(confirm.eintrag.status,'bestaetigt');assert.equal(confirm.eintrag.medien[0].id,'2');
+ assert.equal(Object.hasOwn((await pool.query('SELECT analyse_policy FROM reverse_eintraege WHERE id=$1',[rid])).rows[0].analyse_policy,'bis_schicht'),false,'Normale Bestätigung entfernt T104-JSON-Schatten');
  assert.equal((await call('bestaetigen',{},'koordinator')).success,true,'Bestätigung idempotent');
  await pool.query("INSERT INTO reverse_dateien(id,eintrag_id,medium_id,pfad,format,arch,bits,art,status,metadaten) VALUES(1,$1,1,'cd1/game.exe','pe','x86',32,'binaer','offen','{\"merkmale\":[\"debug_symbole\"]}')",[rid]);
+ await pool.query("UPDATE reverse_dateien SET sha256=$2 WHERE id=1 AND eintrag_id=$1",[rid,'e'.repeat(64)]);
  assert.equal(check(await call('status',{datei:'cd1/game.exe'})).fehlercode,'nicht_gebunden');
  assert.equal((await call('analysieren',{datei:'cd1/game.exe',bis_schicht:'S3'})).fehlercode,'nicht_gebunden');
  assert.equal((await call('binden',{project:'fremd'})).fehlercode,'keine_berechtigung','Agent darf fremdes Projekt nicht behaupten');
@@ -67,10 +78,25 @@ try {
  assert.deepEqual(status.merkmale,['debug_symbole']);assert.equal(status.container.zustand,'ruht');
  const serialized=core.baueToolErgebnis(status,{tool:'reverse',strukturiert:true});
  for(const key of required)assert(Object.hasOwn(serialized.structuredContent,key),'Hülle erhält '+key);
- const queue=check(await call('analysieren',{datei:'cd1/game.exe',bis_schicht:'S3',prioritaet:'interaktiv'}));
- assert.equal(queue.status,'wartet');assert.equal(queue.fehlercode,'container_ruht');assert(queue.auftrag_id);
- assert.equal((await call('analysieren',{datei:'cd1/game.exe',bis_schicht:'S3',prioritaet:'hintergrund'})).auftrag_id,queue.auftrag_id,'Dedup');
- assert.equal((await pool.query('SELECT prioritaet FROM reverse_auftraege WHERE id=$1',[queue.auftrag_id])).rows[0].prioritaet,'interaktiv');
+ // T104 entfernt absichtlich den ungepinnten Fallback: ohne Runtime muss die Queue leer bleiben.
+ const ohneRuntime=check(await call('analysieren',{datei:'cd1/game.exe',bis_schicht:'S3',prioritaet:'interaktiv'}));
+ assert.equal(ohneRuntime.fehlercode,'kein_ausfuehrer');
+ assert.equal((await pool.query('SELECT count(*)::int n FROM reverse_auftraege')).rows[0].n,0);
+ service=createReverseToolService({pool,runtime:{analysieren:(a,c)=>pipeline.analysieren(a,c),abbrechen:(j,a,c)=>pipeline.abbrechen(j,a,c),containerStatus:r=>pipeline.containerStatus(r)}});
+ let queue=check(await call('analysieren',{datei:'cd1/game.exe',bis_schicht:'S3',prioritaet:'interaktiv'}));
+ // Erste reale Schicht ist API-S0: wartet ohne Containerfehler, mit unveränderlichem Quell-/Policy-Pin.
+ assert.equal(queue.status,'wartet');assert.equal(queue.fehlercode,null);assert(queue.auftrag_id);
+ const firstQueue=(await pool.query('SELECT * FROM reverse_auftraege WHERE id=$1',[queue.auftrag_id])).rows[0];
+ assert.equal(firstQueue.prioritaet,'interaktiv');assert.equal(firstQueue.schicht,'S0');
+ assert.equal(firstQueue.policy_pin.wirksam_bis,'S3');assert.equal(firstQueue.policy_pin.quelle.sha256,'e'.repeat(64));
+ assert.equal((await automatisch(rid,'1','1')).auftrag_id,queue.auftrag_id,'Automatische Planung dedupliziert echten gepinnten Auftrag');
+ assert.equal((await pool.query('SELECT prioritaet FROM reverse_auftraege WHERE id=$1',[queue.auftrag_id])).rows[0].prioritaet,'interaktiv','Automatischer Hintergrundnachzug senkt Priorität nicht');
+ // Ausdrücklicher Folgeauftrag ersetzt seit T104 den manuellen Root, statt den alten Pin umzuschreiben.
+ queue=check(await call('analysieren',{datei:'cd1/game.exe',bis_schicht:'S3',prioritaet:'hintergrund'}));
+ assert.notEqual(queue.auftrag_id,firstQueue.id);assert.equal(queue.status,'wartet');
+ const replaced=(await pool.query('SELECT status,fehlercode,policy_pin FROM reverse_auftraege WHERE id=$1',[firstQueue.id])).rows[0];
+ assert.equal(replaced.status,'fehler');assert.equal(replaced.fehlercode,'policy_geaendert');assert.deepEqual(replaced.policy_pin,firstQueue.policy_pin);
+ assert.equal((await pool.query("SELECT count(*)::int n FROM reverse_auftraege WHERE datei_id=1 AND status IN ('offen','wartet','laeuft')")).rows[0].n,1);
  assert.equal((await call('abbrechen',{auftrag_id:queue.auftrag_id},other)).fehlercode,'keine_berechtigung');
  assert.equal((await call('abbrechen',{auftrag_id:queue.auftrag_id})).success,true);
  await pool.query("INSERT INTO reverse_schichten(datei_id,medium_id,schicht,fingerabdruck,status,werkzeug,funktionen_gesamt,funktionen_fertig) VALUES(1,1,'S1','fixture','laeuft','fixture-tool',10,2)");
@@ -106,22 +132,74 @@ try {
  assert.equal(split.success,true,JSON.stringify(split));assert.equal(split.aufgeteilt.length,2);
  assert.equal((await call('eintrag',{reverse_id:splitRid})).eintrag.status,'archiviert');
  const children=(await pool.query('SELECT id,fingerabdruck,bestaetigt_von,analyse_policy FROM reverse_eintraege WHERE id=ANY($1::text[])',[split.aufgeteilt])).rows;
- assert(children.every(c=>c.fingerabdruck?.length===64&&c.bestaetigt_von==='koordinator'&&c.analyse_policy.bis_schicht==='S3'),JSON.stringify(children.map(c=>({fp:c.fingerabdruck?.length,von:c.bestaetigt_von,policy:c.analyse_policy}))));
+ // T104 ändert die wirksame Tiefenquelle, nicht die unveränderte Gruppierungsimplementierung.
+ // Deren historische JSON-S3-Kopie darf PG nicht überstimmen; Fingerprint und Bestätiger bleiben streng geprüft.
+ assert(children.every(c=>c.fingerabdruck?.length===64&&c.bestaetigt_von==='koordinator'),JSON.stringify(children));
+ for(const child of children){
+  assert.equal((await core.leseReverseEinstellwerte({project,eintrag_id:child.id},pool)).werte.analyse_bis_schicht.wert,'S3');
+  await pool.query("INSERT INTO reverse_einstellungen(ebene,eintrag_id,name,wert_text,grund,gesetzt_von) VALUES('eintrag',$1,'analyse_bis_schicht','E','RV9 fixture','fixture')",[child.id]);
+  assert.equal((await core.leseReverseEinstellwerte({project,eintrag_id:child.id},pool)).werte.analyse_bis_schicht.wert,'E','Eintrags-PG gewinnt gegen historische JSON-Kopie');
+  await pool.query("DELETE FROM reverse_einstellungen WHERE ebene='eintrag' AND eintrag_id=$1 AND name='analyse_bis_schicht'",[child.id]);
+ }
  const merged=await call('bestaetigen',{reverse_id:mergeRid,zusammenfuehren_mit:split.aufgeteilt[0]},'koordinator');
  assert.equal(merged.success,true,JSON.stringify(merged));assert.equal(merged.eintrag.medien.length,2);
  assert.equal((await call('eintrag',{reverse_id:mergeRid})).eintrag.status,'archiviert');
  await pool.query("INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,status) VALUES(7,'E','fixture-e','fertig')");
  assert.equal((await call('bestaetigen',{reverse_id:lockedRid,zusammenfuehren_mit:split.aufgeteilt[1]},'koordinator')).fehlercode,'ziel_belegt','E-Historie schützt Gruppierung');
- // Vier konkurrierende Analysen desselben Mediums deduplizieren; globale Queuegrenze gilt über Einträge.
- for(const child of split.aufgeteilt)assert.equal((await call('binden',{reverse_id:child})).success,true);
+ // Gleiche globale Queue-Race-Assertion am echten Pipelineweg, mit synthetischen hashgebundenen S0-Quellen.
+ const childSources=new Map();
+ for(const [i,child] of split.aufgeteilt.entries()){
+  assert.equal((await call('binden',{reverse_id:child})).success,true);
+  const medium=(await pool.query('SELECT id::text FROM reverse_medien WHERE eintrag_id=$1 ORDER BY id LIMIT 1',[child])).rows[0].id;
+  const file=String(10+i);childSources.set(child,{file,medium});
+  await pool.query("INSERT INTO reverse_dateien(id,eintrag_id,medium_id,pfad,sha256,art) VALUES($1,$2,$3,'queue.bin',$4,'binaer')",[file,child,medium,String(i+1).repeat(64)]);
+ }
  // P18-T86: Queuegrenze aus reverse_einstellungen (queue_offene_max), nicht mehr aus der Env.
  await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert,grund,gesetzt_von) VALUES('global','queue_offene_max',1,'RV9 fixture','fixture')");
- const raced=await Promise.all(split.aufgeteilt.map(child=>call('analysieren',{reverse_id:child,bis_schicht:'S3'})));
+ const raced=await Promise.all(split.aufgeteilt.map(child=>call('analysieren',{reverse_id:child,datei:'queue.bin',bis_schicht:'S3'})));
  assert.equal(raced.filter(r=>r.success).length,1);assert.equal(raced.filter(r=>r.fehlercode==='warteschlange_voll').length,1);
- await pool.query("DELETE FROM reverse_einstellungen WHERE ebene='global' AND name='queue_offene_max'");
- const winner=raced.find(r=>r.success),winnerRid=winner.reverse_id;
- const dedups=await Promise.all(Array.from({length:4},()=>call('analysieren',{reverse_id:winnerRid,bis_schicht:'S3'})));
+ let winner=raced.find(r=>r.success);const winnerRid=winner.reverse_id;
+ // T104: Dedupe gilt für automatische Wiederplanung; manuelle Ersetzung ist oben separat streng geprüft.
+ const source=childSources.get(winnerRid);
+ const dedups=await Promise.all(Array.from({length:4},()=>automatisch(winnerRid,source.file,source.medium)));
  assert(dedups.every(r=>r.auftrag_id===winner.auftrag_id));
+ assert.equal((await pool.query("SELECT count(*)::int n FROM reverse_auftraege WHERE eintrag_id=$1 AND status IN ('offen','wartet','laeuft')",[winnerRid])).rows[0].n,1);
+ // Ein Env-Wert darf den laufend gelesenen globalen PG-Wert nicht ersetzen.
+ const oldQueueEnv=process.env.SYNAPSE_REVERSE_QUEUE_MAX;process.env.SYNAPSE_REVERSE_QUEUE_MAX='999999';
+ const pendingCount=async()=>Number((await pool.query("SELECT count(*) n FROM reverse_auftraege WHERE status IN ('offen','wartet','laeuft')")).rows[0].n);
+ const row=async id=>(await pool.query('SELECT * FROM reverse_auftraege WHERE id=$1',[id])).rows[0];
+ try{
+  assert.equal(await pendingCount(),1);
+  const loserRid=split.aufgeteilt.find(id=>id!==winnerRid),loserSource=childSources.get(loserRid);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM reverse_auftraege WHERE eintrag_id=$1',[loserRid])).rows[0].n,0,'Abgewiesene Annahme schreibt weder Root noch Auftrag');
+  const autoFull=await automatisch(loserRid,loserSource.file,loserSource.medium);
+  assert.equal(autoFull.fehlercode,'warteschlange_voll');assert.equal(autoFull.auftrag_id,null);assert.equal(await pendingCount(),1);
+  const oldWinner=await row(winner.auftrag_id);
+  const replacement=await call('analysieren',{reverse_id:winnerRid,datei:'queue.bin',bis_schicht:'S3'});
+  assert.equal(replacement.success,true);assert.notEqual(replacement.auftrag_id,winner.auftrag_id);
+  assert.deepEqual((await row(winner.auftrag_id)).policy_pin,oldWinner.policy_pin,'Ersetzung verändert alten Pin nie');
+  assert.equal((await row(winner.auftrag_id)).fehlercode,'policy_geaendert');assert.equal(await pendingCount(),1,'Ersetzung an voller Grenze bleibt platzneutral');
+  winner=replacement;
+  // Zwei freie Kandidaten konkurrieren um genau einen Restplatz bei PG-Limit 2.
+  await pool.query("INSERT INTO reverse_dateien(id,eintrag_id,medium_id,pfad,sha256,art) VALUES(12,$1,$2,'extra.bin',$3,'binaer')",[winnerRid,source.medium,'9'.repeat(64)]);
+  await pool.query("UPDATE reverse_einstellungen SET wert=2 WHERE ebene='global' AND name='queue_offene_max'");
+  const two=await Promise.all([call('analysieren',{reverse_id:loserRid,datei:'queue.bin',bis_schicht:'S3'}),call('analysieren',{reverse_id:winnerRid,datei:'extra.bin',bis_schicht:'S3'})]);
+  assert.equal(two.filter(r=>r.success).length,1);assert.equal(two.filter(r=>r.fehlercode==='warteschlange_voll').length,1);assert.equal(await pendingCount(),2);
+  // Nach Absenkung unter den Bestand wird nichts verdrängt, auch keine manuelle Policy.
+  await pool.query("UPDATE reverse_einstellungen SET wert=1 WHERE ebene='global' AND name='queue_offene_max'");
+  const beforeRejected=await row(winner.auftrag_id),allBefore=(await pool.query('SELECT count(*)::int n FROM reverse_auftraege')).rows[0].n;
+  const rejected=await call('analysieren',{reverse_id:winnerRid,datei:'queue.bin',bis_schicht:'S0'});
+  assert.equal(rejected.success,false);assert.equal(rejected.fehlercode,'warteschlange_voll');
+  assert.deepEqual(await row(winner.auftrag_id),beforeRejected,'Abweisung verändert weder Status/Pin noch Zeitstempel');
+  assert.equal((await pool.query('SELECT count(*)::int n FROM reverse_auftraege')).rows[0].n,allBefore);
+  assert.equal((await automatisch(winnerRid,source.file,source.medium)).auftrag_id,winner.auftrag_id,'Dedupe verbraucht auch oberhalb abgesenkter Grenze keinen Platz');
+  await pool.query("UPDATE reverse_auftraege SET status='fertig' WHERE id=$1",[two.find(r=>r.success).auftrag_id]);
+  assert.equal(await pendingCount(),1);
+  console.log('T104 Queue-Repro PASS: PG 1/2, konkurrierende Annahmen, Env ignoriert, Dedupe voll, Ersetzung neutral, Absenkung ohne Verdrängung');
+ }finally{
+  if(oldQueueEnv===undefined)delete process.env.SYNAPSE_REVERSE_QUEUE_MAX;else process.env.SYNAPSE_REVERSE_QUEUE_MAX=oldQueueEnv;
+  await pool.query("DELETE FROM reverse_einstellungen WHERE ebene='global' AND name='queue_offene_max'");
+ }
  await pool.query("UPDATE reverse_auftraege SET status='fertig' WHERE id=$1",[winner.auftrag_id]);
  assert.equal((await call('abbrechen',{auftrag_id:winner.auftrag_id})).status,'fertig','Terminalzustand bleibt fertig');
  // Ein akzeptierter Fachschreibvorgang darf ohne durable Aktivität nicht committen.
@@ -167,9 +245,10 @@ try {
  assert.deepEqual(stdio.reverseTool.definition,REVERSE_DEFINITION);
  // P18-T64 (527fed6c, auf main 5b9a3774, bereits in Basis 354135ca) hat 'kein_ausfuehrer' und 'format_nicht_unterstuetzt'
  // ergaenzt (20 -> 22); P18-T26 hat keine Codes hinzugefuegt. Exakte Liste statt nur Laenge, damit auch Tausch/Umbenennung auffaellt.
- assert.deepEqual([...REVERSE_FEHLERCODES],['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt']);
- assert.equal(REVERSE_FEHLERCODES.length,22);
+ assert.deepEqual([...REVERSE_FEHLERCODES],['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt','policy_pin_fehlt','policy_geaendert','policy_grenze','policy_nicht_lesbar']);
+ // T104 ergänzt genau vier Policy-Codes; alle 22 bisherigen bleiben in gleicher Reihenfolge.
+ assert.equal(REVERSE_FEHLERCODES.length,26);
  console.log('RV9 PASS: Schema-Golden, Bibliothek/Paging, Bestätigung/Reorder, Rechte/Bindung/Race, Statusfelder, Queue/Dedup/Abbruch, Longpoll, Aktivität, unbekannte/ungenutzte Parameter, Archiv');
 } catch(error){console.error(error);process.exitCode=1;}
-finally {await pool.query('DELETE FROM public.tool_aktivitaet WHERE projekt=$1 AND agent_id IN ($2,$3)',[project,agent,other]);await pool.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await pool.end();await core.closePool();}
+finally {await pipeline.beende();await pool.query('DELETE FROM public.tool_aktivitaet WHERE projekt=$1 AND agent_id IN ($2,$3)',[project,agent,other]);await pool.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await pool.end();await core.closePool();}
 process.exit(process.exitCode||0);

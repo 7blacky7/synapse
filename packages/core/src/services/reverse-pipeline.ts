@@ -13,7 +13,7 @@ import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-kon
 import {AssetSpeicher,type AssetAdresse} from './asset-speicher.js';
 import {reverseDateiSpeicherAdresse} from './reverse-eingang.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
-import {configureReverseRuntime,reverseBisSchichtGrenze,begrenzeReverseSchicht,type ReverseAnalyseAnfrage} from './reverse-tool.js';
+import {ReverseFehler,configureReverseRuntime,reverseBisSchichtGrenze,begrenzeReverseSchicht,type ReverseAnalyseAnfrage} from './reverse-tool.js';
 import {createWorkJobService,validateWorkResources,type WorkResourceNeed} from './work-jobs.js';
 import {starteApiAuftragsLoop,type ApiAuftragsLoop} from './api-auftrags-loop.js';
 import {reverseKindAusfuehrbar,reverseFehlerDeterministisch,zerlegeReverseFehlercode,reverseResourceNeedRoh,reverseStornoAnfordern} from './reverse-ausfuehrer.js';
@@ -194,8 +194,17 @@ export class ReversePipelineDienst{
   const version=reverseContainerWerkzeugVersion();
   const fp=reverseAnalyseFingerabdruck(d.sha256,'S1','reverse-S1',version,this.profile);
   let supplementary=(await db.query("SELECT * FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2 AND schicht='S1' AND ausfuehrung='container' AND status IN ('offen','wartet','laeuft') FOR UPDATE",[j.eintrag_id,j.datei_id])).rows[0];
+  if(!supplementary&&!await this.queuePlatz(db))return;
   if(!supplementary)supplementary=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,schicht,prioritaet,status,ausloeser,ausfuehrung,fingerabdruck,ziel_schicht,projekt,werkzeug,werkzeug_version,profil_version,policy_pin) VALUES($1,$2,'S1',$3,'wartet','pipeline:s1-tools','container',$4,$5,$6,'reverse-S1',$7,$8,$9::jsonb) RETURNING *",[j.eintrag_id,j.datei_id,j.prioritaet,fp,j.ziel_schicht,j.projekt,version,this.profile,JSON.stringify({...policy,ursprung:'folge'})])).rows[0];
   if(!await this.containerAuftrag(db,supplementary,d.sha256,'S1'))await db.query("UPDATE reverse_auftraege SET fehlercode='container_gesperrt' WHERE id=$1 AND status<>'fehler'",[supplementary.id]);
+ }
+ /** Global admission shares the caller's transaction. Only a locked, replaced request may give up its slot. */
+ private async queuePlatz(db:PoolClient,ersetzt?:Row):Promise<boolean>{
+  await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-queue-annahme'))");
+  const s=await leseReverseEinstellwerte({},db);
+  if(s.letzter_fehler||s.migrationsbedarf.some(x=>x.name==='queue_offene_max'))throw new ReversePolicyFehler('policy_nicht_lesbar');
+  const n=(await db.query("SELECT count(*) AS n FROM reverse_auftraege WHERE status IN ('offen','wartet','laeuft') AND ($1::uuid IS NULL OR id<>$1::uuid)",[ersetzt?.id??null])).rows[0].n;
+  return BigInt(n)<BigInt(reverseZahl(s,'queue_offene_max'));
  }
  private async queue(db:PoolClient,a:ReverseAnalyseAnfrage):Promise<Row>{
   try{return await this.queueMitPolicy(db,a);}catch(e){
@@ -241,9 +250,15 @@ export class ReversePipelineDienst{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-pipeline:'+a.reverseId+':'+(a.dateiId??'m'+a.mediumId)+':'+stage]);
   // Adopt RV9 waiting requests instead of creating a parallel executable job.
   let j=(await db.query("SELECT * FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id IS NOT DISTINCT FROM $2::bigint AND ($2::bigint IS NOT NULL OR medium_id IS NOT DISTINCT FROM $4::bigint) AND schicht=$3 AND status IN ('offen','wartet','laeuft','fehler') AND (fingerabdruck IS NULL OR ausfuehrung=$5) ORDER BY (status IN ('offen','wartet','laeuft')) DESC,created_at DESC,id DESC LIMIT 1 FOR UPDATE",[a.reverseId,a.dateiId,stage,a.dateiId?null:a.mediumId,local?'api':'container'])).rows[0];
+  // Defer manual replacement until admission; a rejected request must not invalidate the old pin.
+  let ersetzt:Row|undefined,ersetzCode:ReversePolicyFehler['code']='policy_geaendert';
   if(j){
-   try{await pruefeReversePolicyAuftrag(db,String(j.id),a.reverseId,stage);}catch(e){if(!istReversePolicyFehler(e))throw e;await halteReversePolicyAuftrag(db,String(j.id),a.reverseId,e.code);if(!a.policyManuell)return {auftrag_id:j.id,status:'fehler',fehlercode:e.code};j=undefined;}
-   if(j&&a.policyManuell){await halteReversePolicyAuftrag(db,String(j.id),a.reverseId,'policy_geaendert');j=undefined;}
+   try{await pruefeReversePolicyAuftrag(db,String(j.id),a.reverseId,stage);}catch(e){
+    if(!istReversePolicyFehler(e))throw e;
+    if(!a.policyManuell){await halteReversePolicyAuftrag(db,String(j.id),a.reverseId,e.code);return {auftrag_id:j.id,status:'fehler',fehlercode:e.code};}
+    ersetzt=j;ersetzCode=e.code;j=undefined;
+   }
+   if(j&&a.policyManuell){ersetzt=j;j=undefined;}
   }
   if(j?.status==='laeuft'&&j.fingerabdruck!==fp)return {auftrag_id:j.id,status:'wartet',fehlercode:'schicht_nicht_fertig'};
   if(stage==='E'&&j?.p20_auftrag_id&&j.fingerabdruck!==fp){
@@ -256,6 +271,11 @@ export class ReversePipelineDienst{
   // P18-T66/E1: ein neuer Werkzeugstand (anderer Fingerabdruck) belebt auch fachliche Fehler des alten Werkzeugs wieder.
   const wiederbeleben=j?.status==='fehler'&&!String(j.fehlercode??'').startsWith('policy_')&&!ohneAusfuehrer&&(j.fehlercode==='kein_ausfuehrer'||(!!j.fingerabdruck&&j.fingerabdruck!==fp));
   if(j?.status==='fehler'&&j.fingerabdruck===fp&&!wiederbeleben)return {auftrag_id:j.id,status:'fehler',fehlercode:j.fehlercode};
+  if((!j||wiederbeleben)&&!await this.queuePlatz(db,ersetzt)){
+   if(a.policyManuell)throw new ReverseFehler('warteschlange_voll');
+   return {success:false,status:'fehler',fehlercode:'warteschlange_voll',auftrag_id:null,schicht_angefragt:a.bisSchicht};
+  }
+  if(ersetzt)await halteReversePolicyAuftrag(db,String(ersetzt.id),a.reverseId,ersetzCode);
   if(!j)j=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,medium_id,schicht,prioritaet,status,ausloeser,trigger_identity_id,id,policy_pin) VALUES($1,$2,$3,$4,$5,'wartet',$6,$7,$8,$9::jsonb) RETURNING *",[a.reverseId,a.dateiId,a.dateiId?null:a.mediumId,stage,a.prioritaet,'agent:'+a.agentId,aktuelleAgentAkteurIdentityId(a.agentId),neuId,JSON.stringify(pin)])).rows[0];
   await db.query("UPDATE reverse_auftraege SET medium_id=CASE WHEN datei_id IS NOT NULL THEN NULL ELSE medium_id END,fingerabdruck=$2,ziel_schicht=COALESCE(ziel_schicht,$3),projekt=COALESCE(projekt,$4),ausfuehrung=$5,werkzeug=$6,werkzeug_version=$7,profil_version=$8,prioritaet=CASE WHEN prioritaet='interaktiv' OR $9='interaktiv' THEN 'interaktiv' ELSE prioritaet END,updated_at=clock_timestamp() WHERE id=$1",
    [j.id,fp,a.bisSchicht,a.project,local?'api':'container',tool,version,profil,a.prioritaet]);
@@ -305,6 +325,7 @@ export class ReversePipelineDienst{
   const stand=await leseReverseEinstellungen(a.project,undefined,a.reverseId),budget=stand.werte.s3_pg_budget_bytes.wert;
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-pipeline:'+a.reverseId+':'+a.dateiId+':S3']);
   const aktiv=(await db.query("SELECT id,status FROM reverse_auftraege WHERE eintrag_id=$1 AND datei_id=$2 AND schicht='S3' AND status IN ('offen','wartet','laeuft') ORDER BY created_at LIMIT 1 FOR UPDATE",[a.reverseId,a.dateiId])).rows[0];
+  if(!await this.queuePlatz(db,aktiv))throw new ReverseFehler('warteschlange_voll');
   if(aktiv)await halteReversePolicyAuftrag(db,String(aktiv.id),a.reverseId,'policy_geaendert');
   const fp=hash([d.fingerabdruck,'nachzug',budget]);
   const j=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,schicht,prioritaet,status,ausloeser,trigger_identity_id,ausfuehrung,fingerabdruck,ziel_schicht,projekt,werkzeug,werkzeug_version,profil_version,id,policy_pin) VALUES($1,$2,'S3',$3,'wartet',$4,$5,'api',$6,$7,$8,'reverse-S3-nachzug','1',$9,$10,$11::jsonb) RETURNING id",[a.reverseId,a.dateiId,a.prioritaet,'agent:'+a.agentId,aktuelleAgentAkteurIdentityId(a.agentId),fp,a.bisSchicht,a.project,this.profile,neuId,JSON.stringify(pin)])).rows[0];
@@ -402,6 +423,7 @@ export class ReversePipelineDienst{
    const j=(await db.query("SELECT * FROM reverse_auftraege WHERE id=$1 AND (status IN ('wartet','fehler') OR status='laeuft' AND lease_bis<clock_timestamp()) FOR UPDATE SKIP LOCKED",[kandidat.id])).rows[0];
    if(!j)return;
    try{await pruefeReversePolicyAuftrag(db,String(j.id),String(j.eintrag_id),String(j.schicht));}catch(e){if(!istReversePolicyFehler(e))throw e;await halteReversePolicyAuftrag(db,String(j.id),String(j.eintrag_id),e.code);return;}
+   if(j.status==='fehler'&&!await this.queuePlatz(db))return;
    const leaseMs=j.werkzeug==='reverse-S3-nachzug'?(await leseReverseEinstellungen(j.projekt)).werte.s3_nachzug_lease_ms.wert:this.leaseMs;
    const token=randomUUID();await db.query("UPDATE reverse_auftraege SET status='laeuft',lease_token=$2,lease_bis=clock_timestamp()+$3::double precision*interval '1 millisecond',updated_at=clock_timestamp() WHERE id=$1",[j.id,token,leaseMs]);
    await db.query("UPDATE reverse_schichten SET status='laeuft',gestartet_at=clock_timestamp(),fehlercode=NULL WHERE auftrag_id=$1 AND aktuell AND fingerabdruck=$2",[j.id,j.fingerabdruck]);
