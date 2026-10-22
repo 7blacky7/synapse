@@ -51,38 +51,24 @@ async function dateiAblegen(root:string,arbeit:string,zielBasis:string,staging:s
 }
 
 export async function uebernehmeEInBloecken(pool:Pool,e:ReverseEBlockAuftrag):Promise<{dateien:number;verworfen:number}>{
+ const {eFachauftrag,eCheckpoint,eMutation}=await import('./reverse-e-fortsetzung.js');
  if(!/^[0-9a-f-]{36}$/i.test(e.jobId)||!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/.test(e.reverseId)
   ||!/^[1-9][0-9]{0,18}$/.test(e.mediumId)||!/^[a-f0-9]{64}$/.test(e.manifestSha))throw new Error('reverse_e_block_parameter');
  if(e.einstellungen.letzter_fehler)throw new Error(e.einstellungen.letzter_fehler);
  const root=await fs.realpath(e.reverseRoot),arbeit=await fs.realpath(e.arbeitsWurzel);
- if(!innen(path.join(root,'_arbeit'),arbeit))throw new Error('reverse_e_block_pfad');
+ if(root!==path.resolve(e.reverseRoot)||arbeit!==path.resolve(e.arbeitsWurzel)||!innen(path.join(root,'_arbeit'),arbeit))throw new Error('reverse_e_block_pfad');
  const gruppe=reverseEGruppe(e.mediumId),ziel=path.join(root,e.reverseId,'entpackt',gruppe);
- const staging=path.join(root,e.reverseId,'entpackt','.e-'+e.jobId.toLowerCase());
+ // Segmentidentität verhindert, dass Position 1 eines Folgesegments einen alten Stagingrest verbraucht.
+ const staging=path.join(root,e.reverseId,'entpackt','.e-'+e.jobId.toLowerCase(),e.manifestSha);
  const medium=(await pool.query('SELECT position,bezeichnung FROM reverse_medien WHERE id=$1 AND eintrag_id=$2',[e.mediumId,e.reverseId])).rows[0];
  if(!medium)throw new Error('reverse_e_block_medium');
  const label=typeof medium.bezeichnung==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/.test(medium.bezeichnung.trim())
   ?medium.bezeichnung.trim():'medium-'+(Number(medium.position)+1);
- const tx=<T>(body:(db:PoolClient)=>Promise<T>)=>inTransaktionMitRetry(pool,'reverse-e-block',async db=>{
-  if(!await e.pruefeLease(db))throw new Error('reverse_e_lease_verloren');
-  return body(db);
- },{versuche:reverseZahl(e.einstellungen,'retry_max')});
- const auftrag=await tx(async db=>{
-  const r=(await db.query("SELECT id::text,uebernahme FROM reverse_auftraege WHERE eintrag_id=$1 AND medium_id=$2 AND schicht='E' AND p20_auftrag_id=$3 ORDER BY created_at DESC LIMIT 1 FOR UPDATE",[e.reverseId,e.mediumId,e.jobId])).rows[0];
-  if(!r)throw new Error('reverse_e_block_auftrag');
-  const alt=r.uebernahme as Checkpoint|null;
-  if(alt?.manifest_sha&&alt.manifest_sha!==e.manifestSha)throw new Error('reverse_e_manifest_geaendert');
-  const cp:Checkpoint=alt?.manifest_sha?alt:{...alt,manifest_sha:e.manifestSha,position:'0',dateien:'0',verworfen:'0',einstellungen_revision:e.einstellungen.revision};
-  await db.query('UPDATE reverse_auftraege SET uebernahme=$2::jsonb WHERE id=$1',[r.id,JSON.stringify(cp)]);
-  const bytes=(await db.query('SELECT COALESCE(sum(groesse),0)::text AS bytes FROM reverse_dateien WHERE eintrag_id=$1',[e.reverseId])).rows[0].bytes as string;
-  return {id:r.id as string,cp,bytes};
- });
- // Review 028940c6/B5: Eintragssumme einmal je Lauf lesen, danach je bestaetigtem Block um die tatsaechlich geschriebenen Bytes
- // fortschreiben (kein Vollscan je Block). Parallele Laeufe anderer Medien desselben Eintrags sieht der naechste Lauf.
- let cp=auftrag.cp,eintragBytes=BigInt(auftrag.bytes);
- // P18-T94: Registry in eigenen begrenzten TXs nach E; Wiederholung nach Crash holt fehlende Blöcke nach.
- const assetsNachziehen=()=>zieheReverseAssetsNach(pool,{eintrag_id:e.reverseId,medium_id:e.mediumId,einstellungen:e.einstellungen,
-  pruefeLease:db=>e.pruefeLease(db as PoolClient)});
- if(cp.fertig){await assetsNachziehen();return {dateien:sicher(cp.dateien),verworfen:sicher(cp.verworfen)};}
+ const f=await eFachauftrag(pool,e),alt=f.uebernahme as unknown as Checkpoint|null;
+ if(alt?.manifest_sha&&alt.manifest_sha!==e.manifestSha)throw new Error('reverse_e_manifest_geaendert');
+ let cp:Checkpoint=alt?.manifest_sha?alt:{...alt,manifest_sha:e.manifestSha,position:'0',dateien:alt?.dateien??'0',verworfen:alt?.verworfen??'0',einstellungen_revision:e.einstellungen.revision};
+ await eCheckpoint(pool,e,cp as unknown as Record<string,unknown>);
+ if(cp.fertig)return {dateien:sicher(cp.dateien),verworfen:sicher(cp.verworfen)};
  await eZielOrdner(root,staging);
  const maxRecord=reverseZahl(e.einstellungen,'manifest_record_bytes'),chunk=reverseZahl(e.einstellungen,'lese_block_bytes');
  const maxDatei=reverseBigInt(e.einstellungen,'max_datei_bytes'),tiefe=reverseZahl(e.einstellungen,'pfad_tiefe_max');
@@ -92,68 +78,59 @@ export async function uebernehmeEInBloecken(pool:Pool,e:ReverseEBlockAuftrag):Pr
    position++;
    if(position<=BigInt(cp.position))continue;
    if(Buffer.byteLength(JSON.stringify(d))>maxRecord)throw new Error('reverse_e_manifest_record_zu_gross');
+   let pfad:string;
+   try{pfad=normalisiereSpeicherPfad(d.pfad);}catch{throw new Error('reverse_e_manifest_pfad');}
+   if(pfad!==d.pfad||pfad.length>reverseZahl(e.einstellungen,'speicher_pfad_zeichen')||pfad.split('/').length-1>tiefe
+    ||pfad.split('/').some(t=>t==='.intern'||t.startsWith('.e-'))
+    ||!/^[a-f0-9]{64}$/.test(d.sha256)||!/^(0|[1-9][0-9]*)$/.test(d.groesse))throw new Error('reverse_e_manifest_record_ungueltig');
+   if(BigInt(d.groesse)>maxDatei)throw new Error('reverse_e_datei_zu_gross:'+d.pfad);
    const sql={pfad:label+'/'+d.pfad,sha256:d.sha256,groesse:d.groesse,art:ARTEN.has(d.art??'')?d.art:'sonstig',
-    storage_key:e.reverseId+'/entpackt/'+gruppe+'/'+d.pfad,meta:{...d.metadaten,e_auftrag:e.jobId,e_pfad:d.pfad,e_position:String(position)}};
+    storage_key:e.reverseId+'/entpackt/'+gruppe+'/'+d.pfad,
+    meta:{...d.metadaten,e_auftrag:e.jobId,e_pfad:d.pfad,e_manifest:e.manifestSha,e_position:String(position)}};
    yield {position:String(position),d,sql};
   }
  }
- const grenzen={zeilen:reverseZahl(e.einstellungen,'e_uebernahme_block_zeilen'),bytes:reverseZahl(e.einstellungen,'materialisierung_tx_bytes')-4*Buffer.byteLength(JSON.stringify(cp))-Buffer.byteLength(e.reverseId+e.mediumId+e.jobId)};
+ const grenzen={zeilen:reverseZahl(e.einstellungen,'e_uebernahme_block_zeilen'),
+  bytes:reverseZahl(e.einstellungen,'materialisierung_tx_bytes')-Buffer.byteLength(JSON.stringify([e.reverseId,e.mediumId,e.jobId]))};
  for await(const block of indexBloeckeAsync(rest(),grenzen)){
-  const bereit:Array<{position:string;d:ReverseEMetadatei;sql:Record<string,unknown>}>=[];
-  const gesehen=new Set<string>();let verworfen=0n;
-  for(const item of block){
-   const {d}=item;
-   let pfad:string;
-   try{pfad=normalisiereSpeicherPfad(d.pfad);}catch{verworfen++;continue;}
-   if(pfad!==d.pfad||pfad.length>reverseZahl(e.einstellungen,'speicher_pfad_zeichen')||pfad.split('/').length-1>tiefe
-    ||pfad.split('/').some(t=>t==='.intern'||t.startsWith('.e-'))||gesehen.has(pfad)
-    ||!/^[a-f0-9]{64}$/.test(d.sha256)||!/^(0|[1-9][0-9]*)$/.test(d.groesse)||BigInt(d.groesse)>maxDatei){verworfen++;continue;}
-   gesehen.add(pfad);
-   if(await dateiAblegen(root,arbeit,ziel,staging,BigInt(item.position),d,chunk))bereit.push(item);else verworfen++;
+  const gesehen=new Set<string>();
+  for(const {d,position} of block){
+   if(gesehen.has(d.pfad))throw new Error('reverse_e_manifest_doppelter_pfad');
+   gesehen.add(d.pfad);
+   if(!await dateiAblegen(root,arbeit,ziel,staging,BigInt(position),d,chunk))throw new Error('reverse_e_datei_offen:'+d.pfad);
   }
   const erwartet=cp.position;
-  const [naechster,geschriebenBytes]=await tx(async db=>{
-   const aktuell=(await db.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1 FOR UPDATE',[auftrag.id])).rows[0]?.uebernahme as Checkpoint;
-   if(!aktuell||aktuell.manifest_sha!==e.manifestSha||aktuell.position!==erwartet)throw new Error('reverse_e_checkpoint_geaendert');
-   // Eintrags-Bytebudget unter derselben Eintragssperre; kein Dateianzahl-Gesamtlimit.
-   await db.query('SELECT id FROM reverse_eintraege WHERE id=$1 FOR UPDATE',[e.reverseId]);
-   const altDateien=new Map((await db.query('SELECT pfad,groesse::text FROM reverse_dateien WHERE eintrag_id=$1 AND pfad=ANY($2::text[])',[e.reverseId,bereit.map(x=>label+'/'+x.d.pfad)])).rows
-    .map(z=>[z.pfad as string,BigInt(z.groesse as string)]));
-   const differenz=(x:{d:ReverseEMetadatei})=>BigInt(x.d.groesse)-(altDateien.get(label+'/'+x.d.pfad)??0n);
-   const delta=bereit.reduce((n,x)=>n+differenz(x),0n);
-   if(eintragBytes+delta>reverseBigInt(e.einstellungen,'eintrag_bytes'))throw new Error('reverse_e_eintrag_bytes');
-   // Genauso wie Projekt-Code: gebundene Werte, Hash-Upsert und bounded SQL, eigene Reverse-Tabelle.
-   const r=bereit.length?await db.query(`INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,sha256,groesse,art,storage_key,entpackt_mit,metadaten,status)
-    SELECT $1,$2,u.pfad,u.sha256,u.groesse,u.art,u.storage_key,'reverse-E',u.meta,'offen'
-    FROM jsonb_to_recordset($3::jsonb) AS u(pfad text,sha256 text,groesse bigint,art text,storage_key text,meta jsonb)
-    ON CONFLICT(eintrag_id,pfad) DO UPDATE SET sha256=EXCLUDED.sha256,groesse=EXCLUDED.groesse,storage_key=EXCLUDED.storage_key,
-     art=EXCLUDED.art,metadaten=reverse_dateien.metadaten||EXCLUDED.metadaten,updated_at=clock_timestamp()
-    WHERE (reverse_dateien.storage_key=EXCLUDED.storage_key OR reverse_dateien.storage_key IS NULL)
-     AND (reverse_dateien.metadaten->>'e_auftrag' IS DISTINCT FROM $4 OR reverse_dateien.metadaten->>'e_position'=EXCLUDED.metadaten->>'e_position')
-    RETURNING pfad`,
-    [e.reverseId,e.mediumId,JSON.stringify(bereit.map(x=>x.sql)),e.jobId]):{rowCount:0,rows:[]};
-   const geschrieben=new Set(r.rows.map(z=>z.pfad as string));
-   const neu=BigInt(r.rowCount??0);
-   const next:Checkpoint={...aktuell,position:block[block.length-1].position,
-    dateien:String(BigInt(aktuell.dateien)+neu),verworfen:String(BigInt(aktuell.verworfen)+verworfen+BigInt(bereit.length)-neu)};
-   await db.query("UPDATE reverse_auftraege SET uebernahme=$2::jsonb,updated_at=clock_timestamp() WHERE id=$1",[auftrag.id,JSON.stringify(next)]);
-   return [next,bereit.reduce((n,x)=>geschrieben.has(label+'/'+x.d.pfad)?n+differenz(x):n,0n)] as const;
-  });
-  cp=naechster;eintragBytes+=geschriebenBytes;
+  // Metadaten und Cursor bewusst in verschiedenen TXs. Wiederholung derselben Segmentposition ist idempotent.
+  const r=await eMutation(pool,e,`INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,sha256,groesse,art,storage_key,entpackt_mit,metadaten,status)
+   SELECT $1,$2,u.pfad,u.sha256,u.groesse,u.art,u.storage_key,'reverse-E',u.meta,'offen'
+   FROM jsonb_to_recordset($3::jsonb) AS u(pfad text,sha256 text,groesse bigint,art text,storage_key text,meta jsonb)
+   ON CONFLICT(eintrag_id,pfad) DO UPDATE SET art=EXCLUDED.art,metadaten=reverse_dateien.metadaten||EXCLUDED.metadaten,updated_at=clock_timestamp()
+   WHERE reverse_dateien.sha256=EXCLUDED.sha256 AND reverse_dateien.groesse=EXCLUDED.groesse
+    AND reverse_dateien.storage_key=EXCLUDED.storage_key
+    AND (reverse_dateien.metadaten->>'e_auftrag' IS DISTINCT FROM $4
+     OR (reverse_dateien.metadaten->>'e_manifest'=EXCLUDED.metadaten->>'e_manifest'
+      AND reverse_dateien.metadaten->>'e_position'=EXCLUDED.metadaten->>'e_position'))
+   RETURNING pfad`,
+   [e.reverseId,e.mediumId,JSON.stringify(block.map(x=>x.sql)),e.jobId],block.length,async db=>{
+    const aktuell=await eFachauftrag(db,e);
+    if(aktuell.uebernahme?.manifest_sha!==e.manifestSha||aktuell.uebernahme?.position!==erwartet)throw new Error('reverse_e_checkpoint_geaendert');
+    const altDateien=new Map((await db.query('SELECT pfad,groesse::text FROM reverse_dateien WHERE eintrag_id=$1 AND pfad=ANY($2::text[])',
+     [e.reverseId,block.map(x=>label+'/'+x.d.pfad)])).rows.map(z=>[z.pfad as string,BigInt(z.groesse as string)]));
+    const delta=block.reduce((n,x)=>n+BigInt(x.d.groesse)-(altDateien.get(label+'/'+x.d.pfad)??0n),0n);
+    const belegt=(await db.query(`SELECT COALESCE((SELECT sum(groesse) FROM reverse_dateien WHERE eintrag_id=$1),0)+
+     COALESCE((SELECT sum((uebernahme#>>'{rueckhalt,bytes}')::numeric) FROM reverse_auftraege WHERE eintrag_id=$1
+      AND p20_auftrag_id IS DISTINCT FROM $2::uuid AND uebernahme#>>'{rueckhalt,bytes}' ~ '^[0-9]+$'),0) AS bytes`,[e.reverseId,e.jobId])).rows[0].bytes;
+    if(BigInt(belegt)+delta>reverseBigInt(e.einstellungen,'eintrag_bytes'))throw new Error('reverse_e_eintrag_bytes');
+   },true);
+  if(r.rowCount!==block.length)throw new Error('reverse_e_datei_konflikt');
+  cp={...cp,position:block[block.length-1].position,dateien:String(BigInt(cp.dateien)+BigInt(block.length))};
+  await eCheckpoint(pool,e,cp as unknown as Record<string,unknown>);
   await e.fortschritt?.(cp);
  }
- const ergebnis=await tx(async db=>{
-  const alt=(await db.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1 FOR UPDATE',[auftrag.id])).rows[0]?.uebernahme as Checkpoint;
-  if(!alt||alt.manifest_sha!==e.manifestSha||alt.position!==cp.position)throw new Error('reverse_e_checkpoint_geaendert');
-  const r=await finalisiereEErgebnis(db,e,sicher(cp.dateien),sicher(cp.verworfen));
-  if(cp.runner_status==='teilweise'){
-   // P18-T87/T88: vorzeitig beendeter Lauf: Uebernommenes bleibt, Auftrag und E-Schicht zeigen teilweise mit Code.
-   await db.query("UPDATE reverse_auftraege SET status='teilweise',fehlercode=$2 WHERE id=$1",[auftrag.id,cp.runner_fehlercode??null]);
-   await db.query("UPDATE reverse_schichten SET status='teilweise',fehlercode=$2 WHERE auftrag_id=$1 AND aktuell",[auftrag.id,cp.runner_fehlercode??null]);
-  }
-  await db.query("UPDATE reverse_auftraege SET uebernahme=$2::jsonb WHERE id=$1",[auftrag.id,JSON.stringify({...cp,fertig:true})]);
-  return r;
- });
- await assetsNachziehen();
- return ergebnis;
+ cp={...cp,fertig:true};
+ await eCheckpoint(pool,e,cp as unknown as Record<string,unknown>);
+ // Schicht-/Auftragsabschluss folgt erst nach bestätigtem Extraktionsende im Executor.
+ // T94 bleibt eintragsspezifisch und schreibt seine eigenen begrenzten Transaktionen.
+ await zieheReverseAssetsNach(pool,{eintrag_id:e.reverseId,medium_id:e.mediumId,einstellungen:e.einstellungen,pruefeLease:db=>e.pruefeLease(db as PoolClient)});
+ return {dateien:sicher(cp.dateien),verworfen:sicher(cp.verworfen)};
 }

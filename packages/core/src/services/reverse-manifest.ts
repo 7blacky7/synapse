@@ -3,10 +3,10 @@ import {createHash} from 'node:crypto';
 import {constants,promises as fs} from 'node:fs';
 import path from 'node:path';
 import type {ReverseEMetadatei} from './reverse-e-bloecke.js';
-export interface ReverseManifestVerweis {version:1;pfad:'.e-manifest.jsonl';sha256:string;bytes:string;zeilen:string}
+export interface ReverseManifestVerweis {version:1|2;pfad:string;sha256:string;bytes:string;zeilen:string}
 export function reverseManifestVerweis(roh:unknown):ReverseManifestVerweis {
  const v=roh as Partial<ReverseManifestVerweis>|null;
- if(!v||v.version!==1||v.pfad!=='.e-manifest.jsonl'||typeof v.sha256!=='string'||!/^[a-f0-9]{64}$/.test(v.sha256)
+ if(!v||!(v.version===1&&v.pfad==='.e-manifest.jsonl'||v.version===2&&typeof v.pfad==='string'&&/^\.e-manifest-[1-9][0-9]*\.jsonl$/.test(v.pfad))||typeof v.sha256!=='string'||!/^[a-f0-9]{64}$/.test(v.sha256)
   ||typeof v.bytes!=='string'||!/^(0|[1-9][0-9]*)$/.test(v.bytes)||typeof v.zeilen!=='string'||!/^(0|[1-9][0-9]*)$/.test(v.zeilen))
   throw new Error('reverse_manifest_verweis_ungueltig');
  return v as ReverseManifestVerweis;

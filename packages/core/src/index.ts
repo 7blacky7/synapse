@@ -74,6 +74,7 @@ export type { ReverseAction, ReverseFehlercode, ReverseContainerInfo, ReverseAna
 export { ergaenzeReverseRuntime } from './services/reverse-tool.js';
 // P18-T61/R1-C: E-Ergebnis eines Reverse-Container-Auftrags in die Bibliothek übernehmen.
 export { uebernehmeEErgebnis, reverseEGruppe, ReverseEUebernahmeFehler } from './services/reverse-e-uebernahme.js';
+export {eMutation,eFachauftrag,eCheckpoint,eArbeitsBeleg,eDateiExists,eRueckhaltBeleg,eAbschluss,eRetentionsJournal} from './services/reverse-e-fortsetzung.js';
 export type { ReverseEManifestEintrag, ReverseEUebernahmeOptionen } from './services/reverse-e-uebernahme.js';
 // P18-T69: reverse-S3 (Ghidra) -> S2/S3 in die Code-Tabellen; Ressourcenbedarf je Container-Kind.
 export { uebernehmeS3Ergebnis, reverseS3AusgabeKey, ReverseS3UebernahmeFehler } from './services/reverse-s3-uebernahme.js';

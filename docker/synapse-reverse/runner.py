@@ -310,7 +310,7 @@ def limit_violation(files: int, dirs: int, total: int, cap: dict[str, int], inpu
                                   f"{input_size} Bytes Eingabe (max_kompressionsfaktor {cap['max_kompressionsfaktor']})")
     if total > cap["max_bytes"]:
         return "zu_gross", f"max_bytes ueberschritten: mehr als {cap['max_bytes']} Bytes Ausgabe"
-    if not cap.get("blockuebernahme") and (files > cap["max_dateien"] or dirs > cap["max_dateien"]):
+    if files > cap["max_dateien"] or dirs > cap["max_dateien"]:
         return "zu_gross", f"max_dateien ueberschritten: mehr als {cap['max_dateien']} Eintraege"
     return None
 
@@ -913,9 +913,14 @@ def entpacke_iso(out: Path, eintrag: dict[str, Any], cap: dict[str, int], input_
     if code == -signal.SIGXFSZ or (code and "File too large" in meldung):
         raise GrenzeUeberschritten(*file_limit_violation(cap, input_size))
     if code:
-        clear_output(ziel)
-        ziel.rmdir()
-        hinweise.append({"code": "iso_nicht_entpackt", "pfad": eintrag["pfad"], "meldung": meldung[-500:]})
+        # P18-T93: Werkzeugfehler ist kein Beleg, dass bereits geschriebene Dateien unbrauchbar sind.
+        # Fremdes stderr kann Pfade/Geheimnisse enthalten: im Status nur maskiert ausgeben.
+        diagnose = {"werkzeug": "7zz", "exitcode": code, "stderr": "[maskiert]",
+                    "stderr_zeichen": len(meldung), "grund": "iso_werkzeug_fehler"}
+        halte_an("werkzeug", "iso_werkzeug_fehler", "iso_entpacken", eintrag["pfad"], json.dumps(diagnose))
+        hinweise.append({"code": "iso_nicht_entpackt", "pfad": eintrag["pfad"], **diagnose,
+                         "retention": {"erhalten": True, "fortsetzbar": False,
+                                       "rueckhalt": ziel.relative_to(out).as_posix()}})
         return False
     eintrag.setdefault("metadaten", {})["inhalt"] = ziel.relative_to(out).as_posix()
     return True
@@ -1156,6 +1161,111 @@ def inhalt_ordner(source: Path) -> Path:
     return ziel
 
 
+
+def e_schritt(req: dict[str, Any], job: str, source: Path, cap: dict[str, int]) -> list[dict[str, Any]]:
+    """Generischer 7zz-Prozessadapter. Formatwissen bleibt im vorhandenen Werkzeug."""
+    spec = importlib.util.spec_from_file_location("reverse_checkpoint", Path(__file__).with_name("checkpoint.py"))
+    if spec is None or spec.loader is None:
+        raise ValueError("e_checkpoint_adapter_fehlt")
+    journal = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(journal)
+    raw = req.get("fortsetzung")
+    if not isinstance(raw, dict) or not isinstance(raw.get("bindung"), dict):
+        raise ValueError("e_checkpoint_bindung_fehlt")
+    snapshot = req.get("einstellungen") or {}
+    values = snapshot.get("werte") or {}
+    poll = int(values["guard_intervall_ms"]["wert"]) / 1000
+    wait = int(values["prozess_wait_ms"]["wert"]) / 1000
+    out = path_under(job, WORK, False)
+    out.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + cap["zeitlimit_s"] - min(cap["nachlauf_s"], cap["zeitlimit_s"] // 4)
+    runtime = hashlib.sha256()
+    for name in ("runner.py", "checkpoint.py", "manifest.py"):
+        with Path(__file__).with_name(name).open("rb") as f:
+            while block := f.read(cap["lese_block_bytes"]):
+                runtime.update(block)
+    bindung = {**raw["bindung"], "runtime_sha256": runtime.hexdigest(), "werkzeug": tool_version("7zz"),
+               "einstellungen_revision": snapshot.get("revision")}
+    env = {**os.environ, "LC_ALL": "C.UTF-8", "HOME": str(out), "TMPDIR": str(out)}
+
+    def prozess(argv: list[str], ziel: Path, ende: float, maximum: int) -> None:
+        # stdout enthält nur diesen Member bzw. das Inventar. Fristen/Fehler löschen keinen Teilstand.
+        with ziel.open("xb") as sink:
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.DEVNULL,
+                                    env=env, cwd=out, start_new_session=True, preexec_fn=file_size_limit(maximum))
+            try:
+                while proc.poll() is None:
+                    if time.monotonic() >= ende:
+                        raise TimeoutError("e_member_deadline")
+                    if ziel.stat().st_size > maximum:
+                        raise ValueError("e_member_schrittbudget")
+                    time.sleep(min(poll, max(0, ende - time.monotonic())))
+                if proc.returncode != 0:
+                    raise ValueError("e_member_werkzeug:" + str(proc.returncode))
+                sink.flush()
+                os.fsync(sink.fileno())
+            finally:
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                proc.wait(timeout=wait)
+
+    def auflisten(archiv: Path):
+        # Technische Werkzeugausgabe, keine Mediendekodierung. Erst Exit 0, dann bestätigtes Inventar.
+        spool = out / (".e-inventar-" + os.urandom(16).hex())
+        prozess(["7zz", "l", "-slt", "-ba", "-sccUTF-8", "--", str(archiv)], spool, deadline, cap["max_bytes"])
+        record: dict[str, str] = {}
+        def member():
+            if not record:
+                return None
+            if any(k in record for k in ("Symbolic Link", "Hard Link")):
+                raise ValueError("e_member_symlink")
+            if record.get("Folder") == "+" or record.get("Attributes", "").startswith("D"):
+                return None
+            if "Path" not in record or not record.get("Size", "").isdigit():
+                raise ValueError("e_member_inventar_ungueltig")
+            return {"pfad": record["Path"], "groesse": record["Size"]}
+        with spool.open("rb") as f:
+            while line := f.readline(cap["manifest_record_bytes"] + 2):
+                if len(line) > cap["manifest_record_bytes"] + 1 or not line.endswith(b"\n"):
+                    raise ValueError("e_member_inventar_record")
+                text = line.decode("utf-8", errors="strict").rstrip("\r\n")
+                if not text:
+                    item = member()
+                    if item is not None:
+                        yield item
+                    record = {}
+                else:
+                    key, separator, value = text.partition(" = ")
+                    if not separator or key in record:
+                        raise ValueError("e_member_inventar_ungueltig")
+                    record[key] = value
+                    if sum(len(k) + len(v) for k, v in record.items()) > cap["manifest_record_bytes"]:
+                        raise ValueError("e_member_inventar_record")
+            item = member()
+            if item is not None:
+                yield item
+
+    def extrahieren(archiv: Path, member: str, ziel: Path, ende: float) -> None:
+        prozess(["7zz", "x", "-so", "-spd", "-y", "--", str(archiv), member], ziel, min(ende, deadline),
+                min(cap["max_datei_bytes"], cap["max_bytes"]))
+
+    def erkennen(p: Path) -> bool:
+        return detect_format(p) in ("7z", "rar", "zip", "cab", "gzip", "bzip2", "xz", "tar", "lha", "arj", "iso9660", "udf")
+
+    try:
+        result = journal.ausfuehren(out, source, bindung, cap, auflisten, extrahieren, erkennen,
+                                   importiert_sha=raw.get("importiert_sha"))
+        result["werkzeug_version"] = bindung["werkzeug"]
+        return [result]
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return [{"status": "teilweise", "fehlercode": "werkzeug_fehler", "manifest": [],
+                 "retention": {"erhalten": True, "fortsetzbar": False, "grund": str(exc),
+                               "cursor_unbestaetigt": True}}]
+
+
 def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, int], input_size: int,
                        env: dict[str, str], job_tmp: Path, deadline: float, stand: Bestand | None = None) -> dict[str, Any]:
     """Einen Container nach <name>~inhalt/ entpacken. Grenzverletzung/Fehler betreffen nur diesen Container."""
@@ -1176,9 +1286,10 @@ def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, 
             return scan_output(out, cap, input_size)
 
     def verwerfen(grund: str, meldung: str = "") -> dict[str, Any]:
-        clear_output(ziel)
-        shutil.rmtree(ziel, ignore_errors=True)
-        return {"status": "fehler", "grund": grund, **({"meldung": meldung[-300:]} if meldung else {})}
+        # P18-T93: Unbestätigter Teilbaum bleibt erhalten und wird nicht erneut als fertig ausgegeben.
+        halte_an("grenze", grund, "verschachtelt", rel, meldung or grund)
+        return {"status": "teilweise", "grund": grund, "rueckhalt": ziel.relative_to(out).as_posix(),
+                "fortsetzbar": False, **({"meldung": meldung[-300:]} if meldung else {})}
     try:
         command = verschachtelt_kommando(tool, source, ziel, fmt)
     except ValueError:
@@ -1471,8 +1582,7 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
                 ergebnis = {"status": "fehler", "fehlercode": "beschaedigt" if code else "werkzeug_fehler",
                             "meldung": (meldung or "")[-1000:] or f"Parser-Prozess endete mit {code}"}
             if ergebnis.get("status") != "fertig":
-                if out:
-                    clear_output(out)
+                # Trackwerkzeuge haben noch keinen bestätigten Member-Cursor: erhalten, nicht adoptieren.
                 fehler = str(ergebnis.get("fehlercode") or "werkzeug_fehler")
                 event = {"status": "fehler", "fehlercode": fehler, "meldung": ergebnis.get("meldung"), "manifest": [],
                          "format": erkennung.format, "dauer_s": round(time.monotonic() - started, 3)}
@@ -1502,11 +1612,14 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
         if out is None:
             return [{"status": "fertig", "fehlercode": None, "werkzeug_version": version, "format": erkennung.format,
                      "spurtabelle": tabelle, "manifest": [], "dauer_s": round(time.monotonic() - started, 3)}]
+        if _STOPP is not None:
+            return [{"status": "teilweise", "fehlercode": abbruch_code(True), "manifest": [],
+                     "retention": {"erhalten": True, "fortsetzbar": False, "grund": _STOPP.get("grund"),
+                                   "abbruch": _STOPP}}]
         files, size = output_manifest(out, cap, input_size, lauf_ende(started, cap))
     except GrenzeUeberschritten as exc:
-        if out:
-            clear_output(out)
-        return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
+        return [{"status": "teilweise", "retention": {"erhalten": True, "fortsetzbar": False, "grund": str(exc)},
+                 "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
                  "dauer_s": round(time.monotonic() - started, 3)}]
     def disc_meta(datei: dict[str, Any]) -> None:
         zusatz = meta.get(datei["pfad"])
@@ -1613,6 +1726,8 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
         return run_disc(req, job, cap, size, medium, erkennung, nur_tabelle=True)
     if extract:
         begleit = companions(req)
+        if cap.get("blockuebernahme") and not begleit and detect_format(source) in ("7z", "rar", "zip", "cab", "gzip", "bzip2", "xz", "tar", "lha", "arj", "iso9660", "udf"):
+            return e_schritt(req, job, source, cap)
         # P18-T62: Grenzen beziehen sich auf das ganze Medium (Hauptdatei + Begleitdateien, z. B. CUE + BIN).
         input_size = sum(path.stat().st_size for path in {source, *(item for _, item in begleit)})
         # P18-T49: Disc-Images (CUE, CloneCD, MDS, NRG, ... und Raw-2352) ueber Registry + gemeinsamen Extraktor.
@@ -1699,10 +1814,17 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
             fortschritt_phase("siedler3", rel)
             result = siedler3_entpacken(source, out, rel, cap, input_size, arbeitsende(started, cap), verschachtelt)
             verschachtelt.setdefault(rel, {})["verschachtelt"] = {"format": siedler_fmt, **result}
+        if _STOPP is not None:
+            return [{"status": "teilweise", "fehlercode": abbruch_code(True), "manifest": [],
+                     "retention": {"erhalten": True, "fortsetzbar": False, "grund": _STOPP.get("grund"),
+                                   "abbruch": _STOPP}}]
         files, size = output_manifest(out, cap, input_size, lauf_ende(started, cap))
     except GrenzeUeberschritten as exc:
-        clear_output(out)
-        return [{"status": "fehler", "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
+        if not extract:
+            clear_output(out)  # S3 unverändert
+        return [{"status": "teilweise" if extract else "fehler",
+                 **({"retention": {"erhalten": True, "fortsetzbar": False, "grund": str(exc)}} if extract else {}),
+                 "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
                  "dauer_s": round(time.monotonic() - started, 3)}]
     version = "siedler3 P18-T72" if siedler_only else "pe-ressourcen P18-T76" if pe_only else tool_version(tool)
     merge_verschachtelt(files, verschachtelt)

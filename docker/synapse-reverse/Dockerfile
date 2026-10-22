@@ -45,6 +45,8 @@ RUN curl --fail --location --retry 3 --output /tmp/rizin.tar.xz "https://github.
  && /usr/sbin/useradd --uid 65532 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin reverse
 COPY --chmod=0444 runner.py /opt/reverse/runner.py
 COPY --chmod=0444 manifest.py /opt/reverse/manifest.py
+COPY --chmod=0444 checkpoint.py /opt/reverse/checkpoint.py
+COPY --chmod=0444 leser.py /opt/reverse/leser.py
 # P18-T49/RV34: Spurtabelle, Parser-Registry (libmirage via GObject-Introspection) und gemeinsamer Extraktor.
 COPY --chmod=0444 disc.py /opt/reverse/disc.py
 COPY --chmod=0444 pe_ressourcen.py /opt/reverse/pe_ressourcen.py

@@ -470,6 +470,10 @@ export class ReverseExecutor {
   // P18-T88: bestaetigte E-Manifeste (Blockuebernahme) bleiben fuer die Wiederaufnahme erhalten; keine neue Aufraeumfunktion.
   const eArtefakte=(await this.pool.query("SELECT p20_auftrag_id::text AS id FROM reverse_auftraege WHERE p20_auftrag_id=ANY($1::uuid[]) AND uebernahme->'artefakt' IS NOT NULL",[namen])).rows;
   for(const row of eArtefakte)behalten.add(String(row.id).toLowerCase());
+  // Teil C: E ohne explizit bestätigten Vollabschluss ist Rückhalt, auch vor dem ersten PG-Checkpoint.
+  // S3 bleibt in beiden bisherigen Abfragen und im Aufräumpfad unverändert.
+  const eRest=(await this.pool.query("SELECT DISTINCT p20_auftrag_id::text AS id FROM reverse_auftraege WHERE p20_auftrag_id=ANY($1::uuid[]) AND schicht='E' AND (uebernahme->>'e_abgeschlossen' IS DISTINCT FROM 'true' OR uebernahme->>'retention'='true' OR uebernahme->'rueckhalt' IS NOT NULL OR uebernahme->>'cursor_unbestaetigt'='true')",[namen])).rows;
+  for(const row of eRest)behalten.add(String(row.id).toLowerCase());
   let n=0;
   for(const name of namen){
    if(behalten.has(name.toLowerCase())){if(!this.altScope)await sperreArbeitsOrdner(path.join(this.k.arbeitRoot,name));continue;}
@@ -490,19 +494,25 @@ export class ReverseExecutor {
  private async uebernimmUnterFence(job:WorkJob,wer:WorkIdentity,e:Parameters<typeof uebernehmeEErgebnis>[1],
   ende?:{status:string;fehlercode:string|null}):Promise<{dateien:number;verworfen:number}|null>{
   const c=await this.pool.connect();
+  let r:Awaited<ReturnType<typeof uebernehmeEErgebnis>>;
   try{
    await c.query('BEGIN');
    if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return null;}
-   // Ohne connect(): die Übernahme läuft in dieser Transaktion unter dem Lease-Fence.
-   const r=await (this.deps.uebernahme??uebernehmeEErgebnis)({query:c.query.bind(c)},e,this.deps.uebernahmeOptionen);
-   if(ende?.status==='teilweise'){
-    // P18-T87: vorzeitig beendeter Lauf (Frist/Grenze): Uebernommenes bleibt, Auftrag und E-Schicht zeigen teilweise mit Code.
-    await c.query("UPDATE reverse_auftraege SET status='teilweise',fehlercode=$2,updated_at=clock_timestamp() WHERE p20_auftrag_id=$1 AND status IN ('fertig','teilweise')",[job.id,ende.fehlercode]);
-    await c.query("UPDATE reverse_schichten SET status='teilweise',fehlercode=$2 WHERE aktuell AND schicht='E' AND datei_id IS NULL AND status IN ('fertig','teilweise') AND auftrag_id IN (SELECT id FROM reverse_auftraege WHERE p20_auftrag_id=$1)",[job.id,ende.fehlercode]);
-   }
-   await c.query('COMMIT');return r;
+   r=await (this.deps.uebernahme??uebernehmeEErgebnis)({query:c.query.bind(c)},e,this.deps.uebernahmeOptionen);
+   await c.query('COMMIT');
   }catch(err){await c.query('ROLLBACK').catch(()=>undefined);throw err;}
   finally{c.release();}
+  const wert=r as typeof r&{rueckhalt?:Record<string,unknown>;offen?:number;grund?:string};
+  if(wert.rueckhalt||ende?.status==='teilweise'){
+   const {eAbschluss,eCheckpoint}=await import('@synapse/core');
+   const einstellungen=await leseReverseEinstellwerte({eintrag_id:e.reverseId},this.pool);
+   const kontext={...e,einstellungen,pruefeLease:(db:import('pg').PoolClient)=>this.leaseLebt(db,job,wer,true)};
+   // Jede Phase trägt ihren Lease-Fence; ein Crash lässt den FS-Beleg bzw. den abgeschlossenen Import bestehen.
+   if(wert.rueckhalt)await eCheckpoint(this.pool as Pool,kontext,{retention:true,fortsetzung_gesperrt:true,rueckhalt:wert.rueckhalt});
+   await eAbschluss(this.pool as Pool,kontext,{dateien:String(r.dateien),abgewiesen:String(r.verworfen),
+    offen:String(wert.offen??0),grund:wert.grund??ende?.fehlercode??'teilweise',rueckhalt:wert.rueckhalt,fertig:false});
+  }
+  return r;
  }
  /**
   * Endgültiger Fehlschlag unter Lease-Fence. P18-T64: immer eine Logzeile; fachliche Fehler (deterministisch) setzen
@@ -594,112 +604,162 @@ export class ReverseExecutor {
   * bestaetigten Rest, ohne erneut zu entpacken. P18-T87 bleibt: harte Frist, Storno, kein Neueinreihen.
   * Fehlerbudget: retry_max Versuche OHNE Fortschritt; deterministische Fehler (Manifest geaendert, Eintragsquote) sofort.
   */
+ /** P18-T93: gehaltene E-Arbeit ist ein sichtbarer Abschluss, keine automatische Adoption. */
+ private async eHalten(job:WorkJob,wer:WorkIdentity,grund:string,extra:Record<string,unknown>={}):Promise<void>{
+  const {eAbschluss,eCheckpoint,eFachauftrag,eRetentionsJournal,eRueckhaltBeleg,eMutation}=await import('@synapse/core');
+  const einstellungen=await leseReverseEinstellwerte({eintrag_id:job.inputRef.id},this.pool);
+  const e={jobId:job.id,reverseId:job.inputRef.id,mediumId:job.inputRef.revision,einstellungen,pruefeLease:(c:import('pg').PoolClient)=>this.leaseLebt(c,job,wer,true)};
+  const arbeit=path.join(this.k.arbeitRoot,job.id),ausgabe=this.altScope?path.join(arbeit,job.id):arbeit;
+  let rueckhalt:Record<string,unknown>;
+  try{
+   rueckhalt=await eRueckhaltBeleg(this.k.reverseRoot,e,job.inputRef.sha256,reverseZahl(einstellungen,'manifest_record_bytes'))
+    ??await eRetentionsJournal(this.k.reverseRoot,ausgabe,e,grund,reverseZahl(einstellungen,'manifest_record_bytes'));
+  }catch(err){
+   rueckhalt={erhalten:true,storage_key:path.relative(this.k.reverseRoot,ausgabe),bytes:null,grund,loeschen:false,
+    automatisch_fortsetzen:false,fehler:{errno:(err as NodeJS.ErrnoException).code??'UNBEKANNT',meldung:(err as Error).message}};
+  }
+  const f=await eFachauftrag(this.pool,e),cp=f.uebernahme??{};
+  const vorher=cp.rueckhalt as Record<string,unknown>|undefined,abschluss=cp.abschluss as Record<string,unknown>|undefined;
+  // Neu messen, aber offene Dateien und den ursprünglichen Rename-Fehler über Retry hinweg erhalten.
+  if(vorher)rueckhalt={...vorher,...rueckhalt,grund:vorher.grund??rueckhalt.grund,
+   ...(vorher.fehler?{fehler:vorher.fehler}:{})};
+  const ursache=String(vorher?.grund??grund);
+  const ex=cp.extraktion as Record<string,unknown>|undefined,artefakt=cp.artefakt as Record<string,unknown>|undefined;
+  const rest=artefakt?BigInt(String(artefakt.zeilen??'0'))-BigInt(String(cp.position??'0')):0n;
+  const offen=String(rueckhalt.offen??(ex?BigInt(String(ex.offen??'0'))+(rest>0n?rest:0n):abschluss?.offen??(rest>0n?rest:'0')));
+  rueckhalt={...rueckhalt,offen,offen_unbekannt:!ex&&!artefakt&&rueckhalt.offen===undefined&&abschluss?.offen===undefined};
+  await eCheckpoint(this.pool as Pool,e,{retention:true,fortsetzung_gesperrt:true,rueckhalt,letzter_fehler:ursache,...extra});
+  await eAbschluss(this.pool as Pool,e,{dateien:String(cp.dateien??abschluss?.dateien??'0'),abgewiesen:String(cp.verworfen??abschluss?.abgewiesen??rueckhalt.abgewiesen??'0'),
+   offen,grund:ursache,rueckhalt,fertig:false});
+  if(grund==='storno'||grund==='zeitlimit'){
+   // E-Metadaten sind bereits begrenzt abgeschlossen. Auch diese beiden konstanten Steuerzeilen je eine TX.
+   await eMutation(this.pool as Pool,e,"INSERT INTO work_job_audit(id,job_id,event,detail) SELECT gen_random_uuid(),$1,$2,$3::jsonb WHERE NOT EXISTS(SELECT 1 FROM work_job_audit WHERE job_id=$1 AND event=$2 AND detail->>'versuch'=$4)",
+    [job.id,'reverse_e_erhalten',JSON.stringify({grund,versuch:String(job.attempt)}),String(job.attempt)]);
+   await eMutation(this.pool as Pool,e,"UPDATE work_jobs SET state=$2,error_code=$3,lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1",
+    [job.id,grund==='storno'?'cancelled':'failed',grund==='storno'?'abgebrochen':'zeitlimit']);
+   return;
+  }
+  const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:job.inputRef.sha256};
+  if(await this.jobs.stage(wer,job.id,job.claimToken!,out))await this.jobs.complete(wer,job.id,job.claimToken!,job.inputRef);
+ }
+
  private async fuehreEBlockAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob,quelle:ReverseQuelle):Promise<void>{
+  const {eFachauftrag,eCheckpoint,eAbschluss,eDateiExists}=await import('@synapse/core');
   const token=job.claimToken!,alt=this.altScope,arbeit=path.join(this.k.arbeitRoot,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
-  const fach=(await this.pool.query("SELECT id::text,uebernahme FROM reverse_auftraege WHERE p20_auftrag_id=$1 AND eintrag_id=$2 AND medium_id=$3 AND schicht='E' ORDER BY created_at DESC LIMIT 1",[job.id,quelle.reverseId,quelle.mediumId])).rows[0];
-  if(!fach){await this.scheitern(job,wer,'nicht_gefunden');return;}
-  let checkpoint=fach.uebernahme as Record<string,unknown>|null;
-  const einst=(checkpoint?.einstellungen as ReverseEinstellSnapshot|undefined)??await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
-  if(einst.letzter_fehler){console.error('[reverse-executor] Einstellungen nicht verwendbar:',job.id,einst.letzter_fehler);await this.jobs.release(wer,job.id,token);return;}
-  const fehlversuche=Number(checkpoint?.fehlversuche??0),startPosition=String(checkpoint?.position??'0'),retryMax=reverseZahl(einst,'retry_max');
-  // Review 028940c6/B1 (W5/K3 im Blockweg): Grenze retry_max aus dem Einstellkatalog. Erreicht -> endgueltig wie P18-T87, kein Neueinreihen.
-  const aufgeben=async(code:string)=>{if(await this.scheitern(job,wer,code,true))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true}).catch(()=>undefined);};
-  if(fehlversuche>=retryMax){await aufgeben(String(checkpoint?.letzter_fehler??'werkzeug_fehler'));return;}
-  const tx=async<T>(fn:(c:import('pg').PoolClient)=>Promise<T>)=>{
-   const c=await this.pool.connect();
-   try{await c.query('BEGIN');if(!await this.leaseLebt(c,job,wer,true))throw new Error('reverse_e_lease_verloren');
-    const r=await fn(c);await c.query('COMMIT');return r;
-   }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}finally{c.release();}
-  };
+  const f=await eFachauftrag(this.pool,{jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId});
+  let cp=f.uebernahme??{};
+  const aktuell=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
+  const einst=(cp.einstellungen as ReverseEinstellSnapshot|undefined)??aktuell;
+  if(aktuell.letzter_fehler||einst.letzter_fehler||aktuell.revision!==einst.revision){
+   await this.eHalten(job,wer,'konfiguration_veraltet');return;
+  }
+  const e={jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,einstellungen:einst,
+   pruefeLease:(c:import('pg').PoolClient)=>this.leaseLebt(c,job,wer,true)};
+  const failed=Number(cp.fehlversuche??0),retryMax=reverseZahl(einst,'retry_max'),start=String(cp.position??'0');
+  if(cp.fortsetzung_gesperrt||cp.retention){await this.eHalten(job,wer,String(cp.letzter_fehler??'fortsetzung_gesperrt'));return;}
+  if(failed>=retryMax){await this.eHalten(job,wer,'retry_erschoepft');return;}
   let lebt=true,aufsicht:Aufsicht|null=null;
   const timer=setInterval(()=>{void this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).then(ok=>{if(!ok)lebt=false;},()=>{lebt=false;});},this.k.renewMs);timer.unref();
   try{
-   if(!checkpoint?.artefakt){
-    // Review B1: Jeder Entpackversuch vor dem bestaetigten Manifest zaehlt vorab als Fehlversuch. So zaehlen auch Runner ohne sicheres
-    // Ende, Lease-Verlust nach dem Runner und Abstuerze; der Manifest-Checkpoint setzt den Zaehler auf den Stand davor zurueck.
-    await tx(async c=>{
-     await c.query("UPDATE reverse_auftraege SET uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('version',1,'einstellungen',$2::jsonb,'fehlversuche',$3::int,'letzter_fehler',$4::text) WHERE id=$1",
-      [fach.id,JSON.stringify(einst),fehlversuche+1,'werkzeug_fehler:entpacken_ohne_ende']);
-    });
-    // Nur ein Versuch ohne bestaetigtes Manifest darf einen frischen Arbeitsordner erzeugen.
-    await mkdir(this.k.arbeitRoot,{recursive:true,mode:0o711});
-    await rm(ausgabe,{recursive:true,force:true});await runnerOrdner(ausgabe);
+   if(!cp.artefakt){
+    // Herkunftsloser Altbestand (u.a. XP) wird nie geleert oder still adoptiert.
+    if(await eDateiExists(ausgabe)){
+     const namen=await readdir(ausgabe);
+     if(namen.length&&!namen.includes('.e-journal.sqlite')){await this.eHalten(job,wer,'altarbeit_ohne_cursor');return;}
+    }
+    await eCheckpoint(this.pool as Pool,e,{version:2,einstellungen:einst,fehlversuche:failed+1,
+     cursor_unbestaetigt:true,letzter_fehler:'entpacken_ohne_ende'});
+    await mkdir(this.k.arbeitRoot,{recursive:true,mode:0o711});await runnerOrdner(ausgabe);
     const aufs=await leseReverseAufsicht();
     aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,aufs.hart_puffer_s.wert));
-    let ergebnis:Record<string,unknown>;
-    try{
-     const [pe,siedler,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
-     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({
-      kommando:'extrahieren',schicht:'E',blockuebernahme:true,einstellungen:einst,
-      // Transportfrist (Descriptor) und Nachlauf; der Runner nimmt das kleinere Zeitlimit.
-      grenzen:{zeitlimit_s:this.k.zeitlimitS,nachlauf_s:aufs.nachlauf_s.wert},
-      ...(live?{fortschritt:{takt_s:live.takt_s}}:{}),eingabe:'/bib/'+quelle.storageKey,
-      eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
-      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
-      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:pe.aktiv,pe_ressourcen_stand:pe,siedler3:siedler.aktiv,siedler3_stand:siedler},
-     }),live?.melde);
-    }catch(e){
-     if(!alt)await sperreArbeitsOrdner(arbeit);
-     const m=(e as Error).message;
-     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
-     const eingriff=aufsicht.grund();
-     if(eingriff){await this.eingriffBeenden(job,wer,eingriff);return;}
-     if(m==='tool_not_ready'||m==='tool_runner_capacity'){
-      // Nicht abgesetzt: kein Versuch, Zaehler zuruecknehmen.
-      await this.pool.query("UPDATE reverse_auftraege SET uebernahme=uebernahme||jsonb_build_object('fehlversuche',$2::int,'letzter_fehler',$3::text) WHERE id=$1",
-       [fach.id,fehlversuche,checkpoint?.letzter_fehler??null]).catch(()=>undefined);
-      await this.jobs.release(wer,job.id,token);
-     }else console.error('[reverse-executor] Ausführung ohne sicheres Ende:',job.id,m);
-     return;
-    }
+    const [pe,siedler,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
+    const ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({
+     kommando:'extrahieren',schicht:'E',blockuebernahme:true,einstellungen:einst,
+     fortsetzung:{bindung:{job_id:job.id,eintrag_id:quelle.reverseId,medium_id:quelle.mediumId,quellhash:job.inputRef.sha256,
+      werkzeug:f.werkzeug,werkzeug_version:f.werkzeug_version,profil_version:f.profil_version},
+      importiert_sha:cp.importiert_sha??null},
+     grenzen:{zeitlimit_s:this.k.zeitlimitS,nachlauf_s:aufs.nachlauf_s.wert},
+     ...(live?{fortschritt:{takt_s:live.takt_s}}:{}),eingabe:'/bib/'+quelle.storageKey,
+     eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
+     begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
+     optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:pe.aktiv,pe_ressourcen_stand:pe,siedler3:siedler.aktiv,siedler3_stand:siedler},
+    }),live?.melde);
     if(!alt)await sperreArbeitsOrdner(arbeit);
     aufsicht.ende();
-    if(aufsicht.grund()==='storno'){await this.eingriffBeenden(job,wer,'storno');return;}
-    if(!lebt){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
+    if(!lebt)return;
+    if(aufsicht.grund()){await this.eHalten(job,wer,aufsicht.grund()!);return;}
     if(!['fertig','teilweise'].includes(String(ergebnis.status))||!ergebnis.manifest_datei){
-     meldeRunnerFehler(job.kind,job.id,ergebnis);await this.scheitern(job,wer,fehlercode(ergebnis.fehlercode,ergebnis.format_detail));return;
+     await this.eHalten(job,wer,String(ergebnis.fehlercode??(ergebnis.retention as Record<string,unknown>|undefined)?.grund??'ende_unbestaetigt'),{runner_abbruch:ergebnis.retention??null});return;
     }
-    if(ergebnis.abbruch)console.warn('[reverse-executor] Lauf vorzeitig beendet, Teilergebnis wird uebernommen:',job.id,JSON.stringify(ergebnis.abbruch).slice(0,500));
     const artefakt=reverseManifestVerweis(ergebnis.manifest_datei);
     await pruefeReverseManifest(ausgabe,artefakt,reverseZahl(einst,'lese_block_bytes'));
-    checkpoint={version:1,einstellungen:einst,artefakt,runner_status:ergebnis.status,
-     runner_fehlercode:ergebnis.status==='teilweise'?fehlercode(ergebnis.fehlercode??'deadline'):null,fehlversuche};
-    await tx(async c=>{await c.query('UPDATE reverse_auftraege SET uebernahme=$2::jsonb WHERE id=$1',[fach.id,JSON.stringify(checkpoint)]);});
+    const ex=ergebnis.extraktion as Record<string,unknown>|undefined;
+    if(artefakt.version===2&&(!ex||ex.version!==1||typeof ex.bindung!=='string'||!/^[a-f0-9]{64}$/.test(ex.bindung)
+      ||typeof ex.schritt!=='string'||!/^[1-9][0-9]*$/.test(ex.schritt)||artefakt.pfad!=='.e-manifest-'+ex.schritt+'.jsonl'
+      ||typeof ex.fertig!=='boolean'||typeof ex.fortsetzbar!=='boolean'
+      ||typeof ex.offen!=='string'||!/^[0-9]+$/.test(ex.offen)
+      ||typeof ex.gesamt!=='string'||!/^[0-9]+$/.test(ex.gesamt)
+      ||(ex.fertig&&(ex.offen!=='0'||ergebnis.status!=='fertig'))
+      ||(artefakt.zeilen==='0'&&ex.fertig&&ex.leertabelle_belegt!==true)))throw new Error('reverse_e_extraktion_ungueltig');
+    if(cp.extraktion&&(cp.extraktion as Record<string,unknown>).bindung!==ex?.bindung)throw new Error('reverse_e_cursor_herkunft');
+    cp={...cp,version:2,einstellungen:einst,artefakt,extraktion:ex??null,runner_status:ergebnis.status,
+     runner_fehlercode:ergebnis.fehlercode??null,fehlversuche:failed,cursor_unbestaetigt:false};
+    await eCheckpoint(this.pool as Pool,e,cp);
    }else if(!alt)await sperreArbeitsOrdner(arbeit);
-   const artefakt=reverseManifestVerweis(checkpoint.artefakt);
+   const artefakt=reverseManifestVerweis(cp.artefakt);
    await pruefeReverseManifest(ausgabe,artefakt,reverseZahl(einst,'lese_block_bytes'));
-   await uebernehmeEInBloecken(this.pool as Pool,{
-    jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId,arbeitsWurzel:ausgabe,reverseRoot:this.k.reverseRoot,
-    manifestSha:artefakt.sha256,manifest:leseReverseManifest(ausgabe,artefakt,reverseZahl(einst,'manifest_record_bytes'),reverseZahl(einst,'lese_block_bytes')),
-    einstellungen:einst,pruefeLease:c=>this.leaseLebt(c,job,wer,true),
-    fortschritt:async p=>{
-     // P18-T87: Storno auch waehrend der Uebernahme; bestaetigte Bloecke bleiben.
-     if(await reverseStornoAngefordert(this.pool,job.id))throw new Error('reverse_e_storno');
-     await speichereReverseFortschritt(this.pool,job.id,token,{phase:'uebernahme',dateien_bisher:Number(p.dateien),
-      bytes_geschrieben:null,aktuelle_datei:null,gesamt:Number(artefakt.zeilen),uebernahme_position:p.position},job.attempt);
-    }
+   const r=await uebernehmeEInBloecken(this.pool as Pool,{
+    ...e,arbeitsWurzel:ausgabe,reverseRoot:this.k.reverseRoot,manifestSha:artefakt.sha256,
+    manifest:leseReverseManifest(ausgabe,artefakt,reverseZahl(einst,'manifest_record_bytes'),reverseZahl(einst,'lese_block_bytes')),
+    fortschritt:async()=>{if(await reverseStornoAngefordert(this.pool,job.id))throw new Error('reverse_e_storno');}
    });
    if(!lebt)return;
+   cp=(await eFachauftrag(this.pool,e)).uebernahme??{};
+   const ex=cp.extraktion as Record<string,unknown>|undefined;
+   if(ex&&!ex.fertig){
+    if(ex.fortsetzbar&&(await leseReverseBlockSchalter()).aktiv){
+     await eCheckpoint(this.pool as Pool,e,{artefakt:null,manifest_sha:null,position:'0',fertig:false,
+      importiert_sha:artefakt.sha256,fehlversuche:0,cursor_unbestaetigt:true});
+     await this.jobs.release(wer,job.id,token);return;
+    }
+    await this.eHalten(job,wer,String(cp.runner_fehlercode??'fortsetzung_nicht_unterstuetzt'));return;
+   }
+   if(ex?.fertig&&String(ex.gesamt)!==String(r.dateien))throw new Error('reverse_e_extraktion_zaehler');
+   const fertig=cp.runner_status==='fertig';
+   if(!fertig){await this.eHalten(job,wer,String(cp.runner_fehlercode??'teilweise'));return;}
+   await eAbschluss(this.pool as Pool,e,{dateien:String(r.dateien),abgewiesen:String(r.verworfen),offen:'0',grund:null,fertig:true});
+   await eCheckpoint(this.pool as Pool,e,{e_abgeschlossen:true,cursor_unbestaetigt:false,retention:false});
    const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:artefakt.sha256};
-   if(!await this.jobs.stage(wer,job.id,token,out)){console.warn('[reverse-executor] Staging abgewiesen:',job.id);return;}
-   const done=await this.jobs.complete(wer,job.id,token,job.inputRef);
-   if(!done.completed)console.warn('[reverse-executor] Blockabschluss abgewiesen:',job.id);
-  }catch(e){
-   const m=(e as Error).message;
-   if(m==='reverse_e_storno'){await this.stornieren(job,wer);return;}
-   console.error('[reverse-executor] E-Blockübernahme unterbrochen:',job.id,m);
-   // Deterministisch: geaendertes/kaputtes Manifest bzw. Eintragsquote -> sofort mit Code; sonst Fehlerbudget ohne Fortschritt.
-   const code=m==='reverse_e_eintrag_bytes'?'speicherlimit':/^reverse_(e_manifest_geaendert|manifest_)/.test(m)?'beschaedigt':null;
-   if(code){await this.scheitern(job,wer,code);return;}
-   const jetzt=(await this.pool.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1',[fach.id]).catch(()=>({rows:[]}))).rows[0]?.uebernahme as Record<string,unknown>|undefined;
-   const fortschritt=jetzt&&String(jetzt.position??'0')!==startPosition;
-   const zaehler=fortschritt?1:fehlversuche+1,letzter='werkzeug_fehler:'+m.replace(/[^a-zA-Z0-9_.-]/g,'').slice(0,64);
-   await this.pool.query("UPDATE reverse_auftraege SET uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('fehlversuche',$2::int,'letzter_fehler',$3::text) WHERE id=$1",
-    [fach.id,zaehler,letzter]).catch(()=>undefined);
+   if(await this.jobs.stage(wer,job.id,token,out))await this.jobs.complete(wer,job.id,token,job.inputRef);
+  }catch(err){
+   if(!alt)await sperreArbeitsOrdner(arbeit);
    if(!lebt)return;
-   if(zaehler>=retryMax){await aufgeben(letzter);return;}
+   const m=(err as Error).message;
+   if(m==='tool_runner_timeout')aufsicht?.beende('zeitlimit');
+   if(m==='reverse_e_storno'||aufsicht?.grund()){await this.eHalten(job,wer,m==='reverse_e_storno'?'storno':aufsicht!.grund()!);return;}
+   if(m==='tool_not_ready'||m==='tool_runner_capacity'){
+    await eCheckpoint(this.pool as Pool,e,{fehlversuche:failed});await this.jobs.release(wer,job.id,token);return;
+   }
+   cp=(await eFachauftrag(this.pool,e)).uebernahme??{};
+   const n=String(cp.position??'0')!==start?1:failed+1;
+   await eCheckpoint(this.pool as Pool,e,{fehlversuche:n,letzter_fehler:m});
+   if(n>=retryMax||/^reverse_(manifest|e_(datei|eintrag|cursor|extraktion))/.test(m)){
+    await this.eHalten(job,wer,m);return;
+   }
    await this.jobs.release(wer,job.id,token);
   }finally{clearInterval(timer);aufsicht?.ende();}
+ }
+
+ /** Vorabfehler ohne Extraktion: dieselben terminalen Zustände, jede eigene Mutation begrenzt. */
+ private async eVorabFehler(job:WorkJob,wer:WorkIdentity,code:string):Promise<void>{
+  const {eAbschluss,eMutation}=await import('@synapse/core');
+  const einstellungen=await leseReverseEinstellwerte({eintrag_id:job.inputRef.id},this.pool);
+  const e={jobId:job.id,reverseId:job.inputRef.id,mediumId:job.inputRef.revision,einstellungen,
+   pruefeLease:(c:import('pg').PoolClient)=>this.leaseLebt(c,job,wer,true)};
+  await eAbschluss(this.pool as Pool,e,{dateien:'0',abgewiesen:'0',offen:'0',grund:code,fertig:false,status:'fehler'});
+  await eMutation(this.pool as Pool,e,"INSERT INTO work_job_audit(id,job_id,event,detail) SELECT gen_random_uuid(),$1,'failed',$2::jsonb WHERE NOT EXISTS(SELECT 1 FROM work_job_audit WHERE job_id=$1 AND event='failed' AND detail->>'versuch'=$3)",
+   [job.id,JSON.stringify({fehlercode:code,executor:'reverse',versuch:String(job.attempt)}),String(job.attempt)]);
+  await eMutation(this.pool as Pool,e,"UPDATE work_jobs SET state='failed',error_code=$2,lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1",[job.id,code]);
  }
 
  private async fuehreAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
@@ -711,24 +771,30 @@ export class ReverseExecutor {
   // P18-T88: Blockuebernahme (Produkt-Schalter reverse_blockuebernahme, Standard AUS) oder bereits angefangener Blockauftrag.
   // Dort zaehlt ein eigenes Fehlerbudget ohne Fortschritt; erfolgreiche Bloecke gehen nicht auf die alte Versuchsgrenze.
   const blockStand=await leseReverseBlockSchalter();
-  const blockRest=(await this.pool.query("SELECT 1 FROM reverse_auftraege WHERE p20_auftrag_id=$1 AND uebernahme->>'version'='1' LIMIT 1",[job.id])).rows.length>0;
-  const block=blockStand.aktiv||blockRest;
-  // W5/K3: kein Endlos-Neuentpacken nach wiederholtem Lease-Verlust oder Übernahmefehler.
-  if(!block&&job.attempt>this.k.retryMax){if(await this.scheitern(job,wer,'werkzeug_fehler'))await rm(path.join(this.k.arbeitRoot,job.id),{recursive:true,force:true});return;}
+  const blockRest=(await this.pool.query("SELECT 1 FROM reverse_auftraege WHERE p20_auftrag_id=$1 AND uebernahme->>'version' IN ('1','2') LIMIT 1",[job.id])).rows.length>0;
+  const block=blockStand.aktiv;
+  if(!block&&blockRest){await this.eHalten(job,wer,'blockuebernahme_aus');return;}
+  if(!block&&job.attempt>this.k.retryMax){await this.eHalten(job,wer,'retry_erschoepft');return;}
   const quelle=await this.eingabe(job);
-  if(!quelle){await this.scheitern(job,wer,'nicht_gefunden');return;}
+  if(!quelle){await this.eVorabFehler(job,wer,'nicht_gefunden');return;}
   // P18-T64: bekannte, noch nicht unterstützte Formate ohne Containerlauf klar benennen.
   const vorab=await reverseFormatVorpruefung(quelle.dateien.map(d=>({pfad:path.join(this.k.reverseRoot,d.storageKey),rolle:d.rolle,name:d.name})));
-  if(vorab){await this.scheitern(job,wer,vorab);return;}
+  if(vorab){await this.eVorabFehler(job,wer,vorab);return;}
   // P18-T66: Originale liegen ggf. als 0600 root; der Runner (65532) muss sie lesen dürfen.
   const rechte=await reverseEingabeLesbar(quelle.dateien.map(d=>path.join(this.k.reverseRoot,d.storageKey)));
-  if(rechte){await this.scheitern(job,wer,rechte);return;}
+  if(rechte){await this.eVorabFehler(job,wer,rechte);return;}
   if(block)return this.fuehreEBlockAus(lc,wer,job,quelle);
   // Globaler Container: /arbeit=_arbeit, Ausgabe /arbeit/<jobId>. Alter Descriptor: /arbeit=_arbeit/<jobId>, Ausgabe darin.
   const alt=this.altScope;
   const arbeit=await reverseArbeitsOrdner(this.k,job.id),ausgabe=alt?path.join(arbeit,job.id):arbeit;
-  // Der Runner verlangt einen leeren Ausgabeordner; Reste eines verlorenen Versuchs entfernen.
-  await rm(ausgabe,{recursive:true,force:true});
+  const {eRueckhaltBeleg,eFachauftrag}=await import('@synapse/core');
+  const es=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
+  const ek={jobId:job.id,reverseId:quelle.reverseId,mediumId:quelle.mediumId};
+  const ef=await eFachauftrag(this.pool,ek);
+  const beleg=await eRueckhaltBeleg(this.k.reverseRoot,ek,job.inputRef.sha256,reverseZahl(es,'manifest_record_bytes'));
+  if(beleg||ef.uebernahme?.retention||(await readdir(ausgabe).catch((err:NodeJS.ErrnoException)=>{if(err.code==='ENOENT')return [];throw err;})).length){
+   await this.eHalten(job,wer,String(beleg?.grund??'altarbeit_erhalten'));return;
+  }
   await runnerOrdner(ausgabe);
   // P18-T87: Puffer der harten Frist und Nachlauf fuer das Manifest: Einstellwerte (reverse_einstellungen, Code-Wert nur Standard).
   const einst=await leseReverseAufsicht();
@@ -756,7 +822,7 @@ export class ReverseExecutor {
     // P18-T87: Transport-Timeout heisst Frist ueberschritten: Lauf physisch beenden und wie die harte Frist behandeln.
     if(m==='tool_runner_timeout')aufsicht.beende('zeitlimit');
     const eingriff=aufsicht.grund();
-    if(eingriff){aufraeumen=await this.eingriffBeenden(job,wer,eingriff);return;}
+    if(eingriff){await this.eHalten(job,wer,eingriff);return;}
     // Nicht abgesetzt: sauber zurückgeben. Sonst bleibt der Auftrag bis zum Lease-Ablauf gesperrt.
     if(m==='tool_not_ready'||m==='tool_runner_capacity'){await this.jobs.release(wer,job.id,token);aufraeumen=true;}
     else console.error('[reverse-executor] Ausführung ohne sicheres Ende:',job.id,m);
@@ -768,7 +834,8 @@ export class ReverseExecutor {
    aufsicht.ende();
    const status=String(ergebnis.status);
    // P18-T87: Storno kam vor dem Ergebnis an -> Ergebnis verwerfen, der Auftrag bleibt abgebrochen.
-   if(aufsicht.grund()==='storno'){aufraeumen=await this.eingriffBeenden(job,wer,'storno');return;}
+   if(aufsicht.grund()==='storno'){await this.eHalten(job,wer,'storno');return;}
+   if(ergebnis.retention){await this.eHalten(job,wer,String(ergebnis.fehlercode??(ergebnis.retention as Record<string,unknown>).grund??'teilweise'),{runner_abbruch:ergebnis.retention});return;}
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if((status==='fertig'||(status==='teilweise'&&manifest.length>0))&&lebt){
     if(ergebnis.abbruch)console.warn('[reverse-executor] Lauf vorzeitig beendet, Teilergebnis wird uebernommen:',job.id,JSON.stringify(ergebnis.abbruch).slice(0,500));
@@ -780,7 +847,7 @@ export class ReverseExecutor {
     catch(e){
      // W5: fachlicher Fehler -> endgültig; sonst freigeben, bis der Versuchszähler erreicht ist.
      console.error('[reverse-executor] Übernahme fehlgeschlagen:',job.id,(e as Error).message);
-     if(e instanceof ReverseEUebernahmeFehler||job.attempt>=this.k.retryMax)aufraeumen=await this.scheitern(job,wer,e instanceof ReverseEUebernahmeFehler?fehlercode(e.code):'werkzeug_fehler');
+     if(e instanceof ReverseEUebernahmeFehler||job.attempt>=this.k.retryMax)await this.eHalten(job,wer,e instanceof ReverseEUebernahmeFehler?fehlercode(e.code):'werkzeug_fehler');
      else aufraeumen=await this.jobs.release(wer,job.id,token);
      return;
     }
@@ -794,11 +861,11 @@ export class ReverseExecutor {
    }
    if(!lebt){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
    meldeRunnerFehler(job.kind,job.id,ergebnis);
-   aufraeumen=await this.scheitern(job,wer,status==='teilweise'?fehlercode(ergebnis.fehlercode??'deadline'):fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
+   await this.eHalten(job,wer,status==='teilweise'?String(ergebnis.fehlercode??'deadline'):fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
   }finally{
    clearInterval(timer);aufsicht.ende();
-   // Nur mit gültigem Abschluss aufräumen: ein Folgeversuch nutzt denselben Auftragsordner.
-   if(aufraeumen)await rm(arbeit,{recursive:true,force:true}).catch(()=>undefined);
+   // Teil C: Arbeitsreste werden hier niemals gelöscht. Der zentrale E-Guard verlangt bestätigten Vollabschluss.
+   void aufraeumen;
   }
  }
  /** P18-T69/E3: Datei-Eingabe eines reverse-S3-Auftrags (inputRef.revision = reverse_dateien.id, sha256 = Dateiinhalt). */

@@ -243,10 +243,12 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
         rueckhalt.grund='rueckhalt_fehlgeschlagen';
         rueckhalt.fehler={pfad:arbeit||e.arbeitsWurzel,ziel:key,errno:(err as NodeJS.ErrnoException).code??'UNBEKANNT',
           groesse:rueckhalt.bytes,offen:gueltig.length,abgewiesen:verworfen};
-        // Freigegebenes Restrisiko: bei fehlgeschlagenem rename bleibt Executor-Aufräumen bis Teil B unverändert.
+        // P18-T93 Teil B: Der Ergebnisvertrag sperrt Cleanup/Retry auch bei fehlgeschlagenem rename.
         console.error('[reverse-e-uebernahme] rueckhalt_fehlgeschlagen',JSON.stringify(rueckhalt.fehler));
       }finally{for(const h of handles.reverse())await h.close().catch(()=>undefined);}
-      const result=await finalisiereEErgebnis(client,e,0,verworfen,{offen:gueltig.length,grund:String(rueckhalt.grund),rueckhalt});
+      // Nur Verweis zurückgeben. PG-Abschluss erfolgt in einzeln budgetierten, wiederholbaren Phasen des Executors.
+      const result={dateien:0,verworfen,offen:gueltig.length,abgewiesen:verworfen,grund:String(rueckhalt.grund),rueckhalt,
+        retention:{loeschen:false,automatisch_fortsetzen:false}};
       if(eigen)await client.query('COMMIT');
       return result;
     }catch(err){if(eigen)await client.query('ROLLBACK').catch(()=>undefined);throw err;}
