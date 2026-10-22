@@ -740,7 +740,10 @@ export class ReverseExecutor {
    let ergebnis:Record<string,unknown>;
    try{
     const [peStand,siedlerStand,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
-    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
+    // P18-T93: Auch E-AUS verwendet den eintragsspezifischen PG-Snapshot im Runner.
+    const eEinstellungen=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
+    if(eEinstellungen.letzter_fehler)throw new Error(eEinstellungen.letzter_fehler);
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>({kommando:'extrahieren',schicht:'E',einstellungen:eEinstellungen,...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand,siedler3:siedlerStand.aktiv,siedler3_stand:siedlerStand},

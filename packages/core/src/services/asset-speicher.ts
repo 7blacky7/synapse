@@ -14,6 +14,8 @@ import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { getAssetKonfiguration } from '../config/asset-konfig.js';
 import type { AssetKonfiguration } from '../config/asset-konfig.js';
+import {leseReverseEinstellwerte,reverseZahl,reverseBigInt} from './reverse-einstellwerte.js';
+import {getPool} from '../db/client.js';
 
 export interface AssetAdresse {
   bereich: 'projekt' | 'reverse';
@@ -527,28 +529,33 @@ export class AssetSpeicher {
     const k=await this.reverseKontext('_arbeit'),p=await this.eltern(k,key+'/.bereich',true);
     await p.handle.close();return key;
   }
-  private reverseManifest(input: ReverseManifest): ReverseManifest {
+  private async reverseManifest(input: ReverseManifest): Promise<ReverseManifest> {
     reverseId(input.reverseId);auftragId(input.auftragId);identitaet(input.gruppe);
     if(!['entpackt','code','assets'].includes(input.art)||!Array.isArray(input.dateien))return fail('manifest_ungueltig','Ungültiger Ausgabebereich/Dateiliste.');
-    if(input.dateien.length>Math.min(this.cfg.reverse.maxProjektDateien,this.cfg.reverse.maxErgebnisse))return fail('quote','Zu viele Manifestdateien.');
-    const seen=new Set<string>();let bytes=0;
+    const s=await leseReverseEinstellwerte({eintrag_id:input.reverseId});
+    if(s.letzter_fehler)return fail('konfiguration',s.letzter_fehler);
+    if(input.dateien.length>reverseZahl(s,'e_uebernahme_block_zeilen')||Buffer.byteLength(JSON.stringify(input))>reverseZahl(s,'materialisierung_tx_bytes'))
+      return fail('blockuebernahme_erforderlich','Reverse-Batch zu groß; Quelle bleibt erhalten, nichts wird abgeschnitten.');
+    const seen=new Set<string>();let bytes=0n;
     const dateien=input.dateien.map(e=>{
       const pfad=normalisiereSpeicherPfad(e.pfad);
       if(pfad!==e.pfad||seen.has(pfad))return fail('manifest_ungueltig','Manifestpfade müssen kanonisch und eindeutig sein.');
-      if(pfad.split('/').length-1>this.cfg.inspektion.maxDepth)return fail('quote','Manifesttiefe überschritten.');
-      if(!Number.isSafeInteger(e.groesse)||e.groesse<0||e.groesse>this.cfg.reverse.maxDateiBytes)return fail('quote','Dateigröße überschreitet Grenze.');
+      if(pfad.split('/').length-1>reverseZahl(s,'pfad_tiefe_max'))return fail('quote','Manifesttiefe überschritten.');
+      if(!Number.isSafeInteger(e.groesse)||e.groesse<0||BigInt(e.groesse)>reverseBigInt(s,'max_datei_bytes'))return fail('quote','Dateigröße überschreitet Grenze.');
       if(!/^[a-f0-9]{64}$/.test(e.sha256))return fail('hash_falsch','Manifest-SHA256 fehlt.');
-      seen.add(pfad);bytes+=e.groesse;
-      if(!Number.isSafeInteger(bytes)||bytes>this.cfg.reverse.maxProjektBytes)return fail('quote','Manifestgröße überschritten.');
+      seen.add(pfad);bytes+=BigInt(e.groesse);
+      if(bytes>reverseBigInt(s,'eintrag_bytes'))return fail('quote','Manifestgröße überschreitet Reverse-Eintragsbudget.');
       return {pfad,groesse:e.groesse,sha256:e.sha256};
     });
     return {...input,dateien};
   }
   /** FD-verankerte Traversierung: keine Links, Devices, Sockets oder FIFOs. */
-  private async reverseDateiliste(k: Kontext,key: string): Promise<string[]> {
+  private async reverseDateiliste(k: Kontext,key: string,eintrag=k.adresse.ziel_ref): Promise<string[]> {
+    const s=await leseReverseEinstellwerte({eintrag_id:eintrag});
+    if(s.letzter_fehler)return fail('konfiguration',s.letzter_fehler);
     const out: string[]=[];
     const walk=async(h: FileHandle,prefix: string,tiefe: number): Promise<void>=>{
-      if(tiefe>this.cfg.inspektion.maxDepth)return fail('quote','Verzeichnis zu tief.');
+      if(tiefe>reverseZahl(s,'pfad_tiefe_max'))return fail('quote','Verzeichnis zu tief.');
       await this.pruefeFd(k,h);
       for(const name of await fs.readdir(fdPfad(h))) {
         if(normalisiereSpeicherPfad(name)!==name||name.includes('/'))return fail('pfad_ungueltig','Nicht kanonischer Dateiname.');
@@ -558,7 +565,7 @@ export class AssetSpeicher {
           try{await walk(child,rel+'/',tiefe+1);}finally{await child.close();}
         } else if(st.isFile()&&st.nlink===1) {
           out.push(rel);
-          if(out.length>Math.min(k.maxDateien,this.cfg.reverse.maxErgebnisse))return fail('quote','Zu viele Dateien.');
+          if(out.length>reverseZahl(s,'e_uebernahme_block_zeilen'))return fail('blockuebernahme_erforderlich','Reverse-Batch zu groß; Quelle unverändert erhalten.');
         } else return fail('manifest_ungueltig','Nur reguläre Dateien ohne Hardlinks erlaubt.');
       }
     };
@@ -621,7 +628,7 @@ export class AssetSpeicher {
   }
   /** Snapshot schützt gegen zusätzliche/ersetzte Containerdateien nach der Prüfung. */
   async publishReverseManifest(roh: ReverseManifest,o: ReversePublishOptionen): Promise<ReversePublishOperation> {
-    const input=this.reverseManifest(roh);
+    const input=await this.reverseManifest(roh);
     if(typeof o.prepare!=='function'||typeof o.commit!=='function')throw new TypeError('PG-Prepare/Commit erforderlich.');
     const k=await this.reverseKontext(input.reverseId),work=await this.reverseKontext('_arbeit');
     const target=input.reverseId+'/'+input.art+'/'+input.gruppe;
@@ -634,10 +641,14 @@ export class AssetSpeicher {
         try{await fs.lstat(p.pfad);return fail('konflikt','Diese Ausgabe existiert bereits.');}catch(e){if(!istCode(e,'ENOENT'))throw e;}
       });
       if(await this.info(k,this.intern(k,'reverse-journal',input.auftragId+'.json')))return fail('konflikt','Auftrag wurde bereits publiziert/vorbereitet.');
-      const liste=await this.reverseDateiliste(work,'_arbeit/'+input.auftragId);
+      const liste=await this.reverseDateiliste(work,'_arbeit/'+input.auftragId,input.reverseId);
       if(JSON.stringify(liste)!==JSON.stringify(input.dateien.map(e=>e.pfad).sort()))return fail('manifest_ungueltig','Manifest muss alle Dateien erfassen.');
       const belegt=await this.belegung(k);
-      if(belegt.bytes+input.dateien.reduce((n,e)=>n+e.groesse,0)>k.maxBytes||belegt.dateien+input.dateien.length>k.maxDateien)return fail('quote','Reverse-Quote überschritten.');
+      const s=await leseReverseEinstellwerte({eintrag_id:input.reverseId});
+      if(s.letzter_fehler)return fail('konfiguration',s.letzter_fehler);
+      // .intern zählt nicht zur sichtbaren Belegung; der T93-Rückhalt gehört trotzdem zur Eintragsquote.
+      const behalten=(await getPool().query("SELECT COALESCE(sum((uebernahme#>>'{rueckhalt,bytes}')::numeric),0)::text AS bytes FROM reverse_auftraege WHERE eintrag_id=$1 AND uebernahme#>>'{rueckhalt,erhalten}'='true' AND uebernahme#>>'{rueckhalt,bytes}' ~ '^[0-9]+$'",[input.reverseId])).rows[0]?.bytes??'0';
+      if(BigInt(belegt.bytes)+BigInt(behalten)+input.dateien.reduce((n,e)=>n+BigInt(e.groesse),0n)>reverseBigInt(s,'eintrag_bytes'))return fail('quote','Reverse-Eintragsbudget einschließlich Rückhalt überschritten.');
       await this.mitEltern(k,staging,true,async p=>{await fs.mkdir(p.pfad,{mode:0o700});stageCreated=true;await p.handle.sync();});
       for(const e of input.dateien)await this.mitEltern(k,staging+'/'+e.pfad,true,async p=>{
         const out=await fs.open(p.pfad,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
@@ -669,7 +680,7 @@ export class AssetSpeicher {
     const k=await this.reverseKontext(id),h=await this.open(k,this.intern(k,'reverse-journal',job+'.json'));
     let op: ReversePublishOperation;
     try{op=JSON.parse(await h.readFile('utf8'));}finally{await h.close();}
-    const input=this.reverseManifest(op);
+    const input=await this.reverseManifest(op);
     if(input.reverseId!==id||input.auftragId!==job||op.storage_key!==id+'/'+input.art+'/'+input.gruppe||op.staging_key!=='_eingang/'+job+'-manifest')return fail('konflikt','Journal passt nicht zur Operation.');
     const lockKey=this.intern(k,'locks','publish');
     let lock: FileHandle;

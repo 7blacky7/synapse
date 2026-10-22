@@ -12,6 +12,7 @@ import path from 'node:path';
 import {Client as PgClient} from 'pg';
 import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-konfig.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
+import {leseReverseEinstellwerte,reverseZahl,reverseBigInt} from './reverse-einstellwerte.js';
 import {registriereReverseAssetsInTransaktion,leseReverseAssetRegistrierungSchalter} from './reverse-asset-registrierung.js';
 
 export interface ReverseEManifestEintrag {pfad:string;sha256:string;groesse:number;
@@ -32,6 +33,7 @@ export interface ReverseEUebernahmeOptionen {
 export class ReverseEUebernahmeFehler extends Error {
   constructor(readonly code:'parameter_ungueltig'|'nicht_gefunden'|'pfad_gefahr',message:string){super(message);}
 }
+interface EErgebnis {dateien:number;verworfen:number;offen?:number;abgewiesen?:number;grund?:string}
 type Db={query:Function};
 type Client={query:Function;release?:()=>void};
 /** pg.Client und ausgecheckter PoolClient besitzen ebenfalls connect(). Nur Pool/Pooladapter auschecken.
@@ -44,7 +46,7 @@ const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SEGMENT=/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/;
 const fehler=(code:ReverseEUebernahmeFehler['code'],m:string):never=>{throw new ReverseEUebernahmeFehler(code,m);};
 const innerhalb=(root:string,p:string)=>p===root||p.startsWith(root+path.sep);
-const laufend=new Map<string,Promise<{dateien:number;verworfen:number}>>();
+const laufend=new Map<string,Promise<EErgebnis>>();
 
 /** Gruppe der E-Ausgabe eines Mediums: genau ein sicheres Segment. */
 export function reverseEGruppe(mediumId:string):string {return 'm'+mediumId;}
@@ -95,7 +97,7 @@ export async function eZielOrdner(root:string,dir:string):Promise<void>{
  * Client. arbeitsWurzel muss unter <reverseRoot>/_arbeit/ liegen (gleiches Dateisystem, atomares rename).
  * Liefert die Zahl übernommener und verworfener Manifestdateien.
  */
-export async function uebernehmeEErgebnis(db:{query:Function},e:{jobId:string;reverseId:string;mediumId:string;arbeitsWurzel:string;manifest:ReverseEManifestEintrag[]},o:ReverseEUebernahmeOptionen={}):Promise<{dateien:number;verworfen:number}>{
+export async function uebernehmeEErgebnis(db:{query:Function},e:{jobId:string;reverseId:string;mediumId:string;arbeitsWurzel:string;manifest:ReverseEManifestEintrag[]},o:ReverseEUebernahmeOptionen={}):Promise<EErgebnis>{
   if(!e||typeof e.jobId!=='string'||!UUID.test(e.jobId))fehler('parameter_ungueltig','jobId muss eine UUID sein.');
   if(typeof e.reverseId!=='string'||!SEGMENT.test(e.reverseId))fehler('parameter_ungueltig','Ungültige Reverse-ID.');
   if(typeof e.mediumId!=='string'||!/^[1-9][0-9]{0,18}$/.test(e.mediumId))fehler('parameter_ungueltig','Ungültige Medium-ID.');
@@ -107,19 +109,21 @@ export async function uebernehmeEErgebnis(db:{query:Function},e:{jobId:string;re
   laufend.set(key,lauf);return lauf;
 }
 
-async function bisherigesErgebnis(db:Db,e:{jobId:string;reverseId:string;mediumId:string}):Promise<{dateien:number;verworfen:number}|null>{
-  const r=(await db.query(`SELECT funktionen_gesamt,funktionen_fertig FROM reverse_schichten
-    WHERE medium_id=$1 AND datei_id IS NULL AND schicht='E' AND ausgabe_key=$2 AND status IN ('fertig','teilweise','fehler')
-    ORDER BY id DESC LIMIT 1`,[e.mediumId,e.reverseId+'/entpackt/'+reverseEGruppe(e.mediumId)+'/'+e.jobId.toLowerCase()])).rows[0];
+async function bisherigesErgebnis(db:Db,e:{jobId:string;reverseId:string;mediumId:string}):Promise<EErgebnis|null>{
+  const r=(await db.query(`SELECT s.funktionen_gesamt,s.funktionen_fertig,a.uebernahme->'rueckhalt' AS rueckhalt FROM reverse_schichten s
+    LEFT JOIN reverse_auftraege a ON a.id=s.auftrag_id AND a.eintrag_id=$3
+    WHERE s.medium_id=$1 AND s.datei_id IS NULL AND s.schicht='E' AND s.ausgabe_key=$2 AND s.status IN ('fertig','teilweise','fehler')
+    ORDER BY s.id DESC LIMIT 1`,[e.mediumId,e.reverseId+'/entpackt/'+reverseEGruppe(e.mediumId)+'/'+e.jobId.toLowerCase(),e.reverseId])).rows[0];
   if(!r)return null;
   const gesamt=Number(r.funktionen_gesamt??0),fertig=Number(r.funktionen_fertig??0);
+  if(r.rueckhalt)return {dateien:fertig,verworfen:Number(r.rueckhalt.abgewiesen??0),offen:Number(r.rueckhalt.offen??0),abgewiesen:Number(r.rueckhalt.abgewiesen??0),grund:r.rueckhalt.grund};
   return {dateien:fertig,verworfen:Math.max(0,gesamt-fertig)};
 }
 
-async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string;arbeitsWurzel:string;manifest:ReverseEManifestEintrag[]},o:ReverseEUebernahmeOptionen):Promise<{dateien:number;verworfen:number}>{
+async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string;arbeitsWurzel:string;manifest:ReverseEManifestEintrag[]},o:ReverseEUebernahmeOptionen):Promise<EErgebnis>{
   const cfg=o.konfiguration??getAssetKonfiguration();
   const job=e.jobId.toLowerCase(),rid=e.reverseId,mid=e.mediumId,gruppe=reverseEGruppe(mid);
-  const medium=(await db.query('SELECT id::text AS id,position,bezeichnung FROM reverse_medien WHERE id=$1 AND eintrag_id=$2',[mid,rid])).rows[0];
+  const medium=(await db.query('SELECT id::text AS id,position,bezeichnung,satz_sha256 FROM reverse_medien WHERE id=$1 AND eintrag_id=$2',[mid,rid])).rows[0];
   if(!medium)fehler('nicht_gefunden','Medium gehört nicht zum Reverse-Eintrag.');
   const alt=await bisherigesErgebnis(db,e);
   if(alt){
@@ -139,23 +143,115 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
   const arbeitsBasis=path.join(root,'_arbeit');
   if(arbeit&&!innerhalb(arbeitsBasis,arbeit)||arbeit===arbeitsBasis)fehler('pfad_gefahr','arbeitsWurzel liegt nicht unter <reverseRoot>/_arbeit/.');
   const zielBasis=path.join(root,rid,'entpackt',gruppe);
-  const chunk=Math.max(65536,Number(cfg.speicher.chunkBytes)||0);
-  const maxDatei=Number(cfg.reverse.maxDateiBytes)||Number.MAX_SAFE_INTEGER;
-  const maxAnzahl=Math.min(Number(cfg.reverse.maxErgebnisse)||200000,200000);
+  const s=await leseReverseEinstellwerte({eintrag_id:rid},db);
+  if(s.letzter_fehler)throw new Error(s.letzter_fehler);
+  const chunk=reverseZahl(s,'lese_block_bytes'),maxDatei=reverseBigInt(s,'max_datei_bytes');
+  const maxRows=reverseZahl(s,'e_uebernahme_block_zeilen'),maxBytes=reverseZahl(s,'materialisierung_tx_bytes');
+  const label=typeof medium.bezeichnung==='string'&&SEGMENT.test(medium.bezeichnung.trim())?medium.bezeichnung.trim():'medium-'+(Number(medium.position)+1);
 
   // Manifest kanonisch prüfen: ungültige Einträge werden verworfen, nie angefasst.
   const gesehen=new Set<string>();
   const gueltig:ReverseEManifestEintrag[]=[];let verworfen=0;
-  for(const roh of e.manifest.slice(0,maxAnzahl)){
+  // Eine gültige Datei über der Schutzgrenze bleibt offen; niemals als beschädigt aussortieren.
+  // Ein Beleg plus Anzahl hält den PG-Verweis klein; alle Dateien stehen im Rückhaltmanifest.
+  let dateigrenze:{pfad:string;groesse:string;grenze:string;anzahl:number}|null=null;
+  for(const roh of e.manifest){
     let pfad='';
     try{pfad=normalisiereSpeicherPfad(String((roh as ReverseEManifestEintrag)?.pfad));}catch{pfad='';}
     const ok=!!pfad&&pfad===roh?.pfad&&!gesehen.has(pfad)&&!pfad.split('/').includes('.intern')&&!pfad.split('/').some(t=>t.startsWith('.e-'))
       &&typeof roh.sha256==='string'&&/^[a-f0-9]{64}$/.test(roh.sha256)
-      &&Number.isSafeInteger(roh.groesse)&&roh.groesse>=0&&roh.groesse<=maxDatei;
+      &&Number.isSafeInteger(roh.groesse)&&roh.groesse>=0
+      &&pfad.length<=reverseZahl(s,'speicher_pfad_zeichen')&&pfad.split('/').length-1<=reverseZahl(s,'pfad_tiefe_max');
     if(!ok){verworfen++;continue;}
+    if(BigInt(roh.groesse)>maxDatei){
+      if(dateigrenze)dateigrenze.anzahl++;
+      else dateigrenze={pfad,groesse:String(roh.groesse),grenze:String(maxDatei),anzahl:1};
+    }
     gesehen.add(pfad);gueltig.push({pfad,sha256:roh.sha256,groesse:roh.groesse,art:eArt(roh.art),metadaten:JSON.parse(eMeta(roh.metadaten))});
   }
-  verworfen+=Math.max(0,e.manifest.length-maxAnzahl);
+  // P18-T93: Ganzer Batch vor jeder Mutation; niemals einen Präfix als Ergebnis abschneiden.
+  const parameter=[rid,mid,job,gueltig.map(d=>label+'/'+d.pfad),gueltig.map(d=>d.sha256),gueltig.map(d=>d.groesse),
+    gueltig.map(d=>rid+'/entpackt/'+gruppe+'/'+d.pfad),gueltig.map(d=>d.pfad),gueltig.map(d=>eArt(d.art)),gueltig.map(d=>eMeta(d.metadaten))];
+  // Sechs Abschluss-/Kontrollmutationen; ein Metadatensatz als konservative Byte-Reserve.
+  let batchZeilen=gueltig.length+6,batchBytes=Buffer.byteLength(JSON.stringify(parameter))+reverseZahl(s,'manifest_record_bytes');
+  if((await leseReverseAssetRegistrierungSchalter(db)).aktiv){
+    // T94 unverändert: sein Mediennachzug liegt in derselben Altweg-TX. Obergrenze vorab einrechnen.
+    const n=Number((await db.query('SELECT count(*)::text AS n FROM reverse_dateien WHERE eintrag_id=$1 AND medium_id=$2',[rid,mid])).rows[0].n)+gueltig.length;
+    batchZeilen+=2*n;batchBytes+=2*n*reverseZahl(s,'manifest_record_bytes');
+  }
+  const belegt=(await db.query("SELECT COALESCE((SELECT sum(groesse) FROM reverse_dateien WHERE eintrag_id=$1),0)+COALESCE((SELECT sum((uebernahme#>>'{rueckhalt,bytes}')::numeric) FROM reverse_auftraege WHERE eintrag_id=$1 AND uebernahme#>>'{rueckhalt,erhalten}'='true' AND uebernahme#>>'{rueckhalt,bytes}' ~ '^[0-9]+$'),0) AS bytes",[rid])).rows[0]?.bytes??'0';
+  const quota=BigInt(belegt)+gueltig.reduce((n,d)=>n+BigInt(d.groesse),0n)>reverseBigInt(s,'eintrag_bytes');
+  if(dateigrenze||batchZeilen>maxRows||batchBytes>maxBytes||quota){
+    const client=await uebernahmeClient(db),eigen=client!==db;
+    try{
+      if(eigen)await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['reverse-e-uebernahme:'+job]);
+      const nochmal=await bisherigesErgebnis(client,e);
+      if(nochmal){if(eigen)await client.query('COMMIT');return nochmal;}
+      const herkunft=(await client.query("SELECT werkzeug,werkzeug_version,profil_version,fingerabdruck FROM reverse_auftraege WHERE eintrag_id=$1 AND medium_id=$2 AND schicht='E' AND (id::text=$3 OR p20_auftrag_id::text=$3) ORDER BY created_at DESC LIMIT 1",[rid,mid,job])).rows[0]??{};
+      const key=rid+'/.intern/rueckhalt/'+job,manifestName='rueckhalt-manifest.jsonl',grund=dateigrenze?'datei_zu_gross':quota?'eintrag_bytes':'blockuebernahme_erforderlich';
+      const rueckhalt:Record<string,unknown>={storage_key:key,manifest:manifestName,manifest_sha256:null,erhalten:false,bytes:'0',
+        offen:gueltig.length,abgewiesen:verworfen,grund,datei_zu_gross:dateigrenze,einstellungen_revision:s.revision,
+        batch_zeilen:batchZeilen,batch_bytes:batchBytes,zeilen_grenze:maxRows,byte_grenze:maxBytes};
+      const flags=constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW;
+      const handles:Awaited<ReturnType<typeof fs.open>>[]=[];
+      try{
+        if(!arbeit||arbeit!==path.resolve(e.arbeitsWurzel)||!await sichereEEltern(root,path.relative(root,arbeit)+'/x'))
+          throw Object.assign(new Error('Arbeitswurzel nicht sicher'),{code:'EPFAD'});
+        let parent=await fs.open(root,flags);handles.push(parent);
+        for(const teil of [rid,'.intern','rueckhalt']){
+          const next='/proc/self/fd/'+parent.fd+'/'+teil;
+          try{await fs.mkdir(next,{mode:0o700});}catch(err){if((err as NodeJS.ErrnoException).code!=='EEXIST')throw err;}
+          parent=await fs.open(next,flags);handles.push(parent);
+        }
+        const dest='/proc/self/fd/'+parent.fd+'/'+job;
+        if(await existiert(dest))throw Object.assign(new Error('Rückhaltziel existiert; keine Adoption'),{code:'EEXIST'});
+        const source=await fs.open(arbeit,flags);handles.push(source);
+        let treeBytes=0n;
+        const messen=async(h:Awaited<ReturnType<typeof fs.open>>):Promise<void>=>{
+          for(const name of await fs.readdir('/proc/self/fd/'+h.fd)){
+            const fp='/proc/self/fd/'+h.fd+'/'+name,st=await fs.lstat(fp,{bigint:true});
+            if(st.isDirectory()){const d=await fs.open(fp,flags);try{await messen(d);}finally{await d.close();}}
+            else if(st.isFile()&&st.nlink===1n)treeBytes+=st.size;
+            else throw Object.assign(new Error('Nichtregulärer Rückhaltinhalt'),{code:'EPFAD'});
+          }
+        };
+        await messen(source);rueckhalt.bytes=String(treeBytes);
+        const sourceFd='/proc/self/fd/'+source.fd;
+        if(await existiert(sourceFd+'/rueckhalt.json')||await existiert(sourceFd+'/'+manifestName))
+          throw Object.assign(new Error('Rückhalt-Metadatenname bereits vorhanden'),{code:'EEXIST'});
+        const mf=await fs.open(sourceFd+'/'+manifestName,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+        const digest=createHash('sha256');let manifestBytes=0n;
+        try{for(const d of e.manifest){const line=JSON.stringify(d)+'\n';await mf.writeFile(line);digest.update(line);manifestBytes+=BigInt(Buffer.byteLength(line));}await mf.sync();}
+        finally{await mf.close();}
+        rueckhalt.manifest_sha256=digest.digest('hex');
+        const raw=JSON.stringify({version:1,manifest:manifestName,manifest_sha256:rueckhalt.manifest_sha256,
+          herkunft:{eintrag_id:rid,medium_id:mid,quellhash:medium.satz_sha256??null,...herkunft,job_id:job},
+          zeitpunkt:new Date().toISOString(),grund,datei_zu_gross:dateigrenze,zaehler:{offen:gueltig.length,abgewiesen:verworfen},
+          quell_bytes:String(treeBytes),manifest_bytes:String(manifestBytes),einstellungen_revision:s.revision})+'\n';
+        const info=await fs.open(sourceFd+'/rueckhalt.json',constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+        try{await info.writeFile(raw);await info.sync();}finally{await info.close();}
+        rueckhalt.bytes=String(treeBytes+manifestBytes+BigInt(Buffer.byteLength(raw)));
+        await source.sync();
+        const from=await fs.open(path.dirname(arbeit),flags);handles.push(from);
+        const sourcePath='/proc/self/fd/'+from.fd+'/'+path.basename(arbeit),now=await fs.lstat(sourcePath),held=await source.stat();
+        if(now.ino!==held.ino||now.dev!==held.dev||!now.isDirectory())throw Object.assign(new Error('Arbeitswurzel geändert'),{code:'EPFAD'});
+        // Kein Copy/Delete-Fallback: rename muss auf demselben Dateisystem atomar sein.
+        await fs.rename(sourcePath,dest);rueckhalt.erhalten=true;
+        await parent.sync();await from.sync();
+      }catch(err){
+        rueckhalt.grund='rueckhalt_fehlgeschlagen';
+        rueckhalt.fehler={pfad:arbeit||e.arbeitsWurzel,ziel:key,errno:(err as NodeJS.ErrnoException).code??'UNBEKANNT',
+          groesse:rueckhalt.bytes,offen:gueltig.length,abgewiesen:verworfen};
+        // Freigegebenes Restrisiko: bei fehlgeschlagenem rename bleibt Executor-Aufräumen bis Teil B unverändert.
+        console.error('[reverse-e-uebernahme] rueckhalt_fehlgeschlagen',JSON.stringify(rueckhalt.fehler));
+      }finally{for(const h of handles.reverse())await h.close().catch(()=>undefined);}
+      const result=await finalisiereEErgebnis(client,e,0,verworfen,{offen:gueltig.length,grund:String(rueckhalt.grund),rueckhalt});
+      if(eigen)await client.query('COMMIT');
+      return result;
+    }catch(err){if(eigen)await client.query('ROLLBACK').catch(()=>undefined);throw err;}
+    finally{if(eigen)client.release?.();}
+  }
 
   const uebernommen:ReverseEManifestEintrag[]=[];
   const staging=path.join(root,rid,'entpackt','.e-'+job);
@@ -218,11 +314,11 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
 }
 
 /** PG-Abschluss gemeinsam für Altübernahme und den bestätigten letzten Block; Aufrufer hält die Lease. */
-export async function finalisiereEErgebnis(db:Db,e:{jobId:string;reverseId:string;mediumId:string},dateien:number,weg:number){
+export async function finalisiereEErgebnis(db:Db,e:{jobId:string;reverseId:string;mediumId:string},dateien:number,weg:number,offen?:{offen:number;grund:string;rueckhalt:Record<string,unknown>}):Promise<EErgebnis>{
  const job=e.jobId.toLowerCase(),rid=e.reverseId,mid=e.mediumId,gruppe=reverseEGruppe(mid);
- const gesamt=dateien+weg;
-    const status=gesamt===0||weg===0?'fertig':dateien>0?'teilweise':'fehler';
-    const fehlercode=status==='fehler'?'beschaedigt':null;
+ const gesamt=dateien+weg+(offen?.offen??0);
+    const status=offen?'teilweise':gesamt===0||weg===0?'fertig':dateien>0?'teilweise':'fehler';
+    const fehlercode=offen?(offen.grund==='rueckhalt_fehlgeschlagen'?'werkzeug_fehler':offen.grund==='eintrag_bytes'?'speicherlimit':'zu_gross'):status==='fehler'?'beschaedigt':null;
     const auftrag=(await db.query(`SELECT id,fingerabdruck FROM reverse_auftraege WHERE eintrag_id=$1 AND medium_id=$2 AND schicht='E'
       AND (id::text=$3 OR p20_auftrag_id::text=$3) ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,[rid,mid,job])).rows[0];
     const ausgabe=rid+'/entpackt/'+gruppe+'/'+job;
@@ -242,7 +338,8 @@ export async function finalisiereEErgebnis(db:Db,e:{jobId:string;reverseId:strin
           funktionen_gesamt=EXCLUDED.funktionen_gesamt,funktionen_fertig=EXCLUDED.funktionen_fertig,ausgabe_key=EXCLUDED.ausgabe_key,beendet_at=EXCLUDED.beendet_at`,
         [mid,fp,status,fehlercode,gesamt,dateien,ausgabe,auftrag?.id??null]);
     }
+    if(offen&&auftrag)await db.query("UPDATE reverse_auftraege SET uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('rueckhalt',$2::jsonb) WHERE id=$1 AND eintrag_id=$3",[auftrag.id,JSON.stringify(offen.rueckhalt),rid]);
     await db.query("SELECT pg_notify('synapse_reverse_changed',$1)",[rid]);
 
- return {dateien,verworfen:weg};
+ return offen?{dateien,verworfen:weg,offen:offen.offen,abgewiesen:weg,grund:offen.grund}:{dateien,verworfen:weg};
 }

@@ -84,7 +84,6 @@ export interface AssetKonfiguration {
     maxDateiBytes: number;
     maxProjektBytes: number;
     maxProjektDateien: number;
-    maxErgebnisse: number;
   };
 }
 
@@ -292,7 +291,6 @@ export function ladeAssetKonfiguration(env: NodeJS.ProcessEnv = process.env): As
       maxDateiBytes: reverseMaxDatei,
       maxProjektBytes: zahl(env, 'SYNAPSE_REVERSE_MAX_PROJECT_BYTES', 100 * GIB, reverseMaxDatei, Number.MAX_SAFE_INTEGER),
       maxProjektDateien: zahl(env, 'SYNAPSE_REVERSE_MAX_PROJECT_FILES', 500_000, 1, Number.MAX_SAFE_INTEGER),
-      maxErgebnisse: zahl(env, 'SYNAPSE_REVERSE_MAX_RESULTS', 10_000, 1, 1_000_000),
     },
   };
 }

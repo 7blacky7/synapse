@@ -59,7 +59,9 @@ export const REVERSE_EINSTELLKATALOG = {
  nachlauf_s:i('s',1,86400,300,G),
  status_auftraege_max:i('Aufträge',1,10000,100,GP,null,'SYNAPSE_REVERSE_STATUS_AUFTRAEGE_MAX'),
  container_offen_anzeige:i('Container',1,10000,50,GP),
- // E / S3 / Speicher: kein Gesamtdateilimit, nur Schritt-, Block- und Schutzgrenzen
+ // E / S3 / Speicher: kein Gesamtdateilimit, nur Schritt-, Block- und Schutzgrenzen.
+ // P18-T93: E-AUS hält zu große Batches offen zurück; MAX_RESULTS entfällt.
+ // Importer/Speicher lesen PG-Grenzen; der E-AUS-Runner folgt gesondert in Teil B.
  e_schritt_dateien:i('neu bearbeitete Einträge',1,1000000,200000,GE),
  pe_schritt_eintraege:i('PE-Ressourcen je Schritt',1,1000000,5000,GE),
  e_uebernahme_block_zeilen:i('Zeilen pro TX',1,50000,5000,GE),
