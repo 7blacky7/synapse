@@ -37,7 +37,8 @@ export interface ReverseNachzugAutoKontext {
 }
 export const REVERSE_NACHZUG_AGENT='reverse-nachzug-auto';
 const OFFEN="('offen','wartet','laeuft')";
-const VORUEBERGEHEND=['warteschlange_voll','container_gesperrt'];
+/** Nie dauerhaft markieren: aendert sich mit Schaltern, Ausfuehrern oder Policy (reverseFehlerDeterministisch zaehlt kein_ausfuehrer/policy_* als endgueltig). */
+const VORUEBERGEHEND=['warteschlange_voll','container_gesperrt','container_ruht','kein_ausfuehrer'];
 const schalterAn=(ein:ReverseEinstellSnapshot,n:'s1_neu_parsen_auto'|'s3_auto'|'auto_nachzug_debug')=>reverseWert(ein,n)==='an';
 
 /** Abgebrochener jüngster Auftrag einer Datei: die Automatik reiht nichts neu ein (wie entdecke, P18-T87). */
@@ -105,7 +106,8 @@ export async function reiheReverseNachzugEin(k:Pick<ReverseNachzugAutoKontext,'p
   name:art==='s1'?'s1_neu_parsen_auto':'s3_auto',grund:code??'werkzeug_fehler',detail:r.fehler_detail==null?null:String(r.fehler_detail),quelle:REVERSE_NACHZUG_AGENT},k.pool as never);
  // Dauerhafte Marke (je Profil/Werkzeugstand einmal) nur bei Erfolg oder fachlich endgueltigem Fehler. Voruebergehendes (reverse_s3 aus,
  // kein_ausfuehrer, Policy, Warteschlange voll, Halt) merkt nur den Versuch: die Datei bleibt Kandidat, rueckt aber hinter neue Dateien.
- const dauerhaft=!fehler||(r.status!=='gehalten'&&!VORUEBERGEHEND.includes(code??'')&&reverseFehlerDeterministisch(code??''));
+ const voruebergehend=r.status==='gehalten'||fehler&&(VORUEBERGEHEND.includes(code??'')||(code??'').startsWith('policy_')||!reverseFehlerDeterministisch(code??''));
+ const dauerhaft=!voruebergehend;
  const jetzt=new Date().toISOString();
  const marke=dauerhaft?{[art+'_kennung']:kennung,[art+'_at']:jetzt,[art+'_ergebnis']:fehler?code:String(r.status??'wartet'),[art+'_fehler']:fehler}
   :{[art+'_versuch_at']:jetzt,[art+'_ergebnis']:code??String(r.status),[art+'_fehler']:true};

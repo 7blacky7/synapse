@@ -133,7 +133,7 @@ test('T111 Takt: nur PE, kleinste zuerst, Deckel, auto_grenze, Werkzeugstand',as
  assert.equal((await marke(klein)).s3_kennung,'ghidra-1');
  await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,status,ausloeser,prioritaet,ziel_schicht) VALUES($1,$2,$3,'S3','wartet','agent:reverse-nachzug-auto','nachzug','S3')",[randomUUID(),rid,klein]);
  assert.equal((await auto.reverseS3AutoTakt(k)).ausgesetzt,'deckel_erreicht');
- await leeren();
+ await raw.query("DELETE FROM reverse_auftraege WHERE eintrag_id=$1",[rid]);
  await auto.reverseS3AutoTakt(k);assert.equal(aufrufe.at(-1).dateiId,gross);
  const neu={...k,s3Kennung:'ghidra-2'};aufrufe.length=0;await setting('s3_auto_schritt',5);await setting('s3_auto_offen_max',5);
  await auto.reverseS3AutoTakt({...neu,ein:await ein()});
@@ -216,10 +216,19 @@ test('R5 (61f66a9e): Eintrag ohne aktuelle fertige E-Schicht liefert keine Kandi
  const k={vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:i',s3Kennung:'g-i',einreihen:einreihen({status:'wartet'})};
  assert.equal((await auto.reverseS1NeuParsenTakt(k)).kandidaten,1,'aktiv: S1-Kandidat');
 });
+test('R4 (887c23b1): gehalten, kein_ausfuehrer und policy_* setzen nie eine Dauer-Marke',async()=>{
+ await leeren();await setting('s1_neu_parsen_auto','an');await setting('s1_neu_parsen_schritt',50);
+ for(const [i,antwort] of [{status:'gehalten',fehlercode:null},{status:'fehler',fehlercode:'kein_ausfuehrer'},{status:'fehler',fehlercode:'policy_pin_fehlt'},{status:'fehler',fehlercode:'policy_geaendert'}].entries()){
+  const d=await datei('g/'+i+'.txt',{s1Profil:'alt-g'});
+  await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:g'+i,s3Kennung:'w',einreihen:einreihen(a=>a.dateiId===d?antwort:{status:'fehler',fehlercode:'warteschlange_voll'})});
+  assert.equal((await marke(d)).s1_kennung,undefined,JSON.stringify(antwort)+' darf nicht dauerhaft markieren');
+  assert.ok((await marke(d)).s1_versuch_at);
+ }
+});
 test('Vorrang-Schwellen: 0 = nicht pruefen, Grund mit Zahl im Debug',async()=>{
  await leeren();await setting('nachzug_vorrang_chunks_max',0);await setting('nachzug_vorrang_parse_max',0);
  assert.equal(await auto.reverseNachzugVorrang(pool,await ein()),null,'ohne offene Reverse-/Leser-Arbeit und Schwellen 0: kein Aussetzen trotz Dauer-Rueckstand');
- await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,schicht,status,ausloeser,prioritaet) VALUES($1,$2,'E','wartet','agent:x','hintergrund')",[randomUUID(),rid]);
+ await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,medium_id,schicht,status,ausloeser,prioritaet) VALUES($1,$2,$3,'E','wartet','agent:x','hintergrund')",[randomUUID(),rid,mid]);
  assert.equal(await auto.reverseNachzugVorrang(pool,await ein()),'vorrang_offen');
  await leeren();await setting('nachzug_vorrang_chunks_max',1000);await setting('nachzug_vorrang_parse_max',100);
 });
