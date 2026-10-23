@@ -1,11 +1,12 @@
 {
   "schnittstelle_version": 1,
   "name": "siedler3-gfx-snd",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "runtime": "python3",
   "entrypoint": "leser.py",
   "dateien": [
-    "leser.py"
+    "leser.py",
+    "dekodierung.py"
   ],
   "erkennung": {
     "magic": [
@@ -24,6 +25,7 @@
     "struktur",
     "binaer",
     "frames",
-    "sound"
+    "sound",
+    "bild"
   ]
 }

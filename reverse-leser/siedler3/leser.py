@@ -11,6 +11,8 @@ import struct
 import sys
 import time
 
+from dekodierung import dekodiere, Dekodiergrenze, UnbekannteVariante
+
 
 class Schrittgrenze(ValueError):
     pass
@@ -125,52 +127,90 @@ class Ausgabe:
 
     def put(self, item):
         self.source.check()
-        identity = item["id"]
-        name = hashlib.sha256(identity.encode()).hexdigest() + (
-            ".wav" if item["prefix"].startswith(b"RIFF") else ".bin")
-        payload = item["payload"]
-        length = (len(item["prefix"]) + payload[1] + len(item["suffix"])) if payload else 0
-        reference = {"pfad": name, "sha256": "0" * 64, "bytes": str(length)} if payload is not None else None
-        obj = {"art": "objekt", "member_id": identity, "objektpfad": identity,
-               "typ": item["kind"], "quelle": {"offset": str(item["offset"]), "laenge": str(item["length"])},
-               "datei": reference, "metadaten": item["metadata"]}
-        planned = len(pack(obj).encode()) + 1
-        # Ein Segment ist ebenfalls eine Datei; keine kumulative Containerquote.
-        if (self.count + 1 > self.limits["dateien"]
-                or self.files + int(reference is not None) + 1 > self.limits["dateien"]
-                or length > self.limits["datei_bytes"]
-                or self.segment_bytes + planned > self.limits["datei_bytes"]
-                or planned > self.limits["zeile_bytes"]
-                or self.bytes + length + planned > self.limits["bytes"]):
+        items = [item]
+        # Ein GFX-Record ist die Bestätigungsgrenze: Roh + PNG immer gemeinsam.
+        if "dekodierung" in item:
+            if self.count + 2 > self.limits["dateien"] or self.files + 3 > self.limits["dateien"]:
+                raise Schrittgrenze("schritt_oder_dateigrenze")
+            offset, end, kind = item["dekodierung"]
+            try:
+                png, used, details = dekodiere(self.source, offset, end, kind)
+            except Dekodiergrenze as exc:
+                raise Schrittgrenze(str(exc)) from exc
+            except UnbekannteVariante as exc:
+                item["metadata"]["grund"] = str(exc)
+            else:
+                image_id = item["id"] + "/bild"
+                item["metadata"]["bild_member"] = image_id
+                image = record(image_id, offset, used, "bild",
+                               {**details, "roh_member": item["id"], "status": "dekodiert"})
+                image["data"] = png
+                items.append(image)
+        planned = []
+        for value in items:
+            identity = value["id"]
+            data = value.get("data")
+            payload = value["payload"]
+            has_file = data is not None or payload is not None
+            length = (len(data) if data is not None else
+                      len(value["prefix"]) + payload[1] + len(value["suffix"]) if payload is not None else 0)
+            suffix = ".png" if data is not None else ".wav" if value["prefix"].startswith(b"RIFF") else ".bin"
+            name = hashlib.sha256(identity.encode()).hexdigest() + suffix
+            reference = {"pfad": name, "sha256": "0" * 64, "bytes": str(length)} if has_file else None
+            obj = {"art": "objekt", "member_id": identity, "objektpfad": identity,
+                   "typ": value["kind"], "quelle": {"offset": str(value["offset"]), "laenge": str(value["length"])},
+                   "datei": reference, "metadaten": value["metadata"]}
+            line_bytes = len(pack(obj).encode()) + 1
+            planned.append((value, obj, length, line_bytes))
+        artifact_count = sum(obj["datei"] is not None for _, obj, _, _ in planned)
+        total_lines = sum(n for _, _, _, n in planned)
+        total_bytes = sum(n + size for _, _, size, n in planned)
+        if (self.count + len(planned) > self.limits["dateien"]
+                or self.files + artifact_count + 1 > self.limits["dateien"]
+                or any(size > self.limits["datei_bytes"] or n > self.limits["zeile_bytes"]
+                       for _, _, size, n in planned)
+                or self.segment_bytes + total_lines > self.limits["datei_bytes"]
+                or self.bytes + total_bytes > self.limits["bytes"]):
             raise Schrittgrenze("schritt_oder_dateigrenze")
-        if reference is not None:
-            assert payload is not None
-            digest = hashlib.sha256()
-            fd = os.open(self.root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(fd, "wb") as out:
-                for chunk in (item["prefix"],):
-                    out.write(chunk)
-                    digest.update(chunk)
-                try:
-                    for chunk in self.source.blocks(*payload):
-                        out.write(chunk)
-                        digest.update(chunk)
-                except Schrittgrenze as exc:
-                    raise ValueError("record_unbestaetigt:" + str(exc)) from exc
-                out.write(item["suffix"])
-                digest.update(item["suffix"])
-                out.flush()
-                os.fsync(out.fileno())
-            reference["sha256"] = digest.hexdigest()
-            self.files += 1
-        line = (pack(obj) + "\n").encode()
-        if self.segment is None:
-            self.segment = (self.root / "segment-0001.jsonl").open("xb")
-        self.segment.write(line)
-        self.digest.update(line)
-        self.segment_bytes += len(line)
-        self.bytes += length + len(line)
-        self.count += 1
+        # Alle Grenzen geprüft, bevor irgendein Artefakt dieses Records entsteht.
+        for value, obj, length, _ in planned:
+            reference = obj["datei"]
+            if reference is not None:
+                digest = hashlib.sha256()
+                fd = os.open(self.root / reference["pfad"],
+                             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "wb") as out:
+                    try:
+                        data = value.get("data")
+                        if data is not None:
+                            blocks = (memoryview(data)[i:i + self.source.chunk]
+                                      for i in range(0, len(data), self.source.chunk))
+                        else:
+                            blocks = self.source.blocks(*value["payload"])
+                        out.write(value["prefix"])
+                        digest.update(value["prefix"])
+                        for block in blocks:
+                            self.source.check()
+                            out.write(block)
+                            digest.update(block)
+                        out.write(value["suffix"])
+                        digest.update(value["suffix"])
+                        out.flush()
+                        os.fsync(out.fileno())
+                    except Schrittgrenze as exc:
+                        raise ValueError("record_unbestaetigt:" + str(exc)) from exc
+                reference["sha256"] = digest.hexdigest()
+                self.files += 1
+        # Erst nach ALLEN Artefakten die Recordzeilen in den Segmentbeleg aufnehmen.
+        for _, obj, length, _ in planned:
+            line = (pack(obj) + "\n").encode()
+            if self.segment is None:
+                self.segment = (self.root / "segment-0001.jsonl").open("xb")
+            self.segment.write(line)
+            self.digest.update(line)
+            self.segment_bytes += len(line)
+            self.bytes += length + len(line)
+            self.count += 1
 
     def finish(self, cursor, complete, reason=None, failed=False):
         if self.segment is not None:
@@ -365,8 +405,13 @@ def gfx(source):
                 elif known:
                     meta["grund"] = "bildrecord_zu_kurz_roh_erhalten"
                 identity = "gfx/tabelle-" + str(slot) + "/index-" + str(index) + "/frame-" + str(frame) + "-offset-" + str(offset)
-                yield record(identity, offset, length, "frames" if known else "binaer",
-                             meta, payload=(offset, length))
+                item = record(identity, offset, length, "frames" if known else "binaer",
+                              meta, payload=(offset, length))
+                if (known and meta.get("breite") not in (None, "0")
+                        and meta.get("hoehe") not in (None, "0")
+                        and meta["grund"] == "rle_roh_link_schritt"):
+                    item["dekodierung"] = (offset, offset + length, kind)
+                yield item
 
 
 def snd(source):
@@ -422,4 +467,4 @@ def records(source, detected):
 
 
 if __name__ == "__main__":
-    run(records, identify, "siedler3-gfx-snd-v1")
+    run(records, identify, "siedler3-gfx-snd-v2")

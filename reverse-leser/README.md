@@ -107,7 +107,17 @@ bleiben roh mit Grund; kein geratenes Rendering. SND liefert PCM-WAVs, bei
 unvollständigem PCM-Frame zusätzlich den ganzen Rohrecord; unbekannte Codecs
 nur roh mit Grund. fertig bedeutet vollständig durchlaufene Containerstruktur,
 nicht vollständige semantische Dekodierung jedes Rohobjekts.
-Keine PNG/GIF-/Vorschauerzeugung; Darstellung folgt im späteren Link-Schritt.
+Seit Paketversion1.1.0 liefert das externe Siedler-Paket bekannte GFX-Bilder
+zusätzlich als verlustfreie PNG-Dekodierartefakte (typ bild). Freigabe:
+P18-T97 Schritt2, Entwurf cf2ea9d7, User-Kriterium F1/T89. Rohrecord bleibt
+unverändert; sein bild_member und das roh_member des PNG verknüpfen beide.
+dekodierung.py ist eine eigene gepinnte Paketdatei, kein Legacy-Import.
+Rohrecord und PNG bilden EINE Cursor-/Budgetgrenze: vor dem Schreiben zählen
+beide Dateien/Metadaten plus Segment; erst danach wird der Frame bestätigt.
+PNG-Quelle nennt die tatsächlich verbrauchten RLE-Bytes, Rohquelle den ganzen
+belegten Recordbereich. Nullframes bleiben ausschließlich roh. Defektes RLE
+meldet Fehler, unbekannte Varianten einen Rohgrund. Kein GIF, Thumbnail oder
+Skalieren; allgemeine Anzeigeumwandlung bleibt der spätere Link-Schritt.
 
 ## PAK-Paket und Probe
 
@@ -123,3 +133,34 @@ Alle Fixturebytes entstehen selbst im Test, keine fremden Spiel-/Live-Daten.
 Keine Docker-/SSH-Probe. In V6 erst: echte Sandbox, Resume-Integration und
 Siedler-Regressionsbestand (00=235,03=448,06=1430; SND00=208 WAV+45 Roh)
 semantisch gegen Altbestand prüfen. Legacy wird erst nach V6 entfernt.
+
+## Schritt2: gezielte Entwicklungstests und spätere Live-Abnahme
+
+Eigene Fixtures: uv run --no-project python -B reverse-leser/tests/test_leser.py
+und uv run --no-project python -B reverse-leser/tests/test_regression.py.
+Integration: mise exec -- node --test packages/core/tests/reverse-leser-p18-t97-schritt2.test.mjs
+(DATABASE_URL muss synapse_test auf Port5433 sein, privates Testschema).
+Die Dekodierprobe vergleicht ausschließlich selbst erzeugte Bytes mit dem
+unveränderten Legacy-Oracle; PNG-Dateibytes, Pixel und CRC sowie WAV/Rohbytes werden
+unabhängig geprüft. Synthetische235/448/1430-Bild- und208WAV/45BIN-Proben
+sind KEIN Live-Beleg für die Originale.
+
+Erst nach Freigabe: stand:nachher für beide Python-Paketdateien plus Manifest
+registrieren, unveränderten Runtime-Pin003f2285… nutzen; keine Aktivierung.
+Echte Originale verbleiben auf dem Reverse-Share und werden ausschließlich in
+autorisierten leser_testen-Fenstern gelesen. Dort alle PNG-Pixel/Metadaten,
+WAV-/BIN-Hashes und physischen Enden gegen den gepinnten Legacybestand prüfen.
+Testläufe sind im assets_tree absichtlich unsichtbar. Reale Artefaktbelege
+brauchen einen lesenden serverseitigen Weg, sonst ist die Abnahme offen.
+Der Live-Executor weist Recordcursor noch ab; lokale Cursorproben beweisen
+keinen Live-Resume. Teilweise bleibt teilweise; keine Wiederholung mit neuen
+Schlüsseln als vorgetäuschte Fortsetzung. Blockübernahme bleibt AUS.
+
+R1-Nachtrag (Review42a24525): Der Encoder komprimiert wie Legacy sämtliche
+Filter-0-Zeilen in genau einem zlib-Aufruf (Standardlevel), mit identischem
+IHDR/IDAT/IEND-Aufbau. Der PG-RAM-Preflight reserviert den zusätzlichen
+Zeilenpuffer bereits vor Allokation. Die Regression enthält Shadow17x6
+(zwei Spans8+9 je Zeile) und120 deterministische Gruppen-/RGB-/Offsetfälle.
+Bei gleicher Python-/zlib-Umgebung werden PNG-Dateibytes strikt verglichen;
+eine spätere Bitstreamabweichung ist ein eigener roter Befund, kein stiller
+Pixelgleichheitsersatz. Live-Goldenprüfung bleibt gesondert ausstehend.

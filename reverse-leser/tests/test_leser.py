@@ -111,7 +111,10 @@ class LeserTests(unittest.TestCase):
                 request = projected
                 (output / ".leser-protokoll.jsonl").write_bytes(b"nur-parent-spool")
             result = subprocess.run(
-                [sys.executable, "-I", "-B", "-u", str(ROOT / reader / "leser.py")],
+                [sys.executable, "-I", "-B", "-u", "-c",
+                 "import runpy,sys;sys.path.insert(0,sys.argv[1]);"
+                 "runpy.run_path(sys.argv[1]+'/leser.py',run_name='__main__')",
+                 str(ROOT / reader)],
                 input=json.dumps(request) + "\n", capture_output=True, text=True, timeout=15,
                 cwd=output, env={"PATH": str(Path(sys.executable).parent), "LANG": "C.UTF-8"})
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -278,7 +281,11 @@ class LeserTests(unittest.TestCase):
         self.assertEqual(len(files[frames[0]["datei"]["pfad"]]), 12)
         self.assertEqual(frames[1]["metadaten"]["breite"], "2")
         self.assertTrue(any(v["metadaten"].get("grund") == "variante_unbekannt" for v in objects))
-        self.assertFalse(any(name.endswith((".png", ".gif")) for name in files))
+        images = [v for v in objects if v["typ"] == "bild"]
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["metadaten"]["roh_member"], frames[1]["member_id"])
+        self.assertEqual(files[images[0]["datei"]["pfad"]][:8], b"\x89PNG\r\n\x1a\n")
+        self.assertFalse(any(name.endswith(".gif") for name in files))
 
     def test_gfx_empty_tables_and_resume(self):
         end, objects, _, _ = self.invoke("siedler3", gfx(empty=True))
