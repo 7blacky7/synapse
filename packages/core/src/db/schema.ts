@@ -73,6 +73,7 @@ import {REVERSE_LESER_SCHEMA_SQL} from './reverse-leser-schema.js';
 import {REVERSE_LESER_NACHZUG_SCHEMA_SQL} from './reverse-leser-nachzug-schema.js';
 import {REVERSE_LESER_RUNTIME_SCHEMA_SQL} from './reverse-leser-runtime-schema.js';
 import {REVERSE_ANALYSE_POLICY_SCHEMA_SQL} from './reverse-analyse-policy-schema.js';
+import {REVERSE_F3_BEREINIGUNG_SCHEMA_SQL} from './reverse-f3-bereinigung-schema.js';
 import {REVERSE_PIPELINE_SCHEMA_SQL} from './reverse-pipeline-schema.js';
 import { PROJECT_RESTORE_SCHEMA_SQL } from './project-restore-schema.js';
 import { PLAN_TASK_SCHEMA_SQL } from './plan-task-schema.js';
@@ -2779,6 +2780,7 @@ ${TOOL_CONTAINER_SCHEMA_SQL}
 -- P18-T13/RV3: nach A2 und P20, keine Änderung bestehender Tabellen.
 ${REVERSE_SCHEMA_SQL}
 ${REVERSE_PIPELINE_SCHEMA_SQL}
+${REVERSE_F3_BEREINIGUNG_SCHEMA_SQL}
 
 -- P13-T24/A6: resumierbare Uploadteile, Prepared-Owner und Recoverymetadaten.
 ${ASSET_UPLOAD_SCHEMA_SQL}

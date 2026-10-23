@@ -1,0 +1,382 @@
+#!/usr/bin/env node
+/**
+ * P18-T97 F3 tranche 1. Coordinator maintenance after review + full backup.
+ * Default dry-run: READ ONLY, streaming canonical JSONL manifest, no cache/share work.
+ * --eintrag rev-die-siedler-3-229a52 [--manifest <NEW local audit-data.jsonl>]
+ * Apply: --ausfuehren --manifest <sealed audit-data.jsonl>
+ * --manifest-sha256 <sha256> --backup-beleg <verified backup identifier>
+ * DATABASE_URL comes from the authorised SERVER maintenance environment.
+ * Schema145 is deployed normally; this script NEVER creates schema/tables.
+ * Import has no I/O side effect. Tests run only when the coordinator opens test phase.
+ */
+import {createHash} from 'node:crypto';
+import {constants} from 'node:fs';
+import {open,realpath} from 'node:fs/promises';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
+import {leseReverseEinstellwerte,reverseZahl} from '@synapse/core';
+import {leseReversePipelineHalt} from '../../core/dist/services/reverse-pipeline-halt.js';
+
+export const ENTRY='rev-die-siedler-3-229a52';
+export const FORMATS=['png','gif','wav','jpeg','avi','ico','zip'];
+export function canon(x){return JSON.stringify(order(x));}
+function order(x){return Array.isArray(x)?x.map(order):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,order(x[k])])):x;}
+export const sha=x=>createHash('sha256').update(x).digest('hex');
+const hash=x=>sha(canon(x)),size=x=>Buffer.byteLength(canon(x));
+const stop=code=>{throw Error(code);};
+const same=(a,b,code)=>{if(canon(a)!==canon(b))stop(code);};
+const ident=x=>'"'+String(x).replaceAll('"','""')+'"';
+const validHash=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
+export const validName=x=>typeof x==='string'&&(/^(?:strings(?:-[0-9]+)?[.]txt)$/.test(x)||x==='imports.txt');
+const eligible=[
+ "c.eintrag_id=$1 AND c.schicht='S1' AND c.parser_generation_id IS NULL AND c.deleted_at IS NULL",
+ "AND d.format=ANY($2::text[]) AND d.sha256 IS NOT NULL AND d.storage_key IS NOT NULL",
+ "AND NOT (COALESCE(d.metadaten#>>'{code_klassifikation,ist_code}','false')='true' AND d.metadaten#>>'{code_klassifikation,sha256}'=d.sha256)",
+ "AND (c.file_name ~ '^strings(-[0-9]+)?[.]txt$' OR (c.file_name='imports.txt' AND COALESCE(c.content,'')=''))"
+].join(' ');
+const cols="c.id,c.file_path,c.file_name,c.datei_id::text AS source_id,d.sha256 AS source_sha,to_jsonb(c)::text AS raw,to_jsonb(d)::text AS source_raw";
+const FK=new Set([
+ 'reverse_code_symbole>reverse_code_dateien:FOREIGN KEY (eintrag_id, file_path) REFERENCES reverse_code_dateien(eintrag_id, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED',
+ 'reverse_code_symbole>reverse_code_symbole:FOREIGN KEY (parent_symbol) REFERENCES reverse_code_symbole(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED',
+ 'reverse_code_verweise>reverse_code_dateien:FOREIGN KEY (eintrag_id, file_path) REFERENCES reverse_code_dateien(eintrag_id, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED',
+ 'reverse_code_verweise>reverse_code_symbole:FOREIGN KEY (symbol_id) REFERENCES reverse_code_symbole(id) ON DELETE CASCADE',
+ 'reverse_code_statements>reverse_code_dateien:FOREIGN KEY (eintrag_id, file_path) REFERENCES reverse_code_dateien(eintrag_id, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED',
+ 'reverse_code_kanten>reverse_code_dateien:FOREIGN KEY (eintrag_id, file_path) REFERENCES reverse_code_dateien(eintrag_id, file_path) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED',
+ 'reverse_code_kanten>reverse_code_symbole:FOREIGN KEY (target_symbol_id) REFERENCES reverse_code_symbole(id) ON DELETE SET NULL'
+]);
+const CODE_TABLES=['reverse_code_dateien','reverse_code_symbole','reverse_code_verweise','reverse_code_statements','reverse_code_kanten'];
+export async function schemaGuard(db){
+ // Resolve the SAME exact schema/OIDs used by our locks and dependency queries.
+ const relations=(await db.query("SELECT c.relname AS name,c.oid::text AS oid,n.nspname AS schema,to_regclass(quote_ident(c.relname))::oid::text AS visible_oid FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relname=ANY($1::text[]) AND c.relkind='r'",[CODE_TABLES])).rows;
+ if(relations.length!==CODE_TABLES.length||relations.some(r=>r.oid!==r.visible_oid))stop('f3_relation_unbekannt');
+ const by=new Map(relations.map(r=>[r.name,r])),targets=['reverse_code_dateien','reverse_code_symbole'].map(n=>by.get(n).oid);
+ // Do NOT filter child schemas: every incoming FK from the entire DB is inspected.
+ const r=await db.query("SELECT k.conrelid::text AS child_oid,k.confrelid::text AS parent_oid,c.relname AS t,p.relname AS target,cn.nspname AS child_schema,pn.nspname AS parent_schema,pg_get_constraintdef(k.oid) AS def FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace cn ON cn.oid=c.relnamespace JOIN pg_class p ON p.oid=k.confrelid JOIN pg_namespace pn ON pn.oid=p.relnamespace WHERE k.contype='f' AND k.confrelid=ANY($1::oid[])",[targets]);
+ for(const f of r.rows){
+  const child=by.get(f.t),parent=by.get(f.target);
+  if(!child||!parent||f.child_oid!==child.oid||f.parent_oid!==parent.oid||
+     f.child_schema!==child.schema||f.parent_schema!==parent.schema||
+     !FK.has(f.t+'>'+f.target+':'+f.def))stop('f3_fk_unbekannt');
+ }
+ const triggers=await db.query("SELECT tgname FROM pg_trigger WHERE tgrelid=ANY($1::oid[]) AND NOT tgisinternal",[targets]);
+ if(triggers.rows.length)stop('f3_trigger_unbekannt');
+}
+async function settings(db){
+ const s=await leseReverseEinstellwerte({eintrag_id:ENTRY},db);
+ if(s.letzter_fehler)stop(s.letzter_fehler);
+ return {revision:s.revision,rows:reverseZahl(s,'e_uebernahme_block_zeilen'),maxBytes:reverseZahl(s,'materialisierung_tx_bytes'),
+  recordBytes:reverseZahl(s,'manifest_record_bytes'),statement:reverseZahl(s,'leser_statement_timeout_ms'),lock:reverseZahl(s,'leser_lock_timeout_ms')};
+}
+async function quiet(db){
+ const h=await leseReversePipelineHalt(db);if(!h.aktiv||h.letzter_fehler)stop('f3_halt_erforderlich');
+ if((await db.query("SELECT 1 FROM reverse_auftraege WHERE status IN('offen','wartet','laeuft') OR lease_bis>clock_timestamp() LIMIT 1")).rows.length)stop('f3_nicht_ruhig');
+ if((await db.query("SELECT 1 FROM work_jobs w WHERE scope='reverse' AND (state IN('pending','leased','staged') OR (resource_unconfirmed AND NOT EXISTS(SELECT 1 FROM tool_container_runs r WHERE r.job_id=w.id AND r.attempt=w.attempt AND r.state='done'))) LIMIT 1")).rows.length)stop('f3_nicht_ruhig');
+}
+const indirect={
+ asset_revisionen:{owner:"a.project",join:"JOIN asset_files a ON a.id=t.asset_id",valid:"EXISTS(SELECT 1 FROM asset_files a WHERE a.id=t.asset_id)"},
+ asset_konflikte:{owner:"a.project",join:"JOIN asset_files a ON a.id=t.asset_id",valid:"EXISTS(SELECT 1 FROM asset_files a WHERE a.id=t.asset_id)"},
+ asset_retention_referenzen:{owner:"a.project",join:"JOIN asset_files a ON a.id=t.asset_id",valid:"EXISTS(SELECT 1 FROM asset_files a WHERE a.id=t.asset_id)"},
+ asset_manifest_eintraege:{owner:"m.project",join:"JOIN asset_manifest_sitzungen m ON m.id=t.manifest_id",valid:"EXISTS(SELECT 1 FROM asset_manifest_sitzungen m JOIN asset_files a ON a.id=t.asset_id AND a.project=m.project WHERE m.id=t.manifest_id)"},
+ // Root-key protocol is defined by share-scanner.ts:89; include every checkpoint
+ // conservatively (also Reverse roots), rather than lose an unassignable owner.
+ asset_scan_checkpoints:{owner:"'root:'||t.root_key",join:"",valid:"t.root_key LIKE 'projekt:%' OR t.root_key LIKE 'reverse:%'"},
+ asset_upload_sitzungen:{owner:"CASE WHEN t.bereich='projekt' THEN t.ziel_ref ELSE '@reverse-transport:'||t.ziel_ref END",join:"",valid:"t.bereich IN('projekt','reverse') AND t.ziel_ref IS NOT NULL"},
+ asset_upload_teile:{owner:"CASE WHEN u.bereich='projekt' THEN u.ziel_ref ELSE '@reverse-transport:'||u.ziel_ref END",join:"JOIN asset_upload_sitzungen u ON u.id=t.upload_id",valid:"EXISTS(SELECT 1 FROM asset_upload_sitzungen u WHERE u.id=t.upload_id AND u.bereich IN('projekt','reverse') AND u.ziel_ref IS NOT NULL)"}
+};
+/** Counts AND SHA256 of complete canonical records (IDs/revisions/content included).
+ * Fresh READ COMMITTED statement per table; no stale snapshot in a write transaction.
+ * All projects and indirect owners; an unknown/unassignable table is a STOP.
+ */
+export async function projectSentinel(db){
+ const schema=(await db.query('SELECT current_schema() AS s')).rows[0].s;
+ const names=(await db.query("SELECT t.table_name,EXISTS(SELECT 1 FROM information_schema.columns c WHERE c.table_schema=t.table_schema AND c.table_name=t.table_name AND c.column_name='project') AS direct FROM information_schema.tables t WHERE t.table_schema=$1 AND t.table_type='BASE TABLE' AND (t.table_name LIKE 'asset\\_%' ESCAPE '\\' OR t.table_name LIKE 'code\\_%' ESCAPE '\\' OR t.table_name='file_versions') ORDER BY t.table_name",[schema])).rows;
+ const out={};
+ for(const {table_name:t,direct} of names){
+  const spec=direct?{owner:'t.project',join:'',valid:'t.project IS NOT NULL'}:indirect[t];
+  if(!spec)stop('f3_projekttabelle_unzugeordnet');
+  const table=ident(schema)+'.'+ident(t);
+  if((await db.query('SELECT 1 FROM '+table+' t WHERE ('+spec.valid+') IS NOT TRUE LIMIT 1')).rows.length)stop('f3_projektzeile_unzugeordnet');
+  // Digest is a sorted multiset of record-SHA256, avoiding one enormous value/content dump.
+  out[t]=(await db.query("SELECT owner,count(*)::text AS n,encode(sha256(convert_to(string_agg(h,'' ORDER BY h),'UTF8')),'hex') AS sha256 FROM (SELECT "+spec.owner+"::text AS owner,encode(sha256(convert_to(to_jsonb(t)::text,'UTF8')),'hex') AS h FROM "+table+" t "+spec.join+") q GROUP BY owner ORDER BY owner")).rows;
+ }
+ return out;
+}
+const checkProjects=async(db,h)=>same(await projectSentinel(db),h.projects,'f3_projektbestand_geaendert');
+const file=r=>({id:r.id,path:r.file_path,name:r.file_name,source_id:r.source_id,source_sha:r.source_sha,
+ code_hash:sha(r.raw),source_hash:sha(r.source_raw),row_bytes:Buffer.byteLength(r.raw)});
+async function deadlines(db,s){await db.query("SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout',$2,true)",[String(s.statement),String(s.lock)]);}
+export async function createManifest(pool,emit){
+ const db=await pool.connect(),digest=createHash('sha256');let files=0,symbols=0,s;
+ const send=async x=>{const raw=canon(x)+'\n';if(Buffer.byteLength(raw)>s.recordBytes)stop('f3_manifest_record_zu_gross');digest.update(raw);await emit?.(raw);};
+ try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  s=await settings(db);await deadlines(db,s);await schemaGuard(db);
+  const header={kind:'header',version:1,scope:'p18-t97-f3-tranche1',entry:ENTRY,settings:s,projects:await projectSentinel(db)};
+  await send(header);
+  let cursor='';
+  for(;;){
+   const rows=(await db.query('SELECT '+cols+' FROM reverse_code_dateien c JOIN reverse_dateien d ON d.id=c.datei_id AND d.eintrag_id=c.eintrag_id WHERE '+eligible+' AND c.id>$3 ORDER BY c.id LIMIT $4',[ENTRY,FORMATS,cursor,s.rows])).rows;
+   if(!rows.length)break;
+   for(const r of rows){
+    const f=file(r);if(!validName(f.name))stop('f3_dateiname');
+    let after='';
+    for(;;){
+     const ss=(await db.query("SELECT id,to_jsonb(s)::text AS raw FROM reverse_code_symbole s WHERE eintrag_id=$1 AND file_path=$2 AND id>$3 ORDER BY id LIMIT $4",[ENTRY,f.path,after,s.rows])).rows;
+     if(!ss.length)break;
+     for(const v of ss){await send({kind:'symbol',id:v.id,file:f,hash:sha(v.raw),row_bytes:Buffer.byteLength(v.raw)});symbols++;}
+     after=ss.at(-1).id;
+    }
+    await send({kind:'file',id:f.id,file:f,hash:f.code_hash,row_bytes:f.row_bytes});files++;
+   }
+   cursor=rows.at(-1).id;
+  }
+  await db.query('ROLLBACK');return {sha256:digest.digest('hex'),files,symbols};
+ }catch(e){await db.query('ROLLBACK').catch(()=>{});throw e;}finally{db.release();}
+}
+
+export function validateHeader(h){
+ if(h?.kind!=='header'||h.version!==1||h.scope!=='p18-t97-f3-tranche1'||h.entry!==ENTRY||
+    !h.projects||!h.settings||!validHash(h.settings.revision))stop('f3_manifest_header');
+ for(const k of ['rows','maxBytes','recordBytes','statement','lock'])
+  if(!Number.isSafeInteger(h.settings[k])||h.settings[k]<1)stop('f3_manifest_budget');
+}
+function validateOp(x){
+ const f=x?.file;
+ if(!['symbol','file'].includes(x?.kind)||typeof x.id!=='string'||!x.id||!validHash(x.hash)||
+    !Number.isSafeInteger(x.row_bytes)||x.row_bytes<1||!f||typeof f.id!=='string'||
+    typeof f.path!=='string'||!validName(f.name)||f.path.split('/').at(-1)!==f.name||
+    !/^[1-9][0-9]*$/.test(f.source_id)||!validHash(f.source_sha)||!validHash(f.source_hash)||!validHash(f.code_hash)||
+    !Number.isSafeInteger(f.row_bytes)||f.row_bytes<1||
+    (x.kind==='file'&&(x.id!==f.id||x.hash!==f.code_hash||x.row_bytes!==f.row_bytes)))stop('f3_manifest_op');
+}
+export async function verifyManifest(lines,expected,backup=''){
+ if(!validHash(expected))stop('f3_manifest_hash');
+ const digest=createHash('sha256');let header,previousFile='',previousSymbol='',current=null,closed=true,n=0,approved=[];
+ const proofs=[];
+ for await(const raw of lines()){
+  digest.update(raw);let x;try{x=JSON.parse(raw);}catch{stop('f3_manifest_json');}
+  if(canon(x)+'\n'!==raw)stop('f3_manifest_nicht_kanonisch');
+  if(!header){validateHeader(x);header=x;continue;}
+  if(Buffer.byteLength(raw)>header.settings.recordBytes)stop('f3_manifest_record_zu_gross');
+  validateOp(x);
+  if(current?.id!==x.file.id){
+   if(!closed||x.file.id<=previousFile)stop('f3_manifest_reihenfolge');
+   current=x.file;previousFile=x.file.id;previousSymbol='';closed=false;
+  }else same(current,x.file,'f3_manifest_quellkonflikt');
+  if(closed)stop('f3_manifest_reihenfolge');
+  if(x.kind==='symbol'){
+   if(x.id<=previousSymbol)stop('f3_manifest_reihenfolge');previousSymbol=x.id;
+  }else closed=true;
+  const proposed=batchCost({...header,backup},[...approved,x]);
+  if(approved.length&&(proposed.rows>header.settings.rows||proposed.bytes>header.settings.maxBytes)){proofs.push(hash(approved));approved=[];}
+  const single=batchCost({...header,backup},[x]);
+  if(single.rows>header.settings.rows||single.bytes>header.settings.maxBytes)stop('f3_einzelzeile_ueber_budget');
+  approved.push(x);n++;
+ }
+ if(approved.length)proofs.push(hash(approved));
+ if(!header||!closed||digest.digest('hex')!==expected)stop('f3_manifest_hash');
+ return {header,operations:n,proofs};
+}
+function payload(h,pin,n,ops,backup){
+ return {eintrag_id:ENTRY,manifest_sha256:pin,batch_nr:String(n),batch_sha256:hash(ops),ops,
+  delta:{files:ops.filter(x=>x.kind==='file').length,symbols:ops.filter(x=>x.kind==='symbol').length},
+  backup_beleg:backup,projekt_sentinel_sha256:hash(h.projects),einstellungen_revision:h.settings.revision};
+}
+/** Charge removed records, bounded parameters/evidence, and ONE extra journal row.
+ * Conservative 4x operation wire cost also covers the bound ID/path/source arrays.
+ */
+export function batchCost(h,ops){
+ return {rows:ops.length+1,bytes:ops.reduce((n,x)=>n+x.row_bytes,0)+4*size(ops)+
+  size({entry:ENTRY,pin:'0'.repeat(64),batch:'9223372036854775807',backup:h.backup,settings:h.settings.revision,projects:hash(h.projects)})};
+}
+export async function* batches(lines,h,backup){
+ let ops=[];
+ const costHeader={...h,backup};
+ for await(const raw of lines()){
+  const x=JSON.parse(raw);if(x.kind==='header')continue;validateOp(x);
+  const c=batchCost(costHeader,[...ops,x]);
+  if(ops.length&&(c.rows>h.settings.rows||c.bytes>h.settings.maxBytes)){yield ops;ops=[];}
+  const single=batchCost(costHeader,[x]);
+  if(single.rows>h.settings.rows||single.bytes>h.settings.maxBytes)stop('f3_einzelzeile_ueber_budget');
+  ops.push(x);
+ }
+ if(ops.length)yield ops;
+}
+async function journalGuard(db){
+ const name=(await db.query("SELECT to_regclass(format('%I.reverse_f3_bereinigungs_batches',current_schema())) AS t")).rows[0].t;
+ if(!name)stop('f3_schema145_fehlt');
+ const columns=(await db.query("SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='reverse_f3_bereinigungs_batches' ORDER BY ordinal_position")).rows;
+ same(columns.map(x=>[x.column_name,x.data_type]),[
+  ['eintrag_id','text'],['manifest_sha256','text'],['batch_nr','bigint'],['batch_sha256','text'],
+  ['ops','jsonb'],['delta','jsonb'],['backup_beleg','text'],['projekt_sentinel_sha256','text'],
+  ['einstellungen_revision','text'],['abgeschlossen_am','timestamp with time zone']
+ ],'f3_schema145_abweichend');
+ const constraints=(await db.query("SELECT contype,pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conrelid='reverse_f3_bereinigungs_batches'::regclass AND contype IN('p','f') ORDER BY contype")).rows;
+ same(constraints,[
+  {contype:'f',def:'FOREIGN KEY (eintrag_id) REFERENCES reverse_eintraege(id) ON DELETE RESTRICT'},
+  {contype:'p',def:'PRIMARY KEY (eintrag_id, manifest_sha256, batch_nr)'}
+ ],'f3_schema145_abweichend');
+ const unsafe=(await db.query("SELECT tgname FROM pg_trigger WHERE tgrelid='reverse_f3_bereinigungs_batches'::regclass AND NOT tgisinternal UNION ALL SELECT conname FROM pg_constraint WHERE contype='f' AND confrelid='reverse_f3_bereinigungs_batches'::regclass")).rows;
+ if(unsafe.length)stop('f3_journal_nebenwirkung');
+}
+async function dependencyGuard(db,kind,ops){
+ if(!ops.length)return;
+ if(kind==='symbol'){
+  const ids=ops.map(x=>x.id);
+  if((await db.query("SELECT 1 FROM reverse_code_symbole WHERE parent_symbol=ANY($1::text[]) UNION ALL SELECT 1 FROM reverse_code_verweise WHERE symbol_id=ANY($1::text[]) UNION ALL SELECT 1 FROM reverse_code_kanten WHERE target_symbol_id=ANY($1::text[]) LIMIT 1",[ids])).rows.length)stop('f3_abhaengigkeit_stop');
+ }else{
+  const paths=ops.map(x=>x.file.path);
+  if((await db.query("SELECT 1 FROM reverse_code_symbole WHERE eintrag_id=$1 AND file_path=ANY($2::text[]) UNION ALL SELECT 1 FROM reverse_code_verweise WHERE eintrag_id=$1 AND file_path=ANY($2::text[]) UNION ALL SELECT 1 FROM reverse_code_statements WHERE eintrag_id=$1 AND file_path=ANY($2::text[]) UNION ALL SELECT 1 FROM reverse_code_kanten WHERE eintrag_id=$1 AND file_path=ANY($2::text[]) LIMIT 1",[ENTRY,paths])).rows.length)stop('f3_abhaengigkeit_stop');
+ }
+}
+async function absent(db,ops){
+ for(const kind of ['symbol','file']){
+  const own=ops.filter(x=>x.kind===kind);if(!own.length)continue;
+  const table=kind==='symbol'?'reverse_code_symbole':'reverse_code_dateien';
+  if((await db.query('SELECT 1 FROM '+table+' WHERE eintrag_id=$1 AND id=ANY($2::text[]) LIMIT 1',[ENTRY,own.map(x=>x.id)])).rows.length)stop('f3_journal_daten_widerspruch');
+ }
+}
+async function deleteBatch(db,ops,{beforeDelete}={}){
+ const fs=new Map(ops.map(x=>[x.file.id,x.file]));
+ const rows=(await db.query('SELECT '+cols+' FROM reverse_code_dateien c JOIN reverse_dateien d ON d.id=c.datei_id AND d.eintrag_id=c.eintrag_id WHERE '+eligible+' AND c.id=ANY($3::text[]) ORDER BY c.id FOR UPDATE OF c,d',[ENTRY,FORMATS,[...fs.keys()]])).rows;
+ if(rows.length!==fs.size)stop('f3_quelle_geaendert');
+ for(const r of rows)same(file(r),fs.get(r.id),'f3_quelle_geaendert');
+ for(const kind of ['symbol','file']){
+  const own=ops.filter(x=>x.kind===kind);if(!own.length)continue;
+  const table=kind==='symbol'?'reverse_code_symbole':'reverse_code_dateien';
+  if(kind==='symbol'){
+   const rows=(await db.query("SELECT id,file_path,datei_id::text,schicht,parser_generation_id,to_jsonb(s)::text AS raw FROM reverse_code_symbole s WHERE eintrag_id=$1 AND id=ANY($2::text[]) ORDER BY id FOR UPDATE",[ENTRY,own.map(x=>x.id)])).rows;
+   const by=new Map(rows.map(x=>[x.id,x]));
+   for(const x of own){
+    const r=by.get(x.id);
+    if(!r||r.file_path!==x.file.path||r.datei_id!==x.file.source_id||r.schicht!=='S1'||r.parser_generation_id!==null||sha(r.raw)!==x.hash||Buffer.byteLength(r.raw)!==x.row_bytes)stop('f3_symbol_geaendert');
+   }
+  }
+  await dependencyGuard(db,kind,own);
+  await beforeDelete?.({db,kind,ops:own});
+  const targets=own.map(x=>({id:x.id,path:x.file.path,source:x.file.source_id}));
+  const result=await db.query('DELETE FROM '+table+" s USING jsonb_to_recordset($2::jsonb) x(id text,path text,source bigint) WHERE s.eintrag_id=$1 AND s.id=x.id AND s.file_path=x.path AND s.datei_id=x.source AND s.schicht='S1' AND s.parser_generation_id IS NULL RETURNING s.id",[ENTRY,JSON.stringify(targets)]);
+  same(result.rows.map(x=>x.id).sort(),own.map(x=>x.id).sort(),'f3_loeschmenge_geaendert');
+ }
+}
+/** lines() must reopen the same reviewed immutable stream. CLI pins its open FD.
+ * Fault hooks are library-only, not exposed as command-line mutation controls.
+ */
+export async function applyManifest(pool,{lines,expected,backup,beforeDelete,afterDelete,afterCommit,onBatch}){
+ if(typeof backup!=='string'||backup.trim().length<8)stop('f3_sicherungsbeleg_fehlt');
+ const {header:h,proofs}=await verifyManifest(lines,expected,backup);
+ const lock=await pool.connect();let held=false,committed=0,resumed=0,number=0;
+ try{
+  held=(await lock.query('SELECT pg_try_advisory_lock(hashtext($1)) AS ok',['p18-t97-f3:'+ENTRY])).rows[0].ok;
+  if(!held)stop('f3_bereinigung_laeuft');
+  await journalGuard(lock);await quiet(lock);same(await settings(lock),h.settings,'f3_einstellungen_geaendert');await checkProjects(lock,h);
+  for await(const ops of batches(lines,h,backup)){
+   if(hash(ops)!==proofs[number])stop('f3_manifest_batch_geaendert');
+   const evidence=payload(h,expected,number,ops,backup),c=await pool.connect();let done=false;
+   try{
+    // Fresh snapshots are essential to detect same-count concurrent project UPDATEs.
+    await c.query('BEGIN ISOLATION LEVEL READ COMMITTED');await deadlines(c,h.settings);
+    await c.query("SELECT pg_advisory_xact_lock_shared(hashtext('reverse-pipeline-halt'))");
+    await quiet(c);same(await settings(c),h.settings,'f3_einstellungen_geaendert');
+    await checkProjects(c,h);await journalGuard(c);
+    // Reverse-only writer barriers: FK inserts/SET NULL/cascades cannot race the
+    // dependency test. No locks on project, P20, work_jobs or generic routes.
+    const schema=(await c.query('SELECT current_schema() AS s')).rows[0].s;
+    await c.query('LOCK TABLE '+CODE_TABLES.map(t=>ident(schema)+'.'+ident(t)).join(',')+' IN SHARE ROW EXCLUSIVE MODE');
+    await schemaGuard(c);
+    const old=(await c.query("SELECT eintrag_id,manifest_sha256,batch_nr::text,batch_sha256,ops,delta,backup_beleg,projekt_sentinel_sha256,einstellungen_revision FROM reverse_f3_bereinigungs_batches WHERE eintrag_id=$1 AND manifest_sha256=$2 AND batch_nr=$3 FOR UPDATE",[ENTRY,expected,String(number)])).rows[0];
+    if(old){
+     same(old,evidence,'f3_journal_konflikt');await absent(c,ops);await checkProjects(c,h);
+     await c.query('ROLLBACK');resumed++;number++;continue;
+    }
+    // A missing row without the atomic journal record fails the exact hash/row checks.
+    await deleteBatch(c,ops,{beforeDelete});await afterDelete?.({db:c,batch:number,ops});
+    await quiet(c);same(await settings(c),h.settings,'f3_einstellungen_geaendert');
+    const cost=batchCost({...h,backup},ops);
+    if(cost.rows>h.settings.rows||cost.bytes>h.settings.maxBytes)stop('f3_tx_budget');
+    await c.query("INSERT INTO reverse_f3_bereinigungs_batches(eintrag_id,manifest_sha256,batch_nr,batch_sha256,ops,delta,backup_beleg,projekt_sentinel_sha256,einstellungen_revision) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9)",
+     [ENTRY,expected,String(number),evidence.batch_sha256,JSON.stringify(ops),JSON.stringify(evidence.delta),backup,evidence.projekt_sentinel_sha256,h.settings.revision]);
+    await checkProjects(c,h);
+    await c.query('COMMIT');done=true;committed++;
+    // Even if the process/transport dies HERE, the DELETE and journal are atomic.
+    await afterCommit?.({batch:number});
+    await checkProjects(c,h); // Additional fresh AFTER-EVERY-COMMIT gate.
+    await onBatch?.({batch:number,manifest:expected,delta:evidence.delta,cost});
+    number++;
+   }catch(e){
+    if(!done)await c.query('ROLLBACK').catch(()=>{});
+    e.committed_batches=committed;e.resumed_batches=resumed;throw e;
+   }finally{c.release();}
+  }
+  const count=(await lock.query('SELECT count(*)::text AS n FROM reverse_f3_bereinigungs_batches WHERE eintrag_id=$1 AND manifest_sha256=$2',[ENTRY,expected])).rows[0].n;
+  if(number!==proofs.length||BigInt(count)!==BigInt(number))stop('f3_journal_konflikt');
+  await checkProjects(lock,h);
+  return {status:'fertig',manifest:expected,committed_batches:committed,resumed_batches:resumed,projekte_unveraendert:true};
+ }finally{
+  try{if(held)await lock.query('SELECT pg_advisory_unlock(hashtext($1))',['p18-t97-f3:'+ENTRY]);}finally{lock.release();}
+ }
+}
+/** Bounded JSONL reader: never collect all symbol IDs or unbounded lines in RAM. */
+export async function* fileLines(handle,max){
+ let offset=0,rest=Buffer.alloc(0);
+ for(;;){
+  const block=Buffer.alloc(Math.min(max+1,65536)),r=await handle.read(block,0,block.length,offset);
+  if(!r.bytesRead)break;offset+=r.bytesRead;rest=Buffer.concat([rest,block.subarray(0,r.bytesRead)]);
+  for(;;){const i=rest.indexOf(10);if(i<0)break;if(i+1>max)stop('f3_manifest_record_zu_gross');
+   yield rest.subarray(0,i+1).toString('utf8');rest=rest.subarray(i+1);}
+  if(rest.length>max)stop('f3_manifest_record_zu_gross');
+ }
+ if(rest.length)stop('f3_manifest_fragment');
+}
+async function auditPath(filename,forbidden){
+ const dir=await realpath(path.dirname(path.resolve(filename)));
+ for(const root of forbidden.filter(Boolean)){
+  const r=path.resolve(root);let real=r;try{real=await realpath(r);}catch(e){if(e.code!=='ENOENT')throw e;}
+  if([r,real].some(x=>dir===x||dir.startsWith(x+path.sep)))stop('f3_belegpfad_verboten');
+ }
+ return {dir,file:path.join(dir,path.basename(filename))};
+}
+export async function main(argv=process.argv.slice(2)){
+ const a={};for(let i=0;i<argv.length;i++){
+  const k=argv[i];if(!['--eintrag','--manifest','--manifest-sha256','--backup-beleg','--ausfuehren'].includes(k)||Object.hasOwn(a,k))stop('f3_parameter');
+  a[k]=k==='--ausfuehren'?true:argv[++i];if(a[k]===undefined||a[k]==='')stop('f3_parameter');
+ }
+ if(a['--eintrag']!==ENTRY)stop('f3_eintrag_nicht_freigegeben');
+ const {getAssetKonfiguration}=await import('@synapse/core'),cfg=getAssetKonfiguration();
+ const forbidden=[cfg.speicher.root,cfg.speicher.reverseRoot,fileURLToPath(new URL('../../..',import.meta.url))];
+ const {Pool}=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
+ if(!process.env.DATABASE_URL)stop('f3_datenbank_fehlt');
+ const pool=new Pool({connectionString:process.env.DATABASE_URL});
+ try{
+  if(!a['--ausfuehren']){
+   let out;
+   try{
+    if(a['--manifest']){
+     const p=await auditPath(a['--manifest'],forbidden);
+     out=await open(p.file,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+    }
+    const result=await createManifest(pool,async raw=>{if(out)await out.writeFile(raw);});
+    if(out){await out.chmod(0o444);await out.sync();}
+    console.log(JSON.stringify({status:'dry-run',...result}));return;
+   }finally{await out?.close();}
+  }
+  if(!a['--manifest'])stop('f3_manifest_fehlt');
+  const p=await auditPath(a['--manifest'],forbidden),input=await open(p.file,constants.O_RDONLY|constants.O_NOFOLLOW);
+  try{
+   const stat=await input.stat({bigint:true});
+   if(!stat.isFile()||stat.nlink!==1n||(Number(stat.mode)&0o222)!==0)stop('f3_manifest_nicht_versiegelt');
+   const s=await settings(pool),fingerprint=st=>[String(st.ino),String(st.dev),String(st.size),String(st.mtimeNs),String(st.ctimeNs)];
+   const lines=async function*(){
+    same(fingerprint(await input.stat({bigint:true})),fingerprint(stat),'f3_manifest_geaendert');
+    yield* fileLines(input,s.recordBytes);
+    same(fingerprint(await input.stat({bigint:true})),fingerprint(stat),'f3_manifest_geaendert');
+   };
+   console.log(JSON.stringify(await applyManifest(pool,{lines,expected:a['--manifest-sha256'],backup:a['--backup-beleg'],
+    onBatch:row=>console.log(JSON.stringify({status:'batch_committed',...row}))})));
+  }finally{await input.close();}
+ }finally{await pool.end();}
+}
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+ main().catch(e=>{console.error(JSON.stringify({status:'gestoppt',code:/^f3_[a-z0-9_]+$/.test(e.message)?e.message:'f3_werkzeug_fehler',committed_batches:e.committed_batches??0,resumed_batches:e.resumed_batches??0}));process.exitCode=1;});
+}
