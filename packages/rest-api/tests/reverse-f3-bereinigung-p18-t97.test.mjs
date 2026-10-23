@@ -9,7 +9,7 @@ import {createRequire} from 'node:module';
 import {readFile,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost} from '../scripts/reverse-f3-bereinigen.mjs';
+import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy} from '../scripts/reverse-f3-bereinigen.mjs';
 const enabled=process.env.SYNAPSE_TEST_PHASE==='P18-T97-F3';
 const run=(name,fn)=>test(name,{skip:!enabled},fn);
 const {Pool}=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
@@ -120,11 +120,25 @@ run('missing row without atomic evidence is not adopted',async t=>{
 run('internal parent, external ref and SET NULL target all stop without side effects',async t=>{
  for(const kind of ['parent','ref','edge']){
   await t.test(kind,async t=>{
-   const f=await fixture(t);
+   const f=await fixture(t),m=await f.make();
    if(kind==='parent')await f.pool.query("UPDATE reverse_code_symbole SET parent_symbol='a-00000' WHERE id='a-00001'");
    if(kind==='ref')await f.pool.query("INSERT INTO reverse_code_verweise VALUES('ref',$1,'source3@S1/strings.txt','a-00000')",[ENTRY]);
    if(kind==='edge')await f.pool.query("INSERT INTO reverse_code_kanten VALUES(1,$1,'source3@S1/strings.txt','a-00000')",[ENTRY]);
-   const m=await f.make(),before=await f.counts();
+   const before=await f.counts();
+   await assert.rejects(f.make(),/f3_abhaengigkeit_stop/);
+   if(kind==='parent'){
+    // Stale evidence MUST fail its row hash before reaching the dependency guard.
+    await assert.rejects(applyManifest(f.pool,m),/f3_symbol_geaendert/);
+    // Build an exact synthetic reviewed manifest for the post-change parent row,
+    // solely to reach the internal-manifest dependency guard independently.
+    const row=(await f.pool.query("SELECT to_jsonb(s)::text AS raw FROM reverse_code_symbole s WHERE id='a-00001'")).rows[0].raw;
+    const records=m.records.map(raw=>{
+     const x=JSON.parse(raw);
+     if(x.kind==='symbol'&&x.id==='a-00001'){x.hash=sha(row);x.row_bytes=Buffer.byteLength(row);return canon(x)+'\n';}
+     return raw;
+    });
+    m.expected=sha(records.join(''));m.lines=async function*(){yield* records;};
+   }
    await assert.rejects(applyManifest(f.pool,m),/f3_abhaengigkeit_stop/);
    assert.deepEqual(await f.counts(),before);
    if(kind==='edge')assert.equal((await f.pool.query('SELECT target_symbol_id FROM reverse_code_kanten')).rows[0].target_symbol_id,'a-00000');
@@ -212,7 +226,8 @@ run('reviewed manifest hash and second-pass batch proof are mandatory',async t=>
 run('journal schema must already exist; script never repairs/creates it',async t=>{
  const f=await fixture(t),m=await f.make();await f.pool.query('DROP TABLE reverse_f3_bereinigungs_batches');
  await assert.rejects(applyManifest(f.pool,m),/f3_schema145_fehlt/);
- assert.equal((await f.pool.query("SELECT to_regclass('reverse_f3_bereinigungs_batches') AS t")).rows[0].t,null);
+ await assert.rejects(f.make(),/f3_schema145_fehlt/);
+ assert.equal((await f.pool.query("SELECT to_regclass(format('%I.reverse_f3_bereinigungs_batches',current_schema())) AS t")).rows[0].t,null);
 });
 run('an oversized single row cannot bypass byte budget or omit commit-evidence cost',async t=>{
  const f=await fixture(t);
@@ -286,4 +301,58 @@ run('same-name foreign-schema CASCADE/SET NULL FK stops before any deletion',asy
   await assert.rejects(f.make(),/f3_fk_unbekannt/);
   assert.deepEqual(await f.counts(),before);assert.deepEqual(await foreignRows(),previous);
  });
+});
+
+function injectedPool(pool,inject){
+ return {connect:async()=>{
+  const c=await pool.connect();
+  return {query:async(q,...args)=>{
+   const text=typeof q==='string'?q:q.text;
+   const failure=inject(text);
+   if(failure){if(text==='ROLLBACK')await c.query(q,...args);throw failure;}
+   return c.query(q,...args);
+  },release:()=>c.release()};
+ }};
+}
+run('simulated PG statement timeout exposes phase/SQLSTATE only; first cause survives rollback error',async t=>{
+ const f=await fixture(t),before=await f.counts(),records=[];
+ const secret='postgres://private:password@internal/private?payload=secret';
+ const pool=injectedPool(f.pool,text=>{
+  if(text.includes('string_agg(h')&&text.includes('code_files'))return Object.assign(Error(secret),{code:'57014',detail:secret,query:secret});
+  if(text==='ROLLBACK')return Object.assign(Error(secret),{code:'25P02'});
+ });
+ await assert.rejects(createManifest(pool,raw=>records.push(raw)),e=>{
+  const d=failureDiagnostic(e);
+  assert.deepEqual(d,{status:'gestoppt',code:'f3_werkzeug_fehler',phase:'sentinel_hash',tabelle:'code_files',pg_code:'57014',committed_batches:0,resumed_batches:0});
+  assert.equal(JSON.stringify(d).includes(secret),false);return true;
+ });
+ assert.deepEqual(records,[]);assert.deepEqual(await f.counts(),before);
+});
+run('FK PG failure diagnostic is safe; dry-run writes zero',async t=>{
+ const f=await fixture(t),before=await f.counts();
+ const pool=injectedPool(f.pool,text=>text.includes('FROM pg_constraint k')?Object.assign(Error('secret sql detail /private/file'),{code:'42501'}):null);
+ await assert.rejects(createManifest(pool,()=>assert.fail('no header before guards')),e=>{
+  const d=failureDiagnostic(e);assert.equal(d.phase,'fk_katalog');assert.equal(d.pg_code,'42501');
+  assert.equal(JSON.stringify(d).includes('secret'),false);return true;
+ });
+ assert.deepEqual(await f.counts(),before);
+});
+run('filesystem failure uses errno allowlist without path/message disclosure',async t=>{
+ const f=await fixture(t),before=await f.counts();
+ await assert.rejects(createManifest(f.pool,()=>{throw Object.assign(Error('/secret/private-file'),{code:'EACCES'});}),e=>{
+  const d=failureDiagnostic(e);assert.equal(d.phase,'manifest_header');assert.equal(d.fs_code,'EACCES');
+  assert.equal(d.pg_code,undefined);assert.equal(JSON.stringify(d).includes('/secret'),false);return true;
+ });
+ assert.deepEqual(await f.counts(),before);
+});
+run('explicit bounded sentinel timeout is pinned in manifest and every batch journal',async t=>{
+ const f=await fixture(t),records=[],result=await createManifest(f.pool,raw=>records.push(raw),{sentinelTimeoutMs:1000});
+ const h=JSON.parse(records[0]);assert.equal(h.version,2);
+ assert.deepEqual(h.sentinel,{timeout_ms:1000,quelle:'cli'});assert.deepEqual(result.sentinel,h.sentinel);
+ const lines=async function*(){yield* records;};
+ await applyManifest(f.pool,{lines,expected:result.sha256,backup:'own-backup-proof'});
+ const rows=(await f.pool.query("SELECT delta->'sentinel' AS policy FROM reverse_f3_bereinigungs_batches")).rows;
+ assert.ok(rows.length>0);for(const row of rows)assert.deepEqual(row.policy,h.sentinel);
+ assert.throws(()=>sentinelPolicy(h.settings,0),/f3_sentinel_budget/);
+ assert.throws(()=>sentinelPolicy(h.settings,Number.MAX_SAFE_INTEGER),/f3_sentinel_budget/);
 });
