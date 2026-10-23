@@ -35,7 +35,7 @@ async function fixture(t,{rows=5000,symbols=3}={}){
  await pool.query("CREATE TABLE agent_profil_schalter(ebene text,project text,funktion text,aktiv boolean,grund text,gesetzt_von text,gesetzt_am timestamptz)");
  await pool.query("INSERT INTO agent_profil_schalter VALUES('global',NULL,'reverse_pipeline_halt',true,'own fixture','coordinator',now())");
  await pool.query("CREATE TABLE reverse_auftraege(status text,lease_bis timestamptz)");
- await pool.query("CREATE TABLE work_jobs(id uuid,scope text,state text,attempt int,resource_unconfirmed boolean)");
+ await pool.query("CREATE TABLE work_jobs(id uuid,scope text,state text,attempt int,resource_unconfirmed boolean,lease_until timestamptz)");
  await pool.query("CREATE TABLE tool_container_runs(job_id uuid,attempt int,state text)");
  // Direct and every indirect ownership route required by review R3.
  await pool.query("CREATE TABLE asset_files(id bigint PRIMARY KEY,project text,file_path text,sha256 text)");
@@ -355,4 +355,51 @@ run('explicit bounded sentinel timeout is pinned in manifest and every batch jou
  assert.ok(rows.length>0);for(const row of rows)assert.deepEqual(row.policy,h.sentinel);
  assert.throws(()=>sentinelPolicy(h.settings,0),/f3_sentinel_budget/);
  assert.throws(()=>sentinelPolicy(h.settings,Number.MAX_SAFE_INTEGER),/f3_sentinel_budget/);
+});
+
+run('terminal P20 historical markers without live resource are quiet and listed; P20 unchanged',async t=>{
+ for(const state of ['completed','failed','cancelled','expired'])await t.test(state,async t=>{
+  const f=await fixture(t),id=randomUUID();
+  await f.pool.query("INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) VALUES($1,'reverse',$2,2,true)",[id,state]);
+  const p20=async()=>(await f.pool.query('SELECT * FROM work_jobs ORDER BY id')).rows;
+  const before=await p20(),m=await f.make(),h=JSON.parse(m.records[0]);
+  assert.deepEqual(h.hinweise,[{code:'f3_terminaler_altmarker',job_id:id,state,attempt:2}]);
+  assert.deepEqual(await p20(),before);assert.deepEqual(m.hinweise,h.hinweise);
+  assert.equal((await applyManifest(f.pool,m)).status,'fertig');
+  assert.deepEqual(await p20(),before);assert.equal((await p20())[0].resource_unconfirmed,true);
+ });
+});
+run('terminal marker with UNKNOWN run, even an older attempt, stops dry-run and apply',async t=>{
+ const f=await fixture(t),id=randomUUID();
+ await f.pool.query("INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) VALUES($1,'reverse','failed',2,true)",[id]);
+ const m=await f.make(),before=await f.counts();
+ await f.pool.query("INSERT INTO tool_container_runs VALUES($1,1,'unknown')",[id]);
+ const runs=(await f.pool.query('SELECT * FROM tool_container_runs')).rows;
+ await assert.rejects(f.make(),/f3_nicht_ruhig/);
+ await assert.rejects(applyManifest(f.pool,m),/f3_nicht_ruhig/);
+ assert.deepEqual(await f.counts(),before);
+ assert.deepEqual((await f.pool.query('SELECT * FROM tool_container_runs')).rows,runs);
+ assert.equal((await f.pool.query('SELECT resource_unconfirmed FROM work_jobs')).rows[0].resource_unconfirmed,true);
+});
+run('quiet guard still rejects every non-terminal job, active run, lease, local work or halt OFF',async t=>{
+ const cases=[
+  ["INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) VALUES($1,'reverse','pending',0,false)",'f3_nicht_ruhig'],
+  ["INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) VALUES($1,'reverse','leased',1,false)",'f3_nicht_ruhig'],
+  ["INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) VALUES($1,'reverse','staged',1,false)",'f3_nicht_ruhig'],
+  ["INSERT INTO work_jobs VALUES($1,'reverse','completed',2,false,clock_timestamp()+interval '1 minute')",'f3_nicht_ruhig'],
+  ["INSERT INTO reverse_auftraege VALUES('wartet',NULL)",'f3_nicht_ruhig'],
+  ["INSERT INTO reverse_auftraege VALUES('fertig',clock_timestamp()+interval '1 minute')",'f3_nicht_ruhig'],
+  ["UPDATE agent_profil_schalter SET aktiv=false",'f3_halt_erforderlich']
+ ];
+ for(let i=0;i<cases.length;i++)await t.test(String(i),async t=>{
+  const f=await fixture(t),[sql,code]=cases[i],id=randomUUID();
+  await f.pool.query(sql,sql.includes('$1')?[id]:[]);
+  await assert.rejects(f.make(),new RegExp(code));assert.equal((await f.counts()).evidence,'0');
+ });
+ await t.test('running run blocks even without marker',async t=>{
+  const f=await fixture(t),id=randomUUID();
+  await f.pool.query("INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) VALUES($1,'reverse','completed',2,false)",[id]);
+  await f.pool.query("INSERT INTO tool_container_runs VALUES($1,2,'running')",[id]);
+  await assert.rejects(f.make(),/f3_nicht_ruhig/);assert.equal((await f.counts()).evidence,'0');
+ });
 });

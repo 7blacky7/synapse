@@ -103,11 +103,18 @@ async function settings(db){
  return {revision:s.revision,rows:reverseZahl(s,'e_uebernahme_block_zeilen'),maxBytes:reverseZahl(s,'materialisierung_tx_bytes'),
   recordBytes:reverseZahl(s,'manifest_record_bytes'),statement:reverseZahl(s,'leser_statement_timeout_ms'),lock:reverseZahl(s,'leser_lock_timeout_ms')};
 }
+const TERMINAL_JOBS=['completed','failed','cancelled','expired'];
 async function quiet(db){
  phase('ruhe');
  const h=await leseReversePipelineHalt(db);if(!h.aktiv||h.letzter_fehler)stop('f3_halt_erforderlich');
  if((await db.query("SELECT 1 FROM reverse_auftraege WHERE status IN('offen','wartet','laeuft') OR lease_bis>clock_timestamp() LIMIT 1")).rows.length)stop('f3_nicht_ruhig');
- if((await db.query("SELECT 1 FROM work_jobs w WHERE scope='reverse' AND (state IN('pending','leased','staged') OR (resource_unconfirmed AND NOT EXISTS(SELECT 1 FROM tool_container_runs r WHERE r.job_id=w.id AND r.attempt=w.attempt AND r.state='done'))) LIMIT 1")).rows.length)stop('f3_nicht_ruhig');
+ // Terminal historical P20 flags alone are NOT evidence of a living resource.
+ // Any non-terminal job, live lease or non-done run (including older attempts)
+ // remains a hard stop, independently of resource_unconfirmed.
+ if((await db.query("SELECT 1 FROM work_jobs w WHERE w.scope='reverse' AND (w.state IS NULL OR NOT (w.state=ANY($1::text[])) OR w.lease_until>clock_timestamp()) LIMIT 1",[TERMINAL_JOBS])).rows.length)stop('f3_nicht_ruhig');
+ if((await db.query("SELECT 1 FROM tool_container_runs r JOIN work_jobs w ON w.id=r.job_id WHERE w.scope='reverse' AND r.state IS DISTINCT FROM 'done' LIMIT 1")).rows.length)stop('f3_nicht_ruhig');
+ const stale=(await db.query("SELECT id::text AS job_id,state,attempt FROM work_jobs WHERE scope='reverse' AND state=ANY($1::text[]) AND resource_unconfirmed ORDER BY id",[TERMINAL_JOBS])).rows;
+ return stale.map(r=>({code:'f3_terminaler_altmarker',job_id:r.job_id,state:r.state,attempt:r.attempt}));
 }
 const indirect={
  asset_revisionen:{owner:"a.project",join:"JOIN asset_files a ON a.id=t.asset_id",valid:"EXISTS(SELECT 1 FROM asset_files a WHERE a.id=t.asset_id)"},
@@ -189,16 +196,16 @@ export async function createManifest(pool,emit,{sentinelTimeoutMs}={}){
  const send=async x=>{const raw=canon(x)+'\n';if(Buffer.byteLength(raw)>s.recordBytes)stop('f3_manifest_record_zu_gross');digest.update(raw);await emit?.(raw);};
  try{
   phase('db_begin');await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-  s=await settings(db);await deadlines(db,s);await schemaGuard(db);await journalGuard(db);await quiet(db);
+  s=await settings(db);await deadlines(db,s);await schemaGuard(db);await journalGuard(db);const hinweise=await quiet(db);
   const sentinel=sentinelPolicy(s,sentinelTimeoutMs),projects=await projectSentinel(db,sentinel);
   // Full read-only guard pass BEFORE the first header. Same stable snapshot as output.
   for await(const op of plannedOperations(db,s)){validateOp(op);}
-  const header={kind:'header',version:2,scope:'p18-t97-f3-tranche1',entry:ENTRY,settings:s,sentinel,projects};
+  const header={kind:'header',version:2,scope:'p18-t97-f3-tranche1',entry:ENTRY,settings:s,sentinel,projects,hinweise};
   phase('manifest_header');await send(header);
   for await(const op of plannedOperations(db,s)){
    phase('manifest_records');await send(op);if(op.kind==='file')files++;else symbols++;
   }
-  phase('abschluss');await db.query('ROLLBACK');return {sha256:digest.digest('hex'),files,symbols,sentinel};
+  phase('abschluss');await db.query('ROLLBACK');return {sha256:digest.digest('hex'),files,symbols,sentinel,hinweise};
  }catch(e){capture(e);await db.query('ROLLBACK').catch(()=>{broken=true;});throw e;}finally{db.release(broken);}
  });
 }
@@ -206,6 +213,7 @@ export async function createManifest(pool,emit,{sentinelTimeoutMs}={}){
 export function validateHeader(h){
  if(h?.kind!=='header'||h.version!==2||h.scope!=='p18-t97-f3-tranche1'||h.entry!==ENTRY||
     !h.projects||!h.settings||!validHash(h.settings.revision))stop('f3_manifest_header');
+ if(!Array.isArray(h.hinweise)||h.hinweise.some(x=>x?.code!=='f3_terminaler_altmarker'||typeof x.job_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x.job_id)||!TERMINAL_JOBS.includes(x.state)||!Number.isSafeInteger(x.attempt)||x.attempt<0))stop('f3_manifest_header');
  if(!h.sentinel||!['pg','cli'].includes(h.sentinel.quelle))stop('f3_manifest_header');
  same(h.sentinel,sentinelPolicy(h.settings,h.sentinel.quelle==='cli'?h.sentinel.timeout_ms:undefined),'f3_manifest_header');
  for(const k of ['rows','maxBytes','recordBytes','statement','lock'])
