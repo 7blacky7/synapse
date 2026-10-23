@@ -1,6 +1,6 @@
 /** P18-T104: one Reverse-only policy contract. Callers own the transaction; never reconnect a held client. */
 import {createHash} from 'node:crypto';
-import {leseReverseEinstellwerte,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
+import {leseReverseEinstellwerte,reverseWert,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
 export const REVERSE_POLICY_STUFEN=['E','S0','S1','S2','S3'] as const;
 export type ReversePolicyStufe=typeof REVERSE_POLICY_STUFEN[number];
 type Db={query:Function};
@@ -30,6 +30,8 @@ export interface ReversePolicyPin {
  vorgaben:string[];
  /** P18-T98: abgeschlossene Altaufträge ohne Pin (fertig/teilweise) zählen für diesen Pin nicht als Vorgabe. Nur Nachzug-Aufträge setzen das. */
  ohne_legacy_abgeschlossen?:true;
+ /** P18-T111: automatischer Nachzug mit eigener Grenze (nur S3 fuer PE, Schalter s3_auto); ersetzt analyse_bis_schicht nur fuer diesen Pin. */
+ auto_grenze?:ReversePolicyStufe;
 }
 interface Kontext {reverseId:string;dateiId:string|null;mediumId:string|null;project?:string|null}
 interface Vorgabe {id:string;pin:ReversePolicyPin}
@@ -69,7 +71,7 @@ async function vorgaben(db:Db,k:Kontext,q:ReversePolicyPin['quelle'],ersetze?:st
  return rows.map((r:Row)=>({id:String(r.id),pin:pinLesen(r.policy_pin,String(r.id))}));
 }
 function ids(v:Vorgabe[]):string[]{return v.map(x=>x.id).sort();}
-export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefragt:string;manuell?:boolean;elternId?:string|null;ohneLegacyAbgeschlossen?:boolean}):Promise<ReversePolicyPin>{
+export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefragt:string;manuell?:boolean;elternId?:string|null;ohneLegacyAbgeschlossen?:boolean;autoGrenze?:string}):Promise<ReversePolicyPin>{
  await sperreReversePolicy(db,k.reverseId,!!k.manuell);
  const q=await quelle(db,k),scope=q.datei_id?'datei:'+q.datei_id:'medium:'+q.medium_id;
  const ohneLegacy=k.ohneLegacyAbgeschlossen===true;
@@ -83,11 +85,14 @@ export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefra
   const aktuell=reversePolicyProjektion(await leseReverseEinstellwerte({project:x.pin.project,eintrag_id:k.reverseId},db));
   if(hash(aktuell)!==x.pin.policy_revision)throw new ReversePolicyFehler('policy_geaendert',x.id);
  }
- const angefragt=k.manuell?reversePolicyStufe(k.angefragt):(parent?.wirksam_bis??s.grenze);
- const wirksam=reversePolicyMinimum(s.grenze,angefragt,...v.map(x=>x.pin.wirksam_bis));
+ // P18-T111: nur ein automatischer Root (kein manueller, kein Folgeauftrag) darf eine eigene Grenze tragen; Vorgaben begrenzen weiter.
+ const autoGrenze=!k.manuell&&!parent&&k.autoGrenze?reversePolicyStufe(k.autoGrenze):undefined;
+ const grenze=autoGrenze??s.grenze;
+ const angefragt=k.manuell?reversePolicyStufe(k.angefragt):(parent?.wirksam_bis??grenze);
+ const wirksam=reversePolicyMinimum(grenze,angefragt,...v.map(x=>x.pin.wirksam_bis));
  return {version:1,ursprung:k.manuell?'manuell':parent?'folge':'automatisch',root_id:k.manuell?k.id:parent?.root_id??k.id,scope_key:scope,
   eintrag_id:k.reverseId,project,angefragt_bis:angefragt,wirksam_bis:wirksam,policy_revision:hash(s),quelle:q,
-  vorgaben:[...ids(v),...(k.manuell?[k.id]:[])].sort(),...(ohneLegacy?{ohne_legacy_abgeschlossen:true as const}:{})};
+  vorgaben:[...ids(v),...(k.manuell?[k.id]:[])].sort(),...(ohneLegacy?{ohne_legacy_abgeschlossen:true as const}:{}),...(autoGrenze?{auto_grenze:autoGrenze}:{})};
 }
 /** Strictly scoped by entry and optionally source; accepts Fachauftrag ID or P20 ID. Read-only inside caller's TX. */
 export async function pruefeReversePolicyAuftrag(db:Db,id:string,rid:string,stufe:string,dateiId?:string|null):Promise<ReversePolicyPin>{
@@ -103,12 +108,14 @@ export async function pruefeReversePolicyAuftrag(db:Db,id:string,rid:string,stuf
   const k={reverseId:rid,dateiId:r.datei_id??null,mediumId:r.medium_id??null,project:p.project};
   const q=await quelle(db,k);
   if(q.sha256!==p.quelle.sha256||q.medium_id!==p.quelle.medium_id)throw new ReversePolicyFehler('policy_geaendert',String(r.id));
-  const s=reversePolicyProjektion(await leseReverseEinstellwerte({project:p.project,eintrag_id:rid},db));
+  const roh=await leseReverseEinstellwerte({project:p.project,eintrag_id:rid},db),s=reversePolicyProjektion(roh);
+  // P18-T111: Schalter s3_auto aus = automatische S3-Pins sind nicht mehr gedeckt.
+  if(p.auto_grenze&&reverseWert(roh,'s3_auto')!=='an')throw new ReversePolicyFehler('policy_geaendert',String(r.id));
   const v=await vorgaben(db,k,q,undefined,p.ohne_legacy_abgeschlossen===true);
   for(const x of v){const aktuell=reversePolicyProjektion(await leseReverseEinstellwerte({project:x.pin.project,eintrag_id:rid},db));if(hash(aktuell)!==x.pin.policy_revision)throw new ReversePolicyFehler('policy_geaendert',String(r.id));}
   if(hash(s)!==p.policy_revision||JSON.stringify(ids(v))!==JSON.stringify(p.vorgaben))
    throw new ReversePolicyFehler('policy_geaendert',String(r.id));
-  const max=reversePolicyMinimum(p.wirksam_bis,s.grenze,...v.map(x=>x.pin.wirksam_bis));
+  const max=reversePolicyMinimum(p.wirksam_bis,p.auto_grenze??s.grenze,...v.map(x=>x.pin.wirksam_bis));
   if(REVERSE_POLICY_STUFEN.indexOf(reversePolicyStufe(stufe))>REVERSE_POLICY_STUFEN.indexOf(max))throw new ReversePolicyFehler('policy_grenze',String(r.id));
   answer=p;
  }

@@ -156,7 +156,9 @@ export function begrenzeReverseSchicht(wunsch:unknown,ein?:ReverseEinstellSnapsh
 export interface ReverseContainerInfo {zustand:'laeuft'|'startet'|'ruht';kaltstart_s:number|null;container_id?:string}
 export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:string;dateiId:string|null;mediumId:string|null;bisSchicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug';policyManuell?:boolean;policyElternId?:string;
   /** P18-T98: Nachzug-Auftraege uebergehen abgeschlossene Altauftraege ohne Policy-Pin (reverse-analyse-policy vorgaben). */
-  ohneLegacyAbgeschlossen?:boolean}
+  ohneLegacyAbgeschlossen?:boolean;
+  /** P18-T111: eigene Policy-Grenze eines automatischen Nachzugs (S3 fuer PE). */
+  autoGrenze?:'S3'}
 export interface ReverseRuntime {
   /** PG-only, derselbe Client wie Fachauftrag und Aktivität. Kein Wake/FS/Docker unter Lock. */
   analysieren?: (anfrage:ReverseAnalyseAnfrage,db:PoolClient)=>Promise<Row>;

@@ -671,7 +671,7 @@ export class ReversePipelineDienst{
  }
  /** P18-T98/T111: gedrosselter Nachzug (Schalter in reverse_einstellungen, Standard aus); wirft nie. */
  private async nachzugAuto():Promise<void>{
-  await reverseNachzugAutoTakt({pool:this.pool,ein:this.ein,parserProfil:this.parserAdapter?this.s1ParserProfil():null,einreihen:a=>this.nachziehen(a)});
+  await reverseNachzugAutoTakt({pool:this.pool,ein:this.ein,parserProfil:this.parserAdapter?this.s1ParserProfil():null,s3Kennung:reverseContainerWerkzeugVersion(),einreihen:a=>this.nachziehen(a)});
  }
  async durchlauf():Promise<void>{
   if(this.beendet)return;await this.einstellungen();await this.entdecke();await this.nachzugAuto();

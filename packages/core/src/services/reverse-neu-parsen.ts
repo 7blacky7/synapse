@@ -34,7 +34,13 @@ export async function fuehreNeuParsenAus(db:Db,o:NeuParsenAuftrag):Promise<Row>{
  const basis={reverse_id:o.reverseId,datei:o.datei,status:o.vorschau?'vorschau':'eingereiht',gesamt,ohne_parser_profil:ohneParser,profile};
  if(o.vorschau){
   const beispiele=(await db.query(`SELECT d.pfad,s.profil_version ${FILTER} AND s.profil_version NOT LIKE 'parser-s1:%' ORDER BY d.id LIMIT 10`,p)).rows;
-  return {...basis,beispiele,hinweis:'Nur Vorschau. Ausfuehren: reverse(action:"neu_parsen", reverse_id, [datei|pfad_praefix|profil_version], vorschau:false, limit) - nur Koordinator/User; Prioritaet nachzug.'};
+  // P18-T111: Stand S3 automatisch je Eintrag (PE-Programme).
+  const s3=(await db.query(`SELECT count(*)::int AS pe_gesamt,
+   count(*) FILTER (WHERE EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S3' AND s.aktuell AND s.status IN ('fertig','teilweise')))::int AS s3_fertig,
+   count(*) FILTER (WHERE EXISTS(SELECT 1 FROM reverse_auftraege r WHERE r.datei_id=d.id AND r.schicht='S3' AND r.status IN ('offen','wartet','laeuft')))::int AS s3_offen,
+   count(*) FILTER (WHERE (d.metadaten->'nachzug_auto'->>'s3_fehler')='true' AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S3' AND s.aktuell AND s.status IN ('fertig','teilweise')))::int AS s3_auto_fehler
+  FROM reverse_dateien d WHERE d.eintrag_id=$1 AND d.format='pe' AND lower(d.pfad) ~ '\\.(exe|dll|ocx|sys|drv)$'`,[o.reverseId])).rows[0];
+  return {...basis,beispiele,s3_auto:s3,hinweis:'Nur Vorschau. Ausfuehren: reverse(action:"neu_parsen", reverse_id, [datei|pfad_praefix|profil_version], vorschau:false, limit) - nur Koordinator/User; Prioritaet nachzug.'};
  }
  if(!o.einreihen)throw new Error('neu_parsen_ohne_runtime');
  const kandidaten=(await db.query(`SELECT d.id::text AS id,d.medium_id::text AS medium_id ${FILTER} AND NOT ${OFFEN_S1} ORDER BY d.id LIMIT $5`,[...p,o.limit])).rows;

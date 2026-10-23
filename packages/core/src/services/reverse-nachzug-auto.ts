@@ -2,6 +2,9 @@
  * P18-T98/T111: gedrosselter Reverse-Nachzug mit niedrigster Priorität. Schalter in reverse_einstellungen (global), Standard aus.
  * - s1_neu_parsen_auto: S1 neu parsen, wenn die aktuelle S1-Schicht nicht vom aktuellen Parser-Profil stammt
  *   (nur bei reverse_parser_adapter EIN). Höchstens s1_neu_parsen_schritt offene Nachzug-Aufträge.
+ * - s3_auto (P18-T111): S3/Ghidra für PE-Programme (.exe/.dll/.ocx/.sys/.drv), kleinste Datei zuerst, höchstens
+ *   s3_auto_offen_max offene und s3_auto_schritt neue Aufträge je Takt. Eigener Pin-Weg (auto_grenze S3), analyse_bis_schicht
+ *   bleibt S1. Dedupe je Hash und Werkzeugstand über Fingerabdruck/reverse_analyse_cache; Marke je Werkzeugstand.
  * Eingereiht wird nur über den vorhandenen queue-Weg der Pipeline (Fingerabdruck, Cache, Retry, Policy-Pin) mit Priorität
  * 'nachzug'. Solange interaktive oder Hintergrund-Aufträge offen sind, setzt der Takt aus. Fehler gehen ins Reverse-Fehlerlog
  * (P18-T109), der Takt läuft mit der nächsten Datei weiter. Jede Datei wird je Parser-Profil höchstens einmal automatisch
@@ -17,19 +20,21 @@ import type {ReverseAnalyseAnfrage} from './reverse-tool.js';
 
 type Row=Record<string,unknown>;
 type Db={query:Function};
-export type ReverseNachzugArt='s1';
+export type ReverseNachzugArt='s1'|'s3';
 export interface ReverseNachzugKandidat {id:string;eintrag_id:string;medium_id:string|null;pfad:string|null}
 export interface ReverseNachzugAutoKontext {
  pool:Db;ein:ReverseEinstellSnapshot;
  /** Aktuelles S1-Parserprofil der Pipeline; null = reverse_parser_adapter aus, dann kein Neu-Parsen. */
  parserProfil:string|null;
+ /** P18-T111: Werkzeugstand des Reverse-Containers (= werkzeug_version der S3-Schicht). */
+ s3Kennung:string;
  /** Pipeline-queue in eigener Transaktion (Admission, Policy-Sperre). */
  einreihen:(a:ReverseAnalyseAnfrage)=>Promise<Row>;
 }
 export const REVERSE_NACHZUG_AGENT='reverse-nachzug-auto';
 const OFFEN="('offen','wartet','laeuft')";
 const VORUEBERGEHEND=['warteschlange_voll','container_gesperrt'];
-const schalterAn=(ein:ReverseEinstellSnapshot,n:'s1_neu_parsen_auto'|'auto_nachzug_debug')=>reverseWert(ein,n)==='an';
+const schalterAn=(ein:ReverseEinstellSnapshot,n:'s1_neu_parsen_auto'|'s3_auto'|'auto_nachzug_debug')=>reverseWert(ein,n)==='an';
 
 /** Abgebrochener jüngster Auftrag einer Datei: die Automatik reiht nichts neu ein (wie entdecke, P18-T87). */
 const NICHT_ABGEBROCHEN=`NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen'
@@ -44,6 +49,16 @@ export const REVERSE_S1_NEU_PARSEN_SQL=`SELECT d.id::text AS id,d.eintrag_id,d.m
   AND NOT EXISTS(SELECT 1 FROM reverse_auftraege r WHERE r.datei_id=d.id AND r.status IN ${OFFEN})
   AND ${NICHT_ABGEBROCHEN}
  ORDER BY d.id LIMIT $1`;
+
+/** P18-T111: $1 Limit, $2 Werkzeugstand, $3 Parser-Profil oder NULL (S1 muss aktuell sein, sonst liefe zuerst S1). Kleinste Datei zuerst. */
+export const REVERSE_S3_AUTO_SQL=`SELECT d.id::text AS id,d.eintrag_id,d.medium_id::text AS medium_id,d.pfad FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id
+ WHERE ${AUTOMATISCH} AND d.format='pe' AND lower(d.pfad) ~ '\\.(exe|dll|ocx|sys|drv)$'
+  AND EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S1' AND s.aktuell AND s.status IN ('fertig','teilweise') AND ($3::text IS NULL OR s.profil_version=$3))
+  AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S3' AND s.aktuell AND s.status IN ('fertig','teilweise') AND s.werkzeug_version=$2)
+  AND COALESCE(d.metadaten->'nachzug_auto'->>'s3_kennung','')<>$2
+  AND NOT EXISTS(SELECT 1 FROM reverse_auftraege r WHERE r.datei_id=d.id AND r.status IN ${OFFEN})
+  AND ${NICHT_ABGEBROCHEN}
+ ORDER BY d.groesse NULLS LAST,d.id LIMIT $1`;
 
 /** Vorrang: offene interaktive oder Hintergrund-Arbeit der Reverse-Pipeline geht immer vor. */
 export async function reverseNachzugVorrangOffen(db:Db):Promise<boolean>{
@@ -65,7 +80,7 @@ export async function reiheReverseNachzugEin(k:Pick<ReverseNachzugAutoKontext,'p
  const voruebergehend=r.status==='gehalten'||VORUEBERGEHEND.includes(code??'');
  if(!voruebergehend)try{
   await k.pool.query("UPDATE reverse_dateien SET metadaten=COALESCE(metadaten,'{}'::jsonb)||jsonb_build_object('nachzug_auto',COALESCE(metadaten->'nachzug_auto','{}'::jsonb)||$2::jsonb) WHERE id=$1::bigint",
-   [d.id,JSON.stringify({[art+'_kennung']:kennung,[art+'_at']:new Date().toISOString(),[art+'_ergebnis']:fehler?code:String(r.status??'wartet')})]);
+   [d.id,JSON.stringify({[art+'_kennung']:kennung,[art+'_at']:new Date().toISOString(),[art+'_ergebnis']:fehler?code:String(r.status??'wartet'),[art+'_fehler']:fehler})]);
  }catch{/* Marke ist nur Drossel; der naechste Takt versucht es erneut. */}
  return fehler?'fehler:'+(code??'werkzeug_fehler'):String(r.status??'wartet');
 }
@@ -88,10 +103,28 @@ export async function reverseS1NeuParsenTakt(k:ReverseNachzugAutoKontext):Promis
  return {aktiv:true,kandidaten:kandidaten.length,ergebnisse};
 }
 
+/** T111: ein Takt S3 automatisch. Ergebnis nur für Debug/Tests. */
+export async function reverseS3AutoTakt(k:ReverseNachzugAutoKontext):Promise<Row>{
+ if(!schalterAn(k.ein,'s3_auto'))return {aktiv:false,grund:'s3_auto_aus'};
+ if(await reverseNachzugVorrangOffen(k.pool))return {aktiv:true,ausgesetzt:'vorrang_offen'};
+ const frei=Math.min(reverseZahl(k.ein,'s3_auto_schritt'),reverseZahl(k.ein,'s3_auto_offen_max')-await offeneNachzuege(k.pool,'S3'));
+ if(frei<=0)return {aktiv:true,ausgesetzt:'deckel_erreicht'};
+ const kandidaten=(await k.pool.query(REVERSE_S3_AUTO_SQL,[frei,k.s3Kennung,k.parserProfil])).rows as ReverseNachzugKandidat[];
+ const ergebnisse:Record<string,number>={};
+ for(const d of kandidaten){
+  const e=await reiheReverseNachzugEin(k,d,'s3',k.s3Kennung,{reverseId:d.eintrag_id,project:'reverse-bibliothek',agentId:REVERSE_NACHZUG_AGENT,
+   dateiId:d.id,mediumId:d.medium_id,bisSchicht:'S3',prioritaet:'nachzug',ohneLegacyAbgeschlossen:true,autoGrenze:'S3'});
+  ergebnisse[e]=(ergebnisse[e]??0)+1;
+  if(e==='fehler:warteschlange_voll')break;
+ }
+ return {aktiv:true,kandidaten:kandidaten.length,ergebnisse};
+}
+
 /** Ein Takt aller Nachzüge; wirft nie, damit der Pipeline-Durchlauf weiterläuft. */
 export async function reverseNachzugAutoTakt(k:ReverseNachzugAutoKontext):Promise<Row>{
  const takt:Row={};
  try{takt.s1=await reverseS1NeuParsenTakt(k);}catch(e){takt.s1={fehler:String((e as Error)?.message??e).slice(0,200)};}
+ try{takt.s3=await reverseS3AutoTakt(k);}catch(e){takt.s3={fehler:String((e as Error)?.message??e).slice(0,200)};}
  if(schalterAn(k.ein,'auto_nachzug_debug'))console.error('[Reverse-Nachzug-Auto]',JSON.stringify(takt));
  return takt;
 }
