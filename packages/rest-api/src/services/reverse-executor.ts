@@ -21,7 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import Docker from 'dockerode';
 import type {Pool} from 'pg';
-import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
+import {leseReversePeRessourcenSchalter,getPool,getAssetKonfiguration,registerVirtualProject,registerToolDescriptor,setToolActivation,validateToolDescriptor,
  configureWorkJobHooks,createWorkJobService,validateWorkResources,registriereWorker,workerPausiert,uebernehmeEErgebnis,
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
  reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
@@ -762,7 +762,7 @@ export class ReverseExecutor {
     await mkdir(this.k.arbeitRoot,{recursive:true,mode:0o711});await runnerOrdner(ausgabe);
     const aufs=await leseReverseAufsicht();
     aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,aufs.hart_puffer_s.wert));
-    const [pe,siedler,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
+    const [pe,live]=await Promise.all([leseReversePeRessourcenSchalter(),this.liveFortschritt(job,token)]);
     const ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.fordereFachbindung(job);await this.policyPruefen(job);return ({
      kommando:'extrahieren',schicht:'E',blockuebernahme:true,einstellungen:einst,
      fortsetzung:{bindung:{job_id:job.id,eintrag_id:quelle.reverseId,medium_id:quelle.mediumId,quellhash:job.inputRef.sha256,
@@ -772,7 +772,7 @@ export class ReverseExecutor {
      ...(live?{fortschritt:{takt_s:live.takt_s}}:{}),eingabe:'/bib/'+quelle.storageKey,
      eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
-     optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:pe.aktiv,pe_ressourcen_stand:pe,siedler3:siedler.aktiv,siedler3_stand:siedler},
+     optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:pe.aktiv,pe_ressourcen_stand:pe},
     });},live?.melde);
     if(!alt)await sperreArbeitsOrdner(arbeit);
     aufsicht.ende();
@@ -910,14 +910,14 @@ export class ReverseExecutor {
   try{
    let ergebnis:Record<string,unknown>;
    try{
-    const [peStand,siedlerStand,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
+    const [peStand,live]=await Promise.all([leseReversePeRessourcenSchalter(),this.liveFortschritt(job,token)]);
     // P18-T93: Auch E-AUS verwendet den eintragsspezifischen PG-Snapshot im Runner.
     const eEinstellungen=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
     if(eEinstellungen.letzter_fehler)throw new Error(eEinstellungen.letzter_fehler);
     ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.fordereFachbindung(job);await this.policyPruefen(job);return ({kommando:'extrahieren',schicht:'E',einstellungen:eEinstellungen,...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
-     optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand,siedler3:siedlerStand.aktiv,siedler3_stand:siedlerStand},
+     optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand},
      grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung,
       nachlauf_s:nachlaufS}});},live?.melde);
    }catch(e){

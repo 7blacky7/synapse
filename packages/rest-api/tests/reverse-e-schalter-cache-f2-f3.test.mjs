@@ -55,7 +55,7 @@ try{
   async observe(id){return {container_id:id,running:true,start_observed:true,cpu_percent:0,gpu_percent:null,measured_at:new Date().toISOString()};},
   async stop(){},async cleanup(){},
   async command(id,req,_t,_m,onTerminal){
-   calls.push(req);const names=['base.txt',...(req.optionen.pe_ressourcen?['pe.txt']:[]),...(req.optionen.siedler3?['gfx.txt']:[])],manifest=[];
+   calls.push(req);const names=['base.txt',...(req.optionen.pe_ressourcen?['pe.txt']:[])],manifest=[];
    for(const name of names){await writeFile(join(mounts.get(id),req.auftrag_id,name),name);manifest.push({pfad:name,groesse:Buffer.byteLength(name),sha256:sha(name)});}
    onTerminal?.();return {status:'fertig',manifest};
   },
@@ -250,18 +250,22 @@ try{
 
  eq((await row(await repeat(a))).p20_auftrag_id,off.p20_auftrag_id,'pending requests deduplicate');
  await drain();eq((await row(first)).status,'fertig');
- eq([calls.at(-1).optionen.pe_ressourcen,calls.at(-1).optionen.siedler3],[false,false],'default OFF reaches command');
+ eq(calls.at(-1).optionen.pe_ressourcen,false,'default PE OFF reaches command');
  await flag('reverse_pe_ressourcen',true);
  const second=await request(a),pe=await row(second);
  assert.notEqual(pe.fingerabdruck,off.fingerabdruck);assert.notEqual(pe.p20_auftrag_id,off.p20_auftrag_id);checks+=2;
  await drain();eq((await row(second)).status,'fertig');
- eq([calls.at(-1).optionen.pe_ressourcen,calls.at(-1).optionen.siedler3],[true,false],'global PE ON reaches command');
+ eq(calls.at(-1).optionen.pe_ressourcen,true,'global PE ON reaches command');
  eq(calls.at(-1).optionen.pe_ressourcen_stand.quelle,'produkt-schalter');
- await flag('reverse_siedler3',true);
- const third=await request(a),both=await row(third);assert.notEqual(both.fingerabdruck,pe.fingerabdruck);checks++;
+ const beforeRetired=(await db.query("SELECT count(*)::int n FROM work_jobs")).rows[0].n;
+ await flag('reverse_siedler3',true); // Historischer PG-Altwert darf weder Profil noch Dispatch beeinflussen.
+ await inDb(()=>pipeline.entdecke());
+ eq((await db.query("SELECT count(*)::int n FROM work_jobs")).rows[0].n,beforeRetired,'retired-Wert erzeugt keinen Auto-E-Lauf');
+ const third=await request(a),both=await row(third);eq(both.fingerabdruck,pe.fingerabdruck,'PE-only-Profil unabhängig vom Legacywert');
+ assert.notEqual(both.p20_auftrag_id,pe.p20_auftrag_id);checks++;
  await drain();eq((await row(third)).status,'fertig');
- eq([calls.at(-1).optionen.pe_ressourcen,calls.at(-1).optionen.siedler3],[true,true],'both global switches reach fresh command');
- eq(Number((await db.query("SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1 AND metadaten->>'e_auftrag'=$2",[a.rid,both.p20_auftrag_id])).rows[0].n),3,'fresh feature outputs imported by same E path');
+ eq(calls.at(-1).optionen.pe_ressourcen,true,'PE bleibt aktiv');
+ eq(Number((await db.query("SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1 AND metadaten->>'e_auftrag'=$2",[a.rid,both.p20_auftrag_id])).rows[0].n),2,'frischer PE-only-Auftrag übernimmt dieselben generischen Ausgaben');
  let count=(await db.query("SELECT count(*)::int n FROM work_jobs")).rows[0].n;
  await inDb(()=>pipeline.entdecke());eq((await db.query("SELECT count(*)::int n FROM work_jobs")).rows[0].n,count,'completed current profile has no discovery loop');
  // Reproduce live F3 exactly: a later Fachauftrag points at a work job that had already completed.
@@ -300,14 +304,18 @@ try{
  await inDb(()=>pipeline.entdecke());eq((await db.query('SELECT count(*)::int n FROM work_jobs')).rows[0].n,count,'feature change settles without infinite re-extraction');
  eq((await db.query("SELECT count(*)::int n FROM reverse_auftraege r JOIN work_jobs w ON w.id=r.p20_auftrag_id WHERE r.schicht='E' AND r.status IN ('offen','wartet','laeuft') AND w.state='completed'")).rows[0].n,0,'no completed-work orphan remains');
  eq((await db.query("SELECT id::text,sha256,metadaten->>'e_auftrag' job FROM reverse_dateien WHERE eintrag_id=$1 AND pfad='CD1/pe.txt'",[a.rid])).rows[0],peBefore,'OFF retains prior derived file unchanged; no new PE output');
- // Return to the original OFF/OFF combination: historical matching jobs cannot hide the current different layer.
- const gfxBefore=(await db.query("SELECT id::text,sha256,metadaten->>'e_auftrag' job FROM reverse_dateien WHERE eintrag_id=$1 AND pfad='CD1/gfx.txt'",[a.rid])).rows[0];
+ // Historischer Legacywert bleibt wirkungslos; tatsächlicher PE-Profilwechsel bleibt ausführbar.
+ const baseBefore=(await db.query("SELECT id::text,sha256,metadaten->>'e_auftrag' job FROM reverse_dateien WHERE eintrag_id=$1 AND pfad='CD1/base.txt'",[a.rid])).rows[0];
  const aCount=(await db.query("SELECT count(*)::int n FROM work_jobs WHERE input_ref->>'id'=$1",[a.rid])).rows[0].n;
  await flag('reverse_siedler3',false);await inDb(()=>pipeline.entdecke());
- eq((await db.query("SELECT count(*)::int n FROM work_jobs WHERE input_ref->>'id'=$1",[a.rid])).rows[0].n,aCount+1,'return to historical flag combination schedules fresh E '+JSON.stringify((await db.query("SELECT id::text,status,fehlercode,versuch,p20_auftrag_id::text,fingerabdruck,policy_pin FROM reverse_auftraege WHERE eintrag_id=$1 ORDER BY created_at",[a.rid])).rows));
+ eq((await db.query("SELECT count(*)::int n FROM work_jobs WHERE input_ref->>'id'=$1",[a.rid])).rows[0].n,aCount,'Legacy EIN->AUS erzeugt keinen E-Nachzug');
+ eq((await db.query("SELECT id::text,sha256,metadaten->>'e_auftrag' job FROM reverse_dateien WHERE eintrag_id=$1 AND pfad='CD1/base.txt'",[a.rid])).rows[0],baseBefore,'wirkungsloser Legacywechsel lässt Datei samt Herkunft unverändert');
+ await flag('reverse_pe_ressourcen',true);await inDb(()=>pipeline.entdecke());
+ const peNachzug=(await db.query("SELECT p20_auftrag_id::text FROM reverse_auftraege WHERE eintrag_id=$1 AND status IN ('offen','wartet','laeuft') ORDER BY created_at DESC,id DESC LIMIT 1",[a.rid])).rows[0];
+ eq((await db.query("SELECT count(*)::int n FROM work_jobs WHERE input_ref->>'id'=$1",[a.rid])).rows[0].n,aCount+1,'echter PE-Profilwechsel erzeugt genau einen E-Nachzug');
  await drain();await drain();
- eq([calls.at(-1).optionen.pe_ressourcen,calls.at(-1).optionen.siedler3],[false,false],'OFF/OFF reaches new dispatch');
- eq((await db.query("SELECT id::text,sha256,metadaten->>'e_auftrag' job FROM reverse_dateien WHERE eintrag_id=$1 AND pfad='CD1/gfx.txt'",[a.rid])).rows[0],gfxBefore,'Siedler OFF retains existing derived data');
+ eq(calls.at(-1).optionen.pe_ressourcen,true,'PE-Profilwechsel erreicht neuen Dispatch');
+ eq((await db.query("SELECT id::text,sha256,metadaten->>'e_auftrag' job FROM reverse_dateien WHERE eintrag_id=$1 AND pfad='CD1/base.txt'",[a.rid])).rows[0],{...baseBefore,job:peNachzug.p20_auftrag_id},'echter PE-Neuimport behält Bytes/ID und belegt den neuen Auftrag korrekt');
 
  // R5 isoliert: älterer Fehler, neuere fertige Generation, Profilwechsel -> genau ein neuer Nachzug.
  const r5medium=await medium('r5-generation'),r5old=await request(r5medium);await drain();
@@ -315,7 +323,7 @@ try{
  await db.query("UPDATE reverse_auftraege SET status='fehler',fehlercode='werkzeug_fehler' WHERE id=$1",[r5oldRow.id]);
  const r5done=await request(r5medium);await drain();eq((await row(r5done)).status,'fertig','R5 neuere erfolgreiche Generation');
  const r5alt=(await db.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1',[r5oldRow.id])).rows[0].uebernahme;
- await flag('reverse_pe_ressourcen',true);
+ await flag('reverse_pe_ressourcen',false);
  const r5before=(await db.query("SELECT count(*)::int n FROM work_jobs WHERE input_ref->>'id'=$1",[r5medium.rid])).rows[0].n;
  const r5next=await repeat(r5medium),r5nextRow=await row(r5next);
  eq((await db.query("SELECT count(*)::int n FROM work_jobs WHERE input_ref->>'id'=$1",[r5medium.rid])).rows[0].n,r5before+1,'R5 genau ein Nachzug');
@@ -324,6 +332,7 @@ try{
  eq((await db.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1',[r5oldRow.id])).rows[0].uebernahme,r5alt,'R5 alter Rohbeleg bleibt');
  await drain();eq((await row(r5next)).status,'fertig','R5 neuer Nachzug fertig');
 
+ for(const req of calls){eq(Object.hasOwn(req.optionen,'siedler3'),false,'kein Legacy-Requestfeld');eq(Object.hasOwn(req.optionen,'siedler3_stand'),false);}
  assert(ownershipCalls>0);checks++;
  console.log('F2/F3 unprivileged uid='+process.getuid?.()+' ownership_boundary_mock_calls='+ownershipCalls);
  console.log('F2/F3 PASS '+checks+' checks; scheduler/cache -> executor switches -> importer; completed reuse/orphan recovery/scoped E/profile changes; commands='+calls.length);

@@ -17,17 +17,7 @@ import test_leser as fixtures
 from test_leser import gfx, snd, pak, sha, checkpoint, ROOT
 
 
-def legacy():
-    spec = importlib.util.spec_from_file_location(
-        "legacy_siedler_oracle", ROOT.parent / "docker/synapse-reverse/siedler3.py")
-    if spec is None or spec.loader is None:
-        raise AssertionError("legacy_oracle_fehlt")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-ORACLE = legacy()
+GOLDEN = json.loads((Path(__file__).parent / "fixtures/siedler3-golden-v1.json").read_text())
 KINDS = (0x106, 0x3112, 0x5982, 0x11306, 0x2412)
 
 
@@ -88,16 +78,6 @@ def sounds():
         data += struct.pack("<IHHIIHH", 20 + len(pcm), 1, 2, 8000, 32000, 4, 16) + pcm
     struct.pack_into("<I", data, 16, len(data))
     return bytes(data)
-
-
-def oracle_records(data, audio=False):
-    with tempfile.TemporaryFile() as stream:
-        stream.write(data)
-        stream.flush()
-        reader = ORACLE.Reader(stream, {"parser_ram_mb": 64, "max_bytes": 16777216,
-                               "max_dateien": 10000, "max_datei_bytes": 16777216},
-                               time.monotonic() + 10)
-        return list(ORACLE.snd_records(reader) if audio else ORACLE.gfx_records(reader))
 
 
 def pixels(data):
@@ -203,15 +183,6 @@ def fixture_bitmap(kind, masks, width, height, dx, dy, rng, odd=False):
     return bytes(data), off, bytes(rgba)
 
 
-def legacy_bitmap(data, off, kind, masks):
-    with tempfile.TemporaryFile() as stream:
-        stream.write(data)
-        stream.flush()
-        r = ORACLE.Reader(stream, {"parser_ram_mb": 64, "max_bytes": 16777216,
-                                  "max_dateien": 10000}, time.monotonic() + 10)
-        return ORACLE.bitmap(r, off, len(data), ORACLE.GROUPS[kind], masks)
-
-
 class Regression(unittest.TestCase):
     def invoke(self, *args, **kwargs):
         return fixtures.LeserTests().invoke(*args, **kwargs)
@@ -224,14 +195,15 @@ class Regression(unittest.TestCase):
         data += struct.pack("<IHHhh", 12, 17, 6, -2, 3)
         data += struct.pack("<HH", 8, 0x8009) * 6
         blob, used, meta = DECODER.dekodiere(Bildquelle(bytes(data)), 96, len(data), 0x5982)
-        old, old_used, _ = legacy_bitmap(bytes(data), 96, 0x5982, masks)
-        self.assertEqual(blob, old)
-        self.assertEqual(used, old_used)
+        expected = GOLDEN["shadow_17x6"]
+        self.assertEqual(sha(blob), expected["png_sha256"])
+        self.assertEqual(len(blob), expected["png_bytes"])
+        self.assertEqual(used, expected["verbrauch"])
         self.assertEqual(pixels(blob), ((17, 6), bytes((0, 0, 0, 128)) * (17 * 6)))
         self.assertEqual((meta["versatz_x"], meta["versatz_y"]), ("-2", "3"))
         print("R1 Shadow17x6: PNG-bytegleich, Bytes=" + str(len(blob)) + " SHA256=" + sha(blob))
 
-    def test_deterministic_120_case_matrix_png_bytes_pixels_offsets(self):
+    def test_deterministic_120_case_matrix_pixels_offsets(self):
         rng = random.Random(970023)
         checks = 0
         for masks in ((0xf800, 0x7e0, 0x1f), (0x7c00, 0x3e0, 0x1f)):
@@ -241,15 +213,13 @@ class Regression(unittest.TestCase):
                     dx, dy = rng.randint(-32768, 32767), rng.randint(-32768, 32767)
                     data, off, expected = fixture_bitmap(kind, masks, width, height, dx, dy, rng, odd=bool(i % 2))
                     new, used, meta = DECODER.dekodiere(Bildquelle(data), off, len(data), kind)
-                    old, old_used, _ = legacy_bitmap(data, off, kind, masks)
-                    self.assertEqual(new, old, (hex(kind), masks, i, width, height))
-                    self.assertEqual(used, old_used)
+                    self.assertEqual(used, len(data) - off, (hex(kind), masks, i))
                     self.assertEqual(pixels(new), ((width, height), expected))
                     self.assertEqual((meta["versatz_x"], meta["versatz_y"]),
                                      (str(dx), str(dy)) if kind in KINDS[:3] else ("0", "0"))
                     checks += 1
         self.assertEqual(checks, 120)
-        print("R1 Matrix: 120/120 PNG-bytegleich und exakte RGBA-Pixel/Offsets")
+        print("Matrix: 120/120 unabhängige RGBA-Pixel/Quellverbrauch/Offsets; feste Byte-Goldens separat")
 
     def test_all_groups_both_rgb_masks_match_legacy_bytes_and_pixels(self):
         for masks in ((0xf800, 0x7e0, 0x1f), (0x7c00, 0x3e0, 0x1f)):
@@ -258,16 +228,18 @@ class Regression(unittest.TestCase):
             self.assertEqual(end["status"], "fertig")
             images = [r for r in rows if r["typ"] == "bild"]
             self.assertEqual(len(images), 5)
-            expected = [v for v in oracle_records(data) if v[4] == "image/png"]
+            expected = GOLDEN["bilder"]
             self.assertEqual(len(expected), len(images))
             for actual, old in zip(images, expected):
                 blob = files[actual["datei"]["pfad"]]
-                self.assertEqual(blob, old[1])
-                self.assertEqual(pixels(blob), pixels(old[1]))
-                self.assertEqual((int(actual["quelle"]["offset"]), int(actual["quelle"]["laenge"])),
-                                 (old[2], old[3]))
-                self.assertEqual(actual["metadaten"]["versatz_x"], str(old[5]["versatz_x"]))
-                self.assertEqual(actual["metadaten"]["darstellung"], old[5]["darstellung"])
+                self.assertEqual(sha(blob), old["png_sha256"])
+                self.assertEqual(len(blob), old["png_bytes"])
+                self.assertEqual(pixels(blob), ((old["width"], old["height"]), bytes.fromhex(old["rgba_hex"])))
+                self.assertEqual(actual["quelle"]["offset"], old["quelle"]["offset"])
+                self.assertEqual(actual["quelle"]["laenge"], old["quelle"]["laenge"])
+                self.assertEqual(actual["metadaten"]["versatz_x"], old["versatz_x"])
+                self.assertEqual(actual["metadaten"]["versatz_y"], old["versatz_y"])
+                self.assertEqual(actual["metadaten"]["darstellung"], old["darstellung"])
                 raw = next(r for r in rows if r["member_id"] == actual["metadaten"]["roh_member"])
                 off, n = int(raw["quelle"]["offset"]), int(raw["quelle"]["laenge"])
                 self.assertEqual(files[raw["datei"]["pfad"]], data[off:off+n])
@@ -286,14 +258,16 @@ class Regression(unittest.TestCase):
         data = sounds()
         end, rows, _, files = self.invoke("siedler3", data, limits={"dateien": "1024"})
         self.assertEqual(end["status"], "fertig")
-        expected = {(off, "sound" if mime == "audio/wav" else "binaer"): blob
-                    for _, blob, off, _, mime, _ in oracle_records(data, True)}
+        expected = {"sound": GOLDEN["wav"], "binaer": GOLDEN["roh"]}
         artifacts = [r for r in rows if r["datei"] is not None]
         self.assertEqual(sum(r["typ"] == "sound" for r in artifacts), 208)
         self.assertEqual(sum(r["typ"] == "binaer" for r in artifacts), 45)
         for row in artifacts:
-            self.assertEqual(files[row["datei"]["pfad"]],
-                             expected[int(row["quelle"]["offset"]), row["typ"]])
+            blob = files[row["datei"]["pfad"]]
+            fixed = expected[row["typ"]]
+            self.assertEqual(blob, bytes.fromhex(fixed["hex"]))
+            self.assertEqual(sha(blob), fixed["sha256"])
+            self.assertEqual(len(blob), fixed["bytes"])
 
     def test_png_pair_budget_boundary_and_resume(self):
         data = graphics()
@@ -384,5 +358,48 @@ class Regression(unittest.TestCase):
         self.assertEqual(self.invoke("siedler3", pak([]))[0]["status"], "nicht_unterstuetzt")
 
 
+
+def export_inspection_fixture(out):
+    """Nur eigene Quellen + echte externe Leserartefakte für den generischen Inspect-Vertrag.
+    Kein Runtime-/Registrylauf, kein Legacydecoder, keine Projektdaten."""
+    out.mkdir(parents=True)
+    manifest = []
+    for name, data in (("gfx.dat", graphics()), ("snd.dat", snd()),
+                       ("karte.map", b"eigener unbekannter MAP-Rohstand")):
+        (out / name).write_bytes(data)
+        manifest.append({"pfad": name, "groesse": len(data), "sha256": sha(data), "art": "binaer"})
+        if name == "karte.map":
+            continue
+        end, rows, _, files = fixtures.LeserTests().invoke("siedler3", data)
+        if end["status"] != "fertig":
+            raise AssertionError(end)
+        for row in rows:
+            ref = row["datei"]
+            if ref is None:
+                continue
+            rel = name + "~leser/" + ref["pfad"]
+            target = out / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            blob = files[ref["pfad"]]
+            target.write_bytes(blob)
+            off, length = int(row["quelle"]["offset"]), int(row["quelle"]["laenge"])
+            meta = dict(row["metadaten"])
+            meta.update(offset=off, laenge=length, quellbereich_sha256=sha(data[off:off+length]))
+            for key in ("breite", "hoehe", "versatz_x", "versatz_y"):
+                if key in meta:
+                    meta[key] = int(meta[key])
+            meta["typ"] = meta.get("darstellung", row["typ"])
+            mime = "image/png" if rel.endswith(".png") else "audio/wav" if rel.endswith(".wav") else "application/octet-stream"
+            manifest.append({"pfad": rel, "groesse": len(blob), "sha256": sha(blob),
+                "art": "asset" if mime.startswith(("image/", "audio/")) else "binaer",
+                "metadaten": {"mime_type": mime,
+                    "asset_type": "image" if mime == "image/png" else "audio" if mime == "audio/wav" else "unbekannt",
+                    "siedler3": meta,
+                    "herkunft": {"archiv": name, "pfad": ref["pfad"], "tiefe": 1}}})
+    print(json.dumps({"manifest": manifest}, ensure_ascii=False))
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    if len(sys.argv) == 3 and sys.argv[1] == "--export-inspection":
+        export_inspection_fixture(Path(sys.argv[2]))
+    else:
+        unittest.main(verbosity=2)

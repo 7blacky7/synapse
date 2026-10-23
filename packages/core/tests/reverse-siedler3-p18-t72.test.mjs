@@ -143,19 +143,19 @@ try{
  await db.query("DELETE FROM agent_profil_schalter WHERE funktion=ANY($1::text[])",[['reverse_leser','reverse_leser_nachzug']]);
  await db.query('DELETE FROM reverse_auftraege WHERE id=ANY($1::uuid[])',[local]);await db.query('DELETE FROM reverse_dateien WHERE id=$1',[localFile]);
  const job=randomUUID(),work=join(root,'_arbeit',job);
- const exported=JSON.parse(execFileSync('uv',['run','--no-project','python','-B',new URL('../../../docker/synapse-reverse/test_siedler3.py',import.meta.url).pathname,'--export',work],{encoding:'utf8'}));
- eq(exported.manifest.length,15,'three originals + nine GFX + two WAV + MAP report');
- eq(exported.status.fehlercode,'verschluesselt','no MAP decryption');
+ const exported=JSON.parse(execFileSync('uv',['run','--no-project','python','-B',new URL('../../../reverse-leser/tests/test_regression.py',import.meta.url).pathname,'--export-inspection',work],{encoding:'utf8'}));
+ eq(exported.manifest.filter(d=>d.pfad.endsWith('.png')).length,5,'fünf externe GFX-Gruppen');
+ eq(exported.manifest.filter(d=>d.pfad.endsWith('.wav')).length,2,'zwei externe WAV-Varianten');
  const cfg=core.ladeAssetKonfiguration({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:root});
  const imported=await core.uebernehmeEErgebnis(db,{jobId:job,reverseId:rid,mediumId:'1',arbeitsWurzel:work,manifest:exported.manifest},{konfiguration:cfg});
- eq(imported,{dateien:15,verworfen:0});
+ eq(imported,{dateien:exported.manifest.length,verworfen:0});
  const service=core.createReverseToolService({pool:db});
  const call=(action,extra={})=>service.ausfuehren({action,project,agent_id:agent,reverse_id:rid,...extra});
  eq((await call('dateien')).fehlercode,'nicht_gebunden');
  eq((await call('binden')).success,true);
  const all=[];let offset=0;
  do{const r=await call('dateien',{offset,limit:4});eq(r.success,true,JSON.stringify(r));all.push(...r.dateien);offset=r.naechster_offset;}while(offset!==null);
- eq(all.length,15);eq(new Set(all.map(d=>d.pfad)).size,15);
+ eq(all.length,exported.manifest.length);eq(new Set(all.map(d=>d.pfad)).size,all.length);
  const image=all.find(d=>d.pfad.endsWith('.png')&&d.siedler3.typ==='sprite');
  const sound=all.find(d=>d.pfad.endsWith('.wav'));
  eq(image.art,'asset');eq(sound.art,'asset');
@@ -170,8 +170,8 @@ try{
   const bytes=await readFile(join(root,rid,'entpackt','m1',entry.pfad.slice(4)));
   eq(sha(bytes),entry.sha256);
  }
- const report=all.find(d=>d.pfad.startsWith('CD1/karte.map~inhalt/'));
- eq(report.art,'text');eq(all.find(d=>d.pfad==='CD1/karte.map').verschachtelt.grund,'verschluesselt');
+ const report=all.find(d=>d.pfad==='CD1/karte.map');
+ eq(report.art,'binaer');eq(await readFile(join(root,rid,'entpackt','m1','karte.map'),'utf8'),'eigener unbekannter MAP-Rohstand','unbekannte Rohquelle unverändert erhalten');
  eq((await call('dateien',{path:'../x'})).fehlercode,'pfad_gefahr');
  const tree=await call('assets_tree',{path:'CD1',recursive:true,limit:50});eq(tree.success,true);
  const {MCP_TOOLS,handleToolCall}=await import('../../rest-api/dist/routes/mcp.js');
@@ -218,33 +218,36 @@ try{
  }
  await db.query("DELETE FROM agent_profil_schalter WHERE funktion='reverse_blockuebernahme'");
 
- eq((await schalter()).aktiv,false,'default OFF');
- await db.query("INSERT INTO agent_profil_schalter(ebene,funktion,aktiv,grund,gesetzt_von) VALUES('global','alle',true,'fixture','fixture')");
- eq((await schalter()).aktiv,false,'alle excludes new feature');
- await setzeProfilProduktSchalter({ebene:'global',funktion:'reverse_siedler3',aktiv:true,grund:'Fixture Freigabe'},{system:'user'});
- eq((await schalter()).quelle,'produkt-schalter');
- eq((await leseProfilProduktSchalter('reverse_siedler3',project)).project,null,'global library');
- await assert.rejects(setzeProfilProduktSchalter({ebene:'projekt',project,funktion:'reverse_siedler3',aktiv:true,grund:'Fixture Freigabe'},{system:'user'}),e=>e.code==='nur_global');
- await assert.rejects(setzeProfilProduktSchalter({ebene:'global',funktion:'reverse_siedler3',aktiv:false,grund:'Fixture kein Recht'},{}),e=>e.code==='recht_fehlt');
- const off=await setzeSchalter('reverse_siedler3',{aktiv:false,modus:'freigegeben',dauer_min:1,grund:'Fixture temporary OFF'});
- assert(off.bis);eq(off.modus,'freigegeben');eq((await schalter()).aktiv,false);eq((await schalter()).quelle,'intern');
+ // Retired: Altwerte/alle/Intern/Ablauf/Lesefehler dürfen den Legacydecoder nie reaktivieren.
+ eq((await schalter()).aktiv,false);eq((await schalter()).stillgelegt,true);
+ await db.query("INSERT INTO agent_profil_schalter(ebene,funktion,aktiv,grund,gesetzt_von) VALUES('global','alle',true,'historisches alle','fixture'),('global','reverse_siedler3',true,'historisches EIN','fixture')");
+ await db.query("INSERT INTO intern_schalter(name,modus,aktiv,bis,grund) VALUES('reverse_siedler3','freigegeben',true,now()+interval '1 hour','historischer Override')");
+ const beforeRetired=(await db.query("SELECT to_jsonb(s) AS row FROM agent_profil_schalter s WHERE funktion='reverse_siedler3'")).rows[0].row;
+ const beforeIntern=(await db.query("SELECT to_jsonb(s) AS row FROM intern_schalter s WHERE name='reverse_siedler3'")).rows[0].row;
+ for(const aktiv of [true,false]){
+  await assert.rejects(()=>setzeProfilProduktSchalter({ebene:'global',funktion:'reverse_siedler3',aktiv,grund:'Retired bleibt unverändert'},{system:'user'}),e=>e.code==='funktion_stillgelegt');
+  await assert.rejects(()=>setzeSchalter('reverse_siedler3',{aktiv,modus:'freigegeben',dauer_min:1,grund:'Retired bleibt unverändert'}),e=>e.code==='funktion_stillgelegt');
+ }
+ eq((await db.query("SELECT to_jsonb(s) AS row FROM agent_profil_schalter s WHERE funktion='reverse_siedler3'")).rows[0].row,beforeRetired,'Produktsetter ohne DB-Schreibwirkung');
+ eq((await db.query("SELECT to_jsonb(s) AS row FROM intern_schalter s WHERE name='reverse_siedler3'")).rows[0].row,beforeIntern,'Internsetter ohne DB-Schreibwirkung');
+ const retired=await leseProfilProduktSchalter('reverse_siedler3',project);
+ eq(retired.aktiv,false);eq(retired.stillgelegt,true);eq(retired.historischer_wert,true);eq(retired.project,null);
+ eq((await core.leseSchalter('reverse_siedler3')).aktiv,false);
+ await assert.rejects(()=>setzeProfilProduktSchalter({ebene:'global',funktion:'reverse_siedler3',aktiv:true,grund:'kein Recht'},{}),e=>e.code==='recht_fehlt');
  const productionEnv={...process.env,SYNAPSE_INTERN_TOOL:'0'};
  const restarted=execFileSync(process.execPath,['--input-type=module','-e',
-  "import {leseReverseSiedler3Schalter as read} from './packages/core/dist/services/reverse-siedler3-schalter.js';import {closePool} from './packages/core/dist/db/client.js';console.log(JSON.stringify(await read()));await closePool();"
+  "import {leseReverseSiedler3Schalter as read} from './packages/core/dist/services/reverse-siedler3-schalter.js';console.log(JSON.stringify(await read()));"
  ],{env:productionEnv,encoding:'utf8'});
- const production=JSON.parse(restarted.trim().split('\n').pop());
- eq(production.aktiv,true,'restart persistence / production ignores temporary OFF');eq(production.quelle,'produkt-schalter');
+ eq(JSON.parse(restarted.trim().split('\n').pop()).aktiv,false,'Neustart/Produktionsmodus bleibt retired');
  await db.query("UPDATE intern_schalter SET bis=now()-interval '1 second'");
- eq((await schalter()).aktiv,true,'expiry returns product');
- await setzeProfilProduktSchalter({ebene:'global',funktion:'reverse_siedler3',aktiv:false,grund:'Fixture default OFF'},{system:'user'});
- await setzeSchalter('reverse_siedler3',{aktiv:true,modus:'freigegeben',dauer_min:1,grund:'Fixture temporary ON'});
- eq((await schalter()).aktiv,true);
+ eq((await core.leseSchalter('reverse_siedler3')).aktiv,false);eq((await schalter()).aktiv,false);
  await db.query('ALTER TABLE intern_schalter RENAME COLUMN bis TO missing_bis');
- let s=await schalter();eq(s.aktiv,false);eq(s.letzter_fehler,'reverse_siedler3_override_nicht_lesbar');
+ eq((await schalter()).aktiv,false,'unlesbarer Intern-Stand bleibt retired');
  await db.query('ALTER TABLE agent_profil_schalter RENAME COLUMN aktiv TO missing_aktiv');
- eq((await schalter()).aktiv,false,'unavailable product -> standard OFF');
+ eq((await leseProfilProduktSchalter('reverse_siedler3')).aktiv,false,'unlesbarer Produktstand bleibt AUS');
+ eq((await schalter()).aktiv,false);
  console.log('T72 BEISPIEL',JSON.stringify({imported,image,sound,map_report:report.pfad,checks}));
- console.log('P18-T72 PASS: GFX/SND/MAP -> E -> dateien/inspect/Ansichtsquelle, REST=stdio, Herkunft/Hash/Paging, Rechte/global/Persistenz, intern ON/OFF/Ablauf/Ausfall.');
+ console.log('P18-T72/T97 PASS: externe GFX/SND-Fixtures -> generischer E-Import/inspect/Ansichtsquelle, REST=stdio, Herkunft/Hash/Paging, Retired und vollständige A-Regressionen.');
 }finally{
  await closePool();await raw.query('DROP SCHEMA '+schema+' CASCADE');await raw.end();await rm(root,{recursive:true,force:true});
 }

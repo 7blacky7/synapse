@@ -23,7 +23,6 @@ import {reverseEinstellSnapshot,leseReverseEinstellwerte,leseReverseBlockSchalte
 import {materialisiereS1InBloecken,veroeffentlicheS1Generation,materialisiereParserS1InBloecken} from './reverse-s1-bloecke.js';
 import {leseReverseParserSchalter,publiziereReverseParser,REVERSE_PARSER_VERSION} from './reverse-parser-adapter.js';
 import {leseReversePeRessourcenSchalter} from './reverse-pe-schalter.js';
-import {leseReverseSiedler3Schalter} from './reverse-siedler3-schalter.js';
 import {leseProfilProduktSchalter} from './agent-profil-schalter.js';
 import {starteReverseEntstoerer} from './reverse-entstoerer.js';
 import {analysiereRv27} from './hex-rv27.js';
@@ -122,8 +121,8 @@ export class ReversePipelineDienst{
  }
  /** E output depends on the effective global feature values, not on the requesting project. */
  private async eProfil():Promise<string>{
-  const [pe,siedler]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter()]);
-  return hash({basis:this.profile,pe_ressourcen:pe.aktiv,siedler3:siedler.aktiv});
+  const pe=await leseReversePeRessourcenSchalter();
+   return hash({basis:this.profile,pe_ressourcen:pe.aktiv});
  }
  /** P18-T88: S1 im Blockweg ist ein anderes (vollständiges) Ergebnis und bekommt einen eigenen Fingerabdruck; S0/S2/S3 bleiben unverändert. */
  private s1BlockProfil():string{return hash([this.profile,'s1-bloecke-v1']);}

@@ -1,5 +1,15 @@
 # Externe Reverse-Leser (Schnittstelle 1)
 
+P18-T97 Legacy-Abbau: Der allgemeine externe Siedler-Leser ersetzt den eingebauten Decoder.
+reverse_siedler3 ist stillgelegt und kann weder Produkt noch intern aktivieren; alte PG-Werte
+und Legacy-Ergebnisbestände bleiben als Belege erhalten. Neue Leserstände bleiben versioniert
+und werden ausschließlich über den allgemeinen Manifest-/Registry-/Runtimevertrag verwaltet.
+Vor Image-/Runtimewechsel muss der globale Admission-Halt stehen, inklusive Drain aller
+lokalen API-Aufträge/Leases und WorkJobs sowie gesondertem physischen Containerende.
+Der Koordinator führt Wechsel und Rollback gemeinsam mit passendem Runtime-Pin aus;
+diese Implementierung setzt keine Schalter und baut/deployt kein Image.
+
+
 ### Zulauf vor einem Reverse-Image-Wechsel (P18-T97)
 
 `reverse_pipeline_halt` ist ein dauerhafter globaler Produkt-Schalter (Standard AUS, nur ausdrücklich; keine intern-/Env-Übersteuerung).
@@ -147,7 +157,7 @@ Reine lokale Prozessprobe: uv run --no-project python -B reverse-leser/tests/tes
 Alle Fixturebytes entstehen selbst im Test, keine fremden Spiel-/Live-Daten.
 Keine Docker-/SSH-Probe. In V6 erst: echte Sandbox, Resume-Integration und
 Siedler-Regressionsbestand (00=235,03=448,06=1430; SND00=208 WAV+45 Roh)
-semantisch gegen Altbestand prüfen. Legacy wird erst nach V6 entfernt.
+semantisch gegen Altbestand prüfen. V6 ist inzwischen belegt (34259dda/4814afe2); P18-T97 entfernt den eingebauten Legacy-Decoder. Die produktiven externen Siedler-/PAK-Pakete bleiben dabei bytegleich.
 
 ## Schritt2: gezielte Entwicklungstests und spätere Live-Abnahme
 
@@ -155,9 +165,7 @@ Eigene Fixtures: uv run --no-project python -B reverse-leser/tests/test_leser.py
 und uv run --no-project python -B reverse-leser/tests/test_regression.py.
 Integration: mise exec -- node --test packages/core/tests/reverse-leser-p18-t97-schritt2.test.mjs
 (DATABASE_URL muss synapse_test auf Port5433 sein, privates Testschema).
-Die Dekodierprobe vergleicht ausschließlich selbst erzeugte Bytes mit dem
-unveränderten Legacy-Oracle; PNG-Dateibytes, Pixel und CRC sowie WAV/Rohbytes werden
-unabhängig geprüft. Synthetische235/448/1430-Bild- und208WAV/45BIN-Proben
+Die Dekodierprobe verwendet ausschließlich eigene Fixturebytes und einen festen, versionierten Erwartungsindex (tests/fixtures/siedler3-golden-v1.json). Kein Legacy-Modul wird geladen. Feste PNG-Dateihashes, unabhängige Pixel/CRC-Prüfung und WAV/Rohbytes werden strikt verglichen. Synthetische235/448/1430-Bild- und208WAV/45BIN-Proben
 sind KEIN Live-Beleg für die Originale.
 
 Erst nach Freigabe: stand:nachher für beide Python-Paketdateien plus Manifest
@@ -176,6 +184,4 @@ Filter-0-Zeilen in genau einem zlib-Aufruf (Standardlevel), mit identischem
 IHDR/IDAT/IEND-Aufbau. Der PG-RAM-Preflight reserviert den zusätzlichen
 Zeilenpuffer bereits vor Allokation. Die Regression enthält Shadow17x6
 (zwei Spans8+9 je Zeile) und120 deterministische Gruppen-/RGB-/Offsetfälle.
-Bei gleicher Python-/zlib-Umgebung werden PNG-Dateibytes strikt verglichen;
-eine spätere Bitstreamabweichung ist ein eigener roter Befund, kein stiller
-Pixelgleichheitsersatz. Live-Goldenprüfung bleibt gesondert ausstehend.
+Die feste Shadow17x6-Referenz stammt aus dem unabhängigen Legacy-Beleg42a24525 (78B/SHA256e3c4cf6a). Zusätzlich sind die fünf kleinen Gruppen-/RGBA-Verträge eingefroren. Die120 Zufallsfälle behalten unabhängige Pixel-/Verbrauchs-/Offsetprüfungen; ohne ausführbares Legacy-Oracle wird für diese Matrix keine neue allgemeine Byte-Paritätsbehauptung erhoben. Jede Abweichung eines festen PNG-Goldens ist ROT. Die abgeschlossene V6-Originalprüfung ist separat in34259dda/4814afe2 belegt.

@@ -3,6 +3,8 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+from contextlib import contextmanager
 import shutil
 import subprocess
 import tarfile
@@ -18,6 +20,32 @@ SPEC = importlib.util.spec_from_file_location("reverse_runner", MODULE_PATH)
 runner = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(runner)
+
+
+@contextmanager
+def eingabe_pipe(text):
+    """T103 d5533316: echter stdin-FD für die Selector-/Selfpipe-Schleife."""
+    read_fd, write_fd = os.pipe()
+    with os.fdopen(read_fd, "r", encoding="utf-8") as reader:
+        with os.fdopen(write_fd, "w", encoding="utf-8") as writer:
+            writer.write(text)
+        with patch("sys.stdin", reader):
+            yield
+
+
+def rohstand(root):
+    """Unabhängiger Bytebeleg vor Fehlerabschluss, keine Runner-/Manifestfunktion."""
+    return {p.relative_to(root).as_posix(): (p.stat().st_size, hashlib.sha256(p.read_bytes()).hexdigest())
+            for p in root.rglob("*") if p.is_file()}
+
+
+def pruefe_rohstand(test, root, vorher):
+    nachher = rohstand(root)
+    test.assertEqual(len(nachher), len(vorher), "keine Rohdatei gelöscht oder hinzugefügt")
+    def digest(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    test.assertEqual(digest(nachher), digest(vorher), "alle Pfade/Längen/Bytehashes unverändert")
+    return nachher
 
 
 def disc_image(sector_ids, offset_ids=()):
@@ -399,17 +427,43 @@ class ReverseT62BombTests(unittest.TestCase):
         patches = [patch.object(runner, "command_for", return_value=["sh", "-c", script])]
         if guard_interval is not None:
             patches.append(patch.object(runner, "GUARD_INTERVAL_S", guard_interval))
-        with tempfile.TemporaryDirectory() as tmp_root, patch.object(runner, "TMP_ROOT", Path(tmp_root)):
+        original = runner.run_isolated
+        self.roh_vor_abschluss = None
+
+        def beobachte(*args, **kwargs):
+            try:
+                return original(*args, **kwargs)
+            finally:
+                # Nach beendetem Werkzeug, VOR Runner-Fehler-/Retentionsbehandlung.
+                self.roh_vor_abschluss = rohstand(args[3])
+
+        with tempfile.TemporaryDirectory() as tmp_root, patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+             patch.object(runner, "run_isolated", side_effect=beobachte):
             for item in patches:
                 item.start()
             try:
                 started = time.monotonic()
                 events = runner.run_request({"kommando": "extrahieren", "eingabe": source,
                                              "ausgabe": "/arbeit/job-bomb", "grenzen": grenzen})
+                self.assertEqual(Path(source).read_bytes(), self.SOURCE, "Original bytegleich")
                 return events, time.monotonic() - started
             finally:
                 for item in patches:
                     item.stop()
+
+    def assert_retained_output(self, box, event):
+        # T93 b883213a/2e52ffa8: spezifischer Fehler + gesperrter Rohstand, niemals Vollerfolg.
+        self.assertEqual(event["status"], "teilweise")
+        self.assertEqual(event["manifest"], [], "keine unbestätigten Dateien publizieren")
+        beleg = event["retention"]
+        self.assertIs(beleg["erhalten"], True)
+        self.assertIs(beleg["fortsetzbar"], False)
+        self.assertTrue(isinstance(beleg["grund"], str) and beleg["grund"])
+        self.assertIsNotNone(self.roh_vor_abschluss)
+        nachher = pruefe_rohstand(self, box.work / "job-bomb", self.roh_vor_abschluss)
+        self.assertGreater(len(nachher), 0, "Werkzeug-Rohreste sind tatsächlich vorhanden")
+        for size, digest in nachher.values():
+            self.assertEqual(digest, hashlib.sha256(bytes(size)).hexdigest(), "eigene Nullbyte-Fixture unverändert")
 
     def assert_no_output(self, box):
         self.assertEqual(list((box.work / "job-bomb").iterdir()), [], "keine Teilausgabe auf der Platte")
@@ -452,10 +506,8 @@ class ReverseT62BombTests(unittest.TestCase):
             script = 'i=0; while :; do head -c 4096 /dev/zero > "f$i" 2>/dev/null; i=$((i+1)); done'
             events, elapsed = self.run_bomb(box, script, {"zeitlimit_s": 60, "max_kompressionsfaktor": 200})
             self.assertLess(elapsed, 10, "Abbruch waehrend des Laufs, nicht erst am Zeitlimit")
-            self.assertEqual(events[-1]["status"], "fehler")
             self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
-            self.assertEqual(events[-1]["manifest"], [])
-            self.assert_no_output(box)
+            self.assert_retained_output(box, events[-1])
 
     def test_single_file_is_capped_by_rlimit_fsize(self):
         with Sandbox() as box, tempfile.TemporaryDirectory() as probe:
@@ -467,7 +519,7 @@ class ReverseT62BombTests(unittest.TestCase):
             self.assertLess(elapsed, 10)
             self.assertEqual(int(size_file.read_text().strip()), 100 * 200 + 1, "Datei bei der Grenze abgeschnitten")
             self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
-            self.assert_no_output(box)
+            self.assert_retained_output(box, events[-1])
 
     def test_tool_killed_by_sigxfsz_counts_as_limit_even_without_leftover(self):
         with Sandbox() as box:
@@ -483,7 +535,9 @@ class ReverseT62BombTests(unittest.TestCase):
             events, elapsed = self.run_bomb(box, script, {"zeitlimit_s": 60, "max_dateien": 50})
             self.assertLess(elapsed, 10)
             self.assertEqual(events[-1]["fehlercode"], "zu_gross", events[-1])
-            self.assert_no_output(box)
+            self.assert_retained_output(box, events[-1])
+            assert self.roh_vor_abschluss is not None
+            self.assertGreater(len(self.roh_vor_abschluss), 50, "Dateizahlgrenze tatsächlich erreicht")
 
     def test_clear_output_removes_protected_directories(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -528,16 +582,25 @@ class ReverseT62BombTests(unittest.TestCase):
             archive.writestr("null.bin", b"\x00" * 50_000_000)
         data = buffer.getvalue()
         self.assertLess(len(data), 200_000, "klein komprimiert")
+        original = runner.run_isolated
+        self.roh_vor_abschluss = None
+        def beobachte(*args, **kwargs):
+            try:
+                return original(*args, **kwargs)
+            finally:
+                self.roh_vor_abschluss = rohstand(args[3])
         with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, \
              patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
+             patch.object(runner, "run_isolated", side_effect=beobachte), \
              patch.dict(runner.TOOLS, {"7zz": (seven, *runner.TOOLS["7zz"][1:])}):
             source = box.put("rev/original/dateien/aa/bomb.zip", data)
             started = time.monotonic()
             events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-bomb",
                                          "grenzen": {"zeitlimit_s": 120}})
+            self.assertEqual(Path(source).read_bytes(), data, "ZIP-Original bytegleich")
             self.assertLess(time.monotonic() - started, 30)
             self.assertEqual(events[-1]["fehlercode"], "bombe_verdacht", events[-1])
-            self.assert_no_output(box)
+            self.assert_retained_output(box, events[-1])
 
 
 def mini_pe(overlay=b"", extra=b""):
@@ -604,7 +667,7 @@ class VerschachteltTests(unittest.TestCase):
         self.assertEqual(art["DATA2.CAB"], ("installshield", None, "teil_eines_satzes:DATA1.CAB"))
         self.assertEqual(art["setup.msi"], ("msi", "msiextract", ""))
         self.assertIsNone(art["brief.doc"])
-        self.assertEqual(art["SIEDLER.DAT"][:2], ("siedler3-dat", "siedler3"))
+        self.assertIsNone(art["SIEDLER.DAT"])  # Formatwissen liegt beim externen Leser.
         self.assertIsNone(art["plain.exe"])
         self.assertEqual(art["sfx7z.exe"], ("pe-7z", "7zz", ""))
         self.assertEqual(art["inno.exe"], ("inno", "innoextract", ""))
@@ -636,23 +699,40 @@ class VerschachteltTests(unittest.TestCase):
                                                                        "grund": "teil_eines_satzes:DATA1.CAB"})
         self.assertEqual(meta[basis + "DATA1.CAB~inhalt/Program Files/S3.EXE"]["herkunft"],
                          {"archiv": basis + "DATA1.CAB", "pfad": "Program Files/S3.EXE", "tiefe": 1})
-        s3 = meta[basis + "S3.DAT"]["verschachtelt"]
-        self.assertEqual((s3["status"], s3["grund"]), ("vorgemerkt", "nicht_unterstuetzt:siedler3-dat"))
+        self.assertNotIn(basis + "S3.DAT", meta)  # Quelle bleibt unangetastet für Leser-Nachzug.
         summary = runner.verschachtelt_zusammenfassung(meta)
         self.assertEqual(summary["entpackt"], 1)
-        self.assertEqual([x["pfad"] for x in summary["nicht_entpackt"]], [basis + "S3.DAT"])
+        self.assertEqual(summary["nicht_entpackt"], [])
 
     def test_bombe_im_inneren_container_verwirft_nur_diesen(self):
         def fake(tool, source, ziel, fmt):
             return ["sh", "-c", "head -c 3000000 /dev/zero > null.bin"]
+        original, snapshots = runner.run_isolated, []
+        def beobachte(*args, **kwargs):
+            try:
+                return original(*args, **kwargs)
+            finally:
+                snapshots.append(rohstand(args[3]))
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            (out / "bombe.zip").write_bytes(b"PK\x03\x04" + b"\x00" * 100)
+            archive = b"PK\x03\x04" + b"\x00" * 100
+            (out / "bombe.zip").write_bytes(archive)
             (out / "bleibt.txt").write_bytes(b"x")
-            meta, _ = self.lauf(out, self.cap(max_bytes=1_000_000), fake)
-            self.assertEqual(sorted(runner.dateien_unter(out)), ["bleibt.txt", "bombe.zip"])
-        eintrag = meta["bombe.zip"]["verschachtelt"]
-        self.assertEqual((eintrag["status"], eintrag["grund"]), ("fehler", "zu_gross"))
+            with patch.object(runner, "run_isolated", side_effect=beobachte):
+                meta, abgebrochen = self.lauf(out, self.cap(max_bytes=1_000_000), fake)
+            self.assertFalse(abgebrochen, "Schleife leer; separater Rückhaltfehler bleibt sichtbar")
+            eintrag = meta["bombe.zip"]["verschachtelt"]
+            self.assertEqual((eintrag["status"], eintrag["grund"]), ("teilweise", "zu_gross"))
+            self.assertEqual(eintrag["rueckhalt"], "bombe.zip~inhalt")
+            self.assertIs(eintrag["fortsetzbar"], False)
+            ziel = out / eintrag["rueckhalt"]
+            self.assertTrue(ziel.is_dir(), "Rückhaltverzeichnis vorhanden")
+            pruefe_rohstand(self, ziel, snapshots[-1])
+            self.assertEqual((ziel / "null.bin").read_bytes(), bytes(1_000_001), "begrenzt erhaltene Rohbytes bytegleich")
+            self.assertEqual(sorted(runner.dateien_unter(out)), ["bleibt.txt", "bombe.zip", "bombe.zip~inhalt/null.bin"])
+            self.assertEqual((out / "bombe.zip").read_bytes(), archive)
+            self.assertEqual((out / "bleibt.txt").read_bytes(), b"x")
+            self.assertEqual(runner._STOPP["fehlercode"], "zu_gross")
 
     def test_tiefenlimit_und_schalter(self):
         def fake(tool, source, ziel, fmt):
@@ -676,11 +756,20 @@ class VerschachteltTests(unittest.TestCase):
             return ["sh", "-c", "echo 'Datei ist verschluesselt' >&2; exit 2"]
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
-            (out / "geheim.rar").write_bytes(b"Rar!\x1a\x07\x00" + b"\x00" * 10)
-            meta, _ = self.lauf(out, self.cap(), fake)
+            archive = b"Rar!\x1a\x07\x00" + b"\x00" * 10
+            (out / "geheim.rar").write_bytes(archive)
+            vorher = rohstand(out)
+            meta, abgebrochen = self.lauf(out, self.cap(), fake)
+            self.assertFalse(abgebrochen, "kein weiterer Kandidat; Rückhalt verbietet Resume")
             self.assertEqual(runner.dateien_unter(out), ["geheim.rar"])
-        eintrag = meta["geheim.rar"]["verschachtelt"]
-        self.assertEqual((eintrag["status"], eintrag["grund"]), ("fehler", "werkzeug_fehler"))
+            eintrag = meta["geheim.rar"]["verschachtelt"]
+            self.assertEqual((eintrag["status"], eintrag["grund"]), ("teilweise", "werkzeug_fehler"))
+            self.assertEqual(eintrag["rueckhalt"], "geheim.rar~inhalt")
+            self.assertIs(eintrag["fortsetzbar"], False)
+            self.assertTrue((out / eintrag["rueckhalt"]).is_dir(), "auch leerer gesperrter Teilbaum bleibt erhalten")
+            pruefe_rohstand(self, out, vorher)
+            self.assertEqual((out / "geheim.rar").read_bytes(), archive)
+            self.assertEqual(runner._STOPP["fehlercode"], "werkzeug_fehler")
         self.assertIn("verschluesselt", eintrag["meldung"])
 
     def test_e2e_zip_mit_tar_gz_wird_rekursiv_entpackt(self):
@@ -839,19 +928,39 @@ class GrenzenFristT87Tests(unittest.TestCase):
         def fake(tool, source, ziel, fmt):
             return ["sh", "-c", "printf a > x1.txt; printf b > x2.txt"]
         haupt = ["sh", "-c", "for i in 1 2 3; do printf 'PK\\003\\004xxxxxxxx' > z$i.zip; done"]
+        original, snapshots = runner.run_isolated, []
+        def beobachte(*args, **kwargs):
+            try:
+                return original(*args, **kwargs)
+            finally:
+                snapshots.append(rohstand(box.work / "job-voll"))
         with Sandbox() as box, tempfile.TemporaryDirectory() as tmp_root, \
              patch.object(runner, "TMP_ROOT", Path(tmp_root)), \
              patch.object(runner, "command_for", return_value=haupt), \
-             patch.object(runner, "verschachtelt_kommando", side_effect=fake):
-            source = box.put("rev/original/dateien/aa/set.zip", b"PK\x03\x04" + b"\x00" * 96)
+             patch.object(runner, "verschachtelt_kommando", side_effect=fake), \
+             patch.object(runner, "run_isolated", side_effect=beobachte):
+            original_bytes = b"PK\x03\x04" + b"\x00" * 96
+            source = box.put("rev/original/dateien/aa/set.zip", original_bytes)
             events = runner.run_request({"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-voll",
                                          "grenzen": {"max_dateien": 5}})
-        ende = events[-1]
-        self.assertEqual((ende["status"], ende["fehlercode"]), ("teilweise", "zu_gross"), ende)
-        self.assertEqual((ende["abbruch"]["phase"], ende["abbruch"]["offen"]), ("verschachtelt", 4))
-        self.assertEqual(sorted(e["pfad"] for e in ende["manifest"]),
-                         ["z1.zip", "z1.zip~inhalt/x1.txt", "z1.zip~inhalt/x2.txt", "z2.zip", "z3.zip"])
-        self.assertEqual(ende["verschachtelt"]["abbruch"]["grund"], "grenze")
+            ende = events[-1]
+            self.assertEqual((ende["status"], ende["fehlercode"]), ("teilweise", "zu_gross"), ende)
+            self.assertEqual(ende["manifest"], [], "kein unbestätigter Teilstand als Erfolg publiziert")
+            retention = ende["retention"]
+            self.assertIs(retention["erhalten"], True)
+            self.assertIs(retention["fortsetzbar"], False)
+            self.assertEqual((retention["abbruch"]["phase"], retention["abbruch"]["offen"]), ("verschachtelt", 4))
+            self.assertEqual(retention["abbruch"]["grund"], "grenze")
+            self.assertEqual(retention["abbruch"], runner._STOPP, "bestätigter Abbruchbeleg unverändert")
+            ziel = box.work / "job-voll"
+            pruefe_rohstand(self, ziel, snapshots[-1])
+            expected = {**{f"z{i}.zip": b"PK\x03\x04xxxxxxxx" for i in (1, 2, 3)},
+                        "z1.zip~inhalt/x1.txt": b"a", "z1.zip~inhalt/x2.txt": b"b"}
+            self.assertEqual(sorted(runner.dateien_unter(ziel)), sorted(expected))
+            for rel, raw in expected.items():
+                self.assertEqual((ziel / rel).read_bytes(), raw, "alle fünf zurückgehaltenen Dateien bytegleich")
+            self.assertEqual(Path(source).read_bytes(), original_bytes)
+
 
 
 class LiveFortschrittT85Tests(unittest.TestCase):
@@ -867,7 +976,7 @@ class LiveFortschrittT85Tests(unittest.TestCase):
              patch("sys.stdout", new_callable=io.StringIO) as out:
             source = box.put("rev/original/dateien/aa/set.zip", b"PK\x03\x04" + b"\x00" * 96)
             auftrag = {"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-live", **extra}
-            with patch("sys.stdin", io.StringIO(json.dumps(auftrag) + "\n")):
+            with eingabe_pipe(json.dumps(auftrag) + "\n"):
                 self.assertEqual(runner.main(), 0)
             self.assertIsNone(runner._FORTSCHRITT, "Thread-Stand nach dem Auftrag geraeumt")
             return [json.loads(z) for z in out.getvalue().splitlines() if z.strip()]
@@ -910,7 +1019,7 @@ class LiveFortschrittT85Tests(unittest.TestCase):
             source = box.put("rev/original/dateien/aa/set.zip", b"PK\x03\x04" + b"\x00" * 96)
             auftrag = {"kommando": "extrahieren", "eingabe": source, "ausgabe": "/arbeit/job-rest",
                        "fortschritt": {"takt_s": 1}}
-            with patch("sys.stdin", io.StringIO(json.dumps(auftrag) + "\n")):
+            with eingabe_pipe(json.dumps(auftrag) + "\n"):
                 with self.assertRaises(SystemExit) as ende:
                     runner.main()
             self.assertEqual(ende.exception.code, 3)
@@ -934,6 +1043,34 @@ class LiveFortschrittT85Tests(unittest.TestCase):
         self.assertEqual(len(kurz), runner.FORTSCHRITT_DATEI_ZEICHEN)
         self.assertTrue(kurz.startswith("...") and kurz.endswith("I386/DRIVER.CA_"))
         self.assertEqual(runner.kurz_pfad("x/y"), "x/y")
+
+
+class RetiredLegacyTests(unittest.TestCase):
+    def test_explicit_legacy_requests_fail_before_output(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(runner, "WORK", Path(tmp) / "work"):
+            for value in (True,):
+                result = runner.run_request({"optionen": {"siedler3": value}})
+                self.assertEqual(result[0]["fehlercode"], "format_nicht_unterstuetzt")
+                self.assertEqual(result[0]["format_detail"], "reverse_siedler3_stillgelegt")
+                self.assertEqual(result[0]["manifest"], [])
+                self.assertFalse((Path(tmp) / "work").exists())
+            result = runner.run_request({"werkzeug": "siedler3"})
+            self.assertEqual(result[0]["format_detail"], "reverse_siedler3_stillgelegt")
+            self.assertFalse(hasattr(runner, "siedler3_modul"))
+            self.assertFalse(hasattr(runner, "siedler3_entpacken"))
+
+    def test_old_false_option_keeps_normal_validation(self):
+        # Rev1 B: altes explizites false bleibt folgenlos; es fordert keinen Decoder an.
+        with tempfile.TemporaryDirectory() as tmp:
+            bib, work = Path(tmp) / "bib", Path(tmp) / "work"
+            bib.mkdir()
+            source = bib / "eigene.bin"
+            source.write_bytes(b"eigene unbekannte Fixturebytes")
+            with patch.object(runner, "BIB", bib), patch.object(runner, "WORK", work), patch.object(runner, "selected_tool", return_value=None):
+                with self.assertRaisesRegex(ValueError, "kein Werkzeug angegeben"):
+                    runner.run_request({"auftrag_id": "legacy-false", "eingabe": str(source),
+                        "optionen": {"siedler3": False, "siedler3_stand": {"aktiv": False}}})
+            self.assertFalse(work.exists())
 
 
 if __name__ == "__main__":

@@ -1049,9 +1049,8 @@ PE_OVERLAY_MIN = 64 * 1024
 # Spieleigene Daten-Container: erkannt und als Folgeschritt (Parser/Inspektor) vorgemerkt, nicht entpackt.
 SPIEL_CONTAINER = (
     (b"MPQ\x1a", "mpq"), (b"IWAD", "wad"), (b"PWAD", "wad"), (b"PACK", "quake-pak"), (b"BIGF", "ea-big"),
-    (b"\x04\x13\x04\x00\x0c\x00\x00\x00", "siedler3-dat"),
 )
-SPIEL_FORMATE = frozenset(name for _, name in SPIEL_CONTAINER) | {"siedler3-snd", "siedler3-map"}
+SPIEL_FORMATE = frozenset(name for _, name in SPIEL_CONTAINER)
 SATZ_RE = re.compile(r"^(.*?)(\d+)$")
 
 
@@ -1171,9 +1170,6 @@ def container_art(path: Path) -> tuple[str, str | None, str] | None:
             head = stream.read(HEAD_BYTES)
     except OSError:
         return None
-    siedler = siedler3_modul().identify(head, path.suffix)
-    if siedler:
-        return siedler, "siedler3", ""
     if head.startswith(ISC_MAGIC):
         satz = installshield_satz(path)
         if satz:
@@ -1431,42 +1427,6 @@ def entpacke_container(out: Path, rel: str, fmt: str, tool: str, cap: dict[str, 
 
 
 
-# P18-T72: builtin static decoder, same E budgets and manifest as other containers.
-_SIEDLER3: Any = None
-
-
-def siedler3_modul() -> Any:
-    global _SIEDLER3
-    if _SIEDLER3 is None:
-        spec = importlib.util.spec_from_file_location("reverse_siedler3", Path(__file__).with_name("siedler3.py"))
-        if spec is None or spec.loader is None:
-            raise ValueError("siedler3.py fehlt")
-        _SIEDLER3 = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(_SIEDLER3)
-    return _SIEDLER3
-
-
-def siedler3_entpacken(source: Path, out: Path, rel: str, cap: dict[str, int], input_size: int,
-                       deadline: float, meta: dict[str, dict[str, Any]], stand: Bestand | None = None) -> dict[str, Any]:
-    stand = stand or Bestand(out)
-    result = siedler3_modul().extract(source, out, rel, cap, input_size, deadline, limit_violation, stand.zahlen())
-    # P18-T87: Bestand nur um die neuen Dateien (und ihren einen Ordner) ergaenzen statt die Ausgabe neu zu zaehlen.
-    if result["metadaten"]:
-        stand.plus(len(result["metadaten"]), 1, sum((out / p).stat().st_size for p in result["metadaten"]))
-    depth = int(meta.get(rel, {}).get("herkunft", {}).get("tiefe", 0)) + 1
-    for item in result["metadaten"].values():
-        item["herkunft"]["tiefe"] = depth
-    meta.update(result["metadaten"])
-    return {k: v for k, v in result.items() if k != "metadaten"}
-
-
-def siedler3_status(meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    results = {p: m["verschachtelt"] for p, m in meta.items()
-               if m.get("verschachtelt", {}).get("werkzeug") == "siedler3"}
-    errors = [v.get("grund") for v in results.values() if v.get("status") != "entpackt"]
-    return {"ergebnisse": results, "fehlercode": errors[0] if errors else None}
-
-
 # P18-T76: same E budgets and manifest/import path; no PE loader or subprocess.
 _PE_RES: Any = None
 
@@ -1505,7 +1465,7 @@ def pe_ressourcen_status(meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
 
 def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
                            started: float, ueberspringen: frozenset[str] = frozenset(),
-                           pe_aktiv: bool = False, siedler_aktiv: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
+                           pe_aktiv: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
     """Rekursiv bis keine neuen Container auftauchen. Rueckgabe: Zusatzmetadaten je Pfad, vorzeitig beendet.
 
     P18-T87: Die Ausgabe wird einmal gezaehlt (Bestand) und nur um neu Entpacktes ergaenzt; Dateien aus einem entpackten
@@ -1549,8 +1509,6 @@ def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env:
             continue
         fmt, tool, grund = art
         eintrag: dict[str, Any] = {"format": fmt}
-        if tool == "siedler3" and not siedler_aktiv:
-            tool, grund = None, "Produktschalter reverse_siedler3 ist AUS"
         if tool is None and grund.startswith("teil_eines_satzes:"):
             eintrag.update(status="teil", grund=grund)
         elif tool is None:
@@ -1558,9 +1516,6 @@ def entpacke_verschachtelt(out: Path, cap: dict[str, int], input_size: int, env:
                            grund="nicht_unterstuetzt:" + fmt, hinweis=grund)
         elif tiefe.get(rel, 0) >= cap["max_verschachtelung"]:
             eintrag.update(status="fehler", grund="tiefenlimit")
-        elif tool == "siedler3":
-            fortschritt_phase("siedler3", rel)
-            eintrag.update(siedler3_entpacken(out / rel, out, rel, cap, input_size, deadline, meta, stand))
         else:
             fortschritt_phase("verschachtelt", rel)
             eintrag.update(entpacke_container(out, rel, fmt, tool, cap, input_size, env, job_tmp, deadline, stand))
@@ -1595,9 +1550,6 @@ def merge_verschachtelt(files: Any, meta: dict[str, dict[str, Any]]) -> None:
             datei["metadaten"] = {**(datei.get("metadaten") or {}), **zusatz}
             if "verschachtelt" in zusatz:
                 datei["art"] = "archiv"
-            elif "siedler3" in zusatz:
-                mime = zusatz.get("mime_type", "")
-                datei["art"] = "asset" if mime.startswith(("image/", "audio/")) else "text" if mime == "application/json" else "binaer"
             elif "pe_ressource" in zusatz:
                 mime = zusatz.get("mime_type", "")
                 datei["art"] = "asset" if mime.startswith("image/") else "text" if mime.startswith("text/") else "binaer"
@@ -1611,11 +1563,11 @@ def merge_verschachtelt(files: Any, meta: dict[str, dict[str, Any]]) -> None:
 
 
 def verschachtelt_isoliert(out: Path, cap: dict[str, int], input_size: int, env: dict[str, str], job_tmp: Path,
-                           started: float, pe_aktiv: bool = False, siedler_aktiv: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
+                           started: float, pe_aktiv: bool = False) -> tuple[dict[str, dict[str, Any]], bool]:
     """Wie entpacke_verschachtelt, mit eigenem TMPDIR und Prozess-Sweep danach (nach dem Hauptwerkzeug)."""
     job_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        return entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, pe_aktiv=pe_aktiv, siedler_aktiv=siedler_aktiv)
+        return entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, pe_aktiv=pe_aktiv)
     finally:
         rest = sweep_processes()
         clean_tmp(job_tmp)
@@ -1706,7 +1658,7 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
                         teilweise = not entpacke_iso(out, eintrag, cap, input_size, env, job_tmp, hinweise,
                                                      arbeitsende(started, cap)) or teilweise
                 iso = frozenset(p for p, e in meta.items() if (e.get("metadaten") or {}).get("rolle") == "iso")
-                verschachtelt, abgebrochen = entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, iso, optionen.get("pe_ressourcen") is True, optionen.get("siedler3") is True)
+                verschachtelt, abgebrochen = entpacke_verschachtelt(out, cap, input_size, env, job_tmp, started, iso, optionen.get("pe_ressourcen") is True)
         finally:
             rest = sweep_processes()
             clean_tmp(job_tmp)
@@ -1741,16 +1693,14 @@ def run_disc(req: dict[str, Any], job: str, cap: dict[str, int], input_size: int
             disc_meta(datei)
     merge_verschachtelt(files, verschachtelt)
     pe_status = pe_ressourcen_status(verschachtelt)
-    siedler_status = siedler3_status(verschachtelt)
-    teilweise = teilweise or bool(pe_status["fehlercode"] or siedler_status["fehlercode"])
+    teilweise = teilweise or bool(pe_status["fehlercode"])
     abgebrochen = abgebrochen or _STOPP is not None
     return [
         {"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)},
         {"status": "teilweise" if teilweise or abgebrochen else "fertig",
-         "fehlercode": pe_status["fehlercode"] or siedler_status["fehlercode"] or ("werkzeug_fehler" if teilweise else abbruch_code(abgebrochen)),
+         "fehlercode": pe_status["fehlercode"] or ("werkzeug_fehler" if teilweise else abbruch_code(abgebrochen)),
          **({"abbruch": _STOPP} if _STOPP else {}),
          "pe_ressourcen": {"aktiv": optionen.get("pe_ressourcen") is True, "stand": optionen.get("pe_ressourcen_stand"), **pe_status},
-         "siedler3": {"aktiv": optionen.get("siedler3") is True, "stand": optionen.get("siedler3_stand"), **siedler_status},
          "werkzeug_version": version, "format": erkennung.format, "spurtabelle": tabelle, "hinweise": hinweise,
          "verschachtelt": verschachtelt_zusammenfassung(verschachtelt),
          "dauer_s": round(time.monotonic() - started, 3), **manifest_wire(files), "ausgabe_bytes": str(size) if cap.get("blockuebernahme") else size},
@@ -1812,6 +1762,13 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     if req.get("kommando") == "leser_ausfuehren":
         from leser import ausfuehren
         return [ausfuehren(req, stopp=signal_angefordert, stopp_frist=signal_frist)]
+    # P18-T97: alte explizite Legacy-Aufträge sichtbar ablehnen, bevor irgendein Ausgabepfad entsteht.
+    legacy_options = req.get("optionen")
+    if req.get("werkzeug") == "siedler3" or (isinstance(legacy_options, dict) and
+            legacy_options.get("siedler3") is True):
+        return [{"status": "fehler", "fehlercode": "format_nicht_unterstuetzt",
+                 "format_detail": "reverse_siedler3_stillgelegt", "manifest": [],
+                 "meldung": "Eingebauter Leser stillgelegt; registrierten externen Leser verwenden."}]
     global _STOPP
     _STOPP = None
     job = job_id(req)
@@ -1823,7 +1780,6 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     raw_options = req.get("optionen")
     optionen: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
     pe_aktiv = optionen.get("pe_ressourcen") is True
-    siedler_aktiv = optionen.get("siedler3") is True
     input_size = source.stat().st_size
     if req.get("kommando") == "spurtabelle" and not req.get("werkzeug"):
         # P18-T49: nur die Spurtabelle (kein Schreiben in /arbeit); mit 'werkzeug' bleibt der bisherige Weg.
@@ -1853,11 +1809,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
             return [{"status": "fehler", "fehlercode": "format_nicht_unterstuetzt", "format_detail": unsupported,
                      "meldung": "Format " + unsupported + " wird noch nicht unterstuetzt", "manifest": []}]
     fmt = detect_format(source) if extract else ""
-    siedler_fmt = siedler3_modul().identify(head_bytes(source, 96), Path(str(req.get("eingabe_name") or source.name)).suffix) if extract else None
-    siedler_only = bool(siedler_fmt and siedler_aktiv)
-    tool = "siedler3" if siedler_only else selected_tool(req, fmt)
-    if siedler_only:
-        fmt = str(siedler_fmt)
+    tool = selected_tool(req, fmt)
     if not tool:
         if extract:
             return [{"status": "fehler", "fehlercode": "nicht_unterstuetzt",
@@ -1869,7 +1821,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     if any(out.iterdir()):
         raise ValueError("Ausgabeordner muss leer sein")
     pe_only = extract and fmt == "pe" and pe_aktiv and pe_container(source) is None
-    command = [] if pe_only or siedler_only else command_for(tool, source, out, req, fmt)
+    command = [] if pe_only else command_for(tool, source, out, req, fmt)
     started = time.monotonic()
     job_tmp = TMP_ROOT / job
     shutil.rmtree(job_tmp, ignore_errors=True)
@@ -1886,7 +1838,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
     preexec = file_size_limit(per_file_limit(cap, input_size)) if extract else None
     try:
         try:
-            if pe_only or siedler_only:
+            if pe_only:
                 code, meldung = 0, ""  # ordinary PE: resources are not an archive for 7zz
             else:
                 fortschritt_phase("iso_entpacken" if fmt in SEVENZIP_TYPES else "werkzeug")
@@ -1913,17 +1865,12 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
                 raise GrenzeUeberschritten(*file_limit_violation(cap, input_size))
         if code:
             return [{"status": "fehler", "fehlercode": "werkzeug_fehler", "meldung": meldung}]
-        verschachtelt, abgebrochen = (verschachtelt_isoliert(out, cap, input_size, env, job_tmp, started, pe_aktiv, siedler_aktiv)
+        verschachtelt, abgebrochen = (verschachtelt_isoliert(out, cap, input_size, env, job_tmp, started, pe_aktiv)
                                       if extract else ({}, False))
         if extract and fmt == "pe" and pe_aktiv:
             rel = Path(str(req.get("eingabe_name") or source.name)).name
             fortschritt_phase("pe_ressourcen", rel)
             pe_ressourcen(source, out, rel, cap, input_size, arbeitsende(started, cap), verschachtelt)
-        if siedler_only:
-            rel = Path(str(req.get("eingabe_name") or source.name)).name
-            fortschritt_phase("siedler3", rel)
-            result = siedler3_entpacken(source, out, rel, cap, input_size, arbeitsende(started, cap), verschachtelt)
-            verschachtelt.setdefault(rel, {})["verschachtelt"] = {"format": siedler_fmt, **result}
         if _STOPP is not None:
             return [{"status": "teilweise", "fehlercode": abbruch_code(True), "manifest": [],
                      "retention": {"erhalten": True, "fortsetzbar": False, "grund": _STOPP.get("grund"),
@@ -1936,7 +1883,7 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
                  **({"retention": {"erhalten": True, "fortsetzbar": False, "grund": str(exc)}} if extract else {}),
                  "fehlercode": exc.code, "meldung": str(exc), "manifest": [],
                  "dauer_s": round(time.monotonic() - started, 3)}]
-    version = "siedler3 P18-T72" if siedler_only else "pe-ressourcen P18-T76" if pe_only else tool_version(tool)
+    version = "pe-ressourcen P18-T76" if pe_only else tool_version(tool)
     merge_verschachtelt(files, verschachtelt)
     abgebrochen = abgebrochen or _STOPP is not None
     ende: dict[str, Any] = {"status": "teilweise" if abgebrochen else "fertig", "fehlercode": abbruch_code(abgebrochen),
@@ -1949,10 +1896,6 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
         if pe_status["fehlercode"]:
             ende.update(status="teilweise", fehlercode=pe_status["fehlercode"])
         ende["pe_ressourcen"] = {"aktiv": pe_aktiv, "stand": optionen.get("pe_ressourcen_stand"), **pe_status}
-        siedler_status = siedler3_status(verschachtelt)
-        if siedler_status["fehlercode"]:
-            ende.update(status="teilweise", fehlercode=siedler_status["fehlercode"])
-        ende["siedler3"] = {"aktiv": siedler_aktiv, "stand": optionen.get("siedler3_stand"), **siedler_status}
         ende["verschachtelt"] = verschachtelt_zusammenfassung(verschachtelt)
     return [{"status": "fortschritt", "funktionen_fertig": len(files), "gesamt": len(files)}, ende]
 

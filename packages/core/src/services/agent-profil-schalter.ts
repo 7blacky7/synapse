@@ -328,6 +328,7 @@ export async function ausweisSchattenAktiv(project: string, mitAnmeldung = true)
 }
 
 export interface ProfilProduktSchalterStand {
+  stillgelegt?: boolean; historischer_wert?: boolean; nachfolger?: string;
   funktion: ProfilProduktFunktion;
   project: string | null;
   aktiv: boolean;
@@ -373,8 +374,9 @@ export async function leseProfilProduktSchalter(
     } as import('pg').QueryConfig & { query_timeout: number });
     const rang = (z: SchalterZeile) => (z.ebene === 'projekt' ? 2 : 0) + (z.funktion === funktion ? 1 : 0);
     const z = [...r.rows].sort((a, b) => rang(b) - rang(a))[0];
-    if (!z) return basis;
-    return { ...basis, aktiv: z.aktiv, quelle: 'produkt-schalter', ebene: z.ebene,
+    if (!z) return funktion==='reverse_siedler3'?{...basis,aktiv:false,stillgelegt:true,nachfolger:'reverse leser_liste'}:basis;
+    return { ...basis, aktiv: funktion==='reverse_siedler3'?false:z.aktiv, quelle: 'produkt-schalter', ebene: z.ebene,
+      ...(funktion==='reverse_siedler3'?{stillgelegt:true,historischer_wert:z.aktiv,nachfolger:'reverse leser_liste'}:{}),
       regel_funktion: z.funktion as ProfilProduktFunktion | 'alle', gesetzt_von: z.gesetzt_von,
       gesetzt_am: z.gesetzt_am.toISOString(), grund: z.grund };
   } catch {
@@ -447,6 +449,7 @@ export async function setzeProfilProduktSchalter(
   } else {
     throw new ProfilSchalterFehler('recht_fehlt');
   }
+  if(e.funktion==='reverse_siedler3')throw new ProfilSchalterFehler('funktion_stillgelegt');
   if(e.funktion==='reverse_pipeline_halt')await setzeReversePipelineHalt(getPool(),e.aktiv,e.grund.trim(),wer,setter);
   else await getPool().query(
     `INSERT INTO agent_profil_schalter (ebene, project, funktion, aktiv, grund, gesetzt_von, setter_identity_id, gesetzt_am)

@@ -102,6 +102,7 @@ export const INTERN_SCHALTER = {
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 
 export interface InternSchalterStand {
+  stillgelegt?: boolean; nachfolger?: string;
   name: string;
   /** wirksam: gesetzt UND nicht abgelaufen */
   aktiv: boolean;
@@ -169,13 +170,15 @@ function alsStand(name: string, z: SchalterZeile | null, jetzt = Date.now()): In
   if (!z) {
     return {
       name, aktiv: false, gesetzt: false, abgelaufen: false, modus: null, bis: null,
+      ...(name==='reverse_siedler3'?{stillgelegt:true,nachfolger:'reverse leser_liste'}:{}),
       dauerhaft: false, grund: null, gesetzt_von: null, gesetzt_am: null,
     };
   }
   const abgelaufen = (z.aktiv || name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'hauptagent' || name === 'hauptagent_api' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) && z.bis !== null && z.bis.getTime() <= jetzt;
   return {
     name,
-    aktiv: z.aktiv && !abgelaufen,
+    aktiv: name==='reverse_siedler3'?false:z.aktiv && !abgelaufen,
+    ...(name==='reverse_siedler3'?{stillgelegt:true,nachfolger:'reverse leser_liste'}:{}),
     gesetzt: z.aktiv,
     abgelaufen,
     modus: z.modus,
@@ -205,13 +208,14 @@ export async function setzeSchalter(
       `Unbekannter Schalter "${name}". Erlaubt: ${Object.keys(INTERN_SCHALTER).join(', ')}.`,
     );
   }
+  if(name==='reverse_siedler3')throw new InternSchalterFehler('funktion_stillgelegt','Siedler-3-Legacy ist stillgelegt; externen Leser verwenden.');
   const erlaubt: readonly string[] = INTERN_SCHALTER[name];
   let modus: string | null = null;
   let bis: Date | null = null;
   let hinweis: string | undefined;
 
   // Der Freigabeschalter braucht auch fuer einen AUS-Override einen Ablauf.
-  if (opt.aktiv || name === 'reverse_siedler3' || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) {
+  if (opt.aktiv || name === 'reverse_verknuepfungen' || name === 'reverse_erkenntnisse' || name === 'reverse_fortschritt_live' || name === 'reverse_blockuebernahme' || name === 'reverse_asset_registrierung' || name === 'reverse_parser_adapter' || name === 'reverse_leser' || name === 'reverse_leser_nachzug' || name === 'reverse_leser_runtime_verwaltung' || name === 'reverse_leser_hinweise' || name === 'reverse_entstoerer_auto' || name === 'reverse_wav_pregap' || name === 'agentennetzwerk' || name === 'tray_token_weiterleitung' || name === 'main_synapse' || name === 'token_identitaet' || name === 'agent_bezug_modus' || name === 'w1b_durchsetzung' || name === 'w1b_antwortanpassung' || name === 'w1b_anmeldung' || name === 'agenten_ausweis' || name === 'mehrprojekt' || (name === 'hex_lesen' || name === 'hex_adressen' || name === 'hex_formate' || name === 'hex_entschluesseln')) {
     modus = opt.modus ?? erlaubt[0];
     if (!erlaubt.includes(modus)) {
       throw new InternSchalterFehler('modus_ungueltig', `Modus "${modus}" passt nicht zu "${name}". Erlaubt: ${erlaubt.join(', ')}.`);

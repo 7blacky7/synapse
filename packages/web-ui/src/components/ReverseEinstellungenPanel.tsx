@@ -10,7 +10,7 @@ const funktionen=[
  {name:'reverse_pipeline_halt',titel:'Neue Reverse-Aufträge anhalten',text:'EIN sperrt den Zulauf dauerhaft. Bereits zugelassene Aufträge laufen aus. Vor einem Image-Wechsel müssen wartende und laufende Aufträge sowie physische Container vollständig ausgelaufen sein. AUS gibt nur den Zulauf wieder frei.'},
  {name:'reverse_blockuebernahme',titel:'Fortsetzbare Übernahme',text:'Metadaten und Analyse in begrenzten Blöcken übernehmen. Große Medien behalten ihren bestätigten Fortschritt. Gilt global, wirksam ab dem nächsten Auftrag.'},
  {name:'reverse_erkenntnisse',titel:'Erkenntnisse am Eintrag',text:'Manuelle Aussagen mit Quellen und unveränderlicher Versionsgeschichte. Gebundene Projekte können gemeinsam daran arbeiten.'},
- {name:'reverse_siedler3',titel:'Siedler 3: Datencontainer',text:'Grafiken und Sounds aus GFX/SND als einzelne Dateien ablegen; verschlüsselte MAP-Blöcke nur melden. Gilt global. Jede Änderung startet das vollständige Entpacken aller automatisch analysierten Medien neu. Bereits erzeugte Dateien bleiben beim Ausschalten erhalten.'} ,
+ {name:'reverse_siedler3',titel:'Siedler 3: externer Leser',text:'Der eingebaute Datenleser ist stillgelegt. GFX/SND werden über registrierte, versionierte externe Leser verarbeitet. Bereits erzeugte Ergebnisse bleiben erhalten.'},
  {name:'reverse_pe_ressourcen',titel:'PE-Ressourcen',text:'Icons, Bitmaps, Dialoge, Stringtabellen und Versionsinfo aus EXE/DLL ablegen. Gilt global. Jede Änderung startet das vollständige Entpacken aller automatisch analysierten Medien neu. Bereits erzeugte Dateien bleiben beim Ausschalten erhalten.'},
  {name:'reverse_fortschritt_live',titel:'Live-Fortschritt laufender Aufträge',text:'Der Reverse-Container meldet beim Entpacken und Analysieren laufend Phase, Dateien, Bytes und aktuelle Datei; reverse status und diagnose zeigen das und warnen bei Stillstand (ohne Abbruch). Gilt global. Wirkt ab dem nächsten gestarteten Auftrag.'},
  {name:'reverse_entstoerer_auto',titel:'Automatischer Entstörer',text:'Räumt regelmäßig ausführerlose Aufträge, abgelaufene Leases und hängende Reverse-Container auf (wie reverse entstoeren). Gilt global. Standard EIN wie bisher.'},
@@ -65,8 +65,8 @@ export function ReverseEinstellungenPanel({project}:{project:string}){
   {funktionen.map(f=>{const s=stand.find(x=>x.funktion===f.name);return <div className="cp-setting-field wide" key={f.name}>
    <span><b>{f.titel}: {s?(s.aktiv?'EIN':'AUS'):'…'}</b><small>{f.text}</small>
     {s&&<small>Quelle: {s.quelle}{s.ebene?' ('+s.ebene+')':''}{s.letzter_fehler?' · '+s.letzter_fehler:''}</small>}</span>
-   <button type="button" disabled={busy||!s||grund.trim().length<5} onClick={()=>void speichern('/schalter',{
-    profil_funktion:f.name,aktiv:!s?.aktiv,ebene:GLOBALE_FUNKTIONEN.includes(f.name)?'global':ebene==='eintrag'?'global':ebene,grund})}>{s?.aktiv?'Ausschalten':'Einschalten'}</button>
+   <button type="button" disabled={f.name==='reverse_siedler3'||busy||!s||grund.trim().length<5} onClick={()=>void speichern('/schalter',{
+    profil_funktion:f.name,aktiv:!s?.aktiv,ebene:GLOBALE_FUNKTIONEN.includes(f.name)?'global':ebene==='eintrag'?'global':ebene,grund})}>{f.name==='reverse_siedler3'?'Stillgelegt':s?.aktiv?'Ausschalten':'Einschalten'}</button>
   </div>;})}
   <label className="cp-setting-field wide"><span><b>Ebene</b><small>Global: alle Projekte. Projekt: Lese- und Antwortgrenzen dieses Projekts. Reverse-Eintrag: Entpack-, Speicher- und Analysegrenzen eines gebundenen Eintrags (gilt für alle Projekte mit diesem Eintrag).</small></span><select value={ebene} onChange={e=>{setEbene(e.target.value as 'global'|'projekt'|'eintrag');setWerte({});}}>
    <option value="projekt">Dieses Projekt</option><option value="global">Global</option><option value="eintrag">Reverse-Eintrag</option></select></label>

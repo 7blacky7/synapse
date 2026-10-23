@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "zweck": "Eigene synthetische Fixtureverträge; keine fremden Spieldaten und kein ausführbares Legacy-Oracle.",
+  "herkunft": {
+    "legacy_basis": "a0a21dcd",
+    "legacy_datei_sha256": "52c594dfddb88c841a9b42c5ee225b48ab4580b8e6e58d25cd33101f2c32df0d",
+    "paritaet_vor_abbau": "42a24525 (120 Pixel/Offset-Fälle), anschließender PNG-Fix und V6 34259dda/4814afe2",
+    "ableitung": "Feste kleine RGBA-/RIFF-/Roh-Verträge unabhängig berechnet (keine Decoder-/Testausführung), Job b93b6d64; PNG-Chunkreihenfolge IHDR/IDAT/IEND, Filter0, zlib Standard6. Verifikation erst in Testphase.",
+    "shadow_beleg": "42a24525-65e6-4217-a82f-1a5988ba4526: Legacy78B/e3c4cf6a, neu nach Fix bytegleich."
+  },
+  "bilder": [
+    {
+      "kind": "sprite",
+      "width": 3,
+      "height": 2,
+      "rgba_hex": "00000000ff0000ff00ff00ffff0000ff0000000000000000",
+      "png_bytes": 77,
+      "png_sha256": "9ed1d47a9b0d14aaf21aeb54fa2604909b756c922d0064916b14f67d5faf6960",
+      "gruppe": "0x106",
+      "quelle": {
+        "offset": "176",
+        "laenge": "22"
+      },
+      "versatz_x": "-2",
+      "versatz_y": "3",
+      "darstellung": "sprite"
+    },
+    {
+      "kind": "torso",
+      "width": 3,
+      "height": 2,
+      "rgba_hex": "00000000ffffffff838383ffffffffff0000000000000000",
+      "png_bytes": 83,
+      "png_sha256": "01d27e522ed1296fe5d724ddba270e8ff006bd3f8aa12dfd8c7722f126e40a6d",
+      "gruppe": "0x3112",
+      "quelle": {
+        "offset": "210",
+        "laenge": "19"
+      },
+      "versatz_x": "-2",
+      "versatz_y": "3",
+      "darstellung": "graustufenmaske"
+    },
+    {
+      "kind": "shadow",
+      "width": 3,
+      "height": 2,
+      "rgba_hex": "000000000000008000000080000000800000000000000000",
+      "png_bytes": 74,
+      "png_sha256": "fc795c27378711c086c7c59319261ddafc1c7fe72d94163ee4c35bb542463d80",
+      "gruppe": "0x5982",
+      "quelle": {
+        "offset": "242",
+        "laenge": "16"
+      },
+      "versatz_x": "-2",
+      "versatz_y": "3",
+      "darstellung": "shadow"
+    },
+    {
+      "kind": "gui",
+      "width": 3,
+      "height": 2,
+      "rgba_hex": "00000000ff0000ff00ff00ffff0000ff0000000000000000",
+      "png_bytes": 77,
+      "png_sha256": "9ed1d47a9b0d14aaf21aeb54fa2604909b756c922d0064916b14f67d5faf6960",
+      "gruppe": "0x11306",
+      "quelle": {
+        "offset": "258",
+        "laenge": "18"
+      },
+      "versatz_x": "0",
+      "versatz_y": "0",
+      "darstellung": "gui"
+    },
+    {
+      "kind": "landscape",
+      "width": 3,
+      "height": 2,
+      "rgba_hex": "00000000ff0000ff00ff00ffff0000ff0000000000000000",
+      "png_bytes": 77,
+      "png_sha256": "9ed1d47a9b0d14aaf21aeb54fa2604909b756c922d0064916b14f67d5faf6960",
+      "gruppe": "0x2412",
+      "quelle": {
+        "offset": "276",
+        "laenge": "16"
+      },
+      "versatz_x": "0",
+      "versatz_y": "0",
+      "darstellung": "landscape"
+    }
+  ],
+  "wav": {
+    "bytes": 48,
+    "sha256": "7511e047e1ec3ccff2b33bb07de90ef77123af952a1cbfcd5e71591e0bf474d5",
+    "hex": "524946462800000057415645666d74201000000001000200401f0000007d000004001000646174610400000061626364"
+  },
+  "roh": {
+    "bytes": 25,
+    "sha256": "d9e1cf461aecf01be35d4239c151e6b1583544023c13ba5265fe1b8576b282e2",
+    "hex": "1900000001000200401f0000007d0000040010006162636478"
+  },
+  "shadow_17x6": {
+    "width": 17,
+    "height": 6,
+    "rgba_hex_pro_pixel": "00000080",
+    "png_bytes": 78,
+    "png_sha256": "e3c4cf6aee4cee3a03c35370576955339fbb9ba5fa39589b5d53d8b3c2e10985",
+    "verbrauch": 36,
+    "versatz_x": "-2",
+    "versatz_y": "3"
+  },
+  "referenz_counts": {
+    "gfx": [
+      235,
+      448,
+      1430
+    ],
+    "wav": 208,
+    "roh": 45
+  },
+  "matrix": {
+    "seed": 970023,
+    "faelle": 120,
+    "pruefung": "Unabhängige Pixel/Quellverbrauch/Offsets; Byte-Goldens separat nur für die festen kleinen Fälle + Shadow17x6."
+  }
+}
