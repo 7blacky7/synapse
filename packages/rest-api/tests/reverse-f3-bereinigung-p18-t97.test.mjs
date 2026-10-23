@@ -9,7 +9,7 @@ import {createRequire} from 'node:module';
 import {readFile,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy} from '../scripts/reverse-f3-bereinigen.mjs';
+import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy,encodeRecord,metadataRecords,manifestHeader} from '../scripts/reverse-f3-bereinigen.mjs';
 const enabled=process.env.SYNAPSE_TEST_PHASE==='P18-T97-F3';
 const run=(name,fn)=>test(name,{skip:!enabled},fn);
 const {Pool}=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
@@ -235,7 +235,7 @@ run('an oversized single row cannot bypass byte budget or omit commit-evidence c
  const m=await f.make();
  await assert.rejects(applyManifest(f.pool,m),/f3_einzelzeile_ueber_budget/);
  const header=JSON.parse(m.records[0]);
- const op=JSON.parse(m.records[1]),cost=batchCost({...header,backup:m.backup},[op]);
+ const op=m.records.map(JSON.parse).find(x=>x.kind==='symbol'),cost=batchCost({...header,backup:m.backup},[op]);
  assert.equal(cost.rows,2);assert.ok(cost.bytes>65536);
  assert.equal((await f.counts()).evidence,'0');
 });
@@ -347,7 +347,7 @@ run('filesystem failure uses errno allowlist without path/message disclosure',as
 });
 run('explicit bounded sentinel timeout is pinned in manifest and every batch journal',async t=>{
  const f=await fixture(t),records=[],result=await createManifest(f.pool,raw=>records.push(raw),{sentinelTimeoutMs:1000});
- const h=JSON.parse(records[0]);assert.equal(h.version,2);
+ const h=JSON.parse(records[0]);assert.equal(h.version,3);
  assert.deepEqual(h.sentinel,{timeout_ms:1000,quelle:'cli'});assert.deepEqual(result.sentinel,h.sentinel);
  const lines=async function*(){yield* records;};
  await applyManifest(f.pool,{lines,expected:result.sha256,backup:'own-backup-proof'});
@@ -362,9 +362,9 @@ run('terminal P20 historical markers without live resource are quiet and listed;
   const f=await fixture(t),id=randomUUID();
   await f.pool.query("INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) VALUES($1,'reverse',$2,2,true)",[id,state]);
   const p20=async()=>(await f.pool.query('SELECT * FROM work_jobs ORDER BY id')).rows;
-  const before=await p20(),m=await f.make(),h=JSON.parse(m.records[0]);
+  const before=await p20(),m=await f.make(),{header:h}=await verifyManifest(m.lines,m.expected,m.backup);
   assert.deepEqual(h.hinweise,[{code:'f3_terminaler_altmarker',job_id:id,state,attempt:2}]);
-  assert.deepEqual(await p20(),before);assert.deepEqual(m.hinweise,h.hinweise);
+  assert.deepEqual(await p20(),before);assert.equal(m.hinweise_anzahl,h.hinweise.length);
   assert.equal((await applyManifest(f.pool,m)).status,'fertig');
   assert.deepEqual(await p20(),before);assert.equal((await p20())[0].resource_unconfirmed,true);
  });
@@ -402,4 +402,81 @@ run('quiet guard still rejects every non-terminal job, active run, lease, local 
   await f.pool.query("INSERT INTO tool_container_runs VALUES($1,2,'running')",[id]);
   await assert.rejects(f.make(),/f3_nicht_ruhig/);assert.equal((await f.counts()).evidence,'0');
  });
+});
+
+run('production-scale sentinels across all 27 project tables: thin header, bounded records, exact reconstruction',async t=>{
+ const f=await fixture(t);
+ const extra=['asset_aenderungen','asset_aenderungsstaende','asset_host_checkpoints','asset_inspektions_auftraege','asset_inspektions_projekte','asset_konflikt_eingaenge','asset_konflikt_loesungen','asset_mutationen','asset_projekt_optionen'];
+ for(const table of extra)await f.pool.query('CREATE TABLE '+table+'(id text PRIMARY KEY,project text,value text)');
+ const direct=['asset_objects','asset_references','code_files','code_symbols','code_references','code_statements','code_call_edges','code_chunks','file_versions',...extra];
+ const ids=Array.from({length:512},(_,i)=>'project-'+String(i).padStart(5,'0'));
+ for(const table of direct)await f.pool.query('INSERT INTO '+table+' SELECT x,x,$2 FROM unnest($1::text[]) x',[ids,'own production-scale sentinel fixture']);
+ const expected=await projectSentinel(f.pool),before=await f.counts(),m=await f.make();
+ assert.equal(Object.keys(expected).length,27);
+ const wire=JSON.parse(m.records[0]),limit=wire.settings.recordBytes;
+ assert.ok(Buffer.byteLength(canon(expected))>limit);
+ assert.equal(Object.hasOwn(wire,'projects'),false);assert.equal(Object.hasOwn(wire,'hinweise'),false);
+ assert.ok(Buffer.byteLength(m.records[0])<limit);
+ assert.equal(wire.metadaten.project_tables,27);assert.ok(wire.metadaten.project_owners>=18*512);
+ for(const raw of m.records)assert.ok(Buffer.byteLength(raw)<=limit);
+ assert.deepEqual(await f.counts(),before);
+ const {header,operations}=await verifyManifest(m.lines,m.expected,m.backup);
+ assert.deepEqual(JSON.parse(canon(header.projects)),expected);assert.equal(operations,6);
+ assert.equal((await applyManifest(f.pool,m)).status,'fertig');
+ assert.deepEqual(await projectSentinel(f.pool),expected);
+});
+run('thousands of terminal hints are individual budgeted records, not one oversized header',async t=>{
+ const f=await fixture(t),ids=Array.from({length:2000},()=>randomUUID());
+ await f.pool.query("INSERT INTO work_jobs(id,scope,state,attempt,resource_unconfirmed) SELECT x,'reverse','failed',1,true FROM unnest($1::uuid[]) x",[ids]);
+ const before=(await f.pool.query('SELECT * FROM work_jobs ORDER BY id')).rows,m=await f.make();
+ const wire=JSON.parse(m.records[0]),{header}=await verifyManifest(m.lines,m.expected,m.backup);
+ assert.equal(wire.metadaten.hinweise,ids.length);assert.equal(header.hinweise.length,ids.length);
+ assert.ok(Buffer.byteLength(canon(header.hinweise))>wire.settings.recordBytes);
+ assert.equal(m.records.map(JSON.parse).filter(x=>x.kind==='hinweis').length,ids.length);
+ for(const raw of m.records)assert.ok(Buffer.byteLength(raw)<=wire.settings.recordBytes);
+ assert.deepEqual((await f.pool.query('SELECT * FROM work_jobs ORDER BY id')).rows,before);
+});
+run('changed, missing, duplicated or second-pass metadata cannot reach DELETE',async t=>{
+ const f=await fixture(t),m=await f.make(),before=await f.counts();
+ const index=m.records.findIndex(raw=>JSON.parse(raw).kind==='project_owner');assert.ok(index>0);
+ for(const kind of ['change','remove','duplicate']){
+  let rows=[...m.records];
+  if(kind==='change'){const x=JSON.parse(rows[index]);x.n=String(BigInt(x.n)+1n);rows[index]=canon(x)+'\n';}
+  if(kind==='remove')rows.splice(index,1);
+  if(kind==='duplicate')rows.splice(index,0,rows[index]);
+  const lines=async function*(){yield* rows;};
+  await assert.rejects(applyManifest(f.pool,{...m,lines,expected:sha(rows.join(''))}),/f3_manifest_metadaten/);
+  assert.deepEqual(await f.counts(),before);
+ }
+ let pass=0;
+ const lines=async function*(){
+  pass++;for(let i=0;i<m.records.length;i++){
+   if(pass>1&&i===index){const x=JSON.parse(m.records[i]);x.n='999';yield canon(x)+'\n';}
+   else yield m.records[i];
+  }
+ };
+ await assert.rejects(applyManifest(f.pool,{...m,lines}),/f3_manifest_metadaten/);
+ assert.deepEqual(await f.counts(),before);
+});
+run('overlong candidate or metadata record is rejected BEFORE the first output record',async t=>{
+ const f=await fixture(t),records=[];
+ await f.add('long',2,'strings-0004.txt');
+ await f.pool.query("UPDATE reverse_code_dateien SET file_path=$1 WHERE id='long'",['x'.repeat(65536)+'/strings-0004.txt']);
+ const before=await f.counts();
+ await assert.rejects(createManifest(f.pool,raw=>records.push(raw)),/f3_manifest_record_zu_gross/);
+ assert.deepEqual(records,[]);assert.deepEqual(await f.counts(),before);
+ assert.throws(()=>encodeRecord({kind:'project_owner',table:'code_files',owner:'x'.repeat(65536),n:'1',sha256:'a'.repeat(64)},65536),/f3_manifest_record_zu_gross/);
+});
+run('18966 file contexts / 714611 symbols never inflate one record or batch evidence',async()=>{
+ const limit=65536,settings={revision:'a'.repeat(64),rows:5000,maxBytes:4194304,recordBytes:limit,statement:10000,lock:2000};
+ const h=manifestHeader(settings,sentinelPolicy(settings),{},[]);
+ // Deliberately conservative escaping and numeric widths, greater than current RO maxima.
+ const file={id:'\u0001'.repeat(64),path:'\u0001'.repeat(149)+'/strings.txt',name:'strings.txt',source_id:'99999',
+  source_sha:'a'.repeat(64),source_hash:'b'.repeat(64),code_hash:'c'.repeat(64),row_bytes:Number.MAX_SAFE_INTEGER};
+ const symbol={kind:'symbol',id:'\u0001'.repeat(256),file,hash:'d'.repeat(64),row_bytes:Number.MAX_SAFE_INTEGER};
+ const bytes=Buffer.byteLength(encodeRecord(symbol,limit));
+ assert.ok(bytes<4096);assert.equal(Buffer.byteLength(encodeRecord(symbol,limit)),bytes);
+ assert.ok(18966*bytes>limit);assert.ok(714611*bytes>limit);
+ assert.equal(h.metadaten.project_owners,0);assert.ok(Buffer.byteLength(encodeRecord(h,limit))<limit);
+ assert.deepEqual([...metadataRecords({},[])],[]);
 });

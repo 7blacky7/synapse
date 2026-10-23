@@ -33,8 +33,8 @@ const validHash=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
 export const validName=x=>typeof x==='string'&&(/^(?:strings(?:-[0-9]+)?[.]txt)$/.test(x)||x==='imports.txt');
 
 const contexts=new AsyncLocalStorage(),failures=new WeakMap();
-const F3_CODES=new Set(["f3_abhaengigkeit_stop","f3_belegpfad_verboten","f3_bereinigung_laeuft","f3_dateiname","f3_datenbank_fehlt","f3_einstellungen_geaendert","f3_eintrag_nicht_freigegeben","f3_einzelzeile_ueber_budget","f3_fk_unbekannt","f3_halt_erforderlich","f3_journal_daten_widerspruch","f3_journal_konflikt","f3_journal_nebenwirkung","f3_loeschmenge_geaendert","f3_manifest_batch_geaendert","f3_manifest_budget","f3_manifest_fehlt","f3_manifest_fragment","f3_manifest_geaendert","f3_manifest_hash","f3_manifest_header","f3_manifest_json","f3_manifest_nicht_kanonisch","f3_manifest_nicht_versiegelt","f3_manifest_op","f3_manifest_quellkonflikt","f3_manifest_record_zu_gross","f3_manifest_reihenfolge","f3_nicht_ruhig","f3_parameter","f3_projektbestand_geaendert","f3_projekttabelle_unzugeordnet","f3_projektzeile_unzugeordnet","f3_quelle_geaendert","f3_relation_unbekannt","f3_schema145_abweichend","f3_schema145_fehlt","f3_sentinel_budget","f3_sentinel_im_manifest_gepinnt","f3_sicherungsbeleg_fehlt","f3_symbol_geaendert","f3_trigger_unbekannt","f3_tx_budget","f3_werkzeug_fehler"]);
-const PHASES=new Set(['initialisieren','audit_open','db_connect','db_begin','einstellungen','timeouts','fk_katalog','ruhe','journal','sentinel_katalog','sentinel_ownership','sentinel_count','sentinel_hash','sentinel_restore','kandidaten','symbole','abhaengigkeiten','manifest_header','manifest_records','manifest_sync','manifest_pruefen','apply','commit','abschluss']);
+const F3_CODES=new Set(["f3_abhaengigkeit_stop","f3_belegpfad_verboten","f3_bereinigung_laeuft","f3_dateiname","f3_datenbank_fehlt","f3_einstellungen_geaendert","f3_eintrag_nicht_freigegeben","f3_einzelzeile_ueber_budget","f3_fk_unbekannt","f3_halt_erforderlich","f3_journal_daten_widerspruch","f3_journal_konflikt","f3_journal_nebenwirkung","f3_loeschmenge_geaendert","f3_manifest_batch_geaendert","f3_manifest_budget","f3_manifest_fehlt","f3_manifest_fragment","f3_manifest_geaendert","f3_manifest_hash","f3_manifest_header","f3_manifest_json","f3_manifest_nicht_kanonisch","f3_manifest_metadaten","f3_manifest_metadaten_geaendert","f3_manifest_nicht_versiegelt","f3_manifest_op","f3_manifest_quellkonflikt","f3_manifest_record_zu_gross","f3_manifest_reihenfolge","f3_nicht_ruhig","f3_parameter","f3_projektbestand_geaendert","f3_projekttabelle_unzugeordnet","f3_projektzeile_unzugeordnet","f3_quelle_geaendert","f3_relation_unbekannt","f3_schema145_abweichend","f3_schema145_fehlt","f3_sentinel_budget","f3_sentinel_im_manifest_gepinnt","f3_sicherungsbeleg_fehlt","f3_symbol_geaendert","f3_trigger_unbekannt","f3_tx_budget","f3_werkzeug_fehler"]);
+const PHASES=new Set(['initialisieren','audit_open','db_connect','db_begin','einstellungen','timeouts','fk_katalog','ruhe','journal','sentinel_katalog','sentinel_ownership','sentinel_count','sentinel_hash','sentinel_restore','kandidaten','symbole','abhaengigkeiten','manifest_header','manifest_metadaten','manifest_records','manifest_sync','manifest_pruefen','apply','commit','abschluss']);
 const TABLES=new Set(['asset_aenderungen','asset_aenderungsstaende','asset_files','asset_host_checkpoints','asset_inspektions_auftraege','asset_inspektions_projekte','asset_konflikt_eingaenge','asset_konflikt_loesungen','asset_konflikte','asset_manifest_eintraege','asset_manifest_sitzungen','asset_mutationen','asset_objects','asset_projekt_optionen','asset_references','asset_retention_referenzen','asset_revisionen','asset_scan_checkpoints','asset_upload_sitzungen','asset_upload_teile','code_call_edges','code_chunks','code_files','code_references','code_statements','code_symbols','file_versions']);
 const FS_CODES=new Set(['EACCES','EPERM','ENOENT','EEXIST','ENOSPC','EROFS','EIO','ELOOP','EMFILE','ENFILE','EISDIR','ENOTDIR']);
 function phase(name,table){const c=contexts.getStore();if(c){c.phase=PHASES.has(name)?name:'initialisieren';c.table=TABLES.has(table)?table:undefined;}}
@@ -189,31 +189,97 @@ async function* plannedOperations(db,s){
   cursor=rows.at(-1).id;
  }
 }
+
+export function encodeRecord(value,limit){
+ const raw=canon(value)+'\n';
+ if(Buffer.byteLength(raw)>limit)stop('f3_manifest_record_zu_gross');
+ return raw;
+}
+export function* metadataRecords(projects,hinweise){
+ for(const table of Object.keys(projects).sort()){
+  yield {kind:'project_table',table,owners:projects[table].length};
+  for(const row of projects[table])yield {kind:'project_owner',table,owner:row.owner,n:row.n,sha256:row.sha256};
+ }
+ for(const hinweis of hinweise)yield {kind:'hinweis',hinweis};
+}
+export function manifestHeader(settings,sentinel,projects,hinweise){
+ return {kind:'header',version:3,scope:'p18-t97-f3-tranche1',entry:ENTRY,settings,sentinel,
+  metadaten:{project_tables:Object.keys(projects).length,project_owners:Object.values(projects).reduce((n,a)=>n+a.length,0),
+   hinweise:hinweise.length,projects_sha256:hash(projects),hinweise_sha256:hash(hinweise)}};
+}
+function validHinweis(x){
+ return x?.code==='f3_terminaler_altmarker'&&typeof x.job_id==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x.job_id)&&TERMINAL_JOBS.includes(x.state)&&Number.isSafeInteger(x.attempt)&&x.attempt>=0;
+}
+/** Metadata is reconstructed only for the reviewed table/owner sentinels, never
+ * for all candidate IDs. Empty tables get explicit table records.
+ */
+async function* operationStream(lines,onHeader,onRaw){
+ let header,remaining=0,currentTable='',lastTable='',tables=0,owners=0,hints=false,ready=false;
+ const ownerSeen=new Set(),hintSeen=new Set();
+ const finish=()=>{
+  if(ready)return;
+  if(!header||remaining!==0||tables!==header.metadaten.project_tables||owners!==header.metadaten.project_owners||header.hinweise.length!==header.metadaten.hinweise)stop('f3_manifest_metadaten');
+  if(hash(header.projects)!==header.metadaten.projects_sha256||hash(header.hinweise)!==header.metadaten.hinweise_sha256)stop('f3_manifest_metadaten');
+  ready=true;onHeader(header);
+ };
+ for await(const raw of lines()){
+  onRaw?.(raw);let x;try{x=JSON.parse(raw);}catch{stop('f3_manifest_json');}
+  if(canon(x)+'\n'!==raw)stop('f3_manifest_nicht_kanonisch');
+  if(!header){
+   validateHeader(x);encodeRecord(x,x.settings.recordBytes);
+   header={...x,projects:Object.create(null),hinweise:[]};continue;
+  }
+  encodeRecord(x,header.settings.recordBytes);
+  if(['project_table','project_owner','hinweis'].includes(x.kind)){
+   if(ready)stop('f3_manifest_metadaten');
+   if(x.kind==='project_table'){
+    if(hints||remaining!==0||typeof x.table!=='string'||!/^[a-z_][a-z0-9_]*$/.test(x.table)||x.table<=lastTable||!Number.isSafeInteger(x.owners)||x.owners<0||tables>=header.metadaten.project_tables)stop('f3_manifest_metadaten');
+    lastTable=currentTable=x.table;remaining=x.owners;ownerSeen.clear();tables++;header.projects[x.table]=[];
+   }else if(x.kind==='project_owner'){
+    if(hints||!currentTable||x.table!==currentTable||remaining<1||typeof x.owner!=='string'||ownerSeen.has(x.owner)||typeof x.n!=='string'||!/^[1-9][0-9]*$/.test(x.n)||!validHash(x.sha256)||owners>=header.metadaten.project_owners)stop('f3_manifest_metadaten');
+    ownerSeen.add(x.owner);header.projects[currentTable].push({owner:x.owner,n:x.n,sha256:x.sha256});remaining--;owners++;
+   }else{
+    if(remaining!==0||tables!==header.metadaten.project_tables||owners!==header.metadaten.project_owners||!validHinweis(x.hinweis)||hintSeen.has(x.hinweis.job_id)||header.hinweise.length>=header.metadaten.hinweise)stop('f3_manifest_metadaten');
+    hints=true;hintSeen.add(x.hinweis.job_id);header.hinweise.push(x.hinweis);
+   }
+   continue;
+  }
+  finish();validateOp(x);yield x;
+ }
+ finish();
+}
+
 export async function createManifest(pool,emit,{sentinelTimeoutMs}={}){
  return diagnosed(async()=>{
  phase('db_connect');
  const db=await observed(pool).connect(),digest=createHash('sha256');let files=0,symbols=0,s,broken=false;
- const send=async x=>{const raw=canon(x)+'\n';if(Buffer.byteLength(raw)>s.recordBytes)stop('f3_manifest_record_zu_gross');digest.update(raw);await emit?.(raw);};
+ const send=async x=>{const raw=encodeRecord(x,s.recordBytes);digest.update(raw);await emit?.(raw);};
  try{
   phase('db_begin');await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   s=await settings(db);await deadlines(db,s);await schemaGuard(db);await journalGuard(db);const hinweise=await quiet(db);
   const sentinel=sentinelPolicy(s,sentinelTimeoutMs),projects=await projectSentinel(db,sentinel);
+  const header=manifestHeader(s,sentinel,projects,hinweise);
+  // Validate EVERY record before output, using the same record budget as the writer.
+  phase('manifest_header');encodeRecord(header,s.recordBytes);
+  phase('manifest_metadaten');for(const row of metadataRecords(projects,hinweise))encodeRecord(row,s.recordBytes);
   // Full read-only guard pass BEFORE the first header. Same stable snapshot as output.
-  for await(const op of plannedOperations(db,s)){validateOp(op);}
-  const header={kind:'header',version:2,scope:'p18-t97-f3-tranche1',entry:ENTRY,settings:s,sentinel,projects,hinweise};
+  for await(const op of plannedOperations(db,s)){validateOp(op);phase('manifest_records');encodeRecord(op,s.recordBytes);}
   phase('manifest_header');await send(header);
+  phase('manifest_metadaten');for(const row of metadataRecords(projects,hinweise))await send(row);
   for await(const op of plannedOperations(db,s)){
    phase('manifest_records');await send(op);if(op.kind==='file')files++;else symbols++;
   }
-  phase('abschluss');await db.query('ROLLBACK');return {sha256:digest.digest('hex'),files,symbols,sentinel,hinweise};
+  phase('abschluss');await db.query('ROLLBACK');return {sha256:digest.digest('hex'),files,symbols,sentinel,hinweise_anzahl:hinweise.length,metadaten:header.metadaten};
  }catch(e){capture(e);await db.query('ROLLBACK').catch(()=>{broken=true;});throw e;}finally{db.release(broken);}
  });
 }
 
 export function validateHeader(h){
- if(h?.kind!=='header'||h.version!==2||h.scope!=='p18-t97-f3-tranche1'||h.entry!==ENTRY||
-    !h.projects||!h.settings||!validHash(h.settings.revision))stop('f3_manifest_header');
- if(!Array.isArray(h.hinweise)||h.hinweise.some(x=>x?.code!=='f3_terminaler_altmarker'||typeof x.job_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x.job_id)||!TERMINAL_JOBS.includes(x.state)||!Number.isSafeInteger(x.attempt)||x.attempt<0))stop('f3_manifest_header');
+ if(h?.kind!=='header'||h.version!==3||h.scope!=='p18-t97-f3-tranche1'||h.entry!==ENTRY||
+    Object.hasOwn(h,'projects')||Object.hasOwn(h,'hinweise')||!h.settings||!validHash(h.settings.revision))stop('f3_manifest_header');
+ const m=h.metadaten;
+ if(!m||!validHash(m.projects_sha256)||!validHash(m.hinweise_sha256))stop('f3_manifest_header');
+ for(const k of ['project_tables','project_owners','hinweise'])if(!Number.isSafeInteger(m[k])||m[k]<0)stop('f3_manifest_header');
  if(!h.sentinel||!['pg','cli'].includes(h.sentinel.quelle))stop('f3_manifest_header');
  same(h.sentinel,sentinelPolicy(h.settings,h.sentinel.quelle==='cli'?h.sentinel.timeout_ms:undefined),'f3_manifest_header');
  for(const k of ['rows','maxBytes','recordBytes','statement','lock'])
@@ -230,14 +296,9 @@ function validateOp(x){
 }
 export async function verifyManifest(lines,expected,backup=''){
  if(!validHash(expected))stop('f3_manifest_hash');
- const digest=createHash('sha256');let header,previousFile='',previousSymbol='',current=null,closed=true,n=0,approved=[];
+ const digest=createHash('sha256');let header,previousFile='',previousSymbol='',current=null,closed=true,n=0,approved=[],cost;
  const proofs=[];
- for await(const raw of lines()){
-  digest.update(raw);let x;try{x=JSON.parse(raw);}catch{stop('f3_manifest_json');}
-  if(canon(x)+'\n'!==raw)stop('f3_manifest_nicht_kanonisch');
-  if(!header){validateHeader(x);header=x;continue;}
-  if(Buffer.byteLength(raw)>header.settings.recordBytes)stop('f3_manifest_record_zu_gross');
-  validateOp(x);
+ for await(const x of operationStream(lines,h=>{header=h;cost=batchBase({...h,backup});},raw=>digest.update(raw))){
   if(current?.id!==x.file.id){
    if(!closed||x.file.id<=previousFile)stop('f3_manifest_reihenfolge');
    current=x.file;previousFile=x.file.id;previousSymbol='';closed=false;
@@ -246,11 +307,12 @@ export async function verifyManifest(lines,expected,backup=''){
   if(x.kind==='symbol'){
    if(x.id<=previousSymbol)stop('f3_manifest_reihenfolge');previousSymbol=x.id;
   }else closed=true;
-  const proposed=batchCost({...header,backup},[...approved,x]);
-  if(approved.length&&(proposed.rows>header.settings.rows||proposed.bytes>header.settings.maxBytes)){proofs.push(hash(approved));approved=[];}
-  const single=batchCost({...header,backup},[x]);
-  if(single.rows>header.settings.rows||single.bytes>header.settings.maxBytes)stop('f3_einzelzeile_ueber_budget');
-  approved.push(x);n++;
+  let proposed=addCost(cost,x);
+  if(approved.length&&(proposed.rows>header.settings.rows||proposed.bytes>header.settings.maxBytes)){
+   proofs.push(hash(approved));approved=[];cost=batchBase({...header,backup});proposed=addCost(cost,x);
+  }
+  if(proposed.rows>header.settings.rows||proposed.bytes>header.settings.maxBytes)stop('f3_einzelzeile_ueber_budget');
+  approved.push(x);cost=proposed;n++;
  }
  if(approved.length)proofs.push(hash(approved));
  if(!header||!closed||digest.digest('hex')!==expected)stop('f3_manifest_hash');
@@ -259,25 +321,27 @@ export async function verifyManifest(lines,expected,backup=''){
 function payload(h,pin,n,ops,backup){
  return {eintrag_id:ENTRY,manifest_sha256:pin,batch_nr:String(n),batch_sha256:hash(ops),ops,
   delta:{files:ops.filter(x=>x.kind==='file').length,symbols:ops.filter(x=>x.kind==='symbol').length,sentinel:h.sentinel},
-  backup_beleg:backup,projekt_sentinel_sha256:hash(h.projects),einstellungen_revision:h.settings.revision};
+  backup_beleg:backup,projekt_sentinel_sha256:h.metadaten.projects_sha256,einstellungen_revision:h.settings.revision};
 }
-/** Charge removed records, bounded parameters/evidence, and ONE extra journal row.
- * Conservative 4x operation wire cost also covers the bound ID/path/source arrays.
+/** Linear accounting: candidate count never enlarges a record/header.
+ * Charge explicit deletes + journal row, complete row bytes and conservative wire cost.
+ * Metadata digest is computed ONCE, never rehash the full sentinel set per candidate.
  */
-export function batchCost(h,ops){
- return {rows:ops.length+1,bytes:ops.reduce((n,x)=>n+x.row_bytes,0)+4*size(ops)+
-  size({entry:ENTRY,pin:'0'.repeat(64),batch:'9223372036854775807',backup:h.backup,settings:h.settings.revision,sentinel:h.sentinel,projects:hash(h.projects)})};
+function batchBase(h){
+ return {rows:1,bytes:8+size({entry:ENTRY,pin:'0'.repeat(64),batch:'9223372036854775807',backup:h.backup,
+  settings:h.settings.revision,sentinel:h.sentinel,projects:h.metadaten.projects_sha256})};
 }
+const addCost=(c,x)=>({rows:c.rows+1,bytes:c.bytes+x.row_bytes+4*size(x)+4});
+export function batchCost(h,ops){return ops.reduce(addCost,batchBase(h));}
 export async function* batches(lines,h,backup){
- let ops=[];
- const costHeader={...h,backup};
- for await(const raw of lines()){
-  const x=JSON.parse(raw);if(x.kind==='header')continue;validateOp(x);
-  const c=batchCost(costHeader,[...ops,x]);
-  if(ops.length&&(c.rows>h.settings.rows||c.bytes>h.settings.maxBytes)){yield ops;ops=[];}
-  const single=batchCost(costHeader,[x]);
-  if(single.rows>h.settings.rows||single.bytes>h.settings.maxBytes)stop('f3_einzelzeile_ueber_budget');
-  ops.push(x);
+ let ops=[],cost=batchBase({...h,backup});
+ for await(const x of operationStream(lines,actual=>same(actual,h,'f3_manifest_metadaten_geaendert'))){
+  let next=addCost(cost,x);
+  if(ops.length&&(next.rows>h.settings.rows||next.bytes>h.settings.maxBytes)){
+   yield ops;ops=[];cost=batchBase({...h,backup});next=addCost(cost,x);
+  }
+  if(next.rows>h.settings.rows||next.bytes>h.settings.maxBytes)stop('f3_einzelzeile_ueber_budget');
+  ops.push(x);cost=next;
  }
  if(ops.length)yield ops;
 }
