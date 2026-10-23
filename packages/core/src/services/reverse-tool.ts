@@ -37,8 +37,9 @@ import {ReverseLeserFehler} from './reverse-leser-vertrag.js';
 import {LESER_RUNTIME_ACTIONS,LESER_RUNTIME_PARAMETER,LESER_RUNTIME_FELDER,fuehreLeserRuntimeAus} from './reverse-leser-runtime-tool.js';
 import type {LeserRuntimeImage} from './reverse-leser-runtime-vertrag.js';
 import {ergaenzeReverseLeserHinweisKontext} from './reverse-leser-hinweis.js';
+import {NEU_PARSEN_ACTIONS,NEU_PARSEN_PARAMETER,NEU_PARSEN_FELDER,fuehreNeuParsenAus} from './reverse-neu-parsen.js';
 
-export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...ERKENNTNIS_ACTIONS,...LESER_ACTIONS,...LESER_RUNTIME_ACTIONS,...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
+export const REVERSE_ACTIONS = ['liste','eintrag','vorschlaege','bestaetigen','archivieren','binden','loesen','bindungen','status','analysieren','abbrechen','dateien','diagnose','entstoeren',...NEU_PARSEN_ACTIONS,...ERKENNTNIS_ACTIONS,...LESER_ACTIONS,...LESER_RUNTIME_ACTIONS,...REVERSE_CODE_ACTIONS,...REVERSE_ASSET_ACTIONS,'ansicht','uebernehmen','struktur','verknuepfungen'] as const;
 export type ReverseAction = typeof REVERSE_ACTIONS[number];
 export const REVERSE_FEHLERCODES = ['nicht_gefunden','nicht_gebunden','nicht_unterstuetzt','gepackt','verschluesselt','beschaedigt','zu_gross','bombe_verdacht','pfad_gefahr','zeitlimit','speicherlimit','werkzeug_fehler','container_ruht','container_gesperrt','warteschlange_voll','schicht_nicht_fertig','ziel_belegt','keine_berechtigung','ansicht_nicht_darstellbar','semantik_nicht_verfuegbar','kein_ausfuehrer','format_nicht_unterstuetzt','policy_pin_fehlt','policy_geaendert','policy_grenze','policy_nicht_lesbar'] as const;
 export type ReverseFehlercode = typeof REVERSE_FEHLERCODES[number];
@@ -58,7 +59,7 @@ const TEXTE: Record<ReverseFehlercode,string> = {
 };
 const mediumSchema = {type:'object',properties:{id:{type:'string'},bezeichnung:{type:'string'},art:{type:'string',enum:['image','ordner','archiv']}},required:['id'],additionalProperties:false};
 export const REVERSE_DEFINITION = {
-  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: verknuepfungen(datei|gruppe|funktion) ordnet Stringreferenzen an Dateien zu, nennt Funktionen und rückwärtige Aufrufer (Produkt reverse_verknuepfungen, Standard AUS); gruppe z.B. GFX oder .dat; struktur ergänzt geladen_von. vergleichen(datei_a,datei_b) vergleicht S3-Funktionen mit Unsicherheitskennzeichnung und Paging; funktion = Symbol-ID für Diff. tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Leser: leser_liste/get lesen registrierte Versionen; leser_registrieren pinnt files-Versionen, leser_testen führt isolierte Tests ohne Publikation aus (reverse_leser EIN); leser_aktivieren/deaktivieren nur Verwaltung; leser_nachziehen bereitet ausschließlich vor. Leser-Runtime: leser_runtime_liste/get zeigen PG-Pins; leser_runtime_bereitstellen (vorschau Standard true) erzeugt RO-Snapshots aus files-Versionen; leser_runtime_aktivieren/deaktivieren setzen den globalen Standard je serverseitigem Image mit CAS/Audit, nur Verwaltung. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
+  name:'reverse',description:'Globale Reverse-Bibliothek: Grunddaten für alle, Inhalte erst nach Projektbindung. liste/eintrag/vorschlaege; bestaetigen/archivieren nur Koordinator/User; binden/loesen/bindungen; status (optional Long-Poll bis 50s), analysieren, abbrechen (eigener Auftrag/Koordinator); neu_parsen = S1 der gespeicherten Dateien neu parsen (Standard Vorschau; vorschau:false nur Koordinator/User, Prioritaet nachzug); dateien = seitenweise Dateiliste eines gebundenen Eintrags (Originale und entpackte Dateien, optional path als Ordnerpräfix). status nennt alle offenen auftrag_ids (auftraege). diagnose (jeder, lesend): offene/hängende Aufträge mit Ursache, Container-Zustand und automatischen Maßnahmen, optional reverse_id. entstoeren (nur Koordinator/User, vorschau Standard true): ausführerlose Aufträge stornieren, abgelaufene Leases freigeben, hängenden Reverse-Container neu starten; Filter ursache/reverse_id/auftrag_id; läuft auch automatisch. Analyse asynchron, keine lokale Byteausführung. Code: verknuepfungen(datei|gruppe|funktion) ordnet Stringreferenzen an Dateien zu, nennt Funktionen und rückwärtige Aufrufer (Produkt reverse_verknuepfungen, Standard AUS); gruppe z.B. GFX oder .dat; struktur ergänzt geladen_von. vergleichen(datei_a,datei_b) vergleicht S3-Funktionen mit Unsicherheitskennzeichnung und Paging; funktion = Symbol-ID für Diff. tree/functions/symbols/references/search/file/calls über gebundene Reverse-Schichten; virtuelle Pfade, Paging, Volltext und begrenzte Textfenster. Assets: assets_tree (path/depth/recursive/limit/format/asset_type) und inspect (datei oder file_path, objects_offset/objects_limit/object_type/references_limit) über denselben Asset-Leser, nur gebundene Einträge. ansicht (datei/file_path, ansicht inline|link|beides, offen_sekunden, einmalig) über den gemeinsamen Vorschau-Dienst; Revision und Link an sha256 gebunden, Bild als MCP-image-Block. Leser: leser_liste/get lesen registrierte Versionen; leser_registrieren pinnt files-Versionen, leser_testen führt isolierte Tests ohne Publikation aus (reverse_leser EIN); leser_aktivieren/deaktivieren nur Verwaltung; leser_nachziehen bereitet ausschließlich vor. Leser-Runtime: leser_runtime_liste/get zeigen PG-Pins; leser_runtime_bereitstellen (vorschau Standard true) erzeugt RO-Snapshots aus files-Versionen; leser_runtime_aktivieren/deaktivieren setzen den globalen Standard je serverseitigem Image mit CAS/Audit, nur Verwaltung. Feste Dateifelder und Fehlercodes; unbekannte Parameter werden gemeldet.',
   inputSchema:{type:'object',properties:{
     action:{type:'string',enum:[...REVERSE_ACTIONS]},agent_id:{type:'string',description:'Agent-ID, Pflicht'},
     project:{type:'string',description:'Projekt für Bindung, Dateistatus und Analyse'},
@@ -74,7 +75,7 @@ export const REVERSE_DEFINITION = {
     funktion:{type:'string',description:'verknuepfungen: exakter Funktionsname oder Symbol-ID (auch rückwärtige Aufrufer); vergleichen: Symbol-ID aus unterschiede für Rohtext-Diff; from_line/to_line paginieren Diff-Zeilen'},
     warten_sekunden:{type:'number',minimum:0,maximum:50},
     ursache:{type:'array',items:{type:'string',enum:[...REVERSE_ENTSTOERBAR]},description:'entstoeren: nur diese Ursachen (Standard alle entstörbaren)'},
-    vorschau:{type:'boolean',description:'entstoeren: Standard true = nur zeigen; false = ausführen'},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
+    vorschau:{type:'boolean',description:'entstoeren/neu_parsen: Standard true = nur zeigen; false = ausführen'},bis_schicht:{type:'string',enum:['E','S0','S1','S2','S3']},
     prioritaet:{type:'string',enum:['interaktiv','hintergrund','nachzug']},auftrag_id:{type:'string'},
     path:{type:'string'},name:{type:'string'},symbol_type:{type:'string'},file_type:{type:'string'},callee:{type:'string'},
     from_line:{type:'number'},to_line:{type:'number'},truncate_long_lines:{type:'number'},
@@ -87,6 +88,7 @@ export const REVERSE_DEFINITION = {
     ...ERKENNTNIS_PARAMETER,
     ...LESER_PARAMETER,
     ...LESER_RUNTIME_PARAMETER,
+    ...NEU_PARSEN_PARAMETER,
   },required:['action','agent_id']},
   outputSchema:{type:'object',properties:{
     success:{type:'boolean'},reverse_id:{type:['string','null']},datei:{type:['string','null']},
@@ -101,6 +103,7 @@ const JE_ACTION: Record<ReverseAction,readonly string[]> = {
   ...ERKENNTNIS_FELDER,
   ...LESER_FELDER,
   ...LESER_RUNTIME_FELDER,
+  ...NEU_PARSEN_FELDER,
   liste:['status','tag','query','limit','offset'],vorschlaege:['tag','query','limit','offset'],
   eintrag:['reverse_id'],bestaetigen:['reverse_id','titel','medien','zusammenfuehren_mit','aufteilen'],
   archivieren:['reverse_id'],binden:['reverse_id','notiz'],loesen:['reverse_id'],bindungen:['limit','offset'],
@@ -151,10 +154,14 @@ export function begrenzeReverseSchicht(wunsch:unknown,ein?:ReverseEinstellSnapsh
   return stages.indexOf(wunsch as typeof stages[number])>stages.indexOf(grenze)?grenze:wunsch as typeof stages[number];
 }
 export interface ReverseContainerInfo {zustand:'laeuft'|'startet'|'ruht';kaltstart_s:number|null;container_id?:string}
-export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:string;dateiId:string|null;mediumId:string|null;bisSchicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug';policyManuell?:boolean;policyElternId?:string}
+export interface ReverseAnalyseAnfrage {reverseId:string;project:string;agentId:string;dateiId:string|null;mediumId:string|null;bisSchicht:string;prioritaet:'interaktiv'|'hintergrund'|'nachzug';policyManuell?:boolean;policyElternId?:string;
+  /** P18-T98: Nachzug-Auftraege uebergehen abgeschlossene Altauftraege ohne Policy-Pin (reverse-analyse-policy vorgaben). */
+  ohneLegacyAbgeschlossen?:boolean}
 export interface ReverseRuntime {
   /** PG-only, derselbe Client wie Fachauftrag und Aktivität. Kein Wake/FS/Docker unter Lock. */
   analysieren?: (anfrage:ReverseAnalyseAnfrage,db:PoolClient)=>Promise<Row>;
+  /** P18-T98: automatischer queue-Weg in eigener Transaktion (Pin-Ursprung automatisch), fuer neu_parsen und Nachzug. */
+  nachziehen?: (anfrage:ReverseAnalyseAnfrage)=>Promise<Row>;
   /** P18-T87: darf Zusatzfelder liefern (z. B. storno:'angefordert' bei laufender Containerarbeit). */
   abbrechen?: (auftrag:Row,agentId:string,db:PoolClient)=>Promise<Row|void>;
   /** Nur lesen; nach der PG-Transaktion, keine Lebenszyklusänderung. */
@@ -463,6 +470,16 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     if((ERKENNTNIS_ACTIONS as readonly string[]).includes(action)){
       await projektRecht(pool,a);
       const data=await fuehreErkenntnisAus(pool,a);await tx(db=>activity(db,a));return data;
+    }
+    if((NEU_PARSEN_ACTIONS as readonly string[]).includes(action)){
+      const project=await projektRecht(pool,a),rid=id(a.reverse_id),vorschau=a.vorschau!==false;
+      await entry(pool,rid);
+      if(!darfKoordinatorOderUser(a.agent_id)&&(!vorschau||!await pruefeReverseBindung(pool,project,rid)))fail(vorschau?'nicht_gebunden':'keine_berechtigung');
+      const nachziehen=hooks().nachziehen;
+      if(!vorschau&&!nachziehen)fail('kein_ausfuehrer','policy_runtime_fehlt');
+      const schritt=reverseZahl(ein,'s1_neu_parsen_schritt'),limit=Math.max(1,Math.min(Number(a.limit)||schritt,reverseZahl(ein,'max_limit')));
+      return fuehreNeuParsenAus(pool,{reverseId:rid,datei:str(a.datei??a.file_path)||null,pfadPraefix:str(a.pfad_praefix)||null,profil:str(a.profil_version)||null,vorschau,limit,
+        einreihen:nachziehen?(dateiId,mediumId)=>nachziehen({reverseId:rid,project,agentId:str(a.agent_id),dateiId,mediumId,bisSchicht:'S1',prioritaet:'nachzug',ohneLegacyAbgeschlossen:true}):undefined});
     }
     if(action==='uebernehmen'){
       const project=await projektRecht(pool,a),rid=id(a.reverse_id);

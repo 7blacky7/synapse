@@ -29,6 +29,7 @@ import {analysiereRv27} from './hex-rv27.js';
 import {normalisiereS1,uebernehmeNormalisiert} from './reverse-normalisierer/s1.js';
 
 import {bereiteReversePolicyPin,pruefeReversePolicyAuftrag,sperreReversePolicy,halteReversePolicyAuftrag,istReversePolicyFehler,ReversePolicyFehler} from './reverse-analyse-policy.js';
+import {reverseNachzugAutoTakt} from './reverse-nachzug-auto.js';
 
 type Row=Record<string,unknown>;
 interface AnalysePayload {result:Omit<AssetResult,'file_path'>;strings:string[];metadata:Row;status:string;dauer_ms:number}
@@ -660,8 +661,20 @@ export class ReversePipelineDienst{
    if(failed.rowCount)await this.pool.query("UPDATE reverse_schichten SET status='fehler',fehlercode='werkzeug_fehler' WHERE auftrag_id=$1 AND aktuell AND status IN ('offen','wartet','laeuft')",[j.id]);
   }finally{await source?.schliessen();}
  }
+ /** P18-T98/T111: Nachzug in eigener Transaktion über den automatischen queue-Weg (Halt und Policy-Sperre wie entdecke). */
+ async nachziehen(a:ReverseAnalyseAnfrage,db?:PoolClient):Promise<Row>{
+  const lauf=async(c:PoolClient):Promise<Row>=>{
+   const halt=await reverseAdmission(c);if(halt.aktiv||halt.letzter_fehler)return {status:'gehalten',fehlercode:null};
+   await sperreReversePolicy(c,a.reverseId);return this.queue(c,{...a,policyManuell:false});
+  };
+  return db?lauf(db):this.tx(lauf);
+ }
+ /** P18-T98/T111: gedrosselter Nachzug (Schalter in reverse_einstellungen, Standard aus); wirft nie. */
+ private async nachzugAuto():Promise<void>{
+  await reverseNachzugAutoTakt({pool:this.pool,ein:this.ein,parserProfil:this.parserAdapter?this.s1ParserProfil():null,einreihen:a=>this.nachziehen(a)});
+ }
  async durchlauf():Promise<void>{
-  if(this.beendet)return;await this.einstellungen();await this.entdecke();
+  if(this.beendet)return;await this.einstellungen();await this.entdecke();await this.nachzugAuto();
   // P18-T68: je Worker so lange Aufträge holen, bis keiner mehr wartet oder das Zeitbudget des Durchlaufs um ist.
   // Vorher genau EIN Auftrag je Worker und Scanintervall (gemessen: 1 Datei/60 s bei ~0,3 s Inspektion).
   const ende=Date.now()+this.w.durchlaufMs;
@@ -675,7 +688,7 @@ export class ReversePipelineDienst{
 export function starteReversePipeline():ApiAuftragsLoop|null{
  const cfg=getAssetKonfiguration();if(!cfg.reverse.aktiv)return null;
  const dienst=new ReversePipelineDienst({konfiguration:cfg});
- configureReverseRuntime({analysieren:(a,db)=>dienst.analysieren(a,db),abbrechen:(j,agent,db)=>dienst.abbrechen(j,agent,db),containerStatus:rid=>dienst.containerStatus(rid)});
+ configureReverseRuntime({analysieren:(a,db)=>dienst.analysieren(a,db),nachziehen:a=>dienst.nachziehen(a),abbrechen:(j,agent,db)=>dienst.abbrechen(j,agent,db),containerStatus:rid=>dienst.containerStatus(rid)});
  const loop=starteApiAuftragsLoop({intervallMs:cfg.sync.scanIntervallMs,arbeit:()=>imHintergrund(()=>dienst.durchlauf()),fehler:()=>console.error('[Reverse-Pipeline] Durchlauf fehlgeschlagen')});
  // P18-T64: automatischer Entstörer (gleiche Regeln wie reverse(entstoeren)) läuft im selben API-Prozess.
  const entstoerer=starteReverseEntstoerer();

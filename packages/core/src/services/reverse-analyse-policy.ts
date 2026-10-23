@@ -28,6 +28,8 @@ export interface ReversePolicyPin {
  eintrag_id:string;project:string|null;angefragt_bis:ReversePolicyStufe;wirksam_bis:ReversePolicyStufe;
  policy_revision:string;quelle:{datei_id:string|null;medium_id:string|null;sha256:string};
  vorgaben:string[];
+ /** P18-T98: abgeschlossene Altaufträge ohne Pin (fertig/teilweise) zählen für diesen Pin nicht als Vorgabe. Nur Nachzug-Aufträge setzen das. */
+ ohne_legacy_abgeschlossen?:true;
 }
 interface Kontext {reverseId:string;dateiId:string|null;mediumId:string|null;project?:string|null}
 interface Vorgabe {id:string;pin:ReversePolicyPin}
@@ -53,22 +55,25 @@ async function quelle(db:Db,k:Kontext):Promise<ReversePolicyPin['quelle']>{
  if(!r||!/^[a-f0-9]{64}$/.test(String(r.sha256)))throw new ReversePolicyFehler('policy_geaendert');
  return {datei_id:k.dateiId,medium_id:k.dateiId?(r.medium_id??null):String(r.id),sha256:r.sha256};
 }
-async function vorgaben(db:Db,k:Kontext,q:ReversePolicyPin['quelle'],ersetze?:string):Promise<Vorgabe[]> {
+async function vorgaben(db:Db,k:Kontext,q:ReversePolicyPin['quelle'],ersetze?:string,ohneLegacyAbgeschlossen=false):Promise<Vorgabe[]> {
  // Latest explicit root per applicable scope. Legacy manual requests have no trustworthy depth: hold, never infer from GREATEST.
  const scopes=['eintrag',...(q.medium_id?['medium:'+q.medium_id]:[]),...(q.datei_id?['datei:'+q.datei_id]:[])];
  const rows=(await db.query(`SELECT DISTINCT ON (scope_key) id::text,policy_pin,scope_key FROM (
   SELECT id,created_at,policy_pin,COALESCE(policy_pin->>'scope_key',CASE WHEN datei_id IS NOT NULL THEN 'datei:'||datei_id::text ELSE 'medium:'||medium_id::text END) AS scope_key
   FROM reverse_auftraege WHERE eintrag_id=$1 AND
    (policy_pin->>'ursprung'='manuell' OR policy_pin IS NULL AND ausloeser LIKE 'agent:%' AND ausloeser<>'agent:reverse-pipeline')
+   -- P18-T98: ein abgeschlossener Altauftrag (z. B. manuelles E eines Mediums) haelt Nachzug-Auftraege nicht mehr fest.
+   AND NOT ($4::boolean AND policy_pin IS NULL AND status IN ('fertig','teilweise'))
  ) r WHERE scope_key=ANY($2::text[]) AND ($3::text IS NULL OR scope_key<>$3)
- ORDER BY scope_key,created_at DESC,id DESC`,[k.reverseId,scopes,ersetze??null])).rows;
+ ORDER BY scope_key,created_at DESC,id DESC`,[k.reverseId,scopes,ersetze??null,ohneLegacyAbgeschlossen])).rows;
  return rows.map((r:Row)=>({id:String(r.id),pin:pinLesen(r.policy_pin,String(r.id))}));
 }
 function ids(v:Vorgabe[]):string[]{return v.map(x=>x.id).sort();}
-export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefragt:string;manuell?:boolean;elternId?:string|null}):Promise<ReversePolicyPin>{
+export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefragt:string;manuell?:boolean;elternId?:string|null;ohneLegacyAbgeschlossen?:boolean}):Promise<ReversePolicyPin>{
  await sperreReversePolicy(db,k.reverseId,!!k.manuell);
  const q=await quelle(db,k),scope=q.datei_id?'datei:'+q.datei_id:'medium:'+q.medium_id;
- const v=await vorgaben(db,k,q,k.manuell?scope:undefined);
+ const ohneLegacy=k.ohneLegacyAbgeschlossen===true;
+ const v=await vorgaben(db,k,q,k.manuell?scope:undefined,ohneLegacy);
  let parent:ReversePolicyPin|undefined;
  if(k.elternId)parent=await pruefeReversePolicyAuftrag(db,k.elternId,k.reverseId,'E');
  const project=k.manuell?(k.project??null):(parent?.project??v.find(x=>x.pin.scope_key===scope)?.pin.project??v.at(-1)?.pin.project??null);
@@ -82,7 +87,7 @@ export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefra
  const wirksam=reversePolicyMinimum(s.grenze,angefragt,...v.map(x=>x.pin.wirksam_bis));
  return {version:1,ursprung:k.manuell?'manuell':parent?'folge':'automatisch',root_id:k.manuell?k.id:parent?.root_id??k.id,scope_key:scope,
   eintrag_id:k.reverseId,project,angefragt_bis:angefragt,wirksam_bis:wirksam,policy_revision:hash(s),quelle:q,
-  vorgaben:[...ids(v),...(k.manuell?[k.id]:[])].sort()};
+  vorgaben:[...ids(v),...(k.manuell?[k.id]:[])].sort(),...(ohneLegacy?{ohne_legacy_abgeschlossen:true as const}:{})};
 }
 /** Strictly scoped by entry and optionally source; accepts Fachauftrag ID or P20 ID. Read-only inside caller's TX. */
 export async function pruefeReversePolicyAuftrag(db:Db,id:string,rid:string,stufe:string,dateiId?:string|null):Promise<ReversePolicyPin>{
@@ -99,7 +104,7 @@ export async function pruefeReversePolicyAuftrag(db:Db,id:string,rid:string,stuf
   const q=await quelle(db,k);
   if(q.sha256!==p.quelle.sha256||q.medium_id!==p.quelle.medium_id)throw new ReversePolicyFehler('policy_geaendert',String(r.id));
   const s=reversePolicyProjektion(await leseReverseEinstellwerte({project:p.project,eintrag_id:rid},db));
-  const v=await vorgaben(db,k,q);
+  const v=await vorgaben(db,k,q,undefined,p.ohne_legacy_abgeschlossen===true);
   for(const x of v){const aktuell=reversePolicyProjektion(await leseReverseEinstellwerte({project:x.pin.project,eintrag_id:rid},db));if(hash(aktuell)!==x.pin.policy_revision)throw new ReversePolicyFehler('policy_geaendert',String(r.id));}
   if(hash(s)!==p.policy_revision||JSON.stringify(ids(v))!==JSON.stringify(p.vorgaben))
    throw new ReversePolicyFehler('policy_geaendert',String(r.id));
