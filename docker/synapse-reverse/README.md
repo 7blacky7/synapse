@@ -233,3 +233,64 @@ Alte Generationen werden nicht gelöscht. Member-Resume und die gesicherte
 Abnahme muss Transport-/DB-Proben von echten Unraid-Sandboxproben unterscheiden.
 Erforderlich: Netzversuch, Fremdschreiben, Endlosschleife, Riesenausgabe,
 Symlink, fehlendes/kaputtes Ende, falsche Hashes sowie zwei isolierte Jobs.
+
+
+### P18-T103: geordneter SIGTERM (Abnahme separat)
+
+Der echte Runner installiert als PID1 einen SIGTERM-Latch mit Wakeup-Pipe. Im Import
+entstehen keine Signalhandler/FDs. Idle nimmt nach TERM keinen Auftrag mehr an und endet
+143; normale EOF bleibt0. Der Handler führt selbst weder I/O noch Journal-/Lockarbeit aus.
+Aktive Werkzeuge erhalten TERM, bei Bedarf KILL mit reap innerhalb der gepinnten
+prozess_wait_ms; Polling nutzt guard_intervall_ms. Der äußere Stop-/Lease-Fence bleibt
+im unveränderten P20/T105-Weg. Neue Env-Zeitbudgets werden nicht eingeführt.
+
+Checkpoint-E stoppt vor der nächsten Arbeitseinheit. Nur vollständig bestätigte Member
+erscheinen im gehashten Manifest; Datei-fsync, bereit-Commit, rename/Ordner-fsync und
+fertig-Commit bleiben in dieser Reihenfolge. Unbestätigte Zwischenfiles bleiben erhalten.
+Ein konsistenter Signalcheckpoint meldet teilweise/signal_sigterm, nie eine erfolgreiche
+leere Tabelle. Der Executor hält nach bestätigtem Teilimport; kein Auto-Release. Resume
+braucht unveränderte Herkunft/Runtime/Einstellungen und das bisherige importiert_sha-ACK.
+Alte Runtime-Journale werden nach Deploy nicht auf einen neuen Pin umgedeutet.
+E ohne Journal und S3 behalten Rohreste, ohne einen Resume-Cursor zu erfinden.
+
+Ein Leserabbruch erzeugt KEINEN künstlichen JSONL-Endmarker. leser_runner_sigterm bezeichnet
+das Signal des Parents; leser_exit und Diagnose signal/exit_code bleiben der tatsächlich
+beobachtete Kindstatus VOR Cleanup. Cleanupfehler ersetzen keinen früheren Grund.
+Vollständige gespeicherte Protokollzeilen werden gesichert, Fragmente nicht als gültige
+Records gezählt. Hostvalidierung/physisches Ende/Fence bleiben zwingend; ein Abbruch
+ersetzt keine aktuelle Generation. Leser-Resume mit cursor_key bleibt ausdrücklich offen.
+
+Tests werden erst in der gebündelten Testphase gestartet:
+docker/synapse-reverse/test_runner_signale.py, packages/rest-api/tests/reverse-signal-p18-t103.test.mjs
+und reverse-signal-p18-t103-v6.test.mjs. Eigene Prozessfixtures beweisen keine PID1-Semantik.
+Echte V6-Proben gegen den exakten Image-/Runtimepin erfolgen nur im gesondert autorisierten
+Fenster. Zähe native Calls können kooperative Checks verzögern; Exit137 ist kein bestandener
+SIGTERM-Test. Unsichere Bytes/fehlender Endbeleg bleiben als Restbefund sichtbar.
+
+Kein eigener Image-Neubau: gemäß411f7b6c erst nach V6 Legacy separat abbauen, dann EIN
+gemeinsames Image bauen und genau dieses mit Idle/E-vor-nach-fsync/Leser-Signalen abnehmen.
+Dockerfile/siedler3.py/Legacy-Hunks bleiben in diesem Schritt unverändert. Alle sechs
+P20-Schutzdateien müssen vor/nach jedem Commit bytegleich zur Basis3d3d377f sein.
+Projektpfade, Schalter und Blockübernahme werden nicht verändert.
+
+
+#### Reviewfix R1–R3 (6fe31bd2)
+
+S3-Signalrückhalt wird vor dem terminalen Status unter Policy-/Lease-Fence in
+reverse_auftraege.uebernahme gespeichert (retention + job-/quellgebundener Beleg).
+Nur dieser explizite Rückhalt wird im normalen Aufräumtakt berücksichtigt; andere
+terminale S3-Arbeit bleibt unverändert. Scheitert die Sicherung, kein terminaler
+Statuswechsel und kein Cleanup. Ein verlorener Fence publiziert keinen Rückhalt.
+
+Der Handler merkt zusätzlich die monotone Signalzeit (nur Clock/Skalare, kein I/O).
+Ein einmaliger absoluter Ablauf wird aus diesem Zeitpunkt und dem gepinnten
+prozess_wait_ms gebildet und an Leser und Sweep geteilt. TERM/KILL/Poll-Latenz
+verbrauchen dieselbe Restzeit; ein weiterer Sweep erhält kein neues Zeitkonto.
+Docker stopSeconds verwendet denselben PG-Wert auf volle Sekunden aufgerundet.
+Native/fsync-Latenz bleibt durch diese kooperativen Grenzen nicht hart garantiert.
+
+Spätes Parent-TERM nach Leserreturn verwendet denselben festen Parentcode mit
+unverändertem Kindexit/Protokollverweis; ein bereits beobachteter Kindfehler gewinnt.
+Vor Kindstart sind Kindfelder null. Ein Signal-Ende erfindet keinen Leser-Endmarker.
+R1 prüft N2 gegen synapse_test mit echten Cleanup-Takten/Bytehashes/Leaseverlust;
+R2/R3 prüft N1 mit Fake-Uhr und echter Runner-Publikationsgrenze.

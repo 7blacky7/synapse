@@ -54,7 +54,11 @@ def sicher(root: Path, rel: str, tiefe: int) -> Path:
     return target
 
 
-def hash_datei(pfad: Path, chunk: int) -> tuple[str, int]:
+class SignalStopp(Exception):
+    """Cooperative stop, raised outside durability-critical sections."""
+
+
+def hash_datei(pfad: Path, chunk: int, stopp: Callable[[], bool] | None = None) -> tuple[str, int]:
     fd = os.open(pfad, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         st = os.fstat(fd)
@@ -63,6 +67,8 @@ def hash_datei(pfad: Path, chunk: int) -> tuple[str, int]:
         digest, size = hashlib.sha256(), 0
         with os.fdopen(fd, "rb", closefd=False) as f:
             while block := f.read(chunk):
+                if stopp is not None and stopp():
+                    raise SignalStopp()
                 digest.update(block)
                 size += len(block)
         after = os.fstat(fd)
@@ -77,8 +83,16 @@ def ausfuehren(root: Path, source: Path, bindung: dict[str, Any], cap: dict[str,
                auflisten: Callable[[Path], Iterable[dict[str, Any]]],
                extrahieren: Callable[[Path, str, Path, float], None],
                erkennen: Callable[[Path], bool], bibliothek: Path | None = None,
-               importiert_sha: str | None = None) -> dict[str, Any]:
+               importiert_sha: str | None = None, stopp: Callable[[], bool] | None = None) -> dict[str, Any]:
     """Ein Schritt. Callbacks sind allgemeine Werkzeugadapter, keine Leserinstallation."""
+    def gestoppt() -> bool:
+        return stopp is not None and stopp()
+
+    def hashen(p: Path, chunk: int) -> tuple[str, int]:
+        return hash_datei(p, chunk, stopp)
+
+    if gestoppt():
+        raise SignalStopp()
     root.mkdir(parents=True, exist_ok=True)
     if root.is_symlink() or root.resolve() != root.absolute():
         raise ValueError("e_checkpoint_pfad")
@@ -102,14 +116,14 @@ CREATE TABLE IF NOT EXISTS member(id INTEGER PRIMARY KEY,archiv INTEGER NOT NULL
         if alt is not None and alt[0] != key:
             raise ValueError("e_checkpoint_herkunft_geaendert")
         if alt is None:
-            sha, size = hash_datei(source, cap["lese_block_bytes"])
+            sha, size = hashen(source, cap["lese_block_bytes"])
             conn.execute("INSERT INTO meta VALUES('bindung',?)", (key,))
             conn.execute("INSERT INTO meta VALUES('schritt','1')")
             conn.execute("INSERT INTO archive(source,sha,groesse,prefix,tiefe) VALUES(?,?,?,'',0)", (str(source), sha, str(size)))
             conn.commit()
             sync_ordner(root)
         ursprung = conn.execute("SELECT sha,groesse FROM archive WHERE id=1").fetchone()
-        if hash_datei(source, cap["lese_block_bytes"]) != (ursprung["sha"], int(ursprung["groesse"])):
+        if hashen(source, cap["lese_block_bytes"]) != (ursprung["sha"], int(ursprung["groesse"])):
             raise ValueError("e_checkpoint_quelle_geaendert")
         schritt = int(conn.execute("SELECT value FROM meta WHERE name='schritt'").fetchone()[0])
         antwortpfad = root / ANTWORT
@@ -148,115 +162,128 @@ CREATE TABLE IF NOT EXISTS member(id INTEGER PRIMARY KEY,archiv INTEGER NOT NULL
                 p = sicher(root, a["source"], cap["max_tiefe"])
                 if not p.exists() and bibliothek is not None:
                     p = sicher(bibliothek, a["source"], cap["max_tiefe"])
-            sha, size = hash_datei(p, cap["lese_block_bytes"])
+            sha, size = hashen(p, cap["lese_block_bytes"])
             if sha != a["sha"] or str(size) != a["groesse"]:
                 raise ValueError("e_checkpoint_quelle_geaendert")
             geprueft[a["id"]] = p
             return p
 
-        while True:
-            if time.monotonic() >= deadline:
-                grund = "deadline"
-                break
-            a = conn.execute("SELECT * FROM archive WHERE inventar=0 ORDER BY id LIMIT 1").fetchone()
-            if a is not None:
-                p = archivpfad(a)
-                n = 0
-                for item in auflisten(p):
-                    if time.monotonic() >= deadline:
-                        grund = "deadline"
+        try:
+            while True:
+                if gestoppt():
+                    grund = "signal_sigterm"
+                    break
+                if time.monotonic() >= deadline:
+                    grund = "deadline"
+                    break
+                a = conn.execute("SELECT * FROM archive WHERE inventar=0 ORDER BY id LIMIT 1").fetchone()
+                if a is not None:
+                    p = archivpfad(a)
+                    n = 0
+                    for item in auflisten(p):
+                        if gestoppt():
+                            grund = "signal_sigterm"
+                            break
+                        if time.monotonic() >= deadline:
+                            grund = "deadline"
+                            break
+                        name, size = str(item["pfad"]), int(item["groesse"])
+                        if size < 0:
+                            raise ValueError("e_member_groesse")
+                        rel = a["prefix"] + name
+                        sicher(root, rel, cap["max_tiefe"])
+                        # Wiederholung einer unterbrochenen Auflistung ist nur bei identischem Member erlaubt.
+                        old = conn.execute("SELECT groesse,ziel FROM member WHERE archiv=? AND name=?", (a["id"], name)).fetchone()
+                        if old and (old["groesse"] != str(size) or old["ziel"] != rel):
+                            raise ValueError("e_member_inventar_geaendert")
+                        conn.execute("INSERT OR IGNORE INTO member(archiv,name,ziel,groesse) VALUES(?,?,?,?)", (a["id"], name, rel, str(size)))
+                        n += 1
+                        if n % cap["manifest_segment_zeilen"] == 0:
+                            conn.commit()
+                    conn.commit()
+                    if grund:
                         break
-                    name, size = str(item["pfad"]), int(item["groesse"])
-                    if size < 0:
-                        raise ValueError("e_member_groesse")
-                    rel = a["prefix"] + name
-                    sicher(root, rel, cap["max_tiefe"])
-                    # Wiederholung einer unterbrochenen Auflistung ist nur bei identischem Member erlaubt.
-                    old = conn.execute("SELECT groesse,ziel FROM member WHERE archiv=? AND name=?", (a["id"], name)).fetchone()
-                    if old and (old["groesse"] != str(size) or old["ziel"] != rel):
-                        raise ValueError("e_member_inventar_geaendert")
-                    conn.execute("INSERT OR IGNORE INTO member(archiv,name,ziel,groesse) VALUES(?,?,?,?)", (a["id"], name, rel, str(size)))
-                    n += 1
-                    if n % cap["manifest_segment_zeilen"] == 0:
-                        conn.commit()
+                    conn.execute("UPDATE archive SET inventar=1 WHERE id=?", (a["id"],))
+                    conn.commit()
+                m = conn.execute("SELECT * FROM member WHERE status IN('offen','bereit') ORDER BY id LIMIT 1").fetchone()
+                if m is None:
+                    if conn.execute("SELECT 1 FROM archive WHERE inventar=0 LIMIT 1").fetchone():
+                        continue
+                    # Archivquellen werden erst publiziert, wenn keine Kindarbeit mehr offen ist.
+                    # Damit kann der Import andere fertige Dateien verschieben, ohne Resume-Quellen zu entfernen.
+                    for gehalten in conn.execute("SELECT id,groesse,schritt FROM member WHERE status='quelle' ORDER BY id"):
+                        size = int(gehalten["groesse"])
+                        if gehalten["schritt"] != schritt:
+                            if dateien >= cap["max_dateien"] or size_step + size > cap["max_bytes"]:
+                                grund = "schrittgrenze" if dateien else "datei_ueber_schrittbudget"
+                                break
+                            dateien += 1
+                            size_step += size
+                        conn.execute("UPDATE member SET status='fertig',schritt=? WHERE id=?", (schritt, gehalten["id"]))
+                    conn.commit()
+                    break
+                size = int(m["groesse"])
+                if size > cap["max_datei_bytes"]:
+                    grund = "datei_zu_gross"
+                    break
+                if dateien >= cap["max_dateien"] or size_step + size > cap["max_bytes"]:
+                    grund = "schrittgrenze" if dateien else "datei_ueber_schrittbudget"
+                    break
+                a = conn.execute("SELECT * FROM archive WHERE id=?", (m["archiv"],)).fetchone()
+                p = archivpfad(a)
+                if a["id"] not in archiv_summen:
+                    archiv_summen[a["id"]] = sum(int(r[0]) for r in conn.execute("SELECT groesse FROM member WHERE archiv=? AND status IN('fertig','quelle')", (a["id"],)))
+                if archiv_summen[a["id"]] + size > int(a["groesse"]) * cap["max_kompressionsfaktor"]:
+                    grund = "bombe_verdacht"
+                    break
+                ziel = sicher(root, m["ziel"], cap["max_tiefe"])
+                ziel.parent.mkdir(parents=True, exist_ok=True)
+                if m["status"] == "bereit":
+                    zwischen = root / m["zwischen"]
+                    kandidat = ziel if ziel.exists() else zwischen
+                    sha, actual = hashen(kandidat, cap["lese_block_bytes"])
+                    if sha != m["sha"] or actual != size:
+                        raise ValueError("e_member_bereit_geaendert")
+                else:
+                    # Jeder Wiederholungsversuch bekommt einen eigenen Namen; alte Fragmente bleiben erhalten.
+                    zwischen = root / (".e-member-" + uuid.uuid4().hex)
+                    extrahieren(p, m["name"], zwischen, deadline)
+                    sha, actual = hashen(zwischen, cap["lese_block_bytes"])
+                    if actual != size:
+                        raise ValueError("e_member_unvollstaendig")
+                    with zwischen.open("rb") as f:
+                        os.fsync(f.fileno())
+                    conn.execute("UPDATE member SET status='bereit',sha=?,zwischen=? WHERE id=?", (sha, zwischen.name, m["id"]))
+                    conn.commit()
+                if ziel.exists():
+                    if hash_datei(ziel, cap["lese_block_bytes"]) != (sha, size):
+                        raise ValueError("e_member_ziel_belegt")
+                else:
+                    os.rename(zwischen, ziel)
+                    sync_ordner(ziel.parent)
+                archiv = erkennen(ziel)
+                if archiv:
+                    if a["tiefe"] >= cap["max_verschachtelung"]:
+                        grund = "tiefenlimit"
+                    else:
+                        conn.execute("INSERT OR IGNORE INTO archive(source,sha,groesse,prefix,tiefe) VALUES(?,?,?,?,?)",
+                                     (m["ziel"], sha, str(size), m["ziel"] + "~inhalt/", a["tiefe"] + 1))
+                conn.execute("UPDATE member SET status=?,schritt=? WHERE id=?", ("quelle" if archiv and grund is None else "fertig", schritt, m["id"]))
                 conn.commit()
+                dateien += 1
+                size_step += size
+                archiv_summen[a["id"]] += size
                 if grund:
                     break
-                conn.execute("UPDATE archive SET inventar=1 WHERE id=?", (a["id"],))
-                conn.commit()
-            m = conn.execute("SELECT * FROM member WHERE status IN('offen','bereit') ORDER BY id LIMIT 1").fetchone()
-            if m is None:
-                if conn.execute("SELECT 1 FROM archive WHERE inventar=0 LIMIT 1").fetchone():
-                    continue
-                # Archivquellen werden erst publiziert, wenn keine Kindarbeit mehr offen ist.
-                # Damit kann der Import andere fertige Dateien verschieben, ohne Resume-Quellen zu entfernen.
-                for gehalten in conn.execute("SELECT id,groesse,schritt FROM member WHERE status='quelle' ORDER BY id"):
-                    size = int(gehalten["groesse"])
-                    if gehalten["schritt"] != schritt:
-                        if dateien >= cap["max_dateien"] or size_step + size > cap["max_bytes"]:
-                            grund = "schrittgrenze" if dateien else "datei_ueber_schrittbudget"
-                            break
-                        dateien += 1
-                        size_step += size
-                    conn.execute("UPDATE member SET status='fertig',schritt=? WHERE id=?", (schritt, gehalten["id"]))
-                conn.commit()
-                break
-            size = int(m["groesse"])
-            if size > cap["max_datei_bytes"]:
-                grund = "datei_zu_gross"
-                break
-            if dateien >= cap["max_dateien"] or size_step + size > cap["max_bytes"]:
-                grund = "schrittgrenze" if dateien else "datei_ueber_schrittbudget"
-                break
-            a = conn.execute("SELECT * FROM archive WHERE id=?", (m["archiv"],)).fetchone()
-            p = archivpfad(a)
-            if a["id"] not in archiv_summen:
-                archiv_summen[a["id"]] = sum(int(r[0]) for r in conn.execute("SELECT groesse FROM member WHERE archiv=? AND status IN('fertig','quelle')", (a["id"],)))
-            if archiv_summen[a["id"]] + size > int(a["groesse"]) * cap["max_kompressionsfaktor"]:
-                grund = "bombe_verdacht"
-                break
-            ziel = sicher(root, m["ziel"], cap["max_tiefe"])
-            ziel.parent.mkdir(parents=True, exist_ok=True)
-            if m["status"] == "bereit":
-                zwischen = root / m["zwischen"]
-                kandidat = ziel if ziel.exists() else zwischen
-                sha, actual = hash_datei(kandidat, cap["lese_block_bytes"])
-                if sha != m["sha"] or actual != size:
-                    raise ValueError("e_member_bereit_geaendert")
-            else:
-                # Jeder Wiederholungsversuch bekommt einen eigenen Namen; alte Fragmente bleiben erhalten.
-                zwischen = root / (".e-member-" + uuid.uuid4().hex)
-                extrahieren(p, m["name"], zwischen, deadline)
-                sha, actual = hash_datei(zwischen, cap["lese_block_bytes"])
-                if actual != size:
-                    raise ValueError("e_member_unvollstaendig")
-                with zwischen.open("rb") as f:
-                    os.fsync(f.fileno())
-                conn.execute("UPDATE member SET status='bereit',sha=?,zwischen=? WHERE id=?", (sha, zwischen.name, m["id"]))
-                conn.commit()
-            if ziel.exists():
-                if hash_datei(ziel, cap["lese_block_bytes"]) != (sha, size):
-                    raise ValueError("e_member_ziel_belegt")
-            else:
-                os.rename(zwischen, ziel)
-                sync_ordner(ziel.parent)
-            archiv = erkennen(ziel)
-            if archiv:
-                if a["tiefe"] >= cap["max_verschachtelung"]:
-                    grund = "tiefenlimit"
-                else:
-                    conn.execute("INSERT OR IGNORE INTO archive(source,sha,groesse,prefix,tiefe) VALUES(?,?,?,?,?)",
-                                 (m["ziel"], sha, str(size), m["ziel"] + "~inhalt/", a["tiefe"] + 1))
-            conn.execute("UPDATE member SET status=?,schritt=? WHERE id=?", ("quelle" if archiv and grund is None else "fertig", schritt, m["id"]))
-            conn.commit()
-            dateien += 1
-            size_step += size
-            archiv_summen[a["id"]] += size
-            if grund:
-                break
+        except Exception:
+            if not gestoppt():
+                raise
+            grund = "signal_sigterm"
         offen = conn.execute("SELECT count(*) FROM member WHERE status<>'fertig'").fetchone()[0]
         inventare = conn.execute("SELECT count(*) FROM archive WHERE inventar=0").fetchone()[0]
         # Ein vorzeitiger Ausstieg ist nie eine leere erfolgreiche Tabelle.
+        if gestoppt():
+            grund = grund or "signal_sigterm"
         fertig = grund is None and offen == 0 and inventare == 0
         name = ".e-manifest-" + str(schritt) + ".jsonl"
         tmp = root / (".e-segment-" + uuid.uuid4().hex)
@@ -266,6 +293,8 @@ CREATE TABLE IF NOT EXISTS member(id INTEGER PRIMARY KEY,archiv INTEGER NOT NULL
                 record = {"pfad": row["ziel"], "sha256": row["sha"], "groesse": row["groesse"],
                           "metadaten": {"herkunft": {"archiv": row["archivquelle"], "pfad": row["name"]},
                                         "e_member_id": str(row["id"]), "e_bindung": key}}
+                if gestoppt() and time.monotonic() >= deadline:
+                    raise TimeoutError("e_manifest_deadline")
                 raw = kanonisch(record) + b"\n"
                 if len(raw) > cap["manifest_record_bytes"] + 1:
                     raise ValueError("e_manifest_record_zu_gross")
@@ -278,11 +307,14 @@ CREATE TABLE IF NOT EXISTS member(id INTEGER PRIMARY KEY,archiv INTEGER NOT NULL
             os.fsync(target.fileno())
         os.replace(tmp, root / name)
         sync_ordner(root)
+        if gestoppt():
+            grund = grund or "signal_sigterm"
+            fertig = False
         result = {"status": "fertig" if fertig else "teilweise", "fehlercode": grund,
                   "manifest": [], "manifest_datei": {"version": 2, "pfad": name, "sha256": digest.hexdigest(), "bytes": str(manifest_bytes), "zeilen": str(count)},
                   "ausgabe_bytes": str(total),
                   "extraktion": {"version": 1, "bindung": key, "schritt": str(schritt), "fertig": fertig,
-                                  "fortsetzbar": grund in ("deadline", "schrittgrenze") and dateien > 0,
+                                  "fortsetzbar": grund in ("deadline", "schrittgrenze", "signal_sigterm") and dateien > 0,
                                   "offen": str(offen), "inventare_offen": str(inventare),
                                   "gesamt": str(conn.execute("SELECT count(*) FROM member WHERE status='fertig'").fetchone()[0]),
                                   "leertabelle_belegt": fertig and count == 0}}

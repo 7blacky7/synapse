@@ -8,6 +8,7 @@ import json
 import os
 import re
 import resource
+import selectors
 import shutil
 import signal
 import socket
@@ -94,6 +95,94 @@ DISC_PY = Path(__file__).with_name("disc.py")
 ALTER_WEG = frozenset({"cue"})
 ROH_ENDUNGEN = (".bin", ".img", ".iso")
 _DISC: Any = None
+
+
+# P18-T103: process-wide latch, deliberately separate from the per-request _STOPP.
+_SIGTERM = 0
+_SIGNAL_BEGINN: float | None = None
+_SIGNAL_WAIT_S = 0.0
+_SIGNAL_POLL_S = GUARD_INTERVAL_S
+_SIGNAL_DEADLINE: float | None = None
+
+
+class SignalStopp(Exception):
+    """Raised only by cooperative checks, never by the signal handler."""
+
+
+def signal_angefordert() -> bool:
+    return _SIGTERM != 0
+
+
+def signal_pruefen() -> None:
+    if signal_angefordert():
+        raise SignalStopp()
+
+
+def signal_handler(signum: int, _frame: Any) -> None:
+    global _SIGTERM, _SIGNAL_BEGINN
+    if not _SIGTERM:
+        # Clock + scalar latches only: no I/O, locks, exceptions or cleanup here.
+        _SIGNAL_BEGINN = time.monotonic()
+        _SIGTERM = signum
+
+
+def signal_frist() -> float | None:
+    """ONE absolute deadline from signal receipt, shared by every cleanup owner."""
+    global _SIGNAL_DEADLINE
+    if not signal_angefordert():
+        return None
+    if _SIGNAL_DEADLINE is None:
+        _SIGNAL_DEADLINE = (_SIGNAL_BEGINN if _SIGNAL_BEGINN is not None else time.monotonic()) + _SIGNAL_WAIT_S
+    return _SIGNAL_DEADLINE
+
+
+def signal_budget(req: dict[str, Any]) -> None:
+    """Only the existing pinned PG projection supplies cleanup time."""
+    global _SIGNAL_WAIT_S, _SIGNAL_POLL_S, _SIGNAL_DEADLINE
+    _SIGNAL_DEADLINE = None
+    snapshot = req.get("einstellungen")
+    values = snapshot.get("werte") if isinstance(snapshot, dict) else {}
+    values = values if isinstance(values, dict) else {}
+    grenzen = req.get("leser_grenzen")
+    grenzen = grenzen if isinstance(grenzen, dict) else {}
+    values = {k: v for k, v in values.items() if isinstance(v, dict)}
+    wait = grenzen.get("wait_ms") if req.get("kommando") == "leser_ausfuehren" else (values.get("prozess_wait_ms") or {}).get("wert")
+    poll = grenzen.get("poll_ms") if req.get("kommando") == "leser_ausfuehren" else (values.get("guard_intervall_ms") or {}).get("wert")
+    _SIGNAL_WAIT_S = int(wait) / 1000 if isinstance(wait, str) and wait.isdecimal() else 0.0
+    _SIGNAL_POLL_S = int(poll) / 1000 if isinstance(poll, str) and poll.isdecimal() and int(poll) > 0 else GUARD_INTERVAL_S
+
+
+def signal_kind_beenden(proc: subprocess.Popen[Any]) -> None:
+    """TERM then bounded KILL/reap, one shared cleanup deadline per request."""
+    global _SIGNAL_DEADLINE
+    deadline = signal_frist()
+    if deadline is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=max(0, deadline - time.monotonic()) / 2)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        kill_group(proc.pid)
+    # After kill no extra wait budget; a non-reaped child is an explicit failure.
+    proc.wait(timeout=max(0, deadline - time.monotonic()))
+
+
+def signal_abbruch(req: dict[str, Any], antwort: dict[str, Any] | None = None) -> dict[str, Any]:
+    if req.get("kommando") == "leser_ausfuehren":
+        from leser import signal_antwort as leser_signal
+        return leser_signal(antwort)
+    return signal_antwort()
+
+
+def signal_antwort() -> dict[str, Any]:
+    return {"status": "teilweise", "fehlercode": "signal_sigterm", "manifest": [],
+            "retention": {"erhalten": True, "fortsetzbar": False,
+                          "cursor_unbestaetigt": True, "grund": "signal_sigterm"}}
 
 
 def disc_modul() -> Any:
@@ -273,14 +362,17 @@ def sweep_processes() -> int:
     def others() -> list[int]:
         return [int(p.name) for p in Path("/proc").iterdir() if p.name.isdigit() and int(p.name) not in keep and alive(int(p.name))]
     rest = others()
-    deadline = time.monotonic() + 2
+    # Legacy cleanup retains its budget; TERM cleanup shares the pinned deadline.
+    deadline = signal_frist() if signal_angefordert() else time.monotonic() + 2
+    if deadline is None:
+        deadline = time.monotonic()
     while rest and time.monotonic() < deadline:
         for victim in rest:
             try:
                 os.kill(victim, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        time.sleep(0.05)
+        time.sleep(min(_SIGNAL_POLL_S, max(0, deadline - time.monotonic())) if signal_angefordert() else 0.05)
         try:  # als PID 1 erben wir verwaiste Kinder und muessen sie einsammeln
             while os.waitpid(-1, os.WNOHANG)[0] > 0:
                 pass
@@ -406,6 +498,7 @@ def scan_output(root: Path, cap: dict[str, int], input_size: int, basis: tuple[i
     neueste_ns = -1
     stack: list[tuple[str, int]] = [(str(root), tiefe0)]
     while stack:
+        signal_pruefen()
         here, depth = stack.pop()
         if depth > cap["max_tiefe"]:
             return "bombe_verdacht", f"max_tiefe ueberschritten: tiefer als {cap['max_tiefe']} Ebenen"
@@ -422,6 +515,7 @@ def scan_output(root: Path, cap: dict[str, int], input_size: int, basis: tuple[i
         except OSError:
             continue
         for entry in entries:
+            signal_pruefen()
             try:
                 if entry.is_dir(follow_symlinks=False):
                     dirs += 1
@@ -508,6 +602,7 @@ def run_isolated(command: list[str], timeout: int, env: dict[str, str], cwd: Pat
     P18-T62: mit guard wird die Ausgabe alle GUARD_INTERVAL_S geprueft. Bei einer Grenzverletzung stirbt die ganze
     Prozessgruppe sofort und GrenzeUeberschritten wird geworfen; die Teilausgabe raeumt run_request.
     """
+    signal_pruefen()
     violation: tuple[str, str] | None = None
     code = -1
     with (job_tmp / ".stdout").open("w+b") as out_stream, (job_tmp / ".stderr").open("w+b") as err_stream:
@@ -516,17 +611,20 @@ def run_isolated(command: list[str], timeout: int, env: dict[str, str], cwd: Pat
         deadline = time.monotonic() + timeout
         try:
             while True:
+                signal_pruefen()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(command, timeout)
                 try:
-                    code = proc.wait(timeout=min(GUARD_INTERVAL_S, remaining) if guard else remaining)
+                    code = proc.wait(timeout=min(_SIGNAL_POLL_S, remaining))
                     break
                 except subprocess.TimeoutExpired:
                     violation = guard() if guard else None
                     if violation:
                         break
         finally:
+            if signal_angefordert():
+                signal_kind_beenden(proc)
             kill_group(proc.pid)
             try:
                 proc.wait(timeout=5)
@@ -754,6 +852,7 @@ def manifest_fuellen(root: Path, cap: dict[str, int], input_size: int, frist: fl
     if _FORTSCHRITT is not None:
         _FORTSCHRITT.gesamt = _FORTSCHRITT.dateien or None
     for current, dirs, files in os.walk(root, followlinks=False):
+        signal_pruefen()
         here = Path(current)
         symlink_dirs = [d for d in dirs if (here / d).is_symlink()]
         if symlink_dirs:
@@ -762,6 +861,7 @@ def manifest_fuellen(root: Path, cap: dict[str, int], input_size: int, frist: fl
         if len(here.relative_to(root).parts) > cap["max_tiefe"]:
             raise GrenzeUeberschritten("bombe_verdacht", "max_tiefe ueberschritten")
         for name in sorted(files):
+            signal_pruefen()
             if cap.get("blockuebernahme") and here == root and name.startswith(".e-"):
                 continue
             path = here / name
@@ -781,6 +881,7 @@ def manifest_fuellen(root: Path, cap: dict[str, int], input_size: int, frist: fl
             digest = hashlib.sha256()
             with path.open("rb") as stream:
                 for chunk in iter(lambda: stream.read(cap.get("lese_block_bytes", 1024 * 1024)), b""):
+                    signal_pruefen()
                     digest.update(chunk)
             entries.append({"pfad": path.relative_to(root).as_posix(),
                             "groesse": size, "sha256": digest.hexdigest()})
@@ -1107,6 +1208,7 @@ def dateien_unter(root: Path) -> list[str]:
     """Regulaere Dateien relativ zu root (posix), ohne Symlinks zu folgen."""
     result = []
     for current, dirs, files in os.walk(root, followlinks=False):
+        signal_pruefen()
         here = Path(current)
         dirs[:] = sorted(d for d in dirs if not (here / d).is_symlink())
         for name in sorted(files):
@@ -1190,11 +1292,13 @@ def e_schritt(req: dict[str, Any], job: str, source: Path, cap: dict[str, int]) 
 
     def prozess(argv: list[str], ziel: Path, ende: float, maximum: int) -> None:
         # stdout enthält nur diesen Member bzw. das Inventar. Fristen/Fehler löschen keinen Teilstand.
+        signal_pruefen()
         with ziel.open("xb") as sink:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.DEVNULL,
                                     env=env, cwd=out, start_new_session=True, preexec_fn=file_size_limit(maximum))
             try:
                 while proc.poll() is None:
+                    signal_pruefen()
                     if time.monotonic() >= ende:
                         raise TimeoutError("e_member_deadline")
                     if ziel.stat().st_size > maximum:
@@ -1205,6 +1309,8 @@ def e_schritt(req: dict[str, Any], job: str, source: Path, cap: dict[str, int]) 
                 sink.flush()
                 os.fsync(sink.fileno())
             finally:
+                if signal_angefordert():
+                    signal_kind_beenden(proc)
                 if proc.poll() is None:
                     try:
                         os.killpg(proc.pid, signal.SIGKILL)
@@ -1257,9 +1363,11 @@ def e_schritt(req: dict[str, Any], job: str, source: Path, cap: dict[str, int]) 
 
     try:
         result = journal.ausfuehren(out, source, bindung, cap, auflisten, extrahieren, erkennen,
-                                   importiert_sha=raw.get("importiert_sha"))
+                                   importiert_sha=raw.get("importiert_sha"), stopp=signal_angefordert)
         result["werkzeug_version"] = bindung["werkzeug"]
         return [result]
+    except (SignalStopp, journal.SignalStopp):
+        return [signal_antwort()]
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return [{"status": "teilweise", "fehlercode": "werkzeug_fehler", "manifest": [],
                  "retention": {"erhalten": True, "fortsetzbar": False, "grund": str(exc),
@@ -1698,10 +1806,12 @@ def normalisierer_rohausgaben(source: Path, out: Path, cap: dict[str, int], env:
 
 
 def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
+    signal_pruefen()
+    signal_budget(req)
     # P18-T40: separater Vertragsadapter vor jedem E-/S3-/BIB-Pfad.
     if req.get("kommando") == "leser_ausfuehren":
         from leser import ausfuehren
-        return [ausfuehren(req)]
+        return [ausfuehren(req, stopp=signal_angefordert, stopp_frist=signal_frist)]
     global _STOPP
     _STOPP = None
     job = job_id(req)
@@ -1848,35 +1958,98 @@ def run_request(req: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def main() -> int:
-    global _FORTSCHRITT
-    if sys.argv[1:] == ["--self-probe"]:
-        result = self_probe()
-        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), flush=True)
-        return 0 if result["status"] == "ok" else 1
-    for line in sys.stdin:
-        try:
-            if len(line.encode("utf-8")) > 65536:
-                raise ValueError("Auftrag zu gross")
-            request = json.loads(line)
-            if not isinstance(request, dict):
-                raise ValueError("JSON-Zeile muss ein Objekt sein")
-            # P18-T85: Live-Fortschritt nur fuer die Dauer dieses Auftrags; gestoppt vor jeder Endmeldung.
-            _FORTSCHRITT = Fortschritt.aus_auftrag(request)
-            if _FORTSCHRITT is not None:
-                _FORTSCHRITT.starten()
+    global _FORTSCHRITT, _SIGTERM, _SIGNAL_BEGINN, _SIGNAL_DEADLINE
+    _SIGNAL_BEGINN = _SIGNAL_DEADLINE = None
+    # No installation on import; in particular tests must not acquire the caller's signals.
+    _SIGTERM = 0
+    read_fd, write_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+    old_handler = signal.getsignal(signal.SIGTERM)
+    old_wakeup = signal.set_wakeup_fd(write_fd)
+    signal.signal(signal.SIGTERM, signal_handler)
+    try:
+        if sys.argv[1:] == ["--self-probe"]:
+            result = self_probe()
+            ausgabe(result)
+            return 143 if signal_angefordert() else (0 if result["status"] == "ok" else 1)
+        with selectors.DefaultSelector() as selector:
+            selector.register(read_fd, selectors.EVENT_READ, "signal")
+            selector.register(sys.stdin.fileno(), selectors.EVENT_READ, "stdin")
+            buffer = b""
+            eof = False
+            while not signal_angefordert():
+                if b"\n" not in buffer and not eof:
+                    for key, _ in selector.select():
+                        if key.data == "signal":
+                            os.read(read_fd, 4096)
+                        elif not signal_angefordert():
+                            block = os.read(sys.stdin.fileno(), 65537)
+                            if block:
+                                buffer += block
+                            else:
+                                eof = True
+                    if signal_angefordert():
+                        break
+                if not buffer:
+                    if eof:
+                        break
+                    continue
+                if b"\n" not in buffer and not eof:
+                    if len(buffer) > 65536:
+                        ausgabe({"status": "fehler", "fehlercode": "ungueltiger_auftrag",
+                                 "meldung": "Auftrag zu gross"})
+                        return 1
+                    continue
+                line, separator, buffer = buffer.partition(b"\n")
+                if not separator:
+                    buffer = b""
+                request: dict[str, Any] = {}
+                try:
+                    if len(line) > 65536:
+                        raise ValueError("Auftrag zu gross")
+                    request = json.loads(line)
+                    if not isinstance(request, dict):
+                        raise ValueError("JSON-Zeile muss ein Objekt sein")
+                    _FORTSCHRITT = Fortschritt.aus_auftrag(request)
+                    if _FORTSCHRITT is not None:
+                        _FORTSCHRITT.starten()
+                    try:
+                        events = run_request(request)
+                    except SignalStopp:
+                        events = [signal_abbruch(request)]
+                    finally:
+                        if _FORTSCHRITT is not None:
+                            _FORTSCHRITT.stoppen()
+                        _FORTSCHRITT = None
+                    # Linearisation: only the short terminal write is signal-masked.
+                    mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+                    try:
+                        if signal_angefordert() and events[-1].get("status") == "fertig":
+                            events = [signal_abbruch(request, events[-1])]
+                        for event in events:
+                            ausgabe(event)
+                    finally:
+                        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+                except subprocess.TimeoutExpired:
+                    ausgabe(signal_abbruch(request) if signal_angefordert() else
+                            {"status": "teilweise", "fehlercode": "deadline", "manifest": []})
+                except (ValueError, OSError, json.JSONDecodeError, TypeError) as exc:
+                    ausgabe({"status": "fehler", "fehlercode": "ungueltiger_auftrag", "meldung": str(exc)})
+            return 143 if signal_angefordert() else 0
+    finally:
+        if signal_angefordert() and CONTAINER_MODUS:
+            # All Popen owners have finished before reaping adopted PID1 children.
+            rest = sweep_processes()
             try:
-                events = run_request(request)
-            finally:
-                if _FORTSCHRITT is not None:
-                    _FORTSCHRITT.stoppen()
-                _FORTSCHRITT = None
-            for event in events:
-                ausgabe(event)
-        except subprocess.TimeoutExpired:
-            ausgabe({"status": "teilweise", "fehlercode": "deadline", "manifest": []})
-        except (ValueError, OSError, json.JSONDecodeError, TypeError) as exc:
-            ausgabe({"status": "fehler", "fehlercode": "ungueltiger_auftrag", "meldung": str(exc)})
-    return 0
+                while os.waitpid(-1, os.WNOHANG)[0] > 0:
+                    pass
+            except ChildProcessError:
+                pass
+            if rest:
+                raise SystemExit(3)
+        signal.set_wakeup_fd(old_wakeup)
+        signal.signal(signal.SIGTERM, old_handler)
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ import {leseReverseSiedler3Schalter,leseReversePeRessourcenSchalter,getPool,getA
  reverseEGruppe,ReverseEUebernahmeFehler,ergaenzeReverseRuntime,REVERSE_FEHLERCODES,REVERSE_EXECUTOR_UNTERSTUETZT,meldeReverseAusfuehrer,
  reverseFehlerDeterministisch,uebernehmeS3Ergebnis,reverseS3AusgabeKey,ReverseS3UebernahmeFehler,reverseResourceNeedRoh,
  leseReverseFortschrittSchalter,normalisiereReverseFortschritt,speichereReverseFortschritt,reverseStornoAngefordert,
- leseReverseAufsicht,leseReverseEinstellwerte,leseReverseBlockSchalter,leseReverseProduktSchalter,reverseZahl,reverseBudget,
+ leseReverseAufsicht,leseReverseEinstellwerte,leseReverseBlockSchalter,leseReverseProduktSchalter,reverseZahl,reverseBudget,reverseBigInt,
  uebernehmeEInBloecken,reverseManifestVerweis,pruefeReverseManifest,leseReverseManifest,REVERSE_EINSTELLKATALOG,type ReverseEinstellSnapshot,
  type ToolDescriptor,type WorkJob,type WorkJobHooks,type WorkJobClient,type WorkNodeAuthority,type WorkIdentity,
  type WorkJobService,type WorkJobPool,type WorkResourceNeed,type ReverseContainerInfo,type ReverseEManifestEintrag} from '@synapse/core';
@@ -466,6 +466,30 @@ export class ReverseExecutor {
   }
   return {geprueft:true,geweckt,gestartet:claims.length,...(recoveryHinweis?{hinweis:recoveryHinweis}:{})};
  }
+ /** T103-R1: checkpoint BEFORE terminal state; a crash/fence loss never makes raw work disposable. */
+ private async halteS3Signal(job:WorkJob,wer:WorkIdentity):Promise<void>{
+  const storageKey=path.relative(this.k.reverseRoot,path.join(this.k.arbeitRoot,job.id));
+  if(!UUID.test(job.id)||storageKey.startsWith('..')||path.isAbsolute(storageKey))throw Error('reverse_signal_rueckhalt_scope');
+  const einstellungen=await leseReverseEinstellwerte({eintrag_id:job.inputRef.id},this.pool);
+  if(einstellungen.letzter_fehler)throw Error(einstellungen.letzter_fehler);
+  const c=await this.pool.connect();
+  try{
+   await c.query('BEGIN');
+   await this.policyPruefen(job,c);
+   if(!await this.leaseLebt(c,job,wer,true)){await c.query('ROLLBACK');return;}
+   const beleg={version:1,job_id:job.id,versuch:job.attempt,eintrag_id:job.inputRef.id,
+    datei_id:job.inputRef.revision,quell_sha256:job.inputRef.sha256,storage_key:storageKey,
+    grund:'signal_sigterm',erhalten:true,cursor_unbestaetigt:true,automatisch_fortsetzen:false};
+   const params=[job.id,JSON.stringify(beleg),job.inputRef.id,job.inputRef.revision];
+   if(reverseZahl(einstellungen,'e_uebernahme_block_zeilen')<1||BigInt(Buffer.byteLength(JSON.stringify(params)))>reverseBigInt(einstellungen,'materialisierung_tx_bytes'))throw Error('reverse_signal_rueckhalt_budget');
+   const result=await c.query("UPDATE reverse_auftraege SET uebernahme=COALESCE(uebernahme,'{}'::jsonb)||jsonb_build_object('retention',true,'fortsetzung_gesperrt',true,'signal_rueckhalt',$2::jsonb),updated_at=clock_timestamp() WHERE p20_auftrag_id=$1 AND eintrag_id=$3 AND datei_id::text=$4 AND schicht='S3'",params);
+   if(result.rowCount!==1)throw Error('reverse_signal_rueckhalt_fehlt');
+   await c.query('COMMIT');
+  }catch(e){await c.query('ROLLBACK').catch(()=>undefined);throw e;}
+  finally{c.release();}
+  // A second fenced TX is intentional: retention is durable before any terminal state.
+  await this.scheitern(job,wer,'signal_sigterm',true);
+ }
  /** K3: Arbeitsordner ohne offenen Auftrag (verlorene Lease, Abbruch) entfernen. */
  async raeumeArbeitAuf():Promise<number>{
   let namen:string[];
@@ -483,6 +507,9 @@ export class ReverseExecutor {
   for(const row of eRest)behalten.add(String(row.id).toLowerCase());
   const policyRest=(await this.pool.query("SELECT DISTINCT p20_auftrag_id::text AS id FROM reverse_auftraege WHERE p20_auftrag_id=ANY($1::uuid[]) AND (policy_pin IS NULL OR fehlercode LIKE 'policy_%')",[namen])).rows;
   for(const row of policyRest)behalten.add(String(row.id).toLowerCase());
+  // T103-R1: only explicitly fenced, source-bound S3 signal retention survives cleanup.
+  const s3Signal=(await this.pool.query("SELECT DISTINCT p20_auftrag_id::text AS id FROM reverse_auftraege WHERE p20_auftrag_id=ANY($1::uuid[]) AND schicht='S3' AND uebernahme->>'retention'='true' AND uebernahme#>>'{signal_rueckhalt,job_id}'=p20_auftrag_id::text",[namen])).rows;
+  for(const row of s3Signal)behalten.add(String(row.id).toLowerCase());
   let n=0;
   for(const name of namen){
    if(behalten.has(name.toLowerCase())){if(!this.altScope)await sperreArbeitsOrdner(path.join(this.k.arbeitRoot,name));continue;}
@@ -760,6 +787,8 @@ export class ReverseExecutor {
    if(!lebt)return;
    cp=(await eFachauftrag(this.pool,e)).uebernahme??{};
    const ex=cp.extraktion as Record<string,unknown>|undefined;
+   // T103: a signal checkpoint is a held boundary, never an automatic restart.
+   if(cp.runner_fehlercode==='signal_sigterm'){await this.eHalten(job,wer,'signal_sigterm');return;}
    if(ex&&!ex.fertig){
     if(ex.fortsetzbar&&(await leseReverseBlockSchalter()).aktiv){
      await eCheckpoint(this.pool as Pool,e,{artefakt:null,manifest_sha:null,position:'0',fertig:false,
@@ -891,6 +920,7 @@ export class ReverseExecutor {
    const status=String(ergebnis.status);
    // P18-T87: Storno kam vor dem Ergebnis an -> Ergebnis verwerfen, der Auftrag bleibt abgebrochen.
    if(aufsicht.grund()==='storno'){await this.eHalten(job,wer,'storno');return;}
+   if(ergebnis.fehlercode==='signal_sigterm'){await this.eHalten(job,wer,'signal_sigterm',{runner_abbruch:ergebnis.retention??null});return;}
    if(ergebnis.retention){await this.eHalten(job,wer,String(ergebnis.fehlercode??(ergebnis.retention as Record<string,unknown>).grund??'teilweise'),{runner_abbruch:ergebnis.retention});return;}
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if((status==='fertig'||(status==='teilweise'&&manifest.length>0))&&lebt){
@@ -1026,6 +1056,7 @@ export class ReverseExecutor {
    const status=String(ergebnis.status);
    // P18-T87: Storno kam vor dem Ergebnis an -> Ergebnis verwerfen, der Auftrag bleibt abgebrochen.
    if(aufsicht.grund()==='storno'){aufraeumen=await this.eingriffBeenden(job,wer,'storno');return;}
+   if(ergebnis.fehlercode==='signal_sigterm'){await this.halteS3Signal(job,wer);return;}
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if(status==='fertig'&&lebt){
     if(!await this.jobs.renew(wer,job.id,token,this.k.leaseSeconds).catch(()=>false)){console.warn('[reverse-executor] Lease verloren, S3-Ergebnis verworfen:',job.id);return;}

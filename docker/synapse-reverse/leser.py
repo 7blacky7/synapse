@@ -12,7 +12,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import BinaryIO, cast
+from typing import BinaryIO, Callable, cast
 
 PROTOKOLL = ".leser-protokoll.jsonl"
 # Isolierter Interpreter, nur Standardbibliothek und das RO-Leserpaket.
@@ -33,11 +33,13 @@ def _zahl(grenzen: dict, name: str) -> int:
     return int(wert)
 
 
-def _baum(wurzel: Path, grenzen: dict, deadline: float) -> None:
+def _baum(wurzel: Path, grenzen: dict, deadline: float, stopp: Callable[[], bool] | None = None) -> None:
     """Kein Follow von Links/Spezialdateien; auch nicht gemeldete Dateien zählen."""
     anzahl = groesse = ordner = 0
     stapel = [(wurzel, 0)]
     while stapel:
+        if stopp is not None and stopp():
+            raise ValueError("leser_runner_sigterm")
         if time.monotonic() >= deadline:
             raise ValueError("leser_zeitlimit")
         pfad, tiefe = stapel.pop()
@@ -45,6 +47,8 @@ def _baum(wurzel: Path, grenzen: dict, deadline: float) -> None:
             raise ValueError("leser_pfad_tiefe")
         with os.scandir(pfad) as eintraege:
             for eintrag in eintraege:
+                if stopp is not None and stopp():
+                    raise ValueError("leser_runner_sigterm")
                 if time.monotonic() >= deadline:
                     raise ValueError("leser_zeitlimit")
                 s = eintrag.stat(follow_symlinks=False)
@@ -116,6 +120,7 @@ FEHLERCODES = frozenset([
     "leser_prozess_cleanup_fehler",
     "leser_prozess_fehler",
     "leser_prozess_signal",
+    "leser_runner_sigterm",
     "leser_schrittgrenze",
     "leser_stderr_limit",
     "leser_verzeichnisse_limit",
@@ -157,18 +162,62 @@ def _beende(prozess: subprocess.Popen, wait_ms: int) -> str | None:
     return fehler
 
 
-def ausfuehren(auftrag: dict) -> dict:
+def signal_antwort(antwort: dict | None = None) -> dict:
+    """Late parent TERM preserves the observed child cause and protocol reference."""
+    previous = dict(antwort or {})
+    if previous.get("status") == "fehler":
+        return previous
+    code = "leser_runner_sigterm"
+    child_exit = previous.get("leser_exit")
+    diagnose = previous.get("leser_diagnose")
+    previous.update(status="fehler", fehlercode=code, leser_exit=child_exit,
+                    leser_diagnose={**diagnose, "code": code} if isinstance(diagnose, dict)
+                    else _diagnose(code, "eingabe", child_exit))
+    return previous
+
+
+def _signal_beende(prozess: subprocess.Popen, wait_ms: int,
+                    frist: Callable[[], float | None] | None) -> str | None:
+    # Standalone callers get one local budget; the Runner supplies its absolute deadline.
+    deadline = frist() if frist is not None else time.monotonic() + wait_ms / 1000
+    if deadline is None:
+        return "leser_prozess_cleanup_fehler"
+    if deadline <= time.monotonic():
+        return _beende(prozess, 0)  # No fresh TERM grace after the shared deadline.
+    cleanup_code = None
+    try:
+        os.killpg(prozess.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        cleanup_code = "leser_prozess_cleanup_fehler"
+    try:
+        prozess.wait(timeout=max(0, deadline - time.monotonic()) / 2)
+    except subprocess.TimeoutExpired:
+        pass
+    remaining = max(0, int((deadline - time.monotonic()) * 1000))
+    return _beende(prozess, remaining) or cleanup_code
+
+
+def ausfuehren(auftrag: dict, stopp: Callable[[], bool] | None = None,
+               stopp_frist: Callable[[], float | None] | None = None) -> dict:
     """Auch Fehler vor Prozessstart verlassen den Adapter nur als feste Codes."""
     try:
-        return _ausfuehren(auftrag)
+        return _ausfuehren(auftrag, stopp, stopp_frist)
     except Exception as exc:
         code = _fehlercode(exc)
         return {"status": "fehler", "fehlercode": code, "leser_exit": None,
                 "leser_diagnose": _diagnose(code, "eingabe", None)}
 
 
-def _ausfuehren(auftrag: dict) -> dict:
+def _ausfuehren(auftrag: dict, stopp: Callable[[], bool] | None = None,
+                 stopp_frist: Callable[[], float | None] | None = None) -> dict:
     """Genau ein Kind, ein Schritt. Keine Formatwahl, Installation, Queue oder Adoption."""
+    def pruefe_stopp() -> None:
+        if stopp is not None and stopp():
+            raise ValueError("leser_runner_sigterm")
+
+    pruefe_stopp()
     daten = leser_stdin(auftrag)
     eingabe, grenzen = auftrag["leser_eingabe"], auftrag["leser_grenzen"]
     entrypoint = auftrag["leser_entrypoint"]
@@ -190,9 +239,11 @@ def _ausfuehren(auftrag: dict) -> dict:
     rest = b""
     fehler = cleanup_code = None
     exit_vor_cleanup = None
+    geschrieben = 0
     fd = os.open(ziel / PROTOKOLL, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         with os.fdopen(fd, "wb", buffering=0) as protokoll, selectors.DefaultSelector() as selector:
+            pruefe_stopp()
             prozess = subprocess.Popen(
                 [sys.executable, "-I", "-B", "-u", "-c", _BOOTSTRAP, str(programm),
                  str(_zahl(grenzen, "ram_mib") * 1048576), str(_zahl(grenzen, "datei_bytes")),
@@ -209,9 +260,14 @@ def _ausfuehren(auftrag: dict) -> dict:
                 selector.register(stream, ereignis, art)
             pos = stderr_bytes = 0
             while selector.get_map() or prozess.poll() is None:
+                # An already observed child failure remains the first cause.
+                observed = prozess.poll()
+                if observed is not None and observed != 0:
+                    raise ValueError("leser_prozess_signal" if observed < 0 else "leser_exit_fehler")
+                pruefe_stopp()
                 if time.monotonic() >= deadline:
                     raise ValueError("leser_zeitlimit")
-                _baum(ziel, grenzen, deadline)
+                _baum(ziel, grenzen, deadline, stopp)
                 for key, _ in selector.select(min(_zahl(grenzen, "poll_ms") / 1000, max(0, deadline - time.monotonic()))):
                     if key.data == "in":
                         try:
@@ -241,6 +297,7 @@ def _ausfuehren(auftrag: dict) -> dict:
                         if len(zeile) > _zahl(grenzen, "zeile_bytes"):
                             raise ValueError("leser_zeile_limit")
                         protokoll.write(zeile + b"\n")
+                        geschrieben += len(zeile) + 1
                         digest.update(zeile + b"\n")
                         zeilen += 1
                     if len(rest) > _zahl(grenzen, "zeile_bytes"):
@@ -249,7 +306,8 @@ def _ausfuehren(auftrag: dict) -> dict:
                 raise ValueError("leser_ende_unvollstaendig")
             if prozess.returncode != 0:
                 raise ValueError("leser_prozess_signal" if prozess.returncode < 0 else "leser_exit_fehler")
-            _baum(ziel, grenzen, deadline)
+            _baum(ziel, grenzen, deadline, stopp)
+            pruefe_stopp()
             os.fsync(protokoll.fileno())
     except Exception as exc:
         fehler = _fehlercode(exc)
@@ -257,12 +315,28 @@ def _ausfuehren(auftrag: dict) -> dict:
         if prozess is not None:
             # poll() VOR dem eigenen kill: das Cleanup-SIGKILL ist keine Ursache.
             exit_vor_cleanup = prozess.poll()
-            cleanup_code = _beende(prozess, _zahl(grenzen, "wait_ms"))
+            wait_ms = _zahl(grenzen, "wait_ms")
+            # Cause priority and cleanup budget are independent: a prior guard/child
+            # error must not grant fresh time after a concurrent parent stop.
+            if fehler == "leser_runner_sigterm" or (stopp is not None and stopp()):
+                cleanup_code = _signal_beende(prozess, wait_ms, stopp_frist)
+            else:
+                cleanup_code = _beende(prozess, wait_ms)
+        # Error paths preserve a durable protocol too. No synthetic reader end record.
+        if fehler is not None:
+            try:
+                sync_fd = os.open(ziel / PROTOKOLL, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(sync_fd)
+                finally:
+                    os.close(sync_fd)
+            except OSError:
+                cleanup_code = cleanup_code or "leser_prozess_cleanup_fehler"
     if fehler is None and cleanup_code is not None:
         fehler = cleanup_code
     # Der Host bestätigt zusätzlich das Ende des ganzen Containers.
     return {"status": "fehler" if fehler else "fertig", "fehlercode": fehler,
             "leser_protokoll": {"pfad": PROTOKOLL, "sha256": digest.hexdigest(),
-                               "bytes": str(gesamt), "zeilen": str(zeilen)},
+                               "bytes": str(geschrieben), "zeilen": str(zeilen)},
             "leser_exit": exit_vor_cleanup,
             "leser_diagnose": _diagnose(fehler, "ausfuehrung", exit_vor_cleanup, cleanup_code)}
