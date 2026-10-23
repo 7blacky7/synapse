@@ -9,7 +9,7 @@ import {createRequire} from 'node:module';
 import {readFile,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy,encodeRecord,metadataRecords,manifestHeader} from '../scripts/reverse-f3-bereinigen.mjs';
+import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy,encodeRecord,metadataRecords,manifestHeader,pruefeZwischenIntervall} from '../scripts/reverse-f3-bereinigen.mjs';
 const enabled=process.env.SYNAPSE_TEST_PHASE==='P18-T97-F3';
 const run=(name,fn)=>test(name,{skip:!enabled},fn);
 const {Pool}=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
@@ -165,20 +165,21 @@ run('concurrent FK insert cannot pass the check/delete window',async t=>{
   assert.equal((await f.pool.query("SELECT count(*)::text AS n FROM reverse_code_verweise WHERE id='race'")).rows[0].n,'0');
  }finally{other.release();}
 });
-run('same-count project UPDATE before COMMIT rolls back current Reverse batch',async t=>{
- const f=await fixture(t),m=await f.make(),before=await f.counts();
+run('concurrent same-count project UPDATE is detected as final alarm after the committed Reverse batch',async t=>{
+ const f=await fixture(t),m=await f.make();
  await assert.rejects(applyManifest(f.pool,{...m,afterDelete:async()=>{
   await f.pool.query("UPDATE code_files SET value='legitimate concurrent project change' WHERE id='keep'");
- }}),/f3_projektbestand_geaendert/);
- assert.deepEqual(await f.counts(),before);
+ }}),e=>e.message==='f3_projektbestand_geaendert'&&e.alarm===true&&e.committed_batches===1&&failureDiagnostic(e).alarm===true);
+ const state=await f.counts();assert.equal(state.evidence,'1');assert.equal(state.symbols.length,0);
+ assert.deepEqual(state.files.map(x=>x.id),['d','e','e2','f','foreign','g','h']);
  assert.equal((await f.pool.query("SELECT value FROM code_files WHERE id='keep'")).rows[0].value,'legitimate concurrent project change');
 });
-run('fresh post-COMMIT gate catches indirect same-count revision UPDATE',async t=>{
- const f=await fixture(t,{rows:2}),m=await f.make();
+run('final full balance catches indirect revision change after LAST commit, never claims full success',async t=>{
+ const f=await fixture(t,{rows:2}),m=await f.make(),total=m.files+m.symbols;
  await assert.rejects(applyManifest(f.pool,{...m,afterCommit:async()=>{
   await f.pool.query("UPDATE asset_revisionen SET sha256='external project change' WHERE asset_id=1");
- }}),e=>e.message==='f3_projektbestand_geaendert'&&e.committed_batches===1);
- assert.equal((await f.counts()).evidence,'1');
+ }}),e=>e.message==='f3_projektbestand_geaendert'&&e.alarm===true&&e.committed_batches===total);
+ assert.equal((await f.counts()).evidence,String(total));
  await assert.rejects(applyManifest(f.pool,m),/f3_projektbestand_geaendert/);
 });
 run('all seven indirect sentinel routes detect same-count mutations',async t=>{
@@ -278,15 +279,16 @@ run('normal exact delta; complete source records and own share bytes unchanged',
  const remaining=(await f.counts()).files.map(x=>x.id);
  assert.deepEqual(remaining,['d','e','e2','f','foreign','g','h']);
 });
-run('project COUNT changes mid-batch roll back Reverse and STOP',async t=>{
- const f=await fixture(t,{rows:2}),m=await f.make(),before=await f.counts();
+run('project COUNT change mid-batch raises final alarm; parallel project write remains',async t=>{
+ const f=await fixture(t,{rows:2}),m=await f.make();let changed=false;
  await assert.rejects(applyManifest(f.pool,{...m,afterDelete:async()=>{
+  if(changed)return;changed=true;
   await f.pool.query("INSERT INTO code_files VALUES('external-new','project','legitimate concurrent insert')");
- }}),/f3_projektbestand_geaendert/);
- assert.deepEqual(await f.counts(),before);
+ }}),e=>e.message==='f3_projektbestand_geaendert'&&e.alarm===true&&e.committed_batches===m.files+m.symbols);
+ const state=await f.counts();assert.equal(state.evidence,String(m.files+m.symbols));assert.equal(state.symbols.length,0);
+ assert.deepEqual(state.files.map(x=>x.id),['d','e','e2','f','foreign','g','h']);
  assert.equal((await f.pool.query('SELECT count(*)::text AS n FROM code_files')).rows[0].n,'2');
 });
-
 run('same-name foreign-schema CASCADE/SET NULL FK stops before any deletion',async t=>{
  for(const action of ['CASCADE','SET NULL'])await t.test(action,async t=>{
   const f=await fixture(t),m=await f.make(),foreign='f3_foreign_'+randomUUID().replaceAll('-','');
@@ -347,7 +349,7 @@ run('filesystem failure uses errno allowlist without path/message disclosure',as
 });
 run('explicit bounded sentinel timeout is pinned in manifest and every batch journal',async t=>{
  const f=await fixture(t),records=[],result=await createManifest(f.pool,raw=>records.push(raw),{sentinelTimeoutMs:1000});
- const h=JSON.parse(records[0]);assert.equal(h.version,3);
+ const h=JSON.parse(records[0]);assert.equal(h.version,4);
  assert.deepEqual(h.sentinel,{timeout_ms:1000,quelle:'cli'});assert.deepEqual(result.sentinel,h.sentinel);
  const lines=async function*(){yield* records;};
  await applyManifest(f.pool,{lines,expected:result.sha256,backup:'own-backup-proof'});
@@ -469,7 +471,7 @@ run('overlong candidate or metadata record is rejected BEFORE the first output r
 });
 run('18966 file contexts / 714611 symbols never inflate one record or batch evidence',async()=>{
  const limit=65536,settings={revision:'a'.repeat(64),rows:5000,maxBytes:4194304,recordBytes:limit,statement:10000,lock:2000};
- const h=manifestHeader(settings,sentinelPolicy(settings),{},[]);
+ const h=manifestHeader(settings,sentinelPolicy(settings),{},[],'e'.repeat(64));
  // Deliberately conservative escaping and numeric widths, greater than current RO maxima.
  const file={id:'\u0001'.repeat(64),path:'\u0001'.repeat(149)+'/strings.txt',name:'strings.txt',source_id:'99999',
   source_sha:'a'.repeat(64),source_hash:'b'.repeat(64),code_hash:'c'.repeat(64),row_bytes:Number.MAX_SAFE_INTEGER};
@@ -479,4 +481,52 @@ run('18966 file contexts / 714611 symbols never inflate one record or batch evid
  assert.ok(18966*bytes>limit);assert.ok(714611*bytes>limit);
  assert.equal(h.metadaten.project_owners,0);assert.ok(Buffer.byteLength(encodeRecord(h,limit))<limit);
  assert.deepEqual([...metadataRecords({},[])],[]);
+});
+
+run('default performs EXACTLY TWO full project sentinel passes across many batches',async t=>{
+ const f=await fixture(t,{rows:2,symbols:12}),m=await f.make();let full=0;
+ const pool=injectedPool(f.pool,text=>{if(text==="SELECT current_setting('statement_timeout') AS v")full++;return null;});
+ const result=await applyManifest(pool,m);
+ assert.ok(result.committed_batches>2);assert.equal(full,2);
+ assert.deepEqual(result.pruefungen,{vollsentinel_alle_batches:0,regulaere_vollpruefungen:2});
+ const journal=(await f.pool.query("SELECT delta->'pruefungen' AS controls,delta->>'katalog_sha256' AS pin FROM reverse_f3_bereinigungs_batches")).rows;
+ const h=JSON.parse(m.records[0]);assert.match(h.katalog_sha256,/^[a-f0-9]{64}$/);
+ for(const row of journal){assert.deepEqual(row.controls,{vollsentinel_alle_batches:0});assert.equal(row.pin,h.katalog_sha256);}
+});
+run('OID catalog changed between batches stops BEFORE next deletion',async t=>{
+ const f=await fixture(t,{rows:2}),m=await f.make();let changed=false;
+ await assert.rejects(applyManifest(f.pool,{...m,afterCommit:async()=>{
+  if(changed)return;changed=true;
+  const row=(await f.pool.query("SELECT conname FROM pg_constraint WHERE conrelid='reverse_code_verweise'::regclass AND confrelid='reverse_code_symbole'::regclass")).rows[0];
+  const name='"'+row.conname.replaceAll('"','""')+'"';
+  await f.pool.query('ALTER TABLE reverse_code_verweise DROP CONSTRAINT '+name);
+  await f.pool.query('ALTER TABLE reverse_code_verweise ADD CONSTRAINT '+name+' FOREIGN KEY(symbol_id) REFERENCES reverse_code_symbole(id) ON DELETE CASCADE');
+ }}),e=>e.message==='f3_katalog_geaendert'&&e.committed_batches===1);
+ const after=await f.counts();assert.equal(after.evidence,'1');
+ assert.deepEqual(after.symbols.map(x=>x.id),['a-00001','a-00002']);
+ assert.deepEqual(after.files.map(x=>x.id),['a','b','c','d','e','e2','f','foreign','g','h']);
+});
+run('DELETE RETURNING deviation rolls back exact deletion AND evidence, then STOP',async t=>{
+ const f=await fixture(t),m=await f.make(),before=await f.counts();
+ const pool={connect:async()=>{
+  const c=await f.pool.connect();
+  return {query:async(q,...args)=>{
+   const result=await c.query(q,...args),text=typeof q==='string'?q:q.text;
+   return text.startsWith('DELETE FROM reverse_code_symbole ')?{...result,rows:[]}:result;
+  },release:(...args)=>c.release(...args)};
+ }};
+ await assert.rejects(applyManifest(pool,m),/f3_loeschmenge_geaendert/);
+ assert.deepEqual(await f.counts(),before);
+});
+run('optional full-sentinel interval is bounded, counted and pinned in journal resume',async t=>{
+ const f=await fixture(t,{rows:2,symbols:6}),m=await f.make();let full=0;
+ const pool=injectedPool(f.pool,text=>{if(text==="SELECT current_setting('statement_timeout') AS v")full++;return null;});
+ const result=await applyManifest(pool,{...m,zwischenSentinelBatches:2});
+ assert.equal(full,2+Math.floor((result.committed_batches-1)/2));
+ assert.equal(result.pruefungen.vollsentinel_alle_batches,2);
+ const controls=(await f.pool.query("SELECT DISTINCT delta->'pruefungen' AS p FROM reverse_f3_bereinigungs_batches")).rows;
+ assert.deepEqual(controls,[{p:{vollsentinel_alle_batches:2}}]);
+ await assert.rejects(applyManifest(f.pool,{...m,zwischenSentinelBatches:0}),/f3_journal_konflikt/);
+ assert.throws(()=>pruefeZwischenIntervall(-1,9),/f3_zwischen_budget/);
+ assert.throws(()=>pruefeZwischenIntervall(10,9),/f3_zwischen_budget/);
 });

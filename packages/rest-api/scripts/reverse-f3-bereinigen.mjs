@@ -5,6 +5,7 @@
  * --eintrag rev-die-siedler-3-229a52 [--manifest <NEW local audit-data.jsonl>]
  * Apply: --ausfuehren --manifest <sealed audit-data.jsonl>
  * --manifest-sha256 <sha256> --backup-beleg <verified backup identifier>
+ * Apply optional --vollsentinel-alle-batches N (default 0, bounded by actual batch count).
  * Optional --sentinel-timeout-ms is bounded by the PG catalog and pinned in manifest/journal.
  * DATABASE_URL comes from the authorised SERVER maintenance environment.
  * Schema145 is deployed normally; this script NEVER creates schema/tables.
@@ -33,8 +34,8 @@ const validHash=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
 export const validName=x=>typeof x==='string'&&(/^(?:strings(?:-[0-9]+)?[.]txt)$/.test(x)||x==='imports.txt');
 
 const contexts=new AsyncLocalStorage(),failures=new WeakMap();
-const F3_CODES=new Set(["f3_abhaengigkeit_stop","f3_belegpfad_verboten","f3_bereinigung_laeuft","f3_dateiname","f3_datenbank_fehlt","f3_einstellungen_geaendert","f3_eintrag_nicht_freigegeben","f3_einzelzeile_ueber_budget","f3_fk_unbekannt","f3_halt_erforderlich","f3_journal_daten_widerspruch","f3_journal_konflikt","f3_journal_nebenwirkung","f3_loeschmenge_geaendert","f3_manifest_batch_geaendert","f3_manifest_budget","f3_manifest_fehlt","f3_manifest_fragment","f3_manifest_geaendert","f3_manifest_hash","f3_manifest_header","f3_manifest_json","f3_manifest_nicht_kanonisch","f3_manifest_metadaten","f3_manifest_metadaten_geaendert","f3_manifest_nicht_versiegelt","f3_manifest_op","f3_manifest_quellkonflikt","f3_manifest_record_zu_gross","f3_manifest_reihenfolge","f3_nicht_ruhig","f3_parameter","f3_projektbestand_geaendert","f3_projekttabelle_unzugeordnet","f3_projektzeile_unzugeordnet","f3_quelle_geaendert","f3_relation_unbekannt","f3_schema145_abweichend","f3_schema145_fehlt","f3_sentinel_budget","f3_sentinel_im_manifest_gepinnt","f3_sicherungsbeleg_fehlt","f3_symbol_geaendert","f3_trigger_unbekannt","f3_tx_budget","f3_werkzeug_fehler"]);
-const PHASES=new Set(['initialisieren','audit_open','db_connect','db_begin','einstellungen','timeouts','fk_katalog','ruhe','journal','sentinel_katalog','sentinel_ownership','sentinel_count','sentinel_hash','sentinel_restore','kandidaten','symbole','abhaengigkeiten','manifest_header','manifest_metadaten','manifest_records','manifest_sync','manifest_pruefen','apply','commit','abschluss']);
+const F3_CODES=new Set(["f3_abhaengigkeit_stop","f3_belegpfad_verboten","f3_bereinigung_laeuft","f3_dateiname","f3_datenbank_fehlt","f3_einstellungen_geaendert","f3_eintrag_nicht_freigegeben","f3_einzelzeile_ueber_budget","f3_fk_unbekannt","f3_halt_erforderlich","f3_journal_daten_widerspruch","f3_katalog_geaendert","f3_journal_konflikt","f3_journal_nebenwirkung","f3_loeschmenge_geaendert","f3_manifest_batch_geaendert","f3_manifest_budget","f3_manifest_fehlt","f3_manifest_fragment","f3_manifest_geaendert","f3_manifest_hash","f3_manifest_header","f3_manifest_json","f3_manifest_nicht_kanonisch","f3_manifest_metadaten","f3_manifest_metadaten_geaendert","f3_manifest_nicht_versiegelt","f3_manifest_op","f3_manifest_quellkonflikt","f3_manifest_record_zu_gross","f3_manifest_reihenfolge","f3_nicht_ruhig","f3_parameter","f3_projektbestand_geaendert","f3_projekttabelle_unzugeordnet","f3_projektzeile_unzugeordnet","f3_quelle_geaendert","f3_relation_unbekannt","f3_schema145_abweichend","f3_schema145_fehlt","f3_sentinel_budget","f3_sentinel_im_manifest_gepinnt","f3_sicherungsbeleg_fehlt","f3_symbol_geaendert","f3_trigger_unbekannt","f3_tx_budget","f3_werkzeug_fehler","f3_zwischen_budget"]);
+const PHASES=new Set(['initialisieren','audit_open','db_connect','db_begin','einstellungen','timeouts','fk_katalog','ruhe','journal','sentinel_katalog','sentinel_ownership','sentinel_count','sentinel_hash','sentinel_restore','kandidaten','symbole','abhaengigkeiten','manifest_header','manifest_metadaten','manifest_records','manifest_sync','manifest_pruefen','endbilanz','apply','commit','abschluss']);
 const TABLES=new Set(['asset_aenderungen','asset_aenderungsstaende','asset_files','asset_host_checkpoints','asset_inspektions_auftraege','asset_inspektions_projekte','asset_konflikt_eingaenge','asset_konflikt_loesungen','asset_konflikte','asset_manifest_eintraege','asset_manifest_sitzungen','asset_mutationen','asset_objects','asset_projekt_optionen','asset_references','asset_retention_referenzen','asset_revisionen','asset_scan_checkpoints','asset_upload_sitzungen','asset_upload_teile','code_call_edges','code_chunks','code_files','code_references','code_statements','code_symbols','file_versions']);
 const FS_CODES=new Set(['EACCES','EPERM','ENOENT','EEXIST','ENOSPC','EROFS','EIO','ELOOP','EMFILE','ENFILE','EISDIR','ENOTDIR']);
 function phase(name,table){const c=contexts.getStore();if(c){c.phase=PHASES.has(name)?name:'initialisieren';c.table=TABLES.has(table)?table:undefined;}}
@@ -46,7 +47,7 @@ function capture(e,source){
 }
 async function diagnosed(fn){
  if(contexts.getStore())return fn();
- return contexts.run({phase:'initialisieren'},async()=>{try{return await fn();}catch(e){capture(e);if(e&&typeof e==='object')failures.set(e,{...contexts.getStore().first,committed_batches:contexts.getStore().error?.committed_batches??0,resumed_batches:contexts.getStore().error?.resumed_batches??0});throw e;}});
+ return contexts.run({phase:'initialisieren'},async()=>{try{return await fn();}catch(e){capture(e);if(e&&typeof e==='object')failures.set(e,{...contexts.getStore().first,committed_batches:contexts.getStore().error?.committed_batches??0,resumed_batches:contexts.getStore().error?.resumed_batches??0,...(contexts.getStore().error?.alarm===true?{alarm:true}:{})});throw e;}});
 }
 function observed(db){
  return {query:async(...args)=>{try{return await db.query(...args);}catch(e){capture(e,'pg');throw e;}},
@@ -86,15 +87,22 @@ export async function schemaGuard(db){
  if(relations.length!==CODE_TABLES.length||relations.some(r=>r.oid!==r.visible_oid))stop('f3_relation_unbekannt');
  const by=new Map(relations.map(r=>[r.name,r])),targets=['reverse_code_dateien','reverse_code_symbole'].map(n=>by.get(n).oid);
  // Do NOT filter child schemas: every incoming FK from the entire DB is inspected.
- const r=await db.query("SELECT k.conrelid::text AS child_oid,k.confrelid::text AS parent_oid,c.relname AS t,p.relname AS target,cn.nspname AS child_schema,pn.nspname AS parent_schema,pg_get_constraintdef(k.oid) AS def FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace cn ON cn.oid=c.relnamespace JOIN pg_class p ON p.oid=k.confrelid JOIN pg_namespace pn ON pn.oid=p.relnamespace WHERE k.contype='f' AND k.confrelid=ANY($1::oid[])",[targets]);
+ const r=await db.query("SELECT k.oid::text AS constraint_oid,k.convalidated,k.conrelid::text AS child_oid,k.confrelid::text AS parent_oid,c.relname AS t,p.relname AS target,cn.nspname AS child_schema,pn.nspname AS parent_schema,pg_get_constraintdef(k.oid) AS def FROM pg_constraint k JOIN pg_class c ON c.oid=k.conrelid JOIN pg_namespace cn ON cn.oid=c.relnamespace JOIN pg_class p ON p.oid=k.confrelid JOIN pg_namespace pn ON pn.oid=p.relnamespace WHERE k.contype='f' AND k.confrelid=ANY($1::oid[])",[targets]);
  for(const f of r.rows){
   const child=by.get(f.t),parent=by.get(f.target);
   if(!child||!parent||f.child_oid!==child.oid||f.parent_oid!==parent.oid||
      f.child_schema!==child.schema||f.parent_schema!==parent.schema||
      !FK.has(f.t+'>'+f.target+':'+f.def))stop('f3_fk_unbekannt');
  }
- const triggers=await db.query("SELECT tgname FROM pg_trigger WHERE tgrelid=ANY($1::oid[]) AND NOT tgisinternal",[targets]);
- if(triggers.rows.length)stop('f3_trigger_unbekannt');
+ const allRelations=relations.map(r=>r.oid);
+ const triggers=await db.query("SELECT oid::text AS trigger_oid,tgrelid::text AS relation_oid,tgname,tgenabled,tgisinternal,tgfoid::text AS function_oid,tgconstraint::text AS constraint_oid,tgtype,tgattr::text AS attributes,encode(tgargs,'hex') AS args,pg_get_triggerdef(oid) AS def FROM pg_trigger WHERE tgrelid=ANY($1::oid[])",[allRelations]);
+ if(triggers.rows.some(t=>!t.tgisinternal&&targets.includes(t.relation_oid)))stop('f3_trigger_unbekannt');
+ return hash({relations:[...relations].sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0),
+  foreign_keys:[...r.rows].sort((a,b)=>a.constraint_oid<b.constraint_oid?-1:a.constraint_oid>b.constraint_oid?1:0),
+  triggers:[...triggers.rows].sort((a,b)=>a.trigger_oid<b.trigger_oid?-1:a.trigger_oid>b.trigger_oid?1:0)});
+}
+async function checkCatalog(db,h){
+ same(await schemaGuard(db),h.katalog_sha256,'f3_katalog_geaendert');
 }
 async function settings(db){
  phase('einstellungen');
@@ -202,8 +210,8 @@ export function* metadataRecords(projects,hinweise){
  }
  for(const hinweis of hinweise)yield {kind:'hinweis',hinweis};
 }
-export function manifestHeader(settings,sentinel,projects,hinweise){
- return {kind:'header',version:3,scope:'p18-t97-f3-tranche1',entry:ENTRY,settings,sentinel,
+export function manifestHeader(settings,sentinel,projects,hinweise,katalog_sha256){
+ return {kind:'header',version:4,scope:'p18-t97-f3-tranche1',entry:ENTRY,settings,sentinel,katalog_sha256,
   metadaten:{project_tables:Object.keys(projects).length,project_owners:Object.values(projects).reduce((n,a)=>n+a.length,0),
    hinweise:hinweise.length,projects_sha256:hash(projects),hinweise_sha256:hash(hinweise)}};
 }
@@ -256,9 +264,9 @@ export async function createManifest(pool,emit,{sentinelTimeoutMs}={}){
  const send=async x=>{const raw=encodeRecord(x,s.recordBytes);digest.update(raw);await emit?.(raw);};
  try{
   phase('db_begin');await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-  s=await settings(db);await deadlines(db,s);await schemaGuard(db);await journalGuard(db);const hinweise=await quiet(db);
+  s=await settings(db);await deadlines(db,s);const katalog=await schemaGuard(db);await journalGuard(db);const hinweise=await quiet(db);
   const sentinel=sentinelPolicy(s,sentinelTimeoutMs),projects=await projectSentinel(db,sentinel);
-  const header=manifestHeader(s,sentinel,projects,hinweise);
+  const header=manifestHeader(s,sentinel,projects,hinweise,katalog);
   // Validate EVERY record before output, using the same record budget as the writer.
   phase('manifest_header');encodeRecord(header,s.recordBytes);
   phase('manifest_metadaten');for(const row of metadataRecords(projects,hinweise))encodeRecord(row,s.recordBytes);
@@ -275,8 +283,8 @@ export async function createManifest(pool,emit,{sentinelTimeoutMs}={}){
 }
 
 export function validateHeader(h){
- if(h?.kind!=='header'||h.version!==3||h.scope!=='p18-t97-f3-tranche1'||h.entry!==ENTRY||
-    Object.hasOwn(h,'projects')||Object.hasOwn(h,'hinweise')||!h.settings||!validHash(h.settings.revision))stop('f3_manifest_header');
+ if(h?.kind!=='header'||h.version!==4||h.scope!=='p18-t97-f3-tranche1'||h.entry!==ENTRY||
+    Object.hasOwn(h,'projects')||Object.hasOwn(h,'hinweise')||!h.settings||!validHash(h.settings.revision)||!validHash(h.katalog_sha256))stop('f3_manifest_header');
  const m=h.metadaten;
  if(!m||!validHash(m.projects_sha256)||!validHash(m.hinweise_sha256))stop('f3_manifest_header');
  for(const k of ['project_tables','project_owners','hinweise'])if(!Number.isSafeInteger(m[k])||m[k]<0)stop('f3_manifest_header');
@@ -318,9 +326,9 @@ export async function verifyManifest(lines,expected,backup=''){
  if(!header||!closed||digest.digest('hex')!==expected)stop('f3_manifest_hash');
  return {header,operations:n,proofs};
 }
-function payload(h,pin,n,ops,backup){
+function payload(h,pin,n,ops,backup,zwischen=0){
  return {eintrag_id:ENTRY,manifest_sha256:pin,batch_nr:String(n),batch_sha256:hash(ops),ops,
-  delta:{files:ops.filter(x=>x.kind==='file').length,symbols:ops.filter(x=>x.kind==='symbol').length,sentinel:h.sentinel},
+  delta:{files:ops.filter(x=>x.kind==='file').length,symbols:ops.filter(x=>x.kind==='symbol').length,sentinel:h.sentinel,pruefungen:{vollsentinel_alle_batches:zwischen},katalog_sha256:h.katalog_sha256},
   backup_beleg:backup,projekt_sentinel_sha256:h.metadaten.projects_sha256,einstellungen_revision:h.settings.revision};
 }
 /** Linear accounting: candidate count never enlarges a record/header.
@@ -329,7 +337,7 @@ function payload(h,pin,n,ops,backup){
  */
 function batchBase(h){
  return {rows:1,bytes:8+size({entry:ENTRY,pin:'0'.repeat(64),batch:'9223372036854775807',backup:h.backup,
-  settings:h.settings.revision,sentinel:h.sentinel,projects:h.metadaten.projects_sha256})};
+  settings:h.settings.revision,sentinel:h.sentinel,projects:h.metadaten.projects_sha256,katalog:h.katalog_sha256,vollsentinel_alle_batches:Number.MAX_SAFE_INTEGER})};
 }
 const addCost=(c,x)=>({rows:c.rows+1,bytes:c.bytes+x.row_bytes+4*size(x)+4});
 export function batchCost(h,ops){return ops.reduce(addCost,batchBase(h));}
@@ -414,47 +422,53 @@ async function deleteBatch(db,ops,{beforeDelete}={}){
 /** lines() must reopen the same reviewed immutable stream. CLI pins its open FD.
  * Fault hooks are library-only, not exposed as command-line mutation controls.
  */
-export async function applyManifest(pool,{lines,expected,backup,beforeDelete,afterDelete,afterCommit,onBatch}){
+
+export function pruefeZwischenIntervall(n,batches){
+ if(!Number.isSafeInteger(n)||n<0||n>batches)stop('f3_zwischen_budget');
+ return n;
+}
+export async function applyManifest(pool,{lines,expected,backup,beforeDelete,afterDelete,afterCommit,onBatch,zwischenSentinelBatches=0}){
  return diagnosed(async()=>{
  pool=observed(pool);phase('manifest_pruefen');
  if(typeof backup!=='string'||backup.trim().length<8)stop('f3_sicherungsbeleg_fehlt');
  const {header:h,proofs}=await verifyManifest(lines,expected,backup);
+ const zwischen=pruefeZwischenIntervall(zwischenSentinelBatches,proofs.length);
  const lock=await pool.connect();let held=false,committed=0,resumed=0,number=0;
+ const intermediate=async(db,index)=>{
+  if(zwischen>0&&(index+1)%zwischen===0&&index+1<proofs.length)await checkProjects(db,h);
+ };
  try{
   held=(await lock.query('SELECT pg_try_advisory_lock(hashtext($1)) AS ok',['p18-t97-f3:'+ENTRY])).rows[0].ok;
   if(!held)stop('f3_bereinigung_laeuft');
-  await journalGuard(lock);await quiet(lock);same(await settings(lock),h.settings,'f3_einstellungen_geaendert');await checkProjects(lock,h);
+  await journalGuard(lock);await quiet(lock);same(await settings(lock),h.settings,'f3_einstellungen_geaendert');
+  await checkCatalog(lock,h);
+  await checkProjects(lock,h); // FULL gate 1: once before any batch, including resume.
   for await(const ops of batches(lines,h,backup)){
    if(hash(ops)!==proofs[number])stop('f3_manifest_batch_geaendert');
-   const evidence=payload(h,expected,number,ops,backup),c=await pool.connect();let done=false;
+   const evidence=payload(h,expected,number,ops,backup,zwischen),c=await pool.connect();let done=false;
    try{
-    // Fresh snapshots are essential to detect same-count concurrent project UPDATEs.
     await c.query('BEGIN ISOLATION LEVEL READ COMMITTED');await deadlines(c,h.settings);
     await c.query("SELECT pg_advisory_xact_lock_shared(hashtext('reverse-pipeline-halt'))");
-    await quiet(c);same(await settings(c),h.settings,'f3_einstellungen_geaendert');
-    await checkProjects(c,h);await journalGuard(c);
-    // Reverse-only writer barriers: FK inserts/SET NULL/cascades cannot race the
-    // dependency test. No locks on project, P20, work_jobs or generic routes.
+    await quiet(c);same(await settings(c),h.settings,'f3_einstellungen_geaendert');await journalGuard(c);
+    // Reverse-only writer barriers cover both catalog checks and all explicit deletes.
     const schema=(await c.query('SELECT current_schema() AS s')).rows[0].s;
     await c.query('LOCK TABLE '+CODE_TABLES.map(t=>ident(schema)+'.'+ident(t)).join(',')+' IN SHARE ROW EXCLUSIVE MODE');
-    await schemaGuard(c);
+    await checkCatalog(c,h);
     const old=(await c.query("SELECT eintrag_id,manifest_sha256,batch_nr::text,batch_sha256,ops,delta,backup_beleg,projekt_sentinel_sha256,einstellungen_revision FROM reverse_f3_bereinigungs_batches WHERE eintrag_id=$1 AND manifest_sha256=$2 AND batch_nr=$3 FOR UPDATE",[ENTRY,expected,String(number)])).rows[0];
     if(old){
-     same(old,evidence,'f3_journal_konflikt');await absent(c,ops);await checkProjects(c,h);
-     await c.query('ROLLBACK');resumed++;number++;continue;
+     same(old,evidence,'f3_journal_konflikt');await absent(c,ops);
+     await c.query('ROLLBACK');resumed++;await intermediate(c,number);number++;continue;
     }
-    // A missing row without the atomic journal record fails the exact hash/row checks.
     await deleteBatch(c,ops,{beforeDelete});await afterDelete?.({db:c,batch:number,ops});
     await quiet(c);same(await settings(c),h.settings,'f3_einstellungen_geaendert');
     const cost=batchCost({...h,backup},ops);
     if(cost.rows>h.settings.rows||cost.bytes>h.settings.maxBytes)stop('f3_tx_budget');
     await c.query("INSERT INTO reverse_f3_bereinigungs_batches(eintrag_id,manifest_sha256,batch_nr,batch_sha256,ops,delta,backup_beleg,projekt_sentinel_sha256,einstellungen_revision) VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9)",
      [ENTRY,expected,String(number),evidence.batch_sha256,JSON.stringify(ops),JSON.stringify(evidence.delta),backup,evidence.projekt_sentinel_sha256,h.settings.revision]);
-    await checkProjects(c,h);
+    await checkCatalog(c,h); // Cheap OID/FK/trigger gate; no full project scan here.
     phase('commit');await c.query('COMMIT');done=true;committed++;
-    // Even if the process/transport dies HERE, the DELETE and journal are atomic.
     await afterCommit?.({batch:number});
-    await checkProjects(c,h); // Additional fresh AFTER-EVERY-COMMIT gate.
+    await intermediate(c,number);
     await onBatch?.({batch:number,manifest:expected,delta:evidence.delta,cost});
     number++;
    }catch(e){
@@ -464,9 +478,15 @@ export async function applyManifest(pool,{lines,expected,backup,beforeDelete,aft
   }
   const count=(await lock.query('SELECT count(*)::text AS n FROM reverse_f3_bereinigungs_batches WHERE eintrag_id=$1 AND manifest_sha256=$2',[ENTRY,expected])).rows[0].n;
   if(number!==proofs.length||BigInt(count)!==BigInt(number))stop('f3_journal_konflikt');
-  await checkProjects(lock,h);
-  return {status:'fertig',manifest:expected,committed_batches:committed,resumed_batches:resumed,projekte_unveraendert:true};
- }catch(e){capture(e);throw e;}finally{
+  await checkCatalog(lock,h);
+  // FULL gate 2: after the LAST COMMIT. A mismatch is an explicit alarm, never success.
+  try{
+   const final=await projectSentinel(lock,h.sentinel);phase('endbilanz');
+   same(final,h.projects,'f3_projektbestand_geaendert');
+  }catch(e){e.alarm=true;e.committed_batches=committed;e.resumed_batches=resumed;throw e;}
+  return {status:'fertig',manifest:expected,committed_batches:committed,resumed_batches:resumed,projekte_unveraendert:true,
+   pruefungen:{vollsentinel_alle_batches:zwischen,regulaere_vollpruefungen:2},katalog_sha256:h.katalog_sha256};
+ }catch(e){e.committed_batches??=committed;e.resumed_batches??=resumed;capture(e);throw e;}finally{
   try{if(held)await lock.query('SELECT pg_advisory_unlock(hashtext($1))',['p18-t97-f3:'+ENTRY]);}finally{lock.release();}
  }
 });
@@ -494,7 +514,7 @@ async function auditPath(filename,forbidden){
 export async function main(argv=process.argv.slice(2)){
  return diagnosed(async()=>{
  const a={};for(let i=0;i<argv.length;i++){
-  const k=argv[i];if(!['--eintrag','--manifest','--manifest-sha256','--backup-beleg','--ausfuehren','--sentinel-timeout-ms'].includes(k)||Object.hasOwn(a,k))stop('f3_parameter');
+  const k=argv[i];if(!['--eintrag','--manifest','--manifest-sha256','--backup-beleg','--ausfuehren','--sentinel-timeout-ms','--vollsentinel-alle-batches'].includes(k)||Object.hasOwn(a,k))stop('f3_parameter');
   a[k]=k==='--ausfuehren'?true:argv[++i];if(a[k]===undefined||a[k]==='')stop('f3_parameter');
  }
  if(a['--eintrag']!==ENTRY)stop('f3_eintrag_nicht_freigegeben');
@@ -502,6 +522,8 @@ export async function main(argv=process.argv.slice(2)){
  const forbidden=[cfg.speicher.root,cfg.speicher.reverseRoot,fileURLToPath(new URL('../../..',import.meta.url))];
  const {Pool}=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
  if(!process.env.DATABASE_URL)stop('f3_datenbank_fehlt');
+ if(a['--vollsentinel-alle-batches']!==undefined&&(!a['--ausfuehren']||!/^(0|[1-9][0-9]*)$/.test(a['--vollsentinel-alle-batches'])))stop('f3_zwischen_budget');
+ const zwischenSentinelBatches=Number(a['--vollsentinel-alle-batches']??0);
  const pool=observed(new Pool({connectionString:process.env.DATABASE_URL}));
  if(a['--sentinel-timeout-ms']!==undefined&&!/^[1-9][0-9]*$/.test(a['--sentinel-timeout-ms']))stop('f3_sentinel_budget');
  const sentinelTimeoutMs=a['--sentinel-timeout-ms']===undefined?undefined:Number(a['--sentinel-timeout-ms']);
@@ -531,7 +553,7 @@ export async function main(argv=process.argv.slice(2)){
     yield* fileLines(input,s.recordBytes);
     same(fingerprint(await input.stat({bigint:true})),fingerprint(stat),'f3_manifest_geaendert');
    };
-   console.log(JSON.stringify(await applyManifest(pool,{lines,expected:a['--manifest-sha256'],backup:a['--backup-beleg'],
+   console.log(JSON.stringify(await applyManifest(pool,{lines,expected:a['--manifest-sha256'],backup:a['--backup-beleg'],zwischenSentinelBatches,
     onBatch:row=>console.log(JSON.stringify({status:'batch_committed',...row}))})));
   }catch(e){capture(e);throw e;}finally{await input.close();}
  }catch(e){capture(e);throw e;}finally{await pool.end();}
