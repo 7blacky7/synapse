@@ -9,7 +9,7 @@ import {createRequire} from 'node:module';
 import {readFile,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy,encodeRecord,metadataRecords,manifestHeader,pruefeZwischenIntervall,openBatchConnection,transactionSnapshot,transactionGuard} from '../scripts/reverse-f3-bereinigen.mjs';
+import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy,encodeRecord,metadataRecords,manifestHeader,pruefeZwischenIntervall,openBatchConnection,transactionSnapshot,transactionGuard,TRANCHE_2A_SOURCE_IDS} from '../scripts/reverse-f3-bereinigen.mjs';
 const enabled=process.env.SYNAPSE_TEST_PHASE==='P18-T97-F3';
 const run=(name,fn)=>test(name,{skip:!enabled},fn);
 const {Pool}=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
@@ -749,4 +749,177 @@ run('journal TOAST chunks are allowed only via its exact parent OID',async t=>{
  await transactionGuard(c,[],baseline);await c.query('COMMIT');
  assert.equal((await f.counts()).evidence,'1');
  }finally{await c.query('ROLLBACK').catch(()=>{});await c.end();}
+});
+
+/** Tranche2a uses the SAME deletion/TX engine. No cache deletion is authorised here. */
+async function fixture2a(t,options={}){
+ const f=await fixture(t,options),p=f.pool;
+ const sources=[
+  [5,'unbekannt','data.bin'],[16,'unbekannt','keep.htm'],[17,'pe','keep.exe'],
+  [18,'unbekannt','labels.txt'],[19,'unbekannt','classified.bin'],[20,'unbekannt','parser.bin'],
+  [22,'unbekannt','names.bin'],[23,'unbekannt','structured.bin'],[24,'pdf','guide.pdf'],
+  [762,'unbekannt','parts.dat'],[99000,'unbekannt','not-approved.bin']
+ ];
+ for(const [id,format,name] of sources)await p.query('INSERT INTO reverse_dateien VALUES($1,$2,$3,$4,$5,$6,$7)',
+  [id,ENTRY,'own-fixture/'+name,format,'b'.repeat(64),ENTRY+'/entpackt/own-fixture/'+name,{}]);
+ for(const [id,source,name,stage,generation] of [
+  ['t2-data',5,'strings.txt'],['t2-data-imports',5,'imports.txt'],
+  ['t2-extra-wrong',5,'strings-0002.txt'],
+  ['t2-html',16,'strings.txt'],['t2-html-imports',16,'imports.txt'],
+  ['t2-pe',17,'strings.txt'],['t2-pe-imports',17,'imports.txt'],
+  ['t2-label',18,'strings.txt'],['t2-real-imports',18,'imports.txt'],
+  ['t2-classified',19,'strings.txt'],['t2-parser',20,'strings.txt','S1','new-parser'],
+  ['t2-name',22,'strings-evil.txt'],['t2-s2',23,'functions.txt','S2'],['t2-s3',23,'decompiled.c','S3'],
+  ['t2-pdf',24,'strings.txt'],['t2-pdf-imports',24,'imports.txt'],
+  ['t2-part1',762,'strings.txt'],['t2-part2',762,'strings-0002.txt'],['t2-part-imports',762,'imports.txt'],
+  ['t2-part3',762,'strings-0003.txt'],['t2-unlisted',99000,'strings.txt']
+ ])await f.add(id,source,name,stage,generation);
+ await p.query("UPDATE reverse_code_dateien SET content='genuine_import' WHERE id IN ('t2-pe-imports','t2-real-imports')");
+ await p.query("UPDATE reverse_dateien SET metadaten=jsonb_build_object('code_klassifikation',jsonb_build_object('ist_code',true,'sha256',sha256)) WHERE id=19");
+ for(let i=0;i<2;i++)await p.query("INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,datei_id,schicht,value) VALUES($1,$2,'source5@S1/strings.txt',5,'S1',$3)",
+  ['t2-symbol-'+i,ENTRY,'own raw string '+i]);
+ await p.query('CREATE TABLE reverse_analyse_cache(fingerabdruck text PRIMARY KEY,status text,ergebnis jsonb)');
+ await p.query("INSERT INTO reverse_analyse_cache VALUES('own-cache','fertig','{\"strings\":[\"keep cache verbatim\"]}')");
+ const selected=['t2-data','t2-data-imports','t2-label','t2-pdf','t2-pdf-imports','t2-part1','t2-part2','t2-part-imports'].sort();
+ const snapshot=async()=>({
+  files:(await p.query('SELECT id,to_jsonb(c)::text AS raw FROM reverse_code_dateien c ORDER BY id')).rows,
+  symbols:(await p.query('SELECT id,to_jsonb(s)::text AS raw FROM reverse_code_symbole s ORDER BY id')).rows,
+  sources:(await p.query('SELECT to_jsonb(d)::text AS raw FROM reverse_dateien d ORDER BY id')).rows,
+  cache:(await p.query('SELECT to_jsonb(c)::text AS raw FROM reverse_analyse_cache c ORDER BY fingerabdruck')).rows,
+  journal:(await p.query('SELECT count(*)::text AS n FROM reverse_f3_bereinigungs_batches')).rows[0].n
+ });
+ const make2a=async()=>{
+  const records=[],result=await createManifest(p,raw=>records.push(raw),{tranche:'2a'});
+  return {...result,records,lines:async function*(){yield* records;},expected:result.sha256,backup:'verified-own-test-backup',tranche:'2a'};
+ };
+ return {...f,selected,snapshot,make2a};
+}
+run('tranche2a dry-run selects only pinned source IDs and exact approved dump parts; no mutation',async t=>{
+ const f=await fixture2a(t),before=await f.snapshot(),m=await f.make2a();
+ assert.deepEqual(await f.snapshot(),before);assert.equal(m.files,8);assert.equal(m.symbols,2);
+ const h=(await verifyManifest(m.lines,m.expected,m.backup)).header;
+ assert.equal(h.scope,'p18-t97-f3-tranche2a');assert.equal(h.tranche,'2a');
+ assert.equal(h.qualifikation.quellen,1550);assert.equal(h.qualifikation.quellen_sha256,sha(canon(TRANCHE_2A_SOURCE_IDS)));
+ assert.deepEqual(h.qualifikation.zweitteile,['762','8542']);
+ assert.equal(TRANCHE_2A_SOURCE_IDS.length,1550);assert.equal(new Set(TRANCHE_2A_SOURCE_IDS).size,1550);
+ assert.ok(TRANCHE_2A_SOURCE_IDS.every(x=>/^[1-9][0-9]*$/.test(x)));
+ const actual=m.records.map(JSON.parse).filter(x=>x.kind==='file').map(x=>x.id);
+ assert.deepEqual(actual,f.selected);
+ // Existing default tranche1 remains exactly its original fixture selection.
+ assert.equal((await f.make()).files,3);
+});
+run('tranche2a exact deltas and own tranche journal; HTML/PE/imports/S2/S3/cache/source/project bytes survive',async t=>{
+ const f=await fixture2a(t,{rows:2}),before=await f.snapshot(),projects=await projectSentinel(f.pool),m=await f.make2a(),seen=[];
+ const result=await applyManifest(f.pool,{...m,onBatch:x=>seen.push(x)});
+ assert.equal(result.status,'fertig');assert.equal(result.tranche,'2a');assert.equal(result.committed_batches,10);
+ for(const x of seen){assert.ok(x.cost.rows<=2);assert.ok(x.cost.bytes<=65536);assert.equal(x.delta.tranche,'2a');}
+ const after=await f.snapshot();
+ assert.deepEqual(after.files,before.files.filter(x=>!f.selected.includes(x.id)));
+ assert.deepEqual(after.symbols,before.symbols.filter(x=>!x.id.startsWith('t2-symbol-')));
+ assert.deepEqual(after.sources,before.sources);assert.deepEqual(after.cache,before.cache);
+ assert.deepEqual(await projectSentinel(f.pool),projects);
+ const j=(await f.pool.query("SELECT delta->>'tranche' AS tranche,sum((delta->>'files')::int)::text AS files,sum((delta->>'symbols')::int)::text AS symbols FROM reverse_f3_bereinigungs_batches GROUP BY delta->>'tranche'")).rows;
+ assert.deepEqual(j,[{tranche:'2a',files:'8',symbols:'2'}]);
+ const again=await applyManifest(f.pool,m);assert.equal(again.committed_batches,0);assert.equal(again.resumed_batches,10);
+});
+run('tranche2a crash before COMMIT rolls back; ACK-loss resume preserves the other tranche',async t=>{
+ const f=await fixture2a(t,{rows:2}),m=await f.make2a(),before=await f.snapshot();
+ await assert.rejects(applyManifest(f.pool,{...m,afterDelete:()=>{throw Error('own precommit crash');}}),/own precommit crash/);
+ assert.deepEqual(await f.snapshot(),before);
+ await assert.rejects(applyManifest(f.pool,{...m,afterCommit:()=>{throw Error('own ACK loss');}}),/own ACK loss/);
+ assert.equal((await f.snapshot()).journal,'1');
+ const done=await applyManifest(f.pool,m);assert.equal(done.resumed_batches,1);assert.equal(done.status,'fertig');
+ const tr1=await f.make();assert.equal(tr1.files,3);assert.equal((await applyManifest(f.pool,tr1)).status,'fertig');
+ const groups=(await f.pool.query("SELECT CASE WHEN delta ? 'tranche' THEN delta->>'tranche' ELSE '1' END AS tranche,count(*)::text AS n FROM reverse_f3_bereinigungs_batches GROUP BY 1 ORDER BY 1")).rows;
+ assert.deepEqual(groups,[{tranche:'1',n:'6'},{tranche:'2a',n:'10'}]);
+});
+run('tranche2a scope/list tampering and mismatched CLI/library tranche fail before mutation',async t=>{
+ const f=await fixture2a(t),m=await f.make2a(),before=await f.snapshot();
+ await assert.rejects(applyManifest(f.pool,{...m,tranche:'1'}),/f3_manifest_header/);
+ for(const change of [
+  h=>{h.scope='p18-t97-f3-tranche2b';},
+  h=>{h.qualifikation.quellen=1551;},
+  h=>{h.qualifikation.quellen_sha256='c'.repeat(64);},
+  h=>{h.qualifikation.zweitteile.push('5');},
+  h=>{h.tranche='1';}
+ ]){
+  const records=[...m.records],h=JSON.parse(records[0]);change(h);records[0]=canon(h)+'\n';
+  const lines=async function*(){yield* records;};
+  await assert.rejects(applyManifest(f.pool,{...m,lines,expected:sha(records.join(''))}),/f3_manifest_header/);
+ }
+ // A forged source ID outside the pinned list is rejected by the manifest reader,
+ // even when its dump filename is otherwise legitimate.
+ const records=m.records.map(raw=>{
+  const x=JSON.parse(raw);if(x.file)x.file.source_id='99000';return canon(x)+'\n';
+ });
+ await assert.rejects(verifyManifest(async function*(){yield* records;},sha(records.join('')),m.backup),/f3_manifest_op/);
+ await assert.rejects(createManifest(f.pool,()=>assert.fail('no record for 2b'),{tranche:'2b'}),/f3_parameter/);
+ assert.deepEqual(await f.snapshot(),before);
+});
+run('tranche2a source/format/HTML/parser/import/settings drift all stop without deleting',async t=>{
+ const cases=[
+  "UPDATE reverse_dateien SET sha256=repeat('c',64) WHERE id=5",
+  "UPDATE reverse_dateien SET format='pe' WHERE id=5",
+  "UPDATE reverse_dateien SET pfad='new-source.htm' WHERE id=5",
+  "UPDATE reverse_code_dateien SET parser_generation_id='new' WHERE id='t2-data'",
+  "UPDATE reverse_code_dateien SET content='now a real import' WHERE id='t2-data-imports'",
+  "UPDATE reverse_einstellungen SET wert=4 WHERE name='e_uebernahme_block_zeilen'"
+ ];
+ for(let i=0;i<cases.length;i++)await t.test(String(i),async t=>{
+  const f=await fixture2a(t),m=await f.make2a();await f.pool.query(cases[i]);const before=await f.snapshot();
+  await assert.rejects(applyManifest(f.pool,m),/f3_(quelle|einstellungen)_geaendert/);
+  assert.deepEqual(await f.snapshot(),before);
+ });
+});
+run('tranche2a uses the same hard dependency and transaction-mutation guards',async t=>{
+ for(const kind of ['cross-fk','own-project-write','own-cache-write'])await t.test(kind,async t=>{
+  const f=await fixture2a(t),m=await f.make2a(),before=await f.snapshot(),projects=await projectSentinel(f.pool);
+  if(kind==='cross-fk'){
+   await f.pool.query("INSERT INTO reverse_code_verweise VALUES('own-ref',$1,'source3@S1/strings.txt','t2-symbol-0')",[ENTRY]);
+   await assert.rejects(f.make2a(),/f3_abhaengigkeit_stop/);
+   await assert.rejects(applyManifest(f.pool,m),/f3_abhaengigkeit_stop/);
+  }else await assert.rejects(applyManifest(f.pool,{...m,afterDelete:({db})=>db.query(kind==='own-project-write'
+   ?"UPDATE code_files SET value='forbidden own TX write'"
+   :"UPDATE reverse_analyse_cache SET ergebnis='{\"strings\":[]}'")}),/f3_tx_fremdmutation/);
+  assert.deepEqual(await f.snapshot(),before);assert.deepEqual(await projectSentinel(f.pool),projects);
+ });
+});
+
+run('tranche2a writer/keyset/reader agree on byte order across file and symbol pages',async t=>{
+ const f=await fixture2a(t,{rows:2});
+ // Same punctuation mismatch as t2-part1/t2-part-imports, now also across
+ // the symbol keyset boundary. rows=2 forces several file/symbol pages.
+ await f.pool.query("INSERT INTO reverse_code_symbole(id,eintrag_id,file_path,datei_id,schicht,value) VALUES('t2-symbol--part',$1,'source5@S1/strings.txt',5,'S1','own fixture')",[ENTRY]);
+ const before=await f.snapshot(),m=await f.make2a(),proof=await verifyManifest(m.lines,m.expected,m.backup);
+ assert.equal(proof.operations,11);assert.equal(m.files,8);assert.equal(m.symbols,3);
+ const body=m.records.map(JSON.parse).filter(x=>['symbol','file'].includes(x.kind));
+ assert.deepEqual(body.filter(x=>x.kind==='file').map(x=>x.id),[
+  't2-data','t2-data-imports','t2-label','t2-part-imports','t2-part1','t2-part2','t2-pdf','t2-pdf-imports'
+ ]);
+ assert.deepEqual(body.filter(x=>x.kind==='symbol').map(x=>x.id),['t2-symbol--part','t2-symbol-0','t2-symbol-1']);
+ assert.equal(new Set(body.map(x=>x.kind+':'+x.id)).size,body.length);
+ assert.deepEqual(await f.snapshot(),before);
+});
+run('byte ordering keeps strict reverse/duplicate/unclosed file and symbol rejection',async t=>{
+ const f=await fixture2a(t,{rows:2}),m=await f.make2a(),before=await f.snapshot();
+ const prefix=[],groups=[];
+ for(const raw of m.records){
+  const x=JSON.parse(raw);
+  if(!['symbol','file'].includes(x.kind)){prefix.push(raw);continue;}
+  if(groups.at(-1)?.id!==x.file.id)groups.push({id:x.file.id,records:[]});
+  groups.at(-1).records.push(raw);
+ }
+ const first=groups[0].records,remaining=groups.slice(1).flatMap(x=>x.records);
+ const symbolRows=first.filter(raw=>JSON.parse(raw).kind==='symbol');
+ const fileRows=first.filter(raw=>JSON.parse(raw).kind==='file');
+ for(const records of [
+  [...prefix,...[...groups].reverse().flatMap(x=>x.records)],
+  [...prefix,...first,...first,...remaining],
+  [...prefix,...symbolRows.reverse(),...fileRows,...remaining],
+  [...prefix,...first.filter(raw=>JSON.parse(raw).kind!=='file'),...remaining]
+ ]){
+  const lines=async function*(){yield* records;};
+  await assert.rejects(applyManifest(f.pool,{...m,lines,expected:sha(records.join(''))}),/f3_manifest_reihenfolge/);
+ }
+ assert.deepEqual(await f.snapshot(),before);
 });
