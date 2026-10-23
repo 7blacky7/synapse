@@ -338,10 +338,16 @@ test('T105 Nachtrag: aktuelle Runs/offene Jobs bleiben gesperrt, Diagnose und TX
    const blocked=await step();assert.equal(blocked.ruhe.offene_jobs,'1');assert.equal((await f.row(b.instance_id)).state,'warm');
   }
   assert.equal(r.beforeGrund('reverse-e',pending.id),'reverse_ende_unbestaetigt');
+  // Admission-Fixture: Recovery-Assertion bleibt unverändert; der echte Vor-Wake-Guard erhält einen gültigen Beleg.
+  await f.db.query("CREATE TABLE reverse_auftraege(id uuid,eintrag_id text,medium_id bigint,schicht text,p20_auftrag_id uuid,uebernahme jsonb)");
+  const admission=await import('../../core/dist/services/reverse-pipeline-halt.js'),fach=randomUUID();
+  await f.db.query("INSERT INTO reverse_auftraege VALUES($1,$2,1,'E',$3,'{}')",[fach,pending.inputRef.id,pending.id]);
+  await admission.belegeReverseAdmission(f.db,pending.id,fach);
+  assert.equal(await admission.pruefeReverseFachbindung(f.db,pending),null);
   // Echter Executor-Durchlauf muss den Vor-Claim-Grund zurückgeben (sonstige Arbeit ersetzt).
   const {ReverseExecutor}=await import('../dist/services/reverse-executor.js');
   const executor=Object.assign(Object.create(ReverseExecutor.prototype),{beendet:false,eingerichtet:true,k:{parallel:1,kinds:['reverse-E'],leaseSeconds:60},
-   laufend:new Map(),altScope:false,pool:{query:async()=>({rows:[{id:pending.id}]})},deps:{lifecycle:()=>({wake:()=>assert.fail('gesperrt')}),identitaet:async()=>f.who,recovery:r},
+   laufend:new Map(),altScope:false,pool:{query:async(q,v)=>String(q).includes('SELECT r.*,w.kind')?f.db.query(q,v):({rows:[{id:pending.id}]})},deps:{lifecycle:()=>({wake:()=>assert.fail('gesperrt')}),identitaet:async()=>f.who,recovery:r},
    jobs:{get:async()=>pending,claim:async()=>[]},raeumeArbeitAuf:async()=>0,policyPruefen:async()=>{}});
   const result=await executor.durchlauf();assert.equal(result.hinweis,'reverse_ende_unbestaetigt');assert.equal(result.gestartet,0);
   const budget=core.reverseBigInt(await core.leseReverseEinstellwerte({},f.db),'materialisierung_tx_bytes');

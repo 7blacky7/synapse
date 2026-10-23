@@ -117,6 +117,8 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'reverse_pe_ressourcen',
   'reverse_verknuepfungen', 'reverse_erkenntnisse',
   'reverse_siedler3',
+  // P18-T97: globaler Zulassungsstopp, Standard AUS; EIN lässt Altaufträge drainen.
+  'reverse_pipeline_halt',
   // P18-T85: Live-Fortschritt laufender Reverse-Container-Auftraege (reverse-fortschritt.ts), global, Standard AUS bis Abnahme, nur ausdruecklich.
   'reverse_fortschritt_live',
   // P18-T86/T88: fortsetzbare Blockübernahme; explizit global, Standard AUS.
@@ -138,7 +140,7 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   'ausweis_channels',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'ausweis_channels'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['reverse_pipeline_halt', 'agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'ausweis_channels'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -351,9 +353,12 @@ function istFunktion(f: string): f is ProfilProduktFunktion {
   return (PROFIL_PRODUKT_FUNKTIONEN as readonly string[]).includes(f) || (ALT_AUSWEIS_FUNKTIONEN as readonly string[]).includes(f);
 }
 
+import {leseReversePipelineHalt,setzeReversePipelineHalt} from './reverse-pipeline-halt.js';
+
 export async function leseProfilProduktSchalter(
   funktion: ProfilProduktFunktion, project?: string | null,
 ): Promise<ProfilProduktSchalterStand> {
+  if(funktion==='reverse_pipeline_halt')return leseReversePipelineHalt(getPool());
   if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3'||funktion==='reverse_fortschritt_live'||funktion==='reverse_blockuebernahme'||funktion==='reverse_asset_registrierung'||funktion==='reverse_parser_adapter'||funktion==='reverse_leser'||funktion==='reverse_leser_nachzug'||funktion==='reverse_leser_runtime_verwaltung'||funktion==='reverse_leser_hinweise'||funktion==='reverse_entstoerer_auto'||funktion==='reverse_wav_pregap')project=null; // global library, same value in every project
   const basis: ProfilProduktSchalterStand = { funktion, project: project ?? null, aktiv: STANDARD_EIN.includes(funktion), quelle: 'standard',
     ebene: null, regel_funktion: null, gesetzt_von: null, gesetzt_am: null, grund: null, letzter_fehler: null };
@@ -405,6 +410,7 @@ export async function setzeProfilProduktSchalter(
   if (e.funktion !== 'alle' && !istFunktion(e.funktion)) throw new ProfilSchalterFehler('funktion_unbekannt');
   if (e.ebene !== 'global' && e.ebene !== 'projekt') throw new ProfilSchalterFehler('ebene_ungueltig');
   if((e.funktion==='reverse_pe_ressourcen'||e.funktion==='reverse_siedler3'||e.funktion==='reverse_fortschritt_live'||e.funktion==='reverse_blockuebernahme'||e.funktion==='reverse_asset_registrierung'||e.funktion==='reverse_parser_adapter'||e.funktion==='reverse_leser'||e.funktion==='reverse_leser_nachzug'||e.funktion==='reverse_leser_hinweise'||e.funktion==='reverse_leser_runtime_verwaltung')&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
+  if(e.funktion==='reverse_pipeline_halt'&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
   const project = e.ebene === 'projekt' ? (e.project ?? '').trim() : null;
   if (e.ebene === 'projekt' && !project) throw new ProfilSchalterFehler('project_fehlt');
   if (typeof e.grund !== 'string' || e.grund.trim().length < 5) throw new ProfilSchalterFehler('grund_fehlt');
@@ -441,7 +447,8 @@ export async function setzeProfilProduktSchalter(
   } else {
     throw new ProfilSchalterFehler('recht_fehlt');
   }
-  await getPool().query(
+  if(e.funktion==='reverse_pipeline_halt')await setzeReversePipelineHalt(getPool(),e.aktiv,e.grund.trim(),wer,setter);
+  else await getPool().query(
     `INSERT INTO agent_profil_schalter (ebene, project, funktion, aktiv, grund, gesetzt_von, setter_identity_id, gesetzt_am)
      VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
      ON CONFLICT (ebene, (COALESCE(project, '')), funktion) DO UPDATE SET aktiv=EXCLUDED.aktiv, grund=EXCLUDED.grund,

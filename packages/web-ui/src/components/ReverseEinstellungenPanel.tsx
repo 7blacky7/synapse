@@ -7,6 +7,7 @@ interface Wert {wert:number|string;quelle:string;standard:string|number;ebene?:s
  werte?:string[]|null;env_vorschlag?:{name:string;wert?:string;ungueltig?:boolean}|null}
 interface Budgets {verbrauch?:{verbrauch_bytes:number;verbrauch_bytes_exakt?:string;fehlend_gesamt:number;eintraege:number};migrationsbedarf?:Array<{name:string;ebene:string;grund:string}>;werte:Record<string,Wert>;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};letzter_fehler:string|null}
 const funktionen=[
+ {name:'reverse_pipeline_halt',titel:'Neue Reverse-Aufträge anhalten',text:'EIN sperrt den Zulauf dauerhaft. Bereits zugelassene Aufträge laufen aus. Vor einem Image-Wechsel müssen wartende und laufende Aufträge sowie physische Container vollständig ausgelaufen sein. AUS gibt nur den Zulauf wieder frei.'},
  {name:'reverse_blockuebernahme',titel:'Fortsetzbare Übernahme',text:'Metadaten und Analyse in begrenzten Blöcken übernehmen. Große Medien behalten ihren bestätigten Fortschritt. Gilt global, wirksam ab dem nächsten Auftrag.'},
  {name:'reverse_erkenntnisse',titel:'Erkenntnisse am Eintrag',text:'Manuelle Aussagen mit Quellen und unveränderlicher Versionsgeschichte. Gebundene Projekte können gemeinsam daran arbeiten.'},
  {name:'reverse_siedler3',titel:'Siedler 3: Datencontainer',text:'Grafiken und Sounds aus GFX/SND als einzelne Dateien ablegen; verschlüsselte MAP-Blöcke nur melden. Gilt global. Jede Änderung startet das vollständige Entpacken aller automatisch analysierten Medien neu. Bereits erzeugte Dateien bleiben beim Ausschalten erhalten.'} ,
@@ -16,7 +17,7 @@ const funktionen=[
  {name:'reverse_wav_pregap',titel:'Audio-CD: Pregap in WAV',text:'Beim Entpacken von Audio-Spuren den Pregap mit in die WAV-Datei schreiben. Gilt global, wirksam ab dem nächsten Auftrag.'},
  {name:'reverse_verknuepfungen',titel:'Code und Dateien verknüpfen',text:'Statische Dateimuster in Strings mit Dateien und aufrufenden Funktionen verbinden. Eine Referenz beweist noch keinen Ladevorgang.'},
 ];
-const GLOBALE_FUNKTIONEN=['reverse_blockuebernahme','reverse_pe_ressourcen','reverse_siedler3','reverse_fortschritt_live','reverse_entstoerer_auto','reverse_wav_pregap'];
+const GLOBALE_FUNKTIONEN=['reverse_pipeline_halt','reverse_blockuebernahme','reverse_pe_ressourcen','reverse_siedler3','reverse_fortschritt_live','reverse_entstoerer_auto','reverse_wav_pregap'];
 const namen:Record<string,string>={erkenntnis_bytes:'Erkenntnisgröße (Bytes)',erkenntnis_belege:'Belege und Ziele je Erkenntnis',erkenntnis_aussagen:'Aussagen je Erkenntnis',s3_pg_budget_bytes:'S3-Speicherbudget je Eintrag (Bytes)',s3_nachzug_lease_ms:'S3-Nachzug: Auftragsfrist (ms)',antwort_bytes:'Antwortgröße (Bytes)',seiten_limit:'Standard-Seitengröße',max_pfad_zeichen:'Maximale Pfadlänge (Zeichen)',max_limit:'Maximale Seitengröße',analyse_verweise:'Verweise je Stapel',
  analyse_dateien:'Dateien je Analyse',analyse_funktionen:'Funktionen je Analyse',analyse_kanten:'Aufrufkanten je Analyse',max_ziele:'Dateiziele je Referenz',
  aufrufer_tiefe:'Aufrufer: maximale Tiefe',aufrufer_max:'Aufrufer je Funktion',konfidenz_prozent:'Mindestkonfidenz (%)',max_muster_zeichen:'Musterlänge (Zeichen)',laufzeit_ms:'Analysezeit (ms)',

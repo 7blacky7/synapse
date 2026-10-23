@@ -11,6 +11,9 @@
  * lifecycle.execute {kommando:'extrahieren'} -> uebernehmeEErgebnis unter Lease-Fence -> stage -> complete.
  * Alles aus, solange SYNAPSE_REVERSE_ENABLED nicht '1' ist.
  */
+import {ReversePipelineDienst} from '@synapse/core';
+const pruefeReverseFachbindung=ReversePipelineDienst.pruefeFachbindung;
+const ReverseAdmissionFehler=ReversePipelineDienst.AdmissionFehler;
 import {sperreReversePolicy,pruefeReversePolicyAuftrag,halteReversePolicyAuftrag,istReversePolicyFehler} from '@synapse/core';
 import {createHash} from 'node:crypto';
 import {mkdir,chmod,chown,rm,readdir,open,lstat} from 'node:fs/promises';
@@ -353,11 +356,12 @@ export class ReverseExecutor {
  hooks():WorkJobHooks{
   return {
    resourceDomain:nodeId=>this.wer&&nodeId===this.wer.nodeId?this.domain(nodeId):undefined,
-   authorizeJob:async(node:WorkNodeAuthority,job:WorkJob)=>{
+   authorizeJob:async(node:WorkNodeAuthority,job:WorkJob,client:WorkJobClient)=>{
     const w=this.wer;
     if(!w||this.beendet||node.node_id!==w.nodeId||String(node.boot_id)!==w.bootGeneration||node.service_token_hash!==w.authHash)return null;
     if(job.capability!==REVERSE_CAPABILITY||job.project!==REVERSE_PROJEKT||job.scope!=='reverse'||!this.k.kinds.includes(job.kind)||job.resourceNeed.gpu)return null;
-    const max=this.k.parallel+ganz(process.env,'SYNAPSE_WORK_INTERACTIVE_RESERVE',1,0);
+    if(await pruefeReverseFachbindung(client,job))return null; // Vorhandener Claim-Client; kein Poolread oder Halt-Lock.
+     const max=this.k.parallel+ganz(process.env,'SYNAPSE_WORK_INTERACTIVE_RESERVE',1,0);
     const n=reverseContainerBedarf(this.k);
     return {resourceDomain:this.domain(w.nodeId),maxConcurrent:max,budget:{cpu:n.cpu*max,ram:n.ram*max,vram:0,gpu:false}};
    },
@@ -448,12 +452,14 @@ export class ReverseExecutor {
   const frei=this.k.parallel-this.laufend.size;
   if(frei<=0)return {geprueft:true,geweckt:0,gestartet:0};
   // Der Claim-Guard verlangt einen warmen Job-Container; offene Aufträge deshalb zuerst wecken.
-  const offen=(await this.pool.query(`SELECT id FROM work_jobs WHERE capability=$1 AND project=$2 AND kind=ANY($3::text[])
+  const admissionWerte=await leseReverseEinstellwerte({},this.pool);if(admissionWerte.letzter_fehler)return leer('reverse_fachbindung_nicht_lesbar');
+   const offen=(await this.pool.query(`SELECT id FROM work_jobs WHERE capability=$1 AND project=$2 AND kind=ANY($3::text[])
    AND state='pending' AND (deadline IS NULL OR deadline>clock_timestamp()) ORDER BY created_at,id LIMIT $4`,
-   [REVERSE_CAPABILITY,REVERSE_PROJEKT,this.k.kinds,frei])).rows;
-  const freigegeben:typeof offen=[];
+   [REVERSE_CAPABILITY,REVERSE_PROJEKT,this.k.kinds,reverseZahl(admissionWerte,'status_auftraege_max')])).rows;
+  const freigegeben:typeof offen=[];let recoveryBindung:string|undefined;
   for(const row of offen){const job=await this.jobs.get(String(row.id),REVERSE_PROJEKT);if(!job)continue;
-   try{await this.policyPruefen(job);freigegeben.push(row);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,this.wer,e.code);}}
+   const bindung=await pruefeReverseFachbindung(this.pool,job);if(bindung){recoveryBindung=bindung;continue;}
+    try{await this.policyPruefen(job);if(freigegeben.length<frei)freigegeben.push(row);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,this.wer,e.code);}}
   let geweckt=0,recoveryHinweis:string|undefined;
   // P18-T64: der globale Container wird einmal geweckt; nur der alte Descriptor braucht einen Container je Auftrag.
   for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{if(this.deps.recovery&&!await this.deps.recovery.before(REVERSE_TOOL_ID,String(row.id))){recoveryHinweis=this.deps.recovery.beforeGrund(REVERSE_TOOL_ID,String(row.id));continue;}await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
@@ -464,7 +470,7 @@ export class ReverseExecutor {
     .finally(()=>{this.laufend.delete(job.id);});
    this.laufend.set(job.id,lauf);
   }
-  return {geprueft:true,geweckt,gestartet:claims.length,...(recoveryHinweis?{hinweis:recoveryHinweis}:{})};
+  return {geprueft:true,geweckt,gestartet:claims.length,...((recoveryBindung??recoveryHinweis)?{hinweis:recoveryBindung??recoveryHinweis}:{})};
  }
  /** T103-R1: checkpoint BEFORE terminal state; a crash/fence loss never makes raw work disposable. */
  private async halteS3Signal(job:WorkJob,wer:WorkIdentity):Promise<void>{
@@ -744,7 +750,7 @@ export class ReverseExecutor {
     const aufs=await leseReverseAufsicht();
     aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,aufs.hart_puffer_s.wert));
     const [pe,siedler,live]=await Promise.all([leseReversePeRessourcenSchalter(),leseReverseSiedler3Schalter(),this.liveFortschritt(job,token)]);
-    const ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.policyPruefen(job);return ({
+    const ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.fordereFachbindung(job);await this.policyPruefen(job);return ({
      kommando:'extrahieren',schicht:'E',blockuebernahme:true,einstellungen:einst,
      fortsetzung:{bindung:{job_id:job.id,eintrag_id:quelle.reverseId,medium_id:quelle.mediumId,quellhash:job.inputRef.sha256,
       werkzeug:f.werkzeug,werkzeug_version:f.werkzeug_version,profil_version:f.profil_version},
@@ -805,6 +811,7 @@ export class ReverseExecutor {
    const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:artefakt.sha256};
    if(await this.jobs.stage(wer,job.id,token,out))await this.jobs.complete(wer,job.id,token,job.inputRef);
   }catch(err){
+   if(err instanceof ReverseAdmissionFehler)throw err; // Kein scheitern/policyHalten für ungebundene IDs.
    if(!alt)await sperreArbeitsOrdner(arbeit);
    if(!lebt)return;
    if(istReversePolicyFehler(err)){await this.policyHalten(job,wer,err.code);return;}
@@ -839,8 +846,11 @@ export class ReverseExecutor {
   await eMutation(this.pool as Pool,e,"UPDATE work_jobs SET state='failed',error_code=$2,lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1",[job.id,code]);
  }
 
+ private async fordereFachbindung(job:WorkJob):Promise<void>{
+  const code=await pruefeReverseFachbindung(this.pool,job);if(code)throw new ReverseAdmissionFehler(code);
+ }
  private async fuehreAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
-  try{await this.fuehreAusMitPolicy(lc,wer,job);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,wer,e.code);}
+  try{await this.fordereFachbindung(job);await this.fuehreAusMitPolicy(lc,wer,job);}catch(e){if(e instanceof ReverseAdmissionFehler){console.warn('[reverse-executor]',job.id,e.code);return;}if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,wer,e.code);}
  }
  private async fuehreAusMitPolicy(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob):Promise<void>{
   const token=job.claimToken!;
@@ -891,13 +901,14 @@ export class ReverseExecutor {
     // P18-T93: Auch E-AUS verwendet den eintragsspezifischen PG-Snapshot im Runner.
     const eEinstellungen=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
     if(eEinstellungen.letzter_fehler)throw new Error(eEinstellungen.letzter_fehler);
-    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.policyPruefen(job);return ({kommando:'extrahieren',schicht:'E',einstellungen:eEinstellungen,...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.fordereFachbindung(job);await this.policyPruefen(job);return ({kommando:'extrahieren',schicht:'E',einstellungen:eEinstellungen,...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      eingabe:'/bib/'+quelle.storageKey,eingabe_name:quelle.dateien[0].name||undefined,ausgabe:'/arbeit/'+job.id,
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:peStand.aktiv,pe_ressourcen_stand:peStand,siedler3:siedlerStand.aktiv,siedler3_stand:siedlerStand},
      grenzen:{zeitlimit_s:this.k.zeitlimitS,max_dateien:this.k.maxDateien,max_bytes:this.k.maxBytes,max_verschachtelung:this.k.maxVerschachtelung,
       nachlauf_s:nachlaufS}});},live?.melde);
    }catch(e){
+    if(e instanceof ReverseAdmissionFehler)throw e; // Ungebundene generische Jobs bleiben sichtbar und unverändert.
     if(!alt)await sperreArbeitsOrdner(arbeit);
     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
     if(reverseNichtGesendet(e)){
@@ -1030,12 +1041,13 @@ export class ReverseExecutor {
     const live=await this.liveFortschritt(job,token);
     // P18-T86: S3-Grenzen (s3_zeitlimit_s, s3_lauf_bytes, ...) als Einstellungs-Snapshot des Eintrags; grenzen nur Transportfrist/Nachlauf.
     const s3Einst=await leseReverseEinstellwerte({eintrag_id:quelle.reverseId},this.pool);
-    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.policyPruefen(job);return ({werkzeug:'analyzeHeadless',schicht:'S3',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.fordereFachbindung(job);await this.policyPruefen(job);return ({werkzeug:'analyzeHeadless',schicht:'S3',...(live?{fortschritt:{takt_s:live.takt_s}}:{}),
      ...(s3Einst.letzter_fehler?{}:{einstellungen:s3Einst}),
      eingabe:'/bib/'+quelle.storageKey,ausgabe:'/arbeit/'+job.id,
      grenzen:{zeitlimit_s:this.k.s3ZeitlimitS,max_bytes:this.k.s3MaxBytes,max_dateien:this.k.maxDateien,
       nachlauf_s:nachlaufS}});},live?.melde);
    }catch(e){
+    if(e instanceof ReverseAdmissionFehler)throw e; // Ungebundene generische Jobs bleiben sichtbar und unverändert.
     if(!alt)await sperreArbeitsOrdner(arbeit);
     if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
     if(reverseNichtGesendet(e)){

@@ -5,7 +5,8 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,rm,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
-import {createRequire} from 'node:module';
+import {createRequire,syncBuiltinESMExports} from 'node:module';
+import fs from 'node:fs/promises';
 const url=new URL(process.env.DATABASE_URL??'http://invalid');
 assert.equal(url.port,'5433','nur Test-Port');assert.equal(url.pathname,'/synapse_test','nur Testdatenbank');
 delete process.env.SYNAPSE_DATABASE_URL;delete process.env.SYNAPSE_COMPUTE_POLICY_ENABLED;delete process.env.SYNAPSE_COMPUTE_ADMISSION;
@@ -22,11 +23,15 @@ const {ladeAssetKonfiguration}=await import('../../core/dist/config/asset-konfig
 const core=await import('../../core/dist/index.js');
 const {ToolLifecycle}=await import('../dist/services/tool-lifecycle.js');
 const {buildToolContainerOptions}=await import('../dist/services/tool-container-docker.js');
-const ex=await import('../dist/services/reverse-executor.js');
+let ex;
 const sha=b=>createHash('sha256').update(b).digest('hex');
 
 test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
  const root=await mkdtemp(join(tmpdir(),'p18-t64-'));const reverseRoot=join(root,'rev');await mkdir(reverseRoot);
+ // Gleiche eng begrenzte UID-Attrappe wie F2F3: nur eigene temporäre Daten, kein Docker.
+ const originalChown=fs.chown;
+ if(process.env.P18_T64_REAL_CHOWN!=='1')fs.chown=async(p,uid,gid)=>{assert(String(p).startsWith(root+'/'));assert.equal(uid,0);assert.equal(gid,65532);};
+ syncBuiltinESMExports();ex=await import('../dist/services/reverse-executor.js');
  const schema='p18_t64_'+randomUUID().replaceAll('-','');
  const pool=new Pool({connectionString:process.env.DATABASE_URL,max:6});
  const connect=async()=>{const c=await pool.connect();await c.query('SET search_path TO "'+schema+'",public');return c;};
@@ -41,6 +46,10 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   await db.query("CREATE TABLE embedding_knoten(node_id text PRIMARY KEY,boot_id text NOT NULL,service_token_hash text NOT NULL,status text NOT NULL DEFAULT 'ready',gesperrt_vom_user boolean NOT NULL DEFAULT false,letzter_kontakt timestamptz NOT NULL DEFAULT now(),node_kind text DEFAULT 'cpu')");
   for(const sql of [WORK_JOBS_SCHEMA_SQL,ASSET_UPLOAD_SCHEMA_SQL,REVERSE_SCHEMA_SQL,REVERSE_PIPELINE_SCHEMA_SQL,TOOL_AKTIVITAET_SCHEMA_SQL,TOOL_CONTAINER_SCHEMA_SQL])await db.query(sql);
 
+  await db.query('ALTER TABLE tool_activation ADD COLUMN IF NOT EXISTS updater_identity_id TEXT');
+  await db.query((await import('../../core/dist/db/reverse-analyse-policy-schema.js')).REVERSE_ANALYSE_POLICY_SCHEMA_SQL);
+  await db.query('ALTER TABLE reverse_auftraege ADD COLUMN IF NOT EXISTS uebernahme JSONB');
+  await db.query('CREATE TABLE agent_profil_schalter (LIKE public.agent_profil_schalter INCLUDING DEFAULTS INCLUDING INDEXES)');
   const konfig=ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:'synapse-reverse:p18-t64@sha256:'+'b'.repeat(64),
    SYNAPSE_REVERSE_RESOURCE_NEED:'{"cpu":1,"ram":512,"vram":0,"gpu":false}',SYNAPSE_REVERSE_EXECUTOR_LEASE_SECONDS:'30'},reverseRoot);
   konfig.renewMs=3600000;
@@ -96,6 +105,10 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
    const schicht=kind==='reverse-E'?'E':kind.slice(8),fp=sha('fp'+rid+kind);
    const a=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,medium_id,schicht,status,p20_auftrag_id,ausfuehrung,fingerabdruck) VALUES($1,$2,$3,'wartet',$4,'container',$5) RETURNING id::text",[rid,m,schicht,job.id,fp])).rows[0].id;
    if(schicht==='E')await db.query("INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,status,auftrag_id) VALUES($1,$2,$3,'wartet',$4)",[m,schicht,fp,a]);
+   const {bereiteReversePolicyPin}=await import('../../core/dist/services/reverse-analyse-policy.js');
+   const pin=await bereiteReversePolicyPin(db,{id:a,reverseId:rid,dateiId:null,mediumId:m,angefragt:'E'});
+   await db.query('UPDATE reverse_auftraege SET policy_pin=$2 WHERE id=$1',[a,pin]);
+   if(core.ReversePipelineDienst.AdmissionFehler)await (await import('../../core/dist/services/reverse-pipeline-halt.js')).belegeReverseAdmission(db,job.id,a);
    return {rid,m,job,auftrag:a};
   };
   const zustand=async id=>(await db.query('SELECT state,error_code FROM work_jobs WHERE id=$1',[id])).rows[0];
@@ -278,6 +291,7 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
  }finally{
   abmelden?.();unhook?.();lc?.close();
   await pool.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');await pool.end();
+  fs.chown=originalChown;syncBuiltinESMExports();
   await rm(root,{recursive:true,force:true});
  }
 });

@@ -1,5 +1,20 @@
 # synapse-reverse container (RV11)
 
+### Zulauf vor einem Reverse-Image-Wechsel (P18-T97)
+
+`reverse_pipeline_halt` ist ein dauerhafter globaler Produkt-Schalter (Standard AUS, nur ausdrücklich; keine intern-/Env-Übersteuerung).
+EIN sperrt neue Fachzulassungen. Setter und Fachpfade teilen einen PG-Transaktionslock: der Setter-Commit ist der Cut.
+Vorher atomar gebundene Pending dürfen weiter geclaimt werden; laufende Eltern veröffentlichen ihr Ergebnis, legen aber keine Folgeaufträge an.
+Ungebundene Jobs des generischen P20-Endpunkts laufen nie und bleiben im Drain-Zähler sichtbar. Das gilt auch bei Halt AUS.
+`reverse status` zeigt nach Projektbindung `zulauf.halt`, globale Pending/Running-Zähler und begrenzte Bindungsdiagnosen.
+Die Zähler sind nur das logische Tor; physisches Containerende muss der Koordinator zusätzlich belegen.
+
+Betriebsfolge: Halt-Vorlauf-API deployen, Halt EIN mit Auditgrund setzen, Pending/Running auf 0 drainen und physisches Ende belegen,
+dann `reverse_siedler3` global AUS auditieren, erst danach Legacy-Abbau/Image/Runtime wechseln. Rollback behält diese Halt-fähige API.
+Explizite isolierte Leser-Testläufe bleiben ein gesondert autorisierter Weg; während des Drains werden keine Tests gestartet.
+Diese Implementierung setzt selbst keinen Schalter und startet weder Deploy noch Container.
+
+
 This image provides static extraction and analysis tools. Original programs are data and are never launched. P20 must enforce network disabled, read-only rootfs, user 65532, cap_drop ALL, no-new-privileges, quotas, and the mount policy in thought 51ea56f7.
 
 ## Build

@@ -3,6 +3,8 @@
  * Originalbytes und Code/Assets werden hier niemals vom PC gelesen. RV10/RV8 ergänzen
  * diese Grenze später. Alle SQL-Werte sind gebunden; Projektinhalt bleibt getrennt.
  */
+import {fordereReverseAdmission,reverseAdmissionDiagnose} from './reverse-pipeline-halt.js';
+import {sperreReversePolicy} from './reverse-analyse-policy.js';
 import { aktuelleAgentAkteurIdentityId, aktuellerAgentAufruf } from './agent-bezug.js';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
@@ -404,11 +406,12 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         budget_art:'Maskierter C/ASM-Text und Referenzdaten; ohne PostgreSQL-Index-/Zeilenoverhead.'};
     }
     const features=Array.isArray(meta.merkmale)?meta.merkmale.filter(x=>typeof x==='string').map(x=>maskiereMitKatalog(x as string,'reverse').text):[];
+    const admission=a.project&&await pruefeReverseBindung(pool,str(a.project),rid)?await reverseAdmissionDiagnose(pool,rid,integer(a.limit,reverseZahl(ein,'seiten_limit'),reverseZahl(ein,'max_limit')),integer(a.offset,0,2147483647)):undefined;
     const container=hooks().containerStatus?await hooks().containerStatus!(rid):{zustand:'ruht',kaltstart_s:null};
     if(!['ruht','startet','laeuft'].includes(container.zustand))fail('werkzeug_fehler');
     const zerlegt=zerlegeReverseFehlercode(active?.fehlercode??letzterFehler?.fehlercode);
     const error=zerlegt.code&&REVERSE_FEHLERCODES.includes(zerlegt.code as ReverseFehlercode)?zerlegt.code:null;
-    return {reverse_id:rid,datei:path,...(s3Speicher?{s3_speicher:s3Speicher}:{}),format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,schicht:finished?.schicht??null,
+    return {reverse_id:rid,datei:path,...(admission?{zulauf:admission}:{}),...(s3Speicher?{s3_speicher:s3Speicher}:{}),format:f?.format??'unbekannt',arch:f?.arch??'unbekannt',bits:f?.bits??null,schicht:finished?.schicht??null,
       schicht_angefragt:jobs[0]?.schicht??active?.schicht??null,status:jobs[0]?.status??(letzterFehler&&active?.status!=='fertig'&&active?.status!=='teilweise'?'fehler':undefined)??active?.status??f?.status??'offen',fehlercode:error,
       werkzeug:active?.werkzeug??null,merkmale:features,fortschritt:{gesamt:Number(active?.funktionen_gesamt??ls.length),fertig:Number(active?.funktionen_fertig??ls.filter(l=>l.status==='fertig').length)},
       container:{zustand:container.zustand,kaltstart_s:container.kaltstart_s},...(jobs[0]?{auftrag_id:jobs[0].id,eta:null,...liveVon(jobs[0].p20_auftrag_id)}:{}),
@@ -485,6 +488,7 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       await entry(pool,rid);
       if(!await pruefeReverseBindung(pool,project,rid))fail('nicht_gebunden');
       const data=await fuehreReverseCodeAus(a,{db:pool,anfordern:(datei,schicht)=>tx(async db=>{
+        await fordereReverseAdmission(db);await sperreReversePolicy(db,rid,true);
         const e=await entry(db,rid,true);
         const input={...a,action:'analysieren',datei,file_path:undefined,bis_schicht:schicht,prioritaet:'interaktiv'};
         const job=await analyse(db,input,e,ein);await activity(db,input);return job;
@@ -627,7 +631,10 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
         await activity(db,{...a,reverse_id:job.eintrag_id});return {reverse_id:job.eintrag_id,auftrag_id:jid,status:'abgebrochen',...(zusatz??{})};
       }
       if(action==='bestaetigen')await db.query("SELECT pg_advisory_xact_lock(hashtext('reverse-gruppierung'))");
-      const rid=id(a.reverse_id),e=await entry(db,rid,['bestaetigen','archivieren','analysieren'].includes(action));
+      const rid=id(a.reverse_id);
+       // Frühester manueller Admission-Punkt: Halt -> Policy -> Eintrag, vor Hooks/Queue.
+       if(action==='analysieren'){await fordereReverseAdmission(db);await sperreReversePolicy(db,rid,true);}
+       const e=await entry(db,rid,['bestaetigen','archivieren','analysieren'].includes(action));
       let r:Row;
       if(action==='eintrag')r={status:e.status,eintrag:await entryDto(db,e)};
       else if(action==='bestaetigen')r=await confirm(db,a,e,ein);

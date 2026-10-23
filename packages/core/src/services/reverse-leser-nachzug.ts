@@ -1,6 +1,7 @@
 /** P18-T43: persistente Planung im vorhandenen Executor-Takt; keine eigene Queue.
  * Nur gespeicherte Reverse-Dateien. Keine Projektbytes, Originale oder XP-Arbeitsordner.
  * Jeder Schreibschritt 1 Zeile/TX, eigene Hash-/Policy-Fences, keine Löschung alter Läufe. */
+import {fordereReverseAdmission,leseReversePipelineHalt,belegeReverseAdmission,pruefeReverseFachbindung,ReverseAdmissionFehler} from './reverse-pipeline-halt.js';
 import {Pool,type PoolClient} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {constants} from 'node:fs';
@@ -49,8 +50,13 @@ export async function reverseLeserProjektarbeitVorrang(db:Db):Promise<boolean>{
 }
 /** Gemeinsamer Claim-/Publikationscheck, nur für echte Nachzugläufe. Keine fremden Eintragsinhalte. */
 export async function reverseLeserNachzugFreigegeben(db:Db,jobId:string):Promise<boolean>{
- const l=(await db.query("SELECT eintrag_id,diagnose FROM reverse_leser_laeufe WHERE work_job_id=$1 AND diagnose->>'nachzug'='true'",[jobId])).rows[0];
- if(!l)return true;
+ const rows=(await db.query("SELECT l.*,w.kind,w.capability,w.project,w.scope,w.profile_id,w.input_ref FROM reverse_leser_laeufe l JOIN work_jobs w ON w.id=l.work_job_id WHERE l.work_job_id=$1",[jobId])).rows;
+ if(rows.length!==1)return false;const l=rows[0];
+ // Der ausdrücklich angelegte Testlauf bleibt ein eigener, isolierter Weg.
+ if(l.diagnose?.testmodus===true)return true;
+ if(l.diagnose?.nachzug!==true)return false;
+ if(await pruefeReverseFachbindung(db,{id:jobId,kind:l.kind,capability:l.capability,project:l.project,scope:l.scope,
+  inputRef:l.input_ref,profileId:l.profile_id},true))return false;
  if(!(await schalter(db)).aktiv||!await reverseEintragAktiv(db,l.eintrag_id))return false;
  return await policy(db,l.eintrag_id)===l.diagnose.policy_revision;
 }
@@ -64,7 +70,7 @@ async function guard(db:Db,id:string,r:ReverseLeserRevision,s:ReverseEinstellSna
 }
 async function mutation<T>(db:ReverseLeserDb,id:string,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,p:string,params:unknown,run:(c:PoolClient)=>Promise<T>,d?:Datei){
  reverseLeserTxBudget(s,1,params);
- return tx(db,async c=>{await c.query("SELECT set_config('statement_timeout',$1,true)",[String(reverseZahl(s,'leser_statement_timeout_ms'))]);
+ return tx(db,async c=>{await fordereReverseAdmission(c);await c.query("SELECT set_config('statement_timeout',$1,true)",[String(reverseZahl(s,'leser_statement_timeout_ms'))]);
   await guard(c,id,r,s,p,d);return run(c);});
 }
 /** Nur begrenzte Magicbytes lesen; Hashprüfung der vollständigen Datei erst beim regulären Claim. */
@@ -107,23 +113,32 @@ async function auftrag(db:ReverseLeserDb,d:Datei,r:ReverseLeserRevision,s:Revers
  const identity=hash([d.eintrag_id,d.id,d.sha256,r.id,pin.runtime_sha256,pin.runtime_image_digest]),id=uuid(identity),generation=id;
  const alt=(await db.query("SELECT id,work_job_id,status,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest FROM reverse_leser_laeufe WHERE id=$1 AND eintrag_id=$2",[id,d.eintrag_id])).rows[0];
  if(alt){
+  if(!alt.diagnose?.admission)fail('reverse_admission_nicht_belegt');
   if(alt.runtime_sha256!==pin.runtime_sha256||alt.runtime_image_digest!==pin.runtime_image_digest)fail('leser_runtime_laufpin_geaendert');
   if(alt.einstellungen_revision!==s.revision||alt.diagnose.policy_revision!==p)fail('leser_nachzug_laufpin_veraltet');
   return {id:alt.id,job:alt.work_job_id,neu:false};
  }
  const input={kind:'reverse-leser',capability:'reverse_leser',project:'reverse-bibliothek',scope:'reverse',priority:'nachzug' as const,
   inputRef:{scope:'reverse',id:d.eintrag_id,revision:d.id,sha256:d.sha256},
-  resourceNeed:{cpu:reverseZahl(s,'e_cpu'),ram:reverseZahl(s,'e_ram_mib'),vram:0,gpu:false},idempotencyKey:'reverse-leser-nachzug:'+identity};
+  resourceNeed:{cpu:reverseZahl(s,'e_cpu'),ram:reverseZahl(s,'e_ram_mib'),vram:0,gpu:false},idempotencyKey:'reverse-leser-nachzug:'+identity+':'+randomUUID()};
  const jobs=createWorkJobService({pool:db as unknown as WorkJobPool});
  // P20 schreibt zusätzlich UUID und Requesthash; auch diese Bytes zählen, nicht nur der Eingabeumschlag.
  const jobParams=[id,input.kind,input.capability,null,input.project,input.scope,JSON.stringify(input.inputRef),JSON.stringify(input.resourceNeed),input.priority,input.idempotencyKey,'0'.repeat(64),null];
- const job=await mutation(db,d.eintrag_id,r,s,p,jobParams,c=>jobs.enqueue(input,c as unknown as WorkJobClient),d);
- const diagnose={nachzug:true,nachzug_identitaet:identity,policy_revision:p,quell_storage_key:d.storage_key};
- const params=[id,d.eintrag_id,d.id,r.id,d.sha256,generation,job.id,s.revision,diagnose,pin.runtime_sha256,pin.runtime_image_digest];
- const row=await mutation(db,d.eintrag_id,r,s,p,params,c=>c.query(`INSERT INTO reverse_leser_laeufe
-  (id,eintrag_id,datei_id,leser_id,quell_sha256,generation,work_job_id,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest)
-  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11) ON CONFLICT(id) DO NOTHING RETURNING id`,params),d);
- return {id,job:job.id,neu:!!row.rowCount};
+ return tx(db,async c=>{
+  await fordereReverseAdmission(c);await guard(c,d.eintrag_id,r,s,p,d);
+  await c.query("SELECT set_config('statement_timeout',$1,true)",[String(reverseZahl(s,'leser_statement_timeout_ms'))]);
+  const job=await jobs.enqueue(input,c as unknown as WorkJobClient);
+  const diagnose={nachzug:true,nachzug_identitaet:identity,policy_revision:p,quell_storage_key:d.storage_key};
+  const params=[id,d.eintrag_id,d.id,r.id,d.sha256,generation,job.id,s.revision,diagnose,pin.runtime_sha256,pin.runtime_image_digest];
+  // G1-G3: Job + Lauf + Beleg sind dieselbe TX; Grenzfehler rollt alles zurück.
+  reverseLeserTxBudget(s,3,[jobParams,params]);
+  const row=await c.query(`INSERT INTO reverse_leser_laeufe
+   (id,eintrag_id,datei_id,leser_id,quell_sha256,generation,work_job_id,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11) ON CONFLICT(id) DO NOTHING RETURNING id`,params);
+  if(!row.rowCount)fail('reverse_fachbindung_ungueltig');
+  await belegeReverseAdmission(c,job.id,id,true);
+  return {id,job:job.id,neu:true};
+ });
 }
 async function punkt(db:ReverseLeserDb,id:string,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,p:string,neu=false,image?:LeserRuntimeImage):Promise<Punkt>{
  const alt=(await db.query<Punkt>('SELECT '+PUNKT+' FROM reverse_leser_nachzug WHERE eintrag_id=$1 AND leser_id=$2',[id,r.id])).rows[0];
@@ -157,7 +172,9 @@ async function fortschritt(db:ReverseLeserDb,c:Punkt,r:ReverseLeserRevision,s:Re
  });
 }
 /** Ein begrenzter Schritt; Vorschau schreibt weder Checkpoint noch Auftrag, auch bei AUS. */
-export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:string;leser_id:string;vorschau?:boolean;root?:string;automatisch?:boolean;image?:LeserRuntimeImage}){
+async function reverseLeserNachziehenIntern(db:ReverseLeserDb,o:{eintrag_id:string;leser_id:string;vorschau?:boolean;root?:string;automatisch?:boolean;image?:LeserRuntimeImage}){
+ const halt=await leseReversePipelineHalt(db);
+ if(o.vorschau===false&&(halt.aktiv||halt.letzter_fehler))return {status:'gehalten',grund:halt.letzter_fehler??'reverse_pipeline_gehalten'};
  const id=o.eintrag_id,s=await snapshot(db,id),sch=await schalter(db);
  if(!await reverseEintragAktiv(db,id))return {status:'uebersprungen_inaktiv',eintrag_id:id,schalter:sch};
  const r=await leseReverseLeserRevision(db,o.leser_id);
@@ -188,6 +205,7 @@ export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:str
     jobNeu=(await auftrag(db,d,r,s,p,{runtime_sha256:c.runtime_sha256,runtime_image_digest:c.runtime_image_digest})).neu;
    }
   }catch(e){
+   if(e instanceof ReverseAdmissionFehler)throw e;
    const code=(e as {code?:string}).code??(e as Error).message;
    if(['leser_nachzug_aus','leser_eintrag_inaktiv','leser_einstellungen_geaendert','leser_revision_inaktiv'].includes(code))throw e;
    fehler=/^[a-zA-Z0-9_]+$/.test(code)?code:'leser_nachzug_probe_fehlgeschlagen';
@@ -203,7 +221,11 @@ export async function reverseLeserNachziehen(db:ReverseLeserDb,o:{eintrag_id:str
 }
 /** Durable Polling aus dem vorhandenen Takt. Ein Paar und höchstens PG-Blockzeilen pro Aufruf.
  * Neue Registryrevisionen besitzen einen eigenen Checkpoint; fertige Scans werden bei neuen Quelldaten neu gestartet. */
+export async function reverseLeserNachziehen(...args:Parameters<typeof reverseLeserNachziehenIntern>){
+ try{return await reverseLeserNachziehenIntern(...args);}catch(e){if(e instanceof ReverseAdmissionFehler)return {status:'gehalten',grund:e.code};throw e;}
+}
 export async function planeReverseLeserNachzug(db:ReverseLeserDb,root?:string,image?:LeserRuntimeImage){
+ const halt=await leseReversePipelineHalt(db);if(halt.aktiv||halt.letzter_fehler)return {status:'gehalten',grund:halt.letzter_fehler??'reverse_pipeline_gehalten'};
  const sch=await schalter(db);if(!sch.aktiv)return {status:'leser_nachzug_aus'};
  if(!(db instanceof Pool))fail('leser_nachzug_pool_erforderlich');
  if(await reverseLeserProjektarbeitVorrang(db))return {status:'projektarbeit_hat_vorrang'};
@@ -225,6 +247,7 @@ export async function planeReverseLeserNachzug(db:ReverseLeserDb,root?:string,im
  }
  try{return await reverseLeserNachziehen(db,{eintrag_id:pair.eintrag_id,leser_id:pair.leser_id,vorschau:false,root,automatisch:true,image});}
  catch(e){
+  if(e instanceof ReverseAdmissionFehler)return {status:'gehalten',grund:e.code};
   // Ein veralteter Scan blockiert keine anderen Paare oder gesunden Folgejobs (F1).
   const code=(e as Error).message,s=await snapshot(db,pair.eintrag_id);
   const params=[pair.eintrag_id,pair.leser_id,/^[a-zA-Z0-9_]+$/.test(code)?code:'leser_nachzug_fehlgeschlagen',pair.scan_id??null];
