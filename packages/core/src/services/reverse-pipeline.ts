@@ -30,6 +30,7 @@ import {normalisiereS1,uebernehmeNormalisiert} from './reverse-normalisierer/s1.
 
 import {bereiteReversePolicyPin,pruefeReversePolicyAuftrag,sperreReversePolicy,halteReversePolicyAuftrag,istReversePolicyFehler,ReversePolicyFehler} from './reverse-analyse-policy.js';
 import {reverseNachzugAutoTakt} from './reverse-nachzug-auto.js';
+import {loggeReverseFehler} from './reverse-fehlerlog.js';
 
 type Row=Record<string,unknown>;
 interface AnalysePayload {result:Omit<AssetResult,'file_path'>;strings:string[];metadata:Row;status:string;dauer_ms:number}
@@ -228,6 +229,10 @@ export class ReversePipelineDienst{
   try{return await this.queueMitPolicy(db,a);}catch(e){
    if(!istReversePolicyFehler(e))throw e;
    if(e.auftragId)await halteReversePolicyAuftrag(db,e.auftragId,a.reverseId,e.code);
+   // P18-T98: bisher stumm (Siedler 30 h ohne Auftrag). Ein Fehlerlog-Eintrag je blockierendem Auftrag bzw. Eintrag, Wiederholungen
+   // zaehlen hoch; eigene Verbindung, nicht abgewartet, wirft nie, nur bei Schalter reverse_fehlerlog.
+   void loggeReverseFehler({eintrag_id:a.reverseId,datei:e.auftragId?'vorgabe:'+e.auftragId:null,schicht:a.bisSchicht,komponente:'policy',name:'queue_policy',
+    grund:e.code,detail:'zuletzt '+(a.dateiId?'datei '+a.dateiId:'medium '+String(a.mediumId))+' ('+a.agentId+')',quelle:'reverse-pipeline'});
    return {status:'fehler',fehlercode:e.code,auftrag_id:e.auftragId??null,schicht_angefragt:a.bisSchicht};
   }
  }
@@ -438,7 +443,9 @@ export class ReversePipelineDienst{
   const verwaist=(await this.pool.query("SELECT r.id,r.eintrag_id,r.medium_id::text,r.projekt,r.ziel_schicht,r.prioritaet FROM reverse_auftraege r JOIN work_jobs w ON w.id=r.p20_auftrag_id JOIN reverse_eintraege e ON e.id=r.eintrag_id WHERE r.schicht='E' AND r.datei_id IS NULL AND r.status IN ('offen','wartet') AND w.state='completed' AND e.status='bestaetigt' ORDER BY r.created_at,r.id LIMIT $1",[this.w.discovery])).rows;
   for(const j of verwaist)await this.tx(db=>this.queue(db,{reverseId:j.eintrag_id,dateiId:null,mediumId:j.medium_id,project:j.projekt??'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:j.ziel_schicht??reverseBisSchichtGrenze(this.ein),prioritaet:j.prioritaet,policyElternId:j.id}));
   const eProfil=await this.eProfil();
-  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND (NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht='S3' AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) OR $3::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten s1 WHERE s1.datei_id=d.id AND s1.schicht='S1' AND s1.aktuell AND s1.status IN ('fertig','teilweise') AND s1.profil_version<>$3)) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.datei_id=d.id AND nz.created_at>ab.created_at)) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[this.w.discovery,this.profile,this.parserAdapter?this.s1ParserProfil():this.s1Bloecke?this.s1BlockProfil():null])).rows;
+  const files=(await this.pool.query("SELECT d.id::text,d.eintrag_id,d.medium_id::text,e.analyse_policy FROM reverse_dateien d JOIN reverse_eintraege e ON e.id=d.eintrag_id WHERE e.status='bestaetigt' AND d.storage_key IS NOT NULL AND d.sha256 IS NOT NULL AND COALESCE((e.analyse_policy->>'automatisch')::boolean,true) AND (NOT EXISTS(SELECT 1 FROM reverse_schichten done WHERE done.datei_id=d.id AND done.schicht='S3' AND done.aktuell AND done.status IN ('fertig','teilweise') AND done.profil_version=$2) OR $3::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten s1 WHERE s1.datei_id=d.id AND s1.schicht='S1' AND s1.aktuell AND s1.status IN ('fertig','teilweise') AND s1.profil_version<>$3)) AND NOT ($4::text IS NOT NULL AND EXISTS(SELECT 1 FROM reverse_schichten p1 WHERE p1.datei_id=d.id AND p1.schicht='S1' AND p1.aktuell AND p1.status IN ('fertig','teilweise') AND p1.profil_version<>$4)) AND NOT EXISTS(SELECT 1 FROM reverse_auftraege ab WHERE ab.datei_id=d.id AND ab.status='abgebrochen' AND NOT EXISTS(SELECT 1 FROM reverse_auftraege nz WHERE nz.datei_id=d.id AND nz.created_at>ab.created_at)) ORDER BY d.pipeline_gesehen_at NULLS FIRST,d.updated_at,d.id LIMIT $1",[this.w.discovery,this.profile,!this.parserAdapter&&this.s1Bloecke?this.s1BlockProfil():null,this.parserAdapter?this.s1ParserProfil():null])).rows;
+  // P18-T98: bei Parser-Adapter EIN laeuft das Neu-Parsen fertiger S1-Schichten nur noch ueber die Drossel (reverse-nachzug-auto,
+  // s1_neu_parsen_auto/-schritt, Prioritaet nachzug); entdecke() laesst diese Dateien ($4) aus. Neue Dateien ohne S1 bleiben hier.
   // P18-T88: $4 = S1-Blockprofil bei Schalter AN - vorhandene S1-Ergebnisse des anderen Profils laufen einmal neu (auch bei Ziel S2/S3).
   for(const d of files)await this.tx(async db=>{const halt=await reverseAdmission(db);if(halt.aktiv||halt.letzter_fehler)return;await sperreReversePolicy(db,d.eintrag_id);await db.query('UPDATE reverse_dateien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[d.id]);return this.queue(db,{reverseId:d.eintrag_id,dateiId:d.id,mediumId:d.medium_id,
    project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:reverseBisSchichtGrenze(this.ein),prioritaet:'hintergrund'});});

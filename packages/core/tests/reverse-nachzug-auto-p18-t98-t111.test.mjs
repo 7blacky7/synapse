@@ -1,0 +1,237 @@
+/** P18-T98/T111: Nachzug-Policy (Altauftraege, auto_grenze), S1-Neu-Parsen- und S3-Auto-Takt, reverse(neu_parsen). Nur privates synapse_test-Schema. */
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {randomUUID} from 'node:crypto';
+import {createRequire} from 'node:module';
+const url=new URL(process.env.DATABASE_URL||'http://invalid');
+assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
+delete process.env.SYNAPSE_DATABASE_URL;
+Object.assign(process.env,{SYNAPSE_SKIP_EMBEDDINGS:'1',SYNAPSE_INTERN_TOOL:'0',QDRANT_URL:'http://127.0.0.1:1',SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:'/tmp/p18-t98-reverse'});
+const schema='p18_t98_'+randomUUID().replaceAll('-','');
+const scoped=new URL(url);scoped.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=scoped.href;
+const {Pool}=createRequire(new URL('../package.json',import.meta.url))('pg');
+const raw=new Pool({connectionString:url.href,max:6,options:'-c search_path='+schema+',public'});
+await raw.query('CREATE SCHEMA '+schema);
+const names=(await raw.query("SELECT tablename FROM pg_tables WHERE schemaname='public' AND (tablename LIKE 'reverse_%' OR tablename IN ('work_jobs','work_job_audit','agent_profil_schalter','intern_schalter'))")).rows;
+for(const {tablename:t}of names){assert.match(t,/^[a-z_0-9]+$/);await raw.query('CREATE TABLE '+schema+'.'+t+' (LIKE public.'+t+' INCLUDING ALL)');}
+const policy=await import('../dist/services/reverse-analyse-policy.js');
+const auto=await import('../dist/services/reverse-nachzug-auto.js');
+const {fuehreNeuParsenAus}=await import('../dist/services/reverse-neu-parsen.js');
+const {leseReverseEinstellwerte}=await import('../dist/services/reverse-einstellwerte.js');
+const pool={async connect(){return raw.connect();},query:(s,p)=>raw.query(s,p)};
+// Projekt-Backlog der gemeinsamen Testdatenbank ist nicht steuerbar: Takt-Tests pruefen nur den Reverse-Vorrang, der Rest eigene Faelle.
+const nurReverse=async db=>(await auto.reverseNachzugVorrangOffen(db))?'vorrang_offen':null;
+const tx=async fn=>{const c=await raw.connect();try{await c.query('BEGIN');const r=await fn(c);await c.query('COMMIT');return r;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}};
+const sha=n=>String(n).padStart(64,'0').replace(/[^0-9a-f]/g,'a');
+const rid='rev-t98-'+randomUUID().slice(0,8);
+await raw.query("INSERT INTO reverse_eintraege(id,titel,status,analyse_policy) VALUES($1,'Synthetic T98','bestaetigt','{\"automatisch\":true}')",[rid]);
+const mid=String((await raw.query("INSERT INTO reverse_medien(eintrag_id,position,art,status,satz_sha256) VALUES($1,0,'ordner','vollstaendig',$2) RETURNING id",[rid,sha('m')])).rows[0].id);
+// R5 (61f66a9e): nur aktive Eintraege = bestaetigt + aktuelle fertige E-Schicht.
+const eSchicht=()=>raw.query("INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,status,werkzeug,werkzeug_version,profil_version,aktuell) VALUES($1,'E',$2,'fertig','reverse-E','v','p',true) ON CONFLICT DO NOTHING",[mid,sha('e')]);
+await eSchicht();
+let nr=0;
+async function datei(pfad,{format=null,groesse=10,s1Profil='alt-profil',s3Version=null}={}){
+ nr++;
+ const id=String((await raw.query("INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,sha256,groesse,art,format,storage_key) VALUES($1,$2,$3,$4,$5,'binaer',$6,$7) RETURNING id",
+  [rid,mid,pfad,sha(1000+nr),groesse,format,rid+'/entpackt/m'+mid+'/'+pfad])).rows[0].id);
+ if(s1Profil)await raw.query("INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,status,werkzeug,werkzeug_version,profil_version,aktuell) VALUES($1,'S1',$2,'fertig','asset-inspektoren','v',$3,true)",[id,sha(5000+nr),s1Profil]);
+ if(s3Version)await raw.query("INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,status,werkzeug,werkzeug_version,profil_version,aktuell) VALUES($1,'S3',$2,'fertig','reverse-S3',$3,'p',true)",[id,sha(7000+nr),s3Version]);
+ return id;
+}
+async function setting(name,wert,ebene='global'){
+ await raw.query('DELETE FROM reverse_einstellungen WHERE ebene=$1 AND name=$2 AND eintrag_id IS NOT DISTINCT FROM $3',[ebene,name,ebene==='eintrag'?rid:null]);
+ await raw.query("INSERT INTO reverse_einstellungen(ebene,project,eintrag_id,name,wert_text,grund,gesetzt_von) VALUES($1,NULL,$2,$3,$4,'T98','fixture')",[ebene,ebene==='eintrag'?rid:null,name,String(wert)]);
+}
+const ein=()=>leseReverseEinstellwerte({},pool);
+const aufrufe=[];
+const einreihen=antwort=>async a=>{aufrufe.push(a);return typeof antwort==='function'?antwort(a):antwort;};
+const marke=async id=>(await raw.query("SELECT metadaten->'nachzug_auto' AS m FROM reverse_dateien WHERE id=$1",[id])).rows[0].m;
+const legacyE=async status=>(await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,medium_id,schicht,status,ausloeser,projekt) VALUES($1,$2,$3,'E',$4,'agent:alt','synapse') RETURNING id",[randomUUID(),rid,mid,status])).rows[0].id;
+const pin=(dateiId,o={})=>tx(c=>policy.bereiteReversePolicyPin(c,{id:randomUUID(),reverseId:rid,dateiId,mediumId:mid,angefragt:o.angefragt??'S1',manuell:!!o.manuell,project:'reverse-bibliothek',...o}));
+const auftragMitPin=async(dateiId,p,schicht='S1',status='wartet',prio='nachzug')=>(await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,status,ausloeser,policy_pin,ziel_schicht,projekt,prioritaet) VALUES($1,$2,$3,$4,$5,'agent:reverse-nachzug-auto',$6,$7,'reverse-bibliothek',$8) RETURNING id::text",[randomUUID(),rid,dateiId,schicht,status,JSON.stringify(p),p.wirksam_bis,prio])).rows[0].id;
+// 61f66a9e: auch Dateien/Schichten frueherer Faelle entfernen, sonst bleiben sie Kandidaten (742 statt 745, wartet 7 statt 1).
+const leeren=async()=>{
+ await raw.query("DELETE FROM reverse_auftraege WHERE eintrag_id=$1",[rid]);
+ await raw.query("DELETE FROM reverse_schichten WHERE datei_id IN (SELECT id FROM reverse_dateien WHERE eintrag_id=$1)",[rid]);
+ await raw.query("DELETE FROM reverse_dateien WHERE eintrag_id=$1",[rid]);
+};
+
+test.after(async()=>{await raw.query('DROP SCHEMA '+schema+' CASCADE');await raw.end();});
+
+test('T98 Ursache: abgeschlossener Alt-E-Auftrag ohne Pin blockiert nur ohne Flag',async()=>{
+ await leeren();const d=await datei('x/a.bin');await legacyE('teilweise');
+ await assert.rejects(pin(d),e=>e.code==='policy_pin_fehlt','Altbestand: ohne Flag weiter gehalten (Verhalten unveraendert)');
+ const p=await pin(d,{ohneLegacyAbgeschlossen:true});
+ assert.equal(p.ohne_legacy_abgeschlossen,true);assert.equal(p.wirksam_bis,'S1');assert.deepEqual(p.vorgaben,[]);
+ const id=await auftragMitPin(d,p);
+ const g=await tx(c=>policy.pruefeReversePolicyAuftrag(c,id,rid,'S1'));assert.equal(g.ohne_legacy_abgeschlossen,true);
+});
+test('T98: offener Alt-Auftrag ohne Pin haelt auch mit Flag',async()=>{
+ await leeren();const d=await datei('x/b.bin');await legacyE('wartet');
+ await assert.rejects(pin(d,{ohneLegacyAbgeschlossen:true}),e=>e.code==='policy_pin_fehlt');
+});
+test('T111: auto_grenze S3 nur automatisch, nur mit s3_auto an, Vorgaben begrenzen weiter',async()=>{
+ await leeren();await setting('analyse_bis_schicht','S1');await setting('s3_auto','an');
+ const d=await datei('x/c.dll',{format:'pe'});
+ const ohne=await pin(d,{ohneLegacyAbgeschlossen:true});assert.equal(ohne.wirksam_bis,'S1','ohne autoGrenze bleibt analyse_bis_schicht');
+ const p=await pin(d,{ohneLegacyAbgeschlossen:true,autoGrenze:'S3'});assert.equal(p.wirksam_bis,'S3');assert.equal(p.auto_grenze,'S3');
+ const id=await auftragMitPin(d,p,'S3');
+ await tx(c=>policy.pruefeReversePolicyAuftrag(c,id,rid,'S3'));
+ await setting('s3_auto','aus');
+ await assert.rejects(tx(c=>policy.pruefeReversePolicyAuftrag(c,id,rid,'S3')),e=>e.code==='policy_geaendert','Schalter aus deckt den Pin nicht mehr');
+ await setting('s3_auto','an');
+ const m=await pin(d,{manuell:true,angefragt:'S1',autoGrenze:'S3'});assert.equal(m.wirksam_bis,'S1');assert.equal(m.auto_grenze,undefined,'manuell: keine Auto-Grenze');
+ await auftragMitPin(d,m,'S1','fertig');
+ const begrenzt=await pin(d,{ohneLegacyAbgeschlossen:true,autoGrenze:'S3'});assert.equal(begrenzt.wirksam_bis,'S1','manueller Root S1 begrenzt die Automatik');
+});
+test('T98 Takt: Schalter aus, Parser aus, Deckel, Prioritaet, Marke, Vorrang',async()=>{
+ await leeren();aufrufe.length=0;
+ const a=await datei('s1/a.txt'),b=await datei('s1/b.txt'),c=await datei('s1/c.txt',{s1Profil:'parser-s1:neu'});
+ await setting('s1_neu_parsen_auto','aus');
+ assert.equal((await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:neu',s3Kennung:'w',einreihen:einreihen({status:'wartet'})})).grund,'s1_neu_parsen_auto_aus');
+ await setting('s1_neu_parsen_auto','an');await setting('s1_neu_parsen_schritt',1);
+ assert.equal((await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:null,s3Kennung:'w',einreihen:einreihen({status:'wartet'})})).grund,'reverse_parser_adapter_aus');
+ assert.equal(aufrufe.length,0);
+ const t=await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:neu',s3Kennung:'w',einreihen:einreihen({status:'wartet'})});
+ assert.equal(t.kandidaten,1,'Deckel s1_neu_parsen_schritt=1');
+ assert.deepEqual([aufrufe[0].bisSchicht,aufrufe[0].prioritaet,aufrufe[0].ohneLegacyAbgeschlossen,aufrufe[0].dateiId],['S1','nachzug',true,a]);
+ assert.equal((await marke(a)).s1_kennung,'parser-s1:neu');
+ assert.ok(!aufrufe.some(x=>x.dateiId===c),'aktuelles Parser-Profil wird nicht neu geparst');
+ await setting('s1_neu_parsen_schritt',50);
+ await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:neu',s3Kennung:'w',einreihen:einreihen({status:'wartet'})});
+ assert.deepEqual(aufrufe.map(x=>x.dateiId),[a,b],'markierte Datei kommt je Profil nur einmal');
+ await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,status,ausloeser,prioritaet) VALUES($1,$2,$3,'S0','wartet','agent:x','interaktiv')",[randomUUID(),rid,c]);
+ assert.equal((await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:neuer',s3Kennung:'w',einreihen:einreihen({status:'wartet'})})).ausgesetzt,'vorrang_offen');
+});
+test('T98 Takt: voruebergehend ohne Marke, Fehler mit Marke und Takt laeuft weiter',async()=>{
+ await leeren();aufrufe.length=0;await setting('s1_neu_parsen_auto','an');await setting('s1_neu_parsen_schritt',50);
+ const d1=await datei('f/1.txt',{s1Profil:'p-alt2'}),d2=await datei('f/2.txt',{s1Profil:'p-alt2'});
+ const voll=await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:f',s3Kennung:'w',einreihen:einreihen({status:'fehler',fehlercode:'warteschlange_voll'})});
+ assert.equal(voll.ergebnisse['fehler:warteschlange_voll'],1,'Abbruch nach warteschlange_voll');
+ assert.equal((await marke(d1)).s1_kennung,undefined,'voruebergehend: keine Dauer-Marke');assert.ok((await marke(d1)).s1_versuch_at);
+ const r=await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:f',s3Kennung:'w',einreihen:einreihen(a=>a.dateiId===d1?{status:'fehler',fehlercode:'policy_grenze'}:{status:'wartet'})});
+ assert.equal(r.ergebnisse['fehler:policy_grenze'],1);assert.equal(r.ergebnisse.wartet,1);
+ assert.equal((await marke(d1)).s1_fehler,true);assert.equal((await marke(d2)).s1_fehler,false);
+ assert.equal((await marke(d1)).s1_kennung,undefined,'policy_grenze ist nicht deterministisch: Datei bleibt Kandidat');
+ aufrufe.length=0;
+ await auto.reverseS1NeuParsenTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:f',s3Kennung:'w',einreihen:einreihen({status:'wartet'})});
+ assert.deepEqual(aufrufe.map(x=>x.dateiId),[d1],'nach voruebergehendem Fehler wieder Kandidat');
+ const wurf=await auto.reverseNachzugAutoTakt({vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:g',s3Kennung:'w',einreihen:async()=>{throw Object.assign(Error('x'),{code:'werkzeug_fehler'});}});
+ assert.ok(wurf.s1,'Gesamttakt wirft nie');
+});
+test('T111 Takt: nur PE, kleinste zuerst, Deckel, auto_grenze, Werkzeugstand',async()=>{
+ await leeren();aufrufe.length=0;await setting('s1_neu_parsen_auto','aus');await setting('s3_auto','an');await setting('s3_auto_offen_max',1);await setting('s3_auto_schritt',1);
+ const gross=await datei('p/gross.exe',{format:'pe',groesse:900,s1Profil:'parser-s1:p'});
+ const klein=await datei('p/klein.DLL',{format:'pe',groesse:5,s1Profil:'parser-s1:p'});
+ await datei('p/bild.jpg',{format:'jpeg',groesse:1,s1Profil:'parser-s1:p'});
+ await datei('p/alt.exe',{format:'pe',groesse:2,s1Profil:'alt'});
+ await datei('p/fertig.dll',{format:'pe',groesse:3,s1Profil:'parser-s1:p',s3Version:'ghidra-1'});
+ const k={vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:p',s3Kennung:'ghidra-1',einreihen:einreihen({status:'wartet'})};
+ const t=await auto.reverseS3AutoTakt(k);
+ assert.equal(t.kandidaten,1);
+ assert.deepEqual([aufrufe[0].dateiId,aufrufe[0].bisSchicht,aufrufe[0].autoGrenze,aufrufe[0].prioritaet],[klein,'S3','S3','nachzug']);
+ assert.equal((await marke(klein)).s3_kennung,'ghidra-1');
+ await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,status,ausloeser,prioritaet,ziel_schicht) VALUES($1,$2,$3,'S3','wartet','agent:reverse-nachzug-auto','nachzug','S3')",[randomUUID(),rid,klein]);
+ assert.equal((await auto.reverseS3AutoTakt(k)).ausgesetzt,'deckel_erreicht');
+ await leeren();
+ await auto.reverseS3AutoTakt(k);assert.equal(aufrufe.at(-1).dateiId,gross);
+ const neu={...k,s3Kennung:'ghidra-2'};aufrufe.length=0;await setting('s3_auto_schritt',5);await setting('s3_auto_offen_max',5);
+ await auto.reverseS3AutoTakt({...neu,ein:await ein()});
+ assert.equal(aufrufe.length,3,'neuer Werkzeugstand: klein, fertig und gross je einmal (alt.exe ohne aktuelles S1-Profil nicht)');
+ await setting('s3_auto','aus');
+ assert.equal((await auto.reverseS3AutoTakt({...k,ein:await ein()})).grund,'s3_auto_aus');
+});
+test('T98: Policy-Abweisung in queue() landet im Fehlerlog (ein Eintrag je Vorgabe, zaehlt hoch)',async()=>{
+ await leeren();await raw.query('DELETE FROM reverse_fehlerlog');
+ await raw.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('global',NULL,'reverse_fehlerlog',true,'T98','fixture')");
+ const {ReversePipelineDienst}=await import('../dist/services/reverse-pipeline.js');
+ const dienst=new ReversePipelineDienst({pool:raw,ausfuehrbareKinds:[]});
+ const legacy=await legacyE('fertig');
+ await raw.query("UPDATE reverse_auftraege SET status='wartet' WHERE id=$1",[legacy]);
+ const d1=await datei('q/1.bin'),d2=await datei('q/2.bin');
+ for(const d of [d1,d2]){
+  const r=await dienst.nachziehen({reverseId:rid,project:'reverse-bibliothek',agentId:'t98',dateiId:d,mediumId:mid,bisSchicht:'S1',prioritaet:'nachzug'});
+  assert.equal(r.fehlercode,'policy_pin_fehlt');
+ }
+ let zeilen=[];
+ for(let i=0;i<20&&!(zeilen[0]?.anzahl>=2);i++){await new Promise(r=>setTimeout(r,100));zeilen=(await raw.query("SELECT komponente,name,grund,datei,anzahl FROM reverse_fehlerlog WHERE eintrag_id=$1",[rid])).rows;}
+ assert.equal(zeilen.length,1,'ein Eintrag je blockierendem Auftrag');
+ assert.deepEqual([zeilen[0].komponente,zeilen[0].name,zeilen[0].grund,zeilen[0].datei],['policy','queue_policy','policy_pin_fehlt','vorgabe:'+legacy]);
+ assert.equal(Number(zeilen[0].anzahl),2,'Wiederholung zaehlt hoch');
+ await raw.query("DELETE FROM agent_profil_schalter WHERE funktion='reverse_fehlerlog'");
+ await dienst.beende();
+});
+test('Review 6b9112b6 (4): reverse_s3 aus -> keine Dauer-Marke, nach Einschalten wieder Kandidat; Versuchte ruecken nach hinten',async()=>{
+ await leeren();aufrufe.length=0;await setting('s3_auto','an');await setting('s3_auto_offen_max',5);await setting('s3_auto_schritt',1);
+ const x=await datei('r/x.dll',{format:'pe',groesse:1,s1Profil:'parser-s1:r'}),y=await datei('r/y.dll',{format:'pe',groesse:2,s1Profil:'parser-s1:r'});
+ const k={vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:r',s3Kennung:'g-r'};
+ await auto.reverseS3AutoTakt({...k,einreihen:einreihen({status:'fehler',fehlercode:'kein_ausfuehrer',fehler_detail:'reverse_s3_aus'})});
+ assert.equal((await marke(x)).s3_kennung,undefined);
+ await auto.reverseS3AutoTakt({...k,einreihen:einreihen({status:'wartet'})});
+ assert.deepEqual(aufrufe.map(a=>a.dateiId),[x,y],'versuchte Datei x rueckt hinter y');
+ await auto.reverseS3AutoTakt({...k,einreihen:einreihen({status:'wartet'})});
+ assert.equal(aufrufe.at(-1).dateiId,x,'x wieder Kandidat und wird nun eingereiht');assert.equal((await marke(x)).s3_kennung,'g-r');
+});
+test('Review 6b9112b6 (2): Vorrang Leser-Nachzug und Projekt-Backlog setzen aus',async()=>{
+ await leeren();aufrufe.length=0;await setting('s3_auto','an');await setting('s1_neu_parsen_auto','an');
+ await datei('v/a.dll',{format:'pe',s1Profil:'parser-s1:v'});
+ await raw.query("INSERT INTO reverse_leser_nachzug(eintrag_id,leser_id,scan_id,einstellungen_revision,policy_revision,status) VALUES($1,'l-t98',gen_random_uuid(),repeat('a',64),repeat('a',64),'offen')",[rid]);
+ assert.equal(await auto.reverseNachzugVorrang(pool),'leser_nachzug_laeuft');
+ assert.equal((await auto.reverseS3AutoTakt({pool,ein:await ein(),parserProfil:'parser-s1:v',s3Kennung:'g',einreihen:einreihen({status:'wartet'})})).ausgesetzt,'leser_nachzug_laeuft','Standard-Vorrang greift');
+ await raw.query("DELETE FROM reverse_leser_nachzug WHERE leser_id='l-t98'");
+ for(const grund of ['projekt_parse_backlog','projekt_chunks_offen']){
+  assert.equal((await auto.reverseS1NeuParsenTakt({vorrang:async()=>grund,pool,ein:await ein(),parserProfil:'parser-s1:neu2',s3Kennung:'g',einreihen:einreihen({status:'wartet'})})).ausgesetzt,grund);
+  assert.equal((await auto.reverseS3AutoTakt({vorrang:async()=>grund,pool,ein:await ein(),parserProfil:'parser-s1:v',s3Kennung:'g',einreihen:einreihen({status:'wartet'})})).ausgesetzt,grund);
+ }
+ assert.equal(aufrufe.length,0,'bei Vorrang wird nichts eingereiht');
+});
+test('Review 6b9112b6 (1): entdecke() reiht veraltete Parser-S1 nicht mehr selbst ein (nur ueber Drossel)',async()=>{
+ await leeren();
+ await raw.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('global',NULL,'reverse_parser_adapter',true,'T98','fixture')");
+ const {ReversePipelineDienst}=await import('../dist/services/reverse-pipeline.js');
+ const dienst=new ReversePipelineDienst({pool:raw,ausfuehrbareKinds:[]});
+ await dienst['einstellungen']();
+ const alt=await datei('e/alt.txt',{s1Profil:'kein-parser-profil'});
+ await dienst['entdecke']();
+ assert.equal((await raw.query('SELECT count(*)::int n FROM reverse_auftraege WHERE datei_id=$1',[alt])).rows[0].n,0,'Massen-Neueinreihung ueber entdecke umgangen? Nein');
+ await raw.query("DELETE FROM agent_profil_schalter WHERE funktion='reverse_parser_adapter'");
+ await dienst.beende();
+});
+test('Review 6b9112b6 (3): neu_parsen ausfuehren nutzt die Leser-Verwalter-Pruefung (Koordinator/User/Main-Agent)',async()=>{
+ const {readFile}=await import('node:fs/promises');
+ const src=await readFile(new URL('../src/services/reverse-tool.ts',import.meta.url),'utf8');
+ const block=src.slice(src.indexOf('(NEU_PARSEN_ACTIONS as readonly string[]).includes(action)'),src.indexOf("if(action==='uebernehmen')"));
+ assert.match(block,/if\(!vorschau\)await pruefeReverseLeserVerwalter\(pool,project\)/,'Ausfuehren: pruefeReverseLeserVerwalter (Main-Agent eingeschlossen, siehe reverse-leser-tool Tests)');
+ assert.doesNotMatch(block,/!vorschau\|\|/,'kein reines darfKoordinatorOderUser fuer Ausfuehren');
+});
+test('R5 (61f66a9e): Eintrag ohne aktuelle fertige E-Schicht liefert keine Kandidaten',async()=>{
+ await leeren();aufrufe.length=0;await setting('s1_neu_parsen_auto','an');await setting('s1_neu_parsen_schritt',50);await setting('s3_auto','an');await setting('s3_auto_offen_max',5);await setting('s3_auto_schritt',5);
+ await datei('i/a.txt',{s1Profil:'alt-i'});await datei('i/b.dll',{format:'pe',s1Profil:'parser-s1:i'});
+ await raw.query("UPDATE reverse_schichten SET aktuell=false WHERE medium_id=$1 AND schicht='E'",[mid]);
+ try{
+  const k={vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:i',s3Kennung:'g-i',einreihen:einreihen({status:'wartet'})};
+  assert.equal((await auto.reverseS1NeuParsenTakt(k)).kandidaten,0);assert.equal((await auto.reverseS3AutoTakt(k)).kandidaten,0);
+  assert.equal(aufrufe.length,0,'inaktiver Eintrag wird nicht angefasst');
+ }finally{await raw.query("UPDATE reverse_schichten SET aktuell=true WHERE medium_id=$1 AND schicht='E'",[mid]);}
+ const k={vorrang:nurReverse,pool,ein:await ein(),parserProfil:'parser-s1:i',s3Kennung:'g-i',einreihen:einreihen({status:'wartet'})};
+ assert.equal((await auto.reverseS1NeuParsenTakt(k)).kandidaten,1,'aktiv: S1-Kandidat');
+});
+test('Vorrang-Schwellen: 0 = nicht pruefen, Grund mit Zahl im Debug',async()=>{
+ await leeren();await setting('nachzug_vorrang_chunks_max',0);await setting('nachzug_vorrang_parse_max',0);
+ assert.equal(await auto.reverseNachzugVorrang(pool,await ein()),null,'ohne offene Reverse-/Leser-Arbeit und Schwellen 0: kein Aussetzen trotz Dauer-Rueckstand');
+ await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,schicht,status,ausloeser,prioritaet) VALUES($1,$2,'E','wartet','agent:x','hintergrund')",[randomUUID(),rid]);
+ assert.equal(await auto.reverseNachzugVorrang(pool,await ein()),'vorrang_offen');
+ await leeren();await setting('nachzug_vorrang_chunks_max',1000);await setting('nachzug_vorrang_parse_max',100);
+});
+test('neu_parsen: Vorschau aendert nichts, Ausfuehren nur gefilterte Dateien mit limit',async()=>{
+ await leeren();aufrufe.length=0;
+ const a=await datei('ordner/a.txt',{s1Profil:'np-alt'}),b=await datei('ordner/b.txt',{s1Profil:'np-alt'});await datei('ordner_x/c.txt',{s1Profil:'np-alt'});
+ const v=await fuehreNeuParsenAus(pool,{reverseId:rid,datei:null,pfadPraefix:'ordner/',profil:'np-alt',vorschau:true,limit:50});
+ assert.equal(v.status,'vorschau');assert.equal(v.gesamt,2,'Praefix ordner/ trifft ordner_x nicht (LIKE escaped)');assert.equal(aufrufe.length,0);
+ assert.ok('s3_auto' in v);
+ const r=await fuehreNeuParsenAus(pool,{reverseId:rid,datei:null,pfadPraefix:'ordner/',profil:'np-alt',vorschau:false,limit:1,einreihen:(id,m)=>{aufrufe.push({id,m});return {status:'wartet'};}});
+ assert.equal(r.angestossen,1);assert.equal(r.rest,1);assert.deepEqual(aufrufe.map(x=>x.id),[a]);
+ const e=await fuehreNeuParsenAus(pool,{reverseId:rid,datei:'ordner/b.txt',pfadPraefix:null,profil:null,vorschau:false,limit:5,einreihen:()=>({status:'fehler',fehlercode:'warteschlange_voll'})});
+ assert.equal(e.abbruch,'warteschlange_voll');assert.equal(e.angestossen,1);
+ assert.ok(b);
+});

@@ -1,6 +1,6 @@
 /**
  * P18-T98: manuelles Neu-Parsen ueber reverse(neu_parsen) auf den gespeicherten Reverse-Dateien (kein Original/ISO neu einlesen).
- * Vorschau (Standard, vorschau!==false) zaehlt S1-Dateien je Profil; Ausfuehren (Koordinator/User) reiht hoechstens limit Dateien
+ * Vorschau (Standard, vorschau!==false) zaehlt S1-Dateien je Profil; Ausfuehren (Koordinator/User/Main-Agent) reiht hoechstens limit Dateien
  * ueber denselben automatischen queue-Weg der Pipeline mit Prioritaet 'nachzug' ein (Pin-Ursprung automatisch, kein manueller
  * Root, damit spaetere Automatik wie S3 nicht auf S1 begrenzt wird). Ersetzt werden nur S1-Ableitungen der gewaehlten Dateien
  * (neue Parser-Generation, alte bleibt in reverse_parser_generationen). Projekt-Neu-Parsen (intern parse_neu) bleibt unberuehrt.
@@ -40,7 +40,7 @@ export async function fuehreNeuParsenAus(db:Db,o:NeuParsenAuftrag):Promise<Row>{
    count(*) FILTER (WHERE EXISTS(SELECT 1 FROM reverse_auftraege r WHERE r.datei_id=d.id AND r.schicht='S3' AND r.status IN ('offen','wartet','laeuft')))::int AS s3_offen,
    count(*) FILTER (WHERE (d.metadaten->'nachzug_auto'->>'s3_fehler')='true' AND NOT EXISTS(SELECT 1 FROM reverse_schichten s WHERE s.datei_id=d.id AND s.schicht='S3' AND s.aktuell AND s.status IN ('fertig','teilweise')))::int AS s3_auto_fehler
   FROM reverse_dateien d WHERE d.eintrag_id=$1 AND d.format='pe' AND lower(d.pfad) ~ '\\.(exe|dll|ocx|sys|drv)$'`,[o.reverseId])).rows[0];
-  return {...basis,beispiele,s3_auto:s3,hinweis:'Nur Vorschau. Ausfuehren: reverse(action:"neu_parsen", reverse_id, [datei|pfad_praefix|profil_version], vorschau:false, limit) - nur Koordinator/User; Prioritaet nachzug.'};
+  return {...basis,beispiele,s3_auto:s3,hinweis:'Nur Vorschau. Ausfuehren: reverse(action:"neu_parsen", reverse_id, [datei|pfad_praefix|profil_version], vorschau:false, limit) - nur Koordinator/User/Main-Agent; Prioritaet nachzug.'};
  }
  if(!o.einreihen)throw new Error('neu_parsen_ohne_runtime');
  const kandidaten=(await db.query(`SELECT d.id::text AS id,d.medium_id::text AS medium_id ${FILTER} AND NOT ${OFFEN_S1} ORDER BY d.id LIMIT $5`,[...p,o.limit])).rows;

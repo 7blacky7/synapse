@@ -102,6 +102,9 @@ export const REVERSE_EINSTELLKATALOG = {
  s3_auto_offen_max:i('offene Auto-S3-Auftraege',1,64,1,G),
  s3_auto_schritt:i('Auto-S3-Einreihungen je Takt',1,64,1,G),
  auto_nachzug_debug:auswahl('Schalter',['aus','an'],'aus',G),
+ // Vorrang des Nachzugs: aussetzen erst UEBER diesen Rueckstaenden (0 = nicht pruefen); ein Dauer-Rest blockiert sonst fuer immer.
+ nachzug_vorrang_chunks_max:i('offene Code-Chunks (Embedding)',0,I32,1000,G,'nicht pruefen'),
+ nachzug_vorrang_parse_max:i('faellige Projektdateien (Parser)',0,I32,100,G,'nicht pruefen'),
  analyse_bis_schicht:auswahl('Schicht',['E','S0','S1','S2','S3'],'S1',GE,'SYNAPSE_REVERSE_BIS_SCHICHT'),
  // Runner-intern / Aufnahme / Übertragung / S1
  guard_intervall_ms:i('ms',10,5000,500,G),
