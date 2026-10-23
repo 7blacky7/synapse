@@ -153,6 +153,9 @@ try {
     writeFileSync('/tmp/p18-rv2-golden.json', JSON.stringify(actual,null,2)+'\n');
     console.log('ALT-GOLDEN gespeichert: core + REST + stdio, 30 Tool-Abfragen, Anker build/make/MeshMarker geprüft');
   } else {
+    // Golden-Aenderungen (nur dokumentiert nachgezogen, nie neu eingefroren):
+    // P18-T110: code_intel when_to_use enthaelt den Guide-Satz zur Typpruefung (typen:true/Schatten) aus P16-T15
+    //   (guide/content.ts, git f555a676, 13.10.2026 19:44, nach dem RV2-Capture). Sonst unveraendert.
     const golden=JSON.parse(readFileSync(join(repo,'packages/core/tests/fixtures/intel-bereich-p18-t12.golden.json'),'utf8'));
     assert.deepEqual(actual,golden);
     console.log('GOLDEN unverändert: core + REST + stdio');
