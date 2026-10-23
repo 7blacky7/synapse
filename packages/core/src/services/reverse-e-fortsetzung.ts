@@ -5,6 +5,7 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {reverseBigInt,reverseZahl,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
+import {REVERSE_FEHLERCODES} from './reverse-tool.js';
 
 export interface EKontext {
  jobId:string;reverseId:string;mediumId:string;einstellungen:ReverseEinstellSnapshot;
@@ -105,7 +106,10 @@ export async function eAbschluss(pool:Pool,e:EKontext,werte:{dateien:string;abge
  // Die alte Schema-UI hat INTEGER-Zähler; Vollständigkeit hängt nur an den exakten JSON-Dezimalwerten.
  const anzeige=(n:string)=>Number(BigInt(n)>2147483647n?2147483647n:BigInt(n));
  const sum=String(BigInt(werte.dateien)+BigInt(werte.abgewiesen)+BigInt(werte.offen));
- const fehler=werte.grund?'werkzeug_fehler':null,ausgabe=e.reverseId+'/entpackt/m'+e.mediumId+'/'+e.jobId.toLowerCase();
+ // Rohgrund bleibt im Rückhalt/Checkpoint; nur der öffentliche Fehlercode wird normalisiert.
+ const kandidat=werte.grund==='datei_zu_gross'?'zu_gross':werte.grund;
+ const fehler=kandidat===null?null:REVERSE_FEHLERCODES.find(code=>code===kandidat)??'werkzeug_fehler';
+ const ausgabe=e.reverseId+'/entpackt/m'+e.mediumId+'/'+e.jobId.toLowerCase();
  const alte=(await pool.query("SELECT id::text FROM reverse_schichten WHERE medium_id=$1 AND datei_id IS NULL AND schicht='E' AND aktuell AND fingerabdruck<>$2",[e.mediumId,f.fingerabdruck])).rows;
  for(const row of alte)await eMutation(pool,e,'UPDATE reverse_schichten SET aktuell=false WHERE id=$1 AND medium_id=$2',[row.id,e.mediumId]);
  await eMutation(pool,e,`INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,aktuell,status,fehlercode,werkzeug,funktionen_gesamt,funktionen_fertig,ausgabe_key,auftrag_id,gestartet_at,beendet_at)
