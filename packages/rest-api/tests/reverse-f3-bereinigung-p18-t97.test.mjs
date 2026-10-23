@@ -4,12 +4,12 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,randomBytes} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {readFile,mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy,encodeRecord,metadataRecords,manifestHeader,pruefeZwischenIntervall} from '../scripts/reverse-f3-bereinigen.mjs';
+import {ENTRY,canon,sha,createManifest,applyManifest,verifyManifest,projectSentinel,validName,batchCost,failureDiagnostic,sentinelPolicy,encodeRecord,metadataRecords,manifestHeader,pruefeZwischenIntervall,openBatchConnection,transactionSnapshot,transactionGuard} from '../scripts/reverse-f3-bereinigen.mjs';
 const enabled=process.env.SYNAPSE_TEST_PHASE==='P18-T97-F3';
 const run=(name,fn)=>test(name,{skip:!enabled},fn);
 const {Pool}=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
@@ -151,7 +151,11 @@ run('FK catalog change and unknown project owner fail closed',async t=>{
  await assert.rejects(applyManifest(f.pool,m),/f3_fk_unbekannt/);
  await f.pool.query('DROP TABLE surprise');
  await f.pool.query('CREATE TABLE asset_unzugeordnet(id text)');
- await assert.rejects(applyManifest(f.pool,m),/f3_projekttabelle_unzugeordnet/);
+ const result=await applyManifest(f.pool,m);
+ assert.equal(result.status,'fertig');assert.equal(result.projektbilanz.start.diagnose.code,'f3_projekttabelle_unzugeordnet');
+ assert.equal(result.projektbilanz.dryrun_zu_start.nicht_vergleichbar,true);
+ // Dry-run still validates its complete immutable metadata before producing a manifest.
+ await assert.rejects(f.make(),/f3_projekttabelle_unzugeordnet/);
 });
 run('concurrent FK insert cannot pass the check/delete window',async t=>{
  const f=await fixture(t),m=await f.make(),other=await f.pool.connect();let race;
@@ -165,22 +169,35 @@ run('concurrent FK insert cannot pass the check/delete window',async t=>{
   assert.equal((await f.pool.query("SELECT count(*)::text AS n FROM reverse_code_verweise WHERE id='race'")).rows[0].n,'0');
  }finally{other.release();}
 });
-run('concurrent same-count project UPDATE is detected as final alarm after the committed Reverse batch',async t=>{
+run('parallel same-count project UPDATE is informational; own Reverse TX remains clean',async t=>{
  const f=await fixture(t),m=await f.make();
- await assert.rejects(applyManifest(f.pool,{...m,afterDelete:async()=>{
+ const result=await applyManifest(f.pool,{...m,afterDelete:async()=>{
   await f.pool.query("UPDATE code_files SET value='legitimate concurrent project change' WHERE id='keep'");
- }}),e=>e.message==='f3_projektbestand_geaendert'&&e.alarm===true&&e.committed_batches===1&&failureDiagnostic(e).alarm===true);
+ }});
+ assert.equal(result.status,'fertig');assert.equal(result.projektschutz,'eigene_batch_transaktion');
+ assert.equal(result.projektbilanz.informativ,true);
+ assert.deepEqual(result.projektbilanz.start_zu_ende.tabellen.map(x=>x.tabelle),['code_files']);
+ assert.equal(result.projektbilanz.start_zu_ende.tabellen[0].vorher,'1');
+ assert.equal(result.projektbilanz.start_zu_ende.tabellen[0].nachher,'1');
  const state=await f.counts();assert.equal(state.evidence,'1');assert.equal(state.symbols.length,0);
  assert.deepEqual(state.files.map(x=>x.id),['d','e','e2','f','foreign','g','h']);
  assert.equal((await f.pool.query("SELECT value FROM code_files WHERE id='keep'")).rows[0].value,'legitimate concurrent project change');
 });
-run('final full balance catches indirect revision change after LAST commit, never claims full success',async t=>{
- const f=await fixture(t,{rows:2}),m=await f.make(),total=m.files+m.symbols;
- await assert.rejects(applyManifest(f.pool,{...m,afterCommit:async()=>{
+run('changed project baseline after dry-run and indirect end changes never stop apply or resume',async t=>{
+ const f=await fixture(t,{rows:2}),m=await f.make(),information=[];
+ await f.pool.query("UPDATE code_files SET value='after dry-run' WHERE id='keep'");
+ const result=await applyManifest(f.pool,{...m,onInformation:x=>information.push(x),afterCommit:async()=>{
   await f.pool.query("UPDATE asset_revisionen SET sha256='external project change' WHERE asset_id=1");
- }}),e=>e.message==='f3_projektbestand_geaendert'&&e.alarm===true&&e.committed_batches===total);
- assert.equal((await f.counts()).evidence,String(total));
- await assert.rejects(applyManifest(f.pool,m),/f3_projektbestand_geaendert/);
+ }});
+ assert.equal(result.status,'fertig');assert.equal(result.committed_batches,m.files+m.symbols);
+ assert.deepEqual(result.projektbilanz.dryrun_zu_start.tabellen.map(x=>x.tabelle),['code_files']);
+ assert.deepEqual(result.projektbilanz.start_zu_ende.tabellen.map(x=>x.tabelle),['asset_revisionen']);
+ assert.deepEqual(information.map(x=>x.zeitpunkt),['start','ende']);
+ assert.ok(information.every(x=>x.informativ===true&&!Object.hasOwn(x,'projects')));
+ const resumed=await applyManifest(f.pool,m);
+ assert.equal(resumed.status,'fertig');assert.equal(resumed.committed_batches,0);
+ assert.equal(resumed.resumed_batches,result.committed_batches);
+ assert.equal(resumed.projektbilanz.dryrun_zu_start.geaendert,true);
 });
 run('all seven indirect sentinel routes detect same-count mutations',async t=>{
  const f=await fixture(t);
@@ -268,23 +285,29 @@ run('schema145 through regular ensureSchema twice, own test schema only',async t
 run('normal exact delta; complete source records and own share bytes unchanged',async t=>{
  const f=await fixture(t),m=await f.make();
  const source=async()=>JSON.stringify((await f.pool.query('SELECT * FROM reverse_dateien ORDER BY id')).rows);
- const before=await source(),projects=await projectSentinel(f.pool);
+ const dependencies=async()=>JSON.stringify(await Promise.all(
+  ['reverse_code_verweise','reverse_code_statements','reverse_code_kanten'].map(async table=>(await f.pool.query('SELECT * FROM '+table)).rows)));
+ const before=await source(),projects=await projectSentinel(f.pool),dependencyBefore=await dependencies();
  const root=await mkdtemp(join(tmpdir(),'f3-own-share-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const share=join(root,'original.bin'),bytes=Buffer.from('own source evidence');await writeFile(share,bytes);
  const result=await applyManifest(f.pool,m);assert.equal(result.status,'fertig');
  const delta=(await f.pool.query("SELECT sum((delta->>'files')::int)::text AS files,sum((delta->>'symbols')::int)::text AS symbols FROM reverse_f3_bereinigungs_batches")).rows[0];
  assert.deepEqual(delta,{files:'3',symbols:'3'});
  assert.equal(await source(),before);assert.deepEqual(await readFile(share),bytes);
+ assert.equal(await dependencies(),dependencyBefore); // FK lock permission never permits a child-row mutation.
  assert.deepEqual(await projectSentinel(f.pool),projects);
  const remaining=(await f.counts()).files.map(x=>x.id);
  assert.deepEqual(remaining,['d','e','e2','f','foreign','g','h']);
 });
-run('project COUNT change mid-batch raises final alarm; parallel project write remains',async t=>{
+run('parallel project COUNT change mid-batch is reported without stopping',async t=>{
  const f=await fixture(t,{rows:2}),m=await f.make();let changed=false;
- await assert.rejects(applyManifest(f.pool,{...m,afterDelete:async()=>{
+ const result=await applyManifest(f.pool,{...m,afterDelete:async()=>{
   if(changed)return;changed=true;
   await f.pool.query("INSERT INTO code_files VALUES('external-new','project','legitimate concurrent insert')");
- }}),e=>e.message==='f3_projektbestand_geaendert'&&e.alarm===true&&e.committed_batches===m.files+m.symbols);
+ }});
+ assert.equal(result.status,'fertig');assert.equal(result.committed_batches,m.files+m.symbols);
+ const diff=result.projektbilanz.start_zu_ende.tabellen.find(x=>x.tabelle==='code_files');
+ assert.equal(diff.vorher,'1');assert.equal(diff.nachher,'2');
  const state=await f.counts();assert.equal(state.evidence,String(m.files+m.symbols));assert.equal(state.symbols.length,0);
  assert.deepEqual(state.files.map(x=>x.id),['d','e','e2','f','foreign','g','h']);
  assert.equal((await f.pool.query('SELECT count(*)::text AS n FROM code_files')).rows[0].n,'2');
@@ -305,16 +328,22 @@ run('same-name foreign-schema CASCADE/SET NULL FK stops before any deletion',asy
  });
 });
 
+/** Both the read-lock session and every dedicated batch use the same test-only
+ * query interceptor. Fresh batch clients are real pg.Client, never pool checkout.
+ */
+function mappedPool(pool,map){
+ const wrap=c=>({query:(q,...args)=>map(c,q,args),
+  ...(c.release?{release:(...args)=>c.release(...args)}:{}),
+  ...(c.end?{end:()=>c.end()}:{})});
+ return {options:pool.options,connect:async()=>wrap(await pool.connect()),
+  connectFresh:async()=>wrap(await openBatchConnection(pool.options))};
+}
 function injectedPool(pool,inject){
- return {connect:async()=>{
-  const c=await pool.connect();
-  return {query:async(q,...args)=>{
-   const text=typeof q==='string'?q:q.text;
-   const failure=inject(text);
-   if(failure){if(text==='ROLLBACK')await c.query(q,...args);throw failure;}
-   return c.query(q,...args);
-  },release:()=>c.release()};
- }};
+ return mappedPool(pool,async(c,q,args)=>{
+  const text=typeof q==='string'?q:q.text,failure=inject(text);
+  if(failure){if(text==='ROLLBACK')await c.query(q,...args);throw failure;}
+  return c.query(q,...args);
+ });
 }
 run('simulated PG statement timeout exposes phase/SQLSTATE only; first cause survives rollback error',async t=>{
  const f=await fixture(t),before=await f.counts(),records=[];
@@ -508,13 +537,10 @@ run('OID catalog changed between batches stops BEFORE next deletion',async t=>{
 });
 run('DELETE RETURNING deviation rolls back exact deletion AND evidence, then STOP',async t=>{
  const f=await fixture(t),m=await f.make(),before=await f.counts();
- const pool={connect:async()=>{
-  const c=await f.pool.connect();
-  return {query:async(q,...args)=>{
-   const result=await c.query(q,...args),text=typeof q==='string'?q:q.text;
-   return text.startsWith('DELETE FROM reverse_code_symbole ')?{...result,rows:[]}:result;
-  },release:(...args)=>c.release(...args)};
- }};
+ const pool=mappedPool(f.pool,async(c,q,args)=>{
+  const result=await c.query(q,...args),text=typeof q==='string'?q:q.text;
+  return text.startsWith('DELETE FROM reverse_code_symbole ')?{...result,rows:[]}:result;
+ });
  await assert.rejects(applyManifest(pool,m),/f3_loeschmenge_geaendert/);
  assert.deepEqual(await f.counts(),before);
 });
@@ -529,4 +555,198 @@ run('optional full-sentinel interval is bounded, counted and pinned in journal r
  await assert.rejects(applyManifest(f.pool,{...m,zwischenSentinelBatches:0}),/f3_journal_konflikt/);
  assert.throws(()=>pruefeZwischenIntervall(-1,9),/f3_zwischen_budget/);
  assert.throws(()=>pruefeZwischenIntervall(10,9),/f3_zwischen_budget/);
+});
+
+run('own TX project insert/update/delete are rolled back together with DELETE and journal',async t=>{
+ for(const sql of [
+  "INSERT INTO code_files VALUES('hidden','project','own forbidden write')",
+  "UPDATE code_files SET value='hidden' WHERE id='keep'",
+  "DELETE FROM code_files WHERE id='keep'"
+ ])await t.test(sql.split(' ')[0],async t=>{
+  const f=await fixture(t),m=await f.make(),before=await f.counts(),projects=await projectSentinel(f.pool);
+  await assert.rejects(applyManifest(f.pool,{...m,afterDelete:({db})=>db.query(sql)}),
+   e=>e.message==='f3_tx_fremdmutation'&&e.committed_batches===0&&failureDiagnostic(e).phase==='tx_schutz');
+  assert.deepEqual(await f.counts(),before);assert.deepEqual(await projectSentinel(f.pool),projects);
+ });
+});
+run('hidden project mutation through a test trigger in own TX is rolled back',async t=>{
+ const f=await fixture(t);
+ // Source-side trigger is outside the two DELETE targets. It hides a nested
+ // project write from DELETE/RETURNING; the independent xact-stat gate sees it.
+ await f.pool.query("CREATE FUNCTION hidden_project_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE code_files SET value='trigger mutation' WHERE id='keep'; RETURN NEW; END $$");
+ await f.pool.query("CREATE TRIGGER hidden_project_write AFTER UPDATE ON reverse_dateien FOR EACH ROW EXECUTE FUNCTION hidden_project_write()");
+ const m=await f.make(),before=await f.counts(),projects=await projectSentinel(f.pool);
+ const sources=(await f.pool.query('SELECT * FROM reverse_dateien ORDER BY id')).rows;
+ await assert.rejects(applyManifest(f.pool,{...m,afterDelete:({db})=>db.query("UPDATE reverse_dateien SET pfad=pfad WHERE id=1")}),/f3_tx_fremdmutation/);
+ assert.deepEqual(await f.counts(),before);assert.deepEqual(await projectSentinel(f.pool),projects);
+ assert.deepEqual((await f.pool.query('SELECT * FROM reverse_dateien ORDER BY id')).rows,sources);
+});
+run('TX guard checks ALL schemas by exact relation OIDs, including a foreign-schema project table',async t=>{
+ const f=await fixture(t),other='foreign_'+randomUUID().replaceAll('-','');f.extraSchemas.push(other);
+ await f.admin.query('CREATE SCHEMA "'+other+'"');
+ await f.admin.query('CREATE TABLE "'+other+'".code_files(id text PRIMARY KEY)');
+ const m=await f.make(),before=await f.counts();
+ await assert.rejects(applyManifest(f.pool,{...m,afterDelete:({db})=>db.query('INSERT INTO "'+other+'".code_files VALUES(\'hidden\')')}),/f3_tx_fremdmutation/);
+ assert.deepEqual(await f.counts(),before);
+ assert.equal((await f.admin.query('SELECT count(*)::text AS n FROM "'+other+'".code_files')).rows[0].n,'0');
+});
+run('TX DELTA requires exact deletes/journal; missing, negative/reset counters and query failures stop',async t=>{
+ for(const kind of ['delete','journal','missing','negative','query_failure'])await t.test(kind,async t=>{
+  const f=await fixture(t),m=await f.make(),before=await f.counts(),reads=new WeakMap();
+  const pool=mappedPool(f.pool,async(c,q,args)=>{
+   const text=typeof q==='string'?q:q.text;
+   if(text.includes('FROM pg_catalog.pg_stat_xact_all_tables')){
+    const count=(reads.get(c)??0)+1;reads.set(c,count);
+    if(count>1&&kind==='query_failure')throw Object.assign(Error('not exposed'),{code:'42501'});
+    const result=await c.query(q,...args);
+    const name=kind==='journal'?'reverse_f3_bereinigungs_batches':'reverse_code_symbole';
+    const oid=(await c.query('SELECT $1::regclass::oid::text AS oid',[name])).rows[0].oid;
+    if(count===1)return kind==='negative'?{...result,rows:result.rows.map(r=>r.oid!==oid?r:{...r,del:'1000000000'})}:result;
+    if(kind==='missing')return {...result,rows:result.rows.filter(r=>r.oid!==oid)};
+    return {...result,rows:result.rows.map(r=>r.oid!==oid?r:{...r,...(kind==='delete'?{del:String(BigInt(r.del)+1n)}:kind==='journal'?{ins:'0'}:{})})};
+   }
+   return c.query(q,...args);
+  });
+  await assert.rejects(applyManifest(pool,m),e=>kind==='query_failure'
+   ?failureDiagnostic(e).pg_code==='42501'&&failureDiagnostic(e).phase==='tx_schutz'
+   :e.message==='f3_tx_delta_abweichung');
+  assert.deepEqual(await f.counts(),before);
+ });
+});
+run('deferred trigger writes are forced BEFORE the final xact-stat check',async t=>{
+ const f=await fixture(t);
+ await f.pool.query("CREATE FUNCTION deferred_project_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE code_files SET value='deferred mutation' WHERE id='keep'; RETURN NEW; END $$");
+ await f.pool.query("CREATE CONSTRAINT TRIGGER deferred_project_write AFTER UPDATE ON reverse_dateien DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION deferred_project_write()");
+ const m=await f.make(),before=await f.counts(),projects=await projectSentinel(f.pool);
+ await assert.rejects(applyManifest(f.pool,{...m,afterDelete:({db})=>db.query("UPDATE reverse_dateien SET pfad=pfad WHERE id=1")}),/f3_tx_fremdmutation/);
+ assert.deepEqual(await f.counts(),before);assert.deepEqual(await projectSentinel(f.pool),projects);
+});
+
+run('informational sentinel timeout never masks a later hard TX violation',async t=>{
+ const f=await fixture(t),m=await f.make(),before=await f.counts();
+ const pool=injectedPool(f.pool,text=>text==="SELECT current_setting('statement_timeout') AS v"
+  ?Object.assign(Error('not exposed'),{code:'57014'}):null);
+ // injectedPool throws its Error result; outer mutation diagnostics must stay independent.
+ await assert.rejects(applyManifest(pool,{...m,afterDelete:({db})=>db.query("UPDATE code_files SET value='own forbidden mutation'")}),
+  e=>e.message==='f3_tx_fremdmutation'&&failureDiagnostic(e).phase==='tx_schutz'&&failureDiagnostic(e).pg_code===undefined);
+ assert.deepEqual(await f.counts(),before);
+});
+
+run('unavailable informational full sentinel is reported, not a mutation gate',async t=>{
+ const f=await fixture(t),m=await f.make(),information=[];
+ const pool=injectedPool(f.pool,text=>text==="SELECT current_setting('statement_timeout') AS v"
+  ?Object.assign(Error('private payload is never reported'),{code:'57014'}):null);
+ const result=await applyManifest(pool,{...m,onInformation:x=>information.push(x)});
+ assert.equal(result.status,'fertig');assert.equal(result.projektbilanz.start_zu_ende.nicht_vergleichbar,true);
+ assert.equal(result.projektbilanz.start.diagnose.pg_code,'57014');
+ assert.equal(result.projektbilanz.ende.diagnose.pg_code,'57014');
+ assert.deepEqual(information.map(x=>x.zeitpunkt),['start','ende']);
+ assert.equal(JSON.stringify(result).includes('private payload'),false);
+ assert.equal((await f.counts()).symbols.length,0);
+});
+
+run('multiple apply batches, rollback retry and resume each open/end a distinct dedicated backend',async t=>{
+ const f=await fixture(t,{rows:2,symbols:8}),m=await f.make(),pids=[],ended=[];
+ const pool={options:f.pool.options,connect:()=>f.pool.connect(),connectFresh:async()=>{
+  const c=await openBatchConnection(f.pool.options);
+  const pid=(await c.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;pids.push(pid);
+  return {query:(...args)=>c.query(...args),end:async()=>{await c.end();ended.push(pid);}};
+ }};
+ const before=await f.counts();
+ await assert.rejects(applyManifest(pool,{...m,afterDelete:()=>{throw Error('rollback probe');}}),/rollback probe/);
+ assert.deepEqual(await f.counts(),before);
+ await assert.rejects(applyManifest(pool,{...m,afterCommit:()=>{throw Error('lost ACK');}}),/lost ACK/);
+ const result=await applyManifest(pool,m);assert.equal(result.status,'fertig');assert.equal(result.resumed_batches,1);
+ assert.equal((await applyManifest(pool,m)).committed_batches,0);
+ assert.ok(pids.length>10);assert.equal(new Set(pids).size,pids.length);
+ assert.deepEqual(ended,pids);assert.equal((await f.counts()).symbols.length,0);
+});
+run('real guard DELTA remains correct across COMMIT/ROLLBACK/retry on the SAME backend',async t=>{
+ const f=await fixture(t),c=await openBatchConnection(f.pool.options);
+ try{
+ // Prior committed work may still be in the backend's pending counters.
+ await c.query("UPDATE code_files SET value='historical committed write'");
+ const perform=async(id,batch,commit)=>{
+  await c.query('BEGIN');
+  const baseline=await transactionSnapshot(c);
+  await c.query('DELETE FROM reverse_code_symbole WHERE id=$1',[id]);
+  await c.query("INSERT INTO reverse_f3_bereinigungs_batches(eintrag_id,manifest_sha256,batch_nr,batch_sha256,ops,delta,backup_beleg,projekt_sentinel_sha256,einstellungen_revision) VALUES($1,$2,$3,$2,'[]','{}','own-backup',$2,$2)",[ENTRY,'d'.repeat(64),batch]);
+  await transactionGuard(c,[{kind:'symbol'}],baseline);
+  await c.query(commit?'COMMIT':'ROLLBACK');
+ };
+ await perform('a-00000',0,true);await perform('a-00001',1,true);
+ await perform('a-00002',2,false);
+ assert.equal((await f.counts()).evidence,'2');assert.equal((await f.counts()).symbols.length,1);
+ await perform('a-00002',2,true);
+ assert.equal((await f.counts()).evidence,'3');assert.equal((await f.counts()).symbols.length,0);
+ assert.equal((await f.pool.query("SELECT value FROM code_files WHERE id='keep'")).rows[0].value,'historical committed write');
+ }finally{await c.query('ROLLBACK').catch(()=>{});await c.end();}
+});
+run('hidden TRUNCATE/DDL functions roll back before COMMIT; project data and journal survive',async t=>{
+ for(const command of ['TRUNCATE code_files','CREATE TABLE hidden_ddl(id text)'])await t.test(command,async t=>{
+  const f=await fixture(t);
+  await f.pool.query("CREATE FUNCTION hidden_sql() RETURNS void LANGUAGE plpgsql AS $$ BEGIN "+command+"; END $$");
+  const m=await f.make(),before=await f.counts(),projects=await projectSentinel(f.pool);
+  await assert.rejects(applyManifest(f.pool,{...m,afterDelete:({db})=>db.query('SELECT hidden_sql()')}),
+   e=>['f3_tx_fremdmutation','f3_tx_lock_unerlaubt','f3_tx_delta_abweichung'].includes(e.message)&&e.committed_batches===0);
+  assert.deepEqual(await f.counts(),before);assert.deepEqual(await projectSentinel(f.pool),projects);
+  assert.equal((await f.pool.query("SELECT to_regclass(format('%I.hidden_ddl',current_schema())) AS t")).rows[0].t,null);
+ });
+});
+run('writing project lock alone is forbidden even when every tuple delta is zero',async t=>{
+ const f=await fixture(t),m=await f.make(),before=await f.counts();
+ await assert.rejects(applyManifest(f.pool,{...m,afterDelete:({db})=>db.query('LOCK TABLE code_files IN SHARE MODE')}),
+  e=>{
+   const d=failureDiagnostic(e);
+   assert.equal(e.message,'f3_tx_lock_unerlaubt');assert.equal(d.phase,'tx_locks');
+   assert.equal(d.lock.relname,'code_files');assert.equal(d.lock.schema,f.schema);
+   assert.match(d.lock.oid,/^[0-9]+$/);assert.equal(d.lock.relkind,'r');assert.equal(d.lock.lockmode,'ShareLock');
+   assert.deepEqual(d.lock.erwartet,{ziel:false,closure:false,journal:false,index:false,toast:false});
+   return true;
+  });
+ assert.deepEqual(await f.counts(),before);
+});
+run('AccessShare/RowShare project locks are permitted without project mutation',async t=>{
+ const f=await fixture(t),m=await f.make();
+ const result=await applyManifest(f.pool,{...m,afterDelete:({db})=>db.query("SELECT * FROM code_files WHERE id='keep' FOR UPDATE")});
+ assert.equal(result.status,'fertig');assert.equal(result.projektbilanz.start_zu_ende.geaendert,false);
+});
+run('only exact target-parent TOAST writes are permitted; foreign TOAST writes stop',async t=>{
+ const f=await fixture(t),value=randomBytes(6000).toString('hex');
+ await f.pool.query("UPDATE reverse_code_symbole SET value=$1 WHERE id='a-00000'",[value]);
+ await f.pool.query("UPDATE reverse_code_dateien SET content=$1 WHERE id='a'",[value]);
+ assert.ok((await f.pool.query("SELECT pg_column_size(value) AS n FROM reverse_code_symbole WHERE id='a-00000'")).rows[0].n>2000);
+ const m=await f.make();assert.equal((await applyManifest(f.pool,m)).status,'fertig');
+ assert.equal((await f.counts()).symbols.length,0);
+ const g=await fixture(t),n=await g.make(),before=await g.counts();
+ await assert.rejects(applyManifest(g.pool,{...n,afterDelete:({db})=>db.query("UPDATE code_files SET value=$1 WHERE id='keep'",[value])}),/f3_tx_fremdmutation/);
+ assert.deepEqual(await g.counts(),before);
+ assert.equal((await g.pool.query("SELECT value FROM code_files WHERE id='keep'")).rows[0].value,'unchanged');
+});
+run('unreviewed rule, RLS policy/flag and non-system journal trigger stop before mutation',async t=>{
+ const cases=[
+  ["CREATE RULE hidden_rule AS ON DELETE TO reverse_code_symbole DO INSTEAD NOTHING",'f3_regel_unbekannt'],
+  ["CREATE POLICY hidden_policy ON reverse_code_dateien USING (true)",'f3_rls_unbekannt'],
+  ["ALTER TABLE reverse_code_dateien ENABLE ROW LEVEL SECURITY",'f3_rls_unbekannt'],
+  ["CREATE RULE hidden_journal AS ON INSERT TO reverse_f3_bereinigungs_batches DO INSTEAD NOTHING",'f3_regel_unbekannt'],
+  ["CREATE FUNCTION hidden_trigger() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$; CREATE TRIGGER hidden_trigger BEFORE INSERT ON reverse_f3_bereinigungs_batches FOR EACH ROW EXECUTE FUNCTION hidden_trigger()",'f3_journal_nebenwirkung']
+ ];
+ for(let i=0;i<cases.length;i++)await t.test(String(i),async t=>{
+  const f=await fixture(t),m=await f.make(),before=await f.counts(),[sql,code]=cases[i];
+  await f.pool.query(sql);
+  await assert.rejects(applyManifest(f.pool,m),new RegExp(code));
+  assert.deepEqual(await f.counts(),before);
+ });
+});
+
+run('journal TOAST chunks are allowed only via its exact parent OID',async t=>{
+ const f=await fixture(t),c=await openBatchConnection(f.pool.options);
+ try{
+ await c.query('BEGIN');const baseline=await transactionSnapshot(c);
+ const payload=JSON.stringify([{own_fixture:randomBytes(12000).toString('hex')}]);
+ await c.query("INSERT INTO reverse_f3_bereinigungs_batches(eintrag_id,manifest_sha256,batch_nr,batch_sha256,ops,delta,backup_beleg,projekt_sentinel_sha256,einstellungen_revision) VALUES($1,$2,0,$2,$3,'{}','own-backup',$2,$2)",[ENTRY,'c'.repeat(64),payload]);
+ assert.ok((await c.query('SELECT pg_column_size(ops) AS n FROM reverse_f3_bereinigungs_batches')).rows[0].n>2000);
+ await transactionGuard(c,[],baseline);await c.query('COMMIT');
+ assert.equal((await f.counts()).evidence,'1');
+ }finally{await c.query('ROLLBACK').catch(()=>{});await c.end();}
 });
