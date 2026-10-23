@@ -39,3 +39,23 @@ test('T105: Diagnose Job+Attempt+Generation; Entstörer-CAS und Readerinstanz bl
   assert.equal((await f.row(b.instance_id)).state,'stopping');assert.equal((await f.row(rb.instance_id)).state,'warm');
  }finally{unhook?.();await f.close();}
 });
+
+
+test('T105 Nachtrag: Reverse-Diagnose zeigt Recovery-Grund und historische Restmarker',async()=>{
+ const f=await fixture();try{
+  await f.db.query("CREATE TABLE reverse_auftraege(id uuid,eintrag_id text,schicht text,status text,fehlercode text,p20_auftrag_id uuid,versuch int,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now())");
+  const pending=await f.newJob({state:'pending',attempt:0}),old=await f.newJob(),b=await f.instance();
+  await f.db.query("UPDATE work_jobs SET state='failed',resource_unconfirmed=true,error_code='alt_unbestaetigt' WHERE id=$1",[old.id]);
+  await f.run(old,{...b,generation:randomUUID()},'unknown');
+  const r=new ReverseContainerRecovery({pool:f.db,ready:()=>false,identity:async()=>f.who,claimIdentity:()=>f.who});
+  assert.equal(await r.before('reverse-e',pending.id),false);
+  const diag=await mitLesePool(f.db,()=>core.diagnoseReverse({pool:f.db}));
+  const instanz=diag.container.instanzen.find(x=>x.instance_id===b.instance_id);
+  const grund=JSON.parse(instanz.letzter_fehler);
+  assert.equal(grund.grund,'reverse_runner_nicht_angebunden');
+  assert.equal(grund.ruhe.terminale_marker,'1');assert.equal(grund.ruhe.alte_runs_offen,'1');
+  assert.equal(instanz.runs_unbekannt,0,'alte Runs bleiben sichtbar, sperren aber nicht die neue Generation');
+  const marker=(await f.db.query('SELECT state,resource_unconfirmed,error_code FROM work_jobs WHERE id=$1',[old.id])).rows[0];
+  assert.deepEqual(marker,{state:'failed',resource_unconfirmed:true,error_code:'alt_unbestaetigt'});
+ }finally{await f.close();}
+});

@@ -80,16 +80,77 @@ export function dockerFake(){
  return {docker,calls,containers,setWriteMode:m=>{writeMode=m;}};
 }
 
+
+/** Echte PG-Recovery + unveränderter Lifecycle, nur Docker ist eine Attrappe. */
+async function altlastRecovery(f,job,instanceId,alterRunUnklar=false){
+ const fake=dockerFake(),b=await f.row(instanceId),d=await f.descriptor();
+ const cfg={docker:fake.docker,binding:async(id,j)=>recovery.binding(id,j),stopSeconds:async()=>1};
+ let recovery,lc;
+ const oldTransport=new ReverseContainerTransport(cfg);
+ const started=await oldTransport.start(d,{instance_id:instanceId,generation:b.generation,project,job_id:null,warmup_job_id:randomUUID(),name:'old-api-session',isCurrent:async()=>true});
+ await f.db.query('UPDATE tool_containers SET container_id=$2 WHERE instance_id=$1',[instanceId,started.id]);
+ // API-Neustart: Container bleibt, lokaler Transport ist neu.
+ const transport=new ReverseContainerTransport(cfg);
+ const txRows=[],txBytes=[];
+ const pool={get totalCount(){return f.db.totalCount;},get idleCount(){return f.db.idleCount;},get waitingCount(){return f.db.waitingCount;},
+  query:(...a)=>f.db.query(...a),connect:async()=>{
+   const c=await f.db.connect();let rows=0,bytes=0;
+   return {release:()=>c.release(),query:async(...a)=>{const sql=String(a[0]);if(sql==='BEGIN'){rows=0;bytes=0;}
+    const out=await c.query(...a);if(/^\s*(UPDATE|INSERT|DELETE)/i.test(sql)){rows+=out.rowCount??0;bytes+=Buffer.byteLength(JSON.stringify(a[1]??[]));}
+    if(sql==='COMMIT'){txRows.push(rows);txBytes.push(bytes);}return out;}};
+  }};
+ recovery=new ReverseContainerRecovery({pool,ready:x=>transport.ready(x),identity:async()=>f.who,claimIdentity:()=>f.who});
+ const oldGeneration=randomUUID(),oldIds=[];
+ for(const [state,generation,runState] of [['failed',oldGeneration,alterRunUnklar?'unknown':'done'],['cancelled',oldGeneration,'done'],['completed',b.generation,'done']]){
+  const j=await f.newJob();
+  await f.db.query("UPDATE work_jobs SET state=$2,output_ref=input_ref,resource_unconfirmed=true,error_code='historische_fixture',completed_at=now() WHERE id=$1",[j.id,state]);
+  await f.run(j,{...b,generation},runState);oldIds.push(j.id);
+ }
+ const snapshot=async()=>({
+  jobs:(await f.db.query('SELECT * FROM work_jobs WHERE id=ANY($1::uuid[]) ORDER BY id',[oldIds])).rows,
+  runs:(await f.db.query('SELECT * FROM tool_container_runs WHERE instance_id=$1 AND generation=$2 ORDER BY job_id',[instanceId,oldGeneration])).rows
+ });
+ const before=await snapshot();
+ assert.equal(transport.ready({...b,container_id:started.id}),false);
+ assert.equal(await recovery.allow(job,f.db),false);
+ assert.equal(await recovery.before('reverse-e',job.id),false);
+ const reserved=await f.row(instanceId),diag=JSON.parse(reserved.last_error);
+ assert.equal(reserved.state,'stopping');assert.equal(diag.ruhe.terminale_marker,'3');assert.equal(diag.ruhe.alte_runs_offen,alterRunUnklar?'1':'0');
+ assert.equal(diag.ruhe.aktive_runs,'0');assert.equal(diag.ruhe.offene_jobs,'0');
+ assert.equal(recovery.beforeGrund('reverse-e',job.id),'stopping');
+ assert.deepEqual(await snapshot(),before,'Recovery verändert keine alten Marker/Runs');
+ assert.ok(txRows.length>0&&txRows.every(n=>n<=1),JSON.stringify(txRows));
+ const budget=core.reverseBigInt(await core.leseReverseEinstellwerte({},f.db),'materialisierung_tx_bytes');
+ assert.ok(txBytes.every(n=>BigInt(n)<=budget));
+ try{
+  let released=0;
+  lc=new ToolLifecycle({pool:f.db,executor:transport,resources:{acquire:async()=> 'new-fixture-resource',release:async()=>{released++;}},registerGuards:false});
+  await lc.tick();
+  assert.equal((await f.row(instanceId)).state,'cold');assert.equal(released,1);assert.equal(fake.calls.stop,1);
+  assert.deepEqual(await snapshot(),before,'Lifecycle bestätigt keine terminalen Altmarker oder Runs alter Generationen');
+  assert.equal(await recovery.before('reverse-e',job.id),true);
+  await lc.wake('reverse-e',project,job.id);
+  const next=await f.row(instanceId);
+  assert.equal(next.state,'warm');assert.notEqual(next.generation,b.generation);
+  assert.equal(transport.ready(next),true);assert.equal(await recovery.before('reverse-e',job.id),true);
+  assert.equal(await recovery.allow(job,f.db),true);
+  assert.equal(recovery.beforeGrund('reverse-e',job.id),undefined);
+  return {transport,evidence:{oldGeneration:b.generation,newGeneration:next.generation,oldIds,diag,txRows,txBytes,stop:fake.calls.stop,start:fake.calls.start},
+   verify:async()=>assert.deepEqual(await snapshot(),before,'alte Endmarker bleiben nach echtem Claim bytegleich'),
+   close:()=>{for(const x of new Set(fake.containers.values()))x.stream.destroy();}};
+ }finally{lc?.close();}
+}
+
 /** Realer Provider + ServerExecutor.refresh + P20.claim, nur die Registrierung ist vorab gefixt.
  * Während der Messung arbeiten exakt A/B; Docker/Hostmessung brauchen keine echte Nutzlast. */
-export async function claimParallelProbe(t,{tool='reverse-e',kind,negativ=false,fehlenderSnapshot=false,resume=false}={}){
+export async function claimParallelProbe(t,{tool='reverse-e',kind,negativ=false,fehlenderSnapshot=false,resume=false,altlast=false,alterRunUnklar=false}={}){
  const {AsyncLocalStorage}=await import('node:async_hooks');
  const {setTimeout:pause}=await import('node:timers/promises');
  const {createHash}=await import('node:crypto');
  const {ServerExecutor}=await import('../dist/services/server-executor.js');
  const {reverseServerIdentitaet}=await import('../dist/services/reverse-executor.js');
  const {mitLesePool}=await import('../../core/dist/db/client.js');
- const f=await fixture();let a,b,lc,unregister,refreshPending;
+ const f=await fixture();let a,b,lc,unregister,refreshPending,recovered;
  const envKeys=['SYNAPSE_COMPUTE_RESOURCE_BINDINGS','SYNAPSE_COMPUTE_ADMISSION','SYNAPSE_COMPUTE_POLICY'];
  const oldEnv=Object.fromEntries(envKeys.map(k=>[k,process.env[k]]));
  const guardContext=new AsyncLocalStorage();
@@ -105,6 +166,7 @@ export async function claimParallelProbe(t,{tool='reverse-e',kind,negativ=false,
   const job=await f.newJob({tool,kind,state:'pending',attempt:0});
   const instanceId=createHash('sha256').update(tool+'\0'+project+'\0'+(tool==='reverse-leser'?job.id:'project')).digest('hex');
   await f.instance(job,{tool,id:instanceId});
+  if(altlast){recovered=await altlastRecovery(f,job,instanceId,alterRunUnklar);evidence.recovery=recovered.evidence;}
   if(tool==='reverse-leser')await f.db.query("INSERT INTO reverse_leser_laeufe(id,work_job_id,diagnose) VALUES($1,$2,$3)",[randomUUID(),job.id,resume?{host_validiert:true}:{transport:{phase:'vorbereitung'}}]);
   const foreign=await f.jobs.enqueue({kind:'test-normal',capability:'test-normal',project:'t105-project',scope:'test',
    inputRef:{scope:'test',id:'synthetic',revision:'1',sha256:'d'.repeat(64)},resourceNeed:{cpu:1,ram:32,vram:0,gpu:false},idempotencyKey:randomUUID()});
@@ -143,7 +205,7 @@ export async function claimParallelProbe(t,{tool='reverse-e',kind,negativ=false,
   const provider=reverseServerIdentitaet({},server);
   assert.equal(provider.snapshot(),null);
   if(!fehlenderSnapshot){assert.deepEqual(await provider(),f.who);assert.equal(Object.isFrozen(provider.snapshot()),true);}
-  const guard=new ReverseContainerRecovery({pool:forbiddenPool,identity:provider,claimIdentity:provider.snapshot,ready:()=>!resume});
+  const guard=new ReverseContainerRecovery({pool:forbiddenPool,identity:provider,claimIdentity:provider.snapshot,ready:x=>recovered?recovered.transport.ready(x):!resume});
   lc=new ToolLifecycle({pool:poolA,executor:{},registerGuards:true});
   const allow=guard.allow.bind(guard);let first=true,blockedRefresh=false,parallelBarrier=null;
   guard.allow=async(j,c)=>{
@@ -190,10 +252,18 @@ export async function claimParallelProbe(t,{tool='reverse-e',kind,negativ=false,
    inputStillCurrent:async()=>true,outputIsStaged:async()=>true});
   const claims=await service(poolA).claim(f.who,{limit:1});
   if(refreshPending)await refreshPending;
-  assert.equal(claims.length,negativ||fehlenderSnapshot?0:1);
+  assert.equal(claims.length,negativ||fehlenderSnapshot||alterRunUnklar?0:1);
   if(claims.length){assert.equal(claims[0].id,job.id);assert.equal(claims[0].attempt,1);}
   const next=await service(poolB).claim(other,{limit:1});
   assert.equal(next[0]?.id,foreign.id,'echter Nicht-Reverse-Claim nach Freigabe globaler Claimlocks');
+  if(alterRunUnklar){
+   // Zusätzlicher P20-Bestandbefund: generischer Guard zählt unknown ohne Generation.
+   // Kein Bestätigen/Umgehen im Reverse-Fix; keine Assertion des positiven Live-Falls abschwächen.
+   assert.equal(claims.length,0);assert.equal(next.length,1);assert.equal(evidence.guardSelects,0);
+   await recovered.verify();
+   t.diagnostic('T105 zusätzliche P20-Negativprobe '+JSON.stringify({...evidence,reverseClaims:0,nonReverseClaims:1}));
+   return;
+  }
   // Zweite echte Parallelrunde: A/B claimen überlappend, gleicher allgemeiner Lifecycle-Guard.
   const more=await service(poolA).enqueue({kind:'test-normal',capability:'test-normal',project:'t105-project',scope:'test',
    inputRef:{scope:'test',id:'next',revision:'1',sha256:'e'.repeat(64)},resourceNeed:{cpu:1,ram:32,vram:0,gpu:false},idempotencyKey:randomUUID()});
@@ -219,9 +289,10 @@ export async function claimParallelProbe(t,{tool='reverse-e',kind,negativ=false,
   assert.deepEqual(residual,[]);
   assert.equal(evidence.guardWrites,0);assert.equal(evidence.guardSecondConnections,0);
   evidence.reverseClaims=claims.length;evidence.nonReverseClaims=next.length+parallel.length;evidence.residual=residual;
+  await recovered?.verify();
   t.diagnostic('T105 echte PG-Probe '+JSON.stringify(evidence));
  }finally{
-  unregister?.();lc?.close();
+  unregister?.();lc?.close();recovered?.close();
   // Auch Negativkontrollen verlassen keine offenen Transaktionen.
   if(a)await a.query('ROLLBACK').catch(()=>{});
   if(refreshPending)await refreshPending.catch(()=>{});
@@ -233,6 +304,52 @@ export async function claimParallelProbe(t,{tool='reverse-e',kind,negativ=false,
 }
 
 if(process.argv[1]===fileURLToPath(import.meta.url)){
+
+test('T105 Nachtrag: Altlast -> Recovery -> Lifecycle -> neue Generation -> echter Parallelclaim',{timeout:20000},t=>claimParallelProbe(t,{altlast:true}));
+test('T105 Abgrenzung: alter unknown-Run sperrt im unveränderten P20, Nicht-Reverse läuft',{timeout:20000},t=>claimParallelProbe(t,{altlast:true,alterRunUnklar:true}));
+
+test('T105 Nachtrag: aktuelle Runs/offene Jobs bleiben gesperrt, Diagnose und TX1',{timeout:20000},async t=>{
+ const f=await fixture();const warning=console.warn,logs=[];let c;
+ try{
+  console.warn=(...a)=>{if(a[0]==='[reverse-recovery]')logs.push(a);else warning(...a);};
+  const pending=await f.newJob({state:'pending',attempt:0}),b=await f.instance();
+  const old=await f.newJob();await f.db.query("UPDATE work_jobs SET state='failed',resource_unconfirmed=true WHERE id=$1",[old.id]);
+  await f.run(old,{...b,generation:randomUUID()},'unknown');
+  const current=await f.newJob();await f.run(current,b,'running');
+  c=await f.db.connect();const query=c.query.bind(c),rows=[],bytes=[];let mutations=0,txBytes=0;
+  c.connect=()=>{throw Error('B1 reconnect');};
+  c.query=async(...a)=>{const sql=String(a[0]);const out=await query(...a);
+   if(/^\s*(UPDATE|INSERT|DELETE)/i.test(sql)){mutations+=out.rowCount??0;txBytes+=Buffer.byteLength(JSON.stringify(a[1]??[]));}return out;};
+  const r=new ReverseContainerRecovery({pool:c,ready:()=>false,identity:async()=>f.who,claimIdentity:()=>f.who});
+  const step=async()=>{await query('BEGIN');mutations=0;txBytes=0;
+   try{assert.equal(await r.before('reverse-e',pending.id),false);await query('COMMIT');rows.push(mutations);bytes.push(txBytes);}
+   catch(e){await query('ROLLBACK');throw e;}
+   return JSON.parse((await f.row(b.instance_id)).last_error);
+  };
+  const active=await step();assert.equal(active.grund,'reverse_ende_unbestaetigt');assert.equal(active.ruhe.aktive_runs,'1');assert.equal(active.ruhe.offene_jobs,'1');
+  const stamp=(await f.row(b.instance_id)).updated_at,logCount=logs.length;await step();
+  assert.deepEqual((await f.row(b.instance_id)).updated_at,stamp);assert.equal(logs.length,logCount,'kein Poll-Logspam');assert.equal(rows.at(-1),0);
+  await f.db.query("UPDATE work_jobs SET state='completed',output_ref=input_ref,resource_unconfirmed=true WHERE id=$1",[current.id]);
+  await f.db.query("UPDATE tool_container_runs SET state='unknown' WHERE job_id=$1",[current.id]);
+  const unknown=await step();assert.equal(unknown.ruhe.aktive_runs,'1');assert.equal(unknown.ruhe.aktuelle_enden_offen,'1');
+  await f.db.query("UPDATE tool_container_runs SET state='done' WHERE job_id=$1",[current.id]);
+  for(const state of ['pending','leased','staged']){
+   await f.db.query("UPDATE work_jobs SET state=$2,staged_output_ref=input_ref,resource_unconfirmed=true WHERE id=$1",[current.id,state]);
+   const blocked=await step();assert.equal(blocked.ruhe.offene_jobs,'1');assert.equal((await f.row(b.instance_id)).state,'warm');
+  }
+  assert.equal(r.beforeGrund('reverse-e',pending.id),'reverse_ende_unbestaetigt');
+  // Echter Executor-Durchlauf muss den Vor-Claim-Grund zurückgeben (sonstige Arbeit ersetzt).
+  const {ReverseExecutor}=await import('../dist/services/reverse-executor.js');
+  const executor=Object.assign(Object.create(ReverseExecutor.prototype),{beendet:false,eingerichtet:true,k:{parallel:1,kinds:['reverse-E'],leaseSeconds:60},
+   laufend:new Map(),altScope:false,pool:{query:async()=>({rows:[{id:pending.id}]})},deps:{lifecycle:()=>({wake:()=>assert.fail('gesperrt')}),identitaet:async()=>f.who,recovery:r},
+   jobs:{get:async()=>pending,claim:async()=>[]},raeumeArbeitAuf:async()=>0,policyPruefen:async()=>{}});
+  const result=await executor.durchlauf();assert.equal(result.hinweis,'reverse_ende_unbestaetigt');assert.equal(result.gestartet,0);
+  const budget=core.reverseBigInt(await core.leseReverseEinstellwerte({},f.db),'materialisierung_tx_bytes');
+  assert.ok(rows.every(n=>n<=1));assert.ok(bytes.every(n=>BigInt(n)<=budget));
+  assert.ok(logs.every(x=>!x[1].includes('historische_fixture')&&!x[1].includes('t105-auth')));
+  t.diagnostic(JSON.stringify({txRows:rows,txBytes:bytes,grund:result.hinweis,logs:logs.length}));
+ }finally{console.warn=warning;if(c){await c.query('ROLLBACK').catch(()=>{});c.release();}await f.close();}
+});
 
 for(const kind of ['reverse-E','reverse-S3'])test('T105: echter Claim/Guard gegen parallelen Refresh '+kind,{timeout:15000},t=>claimParallelProbe(t,{kind}));
 test('T105: begrenzte Negativkontrolle alter Claim->Refresh-Wartepfad',{timeout:15000},t=>claimParallelProbe(t,{negativ:true}));

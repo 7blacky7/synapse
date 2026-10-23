@@ -454,9 +454,9 @@ export class ReverseExecutor {
   const freigegeben:typeof offen=[];
   for(const row of offen){const job=await this.jobs.get(String(row.id),REVERSE_PROJEKT);if(!job)continue;
    try{await this.policyPruefen(job);freigegeben.push(row);}catch(e){if(!istReversePolicyFehler(e))throw e;await this.policyHalten(job,this.wer,e.code);}}
-  let geweckt=0;
+  let geweckt=0,recoveryHinweis:string|undefined;
   // P18-T64: der globale Container wird einmal geweckt; nur der alte Descriptor braucht einen Container je Auftrag.
-  for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{if(this.deps.recovery&&!await this.deps.recovery.before(REVERSE_TOOL_ID,String(row.id)))continue;await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
+  for(const row of this.altScope?freigegeben:freigegeben.slice(0,1)){try{if(this.deps.recovery&&!await this.deps.recovery.before(REVERSE_TOOL_ID,String(row.id))){recoveryHinweis=this.deps.recovery.beforeGrund(REVERSE_TOOL_ID,String(row.id));continue;}await lc.wake(REVERSE_TOOL_ID,REVERSE_PROJEKT,String(row.id));geweckt++;}catch(e){console.error('[reverse-executor] Wecken fehlgeschlagen:',(e as Error).message);}}
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:this.k.leaseSeconds});
   const wer=this.wer;
   for(const job of claims){
@@ -464,7 +464,7 @@ export class ReverseExecutor {
     .finally(()=>{this.laufend.delete(job.id);});
    this.laufend.set(job.id,lauf);
   }
-  return {geprueft:true,geweckt,gestartet:claims.length};
+  return {geprueft:true,geweckt,gestartet:claims.length,...(recoveryHinweis?{hinweis:recoveryHinweis}:{})};
  }
  /** K3: Arbeitsordner ohne offenen Auftrag (verlorene Lease, Abbruch) entfernen. */
  async raeumeArbeitAuf():Promise<number>{

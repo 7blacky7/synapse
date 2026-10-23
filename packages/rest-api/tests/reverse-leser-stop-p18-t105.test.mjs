@@ -78,3 +78,30 @@ test('T105: Stop-Wartefrist/Generationwechsel geben keinen falschen Endbeleg, Cr
   assert.equal(await resumed.allow(job,f.db),true,'bestehender Hostvalidierungsresume braucht keine neue lokale Session');
  }finally{await f.close();}
 });
+
+
+test('T105 Nachtrag: jobgebundene terminale Marker ohne done bleiben gesperrt',async()=>{
+ const f=await fixture();try{
+  const j=await f.newJob({tool:'reverse-leser'}),b=await f.instance(j,{tool:'reverse-leser'});
+  await f.db.query("UPDATE work_jobs SET state='failed',resource_unconfirmed=true WHERE id=$1",[j.id]);
+  const old=await f.newJob({tool:'reverse-leser'});
+  await f.db.query("UPDATE work_jobs SET state='failed',resource_unconfirmed=true WHERE id=$1",[old.id]);
+  const fremd=await f.instance(old,{tool:'reverse-leser'});await f.run(old,fremd,'unknown');
+  const snapshot=async()=>(await f.db.query('SELECT * FROM work_jobs WHERE id=ANY($1::uuid[]) ORDER BY id',[[j.id,old.id]])).rows;
+  const before=await snapshot();
+  const r=new ReverseContainerRecovery({pool:f.db,ready:()=>false,identity:async()=>f.who,claimIdentity:()=>f.who});
+  assert.equal(await r.before('reverse-leser',j.id),false);
+  assert.equal((await f.row(b.instance_id)).state,'warm');
+  let diag=JSON.parse((await f.row(b.instance_id)).last_error);
+  assert.equal(diag.grund,'reverse_ende_unbestaetigt');assert.equal(diag.ruhe.aktuelle_enden_offen,'1');
+  assert.equal(diag.ruhe.terminale_marker,'1','fremde Leserinstanz nicht eingemischt');
+  await f.run(j,{...b,generation:randomUUID()},'done');
+  assert.equal(await r.before('reverse-leser',j.id),false);
+  assert.equal((await f.row(b.instance_id)).state,'warm','done aus alter Generation reicht nicht');
+  await f.db.query('UPDATE tool_container_runs SET generation=$2 WHERE job_id=$1',[j.id,b.generation]);
+  assert.equal(await r.before('reverse-leser',j.id),false);
+  assert.equal((await f.row(b.instance_id)).state,'stopping','nur aktueller done-Beleg erlaubt Recovery');
+  assert.equal((await f.row(fremd.instance_id)).state,'warm');
+  assert.deepEqual(await snapshot(),before,'kein stilles Bestätigen alter Jobmarker');
+ }finally{await f.close();}
+});

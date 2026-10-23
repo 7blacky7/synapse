@@ -11,11 +11,44 @@ type Db=Pool|PoolClient|Client;
 type Query=Pick<PoolClient,'query'>;
 export interface ReverseStopBeleg {instance_id:string;generation:string;container_id:string|null;job_id?:string|null;attempt?:number;tool_id?:string;descriptor_hash?:string}
 interface Instanz extends ReverseContainerBinding {state:string;work_job_id:string|null;start_inflight:boolean;operation_token:string|null}
+interface RuheBeleg {
+ aktive_runs:string;offene_jobs:string;aktuelle_enden_offen:string;
+ terminale_marker:string;alte_runs_offen:string;
+}
+interface BeforeBeleg {job_id:string;instance_id:string;generation:string;grund:string;ruhe?:RuheBeleg}
 export class ReverseContainerRecovery {
  constructor(private readonly o:{pool?:Db;ready:(b:ReverseContainerBinding)=>boolean;identity:()=>Promise<WorkIdentity|null>;claimIdentity:()=>Readonly<WorkIdentity>|null}){
   this.db=o.pool??getPool();
  }
  private readonly db:Db;
+ private readonly beforeBelege=new Map<string,BeforeBeleg>();
+ /** Letzter Vor-Claim-Befund je Reverse-Tool; keine Jobinhalte und kein I/O im Claim-Guard. */
+ beforeGrund(tool:string,jobId:string):string|undefined {
+  const b=this.beforeBelege.get(tool);return b?.job_id===jobId?b.grund:undefined;
+ }
+ private beforeMelden(tool:string,b:BeforeBeleg):void {
+  const vorher=this.beforeBelege.get(tool);
+  this.beforeBelege.set(tool,b);
+  if(JSON.stringify(vorher)!==JSON.stringify(b))console.warn('[reverse-recovery]',JSON.stringify({tool_id:tool,...b}));
+ }
+ /** Historische Endmarker bleiben unverändert. Nur aktuelle Runs bzw. offene Arbeit sperren.
+  * Eine jobgebundene Instanz ohne done-Beleg bleibt konservativ gesperrt. */
+ private async ruheBeleg(c:Query,r:Instanz):Promise<RuheBeleg>{
+  return (await c.query<RuheBeleg>(`WITH jobs AS (
+   SELECT w.* FROM work_jobs w WHERE w.project=$3 AND w.capability=$4
+    AND (($4='reverse_bibliothek' AND w.kind IN('reverse-E','reverse-S3')) OR ($4='reverse_leser' AND w.kind='reverse-leser'))
+    AND ($5::uuid IS NULL OR w.id=$5)
+  )
+  SELECT
+   (SELECT count(*) FROM tool_container_runs WHERE instance_id=$1 AND generation=$2 AND state IN('running','unknown'))::text AS aktive_runs,
+   (SELECT count(*) FROM jobs WHERE state IN('leased','staged') OR (state NOT IN('completed','failed','cancelled','expired') AND resource_unconfirmed))::text AS offene_jobs,
+   (SELECT count(*) FROM jobs w WHERE w.state IN('completed','failed','cancelled','expired') AND w.resource_unconfirmed
+     AND (w.id=$5 OR EXISTS(SELECT 1 FROM tool_container_runs r WHERE r.job_id=w.id AND r.attempt=w.attempt AND r.instance_id=$1 AND r.generation=$2))
+     AND NOT EXISTS(SELECT 1 FROM tool_container_runs r WHERE r.job_id=w.id AND r.attempt=w.attempt AND r.instance_id=$1 AND r.generation=$2 AND r.state='done'))::text AS aktuelle_enden_offen,
+   (SELECT count(*) FROM jobs WHERE state IN('completed','failed','cancelled','expired') AND resource_unconfirmed)::text AS terminale_marker,
+   (SELECT count(*) FROM tool_container_runs WHERE instance_id=$1 AND generation<>$2 AND state IN('running','unknown'))::text AS alte_runs_offen`,
+   [r.instance_id,r.generation,PROJEKT,r.tool_id==='reverse-e'?'reverse_bibliothek':'reverse_leser',r.work_job_id])).rows[0];
+ }
  private async tx<T>(fn:(c:Query)=>Promise<T>):Promise<T>{
   // Gehaltene Clients gehören dem Aufrufer: weder reconnect noch BEGIN/COMMIT/Release.
   // Nur pg.Pool besitzt diese drei Pool-Zähler. connect() allein wäre auch bei pg.Client wahr (B1).
@@ -72,16 +105,22 @@ export class ReverseContainerRecovery {
  /** Kein Claim auf PG-warm ohne Transport; Recovery reserviert nur nach beweisbarer Ruhe. */
  async before(tool:string,jobId:string):Promise<boolean>{
   const r=await this.current(tool,jobId);
-  if(!r||r.state!=='warm')return r?.state!=='stopping';
-  if(this.o.ready(r))return true;
-  await this.requestStop({...r,job_id:jobId},true);
+  if(!r||r.state!=='warm'){
+   if(r?.state==='stopping')this.beforeMelden(tool,{job_id:jobId,instance_id:r.instance_id,generation:r.generation,grund:'stopping'});
+   else this.beforeBelege.delete(tool);
+   return r?.state!=='stopping';
+  }
+  if(this.o.ready(r)){this.beforeBelege.delete(tool);return true;}
+  const result=await this.requestStop({...r,job_id:jobId},true);
+  this.beforeMelden(tool,{job_id:jobId,instance_id:r.instance_id,generation:r.generation,
+   grund:result.zustand??'reverse_zustand_unbekannt',...(result.ruhe?{ruhe:result.ruhe}:{})});
   return false;
  }
  async stopSeconds():Promise<number>{
   const s=await leseReverseEinstellwerte({},this.db);if(s.letzter_fehler)throw Error(s.letzter_fehler);
   return Math.ceil(reverseZahl(s,'prozess_wait_ms')/1000);
  }
- async requestStop(expected:ReverseStopBeleg,idle=false,diagnose=false):Promise<{neu_gestartet:boolean;zustand:string|null}>{
+ async requestStop(expected:ReverseStopBeleg,idle=false,diagnose=false):Promise<{neu_gestartet:boolean;zustand:string|null;ruhe?:RuheBeleg}>{
   const who=await this.o.identity();if(!who)return {neu_gestartet:false,zustand:'server_identitaet_fehlt'};
   const s=await leseReverseEinstellwerte({},this.db);
   if(s.letzter_fehler)throw Error(s.letzter_fehler);
@@ -110,21 +149,30 @@ export class ReverseContainerRecovery {
      if(!unknown.rows.length)return {neu_gestartet:false,zustand:'reverse_diagnose_veraltet'};
     }
    }
+   let ruhe:RuheBeleg|undefined;
+   // Höchstens EINE eigene mutierte Zeile je TX, auch bei wiederholter Ablehnung.
+   const schreibeGrund=async(grund:string)=>{
+    const detail=JSON.stringify({grund,...(ruhe?{ruhe}:{})});
+    const werte=[...params.slice(0,3),detail,PROJEKT];
+    if(BigInt(Buffer.byteLength(JSON.stringify(werte)))>reverseBigInt(s,'materialisierung_tx_bytes'))throw Error('reverse_recovery_tx_bytes');
+    await c.query(`UPDATE tool_containers SET last_error=$4,updated_at=clock_timestamp()
+     WHERE instance_id=$1 AND generation=$2 AND container_id IS NOT DISTINCT FROM $3
+      AND project=$5 AND last_error IS DISTINCT FROM $4`,werte);
+    return {neu_gestartet:false,zustand:grund,...(ruhe?{ruhe}:{})};
+   };
    if(idle){
-    if(r.start_inflight||r.state!=='warm'||this.o.ready(r))return {neu_gestartet:false,zustand:'reverse_nicht_ruhig'};
-    const active=await c.query(`SELECT 1 FROM tool_container_runs WHERE instance_id=$1 AND state IN('running','unknown')
-     UNION ALL SELECT 1 FROM work_jobs WHERE project=$2 AND capability=$3
-      AND (state IN('leased','staged') OR resource_unconfirmed)
-      AND ($4::uuid IS NULL OR id=$4) LIMIT 1`,
-     [r.instance_id,PROJEKT,r.tool_id==='reverse-e'?'reverse_bibliothek':'reverse_leser',r.work_job_id]);
-    if(active.rows.length)return {neu_gestartet:false,zustand:'reverse_ende_unbestaetigt'};
+    if(r.start_inflight||r.state!=='warm'||this.o.ready(r))return schreibeGrund('reverse_nicht_ruhig');
+    ruhe=await this.ruheBeleg(c,r);
+    if([ruhe.aktive_runs,ruhe.offene_jobs,ruhe.aktuelle_enden_offen].some(n=>n!=='0'))return schreibeGrund('reverse_ende_unbestaetigt');
     const enabled=await c.query('SELECT 1 FROM tool_descriptors d JOIN tool_activation a USING(tool_id) WHERE d.tool_id=$1 AND d.enabled AND a.project=$2 AND a.enabled',[r.tool_id,PROJEKT]);
-    if(!enabled.rows.length)return {neu_gestartet:false,zustand:'reverse_inaktiv'};
+    if(!enabled.rows.length)return schreibeGrund('reverse_inaktiv');
    }
+   const grund=idle?JSON.stringify({grund:'reverse_runner_nicht_angebunden',ruhe}):'reverse_beendigung_ausstehend';
+   const werte=[...params,grund];
+   if(BigInt(Buffer.byteLength(JSON.stringify(werte)))>reverseBigInt(s,'materialisierung_tx_bytes'))throw Error('reverse_recovery_tx_bytes');
    await c.query(`UPDATE tool_containers SET state='stopping',operation_token=$4,operation_at=clock_timestamp(),
-    last_error=$5,updated_at=clock_timestamp() WHERE instance_id=$1 AND generation=$2 AND container_id IS NOT DISTINCT FROM $3`,
-    [...params,idle?'reverse_runner_nicht_angebunden':'reverse_beendigung_ausstehend']);
-   return {neu_gestartet:true,zustand:'stopping'};
+    last_error=$5,updated_at=clock_timestamp() WHERE instance_id=$1 AND generation=$2 AND container_id IS NOT DISTINCT FROM $3`,werte);
+   return {neu_gestartet:true,zustand:'stopping',...(ruhe?{ruhe}:{})};
   });
  }
  /** Ein Versuch bleibt geleast; der vorhandene Lifecycle-Tick beendet exakt die reservierte Generation. */
