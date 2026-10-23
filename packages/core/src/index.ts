@@ -1,6 +1,10 @@
 export { NETZWERK_FUNKTION, NETZWERK_EINSTELLUNGEN, NETZWERK_ADMIN_PARAMETER, leseNetzwerkKonfiguration, fuehreNetzwerkAdminAus, netzwerkEreignis, netzwerkArgumente, netzwerkText } from './services/agentennetzwerk.js';
 export type { NetzwerkEinstellung, NetzwerkWerte, NetzwerkEreignis } from './services/agentennetzwerk.js';
 export {leseReversePeRessourcenSchalter} from './services/reverse-pe-schalter.js';
+export {leiteReverseIntelUm,istReverseIntelZiel,pruefeReverseIntelZiel,bezeugeReverseIntelZiel,reverseIntelVerlauf,REVERSE_INTEL_ZEUGE} from './services/intel-reverse-weiche.js';
+export {reverseGlobalSichtbar,reverseEintragSichtbar,leseReverseStand} from './services/reverse-sichtbarkeit.js';
+export {leseReverseFehlerlog,loggeReverseFehler,loggeReverseMassnahme,reverseFehlerlogAktiv,reverseFehlerKomponente} from './services/reverse-fehlerlog.js';
+export {REVERSE_FEHLERLOG_SCHEMA_SQL} from './db/reverse-fehlerlog-schema.js';
 export {leseReverseEinstellwerte,leseReverseBlockSchalter,leseReverseProduktSchalter,reverseZahl,reverseWert,reverseBigInt,reverseBudget} from './services/reverse-einstellwerte.js';
 export type {ReverseEinstellSnapshot} from './services/reverse-einstellwerte.js';
 export {uebernehmeEInBloecken} from './services/reverse-e-bloecke.js';

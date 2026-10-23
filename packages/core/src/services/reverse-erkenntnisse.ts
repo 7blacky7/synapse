@@ -3,6 +3,7 @@ import type {Pool,PoolClient} from 'pg';
 import {hexAkteur} from './hex-quellen.js';
 import {hexFormatSchreibrecht,hexFormatVerwalter} from './hex-formate.js';
 import {leseReverseEinstellungen} from './reverse-einstellungen.js';
+import {reverseGlobalSichtbar} from './reverse-sichtbarkeit.js';
 import {ErkenntnisFehler,erkenntnisFehler as fail,objekt,nur,pflichtText,ganzzahl,dezimal,sha,kanonisch,hashInhalt,bindung,inhaltZugang,pruefeInhalt,quellstaende,type ErkenntnisRow as Row} from './reverse-erkenntnis-inhalt.js';
 export {ErkenntnisFehler};
 export const ERKENNTNIS_ACTIONS=['erkenntnis_liste','erkenntnis_get','erkenntnis_speichern','format_anhaengen'] as const;
@@ -29,7 +30,9 @@ function dto(r:Row,rid:string):Row{
  return {...r,verweis_id:String(r.verweis_id),ursprung:'manuell',basis_version:Number(r.version)-1,ref:ref(rid,r.verweis_id,r.version)};
 }
 // Nur sichtbare Quellen vor LIMIT/OFFSET berücksichtigen; fremde Metadaten nie ausgeben.
-function lesbareQuellenSql(projectParameter:string):string{
+function lesbareQuellenSql(projectParameter:string,global=false):string{
+ // P18-T109: global sichtbar -> nur vorhandene Einträge zählen, keine Bindung.
+ if(global)return `NOT EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(v.inhalt->'belege','[]'::jsonb)||COALESCE(v.inhalt->'ziele','[]'::jsonb)) quelle WHERE quelle->>'reverse_id' IS NOT NULL AND ${projectParameter}::text IS NOT NULL AND NOT EXISTS(SELECT 1 FROM reverse_eintraege e WHERE e.id=quelle->>'reverse_id'))`;
  return `NOT EXISTS(SELECT 1 FROM jsonb_array_elements(COALESCE(v.inhalt->'belege','[]'::jsonb)||COALESCE(v.inhalt->'ziele','[]'::jsonb)) quelle WHERE quelle->>'reverse_id' IS NOT NULL AND NOT EXISTS(SELECT 1 FROM reverse_bindungen b WHERE b.project=${projectParameter} AND b.eintrag_id=quelle->>'reverse_id' AND b.geloest_at IS NULL))`;
 }
 async function sichtbareMetadaten(db:PoolClient,project:string,rows:Row[]):Promise<Row[]>{
@@ -68,6 +71,7 @@ export async function fuehreErkenntnisAus(pool:Pool,a:Row):Promise<Row>{
   await db.query('BEGIN');
   await db.query("SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout',$1,true)",[String(stand.werte.laufzeit_ms.wert)]);
   await bindung(db,project,rid);
+  const global=await reverseGlobalSichtbar(db);
   const entry=(await db.query('SELECT status FROM reverse_eintraege WHERE id=$1 FOR SHARE',[rid])).rows[0];
   if(!entry)fail('nicht_gefunden');
   if(write&&entry.status!=='bestaetigt')fail('erkenntnis_eintrag_nicht_bestaetigt');
@@ -78,7 +82,7 @@ export async function fuehreErkenntnisAus(pool:Pool,a:Row):Promise<Row>{
    const query=a.query===undefined?null:pflichtText(a.query,stand.werte.max_pfad_zeichen.wert);
    const kat=a.kategorie===undefined?null:pflichtText(a.kategorie,stand.werte.max_pfad_zeichen.wert);
    if(a.konfidenz!==undefined&&!['belegt','vermutet'].includes(a.konfidenz))fail('erkenntnis_konfidenz_ungueltig');
-   const rows=(await db.query(`SELECT r.id::text AS verweis_id,v.version,v.titel,v.kategorie,v.canonical_hash,v.autor,v.erstellt_am,v.inhalt,v.inhalt->>'status' AS status FROM reverse_verweise r JOIN LATERAL(SELECT * FROM reverse_verweis_versionen WHERE verweis_id=r.id ORDER BY version DESC LIMIT 1)v ON true WHERE r.eintrag_id=$1 AND r.ursprung='manuell' AND r.id>$2::bigint AND ($3::text IS NULL OR strpos(lower(v.titel||' '||v.inhalt::text),lower($3))>0) AND ($4::text IS NULL OR v.kategorie=$4) AND ($5::text IS NULL OR EXISTS(SELECT 1 FROM jsonb_array_elements(v.inhalt->'aussagen') x WHERE x->>'konfidenz'=$5)) AND ${lesbareQuellenSql('$7')} ORDER BY r.id LIMIT $6`,[rid,after,query,kat,a.konfidenz??null,n+1,project])).rows;
+   const rows=(await db.query(`SELECT r.id::text AS verweis_id,v.version,v.titel,v.kategorie,v.canonical_hash,v.autor,v.erstellt_am,v.inhalt,v.inhalt->>'status' AS status FROM reverse_verweise r JOIN LATERAL(SELECT * FROM reverse_verweis_versionen WHERE verweis_id=r.id ORDER BY version DESC LIMIT 1)v ON true WHERE r.eintrag_id=$1 AND r.ursprung='manuell' AND r.id>$2::bigint AND ($3::text IS NULL OR strpos(lower(v.titel||' '||v.inhalt::text),lower($3))>0) AND ($4::text IS NULL OR v.kategorie=$4) AND ($5::text IS NULL OR EXISTS(SELECT 1 FROM jsonb_array_elements(v.inhalt->'aussagen') x WHERE x->>'konfidenz'=$5)) AND ${lesbareQuellenSql('$7',global)} ORDER BY r.id LIMIT $6`,[rid,after,query,kat,a.konfidenz??null,n+1,project])).rows;
    const sichtbar=await sichtbareMetadaten(db,project,rows.slice(0,n));
    result={erkenntnisse:sichtbar.map(r=>dto(r,rid)),liste_nach:rows.length>n?rows[n-1].verweis_id:null};
   }else if(a.action==='erkenntnis_get'){
@@ -86,7 +90,7 @@ export async function fuehreErkenntnisAus(pool:Pool,a:Row):Promise<Row>{
    if(a.historie!==undefined&&typeof a.historie!=='boolean')fail('erkenntnis_parameter_ungueltig');
    if(a.historie){
     const n=limit(),offset=ganzzahl(a.offset??0);
-    const rows=(await db.query(`SELECT v.verweis_id::text,v.version,v.titel,v.kategorie,v.canonical_hash,v.autor,v.erstellt_am,v.inhalt,v.inhalt->>'status' AS status FROM reverse_verweis_versionen v JOIN reverse_verweise r ON r.id=v.verweis_id WHERE r.id=$1 AND r.eintrag_id=$2 AND ${lesbareQuellenSql('$5')} ORDER BY v.version DESC LIMIT $3 OFFSET $4`,[id,rid,n+1,offset,project])).rows;
+    const rows=(await db.query(`SELECT v.verweis_id::text,v.version,v.titel,v.kategorie,v.canonical_hash,v.autor,v.erstellt_am,v.inhalt,v.inhalt->>'status' AS status FROM reverse_verweis_versionen v JOIN reverse_verweise r ON r.id=v.verweis_id WHERE r.id=$1 AND r.eintrag_id=$2 AND ${lesbareQuellenSql('$5',global)} ORDER BY v.version DESC LIMIT $3 OFFSET $4`,[id,rid,n+1,offset,project])).rows;
     const sichtbar=await sichtbareMetadaten(db,project,rows.slice(0,n));
     result={versionen:sichtbar.map(r=>dto(r,rid)),naechster_offset:rows.length>n?offset+n:null};
    }else{

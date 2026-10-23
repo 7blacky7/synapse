@@ -42,6 +42,8 @@ const zeile=async id=>(await db.query(`SELECT w.id::text AS id,w.state,w.attempt
 try{
  for(const table of ['agent_sessions','projects','tool_aktivitaet'])await db.query('CREATE TABLE '+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await db.query(WORK_JOBS_SCHEMA_SQL);await db.query(WORK_JOBS_SCHEMA_SQL);await db.query(REVERSE_SCHEMA_SQL);await db.query(core.REVERSE_PIPELINE_SCHEMA_SQL);
+ // P18-T109 Fixture-Nachzug: policy_pin-Spalte aus P18-T104 (144_reverse_analyse_policy).
+ await db.query((await import('../dist/db/reverse-analyse-policy-schema.js')).REVERSE_ANALYSE_POLICY_SCHEMA_SQL);
  for(const [t,c] of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await db.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
  await db.query('CREATE TABLE agent_profil_schalter(ebene text,project text,funktion text,aktiv boolean,grund text,gesetzt_von text,setter_identity_id uuid,gesetzt_am timestamptz DEFAULT now())');
  await db.query("CREATE UNIQUE INDEX ON agent_profil_schalter(ebene,(COALESCE(project,'')),funktion)");

@@ -7,6 +7,7 @@ import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-kon
 import {AssetUploadKern,AssetUploadFehler,type AssetUploadDb} from './asset-upload.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
 import {holeReverseAnsichtDatei,reverseAnsichtAdapter} from './reverse-ansicht-adapter.js';
+import {reverseEintragSichtbar} from './reverse-sichtbarkeit.js';
 type Row=Record<string,unknown>;
 export class ReverseUebernahmeFehler extends Error {
  constructor(readonly code:'keine_berechtigung'|'nicht_gebunden'|'nicht_gefunden'|'ziel_belegt'|'pfad_gefahr'|'werkzeug_fehler',readonly detail?:string,readonly extra:Row={}){super(code);}
@@ -23,7 +24,8 @@ export async function uebernehmeReverseAsset(a:Row,o:{db?:AssetUploadDb|Pool;kon
  const quelle=pfad(a.file_path),ziel=pfad(a.ziel_pfad);
  if(/@S[0-3](?:\/|$)/i.test(quelle))fail('keine_berechtigung','Nur Assets sind übernehmbar; neuen Code über files mit @ref-Marke schreiben.');
  const bindung=async(d:Pick<AssetUploadDb,'query'>,lock=false)=>{
-  if(!(await d.query('SELECT id FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL'+(lock?' FOR SHARE':''),[project,rid])).rows.length)fail('nicht_gebunden');
+  // P18-T109: zentrale Sichtbarkeit; Übernahme bleibt an Projektrecht und diesen Weg gebunden.
+  if(!(await reverseEintragSichtbar(d,project,rid,lock)))fail('nicht_gebunden');
  };
  await bindung(db);
  const datei=await holeReverseAnsichtDatei(db,rid,quelle);

@@ -135,12 +135,15 @@ export const PROFIL_PRODUKT_FUNKTIONEN = [
   // P18-T86: automatischer Reverse-Entstoerer (bisher Env SYNAPSE_REVERSE_ENTSTOERER, STANDARD EIN wie bisher) und WAV-Pregap
   // beim Audio-CD-Entpacken (bisher Env SYNAPSE_REVERSE_WAV_PREGAP, Standard AUS); beide global, nur ausdruecklich.
   'reverse_entstoerer_auto', 'reverse_wav_pregap',
+  // P18-T109: Reverse global ohne Bindung sichtbar, code_intel/asset_intel mit project=rev-…, zentrales Reverse-Fehlerlog;
+  // alle global, Standard AUS, nur ausdruecklich.
+  'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog',
   // P22-T105: Ausweis-Channels still beitreten (auch im laufenden Lauf) und nicht verlassbar (ausweis-channels.ts), je Projekt,
   // Standard AUS bis Abnahme, nur ausdruecklich.
   'ausweis_channels',
 ] as const;
 /** Funktionen, die 'alle' bewusst NICHT einschliesst (nur ausdruecklich schaltbar). */
-export const NUR_AUSDRUECKLICH: readonly string[] = ['reverse_pipeline_halt', 'agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'ausweis_channels'];
+export const NUR_AUSDRUECKLICH: readonly string[] = ['reverse_pipeline_halt', 'agentennetzwerk', 'db_lesen', 'hex_adressen', 'hex_entschluesseln', 'hex_formate', 'hex_lesen', 'mehrprojekt', 'tool_beschreibungen_kurz', 'fall_skill_hinweis', 'tool_liste_je_verbindung', 'tool_antworten_schlank', 'fall_skill_faelle', 'shell_fremde_ergebnisse', 'verbrauch', 'runtime_ueberwachung', 'hauptagent_cli_modelle', 'hauptagent_verlauf', 'runtime_status_stabil', 'verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'agenten_entfernung', 'startkontext', 'main_lesezugriff', 'agent_verlauf_alle', 'spezialisten_container', 'chat_get_eigene', 'agent_anmeldungen', 'reverse_s3', 'reverse_siedler3', 'reverse_pe_ressourcen', 'reverse_verknuepfungen', 'reverse_erkenntnisse', 'reverse_fortschritt_live', 'reverse_blockuebernahme', 'reverse_asset_registrierung', 'reverse_parser_adapter', 'reverse_leser', 'reverse_leser_nachzug', 'reverse_leser_hinweise', 'reverse_leser_runtime_verwaltung', 'reverse_entstoerer_auto', 'reverse_wav_pregap', 'reverse_global_sichtbar', 'reverse_intel_abruf', 'reverse_fehlerlog', 'ausweis_channels'];
 /**
  * P22-T63: Funktionen mit Standard EIN (keine Zeile = EIN, Lesefehler = EIN mit letzter_fehler). Bisher nur hauptagent_verlauf:
  * reine Speicherung/Anzeige des eigenen Chats; AUS stellt das Altverhalten (Verlauf nur im Browser-Tab) her.
@@ -360,7 +363,7 @@ export async function leseProfilProduktSchalter(
   funktion: ProfilProduktFunktion, project?: string | null,
 ): Promise<ProfilProduktSchalterStand> {
   if(funktion==='reverse_pipeline_halt')return leseReversePipelineHalt(getPool());
-  if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3'||funktion==='reverse_fortschritt_live'||funktion==='reverse_blockuebernahme'||funktion==='reverse_asset_registrierung'||funktion==='reverse_parser_adapter'||funktion==='reverse_leser'||funktion==='reverse_leser_nachzug'||funktion==='reverse_leser_runtime_verwaltung'||funktion==='reverse_leser_hinweise'||funktion==='reverse_entstoerer_auto'||funktion==='reverse_wav_pregap')project=null; // global library, same value in every project
+  if(funktion==='reverse_pe_ressourcen'||funktion==='reverse_siedler3'||funktion==='reverse_fortschritt_live'||funktion==='reverse_blockuebernahme'||funktion==='reverse_asset_registrierung'||funktion==='reverse_parser_adapter'||funktion==='reverse_leser'||funktion==='reverse_leser_nachzug'||funktion==='reverse_leser_runtime_verwaltung'||funktion==='reverse_leser_hinweise'||funktion==='reverse_entstoerer_auto'||funktion==='reverse_wav_pregap'||funktion==='reverse_global_sichtbar'||funktion==='reverse_intel_abruf'||funktion==='reverse_fehlerlog')project=null; // global library, same value in every project
   const basis: ProfilProduktSchalterStand = { funktion, project: project ?? null, aktiv: STANDARD_EIN.includes(funktion), quelle: 'standard',
     ebene: null, regel_funktion: null, gesetzt_von: null, gesetzt_am: null, grund: null, letzter_fehler: null };
   if (!istFunktion(funktion)) return { ...basis, letzter_fehler: 'funktion_unbekannt' };
@@ -411,7 +414,7 @@ export async function setzeProfilProduktSchalter(
 ): Promise<ProfilProduktSchalterStand> {
   if (e.funktion !== 'alle' && !istFunktion(e.funktion)) throw new ProfilSchalterFehler('funktion_unbekannt');
   if (e.ebene !== 'global' && e.ebene !== 'projekt') throw new ProfilSchalterFehler('ebene_ungueltig');
-  if((e.funktion==='reverse_pe_ressourcen'||e.funktion==='reverse_siedler3'||e.funktion==='reverse_fortschritt_live'||e.funktion==='reverse_blockuebernahme'||e.funktion==='reverse_asset_registrierung'||e.funktion==='reverse_parser_adapter'||e.funktion==='reverse_leser'||e.funktion==='reverse_leser_nachzug'||e.funktion==='reverse_leser_hinweise'||e.funktion==='reverse_leser_runtime_verwaltung')&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
+  if((e.funktion==='reverse_pe_ressourcen'||e.funktion==='reverse_siedler3'||e.funktion==='reverse_fortschritt_live'||e.funktion==='reverse_blockuebernahme'||e.funktion==='reverse_asset_registrierung'||e.funktion==='reverse_parser_adapter'||e.funktion==='reverse_leser'||e.funktion==='reverse_leser_nachzug'||e.funktion==='reverse_leser_hinweise'||e.funktion==='reverse_leser_runtime_verwaltung'||e.funktion==='reverse_global_sichtbar'||e.funktion==='reverse_intel_abruf'||e.funktion==='reverse_fehlerlog')&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
   if(e.funktion==='reverse_pipeline_halt'&&e.ebene!=='global')throw new ProfilSchalterFehler('nur_global');
   const project = e.ebene === 'projekt' ? (e.project ?? '').trim() : null;
   if (e.ebene === 'projekt' && !project) throw new ProfilSchalterFehler('project_fehlt');

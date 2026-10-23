@@ -27,6 +27,8 @@ import {leseReverseEinstellungen,leseReverseSpeicherVerbrauch} from './reverse-e
 import {leseReverseEinstellwerte,reverseZahl,reverseWert,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
 import {REVERSE_EINSTELLKATALOG} from './reverse-einstellkatalog.js';
 import { vorhandeneZielfelder, zielinhaltHerkunft } from './zielinhalt.js';
+import {reverseEintragSichtbar,reverseGlobalSichtbar,leseReverseStand} from './reverse-sichtbarkeit.js';
+import {leseReverseFehlerlog,loggeReverseFehler,reverseFehlerlogAktiv} from './reverse-fehlerlog.js';
 
 import {ERKENNTNIS_ACTIONS,ERKENNTNIS_PARAMETER,ERKENNTNIS_FELDER,fuehreErkenntnisAus,ErkenntnisFehler} from './reverse-erkenntnisse.js';
 
@@ -204,8 +206,9 @@ export function baueReverseAntwort(a:Row,daten:Row={},fehler?:ReverseFehlercode,
     ...(fehler?{fehlercode:fehler,message:TEXTE[fehler]}:{}),...(detail?{fehler:detail}:{}),felder:{...base,fehlercode:fehler??base.fehlercode}};
   return antwort;
 }
+/** P18-T109: mit reverse_global_sichtbar EIN genügt der vorhandene Eintrag (reverse-sichtbarkeit.ts); AUS = Bindung wie bisher. */
 export async function pruefeReverseBindung(db:Db,project:string,reverseId:string):Promise<boolean> {
-  return ((await db.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[project,reverseId])).rowCount??0)>0;
+  return reverseEintragSichtbar(db,project,reverseId);
 }
 
 export function createReverseToolService(deps:ReverseToolDependencies={}) {
@@ -243,7 +246,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
     return {reverse_id:e.id,titel:maskiereMitKatalog(str(e.titel),'reverse').text,beschreibung:maskiereMitKatalog(str(e.beschreibung),'reverse').text,status:e.status,tags:e.tags,
       medien:ms.map(m=>({...m,bezeichnung:maskiereMitKatalog(str(m.bezeichnung),'reverse').text})),schicht_summen:layers,
       dateizahl:Number((await db.query('SELECT count(*)::int AS n FROM reverse_dateien WHERE eintrag_id=$1',[e.id])).rows[0].n),
-      bindungen:Number((await db.query('SELECT count(*)::int AS n FROM reverse_bindungen WHERE eintrag_id=$1 AND geloest_at IS NULL',[e.id])).rows[0].n)};
+      bindungen:Number((await db.query('SELECT count(*)::int AS n FROM reverse_bindungen WHERE eintrag_id=$1 AND geloest_at IS NULL',[e.id])).rows[0].n),
+      // P18-T109: Stand/Erkenntniszahl nur mit reverse_global_sichtbar EIN (AUS bleibt die Antwort unverändert).
+      ...(await reverseGlobalSichtbar(db)?{...await leseReverseStand(db,str(e.id)),sichtbar:'global'}:{})};
   }
   async function activity(db:Db,a:Row,accepted=true):Promise<void> {
     const project=str(a.project);if(!project)return;
@@ -579,7 +584,9 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       // P18-T64: lesend für jeden Agenten; nur Auftrags-/Containerzustände, keine Inhalte.
       const rid=gesetzt(a.reverse_id)?id(a.reverse_id):null;if(rid)await entry(pool,rid);
       const limit=integer(a.limit,reverseZahl(ein,'diagnose_seiten_limit'),reverseZahl(ein,'diagnose_max_limit'));if(!limit)fail('werkzeug_fehler','parameter_ungueltig');
-      return {reverse_id:rid,status:'diagnose',...await diagnoseReverse({reverseId:rid,limit,pool})};
+      // P18-T109: zentrales Fehlerlog nur mit Schalter reverse_fehlerlog EIN (AUS: Antwort unverändert).
+      const fehlerlog=await reverseFehlerlogAktiv(pool)?{fehlerlog:await leseReverseFehlerlog({reverseId:rid,limit,pool})}:{};
+      return {reverse_id:rid,status:'diagnose',...await diagnoseReverse({reverseId:rid,limit,pool}),...fehlerlog};
     }
     if(action==='entstoeren'){
       if(!darfKoordinatorOderUser(a.agent_id))fail('keine_berechtigung');
@@ -696,6 +703,8 @@ export function createReverseToolService(deps:ReverseToolDependencies={}) {
       if(code==='57014')return baueReverseAntwort(a,{},'zeitlimit');
       // P18-T66/F3: unerwartete Ausnahme sichtbar machen (z. B. idempotency_conflict); als Detail nur kurze Kennungen.
       const m=String((e as Error)?.message??'');
+      void loggeReverseFehler({eintrag_id:typeof a.reverse_id==='string'?a.reverse_id:null,komponente:'tool',name:String(a.action),
+        grund:/^[a-z][a-z0-9_]{2,63}$/.test(m)?m:'interner_fehler',detail:m.slice(0,200),quelle:'reverse-tool'},pool);
       console.error('[reverse-tool] Unerwarteter Fehler bei',String(a.action),':',m.slice(0,ein?reverseZahl(ein,'diagnose_log_zeichen'):Number(REVERSE_EINSTELLKATALOG.diagnose_log_zeichen.standard)));
       return baueReverseAntwort(a,{},'werkzeug_fehler',/^[a-z][a-z0-9_]{2,63}$/.test(m)?m:'interner_fehler');
     }

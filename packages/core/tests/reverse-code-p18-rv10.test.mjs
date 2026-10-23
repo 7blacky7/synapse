@@ -6,11 +6,14 @@ const dsn=new URL(process.env.DATABASE_URL||'http://invalid');
 assert.equal(dsn.port,'5433');assert.equal(dsn.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
 process.env.SYNAPSE_SKIP_EMBEDDINGS='1';process.env.QDRANT_URL='http://127.0.0.1:1';
+// P18-T109 Fixture-Nachzug: seit P18-T86 lesen die Reverse-Einstellwerte ueber getPool; dieser sieht das private Schema zuerst.
+const schema='p18_rv10_'+process.pid;
+{const scoped=new URL(process.env.DATABASE_URL);scoped.searchParams.set('options','-c search_path='+schema+',public');process.env.DATABASE_URL=scoped.href;}
 const core=await import('../dist/index.js');
 const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
 const require=createRequire(new URL('../package.json',import.meta.url)),{Pool}=require('pg');
 const raw=new Pool({connectionString:process.env.DATABASE_URL});
-const schema='p18_rv10_'+process.pid,project='p18_rv10',agent='p18_rv10-agent',rid='rev-rv10-000001';
+const project='p18_rv10',agent='p18_rv10-agent',rid='rev-rv10-000001';
 const pool={async connect(){const db=await raw.connect();try{await db.query('SET search_path TO '+schema+',public');return db;}catch(e){db.release();throw e;}},
  async query(...args){const db=await this.connect();try{return await db.query(...args);}finally{db.release();}}};
 let demanded=0,seq=0,passed=0;
@@ -30,6 +33,8 @@ try{
  assert.equal((await pool.query('SELECT current_database() AS d,current_schema() AS s')).rows[0].d,'synapse_test');
  for(const table of ['projects','agent_sessions','tool_aktivitaet','code_files'])await pool.query('CREATE TABLE '+schema+'.'+table+' (LIKE public.'+table+' INCLUDING DEFAULTS INCLUDING INDEXES)');
  await pool.query(REVERSE_SCHEMA_SQL);
+ // P18-T109 Fixture-Nachzug: private reverse_einstellungen (Projektebene) statt Env-Grenze (P18-T86).
+ for(const f of ['reverse-verknuepfungen-schema','reverse-einstellwerte-schema'])await pool.query(Object.values(await import('../dist/db/'+f+'.js')).find(x=>typeof x==='string'));
  // P18-T84: current schema for origin filters; no production migration from this fixture.
  await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
  await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);
@@ -93,9 +98,11 @@ try{
  const missing=await call('file',{file_path:'pending.exe@S3/00000001_Foo.c'});assert.equal(missing.fehlercode,'schicht_nicht_fertig');assert(missing.auftrag_id);assert.equal(demanded,1);
  assert.equal((await service.ausfuehren({action:'file',agent_id:'p18_rv10-wrong',project,reverse_id:rid,file_path:path})).fehlercode,'keine_berechtigung');
  process.env.SYNAPSE_REVERSE_ANTWORT_MAX='1200';
+ await pool.query("INSERT INTO reverse_einstellungen(ebene,project,name,wert,grund,gesetzt_von) VALUES('projekt',$1,'antwort_bytes',1200,'rv10 fixture (P18-T86-Weg)','test')",[project]);
  await pool.query("UPDATE reverse_code_dateien SET content=$2 WHERE file_path=$1",[path,'0123456789\n'.repeat(20000)]);
  const bounded=ok(await call('file',{file_path:path}));assert.equal(bounded.gekappt,true);assert(bounded.content.length<1200);assert.equal(bounded.returned_range.eof,false);
  delete process.env.SYNAPSE_REVERSE_ANTWORT_MAX;
+ await pool.query("DELETE FROM reverse_einstellungen WHERE ebene='projekt' AND project=$1 AND name='antwort_bytes'",[project]);
  assert((await pool.query('SELECT count(*)::int AS n FROM tool_aktivitaet WHERE projekt=$1',[project])).rows[0].n>0);
  // P21-T16 (H-REA5): Ziel-Inhalt wird gekennzeichnet; Text bleibt unveraendert, Geheimnis-Maskierung wie bisher.
  const {ZIELINHALT_HINWEIS}=await import('../dist/services/zielinhalt.js');

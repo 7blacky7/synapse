@@ -16,6 +16,7 @@ import {getPool} from '../db/client.js';
 import type {AssetUploadDb} from './asset-upload.js';
 import type {AssetAdresse} from './asset-speicher.js';
 import {AssetAnsichtFehler} from './asset-ansicht-renderer.js';
+import {reverseEintragSichtbar} from './reverse-sichtbarkeit.js';
 
 const SHA_MUSTER=/^[a-f0-9]{64}$/;
 const REF_MUSTER=/^[A-Za-z0-9_.:-]{1,200}$/;
@@ -44,8 +45,8 @@ async function shaImEintrag(db:Db,eintrag:string,sha:string):Promise<boolean>{
  */
 export async function pruefeReverseAnsichtBindung(db:Db,o:{projekt:unknown;eintrag_id:unknown;sha256?:unknown}):Promise<ReverseBindungsErgebnis>{
   if(typeof o.projekt!=='string'||!o.projekt||o.projekt.length>200||typeof o.eintrag_id!=='string'||!REF_MUSTER.test(o.eintrag_id))return 'nicht_gebunden';
-  const gebunden=(await db.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL LIMIT 1',
-    [o.projekt,o.eintrag_id])).rows.length>0;
+  // P18-T109: zentrale Sichtbarkeit (AUS = Bindung wie bisher).
+  const gebunden=await reverseEintragSichtbar(db,o.projekt,o.eintrag_id);
   if(!gebunden)return 'nicht_gebunden';
   if(o.sha256===undefined||o.sha256===null)return 'ok';
   if(typeof o.sha256!=='string'||!SHA_MUSTER.test(o.sha256))return 'revision_falsch';

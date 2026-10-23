@@ -36,6 +36,7 @@ import {
   ergaenzeCodeIntelAntwort,
   mitCodeIntelSchatten,
   ANSICHT_SCHEMA_PROPERTIES,
+  leiteReverseIntelUm,
 } from '@synapse/core';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
@@ -251,8 +252,9 @@ export const codeIntelTool: ConsolidatedTool = {
 
   // Etappe C (P4-T67/T70): die Asset-Weiche aus core haengt NACH der Bestandsantwort nur Zusatzfelder an;
   // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: rest-api/src/routes/mcp.ts.
+  // P18-T109: project="rev-…" -> Reverse-Eintrag (Schalter reverse_intel_abruf); null = Bestand. Spiegel: rest-api mcp.ts.
   handler: async (args: Record<string, unknown>) =>
-    mitCodeIntelSchatten(reqStr(args, 'action'), args, async () =>
+    (await leiteReverseIntelUm('code_intel', args)) ?? mitCodeIntelSchatten(reqStr(args, 'action'), args, async () =>
       ergaenzeCodeIntelAntwort(reqStr(args, 'action'), args, await codeIntelBestand(args))),
 };
 

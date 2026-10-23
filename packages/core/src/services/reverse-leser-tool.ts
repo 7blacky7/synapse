@@ -6,6 +6,7 @@ import {aktuellerW1bAkteur,pruefeProfilVerwalter} from './agent-profil-verwalter
 import {createWorkJobService,type WorkJobPool} from './work-jobs.js';
 import {leseReverseEinstellwerte,reverseZahl} from './reverse-einstellwerte.js';
 import {reverseEintragAktiv} from './reverse-asset-registrierung.js';
+import {reverseEintragSichtbar} from './reverse-sichtbarkeit.js';
 import {leseReverseLeserSchalter,leseReverseLeserRevision,listeReverseLeserRevisionen,registriereReverseLeserEntwurf,type ReverseLeserRevision} from './reverse-leser-registry.js';
 import {ReverseLeserFehler,reverseLeserHash,reverseLeserKanonisch,type ReverseLeserQuelle} from './reverse-leser-vertrag.js';
 import {waehleLeserRuntimePin} from './reverse-leser-runtime.js';
@@ -65,7 +66,7 @@ export async function fuehreReverseLeserAus(pool:Pool,a:Row,image?:LeserRuntimeI
  if(a.leser_id!==undefined){r=await leseReverseLeserRevision(pool,text(a.leser_id,max));if(!r)fail('nicht_gefunden');}
  async function bindung(){
   const rid=text(a.reverse_id,max);
-  if(!(await pool.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[project,rid])).rows.length)fail('nicht_gebunden');
+  if(!(await reverseEintragSichtbar(pool,project,rid)))fail('nicht_gebunden'); // P18-T109
   return rid;
  }
  if(a.action==='leser_get'){

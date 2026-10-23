@@ -240,6 +240,7 @@ import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort }
 import { mitCodeIntelSchatten } from '@synapse/core';
 // P13-T34/A16: Parameter ansicht + MCP-Bildbloecke (Base64 nie in Text, structuredContent oder Log).
 import { ANSICHT_SCHEMA_PROPERTIES, mitCodeIntelAnsicht, trenneMcpBilder, haengeMcpBilderAn, type McpBild } from '@synapse/core';
+import { leiteReverseIntelUm } from '@synapse/core';
 import { REVERSE_DEFINITION, fuehreReverseAus } from '@synapse/core';
 import { HEX_DEFINITION, fuehreHexAus } from '@synapse/core';
 // intern (P14): Definition und Dispatcher aus core; nur bei SYNAPSE_INTERN_TOOL=1 in der Liste.
@@ -4662,7 +4663,8 @@ async function handleToolCallKern(
     // Etappe C (P4-T67/T70): die Asset-Weiche aus core haengt NACH der Bestandsantwort nur Zusatzfelder an;
     // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: mcp-server consolidated/code-intel.ts.
     // P13-T34/A16: mitCodeIntelAnsicht liefert ohne ansicht-Parameter unveraendert den Bestand.
-    case 'code_intel': return mitCodeIntelAnsicht(action, args, effectiveAgentId, () => mitCodeIntelSchatten(action!, args, async () => ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
+    // P18-T109: project="rev-…" -> Reverse-Eintrag (Schalter reverse_intel_abruf); null = Bestand. Spiegel: mcp-server code-intel.ts.
+    case 'code_intel': return (await leiteReverseIntelUm('code_intel', args, effectiveAgentId)) ?? mitCodeIntelAnsicht(action, args, effectiveAgentId, () => mitCodeIntelSchatten(action!, args, async () => ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
       const project = reqStr(args, 'project');
       switch (action) {
         case 'tree': {

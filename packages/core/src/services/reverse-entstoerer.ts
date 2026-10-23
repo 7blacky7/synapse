@@ -13,6 +13,7 @@ import { getPool } from '../db/client.js';
 import { reverseAusfuehrer, zerlegeReverseFehlercode, leseReverseAufsicht } from './reverse-ausfuehrer.js';
 import { registriereWorker, workerPausiert } from './worker-steuerung.js';
 import { REVERSE_EINSTELLKATALOG } from './reverse-einstellkatalog.js';
+import { loggeReverseMassnahme } from './reverse-fehlerlog.js';
 
 type Row = Record<string, unknown>;
 type Db = Pick<Pool, 'query' | 'connect'>;
@@ -63,7 +64,12 @@ const verlauf: ReverseMassnahme[] = [];
 let letzterAutoLauf: { am: string; massnahmen: number; fehler?: string; uebersprungen?: string } | null = null;
 /** P18-T86: diagnose_verlauf_speicher; jede Diagnose aktualisiert den wirksamen Wert. */
 let verlaufMax = Number(REVERSE_EINSTELLKATALOG.diagnose_verlauf_speicher.standard);
-function merke(m: ReverseMassnahme): void { verlauf.unshift(m); if (verlauf.length > verlaufMax) verlauf.length = verlaufMax; }
+function merke(m: ReverseMassnahme): void {
+  verlauf.unshift(m); if (verlauf.length > verlaufMax) verlauf.length = verlaufMax;
+  // P18-T109: dauerhaft im zentralen Fehlerlog (nur Schalter reverse_fehlerlog EIN, blockiert nie).
+  // Abnahme R3b: Eintrag/Datei/Schicht werden aus dem Ziel-Auftrag bzw. Work-Job aufgeloest.
+  void loggeReverseMassnahme(m);
+}
 
 async function tabelleDa(db: Pick<Pool, 'query'>, name: string): Promise<boolean> {
   return !!(await db.query('SELECT to_regclass($1) AS t', [name])).rows[0]?.t;

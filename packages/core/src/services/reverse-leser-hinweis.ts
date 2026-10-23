@@ -8,6 +8,8 @@ import {registriereHinweisQuelle,type HinweisQuelle,type AusloeserHinweis} from 
 import {leseReverseEinstellwerte,leseReverseProduktSchalter,reverseZahl} from './reverse-einstellwerte.js';
 import {gruppiereRv27Dateien} from './hex-rv27.js';
 import {leseReverseVerknuepfungen} from './reverse-verknuepfungen.js';
+import {reverseEintragSichtbar,reverseSichtbarSql} from './reverse-sichtbarkeit.js';
+import {loggeReverseFehler} from './reverse-fehlerlog.js';
 import {maskiereMitKatalog} from './masken-katalog.js';
 import type {ReverseLeserManifest} from './reverse-leser-vertrag.js';
 type Row=Record<string,any>;
@@ -66,10 +68,11 @@ export async function ergaenzeReverseLeserHinweisKontext(pool:Pool,a:Row,antwort
   return c.query(sql,p);
  };
  let rows:Row[]=[],revision='',registryOffen=false,offset=Number(a.offset??0);
+ const sichtSql=await reverseSichtbarSql(pool); // P18-T109
 
  try{
   await c.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-  if(!(await q('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[a.project,a.reverse_id])).rows.length){await c.query('ROLLBACK');return antwort;}
+  if(!(await q(sichtSql,[a.project,a.reverse_id])).rows.length){await c.query('ROLLBACK');return antwort;}
   const limit=Math.min(Number(a.limit??reverseZahl(s,'seiten_limit')),reverseZahl(s,'max_limit'));
   const pfad=typeof (a.datei??a.file_path)==='string'?a.datei??a.file_path:null;
   const prefix=typeof a.path==='string'?a.path:null;
@@ -127,6 +130,9 @@ export async function ergaenzeReverseLeserHinweisKontext(pool:Pool,a:Row,antwort
    datei:mask(ds[0].pfad),header_comparison:{...g.header_comparison as Row,reference:mask((g.header_comparison as Row).reference)},funktionen:[]};
   item.pfade=ds.map(d=>String(d.pfad));
   gruppen.push(item);
+  // P18-T109: Leserbefund zusätzlich ins zentrale Fehlerlog (Schalter reverse_fehlerlog, blockiert nie).
+  if(['beschaedigt','schritt_unterbrochen','kein_leser','leser_deaktiviert'].includes(zustand))
+   void loggeReverseFehler({eintrag_id:String(a.reverse_id),datei:String(ds[0].pfad),komponente:'leser',name:String(g.key),grund:zustand,detail:ds[0].gruppenzahl+' Dateien',quelle:'rv27_leser_hinweis'},pool);
  }
  // Ein RV30-Leselauf je Antwort; Funktionen bleiben statische Belege, kein Ghidra-Auftrag.
  const maxFn=reverseZahl(s,'leser_hinweis_funktionen');
@@ -151,7 +157,7 @@ export async function ergaenzeReverseLeserHinweisKontext(pool:Pool,a:Row,antwort
  if(String((await pool.query(registrySql)).rows[0].revision)!==revision)return ausgabe({letzter_fehler:'registry_geaendert'});
  const einstellungen=await leseReverseEinstellwerte({project:a.project,eintrag_id:a.reverse_id},pool);
  if(einstellungen.letzter_fehler||einstellungen.revision!==s.revision)return ausgabe({letzter_fehler:'einstellungen_geaendert'});
- if(!aktuell.aktiv||aktuell.letzter_fehler||!(await pool.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[a.project,a.reverse_id])).rows.length)return antwort;
+ if(!aktuell.aktiv||aktuell.letzter_fehler||!(await reverseEintragSichtbar(pool,String(a.project),String(a.reverse_id))))return antwort;
  return ausgabe({registryrevision:revision,registry_erkennung_offen:registryOffen,gruppen,
   seite:{offset,limit:rows.length},letzter_fehler:null});
 }
@@ -161,7 +167,7 @@ export function reverseLeserHinweisQuelle(db:Pick<Pool,'query'>=getPool()):Hinwe
   if(ctx.tool!=='reverse'||!AKTIONEN.has(ctx.aktion??'')||ctx.signal.aborted)return [];
   const h=ctx.felder.leser_hinweis;
   if(!obj(h)||!h.schalter?.aktiv||h.letzter_fehler||!Array.isArray(h.gruppen))return [];
-  if(!(await db.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL',[ctx.projekt,ctx.argumente.reverse_id])).rows.length||ctx.signal.aborted)return [];
+  if(!(await reverseEintragSichtbar(db,String(ctx.projekt),String(ctx.argumente.reverse_id)))||ctx.signal.aborted)return [];
   const stand=await leseReverseProduktSchalter('reverse_leser_hinweise',null,db);
   if(!stand.aktiv||stand.letzter_fehler||ctx.signal.aborted)return [];
   const leser=await leseReverseProduktSchalter('reverse_leser',null,db);

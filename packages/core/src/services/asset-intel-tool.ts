@@ -241,6 +241,7 @@ async function umkehrZuCodeIntel(act: AssetIntelAction, project: string, filePat
  * Fuehrt einen asset_intel-Aufruf aus. Wirft nie: jeder Fehler wird zu einer Antwort mit
  * success:false, fehler-Code und Hinweis. Antworten sind hart auf 60.000 Zeichen gekappt.
  */
+import { leiteReverseIntelUm } from './intel-reverse-weiche.js';
 export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefined | null,api:{apiAusfuehrung?:boolean;agentId?:string}={}): Promise<Record<string, unknown>> {
   const a: Record<string, unknown> = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
   const action = a.action;
@@ -248,6 +249,9 @@ export async function fuehreAssetIntelAus(args: Record<string, unknown> | undefi
 
   const befund = pruefeUnbekannteParameter('asset_intel', ERLAUBT, a);
   if (befund) return fehlerAntwort(action, project, 'unbekannte_parameter', befund.meldung, undefined, { unbekannt: befund.unbekannt });
+  // P18-T109: project="rev-…" -> Reverse-Eintrag (Schalter reverse_intel_abruf); sonst null und Bestand.
+  const reverse = await leiteReverseIntelUm('asset_intel', a, api.agentId);
+  if (reverse) return reverse;
 
   if (typeof action !== 'string' || !(ASSET_INTEL_ACTIONS as readonly string[]).includes(action)) {
     return fehlerAntwort(action, project, 'unbekannte_action', 'Unbekannte action: ' + JSON.stringify(action ?? null) + '.', 'Erlaubt: ' + ASSET_INTEL_ACTIONS.join(', '));

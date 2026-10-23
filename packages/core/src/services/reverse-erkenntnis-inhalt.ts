@@ -2,6 +2,7 @@
 import {createHash} from 'node:crypto';
 import type {PoolClient} from 'pg';
 import {maskiereMitKatalog} from './masken-katalog.js';
+import {reverseEintragSichtbar} from './reverse-sichtbarkeit.js';
 export type ErkenntnisRow=Record<string,any>;
 export class ErkenntnisFehler extends Error {
  constructor(readonly kennung:string,readonly extra:ErkenntnisRow={}){super(kennung);}
@@ -44,7 +45,8 @@ export function kanonisch(v:unknown):string {
 export const hashInhalt=(v:unknown)=>createHash('sha256').update(kanonisch(v)).digest('hex');
 export async function bindung(db:PoolClient,project:string,rid:unknown):Promise<string>{
  const id=pflichtText(rid,200);
- if(!(await db.query('SELECT 1 FROM reverse_bindungen WHERE project=$1 AND eintrag_id=$2 AND geloest_at IS NULL FOR SHARE',[project,id])).rowCount)erkenntnisFehler('nicht_gebunden');
+ // P18-T109: zentrale Sichtbarkeit (reverse_global_sichtbar EIN = Erkenntnisse global, ohne Bindung).
+ if(!(await reverseEintragSichtbar(db,project,id,true)))erkenntnisFehler('nicht_gebunden');
  return id;
 }
 export async function inhaltZugang(db:PoolClient,project:string,inhalt:ErkenntnisRow):Promise<void>{

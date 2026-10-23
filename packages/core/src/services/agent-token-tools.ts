@@ -376,6 +376,21 @@ export async function bereiteAgentToolAufrufVor(
   const bezug = aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   const args = { ...eingabe };
   const token = Object.hasOwn(eingabe, 'token') ? feld(eingabe, 'token') : transportToken;
+  // P18-T109: code_intel/asset_intel mit project="rev-…" (Schalter reverse_intel_abruf): der Ausweis wird wie beim reverse-Tool
+  // in seiner Heimat geprüft (kein Visum, kein Fremdprojekt); die Reverse-ID bleibt das Ziel des Handlers.
+  if (token && (tool === 'code_intel' || tool === 'asset_intel')) {
+    const { istReverseIntelZiel, bezeugeReverseIntelZiel } = await import('./intel-reverse-weiche.js');
+    const reverseId = feld(eingabe, 'project');
+    if (reverseId && await istReverseIntelZiel(reverseId)) {
+      const heimat = await ausweisProjekt(token);
+      if (heimat) {
+        const k = await bereiteAgentToolAufrufVor(tool, { ...eingabe, project: heimat }, serverInstanceId, transportToken, erlaubteParameter, optionen);
+        // Abnahme R1: Zeuge der Reverse-Autorisierung; die Weiche lehnt danach ab statt in den Projektpfad zu fallen.
+        if (!k.antwort) k.args = bezeugeReverseIntelZiel({ ...k.args, project: reverseId }, reverseId);
+        return k;
+      }
+    }
+  }
   // W12 V7: Lesepunkt = Ausweis-Kern ODER alter Einzelschalter (siehe ausweisTokenAktiv); Antwortform wie bisher.
   // P22-T50: project '*' (jev abwesend: alle Projekte) ist nie ein Projekt - kein Fremdprojekt, kein Visum, kein Onboarding.
   const alleProjekte = feld(eingabe, 'project') === '*';

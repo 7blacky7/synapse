@@ -53,7 +53,7 @@ const snapshot=async()=>JSON.stringify((await pool.query("SELECT row_to_json(r) 
 try{
  await raw.query('CREATE SCHEMA '+schema);
  for(const t of ['projects','agent_sessions','agent_identitaeten','agent_profil_schalter','intern_schalter','tool_aktivitaet','plan_tasks','thoughts','asset_upload_sitzungen','code_symbols'])await pool.query('CREATE TABLE '+t+' (LIKE public.'+t+' INCLUDING DEFAULTS INCLUDING INDEXES)');
- for(const file of ['work-jobs-schema','reverse-schema','reverse-pipeline-schema','reverse-eingang-schema','reverse-verknuepfungen-schema','reverse-code-stuecke-schema','hex-schema','hex-formate-schema','reverse-erkenntnisse-schema','reverse-einstellwerte-schema']){
+ for(const file of ['work-jobs-schema','reverse-schema','reverse-pipeline-schema','reverse-eingang-schema','reverse-verknuepfungen-schema','reverse-code-stuecke-schema','hex-schema','hex-formate-schema','reverse-erkenntnisse-schema','reverse-einstellwerte-schema','reverse-analyse-policy-schema']){
   const mod=await import('../dist/db/'+file+'.js'),sql=Object.values(mod).find(x=>typeof x==='string');
   await pool.query(sql);await pool.query(sql);
  }
@@ -191,6 +191,13 @@ try{
   await pool.query("UPDATE reverse_schichten SET aktuell=false WHERE datei_id=$1 AND schicht='S1' AND aktuell",[source.id]);
   await pool.query("INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,aktuell,status,werkzeug) VALUES($1,'S1',$2,true,'fertig','fixture')",[source.id,fp]);
   const job={id:randomUUID(),datei_id:source.id,eintrag_id:R,schicht:'S1',fingerabdruck:fp,werkzeug:'asset-inspektoren',werkzeug_version:version,profil_version:'fixture',lease_token:randomUUID()};
+  // P18-T109 Fixture-Nachzug (P18-T104): materialisiere prueft den Policy-Pin des Fachauftrags; echter Pin ueber den Produktweg.
+  const policy=await import('../dist/services/reverse-analyse-policy.js');
+  await inDb(()=>tx(async db=>{
+   const pin=await policy.bereiteReversePolicyPin(db,{reverseId:R,dateiId:String(source.id),mediumId:null,project:P,id:job.id,angefragt:'S1',manuell:true});
+   await db.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,status,ausloeser,policy_pin,lease_token,lease_bis) VALUES($1,$2,$3,'S1','laeuft','agent:p18-t84-fixture',$4::jsonb,$5,clock_timestamp()+interval '1 hour')",
+    [job.id,R,source.id,JSON.stringify(pin),job.lease_token]);
+  }));
   await inDb(()=>tx(db=>pipeline.materialisiere(db,job,{status:'fertig',dauer_ms:1,metadata:{},strings:['gfx/'+marker+'.dat'],result:{format:'pe',asset_type:'executable',metadata:{bits:32,architektur:'x86'},objects:[],references:[{kind:'library',target:marker+'.dll'}]}})));
  };
  await s1('old');await s1('new');
@@ -202,17 +209,28 @@ try{
  const s3=async(maxPgBytes,marker)=>{
   const jobId=randomUUID(),fp=sha(jobId),arbeitsWurzel=join(root,'_arbeit',jobId);await mkdir(arbeitsWurzel);
   await pool.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,prioritaet,status,ausloeser,ausfuehrung,fingerabdruck,ziel_schicht,projekt,werkzeug,werkzeug_version,profil_version) VALUES($1,$2,$3,'S3','interaktiv','wartet','fixture','container',$4,'S3',$5,'reverse-S3','fixture','fixture')",[jobId,R,source.id,fp,P]);
+  // P18-T109 Fixture-Nachzug (P18-T104): uebernehmeS3Ergebnis prueft den Policy-Pin; echter Pin ueber den Produktweg.
+  const policyS3=await import('../dist/services/reverse-analyse-policy.js');
+  await inDb(()=>tx(async db=>{
+   const pin=await policyS3.bereiteReversePolicyPin(db,{reverseId:R,dateiId:String(source.id),mediumId:null,project:P,id:jobId,angefragt:'S3',manuell:true});
+   await db.query('UPDATE reverse_auftraege SET policy_pin=$2::jsonb WHERE id=$1',[jobId,JSON.stringify(pin)]);
+  }));
   const values={'functions.jsonl':JSON.stringify({name:'Fixture',address_offset:4096,size:16,prototype:'void Fixture()',decompile_status:'ok',decompiled:'void Fixture(){ '+marker+'(); }'})+'\n','s1-rz-strings.json':JSON.stringify([{vaddr:5000,string:'gfx/'+marker+'.dat',size:16}]),'s1-rz-imports.json':'[]','s1-rz-symbols.json':'[]','normalisierer-status.json':'{"status":"fertig"}'};
   const manifest=[];for(const [pfad,text]of Object.entries(values)){await writeFile(join(arbeitsWurzel,pfad),text);manifest.push({pfad,sha256:sha(text),groesse:Buffer.byteLength(text)});}
   const e={jobId,reverseId:R,dateiId:source.id,arbeitsWurzel,manifest};
   return {e,result:await inDb(()=>tx(db=>core.uebernehmeS3Ergebnis(db,e,{konfiguration:cfg,maxPgBytes})))};
  };
+ // P18-T109 Fixture-Nachzug (P18-T104/T86): S3 braucht die Policy-Grenze S3; nur im privaten Testschema (getPool per search_path), danach entfernt.
+ await pool.query("DELETE FROM reverse_einstellungen WHERE ebene='global' AND name='analyse_bis_schicht'");
+ await pool.query("INSERT INTO reverse_einstellungen(ebene,project,eintrag_id,name,wert,wert_text,grund,gesetzt_von) VALUES('global',NULL,NULL,'analyse_bis_schicht',NULL,'S3','t84 fixture S3','test')");
  await s3(100000,'first');await s3(100000,'second');
  eq(await snapshot(),before,'S3 rerun + raw normalizer preserve all manual versions');
  const pending=await s3(1,'catchup');eq(pending.result.gespeichert,0,'low budget creates real catch-up need');
  const caught=await inDb(()=>tx(db=>core.uebernehmeS3Ergebnis(db,pending.e,{konfiguration:cfg,maxPgBytes:100000,nachzug:true})));
  eq(caught.gespeichert,1,'real retained-artifact catch-up imports function');
  eq(await snapshot(),before,'catch-up preserves manual history');
+ // P18-T109 Fixture-Nachzug: S3-Grenze nach allen S3-Laeufen (inkl. Catch-up) wieder entfernen.
+ await pool.query("DELETE FROM reverse_einstellungen WHERE ebene='global' AND name='analyse_bis_schicht' AND gesetzt_von='test'");
  await new ReverseEingang({db:pool,konfiguration:cfg}).aktualisieren(R);
  eq(await snapshot(),before,'entry re-evaluation preserves manual history');
  // File lifecycle does not own manual knowledge; cascading index cleanup leaves it intact.
