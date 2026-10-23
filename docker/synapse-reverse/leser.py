@@ -29,7 +29,7 @@ runpy.run_path(sys.argv[1],run_name='__main__')
 def _zahl(grenzen: dict, name: str) -> int:
     wert = grenzen[name]
     if not isinstance(wert, str) or not wert.isascii() or not wert.isdecimal():
-        raise ValueError("leser_grenze_ungueltig:" + name)
+        raise ValueError("leser_grenze_ungueltig")
     return int(wert)
 
 
@@ -48,6 +48,10 @@ def _baum(wurzel: Path, grenzen: dict, deadline: float) -> None:
                 if time.monotonic() >= deadline:
                     raise ValueError("leser_zeitlimit")
                 s = eintrag.stat(follow_symlinks=False)
+                if stat.S_ISLNK(s.st_mode):
+                    raise ValueError("leser_pfad_symlink")
+                if stat.S_ISREG(s.st_mode) and s.st_nlink != 1:
+                    raise ValueError("leser_hardlink")
                 if stat.S_ISDIR(s.st_mode):
                     ordner += 1
                     if ordner > _zahl(grenzen, "dateien") * (_zahl(grenzen, "tiefe") + 1):
@@ -79,7 +83,7 @@ def leser_stdin(auftrag: dict) -> bytes:
         wert = grenzen[name]
         if (not isinstance(wert, str) or not wert.isascii() or not wert.isdecimal()
                 or wert.startswith("0") or int(wert) > 9223372036854775807):
-            raise ValueError("leser_grenze_ungueltig:" + name)
+            raise ValueError("leser_grenze_ungueltig")
     eingabe = auftrag.get("leser_eingabe")
     if not isinstance(eingabe, dict):
         raise ValueError("leser_auftrag_ungueltig")
@@ -90,7 +94,80 @@ def leser_stdin(auftrag: dict) -> bytes:
     return daten
 
 
+
+# Nur eigene Codes, niemals Exceptions, Pfade oder Leser-Nutzdaten weiterreichen.
+FEHLERCODES = frozenset([
+    "leser_auftrag_ungueltig",
+    "leser_ausgabe_nicht_leer",
+    "leser_ausgabe_spezialdatei",
+    "leser_datei_zu_gross",
+    "leser_eingabe_limit",
+    "leser_eingabe_ungueltig",
+    "leser_ende_unvollstaendig",
+    "leser_exit_fehler",
+    "leser_grenze_ungueltig",
+    "leser_grenzen_fehlen",
+    "leser_grenzen_felder",
+    "leser_hardlink",
+    "leser_pfad_symlink",
+    "leser_pfad_tiefe",
+    "leser_pipe_fehlt",
+    "leser_protokoll_limit",
+    "leser_prozess_cleanup_fehler",
+    "leser_prozess_fehler",
+    "leser_prozess_signal",
+    "leser_schrittgrenze",
+    "leser_stderr_limit",
+    "leser_verzeichnisse_limit",
+    "leser_zeile_limit",
+    "leser_zeitlimit",
+])
+def _fehlercode(exc: Exception) -> str:
+    code = str(exc) if isinstance(exc, ValueError) else ""
+    return code if code in FEHLERCODES else "leser_prozess_fehler"
+
+
+def _diagnose(code: str | None, phase: str, exit_code: int | None,
+              cleanup_code: str | None = None) -> dict:
+    return {"version": 1, "quelle": "adapter", "phase": phase, "code": code,
+            "exit_code": exit_code if exit_code is not None and exit_code >= 0 else None,
+            "signal": -exit_code if exit_code is not None and exit_code < 0 else None,
+            "cleanup_code": cleanup_code}
+
+
+def _beende(prozess: subprocess.Popen, wait_ms: int) -> str | None:
+    """Cleanup darf den zuvor beobachteten Exit/Signal/Guardgrund nie ersetzen."""
+    fehler = None
+    try:
+        os.killpg(prozess.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        fehler = "leser_prozess_cleanup_fehler"
+    try:
+        prozess.wait(timeout=wait_ms / 1000)
+    except (OSError, subprocess.SubprocessError):
+        fehler = "leser_prozess_cleanup_fehler"
+    for stream in (prozess.stdin, prozess.stdout, prozess.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                fehler = "leser_prozess_cleanup_fehler"
+    return fehler
+
+
 def ausfuehren(auftrag: dict) -> dict:
+    """Auch Fehler vor Prozessstart verlassen den Adapter nur als feste Codes."""
+    try:
+        return _ausfuehren(auftrag)
+    except Exception as exc:
+        code = _fehlercode(exc)
+        return {"status": "fehler", "fehlercode": code, "leser_exit": None,
+                "leser_diagnose": _diagnose(code, "eingabe", None)}
+
+
+def _ausfuehren(auftrag: dict) -> dict:
     """Genau ein Kind, ein Schritt. Keine Formatwahl, Installation, Queue oder Adoption."""
     daten = leser_stdin(auftrag)
     eingabe, grenzen = auftrag["leser_eingabe"], auftrag["leser_grenzen"]
@@ -111,7 +188,8 @@ def ausfuehren(auftrag: dict) -> dict:
     prozess = None
     digest, gesamt, zeilen = hashlib.sha256(), 0, 0
     rest = b""
-    fehler = None
+    fehler = cleanup_code = None
+    exit_vor_cleanup = None
     fd = os.open(ziel / PROTOKOLL, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         with os.fdopen(fd, "wb", buffering=0) as protokoll, selectors.DefaultSelector() as selector:
@@ -170,23 +248,21 @@ def ausfuehren(auftrag: dict) -> dict:
             if rest:
                 raise ValueError("leser_ende_unvollstaendig")
             if prozess.returncode != 0:
-                raise ValueError("leser_exit_fehler")
+                raise ValueError("leser_prozess_signal" if prozess.returncode < 0 else "leser_exit_fehler")
             _baum(ziel, grenzen, deadline)
             os.fsync(protokoll.fileno())
-    except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        fehler = str(exc) if isinstance(exc, ValueError) else "leser_prozess_fehler"
+    except Exception as exc:
+        fehler = _fehlercode(exc)
     finally:
         if prozess is not None:
-            try:
-                os.killpg(prozess.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            prozess.wait(timeout=_zahl(grenzen, "wait_ms") / 1000)
-            for stream in (prozess.stdin, prozess.stdout, prozess.stderr):
-                if stream is not None:
-                    stream.close()
-    # Der Host stoppt zusätzlich den ganzen Jobcontainer und validiert JSONL UND Dateien.
+            # poll() VOR dem eigenen kill: das Cleanup-SIGKILL ist keine Ursache.
+            exit_vor_cleanup = prozess.poll()
+            cleanup_code = _beende(prozess, _zahl(grenzen, "wait_ms"))
+    if fehler is None and cleanup_code is not None:
+        fehler = cleanup_code
+    # Der Host bestätigt zusätzlich das Ende des ganzen Containers.
     return {"status": "fehler" if fehler else "fertig", "fehlercode": fehler,
             "leser_protokoll": {"pfad": PROTOKOLL, "sha256": digest.hexdigest(),
                                "bytes": str(gesamt), "zeilen": str(zeilen)},
-            "leser_exit": None if prozess is None else prozess.returncode}
+            "leser_exit": exit_vor_cleanup,
+            "leser_diagnose": _diagnose(fehler, "ausfuehrung", exit_vor_cleanup, cleanup_code)}

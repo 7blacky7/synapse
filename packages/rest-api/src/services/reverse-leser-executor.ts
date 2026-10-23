@@ -22,7 +22,57 @@ const AUTH={role:'koordinator' as const,authenticated:true as const};
 const SHA=/^[a-f0-9]{64}$/,UUID=/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 type Raw=Record<string,unknown>;
 type Db=Pick<PoolClient,'query'>;
-function fail(code:string):never{throw Error(code);}
+function fail(code:string):never{throw normalisiereLeserFehler(Error(code));}
+
+/** T106: endliche Listen statt Präfixvertrauen; keine fremden Meldungen/Dateinamen. */
+const ADAPTER_GRUENDE=new Set<string>(["leser_auftrag_ungueltig","leser_ausgabe_nicht_leer","leser_ausgabe_spezialdatei","leser_datei_zu_gross","leser_eingabe_limit","leser_eingabe_ungueltig","leser_ende_unvollstaendig","leser_exit_fehler","leser_grenze_ungueltig","leser_grenzen_fehlen","leser_grenzen_felder","leser_hardlink","leser_pfad_symlink","leser_pfad_tiefe","leser_pipe_fehlt","leser_protokoll_limit","leser_prozess_cleanup_fehler","leser_prozess_fehler","leser_prozess_signal","leser_schrittgrenze","leser_stderr_limit","leser_verzeichnisse_limit","leser_zeile_limit","leser_zeitlimit"]);
+const LESER_GRUENDE=new Set<string>(["konfiguration_veraltet","leser_abschluss_tx_zu_gross","leser_antwort_widerspruch","leser_artefakt_doppelt","leser_artefakt_hash","leser_artefakt_laenge","leser_artefakt_ungemeldet","leser_asset_registrierung_aus","leser_auftrag_ungueltig","leser_aus","leser_ausfuehrung_fehlgeschlagen","leser_ausgabe_bereits_vorhanden","leser_ausgabe_nicht_leer","leser_ausgabe_spezialdatei","leser_ausgabe_symlink","leser_ausgabetyp_ungueltig","leser_baumpruefung_zeitlimit","leser_checkpoint_benoetigt_teil_c","leser_checkpoint_tx_zu_gross","leser_cursor_ungueltig","leser_datei_hash","leser_datei_laenge","leser_datei_ungueltig","leser_datei_veraendert","leser_datei_zeitlimit","leser_datei_zu_gross","leser_dateien_ungueltig","leser_dateipruefung_zeitlimit","leser_eingabe_hash","leser_eingabe_limit","leser_eingabe_scope","leser_eingabe_ungueltig","leser_einstellungen_geaendert","leser_einstellungen_veraendert","leser_eintrag_bytes","leser_eintrag_inaktiv","leser_ende_ohne_daten","leser_ende_ohne_ergebnis","leser_ende_unvollstaendig","leser_ende_widerspruch","leser_endmarker_fehlt","leser_endung_ungueltig","leser_erkennung_ungueltig","leser_exit_fehler","leser_felder_ungueltig","leser_ganzzahl_ungueltig","leser_generation_bereits_abgeschlossen","leser_grenze_ungueltig","leser_grenzen_fehlen","leser_grenzen_felder","leser_grenzen_version","leser_groessenbereich_ungueltig","leser_hardlink","leser_harte_frist","leser_hash_ungueltig","leser_hostwurzel_fehlt","leser_idempotenz_konflikt","leser_identifikation_ungueltig","leser_job_fehlt","leser_job_fenced","leser_kopie_kurz","leser_lauf_nicht_freigegeben","leser_lauf_scope","leser_laufzeit_hash","leser_laufzeit_pin_fehlt","leser_laufzeit_zusatzdatei","leser_lease_verloren","leser_leere_zeile","leser_magic_ungueltig","leser_magic_zu_gross","leser_manifest_unvollstaendig","leser_materialisierung_fehlgeschlagen","leser_materialisierung_nicht_freigegeben","leser_materialisierung_tx_zu_gross","leser_metadaten_ungueltig","leser_mountbindung_fehlt","leser_objekt_doppelt","leser_objekt_ohne_daten","leser_objekte_schrittgrenze","leser_objektzahl_widerspruch","leser_paket_container_nicht_lesbar","leser_paket_dateien","leser_paket_hash","leser_paket_index","leser_paket_modus_ungueltig","leser_paket_scope","leser_paket_unvollstaendig","leser_paket_zu_gross","leser_pfad_spezialdatei","leser_pfad_symlink","leser_pfad_tiefe","leser_pfad_ungueltig","leser_pipe_fehlt","leser_protokoll_felder","leser_protokoll_hash","leser_protokoll_limit","leser_protokoll_pfad","leser_prozess_cleanup_fehler","leser_prozess_fehler","leser_prozess_nicht_erfolgreich","leser_prozess_signal","leser_publikation_fenced","leser_quellbeleg_ungueltig","leser_quellbereich","leser_quellstand_oder_revision_geaendert","leser_quellversion_veraendert","leser_record_art","leser_record_nach_ende","leser_record_ungueltig","leser_record_zu_gross","leser_revision_fehlt","leser_revision_hash","leser_revision_inaktiv","leser_runtime_auftrag_ungueltig","leser_runtime_basis_geaendert","leser_runtime_bereitstellung_laeuft","leser_runtime_container_nicht_lesbar","leser_runtime_idempotenz_konflikt","leser_runtime_image_geaendert","leser_runtime_modus_ungueltig","leser_runtime_nicht_unterstuetzt","leser_runtime_pfad","leser_runtime_pin_unbekannt","leser_runtime_pool_erforderlich","leser_runtime_quellbeleg_ungueltig","leser_runtime_registry_konflikt","leser_runtime_schreibbar","leser_runtime_snapshot_ungueltig","leser_runtime_verwaltung_aus","leser_runtime_ziel_belegt","leser_schnittstelle_nicht_unterstuetzt","leser_schrittgrenze","leser_segment_hash","leser_segment_record","leser_segmente_schrittgrenze","leser_speicher_fehlt","leser_start_nur_vor_claim","leser_stderr_limit","leser_stop_bindung_fehlt","leser_stop_budget_fehlt","leser_stop_unbestaetigt","leser_text_ungueltig","leser_transport_ende_unbestaetigt","leser_transportbindung_fehlt","leser_validierung_zeitlimit","leser_verzeichnisse_limit","leser_wurzel_symlink","leser_zeile_limit","leser_zeitlimit"]);
+interface LeserDiagnose {
+ version:1;quelle:'adapter'|'host';phase:'eingabe'|'ausfuehrung'|'validierung';
+ code:string|null;exit_code:number|null;signal:number|null;cleanup_code:string|null;
+}
+class LeserAbweisung extends Error {
+ constructor(code:string,readonly diagnose:LeserDiagnose){
+  super(code);
+ }
+}
+export function normalisiereLeserFehler(e:unknown,fallback='leser_ausfuehrung_fehlgeschlagen'):LeserAbweisung{
+ const roh=e instanceof Error?e.message:null;
+ const code=roh!==null&&LESER_GRUENDE.has(roh)?roh:LESER_GRUENDE.has(fallback)?fallback:'leser_ausfuehrung_fehlgeschlagen';
+ if(e instanceof LeserAbweisung&&code===e.message)return e;
+ return new LeserAbweisung(code,{version:1,quelle:'host',phase:'validierung',code,exit_code:null,signal:null,cleanup_code:null});
+}
+/** Die optionale V1-Diagnose ist nur ein Ablehnungsgrund, nie ein Erfolgsbeleg. */
+export function pruefeLeserProzess(antwort:Raw):void{
+ const fallback=()=>{throw normalisiereLeserFehler(Error('leser_prozess_nicht_erfolgreich'));};
+ if(!obj(antwort))return fallback();
+ const code=typeof antwort.fehlercode==='string'&&ADAPTER_GRUENDE.has(antwort.fehlercode)?antwort.fehlercode:null;
+ let diagnose:LeserDiagnose|undefined;
+ if(antwort.leser_diagnose!==undefined){
+  const d=antwort.leser_diagnose;
+  const keys=['version','quelle','phase','code','exit_code','signal','cleanup_code'];
+  if(!obj(d)||Object.keys(d).length!==keys.length||keys.some(k=>!(k in d))
+   ||d.version!==1||d.quelle!=='adapter'||typeof d.phase!=='string'||!['eingabe','ausfuehrung'].includes(d.phase)
+   ||!(d.code===null||typeof d.code==='string'&&ADAPTER_GRUENDE.has(d.code))
+   ||!(d.exit_code===null||Number.isSafeInteger(d.exit_code)&&Number(d.exit_code)>=0&&Number(d.exit_code)<=255)
+   ||!(d.signal===null||Number.isSafeInteger(d.signal)&&Number(d.signal)>=1&&Number(d.signal)<=64)
+   ||d.signal!==null&&d.exit_code!==null
+   ||!(d.cleanup_code===null||d.cleanup_code==='leser_prozess_cleanup_fehler'))return fallback();
+  if(d.code!==(antwort.fehlercode??null)
+   ||antwort.leser_exit!==(d.signal!==null?-Number(d.signal):d.exit_code))return fallback();
+  diagnose={version:1,quelle:'adapter',phase:d.phase as 'eingabe'|'ausfuehrung',code:d.code as string|null,
+   exit_code:d.exit_code as number|null,signal:d.signal as number|null,cleanup_code:d.cleanup_code as string|null};
+ }
+ if(antwort.status==='fertig'&&antwort.leser_exit===0){
+  if(antwort.fehlercode!=null||diagnose?.code!=null||diagnose?.cleanup_code!=null)fail('leser_antwort_widerspruch');
+  return;
+ }
+ if(antwort.status!=='fehler'||!code)return fallback();
+ if(code==='leser_prozess_signal'&&diagnose&&diagnose.signal===null)return fallback();
+ if(code==='leser_exit_fehler'&&diagnose&&(diagnose.exit_code===null||diagnose.exit_code===0))return fallback();
+ throw new LeserAbweisung(code,diagnose??{version:1,quelle:'adapter',phase:'ausfuehrung',code,exit_code:null,signal:null,cleanup_code:null});
+}
+
 function obj(v:unknown):v is Raw{return !!v&&typeof v==='object'&&!Array.isArray(v);}
 function fields(v:unknown,keys:string[]):asserts v is Raw{
  if(!obj(v)||Object.keys(v).some(k=>!keys.includes(k))||keys.some(k=>!(k in v)))fail('leser_protokoll_felder');
@@ -39,7 +89,8 @@ export async function leserSichererPfad(root:string,key:string,s:ReverseEinstell
  let p=base;
  for(const teil of key.split('/')){
   p=path.join(p,teil);const st=await lstat(p);
-  if(st.isSymbolicLink()||(!st.isDirectory()&&!st.isFile()))fail('leser_pfad_spezialdatei');
+  if(st.isSymbolicLink())fail('leser_pfad_symlink');
+  if(!st.isDirectory()&&!st.isFile())fail('leser_pfad_spezialdatei');
  }
  if(await realpath(p)!==p)fail('leser_pfad_symlink');
  return p;
@@ -48,7 +99,9 @@ async function datei(p:string,max:bigint,s:ReverseEinstellSnapshot,onBlock?:(b:B
  const h=await open(p,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
  try{
   const vor=await h.stat({bigint:true});
-  if(!vor.isFile()||vor.nlink!==1n||vor.size>max)fail('leser_datei_ungueltig');
+  if(!vor.isFile())fail('leser_datei_ungueltig');
+  if(vor.nlink!==1n)fail('leser_hardlink');
+  if(vor.size>max)fail('leser_datei_zu_gross');
   const digest=createHash('sha256'),buffer=Buffer.alloc(reverseZahl(s,'lese_block_bytes'));let bytes=0n;
   const deadline=Date.now()+reverseZahl(s,'e_zeitlimit_s')*1000;
   for(;;){
@@ -109,7 +162,7 @@ export interface LeserValidierung {
 /** Nur nach bestätigtem Containerende. Exit 0 allein und ein leeres Manifest genügen nie. */
 export async function pruefeLeserAusgabe(root:string,s:ReverseEinstellSnapshot,m:ReverseLeserManifest,
  quellBytes:string,antwort:Raw):Promise<LeserValidierung>{
- if(antwort.status!=='fertig'||antwort.leser_exit!==0)fail('leser_prozess_nicht_erfolgreich');
+ pruefeLeserProzess(antwort);
  fields(antwort.leser_protokoll,['pfad','sha256','bytes','zeilen']);
  const behauptet=antwort.leser_protokoll;if(behauptet.pfad!==PROTOKOLL)fail('leser_protokoll_pfad');
  const budget=reverseLeserSchrittBudget(m,s),limit=BigInt(budget.dateien),bytesLimit=BigInt(budget.bytes);
@@ -292,8 +345,8 @@ export class ReverseLeserExecutor {
   try{return (await pruefeLeserRuntimeSnapshot(this.pool,{
    runtime_sha256:l.runtime_sha256,runtime_image_digest:l.runtime_image_digest},s,this.k.reverseRoot,this.k.digest)).root;}
   catch(e){
-   const code=(e as Error).message;
-   fail(code.startsWith('leser_runtime_')||code.startsWith('leser_laufzeit_')?code:'leser_runtime_snapshot_ungueltig');
+   const code=normalisiereLeserFehler(e,'leser_runtime_snapshot_ungueltig').message;
+   fail(code);
   }
  }
  private async vorbereiten(job:WorkJob):Promise<Vorbereitet>{
@@ -347,8 +400,13 @@ export class ReverseLeserExecutor {
  }
  private async fehlerAbschliessen(job:WorkJob,laufId:string,s:ReverseEinstellSnapshot,code:string,
   diagnose:Record<string,unknown>,bytes:string|null,wer?:WorkIdentity){
+  code=normalisiereLeserFehler(Error(code)).message;
   const params=[job.id,job.inputRef.id,job.inputRef.revision,job.inputRef.sha256,job.attempt,code,
    {...diagnose,abschluss_versuch:job.attempt},bytes,laufId,!!wer];
+  if(BigInt(Buffer.byteLength(reverseLeserKanonisch(params)))>reverseBigInt(s,'materialisierung_tx_bytes')){
+   const {abweisung:ignoriert,...klein}=diagnose;
+   params[6]={...klein,abschluss_versuch:job.attempt};
+  }
   await this.statusTx(s,params,async c=>{
    const own=wer
     ?await c.query("SELECT 1 FROM work_jobs WHERE id=$1 AND state='leased' AND attempt=$2 AND claim_token=$3 AND owner_node=$4 AND boot_generation=$5 AND owner_auth_hash=$6 FOR UPDATE",
@@ -409,7 +467,7 @@ export class ReverseLeserExecutor {
    await this.fehlerFortsetzen(String(row.id),s);
   }
   const frei=reverseZahl(this.s,'executor_parallel')-this.laufend.size;if(frei<=0)return {gestartet:0};
-  const nachzug:Record<string,unknown>=await planeReverseLeserNachzug(this.pool,this.k.reverseRoot,{image:this.k.image,digest:this.k.digest}).catch(e=>({status:'fehler',fehlercode:(e as Error).message}));
+  const nachzug:Record<string,unknown>=await planeReverseLeserNachzug(this.pool,this.k.reverseRoot,{image:this.k.image,digest:this.k.digest}).catch(e=>({status:'fehler',fehlercode:normalisiereLeserFehler(e).message}));
   const nz=await leseReverseLeserNachzugSchalter(this.pool);
   if(nz.aktiv&&!nz.letzter_fehler){
    const pins=await this.pool.query("SELECT j.id,l.id AS lauf_id,l.eintrag_id,l.einstellungen_revision FROM work_jobs j JOIN reverse_leser_laeufe l ON l.work_job_id=j.id WHERE j.kind='reverse-leser' AND j.capability=$1 AND j.project=$2 AND j.state='pending' AND l.diagnose->>'nachzug'='true' ORDER BY j.created_at,j.id LIMIT $3",
@@ -448,7 +506,7 @@ export class ReverseLeserExecutor {
     await lc.wake(LESER_TOOL,PROJEKT,String(row.id));geweckt++;
    }catch(e){
     if(e instanceof ReverseEntfernungAusstehend){console.warn('[reverse-leser] Entfernung ausstehend:',row.id);continue;}
-    const code=(e as Error).message;
+    const code=normalisiereLeserFehler(e).message;
     if(code==='leser_einstellungen_veraendert')await this.veraltetenJobAbschliessen(String(row.id));
     else if(code.startsWith('leser_runtime_')||code.startsWith('leser_laufzeit_'))await this.veraltetenJobAbschliessen(String(row.id),code);
     else console.error('[reverse-leser] Start bleibt offen:',row.id,code);
@@ -457,7 +515,7 @@ export class ReverseLeserExecutor {
   const claims=await this.jobs.claim(this.wer,{limit:frei,leaseSeconds:reverseZahl(this.s,'executor_lease_s')});
   const wer=this.wer;
   for(const job of claims){
-   const p=this.ausfuehren(lc,wer,job).catch(e=>console.error('[reverse-leser]',job.id,(e as Error).message))
+   const p=this.ausfuehren(lc,wer,job).catch(e=>{const f=normalisiereLeserFehler(e);console.error('[reverse-leser]',job.id,f.message,f.diagnose);})
     .finally(()=>{this.laufend.delete(job.id);this.vorbereitet.delete(job.id);});
    this.laufend.set(job.id,p);
   }
@@ -484,23 +542,24 @@ export class ReverseLeserExecutor {
     const out={scope:'reverse-leser',id:l.id,revision:l.datei_id,sha256:String(saved.manifest_sha256)};
     if(!await this.jobs.stage(wer,job.id,job.claimToken!,out)||!(await this.jobs.complete(wer,job.id,job.claimToken!,job.inputRef)).completed)fail('leser_publikation_fenced');
    }catch(e){
-    const code=(e as Error).message.startsWith('leser_')?(e as Error).message:'leser_materialisierung_fehlgeschlagen';
+    const fehler=normalisiereLeserFehler(e,'leser_materialisierung_fehlgeschlagen'),code=fehler.message;
     await this.fehlerAbschliessen(job,l.id,s,code,{physisches_ende:true,fortsetzung_materialisierung:true,einstellungen_revision_alt:l.einstellungen_revision,einstellungen_revision_aktuell:s.revision},null,wer);
-    throw e;
+    throw fehler;
    }
    return;
   }
   const {s,lauf:l,r}=v,budget=reverseLeserSchrittBudget(r.manifest,s),token=job.claimToken!;
   let verloren=false,erneuert=false,physischBeendet=false;
+  let abbruchgrund:'leser_lease_verloren'|'leser_harte_frist'|null=null;
   const timer=setInterval(()=>{
    if(erneuert)return;erneuert=true;
-   void this.jobs.renew(wer,job.id,token,reverseZahl(s,'executor_lease_s')).then(ok=>{if(!ok)verloren=true;},()=>{verloren=true;})
+   void this.jobs.renew(wer,job.id,token,reverseZahl(s,'executor_lease_s')).then(ok=>{if(!ok){verloren=true;abbruchgrund??='leser_lease_verloren';}},()=>{verloren=true;abbruchgrund??='leser_lease_verloren';})
     .finally(()=>{erneuert=false;if(verloren)void this.stop(lc,job.id).then(()=>{physischBeendet=true;},()=>{});});
   },Math.max(reverseZahl(s,'executor_renew_min_ms'),Math.floor(reverseZahl(s,'executor_lease_s')*1000/3)));
   timer.unref();
   const harteMs=Math.max(1,Math.min(Number(budget.zeit_ms)+reverseZahl(s,'hart_puffer_s')*1000,
    job.deadline?Date.parse(job.deadline)-Date.now():Infinity));
-  const hart=setTimeout(()=>{if(!physischBeendet){verloren=true;void this.stop(lc,job.id).then(()=>{physischBeendet=true;},()=>{});}},harteMs);
+  const hart=setTimeout(()=>{if(!physischBeendet){verloren=true;abbruchgrund??='leser_harte_frist';void this.stop(lc,job.id).then(()=>{physischBeendet=true;},()=>{});}},harteMs);
   hart.unref();
   try{
    if(this.recovery){
@@ -521,7 +580,7 @@ export class ReverseLeserExecutor {
    });
    if(this.recovery)await this.transportMerken(job,wer,s,l.id,'stop');
    await this.stop(lc,job.id);physischBeendet=true;
-   if(verloren)fail('leser_lease_verloren');
+   if(verloren)fail(abbruchgrund??'leser_lease_verloren');
    const result=await pruefeLeserAusgabe(v.ausgabe,s,r.manifest,l.groesse,antwort);
    const c=await this.pool.connect();
    try{
@@ -543,15 +602,18 @@ export class ReverseLeserExecutor {
     return;
    }
    await this.stop(lc,job.id).then(()=>{physischBeendet=true;},()=>{});
-   const code=(e as Error).message.startsWith('leser_')?(e as Error).message:'leser_ausfuehrung_fehlgeschlagen';
+   const beobachtet=normalisiereLeserFehler(e);
+   // Stop-/Fence-Abweisung bleibt maßgeblich; sonst erklärt der eigene Timer den Transportabbruch.
+   const sicherheit=['leser_stop_unbestaetigt','leser_stop_bindung_fehlt','leser_job_fenced','leser_publikation_fenced'].includes(beobachtet.message);
+   const fehler=abbruchgrund&&!sicherheit?normalisiereLeserFehler(Error(abbruchgrund)):beobachtet,code=fehler.message;
    let rueckhaltBytes:string|null=null;
    if(physischBeendet)try{
     rueckhaltBytes=String((await baum(v.ausgabe,s,BigInt(budget.dateien)+1n,BigInt(budget.bytes)+reverseBigInt(s,'runner_output_bytes'))).bytes);
    }catch{/* Kein erfundener Messwert bei Symlink, überschrittenem Budget oder unlesbarem Baum. */}
    await this.fehlerAbschliessen(job,l.id,s,code,{
-    ausgabe_key:v.key,physisches_ende:physischBeendet,ausgabe_bytes_bekannt:rueckhaltBytes!==null,
+    ausgabe_key:v.key,physisches_ende:physischBeendet,ausgabe_bytes_bekannt:rueckhaltBytes!==null,abweisung:fehler.diagnose,
    },rueckhaltBytes,wer);
-   throw e;
+   throw fehler;
   }finally{clearInterval(timer);clearTimeout(hart);this.stopBelege.delete(job.id);}
  }
  private async transportMerken(job:WorkJob,wer:WorkIdentity,s:ReverseEinstellSnapshot,laufId:string,phase:string){

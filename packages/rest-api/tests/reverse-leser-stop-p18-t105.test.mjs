@@ -56,7 +56,7 @@ for(const fall of ['erfolg','leaseverlust','frist'])test('T105: Leserantwort + z
   assert.equal(released,1);assert.equal(executed,1);
   const diag=(await f.db.query('SELECT diagnose FROM reverse_leser_laeufe WHERE id=$1',[id])).rows[0].diagnose;
   if(fall==='erfolg'){assert.equal(error,null);assert.equal(failed,0);assert.equal(staged,1);assert.equal(completed,1);assert.equal(diag.host_validiert,true);}
-  else{assert.match(error?.message??'',/leser_(lease_verloren|job_fenced)/);assert.equal(failed,1);assert.equal(staged,0);assert.equal(completed,0);assert.notEqual(diag.host_validiert,true);}
+  else{if(fall==='frist')assert.equal(error?.message,'leser_harte_frist');else assert.match(error?.message??'',/leser_(lease_verloren|job_fenced)/);assert.equal(failed,1);assert.equal(staged,0);assert.equal(completed,0);assert.notEqual(diag.host_validiert,true);}
   assert.equal(await readFile(join(root,'.leser-protokoll.jsonl'),'utf8'),protocol);
  }finally{lc?.close();await f.close();await rm(root,{recursive:true,force:true});}
 });
