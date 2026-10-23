@@ -682,7 +682,7 @@ export class ReverseExecutor {
   * Fehlerbudget: retry_max Versuche OHNE Fortschritt; deterministische Fehler (Manifest geaendert, Eintragsquote) sofort.
   */
  /** P18-T93: gehaltene E-Arbeit ist ein sichtbarer Abschluss, keine automatische Adoption. */
- private async eHalten(job:WorkJob,wer:WorkIdentity,grund:string,extra:Record<string,unknown>={}):Promise<void>{
+ private async eHalten(job:WorkJob,wer:WorkIdentity,grund:string,extra:Record<string,unknown>={},abschlussart:'gehalten'|'werkzeug'='gehalten',oeffentlicherFehler?:{code:unknown;format_detail?:unknown}):Promise<void>{
   const {eAbschluss,eCheckpoint,eFachauftrag,eRetentionsJournal,eRueckhaltBeleg,eMutation}=await import('@synapse/core');
   const einstellungen=await leseReverseEinstellwerte({eintrag_id:job.inputRef.id},this.pool);
   const e={jobId:job.id,reverseId:job.inputRef.id,mediumId:job.inputRef.revision,einstellungen,pruefeLease:async(c:import('pg').PoolClient)=>{await this.policyPruefen(job,c);return this.leaseLebt(c,job,wer,true);}};
@@ -692,7 +692,7 @@ export class ReverseExecutor {
    rueckhalt=await eRueckhaltBeleg(this.k.reverseRoot,e,job.inputRef.sha256,reverseZahl(einstellungen,'manifest_record_bytes'))
     ??await eRetentionsJournal(this.k.reverseRoot,ausgabe,e,grund,reverseZahl(einstellungen,'manifest_record_bytes'));
   }catch(err){
-   rueckhalt={erhalten:true,storage_key:path.relative(this.k.reverseRoot,ausgabe),bytes:null,grund,loeschen:false,
+   rueckhalt={erhalten:false,storage_key:path.relative(this.k.reverseRoot,ausgabe),bytes:null,grund,loeschen:false,
     automatisch_fortsetzen:false,fehler:{errno:(err as NodeJS.ErrnoException).code??'UNBEKANNT',meldung:(err as Error).message}};
   }
   const f=await eFachauftrag(this.pool,e),cp=f.uebernahme??{};
@@ -706,18 +706,31 @@ export class ReverseExecutor {
   const offen=String(rueckhalt.offen??(ex?BigInt(String(ex.offen??'0'))+(rest>0n?rest:0n):abschluss?.offen??(rest>0n?rest:'0')));
   rueckhalt={...rueckhalt,offen,offen_unbekannt:!ex&&!artefakt&&rueckhalt.offen===undefined&&abschluss?.offen===undefined};
   await eCheckpoint(this.pool as Pool,e,{retention:true,fortsetzung_gesperrt:true,rueckhalt,letzter_fehler:ursache,...extra});
+  const oeffentlicheUrsache=vorher?.grund?ursache:oeffentlicherFehler?fehlercode(oeffentlicherFehler.code,oeffentlicherFehler.format_detail):ursache;
+  const rohCode=grund==='storno'?'abgebrochen':grund==='zeitlimit'||oeffentlicheUrsache==='deadline'?'zeitlimit':oeffentlicheUrsache==='datei_zu_gross'?'zu_gross':oeffentlicheUrsache;
+  const basis=rohCode.split(':')[0];
+  const code=grund==='storno'?'abgebrochen':basis==='werkzeug_fehler'?'werkzeug_fehler':(REVERSE_FEHLERCODES as readonly string[]).includes(basis)?rohCode:'werkzeug_fehler';
+  const cache=(await this.pool.query('SELECT versuche FROM reverse_analyse_cache WHERE fingerabdruck=$1',[f.fingerabdruck])).rows[0];
+  const erschoepft=Math.max(Number(cache?.versuche??0),job.attempt,Number(cp.fehlversuche??0))>=reverseZahl(einstellungen,'retry_max');
+  // Nur ein tatsächlicher wiederholbarer Werkzeugfehler bekommt den bisherigen T64-Neuversuch.
+  // Gehaltene Pins/Cursor/Signale bleiben gesperrt; neue Versuche adoptieren niemals den alten Rohstand.
+  const wiederholbar=abschlussart==='werkzeug'&&!reverseFehlerDeterministisch(code)&&!erschoepft&&!rueckhalt.fehler;
+  const fachstatus=grund==='storno'?'abgebrochen':wiederholbar?'wartet':'fehler';
   await eAbschluss(this.pool as Pool,e,{dateien:String(cp.dateien??abschluss?.dateien??'0'),abgewiesen:String(cp.verworfen??abschluss?.abgewiesen??rueckhalt.abgewiesen??'0'),
-   offen,grund:ursache,rueckhalt,fertig:false});
-  if(grund==='storno'||grund==='zeitlimit'){
-   // E-Metadaten sind bereits begrenzt abgeschlossen. Auch diese beiden konstanten Steuerzeilen je eine TX.
-   await eMutation(this.pool as Pool,e,"INSERT INTO work_job_audit(id,job_id,event,detail) SELECT gen_random_uuid(),$1,$2,$3::jsonb WHERE NOT EXISTS(SELECT 1 FROM work_job_audit WHERE job_id=$1 AND event=$2 AND detail->>'versuch'=$4)",
-    [job.id,'reverse_e_erhalten',JSON.stringify({grund,versuch:String(job.attempt)}),String(job.attempt)]);
-   await eMutation(this.pool as Pool,e,"UPDATE work_jobs SET state=$2,error_code=$3,lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1",
-    [job.id,grund==='storno'?'cancelled':'failed',grund==='storno'?'abgebrochen':'zeitlimit']);
-   return;
-  }
-  const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:job.inputRef.sha256};
-  if(await this.jobs.stage(wer,job.id,job.claimToken!,out))await this.jobs.complete(wer,job.id,job.claimToken!,job.inputRef);
+   offen,grund:code,rueckhalt,fertig:false,status:'fehler'});
+  // Bestehende Matrix mit je einer gefencten Mutation, auch bei PG-Budget1/2.
+  // Der Rohgrund bleibt separat erhalten; ein öffentlicher Fallback überschreibt ihn nicht.
+  await eCheckpoint(this.pool as Pool,e,{abschluss:{dateien:String(cp.dateien??abschluss?.dateien??'0'),
+   abgewiesen:String(cp.verworfen??abschluss?.abgewiesen??rueckhalt.abgewiesen??'0'),offen,grund:ursache,fertig:false}});
+  await eMutation(this.pool as Pool,e,"UPDATE reverse_auftraege SET status=$2,fehlercode=$3 WHERE id=$1 AND eintrag_id=$4",
+   [f.id,fachstatus,code,e.reverseId]);
+  await eMutation(this.pool as Pool,e,"UPDATE reverse_schichten SET status=$2,fehlercode=$3 WHERE auftrag_id=$1 AND medium_id=$4 AND datei_id IS NULL AND schicht='E' AND aktuell",
+   [f.id,wiederholbar?'wartet':'fehler',code,e.mediumId]);
+  const event=grund==='storno'?'cancelled':'failed';
+  await eMutation(this.pool as Pool,e,"INSERT INTO work_job_audit(id,job_id,event,detail) SELECT gen_random_uuid(),$1,$2,$3::jsonb WHERE NOT EXISTS(SELECT 1 FROM work_job_audit WHERE job_id=$1 AND event=$2 AND detail->>'versuch'=$4)",
+   [job.id,event,JSON.stringify({grund:ursache,fehlercode:code,executor:'reverse',retention:true,versuch:String(job.attempt)}),String(job.attempt)]);
+  await eMutation(this.pool as Pool,e,"UPDATE work_jobs SET state=$2,error_code=$3,lease_until=NULL,staged_output_ref=NULL,updated_at=clock_timestamp() WHERE id=$1",
+   [job.id,grund==='storno'?'cancelled':'failed',code]);
  }
 
  private async fuehreEBlockAus(lc:ToolLifecycle,wer:WorkIdentity,job:WorkJob,quelle:ReverseQuelle):Promise<void>{
@@ -932,7 +945,7 @@ export class ReverseExecutor {
    // P18-T87: Storno kam vor dem Ergebnis an -> Ergebnis verwerfen, der Auftrag bleibt abgebrochen.
    if(aufsicht.grund()==='storno'){await this.eHalten(job,wer,'storno');return;}
    if(ergebnis.fehlercode==='signal_sigterm'){await this.eHalten(job,wer,'signal_sigterm',{runner_abbruch:ergebnis.retention??null});return;}
-   if(ergebnis.retention){await this.eHalten(job,wer,String(ergebnis.fehlercode??(ergebnis.retention as Record<string,unknown>).grund??'teilweise'),{runner_abbruch:ergebnis.retention});return;}
+   if(ergebnis.retention){await this.eHalten(job,wer,String(ergebnis.fehlercode??(ergebnis.retention as Record<string,unknown>).grund??'teilweise'),{runner_abbruch:ergebnis.retention},ergebnis.status==='fehler'?'werkzeug':'gehalten');return;}
    const manifest=Array.isArray(ergebnis.manifest)?ergebnis.manifest as ReverseEManifestEintrag[]:[];
    if((status==='fertig'||(status==='teilweise'&&manifest.length>0))&&lebt){
     if(ergebnis.abbruch)console.warn('[reverse-executor] Lauf vorzeitig beendet, Teilergebnis wird uebernommen:',job.id,JSON.stringify(ergebnis.abbruch).slice(0,500));
@@ -945,11 +958,15 @@ export class ReverseExecutor {
      if(istReversePolicyFehler(e)){await this.policyHalten(job,wer,e.code);return;}
      // W5: fachlicher Fehler -> endgültig; sonst freigeben, bis der Versuchszähler erreicht ist.
      console.error('[reverse-executor] Übernahme fehlgeschlagen:',job.id,(e as Error).message);
-     if(e instanceof ReverseEUebernahmeFehler||job.attempt>=this.k.retryMax)await this.eHalten(job,wer,e instanceof ReverseEUebernahmeFehler?fehlercode(e.code):'werkzeug_fehler');
+     if(e instanceof ReverseEUebernahmeFehler||job.attempt>=this.k.retryMax)await this.eHalten(job,wer,e instanceof ReverseEUebernahmeFehler?fehlercode(e.code):'werkzeug_fehler',{},e instanceof ReverseEUebernahmeFehler?'werkzeug':'gehalten');
      else aufraeumen=await this.jobs.release(wer,job.id,token);
      return;
     }
     if(!r){console.warn('[reverse-executor] Späte Rückmeldung nach Lease-Ablauf verworfen:',job.id);return;}
+    const teil=r as typeof r&{rueckhalt?:Record<string,unknown>;grund?:string};
+    if(teil.rueckhalt||status==='teilweise'){
+     await this.eHalten(job,wer,String(teil.grund??ergebnis.fehlercode??'teilweise'));return;
+    }
     aufraeumen=true;
     const out={scope:'reverse',id:job.id,revision:String(job.attempt),sha256:createHash('sha256').update(JSON.stringify(manifest)).digest('hex')};
     if(!await this.jobs.stage(wer,job.id,token,out)){console.warn('[reverse-executor] Staging abgewiesen:',job.id);return;}
@@ -959,7 +976,9 @@ export class ReverseExecutor {
    }
    if(!lebt){console.warn('[reverse-executor] Lease verloren, Ergebnis verworfen:',job.id);return;}
    meldeRunnerFehler(job.kind,job.id,ergebnis);
-   await this.eHalten(job,wer,status==='teilweise'?String(ergebnis.fehlercode??'deadline'):fehlercode(ergebnis.fehlercode,ergebnis.format_detail));
+   const rohgrund=String(ergebnis.fehlercode??(status==='teilweise'?'deadline':'werkzeug_fehler'));
+   await this.eHalten(job,wer,rohgrund,ergebnis.format_detail===undefined?{}:{format_detail:ergebnis.format_detail},
+    status==='fehler'?'werkzeug':'gehalten',status==='teilweise'?undefined:{code:ergebnis.fehlercode,format_detail:ergebnis.format_detail});
   }finally{
    clearInterval(timer);aufsicht.ende();
    // Teil C: Arbeitsreste werden hier niemals gelöscht. Der zentrale E-Guard verlangt bestätigten Vollabschluss.

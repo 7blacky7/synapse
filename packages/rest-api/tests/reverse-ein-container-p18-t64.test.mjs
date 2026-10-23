@@ -21,6 +21,7 @@ const {REVERSE_PIPELINE_SCHEMA_SQL}=await import('../../core/dist/db/reverse-pip
 const {ASSET_UPLOAD_SCHEMA_SQL}=await import('../../core/dist/db/asset-upload-schema.js');
 const {ladeAssetKonfiguration}=await import('../../core/dist/config/asset-konfig.js');
 const core=await import('../../core/dist/index.js');
+const {mitLesePool}=await import('../../core/dist/db/client.js');
 const {ToolLifecycle}=await import('../dist/services/tool-lifecycle.js');
 const {buildToolContainerOptions}=await import('../dist/services/tool-container-docker.js');
 let ex;
@@ -37,7 +38,7 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
  const connect=async()=>{const c=await pool.connect();await c.query('SET search_path TO "'+schema+'",public');return c;};
  const db={connect,query:async(...a)=>{const c=await connect();try{return await c.query(...a);}finally{c.release();}}};
  let lc,unhook,abmelden;
- try{
+ try{await mitLesePool(db,async()=>{
   assert.equal((await pool.query('SELECT current_database() AS name')).rows[0].name,'synapse_test');
   await pool.query('CREATE SCHEMA "'+schema+'"');
   await db.query('CREATE TABLE asset_upload_sitzungen (LIKE public.asset_upload_sitzungen INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES)');
@@ -48,8 +49,10 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
 
   await db.query('ALTER TABLE tool_activation ADD COLUMN IF NOT EXISTS updater_identity_id TEXT');
   await db.query((await import('../../core/dist/db/reverse-analyse-policy-schema.js')).REVERSE_ANALYSE_POLICY_SCHEMA_SQL);
-  await db.query('ALTER TABLE reverse_auftraege ADD COLUMN IF NOT EXISTS uebernahme JSONB');
+  await db.query('ALTER TABLE reverse_auftraege ADD COLUMN IF NOT EXISTS uebernahme JSONB, ADD COLUMN IF NOT EXISTS trigger_identity_id TEXT');
   await db.query('CREATE TABLE agent_profil_schalter (LIKE public.agent_profil_schalter INCLUDING DEFAULTS INCLUDING INDEXES)');
+  await db.query('CREATE TABLE reverse_einstellungen(ebene text,project text,eintrag_id text,name text,wert numeric,wert_text text)');
+  await db.query("INSERT INTO reverse_einstellungen(ebene,name,wert) VALUES('global','entstoerer_gnade_s',0),('global','entstoerer_ohne_ausfuehrer_s',0)");
   const konfig=ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:'synapse-reverse:p18-t64@sha256:'+'b'.repeat(64),
    SYNAPSE_REVERSE_RESOURCE_NEED:'{"cpu":1,"ram":512,"vram":0,"gpu":false}',SYNAPSE_REVERSE_EXECUTOR_LEASE_SECONDS:'30'},reverseRoot);
   konfig.renewMs=3600000;
@@ -60,17 +63,19 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   await db.query('INSERT INTO embedding_knoten(node_id,boot_id,service_token_hash) VALUES($1,$2,$3)',[wer.nodeId,wer.bootGeneration,wer.authHash]);
 
   // Fake-Container: echte Mount-/Optionsauflösung, Runner simuliert, stop wirklich beobachtbar.
-  const resolve=ex.reverseMountResolver(konfig),arbeitVon=new Map(),gestoppt=new Set(),starts=[],kommandos=[];let absturzFuer=null;
+  const resolve=ex.reverseMountResolver(konfig),arbeitVon=new Map(),gestoppt=new Set(),starts=[],kommandos=[];let absturzFuer=null,physischesEndeBestaetigt=true,rohfehlerFuer=null;
+  const unbekannterRohgrund='unknown_fixture_code: Sonderzeichen ä / '+ 'ungekuerzt'.repeat(12),rohesFormatdetail='Detail ä / unverändert';
   const fake={
    async start(d,ctx){const mounts=await resolve(d,ctx);const o=buildToolContainerOptions(d,ctx,mounts);starts.push(o);
     const id='fake-'+ctx.generation;arbeitVon.set(id,mounts.find(m=>m.role==='arbeit').source);return {id,coldstart_ms:3};},
-   async observe(id){return {container_id:id,running:!gestoppt.has(id),start_observed:true,cpu_percent:0,gpu_percent:null,measured_at:(await db.query('SELECT clock_timestamp() AS t')).rows[0].t.toISOString()};},
+   async observe(id){return {container_id:id,running:!gestoppt.has(id)||!physischesEndeBestaetigt,start_observed:true,cpu_percent:0,gpu_percent:null,measured_at:(await db.query('SELECT clock_timestamp() AS t')).rows[0].t.toISOString()};},
    async stop(id){gestoppt.add(id);},async cleanup(){},
    async command(id,req,_t,_m,onTerminal){
     kommandos.push({container:id,req});
     assert.equal(req.ausgabe,'/arbeit/'+req.auftrag_id);
     const out=join(arbeitVon.get(id),req.auftrag_id);
     assert.deepEqual(await readdir(out),[],'Ausgabeordner leer vorab angelegt');
+    if(rohfehlerFuer===req.auftrag_id){await writeFile(join(out,'roh.bin'),'unveraenderter Rohstand');onTerminal?.();return {status:'fehler',fehlercode:unbekannterRohgrund,format_detail:rohesFormatdetail};}
     if(absturzFuer===req.auftrag_id){onTerminal?.();return {status:'fehler',fehlercode:'werkzeug_fehler',meldung:'Fixture-Absturz'};}
     await writeFile(join(out,'a.txt'),'hallo');
     onTerminal?.();return {status:'fertig',fehlercode:null,manifest:[{pfad:'a.txt',groesse:5,sha256:sha('hallo')}]};
@@ -82,7 +87,10 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   unhook=ex.registriereWorkJobHooks(ex.REVERSE_CAPABILITY,executor.hooks());
   let kapazitaet={belegt:4,max:4};
   abmelden=core.meldeReverseAusfuehrer({kinds:konfig.kinds,parallel:konfig.parallel,kapazitaet:async()=>kapazitaet,
-   containerNeustart:j=>lc.neustart(ex.REVERSE_TOOL_ID,ex.REVERSE_PROJEKT,j??null)});
+   containerNeustart:async j=>{
+    try{return await lc.neustart(ex.REVERSE_TOOL_ID,ex.REVERSE_PROJEKT,j??null);}
+    catch(e){if(!physischesEndeBestaetigt&&e.message==='tool_stop_unconfirmed')return {neu_gestartet:false,zustand:'stopping'};throw e;}
+   }});
   const jobs=core.createWorkJobService({pool:db});
   const tool=a=>core.fuehreReverseAus(a,{pool:db});
 
@@ -165,6 +173,20 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   assert.equal((await zustand(e4.job.id)).state,'completed');assert.equal(starts.length,1,'Container läuft weiter');
   absturzFuer=null;
   console.log('PASS 4 Absturz trifft nur einen Auftrag');
+  // T93 R1: echter E-AUS-Aufrufer, keine direkte eHalten-Matrix; unbekannt/lang/Unicode bleibt roh.
+  const rohfall=await neuerAuftrag('rohgrund');rohfehlerFuer=rohfall.job.id;
+  await durchlaufe(2);rohfehlerFuer=null;
+  assert.deepEqual(await zustand(rohfall.job.id),{state:'failed',error_code:'werkzeug_fehler'});
+  assert.equal((await auftrag(rohfall.auftrag)).status,'wartet');
+  const rohcp=(await db.query('SELECT uebernahme FROM reverse_auftraege WHERE id=$1',[rohfall.auftrag])).rows[0].uebernahme;
+  assert.equal(rohcp.retention,true);assert.equal(rohcp.fortsetzung_gesperrt,true);
+  assert.equal(rohcp.rueckhalt.grund,unbekannterRohgrund);
+  assert.equal(rohcp.letzter_fehler,unbekannterRohgrund);assert.equal(rohcp.abschluss.grund,unbekannterRohgrund);
+  assert.equal(rohcp.format_detail,rohesFormatdetail);
+  const rohjournal=JSON.parse(await fs.readFile(join(konfig.arbeitRoot,rohfall.job.id,'.e-retention.json'),'utf8'));
+  assert.equal(rohjournal.grund,unbekannterRohgrund);
+  assert.equal(await fs.readFile(join(konfig.arbeitRoot,rohfall.job.id,'roh.bin'),'utf8'),'unveraenderter Rohstand');
+  console.log('PASS T93 Rohgrund echter E-AUS-Aufrufer: Journal/Checkpoint unverändert, öffentlich failed/werkzeug_fehler, Fach wartet');
 
   // 5) P18-T46 (angepasst in der Testphase Welle 2): CloneCD liest der Runner jetzt mit dem eigenen Parser. Keine
   //    Vorab-Ablehnung mehr (vorher P18-T64: format_nicht_unterstuetzt:clonecd ohne Containerlauf); Haupt- und
@@ -264,7 +286,7 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   // 11) API-Neustart mitten im Auftrag + automatischer Entstörer: unbekannter Lauf blockiert den Container, Lease ist
   //     abgelaufen, dazu ein ausführerloser S1-Auftrag. Ein Automatik-Durchlauf behebt alles, danach läuft der Auftrag.
   const h=await neuerAuftrag(12),hs1=await neuerAuftrag(12,{kind:'reverse-S1',rid:h.rid});
-  const inst=(await db.query("SELECT instance_id,generation FROM tool_containers WHERE tool_id=$1 AND state='warm'",[ex.REVERSE_TOOL_ID])).rows[0];
+  const inst=(await db.query("SELECT instance_id,generation,container_id FROM tool_containers WHERE tool_id=$1 AND state='warm'",[ex.REVERSE_TOOL_ID])).rows[0];
   assert.ok(inst,'globaler Container warm');
   await db.query("UPDATE work_jobs SET state='leased',attempt=1,owner_node=$2,boot_generation=$3,owner_auth_hash=$4,claim_token=$5,resource_domain='x',lease_until=clock_timestamp()-interval '1 minute' WHERE id=$1",
    [h.job.id,wer.nodeId,randomUUID(),wer.authHash,randomUUID()]);
@@ -273,13 +295,22 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   assert.equal(diag.container.instanzen[0].ursache,'container_haengt',JSON.stringify(diag.container));
   assert.equal(u(h.auftrag).ursache,'lease_abgelaufen');assert.equal(u(hs1.auftrag).ursache,'kein_ausfuehrer');
   process.env.SYNAPSE_REVERSE_ENTSTOERER_KEIN_AUSFUEHRER_S='0';process.env.SYNAPSE_REVERSE_ENTSTOERER_MS='3600000';
+  physischesEndeBestaetigt=false;
   const auto=core.starteReverseEntstoerer({pool:db});
   try{
    const lauf=await auto.durchlauf();
    const alle=[...lauf.kein_ausfuehrer.massnahmen,...lauf.rest.massnahmen];
    assert.ok(alle.some(m=>m.ursache==='kein_ausfuehrer'&&m.ergebnis==='storniert'),JSON.stringify(alle));
    assert.ok(alle.some(m=>m.ursache==='lease_abgelaufen'&&m.ergebnis==='freigegeben:pending'),JSON.stringify(alle));
-   assert.ok(alle.some(m=>m.ursache==='container_haengt'&&m.ergebnis.startsWith('gestoppt')),JSON.stringify(alle));
+   assert.ok(alle.some(m=>m.ursache==='container_haengt'&&m.ergebnis.startsWith('ausstehend')),JSON.stringify(alle));
+   assert.equal((await fake.observe(inst.container_id)).running,true,'Stopanforderung allein ist kein physischer Endbeleg');
+   assert.equal((await db.query('SELECT state FROM tool_containers WHERE instance_id=$1',[inst.instance_id])).rows[0].state,'stopping');
+   // T105/28465: vorhandener Fake liefert den Endbeleg erst jetzt; Lifecycle bestätigt Ende/Ressourcen/Run.
+   physischesEndeBestaetigt=true;await lc.tick();
+   assert.equal((await fake.observe(inst.container_id)).running,false,'physisch gestoppt');
+   const gestopptBeleg=(await db.query('SELECT state,container_id,resource_token FROM tool_containers WHERE instance_id=$1',[inst.instance_id])).rows[0];
+   assert.deepEqual(gestopptBeleg,{state:'cold',container_id:null,resource_token:null},'gestoppt erst nach physischem Ende');
+   assert.equal((await db.query("SELECT count(*)::int n FROM tool_container_runs WHERE instance_id=$1 AND generation=$2 AND state IN('running','unknown')",[inst.instance_id,inst.generation])).rows[0].n,0,'keine unbestätigten Runs nach Endbeleg');
    diag=await core.diagnoseReverse({pool:db});
    assert.equal(diag.automatik.aktiv,true);assert.ok(diag.automatik.letzter_lauf.massnahmen>=3);assert.ok(diag.automatik.massnahmen.some(m=>m.quelle==='automatik'));
    assert.equal((await auto.durchlauf()).rest.anzahl,0,'zweiter Automatik-Lauf: nichts mehr zu tun');
@@ -288,7 +319,7 @@ test('P18-T64 ein Reverse-Container, Diagnose, Entstörer',async()=>{
   for(let i=0;i<3;i++){await executor2.durchlauf();await executor2.leerlauf();assert.ok(await reverseContainer()<=1);}
   assert.equal((await zustand(h.job.id)).state,'completed','Auftrag nach Neustart erledigt');
   console.log('PASS 11 API-Neustart + automatischer Entstörer');
- }finally{
+ });}finally{
   abmelden?.();unhook?.();lc?.close();
   await pool.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');await pool.end();
   fs.chown=originalChown;syncBuiltinESMExports();
