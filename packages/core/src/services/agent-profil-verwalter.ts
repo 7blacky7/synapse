@@ -5,7 +5,8 @@
  */
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
-import { aktuellerAgentPrincipal } from './agent-bezug.js';
+import { aktuellerAgentAufruf, aktuellerAgentPrincipal } from './agent-bezug.js';
+import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 import { aktuelleUserHerkunft } from './user-herkunft.js';
 import type { W1bAkteur, AusweisAkteur } from './agent-profil-vertrag.js';
 import { rolleFuerAgent } from './agent-rollen.js';
@@ -28,6 +29,20 @@ export function aktuellerW1bAkteur(): W1bAkteur | null {
 }
 
 /**
+ * P22-T79 (Befund d93b8a2e): der Main verwaltet Agenten in Projekt <project> NUR, wenn die Ausweis-Grenze den Aufruf als
+ * Agenten-Verwaltung freigegeben hat (Aufrufkontext main_verwaltung === project; Positivliste + Schalter main_agentenverwaltung
+ * in agent-token-tools.ts) und PG ihn als aktive Main-Identitaet im internen Bereich kennt. Sonst null.
+ */
+export async function mainVerwaltetProjekt(akteur: AusweisAkteur, project: string | null, db?: ProfilDb): Promise<{ wer: string; actor_identity_id: string } | null> {
+  if (!project || akteur.art !== 'identitaet') return null;
+  const p = akteur.principal;
+  if (p.rolle !== 'main' || p.project !== HAUPTAGENT_PROJEKT || aktuellerAgentAufruf()?.main_verwaltung !== project) return null;
+  const r = await (db ?? getPool()).query(
+    "SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2 AND status='aktiv' AND rolle='main'", [p.identity_id, HAUPTAGENT_PROJEKT]);
+  return r.rows[0] ? { wer: p.identity_id, actor_identity_id: p.identity_id } : null;
+}
+
+/**
  * User, oder aktiver bestaetigter Koordinator DESSELBEN Projekts (Rolle wird in PG gegengeprueft,
  * nicht aus dem Principal geglaubt). nurUser: globale Kataloge.
  */
@@ -47,6 +62,8 @@ export async function pruefeProfilVerwalter(
     return { wer: 'legacy:' + agent, actor_identity_id: null };
   }
   if (akteur.art !== 'identitaet') throw new ProfilVerwaltungFehler('recht_fehlt');
+  const main = await mainVerwaltetProjekt(akteur, project, opt.db);
+  if (main) return main;
   const p = akteur.principal;
   if (p.project !== project || p.rolle !== 'koordinator') throw new ProfilVerwaltungFehler('recht_fehlt');
   const r = await (opt.db ?? getPool()).query(

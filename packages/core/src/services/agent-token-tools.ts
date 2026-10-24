@@ -55,6 +55,7 @@ import {
 import {
   leseMainSchalter, mainIdentitaetDesAusweises, istMainPrincipal, sichtbareUserProjekte, mainHinweisText, mainNurLesenAblehnung,
   mainProjektUnbekannt, mainKommunikationErlaubt, MAIN_LESEZUGRIFF_FUNKTION, MAIN_DATEN_TOOLS, MAIN_HINWEIS_FELD,
+  mainVerwaltungErlaubt, mainVerwaltungAktiv,
 } from './hauptagent-sonderstellung.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 // P22-T86: chat(get) mit Ausweis nur eigene Nachrichten (Produkt-Schalter chat_get_eigene, Standard EIN).
@@ -409,6 +410,8 @@ export async function bereiteAgentToolAufrufVor(
     && (await leseMainSchalter(MAIN_LESEZUGRIFF_FUNKTION)).aktiv && !!(await mainIdentitaetDesAusweises(token));
   const fremdProjekt = heimatDesAusweises && heimatDesAusweises !== projektHinweis
     && (mainLesend || (await leseMehrprojektSchalter(heimatDesAusweises)).aktiv) ? projektHinweis : null;
+  // P22-T79 (Befund d93b8a2e): Agenten-Verwaltung des Main in B (Positivliste, Schalter main_agentenverwaltung, Standard AUS).
+  const mainVerwaltung = mainLesend && mainVerwaltungErlaubt(tool, aktionRoh) && await mainVerwaltungAktiv();
   // P22-T43 (B2): Anzeige aus der WIRKSAMEN Quelle; freigegeben unveraendert = ausweisTokenAktiv (Kern ODER Altschalter).
   // P22-T44: im fremden Projekt gilt der Stand der Heimat.
   const schalter = await wirksamerAusweisSchalter(fremdProjekt ? heimatDesAusweises : projektHinweis, token);
@@ -597,8 +600,10 @@ export async function bereiteAgentToolAufrufVor(
       }
       const k = aktuellerAgentAufruf();
       if (k) {
-        k.principal = { art: 'legacy', project: fremdProjekt, agent_id: p.agent_id };
+        // P22-T79: bei Agenten-Verwaltung bleibt der Principal die Main-Identitaet (die Fachdienste pruefen sie mit main_verwaltung).
+        k.principal = mainVerwaltung ? agentPrincipalAusAnmeldung(p) : { art: 'legacy', project: fremdProjekt, agent_id: p.agent_id };
         k.fremdprojekt = { project: fremdProjekt, heimat: p.project, zugang: fremd.zugang, identity_id: p.identitaet.id };
+        k.main_verwaltung = mainVerwaltung ? fremdProjekt : null;
       }
       // Pflichtregeln von B einmal je Lauf: Onboarding-Nachweis des Namens in B vergessen -> das Bestands-Onboarding liefert sie.
       // P22-T79: nicht fuer den Main (er arbeitet in B nicht).
@@ -666,7 +671,7 @@ export async function bereiteAgentToolAufrufVor(
       bindeVerschachtelteActorFelder(tool, action, args, p.agent_id, erlaubteParameter);
     }
     // P22-T44: Visum = nur lesende Aktionen + Channels; Schreiben braucht die Arbeitsfreigabe durch den Koordinator von B.
-    if (fremd?.zugang === 'visum' && !visumErlaubt(tool, action) && !(mainLesend && mainKommunikationErlaubt(tool, action))) {
+    if (fremd?.zugang === 'visum' && !visumErlaubt(tool, action) && !(mainLesend && mainKommunikationErlaubt(tool, action)) && !mainVerwaltung) {
       // P22-T79: der Main bekommt keine Arbeitsfreigabe, nur den Hinweis auf den Koordinator.
       basis.antwort = mainLesend ? mainNurLesenAblehnung(tool, action, fremd.project) : visumAblehnung(tool, action, fremd.project, fremd.heimat, fremd.identity_id, fremd.visum_bis);
       return basis;

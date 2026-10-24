@@ -20,6 +20,7 @@ import { ausweisTokenAktiv } from './agent-profil-schalter.js';
 // P22-T45: Erstnutzungsfrist aus der EINEN Lesestelle (Einstellung erstnutzung_minuten); kein Importzyklus mehr.
 import { erstnutzungFristMs } from './agent-ausweis-fristen.js';
 import { leseAgentBezugModus, aktuellerAgentAufruf, type AgentBezugStand } from './agent-bezug.js';
+import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 import { beginneIdentitaetsSitzung } from './agent-identitaet-sitzungen.js';
 import { selbstKonflikte, type Selbstangaben } from './agent-selbstfelder.js';
 
@@ -164,7 +165,15 @@ async function berechtigung(c: PoolClient, project: string, p?: AgentIdentitaetP
     "SELECT rolle FROM agent_identitaeten WHERE id=$1 AND project=$2 AND status='aktiv' FOR SHARE",
     [p.identity_id, project],
   );
-  if (!r.rows[0]) throw new AgentIdentitaetFehler('principal_ungueltig');
+  if (!r.rows[0]) {
+    // P22-T79 (Befund d93b8a2e): der Main verwaltet Agenten in <project> nur mit Freigabe der Ausweis-Grenze (main_verwaltung).
+    if (aktuellerAgentAufruf()?.main_verwaltung === project) {
+      const m = await c.query("SELECT 1 FROM agent_identitaeten WHERE id=$1 AND project=$2 AND rolle='main' AND status='aktiv' FOR SHARE",
+        [p.identity_id, HAUPTAGENT_PROJEKT]);
+      if (m.rows[0]) return { wer: p.identity_id, verwaltung: true, daemon: false };
+    }
+    throw new AgentIdentitaetFehler('principal_ungueltig');
+  }
   return { wer: p.identity_id, verwaltung: r.rows[0].rolle === 'koordinator', daemon: false };
 }
 async function audit(c: Pick<PoolClient, 'query'>, id: string, wer: string, aktion: string, alt: unknown, neu: unknown, grund?: string): Promise<void> {

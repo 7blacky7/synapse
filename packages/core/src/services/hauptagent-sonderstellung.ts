@@ -13,6 +13,11 @@
  *   Main). Wirksam = intern-Override (nur SYNAPSE_INTERN_TOOL=1, befristet) > Produkt-Schalter (ebene global) > Standard EIN.
  *   AUS = Bestand (Abweisung agent_token_fremdes_projekt bzw. kein eingespielter Startkontext).
  * DEBUG: leseMainSchalter() (Quelle, letzter_fehler); chat(identitaet).ausweis_projekte zeigt die Eintraege des Main.
+ * AGENTEN-VERWALTUNG (P22-T79 Befund d93b8a2e, User 24.10.: 'auf Agenten sowieso und auch Koordinatoren auf der API'): mit
+ *   Produkt-Schalter 'main_agentenverwaltung' (global, Standard AUS, nur ausdruecklich) darf der Main in jedem User-Projekt die
+ *   Aktionen der Positivliste MAIN_VERWALTUNG ausfuehren (Ausweise, Identitaeten, Spezialisten/Koordinatoren starten/stoppen,
+ *   Heartbeat, Kontingent). Der Principal bleibt dann die Main-Identitaet, der Aufrufkontext traegt main_verwaltung=<Projekt>;
+ *   pruefeProfilVerwalter/pruefeAusweisAkteur lassen den Main NUR mit diesem Flag zu. Projektarbeit bleibt main_nur_lesen.
  */
 import type { QueryConfig } from 'pg';
 import { getPool } from '../db/client.js';
@@ -102,6 +107,23 @@ export function mainKommunikationErlaubt(tool: string, action: string | undefine
   return MAIN_KOMMUNIKATION.has(`${tool}.${action ?? ''}`);
 }
 
+export const MAIN_AGENTENVERWALTUNG_FUNKTION = 'main_agentenverwaltung' as const;
+/** P22-T79: Agenten-Verwaltung des Main in User-Projekten (tool.action). Kein purge, keine Projektdaten. */
+export const MAIN_VERWALTUNG: ReadonlySet<string> = new Set([
+  'admin.agent_vorbereiten', 'admin.token_abrufen', 'admin.token_loeschen', 'admin.profil_lesen', 'admin.profil_uebersicht',
+  'admin.profil_historie', 'admin.identitaet_deaktivieren', 'admin.identitaet_reaktivieren', 'admin.container_kontingent',
+  'admin.anmeldungen', 'admin.koordinator_heartbeat',
+  'specialist.spawn', 'specialist.spawn_batch', 'specialist.stop', 'specialist.status', 'specialist.wake', 'specialist.heartbeat',
+  'specialist.capabilities',
+]);
+export function mainVerwaltungErlaubt(tool: string, action: string | undefined): boolean {
+  return MAIN_VERWALTUNG.has(`${tool}.${action ?? ''}`);
+}
+/** Schalter main_agentenverwaltung (global). Wirft nie; Lesefehler -> AUS. */
+export async function mainVerwaltungAktiv(): Promise<boolean> {
+  try { return (await leseProfilProduktSchalter(MAIN_AGENTENVERWALTUNG_FUNKTION, null)).aktiv; } catch { return false; }
+}
+
 /** Lenkhinweis fuer den Main im internen Bereich bzw. bei der Anmeldung. */
 export function mainHinweisText(projekte: string[]): string {
   return `Du bist der Main: du siehst ALLE Projekte des Users lesend ein und arbeitest nicht darin. Im internen Bereich "${HAUPTAGENT_PROJEKT}" `
@@ -113,7 +135,8 @@ export function mainNurLesenAblehnung(tool: string, action: string | undefined, 
   return {
     success: false, error: 'main_nur_lesen', tool, ...(action ? { action } : {}), project,
     message: `Der Main arbeitet nicht in Projekten: im Projekt "${project}" darfst du lesen und Channels nutzen. "${tool}${action ? '.' + action : ''}" `
-      + `aendert etwas - gib den Auftrag an den Koordinator von "${project}" weiter (channel oder chat). Nichts wurde ausgefuehrt.`,
+      + `aendert etwas - gib den Auftrag an den Koordinator von "${project}" weiter (channel oder chat). Nichts wurde ausgefuehrt. `
+      + `Agenten-Verwaltung (Ausweise, Koordinatoren/Spezialisten starten/stoppen, Heartbeat, Kontingent) ist mit Schalter main_agentenverwaltung erlaubt.`,
   };
 }
 

@@ -30,6 +30,8 @@ export interface AgentAufrufKontext {
   bezug: AgentBezugStand;
   /** P22-T44: Aufruf mit Ausweis in einem ANDEREN Projekt als der Heimat (principal ist dann legacy im Projekt B). */
   fremdprojekt?: { project: string; heimat: string; zugang: 'frei' | 'visum' | 'arbeitsfreigabe'; identity_id: string } | null;
+  /** P22-T79: Agenten-Verwaltung des Main im Projekt <wert> (nur Positivliste, Schalter main_agentenverwaltung); principal bleibt der Main. */
+  main_verwaltung?: string | null;
 }
 const aufrufe = new AsyncLocalStorage<AgentAufrufKontext>();
 export function istAgentBezugModus(v: unknown): v is AgentBezugModus {
