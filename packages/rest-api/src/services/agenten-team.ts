@@ -24,7 +24,10 @@ import {
   listWrapperStatus,
   markiereEntfernteProfile,
   ohneEntfernte,
+  startOrtAnzeige,
+  startOrtSchalterAktiv,
   waehleSpezialisten,
+  type StartOrtAnzeige,
 } from '@synapse/core';
 
 type Zeit = { iso: string; ortszeit: string } | null;
@@ -58,17 +61,22 @@ export interface TeamAgent {
   letzte_anmeldung: { zeit: Zeit; anlass: string | null; aufruf: string | null; lauf_status: string | null; ort: string | null } | null;
   kontext: Record<string, unknown> | null;
   herkunft: { art: string; ort: string | null; quelle: string | null };
+  /** P22-T113: woher der Agent gestartet wurde (Schalter agent_start_ort; AUS bzw. unbekannt = null). */
+  start_ort: StartOrtAnzeige | null;
   wrapper: TeamWrapper | null;
 }
 
 interface IdentZeile {
   identity_id: string; agent_id: string; name: string; rolle: string; modell: string | null; typ: string | null;
   zuletzt_aktiv: Date | null; lauf_status: string | null; ausweis_gueltig: boolean;
+  start_ort: string | null; start_ziel: string | null; start_ort_art: string | null; start_ort_quelle: string | null; start_ort_am: Date | null;
+  start_ort_vorgabe: unknown;
 }
 
 const IDENT_SQL = `
 SELECT i.id AS identity_id, i.agent_id, i.name, i.rolle, COALESCE(i.modell_bestaetigt, i.modell_selbstauskunft) AS modell,
        t.schluessel AS typ, i.zuletzt_aktiv,
+       i.start_ort, i.start_ziel, i.start_ort_art, i.start_ort_quelle, i.start_ort_am, i.startrezept->'start_ort_vorgabe' AS start_ort_vorgabe,
        (SELECT l.status FROM agent_identitaet_laeufe l WHERE l.identity_id = i.id ORDER BY l.context_epoch DESC LIMIT 1) AS lauf_status,
        EXISTS (SELECT 1 FROM agent_identitaet_tokens k
                 WHERE k.identity_id = i.id AND k.widerrufen_am IS NULL AND (k.gueltig_bis IS NULL OR k.gueltig_bis > NOW())) AS ausweis_gueltig
@@ -104,6 +112,7 @@ export async function ladeAgentenTeam(project: string, optionen: { hauptagent?: 
   const wrapper = new Map(wrapperZeilen.map((z) => [z.row.agentName, wrapperAus(z.row, kennzeichnung(z))]));
 
   const schalter = await leseAnmeldungenSchalter(project);
+  const startOrtAn = await startOrtSchalterAktiv(project);
   const anmeldung = new Map<string, Record<string, unknown>>();
   let anmeldungFehler: string | null = null;
   if (schalter.aktiv && ident.length) {
@@ -132,13 +141,16 @@ export async function ladeAgentenTeam(project: string, optionen: { hauptagent?: 
         zeit: (a.zeit as Zeit) ?? null, anlass: typeof a.anlass === 'string' ? a.anlass : null, aufruf: typeof a.aufruf === 'string' ? a.aufruf : null,
         lauf_status: typeof a.lauf_status === 'string' ? a.lauf_status : null, ort: typeof a.ort === 'string' ? a.ort : null,
       } : null,
-      kontext, herkunft: h, wrapper: w,
+      kontext, herkunft: h,
+      start_ort: startOrtAn ? startOrtAnzeige({ start_ort: i.start_ort, start_ziel: i.start_ziel, start_ort_art: i.start_ort_art,
+        start_ort_quelle: i.start_ort_quelle, start_ort_am: i.start_ort_am, vorgabe: i.start_ort_vorgabe }) : null,
+      wrapper: w,
     };
   }));
   const nurWrapper: TeamAgent[] = await Promise.all([...wrapper.entries()].map(async ([name, w]) => ({
     schluessel: 'wrapper:' + name, art: 'wrapper' as const, name, agent_id: name, identity_id: null, rolle: null, typ: null,
     modell: w.model, ausweis: null, zuletzt_aktiv: w.last_activity, lauf_status: null, letzte_anmeldung: null, kontext: wrapperKontext(w),
-    herkunft: await ermittleAgentHerkunft(project, { agent: name }), wrapper: w,
+    herkunft: await ermittleAgentHerkunft(project, { agent: name }), start_ort: null, wrapper: w,
   })));
 
   return {
@@ -153,6 +165,7 @@ export async function ladeAgentenTeam(project: string, optionen: { hauptagent?: 
       letzte_anmeldung: 'admin anmeldungen (leseAnmeldungen, nur_letzte; Schalter agent_anmeldungen)',
       kontext: 'Anmeldung (hauptagent_verlauf/wrapper_status), sonst wrapper_status',
       herkunft: 'ermittleAgentHerkunft',
+      start_ort: startOrtAn ? 'agent_identitaeten.start_ort (tatsaechlicher Start), sonst startrezept.start_ort_vorgabe' : 'Schalter agent_start_ort AUS',
       wrapper: 'wrapper_status wie GET specialists',
     },
   };

@@ -275,6 +275,13 @@ function herkunftAus(value: unknown): AgentHerkunftViewModel {
   return { art, ort: typeof roh.ort === 'string' && roh.ort ? roh.ort : null };
 }
 
+/** P22-T113: Startort aus agenten-team (start_ort.bezeichnung kommt fertig vom Server). */
+function startOrtAus(value: unknown): { bezeichnung: string; vorgabe: boolean; quelle: string } | undefined {
+  const roh = objekt(value);
+  const bezeichnung = roh && typeof roh.bezeichnung === 'string' ? roh.bezeichnung : '';
+  return bezeichnung ? { bezeichnung, vorgabe: roh?.vorgabe === true, quelle: typeof roh?.quelle === 'string' ? roh.quelle : '' } : undefined;
+}
+
 /** P8-T25: kurzes Kennzeichen, wo ein Agent laeuft. */
 export function herkunftText(herkunft: AgentHerkunftViewModel): string {
   if (herkunft.art === 'unraid') return 'Unraid-Container' + (herkunft.ort ? ' · ' + herkunft.ort : '');
@@ -478,6 +485,7 @@ export async function loadProjectTeamViewModels(project: string): Promise<Projec
       anmeldungAnlass: text(anmeldung?.anlass),
       anmeldungAus: art === 'identitaet' && anmeldungAus,
       herkunft: herkunftAus(row.herkunft),
+      startOrt: startOrtAus(row.start_ort),
       source: 'api' as const,
     };
   }).sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''));

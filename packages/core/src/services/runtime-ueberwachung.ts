@@ -135,6 +135,9 @@ type EinstellungDef =
 /** Container-Werte = U4-Spezifikation (thought 791212a9 Schritt 2c). */
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   takt_sekunden: { art: 'zahl', standard: 15, min: 5, max: 300 },
+  // P22-T113 (Abnahme R6): Takt und Menge der Zustellung ueber den Startort-Daemon (agent-startort-zustellung.ts).
+  startort_zustell_takt_sekunden: { art: 'zahl', standard: 5, min: 1, max: 300 },
+  startort_zustell_je_takt: { art: 'zahl', standard: 3, min: 1, max: 20 },
   // Muss ueber dem status.json-Takt (30 s) und dem Long-Poll des Daemons (~25 s) liegen.
   daemon_frisch_sekunden: { art: 'zahl', standard: 90, min: 45, max: 900 },
   probe_timeout_sekunden: { art: 'zahl', standard: 10, min: 2, max: 60 },

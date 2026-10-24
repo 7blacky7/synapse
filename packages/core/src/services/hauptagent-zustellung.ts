@@ -98,20 +98,34 @@ const ABFRAGEN: Record<ZustellWeg, { max: string; neu: (modus: ZustellOptionen['
   },
 };
 
-async function wasserstand(identityId: string, weg: ZustellWeg): Promise<number> {
+/**
+ * P22-T113 Abnahme R4: verlustfreie Erstuebernahme fuer Nicht-Main-Identitaeten. inbox (unverarbeitet) und event (ohne ACK)
+ * beginnen VOR der aeltesten offenen Nachricht, damit bereits wartende zuerst zugestellt werden; chat/channel bleiben beim
+ * kontrollierten Schnitt (hoechste vorhandene ID, keine Historie), weil sie keinen Erledigt-Stand haben.
+ */
+const VERLUSTFREI_START: Partial<Record<ZustellWeg, string>> = {
+  inbox: `SELECT COALESCE((SELECT MIN(id)-1 FROM specialist_inbox WHERE to_identity_id=$1 AND processed=false),
+            (SELECT COALESCE(MAX(id),0) FROM specialist_inbox WHERE to_identity_id=$1))::bigint AS m`,
+  event: `SELECT COALESCE((SELECT MIN(e.id)-1 FROM agent_events e WHERE e.target_identity_id=$1
+              AND NOT EXISTS (SELECT 1 FROM agent_identitaet_event_acks a WHERE a.event_id=e.id AND a.identity_id=$1)),
+            (SELECT COALESCE(MAX(id),0) FROM agent_events WHERE target_identity_id=$1))::bigint AS m`,
+};
+
+async function wasserstand(identityId: string, weg: ZustellWeg, verlustfrei = false): Promise<number> {
   const w = await getPool().query<{ bis_id: string }>('SELECT bis_id FROM agent_zustell_wasserstaende WHERE identity_id=$1 AND weg=$2', [identityId, weg]);
   if (w.rows[0]) return Number(w.rows[0].bis_id);
-  const m = Number((await getPool().query<{ m: string }>(ABFRAGEN[weg].max, [identityId])).rows[0]?.m ?? 0);
+  const start = verlustfrei ? VERLUSTFREI_START[weg] : undefined;
+  const m = Number((await getPool().query<{ m: string }>(start ?? ABFRAGEN[weg].max, [identityId])).rows[0]?.m ?? 0);
   await getPool().query(
     'INSERT INTO agent_zustell_wasserstaende(identity_id,weg,bis_id) VALUES($1,$2,$3) ON CONFLICT (identity_id,weg) DO NOTHING', [identityId, weg, m]);
   return Number((await getPool().query<{ bis_id: string }>('SELECT bis_id FROM agent_zustell_wasserstaende WHERE identity_id=$1 AND weg=$2', [identityId, weg])).rows[0].bis_id);
 }
 
 /** Neue Nachrichten an die Identitaet in den Ledger uebernehmen. Rueckgabe: neu aufgenommene Zustellungen. */
-export async function sammleZustellungen(identityId: string, opt: ZustellOptionen = leseZustellOptionen()): Promise<number> {
+export async function sammleZustellungen(identityId: string, opt: ZustellOptionen = leseZustellOptionen(), empfaengerAgentId: string = HAUPTAGENT_AGENT_ID, verlustfrei = false): Promise<number> {
   let neu = 0;
   for (const weg of ZUSTELL_WEGE) {
-    const bis = await wasserstand(identityId, weg);
+    const bis = await wasserstand(identityId, weg, verlustfrei);
     const r = await getPool().query<Roh>(ABFRAGEN[weg].neu(opt.channel_modus), [identityId, bis]);
     if (!r.rows.length && weg !== 'channel') continue;
     for (const z of r.rows) {
@@ -120,7 +134,7 @@ export async function sammleZustellungen(identityId: string, opt: ZustellOptione
         ...(z.channel ? { channel: z.channel } : {}), ...(z.event_typ ? { event_typ: z.event_typ } : {}),
         ...(z.prioritaet ? { prioritaet: z.prioritaet } : {}),
         absender: { agent_id: z.agent_id, identity_id: z.identity_id, rolle: z.rolle, project: z.project },
-        empfaenger: { identity_id: identityId, agent_id: HAUPTAGENT_AGENT_ID },
+        empfaenger: { identity_id: identityId, agent_id: empfaengerAgentId },
         inhalt: z.inhalt, gesendet_am: z.gesendet ? new Date(z.gesendet).toISOString() : null,
       };
       const ins = await getPool().query(
@@ -205,6 +219,54 @@ export async function fuehreZustellungAus(o: {
       [z.id, versuche, String(grund).slice(0, 200), jobId, endgueltig ? 'fehler' : 'pending', Math.min(60_000, 2_000 * 2 ** Math.min(versuche, 5))]);
     if (endgueltig) erg.fehler++; else erg.verschoben++;
     // Beschaeftigt: die uebrigen warten auf den naechsten Takt (Reihenfolge bleibt).
+    if (grund === 'beschaeftigt' || grund === 'nicht_verbunden') break;
+  }
+  return erg;
+}
+
+/**
+ * P22-T113 Stufe 2: Zustellung an EINE beliebige Identitaet (Koordinator, Spezialist, Subagent) ueber den Daemon ihres
+ * Startorts: Container-Daemon (target_runtime) oder PC-Daemon (target_hostname). Gleicher Ledger, Wasserstand und dieselbe
+ * Quittung wie beim Main; ohne Main-Sonderwege (Web-UI-Einwurf, Main-Verlauf). Der Job 'zustellen' wird von jedem Daemon
+ * ausgefuehrt (specialist-job-worker). Aufrufer: agent-startort-zustellung.ts (Schalter agent_start_ort).
+ */
+export async function fuehreIdentitaetsZustellungAus(o: {
+  identity_id: string; project: string; agent_id: string;
+  ziel: { target_runtime: SpecialistZielRuntime } | { target_hostname: string };
+  optionen?: ZustellOptionen; max?: number;
+}): Promise<ZustellErgebnis> {
+  const opt = o.optionen ?? leseZustellOptionen();
+  const erg: ZustellErgebnis = { gesammelt: 0, zugestellt: 0, verschoben: 0, fehler: 0 };
+  erg.gesammelt = await sammleZustellungen(o.identity_id, opt, o.agent_id, true);
+  const faellig = await getPool().query<{ id: string; zustellung: Zustellung; versuche: number }>(
+    `SELECT id, zustellung, versuche FROM agent_zustellungen WHERE identity_id=$1 AND status='pending' AND naechster_versuch<=NOW()
+      ORDER BY erstellt_am, id LIMIT $2`, [o.identity_id, Math.max(1, Math.min(20, o.max ?? 5))]);
+  for (const z of faellig.rows) {
+    let grund: string | null = null;
+    let jobId: string | null = null;
+    try {
+      const job = await enqueueSpecialistJob({ project: o.project, action: 'zustellen',
+        args: { name: o.agent_id, identity_id: o.identity_id, ...o.ziel, zustellung: z.zustellung } });
+      jobId = job.id;
+      const r = await waitForSpecialistJob(job.id, opt.turn_warte_ms);
+      const e = werkzeugErgebnis(r.result) ?? {};
+      if (r.status === 'done' && e.zugestellt === true) {
+        await getPool().query("UPDATE agent_zustellungen SET status='zugestellt', zugestellt_am=NOW(), job_id=$2, letzter_grund=NULL WHERE id=$1", [z.id, jobId]);
+        await quittiere(o.identity_id, z.zustellung);
+        erg.zugestellt++;
+        continue;
+      }
+      grund = typeof e.grund === 'string' ? e.grund : r.status === 'done' ? 'unbekannt' : (r.error === 'expired' ? 'daemon_nicht_erreichbar' : r.status);
+    } catch (err) {
+      grund = (err as Error).message ?? 'fehler';
+    }
+    const versuche = z.versuche + 1;
+    const endgueltig = versuche >= MAX_VERSUCHE;
+    await getPool().query(
+      `UPDATE agent_zustellungen SET versuche=$2, letzter_grund=$3, job_id=$4, status=$5,
+         naechster_versuch=NOW() + ($6::integer * interval '1 millisecond') WHERE id=$1`,
+      [z.id, versuche, String(grund).slice(0, 200), jobId, endgueltig ? 'fehler' : 'pending', Math.min(60_000, 2_000 * 2 ** Math.min(versuche, 5))]);
+    if (endgueltig) erg.fehler++; else erg.verschoben++;
     if (grund === 'beschaeftigt' || grund === 'nicht_verbunden') break;
   }
   return erg;

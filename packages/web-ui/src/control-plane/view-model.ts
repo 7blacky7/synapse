@@ -104,6 +104,8 @@ export interface ProjectTeamAgentViewModel {
   /** Schalter agent_anmeldungen ist AUS: keine Anmeldedaten. */
   anmeldungAus?: boolean;
   herkunft?: AgentHerkunftViewModel;
+  /** P22-T113: woher der Agent gestartet wurde (Plattform, Daemon/Tray, Desktop-CLI, Web-KI, Extern); Vorgabe = noch kein Start. */
+  startOrt?: { bezeichnung: string; vorgabe: boolean; quelle: string };
   source: 'api';
 }
 

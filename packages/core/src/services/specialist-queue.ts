@@ -136,6 +136,7 @@ export async function enqueueSpecialistJob(args: {
     const res = await pool.query<{ id: string }>(
       'INSERT INTO specialist_jobs(project,action,args,actor_identity_id,target_identity_id) VALUES($1,$2,$3::jsonb,$4,$5) RETURNING id',
       [args.project,args.action,JSON.stringify(jobArgs),aktuelleAgentIdentityId(args.project),targetIdentity]);
+    await merkeStartOrtAusJobSicher(args.project, args.action, jobArgs, null, 'specialist_jobs:auftrag');
     return { id: res.rows[0].id };
   }
   const res = await pool.query<{ id: string }>(
@@ -144,7 +145,16 @@ export async function enqueueSpecialistJob(args: {
      RETURNING id`,
     [args.project, args.action, JSON.stringify(jobArgs)],
   );
+  await merkeStartOrtAusJobSicher(args.project, args.action, jobArgs, null, 'specialist_jobs:auftrag');
   return { id: res.rows[0].id };
+}
+
+/** P22-T113: Startort aus dem Job merken (Schalter agent_start_ort; lazy gegen Importzyklen, wirft nie). */
+async function merkeStartOrtAusJobSicher(project: string, action: string, jobArgs: Record<string, unknown>, hostname: string | null, quelle: string): Promise<void> {
+  try {
+    const { merkeStartOrtAusJob } = await import('./agent-start-ort.js');
+    await merkeStartOrtAusJob({ project, action, args: jobArgs, hostname, quelle });
+  } catch { /* Zusatzinformation, nie ein Startfehler */ }
 }
 
 /** P22-T6: Runtimes, deren Container-Daemon Spezialisten-Jobs ausfuehrt (args.target_runtime). */
@@ -193,6 +203,8 @@ export async function claimPendingSpecialistJob(
       [daemonId, job.id],
     );
     await client.query('COMMIT');
+    // P22-T113: PC-Daemon claimt -> Hostname als Startziel (Container-Jobs tragen ihre Runtime schon seit dem Auftrag).
+    if (!runtime && hostname) await merkeStartOrtAusJobSicher(project, job.action, (job.args ?? {}) as Record<string, unknown>, hostname, 'specialist_jobs:claim');
     return upd.rows[0];
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch { /* ignore */ }

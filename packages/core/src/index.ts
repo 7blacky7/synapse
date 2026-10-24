@@ -748,6 +748,13 @@ export {
 } from './services/agent-container.js';
 export type { SpawnOrt, ContainerKontingent, ContainerSpawnEingabe } from './services/agent-container.js';
 export { AGENT_CONTAINER_SCHEMA_SQL } from './db/agent-container-schema.js';
+// P22-T113: Startort jedes Agenten (Schalter agent_start_ort, Schema 149).
+export { AGENT_START_ORT_SCHEMA_SQL } from './db/agent-start-ort-schema.js';
+export { AGENT_START_ORT_FUNKTION, START_ORTE, START_ORT_ARTEN, merkeStartOrt, merkeStartOrtAusJob, leseStartOrt, zustellWegFuer, startOrtSchalterAktiv, startOrtAnzeige } from './services/agent-start-ort.js';
+export type { StartOrt, StartOrtArt, StartOrtAnzeige, StartOrtEingabe, StartOrtStand, StartOrtZustellweg } from './services/agent-start-ort.js';
+export { fuehreStartOrtZustellungenAus, letzterStartOrtZustellStand, leseStartOrtZustellWerte } from './services/agent-startort-zustellung.js';
+export type { StartOrtZustellStand, StartOrtZustellAgent } from './services/agent-startort-zustellung.js';
+export { fuehreIdentitaetsZustellungAus } from './services/hauptagent-zustellung.js';
 // P22-T79: Sonderstellung des Main (Lesezugriff auf alle User-Projekte, Lenkhinweise, Schalter Standard EIN).
 export {
   leseMainSchalter, mainIdentitaetDesAusweises, istMainPrincipal, sichtbareUserProjekte, mainHinweisText, mainNurLesenAblehnung,

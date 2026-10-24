@@ -1580,6 +1580,7 @@ function ProjectAgentTeamView({ project }: { project: string }) {
           <div><dt>Modell</dt><dd>{current.model || '–'}</dd></div>
           <div><dt>Provider</dt><dd>{current.provider || '–'}</dd></div>
           <div><dt>Ort</dt><dd>{current.herkunft ? herkunftText(current.herkunft) : '–'}</dd></div>
+          <div><dt>Gestartet über</dt><dd title={current.startOrt?.quelle || undefined}>{current.startOrt ? current.startOrt.bezeichnung : '–'}</dd></div>
           <div><dt>Letzte Anmeldung</dt><dd>{teamAnmeldungText(current)}</dd></div>
           <div><dt>Kontext</dt><dd>{teamKontextText(current)}</dd></div>
           <div><dt>Tokens ein / aus</dt><dd>{current.tokensIn.toLocaleString('de-DE')} / {current.tokensOut.toLocaleString('de-DE')}</dd></div>

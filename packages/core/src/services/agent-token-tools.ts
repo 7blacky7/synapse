@@ -678,6 +678,9 @@ export async function bereiteAgentToolAufrufVor(
     }
     if (anmeldung) {
       if (await anmeldungAn()) await merkeHerkunftsort(p.lauf_id, herkunftVon(optionen));
+      // P22-T113: selbst gestartete Agenten (nur angemeldet) als extern merken, nie ueber einen Daemon-/Container-Ort (Schalter agent_start_ort).
+      await (await import('./agent-start-ort.js')).merkeStartOrt({ project: p.project, identity_id: p.identitaet.id, ort: 'extern',
+        ziel: herkunftVon(optionen) ?? null, quelle: 'anmeldung' });
       // Auch nach Inaktivitaet die Lebensphase erhalten: offene Broadcasts bleiben adressiert.
       if (bezug.modus === 'alt') await getPool().query("UPDATE agent_sessions SET status='active', sitzung_seit=clock_timestamp() WHERE id=$1 AND project=$2 AND identity_id=$3", [p.agent_id, p.project, p.identitaet.id]);
       if (sitzungsSignal) {
