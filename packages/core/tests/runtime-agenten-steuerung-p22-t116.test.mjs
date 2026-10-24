@@ -71,4 +71,28 @@ assert.equal((await D.sendeProzessSignal(1,'SIGTERM')).error,'pid_ungueltig');
 assert.equal((await D.sendeProzessSignal(process.pid,'SIGTERM')).error,'pid_ungueltig');
 assert.equal((await D.sendeProzessSignal(123456789,'SIGSTOP')).error,'signal_ungueltig');
 assert.equal((await D.leseLaufLogs('../x',100)).error,'identity_ungueltig');
+// da3d601a (1): Lage bindet Ort/Runtime/Host/Socket - claude->codex bei gleicher PID/Status ist eine Abweichung
+const zielA={identity_id:'i',agent_id:'a',project:'p',rolle:'koordinator',status:'aktiv',ort:'container',runtime:'claude',hostname:null,
+  wrapper:{status:'running',wrapperPid:42,socketPath:'/root/.synapse/agent-runs/i/x.sock',provider:'anthropic'}};
+const lA=S.lageVon(zielA);
+assert.deepEqual(S.lageAbweichung(lA,S.lageVon(zielA)),[]);
+assert.deepEqual(S.lageAbweichung(lA,S.lageVon({...zielA,runtime:'codex',wrapper:{...zielA.wrapper,provider:'openai'}})),['runtime','provider'],'Runtime-Wechsel trotz gleicher PID erkannt');
+assert.ok(S.lageAbweichung(lA,S.lageVon({...zielA,ort:'pc',runtime:null,hostname:'h'})).includes('ort'));
+assert.ok(S.lageAbweichung(lA,S.lageVon({...zielA,project:'q'})).includes('project'));
+// da3d601a (2): Bestaetigung mit fremdem Ziel wird abgelehnt (Server-Seite der UI-Bindung) - unbekannte ID zuerst
+assert.equal((await S.fuehreRuntimeAgentenAktion({action:'runtime_steuern',bestaetigung:{id:'nix',grund:'x'.repeat(12),project:'b',identity_id:'y'}},{art:'user'})).error,'bestaetigung_unbekannt');
+// MCP-Huelle (Spawn/Stop-Ergebnis) wird ausgepackt
+assert.equal(S.jobErfolgreich({status:'done',result:{content:[{type:'text',text:JSON.stringify({success:false})}]}}),false,'Huelle success:false');
+assert.equal(S.jobErfolgreich({status:'done',result:{content:[{type:'text',text:JSON.stringify({success:true})}]}}),true);
+// R8: Grenzen aus PG-Einstellungen mit Code-Standard
+const Gr=await load('packages/core/dist/services/runtime-agenten-grenzen.js');
+const std=Gr.grenzenAusWerten(null);
+assert.equal(std.quelle,'standard');assert.equal(std.frist_ms,600000);assert.equal(std.prozess_seiten_max,5);assert.equal(std.veraltet_ms,600000);
+const pg=Gr.grenzenAusWerten({runtime_steuer_frist_minuten:3,runtime_prozess_seiten_max:9,runtime_log_max_bytes:4096,runtime_veraltet_minuten:2,runtime_steuer_job_warte_sekunden:30});
+assert.equal(pg.quelle,'pg');assert.equal(pg.frist_ms,180000);assert.equal(pg.prozess_seiten_max,9);assert.equal(pg.log_max_bytes,4096);assert.equal(pg.veraltet_ms,120000);assert.equal(pg.job_warte_ms,30000);
+assert.equal(Gr.grenzenAusWerten({runtime_steuer_frist_minuten:'kaputt'}).frist_ms,600000,'ungueltig -> Standard');
+const U=await load('packages/core/dist/services/runtime-ueberwachung.js');
+for(const k of ['runtime_steuer_frist_minuten','runtime_steuer_offen_max','runtime_steuer_job_warte_sekunden','runtime_prozess_seiten_max','runtime_log_max_bytes','runtime_veraltet_minuten','runtime_stop_bestaetigen_sekunden','runtime_modellwechsel_spawn_warte_sekunden'])
+  assert.ok(U.RUNTIME_UEBERWACHUNG_EINSTELLUNGEN[k],'PG-Einstellung '+k);
+assert.equal(U.RUNTIME_UEBERWACHUNG_EINSTELLUNGEN.runtime_steuer_frist_minuten.standard*60000,Gr.RUNTIME_AGENTEN_GRENZEN_STANDARD.frist_ms,'Katalog = Code-Standard');
 console.log('OK runtime-agenten-steuerung-p22-t116');
