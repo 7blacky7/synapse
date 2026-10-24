@@ -232,6 +232,158 @@ test('Vorrang-Schwellen: 0 = nicht pruefen, Grund mit Zahl im Debug',async()=>{
  assert.equal(await auto.reverseNachzugVorrang(pool,await ein()),'vorrang_offen');
  await leeren();await setting('nachzug_vorrang_chunks_max',1000);await setting('nachzug_vorrang_parse_max',100);
 });
+test('P18-T112 B: regulaere Discovery uebergeht abgeschlossenen Legacy-E ohne Pin, offener haelt weiter',async()=>{
+ await leeren();
+ const {ReversePipelineDienst}=await import('../dist/services/reverse-pipeline.js');
+ const dienst=new ReversePipelineDienst({pool:raw,ausfuehrbareKinds:[]});
+ await dienst['einstellungen']();
+ const legacy=await legacyE('teilweise');
+ const neu=await datei('t112/neu.bin',{s1Profil:null});
+ await dienst['entdecke']();
+ assert.ok((await raw.query('SELECT count(*)::int n FROM reverse_auftraege WHERE datei_id=$1',[neu])).rows[0].n>0,'neue Datei ohne S1 wird trotz Legacy-E eingereiht');
+ await leeren();await raw.query("DELETE FROM reverse_auftraege WHERE id=$1",[legacy]);
+ await legacyE('wartet');
+ const gehalten=await datei('t112/gehalten.bin',{s1Profil:null});
+ await dienst['entdecke']();
+ assert.equal((await raw.query('SELECT count(*)::int n FROM reverse_auftraege WHERE datei_id=$1',[gehalten])).rows[0].n,0,'offener Legacy-Auftrag haelt weiter');
+ await leeren();await raw.query("DELETE FROM reverse_auftraege WHERE eintrag_id=$1",[rid]);
+ await dienst.beende();
+});
+// P18-T112 A (a4b2449f): echte PG-Proben ohne Leser-Runtime; Laufzeilen direkt im Testschema.
+const nz=await import('../dist/services/reverse-leser-nachzug.js');
+const L='d'.repeat(64),R0='0'.repeat(64),R1='1'.repeat(64),R2='2'.repeat(64),P='e'.repeat(64);
+const lauf=async({id=randomUUID(),datei:did,status,rev,beendet='clock_timestamp()'})=>{
+ const q=(await raw.query('SELECT sha256 FROM reverse_dateien WHERE id=$1',[did])).rows[0].sha256;
+ await raw.query(`INSERT INTO reverse_leser_laeufe(id,leser_id,eintrag_id,datei_id,quell_sha256,generation,status,einstellungen_revision,diagnose,manifest_key,manifest_sha256,beendet_at)
+  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,${beendet})`,[id,L,rid,did,q,randomUUID(),status,rev,JSON.stringify({nachzug:true,policy_revision:P}),
+  status==='fertig'?'m/'+id:null,status==='fertig'?'f'.repeat(64):null]);
+ return {id,sha:q};
+};
+test('P18-T112 A1: Ersatzscan haengt an veralteter Checkpoint-Revision + gescheiterter Quelle ohne Erfolg, nicht am Zeitstempel',async()=>{
+ await leeren();await raw.query('DELETE FROM reverse_leser_laeufe');await raw.query('DELETE FROM reverse_leser_nachzug');await raw.query('DELETE FROM reverse_leser_zustaende');
+ await raw.query("INSERT INTO reverse_leser_zustaende(leser_id,name,status,storage_key,paket_bytes,freigegeben_von,freigegeben_at) VALUES($1,'t112','aktiv','leser/t112',1,'fixture',clock_timestamp())",[L]);
+ const d1=await datei('l/a.png',{s1Profil:null});
+ const akt=await nz.reverseLeserNachzugRevisionen(raw,rid);
+ const checkpoint=async(status,rev,pol,fehler=null)=>{await raw.query('DELETE FROM reverse_leser_nachzug');await raw.query(`INSERT INTO reverse_leser_nachzug(eintrag_id,leser_id,scan_id,scan_bis,quellstand,einstellungen_revision,policy_revision,status,fehlercode,updated_at)
+  VALUES($1,$2,gen_random_uuid(),$3,clock_timestamp()+interval '1 minute',$4,$5,$6,$7,clock_timestamp()+interval '1 hour')`,[rid,L,d1,rev,pol,status,fehler]);};
+ // 1) fertiger Scan unter alter Revision, ohne gescheiterte Quelle: nichts.
+ await checkpoint('fertig',R0,P);
+ assert.equal(await nz.waehleReverseLeserNachzugPaar(raw),undefined,'kein Fehlschlag: kein Ersatzscan');
+ // 2) gescheiterter Lauf VOR dem (spaeteren) Checkpoint-Zeitstempel: trotzdem Ersatzscan (Zeitstempel egal).
+ await lauf({datei:d1,status:'fehler',rev:R0,beendet:"clock_timestamp()-interval '1 day'"});
+ assert.equal((await nz.waehleReverseLeserNachzugPaar(raw))?.status,'fertig','fertiger Scan alter Revision + gescheiterte Quelle -> Ersatzscan');
+ // 3) Restpfad 04d5f2b9: offener alter Scan nach Pinfehler 'teilweise', updated_at nach den Fehlschlaegen -> Ersatzscan.
+ await checkpoint('teilweise',R0,P,'leser_einstellungen_geaendert');
+ const p3=await nz.waehleReverseLeserNachzugPaar(raw);
+ assert.deepEqual([p3?.status,p3?.eintrag_id,p3?.leser_id],['teilweise',rid,L],'teilweise nach Pinfehler verdeckt die Fehlschlaege nicht');
+ // 4) Checkpoint bereits unter aktueller Revision (nach dem Neustart): kein Dauer-Neuscan, auch wenn der Ersatz erneut scheitert.
+ await checkpoint('fertig',akt.revision,akt.policy);
+ assert.equal(await nz.waehleReverseLeserNachzugPaar(raw),undefined,'aktuelle Revision: kein erneuter Neustart');
+ // 5) spaeterer Erfolg derselben Quelle: kein Ersatzscan, auch bei alter Revision.
+ await checkpoint('teilweise',R0,P,'leser_einstellungen_geaendert');
+ await lauf({datei:d1,status:'fertig',rev:R1});
+ assert.equal(await nz.waehleReverseLeserNachzugPaar(raw),undefined,'Erfolg vorhanden: kein Ersatzscan');
+ // Wiederaufnahme: planeReverseLeserNachzug ruft fuer dieses Paar punkt(neu=true) (Checkpoint neu unter aktueller Revision) und auftrag();
+ // der volle plane()-Lauf braucht Leser-Runtime/Magicprobe und ist durch A2 (Laufwahl) + diese Paarwahl abgedeckt.
+ await raw.query('DELETE FROM reverse_leser_laeufe');await raw.query('DELETE FROM reverse_leser_nachzug');
+});
+test('P18-T112 A2: Laufwahl – Erfolg irgendeiner Revision erledigt, nur Gescheitertes wird je Revision neu geplant',async()=>{
+ await leeren();await raw.query('DELETE FROM reverse_leser_laeufe');
+ const d1=await datei('l/b.png',{s1Profil:null});
+ const sha=(await raw.query('SELECT sha256 FROM reverse_dateien WHERE id=$1',[d1])).rows[0].sha256;
+ const quelle={eintrag_id:rid,id:d1,sha256:sha},I='3'.repeat(64);
+ assert.deepEqual(await nz.reverseLeserLaufWahl(raw,quelle,L,{},I,R0,P),{art:'plan',identity:I,alt:undefined},'ohne Lauf: Basisidentitaet planen');
+ await lauf({id:nz.reverseLeserLaufUuid(I),datei:d1,status:'fehler',rev:R0});
+ const w1=await nz.reverseLeserLaufWahl(raw,quelle,L,{},I,R1,P);
+ assert.equal(w1.art,'plan');assert.notEqual(w1.identity,I,'gescheitert + neue Revision: Ersatzidentitaet');assert.equal(w1.alt,undefined);
+ assert.equal((await nz.reverseLeserLaufWahl(raw,quelle,L,{},I,R1,P)).identity,w1.identity,'Dedupe: gleiche Revision -> gleiche Ersatzidentitaet');
+ await lauf({id:nz.reverseLeserLaufUuid(w1.identity),datei:d1,status:'fertig',rev:R1});
+ const w2=await nz.reverseLeserLaufWahl(raw,quelle,L,{},I,R2,P);
+ assert.deepEqual([w2.art,w2.id],['erledigt',nz.reverseLeserLaufUuid(w1.identity)],'erfolgreicher Ersatz einer frueheren Revision zaehlt als erledigt (kein Doppellauf)');
+ await raw.query('DELETE FROM reverse_leser_laeufe');
+ await lauf({id:nz.reverseLeserLaufUuid(I),datei:d1,status:'fertig',rev:R0});
+ assert.equal((await nz.reverseLeserLaufWahl(raw,quelle,L,{},I,R2,P)).art,'erledigt','fertiger Basislauf alter Revision erledigt');
+ await raw.query('DELETE FROM reverse_leser_laeufe');await leeren();
+});
+test('P18-T112 A4 (51d793a5): 50 Paare unter aktueller Revision verdecken ein veraltetes 51. Paar nicht',async()=>{
+ await leeren();for(const t of ['reverse_leser_laeufe','reverse_leser_nachzug','reverse_leser_zustaende'])await raw.query('DELETE FROM '+t);
+ const d1=await datei('p/x.png',{s1Profil:null});
+ const akt=await nz.reverseLeserNachzugRevisionen(raw,rid);
+ const leser=n=>n.toString(16).padStart(64,'0');
+ for(let i=1;i<=51;i++){
+  const id=leser(i),veraltet=i===51;
+  await raw.query("INSERT INTO reverse_leser_zustaende(leser_id,name,status,storage_key,paket_bytes,freigegeben_von,freigegeben_at) VALUES($1,$2,'aktiv',$3,1,'fixture',clock_timestamp())",[id,'t112-'+i,'leser/t112-'+i]);
+  await raw.query(`INSERT INTO reverse_leser_nachzug(eintrag_id,leser_id,scan_id,scan_bis,quellstand,einstellungen_revision,policy_revision,status,updated_at)
+   VALUES($1,$2,gen_random_uuid(),$3,clock_timestamp()+interval '1 minute',$4,$5,'fertig',clock_timestamp()+($6||' seconds')::interval)`,
+   [rid,id,d1,veraltet?R0:akt.revision,akt.policy,String(i)]);
+  const q=(await raw.query('SELECT sha256 FROM reverse_dateien WHERE id=$1',[d1])).rows[0].sha256;
+  await raw.query(`INSERT INTO reverse_leser_laeufe(id,leser_id,eintrag_id,datei_id,quell_sha256,generation,status,einstellungen_revision,diagnose,beendet_at)
+   VALUES(gen_random_uuid(),$1,$2,$3,$4,gen_random_uuid(),'fehler',$5,'{"nachzug":true}',clock_timestamp())`,[id,rid,d1,q,veraltet?R0:akt.revision]);
+ }
+ const p=await nz.waehleReverseLeserNachzugPaar(raw);
+ assert.equal(p?.leser_id,leser(51),'veraltetes Paar hinter 50 aktuellen wird gefunden');
+ for(const t of ['reverse_leser_laeufe','reverse_leser_nachzug','reverse_leser_zustaende'])await raw.query('DELETE FROM '+t);await leeren();
+});
+test('P18-T112 A3: planeReverseLeserNachzug – offener Scan, Pinfehler -> teilweise, Ersatz je Quelle genau einmal, kein Dauer-Neuscan',async()=>{
+ // Kein Produktcode-Bypass: Leser-Runtime ueber die vorhandenen Registry-Tabellen, Magicprobe ueber echte Dateien im uebergebenen root.
+ const {mkdtemp,mkdir,writeFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join,dirname}=await import('node:path');
+ await leeren();
+ for(const t of ['reverse_leser_laeufe','reverse_leser_nachzug','reverse_leser_zustaende','reverse_leser','reverse_leser_runtime_ereignisse','reverse_leser_runtime_images','reverse_leser_runtimes','work_jobs'])await raw.query('DELETE FROM '+t);
+ const PIN='a'.repeat(64),image={image:'synapse-reverse:t112',digest:'sha256:'+'b'.repeat(64)};
+ await raw.query("INSERT INTO reverse_leser_runtimes(pin,vertrag,inhaltsindex,storage_key,quelle,bytes,erstellt_von) VALUES($1,'leser-python3-v1','{\"dateien\":[]}',$2,'{}',1,'fixture')",[PIN,'.intern/leser-runtime/'+PIN]);
+ await raw.query("INSERT INTO reverse_leser_runtime_images(pin,image_digest,image,erstellt_von) VALUES($1,$2,$3,'fixture')",[PIN,image.digest,image.image]);
+ await raw.query("INSERT INTO reverse_leser_runtime_ereignisse(id,request_key,payload_hash,phase,image_digest,pin,akteur,grund) VALUES(gen_random_uuid(),repeat('c',64),repeat('c',64),'aktiviert',$1,$2,'fixture','T112')",[image.digest,PIN]);
+ const manifest={name:'t112-png',version:'1',runtime:'python3',erkennung:{min_bytes:8,max_bytes:null,endungen:['.png'],magic:[{offset:0,hex:'89504e470d0a1a0a'}]}};
+ await raw.query(`INSERT INTO reverse_leser(id,name,version,schnittstelle_version,runtime,manifest,manifest_sha256,code_sha256,paket_sha256,quelle,quell_bytes,registriert_von)
+  VALUES($1,'t112-png','1',1,'python3',$2::jsonb,repeat('1',64),repeat('2',64),repeat('3',64),'{}',1,'fixture')`,[L,JSON.stringify(manifest)]);
+ await raw.query("INSERT INTO reverse_leser_zustaende(leser_id,name,status,storage_key,paket_bytes,freigegeben_von,freigegeben_at) VALUES($1,'t112-png','aktiv','leser/t112',1,'fixture',clock_timestamp())",[L]);
+ for(const f of ['reverse_leser','reverse_leser_nachzug'])await raw.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('global',NULL,$1,true,'T112','fixture') ON CONFLICT DO NOTHING",[f]);
+ const root=await mkdtemp(join(tmpdir(),'p18-t112-'));
+ try{
+  const png=Buffer.concat([Buffer.from('89504e470d0a1a0a','hex'),Buffer.alloc(24,7)]);
+  const quellen=[];
+  for(const name of ['a.png','b.png']){
+   const id=await datei('lz/'+name,{s1Profil:null,groesse:png.length});
+   const key=(await raw.query('SELECT storage_key FROM reverse_dateien WHERE id=$1',[id])).rows[0].storage_key;
+   await mkdir(dirname(join(root,key)),{recursive:true});await writeFile(join(root,key),png);quellen.push(id);
+  }
+  const plane=()=>nz.planeReverseLeserNachzug(raw,root,image);
+  const laeufe=async()=>(await raw.query("SELECT datei_id::text,status,einstellungen_revision FROM reverse_leser_laeufe WHERE eintrag_id=$1 ORDER BY created_at,id",[rid])).rows;
+  // 1) erster Scan plant je Quelle einen Lauf.
+  const r1=await plane();
+  assert.equal((await laeufe()).length,2,'je Quelle ein Lauf: '+JSON.stringify(r1));
+  const rev0=(await laeufe())[0].einstellungen_revision;
+  // 2) Scan gilt als noch offen; Einstellung aendert sich; Executor schliesst die pending Laeufe vor Claim (wie reverse-leser-executor.ts).
+  await raw.query("UPDATE reverse_leser_nachzug SET status='offen' WHERE eintrag_id=$1",[rid]);
+  await setting('s1_neu_parsen_schritt',51);
+  await raw.query("UPDATE reverse_leser_laeufe SET status='fehler',fehlercode='leser_einstellungen_geaendert',beendet_at=clock_timestamp() WHERE eintrag_id=$1",[rid]);
+  await raw.query("UPDATE work_jobs SET state='failed',error_code='leser_einstellungen_geaendert',updated_at=clock_timestamp() WHERE kind='reverse-leser'");
+  // 3) offener Scan scheitert am Pin -> catch setzt 'teilweise' (updated_at liegt danach hinter den Fehlschlaegen).
+  const r3=await plane();
+  assert.equal(r3.status,'teilweise','Pinfehler im offenen Scan: '+JSON.stringify(r3));
+  assert.equal((await laeufe()).length,2,'noch kein Ersatz');
+  // 4) Wiederaufnahme: Ersatzscan unter neuer Revision, genau ein Ersatzlauf je Quelle.
+  const r4=await plane();
+  const nach4=await laeufe();
+  assert.equal(nach4.length,4,'genau ein Ersatz je Quelle: '+JSON.stringify(r4));
+  const neu=nach4.filter(l=>l.einstellungen_revision!==rev0);
+  assert.deepEqual(neu.map(l=>l.datei_id).sort(),[...quellen].sort(),'Ersatz fuer beide Quellen');
+  assert.ok(neu.every(l=>l.status==='offen'),'Ersatz offen');
+  // 5) weitere Takte: kein Doppel, kein Dauer-Neuscan (Checkpoint traegt aktuelle Revision).
+  for(let i=0;i<3;i++)await plane();
+  assert.equal((await laeufe()).length,4,'keine weiteren Laeufe');
+  // 6) Ersatz scheitert erneut in derselben Revision: kein neuer Lauf, kein Neuscan.
+  await raw.query("UPDATE reverse_leser_laeufe SET status='fehler',fehlercode='leser_ende_ohne_ergebnis',beendet_at=clock_timestamp() WHERE eintrag_id=$1 AND einstellungen_revision<>$2",[rid,rev0]);
+  for(let i=0;i<2;i++)await plane();
+  assert.equal((await laeufe()).length,4,'gleiche Revision: keine Endlosschleife');
+ }finally{
+  await rm(root,{recursive:true,force:true});
+  await raw.query("DELETE FROM agent_profil_schalter WHERE funktion IN('reverse_leser','reverse_leser_nachzug')");
+  for(const t of ['reverse_leser_laeufe','reverse_leser_nachzug','work_jobs'])await raw.query('DELETE FROM '+t);
+  await raw.query("DELETE FROM reverse_einstellungen WHERE name='s1_neu_parsen_schritt'");
+  await leeren();
+ }
+});
 test('neu_parsen: Vorschau aendert nichts, Ausfuehren nur gefilterte Dateien mit limit',async()=>{
  await leeren();aufrufe.length=0;
  const a=await datei('ordner/a.txt',{s1Profil:'np-alt'}),b=await datei('ordner/b.txt',{s1Profil:'np-alt'});await datei('ordner_x/c.txt',{s1Profil:'np-alt'});

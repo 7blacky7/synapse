@@ -448,7 +448,10 @@ export class ReversePipelineDienst{
   // s1_neu_parsen_auto/-schritt, Prioritaet nachzug); entdecke() laesst diese Dateien ($4) aus. Neue Dateien ohne S1 bleiben hier.
   // P18-T88: $4 = S1-Blockprofil bei Schalter AN - vorhandene S1-Ergebnisse des anderen Profils laufen einmal neu (auch bei Ziel S2/S3).
   for(const d of files)await this.tx(async db=>{const halt=await reverseAdmission(db);if(halt.aktiv||halt.letzter_fehler)return;await sperreReversePolicy(db,d.eintrag_id);await db.query('UPDATE reverse_dateien SET pipeline_gesehen_at=clock_timestamp() WHERE id=$1',[d.id]);return this.queue(db,{reverseId:d.eintrag_id,dateiId:d.id,mediumId:d.medium_id,
-   project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:reverseBisSchichtGrenze(this.ein),prioritaet:'hintergrund'});});
+   project:'reverse-bibliothek',agentId:'reverse-pipeline',bisSchicht:reverseBisSchichtGrenze(this.ein),prioritaet:'hintergrund',
+   // P18-T112: abgeschlossene Legacy-Auftraege ohne Pin (z. B. manuelles E eines Mediums vor P18-T104) halten neue Dateien nicht
+   // mehr fest; offene Altauftraege halten weiter. Die Medien-E-Schleife unten bleibt bewusst ohne diese Ausnahme.
+   ohneLegacyAbgeschlossen:true});});
   // Teil E: Metadatenereignis; dauerhafter Keyset-Scan im vorhandenen Leser-Executor.
   const {meldeReverseLeserKandidat}=await import('./reverse-leser-nachzug.js');
   for(const d of files)await meldeReverseLeserKandidat(this.pool,String(d.eintrag_id),String(d.id));

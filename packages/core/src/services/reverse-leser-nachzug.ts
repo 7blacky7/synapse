@@ -25,6 +25,74 @@ interface Punkt {
 function fail(code:string):never {throw new ReverseLeserFehler(code);}
 const hash=(v:unknown)=>reverseLeserHash(reverseLeserKanonisch(v));
 const uuid=(h:string)=>h.slice(0,8)+'-'+h.slice(8,12)+'-4'+h.slice(13,16)+'-a'+h.slice(17,20)+'-'+h.slice(20,32);
+/** Nur fuer Tests/Diagnose: Lauf-ID aus der deterministischen Identitaet. */
+export const reverseLeserLaufUuid=uuid;
+const LAUF_SPALTEN='id,work_job_id,status,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest';
+/**
+ * P18-T112: Laufwahl bei Einstell-/Policy-Wechsel. Ein erfolgreicher Nachzuglauf (fertig/teilweise) IRGENDEINER Revision fuer dieselbe
+ * Quelle/Hash/Leser/Runtime zaehlt als erledigt (Ergebnisse bleiben, kein Doppellauf). Nur ein gescheiterter/abgebrochener Lauf ohne
+ * spaeteren Erfolg wird mit eigener Identitaet je Revision neu geplant; die alte Generation bleibt unveraendert.
+ */
+export async function reverseLeserLaufWahl(db:Db,d:{eintrag_id:string;id:string;sha256:string},leserId:string,
+ pin:{runtime_sha256?:string;runtime_image_digest?:string},identity:string,revision:string,p:string)
+ :Promise<{art:'erledigt';id:string;job:string|null}|{art:'plan';identity:string;alt:Record<string,any>|undefined}>{
+ const lies=async(x:string)=>(await db.query('SELECT '+LAUF_SPALTEN+' FROM reverse_leser_laeufe WHERE id=$1 AND eintrag_id=$2',[uuid(x),d.eintrag_id])).rows[0];
+ let alt=await lies(identity);
+ if(alt&&(alt.einstellungen_revision!==revision||alt.diagnose?.policy_revision!==p)){
+  if(['fertig','teilweise'].includes(String(alt.status)))return {art:'erledigt',id:alt.id,job:alt.work_job_id??null};
+  const ok=(await db.query(`SELECT id,work_job_id FROM reverse_leser_laeufe WHERE eintrag_id=$1 AND datei_id=$2::bigint AND leser_id=$3 AND quell_sha256=$4
+   AND runtime_sha256 IS NOT DISTINCT FROM $5 AND runtime_image_digest IS NOT DISTINCT FROM $6 AND diagnose->>'nachzug'='true' AND status IN ('fertig','teilweise')
+   ORDER BY created_at DESC,id LIMIT 1`,[d.eintrag_id,d.id,leserId,d.sha256,pin.runtime_sha256??null,pin.runtime_image_digest??null])).rows[0];
+  if(ok)return {art:'erledigt',id:ok.id,job:ok.work_job_id??null};
+  if(['fehler','abgebrochen'].includes(String(alt.status))){identity=hash([identity,revision,p]);alt=await lies(identity);}
+ }
+ return {art:'plan',identity,alt};
+}
+/** Regulaere Paarauswahl (unveraendert): kein Checkpoint, offener Scan oder geaenderte Quelldateien. */
+export const REVERSE_LESER_NACHZUG_PAAR_SQL=`SELECT e.id AS eintrag_id,z.leser_id,c.status,c.einstellungen_revision,c.policy_revision,c.scan_id
+  FROM reverse_eintraege e CROSS JOIN reverse_leser_zustaende z
+  LEFT JOIN reverse_leser_nachzug c ON c.eintrag_id=e.id AND c.leser_id=z.leser_id
+  WHERE e.status='bestaetigt' AND z.status='aktiv'
+  AND EXISTS(SELECT 1 FROM reverse_medien m JOIN reverse_schichten s ON s.medium_id=m.id
+   WHERE m.eintrag_id=e.id AND s.schicht='E' AND s.aktuell AND s.status IN('fertig','teilweise'))
+  AND (c.eintrag_id IS NULL OR c.status='offen' OR EXISTS(SELECT 1 FROM reverse_dateien d
+   WHERE d.eintrag_id=e.id AND (d.id>c.scan_bis OR d.updated_at>c.quellstand)))
+  ORDER BY c.updated_at NULLS FIRST,e.id,z.leser_id LIMIT 1`;
+/** P18-T112: nicht offene Checkpoints (fertig/teilweise) mit mindestens einer Quelle, deren Nachzuglauf gescheitert/abgebrochen ist und
+ * die keinen erfolgreichen Lauf hat - unabhaengig von Zeitstempeln. Ob neu gescannt wird, entscheidet die Checkpoint-Revision. */
+export const REVERSE_LESER_NACHZUG_ERSATZ_SQL=`SELECT e.id AS eintrag_id,z.leser_id,c.status,c.einstellungen_revision,c.policy_revision,c.scan_id
+  FROM reverse_leser_nachzug c JOIN reverse_eintraege e ON e.id=c.eintrag_id JOIN reverse_leser_zustaende z ON z.leser_id=c.leser_id
+  WHERE e.status='bestaetigt' AND z.status='aktiv' AND c.status<>'offen'
+  AND EXISTS(SELECT 1 FROM reverse_medien m JOIN reverse_schichten s ON s.medium_id=m.id
+   WHERE m.eintrag_id=e.id AND s.schicht='E' AND s.aktuell AND s.status IN('fertig','teilweise'))
+  AND EXISTS(SELECT 1 FROM reverse_leser_laeufe l WHERE l.eintrag_id=e.id AND l.leser_id=z.leser_id AND l.diagnose->>'nachzug'='true'
+   AND l.status IN('fehler','abgebrochen')
+   AND NOT EXISTS(SELECT 1 FROM reverse_leser_laeufe ok WHERE ok.eintrag_id=l.eintrag_id AND ok.datei_id=l.datei_id AND ok.leser_id=l.leser_id
+    AND ok.quell_sha256=l.quell_sha256 AND ok.status IN('fertig','teilweise')))
+  ORDER BY c.updated_at,e.id,z.leser_id LIMIT $1 OFFSET $2`;
+/** Aktuelle Einstell-/Policy-Revision eines Eintrags, wie Scan und Laeufe sie pinnen. */
+export async function reverseLeserNachzugRevisionen(db:Db,id:string):Promise<{revision:string;policy:string}>{
+ return {revision:(await snapshot(db,id)).revision,policy:await policy(db,id)};
+}
+/** P18-T112: Paarwahl. Ein Ersatzscan entsteht, wenn der Checkpoint unter einer anderen Einstell-/Policy-Revision lief als der aktuellen
+ * und eine Quelle ohne Erfolg gescheitert ist (fertiger Scan mit spaeter gescheiterten Jobs, oder nach Pinfehler 'teilweise'). Nach dem
+ * Neustart traegt der Checkpoint die aktuelle Revision; scheitert der Ersatz erneut in derselben Revision, entsteht kein Dauer-Neuscan. */
+export async function waehleReverseLeserNachzugPaar(db:Db):Promise<Record<string,any>|undefined>{
+ const pair=(await db.query(REVERSE_LESER_NACHZUG_PAAR_SQL)).rows[0];if(pair)return pair;
+ // Die aktuelle Revision ist je Eintrag nur in JS bestimmbar: seitenweise blaettern, damit Paare unter aktueller Revision
+ // (bleibender Fehler) ein veraltetes Paar nicht dauerhaft verdecken (51d793a5). Revision je Eintrag nur einmal lesen.
+ const seite=50,revisionen=new Map<string,{revision:string;policy:string}|null>();
+ for(let offset=0;;offset+=seite){
+  const rows=(await db.query(REVERSE_LESER_NACHZUG_ERSATZ_SQL,[seite,offset])).rows;
+  for(const k of rows){
+   const id=String(k.eintrag_id);
+   if(!revisionen.has(id))revisionen.set(id,await reverseLeserNachzugRevisionen(db,id).catch(()=>null));
+   const r=revisionen.get(id);
+   if(r&&(k.einstellungen_revision!==r.revision||k.policy_revision!==r.policy))return k;
+  }
+  if(rows.length<seite)return undefined;
+ }
+}
 const PUNKT='eintrag_id,leser_id,datei_cursor::text,hash_cursor,scan_bis::text,scan_id::text,einstellungen_revision,policy_revision,runtime_sha256,runtime_image_digest,status,geprueft::text,passend::text,auftraege::text,offen::text';
 /** B1: gehaltene Clients nie neu verbinden und keine fremde TX abschließen. */
 async function tx<T>(db:ReverseLeserDb,run:(c:PoolClient)=>Promise<T>):Promise<T>{
@@ -110,8 +178,10 @@ async function stand(db:Db,id:string){
  * Claim-Auswahl nimmt ausschließlich Aufträge MIT bestätigter Laufbindung. */
 async function auftrag(db:ReverseLeserDb,d:Datei,r:ReverseLeserRevision,s:ReverseEinstellSnapshot,p:string,pin:LeserRuntimePin){
  await pruefeLeserRuntimeBindung(db,pin);
- const identity=hash([d.eintrag_id,d.id,d.sha256,r.id,pin.runtime_sha256,pin.runtime_image_digest]),id=uuid(identity),generation=id;
- const alt=(await db.query("SELECT id,work_job_id,status,einstellungen_revision,diagnose,runtime_sha256,runtime_image_digest FROM reverse_leser_laeufe WHERE id=$1 AND eintrag_id=$2",[id,d.eintrag_id])).rows[0];
+ // P18-T112: Laufwahl bei Revisionswechsel (siehe reverseLeserLaufWahl). Offene alte Laeufe schliesst der Executor; der Scan ersetzt sie.
+ const wahl=await reverseLeserLaufWahl(db,d,r.id,pin,hash([d.eintrag_id,d.id,d.sha256,r.id,pin.runtime_sha256,pin.runtime_image_digest]),s.revision,p);
+ if(wahl.art==='erledigt')return {id:wahl.id,job:wahl.job,neu:false};
+ const identity=wahl.identity,id=uuid(identity),generation=id,alt=wahl.alt;
  if(alt){
   if(!alt.diagnose?.admission)fail('reverse_admission_nicht_belegt');
   if(alt.runtime_sha256!==pin.runtime_sha256||alt.runtime_image_digest!==pin.runtime_image_digest)fail('leser_runtime_laufpin_geaendert');
@@ -229,15 +299,7 @@ export async function planeReverseLeserNachzug(db:ReverseLeserDb,root?:string,im
  const sch=await schalter(db);if(!sch.aktiv)return {status:'leser_nachzug_aus'};
  if(!(db instanceof Pool))fail('leser_nachzug_pool_erforderlich');
  if(await reverseLeserProjektarbeitVorrang(db))return {status:'projektarbeit_hat_vorrang'};
- const pair=(await db.query(`SELECT e.id AS eintrag_id,z.leser_id,c.status,c.einstellungen_revision,c.policy_revision,c.scan_id
-  FROM reverse_eintraege e CROSS JOIN reverse_leser_zustaende z
-  LEFT JOIN reverse_leser_nachzug c ON c.eintrag_id=e.id AND c.leser_id=z.leser_id
-  WHERE e.status='bestaetigt' AND z.status='aktiv'
-  AND EXISTS(SELECT 1 FROM reverse_medien m JOIN reverse_schichten s ON s.medium_id=m.id
-   WHERE m.eintrag_id=e.id AND s.schicht='E' AND s.aktuell AND s.status IN('fertig','teilweise'))
-  AND (c.eintrag_id IS NULL OR c.status='offen' OR EXISTS(SELECT 1 FROM reverse_dateien d
-   WHERE d.eintrag_id=e.id AND (d.id>c.scan_bis OR d.updated_at>c.quellstand)))
-  ORDER BY c.updated_at NULLS FIRST,e.id,z.leser_id LIMIT 1`)).rows[0];
+ const pair=await waehleReverseLeserNachzugPaar(db);
  if(!pair)return {status:'fertig'};
  if(!await reverseEintragAktiv(db,pair.eintrag_id))return {status:'uebersprungen_inaktiv'};
  if(pair.status&&pair.status!=='offen'){
