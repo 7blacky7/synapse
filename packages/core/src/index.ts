@@ -694,7 +694,7 @@ export {
 } from './services/runtime-ueberwachung.js';
 export type {
   UeberwachteRuntime, RuntimeUeberwachungSchalter, RuntimeUeberwachungEinstellungName, RuntimeUeberwachungWerte, RuntimeUeberwachungEinstellungen,
-  UeberwachungZustand, Massnahme as UeberwachungMassnahme, UeberwachungStand, UeberwachungEreignis, ContainerBeobachtung, RuntimeBeobachtung,
+  UeberwachungZustand, Massnahme as UeberwachungMassnahme, UeberwachungStand, UeberwachungEreignis, ContainerBeobachtung, RuntimeBeobachtung, ProbeDiagnose, ProbeFehlerKlasse,
   Entscheidung as UeberwachungEntscheidung, UeberwachungsDienste, TaktBericht as UeberwachungTaktBericht, FreeAusfuehrer, KettenRuntime, KettenSchritt,
 } from './services/runtime-ueberwachung.js';
 export { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './db/runtime-ueberwachung-schema.js';
@@ -750,6 +750,10 @@ export type { SpawnOrt, ContainerKontingent, ContainerSpawnEingabe } from './ser
 export { AGENT_CONTAINER_SCHEMA_SQL } from './db/agent-container-schema.js';
 // P22-T113: Startort jedes Agenten (Schalter agent_start_ort, Schema 149).
 export { AGENT_START_ORT_SCHEMA_SQL } from './db/agent-start-ort-schema.js';
+// P22-T118: Wrapper-Ende belegbar (Schema 150, rein additive Diagnose).
+export { WRAPPER_ENDE_SCHEMA_SQL } from './db/wrapper-ende-schema.js';
+export { CONTAINER_ENDE_ARTEN, CONTAINER_HINWEIS_ARTEN, WRAPPER_ENDE_STANDARD, WRAPPER_ENDE_FENSTER_MS, leseWrapperEndeGrenzen, zielBetroffen, bewerteWrapperEnde, vermerkeWrapperEnde, betroffeneWrapper } from './services/wrapper-ende.js';
+export type { WrapperEndeBefund, UeberwachungsEreignisKurz, BetroffenerWrapper, WrapperEndeZiel } from './services/wrapper-ende.js';
 export { AGENT_START_ORT_FUNKTION, START_ORTE, START_ORT_ARTEN, merkeStartOrt, merkeStartOrtAusJob, leseStartOrt, zustellWegFuer, startOrtSchalterAktiv, startOrtAnzeige } from './services/agent-start-ort.js';
 export type { StartOrt, StartOrtArt, StartOrtAnzeige, StartOrtEingabe, StartOrtStand, StartOrtZustellweg } from './services/agent-start-ort.js';
 // P22-T116: Runtime-Agenten-Uebersicht (Schalter runtime_agenten_uebersicht, Std AUS).

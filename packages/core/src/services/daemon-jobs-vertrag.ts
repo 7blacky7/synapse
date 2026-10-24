@@ -365,5 +365,9 @@ export async function markiereWrapperAbgestuerzt(k: { identity_id?: string | nul
     `UPDATE ${k.identity_id ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} SET status='crashed',busy=false,connected_mcp=false WHERE project=$1 AND ${k.identity_id ? 'identity_id' : 'agent_name'}=$2 AND wrapper_pid=$3 AND last_activity=$4 AND status IN ('running','idle')`,
     [k.project, k.identity_id ?? k.agent_name, k.wrapper_pid, k.last_activity],
   );
+  // P22-T118: Erkennungszeit, belegte Ursache und Container-Ereignis vermerken (additiv, wirft nie).
+  if ((r.rowCount ?? 0) > 0) {
+    await (await import('./wrapper-ende.js')).vermerkeWrapperEnde({ ...k, quelle: 'daemon_jobs_vertrag.markiereWrapperAbgestuerzt' }).catch(() => undefined);
+  }
   return r.rowCount ?? 0;
 }

@@ -182,6 +182,9 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   runtime_stop_bestaetigen_sekunden: { art: 'zahl', standard: 5, min: 1, max: 120 },
   // P22-T117: Wartezeit auf den Spawn beim Plattform-Modellwechsel.
   runtime_modellwechsel_spawn_warte_sekunden: { art: 'zahl', standard: 90, min: 10, max: 600 },
+  // P22-T118: Wrapper-Ende (wrapper-ende.ts): Zeitfenster fuer Container-Ereignisse und Kappung des Betroffenen-Snapshots.
+  wrapper_ende_fenster_minuten: { art: 'zahl', standard: 30, min: 1, max: 1440 },
+  wrapper_ende_betroffene_max: { art: 'zahl', standard: 50, min: 1, max: 1000 },
 } as const satisfies Record<string, EinstellungDef>;
 export type RuntimeUeberwachungEinstellungName = keyof typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN;
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN = Object.keys(RUNTIME_UEBERWACHUNG_EINSTELLUNGEN) as RuntimeUeberwachungEinstellungName[];
@@ -384,7 +387,16 @@ export interface ContainerBeobachtung {
   image: string | null;
   agent_runtime_image: boolean;
   fehler: string | null;
+  /** P22-T118: konkrete Probe-Fehlerklasse (nur Diagnose; die Bewertung nutzt weiter prozess). */
+  probe_diagnose?: ProbeDiagnose | null;
 }
+
+/**
+ * P22-T118: Klasse eines Probe-Fehlers. 'prozess: haengt' fasste bisher Container-Watchdog-Timeout, Docker-Transport-Timeout,
+ * Stream-Abbruch und Exec-Fehler zusammen - jetzt einzeln belegbar, mit Exitcode, Dauer und stderr-Auszug.
+ */
+export type ProbeFehlerKlasse = 'timeout_container' | 'timeout_transport' | 'stream_abbruch' | 'exec_fehler' | 'pid_limit' | 'exit' | 'ausgabe_ungueltig' | 'status_veraltet';
+export interface ProbeDiagnose { klasse: ProbeFehlerKlasse; exit_code: number | null; dauer_ms: number | null; stderr: string | null; meldung: string | null }
 
 export interface RuntimeBeobachtung extends ContainerBeobachtung {
   api_verbunden: boolean;
@@ -555,7 +567,9 @@ export async function fuehreUeberwachungsTaktAus(d: UeberwachungsDienste, opt: {
         if (ent.zustand !== s.zustand || ent.ursache !== s.ursache) {
           neu.seit = jetzt.toISOString();
           const art = ent.zustand === 'ok' ? (s.zustand === 'unbekannt' ? 'erkannt_ok' : 'wiederhergestellt') : 'zustand_' + ent.zustand;
-          await schreibeEreignis(pool, rt, art, ent.ursache, { vorher: s.zustand, hinweis: ent.hinweis, container: c.container, prozess: c.prozess, api_verbunden: apiVerbunden });
+          // P22-T118: Fehlertext und Probe-Klasse dauerhaft im Ereignis (der Stand wird bei Wiederherstellung ersetzt).
+          await schreibeEreignis(pool, rt, art, ent.ursache, { vorher: s.zustand, hinweis: ent.hinweis, container: c.container, prozess: c.prozess, api_verbunden: apiVerbunden,
+            fehler: c.fehler ?? null, probe: c.probe_diagnose ?? null, status_alter_s: c.status_alter_s });
         }
         neu.zustand = ent.zustand;
         neu.ursache = ent.ursache;
@@ -577,6 +591,12 @@ export async function fuehreUeberwachungsTaktAus(d: UeberwachungsDienste, opt: {
           // Die Kette (fuehreKetteAus) laeuft nach der Bewertung aller Runtimes und vermerkt ihre Schritte selbst.
         } else if (ent.massnahme !== 'keine') {
           neu.versuche = [...s.versuche, { zeit: jetzt.toISOString(), art: ent.massnahme, ursache: ent.ursache }].slice(-20);
+          // P22-T118: laufende Wrapper VOR der Massnahme festhalten (danach sind sie weg).
+          const snap = (ent.massnahme === 'container_restart' || ent.massnahme === 'container_start')
+            ? await (await import('./wrapper-ende.js')).betroffeneWrapper(rt) : null;
+          // Kappung/Lesefehler sichtbar: betroffene_gesamt/_gekappt/_max/_fehler stehen neben der Liste.
+          const betroffeneVorher = snap ? snap.liste : null;
+          const betroffeneInfo = snap ? { betroffene_gesamt: snap.gesamt, betroffene_gekappt: snap.gekappt, betroffene_max: snap.max, betroffene_fehler: snap.fehler } : {};
           try {
             if (ent.massnahme === 'container_start') await d.starteContainer(rt);
             else if (ent.massnahme === 'container_restart') await d.neustartContainer(rt);
@@ -584,12 +604,14 @@ export async function fuehreUeberwachungsTaktAus(d: UeberwachungsDienste, opt: {
               await stelleMainLaufSicher({ identity_id: mainId, runtime: rt, modell: await d.standardModell(rt), warte_ms: 0 });
             }
             zeile.ausgefuehrt = ent.massnahme;
-            await schreibeEreignis(pool, rt, ent.massnahme, ent.ursache, { versuch: neu.versuche.length });
+            // P22-T118: Ursache der Massnahme belegbar + Verknuepfung zu den dabei laufenden Wrappern (Gegenstueck: wrapper.beendet_details.ereignis).
+            await schreibeEreignis(pool, rt, ent.massnahme, ent.ursache, { versuch: neu.versuche.length, fehler: c.fehler ?? null, probe: c.probe_diagnose ?? null,
+              betroffene_wrapper: betroffeneVorher, ...betroffeneInfo });
           } catch (err) {
             const meldung = ((err as Error).message ?? String(err)).slice(0, 500);
             zeile.fehler = meldung;
             neu.letzter_fehler = meldung;
-            await schreibeEreignis(pool, rt, ent.massnahme + '_fehlgeschlagen', ent.ursache, { meldung });
+            await schreibeEreignis(pool, rt, ent.massnahme + '_fehlgeschlagen', ent.ursache, { meldung, fehler: c.fehler ?? null, probe: c.probe_diagnose ?? null, betroffene_wrapper: betroffeneVorher, ...betroffeneInfo });
           }
         }
         await schreibeStand(pool, neu);

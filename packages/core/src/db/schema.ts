@@ -57,6 +57,7 @@ import { AGENT_ENTFERNUNG_SCHEMA_SQL, AGENT_UMBENENNUNG_SCHEMA_SQL } from './age
 import { AGENT_STARTKONTEXT_SCHEMA_SQL } from './agent-startkontext-schema.js';
 import { AGENT_CONTAINER_SCHEMA_SQL } from './agent-container-schema.js';
 import { AGENT_START_ORT_SCHEMA_SQL } from './agent-start-ort-schema.js';
+import { WRAPPER_ENDE_SCHEMA_SQL } from './wrapper-ende-schema.js';
 import { HEX_SCHEMA_SQL } from './hex-schema.js';
 import {HEX_ANALYSEN_SCHEMA_SQL} from './hex-analysen-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
@@ -3208,6 +3209,7 @@ ${AGENT_UMBENENNUNG_SCHEMA_SQL}
 ${AGENT_STARTKONTEXT_SCHEMA_SQL}
 ${AGENT_CONTAINER_SCHEMA_SQL}
 ${AGENT_START_ORT_SCHEMA_SQL}
+${WRAPPER_ENDE_SCHEMA_SQL}
 ${HEX_SCHEMA_SQL}
 ${HEX_ANALYSEN_SCHEMA_SQL}
 ${HEX_FORMATE_SCHEMA_SQL}

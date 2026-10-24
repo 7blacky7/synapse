@@ -7,8 +7,8 @@
  *   altes Image (kein Daemon)-> prozess 'unbekannt'
  */
 import type Docker from 'dockerode';
-import type { ContainerBeobachtung } from '@synapse/core';
-import { captureRuntimeProbe } from './probe.js';
+import type { ContainerBeobachtung, ProbeDiagnose } from '@synapse/core';
+import { captureRuntimeProbe, RuntimeProbeError } from './probe.js';
 import { istAgentRuntimeImage, AGENT_RUNTIME_IMAGE_LABEL } from './runtime-container-spez.js';
 import type { RuntimeConfiguration } from './types.js';
 
@@ -37,6 +37,20 @@ export function leseStatusAusgabe(stdout: string): { quelle?: unknown; erzeugt_a
 
 const kurz = (e: unknown): string => ((e as Error)?.message ?? String(e)).slice(0, 300);
 
+/**
+ * P22-T118: Probe-Fehler einzeln klassifizieren (rein, testbar). Die Bewertung (prozess haengt/daemon_tot) bleibt unveraendert;
+ * die Klasse ist reine Diagnose fuer Ereignis und Stand.
+ */
+export function klassifiziereProbeFehler(error: unknown, dauerMs: number | null): ProbeDiagnose {
+  const meldung = kurz(error);
+  if (error instanceof RuntimeProbeError) {
+    if (error.code === 'pid_limit') return { klasse: 'pid_limit', exit_code: null, dauer_ms: dauerMs, stderr: null, meldung };
+    return { klasse: error.art === 'container_watchdog' ? 'timeout_container' : 'timeout_transport', exit_code: error.art === 'container_watchdog' ? 124 : null, dauer_ms: dauerMs, stderr: null, meldung };
+  }
+  if (/Docker-Stream vorzeitig geschlossen/.test(meldung)) return { klasse: 'stream_abbruch', exit_code: null, dauer_ms: dauerMs, stderr: null, meldung };
+  return { klasse: 'exec_fehler', exit_code: null, dauer_ms: dauerMs, stderr: null, meldung };
+}
+
 export async function beobachteRuntimeContainer(
   docker: Docker, config: RuntimeConfiguration | null, o: BeobachtungsOptionen,
 ): Promise<ContainerBeobachtung> {
@@ -58,19 +72,24 @@ export async function beobachteRuntimeContainer(
   if (!info.State?.Running) return { ...stand, container: 'gestoppt' };
   if (!agentImage) return { ...stand, container: 'laeuft' };
   let r: { stdout: string; stderr: string; exitCode: number | null };
+  const t0 = Date.now();
   try {
     r = await captureRuntimeProbe(docker, container, ['synapse-runtime', 'status'], o.env, o.probe_timeout_ms);
   } catch (error) {
-    return { ...stand, container: 'laeuft', prozess: 'haengt', fehler: kurz(error) };
+    return { ...stand, container: 'laeuft', prozess: 'haengt', fehler: kurz(error), probe_diagnose: klassifiziereProbeFehler(error, Date.now() - t0) };
   }
+  const dauer = Date.now() - t0;
+  const stderr = r.stderr ? r.stderr.slice(-500) : null;
   if (r.exitCode === 127) return { ...stand, container: 'laeuft', prozess: 'unbekannt', fehler: 'synapse-runtime fehlt im Image' };
   let s: { quelle?: unknown; erzeugt_am?: unknown } | null = null;
   try { s = leseStatusAusgabe(r.stdout); } catch { s = null; }
   if (!s || s.quelle !== 'daemon' || typeof s.erzeugt_am !== 'string' || !Number.isFinite(Date.parse(s.erzeugt_am))) {
-    return { ...stand, container: 'laeuft', prozess: 'daemon_tot', fehler: r.exitCode === 0 ? 'status.json fehlt' : ('synapse-runtime status Exit ' + String(r.exitCode)) };
+    return { ...stand, container: 'laeuft', prozess: 'daemon_tot', fehler: r.exitCode === 0 ? 'status.json fehlt' : ('synapse-runtime status Exit ' + String(r.exitCode)),
+      probe_diagnose: { klasse: r.exitCode === 0 ? 'ausgabe_ungueltig' : 'exit', exit_code: r.exitCode, dauer_ms: dauer, stderr, meldung: null } };
   }
   const alterMs = (o.jetzt ?? Date.now)() - Date.parse(s.erzeugt_am);
-  return bewerteAlter(stand, alterMs, o.daemon_frisch_ms);
+  const b = bewerteAlter(stand, alterMs, o.daemon_frisch_ms);
+  return b.prozess === 'daemon_tot' ? { ...b, probe_diagnose: { klasse: 'status_veraltet', exit_code: r.exitCode, dauer_ms: dauer, stderr, meldung: null } } : b;
 }
 
 function bewerteAlter(stand: ContainerBeobachtung, alterMs: number, frischMs: number): ContainerBeobachtung {

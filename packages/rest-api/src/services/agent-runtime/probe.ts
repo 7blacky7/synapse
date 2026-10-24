@@ -22,7 +22,8 @@ export class RuntimeStatusProbe<T> {
 }
 
 export class RuntimeProbeError extends Error {
-  constructor(readonly code: 'pid_limit' | 'probe_timeout', message: string) { super(message); }
+  /** P22-T118: art unterscheidet bei probe_timeout Container-Watchdog (Exit 124) und Docker-Transport (keine Antwort). */
+  constructor(readonly code: 'pid_limit' | 'probe_timeout', message: string, readonly art: 'container_watchdog' | 'transport' | null = null) { super(message); }
 }
 
 export function runtimeProbeDiagnostic(error: unknown): { code: 'pid_limit' | 'probe_timeout' | 'probe_error'; message: string } {
@@ -83,7 +84,7 @@ export async function captureRuntimeProbe(
     // Transport-Sicherung erst NACH dem Container-Watchdog + Kill-Frist.
     const timer = setTimeout(() => {
       stream.destroy();
-      reject(new RuntimeProbeError('probe_timeout', 'Runtime-Prüfung ohne Docker-Antwort; Container-Watchdog beendet die eigene Prozessgruppe.'));
+      reject(new RuntimeProbeError('probe_timeout', 'Runtime-Prüfung ohne Docker-Antwort; Container-Watchdog beendet die eigene Prozessgruppe.', 'transport'));
     }, timeoutMs + 3_000);
     const done = (error?: Error): void => {
       clearTimeout(timer);
@@ -106,7 +107,7 @@ export async function captureRuntimeProbe(
   });
   const info = await exec.inspect();
   const result = { stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'), exitCode: info.ExitCode ?? null };
-  if (result.exitCode === 124) throw new RuntimeProbeError('probe_timeout', 'Runtime-Prüfung nach ' + timeoutMs + 'ms abgebrochen; eigene Prozessgruppe im Container beendet.');
+  if (result.exitCode === 124) throw new RuntimeProbeError('probe_timeout', 'Runtime-Prüfung nach ' + timeoutMs + 'ms abgebrochen; eigene Prozessgruppe im Container beendet.', 'container_watchdog');
   const diagnostic = runtimeProbeDiagnostic(result.stderr + '\n' + result.stdout);
   if (diagnostic.code === 'pid_limit') throw new RuntimeProbeError('pid_limit', diagnostic.message);
   return result;

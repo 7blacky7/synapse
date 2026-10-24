@@ -161,6 +161,8 @@ export async function reapLokaleWrapper(projects: string[], alterMs=300000): Pro
       if((await pruefeWrapperProzess(Number(r.wrapper_pid),r.agent_name,project,path,r.identity_id)).zustand!=='tot')continue;
       const updated=await getPool().query(`UPDATE ${r.identity_id ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} SET status='crashed',busy=false,connected_mcp=false WHERE project=$1 AND ${r.identity_id ? 'identity_id' : 'agent_name'}=$2 AND wrapper_pid=$3 AND last_activity=$4 AND status IN ('running','idle')`,[project,r.identity_id ?? r.agent_name,r.wrapper_pid,r.last_activity]);
       count+=updated.rowCount??0;
+      // P22-T118: Erkennungszeit, belegte Ursache und Container-Ereignis vermerken (additiv, wirft nie).
+      if((updated.rowCount??0)>0)await (await import('./wrapper-ende.js')).vermerkeWrapperEnde({identity_id:r.identity_id,project,agent_name:r.agent_name,wrapper_pid:Number(r.wrapper_pid),last_activity:r.last_activity,quelle:'wrapper_prozess.reapLokaleWrapper'}).catch(()=>undefined);
     }
   }
   return count;
