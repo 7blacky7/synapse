@@ -49,7 +49,7 @@ assert.equal(S.jobErfolgreich({status:'timeout'}),false);
 // R5: gemeinsamer Vertrag stdio/REST
 assert.equal(await S.fuehreRuntimeAgentenAktion({action:'status'},null),null,'fremde Aktion -> null');
 assert.equal((await S.fuehreRuntimeAgentenAktion({action:'runtime_steuern',bestaetigung:{id:'nix',grund:'x'.repeat(12)}},{art:'user'})).error,'bestaetigung_unbekannt');
-assert.deepEqual([...S.RUNTIME_TOOL_AKTIONEN],['runtime_uebersicht','runtime_steuern','runtime_log','runtime_prozesse','runtime_prozess']);
+assert.deepEqual([...S.RUNTIME_TOOL_AKTIONEN],['runtime_uebersicht','runtime_steuern','runtime_log','runtime_prozesse','runtime_prozess','runtime_modellwechsel']);
 assert.ok(S.RUNTIME_TOOL_PROPERTIES.bestaetigung&&S.RUNTIME_TOOL_PROPERTIES.aktion.enum.includes('restart'));
 
 assert.equal(D.maskiere('a sai_ABC_def b Bearer xyz.1 token=geheim sk-1234567890'),'a sai_[WERT] b Bearer [WERT] token=[WERT] sk-[WERT]');
