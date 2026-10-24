@@ -112,6 +112,9 @@ const ROUTEN: RouteDef[] = [
   // P22-T109: Container-Kontingent (Regler der Web-UI); Rechte im Core (User; Koordinator/Main nur mit kontingent_delegiert).
   { methode: 'GET', pfad: '/container-kontingent', action: 'container_kontingent', quelle: () => ({ kontingent_modus: 'status' }) },
   { methode: 'PUT', pfad: '/container-kontingent', action: 'container_kontingent', quelle: req => ({ ...body(req), kontingent_modus: 'setzen' }) },
+  // P22-T107: Heartbeat der Koordinatoren (GET Status, PUT setzen {ziel_identity_id, aktiv, intervall_ms?, grund, user_auftrag?}).
+  { methode: 'GET', pfad: '/koordinator-heartbeat', action: 'koordinator_heartbeat', quelle: () => ({}) },
+  { methode: 'PUT', pfad: '/koordinator-heartbeat', action: 'koordinator_heartbeat', quelle: body },
   // P22-T44: Ausweis fuer mehrere Projekte - Visa/Einwanderungen in diesem Projekt, Arbeitsfreigabe (User oder Koordinator dieses Projekts).
   { methode: 'GET', pfad: '/ausweis-visa', action: 'ausweis_visa', quelle: () => ({}) },
   { methode: 'POST', pfad: '/ausweis-visa/:identity_id/arbeitsfreigabe', action: 'arbeitsfreigabe_erteilen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },

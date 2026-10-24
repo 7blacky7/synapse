@@ -617,7 +617,7 @@ export async function bereiteAgentToolAufrufVor(
     if (!fremd && zielProjekt === HAUPTAGENT_PROJEKT && istMainPrincipal(p)
       && (anmeldung || (MAIN_DATEN_TOOLS.has(tool) && visumErlaubt(tool, action)))
       && (await leseMainSchalter(MAIN_LESEZUGRIFF_FUNKTION)).aktiv) {
-      basis.main_hinweis = mainHinweisText(await sichtbareUserProjekte());
+      basis.main_hinweis = mainHinweisText(await sichtbareUserProjekte(), await mainVerwaltungAktiv());
     }
     // P22-T44: Anzeige Visa/Einwanderungen (einmal je Lauf und bei Aenderung), nur bei Schalter mehrprojekt der Heimat.
     try {

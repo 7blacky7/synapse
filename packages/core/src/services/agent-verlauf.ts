@@ -237,6 +237,9 @@ export async function baueStartkontext(identity_id: string): Promise<{ text: str
       const projekte = await sichtbareUserProjekte();
       hinweise.push('Du bist der Main: du siehst ALLE Projekte des Users lesend ein (project:"<name>" angeben) und arbeitest nicht darin. '
         + `Projekte: ${projekte.length ? projekte.join(', ') : '(keine gefunden)'}.`);
+      // P22-T107 (Befund 01f22cc2): mit main_agentenverwaltung EIN verwaltet der Main Agenten selbst.
+      const sv = await import('./hauptagent-sonderstellung.js');
+      if (await sv.mainVerwaltungAktiv()) hinweise.push(sv.MAIN_VERWALTUNG_HINWEIS);
     } else {
       // P22-T81: Startpaket jeder anderen Identitaet: Rolle/Regeln des Ausweis-Profils + eigene Hinweise (Aufgabe, Ort).
       const ra = await rolleUndAuftrag(identity_id, stand);

@@ -490,7 +490,9 @@ export async function fuehreRuntimeWechselAus(d: RuntimeWechselDienste): Promise
  */
 export async function heartbeatBeimSpawnFuerZiel(project: string, ziel: Extract<AgentZiel, { art: 'identity' }>): Promise<void> {
   if (project !== HAUPTAGENT_PROJEKT) {
-    await setzeHeartbeatKonfiguration(project, [ziel], { enabled: true, intervalMs: null });
+    // P22-T107: Koordinator mit eigener Einstellung (Schalter koordinator_heartbeat EIN) -> diese, sonst Standard (an, adaptiv).
+    const k = await (await import('./koordinator-heartbeat.js')).koordinatorHeartbeatBeimSpawn(project, ziel.identity_id);
+    await setzeHeartbeatKonfiguration(project, [ziel], k ?? { enabled: true, intervalMs: null });
     return;
   }
   const r = await getPool().query<{ startrezept: unknown }>('SELECT startrezept FROM agent_identitaeten WHERE id=$1 AND project=$2',

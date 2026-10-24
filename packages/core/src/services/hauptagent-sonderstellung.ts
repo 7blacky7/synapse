@@ -124,10 +124,17 @@ export async function mainVerwaltungAktiv(): Promise<boolean> {
   try { return (await leseProfilProduktSchalter(MAIN_AGENTENVERWALTUNG_FUNKTION, null)).aktiv; } catch { return false; }
 }
 
+/** P22-T107 (Befund 01f22cc2): Zusatz, wenn main_agentenverwaltung EIN ist - der Main legt Agenten selbst an, statt weiterzuleiten. */
+export const MAIN_VERWALTUNG_HINWEIS = 'Agenten-Verwaltung erledigst du SELBST in jedem Projekt (project:"<name>"), wenn der User es auftraegt: '
+  + 'Ausweis anlegen admin(agent_vorbereiten, rolle koordinator|subagent, grund, user_auftrag), Koordinatoren/Spezialisten starten/stoppen '
+  + 'specialist(spawn ort:"container" | stop | wake | status), Heartbeat admin(koordinator_heartbeat) bzw. specialist(heartbeat), '
+  + 'Kontingent admin(container_kontingent). Nicht an einen Koordinator weiterleiten und nicht erneut nachfragen.';
+
 /** Lenkhinweis fuer den Main im internen Bereich bzw. bei der Anmeldung. */
-export function mainHinweisText(projekte: string[]): string {
+export function mainHinweisText(projekte: string[], verwaltung = false): string {
   return `Du bist der Main: du siehst ALLE Projekte des Users lesend ein und arbeitest nicht darin. Im internen Bereich "${HAUPTAGENT_PROJEKT}" `
-    + `liegen keine Projektdaten (Tasks, Thoughts, Memories, Code). Gib dafuer project:"<name>" an. Projekte: ${liste(projekte)}.`;
+    + `liegen keine Projektdaten (Tasks, Thoughts, Memories, Code). Gib dafuer project:"<name>" an. Projekte: ${liste(projekte)}.`
+    + (verwaltung ? ' ' + MAIN_VERWALTUNG_HINWEIS : '');
 }
 
 /** Schreibversuch des Main in einem User-Projekt. */

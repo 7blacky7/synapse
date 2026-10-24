@@ -31,6 +31,7 @@ import { API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER, istApiAgentAdminAct
 import { markiereEntfernteProfile } from './agent-entfernung.js';
 import { AGENT_ENTFERNUNG_ADMIN_ACTIONS, AGENT_ENTFERNUNG_ADMIN_PARAMETER, istAgentEntfernungAdminAction, fuehreAgentEntfernungAdminAus } from './agent-entfernung.js';
 import { CONTAINER_ADMIN_ACTIONS, CONTAINER_ADMIN_PARAMETER, istContainerAdminAction, fuehreContainerAdminAus } from './agent-container.js';
+import { KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS, istKoordinatorHeartbeatAdminAction, fuehreKoordinatorHeartbeatAdminAus } from './koordinator-heartbeat.js';
 import { AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, istAgentAnmeldungenAdminAction, fuehreAgentAnmeldungenAdminAus } from './agent-anmeldungen.js';
 import { RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, RUNTIME_UEBERWACHUNG_ADMIN_PARAMETER, istRuntimeUeberwachungAdminAction, fuehreRuntimeUeberwachungAdminAus } from './runtime-ueberwachung.js';
 import { AUSWEIS_FRIST_NAMEN, leseAusweisFristen, setzeAusweisFristen } from './agent-ausweis-fristen.js';
@@ -56,7 +57,7 @@ const W1B_KERN_AKTIONEN = [
   'profil_lesen', 'identitaet_deaktivieren', 'identitaet_reaktivieren',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
-export const W1B_ADMIN_ACTIONS = ['agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS] as const;
+export const W1B_ADMIN_ACTIONS = ['agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS] as const;
 export type W1bAdminAction = typeof W1B_KERN_AKTIONEN[number];
 
 /** Nur NEUE Parameternamen; bestehende (project, aktiv, grund, ebene, agent_id) bleiben byte-stabil unveraendert. */
@@ -549,6 +550,8 @@ export async function fuehreW1bAdminAus(action: string, args: Args, opt: { akteu
   if (istAgentEntfernungAdminAction(action)) return fuehreAgentEntfernungAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P22-T82: Kontingent fuer Spezialisten im Runtime-Container (status: User + Koordinator inkl. Legacy; setzen: nur User).
   if (istContainerAdminAction(action)) return fuehreContainerAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
+  // P22-T107: Heartbeat der Koordinatoren (User; Koordinator/Main nur mit user_auftrag) – eigener Rechtepfad in koordinator-heartbeat.ts.
+  if (istKoordinatorHeartbeatAdminAction(action)) return fuehreKoordinatorHeartbeatAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   // P22-T87 S1: Anmelde-Uebersicht (lesend: User, Koordinator inkl. Legacy, Main) – eigener Rechtepfad in agent-anmeldungen.ts.
   if (istAgentAnmeldungenAdminAction(action)) return fuehreAgentAnmeldungenAdminAus(action, args, akteur ?? legacyKoordinatorAus(args));
   if (istAusweisAktion(action)) {

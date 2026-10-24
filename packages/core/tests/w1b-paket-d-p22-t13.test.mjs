@@ -87,7 +87,9 @@ const W1B_AKTIONEN=[
  // P22-T58: additive Aktion der Runtime-Ueberwachung
  'runtime_ueberwachung',
  // P22-T80: alte Agenten archivieren; P22-T82: Kontingent Spezialisten im Container; P22-T87: Anmelde-Uebersicht
- 'agenten_aufraeumen','container_kontingent','anmeldungen'];
+ 'agenten_aufraeumen','container_kontingent','anmeldungen',
+ // P22-T107: Heartbeat der Koordinatoren
+ 'koordinator_heartbeat'];
 const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','zustand','erwartete_revision','ziel_revision','korrektur','profil_patch','typ_id','typ_schluessel','typ_inhalt',
  'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
