@@ -8,6 +8,7 @@ export {REVERSE_FEHLERLOG_SCHEMA_SQL} from './db/reverse-fehlerlog-schema.js';
 export {leseReverseDateienBelegt,gleicheReverseBelegungAb,reverseBelegungVerlauf,reverseBelegungModus} from './services/reverse-belegung.js';
 export type {ReverseBelegungBefund,ReverseBelegungModus} from './services/reverse-belegung.js';
 export {REVERSE_BELEGUNG_SCHEMA_SQL} from './db/reverse-belegung-schema.js';
+export {REVERSE_AUFTRAEGE_VORGABEN_SCHEMA_SQL} from './db/reverse-auftraege-vorgaben-schema.js';
 export {leseReverseEinstellwerte,leseReverseBlockSchalter,leseReverseProduktSchalter,reverseZahl,reverseWert,reverseBigInt,reverseBudget} from './services/reverse-einstellwerte.js';
 export type {ReverseEinstellSnapshot} from './services/reverse-einstellwerte.js';
 export {uebernehmeEInBloecken} from './services/reverse-e-bloecke.js';

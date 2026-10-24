@@ -102,8 +102,10 @@ export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefra
 /** Strictly scoped by entry and optionally source; accepts Fachauftrag ID or P20 ID. Read-only inside caller's TX. */
 export async function pruefeReversePolicyAuftrag(db:Db,id:string,rid:string,stufe:string,dateiId?:string|null):Promise<ReversePolicyPin>{
  await sperreReversePolicy(db,rid);
+ // P18-T114: UUID-Vergleich nutzt pkey/idx_reverse_auftraege_p20 (vorher ::text = Voll-Scan je Pruefung). Keine UUID = kein Treffer wie bisher.
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id)))throw new ReversePolicyFehler('policy_pin_fehlt',id);
  const rows=(await db.query(`SELECT id::text,eintrag_id,datei_id::text,medium_id::text,policy_pin FROM reverse_auftraege
-  WHERE eintrag_id=$1 AND (id::text=$2 OR p20_auftrag_id::text=$2)
+  WHERE eintrag_id=$1 AND (id=$2::uuid OR p20_auftrag_id=$2::uuid)
    AND ($3::text IS NULL OR datei_id::text=$3) ORDER BY created_at DESC,id DESC`,[rid,id,dateiId??null])).rows;
  if(!rows.length)throw new ReversePolicyFehler('policy_pin_fehlt',id);
  let answer:ReversePolicyPin|undefined;

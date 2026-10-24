@@ -75,6 +75,7 @@ import {REVERSE_LESER_RUNTIME_SCHEMA_SQL} from './reverse-leser-runtime-schema.j
 import {REVERSE_ANALYSE_POLICY_SCHEMA_SQL} from './reverse-analyse-policy-schema.js';
 import {REVERSE_FEHLERLOG_SCHEMA_SQL} from './reverse-fehlerlog-schema.js';
 import {REVERSE_BELEGUNG_SCHEMA_SQL} from './reverse-belegung-schema.js';
+import {REVERSE_AUFTRAEGE_VORGABEN_SCHEMA_SQL} from './reverse-auftraege-vorgaben-schema.js';
 import {REVERSE_F3_BEREINIGUNG_SCHEMA_SQL} from './reverse-f3-bereinigung-schema.js';
 import {REVERSE_PIPELINE_SCHEMA_SQL} from './reverse-pipeline-schema.js';
 import { PROJECT_RESTORE_SCHEMA_SQL } from './project-restore-schema.js';
@@ -3221,6 +3222,7 @@ ${REVERSE_LESER_RUNTIME_SCHEMA_SQL}
 ${REVERSE_ANALYSE_POLICY_SCHEMA_SQL}
 ${REVERSE_FEHLERLOG_SCHEMA_SQL}
 ${REVERSE_BELEGUNG_SCHEMA_SQL}
+${REVERSE_AUFTRAEGE_VORGABEN_SCHEMA_SQL}
 `;
 
 /** Fehlercodes, bei denen ein neuer Versuch sinnvoll ist: Deadlock, Sperre nicht zu bekommen, Serialisierung. */
