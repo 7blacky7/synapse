@@ -105,6 +105,16 @@ export const MODELL_HAIKU_55_NACHZUG_SQL = `UPDATE model_registry
        effort_stufen = ARRAY['low', 'medium', 'high', 'xhigh', 'max'], default_effort = 'medium', updated_at = NOW()
  WHERE alias = 'haiku' AND full_id = 'claude-haiku-4-5-20251001'`;
 
+/**
+ * P22-T126 (rea3 389b0abe/0478c366, Gesamttabelle 65b907f6, gemessen CLI 2.1.310/Abo): Aliase opus, opus-5, opus-4.8, opus-4.7,
+ * sonnet-5 haben 1M Kontext wie die [1m]-Eintraege -> context_window 1000000, Korridor 80/97. Idempotent und eng: NUR solange der
+ * alte Wert 200000 steht (gepflegte Werte bleiben, zweiter Lauf 0 Zeilen). NICHT (gemessen 200k): haiku-4.5, sonnet-4.6, opus-4.6.
+ * Codex: keine Registry-Zeilen, kein gemessenes Fenster -> nichts. Kein Direkt-DB-Schreiben: laeuft beim Schema-Start.
+ */
+export const MODELL_KONTEXT_1M_NACHZUG_SQL = `UPDATE model_registry
+   SET context_window = 1000000, corridor_min = 80, corridor_max = 97, updated_at = NOW()
+ WHERE context_window = 200000 AND alias IN ('opus', 'opus-5', 'opus-4.8', 'opus-4.7', 'sonnet-5')`;
+
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
@@ -1984,6 +1994,8 @@ UPDATE model_registry
 
 -- P22-T75: haiku (CLI-Alias = neueste Version) von Haiku 4.5 auf 5.5 ziehen, nur solange er noch auf 4.5 steht; haiku-4.5 steht im Seed oben.
 ${MODELL_HAIKU_55_NACHZUG_SQL};
+-- P22-T126: opus/sonnet-5 auf 1M Kontext (idempotent, nur alter 200k-Stand).
+${MODELL_KONTEXT_1M_NACHZUG_SQL};
 
 -- ==========================================================================
 -- model_cutoffs: Wissensstand (knowledge cutoff) je Modell-ID, datengetrieben.
