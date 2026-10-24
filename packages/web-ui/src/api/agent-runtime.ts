@@ -552,6 +552,12 @@ export async function getPlattformAgentChatSchalter(identityId: string): Promise
   return (await jsonRequest<{ success: true; schalter: PlattformAgentChatSchalter }>('/api/agent-runtimes/agent-chat/status?identity_id=' + encodeURIComponent(identityId))).schalter;
 }
 
+/** P22-T124: Schalter agent_chat_einheitlich (Produkt-Schalter im Projekt der Zielidentitaet, Std AUS); fehlt das Feld = AUS. */
+export async function getAgentChatEinheitlich(identityId: string): Promise<boolean> {
+  const r = await jsonRequest<{ success: true; einheitlich?: { aktiv?: boolean } }>('/api/agent-runtimes/agent-chat/status?identity_id=' + encodeURIComponent(identityId));
+  return r.einheitlich?.aktiv === true;
+}
+
 /** P22-T112: Nachricht des Users an einen Plattform-Agenten (Zustellung per Inbox). */
 export async function sendePlattformAgentChat(identityId: string, text: string): Promise<{ inbox_id: number; agent_id: string; project: string }> {
   return jsonRequest<{ success: true; inbox_id: number; agent_id: string; project: string }>('/api/agent-runtimes/agent-chat', {

@@ -76,7 +76,7 @@ export function ProjectCoordinatorDock() {
           <section className="main-assistant-context"><span>PROJEKT</span><strong>{open.project}</strong><small>Erreichbar über die Channels dieses Projekts.</small></section>
           <section className="main-assistant-context"><span>LÄUFT AUF</span><strong>{herkunftText(open.herkunft)}</strong></section>
           <section className="main-assistant-context"><span>LETZTES LEBENSZEICHEN</span><strong>{open.lastActivity || '–'}</strong></section>
-          {chatAktiv && <PlattformAgentChat identityId={open.id} name={open.name} />}
+          {chatAktiv && <PlattformAgentChat identityId={open.id} name={open.name} project={open.project} />}
           <footer><span>agent_identitaeten · aktiver Lauf</span><b>online</b></footer>
         </aside>
       )}

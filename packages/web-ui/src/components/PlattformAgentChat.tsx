@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { abonniereToolKarten, getAgentVerlauf, sendePlattformAgentChat, type MainAgentVerlaufEintrag } from '../api/agent-runtime';
+import { abonniereToolKarten, getAgentChatEinheitlich, getAgentVerlauf, sendePlattformAgentChat, type MainAgentVerlaufEintrag } from '../api/agent-runtime';
+import { EinheitlicherAgentChat } from './EinheitlicherAgentChat';
 
 /**
  * P22-T112: Chat mit einem Plattform-Agenten (Koordinator, spaeter Spezialist) im Fenster der Seitenleiste.
@@ -12,8 +13,17 @@ const SICHTBAR = new Set(['user', 'agent', 'nachricht', 'ausgabe']);
 
 interface Gesendet { key: string; text: string; inboxId: number | null; fehler: string }
 
-export function PlattformAgentChat({ identityId, name, pollMs = PLATTFORM_AGENT_CHAT_POLL_MS }: { identityId: string; name: string; pollMs?: number }) {
+export function PlattformAgentChat({ identityId, name, pollMs = PLATTFORM_AGENT_CHAT_POLL_MS, project }: { identityId: string; name: string; pollMs?: number; project?: string }) {
   const intervall = Number.isFinite(pollMs) && pollMs > 0 ? pollMs : PLATTFORM_AGENT_CHAT_POLL_MS;
+  // P22-T124: Schalter agent_chat_einheitlich (im Projekt der Zielidentitaet, Std AUS) -> Chatfenster wie der Main-Chat.
+  // An die Identitaet gebunden (wie T112/T116 R6); Lesefehler = AUS (Altansicht).
+  const [einheitlich, setEinheitlich] = useState<{ identityId: string; aktiv: boolean }>({ identityId: '', aktiv: false });
+  useEffect(() => {
+    let gueltig = true;
+    getAgentChatEinheitlich(identityId).then((a) => { if (gueltig) setEinheitlich({ identityId, aktiv: a }); }).catch(() => { if (gueltig) setEinheitlich({ identityId, aktiv: false }); });
+    return () => { gueltig = false; };
+  }, [identityId]);
+  if (einheitlich.identityId === identityId && einheitlich.aktiv) return <EinheitlicherAgentChat key={identityId} identityId={identityId} name={name} project={project} pollMs={intervall} />;
   return <PlattformAgentChatIdentitaet key={identityId} identityId={identityId} name={name} pollMs={intervall} />;
 }
 

@@ -502,7 +502,10 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       if (!/^[a-f0-9-]{36}$/.test(id)) return reply.code(400).send({ success: false, error: { code: 'identity_id_fehlt', message: 'identity_id angeben' } });
       const ziel = (await getPool().query<{ project: string }>('SELECT project FROM agent_identitaeten WHERE id=$1', [id])).rows[0];
       if (!ziel) return reply.code(404).send({ success: false, error: { code: 'identitaet_unbekannt', message: 'Identitaet nicht gefunden' } });
-      return { success: true, schalter: await plattformAgentChatSchalter(ziel.project) };
+      // P22-T124: einheitliches Chatfenster (Schalter agent_chat_einheitlich, Std AUS); Debug: Quelle und Fehler mitliefern.
+      const e = await leseProfilProduktSchalter('agent_chat_einheitlich', ziel.project).catch(() => null);
+      const einheitlich = { name: 'agent_chat_einheitlich', aktiv: !!e && e.aktiv && !e.letzter_fehler, quelle: e?.quelle ?? 'fehler', letzter_fehler: e ? e.letzter_fehler : 'nicht_lesbar' };
+      return { success: true, schalter: await plattformAgentChatSchalter(ziel.project), einheitlich };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.post<{ Body: { identity_id?: unknown; text?: unknown } }>('/api/agent-runtimes/agent-chat', async (request, reply) => {

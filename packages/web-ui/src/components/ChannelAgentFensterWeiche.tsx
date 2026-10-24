@@ -28,7 +28,7 @@ export function ChannelAgentFensterWeiche(props: ComponentProps<typeof ChannelAg
         <div><i /><span><strong>{props.windowState.agentName}</strong><small>Direktchat · {props.windowState.role} · {props.project}</small></span></div>
         <button type="button" onClick={props.onClose}>×</button>
       </header>
-      <PlattformAgentChat identityId={id} name={props.windowState.agentName} />
+      <PlattformAgentChat identityId={id} name={props.windowState.agentName} project={props.project} />
       <footer><span>plattform_agent_chat · Inbox</span><b>direkt</b></footer>
     </aside>
   );

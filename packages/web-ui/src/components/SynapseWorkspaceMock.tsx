@@ -14,12 +14,14 @@ import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
 import { HauptagentModellChip } from './HauptagentModellChip';
-import { ToolBilder } from './ToolBild';
 import { type ChannelAgentWindowState } from './ChannelAgentChatWindow';
 import { ChannelAgentFensterWeiche } from './ChannelAgentFensterWeiche';
 import { RuntimeAgentenPanel } from './RuntimeAgentenPanel';
 import { AttachmentDrafts, AttachmentMessage, handleAttachmentDrop, prepareMockChatAttachments, type MockChatAttachment } from './ChatAttachments';
 import { PlanungsHinweis, StatusChip } from './StatusKennzeichnung';
+// P22-T124: Tool-Karten und Verlaufs-Logik gemeinsam mit dem einheitlichen Chat der Plattform-Agenten.
+import { ToolActivity } from './agent-chat-teile';
+import { verlaufInfo, verlaufWerkzeuge, verlaufZugInfo } from './agent-chat-logik';
 import {
   herkunftText,
   loadChannelMemberViewModels,
@@ -31,7 +33,6 @@ import {
   loadSystemEntities,
   loadMainAgentToolCallResult,
   loadMainAgentToolCallViewModels,
-  loadToolCallResult,
   sendChannelMessage,
 } from '../api/control-plane-adapter';
 import { defaultSettings, navigation } from '../mock/ui-control-plane';
@@ -201,14 +202,6 @@ function PageHeader({
   );
 }
 
-function formatToolPayload(value: string) {
-  if (!value) return '';
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
-}
 
 function NativeHtmlBlock({ block }: { block: AgentHtmlBlock }) {
   const style = {
@@ -264,131 +257,6 @@ function NativeHtmlMessage({
   );
 }
 
-function shortToolName(tool: string) {
-  const parts = tool.split('__');
-  return parts[parts.length - 1] || tool;
-}
-
-function toolCallIsFresh(call: ToolCallViewModel) {
-  const created = Date.parse(call.createdAt);
-  return call.status === 'running' || (Number.isFinite(created) && Date.now() - created <= 10_000);
-}
-
-function ToolCallNode({ call, project, ladeErgebnis }: { call: ToolCallViewModel; project: string; ladeErgebnis?: (id: string) => Promise<string> }) {
-  const [stage, setStage] = useState<0 | 1 | 2>(0);
-  const [result, setResult] = useState(call.error || call.resultPreview);
-  const [resultError, setResultError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const fresh = toolCallIsFresh(call);
-
-  useEffect(() => {
-    // Aufrufe aus dem Antwortstrom bringen ihr Ergebnis selbst mit.
-    if (call.source === 'stream') setResult(call.error || call.resultPreview);
-    if (stage !== 2 || call.source === 'stream') return;
-    let active = true;
-    let timer: number | undefined;
-
-    const refreshResult = async () => {
-      setLoading(true);
-      try {
-        const fullResult = ladeErgebnis ? await ladeErgebnis(call.id) : await loadToolCallResult(project, call.id);
-        if (active) {
-          setResult(fullResult);
-          setResultError('');
-        }
-      } catch (loadError) {
-        if (active) setResultError(loadError instanceof Error ? loadError.message : String(loadError));
-      } finally {
-        if (active) setLoading(false);
-      }
-      if (active && toolCallIsFresh(call)) {
-        timer = window.setTimeout(() => void refreshResult(), 500);
-      }
-    };
-
-    void refreshResult();
-    return () => {
-      active = false;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [stage, project, call.id, call.createdAt, call.status, ladeErgebnis]);
-
-  const advance = () => setStage((current) => current === 0 ? 1 : current === 1 ? 2 : 0);
-
-  return (
-    <article className={'tool-node ' + call.status + (stage ? ' is-open' : '')}>
-      <button type="button" onClick={advance} aria-expanded={stage > 0}>
-        <i className="tool-knot" />
-        <span className="tool-name">{shortToolName(call.tool)}</span>
-        <span className="tool-action">{call.action || 'Aufruf'}</span>
-        <time>{call.createdAt ? new Date(call.createdAt).toLocaleTimeString('de-DE') : ''}</time>
-        <b>{call.status === 'failed' ? 'Fehler' : call.durationMs + ' ms'}</b>
-        <span className="tool-click-hint">{stage === 0 ? 'Command' : stage === 1 ? 'Ausgabe' : 'Schließen'}</span>
-      </button>
-      {call.bilder?.length ? <ToolBilder bilder={call.bilder} /> : null}
-      {stage >= 1 && (
-        <div className="tool-payload command">
-          <label>Command · Klick 1</label>
-          <pre>{formatToolPayload(call.argsPreview) || 'Keine Argumente gespeichert.'}</pre>
-        </div>
-      )}
-      {stage === 2 && (
-        <div className={'tool-payload output' + (fresh ? ' live' : '')}>
-          <label>{call.error ? 'Fehler' : fresh ? 'Ausgabe · live bis 10 s' : 'Ausgabe · vollständig'}</label>
-          <pre>{formatToolPayload(resultError || call.error || result) || (loading ? 'Wird geladen …' : 'Keine Ausgabe gespeichert.')}</pre>
-        </div>
-      )}
-    </article>
-  );
-}
-
-function ToolActivity({
-  calls,
-  error,
-  project,
-  summary,
-  phases,
-  leerText,
-  ladeErgebnis,
-}: {
-  calls: ToolCallViewModel[];
-  error: string;
-  project: string;
-  summary: string;
-  phases: string[];
-  leerText: string;
-  /** P8-T26: Ergebnisquelle fuer Aufrufe, die nicht aus dem gewaehlten Projekt kommen (Hauptagent). */
-  ladeErgebnis?: (id: string) => Promise<string>;
-}) {
-  const [open, setOpen] = useState(true);
-
-  return (
-    <section className={open ? 'tool-run is-open' : 'tool-run'} aria-label={summary}>
-      <button className="tool-run-summary" type="button" onClick={() => setOpen((current) => !current)} aria-expanded={open}>
-        <i />
-        <strong>{summary}</strong>
-        <span>{calls.length} Toolcalls · {phases.length} Denkphasen</span>
-        <b>{open ? 'Einklappen' : 'Ausklappen'}</b>
-      </button>
-      {open && (
-        <div className="tool-run-body">
-          {error && <p className="tool-stream-error">{error}</p>}
-          <div className="tool-strand">
-            {phases.map((phase, index) => (
-              <div className="thought-node" key={phase + index}>
-                <i className="tool-knot" />
-                <span>Denkphase</span>
-                <strong>{phase}</strong>
-              </div>
-            ))}
-            {calls.map((call) => <ToolCallNode call={call} project={project} ladeErgebnis={ladeErgebnis} key={call.id} />)}
-          </div>
-          {!calls.length && !error && <p className="tool-stream-empty">{leerText}</p>}
-        </div>
-      )}
-    </section>
-  );
-}
 
 // P8-T25: Der Poll liefert immer nur die letzten N Aufrufe. Ersetzte man damit
 // die Liste, rutschte sie bei jedem Poll weiter (oben fallen Eintraege weg,
@@ -520,58 +388,6 @@ function setzeArtefaktBlock(
 // Strom dieselbe Nachricht treffen. Lokale Nachrichten ohne Server-ID behalten Date.now()-IDs (groesser, also hinten).
 const verlaufAnzeigeId = (serverId: string, artefakt = false): number => Number(serverId) * 2 + (artefakt ? 1 : 0);
 
-function verlaufInfo(eintrag: MainAgentVerlaufEintrag): string {
-  const zeit = new Date(eintrag.erstellt_am);
-  const wann = Number.isNaN(zeit.getTime()) ? '' : zeit.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-  return [eintrag.rolle === 'user' ? eintrag.geraet : null, wann].filter(Boolean).join(' · ');
-}
-
-function verlaufWerkzeuge(eintrag: MainAgentVerlaufEintrag): AgentMessage['toolRun'] {
-  const calls = (eintrag.werkzeuge?.calls ?? []).map((call): ToolCallViewModel => {
-    const input = call.input && typeof call.input === 'object' ? call.input as Record<string, unknown> : null;
-    const start = Date.parse(call.start);
-    const ende = call.ende ? Date.parse(call.ende) : Number.NaN;
-    const offen = !call.ende;
-    const ausgabe = call.output === undefined || call.output === null ? '' : typeof call.output === 'string' ? call.output : JSON.stringify(call.output);
-    return {
-      id: 'stream:' + call.id,
-      tool: call.name || 'tool',
-      action: typeof input?.action === 'string' ? input.action : '',
-      agent: 'Hauptagent',
-      status: offen ? (eintrag.status === 'laeuft' ? 'running' : 'failed') : call.isError ? 'failed' : 'done',
-      argsPreview: call.input === undefined ? '' : typeof call.input === 'string' ? call.input : JSON.stringify(call.input),
-      resultPreview: !offen && !call.isError ? ausgabe : '',
-      error: call.isError ? ausgabe || 'Fehler' : offen && eintrag.status !== 'laeuft' ? 'ohne Ergebnis beendet' : '',
-      durationMs: Number.isFinite(start) && Number.isFinite(ende) ? Math.max(0, ende - start) : 0,
-      ...(call.bilder?.length ? { bilder: call.bilder } : {}),
-      createdAt: call.start,
-      source: 'stream',
-    };
-  });
-  const phases = eintrag.werkzeuge?.phasen ?? [];
-  return calls.length || phases.length ? { calls, phases } : undefined;
-}
-
-const tausender = (n: number): string => n >= 1000 ? (n / 1000).toFixed(n >= 10_000 ? 0 : 1) + 'k' : String(n);
-
-const fensterQuelleText = (q: 'registry' | 'cli' | 'fallback' | undefined): string => q === 'cli' ? 'CLI' : q === 'fallback' ? 'Rückfall' : q === 'registry' ? 'Registry' : 'Quelle unbekannt';
-
-// P22-T63: Token-Zeile je Antwort: Modell · Zuege · Dauer · in/out · Kontext (gemessen = CLI usage).
-function verlaufZugInfo(eintrag: MainAgentVerlaufEintrag): string | undefined {
-  const g = eintrag.tokens?.gemessen;
-  const teile = [
-    eintrag.modell,
-    eintrag.zug?.zuege ? eintrag.zug.zuege + (eintrag.zug.zuege === 1 ? ' Zug' : ' Züge') : null,
-    eintrag.zug ? (eintrag.zug.dauer_ms / 1000).toFixed(1) + ' s' : null,
-    g ? 'in ' + tausender(g.input + g.cache_read + g.cache_creation) + ' / out ' + tausender(g.output) : null,
-    // P22-T70: ohne Kontextstand (dauerhafter Weg ohne Wrapper-Messung) ehrlich 'nicht gemessen' statt 0 %.
-    // P22-T75: Obergrenze und ihre Quelle sichtbar (Registry | CLI | Rückfall), damit eine falsche Annahme auffaellt.
-    eintrag.kontext ? 'Kontext ' + eintrag.kontext.prozent + ' % von ' + tausender(eintrag.kontext.fenster) + ' (' + fensterQuelleText(eintrag.kontext.schwellen_quelle) + ')' : g ? 'Kontext nicht gemessen' : null,
-    eintrag.zug?.kosten ? '$' + eintrag.zug.kosten.usd.toFixed(4) : null,
-    g ? 'gemessen' : null,
-  ].filter(Boolean);
-  return teile.length ? teile.join(' · ') : undefined;
-}
 
 // P22-T67: Bilder des dauerhaften Wegs: Sitzungs-Eintraege (jsonl:) tragen den Asset-Verweis in meta.bilder. Sie erscheinen als
 // Bild-Aufruf in der Werkzeugliste der zugehoerigen (sonst der letzten) Agent-Antwort, ueber dieselbe Komponente wie der Altweg.
