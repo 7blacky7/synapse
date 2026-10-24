@@ -56,3 +56,18 @@
   flex-shrink: 0;
 }
 
+
+/* P22-T124 L3: Im mobilen Channel bleibt das Fenster im verfuegbaren Thread.
+   Nur der neue Direktchat; Desktop-Geometrie und Main-Chat bleiben unveraendert. */
+@media (max-width: 768px) {
+  .channel-thread .main-assistant-window.coordinator-info-window.mit-chat:has(> .agent-chat-shell--embedded) {
+    inset: 0;
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    max-height: 100%;
+    margin: 0;
+    /* Die Desktop-Startposition kommt als Inline-Transform aus der Fensterweiche. */
+    transform: none !important;
+  }
+}
