@@ -6,6 +6,7 @@ import { ToolActivity } from './agent-chat-teile';
 import { aktuellesModell, baueAgentChatNachrichten } from './agent-chat-logik';
 import '../workspace-mock.css';
 import '../hauptagent-verlauf.css';
+import './project-coordinator-dock.css';
 
 /**
  * P22-T124 (User 24.10.2026): einheitliches Chatfenster fuer Plattform-Agenten (Koordinatoren in der Seitenleiste) mit den
@@ -103,7 +104,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
 
   return (
     <VerweisFensterProvider>
-      <section className="conversation agent-chat-shell einheitlicher-agent-chat" aria-label={'Chat mit ' + name}
+      <section className="conversation agent-chat-shell einheitlicher-agent-chat agent-chat-shell--embedded" aria-label={'Chat mit ' + name}
         data-identity={identityId} data-karten={karten ? 'ein' : 'aus'} data-eintraege={eintraege.length}>
         <div className="conversation-head">
           <div className="agent-identity"><span>{name.slice(0, 2).toUpperCase()}</span><div><strong>{name}</strong><small>{modell ?? 'Modell unbekannt'}{project ? ' · ' + project : ''}</small></div></div>

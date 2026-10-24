@@ -16,3 +16,43 @@
 .plattform-agent-chat-leer{margin:0;color:var(--muted);font-size:11px}
 .plattform-agent-chat-eingabe{display:flex;gap:6px}
 .plattform-agent-chat-eingabe textarea{flex:1;resize:vertical;min-height:38px;font:inherit;font-size:12px}
+
+/* P22-T124 L1: Nur der neue, eingebettete Plattformchat bekommt einen begrenzten
+   Flex-Raum. Main-Floating-Chat und der alte Plattformchat tragen den Modifier nicht. */
+.coordinator-info-window.mit-chat:has(> .agent-chat-shell--embedded) {
+  height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* Sechs Klassen schlagen die Main-Geometrie (Desktop vier, mobil fuenf).
+   Keine Main-Position/Resize-Eigenschaften in das eingebettete Fenster uebernehmen. */
+.main-assistant-window.coordinator-info-window.mit-chat > .conversation.agent-chat-shell.agent-chat-shell--embedded {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  flex: 1 1 0;
+  width: 100%;
+  max-width: none;
+  transform: none;
+  resize: none;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  box-shadow: none;
+  transition: none;
+}
+.coordinator-info-window.mit-chat > .agent-chat-shell--embedded > .message-feed {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+.coordinator-info-window.mit-chat > .agent-chat-shell--embedded > .conversation-head,
+.coordinator-info-window.mit-chat > .agent-chat-shell--embedded > .agent-composer,
+.coordinator-info-window.mit-chat:has(> .agent-chat-shell--embedded) > footer {
+  flex-shrink: 0;
+}
+

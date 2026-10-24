@@ -1,6 +1,6 @@
 {
   "name": "@synapse/web-ui",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "description": "Synapse Web-UI mit Chat-Interface",
   "scripts": {
