@@ -158,8 +158,9 @@ async function merkeStartOrtAusJobSicher(project: string, action: string, jobArg
   try {
     const { merkeStartOrtAusJob } = await import('./agent-start-ort.js');
     await merkeStartOrtAusJob({ project, action, args: jobArgs, hostname, quelle });
-    // P22-T117: Modell/CLI-Anbieter des Plattform-Starts ins Profil (Schalter plattform_agent_modellwechsel; wirft nie).
-    await (await import('./plattform-agent-modellwechsel.js')).merkeAusweisModellAusJob({ project, action, args: jobArgs });
+    // P22-T117 (R4): beim Enqueue NUR die Startabsicht (plattform_modell_absicht); das Laufmodell schreibt completeSpecialistJob
+    // erst nach bestaetigtem Start. Schalter plattform_agent_modellwechsel; wirft nie.
+    await (await import('./plattform-agent-modellwechsel.js')).merkeModellAbsicht({ project, action, args: jobArgs });
   } catch { /* Zusatzinformation, nie ein Startfehler */ }
 }
 
@@ -228,7 +229,7 @@ export async function completeSpecialistJob(
   completion: SpecialistJobCompletion,
 ): Promise<void> {
   const pool = getPool();
-  await pool.query(
+  const upd = await pool.query(
     `UPDATE specialist_jobs
      SET status = $2,
          result = $3::jsonb,
@@ -236,7 +237,8 @@ export async function completeSpecialistJob(
          message = $5,
          completed_at = NOW(),
          updated_at = NOW()
-     WHERE id = $1`,
+     WHERE id = $1
+     RETURNING project, action, args, target_identity_id`,
     [
       id,
       completion.status,
@@ -245,6 +247,14 @@ export async function completeSpecialistJob(
       completion.message ?? null,
     ],
   );
+  // P22-T117 (R4): Modell erst nach bestaetigtem Start an die Laufgeneration binden (spawn/spawn_batch, auch Namensstarts). Wirft nie.
+  const row = (upd.rows[0] ?? null) as { project: string; action: string; args: Record<string, unknown>; target_identity_id: string | null } | null;
+  if (row && completion.status === 'done' && (row.action === 'spawn' || row.action === 'spawn_batch')) {
+    try {
+      await (await import('./plattform-agent-modellwechsel.js')).merkeAusweisModellNachStart({ id, project: row.project, action: row.action,
+        args: row.args ?? {}, target_identity_id: row.target_identity_id ?? null, result: completion.result ?? null });
+    } catch { /* Zusatzinformation, nie ein Abschlussfehler */ }
+  }
   await pool.query(`SELECT pg_notify($1, $2)`, [doneChannelForJob(id), completion.status]);
 }
 

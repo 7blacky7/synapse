@@ -6325,6 +6325,7 @@ async function fuehreToolsCallAus(
   access: MainToolAccess,
   agentTransportToken?: string,
   herkunft?: string,
+  plattformLauf?: string,
 ): Promise<unknown> {
   // P22-T13 K16.1: Originalargumente VOR jeder serverseitigen Vorbelegung sichern.
   const explizitArgs: Record<string, unknown> = { ...toolArgs };
@@ -6481,7 +6482,7 @@ async function fuehreToolsCallAus(
     result: _logResult,
   });
   return result;
-  }, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName), { originalArgs: explizitArgs, vorbelegt, herkunft });
+  }, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName), { originalArgs: explizitArgs, vorbelegt, herkunft, plattformLauf });
 }
 
 export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
@@ -6575,6 +6576,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             mainAccess,
             typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined,
             herkunftsortAusKopf(request.headers as Record<string, unknown>),
+            // P22-T117: Lauf-Nachweis des Plattform-Laufs (nur Modellanzeige bei chat(anmelden)).
+            typeof request.headers['x-synapse-plattform-lauf'] === 'string' ? request.headers['x-synapse-plattform-lauf'] : undefined,
           );
           break;
         }
@@ -6664,6 +6667,8 @@ export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
             mainAccess,
             typeof request.headers['x-synapse-agent-token'] === 'string' ? request.headers['x-synapse-agent-token'] : undefined,
             herkunftsortAusKopf(request.headers as Record<string, unknown>),
+            // P22-T117: Lauf-Nachweis des Plattform-Laufs (nur Modellanzeige bei chat(anmelden)).
+            typeof request.headers['x-synapse-plattform-lauf'] === 'string' ? request.headers['x-synapse-plattform-lauf'] : undefined,
           );
           break;
         }

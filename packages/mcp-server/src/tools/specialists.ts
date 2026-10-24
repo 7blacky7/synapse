@@ -4,6 +4,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomBytes, createHash } from 'node:crypto';
 import { writeFile, mkdir, rm, readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -314,6 +315,9 @@ async function spawnSpecialistMitUmgebung(
   //          Werkzeugprofil main-synapse). P22-T82: ebenso jeder Spezialist im Container (eigener Bearer, kein Werkzeugprofil). Die Datei traegt KEIN Geheimnis: Bearer und Ausweis stehen als Env-Referenz darin
   //          und kommen nur ueber die Wrapper-Umgebung. Ohne Zugang kein Start - ein Main ohne Werkzeuge waere nutzlos.
   let hauptagentMcp: { configPfad: string; bearer: string } | null = null;
+  // P22-T117 (R2): Lauf-Nachweis dieses Plattform-Laufs. Rohwert nur in der Wrapper-Umgebung (Header-Referenz in der Config),
+  // nach aussen nur der Hash (Spawn-Ergebnis -> startrezept.plattform_modell.lauf_hash). Externe Ausweis-Uebernahmen haben ihn nicht.
+  const plattformLauf = randomBytes(24).toString('hex');
   const datenwegMcp = spezialistenDatenweg();
   if (!mcpBruecke.aktiv && identityId && tokenAnmeldung && process.env.SYNAPSE_CLI_RECHTE === 'container' && datenwegMcp.hauptagentMcp) {
     try {
@@ -331,6 +335,7 @@ async function spawnSpecialistMitUmgebung(
               ...(profil ? { 'X-Synapse-Werkzeugprofil': profil } : {}),
               'X-Synapse-Agent': name,
               'x-synapse-agent-token': '${SYNAPSE_AGENT_TOKEN}',
+              'x-synapse-plattform-lauf': '${SYNAPSE_PLATTFORM_LAUF}',
             },
           },
         },
@@ -372,7 +377,7 @@ async function spawnSpecialistMitUmgebung(
         : {}),
       // P22-T66: Identitaets-MCP-Config des Hauptagenten im Container (Bearer nur hier, Referenz in der Datei).
       ...(hauptagentMcp
-        ? { SYNAPSE_MCP_CONFIG_FILE: hauptagentMcp.configPfad, SYNAPSE_MCP_STRICT: '1', SYNAPSE_HAUPTAGENT_MCP_BEARER: hauptagentMcp.bearer }
+        ? { SYNAPSE_MCP_CONFIG_FILE: hauptagentMcp.configPfad, SYNAPSE_MCP_STRICT: '1', SYNAPSE_HAUPTAGENT_MCP_BEARER: hauptagentMcp.bearer, SYNAPSE_PLATTFORM_LAUF: plattformLauf }
         : {}),
     },
     // P22-T71: im Projektordner starten (wie die Prozesspruefung beim Stop erwartet), nicht im cwd des Daemons.
@@ -467,6 +472,7 @@ async function spawnSpecialistMitUmgebung(
       wrapperPid,
       socket: socketPath,
       channel: channel ?? `${project}-general`,
+      ...(hauptagentMcp ? { plattform_lauf_hash: createHash('sha256').update(plattformLauf).digest('hex') } : {}),
       mcpBruecke,
     },
     ...(effortHinweis ? { effortHinweis } : {}),

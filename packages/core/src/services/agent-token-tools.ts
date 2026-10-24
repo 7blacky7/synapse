@@ -212,6 +212,8 @@ export interface AgentToolAufrufOptionen {
   vorbelegt?: readonly string[];
   /** Anzeige: Herkunftsort des Clients (nur W1b-Anmeldung); nie Berechtigung. */
   herkunft?: string;
+  /** P22-T117: Lauf-Nachweis (Header x-synapse-plattform-lauf) des Plattform-Laufs; nur fuer die Modellanzeige bei chat(anmelden). */
+  plattformLauf?: string;
 }
 /** Ohne Optionen (stdio) ist die Herkunft die lokale CLI-Anbindung. */
 const herkunftVon = (o?: AgentToolAufrufOptionen): string | undefined => (o ? o.herkunft : 'CLI/stdio');
@@ -698,7 +700,8 @@ export async function bereiteAgentToolAufrufVor(
         // P22-T78: Startkontext, den der neue Prozess mit seinem System-Prompt bekam, genau einmal auf diesen (neuen) Lauf buchen.
         await (await import('./agent-verlauf.js')).bucheStartkontextAufLauf(p.identitaet.id, p.lauf_id).catch(() => false);
         // P22-T117: hinterlegtes Modell/CLI-Anbieter/Startort bzw. Hinweis (Schalter plattform_agent_modellwechsel; AUS -> unveraendert).
-        const ausweisModell = await (await import('./plattform-agent-modellwechsel.js')).ausweisModellFuerAnmeldung(p.identitaet.id, p.project);
+        const ausweisModell = await (await import('./plattform-agent-modellwechsel.js')).ausweisModellFuerAnmeldung(p.identitaet.id, p.project,
+          optionen ? optionen.plattformLauf : process.env.SYNAPSE_PLATTFORM_LAUF);
         basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p, token), ...(abloesung ? { abloesung } : {}), ...(ausweisModell ?? {}),
           ...(eigenePlaene ? { offene_plaene: eigenePlaene } : {}), agentOnboarding };
       }

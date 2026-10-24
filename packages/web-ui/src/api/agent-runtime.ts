@@ -478,12 +478,14 @@ export async function getRuntimeAgentLog(identityId: string): Promise<Record<str
 export async function getRuntimeProzesse(project: string): Promise<Record<string, unknown>> {
   return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/prozesse?project=' + encodeURIComponent(project));
 }
+/** P22-T117: Abo-Runtimes, auf die ein Plattform-Agent wechseln kann (API-Runtimes gibt es dafuer nicht, User-Entscheidung). */
+export const PLATTFORM_AGENT_RUNTIMES = ['claude', 'codex'] as const;
 /** P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (Schalter plattform_agent_modellwechsel). */
-export async function wechsleAgentModellUi(identityId: string, runtime: string, modell: string, grund: string, kostenBestaetigt = false): Promise<Record<string, unknown>> {
-  return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/modellwechsel', { method: 'POST', body: JSON.stringify({ identity_id: identityId, runtime, modell, grund, kosten_bestaetigt: kostenBestaetigt }) });
+export async function wechsleAgentModellUi(identityId: string, runtime: typeof PLATTFORM_AGENT_RUNTIMES[number], modell: string, grund: string): Promise<Record<string, unknown>> {
+  return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/modellwechsel', { method: 'POST', body: JSON.stringify({ identity_id: identityId, runtime, modell, grund }) });
 }
 /** P22-T116: zweistufig - ohne bestaetigung nur Vorschau + bestaetigung_id; mit {id, grund} Ausfuehrung. */
-export async function steuereRuntimeAgentUi(identityId: string, aktion: 'stop' | 'start' | 'restart' | 'wake', grund: string, bestaetigung?: { id: string; grund: string }): Promise<Record<string, unknown>> {
+export async function steuereRuntimeAgentUi(identityId: string, aktion: 'stop' | 'start' | 'restart' | 'wake', grund: string, bestaetigung?: { id: string; grund: string; project: string; identity_id: string }): Promise<Record<string, unknown>> {
   return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/steuern', { method: 'POST', body: JSON.stringify({ identity_id: identityId, aktion, grund, ...(bestaetigung ? { bestaetigung } : {}) }) });
 }
 

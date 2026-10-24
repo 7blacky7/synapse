@@ -108,6 +108,14 @@ function requestToken(request: FastifyRequest): string | null {
   return null;
 }
 
+/** P22-T116/T117: Akteur 'user' NUR fuer eine gepruefte interaktive User-Session (gleiche Regel wie der Guard), sonst null (recht_fehlt). */
+async function userAkteur(request: FastifyRequest): Promise<{ art: 'user' } | null> {
+  if (process.env.SYNAPSE_AUTH_DISABLED === '1') return { art: 'user' };
+  const token = requestToken(request);
+  const principal = token ? await validateToken(token) : null;
+  return principal && runtimeTokenAllowed(principal.kind) ? { art: 'user' } : null;
+}
+
 async function guardInteractiveRuntimeRequest(request: FastifyRequest, reply: FastifyReply): Promise<void> {
   const pathname = request.url.split('?')[0];
   if (!pathname.startsWith('/api/agent-runtimes') && !pathname.startsWith('/api/main-agent')) return;
@@ -368,7 +376,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T116: Runtime-Agenten (Uebersicht, Log, Prozesse, Steuern, Prozess-Signal mit Bestaetigung). Unter /api/agent-runtimes, damit
-  // guardInteractiveRuntimeRequest greift (nur interaktive User-Session; Service-/Daemon-/Wrapper-Tokens 403). Akteur = User.
+  // guardInteractiveRuntimeRequest greift (nur interaktive User-Session; Service-/Daemon-/Wrapper-Tokens 403). Akteur = userAkteur (geprueft).
   fastify.get<{ Querystring: { project?: string } }>('/api/agent-runtimes/runtime-agenten', async (request, reply) => {
     try {
       const project = request.query.project?.trim() ?? '';
@@ -377,33 +385,36 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get<{ Querystring: { identity_id?: string; max_bytes?: string } }>('/api/agent-runtimes/runtime-agenten/log', async (request, reply) => {
-    try { return await leseRuntimeAgentLog({ identity_id: request.query.identity_id, max_bytes: request.query.max_bytes }, { art: 'user' }); }
+    try { return await leseRuntimeAgentLog({ identity_id: request.query.identity_id, max_bytes: request.query.max_bytes }, await userAkteur(request)); }
     catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get<{ Querystring: { project?: string } }>('/api/agent-runtimes/runtime-agenten/prozesse', async (request, reply) => {
-    try { return await leseRuntimeProzesse({ project: request.query.project }, { art: 'user' }); }
+    try { return await leseRuntimeProzesse({ project: request.query.project }, await userAkteur(request)); }
     catch (error) { return sendFachFehler(reply, error); }
   });
-  fastify.post<{ Body: { identity_id?: unknown; aktion?: unknown; grund?: unknown; message?: unknown; bestaetigung?: { id?: unknown; grund?: unknown } } }>('/api/agent-runtimes/runtime-agenten/steuern', async (request, reply) => {
+  fastify.post<{ Body: { identity_id?: unknown; aktion?: unknown; grund?: unknown; message?: unknown; bestaetigung?: { id?: unknown; grund?: unknown; project?: unknown; identity_id?: unknown } } }>('/api/agent-runtimes/runtime-agenten/steuern', async (request, reply) => {
     try {
       const b = request.body ?? {};
-      const best = b.bestaetigung && typeof b.bestaetigung === 'object' ? { id: b.bestaetigung.id, grund: b.bestaetigung.grund } : null;
-      return await steuereRuntimeAgent({ identity_id: b.identity_id, aktion: b.aktion, grund: b.grund, message: b.message, bestaetigung: best }, { art: 'user' });
+      // Bestaetigung an Projekt + Identitaet der Instanz gebunden, die die Vorschau zeigte (da3d601a).
+      const best = b.bestaetigung && typeof b.bestaetigung === 'object'
+        ? { id: b.bestaetigung.id, grund: b.bestaetigung.grund, project: b.bestaetigung.project, identity_id: b.bestaetigung.identity_id } : null;
+      return await steuereRuntimeAgent({ identity_id: b.identity_id, aktion: b.aktion, grund: b.grund, message: b.message, bestaetigung: best }, await userAkteur(request));
     }
     catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.post<{ Body: { project?: unknown; runtime?: unknown; pid?: unknown; signal?: unknown; grund?: unknown; bestaetigung?: { id?: unknown; grund?: unknown } } }>('/api/agent-runtimes/runtime-agenten/prozess', async (request, reply) => {
     try {
       const b = request.body ?? {};
-      if (b.bestaetigung && typeof b.bestaetigung === 'object') return await bestaetigeProzessAenderung({ id: b.bestaetigung.id, grund: b.bestaetigung.grund }, { art: 'user' });
-      return await frageProzessAenderungAn({ project: b.project, runtime: b.runtime, pid: b.pid, signal: b.signal, grund: b.grund }, { art: 'user' });
+      const akteur = await userAkteur(request);
+      if (b.bestaetigung && typeof b.bestaetigung === 'object') return await bestaetigeProzessAenderung({ id: b.bestaetigung.id, grund: b.bestaetigung.grund, project: b.project }, akteur);
+      return await frageProzessAenderungAn({ project: b.project, runtime: b.runtime, pid: b.pid, signal: b.signal, grund: b.grund }, akteur);
     } catch (error) { return sendFachFehler(reply, error); }
   });
-  // P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (User; API-Runtimes nur mit kosten_bestaetigt).
-  fastify.post<{ Body: { identity_id?: unknown; runtime?: unknown; modell?: unknown; effort?: unknown; grund?: unknown; kosten_bestaetigt?: unknown } }>('/api/runtime-agenten/modellwechsel', async (request, reply) => {
+  // P22-T117 (R5): Modell/CLI-Anbieter eines Plattform-Agenten wechseln. Unter /api/agent-runtimes (Guard), Akteur geprueft; nur Abo-Runtimes (R3).
+  fastify.post<{ Body: { identity_id?: unknown; runtime?: unknown; modell?: unknown; effort?: unknown; grund?: unknown } }>('/api/agent-runtimes/runtime-agenten/modellwechsel', async (request, reply) => {
     try {
       const b = request.body ?? {};
-      return await wechslePlattformAgentModell({ identity_id: b.identity_id, runtime: b.runtime, modell: b.modell, effort: b.effort, grund: b.grund, kosten_bestaetigt: b.kosten_bestaetigt }, { art: 'user' });
+      return await wechslePlattformAgentModell({ identity_id: b.identity_id, runtime: b.runtime, modell: b.modell, effort: b.effort, grund: b.grund }, await userAkteur(request));
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T112: Chat mit Plattform-Agenten (Schalter siehe plattformAgentChatSchalter). Verlauf liest die Web-UI ueber agent-verlauf.

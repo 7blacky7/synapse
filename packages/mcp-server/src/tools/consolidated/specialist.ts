@@ -24,7 +24,7 @@ import {
 } from '../index.js';
 import { getWrapperStatus, listWrapperStatus, steuereHeartbeat, EFFORT_STUFEN, selbstAuskunft, waehleSpezialisten, kennzeichnung, ausblendHinweis, beschrifteZeile, veraltetSchwelleMs } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
-import { findeWrapperStatusPerName, leseRuntimeUebersicht } from '@synapse/core';
+import { findeWrapperStatusPerName, leseRuntimeUebersicht, RUNTIME_TOOL_AKTIONEN, RUNTIME_TOOL_PROPERTIES } from '@synapse/core';
 
 export const specialistTool: ConsolidatedTool = {
   definition: {
@@ -36,8 +36,7 @@ export const specialistTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst',
-            'runtime_uebersicht', 'runtime_steuern', 'runtime_log', 'runtime_prozesse', 'runtime_prozess', 'runtime_modellwechsel'],
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst', ...RUNTIME_TOOL_AKTIONEN],
           description: 'Die auszuführende Aktion. selbst = Selbstauskunft eines Spezialisten (agent_id Pflicht, project optional): Modell, Effort, Kontext, Tokens, Schwellen, Cutoff — nur aus DB/Registry, nichts geschaetzt. spawn_batch = mehrere Spezialisten in einem Call starten (specialists-Array). purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
         },
 
@@ -107,15 +106,7 @@ export const specialistTool: ConsolidatedTool = {
         },
 
         // P22-T116 runtime_* (Schalter runtime_agenten_uebersicht lesend, runtime_agenten_steuerung aendernd; nur Main/Koordinator/User)
-        identity_id: { type: 'string', description: 'runtime_steuern/runtime_log: Ziel-Identitaet (UUID)' },
-        aktion: { type: 'string', enum: ['stop', 'start', 'restart', 'wake'], description: 'runtime_steuern: stop | start (letztes Spawn-Rezept) | restart | wake' },
-        grund: { type: 'string', description: 'runtime_steuern/runtime_prozess: Grund (mind. 10 Zeichen, Audit)' },
-        runtime: { type: 'string', description: 'runtime_prozess: Container-Runtime (claude|codex); runtime_modellwechsel: Ziel-CLI-Anbieter (claude|codex = Abo frei; sonst API, nur nach Rueckfrage beim User)' },
-        runtimes: { type: 'array', items: { type: 'string' }, description: 'runtime_prozesse: nur diese Runtimes (Standard alle)' },
-        pid: { type: 'number', description: 'runtime_prozess: PID im Container' },
-        signal: { type: 'string', enum: ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL', 'SIGUSR1', 'SIGUSR2'], description: 'runtime_prozess: Signal (Standard SIGTERM)' },
-        max_bytes: { type: 'number', description: 'runtime_log: Bytes je Datei vom Ende (max 16384)' },
-        bestaetigung: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, description: 'runtime_steuern/runtime_prozess: {id, grund} fuehrt eine Rueckfrage aus (1. Aufruf ohne bestaetigung = nur Vorschau + bestaetigung_id, 10 min, einmalig, gleicher Aufrufer)' },
+        ...RUNTIME_TOOL_PROPERTIES,
         // status parameters
         // name, project_path: siehe oben
         alle: {
@@ -196,11 +187,7 @@ export const specialistTool: ConsolidatedTool = {
         // P22-T116 (Abnahme 20a1192a R5): T116-Aktionen ueber den gemeinsamen core-Vertrag (gleich REST-MCP), inkl. Bestaetigung.
         const gemeinsam = await core.fuehreRuntimeAgentenAktion(args, akteur);
         if (gemeinsam) return gemeinsam;
-        switch (action) {
-          // P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (Schalter plattform_agent_modellwechsel, Std AUS).
-          case 'runtime_modellwechsel': return await core.wechslePlattformAgentModell({ identity_id: args.identity_id, runtime: args.runtime, modell: args.model, effort: args.effort, grund: args.grund }, akteur);
-          default: return { success: false, error: 'aktion_unbekannt' };
-        }
+        return { success: false, error: 'aktion_unbekannt', project };
       } catch (err) {
         const e = err as { code?: string; details?: unknown; message?: string };
         return { success: false, error: e.code ?? 'fehler', message: e.code ? undefined : String(e.message ?? err).slice(0, 300), ...(e.details ? { details: e.details } : {}) };
