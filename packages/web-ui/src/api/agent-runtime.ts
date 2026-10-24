@@ -455,6 +455,27 @@ export async function getMainAgentVerlauf(abfrage: { limit?: number; vor_id?: st
   return jsonRequest<{ success: true } & MainAgentVerlauf>('/api/main-agent/verlauf' + (query ? '?' + query : ''));
 }
 
+/** P22-T81: Verlauf einer beliebigen Identitaet (gleiche Eintragsform wie der Main-Verlauf). */
+export async function getAgentVerlauf(identityId: string, abfrage: { limit?: number; vor_id?: string; seit_rev?: string; ab_id?: string } = {}): Promise<MainAgentVerlauf> {
+  const params = new URLSearchParams({ identity_id: identityId });
+  for (const [name, wert] of Object.entries(abfrage)) if (wert !== undefined && wert !== '') params.set(name, String(wert));
+  return jsonRequest<{ success: true } & MainAgentVerlauf>('/api/agent-runtimes/agent-verlauf?' + params.toString());
+}
+
+/** P22-T112: PG-Produkt-Schalter im Projekt der Zielidentitaet, Standard AUS. */
+export interface PlattformAgentChatSchalter { aktiv: boolean; quelle: string; name: string; wert: string | null; project: string | null; letzter_fehler: string | null }
+export async function getPlattformAgentChatSchalter(identityId: string): Promise<PlattformAgentChatSchalter> {
+  return (await jsonRequest<{ success: true; schalter: PlattformAgentChatSchalter }>('/api/agent-runtimes/agent-chat/status?identity_id=' + encodeURIComponent(identityId))).schalter;
+}
+
+/** P22-T112: Nachricht des Users an einen Plattform-Agenten (Zustellung per Inbox). */
+export async function sendePlattformAgentChat(identityId: string, text: string): Promise<{ inbox_id: number; agent_id: string; project: string }> {
+  return jsonRequest<{ success: true; inbox_id: number; agent_id: string; project: string }>('/api/agent-runtimes/agent-chat', {
+    method: 'POST',
+    body: JSON.stringify({ identity_id: identityId, text }),
+  });
+}
+
 /** P22-T73: Schalter der Warteschlange des Main-Chats (Standard AUS); EIN = Nachrichten warten statt Fehler. */
 export async function getMainAgentWarteschlangeSchalter(): Promise<{ aktiv: boolean; quelle: string }> {
   return (await jsonRequest<{ success: true; schalter: { aktiv: boolean; quelle: string } }>('/api/main-agent/warteschlange/schalter')).schalter;

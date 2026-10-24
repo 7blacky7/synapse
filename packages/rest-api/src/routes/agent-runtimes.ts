@@ -10,7 +10,7 @@ import {
   leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
-  listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls,
+  listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
@@ -71,6 +71,19 @@ function sendError(reply: FastifyReply, error: unknown, status = 500): FastifyRe
 function sse(reply: FastifyReply, event: string, data: Record<string, unknown>): void {
   reply.raw.write('event: ' + event + '\n');
   reply.raw.write('data: ' + JSON.stringify(data) + '\n\n');
+}
+
+/**
+ * P22-T112: Chat mit Plattform-Agenten (Koordinatoren, Spezialisten im Container) aus der Seitenleiste der Web-UI.
+ * PG-Produkt-Schalter plattform_agent_chat im Projekt der Zielidentitaet, Standard AUS (POST 409 funktion_aus).
+ * Zustellung: specialist_inbox (Absender 'user'), der Wrapper des Agenten pollt die Inbox und weckt das CLI. Die Antwort
+ * erscheint im Verlauf der Identitaet (GET /api/agent-runtimes/agent-verlauf, P22-T81). Der Main hat seinen eigenen Chat.
+ * DEBUG: GET /api/agent-runtimes/agent-chat/status (Schalter, Quelle, Wert).
+ */
+export async function plattformAgentChatSchalter(project: string) {
+  const stand = await leseProfilProduktSchalter('plattform_agent_chat', project);
+  const aktiv = stand.aktiv && !stand.letzter_fehler;
+  return { ...stand, aktiv, name: 'plattform_agent_chat', wert: aktiv ? 'ein' : 'aus', standard: false as const };
 }
 
 export function runtimeTokenAllowed(kind: TokenKind): boolean {
@@ -351,6 +364,37 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     try {
       const koordinatoren = await onlineKoordinatoren();
       return { success: true, count: koordinatoren.length, koordinatoren };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T112: Chat mit Plattform-Agenten (Schalter siehe plattformAgentChatSchalter). Verlauf liest die Web-UI ueber agent-verlauf.
+  fastify.get<{ Querystring: { identity_id?: string } }>('/api/agent-runtimes/agent-chat/status', async (request, reply) => {
+    try {
+      const id = request.query.identity_id?.trim() ?? '';
+      if (!/^[a-f0-9-]{36}$/.test(id)) return reply.code(400).send({ success: false, error: { code: 'identity_id_fehlt', message: 'identity_id angeben' } });
+      const ziel = (await getPool().query<{ project: string }>('SELECT project FROM agent_identitaeten WHERE id=$1', [id])).rows[0];
+      if (!ziel) return reply.code(404).send({ success: false, error: { code: 'identitaet_unbekannt', message: 'Identitaet nicht gefunden' } });
+      return { success: true, schalter: await plattformAgentChatSchalter(ziel.project) };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.post<{ Body: { identity_id?: unknown; text?: unknown } }>('/api/agent-runtimes/agent-chat', async (request, reply) => {
+    try {
+      let schalter: Awaited<ReturnType<typeof plattformAgentChatSchalter>> | undefined;
+      const fehler = (status: number, code: string, message: string) => reply.code(status).send({ success: false, error: { code, message }, ...(schalter ? { schalter } : {}) });
+      const identityId = typeof request.body?.identity_id === 'string' ? request.body.identity_id.trim() : '';
+      const text = typeof request.body?.text === 'string' ? request.body.text.trim() : '';
+      if (!/^[a-f0-9-]{36}$/.test(identityId)) return fehler(400, 'identity_id_fehlt', 'identity_id angeben');
+      if (!text) return fehler(400, 'text_fehlt', 'Nachricht ist leer');
+      if (text.length > 20_000) return fehler(400, 'text_zu_lang', 'Nachricht laenger als 20000 Zeichen');
+      const r = await getPool().query<{ agent_id: string; project: string; rolle: string; status: string }>(
+        'SELECT agent_id, project, rolle, status FROM agent_identitaeten WHERE id = $1', [identityId]);
+      const ziel = r.rows[0];
+      if (!ziel) return fehler(404, 'identitaet_unbekannt', 'Identitaet nicht gefunden');
+      if (ziel.rolle === 'main') return fehler(400, 'hauptagent_eigener_chat', 'Der Hauptagent hat seinen eigenen Chat (/api/main-agent)');
+      if (ziel.status !== 'aktiv') return fehler(409, 'identitaet_inaktiv', 'Identitaet ist nicht aktiv');
+      schalter = await plattformAgentChatSchalter(ziel.project);
+      if (!schalter.aktiv) return fehler(409, 'funktion_aus', 'Chat mit Plattform-Agenten ist aus (plattform_agent_chat)');
+      const gesendet = await postToInbox('user', ziel.agent_id, text, ziel.project);
+      return { success: true, weg: 'inbox', inbox_id: gesendet.id, gesendet_am: gesendet.createdAt, agent_id: ziel.agent_id, project: ziel.project, identity_id: identityId };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts) fuer "Persoenliche Artefakte" – nur lesend.

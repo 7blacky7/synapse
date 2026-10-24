@@ -2,3 +2,17 @@
 .dock-empty{max-width:150px;margin:0;border:1px solid var(--border);border-right:0;background:var(--strong);color:var(--muted);padding:6px 8px;font:700 7px "IBM Plex Mono",monospace;text-align:right}
 .coordinator-info-window{height:auto;min-height:0;resize:none}
 @media(max-width:760px){.coordinator-dock-tab:hover,.coordinator-dock-tab:focus-visible{width:190px}}
+
+/* P22-T112: Chat mit Plattform-Agenten im Fenster */
+.coordinator-info-window.mit-chat{width:min(440px,calc(100vw - 32px))}
+.plattform-agent-chat{display:flex;flex-direction:column;gap:6px;min-height:0;border-top:1px solid var(--border);padding:8px}
+.plattform-agent-chat-verlauf{display:flex;flex-direction:column;gap:6px;max-height:min(46vh,420px);overflow-y:auto}
+.plattform-agent-chat-msg{max-width:88%;border:1px solid var(--border);border-radius:6px;padding:5px 8px;background:var(--pane,transparent)}
+.plattform-agent-chat-msg.ein{align-self:flex-end}
+.plattform-agent-chat-msg.aus{align-self:flex-start}
+.plattform-agent-chat-msg.offen{opacity:.7}
+.plattform-agent-chat-msg small{display:block;color:var(--muted);font-size:10px}
+.plattform-agent-chat-msg p{margin:2px 0 0;white-space:pre-wrap;word-break:break-word;font-size:12px}
+.plattform-agent-chat-leer{margin:0;color:var(--muted);font-size:11px}
+.plattform-agent-chat-eingabe{display:flex;gap:6px}
+.plattform-agent-chat-eingabe textarea{flex:1;resize:vertical;min-height:38px;font:inherit;font-size:12px}

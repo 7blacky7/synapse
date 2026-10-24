@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { herkunftText, loadOnlineCoordinators } from '../api/control-plane-adapter';
 import type { OnlineCoordinatorViewModel } from '../control-plane/view-model';
+import { getPlattformAgentChatSchalter } from '../api/agent-runtime';
+import { PlattformAgentChat } from './PlattformAgentChat';
 import './project-coordinator-dock.css';
 
 /**
@@ -13,6 +15,15 @@ export function ProjectCoordinatorDock() {
   const [error, setError] = useState('');
   const [openId, setOpenId] = useState('');
   const [railTop, setRailTop] = useState(11);
+  // P22-T112: PG-Freigabe gilt im Projekt der gewaehlten Identitaet; keine Freigabe von A fuer B uebernehmen.
+  const [chatStand, setChatStand] = useState<{ identityId: string; aktiv: boolean }>({ identityId: '', aktiv: false });
+  const chatAktiv = chatStand.identityId === openId && chatStand.aktiv;
+  useEffect(() => {
+    if (!openId) return;
+    let active = true;
+    getPlattformAgentChatSchalter(openId).then((s) => { if (active) setChatStand({ identityId: openId, aktiv: s.aktiv }); }).catch(() => { if (active) setChatStand({ identityId: openId, aktiv: false }); });
+    return () => { active = false; };
+  }, [openId]);
   const railDragRef = useRef<{ pointerId: number; startY: number; originTop: number } | null>(null);
 
   useEffect(() => {
@@ -57,7 +68,7 @@ export function ProjectCoordinatorDock() {
         {!coordinators.length && <p className="dock-empty" title={error || undefined}>{error ? 'Koordinatoren nicht abrufbar' : 'Kein Koordinator online'}</p>}
       </aside>
       {open && (
-        <aside className="main-assistant-window coordinator-info-window floating-agent-window" tabIndex={-1} style={{ transform: 'translate(120px,70px)', zIndex: 52 }}>
+        <aside className={'main-assistant-window coordinator-info-window floating-agent-window' + (chatAktiv ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(120px,70px)', zIndex: 52 }}>
           <header>
             <div><i /><span><strong>{open.name}</strong><small>Projektkoordinator · {open.project}</small></span></div>
             <button type="button" onClick={() => setOpenId('')}>An Seite</button>
@@ -65,6 +76,7 @@ export function ProjectCoordinatorDock() {
           <section className="main-assistant-context"><span>PROJEKT</span><strong>{open.project}</strong><small>Erreichbar über die Channels dieses Projekts.</small></section>
           <section className="main-assistant-context"><span>LÄUFT AUF</span><strong>{herkunftText(open.herkunft)}</strong></section>
           <section className="main-assistant-context"><span>LETZTES LEBENSZEICHEN</span><strong>{open.lastActivity || '–'}</strong></section>
+          {chatAktiv && <PlattformAgentChat identityId={open.id} name={open.name} />}
           <footer><span>agent_identitaeten · aktiver Lauf</span><b>online</b></footer>
         </aside>
       )}
