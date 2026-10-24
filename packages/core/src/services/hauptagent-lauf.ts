@@ -57,6 +57,29 @@ export function leseMainLaufOptionen(env: NodeJS.ProcessEnv = process.env): Main
   };
 }
 
+/** P22-T114: Schalter (Produkt, Std AUS): Wake-Frist im Daemon = Turn-Frist - Puffer statt fester 30 s. */
+export const MAIN_TURN_WAKE_FRIST_FUNKTION = 'main_turn_wake_frist' as const;
+/** Puffer, damit der Daemon-Job vor der API-Wartezeit antwortet (sonst main_turn_zeitlimit statt Ergebnis). */
+export const MAIN_WAKE_PUFFER_MS = 5_000;
+
+/**
+ * Rein: Wake-Frist fuer den Daemon. Schalter AUS -> null (Daemon nimmt wie bisher 30 s).
+ * Immer STRIKT kleiner als die API-Turnfrist (f2cf9d4b): Puffer = min(5 s, 20 % der Turnfrist), keine Untergrenze ueber der
+ * Turnfrist. Turnfrist ist laut leseMainLaufOptionen >= 5 s -> Wake-Frist >= 4 s (Daemon-Minimum WAKE_FRIST_MIN_MS = 1 s).
+ */
+export function mainWakeFrist(turnWarteMs: number, schalterAn: boolean): number | null {
+  if (!schalterAn || !Number.isFinite(turnWarteMs) || turnWarteMs <= 0) return null;
+  const puffer = Math.max(1, Math.min(MAIN_WAKE_PUFFER_MS, Math.floor(turnWarteMs * 0.2)));
+  return Math.min(Math.floor(turnWarteMs) - puffer, 60 * 60_000);
+}
+
+async function mainWakeFristSchalter(): Promise<{ aktiv: boolean; fehler: string | null }> {
+  try {
+    const { leseProfilProduktSchalter } = await import('./agent-profil-schalter.js');
+    return { aktiv: (await leseProfilProduktSchalter(MAIN_TURN_WAKE_FRIST_FUNKTION, HAUPTAGENT_PROJEKT)).aktiv, fehler: null };
+  } catch (err) { return { aktiv: false, fehler: String((err as Error)?.message ?? err).slice(0, 200) }; }
+}
+
 export function istMainLaufRuntime(runtime: unknown): runtime is SpecialistZielRuntime {
   return typeof runtime === 'string' && (SPECIALIST_ZIEL_RUNTIMES as readonly string[]).includes(runtime);
 }
@@ -329,15 +352,21 @@ export async function sendeMainTurn(e: {
   if (stand.zustand !== 'laeuft') throw new MainLaufFehler('main_laeuft_nicht', { zustand: stand.zustand, andere_runtime: stand.andere_runtime });
   // O2 'fehler': nicht in die Inbox legen, sondern gleich melden (die lokale Vorlage legt bei busy in die Inbox).
   if (opt.beschaeftigt === 'fehler' && stand.wrapper?.busy) throw new MainLaufFehler('main_beschaeftigt');
+  // P22-T114: Ohne Schalter wartet der Daemon fest 30 s auf die Wake-Antwort, die erst nach dem ganzen CLI-Zug kommt.
+  const schalter = await mainWakeFristSchalter();
+  const wakeFrist = mainWakeFrist(opt.turn_warte_ms, schalter.aktiv);
+  const fristDebug = { schalter: MAIN_TURN_WAKE_FRIST_FUNKTION, aktiv: schalter.aktiv, wake_frist_ms: wakeFrist ?? 30_000,
+    frist_quelle: wakeFrist ? 'turn_warte_ms' : 'daemon_standard_30s', turn_warte_ms: opt.turn_warte_ms, ...(schalter.fehler ? { schalter_fehler: schalter.fehler } : {}) };
   const job = await enqueueSpecialistJob({
     project: HAUPTAGENT_PROJEKT, action: 'wake',
-    args: { name: HAUPTAGENT_AGENT_ID, identity_id: e.identity_id, message: e.nachricht, target_runtime: e.runtime, ...(e.absender ? { absender: e.absender } : {}) },
+    args: { name: HAUPTAGENT_AGENT_ID, identity_id: e.identity_id, message: e.nachricht, target_runtime: e.runtime, ...(e.absender ? { absender: e.absender } : {}),
+      ...(wakeFrist ? { wake_frist_ms: wakeFrist } : {}) },
   });
   const r = await warteJob(job.id, opt.turn_warte_ms);
-  if (r.status === 'pending' || r.status === 'running') throw new MainLaufFehler('main_turn_zeitlimit', { job_id: job.id });
+  if (r.status === 'pending' || r.status === 'running') throw new MainLaufFehler('main_turn_zeitlimit', { job_id: job.id, debug: fristDebug });
   if (r.status !== 'done') {
     throw new MainLaufFehler(r.error === 'expired' ? 'runtime_daemon_nicht_erreichbar' : 'main_turn_fehlgeschlagen',
-      { job_id: job.id, status: r.status, meldung: r.message ?? null });
+      { job_id: job.id, status: r.status, meldung: r.message ?? null, debug: fristDebug });
   }
   const erg = r.ergebnis ?? {};
   if (erg.success === false) {
@@ -349,7 +378,10 @@ export async function sendeMainTurn(e: {
       if (Date.now() - zuletzt > MAIN_VERWAIST_MS) await setzeMainZeile(e.identity_id, stand.wrapper?.wrapper_pid ?? null, 'crashed');
       throw new MainLaufFehler('main_nicht_verbunden', { job_id: job.id, meldung });
     }
-    throw new MainLaufFehler('main_turn_fehlgeschlagen', { job_id: job.id, meldung });
+    // P22-T114: Wake-Timeout im Daemon kenntlich machen (der Main arbeitet evtl. weiter, seine Antwort kommt nicht mehr an).
+    const wakeTimeout = !!meldung && /Timeout waiting for response to "wake"/.test(meldung);
+    throw new MainLaufFehler('main_turn_fehlgeschlagen', { job_id: job.id, meldung, debug: { ...fristDebug, wake_timeout: wakeTimeout,
+      ...(wakeTimeout && !schalter.aktiv ? { hinweis: 'Daemon-Wake-Frist 30 s abgelaufen; Main laeuft evtl. weiter. Schalter main_turn_wake_frist koppelt die Frist an die Turn-Frist.' } : {}) } });
   }
   if (erg.queued === true) {
     const inbox = Number(erg.inbox_id);

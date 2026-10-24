@@ -328,7 +328,10 @@ async function dispatchSpecialistActionGebunden(
       if (names.length === 1) {
         // P22-T73: Absender fuer den Inbox-Rueckfall (Main-Chat: 'user').
         const absender = typeof args.absender === 'string' && args.absender ? args.absender : undefined
-        return (await tools.wakeSpecialistTool(names[0], message, job.project, absender)) as Record<string, unknown>
+        // P22-T114: Wake-Frist des Aufrufers (Main-Turn bei Schalter main_turn_wake_frist, immer < API-Turnfrist); ungueltig -> 30 s wie bisher.
+        const frist = Number(args.wake_frist_ms)
+        const wakeFrist = Number.isSafeInteger(frist) && frist >= 1_000 ? Math.min(frist, 60 * 60_000) : undefined
+        return (await tools.wakeSpecialistTool(names[0], message, job.project, absender, wakeFrist)) as Record<string, unknown>
       }
       const results: Array<Record<string, unknown>> = []
       const errors: string[] = []

@@ -39,7 +39,15 @@ interface WrapperConnection {
 }
 
 // Timeout for individual JSON-RPC requests (30 seconds)
-const REQUEST_TIMEOUT_MS = 30_000
+export const REQUEST_TIMEOUT_MS = 30_000
+/** P22-T114: zulaessige Wake-Frist (Aufrufer gibt sie bei Schalter main_turn_wake_frist mit). */
+export const WAKE_FRIST_MIN_MS = 1_000
+export const WAKE_FRIST_MAX_MS = 60 * 60_000
+/** Rein: wirksame Frist einer Anfrage (ungueltig/fehlend -> 30 s wie bisher). */
+export function wirksameAnfrageFrist(timeoutMs?: number | null): number {
+  return typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs >= WAKE_FRIST_MIN_MS
+    ? Math.min(Math.floor(timeoutMs), WAKE_FRIST_MAX_MS) : REQUEST_TIMEOUT_MS
+}
 
 // ---------------------------------------------------------------------------
 // HeartbeatController
@@ -227,8 +235,9 @@ class HeartbeatController {
   /**
    * Send a wake message to the wrapper and return the agent's response.
    */
-  async sendWake(name: string, message: string): Promise<SendMessageResult> {
-    const result = await this.sendRequest(name, 'wake', { message })
+  async sendWake(name: string, message: string, opts?: { timeoutMs?: number | null }): Promise<SendMessageResult> {
+    // P22-T114: der Wrapper antwortet erst nach dem ganzen CLI-Zug -> Frist optional an die Turn-Frist des Aufrufers koppeln.
+    const result = await this.sendRequest(name, 'wake', { message }, opts?.timeoutMs)
     const kontextTokens = Number(result?.kontextTokens ?? 0)
     return {
       content: String(result?.content ?? ''),
@@ -327,7 +336,9 @@ class HeartbeatController {
     name: string,
     method: string,
     params?: Record<string, unknown>,
+    timeoutMs?: number | null,
   ): Promise<any> {
+    const frist = wirksameAnfrageFrist(timeoutMs)
     const conn = this.connections.get(agentLaufSchluessel(name))
     if (!conn) {
       return Promise.reject(new Error(`Not connected to wrapper "${name}"`))
@@ -354,10 +365,10 @@ class HeartbeatController {
         conn.pending.delete(id)
         reject(
           new Error(
-            `Timeout waiting for response to "${method}" (id=${id}) from wrapper "${name}"`,
+            `Timeout waiting for response to "${method}" (id=${id}) from wrapper "${name}" after ${frist} ms`,
           ),
         )
-      }, REQUEST_TIMEOUT_MS)
+      }, frist)
 
       // Wrap resolve/reject to clear the timer
       conn.pending.set(id, {
@@ -408,6 +419,8 @@ class HeartbeatController {
       if (msg.id !== undefined) {
         // Response to a pending request
         const pending = conn.pending.get(msg.id)
+        // P22-T114: spaete Antwort nach abgelaufener Frist nicht still verwerfen, sondern belegen.
+        if (!pending) console.error(`[heartbeat] spaete Antwort id=${String(msg.id)} von "${conn.name}" ohne wartende Anfrage verworfen (Frist abgelaufen)${msg.error ? ' error=' + msg.error.message : ''}`)
         if (pending) {
           conn.pending.delete(msg.id)
           if (msg.error) {

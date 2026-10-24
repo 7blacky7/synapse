@@ -866,6 +866,8 @@ export async function wakeSpecialistTool(
   project?: string,
   /** P22-T73: Absender des Inbox-Rueckfalls (Main-Chat: 'user'); ohne Angabe wie bisher 'koordinator'. */
   absender = 'koordinator',
+  /** P22-T114: Frist fuer die Wake-Antwort (Schalter main_turn_wake_frist im Aufrufer); ohne Angabe 30 s wie bisher. */
+  wakeFristMs?: number,
 ) {
   if (!heartbeatController.isConnected(name)) {
     // P22-T66: Identitaets-Lauf mit Startfehler -> Grund mitgeben (Laufordner haengt nur an der Identitaet, nicht am Pfad).
@@ -877,9 +879,10 @@ export async function wakeSpecialistTool(
   }
 
   try {
-    const result = await heartbeatController.sendWake(name, message);
+    const result = await heartbeatController.sendWake(name, message, { timeoutMs: wakeFristMs });
     return jsonResult({
       success: true,
+      ...(wakeFristMs ? { debug: { wake_frist_ms: wakeFristMs } } : {}),
       response: result.content,
       tokens: {
         input: result.inputTokens,
@@ -911,6 +914,8 @@ export async function wakeSpecialistTool(
     return jsonResult({
       success: false,
       message: `Fehler beim Aufwecken von "${name}": ${err}`,
+      // P22-T114 Debug: welche Frist galt (ohne Angabe die feste 30-s-Frist).
+      debug: { wake_frist_ms: wakeFristMs ?? null, frist_quelle: wakeFristMs ? 'aufrufer' : 'standard_30s' },
     });
   }
 }
