@@ -115,6 +115,10 @@ export const MAIN_VERWALTUNG: ReadonlySet<string> = new Set([
   'admin.anmeldungen', 'admin.koordinator_heartbeat',
   'specialist.spawn', 'specialist.spawn_batch', 'specialist.stop', 'specialist.status', 'specialist.wake', 'specialist.heartbeat',
   'specialist.capabilities',
+  // P22-T121 (User 24.10. R7 = ja): Runtime-Agenten-Aktionen (T116/T117). Wirksam nur ueber diese Positivliste, d. h. nur mit
+  // Schalter main_agentenverwaltung EIN; dahinter bleibt pruefeSteuerRecht + Bestaetigung (runtime-agenten-steuerung.ts) voll wirksam.
+  'specialist.runtime_uebersicht', 'specialist.runtime_steuern', 'specialist.runtime_log', 'specialist.runtime_prozesse',
+  'specialist.runtime_prozess', 'specialist.runtime_modellwechsel',
 ]);
 export function mainVerwaltungErlaubt(tool: string, action: string | undefined): boolean {
   return MAIN_VERWALTUNG.has(`${tool}.${action ?? ''}`);
@@ -128,7 +132,8 @@ export async function mainVerwaltungAktiv(): Promise<boolean> {
 export const MAIN_VERWALTUNG_HINWEIS = 'Agenten-Verwaltung erledigst du SELBST in jedem Projekt (project:"<name>"), wenn der User es auftraegt: '
   + 'Ausweis anlegen admin(agent_vorbereiten, rolle koordinator|subagent, grund, user_auftrag), Koordinatoren/Spezialisten starten/stoppen '
   + 'specialist(spawn ort:"container" | stop | wake | status), Heartbeat admin(koordinator_heartbeat) bzw. specialist(heartbeat), '
-  + 'Kontingent admin(container_kontingent). Nicht an einen Koordinator weiterleiten und nicht erneut nachfragen.';
+  + 'Kontingent admin(container_kontingent), Runtime-Agenten specialist(runtime_uebersicht | runtime_steuern | runtime_log | '
+  + 'runtime_prozesse | runtime_prozess | runtime_modellwechsel; Steuern mit grund + Bestaetigung). Nicht an einen Koordinator weiterleiten und nicht erneut nachfragen.';
 
 /** Lenkhinweis fuer den Main im internen Bereich bzw. bei der Anmeldung. */
 export function mainHinweisText(projekte: string[], verwaltung = false): string {
