@@ -133,7 +133,8 @@ export const MAIN_VERWALTUNG_HINWEIS = 'Agenten-Verwaltung erledigst du SELBST i
   + 'Ausweis anlegen admin(agent_vorbereiten, rolle koordinator|subagent, grund, user_auftrag), Koordinatoren/Spezialisten starten/stoppen '
   + 'specialist(spawn ort:"container" | stop | wake | status), Heartbeat admin(koordinator_heartbeat) bzw. specialist(heartbeat), '
   + 'Kontingent admin(container_kontingent), Runtime-Agenten specialist(runtime_uebersicht | runtime_steuern | runtime_log | '
-  + 'runtime_prozesse | runtime_prozess | runtime_modellwechsel; Steuern mit grund + Bestaetigung). Nicht an einen Koordinator weiterleiten und nicht erneut nachfragen.';
+  + 'runtime_prozesse | runtime_prozess | runtime_modellwechsel; Steuern mit grund, danach Bestaetigung als '
+  + 'bestaetigung:{id, grund, project, identity_id} - project und identity_id exakt wie in der Vorschau). Nicht an einen Koordinator weiterleiten und nicht erneut nachfragen.';
 
 /** Lenkhinweis fuer den Main im internen Bereich bzw. bei der Anmeldung. */
 export function mainHinweisText(projekte: string[], verwaltung = false): string {

@@ -18,7 +18,15 @@
 .runtime-agenten-panel.neu .rap-aktionen{display:flex;flex-wrap:wrap;gap:4px}
 .runtime-agenten-panel.neu details{margin-top:10px}
 .runtime-agenten-panel.neu details pre{max-height:320px;overflow:auto;padding:8px;border:1px solid var(--border2);border-radius:6px;background:var(--soft);font-size:11px;white-space:pre-wrap;word-break:break-word}
-.runtime-agenten-panel.neu .rap-dialog{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--strong);display:grid;gap:8px;max-width:520px}
+/* Layout-Fix (rea1 eb96f941): die Teamflaeche hat eine feste Hoehe (workspace-mock.css .project-agent-team); lange Listen
+   scrollen jetzt IN ihrer Spalte statt ueber das Panel darunter zu laufen. Das Panel steht im normalen Fluss darunter. */
+/* Nur bei Schalter runtime_agenten_panel_neu EIN: das Panel .neu wird nur dann (ort team) neben der Teamflaeche gerendert. */
+.standard-page:has(>.runtime-agenten-panel.neu)>.project-agent-team{overflow:hidden}
+.standard-page:has(>.runtime-agenten-panel.neu)>.project-agent-team>.entity-list,.standard-page:has(>.runtime-agenten-panel.neu)>.project-agent-team>.entity-detail{min-height:0;max-height:100%;overflow-y:auto}
+.runtime-agenten-panel.neu{clear:both}
+/* Modell-Dialog als echtes Overlay ueber allem (auch ueber der Teamliste). */
+.rap-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.45)}
+.runtime-agenten-panel.neu .rap-dialog{padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--strong);color:var(--text);display:grid;gap:8px;width:min(520px,100%);max-height:calc(100vh - 32px);overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.35)}
 .runtime-agenten-panel.neu .rap-dialog label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
 .runtime-agenten-panel.neu .rap-dialog select,.runtime-agenten-panel.neu .rap-dialog input{padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text)}
 .runtime-agenten-panel.neu .rap-dialog .rap-bestaetigen{padding:8px;border-radius:6px;background:var(--soft)}

@@ -174,8 +174,8 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
           </div>
         </div>
       ))}
-      {dialog && <ModellDialog key={dialog.id} name={dialog.name} modellBisher={dialog.modell} onAbbruch={() => setDialog(null)}
-        onAusfuehren={(rt, m, gr) => modellAusDialog(dialog, rt, m, gr)} />}
+      {dialog && <div className="rap-overlay"><ModellDialog key={dialog.id} name={dialog.name} modellBisher={dialog.modell} onAbbruch={() => setDialog(null)}
+        onAusfuehren={(rt, m, gr) => modellAusDialog(dialog, rt, m, gr)} /></div>}
       {ausgabe && <details open><summary>Ergebnis (Details)</summary><pre>{ausgabe}</pre></details>}
       {daten.debug && <details><summary>Debug</summary><pre>{JSON.stringify(daten.debug, null, 2)}</pre></details>}
     </section>
