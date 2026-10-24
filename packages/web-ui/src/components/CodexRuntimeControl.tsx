@@ -150,10 +150,13 @@ export function AgentRuntimeControl({
       <header><div><i className={tone(status)} /><span><strong>{meta.label}</strong><small>PRODUKTIV · AgentRuntime / {meta.driver}</small></span></div><b>{status?.container.status || 'prüfen …'}</b></header>
       <div className="codex-compact-grid">
         <label><span>Persistenter Runtime-Pfad</span><input value={rootPath} onChange={(event) => setRootPath(event.target.value)} /></label>
-        {runtime === 'claude'
-          ? <label><span>Claude-Modell</span><CliModellAuswahl runtime="claude" value={model} onChange={setModel} listId="claude-runtime-models-kompakt" /></label>
-          : <details><summary>Modelle der Codex-CLI</summary><CliModellUebersicht runtime="codex" /></details>}
-        <span><b>{authLabel(status)}</b><small>{status?.version || 'Version wird nach Einrichtung erkannt'}{status?.model ? ' · ' + status.model : ''}</small></span>
+        <details className="runtime-models">
+          <summary>{runtime === 'claude' ? 'Modelle der Claude-CLI' : 'Modelle der Codex-CLI'}</summary>
+          {runtime === 'claude'
+            ? <CliModellAuswahl runtime="claude" value={model} onChange={setModel} listId="claude-runtime-models-kompakt" uebersicht />
+            : <CliModellUebersicht runtime="codex" />}
+        </details>
+        <span className="runtime-auth-status"><small>Anmeldung & CLI-Version</small><b>{authLabel(status)}</b><small>{status?.version || 'Version wird nach Einrichtung erkannt'}</small></span>
         <div className="codex-compact-actions">
           {status?.container.status === 'running' && status.installed
             ? <button type="button" disabled>Container und CLI erkannt</button>

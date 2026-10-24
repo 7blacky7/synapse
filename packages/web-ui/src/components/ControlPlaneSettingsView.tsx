@@ -136,8 +136,15 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
             <ApiBudgetPanel />
           </>}
           {category === 'heartbeat' && <HauptagentSteuerung />}
-          {category === 'runtimes' && <div className="runtime-settings-list"><AgentRuntimeControl runtime="codex" compact /><AgentRuntimeControl runtime="claude" compact /></div>}
-          {category === 'auth' && <div className="runtime-settings-list"><AgentRuntimeControl runtime="claude" compact /><AgentRuntimeControl runtime="codex" compact /></div>}
+          {(category === 'runtimes' || category === 'auth') && <section key={category} className="runtime-settings-section" aria-label={category === 'auth' ? 'Runtime-Anmeldungen' : 'Runtime-Verwaltung'}>
+            <header className="runtime-settings-intro">
+              <h3>{category === 'auth' ? 'CLI-Zugänge' : 'Runtime-Container'}</h3>
+              <p>{category === 'auth' ? 'Anmeldestatus prüfen und bei Bedarf das Login-Terminal öffnen.' : 'Container verwalten, CLI-Modelle einsehen und dem Hauptagenten zuweisen.'} Das Modell des Hauptagenten wird in seiner Steuerung gewählt.</p>
+            </header>
+            <div className="runtime-settings-list">
+              {(category === 'auth' ? ['claude', 'codex'] as const : ['codex', 'claude'] as const).map((runtime) => <AgentRuntimeControl key={runtime} runtime={runtime} compact />)}
+            </div>
+          </section>}
           {category === 'appearance' && <div className="cp-fields">
             <ToggleField label="Dunkles Design" hint="Hell/Dunkel unabhängig von der Akzentfarbe" checked={theme === 'dark'} onChange={(value) => onTheme(value ? 'dark' : 'light')} />
             <Field label="Akzentfarbe" hint="Gilt sofort für Navigation, Fenster, aktive Zustände und HTML-Flächen" wide>

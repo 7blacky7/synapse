@@ -62,13 +62,18 @@ export function CliModellHerkunft({ liste, fehler, laedt, onNeu }: { liste: CliM
 }
 
 /** Eingabe mit Vorschlaegen aus der CLI-Liste; darunter Effort-Stufen und Kontext des gewaehlten Modells. */
-export function CliModellAuswahl({ runtime, value, onChange, listId, placeholder }: {
-  runtime: AgentRuntimeName; value: string; onChange: (value: string) => void; listId: string; placeholder?: string;
+export function CliModellAuswahl({ runtime, value, onChange, listId, placeholder, uebersicht = false }: {
+  runtime: AgentRuntimeName; value: string; onChange: (value: string) => void; listId: string; placeholder?: string; uebersicht?: boolean;
 }) {
   const { liste, fehler, laedt, laden } = useCliModelle(runtime);
   const gewaehlt = liste?.modelle.find((m) => m.id === value.trim()) ?? null;
   return <div className="cli-modell-auswahl">
-    <input list={listId} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder ?? 'Modell-ID aus der Liste oder frei'} />
+    {uebersicht && <>
+      <CliModellZeilen liste={liste} />
+      <label htmlFor={listId + '-eingabe'}>Gespeicherte Runtime-Modellvorgabe</label>
+      <small>Vorgabe der Runtime-Konfiguration, nicht das aktuell gewählte Modell des Hauptagenten. Modell-ID oder CLI-Alias bleiben frei eingebbar.</small>
+    </>}
+    <input id={listId + '-eingabe'} list={listId} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder ?? 'Modell-ID aus der Liste oder frei'} />
     <datalist id={listId}>
       {(liste?.modelle ?? []).filter((m) => m.sichtbar || m.id === value).map((m) => <option key={m.id} value={m.id} label={m.name + ' · ' + effortText(m)} />)}
     </datalist>
@@ -79,15 +84,22 @@ export function CliModellAuswahl({ runtime, value, onChange, listId, placeholder
   </div>;
 }
 
-/** Nur-Lese-Liste aller Modelle der CLI (z. B. Codex, solange die Runtime-Konfiguration kein Modell speichert). */
-export function CliModellUebersicht({ runtime }: { runtime: AgentRuntimeName }) {
-  const { liste, fehler, laedt, laden } = useCliModelle(runtime);
+/** Gemeinsame Darstellung; verwendet die bereits geladene CLI-Liste ohne weitere Anfrage. */
+function CliModellZeilen({ liste }: { liste: CliModellListe | null }) {
   return <div className="cli-modell-uebersicht">
     <ul>
       {(liste?.modelle ?? []).map((m) => <li key={m.id} className={m.sichtbar ? '' : 'versteckt'} title={m.beschreibung ?? ''}>
         <code>{m.id}</code><span>{[modellZeile(m), effortText(m)].filter(Boolean).join(' · ')}</span>
       </li>)}
     </ul>
+  </div>;
+}
+
+/** Nur-Lese-Liste aller Modelle der CLI (z. B. Codex, solange die Runtime-Konfiguration kein Modell speichert). */
+export function CliModellUebersicht({ runtime }: { runtime: AgentRuntimeName }) {
+  const { liste, fehler, laedt, laden } = useCliModelle(runtime);
+  return <div className="cli-modell-uebersicht">
+    <CliModellZeilen liste={liste} />
     <CliModellHerkunft liste={liste} fehler={fehler} laedt={laedt} onNeu={() => void laden(true)} />
   </div>;
 }
