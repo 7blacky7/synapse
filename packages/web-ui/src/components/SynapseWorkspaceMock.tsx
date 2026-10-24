@@ -37,6 +37,7 @@ import {
 import { defaultSettings, navigation } from '../mock/ui-control-plane';
 import {
   clearMainAgentVerlauf, createMainAgentSession, getMainAgentRuntime, getMainAgentVerlauf, streamMainAgentMessage, getMainAgentWarteschlangeSchalter,
+  abonniereToolKarten, type ToolKarteLive,
   type AgentArtifactEvent, type AgentRuntimeName, type AgentRuntimeStatus, type AgentToolEvent, type MainAgentVerlauf, type MainAgentVerlaufEintrag,
 } from '../api/agent-runtime';
 import type {
@@ -455,6 +456,25 @@ function wendeWerkzeugSchrittAn(run: AgentMessage['toolRun'], schritt: AgentTool
   return { phases, calls: vorhanden ? calls.map((call) => call.id === id ? neu : call) : [...calls, neu] };
 }
 
+// P22-T123: Karte aus tool_calls (live per SSE) in die laufende Antwort uebernehmen; gleiche id wie die spaetere Serverfassung
+// (verlaufWerkzeuge: 'stream:' + call.id), damit der Endstand aus dem Verlauf sie ersetzt statt doppelt zu zeigen.
+function wendeToolKarteAn(run: AgentMessage['toolRun'], karte: ToolKarteLive): NonNullable<AgentMessage['toolRun']> {
+  const calls = run?.calls ?? [];
+  const phases = run?.phases ?? [];
+  const id = 'stream:' + karte.id;
+  if (calls.some((call) => call.id === id)) return { calls, phases };
+  const ausgabe = karte.output === undefined || karte.output === null ? '' : typeof karte.output === 'string' ? karte.output : JSON.stringify(karte.output);
+  const start = Date.parse(karte.start);
+  const ende = karte.ende ? Date.parse(karte.ende) : Number.NaN;
+  const neu: ToolCallViewModel = {
+    id, tool: karte.name || 'tool', action: karte.action ?? '', agent: 'Hauptagent', status: karte.isError ? 'failed' : 'done',
+    argsPreview: karte.input === undefined ? '' : typeof karte.input === 'string' ? karte.input : JSON.stringify(karte.input),
+    resultPreview: karte.isError ? '' : ausgabe, error: karte.isError ? ausgabe || 'Fehler' : '',
+    durationMs: Number.isFinite(start) && Number.isFinite(ende) ? Math.max(0, ende - start) : 0, createdAt: karte.start, source: 'stream',
+  };
+  return { phases, calls: [...calls, neu] };
+}
+
 function istNeuereRevision(neu: AgentHtmlBlock['revision'], alt: AgentHtmlBlock['revision']): boolean {
   if (neu === undefined || alt === undefined) return true;
   const a = Number(neu);
@@ -681,6 +701,15 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   const verlaufStandRef = useRef<{ maxRev: string; geleertRev: string | null; aeltesteId: string | null; laeuft: boolean }>({ maxRev: '0', geleertRev: null, aeltesteId: null, laeuft: false });
   /** Antwort-IDs, deren Strom DIESER Tab gerade empfaengt; der Abgleich ueberschreibt sie nicht. */
   const eigeneLaufendeRef = useRef(new Set<string>());
+  /** P22-T123: Anzeige-ID der Antwort, deren Strom dieser Tab gerade empfaengt (Ziel der Live-Tool-Karten). */
+  const laufendeAnzeigeIdRef = useRef<number | null>(null);
+  // P22-T123: Tool-Karten live aus tool_calls (Schalter verlauf_tool_karten, sonst meldet der Server 'aus'). Eigener Strom: Karte in
+  // dessen Antwort. Sonst bringt der 2-s-Abgleich die laufende Antwort samt Karten (der Server haengt sie beim Lesen an).
+  useEffect(() => abonniereToolKarten(null, (karte) => {
+    const ziel = laufendeAnzeigeIdRef.current;
+    if (ziel === null) return;
+    setMessages((items) => items.map((message) => message.id === ziel ? { ...message, toolRun: wendeToolKarteAn(message.toolRun, karte) } : message));
+  }), []);
   /** Aeltere Nachrichten wurden oben eingefuegt: kein Sprung nach unten, kein "neue Antworten". */
   const aeltereGeladenRef = useRef(false);
   const [verlauf, setVerlauf] = useState<{ verfuegbar: boolean | null; grund?: string; mehr: boolean; laedt: boolean; fehler: string }>({ verfuegbar: null, mehr: false, laedt: false, fehler: '' });
@@ -954,6 +983,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
             artefaktId = verlaufAnzeigeId(zeilen.antwort_id, true);
             eigeneAntwortId = zeilen.antwort_id;
             eigeneLaufendeRef.current.add(zeilen.antwort_id);
+            laufendeAnzeigeIdRef.current = answerId;
             // Hat der Abgleich die beiden Zeilen schon gebracht, weichen dessen Fassungen dem eigenen Strom.
             setMessages((items) => items
               .filter((message) => umbenannt.has(message.id) || (message.id !== userId && message.id !== answerId && message.id !== artefaktId))
@@ -1004,6 +1034,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         setThinking(false);
         // P22-T63: ab jetzt liefert der Abgleich den Endstand dieser Antwort.
         if (eigeneAntwortId) eigeneLaufendeRef.current.delete(eigeneAntwortId);
+        laufendeAnzeigeIdRef.current = null;
       }
       return;
     }

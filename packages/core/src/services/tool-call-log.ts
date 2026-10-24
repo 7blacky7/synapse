@@ -15,7 +15,20 @@
  */
 
 import { getPool } from '../db/index.js';
-import { aktuelleAgentIdentityId, aktuellerAgentPrincipal, loeseAgentFilter } from './agent-bezug.js';
+import { aktuelleAgentIdentityId, aktuellerAgentPrincipal, aktuellerAgentAufruf, loeseAgentFilter } from './agent-bezug.js';
+
+/**
+ * P22-T123 (Abnahme 2ecbc7e7 R1): belegte Akteur-Identitaet. identity_id bleibt wie bisher nur im Heimatprojekt gesetzt; im
+ * fremden Projekt (P22-T44, Kontext fremdprojekt aus dem gepruefte Ausweis) traegt akteur_identity_id die Identitaet des
+ * Aufrufers. Nie aus einem Namen geraten.
+ */
+function belegteAkteurIdentitaet(project: string | null | undefined, agentId: string | null | undefined, identityId: string | null): string | null {
+  if (identityId) return identityId;
+  const k = aktuellerAgentAufruf();
+  const f = k?.fremdprojekt;
+  if (!f || !k?.principal || !project || f.project !== project) return null;
+  return agentId == null || agentId === k.principal.agent_id ? f.identity_id : null;
+}
 import {maskiereShellVorSpeichern,maskiereShellAntwort} from './shell-maske.js';
 import {schwaerzeToolLogText} from './tool-args-schwaerzen.js';
 
@@ -91,6 +104,7 @@ export interface ToolCallLogEntry {
 export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
   const identityId = entry.project ? aktuelleAgentIdentityId(entry.project, entry.agentId) : null;
   const principal = identityId ? aktuellerAgentPrincipal() : null;
+  const akteurIdentityId = belegteAkteurIdentitaet(entry.project, entry.agentId, identityId);
   try {
     if(entry.tool==='shell')entry=await maskiereShellVorSpeichern(entry.project??undefined,entry);
     if(entry.tool==='hex')entry={...entry,argsPreview:JSON.stringify({action:entry.action}),result:'[Hex-Byteergebnis nur beim Aufrufer; keine Bytefenster im Audit]'};
@@ -120,12 +134,7 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
       }
     }
     const pool = getPool();
-    await pool.query(
-      `INSERT INTO tool_calls
-         (project, agent_id, source, tool_name, action, args_preview, ok,
-          error, duration_ms, result, result_bytes, result_truncated, is_mutation, identity_id, lauf_id, context_epoch)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-      [
+    const werte = [
         entry.project ?? null,
         entry.agentId ?? null,
         entry.source ?? (entry.agentId ? null : 'mcp'),
@@ -141,8 +150,17 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
         isMutationAction(entry.action),
         identityId, principal?.art === 'identity' ? principal.lauf_id : null,
         principal?.art === 'identity' ? principal.context_epoch : null,
-      ],
-    );
+    ];
+    const spalten = `project, agent_id, source, tool_name, action, args_preview, ok,
+          error, duration_ms, result, result_bytes, result_truncated, is_mutation, identity_id, lauf_id, context_epoch`;
+    try {
+      await pool.query(`INSERT INTO tool_calls (${spalten}, akteur_identity_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, [...werte, akteurIdentityId]);
+    } catch (err) {
+      // P22-T123: Schema 135 noch ohne Spalte akteur_identity_id (Prozess aelter als die DB-Migration) -> bisheriger Eintrag.
+      if ((err as { code?: string }).code !== '42703') throw err;
+      await pool.query(`INSERT INTO tool_calls (${spalten}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, werte);
+    }
   } catch (err) {
     console.error('[tool-call-log] logToolCall fehlgeschlagen:', (err as Error).message);
   }

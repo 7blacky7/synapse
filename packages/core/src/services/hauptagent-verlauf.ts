@@ -40,6 +40,7 @@ import {
 } from './verlauf-tokens.js';
 import type { Zustellung } from './hauptagent-zustellung.js';
 import { enqueueSpecialistJob } from './specialist-queue.js';
+import { ergaenzeToolKarten, leseToolKartenSchalter, type ToolKartenDebug } from './verlauf-tool-karten.js';
 import { addThought } from './thoughts.js';
 import type { ThoughtSource } from '../types/index.js';
 import type { AusweisAkteur } from './agent-profil-vertrag.js';
@@ -899,6 +900,8 @@ export interface VerlaufAntwort {
   mehr: boolean;
   max_rev: string;
   geleert_rev: string;
+  /** P22-T123: Debug der Tool-Karten aus tool_calls (Schalter verlauf_tool_karten, verlauf-tool-karten.ts). */
+  tool_karten?: ToolKartenDebug;
 }
 
 function ganzzahl(v: unknown): string | null {
@@ -945,10 +948,15 @@ export async function leseVerlaufFuer(identity_id: string, a: VerlaufAbfrage = {
     const ab = Math.max(Number(ganzzahl(a.ab_id) ?? '0'), Number(ausgeblendet_bis_id) + 1);
     const r = await pool.query<Zeile>(
       `SELECT ${SPALTEN} FROM hauptagent_verlauf
-        WHERE identity_id = $1 AND id >= $2::bigint AND (rev > $3::bigint OR aktualisiert_am > NOW() - interval '3 seconds')
+        WHERE identity_id = $1 AND id >= $2::bigint AND (rev > $3::bigint OR aktualisiert_am > NOW() - interval '3 seconds'
+               OR ($4::boolean AND status = 'laeuft'))
         ORDER BY hauptagent_verlauf.id LIMIT ${VERLAUF_SEITE_MAX}`,
-      [v.identity_id, String(ab), seit]);
-    return { ...leer, verfuegbar: true, identity_id: v.identity_id, eintraege: r.rows.map(eintrag), max_rev, geleert_rev };
+      [v.identity_id, String(ab), seit, (await leseToolKartenSchalter()).aktiv]);
+    // P22-T123: bei Schalter verlauf_tool_karten EIN kommen laufende Antworten immer mit (neue tool_calls aendern rev nicht);
+    // ihre Karten haengt ergaenzeToolKarten beim Lesen an.
+    const eintraege = r.rows.map(eintrag);
+    const tool_karten = await ergaenzeToolKarten(v.identity_id, eintraege);
+    return { ...leer, verfuegbar: true, identity_id: v.identity_id, eintraege, max_rev, geleert_rev, tool_karten };
   }
   const limit = Math.min(VERLAUF_SEITE_MAX, Math.max(1, Number(ganzzahl(a.limit) ?? VERLAUF_SEITE_STANDARD)));
   const r = await pool.query<Zeile>(
@@ -958,7 +966,8 @@ export async function leseVerlaufFuer(identity_id: string, a: VerlaufAbfrage = {
     [v.identity_id, ausgeblendet_bis_id, ganzzahl(a.vor_id), limit + 1]);
   const mehr = r.rows.length > limit;
   const eintraege = r.rows.slice(0, limit).reverse().map(eintrag);
-  return { ...leer, verfuegbar: true, identity_id: v.identity_id, eintraege, mehr, max_rev, geleert_rev };
+  const tool_karten = await ergaenzeToolKarten(v.identity_id, eintraege);
+  return { ...leer, verfuegbar: true, identity_id: v.identity_id, eintraege, mehr, max_rev, geleert_rev, tool_karten };
 }
 
 /**

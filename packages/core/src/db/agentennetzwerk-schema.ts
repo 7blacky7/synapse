@@ -7,10 +7,17 @@ CREATE TABLE IF NOT EXISTS agentennetzwerk_einstellungen (
  name TEXT PRIMARY KEY, wert JSONB NOT NULL, grund TEXT NOT NULL,
  gesetzt_von TEXT NOT NULL, gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- P22-T123 (Abnahme 2ecbc7e7 R1/R4): belegte Akteur-Identitaet eines Aufrufs im fremden Projekt (logToolCall, nie aus einem
+-- Namen) und Einstellwerte der Tool-Karten. Additiv; die Spalte vor der Funktion, die sie liest.
+ALTER TABLE tool_calls ADD COLUMN IF NOT EXISTS akteur_identity_id TEXT;
+CREATE TABLE IF NOT EXISTS verlauf_tool_karten_einstellungen (
+ name TEXT PRIMARY KEY, wert JSONB NOT NULL, grund TEXT NOT NULL,
+ gesetzt_von TEXT NOT NULL, gesetzt_am TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE OR REPLACE FUNCTION notify_tool_activity() RETURNS trigger AS $fn$
 BEGIN
  PERFORM pg_notify('synapse_tool_activity', json_build_object(
-  'project', NEW.project, 'id', NEW.id::text, 'identity_id', NEW.identity_id)::text);
+  'project', NEW.project, 'id', NEW.id::text, 'identity_id', NEW.identity_id, 'akteur_identity_id', NEW.akteur_identity_id)::text);
  RETURN NEW;
 END;
 $fn$ LANGUAGE plpgsql;

@@ -732,6 +732,13 @@ export type {
   VerlaufGemessen, VerlaufKontext, VerlaufZug,
 } from './services/hauptagent-verlauf.js';
 export { HAUPTAGENT_VERLAUF_SCHEMA_SQL } from './db/hauptagent-verlauf-schema.js';
+// P22-T123: Tool-Karten im Chat aus tool_calls je Identitaet (Schalter verlauf_tool_karten, Standard AUS).
+export {
+  VERLAUF_TOOL_KARTEN_FUNKTION, leseToolKartenSchalter, ergaenzeToolKarten, ladeToolKarte, toolKarteAusZeile, toolKartenFenster, ordneToolKartenZu,
+  TOOL_KARTEN_EINSTELLUNGEN, leseToolKartenEinstellungen, setzeToolKartenEinstellungen, ausgabenOhneAusloeser, ankerAusPg, toolKarteFuerStrom,
+  type ToolKarte, type ToolKartenDebug, type ToolKartenZeile, type ToolKartenFenster, type ToolKartenWerte, type ToolKartenEinstellung,
+  type ToolKartenEinstellungenStand,
+} from './services/verlauf-tool-karten.js';
 export { rendereToolBild, type ToolBildEingabe, type ToolBildErgebnis, type ToolBildDienste } from './services/hauptagent-bilder.js';
 export { werkzeugBilder, ohneBilddaten, bildVerweisAusAufruf } from './services/werkzeug-bilder.js';
 export type { VerlaufBild } from './services/hauptagent-verlauf.js';

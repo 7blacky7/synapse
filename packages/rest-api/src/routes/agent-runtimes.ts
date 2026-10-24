@@ -14,7 +14,8 @@ import {
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
-  leseVerlaufFuer, AGENT_VERLAUF_ALLE_FUNKTION, leseProfilProduktSchalter, getPool,
+  leseVerlaufFuer, AGENT_VERLAUF_ALLE_FUNKTION, leseProfilProduktSchalter, getPool, leseToolKartenSchalter, toolKarteFuerStrom,
+  leseToolKartenEinstellungen, setzeToolKartenEinstellungen,
   warteschlangeAktiv, mainWechselOffen, stelleInWarteschlange, NICHT_ERREICHT_CODES, warteschlangeStatus, leseWarteschlangeSchalter, setzeWarteschlangeSchalter,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
@@ -336,6 +337,81 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         return { success: true, ...verlauf, agent_verlauf_alle: { aktiv: schalter.aktiv, quelle: schalter.quelle } };
       } catch (error) { return sendFachFehler(reply, error); }
     });
+  // P22-T123: Tool-Karten live. PG-NOTIFY synapse_tool_activity (Trigger auf tool_calls, Schema 135) -> SSE 'tool' mit der Karte,
+  // nur belegte eigene Aufrufe der Identitaet (identity_id oder akteur_identity_id; ohne Angabe: der Main), nie nach Namen.
+  // Rechte wie die Chatansicht (Guard oben: nur der interaktive User). Schalter verlauf_tool_karten AUS -> Ereignis 'aus',
+  // Ende; auch waehrend des Stroms (je Ereignis und alle sse_schalter_pruefung_ms). Takte aus den PG-Einstellungen.
+  // DEBUG: Ereignis 'bereit' {identity_id, main, schalter}; jede Karte traegt nr (laufende Zaehlung dieses Stroms).
+  fastify.get<{ Querystring: { identity_id?: string } }>('/api/agent-runtimes/tool-karten/stream', async (request, reply) => {
+    const roh = typeof request.query?.identity_id === 'string' ? request.query.identity_id.trim() : '';
+    const mainId = await hauptagentIdentitaetsId();
+    const identityId = roh || mainId || '';
+    if (!/^[a-f0-9-]{36}$/.test(identityId)) {
+      return reply.code(400).send({ success: false, error: { code: 'identity_id_fehlt', message: 'identity_id angeben (ohne: keine Main-Identitaet)' } });
+    }
+    const schalter = await leseToolKartenSchalter();
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    reply.sent = true;
+    if (!schalter.aktiv) { sse(reply, 'aus', { schalter }); reply.raw.end(); return; }
+    const main = mainId === identityId;
+    const einstellungen = (await leseToolKartenEinstellungen()).werte;
+    let client: import('pg').PoolClient | null = null;
+    let zu = false;
+    let nr = 0;
+    const takt = setInterval(() => { if (!zu) reply.raw.write(': takt\n\n'); }, einstellungen.sse_takt_ms);
+    // R2 (Abnahme 2ecbc7e7): Schalter AUS waehrend des Stroms -> 'aus' und Ende, je Ereignis und im Pruef-Takt, fail-closed.
+    const abschalten = () => {
+      if (zu) return;
+      sse(reply, 'aus', { grund: 'schalter_aus' });
+      ende();
+      reply.raw.end();
+    };
+    const pruefung = setInterval(() => {
+      if (!zu) void leseToolKartenSchalter().then((s) => { if (s.aktiv !== true) abschalten(); }).catch(abschalten);
+    }, einstellungen.sse_schalter_pruefung_ms);
+    const melden = (msg: { channel: string; payload?: string }) => {
+      if (zu || msg.channel !== 'synapse_tool_activity') return;
+      let p: { id?: unknown; identity_id?: unknown; akteur_identity_id?: unknown } = {};
+      try { p = JSON.parse(msg.payload || '{}'); } catch { return; }
+      // R1: nur belegte Aufrufe der Identitaet (identity_id oder akteur_identity_id), kein Namensfallback.
+      if (p.identity_id !== identityId && p.akteur_identity_id !== identityId) return;
+      void toolKarteFuerStrom(identityId, p).then((r) => {
+        if (zu) return;
+        if (r.aus) { abschalten(); return; }
+        if (r.karte) { nr += 1; sse(reply, 'tool', { karte: r.karte, nr }); }
+      }).catch(() => undefined);
+    };
+    const ende = () => {
+      if (zu) return;
+      zu = true;
+      clearInterval(takt);
+      clearInterval(pruefung);
+      const c = client;
+      client = null;
+      if (c) { c.removeListener('notification', melden); void c.query('UNLISTEN synapse_tool_activity').catch(() => undefined).finally(() => c.release()); }
+    };
+    reply.raw.on('close', ende);
+    try {
+      const c = await getPool().connect();
+      if (zu) { c.release(); return; }
+      client = c;
+      c.on('notification', melden);
+      await c.query('LISTEN synapse_tool_activity');
+      sse(reply, 'bereit', { identity_id: identityId, main, schalter });
+    } catch (error) {
+      sse(reply, 'fehler', { message: errorMessage(error) });
+      ende();
+      reply.raw.end();
+    }
+  });
+  // P22-T123 (R4): Einstellwerte der Tool-Karten (PG verlauf_tool_karten_einstellungen, Code-Standard, Quelle je Wert).
+  // Lesen und Setzen nur der interaktive User (Guard oben); werte {name: zahl|null}, null = Code-Standard, grund Pflicht.
+  fastify.get('/api/agent-runtimes/tool-karten/einstellungen', async (_request, reply) => {
+    try { return { success: true, schalter: await leseToolKartenSchalter(), ...(await leseToolKartenEinstellungen()) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/agent-runtimes/tool-karten/einstellungen', async (request, reply) => {
+    try { return { success: true, ...(await setzeToolKartenEinstellungen(request.body?.werte, request.body?.grund, 'user')) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
   // P22-T63: Gespraechsverlauf des Hauptagenten je Main-Identitaet (geraeteuebergreifend, Vertrag thought 97d9a354).
   // Ohne seit_rev: Seite (neueste zuerst, vor_id = aeltere nachladen); mit seit_rev: nur Aenderungen fuer den Live-Abgleich.
   fastify.get<{ Querystring: { limit?: string; vor_id?: string; seit_rev?: string; ab_id?: string } }>('/api/main-agent/verlauf', async (request, reply) => {

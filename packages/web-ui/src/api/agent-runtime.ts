@@ -445,6 +445,8 @@ export interface MainAgentVerlauf {
   mehr: boolean;
   max_rev: string;
   geleert_rev: string;
+  /** P22-T123: Tool-Karten aus tool_calls (Schalter verlauf_tool_karten); Debug der Zuordnung. */
+  tool_karten?: { aktiv: boolean; quelle: string; antworten: number; gefunden: number; zugeordnet: number; ohne_fenster: number; letzter_fehler: string | null };
 }
 
 /** P22-T63: Seite (limit, vor_id) oder Aenderungen seit einem Stand (seit_rev, ab_id). */
@@ -460,6 +462,59 @@ export async function getAgentVerlauf(identityId: string, abfrage: { limit?: num
   const params = new URLSearchParams({ identity_id: identityId });
   for (const [name, wert] of Object.entries(abfrage)) if (wert !== undefined && wert !== '') params.set(name, String(wert));
   return jsonRequest<{ success: true } & MainAgentVerlauf>('/api/agent-runtimes/agent-verlauf?' + params.toString());
+}
+
+/** P22-T123: eine Tool-Karte aus tool_calls (gleiche Form wie werkzeuge.calls im Verlauf). */
+export interface ToolKarteLive {
+  id: string; name?: string; action?: string | null; input?: unknown; output?: unknown; isError?: boolean;
+  start: string; ende: string | null; tool_call_id: string; project: string | null;
+}
+
+/**
+ * P22-T123: Tool-Karten live (SSE GET /api/agent-runtimes/tool-karten/stream, PG-NOTIFY auf tool_calls), nur eigene Aufrufe der
+ * Identitaet; identityId null = der Main. Rueckgabe: Abmelden. Bei Schalter AUS meldet der Server 'aus' und beendet den Strom.
+ */
+export function abonniereToolKarten(
+  identityId: string | null,
+  onKarte: (karte: ToolKarteLive) => void,
+  onStatus?: (status: { art: 'bereit' | 'aus' | 'fehler'; info?: unknown }) => void,
+): () => void {
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      const query = identityId ? '?identity_id=' + encodeURIComponent(identityId) : '';
+      const response = await apiFetch('/api/agent-runtimes/tool-karten/stream' + query, { headers: { Accept: 'text/event-stream' }, signal: controller.signal });
+      if (!response.ok || !response.body) { onStatus?.({ art: 'fehler', info: response.status }); return; }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let puffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        puffer += decoder.decode(value, { stream: true });
+        let ende = puffer.indexOf('\n\n');
+        while (ende >= 0) {
+          const block = puffer.slice(0, ende);
+          puffer = puffer.slice(ende + 2);
+          ende = puffer.indexOf('\n\n');
+          let event = 'message';
+          let data = '';
+          for (const zeile of block.split('\n')) {
+            if (zeile.startsWith('event:')) event = zeile.slice(6).trim();
+            else if (zeile.startsWith('data:')) data += zeile.slice(5).trim();
+          }
+          if (!data) continue;
+          let d: Record<string, unknown>;
+          try { d = JSON.parse(data) as Record<string, unknown>; } catch { continue; }
+          if (event === 'tool' && d.karte && typeof d.karte === 'object') onKarte(d.karte as ToolKarteLive);
+          else if (event === 'bereit' || event === 'aus' || event === 'fehler') onStatus?.({ art: event, info: d });
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) onStatus?.({ art: 'fehler', info: error instanceof Error ? error.message : String(error) });
+    }
+  })();
+  return () => controller.abort();
 }
 
 /** P22-T116: Runtime-Agenten-Uebersicht (Schalter runtime_agenten_uebersicht, Std AUS) und Steuerung (runtime_agenten_steuerung). */

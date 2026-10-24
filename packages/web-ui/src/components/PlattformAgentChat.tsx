@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getAgentVerlauf, sendePlattformAgentChat, type MainAgentVerlaufEintrag } from '../api/agent-runtime';
+import { abonniereToolKarten, getAgentVerlauf, sendePlattformAgentChat, type MainAgentVerlaufEintrag } from '../api/agent-runtime';
 
 /**
  * P22-T112: Chat mit einem Plattform-Agenten (Koordinator, spaeter Spezialist) im Fenster der Seitenleiste.
@@ -19,6 +19,8 @@ export function PlattformAgentChat({ identityId, name, pollMs = PLATTFORM_AGENT_
 
 function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId: string; name: string; pollMs: number }) {
   const [eintraege, setEintraege] = useState<MainAgentVerlaufEintrag[]>([]);
+  /** P22-T123: Server meldet Schalter verlauf_tool_karten EIN (Antwortfeld tool_karten.aktiv). */
+  const [toolKartenAn, setToolKartenAn] = useState(false);
   const [hinweis, setHinweis] = useState('');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -40,7 +42,12 @@ function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId
       const v = await getAgentVerlauf(identityId, { limit: 60 });
       if (!gueltig()) return;
       letzteAntwort.current = id;
-      setEintraege(v.eintraege.filter((e) => SICHTBAR.has(e.rolle) && e.text.trim()));
+      // P22-T123: bei Schalter verlauf_tool_karten EIN haengen die Werkzeugschritte als Karten an der Antwort (aus tool_calls);
+      // die Roh-JSON-Zeilen weg 'werkzeug' erscheinen dann nicht mehr als eigene Nachricht.
+      const karten = v.tool_karten?.aktiv === true;
+      setToolKartenAn(karten);
+      setEintraege(v.eintraege.filter((e) => SICHTBAR.has(e.rolle) && !(karten && e.weg === 'werkzeug')
+        && (e.text.trim() || (karten && (e.werkzeuge?.calls?.length ?? 0) > 0))));
       setHinweis(v.verfuegbar ? '' : 'Verlauf nicht verfuegbar' + (v.grund ? ' (' + v.grund + ')' : ''));
     } catch (error) {
       if (!gueltig()) return;
@@ -61,6 +68,9 @@ function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId
       window.clearInterval(timer);
     };
   }, [laden, pollMs]);
+
+  // P22-T123: neuer eigener Tool-Aufruf (NOTIFY auf tool_calls) -> Verlauf sofort neu laden; die Karte haengt der Server an.
+  useEffect(() => (toolKartenAn ? abonniereToolKarten(identityId, () => void laden()) : undefined), [toolKartenAn, identityId, laden]);
 
   useEffect(() => { endeRef.current?.scrollIntoView({ block: 'end' }); }, [eintraege.length, gesendet.length]);
 
@@ -96,7 +106,8 @@ function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId
         {eintraege.map((e) => (
           <article key={e.id} className={'plattform-agent-chat-msg ' + (e.rolle === 'user' || e.richtung === 'ein' ? 'ein' : 'aus')}>
             <small>{e.rolle === 'agent' || e.richtung === 'aus' ? name : (e.absender?.agent_id || 'Du')} · {new Date(e.erstellt_am).toLocaleTimeString('de-DE')}{e.status === 'laeuft' ? ' · antwortet …' : ''}</small>
-            <p>{e.text}</p>
+            {e.text.trim() ? <p>{e.text}</p> : null}
+            {toolKartenAn && e.werkzeuge?.calls?.length ? <WerkzeugKarten calls={e.werkzeuge.calls} /> : null}
           </article>
         ))}
         {offen.map((g) => (
@@ -114,5 +125,50 @@ function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId
         <button type="submit" disabled={busy || !text.trim()}>{busy ? '…' : 'Senden'}</button>
       </form>
     </section>
+  );
+}
+
+type WerkzeugCall = NonNullable<MainAgentVerlaufEintrag['werkzeuge']>['calls'][number];
+
+function alsText(wert: unknown): string {
+  if (wert === undefined || wert === null) return '';
+  if (typeof wert === 'string') return wert;
+  try { return JSON.stringify(wert, null, 2); } catch { return String(wert); }
+}
+
+/** P22-T123: Tool-Karten einer Antwort (gleiche Klassen wie die Karten im Main-Chat: tool-run / tool-node). */
+function WerkzeugKarten({ calls }: { calls: WerkzeugCall[] }) {
+  const [offen, setOffen] = useState(false);
+  const laeuft = calls.some((call) => !call.ende);
+  return (
+    <section className={offen ? 'tool-run is-open' : 'tool-run'} aria-label={calls.length + ' Toolcalls'}>
+      <button className="tool-run-summary" type="button" onClick={() => setOffen((wert) => !wert)} aria-expanded={offen}>
+        <span>{calls.length} Toolcalls{laeuft ? ' · arbeitet …' : ''}</span>
+      </button>
+      {offen && (
+        <div className="tool-run-body">
+          <div className="tool-strand">{calls.map((call) => <WerkzeugKarte call={call} key={call.id} />)}</div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function WerkzeugKarte({ call }: { call: WerkzeugCall }) {
+  const [stufe, setStufe] = useState<0 | 1 | 2>(0);
+  const eingabe = call.input && typeof call.input === 'object' ? call.input as Record<string, unknown> : null;
+  const status = !call.ende ? 'running' : call.isError ? 'failed' : 'done';
+  const name = (call.name || 'tool').split('__').pop() || 'tool';
+  return (
+    <article className={'tool-node ' + status + (stufe ? ' is-open' : '')}>
+      <button type="button" onClick={() => setStufe((s) => (s === 0 ? 1 : s === 1 ? 2 : 0))} aria-expanded={stufe > 0}>
+        <i className="tool-knot" />
+        <span className="tool-name">{name}</span>
+        <span className="tool-action">{typeof eingabe?.action === 'string' ? eingabe.action : 'Aufruf'}</span>
+        <span className="tool-click-hint">{stufe === 0 ? 'Command' : stufe === 1 ? 'Ausgabe' : 'Schließen'}</span>
+      </button>
+      {stufe >= 1 && <div className="tool-payload command"><pre>{alsText(call.input) || 'Keine Argumente gespeichert.'}</pre></div>}
+      {stufe === 2 && <div className="tool-payload output"><pre>{alsText(call.output) || 'Keine Ausgabe gespeichert.'}</pre></div>}
+    </article>
   );
 }

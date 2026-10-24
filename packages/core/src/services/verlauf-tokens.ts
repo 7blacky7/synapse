@@ -37,7 +37,7 @@ export interface TokenZaehlSchalter { aktiv: boolean; quelle: 'standard' | 'prod
 
 /** Schalter der Stufe 2 (alle Standard AUS, nur ausdruecklich): eine Lesestelle fuer alle. */
 // P22-T73: main_warteschlange (Warteschlange des Main-Chats) liest denselben Weg: Standard AUS, intern > Produkt-Schalter.
-export const VERLAUF_STUFE2_FUNKTIONEN = ['verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange'] as const;
+export const VERLAUF_STUFE2_FUNKTIONEN = ['verlauf_token_zaehlung', 'verlauf_alle_richtungen', 'main_korridor', 'verlauf_uebergabe', 'main_warteschlange', 'verlauf_tool_karten'] as const;
 export type VerlaufStufe2Funktion = typeof VERLAUF_STUFE2_FUNKTIONEN[number];
 
 /** Frisch je Aufruf. Standard AUS; Lesefehler -> AUS mit letzter_fehler. */
