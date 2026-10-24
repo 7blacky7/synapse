@@ -27,7 +27,7 @@ import {
   leseW1bSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv, leseAusweisKernFuerToken, ausweisProjekt, ausweisIrgendwoAktiv,
   type AusweisKernStand,
 } from './agent-profil-schalter.js';
-import { feldBedeutung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder, selbstKonflikte, SELBSTFELD_REGELN, type Selbstangaben } from './agent-selbstfelder.js';
+import { feldBedeutung, modellNachBezeugung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder, selbstKonflikte, SELBSTFELD_REGELN, type Selbstangaben } from './agent-selbstfelder.js';
 // P22-T56: tools/list je Verbindung (Variante aus entscheideToolListeVerbindung).
 import type { ToolListeEntscheidung } from './tool-liste-verbindung.js';
 import { entscheideToolAufruf, entscheideToolListe, istNichtSperrbareAktion, type TransportZugang } from './tool-gate.js';
@@ -637,9 +637,13 @@ export async function bereiteAgentToolAufrufVor(
     if (aufruf) bestaetigteKontexte.set(aufruf, basis.bestaetigt);
     // t109: Abweichungen nur auditieren. Strikt sind Widersprueche bereits abgelehnt; nur die
     // Modell-Selbstbeobachtung bleibt auditierbar.
+    // P22-T119: Schalter ausweis_zielmodell (Produkt, Std AUS) - Zielmodell-Felder nicht mehr mit dem Aufrufer-Modell ueberschreiben.
+    let zielmodellAn = false;
+    try { zielmodellAn = (await (await import('./agent-profil-schalter.js')).leseProfilProduktSchalter('ausweis_zielmodell', p.project)).aktiv; } catch { zielmodellAn = false; }
+    const modellBezeugt = !zielmodellAn || feldBedeutung(tool, action, 'model') === 'selbst_beobachtung';
     const pruefFelder = strikt
       ? (feldBedeutung(tool, action, 'model') === 'selbst_beobachtung' ? ['model'] : [])
-      : ['agent_id', 'role', 'model'];
+      : ['agent_id', 'role', ...(modellBezeugt ? ['model'] : [])];
     const abweichungen = Object.fromEntries(pruefFelder.flatMap(k => {
       const soll = k === 'agent_id' ? p.agent_id : k === 'role' ? p.rolle : p.modell;
       return args[k] !== undefined && args[k] !== soll ? [[k, { vorschlag: args[k], bezeugt: soll }]] : [];
@@ -655,7 +659,12 @@ export async function bereiteAgentToolAufrufVor(
       // chat.get braucht den Leser (DMs/Lesestand) und bekommt im Normalmodus weiter die Identitaet (Bestand t109).
       if (!(tool === 'files' && action === 'history')) bezeuge(args, 'agent_id', p.agent_id, erlaubteParameter);
       bezeuge(args, 'project', zielProjekt, erlaubteParameter); bezeuge(args, 'role', p.rolle, erlaubteParameter);
-      if (Object.hasOwn(args, 'model')) args.model = p.modell;
+      if (Object.hasOwn(args, 'model')) {
+        const m = modellNachBezeugung(tool, action, args.model, p.modell, zielmodellAn);
+        args.model = m.model;
+        // Debug: welche Regel galt (Ursprung + Schalter), nur wenn der Schalter EIN ist.
+        if (zielmodellAn) basis.bestaetigt = { ...basis.bestaetigt, modell_feld: { art: m.art, schalter: 'ausweis_zielmodell' } } as typeof basis.bestaetigt;
+      }
       // Fachliche Absenderfelder duerfen die gepruefte Attribution nicht wieder ersetzen.
       if (tool === 'thought' && ['add', 'add_batch'].includes(action ?? '')) args.source = p.agent_id;
       if (tool === 'event' && action === 'emit') args.source_id = p.agent_id;

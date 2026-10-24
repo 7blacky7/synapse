@@ -321,7 +321,10 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       const identityResult = await fuehreSpecialistIdentitaetsAktion({ action:'wake',project,name:specName,message });
       if (identityResult) return identityResult;
       const topic = `synapse_specialist_wake_${specName}`;
-      const payload = JSON.stringify({ message, from: 'rest-api', project, timestamp: Date.now() });
+      // P22-T119: echter Absender (Ausweis-Principal) statt fest 'rest-api' (Schalter wake_echter_absender, Std AUS).
+      const { wakeAbsenderFuer } = await import('@synapse/core');
+      const wa = await wakeAbsenderFuer(project, null);
+      const payload = JSON.stringify({ message, from: wa.absender, project, timestamp: Date.now() });
       let notifyOk = false;
       let inboxId: number | undefined;
       const wakeErrors: string[] = [];
@@ -334,7 +337,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       }
 
       try {
-        const r = await postToInbox('rest-api', specName, message, project);
+        const r = await postToInbox(wa.absender, specName, message, project);
         inboxId = r.id;
       } catch (e) {
         wakeErrors.push(`inbox: ${(e as Error).message}`);
@@ -347,6 +350,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
           name: specName,
           notified: notifyOk,
           inboxId,
+          debug: { absender: wa.absender, absender_quelle: wa.quelle, schalter: 'wake_echter_absender' },
           message: `Wake gesendet an "${specName}" (notify=${notifyOk}, inbox=${inboxId != null})`,
         };
       }

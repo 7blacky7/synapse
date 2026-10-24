@@ -792,6 +792,10 @@ export type { ModellFamilie, ZaehlVerfahren, TokenZaehlung, TokenZaehlSchalter, 
 export type { MainLaufOptionen, MainLaufStand, MainStartEingabe, MainTurnErgebnis, RuntimeWechselDienste, MainStopErgebnis } from './services/hauptagent-lauf.js';
 // P22-T114: Wake-Frist des Main-Turns (Schalter main_turn_wake_frist).
 export { MAIN_TURN_WAKE_FRIST_FUNKTION, MAIN_WAKE_PUFFER_MS, mainWakeFrist } from './services/hauptagent-lauf.js';
+// P22-T119: Zielmodell, Laufbindung modell_bestaetigt, echter wake-Absender.
+export { modellNachBezeugung } from './services/agent-selbstfelder.js';
+export { MODELL_LAUF_BINDUNG_FUNKTION, modellLaufBindungAktiv } from './services/plattform-agent-modellwechsel.js';
+export { WAKE_ECHTER_ABSENDER_FUNKTION, WAKE_ALT_ABSENDER, waehleWakeAbsender, wakeAbsenderFuer } from './services/wake-absender.js';
 // P22-T73: Warteschlange des Main-Chats (Schalter main_warteschlange, Verlauf-Status 'wartet').
 export {
   MAIN_WARTESCHLANGE_FUNKTION, NICHT_ERREICHT_CODES, leseWarteschlangeSchalter, setzeWarteschlangeSchalter, warteschlangeAktiv,

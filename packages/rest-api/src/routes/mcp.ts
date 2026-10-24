@@ -4207,7 +4207,10 @@ async function handleToolCallKern(
         const name = reqStr(args, 'name');
         const message = reqStr(args, 'message');
         const topic = `synapse_specialist_wake_${name}`;
-        const payload = JSON.stringify({ message, from: 'rest-api', project, timestamp: Date.now() });
+        // P22-T119: echter Absender statt fest 'rest-api' (Schalter wake_echter_absender, Std AUS).
+        const { wakeAbsenderFuer } = await import('@synapse/core');
+        const wa = await wakeAbsenderFuer(project, effectiveAgentId);
+        const payload = JSON.stringify({ message, from: wa.absender, project, timestamp: Date.now() });
         let notifyOk = false;
         let inboxId: number | undefined;
         const wakeErrors: string[] = [];
@@ -4222,7 +4225,7 @@ async function handleToolCallKern(
 
         // Persistent fallback: Inbox (wird beim naechsten Heartbeat verarbeitet)
         try {
-          const r = await postToInbox('rest-api', name, message, project);
+          const r = await postToInbox(wa.absender, name, message, project);
           inboxId = r.id;
         } catch (e) {
           wakeErrors.push(`inbox: ${(e as Error).message}`);
@@ -4235,6 +4238,7 @@ async function handleToolCallKern(
           notified: notifyOk,
           inboxId,
           errors: wakeErrors.length > 0 ? wakeErrors : undefined,
+          debug: { absender: wa.absender, absender_quelle: wa.quelle, principal_project: wa.principal_project, schalter: 'wake_echter_absender' },
           message: ok
             ? `Wake gesendet an "${name}" (notify=${notifyOk}, inbox=${inboxId != null})`
             : `Wake-Fehler fuer "${name}": ${wakeErrors.join(', ')}`,

@@ -144,3 +144,19 @@ export function bindeVerschachtelteActorFelder(
       el && typeof el === 'object' && !Array.isArray(el) ? { ...(el as Record<string, unknown>), [v.feld]: agentId } : el);
   }
 }
+
+/**
+ * P22-T119 (Befund 5a7f6a07): Wert von args.model nach der Ausweis-Bezeugung im Normalmodus (rein, testbar).
+ * Ursprung (P22-T10, a9509773): model war die SELBSTAUSKUNFT des Agenten (chat register/anmelden); der Ausweis bezeugt das
+ * Modell, eine abweichende Angabe wird ueberschrieben + als identitaet_abweichung auditiert. Das bleibt so.
+ * Schalter ausweis_zielmodell EIN: bei Zielmodell-Feldern (feldBedeutung 'fach', z. B. specialist spawn, runtime_modellwechsel)
+ * gewinnt das angeforderte Modell; nur ohne Angabe (leer/kein String) gilt wie bisher das Aufrufer-Modell als Rueckfall.
+ * Schalter AUS: unveraendert (jede vorhandene Angabe -> Aufrufer-Modell).
+ */
+export function modellNachBezeugung(tool: string, action: string | undefined, angefordert: unknown, aufruferModell: string | null, schalterAn: boolean):
+  { model: unknown; art: 'selbstauskunft_bezeugt' | 'zielmodell_angefordert' | 'zielmodell_rueckfall' | 'unveraendert_bezeugt' } {
+  if (!schalterAn) return { model: aufruferModell, art: 'unveraendert_bezeugt' };
+  if (feldBedeutung(tool, action, 'model') === 'selbst_beobachtung') return { model: aufruferModell, art: 'selbstauskunft_bezeugt' };
+  if (typeof angefordert === 'string' && angefordert.trim()) return { model: angefordert, art: 'zielmodell_angefordert' };
+  return { model: aufruferModell, art: 'zielmodell_rueckfall' };
+}

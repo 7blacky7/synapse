@@ -40,6 +40,12 @@ export async function plattformModellwechselAktiv(project: string): Promise<bool
   try { return (await leseProfilProduktSchalter(PLATTFORM_MODELLWECHSEL_FUNKTION, project)).aktiv; } catch { return false; }
 }
 
+/** P22-T119: Schalter modell_lauf_bindung (Produkt, Std AUS). Wirft nie. */
+export const MODELL_LAUF_BINDUNG_FUNKTION = 'modell_lauf_bindung' as const;
+export async function modellLaufBindungAktiv(project: string): Promise<boolean> {
+  try { return (await leseProfilProduktSchalter(MODELL_LAUF_BINDUNG_FUNKTION, project)).aktiv; } catch { return false; }
+}
+
 /** Abo (frei) vs. API (kostenpflichtig). Rein, testbar. */
 export function kostenArt(runtime: string): 'abo' | 'api' {
   return (ABO_RUNTIMES as readonly string[]).includes(runtime) ? 'abo' : 'api';
@@ -61,7 +67,7 @@ export function istIdentitaetsLaufSocket(socket: string | null | undefined, iden
 }
 
 export interface AusweisModell { modell: string | null; runtime: string | null; effort: string | null; start_ort: string | null; start_ziel: string | null; am: string | null; quelle: string | null;
-  wrapper_pid?: number | null; lauf_hash?: string | null; job_id?: string | null }
+  wrapper_pid?: number | null; lauf_hash?: string | null; job_id?: string | null; job_erstellt?: string | null }
 
 function text(v: unknown, max = 128): string | null {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
@@ -123,6 +129,89 @@ export function bestaetigteStarts(action: string, args: Record<string, unknown>,
   return liste.map((x, i) => einzel(jobInhalt(x), specs[i] ?? {})).filter((x): x is BestaetigterStart => !!x);
 }
 
+type LaufQuery = (sql: string, params: unknown[]) => Promise<{ rowCount?: number | null }>;
+
+/**
+ * P22-T119 R1c (Befund rea4 1d85243c): modell_bestaetigt nach Plattform-Modellwechsel. Schalter modell_lauf_bindung EIN ->
+ * nur ueber bindeModellAnLauf (CAS auf genau den neu gestarteten Lauf: Spawn-Job + PID + Laufhash + Modell); ohne
+ * vollstaendigen Laufnachweis nichts schreiben. AUS -> exakt Bestand (ungebundenes UPDATE). query injizierbar. Wirft nie.
+ */
+export async function bestaetigeWechselModell(bindung: boolean, identity_id: string, modell: string,
+  lauf: { job_id: string | null; wrapper_pid: number | null; lauf_hash: string | null } | null,
+  query: LaufQuery = (sql, p) => getPool().query(sql, p)): Promise<{ gesetzt: boolean; grund: string }> {
+  if (!bindung) {
+    try {
+      const r = await query('UPDATE agent_identitaeten SET modell_bestaetigt = $2 WHERE id::text = $1', [identity_id, modell]);
+      return { gesetzt: (r.rowCount ?? 0) > 0, grund: 'schalter_aus_bestand' };
+    } catch { return { gesetzt: false, grund: 'fehler' }; }
+  }
+  if (!lauf?.job_id || !lauf.wrapper_pid || !lauf.lauf_hash) {
+    console.debug('[modell-lauf-bindung] Modellwechsel ohne Laufnachweis, modell_bestaetigt nicht gesetzt', { identity_id, modell, lauf });
+    return { gesetzt: false, grund: 'kein_laufnachweis' };
+  }
+  return bindeModellAnLauf(identity_id, { modell, job_id: lauf.job_id, wrapper_pid: lauf.wrapper_pid, lauf_hash: lauf.lauf_hash }, query);
+}
+
+/** Laufgeneration = Anlagezeit des Start-Jobs (specialist_jobs.created_at, UTC mit Mikrosekunden). null bei Fehler. */
+async function jobGeneration(job_id: string): Promise<string | null> {
+  try {
+    const r = await getPool().query<{ g: string | null }>(
+      `SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS g FROM specialist_jobs WHERE id::text = $1`, [job_id]);
+    return r.rows[0]?.g ?? null;
+  } catch { return null; }
+}
+
+/**
+ * P22-T119 R1b: Laufprofil startrezept.plattform_modell atomar per CAS ueber die Laufgeneration schreiben. Greift nur, wenn
+ * der vorhandene Eintrag keine Generation hat (Altbestand), derselbe Job ist oder eine aeltere/gleiche Generation traegt.
+ * Ein spaeter Abschluss eines AELTEREN Jobs (A) ueberschreibt so nie das Profil eines neueren Laufs (B); Debug-Meldung.
+ * query injizierbar fuer den PG-Test. Wirft nie.
+ */
+export async function schreibeLaufProfil(identity_id: string, eintrag: AusweisModell & { job_id: string; job_erstellt: string },
+  query: LaufQuery = (sql, p) => getPool().query(sql, p)): Promise<{ geschrieben: boolean; grund: 'geschrieben' | 'neuerer_lauf_vorhanden' | 'fehler' }> {
+  try {
+    const r = await query(`UPDATE agent_identitaeten SET startrezept = jsonb_set(COALESCE(startrezept, '{}'::jsonb), '{plattform_modell}', $2::jsonb),
+        profil_revision = profil_revision + 1
+      WHERE id::text = $1 AND rolle <> 'main' AND (
+        startrezept->'plattform_modell'->>'job_erstellt' IS NULL
+        OR startrezept->'plattform_modell'->>'job_id' = $3
+        OR (startrezept->'plattform_modell'->>'job_erstellt')::timestamptz <= $4::timestamptz)`,
+      [identity_id, JSON.stringify(eintrag), eintrag.job_id, eintrag.job_erstellt]);
+    if ((r.rowCount ?? 0) > 0) return { geschrieben: true, grund: 'geschrieben' };
+    console.debug('[modell-lauf-bindung] Laufprofil nicht geschrieben: neuerer Lauf vorhanden', { identity_id, job_id: eintrag.job_id, job_erstellt: eintrag.job_erstellt, wrapper_pid: eintrag.wrapper_pid });
+    return { geschrieben: false, grund: 'neuerer_lauf_vorhanden' };
+  } catch (err) {
+    console.error('[modell-lauf-bindung] Laufprofil nicht geschrieben:', (err as Error)?.message ?? err);
+    return { geschrieben: false, grund: 'fehler' };
+  }
+}
+
+/**
+ * P22-T119 R1 (Befund 0c19c24c): modell_bestaetigt atomar per CAS an genau diesen Lauf binden. Ein einziges UPDATE, das nur
+ * greift, wenn startrezept.plattform_modell noch GENAU dieser Lauf ist (job_id + wrapper_pid + lauf_hash + modell). Ein
+ * aelterer Abschluss, der nach einem neueren bestaetigten Lauf ankommt, schreibt nichts (auch kein gesetzt-Flag) und meldet
+ * das im Debug. query injizierbar fuer den PG-Test. Wirft nie.
+ */
+export async function bindeModellAnLauf(identity_id: string, lauf: { modell: string; job_id: string; wrapper_pid: number; lauf_hash: string },
+  query: LaufQuery = (sql, p) => getPool().query(sql, p)): Promise<{ gesetzt: boolean; grund: 'gebunden' | 'lauf_nicht_mehr_aktuell' | 'fehler' }> {
+  try {
+    const r = await query(`UPDATE agent_identitaeten SET modell_bestaetigt = $2,
+        startrezept = jsonb_set(startrezept, '{plattform_modell,modell_bestaetigt_gesetzt}', 'true'::jsonb)
+      WHERE id::text = $1 AND rolle <> 'main'
+        AND startrezept->'plattform_modell'->>'job_id' = $3
+        AND startrezept->'plattform_modell'->>'wrapper_pid' = $4
+        AND startrezept->'plattform_modell'->>'lauf_hash' = $5
+        AND startrezept->'plattform_modell'->>'modell' = $2`,
+      [identity_id, lauf.modell, lauf.job_id, String(lauf.wrapper_pid), lauf.lauf_hash]);
+    if ((r.rowCount ?? 0) > 0) return { gesetzt: true, grund: 'gebunden' };
+    console.debug('[modell-lauf-bindung] uebersprungen: Lauf nicht mehr aktuell', { identity_id, job_id: lauf.job_id, wrapper_pid: lauf.wrapper_pid, modell: lauf.modell });
+    return { gesetzt: false, grund: 'lauf_nicht_mehr_aktuell' };
+  } catch (err) {
+    console.error('[modell-lauf-bindung] modell_bestaetigt nicht gesetzt:', (err as Error)?.message ?? err);
+    return { gesetzt: false, grund: 'fehler' };
+  }
+}
+
 /**
  * Nach bestaetigtem Start (completeSpecialistJob, Status done): Modell an die Laufgeneration binden. Nur Container-Starts
  * (target_runtime), auch Namens-/Batch-Starts. Ohne Lauf-Nachweis/Wrapper-PID nichts. Wirft nie; Schalter AUS -> 0.
@@ -133,12 +222,25 @@ export async function merkeAusweisModellNachStart(j: { id: string; project: stri
     if (!rt || (j.action !== 'spawn' && j.action !== 'spawn_batch')) return 0;
     if (!(await plattformModellwechselAktiv(j.project))) return 0;
     let n = 0;
+    // P22-T119 R1b (Schalter modell_lauf_bindung): Laufprofil nur generationsgebunden (CAS) schreiben. AUS -> Bestand.
+    const bindung = await modellLaufBindungAktiv(j.project);
+    const generation = bindung ? await jobGeneration(j.id) : null;
+    if (bindung && !generation) console.debug('[modell-lauf-bindung] keine Job-Generation, Laufprofil nicht geschrieben', { job_id: j.id });
     for (const s of bestaetigteStarts(j.action, j.args ?? {}, j.result)) {
       const id = (j.action === 'spawn' ? identitaetAusSpawnArgs(j.args, j.target_identity_id) : s.identity_id) ?? (s.name ? await identitaetZuName(j.project, s.name) : null);
       if (!id || !s.modell || !s.wrapper_pid || !s.lauf_hash) continue;
       const eintrag: AusweisModell = { modell: s.modell, runtime: rt, effort: s.effort, start_ort: 'container', start_ziel: rt,
         am: new Date().toISOString(), quelle: 'spawn_bestaetigt', wrapper_pid: s.wrapper_pid, lauf_hash: s.lauf_hash, job_id: j.id };
-      if (await schreibeProfil(id, 'plattform_modell', eintrag as unknown as Record<string, unknown>)) n++;
+      if (bindung) {
+        if (!generation) continue;
+        if ((await schreibeLaufProfil(id, { ...eintrag, job_id: j.id, job_erstellt: generation })).geschrieben) {
+          n++;
+          // P22-T119: modell_bestaetigt = tatsaechlich gestartetes Modell desselben Laufs (CAS, Befund 5a7f6a07/0c19c24c).
+          await bindeModellAnLauf(id, { modell: s.modell, job_id: j.id, wrapper_pid: s.wrapper_pid, lauf_hash: s.lauf_hash });
+        }
+      } else if (await schreibeProfil(id, 'plattform_modell', eintrag as unknown as Record<string, unknown>)) {
+        n++;
+      }
     }
     return n;
   } catch { return 0; }
@@ -254,6 +356,7 @@ async function fuehreWechselAus(w: { z: Awaited<ReturnType<typeof ladeSteuerZiel
     if (sperre) { abbruch = sperre; schritte.push({ schritt: 'spawn', uebersprungen: sperre, laufend: vorSpawn.filter(r => r.status === 'running' || r.status === 'idle') }); }
   }
   let neuPid: number | null = null;
+  let neuLauf: { job_id: string | null; wrapper_pid: number | null; lauf_hash: string | null } | null = null;
   if (!abbruch) {
     const { audit: _a, effort: _e, ...rest } = rezept as Record<string, unknown>;
     const spawnArgs: Record<string, unknown> = { ...rest, name, identity_id: z.identity_id, model: modell, ...(effort ? { effort } : {}), audit };
@@ -266,12 +369,13 @@ async function fuehreWechselAus(w: { z: Awaited<ReturnType<typeof ladeSteuerZiel
       const pid = Number(s.wrapperPid);
       const lebt = (await listWrapperStatus(z.project)).find(r => r.identityId === z.identity_id && (r.status === 'running' || r.status === 'idle'));
       if (!Number.isSafeInteger(pid) || pid <= 0 || !lebt || lebt.wrapperPid !== pid) abbruch = 'start_nicht_bestaetigt';
-      else neuPid = pid;
+      else { neuPid = pid; neuLauf = { job_id: j.job_id ?? null, wrapper_pid: pid, lauf_hash: text(s.plattform_lauf_hash, 128) }; }
     }
   }
   const ok = !abbruch;
   // Erst nach bestaetigtem Start: modell_bestaetigt (plattform_modell schreibt completeSpecialistJob an die Laufgeneration).
-  if (ok) await getPool().query('UPDATE agent_identitaeten SET modell_bestaetigt = $2 WHERE id::text = $1', [z.identity_id, modell]).catch(() => undefined);
+  // P22-T119 R1c: bei Schalter modell_lauf_bindung EIN nur lauf-gebunden (CAS), sonst Bestand.
+  const modellBindung = ok ? await bestaetigeWechselModell(await modellLaufBindungAktiv(z.project), z.identity_id, modell, neuLauf) : null;
   let auditiert = false;
   try {
     await getPool().query('INSERT INTO agent_identitaet_audit (identity_id, wer, aktion, neu, grund) VALUES ($1,$2,$3,$4::jsonb,$5)',
@@ -279,5 +383,5 @@ async function fuehreWechselAus(w: { z: Awaited<ReturnType<typeof ladeSteuerZiel
     auditiert = true;
   } catch { auditiert = false; }
   return { success: ok, ...(abbruch ? { error: abbruch } : {}), identity_id: z.identity_id, agent: z.agent_id, project: z.project, modell, runtime, effort, kosten_art: kostenArt(runtime), schritte,
-    debug: { schalter: PLATTFORM_MODELLWECHSEL_FUNKTION, ort: z.ort, bisher: audit.von, wrapper_status: z.wrapper?.status ?? null, alt_wrapper_pid: altPid, neu_wrapper_pid: neuPid, modell_pruefung: w.pruefQuelle, grenzen_quelle: grenzen.quelle, auditiert } };
+    debug: { schalter: PLATTFORM_MODELLWECHSEL_FUNKTION, ort: z.ort, bisher: audit.von, wrapper_status: z.wrapper?.status ?? null, alt_wrapper_pid: altPid, neu_wrapper_pid: neuPid, modell_pruefung: w.pruefQuelle, grenzen_quelle: grenzen.quelle, auditiert, modell_bindung: modellBindung } };
 }
