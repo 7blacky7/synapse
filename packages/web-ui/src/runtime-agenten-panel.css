@@ -1,0 +1,25 @@
+/* P22-T122: Runtime-Agenten-Panel (neue Darstellung, Schalter runtime_agenten_panel_neu). Nutzt die Design-Tokens der
+   .synapse-control (hell/dunkel, P22-T111), daher folgt es dem Umschalter. */
+.runtime-agenten-panel.neu{margin:16px 0;padding:14px 16px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--text)}
+.runtime-agenten-panel.neu header{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.runtime-agenten-panel.neu header h3{margin:0 auto 0 0;font-size:14px}
+.runtime-agenten-panel.neu button{padding:4px 10px;border:1px solid var(--border);border-radius:6px;background:var(--strong);color:var(--text);cursor:pointer;font-size:12px}
+.runtime-agenten-panel.neu button:hover{background:var(--soft)}
+.runtime-agenten-panel.neu button:disabled{opacity:.5;cursor:default}
+.runtime-agenten-panel.neu h4{margin:14px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.runtime-agenten-panel.neu .rap-tabelle{overflow-x:auto;border:1px solid var(--border2);border-radius:8px;background:var(--strong)}
+.runtime-agenten-panel.neu table{width:100%;border-collapse:collapse;font-size:12px}
+.runtime-agenten-panel.neu th,.runtime-agenten-panel.neu td{padding:6px 8px;text-align:left;vertical-align:top;border-bottom:1px solid var(--border2);white-space:nowrap}
+.runtime-agenten-panel.neu th{color:var(--muted);font-weight:600;background:var(--soft)}
+.runtime-agenten-panel.neu td.rap-name{white-space:normal;min-width:160px}
+.runtime-agenten-panel.neu td.rap-name small{display:block;color:var(--muted)}
+.runtime-agenten-panel.neu td.rap-warn{white-space:normal;max-width:260px}
+.runtime-agenten-panel.neu tr.mit-warnung td{background:color-mix(in srgb,#e0a100 10%,transparent)}
+.runtime-agenten-panel.neu .rap-aktionen{display:flex;flex-wrap:wrap;gap:4px}
+.runtime-agenten-panel.neu details{margin-top:10px}
+.runtime-agenten-panel.neu details pre{max-height:320px;overflow:auto;padding:8px;border:1px solid var(--border2);border-radius:6px;background:var(--soft);font-size:11px;white-space:pre-wrap;word-break:break-word}
+.runtime-agenten-panel.neu .rap-dialog{margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--strong);display:grid;gap:8px;max-width:520px}
+.runtime-agenten-panel.neu .rap-dialog label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+.runtime-agenten-panel.neu .rap-dialog select,.runtime-agenten-panel.neu .rap-dialog input{padding:5px 8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text)}
+.runtime-agenten-panel.neu .rap-dialog .rap-bestaetigen{padding:8px;border-radius:6px;background:var(--soft)}
+.runtime-agenten-panel.neu .rap-fehler{color:#b3261e}

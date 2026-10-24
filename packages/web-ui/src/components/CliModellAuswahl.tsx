@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { katalogAntwortGilt } from './runtime-agenten-panel-logik';
 import { getAgentRuntimeModelle, type AgentRuntimeName, type CliModell, type CliModellListe } from '../api/agent-runtime';
 import '../cli-modelle.css';
 
@@ -11,23 +12,34 @@ export function useCliModelle(runtime: AgentRuntimeName | null) {
   const [liste, setListe] = useState<CliModellListe | null>(null);
   const [fehler, setFehler] = useState('');
   const [laedt, setLaedt] = useState(false);
+  // P22-T122 R2 (rea4 9d143cb0): Antworten an angefragte Runtime + juengste Anfrage binden; spaete Antworten (Runtimewechsel,
+  // Unmount) ueberschreiben weder Liste noch Fehler noch Ladezustand.
+  const anfrage = useRef(0);
+  const aktiv = useRef(true);
+  const aktuelleRuntime = useRef<AgentRuntimeName | null>(runtime);
+  aktuelleRuntime.current = runtime;
   const laden = useCallback(async (neu = false) => {
     if (!runtime) return;
+    const g = ++anfrage.current;
+    const gilt = () => katalogAntwortGilt(aktiv.current, g, anfrage.current, runtime, aktuelleRuntime.current);
     setLaedt(true);
     try {
-      setListe(await getAgentRuntimeModelle(runtime, neu));
-      setFehler('');
+      const l = await getAgentRuntimeModelle(runtime, neu);
+      if (gilt()) { setListe(l); setFehler(''); }
     } catch (reason) {
-      setFehler(reason instanceof Error ? reason.message : String(reason));
+      if (gilt()) setFehler(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLaedt(false);
+      if (gilt()) setLaedt(false);
     }
   }, [runtime]);
   useEffect(() => {
+    aktiv.current = true;
     setListe(null);
     setFehler('');
     void laden();
+    return () => { anfrage.current++; };
   }, [laden]);
+  useEffect(() => () => { aktiv.current = false; anfrage.current++; }, []);
   return { liste, fehler, laedt, laden };
 }
 

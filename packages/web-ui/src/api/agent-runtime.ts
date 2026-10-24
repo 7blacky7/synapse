@@ -468,7 +468,7 @@ export interface RuntimeAgentZeile {
   letzte_aktivitaet: string; inaktiv_sekunden: number; heartbeat: { an: boolean; takt_ms: number | null }; pid: number | null;
   wrapper_pid: number | null; modell: string | null; auftrag: string | null; tokens: { input: number; output: number; prozent: number }; warnungen: string[];
 }
-export interface RuntimeAgentenStand { aktiv: boolean; orte?: Record<string, RuntimeAgentZeile[]>; anzahl?: number; warnungen_gesamt?: number; debug?: Record<string, unknown> }
+export interface RuntimeAgentenStand { aktiv: boolean; /** P22-T122: Schalter runtime_agenten_panel_neu */ panel_neu?: boolean; orte?: Record<string, RuntimeAgentZeile[]>; anzahl?: number; warnungen_gesamt?: number; debug?: Record<string, unknown> }
 export async function getRuntimeAgenten(project: string): Promise<RuntimeAgentenStand> {
   return jsonRequest<{ success: true } & RuntimeAgentenStand>('/api/agent-runtimes/runtime-agenten?project=' + encodeURIComponent(project));
 }

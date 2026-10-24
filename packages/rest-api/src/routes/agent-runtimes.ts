@@ -381,7 +381,9 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     try {
       const project = request.query.project?.trim() ?? '';
       const u = await leseRuntimeUebersicht(project);
-      return u ? { success: true, aktiv: true, project, ...u } : { success: true, aktiv: false, project, schalter: 'runtime_agenten_uebersicht' };
+      // P22-T122: neue Darstellung (Schalter runtime_agenten_panel_neu, Std AUS; Lesefehler -> AUS).
+      const panel_neu = u ? await leseProfilProduktSchalter('runtime_agenten_panel_neu', project).then(s => s.aktiv && !s.letzter_fehler, () => false) : false;
+      return u ? { success: true, aktiv: true, project, panel_neu, ...u } : { success: true, aktiv: false, project, schalter: 'runtime_agenten_uebersicht' };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.get<{ Querystring: { identity_id?: string; max_bytes?: string } }>('/api/agent-runtimes/runtime-agenten/log', async (request, reply) => {
