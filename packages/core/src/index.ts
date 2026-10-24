@@ -796,6 +796,8 @@ export { MAIN_TURN_WAKE_FRIST_FUNKTION, MAIN_WAKE_PUFFER_MS, mainWakeFrist } fro
 export { modellNachBezeugung } from './services/agent-selbstfelder.js';
 export { MODELL_LAUF_BINDUNG_FUNKTION, modellLaufBindungAktiv } from './services/plattform-agent-modellwechsel.js';
 export { WAKE_ECHTER_ABSENDER_FUNKTION, WAKE_ALT_ABSENDER, waehleWakeAbsender, wakeAbsenderFuer } from './services/wake-absender.js';
+// P22-T120: Antwort geweckter Agenten identitaetsadressiert an den Wecker.
+export { WAKE_ANTWORT_IDENTITAET_FUNKTION, wakeAntwortIdentitaetAktiv, rueckadresseAusPrincipal, merkeWakeRueckadresse, rueckadresseFuer, wakeRueckadresseVorab, projektfreiesLesenErlaubt, wakeReihenfolge } from './services/wake-rueckadresse.js';
 // P22-T73: Warteschlange des Main-Chats (Schalter main_warteschlange, Verlauf-Status 'wartet').
 export {
   MAIN_WARTESCHLANGE_FUNKTION, NICHT_ERREICHT_CODES, leseWarteschlangeSchalter, setzeWarteschlangeSchalter, warteschlangeAktiv,

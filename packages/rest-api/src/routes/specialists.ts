@@ -329,28 +329,40 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       let inboxId: number | undefined;
       const wakeErrors: string[] = [];
 
-      try {
-        await getPool().query('SELECT pg_notify($1, $2)', [topic, payload]);
-        notifyOk = true;
-      } catch (e) {
-        wakeErrors.push(`notify: ${(e as Error).message}`);
-      }
+      // P22-T120 R2: Rueckadresse VORAB, atomar im INSERT der wake-Zeile; mit Rueckadresse erst INSERT, dann Notify (sonst Bestand).
+      const { wakeRueckadresseVorab, wakeReihenfolge } = await import('@synapse/core');
+      const vorab = await wakeRueckadresseVorab(project, wa.absender);
+      const notify = async (): Promise<boolean> => {
+        try {
+          await getPool().query('SELECT pg_notify($1, $2)', [topic, payload]);
+          return true;
+        } catch (e) {
+          wakeErrors.push(`notify: ${(e as Error).message}`);
+          return false;
+        }
+      };
+      const inbox = async (): Promise<number | undefined> => {
+        try {
+          return (await postToInbox(wa.absender, specName, message, project, vorab.identity_id ? { fromIdentityId: vorab.identity_id } : undefined)).id;
+        } catch (e) {
+          wakeErrors.push(`inbox: ${(e as Error).message}`);
+          return undefined;
+        }
+      };
+      // Mit Rueckadresse: Notify NUR nach erfolgreichem INSERT, sonst success=false (500) mit Debug. Ohne: Bestand.
+      const ablauf = await wakeReihenfolge(!!vorab.identity_id, inbox, notify);
+      notifyOk = ablauf.notifyOk; inboxId = ablauf.inboxId;
+      if (ablauf.rueckadresse_fehler) wakeErrors.push(ablauf.rueckadresse_fehler);
+      const rueckadresse = { ...vorab, gesetzt: !!vorab.identity_id && inboxId != null, fehler: ablauf.rueckadresse_fehler };
 
-      try {
-        const r = await postToInbox(wa.absender, specName, message, project);
-        inboxId = r.id;
-      } catch (e) {
-        wakeErrors.push(`inbox: ${(e as Error).message}`);
-      }
-
-      const ok = notifyOk || inboxId != null;
+      const ok = ablauf.ok;
       if (ok) {
         return {
           success: true,
           name: specName,
           notified: notifyOk,
           inboxId,
-          debug: { absender: wa.absender, absender_quelle: wa.quelle, schalter: 'wake_echter_absender' },
+          debug: { absender: wa.absender, absender_quelle: wa.quelle, schalter: 'wake_echter_absender', rueckadresse },
           message: `Wake gesendet an "${specName}" (notify=${notifyOk}, inbox=${inboxId != null})`,
         };
       }
@@ -358,6 +370,7 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
       return reply.status(500).send({
         success: false,
         errors: wakeErrors,
+        debug: { absender: wa.absender, absender_quelle: wa.quelle, schalter: 'wake_echter_absender', rueckadresse },
         message: `Wake-Fehler fuer "${specName}": ${wakeErrors.join(', ')}`,
       });
     } catch (error) {

@@ -4215,30 +4215,42 @@ async function handleToolCallKern(
         let inboxId: number | undefined;
         const wakeErrors: string[] = [];
 
+        // P22-T120 R2: Rueckadresse (Identitaet des Weckers) VORAB bestimmen, atomar im INSERT der wake-Zeile (Schalter wake_antwort_identitaet).
+        const { wakeRueckadresseVorab, wakeReihenfolge } = await import('@synapse/core');
+        const vorab = await wakeRueckadresseVorab(project, wa.absender);
         // Fast path: PG NOTIFY (wrapper.ts hat LISTEN synapse_specialist_wake_<name>)
-        try {
-          await getPool().query('SELECT pg_notify($1, $2)', [topic, payload]);
-          notifyOk = true;
-        } catch (e) {
-          wakeErrors.push(`notify: ${(e as Error).message}`);
-        }
-
+        const notify = async (): Promise<boolean> => {
+          try {
+            await getPool().query('SELECT pg_notify($1, $2)', [topic, payload]);
+            return true;
+          } catch (e) {
+            wakeErrors.push(`notify: ${(e as Error).message}`);
+            return false;
+          }
+        };
         // Persistent fallback: Inbox (wird beim naechsten Heartbeat verarbeitet)
-        try {
-          const r = await postToInbox(wa.absender, name, message, project);
-          inboxId = r.id;
-        } catch (e) {
-          wakeErrors.push(`inbox: ${(e as Error).message}`);
-        }
+        const inbox = async (): Promise<number | undefined> => {
+          try {
+            return (await postToInbox(wa.absender, name, message, project, vorab.identity_id ? { fromIdentityId: vorab.identity_id } : undefined)).id;
+          } catch (e) {
+            wakeErrors.push(`inbox: ${(e as Error).message}`);
+            return undefined;
+          }
+        };
+        // Mit Rueckadresse: erst persistente Zeile (inkl. Rueckadresse), Notify NUR nach erfolgreichem INSERT, sonst success=false. Sonst Bestand.
+        const ablauf = await wakeReihenfolge(!!vorab.identity_id, inbox, notify);
+        notifyOk = ablauf.notifyOk; inboxId = ablauf.inboxId;
+        if (ablauf.rueckadresse_fehler) wakeErrors.push(ablauf.rueckadresse_fehler);
+        const rueckadresse = { ...vorab, gesetzt: !!vorab.identity_id && inboxId != null, fehler: ablauf.rueckadresse_fehler };
 
-        const ok = notifyOk || inboxId != null;
+        const ok = ablauf.ok;
         return {
           success: ok,
           name,
           notified: notifyOk,
           inboxId,
           errors: wakeErrors.length > 0 ? wakeErrors : undefined,
-          debug: { absender: wa.absender, absender_quelle: wa.quelle, principal_project: wa.principal_project, schalter: 'wake_echter_absender' },
+          debug: { absender: wa.absender, absender_quelle: wa.quelle, principal_project: wa.principal_project, schalter: 'wake_echter_absender', rueckadresse },
           message: ok
             ? `Wake gesendet an "${name}" (notify=${notifyOk}, inbox=${inboxId != null})`
             : `Wake-Fehler fuer "${name}": ${wakeErrors.join(', ')}`,
