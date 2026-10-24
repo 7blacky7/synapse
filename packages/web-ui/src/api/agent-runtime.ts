@@ -462,6 +462,26 @@ export async function getAgentVerlauf(identityId: string, abfrage: { limit?: num
   return jsonRequest<{ success: true } & MainAgentVerlauf>('/api/agent-runtimes/agent-verlauf?' + params.toString());
 }
 
+/** P22-T116: Runtime-Agenten-Uebersicht (Schalter runtime_agenten_uebersicht, Std AUS) und Steuerung (runtime_agenten_steuerung). */
+export interface RuntimeAgentZeile {
+  name: string; identity_id: string | null; quelle: string; ort: string; runtime: string | null; status: string; busy: boolean;
+  letzte_aktivitaet: string; inaktiv_sekunden: number; heartbeat: { an: boolean; takt_ms: number | null }; pid: number | null;
+  wrapper_pid: number | null; modell: string | null; auftrag: string | null; tokens: { input: number; output: number; prozent: number }; warnungen: string[];
+}
+export interface RuntimeAgentenStand { aktiv: boolean; orte?: Record<string, RuntimeAgentZeile[]>; anzahl?: number; warnungen_gesamt?: number; debug?: Record<string, unknown> }
+export async function getRuntimeAgenten(project: string): Promise<RuntimeAgentenStand> {
+  return jsonRequest<{ success: true } & RuntimeAgentenStand>('/api/runtime-agenten?project=' + encodeURIComponent(project));
+}
+export async function getRuntimeAgentLog(identityId: string): Promise<Record<string, unknown>> {
+  return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/log?identity_id=' + encodeURIComponent(identityId));
+}
+export async function getRuntimeProzesse(project: string): Promise<Record<string, unknown>> {
+  return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/prozesse?project=' + encodeURIComponent(project));
+}
+export async function steuereRuntimeAgentUi(identityId: string, aktion: 'stop' | 'start' | 'restart' | 'wake', grund: string): Promise<Record<string, unknown>> {
+  return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/steuern', { method: 'POST', body: JSON.stringify({ identity_id: identityId, aktion, grund }) });
+}
+
 /** P22-T112: PG-Produkt-Schalter im Projekt der Zielidentitaet, Standard AUS. */
 export interface PlattformAgentChatSchalter { aktiv: boolean; quelle: string; name: string; wert: string | null; project: string | null; letzter_fehler: string | null }
 export async function getPlattformAgentChatSchalter(identityId: string): Promise<PlattformAgentChatSchalter> {

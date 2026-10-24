@@ -752,6 +752,11 @@ export { AGENT_CONTAINER_SCHEMA_SQL } from './db/agent-container-schema.js';
 export { AGENT_START_ORT_SCHEMA_SQL } from './db/agent-start-ort-schema.js';
 export { AGENT_START_ORT_FUNKTION, START_ORTE, START_ORT_ARTEN, merkeStartOrt, merkeStartOrtAusJob, leseStartOrt, zustellWegFuer, startOrtSchalterAktiv, startOrtAnzeige } from './services/agent-start-ort.js';
 export type { StartOrt, StartOrtArt, StartOrtAnzeige, StartOrtEingabe, StartOrtStand, StartOrtZustellweg } from './services/agent-start-ort.js';
+// P22-T116: Runtime-Agenten-Uebersicht (Schalter runtime_agenten_uebersicht, Std AUS).
+export { RUNTIME_UEBERSICHT_FUNKTION, runtimeVeraltetMs, ortFuer, warnungenFuer, baueRuntimeUebersicht, runtimeUebersichtAktiv, leseRuntimeUebersicht, findeWrapperStatusPerName } from './services/runtime-agenten-uebersicht.js';
+export type { RuntimeAgentEintrag, RuntimeUebersicht, RuntimeWarnung } from './services/runtime-agenten-uebersicht.js';
+export { RUNTIME_STEUERUNG_FUNKTION, STEUER_AKTIONEN, PROZESS_SIGNALE, STEUER_GRENZEN, steuerAkteurAusAufruf, pruefeSteuerRecht, ladeSteuerZiel, steuereRuntimeAgent, leseRuntimeAgentLog, gleicheProzesseAb, leseRuntimeProzesse, frageProzessAenderungAn, bestaetigeProzessAenderung } from './services/runtime-agenten-steuerung.js';
+export type { SteuerAkteur, SteuerAktion, SteuerZiel, ProzessSignal, RuntimeProzess, ProzessWarnung } from './services/runtime-agenten-steuerung.js';
 export { fuehreStartOrtZustellungenAus, letzterStartOrtZustellStand, leseStartOrtZustellWerte } from './services/agent-startort-zustellung.js';
 export type { StartOrtZustellStand, StartOrtZustellAgent } from './services/agent-startort-zustellung.js';
 export { fuehreIdentitaetsZustellungAus } from './services/hauptagent-zustellung.js';

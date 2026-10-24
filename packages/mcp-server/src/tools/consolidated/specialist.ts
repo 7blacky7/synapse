@@ -24,6 +24,7 @@ import {
 } from '../index.js';
 import { getWrapperStatus, listWrapperStatus, steuereHeartbeat, EFFORT_STUFEN, selbstAuskunft, waehleSpezialisten, kennzeichnung, ausblendHinweis, beschrifteZeile, veraltetSchwelleMs } from '@synapse/core';
 import type { WrapperStatusRow } from '@synapse/core';
+import { findeWrapperStatusPerName, leseRuntimeUebersicht } from '@synapse/core';
 
 export const specialistTool: ConsolidatedTool = {
   definition: {
@@ -35,7 +36,8 @@ export const specialistTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst'],
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst',
+            'runtime_uebersicht', 'runtime_steuern', 'runtime_log', 'runtime_prozesse', 'runtime_prozess'],
           description: 'Die auszuführende Aktion. selbst = Selbstauskunft eines Spezialisten (agent_id Pflicht, project optional): Modell, Effort, Kontext, Tokens, Schwellen, Cutoff — nur aus DB/Registry, nichts geschaetzt. spawn_batch = mehrere Spezialisten in einem Call starten (specialists-Array). purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
         },
 
@@ -104,6 +106,16 @@ export const specialistTool: ConsolidatedTool = {
             'Effort-Stufe fuer claude --effort (optional fuer: spawn; bei spawn_batch je Item). Weglassen = default_effort des Modells (capabilities -> models, Claude-Standard medium) — NICHT mehr die User-Einstellung. Bleibt bei Kontext-Rotation und keep_alive-Neustart gleich. Stufen je Modell: capabilities -> models[].effortStufen. Eine Stufe, die das Modell nicht kann, wird abgelehnt (die CLI wiche sonst STILL aus: xhigh -> high bei opus-4.6/sonnet-4.6); haiku kennt keinen Effort (Fehler). Gemini/antigravity: kein Flag (effortHinweis in der Antwort).',
         },
 
+        // P22-T116 runtime_* (Schalter runtime_agenten_uebersicht lesend, runtime_agenten_steuerung aendernd; nur Main/Koordinator/User)
+        identity_id: { type: 'string', description: 'runtime_steuern/runtime_log: Ziel-Identitaet (UUID)' },
+        aktion: { type: 'string', enum: ['stop', 'start', 'restart', 'wake'], description: 'runtime_steuern: stop | start (letztes Spawn-Rezept) | restart | wake' },
+        grund: { type: 'string', description: 'runtime_steuern/runtime_prozess: Grund (mind. 10 Zeichen, Audit)' },
+        runtime: { type: 'string', description: 'runtime_prozess: Container-Runtime (claude|codex)' },
+        runtimes: { type: 'array', items: { type: 'string' }, description: 'runtime_prozesse: nur diese Runtimes (Standard alle)' },
+        pid: { type: 'number', description: 'runtime_prozess: PID im Container' },
+        signal: { type: 'string', enum: ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL', 'SIGUSR1', 'SIGUSR2'], description: 'runtime_prozess: Signal (Standard SIGTERM)' },
+        max_bytes: { type: 'number', description: 'runtime_log: Bytes je Datei vom Ende (max 16384)' },
+        bestaetigung: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, description: 'runtime_prozess: {id, grund} fuehrt eine Rueckfrage aus (1. Aufruf ohne bestaetigung = nur Vorschau + bestaetigung_id, 10 min, einmalig, gleicher Aufrufer)' },
         // status parameters
         // name, project_path: siehe oben
         alle: {
@@ -175,6 +187,33 @@ export const specialistTool: ConsolidatedTool = {
 
   handler: async (args: Record<string, unknown>) => {
     const action = reqStr(args, 'action');
+    // P22-T116: Runtime-Agenten-Uebersicht/-Steuerung (Schalter runtime_agenten_uebersicht/_steuerung, Standard AUS).
+    if (action.startsWith('runtime_')) {
+      const core = await import('@synapse/core');
+      const akteur = core.steuerAkteurAusAufruf();
+      const project = str(args, 'project') ?? '';
+      try {
+        switch (action) {
+          case 'runtime_uebersicht': {
+            await core.pruefeSteuerRecht(akteur, project);
+            const u = await core.leseRuntimeUebersicht(project);
+            return u ? { success: true, project, ...u } : { success: false, error: 'funktion_aus', schalter: core.RUNTIME_UEBERSICHT_FUNKTION };
+          }
+          case 'runtime_steuern': return await core.steuereRuntimeAgent({ identity_id: args.identity_id, aktion: args.aktion, grund: args.grund, message: args.message }, akteur);
+          case 'runtime_log': return await core.leseRuntimeAgentLog({ identity_id: args.identity_id, max_bytes: args.max_bytes }, akteur);
+          case 'runtime_prozesse': return await core.leseRuntimeProzesse({ project, runtimes: args.runtimes }, akteur);
+          case 'runtime_prozess': {
+            const b = typeof args.bestaetigung === 'string' ? JSON.parse(args.bestaetigung) : args.bestaetigung;
+            if (b && typeof b === 'object') return await core.bestaetigeProzessAenderung(b as { id: unknown; grund: unknown }, akteur);
+            return await core.frageProzessAenderungAn({ project, runtime: args.runtime, pid: args.pid, signal: args.signal, grund: args.grund }, akteur);
+          }
+          default: return { success: false, error: 'aktion_unbekannt' };
+        }
+      } catch (err) {
+        const e = err as { code?: string; details?: unknown; message?: string };
+        return { success: false, error: e.code ?? 'fehler', message: e.code ? undefined : String(e.message ?? err).slice(0, 300), ...(e.details ? { details: e.details } : {}) };
+      }
+    }
     const { fuehreSpecialistIdentitaetsAktion } = await import('@synapse/core');
     const identityResult = await fuehreSpecialistIdentitaetsAktion(args);
     if (identityResult) return identityResult;
@@ -399,6 +438,14 @@ export const specialistTool: ConsolidatedTool = {
                 skill: '(Skill-Daten nur via project_path verfuegbar)',
               };
             }
+            // P22-T116 (Schalter runtime_agenten_uebersicht): Identitaets-Agenten per Name finden (z. B. vom Main gestartete Koordinatoren).
+            const perName = await findeWrapperStatusPerName(name, project);
+            if (perName) {
+              const r2 = perName.row;
+              const connected = Date.now() - r2.lastActivity.getTime() < THREE_MIN_MS && r2.status !== 'crashed' && r2.status !== 'stopped';
+              return { success: true, specialist: { ...pgRowToSpec(r2), identity_id: r2.identityId ?? null }, connected,
+                wrapperStatus: { via: 'pg_identitaet', lastActivity: r2.lastActivity.toISOString() }, debug: perName.debug };
+            }
             // PG leer → Fallback auf specialistStatusTool
             if (projectPath) return await specialistStatusTool(projectPath, name);
             return { success: false, message: `Spezialist "${name}" nicht gefunden.` };
@@ -416,6 +463,8 @@ export const specialistTool: ConsolidatedTool = {
               runningCount: auswahl.sichtbar.filter(z => z.row.status === 'running' && !z.verwaist).length,
               lastUpdate: rows[0].lastActivity.toISOString(),
               ...ausblendHinweis(auswahl),
+              // P22-T116: Uebersicht ALLER Runtime-Agenten je Ort inkl. Warnungen (nur bei Schalter EIN).
+              ...await leseRuntimeUebersicht(project, rows).then(u => (u ? { runtime_uebersicht: u } : {}), () => ({})),
             };
           }
           // PG leer → Fallback

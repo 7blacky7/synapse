@@ -40,6 +40,11 @@ export async function ermittleAgentHerkunft(
 ): Promise<AgentHerkunft> {
   const pool = getPool();
   const identityId = agent.identity_id ?? null;
+  // P22-T116 (Schalter runtime_agenten_uebersicht): zuerst Startort (T113) und Identitaets-Wrapper, dann der Altweg.
+  if (identityId) {
+    const neu = await herkunftAusIdentitaet(project, identityId);
+    if (neu) return neu;
+  }
   try {
     const job = await pool.query<{ claimed_by: string }>(
       `SELECT claimed_by FROM specialist_jobs
@@ -64,6 +69,27 @@ export async function ermittleAgentHerkunft(
     // Anzeigeinformation: ein Lesefehler macht die Herkunft unbekannt, nie die Liste kaputt.
   }
   return UNBEKANNT;
+}
+
+/** P22-T116: Herkunft aus agent_identitaeten.start_ort bzw. agent_identitaet_wrapper_status (Socket-Pfad). Schalter AUS/Fehler -> null. */
+export async function herkunftAusIdentitaet(project: string, identityId: string): Promise<AgentHerkunft | null> {
+  try {
+    const { runtimeUebersichtAktiv } = await import('./runtime-agenten-uebersicht.js');
+    if (!(await runtimeUebersichtAktiv(project))) return null;
+    const pool = getPool();
+    const i = await pool.query<{ start_ort: string | null; start_ziel: string | null }>(
+      'SELECT start_ort, start_ziel FROM agent_identitaeten WHERE id::text = $1', [identityId]);
+    const s = i.rows[0];
+    if (s?.start_ort === 'container') return { art: 'unraid', ort: s.start_ziel, quelle: 'agent_identitaeten.start_ort' };
+    if (s?.start_ort === 'daemon') return { art: 'pc', ort: s.start_ziel, quelle: 'agent_identitaeten.start_ort' };
+    const w = await pool.query<{ socket_path: string | null; provider: string | null }>(
+      'SELECT socket_path, provider FROM agent_identitaet_wrapper_status WHERE identity_id = $1 AND project = $2 ORDER BY last_activity DESC LIMIT 1', [identityId, project]);
+    const z = w.rows[0];
+    if (z?.socket_path?.startsWith('/root/.synapse/agent-runs/')) return { art: 'unraid', ort: z.provider === 'openai' ? 'codex' : 'claude', quelle: 'agent_identitaet_wrapper_status.socket_path' };
+    if (z?.socket_path) return { art: 'pc', ort: null, quelle: 'agent_identitaet_wrapper_status.socket_path' };
+    if (s?.start_ort === 'extern') return { art: 'sonstig', ort: s.start_ziel, quelle: 'agent_identitaeten.start_ort' };
+  } catch { /* Anzeige: Altweg */ }
+  return null;
 }
 
 export interface OnlineKoordinator {

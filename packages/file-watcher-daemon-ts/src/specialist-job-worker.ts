@@ -393,6 +393,20 @@ async function dispatchSpecialistActionGebunden(
       }
     }
 
+    // P22-T116: Debug/Steuerung der Runtime-Agenten (core runtime-agenten-steuerung.ts). Lesend begrenzt, Signal nur nach Bestaetigung.
+    case 'log_lesen': {
+      const { leseLaufLogs } = await import('./runtime-agenten-debug.js')
+      return await leseLaufLogs(String(args.lauf_identity ?? ''), Number(args.max_bytes))
+    }
+    case 'prozesse': {
+      const { leseProzessliste } = await import('./runtime-agenten-debug.js')
+      return await leseProzessliste()
+    }
+    case 'prozess_signal': {
+      const { sendeProzessSignal } = await import('./runtime-agenten-debug.js')
+      return await sendeProzessSignal(Number(args.pid), String(args.signal ?? 'SIGTERM'))
+    }
+
     default:
       throw new Error(`Unbekannte Specialist-Action: ${job.action}`)
   }

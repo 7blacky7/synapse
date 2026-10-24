@@ -32,7 +32,11 @@ export type SpecialistAction =
   // den Rotations-Marker auf dem Rechner, auf dem der Wrapper laeuft.
   | 'rotate'
   // P22-T6: Nachricht an einen Agenten im Runtime-Container zustellen (Container-Daemon -> Wrapper -> Modell).
-  | 'zustellen';
+  | 'zustellen'
+  // P22-T116: Debug/Steuerung der Runtime-Agenten (runtime-agenten-steuerung.ts): Log lesen, Prozessliste, Signal an PID.
+  | 'log_lesen'
+  | 'prozesse'
+  | 'prozess_signal';
 
 export interface SpecialistJobRow {
   actor_identity_id?: string | null;
