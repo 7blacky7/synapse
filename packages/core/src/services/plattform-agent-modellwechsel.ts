@@ -207,7 +207,7 @@ export async function wechslePlattformAgentModell(e: ModellwechselEingabe, akteu
   modell = p.modell;
   let effort = text(e.effort, 32);
   if (effort && p.quelle !== 'schalter_aus') {
-    const pe = await hm.pruefeEffortFuerModell(runtime, modell!, effort);
+    const pe = await hm.pruefeEffortFuerModell(runtime as typeof ABO_RUNTIMES[number], modell!, effort);
     if (!pe.ok) fehler(pe.grund ?? 'effort_ungueltig', { effort, modell, stufen: pe.stufen });
     effort = pe.effort;
   }
