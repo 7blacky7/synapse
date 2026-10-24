@@ -41,6 +41,8 @@
  *   GET  /web-ui-koordinator-token?identity_id=    nur User
  *   GET  /ausweis-fristen                   ausweis_fristen modus status (P22-T45: Wert + Quelle je Frist)
  *   PUT  /ausweis-fristen                   ausweis_fristen {modus? setzen|entfernen, ebene?, schatten_stunden?, erstnutzung_minuten?, visum_minuten?, arbeitsfreigabe_stunden?, anmeldung_plaene_minuten?, files_plan_stunden?, frist_namen?, grund}
+ *   GET  /container-kontingent              container_kontingent status (P22-T109)
+ *   PUT  /container-kontingent              container_kontingent setzen {container_agenten_max, grund, user_auftrag?}
  *   GET  /ausweis-visa                      ausweis_visa (P22-T44: Agenten anderer Projekte mit Visum/Arbeitsfreigabe hier)
  *   POST /ausweis-visa/:identity_id/arbeitsfreigabe   arbeitsfreigabe_erteilen {grund}
  *   POST /ausweis-visa/:identity_id/entziehen         arbeitsfreigabe_entziehen {grund}
@@ -107,6 +109,9 @@ const ROUTEN: RouteDef[] = [
   { methode: 'PUT', pfad: '/hex-einstellungen', action: 'hex_einstellungen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
   { methode: 'GET', pfad: '/ausweis-fristen', action: 'ausweis_fristen', quelle: () => ({ modus: 'status' }) },
   { methode: 'PUT', pfad: '/ausweis-fristen', action: 'ausweis_fristen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
+  // P22-T109: Container-Kontingent (Regler der Web-UI); Rechte im Core (User; Koordinator/Main nur mit kontingent_delegiert).
+  { methode: 'GET', pfad: '/container-kontingent', action: 'container_kontingent', quelle: () => ({ kontingent_modus: 'status' }) },
+  { methode: 'PUT', pfad: '/container-kontingent', action: 'container_kontingent', quelle: req => ({ ...body(req), kontingent_modus: 'setzen' }) },
   // P22-T44: Ausweis fuer mehrere Projekte - Visa/Einwanderungen in diesem Projekt, Arbeitsfreigabe (User oder Koordinator dieses Projekts).
   { methode: 'GET', pfad: '/ausweis-visa', action: 'ausweis_visa', quelle: () => ({}) },
   { methode: 'POST', pfad: '/ausweis-visa/:identity_id/arbeitsfreigabe', action: 'arbeitsfreigabe_erteilen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },

@@ -9,8 +9,10 @@
  *   identity_id, target_runtime und Projektordner /projects/<p> -> Ergebnis des Daemons. stop/wake/status finden die Runtime
  *   ueber den letzten Spawn-Job (WRAPPER_ZIEL_SQL), der Aufrufer muss den Ort nicht kennen.
  * CONTAINER-AGENT = Identitaet mit lebendem Wrapper (running/idle), deren letzter Spawn-Job eine target_runtime trug.
- * RECHTE: wie agent_vorbereiten - User oder Koordinator DESSELBEN Projekts (auch Legacy-Koordinator). Das Kontingent setzt NUR der
- *   User (admin container_kontingent bzw. Web-UI); Koordinatoren fragen an, der Main justiert erst nach User-Freigabe (W4).
+ * RECHTE: wie agent_vorbereiten - User oder Koordinator DESSELBEN Projekts (auch Legacy-Koordinator). Das Kontingent setzt der
+ *   User (admin container_kontingent bzw. Web-UI-Regler). P22-T109 (User 24.10.): mit Produkt-Schalter kontingent_delegiert
+ *   (Standard AUS) auch der Koordinator DESSELBEN Projekts oder der Main, wenn der User es entschieden hat - Pflicht user_auftrag
+ *   (User-Zitat); gesetzt_von koordinator:<id> | legacy:<name> | main:<id>, grund enthaelt das Zitat. Schalter AUS = nur User.
  * SCHALTER: spezialisten_container AUS -> Fehler spezialisten_container_aus, der PC-Weg bleibt unveraendert (ort fehlt/pc).
  * DEBUG: admin(action:'container_kontingent', kontingent_modus:'status') zeigt Schalter, Kontingent samt Quelle, belegte
  *   Container-Agenten und den Daemon-Stand je Runtime.
@@ -18,7 +20,7 @@
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText, pruefeProfilVerwalter } from './agent-profil-verwalter.js';
-import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
+import { MAIN_ROLLE, type AusweisAkteur, type W1bAkteur } from './agent-profil-vertrag.js';
 import { rolleFuerAgent } from './agent-rollen.js';
 import { WRAPPER_ZIEL_SQL, runtimeProjektPfad } from './runtime-daemon-zugang.js';
 import { enqueueSpecialistJob, waitForSpecialistJob, type SpecialistZielRuntime } from './specialist-queue.js';
@@ -30,7 +32,8 @@ export const SPAWN_ORTE = ['pc', 'container'] as const;
 export type SpawnOrt = typeof SPAWN_ORTE[number];
 /** Wartezeit auf den Spawn im Container (CLI-Start + Startpruefung des Wrappers). */
 const CONTAINER_SPAWN_WARTE_MS = 120_000;
-const FREIGABE_WEG = 'Koordinator fragt den Main an, der Main legt es dem User vor; nur der User setzt admin(action:"container_kontingent", kontingent_modus:"setzen").';
+const FREIGABE_WEG = 'User setzt den Regler in der Web-UI (Einstellungen > Container-Agenten) bzw. admin(action:"container_kontingent", kontingent_modus:"setzen"); Koordinator/Main nur mit Schalter kontingent_delegiert und user_auftrag (User-Zitat).';
+export const KONTINGENT_DELEGIERT_FUNKTION = 'kontingent_delegiert' as const;
 
 function fehler(code: string, details?: Record<string, unknown>): never { throw new ProfilVerwaltungFehler(code, details); }
 
@@ -171,8 +174,9 @@ export async function spawneBatchImContainer(project: string, specialists: unkno
 export const CONTAINER_ADMIN_ACTIONS = ['container_kontingent'] as const;
 export const CONTAINER_KONTINGENT_MODI = ['status', 'setzen'] as const;
 export const CONTAINER_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
-  kontingent_modus: { type: 'string', enum: [...CONTAINER_KONTINGENT_MODI], description: 'container_kontingent: status (Standard; User und Koordinator des Projekts) | setzen (nur User, mit container_agenten_max und grund)' },
+  kontingent_modus: { type: 'string', enum: [...CONTAINER_KONTINGENT_MODI], description: 'container_kontingent: status (Standard; User, Koordinator des Projekts, Main) | setzen (User; mit Schalter kontingent_delegiert auch Koordinator/Main mit user_auftrag; container_agenten_max und grund)' },
   container_agenten_max: { type: 'number', description: 'container_kontingent setzen: hoechstens so viele Container-Agenten gleichzeitig im Projekt (0..100, Standard 0)' },
+  // user_auftrag ist bereits ein W1b-Parameter (User-Wortlaut); container_kontingent setzen durch Koordinator/Main braucht ihn (P22-T109).
 };
 
 export function istContainerAdminAction(action: string | undefined): boolean {
@@ -181,11 +185,31 @@ export function istContainerAdminAction(action: string | undefined): boolean {
 
 export async function containerStatus(project: string): Promise<Record<string, unknown>> {
   const { runtimeDaemonAngemeldet } = await import('./hauptagent-lauf.js');
-  const [schalter, kontingent, belegt, claude, codex] = await Promise.all([
-    leseProfilProduktSchalter(SPEZIALISTEN_CONTAINER_FUNKTION, project), leseContainerKontingent(project), belegteContainerAgenten(project),
+  const [schalter, delegiert, kontingent, belegt, claude, codex] = await Promise.all([
+    leseProfilProduktSchalter(SPEZIALISTEN_CONTAINER_FUNKTION, project), leseProfilProduktSchalter(KONTINGENT_DELEGIERT_FUNKTION, project),
+    leseContainerKontingent(project), belegteContainerAgenten(project),
     runtimeDaemonAngemeldet('claude'), runtimeDaemonAngemeldet('codex')]);
-  return { project, schalter: { aktiv: schalter.aktiv, quelle: schalter.quelle }, kontingent, belegt: belegt.length, agenten: belegt,
-    runtime_daemon: { claude, codex } };
+  return { project, schalter: { aktiv: schalter.aktiv, quelle: schalter.quelle },
+    kontingent_delegiert: { aktiv: delegiert.aktiv, quelle: delegiert.quelle, wer_setzt: delegiert.aktiv ? 'user, koordinator des projekts, main (mit user_auftrag)' : 'nur user' },
+    kontingent, belegt: belegt.length, agenten: belegt, runtime_daemon: { claude, codex } };
+}
+
+/**
+ * P22-T109: wer setzt das Kontingent? User immer ('user'). Koordinator DESSELBEN Projekts (auch Legacy) oder aktiver Main nur mit
+ * Schalter kontingent_delegiert und dokumentiertem User-Auftrag (Zitat). Rueckgabe: Audit-Kennung fuer gesetzt_von.
+ */
+async function kontingentSetzer(wer: AusweisAkteur, project: string, userAuftrag: unknown): Promise<{ gesetzt_von: string; zitat: string | null }> {
+  if (wer.art === 'user') return { gesetzt_von: 'user', zitat: null };
+  const delegiert = await leseProfilProduktSchalter(KONTINGENT_DELEGIERT_FUNKTION, project);
+  if (!delegiert.aktiv) fehler('recht_fehlt', { grund: 'Kontingent setzt nur der User (Schalter kontingent_delegiert AUS)', freigabe_weg: FREIGABE_WEG });
+  const zitat = pflichtText(userAuftrag, 'user_auftrag_fehlt');
+  if (wer.art === 'identitaet' && wer.principal.rolle === MAIN_ROLLE) {
+    const r = await getPool().query("SELECT 1 FROM agent_identitaeten WHERE id=$1 AND status='aktiv' AND rolle=$2", [wer.principal.identity_id, MAIN_ROLLE]);
+    if (!r.rows[0]) fehler('recht_fehlt');
+    return { gesetzt_von: 'main:' + wer.principal.identity_id, zitat };
+  }
+  const v = await pruefeProfilVerwalter(wer, project);
+  return { gesetzt_von: v.wer.startsWith('legacy:') ? v.wer : 'koordinator:' + v.wer, zitat };
 }
 
 export async function fuehreContainerAdminAus(action: string, args: Record<string, unknown>, akteur: W1bAkteur | AusweisAkteur | null): Promise<Record<string, unknown>> {
@@ -196,18 +220,19 @@ export async function fuehreContainerAdminAus(action: string, args: Record<strin
     const modus = typeof args.kontingent_modus === 'string' ? args.kontingent_modus : 'status';
     if (!(CONTAINER_KONTINGENT_MODI as readonly string[]).includes(modus)) fehler('modus_unbekannt', { erlaubt: CONTAINER_KONTINGENT_MODI });
     if (modus === 'status') {
-      await pruefeProfilVerwalter(wer, project);
+      if (!(wer.art === 'identitaet' && wer.principal.rolle === MAIN_ROLLE)) await pruefeProfilVerwalter(wer, project);
       return { success: true, action, modus, ...(await containerStatus(project)) };
     }
-    // F3 (Koordinator 20.10.): Kontingent setzt NUR der User; Koordinatoren stellen eine Anfrage.
-    if (wer.art !== 'user') fehler('recht_fehlt', { grund: 'Kontingent setzt nur der User', freigabe_weg: FREIGABE_WEG });
+    // F3 (20.10.) + P22-T109 (User 24.10.): User immer; Koordinator/Main nur mit Schalter kontingent_delegiert und User-Auftrag.
+    const setzer = await kontingentSetzer(wer, project, args.user_auftrag);
     const max = Number(args.container_agenten_max);
     if (!Number.isInteger(max) || max < 0 || max > 100) fehler('container_agenten_max_ungueltig', { min: 0, max: 100 });
-    const grund = pflichtText(args.grund, 'grund_fehlt');
+    const grundText = pflichtText(args.grund, 'grund_fehlt');
+    const grund = setzer.zitat ? (grundText + ' | User-Auftrag: ' + setzer.zitat).slice(0, 2000) : grundText;
     await getPool().query(
-      `INSERT INTO projekt_agenten_kontingent (project, container_agenten_max, gesetzt_von, gesetzt_am, grund) VALUES ($1,$2,'user',NOW(),$3)
+      `INSERT INTO projekt_agenten_kontingent (project, container_agenten_max, gesetzt_von, gesetzt_am, grund) VALUES ($1,$2,$4,NOW(),$3)
        ON CONFLICT (project) DO UPDATE SET container_agenten_max = EXCLUDED.container_agenten_max, gesetzt_von = EXCLUDED.gesetzt_von,
-         gesetzt_am = EXCLUDED.gesetzt_am, grund = EXCLUDED.grund`, [project, max, grund]);
+         gesetzt_am = EXCLUDED.gesetzt_am, grund = EXCLUDED.grund`, [project, max, grund, setzer.gesetzt_von]);
     return { success: true, action, modus, ...(await containerStatus(project)) };
   } catch (err) {
     if (err instanceof ProfilVerwaltungFehler) return { success: false, action, error: err.code, ...(err.details ? { details: err.details } : {}) };
