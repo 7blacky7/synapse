@@ -9,6 +9,7 @@ import {zieheReverseAssetsNach} from './reverse-asset-registrierung.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
 import {pruefeEDatei,sichereEEltern,eZielOrdner,reverseEGruppe,finalisiereEErgebnis} from './reverse-e-uebernahme.js';
 import {reverseBigInt,reverseZahl,type ReverseEinstellSnapshot} from './reverse-einstellwerte.js';
+import {leseReverseDateienBelegt} from './reverse-belegung.js';
 
 export interface ReverseEMetadatei {pfad:string;sha256:string;groesse:string;art?:string;metadaten?:Record<string,unknown>}
 export interface ReverseEBlockAuftrag {
@@ -117,9 +118,11 @@ export async function uebernehmeEInBloecken(pool:Pool,e:ReverseEBlockAuftrag):Pr
     const altDateien=new Map((await db.query('SELECT pfad,groesse::text FROM reverse_dateien WHERE eintrag_id=$1 AND pfad=ANY($2::text[])',
      [e.reverseId,block.map(x=>label+'/'+x.d.pfad)])).rows.map(z=>[z.pfad as string,BigInt(z.groesse as string)]));
     const delta=block.reduce((n,x)=>n+BigInt(x.d.groesse)-(altDateien.get(label+'/'+x.d.pfad)??0n),0n);
-    const belegt=(await db.query(`SELECT COALESCE((SELECT sum(groesse) FROM reverse_dateien WHERE eintrag_id=$1),0)+
+    // P18-T113: reverse_dateien-Anteil aus dem laufenden Zaehler (Schalter belegung_zaehler), Rueckhalt wie bisher.
+    const dateienBytes=await leseReverseDateienBelegt(db,e.reverseId,e.einstellungen,'e_block');
+    const belegt=(await db.query(`SELECT $3::numeric+
      COALESCE((SELECT sum((uebernahme#>>'{rueckhalt,bytes}')::numeric) FROM reverse_auftraege WHERE eintrag_id=$1
-      AND p20_auftrag_id IS DISTINCT FROM $2::uuid AND uebernahme#>>'{rueckhalt,bytes}' ~ '^[0-9]+$'),0) AS bytes`,[e.reverseId,e.jobId])).rows[0].bytes;
+      AND p20_auftrag_id IS DISTINCT FROM $2::uuid AND uebernahme#>>'{rueckhalt,bytes}' ~ '^[0-9]+$'),0) AS bytes`,[e.reverseId,e.jobId,dateienBytes])).rows[0].bytes;
     if(BigInt(belegt)+delta>reverseBigInt(e.einstellungen,'eintrag_bytes'))throw new Error('reverse_e_eintrag_bytes');
    },true);
   if(r.rowCount!==block.length)throw new Error('reverse_e_datei_konflikt');

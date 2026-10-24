@@ -102,6 +102,11 @@ export const REVERSE_EINSTELLKATALOG = {
  s3_auto_offen_max:i('offene Auto-S3-Auftraege',1,64,1,G),
  s3_auto_schritt:i('Auto-S3-Einreihungen je Takt',1,64,1,G),
  auto_nachzug_debug:auswahl('Schalter',['aus','an'],'aus',G),
+ // P18-T113: Eintragsbudget aus laufendem Zaehler (reverse-belegung.ts); debug vergleicht jede Lesung mit der echten Summe.
+ belegung_zaehler:auswahl('Schalter',['aus','an','debug'],'aus',G),
+ // Abgleich ist nachrangig: Sperr-/Statementfrist, bei Ueberschreitung uebersprungen (Fehlerlog), nie blockierend.
+ belegung_abgleich_lock_ms:i('ms',1,60000,200,G),
+ belegung_abgleich_timeout_ms:i('ms',100,300000,10000,G),
  // Vorrang des Nachzugs: aussetzen erst UEBER diesen Rueckstaenden (0 = nicht pruefen); ein Dauer-Rest blockiert sonst fuer immer.
  nachzug_vorrang_chunks_max:i('offene Code-Chunks (Embedding)',0,I32,1000,G,'nicht pruefen'),
  nachzug_vorrang_parse_max:i('faellige Projektdateien (Parser)',0,I32,100,G,'nicht pruefen'),

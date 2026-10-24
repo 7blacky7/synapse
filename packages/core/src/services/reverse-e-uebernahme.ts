@@ -13,6 +13,7 @@ import {Client as PgClient} from 'pg';
 import {getAssetKonfiguration,type AssetKonfiguration} from '../config/asset-konfig.js';
 import {normalisiereSpeicherPfad} from './asset-speicher.js';
 import {leseReverseEinstellwerte,reverseZahl,reverseBigInt} from './reverse-einstellwerte.js';
+import {leseReverseDateienBelegt} from './reverse-belegung.js';
 import {registriereReverseAssetsInTransaktion,leseReverseAssetRegistrierungSchalter} from './reverse-asset-registrierung.js';
 
 export interface ReverseEManifestEintrag {pfad:string;sha256:string;groesse:number;
@@ -179,7 +180,9 @@ async function uebernehme(db:Db,e:{jobId:string;reverseId:string;mediumId:string
     const n=Number((await db.query('SELECT count(*)::text AS n FROM reverse_dateien WHERE eintrag_id=$1 AND medium_id=$2',[rid,mid])).rows[0].n)+gueltig.length;
     batchZeilen+=2*n;batchBytes+=2*n*reverseZahl(s,'manifest_record_bytes');
   }
-  const belegt=(await db.query("SELECT COALESCE((SELECT sum(groesse) FROM reverse_dateien WHERE eintrag_id=$1),0)+COALESCE((SELECT sum((uebernahme#>>'{rueckhalt,bytes}')::numeric) FROM reverse_auftraege WHERE eintrag_id=$1 AND uebernahme#>>'{rueckhalt,erhalten}'='true' AND uebernahme#>>'{rueckhalt,bytes}' ~ '^[0-9]+$'),0) AS bytes",[rid])).rows[0]?.bytes??'0';
+  // P18-T113: reverse_dateien-Anteil aus dem laufenden Zaehler (Schalter belegung_zaehler), Rueckhalt wie bisher.
+  const dateienBytes=await leseReverseDateienBelegt(db,rid,s,'e_uebernahme');
+  const belegt=(await db.query("SELECT $2::numeric+COALESCE((SELECT sum((uebernahme#>>'{rueckhalt,bytes}')::numeric) FROM reverse_auftraege WHERE eintrag_id=$1 AND uebernahme#>>'{rueckhalt,erhalten}'='true' AND uebernahme#>>'{rueckhalt,bytes}' ~ '^[0-9]+$'),0) AS bytes",[rid,dateienBytes])).rows[0]?.bytes??'0';
   const quota=BigInt(belegt)+gueltig.reduce((n,d)=>n+BigInt(d.groesse),0n)>reverseBigInt(s,'eintrag_bytes');
   if(dateigrenze||batchZeilen>maxRows||batchBytes>maxBytes||quota){
     const client=await uebernahmeClient(db),eigen=client!==db;

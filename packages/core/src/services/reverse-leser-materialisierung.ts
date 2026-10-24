@@ -10,6 +10,7 @@ import {leseReverseLeserSchalter,leseReverseLeserRevision,pruefeReverseLeserQuel
 import {reverseEintragAktiv,leseReverseAssetRegistrierungSchalter,registriereReverseAssetBlock} from './reverse-asset-registrierung.js';
 import {reverseLeserPfad,reverseLeserHash,reverseLeserKanonisch,ReverseLeserFehler,type ReverseLeserEreignis} from './reverse-leser-vertrag.js';
 import {loeseReverseLeserNachher,mitReverseNachherLesesicht} from './reverse-leser-nachher.js';
+import {leseReverseDateienBelegt,gleicheReverseBelegungAb} from './reverse-belegung.js';
 type Db=Pick<PoolClient,'query'>;
 type Objekt=Extract<ReverseLeserEreignis,{art:'objekt'}>;
 function fail(code:string):never {throw new ReverseLeserFehler(code);}
@@ -185,6 +186,8 @@ export async function materialisiereReverseLeser(pool:Pool,o:ReverseLeserMateria
   }
  }
  let position=0n;
+ // P18-T113: Zaehler nachrangig gegen die echte Summe abgleichen (nur an|debug, befristet, nicht abgewartet).
+ void gleicheReverseBelegungAb(pool,l.eintrag_id,s,'leser_materialisierung_start');
  for await(const v of objekte()){
   position++;if(position<=BigInt(l.position))continue;reverseLeserPfad(v.objektpfad,s);
   const identity=reverseLeserHash(reverseLeserKanonisch([l.eintrag_id,l.quell_sha256,r.id,r.code_sha256,v.objektpfad,'original']));
@@ -194,8 +197,10 @@ export async function materialisiereReverseLeser(pool:Pool,o:ReverseLeserMateria
   // Reservierung unter Eintragssperre: vergangene Generationen/Rückhalt + laufende Kopien zählen mit.
   if(v.datei)await reverseLeserTx(pool,async c=>{
    await guard(c);await c.query('SELECT id FROM reverse_eintraege WHERE id=$1 FOR UPDATE',[l.eintrag_id]);
-   const used=(await c.query(`SELECT (COALESCE((SELECT sum(groesse) FROM reverse_dateien WHERE eintrag_id=$1),0)
-    +COALESCE((SELECT sum(ausgabe_bytes+COALESCE((diagnose->>'kopie_reserviert')::bigint,0)) FROM reverse_leser_laeufe WHERE eintrag_id=$1),0))::text AS bytes`,[l.eintrag_id])).rows[0];
+   // P18-T113: reverse_dateien-Anteil aus dem laufenden Zaehler statt Voll-Summe je Record (Schalter belegung_zaehler).
+   const dateienBytes=await leseReverseDateienBelegt(c,l.eintrag_id,s,'leser_materialisierung');
+   const used=(await c.query(`SELECT ($2::numeric
+    +COALESCE((SELECT sum(ausgabe_bytes+COALESCE((diagnose->>'kopie_reserviert')::bigint,0)) FROM reverse_leser_laeufe WHERE eintrag_id=$1),0))::text AS bytes`,[l.eintrag_id,dateienBytes])).rows[0];
    const pending=(await c.query('SELECT diagnose FROM reverse_leser_laeufe WHERE id=$1 FOR UPDATE',[l.id])).rows[0].diagnose;
    if(BigInt(used.bytes)+(pending.kopie_identitaet===identity?0n:BigInt(bytes))>reverseBigInt(s,'eintrag_bytes'))fail('leser_eintrag_bytes');
    reverseLeserTxBudget(s,1,[l.id,bytes,identity]);
@@ -224,6 +229,7 @@ export async function materialisiereReverseLeser(pool:Pool,o:ReverseLeserMateria
   });
  }
  if(position!==BigInt(l.ausgabe_anzahl))fail('leser_objektzahl_widerspruch');
+ void gleicheReverseBelegungAb(pool,l.eintrag_id,s,'leser_materialisierung_ende');
  const assetSch=await leseReverseAssetRegistrierungSchalter(pool);
  if(!assetSch.aktiv){
   await reverseLeserTx(pool,async c=>{await guard(c);reverseLeserTxBudget(s,1,[l.id]);
