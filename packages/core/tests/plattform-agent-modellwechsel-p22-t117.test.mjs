@@ -45,12 +45,21 @@ check((await M.merkeAusweisModellNachStart({ id: 'j', project: 'x', action: 'spa
 check((await M.merkeModellAbsicht({ project: 'x', action: 'stop', args: {} })) === false, 'Absicht nur fuer spawn');
 check(!('merkeAusweisModellAusJob' in M) && !('merkeAusweisModell' in M), 'kein Schreiben bei Startabsicht mehr');
 
+// R1-Rest (06068f63): vor dem Spawn darf kein Wrapper der Identitaet laufen - weder alte PID noch fremde Generation
+check(M.spawnSperreNachStop(100, []) === null, 'nichts laeuft -> Spawn erlaubt');
+check(M.spawnSperreNachStop(100, [{ status: 'stopped', wrapperPid: 100 }]) === null, 'alter Wrapper gestoppt -> Spawn erlaubt');
+check(M.spawnSperreNachStop(100, [{ status: 'running', wrapperPid: 100 }]) === 'stop_nicht_bestaetigt', 'alte PID laeuft noch -> Abbruch');
+check(M.spawnSperreNachStop(100, [{ status: 'stopped', wrapperPid: 100 }, { status: 'running', wrapperPid: 300 }]) === 'anderer_lauf_aktiv', 'Stop bestaetigt, aber fremder Wrapper PID300 laeuft -> Abbruch, kein Ersetzen');
+check(M.spawnSperreNachStop(null, [{ status: 'idle', wrapperPid: 300 }]) === 'anderer_lauf_aktiv', 'Vorschau ohne Lauf, inzwischen anderer Lauf -> Abbruch');
+
 // R2: Bindung an den AKTUELLEN Lauf (Nachweis + Generation + echter agent-runs-Pfad)
 const id = '11111111-2222-3333-4444-555555555555';
 const nachweis = 'f'.repeat(48);
 const lh = createHash('sha256').update(nachweis).digest('hex');
 check(M.plattformLaufHash(nachweis) === lh && M.plattformLaufHash('kurz') === null && M.plattformLaufHash(undefined) === null, 'Nachweis-Hash');
-const sock = path.join(A.agentLaufPfad('/workspace/synapse', 'identity:' + id), 'identity:' + id + '.sock');
+// Laufpfad wie im echten Identitaetslauf: innerhalb der Agent-Laufumgebung mit SYNAPSE_AGENT_IDENTITY_ID (unabhaengig von der Shell-Umgebung)
+const sock = A.mitAgentLaufUmgebung('identity:' + id, 'synapse', { SYNAPSE_AGENT_IDENTITY_ID: id },
+  () => path.join(A.agentLaufPfad('/workspace/synapse', 'identity:' + id), 'identity:' + id + '.sock'));
 check(M.istIdentitaetsLaufSocket(sock, id), 'echter Laufpfad aus agentLaufPfad erkannt: ' + sock);
 check(M.istIdentitaetsLaufSocket('/root/.synapse/agent-runs/' + id + '/x.sock', id), 'Container-Pfad /root/.synapse/agent-runs');
 check(!M.istIdentitaetsLaufSocket('/projects/x/.synapse/sockets/a.sock', id), 'Altweg-Socket kein Identitaetslauf');

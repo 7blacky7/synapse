@@ -759,7 +759,7 @@ export { RUNTIME_STEUERUNG_FUNKTION, STEUER_AKTIONEN, PROZESS_SIGNALE, STEUER_GR
 export { RUNTIME_AGENTEN_GRENZEN_STANDARD, grenzenAusWerten, leseRuntimeAgentenGrenzen, runtimeAgentenGrenzenJetzt } from './services/runtime-agenten-grenzen.js';
 export type { SteuerAkteur, SteuerAktion, SteuerZiel, ProzessSignal, RuntimeProzess, ProzessWarnung } from './services/runtime-agenten-steuerung.js';
 // P22-T117: Modell-/CLI-Wechsel fuer Plattform-Agenten (Schalter plattform_agent_modellwechsel, Std AUS).
-export { PLATTFORM_MODELLWECHSEL_FUNKTION, ABO_RUNTIMES, PLATTFORM_LAUF_HEADER, PLATTFORM_LAUF_ENV, modellSichtbarFuerLauf, plattformModellwechselAktiv, kostenArt, kostenEntscheidung, plattformLaufHash, istIdentitaetsLaufSocket, merkeModellAbsicht, bestaetigteStarts, merkeAusweisModellNachStart, ausweisModellFuerAnmeldung, wechslePlattformAgentModell } from './services/plattform-agent-modellwechsel.js';
+export { PLATTFORM_MODELLWECHSEL_FUNKTION, ABO_RUNTIMES, PLATTFORM_LAUF_HEADER, PLATTFORM_LAUF_ENV, modellSichtbarFuerLauf, plattformModellwechselAktiv, kostenArt, kostenEntscheidung, plattformLaufHash, istIdentitaetsLaufSocket, merkeModellAbsicht, bestaetigteStarts, merkeAusweisModellNachStart, spawnSperreNachStop, ausweisModellFuerAnmeldung, wechslePlattformAgentModell } from './services/plattform-agent-modellwechsel.js';
 export type { AusweisModell, ModellwechselEingabe } from './services/plattform-agent-modellwechsel.js';
 export { fuehreStartOrtZustellungenAus, letzterStartOrtZustellStand, leseStartOrtZustellWerte } from './services/agent-startort-zustellung.js';
 export type { StartOrtZustellStand, StartOrtZustellAgent } from './services/agent-startort-zustellung.js';

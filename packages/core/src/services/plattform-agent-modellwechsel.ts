@@ -180,6 +180,16 @@ export interface ModellwechselEingabe { identity_id: unknown; runtime?: unknown;
 
 const LAUFENDE_WECHSEL = new Set<string>();
 
+/**
+ * Rein, testbar (06068f63): vor dem Spawn darf fuer die Identitaet KEIN Wrapper laufen - weder die alte Generation (altPid)
+ * noch ein anderer, der inzwischen ueber einen anderen Weg/Prozess gestartet wurde. Liefert den Abbruchgrund oder null.
+ */
+export function spawnSperreNachStop(altPid: number | null, zeilen: Array<{ status: string | null; wrapperPid: number | null }>): string | null {
+  const lebend = zeilen.filter(r => r.status === 'running' || r.status === 'idle');
+  if (!lebend.length) return null;
+  return lebend.some(r => altPid !== null && r.wrapperPid === altPid) ? 'stop_nicht_bestaetigt' : 'anderer_lauf_aktiv';
+}
+
 /** Wechsel von Modell und/oder CLI-Anbieter eines Plattform-Agenten (Identitaet bleibt). */
 export async function wechslePlattformAgentModell(e: ModellwechselEingabe, akteur: SteuerAkteur | null): Promise<Record<string, unknown>> {
   const z = await ladeSteuerZiel(String(e.identity_id ?? ''));
@@ -234,11 +244,15 @@ async function fuehreWechselAus(w: { z: Awaited<ReturnType<typeof ladeSteuerZiel
     const j = await fuehreJob(z.project, 'stop', { name, ...stopZiel, ...(altPid ? { wrapper_pid: altPid } : {}), audit }, grenzen.job_warte_ms);
     schritte.push({ schritt: 'stop', ...j });
     if (!jobErfolgreich(j)) abbruch = 'stop_fehlgeschlagen';
-    else {
-      const nachher = await wartenBisGestoppt(z.identity_id, z.project);
-      if (nachher && (nachher.status === 'running' || nachher.status === 'idle') && nachher.wrapperPid === altPid) abbruch = 'stop_nicht_bestaetigt';
-    }
+    else await wartenBisGestoppt(z.identity_id, z.project);
   } else schritte.push({ schritt: 'stop', uebersprungen: 'laeuft_nicht' });
+  // Generationsbindung: unmittelbar vor dem Spawn alle Wrapper-Zeilen der Identitaet frisch lesen (alte PID oder fremder Lauf -> Abbruch).
+  let vorSpawn: Array<{ status: string | null; wrapperPid: number | null }> = [];
+  if (!abbruch) {
+    vorSpawn = (await listWrapperStatus(z.project)).filter(r => r.identityId === z.identity_id).map(r => ({ status: r.status, wrapperPid: r.wrapperPid }));
+    const sperre = spawnSperreNachStop(altPid, vorSpawn);
+    if (sperre) { abbruch = sperre; schritte.push({ schritt: 'spawn', uebersprungen: sperre, laufend: vorSpawn.filter(r => r.status === 'running' || r.status === 'idle') }); }
+  }
   let neuPid: number | null = null;
   if (!abbruch) {
     const { audit: _a, effort: _e, ...rest } = rezept as Record<string, unknown>;
