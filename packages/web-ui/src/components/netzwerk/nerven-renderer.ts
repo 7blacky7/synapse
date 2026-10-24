@@ -7,13 +7,14 @@ export interface Kamera { x: number; y: number; zoom: number }
 export interface Licht {
  readonly art: 'webgl2' | 'canvas2d';
  readonly info: string;
- begin(w: number, h: number, dpr: number, kamera: Kamera, zeit: number): void;
+ /** hell = helles Design (P22-T111): heller Grund, Sprites normal statt additiv geblendet. */
+ begin(w: number, h: number, dpr: number, kamera: Kamera, zeit: number, hell?: boolean): void;
  /** groesse = Durchmesser in Weltpunkten; tiefe < 1 = Parallaxe-Hintergrund; puls = Amplitude, frequenz in rad/s. */
  sprite(x: number, y: number, groesse: number, r: number, g: number, b: number, a: number, form: number, tiefe?: number, puls?: number, phase?: number, frequenz?: number): void;
  end(): { sprites: number; verworfen: number };
  dispose(): void;
 }
-const HINTERGRUND = [0.02, 0.027, 0.043] as const, FLOATS = 12, MAX_SPRITES = 80000;
+const HINTERGRUND = [0.02, 0.027, 0.043] as const, HINTERGRUND_HELL = [0.945, 0.933, 0.91] as const, FLOATS = 12, MAX_SPRITES = 80000;
 
 const VS = `#version 300 es
 layout(location=0) in vec2 q;
@@ -47,12 +48,12 @@ void main(){
  else if(vForm==8){float m=1.0-d;k=m*m*m*m;}
  else{k=exp(-d*d*10.0)*1.5+exp(-d*2.4)*0.45;}
  k*=smoothstep(1.0,0.82,d);
- o=vec4(vCol.rgb*vCol.a*k,1.0);
+ o=vec4(vCol.rgb*vCol.a*k,clamp(vCol.a*k,0.0,1.0));
 }`;
 
 class WebGlLicht implements Licht {
  readonly art = 'webgl2' as const; info = 'webgl2';
- private daten = new Float32Array(4096 * FLOATS); private n = 0; private verworfen = 0;
+ private daten = new Float32Array(4096 * FLOATS); private n = 0; private verworfen = 0; private hell = false;
  private prog: WebGLProgram; private inst: WebGLBuffer; private vao: WebGLVertexArrayObject;
  private u: { view: WebGLUniformLocation | null; cam: WebGLUniformLocation | null; time: WebGLUniformLocation | null };
  constructor(private gl: WebGL2RenderingContext) {
@@ -78,10 +79,11 @@ class WebGlLicht implements Licht {
   const dbg = gl.getExtension('WEBGL_debug_renderer_info');
   this.info = 'webgl2 · ' + String(dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)).slice(0, 80);
  }
- begin(w: number, h: number, dpr: number, k: Kamera, zeit: number) {
+ begin(w: number, h: number, dpr: number, k: Kamera, zeit: number, hell = false) {
+  this.hell = hell;
   const gl = this.gl, c = gl.canvas as HTMLCanvasElement, bw = Math.round(w * dpr), bh = Math.round(h * dpr);
   if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; }
-  gl.viewport(0, 0, bw, bh); gl.clearColor(HINTERGRUND[0], HINTERGRUND[1], HINTERGRUND[2], 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.viewport(0, 0, bw, bh); const bg = hell ? HINTERGRUND_HELL : HINTERGRUND; gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT);
   gl.useProgram(this.prog); gl.uniform2f(this.u.view, w, h); gl.uniform3f(this.u.cam, k.x, k.y, k.zoom); gl.uniform1f(this.u.time, zeit);
   this.n = 0; this.verworfen = 0;
  }
@@ -97,7 +99,7 @@ class WebGlLicht implements Licht {
  }
  end() {
   const gl = this.gl;
-  gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
+  gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); if (this.hell) gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); else gl.blendFunc(gl.ONE, gl.ONE);
   gl.bindVertexArray(this.vao); gl.bindBuffer(gl.ARRAY_BUFFER, this.inst);
   gl.bufferData(gl.ARRAY_BUFFER, this.daten.subarray(0, this.n * FLOATS), gl.STREAM_DRAW);
   gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.n);
@@ -112,11 +114,11 @@ class CanvasLicht implements Licht {
  readonly art = 'canvas2d' as const; readonly info = 'canvas2d (ohne WebGL2)';
  private w = 0; private h = 0; private k: Kamera = { x: 0, y: 0, zoom: 1 }; private t = 0; private n = 0; private verworfen = 0;
  constructor(private ctx: CanvasRenderingContext2D) {}
- begin(w: number, h: number, dpr: number, k: Kamera, zeit: number) {
+ begin(w: number, h: number, dpr: number, k: Kamera, zeit: number, hell = false) {
   const c = this.ctx.canvas, bw = Math.round(w * dpr), bh = Math.round(h * dpr);
   if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; }
   this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); this.ctx.globalCompositeOperation = 'source-over';
-  this.ctx.fillStyle = '#05070b'; this.ctx.fillRect(0, 0, w, h); this.ctx.globalCompositeOperation = 'lighter';
+  this.ctx.fillStyle = hell ? '#f1eee8' : '#05070b'; this.ctx.fillRect(0, 0, w, h); this.ctx.globalCompositeOperation = hell ? 'source-over' : 'lighter';
   this.w = w; this.h = h; this.k = k; this.t = zeit; this.n = 0; this.verworfen = 0;
  }
  sprite(x: number, y: number, g: number, r: number, gr: number, b: number, a: number, form: number, tiefe = 1, puls = 0, phase = 0, frequenz = 2.4) {

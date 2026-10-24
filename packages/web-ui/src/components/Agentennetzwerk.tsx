@@ -34,6 +34,8 @@ const zitter = (seed: number, k: number, takt: number) => (hash(seed + ':' + k +
 const mische = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const glatt = (t: number) => t * t * (3 - 2 * t);
 /** Beschriftungsreihenfolge: wichtige Knoten zuerst, Rest nur dort, wo Platz frei ist. */
+/** P22-T111: helle Schriftfarben der Textebene im hellen Design auf lesbare dunkle Gegenstuecke abbilden. */
+const TEXT_HELL: Record<string, string> = { '#cbd5e1': '#334155', '#fde3c8': '#9a3412', '#fed7aa': '#9a3412', '#ffedd5': '#7c2d12', '#fdba74': '#c2410c', '#d8ccff': '#5b21b6', '#94a3b8': '#475569', '#fde68a': '#a16207', '#fca5a5': '#b91c1c' };
 const RANG: Record<string, number> = { zentrum: 0, main: 1, koordinator: 1, plan: 2, channel: 2, 'channel-cluster': 2, cluster: 2, arbeitsagent: 3 };
 
 /** Festes Dekor (konstanter Startwert): Sternenstaub auf drei Parallaxe-Ebenen und Nebelwolken. */
@@ -220,7 +222,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const ke = reduz.matches ? 1 : 1 - Math.exp(-dt * 1.1);
    if (k.fit !== fit && Math.abs(k.zoom - fit) / fit > 0.5) { k.zoom = tz; k.x = tx; k.y = ty; }
    k.x += (tx - k.x) * ke; k.y += (ty - k.y) * ke; k.zoom += (tz - k.zoom) * ke; k.fit = fit;
-   licht.begin(w, h, dpr, k, uhr);
+   // P22-T111: helles Design am naechsten data-theme-Vorfahren ablesen (Umschalter wirkt ohne Neustart der Schleife).
+   const hell = el.closest('[data-theme="light"]') !== null;
+   licht.begin(w, h, dpr, k, uhr, hell);
    // Tiefer Raum: Nebel und Sternenstaub hinter dem Netz (Parallaxe ueber tiefe < 1).
    if (!stufe) for (const n of deko.nebel) licht.sprite(n.x, n.y, n.g, n.f[0], n.f[1], n.f[2], n.a, 0, n.t, 0.05, n.x, 0.25);
    const st = deko.sterne;
@@ -457,8 +461,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    if (tc.width !== tw || tc.height !== th) { tc.width = tw; tc.height = th; }
    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
    const sx = (x: number) => (x - k.x) * k.zoom + w / 2, sy = (y: number) => (y - k.y) * k.zoom + h / 2;
-   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round'; ctx.strokeStyle = 'rgba(4,6,10,0.85)'; ctx.lineWidth = 3;
-   const schreibe = (text: string, x: number, y: number, farbe: string, font: string, alpha = 1) => { ctx.globalAlpha = alpha; ctx.font = font; ctx.strokeText(text, x, y); ctx.fillStyle = farbe; ctx.fillText(text, x, y); };
+   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round'; ctx.strokeStyle = hell ? 'rgba(248,246,242,0.9)' : 'rgba(4,6,10,0.85)'; ctx.lineWidth = 3;
+   const schreibe = (text: string, x: number, y: number, farbe: string, font: string, alpha = 1) => { ctx.globalAlpha = alpha; ctx.font = font; ctx.strokeText(text, x, y); ctx.fillStyle = hell ? (TEXT_HELL[farbe] ?? farbe) : farbe; ctx.fillText(text, x, y); };
    const kompakt = w < 640, arbeiterZahl = g.knoten.filter(n => n.rolle === 'arbeitsagent').length, alleNamen = !kompakt && arbeiterZahl <= 36, belegt: number[] = [];
    // Dichte Netze nennen nur die aktivsten Zellen; Hover/Auswahl zeigt jeden Namen.
    let namenFrei = arbeiterZahl > 60 ? (kompakt ? 4 : 10) : Infinity;
