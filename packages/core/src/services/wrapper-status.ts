@@ -43,6 +43,8 @@ export interface WrapperStatusRow {
   channels: string[]
   connectedMcp: boolean
   lastActivity: Date
+  /** P22-T125 R2c: unverkuerzter PG-Text fuer die Laufbindung; niemals aus Date rekonstruieren. */
+  lastActivityExakt?: string | null
   /** false = der Wrapper schlaegt nicht mehr von selbst. wake/NOTIFY wirken weiter. */
   heartbeatEnabled: boolean
   /** null = adaptive Ladder (10s..60min). Zahl = fester Takt in Millisekunden. */
@@ -53,6 +55,10 @@ export interface WrapperStatusRow {
    * null = kein Flag (haiku, Gemini) oder Wrapper von vor dem Feld.
    */
   effort?: string | null
+  /** P22-T118/T125: letzter Ende-Befund (Schema 150). Nur gueltig bei status 'crashed' und gleicher wrapper_pid (wrapperEndeAnzeige). */
+  beendetUrsache?: string | null
+  beendetErkanntAm?: Date | null
+  beendetDetails?: Record<string, unknown> | null
 }
 
 /** Datenbank-Row (snake_case) → WrapperStatusRow (camelCase) */
@@ -77,9 +83,13 @@ function mapRow(row: Record<string, unknown>): WrapperStatusRow {
     channels: (row.channels as string[]) ?? [],
     connectedMcp: row.connected_mcp as boolean,
     lastActivity: new Date(row.last_activity as string),
+    lastActivityExakt: typeof row.last_activity_exakt === 'string' ? row.last_activity_exakt : null,
     heartbeatEnabled: (row.heartbeat_enabled as boolean) ?? true,
     heartbeatIntervalMs: row.heartbeat_interval_ms != null ? Number(row.heartbeat_interval_ms) : null,
     effort: (row.effort as string | null | undefined) ?? null,
+    beendetUrsache: (row.beendet_ursache as string | null | undefined) ?? null,
+    beendetErkanntAm: row.beendet_erkannt_am ? new Date(row.beendet_erkannt_am as string) : null,
+    beendetDetails: (row.beendet_details as Record<string, unknown> | null | undefined) ?? null,
   }
 }
 
@@ -202,7 +212,7 @@ export async function getWrapperStatus(
   const z = wrapperZiel(eingabe, project)
   const pool = getPool()
   const { rows } = await pool.query(
-    `SELECT * FROM ${z.art === 'identity' ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} WHERE ${z.art === 'identity' ? 'identity_id' : 'agent_name'} = $1 AND project = $2`,
+    `SELECT *, last_activity::text AS last_activity_exakt FROM ${z.art === 'identity' ? 'agent_identitaet_wrapper_status' : 'wrapper_status'} WHERE ${z.art === 'identity' ? 'identity_id' : 'agent_name'} = $1 AND project = $2`,
     [z.art === 'identity' ? z.identity_id : z.agent_id, project],
   )
   return rows.length > 0 ? mapRow(rows[0]) : null
@@ -220,7 +230,7 @@ export async function listWrapperStatusFuerAgent(agentName: string): Promise<Wra
   }
   const pool = getPool()
   const { rows } = await pool.query(
-    `SELECT * FROM wrapper_status WHERE agent_name = $1 ORDER BY last_activity DESC`,
+    `SELECT *, last_activity::text AS last_activity_exakt FROM wrapper_status WHERE agent_name = $1 ORDER BY last_activity DESC`,
     [agentName],
   )
   return rows.map(mapRow)
@@ -233,11 +243,11 @@ export async function listWrapperStatusFuerAgent(agentName: string): Promise<Wra
 export async function listWrapperStatus(project: string): Promise<WrapperStatusRow[]> {
   const pool = getPool()
   const { rows } = await pool.query(
-    `SELECT * FROM wrapper_status WHERE project = $1 ORDER BY last_activity DESC`,
+    `SELECT *, last_activity::text AS last_activity_exakt FROM wrapper_status WHERE project = $1 ORDER BY last_activity DESC`,
     [project],
   )
   if ((aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus !== 'alt') {
-    const identities = await pool.query('SELECT * FROM agent_identitaet_wrapper_status WHERE project=$1 ORDER BY last_activity DESC', [project])
+    const identities = await pool.query('SELECT *, last_activity::text AS last_activity_exakt FROM agent_identitaet_wrapper_status WHERE project=$1 ORDER BY last_activity DESC', [project])
     const alle = [...rows, ...identities.rows].map(mapRow).sort((a,b) => b.lastActivity.getTime() - a.lastActivity.getTime())
     return ohneEntfernte(project, alle, (z) => ({ agent: z.agentName, identity: z.identityId }))
   }
@@ -305,14 +315,14 @@ export async function setzeHeartbeatKonfiguration(
   const { rows } = await pool.query(
     `UPDATE wrapper_status SET ${setzt.join(', ')}
       WHERE project = $1${namensFilter}
-      RETURNING *`,
+      RETURNING *, last_activity::text AS last_activity_exakt`,
     werte,
   )
   if ((aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus()).modus !== 'alt' && (identitaeten.length || !agentNames?.length)) {
     for (const ziel of identitaeten) wrapperZiel(ziel, project)
     const idWerte = agentNames?.length ? [...werte.slice(0, -1), identitaeten.map(z => z.identity_id)] : werte
     const idFilter = agentNames?.length ? ` AND identity_id = ANY($${idWerte.length}::TEXT[])` : ''
-    const ids = await pool.query(`UPDATE agent_identitaet_wrapper_status SET ${setzt.join(', ')} WHERE project=$1${idFilter} RETURNING *`, idWerte)
+    const ids = await pool.query(`UPDATE agent_identitaet_wrapper_status SET ${setzt.join(', ')} WHERE project=$1${idFilter} RETURNING *, last_activity::text AS last_activity_exakt`, idWerte)
     return [...rows, ...ids.rows].map(mapRow)
   }
   return rows.map(mapRow)

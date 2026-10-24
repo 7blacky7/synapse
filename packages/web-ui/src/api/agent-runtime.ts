@@ -522,6 +522,8 @@ export interface RuntimeAgentZeile {
   name: string; identity_id: string | null; quelle: string; ort: string; runtime: string | null; status: string; busy: boolean;
   letzte_aktivitaet: string; inaktiv_sekunden: number; heartbeat: { an: boolean; takt_ms: number | null }; pid: number | null;
   wrapper_pid: number | null; modell: string | null; auftrag: string | null; tokens: { input: number; output: number; prozent: number }; warnungen: string[];
+  /** P22-T125 (Schalter wrapper_status_ursache): Anzeigestatus aus belegter Ursache, eigene Zeile. */
+  anzeige_status?: string; du_selbst?: boolean; beendet?: { ursache?: string; erkannt_am?: string | null; ereignis_id?: string | null; veraltet_verworfen?: boolean } | null;
 }
 export interface RuntimeAgentenStand { aktiv: boolean; /** P22-T122: Schalter runtime_agenten_panel_neu */ panel_neu?: boolean; orte?: Record<string, RuntimeAgentZeile[]>; anzahl?: number; warnungen_gesamt?: number; debug?: Record<string, unknown> }
 export async function getRuntimeAgenten(project: string): Promise<RuntimeAgentenStand> {

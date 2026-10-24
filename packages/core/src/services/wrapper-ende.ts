@@ -84,8 +84,8 @@ export async function vermerkeWrapperEnde(k: { identity_id?: string | null; proj
   try {
     const pool = getPool();
     const grenzen = await leseWrapperEndeGrenzen();
-    const z = await pool.query<{ socket_path: string | null; provider: string | null; last_activity: Date | null }>(
-      `SELECT socket_path, provider, last_activity FROM ${tabelle} WHERE project=$1 AND ${schluessel}=$2 AND wrapper_pid=$3 LIMIT 1`, [k.project, k.identity_id ?? k.agent_name, k.wrapper_pid]);
+    const z = await pool.query<{ socket_path: string | null; provider: string | null; last_activity_exakt: string | null }>(
+      `SELECT socket_path, provider, last_activity::text AS last_activity_exakt FROM ${tabelle} WHERE project=$1 AND ${schluessel}=$2 AND wrapper_pid=$3 LIMIT 1`, [k.project, k.identity_id ?? k.agent_name, k.wrapper_pid]);
     const o = ortFuer({ socketPath: z.rows[0]?.socket_path ?? null, provider: z.rows[0]?.provider ?? null });
     const erkannt = new Date().toISOString();
     let ereignisse: UeberwachungsEreignisKurz[] = [];
@@ -99,7 +99,7 @@ export async function vermerkeWrapperEnde(k: { identity_id?: string | null; proj
         betroffene_gekappt: x.details?.betroffene_gekappt === true }));
     }
     const ziel: WrapperEndeZiel = { identity_id: k.identity_id ?? null, agent: k.agent_name, project: k.project, wrapper_pid: k.wrapper_pid };
-    const befund = bewerteWrapperEnde({ ziel, letztes_lebenszeichen: z.rows[0]?.last_activity ? z.rows[0].last_activity.toISOString() : null, erkannt_am: erkannt, ereignisse, fenster_ms: grenzen.fenster_ms });
+    const befund = bewerteWrapperEnde({ ziel, letztes_lebenszeichen: z.rows[0]?.last_activity_exakt ?? null, erkannt_am: erkannt, ereignisse, fenster_ms: grenzen.fenster_ms });
     const ev = befund.ereignis ? { id: befund.ereignis.id, zeit: befund.ereignis.zeit, art: befund.ereignis.art, ursache: befund.ereignis.ursache } : null;
     const details = { letztes_lebenszeichen: befund.fenster.von, zeitfenster: befund.fenster, zeitpunkt: 'erkannt_nicht_gemessen', quelle: k.quelle,
       ort: o.ort, runtime: o.ort === 'container' ? o.runtime : null, wrapper_pid: k.wrapper_pid, ereignis: ev, beleg: befund.beleg, zeitgleich: befund.zeitgleich,

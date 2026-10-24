@@ -446,9 +446,11 @@ export const specialistTool: ConsolidatedTool = {
               ...await leseRuntimeUebersicht(project, rows).then(u => (u ? { runtime_uebersicht: u } : {}), () => ({})),
             };
           }
+          // P22-T125 R1: auch bei leerem Projekt die Uebersicht (eigene Zeile des Aufrufers, Schalter wrapper_status_ursache) - wie REST-MCP.
+          const leerUebersicht = await leseRuntimeUebersicht(project, rows).then(u => (u ? { runtime_uebersicht: u } : {}), () => ({}));
           // PG leer → Fallback
-          if (projectPath) return await specialistStatusTool(projectPath, undefined);
-          return { success: true, specialists: {}, runningCount: 0, lastUpdate: new Date().toISOString() };
+          if (projectPath) return { ...(await specialistStatusTool(projectPath, undefined) as Record<string, unknown>), ...leerUebersicht };
+          return { success: true, specialists: {}, runningCount: 0, lastUpdate: new Date().toISOString(), ...leerUebersicht };
         }
 
         // Kein project → Fallback auf specialistStatusTool (braucht project_path)

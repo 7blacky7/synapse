@@ -158,7 +158,7 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
               <tbody>{zeilen.map(z => (
                 <tr key={(z.identity_id ?? z.name) + ortName} className={z.warnungen.length ? 'mit-warnung' : ''}>
                   <td className="rap-name" title={z.auftrag ?? ''}>{z.name}<small>{[z.quelle, z.modell].filter(Boolean).join(' · ')}</small></td>
-                  <td>{z.status}{z.busy ? ' · arbeitet' : ''}</td>
+                  <td>{z.anzeige_status ?? z.status}{z.du_selbst ? ' · du selbst' : ''}{z.busy ? ' · arbeitet' : ''}</td>
                   <td>{Math.round(z.inaktiv_sekunden / 60)} min</td>
                   <td>{z.heartbeat.an ? 'an' : 'aus'}</td>
                   <td>{z.tokens.prozent} %</td>
@@ -196,7 +196,7 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
             <tbody>{zeilen.map(z => (
               <tr key={(z.identity_id ?? z.name) + ort} className={z.warnungen.length ? 'mit-warnung' : ''}>
                 <td title={z.auftrag ?? ''}>{z.name}<small>{z.quelle}{z.modell ? ' · ' + z.modell : ''}</small></td>
-                <td>{z.status}{z.busy ? ' · busy' : ''}</td>
+                <td>{z.anzeige_status ?? z.status}{z.du_selbst ? ' · du selbst' : ''}{z.busy ? ' · busy' : ''}</td>
                 <td>{Math.round(z.inaktiv_sekunden / 60)} min</td>
                 <td>{z.heartbeat.an ? 'an' : 'aus'}</td>
                 <td>{z.tokens.prozent}%</td>

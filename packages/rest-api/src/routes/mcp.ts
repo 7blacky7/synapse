@@ -4198,7 +4198,8 @@ async function handleToolCallKern(
             : new Date().toISOString(),
           ...ausblendHinweis(auswahl),
           // P22-T116: Uebersicht aller Runtime-Agenten (nur Schalter EIN), wie stdio.
-          ...(rows.length ? await leseRuntimeUebersicht(project, rows).then(u => (u ? { runtime_uebersicht: u } : {}), () => ({})) : {}),
+          // P22-T125 R1: auch bei leerem Projekt (eigene Zeile des Aufrufers wird bei Schalter wrapper_status_ursache nachgeladen).
+          ...await leseRuntimeUebersicht(project, rows).then(u => (u ? { runtime_uebersicht: u } : {}), () => ({})),
         };
       }
 
