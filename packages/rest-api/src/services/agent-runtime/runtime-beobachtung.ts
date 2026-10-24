@@ -8,7 +8,7 @@
  */
 import type Docker from 'dockerode';
 import type { ContainerBeobachtung, ProbeDiagnose } from '@synapse/core';
-import { captureRuntimeProbe, RuntimeProbeError } from './probe.js';
+import { captureRuntimeProbe, RuntimeProbeError, type ProbeMessung } from './probe.js';
 import { istAgentRuntimeImage, AGENT_RUNTIME_IMAGE_LABEL } from './runtime-container-spez.js';
 import type { RuntimeConfiguration } from './types.js';
 
@@ -73,10 +73,14 @@ export async function beobachteRuntimeContainer(
   if (!agentImage) return { ...stand, container: 'laeuft' };
   let r: { stdout: string; stderr: string; exitCode: number | null };
   const t0 = Date.now();
+  // P22-T127 R3: Teilzeiten messen (exec, Node-Start im Container, Ende des Status-Lesens), nur Diagnose.
+  const mess: ProbeMessung = {};
+  const teilzeiten = () => ({ exec_erstellt: mess.exec_erstellt ?? null, stream_offen: mess.stream_offen ?? null, supervisor_bereit: mess.supervisor_bereit ?? null,
+    kind_ende: mess.kind_ende ?? null, erste_ausgabe: mess.erste_ausgabe ?? null, ende: mess.ende ?? null });
   try {
-    r = await captureRuntimeProbe(docker, container, ['synapse-runtime', 'status'], o.env, o.probe_timeout_ms);
+    r = await captureRuntimeProbe(docker, container, ['synapse-runtime', 'status'], o.env, o.probe_timeout_ms, mess);
   } catch (error) {
-    return { ...stand, container: 'laeuft', prozess: 'haengt', fehler: kurz(error), probe_diagnose: klassifiziereProbeFehler(error, Date.now() - t0) };
+    return { ...stand, container: 'laeuft', prozess: 'haengt', fehler: kurz(error), probe_diagnose: { ...klassifiziereProbeFehler(error, Date.now() - t0), teilzeiten: teilzeiten() } };
   }
   const dauer = Date.now() - t0;
   const stderr = r.stderr ? r.stderr.slice(-500) : null;

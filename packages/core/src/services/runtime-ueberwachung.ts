@@ -185,6 +185,17 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // P22-T118: Wrapper-Ende (wrapper-ende.ts): Zeitfenster fuer Container-Ereignisse und Kappung des Betroffenen-Snapshots.
   wrapper_ende_fenster_minuten: { art: 'zahl', standard: 30, min: 1, max: 1440 },
   wrapper_ende_betroffene_max: { art: 'zahl', standard: 50, min: 1, max: 1000 },
+  // P22-T127 (Befund rea4 2341c3bb): eine einzelne Status-Probe knapp ueber probe_timeout (z. B. 10645 ms, Exit 124) loeste sofort
+  // container_restart aus und beendete laufende Agenten. Schalter (Std AUS): EIN = daemon_haengt fuehrt erst nach
+  // probe_fehler_bestaetigung Probe-Fehlern IN FOLGE zum Restart (Erfolg setzt zurueck); davor nur Ereignis probe_fehler.
+  // probe_fehler_fenster_minuten = groesste erlaubte Luecke zwischen zwei Fehlern der Folge (fehlende Beobachtungen, z. B. API
+  // neu gestartet); wirksam geklemmt auf mindestens 2 Takte + 2 Probe-Laufzeiten (probeFolgeLueckeMs), damit jede gueltige
+  // Kombination aus Takt/Timeout/Fenster/N die Schwelle erreichen kann (Abnahme rea4 5a1b2b38 R1).
+  // probe_fehler_max_minuten = harte Obergrenze: haelt die Folge so lange ununterbrochen an, wird immer neu gestartet.
+  probe_bestaetigung_aktiv: { art: 'bool', standard: false },
+  probe_fehler_bestaetigung: { art: 'zahl', standard: 3, min: 1, max: 20 },
+  probe_fehler_fenster_minuten: { art: 'zahl', standard: 5, min: 1, max: 120 },
+  probe_fehler_max_minuten: { art: 'zahl', standard: 10, min: 1, max: 240 },
 } as const satisfies Record<string, EinstellungDef>;
 export type RuntimeUeberwachungEinstellungName = keyof typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN;
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN = Object.keys(RUNTIME_UEBERWACHUNG_EINSTELLUNGEN) as RuntimeUeberwachungEinstellungName[];
@@ -396,7 +407,10 @@ export interface ContainerBeobachtung {
  * Stream-Abbruch und Exec-Fehler zusammen - jetzt einzeln belegbar, mit Exitcode, Dauer und stderr-Auszug.
  */
 export type ProbeFehlerKlasse = 'timeout_container' | 'timeout_transport' | 'stream_abbruch' | 'exec_fehler' | 'pid_limit' | 'exit' | 'ausgabe_ungueltig' | 'status_veraltet';
-export interface ProbeDiagnose { klasse: ProbeFehlerKlasse; exit_code: number | null; dauer_ms: number | null; stderr: string | null; meldung: string | null }
+export interface ProbeDiagnose { klasse: ProbeFehlerKlasse; exit_code: number | null; dauer_ms: number | null; stderr: string | null; meldung: string | null;
+  /** P22-T127 R3: Teilzeiten der Probe in ms ab Start (API-Seite: exec_erstellt, stream_offen, erste_ausgabe, ende; Container-Seite:
+   *  supervisor_bereit = Node-Start des Watchdogs bis vor dem Kind-Spawn, kind_ende = Ende von synapse-runtime status). null = nicht erreicht. */
+  teilzeiten?: Record<string, number | null> | null }
 
 export interface RuntimeBeobachtung extends ContainerBeobachtung {
   api_verbunden: boolean;
@@ -414,9 +428,51 @@ export interface Entscheidung { zustand: UeberwachungZustand; ursache: string | 
 
 const NEUSTART_MASSNAHMEN: readonly Massnahme[] = ['wrapper_respawn', 'container_restart', 'container_start'];
 
+/** P22-T127: Folge der Probe-Fehler in Folge (gespeichert unter beobachtung.probe_fehler_folge). */
+export interface ProbeFehlerFolge { anzahl: number; seit: string; letzter: string }
+type FolgeWerte = Pick<RuntimeUeberwachungWerte, 'probe_fehler_fenster_minuten' | 'takt_sekunden' | 'probe_timeout_sekunden'>;
+
+/** Groesste erlaubte Luecke zwischen zwei Fehlern der Folge: Einstellung, mindestens 2 Takte + 2 Probe-Laufzeiten (+4 s Fristen). */
+export function probeFolgeLueckeMs(e: FolgeWerte): number {
+  const minimum = 2 * e.takt_sekunden * 1000 + 2 * (e.probe_timeout_sekunden + 4) * 1000;
+  return Math.max(e.probe_fehler_fenster_minuten * 60_000, minimum);
+}
+
+/**
+ * P22-T127: Folge inkl. der aktuellen Beobachtung (rein, testbar). Erfolg (prozess != haengt) -> null. Die Zaehlung ist 'in Folge'
+ * und haengt NICHT vom Fenster ab; neu begonnen wird nur, wenn seit dem letzten Fehler laenger als probeFolgeLueckeMs nichts
+ * beobachtet wurde. Altform (ISO-Liste aus der ersten Fassung) wird gelesen.
+ */
+export function probeFehlerFolge(b: Pick<ContainerBeobachtung, 'prozess'>, s: Pick<UeberwachungStand, 'beobachtung'>, e: FolgeWerte, jetzt = Date.now()): ProbeFehlerFolge | null {
+  if (b.prozess !== 'haengt') return null;
+  const jetztIso = new Date(jetzt).toISOString();
+  const roh = s.beobachtung ? (s.beobachtung as { probe_fehler_folge?: unknown }).probe_fehler_folge : null;
+  let alt: ProbeFehlerFolge | null = null;
+  if (Array.isArray(roh)) {
+    const z = roh.filter((x): x is string => typeof x === 'string' && Number.isFinite(Date.parse(x)));
+    if (z.length) alt = { anzahl: z.length, seit: z[0], letzter: z[z.length - 1] };
+  } else if (roh && typeof roh === 'object') {
+    const o = roh as Partial<ProbeFehlerFolge>;
+    if (typeof o.anzahl === 'number' && o.anzahl > 0 && typeof o.seit === 'string' && typeof o.letzter === 'string'
+      && Number.isFinite(Date.parse(o.seit)) && Number.isFinite(Date.parse(o.letzter))) alt = { anzahl: o.anzahl, seit: o.seit, letzter: o.letzter };
+  }
+  if (!alt || jetzt - Date.parse(alt.letzter) > probeFolgeLueckeMs(e)) return { anzahl: 1, seit: jetztIso, letzter: jetztIso };
+  return { anzahl: alt.anzahl + 1, seit: alt.seit, letzter: jetztIso };
+}
+
 export function bewerteRuntime(b: RuntimeBeobachtung, s: UeberwachungStand, e: RuntimeUeberwachungWerte, jetzt = Date.now()): Entscheidung {
   const roh = rohEntscheidung(b, s);
   if (!NEUSTART_MASSNAHMEN.includes(roh.massnahme)) return roh;
+  // P22-T127: einzelner Probe-Timeout ist nur eine Warnung; Restart erst bei bestaetigter Stoerung.
+  if (e.probe_bestaetigung_aktiv && roh.massnahme === 'container_restart' && roh.ursache === 'daemon_haengt') {
+    const f = probeFehlerFolge(b, s, e, jetzt);
+    const n = f?.anzahl ?? 0;
+    const dauerMs = f ? jetzt - Date.parse(f.seit) : 0;
+    // Harte Obergrenze: ununterbrochene Folge laenger als probe_fehler_max_minuten -> immer Restart.
+    if (n < e.probe_fehler_bestaetigung && dauerMs < e.probe_fehler_max_minuten * 60_000) {
+      return { ...roh, massnahme: 'keine', hinweis: `probe_unbestaetigt_${n}_von_${e.probe_fehler_bestaetigung}` };
+    }
+  }
   if (!e.neustart_erlaubt) return { ...roh, massnahme: 'keine', hinweis: 'neustart_aus' };
   const fensterMs = e.neustart_fenster_minuten * 60_000;
   const imFenster = s.versuche.filter(v => jetzt - Date.parse(v.zeit) < fensterMs);
@@ -560,7 +616,13 @@ export async function fuehreUeberwachungsTaktAus(d: UeberwachungsDienste, opt: {
         zeile.entscheidung = ent;
         if (trocken) { staende[rt] = { ...s, zustand: ent.zustand, ursache: ent.ursache }; continue; }
         // Stand fortschreiben
-        const neu: UeberwachungStand = { ...s, beobachtung: { ...c, api_verbunden: apiVerbunden, ack_haengt: ackHaengt, main_wrapper: wrapper }, letzter_fehler: c.fehler };
+        const folge = probeFehlerFolge(c, s, e, jetzt.getTime());
+        const neu: UeberwachungStand = { ...s, beobachtung: { ...c, api_verbunden: apiVerbunden, ack_haengt: ackHaengt, main_wrapper: wrapper, probe_fehler_folge: folge }, letzter_fehler: c.fehler };
+        // P22-T127: unbestaetigter Probe-Fehler -> nur Ereignis (Debug: Folge, Schwelle, Probe-Klasse/Dauer).
+        if (ent.hinweis?.startsWith('probe_unbestaetigt_')) {
+          await schreibeEreignis(pool, rt, 'probe_fehler', ent.ursache, { folge: folge?.anzahl ?? 0, folge_seit: folge?.seit ?? null, schwelle: e.probe_fehler_bestaetigung,
+            luecke_ms: probeFolgeLueckeMs(e), max_minuten: e.probe_fehler_max_minuten, fehler: c.fehler ?? null, probe: c.probe_diagnose ?? null });
+        }
         if (c.container === 'laeuft') neu.container_soll_laufen = true;
         neu.main_laeuft_seit = istMain ? soll.laeuft_seit : s.main_laeuft_seit;
         if (ent.zustand === 'ok') { neu.letzter_ok = jetzt.toISOString(); neu.versuche = []; }
