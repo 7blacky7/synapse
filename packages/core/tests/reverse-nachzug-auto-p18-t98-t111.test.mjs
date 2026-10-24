@@ -305,6 +305,43 @@ test('P18-T112 A2: Laufwahl – Erfolg irgendeiner Revision erledigt, nur Gesche
  assert.equal((await nz.reverseLeserLaufWahl(raw,quelle,L,{},I,R2,P)).art,'erledigt','fertiger Basislauf alter Revision erledigt');
  await raw.query('DELETE FROM reverse_leser_laeufe');await leeren();
 });
+test('P18-T112 B2 (bbb29904): Folgeschritt S0 -> S1 einer neuen Datei unter abgeschlossenem Legacy-E erbt die Ausnahme',async()=>{
+ await leeren();await raw.query('DELETE FROM reverse_auftraege WHERE eintrag_id=$1',[rid]);
+ const legacy=await legacyE('teilweise');
+ const d=await datei('t112/folge.bin',{s1Profil:null});
+ // Root wie entdecke(): S0 mit Ausnahme, abgeschlossen.
+ const root=await pin(d,{ohneLegacyAbgeschlossen:true});
+ assert.equal(root.ohne_legacy_abgeschlossen,true);
+ const rootId=await auftragMitPin(d,root,'S0','fertig','hintergrund');
+ // Folgepin ohne eigenes Flag (wie reverse-pipeline.ts Folgequeue mit policyElternId): kein policy_pin_fehlt, Flag geerbt.
+ const folge=await pin(d,{elternId:rootId});
+ assert.equal(folge.ursprung,'folge');assert.equal(folge.ohne_legacy_abgeschlossen,true,'Ausnahme vom Eltern-Pin geerbt');
+ const folgeId=await auftragMitPin(d,folge,'S1','wartet','hintergrund');
+ await tx(c=>policy.pruefeReversePolicyAuftrag(c,folgeId,rid,'S1'));
+ // Echter Folgeweg ueber die Pipeline-queue mit policyElternId (wie nach S0 -> S1).
+ const {ReversePipelineDienst}=await import('../dist/services/reverse-pipeline.js');
+ const dienst=new ReversePipelineDienst({pool:raw,ausfuehrbareKinds:[]});await dienst['einstellungen']();
+ await raw.query('DELETE FROM reverse_auftraege WHERE id=$1',[folgeId]);
+ // 14fabd17: S0 ist fertig (aktuelles Profil/Werkzeug der Pipeline), damit queue wirklich den S1-Folgeschritt waehlt.
+ await raw.query("INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,status,werkzeug,werkzeug_version,profil_version,auftrag_id,aktuell) VALUES($1,'S0',$2,'fertig','asset-inspektoren',$3,$4,$5,true)",
+  [d,'9'.repeat(64),dienst['version'],dienst['profile'],rootId]);
+ const r=await tx(c=>dienst['queue'](c,{reverseId:rid,project:'reverse-bibliothek',agentId:'reverse-pipeline',dateiId:d,mediumId:mid,bisSchicht:'S1',prioritaet:'hintergrund',policyElternId:rootId}));
+ assert.notEqual(r.fehlercode,'policy_pin_fehlt','Folgequeue nicht mehr durch '+legacy+' blockiert: '+JSON.stringify(r));
+ const neu=(await raw.query("SELECT schicht,status,policy_pin FROM reverse_auftraege WHERE datei_id=$1 AND id<>$2 ORDER BY created_at DESC LIMIT 1",[d,rootId])).rows[0];
+ assert.equal(neu?.schicht,'S1','echter S1-Folgeauftrag: '+JSON.stringify(r));
+ assert.equal(neu?.policy_pin?.ursprung,'folge');
+ assert.equal(neu?.policy_pin?.ohne_legacy_abgeschlossen,true,'eingereihter Folgeauftrag traegt die Ausnahme');
+ // Manueller Auftrag erbt nichts: weiter gehalten.
+ await assert.rejects(pin(d,{manuell:true,elternId:rootId}),e=>e.code==='policy_pin_fehlt');
+ // Koordinator-Entscheidung (14fabd17): abgeschlossene NULL-Pin-Altauftraege jeder Schicht geben nichts vor; ein OFFENER Legacy-S1
+ // ohne Pin auf derselben Datei haelt weiter, auch mit Flag bzw. geerbtem Flag.
+ await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,status,ausloeser,projekt) VALUES($1,$2,$3,'S1','fertig','agent:alt','synapse')",[randomUUID(),rid,d]);
+ assert.equal((await pin(d,{ohneLegacyAbgeschlossen:true})).ohne_legacy_abgeschlossen,true,'abgeschlossener Legacy-S1 ohne Pin: keine Vorgabe');
+ await raw.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,status,ausloeser,projekt,created_at) VALUES($1,$2,$3,'S1','wartet','agent:alt','synapse',clock_timestamp()+interval '1 second')",[randomUUID(),rid,d]);
+ await assert.rejects(pin(d,{ohneLegacyAbgeschlossen:true}),e=>e.code==='policy_pin_fehlt','offener Legacy-S1 ohne Pin haelt weiter');
+ await assert.rejects(pin(d,{elternId:rootId}),e=>e.code==='policy_pin_fehlt','auch mit geerbtem Flag');
+ await dienst.beende();await raw.query('DELETE FROM reverse_auftraege WHERE eintrag_id=$1',[rid]);await leeren();
+});
 test('P18-T112 A4 (51d793a5): 50 Paare unter aktueller Revision verdecken ein veraltetes 51. Paar nicht',async()=>{
  await leeren();for(const t of ['reverse_leser_laeufe','reverse_leser_nachzug','reverse_leser_zustaende'])await raw.query('DELETE FROM '+t);
  const d1=await datei('p/x.png',{s1Profil:null});

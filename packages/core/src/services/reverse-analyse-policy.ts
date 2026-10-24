@@ -64,7 +64,9 @@ async function vorgaben(db:Db,k:Kontext,q:ReversePolicyPin['quelle'],ersetze?:st
   SELECT id,created_at,policy_pin,COALESCE(policy_pin->>'scope_key',CASE WHEN datei_id IS NOT NULL THEN 'datei:'||datei_id::text ELSE 'medium:'||medium_id::text END) AS scope_key
   FROM reverse_auftraege WHERE eintrag_id=$1 AND
    (policy_pin->>'ursprung'='manuell' OR policy_pin IS NULL AND ausloeser LIKE 'agent:%' AND ausloeser<>'agent:reverse-pipeline')
-   -- P18-T98: ein abgeschlossener Altauftrag (z. B. manuelles E eines Mediums) haelt Nachzug-Auftraege nicht mehr fest.
+   -- P18-T98/T112 (Koordinator-Entscheidung zu 14fabd17): mit Flag zaehlen ALLE abgeschlossenen (fertig/teilweise) Altauftraege
+   -- ohne Pin nicht mehr als Vorgabe, gleich welcher Schicht (nicht nur E) - sie geben nichts mehr vor. Offene Altauftraege ohne Pin
+   -- (offen/wartet/laeuft/fehler) halten weiter (policy_pin_fehlt).
    AND NOT ($4::boolean AND policy_pin IS NULL AND status IN ('fertig','teilweise'))
  ) r WHERE scope_key=ANY($2::text[]) AND ($3::text IS NULL OR scope_key<>$3)
  ORDER BY scope_key,created_at DESC,id DESC`,[k.reverseId,scopes,ersetze??null,ohneLegacyAbgeschlossen])).rows;
@@ -74,10 +76,12 @@ function ids(v:Vorgabe[]):string[]{return v.map(x=>x.id).sort();}
 export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefragt:string;manuell?:boolean;elternId?:string|null;ohneLegacyAbgeschlossen?:boolean;autoGrenze?:string}):Promise<ReversePolicyPin>{
  await sperreReversePolicy(db,k.reverseId,!!k.manuell);
  const q=await quelle(db,k),scope=q.datei_id?'datei:'+q.datei_id:'medium:'+q.medium_id;
- const ohneLegacy=k.ohneLegacyAbgeschlossen===true;
- const v=await vorgaben(db,k,q,k.manuell?scope:undefined,ohneLegacy);
  let parent:ReversePolicyPin|undefined;
  if(k.elternId)parent=await pruefeReversePolicyAuftrag(db,k.elternId,k.reverseId,'E');
+ // P18-T112 (bbb29904): Folgeauftraege (z. B. S0 -> S1) erben die Legacy-Ausnahme des Eltern-Pins; sonst blockiert ein
+ // abgeschlossener Alt-E ohne Pin jeden Folgeschritt, obwohl der Root bereits mit Ausnahme angenommen wurde.
+ const ohneLegacy=k.ohneLegacyAbgeschlossen===true||(!k.manuell&&parent?.ohne_legacy_abgeschlossen===true);
+ const v=await vorgaben(db,k,q,k.manuell?scope:undefined,ohneLegacy);
  const project=k.manuell?(k.project??null):(parent?.project??v.find(x=>x.pin.scope_key===scope)?.pin.project??v.at(-1)?.pin.project??null);
  const s=reversePolicyProjektion(await leseReverseEinstellwerte({project,eintrag_id:k.reverseId},db));
  // A root whose config has changed cannot silently grant a fresh descendant.
@@ -86,7 +90,8 @@ export async function bereiteReversePolicyPin(db:Db,k:Kontext&{id:string;angefra
   if(hash(aktuell)!==x.pin.policy_revision)throw new ReversePolicyFehler('policy_geaendert',x.id);
  }
  // P18-T111: nur ein automatischer Root (kein manueller, kein Folgeauftrag) darf eine eigene Grenze tragen; Vorgaben begrenzen weiter.
- const autoGrenze=!k.manuell&&!parent&&k.autoGrenze?reversePolicyStufe(k.autoGrenze):undefined;
+ // Folgeauftraege eines automatischen S3-Roots erben dessen Grenze (pruefeReversePolicyAuftrag prueft s3_auto weiter).
+ const autoGrenze=k.manuell?undefined:parent?(parent.auto_grenze?reversePolicyStufe(parent.auto_grenze):undefined):k.autoGrenze?reversePolicyStufe(k.autoGrenze):undefined;
  const grenze=autoGrenze??s.grenze;
  const angefragt=k.manuell?reversePolicyStufe(k.angefragt):(parent?.wirksam_bis??grenze);
  const wirksam=reversePolicyMinimum(grenze,angefragt,...v.map(x=>x.pin.wirksam_bis));
