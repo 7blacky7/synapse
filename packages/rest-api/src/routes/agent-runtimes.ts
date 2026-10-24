@@ -18,7 +18,7 @@ import {
   warteschlangeAktiv, mainWechselOffen, stelleInWarteschlange, NICHT_ERREICHT_CODES, warteschlangeStatus, leseWarteschlangeSchalter, setzeWarteschlangeSchalter,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
-import { leseRuntimeUebersicht, leseRuntimeAgentLog, leseRuntimeProzesse, steuereRuntimeAgent, frageProzessAenderungAn, bestaetigeProzessAenderung } from '@synapse/core';
+import { leseRuntimeUebersicht, leseRuntimeAgentLog, leseRuntimeProzesse, steuereRuntimeAgent, frageProzessAenderungAn, bestaetigeProzessAenderung, wechslePlattformAgentModell } from '@synapse/core';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
 import { gleicheCliListeMitRegistry } from '../services/agent-runtime/registry-abgleich.js';
 import type { CliModellListe } from '../services/agent-runtime/cli-modelle.js';
@@ -392,6 +392,13 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       const b = request.body ?? {};
       if (b.bestaetigung && typeof b.bestaetigung === 'object') return await bestaetigeProzessAenderung({ id: b.bestaetigung.id, grund: b.bestaetigung.grund }, { art: 'user' });
       return await frageProzessAenderungAn({ project: b.project, runtime: b.runtime, pid: b.pid, signal: b.signal, grund: b.grund }, { art: 'user' });
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (User; API-Runtimes nur mit kosten_bestaetigt).
+  fastify.post<{ Body: { identity_id?: unknown; runtime?: unknown; modell?: unknown; effort?: unknown; grund?: unknown; kosten_bestaetigt?: unknown } }>('/api/runtime-agenten/modellwechsel', async (request, reply) => {
+    try {
+      const b = request.body ?? {};
+      return await wechslePlattformAgentModell({ identity_id: b.identity_id, runtime: b.runtime, modell: b.modell, effort: b.effort, grund: b.grund, kosten_bestaetigt: b.kosten_bestaetigt }, { art: 'user' });
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T112: Chat mit Plattform-Agenten (Schalter siehe plattformAgentChatSchalter). Verlauf liest die Web-UI ueber agent-verlauf.

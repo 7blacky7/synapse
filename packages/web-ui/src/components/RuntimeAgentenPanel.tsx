@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getRuntimeAgenten, getRuntimeAgentLog, getRuntimeProzesse, steuereRuntimeAgentUi, type RuntimeAgentenStand } from '../api/agent-runtime';
+import { getRuntimeAgenten, getRuntimeAgentLog, getRuntimeProzesse, steuereRuntimeAgentUi, wechsleAgentModellUi, type RuntimeAgentenStand } from '../api/agent-runtime';
 
 /**
  * P22-T116: Debug-Uebersicht ALLER Runtime-Agenten eines Projekts je Ort (Container/PC) mit Warnungen, Log, Prozessliste und
@@ -29,6 +29,19 @@ export function RuntimeAgentenPanel({ project }: { project: string }) {
     void zeige(steuereRuntimeAgentUi(id, aktion, grund.trim()).finally(() => void laden()));
   };
 
+  // P22-T117: Modell/CLI-Anbieter wechseln (Schalter plattform_agent_modellwechsel; AUS -> funktion_aus in der Ausgabe).
+  const modellWechseln = (id: string, bisher: string | null) => {
+    const eingabe = window.prompt('Neues Modell als runtime|modell (claude|codex = Abo, z. B. claude|sonnet oder codex|codex/gpt-6-luna). Bisher: ' + (bisher ?? '?')) ?? '';
+    const [runtime, ...rest] = eingabe.trim().split('|');
+    const modell = rest.join('|').trim();
+    if (!runtime || !modell) return;
+    const abo = runtime === 'claude' || runtime === 'codex';
+    if (!abo && !window.confirm('Runtime ' + runtime + ' rechnet über die API ab (kostenpflichtig, kein Abo). Trotzdem wechseln?')) return;
+    const grund = window.prompt('Grund für den Modellwechsel (mind. 10 Zeichen, steht im Audit):') ?? '';
+    if (grund.trim().length < 10) return;
+    void zeige(wechsleAgentModellUi(id, runtime, modell, grund.trim(), !abo).finally(() => void laden()));
+  };
+
   if (!stand?.aktiv) return null;
   return (
     <section className="runtime-agenten-panel" aria-label="Runtime-Agenten">
@@ -54,6 +67,7 @@ export function RuntimeAgentenPanel({ project }: { project: string }) {
                 <td>{z.identity_id && <>
                   <button type="button" onClick={() => void zeige(getRuntimeAgentLog(z.identity_id!))}>Log</button>
                   {(['wake', 'stop', 'start', 'restart'] as const).map(a => <button type="button" key={a} onClick={() => steuern(z.identity_id!, a)}>{a}</button>)}
+                  <button type="button" title="Modell/CLI-Anbieter wechseln (P22-T117)" onClick={() => modellWechseln(z.identity_id!, z.modell)}>Modell</button>
                 </>}</td>
               </tr>
             ))}</tbody>

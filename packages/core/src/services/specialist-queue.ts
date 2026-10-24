@@ -158,6 +158,8 @@ async function merkeStartOrtAusJobSicher(project: string, action: string, jobArg
   try {
     const { merkeStartOrtAusJob } = await import('./agent-start-ort.js');
     await merkeStartOrtAusJob({ project, action, args: jobArgs, hostname, quelle });
+    // P22-T117: Modell/CLI-Anbieter des Plattform-Starts ins Profil (Schalter plattform_agent_modellwechsel; wirft nie).
+    await (await import('./plattform-agent-modellwechsel.js')).merkeAusweisModellAusJob({ project, action, args: jobArgs });
   } catch { /* Zusatzinformation, nie ein Startfehler */ }
 }
 

@@ -37,7 +37,7 @@ export const specialistTool: ConsolidatedTool = {
         action: {
           type: 'string',
           enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst',
-            'runtime_uebersicht', 'runtime_steuern', 'runtime_log', 'runtime_prozesse', 'runtime_prozess'],
+            'runtime_uebersicht', 'runtime_steuern', 'runtime_log', 'runtime_prozesse', 'runtime_prozess', 'runtime_modellwechsel'],
           description: 'Die auszuführende Aktion. selbst = Selbstauskunft eines Spezialisten (agent_id Pflicht, project optional): Modell, Effort, Kontext, Tokens, Schwellen, Cutoff — nur aus DB/Registry, nichts geschaetzt. spawn_batch = mehrere Spezialisten in einem Call starten (specialists-Array). purge = Stop + komplette Entfernung (FS-Verzeichnis, status.json, Channel-Memberships, Chat-Session). Auto-Respawn unmoeglich danach.',
         },
 
@@ -110,7 +110,7 @@ export const specialistTool: ConsolidatedTool = {
         identity_id: { type: 'string', description: 'runtime_steuern/runtime_log: Ziel-Identitaet (UUID)' },
         aktion: { type: 'string', enum: ['stop', 'start', 'restart', 'wake'], description: 'runtime_steuern: stop | start (letztes Spawn-Rezept) | restart | wake' },
         grund: { type: 'string', description: 'runtime_steuern/runtime_prozess: Grund (mind. 10 Zeichen, Audit)' },
-        runtime: { type: 'string', description: 'runtime_prozess: Container-Runtime (claude|codex)' },
+        runtime: { type: 'string', description: 'runtime_prozess: Container-Runtime (claude|codex); runtime_modellwechsel: Ziel-CLI-Anbieter (claude|codex = Abo frei; sonst API, nur nach Rueckfrage beim User)' },
         runtimes: { type: 'array', items: { type: 'string' }, description: 'runtime_prozesse: nur diese Runtimes (Standard alle)' },
         pid: { type: 'number', description: 'runtime_prozess: PID im Container' },
         signal: { type: 'string', enum: ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL', 'SIGUSR1', 'SIGUSR2'], description: 'runtime_prozess: Signal (Standard SIGTERM)' },
@@ -207,6 +207,8 @@ export const specialistTool: ConsolidatedTool = {
             if (b && typeof b === 'object') return await core.bestaetigeProzessAenderung(b as { id: unknown; grund: unknown }, akteur);
             return await core.frageProzessAenderungAn({ project, runtime: args.runtime, pid: args.pid, signal: args.signal, grund: args.grund }, akteur);
           }
+          // P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (Schalter plattform_agent_modellwechsel, Std AUS).
+          case 'runtime_modellwechsel': return await core.wechslePlattformAgentModell({ identity_id: args.identity_id, runtime: args.runtime, modell: args.model, effort: args.effort, grund: args.grund }, akteur);
           default: return { success: false, error: 'aktion_unbekannt' };
         }
       } catch (err) {

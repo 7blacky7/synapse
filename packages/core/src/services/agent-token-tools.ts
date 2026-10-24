@@ -697,7 +697,9 @@ export async function bereiteAgentToolAufrufVor(
         const eigenePlaene = await eigenePlaeneZeile(p);
         // P22-T78: Startkontext, den der neue Prozess mit seinem System-Prompt bekam, genau einmal auf diesen (neuen) Lauf buchen.
         await (await import('./agent-verlauf.js')).bucheStartkontextAufLauf(p.identitaet.id, p.lauf_id).catch(() => false);
-        basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p, token), ...(abloesung ? { abloesung } : {}),
+        // P22-T117: hinterlegtes Modell/CLI-Anbieter/Startort bzw. Hinweis (Schalter plattform_agent_modellwechsel; AUS -> unveraendert).
+        const ausweisModell = await (await import('./plattform-agent-modellwechsel.js')).ausweisModellFuerAnmeldung(p.identitaet.id, p.project);
+        basis.antwort = { success: true, action: 'anmelden', principal: zeigePrincipal(p, token), ...(abloesung ? { abloesung } : {}), ...(ausweisModell ?? {}),
           ...(eigenePlaene ? { offene_plaene: eigenePlaene } : {}), agentOnboarding };
       }
     } else if (tool === 'chat' && action === 'identitaet') {
