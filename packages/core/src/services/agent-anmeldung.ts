@@ -21,6 +21,7 @@ import { registriereHinweisQuelle, type AusloeserHinweis, type HinweisKontext, t
 // W12-B (P22-T25): Ausweis-Kern (V7) und TOKEN_BEREIT-Vertrag (V6); der Tresor entfaellt (V1, Ausweis offen).
 import { leseAusweisKern, leereAusweisKernCache, ausweisAnmeldungAktiv, ausweisSchattenAktiv } from './agent-profil-schalter.js';
 import { tokenBereitEntprellungMs, tokenBereitText, TEXT_NEUINSTANZ } from './agent-profil-vertrag.js';
+import { kennungsText } from './agent-kennung-texte.js';
 import { neuesAusweisImTextMuster } from './agent-ausweis-format.js';
 import { offeneVisa } from './agent-ausweis-projekte.js';
 import {
@@ -422,7 +423,8 @@ export const TOKEN_BEREIT_QUELLE: HinweisQuelle = {
     const z = r.rows[0];
     if (!z) return [];
     if (z.zuletzt_benutzt) return [{ hinweis_id: z.token_id, modus: 'bis_erledigt', text: '', erledigt: true }];
-    const text = tokenBereitText(z.token_offen);
+    // P22-T131: bei Schalter agent_kennung_werbung EIN nennt der Text agent_kennung statt token.
+    const text = await kennungsText(tokenBereitText(z.token_offen), k.projekt);
     // kurztext = voller Text: auch die entprellte Wiederholung muss den Ausweis tragen (zuverlaessig bis zur Uebernahme).
     return [{ hinweis_id: z.token_id, modus: 'bis_erledigt', text, kurztext: text, spezifitaet: 9,
       entprellung_ms: tokenBereitEntprellungMs() }];

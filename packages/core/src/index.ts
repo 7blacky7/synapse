@@ -628,6 +628,9 @@ export { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParame
 export type { AgentToolKontext, AgentToolAufrufOptionen, BestaetigterAufrufKontext } from './services/agent-token-tools.js';
 // P22-T13 Phase V: W1b-Vertrag, Gate-Kern, Selbstfelder, Schalter, Tokentresor, Schema 113.
 export { gateToolListe, bestaetigterAufrufKontext } from './services/agent-token-tools.js';
+// P22-T131: Ausweis-Parameter agent_kennung (token als Alias), Schalter agent_kennung_werbung, Debug-Zaehler.
+export { normalisiereAgentKennung, agentKennungDiagnose, AGENT_KENNUNG_FELD, AGENT_KENNUNG_FUNKTION, AGENT_KENNUNG_PARAMETER } from './services/agent-token-tools.js';
+export { leseAgentKennungWerbung, textMitAgentKennung, kennungsText, guideFuerKennung, kennungTexteDiagnose } from './services/agent-kennung-texte.js';
 export * from './services/agent-profil-vertrag.js';
 export * from './services/tool-gate.js';
 export * from './services/agent-selbstfelder.js';

@@ -37,6 +37,7 @@ import {
   getPendingEventHints,
   pruefeEventEskalation,
   TOOL_GUIDES,
+  guideFuerKennung,
   stelleSchemaSicher,
   logToolCall,
   toolArgsVorschau,
@@ -217,7 +218,8 @@ export function createServer(): Server {
     let toolGuideHint: Record<string, unknown> | null = null;
     // P22-T13 Paket C: abgeschalteter tool_guide wird weder gebaut noch als gezeigt markiert.
     if (!firstUseHinted.has(firstUseKey) && hinweisAktiv('tool_guide')) {
-      toolGuideHint = buildFirstUseHint(name);
+      // P22-T131: First-Use-Guide mit agent_kennung bei Schalter agent_kennung_werbung EIN.
+      toolGuideHint = await guideFuerKennung(buildFirstUseHint(name), kontext.principal?.project ?? null);
       // Auch bei null markieren — kein "Retry" wenn Tool im Guide fehlt
       firstUseHinted.add(firstUseKey);
     }

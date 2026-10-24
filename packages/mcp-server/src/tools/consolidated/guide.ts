@@ -4,7 +4,7 @@
  * Single Source of Truth: @synapse/core (GUIDE_OVERVIEW + TOOL_GUIDES).
  */
 
-import { GUIDE_OVERVIEW, TOOL_GUIDES } from '@synapse/core';
+import { GUIDE_OVERVIEW, TOOL_GUIDES, guideFuerKennung } from '@synapse/core';
 import { ConsolidatedTool, str } from './types.js';
 
 export const guideTool: ConsolidatedTool = {
@@ -50,7 +50,8 @@ export const guideTool: ConsolidatedTool = {
       };
     }
 
-    const toolGuide = TOOL_GUIDES[toolName];
+    // P22-T131: Ausweis-Parameter im Guide als agent_kennung bei Schalter agent_kennung_werbung EIN (global).
+    const toolGuide = await guideFuerKennung(TOOL_GUIDES[toolName]);
     if (!toolGuide) {
       return {
         success: false,

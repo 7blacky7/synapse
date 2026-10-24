@@ -27,6 +27,8 @@ import {
   leseW1bSchalter, leseAusweisKern, ausweisTokenAktiv, ausweisAnmeldungAktiv, leseAusweisKernFuerToken, ausweisProjekt, ausweisIrgendwoAktiv,
   type AusweisKernStand,
 } from './agent-profil-schalter.js';
+// P22-T131: Schalter agent_kennung_werbung + Textersatz fuer Hinweise.
+import { leseAgentKennungWerbung, textMitAgentKennung, kennungsText } from './agent-kennung-texte.js';
 import { feldBedeutung, modellNachBezeugung, sammleSelbstangaben, actorAliasFelder, bindeVerschachtelteActorFelder, selbstKonflikte, SELBSTFELD_REGELN, type Selbstangaben } from './agent-selbstfelder.js';
 // P22-T56: tools/list je Verbindung (Variante aus entscheideToolListeVerbindung).
 import type { ToolListeEntscheidung } from './tool-liste-verbindung.js';
@@ -63,6 +65,56 @@ import { leseChatGetEigeneSchalter, chatGetEigeneAntwort } from './chat-ausweis-
 export const AGENT_TOKEN_PARAMETER = {
   token: { type: 'string', description: 'Agenten-Ausweis (sai_...): bei JEDEM Aufruf mitgeben. Er allein bestimmt Identitaet, Projekt und Rolle (agent_id/role weglassen). Start/Kontextverlust: chat(action:"anmelden", token).' },
 };
+/**
+ * P22-T131 (User 24.10.2026): der Ausweis-Parameter heisst kuenftig agent_kennung (Wert bleibt sai_...), weil 'token' bei Modellen
+ * Geheimnis-Reflexe ausloest. ANNAHME immer: agent_kennung ODER token (Alias); beide mit gleichem Wert = ok, verschieden =
+ * agent_kennung_widerspruch. Intern heisst das Feld weiter token (normalisiereAgentKennung am Eingang). WERBUNG: nur bei
+ * Produkt-Schalter agent_kennung_werbung (Standard AUS) ersetzt agent_kennung den token-Parameter in tools/list; AUS = Bestand.
+ * Interne Schemas (RV9-Golden) bleiben unveraendert. Schwaerzung: der Ausweis wird wertbasiert (AUSWEIS_FORMAT) nie geschwaerzt,
+ * unabhaengig vom Feldnamen; 'agent_kennung' ist kein Geheimnis-Name. DEBUG: agentKennungDiagnose() (Zaehler je Name).
+ */
+export const AGENT_KENNUNG_FELD = 'agent_kennung' as const;
+export const AGENT_KENNUNG_FUNKTION = 'agent_kennung_werbung' as const;
+export const AGENT_KENNUNG_PARAMETER = {
+  agent_kennung: { type: 'string', description: 'Agenten-Kennung (sai_...), kein Geheimnis: bei JEDEM Aufruf mitgeben. Sie allein bestimmt Identitaet, Projekt und Rolle (agent_id/role weglassen). Start/Kontextverlust: chat(action:"anmelden", agent_kennung).' },
+};
+const kennungZaehler = { token: 0, agent_kennung: 0, beide_gleich: 0, widerspruch: 0 };
+/** P22-T131 DEBUG: wie oft welcher Parametername seit Prozessstart kam (Grundlage fuer das spaetere Abkuendigen von token). */
+export function agentKennungDiagnose(): { token: number; agent_kennung: number; beide_gleich: number; widerspruch: number } {
+  return { ...kennungZaehler };
+}
+/** P22-T131: agent_kennung -> internes Feld token. Gibt eine Kopie zurueck; fehler nur bei widerspruechlichen Werten. */
+export function normalisiereAgentKennung(eingabe: Record<string, unknown>): { eingabe: Record<string, unknown>; fehler?: 'agent_kennung_widerspruch' } {
+  const hatKennung = Object.hasOwn(eingabe, AGENT_KENNUNG_FELD);
+  const hatToken = Object.hasOwn(eingabe, 'token');
+  if (!hatKennung) {
+    if (hatToken) kennungZaehler.token++;
+    return { eingabe };
+  }
+  const { [AGENT_KENNUNG_FELD]: kennung, ...rest } = eingabe;
+  if (hatToken) {
+    if (rest.token !== kennung) { kennungZaehler.widerspruch++; return { eingabe: rest, fehler: 'agent_kennung_widerspruch' }; }
+    kennungZaehler.beide_gleich++;
+    return { eingabe: rest };
+  }
+  kennungZaehler.agent_kennung++;
+  return { eingabe: { ...rest, token: kennung } };
+}
+export const TEXT_AGENT_KENNUNG_WIDERSPRUCH = 'agent_kennung und token haben verschiedene Werte. Nur agent_kennung mitgeben. Nichts wurde ausgefuehrt.';
+/** P22-T131: Schalter frisch je tools/list; Lesefehler -> AUS (Bestand). */
+async function kennungWerbungAktiv(project: string | null): Promise<boolean> {
+  return leseAgentKennungWerbung(project);
+}
+/** P22-T131: in einer Schema-KOPIE token durch agent_kennung ersetzen und die Verweise in agent_id/project-Texten nachziehen. */
+function bewirbAgentKennung(props: Record<string, unknown>): void {
+  if (!('token' in props)) return;
+  delete props.token;
+  Object.assign(props, structuredClone(AGENT_KENNUNG_PARAMETER));
+  const aid = props.agent_id as { description?: string } | undefined;
+  if (aid?.description) props.agent_id = { ...aid, description: aid.description.replace(/kommt aus token/g, 'kommt aus agent_kennung') };
+  const p = props.project as { description?: string } | undefined;
+  if (p?.description) props.project = { ...p, description: p.description.replace('mit token/Ausweis', 'mit agent_kennung') };
+}
 /** P22-T55: Beschreibung von agent_id, sobald der Ausweis beworben wird (getrennte Texte je Weg: Ausweis vs. Legacy). */
 export const TEXT_AGENT_ID_MIT_AUSWEIS = 'Nur OHNE Ausweis (Legacy): eigene Agent-ID. Mit Ausweis weglassen, die Identitaet kommt aus token.';
 /** P22-T55: Hinweis an einen Ausweis-Agenten, der agent_id/role (oder einen Absender-Alias) mitgibt; je Lauf einmal. */
@@ -132,6 +184,8 @@ export async function beworbeneAgentTools<T extends { name: string; inputSchema?
   // S2: project nur optional, wenn die Liste MIT Ausweis abgefragt wird UND der Ausweis-Kern wirksam ist.
   const projektOptional = opt?.mitAusweis === true && (await leseAusweisKern(opt?.project ?? null)).aktiv;
   const mehrprojekt = projektOptional && (await leseMehrprojektSchalter(opt?.project ?? null)).aktiv;
+  // P22-T131: agent_kennung statt token bewerben (Schalter agent_kennung_werbung, Standard AUS).
+  const kennung = tokenAn && await kennungWerbungAktiv(opt?.project ?? null);
   // P23-T5: Beschreibungstexte zuerst kuerzen (Kopien, Struktur gleich); token/agent_id und die Ausweis-Anpassung danach bleiben unberuehrt.
   const basis = await wendeKurzeBeschreibungenAn(defs, opt?.project ?? null);
   return basis.map(def => {
@@ -143,6 +197,7 @@ export async function beworbeneAgentTools<T extends { name: string; inputSchema?
         if (aid) kopie.inputSchema.properties.agent_id = { ...aid, description: TEXT_AGENT_ID_MIT_AUSWEIS + (aid.description ? ' ' + aid.description : '') };
       }
       if (projektOptional) ausweisProjektOptional(kopie, mehrprojekt);
+      if (kennung) bewirbAgentKennung(kopie.inputSchema.properties);
       if (kopie.name === 'chat') {
         const action = kopie.inputSchema.properties.action as { enum?: unknown[] } | undefined;
         if (action?.enum) {
@@ -163,6 +218,7 @@ async function ausweisVerbindungTools<T extends { name: string; inputSchema?: { 
 ): Promise<T[]> {
   const anmeldungAn = await ausweisAnmeldungAktiv(heimat);
   const mehrprojekt = (await leseMehrprojektSchalter(heimat)).aktiv;
+  const kennung = await kennungWerbungAktiv(heimat);
   const basis = await wendeKurzeBeschreibungenAn(defs, heimat);
   return basis.map(def => {
     const kopie = structuredClone(def);
@@ -170,6 +226,7 @@ async function ausweisVerbindungTools<T extends { name: string; inputSchema?: { 
       kopie.inputSchema.properties.token = { ...AGENT_TOKEN_PARAMETER.token };
       ausweisProjektOptional(kopie, mehrprojekt);
       blendeSelbstangabenAus(kopie, mehrprojekt);
+      if (kennung) bewirbAgentKennung(kopie.inputSchema.properties);
       if (kopie.name === 'chat') {
         const action = kopie.inputSchema.properties.action as { enum?: unknown[] } | undefined;
         if (action?.enum) action.enum = action.enum.filter(a => anmeldungAn || a !== 'koordinator_liste');
@@ -253,6 +310,13 @@ export async function mitAgentToolAufruf<T>(
     const kontext = await bereiteAgentToolAufrufVor(tool, eingabe, serverInstanceId, transportToken, erlaubteParameter, optionen);
     let ergebnis = await arbeit(kontext);
     // P22-T50: index_stats(sitzung:'fortsetzung') mit Ausweis -> Verweis auf chat(anmelden).
+    // P22-T131: Hinweistexte (Sitzung, nur-token) bei Schalter agent_kennung_werbung EIN mit agent_kennung.
+    const kennungTexte = (kontext.sitzung_hinweis || kontext.angabe_hinweis)
+      && await leseAgentKennungWerbung(kontext.principal?.project ?? null);
+    if (kennungTexte) {
+      if (kontext.sitzung_hinweis) kontext.sitzung_hinweis = textMitAgentKennung(kontext.sitzung_hinweis);
+      if (kontext.angabe_hinweis) kontext.angabe_hinweis = textMitAgentKennung(kontext.angabe_hinweis);
+    }
     if (kontext.sitzung_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.sitzung_hinweis, 'ausweis_sitzung_hinweis');
     // P22-T55: agent_id/role mit Ausweis mitgegeben -> kurzer Hinweis (je Lauf einmal, abweichende Werte ignoriert).
     if (kontext.angabe_hinweis) ergebnis = haengeAusweisHinweiseAn(ergebnis, kontext.angabe_hinweis, 'ausweis_hinweis');
@@ -376,6 +440,13 @@ export async function bereiteAgentToolAufrufVor(
   tool: string, eingabe: Record<string, unknown>, serverInstanceId: string, transportToken?: string, erlaubteParameter?: Set<string>,
   optionen?: AgentToolAufrufOptionen,
 ): Promise<AgentToolKontext> {
+  // P22-T131: agent_kennung (neuer Name) -> internes Feld token; Widerspruch beider Namen vor jeder Pruefung/Nebenwirkung ablehnen.
+  const kennung = normalisiereAgentKennung(eingabe);
+  if (kennung.fehler) {
+    return { aktiv: true, args: { ...kennung.eingabe },
+      antwort: { success: false, error: kennung.fehler, message: TEXT_AGENT_KENNUNG_WIDERSPRUCH } };
+  }
+  eingabe = kennung.eingabe;
   const bezug = aktuellerAgentAufruf()?.bezug ?? await leseAgentBezugModus();
   const args = { ...eingabe };
   const token = Object.hasOwn(eingabe, 'token') ? feld(eingabe, 'token') : transportToken;
@@ -526,8 +597,9 @@ export async function bereiteAgentToolAufrufVor(
       return basis;
     }
     if (!token) {
+      // P22-T131: Fehlertext nennt agent_kennung nur bei Schalter agent_kennung_werbung EIN (Fehlercode bleibt).
       basis.antwort = { success: false, error: 'agent_token_fehlt',
-        message: TEXT_AGENT_TOKEN_FEHLT };
+        message: await kennungsText(TEXT_AGENT_TOKEN_FEHLT, feld(args, 'project') ?? null) };
       return basis;
     }
     // P22-T13 K16.1: Herkunft der Angaben. Vorbelegte Selbstfelder gehoeren nicht zum Konfliktvergleich.

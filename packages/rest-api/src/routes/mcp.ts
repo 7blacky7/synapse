@@ -232,7 +232,7 @@ import {
   setSetupPhase,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
-import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls, baueToolErgebnis, kuerzeThoughtTreffer, toolArgsVorschau } from '@synapse/core';
+import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls, baueToolErgebnis, kuerzeThoughtTreffer, toolArgsVorschau, guideFuerKennung } from '@synapse/core';
 import { leiteAgentIdAusHeaders } from './agent-header.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen — dieselbe Funktion wie im
 // lokalen MCP-Server, damit die beiden Strecken nicht auseinanderlaufen.
@@ -5987,7 +5987,8 @@ async function handleToolCallKern(
         };
       }
 
-      const toolGuide = TOOL_GUIDES[toolName];
+      // P22-T131: Ausweis-Parameter im Guide als agent_kennung bei Schalter agent_kennung_werbung EIN (global).
+      const toolGuide = await guideFuerKennung(TOOL_GUIDES[toolName]);
       if (!toolGuide) {
         return {
           success: false,

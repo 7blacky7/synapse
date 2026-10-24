@@ -13,6 +13,8 @@
  * dessen Aufrufer den Altschalter token_identitaet prueft).
  */
 import { getPool } from '../db/client.js';
+// P22-T131: Schalter agent_kennung_werbung fuer die Startkonfiguration.
+import { leseAgentKennungWerbung } from './agent-kennung-texte.js';
 import {
   W1B_DIENSTE, baueStartkonfiguration,
   type AgentVorbereitenAusgabe, type AgentVorbereitenEingabe, type AusweisAbruf, type AusweisAkteur, type AusweisWeg, type ProfilInhalt,
@@ -99,12 +101,14 @@ async function ausgabe(
 ): Promise<AgentVorbereitenAusgabe> {
   const rev = await getPool().query<{ profil_revision: number }>('SELECT profil_revision FROM agent_identitaeten WHERE id=$1', [a.identitaet.id]);
   const erstnutzungBis = a.gueltig_bis ?? null;
+  // P22-T131: Startkonfiguration nennt agent_kennung nur bei Schalter agent_kennung_werbung EIN.
+  const kennung = await leseAgentKennungWerbung(project);
   return {
     identity_id: a.identitaet.id, agent_id: a.identitaet.agent_id, project, rolle: a.identitaet.rolle,
     profil_revision: rev.rows[0]?.profil_revision ?? 0, neu_angelegt: neuAngelegt, legacy_uebernahme: legacyUebernahme,
     token: a.token, token_id: a.token_id, token_praefix: a.token_praefix,
     zustand: erstnutzungBis ? 'ausgestellt' : 'aktiv', ausweis_weg: (a.ausweis_weg as AusweisWeg | null) ?? 'vorbereitet',
-    erstnutzung_bis: erstnutzungBis, startkonfiguration: baueStartkonfiguration(a.token, erstnutzungBis, e.startart),
+    erstnutzung_bis: erstnutzungBis, startkonfiguration: baueStartkonfiguration(a.token, erstnutzungBis, e.startart, kennung),
   };
 }
 

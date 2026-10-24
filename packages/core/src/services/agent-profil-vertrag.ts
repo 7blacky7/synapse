@@ -961,7 +961,8 @@ export interface Startkonfiguration {
   /** Dieselbe Vorlage mit Platzhalter {TOKEN} (fuer Anzeige/Logs ohne Wert). */
   startsatz_vorlage: string;
   /** Erste Aktion des Agenten. */
-  erste_aktion: { tool: 'chat'; argumente: { action: 'anmelden'; token: string } };
+  /** P22-T131: bei Schalter agent_kennung_werbung EIN steht der Ausweis unter agent_kennung statt token. */
+  erste_aktion: { tool: 'chat'; argumente: { action: 'anmelden'; token?: string; agent_kennung?: string } };
   /** ISO-Zeitpunkt der Erstnutzungsfrist; null = bereits aktiv. */
   erstnutzung_bis: string | null;
   /** Nur Daemon-Spezialisten (Bestand): Env-Name, den der Daemon selbst setzt. Kein neues Konzept. */
@@ -985,6 +986,8 @@ export interface AgentVorbereitenAusgabe {
   startkonfiguration: Startkonfiguration;
 }
 
+// P22-T131: reiner Textersatz (keine Logik, kein Schalter hier) fuer die agent_kennung-Variante.
+import { textMitAgentKennung } from './agent-kennung-texte.js';
 export const STARTSATZ_VORLAGE = 'Dein Synapse-Agenten-Ausweis: {TOKEN}. Erste Aktion: chat(action:"anmelden", token:"{TOKEN}"). '
   + 'Danach bei JEDEM Synapse-Aufruf token:"{TOKEN}" mitgeben (ersetzt agent_id, project und role). '
   + 'Neuer Kontext/Neustart: wieder chat(anmelden, token), nie chat(register). Ausweis nie in Channel, Thought oder Log schreiben.';
@@ -994,11 +997,13 @@ export function startsatzText(token: string, erstnutzung_bis: string | null): st
   return erstnutzung_bis ? `${satz} Erste Anmeldung bis ${erstnutzung_bis}, sonst verfaellt der Ausweis.` : satz;
 }
 
-export function baueStartkonfiguration(token: string, erstnutzung_bis: string | null, startart?: Startart): Startkonfiguration {
+/** P22-T131: kennung=true (Schalter agent_kennung_werbung EIN) -> Startsatz/Vorlage/erste Aktion mit agent_kennung; Standard = Bestand. */
+export function baueStartkonfiguration(token: string, erstnutzung_bis: string | null, startart?: Startart, kennung = false): Startkonfiguration {
+  const k = (s: string): string => (kennung ? textMitAgentKennung(s) : s);
   return {
-    startsatz: startsatzText(token, erstnutzung_bis),
-    startsatz_vorlage: STARTSATZ_VORLAGE,
-    erste_aktion: { tool: 'chat', argumente: { action: 'anmelden', token } },
+    startsatz: k(startsatzText(token, erstnutzung_bis)),
+    startsatz_vorlage: k(STARTSATZ_VORLAGE),
+    erste_aktion: { tool: 'chat', argumente: kennung ? { action: 'anmelden', agent_kennung: token } : { action: 'anmelden', token } },
     erstnutzung_bis,
     ...(startart === 'spezialist' ? { bestand_env: 'SYNAPSE_AGENT_TOKEN' as const } : {}),
   };

@@ -14,6 +14,8 @@ import { rolleFuerAgent, rollenQuelleKlartext, baueOnboardingRegelwerk, baueRege
 import { w12ZustellKontext, w12ProfilBlock, markiereZugestellt, typRegelnFuer } from './agent-lauf.js';
 import { markiereWerkzeugRegelnZugestellt } from './werkzeug-regeln.js';
 import { TEXT_NEUINSTANZ } from './agent-profil-vertrag.js';
+// P22-T131: Neuinstanz-Hinweis schalterabhaengig (agent_kennung_werbung).
+import { kennungsText } from './agent-kennung-texte.js';
 import { getPool } from '../db/client.js';
 import type { RegelVerzeichnis } from './agent-rollen.js';
 
@@ -297,6 +299,8 @@ export async function holeAgentOnboarding(e: {
   const { project, agentId } = e;
   // P22-T50: '*' (jev abwesend: alle Projekte) ist nie ein Projekt - kein Onboarding, keine Registrierung.
   if (project === '*') return null;
+  // P22-T131: Neuinstanz-Hinweis nennt agent_kennung nur bei Schalter agent_kennung_werbung EIN.
+  const neuinstanzText = await kennungsText(TEXT_NEUINSTANZ, project);
   const { rolle, quelle } = rolleFuerAgent(agentId, e.role);
   // W12-B: null = Bestandsverhalten (kein Token-Agent mit Lauf, Kern AUS oder Lesefehler).
   const w12 = await w12ZustellKontext(project, agentId, !!e.explizit).catch(() => null);
@@ -351,7 +355,7 @@ export async function holeAgentOnboarding(e: {
         ...regelwerk.regel_verzeichnis,
         regeln: regelwerk.regel_verzeichnis.regeln ?? regelwerk.rules.filter(r => !r.vollstaendig).map(r => r.name) } } : {}),
       ...(profil ? { profil } : {}),
-      neuinstanz_hinweis: TEXT_NEUINSTANZ,
+      neuinstanz_hinweis: neuinstanzText,
       zustellung: { ...zustellAnzeige(folge.umfang), lauf_id: folge.lauf_id, ...regelDiagnose },
     };
     if (!pflicht && !profil) {
@@ -399,7 +403,7 @@ export async function holeAgentOnboarding(e: {
         ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
         ...(kurz.skills_andere.length ? { skills_andere: kurz.skills_andere } : {}),
         statistik_abruf: 'Statistiken, Jev, Erklaerungsfaelle, Entscheidungs-Durchsicht: admin(action:"index_stats", onboarding:true)',
-        neuinstanz_hinweis: TEXT_NEUINSTANZ,
+        neuinstanz_hinweis: neuinstanzText,
         zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose, koordinator_kurz: true },
       };
       const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
@@ -431,7 +435,7 @@ export async function holeAgentOnboarding(e: {
         ...(kurz.eigene_tasks.length ? { eigene_tasks: kurz.eigene_tasks } : {}),
         ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
         ...(faelle ? { erklaerung_faelle: faelle } : {}),
-        neuinstanz_hinweis: TEXT_NEUINSTANZ,
+        neuinstanz_hinweis: neuinstanzText,
       };
       const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
       if (geliefert) {
@@ -474,7 +478,7 @@ export async function holeAgentOnboarding(e: {
     // W12-B: nur fuer Token-Agenten mit Lauf bei Kern EIN (sonst Bestandsform unveraendert).
     ...profilErg.teil,
     ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
-    ...(w12 ? { neuinstanz_hinweis: TEXT_NEUINSTANZ, zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose } } : {}),
+    ...(w12 ? { neuinstanz_hinweis: neuinstanzText, zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose } } : {}),
   };
   const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
   if (geliefert && w12) {
