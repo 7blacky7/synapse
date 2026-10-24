@@ -367,27 +367,32 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, count: koordinatoren.length, koordinatoren };
     } catch (error) { return sendFachFehler(reply, error); }
   });
-  // P22-T116: Runtime-Agenten (Uebersicht, Log, Prozesse, Steuern, Prozess-Signal mit Bestaetigung). Web-UI = User.
-  fastify.get<{ Querystring: { project?: string } }>('/api/runtime-agenten', async (request, reply) => {
+  // P22-T116: Runtime-Agenten (Uebersicht, Log, Prozesse, Steuern, Prozess-Signal mit Bestaetigung). Unter /api/agent-runtimes, damit
+  // guardInteractiveRuntimeRequest greift (nur interaktive User-Session; Service-/Daemon-/Wrapper-Tokens 403). Akteur = User.
+  fastify.get<{ Querystring: { project?: string } }>('/api/agent-runtimes/runtime-agenten', async (request, reply) => {
     try {
       const project = request.query.project?.trim() ?? '';
       const u = await leseRuntimeUebersicht(project);
       return u ? { success: true, aktiv: true, project, ...u } : { success: true, aktiv: false, project, schalter: 'runtime_agenten_uebersicht' };
     } catch (error) { return sendFachFehler(reply, error); }
   });
-  fastify.get<{ Querystring: { identity_id?: string; max_bytes?: string } }>('/api/runtime-agenten/log', async (request, reply) => {
+  fastify.get<{ Querystring: { identity_id?: string; max_bytes?: string } }>('/api/agent-runtimes/runtime-agenten/log', async (request, reply) => {
     try { return await leseRuntimeAgentLog({ identity_id: request.query.identity_id, max_bytes: request.query.max_bytes }, { art: 'user' }); }
     catch (error) { return sendFachFehler(reply, error); }
   });
-  fastify.get<{ Querystring: { project?: string } }>('/api/runtime-agenten/prozesse', async (request, reply) => {
+  fastify.get<{ Querystring: { project?: string } }>('/api/agent-runtimes/runtime-agenten/prozesse', async (request, reply) => {
     try { return await leseRuntimeProzesse({ project: request.query.project }, { art: 'user' }); }
     catch (error) { return sendFachFehler(reply, error); }
   });
-  fastify.post<{ Body: { identity_id?: unknown; aktion?: unknown; grund?: unknown; message?: unknown } }>('/api/runtime-agenten/steuern', async (request, reply) => {
-    try { return await steuereRuntimeAgent({ identity_id: request.body?.identity_id, aktion: request.body?.aktion, grund: request.body?.grund, message: request.body?.message }, { art: 'user' }); }
+  fastify.post<{ Body: { identity_id?: unknown; aktion?: unknown; grund?: unknown; message?: unknown; bestaetigung?: { id?: unknown; grund?: unknown } } }>('/api/agent-runtimes/runtime-agenten/steuern', async (request, reply) => {
+    try {
+      const b = request.body ?? {};
+      const best = b.bestaetigung && typeof b.bestaetigung === 'object' ? { id: b.bestaetigung.id, grund: b.bestaetigung.grund } : null;
+      return await steuereRuntimeAgent({ identity_id: b.identity_id, aktion: b.aktion, grund: b.grund, message: b.message, bestaetigung: best }, { art: 'user' });
+    }
     catch (error) { return sendFachFehler(reply, error); }
   });
-  fastify.post<{ Body: { project?: unknown; runtime?: unknown; pid?: unknown; signal?: unknown; grund?: unknown; bestaetigung?: { id?: unknown; grund?: unknown } } }>('/api/runtime-agenten/prozess', async (request, reply) => {
+  fastify.post<{ Body: { project?: unknown; runtime?: unknown; pid?: unknown; signal?: unknown; grund?: unknown; bestaetigung?: { id?: unknown; grund?: unknown } } }>('/api/agent-runtimes/runtime-agenten/prozess', async (request, reply) => {
     try {
       const b = request.body ?? {};
       if (b.bestaetigung && typeof b.bestaetigung === 'object') return await bestaetigeProzessAenderung({ id: b.bestaetigung.id, grund: b.bestaetigung.grund }, { art: 'user' });

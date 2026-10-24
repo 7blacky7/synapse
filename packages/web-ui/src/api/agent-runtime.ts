@@ -470,20 +470,21 @@ export interface RuntimeAgentZeile {
 }
 export interface RuntimeAgentenStand { aktiv: boolean; orte?: Record<string, RuntimeAgentZeile[]>; anzahl?: number; warnungen_gesamt?: number; debug?: Record<string, unknown> }
 export async function getRuntimeAgenten(project: string): Promise<RuntimeAgentenStand> {
-  return jsonRequest<{ success: true } & RuntimeAgentenStand>('/api/runtime-agenten?project=' + encodeURIComponent(project));
+  return jsonRequest<{ success: true } & RuntimeAgentenStand>('/api/agent-runtimes/runtime-agenten?project=' + encodeURIComponent(project));
 }
 export async function getRuntimeAgentLog(identityId: string): Promise<Record<string, unknown>> {
-  return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/log?identity_id=' + encodeURIComponent(identityId));
+  return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/log?identity_id=' + encodeURIComponent(identityId));
 }
 export async function getRuntimeProzesse(project: string): Promise<Record<string, unknown>> {
-  return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/prozesse?project=' + encodeURIComponent(project));
+  return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/prozesse?project=' + encodeURIComponent(project));
 }
 /** P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (Schalter plattform_agent_modellwechsel). */
 export async function wechsleAgentModellUi(identityId: string, runtime: string, modell: string, grund: string, kostenBestaetigt = false): Promise<Record<string, unknown>> {
   return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/modellwechsel', { method: 'POST', body: JSON.stringify({ identity_id: identityId, runtime, modell, grund, kosten_bestaetigt: kostenBestaetigt }) });
 }
-export async function steuereRuntimeAgentUi(identityId: string, aktion: 'stop' | 'start' | 'restart' | 'wake', grund: string): Promise<Record<string, unknown>> {
-  return jsonRequest<Record<string, unknown>>('/api/runtime-agenten/steuern', { method: 'POST', body: JSON.stringify({ identity_id: identityId, aktion, grund }) });
+/** P22-T116: zweistufig - ohne bestaetigung nur Vorschau + bestaetigung_id; mit {id, grund} Ausfuehrung. */
+export async function steuereRuntimeAgentUi(identityId: string, aktion: 'stop' | 'start' | 'restart' | 'wake', grund: string, bestaetigung?: { id: string; grund: string }): Promise<Record<string, unknown>> {
+  return jsonRequest<Record<string, unknown>>('/api/agent-runtimes/runtime-agenten/steuern', { method: 'POST', body: JSON.stringify({ identity_id: identityId, aktion, grund, ...(bestaetigung ? { bestaetigung } : {}) }) });
 }
 
 /** P22-T112: PG-Produkt-Schalter im Projekt der Zielidentitaet, Standard AUS. */

@@ -10,11 +10,13 @@ import { PlattformAgentChat } from './PlattformAgentChat';
  */
 export function ChannelAgentFensterWeiche(props: ComponentProps<typeof ChannelAgentChatWindow>) {
   const id = props.windowState.identityId ?? '';
-  const [direkt, setDirekt] = useState(false);
+  // Abnahme 20a1192a R6: Freigabe an die Identitaet gebunden (wie T112-Dock) - eine Freigabe von A wirkt nie fuer B.
+  const [stand, setStand] = useState<{ identityId: string; aktiv: boolean }>({ identityId: '', aktiv: false });
+  const direkt = stand.identityId === id && stand.aktiv;
   useEffect(() => {
-    if (!id) { setDirekt(false); return; }
+    if (!id) return;
     let aktiv = true;
-    getPlattformAgentChatSchalter(id).then(s => { if (aktiv) setDirekt(s.aktiv); }).catch(() => { if (aktiv) setDirekt(false); });
+    getPlattformAgentChatSchalter(id).then(s => { if (aktiv) setStand({ identityId: id, aktiv: s.aktiv }); }).catch(() => { if (aktiv) setStand({ identityId: id, aktiv: false }); });
     return () => { aktiv = false; };
   }, [id]);
   if (!direkt || !id) return <ChannelAgentChatWindow {...props} />;

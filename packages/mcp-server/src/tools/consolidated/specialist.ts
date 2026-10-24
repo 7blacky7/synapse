@@ -115,7 +115,7 @@ export const specialistTool: ConsolidatedTool = {
         pid: { type: 'number', description: 'runtime_prozess: PID im Container' },
         signal: { type: 'string', enum: ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGKILL', 'SIGUSR1', 'SIGUSR2'], description: 'runtime_prozess: Signal (Standard SIGTERM)' },
         max_bytes: { type: 'number', description: 'runtime_log: Bytes je Datei vom Ende (max 16384)' },
-        bestaetigung: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, description: 'runtime_prozess: {id, grund} fuehrt eine Rueckfrage aus (1. Aufruf ohne bestaetigung = nur Vorschau + bestaetigung_id, 10 min, einmalig, gleicher Aufrufer)' },
+        bestaetigung: { type: 'object', properties: { id: { type: 'string' }, grund: { type: 'string' } }, description: 'runtime_steuern/runtime_prozess: {id, grund} fuehrt eine Rueckfrage aus (1. Aufruf ohne bestaetigung = nur Vorschau + bestaetigung_id, 10 min, einmalig, gleicher Aufrufer)' },
         // status parameters
         // name, project_path: siehe oben
         alle: {
@@ -193,20 +193,10 @@ export const specialistTool: ConsolidatedTool = {
       const akteur = core.steuerAkteurAusAufruf();
       const project = str(args, 'project') ?? '';
       try {
+        // P22-T116 (Abnahme 20a1192a R5): T116-Aktionen ueber den gemeinsamen core-Vertrag (gleich REST-MCP), inkl. Bestaetigung.
+        const gemeinsam = await core.fuehreRuntimeAgentenAktion(args, akteur);
+        if (gemeinsam) return gemeinsam;
         switch (action) {
-          case 'runtime_uebersicht': {
-            await core.pruefeSteuerRecht(akteur, project);
-            const u = await core.leseRuntimeUebersicht(project);
-            return u ? { success: true, project, ...u } : { success: false, error: 'funktion_aus', schalter: core.RUNTIME_UEBERSICHT_FUNKTION };
-          }
-          case 'runtime_steuern': return await core.steuereRuntimeAgent({ identity_id: args.identity_id, aktion: args.aktion, grund: args.grund, message: args.message }, akteur);
-          case 'runtime_log': return await core.leseRuntimeAgentLog({ identity_id: args.identity_id, max_bytes: args.max_bytes }, akteur);
-          case 'runtime_prozesse': return await core.leseRuntimeProzesse({ project, runtimes: args.runtimes }, akteur);
-          case 'runtime_prozess': {
-            const b = typeof args.bestaetigung === 'string' ? JSON.parse(args.bestaetigung) : args.bestaetigung;
-            if (b && typeof b === 'object') return await core.bestaetigeProzessAenderung(b as { id: unknown; grund: unknown }, akteur);
-            return await core.frageProzessAenderungAn({ project, runtime: args.runtime, pid: args.pid, signal: args.signal, grund: args.grund }, akteur);
-          }
           // P22-T117: Modell/CLI-Anbieter eines Plattform-Agenten wechseln (Schalter plattform_agent_modellwechsel, Std AUS).
           case 'runtime_modellwechsel': return await core.wechslePlattformAgentModell({ identity_id: args.identity_id, runtime: args.runtime, modell: args.model, effort: args.effort, grund: args.grund }, akteur);
           default: return { success: false, error: 'aktion_unbekannt' };

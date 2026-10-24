@@ -1452,7 +1452,7 @@ function ChannelsView({
               return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} title={agent.name + ' · ' + agent.role + ' · ' + herkunftText(agent.herkunft)} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><strong>{agent.name}</strong>{agent.identityId && <span role="link" tabIndex={0} className="channel-agent-ausweis" title="Ausweis und Profil verwalten" onClick={(event) => { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); } }}>Ausweis</span>}</button>;
             })}
           </div>
-          <RuntimeAgentenPanel project={project} />
+          <RuntimeAgentenPanel key={project} project={project} />
           {openAgentWindows.map((agentWindow, index) => (
             <ChannelAgentFensterWeiche
               key={agentWindow.key}

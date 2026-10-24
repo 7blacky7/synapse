@@ -172,6 +172,16 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   // P22-T73 (User 68259fd1): Warteschlange des Main-Chats. War der Main mindestens so lange nicht erreichbar (aelteste wartende
   // Nachricht), gehen alle wartenden Nachrichten als EIN Buendel-Turn; kuerzer = einzeln in Reihenfolge. 0 = immer Buendel.
   warteschlange_buendel_sekunden: { art: 'zahl', standard: 120, min: 0, max: 86400 },
+  // P22-T116 R8: Runtime-Agenten-Uebersicht/-Steuerung (runtime-agenten-grenzen.ts, Code-Standard dort gleich).
+  runtime_steuer_frist_minuten: { art: 'zahl', standard: 10, min: 1, max: 60 },
+  runtime_steuer_offen_max: { art: 'zahl', standard: 50, min: 1, max: 500 },
+  runtime_steuer_job_warte_sekunden: { art: 'zahl', standard: 20, min: 5, max: 300 },
+  runtime_prozess_seiten_max: { art: 'zahl', standard: 5, min: 1, max: 50 },
+  runtime_log_max_bytes: { art: 'zahl', standard: 16384, min: 1024, max: 262144 },
+  runtime_veraltet_minuten: { art: 'zahl', standard: 10, min: 1, max: 1440 },
+  runtime_stop_bestaetigen_sekunden: { art: 'zahl', standard: 5, min: 1, max: 120 },
+  // P22-T117: Wartezeit auf den Spawn beim Plattform-Modellwechsel.
+  runtime_modellwechsel_spawn_warte_sekunden: { art: 'zahl', standard: 90, min: 10, max: 600 },
 } as const satisfies Record<string, EinstellungDef>;
 export type RuntimeUeberwachungEinstellungName = keyof typeof RUNTIME_UEBERWACHUNG_EINSTELLUNGEN;
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN = Object.keys(RUNTIME_UEBERWACHUNG_EINSTELLUNGEN) as RuntimeUeberwachungEinstellungName[];

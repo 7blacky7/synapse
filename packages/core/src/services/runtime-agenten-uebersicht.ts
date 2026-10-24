@@ -11,12 +11,13 @@
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { listWrapperStatus, type WrapperStatusRow } from './wrapper-status.js';
+import { leseRuntimeAgentenGrenzen, runtimeAgentenGrenzenJetzt } from './runtime-agenten-grenzen.js';
 
 export const RUNTIME_UEBERSICHT_FUNKTION = 'runtime_agenten_uebersicht' as const;
 /** Ab diesem Alter der letzten Aktivitaet gilt ein 'running'/'idle'-Agent als veraltet (Env SYNAPSE_RUNTIME_VERALTET_MS, Std 10 min). */
+/** R8: Schwelle aus PG-Einstellung runtime_veraltet_minuten (zuletzt gelesen), sonst Code-Standard 10 min. Kein ENV-Weg. */
 export function runtimeVeraltetMs(): number {
-  const n = Number(process.env.SYNAPSE_RUNTIME_VERALTET_MS);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 10 * 60_000;
+  return runtimeAgentenGrenzenJetzt().veraltet_ms;
 }
 
 export type RuntimeWarnung = 'crashed' | 'laeuft_veraltet' | 'laeuft_ohne_heartbeat_und_auftrag' | 'busy_veraltet';
@@ -117,12 +118,13 @@ async function leseStartOrte(ids: string[]): Promise<Map<string, { start_ort: st
 export async function leseRuntimeUebersicht(project: string, rows?: WrapperStatusRow[]): Promise<(RuntimeUebersicht & { debug: Record<string, unknown> }) | null> {
   if (!(await runtimeUebersichtAktiv(project))) return null;
   try {
+    const grenzen = await leseRuntimeAgentenGrenzen();
     const alle = rows ?? await listWrapperStatus(project);
     const ids = alle.map(r => r.identityId).filter((x): x is string => !!x);
     const startOrte = await leseStartOrte(ids);
     const u = baueRuntimeUebersicht(alle, { startOrte });
     return { ...u, debug: { schalter: RUNTIME_UEBERSICHT_FUNKTION, zeilen_identitaet: ids.length, zeilen_legacy: alle.length - ids.length,
-      start_orte_bekannt: [...startOrte.values()].filter(s => s.start_ort).length, veraltet_ms: runtimeVeraltetMs() } };
+      start_orte_bekannt: [...startOrte.values()].filter(s => s.start_ort).length, veraltet_ms: grenzen.veraltet_ms, grenzen_quelle: grenzen.quelle } };
   } catch (err) {
     return { orte: {}, anzahl: 0, warnungen_gesamt: 0, debug: { schalter: RUNTIME_UEBERSICHT_FUNKTION, fehler: String((err as Error)?.message ?? err).slice(0, 200) } };
   }

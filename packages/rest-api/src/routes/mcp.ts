@@ -11,6 +11,8 @@ import {mitShellAufrufPerId,mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSich
 // P23-T3: schlanke Tool-Antworten (Schalter tool_antworten_schlank, Standard AUS).
 import { schlankeShellRueckfrageWennAktiv, fremderLaufFeld } from '@synapse/core';
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
+// P22-T116: specialist runtime_* - gemeinsamer Vertrag mit stdio (Schema + Handler aus core).
+import { fuehreRuntimeAgentenAktion, RUNTIME_TOOL_AKTIONEN, RUNTIME_TOOL_PROPERTIES, findeWrapperStatusPerName, leseRuntimeUebersicht } from '@synapse/core';
 import { getProjectRecordById, mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 // P22-T56: tools/list je Verbindung (Ausweis im Header / Legacy-Connector / gemeinsame Verbindung).
 import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
@@ -848,9 +850,10 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst'],
+          enum: ['spawn', 'spawn_batch', 'stop', 'purge', 'status', 'wake', 'update_skill', 'capabilities', 'heartbeat', 'selbst', ...RUNTIME_TOOL_AKTIONEN],
           description: 'Die auszufuehrende Aktion. selbst = Selbstauskunft eines Spezialisten (agent_id Pflicht, project optional): Modell, Effort, Kontext, Tokens, Schwellen, Cutoff — nur aus DB/Registry, nichts geschaetzt.',
         },
+        ...RUNTIME_TOOL_PROPERTIES,
         name: {
           oneOf: [
             { type: 'string' },
@@ -4026,6 +4029,9 @@ async function handleToolCallKern(
     // 10. SPECIALIST — nur ueber MCP Server (stdio) verfuegbar
     // =================================================================
     case 'specialist': {
+      // P22-T116: runtime_* ueber denselben core-Handler wie stdio (Akteur aus dem Ausweis-Aufrufkontext).
+      const runtimeErgebnis = await fuehreRuntimeAgentenAktion(args as Record<string, unknown>);
+      if (runtimeErgebnis) return runtimeErgebnis;
       const { fuehreSpecialistIdentitaetsAktion } = await import('@synapse/core');
       const identityResult = await fuehreSpecialistIdentitaetsAktion(args);
       if (identityResult) return identityResult;
@@ -4150,6 +4156,14 @@ async function handleToolCallKern(
           // Einzelner Spezialist
           const row = await getWrapperStatus(name, project).catch(() => null);
           if (!row) {
+            // P22-T116 (Schalter runtime_agenten_uebersicht): Identitaets-Agenten per Name finden, wie stdio.
+            const perName = await findeWrapperStatusPerName(name, project);
+            if (perName) {
+              const r2 = perName.row;
+              const connected2 = Date.now() - r2.lastActivity.getTime() < THREE_MIN_MS && r2.status !== 'crashed' && r2.status !== 'stopped';
+              return { success: true, specialist: { ...toSpecialist(r2), identity_id: r2.identityId ?? null }, connected: connected2,
+                wrapperStatus: { via: 'pg_identitaet', lastActivity: r2.lastActivity.toISOString() }, debug: perName.debug };
+            }
             return { success: false, message: `Spezialist "${name}" nicht gefunden.` };
           }
           const connected = Date.now() - row.lastActivity.getTime() < THREE_MIN_MS
@@ -4183,6 +4197,8 @@ async function handleToolCallKern(
             ? rows[0].lastActivity.toISOString()
             : new Date().toISOString(),
           ...ausblendHinweis(auswahl),
+          // P22-T116: Uebersicht aller Runtime-Agenten (nur Schalter EIN), wie stdio.
+          ...(rows.length ? await leseRuntimeUebersicht(project, rows).then(u => (u ? { runtime_uebersicht: u } : {}), () => ({})) : {}),
         };
       }
 

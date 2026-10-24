@@ -400,11 +400,12 @@ async function dispatchSpecialistActionGebunden(
     }
     case 'prozesse': {
       const { leseProzessliste } = await import('./runtime-agenten-debug.js')
-      return await leseProzessliste()
+      return await leseProzessliste(Number(args.ab_pid ?? 0), Number(args.max ?? 0))
     }
     case 'prozess_signal': {
       const { sendeProzessSignal } = await import('./runtime-agenten-debug.js')
-      return await sendeProzessSignal(Number(args.pid), String(args.signal ?? 'SIGTERM'))
+      return await sendeProzessSignal(Number(args.pid), String(args.signal ?? 'SIGTERM'),
+        args.erwartet_start_ticks !== undefined ? { start_ticks: args.erwartet_start_ticks, kommando: args.erwartet_kommando } : undefined)
     }
 
     default:

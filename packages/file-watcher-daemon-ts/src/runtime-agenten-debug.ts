@@ -79,22 +79,36 @@ async function uptimeS(): Promise<number> {
   return Number((await readFile('/proc/uptime', 'utf-8')).split(' ')[0])
 }
 
-export async function leseProzessliste(): Promise<Record<string, unknown>> {
+/** Eine Seite der Prozessliste: PIDs >= abPid, hoechstens max (Standard/Obergrenze MAX_PROZESSE). Fortsetzung ueber naechste_ab_pid. */
+export async function leseProzessliste(abPid = 0, max = MAX_PROZESSE): Promise<Record<string, unknown>> {
   const uptime = await uptimeS()
-  const pids = (await readdir('/proc')).filter(n => /^\d+$/.test(n)).map(Number).sort((a, b) => a - b)
+  const grenze = Number.isSafeInteger(max) && max > 0 ? Math.min(max, MAX_PROZESSE) : MAX_PROZESSE
+  const ab = Number.isSafeInteger(abPid) && abPid > 0 ? abPid : 0
+  const pids = (await readdir('/proc')).filter(n => /^\d+$/.test(n)).map(Number).filter(p => p >= ab).sort((a, b) => a - b)
+  const seite = pids.slice(0, grenze)
   const prozesse: Array<Record<string, unknown>> = []
-  for (const pid of pids.slice(0, MAX_PROZESSE)) {
+  for (const pid of seite) {
     const p = await leseProzess(pid, uptime)
     if (p) prozesse.push(p)
   }
-  return { success: true, prozesse, anzahl: prozesse.length, gekappt: pids.length > MAX_PROZESSE, eigene_pid: process.pid, gelesen_am: new Date().toISOString() }
+  const gekappt = pids.length > grenze
+  return { success: true, prozesse, anzahl: prozesse.length, gekappt, naechste_ab_pid: gekappt ? pids[grenze] : null,
+    eigene_pid: process.pid, gelesen_am: new Date().toISOString() }
 }
 
-export async function sendeProzessSignal(pid: number, signal: string): Promise<Record<string, unknown>> {
+/** Pin-Vergleich (rein): derselbe Prozess = gleiche start_ticks UND gleiches Kommando wie in der Vorschau. */
+export function gleicherProzess(prozess: Record<string, unknown>, pin: { start_ticks: unknown; kommando: unknown }): boolean {
+  return Number.isSafeInteger(pin.start_ticks) && prozess.start_ticks === pin.start_ticks
+    && typeof pin.kommando === 'string' && prozess.kommando === pin.kommando
+}
+
+export async function sendeProzessSignal(pid: number, signal: string, pin?: { start_ticks: unknown; kommando: unknown }): Promise<Record<string, unknown>> {
   if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return { success: false, error: 'pid_ungueltig' }
   if (!(SIGNALE as readonly string[]).includes(signal)) return { success: false, error: 'signal_ungueltig' }
+  if (!pin) return { success: false, error: 'pin_fehlt' }
   const prozess = await leseProzess(pid, await uptimeS())
   if (!prozess) return { success: false, error: 'prozess_nicht_gefunden', pid }
+  if (!gleicherProzess(prozess, pin)) return { success: false, error: 'prozess_geaendert', pid, prozess, pin }
   try {
     process.kill(pid, signal as NodeJS.Signals)
     console.error(`[specialist-worker] P22-T116 Signal ${signal} an PID ${pid} (${String(prozess.kommando).slice(0, 80)})`)

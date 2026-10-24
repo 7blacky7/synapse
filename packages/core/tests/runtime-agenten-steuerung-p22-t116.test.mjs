@@ -37,10 +37,36 @@ assert.equal(S.STEUER_GRENZEN.frist_ms,600000);
 // Rechte/Rueckfrage ohne DB: kein Akteur -> recht_fehlt bzw. Bestaetigung unbekannt
 await assert.rejects(()=>S.pruefeSteuerRecht(null,'x'),e=>e.code==='recht_fehlt');
 await assert.rejects(()=>S.bestaetigeProzessAenderung({id:'nix',grund:'x'.repeat(12)},{art:'user'}),e=>e.code==='bestaetigung_unbekannt');
+// R1: auch stop/start/restart/wake nur ueber Bestaetigung; unbekannte ID fuehrt nichts aus
+await assert.rejects(()=>S.steuereRuntimeAgent({bestaetigung:{id:'nix',grund:'x'.repeat(12)}},{art:'user'}),e=>e.code==='bestaetigung_unbekannt');
+await assert.rejects(()=>S.steuereRuntimeAgent({aktion:'kaputt',identity_id:'x'},{art:'user'}),e=>e.code==='aktion_ungueltig');
+// R3: fachlicher Erfolg = done UND kein success:false (Grundlage fuer Restart-Abbruch)
+assert.equal(S.jobErfolgreich({status:'done',result:{success:true}}),true);
+assert.equal(S.jobErfolgreich({status:'done',result:null}),true);
+assert.equal(S.jobErfolgreich({status:'done',result:{success:false}}),false,'Stop mit success:false gilt als fehlgeschlagen');
+assert.equal(S.jobErfolgreich({status:'failed',result:null}),false);
+assert.equal(S.jobErfolgreich({status:'timeout'}),false);
+// R5: gemeinsamer Vertrag stdio/REST
+assert.equal(await S.fuehreRuntimeAgentenAktion({action:'status'},null),null,'fremde Aktion -> null');
+assert.equal((await S.fuehreRuntimeAgentenAktion({action:'runtime_steuern',bestaetigung:{id:'nix',grund:'x'.repeat(12)}},{art:'user'})).error,'bestaetigung_unbekannt');
+assert.deepEqual([...S.RUNTIME_TOOL_AKTIONEN],['runtime_uebersicht','runtime_steuern','runtime_log','runtime_prozesse','runtime_prozess']);
+assert.ok(S.RUNTIME_TOOL_PROPERTIES.bestaetigung&&S.RUNTIME_TOOL_PROPERTIES.aktion.enum.includes('restart'));
 
 assert.equal(D.maskiere('a sai_ABC_def b Bearer xyz.1 token=geheim sk-1234567890'),'a sai_[WERT] b Bearer [WERT] token=[WERT] sk-[WERT]');
-const liste=await D.leseProzessliste();
-assert.ok(liste.success&&liste.prozesse.some(p=>p.pid===process.pid),'eigener Prozess in /proc');
+// R7 (Abnahme): Kappung hostabhaengig -> eigener Prozess gezielt ueber ab_pid, Paging ueber naechste_ab_pid
+const eigen=await D.leseProzessliste(process.pid,1);
+assert.ok(eigen.success&&eigen.prozesse.length===1&&eigen.prozesse[0].pid===process.pid,'eigener Prozess per ab_pid');
+const s1=await D.leseProzessliste(0,2);
+assert.ok(s1.prozesse.length<=2);
+if(s1.gekappt){const s2=await D.leseProzessliste(s1.naechste_ab_pid,2);assert.ok(s2.prozesse.every(p=>p.pid>=s1.naechste_ab_pid)&&s2.prozesse.every(p=>!s1.prozesse.some(q=>q.pid===p.pid)),'Seiten ueberschneiden sich nicht');}
+// R4: Pin
+const ich=eigen.prozesse[0];
+assert.equal(D.gleicherProzess(ich,{start_ticks:ich.start_ticks,kommando:ich.kommando}),true);
+assert.equal(D.gleicherProzess(ich,{start_ticks:ich.start_ticks+1,kommando:ich.kommando}),false,'PID-Wiederverwendung: andere Startzeit');
+assert.equal(D.gleicherProzess(ich,{start_ticks:ich.start_ticks,kommando:'anders'}),false,'anderes Kommando');
+assert.equal((await D.sendeProzessSignal(123456789,'SIGTERM')).error,'pin_fehlt','ohne Pin kein Signal');
+const eltern=(await D.leseProzessliste(process.ppid,1)).prozesse[0];
+if(eltern&&eltern.pid===process.ppid)assert.equal((await D.sendeProzessSignal(process.ppid,'SIGTERM',{start_ticks:eltern.start_ticks+1,kommando:eltern.kommando})).error,'prozess_geaendert','falscher Pin -> kein Signal');
 assert.equal((await D.sendeProzessSignal(1,'SIGTERM')).error,'pid_ungueltig');
 assert.equal((await D.sendeProzessSignal(process.pid,'SIGTERM')).error,'pid_ungueltig');
 assert.equal((await D.sendeProzessSignal(123456789,'SIGSTOP')).error,'signal_ungueltig');
