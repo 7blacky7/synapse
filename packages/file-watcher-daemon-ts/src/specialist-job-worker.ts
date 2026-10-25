@@ -207,6 +207,12 @@ export async function dispatchSpecialistAction(
   // ID-Aufträge überschreiben nur ihren eigenen Datenweg, nie parallele Legacy-Jobs.
   return mitDaemonAuftrag(job, async () => {
     if (!job.target_identity_id) return dispatchSpecialistActionGebunden(job, optionen);
+    // P22-T134: Zustellung an eine interaktive Sitzung mit Mod-Inbox braucht keine Wrapper-Startumgebung (die Pruefung
+    // unten gilt gestarteten Agenten; fuer Koordinator-CLI liefert sie eine andere Identitaet).
+    if (job.action === 'zustellen') {
+      const { hatModSitzung } = await import('./mod-inbox.js');
+      if (hatModSitzung(job.target_identity_id)) return dispatchSpecialistActionGebunden(job, optionen);
+    }
     const agents = await import('@synapse/agents');
     const env = await holeAgentStartApi(String(job.args.name), job.project);
     if (env.SYNAPSE_AGENT_IDENTITY_ID !== job.target_identity_id) throw new Error('daemon_auftrag_startidentitaet_falsch');

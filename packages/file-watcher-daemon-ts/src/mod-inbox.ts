@@ -133,6 +133,13 @@ function raeumeAuf(jetzt = Date.now()): void {
   for (const [k, u] of uebergaben) if (u.stand === 'gestartet' && jetzt - u.am > GESTARTET_BEHALTEN_MS) uebergaben.delete(k);
 }
 
+/** true = fuer diese Identitaet wartet eine lebende, freigegebene Mod-Sitzung (specialist-job-worker: ohne Startumgebung). */
+export function hatModSitzung(identityId: string | null | undefined): boolean {
+  if (!identityId) return false;
+  for (const s of sitzungen.values()) if (s.aktiv && s.identity_id === identityId && lebt(s)) return true;
+  return false;
+}
+
 /**
  * Fall 'zustellen' ohne Wrapper: an die juengste lebende, freigegebene Sitzung dieser Identitaet uebergeben und auf die
  * Quittung warten. null = keine solche Sitzung (Aufrufer antwortet wie bisher 'nicht_verbunden').
