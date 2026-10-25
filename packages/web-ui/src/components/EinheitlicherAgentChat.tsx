@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
-import { abonniereToolKarten, getAgentVerlauf, sendePlattformAgentChat, type MainAgentVerlaufEintrag } from '../api/agent-runtime';
+import { abonniereToolKarten, getAgentChatInbox, getAgentVerlauf, sendePlattformAgentChat, type AgentChatInboxNachricht, type MainAgentVerlaufEintrag } from '../api/agent-runtime';
 import { ChatEingabefeld } from './ChatEingabefeld';
-import { VerweisFensterProvider, VerweisText } from './Lesefenster';
+import { KlartextText, VerweisFensterProvider } from './Lesefenster';
 import { ToolActivity } from './agent-chat-teile';
-import { aktuellesModell, baueAgentChatNachrichten, istHtmlAntwort } from './agent-chat-logik';
+import { aktuellesModell, baueAgentChatNachrichten, istHtmlAntwort, mischeInboxNachrichten } from './agent-chat-logik';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
 import '../workspace-mock.css';
 import '../hauptagent-verlauf.css';
@@ -16,7 +16,9 @@ import './project-coordinator-dock.css';
  * Main-spezifisch und hier NICHT enthalten: Session/Stream (createMainAgentSession), Warteschlange, Artefakte, Fenster-Modi,
  * HauptagentSteuerung. Verlauf: GET agent-verlauf je identity_id; Senden: Inbox (agent-chat); live: SSE tool-karten je identity_id.
  * SCHALTER agent_chat_einheitlich (Produkt-Schalter im Projekt der Zielidentitaet, Std AUS) waehlt in PlattformAgentChat.
- * DEBUG: data-identity / data-karten / data-eintraege am Wurzelelement.
+ * P22-T137 Nachbesserung: Text als Markdown (KlartextText, wie Lesefenster/Plaene), reines HTML bereinigt (AgentRenderingSurface);
+ * Inbox User<->Agent (GET agent-chat/inbox, Schalter plattform_agent_chat) zeitlich eingemischt; Zustell-Huelle nur als Kennung.
+ * DEBUG: data-identity / data-karten / data-eintraege / data-inbox am Wurzelelement.
  */
 export const EINHEITLICHER_CHAT_POLL_MS = 4_000;
 
@@ -29,7 +31,10 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [gesendet, setGesendet] = useState<Gesendet[]>([]);
+  const [inbox, setInbox] = useState<AgentChatInboxNachricht[]>([]);
   const feedRef = useRef<HTMLDivElement | null>(null);
+  const inboxAnfrage = useRef(0);
+  const letzteInbox = useRef(0);
   const aktiv = useRef(false);
   const generation = useRef(0);
   const anfrage = useRef(0);
@@ -57,23 +62,38 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
     }
   }, [identityId]);
 
+  // P22-T137: Inbox User<->Agent (Antworten per chat(inbox_send) stehen nicht im CLI-Transkript). Zusatz: ein Fehler hier laesst
+  // den Verlauf stehen; Schalter AUS liefert leer.
+  const ladenInbox = useCallback(async () => {
+    if (!aktiv.current) return;
+    const lauf = generation.current;
+    const id = ++inboxAnfrage.current;
+    try {
+      const r = await getAgentChatInbox(identityId, { limit: 40 });
+      if (!aktiv.current || generation.current !== lauf || id < letzteInbox.current) return;
+      letzteInbox.current = id;
+      setInbox(r.aktiv ? r.nachrichten : []);
+    } catch { /* Inbox ist Zusatz zum Verlauf */ }
+  }, [identityId]);
+
   useEffect(() => {
     aktiv.current = true;
-    setEintraege([]); setGesendet([]); setBusy(false);
+    setEintraege([]); setGesendet([]); setInbox([]); setBusy(false);
     void laden();
-    const timer = window.setInterval(() => void laden(), pollMs > 0 ? pollMs : EINHEITLICHER_CHAT_POLL_MS);
+    void ladenInbox();
+    const timer = window.setInterval(() => { void laden(); void ladenInbox(); }, pollMs > 0 ? pollMs : EINHEITLICHER_CHAT_POLL_MS);
     return () => {
       aktiv.current = false;
       generation.current += 1;
       sendend.current = false;
       window.clearInterval(timer);
     };
-  }, [laden, pollMs]);
+  }, [laden, ladenInbox, pollMs]);
 
   // Wie der Main-Chat: neuer eigener Tool-Aufruf (SSE je identity_id) -> Verlauf neu laden, die Karte haengt der Server an.
   useEffect(() => (karten ? abonniereToolKarten(identityId, () => void laden()) : undefined), [karten, identityId, laden]);
 
-  const nachrichten = baueAgentChatNachrichten(eintraege, name, karten);
+  const nachrichten = mischeInboxNachrichten(baueAgentChatNachrichten(eintraege, name, karten), inbox, name);
   const modell = aktuellesModell(eintraege);
   useEffect(() => { const f = feedRef.current; if (f) f.scrollTop = f.scrollHeight; }, [nachrichten.length, gesendet.length]);
 
@@ -94,6 +114,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
       setGesendet((alt) => [...alt, { key, text: nachricht, inboxId: r.inbox_id, fehler: '' }]);
       setText('');
       void laden();
+      void ladenInbox();
     } catch (error) {
       if (gueltig()) setGesendet((alt) => [...alt, { key, text: nachricht, inboxId: null, fehler: error instanceof Error ? error.message : String(error) }]);
     } finally {
@@ -105,16 +126,17 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   // als 'wartet auf Antwort' nach unten, sobald sie aus dem geladenen Fenster (limit 60) faellt - z. B. nach einem langen Zug.
   useEffect(() => {
     setGesendet((alt) => {
-      const rest = alt.filter((g) => g.fehler || !eintraege.some((e) => e.rolle !== 'agent' && e.text.includes(g.text)));
+      const rest = alt.filter((g) => g.fehler || !(eintraege.some((e) => e.rolle !== 'agent' && e.text.includes(g.text))
+        || inbox.some((n) => n.id === g.inboxId)));
       return rest.length === alt.length ? alt : rest;
     });
-  }, [eintraege]);
+  }, [eintraege, inbox]);
   const offen = gesendet;
 
   return (
     <VerweisFensterProvider>
       <section className="conversation agent-chat-shell einheitlicher-agent-chat agent-chat-shell--embedded" aria-label={'Chat mit ' + name}
-        data-identity={identityId} data-karten={karten ? 'ein' : 'aus'} data-eintraege={eintraege.length}>
+        data-identity={identityId} data-karten={karten ? 'ein' : 'aus'} data-eintraege={eintraege.length} data-inbox={inbox.length}>
         <div className="conversation-head">
           <div className="agent-identity"><span>{name.slice(0, 2).toUpperCase()}</span><div><strong>{name}</strong><small>{modell ?? 'Modell unbekannt'}{project ? ' · ' + project : ''}</small></div></div>
         </div>
@@ -126,10 +148,11 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                 summary={m.toolRun.calls.some((c) => c.status === 'running') ? name + ' arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={m.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
               <article className={'message ' + m.role + ' text'}>
                 <header>{m.kopf}{m.info && <small className="message-info">{m.info}</small>}</header>
-                {(m.text || !m.laeuft) && (!m.laeuft && m.role === 'agent' && istHtmlAntwort(m.text)
+                {m.laeuft ? (m.text && <p>{m.text}</p>) : m.text.trim() ? (m.role === 'agent' && istHtmlAntwort(m.text)
                   // P22-T137: reine HTML-Antworten wie beim Main bereinigt im Shadow-DOM (AgentRenderingSurface), nie als rohes innerHTML.
                   ? <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" />
-                  : <p>{m.laeuft ? m.text : <VerweisText project={project} text={m.text} />}</p>)}
+                  // Nachbesserung: Markdown (Absaetze, Listen, fett/kursiv, Code, Tabellen) mit anklickbaren Verweisen.
+                  : <KlartextText project={project} text={m.text} />) : null}
                 {m.laeuft && <div className="message-laeuft"><i /><i /><i /><span>{name} antwortet …</span></div>}
                 {m.hinweise.map((h) => <small key={h} className="message-hinweis">{h}</small>)}
                 {m.zugInfo && <small className="message-zug">{m.zugInfo}</small>}
@@ -139,7 +162,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
           {offen.map((g) => (
             <article key={g.key} className="message user text">
               <header>Du<small className="message-info">{g.fehler ? 'nicht gesendet: ' + g.fehler : 'zugestellt per Inbox #' + g.inboxId + ', wartet auf Antwort'}</small></header>
-              <p>{g.text}</p>
+              <KlartextText project={project} text={g.text} />
             </article>
           ))}
           {hinweis && nachrichten.length > 0 && <div className="verlauf-leiste verlauf-aus"><span>{hinweis}</span></div>}

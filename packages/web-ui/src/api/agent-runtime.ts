@@ -567,6 +567,16 @@ export async function sendePlattformAgentChat(identityId: string, text: string):
   });
 }
 
+/** P22-T137: Inbox-Nachricht zwischen User und Plattform-Agent; richtung 'ein' = vom User an den Agenten, 'aus' = vom Agenten an 'user'. */
+export interface AgentChatInboxNachricht { id: number; richtung: 'ein' | 'aus'; von: string; an: string; text: string; erstellt_am: string }
+
+/** P22-T137: Inbox zwischen User und Agent (beide Richtungen, aelteste zuerst); Schalter wie agent-chat, AUS = aktiv false, leer. */
+export async function getAgentChatInbox(identityId: string, o: { limit?: number } = {}): Promise<{ aktiv: boolean; nachrichten: AgentChatInboxNachricht[] }> {
+  const r = await jsonRequest<{ success: true; aktiv?: boolean; nachrichten?: AgentChatInboxNachricht[] }>('/api/agent-runtimes/agent-chat/inbox?identity_id='
+    + encodeURIComponent(identityId) + (o.limit ? '&limit=' + o.limit : ''));
+  return { aktiv: r.aktiv === true, nachrichten: Array.isArray(r.nachrichten) ? r.nachrichten : [] };
+}
+
 /** P22-T73: Schalter der Warteschlange des Main-Chats (Standard AUS); EIN = Nachrichten warten statt Fehler. */
 export async function getMainAgentWarteschlangeSchalter(): Promise<{ aktiv: boolean; quelle: string }> {
   return (await jsonRequest<{ success: true; schalter: { aktiv: boolean; quelle: string } }>('/api/main-agent/warteschlange/schalter')).schalter;

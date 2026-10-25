@@ -8,6 +8,7 @@ import {
   type VerweisArt, type VerweisInhalt, type VerweisKandidat, type VerweisTreffer,
 } from '../api/verweise';
 import { ToolBilder } from './ToolBild';
+import { zerlegeInline, zerlegeKlartext, type InlineTeil } from './klartext-logik';
 import '../verweise.css';
 
 /**
@@ -15,7 +16,7 @@ import '../verweise.css';
  *  - VerweisFensterProvider: verschiebbare Lesefenster (mehrere moeglich), Klartext statt JSON
  *  - useVerweisFenster().oeffne(...): Fenster oeffnen (auch aus anderen Seiten, z. B. Memories-Reiter)
  *  - VerweisText: Text mit anklickbaren IDs (nur was der Server aufloest)
- *  - KlartextText: Absaetze, Listen, Ueberschriften, Code-Bloecke
+ *  - KlartextText: Absaetze, Listen, Ueberschriften, Code-Bloecke, Tabellen, fett/kursiv/Inline-Code (klartext-logik.ts)
  */
 
 export interface VerweisZiel {
@@ -143,53 +144,33 @@ export function VerweisText({ project, text }: { project: string; text: string }
 
 // ───────────────────────── Klartext ─────────────────────────
 
-type Block =
-  | { typ: 'code'; text: string }
-  | { typ: 'liste'; geordnet: boolean; zeilen: string[] }
-  | { typ: 'titel'; text: string }
-  | { typ: 'absatz'; text: string };
-
-function zerlege(text: string): Block[] {
-  const zeilen = text.replace(/\r\n/g, '\n').split('\n');
-  const bloecke: Block[] = [];
-  let i = 0;
-  while (i < zeilen.length) {
-    const zeile = zeilen[i];
-    if (zeile.trim().startsWith('```')) {
-      const code: string[] = [];
-      i += 1;
-      while (i < zeilen.length && !zeilen[i].trim().startsWith('```')) code.push(zeilen[i++]);
-      i += 1;
-      bloecke.push({ typ: 'code', text: code.join('\n') });
-      continue;
-    }
-    if (!zeile.trim()) { i += 1; continue; }
-    const titel = /^#{1,4}\s+(.+)$/.exec(zeile);
-    if (titel) { bloecke.push({ typ: 'titel', text: titel[1] }); i += 1; continue; }
-    const liste = /^\s*(?:[-*]|\d+[.)])\s+/;
-    if (liste.test(zeile)) {
-      const geordnet = /^\s*\d/.test(zeile);
-      const eintraege: string[] = [];
-      while (i < zeilen.length && liste.test(zeilen[i])) eintraege.push(zeilen[i++].replace(liste, ''));
-      bloecke.push({ typ: 'liste', geordnet, zeilen: eintraege });
-      continue;
-    }
-    const absatz: string[] = [];
-    while (i < zeilen.length && zeilen[i].trim() && !zeilen[i].trim().startsWith('```') && !liste.test(zeilen[i]) && !/^#{1,4}\s+/.test(zeilen[i])) absatz.push(zeilen[i++]);
-    bloecke.push({ typ: 'absatz', text: absatz.join('\n') });
-  }
-  return bloecke;
-}
-
 export function KlartextText({ text, project }: { text: string; project?: string }) {
-  const bloecke = useMemo(() => zerlege(text), [text]);
-  const inline = (t: string) => (project ? <VerweisText project={project} text={t} /> : <>{t}</>);
+  const bloecke = useMemo(() => zerlegeKlartext(text), [text]);
+  // P22-T137: Inline-Auszeichnung als React-Elemente (nie innerHTML); Textteile behalten ihre anklickbaren Verweise.
+  const verweis = (t: string, key?: number): ReactNode => (project ? <VerweisText key={key} project={project} text={t} /> : t);
+  const teil = (t: InlineTeil, key: number): ReactNode => {
+    if (t.art === 'text') return verweis(t.text, key);
+    if (t.art === 'code') return <code key={key}>{verweis(t.text)}</code>;
+    const Tag = t.art === 'fett' ? 'strong' : 'em';
+    return <Tag key={key}>{t.teile.map(teil)}</Tag>;
+  };
+  const inline = (t: string) => <>{zerlegeInline(t).map(teil)}</>;
   if (!bloecke.length) return <p className="klartext-leer">Kein Inhalt.</p>;
   return (
     <div className="klartext">
       {bloecke.map((b, index) => {
         if (b.typ === 'code') return <pre key={index}><code>{b.text}</code></pre>;
         if (b.typ === 'titel') return <h4 key={index}>{inline(b.text)}</h4>;
+        if (b.typ === 'tabelle') {
+          return (
+            <div key={index} className="klartext-tabelle">
+              <table>
+                <thead><tr>{b.kopf.map((z, n) => <th key={n}>{inline(z)}</th>)}</tr></thead>
+                <tbody>{b.zeilen.map((reihe, r) => <tr key={r}>{reihe.map((z, n) => <td key={n}>{inline(z)}</td>)}</tr>)}</tbody>
+              </table>
+            </div>
+          );
+        }
         if (b.typ === 'liste') {
           const Liste = b.geordnet ? 'ol' : 'ul';
           return <Liste key={index}>{b.zeilen.map((z, n) => <li key={n}>{inline(z)}</li>)}</Liste>;

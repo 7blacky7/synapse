@@ -536,6 +536,32 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, weg: 'inbox', inbox_id: gesendet.id, gesendet_am: gesendet.createdAt, agent_id: ziel.agent_id, project: ziel.project, identity_id: identityId };
     } catch (error) { return sendFachFehler(reply, error); }
   });
+  // P22-T137 (Punkt 5): Inbox zwischen User und dieser Identitaet (beide Richtungen) fuer den Fensterverlauf. Antworten per
+  // chat(inbox_send) an 'user' stehen nicht im CLI-Transkript; die Web-UI sortiert sie zeitlich ein. Schalter wie der Chat
+  // (plattform_agent_chat im Projekt der Zielidentitaet; AUS -> aktiv false, leer). Nur lesend, processed bleibt unberuehrt.
+  // Zuordnung: Identitaet (to_/from_identity_id), ohne Identitaet der Name im Projekt. DEBUG: debug {anzahl, limit, schalter_quelle}.
+  fastify.get<{ Querystring: { identity_id?: string; limit?: string } }>('/api/agent-runtimes/agent-chat/inbox', async (request, reply) => {
+    try {
+      const id = request.query.identity_id?.trim() ?? '';
+      if (!/^[a-f0-9-]{36}$/.test(id)) return reply.code(400).send({ success: false, error: { code: 'identity_id_fehlt', message: 'identity_id angeben' } });
+      const ziel = (await getPool().query<{ agent_id: string; project: string }>('SELECT agent_id, project FROM agent_identitaeten WHERE id=$1', [id])).rows[0];
+      if (!ziel) return reply.code(404).send({ success: false, error: { code: 'identitaet_unbekannt', message: 'Identitaet nicht gefunden' } });
+      const schalter = await plattformAgentChatSchalter(ziel.project);
+      if (!schalter.aktiv) return { success: true, aktiv: false, identity_id: id, nachrichten: [], schalter };
+      const n = Number(request.query.limit);
+      const limit = Number.isFinite(n) && n > 0 ? Math.min(100, Math.trunc(n)) : 40;
+      const r = await getPool().query<{ id: number | string; from_agent: string; to_agent: string; content: string; created_at: Date }>(
+        `SELECT id, from_agent, to_agent, content, created_at FROM specialist_inbox
+          WHERE project = $1 AND (
+            (from_agent = 'user' AND to_agent <> 'user' AND (to_identity_id = $2 OR (to_identity_id IS NULL AND to_agent = $3)))
+            OR (to_agent = 'user' AND from_agent <> 'user' AND (from_identity_id = $2 OR (from_identity_id IS NULL AND from_agent = $3))))
+          ORDER BY id DESC LIMIT $4`, [ziel.project, id, ziel.agent_id, limit]);
+      const nachrichten = r.rows.reverse().map((z) => ({ id: Number(z.id), richtung: z.from_agent === 'user' ? 'ein' as const : 'aus' as const,
+        von: z.from_agent, an: z.to_agent, text: z.content, erstellt_am: new Date(z.created_at).toISOString() }));
+      return { success: true, aktiv: true, identity_id: id, agent_id: ziel.agent_id, project: ziel.project, nachrichten,
+        debug: { anzahl: nachrichten.length, limit, schalter_quelle: schalter.quelle } };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
   // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts) fuer "Persoenliche Artefakte" – nur lesend.
   fastify.get<{ Querystring: { limit?: string } }>('/api/main-agent/artefakte', async (request, reply) => {
     try {

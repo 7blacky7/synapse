@@ -9,7 +9,7 @@ import { KnowledgeView } from './KnowledgeView';
 import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ChannelRailListe } from './ChannelRailListe';
 import { ChatEingabefeld } from './ChatEingabefeld';
-import { VerweisFensterProvider, VerweisText } from './Lesefenster';
+import { KlartextText, VerweisFensterProvider, VerweisText } from './Lesefenster';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
@@ -940,7 +940,8 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
             {message.toolRun && (message.toolRun.calls.length > 0 || message.toolRun.phases.length > 0) && <ToolActivity calls={message.toolRun.calls} error="" project={project} summary={message.toolRun.calls.some((call) => call.status === 'running') ? 'Hauptagent arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={message.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
             <article className={'message ' + message.role + ' ' + message.kind}>
               <header>{message.kopf ?? (message.role === 'user' ? 'Du' : 'Hauptagent')}{message.info && <small className="message-info">{message.info}</small>}</header>
-              {message.kind === 'text' && (message.text || !message.laeuft) && <p>{message.laeuft ? message.text : <VerweisText project={project} text={message.text} />}</p>}
+              {/* P22-T137 Punkt 7: fertiger Fliesstext als Markdown (KlartextText wie das Koordinator-Fenster), laufende Antwort roh. */}
+              {message.kind === 'text' && (message.laeuft ? message.text && <p>{message.text}</p> : message.text.trim() && <KlartextText project={project} text={message.text} />)}
               {message.laeuft && <div className="message-laeuft"><i /><i /><i /><span>Hauptagent antwortet …</span></div>}
               {message.hinweise?.map((hinweis) => <small key={hinweis} className="message-hinweis">{hinweis}</small>)}
               {message.zugInfo && <small className="message-zug">{message.zugInfo}</small>}

@@ -25,3 +25,10 @@
 .klartext ul,.klartext ol{margin:0 0 .8em;padding-left:1.4em}
 .klartext pre{margin:0 0 .8em;padding:8px 10px;overflow:auto;border:1px solid var(--border);border-radius:5px;background:rgba(0,0,0,.25);font-size:12px}
 .klartext-leer{opacity:.6;font-size:12px}
+/* P22-T137: Inline-Code und Tabellen (klartext-logik.ts) */
+.klartext code{padding:0 3px;border:1px solid var(--border);border-radius:3px;background:rgba(0,0,0,.25);font:.92em ui-monospace,monospace}
+.klartext pre code{padding:0;border:0;background:none;font-size:inherit}
+.klartext-tabelle{margin:0 0 .8em;overflow-x:auto}
+.klartext table{border-collapse:collapse;font-size:.95em}
+.klartext th,.klartext td{padding:3px 8px;border:1px solid var(--border);text-align:left;vertical-align:top}
+.klartext th{background:var(--strong)}

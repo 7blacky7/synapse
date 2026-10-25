@@ -47,7 +47,8 @@ const ein2 = readFileSync(join(repo, 'packages/web-ui/src/components/Einheitlich
 assert.match(dock, /<PlattformAgentChat [^>]*project=\{open\.project\}/);
 assert.match(weiche, /<PlattformAgentChat [^>]*project=\{props\.project\}/);
 assert.match(pac, /<EinheitlicherAgentChat [^>]*project=\{project\}/);
-assert.match(ein2, /<VerweisText project=\{project\}/);
+// P22-T137: Text als Markdown ueber KlartextText (VerweisText steckt darin, Projektbezug bleibt).
+assert.match(ein2, /<KlartextText project=\{project\} text=\{m\.text\}/);
 assert.match(ein2, /project \? ' · ' \+ project : ''/);
 console.log('OK agent-chat-einheitlich-p22-t124');
 
@@ -92,12 +93,15 @@ function chatProbe() {
     getAgentVerlauf(identityId) { const d = { ...defer(), identityId }; reads.push(d); return d.promise; },
     sendePlattformAgentChat(identityId, text) { const d = { ...defer(), identityId, text }; sends.push(d); return d.promise; },
     abonniereToolKarten() { return () => {}; },
+    // P22-T137: Inbox-Zusatz bleibt in der Probe offen, damit die State-Zaehlungen nur den Verlaufsweg messen.
+    getAgentChatInbox() { return new Promise(() => {}); },
   };
   const jsx = (type, props, key) => ({ type, props: props ?? {}, key });
   const modules = {
     react: hooks, 'react/jsx-runtime': { jsx, jsxs: jsx }, '../api/agent-runtime': api,
     './ChatEingabefeld': { ChatEingabefeld: 'ChatEingabefeld' },
-    './Lesefenster': { VerweisFensterProvider: 'Provider', VerweisText: 'VerweisText' },
+    './Lesefenster': { VerweisFensterProvider: 'Provider', KlartextText: 'KlartextText' },
+    '../kios/AgentRenderingSurface': { default: 'AgentRenderingSurface' },
     './agent-chat-teile': { ToolActivity: 'ToolActivity' }, './agent-chat-logik': L,
   };
   const window = {
