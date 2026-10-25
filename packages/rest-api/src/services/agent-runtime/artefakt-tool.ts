@@ -34,6 +34,7 @@ import {
   renderArtefakt,
   ladeVorlagenZeile,
   stelleArtefaktInVerlauf,
+  meldeArtefaktImVerlauf,
   artefaktVorlagenSchalter,
   artefaktQuellenKatalog,
   darfProjekt,
@@ -354,8 +355,10 @@ async function zeigePerAusweis(args: Record<string, unknown>, agentId?: string):
   const b = await betrachterAusAufruf(args, false);
   const project = str(args, 'project') ?? p.project;
   if (!darfProjekt(b, project)) return { success: false, error: 'projekt_fremd', message: 'Mit Ausweis nur im eigenen Projekt (' + p.project + ')' };
+  // P22-T169: Ersetzen (artefakt_id) wird im Chat des Absenders sichtbar - Zeile 'aktualisiert' bzw. 'fehler'.
+  const ersetzt = str(args, 'artefakt_id');
   try {
-    const v = await speichereVorlagenArtefakt({ artefaktId: str(args, 'artefakt_id'), sessionId: null, ownerIdentityId: p.identity_id,
+    const v = await speichereVorlagenArtefakt({ artefaktId: ersetzt, sessionId: null, ownerIdentityId: p.identity_id,
       createdBy: agentId ?? p.agent_id, project, ...vorlagenEingabe(args) });
     let html = v.html;
     let revision = v.revision;
@@ -369,11 +372,37 @@ async function zeigePerAusweis(args: Record<string, unknown>, agentId?: string):
       project: (extra.project as string | null) ?? project, vorlage: !!v.vorlage, gerendert_am });
     const hinweise = ['Ausweis-Weg: kein Runtime-Container und kein offener Main-Strom - HTML-Datei und Livebild entfallen, die PG-Zeile ist die Wahrheit.'];
     if (verlauf.hinweis) hinweise.push(verlauf.hinweis);
+    // P22-T169 (User-Befund thought c4858305): die Einbettung zeichnet an ihrem Platz neu (Verlaufszeile artefakt:<id>, live); unten im
+    // Chat erscheint zusaetzlich eine kurze Zeile 'aktualisiert' mit dem Ort der Einbettung - vorher sah der User beim Ersetzen nichts.
+    let meldungId: string | null = null;
+    if (ersetzt) {
+      const wo = !verlauf.verlauf_id ? '' : verlauf.neu_angelegt ? ' Die Einbettung steht direkt darüber.'
+        : ' Die Einbettung (Verlaufseintrag ' + verlauf.verlauf_id + (verlauf.erstellt_am ? ' vom ' + zeitDe(verlauf.erstellt_am) : '') + ') zeigt den neuen Stand'
+          + (v.modus === 'live' ? ' und zeichnet live neu.' : '.');
+      const m = await meldeArtefaktImVerlauf(p.identity_id, { artefakt_id: v.id, art: 'aktualisiert', titel: v.title, revision,
+        project: (extra.project as string | null) ?? project, einbettung_verlauf_id: verlauf.verlauf_id,
+        text: 'Artefakt „' + (v.title ?? v.id.slice(0, 8)) + '“ aktualisiert (Revision ' + revision + ').' + wo });
+      meldungId = m.verlauf_id;
+      if (m.hinweis) hinweise.push(m.hinweis);
+    }
     return { success: true, weg: 'ausweis', artefakt_id: v.id, revision, verlauf_id: verlauf.verlauf_id, html_pfad: null, bild_pfad: null,
-      stream_zugestellt: false, hinweise, ...extra };
+      stream_zugestellt: false, hinweise, ...(ersetzt ? { meldung_verlauf_id: meldungId } : {}), ...extra };
   } catch (error) {
-    return vorlagenFehlerAntwort(error);
+    const antwort = vorlagenFehlerAntwort(error);
+    // P22-T169: ein gescheitertes Ersetzen steht auch im Chat des Absenders (vorher nur in der Tool-Antwort, im Chat erschien nichts).
+    if (ersetzt) {
+      const m = await meldeArtefaktImVerlauf(p.identity_id, { artefakt_id: ersetzt, art: 'fehler', project,
+        text: 'Artefakt ' + ersetzt.slice(0, 8) + ' ersetzen fehlgeschlagen: ' + String(antwort.error) + ' – ' + String(antwort.message) });
+      return { ...antwort, meldung_verlauf_id: m.verlauf_id, ...(m.hinweis ? { hinweis: m.hinweis } : {}) };
+    }
+    return antwort;
   }
+}
+
+/** P22-T169: Zeitpunkt fuer Chat-Zeilen (Europe/Berlin, TT.MM., HH:MM). */
+function zeitDe(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 export async function zeigeArtefakt(args: Record<string, unknown>, agentId?: string): Promise<unknown> {

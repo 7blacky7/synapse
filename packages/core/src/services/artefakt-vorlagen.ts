@@ -19,6 +19,10 @@
  *   aelteste zuerst, dann offene vom Ende; Plaene bleiben immer), debug_quelle im Ergebnis. Schalter artefakt_verweise (global,
  *   Standard AUS, nur ausdruecklich): Klick auf data-synapse-verweis / href="#verweis:" im Artefakt oeffnet das Lesefenster der
  *   Web-UI, Radio-/details-Zustand bleibt ueber neue Revisionen erhalten (Web-UI kios/verweis-klick-logik.ts).
+ * P22-T169 (User 25.10.2026, thought 403c12bd): plan.alle/plan.list/plan.get liefern zusaetzlich nummer (Zahl aus der Kurz-ID: P12 -> 12,
+ *   P22-T169 -> 169, ohne Kurz-ID null), damit Vorlagen numerisch statt lexikalisch (P1, P10, P2) ordnen koennen. renderArtefakt nimmt
+ *   optional ausloeser (die NOTIFY-Anlaesse des Live-Dienstes) und zeigt sie im debug. meldeArtefaktImVerlauf: kurze Zeile
+ *   'aktualisiert'/'fehler' im Verlauf des Absenders beim Ersetzen (User-Befund thought c4858305).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { getPool } from '../db/client.js';
@@ -26,6 +30,7 @@ import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { ARTEFAKT_HTML_MAX } from './artefakt.js';
 import { renderVorlage, pruefeVorlage } from './artefakt-vorlage.js';
 import { listPlans, getPlan, listPlansDetail, getAllePlaene, filtereWiedervorlageTasks } from './plans.js';
+import { planNummer, taskNummer } from './plan-kurz-ids.js';
 import { getChannelMessages } from './channels.js';
 import { leseVerlaufSchalter } from './hauptagent-verlauf.js';
 
@@ -174,12 +179,13 @@ const kurz = (v: unknown, n: number): unknown => (typeof v === 'string' && v.len
 const iso = (v: unknown): unknown => (v instanceof Date ? v.toISOString() : v);
 
 registriereArtefaktQuelle({
-  vertrag: 'plan.list', beschreibung: 'Plaene des Projekts ohne Tasks (wie plan list): kurz_id, name, ziel, aktiv, prioritaet, tasks_gesamt/offen/erledigt',
+  vertrag: 'plan.list', beschreibung: 'Plaene des Projekts ohne Tasks (wie plan list): kurz_id, nummer, name, ziel, aktiv, prioritaet, tasks_gesamt/offen/erledigt',
   args: { alle: { typ: 'boolean' } }, kanaele: ['synapse_plan'],
-  lade: async ({ project, args }) => listPlans(project, { alle: args.alle === true }),
+  // P22-T169: nummer = Zahl aus der Kurz-ID (numerisch sortierbar).
+  lade: async ({ project, args }) => (await listPlans(project, { alle: args.alle === true })).map((p) => ({ ...p, nummer: planNummer(p.kurz_id) })),
 });
 registriereArtefaktQuelle({
-  vertrag: 'plan.get', beschreibung: 'Ein Plan mit Tasks (ohne plan_id der aktive): id, kurz_id, name, description, goals, tasks[{kurz_id,title,status,priority,createdAt,updatedAt}]',
+  vertrag: 'plan.get', beschreibung: 'Ein Plan mit Tasks (ohne plan_id der aktive): id, kurz_id, nummer, name, description, goals, tasks[{kurz_id,nummer,title,status,priority,createdAt,updatedAt}]',
   args: { plan_id: { typ: 'string' }, status: { typ: 'string' } }, kanaele: ['synapse_plan'],
   lade: async ({ project, args }) => {
     const p = await getPlan(project, typeof args.plan_id === 'string' ? args.plan_id : null);
@@ -187,16 +193,16 @@ registriereArtefaktQuelle({
     const status = typeof args.status === 'string' ? args.status : null;
     const tasks = (p.tasks ?? []).filter((t) => !status || t.status === status).map((t) => {
       const r = t as unknown as Record<string, unknown>;
-      return { id: r.id, kurz_id: r.kurz_id ?? null, title: r.title, status: r.status, priority: r.priority, createdAt: r.createdAt, updatedAt: r.updatedAt };
+      return { id: r.id, kurz_id: r.kurz_id ?? null, nummer: taskNummer(r.kurz_id)?.task ?? null, title: r.title, status: r.status, priority: r.priority, createdAt: r.createdAt, updatedAt: r.updatedAt };
     });
     const r = p as unknown as Record<string, unknown>;
-    return { id: p.id, kurz_id: r.kurz_id ?? null, name: p.name, description: kurz(p.description, 2000), goals: p.goals, aktiv: r.aktiv ?? null,
+    return { id: p.id, kurz_id: r.kurz_id ?? null, nummer: planNummer(r.kurz_id), name: p.name, description: kurz(p.description, 2000), goals: p.goals, aktiv: r.aktiv ?? null,
       createdAt: p.createdAt, updatedAt: p.updatedAt, tasks };
   },
 });
 registriereArtefaktQuelle({
-  vertrag: 'plan.alle', beschreibung: 'Alle Plaene MIT Tasks kompakt: {plaene[{kurz_id,name,ziel,aktiv,prioritaet,tasks_gesamt,tasks_offen,tasks_erledigt,'
-    + 'updated_at,tasks[{kurz_id,title,status,priority,updatedAt}],tasks_ausgelassen}],gesamt,gekappt,hinweis}. Zu gross: zuerst erledigte Tasks raus, Plaene bleiben',
+  vertrag: 'plan.alle', beschreibung: 'Alle Plaene MIT Tasks kompakt: {plaene[{kurz_id,nummer,name,ziel,aktiv,prioritaet,tasks_gesamt,tasks_offen,tasks_erledigt,'
+    + 'updated_at,tasks[{kurz_id,nummer,title,status,priority,updatedAt}],tasks_ausgelassen}],gesamt,gekappt,hinweis}. Zu gross: zuerst erledigte Tasks raus, Plaene bleiben',
   args: { alle: { typ: 'boolean' }, offen: { typ: 'boolean' }, status: { typ: 'string' }, max_tasks_je_plan: { typ: 'number', max: PLAN_ALLE_JE_PLAN.max } },
   kanaele: ['synapse_plan'],
   lade: async ({ project, args, max_bytes }) => ladePlanAlle(project, args, max_bytes),
@@ -227,10 +233,10 @@ const PLAN_ALLE_RESERVE = 2048;
 const OFFENE_STATUS = new Set(['todo', 'in_progress', 'blocked']);
 
 export interface PlanAlleTask {
-  kurz_id: string | null; id?: string; title: unknown; status: unknown; priority: unknown; updatedAt: unknown; zurueckgestellt_bis?: string;
+  kurz_id: string | null; /** P22-T169: m aus P<n>-T<m>, ohne Kurz-ID null */ nummer: number | null; id?: string; title: unknown; status: unknown; priority: unknown; updatedAt: unknown; zurueckgestellt_bis?: string;
 }
 export interface PlanAllePlan {
-  kurz_id: string | null; name: string; ziel: string; aktiv: boolean; prioritaet: string; tasks_gesamt: number; tasks_offen: number;
+  kurz_id: string | null; /** P22-T169: n aus P<n> */ nummer: number | null; name: string; ziel: string; aktiv: boolean; prioritaet: string; tasks_gesamt: number; tasks_offen: number;
   tasks_erledigt: number; updated_at: string; zurueckgestellt?: boolean; tasks: PlanAlleTask[]; tasks_ausgelassen: number;
 }
 export interface PlanAlleErgebnis {
@@ -272,7 +278,7 @@ export async function ladePlanAlle(project: string, args: Record<string, unknown
     const kompakt = sichtbar.map((t) => t as unknown as Record<string, unknown>)
       .filter((t) => (!status || t.status === status) && (!nurOffen || OFFENE_STATUS.has(String(t.status))))
       .map((t): PlanAlleTask => ({
-        kurz_id: typeof t.kurz_id === 'string' ? t.kurz_id : null, ...(typeof t.kurz_id === 'string' ? {} : { id: String(t.id) }),
+        kurz_id: typeof t.kurz_id === 'string' ? t.kurz_id : null, nummer: taskNummer(t.kurz_id)?.task ?? null, ...(typeof t.kurz_id === 'string' ? {} : { id: String(t.id) }),
         title: kurz(t.title, PLAN_ALLE_TITEL_MAX), status: t.status, priority: t.priority, updatedAt: iso(t.updatedAt),
         ...(t.zurueckgestellt === true && t.zurueckgestellt_bis ? { zurueckgestellt_bis: String(iso(t.zurueckgestellt_bis)) } : {}),
       }));
@@ -285,7 +291,7 @@ export async function ladePlanAlle(project: string, args: Record<string, unknown
     }
     const r = p as unknown as Record<string, unknown>;
     return {
-      kurz_id: p.kurz_id, name: p.name, ziel: p.ziel, aktiv: p.aktiv, prioritaet: p.prioritaet, tasks_gesamt: p.tasks_gesamt,
+      kurz_id: p.kurz_id, nummer: planNummer(p.kurz_id), name: p.name, ziel: p.ziel, aktiv: p.aktiv, prioritaet: p.prioritaet, tasks_gesamt: p.tasks_gesamt,
       tasks_offen: p.tasks_offen, tasks_erledigt: p.tasks_erledigt, updated_at: p.updated_at, ...(r.zurueckgestellt === true ? { zurueckgestellt: true } : {}),
       tasks, tasks_ausgelassen: 0,
     };
@@ -565,8 +571,10 @@ function datenHash(vorlage: string, daten: Record<string, unknown>): string {
  * Rendert ein Artefakt fuer ein Projekt mit den Rechten des Betrachters. Ohne Vorlage: das fertige HTML (Bestand).
  * anzeigen: stand -> vorhandene Momentaufnahme (sonst erste Renderung); live -> neu, wenn die letzte aelter als die Drossel ist.
  * neu_zeichnen: immer neu (Schalter artefakt_vorlagen EIN). live: neu nur bei geaenderten Daten. Wirft ArtefaktVorlagenFehler.
+ * P22-T169: ausloeser (Live-Dienst: Kanaele, ops, ids der gesammelten NOTIFYs) steht im debug, damit der Anlass sichtbar ist.
  */
-export async function renderArtefakt(id: string, o: { project?: string | null; betrachter: ArtefaktBetrachter; anlass: RenderAnlass; jetzt?: Date; von?: string | null }): Promise<ArtefaktRenderErgebnis> {
+export async function renderArtefakt(id: string, o: { project?: string | null; betrachter: ArtefaktBetrachter; anlass: RenderAnlass; jetzt?: Date; von?: string | null;
+  ausloeser?: Record<string, unknown> | null }): Promise<ArtefaktRenderErgebnis> {
   const row = await ladeVorlagenZeile(id);
   if (!row) fehler('artefakt_unbekannt', 'Artefakt ' + id + ' gibt es nicht', 404);
   const z = row!;
@@ -582,7 +590,7 @@ export async function renderArtefakt(id: string, o: { project?: string | null; b
   const ausVorhanden = (hinweis?: string, extra: Record<string, unknown> = {}): ArtefaktRenderErgebnis => ({
     ...basis, project, vorlage: true, revision: vorhanden!.revision, html: vorhanden!.html, gerendert_am: new Date(vorhanden!.gerendert_am).toISOString(),
     neu: false, fehler: vorhanden!.fehler ?? [], ...(hinweis ? { hinweis } : {}),
-    ...(schalter.aktiv ? { debug: { quellen: vorhanden!.quellen_stand, daten_hash: vorhanden!.daten_hash, schalter_quelle: schalter.quelle, anlass: o.anlass, wiederverwendet: true, ...extra } } : {}),
+    ...(schalter.aktiv ? { debug: { quellen: vorhanden!.quellen_stand, daten_hash: vorhanden!.daten_hash, schalter_quelle: schalter.quelle, anlass: o.anlass, ...(o.ausloeser ? { ausloeser: o.ausloeser } : {}), wiederverwendet: true, ...extra } } : {}),
   });
   if (!schalter.aktiv) {
     if (o.anlass === 'neu_zeichnen' || o.anlass === 'live') fehler('funktion_aus', 'Vorlagen sind aus (Produkt-Schalter artefakt_vorlagen)', 409);
@@ -621,7 +629,7 @@ export async function renderArtefakt(id: string, o: { project?: string | null; b
   await aktualisiereVerlaufArtefakt(z.id, project!, { html, revision, gerendert_am: jetzt.toISOString() }).catch(() => 0);
   return {
     ...basis, project, vorlage: true, revision, html, gerendert_am: jetzt.toISOString(), neu: true, fehler: erg.fehler,
-    debug: { quellen: geladen.stand, daten_hash: hash, schalter_quelle: schalter.quelle, render_ms: erg.statistik.ms, gekappt: erg.statistik.gekappt, anlass: o.anlass, wiederverwendet: false },
+    debug: { quellen: geladen.stand, daten_hash: hash, schalter_quelle: schalter.quelle, render_ms: erg.statistik.ms, gekappt: erg.statistik.gekappt, anlass: o.anlass, ...(o.ausloeser ? { ausloeser: o.ausloeser } : {}), wiederverwendet: false },
   };
 }
 
@@ -635,21 +643,45 @@ export interface VerlaufArtefakt { id: string; title: string | null; html: strin
  * desselben Artefakts aktualisiert die Zeile (rev steigt, das Fenster holt sie per seit_rev an Ort und Stelle). Schalter
  * hauptagent_verlauf AUS -> null. Wirft nie.
  */
-export async function stelleArtefaktInVerlauf(identity_id: string, a: VerlaufArtefakt): Promise<{ verlauf_id: string | null; hinweis?: string }> {
+export async function stelleArtefaktInVerlauf(identity_id: string, a: VerlaufArtefakt): Promise<{ verlauf_id: string | null; neu_angelegt?: boolean; erstellt_am?: string; hinweis?: string }> {
   try {
     if (!(await leseVerlaufSchalter()).aktiv) return { verlauf_id: null, hinweis: 'Verlauf ist aus (Schalter hauptagent_verlauf) - nur in Persoenliche Artefakte' };
     const eintrag = { id: a.id, html: a.html, revision: a.revision, ...(a.title ? { title: a.title } : {}), modus: a.modus, vorlage: a.vorlage,
       ...(a.project ? { project: a.project } : {}), ...(a.gerendert_am ? { gerendert_am: a.gerendert_am } : {}) };
-    const r = await getPool().query<{ id: string }>(
+    const r = await getPool().query<{ id: string; neu: boolean; erstellt_am: Date }>(
       `INSERT INTO hauptagent_verlauf (identity_id, rolle, richtung, weg, quelle_ref, status, text, artefakte, meta)
        VALUES ($1, 'ausgabe', 'aus', 'lauf', $2, 'fertig', '', $3::jsonb, $4::jsonb)
        ON CONFLICT (identity_id, quelle_ref) DO UPDATE SET artefakte = EXCLUDED.artefakte, meta = EXCLUDED.meta,
          rev = nextval('hauptagent_verlauf_rev'), aktualisiert_am = NOW()
-       RETURNING id::text AS id`,
+       RETURNING id::text AS id, (xmax = 0) AS neu, erstellt_am`,
       [identity_id, 'artefakt:' + a.id, JSON.stringify([eintrag]), JSON.stringify({ artefakt_id: a.id, project: a.project })]);
-    return { verlauf_id: r.rows[0]?.id ?? null };
+    const z = r.rows[0];
+    // P22-T169: neu_angelegt/erstellt_am sagen dem Aufrufer, ob die Einbettung neu unten steht oder an ihrem alten Platz ersetzt wurde.
+    return { verlauf_id: z?.id ?? null, ...(z ? { neu_angelegt: z.neu === true, erstellt_am: new Date(z.erstellt_am).toISOString() } : {}) };
   } catch (error) {
     return { verlauf_id: null, hinweis: 'Verlaufszeile nicht geschrieben: ' + (error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+/**
+ * P22-T169 (User-Befund 26.10.2026, thought c4858305): kurze Zeile im Verlauf des Absenders zu einem Artefakt - 'aktualisiert' beim
+ * Ersetzen (die Einbettung bleibt an ihrem Platz und zeichnet live neu) bzw. 'fehler', wenn das Ersetzen scheitert. Jede Meldung ist
+ * eine eigene Zeile (quelle_ref artefakt-meldung:<id>:<uuid>), damit sie unten im Chat erscheint; aktualisiereVerlaufArtefakt
+ * trifft sie nicht (kein HTML-Ballast). Schalter hauptagent_verlauf AUS -> verlauf_id null mit Hinweis. Wirft nie.
+ */
+export async function meldeArtefaktImVerlauf(identity_id: string, m: { artefakt_id: string; art: 'aktualisiert' | 'fehler'; text: string;
+  titel?: string | null; revision?: number | null; project?: string | null; einbettung_verlauf_id?: string | null }): Promise<{ verlauf_id: string | null; hinweis?: string }> {
+  try {
+    if (!(await leseVerlaufSchalter()).aktiv) return { verlauf_id: null, hinweis: 'Verlauf ist aus (Schalter hauptagent_verlauf) - keine Zeile ' + m.art + ' im Chat' };
+    const meta = { artefakt_id: m.artefakt_id, artefakt_meldung: m.art, ...(m.titel ? { titel: m.titel } : {}), ...(m.revision != null ? { revision: m.revision } : {}),
+      ...(m.project ? { project: m.project } : {}), ...(m.einbettung_verlauf_id ? { einbettung_verlauf_id: m.einbettung_verlauf_id } : {}) };
+    const r = await getPool().query<{ id: string }>(
+      `INSERT INTO hauptagent_verlauf (identity_id, rolle, richtung, weg, quelle_ref, status, text, artefakte, meta)
+       VALUES ($1, 'ausgabe', 'aus', 'lauf', $2, $3, $4, '[]'::jsonb, $5::jsonb) RETURNING id::text AS id`,
+      [identity_id, 'artefakt-meldung:' + m.artefakt_id + ':' + randomUUID(), m.art === 'fehler' ? 'fehler' : 'fertig', m.text, JSON.stringify(meta)]);
+    return { verlauf_id: r.rows[0]?.id ?? null };
+  } catch (error) {
+    return { verlauf_id: null, hinweis: 'Meldung ' + m.art + ' nicht in den Verlauf geschrieben: ' + (error instanceof Error ? error.message : String(error)) };
   }
 }
 

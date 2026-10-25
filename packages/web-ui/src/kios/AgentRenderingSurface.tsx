@@ -9,6 +9,7 @@ import { leseArtefaktSkripteAktiv } from '../api/artefakt-skripte';
 import { enthaeltSkript } from './skript-rahmen-logik';
 import {
   merkeZustand, stelleZustandHer, verweisProjektVon, verweisWertVon, zerlegeVerweisWert, VERWEIS_SELEKTOR, type ArtefaktZustand,
+  leseArtefaktZustand, speichereArtefaktZustand, type ZustandSpeicher,
 } from './verweis-klick-logik';
 import './kios-integration.css';
 
@@ -27,6 +28,8 @@ interface AgentRenderingSurfaceProps {
   skriptHinweis?: boolean;
   /** P22-T168: Kontextmenue 'Zitat anfügen' an Verweisen; nur Chat-Nachrichten setzen das (User: Artefakttafel/Top-Artefakte bleiben unveraendert). */
   zitatMenue?: boolean;
+  /** P22-T169: Auswahl (Radio/Checkbox/details) je Artefakt und Betrachter ueber das Neuladen merken, z. B. 'artefakt:<id>' (localStorage). */
+  zustandSchluessel?: string | null;
 }
 
 const SHADOW_BASE = `
@@ -52,6 +55,11 @@ function auswahlZiel(): Element {
   return document.querySelector('.synapse-control') ?? document.body;
 }
 
+/** P22-T169: localStorage des Betrachters; gesperrt (privates Fenster, Richtlinie) -> null. */
+function lokalerSpeicher(): ZustandSpeicher | null {
+  try { return typeof window !== 'undefined' ? window.localStorage : null; } catch { return null; }
+}
+
 function verweisDebug(ergebnis: string, info: Record<string, unknown>): void {
   console.debug('[artefakt-verweis]', { ergebnis, ...info });
 }
@@ -67,6 +75,7 @@ export default function AgentRenderingSurface({
   updateOhneAnimation = false,
   skriptHinweis = true,
   zitatMenue = false,
+  zustandSchluessel = null,
 }: AgentRenderingSurfaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -93,6 +102,22 @@ export default function AgentRenderingSurface({
   const auswahlRef = useRef<HTMLDivElement | null>(null);
   const verweisRef = useRef<(el: Element, event: MouseEvent) => void>(() => undefined);
   const zitatRef = useRef<(el: Element, event: MouseEvent) => void>(() => undefined);
+  // P22-T169: gemerkte Auswahl ueber das Neuladen (wie die Zustandsrettung ueber Revisionen nur mit Schalter artefakt_verweise).
+  const zustandSchluesselRef = useRef(zustandSchluessel);
+  zustandSchluesselRef.current = zustandSchluessel;
+  const wiederhergestelltRef = useRef<string | null>(null);
+  const ersteAnzeigeFertigRef = useRef(false);
+  const stelleGemerktenZustandHerRef = useRef<(wann: string) => void>(() => undefined);
+  stelleGemerktenZustandHerRef.current = (wann) => {
+    const s = zustandSchluesselRef.current;
+    const content = contentRef.current;
+    if (!s || !content || aktivRef.current !== true || wiederhergestelltRef.current === s) return;
+    wiederhergestelltRef.current = s;
+    const z = leseArtefaktZustand(lokalerSpeicher(), s);
+    if (!z) return;
+    const n = stelleZustandHer(content, z);
+    console.debug('[artefakt-verweis] zustand neu geladen', { schluessel: s, wiederhergestellt: n, wann });
+  };
 
   // P22-T166 (F9): Das Skript wird hier weiter entfernt (sanitize.ts); mit Schalter artefakt_skripte (gecacht) ein kleiner Hinweis.
   const hatSkript = skriptHinweis && enthaeltSkript(html);
@@ -106,7 +131,12 @@ export default function AgentRenderingSurface({
 
   useEffect(() => {
     let aktiv = true;
-    void leseArtefaktVerweiseAktiv().then((wert) => { if (aktiv) aktivRef.current = wert; });
+    void leseArtefaktVerweiseAktiv().then((wert) => {
+      if (!aktiv) return;
+      aktivRef.current = wert;
+      // P22-T169: kam der Schalter erst nach dem ersten Aufbau, jetzt die gemerkte Auswahl einsetzen.
+      if (wert && ersteAnzeigeFertigRef.current) stelleGemerktenZustandHerRef.current('schalter_geladen');
+    });
     return () => { aktiv = false; };
   }, []);
 
@@ -219,6 +249,20 @@ export default function AgentRenderingSurface({
       const verweisElement = (event.target as Element | null)?.closest?.(VERWEIS_SELEKTOR);
       if (verweisElement) zitatRef.current(verweisElement, event);
     });
+    // P22-T169: nur Aenderungen des Betrachters merken (change feuert nicht beim Setzen per Code; details ueber den Klick auf summary).
+    const merkeDauerhaft = (wann: string) => {
+      const s = zustandSchluesselRef.current;
+      if (!s || aktivRef.current !== true) return;
+      const ok = speichereArtefaktZustand(lokalerSpeicher(), s, merkeZustand(content));
+      console.debug('[artefakt-verweis] zustand gemerkt', { schluessel: s, ok, wann });
+    };
+    content.addEventListener('change', (event) => {
+      const t = event.target as HTMLInputElement | null;
+      if (t?.type === 'radio' || t?.type === 'checkbox') merkeDauerhaft('auswahl');
+    });
+    content.addEventListener('click', (event) => {
+      if ((event.target as Element | null)?.closest?.('summary')) window.setTimeout(() => merkeDauerhaft('details'), 0);
+    });
 
     return () => {
       beobachterRef.current?.disconnect();
@@ -243,6 +287,9 @@ export default function AgentRenderingSurface({
       speedFactor: isUpdate ? 0.45 : 1,
       sofort,
       onDone: () => {
+        ersteAnzeigeFertigRef.current = true;
+        // P22-T169: zuerst die gemerkte Auswahl (einmal je Artefakt), danach der juengere Zustand aus der vorigen Revision.
+        stelleGemerktenZustandHerRef.current(isUpdate ? 'revision' : 'erstes_anzeigen');
         if (zustand) {
           const wiederhergestellt = stelleZustandHer(content, zustand);
           console.debug('[artefakt-verweis] zustand', { revision, wiederhergestellt, sofort });

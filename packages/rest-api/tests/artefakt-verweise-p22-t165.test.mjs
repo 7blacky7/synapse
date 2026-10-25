@@ -92,7 +92,7 @@ try {
   let a = await mit(() => C.ladePlanAlle(P, {}));
   check(a.plaene.map((p) => p.kurz_id).join(',') === 'P1,P2' && a.gesamt.plaene === 2 && a.gekappt === false && !a.hinweis, 'A Plaene wie plan list (aktiv zuerst), zurueckgestellter Plan ausgeblendet', a.plaene.map((p) => p.kurz_id));
   const t1 = a.plaene[0].tasks;
-  check(t1.length === 5 && Object.keys(t1[0]).sort().join(',') === 'kurz_id,priority,status,title,updatedAt' && !JSON.stringify(a).includes('LANGE BESCHREIBUNG'),
+  check(t1.length === 5 && Object.keys(t1[0]).sort().join(',') === 'kurz_id,nummer,priority,status,title,updatedAt' /* nummer ergaenzt P22-T169 */ && !JSON.stringify(a).includes('LANGE BESCHREIBUNG'),
     'A Tasks kompakt ohne Beschreibung, zurueckgestellte Task ausgeblendet', t1);
   check(a.plaene[0].name === 'Hauptplan' && a.plaene[0].aktiv === true && a.plaene[0].tasks_gesamt === 6 && a.plaene[0].tasks_erledigt === 3 && a.plaene[0].tasks_ausgelassen === 0,
     'A Plan-Felder (Zaehler aus plan list)', a.plaene[0]);

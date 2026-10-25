@@ -8,6 +8,8 @@
  *   Projekt: data-synapse-projekt am Element oder einem Vorfahren (Vorlage: {{_meta.project}}), sonst das Projekt des Anzeigeorts.
  * ZUSTAND: Radio-/Checkbox-Auswahl und details[open] werden vor einer neuen Revision gemerkt und danach wiederhergestellt,
  *   damit eine CSS-Navigation (ein Radio je Plan) Live-Updates uebersteht.
+ *   P22-T169: zusaetzlich je Artefakt im localStorage des Betrachters (speichereArtefaktZustand/leseArtefaktZustand), damit die
+ *   Auswahl auch das Neuladen uebersteht; geschrieben erst nach einer Aenderung durch den Betrachter, nur stabile Schluessel.
  * Beides nur mit Produkt-Schalter artefakt_verweise (global, Standard AUS).
  */
 
@@ -103,4 +105,49 @@ export function stelleZustandHer(wurzel: ZustandWurzel, z: ArtefaktZustand): num
     n++;
   });
   return n;
+}
+
+
+// ───────────────── P22-T169: persoenliche Auswahl ueber das Neuladen ─────────────────
+// User 25.10.2026 (thought 403c12bd): gewaehlter Plan / gewaehlte Sortierung je Artefakt und Betrachter merken, auch ueber das
+// Neuladen der Seite. Gespeichert wird erst, wenn der Betrachter etwas aendert; ohne Eintrag bleibt das Artefakt wie heute.
+
+export const ZUSTAND_SPEICHER_PRAEFIX = 'synapse-artefakt-zustand:';
+const ZUSTAND_SPEICHER_MAX = 20000;
+export interface ZustandSpeicher { getItem(schluessel: string): string | null; setItem(schluessel: string, wert: string): void }
+
+/** Index-Schluessel (typ@3, @3) verrutschen, sobald die Daten andere Elemente liefern -> nicht dauerhaft merken. */
+const stabilerSchluessel = (k: string): boolean => !/@\d+$/.test(k);
+
+/** Nur stabile Schluessel (#id, typ:name=wert); fuer den dauerhaften Speicher. Rein. */
+export function dauerhafterZustand(z: ArtefaktZustand): ArtefaktZustand {
+  const filtere = (o: Record<string, boolean>) => Object.fromEntries(Object.entries(o).filter(([k, v]) => stabilerSchluessel(k) && typeof v === 'boolean'));
+  return { geprueft: filtere(z.geprueft ?? {}), offen: filtere(z.offen ?? {}) };
+}
+
+/** Zustand eines Artefakts merken (schluessel z. B. 'artefakt:<id>'). Speicher fehlt/voll/gesperrt -> false, wirft nie. */
+export function speichereArtefaktZustand(speicher: ZustandSpeicher | null | undefined, schluessel: string | null | undefined, z: ArtefaktZustand): boolean {
+  if (!speicher || !schluessel) return false;
+  try {
+    const text = JSON.stringify(dauerhafterZustand(z));
+    if (text.length > ZUSTAND_SPEICHER_MAX) return false;
+    speicher.setItem(ZUSTAND_SPEICHER_PRAEFIX + schluessel, text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Gemerkten Zustand lesen; nichts gemerkt, kaputt oder Speicher gesperrt -> null (das Artefakt bleibt im Standard). Wirft nie. */
+export function leseArtefaktZustand(speicher: ZustandSpeicher | null | undefined, schluessel: string | null | undefined): ArtefaktZustand | null {
+  if (!speicher || !schluessel) return null;
+  try {
+    const roh = speicher.getItem(ZUSTAND_SPEICHER_PRAEFIX + schluessel);
+    if (!roh) return null;
+    const z = JSON.parse(roh) as Partial<ArtefaktZustand> | null;
+    if (!z || typeof z !== 'object' || !z.geprueft || !z.offen || typeof z.geprueft !== 'object' || typeof z.offen !== 'object') return null;
+    return dauerhafterZustand(z as ArtefaktZustand);
+  } catch {
+    return null;
+  }
 }

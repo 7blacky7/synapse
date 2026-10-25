@@ -825,6 +825,8 @@ export {
   ArtefaktVorlagenFehler, artefaktVorlagenSchalter, leseArtefaktVorlagenEinstellungen, setzeArtefaktVorlagenEinstellungen,
   registriereArtefaktQuelle, artefaktQuellenKatalog, pruefeQuellen, kanaeleFuerQuellen, ladeQuellen, darfProjekt, ladeVorlagenZeile,
   speichereVorlagenArtefakt, renderArtefakt, stelleArtefaktInVerlauf, aktualisiereVerlaufArtefakt, renderungsProjekte,
+  // P22-T169: Zeile 'aktualisiert'/'fehler' im Chat beim Ersetzen.
+  meldeArtefaktImVerlauf,
   // P22-T165: plan.alle + Schalter artefakt_verweise.
   ARTEFAKT_VERWEISE_FUNKTION, ladePlanAlle, wegfallReihenfolge,
 } from './services/artefakt-vorlagen.js';

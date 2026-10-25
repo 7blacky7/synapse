@@ -8,6 +8,7 @@ import { abonniereArtefaktLive, zeichneArtefaktNeu } from '../api/agent-runtime'
  * unveraendert gezeigt. Mit Vorlage: Kopfzeile mit Projekt, Stand-Zeit, Knopf 'Neu zeichnen' (Server rendert mit aktuellen Daten);
  * modus live: Live-Strom (nur bei Schalter artefakt_vorlagen_live EIN, sonst meldet der Server 'aus' und der Block bleibt Stand).
  * Volle Breite, kein Raster (R7). Das HTML bereinigt AgentRenderingSurface (sanitize.ts) wie jeden Agenten-Block.
+ * P22-T169: die Auswahl des Betrachters (Radio/Checkbox/details) bleibt je Artefakt-ID auch ueber das Neuladen erhalten.
  */
 export interface ArtefaktLiveBlockProps {
   id: string;
@@ -76,7 +77,7 @@ export function ArtefaktLiveBlock({ id, html, revision, modus, project, vorlage,
       className={className} />
     /* P22-T165: Vorlagen-Updates ohne Aufbau-Animation (nur beim ersten Anzeigen), Verweise mit dem Render-Projekt. */
     : <AgentRenderingSurface html={stand.html} revision={id + ':' + stand.revision} className={className ?? 'native-html-block agent-chat-html'}
-      verweisProjekt={project || verweisProjekt || null} updateOhneAnimation={!!vorlage} />}
+      verweisProjekt={project || verweisProjekt || null} updateOhneAnimation={!!vorlage} zustandSchluessel={'artefakt:' + id} />}
   </div>;
 }
 
