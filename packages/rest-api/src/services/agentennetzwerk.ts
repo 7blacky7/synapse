@@ -1,5 +1,18 @@
 /** P22-T93: serverseitige Projektion bestehender API-Daten; kein DB-Zugriff im Browser. */
-import { getPool, hauptagentIdentitaetsId, HAUPTAGENT_AGENT_ID, leseNetzwerkKonfiguration, netzwerkEreignis, netzwerkText, type ToolCallRow } from '@synapse/core';
+import { getPool, hauptagentIdentitaetsId, HAUPTAGENT_AGENT_ID, leseNetzwerkKonfiguration, netzwerkEreignis, netzwerkErfolg, netzwerkText, type ToolCallRow } from '@synapse/core';
+
+/**
+ * P22-T156: SQL-Ausschnitte nur fuer die serverseitige Klassifikation (core netzwerkErgebnis). Sie werden NIE ausgeliefert:
+ * netzwerkEreignis baut ein festes Objekt, das nur ergebnis_art und den normalisierten fehler_code traegt.
+ */
+export const ERGEBNIS_SPALTEN_SQL = `
+  (c.result IS NOT NULL AND left(c.result,400) ~ '^\\s*\\{[^{}]{0,250}"success"\\s*:\\s*false') AS erfolg_false,
+  (c.result IS NOT NULL AND left(c.result,600) ~ '"stufe"\\s*:\\s*"rueckfrage"' AND left(c.result,600) ~ '"ausgefuehrt"\\s*:\\s*false') AS rueckfrage,
+  (c.result IS NOT NULL AND left(c.result,600) ~ '"stufe"\\s*:\\s*"anleitung"' AND left(c.result,600) ~ '"ausgefuehrt"\\s*:\\s*false') AS anleitung,
+  substring(left(c.result,4000) from '"(?:error|fehler)"\\s*:\\s*"([^"]{1,120})"') AS ergebnis_code,
+  substring(left(c.result,4000) from '"status"\\s*:\\s*"([a-z_]{2,40})"') AS ergebnis_status,
+  substring(left(c.result,1500) from '"message"\\s*:\\s*"([^"]{1,160})') AS ergebnis_meldung`;
+type ErgebnisSpalten = { erfolg_false: boolean; rueckfrage: boolean; anleitung: boolean; ergebnis_code: string | null; ergebnis_status: string | null; ergebnis_meldung: string | null };
 import { ladeAgentenTeam, type TeamAgent } from './agenten-team.js';
 
 // P22-T149: Index-Groesse (indexierte Dateien, Chunks) fuer Projektstern, Trabanten und Nebel. Je Projekt kurz gecacht, damit
@@ -50,19 +63,20 @@ export async function ladeAgentennetzwerk(project: string) {
  const basis = { success: true, version: 1, project, stand: new Date().toISOString(), ...konfiguration };
  if (!konfiguration.schalter.aktiv) return { ...basis, agenten: [], ereignisse: [], begrenzt: 0 };
  const mainId = await hauptagentIdentitaetsId();
- const [team, r, starts, mainTeam, frequenz, channelCalls] = await Promise.all([
+ const [team, r, starts, mainTeam, frequenz, channelCalls, ohneAbsender] = await Promise.all([
   ladeAgentenTeam(project),
-  getPool().query<ToolCallRow & { gesamt: string; ist_main: boolean; ergebnis_bytes: number; ergebnis_leer: boolean }>(`
+  getPool().query<ToolCallRow & ErgebnisSpalten & { gesamt: string; ist_main: boolean; ergebnis_bytes: number; ergebnis_leer: boolean }>(`
    SELECT c.id::text,c.ts,c.project,c.agent_id,c.identity_id,c.lauf_id,c.context_epoch,c.source,
           c.tool_name,c.action,c.args_preview,c.ok,c.error,c.duration_ms,c.is_mutation,COALESCE(c.result_bytes,octet_length(c.result),0)::int AS ergebnis_bytes,
           (c.ok AND c.result IS NOT NULL AND (c.result ~ '"(count|total|total_matches|anzahl)"\\s*:\\s*0\\s*[,}]' OR c.result ~ '"(results|matches|symbols|functions|treffer|items)"\\s*:\\s*\\[\\s*\\]')) AS ergebnis_leer,COUNT(*) OVER()::text AS gesamt,
-          (c.identity_id=$2 OR (c.identity_id IS NULL AND (c.agent_id=$3 OR c.agent_id IN (SELECT 'main-'||id::text FROM agent_runtime_sessions)))) AS ist_main
+          (c.identity_id=$2 OR (c.identity_id IS NULL AND (c.agent_id=$3 OR c.agent_id IN (SELECT 'main-'||id::text FROM agent_runtime_sessions)))) AS ist_main,${ERGEBNIS_SPALTEN_SQL}
    FROM tool_calls c LEFT JOIN agent_identitaeten i ON i.id=c.identity_id
    WHERE (c.project=$1 OR c.identity_id=$2 OR (c.identity_id IS NULL AND
      (c.agent_id=$3 OR c.agent_id IN (SELECT 'main-'||id::text FROM agent_runtime_sessions))))
     AND c.ts >= NOW()-($4::int * INTERVAL '1 second')
     AND (c.identity_id IS NULL OR i.status='aktiv')
     AND COALESCE(c.agent_id,'') NOT LIKE 'archiv-%'
+    AND (c.agent_id IS NOT NULL OR c.identity_id IS NOT NULL)
    ORDER BY c.id DESC LIMIT $5`, [project, mainId, HAUPTAGENT_AGENT_ID, Math.max(konfiguration.werte.inaktiv_sekunden,konfiguration.werte.aktivitaet_sekunden), konfiguration.werte.ereignis_limit]),
   getPool().query<{ziel:string;actor_identity_id:string;id:string}>(`
    SELECT DISTINCT ON (COALESCE(j.target_identity_id,ziel->>'identity_id',ziel->>'name'))
@@ -82,16 +96,22 @@ export async function ladeAgentennetzwerk(project: string) {
    WHERE (c.project=$1 OR c.identity_id=$2 OR (c.identity_id IS NULL AND (c.agent_id=$3 OR c.agent_id IN (SELECT 'main-'||id::text FROM agent_runtime_sessions))))
     AND c.ts>=NOW()-($4::int * INTERVAL '1 second') AND (c.identity_id IS NULL OR i.status='aktiv')
     AND COALESCE(c.agent_id,'') NOT LIKE 'archiv-%'
+    AND (c.agent_id IS NOT NULL OR c.identity_id IS NOT NULL)
    GROUP BY c.identity_id,c.agent_id`,[project,mainId,HAUPTAGENT_AGENT_ID,konfiguration.werte.aktivitaet_sekunden]),
   // Eigener begrenzter Ausschnitt: aktive Channels duerfen bei Shell-/Code-Spitzen nicht verschwinden.
-  getPool().query<ToolCallRow>(`
-   SELECT c.id::text,c.ts,c.project,c.agent_id,c.identity_id,c.lauf_id,c.tool_name,c.action,c.args_preview,c.ok
+  getPool().query<ToolCallRow & ErgebnisSpalten>(`
+   SELECT c.id::text,c.ts,c.project,c.agent_id,c.identity_id,c.lauf_id,c.tool_name,c.action,c.args_preview,c.ok,c.error,${ERGEBNIS_SPALTEN_SQL}
    FROM tool_calls c LEFT JOIN agent_identitaeten i ON i.id=c.identity_id
    WHERE c.project=$1 AND (c.tool_name='channel' OR c.tool_name LIKE '%__channel')
     AND (c.args_preview LIKE '%"channel_name"%' OR c.args_preview LIKE '%"name"%')
     AND c.ts>=NOW()-($2::int*INTERVAL '1 second') AND (c.identity_id IS NULL OR i.status='aktiv')
     AND COALESCE(c.agent_id,'') NOT LIKE 'archiv-%'
+    AND (c.agent_id IS NOT NULL OR c.identity_id IS NOT NULL)
    ORDER BY c.id DESC LIMIT $3`,[project,konfiguration.werte.inaktiv_sekunden,konfiguration.werte.ereignis_limit]),
+  // P22-T155: Aufrufe ohne agent_id und identity_id (kein Ausweis, kein Name) werden kein Knoten, nur ein Zaehler (Debug/Legende).
+  getPool().query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM tool_calls c
+   WHERE c.project=$1 AND c.agent_id IS NULL AND c.identity_id IS NULL AND c.ts >= NOW()-($2::int * INTERVAL '1 second')`,
+   [project, Math.max(konfiguration.werte.inaktiv_sekunden, konfiguration.werte.aktivitaet_sekunden)]),
  ]);
  const meta=(a:TeamAgent|undefined)=>({
   typ:a?.typ?netzwerkText(a.typ):null,modell:a?.modell?netzwerkText(a.modell):null,
@@ -126,7 +146,7 @@ export async function ladeAgentennetzwerk(project: string) {
  }
  // Ohne Startbeleg gilt die juengste direkte Kommunikation innerhalb des Aktivitaetsfensters.
  const kommunikation = new Map<string,{koordinator_id:string;quelle:string;beleg_id:string}>();
- for(const e of ereignisse) if(e.ok&&e.tool==='chat'&&e.interaktion==='senden'){
+ for(const e of ereignisse) if(netzwerkErfolg(e)&&e.tool==='chat'&&e.interaktion==='senden'){
   const sender=alias.get(e.identity_id??e.agent)??alias.get(e.agent);
   for(const empfaenger of e.empfaenger){
    const ziel=alias.get(empfaenger);
@@ -170,5 +190,6 @@ export async function ladeAgentennetzwerk(project: string) {
   zuletzt_aktiv:frequenzen.get(a.id)?.zeit??a.zuletzt_aktiv,
   koordination:koordinierung.get(a.id)??kommunikation.get(a.id)??null})), ereignisse, channel_ereignisse,
   begrenzt: Math.max(0, Number(r.rows[0]?.gesamt ?? 0) - r.rows.length),
+  ohne_absender: Number(ohneAbsender.rows[0]?.n ?? 0),
   quellen: ['tool_calls','agenten-team','hauptagentIdentitaetsId','specialist_jobs.spawn','tool_calls.chat','file_batch_plans','code_files/code_chunks'], cursor: ereignisse.at(-1)?.id ?? null };
 }

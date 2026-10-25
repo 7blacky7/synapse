@@ -5,6 +5,7 @@ import { indexEbenen, nebelPunkte, RUECKFALL, NEBEL_HART, type IndexEbenen } fro
 import { indexReaktion, nimmAuf, raeume, glanzStaerke, impulsLage, leereEffekte, reaktionsWerte, REAKTION_STANDARD, type ReaktionsWerte } from './netzwerk/index-reaktion';
 import { NETZWERK_LABELS, gruppiereEinstellungen, einstellungHilfe, geaenderteNetzwerkWerte } from './netzwerk/einstellungen-form';
 import {PlanNachleuchten,planZustand,planAnimation,planAbklingen,PLAN_FARBEN} from './netzwerk/plan-nachleuchten';
+import { ergebnisArt, istErfolg, halbStelle, knickAnteile, effektZeiten, effektPhase, abprallStelle, gegenstossStelle, farbeAusCss, zaehleErgebnisse, ERGEBNIS_NAMEN, ERGEBNIS_SYMBOL, ERGEBNIS_LEGENDE, FEHLER_ARTEN, type NetzErgebnisArt, type EffektZeiten } from './netzwerk/ergebnis-effekte';
 import { erstelleLicht, type Licht, type Kamera } from './netzwerk/nerven-renderer';
 import '../agentennetzwerk.css';
 export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
@@ -16,7 +17,9 @@ export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
  * Daten nur aus dem API-Vertrag; Dekor (Sterne/Nebel) ist fest und traegt keine Aktivitaet.
  */
 interface Partikel { e: NetzEreignis; start: number; impuls?: Impuls | null; gestartet?: boolean }
-interface Impuls { art: 'aufruf' | 'fehler' | 'dm' | 'post' | 'lesen' | 'kern' | 'plan' | 'an_user' | 'artefakt'; pfad: Float32Array; laenge: number; von: string; nach: string; dauer: number; farbe: Rgb; form: number; icon: string; seed: number; angekommen: boolean; bytes: number; leer: boolean }
+interface Impuls { art: 'aufruf' | 'fehler' | 'dm' | 'post' | 'lesen' | 'kern' | 'plan' | 'an_user' | 'artefakt'; pfad: Float32Array; laenge: number; von: string; nach: string; dauer: number; farbe: Rgb; form: number; icon: string; seed: number; angekommen: boolean; bytes: number; leer: boolean;
+ /** P22-T156: Fehlerart mit eigenem Effekt auf halber Strecke (halb = Haltepunkt als Bahnanteil, zeiten = Anlauf/Halten/Effekt in ms). */
+ ergebnis?: NetzErgebnisArt; code?: string | null; halb?: number; zeiten?: EffektZeiten }
 interface Messung { fps: number; ms: number; rate: number; ausgelassen: number; gezeichnet: number; eingang: number; sprites: number; stufe: number }
 interface Lage { x: number; y: number; a: number; auto?: boolean }
 const LEER: Messung = { fps: 0, ms: 0, rate: 0, ausgelassen: 0, gezeichnet: 0, eingang: 0, sprites: 0, stufe: 0 };
@@ -28,7 +31,7 @@ const COMMIT_GRUEN: Rgb = rgb(PLAN_FARBEN.committet), COMMIT_BLAU: Rgb = rgb(PLA
 export function gruppiereEreignisse(ereignisse: NetzEreignis[]) {
  const gruppen: Array<{ e: NetzEreignis; anzahl: number; ids: string[] }> = [];
  for (const e of ereignisse) {
-  const vorher = gruppen.at(-1), gleich = vorher && [e.project, e.identity_id, e.agent, e.tool, e.action, e.channel, e.ok, e.empfaenger.join(',')].join('|') === [vorher.e.project, vorher.e.identity_id, vorher.e.agent, vorher.e.tool, vorher.e.action, vorher.e.channel, vorher.e.ok, vorher.e.empfaenger.join(',')].join('|');
+  const vorher = gruppen.at(-1), gleich = vorher && [e.project, e.identity_id, e.agent, e.tool, e.action, e.channel, e.ok, e.ergebnis_art ?? '', e.empfaenger.join(',')].join('|') === [vorher.e.project, vorher.e.identity_id, vorher.e.agent, vorher.e.tool, vorher.e.action, vorher.e.channel, vorher.e.ok, vorher.e.ergebnis_art ?? '', vorher.e.empfaenger.join(',')].join('|');
   if (gleich) { vorher.e = e; vorher.anzahl++; vorher.ids.push(e.id); }
   else gruppen.push({ e, anzahl: 1, ids: [e.id] });
  }
@@ -149,6 +152,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   // P22-T149: Index-Ebenen (Stern, Trabanten, Nebel), Akzentfarbe (--accent) und Reaktion der Trabanten auf Commits.
   let ebenen: IndexEbenen = RUECKFALL, akzent: Rgb = KERN, akzentAm = -1e9, orbitPhase = 0, anUserZahl = 0;
   let orbitFlare: { t: number; f: Rgb } | null = null;
+  // P22-T156: Farben der Ergebnis-Effekte aus Theme-Tokens (agentennetzwerk.css --nw-e-*, hell und dunkel getrennt); Rueckfall fest.
+  let ef: { membran: Rgb; sperre: Rgb; nebel: Rgb; konflikt: Rgb; funken: Rgb; wartet: Rgb } = { membran: KERN, sperre: rgb('#d6a84b'), nebel: rgb('#94a3b8'), konflikt: rgb('#a78bfa'), funken: FEHLER, wartet: rgb('#fcd34d') };
+  const ergebnisZahl: Partial<Record<NetzErgebnisArt, number>> = {};
   // Chunk-Nebel als einmal vorgezeichnete Ebene; neu gezeichnet nur bei anderer Punktzahl, anderem Netzradius (40er-Raster) oder Designwechsel.
   let nebelBild: { bild: HTMLCanvasElement; schluessel: string; r: number; f: number } | null = null;
   // P22-T152: Reaktion auf Index-Aenderungen zwischen zwei Snapshots: neue Punkte leuchten auf, wegfallende verglimmen, eine Aenderung
@@ -202,10 +208,17 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   const woelbung = (k: Knoten) => (Math.sin(k.winkel * 3 + 0.7) >= 0 ? 0.13 : -0.13);
   const baue = (e: NetzEreignis, g: Szene, w: Record<string, number>): Impuls | null => {
    const q = g.alias.get(e.identity_id || e.agent) || g.alias.get(e.agent); if (!q) return null;
-   const tool = werkzeugName(e.tool), st = stil(e.tool), farbe = e.ok ? rgb(st.farbe) : FEHLER, seed = hash(e.id);
-   const basis = { farbe, form: st.form, icon: st.icon, seed, angekommen: false, bytes: e.ergebnis_bytes ?? 0, leer: e.ergebnis_leer === true };
+   // P22-T156: Erfolg aus der Ergebnisart (ok allein sagt nichts); Fehlerarten enden mit eigenem Effekt auf halber Strecke.
+   // fehler_effekte 0 = bisheriger roter Fehlerimpuls fuer jede Fehlerart.
+   const art0 = ergebnisArt(e), erfolgreich = istErfolg(art0), effekt = !erfolgreich && nwWert(w, 'fehler_effekte', 1) === 1;
+   const tool = werkzeugName(e.tool), st = stil(e.tool), farbe = erfolgreich || effekt ? rgb(st.farbe) : FEHLER, seed = hash(e.id);
+   const basis = { farbe, form: st.form, icon: st.icon, seed, angekommen: false, bytes: e.ergebnis_bytes ?? 0, leer: erfolgreich && art0 === 'leer' };
+   const mitEffekt = (i: Impuls, knicke: number[]): Impuls => {
+    const z = effektZeiten(art0, w.animation_ms, nwWert(w, 'fehler_effekt_ms', 1400), nwWert(w, 'wartet_halte_ms', 8000));
+    return { ...i, art: 'fehler', ergebnis: art0, code: e.fehler_code ?? null, halb: halbStelle(knicke), zeiten: z, dauer: z.gesamt / 1.3 };
+   };
    // P22-T148: Artefakt bzw. Nachricht an den User feuert vom Urheber ueber den Netzrand hinaus, nie ueber das Projekt (global).
-   const anUser = e.ok ? ereignisArt(e) : null;
+   const anUser = erfolgreich ? ereignisArt(e) : null;
    if (anUser) {
     if (w.an_user_animation === 0) return null;
     const a = pos(q), d = Math.hypot(a.x, a.y), wk = d > 1 ? Math.atan2(a.y, a.x) : (seed % 628) / 100, ende = Math.max(d + 140, g.radius * 1.15);
@@ -214,12 +227,15 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    }
    // P22-T95: Aufruf mit Planbezug (Argument plan_id/schatten, sonst files-Aufruf eines Beitragenden) endet im Schattenplan.
    const planId = e.plan_id ?? (/^files/.test(tool) ? g.planVonAgent.get(q.id) : undefined), pk = planId ? g.alias.get('plan:' + planId) : undefined;
-   if (pk && pk !== q) { const p = gleichmaessig(kurve(pos(q), pos(pk), 0.2, 18), 40); return { ...basis, ...p, art: e.ok ? 'plan' : 'fehler', von: q.id, nach: pk.id, dauer: w.animation_ms * 0.8 }; }
-   if (e.ok && tool === 'chat' && e.interaktion === 'senden') {
+   if (pk && pk !== q) {
+    const p = gleichmaessig(kurve(pos(q), pos(pk), 0.2, 18), 40), i: Impuls = { ...basis, ...p, art: erfolgreich ? 'plan' : 'fehler', von: q.id, nach: pk.id, dauer: w.animation_ms * 0.8 };
+    return effekt ? mitEffekt(i, []) : i;
+   }
+   if (erfolgreich && tool === 'chat' && e.interaktion === 'senden') {
     const z = e.empfaenger.map(x => g.alias.get(x)).find((k): k is Knoten => !!k && k !== q);
     if (z) { const a = pos(q), b = pos(z), p = gleichmaessig([a.x, a.y, b.x, b.y], 24); return { ...basis, ...p, art: 'dm', von: q.id, nach: z.id, dauer: w.animation_ms * 0.75 }; }
    }
-   if (e.ok && e.channel) {
+   if (erfolgreich && e.channel) {
     const c = g.alias.get('channel:' + e.channel);
     if (c) {
      const lesen = e.interaktion === 'lesen', p = gleichmaessig(lesen ? kurve(pos(c), pos(q), -0.2, 18) : kurve(pos(q), pos(c), 0.22, 18), 40);
@@ -227,19 +243,95 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     }
    }
    if (q === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
-   const punkte: number[] = [];
+   const punkte: number[] = [], segmente: number[] = [];
    for (let k: Knoten = q; ; k = k.eltern!) {
     const ziel = k.eltern ?? g.kern; if (ziel === k) break;
+    const vor = punkte.length;
     kurve(pos(k), pos(ziel), woelbung(k), 16, punkte);
+    // P22-T156 (R7): Segmentlaengen, damit der Haltepunkt nicht auf dem Koordinator liegt.
+    let sl = 0; for (let j = vor + 2; j < punkte.length; j += 2) sl += Math.hypot(punkte[j] - punkte[j - 2], punkte[j + 1] - punkte[j - 1]); segmente.push(sl);
     if (!k.eltern || ziel === g.kern) break;
    }
    if (!punkte.length) return null;
    const p = gleichmaessig(punkte, 48);
-   return { ...basis, ...p, art: e.ok ? 'aufruf' : 'fehler', von: q.id, nach: g.kern.id, dauer: w.animation_ms * (0.7 + 0.3 * Math.min(1, p.laenge / 520)) };
+   const ruf: Impuls = { ...basis, ...p, art: erfolgreich ? 'aufruf' : 'fehler', von: q.id, nach: g.kern.id, dauer: w.animation_ms * (0.7 + 0.3 * Math.min(1, p.laenge / 520)) };
+   return effekt ? mitEffekt(ruf, knickAnteile(segmente)) : ruf;
   };
   const punkt = (p: Float32Array, f: number) => {
    const n = p.length / 2 - 1, i = Math.max(0, Math.min(n, f * n)), a = Math.floor(i), b = Math.min(n, a + 1), t = i - a;
    return { x: p[a * 2] + (p[b * 2] - p[a * 2]) * t, y: p[a * 2 + 1] + (p[b * 2 + 1] - p[a * 2 + 1]) * t };
+  };
+  /**
+   * P22-T156: Ergebnis-Effekt eines nicht erfolgreichen Aufrufs. Der Kopf laeuft bis zur Haelfte der Bahn Agent -> Projekt (i.halb)
+   * und endet dort je Art: abprallen (falsch aufgerufen), Schildring (gesperrt), Nebel (nicht gefunden), Gegenstoss mit Doppelblitz
+   * (konflikt), Funken (serverfehler/sonstiges), pulsierendes Halten (wartet). Das Projekt wird nie erreicht, kein Rueckfluss.
+   */
+  const ergebnisEffekt = (i: Impuls, ms: number, e: NetzEreignis, zeit: number, koepfe: Array<{ x: number; y: number; i: Impuls; e: NetzEreignis }>) => {
+   const art = i.ergebnis!, z = i.zeiten!, halb = i.halb ?? 0.5, ph = effektPhase(ms, z, halb);
+   const [r, gg, b] = i.farbe, heiss = mische(i.farbe, WEISS, 0.55), abst = Math.min(0.04, 26 / Math.max(60, i.laenge));
+   if (ph.phase === 'ende') return;
+   if (ph.phase === 'anlauf') {
+    // nicht gefunden wird auf dem letzten Drittel durchsichtig; Serverfehler/sonstiges flackern vor dem Zerspringen.
+    const blass = art === 'nicht_gefunden' ? 1 - 0.6 * Math.max(0, (ph.u - 0.6) / 0.4) : 1;
+    const flacker = (art === 'serverfehler' || art === 'sonstiges') && ph.u > 0.6 ? 0.5 + 0.5 * Math.sin(zeit * 0.08) : 1;
+    for (let j = 12; j >= 1; j--) { const f = ph.kopf - j * abst; if (f < 0) continue; const q = punkt(i.pfad, f), m = 1 - j / 12; licht.sprite(q.x, q.y, 5.5 * (0.4 + m * 0.8), r, gg, b, m * m * 0.85 * blass, 0); }
+    const q = punkt(i.pfad, ph.kopf);
+    licht.sprite(q.x, q.y, 17, heiss[0], heiss[1], heiss[2], blass * flacker, art === 'nicht_gefunden' ? 0 : i.form);
+    licht.sprite(q.x, q.y, 36, r, gg, b, 0.32 * blass * flacker, 0);
+    koepfe.push({ x: q.x, y: q.y, i, e });
+    return;
+   }
+   if (!i.angekommen) { i.angekommen = true; ergebnisZahl[art] = (ergebnisZahl[art] ?? 0) + 1; }
+   const P = punkt(i.pfad, halb), A = punkt(i.pfad, Math.max(0, halb - 0.02)), B = punkt(i.pfad, Math.min(1, halb + 0.02));
+   const tl = Math.hypot(B.x - A.x, B.y - A.y) || 1, tx = (B.x - A.x) / tl, ty = (B.y - A.y) / tl, nx = -ty, ny = tx, u = ph.u;
+   if (art === 'wartet') {
+    const c = ef.wartet;
+    if (ph.phase === 'halten') {
+     const puls = 0.55 + 0.45 * Math.sin((ms - z.anlauf) / 1000 * Math.PI * 2);
+     licht.sprite(P.x, P.y, 17, c[0], c[1], c[2], puls, i.form); licht.sprite(P.x, P.y, 26 + 6 * puls, c[0], c[1], c[2], 0.5 * puls, 1); licht.sprite(P.x, P.y, 46, c[0], c[1], c[2], 0.18 * puls, 0);
+     koepfe.push({ x: P.x, y: P.y, i, e });
+    } else { licht.sprite(P.x, P.y, 17 * (1 - u * 0.5), c[0], c[1], c[2], 1 - u, i.form); licht.sprite(P.x, P.y, 26 + u * 20, c[0], c[1], c[2], 0.4 * (1 - u), 1); }
+    return;
+   }
+   if (art === 'falsch_aufgerufen') {
+    const c = ef.membran, mem = Math.max(0, 1 - u * 1.6);
+    for (let j = -5; j <= 5; j++) licht.sprite(P.x + nx * j * 4.5, P.y + ny * j * 4.5, 5, c[0], c[1], c[2], mem * (1 - Math.abs(j) / 6) * 0.95, 0);
+    const f = abprallStelle(u, halb), q = punkt(i.pfad, f), st = u < 0.2 ? 1 + u * 2.5 : 0.7;
+    licht.sprite(q.x, q.y, 15 * st, heiss[0], heiss[1], heiss[2], Math.min(1, (1 - u) * 2.5), i.form); licht.sprite(q.x, q.y, 28, r, gg, b, 0.25 * (1 - u), 0);
+    if (u < 0.95) koepfe.push({ x: q.x, y: q.y, i, e });
+    return;
+   }
+   if (art === 'gesperrt') {
+    const c = ef.sperre, a = 1 - u, kf = Math.max(0, 1 - u * 3);
+    licht.sprite(P.x, P.y, 26 + u * 16, c[0], c[1], c[2], a * 0.95, 1); licht.sprite(P.x, P.y, 34, c[0], c[1], c[2], a * 0.55, 5); licht.sprite(P.x, P.y, 60, c[0], c[1], c[2], a * 0.2, 0);
+    if (kf > 0) { licht.sprite(P.x - tx * 6, P.y - ty * 6, 15 * kf, heiss[0], heiss[1], heiss[2], kf, i.form); koepfe.push({ x: P.x, y: P.y, i, e }); }
+    return;
+   }
+   if (art === 'nicht_gefunden') {
+    const c = ef.nebel;
+    for (let j = 0; j < 11; j++) {
+     const wk = j * 2.399 + (i.seed % 7), seite = (hash(i.seed + '/' + j) % 100) / 100 - 0.5, d = 6 + glatt(u) * (22 + (j % 4) * 6);
+     licht.sprite(P.x + (Math.cos(wk) * 0.5 + nx * seite * 1.6) * d, P.y + (Math.sin(wk) * 0.5 + ny * seite * 1.6) * d, 6 + u * 12, c[0], c[1], c[2], 0.6 * (1 - u), 0);
+    }
+    return;
+   }
+   if (art === 'konflikt') {
+    const c = ef.konflikt;
+    if (u < 0.35) {
+     const q = punkt(i.pfad, gegenstossStelle(u, halb));
+     licht.sprite(q.x, q.y, 12, c[0], c[1], c[2], 0.95, 4); licht.sprite(q.x, q.y, 26, c[0], c[1], c[2], 0.3, 0);
+     licht.sprite(P.x, P.y, 15, heiss[0], heiss[1], heiss[2], 0.7 + 0.3 * Math.sin(zeit * 0.05), i.form); koepfe.push({ x: P.x, y: P.y, i, e });
+    } else {
+     const v = (u - 0.35) / 0.65, a = 1 - v;
+     for (const s2 of [-1, 1]) licht.sprite(P.x + tx * s2 * 7, P.y + ty * s2 * 7, 14 + v * 34, c[0], c[1], c[2], a * 0.9, 1);
+     licht.sprite(P.x, P.y, 30 * (1 - v * 0.5), c[0], c[1], c[2], a * 0.5, 0);
+    }
+    return;
+   }
+   // serverfehler und sonstiges: Funken mit leichter Schwerkraft (sonstiges etwas grauer, eigener Zaehler).
+   const c = art === 'sonstiges' ? mische(ef.funken, ef.nebel, 0.35) : ef.funken;
+   for (let j = 0; j < 9; j++) { const wk = j * 0.698 + (i.seed % 6), d = 6 + glatt(u) * (20 + (hash(i.seed + ':' + j) % 14)); licht.sprite(P.x + Math.cos(wk) * d, P.y + Math.sin(wk) * d + u * u * 26, 4.5 * (1 - u * 0.4), c[0], c[1], c[2], 1 - u, 4); }
+   if (u < 0.25) licht.sprite(P.x, P.y, 30 * (1 - u * 4), c[0], c[1], c[2], 1 - u * 4, 0);
   };
   const draw = (zeit: number) => {
    raf = requestAnimationFrame(draw);
@@ -306,7 +398,12 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    k.x += (tx - k.x) * ke; k.y += (ty - k.y) * ke; k.zoom += (tz - k.zoom) * ke; k.fit = fit;
    // P22-T111: helles Design am naechsten data-theme-Vorfahren ablesen (Umschalter wirkt ohne Neustart der Schleife).
    const hell = el.closest('[data-theme="light"]') !== null;
-   if (zeit - akzentAm > 1000) { akzentAm = zeit; const ac = getComputedStyle(el).getPropertyValue('--accent').trim(); if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(ac)) akzent = rgb(ac); }
+   if (zeit - akzentAm > 1000) {
+    akzentAm = zeit; const cs = getComputedStyle(el), ac = cs.getPropertyValue('--accent').trim(); if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(ac)) akzent = rgb(ac);
+    // P22-T156: Effektfarben aus den Theme-Tokens (wirken beim Umschalten hell/dunkel ohne Neustart).
+    const tok = (n: string, alt: Rgb): Rgb => farbeAusCss(cs.getPropertyValue(n)) ?? alt;
+    ef = { membran: tok('--nw-e-membran', akzent), sperre: tok('--nw-e-sperre', ef.sperre), nebel: tok('--nw-e-nebel', ef.nebel), konflikt: tok('--nw-e-konflikt', ef.konflikt), funken: tok('--nw-e-funken', ef.funken), wartet: tok('--nw-e-wartet', ef.wartet) };
+   }
    licht.begin(w, h, dpr, k, uhr, hell);
    // Tiefer Raum: Nebel und Sternenstaub hinter dem Netz (Parallaxe ueber tiefe < 1).
    if (!stufe) for (const n of deko.nebel) licht.sprite(n.x, n.y, n.g, n.f[0], n.f[1], n.f[2], n.a, 0, n.t, 0.05, n.x, 0.25);
@@ -402,6 +499,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      }
      continue;
     }
+    if (i.ergebnis && i.zeiten) { ergebnisEffekt(i, zeit - p.start, p.e, zeit, koepfe); continue; }
     const lesen = i.art === 'lesen', fehlt = i.art === 'fehler', ankunft = 0.78;
     const kopf = glatt(Math.min(1, t / ankunft)) * (fehlt ? 0.55 : 1), schweif = lesen ? 7 : 14, abst = Math.min(0.04, 26 / Math.max(60, i.laenge));
     for (let j = schweif; j >= 1; j--) {
@@ -650,7 +748,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    for (const kp of koepfe.slice(-(kompakt ? 8 : 16))) {
     const x = sx(kp.x), y = sy(kp.y);
     schreibe(kp.i.icon, x + 11, y - 12, 'rgb(' + kp.i.farbe.map(c => c * 255 | 0).join(',') + ')', '700 11px "IBM Plex Mono", monospace', 0.95);
-    if (erklaerungen) schreibe(werkzeugName(kp.e.tool) + '.' + kp.e.action, x + 12, y + 12, '#94a3b8', '9px "IBM Plex Mono", monospace', 0.85);
+    // P22-T156: Fehlerart als Symbol am Kopf; mit Erklaerungen Art und normalisierter Code.
+    if (kp.i.ergebnis) schreibe(ERGEBNIS_SYMBOL[kp.i.ergebnis], x - 11, y - 12, '#fca5a5', '700 11px "IBM Plex Mono", monospace', 0.9);
+    if (erklaerungen) schreibe(werkzeugName(kp.e.tool) + '.' + kp.e.action + (kp.i.ergebnis ? ' · ' + ERGEBNIS_NAMEN[kp.i.ergebnis] + (kp.i.code ? ' · ' + kp.i.code : '') : ''), x + 12, y + 12, '#94a3b8', '9px "IBM Plex Mono", monospace', 0.85);
    }
    for (const ab of abgaenge) { const t = (zeit - ab.start) / abDauer(ab.art); if (t < 1) schreibe(ab.name + (ab.art === 'commit' ? (ab.auto ? ' · auto-committet' : ' · committet') : ' · verworfen'), sx(ab.x), sy(ab.y) - 28, ab.art === 'commit' ? '#fde68a' : '#fca5a5', '600 10px "IBM Plex Mono", monospace', Math.max(0, 1 - t * 1.2)); }
    ctx.globalAlpha = 1;
@@ -658,6 +758,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    el.dataset.mainX = String(sx(kp.x)); el.dataset.mainY = String(sy(kp.y)); el.dataset.camX = String(k.x); el.dataset.camY = String(k.y); el.dataset.zoom = String(k.zoom);
    el.dataset.channelCount = String(g.channels); el.dataset.channelWriteCount = String(schreibend); el.dataset.animationCount = String(partikel.current.length);
    el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planZustaende = JSON.stringify(g.knoten.filter(n=>n.plan).map(n=>({id:n.plan!.id,status:planZustand(n.plan!),farbe:n.farbe,fade:n.fade,animation:planAnimation(n.plan!),beitraege:n.teilnehmer?.length??0}))); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
+   el.dataset.ergebnisEffekte = JSON.stringify(ergebnisZahl);
    el.dataset.stern = String(g.stern); el.dataset.trabanten = String(ebenen.trabanten); el.dataset.trabantenEinzeln = String(ebenen.einzeln); el.dataset.nebelPunkte = String(nebelBild && ebenen.nebel && stufe < 3 ? ebenen.nebel : 0);
    // P22-T152: Debug der Index-Reaktion (letzte Art, aktive Leuchtpunkte, Zaehler, zuletzt gesehener Index Dateien/Chunks).
    el.dataset.nebelReaktion = nebelEff.letzte; el.dataset.nebelGlanz = String(nebelEff.glanz.length); el.dataset.nebelImpulse = String(nebelEff.zaehler.impuls);
@@ -708,11 +809,15 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
  const ereignisse = gruppiereEreignisse((snapshot?.ereignisse ?? []).filter(e => !auswahl || e.identity_id === auswahl || e.agent === auswahl || g?.alias.get(e.agent)?.id === auswahl || 'channel:' + e.channel === auswahl)).slice(-8).reverse();
  const datum = (s: string | null | undefined) => s ? new Date(s).toLocaleString('de-DE') : 'Nicht erfasst';
  const kartenAufruf = kartenKnoten?.agent?.letzter_aufruf ?? kartenKnoten?.letzterAufruf;
+ // P22-T156: Anzahl je Ergebnisart im Fenster (Legende, Debug-Zeile).
+ const ergebnisAnzahl = zaehleErgebnisse(snapshot?.ereignisse ?? []);
  return <section className="agent-network" aria-label="Agentennetzwerk">
   <header className="nw-head"><div><span className={'nw-signal ' + (status === 'live' ? 'live' : '')} /><strong>Agentennetzwerk</strong>{erklaerungen && <small>{status}</small>}</div><div>
    {an && <><button onClick={() => setPause(p => !p)} aria-pressed={pause}>{pause ? 'Animation fortsetzen' : 'Animation pausieren'}</button><button className="nw-toggle" role="switch" aria-label="Erklärungen" aria-checked={erklaerungen} onClick={() => setErklaerungen(v => !v)}><span className="nw-toggle-track"><i /></span>Erklärungen <b>{erklaerungen ? 'Ein' : 'Aus'}</b></button>
     <span className="nw-help"><button aria-label="Icon-Legende" aria-expanded={legende} onClick={() => setLegende(v => !v)}>?</button>{legende && <div className="nw-legend" role="dialog" aria-label="Werkzeug-Icons">
-     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; rote Flackerfunken = Fehler; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt. Commit: die Raute fliegt ins Projekt, das Projekt antwortet mit Welle und aufflackernden Trabanten. Artefakt bzw. Nachricht an den User: Signal feuert vom Agenten über den Netzrand (Karte = Artefakt, Funke = Nachricht). Trabanten um das Projekt: je 100 Dateien ein Punkt; feiner Nebel: je 100 Chunks ein Punkt.</p>
+     <p className="nw-legend-text">Jeder echte Aufruf läuft als Lichtimpuls zum Projekt im Zentrum; Aufrufe mit Planbezug enden im goldenen Schattenplan. Blitz = Direktnachricht, Sechseck = Channel, Raute = files-Plan, dunkler Stern = ruhiger Agent. Rückfluss: hohle Ringe vom Ziel zurück zum Agenten, mehr und größere Ringe = größeres Ergebnis; leeres Ergebnis = kleine Kugel, die unterwegs zerplatzt. Nicht erfolgreiche Aufrufe erreichen das Projekt nicht (Ergebnis-Effekte unten). Commit: die Raute fliegt ins Projekt, das Projekt antwortet mit Welle und aufflackernden Trabanten. Artefakt bzw. Nachricht an den User: Signal feuert vom Agenten über den Netzrand (Karte = Artefakt, Funke = Nachricht). Trabanten um das Projekt: je 100 Dateien ein Punkt; feiner Nebel: je 100 Chunks ein Punkt.</p>
+     <p className="nw-legend-text">Ergebnis-Effekte auf halber Strecke Agent → Projekt{snapshot && nwWert(snapshot.werte, 'fehler_effekte', 1) === 0 ? ' (ausgeschaltet: jede Fehlerart als roter Fehlerimpuls)' : ''}: {ERGEBNIS_LEGENDE.map(([a, t]) => ERGEBNIS_SYMBOL[a] + ' ' + ERGEBNIS_NAMEN[a] + ' ' + t + (ergebnisAnzahl[a] ? ' [' + ergebnisAnzahl[a] + ' im Fenster]' : '')).join(' · ')}. Art und Fehlercode stehen am Impulskopf (Erklärungen an) und im Feed.</p>
+     <p className="nw-legend-text">Aufrufe ohne Absender (kein Ausweis, kein Agentenname) werden kein Knoten; sie zählen nur als „ohne Absender“ in der Debug-Zeile (Erklärungen an){snapshot?.ohne_absender ? ' · im Fenster: ' + snapshot.ohne_absender : ''}.</p>
      <p className="nw-legend-text">Pläne: <span style={{color:PLAN_FARBEN.offen}}>offen (gold)</span> · <span style={{color:PLAN_FARBEN.committet}}>committet (grün, fliegt ins Projekt)</span> · <span style={{color:PLAN_FARBEN.auto}}>auto-committet (blau, fliegt ins Projekt)</span> · <span style={{color:PLAN_FARBEN.verworfen}}>verworfen (rote Explosion)</span>.</p>
      {Object.entries(STILE).map(([key, s]) => <span key={key} style={{ color: s.farbe }}><b>{s.icon}</b>{s.name}</span>)}</div>}</span></>}
    <button onClick={() => setEinstellungen(v => !v)} aria-expanded={einstellungen}>Einstellungen</button>
@@ -762,10 +867,10 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     </aside>}
     {!snapshot.ereignisse.length && <p className="nw-empty">Stille im Netz. Jeder echte Aufruf wird hier als Impuls sichtbar.</p>}
    </div>
-   {erklaerungen && <output className="nw-debug">Stream: {status} · {mess.rate} Ereignisse/s · {mess.fps} FPS · {mess.ms} ms/Frame · {mess.sprites} Lichter · Qualitätsstufe {mess.stufe} · {mess.gezeichnet} Impulsframes · {mess.ausgelassen} Animationen/Budgetüberschreitungen · Renderer: {glCanvas.current?.dataset.renderer ?? '–'} · Snapshot begrenzt: {snapshot.begrenzt} · Quelle: {snapshot.schalter.quelle} · Stand: {new Date(snapshot.stand).toLocaleTimeString('de-DE')}{snapshot.letzter_fehler || snapshot.schalter.letzter_fehler ? ' · ' + (snapshot.letzter_fehler || snapshot.schalter.letzter_fehler) : ''} · Index: {snapshot.index ? snapshot.index.dateien + ' Dateien / ' + snapshot.index.chunks + ' Chunks' : 'nicht geliefert'} · Stern {(g?.stern ?? 1).toFixed(2)} · {ie?.trabanten ?? 0} Trabanten ({ie?.einzeln ?? 0} einzeln) · {ie?.nebel ?? 0} Nebelpunkte{ie?.aktiv ? '' : ' · Rückfall ohne Index-Ebenen'}</output>}
+   {erklaerungen && <output className="nw-debug">Stream: {status} · {mess.rate} Ereignisse/s · {mess.fps} FPS · {mess.ms} ms/Frame · {mess.sprites} Lichter · Qualitätsstufe {mess.stufe} · {mess.gezeichnet} Impulsframes · {mess.ausgelassen} Animationen/Budgetüberschreitungen · Renderer: {glCanvas.current?.dataset.renderer ?? '–'} · Snapshot begrenzt: {snapshot.begrenzt} · ohne Absender: {snapshot.ohne_absender ?? 0} · Ergebnisse: {FEHLER_ARTEN.filter(a => ergebnisAnzahl[a]).map(a => ERGEBNIS_NAMEN[a] + ' ' + ergebnisAnzahl[a]).join(', ') || 'keine Fehler'}{nwWert(snapshot.werte, 'fehler_effekte', 1) === 0 ? ' (Effekte aus)' : ''} · Quelle: {snapshot.schalter.quelle} · Stand: {new Date(snapshot.stand).toLocaleTimeString('de-DE')}{snapshot.letzter_fehler || snapshot.schalter.letzter_fehler ? ' · ' + (snapshot.letzter_fehler || snapshot.schalter.letzter_fehler) : ''} · Index: {snapshot.index ? snapshot.index.dateien + ' Dateien / ' + snapshot.index.chunks + ' Chunks' : 'nicht geliefert'} · Stern {(g?.stern ?? 1).toFixed(2)} · {ie?.trabanten ?? 0} Trabanten ({ie?.einzeln ?? 0} einzeln) · {ie?.nebel ?? 0} Nebelpunkte{ie?.aktiv ? '' : ' · Rückfall ohne Index-Ebenen'}</output>}
    {erklaerungen && auswahl && g?.alias.get(auswahl)?.zuordnung && <p className="nw-assignment">{g.alias.get(auswahl)!.zuordnung}</p>}
    <details className="nw-feed" open><summary>Echte Ereignisse {auswahl ? '· Auswahl aktiv' : ''} <button onClick={e => { e.preventDefault(); setAuswahl(''); setKarte(''); }}>Alle</button></summary>
-    <ol>{ereignisse.map(({ e, anzahl, ids }) => <li key={e.id}><time>{new Date(e.zeit).toLocaleTimeString('de-DE')}</time><b className="nw-event-icon" style={{ color: stil(e.tool).farbe }}>{stil(e.tool).icon}</b><span><strong>{e.agent}</strong> {e.tool}.{e.action}{e.empfaenger.length ? ' → ' + e.empfaenger.join(', ') : ''}{e.channel ? ' #' + e.channel : ''}{anzahl > 1 && <em> ×{anzahl}</em>}</span><code title={'Quelle tool_calls, Projekt ' + e.project + ' · IDs ' + ids.join(', ')}>#{e.id}</code><small>{e.ok ? '✓' : 'Fehler'}</small></li>)}</ol>
+    <ol>{ereignisse.map(({ e, anzahl, ids }) => <li key={e.id}><time>{new Date(e.zeit).toLocaleTimeString('de-DE')}</time><b className="nw-event-icon" style={{ color: stil(e.tool).farbe }}>{stil(e.tool).icon}</b><span><strong>{e.agent}</strong> {e.tool}.{e.action}{e.empfaenger.length ? ' → ' + e.empfaenger.join(', ') : ''}{e.channel ? ' #' + e.channel : ''}{anzahl > 1 && <em> ×{anzahl}</em>}</span><code title={'Quelle tool_calls, Projekt ' + e.project + ' · IDs ' + ids.join(', ')}>#{e.id}</code>{(() => { const a = ergebnisArt(e); return <small className={'nw-ergebnis nw-ergebnis-' + a} title={'Ergebnis: ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · Fehlercode ' + e.fehler_code : '')}>{istErfolg(a) ? (a === 'leer' ? '✓ ∅' : '✓') : ERGEBNIS_SYMBOL[a] + ' ' + ERGEBNIS_NAMEN[a] + (e.fehler_code ? ' · ' + e.fehler_code : '')}</small>; })()}</li>)}</ol>
    </details>
   </>}
  </section>;

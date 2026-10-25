@@ -13,6 +13,8 @@ import { schlankeShellRueckfrageWennAktiv, fremderLaufFeld } from '@synapse/core
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 // P22-T116: specialist runtime_* - gemeinsamer Vertrag mit stdio (Schema + Handler aus core).
 import { fuehreRuntimeAgentenAktion, RUNTIME_TOOL_AKTIONEN, RUNTIME_TOOL_PROPERTIES, findeWrapperStatusPerName, leseRuntimeUebersicht } from '@synapse/core';
+// P22-T157: search(action:'verlauf') - Sitzungsverlauf je Ausweis semantisch (verlauf-einbetten.ts).
+import { sucheVerlaufTool, VERLAUF_SUCHE_PROPERTIES } from '@synapse/core';
 import { getProjectRecordById, mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools } from '@synapse/core';
 // P22-T56: tools/list je Verbindung (Ausweis im Header / Legacy-Connector / gemeinsame Verbindung).
 import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
@@ -232,11 +234,11 @@ import {
   setSetupPhase,
 } from '@synapse/core';
 import { minimatch } from 'minimatch';
-import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls, baueToolErgebnis, kuerzeThoughtTreffer, toolArgsVorschau, guideFuerKennung } from '@synapse/core';
+import { GUIDE_OVERVIEW, TOOL_GUIDES, logToolCall, queryToolCalls, baueToolErgebnis, kuerzeThoughtTreffer, toolArgsVorschau, guideFuerKennung, absenderFuerAbweisung } from '@synapse/core';
 import { leiteAgentIdAusHeaders } from './agent-header.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen — dieselbe Funktion wie im
 // lokalen MCP-Server, damit die beiden Strecken nicht auseinanderlaufen.
-import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
+import { pruefeUnbekannteParameter, baueErlaubteParameter, baueJsonParameterTypen, koerziereJsonParameter } from '@synapse/core';
 // asset_intel (P4-T70): Schema und Dispatcher aus core — dieselben, die die stdio-Strecke einhaengt.
 import { ASSET_INTEL_DEFINITION, fuehreAssetIntelAus, ergaenzeCodeIntelAntwort } from '@synapse/core';
 import { mitCodeIntelSchatten } from '@synapse/core';
@@ -359,8 +361,8 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['code', 'path', 'code_with_path', 'memory', 'thoughts', 'proposals', 'tech_docs', 'media', 'tasks', 'plans'],
-          description: 'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media|tasks|plans',
+          enum: ['code', 'path', 'code_with_path', 'memory', 'thoughts', 'proposals', 'tech_docs', 'media', 'tasks', 'plans', 'verlauf'],
+          description: 'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media|tasks|plans|verlauf (eigener Sitzungsverlauf, nur mit Ausweis)',
         },
         query: { type: 'string', description: 'Suchanfrage (erforderlich fuer die meisten Actions)' },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -378,6 +380,7 @@ export const MCP_TOOLS = [
         category: { type: 'string', description: 'Memory-Kategorie-Filter (fuer memory)' },
         ...PLAN_SEARCH_PROPERTIES,
         task_id: { type: 'string', description: 'Thoughts: Task-UUID, Kurz-ID oder Alias als Filter.' },
+        ...VERLAUF_SUCHE_PROPERTIES,
       },
       required: ['action'],
     },
@@ -2276,6 +2279,10 @@ async function attachSkillHinweisgeber(
 const ERLAUBTE_PARAMETER = baueErlaubteParameter(
   MCP_TOOLS as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
 );
+/** P22-T160: Objekt-/Listen-Parameter je Tool (JSON-Text eines Clients mit altem Schema wird zurueckgewandelt). */
+const JSON_PARAMETER_TYPEN = baueJsonParameterTypen(
+  MCP_TOOLS as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
+);
 
 /** P15-T36 Teil 2: Tools, deren Antworten Dateiinhalte tragen koennen (Sicherheitsnetz fuer .env-Werte). */
 const ENV_NETZ_TOOLS = new Set(['files', 'files_batch', 'code_intel']);
@@ -2333,6 +2340,8 @@ async function handleToolCallKern(
   // RV9 prüft unbekannte Parameter selbst, damit auch Fehler den festen Dateikontext tragen.
   if (name === 'reverse') return fuehreReverseAus({ ...args, ...(effectiveAgentId ? { agent_id: effectiveAgentId } : {}) });
 
+  // P22-T160: Objekt-/Listen-Parameter als JSON-Text (MCP-Client mit Tool-Schema von vor dem Deploy) laut Schema zurueckwandeln.
+  koerziereJsonParameter(JSON_PARAMETER_TYPEN.get(name), args);
   const parameterBefund = pruefeUnbekannteParameter(
     name,
     ERLAUBTE_PARAMETER.get(name) ?? new Set<string>(),
@@ -2809,6 +2818,9 @@ async function handleToolCallKern(
           );
           return { success: true, results };
         }
+        case 'verlauf':
+          // P22-T157: Identitaet nur aus dem Ausweis-Principal (sucheVerlaufTool), nie aus Argumenten.
+          return await sucheVerlaufTool(args);
         default:
           return { success: false, error: `Unbekannte search action: "${action}"` };
       }
@@ -6339,6 +6351,23 @@ async function toolsListeErgebnis(headers: Record<string, unknown>, mainAccess: 
 }
 
 /**
+ * P22-T155 (R4): Abweisung VOR mitAgentToolAufruf (Hauptagenten-Profil, Sessionbindung) protokollieren. Absender nur lesend aus
+ * dem Ausweis (absenderFuerAbweisung, keine Rechte, kein Lauf); identity_id nur im Heimatprojekt des Ausweises. args_preview
+ * ohne Ausweisfelder, logToolCall schwaerzt wie bei jedem Aufruf. Best-effort.
+ */
+async function protokolliereFruehAbweisung(toolName: string, args: Record<string, unknown>, transportToken: string | undefined,
+  agentId: string | null, antwort: { error: string } & Record<string, unknown>): Promise<void> {
+  try {
+    const a = await absenderFuerAbweisung(args, transportToken);
+    const { token: _token, agent_kennung: _kennung, ...rest } = args;
+    const project = (typeof args.project === 'string' && args.project ? args.project : null) ?? a?.project ?? null;
+    await logToolCall({ agentId: a?.agent_id ?? agentId ?? (typeof args.agent_id === 'string' ? args.agent_id : null), project,
+      source: 'cloud', tool: toolName, action: typeof args.action === 'string' ? args.action : null, argsPreview: toolArgsVorschau(rest),
+      ok: false, error: antwort.error, result: JSON.stringify(antwort), absender: a && a.project === project ? a : null });
+  } catch { /* Audit ist best-effort */ }
+}
+
+/**
  * P10-T51 (K2, N5): EIN tools/call-Weg fuer POST / und POST /mcp/messages.
  * Vorher stand derselbe Block zweimal in den Routen; dem Root-Weg fehlte attachWerkzeugRegeln.
  * Die Huelle (Text + structuredContent aus demselben Objekt, kompakt, null-Felder weg,
@@ -6363,9 +6392,10 @@ async function fuehreToolsCallAus(
   const profilFehler = (access.profile === 'main-synapse' || access.error)
     ? mainToolAblehnung(toolName, toolArgs, access, MCP_TOOLS, { tokenAufruf: striktMain }) : null;
   if (profilFehler) {
-    return baueToolErgebnis({ success: false, error: profilFehler,
-      message: 'Werkzeug durch Hauptagenten-Profil oder Sessionbindung abgelehnt.' },
-      { tool: toolName, isError: true, strukturiert: true });
+    const ablehnung = { success: false, error: profilFehler,
+      message: 'Werkzeug durch Hauptagenten-Profil oder Sessionbindung abgelehnt.' };
+    void protokolliereFruehAbweisung(toolName, explizitArgs, agentTransportToken, access.agentId ?? derivedAgentId ?? null, ablehnung);
+    return baueToolErgebnis(ablehnung, { tool: toolName, isError: true, strukturiert: true });
   }
   if (access.agentId) toolArgs.agent_id = access.agentId;
   if (hauptagentSession && access.profile === 'artefakt-only') {
@@ -6377,6 +6407,7 @@ async function fuehreToolsCallAus(
         error: 'hauptagent_nur_artefakt',
         message: 'Diese Verbindung gehoert einer Hauptagenten-Session und ist auf das Tool "artefakt" beschraenkt.',
       };
+      void protokolliereFruehAbweisung(toolName, explizitArgs, agentTransportToken, access.agentId ?? null, ablehnung);
       return baueToolErgebnis(ablehnung, { tool: toolName, isError: true, strukturiert: true });
     }
     toolArgs.session_id = hauptagentSession;
@@ -6411,12 +6442,16 @@ async function fuehreToolsCallAus(
     args: toolArgs,
   };
   if (kontext.antwort?.success === false) {
+    // P22-T155: identity_id aus geprueftem ALS; bei frueher Abweisung ohne Principal (z. B. unbekannter_parameter) der lesend
+    // aufgeloeste Absender (kontext.absender, nur im Heimatprojekt des Ausweises). args_preview geschwaerzt wie bei jedem Aufruf.
+    const projekt = kontext.principal?.project ?? (typeof toolArgs.project === 'string' && toolArgs.project ? toolArgs.project : null)
+      ?? kontext.absender?.project ?? null;
     void logToolCall({
-      // Behaupteter Text fuer die Diagnose; identity_id stammt ausschliesslich aus geprueftem ALS.
-      agentId: kontext.principal?.agent_id ?? (typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null),
-      project: kontext.principal?.project ?? (typeof toolArgs.project === 'string' ? toolArgs.project : null),
-      source: 'cloud', tool: toolName, action: String(toolArgs.action ?? ''), ok: false,
-      error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
+      agentId: kontext.principal?.agent_id ?? kontext.absender?.agent_id
+        ?? (typeof toolArgs.agent_id === 'string' ? toolArgs.agent_id : null) ?? derivedAgentId ?? null,
+      project: projekt, source: 'cloud', tool: toolName, action: String(toolArgs.action ?? ''), ok: false,
+      argsPreview: toolArgsVorschau(toolArgs), error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort),
+      absender: kontext.absender && kontext.absender.project === projekt ? kontext.absender : null });
     return baueToolErgebnis(await haengeFallSkillHinweisAn(kontext.antwort, toolName, fallOpt), { tool: toolName, isError: true, strukturiert: true });
   }
   const effectiveAgentId = kontext.principal?.agent_id ?? (typeof toolArgs.agent_id === 'string'

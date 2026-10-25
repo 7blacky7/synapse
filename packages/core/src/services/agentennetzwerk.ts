@@ -7,6 +7,7 @@ import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { pflichtText, pruefeProfilVerwalter, ProfilVerwaltungFehler } from './agent-profil-verwalter.js';
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 import type { ToolCallRow } from './tool-call-log.js';
+import { netzwerkErgebnis, type NetzErgebnisArt, type NetzErgebnisRoh } from './agentennetzwerk-ergebnis.js';
 
 export const NETZWERK_FUNKTION = 'agentennetzwerk' as const;
 export const NETZWERK_EINSTELLUNGEN = {
@@ -35,6 +36,8 @@ export const NETZWERK_EINSTELLUNGEN = {
  // Index-Ebenen (Web-UI netzwerk/index-ebenen.ts): Stern 100 % ab stern_voll_dateien, je Trabant/Nebelpunkt so viele Dateien/Chunks.
  stern_voll_dateien: { standard: 10000, min: 100, max: 1000000 },
  stern_min_promille: { standard: 80, min: 10, max: 1000 },
+ // P22-T162 (User 25.10.2026): Projektsonne waechst bis stern_voll_dateien auf stern_max_promille (1000 = bisherige Groesse, bis 200 %).
+ stern_max_promille: { standard: 1000, min: 1000, max: 2000 },
  dateien_je_trabant: { standard: 100, min: 1, max: 100000 },
  trabanten_einzeln: { standard: 300, min: 0, max: 2000 },
  chunks_je_nebelpunkt: { standard: 100, min: 1, max: 100000 },
@@ -70,6 +73,11 @@ export const NETZWERK_EINSTELLUNGEN = {
  index_cache_ms: { standard: 30000, min: 1000, max: 600000 },
  index_cache_schnell_ms: { standard: 10000, min: 1000, max: 600000 },
  index_billig_ms: { standard: 100, min: 1, max: 10000 },
+ // P22-T156: Ergebnis-Effekte auf der halben Strecke Agent -> Projekt (1 an; 0 = jede Fehlerart mit dem bisherigen roten Fehlerimpuls).
+ fehler_effekte: { standard: 1, min: 0, max: 1 },
+ fehler_effekt_ms: { standard: 1400, min: 300, max: 6000 },
+ // Haltezeit eines wartenden Aufrufs (Rueckfrage); die Bestaetigung ist aus tool_calls nicht zuordenbar (R5).
+ wartet_halte_ms: { standard: 8000, min: 1000, max: 60000 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;
@@ -170,10 +178,20 @@ export interface NetzwerkEreignis {
  interaktion: 'senden' | 'lesen' | 'aufruf'; quelle: 'tool_calls'; routing: 'vorhanden' | 'nicht_erfasst';
  /** P22-T148: Artefakt bzw. Nachricht an den User; Urheber = agent/identity_id. 'user'/'system' stehen nie in empfaenger. */
  art?: 'an_user' | 'artefakt';
+ /** P22-T156: serverseitig abgeleitete Ergebnisart (ok allein sagt nichts: success:false steht oft mit ok=true im Audit). */
+ ergebnis_art: NetzErgebnisArt;
+ /** P22-T156: normalisierter Fehlercode ([a-z0-9_], max. 40), null bei erfolg/leer. Nie Rohtext. */
+ fehler_code: string | null;
 }
+/** P22-T156: Aufruf gilt als erfolgreich (Art erfolg/leer). */
+export const netzwerkErfolg = (e: Pick<NetzwerkEreignis, 'ergebnis_art'>) => e.ergebnis_art === 'erfolg' || e.ergebnis_art === 'leer';
 /** P22-T148: keine Agenten, werden nie zu Netzwerk-Knoten. */
 export const NETZWERK_KEIN_AGENT: readonly string[] = ['user', 'system'];
-export function netzwerkEreignis(row: ToolCallRow): NetzwerkEreignis {
+/**
+ * P22-T155: agent nur aus agent_id (nie aus source 'cloud'/'stdio'); Zeilen ohne agent_id und identity_id filtert die Projektion
+ * (rest-api ladeAgentennetzwerk) vorher heraus und zaehlt sie als ohne_absender.
+ */
+export function netzwerkEreignis(row: ToolCallRow & Omit<Partial<NetzErgebnisRoh>, 'ok'>): NetzwerkEreignis {
  const args = netzwerkArgumente(row.args_preview);
  const tool = netzwerkText(row.tool_name.split('__').pop());
  const action = netzwerkText(row.action);
@@ -185,8 +203,8 @@ export function netzwerkEreignis(row: ToolCallRow): NetzwerkEreignis {
  const empfaenger = genannt.filter(x => !NETZWERK_KEIN_AGENT.includes(x.toLowerCase()));
  const art = tool === 'artefakt' && action === 'zeigen' ? 'artefakt' as const : genannt.some(x => x.toLowerCase() === 'user') ? 'an_user' as const : null;
  const channel = tool === 'channel' ? netzwerkText(args.channel_name ?? args.name) || null : null;
- return { id: String(row.id), zeit: new Date(row.ts).toISOString(), project: netzwerkText(row.project), agent: netzwerkText(row.agent_id || row.source || 'unbekannt'),
+ return { id: String(row.id), zeit: new Date(row.ts).toISOString(), project: netzwerkText(row.project), agent: netzwerkText(row.agent_id || ''),
   identity_id: row.identity_id ?? null, lauf_id: row.lauf_id ?? null, tool, action, ok: row.ok,
   empfaenger, channel, interaktion: sendet ? 'senden' : liest ? 'lesen' : 'aufruf', quelle: 'tool_calls',
-  routing: empfaenger.length || channel || art ? 'vorhanden' : 'nicht_erfasst', ...(art ? { art } : {}) };
+  routing: empfaenger.length || channel || art ? 'vorhanden' : 'nicht_erfasst', ...(art ? { art } : {}), ...netzwerkErgebnis(row) };
 }
