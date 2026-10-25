@@ -96,17 +96,23 @@ export function herkunftKopf(a: MainAgentVerlaufEintrag['absender']): string | n
 export interface ZustellHuelle { text: string; weg: string | null; id: string | null; von: string | null }
 
 const HUELLEN_SCHLUSS = /^(?:Antworte bei Bedarf\b|Bestaetige das Event bei Bedarf\b|Aeltere Nachrichten bei Bedarf:)/;
+/** P22-T142: Rahmen der CLI vor der Huelle (Mod ohne asUser, aeltere Eintraege). Mit asUser beginnt der Text direkt mit dem Kopf. */
+const HUELLEN_RAHMEN = /^The synapse-inbox plugin sent a message:?$/;
 
 /**
  * P22-T137 (Punkt 6): Huelle einer zugestellten Nachricht (Mod synapse-inbox bzw. Wrapper, baueZustellText im Daemon) zerlegen.
  * Form: [Praefix der CLI 'The synapse-inbox plugin sent a message:'] '[Synapse-Nachricht]' + Kopfzeilen (Weg/Von/An/ID/Zeit) +
  * Leerzeile + Text + Antwort-Hinweis ['This is how Claude Code surfaces ...' der CLI]. Ergebnis: nur der eigentliche Text, dazu
- * Weg, ID (z. B. 'inbox:1037') und Absender. Ohne eigene Zeile '[Synapse-Nachricht]' null. Rein.
+ * Weg, ID (z. B. 'inbox:1037') und Absender. Ohne Zeile '[Synapse-Nachricht]' am Anfang null (P22-T142: mit asUser fehlt der
+ * CLI-Rahmen; beide Formen gelten). Rein.
  */
 export function zerlegeZustellHuelle(text: string): ZustellHuelle | null {
   const zeilen = text.replace(/\r\n/g, '\n').split('\n');
-  const start = zeilen.findIndex((z) => z.trim() === '[Synapse-Nachricht]');
-  if (start < 0) return null;
+  // P22-T142: der Kopf zaehlt nur am Anfang (erste nicht leere Zeile, hoechstens nach dem CLI-Rahmen), nie mitten im Text.
+  const naechste = (ab: number): number => { let k = ab; while (k < zeilen.length && !zeilen[k].trim()) k++; return k; };
+  let start = naechste(0);
+  if (start < zeilen.length && HUELLEN_RAHMEN.test(zeilen[start].trim())) start = naechste(start + 1);
+  if (start >= zeilen.length || zeilen[start].trim() !== '[Synapse-Nachricht]') return null;
   const kopf: Record<string, string> = {};
   let i = start + 1;
   for (; i < zeilen.length && zeilen[i].trim(); i++) {

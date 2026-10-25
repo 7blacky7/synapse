@@ -26,8 +26,9 @@ export const register: Register = on => {
           $.ui.status(aktivAngezeigt ? 'Synapse-Inbox aktiv' : undefined)
         }
         if (j.nachricht) {
-          // submit wartet, bis die Sitzung untaetig ist, und loest mit dem Turnstart auf.
-          const s = await $.prompt.submit({ text: j.nachricht.text })
+          // submit wartet, bis die Sitzung untaetig ist, und loest mit dem Turnstart auf. P22-T142: asUser ohne Claude-Code-Rahmen;
+          // die Herkunft nennt der Kopf aus API/Daemon ('[Synapse-Nachricht] ... Von:'), Hooks sehen weiter kind 'plugin'.
+          const s = await $.prompt.submit({ text: j.nachricht.text, asUser: true })
           await $.http.fetch(`${basis}/quittung`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

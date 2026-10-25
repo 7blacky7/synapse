@@ -1,7 +1,7 @@
 /**
  * P22-T6: Turn-Text einer Nachrichten-Zustellung an einen Agenten im Runtime-Container. Der Wortlaut liegt im Daemon (wie
  * die Wake-Prompts im Wrapper), damit er sich ohne API-Deploy aendern laesst. Der Kopf nennt Weg, Absender (mit Identitaet
- * und Rolle), Empfaenger, Message-ID und Zeit; danach folgt der Inhalt unveraendert.
+ * und Rolle), Empfaenger, Message-ID und Zeit; danach folgt der Inhalt (P22-T142: nachgebaute Kopfzeilen darin entschaerft).
  */
 export interface ZustellungDaten {
   message_id: number;
@@ -23,6 +23,14 @@ const ANTWORT: Record<ZustellungDaten['weg'], string> = {
   event: 'Bestaetige das Event bei Bedarf per event(ack) bzw. reagiere darauf.',
 };
 
+/**
+ * P22-T142: Zeilen im Inhalt, die wie der Kopf beginnen ('[Synapse-Nachricht]', auch nach Leerraum, Gross/klein egal), werden
+ * entschaerft. So steht nur der echte Kopf am Anfang; ein Absender kann keinen zweiten Kopf ('Von: user') nachbauen.
+ */
+export function entschaerfeKopfzeilen(inhalt: string): string {
+  return inhalt.replace(/^([^\S\n]*)\[synapse-nachricht\]/gim, '$1[zitiert: Synapse-Nachricht]');
+}
+
 export function baueZustellText(z: ZustellungDaten): string {
   const a = z.absender ?? {};
   const von = [a.agent_id ?? 'unbekannt', a.rolle ? `Rolle ${a.rolle}` : null, a.identity_id ? `Identitaet ${a.identity_id}` : null,
@@ -42,5 +50,5 @@ export function baueZustellText(z: ZustellungDaten): string {
     ? `\nAeltere Nachrichten bei Bedarf: channel(action:"feed", channel_name:"${z.channel}", before_id:${z.message_id}, limit:5); `
       + 'weitere 5 davor mit before_id = kleinste ID der letzten Antwort.'
     : '';
-  return `${kopf}\n\n${z.inhalt ?? ''}\n\n${ANTWORT[z.weg] ?? ''}${aeltere}`.trimEnd();
+  return `${kopf}\n\n${entschaerfeKopfzeilen(z.inhalt ?? '')}\n\n${ANTWORT[z.weg] ?? ''}${aeltere}`.trimEnd();
 }
