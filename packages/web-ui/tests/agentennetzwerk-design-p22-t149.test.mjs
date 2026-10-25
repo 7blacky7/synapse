@@ -103,7 +103,8 @@ try {
  ok(tsx.includes('auto ? COMMIT_BLAU : COMMIT_GRUEN') && tsx.includes('welle(zeit, fc); orbitFlare'), 'E Farbe je Commit-Art, Projektreaktion in derselben Farbe');
  ok(/p\.status !== 'committed' \|\| geflogen\.has\(p\.id\) \|\| bekanntePlaene\.has\(p\.id\)/.test(tsx) && tsx.includes('if (!planStart) { geflogen.add(p.id); continue; }'), 'E Erstauftritt als committed fliegt ab dem Besitzer, Initialhistorie nicht');
  ok(tsx.includes("nach: 'aussen'") && tsx.includes('g.radius * 1.15') && tsx.includes('w.an_user_animation === 0'), 'E an_user/artefakt endet ausserhalb des Netzrands, nie am Projekt; Schalter wirkt');
- ok((tsx.match(/nebelPunkte\(/g) || []).length === 1 && tsx.includes('ctx.drawImage(nb.bild') && tsx.includes("schluessel = n + ':' + rr"), 'E Nebel nur als vorgezeichnete Ebene (einmal gezeichnet, als Ganzes bewegt)');
+ // P22-T152: zweiter Aufruf nur fuer die Positionen der Glanzpunkte (gecacht je Anzahl/Radius), nicht zum Zeichnen der Ebene.
+ ok((tsx.match(/nebelPunkte\(/g) || []).length === 2 && tsx.includes('glanzPunkte = { p: nebelPunkte(n, r), schluessel }') && tsx.includes('ctx.drawImage(nb.bild') && tsx.includes("schluessel = n + ':' + rr"), 'E Nebel nur als vorgezeichnete Ebene (einmal gezeichnet, als Ganzes bewegt)');
  ok(['dataset.stern', 'dataset.trabanten', 'dataset.nebelPunkte', 'dataset.anUser', 'dataset.commitFarben'].every(s => tsx.includes(s)), 'E Debug-Attribute fuer die Browserabnahme');
 
  // ---------- F rest-api Index-Groesse ----------

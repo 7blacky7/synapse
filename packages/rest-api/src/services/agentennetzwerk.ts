@@ -4,19 +4,37 @@ import { ladeAgentenTeam, type TeamAgent } from './agenten-team.js';
 
 // P22-T149: Index-Groesse (indexierte Dateien, Chunks) fuer Projektstern, Trabanten und Nebel. Je Projekt kurz gecacht, damit
 // SSE-Buendel und Wiederabgleich keinen Abfragesturm ausloesen; ein Fehler liefert null (Web-UI faellt auf die feste Darstellung zurueck).
-const INDEX_CACHE_MS = 30_000;
-const indexCache = new Map<string, { zeit: number; wert: { dateien: number; chunks: number; stand: string } | null }>();
-export async function ladeIndexGroesse(project: string) {
+// P22-T152: Cache-Dauer je Projekt aus der eigenen Zaehldauer: unter 100 ms 10 s (Aenderungen erreichen Nebel/Trabanten schneller), sonst
+// 30 s. Messung 25.10.2026 (Live, EXPLAIN ANALYZE): synapse 41 ms; parser-testkorpus (75k Dateien, 451k Chunks) warm 200 ms, kalt 3,9 s.
+// Laufende Zaehlungen werden geteilt: gleichzeitige Betrachter loesen hoechstens eine Abfrage je Projekt aus.
+const INDEX_CACHE_MS = 30_000, INDEX_CACHE_SCHNELL_MS = 10_000, INDEX_BILLIG_MS = 100;
+type IndexGroesse = { dateien: number; chunks: number; stand: string } | null;
+const indexCache = new Map<string, { zeit: number; ttl: number; wert: IndexGroesse }>();
+const indexLaufend = new Map<string, Promise<IndexGroesse>>();
+export async function ladeIndexGroesse(project: string): Promise<IndexGroesse> {
  const alt = indexCache.get(project);
- if (alt && Date.now() - alt.zeit < INDEX_CACHE_MS) return alt.wert;
- let wert: { dateien: number; chunks: number; stand: string } | null = null;
+ if (alt && Date.now() - alt.zeit < alt.ttl) return alt.wert;
+ const laufend = indexLaufend.get(project);
+ if (laufend) return laufend;
+ const zaehlung = zaehleIndex(project);
+ indexLaufend.set(project, zaehlung);
+ try { return await zaehlung; } finally { indexLaufend.delete(project); }
+}
+/** P22-T152: Cache vergessen (Tests, z. B. nach einer Index-Aenderung im privaten Schema); ohne Projekt alle. */
+export function vergissIndexGroesse(project?: string) { if (project) indexCache.delete(project); else indexCache.clear(); }
+/** P22-T152: wirksame Cache-Dauer eines Projekts in ms (null = noch nicht gezaehlt). */
+export function indexCacheDauer(project: string): number | null { return indexCache.get(project)?.ttl ?? null; }
+async function zaehleIndex(project: string): Promise<IndexGroesse> {
+ const t0 = Date.now();
+ let wert: IndexGroesse = null;
  try {
   const r = await getPool().query<{ dateien: number; chunks: number }>(`SELECT
    (SELECT COUNT(*) FROM code_files WHERE project=$1 AND deleted_at IS NULL AND NOT ignored)::int AS dateien,
    (SELECT COUNT(*) FROM code_chunks WHERE project=$1)::int AS chunks`, [project]);
   wert = { dateien: Number(r.rows[0]?.dateien ?? 0), chunks: Number(r.rows[0]?.chunks ?? 0), stand: new Date().toISOString() };
  } catch { wert = null; }
- indexCache.set(project, { zeit: Date.now(), wert });
+ const dauer = Date.now() - t0;
+ indexCache.set(project, { zeit: Date.now(), ttl: wert && dauer < INDEX_BILLIG_MS ? INDEX_CACHE_SCHNELL_MS : INDEX_CACHE_MS, wert });
  return wert;
 }
 

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ladeNetzwerk, schalteNetzwerk, stelleNetzwerkEin, type NetzSnapshot, type NetzEreignis } from '../api/agentennetzwerk';
 import { netzwerkSzene, STILE, stil, rgb, kurve, gleichmaessig, werkzeugName, ereignisArt, type Knoten, type Szene, type Rgb, type Punkt } from './netzwerk/nerven-szene';
-import { indexEbenen, nebelPunkte, RUECKFALL, type IndexEbenen } from './netzwerk/index-ebenen';
+import { indexEbenen, nebelPunkte, RUECKFALL, CHUNKS_JE_NEBELPUNKT, DATEIEN_JE_TRABANT, NEBEL_MAX, TRABANTEN_EINZELN, type IndexEbenen } from './netzwerk/index-ebenen';
+import { indexReaktion, nimmAuf, raeume, glanzStaerke, impulsLage, leereEffekte } from './netzwerk/index-reaktion';
 import {PlanNachleuchten,planZustand,planAnimation,planAbklingen,PLAN_FARBEN} from './netzwerk/plan-nachleuchten';
 import { erstelleLicht, type Licht, type Kamera } from './netzwerk/nerven-renderer';
 import '../agentennetzwerk.css';
@@ -143,6 +144,32 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   let orbitFlare: { t: number; f: Rgb } | null = null;
   // Chunk-Nebel als einmal vorgezeichnete Ebene; neu gezeichnet nur bei anderer Punktzahl, anderem Netzradius (40er-Raster) oder Designwechsel.
   let nebelBild: { bild: HTMLCanvasElement; schluessel: string; r: number; f: number } | null = null;
+  // P22-T152: Reaktion auf Index-Aenderungen zwischen zwei Snapshots: neue Punkte leuchten auf, wegfallende verglimmen, eine Aenderung
+  // ohne neuen Punkt laeuft als Impuls; ohne Aenderung Ruhe. Der erste Snapshot zaehlt nur (kein Feuerwerk beim Oeffnen).
+  let nebelEff = leereEffekte(), trabEff = leereEffekte(), letzterIndex: { dateien: number; chunks: number } | null = null;
+  const merkeIndex = (sn: NetzSnapshot, zeit: number) => {
+   const ix = sn.index;
+   if (!ebenen.aktiv || !ix) { letzterIndex = null; return; }
+   if (letzterIndex) {
+    nebelEff = nimmAuf(nebelEff, indexReaktion(letzterIndex.chunks, ix.chunks, CHUNKS_JE_NEBELPUNKT, NEBEL_MAX), zeit);
+    trabEff = nimmAuf(trabEff, indexReaktion(letzterIndex.dateien, ix.dateien, DATEIEN_JE_TRABANT, TRABANTEN_EINZELN), zeit);
+   }
+   letzterIndex = { dateien: ix.dateien, chunks: ix.chunks };
+  };
+  // Positionen auch wegfallender Punkte (nebelPunkte ist praefixstabil); neu berechnet nur bei anderer Anzahl bzw. anderem Radius.
+  let glanzPunkte: { p: Float32Array; schluessel: string } | null = null;
+  const punkteBis = (n: number, r: number) => { const schluessel = n + ':' + r; if (glanzPunkte?.schluessel !== schluessel) glanzPunkte = { p: nebelPunkte(n, r), schluessel }; return glanzPunkte.p; };
+  // Weicher Lichtpunkt als Vorlage je Farbe: viele Glanzpunkte je Frame bleiben billig (drawImage statt Verlauf je Punkt).
+  const glanzVorlagen = new Map<string, HTMLCanvasElement>();
+  const glanzBild = (farbe: string) => {
+   let bild = glanzVorlagen.get(farbe);
+   if (bild) return bild;
+   bild = document.createElement('canvas'); bild.width = bild.height = 64;
+   const c = bild.getContext('2d');
+   if (c) { const v = c.createRadialGradient(32, 32, 0, 32, 32, 32); v.addColorStop(0, 'rgba(' + farbe + ',1)'); v.addColorStop(0.22, 'rgba(' + farbe + ',0.6)'); v.addColorStop(1, 'rgba(' + farbe + ',0)'); c.fillStyle = v; c.fillRect(0, 0, 64, 64); }
+   if (glanzVorlagen.size > 8) glanzVorlagen.clear();
+   glanzVorlagen.set(farbe, bild); return bild;
+  };
   const nebelEbene = (n: number, r: number, hell: boolean) => {
    const rr = Math.max(40, Math.round(r / 40) * 40), schluessel = n + ':' + rr + ':' + (hell ? 1 : 0);
    if (nebelBild?.schluessel === schluessel) return nebelBild;
@@ -219,7 +246,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const still = pause || reduz.matches; if (!still) uhr += dt;
    const flare = orbitFlare ? Math.max(0, 1 - (zeit - orbitFlare.t) / 800) : 0; if (!still) orbitPhase += dt * (1 + flare * 2.5);
    const jetzt = Date.now();
-   if (!graph || s !== stand || zeit - layoutAm >= Math.max(1000, s.werte.buendel_ms)) { graph = netzwerkSzene(s, jetzt); szene.current = graph; layoutAm = zeit; stand = s; ebenen = indexEbenen(s); }
+   if (!graph || s !== stand || zeit - layoutAm >= Math.max(1000, s.werte.buendel_ms)) { graph = netzwerkSzene(s, jetzt); szene.current = graph; layoutAm = zeit; stand = s; ebenen = indexEbenen(s); merkeIndex(s, zeit); }
+   nebelEff = raeume(nebelEff, zeit); trabEff = raeume(trabEff, zeit);
    const g = graph;
    if (Math.abs(g.radius - dekoRadius) > 60) { deko = dekor(g.radius); dekoRadius = g.radius; }
    // Breite Buehnen dehnen das Nervensystem waagerecht, hohe (Mobil) senkrecht, damit es die Flaeche fuellt.
@@ -408,11 +436,21 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      knotenLicht(l.x, l.y, (74 + kernPuls * 18) * sg, KERN_HEISS[0], KERN_HEISS[1], KERN_HEISS[2], 0.95, 9, 1, 0.08, 0, 1.7);
      // Trabanten: je 100 Dateien ein Punkt auf gekippten Bahnen; ueber der Zeichengrenze dichter und heller statt mehr Objekte. Commits lassen sie aufflackern.
      const tf = flare > 0 && orbitFlare ? mische(KERN_HEISS, orbitFlare.f, flare) : KERN_HEISS, einzeln = stufe >= 3 ? Math.min(24, ebenen.einzeln) : stufe ? Math.ceil(ebenen.einzeln / 2) : ebenen.einzeln;
-     const bahnen = Math.min(8, 3 + Math.floor(einzeln / 60)), innen = 14 + 38 * sg, abstand = 8 + 7 * sg, hellig = 0.5 + ebenen.dichte * 0.35 + kernPuls * 0.3 + flare * 0.4;
-     for (let i = 0; i < einzeln; i++) {
+     // P22-T152: ein Impuls (Dateizahl geaendert, kein neuer Trabant) laesst die Trabanten kurz aufflackern.
+     let tImpuls = 0; for (const t0 of trabEff.impulse) tImpuls = Math.max(tImpuls, impulsLage(t0, zeit).staerke);
+     const bahnen = Math.min(8, 3 + Math.floor(einzeln / 60)), innen = 14 + 38 * sg, abstand = 8 + 7 * sg, hellig = 0.5 + ebenen.dichte * 0.35 + kernPuls * 0.3 + flare * 0.4 + tImpuls * 0.3;
+     const trabant = (i: number) => {
       const bahn = i % bahnen, wkl = i * 2.399 + orbitPhase * (0.22 + (bahn % 3) * 0.09) * (bahn % 2 ? -1 : 1), rr = innen + bahn * abstand + Math.sin(uhr * 0.7 + i) * 2;
-      licht.sprite(l.x + Math.cos(wkl) * rr, l.y + Math.sin(wkl) * rr * 0.92, (ebenen.aktiv ? 4.6 : 3.2) + (i % 4) * 0.5, tf[0], tf[1], tf[2], hellig, 0);
+      return { x: l.x + Math.cos(wkl) * rr, y: l.y + Math.sin(wkl) * rr * 0.92 };
+     };
+     for (let i = 0; i < einzeln; i++) { const p = trabant(i); licht.sprite(p.x, p.y, (ebenen.aktiv ? 4.6 : 3.2) + (i % 4) * 0.5, tf[0], tf[1], tf[2], hellig, 0); }
+     // P22-T152: neue Trabanten leuchten an ihrer Bahnposition in der Akzentfarbe auf, wegfallende verglimmen; der Impuls laeuft als Ring ueber die Bahnen.
+     if (stufe < 3) for (const gz of trabEff.glanz) {
+      const st2 = glanzStaerke(gz, zeit); if (st2 < 0.02 || (gz.art === 'neu' && gz.i >= einzeln)) continue;
+      const p = trabant(gz.i), fg = gz.art === 'neu' ? akzent : GLUT_ROT;
+      licht.sprite(p.x, p.y, 10 + 26 * st2, fg[0], fg[1], fg[2], 0.75 * st2, 0); licht.sprite(p.x, p.y, 5 + 3 * st2, fg[0], fg[1], fg[2], st2, 0);
      }
+     if (stufe < 2 && !reduz.matches) for (const t0 of trabEff.impulse) { const { u, staerke } = impulsLage(t0, zeit), rr = innen * 0.6 + u * (bahnen * abstand + 40); licht.sprite(l.x, l.y, rr / 0.35, akzent[0], akzent[1], akzent[2], 0.45 * staerke, 1); }
      if (ebenen.dichte > 0 && stufe < 2) for (let b2 = 0; b2 < bahnen; b2++) licht.sprite(l.x, l.y, (innen + b2 * abstand) / 0.35, tf[0], tf[1], tf[2], 0.04 + 0.1 * ebenen.dichte, 1);
      if (sel) knotenLicht(l.x, l.y, 200 * Math.max(0.3, sg), 1, 1, 1, 0.3, 1);
      continue;
@@ -540,6 +578,35 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      const ebene = (skala: number, alpha: number) => { ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, alpha)); ctx.translate(sx(dx), sy(dy)); ctx.rotate(rot); ctx.scale(k.zoom * streckX * skala / nb.f, k.zoom * streckY * skala / nb.f); ctx.drawImage(nb.bild, -nb.bild.width / 2, -nb.bild.height / 2); ctx.restore(); };
      ebene(1, basis * (0.88 + 0.12 * Math.sin(tr * 0.5)));
      if (!stufe) ebene(1.015, (0.1 + 0.18 * dichte) * (0.5 + 0.5 * Math.sin(tr * 0.8)));
+     // P22-T152: neue Nebelpunkte leuchten in der Akzentfarbe auf, wegfallende verglimmen; eine Aenderung ohne neuen Punkt laeuft als
+     // Lichtwelle vom Stern nach aussen durch den Nebel (Ebene im wandernden Ring heller). Alles in der Transformation der Ebene, folgt also
+     // ihrem Treiben. Hell: Tinte (normal gemischt), dunkel: additiv. prefers-reduced-motion bzw. Stufe >= 2: statt Welle nur sanftes Aufhellen.
+     if (nebelEff.glanz.length || nebelEff.impulse.length) {
+      const sc = k.zoom * streckX / nb.f, farbe = akzent.map(c => Math.round(c * 255)).join(','), glut = hell ? '154,52,18' : '251,146,60';
+      const imNebel = (zeichne: (c: CanvasRenderingContext2D) => void) => {
+       ctx.save(); ctx.translate(sx(dx), sy(dy)); ctx.rotate(rot); ctx.scale(k.zoom * streckX / nb.f, k.zoom * streckY / nb.f);
+       ctx.globalCompositeOperation = hell ? 'source-over' : 'lighter'; zeichne(ctx); ctx.restore();
+      };
+      if (nebelEff.glanz.length) imNebel(c => {
+       let n = ebenen.nebel; for (const gz of nebelEff.glanz) n = Math.max(n, gz.i + 1);
+       const p = punkteBis(n, nb.r);
+       for (const gz of nebelEff.glanz) {
+        const st2 = glanzStaerke(gz, zeit); if (st2 < 0.02) continue;
+        const x = p[gz.i * 4] * nb.f, y = p[gz.i * 4 + 1] * nb.f, r = (gz.art === 'neu' ? 16 : 10) / sc;
+        c.globalAlpha = Math.min(1, st2 * (hell ? 0.85 : 1)); c.drawImage(glanzBild(gz.art === 'neu' ? farbe : glut), x - r, y - r, 2 * r, 2 * r);
+       }
+      });
+      for (const t0 of nebelEff.impulse) {
+       const { u, staerke } = impulsLage(t0, zeit);
+       if (reduz.matches || stufe >= 2) { ebene(1, staerke * 0.35); continue; }
+       imNebel(c => {
+        const R = u * nb.r * nb.f * 1.04, band = nb.r * nb.f * 0.16;
+        c.save(); c.beginPath(); c.arc(0, 0, R + band / 2, 0, Math.PI * 2); c.arc(0, 0, Math.max(0, R - band / 2), 0, Math.PI * 2, true); c.clip();
+        c.globalAlpha = Math.min(1, staerke * (hell ? 0.9 : 1.2)); c.drawImage(nb.bild, -nb.bild.width / 2, -nb.bild.height / 2); c.restore();
+        c.globalAlpha = 0.3 * staerke; c.strokeStyle = 'rgb(' + farbe + ')'; c.lineWidth = 1.5 / sc; c.beginPath(); c.arc(0, 0, R, 0, Math.PI * 2); c.stroke();
+       });
+      }
+     }
     }
    }
    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round'; ctx.strokeStyle = hell ? 'rgba(248,246,242,0.9)' : 'rgba(4,6,10,0.85)'; ctx.lineWidth = 3;
@@ -581,6 +648,11 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    el.dataset.channelCount = String(g.channels); el.dataset.channelWriteCount = String(schreibend); el.dataset.animationCount = String(partikel.current.length);
    el.dataset.sprites = String(sprites); el.dataset.knoten = String(g.knoten.length); el.dataset.kameraModus = v.modus; el.dataset.streckX = String(streckX); el.dataset.streckY = String(streckY); el.dataset.plaene = String(g.plaene); el.dataset.planZustaende = JSON.stringify(g.knoten.filter(n=>n.plan).map(n=>({id:n.plan!.id,status:planZustand(n.plan!),farbe:n.farbe,fade:n.fade,animation:planAnimation(n.plan!),beitraege:n.teilnehmer?.length??0}))); el.dataset.planImpulse = String(planend); el.dataset.abgangCommit = String(zaehler.commit); el.dataset.abgangExplosion = String(zaehler.explosion); el.dataset.rueck = String(rueckZahl); el.dataset.leer = String(leerZahl);
    el.dataset.stern = String(g.stern); el.dataset.trabanten = String(ebenen.trabanten); el.dataset.trabantenEinzeln = String(ebenen.einzeln); el.dataset.nebelPunkte = String(nebelBild && ebenen.nebel && stufe < 3 ? ebenen.nebel : 0);
+   // P22-T152: Debug der Index-Reaktion (letzte Art, aktive Leuchtpunkte, Zaehler, zuletzt gesehener Index Dateien/Chunks).
+   el.dataset.nebelReaktion = nebelEff.letzte; el.dataset.nebelGlanz = String(nebelEff.glanz.length); el.dataset.nebelImpulse = String(nebelEff.zaehler.impuls);
+   el.dataset.nebelNeu = String(nebelEff.zaehler.neu); el.dataset.nebelWeg = String(nebelEff.zaehler.weg); el.dataset.nebelGebuendelt = String(nebelEff.zaehler.gebuendelt);
+   el.dataset.trabantenReaktion = trabEff.letzte; el.dataset.trabantenGlanz = String(trabEff.glanz.length); el.dataset.trabantenImpulse = String(trabEff.zaehler.impuls);
+   el.dataset.trabantenNeu = String(trabEff.zaehler.neu); el.dataset.trabantenWeg = String(trabEff.zaehler.weg); el.dataset.indexStand = letzterIndex ? letzterIndex.dateien + '/' + letzterIndex.chunks : '';
    el.dataset.anUser = String(anUserZahl); el.dataset.commitFarben = JSON.stringify(commitFarben); el.dataset.akzent = akzent.map(c => Math.round(c * 255)).join(',');
    frames++; summe += performance.now() - start;
    if (zeit - statAm >= 1000) {
