@@ -94,7 +94,7 @@ try{
  await wait(()=>evaluate("!!document.querySelector('canvas.nw-gl')?.dataset.renderer"),'Netzwerk-Canvas');
  await wait(async()=>(await ds()).trabanten===20,'Index im Canvas angekommen');
  let d=await ds();belege.start=d;
- ok(Math.abs(d.stern-(0.08+0.92*2000/60000))<1e-6,'Stern linear: 2.000 Dateien -> '+d.stern.toFixed(3));
+ ok(Math.abs(d.stern-(0.08+0.92*2000/25000))<1e-6,'Stern linear: 2.000 Dateien -> '+d.stern.toFixed(3));
  ok(d.trabanten===20&&d.einzeln===20,'20 Trabanten (je 100 Dateien)');
  ok(d.nebel===223,'223 Nebelpunkte (je 100 Chunks) als Ebene');
  await sleep(2500);await fluessig('dunkel');
