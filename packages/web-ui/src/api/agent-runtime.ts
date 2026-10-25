@@ -570,11 +570,15 @@ export async function sendePlattformAgentChat(identityId: string, text: string):
 /** P22-T137: Inbox-Nachricht zwischen User und Plattform-Agent; richtung 'ein' = vom User an den Agenten, 'aus' = vom Agenten an 'user'. */
 export interface AgentChatInboxNachricht { id: number; richtung: 'ein' | 'aus'; von: string; an: string; text: string; erstellt_am: string }
 
-/** P22-T137: Inbox zwischen User und Agent (beide Richtungen, aelteste zuerst); Schalter wie agent-chat, AUS = aktiv false, leer. */
-export async function getAgentChatInbox(identityId: string, o: { limit?: number } = {}): Promise<{ aktiv: boolean; nachrichten: AgentChatInboxNachricht[] }> {
-  const r = await jsonRequest<{ success: true; aktiv?: boolean; nachrichten?: AgentChatInboxNachricht[] }>('/api/agent-runtimes/agent-chat/inbox?identity_id='
-    + encodeURIComponent(identityId) + (o.limit ? '&limit=' + o.limit : ''));
-  return { aktiv: r.aktiv === true, nachrichten: Array.isArray(r.nachrichten) ? r.nachrichten : [] };
+/**
+ * P22-T137: Inbox zwischen User und Agent (beide Richtungen, aelteste zuerst); Schalter wie agent-chat, AUS = aktiv false, leer.
+ * P22-T146: ab_id = nur juengere (Abgleich), vor_id = die limit davor (aeltere nachladen); mehr = es gibt weitere in dieser Richtung.
+ */
+export async function getAgentChatInbox(identityId: string, o: { limit?: number; ab_id?: number; vor_id?: number } = {}): Promise<{ aktiv: boolean; nachrichten: AgentChatInboxNachricht[]; mehr?: boolean }> {
+  const params = new URLSearchParams({ identity_id: identityId });
+  for (const [name, wert] of Object.entries(o)) if (typeof wert === 'number' && Number.isFinite(wert) && (name !== 'limit' || wert > 0)) params.set(name, String(wert));
+  const r = await jsonRequest<{ success: true; aktiv?: boolean; nachrichten?: AgentChatInboxNachricht[]; mehr?: boolean }>('/api/agent-runtimes/agent-chat/inbox?' + params.toString());
+  return { aktiv: r.aktiv === true, nachrichten: Array.isArray(r.nachrichten) ? r.nachrichten : [], ...(typeof r.mehr === 'boolean' ? { mehr: r.mehr } : {}) };
 }
 
 /** P22-T141: Stand einer Artefakt-Bewertung (Design, global). zustand: vorbild | ueberarbeiten | verbannt | versuch_gezeigt. */

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import Login from './components/Login';
 import SynapseWorkspaceMock from './components/SynapseWorkspaceMock';
 import { AUTH_UNAUTHORIZED_EVENT, getAuthStatus, logout as authLogout } from './api/auth';
+import { verwirfChatFensterSitzung } from './components/chat-fenster-speicher';
 
 type AuthState = 'checking' | 'login' | 'authed';
 
@@ -29,6 +30,11 @@ function App() {
     window.addEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
     return () => window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
   }, []);
+
+  // P22-T146: Die Chatfenster-Sitzung (geladene Beitraege, Ladetiefe) endet mit Logout bzw. abgelaufener Sitzung, nicht mit F5.
+  useEffect(() => {
+    if (authState === 'login') verwirfChatFensterSitzung();
+  }, [authState]);
 
   const handleLogout = async () => {
     await authLogout();

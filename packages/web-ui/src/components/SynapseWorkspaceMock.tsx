@@ -11,6 +11,7 @@ import { ChannelRailListe } from './ChannelRailListe';
 import { ChatEingabefeld } from './ChatEingabefeld';
 import { KlartextText, VerweisFensterProvider, VerweisText } from './Lesefenster';
 import { ArtefaktBewertung, useArtefaktBewertungen } from './ArtefaktBewertung';
+import { fensterAusschnitt } from './chat-fenster-logik';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
 import { MainAgentAssistantDock } from './MainAgentAssistantDock';
 import { HauptagentSteuerung, useAgentVerbrauch } from './HauptagentSteuerung';
@@ -539,6 +540,9 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   }), []);
   /** Aeltere Nachrichten wurden oben eingefuegt: kein Sprung nach unten, kein "neue Antworten". */
   const aeltereGeladenRef = useRef(false);
+  /** P22-T146: festes Fenster der juengsten 50 (gleitet nur, wenn unten); nach 'Aeltere' fest, alles Geladene bleibt bis zum Logout. */
+  const [fensterFest, setFensterFest] = useState(false);
+  const fensterAbRef = useRef<string | null>(null);
   const [verlauf, setVerlauf] = useState<{ verfuegbar: boolean | null; grund?: string; mehr: boolean; laedt: boolean; fehler: string }>({ verfuegbar: null, mehr: false, laedt: false, fehler: '' });
   const uebernehmeVerlauf = (eintraege: MainAgentVerlaufEintrag[]) => {
     for (const eintrag of eintraege) verlaufRef.current.set(eintrag.id, eintrag);
@@ -687,6 +691,15 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   // P22-T63: aeltere Seite oben anfuegen, Leseposition halten.
   const ladeAeltere = async () => {
     const stand = verlaufStandRef.current;
+    // P22-T146: zuerst die im festen Fenster ausgeblendeten zeigen (Leseposition halten); danach gleitet nichts mehr.
+    if (!fensterFest && fenster.versteckt > 0) {
+      registerInteraction();
+      const feed = feedRef.current;
+      const hoeheVorher = feed?.scrollHeight ?? 0;
+      setFensterFest(true);
+      window.requestAnimationFrame(() => { if (feed) feed.scrollTop += feed.scrollHeight - hoeheVorher; });
+      return;
+    }
     if (!stand.aeltesteId || verlauf.laedt) return;
     registerInteraction();
     setVerlauf((v) => ({ ...v, laedt: true }));
@@ -698,6 +711,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
       if (r.eintraege.length) {
         stand.aeltesteId = r.eintraege[0].id;
         aeltereGeladenRef.current = true;
+        setFensterFest(true);
         uebernehmeVerlauf(r.eintraege);
         window.requestAnimationFrame(() => { if (feed) feed.scrollTop += feed.scrollHeight - hoeheVorher; });
       }
@@ -716,6 +730,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
       verlaufRef.current.clear();
       Object.assign(verlaufStandRef.current, { geleertRev: r.geleert_rev, maxRev: r.geleert_rev, aeltesteId: null });
       setMessages([]);
+      setFensterFest(false);
       setVerlauf((v) => ({ ...v, mehr: false, fehler: '' }));
     } catch (error) {
       setRuntimeError('Verlauf leeren fehlgeschlagen: ' + (error instanceof Error ? error.message : String(error)));
@@ -893,7 +908,11 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     }
   };
 
-  const visibleMessages = runtimeMode === 'mock' ? messages : messages.filter((message) => !message.mock);
+  const alleMessages = runtimeMode === 'mock' ? messages : messages.filter((message) => !message.mock);
+  // P22-T146: gleicher Fensterbaustein wie das Koordinator-Fenster (chat-fenster-logik); hochgescrollt gleitet nichts.
+  const fenster = fensterAusschnitt(alleMessages, (message) => String(message.id), { fest: fensterFest, anzeigeAb: null, unten: atBottomRef.current, bisherAb: fensterAbRef.current });
+  fensterAbRef.current = fenster.ab;
+  const visibleMessages = fenster.sichtbar;
   const savedArtifacts = messages.filter((message) => message.kind === 'artifact' && message.saved).length;
   const chatStyle = {
     '--agent-chat-height': '72%',
@@ -935,7 +954,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         {steuerungOffen && !chatCollapsed && <HauptagentSteuerung />}
         <div className="message-feed" ref={feedRef} onScroll={handleFeedScroll}>
           {verlauf.verfuegbar === true && (verlauf.mehr || messages.length > 0) && <div className="verlauf-leiste">
-            {verlauf.mehr
+            {verlauf.mehr || fenster.versteckt > 0
               ? <button type="button" onClick={() => void ladeAeltere()} disabled={verlauf.laedt}>{verlauf.laedt ? 'Lädt …' : '↑ Ältere Nachrichten laden'}</button>
               : <span>Anfang des Verlaufs</span>}
             <button type="button" onClick={() => void leereVerlaufMitRueckfrage()} title="Bisherigen Verlauf auf allen Geräten ausblenden (mit Rückfrage); gespeichert bleibt alles">Verlauf leeren</button>

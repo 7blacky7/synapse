@@ -10,6 +10,9 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const L = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/agent-chat-logik.ts')).href);
 const S = await import(pathToFileURL(join(repo, 'packages/core/dist/services/agent-profil-schalter.js')).href);
 const B = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/artefakt-bewertung-logik.ts')).href);
+// P22-T146: Fensterlogik und Sitzungsspeicher echt (je Probe leerer Speicher).
+const F = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/chat-fenster-logik.ts')).href);
+const SP = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/chat-fenster-speicher.ts')).href);
 
 assert.ok(S.PROFIL_PRODUKT_FUNKTIONEN.includes('agent_chat_einheitlich'));
 assert.ok(S.NUR_AUSDRUECKLICH.includes('agent_chat_einheitlich'), 'nur ausdruecklich (Std AUS)');
@@ -61,6 +64,7 @@ const chatJs = ts.transpileModule(ein2, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 function chatProbe() {
+  SP.verwirfChatFensterSitzung();
   const slots = [], effects = [], reads = [], sends = [], timers = new Map();
   let cursor = 0, timerId = 0, stateWrites = 0;
   let props = { identityId: 'synthetisch-A', name: 'Agent A', project: 'synthetisch', pollMs: 4000 };
@@ -84,6 +88,7 @@ function chatProbe() {
         effects.push(() => { old?.cleanup?.(); slots[i] = { deps, cleanup: fn() }; });
       }
     },
+    useLayoutEffect(fn, deps) { return hooks.useEffect(fn, deps); },
   };
   const defer = () => {
     let resolve, reject;
@@ -107,6 +112,7 @@ function chatProbe() {
     './ArtefaktBewertung': { ArtefaktBewertung: 'ArtefaktBewertung', useArtefaktBewertungen: () => ({ aktiv: false, je: {}, setze() {} }) },
     './artefakt-bewertung-logik': B,
     './agent-chat-teile': { ToolActivity: 'ToolActivity' }, './agent-chat-logik': L,
+    './chat-fenster-logik': F, './chat-fenster-speicher': SP,
   };
   const window = {
     setInterval(fn) { timers.set(++timerId, fn); return timerId; },

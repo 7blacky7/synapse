@@ -540,27 +540,36 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   // P22-T137 (Punkt 5): Inbox zwischen User und dieser Identitaet (beide Richtungen) fuer den Fensterverlauf. Antworten per
   // chat(inbox_send) an 'user' stehen nicht im CLI-Transkript; die Web-UI sortiert sie zeitlich ein. Schalter wie der Chat
   // (plattform_agent_chat im Projekt der Zielidentitaet; AUS -> aktiv false, leer). Nur lesend, processed bleibt unberuehrt.
-  // Zuordnung: Identitaet (to_/from_identity_id), ohne Identitaet der Name im Projekt. DEBUG: debug {anzahl, limit, schalter_quelle}.
-  fastify.get<{ Querystring: { identity_id?: string; limit?: string } }>('/api/agent-runtimes/agent-chat/inbox', async (request, reply) => {
+  // Zuordnung: Identitaet (to_/from_identity_id), ohne Identitaet der Name im Projekt. DEBUG: debug {anzahl, limit, schalter_quelle, modus}.
+  // P22-T146 (additiv, ohne Parameter wie bisher): ab_id = nur juengere als ab_id (aufsteigend, Abgleich des Fensters), vor_id = die
+  // limit Nachrichten vor vor_id (aeltere nachladen); ab_id gewinnt. mehr = es gibt ueber limit hinaus weitere in dieser Richtung.
+  fastify.get<{ Querystring: { identity_id?: string; limit?: string; ab_id?: string; vor_id?: string } }>('/api/agent-runtimes/agent-chat/inbox', async (request, reply) => {
     try {
       const id = request.query.identity_id?.trim() ?? '';
       if (!/^[a-f0-9-]{36}$/.test(id)) return reply.code(400).send({ success: false, error: { code: 'identity_id_fehlt', message: 'identity_id angeben' } });
       const ziel = (await getPool().query<{ agent_id: string; project: string }>('SELECT agent_id, project FROM agent_identitaeten WHERE id=$1', [id])).rows[0];
       if (!ziel) return reply.code(404).send({ success: false, error: { code: 'identitaet_unbekannt', message: 'Identitaet nicht gefunden' } });
       const schalter = await plattformAgentChatSchalter(ziel.project);
-      if (!schalter.aktiv) return { success: true, aktiv: false, identity_id: id, nachrichten: [], schalter };
+      if (!schalter.aktiv) return { success: true, aktiv: false, identity_id: id, nachrichten: [], mehr: false, schalter };
       const n = Number(request.query.limit);
       const limit = Number.isFinite(n) && n > 0 ? Math.min(100, Math.trunc(n)) : 40;
+      const idWert = (v: string | undefined): string | null => (/^\d{1,18}$/.test(v?.trim() ?? '') ? String(v).trim() : null);
+      const ab_id = idWert(request.query.ab_id);
+      const vor_id = ab_id ? null : idWert(request.query.vor_id);
+      const modus = ab_id ? 'ab' : vor_id ? 'vor' : 'letzte';
       const r = await getPool().query<{ id: number | string; from_agent: string; to_agent: string; content: string; created_at: Date }>(
         `SELECT id, from_agent, to_agent, content, created_at FROM specialist_inbox
           WHERE project = $1 AND (
             (from_agent = 'user' AND to_agent <> 'user' AND (to_identity_id = $2 OR (to_identity_id IS NULL AND to_agent = $3)))
             OR (to_agent = 'user' AND from_agent <> 'user' AND (from_identity_id = $2 OR (from_identity_id IS NULL AND from_agent = $3))))
-          ORDER BY id DESC LIMIT $4`, [ziel.project, id, ziel.agent_id, limit]);
-      const nachrichten = r.rows.reverse().map((z) => ({ id: Number(z.id), richtung: z.from_agent === 'user' ? 'ein' as const : 'aus' as const,
+            AND ($5::bigint IS NULL OR id > $5::bigint) AND ($6::bigint IS NULL OR id < $6::bigint)
+          ORDER BY id ${ab_id ? 'ASC' : 'DESC'} LIMIT $4`, [ziel.project, id, ziel.agent_id, limit + 1, ab_id, vor_id]);
+      const mehr = r.rows.length > limit;
+      const zeilen = r.rows.slice(0, limit);
+      const nachrichten = (ab_id ? zeilen : zeilen.reverse()).map((z) => ({ id: Number(z.id), richtung: z.from_agent === 'user' ? 'ein' as const : 'aus' as const,
         von: z.from_agent, an: z.to_agent, text: z.content, erstellt_am: new Date(z.created_at).toISOString() }));
-      return { success: true, aktiv: true, identity_id: id, agent_id: ziel.agent_id, project: ziel.project, nachrichten,
-        debug: { anzahl: nachrichten.length, limit, schalter_quelle: schalter.quelle } };
+      return { success: true, aktiv: true, identity_id: id, agent_id: ziel.agent_id, project: ziel.project, nachrichten, mehr,
+        debug: { anzahl: nachrichten.length, limit, schalter_quelle: schalter.quelle, modus } };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T141: Artefakt-Bewertung (Design-Gedaechtnis, core artefakt-bewertung.ts). Unter /api/agent-runtimes, also nur die interaktive

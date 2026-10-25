@@ -6,6 +6,9 @@
 .coordinator-info-window>header.coordinator-info-kopf span{min-width:0}
 .coordinator-info-window>header.coordinator-info-kopf small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .agent-chat-html{display:block;margin:4px 0}
+/* P22-T146: Hinweis auf neue Nachrichten, wenn der User hochgescrollt ist (Fenster springt nicht mit) */
+.einheitlicher-agent-chat .chat-fenster-neue{position:sticky;bottom:6px;z-index:2;display:block;margin:6px auto 0;border:1px solid var(--accent);background:var(--strong);color:var(--text);padding:4px 10px;font:700 9px "IBM Plex Mono",monospace;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.24)}
+.einheitlicher-agent-chat .chat-fenster-neue:hover{background:var(--soft)}
 /* P22-T137: Groesse des Markdown-Texts im Chat steht in hauptagent-verlauf.css (.message > .klartext, auch Main-Chat). */
 /* P22-T137 (User 25.10.): im Dock-Fenster wie der Main-Agent in der Groesse ziehbar (Ecke unten rechts); die zweite Kopfzeile
    des eingebetteten Chats (Kuerzel, Name, Modell, Projekt) entfaellt, der Fensterkopf traegt Name und Projekt schon. Channel-Fenster unberuehrt. */
