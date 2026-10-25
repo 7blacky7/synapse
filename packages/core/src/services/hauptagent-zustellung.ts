@@ -30,6 +30,8 @@ import { inboxQuittungAktiv, quittungsId } from './inbox-quittung.js';
 export const ZUSTELL_WEGE = ['inbox', 'chat', 'channel', 'event'] as const;
 export type ZustellWeg = typeof ZUSTELL_WEGE[number];
 const MAX_VERSUCHE = 50;
+/** P22-T151: Nachfrage, ob eine von der Mod angenommene Nachricht inzwischen gestartet ist (kein Versuch). */
+const UEBERGEBEN_NACHFRAGE_MS = 15_000;
 const JE_WEG = 50;
 
 export interface ZustellOptionen {
@@ -172,8 +174,11 @@ async function quittiere(identityId: string, z: Zustellung): Promise<void> {
   }
 }
 
-/** unklar (P22-T144): Job eines abgeloesten Daemons, Uebergabe unbekannt -> mit Quittung als zugestellt gebucht (nur Erinnerung). */
-export interface ZustellErgebnis { gesammelt: number; zugestellt: number; verschoben: number; fehler: number; unklar?: number }
+/**
+ * unklar (P22-T144): Job eines abgeloesten Daemons, Uebergabe unbekannt -> mit Quittung als zugestellt gebucht (nur Erinnerung).
+ * wartet (P22-T151): von der Mod angenommen, Turnstart steht aus (kein Versuch gezaehlt).
+ */
+export interface ZustellErgebnis { gesammelt: number; zugestellt: number; verschoben: number; fehler: number; unklar?: number; wartet?: number }
 
 /**
  * Ein Takt: sammeln und faellige Zustellungen nacheinander an den Container-Daemon geben. Laeuft der Wrapper nicht,
@@ -275,6 +280,16 @@ export async function fuehreIdentitaetsZustellungAus(o: {
           letzter_grund='daemon_neugestartet: Uebergabe unklar, nur Erinnerung', quittung_seit=erstellt_am WHERE id=$1`, [z.id, jobId]);
         await quittiere(o.identity_id, z.zustellung);
         erg.unklar = (erg.unklar ?? 0) + 1;
+        continue;
+      }
+      // P22-T151 (Doppelzustellung inbox:1100): Die Mod hat die Nachricht angenommen und startet den Turn, sobald die Sitzung
+      // untaetig ist. Kein Fehlversuch (versuche bleibt, also nie 'fehler', solange die Mod-Sitzung lebt) und kein break: die
+      // folgenden Nachrichten gehen im selben Takt an die Mod, die sie in Reihenfolge einreiht. Stirbt die Sitzung, verwirft der
+      // Daemon die Uebergabe, und die naechste Nachfrage stellt normal zu.
+      if (grund === 'uebergeben_wartet') {
+        await getPool().query(`UPDATE agent_zustellungen SET letzter_grund='uebergeben_wartet', job_id=$2,
+          naechster_versuch=NOW() + ($3::integer * interval '1 millisecond') WHERE id=$1`, [z.id, jobId, UEBERGEBEN_NACHFRAGE_MS]);
+        erg.wartet = (erg.wartet ?? 0) + 1;
         continue;
       }
     } catch (err) {

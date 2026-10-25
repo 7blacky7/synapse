@@ -75,6 +75,6 @@ ok(() => assert.deepEqual(V.cliEingabeAbsender(userTxt), { agent_id: 'user', her
 
 // D Mod
 const mod = readFileSync(join(repo, 'mods/synapse-inbox/hooks/register.ts'), 'utf8');
-ok(() => assert.match(mod, /\$\.prompt\.submit\(\{ text: j\.nachricht\.text, asUser: true \}\)/), 'Mod: submit mit asUser');
+ok(() => assert.match(mod, /\$\.prompt\.submit\(\{ text: n\.text, asUser: true \}\)/), 'Mod: submit mit asUser');
 
 console.log('P22-T142: ' + n + ' Pruefungen bestanden');

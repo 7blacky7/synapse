@@ -5,6 +5,7 @@
  *        5b2efc34). Ersetzt cc-wrap/cc-send fuer Koordinator-CLI und Subagenten mit Ausweis.
  * LOKALE ROUTEN (api.ts, nur Loopback, kein Browser-Origin):
  *   GET  /mod-inbox/warte?sitzung=<uuid>   haelt bis WARTE_MS offen, liefert { nachricht: {id,text} | null, aktiv, grund }
+ *   POST /mod-inbox/angenommen             { sitzung, id } sofort beim Empfang, vor $.prompt.submit (P22-T151)
  *   POST /mod-inbox/quittung               { sitzung, id, gestartet, grund? } nach $.prompt.submit
  *   GET  /mod-inbox/status                 Debug: Sitzungen (ohne Ausweis; P22-T144 mit offenen Quittungen laut API), offene
  *                                          Uebergaben, letzte Abweisungen der Mod (drop-Grund von $.prompt.submit), letzter Fehler
@@ -13,6 +14,10 @@
  * ZUSTELLUNG: zustelleAnMod (specialist-job-worker, Fall 'zustellen' ohne Wrapper) reiht ein und wartet hoechstens
  *   UEBERGABE_FRIST_MS auf die Quittung. Dieselbe Nachricht (weg:message_id) wird nie zweimal uebergeben; ein spaeterer Job
  *   derselben Nachricht wartet auf die laufende Uebergabe bzw. meldet sie als zugestellt.
+ * P22-T151 (Doppelzustellung inbox:1100, thought e228002f): $.prompt.submit wartet, bis die Sitzung untaetig ist. Die Mod meldet
+ *   deshalb 'angenommen' sofort beim Empfang, reiht selbst ein und fragt weiter ab (die Sitzung bleibt lebendig). Ein Job einer
+ *   angenommenen Nachricht antwortet 'uebergeben_wartet' (kein Fehlversuch, keine zweite Uebergabe), bis die Mod 'gestartet'
+ *   quittiert. Stirbt die Sitzung (keine Abrufe mehr), verwirft raeumeAuf die Uebergabe und die API stellt erneut zu.
  * SCHALTER: Produkt-Schalter mod_inbox auf der API; sie antwortet je Sitzung mit aktiv. Ohne aktive Meldung nimmt der Daemon
  *   fuer diese Sitzung nichts an (zustelleAnMod -> null = bisheriger Weg 'nicht_verbunden'). Aus: MOD_INBOX_DISABLED=1.
  */
@@ -54,7 +59,7 @@ interface Sitzung {
   /** Offener Abruf; false = der Abruf war schon abgebrochen, die Nachricht bleibt in der Schlange. */
   warter: ((n: ModNachricht | null) => boolean) | null;
 }
-type UebergabeStand = 'wartet' | 'uebergeben' | 'gestartet' | 'abgewiesen';
+type UebergabeStand = 'wartet' | 'uebergeben' | 'angenommen' | 'gestartet' | 'abgewiesen';
 interface Uebergabe { sitzung: string; stand: UebergabeStand; grund: string | null; am: number; fertig: Array<() => void> }
 // type statt interface: specialist-job-worker liefert das Ergebnis als Record<string, unknown> aus.
 export type ModZustellAntwort = { success: true; zugestellt: boolean; grund?: string; weg: 'mod_inbox' };
@@ -63,6 +68,8 @@ const sitzungen = new Map<string, Sitzung>();
 const uebergaben = new Map<string, Uebergabe>();
 let letzterFehler: string | null = null;
 let letzteMeldung: string | null = null;
+/** P22-T151: Jobs, die eine schon angenommene Nachricht trafen und sie NICHT erneut uebergeben haben (Debug). */
+let doppeltAbgefangen = 0;
 /** P22-T144: letzte Abweisungen der Mod (Grund aus $.prompt.submit drop), neueste zuletzt. */
 const abweisungen: Array<{ id: string; sitzung: string; grund: string; am: string }> = [];
 const ABWEISUNGEN_MAX = 20;
@@ -87,7 +94,7 @@ function markiere(id: string, stand: UebergabeStand, grund: string | null = null
   u.stand = stand;
   u.grund = grund;
   u.am = Date.now();
-  if (stand === 'gestartet' || stand === 'abgewiesen') for (const f of u.fertig.splice(0)) f();
+  if (stand === 'angenommen' || stand === 'gestartet' || stand === 'abgewiesen') for (const f of u.fertig.splice(0)) f();
 }
 
 /** Erste wartende Nachricht an einen offenen Abruf geben. */
@@ -133,6 +140,18 @@ export function quittiere(sitzung: string, id: string, gestartet: boolean, grund
   return true;
 }
 
+/**
+ * P22-T151: Annahme der Mod beim Empfang (sie reiht die Nachricht fuer $.prompt.submit ein). Die Meldungen kommen ungeordnet:
+ * eine schon gestartete oder abgewiesene Uebergabe bleibt, wie sie ist. false = unbekannte Uebergabe oder fremde Sitzung.
+ */
+export function nimmAn(sitzung: string, id: string): boolean {
+  const u = uebergaben.get(id);
+  if (!u || u.sitzung !== sitzung) return false;
+  sitzungFuer(sitzung);
+  if (u.stand === 'wartet' || u.stand === 'uebergeben') markiere(id, 'angenommen');
+  return true;
+}
+
 function raeumeAuf(jetzt = Date.now()): void {
   for (const [id, s] of sitzungen) {
     if (lebt(s, jetzt)) continue;
@@ -158,6 +177,11 @@ export async function zustelleAnMod(identityId: string, schluessel: string, text
   raeumeAuf();
   let u = uebergaben.get(schluessel);
   if (u?.stand === 'gestartet') return { success: true, zugestellt: true, weg: 'mod_inbox' };
+  // P22-T151: Die Mod hat sie schon eingereiht (wartet auf Untaetigkeit): nie ein zweites Mal uebergeben.
+  if (u?.stand === 'angenommen') {
+    doppeltAbgefangen++;
+    return { success: true, zugestellt: false, grund: 'uebergeben_wartet', weg: 'mod_inbox' };
+  }
   if (!u) {
     const s = [...sitzungen.values()].filter((x) => x.aktiv && x.identity_id === identityId && lebt(x)).sort((a, b) => b.zuletzt - a.zuletzt)[0];
     if (!s) return null;
@@ -178,13 +202,14 @@ export async function zustelleAnMod(identityId: string, schluessel: string, text
     uebergaben.delete(schluessel);
     return { success: true, zugestellt: false, grund: 'abgewiesen', weg: 'mod_inbox' };
   }
+  if (offen.stand === 'angenommen') return { success: true, zugestellt: false, grund: 'uebergeben_wartet', weg: 'mod_inbox' };
   if (offen.stand === 'wartet') {
     // Nie abgeholt: zurueckziehen, die API versucht es spaeter erneut.
     const s = sitzungen.get(offen.sitzung);
     if (s) s.schlange = s.schlange.filter((n) => n.id !== schluessel);
     uebergaben.delete(schluessel);
   }
-  // 'uebergeben': die Mod hat sie, die Sitzung arbeitet noch; die Quittung kommt spaeter, ein neuer Job sieht sie.
+  // 'uebergeben' ohne Annahme (Mod vor P22-T151): die Mod hat sie, die Sitzung arbeitet noch; ein neuer Job sieht die Quittung.
   return { success: true, zugestellt: false, grund: 'beschaeftigt', weg: 'mod_inbox' };
 }
 
@@ -309,6 +334,14 @@ export function registriereModInbox(app: FastifyInstance): void {
     return { success: true, bekannt };
   });
 
+  // P22-T151: Annahme sofort beim Empfang, vor $.prompt.submit.
+  app.post<{ Body: { sitzung?: unknown; id?: unknown } }>('/mod-inbox/angenommen', async (req, reply) => {
+    if (!nurLokal(req, reply)) return reply;
+    const b = req.body ?? {};
+    if (typeof b.sitzung !== 'string' || typeof b.id !== 'string') return reply.code(400).send({ success: false, error: 'annahme_ungueltig' });
+    return { success: true, bekannt: nimmAn(b.sitzung, b.id) };
+  });
+
   app.get('/mod-inbox/status', async (req, reply) => {
     if (!nurLokal(req, reply)) return reply;
     const jetzt = Date.now();
@@ -319,6 +352,7 @@ export function registriereModInbox(app: FastifyInstance): void {
         offene_quittungen: s.offene_quittungen })),
       uebergaben: [...uebergaben].map(([id, u]) => ({ id, sitzung: u.sitzung, stand: u.stand, grund: u.grund, vor_s: Math.round((jetzt - u.am) / 1000) })),
       abweisungen,
+      doppelt_abgefangen: doppeltAbgefangen,
       letzte_meldung: letzteMeldung,
       letzter_fehler: letzterFehler,
     };

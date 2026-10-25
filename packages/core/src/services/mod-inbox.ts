@@ -11,6 +11,9 @@
  *   Daemon), deshalb wartet dieser Weg nur MOD_TURN_WARTE_MS statt der Turnfrist des Wrappers (10 min). Meldet ein Host eine neue
  *   daemon_id, gibt die API noch laufende Zustell-Jobs des alten Daemons frei (failed 'daemon_neugestartet') und macht die
  *   wartenden Ledger-Zeilen sofort faellig: nach einem Daemon-Neustart Sekunden statt Minuten.
+ * P22-T151 (Doppelzustellung inbox:1100, thought e228002f): Die Mod meldet 'angenommen' sofort beim Empfang und fragt weiter ab.
+ *   Der Daemon antwortet dann 'uebergeben_wartet'; hauptagent-zustellung.ts zaehlt das nicht als Versuch und gibt die folgenden
+ *   Nachrichten im selben Takt weiter. Eine angenommene Nachricht wird nie zweimal uebergeben und nie 'fehler'.
  * P22-T144 Quittung (Schalter inbox_quittung, inbox-quittung.ts): Neuanmeldung = neue daemon_id oder eine bisher unbekannte
  *   Sitzung einer schon gemeldeten Identitaet. Danach stellt der naechste Takt genau EINE Erinnerung mit den offenen
  *   Quittungs-IDs zu (Absender system, kein Inhalt). Nach einem API-Neustart (Identitaet noch unbekannt) keine Erinnerung.
