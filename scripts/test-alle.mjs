@@ -19,6 +19,7 @@
 //   --vorschlag                 Inventur: Rot als Vorschlag in ergebnis.json + bekannt-rot.vorschlag.json (nie ins Repo)
 //   --liste                     nur finden und einordnen, nichts ausfuehren (Zeilen TESTPLAN)
 //   --ohne-schema-nachzug       synapse_test nach dem Lauf NICHT auf den Schemastand des Codes nachziehen
+//   --screenshots-behalten <n>  je Anlass nur die letzten n Screenshot-Laeufe ui-screenshots/<anlass>/<lauf-id>/ behalten (Standard 3, P25-T7)
 // Schema (User-Entscheidung 3f202323): vor dem Lauf SCHEMA_STAND (nur lesen); getestet wird gegen den Stand, den synapse_test
 // hat (nach einem Deploy = Live-Stand). Rot nur wegen Tabelle/Spalte, die der aktuelle Code anlegt -> SCHEMA_FEHLT_LIVE (nicht ROT,
 // mit Fundstelle/Task). DANACH Nachzug wie P17-T6 (ensureSchema, nur synapse_test): Zeilen SCHEMA_NEU / SCHEMA_OBJEKT / SCHEMA_NACHZUG.
@@ -30,7 +31,12 @@
 //   TESTLAUF ENDE id=... ergebnis=GRUEN|ROT ... json=<pfad>
 // Auswertung ohne Warten: shell(log, id, query:'NEU_ROT|FEHLT|NICHT_GESTARTET|TESTFEHLER|TESTLAUF ENDE', regex:true).
 // Exit 0 = GRUEN, 1 = ROT (neu_rot+fehlt+nicht_gestartet > 0 oder Schema-Nachzug gescheitert), 2 = Abbruch (Zeile TESTLAUF ABBRUCH <grund>).
-// Der Laeufer schreibt nie ins Repo und ruft keine Synapse-API; git nur lesend (Commit, --nur-betroffene).
+// Screenshots (P25-T7, User-Go 25.10.2026): Browser-Tests legen ueber scripts/lib/ui-screenshots.mjs unter ui-screenshots/<anlass>/<TESTLAUF_ID>/
+// ab (Nachlauf: TESTLAUF_NACHLAUF=1 -> .../nachlauf/), nie ueberschreibend. Am Ende loescht der Laeufer je Anlass aeltere Lauf-Ordner:
+//   SCREENSHOTS_GELOESCHT <pfad> dateien=<n> | SCREENSHOTS_AUFRAEUMEN behalten=<n> anlaesse=<n> laeufe_geloescht=<n> dateien=<n> fehler=<n>
+// Der Laeufer schreibt nie ins Repo (einzige Ausnahme: dieses Loeschen alter Lauf-Ordner unter ui-screenshots/, regel-screenshots-in-ui-screenshots-ablegen;
+// der Daemon gleicht ab, geloeschte Assets bleiben ueber asset_intel geloescht/wiederherstellen zurueckholbar) und ruft keine Synapse-API;
+// git nur lesend (Commit, --nur-betroffene).
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -44,6 +50,7 @@ import { beendeAlle, fuehreTestAus } from './lib/testlauf/ausfuehren.mjs';
 import { bewerte, bewerteNachlauf, istRot, summiere, testfehlerZeilen, vorschlagEintrag, waehleNachlauf, werteAusgabeAus, zeileFuerLog } from './lib/testlauf/bewerten.mjs';
 import { geaenderteDateien, paketAbhaengigkeiten, waehleBetroffene, abnehmerHuelle } from './lib/testlauf/betroffene.mjs';
 import { erkenneSchemaFehler, ladeSchemaQuellen, objektName, sucheSchemaObjekt } from './lib/testlauf/schema.mjs';
+import { raeumeScreenshotLaeufeAuf, STANDARD_BEHALTEN as SCREENSHOTS_BEHALTEN } from './lib/ui-screenshots.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ABLAGE = join(homedir(), '.synapse', 'testlaeufe');
@@ -58,7 +65,8 @@ function abbruch(grund) {
 
 function leseOptionen(argv) {
   const o = { nur: [], betroffene: null, parallel: 8, ohneBrowser: false, mitDocker: false, goldenBasis: null,
-    maxMinuten: 120, logDir: null, bekanntRot: null, vorschlag: false, liste: false, ohneSchemaNachzug: false };
+    maxMinuten: 120, logDir: null, bekanntRot: null, vorschlag: false, liste: false, ohneSchemaNachzug: false,
+    screenshotsBehalten: SCREENSHOTS_BEHALTEN };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const gleich = a.indexOf('=');
@@ -79,6 +87,7 @@ function leseOptionen(argv) {
       case '--vorschlag': o.vorschlag = true; break;
       case '--liste': o.liste = true; break;
       case '--ohne-schema-nachzug': o.ohneSchemaNachzug = true; break;
+      case '--screenshots-behalten': o.screenshotsBehalten = Math.max(1, Math.floor(zahl())); break;
       default: abbruch(`unbekannte Option ${a}`);
     }
   }
@@ -232,7 +241,7 @@ async function main() {
   delete kindBasis.FORCE_COLOR;
 
   const commit = git('rev-parse', '--short=12', 'HEAD');
-  console.log(`TESTLAUF START id=${id} modus=${modus} basis=${basis} commit=${commit} tests=${tests.length} neu=${tests.filter((t) => t.neu).length} geaendert=${tests.filter((t) => t.geaendert).length} parallel=${opt.parallel} db=${db.ziel.split('@').pop()} node=${process.version} docker=${opt.mitDocker ? 1 : 0} browser=${opt.ohneBrowser ? 0 : 1} log=${logDir}`);
+  console.log(`TESTLAUF START id=${id} modus=${modus} basis=${basis} commit=${commit} tests=${tests.length} neu=${tests.filter((t) => t.neu).length} geaendert=${tests.filter((t) => t.geaendert).length} parallel=${opt.parallel} db=${db.ziel.split('@').pop()} node=${process.version} docker=${opt.mitDocker ? 1 : 0} browser=${opt.ohneBrowser ? 0 : 1} screenshots_behalten=${opt.screenshotsBehalten} log=${logDir}`);
 
   // Schemastand vor dem Lauf (nur lesen, 3f202323): getestet wird gegen den Stand, den synapse_test gerade hat
   const SCHEMA_SKRIPT = 'scripts/lib/testlauf/schema-nachzug.mjs';
@@ -286,8 +295,9 @@ async function main() {
 
   const laufe = async (t, nachlauf = false) => {
     const vorher = nachlauf ? ergebnisse.get(t.datei) : null;
+    // P25-T7: im Nachlauf TESTLAUF_NACHLAUF=1 -> Screenshots in ui-screenshots/<anlass>/<lauf-id>/nachlauf/ (erster Lauf bleibt unveraendert)
     const logPfad = join(logDir, `${t.paket}__${basename(t.datei).replace(/\.test\.(?:mjs|ts)$/, '')}${nachlauf ? '.nachlauf' : ''}.log`);
-    const lauf = await fuehreTestAus({ cwd: REPO, datei: t.datei, args: t.args, env: { ...kindBasis, ...t.env }, logPfad, zeitlimitS: t.zeitlimit_s });
+    const lauf = await fuehreTestAus({ cwd: REPO, datei: t.datei, args: t.args, env: { ...kindBasis, ...t.env, ...(nachlauf ? { TESTLAUF_NACHLAUF: '1' } : {}) }, logPfad, zeitlimitS: t.zeitlimit_s });
     const aus = werteAusgabeAus(lauf.ausgabe);
     let eintrag = eintragFuer.get(t.datei) ?? null;
     if (opt.goldenBasis && t.golden && lauf.exit !== 0) eintrag = await goldenEintrag(t, logPfad);
@@ -363,6 +373,17 @@ async function main() {
   const ungeprueft = [...ergebnisse.values()].filter((r) => r.status === 'SCHEMA_FEHLT_LIVE').length;
   if (ungeprueft) hinweis('SCHEMA_FEHLT_LIVE_UNGEPRUEFT', '-', `${ungeprueft} Tests ohne Nachlauf (Nachzug ${schemaNachzug}), ihre Pruefungen liefen nicht`);
 
+  // Screenshots (P25-T7): je Anlass nur die letzten n Lauf-Ordner ui-screenshots/<anlass>/<lauf-id>/ behalten, der laufende Lauf ist geschuetzt.
+  // Altbestand ohne Lauf-ID-Namen (z. B. Fixtures ui-screenshots/p22-t149/*.png) bleibt unberuehrt. Bei Abbruch wird nichts geloescht.
+  let screenshots = { behalten: opt.screenshotsBehalten, anlaesse: 0, geloescht: [], fehler: [], aufgeraeumt: false };
+  if (!abgebrochen) {
+    try { screenshots = { ...raeumeScreenshotLaeufeAuf(REPO, { behalten: opt.screenshotsBehalten, schuetzen: [id] }), aufgeraeumt: true }; }
+    catch (e) { screenshots.fehler.push({ rel: '-', text: e.message }); }
+    for (const g of screenshots.geloescht) console.log(`SCREENSHOTS_GELOESCHT ${g.rel} dateien=${g.dateien}`);
+    for (const f of screenshots.fehler) hinweis('SCREENSHOTS_AUFRAEUMEN_FEHLER', f.rel, f.text);
+    console.log(`SCREENSHOTS_AUFRAEUMEN behalten=${screenshots.behalten} anlaesse=${screenshots.anlaesse} laeufe_geloescht=${screenshots.geloescht.length} dateien=${screenshots.geloescht.reduce((s, g) => s + g.dateien, 0)} fehler=${screenshots.fehler.length}`);
+  }
+
   // FEHLT: Eintrag ohne Datei
   const vorhanden = new Set(alleTests.map((t) => t.datei));
   const fehlt = [];
@@ -399,6 +420,7 @@ async function main() {
         herkunft: r.herkunft ?? t.task ?? null, herkunft_zeile: r.herkunft_zeile ?? null, schema_objekte: r.schema_objekte ?? [], nachlauf: r.nachlauf ?? 0,
         vorlauf_status: r.vorlauf_status ?? null, vorlauf_log: r.vorlauf_log ?? null, log: r.log ?? null };
     }).concat(fehlt.map((f) => ({ datei: f.datei, name: f.name, status: 'FEHLT', grund: 'datei_fehlt' }))),
+    screenshots: { lauf_id: id, ...screenshots },
     hinweise,
     ...(opt.vorschlag ? { vorschlag_bekannt_rot: vorschlaege } : {}),
   };

@@ -4,13 +4,14 @@
  * Fixture: Vorlage (modus live) mit Quelle plan.alle: ein Radio je Plan, Verweis je Task, Plan-Link; fertiger Main-Chat-Block mit
  * mehrdeutigem Wert und Thought-Link. Prueft dunkel und hell: Schalter AUS = kein Lesefenster; EIN: Plan-Navigation per CSS, Task-Klick ->
  * Lesefenster mit Beschreibung, Plan-Link ohne Hash-Aenderung, live-Update ohne Aufbau-Animation mit erhaltener Plan-Auswahl,
- * mehrdeutig -> Auswahl, Thought; Persoenliche Artefakte und Top-Artefakte. Screenshots: ui-screenshots/p22-t165/. */
+ * mehrdeutig -> Auswahl, Thought; Persoenliche Artefakte und Top-Artefakte. Screenshots: ui-screenshots/p22-t165/<lauf-id>/ (P25-T7). */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -90,8 +91,9 @@ try{
  await app.listen({host:'127.0.0.1',port:0});const api='http://127.0.0.1:'+app.server.address().port;
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t165');await mkdir(folder,{recursive:true});
- let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,f),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT ui-screenshots/p22-t165/'+f);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t165/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t165'),folder=ablage.ordner;
+ let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(f,Buffer.from(await r.arrayBuffer())));};
  const oeffne=async(theme,ansicht)=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:ui+'/tests/artefakt-verweise.html?project='+P+'&theme='+theme+'&ansicht='+ansicht+'&artefakt='+A+'&th='+TH1})).tab_id;};
  // Shadow-Roots: Vorlage (erste Flaeche mit .pf) und Main-Block.
  const SR="[...document.querySelectorAll('.agent-rendering-shadow')].map(h=>h.shadowRoot).find(s=>s&&s.querySelector('.pf'))";

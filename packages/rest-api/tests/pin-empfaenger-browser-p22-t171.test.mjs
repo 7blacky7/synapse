@@ -10,13 +10,14 @@
  *   3 Pin an eine Memory (Punkt 4): Tag memory:<name>, Liste im Lesefenster.
  *   4 Agenten-Chat (Herkunft, T170 unveraendert): Pin-Kaertchen und Kennzeichnung im gesendeten Block/Feed (Punkt 5).
  * Schalter chat_zitate NUR ueber den befristeten internen Test-Schalter. Jedes Warten hat ein Zeitlimit (keine Schleife ohne Ende).
- * Bei Fehlschlag: 'DEBUG <Herkunft> | tatsaechlich ... | screenshot ...'. Screenshots: ui-screenshots/p22-t171/*.png. */
+ * Bei Fehlschlag: 'DEBUG <Herkunft> | tatsaechlich ... | screenshot ...'. Screenshots: ui-screenshots/p22-t171/<lauf-id>/*.png (P25-T7). */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -83,8 +84,9 @@ try{
  // optimizeDeps.entries wie T170: Vite kennt alle Abhaengigkeiten der Testseite vor dem ersten Laden (sonst Neuladen mitten im Test).
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},optimizeDeps:{entries:['tests/lesefenster-herkunft.html']},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t171');await mkdir(folder,{recursive:true});
- let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,f),Buffer.from(await r.arrayBuffer()));letzterShot='ui-screenshots/p22-t171/'+f;console.log('SCREENSHOT '+letzterShot);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t171/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t171'),folder=ablage.ordner;
+ let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);letzterShot=await ablage.speichere(f,Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+letzterShot);};
  const url=(ansicht,theme='dark')=>ui+'/tests/lesefenster-herkunft.html?project='+P+'&a='+A+'&token='+encodeURIComponent(sitzung)+'&theme='+theme+'&ansicht='+ansicht+'&memory='+MEM;
  let zuletzt=null;
  const bereit=()=>wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');

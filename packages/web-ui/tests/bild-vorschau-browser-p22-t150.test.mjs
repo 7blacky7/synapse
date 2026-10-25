@@ -3,7 +3,7 @@
  * die zwei API-Antworten liefert diese Testseite: Verweis-Aufloesung ueber die echte Server-Funktion loeseAssetVerweis (Attrappe
  * nur fuer DB-Zeilen und Projektwurzel), Ansicht-Route mit echten PNGs aus ui-screenshots/p22-t149. Keine DB, keine Produktionsdaten.
  *   pnpm -C packages/rest-api build && node packages/web-ui/tests/bild-vorschau-browser-p22-t150.test.mjs
- * Screenshots: ui-screenshots/p22-t150/.
+ * Screenshots: ui-screenshots/p22-t150/<lauf-id>/ (P25-T7). Die Fixture-PNGs aus ui-screenshots/p22-t149/*.png sind Altbestand und bleiben.
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -11,6 +11,7 @@ import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
+import { screenshotAblage } from '../../../scripts/lib/ui-screenshots.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const requireUi = createRequire(join(repo, 'packages/web-ui/package.json'));
 const { loeseAssetVerweis } = await import(pathToFileURL(join(repo, 'packages/rest-api/dist/services/verweise.js')).href);
@@ -71,8 +72,10 @@ const wert = async (script) => { const r = await evaluate(script); return r && t
 const wait = async (fn, label, ms = 15000) => { const end = Date.now() + ms; while (Date.now() < end) { if (await fn()) return; await new Promise((r) => setTimeout(r, 150)); } throw Error('Timeout: ' + label); };
 const ok = (v, label) => { assert(v, label); checks += 1; console.log('OK ' + label); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const folder = join(repo, 'ui-screenshots/p22-t150');
-const shot = async (name) => { const r = await fetch(KB + '/screenshot?tab_id=' + tab); assert(r.ok); await writeFile(join(folder, name), Buffer.from(await r.arrayBuffer())); console.log('SCREENSHOT ui-screenshots/p22-t150/' + name); };
+// P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t150/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+const ablage = await screenshotAblage(repo, 'p22-t150');
+const folder = ablage.ordner;
+const shot = async (name) => { const r = await fetch(KB + '/screenshot?tab_id=' + tab); assert(r.ok); console.log('SCREENSHOT ' + await ablage.speichere(name, Buffer.from(await r.arrayBuffer()))); };
 const gross = () => wert("(()=>{const g=document.querySelector('.bild-gross');if(!g)return null;const i=g.querySelector('.bild-gross-buehne img');const t=g.querySelector('.bild-gross-buehne').getBoundingClientRect();"
   + "return {zoom:g.dataset.zoom,index:Number(g.dataset.index),anzahl:Number(g.dataset.anzahl),stand:g.dataset.stand,imParent:g.parentElement.id,imFenster:!!g.closest('.fixture-fenster'),"
   + "nw:i?.naturalWidth||0,nh:i?.naturalHeight||0,tw:t.width,th:t.height,transform:i?.style.transform||'',text:g.querySelector('.bild-gross-unterschrift').textContent,"

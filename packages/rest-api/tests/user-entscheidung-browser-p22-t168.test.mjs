@@ -6,13 +6,14 @@
  * Prueft: AUS = Lesefenster ohne Knopf; EIN: Lesefenster -> 'User-Entscheidung anpinnen' -> Wortlaut -> Speichern -> thought (source
  * user, task_id P1-T2, Tag user-entscheidung, Wortlaut gleich), sichtbar im Lesefenster und in den Task-Verknuepfungen/Pins (plan);
  * Hinweis nur an den Bearbeiter rea4, nicht an A; keine Chat-Nachricht. Kontextmenue am Chat-Verweis -> Lesefenster mit Editor.
- * Plan-Bezug ueber die Route (Tag P1, task_id leer). Screenshots: ui-screenshots/p22-t168/ue-*.png. */
+ * Plan-Bezug ueber die Route (Tag P1, task_id leer). Screenshots: ui-screenshots/p22-t168/<lauf-id>/ue-*.png (P25-T7). */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -72,8 +73,9 @@ try{
  await app.listen({host:'127.0.0.1',port:0});const api='http://127.0.0.1:'+app.server.address().port;
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t168');await mkdir(folder,{recursive:true});
- let nr=1;const shot=async name=>{const f='ue-'+String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,f),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT ui-screenshots/p22-t168/'+f);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t168/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t168'),folder=ablage.ordner;
+ let nr=1;const shot=async name=>{const f='ue-'+String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(f,Buffer.from(await r.arrayBuffer())));};
  const url=theme=>ui+'/tests/chat-zitate.html?project='+P+'&a='+A+'&b='+Bid+'&theme='+theme+'&ansicht=zwei';
  const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:url(theme)})).tab_id;};
  const link=(f,text)=>json('(()=>{const e=[...document.querySelectorAll(\'[data-fenster="'+f+'"] .verweis-link\')].find(b=>b.textContent.trim()==='+JSON.stringify(text)+');'

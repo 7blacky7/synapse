@@ -7,13 +7,14 @@
  * Main-Chat-Weg (Herkunft main, Pin + Zitat im Main-Entwurf, nichts in die Inbox); Channel-Fenster (Kaertchen, Post mit Block an den
  * Channel, keine Inbox, Zitate im Feed als Kaertchen); ohne Herkunft (Artefakte-Seite und Dashboard im Main-Provider): Pin nur
  * gespeichert, kein Kaertchen, kein Menue am Verweis, Empfaengerauswahl (3 sichtbar, Filter behaelt Auswahl) -> genau 2 Inbox-Zeilen.
- * Screenshots: ui-screenshots/p22-t170/*.png. */
+ * Screenshots: ui-screenshots/p22-t170/<lauf-id>/*.png (P25-T7). */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -81,8 +82,9 @@ try{
  // entdeckt Vite einige erst spaeter und laedt dann offene Seiten neu (im KI-Browser: leere Seite mitten im Test).
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},optimizeDeps:{entries:['tests/lesefenster-herkunft.html']},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t170');await mkdir(folder,{recursive:true});
- let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,f),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT ui-screenshots/p22-t170/'+f);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t170/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t170'),folder=ablage.ordner;
+ let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(f,Buffer.from(await r.arrayBuffer())));};
  const url=(ansicht,theme='dark')=>ui+'/tests/lesefenster-herkunft.html?project='+P+'&a='+A+'&token='+encodeURIComponent(sitzung)+'&theme='+theme+'&ansicht='+ansicht;
  let zuletzt=null;
  const bereit=()=>wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');

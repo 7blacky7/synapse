@@ -1,4 +1,5 @@
-// test-testlauf-p25-t1.mjs — Selbsttest des Gesamt-Testlaeufers (P25-T1), ohne DB, ohne Browser, ohne Prozesse.
+// test-testlauf-p25-t1.mjs — Selbsttest des Gesamt-Testlaeufers (P25-T1), ohne DB, ohne Browser, ohne Prozesse
+// (Block J schreibt nur in einen eigenen Temp-Ordner, nie ins Repo).
 // Sichert ab: scripts/lib/testlauf/finden.mjs (leseMarker, taskAusName, referenziertePakete, passtNur, wendeEinstellungAn),
 // bewerten.mjs (werteAusgabeAus, bewerte, passtZeile, testfehlerZeilen, vorschlagEintrag, zeileFuerLog),
 // betroffene.mjs (abnehmerHuelle, waehleBetroffene). Grundlage: Entwurf thought 49df5e9e, User-Go b3a3a812,
@@ -7,6 +8,11 @@ import { leseMarker, taskAusName, referenziertePakete, passtNur, wendeEinstellun
 import { werteAusgabeAus, bewerte, passtZeile, testfehlerZeilen, vorschlagEintrag, zeileFuerLog, waehleNachlauf, bewerteNachlauf, summiere, istRot } from './lib/testlauf/bewerten.mjs';
 import { abnehmerHuelle, waehleBetroffene } from './lib/testlauf/betroffene.mjs';
 import { erkenneSchemaFehler, objektName, sucheSchemaObjekt } from './lib/testlauf/schema.mjs';
+// P25-T7: scripts/lib/ui-screenshots.mjs (laufIdFuerScreenshots, screenshotOrdner, screenshotAblage, raeumeScreenshotLaeufeAuf)
+import { laufIdFuerScreenshots, screenshotOrdner, screenshotAblage, raeumeScreenshotLaeufeAuf } from './lib/ui-screenshots.mjs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let fehler = 0;
 let pruefungen = 0;
@@ -159,6 +165,64 @@ function pruefe(label, ist, soll) {
   const ohne = summiere([{ status: 'SCHEMA_FEHLT_LIVE' }, { status: 'GRUEN' }]);
   pruefe('P25-T1 bewerten.mjs summiere/istRot: SCHEMA_FEHLT_LIVE ohne Nachlauf -> ungeprueft, nicht ROT', [ohne.schema_fehlt_live, ohne.schema_ungeprueft, istRot(ohne, 'aus')], [1, 1, false]);
   pruefe('P25-T1 bewerten.mjs istRot: Nachzug fehler -> ROT', istRot(ohne, 'fehler'), true);
+}
+
+// J Screenshots je Lauf (P25-T7, User-Go 25.10.2026): ui-screenshots/<anlass>/<lauf-id>/, nie ueberschreiben (Sync-Konflikte),
+// je Anlass nur die letzten N Laeufe behalten; Altbestand ohne Lauf-ID-Namen bleibt. Alles in einem Temp-Ordner als Projektwurzel.
+{
+  const tmp = mkdtempSync(join(tmpdir(), 'p25-t7-screenshots-'));
+  try {
+    const jetzt = new Date(2026, 9, 25, 23, 40, 5);
+    pruefe('P25-T7 ui-screenshots.mjs laufIdFuerScreenshots: TESTLAUF_ID vom Laeufer uebernommen',
+      laufIdFuerScreenshots({ TESTLAUF_ID: 'tl-20261025-234005-ab12' }, jetzt, 'ffff'), { lauf: 'tl-20261025-234005-ab12', quelle: 'testlauf' });
+    pruefe('P25-T7 ui-screenshots.mjs laufIdFuerScreenshots: Einzelaufruf -> Zeitstempel ez-',
+      laufIdFuerScreenshots({}, jetzt, '0a1b'), { lauf: 'ez-20261025-234005-0a1b', quelle: 'einzel' });
+    pruefe('P25-T7 ui-screenshots.mjs laufIdFuerScreenshots: TESTLAUF_ID mit Pfadteilen verworfen',
+      laufIdFuerScreenshots({ TESTLAUF_ID: '../../etc' }, jetzt, '0a1b'), { lauf: 'ez-20261025-234005-0a1b', quelle: 'einzel', verworfen: '../../etc' });
+    const o = screenshotOrdner(tmp, 'p22-t171', { env: { TESTLAUF_ID: 'tl-20261025-234005-ab12', TESTLAUF_NACHLAUF: '1' } });
+    pruefe('P25-T7 ui-screenshots.mjs screenshotOrdner: Nachlauf -> Unterordner nachlauf/',
+      [o.rel, o.ordner === join(tmp, 'ui-screenshots', 'p22-t171', 'tl-20261025-234005-ab12', 'nachlauf'), existsSync(o.ordner)],
+      ['ui-screenshots/p22-t171/tl-20261025-234005-ab12/nachlauf', true, false]);
+    let wurf = null;
+    try { screenshotOrdner(tmp, '../x'); } catch (e) { wurf = e.message; }
+    pruefe('P25-T7 ui-screenshots.mjs screenshotOrdner: Anlass mit Pfadteilen -> Fehler', /ungueltiger Anlass/.test(wurf ?? ''), true);
+
+    const zeilen = [];
+    const a = await screenshotAblage(tmp, 'p22-t999', { env: { TESTLAUF_ID: 'tl-20261025-234005-ab12' }, log: (z) => zeilen.push(z) });
+    const p1 = await a.speichere('01-dunkel.png', Buffer.from('eins'));
+    const p2 = await a.speichere('01-dunkel.png', Buffer.from('zwei'));
+    pruefe('P25-T7 ui-screenshots.mjs speichere: gleicher Name -> Suffix -2, Pfade Projekt-relativ', [p1, p2],
+      ['ui-screenshots/p22-t999/tl-20261025-234005-ab12/01-dunkel.png', 'ui-screenshots/p22-t999/tl-20261025-234005-ab12/01-dunkel-2.png']);
+    pruefe('P25-T7 ui-screenshots.mjs speichere: erste Datei NICHT ueberschrieben', [readFileSync(join(tmp, p1), 'utf8'), readFileSync(join(tmp, p2), 'utf8')], ['eins', 'zwei']);
+    pruefe('P25-T7 ui-screenshots.mjs screenshotAblage: Debugzeile SCREENSHOTS', zeilen,
+      ['SCREENSHOTS ordner=ui-screenshots/p22-t999/tl-20261025-234005-ab12 lauf=tl-20261025-234005-ab12 quelle=testlauf']);
+
+    // Aufraeumen: 6 Laeufe (tl/ez gemischt, je mit nachlauf/), dazu Altbestand; behalten 3, ein alter geschuetzter Lauf bleibt
+    const anlass = join(tmp, 'ui-screenshots', 'p22-t168');
+    for (const l of ['tl-20261020-100000-aaaa', 'ez-20261021-100000-bbbb', 'tl-20261022-100000-cccc', 'ez-20261023-100000-dddd', 'tl-20261024-100000-eeee', 'tl-20261019-100000-ffff']) {
+      mkdirSync(join(anlass, l, 'nachlauf'), { recursive: true });
+      writeFileSync(join(anlass, l, '01.png'), 'x');
+      writeFileSync(join(anlass, l, 'nachlauf', '01.png'), 'x');
+    }
+    writeFileSync(join(anlass, '01-alt.png'), 'alt');
+    mkdirSync(join(anlass, 'ki-browser-2026-10-01'));
+    const opt = { behalten: 3, schuetzen: ['tl-20261019-100000-ffff'] };
+    const soll = [{ rel: 'ui-screenshots/p22-t168/ez-20261021-100000-bbbb', dateien: 2 }, { rel: 'ui-screenshots/p22-t168/tl-20261020-100000-aaaa', dateien: 2 }];
+    const vorschau = raeumeScreenshotLaeufeAuf(tmp, { ...opt, trocken: true });
+    pruefe('P25-T7 ui-screenshots.mjs raeumeScreenshotLaeufeAuf trocken: meldet, loescht nichts', [vorschau.geloescht, readdirSync(anlass).length], [soll, 8]);
+    const r = raeumeScreenshotLaeufeAuf(tmp, opt);
+    pruefe('P25-T7 ui-screenshots.mjs raeumeScreenshotLaeufeAuf: aeltere Laeufe nach Zeitstempel (nicht Praefix) geloescht, Dateien gezaehlt',
+      [r.geloescht, r.anlaesse, r.fehler], [soll, 2, []]);
+    pruefe('P25-T7 ui-screenshots.mjs raeumeScreenshotLaeufeAuf: neueste 3 + geschuetzter Lauf + Altbestand bleiben', readdirSync(anlass).sort(),
+      ['01-alt.png', 'ez-20261023-100000-dddd', 'ki-browser-2026-10-01', 'tl-20261019-100000-ffff', 'tl-20261022-100000-cccc', 'tl-20261024-100000-eeee']);
+    pruefe('P25-T7 ui-screenshots.mjs raeumeScreenshotLaeufeAuf: Anlass mit 1 Lauf unberuehrt', [existsSync(join(tmp, p1)), existsSync(join(tmp, p2))], [true, true]);
+    let wurf0 = null;
+    try { raeumeScreenshotLaeufeAuf(tmp, { behalten: 0 }); } catch (e) { wurf0 = e.message; }
+    pruefe('P25-T7 ui-screenshots.mjs raeumeScreenshotLaeufeAuf: behalten 0 -> Fehler statt alles loeschen', /behalten muss/.test(wurf0 ?? ''), true);
+    pruefe('P25-T7 ui-screenshots.mjs raeumeScreenshotLaeufeAuf: ohne ui-screenshots -> nichts', raeumeScreenshotLaeufeAuf(join(tmp, 'gibt-es-nicht')).geloescht, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 console.log(`P25-T1 testlauf-Selbsttest: ${pruefungen} Pruefungen, ${fehler} Fehler`);

@@ -8,7 +8,7 @@
  *     Channel-Absender, Agententeam-Zeile, Absatz 'Aktuelle Task' mit Quelle (SynapseWorkspaceMock.tsx, AgentTaskMarke.tsx).
  *   3 Klick auf die Task in der Agentenleiste -> Lesefenster P1-T2, Agentenfenster oeffnet sich NICHT.
  *   4 Klick in der Team-Zeile (ohne umgebenden Provider) -> Lesefenster, Schaltflaeche der Zeile wird NICHT ausgeloest.
- *   5 hell: Darstellung. Jedes Warten hat ein Zeitlimit. Screenshots: ui-screenshots/p22-t172/*.png.
+ *   5 hell: Darstellung. Jedes Warten hat ein Zeitlimit. Screenshots: ui-screenshots/p22-t172/<lauf-id>/*.png (P25-T7).
  * Bei Fehlschlag: 'DEBUG <Herkunft> | tatsaechlich ... | screenshot ...'. */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -16,6 +16,7 @@ import {createRequire} from 'node:module';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -80,8 +81,9 @@ try{
  await app.listen({host:'127.0.0.1',port:0});const api='http://127.0.0.1:'+app.server.address().port;
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},optimizeDeps:{entries:['tests/agent-task-marke.html']},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t172');await mkdir(folder,{recursive:true});
- let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,f),Buffer.from(await r.arrayBuffer()));letzterShot='ui-screenshots/p22-t172/'+f;console.log('SCREENSHOT '+letzterShot);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t172/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t172'),folder=ablage.ordner;
+ let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);letzterShot=await ablage.speichere(f,Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+letzterShot);};
  const url=(theme='dark')=>ui+'/tests/agent-task-marke.html?project='+P+'&a='+A+'&b='+B+'&token='+encodeURIComponent(sitzung)+'&theme='+theme;
  const bereit=()=>wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');
  const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:url(theme)})).tab_id;await bereit();

@@ -6,6 +6,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -92,8 +93,9 @@ try{
  const many=netzwerkSzene({...raw,plaene:Array.from({length:20},(_,i)=>({...p,id:'many-'+i,status:'open',committed:null}))},n);
  ok(many.plaene===20,'no old 16-plan cutoff for open plans');
  ok(netzwerkSzene({...raw,plaene:[{...p,id:'done-1'}]},n).plaene===0,'P22-T149: committed plans are no nodes (they fly into the project)');
- const folder=join(repo,'ui-screenshots/p22-t102');await mkdir(folder,{recursive:true});
- const shot=async name=>{await sleep(300);const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,name),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+join(folder,name));};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t102/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t102'),folder=ablage.ordner;
+ const shot=async name=>{await sleep(300);const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(name,Buffer.from(await r.arrayBuffer())));};
  tab=(await kb('/tabs/new',{url:ui+'/tests/agentennetzwerk.html'})).tab_id;
  await wait(()=>evaluate("!!document.querySelector('canvas.nw-gl')?.dataset.renderer"),'network canvas');
  const states=()=>evaluate("JSON.parse(document.querySelector('canvas.nw-gl')?.dataset.planZustaende||'[]')");

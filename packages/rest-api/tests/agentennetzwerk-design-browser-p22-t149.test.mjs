@@ -3,7 +3,7 @@
  *   DATABASE_URL=postgresql://...@<host>:5433/synapse_test node packages/rest-api/tests/agentennetzwerk-design-browser-p22-t149.test.mjs
  * Prueft im echten Canvas (dunkel und hell): Projektstern/Trabanten/Nebel aus der Index-Groesse, kein User-Knoten, Feuern ueber die Membran
  * (inbox_send an user, artefakt zeigen), Commit-Flug gruen bzw. blau mit Projektreaktion, Explosion bei cancel, Schalter-Rueckfall, Bildrate.
- * Screenshots: ui-screenshots/p22-t149/. */
+ * Screenshots: ui-screenshots/p22-t149/<lauf-id>/ (P25-T7; die flachen Alt-PNGs dort nutzt bild-vorschau-browser-p22-t150 als Fixture). */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
@@ -11,6 +11,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -81,8 +82,9 @@ try{
  await app.listen({host:'127.0.0.1',port:0});const api='http://127.0.0.1:'+app.server.address().port;
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t149');await mkdir(folder,{recursive:true});
- const shot=async name=>{const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,name),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT ui-screenshots/p22-t149/'+name);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t149/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t149'),folder=ablage.ordner;
+ const shot=async name=>{const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(name,Buffer.from(await r.arrayBuffer())));};
  const ds=()=>evaluate("(()=>{const d=document.querySelector('canvas.nw-gl')?.dataset||{};return {stern:Number(d.stern),trabanten:Number(d.trabanten),einzeln:Number(d.trabantenEinzeln),nebel:Number(d.nebelPunkte),anUser:Number(d.anUser),commit:Number(d.abgangCommit),explosion:Number(d.abgangExplosion),farben:JSON.parse(d.commitFarben||'{}'),fps:Number(d.fps),frameMs:Number(d.frameMs),qualitaet:Number(d.qualitaet),sprites:Number(d.sprites),renderer:d.renderer,akzent:d.akzent}})()");
  const refresh=()=>evaluate("document.dispatchEvent(new Event('visibilitychange'));true");
  // Rohe Bildwiederholrate des KI-Browsers (ohne Netzwerk-Arbeit): Massstab fuer 'keine Ruckler'.

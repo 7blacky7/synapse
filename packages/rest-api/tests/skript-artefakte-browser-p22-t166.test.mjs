@@ -5,13 +5,14 @@
  * Prueft dunkel und hell: Chatfenster bleibt bereinigt (Hinweis), Chip 'Skript', ausgeklappt erst Warnung + Vorschau, Start per Klick,
  * iframe-Attribute, im iframe Cookie/localStorage/Eltern-DOM/fetch gesperrt (Ergebnis als Hoehe codiert), Bruecke liefert Daten,
  * oeffne -> Lesefenster, abgelehnte Anfrage gezaehlt, while(true) -> Watchdog (Web-UI bleibt bedienbar?), location -> Stopp,
- * Live-Vorlage: 'neuer Stand · neu laden' ohne Neuladen, Einklappen entfernt den iframe. Screenshots: ui-screenshots/p22-t166/. */
+ * Live-Vorlage: 'neuer Stand · neu laden' ohne Neuladen, Einklappen entfernt den iframe. Screenshots: ui-screenshots/p22-t166/<lauf-id>/ (P25-T7). */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -98,8 +99,9 @@ try{
  await app.listen({host:'127.0.0.1',port:0});const api='http://127.0.0.1:'+app.server.address().port;
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t166');await mkdir(folder,{recursive:true});
- let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab,{signal:AbortSignal.timeout(20000)});assert(r.ok);await writeFile(join(folder,f),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT ui-screenshots/p22-t166/'+f);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t166/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t166'),folder=ablage.ordner;
+ let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab,{signal:AbortSignal.timeout(20000)});assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(f,Buffer.from(await r.arrayBuffer())));};
  const klick=sel=>evaluate("(()=>{const e=document.querySelector("+JSON.stringify(sel)+");if(!e)return false;e.click();return true})()");
  const klickText=(sel,text)=>evaluate("(()=>{const e=[...document.querySelectorAll("+JSON.stringify(sel)+")].find(x=>x.textContent.trim().startsWith("+JSON.stringify(text)+"));if(!e)return false;e.click();return true})()");
  const ausklappen=async(b,label)=>{ok(await klick('[data-bewertung="'+b+'"] .top-kopf'),label);await wait(()=>evaluate("!!"+RAHMEN(b)),label+': Rahmen da');};

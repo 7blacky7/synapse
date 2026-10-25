@@ -4,7 +4,7 @@
  * Je Ergebnisart (falsch aufgerufen, gesperrt, nicht gefunden, Konflikt, Serverfehler, wartet, sonstiges) eine echte tool_calls-Zeile des
  * Arbeitsagenten; der Snapshot klassifiziert sie, der Canvas zeigt den Effekt auf halber Strecke (Debug data-ergebnis-effekte zaehlt je Art).
  * Dunkel und hell. T155: Zeile ohne Absender wird kein Knoten, Debug-Zaehler ohne_absender. Schalter fehler_effekte=0: kein Ergebnis-Effekt.
- * Screenshots: ui-screenshots/p22-t156/. */
+ * Screenshots: ui-screenshots/p22-t156/<lauf-id>/ (P25-T7). */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
@@ -12,6 +12,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -85,8 +86,9 @@ try{
  await app.listen({host:'127.0.0.1',port:0});const api='http://127.0.0.1:'+app.server.address().port;
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
- const folder=join(repo,'ui-screenshots/p22-t156');await mkdir(folder,{recursive:true});
- const shot=async name=>{const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,name),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT ui-screenshots/p22-t156/'+name);};
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t156/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
+ const ablage=await screenshotAblage(repo,'p22-t156'),folder=ablage.ordner;
+ const shot=async name=>{const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(name,Buffer.from(await r.arrayBuffer())));};
  const zahl=()=>evaluate("JSON.parse(document.querySelector('canvas.nw-gl')?.dataset.ergebnisEffekte||'{}')");
  const refresh=()=>evaluate("document.dispatchEvent(new Event('visibilitychange'));true");
  const hell=on=>evaluate("(()=>{const r=document.getElementById('root');r.className="+(on?"'synapse-control'":"''")+";if("+(on?'true':'false')+"){r.dataset.theme='light';document.documentElement.style.background='#f4f2ee'}else{delete r.dataset.theme;document.documentElement.style.background=''}return true})()");

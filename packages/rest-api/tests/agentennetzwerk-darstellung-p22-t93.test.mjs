@@ -7,7 +7,7 @@
  * Hover/Klick als Zeigerereignisse im Rahmen, Elementbilder als Ausschnitt des Tab-Screenshots. Ein vorab eingespieltes Skript
  * (Vite transformIndexHtml) setzt das Sitzungstoken und sammelt JavaScript-Fehler (Ersatz fuer addInitScript/pageerror).
  *   pnpm -C packages/core build && pnpm -C packages/rest-api build
- *   DATABASE_URL=postgresql://...@<host>:5433/synapse_test [P22_SHOTS=ui-screenshots/p22-t93/ki-browser-<datum>] [P22_GPU=0]
+ *   DATABASE_URL=postgresql://...@<host>:5433/synapse_test [P22_SHOTS=<eigener Ordner, sonst ui-screenshots/p22-t93/<lauf-id>/ (P25-T7)>] [P22_GPU=0]
  *   node packages/rest-api/tests/agentennetzwerk-darstellung-p22-t93.test.mjs
  */
 import assert from 'node:assert/strict';
@@ -16,6 +16,7 @@ import {createRequire} from 'node:module';
 import {dirname,resolve,join,relative} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
+import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -136,7 +137,9 @@ try{
  vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},plugins:[kiBrowserPlugin],server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:api}}}});
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
  const gpu=process.env.P22_GPU!=='0';
- const folder=join(repo,process.env.P22_SHOTS||'ui-screenshots/p22-t93/ki-browser-'+new Date().toISOString().slice(0,10));await mkdir(folder,{recursive:true});
+ // P25-T7 scripts/lib/ui-screenshots.mjs: Standard ui-screenshots/p22-t93/<lauf-id>/ (nie ueberschreiben); P22_SHOTS bleibt als ausdruecklich eigener Ordner.
+ const ablage=process.env.P22_SHOTS?null:await screenshotAblage(repo,'p22-t93');
+ const folder=ablage?ablage.ordner:join(repo,process.env.P22_SHOTS);await mkdir(folder,{recursive:true});
  // Viewport = Groesse des Rahmens; Elementbild = Ausschnitt des Tab-Screenshots (Rahmen liegt bei 0,0).
  const viewport=async(w,h)=>{await evaluate("(()=>{const f=document.getElementById('rahmen');f.style.width='"+w+"px';f.style.height='"+h+"px';return true})()");await sleep(300);};
  const shot=async(name,sel='.agent-network')=>{
@@ -144,7 +147,8 @@ try{
   const r=await imRahmen("(async()=>{const e=document.querySelector("+JSON.stringify(sel)+");e.scrollIntoView({block:'nearest',inline:'nearest'});await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const b=e.getBoundingClientRect(),f=parent.document.getElementById('rahmen').getBoundingClientRect();"+
    "const x0=Math.max(b.left,0),y0=Math.max(b.top,0),x1=Math.min(b.right,innerWidth),y1=Math.min(b.bottom,innerHeight);return {x:f.left+x0,y:f.top+y0,w:x1-x0,h:y1-y0}})()");
   const q=new URLSearchParams({tab_id:tab,clip_x:String(Math.round(r.x)),clip_y:String(Math.round(r.y)),clip_width:String(Math.round(r.w)),clip_height:String(Math.round(r.h))});
-  const res=await fetch(B+'/screenshot?'+q);assert(res.ok);await writeFile(join(folder,name),Buffer.from(await res.arrayBuffer()));console.log('BILD '+relative(repo,join(folder,name)));
+  const res=await fetch(B+'/screenshot?'+q);assert(res.ok);const bild=Buffer.from(await res.arrayBuffer());
+  console.log('BILD '+(ablage?await ablage.speichere(name,bild):(await writeFile(join(folder,name),bild),relative(repo,join(folder,name)))));
  };
  const da=name=>imRahmen("document.querySelector('canvas.nw-gl')?.getAttribute("+JSON.stringify(name)+")??null");
  const fps=async(sekunden)=>{const werte=[];for(let i=0;i<sekunden;i++){await sleep(1000);werte.push(Number(await da('data-fps')));}return werte;};
