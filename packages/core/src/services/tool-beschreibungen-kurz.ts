@@ -793,10 +793,14 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
     },
   },
   artefakt: {
-    b: 'zeigen (nur Hauptagent): HTML-Block in die Web-UI. vorlieben/vorbild/versuch (jeder Agent): Design-Vorlieben des Users vor HTML-Antworten.',
+    b: 'zeigen (Hauptagent; per Ausweis mit Schalter): HTML-Block bzw. Datenvorlage in die Web-UI. neu_zeichnen/quellen: Vorlagen. vorlieben/vorbild/versuch (jeder Agent): Design-Vorlieben des Users vor HTML-Antworten.',
     p: {
-      action: 'zeigen | vorlieben | vorbild | versuch.',
+      action: 'zeigen | neu_zeichnen | quellen | vorlieben | vorbild | versuch.',
       html: 'zeigen: HTML-Inhalt (max. 2 MB).',
+      vorlage: 'zeigen: Vorlage statt html ({{wert | filter}}, #each, #if).',
+      quellen: 'zeigen mit vorlage: [{name, vertrag, args?}] aus dem Katalog.',
+      modus: 'fest | stand | live.',
+      project: 'Projekt der Renderung (Ausweis: nur das eigene).',
       ueberarbeitet_aus: 'zeigen: bewertung_id, dessen neuer Versuch dieser Block ist.',
       bewertung_id: 'vorbild/versuch: ID aus vorlieben.',
       quelle_art: 'versuch: artefakt | inbox | verlauf.',

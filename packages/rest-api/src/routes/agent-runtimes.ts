@@ -21,6 +21,11 @@ import {
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 import { leseRuntimeUebersicht, leseRuntimeAgentLog, leseRuntimeProzesse, steuereRuntimeAgent, frageProzessAenderungAn, bestaetigeProzessAenderung, wechslePlattformAgentModell } from '@synapse/core';
 import { bewerteArtefakt, leseBewertungen, leseDesignVorlieben, zerlegeQuellenListe, BewertungsFehler } from '@synapse/core';
+import {
+  renderArtefakt, renderungsProjekte, ladeVorlagenZeile, artefaktVorlagenSchalter, leseArtefaktVorlagenEinstellungen, setzeArtefaktVorlagenEinstellungen,
+  artefaktQuellenKatalog, ArtefaktVorlagenFehler, ARTEFAKT_VORLAGEN_LIVE_FUNKTION, type ArtefaktRenderErgebnis,
+} from '@synapse/core';
+import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
 import { gleicheCliListeMitRegistry } from '../services/agent-runtime/registry-abgleich.js';
 import type { CliModellListe } from '../services/agent-runtime/cli-modelle.js';
@@ -600,12 +605,58 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, count: artefakte.length, artefakte };
     } catch (error) { return sendFachFehler(reply, error); }
   });
-  fastify.get<{ Params: { id: string } }>('/api/main-agent/artefakte/:id', async (request, reply) => {
+  // P22-T154: mit Vorlage rendert der Server fuer ?project= (Standard: standard_project) mit den Rechten des Users (alle Projekte);
+  // stand = Momentaufnahme, live = neu, wenn aelter als die Drossel. render/projekte nur bei Vorlagen-Artefakten.
+  const vorlagenFehler = (reply: FastifyReply, error: unknown) => error instanceof ArtefaktVorlagenFehler
+    ? reply.code(error.status).send({ success: false, error: { code: error.code, message: error.message } })
+    : sendFachFehler(reply, error);
+  const renderAntwort = (r: ArtefaktRenderErgebnis) => ({ modus: r.modus, project: r.project, revision: r.revision, gerendert_am: r.gerendert_am, neu: r.neu,
+    fehler: r.fehler, ...(r.hinweis ? { hinweis: r.hinweis } : {}), ...(r.debug ? { debug: r.debug } : {}) });
+  fastify.get<{ Params: { id: string }; Querystring: { project?: string } }>('/api/main-agent/artefakte/:id', async (request, reply) => {
     try {
       const artefakt = await ladeArtefakt(request.params.id);
       if (!artefakt) return reply.code(404).send({ success: false, error: { message: 'Artefakt nicht gefunden' } });
-      return { success: true, artefakt };
-    } catch (error) { return sendFachFehler(reply, error); }
+      if (!artefakt.hatVorlage) return { success: true, artefakt };
+      const r = await renderArtefakt(artefakt.id, { project: request.query.project ?? null, betrachter: { art: 'user' }, anlass: 'anzeigen', von: 'user' });
+      return { success: true, artefakt: { ...artefakt, html: r.html }, render: renderAntwort(r), projekte: await renderungsProjekte(artefakt.id) };
+    } catch (error) { return vorlagenFehler(reply, error); }
+  });
+  fastify.post<{ Params: { id: string }; Body: { project?: unknown } }>('/api/main-agent/artefakte/:id/neu-zeichnen', async (request, reply) => {
+    try {
+      const project = typeof request.body?.project === 'string' ? request.body.project : null;
+      const r = await renderArtefakt(request.params.id, { project, betrachter: { art: 'user' }, anlass: 'neu_zeichnen', von: 'user' });
+      return { success: true, artefakt_id: r.artefakt_id, html: r.html, render: renderAntwort(r), projekte: await renderungsProjekte(r.artefakt_id) };
+    } catch (error) { return vorlagenFehler(reply, error); }
+  });
+  // P22-T154 Etappe 5: Live-Strom eines Artefakts fuer ein Projekt. Schalter artefakt_vorlagen_live AUS oder kein live-Artefakt ->
+  // Ereignis 'aus', Ende. Sonst 'bereit' {kanaele, status}, danach 'artefakt' {html, revision, ...} bei neuer Renderung.
+  fastify.get<{ Params: { id: string }; Querystring: { project?: string } }>('/api/main-agent/artefakte/:id/stream', async (request, reply) => {
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    reply.sent = true;
+    try {
+      const live = await artefaktVorlagenSchalter(ARTEFAKT_VORLAGEN_LIVE_FUNKTION);
+      if (!live.aktiv) { sse(reply, 'aus', { grund: 'schalter', schalter: live }); reply.raw.end(); return; }
+      const z = await ladeVorlagenZeile(request.params.id);
+      const project = (typeof request.query.project === 'string' && request.query.project.trim()) || z?.standard_project || '';
+      if (!z || !z.vorlage || z.modus !== 'live' || !project) { sse(reply, 'aus', { grund: !z ? 'unbekannt' : !project ? 'projekt_fehlt' : 'kein_live_artefakt' }); reply.raw.end(); return; }
+      const abo = await abonniereArtefaktLive(z.id, project, { art: 'user' }, (event, data) => sse(reply, event, data));
+      sse(reply, 'bereit', { artefakt_id: z.id, project, kanaele: abo.kanaele, status: artefaktLiveStatus() });
+      const takt = setInterval(() => { reply.raw.write(': takt\n\n'); }, 15000);
+      request.raw.once('close', () => { clearInterval(takt); abo.abmelden(); });
+    } catch (error) {
+      sse(reply, 'fehler', { message: errorMessage(error) });
+      reply.raw.end();
+    }
+  });
+  // P22-T154: interne Einstellungen der Vorlagen (Drossel, Buendelung, Kappungen) und Debug (Schalter, Katalog, Live-Status).
+  fastify.get('/api/main-agent/artefakt-vorlagen', async () => {
+    const [s, live, ausweis] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter(ARTEFAKT_VORLAGEN_LIVE_FUNKTION), artefaktVorlagenSchalter('artefakt_ausweis_zeigen')]);
+    return { success: true, schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis },
+      einstellungen: await leseArtefaktVorlagenEinstellungen(), katalog: artefaktQuellenKatalog(), live: artefaktLiveStatus() };
+  });
+  fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/main-agent/artefakt-vorlagen/einstellungen', async (request, reply) => {
+    try { return { success: true, ...(await setzeArtefaktVorlagenEinstellungen(request.body?.werte, request.body?.grund, 'user')) }; }
+    catch (error) { return vorlagenFehler(reply, error); }
   });
   // P8-T26: Tool-Aufrufe NUR des Hauptagenten (projektuebergreifend) fuer Main-Chat und Arbeitsraum. Akteur aus
   // gespeicherten Daten: Main-Identitaet (identity_id), agent_id 'hauptagent' ohne identity_id (Identitaetsweg ausserhalb

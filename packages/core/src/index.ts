@@ -772,6 +772,20 @@ export {
   bewertungFuerArtefakt, bewertungsHinweisText,
 } from './services/artefakt-bewertung.js';
 export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, BewertungsStand, BewertungsEingabe, BewertungsHinweis } from './services/artefakt-bewertung.js';
+// P22-T154: Artefakte als Datenvorlagen (Schema 152, Vorlagensprache, Quellen, Rendern je Projekt).
+export { ARTEFAKT_VORLAGEN_SCHEMA_SQL } from './db/artefakt-vorlagen-schema.js';
+export { renderVorlage, pruefeVorlage, escapeHtml, VORLAGE_GRENZEN, VORLAGE_FILTER } from './services/artefakt-vorlage.js';
+export type { VorlageOptionen, VorlageErgebnis } from './services/artefakt-vorlage.js';
+export {
+  ARTEFAKT_VORLAGEN_FUNKTION, ARTEFAKT_VORLAGEN_LIVE_FUNKTION, ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION, ARTEFAKT_MODI, ARTEFAKT_VORLAGEN_EINSTELLUNGEN,
+  ArtefaktVorlagenFehler, artefaktVorlagenSchalter, leseArtefaktVorlagenEinstellungen, setzeArtefaktVorlagenEinstellungen,
+  registriereArtefaktQuelle, artefaktQuellenKatalog, pruefeQuellen, kanaeleFuerQuellen, ladeQuellen, darfProjekt, ladeVorlagenZeile,
+  speichereVorlagenArtefakt, renderArtefakt, stelleArtefaktInVerlauf, aktualisiereVerlaufArtefakt, renderungsProjekte,
+} from './services/artefakt-vorlagen.js';
+export type {
+  ArtefaktModus, ArtefaktQuellDefinition, ArtefaktQuelle, QuellStand, ArtefaktBetrachter, VorlagenZeile, VorlagenEingabe, RenderAnlass,
+  ArtefaktRenderErgebnis, VerlaufArtefakt, ArtefaktVorlagenEinstellungenStand, ArtefaktVorlagenWerte,
+} from './services/artefakt-vorlagen.js';
 export { CONTAINER_ENDE_ARTEN, CONTAINER_HINWEIS_ARTEN, WRAPPER_ENDE_STANDARD, WRAPPER_ENDE_FENSTER_MS, leseWrapperEndeGrenzen, zielBetroffen, bewerteWrapperEnde, vermerkeWrapperEnde, betroffeneWrapper } from './services/wrapper-ende.js';
 export type { WrapperEndeBefund, UeberwachungsEreignisKurz, BetroffenerWrapper, WrapperEndeZiel } from './services/wrapper-ende.js';
 export { AGENT_START_ORT_FUNKTION, START_ORTE, START_ORT_ARTEN, merkeStartOrt, merkeStartOrtAusJob, leseStartOrt, zustellWegFuer, startOrtSchalterAktiv, startOrtAnzeige } from './services/agent-start-ort.js';

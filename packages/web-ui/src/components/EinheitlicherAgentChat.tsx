@@ -10,6 +10,7 @@ import {
 } from './chat-fenster-logik';
 import { ladeBisTiefe, leseChatFensterStand, leseChatFensterTiefe, merkeChatFensterStand, merkeChatFensterTiefe } from './chat-fenster-speicher';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
+import { ArtefaktLiveBlock } from './ArtefaktLiveBlock';
 import { ArtefaktBewertung, useArtefaktBewertungen } from './ArtefaktBewertung';
 import { quelleFuerChatNachricht, quellSchluessel, type ArtefaktQuelle } from './artefakt-bewertung-logik';
 import '../workspace-mock.css';
@@ -205,6 +206,8 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   for (const m of nachrichten) {
     const q = !m.laeuft && m.role === 'agent' && istHtmlAntwort(m.text) ? quelleFuerChatNachricht(m, identityId) : null;
     if (q) htmlQuellen.set(m.id, q);
+    // P22-T154: Artefakte im Verlauf sind ueber ihre artefakt_id bewertbar (wie im Main-Chat).
+    for (const a of m.artefakte ?? []) htmlQuellen.set('artefakt:' + a.id, { art: 'artefakt', ref: a.id });
   }
   const bewertung = useArtefaktBewertungen([...htmlQuellen.values()]);
   const modell = aktuellesModell(eintraege);
@@ -349,6 +352,13 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                   </>
                   // Nachbesserung: Markdown (Absaetze, Listen, fett/kursiv, Code, Tabellen) mit anklickbaren Verweisen.
                   : <KlartextText project={project} text={m.text} />) : null}
+                {/* P22-T154: Artefakte (zeigen per Ausweis), volle Breite ohne Raster, gleicher Baustein + Bewertungsleiste wie im Main. */}
+                {!m.laeuft && (m.artefakte ?? []).map((a) => <div key={a.id} className="agent-chat-artefakt">
+                  {a.title && <strong className="agent-chat-artefakt-titel">{a.title}</strong>}
+                  <ArtefaktLiveBlock id={a.id} html={a.html} revision={a.revision} modus={a.modus} project={a.project ?? null} vorlage={a.vorlage === true} gerendertAm={a.gerendert_am} />
+                  {bewertung.aktiv && <ArtefaktBewertung quelle={htmlQuellen.get('artefakt:' + a.id)!}
+                    stand={bewertung.je[quellSchluessel({ art: 'artefakt', ref: a.id })]} onGespeichert={bewertung.setze} />}
+                </div>)}
                 {/* P22-T150: Bilder, auf die der Text verweist (Pfad, asset_id), als Leiste darunter; Klick = Grossansicht. */}
                 {!m.laeuft && !!m.text.trim() && <NachrichtBilder project={project} text={m.text} />}
                 {m.laeuft && <div className="message-laeuft"><i /><i /><i /><span>{name} antwortet …</span></div>}

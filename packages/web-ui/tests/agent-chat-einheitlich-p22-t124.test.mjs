@@ -111,6 +111,8 @@ function chatProbe() {
     // P22-T141: Bewertungsleiste als Attrappe (Schalter aus, keine Hooks), Quellen-Logik echt.
     './ArtefaktBewertung': { ArtefaktBewertung: 'ArtefaktBewertung', useArtefaktBewertungen: () => ({ aktiv: false, je: {}, setze() {} }) },
     './artefakt-bewertung-logik': B,
+    // P22-T154: Artefakt-Baustein des Koordinator-Fensters als Attrappe.
+    './ArtefaktLiveBlock': { ArtefaktLiveBlock: 'ArtefaktLiveBlock' },
     './agent-chat-teile': { ToolActivity: 'ToolActivity' }, './agent-chat-logik': L,
     './chat-fenster-logik': F, './chat-fenster-speicher': SP,
   };

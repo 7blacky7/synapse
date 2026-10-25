@@ -58,6 +58,7 @@ import { AGENT_STARTKONTEXT_SCHEMA_SQL } from './agent-startkontext-schema.js';
 import { AGENT_CONTAINER_SCHEMA_SQL } from './agent-container-schema.js';
 import { AGENT_START_ORT_SCHEMA_SQL } from './agent-start-ort-schema.js';
 import { WRAPPER_ENDE_SCHEMA_SQL } from './wrapper-ende-schema.js'; import { ARTEFAKT_BEWERTUNG_SCHEMA_SQL } from './artefakt-bewertung-schema.js';
+import { ARTEFAKT_VORLAGEN_SCHEMA_SQL } from './artefakt-vorlagen-schema.js';
 import { HEX_SCHEMA_SQL } from './hex-schema.js';
 import {HEX_ANALYSEN_SCHEMA_SQL} from './hex-analysen-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
@@ -3222,6 +3223,7 @@ ${AGENT_STARTKONTEXT_SCHEMA_SQL}
 ${AGENT_CONTAINER_SCHEMA_SQL}
 ${AGENT_START_ORT_SCHEMA_SQL}
 ${WRAPPER_ENDE_SCHEMA_SQL}${ARTEFAKT_BEWERTUNG_SCHEMA_SQL}
+${ARTEFAKT_VORLAGEN_SCHEMA_SQL}
 ${HEX_SCHEMA_SQL}
 ${HEX_ANALYSEN_SCHEMA_SQL}
 ${HEX_FORMATE_SCHEMA_SQL}

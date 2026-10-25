@@ -158,6 +158,8 @@ function chatProbe() {
     './ChatEingabefeld': { ChatEingabefeld: 'ChatEingabefeld' }, './Lesefenster': { VerweisFensterProvider: 'Provider', KlartextText: 'KlartextText' },
     '../kios/AgentRenderingSurface': { default: 'AgentRenderingSurface' },
     './ArtefaktBewertung': { ArtefaktBewertung: 'ArtefaktBewertung', useArtefaktBewertungen: () => ({ aktiv: false, je: {}, setze() {} }) },
+    // P22-T154: Artefakt-Baustein des Koordinator-Fensters als Attrappe.
+    './ArtefaktLiveBlock': { ArtefaktLiveBlock: 'ArtefaktLiveBlock' },
     './artefakt-bewertung-logik': B, './agent-chat-teile': { ToolActivity: 'ToolActivity' }, './agent-chat-logik': L,
     './chat-fenster-logik': F, './chat-fenster-speicher': SPspion,
   };

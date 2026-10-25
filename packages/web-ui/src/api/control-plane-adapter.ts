@@ -599,7 +599,8 @@ export async function loadPersonalMemoryContent(name: string): Promise<string> {
 }
 
 interface ArtefakteResponse {
-  artefakte?: Array<{ id?: unknown; title?: unknown; revision?: unknown; htmlZeichen?: unknown; createdBy?: unknown; sessionId?: unknown; updatedAt?: unknown }>;
+  artefakte?: Array<{ id?: unknown; title?: unknown; revision?: unknown; htmlZeichen?: unknown; createdBy?: unknown; sessionId?: unknown; updatedAt?: unknown;
+    modus?: unknown; hatVorlage?: unknown; standardProject?: unknown }>;
 }
 
 // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts, artefakt-Tool).
@@ -613,6 +614,9 @@ export async function loadPersonalArtifacts(): Promise<PersonalArtifactViewModel
     createdBy: text(row.createdBy) || 'Hauptagent',
     sessionId: text(row.sessionId),
     updatedAt: zeit(row.updatedAt),
+    modus: text(row.modus) || 'fest',
+    hatVorlage: row.hatVorlage === true,
+    standardProject: text(row.standardProject) || null,
     source: 'api' as const,
   }));
 }

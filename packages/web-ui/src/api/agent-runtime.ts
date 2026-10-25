@@ -78,6 +78,11 @@ export interface AgentArtifactEvent {
   revision?: string | number;
   interactive?: boolean;
   preview_path?: string;
+  /** P22-T154: Datenvorlage (fest|stand|live), Projekt der Renderung, Zeitpunkt. */
+  modus?: string;
+  project?: string;
+  vorlage?: boolean;
+  gerendert_am?: string;
 }
 
 /**
@@ -585,6 +590,86 @@ export async function getAgentChatInbox(identityId: string, o: { limit?: number;
 export interface ArtefaktBewertungStand {
   id: string; quelle_art: 'artefakt' | 'inbox' | 'verlauf'; quelle_ref: string; urteil: 'hoch' | 'runter'; kommentar: string | null;
   zustand: 'vorbild' | 'ueberarbeiten' | 'verbannt' | 'versuch_gezeigt'; titel?: string | null; nachfolger?: { art: string; ref: string } | null;
+}
+
+/** P22-T154: Renderung eines Vorlagen-Artefakts fuer ein Projekt (stand = Momentaufnahme, live = gedrosselt neu). */
+export interface ArtefaktRenderStand {
+  modus: 'fest' | 'stand' | 'live'; project: string | null; revision: number; gerendert_am: string; neu: boolean; fehler: string[]; hinweis?: string;
+  debug?: Record<string, unknown>;
+}
+export interface ArtefaktAnsicht {
+  id: string; html: string; titel: string | null; revision: number; modus: 'fest' | 'stand' | 'live'; hatVorlage: boolean; standardProject: string | null;
+  render?: ArtefaktRenderStand; projekte: Array<{ project: string; revision: number; gerendert_am: string }>;
+}
+
+/** P22-T154: Artefakt laden; mit Vorlage rendert der Server fuer project (Standard: Standardprojekt). */
+export async function getArtefaktAnsicht(id: string, project?: string | null): Promise<ArtefaktAnsicht> {
+  const q = project ? '?project=' + encodeURIComponent(project) : '';
+  const r = await jsonRequest<{ success: true; artefakt: Record<string, unknown>; render?: ArtefaktRenderStand; projekte?: ArtefaktAnsicht['projekte'] }>(
+    '/api/main-agent/artefakte/' + encodeURIComponent(id) + q);
+  const a = r.artefakt ?? {};
+  return {
+    id: String(a.id ?? id), html: typeof a.html === 'string' ? a.html : '', titel: typeof a.title === 'string' ? a.title : null,
+    revision: typeof a.revision === 'number' ? a.revision : 1, modus: (a.modus as ArtefaktAnsicht['modus']) ?? 'fest', hatVorlage: a.hatVorlage === true,
+    standardProject: typeof a.standardProject === 'string' ? a.standardProject : null, render: r.render, projekte: Array.isArray(r.projekte) ? r.projekte : [],
+  };
+}
+
+/** P22-T154: neu zeichnen (Vorlage mit aktuellen Daten); Schalter artefakt_vorlagen AUS -> Fehler funktion_aus. */
+export async function zeichneArtefaktNeu(id: string, project?: string | null): Promise<{ html: string; render: ArtefaktRenderStand; projekte: ArtefaktAnsicht['projekte'] }> {
+  const r = await jsonRequest<{ success: true; html: string; render: ArtefaktRenderStand; projekte?: ArtefaktAnsicht['projekte'] }>(
+    '/api/main-agent/artefakte/' + encodeURIComponent(id) + '/neu-zeichnen', { method: 'POST', body: JSON.stringify({ project: project ?? null }) });
+  return { html: r.html, render: r.render, projekte: Array.isArray(r.projekte) ? r.projekte : [] };
+}
+
+export interface ArtefaktLiveDaten { artefakt_id: string; project: string; revision: number; html: string; gerendert_am: string; fehler?: string[] }
+
+/**
+ * P22-T154 Etappe 5: Live-Strom eines Artefakts (SSE GET /api/main-agent/artefakte/:id/stream?project=). Nur live-Artefakte bei
+ * Schalter artefakt_vorlagen_live EIN; sonst meldet der Server 'aus' und beendet den Strom. Rueckgabe: Abmelden.
+ */
+export function abonniereArtefaktLive(
+  id: string,
+  project: string | null,
+  onArtefakt: (d: ArtefaktLiveDaten) => void,
+  onStatus?: (status: { art: 'bereit' | 'aus' | 'fehler'; info?: unknown }) => void,
+): () => void {
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      const q = project ? '?project=' + encodeURIComponent(project) : '';
+      const response = await apiFetch('/api/main-agent/artefakte/' + encodeURIComponent(id) + '/stream' + q, { headers: { Accept: 'text/event-stream' }, signal: controller.signal });
+      if (!response.ok || !response.body) { onStatus?.({ art: 'fehler', info: response.status }); return; }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let puffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        puffer += decoder.decode(value, { stream: true });
+        let ende = puffer.indexOf('\n\n');
+        while (ende >= 0) {
+          const block = puffer.slice(0, ende);
+          puffer = puffer.slice(ende + 2);
+          ende = puffer.indexOf('\n\n');
+          let event = 'message';
+          let data = '';
+          for (const zeile of block.split('\n')) {
+            if (zeile.startsWith('event:')) event = zeile.slice(6).trim();
+            else if (zeile.startsWith('data:')) data += zeile.slice(5).trim();
+          }
+          if (!data) continue;
+          let d: Record<string, unknown>;
+          try { d = JSON.parse(data) as Record<string, unknown>; } catch { continue; }
+          if (event === 'artefakt' && typeof d.html === 'string') onArtefakt(d as unknown as ArtefaktLiveDaten);
+          else if (event === 'bereit' || event === 'aus' || event === 'fehler') onStatus?.({ art: event, info: d });
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) onStatus?.({ art: 'fehler', info: error instanceof Error ? error.message : String(error) });
+    }
+  })();
+  return () => controller.abort();
 }
 
 /** P22-T141: Stand je Block ('artefakt:<id>,inbox:<n>,verlauf:<id>'); Schalter artefakt_bewertung AUS = aktiv false. */

@@ -28,8 +28,25 @@ import {
   designVorliebenZahlen,
   bewertungFuerArtefakt,
   BewertungsFehler,
+  // P22-T154: Artefakte als Datenvorlagen
+  ladeArtefakt,
+  speichereVorlagenArtefakt,
+  renderArtefakt,
+  ladeVorlagenZeile,
+  stelleArtefaktInVerlauf,
+  artefaktVorlagenSchalter,
+  artefaktQuellenKatalog,
+  darfProjekt,
+  ArtefaktVorlagenFehler,
+  ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION,
+  aktuellerAgentPrincipal,
+  aktuelleAgentAkteurIdentityId,
+  hauptagentIdentitaetsId,
+  type ArtefaktBetrachter,
+  type ArtefaktRenderErgebnis,
 } from '@synapse/core';
 import { emitArtifact, identitaetAusSessionId, aktiveMainTurnSession } from './artifact-stream.js';
+import '../artefakt-quellen-api.js';
 
 function meldung(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -210,6 +227,13 @@ function bewertungsFehlerAntwort(error: unknown): Record<string, unknown> {
  */
 export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
   const action = typeof args.action === 'string' ? args.action : '';
+  // P22-T154: neu zeichnen (jeder mit Leserecht auf das Projekt) und Quellenkatalog.
+  if (action === 'neu_zeichnen') return neuZeichnen(args, agentId);
+  if (action === 'quellen') {
+    const [s, live, ausweis] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter('artefakt_vorlagen_live'), artefaktVorlagenSchalter(ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION)]);
+    return { success: true, katalog: artefaktQuellenKatalog(), schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis },
+      hinweis: 'Quellen: [{name, vertrag, args?}]; project wird beim Rendern eingesetzt, nie in args. Vorlage: {{wert | filter}}, {{#each liste as x}}, {{#if a == b}}; alles wird escaped.' };
+  }
   try {
     if (action === 'vorlieben') return { success: true, ...(await leseDesignVorlieben({ limit: args.limit })) };
     if (action === 'vorbild') return { success: true, ...(await ladeBewertungHtml(args.bewertung_id)) };
@@ -240,19 +264,109 @@ export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?:
   return { ...r, ...extra };
 }
 
-export async function zeigeArtefakt(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
-  const action = typeof args.action === 'string' ? args.action : '';
-  if (action !== 'zeigen') {
-    return { success: false, error: 'unbekannte_action', message: 'artefakt kennt nur action:"zeigen" (erster Schritt: EIN Block je Aufruf).' };
+function vorlagenFehlerAntwort(error: unknown): Record<string, unknown> {
+  return error instanceof ArtefaktVorlagenFehler
+    ? { success: false, error: error.code, message: error.message }
+    : { success: false, error: 'artefakt_ungueltig', message: meldung(error) };
+}
+
+function raster(args: Record<string, unknown>) {
+  return { column: ganzzahl(args, 'column'), columnSpan: ganzzahl(args, 'columnSpan'), row: ganzzahl(args, 'row'), rowSpan: ganzzahl(args, 'rowSpan'), minHeight: ganzzahl(args, 'minHeight') };
+}
+
+function vorlagenEingabe(args: Record<string, unknown>) {
+  return {
+    titel: str(args, 'titel'),
+    html: typeof args.html === 'string' ? args.html : null,
+    vorlage: typeof args.vorlage === 'string' ? args.vorlage : null,
+    quellen: args.quellen,
+    modus: args.modus,
+    ...raster(args),
+  };
+}
+
+/** P22-T154: Antwortteil einer Renderung (ohne HTML). */
+function renderTeil(r: ArtefaktRenderErgebnis): Record<string, unknown> {
+  return { modus: r.modus, project: r.project, vorlage: r.vorlage, render_revision: r.revision, gerendert_am: r.gerendert_am,
+    ...(r.fehler.length ? { render_fehler: r.fehler } : {}), ...(r.hinweis ? { render_hinweis: r.hinweis } : {}), ...(r.debug ? { debug: r.debug } : {}) };
+}
+
+/**
+ * P22-T154: Betrachter aus dem bezeugten Aufruf (Ausweis-Principal), nie aus Tool-Argumenten. Main = Main-Session oder die
+ * Main-Identitaet. Ohne Ausweis (Legacy) gilt das angegebene Projekt wie bei den uebrigen Legacy-Werkzeugen.
+ */
+async function betrachterAusAufruf(args: Record<string, unknown>, mainSession: boolean): Promise<ArtefaktBetrachter> {
+  const p = aktuellerAgentPrincipal();
+  if (p && p.art === 'identity') {
+    const main = mainSession || p.identity_id === await hauptagentIdentitaetsId().catch(() => null);
+    return { art: 'agent', identity_id: p.identity_id, agent_id: p.agent_id, project: p.project, main };
   }
-  const angefragt = str(args, 'session_id');
-  if (!angefragt) {
+  return { art: 'agent', identity_id: null, agent_id: p?.agent_id ?? null, project: str(args, 'project') ?? p?.project ?? '', main: mainSession };
+}
+
+/** P22-T154: neu zeichnen ohne die Vorlage neu zu schreiben (jeder mit Leserecht auf das Projekt, R8). */
+async function neuZeichnen(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
+  const id = str(args, 'artefakt_id');
+  if (!id) return { success: false, error: 'artefakt_id_fehlt', message: 'neu_zeichnen braucht artefakt_id' };
+  try {
+    const b = await betrachterAusAufruf(args, !!str(args, 'session_id'));
+    const r = await renderArtefakt(id, { project: str(args, 'project'), betrachter: b, anlass: 'neu_zeichnen', von: agentId ?? null });
+    return { success: true, artefakt_id: r.artefakt_id, revision: r.revision, neu: r.neu, html_zeichen: r.html.length, ...renderTeil(r) };
+  } catch (error) {
+    return vorlagenFehlerAntwort(error);
+  }
+}
+
+/**
+ * P22-T154 (R5/R7): zeigen per Ausweis ohne Hauptagenten-Session (Schalter artefakt_ausweis_zeigen). Bindung ueber die Identitaet;
+ * Ziel ist der eigene Verlauf (Koordinator-Fenster, Spalte artefakte) plus Persoenliche Artefakte. Kein Runtime-Container,
+ * daher keine HTML-Datei und kein Livebild (PG bleibt die Wahrheit).
+ */
+async function zeigePerAusweis(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
+  const s = await artefaktVorlagenSchalter(ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION);
+  if (!s.aktiv) {
     return {
       success: false,
       error: 'kein_hauptagent_kontext',
-      message: 'artefakt ist nur aus einer Hauptagenten-Session aufrufbar — die Session-Bindung setzt der Server aus dem Header X-Synapse-Hauptagent-Session.',
+      message: 'artefakt ist nur aus einer Hauptagenten-Session aufrufbar — die Session-Bindung setzt der Server aus dem Header X-Synapse-Hauptagent-Session. (zeigen per Ausweis: Produkt-Schalter artefakt_ausweis_zeigen, derzeit AUS)',
     };
   }
+  const p = aktuellerAgentPrincipal();
+  if (!p || p.art !== 'identity') {
+    return { success: false, error: 'kein_ausweis', message: 'zeigen ohne Hauptagenten-Session braucht einen Ausweis (agent_kennung); die Bindung laeuft ueber die Identitaet.' };
+  }
+  const b = await betrachterAusAufruf(args, false);
+  const project = str(args, 'project') ?? p.project;
+  if (!darfProjekt(b, project)) return { success: false, error: 'projekt_fremd', message: 'Mit Ausweis nur im eigenen Projekt (' + p.project + ')' };
+  try {
+    const v = await speichereVorlagenArtefakt({ artefaktId: str(args, 'artefakt_id'), sessionId: null, ownerIdentityId: p.identity_id,
+      createdBy: agentId ?? p.agent_id, project, ...vorlagenEingabe(args) });
+    let html = v.html;
+    let revision = v.revision;
+    let gerendert_am: string | undefined;
+    let extra: Record<string, unknown> = { modus: v.modus, project: v.standard_project ?? project, vorlage: false };
+    if (v.vorlage) {
+      const r = await renderArtefakt(v.id, { project, betrachter: b, anlass: 'zeigen', von: agentId ?? p.agent_id });
+      html = r.html; revision = r.revision; gerendert_am = r.gerendert_am; extra = renderTeil(r);
+    }
+    const verlauf = await stelleArtefaktInVerlauf(p.identity_id, { id: v.id, title: v.title, html, revision, modus: v.modus,
+      project: (extra.project as string | null) ?? project, vorlage: !!v.vorlage, gerendert_am });
+    const hinweise = ['Ausweis-Weg: kein Runtime-Container und kein offener Main-Strom - HTML-Datei und Livebild entfallen, die PG-Zeile ist die Wahrheit.'];
+    if (verlauf.hinweis) hinweise.push(verlauf.hinweis);
+    return { success: true, weg: 'ausweis', artefakt_id: v.id, revision, verlauf_id: verlauf.verlauf_id, html_pfad: null, bild_pfad: null,
+      stream_zugestellt: false, hinweise, ...extra };
+  } catch (error) {
+    return vorlagenFehlerAntwort(error);
+  }
+}
+
+export async function zeigeArtefakt(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
+  const action = typeof args.action === 'string' ? args.action : '';
+  if (action !== 'zeigen') {
+    return { success: false, error: 'unbekannte_action', message: 'artefakt kennt zeigen, neu_zeichnen, quellen, vorlieben, vorbild und versuch (zeigen: EIN Block je Aufruf).' };
+  }
+  const angefragt = str(args, 'session_id');
+  if (!angefragt) return zeigePerAusweis(args, agentId);
   const sessionId = await loeseArtefaktSession(angefragt);
   const kontext = sessionId ? await ladeSessionKontext(sessionId) : null;
   if (!sessionId || !kontext) {
@@ -262,7 +376,30 @@ export async function zeigeArtefakt(args: Record<string, unknown>, agentId?: str
   // 1. PG zuerst — die Zeile ist die Wahrheit. Datei/Livebild/Strom sind Abbilder
   //    und duerfen einzeln scheitern, ohne dass das Artefakt verloren geht.
   let zeile: ArtefaktZeile;
-  try {
+  let vorlagenTeil: Record<string, unknown> = {};
+  // P22-T154: Vorlage (oder Ersetzen eines Vorlagen-Artefakts bzw. eines Ausweis-Artefakts ohne Session) -> Vorlagen-Dienst.
+  const vorlageArg = typeof args.vorlage === 'string' && args.vorlage.trim() ? args.vorlage : null;
+  const ersetzt = str(args, 'artefakt_id');
+  const alt = !vorlageArg && ersetzt ? await ladeVorlagenZeile(ersetzt).catch(() => null) : null;
+  if (vorlageArg || alt?.vorlage || (alt && !alt.session_id)) {
+    const project = str(args, 'project') ?? alt?.standard_project ?? null;
+    if (vorlageArg && !project) return { success: false, error: 'projekt_fehlt', message: 'Vorlage aus der Main-Session: project angeben (der Main arbeitet projektuebergreifend)' };
+    try {
+      const v = await speichereVorlagenArtefakt({ artefaktId: ersetzt, sessionId, ownerIdentityId: aktuelleAgentAkteurIdentityId(agentId),
+        createdBy: agentId ?? null, project, ...vorlagenEingabe(args) });
+      let html = v.html;
+      if (v.vorlage) {
+        const r = await renderArtefakt(v.id, { project, betrachter: await betrachterAusAufruf(args, true), anlass: 'zeigen', von: agentId ?? null });
+        html = r.html;
+        vorlagenTeil = renderTeil(r);
+      }
+      const geladen = await ladeArtefakt(v.id);
+      if (!geladen) throw new Error('Artefakt ' + v.id + ' nach dem Speichern nicht lesbar');
+      zeile = { ...geladen, html };
+    } catch (error) {
+      return vorlagenFehlerAntwort(error);
+    }
+  } else try {
     zeile = await speichereArtefakt({
       sessionId,
       html: typeof args.html === 'string' ? args.html : '',
@@ -328,5 +465,6 @@ export async function zeigeArtefakt(args: Record<string, unknown>, agentId?: str
     bild_pfad: bildPfad,
     stream_zugestellt: zugestellt,
     ...(hinweise.length ? { hinweise } : {}),
+    ...vorlagenTeil,
   };
 }

@@ -38,6 +38,10 @@ export interface ArtefaktZeile {
   imagePath: string | null;
   createdBy: string | null;
   createdByIdentityId?: string | null;
+  /** P22-T154: fest (fertiges HTML) | stand | live (Vorlage + Quellen). */
+  modus?: string;
+  standardProject?: string | null;
+  hatVorlage?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -88,6 +92,9 @@ function zeile(row: Record<string, unknown>): ArtefaktZeile {
     imagePath: (row.image_path as string | null) ?? null,
     createdBy: (row.created_by as string | null) ?? null,
     ...(row.created_by_identity_id ? {createdByIdentityId:String(row.created_by_identity_id)} : {}),
+    modus: typeof row.modus === 'string' ? row.modus : 'fest',
+    standardProject: (row.standard_project as string | null) ?? null,
+    hatVorlage: typeof row.vorlage === 'string' && row.vorlage.length > 0,
     createdAt: row.created_at as Date,
     updatedAt: row.updated_at as Date,
   };
@@ -166,6 +173,10 @@ export interface ArtefaktUebersicht {
   htmlZeichen: number;
   imagePath: string | null;
   createdBy: string | null;
+  /** P22-T154 */
+  modus: string;
+  standardProject: string | null;
+  hatVorlage: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -173,8 +184,10 @@ export interface ArtefaktUebersicht {
 export async function listeArtefakte(limit = 100): Promise<ArtefaktUebersicht[]> {
   const grenze = Math.min(Math.max(Math.trunc(limit) || 100, 1), 500);
   const result = await getPool().query(
-    `SELECT id, session_id, title, revision, length(html) AS html_zeichen, image_path, created_by, created_at, updated_at
-       FROM agent_artifacts ORDER BY updated_at DESC LIMIT $1`,
+    `SELECT a.id, a.session_id, a.title, a.revision, length(a.html) AS html_zeichen, a.image_path, a.created_by, a.created_at, a.updated_at,
+            COALESCE(to_jsonb(a)->>'modus', 'fest') AS modus, to_jsonb(a)->>'standard_project' AS standard_project,
+            (to_jsonb(a)->>'vorlage') IS NOT NULL AS hat_vorlage
+       FROM agent_artifacts a ORDER BY a.updated_at DESC LIMIT $1`,
     [grenze],
   );
   return result.rows.map((row: Record<string, unknown>) => ({
@@ -185,6 +198,9 @@ export async function listeArtefakte(limit = 100): Promise<ArtefaktUebersicht[]>
     htmlZeichen: Number(row.html_zeichen),
     imagePath: (row.image_path as string | null) ?? null,
     createdBy: (row.created_by as string | null) ?? null,
+    modus: String(row.modus ?? 'fest'),
+    standardProject: (row.standard_project as string | null) ?? null,
+    hatVorlage: row.hat_vorlage === true,
     createdAt: row.created_at as Date,
     updatedAt: row.updated_at as Date,
   }));

@@ -5,9 +5,12 @@ import {
   loadPersonalArtifacts,
   loadPersonalMemories,
   loadPersonalMemoryContent,
+  loadProjectViewModels,
   PERSOENLICHES_PROJEKT,
 } from '../api/control-plane-adapter';
+import { getArtefaktAnsicht, type ArtefaktAnsicht } from '../api/agent-runtime';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
+import { ArtefaktLiveBlock } from './ArtefaktLiveBlock';
 import '../personal-knowledge.css';
 import { StatusChip } from './StatusKennzeichnung';
 
@@ -99,6 +102,15 @@ function PersonalArtifacts() {
   const [query, setQuery] = useState('');
   const [preview, setPreview] = useState<{ html: string; revision: number } | null>(null);
   const [previewError, setPreviewError] = useState('');
+  // P22-T154: Vorlagen-Artefakte je Projekt (Auswahl, Standard = Standardprojekt), Neu zeichnen, live.
+  const [projekt, setProjekt] = useState('');
+  const [ansicht, setAnsicht] = useState<ArtefaktAnsicht | null>(null);
+  const [projektNamen, setProjektNamen] = useState<string[]>([]);
+  useEffect(() => {
+    let active = true;
+    loadProjectViewModels().then((rows) => { if (active) setProjektNamen(rows.map((p) => p.name)); }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -112,22 +124,46 @@ function PersonalArtifacts() {
   const filtered = useMemo(() => artifacts.filter((artifact) => artifact.title.toLowerCase().includes(query.toLowerCase())), [artifacts, query]);
   const selected = artifacts.find((artifact) => artifact.id === selectedId) ?? filtered[0];
 
+  useEffect(() => { setProjekt(''); }, [selected?.id]);
   useEffect(() => {
     let active = true;
     setPreview(null);
     setPreviewError('');
+    setAnsicht(null);
     if (!selected) return;
-    loadPersonalArtifactHtml(selected.id)
-      .then((value) => { if (active) setPreview(value); })
-      .catch((loadError) => { if (active) setPreviewError(fehlerText(loadError)); });
+    if (selected.hatVorlage) {
+      getArtefaktAnsicht(selected.id, projekt || null)
+        .then((value) => { if (active) { setAnsicht(value); setPreview({ html: value.html, revision: value.render?.revision ?? value.revision }); } })
+        .catch((loadError) => { if (active) setPreviewError(fehlerText(loadError)); });
+    } else {
+      loadPersonalArtifactHtml(selected.id)
+        .then((value) => { if (active) setPreview(value); })
+        .catch((loadError) => { if (active) setPreviewError(fehlerText(loadError)); });
+    }
     return () => { active = false; };
-  }, [selected?.id, selected?.revision]);
+  }, [selected?.id, selected?.revision, projekt]);
+  const projektOptionen = useMemo(() => [...new Set([ansicht?.standardProject, ansicht?.render?.project, ...(ansicht?.projekte ?? []).map((p) => p.project), ...projektNamen]
+    .filter((p): p is string => typeof p === 'string' && !!p))], [ansicht, projektNamen]);
+  const aktivesProjekt = projekt || ansicht?.render?.project || ansicht?.standardProject || '';
 
   return <div className="memory-browser">
-    <aside><header><div><b>PERSÖNLICHE ARTEFAKTE</b><span>{artifacts.length}</span></div></header><input className="knowledge-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Artefakte suchen …" /><div className="memory-list">{filtered.map((artifact) => <button type="button" key={artifact.id} className={selected?.id === artifact.id ? 'active' : ''} onClick={() => setSelectedId(artifact.id)}><span><b>HTML</b><em>Rev. {artifact.revision}</em></span><strong>{artifact.title}</strong><small>{artifact.updatedAt} · {artifact.createdBy}</small></button>)}{!filtered.length && <p className="empty-state">{loading ? 'lädt …' : error || (artifacts.length ? 'Keine Artefakte für diese Suche.' : 'Der Hauptagent hat noch keine Artefakte erstellt.')}</p>}</div></aside>
+    <aside><header><div><b>PERSÖNLICHE ARTEFAKTE</b><span>{artifacts.length}</span></div></header><input className="knowledge-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Artefakte suchen …" /><div className="memory-list">{filtered.map((artifact) => <button type="button" key={artifact.id} className={selected?.id === artifact.id ? 'active' : ''} onClick={() => setSelectedId(artifact.id)}><span><b>{artifact.hatVorlage ? (artifact.modus === 'live' ? 'LIVE' : 'VORLAGE') : 'HTML'}</b><em>Rev. {artifact.revision}</em></span><strong>{artifact.title}</strong><small>{artifact.updatedAt} · {artifact.createdBy}</small></button>)}{!filtered.length && <p className="empty-state">{loading ? 'lädt …' : error || (artifacts.length ? 'Keine Artefakte für diese Suche.' : 'Der Hauptagent hat noch keine Artefakte erstellt.')}</p>}</div></aside>
     <main>{selected ? <article className="memory-detail">
       <header><div><span>HTML-ARTEFAKT · REV. {selected.revision}</span><h2>{selected.title}</h2></div></header>
-      {preview ? <AgentRenderingSurface html={preview.html} revision={selected.id + ':' + preview.revision} className="native-html-block" /> : <p className="memory-content">{previewError || 'lädt …'}</p>}
+      {selected.hatVorlage && <label className="artefakt-projektwahl" style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '0 0 6px', font: '600 10px "IBM Plex Mono", monospace' }}>
+        Daten aus Projekt
+        <select value={aktivesProjekt} onChange={(event) => setProjekt(event.target.value)}>
+          {projektOptionen.map((p) => <option key={p} value={p}>{p}{p === ansicht?.standardProject ? ' (Standard)' : ''}</option>)}
+        </select>
+        <span>{(selected.modus ?? 'stand').toUpperCase()}</span>
+      </label>}
+      {preview ? (selected.hatVorlage
+        ? <ArtefaktLiveBlock key={selected.id + ':' + aktivesProjekt} id={selected.id} html={preview.html} revision={preview.revision} modus={ansicht?.modus ?? selected.modus}
+          project={aktivesProjekt || null} vorlage gerendertAm={ansicht?.render?.gerendert_am} className="native-html-block" />
+        : <AgentRenderingSurface html={preview.html} revision={selected.id + ':' + preview.revision} className="native-html-block" />)
+        : <p className="memory-content">{previewError || 'lädt …'}</p>}
+      {ansicht?.render?.fehler?.length ? <p className="memory-content">Vorlagenfehler: {ansicht.render.fehler.join(' · ')}</p> : null}
+      {ansicht?.render?.hinweis && <p className="memory-content">{ansicht.render.hinweis}</p>}
       <section className="memory-metadata"><dl><div><dt>Artefakt-ID</dt><dd>{selected.id}</dd></div><div><dt>Geändert</dt><dd>{selected.updatedAt || '–'}</dd></div><div><dt>Größe</dt><dd>{selected.htmlChars} Zeichen</dd></div><div><dt>Erstellt von</dt><dd>{selected.createdBy}</dd></div></dl></section>
     </article> : <div className="empty-state">{loading ? 'lädt …' : 'Kein Artefakt ausgewählt.'}</div>}</main>
   </div>;

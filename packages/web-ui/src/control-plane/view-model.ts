@@ -144,6 +144,10 @@ export interface PersonalArtifactViewModel {
   createdBy: string;
   sessionId: string;
   updatedAt: string;
+  /** P22-T154: fest | stand | live; Vorlage; Standardprojekt der Renderung. */
+  modus?: string;
+  hatVorlage?: boolean;
+  standardProject?: string | null;
   source: 'api';
 }
 

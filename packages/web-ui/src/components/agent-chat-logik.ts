@@ -3,7 +3,7 @@
  * einheitlichen Chat der Plattform-Agenten (EinheitlicherAgentChat). Bis T124 lagen verlaufInfo/verlaufWerkzeuge/verlaufZugInfo
  * nur im Main-Chat (dort 'Hauptagent' fest); jetzt mit Agentenname als Parameter. Testbar ohne DOM.
  */
-import type { AgentChatInboxNachricht, MainAgentVerlaufEintrag } from '../api/agent-runtime';
+import type { AgentArtifactEvent, AgentChatInboxNachricht, MainAgentVerlaufEintrag } from '../api/agent-runtime';
 import type { ToolCallViewModel } from '../control-plane/view-model';
 
 export type ToolLauf = { calls: ToolCallViewModel[]; phases: string[] };
@@ -75,6 +75,13 @@ export interface AgentChatNachricht {
   zeit?: string;
   /** P22-T144: fester CLI-Hinweis unter Teammate-Nachrichten, im Fenster eingeklappt (fuer das Modell unveraendert). */
   eingeklappt?: { titel: string; text: string };
+  /** P22-T154: Artefakte der Verlaufszeile (artefakt(zeigen) per Ausweis), volle Breite, kein Raster. */
+  artefakte?: AgentArtifactEvent[];
+}
+
+/** P22-T154: gueltige Artefakte einer Verlaufszeile (id + html). Rein. */
+export function verlaufArtefakte(e: Pick<MainAgentVerlaufEintrag, 'artefakte'>): AgentArtifactEvent[] {
+  return Array.isArray(e.artefakte) ? e.artefakte.filter((a) => !!a && typeof a.id === 'string' && typeof a.html === 'string') : [];
 }
 
 const SICHTBAR = new Set(['user', 'agent', 'nachricht', 'ausgabe', 'system']);
@@ -169,15 +176,17 @@ export function baueAgentChatNachrichten(eintraege: MainAgentVerlaufEintrag[], n
     // P22-T144: CLI-Hinweis unter Teammate-Nachrichten eingeklappt statt im Text.
     const teammate = vomAgent ? null : trenneTeammateHinweis(huelle ? huelle.text : e.text);
     const text = teammate ? teammate.text : huelle ? huelle.text : e.text;
-    if (!text.trim() && !toolRun && e.status !== 'laeuft') continue;
+    const artefakte = verlaufArtefakte(e);
+    if (!text.trim() && !toolRun && e.status !== 'laeuft' && !artefakte.length) continue;
     const kopf = e.rolle === 'system' ? 'System · ' + e.weg
-      : vomAgent ? name + (e.rolle === 'ausgabe' ? ' · ' + e.weg : '')
+      : vomAgent ? name + (artefakte.length && !text.trim() ? ' · Artefakt' : e.rolle === 'ausgabe' ? ' · ' + e.weg : '')
         : e.rolle === 'nachricht' ? herkunftKopf(e.absender) ?? (e.absender?.agent_id || 'unbekannt') + ' · ' + e.weg + (e.absender?.channel ? ' #' + e.absender.channel : '') : 'Du';
     const kennung = huelle?.id ?? undefined;
     aus.push({ id: e.id, role: vomAgent ? 'agent' : 'user', text, kopf, info: [verlaufInfo(e), kennung].filter(Boolean).join(' · '), toolRun,
       laeuft: e.status === 'laeuft', hinweise: e.hinweise?.length ? e.hinweise : [], zugInfo: vomAgent ? verlaufZugInfo(e) : undefined,
       ...(kennung ? { kennung } : {}), ...(inboxNummer(kennung) !== undefined ? { inboxId: inboxNummer(kennung) } : {}),
-      ...(teammate?.hinweis ? { eingeklappt: { titel: TEAMMATE_HINWEIS_TITEL, text: teammate.hinweis } } : {}), zeit: e.erstellt_am });
+      ...(teammate?.hinweis ? { eingeklappt: { titel: TEAMMATE_HINWEIS_TITEL, text: teammate.hinweis } } : {}),
+      ...(artefakte.length ? { artefakte } : {}), zeit: e.erstellt_am });
   }
   return aus;
 }
