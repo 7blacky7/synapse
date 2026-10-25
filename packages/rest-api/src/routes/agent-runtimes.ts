@@ -525,7 +525,9 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       if (ziel.status !== 'aktiv') return fehler(409, 'identitaet_inaktiv', 'Identitaet ist nicht aktiv');
       schalter = await plattformAgentChatSchalter(ziel.project);
       if (!schalter.aktiv) return fehler(409, 'funktion_aus', 'Chat mit Plattform-Agenten ist aus (plattform_agent_chat)');
-      const gesendet = await postToInbox('user', ziel.agent_id, text, ziel.project);
+      // P22-T134: an die Identitaet adressieren (to_identity_id), sonst findet die Zustellung je Identitaet (Mod-Inbox,
+      // Startort P22-T113) die Nachricht nie; to_agent bleibt fuer die Namens-Leser gesetzt.
+      const gesendet = await postToInbox('user', { art: 'identity', project: ziel.project, agent_id: ziel.agent_id, identity_id: identityId }, text, ziel.project);
       return { success: true, weg: 'inbox', inbox_id: gesendet.id, gesendet_am: gesendet.createdAt, agent_id: ziel.agent_id, project: ziel.project, identity_id: identityId };
     } catch (error) { return sendFachFehler(reply, error); }
   });
