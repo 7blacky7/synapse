@@ -43,6 +43,12 @@ const DEFAULT_IGNORES = [
 
   // Build Output
   'dist',
+  // P4-T79 (25.10.2026): auch Build-Ordner mit Namenszusatz. Ein Vite-Bundle unter
+  // packages/web-ui/dist-t124-fixture/ rutschte an 'dist' vorbei in den Index. Nur
+  // Ordner (Schraegstrich) und nur dist-Praefix: build-*/ kann Quellcode sein
+  // (z.B. build-scripts/), *.min.js waere zusaetzlich fuer files gesperrt.
+  'dist-*/',
+  'dist_*/',
   'build',
   'out',
   '.next',
