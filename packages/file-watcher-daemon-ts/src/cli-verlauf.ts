@@ -80,12 +80,28 @@ export function eintraegeJeAusweis(zeilen: readonly string[], startAusweis: stri
   };
 }
 
-/** Stapel fuer den Versand: hoechstens STAPEL_EINTRAEGE Eintraege bzw. etwa STAPEL_BYTES (rein). */
+/**
+ * Null-Bytes raus (rein): PostgreSQL weist text mit 0x00 ab, und der Fehler kippt den ganzen Stapel (gesehen an
+ * einer Werkzeug-Ausgabe der Koordinator-Sitzung, 25.10.2026). Bereinigt werden die Strings selbst, nicht der
+ * JSON-Text - sonst wuerde ein woertliches "\u0000" (mit Backslash) im Inhalt zerstoert.
+ */
+function bereinige(v: unknown): unknown {
+  if (typeof v === 'string') return v.includes('\0') ? v.replace(/\0/g, '') : v;
+  if (Array.isArray(v)) return v.map(bereinige);
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, w]) => [k, bereinige(w)]));
+  return v;
+}
+export function ohneNullBytes(e: SitzungsEintrag): SitzungsEintrag {
+  return JSON.stringify(e).includes('\\u0000') ? bereinige(e) as SitzungsEintrag : e;
+}
+
+/** Stapel fuer den Versand: hoechstens STAPEL_EINTRAEGE Eintraege bzw. etwa STAPEL_BYTES (rein), ohne Null-Bytes. */
 export function inStapeln(eintraege: readonly SitzungsEintrag[]): SitzungsEintrag[][] {
   const stapel: SitzungsEintrag[][] = [];
   let aktuell: SitzungsEintrag[] = [];
   let bytes = 0;
-  for (const e of eintraege) {
+  for (const roh of eintraege) {
+    const e = ohneNullBytes(roh);
     const n = Buffer.byteLength(JSON.stringify(e), 'utf8');
     if (aktuell.length && (aktuell.length >= STAPEL_EINTRAEGE || bytes + n > STAPEL_BYTES)) { stapel.push(aktuell); aktuell = []; bytes = 0; }
     aktuell.push(e);
