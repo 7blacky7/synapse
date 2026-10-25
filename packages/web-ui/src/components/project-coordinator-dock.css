@@ -6,6 +6,10 @@
 .coordinator-info-window>header.coordinator-info-kopf span{min-width:0}
 .coordinator-info-window>header.coordinator-info-kopf small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .agent-chat-html{display:block;margin:4px 0}
+/* P22-T137 (User 25.10.): im Dock-Fenster wie der Main-Agent in der Groesse ziehbar (Ecke unten rechts); die zweite Kopfzeile
+   des eingebetteten Chats (Kuerzel, Name, Modell, Projekt) entfaellt, der Fensterkopf traegt Name und Projekt schon. Channel-Fenster unberuehrt. */
+.koordinator-dock-fenster.mit-chat:has(> .agent-chat-shell--embedded){resize:both;overflow:hidden;min-width:360px;min-height:260px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px)}
+.koordinator-dock-fenster > .agent-chat-shell--embedded > .conversation-head{display:none}
 @media(max-width:760px){.coordinator-dock-tab:hover,.coordinator-dock-tab:focus-visible{width:190px}}
 
 /* P22-T112: Chat mit Plattform-Agenten im Fenster */

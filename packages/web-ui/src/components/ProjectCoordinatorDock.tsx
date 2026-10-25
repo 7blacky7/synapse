@@ -92,7 +92,7 @@ export function ProjectCoordinatorDock() {
         {!coordinators.length && <p className="dock-empty" title={error || undefined}>{error ? 'Koordinatoren nicht abrufbar' : 'Kein Koordinator online'}</p>}
       </aside>
       {open && (
-        <aside className={'main-assistant-window coordinator-info-window floating-agent-window' + (chatAktiv ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(' + fensterPos.x + 'px,' + fensterPos.y + 'px)', zIndex: 52 }}>
+        <aside className={'main-assistant-window coordinator-info-window koordinator-dock-fenster floating-agent-window' + (chatAktiv ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(' + fensterPos.x + 'px,' + fensterPos.y + 'px)', zIndex: 52 }}>
           <header className="coordinator-info-kopf" onPointerDown={startFensterDrag} onPointerMove={moveFenster} onPointerUp={stopFensterDrag} onPointerCancel={stopFensterDrag}>
             <div><i /><span><strong>{open.name}</strong><small title={kopfzeile}>{kopfzeile}</small></span></div>
             <button type="button" onClick={() => setOpenId('')}>An Seite</button>
