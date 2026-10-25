@@ -3,6 +3,8 @@ import { herkunftText, loadOnlineCoordinators } from '../api/control-plane-adapt
 import type { OnlineCoordinatorViewModel } from '../control-plane/view-model';
 import { getPlattformAgentChatSchalter } from '../api/agent-runtime';
 import { PlattformAgentChat } from './PlattformAgentChat';
+// P22-T172: Name + aktuelle Task in Leiste und Fensterkopf.
+import { AgentTaskMarke } from './AgentTaskMarke';
 import './project-coordinator-dock.css';
 
 /**
@@ -86,7 +88,7 @@ export function ProjectCoordinatorDock() {
         <button type="button" className="coordinator-rail-handle" title="Koordinatorenleiste nach oben oder unten verschieben" onPointerDown={startRailDrag} onPointerMove={moveRail} onPointerUp={stopRailDrag} onPointerCancel={stopRailDrag}>↕</button>
         {coordinators.map((coordinator) => (
           <button type="button" className={'coordinator-dock-tab working' + (openId === coordinator.id ? ' is-open' : '')} key={coordinator.id} onClick={() => setOpenId((current) => current === coordinator.id ? '' : coordinator.id)} title={coordinator.name + ' · ' + coordinator.project}>
-            <span>PK</span><div><strong>{coordinator.name}</strong><small>{coordinator.project} · {herkunftText(coordinator.herkunft)}</small></div><i />
+            <span>PK</span><div><strong>{coordinator.name}<AgentTaskMarke project={coordinator.project} identityId={coordinator.id} name={coordinator.name} /></strong><small>{coordinator.project} · {herkunftText(coordinator.herkunft)}</small></div><i />
           </button>
         ))}
         {!coordinators.length && <p className="dock-empty" title={error || undefined}>{error ? 'Koordinatoren nicht abrufbar' : 'Kein Koordinator online'}</p>}
@@ -94,7 +96,7 @@ export function ProjectCoordinatorDock() {
       {open && (
         <aside className={'main-assistant-window coordinator-info-window koordinator-dock-fenster floating-agent-window' + (chatAktiv ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(' + fensterPos.x + 'px,' + fensterPos.y + 'px)', zIndex: 52 }}>
           <header className="coordinator-info-kopf" onPointerDown={startFensterDrag} onPointerMove={moveFenster} onPointerUp={stopFensterDrag} onPointerCancel={stopFensterDrag}>
-            <div><i /><span><strong>{open.name}</strong><small title={kopfzeile}>{kopfzeile}</small></span></div>
+            <div><i /><span><strong>{open.name}<AgentTaskMarke project={open.project} identityId={open.id} name={open.name} /></strong><small title={kopfzeile}>{kopfzeile}</small></span></div>
             <button type="button" onClick={() => setOpenId('')}>An Seite</button>
           </header>
           {chatAktiv && <PlattformAgentChat identityId={open.id} name={open.name} project={open.project} />}

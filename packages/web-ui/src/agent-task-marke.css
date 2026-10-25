@@ -1,0 +1,11 @@
+/* P22-T172: 'Name · aktuelle Task' (AgentTaskMarke.tsx). Nutzt die Design-Tokens der .synapse-control (hell/dunkel). */
+.agent-task-marke{display:inline;font-weight:400;white-space:nowrap;color:var(--muted)}
+.agent-task-marke .agent-task-trenner{color:var(--muted)}
+.agent-task-marke .agent-task-link,.agent-task-marke .agent-task-id{font-family:"IBM Plex Mono",monospace;font-size:.92em;color:var(--accent)}
+.agent-task-marke .agent-task-link{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+.agent-task-marke .agent-task-link:hover,.agent-task-marke .agent-task-link:focus-visible{text-decoration-style:solid;outline:none}
+.agent-task-marke.ist-erledigt .agent-task-link,.agent-task-marke.ist-erledigt .agent-task-id{opacity:.75}
+.agent-task-marke .agent-task-erledigt{margin-left:3px;font-size:.85em}
+.agent-task-marke.ist-leer{font-family:inherit;color:var(--muted)}
+.aktuelle-task-absatz small{display:block;margin-top:2px;color:var(--muted)}
+.aktuelle-task-absatz .aktuelle-task-titel{color:var(--text)}

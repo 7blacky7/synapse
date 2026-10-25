@@ -1,3 +1,10 @@
+// P22-T172: aktuelle Task je Agent (Schalter agent_aktuelle_task, Einstellwert fenster_stunden in agent_aktuelle_task_einstellungen).
+export {
+  AGENT_AKTUELLE_TASK_FUNKTION, AKTUELLE_TASK_REIHENFOLGE, AKTUELLE_TASK_CACHE_MS, AKTUELLE_TASK_EINSTELLUNGEN, leseAktuelleTaskEinstellungen,
+  setzeAktuelleTaskEinstellungen, leseAktuelleTaskSchalter, ermittleAktuelleTasks, aktuelleTaskFuer, leereAktuelleTaskCache,
+} from './services/agent-aktuelle-task.js';
+export type { AktuelleTask, AktuelleTasksStand, AktuelleTaskSchalter, AktuelleTaskQuelle, AktuelleTaskEinstellungenStand } from './services/agent-aktuelle-task.js';
+export { AGENT_AKTUELLE_TASK_SCHEMA_SQL } from './db/agent-aktuelle-task-schema.js';
 export { NETZWERK_FUNKTION, NETZWERK_EINSTELLUNGEN, NETZWERK_ADMIN_PARAMETER, leseNetzwerkKonfiguration, fuehreNetzwerkAdminAus, netzwerkEreignis, netzwerkArgumente, netzwerkText, netzwerkEinheit } from './services/agentennetzwerk.js';
 export type { NetzwerkEinstellung, NetzwerkWerte, NetzwerkEreignis } from './services/agentennetzwerk.js';
 // P22-T156: Ergebnisart je Aufruf (nur normalisierte Codes).

@@ -8,6 +8,9 @@ import {PlanNachleuchten,planZustand,planAnimation,planAbklingen,PLAN_FARBEN} fr
 import { ergebnisArt, istErfolg, halbStelle, knickAnteile, effektZeiten, effektPhase, abprallStelle, gegenstossStelle, farbeAusCss, zaehleErgebnisse, ERGEBNIS_NAMEN, ERGEBNIS_SYMBOL, ERGEBNIS_LEGENDE, FEHLER_ARTEN, type NetzErgebnisArt, type EffektZeiten } from './netzwerk/ergebnis-effekte';
 import { erstelleLicht, type Licht, type Kamera } from './netzwerk/nerven-renderer';
 import '../agentennetzwerk.css';
+// P22-T172: Name + aktuelle Task an Agenten-Knoten (Etikett) und in der Knotenkarte (klickbar).
+import { AgentTaskMarke, useAktuelleTasks } from './AgentTaskMarke';
+import { findeAktuelleTask } from './agent-task-logik';
 export { netzwerkSzene, agentAvatar } from './netzwerk/nerven-szene';
 
 /**
@@ -75,6 +78,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
  // Anzeigezustand fuer die Zeichenschleife ohne Neustart des WebGL-Kontexts.
  const anzeige = useRef({ pause, auswahl, karte, erklaerungen });
  anzeige.current = { pause, auswahl, karte, erklaerungen };
+ // P22-T172: aktuelle Task je Agent fuer die Zeichenschleife (geteilter Puffer api/aktuelle-tasks.ts).
+ const aktuelleTasksStand = useAktuelleTasks(project), aktuelleTasks = useRef(aktuelleTasksStand);
+ aktuelleTasks.current = aktuelleTasksStand;
  useEffect(() => { try { localStorage.setItem('synapse.agentennetzwerk.erklaerungen.v1', erklaerungen ? '1' : '0'); } catch { /* Anzeige funktioniert auch ohne Storage */ } if (!erklaerungen) setLegende(false); }, [erklaerungen]);
  useEffect(() => {
   const planAnzeige=new PlanNachleuchten();
@@ -736,7 +742,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     .sort((a, b) => (RANG[a.kn.rolle] ?? 4) - (RANG[b.kn.rolle] ?? 4) || b.act - a.act);
    for (const { kn, l: lg, act } of reihe) {
     const l = lg!, x = sx(l.x), y = sy(l.y); if (x < -80 || y < -40 || x > w + 80 || y > h + 40) continue;
-    const sel = kn.id === auswahl || kn.id === karte, max = kompakt ? 14 : 22, name = kn.name.length > max ? kn.name.slice(0, max - 1) + '…' : kn.name;
+    // P22-T172: Agenten-Knoten heissen 'Name · Task' (Schalter agent_aktuelle_task AUS bzw. ohne Task: nur der Name).
+    const tk = kn.agent && (kn.rolle === 'arbeitsagent' || kn.rolle === 'koordinator') ? findeAktuelleTask(aktuelleTasks.current, { identityId: kn.agent.identity_id, name: kn.agent.agent })?.task_id : undefined;
+    const roh = tk ? kn.name + ' · ' + tk : kn.name, sel = kn.id === auswahl || kn.id === karte, max = (kompakt ? 14 : 22) + (tk ? tk.length + 3 : 0), name = roh.length > max ? roh.slice(0, max - 1) + '…' : roh;
     if (kn === g.kern) { etikett(kn.name.toUpperCase(), x, y + Math.max(16, 52 * k.zoom * Math.max(0.3, g.stern)), '#fed7aa', '600 10px "IBM Plex Mono", monospace', 0.95, true); continue; }
     if (kn.rolle === 'koordinator' || kn.rolle === 'main') { etikett(name, x, y + Math.max(18, 32 * k.zoom), sel ? '#F97316' : '#fde3c8', '600 11px "IBM Plex Mono", monospace', 0.95 * l.a, true); continue; }
     if (kn.rolle === 'plan') { etikett(kn.name, x, y + Math.max(15, 24 * k.zoom), sel ? '#F97316' : kn.farbe, '500 10px "IBM Plex Mono", monospace', (0.6 + 0.4 * Math.min(1, act)) * l.a * (kn.fade ?? 1), sel); continue; }
@@ -859,6 +867,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     {kartenKnoten && <aside className="nw-card" role="dialog" aria-label={'Knoten ' + kartenKnoten.name}>
      <div><strong>{kartenKnoten.name}</strong><button aria-label="Knotenkarte schließen" onClick={() => { setKarte(''); setAuswahl(''); }}>×</button></div>
      <dl><dt>Rolle</dt><dd>{kartenKnoten.rolle}</dd>
+      {kartenKnoten.agent && <><dt>Aktuelle Task</dt><dd><AgentTaskMarke project={kartenKnoten.agent.project || project} identityId={kartenKnoten.agent.identity_id} name={kartenKnoten.agent.agent} trenner="" leer="–" /></dd></>}
       {kartenKnoten.agent ? <><dt>Typ</dt><dd>{kartenKnoten.agent.typ || 'Legacy / nicht erfasst'}</dd><dt>Modell</dt><dd>{kartenKnoten.agent.modell || 'Nicht erfasst'}</dd><dt>Ort</dt><dd>{kartenKnoten.agent.ort || 'Nicht erfasst'}</dd><dt>Letzte Anmeldung</dt><dd>{datum(kartenKnoten.agent.letzte_anmeldung)}</dd><dt>Aufrufe</dt><dd>{kartenKnoten.aufrufe} im Fenster</dd></> : <><dt>Aktivität</dt><dd>{kartenKnoten.info || kartenKnoten.aufrufe + ' Aufrufe'}</dd></>}
       {kartenKnoten.plan && <><dt>Status</dt><dd>{planZustand(kartenKnoten.plan)}{kartenKnoten.plan.status==='open'&&kartenKnoten.plan.coedit ? ' · Co-Edit offen' : ''}</dd><dt>Besitzer</dt><dd>{kartenKnoten.plan.besitzer_name || 'Nicht erfasst'}</dd><dt>Beitragende</dt><dd>{kartenKnoten.plan.beitraege.length}</dd><dt>Dateien</dt><dd>{kartenKnoten.plan.dateien}{kartenKnoten.plan.dateien_beispiele.length ? ' · ' + kartenKnoten.plan.dateien_beispiele.join(', ') : ''}</dd><dt>Erstellt</dt><dd>{datum(kartenKnoten.plan.erstellt)}</dd></>}
       <dt>Letzter Aufruf</dt><dd>{kartenAufruf ? kartenAufruf.tool + '.' + kartenAufruf.action + ' · ' + datum(kartenAufruf.zeit) : 'Nicht im Zeitfenster'}</dd>

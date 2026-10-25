@@ -180,7 +180,9 @@ export function pinSendeZitat(pin: PinEingabe, ausschnittMax: number): SendeZita
  * Klick/Tippen oeffnet darunter hoechstens so viele Vorschlaege, mehr per Scrollen; Tippen filtert; Gewaehlte als Marken im Feld.
  */
 export const EMPFAENGER_SICHTBAR = 3;
-export interface ZitatEmpfaengerEintrag { identity_id: string; agent_id: string; name: string; rolle: string; project: string }
+export interface ZitatEmpfaengerEintrag { identity_id: string; agent_id: string; name: string; rolle: string; project: string;
+  /** P22-T172: aktuelle Task des Agenten (nur bei Schalter agent_aktuelle_task und bekannter Task). */
+  aktuelle_task?: string }
 
 /** Filter nach Name (auch agent_id/Rolle), Gross/klein egal; die Auswahl bleibt davon unberuehrt. */
 export function filtereZitatEmpfaenger(liste: readonly ZitatEmpfaengerEintrag[], filter: string): ZitatEmpfaengerEintrag[] {

@@ -120,6 +120,8 @@ export function useEmpfaengerFeld({ project, aktiv, label, deaktiviert = false }
                 onMouseDown={(event) => event.preventDefault()} onClick={() => { schalte(e.identity_id); fokus(); }}>
                 <span className="zitat-empfaenger-haken" aria-hidden="true">{gewaehlt ? '✓' : ''}</span>
                 <span>{zitatEmpfaengerName(e)}</span>
+                {/* P22-T172: aktuelle Task als Text (Serverfeld; Klick waehlt hier den Empfaenger, oeffnet nichts). */}
+                {e.aktuelle_task && <small className="agent-task-marke" data-aktuelle-task={e.aktuelle_task}>· {e.aktuelle_task}</small>}
                 <small>{e.rolle}</small>
               </li>
             );

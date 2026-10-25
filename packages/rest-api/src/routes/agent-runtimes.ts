@@ -33,6 +33,8 @@ import {
   pruefeChatZitateAnfrage, textMitZitaten, zitatAlsVerlaufAnhang, leseChatZitateSchalter, leseChatZitateEinstellungen, setzeChatZitateEinstellungen,
   type ZitatDebug,
 } from '@synapse/core';
+// P22-T172: aktuelle Task je Agent - Stand (Schalter, Einstellwert) und Einstellwert setzen (nur der User, Guard oben).
+import { leseAktuelleTaskSchalter, leseAktuelleTaskEinstellungen, setzeAktuelleTaskEinstellungen, AKTUELLE_TASK_REIHENFOLGE } from '@synapse/core';
 // P22-T168 Punkte 8/9: User-Entscheidung anpinnen (derselbe Server-Weg wie thought(add) mit task_id, source user).
 import { pinneUserEntscheidung, listeUserEntscheidungen, type UserEntscheidungZiel } from '@synapse/core';
 // P22-T170: Zitat aus einem Lesefenster ohne Chat-/Channel-Herkunft an die per Checkbox gewaehlten Agenten.
@@ -752,6 +754,16 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   });
   fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/main-agent/chat-zitate/einstellungen', async (request, reply) => {
     try { return { success: true, ...(await setzeChatZitateEinstellungen(request.body?.werte, request.body?.grund, 'user')) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T172: aktuelle Task je Agent - Schalter agent_aktuelle_task (project = Projekt, ohne = global) und Einstellwert fenster_stunden
+  // mit Quelle. Wirft nie. Setzen nur der User (Guard oben): werte {fenster_stunden: zahl|null}, null = Code-Standard, grund Pflicht.
+  fastify.get<{ Querystring: { project?: string } }>('/api/main-agent/aktuelle-task', async (request) => {
+    const p = typeof request.query?.project === 'string' && request.query.project.trim() ? request.query.project.trim() : null;
+    const [schalter, einstellungen] = await Promise.all([leseAktuelleTaskSchalter(p), leseAktuelleTaskEinstellungen()]);
+    return { success: true, aktiv: schalter.aktiv, schalter, einstellungen, reihenfolge: AKTUELLE_TASK_REIHENFOLGE };
+  });
+  fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/main-agent/aktuelle-task/einstellungen', async (request, reply) => {
+    try { return { success: true, ...(await setzeAktuelleTaskEinstellungen(request.body?.werte, request.body?.grund, 'user')) }; } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T168 Punkte 8/9: User-Entscheidung an eine Task bzw. einen Plan anpinnen (nur der User, Guard oben). Speichert SOFORT einen
   // thought (source user, Tag user-entscheidung + Kurz-ID, task_id bei Tasks) und gibt dem Bearbeiter der Task einen kurzen

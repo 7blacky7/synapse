@@ -12,6 +12,7 @@
  *                    sonst null und anmeldungen.aktiv=false in der Antwort
  *   Kontext          aus der Anmeldung (hauptagent_verlauf bzw. wrapper_status des aktiven Laufs), sonst wrapper_status der Zeile
  *   Ort              ermittleAgentHerkunft (wie die Channel-Teilnehmer)
+ *   Aktuelle Task    P22-T172 ermittleAktuelleTasks (Aktivitaet > Bindung > Beteiligte; Schalter agent_aktuelle_task, AUS = null)
  *   Wrapper          listWrapperStatus wie GET specialists; Zeilen mit dem agent_id einer Identitaet haengen an ihr,
  *                    die uebrigen erscheinen als eigene Eintraege (art 'wrapper'); archiv-* und entfernte bleiben draussen
  */
@@ -28,6 +29,9 @@ import {
   startOrtSchalterAktiv,
   waehleSpezialisten,
   type StartOrtAnzeige,
+  ermittleAktuelleTasks,
+  aktuelleTaskFuer,
+  type AktuelleTask,
 } from '@synapse/core';
 
 type Zeit = { iso: string; ortszeit: string } | null;
@@ -64,6 +68,8 @@ export interface TeamAgent {
   /** P22-T113: woher der Agent gestartet wurde (Schalter agent_start_ort; AUS bzw. unbekannt = null). */
   start_ort: StartOrtAnzeige | null;
   wrapper: TeamWrapper | null;
+  /** P22-T172: aktuelle Task (core agent-aktuelle-task.ts); null = keine Task bzw. Schalter agent_aktuelle_task AUS. */
+  aktuelle_task: AktuelleTask | null;
 }
 
 interface IdentZeile {
@@ -113,6 +119,7 @@ export async function ladeAgentenTeam(project: string, optionen: { hauptagent?: 
 
   const schalter = await leseAnmeldungenSchalter(project);
   const startOrtAn = await startOrtSchalterAktiv(project);
+  const aktuelle = await ermittleAktuelleTasks(project);
   const anmeldung = new Map<string, Record<string, unknown>>();
   let anmeldungFehler: string | null = null;
   if (schalter.aktiv && ident.length) {
@@ -145,12 +152,14 @@ export async function ladeAgentenTeam(project: string, optionen: { hauptagent?: 
       start_ort: startOrtAn ? startOrtAnzeige({ start_ort: i.start_ort, start_ziel: i.start_ziel, start_ort_art: i.start_ort_art,
         start_ort_quelle: i.start_ort_quelle, start_ort_am: i.start_ort_am, vorgabe: i.start_ort_vorgabe }) : null,
       wrapper: w,
+      aktuelle_task: aktuelleTaskFuer(aktuelle, { identity_id: i.identity_id, agent_id: i.agent_id }),
     };
   }));
   const nurWrapper: TeamAgent[] = await Promise.all([...wrapper.entries()].map(async ([name, w]) => ({
     schluessel: 'wrapper:' + name, art: 'wrapper' as const, name, agent_id: name, identity_id: null, rolle: null, typ: null,
     modell: w.model, ausweis: null, zuletzt_aktiv: w.last_activity, lauf_status: null, letzte_anmeldung: null, kontext: wrapperKontext(w),
     herkunft: await ermittleAgentHerkunft(project, { agent: name }), start_ort: null, wrapper: w,
+    aktuelle_task: aktuelleTaskFuer(aktuelle, { agent_id: name }),
   })));
 
   return {
@@ -167,6 +176,8 @@ export async function ladeAgentenTeam(project: string, optionen: { hauptagent?: 
       herkunft: 'ermittleAgentHerkunft',
       start_ort: startOrtAn ? 'agent_identitaeten.start_ort (tatsaechlicher Start), sonst startrezept.start_ort_vorgabe' : 'Schalter agent_start_ort AUS',
       wrapper: 'wrapper_status wie GET specialists',
+      aktuelle_task: aktuelle.aktiv ? 'ermittleAktuelleTasks (Aktivitaet > Bindung > Beteiligte)' : 'Schalter agent_aktuelle_task AUS',
     },
+    aktuelle_task: { aktiv: aktuelle.aktiv, quelle: aktuelle.schalter.quelle, cache: aktuelle.cache, letzter_fehler: aktuelle.letzter_fehler },
   };
 }

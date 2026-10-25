@@ -3,6 +3,8 @@ import { getRuntimeAgenten, getRuntimeAgentLog, getRuntimeProzesse, steuereRunti
 import { useCliModelle } from './CliModellAuswahl';
 import { PANEL_RUNTIMES, panelSichtbarAn, modellOptionen, pruefeModellWechsel, modellRequestErlaubt, katalogFuerRuntime, type PanelRuntime } from './runtime-agenten-panel-logik';
 import '../runtime-agenten-panel.css';
+// P22-T172: Name + aktuelle Task in der Spalte Agent.
+import { AgentTaskMarke } from './AgentTaskMarke';
 
 /** P22-T122: Modellauswahl aus dem CLI-Katalog (nur Abo claude|codex) mit Bestaetigungsschritt statt window.prompt. */
 function ModellDialog({ name, modellBisher, onAbbruch, onAusfuehren }: { name: string; modellBisher: string | null;
@@ -157,7 +159,7 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
               <thead><tr><th>Agent</th><th>Status</th><th>Inaktiv</th><th>Heartbeat</th><th>Tokens</th><th>Warnungen</th><th>Aktionen</th></tr></thead>
               <tbody>{zeilen.map(z => (
                 <tr key={(z.identity_id ?? z.name) + ortName} className={z.warnungen.length ? 'mit-warnung' : ''}>
-                  <td className="rap-name" title={z.auftrag ?? ''}>{z.name}<small>{[z.quelle, z.modell].filter(Boolean).join(' · ')}</small></td>
+                  <td className="rap-name" title={z.auftrag ?? ''}>{z.name}<AgentTaskMarke project={project} identityId={z.identity_id} name={z.name} /><small>{[z.quelle, z.modell].filter(Boolean).join(' · ')}</small></td>
                   <td>{z.anzeige_status ?? z.status}{z.du_selbst ? ' · du selbst' : ''}{z.busy ? ' · arbeitet' : ''}</td>
                   <td>{Math.round(z.inaktiv_sekunden / 60)} min</td>
                   <td>{z.heartbeat.an ? 'an' : 'aus'}</td>
@@ -195,7 +197,7 @@ export function RuntimeAgentenPanel({ project, ort = 'channel' }: { project: str
             <thead><tr><th>Agent</th><th>Status</th><th>Inaktiv</th><th>Heartbeat</th><th>Tokens</th><th>Warnungen</th><th /></tr></thead>
             <tbody>{zeilen.map(z => (
               <tr key={(z.identity_id ?? z.name) + ort} className={z.warnungen.length ? 'mit-warnung' : ''}>
-                <td title={z.auftrag ?? ''}>{z.name}<small>{z.quelle}{z.modell ? ' · ' + z.modell : ''}</small></td>
+                <td title={z.auftrag ?? ''}>{z.name}<AgentTaskMarke project={project} identityId={z.identity_id} name={z.name} /><small>{z.quelle}{z.modell ? ' · ' + z.modell : ''}</small></td>
                 <td>{z.anzeige_status ?? z.status}{z.du_selbst ? ' · du selbst' : ''}{z.busy ? ' · busy' : ''}</td>
                 <td>{Math.round(z.inaktiv_sekunden / 60)} min</td>
                 <td>{z.heartbeat.an ? 'an' : 'aus'}</td>

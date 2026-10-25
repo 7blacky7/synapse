@@ -27,6 +27,8 @@ import { validateToken } from '../services/auth.js';
 // P22-T170: Channel-Fenster als Herkunft des Lesefensters - Zitate/Pins gehen als Block im Channel-Post an den ganzen Channel.
 import { pruefeChatZitateAnfrage, textMitZitaten } from '@synapse/core';
 import { ladeAgentenTeam } from '../services/agenten-team.js';
+// P22-T172: aktuelle Task je Agent (eine Stelle in core, Schalter agent_aktuelle_task).
+import { ermittleAktuelleTasks } from '@synapse/core';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
   await agentennetzwerkRoutes(fastify);
@@ -104,6 +106,19 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         error: { message: String(error) },
       });
     }
+  });
+
+  /**
+   * GET /api/projects/:name/agenten-aktuelle-task
+   * P22-T172: aktuelle Task je Agent des Projekts (core agent-aktuelle-task.ts) fuer die Web-UI ('claude-t50 · P22-T171').
+   * Debug: schalter (Quelle), einstellungen (Quelle), reihenfolge, quelle/signale je Zeile, dauer_ms, cache; neu=1 umgeht den Puffer.
+   * Schalter AUS -> aktiv false, leere Liste. Wirft nie (Lesefehler in letzter_fehler).
+   */
+  fastify.get<{
+    Params: { name: string };
+    Querystring: { neu?: string };
+  }>('/api/projects/:name/agenten-aktuelle-task', async (request) => {
+    return ermittleAktuelleTasks(request.params.name, { neu: request.query?.neu === '1' });
   });
 
   /**

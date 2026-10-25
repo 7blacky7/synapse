@@ -2,6 +2,8 @@ import { useEffect, useState, type ComponentProps } from 'react';
 import { getPlattformAgentChatSchalter } from '../api/agent-runtime';
 import { ChannelAgentChatWindow } from './ChannelAgentChatWindow';
 import { PlattformAgentChat } from './PlattformAgentChat';
+// P22-T172: Name + aktuelle Task im Fensterkopf des Direktchats.
+import { AgentTaskMarke } from './AgentTaskMarke';
 
 /**
  * P22-T116 (e, Befund rea1 85ecb878): Klick auf einen Plattform-Agenten (mit Identitaet) im Channel oeffnet bei Schalter
@@ -25,7 +27,7 @@ export function ChannelAgentFensterWeiche(props: ComponentProps<typeof ChannelAg
       style={{ transform: 'translate(' + props.initialPosition.x + 'px,' + props.initialPosition.y + 'px)', zIndex: props.zIndex }}
       onPointerDown={props.onActivate}>
       <header>
-        <div><i /><span><strong>{props.windowState.agentName}</strong><small>Direktchat · {props.windowState.role} · {props.project}</small></span></div>
+        <div><i /><span><strong>{props.windowState.agentName}<AgentTaskMarke project={props.project} identityId={id} name={props.windowState.agentName} /></strong><small>Direktchat · {props.windowState.role} · {props.project}</small></span></div>
         <button type="button" onClick={props.onClose}>×</button>
       </header>
       <PlattformAgentChat identityId={id} name={props.windowState.agentName} project={props.project} />

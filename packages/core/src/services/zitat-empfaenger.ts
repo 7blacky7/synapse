@@ -12,11 +12,15 @@
 import { getPool } from '../db/client.js';
 import { leseChatZitateSchalter, pruefeChatZitateAnfrage, textMitZitaten, type ChatZitateSchalter, type ZitatDebug } from './chat-zitate.js';
 import type { UserEntscheidungZiel } from './user-entscheidung.js';
+// P22-T172: aktuelle Task je Empfaenger in der Auswahlliste ('claude-t50 · P22-T171').
+import { aktuelleTaskFuer, ermittleAktuelleTasks } from './agent-aktuelle-task.js';
 
 export const ZITAT_EMPFAENGER_MAX = 50;
 const INHALT_MAX = 20_000;
 
-export interface ZitatEmpfaenger { identity_id: string; agent_id: string; name: string; rolle: string; project: string }
+export interface ZitatEmpfaenger { identity_id: string; agent_id: string; name: string; rolle: string; project: string;
+  /** P22-T172: nur bei Schalter agent_aktuelle_task und bekannter Task (sonst fehlt das Feld). */
+  aktuelle_task?: string }
 export type ZitatEmpfaengerFehler = { ok: false; status: number; code: string; message: string; schalter?: ChatZitateSchalter; details?: Record<string, unknown> };
 export type ZitatEmpfaengerSende = (ziel: UserEntscheidungZiel, text: string) => Promise<{ id: number }>;
 
@@ -38,7 +42,17 @@ export async function listeZitatEmpfaenger(project: unknown): Promise<{ ok: true
   if (!p || p.length > 120) return { ok: false, status: 400, code: 'project_fehlt', message: 'project angeben' };
   const schalter = await leseChatZitateSchalter(p);
   if (!schalter.aktiv) return { ok: true, aktiv: false, schalter, empfaenger: [] };
-  return { ok: true, aktiv: true, schalter, empfaenger: await leseEmpfaenger(p) };
+  return { ok: true, aktiv: true, schalter, empfaenger: await mitAktuellerTask(p, await leseEmpfaenger(p)) };
+}
+
+/** P22-T172: aktuelle Task je Empfaenger (core agent-aktuelle-task.ts); Schalter AUS bzw. keine Task -> Liste unveraendert. */
+async function mitAktuellerTask(project: string, liste: ZitatEmpfaenger[]): Promise<ZitatEmpfaenger[]> {
+  const stand = await ermittleAktuelleTasks(project);
+  if (!stand.aktiv || !stand.agenten.length) return liste;
+  return liste.map((e) => {
+    const t = aktuelleTaskFuer(stand, { identity_id: e.identity_id, agent_id: e.agent_id });
+    return t ? { ...e, aktuelle_task: t.task_id } : e;
+  });
 }
 
 /** Zitat(e) an jeden gewaehlten Empfaenger (je Empfaenger eine Inbox-Zeile, gleicher Block). */

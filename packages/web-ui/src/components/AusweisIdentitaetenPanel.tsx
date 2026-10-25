@@ -28,6 +28,8 @@ import { PERSOENLICHES_PROJEKT } from '../api/control-plane-adapter';
 import type { AusweisZiel } from '../ausweis-deeplink';
 import { KlartextText } from './Lesefenster';
 import { AusweisPersonaBindung } from './AusweisPersonaBindung';
+// P22-T172: Name + aktuelle Task in der Identitaetenliste (die Ausweisnummer bleibt nur im Detail).
+import { AgentTaskMarke } from './AgentTaskMarke';
 import { AusweisHinweiseEditor } from './AusweisHinweiseEditor';
 import { AusweisKatalogeVerwaltung } from './AusweisKatalogeVerwaltung';
 import { hinweiseAus, hinweiseZuBool, type HinweisWahl } from './ausweis-inhalt';
@@ -339,7 +341,7 @@ export function AusweisIdentitaetenPanel({ project: aktuellesProjekt, ziel }: { 
         {gefiltert.map((z) => {
           const w = wrapper[z.agentId];
           return <button type="button" key={z.identityId} className={'av-zeile' + (z.identityId === auswahl ? ' aktiv' : '') + (z.status === 'deaktiviert' ? ' aus' : '')} onClick={() => setAuswahl(z.identityId)}>
-            <strong>{z.agentId}</strong>
+            <strong>{z.agentId}<AgentTaskMarke project={project} identityId={z.identityId} name={z.agentId} /></strong>
             <span className={'av-chip av-' + z.status}>{z.status}</span>
             <small>{[z.rolle, z.ausweisZustand ? 'Ausweis ' + z.ausweisZustand : z.tokenAbrufbar ? 'Ausweis abrufbar' : 'kein Ausweis', z.laufAktiv ? 'Lauf aktiv' : '', w?.status ? 'Wrapper ' + w.status : '', modellName(z.modellBestaetigt || w?.model || z.modellSelbstauskunft), z.zuletztAktiv ? 'zuletzt ' + z.zuletztAktiv : ''].filter(Boolean).join(' · ')}</small>
           </button>;
