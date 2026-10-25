@@ -36,7 +36,7 @@
  *   DELETE /profile/:identity_id/token      token_loeschen {grund}
  *   GET  /tasks/:task_id/bindung            task_bindung_lesen (offen|identitaet|team)
  *   PUT  /tasks/:task_id/bindung            {bindung_art: identitaet|team, bindung_identity_ids[], grund?}
- *   POST /tasks/:task_id/bindung/aendern    {bindung_art, bindung_identity_ids[], grund}
+ *   POST /tasks/:task_id/bindung/aendern    {bindung_art, bindung_identity_ids[], grund} (P22-T139: bindung_art offen ohne IDs = loesen wie entblocken)
  *   POST /tasks/:task_id/bindung/entblocken {grund}
  *   GET  /web-ui-koordinator-token?identity_id=    nur User
  *   GET  /ausweis-fristen                   ausweis_fristen modus status (P22-T45: Wert + Quelle je Frist)

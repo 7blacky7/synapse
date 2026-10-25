@@ -140,6 +140,16 @@ try{
   agent_verbrauch:()=>({monat:'2026-10'}),
   // P22-T58: Runtime-Ueberwachung lesen/setzen: User und Koordinator inkl. Legacy (F6); Tabellen 122 hier nicht angelegt -> Fachfehler.
   runtime_ueberwachung:()=>({ueberwachung_modus:'status'}),
+  // P22-T139 (Nachtrag, Basis 194b92de war ohne sie rot): spaeter hinzugekommene admin-Aktionen, je lesend.
+  // P22-T93 Netzwerk, P21 Hex, P18-T86 Reverse: Verwaltungsrechte (User, Koordinator inkl. Legacy).
+  agentennetzwerk:()=>({netzwerk_modus:'status'}),
+  hex_einstellungen:()=>({modus:'status'}),
+  reverse_einstellungen:()=>({modus:'status'}),
+  // P22-T80 Aufraeumen, P22-T82 Container-Kontingent (status), P22-T87 Anmeldungen, P22-T107 Koordinator-Heartbeat (status).
+  agenten_aufraeumen:()=>({aufraeumen_modus:'status'}),
+  container_kontingent:()=>({kontingent_modus:'status'}),
+  anmeldungen:()=>({}),
+  koordinator_heartbeat:()=>({modus:'status'}),
  };
  const NUR_USER=new Set(['web_ui_koordinator_token','hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen',
   'api_status','api_schalter','api_budget','api_einstellungen','api_kosten']);

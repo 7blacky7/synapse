@@ -24,7 +24,10 @@ const w1bAktionen = ['profil_schalter_status', 'profil_schalter_setzen', 'profil
   // P22-T8: additive Aktionen des kostenpflichtigen API-Agenten.
   'api_status', 'api_schalter', 'api_budget', 'api_einstellungen', 'api_kosten',
   // P22-T58: additive Aktion der Runtime-Ueberwachung.
-  'runtime_ueberwachung'];
+  'runtime_ueberwachung',
+  // P22-T139 (Nachtrag, Basis 194b92de war ohne sie rot): P22-T93 Netzwerk, P21 Hex, P18-T86 Reverse, P22-T80 Aufraeumen,
+  // P22-T82 Container-Kontingent, P22-T87 Anmeldungen, P22-T107 Koordinator-Heartbeat. Golden-Hashes bleiben unveraendert.
+  'agentennetzwerk', 'hex_einstellungen', 'reverse_einstellungen', 'agenten_aufraeumen', 'container_kontingent', 'anmeldungen', 'koordinator_heartbeat'];
 const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id', 'zustand', 'erwartete_revision', 'ziel_revision', 'korrektur', 'profil_patch', 'typ_id', 'typ_schluessel', 'typ_inhalt',
   'typ_revision', 'profil_scope', 'persona_name', 'persona_inhalt', 'persona_vorlage_id', 'persona_version', 'user_auftrag', 'user_zustimmung', 'anlass', 'bindung_task_id', 'bindung_art', 'bindung_identity_ids',
   // P22-T33 (T1, 227150da): additive W12-Parameter (agent_vorbereiten).
@@ -48,7 +51,12 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   // P22-T8: additive Parameter des API-Agenten (Budget, Modelle, Einstellwerte).
   'api_zeitraum', 'erlaubte_modelle', 'api_einstellungen', 'einstellung_namen',
   // P22-T58: additive Parameter der Runtime-Ueberwachung.
-  'ueberwachung_modus', 'ueberwachung_werte', 'ueberwachung_namen'];
+  'ueberwachung_modus', 'ueberwachung_werte', 'ueberwachung_namen',
+  // P22-T139 (Nachtrag): Parameter der oben nachgetragenen Aktionen (P22-T93, P21, P18-T86, P22-T80, P22-T82, P22-T87).
+  'netzwerk_modus', 'netzwerk_werte', 'hex_werte', 'hex_namen', 'reverse_id', 'reverse_ebene', 'reverse_werte', 'reverse_namen',
+  'aufraeumen_modus', 'aufraeumen_tage', 'aufraeumen_art', 'aufraeumen_ids', 'aufraeumen_bestaetigung', 'aufraeumen_lauf_id', 'mit_entfernten', 'aufraeumen_alle',
+  'kontingent_modus', 'container_agenten_max',
+  'anmeldung_agent', 'anmeldung_seit', 'anmeldung_limit', 'anmeldung_nur_letzte', 'anmeldung_weg', 'anmeldung_debug'];
 // P23-T1: additive Werte in bestehenden Enums (Jev-Funktion skill_rerank in jev_schalten.funktion).
 // P23-T6: additiver Enumwert skill_rerank_probe (Jev-Funktion der Diagnose intern skill_probe).
 const neueEnumWerte = { funktion: new Set(['skill_rerank', 'skill_rerank_probe']) };

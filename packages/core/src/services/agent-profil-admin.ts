@@ -15,7 +15,7 @@ import { NETZWERK_ADMIN_PARAMETER, fuehreNetzwerkAdminAus } from './agentennetzw
 import {REVERSE_ADMIN_ACTIONS,REVERSE_ADMIN_PARAMETER,fuehreReverseAdminAus} from './reverse-einstellungen.js';
 import {HEX_ADMIN_ACTIONS, HEX_ADMIN_PARAMETER, fuehreHexAdminAus} from './hex-einstellungen.js';
 import {
-  W1B_DIENSTE, W12_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, MAIN_ROLLE, darfProfilAendern, type W1bAkteur, type AusweisAkteur, type Startart, type SchattenZustand, type ProfilInhalt, type TaskBindung,
+  W1B_DIENSTE, W12_DIENSTE, W1bNichtUmgesetzt, SCHATTEN_ZUSTAENDE, MAIN_ROLLE, darfProfilAendern, TASK_BINDUNG_LOESEN_HINWEIS, type GebundeneTask, type W1bAkteur, type AusweisAkteur, type Startart, type SchattenZustand, type ProfilInhalt, type TaskBindung,
 } from './agent-profil-vertrag.js';
 import { rolleFuerAgent } from './agent-rollen.js';
 import {
@@ -86,7 +86,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   rolle: { type: 'string', description: 'agent_vorbereiten: Rolle der neuen Identitaet (Standard subagent; koordinator durch User oder Koordinator)' },
   startart: { type: 'string', enum: ['subagent', 'spezialist', 'codex', 'hauptagent', 'sonstiges'], description: 'agent_vorbereiten: Startart fuer die Startkonfiguration' },
   bindung_task_id: { type: 'string', description: 'Task-Bindung: Task-ID (UUID oder P<n>-T<m>)' },
-  bindung_art: { type: 'string', enum: ['identitaet', 'team'], description: 'Task-Bindung: Einzelidentitaet oder Team (offen = entblocken)' },
+  bindung_art: { type: 'string', enum: ['identitaet', 'team', 'offen'], description: 'Task-Bindung: identitaet (genau eine ID), team (Mitglieder) oder offen = Bindung loesen (nur task_bindung_aendern, ohne bindung_identity_ids, grund Pflicht; wie task_bindung_entblocken)' },
   bindung_identity_ids: { type: 'array', items: { type: 'string' }, description: 'Task-Bindung: Identitaets-IDs (identitaet: genau eine; team: frei gewaehlte, desselben Projekts)' },
   schatten_stunden: { type: 'number', description: 'ausweis_fristen setzen: Schattenfrist in Stunden (1..720, Standard 24)' },
   erstnutzung_minuten: { type: 'number', description: 'ausweis_fristen setzen: Erstnutzungsfrist vorbereiteter Ausweise in Minuten (1..1440, Standard 10)' },
@@ -175,7 +175,8 @@ async function vorlageImProjekt(project: string, id: string | undefined): Promis
 async function bindungAus(project: string, a: Args): Promise<TaskBindung> {
   const art = s(a, 'bindung_art');
   const ids = Array.isArray(a.bindung_identity_ids) ? [...new Set((a.bindung_identity_ids as unknown[]).filter((x): x is string => typeof x === 'string' && !!x.trim()).map(x => x.trim()))] : [];
-  if (art !== 'identitaet' && art !== 'team') throw new ProfilVerwaltungFehler('bindung_ungueltig');
+  // P22-T139: 'offen' (loesen) gibt es nur bei task_bindung_aendern ohne Identitaeten; die Meldung nennt den Loese-Weg.
+  if (art !== 'identitaet' && art !== 'team') throw new ProfilVerwaltungFehler('bindung_ungueltig', { hinweis: TASK_BINDUNG_LOESEN_HINWEIS });
   if (art === 'identitaet' && ids.length !== 1) throw new ProfilVerwaltungFehler('bindung_ungueltig');
   if (!ids.length) throw new ProfilVerwaltungFehler('team_leer');
   const r = await getPool().query<{ n: number }>('SELECT count(*)::int AS n FROM agent_identitaeten WHERE id=ANY($1::text[]) AND project=$2', [ids, project]);
@@ -221,7 +222,9 @@ async function leseIdentitaetDetail(project: string, ziel: string, akteur: W1bAk
                 FROM agent_identitaet_tokens WHERE identity_id=$1 ORDER BY erstellt_am DESC LIMIT 10`, [ziel]),
     db.query('SELECT wer, wann, aktion, grund FROM agent_identitaet_audit WHERE identity_id=$1 ORDER BY wann DESC, id DESC LIMIT 20', [ziel]),
     db.query('SELECT vorlage_id, version FROM agent_persona_zuweisungen WHERE identity_id=$1', [ziel]),
-    db.query('SELECT task_id, art FROM plan_task_bindungen WHERE project=$1 AND position($2 in identity_ids::text) > 0 ORDER BY task_id LIMIT 50', [project, ziel]).catch(() => ({ rows: [] as unknown[] })),
+    // P22-T139: dieselbe Abfrage wie die Anmeldung (gebundeneTasks), offene und erledigte Tasks getrennt.
+    import('./agent-profil-update.js').then((m) => m.gebundeneTasksGetrennt(project, ziel))
+      .catch((): { offen: GebundeneTask[]; erledigt: GebundeneTask[] } => ({ offen: [], erledigt: [] })),
   ]);
   let wirksam: unknown = null;
   try {
@@ -236,7 +239,12 @@ async function leseIdentitaetDetail(project: string, ziel: string, akteur: W1bAk
     tokens: tokens.rows,
     audit: auditZeilen.rows,
     persona: persona.rows[0] ?? null,
-    gebundene_tasks: bindungen.rows,
+    gebundene_tasks: bindungen.offen.slice(0, 50),
+    erledigte_gebundene_tasks: {
+      anzahl: bindungen.erledigt.length,
+      tasks: bindungen.erledigt.slice(0, 20).map((t) => ({ task_id: t.task_id, kurz_id: t.kurz_id })),
+      ...(bindungen.erledigt.length ? { hinweis: TASK_BINDUNG_LOESEN_HINWEIS } : {}),
+    },
     // P22-T68: Hinweisarten fuer das Formular (an/aus je Art; Pflichtarten sind nicht abschaltbar).
     hinweis_katalog: HINWEIS_KATALOG.map((e) => ({ schluessel: e.schluessel, klasse: e.klasse, zweck: e.zweck, standard: e.standard })),
   };
@@ -425,6 +433,10 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
     }
     case 'task_bindung_aendern': {
       const task = pflicht(s(a, 'bindung_task_id'), 'bindung_task_id_fehlt');
+      // P22-T139: bindung_art 'offen' ohne Identitaeten = Bindung loesen, derselbe Weg wie task_bindung_entblocken (Grund Pflicht, Audit entblocken).
+      if (s(a, 'bindung_art') === 'offen' && !(Array.isArray(a.bindung_identity_ids) && a.bindung_identity_ids.length > 0)) {
+        return { project, task_id: task, bindung: await W1B_DIENSTE.taskBindung.entblocke(project, task, akteur, pflichtText(a.grund, 'grund_fehlt')), geloest_wie: 'task_bindung_entblocken' };
+      }
       return { project, task_id: task, bindung: await W1B_DIENSTE.taskBindung.aendere(project, task, await bindungAus(project, a), akteur, pflichtText(a.grund, 'grund_fehlt')) };
     }
     case 'task_bindung_entblocken': {

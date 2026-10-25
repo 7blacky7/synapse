@@ -531,10 +531,14 @@ export class TaskBindungFehler extends Error {
   constructor(public readonly code: string, message?: string) { super(message ?? code); }
 }
 
+/** P22-T139: der Loese-Weg, genannt bei bindung_ungueltig und in profil_lesen (erledigte gebundene Tasks). */
+export const TASK_BINDUNG_LOESEN_HINWEIS = 'Bindung loesen: task_bindung_entblocken (bindung_task_id, grund) oder task_bindung_aendern mit bindung_art "offen" '
+  + 'ohne bindung_identity_ids (grund Pflicht). Die Bindung wird geloescht, die Task ist danach offen; das Audit bleibt.';
+
 const TASK_BINDUNG_GRUND_TEXT: Record<string, string> = {
   grund_fehlt: 'Grund ist Pflicht (nicht leer).',
   team_leer: 'Ein Team braucht mindestens ein Mitglied; ein leeres Team ist kein Entblocken.',
-  bindung_ungueltig: 'Ungueltige Task-Bindung.',
+  bindung_ungueltig: 'Ungueltige Task-Bindung. ' + TASK_BINDUNG_LOESEN_HINWEIS,
 };
 
 interface TaskBindungZeile { art: 'identitaet' | 'team'; identity_ids: string[]; revision: number }
@@ -741,6 +745,29 @@ export async function vormerkenTaskBindungBearbeiten(project: string, task_id: s
 export async function pruefeTaskBindungBearbeiten(project: string, task_id: string, ref: string = task_id, bearbeiter?: TaskBearbeiter): Promise<string | null> {
   const p = aktuellerAgentPrincipal();
   return pruefeTaskBindungBearbeitenFuer(project, task_id, p && p.art === 'identity' ? p : null, ref, bearbeiter);
+}
+
+/** P22-T139: Produkt-Schalter (Katalog PROFIL_PRODUKT_FUNKTIONEN, Standard AUS, nur ausdruecklich). */
+export const TASK_BINDUNG_LOESEN_BEI_DONE = 'task_bindung_loesen_bei_done' as const;
+
+/**
+ * P22-T139: Bindung einer gerade erledigten Task loesen, wenn der Produkt-Schalter task_bindung_loesen_bei_done EIN ist (Standard AUS).
+ * Wirkung wie entblocken: Zeile loeschen + Audit-Aktion entblocken (wer 'system:task_erledigt', Grund 'Task erledigt'). Die Bindung
+ * kann unter der UUID oder der Kurz-ID stehen (task_ids). Liefert die geloesten task_ids; Schalter AUS oder keine Bindung -> [].
+ */
+export async function loeseBindungBeiErledigt(project: string, task_ids: readonly (string | null | undefined)[]): Promise<string[]> {
+  if (!(await leseProfilProduktSchalter(TASK_BINDUNG_LOESEN_BEI_DONE, project)).aktiv) return [];
+  const ids = [...new Set(task_ids.filter((x): x is string => typeof x === 'string' && x.trim() !== ''))];
+  if (!ids.length) return [];
+  return mitTransaktion(async (c) => {
+    const r = await c.query<TaskBindungZeile & { task_id: string }>(
+      'SELECT task_id, art, identity_ids, revision FROM plan_task_bindungen WHERE project=$1 AND task_id=ANY($2::text[]) FOR UPDATE', [project, ids]);
+    for (const z of r.rows) {
+      await c.query('DELETE FROM plan_task_bindungen WHERE project=$1 AND task_id=$2', [project, z.task_id]);
+      await schreibeBindungsAudit(c, project, z.task_id, 'entblocken', zeileZuBindung(z), { art: 'offen' }, 'system:task_erledigt', null, 'Task erledigt');
+    }
+    return r.rows.map((z) => z.task_id);
+  });
 }
 
 export const taskBindungDienst: TaskBindungDienst = {

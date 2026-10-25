@@ -28,6 +28,8 @@ export const PROFIL_UPDATE_QUELLE_ID = 'w1b.profil_update';
 /** Der Zustelltext wird von der Registry auf 240 Zeichen gekuerzt; Rest-Hinweis passt dann noch hinein. */
 export const PROFIL_UPDATE_HINWEIS_ZEICHEN = 190;
 const MAX_TASKS = 20;
+/** P22-T139: profil_lesen liest offene und erledigte gebundene Tasks in einer Abfrage. */
+const MAX_TASKS_PROFIL = 200;
 
 const istObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
@@ -240,12 +242,22 @@ export async function profilBlock(identity_id: string): Promise<ProfilBlock> {
 
 /** W12-C: plan_task_bindungen mit identity_id (art identitaet oder Team-Mitglied); erledigte Tasks entfallen. */
 export async function gebundeneTasks(project: string, identity_id: string): Promise<GebundeneTask[]> {
+  return leseGebundeneTasks(project, identity_id, false, MAX_TASKS);
+}
+
+/** P22-T139: dieselbe Abfrage fuer profil_lesen, offene und erledigte (status done) Tasks getrennt. */
+export async function gebundeneTasksGetrennt(project: string, identity_id: string): Promise<{ offen: GebundeneTask[]; erledigt: GebundeneTask[] }> {
+  const alle = await leseGebundeneTasks(project, identity_id, true, MAX_TASKS_PROFIL);
+  return { offen: alle.filter((t) => t.status !== 'done'), erledigt: alle.filter((t) => t.status === 'done') };
+}
+
+async function leseGebundeneTasks(project: string, identity_id: string, mitErledigten: boolean, limit: number): Promise<GebundeneTask[]> {
   const r = await getPool().query<{ task_id: string; art: string; kurz: string | null; titel: string | null; status: string | null }>(
     `SELECT b.task_id, b.art, t.task->>'kurz_id' AS kurz, t.task->>'title' AS titel, t.task->>'status' AS status
        FROM plan_task_bindungen b
        LEFT JOIN LATERAL (SELECT x.task FROM plan_tasks x WHERE x.project = b.project AND (x.id = b.task_id OR x.task->>'kurz_id' = b.task_id) LIMIT 1) t ON true
-      WHERE b.project=$1 AND $2 = ANY(b.identity_ids) AND COALESCE(t.task->>'status', '') <> 'done'
-      ORDER BY b.gesetzt_am DESC LIMIT ${MAX_TASKS}`, [project, identity_id]);
+      WHERE b.project=$1 AND $2 = ANY(b.identity_ids)${mitErledigten ? '' : " AND COALESCE(t.task->>'status', '') <> 'done'"}
+      ORDER BY b.gesetzt_am DESC LIMIT ${limit}`, [project, identity_id]);
   return r.rows.map((z): GebundeneTask => ({
     task_id: z.task_id, kurz_id: z.kurz ?? null, titel: z.titel ?? null, status: z.status ?? null, art: z.art === 'team' ? 'team' : 'identitaet',
   }));

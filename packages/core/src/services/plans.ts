@@ -35,7 +35,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { taskIndex, taskDublettenHinweis, geaenderteTaskIds } from './plan-suche.js';
-import { vormerkenTaskBindungBearbeiten, type TaskBearbeiter } from './agent-profil-vertrag.js';
+import { vormerkenTaskBindungBearbeiten, loeseBindungBeiErledigt, type TaskBearbeiter } from './agent-profil-vertrag.js';
 import {
   ProjectPlan,
   ProjectTask,
@@ -1083,6 +1083,10 @@ export async function updateTask(
   if (!r) return null;
   if (bindung.nachErfolg) {
     try { await bindung.nachErfolg(); } catch (fehler) { console.error('[Synapse] Task-Bindungs-Audit (update_task ohne Token) fehlgeschlagen:', fehler); }
+  }
+  // P22-T139: Schalter task_bindung_loesen_bei_done (Standard AUS) - Bindung einer gerade erledigten Task loesen (Audit 'Task erledigt').
+  if (updates.status === 'done' && fund.task.status !== 'done') {
+    try { await loeseBindungBeiErledigt(project, [zielId, fund.task.kurz_id]); } catch (fehler) { console.error('[Synapse] Task-Bindung bei done loesen fehlgeschlagen:', fehler); }
   }
   const gespeichert = r.plan.tasks.find((t) => t.id === zielId)!;
   console.error(`[Synapse] Task aktualisiert: "${gespeichert.title}"`);

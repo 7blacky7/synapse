@@ -71,6 +71,8 @@ const W1B_AKTIONEN=[
  'agentennetzwerk',
  // P21-T3/T13: Hex-Einstellungen stehen im Schema VOR den Kernaktionen
  'hex_einstellungen',
+ // P18-T86: Reverse-Einstellungen direkt nach Hex (P22-T139: nachgetragen, Basis 194b92de war ohne diesen Eintrag rot)
+ 'reverse_einstellungen',
  'profil_schalter_status','profil_schalter_setzen','profil_uebersicht','schattenprofil_liste','schattenprofil_korrigieren','schattenprofil_bestaetigen','schattenprofil_ablehnen',
  'typ_liste','typ_anlegen','typ_aendern','typ_revision_lesen','profil_aendern','profil_historie','profil_rollback','persona_liste','persona_versionen','persona_anlegen','persona_neue_version',
  'persona_zuweisen','persona_entfernen','agent_vorbereiten','token_abrufen','token_loeschen','web_ui_koordinator_token','task_bindung_lesen','task_bindung_festlegen','task_bindung_aendern','task_bindung_entblocken',
@@ -98,6 +100,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'netzwerk_modus','netzwerk_werte',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)
  'hex_werte','hex_namen',
+ // P18-T86: Reverse-Einstellungs-Parameter nach Hex (P22-T139: nachgetragen)
+ 'reverse_id','reverse_ebene','reverse_werte','reverse_namen',
  'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel',
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Parameter
  'intervall_ms','monat','api_zeitraum','erlaubte_modelle','api_einstellungen','einstellung_namen',
