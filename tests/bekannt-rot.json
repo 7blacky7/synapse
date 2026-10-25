@@ -1,0 +1,88 @@
+{
+  "_zweck": "P25-T1 Gesamt-Testlaeufer (scripts/test-alle.mjs): bekannt rote Tests und zentrale Einstellungen. Rot mit gleicher oder kleinerer Fehlzahl, ohne neue FAIL-Zeile und (falls gesetzt) passendem muster = BEKANNT_ROT, sonst NEU_ROT. Eintrag ohne Datei = FEHLT. fail_zeilen: exakt oder mit * am Ende als Praefix. Pflege nur ueber files (Entwurf 49df5e9e Abschnitt 5).",
+  "_einstellungen": "einstellungen[]: {datei, art: pool|browser|seriell, zeitlimit: <s>, braucht: [\"docker\"], golden: true, args: [...], env: {K: V}, aus: <grund>, grund, seit, task} ueberschreibt die // @testlauf-Marker der Testdatei, ohne sie anzufassen (z. B. nach der Inventur).",
+  "version": 1,
+  "bekannt_rot": [
+    {
+      "datei": "packages/core/tests/fall-skills-p23-t5.test.mjs",
+      "erwartet": {
+        "fail": 2,
+        "fail_zeilen": [
+          "FAIL rest: alle Parameter mit Kurztext*",
+          "FAIL stdio: alle Parameter mit Kurztext*"
+        ],
+        "muster": null
+      },
+      "grund": "fremde Parameter ohne Kurztext (specialist/admin), P22-T143",
+      "seit": "t205",
+      "task": "P22-T143",
+      "quelle": "D2 t207 core-fall-skills-p23-t5.log (FAIL-Liste identisch zu t206)"
+    },
+    {
+      "datei": "packages/core/tests/intern-schalter.test.mjs",
+      "erwartet": {
+        "fail": null,
+        "fail_zeilen": null,
+        "muster": "INTERN_SCHALTER.*before initialization"
+      },
+      "grund": "Absturz beim Laden: Importzyklus (ReferenceError INTERN_SCHALTER before initialization)",
+      "seit": "t205",
+      "task": null,
+      "quelle": "D2 t207 rest-intern-schalter.log"
+    },
+    {
+      "datei": "packages/core/tests/tool-liste-verbindung-p22-t56.test.mjs",
+      "golden": true,
+      "erwartet": {
+        "fail": 7,
+        "fail_zeilen": [
+          "FAIL F Golden ausweis_rest",
+          "FAIL F Golden ausweis_stdio",
+          "FAIL F Golden bestand_rest",
+          "FAIL F Golden bestand_rest_ausweis",
+          "FAIL F Golden bestand_stdio",
+          "FAIL F Golden gemeinsam_rest",
+          "FAIL F Golden legacy_rest"
+        ],
+        "muster": null
+      },
+      "grund": "Golden-Abweichungen wie Basis (in D2 mit --golden-basis echter Vergleich)",
+      "seit": "t206",
+      "task": "P22-T56",
+      "quelle": "D2 t207 golden-soll-tool-liste-verbindung-p22-t56.fail"
+    },
+    {
+      "datei": "packages/core/tests/zuschnitt-paket-c-p22-t13.test.mjs",
+      "golden": true,
+      "erwartet": {
+        "fail": 2,
+        "fail_zeilen": [
+          "FAIL nur ausloeser aus",
+          "FAIL optionale Art hat Produzent: ausloeser.format_ohne_leser"
+        ],
+        "muster": null
+      },
+      "grund": "Golden-Abweichungen wie Basis (in D2 mit --golden-basis echter Vergleich)",
+      "seit": "t206",
+      "task": "P22-T13",
+      "quelle": "D2 t207 golden-soll-zuschnitt-paket-c-p22-t13.fail"
+    },
+    {
+      "datei": "packages/rest-api/tests/web-ui-welle0-p8-t24.test.mjs",
+      "erwartet": {
+        "fail": 3,
+        "fail_zeilen": [
+          "✖ Kompakte Runtime: Login bleibt opt-in, Zuweisung und Stop verwenden echten Vertrag",
+          "✖ Main-Agent-Einstellungen zeigen beide echten Karten vor unveraenderten Entwurfsfeldern",
+          "✖ Produktiver Chat ohne Demo-Nachricht bietet Tooldetails und ehrlichen Projektscope"
+        ],
+        "muster": null
+      },
+      "grund": "3 von 5 rot erwartet (pass 2 / fail 3)",
+      "seit": "t205",
+      "task": "P8-T24",
+      "quelle": "D2 t207 rest-web-ui-welle0-p8-t24.log"
+    }
+  ],
+  "einstellungen": []
+}

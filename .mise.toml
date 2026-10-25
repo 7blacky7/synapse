@@ -33,6 +33,18 @@ run = "pnpm run clean"
 description = "Run linter"
 run = "pnpm run lint"
 
+[tasks."test-alle"]
+description = "Gesamt-Testlauf P25-T1: alle Tests gegen synapse_test (Node 25 ueber mise; Optionen nach --)"
+run = "mise exec node@25 -- node scripts/test-alle.mjs"
+
+[tasks."test-alle:betroffene"]
+description = "Gesamt-Testlauf nur fuer geaenderte Pakete gegen origin/main"
+run = "mise exec node@25 -- node scripts/test-alle.mjs --nur-betroffene"
+
+[tasks."test-alle:liste"]
+description = "Gesamt-Testlauf: nur finden und einordnen, nichts ausfuehren"
+run = "mise exec node@25 -- node scripts/test-alle.mjs --liste"
+
 [tasks."skills-seed"]
 description = "Seed-Skills (Fall-Skills) laden: fehlende anlegen, vorhandene ueberspringen"
 run = "node scripts/skills-seed-laden.mjs --laden"
