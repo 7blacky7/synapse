@@ -440,3 +440,126 @@ export async function designVorliebenZeile(): Promise<string | null> {
   return 'Design-Vorlieben des Users (global, nur Design/Aufmachung): ' + z.vorbilder + ' Vorbild(er), ' + z.ueberarbeiten + ' zu ueberarbeiten, '
     + z.verbannt + ' verbannt. Vor jeder HTML-Antwort lesen: artefakt(action:"vorlieben").';
 }
+
+/*
+ * P22-T161 (User 25.10.2026, inbox:1152/1153, Entwurf 14a0ca9b, Praezisierung 21f9eb78): TOP-ARTEFAKTE je Projekt des Arbeitsraums aus
+ *   den Bewertungen (keine zweite Bewertungslogik). Hinein kommt, was mit Daten dieses Projekts entstanden ist: bewertung.project = P
+ *   (Projekt der Urheber-Identitaet) ODER (Quelle artefakt) agent_artifacts.standard_project = P. Rangfolge: Standard nur 'vorbild';
+ *   alle:true zeigt auch die anderen Zustaende (vorbild, ueberarbeiten, versuch_gezeigt, verbannt ganz unten). Innerhalb: Saldo aus der
+ *   Historie (hoch minus runter, nur Urteile des Users), dann juengste Bewertung, dann id. Weg je Eintrag: vorlage | main | ausweis |
+ *   inbox | verlauf. Revision: bewertet_revision gegen die aktuelle des Artefakts (veraendert_seit_bewertung). Liste ohne HTML; den
+ *   bewerteten Schnappschuss liefert leseBewertungsSchnappschuss. LIVE: Trigger notify_artefakt_bewertung (Schema 156) meldet jede
+ *   Aenderung auf ARTEFAKT_BEWERTUNG_KANAL; den Strom baut die rest-api (artefakt-bewertung-live.ts).
+ * SCHALTER: haengt an artefakt_bewertung (AUS -> aktiv false, leer; Schnappschuss funktion_aus).
+ * DEBUG: debug {anzahl je zustand im Projekt, gekappt, filter, sortierung, schalter_quelle, dauer_ms}.
+ */
+export const ARTEFAKT_BEWERTUNG_KANAL = 'synapse_artefakt_bewertung' as const;
+export type TopWeg = 'vorlage' | 'main' | 'ausweis' | 'inbox' | 'verlauf';
+export const TOP_ARTEFAKTE_STANDARD = 30;
+const TOP_ARTEFAKTE_MAX = 100;
+const KOMMENTAR_VORSCHAU = 160;
+export const TOP_ZUSTAND_RANG: Record<BewertungsZustand, number> = { vorbild: 0, ueberarbeiten: 1, versuch_gezeigt: 2, verbannt: 3 };
+export const TOP_SORTIERUNG = 'zustand (vorbild, ueberarbeiten, versuch_gezeigt, verbannt), saldo DESC, bewertet_am DESC, id DESC';
+
+export interface TopArtefakt {
+  bewertung_id: string; rang: number; quelle: { art: BewertungsQuelle; ref: string }; titel: string | null;
+  zustand: BewertungsZustand; urteil: Urteil; kommentar_vorschau: string | null; kommentar_gekuerzt: boolean;
+  urheber_agent: string | null; urheber_identity_id: string | null; project: string | null; standard_project: string | null;
+  modus: 'fest' | 'stand' | 'live'; hat_vorlage: boolean; weg: TopWeg; artefakt_fehlt: boolean;
+  bewertet_revision: number | null; aktuelle_revision: number | null; veraendert_seit_bewertung: boolean;
+  bewertet_am: string; anzahl_bewertungen: number; saldo: number;
+}
+
+/** Weg eines bewerteten Blocks. Rein. */
+export function topWeg(z: { quelle_art: string; hat_vorlage?: boolean | null; session_id?: string | null }): TopWeg {
+  if (z.quelle_art === 'inbox') return 'inbox';
+  if (z.quelle_art === 'verlauf') return 'verlauf';
+  if (z.hat_vorlage) return 'vorlage';
+  return z.session_id ? 'main' : 'ausweis';
+}
+
+/** Kommentar-Vorschau (eine Zeile, gekappt). Rein. */
+export function kommentarVorschau(k: unknown): { text: string | null; gekuerzt: boolean } {
+  const t = typeof k === 'string' ? k.replace(/\s+/g, ' ').trim() : '';
+  if (!t) return { text: null, gekuerzt: false };
+  return t.length > KOMMENTAR_VORSCHAU ? { text: t.slice(0, KOMMENTAR_VORSCHAU - 1).trimEnd() + '…', gekuerzt: true } : { text: t, gekuerzt: false };
+}
+
+/** Rangfolge wie die SQL-Sortierung (fuer Tests und Web-UI). Rein. */
+export function vergleicheTop(a: Pick<TopArtefakt, 'zustand' | 'saldo' | 'bewertet_am' | 'bewertung_id'>, b: Pick<TopArtefakt, 'zustand' | 'saldo' | 'bewertet_am' | 'bewertung_id'>): number {
+  return (TOP_ZUSTAND_RANG[a.zustand] - TOP_ZUSTAND_RANG[b.zustand]) || (b.saldo - a.saldo)
+    || (Date.parse(b.bewertet_am) - Date.parse(a.bewertet_am)) || (Number(b.bewertung_id) - Number(a.bewertung_id));
+}
+
+function topProjekt(roh: unknown): string {
+  const p = typeof roh === 'string' ? roh.trim() : '';
+  if (!p || p.length > 200) throw new BewertungsFehler('project_fehlt', 'project (Projekt des Arbeitsraums) angeben');
+  return p;
+}
+
+const TOP_FILTER = `(b.project = $1 OR a.standard_project = $1)`;
+const TOP_JOIN = `FROM artefakt_bewertungen b LEFT JOIN agent_artifacts a ON b.quelle_art = 'artefakt' AND a.id::text = b.quelle_ref`;
+
+/** P22-T161: Rangliste der bewerteten Artefakte eines Projekts (ohne HTML). Schalter AUS -> aktiv false, leer. */
+export async function leseTopArtefakte(o: { project: unknown; alle?: unknown; limit?: unknown }) {
+  const start = Date.now();
+  const project = topProjekt(o.project);
+  const alle = o.alle === true || o.alle === 'true' || o.alle === '1' || o.alle === 1;
+  const n = Number(o.limit);
+  const limit = Number.isFinite(n) && n > 0 ? Math.min(TOP_ARTEFAKTE_MAX, Math.trunc(n)) : TOP_ARTEFAKTE_STANDARD;
+  const s = await artefaktBewertungSchalter();
+  const anzahl: Record<BewertungsZustand, number> = { vorbild: 0, ueberarbeiten: 0, verbannt: 0, versuch_gezeigt: 0 };
+  const debug = { anzahl, gekappt: false, alle, limit, filter: 'bewertung.project = project ODER artefakt.standard_project = project', sortierung: TOP_SORTIERUNG,
+    schalter_quelle: s.quelle, dauer_ms: 0, ...(s.letzter_fehler ? { letzter_fehler: s.letzter_fehler } : {}) };
+  if (!s.aktiv) { debug.dauer_ms = Date.now() - start; return { aktiv: false, project, eintraege: [] as TopArtefakt[], debug }; }
+  for (const z of (await getPool().query(`SELECT b.zustand, count(*)::int AS n ${TOP_JOIN} WHERE ${TOP_FILTER} GROUP BY b.zustand`, [project])).rows as Array<{ zustand: BewertungsZustand; n: number }>) {
+    if (z.zustand in anzahl) anzahl[z.zustand] = z.n;
+  }
+  const r = await getPool().query(
+    `SELECT b.id, b.quelle_art, b.quelle_ref, b.quelle_revision, b.project, b.urheber_agent, b.urheber_identity_id, b.titel, b.urteil, b.kommentar,
+            b.zustand, b.bewertet_am, b.anzahl_bewertungen, a.id IS NOT NULL AS artefakt_da, a.title AS artefakt_titel, a.revision AS artefakt_revision,
+            a.session_id, a.modus, a.standard_project, (a.vorlage IS NOT NULL) AS hat_vorlage, COALESCE(h.saldo, 0)::int AS saldo
+       ${TOP_JOIN}
+       LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE x.urteil = 'hoch') - count(*) FILTER (WHERE x.urteil = 'runter') AS saldo
+                            FROM artefakt_bewertungen_historie x WHERE x.bewertung_id = b.id AND x.von = 'user') h ON TRUE
+      WHERE ${TOP_FILTER} AND ($2::boolean OR b.zustand = 'vorbild')
+      ORDER BY CASE b.zustand WHEN 'vorbild' THEN 0 WHEN 'ueberarbeiten' THEN 1 WHEN 'versuch_gezeigt' THEN 2 ELSE 3 END,
+               saldo DESC, b.bewertet_am DESC, b.id DESC
+      LIMIT $3`, [project, alle, limit]);
+  const eintraege: TopArtefakt[] = (r.rows as Array<Record<string, unknown>>).map((z, i) => {
+    const k = kommentarVorschau(z.kommentar);
+    const istArtefakt = z.quelle_art === 'artefakt';
+    const bewertet = z.quelle_revision === null || z.quelle_revision === undefined ? null : Number(z.quelle_revision);
+    const aktuell = istArtefakt && z.artefakt_da === true && z.artefakt_revision !== null ? Number(z.artefakt_revision) : null;
+    const modus = z.modus === 'stand' || z.modus === 'live' ? z.modus : 'fest';
+    return {
+      bewertung_id: String(z.id), rang: i + 1, quelle: { art: z.quelle_art as BewertungsQuelle, ref: String(z.quelle_ref) },
+      titel: text(z.artefakt_titel) ?? text(z.titel), zustand: z.zustand as BewertungsZustand, urteil: z.urteil as Urteil,
+      kommentar_vorschau: k.text, kommentar_gekuerzt: k.gekuerzt, urheber_agent: text(z.urheber_agent), urheber_identity_id: text(z.urheber_identity_id),
+      project: text(z.project), standard_project: text(z.standard_project), modus, hat_vorlage: z.hat_vorlage === true,
+      weg: topWeg({ quelle_art: String(z.quelle_art), hat_vorlage: z.hat_vorlage === true, session_id: text(z.session_id) }),
+      artefakt_fehlt: istArtefakt && z.artefakt_da !== true, bewertet_revision: bewertet, aktuelle_revision: aktuell,
+      veraendert_seit_bewertung: bewertet !== null && aktuell !== null && aktuell !== bewertet,
+      bewertet_am: new Date(z.bewertet_am as string | Date).toISOString(), anzahl_bewertungen: Number(z.anzahl_bewertungen), saldo: Number(z.saldo),
+    };
+  });
+  const sichtbar = alle ? anzahl.vorbild + anzahl.ueberarbeiten + anzahl.verbannt + anzahl.versuch_gezeigt : anzahl.vorbild;
+  debug.gekappt = eintraege.length < sichtbar;
+  debug.dauer_ms = Date.now() - start;
+  return { aktiv: true, project, eintraege, debug };
+}
+
+/** P22-T161: der bewertete Schnappschuss (HTML so, wie der User es bewertet hat), fuer den Umschalter in der Top-Liste. */
+export async function leseBewertungsSchnappschuss(idRoh: unknown) {
+  await brauchtSchalter();
+  const id = bewertungsId(idRoh);
+  const z = (await getPool().query(
+    `SELECT id, titel, html, quelle_art, quelle_ref, quelle_revision, project, urheber_agent, zustand, bewertet_am FROM artefakt_bewertungen WHERE id = $1::bigint`,
+    [id])).rows[0] as Record<string, unknown> | undefined;
+  if (!z) throw new BewertungsFehler('bewertung_unbekannt', 'Bewertung ' + id + ' nicht gefunden', 404);
+  return {
+    bewertung_id: String(z.id), titel: text(z.titel), html: String(z.html), quelle: { art: z.quelle_art as BewertungsQuelle, ref: String(z.quelle_ref) },
+    bewertet_revision: z.quelle_revision === null || z.quelle_revision === undefined ? null : Number(z.quelle_revision), project: text(z.project),
+    urheber_agent: text(z.urheber_agent), zustand: z.zustand as BewertungsZustand, bewertet_am: new Date(z.bewertet_am as string | Date).toISOString(),
+  };
+}

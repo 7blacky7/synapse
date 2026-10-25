@@ -20,7 +20,8 @@ import {
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 import { leseRuntimeUebersicht, leseRuntimeAgentLog, leseRuntimeProzesse, steuereRuntimeAgent, frageProzessAenderungAn, bestaetigeProzessAenderung, wechslePlattformAgentModell } from '@synapse/core';
-import { bewerteArtefakt, leseBewertungen, leseDesignVorlieben, zerlegeQuellenListe, BewertungsFehler } from '@synapse/core';
+import { bewerteArtefakt, leseBewertungen, leseDesignVorlieben, zerlegeQuellenListe, BewertungsFehler, leseTopArtefakte, leseBewertungsSchnappschuss, artefaktBewertungSchalter } from '@synapse/core';
+import { abonniereBewertungsLive, bewertungLiveStatus } from '../services/artefakt-bewertung-live.js';
 import {
   renderArtefakt, renderungsProjekte, ladeVorlagenZeile, artefaktVorlagenSchalter, leseArtefaktVorlagenEinstellungen, setzeArtefaktVorlagenEinstellungen,
   artefaktQuellenKatalog, ArtefaktVorlagenFehler, ARTEFAKT_VORLAGEN_LIVE_FUNKTION, type ArtefaktRenderErgebnis,
@@ -597,6 +598,35 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   fastify.get<{ Querystring: { limit?: string } }>('/api/agent-runtimes/artefakt-bewertung/vorlieben', async (request, reply) => {
     try { return { success: true, ...(await leseDesignVorlieben({ limit: request.query.limit })) }; }
     catch (error) { return bewertungsFehler(reply, error); }
+  });
+  // P22-T161: Top-Artefakte je Projekt des Arbeitsraums aus den Bewertungen (core leseTopArtefakte), nur lesend, ohne HTML. alle=1 zeigt auch
+  // ueberarbeiten/versuch_gezeigt/verbannt (verbannt ganz unten). Schalter artefakt_bewertung AUS -> aktiv false, leer. Statische Pfade
+  // (top, top/stream, top/:id/schnappschuss) gehen in Fastify vor /api/main-agent/artefakte/:id. DEBUG: debug, live (Strom-Status).
+  fastify.get<{ Querystring: { project?: string; alle?: string; limit?: string } }>('/api/main-agent/artefakte/top', async (request, reply) => {
+    try {
+      return { success: true, ...(await leseTopArtefakte({ project: request.query.project, alle: request.query.alle, limit: request.query.limit })), live: bewertungLiveStatus() };
+    } catch (error) { return bewertungsFehler(reply, error); }
+  });
+  fastify.get<{ Params: { id: string } }>('/api/main-agent/artefakte/top/:id/schnappschuss', async (request, reply) => {
+    try { return { success: true, schnappschuss: await leseBewertungsSchnappschuss(request.params.id) }; }
+    catch (error) { return bewertungsFehler(reply, error); }
+  });
+  // P22-T161: Live-Strom der Top-Liste: 'bereit', danach 'geaendert' {anzahl, ereignisse} je Buendel (NOTIFY synapse_artefakt_bewertung).
+  // Schalter artefakt_bewertung AUS -> 'aus', Ende.
+  fastify.get('/api/main-agent/artefakte/top/stream', async (request, reply) => {
+    reply.raw.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    reply.sent = true;
+    try {
+      const s = await artefaktBewertungSchalter();
+      if (!s.aktiv) { sse(reply, 'aus', { grund: 'schalter', schalter: s }); reply.raw.end(); return; }
+      const abmelden = await abonniereBewertungsLive((event, data) => sse(reply, event, data));
+      sse(reply, 'bereit', { status: bewertungLiveStatus() });
+      const takt = setInterval(() => { reply.raw.write(': takt\n\n'); }, 15000);
+      request.raw.once('close', () => { clearInterval(takt); abmelden(); });
+    } catch (error) {
+      sse(reply, 'fehler', { message: errorMessage(error) });
+      reply.raw.end();
+    }
   });
   // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts) fuer "Persoenliche Artefakte" – nur lesend.
   fastify.get<{ Querystring: { limit?: string } }>('/api/main-agent/artefakte', async (request, reply) => {

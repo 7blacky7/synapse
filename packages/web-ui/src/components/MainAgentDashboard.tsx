@@ -2,8 +2,14 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ToolCallViewModel } from '../control-plane/view-model';
 import { StatusChip } from './StatusKennzeichnung';
 import Agentennetzwerk from './Agentennetzwerk';
+import TopArtefakte from './TopArtefakte';
+import { useArtefaktBewertungen } from './ArtefaktBewertung';
+import { ZUSTAND_CHIP } from './artefakt-bewertung-logik';
+import { sitzungsZustand } from './top-artefakte-logik';
 
 type DashboardView = 'activity' | 'dreams' | 'artifacts';
+/** P22-T161: Top-Artefakte (Bewertungen des Projekts) bzw. die HTML-Antworten dieser Main-Sitzung. */
+type ArtefaktUnterreiter = 'top' | 'sitzung';
 
 /** Ein HTML-Artefakt aus dem Antwortstrom dieser Sitzung (artefakt-Tool, SSE 'artifact'). */
 export interface DashboardArtefakt {
@@ -11,6 +17,8 @@ export interface DashboardArtefakt {
   title: string;
   blocks: number;
   saved: boolean;
+  /** P22-T161: Artefakt-IDs der Bloecke (fuer den Bewertungs-Chip). */
+  blockIds?: string[];
 }
 
 interface Props {
@@ -43,7 +51,12 @@ export const BEISPIEL_EREIGNISSE = [
 ] as const;
 export default function MainAgentDashboard({ project, toolCalls, agentBusy, savedArtifacts, artifacts }: Props) {
   const [view, setView] = useState<DashboardView>('activity');
+  const [unterreiter, setUnterreiter] = useState<ArtefaktUnterreiter>('top');
+  const [topAnzahl, setTopAnzahl] = useState<number | null>(null);
   const [autoFollow, setAutoFollow] = useState(true);
+  // P22-T161: Bewertungs-Chip je Sitzungs-Antwort (ersetzt den alten 'gesichert'-Knopf); nur geladen, wenn die Sitzungsliste offen ist.
+  const sitzungsBewertung = useArtefaktBewertungen(view === 'artifacts' && unterreiter === 'sitzung'
+    ? artifacts.flatMap((a) => (a.blockIds ?? []).map((ref) => ({ art: 'artefakt' as const, ref }))) : []);
   useEffect(() => {
     if (autoFollow && agentBusy) setView('activity');
   }, [agentBusy, autoFollow]);
@@ -84,7 +97,7 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
           <nav className="dashboard-tabs">
             <button type="button" className={view === 'activity' ? 'active' : ''} onClick={() => chooseView('activity')}>Aktivitäten <span>{toolCalls.length}</span></button>
             <button type="button" className={view === 'dreams' ? 'active' : ''} onClick={() => chooseView('dreams')}>Dreams <span>0</span></button>
-            <button type="button" className={view === 'artifacts' ? 'active' : ''} onClick={() => chooseView('artifacts')}>Top-Artefakte <span>{artifacts.length}</span></button>
+            <button type="button" className={view === 'artifacts' ? 'active' : ''} onClick={() => chooseView('artifacts')}>Top-Artefakte <span>{topAnzahl ?? '·'}</span></button>
           </nav>
           <div className="dashboard-panel" key={view}>
             {view === 'activity' && (
@@ -111,13 +124,25 @@ export default function MainAgentDashboard({ project, toolCalls, agentBusy, save
               </div>
             )}
             {view === 'artifacts' && (
-              <div className="artifact-board">
-                <header><div><span>HTML-Antworten dieser Sitzung</span><h2>Top-Artefakte</h2></div><strong>{savedArtifacts} gesichert</strong></header>
-                <div className="artifact-ranking">
-                  {artifacts.map((artifact, index) => <article key={artifact.id}><b>#{index + 1}</b><div><strong>{artifact.title}</strong><span>{artifact.blocks} {artifact.blocks === 1 ? 'Block' : 'Blöcke'} · artefakt-Tool</span></div><em>{artifact.blocks}</em><button type="button" className={artifact.saved ? 'liked' : ''} disabled title={artifact.saved ? 'Im Chat gesichert' : 'Im Chat mit 👍 sichern'}>{artifact.saved ? '✓' : '↑'}</button></article>)}
-                  {!artifacts.length && <p className="empty-state">Noch keine HTML-Antworten des Hauptagenten in dieser Sitzung.</p>}
-                </div>
-              </div>
+              <>
+                <nav className="artefakt-unterreiter" aria-label="Artefakte">
+                  <button type="button" className={unterreiter === 'top' ? 'active' : ''} aria-pressed={unterreiter === 'top'} onClick={() => setUnterreiter('top')}>Top · {project}</button>
+                  <button type="button" className={unterreiter === 'sitzung' ? 'active' : ''} aria-pressed={unterreiter === 'sitzung'} onClick={() => setUnterreiter('sitzung')}>Diese Sitzung<span>{artifacts.length}</span></button>
+                </nav>
+                {unterreiter === 'top' && <TopArtefakte project={project} onAnzahl={setTopAnzahl} />}
+                {unterreiter === 'sitzung' && (
+                  <div className="artifact-board sitzung-artefakte">
+                    <header><div><span>Main-Chat</span><h2>HTML-Antworten dieser Sitzung</h2></div><strong>{savedArtifacts} gesichert</strong></header>
+                    <div className="artifact-ranking">
+                      {artifacts.map((artifact, index) => {
+                        const zustand = sitzungsZustand(artifact.blockIds ?? [], sitzungsBewertung.je);
+                        return <article key={artifact.id}><b>#{index + 1}</b><div><strong>{artifact.title}</strong><span>{artifact.blocks} {artifact.blocks === 1 ? 'Block' : 'Blöcke'} · artefakt-Tool</span></div><em>{artifact.blocks}</em>{zustand ? <span className={'top-chip zustand ' + zustand} title="Design-Bewertung (im Chat am Block)">{ZUSTAND_CHIP[zustand]}</span> : <span className="top-chip" title="Im Chat am Block mit dem Design-Daumen bewerten">offen</span>}</article>;
+                      })}
+                      {!artifacts.length && <p className="empty-state">Noch keine HTML-Antworten des Hauptagenten in dieser Sitzung.</p>}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </main>

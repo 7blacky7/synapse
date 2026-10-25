@@ -1,0 +1,47 @@
+/* P22-T161: Top-Artefakte im Arbeitsraum (MainAgentDashboard). Farben nur aus den Theme-Variablen (hell/dunkel). */
+.artifact-board.top-artefakte,.artifact-board.sitzung-artefakte{height:auto;min-height:100%;overflow:auto}
+.artefakt-unterreiter{display:flex;gap:6px;padding:14px 26px 0}
+.artefakt-unterreiter button{border:1px solid var(--border);background:transparent;color:var(--muted);padding:5px 10px;font:700 9px "IBM Plex Mono",monospace;text-transform:uppercase;cursor:pointer}
+.artefakt-unterreiter button.active{border-color:var(--accent);color:var(--accent)}
+.artefakt-unterreiter button span{margin-left:6px;opacity:.75}
+.top-werkzeuge{display:flex;align-items:center;gap:12px}
+.top-live{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font:700 9px "IBM Plex Mono",monospace;text-transform:uppercase}
+.top-live i{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.top-live.bereit i{background:var(--success);animation:dash-pulse 1.8s infinite}
+.top-live.fehler i{background:var(--danger,#ef5b5b)}
+.top-umschalter{display:inline-flex;border:1px solid var(--border)}
+.top-umschalter button{border:0;background:transparent;color:var(--muted);padding:5px 10px;font:700 9px "IBM Plex Mono",monospace;text-transform:uppercase;cursor:pointer}
+.top-umschalter button+button{border-left:1px solid var(--border)}
+.top-umschalter button.active{background:var(--accent);color:var(--accent-contrast,#111318)}
+.top-umschalter.klein button{padding:3px 8px}
+.top-liste{margin-top:12px}
+.top-eintrag{border-bottom:1px solid var(--border)}
+.top-eintrag.verbannt{opacity:.6}
+.top-kopf{width:100%;display:grid;grid-template-columns:42px minmax(0,1fr) auto 16px;gap:12px;align-items:center;padding:13px 4px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}
+.top-kopf:hover{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.top-kopf:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.top-kopf>b{color:var(--muted);font:700 18px "Syne",sans-serif}
+.top-eintrag.vorbild .top-kopf>b{color:var(--accent)}
+.top-text{min-width:0}
+.top-text strong,.top-text q,.top-text small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-text strong{font-size:12px}
+.top-text q{margin-top:3px;color:var(--text,inherit);font-size:11px;font-style:italic;opacity:.85}
+.top-text q::before{content:'\201E'}.top-text q::after{content:'\201C'}
+.top-text small{margin-top:3px;color:var(--muted);font-size:9px}
+.top-chips{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}
+.top-chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);padding:2px 7px;color:var(--muted);font:700 8px "IBM Plex Mono",monospace;text-transform:uppercase;white-space:nowrap}
+.top-chip.live{border-color:var(--success);color:var(--success)}
+.top-chip.live i{width:6px;height:6px;border-radius:50%;background:var(--success);animation:dash-pulse 1.8s infinite}
+.top-chip.modus{border-color:var(--accent);color:var(--accent)}
+.top-chip.zustand.verbannt{border-color:var(--danger,#ef5b5b);color:var(--danger,#ef5b5b)}
+.top-chip.zustand.ueberarbeiten,.top-chip.zustand.versuch_gezeigt{border-color:var(--accent);color:var(--accent)}
+.top-pfeil{width:8px;height:8px;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:transform .15s ease}
+.top-eintrag.offen .top-pfeil{transform:rotate(-135deg)}
+.top-ansicht{padding:4px 4px 16px}
+.top-ansicht-leiste{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 10px}
+.top-revision{color:var(--muted);font:700 9px "IBM Plex Mono",monospace}
+.top-revision.veraendert{color:var(--accent)}
+.top-ansicht .native-html-block{width:100%}
+.sitzung-artefakte .top-chip{justify-self:end}
+@media (max-width:640px){.top-kopf{grid-template-columns:30px minmax(0,1fr) 14px}.top-chips{grid-column:2;justify-content:flex-start}.top-pfeil{grid-row:1;grid-column:3}.artifact-board>header{flex-wrap:wrap;gap:10px}}
+@media (prefers-reduced-motion:reduce){.top-live.bereit i,.top-chip.live i{animation:none}.top-pfeil{transition:none}}

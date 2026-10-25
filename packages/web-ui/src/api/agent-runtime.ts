@@ -684,6 +684,81 @@ export async function sendeArtefaktBewertung(body: { quelle_art: string; quelle_
   return jsonRequest<{ success: true; bewertung: ArtefaktBewertungStand }>('/api/agent-runtimes/artefakt-bewertung', { method: 'POST', body: JSON.stringify(body) });
 }
 
+/** P22-T161: ein Eintrag der Top-Artefakte eines Projekts (core leseTopArtefakte, ohne HTML). */
+export interface TopArtefakt {
+  bewertung_id: string; rang: number; quelle: { art: 'artefakt' | 'inbox' | 'verlauf'; ref: string }; titel: string | null;
+  zustand: ArtefaktBewertungStand['zustand']; urteil: 'hoch' | 'runter'; kommentar_vorschau: string | null; kommentar_gekuerzt: boolean;
+  urheber_agent: string | null; urheber_identity_id: string | null; project: string | null; standard_project: string | null;
+  modus: 'fest' | 'stand' | 'live'; hat_vorlage: boolean; weg: 'vorlage' | 'main' | 'ausweis' | 'inbox' | 'verlauf'; artefakt_fehlt: boolean;
+  bewertet_revision: number | null; aktuelle_revision: number | null; veraendert_seit_bewertung: boolean;
+  bewertet_am: string; anzahl_bewertungen: number; saldo: number;
+}
+export interface TopArtefakteAntwort { aktiv: boolean; project: string; eintraege: TopArtefakt[]; debug?: Record<string, unknown> }
+
+/** P22-T161: Top-Artefakte des Projekts (Standard nur Vorbilder; alle = auch die anderen Zustaende). Schalter AUS = aktiv false. */
+export async function getTopArtefakte(project: string, alle = false): Promise<TopArtefakteAntwort> {
+  const params = new URLSearchParams({ project });
+  if (alle) params.set('alle', '1');
+  const r = await jsonRequest<{ success: true; aktiv?: boolean; project?: string; eintraege?: TopArtefakt[]; debug?: Record<string, unknown> }>(
+    '/api/main-agent/artefakte/top?' + params.toString());
+  return { aktiv: r.aktiv === true, project: typeof r.project === 'string' ? r.project : project, eintraege: Array.isArray(r.eintraege) ? r.eintraege : [], debug: r.debug };
+}
+
+export interface BewertungsSchnappschuss {
+  bewertung_id: string; titel: string | null; html: string; quelle: { art: string; ref: string }; bewertet_revision: number | null; bewertet_am: string;
+}
+
+/** P22-T161: das HTML so, wie der User es bewertet hat (Umschalter bzw. einzige Ansicht bei Inbox/Verlauf). */
+export async function getBewertungsSchnappschuss(bewertungId: string): Promise<BewertungsSchnappschuss> {
+  return (await jsonRequest<{ success: true; schnappschuss: BewertungsSchnappschuss }>(
+    '/api/main-agent/artefakte/top/' + encodeURIComponent(bewertungId) + '/schnappschuss')).schnappschuss;
+}
+
+/**
+ * P22-T161: Live-Strom der Top-Liste (SSE GET /api/main-agent/artefakte/top/stream). 'geaendert' kommt gebuendelt bei jeder Aenderung
+ * einer Bewertung; Schalter artefakt_bewertung AUS -> 'aus', Ende. Rueckgabe: Abmelden.
+ */
+export function abonniereTopArtefakte(
+  onGeaendert: (d: { anzahl: number; ereignisse: unknown[] }) => void,
+  onStatus?: (status: { art: 'bereit' | 'aus' | 'fehler'; info?: unknown }) => void,
+): () => void {
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      const response = await apiFetch('/api/main-agent/artefakte/top/stream', { headers: { Accept: 'text/event-stream' }, signal: controller.signal });
+      if (!response.ok || !response.body) { onStatus?.({ art: 'fehler', info: response.status }); return; }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let puffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        puffer += decoder.decode(value, { stream: true });
+        let ende = puffer.indexOf('\n\n');
+        while (ende >= 0) {
+          const block = puffer.slice(0, ende);
+          puffer = puffer.slice(ende + 2);
+          ende = puffer.indexOf('\n\n');
+          let event = 'message';
+          let data = '';
+          for (const zeile of block.split('\n')) {
+            if (zeile.startsWith('event:')) event = zeile.slice(6).trim();
+            else if (zeile.startsWith('data:')) data += zeile.slice(5).trim();
+          }
+          if (!data) continue;
+          let d: Record<string, unknown>;
+          try { d = JSON.parse(data) as Record<string, unknown>; } catch { continue; }
+          if (event === 'geaendert') onGeaendert({ anzahl: Number(d.anzahl) || 0, ereignisse: Array.isArray(d.ereignisse) ? d.ereignisse : [] });
+          else if (event === 'bereit' || event === 'aus' || event === 'fehler') onStatus?.({ art: event, info: d });
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) onStatus?.({ art: 'fehler', info: error instanceof Error ? error.message : String(error) });
+    }
+  })();
+  return () => controller.abort();
+}
+
 /** P22-T73: Schalter der Warteschlange des Main-Chats (Standard AUS); EIN = Nachrichten warten statt Fehler. */
 export async function getMainAgentWarteschlangeSchalter(): Promise<{ aktiv: boolean; quelle: string }> {
   return (await jsonRequest<{ success: true; schalter: { aktiv: boolean; quelle: string } }>('/api/main-agent/warteschlange/schalter')).schalter;

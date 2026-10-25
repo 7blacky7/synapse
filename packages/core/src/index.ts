@@ -767,15 +767,18 @@ export { AGENT_START_ORT_SCHEMA_SQL } from './db/agent-start-ort-schema.js';
 // P22-T118: Wrapper-Ende belegbar (Schema 150, rein additive Diagnose).
 export { WRAPPER_ENDE_SCHEMA_SQL } from './db/wrapper-ende-schema.js';
 // P22-T141: Artefakt-Bewertung (Schema 151, Design-Gedaechtnis global).
-export { ARTEFAKT_BEWERTUNG_SCHEMA_SQL } from './db/artefakt-bewertung-schema.js';
+export { ARTEFAKT_BEWERTUNG_SCHEMA_SQL, ARTEFAKT_BEWERTUNG_NOTIFY_SCHEMA_SQL } from './db/artefakt-bewertung-schema.js';
 export {
   ARTEFAKT_BEWERTUNG_FUNKTION, ARTEFAKT_BEWERTUNG_MELDEN_FUNKTION, BEWERTUNGS_QUELLEN, VORLIEBEN_STANDARD, VORBILD_HTML_MAX, BewertungsFehler,
   zustandAus, designMerkmale, merkmalText, zerlegeQuellenListe, artefaktBewertungSchalter, bewerteArtefakt, leseBewertungen,
   leseDesignVorlieben, ladeBewertungHtml, verknuepfeVersuch, designVorliebenZahlen, designVorliebenZeile,
   // P22-T147: Bewertung am genutzten Artefakt
   bewertungFuerArtefakt, bewertungsHinweisText,
+  // P22-T161: Top-Artefakte je Projekt (Schema 156: NOTIFY synapse_artefakt_bewertung)
+  ARTEFAKT_BEWERTUNG_KANAL, TOP_ARTEFAKTE_STANDARD, TOP_ZUSTAND_RANG, TOP_SORTIERUNG, topWeg, kommentarVorschau, vergleicheTop, leseTopArtefakte,
+  leseBewertungsSchnappschuss,
 } from './services/artefakt-bewertung.js';
-export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, BewertungsStand, BewertungsEingabe, BewertungsHinweis } from './services/artefakt-bewertung.js';
+export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, BewertungsStand, BewertungsEingabe, BewertungsHinweis, TopArtefakt, TopWeg } from './services/artefakt-bewertung.js';
 // P22-T154: Artefakte als Datenvorlagen (Schema 152, Vorlagensprache, Quellen, Rendern je Projekt).
 export { ARTEFAKT_VORLAGEN_SCHEMA_SQL } from './db/artefakt-vorlagen-schema.js';
 // P22-T157: Sitzungsverlaeufe semantisch durchsuchbar (Schema 153, Collection agent_verlauf, Worker verlauf_nachzug, search action verlauf).
