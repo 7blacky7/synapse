@@ -35,6 +35,7 @@
 .top-chip.modus{border-color:var(--accent);color:var(--accent)}
 .top-chip.zustand.verbannt{border-color:var(--danger,#ef5b5b);color:var(--danger,#ef5b5b)}
 .top-chip.zustand.ueberarbeiten,.top-chip.zustand.versuch_gezeigt{border-color:var(--accent);color:var(--accent)}
+.top-chip.skript{border-color:var(--warning,#d6a84b);color:var(--warning,#d6a84b)}
 .top-pfeil{width:8px;height:8px;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:transform .15s ease}
 .top-eintrag.offen .top-pfeil{transform:rotate(-135deg)}
 .top-ansicht{padding:4px 4px 16px}

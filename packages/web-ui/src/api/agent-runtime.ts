@@ -692,16 +692,20 @@ export interface TopArtefakt {
   modus: 'fest' | 'stand' | 'live'; hat_vorlage: boolean; weg: 'vorlage' | 'main' | 'ausweis' | 'inbox' | 'verlauf'; artefakt_fehlt: boolean;
   bewertet_revision: number | null; aktuelle_revision: number | null; veraendert_seit_bewertung: boolean;
   bewertet_am: string; anzahl_bewertungen: number; saldo: number;
+  /** P22-T166: das aktuelle Artefakt enthaelt ein Skript (nur Quelle artefakt). */
+  hat_skript?: boolean;
 }
-export interface TopArtefakteAntwort { aktiv: boolean; project: string; eintraege: TopArtefakt[]; debug?: Record<string, unknown> }
+/** P22-T166: skripte_aktiv = Schalter artefakt_skripte (Skript laeuft im ausgeklappten Eintrag nach Klick). */
+export interface TopArtefakteAntwort { aktiv: boolean; project: string; eintraege: TopArtefakt[]; skripte_aktiv?: boolean; debug?: Record<string, unknown> }
 
 /** P22-T161: Top-Artefakte des Projekts (Standard nur Vorbilder; alle = auch die anderen Zustaende). Schalter AUS = aktiv false. */
 export async function getTopArtefakte(project: string, alle = false): Promise<TopArtefakteAntwort> {
   const params = new URLSearchParams({ project });
   if (alle) params.set('alle', '1');
-  const r = await jsonRequest<{ success: true; aktiv?: boolean; project?: string; eintraege?: TopArtefakt[]; debug?: Record<string, unknown> }>(
+  const r = await jsonRequest<{ success: true; aktiv?: boolean; project?: string; eintraege?: TopArtefakt[]; skripte_aktiv?: boolean; debug?: Record<string, unknown> }>(
     '/api/main-agent/artefakte/top?' + params.toString());
-  return { aktiv: r.aktiv === true, project: typeof r.project === 'string' ? r.project : project, eintraege: Array.isArray(r.eintraege) ? r.eintraege : [], debug: r.debug };
+  return { aktiv: r.aktiv === true, project: typeof r.project === 'string' ? r.project : project, eintraege: Array.isArray(r.eintraege) ? r.eintraege : [],
+    skripte_aktiv: r.skripte_aktiv === true, debug: r.debug };
 }
 
 export interface BewertungsSchnappschuss {

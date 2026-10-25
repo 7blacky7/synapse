@@ -42,6 +42,8 @@ import {
   aktuellerAgentPrincipal,
   aktuelleAgentAkteurIdentityId,
   hauptagentIdentitaetsId,
+  // P22-T166: Artefakte mit Skript (nur Top-Artefakte)
+  artefaktSkripteSchalter,
   type ArtefaktBetrachter,
   type ArtefaktRenderErgebnis,
 } from '@synapse/core';
@@ -230,9 +232,17 @@ export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?:
   // P22-T154: neu zeichnen (jeder mit Leserecht auf das Projekt) und Quellenkatalog.
   if (action === 'neu_zeichnen') return neuZeichnen(args, agentId);
   if (action === 'quellen') {
-    const [s, live, ausweis, verweise] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter('artefakt_vorlagen_live'),
-      artefaktVorlagenSchalter(ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION), artefaktVorlagenSchalter('artefakt_verweise')]);
-    return { success: true, katalog: artefaktQuellenKatalog(), schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis, artefakt_verweise: verweise },
+    const [s, live, ausweis, verweise, skripte] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter('artefakt_vorlagen_live'),
+      artefaktVorlagenSchalter(ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION), artefaktVorlagenSchalter('artefakt_verweise'), artefaktSkripteSchalter()]);
+    return { success: true, katalog: artefaktQuellenKatalog(), schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis, artefakt_verweise: verweise,
+      artefakt_skripte: skripte },
+      // P22-T166: kurze Anleitung fuer Artefakte mit Skript (laufen NUR in den Top-Artefakten, sonst wird das Skript entfernt).
+      skripte: 'Skript (Schalter artefakt_skripte): <script> im html bzw. in der vorlage laeuft NUR in den Top-Artefakten, nach Klick auf "Skript starten",'
+        + ' in einem abgeschotteten iframe (kein Netzwerk, kein fetch, kein eval, keine externen Bibliotheken - nur inline; keine Formulare/Popups).'
+        + ' Chatfenster und Persoenliche Artefakte zeigen es ohne Skript. Daten nur lesend: await synapse.quelle("plan.alle", {offen:true}) (Katalog wie oben,'
+        + ' project setzt der Rahmen), await synapse.lese("task"|"plan"|"thought"|"memory", id), synapse.oeffne("P22-T5") oeffnet das Lesefenster,'
+        + ' synapse.bereit(fn), synapse.beiNeuemStand(fn), synapse.projekt, synapse.thema (hell|dunkel), CSS-Variablen --synapse-bg/-text/-accent.'
+        + ' Grenzen: 30 Aufrufe je 10 s, 4 parallel, 10 s Zeitlimit, 256 KB je Antwort; haengt das Skript 5 s, wird es gestoppt. Nie nach Codes/Passwoertern fragen.',
       hinweis: 'Quellen: [{name, vertrag, args?}]; project wird beim Rendern eingesetzt, nie in args. Vorlage: {{wert | filter}}, {{#each liste as x}}, {{#if a == b}}; alles wird escaped.',
       // P22-T165: kurze Anleitung fuer anklickbare Artefakte (ohne Skript).
       interaktion: 'Verweis (Schalter artefakt_verweise): <span data-synapse-verweis="P22-T5"> oder <a href="#verweis:P22"> oeffnet das Lesefenster;'

@@ -800,6 +800,12 @@ export {
   // P22-T165: plan.alle + Schalter artefakt_verweise.
   ARTEFAKT_VERWEISE_FUNKTION, ladePlanAlle, wegfallReihenfolge,
 } from './services/artefakt-vorlagen.js';
+// P22-T166: Artefakte mit Skript (nur Top-Artefakte) - nur lesende Daten-Bruecke + Schalter artefakt_skripte.
+export {
+  ARTEFAKT_SKRIPTE_FUNKTION, SKRIPT_BRUECKE_OPS, SKRIPT_LESE_ARTEN, SKRIPT_ANFRAGE_MAX_BYTES, ArtefaktSkriptFehler, artefaktSkripteSchalter,
+  enthaeltSkript, skriptUrheber, urheberDarfProjekt, skriptBrueckeStatus, setzeSkriptBrueckeStatusZurueck, artefaktSkriptBruecke,
+} from './services/artefakt-skript-bruecke.js';
+export type { SkriptBrueckeOp, SkriptLeseArt, SkriptUrheber, SkriptBrueckeKontext, SkriptBrueckeErgebnis } from './services/artefakt-skript-bruecke.js';
 export type {
   ArtefaktModus, ArtefaktQuellDefinition, ArtefaktQuelle, QuellStand, ArtefaktBetrachter, VorlagenZeile, VorlagenEingabe, RenderAnlass,
   ArtefaktRenderErgebnis, VerlaufArtefakt, ArtefaktVorlagenEinstellungenStand, ArtefaktVorlagenWerte,

@@ -468,6 +468,13 @@ export interface TopArtefakt {
   modus: 'fest' | 'stand' | 'live'; hat_vorlage: boolean; weg: TopWeg; artefakt_fehlt: boolean;
   bewertet_revision: number | null; aktuelle_revision: number | null; veraendert_seit_bewertung: boolean;
   bewertet_am: string; anzahl_bewertungen: number; saldo: number;
+  /** P22-T166: aktuelles Artefakt (html bzw. vorlage) enthaelt <script> (nur Quelle artefakt). */
+  hat_skript: boolean;
+}
+
+/** P22-T166: Schalter artefakt_skripte (wie artefakt-skript-bruecke.ts, hier direkt gelesen: kein Importzyklus). Wirft nie. */
+async function skripteAktiv(): Promise<boolean> {
+  try { const s = await leseProfilProduktSchalter('artefakt_skripte', null); return s.aktiv && !s.letzter_fehler; } catch { return false; }
 }
 
 /** Weg eines bewerteten Blocks. Rein. */
@@ -511,14 +518,16 @@ export async function leseTopArtefakte(o: { project: unknown; alle?: unknown; li
   const anzahl: Record<BewertungsZustand, number> = { vorbild: 0, ueberarbeiten: 0, verbannt: 0, versuch_gezeigt: 0 };
   const debug = { anzahl, gekappt: false, alle, limit, filter: 'bewertung.project = project ODER artefakt.standard_project = project', sortierung: TOP_SORTIERUNG,
     schalter_quelle: s.quelle, dauer_ms: 0, ...(s.letzter_fehler ? { letzter_fehler: s.letzter_fehler } : {}) };
-  if (!s.aktiv) { debug.dauer_ms = Date.now() - start; return { aktiv: false, project, eintraege: [] as TopArtefakt[], debug }; }
+  const skripte_aktiv = await skripteAktiv();
+  if (!s.aktiv) { debug.dauer_ms = Date.now() - start; return { aktiv: false, project, eintraege: [] as TopArtefakt[], skripte_aktiv, debug }; }
   for (const z of (await getPool().query(`SELECT b.zustand, count(*)::int AS n ${TOP_JOIN} WHERE ${TOP_FILTER} GROUP BY b.zustand`, [project])).rows as Array<{ zustand: BewertungsZustand; n: number }>) {
     if (z.zustand in anzahl) anzahl[z.zustand] = z.n;
   }
   const r = await getPool().query(
     `SELECT b.id, b.quelle_art, b.quelle_ref, b.quelle_revision, b.project, b.urheber_agent, b.urheber_identity_id, b.titel, b.urteil, b.kommentar,
             b.zustand, b.bewertet_am, b.anzahl_bewertungen, a.id IS NOT NULL AS artefakt_da, a.title AS artefakt_titel, a.revision AS artefakt_revision,
-            a.session_id, a.modus, a.standard_project, (a.vorlage IS NOT NULL) AS hat_vorlage, COALESCE(h.saldo, 0)::int AS saldo
+            a.session_id, a.modus, a.standard_project, (a.vorlage IS NOT NULL) AS hat_vorlage, COALESCE(h.saldo, 0)::int AS saldo,
+            (a.id IS NOT NULL AND (a.html ~* '<script[[:space:]>/]' OR COALESCE(a.vorlage, '') ~* '<script[[:space:]>/]')) AS hat_skript
        ${TOP_JOIN}
        LEFT JOIN LATERAL (SELECT count(*) FILTER (WHERE x.urteil = 'hoch') - count(*) FILTER (WHERE x.urteil = 'runter') AS saldo
                             FROM artefakt_bewertungen_historie x WHERE x.bewertung_id = b.id AND x.von = 'user') h ON TRUE
@@ -541,12 +550,13 @@ export async function leseTopArtefakte(o: { project: unknown; alle?: unknown; li
       artefakt_fehlt: istArtefakt && z.artefakt_da !== true, bewertet_revision: bewertet, aktuelle_revision: aktuell,
       veraendert_seit_bewertung: bewertet !== null && aktuell !== null && aktuell !== bewertet,
       bewertet_am: new Date(z.bewertet_am as string | Date).toISOString(), anzahl_bewertungen: Number(z.anzahl_bewertungen), saldo: Number(z.saldo),
+      hat_skript: istArtefakt && z.hat_skript === true,
     };
   });
   const sichtbar = alle ? anzahl.vorbild + anzahl.ueberarbeiten + anzahl.verbannt + anzahl.versuch_gezeigt : anzahl.vorbild;
   debug.gekappt = eintraege.length < sichtbar;
   debug.dauer_ms = Date.now() - start;
-  return { aktiv: true, project, eintraege, debug };
+  return { aktiv: true, project, eintraege, skripte_aktiv, debug };
 }
 
 /** P22-T161: der bewertete Schnappschuss (HTML so, wie der User es bewertet hat), fuer den Umschalter in der Top-Liste. */

@@ -3,6 +3,8 @@ import {
   abonniereTopArtefakte, getArtefaktAnsicht, getBewertungsSchnappschuss, getTopArtefakte, type ArtefaktAnsicht, type TopArtefakt, type TopArtefakteAntwort,
 } from '../api/agent-runtime';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
+import SkriptRahmen from '../kios/SkriptRahmen';
+import { skriptErlaubt } from '../kios/skript-rahmen-logik';
 import { ArtefaktLiveBlock } from './ArtefaktLiveBlock';
 import { ArtefaktBewertung, useArtefaktBewertungen } from './ArtefaktBewertung';
 import { ZUSTAND_CHIP } from './artefakt-bewertung-logik';
@@ -83,7 +85,7 @@ export default function TopArtefakte({ project, onAnzahl }: { project: string; o
       {daten?.aktiv && (
         <div className="top-liste">
           {eintraege.map((e) => (
-            <TopEintrag key={e.bewertung_id} e={e} project={project} offen={offen === e.bewertung_id}
+            <TopEintrag key={e.bewertung_id} e={e} project={project} offen={offen === e.bewertung_id} skripteAktiv={daten.skripte_aktiv === true}
               onUmschalten={() => setOffen((o) => naechsterOffen(o, e.bewertung_id))} onBewertet={() => { void laden(); }} />
           ))}
           {!eintraege.length && <p className="empty-state">{alle ? 'Noch keine bewerteten Artefakte mit Daten von ' + project + '.' : 'Noch keine Vorbilder mit Daten von ' + project + '. Bewerte ein Artefakt mit dem Design-Daumen, dann erscheint es hier.'}</p>}
@@ -94,8 +96,8 @@ export default function TopArtefakte({ project, onAnzahl }: { project: string; o
   );
 }
 
-function TopEintrag({ e, project, offen, onUmschalten, onBewertet }: {
-  e: TopArtefakt; project: string; offen: boolean; onUmschalten: () => void; onBewertet: () => void;
+function TopEintrag({ e, project, offen, skripteAktiv, onUmschalten, onBewertet }: {
+  e: TopArtefakt; project: string; offen: boolean; skripteAktiv: boolean; onUmschalten: () => void; onBewertet: () => void;
 }) {
   const live = istLive(e);
   return (
@@ -109,18 +111,20 @@ function TopEintrag({ e, project, offen, onUmschalten, onBewertet }: {
         </div>
         <div className="top-chips">
           {e.zustand !== 'vorbild' && <span className={'top-chip zustand ' + e.zustand}>{ZUSTAND_CHIP[e.zustand]}</span>}
+          {/* P22-T166: Artefakt mit Skript (laeuft ausgeklappt nach Klick auf 'Skript starten'). */}
+          {skripteAktiv && e.hat_skript && e.quelle.art === 'artefakt' && <span className="top-chip skript" title="Artefakt mit Skript: läuft ausgeklappt abgeschottet, nach Klick auf 'Skript starten'">Skript</span>}
           {live ? <span className="top-chip live" title="Rendert live mit den Daten dieses Projekts, solange ausgeklappt"><i />Live</span>
             : e.hat_vorlage ? <span className="top-chip modus">{MODUS_TEXT[e.modus]}</span> : null}
           <span className="top-chip weg" title={WEG_TITEL[e.weg]}>{WEG_TEXT[e.weg]}</span>
         </div>
         <i className="top-pfeil" aria-hidden="true" />
       </button>
-      {offen && <TopAnsicht e={e} project={project} onBewertet={onBewertet} />}
+      {offen && <TopAnsicht e={e} project={project} skripteAktiv={skripteAktiv} onBewertet={onBewertet} />}
     </article>
   );
 }
 
-function TopAnsicht({ e, project, onBewertet }: { e: TopArtefakt; project: string; onBewertet: () => void }) {
+function TopAnsicht({ e, project, skripteAktiv, onBewertet }: { e: TopArtefakt; project: string; skripteAktiv: boolean; onBewertet: () => void }) {
   const [schnappschuss, setSchnappschuss] = useState(false);
   const ansicht = topAnsicht(e, schnappschuss);
   const renderFuer = renderProjekt(e, project);
@@ -141,6 +145,9 @@ function TopAnsicht({ e, project, onBewertet }: { e: TopArtefakt; project: strin
   }, [e.bewertung_id, e.quelle.ref, ansicht, renderFuer]);
 
   const hinweis = revisionsHinweis(e);
+  // P22-T166 (F1): Skript nur fuer Artefakte (aktueller Stand bzw. bewerteter Schnappschuss desselben Artefakts), nie Inbox/Verlauf.
+  const skript = !!inhalt && !e.artefakt_fehlt && skriptErlaubt({ schalter: skripteAktiv, quelleArt: e.quelle.art, html: inhalt.html });
+  const skriptProjekt = renderFuer ?? e.project ?? e.standard_project ?? project;
   return (
     <div className="top-ansicht">
       <div className="top-ansicht-leiste">
@@ -162,8 +169,11 @@ function TopAnsicht({ e, project, onBewertet }: { e: TopArtefakt; project: strin
       {inhalt && (ansicht === 'vorlage'
         ? <ArtefaktLiveBlock key={e.quelle.ref + ':' + renderFuer} id={e.quelle.ref} html={inhalt.html} revision={inhalt.revision}
           modus={inhalt.ansicht?.modus ?? e.modus} project={renderFuer} vorlage gerendertAm={inhalt.ansicht?.render?.gerendert_am} className="native-html-block"
-          verweisProjekt={e.project ?? e.standard_project ?? project} />
-        : <AgentRenderingSurface html={inhalt.html} revision={e.bewertung_id + ':' + ansicht + ':' + inhalt.revision} className="native-html-block"
+          verweisProjekt={e.project ?? e.standard_project ?? project} skript={skript ? { titel: e.titel } : null} />
+        : skript
+          ? <SkriptRahmen key={e.bewertung_id + ':' + ansicht} artefaktId={e.quelle.ref} html={inhalt.html} revision={e.bewertung_id + ':' + ansicht + ':' + inhalt.revision}
+            projekt={skriptProjekt} titel={e.titel} className="native-html-block" />
+          : <AgentRenderingSurface html={inhalt.html} revision={e.bewertung_id + ':' + ansicht + ':' + inhalt.revision} className="native-html-block"
           verweisProjekt={e.project ?? e.standard_project ?? project} />)}
       {inhalt?.ansicht?.render?.fehler?.length ? <p className="empty-state">Vorlagenfehler: {inhalt.ansicht.render.fehler.join(' · ')}</p> : null}
     </div>

@@ -26,6 +26,9 @@ import {
   renderArtefakt, renderungsProjekte, ladeVorlagenZeile, artefaktVorlagenSchalter, leseArtefaktVorlagenEinstellungen, setzeArtefaktVorlagenEinstellungen,
   artefaktQuellenKatalog, ArtefaktVorlagenFehler, ARTEFAKT_VORLAGEN_LIVE_FUNKTION, ARTEFAKT_VERWEISE_FUNKTION, type ArtefaktRenderErgebnis,
 } from '@synapse/core';
+// P22-T166: Artefakte mit Skript (nur Top-Artefakte) - nur lesende Daten-Bruecke.
+import { artefaktSkriptBruecke, artefaktSkripteSchalter, skriptBrueckeStatus, ArtefaktSkriptFehler } from '@synapse/core';
+import { leseVerweis } from '../services/verweise.js';
 import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
 import { gleicheCliListeMitRegistry } from '../services/agent-runtime/registry-abgleich.js';
@@ -682,13 +685,34 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   fastify.get('/api/main-agent/artefakt-vorlagen', async () => {
     const [s, live, ausweis, verweise] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter(ARTEFAKT_VORLAGEN_LIVE_FUNKTION),
       artefaktVorlagenSchalter('artefakt_ausweis_zeigen'), artefaktVorlagenSchalter(ARTEFAKT_VERWEISE_FUNKTION)]);
-    return { success: true, schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis, artefakt_verweise: verweise },
-      einstellungen: await leseArtefaktVorlagenEinstellungen(), katalog: artefaktQuellenKatalog(), live: artefaktLiveStatus() };
+    return { success: true, schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis, artefakt_verweise: verweise,
+      artefakt_skripte: await artefaktSkripteSchalter() },
+      einstellungen: await leseArtefaktVorlagenEinstellungen(), katalog: artefaktQuellenKatalog(), live: artefaktLiveStatus(), skript_bruecke: skriptBrueckeStatus() };
   });
   // P22-T165: Schalter artefakt_verweise fuer die Web-UI (Klick auf Verweise im Artefakt, Zustand ueber Live-Updates). Wirft nie.
   fastify.get('/api/main-agent/artefakt-verweise', async () => {
     const s = await artefaktVorlagenSchalter(ARTEFAKT_VERWEISE_FUNKTION);
     return { success: true, aktiv: s.aktiv, schalter: s };
+  });
+  // P22-T166: Schalter artefakt_skripte fuer die Web-UI (Hinweis im Chatfenster) plus Debug der Bruecke. Wirft nie.
+  fastify.get('/api/main-agent/artefakt-skripte', async () => {
+    const s = await artefaktSkripteSchalter();
+    return { success: true, aktiv: s.aktiv, schalter: s, bruecke: skriptBrueckeStatus() };
+  });
+  // P22-T166: nur lesende Daten-Bruecke fuer das Skript eines Top-Artefakts. Der Rahmen der Web-UI (kios/SkriptRahmen.tsx) reicht jede
+  // Anfrage des sandboxed iframe hierher; project setzt der Rahmen (Render-Projekt). Betrachter = User (Guard oben), dazu die
+  // Urheber-Klammer im core. op quelle = Katalogvertrag, op lese = Lesefenster (task/plan/thought/memory). Kein Schreiben.
+  fastify.post<{ Params: { id: string }; Body: unknown }>('/api/main-agent/artefakte/:id/bruecke', async (request, reply) => {
+    try {
+      const e = await artefaktSkriptBruecke(request.params.id, request.body, {
+        betrachter: { art: 'user' },
+        lese: (project, art, ref) => leseVerweis(project, art, ref),
+      });
+      return { success: true, ...e };
+    } catch (error) {
+      if (error instanceof ArtefaktSkriptFehler) return reply.code(error.status).send({ success: false, error: { code: error.code, message: error.message } });
+      return sendFachFehler(reply, error);
+    }
   });
   fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/main-agent/artefakt-vorlagen/einstellungen', async (request, reply) => {
     try { return { success: true, ...(await setzeArtefaktVorlagenEinstellungen(request.body?.werte, request.body?.grund, 'user')) }; }
