@@ -1,4 +1,5 @@
 import { apiFetch } from './auth';
+import type { SendeZitat } from '../components/zitat-logik';
 
 export type AgentRuntimeName = 'codex' | 'claude';
 export type RuntimeContainerStatus = 'not_created' | 'created' | 'running' | 'stopped' | 'error';
@@ -351,11 +352,13 @@ export async function streamMainAgentMessage(
   message: string,
   handlers: RuntimeStreamHandlers,
   signal?: AbortSignal,
+  /** P22-T168: Zitat-Anhaenge (nur an den Main dieser Sitzung). */
+  zitate?: SendeZitat[],
 ): Promise<void> {
   const response = await apiFetch('/api/main-agent/sessions/' + encodeURIComponent(sessionId) + '/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, ...(zitate?.length ? { zitate } : {}) }),
     signal,
   });
   let streamError = '';
@@ -430,7 +433,8 @@ export interface MainAgentVerlaufEintrag {
   hauptagent_weg: string | null;
   lauf_id: string | null;
   artefakte: AgentArtifactEvent[];
-  anhaenge: Array<{ name: string; typ: string | null; groesse: number | null }>;
+  /** P22-T168: auch Zitat-Anhaenge (art 'zitat', zitat-logik anzeigeAusAnhaengen). */
+  anhaenge: Array<{ name: string; typ: string | null; groesse: number | null } | ({ art: 'zitat' } & Record<string, unknown>)>;
   hinweise: string[];
   meta: Record<string, unknown>;
   session_id: string | null;
@@ -564,11 +568,11 @@ export async function getAgentChatEinheitlich(identityId: string): Promise<boole
   return r.einheitlich?.aktiv === true;
 }
 
-/** P22-T112: Nachricht des Users an einen Plattform-Agenten (Zustellung per Inbox). */
-export async function sendePlattformAgentChat(identityId: string, text: string): Promise<{ inbox_id: number; agent_id: string; project: string }> {
-  return jsonRequest<{ success: true; inbox_id: number; agent_id: string; project: string }>('/api/agent-runtimes/agent-chat', {
+/** P22-T112: Nachricht des Users an einen Plattform-Agenten (Zustellung per Inbox). P22-T168: zitate gehen nur an diese Identitaet. */
+export async function sendePlattformAgentChat(identityId: string, text: string, zitate?: SendeZitat[]): Promise<{ inbox_id: number; agent_id: string; project: string; zitate?: Record<string, unknown> }> {
+  return jsonRequest<{ success: true; inbox_id: number; agent_id: string; project: string; zitate?: Record<string, unknown> }>('/api/agent-runtimes/agent-chat', {
     method: 'POST',
-    body: JSON.stringify({ identity_id: identityId, text }),
+    body: JSON.stringify({ identity_id: identityId, text, ...(zitate?.length ? { zitate } : {}) }),
   });
 }
 

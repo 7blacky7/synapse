@@ -39,9 +39,20 @@ export function merkeChatFensterTiefe(identityId: string, tiefe: ChatFensterTief
   try { ablage()?.setItem(TIEFE_PRAEFIX + identityId, JSON.stringify(tiefe)); } catch { /* Ladetiefe ist Komfort */ }
 }
 
-/** Logout bzw. Sitzungsende: Inhalte und Ladetiefen aller Identitaeten verwerfen. */
+/** P22-T168 (F7): Zitat-Entwuerfe je Chat (localStorage, Praefix = ZITAT_ENTWURF_PRAEFIX in zitat-logik.ts) gehen mit dem Logout. */
+const ZITAT_PRAEFIX = 'synapse:zitat-entwurf:';
+function verwirfZitatEntwuerfe(): void {
+  try {
+    const l = typeof localStorage === 'undefined' ? null : localStorage;
+    if (!l) return;
+    for (let i = l.length - 1; i >= 0; i--) { const k = l.key(i); if (k?.startsWith(ZITAT_PRAEFIX)) l.removeItem(k); }
+  } catch { /* kein Entwurf gespeichert */ }
+}
+
+/** Logout bzw. Sitzungsende: Inhalte und Ladetiefen aller Identitaeten verwerfen (P22-T168: auch die Zitat-Entwuerfe). */
 export function verwirfChatFensterSitzung(): void {
   staende.clear();
+  verwirfZitatEntwuerfe();
   try {
     const s = ablage();
     if (!s) return;

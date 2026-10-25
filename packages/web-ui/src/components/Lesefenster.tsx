@@ -1,6 +1,6 @@
 import {
   createContext, useContext, useEffect, useMemo, useRef, useState,
-  type PointerEvent as ReactPointerEvent, type ReactNode,
+  type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -11,6 +11,8 @@ import { ToolBilder } from './ToolBild';
 import { BildGrossansicht } from './BildGrossansicht';
 import { BILD_MUSTER } from './bild-logik';
 import { zerlegeInline, zerlegeKlartext, type InlineTeil } from './klartext-logik';
+import type { ZitatVorlage } from './zitat-logik';
+import { kannAnpinnen, useUserEntscheidung } from './UserEntscheidung';
 // P22-T150: Bildleiste unter Nachrichten, hier mit angeboten (gleicher Bezug wie KlartextText).
 export { NachrichtBilder } from './ToolBild';
 import '../verweise.css';
@@ -27,17 +29,61 @@ export interface VerweisZiel {
   project: string;
   art: VerweisArt;
   id: string;
+  /** P22-T168 Punkt 8: aus dem Kontextmenue 'User-Entscheidung anpinnen' - Fenster oeffnen und den Editor zeigen. */
+  anpinnen?: boolean;
 }
 
-interface FensterZustand extends VerweisZiel {
+interface FensterZustand extends Omit<VerweisZiel, 'anpinnen'> {
   key: string;
   x: number;
   y: number;
   z: number;
+  /** Zaehler: jede Erhoehung oeffnet den Editor 'User-Entscheidung anpinnen'. */
+  anpinnen?: number;
+}
+
+/**
+ * P22-T168: Zitat-Anhaenge des Chatfensters, das diesen Provider traegt (nur an DESSEN Empfaenger, kein Rundversand). null = aus
+ * (Schalter chat_zitate) bzw. kein Chatfenster. Rechtsklick (mobil langes Druecken) auf einen Verweis -> menue; Knopf im Lesefenster
+ * -> anfuegen. Umsetzung: ZitatAnhaenge.tsx (useZitatAnhaenge).
+ */
+export interface ZitatAnbieter {
+  empfaenger: string;
+  menue(pos: { x: number; y: number }, vorlagen: ZitatVorlage[], extra?: { oeffnen?: () => void; kopieren?: string; anpinnen?: () => void }): void;
+  anfuegen(vorlage: ZitatVorlage, pos?: { x: number; y: number }): void;
 }
 
 interface FensterKontext {
   oeffne: (ziel: VerweisZiel) => void;
+  zitat?: ZitatAnbieter | null;
+}
+
+/** P22-T168: langes Druecken (Touch) als Kontextmenue, wo der Browser keins meldet (iOS); der folgende Klick entfaellt. */
+const LANG_DRUECKEN_MS = 550;
+function useLangesDruecken(beiDruck: (pos: { x: number; y: number }) => void) {
+  const zeit = useRef<{ id: number; x: number; y: number } | null>(null);
+  const ausgeloest = useRef(false);
+  const abbrechen = () => { if (zeit.current) { window.clearTimeout(zeit.current.id); zeit.current = null; } };
+  return {
+    abbrechen,
+    /** Langer Druck hat das Menue schon gezeigt (ein folgendes contextmenu zeigt es nicht noch einmal). */
+    ausgeloest: () => ausgeloest.current,
+    /** Nach einem langen Druck: true, und der Klick entfaellt. */
+    verbraucht: () => { const v = ausgeloest.current; ausgeloest.current = false; return v; },
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      ausgeloest.current = false;
+      abbrechen();
+      if (event.pointerType !== 'touch') return;
+      const x = event.clientX, y = event.clientY;
+      zeit.current = { x, y, id: window.setTimeout(() => { zeit.current = null; ausgeloest.current = true; beiDruck({ x, y }); }, LANG_DRUECKEN_MS) };
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+      const z = zeit.current;
+      if (z && Math.hypot(event.clientX - z.x, event.clientY - z.y) > 10) abbrechen();
+    },
+    onPointerUp: abbrechen,
+    onPointerCancel: abbrechen,
+  };
 }
 
 const Kontext = createContext<FensterKontext | null>(null);
@@ -95,25 +141,48 @@ function VerweisLink({ project, wert, treffer }: { project: string; wert: string
   const fenster = useVerweisFenster();
   const [auswahl, setAuswahl] = useState(false);
   const [gross, setGross] = useState(false);
+  // P22-T168: Rechtsklick (mobil langes Druecken) -> 'Zitat anfügen' im Chatfenster dieses Providers; Shift = Browser-Menue (F4).
+  const zitat = fenster?.zitat ?? null;
+  const zeigeZitatMenue = (pos: { x: number; y: number }) => {
+    if (!zitat || !fenster) return;
+    const vorlagen = treffer.map((t): ZitatVorlage => ({ art: t.art, id: t.id, projekt: project, titel: t.titel }));
+    zitat.menue(pos, vorlagen, treffer.length === 1 && treffer[0].art !== 'asset' ? {
+      oeffnen: () => fenster.oeffne({ project, art: treffer[0].art, id: treffer[0].id }),
+      // P22-T168 Punkt 8: Tasks und Plaene - Lesefenster mit offenem Editor 'User-Entscheidung anpinnen' (kein Chat noetig).
+      ...(kannAnpinnen(treffer[0].art) ? { anpinnen: () => fenster.oeffne({ project, art: treffer[0].art, id: treffer[0].id, anpinnen: true }) } : {}),
+    } : undefined);
+  };
+  const druck = useLangesDruecken(zeigeZitatMenue);
   if (!fenster) return <>{wert}</>;
   const oeffne = (t: VerweisTreffer) => { setAuswahl(false); fenster.oeffne({ project, art: t.art, id: t.id }); };
+  const zitatProps = zitat ? {
+    'data-zitierbar': '',
+    onContextMenu: (event: ReactMouseEvent<HTMLElement>) => {
+      druck.abbrechen();
+      if (event.shiftKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!druck.ausgeloest()) zeigeZitatMenue({ x: event.clientX, y: event.clientY });
+    },
+    onPointerDown: druck.onPointerDown, onPointerMove: druck.onPointerMove, onPointerUp: druck.onPointerUp, onPointerCancel: druck.onPointerCancel,
+  } : {};
   if (treffer.length === 1 && treffer[0].art === 'asset') {
     // P22-T150: ein Bildpfad oeffnet direkt die Grossansicht; andere Verweise weiter das Lesefenster.
     const t = treffer[0];
     return (
       <>
-        <button type="button" className="verweis-link" title={'Bild: ' + t.titel + ' (groß anzeigen)'} onClick={() => setGross(true)}>{wert}</button>
+        <button type="button" className="verweis-link" title={'Bild: ' + t.titel + ' (groß anzeigen)'} {...zitatProps} onClick={() => { if (!druck.verbraucht()) setGross(true); }}>{wert}</button>
         {gross && <BildGrossansicht bilder={[{ mime_type: 'image/*', bytes: 0, project, file_path: t.id }]} onSchliessen={() => setGross(false)} />}
       </>
     );
   }
   if (treffer.length === 1) {
     const t = treffer[0];
-    return <button type="button" className="verweis-link" title={ART_LABEL[t.art] + ': ' + t.titel} onClick={() => oeffne(t)}>{wert}</button>;
+    return <button type="button" className="verweis-link" title={ART_LABEL[t.art] + ': ' + t.titel} {...zitatProps} onClick={() => { if (!druck.verbraucht()) oeffne(t); }}>{wert}</button>;
   }
   return (
     <span className="verweis-mehrdeutig">
-      <button type="button" className="verweis-link" title={treffer.length + ' Treffer, bitte waehlen'} onClick={() => setAuswahl((v) => !v)}>{wert} ▾</button>
+      <button type="button" className="verweis-link" title={treffer.length + ' Treffer, bitte waehlen'} {...zitatProps} onClick={() => { if (!druck.verbraucht()) setAuswahl((v) => !v); }}>{wert} ▾</button>
       {auswahl && (
         <span className="verweis-auswahl" role="menu">
           {treffer.map((t) => (
@@ -210,6 +279,12 @@ function LesefensterEinzel({
   const [fehler, setFehler] = useState('');
   const [position, setPosition] = useState({ x: fenster.x, y: fenster.y });
   const drag = useRef<{ id: number; sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // P22-T168: Knopf 'Zitat anfügen' haengt an das Chatfenster an, aus dem dieses Lesefenster geoeffnet wurde (sein Provider).
+  const zitat = useVerweisFenster()?.zitat ?? null;
+  // P22-T168 Punkte 8/9: 'User-Entscheidung anpinnen' (Task/Plan) - ueberall gleich, ohne Chat; darunter die angepinnten Entscheidungen.
+  const entscheidung = useUserEntscheidung({
+    project: fenster.project, art: fenster.art, id: fenster.id, anzeigeId: inhalt?.id, titel: inhalt?.titel, anpinnen: fenster.anpinnen,
+  });
 
   useEffect(() => {
     let aktiv = true;
@@ -246,6 +321,9 @@ function LesefensterEinzel({
           <small>{ART_LABEL[fenster.art]}</small>
           <strong>{inhalt?.titel || fenster.id}</strong>
         </div>
+        {zitat && inhalt && <button type="button" className="verweis-zitat" title={'Als Zitat an die Nachricht an ' + zitat.empfaenger + ' anhängen'}
+          onClick={(event) => zitat.anfuegen({ art: fenster.art, id: inhalt.id || fenster.id, projekt: fenster.project, titel: inhalt.titel }, { x: event.clientX - 200, y: event.clientY + 16 })}>Zitat anfügen</button>}
+        {inhalt && entscheidung.knopf}
         <button type="button" onClick={onSchliessen} aria-label="Fenster schließen">×</button>
       </div>
       <div className="verweis-inhalt">
@@ -259,6 +337,7 @@ function LesefensterEinzel({
                 <div key={m.label}><dt>{m.label}</dt><dd>{/^\d{4}-\d{2}-\d{2}T/.test(m.wert) ? zeitLokal(m.wert) : m.wert}</dd></div>
               ))}
             </dl>
+            {entscheidung.bereich}
             {inhalt.art === 'asset'
               ? <ToolBilder bilder={[{ mime_type: 'image/*', bytes: 0, project: fenster.project, file_path: inhalt.id }]} />
               : <KlartextText text={inhalt.text} project={fenster.project} />}
@@ -278,7 +357,7 @@ function fensterZiel(): Element {
   return document.querySelector('.synapse-control') ?? document.body;
 }
 
-export function VerweisFensterProvider({ children }: { children: ReactNode }) {
+export function VerweisFensterProvider({ children, zitat = null }: { children: ReactNode; zitat?: ZitatAnbieter | null }) {
   const [fenster, setFenster] = useState<FensterZustand[]>([]);
   const zaehler = useRef(1);
 
@@ -287,14 +366,19 @@ export function VerweisFensterProvider({ children }: { children: ReactNode }) {
       setFenster((aktuell) => {
         const z = 1300 + zaehler.current++;
         const vorhanden = aktuell.find((f) => f.project === ziel.project && f.art === ziel.art && f.id === ziel.id);
-        if (vorhanden) return aktuell.map((f) => (f === vorhanden ? { ...f, z } : f));
+        // P22-T168: anpinnen als Zaehler, damit ein zweites 'User-Entscheidung anpinnen' den Editor im offenen Fenster wieder zeigt.
+        const anpinnen = (f?: FensterZustand) => (ziel.anpinnen ? { anpinnen: (f?.anpinnen ?? 0) + 1 } : {});
+        if (vorhanden) return aktuell.map((f) => (f === vorhanden ? { ...f, z, ...anpinnen(f) } : f));
         const versatz = (aktuell.length % 6) * 28;
         const x = Math.max(8, Math.round(window.innerWidth / 2 - 280) + versatz);
         const y = 80 + versatz;
-        return [...aktuell, { ...ziel, key: ziel.art + ':' + ziel.id + ':' + z, x, y, z }];
+        const { anpinnen: _a, ...basis } = ziel;
+        return [...aktuell, { ...basis, key: ziel.art + ':' + ziel.id + ':' + z, x, y, z, ...anpinnen() }];
       });
     },
-  }), []);
+    // P22-T168: Zitat-Anhaenge des Chatfensters, das diesen Provider traegt.
+    zitat,
+  }), [zitat]);
 
   return (
     <Kontext.Provider value={kontext}>

@@ -1,0 +1,66 @@
+/* P22-T168: Zitat-Anhaenge im Chat (ZitatAnhaenge.tsx): Kontextmenue, Editor, Kaertchen ueber dem Eingabefeld, Zitate in Nachrichten. */
+.zitat-menue{position:fixed;z-index:1400;min-width:200px;max-width:320px;display:flex;flex-direction:column;border:1px solid var(--border);border-radius:6px;background:var(--panel,var(--strong,#15181d));color:var(--text);box-shadow:0 10px 30px rgba(0,0,0,.45);overflow:hidden}
+.zitat-menue button{all:unset;cursor:pointer;padding:8px 12px;font-size:12px;line-height:1.35;border-bottom:1px solid var(--border)}
+.zitat-menue button:last-child{border-bottom:0}
+.zitat-menue button:hover,.zitat-menue button:focus-visible{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent)}
+.zitat-menue small{display:block;opacity:.7;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zitat-editor{position:fixed;z-index:1410;width:min(380px,calc(100vw - 16px));display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--accent);border-radius:8px;background:var(--panel,var(--strong,#15181d));color:var(--text);box-shadow:0 14px 40px rgba(0,0,0,.5)}
+.zitat-editor header{display:flex;flex-direction:column;gap:1px;min-width:0}
+.zitat-editor header small{font-size:10px;opacity:.65;text-transform:uppercase;letter-spacing:.05em}
+.zitat-editor header strong{font-size:13px;color:var(--accent)}
+.zitat-editor header span{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zitat-editor blockquote,.zitat-karte-nachricht blockquote{margin:0;padding:4px 8px;max-height:96px;overflow:auto;border-left:2px solid var(--accent);background:var(--soft);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.zitat-editor textarea{width:100%;min-height:76px;resize:vertical;font:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--border);background:var(--soft);color:var(--text)}
+.zitat-editor textarea:focus{outline:1px solid var(--accent);outline-offset:0}
+.zitat-editor footer{display:flex;align-items:center;gap:6px}
+.zitat-editor footer span{flex:1;font-size:10px;color:var(--muted)}
+.zitat-editor footer span.zitat-hinweis{color:#e5736b}
+.zitat-editor footer button{all:unset;cursor:pointer;padding:5px 10px;font-size:11px;border:1px solid var(--border);border-radius:4px}
+.zitat-editor footer button:hover{border-color:var(--accent);color:var(--accent)}
+.zitat-editor footer button.zitat-speichern{border-color:var(--accent);background:var(--accent);color:#111}
+.zitat-entwuerfe{display:flex;gap:6px;overflow-x:auto;margin-bottom:7px;padding-bottom:2px}
+.zitat-karte{flex:0 0 auto;min-width:180px;max-width:300px;display:grid;grid-template-columns:minmax(0,1fr) 24px;align-items:stretch;border:1px solid var(--border);border-left:3px solid var(--accent);background:var(--soft)}
+.zitat-karte-inhalt{all:unset;cursor:pointer;min-width:0;display:flex;flex-direction:column;gap:1px;padding:5px 8px;font-size:11px;line-height:1.3}
+.zitat-karte-inhalt b{color:var(--accent);font-size:11px}
+.zitat-karte-inhalt span,.zitat-karte-inhalt small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zitat-karte-inhalt small{color:var(--muted);font-size:10px}
+.zitat-karte-inhalt:hover b{text-decoration:underline}
+.zitat-karte-weg{all:unset;cursor:pointer;display:grid;place-items:center;color:var(--muted);font-size:15px;border-left:1px solid var(--border)}
+.zitat-karte-weg:hover{color:var(--accent)}
+.zitat-karten-nachricht{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.zitat-karte-nachricht{display:flex;flex-direction:column;gap:3px;padding:5px 8px;border:1px solid var(--border);border-left:3px solid var(--accent);background:var(--soft);font-size:12px}
+.zitat-karte-nachricht header{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;min-width:0}
+.zitat-karte-nachricht header b{color:var(--accent)}
+.zitat-karte-nachricht header span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zitat-karte-nachricht header small{color:var(--muted);font-size:10px}
+.zitat-karte-nachricht p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.verweis-titel button.verweis-zitat{margin-left:auto;font-size:11px;padding:3px 8px}
+/* P22-T168 Punkte 8/9: User-Entscheidung anpinnen im Lesefenster (UserEntscheidung.tsx). */
+.verweis-titel button.verweis-entscheidung{font-size:11px;padding:3px 8px;white-space:nowrap}
+.verweis-titel button.verweis-zitat+button.verweis-entscheidung{margin-left:0}
+.verweis-titel>div+button.verweis-entscheidung{margin-left:auto}
+.user-entscheidungen{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.user-entscheidungen:empty{display:none}
+.user-entscheidungen h4{margin:4px 0 0;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.user-entscheidungen ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:5px}
+.user-entscheidungen li{display:flex;flex-direction:column;gap:3px;padding:5px 8px;border:1px solid var(--border);border-left:3px solid var(--accent);background:var(--soft);font-size:12px}
+.user-entscheidungen li header{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}
+.user-entscheidungen li header b{color:var(--accent)}
+.user-entscheidungen li header small{color:var(--muted);font-size:10px}
+.user-entscheidungen li p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.user-entscheidung-meldung{margin:0;font-size:11px;color:var(--accent)}
+.user-entscheidung-editor{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--accent);border-radius:8px;background:var(--panel,var(--strong,#15181d));color:var(--text)}
+.user-entscheidung-editor header{display:flex;flex-direction:column;gap:1px;min-width:0}
+.user-entscheidung-editor header small{font-size:10px;opacity:.65;text-transform:uppercase;letter-spacing:.05em}
+.user-entscheidung-editor header strong{font-size:13px;color:var(--accent)}
+.user-entscheidung-editor header span{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.user-entscheidung-editor textarea{width:100%;box-sizing:border-box;min-height:76px;resize:vertical;font:inherit;font-size:12px;padding:6px 8px;border:1px solid var(--border);background:var(--soft);color:var(--text)}
+.user-entscheidung-editor textarea:focus{outline:1px solid var(--accent);outline-offset:0}
+.user-entscheidung-editor footer{display:flex;align-items:center;gap:6px}
+.user-entscheidung-editor footer span{flex:1;font-size:10px;color:var(--muted)}
+.user-entscheidung-editor footer span.zitat-hinweis{color:#e5736b}
+.user-entscheidung-editor footer button{all:unset;cursor:pointer;padding:5px 10px;font-size:11px;border:1px solid var(--border);border-radius:4px}
+.user-entscheidung-editor footer button:hover{border-color:var(--accent);color:var(--accent)}
+.user-entscheidung-editor footer button.zitat-speichern{border-color:var(--accent);background:var(--accent);color:#111}
+.user-entscheidung-editor footer button:disabled{opacity:.5;cursor:default}
+@media(max-width:760px){.zitat-karte{min-width:150px;max-width:220px}.zitat-menue button{padding:11px 14px;font-size:13px}}

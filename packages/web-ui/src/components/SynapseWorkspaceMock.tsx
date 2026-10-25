@@ -10,6 +10,8 @@ import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ChannelRailListe } from './ChannelRailListe';
 import { ChatEingabefeld } from './ChatEingabefeld';
 import { KlartextText, VerweisFensterProvider, VerweisText } from './Lesefenster';
+import { ZitatKarten, useZitatAnhaenge } from './ZitatAnhaenge';
+import { anzeigeAusAnhaengen, zerlegeZitatBlock, type AnzeigeZitat } from './zitat-logik';
 import { NachrichtBilder } from './ToolBild';
 import { ArtefaktBewertung, useArtefaktBewertungen } from './ArtefaktBewertung';
 import { fensterAusschnitt } from './chat-fenster-logik';
@@ -119,6 +121,8 @@ interface AgentMessage {
   kopf?: string;
   /** P22-T63: Zugdaten der Antwort (Modell · Zuege · Dauer · in/out · Kontext). */
   zugInfo?: string;
+  /** P22-T168: Zitat-Anhaenge der User-Nachricht (Verlauf anhaenge bzw. eigener Turn). */
+  zitate?: AnzeigeZitat[];
 }
 
 /**
@@ -223,6 +227,7 @@ function NativeHtmlBlock({ block, project }: { block: AgentHtmlBlock; project?: 
       className="native-html-block"
       style={style}
       verweisProjekt={project}
+      zitatMenue
     />
   );
 }
@@ -453,6 +458,13 @@ function warteText(meta: Record<string, unknown> | null | undefined): string {
     : '⏳ Wartet auf den Hauptagenten (' + grund + '). Die Antwort erscheint hier von selbst – nicht erneut senden.';
 }
 
+/** P22-T168: Text ohne Zitat-Block und alle Zitate einer Nachricht (Anhaenge der Verlaufszeile bzw. Block im Text). */
+function zitatTeile(message: AgentMessage): { text: string; zitate: AnzeigeZitat[] } {
+  if (message.kind !== 'text' || message.laeuft) return { text: message.text, zitate: message.zitate ?? [] };
+  const z = zerlegeZitatBlock(message.text);
+  return { text: z.text, zitate: [...(message.zitate ?? []), ...z.zitate] };
+}
+
 function baueVerlaufNachrichten(eintraege: MainAgentVerlaufEintrag[]): AgentMessage[] {
   const auftraege = new Map(eintraege.filter((eintrag) => eintrag.rolle === 'user' || eintrag.rolle === 'nachricht').map((eintrag) => [eintrag.id, eintrag.text]));
   let items: AgentMessage[] = [];
@@ -463,7 +475,8 @@ function baueVerlaufNachrichten(eintraege: MainAgentVerlaufEintrag[]): AgentMess
       continue;
     }
     if (eintrag.rolle === 'user') {
-      items.push({ id: verlaufAnzeigeId(eintrag.id), role: 'user', kind: 'text', text: eintrag.text, info: verlaufInfo(eintrag) });
+      const zitate = anzeigeAusAnhaengen(eintrag.anhaenge);
+      items.push({ id: verlaufAnzeigeId(eintrag.id), role: 'user', kind: 'text', text: eintrag.text, info: verlaufInfo(eintrag), ...(zitate.length ? { zitate } : {}) });
       continue;
     }
     if (eintrag.rolle === 'nachricht') {
@@ -495,6 +508,8 @@ function baueVerlaufNachrichten(eintraege: MainAgentVerlaufEintrag[]): AgentMess
 function MainAgentView({ project, showDashboard }: { theme: Theme; project: string; showDashboard: boolean }) {
   const [input, setInput] = useState('');
   const [pendingFiles, setPendingFiles] = useState<MockChatAttachment[]>([]);
+  // P22-T168: Zitat-Anhaenge NUR an den Hauptagenten (Schalter chat_zitate global).
+  const zitat = useZitatAnhaenge({ chat: 'main', empfaenger: 'Hauptagent', project: null });
   const [dropActive, setDropActive] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [toolCalls, setToolCalls] = useState<ToolCallViewModel[]>([]);
@@ -780,7 +795,10 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const value = input.trim();
-    if ((!value && !pendingFiles.length) || thinking) return;
+    // P22-T168 (F3): auch nur mit Zitaten; sie gehen nur an den Hauptagenten.
+    const zitate = zitat.sendeZitate;
+    const zitatAnzeige = zitat.anzeige;
+    if ((!value && !pendingFiles.length && !zitate.length) || thinking) return;
     registerInteraction();
     setChatCollapsed(false);
 
@@ -800,9 +818,10 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
       let userId = Date.now();
       let answerId = userId + 1;
       let eigeneAntwortId: string | null = null;
-      setMessages((items) => [...items, { id: userId, role: 'user', kind: 'text', text: value, lokal: true }, { id: answerId, role: 'agent', kind: 'text', text: '', lokal: true }]);
+      setMessages((items) => [...items, { id: userId, role: 'user', kind: 'text', text: value, lokal: true, ...(zitatAnzeige.length ? { zitate: zitatAnzeige } : {}) }, { id: answerId, role: 'agent', kind: 'text', text: '', lokal: true }]);
       setThinking(true);
       setInput('');
+      zitat.leeren();
       setRuntimeError('');
       setRuntimeContext('');
       setRuntimeContextRoh('');
@@ -867,7 +886,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
             if (hinweise.length) setRuntimeError(hinweise.join(' ') + ' Die Anzeige ist unvollstaendig.');
           },
           onError: ({ message }) => setRuntimeError(message),
-        }, controller.signal);
+        }, controller.signal, zitate.length ? zitate : undefined);
       } catch (reason) {
         if (reason instanceof Error && reason.name === 'AbortError') {
           setRuntimeContext('Ausgabe abgebrochen');
@@ -930,13 +949,13 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
     + (chatHasUnread ? ' has-new' : '')
     + (chatCollapsed && !chatPeeking ? ' external-collapsed' : '');
   // P8-T28: gleiche Sperre fuer Senden-Knopf und Enter, damit Enter nicht am Knopf vorbei sendet.
-  const sendenGesperrt = runtimeMode === 'unknown' || runtimeMode === 'mock' || thinking || (!input.trim() && !pendingFiles.length);
+  const sendenGesperrt = runtimeMode === 'unknown' || runtimeMode === 'mock' || thinking || (!input.trim() && !pendingFiles.length && !zitat.sendeZitate.length);
 
   return (
-    <VerweisFensterProvider>
+    <VerweisFensterProvider zitat={zitat.anbieter}>
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
       {showDashboard && <MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} artifacts={messages.filter((message) => message.kind === 'artifact').map((message) => ({ id: String(message.id), title: message.title || 'HTML-Antwort', blocks: message.blocks?.length ?? 0, saved: message.saved === true, blockIds: (message.blocks ?? []).map((block) => String(block.id)) }))} />}
-      <section className={shellClass + ' floating-agent-window'} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
+      <section className={shellClass + ' floating-agent-window'} {...zitat.debug} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
         {chatCollapsed && !chatPeeking && <button type="button" className="agent-side-launcher" onClick={openChat}><span>HA</span><strong>Hauptagent</strong>{chatHasUnread && <i />}</button>}
         <div className="conversation-head" onPointerDown={startMainWindowDrag} onPointerMove={moveMainWindow} onPointerUp={stopMainWindowDrag} onPointerCancel={stopMainWindowDrag}>
           <div className="agent-identity"><span>HA</span><div><strong>Hauptagent</strong><small>{chatMode === 'fixed' ? 'fixiert' : 'Auto · ' + collapseDelay + ' ' + collapseUnit}</small></div></div>
@@ -971,12 +990,18 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
               : 'Verlauf gerade nicht lesbar – dieser Chat bleibt vorerst nur in diesem Tab.'}</span></div>}
           {verlauf.fehler && <div className="verlauf-leiste verlauf-aus"><span>Verlauf: {verlauf.fehler}</span></div>}
           {runtimeMode !== 'mock' && <ToolActivity calls={toolCalls} error={toolError} project={project} summary="Tool-Aufrufe des Hauptagenten" phases={[]} leerText="Der Hauptagent hat noch keine Tool-Aufrufe." ladeErgebnis={loadMainAgentToolCallResult} />}
-          {visibleMessages.map((message) => <Fragment key={message.id}>
+          {visibleMessages.map((roh) => {
+            // P22-T168: Text ohne Zitat-Block, die Zitate als Kaertchen.
+            const teile = zitatTeile(roh);
+            const message = teile.text === roh.text ? roh : { ...roh, text: teile.text };
+            return <Fragment key={message.id}>
             {message.toolRun && (message.toolRun.calls.length > 0 || message.toolRun.phases.length > 0) && <ToolActivity calls={message.toolRun.calls} error="" project={project} summary={message.toolRun.calls.some((call) => call.status === 'running') ? 'Hauptagent arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={message.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
-            <article className={'message ' + message.role + ' ' + message.kind}>
+            <article className={'message ' + message.role + ' ' + message.kind} onContextMenu={(event) => zitat.beiKontextmenue(event, message.lokal ? 'lokal' : 'verlauf:' + Math.floor(message.id / 2), project)}>
               <header>{message.kopf ?? (message.role === 'user' ? 'Du' : 'Hauptagent')}{message.info && <small className="message-info">{message.info}</small>}</header>
               {/* P22-T137 Punkt 7: fertiger Fliesstext als Markdown (KlartextText wie das Koordinator-Fenster), laufende Antwort roh. */}
               {message.kind === 'text' && (message.laeuft ? message.text && <p>{message.text}</p> : message.text.trim() && <KlartextText project={project} text={message.text} />)}
+              {/* P22-T168: Zitat-Anhaenge der Nachricht als Kaertchen. */}
+              {message.kind === 'text' && <ZitatKarten zitate={teile.zitate} project={project} />}
               {/* P22-T150: Bildleiste fuer Bildverweise im Text (gleicher Baustein wie das Koordinator-Fenster). */}
               {message.kind === 'text' && !message.laeuft && !!message.text.trim() && <NachrichtBilder project={project} text={message.text} />}
               {message.laeuft && <div className="message-laeuft"><i /><i /><i /><span>Hauptagent antwortet …</span></div>}
@@ -985,7 +1010,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
               {message.kind === 'artifact' && <NativeHtmlMessage message={message} project={project} onSave={() => saveArtifact(message.id)} />}
               {message.kind === 'attachment' && message.attachment && <AttachmentMessage attachment={message.attachment} />}
             </article>
-          </Fragment>)}
+          </Fragment>; })}
           {thinking && <article className="message agent thinking"><header>Hauptagent</header><div><i /><i /><i /><span>{runtimeMode === 'codex' ? 'Codex antwortet im Stream' : 'Antwort wird aufgebaut'}</span></div></article>}
           {/* Vorher nur bei codex. Damit waere jeder Fehler UND jeder Fehl-Hinweis bei der
               Claude-Runtime unsichtbar gewesen — ausgerechnet bei der, die gerade laeuft. */}
@@ -994,12 +1019,14 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
         {unseenMessages > 0 && <button className="agent-new-content" type="button" onClick={jumpToNewestMessage}>↓ {unseenMessages} neue {unseenMessages === 1 ? 'Antwort' : 'Antworten'}</button>}
         <form className={'agent-composer' + (dropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropActive(false); }} onDrop={(event) => { setDropActive(false); handleAttachmentDrop(event, (files) => void queueMainFiles(files)); }}>
           <AttachmentDrafts attachments={pendingFiles} onRemove={(id) => setPendingFiles((current) => current.filter((item) => item.id !== id))} />
+          {zitat.karten}
           <ChatEingabefeld textareaRef={mainComposerRef} rows={chatCollapsed ? 1 : 3} value={input} onChange={(text) => { setInput(text); registerInteraction(); }} onFiles={(files) => void queueMainFiles(files)} sendeGesperrt={sendenGesperrt} placeholder="Nachricht oder Auftrag an den Hauptagenten …" />
           <footer className="composer-foot">
             <span className="composer-hint">{runtimeMode === 'unknown' ? 'Runtime wird geprüft …' : runtimeMode === 'mock' ? 'Kein Agent verbunden — Runtime zuweisen und anmelden.' : runtimeMode === 'codex' ? 'Echte Codex-Session · Chat-Text aktiv, Dateien folgen in einer späteren Stufe.' : chatCollapsed ? 'Chat eingeklappt · Datei ablegen oder Nachricht senden.' : 'Enter sendet · Shift+Enter neue Zeile · Dateien hierher ziehen'}</span>
             {chatCollapsed && <button type="button" className="chat-open-action" onClick={openChat}>Verlauf öffnen{chatHasUnread ? ' · neu' : ''}</button>}
           </footer>
         </form>
+        {zitat.oberflaeche}
       </section>
     </div>
     </VerweisFensterProvider>

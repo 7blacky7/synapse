@@ -44,6 +44,7 @@ import { ergaenzeToolKarten, leseToolKartenSchalter, type ToolKartenDebug } from
 import { addThought } from './thoughts.js';
 import type { ThoughtSource } from '../types/index.js';
 import type { AusweisAkteur } from './agent-profil-vertrag.js';
+import { verlaufZitatAnhang, type VerlaufZitatAnhang } from './chat-zitate.js';
 
 export const HAUPTAGENT_VERLAUF_FUNKTION = 'hauptagent_verlauf' as const;
 /** P22-T81: Verlauf aller aktiven Identitaeten (Produkt-Schalter global, Standard EIN). */
@@ -127,7 +128,9 @@ export interface VerlaufBild {
   hoehe?: number;
 }
 export interface VerlaufWerkzeuge { calls: VerlaufWerkzeug[]; phasen: string[] }
-export interface VerlaufAnhang { name: string; typ: string | null; groesse: number | null }
+export interface VerlaufDateiAnhang { name: string; typ: string | null; groesse: number | null }
+/** P22-T168: Datei-Metadaten bzw. Zitat-Anhang der Web-UI (art 'zitat', chat-zitate.ts). */
+export type VerlaufAnhang = VerlaufDateiAnhang | VerlaufZitatAnhang;
 
 export type VerlaufRolle = 'user' | 'agent' | 'nachricht' | 'ausgabe' | 'system';
 export type VerlaufRichtung = 'ein' | 'aus' | 'intern';
@@ -245,7 +248,10 @@ export type VerlaufTurn = { gespeichert: true; identity_id: string; user_id: str
 
 function anhaengeAus(v: unknown): VerlaufAnhang[] {
   if (!Array.isArray(v)) return [];
-  return v.flatMap((a) => {
+  return v.flatMap((a): VerlaufAnhang[] => {
+    // P22-T168: Zitat-Anhaenge (art 'zitat'); die Senderoute hat sie vorher geprueft (pruefeChatZitateAnfrage).
+    const zitat = verlaufZitatAnhang(a);
+    if (zitat) return [zitat];
     const o = a && typeof a === 'object' ? a as Record<string, unknown> : null;
     if (!o || typeof o.name !== 'string' || !o.name.trim()) return [];
     return [{ name: o.name, typ: typeof o.typ === 'string' ? o.typ : null,

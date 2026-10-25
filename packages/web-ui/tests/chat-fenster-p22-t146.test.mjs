@@ -18,6 +18,9 @@ const F = await lade('packages/web-ui/src/components/chat-fenster-logik.ts');
 const SP = await lade('packages/web-ui/src/components/chat-fenster-speicher.ts');
 const L = await lade('packages/web-ui/src/components/agent-chat-logik.ts');
 const B = await lade('packages/web-ui/src/components/artefakt-bewertung-logik.ts');
+// P22-T168: Zitat-Logik echt, der Hook als Attrappe mit Schalter AUS (Bestand).
+const ZL = await lade('packages/web-ui/src/components/zitat-logik.ts');
+const ZITAT_AUS = { aktiv: false, anbieter: null, entwuerfe: [], sendeZitate: [], anzeige: [], leeren() {}, beiKontextmenue() {}, oberflaeche: null, karten: null, debug: {} };
 const lies = (p) => readFileSync(join(repo, p), 'utf8');
 
 const zeit = (i) => new Date(Date.UTC(2026, 9, 25, 10, 0, 0) + i * 1000).toISOString();
@@ -162,6 +165,7 @@ function chatProbe() {
     './ArtefaktLiveBlock': { ArtefaktLiveBlock: 'ArtefaktLiveBlock' },
     './artefakt-bewertung-logik': B, './agent-chat-teile': { ToolActivity: 'ToolActivity' }, './agent-chat-logik': L,
     './chat-fenster-logik': F, './chat-fenster-speicher': SPspion,
+    './ZitatAnhaenge': { ZitatKarten: 'ZitatKarten', useZitatAnhaenge: () => ZITAT_AUS }, './zitat-logik': ZL,
   };
   const window = {
     setInterval(fn) { timers.set(++timerId, fn); return timerId; }, clearInterval(id) { timers.delete(id); },

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { sanitizeAgentHtml } from './sanitize';
 import { streamAgentHtml, type HtmlStreamHandle } from './fakeStream';
 import { useVerweisFenster } from '../components/Lesefenster';
-import { ART_LABEL, bekannteTreffer, loeseVerweiseAuf, type VerweisTreffer } from '../api/verweise';
+import { ART_LABEL, bekannteTreffer, loeseVerweiseAuf, type VerweisKandidat, type VerweisTreffer } from '../api/verweise';
 import { leseArtefaktVerweiseAktiv } from '../api/artefakt-verweise';
 import { leseArtefaktSkripteAktiv } from '../api/artefakt-skripte';
 import { enthaeltSkript } from './skript-rahmen-logik';
@@ -25,6 +25,8 @@ interface AgentRenderingSurfaceProps {
   updateOhneAnimation?: boolean;
   /** P22-T166 (F9): Hinweis 'Skript entfernt' zeigen, wenn das HTML ein Skript hatte (Standard ja; die Vorschau im Skript-Rahmen nein). */
   skriptHinweis?: boolean;
+  /** P22-T168: Kontextmenue 'Zitat anfügen' an Verweisen; nur Chat-Nachrichten setzen das (User: Artefakttafel/Top-Artefakte bleiben unveraendert). */
+  zitatMenue?: boolean;
 }
 
 const SHADOW_BASE = `
@@ -64,6 +66,7 @@ export default function AgentRenderingSurface({
   verweisProjekt,
   updateOhneAnimation = false,
   skriptHinweis = true,
+  zitatMenue = false,
 }: AgentRenderingSurfaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -82,11 +85,14 @@ export default function AgentRenderingSurface({
   const aktivRef = useRef<boolean | null>(null);
   const verweisProjektRef = useRef(verweisProjekt);
   verweisProjektRef.current = verweisProjekt;
+  const zitatMenueRef = useRef(zitatMenue);
+  zitatMenueRef.current = zitatMenue;
   const ohneAnimationRef = useRef(updateOhneAnimation);
   ohneAnimationRef.current = updateOhneAnimation;
   const [auswahl, setAuswahl] = useState<VerweisAuswahl | null>(null);
   const auswahlRef = useRef<HTMLDivElement | null>(null);
   const verweisRef = useRef<(el: Element, event: MouseEvent) => void>(() => undefined);
+  const zitatRef = useRef<(el: Element, event: MouseEvent) => void>(() => undefined);
 
   // P22-T166 (F9): Das Skript wird hier weiter entfernt (sanitize.ts); mit Schalter artefakt_skripte (gecacht) ein kleiner Hinweis.
   const hatSkript = skriptHinweis && enthaeltSkript(html);
@@ -126,6 +132,31 @@ export default function AgentRenderingSurface({
       else if (treffer.length > 1) { setAuswahl({ x, y, project, treffer }); verweisDebug('auswahl', { ...info, treffer }); }
       else verweisDebug('nicht_gefunden', info);
     }).catch((error) => verweisDebug('fehler', { ...info, fehler: error instanceof Error ? error.message : String(error) }));
+  };
+
+  // P22-T168: Rechtsklick auf einen Verweis in einer Chat-Nachricht (Prop zitatMenue) -> 'Zitat anfügen' im Chatfenster dieses Providers (Schalter chat_zitate,
+  // unabhaengig von artefakt_verweise). Shift = Browser-Menue (F4). Titel aus der (gecachten) Aufloesung.
+  zitatRef.current = (el, event) => {
+    const zitat = fenster?.zitat;
+    const wert = verweisWertVon(el);
+    if (!zitat || !wert || event.shiftKey) return;
+    const ziel = zerlegeVerweisWert(wert);
+    const project = verweisProjektVon(el, verweisProjektRef.current);
+    if (!ziel || !project) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const pos = { x: event.clientX, y: event.clientY };
+    const kandidat: VerweisKandidat = ziel.art
+      ? { text: ziel.id, ...(ziel.art === 'event' || ziel.art === 'nachricht' || ziel.art === 'chat' || ziel.art === 'memory' || ziel.art === 'asset' ? { hinweis: ziel.art } : {}) }
+      : { text: ziel.text };
+    void loeseVerweiseAuf(project, [kandidat]).catch(() => false).then(() => {
+      const treffer = (bekannteTreffer(project, kandidat) ?? []).filter((t) => !ziel.art || t.art === ziel.art);
+      const vorlagen = treffer.length ? treffer.map((t) => ({ art: t.art, id: t.id, projekt: project, titel: t.titel }))
+        : ziel.art ? [{ art: ziel.art, id: ziel.id, projekt: project, titel: '' }] : [];
+      verweisDebug(vorlagen.length ? 'zitat_menue' : 'zitat_nicht_gefunden', { wert, ziel, project, treffer: vorlagen.length });
+      const erster = vorlagen[0];
+      if (erster) zitat.menue(pos, vorlagen, vorlagen.length === 1 ? { oeffnen: () => fenster?.oeffne({ project, art: erster.art, id: erster.id }) } : undefined);
+    });
   };
 
   useEffect(() => {
@@ -181,6 +212,12 @@ export default function AgentRenderingSurface({
         ?? actionElement.getAttribute('data-kios-action')
         ?? '';
       actionRef.current?.(action, input?.value?.trim() || undefined);
+    });
+    // P22-T168: Kontextmenue auf Verweisen (Zitat anfügen) nur in Chat-Nachrichten; sonst bleibt das Browser-Menue.
+    content.addEventListener('contextmenu', (event) => {
+      if (!zitatMenueRef.current) return;
+      const verweisElement = (event.target as Element | null)?.closest?.(VERWEIS_SELEKTOR);
+      if (verweisElement) zitatRef.current(verweisElement, event);
     });
 
     return () => {

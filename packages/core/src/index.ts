@@ -783,6 +783,24 @@ export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, Bewer
 export { ARTEFAKT_VORLAGEN_SCHEMA_SQL } from './db/artefakt-vorlagen-schema.js';
 // P22-T157: Sitzungsverlaeufe semantisch durchsuchbar (Schema 153, Collection agent_verlauf, Worker verlauf_nachzug, search action verlauf).
 export { VERLAUF_STUECKE_SCHEMA_SQL } from './db/verlauf-stuecke-schema.js';
+// P22-T168: Zitat-Anhaenge im Chat (Schalter chat_zitate, Grenzen chat_zitate_einstellungen, Textblock fuer jede Agentenart).
+export { CHAT_ZITATE_SCHEMA_SQL } from './db/chat-zitate-schema.js';
+export {
+  CHAT_ZITATE_FUNKTION, ZITAT_ARTEN, ZITAT_ART_LABEL, ZITAT_BLOCK_HINWEIS, CHAT_ZITATE_EINSTELLUNGEN, leseChatZitateEinstellungen,
+  setzeChatZitateEinstellungen, leseChatZitateSchalter, pruefeZitate, pruefeChatZitateAnfrage, entschaerfeZitatZeilen, baueZitatBlock,
+  textMitZitaten, zitatAlsVerlaufAnhang, verlaufZitatAnhang, zitateAusVerlaufAnhaengen, mainTurnText,
+} from './services/chat-zitate.js';
+export type {
+  ZitatArt, ChatZitateEinstellung, ChatZitateWerte, ChatZitateEinstellungenStand, ChatZitateSchalter, GeprueftesZitat, ZitatPruefung,
+  ZitatDebug, ZitatAnfrage, VerlaufZitatAnhang,
+} from './services/chat-zitate.js';
+// P22-T168 Punkte 8/9: User-Entscheidung anpinnen (thought als User mit task_id bzw. Plan-Tag, Hinweis an den Bearbeiter).
+export {
+  USER_ENTSCHEIDUNG_TAG, pinneUserEntscheidung, listeUserEntscheidungen, userEntscheidungEmpfaenger, userEntscheidungHinweis,
+} from './services/user-entscheidung.js';
+export type {
+  UserEntscheidungArt, UserEntscheidungZiel, UserEntscheidungSende, UserEntscheidungBezug, UserEntscheidungEintrag, UserEntscheidungFehler,
+} from './services/user-entscheidung.js';
 export {
   VERLAUF_EINBETTEN_FUNKTION, VERLAUF_SUCHE_FUNKTION, VERLAUF_COLLECTION, VERLAUF_ZERLEGER_VERSION, VERLAUF_SUCHE_PROPERTIES,
   verlaufZeileText, istGruppenStart, zerlegeVerlauf, teileVerlaufText, schwaerzeVerlaufText, verlaufStueckeAus, verlaufStueckId,

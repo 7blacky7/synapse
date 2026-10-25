@@ -217,6 +217,10 @@ test('Produktiver Chat ohne Demo-Nachricht bietet Tooldetails und ehrlichen Proj
     }
     modules[spec] = { __esModule: true, ...exports };
   }
+  // P22-T168: Zitat-Anhaenge: Logik echt, Hook als Attrappe mit Schalter AUS (Bestand).
+  modules['./zitat-logik'] = load(resolve(repo, 'packages/web-ui/src/components/zitat-logik.ts'), {});
+  modules['./ZitatAnhaenge'] = { __esModule: true, ZitatKarten: component, useZitatAnhaenge: () => ({ aktiv: false, anbieter: null, entwuerfe: [], sendeZitate: [],
+    anzeige: [], leeren() {}, beiKontextmenue() {}, oberflaeche: null, karten: null, debug: {} }) };
   const { MainAgentView, ToolActivity } = load('packages/web-ui/src/components/SynapseWorkspaceMock.tsx', modules,
     '\nexport { MainAgentView, ToolActivity };\n');
   const tree = MainAgentView({ theme: 'dark', project: 'p8-t24', showDashboard: true });

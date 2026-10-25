@@ -27,6 +27,7 @@ import type { SpecialistZielRuntime } from './specialist-queue.js';
 import { setzeProfilProduktSchalter } from './agent-profil-schalter.js';
 import { ProfilVerwaltungFehler, pflichtText } from './agent-profil-verwalter.js';
 import type { AusweisAkteur } from './agent-profil-vertrag.js';
+import { mainTurnText } from './chat-zitate.js';
 
 export const MAIN_WARTESCHLANGE_FUNKTION = 'main_warteschlange' as const;
 
@@ -126,7 +127,7 @@ async function verweiseAufBuendel(ids: string[], antwort_id: string, status: 'fe
      WHERE id = ANY($1::bigint[]) AND rolle = 'agent' AND status IN ('laeuft','wartet')`, [ids, antwort_id, status, hinweis]);
 }
 
-interface Wartende { id: string; user_id: string; user_text: string; user_am: Date; meta: Record<string, unknown> }
+interface Wartende { id: string; user_id: string; user_text: string; user_am: Date; meta: Record<string, unknown>; user_anhaenge?: unknown }
 
 const ZEIT = new Intl.DateTimeFormat('de-DE', { timeZone: 'Europe/Berlin', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
@@ -178,7 +179,7 @@ export async function fuehreMainWarteschlangeAus(o: {
 async function takt(o: { identity_id: string; runtime: string | null | undefined; dienste?: WarteschlangeDienste; jetzt?: number },
   erg: WarteschlangeErgebnis): Promise<string | null> {
   const r = await getPool().query<Wartende>(
-    `SELECT a.id::text AS id, u.id::text AS user_id, u.text AS user_text, u.erstellt_am AS user_am, a.meta
+    `SELECT a.id::text AS id, u.id::text AS user_id, u.text AS user_text, u.erstellt_am AS user_am, a.meta, u.anhaenge AS user_anhaenge
        FROM hauptagent_verlauf a JOIN hauptagent_verlauf u ON u.id = a.antwort_auf
       WHERE a.identity_id = $1 AND a.status = 'wartet' ORDER BY a.id LIMIT 50`, [o.identity_id]);
   erg.wartend = r.rows.length;
@@ -209,7 +210,9 @@ async function takt(o: { identity_id: string; runtime: string | null | undefined
   const buendel = wartend.length > 1 && jetzt - new Date(wartend[0].user_am).getTime() >= schwelleMs;
   const teil = buendel ? wartend : [wartend[0]];
   const ziel = teil[teil.length - 1];
-  const text = buendel ? buendelText(teil, erste.grund ?? null) : ziel.user_text;
+  // P22-T168: Zitat-Anhaenge der User-Zeile gehen als Block mit (wie beim direkten Senden).
+  const text = buendel ? buendelText(teil.map(z => ({ ...z, user_text: mainTurnText(z.user_text, z.user_anhaenge) })), erste.grund ?? null)
+    : mainTurnText(ziel.user_text, ziel.user_anhaenge);
   const ids = teil.map(z => z.id);
   // Nur die Antwortzeile laeuft (sie hat einen Schreiber). Die uebrigen Buendel-Zeilen warten bis zum Ergebnis – der Takt haelt die
   // Sperre, sonst fasst niemand 'warten'-Zeilen an –, damit sie nie als verwaiste laufende Antwort abgebrochen werden.

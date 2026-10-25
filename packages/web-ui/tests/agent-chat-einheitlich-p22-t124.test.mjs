@@ -13,6 +13,9 @@ const B = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/
 // P22-T146: Fensterlogik und Sitzungsspeicher echt (je Probe leerer Speicher).
 const F = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/chat-fenster-logik.ts')).href);
 const SP = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/chat-fenster-speicher.ts')).href);
+// P22-T168: Zitat-Logik echt, der Hook als Attrappe mit Schalter AUS (Bestand).
+const ZL = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/zitat-logik.ts')).href);
+const ZITAT_AUS = { aktiv: false, anbieter: null, entwuerfe: [], sendeZitate: [], anzeige: [], leeren() {}, beiKontextmenue() {}, oberflaeche: null, karten: null, debug: {} };
 
 assert.ok(S.PROFIL_PRODUKT_FUNKTIONEN.includes('agent_chat_einheitlich'));
 assert.ok(S.NUR_AUSDRUECKLICH.includes('agent_chat_einheitlich'), 'nur ausdruecklich (Std AUS)');
@@ -115,6 +118,7 @@ function chatProbe() {
     './ArtefaktLiveBlock': { ArtefaktLiveBlock: 'ArtefaktLiveBlock' },
     './agent-chat-teile': { ToolActivity: 'ToolActivity' }, './agent-chat-logik': L,
     './chat-fenster-logik': F, './chat-fenster-speicher': SP,
+    './ZitatAnhaenge': { ZitatKarten: 'ZitatKarten', useZitatAnhaenge: () => ZITAT_AUS }, './zitat-logik': ZL,
   };
   const window = {
     setInterval(fn) { timers.set(++timerId, fn); return timerId; },

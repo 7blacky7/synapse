@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEve
 import { abonniereToolKarten, getAgentChatInbox, getAgentVerlauf, sendePlattformAgentChat } from '../api/agent-runtime';
 import { ChatEingabefeld } from './ChatEingabefeld';
 import { KlartextText, NachrichtBilder, VerweisFensterProvider } from './Lesefenster';
+import { ZitatKarten, useZitatAnhaenge } from './ZitatAnhaenge';
+import { zerlegeZitatBlock, type AnzeigeZitat } from './zitat-logik';
 import { ToolActivity } from './agent-chat-teile';
 import { aktuellesModell, baueAgentChatNachrichten, istHtmlAntwort, mischeInboxNachrichten } from './agent-chat-logik';
 import {
@@ -37,7 +39,7 @@ export const EINHEITLICHER_CHAT_POLL_MS = 4_000;
 /** P22-T146: Live-Tool-Karten (SSE) buendeln, dann EIN Abgleich (seit_rev) statt Komplett-Laden. */
 const KARTEN_ABGLEICH_MS = 250;
 
-interface Gesendet { key: string; text: string; inboxId: number | null; fehler: string }
+interface Gesendet { key: string; text: string; inboxId: number | null; fehler: string; zitate?: AnzeigeZitat[] }
 
 /** DEBUG ohne Neuzeichnen: letzte inkrementelle Anfrage als data-Attribut. */
 function merkeAnfrage(el: HTMLElement | null, art: string, treffer: number): void {
@@ -54,6 +56,8 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   const [laedtAeltere, setLaedtAeltere] = useState(false);
   const [unten, setUnten] = useState(true);
   const [neue, setNeue] = useState(0);
+  // P22-T168: Zitat-Anhaenge NUR fuer diesen Empfaenger (identity_id); Schalter chat_zitate im Projekt der Zielidentitaet.
+  const zitat = useZitatAnhaenge({ chat: 'agent:' + identityId, empfaenger: name, project: project || null });
   const sectionRef = useRef<HTMLElement | null>(null);
   const feedRef = useRef<HTMLDivElement | null>(null);
   const standRef = useRef(stand);
@@ -291,7 +295,10 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const nachricht = text.trim();
-    if (!nachricht || busy || sendend.current || !aktiv.current) return;
+    // P22-T168 (F3): auch nur mit Zitaten; sie gehen nur an diese identity_id.
+    const zitate = zitat.sendeZitate;
+    const anzeige = zitat.anzeige;
+    if ((!nachricht && !zitate.length) || busy || sendend.current || !aktiv.current) return;
     const lauf = generation.current;
     const id = ++sendeAnfrage.current;
     const gueltig = () => aktiv.current && generation.current === lauf && sendeAnfrage.current === id;
@@ -300,14 +307,15 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
     setBusy(true);
     const key = String(Date.now());
     try {
-      const r = await sendePlattformAgentChat(identityId, nachricht);
+      const r = await sendePlattformAgentChat(identityId, nachricht, zitate.length ? zitate : undefined);
       if (!gueltig()) return;
-      setGesendet((alt) => [...alt, { key, text: nachricht, inboxId: r.inbox_id, fehler: '' }]);
+      setGesendet((alt) => [...alt, { key, text: nachricht, inboxId: r.inbox_id, fehler: '', ...(anzeige.length ? { zitate: anzeige } : {}) }]);
       setText('');
+      zitat.leeren();
       void laden();
       void ladenInbox();
     } catch (error) {
-      if (gueltig()) setGesendet((alt) => [...alt, { key, text: nachricht, inboxId: null, fehler: error instanceof Error ? error.message : String(error) }]);
+      if (gueltig()) setGesendet((alt) => [...alt, { key, text: nachricht, inboxId: null, fehler: error instanceof Error ? error.message : String(error), ...(anzeige.length ? { zitate: anzeige } : {}) }]);
     } finally {
       if (gueltig()) { sendend.current = false; setBusy(false); }
     }
@@ -317,7 +325,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   // als 'wartet auf Antwort' nach unten, sobald sie aus dem geladenen Fenster (limit 60) faellt - z. B. nach einem langen Zug.
   useEffect(() => {
     setGesendet((alt) => {
-      const rest = alt.filter((g) => g.fehler || !(eintraege.some((e) => e.rolle !== 'agent' && e.text.includes(g.text))
+      const rest = alt.filter((g) => g.fehler || !((g.text && eintraege.some((e) => e.rolle !== 'agent' && e.text.includes(g.text)))
         || (g.inboxId !== null && stand.inbox.has(g.inboxId))));
       return rest.length === alt.length ? alt : rest;
     });
@@ -325,8 +333,8 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   const offen = gesendet;
 
   return (
-    <VerweisFensterProvider>
-      <section ref={sectionRef} className="conversation agent-chat-shell einheitlicher-agent-chat agent-chat-shell--embedded" aria-label={'Chat mit ' + name}
+    <VerweisFensterProvider zitat={zitat.anbieter}>
+      <section ref={sectionRef} {...zitat.debug} className="conversation agent-chat-shell einheitlicher-agent-chat agent-chat-shell--embedded" aria-label={'Chat mit ' + name}
         data-identity={identityId} data-karten={stand.karten ? 'ein' : 'aus'} data-eintraege={eintraege.length} data-inbox={stand.inbox.size} data-bewertungen={bewertung.aktiv ? Object.keys(bewertung.je).length : 'aus'}
         data-fenster={stand.aeltereGeladen ? 'fest' : 'gleitend'} data-anzahl={nachrichten.length + '/' + alle.length} data-geladen-bis={stand.maxRev}
         data-aelteste={(stand.verlaufAelteste ?? '-') + '/' + (stand.inboxAelteste ?? '-')}>
@@ -337,8 +345,12 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
           {aeltereDa && <div className="verlauf-leiste"><button type="button" onClick={() => void ladeAeltere()} disabled={laedtAeltere}>{laedtAeltere ? 'Lädt …' : '↑ Ältere Beiträge anzeigen'}</button></div>}
           {!aeltereDa && nachrichten.length > 0 && <div className="verlauf-leiste"><span>Anfang des Verlaufs</span></div>}
           {!nachrichten.length && !offen.length && <div className="verlauf-leiste"><span>{hinweis || 'Noch kein Verlauf. Schreib dem Agenten.'}</span></div>}
-          {nachrichten.map((m) => (
-            <div key={m.id} data-nachricht={m.id}>
+          {nachrichten.map((roh) => {
+            // P22-T168: Zitat-Block der Nachricht als Kaertchen, der Text ohne Block; Markierung + Rechtsklick = Zitat 'Ausschnitt'.
+            const teile = zerlegeZitatBlock(roh.text);
+            const m = teile.zitate.length ? { ...roh, text: teile.text } : roh;
+            return (
+            <div key={m.id} data-nachricht={m.id} onContextMenu={(event) => zitat.beiKontextmenue(event, m.kennung ?? 'verlauf:' + m.id, project)}>
               {m.toolRun && (m.toolRun.calls.length > 0 || m.toolRun.phases.length > 0) && <ToolActivity calls={m.toolRun.calls} error="" project={project}
                 summary={m.toolRun.calls.some((c) => c.status === 'running') ? name + ' arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={m.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
               <article className={'message ' + m.role + ' text'}>
@@ -346,12 +358,13 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                 {m.laeuft ? (m.text && <p>{m.text}</p>) : m.text.trim() ? (m.role === 'agent' && istHtmlAntwort(m.text)
                   // P22-T137: reine HTML-Antworten wie beim Main bereinigt im Shadow-DOM (AgentRenderingSurface), nie als rohes innerHTML.
                   ? <>
-                    <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" verweisProjekt={project} />
+                    <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" verweisProjekt={project} zitatMenue />
                     {bewertung.aktiv && htmlQuellen.has(m.id) && <ArtefaktBewertung quelle={htmlQuellen.get(m.id)!}
                       stand={bewertung.je[quellSchluessel(htmlQuellen.get(m.id)!)]} onGespeichert={bewertung.setze} />}
                   </>
                   // Nachbesserung: Markdown (Absaetze, Listen, fett/kursiv, Code, Tabellen) mit anklickbaren Verweisen.
                   : <KlartextText project={project} text={m.text} />) : null}
+                {!m.laeuft && <ZitatKarten zitate={teile.zitate} project={project} />}
                 {/* P22-T154: Artefakte (zeigen per Ausweis), volle Breite ohne Raster, gleicher Baustein + Bewertungsleiste wie im Main. */}
                 {!m.laeuft && (m.artefakte ?? []).map((a) => <div key={a.id} className="agent-chat-artefakt">
                   {a.title && <strong className="agent-chat-artefakt-titel">{a.title}</strong>}
@@ -368,22 +381,26 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                 {m.zugInfo && <small className="message-zug">{m.zugInfo}</small>}
               </article>
             </div>
-          ))}
+            );
+          })}
           {offen.map((g) => (
             <article key={g.key} className="message user text">
               <header>Du<small className="message-info">{g.fehler ? 'nicht gesendet: ' + g.fehler : 'zugestellt per Inbox #' + g.inboxId + ', wartet auf Antwort'}</small></header>
-              <KlartextText project={project} text={g.text} />
-              <NachrichtBilder project={project} text={g.text} />
+              {g.text && <KlartextText project={project} text={g.text} />}
+              {g.text && <NachrichtBilder project={project} text={g.text} />}
+              {g.zitate && <ZitatKarten zitate={g.zitate} project={project} />}
             </article>
           ))}
           {hinweis && nachrichten.length > 0 && <div className="verlauf-leiste verlauf-aus"><span>{hinweis}</span></div>}
           {neue > 0 && <button type="button" className="chat-fenster-neue" onClick={springeNachUnten}>↓ {neue} neue {neue === 1 ? 'Nachricht' : 'Nachrichten'}</button>}
         </div>
         <form className="agent-composer" onSubmit={submit}>
+          {zitat.karten}
           <ChatEingabefeld rows={2} value={text} onChange={setText} onFiles={() => setHinweis('Dateien gehen in diesem Chat noch nicht (nur Text).')}
-            sendeGesperrt={busy || !text.trim()} placeholder={'Nachricht an ' + name + ' …'} />
-          <footer className="composer-foot"><span className="composer-hint">Enter sendet · Shift+Enter neue Zeile · Zustellung per Inbox</span></footer>
+            sendeGesperrt={busy || (!text.trim() && !zitat.sendeZitate.length)} placeholder={'Nachricht an ' + name + ' …'} />
+          <footer className="composer-foot"><span className="composer-hint">Enter sendet · Shift+Enter neue Zeile · Zustellung per Inbox{zitat.aktiv ? ' · Rechtsklick auf Verweis oder Markierung: Zitat anfügen' : ''}</span></footer>
         </form>
+        {zitat.oberflaeche}
       </section>
     </VerweisFensterProvider>
   );

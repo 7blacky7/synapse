@@ -28,6 +28,13 @@ import {
 } from '@synapse/core';
 // P22-T166: Artefakte mit Skript (nur Top-Artefakte) - nur lesende Daten-Bruecke.
 import { artefaktSkriptBruecke, artefaktSkripteSchalter, skriptBrueckeStatus, ArtefaktSkriptFehler } from '@synapse/core';
+// P22-T168: Zitat-Anhaenge im Chat (Schalter chat_zitate, Grenzen als Einstellungen, Textblock fuer jede Agentenart).
+import {
+  pruefeChatZitateAnfrage, textMitZitaten, zitatAlsVerlaufAnhang, leseChatZitateSchalter, leseChatZitateEinstellungen, setzeChatZitateEinstellungen,
+  type ZitatDebug,
+} from '@synapse/core';
+// P22-T168 Punkte 8/9: User-Entscheidung anpinnen (derselbe Server-Weg wie thought(add) mit task_id, source user).
+import { pinneUserEntscheidung, listeUserEntscheidungen, type UserEntscheidungZiel } from '@synapse/core';
 import { leseVerweis } from '../services/verweise.js';
 import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
@@ -96,6 +103,37 @@ export async function plattformAgentChatSchalter(project: string) {
   const stand = await leseProfilProduktSchalter('plattform_agent_chat', project);
   const aktiv = stand.aktiv && !stand.letzter_fehler;
   return { ...stand, aktiv, name: 'plattform_agent_chat', wert: aktiv ? 'ein' : 'aus', standard: false as const };
+}
+
+type EingangsFehler = { ok: false; status: number; code: string; message: string; details?: Record<string, unknown> };
+type ZitatAntwort = (ZitatDebug & { block_zeichen: number }) | null;
+
+/**
+ * P22-T168: Inhalt EINER Nachricht an EINEN Plattform-Agenten (ein Inbox-Eintrag, kein Rundversand): Text + Zitat-Block. Schalter
+ * chat_zitate im Projekt der Zielidentitaet; ohne zitate unveraendert. Text leer ist erlaubt, wenn Zitate dabei sind (F3).
+ */
+export async function plattformChatInhalt(text: string, zitateRoh: unknown, project: string): Promise<{ ok: true; inhalt: string; zitate: ZitatAntwort } | EingangsFehler> {
+  const z = await pruefeChatZitateAnfrage(zitateRoh, project);
+  if (!z.ok) return z;
+  if (!text && !z.zitate.length) return { ok: false, status: 400, code: 'text_fehlt', message: 'Nachricht ist leer' };
+  const inhalt = textMitZitaten(text, z.zitate);
+  return { ok: true, inhalt, zitate: z.debug ? { ...z.debug, block_zeichen: inhalt.length - text.length } : null };
+}
+
+/**
+ * P22-T168: Eingang einer Main-Nachricht. Modelltext = Nachricht + Zitat-Block (Schalter chat_zitate global); der Verlauf speichert den
+ * reinen Text und die Zitate als anhaenge (art 'zitat', die Warteschlange baut den Block daraus). message leer ist erlaubt, wenn Zitate
+ * dabei sind (F3); ohne zitate wie bisher.
+ */
+export async function mainNachrichtEingang(body: { message?: unknown; anhaenge?: unknown; zitate?: unknown } | undefined | null): Promise<
+  { ok: true; nachricht: string; modellText: string; anhaenge: unknown; zitate: ZitatAntwort } | EingangsFehler> {
+  const nachricht = typeof body?.message === 'string' ? body.message : '';
+  const z = await pruefeChatZitateAnfrage(body?.zitate, null);
+  if (!z.ok) return z;
+  if (!nachricht.trim() && !z.zitate.length) return { ok: false, status: 400, code: 'message_fehlt', message: 'message ist erforderlich' };
+  const modellText = textMitZitaten(nachricht, z.zitate);
+  const anhaenge = z.zitate.length ? [...(Array.isArray(body?.anhaenge) ? body.anhaenge : []), ...z.zitate.map(zitatAlsVerlaufAnhang)] : body?.anhaenge;
+  return { ok: true, nachricht, modellText, anhaenge, zitate: z.debug ? { ...z.debug, block_zeichen: modellText.length - nachricht.length } : null };
 }
 
 export function runtimeTokenAllowed(kind: TokenKind): boolean {
@@ -518,14 +556,16 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, schalter: await plattformAgentChatSchalter(ziel.project), einheitlich };
     } catch (error) { return sendFachFehler(reply, error); }
   });
-  fastify.post<{ Body: { identity_id?: unknown; text?: unknown } }>('/api/agent-runtimes/agent-chat', async (request, reply) => {
+  fastify.post<{ Body: { identity_id?: unknown; text?: unknown; zitate?: unknown } }>('/api/agent-runtimes/agent-chat', async (request, reply) => {
     try {
       let schalter: Awaited<ReturnType<typeof plattformAgentChatSchalter>> | undefined;
       const fehler = (status: number, code: string, message: string) => reply.code(status).send({ success: false, error: { code, message }, ...(schalter ? { schalter } : {}) });
       const identityId = typeof request.body?.identity_id === 'string' ? request.body.identity_id.trim() : '';
       const text = typeof request.body?.text === 'string' ? request.body.text.trim() : '';
       if (!/^[a-f0-9-]{36}$/.test(identityId)) return fehler(400, 'identity_id_fehlt', 'identity_id angeben');
-      if (!text) return fehler(400, 'text_fehlt', 'Nachricht ist leer');
+      // P22-T168 (F3): nur Zitate ohne Text ist erlaubt.
+      const mitZitaten = Array.isArray(request.body?.zitate) && request.body.zitate.length > 0;
+      if (!text && !mitZitaten) return fehler(400, 'text_fehlt', 'Nachricht ist leer');
       if (text.length > 20_000) return fehler(400, 'text_zu_lang', 'Nachricht laenger als 20000 Zeichen');
       const r = await getPool().query<{ agent_id: string; project: string; rolle: string; status: string }>(
         'SELECT agent_id, project, rolle, status FROM agent_identitaeten WHERE id = $1', [identityId]);
@@ -535,15 +575,22 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       if (ziel.status !== 'aktiv') return fehler(409, 'identitaet_inaktiv', 'Identitaet ist nicht aktiv');
       schalter = await plattformAgentChatSchalter(ziel.project);
       if (!schalter.aktiv) return fehler(409, 'funktion_aus', 'Chat mit Plattform-Agenten ist aus (plattform_agent_chat)');
+      // P22-T168: Zitat-Anhaenge gehen nur mit DIESER Nachricht an DIESE Identitaet (ein Inbox-Eintrag, kein Rundversand).
+      const inhalt = await plattformChatInhalt(text, request.body?.zitate, ziel.project);
+      if (!inhalt.ok) {
+        return reply.code(inhalt.status).send({ success: false, error: { code: inhalt.code, message: inhalt.message, ...(inhalt.details ? { details: inhalt.details } : {}) }, schalter });
+      }
+      if (inhalt.inhalt.length > 20_000) return fehler(400, 'text_zu_lang', 'Nachricht mit Zitaten laenger als 20000 Zeichen');
       // P22-T134: an die Identitaet adressieren (to_identity_id), sonst findet die Zustellung je Identitaet (Mod-Inbox,
       // Startort P22-T113) die Nachricht nie; to_agent bleibt fuer die Namens-Leser gesetzt. Ein Identitaetsziel braucht den
       // Agent-Bezug-Kontext (wie daemon-sync/daemon-jobs); im Modus 'alt' bleibt es beim Namen.
       const bezug = await leseAgentBezugModus();
       const gesendet = bezug.modus === 'alt'
-        ? await postToInbox('user', ziel.agent_id, text, ziel.project)
+        ? await postToInbox('user', ziel.agent_id, inhalt.inhalt, ziel.project)
         : await mitAgentAufrufKontext({ principal: null, bezug }, () =>
-          postToInbox('user', { art: 'identity', project: ziel.project, agent_id: ziel.agent_id, identity_id: identityId }, text, ziel.project));
-      return { success: true, weg: 'inbox', inbox_id: gesendet.id, gesendet_am: gesendet.createdAt, agent_id: ziel.agent_id, project: ziel.project, identity_id: identityId };
+          postToInbox('user', { art: 'identity', project: ziel.project, agent_id: ziel.agent_id, identity_id: identityId }, inhalt.inhalt, ziel.project));
+      return { success: true, weg: 'inbox', inbox_id: gesendet.id, gesendet_am: gesendet.createdAt, agent_id: ziel.agent_id, project: ziel.project, identity_id: identityId,
+        ...(inhalt.zitate ? { zitate: { ...inhalt.zitate, empfaenger: identityId } } : {}) };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T137 (Punkt 5): Inbox zwischen User und dieser Identitaet (beide Richtungen) fuer den Fensterverlauf. Antworten per
@@ -693,6 +740,39 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   fastify.get('/api/main-agent/artefakt-verweise', async () => {
     const s = await artefaktVorlagenSchalter(ARTEFAKT_VERWEISE_FUNKTION);
     return { success: true, aktiv: s.aktiv, schalter: s };
+  });
+  // P22-T168: Zitat-Anhaenge fuer die Web-UI: Schalter chat_zitate (project = Projekt des Empfaengers, ohne = global/Main) und Grenzen
+  // mit Quelle. Wirft nie. Setzen der Grenzen nur der User (Guard oben): werte {name: zahl|null}, null = Code-Standard, grund Pflicht.
+  fastify.get<{ Querystring: { project?: string } }>('/api/main-agent/chat-zitate', async (request) => {
+    const p = typeof request.query?.project === 'string' && request.query.project.trim() ? request.query.project.trim() : null;
+    const [schalter, einstellungen] = await Promise.all([leseChatZitateSchalter(p), leseChatZitateEinstellungen()]);
+    return { success: true, aktiv: schalter.aktiv, schalter, grenzen: einstellungen.werte, einstellungen };
+  });
+  fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/main-agent/chat-zitate/einstellungen', async (request, reply) => {
+    try { return { success: true, ...(await setzeChatZitateEinstellungen(request.body?.werte, request.body?.grund, 'user')) }; } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T168 Punkte 8/9: User-Entscheidung an eine Task bzw. einen Plan anpinnen (nur der User, Guard oben). Speichert SOFORT einen
+  // thought (source user, Tag user-entscheidung + Kurz-ID, task_id bei Tasks) und gibt dem Bearbeiter der Task einen kurzen
+  // Inbox-Hinweis (identitaetsadressiert wie agent-chat). Schalter chat_zitate im Projekt des Verweises; Debug: schalter, hinweis.
+  fastify.post<{ Body: { project?: unknown; art?: unknown; id?: unknown; text?: unknown } }>('/api/agent-runtimes/user-entscheidung', async (request, reply) => {
+    try {
+      const bezug = await leseAgentBezugModus();
+      const sende = (ziel: UserEntscheidungZiel, text: string) => (bezug.modus === 'alt' || ziel.art === 'legacy'
+        ? postToInbox('user', ziel.agent_id, text, ziel.project)
+        : mitAgentAufrufKontext({ principal: null, bezug }, () => postToInbox('user', ziel, text, ziel.project)));
+      const r = await pinneUserEntscheidung(request.body ?? {}, sende);
+      if (!r.ok) return reply.code(r.status).send({ success: false, error: { code: r.code, message: r.message }, ...(r.schalter ? { schalter: r.schalter } : {}) });
+      const { ok: _ok, ...rest } = r;
+      return { success: true, ...rest };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.get<{ Querystring: { project?: string; art?: string; id?: string } }>('/api/agent-runtimes/user-entscheidungen', async (request, reply) => {
+    try {
+      const r = await listeUserEntscheidungen(request.query?.project, request.query?.art, request.query?.id);
+      if (!r.ok) return reply.code(r.status).send({ success: false, error: { code: r.code, message: r.message }, ...(r.schalter ? { schalter: r.schalter } : {}) });
+      const { ok: _ok, ...rest } = r;
+      return { success: true, ...rest };
+    } catch (error) { return sendFachFehler(reply, error); }
   });
   // P22-T166: Schalter artefakt_skripte fuer die Web-UI (Hinweis im Chatfenster) plus Debug der Bruecke. Wirft nie.
   fastify.get('/api/main-agent/artefakt-skripte', async () => {
@@ -1002,10 +1082,12 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
 
   fastify.post<{
     Params: { sessionId: string };
-    Body: { message?: string; anhaenge?: unknown };
+    Body: { message?: string; anhaenge?: unknown; zitate?: unknown };
   }>('/api/main-agent/sessions/:sessionId/messages', async (request, reply) => {
-    if (typeof request.body?.message !== 'string' || !request.body.message.trim()) {
-      return sendError(reply, new Error('message ist erforderlich'), 400);
+    // P22-T168: Zitat-Anhaenge gehen nur an den Main dieser Sitzung; ohne zitate wie bisher (message Pflicht).
+    const eingang = await mainNachrichtEingang(request.body);
+    if (!eingang.ok) {
+      return reply.status(eingang.status).send({ success: false, error: { code: eingang.code, message: eingang.message, ...(eingang.details ? { details: eingang.details } : {}) } });
     }
     let session;
     let modell: string | null = null;
@@ -1050,14 +1132,14 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     // jedes Stromereignis gedrosselt. Nur Sitzungen der Main-Identitaet bei Schalter hauptagent_verlauf EIN; Fehler hier
     // lassen den Turn nie scheitern. 'verlauf' sagt der Web-UI, unter welchen Server-IDs die beiden Zeilen stehen.
     const turn = await legeVerlaufTurnAn({
-      identity_id: session.identityId, text: request.body.message, session_id: session.id, runtime, modell,
-      lauf_id: 'altweg:' + session.id, geraet: geraetAusUserAgent(request.headers['user-agent']), anhaenge: request.body.anhaenge,
+      identity_id: session.identityId, text: eingang.nachricht, session_id: session.id, runtime, modell,
+      lauf_id: 'altweg:' + session.id, geraet: geraetAusUserAgent(request.headers['user-agent']), anhaenge: eingang.anhaenge,
     });
     const verlauf = turn.gespeichert ? starteVerlaufAntwort(turn.antwort_id, {
       // Lauf: Altweg je CLI-Sitzung; auf dem dauerhaften Weg setzt core den Lauf des Main (aktuellerMainLauf).
-      modell, identity_id: turn.identity_id, user_id: turn.user_id, user_text: request.body.message, runtime, lauf_id: 'altweg:' + session.id,
+      modell, identity_id: turn.identity_id, user_id: turn.user_id, user_text: eingang.modellText, runtime, lauf_id: 'altweg:' + session.id,
     }) : null;
-    sse(reply, 'verlauf', turn.gespeichert ? { user_id: turn.user_id, antwort_id: turn.antwort_id } : { aus: turn.grund });
+    sse(reply, 'verlauf', { ...(turn.gespeichert ? { user_id: turn.user_id, antwort_id: turn.antwort_id } : { aus: turn.grund }), ...(eingang.zitate ? { zitate: eingang.zitate } : {}) });
 
     // P22-T73: Antwortzeile an die Warteschlange geben und den Strom ohne Fehler beenden ('done' mit wartet). false = ging nicht
     // (Schalter aus, kein Verlauf), dann bleibt es beim bisherigen Weg.
@@ -1091,7 +1173,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     try {
       const result = await manager.driver(runtime).sendMessage(
         session,
-        request.body.message,
+        eingang.modellText,
         (item: RuntimeStreamEvent) => {
           if (item.event === 'usage') letzteUsage = item.data;
           verlauf?.ereignis(item.event, item.data);
