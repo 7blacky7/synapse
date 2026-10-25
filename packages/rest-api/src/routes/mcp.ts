@@ -6372,6 +6372,11 @@ async function fuehreToolsCallAus(
     toolArgs.session_id = hauptagentSession;
   } else if (toolName === 'artefakt' && hauptagentSession) {
     toolArgs.session_id = hauptagentSession;
+  } else if (toolName === 'artefakt' && access.profile === 'main-synapse' && !access.error && access.identityId
+    && access.sessionId === 'identitaet-' + access.identityId) {
+    // P22-T138: der dauerhafte Main (P22-T70) schickt bewusst keinen Session-Header. mainToolAccess hat Bearer und Ausweis
+    // geprueft und 'identitaet-<id>' gesetzt; artefakt-tool.ts bildet das auf die Session des laufenden Turns ab.
+    toolArgs.session_id = access.sessionId;
   } else if (toolName === 'artefakt') {
     // Ohne Hauptagenten-Header gibt es keine Session-Bindung: ein selbst
     // mitgeschicktes session_id waere eine Identitaets-Behauptung.

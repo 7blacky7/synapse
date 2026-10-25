@@ -106,7 +106,7 @@ await section('A Artefakt im Turn -> Chat-Strom + Verlauf (dauerhafter Weg)', as
   let tool = null;
   const d = fakeDaemon(async (job) => {
     if (job.action !== 'wake') return { status: 'failed', error: 'unerwartet' };
-    // So ruft der Main im Container das Werkzeug: mcp.ts setzt session_id = 'identitaet-<id>' (mainToolAccess ohne Header).
+    // Session 'identitaet-<id>' wie aus mcp.ts (mainToolAccess ohne Header); den MCP-Weg selbst prueft artefakt-mcp-dauerhaft-p22-t138.
     tool = await AT.zeigeArtefakt({ action: 'zeigen', session_id: 'identitaet-' + MAIN, html: '<p>Artefakt P22-T70</p>', titel: 'Probe' }, 'hauptagent');
     return { status: 'done', result: ergebnis({ success: true, response: 'Hier ist das Artefakt.', tokens: { input: 3, output: 40, kontext: 120000 } }) };
   });
