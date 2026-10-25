@@ -1,5 +1,9 @@
 export { NETZWERK_FUNKTION, NETZWERK_EINSTELLUNGEN, NETZWERK_ADMIN_PARAMETER, leseNetzwerkKonfiguration, fuehreNetzwerkAdminAus, netzwerkEreignis, netzwerkArgumente, netzwerkText, netzwerkEinheit } from './services/agentennetzwerk.js';
 export type { NetzwerkEinstellung, NetzwerkWerte, NetzwerkEreignis } from './services/agentennetzwerk.js';
+// P22-T156: Ergebnisart je Aufruf (nur normalisierte Codes).
+export { netzwerkErfolg } from './services/agentennetzwerk.js';
+export { netzwerkErgebnis, netzFehlerCode, NETZ_ERGEBNIS_ARTEN, NETZ_FEHLERCODE_ART } from './services/agentennetzwerk-ergebnis.js';
+export type { NetzErgebnisArt, NetzErgebnisRoh } from './services/agentennetzwerk-ergebnis.js';
 export {leseReversePeRessourcenSchalter} from './services/reverse-pe-schalter.js';
 export {leiteReverseIntelUm,istReverseIntelZiel,pruefeReverseIntelZiel,bezeugeReverseIntelZiel,reverseIntelVerlauf,REVERSE_INTEL_ZEUGE} from './services/intel-reverse-weiche.js';
 export {reverseGlobalSichtbar,reverseEintragSichtbar,leseReverseStand} from './services/reverse-sichtbarkeit.js';

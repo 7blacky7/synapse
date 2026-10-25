@@ -61,7 +61,8 @@ try {
   'A Index-Reaktion: Katalog-Standard = Web-UI-Konstanten');
  const tsx = lies('packages/web-ui/src/components/Agentennetzwerk.tsx');
  const rueckfall = [...tsx.matchAll(/nwWert\([^,()]+, '(\w+)', (\d+)\)/g), ...tsx.matchAll(/milli\('(\w+)', (\d+)\)/g)].map(m => [m[1], Number(m[2])]);
- ok(rueckfall.length === 16 && rueckfall.every(([n, v]) => K[n]?.standard === v), 'A Rueckfallwerte in Agentennetzwerk.tsx = Katalog-Standard (' + rueckfall.length + ' Stellen)');
+ // P22-T156: +5 Stellen (fehler_effekte 3x: Impulsbau, Legende, Debug-Zeile; fehler_effekt_ms; wartet_halte_ms) -> 21; jede = Katalog-Standard.
+ ok(rueckfall.length === 21 && rueckfall.every(([n, v]) => K[n]?.standard === v), 'A Rueckfallwerte in Agentennetzwerk.tsx = Katalog-Standard (' + rueckfall.length + ' Stellen)');
  ok(['trabanten_impuls_reichweite', 'commit_flug_ms', 'explosion_ms', 'kernwelle_ms', 'orbit_flare_ms', 'trabanten_bahnen_max', 'deko_sterne', 'nebel_schimmer_mrad_s'].every(n => rueckfall.some(([x]) => x === n)), 'A Agentennetzwerk.tsx liest Ablaeufe, Bahnen, Sternenstaub und Nebel aus snapshot.werte');
  ok(45 / 1000 === 0.045 && 25 / 1000 === 0.025 && 37 / 1000 === 0.037 && 20 / 1000 === 0.02 && 21 / 1000 === 0.021 && 50 / 1000 === 0.05 && 500 / 1000 === 0.5 && 800 / 1000 === 0.8 && 1 - 120 / 1000 === 0.88,
   'A Milli-Einheiten ergeben exakt die bisherigen Faktoren (0.045, 0.025, 0.037, 0.02, 0.021, 0.05, 0.5, 0.8, 0.88/0.12)');

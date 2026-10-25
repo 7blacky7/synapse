@@ -6,6 +6,9 @@
 import {planFade,planFarbe,planZustand} from './plan-nachleuchten';
 import { indexEbenen } from './index-ebenen';
 import type { NetzAgent, NetzEreignis, NetzPlan, NetzSnapshot } from '../../api/agentennetzwerk';
+import { ergebnisArt, istErfolg } from './ergebnis-effekte';
+/** P22-T156: erfolgreich nach der Ergebnisart (ok allein sagt nichts). */
+const erfolg = (e: NetzEreignis) => istErfolg(ergebnisArt(e));
 
 export type Rgb = [number, number, number];
 /** form: 0 Glut, 1 Ring, 2 Raute, 3 Quadrat, 4 Funke, 5 Sechseck, 6 Dreieck, 7 Zelle, 8 Stern, 9 Kern */
@@ -109,7 +112,7 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
   if (!agenten.has(id)) agenten.set(id, { id, agent: e.agent, name: e.agent, rolle: 'arbeitsagent', project: e.project, identity_id: e.identity_id, zuletzt_aktiv: e.zeit, kanaele: [] });
  }
  // Empfaenger echter DMs sind beteiligt, auch wenn sie selbst noch nichts aufgerufen haben.
- for (const e of s.ereignisse) if (e.ok && werkzeugName(e.tool) === 'chat' && e.interaktion === 'senden') for (const ziel of e.empfaenger) {
+ for (const e of s.ereignisse) if (erfolg(e) && werkzeugName(e.tool) === 'chat' && e.interaktion === 'senden') for (const ziel of e.empfaenger) {
   if (keinAgent(ziel)) continue;
   const id = namen.get(ziel) || ziel; aktiv.set(id, Math.max(aktiv.get(id) || 0, Date.parse(e.zeit)));
   if (!agenten.has(id)) agenten.set(id, { id, agent: ziel, name: ziel, rolle: 'arbeitsagent', project: e.project, identity_id: null, zuletzt_aktiv: e.zeit, kanaele: [] });
@@ -201,10 +204,10 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
   }
  }
  // Channels sind Synapsen zwischen Kern und Koordinatoren, ausgerichtet auf ihre echten Teilnehmer.
- const kanalNamen = [...new Set(alleEreignisse.filter(e => e.ok && e.channel && jetzt - Date.parse(e.zeit) <= schwelle).map(e => e.channel!))].sort();
+ const kanalNamen = [...new Set(alleEreignisse.filter(e => erfolg(e) && e.channel && jetzt - Date.parse(e.zeit) <= schwelle).map(e => e.channel!))].sort();
  const sichtbar = kanalNamen.slice(0, s.werte.sichtbare_channels), RC = RK * 0.74;
  const kanaele = sichtbar.map((name, i) => {
-  const calls = alleEreignisse.filter(e => e.ok && e.channel === name && jetzt - Date.parse(e.zeit) <= schwelle);
+  const calls = alleEreignisse.filter(e => erfolg(e) && e.channel === name && jetzt - Date.parse(e.zeit) <= schwelle);
   const teilnehmer = [...new Set(calls.map(e => (alias.get(e.identity_id || e.agent) || alias.get(e.agent))?.id).filter((id): id is string => !!id && id !== kern.id))];
   const punkte = teilnehmer.map(id => alias.get(id)!).filter(k => k.rolle !== 'main');
   const w = mittelwinkel(punkte, -Math.PI / 2 + i * TAU / Math.max(1, sichtbar.length));

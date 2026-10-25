@@ -11,7 +11,13 @@ export interface NetzEreignis {
  ergebnis_leer?:boolean;
  /** P22-T148: Artefakt bzw. Nachricht an den User, Urheber = agent/identity_id. */
  art?:'an_user'|'artefakt';
+ /** P22-T156: serverseitige Ergebnisart (aeltere Server liefern sie nicht -> ok/ergebnis_leer). */
+ ergebnis_art?:NetzErgebnisArt;
+ /** P22-T156: normalisierter Fehlercode, null bei Erfolg; nie Rohtext. */
+ fehler_code?:string|null;
 }
+/** P22-T156: Ergebnisarten (core agentennetzwerk-ergebnis.ts NETZ_ERGEBNIS_ARTEN). */
+export type NetzErgebnisArt='erfolg'|'leer'|'falsch_aufgerufen'|'gesperrt'|'nicht_gefunden'|'konflikt'|'serverfehler'|'wartet'|'sonstiges';
 /** P22-T95: offener (oder gerade committeter) files-Plan als Schattenplan-Knoten; nur Metadaten. */
 export interface NetzPlan { id:string; besitzer:string|null; besitzer_name:string|null; status:string; auto_commit?:boolean; coedit:boolean; erstellt:string; committed:string|null; ops:number; dateien:number; dateien_beispiele:string[]; beitraege:string[] }
 export interface NetzAgent { id:string;agent:string;name:string;rolle:string;project:string;identity_id:string|null;zuletzt_aktiv:string|null;kanaele:string[];aufrufe_im_fenster?:number;letzter_aufruf?:{zeit:string;tool:string;action:string}|null;typ?:string|null;modell?:string|null;ort?:string|null;ort_quelle?:string|null;letzte_anmeldung?:string|null;metadaten_quelle?:string;koordination?:{koordinator_id:string;quelle:string;beleg_id:string}|null }

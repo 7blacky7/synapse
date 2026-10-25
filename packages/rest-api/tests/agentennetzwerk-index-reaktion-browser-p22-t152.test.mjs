@@ -51,7 +51,7 @@ try{
  const {specialistRoutes}=await load('packages/rest-api/dist/routes/specialists.js');
  const {mcpRoutes}=await load('packages/rest-api/dist/routes/mcp.js');
  const {registerAgentProfilRoutes}=await load('packages/rest-api/dist/routes/agent-profil.js');
- const {vergissIndexGroesse,indexCacheDauer}=await load('packages/rest-api/dist/services/agentennetzwerk.js');
+ const {vergissIndexGroesse,indexCacheDauer,ladeIndexGroesse}=await load('packages/rest-api/dist/services/agentennetzwerk.js');
  await app.register(specialistRoutes);await app.register(mcpRoutes);
  await registerAgentProfilRoutes(app,{validateToken:async t=>t==='p22-user'?{kind:'session',scope:null}:null});
  await app.ready();
@@ -63,11 +63,25 @@ try{
  const r0=await app.inject({method:'PUT',url:'/api/projects/'+P+'/agent-profile/agentennetzwerk',headers:{authorization:'Bearer p22-user'},payload:{netzwerk_werte:{abgleich_sekunden:3},grund:'T152 Browserabnahme'}});
  assert.equal(r0.statusCode,200,r0.body);
  // Index setzen (nur Zaehlungen zaehlen) und den Cache vergessen, damit der naechste Snapshot die neue Zahl sofort traegt.
+ // P22-T156 (t152-pruefung): DELETE und INSERT atomar in EINER Transaktion. Vorher sah ein Abgleich-Snapshot (alle 3 s) mit
+ // abgelaufenem Index-Cache (10 s) zwischen DELETE und INSERT 0 Chunks -> alle Punkte 'weg', danach alle 'neu' (ng=231, nw=228
+ // im Schritt 'hell'). Danach auf den neuen Stand warten: eine vor dem COMMIT gestartete Zaehlung kann den alten Stand nach
+ // vergissIndexGroesse in den Cache schreiben (laufende Zaehlungen werden geteilt).
  const index=async(dateien,chunks)=>{
-  await pool.query('DELETE FROM code_files WHERE project=$1',[P]);await pool.query('DELETE FROM code_chunks WHERE project=$1',[P]);
-  await pool.query("INSERT INTO code_files(id,project,file_path,file_name,file_type) SELECT 't152f'||g,$1,'f'||g||'.ts','f'||g||'.ts','ts' FROM generate_series(1,$2::int) g",[P,dateien]);
-  await pool.query("INSERT INTO code_chunks(id,project,file_path,chunk_index,content,line_start,line_end) SELECT 't152c'||g,$1,'f1.ts',g,'x',1,1 FROM generate_series(1,$2::int) g",[P,chunks]);
-  vergissIndexGroesse(P);
+  const c=await pool.connect();
+  try{
+   await c.query('BEGIN');
+   await c.query('DELETE FROM code_files WHERE project=$1',[P]);await c.query('DELETE FROM code_chunks WHERE project=$1',[P]);
+   await c.query("INSERT INTO code_files(id,project,file_path,file_name,file_type) SELECT 't152f'||g,$1,'f'||g||'.ts','f'||g||'.ts','ts' FROM generate_series(1,$2::int) g",[P,dateien]);
+   await c.query("INSERT INTO code_chunks(id,project,file_path,chunk_index,content,line_start,line_end) SELECT 't152c'||g,$1,'f1.ts',g,'x',1,1 FROM generate_series(1,$2::int) g",[P,chunks]);
+   await c.query('COMMIT');
+  }catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}finally{c.release();}
+  for(let i=0;;i++){
+   vergissIndexGroesse(P);const g=await ladeIndexGroesse(P);
+   if(g&&g.dateien===dateien&&g.chunks===chunks)break;
+   if(i>=40)throw Error('Index-Cache erreicht '+dateien+'/'+chunks+' nicht: '+JSON.stringify(g));
+   await sleep(50);
+  }
  };
  await index(2000,22300);
  const {createServer}=await import(pathToFileURL(join(dirname(requireUi.resolve('vite/package.json')),'dist/node/index.js')).href);

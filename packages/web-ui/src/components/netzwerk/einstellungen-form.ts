@@ -28,6 +28,9 @@ export const NETZWERK_LABELS: Record<string, string> = {
  commit_flug_ms: 'Commit-Flug (ms)', explosion_ms: 'Explosion beim Verwerfen (ms)', kernwelle_ms: 'Kernwelle (ms)',
  orbit_flare_ms: 'Trabanten flackern nach Commit (ms)', trabanten_bahnen_max: 'Trabanten-Bahnen höchstens', deko_sterne: 'Sternenstaub (Anzahl)',
  index_cache_ms: 'Index-Cache (ms)', index_cache_schnell_ms: 'Index-Cache bei schneller Zählung (ms)', index_billig_ms: 'Zählung gilt als schnell unter (ms)',
+ // P22-T156
+ fehler_effekte: 'Ergebnis-Effekte auf halber Strecke (1 an, 0 = roter Fehlerimpuls)', fehler_effekt_ms: 'Dauer je Ergebnis-Effekt (ms)',
+ wartet_halte_ms: 'Wartender Aufruf pulsiert (ms)',
 };
 
 export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly string[] }> = [
@@ -41,6 +44,8 @@ export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly st
  { titel: 'Reaktion auf Index-Änderungen', namen: ['glanz_ms', 'glanz_anstieg_ms', 'glanz_abkling_ms', 'verglimmen_ms', 'impuls_ms', 'impuls_abstand_ms', 'impulse_max',
   'glanz_max', 'trabanten_impuls_reichweite'] },
  { titel: 'Abläufe', namen: ['commit_flug_ms', 'explosion_ms', 'kernwelle_ms', 'orbit_flare_ms'] },
+ // P22-T156: Effekte je Ergebnisart (falsch aufgerufen, gesperrt, nicht gefunden, Konflikt, Serverfehler, wartet).
+ { titel: 'Ergebnis-Effekte', namen: ['fehler_effekte', 'fehler_effekt_ms', 'wartet_halte_ms'] },
  { titel: 'Server', namen: ['index_cache_ms', 'index_cache_schnell_ms', 'index_billig_ms'] },
 ];
 
