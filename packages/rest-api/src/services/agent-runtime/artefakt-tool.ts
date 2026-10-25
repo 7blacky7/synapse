@@ -26,6 +26,7 @@ import {
   ladeBewertungHtml,
   verknuepfeVersuch,
   designVorliebenZahlen,
+  bewertungFuerArtefakt,
   BewertungsFehler,
 } from '@synapse/core';
 import { emitArtifact, identitaetAusSessionId, aktiveMainTurnSession } from './artifact-stream.js';
@@ -204,6 +205,8 @@ function bewertungsFehlerAntwort(error: unknown): Record<string, unknown> {
  * versuch (Design-Gedaechtnis, core artefakt-bewertung.ts) brauchen keine Session und stehen jeder Identitaet offen, die artefakt
  * sieht. zeigen mit ueberarbeitet_aus verknuepft den neuen Block als Versuch (Fehler dabei: versuch_fehler, das Artefakt bleibt)
  * und traegt bei Schalter artefakt_bewertung EIN die Zahlen der Vorlieben als design_vorlieben mit.
+ * P22-T147: Ersetzt zeigen (artefakt_id) ein bewertetes Artefakt, liefert die Antwort dessen bewertung (Zustand, Kommentar,
+ * bewertet_am, hinweis) - fuer jeden Agenten, nicht nur den Urheber; vorbild liefert sie ebenso (core ladeBewertungHtml).
  */
 export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
   const action = typeof args.action === 'string' ? args.action : '';
@@ -227,6 +230,10 @@ export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?:
       const f = bewertungsFehlerAntwort(error);
       extra.versuch_fehler = { code: f.error, message: f.message };
     }
+  }
+  if (str(args, 'artefakt_id')) {
+    const bewertung = await bewertungFuerArtefakt(r.artefakt_id).catch(() => null);
+    if (bewertung) extra.bewertung = bewertung;
   }
   const zahlen = await designVorliebenZahlen().catch(() => null);
   if (zahlen && zahlen.vorbilder + zahlen.ueberarbeiten + zahlen.verbannt > 0) extra.design_vorlieben = { ...zahlen, abruf: 'artefakt(action:"vorlieben")' };

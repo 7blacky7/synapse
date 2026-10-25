@@ -768,8 +768,10 @@ export {
   ARTEFAKT_BEWERTUNG_FUNKTION, ARTEFAKT_BEWERTUNG_MELDEN_FUNKTION, BEWERTUNGS_QUELLEN, VORLIEBEN_STANDARD, VORBILD_HTML_MAX, BewertungsFehler,
   zustandAus, designMerkmale, merkmalText, zerlegeQuellenListe, artefaktBewertungSchalter, bewerteArtefakt, leseBewertungen,
   leseDesignVorlieben, ladeBewertungHtml, verknuepfeVersuch, designVorliebenZahlen, designVorliebenZeile,
+  // P22-T147: Bewertung am genutzten Artefakt
+  bewertungFuerArtefakt, bewertungsHinweisText,
 } from './services/artefakt-bewertung.js';
-export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, BewertungsStand, BewertungsEingabe } from './services/artefakt-bewertung.js';
+export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, BewertungsStand, BewertungsEingabe, BewertungsHinweis } from './services/artefakt-bewertung.js';
 export { CONTAINER_ENDE_ARTEN, CONTAINER_HINWEIS_ARTEN, WRAPPER_ENDE_STANDARD, WRAPPER_ENDE_FENSTER_MS, leseWrapperEndeGrenzen, zielBetroffen, bewerteWrapperEnde, vermerkeWrapperEnde, betroffeneWrapper } from './services/wrapper-ende.js';
 export type { WrapperEndeBefund, UeberwachungsEreignisKurz, BetroffenerWrapper, WrapperEndeZiel } from './services/wrapper-ende.js';
 export { AGENT_START_ORT_FUNKTION, START_ORTE, START_ORT_ARTEN, merkeStartOrt, merkeStartOrtAusJob, leseStartOrt, zustellWegFuer, startOrtSchalterAktiv, startOrtAnzeige } from './services/agent-start-ort.js';

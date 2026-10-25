@@ -10,6 +10,9 @@
  *   genannten Identitaet, Verlauf nur Ausgaben dieser Identitaet; alles andere ist quelle_unbekannt.
  * AGENTEN (artefakt-Tool, rest-api artefakt-tool.ts): leseDesignVorlieben (kompakt, ohne HTML), ladeBewertungHtml (Abruf eines
  *   Beispiels, gekappt), verknuepfeVersuch; designVorliebenZeile/-Zahlen fuer Anmeldung und artefakt(zeigen).
+ * P22-T147 (User 25.10.2026): Die Bewertung haengt am Artefakt, nicht am Urheber. Wer ein bewertetes Artefakt per ID nutzt
+ *   (zeigen mit artefakt_id: bewertungFuerArtefakt; vorbild: ladeBewertungHtml), bekommt Zustand, Kommentar, bewertet_am und einen
+ *   Hinweis je Zustand mit - jeder Agent, keine aktive Nachricht (melden bleibt davon getrennt). Nur ueber explizite IDs.
  * SCHALTER: Produkt-Schalter artefakt_bewertung (global, Standard AUS, nur ausdruecklich): AUS = nichts schreiben
  *   (funktion_aus), Lesen leer (aktiv false), keine Hinweise. artefakt_bewertung_melden (Standard AUS): jede Bewertung als
  *   Inbox-Nachricht (Zustand + Kommentar) an den Urheber.
@@ -198,6 +201,40 @@ function stand(z: Record<string, unknown>): BewertungsStand {
   };
 }
 
+/** P22-T147: Bewertung eines genutzten Artefakts fuer den Agenten (am Artefakt, nicht am Urheber). */
+export interface BewertungsHinweis {
+  id: string; zustand: BewertungsZustand; kommentar: string | null; bewertet_am: string; titel?: string; nachfolger?: { art: string; ref: string };
+  hinweis: string;
+}
+
+/** P22-T147: Was der Agent mit einem bewerteten Design tun soll, je Zustand. Rein. */
+export function bewertungsHinweisText(s: Pick<BewertungsStand, 'id' | 'zustand' | 'nachfolger'>): string {
+  const vorne = 'Bewertung des Users (nur Design/Aufmachung): ';
+  if (s.zustand === 'vorbild') return vorne + 'Vorbild - diesen Stil gern weiterverwenden.';
+  if (s.zustand === 'ueberarbeiten') {
+    return vorne + 'ueberarbeiten - Kommentar umsetzen und den neuen Block mit ueberarbeitet_aus:' + s.id + ' verknuepfen (artefakt zeigen; fuer HTML per '
+      + 'Inbox/Verlauf artefakt(action:"versuch", bewertung_id:' + s.id + ', quelle_art, quelle_ref)).';
+  }
+  if (s.zustand === 'verbannt') return vorne + 'verbannt - dieses Design nicht weiterverwenden.';
+  return vorne + 'versuch_gezeigt - ein neuer Versuch ist schon verknuepft' + (s.nachfolger ? ' (' + s.nachfolger.art + ':' + s.nachfolger.ref + ')' : '')
+    + '; der User bewertet ihn, das Original nicht erneut ueberarbeiten.';
+}
+
+function bewertungsHinweis(s: BewertungsStand): BewertungsHinweis {
+  return { id: s.id, zustand: s.zustand, kommentar: s.kommentar, bewertet_am: s.bewertet_am, ...(s.titel ? { titel: s.titel } : {}),
+    ...(s.nachfolger ? { nachfolger: s.nachfolger } : {}), hinweis: bewertungsHinweisText(s) };
+}
+
+/** P22-T147: Bewertung eines Hauptagent-Artefakts per ID (artefakt zeigen mit artefakt_id). Schalter AUS bzw. unbewertet -> null. */
+export async function bewertungFuerArtefakt(artefaktId: unknown): Promise<BewertungsHinweis | null> {
+  const ref = gueltigeRef('artefakt', artefaktId);
+  if (!ref || !(await artefaktBewertungSchalter()).aktiv) return null;
+  const z = (await getPool().query(
+    `SELECT id, quelle_art, quelle_ref, urteil, kommentar, zustand, titel, bewertet_am, anzahl_bewertungen, nachfolger_art, nachfolger_ref
+       FROM artefakt_bewertungen WHERE quelle_art = 'artefakt' AND quelle_ref = $1`, [ref])).rows[0] as Record<string, unknown> | undefined;
+  return z ? bewertungsHinweis(stand(z)) : null;
+}
+
 export interface BewertungsEingabe { quelle_art: unknown; quelle_ref: unknown; identity_id?: unknown; urteil: unknown; kommentar?: unknown }
 export interface MeldeErgebnis { gemeldet: boolean; grund?: string; inbox_id?: number }
 
@@ -321,11 +358,16 @@ export async function leseDesignVorlieben(o: { limit?: unknown } = {}) {
   return { aktiv: true, vorbilder, ueberarbeiten, verbannt, hinweis: VORLIEBEN_HINWEIS, debug };
 }
 
-/** HTML eines bewerteten Designs (Beispiel fuer Agenten), gekappt auf VORBILD_HTML_MAX. */
+/**
+ * HTML eines bewerteten Designs (Beispiel fuer Agenten), gekappt auf VORBILD_HTML_MAX. P22-T147: dazu bewertung (Zustand,
+ * Kommentar, bewertet_am, Hinweis je Zustand) wie bei artefakt zeigen mit artefakt_id.
+ */
 export async function ladeBewertungHtml(idRoh: unknown) {
   await brauchtSchalter();
   const id = bewertungsId(idRoh);
-  const z = (await getPool().query('SELECT id, titel, zustand, kommentar, html, merkmale, quelle_art, quelle_ref FROM artefakt_bewertungen WHERE id = $1::bigint', [id])).rows[0] as Record<string, unknown> | undefined;
+  const z = (await getPool().query(
+    `SELECT id, titel, zustand, kommentar, html, merkmale, quelle_art, quelle_ref, urteil, bewertet_am, anzahl_bewertungen, nachfolger_art, nachfolger_ref
+       FROM artefakt_bewertungen WHERE id = $1::bigint`, [id])).rows[0] as Record<string, unknown> | undefined;
   if (!z) throw new BewertungsFehler('bewertung_unbekannt', 'Bewertung ' + id + ' nicht gefunden', 404);
   const html = String(z.html);
   const gekappt = html.length > VORBILD_HTML_MAX;
@@ -333,6 +375,7 @@ export async function ladeBewertungHtml(idRoh: unknown) {
     id: String(z.id), titel: text(z.titel), zustand: z.zustand as BewertungsZustand, kommentar: text(z.kommentar),
     merkmale: merkmalText(z.merkmale as DesignMerkmale), quelle: z.quelle_art + ':' + z.quelle_ref,
     html: gekappt ? html.slice(0, VORBILD_HTML_MAX) : html, ...(gekappt ? { gekappt: true, html_zeichen: html.length } : {}),
+    bewertung: bewertungsHinweis(stand(z)),
   };
 }
 
