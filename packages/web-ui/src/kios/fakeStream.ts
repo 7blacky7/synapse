@@ -56,14 +56,14 @@ export interface HtmlStreamHandle {
 export function streamAgentHtml(
   target: Element,
   html: string,
-  options: { speedFactor?: number; onDone?: () => void } = {},
+  options: { speedFactor?: number; onDone?: () => void; /** P22-T165: ohne Aufbau-Animation sofort tauschen. */ sofort?: boolean } = {},
 ): HtmlStreamHandle {
   target.replaceChildren();
   const template = document.createElement('template');
   template.innerHTML = html;
 
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
-  if (reducedMotion) {
+  if (reducedMotion || options.sofort) {
     target.appendChild(template.content.cloneNode(true));
     options.onDone?.();
     return { cancel: () => undefined };

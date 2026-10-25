@@ -11,6 +11,8 @@ import {
 import { getArtefaktAnsicht, type ArtefaktAnsicht } from '../api/agent-runtime';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
 import { ArtefaktLiveBlock } from './ArtefaktLiveBlock';
+// P22-T165: Verweise in persoenlichen Artefakten oeffnen das Lesefenster (eigener Provider, kein globaler Umbau).
+import { VerweisFensterProvider } from './Lesefenster';
 import '../personal-knowledge.css';
 import { StatusChip } from './StatusKennzeichnung';
 
@@ -160,7 +162,7 @@ function PersonalArtifacts() {
       {preview ? (selected.hatVorlage
         ? <ArtefaktLiveBlock key={selected.id + ':' + aktivesProjekt} id={selected.id} html={preview.html} revision={preview.revision} modus={ansicht?.modus ?? selected.modus}
           project={aktivesProjekt || null} vorlage gerendertAm={ansicht?.render?.gerendert_am} className="native-html-block" />
-        : <AgentRenderingSurface html={preview.html} revision={selected.id + ':' + preview.revision} className="native-html-block" />)
+        : <AgentRenderingSurface html={preview.html} revision={selected.id + ':' + preview.revision} className="native-html-block" verweisProjekt={aktivesProjekt || null} />)
         : <p className="memory-content">{previewError || 'lädt …'}</p>}
       {ansicht?.render?.fehler?.length ? <p className="memory-content">Vorlagenfehler: {ansicht.render.fehler.join(' · ')}</p> : null}
       {ansicht?.render?.hinweis && <p className="memory-content">{ansicht.render.hinweis}</p>}
@@ -173,6 +175,6 @@ export function KnowledgeView({ section, onNavigate }: Props) {
   return <div className="standard-page knowledge-page">
     <header className="knowledge-page-header"><div><span>GLOBAL / PERSÖNLICH</span><h1>Persönlicher Bereich</h1><p>Projektübergreifende Memories und HTML-Artefakte des Hauptagenten.</p></div><StatusChip stand="live" /></header>
     <ScopeBanner />
-    <section className="knowledge-workbench"><KnowledgeNavigation section={section} onNavigate={onNavigate} /><main>{section === 'user-memories' ? <UserMemories /> : <PersonalArtifacts />}</main></section>
+    <section className="knowledge-workbench"><KnowledgeNavigation section={section} onNavigate={onNavigate} /><main>{section === 'user-memories' ? <UserMemories /> : <VerweisFensterProvider><PersonalArtifacts /></VerweisFensterProvider>}</main></section>
   </div>;
 }

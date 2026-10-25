@@ -161,8 +161,10 @@ function TopAnsicht({ e, project, onBewertet }: { e: TopArtefakt; project: strin
       {!inhalt && !fehler && <p className="empty-state">lädt …</p>}
       {inhalt && (ansicht === 'vorlage'
         ? <ArtefaktLiveBlock key={e.quelle.ref + ':' + renderFuer} id={e.quelle.ref} html={inhalt.html} revision={inhalt.revision}
-          modus={inhalt.ansicht?.modus ?? e.modus} project={renderFuer} vorlage gerendertAm={inhalt.ansicht?.render?.gerendert_am} className="native-html-block" />
-        : <AgentRenderingSurface html={inhalt.html} revision={e.bewertung_id + ':' + ansicht + ':' + inhalt.revision} className="native-html-block" />)}
+          modus={inhalt.ansicht?.modus ?? e.modus} project={renderFuer} vorlage gerendertAm={inhalt.ansicht?.render?.gerendert_am} className="native-html-block"
+          verweisProjekt={e.project ?? e.standard_project ?? project} />
+        : <AgentRenderingSurface html={inhalt.html} revision={e.bewertung_id + ':' + ansicht + ':' + inhalt.revision} className="native-html-block"
+          verweisProjekt={e.project ?? e.standard_project ?? project} />)}
       {inhalt?.ansicht?.render?.fehler?.length ? <p className="empty-state">Vorlagenfehler: {inhalt.ansicht.render.fehler.join(' · ')}</p> : null}
     </div>
   );

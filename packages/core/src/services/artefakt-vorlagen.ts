@@ -15,19 +15,25 @@
  *   (AUS = live verhaelt sich wie stand), artefakt_ausweis_zeigen (zeigen ohne Main-Session, Ziel eigener Verlauf).
  * DEBUG: jede Render-Antwort traegt debug {quellen:[{name,vertrag,ms,bytes,gekappt,fehler}], daten_hash, schalter_quelle,
  *   render_ms, gekappt, anlass, wiederverwendet}.
+ * P22-T165 (Entwurf ba4ebbc0, GO F1-F6): Quelle plan.alle = alle Plaene MIT Tasks kompakt; kappt selbst (erledigte Tasks zuerst,
+ *   aelteste zuerst, dann offene vom Ende; Plaene bleiben immer), debug_quelle im Ergebnis. Schalter artefakt_verweise (global,
+ *   Standard AUS, nur ausdruecklich): Klick auf data-synapse-verweis / href="#verweis:" im Artefakt oeffnet das Lesefenster der
+ *   Web-UI, Radio-/details-Zustand bleibt ueber neue Revisionen erhalten (Web-UI kios/verweis-klick-logik.ts).
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { ARTEFAKT_HTML_MAX } from './artefakt.js';
 import { renderVorlage, pruefeVorlage } from './artefakt-vorlage.js';
-import { listPlans, getPlan } from './plans.js';
+import { listPlans, getPlan, listPlansDetail, getAllePlaene, filtereWiedervorlageTasks } from './plans.js';
 import { getChannelMessages } from './channels.js';
 import { leseVerlaufSchalter } from './hauptagent-verlauf.js';
 
 export const ARTEFAKT_VORLAGEN_FUNKTION = 'artefakt_vorlagen' as const;
 export const ARTEFAKT_VORLAGEN_LIVE_FUNKTION = 'artefakt_vorlagen_live' as const;
 export const ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION = 'artefakt_ausweis_zeigen' as const;
+/** P22-T165: Verweise im Artefakt anklickbar (Lesefenster) + Zustand ueber Live-Updates; wirkt in der Web-UI. */
+export const ARTEFAKT_VERWEISE_FUNKTION = 'artefakt_verweise' as const;
 export const ARTEFAKT_MODI = ['fest', 'stand', 'live'] as const;
 export type ArtefaktModus = typeof ARTEFAKT_MODI[number];
 
@@ -39,7 +45,8 @@ const fehler = (code: string, message: string, status = 400): never => { throw n
 // ---------------------------------------------------------------------------------------------
 // Schalter + Einstellungen
 // ---------------------------------------------------------------------------------------------
-type VorlagenFunktion = typeof ARTEFAKT_VORLAGEN_FUNKTION | typeof ARTEFAKT_VORLAGEN_LIVE_FUNKTION | typeof ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION;
+type VorlagenFunktion = typeof ARTEFAKT_VORLAGEN_FUNKTION | typeof ARTEFAKT_VORLAGEN_LIVE_FUNKTION | typeof ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION
+  | typeof ARTEFAKT_VERWEISE_FUNKTION;
 /** Wirksamer Stand (global); Lesefehler = AUS mit letzter_fehler. Wirft nie. */
 export async function artefaktVorlagenSchalter(funktion: VorlagenFunktion = ARTEFAKT_VORLAGEN_FUNKTION): Promise<{ aktiv: boolean; quelle: string; letzter_fehler: string | null }> {
   try {
@@ -144,7 +151,8 @@ export interface ArtefaktQuellDefinition {
   kanaele: string[];
   /** Reserviert, noch ohne Vertrag (R1: deploy.stand). */
   geplant?: boolean;
-  lade?: (k: { project: string; args: Record<string, unknown> }) => Promise<unknown>;
+  /** max_bytes = wirksame Kappung je Quelle (P22-T165), damit eine Quelle selbst sinnvoll kuerzen kann statt null zu werden. */
+  lade?: (k: { project: string; args: Record<string, unknown>; max_bytes?: number }) => Promise<unknown>;
 }
 export interface ArtefaktQuelle { name: string; vertrag: string; args: Record<string, unknown> }
 
@@ -161,6 +169,7 @@ export function artefaktQuellenKatalog(): Array<Omit<ArtefaktQuellDefinition, 'l
   return [...KATALOG.values()].map(({ lade: _lade, ...rest }) => rest).sort((a, b) => a.vertrag.localeCompare(b.vertrag));
 }
 
+const PLAN_ALLE_JE_PLAN = { standard: 300, max: 1000 } as const;
 const kurz = (v: unknown, n: number): unknown => (typeof v === 'string' && v.length > n ? v.slice(0, n - 1) + '…' : v);
 const iso = (v: unknown): unknown => (v instanceof Date ? v.toISOString() : v);
 
@@ -186,6 +195,13 @@ registriereArtefaktQuelle({
   },
 });
 registriereArtefaktQuelle({
+  vertrag: 'plan.alle', beschreibung: 'Alle Plaene MIT Tasks kompakt: {plaene[{kurz_id,name,ziel,aktiv,prioritaet,tasks_gesamt,tasks_offen,tasks_erledigt,'
+    + 'updated_at,tasks[{kurz_id,title,status,priority,updatedAt}],tasks_ausgelassen}],gesamt,gekappt,hinweis}. Zu gross: zuerst erledigte Tasks raus, Plaene bleiben',
+  args: { alle: { typ: 'boolean' }, offen: { typ: 'boolean' }, status: { typ: 'string' }, max_tasks_je_plan: { typ: 'number', max: PLAN_ALLE_JE_PLAN.max } },
+  kanaele: ['synapse_plan'],
+  lade: async ({ project, args, max_bytes }) => ladePlanAlle(project, args, max_bytes),
+});
+registriereArtefaktQuelle({
   vertrag: 'channel.feed', beschreibung: 'Juengste Nachrichten eines Channels (neueste zuerst): id, sender, content (gekuerzt 2000), createdAt',
   args: { channel: { typ: 'string', pflicht: true }, limit: { typ: 'number', max: 100 } }, kanaele: ['synapse_channel'],
   lade: async ({ project, args }) => {
@@ -201,6 +217,112 @@ registriereArtefaktQuelle({
   vertrag: 'deploy.stand', beschreibung: 'Deploy-Stand (live Commit, Web-UI-Version) - GEPLANT, noch kein lesender Vertrag (P22-T154 R1)',
   args: {}, kanaele: [], geplant: true,
 });
+
+// ---------------------------------------------------------------------------------------------
+// P22-T165: plan.alle - alle Plaene mit ihren Tasks kompakt (ohne Beschreibung), eigene Kappung
+// ---------------------------------------------------------------------------------------------
+const PLAN_ALLE_TITEL_MAX = 160;
+/** Reserve fuer gesamt/hinweis/debug_quelle neben den Plaenen (die Kappung misst nur plaene). */
+const PLAN_ALLE_RESERVE = 2048;
+const OFFENE_STATUS = new Set(['todo', 'in_progress', 'blocked']);
+
+export interface PlanAlleTask {
+  kurz_id: string | null; id?: string; title: unknown; status: unknown; priority: unknown; updatedAt: unknown; zurueckgestellt_bis?: string;
+}
+export interface PlanAllePlan {
+  kurz_id: string | null; name: string; ziel: string; aktiv: boolean; prioritaet: string; tasks_gesamt: number; tasks_offen: number;
+  tasks_erledigt: number; updated_at: string; zurueckgestellt?: boolean; tasks: PlanAlleTask[]; tasks_ausgelassen: number;
+}
+export interface PlanAlleErgebnis {
+  plaene: PlanAllePlan[];
+  gesamt: { plaene: number; tasks: number; ausgelassen: number };
+  gekappt: boolean;
+  hinweis?: string;
+  debug_quelle: { bytes: number; max_bytes: number; filter: Record<string, unknown>; ausgelassen_je_grund: { je_plan: number; kappung: number } };
+}
+
+const bytesVon = (v: unknown): number => Buffer.byteLength(JSON.stringify(v ?? null), 'utf8');
+const zeitVon = (v: unknown): number => { const t = new Date(String(v ?? '')).getTime(); return Number.isNaN(t) ? 0 : t; };
+
+/** Wegfall-Reihenfolge bei Platzmangel (Indizes): erst erledigte (aelteste zuerst), dann offene vom Ende. Rein. */
+export function wegfallReihenfolge(tasks: Array<{ status: unknown; updatedAt: unknown }>): number[] {
+  const mit = tasks.map((t, i) => ({ t, i }));
+  const erledigt = mit.filter((x) => x.t.status === 'done').sort((a, b) => zeitVon(a.t.updatedAt) - zeitVon(b.t.updatedAt) || a.i - b.i).map((x) => x.i);
+  const offen = mit.filter((x) => x.t.status !== 'done').map((x) => x.i).reverse();
+  return [...erledigt, ...offen];
+}
+
+/**
+ * P22-T165: alle Plaene (Reihenfolge wie plan list) mit ihren Tasks kompakt. args: alle (auch zurueckgestellte Plaene/Tasks),
+ * offen (nur todo/in_progress/blocked), status (genau dieser), max_tasks_je_plan (Standard 300, max 1000). Groesser als
+ * maxBytes: projektweit zuerst erledigte Tasks (aelteste zuerst), dann offene vom Ende (niedrigster Plan zuerst); Plaene bleiben.
+ */
+export async function ladePlanAlle(project: string, args: Record<string, unknown> = {}, maxBytes: number = ARTEFAKT_VORLAGEN_EINSTELLUNGEN.quelle_max_bytes.standard,
+  jetzt: Date = new Date()): Promise<PlanAlleErgebnis> {
+  const alle = args.alle === true;
+  const status = typeof args.status === 'string' && args.status.trim() ? args.status.trim() : null;
+  const nurOffen = args.offen === true;
+  const jePlan = Math.min(PLAN_ALLE_JE_PLAN.max, Math.max(1, Math.trunc(Number(args.max_tasks_je_plan)) || PLAN_ALLE_JE_PLAN.standard));
+  const [{ plaene: liste }, voll] = await Promise.all([listPlansDetail(project, { alle, jetzt }), getAllePlaene(project)]);
+  const tasksJePlan = new Map(voll.map((p) => [p.id, p.tasks ?? []]));
+  let jePlanWeg = 0;
+  const vorher: number[] = [];
+  const plaene: PlanAllePlan[] = liste.map((p) => {
+    const sichtbar = filtereWiedervorlageTasks(tasksJePlan.get(p.id) ?? [], { alle, jetzt }).tasks;
+    const kompakt = sichtbar.map((t) => t as unknown as Record<string, unknown>)
+      .filter((t) => (!status || t.status === status) && (!nurOffen || OFFENE_STATUS.has(String(t.status))))
+      .map((t): PlanAlleTask => ({
+        kurz_id: typeof t.kurz_id === 'string' ? t.kurz_id : null, ...(typeof t.kurz_id === 'string' ? {} : { id: String(t.id) }),
+        title: kurz(t.title, PLAN_ALLE_TITEL_MAX), status: t.status, priority: t.priority, updatedAt: iso(t.updatedAt),
+        ...(t.zurueckgestellt === true && t.zurueckgestellt_bis ? { zurueckgestellt_bis: String(iso(t.zurueckgestellt_bis)) } : {}),
+      }));
+    vorher.push(kompakt.length);
+    let tasks = kompakt;
+    if (kompakt.length > jePlan) {
+      const weg = new Set(wegfallReihenfolge(kompakt).slice(0, kompakt.length - jePlan));
+      tasks = kompakt.filter((_, i) => !weg.has(i));
+      jePlanWeg += weg.size;
+    }
+    const r = p as unknown as Record<string, unknown>;
+    return {
+      kurz_id: p.kurz_id, name: p.name, ziel: p.ziel, aktiv: p.aktiv, prioritaet: p.prioritaet, tasks_gesamt: p.tasks_gesamt,
+      tasks_offen: p.tasks_offen, tasks_erledigt: p.tasks_erledigt, updated_at: p.updated_at, ...(r.zurueckgestellt === true ? { zurueckgestellt: true } : {}),
+      tasks, tasks_ausgelassen: 0,
+    };
+  });
+  // Kappung: grob abziehen, exakt nachmessen; bis es passt oder keine Task mehr uebrig ist.
+  const budget = Math.max(512, maxBytes - PLAN_ALLE_RESERVE);
+  let bytes = bytesVon(plaene);
+  let kappungWeg = 0;
+  if (bytes > budget) {
+    const kandidaten = plaene.flatMap((pl, pi) => pl.tasks.map((t, ti) => ({ pi, ti, t, erledigt: t.status === 'done', zeit: zeitVon(t.updatedAt) })));
+    kandidaten.sort((a, b) => (a.erledigt === b.erledigt ? 0 : a.erledigt ? -1 : 1)
+      || (a.erledigt ? a.zeit - b.zeit || a.pi - b.pi || a.ti - b.ti : b.pi - a.pi || b.ti - a.ti));
+    const weg = new Set<PlanAlleTask>();
+    let i = 0;
+    while (bytes > budget && i < kandidaten.length) {
+      let schaetzung = bytes;
+      while (schaetzung > budget && i < kandidaten.length) { weg.add(kandidaten[i].t); schaetzung -= bytesVon(kandidaten[i].t) + 1; i++; }
+      for (const pl of plaene) pl.tasks = pl.tasks.filter((t) => !weg.has(t));
+      bytes = bytesVon(plaene);
+    }
+    kappungWeg = weg.size;
+  }
+  plaene.forEach((pl, i) => { pl.tasks_ausgelassen = vorher[i] - pl.tasks.length; });
+  const ausgelassen = jePlanWeg + kappungWeg;
+  const erg: PlanAlleErgebnis = {
+    plaene,
+    gesamt: { plaene: plaene.length, tasks: plaene.reduce((n, pl) => n + pl.tasks.length, 0), ausgelassen },
+    gekappt: ausgelassen > 0,
+    ...(ausgelassen ? { hinweis: ausgelassen + ' Tasks ausgelassen (' + jePlanWeg + ' ueber max_tasks_je_plan ' + jePlan + ', ' + kappungWeg
+      + ' wegen Kappung ' + maxBytes + ' Bytes): zuerst erledigte (aelteste zuerst), dann offene vom Ende. Eingrenzen: offen:true, status, max_tasks_je_plan.' } : {}),
+    debug_quelle: { bytes: 0, max_bytes: maxBytes, filter: { alle, offen: nurOffen, status, max_tasks_je_plan: jePlan }, ausgelassen_je_grund: { je_plan: jePlanWeg, kappung: kappungWeg } },
+  };
+  // zweimal: die Zahl selbst aendert die Laenge (0 -> fuenfstellig), danach ist sie stabil.
+  erg.debug_quelle.bytes = bytesVon(erg);
+  erg.debug_quelle.bytes = bytesVon(erg);
+  return erg;
+}
 
 const QUELLEN_TEXT_HINWEIS = ' Kommt quellen als Text an, kennt dein MCP-Client das aktuelle Tool-Schema noch nicht (zwischengespeichert'
   + ' vom Sitzungsstart): MCP neu verbinden bzw. Sitzung neu starten, dann geht die Liste als Liste durch.';
@@ -288,7 +410,7 @@ export async function ladeQuellen(quellen: ArtefaktQuelle[], project: string, w:
     const def = KATALOG.get(q.vertrag);
     try {
       if (!def?.lade) throw new Error(def?.geplant ? 'Vertrag ' + q.vertrag + ' ist noch nicht gebaut' : 'Vertrag ' + q.vertrag + ' unbekannt');
-      const k = kappe(await mitFrist(def.lade({ project, args: q.args }), w.quelle_timeout_ms), w.quelle_max_bytes);
+      const k = kappe(await mitFrist(def.lade({ project, args: q.args, max_bytes: w.quelle_max_bytes }), w.quelle_timeout_ms), w.quelle_max_bytes);
       daten[q.name] = k.wert;
       return { name: q.name, vertrag: q.vertrag, ms: Date.now() - start, bytes: k.bytes, gekappt: k.gekappt, fehler: k.fehler };
     } catch (error) {

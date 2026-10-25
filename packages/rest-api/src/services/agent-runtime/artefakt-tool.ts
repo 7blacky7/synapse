@@ -230,9 +230,15 @@ export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?:
   // P22-T154: neu zeichnen (jeder mit Leserecht auf das Projekt) und Quellenkatalog.
   if (action === 'neu_zeichnen') return neuZeichnen(args, agentId);
   if (action === 'quellen') {
-    const [s, live, ausweis] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter('artefakt_vorlagen_live'), artefaktVorlagenSchalter(ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION)]);
-    return { success: true, katalog: artefaktQuellenKatalog(), schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis },
-      hinweis: 'Quellen: [{name, vertrag, args?}]; project wird beim Rendern eingesetzt, nie in args. Vorlage: {{wert | filter}}, {{#each liste as x}}, {{#if a == b}}; alles wird escaped.' };
+    const [s, live, ausweis, verweise] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter('artefakt_vorlagen_live'),
+      artefaktVorlagenSchalter(ARTEFAKT_AUSWEIS_ZEIGEN_FUNKTION), artefaktVorlagenSchalter('artefakt_verweise')]);
+    return { success: true, katalog: artefaktQuellenKatalog(), schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis, artefakt_verweise: verweise },
+      hinweis: 'Quellen: [{name, vertrag, args?}]; project wird beim Rendern eingesetzt, nie in args. Vorlage: {{wert | filter}}, {{#each liste as x}}, {{#if a == b}}; alles wird escaped.',
+      // P22-T165: kurze Anleitung fuer anklickbare Artefakte (ohne Skript).
+      interaktion: 'Verweis (Schalter artefakt_verweise): <span data-synapse-verweis="P22-T5"> oder <a href="#verweis:P22"> oeffnet das Lesefenster;'
+        + ' andere Arten als art:id (thought, memory, task, plan, doc, event, nachricht, chat, asset), Projekt per data-synapse-projekt="{{_meta.project}}".'
+        + ' Navigation ohne Skript: {{#each plan.plaene as p}}<input type="radio" name="plan" id="r-{{p.kurz_id}}" {{#if @erster}}checked{{/if}}>'
+        + '<label for="r-{{p.kurz_id}}">{{p.kurz_id}}</label>{{/each}} und CSS #r-P22:checked ~ .ansichten .v-P22{display:block}; der gewaehlte Plan bleibt ueber Live-Updates erhalten.' };
   }
   try {
     if (action === 'vorlieben') return { success: true, ...(await leseDesignVorlieben({ limit: args.limit })) };

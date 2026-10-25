@@ -24,7 +24,7 @@ import { bewerteArtefakt, leseBewertungen, leseDesignVorlieben, zerlegeQuellenLi
 import { abonniereBewertungsLive, bewertungLiveStatus } from '../services/artefakt-bewertung-live.js';
 import {
   renderArtefakt, renderungsProjekte, ladeVorlagenZeile, artefaktVorlagenSchalter, leseArtefaktVorlagenEinstellungen, setzeArtefaktVorlagenEinstellungen,
-  artefaktQuellenKatalog, ArtefaktVorlagenFehler, ARTEFAKT_VORLAGEN_LIVE_FUNKTION, type ArtefaktRenderErgebnis,
+  artefaktQuellenKatalog, ArtefaktVorlagenFehler, ARTEFAKT_VORLAGEN_LIVE_FUNKTION, ARTEFAKT_VERWEISE_FUNKTION, type ArtefaktRenderErgebnis,
 } from '@synapse/core';
 import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
@@ -680,9 +680,15 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   });
   // P22-T154: interne Einstellungen der Vorlagen (Drossel, Buendelung, Kappungen) und Debug (Schalter, Katalog, Live-Status).
   fastify.get('/api/main-agent/artefakt-vorlagen', async () => {
-    const [s, live, ausweis] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter(ARTEFAKT_VORLAGEN_LIVE_FUNKTION), artefaktVorlagenSchalter('artefakt_ausweis_zeigen')]);
-    return { success: true, schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis },
+    const [s, live, ausweis, verweise] = await Promise.all([artefaktVorlagenSchalter(), artefaktVorlagenSchalter(ARTEFAKT_VORLAGEN_LIVE_FUNKTION),
+      artefaktVorlagenSchalter('artefakt_ausweis_zeigen'), artefaktVorlagenSchalter(ARTEFAKT_VERWEISE_FUNKTION)]);
+    return { success: true, schalter: { artefakt_vorlagen: s, artefakt_vorlagen_live: live, artefakt_ausweis_zeigen: ausweis, artefakt_verweise: verweise },
       einstellungen: await leseArtefaktVorlagenEinstellungen(), katalog: artefaktQuellenKatalog(), live: artefaktLiveStatus() };
+  });
+  // P22-T165: Schalter artefakt_verweise fuer die Web-UI (Klick auf Verweise im Artefakt, Zustand ueber Live-Updates). Wirft nie.
+  fastify.get('/api/main-agent/artefakt-verweise', async () => {
+    const s = await artefaktVorlagenSchalter(ARTEFAKT_VERWEISE_FUNKTION);
+    return { success: true, aktiv: s.aktiv, schalter: s };
   });
   fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/main-agent/artefakt-vorlagen/einstellungen', async (request, reply) => {
     try { return { success: true, ...(await setzeArtefaktVorlagenEinstellungen(request.body?.werte, request.body?.grund, 'user')) }; }

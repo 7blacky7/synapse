@@ -206,7 +206,7 @@ function PageHeader({
 }
 
 
-function NativeHtmlBlock({ block }: { block: AgentHtmlBlock }) {
+function NativeHtmlBlock({ block, project }: { block: AgentHtmlBlock; project?: string }) {
   const style = {
     '--block-column': String(block.column),
     '--block-column-span': String(block.columnSpan),
@@ -222,6 +222,7 @@ function NativeHtmlBlock({ block }: { block: AgentHtmlBlock }) {
       interactive={block.interactive}
       className="native-html-block"
       style={style}
+      verweisProjekt={project}
     />
   );
 }
@@ -229,9 +230,12 @@ function NativeHtmlBlock({ block }: { block: AgentHtmlBlock }) {
 function NativeHtmlMessage({
   message,
   onSave,
+  project,
 }: {
   message: AgentMessage;
   onSave: () => void;
+  /** P22-T165: Projekt fuer Verweise im Artefakt (gewaehltes Projekt des Main-Chats). */
+  project?: string;
 }) {
   const layout = message.layout || { columns: 12, rowHeight: 72, gap: 12 };
   // P22-T141: Bewertung je Block (Artefakt-ID). Schalter artefakt_bewertung AUS (bzw. Mock-Antwort) -> Altansicht unveraendert.
@@ -246,7 +250,7 @@ function NativeHtmlMessage({
     <div className="native-html-message">
       <div className="native-html-grid" style={layoutStyle}>
         {(message.blocks || []).map((block) => (
-          <NativeHtmlBlock block={block} key={block.id} />
+          <NativeHtmlBlock block={block} key={block.id} project={project} />
         ))}
       </div>
       {bewertung.aktiv && (message.blocks || []).map((block, index, alle) => (
@@ -978,7 +982,7 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
               {message.laeuft && <div className="message-laeuft"><i /><i /><i /><span>Hauptagent antwortet …</span></div>}
               {message.hinweise?.map((hinweis) => <small key={hinweis} className="message-hinweis">{hinweis}</small>)}
               {message.zugInfo && <small className="message-zug">{message.zugInfo}</small>}
-              {message.kind === 'artifact' && <NativeHtmlMessage message={message} onSave={() => saveArtifact(message.id)} />}
+              {message.kind === 'artifact' && <NativeHtmlMessage message={message} project={project} onSave={() => saveArtifact(message.id)} />}
               {message.kind === 'attachment' && message.attachment && <AttachmentMessage attachment={message.attachment} />}
             </article>
           </Fragment>)}

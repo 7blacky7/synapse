@@ -346,7 +346,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                 {m.laeuft ? (m.text && <p>{m.text}</p>) : m.text.trim() ? (m.role === 'agent' && istHtmlAntwort(m.text)
                   // P22-T137: reine HTML-Antworten wie beim Main bereinigt im Shadow-DOM (AgentRenderingSurface), nie als rohes innerHTML.
                   ? <>
-                    <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" />
+                    <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" verweisProjekt={project} />
                     {bewertung.aktiv && htmlQuellen.has(m.id) && <ArtefaktBewertung quelle={htmlQuellen.get(m.id)!}
                       stand={bewertung.je[quellSchluessel(htmlQuellen.get(m.id)!)]} onGespeichert={bewertung.setze} />}
                   </>
@@ -355,7 +355,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                 {/* P22-T154: Artefakte (zeigen per Ausweis), volle Breite ohne Raster, gleicher Baustein + Bewertungsleiste wie im Main. */}
                 {!m.laeuft && (m.artefakte ?? []).map((a) => <div key={a.id} className="agent-chat-artefakt">
                   {a.title && <strong className="agent-chat-artefakt-titel">{a.title}</strong>}
-                  <ArtefaktLiveBlock id={a.id} html={a.html} revision={a.revision} modus={a.modus} project={a.project ?? null} vorlage={a.vorlage === true} gerendertAm={a.gerendert_am} />
+                  <ArtefaktLiveBlock id={a.id} html={a.html} revision={a.revision} modus={a.modus} project={a.project ?? null} vorlage={a.vorlage === true} gerendertAm={a.gerendert_am} verweisProjekt={project} />
                   {bewertung.aktiv && <ArtefaktBewertung quelle={htmlQuellen.get('artefakt:' + a.id)!}
                     stand={bewertung.je[quellSchluessel({ art: 'artefakt', ref: a.id })]} onGespeichert={bewertung.setze} />}
                 </div>)}
