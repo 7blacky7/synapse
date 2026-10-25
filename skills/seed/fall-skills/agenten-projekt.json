@@ -142,7 +142,7 @@
       "weg": "beide",
       "sections": [
         { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer chat (Anmeldung, Adressbuch, Direktnachrichten, Inbox). Anmeldung je Weg: fall-querschnitt-ausweis-token bzw. fall-querschnitt-agent-id-legacy." },
-        { "section": "faelle", "content": "- fall-chat-nachrichten: Direktnachricht vs. Inbox, Lesen und Filter." }
+        { "section": "faelle", "content": "- fall-chat-nachrichten: Direktnachricht vs. Inbox, Lesen, Filter und Quittung." }
       ]
     },
     {
@@ -150,7 +150,7 @@
       "weg": "beide",
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: Nachricht an einen Agenten senden oder lesen." },
-        { "section": "regeln", "content": "1. send(content, recipient_id String oder Array = Multicast) bzw. inbox_send(from_agent, to_agent, content).\n2. get(since ISO, sender_id_filter, limit, message_id); inbox_check(agent_name) - agent_name ist hier der Name, nicht agent_id.\n3. Bei chat(get) ist agent_id ein Filter.\n4. cutoff_date bei register: YYYY-MM-DD (YYYY-MM/YYYY werden aufgefuellt)." }
+        { "section": "regeln", "content": "1. send(content, recipient_id String oder Array = Multicast) bzw. inbox_send(from_agent, to_agent, content).\n2. get(since ISO, sender_id_filter, limit, message_id); inbox_check(agent_name) - agent_name ist hier der Name, nicht agent_id.\n3. Bei chat(get) ist agent_id ein Filter.\n4. cutoff_date bei register: YYYY-MM-DD (YYYY-MM/YYYY werden aufgefuellt).\n5. Zugestellte Nachricht mit Kopfzeile Quittung: q-<n> (Schalter inbox_quittung): nach dem Lesen quittieren(quittung = q-<n> oder Liste bis 100), nur eigene, doppelt unschaedlich. Inhalt nicht mehr im Kontext: get(quittung = q-<n>). Offene Quittungen meldet das System nach einem Neustart einmal als Erinnerung von system (nur IDs, kein Inhalt)." }
       ]
     },
     {

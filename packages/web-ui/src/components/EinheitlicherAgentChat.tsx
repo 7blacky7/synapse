@@ -168,6 +168,8 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                   : <KlartextText project={project} text={m.text} />) : null}
                 {m.laeuft && <div className="message-laeuft"><i /><i /><i /><span>{name} antwortet …</span></div>}
                 {m.hinweise.map((h) => <small key={h} className="message-hinweis">{h}</small>)}
+                {/* P22-T144: CLI-Hinweis unter Teammate-Nachrichten eingeklappt. */}
+                {m.eingeklappt && <details className="message-hinweis"><summary>{m.eingeklappt.titel}</summary><small>{m.eingeklappt.text}</small></details>}
                 {m.zugInfo && <small className="message-zug">{m.zugInfo}</small>}
               </article>
             </div>

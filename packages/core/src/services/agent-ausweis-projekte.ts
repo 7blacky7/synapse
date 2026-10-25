@@ -117,7 +117,7 @@ const VISUM_AKTIONEN: Record<string, readonly string[]> = {
   skills: ['search', 'list', 'get_section', 'get_full'],
   // User c4ba1673 Punkt 2: Channels beitreten und schreiben ist im Visum erlaubt.
   channel: ['join', 'leave', 'post', 'feed', 'get', 'list', 'mark_read'],
-  chat: ['get', 'list', 'inbox_check'],
+  chat: ['get', 'list', 'inbox_check', 'quittieren'],
   event: ['pending', 'get', 'ack'],
   files: ['read', 'versions', 'get_version', 'history', 'plan_status', 'shared_plan_status', 'reservation_list'],
   files_batch: ['plan_status', 'shared_plan_status', 'history', 'reservation_list'],

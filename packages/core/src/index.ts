@@ -787,7 +787,14 @@ export { fuehreStartOrtZustellungenAus, letzterStartOrtZustellStand, leseStartOr
 export type { StartOrtZustellStand, StartOrtZustellAgent } from './services/agent-startort-zustellung.js';
 export { fuehreIdentitaetsZustellungAus } from './services/hauptagent-zustellung.js';
 // P22-T134: Mod-Inbox (interaktive Sitzungen ohne Wrapper ueber eine Claude-Code-Mod am lokalen Daemon).
-export { MOD_INBOX_FUNKTION, modInboxSchalterAktiv, meldeModSitzung, fuehreModInboxZustellungenAus, modInboxStand } from './services/mod-inbox.js';
+export { MOD_INBOX_FUNKTION, MOD_TURN_WARTE_MS, modInboxSchalterAktiv, meldeModSitzung, fuehreModInboxZustellungenAus, modInboxStand, vergesseModInboxStand } from './services/mod-inbox.js';
+// P22-T144: Quittung zugestellter Nachrichten (Schalter inbox_quittung) und Freigabe verwaister Zustell-Jobs.
+export {
+  INBOX_QUITTUNG_FUNKTION, inboxQuittungAktiv, inboxQuittungIrgendwoAktiv, quittungsId, leseQuittungsIds, quittiereZustellungen,
+  leseZustellungPerQuittung, quittungsAntwort, offeneQuittungen, baueErinnerungsText, stelleErinnerungZu,
+} from './services/inbox-quittung.js';
+export type { QuittierErgebnis, OffeneQuittung, OffeneQuittungen, ErinnerungErgebnis } from './services/inbox-quittung.js';
+export { gibVerwaisteZustellJobsFrei } from './services/specialist-queue.js';
 export type { ModInboxAgent, ModInboxTakt } from './services/mod-inbox.js';
 // P22-T79: Sonderstellung des Main (Lesezugriff auf alle User-Projekte, Lenkhinweise, Schalter Standard EIN).
 export {

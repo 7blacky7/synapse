@@ -184,6 +184,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       from_agent: 'inbox_send: Absender.',
       to_agent: 'inbox_send: Empfaenger.',
       agent_name: 'inbox_check: Agent-Name.',
+      quittung: 'quittieren bzw. get: Quittungs-ID(s) q-<n> (fall-chat-nachrichten).',
     },
   },
   channel: {

@@ -119,6 +119,11 @@ function bewirbAgentKennung(props: Record<string, unknown>): void {
 export const TEXT_AGENT_ID_MIT_AUSWEIS = 'Nur OHNE Ausweis (Legacy): eigene Agent-ID. Mit Ausweis weglassen, die Identitaet kommt aus token.';
 /** P22-T55: Hinweis an einen Ausweis-Agenten, der agent_id/role (oder einen Absender-Alias) mitgibt; je Lauf einmal. */
 export const TEXT_AUSWEIS_NUR_TOKEN = 'Mit Ausweis nur token mitgeben, agent_id/role weglassen: Identitaet, Projekt und Rolle kommen allein aus dem Ausweis.';
+/** P22-T144: Parameter quittung am chat-Tool (Quittungs-IDs zugestellter Nachrichten, inbox-quittung.ts). */
+const QUITTUNG_PARAMETER = {
+  description: 'quittieren: Quittungs-IDs zugestellter Nachrichten (q-<n>, String oder Liste bis 100); get: eine Quittungs-ID abrufen.',
+  oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 100 }],
+};
 /** Nur Schemas erweitern; die ausgeschaltete Fachlogik bleibt unveraendert. */
 export function ergaenzeAgentTokenParameter(defs: Array<{ name?: string; inputSchema?: { properties?: Record<string, unknown> } }>): void {
   for (const d of defs) {
@@ -127,6 +132,10 @@ export function ergaenzeAgentTokenParameter(defs: Array<{ name?: string; inputSc
     const action = d.name === 'chat' ? d.inputSchema?.properties?.action as { enum?: unknown[] } | undefined : undefined;
     // P22-T55: anmelden/identitaet stehen in BEIDEN Transporten im chat-Enum (Werbung filtert sie ohne wirksamen Ausweis wieder aus).
     for (const a of ['anmelden', 'identitaet', 'koordinator_liste']) if (action?.enum && !action.enum.includes(a)) action.enum.push(a);
+    // P22-T144: chat(quittieren) und chat(get, quittung) im Annahmevertrag; beworben nur mit Schalter inbox_quittung.
+    if (action?.enum && !action.enum.includes('quittieren')) action.enum.push('quittieren');
+    const chatProps = d.name === 'chat' ? d.inputSchema?.properties : undefined;
+    if (chatProps && !('quittung' in chatProps)) chatProps.quittung = structuredClone(QUITTUNG_PARAMETER);
   }
 }
 /** P22-T27/T28 (S2): NUR in einer tools/list-Antwort auf eine Anfrage MIT Ausweis und bei wirksamem Ausweis-Kern ist project nicht Pflicht
@@ -186,6 +195,9 @@ export async function beworbeneAgentTools<T extends { name: string; inputSchema?
   const mehrprojekt = projektOptional && (await leseMehrprojektSchalter(opt?.project ?? null)).aktiv;
   // P22-T131: agent_kennung statt token bewerben (Schalter agent_kennung_werbung, Standard AUS).
   const kennung = tokenAn && await kennungWerbungAktiv(opt?.project ?? null);
+  // P22-T144: quittieren/quittung nur mit Schalter inbox_quittung bewerben (ohne Projekt: irgendwo EIN).
+  const iq = await import('./inbox-quittung.js');
+  const quittungAn = opt?.project ? await iq.inboxQuittungAktiv(opt.project) : await iq.inboxQuittungIrgendwoAktiv();
   // P23-T5: Beschreibungstexte zuerst kuerzen (Kopien, Struktur gleich); token/agent_id und die Ausweis-Anpassung danach bleiben unberuehrt.
   const basis = await wendeKurzeBeschreibungenAn(defs, opt?.project ?? null);
   return basis.map(def => {
@@ -201,8 +213,10 @@ export async function beworbeneAgentTools<T extends { name: string; inputSchema?
       if (kopie.name === 'chat') {
         const action = kopie.inputSchema.properties.action as { enum?: unknown[] } | undefined;
         if (action?.enum) {
-          action.enum = action.enum.filter(a => (tokenAn || (a !== 'anmelden' && a !== 'identitaet')) && (anmeldungAn || a !== 'koordinator_liste'));
+          action.enum = action.enum.filter(a => (tokenAn || (a !== 'anmelden' && a !== 'identitaet')) && (anmeldungAn || a !== 'koordinator_liste')
+            && (quittungAn || a !== 'quittieren'));
         }
+        if (!quittungAn) delete kopie.inputSchema.properties.quittung;
       }
     }
     return kopie;
@@ -219,6 +233,7 @@ async function ausweisVerbindungTools<T extends { name: string; inputSchema?: { 
   const anmeldungAn = await ausweisAnmeldungAktiv(heimat);
   const mehrprojekt = (await leseMehrprojektSchalter(heimat)).aktiv;
   const kennung = await kennungWerbungAktiv(heimat);
+  const quittungAn = await (await import('./inbox-quittung.js')).inboxQuittungAktiv(heimat);
   const basis = await wendeKurzeBeschreibungenAn(defs, heimat);
   return basis.map(def => {
     const kopie = structuredClone(def);
@@ -229,7 +244,8 @@ async function ausweisVerbindungTools<T extends { name: string; inputSchema?: { 
       if (kennung) bewirbAgentKennung(kopie.inputSchema.properties);
       if (kopie.name === 'chat') {
         const action = kopie.inputSchema.properties.action as { enum?: unknown[] } | undefined;
-        if (action?.enum) action.enum = action.enum.filter(a => anmeldungAn || a !== 'koordinator_liste');
+        if (action?.enum) action.enum = action.enum.filter(a => (anmeldungAn || a !== 'koordinator_liste') && (quittungAn || a !== 'quittieren'));
+        if (!quittungAn) delete kopie.inputSchema.properties.quittung;
       }
     }
     return kopie;
@@ -827,6 +843,11 @@ export async function bereiteAgentToolAufrufVor(
     // P22-T13 Paket C (K15.6): Antwortdefault/Obergrenze deklarierter Mengenparameter VOR dem Handler (keine
     // verlustbehaftete Kuerzung danach); nur mit Schalter antwortanpassung und Profil-limits.
     if (anpassung && !basis.antwort) wendeProfilLimitsAn(tool, action, args, erlaubteParameter);
+    // P22-T144: chat(quittieren) bzw. chat(get, quittung) mit Ausweis: nur eigene Zustellungen (Schalter inbox_quittung).
+    if (!basis.antwort && tool === 'chat' && (action === 'quittieren' || (action === 'get' && args.quittung !== undefined))) {
+      basis.antwort = await (await import('./inbox-quittung.js')).quittungsAntwort(action, args.quittung,
+        { identity_id: p.identitaet.id, project: p.project });
+    }
     // P22-T86: chat(get) ohne message_id mit Ausweis -> nur Nachrichten an die eigene Identitaet/den eigenen Namen, neueste zuerst.
     if (!basis.antwort && tool === 'chat' && action === 'get' && args.message_id === undefined) {
       const schalter = await leseChatGetEigeneSchalter();

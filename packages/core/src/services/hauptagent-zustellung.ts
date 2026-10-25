@@ -14,6 +14,8 @@
  *   2 zustellen: Job 'zustellen' (specialist_jobs, target_runtime) an den Container-Daemon. Er baut den Turn-Kopf und weckt den
  *     Wrapper. Ist der Agent beschaeftigt oder nicht verbunden: spaeter erneut (Backoff), KEIN Inbox-Rueckfall.
  *   3 quittieren nach erfolgreicher Zustellung: inbox processed, event ACK der Identitaet. chat/channel haben nur den Ledger.
+ *   P22-T144: mit Schalter inbox_quittung traegt der Job zusaetzlich die Quittungs-ID q-<Ledger-ID> (zustellung.quittung),
+ *     nach erfolgreicher Zustellung steht quittung_seit; der Agent quittiert per chat(quittieren) (inbox-quittung.ts).
  * Umschaltbar per Env: SYNAPSE_HAUPTAGENT_ZUSTELLUNG ein|aus, SYNAPSE_HAUPTAGENT_ZUSTELL_CHANNELS alle|erwaehnung.
  */
 import { getPool } from '../db/client.js';
@@ -23,6 +25,7 @@ import { enqueueSpecialistJob, waitForSpecialistJob, type SpecialistZielRuntime 
 import { leseMainLauf, werkzeugErgebnis } from './hauptagent-lauf.js';
 import { schreibeZustellVerlauf } from './hauptagent-verlauf.js';
 import { schliesseEinwurfAb } from './hauptagent-warteschlange.js';
+import { inboxQuittungAktiv, quittungsId } from './inbox-quittung.js';
 
 export const ZUSTELL_WEGE = ['inbox', 'chat', 'channel', 'event'] as const;
 export type ZustellWeg = typeof ZUSTELL_WEGE[number];
@@ -169,7 +172,8 @@ async function quittiere(identityId: string, z: Zustellung): Promise<void> {
   }
 }
 
-export interface ZustellErgebnis { gesammelt: number; zugestellt: number; verschoben: number; fehler: number }
+/** unklar (P22-T144): Job eines abgeloesten Daemons, Uebergabe unbekannt -> mit Quittung als zugestellt gebucht (nur Erinnerung). */
+export interface ZustellErgebnis { gesammelt: number; zugestellt: number; verschoben: number; fehler: number; unklar?: number }
 
 /**
  * Ein Takt: sammeln und faellige Zustellungen nacheinander an den Container-Daemon geben. Laeuft der Wrapper nicht,
@@ -184,6 +188,8 @@ export async function fuehreZustellungAus(o: {
   erg.gesammelt = await sammleZustellungen(o.identity_id, opt);
   // P22-T71: nur ein Wrapper auf der zugewiesenen Runtime bekommt Zustellungen (dorthin geht der Job).
   if ((await leseMainLauf(o.identity_id, o.runtime)).zustand !== 'laeuft') return erg;
+  // P22-T144: Quittungs-ID je Zustellung (Schalter inbox_quittung).
+  const mitQuittung = await inboxQuittungAktiv(HAUPTAGENT_PROJEKT);
   const faellig = await getPool().query<{ id: string; zustellung: Zustellung; versuche: number }>(
     `SELECT id, zustellung, versuche FROM agent_zustellungen WHERE identity_id=$1 AND status='pending' AND naechster_versuch<=NOW()
       ORDER BY erstellt_am, id LIMIT $2`, [o.identity_id, Math.max(1, Math.min(20, o.max ?? 5))]);
@@ -192,12 +198,13 @@ export async function fuehreZustellungAus(o: {
     let jobId: string | null = null;
     try {
       const job = await enqueueSpecialistJob({ project: HAUPTAGENT_PROJEKT, action: 'zustellen',
-        args: { name: HAUPTAGENT_AGENT_ID, identity_id: o.identity_id, target_runtime: o.runtime, zustellung: z.zustellung } });
+        args: { name: HAUPTAGENT_AGENT_ID, identity_id: o.identity_id, target_runtime: o.runtime,
+          zustellung: mitQuittung ? { ...z.zustellung, quittung: quittungsId(z.id) } : z.zustellung } });
       jobId = job.id;
       const r = await waitForSpecialistJob(job.id, opt.turn_warte_ms);
       const e = werkzeugErgebnis(r.result) ?? {};
       if (r.status === 'done' && e.zugestellt === true) {
-        await getPool().query("UPDATE agent_zustellungen SET status='zugestellt', zugestellt_am=NOW(), job_id=$2, letzter_grund=NULL WHERE id=$1", [z.id, jobId]);
+        await getPool().query("UPDATE agent_zustellungen SET status='zugestellt', zugestellt_am=NOW(), job_id=$2, letzter_grund=NULL, quittung_seit=CASE WHEN $3 THEN NOW() ELSE quittung_seit END WHERE id=$1", [z.id, jobId, mitQuittung]);
         await quittiere(o.identity_id, z.zustellung);
         // P22-T73: Einwurf aus dem Web-UI-Chat -> Antwort in die wartende Antwortzeile der User-Nachricht (wirft nie).
         const einwurf = z.zustellung.weg === 'inbox'
@@ -238,6 +245,7 @@ export async function fuehreIdentitaetsZustellungAus(o: {
   const opt = o.optionen ?? leseZustellOptionen();
   const erg: ZustellErgebnis = { gesammelt: 0, zugestellt: 0, verschoben: 0, fehler: 0 };
   erg.gesammelt = await sammleZustellungen(o.identity_id, opt, o.agent_id, true);
+  const mitQuittung = await inboxQuittungAktiv(o.project);
   const faellig = await getPool().query<{ id: string; zustellung: Zustellung; versuche: number }>(
     `SELECT id, zustellung, versuche FROM agent_zustellungen WHERE identity_id=$1 AND status='pending' AND naechster_versuch<=NOW()
       ORDER BY erstellt_am, id LIMIT $2`, [o.identity_id, Math.max(1, Math.min(20, o.max ?? 5))]);
@@ -246,17 +254,29 @@ export async function fuehreIdentitaetsZustellungAus(o: {
     let jobId: string | null = null;
     try {
       const job = await enqueueSpecialistJob({ project: o.project, action: 'zustellen',
-        args: { name: o.agent_id, identity_id: o.identity_id, ...o.ziel, zustellung: z.zustellung } });
+        args: { name: o.agent_id, identity_id: o.identity_id, ...o.ziel,
+          zustellung: mitQuittung ? { ...z.zustellung, quittung: quittungsId(z.id) } : z.zustellung } });
       jobId = job.id;
       const r = await waitForSpecialistJob(job.id, opt.turn_warte_ms);
       const e = werkzeugErgebnis(r.result) ?? {};
       if (r.status === 'done' && e.zugestellt === true) {
-        await getPool().query("UPDATE agent_zustellungen SET status='zugestellt', zugestellt_am=NOW(), job_id=$2, letzter_grund=NULL WHERE id=$1", [z.id, jobId]);
+        await getPool().query("UPDATE agent_zustellungen SET status='zugestellt', zugestellt_am=NOW(), job_id=$2, letzter_grund=NULL, quittung_seit=CASE WHEN $3 THEN NOW() ELSE quittung_seit END WHERE id=$1", [z.id, jobId, mitQuittung]);
         await quittiere(o.identity_id, z.zustellung);
         erg.zugestellt++;
         continue;
       }
-      grund = typeof e.grund === 'string' ? e.grund : r.status === 'done' ? 'unbekannt' : (r.error === 'expired' ? 'daemon_nicht_erreichbar' : r.status);
+      grund = typeof e.grund === 'string' ? e.grund : r.status === 'done' ? 'unbekannt'
+        : (r.error === 'expired' ? 'daemon_nicht_erreichbar' : r.error === 'daemon_neugestartet' ? 'daemon_neugestartet' : r.status);
+      // P22-T144 (Befund 3be49f2e, Doppelzustellung inbox:1066): Job eines abgeloesten Daemons freigegeben; ob die Mod den Turn
+      // schon gestartet hatte, ist unbekannt. Mit Quittung keine zweite Vollzustellung: als zugestellt buchen (quittung_seit =
+      // erstellt_am, also vor der Neuanmeldung), die Erinnerung nennt die ID. Ohne Quittung wie bisher erneut zustellen.
+      if (mitQuittung && grund === 'daemon_neugestartet') {
+        await getPool().query(`UPDATE agent_zustellungen SET status='zugestellt', zugestellt_am=NOW(), job_id=$2,
+          letzter_grund='daemon_neugestartet: Uebergabe unklar, nur Erinnerung', quittung_seit=erstellt_am WHERE id=$1`, [z.id, jobId]);
+        await quittiere(o.identity_id, z.zustellung);
+        erg.unklar = (erg.unklar ?? 0) + 1;
+        continue;
+      }
     } catch (err) {
       grund = (err as Error).message ?? 'fehler';
     }

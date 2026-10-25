@@ -387,14 +387,15 @@ async function dispatchSpecialistActionGebunden(
     case 'zustellen': {
       // P22-T6: Nachricht direkt ueber den Wrapper ans Modell (auch bei Heartbeat AUS). Kein Inbox-Rueckfall wie bei wake:
       // die API stellt beschaeftigt/nicht verbunden spaeter erneut zu (Ledger agent_zustellungen).
-      const { baueZustellText } = await import('./zustell-text.js')
+      const { baueZustellText, zustellSchluessel } = await import('./zustell-text.js')
       const { heartbeatController } = await import('@synapse/agents')
       const name = String(args.name)
       if (!heartbeatController.isConnected(name)) {
         // P22-T134: interaktive Sitzung ohne Wrapper (Koordinator-CLI, Subagent mit Ausweis) ueber die Mod-Inbox, sonst wie bisher.
         const { zustelleAnMod } = await import('./mod-inbox.js')
         const z = args.zustellung as Parameters<typeof baueZustellText>[0]
-        const r = await zustelleAnMod(String(args.identity_id ?? ''), `${z.weg}:${z.message_id}`, baueZustellText(z))
+        // P22-T144: Erinnerungen der API tragen einen eigenen Schluessel (keine Message-ID).
+        const r = await zustelleAnMod(String(args.identity_id ?? ''), zustellSchluessel(z), baueZustellText(z))
         return r ?? { success: true, zugestellt: false, grund: 'nicht_verbunden' }
       }
       try {

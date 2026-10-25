@@ -63,6 +63,8 @@ type ToolDef = { name: string; inputSchema?: { properties?: Record<string, unkno
  */
 export const NICHT_SPERRBARE_AKTIONEN: ReadonlySet<string> = new Set([
   'chat.register', 'chat.anmelden', 'chat.identitaet', 'chat.koordinator_liste', 'admin.index_stats',
+  // P22-T144: eigene Zustellungen quittieren darf kein Profil sperren (sonst kaeme nach jedem Neustart die Erinnerung).
+  'chat.quittieren',
 ]);
 
 export function istNichtSperrbareAktion(name: string, action: string | undefined): boolean {

@@ -10,6 +10,7 @@
  *   - completeSpecialistJob(id, res)      → void (inkl. NOTIFY)
  *   - waitForSpecialistJob(id, ms)        → SpecialistJobResult
  *   - expirePendingSpecialistJobs(maxSec) → number
+ *   - gibVerwaisteZustellJobsFrei(identity, host, daemonId) → string[] (P22-T144)
  *
  * NEBENEFFEKTE:
  *   - PostgreSQL: INSERT/UPDATE auf specialist_jobs
@@ -339,4 +340,30 @@ export async function expirePendingSpecialistJobs(maxAgeSec: number = 30): Promi
     await pool.query(`SELECT pg_notify($1, $2)`, [doneChannelForJob(row.id), 'rejected']);
   }
   return res.rows.length;
+}
+
+/**
+ * P22-T144 (Befund thought 8ec16245): Zustell-Jobs einer Identitaet, die ein abgeloester Daemon desselben Hosts geclaimt hat und
+ * nie abschliessen wird (Daemon-Neustart waehrend der Uebergabe), auf failed 'daemon_neugestartet' setzen und den Wartenden
+ * wecken. Sonst haelt waitForSpecialistJob die Identitaet bis zur Turnfrist fest (Vorfall: 10 min). Rueckgabe: Job-IDs.
+ */
+export async function gibVerwaisteZustellJobsFrei(identityId: string, host: string, daemonId: string): Promise<string[]> {
+  const pool = getPool();
+  const res = await pool.query<{ id: string }>(
+    `UPDATE specialist_jobs
+     SET status = 'failed',
+         error = 'daemon_neugestartet',
+         message = 'Zustell-Job eines abgeloesten Daemons freigegeben (P22-T144)',
+         completed_at = NOW(),
+         updated_at = NOW()
+     WHERE action = 'zustellen' AND status = 'running'
+       AND args->>'identity_id' = $1 AND args->>'target_hostname' = $2
+       AND claimed_by IS DISTINCT FROM $3
+     RETURNING id`,
+    [identityId, host, daemonId],
+  );
+  for (const row of res.rows) {
+    await pool.query(`SELECT pg_notify($1, $2)`, [doneChannelForJob(row.id), 'failed']);
+  }
+  return res.rows.map((r) => r.id);
 }

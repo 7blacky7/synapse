@@ -26,3 +26,10 @@ CREATE TABLE IF NOT EXISTS agent_zustell_wasserstaende (
   aktualisiert_am TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (identity_id, weg)
 );
+-- P22-T144 (additiv): Quittung des Agenten je Zustellung. quittung_seit = Quittung angefordert (nur bei Schalter
+-- inbox_quittung gesetzt, kein Altbestand), quittiert_am = vom Agenten quittiert, erinnert_am = letzte Erinnerung des Systems.
+ALTER TABLE agent_zustellungen ADD COLUMN IF NOT EXISTS quittung_seit TIMESTAMPTZ;
+ALTER TABLE agent_zustellungen ADD COLUMN IF NOT EXISTS quittiert_am TIMESTAMPTZ;
+ALTER TABLE agent_zustellungen ADD COLUMN IF NOT EXISTS erinnert_am TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_agent_zustellungen_quittung_offen
+  ON agent_zustellungen(identity_id) WHERE quittung_seit IS NOT NULL AND quittiert_am IS NULL;

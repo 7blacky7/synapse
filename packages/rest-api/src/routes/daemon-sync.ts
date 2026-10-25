@@ -321,7 +321,8 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
       let identityId: string;
       try { identityId = (await pruefeAgentToken(ausweis)).identitaet.id; }
       catch { sitzungen.push({ sitzung, aktiv: false, identity_id: null, grund: 'ausweis_ungueltig' }); continue; }
-      sitzungen.push({ sitzung, ...(await meldeModSitzung({ host: d.host, sitzung, identity_id: identityId })) });
+      // P22-T144: daemon_id erkennt einen Daemon-Neustart (verwaiste Zustell-Jobs freigeben, Erinnerung an offene Quittungen).
+      sitzungen.push({ sitzung, ...(await meldeModSitzung({ host: d.host, sitzung, identity_id: identityId, daemon_id: d.daemonId })) });
     }
     return { success: true, sitzungen };
   });

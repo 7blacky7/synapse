@@ -6,7 +6,8 @@
  * LOKALE ROUTEN (api.ts, nur Loopback, kein Browser-Origin):
  *   GET  /mod-inbox/warte?sitzung=<uuid>   haelt bis WARTE_MS offen, liefert { nachricht: {id,text} | null, aktiv, grund }
  *   POST /mod-inbox/quittung               { sitzung, id, gestartet, grund? } nach $.prompt.submit
- *   GET  /mod-inbox/status                 Debug: Sitzungen (ohne Ausweis), offene Uebergaben, letzter Fehler
+ *   GET  /mod-inbox/status                 Debug: Sitzungen (ohne Ausweis; P22-T144 mit offenen Quittungen laut API), offene
+ *                                          Uebergaben, letzte Abweisungen der Mod (drop-Grund von $.prompt.submit), letzter Fehler
  * ZUORDNUNG: Sitzung -> Ausweis aus dem Transcript ~/.claude/projects/<ordner>/<sitzung>.jsonl (letzte chat(anmelden)-Zeile,
  *   ausweisAusZeile wie cli-verlauf). Der Ausweis geht nur an die API (POST /api/daemon/mod-inbox), nie an die Mod.
  * ZUSTELLUNG: zustelleAnMod (specialist-job-worker, Fall 'zustellen' ohne Wrapper) reiht ein und wartet hoechstens
@@ -47,6 +48,8 @@ interface Sitzung {
   identity_id: string | null;
   aktiv: boolean;
   grund: string | null;
+  /** P22-T144: offene Quittungen dieser Identitaet laut letzter API-Antwort (nur Schalter inbox_quittung). */
+  offene_quittungen: { anzahl: number; aelteste_s: number | null } | null;
   schlange: ModNachricht[];
   /** Offener Abruf; false = der Abruf war schon abgebrochen, die Nachricht bleibt in der Schlange. */
   warter: ((n: ModNachricht | null) => boolean) | null;
@@ -60,11 +63,14 @@ const sitzungen = new Map<string, Sitzung>();
 const uebergaben = new Map<string, Uebergabe>();
 let letzterFehler: string | null = null;
 let letzteMeldung: string | null = null;
+/** P22-T144: letzte Abweisungen der Mod (Grund aus $.prompt.submit drop), neueste zuletzt. */
+const abweisungen: Array<{ id: string; sitzung: string; grund: string; am: string }> = [];
+const ABWEISUNGEN_MAX = 20;
 
 function sitzungFuer(id: string, jetzt = Date.now()): Sitzung {
   let s = sitzungen.get(id);
   if (!s) {
-    s = { id, zuletzt: jetzt, transcript: null, gelesen_bis: 0, ausweis: null, identity_id: null, aktiv: false, grund: 'noch_nicht_gemeldet', schlange: [], warter: null };
+    s = { id, zuletzt: jetzt, transcript: null, gelesen_bis: 0, ausweis: null, identity_id: null, aktiv: false, grund: 'noch_nicht_gemeldet', offene_quittungen: null, schlange: [], warter: null };
     sitzungen.set(id, s);
   }
   s.zuletzt = jetzt;
@@ -120,6 +126,10 @@ export function quittiere(sitzung: string, id: string, gestartet: boolean, grund
   if (!u || u.sitzung !== sitzung) return false;
   sitzungFuer(sitzung);
   markiere(id, gestartet ? 'gestartet' : 'abgewiesen', gestartet ? null : (grund ?? 'abgewiesen').slice(0, 200));
+  if (!gestartet) {
+    abweisungen.push({ id, sitzung, grund: (grund ?? 'abgewiesen').slice(0, 200), am: new Date().toISOString() });
+    if (abweisungen.length > ABWEISUNGEN_MAX) abweisungen.splice(0, abweisungen.length - ABWEISUNGEN_MAX);
+  }
   return true;
 }
 
@@ -216,6 +226,13 @@ function leseAusweis(s: Sitzung): void {
   } finally { fs.closeSync(fd); }
 }
 
+/** P22-T144: offene Quittungen aus der API-Antwort (nur Anzeige im Status). */
+function leseOffeneQuittungen(v: unknown): Sitzung['offene_quittungen'] {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as { anzahl?: unknown; aelteste_s?: unknown };
+  return typeof o.anzahl === 'number' ? { anzahl: o.anzahl, aelteste_s: typeof o.aelteste_s === 'number' ? o.aelteste_s : null } : null;
+}
+
 /** Ein Takt: Ausweise nachlesen und die lebenden Sitzungen der API melden. Transportfehler: alter Stand bleibt. */
 export async function modInboxTakt(): Promise<void> {
   const jetzt = Date.now();
@@ -228,7 +245,7 @@ export async function modInboxTakt(): Promise<void> {
   }
   if (liste.length === 0) return;
   try {
-    const r = await anfrage<{ sitzungen?: Array<{ sitzung?: unknown; aktiv?: unknown; identity_id?: unknown; grund?: unknown }> }>(
+    const r = await anfrage<{ sitzungen?: Array<{ sitzung?: unknown; aktiv?: unknown; identity_id?: unknown; grund?: unknown; offene_quittungen?: unknown }> }>(
       '/api/daemon/mod-inbox', { method: 'POST', body: { host: DAEMON_HOST, daemon_id: DAEMON_API_ID, sitzungen: liste } }, 30_000);
     for (const e of r.sitzungen ?? []) {
       const s = typeof e.sitzung === 'string' ? sitzungen.get(e.sitzung) : undefined;
@@ -236,6 +253,7 @@ export async function modInboxTakt(): Promise<void> {
       s.aktiv = e.aktiv === true;
       s.identity_id = typeof e.identity_id === 'string' ? e.identity_id : null;
       s.grund = typeof e.grund === 'string' ? e.grund : null;
+      s.offene_quittungen = leseOffeneQuittungen(e.offene_quittungen);
     }
     letzteMeldung = new Date().toISOString();
     letzterFehler = null;
@@ -297,8 +315,10 @@ export function registriereModInbox(app: FastifyInstance): void {
     return {
       success: true,
       sitzungen: [...sitzungen.values()].map((s) => ({ sitzung: s.id, aktiv: s.aktiv, grund: s.grund, identity_id: s.identity_id,
-        ausweis_bekannt: s.ausweis !== null, wartet: s.warter !== null, schlange: s.schlange.length, zuletzt_vor_s: Math.round((jetzt - s.zuletzt) / 1000) })),
+        ausweis_bekannt: s.ausweis !== null, wartet: s.warter !== null, schlange: s.schlange.length, zuletzt_vor_s: Math.round((jetzt - s.zuletzt) / 1000),
+        offene_quittungen: s.offene_quittungen })),
       uebergaben: [...uebergaben].map(([id, u]) => ({ id, sitzung: u.sitzung, stand: u.stand, grund: u.grund, vor_s: Math.round((jetzt - u.am) / 1000) })),
+      abweisungen,
       letzte_meldung: letzteMeldung,
       letzter_fehler: letzterFehler,
     };

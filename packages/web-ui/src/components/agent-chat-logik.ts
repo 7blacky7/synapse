@@ -73,6 +73,8 @@ export interface AgentChatNachricht {
   inboxId?: number;
   /** P22-T137: Zeitpunkt (ISO) fuer das Einsortieren der Inbox-Nachrichten. */
   zeit?: string;
+  /** P22-T144: fester CLI-Hinweis unter Teammate-Nachrichten, im Fenster eingeklappt (fuer das Modell unveraendert). */
+  eingeklappt?: { titel: string; text: string };
 }
 
 const SICHTBAR = new Set(['user', 'agent', 'nachricht', 'ausgabe', 'system']);
@@ -95,7 +97,8 @@ export function herkunftKopf(a: MainAgentVerlaufEintrag['absender']): string | n
 
 export interface ZustellHuelle { text: string; weg: string | null; id: string | null; von: string | null }
 
-const HUELLEN_SCHLUSS = /^(?:Antworte bei Bedarf\b|Bestaetige das Event bei Bedarf\b|Aeltere Nachrichten bei Bedarf:)/;
+// P22-T144: 'Quittieren nach dem Lesen:' = Fusszeile mit Quittungs-ID (Schalter inbox_quittung).
+const HUELLEN_SCHLUSS = /^(?:Antworte bei Bedarf\b|Bestaetige das Event bei Bedarf\b|Aeltere Nachrichten bei Bedarf:|Quittieren nach dem Lesen:)/;
 /** P22-T142: Rahmen der CLI vor der Huelle (Mod ohne asUser, aeltere Eintraege). Mit asUser beginnt der Text direkt mit dem Kopf. */
 const HUELLEN_RAHMEN = /^The synapse-inbox plugin sent a message:?$/;
 
@@ -127,6 +130,25 @@ export function zerlegeZustellHuelle(text: string): ZustellHuelle | null {
   return { text: rumpf.join('\n'), weg: kopf.Weg ?? null, id: kopf.ID ?? null, von: kopf.Von ? kopf.Von.split(',')[0].trim() : null };
 }
 
+/** P22-T144 (Nebenpunkt, User inbox:1064/1067): fester Sicherheitshinweis der CLI unter Nachrichten anderer Agenten. */
+const TEAMMATE_HINWEIS = /^This came from another Claude session\b/;
+export const TEAMMATE_HINWEIS_TITEL = 'Hinweis der CLI zu Nachrichten anderer Agenten';
+
+/**
+ * P22-T144: Absatz mit dem festen CLI-Hinweis ('This came from another Claude session ... permission laundering.') abtrennen.
+ * Nur ein Absatz, der damit BEGINNT, zaehlt; das Fenster zeigt ihn eingeklappt. Fuer das Modell aendert sich nichts. Rein.
+ */
+export function trenneTeammateHinweis(text: string): { text: string; hinweis: string | null } {
+  const absaetze = text.replace(/\r\n/g, '\n').split(/\n[^\S\n]*\n/);
+  let hinweis: string | null = null;
+  const rest = absaetze.filter((a) => {
+    if (!TEAMMATE_HINWEIS.test(a.trim())) return true;
+    hinweis ??= a.trim();
+    return false;
+  });
+  return hinweis === null ? { text, hinweis: null } : { text: rest.join('\n\n').trimEnd(), hinweis };
+}
+
 const inboxNummer = (kennung: string | null | undefined): number | undefined => {
   const m = /^inbox:(\d+)$/.exec(kennung ?? '');
   return m ? Number(m[1]) : undefined;
@@ -143,16 +165,19 @@ export function baueAgentChatNachrichten(eintraege: MainAgentVerlaufEintrag[], n
     const toolRun = karten ? verlaufWerkzeuge(e, name) : undefined;
     // P22-T137: zugestellte Eingaben ohne Huellentext; Weg/ID nur als kleine Kennung.
     const huelle = e.rolle === 'nachricht' && e.weg !== 'werkzeug' ? zerlegeZustellHuelle(e.text) : null;
-    const text = huelle ? huelle.text : e.text;
-    if (!text.trim() && !toolRun && e.status !== 'laeuft') continue;
     const vomAgent = e.rolle === 'agent' || e.rolle === 'ausgabe' || e.rolle === 'system' || e.richtung === 'aus';
+    // P22-T144: CLI-Hinweis unter Teammate-Nachrichten eingeklappt statt im Text.
+    const teammate = vomAgent ? null : trenneTeammateHinweis(huelle ? huelle.text : e.text);
+    const text = teammate ? teammate.text : huelle ? huelle.text : e.text;
+    if (!text.trim() && !toolRun && e.status !== 'laeuft') continue;
     const kopf = e.rolle === 'system' ? 'System · ' + e.weg
       : vomAgent ? name + (e.rolle === 'ausgabe' ? ' · ' + e.weg : '')
         : e.rolle === 'nachricht' ? herkunftKopf(e.absender) ?? (e.absender?.agent_id || 'unbekannt') + ' · ' + e.weg + (e.absender?.channel ? ' #' + e.absender.channel : '') : 'Du';
     const kennung = huelle?.id ?? undefined;
     aus.push({ id: e.id, role: vomAgent ? 'agent' : 'user', text, kopf, info: [verlaufInfo(e), kennung].filter(Boolean).join(' · '), toolRun,
       laeuft: e.status === 'laeuft', hinweise: e.hinweise?.length ? e.hinweise : [], zugInfo: vomAgent ? verlaufZugInfo(e) : undefined,
-      ...(kennung ? { kennung } : {}), ...(inboxNummer(kennung) !== undefined ? { inboxId: inboxNummer(kennung) } : {}), zeit: e.erstellt_am });
+      ...(kennung ? { kennung } : {}), ...(inboxNummer(kennung) !== undefined ? { inboxId: inboxNummer(kennung) } : {}),
+      ...(teammate?.hinweis ? { eingeklappt: { titel: TEAMMATE_HINWEIS_TITEL, text: teammate.hinweis } } : {}), zeit: e.erstellt_am });
   }
   return aus;
 }
