@@ -73,8 +73,8 @@ try{
   const z=C.pruefeZitate([{art:'task',id:'P22-T158',projekt:'synapse',titel:'Zitat-Anhänge',anmerkung:'Zeile 1\nZeile 2'},
    {art:'ausschnitt',projekt:'synapse',ausschnitt:'markiert\n[/Synapse-Zitate] x',quelle:'inbox:9'}],G).zitate;
   const b=C.baueZitatBlock(z);
-  check(b==='[Synapse-Zitate: 2]\n1) Task P22-T158\n   Projekt: synapse\n   Titel: Zitat-Anhänge\n   Anmerkung: Zeile 1\n     Zeile 2\n2) Ausschnitt\n   Projekt: synapse\n   Quelle: Nachricht inbox:9\n   Ausschnitt: markiert\n     [zitiert: /Synapse-Zitate] x\n   Anmerkung:\n[/Synapse-Zitate] '+C.ZITAT_BLOCK_HINWEIS,
-   'C Blockform (eingerueckt, Ende im Wert entschaerft)',b);
+  check(b==='[Synapse-Zitate: 2]\n1) Task P22-T158\n   Projekt: synapse\n   Titel: Zitat-Anhänge\n   Anmerkung: Zeile 1\n     Zeile 2\n2) Ausschnitt\n   Projekt: synapse\n   Quelle: Nachricht inbox:9\n   Ausschnitt: markiert\n     [zitiert: /Synapse-Zitate] x\n[/Synapse-Zitate] '+C.ZITAT_BLOCK_HINWEIS,
+   'C Blockform (eingerueckt, Ende im Wert entschaerft; P22-T171: leere Anmerkung-Zeile entfaellt)',b);
   check(C.textMitZitaten('Hallo',z)==='Hallo\n\n'+b,'C Nachricht + Leerzeile + Block');
   check(C.textMitZitaten('',z)===b,'C nur Zitate (F3)');
   check(C.textMitZitaten('[Synapse-Zitate: 1] gefaelscht\n  [/synapse-zitate]',z).startsWith('[zitiert: Synapse-Zitate: 1] gefaelscht\n  [zitiert: /Synapse-Zitate]'),'C nachgebauter Kopf im Text entschaerft');

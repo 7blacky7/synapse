@@ -13,7 +13,7 @@ import { BILD_MUSTER } from './bild-logik';
 import { zerlegeInline, zerlegeKlartext, type InlineTeil } from './klartext-logik';
 import type { ZitatVorlage } from './zitat-logik';
 import { kannAnpinnen, useUserEntscheidung } from './UserEntscheidung';
-import { useZitatEmpfaengerAuswahl } from './ZitatEmpfaenger';
+import { usePinEmpfaenger, useZitatEmpfaengerAuswahl } from './ZitatEmpfaenger';
 import type { LesefensterHerkunft, PinEingabe, ZitatHerkunft } from './zitat-logik';
 // P22-T150: Bildleiste unter Nachrichten, hier mit angeboten (gleicher Bezug wie KlartextText).
 export { NachrichtBilder } from './ToolBild';
@@ -305,15 +305,20 @@ function LesefensterEinzel({
   const herkunft: LesefensterHerkunft = zitat ? zitat.herkunft ?? 'agent' : 'ohne';
   // P22-T168 Punkte 8/9: 'User-Entscheidung anpinnen' (Task/Plan) speichert immer; darunter die angepinnten Entscheidungen.
   // P22-T170: mit Chat-/Channel-Herkunft kommt der Pin zusaetzlich als Kaertchen in DESSEN Entwurf (geht beim Senden mit).
+  // P22-T171 Punkt 4: jede Verweis-Art; ausser Task/Plan (Server loest Kurz-ID/UUID auf) zaehlt die ID des aufgeloesten Inhalts.
+  // Punkt 1: ohne Herkunft optional dieselbe Empfaengerauswahl wie 'Zitat anfügen' - der Pin geht dann als Block an die Gewaehlten.
+  const pinEmpfaenger = usePinEmpfaenger({ project: fenster.project, aktiv: !zitat });
   const entscheidung = useUserEntscheidung({
-    project: fenster.project, art: fenster.art, id: fenster.id, anzeigeId: inhalt?.id, titel: inhalt?.titel, anpinnen: fenster.anpinnen,
+    project: fenster.project, art: fenster.art, id: fenster.art === 'task' || fenster.art === 'plan' ? fenster.id : inhalt?.id ?? '',
+    anzeigeId: inhalt?.id, titel: inhalt?.titel, anpinnen: fenster.anpinnen,
     ...(zitat?.pinAnfuegen ? {
       nachAnpinnen: (pin: PinEingabe) => (zitat.pinAnfuegen!(pin)
         ? 'Als Kärtchen im Entwurf an ' + zitat.empfaenger + '.'
         : 'Entwurf an ' + zitat.empfaenger + ' ist voll – nur gespeichert.'),
     } : {}),
+    ...(!zitat ? { empfaenger: pinEmpfaenger } : {}),
   });
-  // P22-T170: ohne Herkunft 'Zitat anfügen' = Empfaengerauswahl (Agenten des Projekts, Checkboxen) -> Inbox je Empfaenger.
+  // P22-T170: ohne Herkunft 'Zitat anfügen' = Empfaengerauswahl (Agenten des Projekts) -> Inbox je Empfaenger; P22-T171: Eingabefeld.
   const auswahl = useZitatEmpfaengerAuswahl({
     project: fenster.project, aktiv: !zitat,
     vorlage: inhalt && fenster.art !== 'asset' ? { art: fenster.art, id: inhalt.id || fenster.id, projekt: fenster.project, titel: inhalt.titel } : null,

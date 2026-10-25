@@ -9,7 +9,12 @@
  *      Titel: <Titel zum Zeitpunkt der Auswahl>
  *      Quelle: Nachricht inbox:1203          (optional)
  *      Ausschnitt: <markierter Text>         (optional; Folgezeilen 5 Leerzeichen eingerueckt)
- *      Anmerkung: <Text des Users>           (Folgezeilen 5 Leerzeichen eingerueckt)
+ *      Anmerkung: <Text des Users>           (Folgezeilen 5 Leerzeichen eingerueckt; P22-T171: entfaellt, wenn leer)
+ *   2) Angepinnte User-Entscheidung an Task P22-T171   (P22-T171 Punkt 5, User 83b5014f: Zitat art 'thought' mit pin = Bezug)
+ *      Thought: <thought-ID des Pins>
+ *      Projekt: synapse
+ *      Titel: <Titel des Bezugs>             (optional)
+ *      Wortlaut: <Entscheidung des Users>    (statt 'Ausschnitt'; Folgezeilen 5 Leerzeichen eingerueckt)
  *   [/Synapse-Zitate] <Lesehinweis>
  *   Zeilen im Text/in Werten, die wie Kopf oder Ende des Blocks beginnen, werden entschaerft ('[zitiert: Synapse-Zitate').
  *   Main: Turn-Text = Nachricht + Block; Verlauf: text ohne Block, anhaenge = Zitate (art 'zitat'); die Warteschlange baut den Block
@@ -179,6 +184,8 @@ export interface GeprueftesZitat {
   /** Nachricht, aus der der Ausschnitt stammt (z. B. 'inbox:1203' oder 'verlauf:<id>'). */
   quelle: string | null;
   anmerkung: string;
+  /** P22-T171 Punkt 5: Bezug einer mitgeschickten User-Entscheidung ('Task P22-T171'), nur bei art 'thought'; sonst null. */
+  pin: string | null;
 }
 export type ZitatPruefung = { ok: true; zitate: GeprueftesZitat[]; gekuerzt: string[] }
   | { ok: false; code: string; message: string; details?: Record<string, unknown> };
@@ -214,7 +221,14 @@ export function pruefeZitate(roh: unknown, grenzen: ChatZitateWerte): ZitatPruef
     const quelle = typeof q === 'string' && /^[A-Za-z0-9:._-]{1,80}$/.test(q.trim()) ? q.trim().slice(0, QUELLE_MAX) : null;
     const anmerkung = typeof o.anmerkung === 'string' ? o.anmerkung.replace(/\r\n/g, '\n').trim() : '';
     if (anmerkung.length > grenzen.anmerkung_max) return fehler('zitat_anmerkung_zu_lang', 'Anmerkung länger als ' + grenzen.anmerkung_max + ' Zeichen', { anmerkung_max: grenzen.anmerkung_max });
-    zitate.push({ art: o.art, id: o.art === 'ausschnitt' ? (id || null) : id, projekt, titel, ausschnitt: ausschnitt || null, quelle, anmerkung });
+    // P22-T171: pin = Bezug der angepinnten User-Entscheidung (einzeilig, Laenge wie der Titel); nur fuer art 'thought' (ID = Pin-thought).
+    let pin: string | null = null;
+    if (o.pin !== undefined && o.pin !== null && o.pin !== '') {
+      if (o.art !== 'thought' || typeof o.pin !== 'string' || !einzeilig(o.pin)) return fehler('zitat_pin_ungueltig', 'pin nur als Bezug-Text bei art thought');
+      pin = einzeilig(o.pin);
+      if (pin.length > grenzen.titel_max) { pin = pin.slice(0, grenzen.titel_max - 1).trimEnd() + '…'; gekuerzt.push(nr + ':pin'); }
+    }
+    zitate.push({ art: o.art, id: o.art === 'ausschnitt' ? (id || null) : id, projekt, titel, ausschnitt: ausschnitt || null, quelle, anmerkung, pin });
   }
   return { ok: true, zitate, gekuerzt };
 }
@@ -245,17 +259,25 @@ export function entschaerfeZitatZeilen(text: string): string {
 
 const einruecken = (wert: string): string => entschaerfeZitatZeilen(wert).split('\n').map((z, i) => (i === 0 ? z : '     ' + z)).join('\n');
 
+/** P22-T171: Eintragszeile eines mitgeschickten Pins (Gegenstueck: web-ui zitat-logik.ts PIN_EINTRAG). */
+export const PIN_EINTRAG = 'Angepinnte User-Entscheidung an ' as const;
+
 /** Block fuer die Zitate (leer ohne Zitate). Rein. */
 export function baueZitatBlock(zitate: readonly GeprueftesZitat[]): string {
   if (!zitate.length) return '';
   const zeilen = ['[Synapse-Zitate: ' + zitate.length + ']'];
   zitate.forEach((z, i) => {
-    zeilen.push((i + 1) + ') ' + ZITAT_ART_LABEL[z.art] + (z.id ? ' ' + z.id : ''));
+    // P22-T171 Punkt 5: ein mitgeschickter Pin heisst 'Angepinnte User-Entscheidung an <Art> <ID>' (nicht 'Thought <id>'), mit Wortlaut.
+    if (z.pin) {
+      zeilen.push((i + 1) + ') ' + PIN_EINTRAG + entschaerfeZitatZeilen(z.pin));
+      if (z.id) zeilen.push('   Thought: ' + z.id);
+    } else zeilen.push((i + 1) + ') ' + ZITAT_ART_LABEL[z.art] + (z.id ? ' ' + z.id : ''));
     zeilen.push('   Projekt: ' + z.projekt);
     if (z.titel) zeilen.push('   Titel: ' + entschaerfeZitatZeilen(z.titel));
     if (z.quelle) zeilen.push('   Quelle: Nachricht ' + z.quelle);
-    if (z.ausschnitt) zeilen.push('   Ausschnitt: ' + einruecken(z.ausschnitt));
-    zeilen.push('   Anmerkung:' + (z.anmerkung ? ' ' + einruecken(z.anmerkung) : ''));
+    if (z.ausschnitt) zeilen.push((z.pin ? '   Wortlaut: ' : '   Ausschnitt: ') + einruecken(z.ausschnitt));
+    // P22-T171 Punkt 5: leere Zeilen wie 'Anmerkung:' ohne Inhalt entfallen.
+    if (z.anmerkung) zeilen.push('   Anmerkung: ' + einruecken(z.anmerkung));
   });
   zeilen.push('[/Synapse-Zitate] ' + ZITAT_BLOCK_HINWEIS);
   return zeilen.join('\n');
@@ -274,10 +296,12 @@ export function textMitZitaten(text: string, zitate: readonly GeprueftesZitat[])
 // ---------------------------------------------------------------------------------------------
 export interface VerlaufZitatAnhang {
   art: 'zitat'; verweis_art: ZitatArt; id: string | null; projekt: string; titel: string; ausschnitt: string | null; quelle: string | null; anmerkung: string;
+  /** P22-T171: Bezug eines mitgeschickten Pins (nur verweis_art 'thought'), sonst null. */
+  pin: string | null;
 }
 
 export function zitatAlsVerlaufAnhang(z: GeprueftesZitat): VerlaufZitatAnhang {
-  return { art: 'zitat', verweis_art: z.art, id: z.id, projekt: z.projekt, titel: z.titel, ausschnitt: z.ausschnitt, quelle: z.quelle, anmerkung: z.anmerkung };
+  return { art: 'zitat', verweis_art: z.art, id: z.id, projekt: z.projekt, titel: z.titel, ausschnitt: z.ausschnitt, quelle: z.quelle, anmerkung: z.anmerkung, pin: z.pin };
 }
 
 const kappe = (v: unknown, max: number): string => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -295,6 +319,7 @@ export function verlaufZitatAnhang(v: unknown): VerlaufZitatAnhang | null {
     ausschnitt: typeof o.ausschnitt === 'string' && o.ausschnitt ? o.ausschnitt.slice(0, CHAT_ZITATE_EINSTELLUNGEN.ausschnitt_max.max) : null,
     quelle: typeof o.quelle === 'string' && o.quelle ? o.quelle.slice(0, QUELLE_MAX) : null,
     anmerkung: kappe(o.anmerkung, CHAT_ZITATE_EINSTELLUNGEN.anmerkung_max.max),
+    pin: o.verweis_art === 'thought' && typeof o.pin === 'string' && o.pin.trim() ? einzeilig(o.pin).slice(0, CHAT_ZITATE_EINSTELLUNGEN.titel_max.max) : null,
   };
 }
 
@@ -303,7 +328,7 @@ export function zitateAusVerlaufAnhaengen(anhaenge: unknown): GeprueftesZitat[] 
   if (!Array.isArray(anhaenge)) return [];
   return anhaenge.flatMap((a) => {
     const z = verlaufZitatAnhang(a);
-    return z ? [{ art: z.verweis_art, id: z.id, projekt: z.projekt, titel: z.titel, ausschnitt: z.ausschnitt, quelle: z.quelle, anmerkung: z.anmerkung }] : [];
+    return z ? [{ art: z.verweis_art, id: z.id, projekt: z.projekt, titel: z.titel, ausschnitt: z.ausschnitt, quelle: z.quelle, anmerkung: z.anmerkung, pin: z.pin }] : [];
   });
 }
 

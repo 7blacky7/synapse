@@ -168,8 +168,9 @@ try{
  ok(lp.success&&lp.eintraege.length===1&&lp.eintraege[0].content==='Plan P1 bleibt hoch.','Plan-Liste liest genau Tag P1 ohne task_id',lp);
  r=await post({project:P,art:'task',id:'P1-T9',text:'x'});
  ok(r.statusCode===404&&r.json().error.code==='task_unbekannt','unbekannte Task -> 404 task_unbekannt');
- r=await post({project:P,art:'memory',id:'x',text:'x'});
- ok(r.statusCode===400&&r.json().error.code==='art_ungueltig','nur task|plan');
+ // (angepasst P22-T171, User 83b5014f Punkt 4: jede Verweis-Art des Lesefensters; abgelehnt wird nur eine Nicht-Verweis-Art)
+ r=await post({project:P,art:'ausschnitt',id:'x',text:'x'});
+ ok(r.statusCode===400&&r.json().error.code==='art_ungueltig','keine Verweis-Art (ausschnitt) -> 400 art_ungueltig');
  r=await post({project:P,art:'task',id:'P1-T2',text:'x'.repeat(2001)});
  ok(r.statusCode===400&&r.json().error.code==='text_zu_lang','Grenze anmerkung_max');
  await testSchalter(false);

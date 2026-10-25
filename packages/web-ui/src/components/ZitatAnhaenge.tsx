@@ -251,7 +251,7 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
         <button type="button" className="zitat-karte-inhalt" title="Anmerkung bearbeiten"
           onClick={(event) => { setMenue(null); setEditor({ pos: { x: event.clientX, y: Math.max(8, event.clientY - 300) }, vorlage: z, schluessel: z.schluessel, anmerkung: z.anmerkung, hinweis: '' }); }}>
           {z.pin
-            ? <><b>User-Entscheidung</b><span>{k.titel.replace(/^User-Entscheidung /, '')}</span>{k.anmerkung && <small>{k.anmerkung}</small>}</>
+            ? <><b>Angepinnte User-Entscheidung</b><span>{'an ' + z.pin + (k.titel ? ' · ' + k.titel : '')}</span>{k.anmerkung && <small>{k.anmerkung}</small>}</>
             : <><b>{k.kopf}</b>{k.titel && <span>{k.titel}</span>}{k.anmerkung && <small>{k.anmerkung}</small>}</>}
         </button>
         <button type="button" className="zitat-karte-weg" aria-label="Zitat entfernen" title="Zitat entfernen"

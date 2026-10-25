@@ -30,12 +30,19 @@ export interface ZitatVorlage {
   ausschnitt?: string;
   /** Schluessel der Nachricht, aus der der Ausschnitt stammt ('verlauf:<id>' bzw. 'inbox:<id>'). */
   quelle?: string;
-  /** P22-T170: Kaertchen einer gerade angepinnten User-Entscheidung (nur Anzeige; gesendet wird es wie jedes Zitat, art 'thought'). */
-  pin?: boolean;
+  /**
+   * P22-T170: Kaertchen einer gerade angepinnten User-Entscheidung (Zitat art 'thought', ID = Pin-thought).
+   * P22-T171 Punkt 5 (User 83b5014f): pin = Bezug ('Task P22-T171'); geht mit (SendeZitat.pin) und heisst im Block wie auf dem
+   * Kaertchen 'Angepinnte User-Entscheidung an <Bezug>' statt 'Thought <id>'.
+   */
+  pin?: string;
 }
 export interface ZitatAnhang extends ZitatVorlage { schluessel: string; anmerkung: string; erstellt_am: string }
-export interface SendeZitat { art: ZitatArt; id?: string; projekt: string; titel: string; ausschnitt?: string; quelle?: { nachricht: string }; anmerkung: string }
-export interface AnzeigeZitat { art: ZitatArt; id: string | null; projekt: string | null; titel: string; ausschnitt?: string; quelle?: string; anmerkung: string }
+export interface SendeZitat { art: ZitatArt; id?: string; projekt: string; titel: string; ausschnitt?: string; quelle?: { nachricht: string }; anmerkung: string; pin?: string }
+export interface AnzeigeZitat { art: ZitatArt; id: string | null; projekt: string | null; titel: string; ausschnitt?: string; quelle?: string; anmerkung: string; pin?: string }
+
+/** P22-T171: Eintragszeile eines Pins im Block (wie core chat-zitate.ts PIN_EINTRAG) und Kopf seines Kaertchens. */
+export const PIN_EINTRAG = 'Angepinnte User-Entscheidung an ';
 
 export function istZitatArt(v: unknown): v is ZitatArt {
   return typeof v === 'string' && (ZITAT_ARTEN as readonly string[]).includes(v);
@@ -67,13 +74,13 @@ export function entferneZitat(liste: readonly ZitatAnhang[], schluessel: string)
   return liste.filter((z) => z.schluessel !== schluessel);
 }
 
-/** Kopf eines Zitats: 'Task P22-T158' bzw. 'Ausschnitt'. */
-export function zitatKopf(z: { art: ZitatArt; id: string | null }): string {
-  return ZITAT_ART_LABEL[z.art] + (z.id ? ' ' + z.id : '');
+/** Kopf eines Zitats: 'Task P22-T158' bzw. 'Ausschnitt'; P22-T171: Pin = 'Angepinnte User-Entscheidung an Task P22-T171'. */
+export function zitatKopf(z: { art: ZitatArt; id: string | null; pin?: string }): string {
+  return z.pin ? PIN_EINTRAG + z.pin : ZITAT_ART_LABEL[z.art] + (z.id ? ' ' + z.id : '');
 }
 
 /** Beschriftung eines Kaertchens: Art + ID, Titel, Anfang der Anmerkung (bzw. des Ausschnitts). */
-export function zitatKarte(z: { art: ZitatArt; id: string | null; titel: string; anmerkung: string; ausschnitt?: string }, laenge = 60): { kopf: string; titel: string; anmerkung: string } {
+export function zitatKarte(z: { art: ZitatArt; id: string | null; titel: string; anmerkung: string; ausschnitt?: string; pin?: string }, laenge = 60): { kopf: string; titel: string; anmerkung: string } {
   const quelle = (z.anmerkung || (z.ausschnitt ? '„' + z.ausschnitt + '“' : '')).replace(/\s+/g, ' ').trim();
   return { kopf: zitatKopf(z), titel: z.titel, anmerkung: quelle.length > laenge ? quelle.slice(0, laenge - 1).trimEnd() + '…' : quelle };
 }
@@ -82,12 +89,13 @@ export function zuSendeZitaten(liste: readonly ZitatAnhang[]): SendeZitat[] {
   return liste.map((z) => ({
     art: z.art, ...(z.id ? { id: z.id } : {}), projekt: z.projekt, titel: z.titel,
     ...(z.ausschnitt ? { ausschnitt: z.ausschnitt } : {}), ...(z.quelle ? { quelle: { nachricht: z.quelle } } : {}), anmerkung: z.anmerkung,
+    ...(z.pin ? { pin: z.pin } : {}),
   }));
 }
 
 export function anzeigeAusEntwurf(liste: readonly ZitatAnhang[]): AnzeigeZitat[] {
   return liste.map((z) => ({ art: z.art, id: z.id, projekt: z.projekt, titel: z.titel, ...(z.ausschnitt ? { ausschnitt: z.ausschnitt } : {}),
-    ...(z.quelle ? { quelle: z.quelle } : {}), anmerkung: z.anmerkung }));
+    ...(z.quelle ? { quelle: z.quelle } : {}), anmerkung: z.anmerkung, ...(z.pin ? { pin: z.pin } : {}) }));
 }
 
 // ───────────────────────── Speicher (localStorage je Chat) ─────────────────────────
@@ -104,8 +112,17 @@ function gueltigerEntwurf(v: unknown): ZitatAnhang | null {
     anmerkung: typeof o.anmerkung === 'string' ? o.anmerkung : '', erstellt_am: typeof o.erstellt_am === 'string' ? o.erstellt_am : '',
     ...(typeof o.ausschnitt === 'string' && o.ausschnitt ? { ausschnitt: o.ausschnitt } : {}),
     ...(typeof o.quelle === 'string' && o.quelle ? { quelle: o.quelle } : {}),
-    ...(o.pin === true ? { pin: true } : {}),
+    ...(pinAusEntwurf(o) ? { pin: pinAusEntwurf(o)! } : {}),
   };
+}
+
+/** P22-T171: pin eines gespeicherten Entwurfs; T170-Entwuerfe hatten pin true und den Bezug im Titel ('User-Entscheidung an X · ...'). */
+function pinAusEntwurf(o: Record<string, unknown>): string | null {
+  if (o.art !== 'thought') return null;
+  if (typeof o.pin === 'string' && o.pin.trim()) return o.pin.trim();
+  if (o.pin !== true) return null;
+  const alt = /^User-Entscheidung an (.+?)(?: · |$)/.exec(typeof o.titel === 'string' ? o.titel : '');
+  return alt ? alt[1] : 'User-Entscheidung';
 }
 
 export function leseZitatEntwurf(ablage: ZitatAblage | null, chat: string): ZitatAnhang[] {
@@ -142,15 +159,26 @@ export function herkunftAusChat(chat: string): ZitatHerkunft {
 
 export interface PinEingabe { thoughtId: string; projekt: string; kopf: string; titel?: string; text: string }
 
-/** Kaertchen fuer eine gerade angepinnte User-Entscheidung: Zitat art 'thought' (ID = thought), Wortlaut als Ausschnitt (gekuerzt). */
+/**
+ * Kaertchen fuer eine gerade angepinnte User-Entscheidung: Zitat art 'thought' (ID = thought), Wortlaut als Ausschnitt (gekuerzt).
+ * P22-T171: pin = Kopf des Bezugs ('Task P1-T2'), titel = Titel des Bezugs (der Block nennt den Pin selbst).
+ */
 export function pinVorlage(pin: PinEingabe, ausschnittMax: number): ZitatVorlage {
   return {
-    art: 'thought', id: pin.thoughtId, projekt: pin.projekt, titel: 'User-Entscheidung an ' + pin.kopf + (pin.titel ? ' · ' + pin.titel : ''),
-    ausschnitt: kuerzeZitatText(pin.text, ausschnittMax).text, pin: true,
+    art: 'thought', id: pin.thoughtId, projekt: pin.projekt, titel: pin.titel ?? '',
+    ausschnitt: kuerzeZitatText(pin.text, ausschnittMax).text, pin: pin.kopf,
   };
 }
 
-/** Empfaengerauswahl (Herkunft 'ohne'): immer genau so viele Zeilen sichtbar, der Rest scrollt (User 82b61246). */
+/** Pin als sendefertiges Zitat (ohne Anmerkung) - Empfaengerauswahl ohne Herkunft (P22-T171 Punkt 1). Rein. */
+export function pinSendeZitat(pin: PinEingabe, ausschnittMax: number): SendeZitat {
+  return zuSendeZitaten(fuegeZitatHinzu([], pinVorlage(pin, ausschnittMax), '', 1, 'pin').liste)[0];
+}
+
+/**
+ * Empfaengerauswahl (Herkunft 'ohne'). P22-T170: genau 3 Zeilen sichtbar (User 82b61246). P22-T171 Punkt 2 (User inbox 1258): Eingabefeld,
+ * Klick/Tippen oeffnet darunter hoechstens so viele Vorschlaege, mehr per Scrollen; Tippen filtert; Gewaehlte als Marken im Feld.
+ */
 export const EMPFAENGER_SICHTBAR = 3;
 export interface ZitatEmpfaengerEintrag { identity_id: string; agent_id: string; name: string; rolle: string; project: string }
 
@@ -168,14 +196,23 @@ export function zitatEmpfaengerName(e: ZitatEmpfaengerEintrag): string {
   return e.rolle === 'main' ? 'Hauptagent' + (e.name && e.name !== 'main' ? ' · ' + e.name : '') : e.name || e.agent_id;
 }
 
+/** P22-T171: Markierung in der Vorschlagsliste per Pfeiltaste (rundum, -1 = keine). Rein. */
+export function naechsteMarkierung(aktuell: number, anzahl: number, schritt: 1 | -1): number {
+  if (anzahl <= 0) return -1;
+  if (aktuell < 0) return schritt > 0 ? 0 : anzahl - 1;
+  return (aktuell + schritt + anzahl) % anzahl;
+}
+
 // ───────────────────────── Block (Anzeige) ─────────────────────────
 
 const KOPF = /^\[Synapse-Zitate: (\d+)\]\s*$/;
 const ENDE = /^\[\/Synapse-Zitate\]/;
 const EINTRAG = /^(\d+)\) (\S+)(?: (.+))?$/;
-const FELD = /^ {3}(Projekt|Titel|Quelle|Ausschnitt|Anmerkung):(?: (.*))?$/;
+// P22-T171 Punkt 5: Pin-Eintrag 'N) Angepinnte User-Entscheidung an <Bezug>' mit Feldern Thought (ID) und Wortlaut (= Ausschnitt).
+const PIN = /^(\d+)\) Angepinnte User-Entscheidung an (.+)$/;
+const FELD = /^ {3}(Projekt|Titel|Quelle|Ausschnitt|Anmerkung|Thought|Wortlaut):(?: (.*))?$/;
 const LABEL_ART = new Map<string, ZitatArt>(Object.entries(ZITAT_ART_LABEL).map(([art, label]) => [label, art as ZitatArt]));
-type Feld = 'projekt' | 'titel' | 'quelle' | 'ausschnitt' | 'anmerkung';
+type Feld = 'projekt' | 'titel' | 'quelle' | 'ausschnitt' | 'anmerkung' | 'thought' | 'wortlaut';
 
 /**
  * Den (letzten) Block aus einem Text loesen. Ohne bzw. mit fehlerhaftem Block: Text unveraendert, keine Zitate. Was nach dem Ende
@@ -193,6 +230,13 @@ export function zerlegeZitatBlock(text: string): { text: string; zitate: Anzeige
   const werte: Array<Partial<Record<Feld, string>>> = [];
   let feld: Feld | null = null;
   for (const z of zeilen.slice(kopf + 1, ende)) {
+    const p = PIN.exec(z);
+    if (p) {
+      zitate.push({ art: 'thought', id: null, projekt: null, titel: '', anmerkung: '', pin: p[2].trim() });
+      werte.push({});
+      feld = null;
+      continue;
+    }
     const e = EINTRAG.exec(z);
     if (e) {
       const art = LABEL_ART.get(e[2]);
@@ -222,6 +266,10 @@ export function zerlegeZitatBlock(text: string): { text: string; zitate: Anzeige
     zitat.anmerkung = (w.anmerkung ?? '').trim();
     if (w.ausschnitt?.trim()) zitat.ausschnitt = w.ausschnitt.trim();
     if (w.quelle?.trim()) zitat.quelle = w.quelle.trim().replace(/^Nachricht /, '');
+    if (zitat.pin) {
+      zitat.id = w.thought?.trim() || null;
+      if (w.wortlaut?.trim()) zitat.ausschnitt = w.wortlaut.trim();
+    }
   });
   const vorher = zeilen.slice(0, kopf).join('\n').trimEnd();
   const nachher = zeilen.slice(ende + 1).join('\n').trim();
@@ -239,6 +287,7 @@ export function anzeigeAusAnhaengen(anhaenge: unknown): AnzeigeZitat[] {
       titel: typeof o.titel === 'string' ? o.titel : '', anmerkung: typeof o.anmerkung === 'string' ? o.anmerkung : '',
       ...(typeof o.ausschnitt === 'string' && o.ausschnitt ? { ausschnitt: o.ausschnitt } : {}),
       ...(typeof o.quelle === 'string' && o.quelle ? { quelle: o.quelle } : {}),
+      ...(o.verweis_art === 'thought' && typeof o.pin === 'string' && o.pin ? { pin: o.pin } : {}),
     }];
   });
 }

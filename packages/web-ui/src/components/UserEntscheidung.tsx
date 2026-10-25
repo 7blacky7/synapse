@@ -3,6 +3,7 @@ import { leseChatZitateStand } from '../api/chat-zitate';
 import { leseUserEntscheidungen, pinneUserEntscheidung, type UserEntscheidungEintrag } from '../api/user-entscheidung';
 import { ART_LABEL, type VerweisArt } from '../api/verweise';
 import type { PinEingabe } from './zitat-logik';
+import type { PinEmpfaenger } from './ZitatEmpfaenger';
 import '../chat-zitate.css';
 
 /**
@@ -12,11 +13,15 @@ import '../chat-zitate.css';
  * der Server gibt dem Bearbeiter der Task einen kurzen Inbox-Hinweis. Darunter die angepinnten User-Entscheidungen.
  * useUserEntscheidung -> knopf (Kopf des Lesefensters) und bereich (Editor, Meldung, Liste). anpinnen = Zaehler aus dem
  * Kontextmenue eines Chat-Verweises: jede Erhoehung oeffnet den Editor.
+ * P22-T171 Punkt 4 (User 83b5014f): fuer JEDE Verweis-Art, die das Lesefenster oeffnet (Server: Tag '<art>:<id>', task_id nur bei
+ * Tasks). Punkt 1: ohne Chat-/Channel-Herkunft zeigt der Editor OPTIONAL die Empfaengerauswahl (Prop empfaenger, ZitatEmpfaenger.tsx
+ * usePinEmpfaenger); ohne Auswahl nur speichern, mit Auswahl danach der Pin als Block an jeden Gewaehlten.
  * SCHALTER chat_zitate (api/chat-zitate.ts, Projekt des Verweises; AUS = kein Knopf, keine Liste). DEBUG: data-user-entscheidung,
- * console.debug('[user-entscheidung]', ...).
+ * data-user-entscheidung-art, console.debug('[user-entscheidung]', ...).
  */
-export type UserEntscheidungArt = 'task' | 'plan';
-export const kannAnpinnen = (art: string): art is UserEntscheidungArt => art === 'task' || art === 'plan';
+export type UserEntscheidungArt = VerweisArt;
+const PIN_ARTEN: readonly string[] = ['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset'];
+export const kannAnpinnen = (art: string): art is UserEntscheidungArt => PIN_ARTEN.includes(art);
 
 const MAX_STANDARD = 2000;
 interface Editor { text: string; hinweis: string; laeuft: boolean }
@@ -27,10 +32,12 @@ function zeitLokal(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('de-DE');
 }
 
-export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinnen = 0, nachAnpinnen }: {
+export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinnen = 0, nachAnpinnen, empfaenger }: {
   project: string; art: VerweisArt; id: string; anzeigeId?: string; titel?: string; anpinnen?: number;
   /** P22-T170: Lesefenster mit Chat-/Channel-Herkunft - Pin zusaetzlich als Kaertchen in dessen Entwurf; Rueckgabe = Zusatz der Meldung. */
   nachAnpinnen?: (pin: PinEingabe) => string | null;
+  /** P22-T171 Punkt 1: Lesefenster OHNE Herkunft - optionale Empfaengerauswahl im Editor. */
+  empfaenger?: PinEmpfaenger;
 }): { aktiv: boolean; knopf: ReactNode; bereich: ReactNode } {
   const moeglich = kannAnpinnen(art) && !!id;
   const [aktiv, setAktiv] = useState(false);
@@ -71,26 +78,32 @@ export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinn
     if (!text) { setEditor({ ...editor, hinweis: 'Bitte die Entscheidung eintragen.' }); return; }
     if (text.length > max) { setEditor({ ...editor, hinweis: 'Höchstens ' + max + ' Zeichen.' }); return; }
     setEditor({ ...editor, laeuft: true, hinweis: '' });
-    const r = await pinneUserEntscheidung({ project, art: zielArt, id, text });
+    const r = await pinneUserEntscheidung({ project, art: zielArt, id, text, ...(titel ? { titel } : {}) });
     console.debug('[user-entscheidung]', 'anpinnen', { project, art, id, ergebnis: r });
     if (!r.ok) { setEditor((e) => e && { ...e, laeuft: false, hinweis: r.message }); return; }
+    const pin: PinEingabe = { thoughtId: r.thought_id, projekt: project, kopf, ...(titel ? { titel } : {}), text };
+    // P22-T171 Punkt 1: erst speichern (oben), dann optional an die Gewaehlten; ein Fehler beim Senden macht den Pin nicht rueckgaengig.
+    const gesendet = empfaenger?.anzahl ? await empfaenger.senden(pin) : '';
+    if (empfaenger?.anzahl) console.debug('[user-entscheidung]', 'an_empfaenger', { project, art, id, thought: r.thought_id, meldung: gesendet });
     setEditor(null);
-    const zusatz = nachAnpinnen?.({ thoughtId: r.thought_id, projekt: project, kopf, ...(titel ? { titel } : {}), text }) ?? null;
-    setMeldung('Angepinnt an ' + kopf + '.' + (r.empfaenger.length ? ' Hinweis an ' + r.empfaenger.join(', ') + '.' : '') + (zusatz ? ' ' + zusatz : ''));
+    const zusatz = nachAnpinnen?.(pin) ?? null;
+    setMeldung('Angepinnt an ' + kopf + '.' + (r.empfaenger.length ? ' Hinweis an ' + r.empfaenger.join(', ') + '.' : '') + (zusatz ? ' ' + zusatz : '') + (gesendet ? ' ' + gesendet : ''));
     const liste = await leseUserEntscheidungen(project, zielArt, id);
     setEintraege(liste.eintraege);
   };
   const beiTaste = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditor(null); }
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); schliessen(); }
     else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void speichern(); }
   };
+  const schliessen = () => { setEditor(null); empfaenger?.zuruecksetzen(); };
 
   const knopf = (
-    <button type="button" className="verweis-entscheidung" title={'Entscheidung als User an ' + kopf + ' anpinnen' + (nachAnpinnen ? ' (zusätzlich als Kärtchen in den Entwurf dieses Chats)' : ' (nur speichern)')}
+    <button type="button" className="verweis-entscheidung" title={'Entscheidung als User an ' + kopf + ' anpinnen' + (nachAnpinnen ? ' (zusätzlich als Kärtchen in den Entwurf dieses Chats)'
+      : empfaenger ? ' (speichern; optional an gewählte Agenten senden)' : ' (nur speichern)')}
       onClick={() => { setMeldung(''); setEditor((e) => e ?? LEER); }}>User-Entscheidung anpinnen</button>
   );
   const bereich = (
-    <section className="user-entscheidungen" data-user-entscheidung={eintraege.length}>
+    <section className="user-entscheidungen" data-user-entscheidung={eintraege.length} data-user-entscheidung-art={art}>
       {editor && (
         <div className="user-entscheidung-editor" role="group" aria-label={'User-Entscheidung an ' + kopf} data-user-entscheidung-editor="">
           <header>
@@ -100,10 +113,16 @@ export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinn
           </header>
           <textarea ref={textRef} rows={4} value={editor.text} placeholder="Deine Entscheidung im Wortlaut …" disabled={editor.laeuft}
             onChange={(event) => setEditor({ ...editor, text: event.target.value, hinweis: '' })} onKeyDown={beiTaste} />
+          {empfaenger?.feld && (
+            <div className="user-entscheidung-empfaenger" data-pin-empfaenger={empfaenger.anzahl}>
+              <small>Optional an Agenten senden (ohne Auswahl nur speichern)</small>
+              {empfaenger.feld}
+            </div>
+          )}
           <footer>
             <span className={editor.hinweis ? 'zitat-hinweis' : ''}>{editor.hinweis || (editor.laeuft ? 'Wird angepinnt …' : editor.text.trim().length + ' / ' + max + ' · Strg+Enter speichert')}</span>
-            <button type="button" onClick={() => setEditor(null)}>Abbrechen</button>
-            <button type="button" className="zitat-speichern" disabled={editor.laeuft} onClick={() => { void speichern(); }}>Speichern</button>
+            <button type="button" onClick={schliessen}>Abbrechen</button>
+            <button type="button" className="zitat-speichern" disabled={editor.laeuft} onClick={() => { void speichern(); }}>{empfaenger?.anzahl ? 'Speichern und senden' : 'Speichern'}</button>
           </footer>
         </div>
       )}

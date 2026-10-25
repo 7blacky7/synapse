@@ -8,6 +8,8 @@
  *   channel = echtes Channel-Fenster (ChannelsView aus SynapseWorkspaceMock) fuer #team
  *   ohne    = Flaeche ohne Chat-Bezug: Artefakte-Seite (Provider ohne Zitat) und Dashboard-Bereich im Main-Provider
  *             (LesefensterOhneHerkunft, wie das Main-Dashboard/Top-Artefakte)
+ * P22-T171 (rest-api/tests/pin-empfaenger-browser-p22-t171.test.mjs): memory=<name> zeigt auf der Artefakte-Seite zusaetzlich einen
+ *   Memory-Verweis (Pin an eine andere Verweis-Art, Punkt 4).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -105,6 +107,7 @@ function OhneFlaeche() {
         <section data-bereich="artefakte" style={{ width: 420, padding: 12, ...rahmen }}>
           <h3 style={{ margin: '0 0 6px' }}>Artefakte</h3>
           <p><VerweisText project={project} text="Artefakt-Seite: siehe P1-T2." /></p>
+          {q.get('memory') && <p data-bereich="artefakte-memory"><VerweisText project={project} text={'Regel: Memory ' + q.get('memory')} /></p>}
         </section>
       </VerweisFensterProvider>
       <MainFenster mitDashboard />

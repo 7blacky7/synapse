@@ -94,10 +94,12 @@ const textareaVon = (s) => alle(editorVon(s), (x) => x.type === 'textarea')[0];
   ok(h.aufrufe.stand[0] === 'p' && h.aufrufe.liste.length === 0, 'A AUS: Schalter im Projekt des Verweises gelesen, Liste nicht geladen', h.aufrufe);
 }
 {
+  // (angepasst P22-T171, User 83b5014f Punkt 4: jede Verweis-Art des Lesefensters; ausgeschlossen bleibt nur, was das Lesefenster nicht oeffnet)
   const h = hookProbe({ liste: [] });
-  let s = h.render({ art: 'thought', id: 'abc12345' }); await flush(); s = h.render();
-  ok(s.knopf === null && h.aufrufe.stand.length === 0 && h.aufrufe.liste.length === 0, 'A nur Task/Plan: Thought ohne Knopf und ohne Abfrage');
-  ok(h.UE.kannAnpinnen('task') && h.UE.kannAnpinnen('plan') && !h.UE.kannAnpinnen('memory') && !h.UE.kannAnpinnen('asset'), 'A kannAnpinnen nur task|plan');
+  let s = h.render({ art: 'ausschnitt', id: 'abc12345' }); await flush(); s = h.render();
+  ok(s.knopf === null && h.aufrufe.stand.length === 0 && h.aufrufe.liste.length === 0, 'A keine Verweis-Art (ausschnitt): ohne Knopf und ohne Abfrage');
+  ok(h.UE.kannAnpinnen('task') && h.UE.kannAnpinnen('plan') && h.UE.kannAnpinnen('memory') && h.UE.kannAnpinnen('asset') && h.UE.kannAnpinnen('thought') && !h.UE.kannAnpinnen('ausschnitt'),
+    'A kannAnpinnen jede Verweis-Art (P22-T171)');
 }
 {
   const alt = { id: 'aaaaaaaa-0000-4000-8000-000000000000', source: 'koordinator', content: 'USER-ENTSCHEIDUNG alt', tags: ['user-entscheidung'], timestamp: '2026-10-25T19:00:00Z', task_id: 'P1-T2' };
@@ -119,7 +121,7 @@ const textareaVon = (s) => alle(editorVon(s), (x) => x.type === 'textarea')[0];
   s.knopf.props.onClick(); s = h.render();
   textareaVon(s).props.onChange({ target: { value: '  So machen wir es: erst B, dann A.  ' } }); s = h.render();
   knopf(s.bereich, 'Speichern').props.onClick(); await flush(); s = h.render();
-  gleich(h.aufrufe.pinne, [{ project: 'p', art: 'task', id: 'P1-T2', text: 'So machen wir es: erst B, dann A.' }], 'A Speichern -> POST mit Projekt, Art, ID und Wortlaut (aussen getrimmt)');
+  gleich(h.aufrufe.pinne, [{ project: 'p', art: 'task', id: 'P1-T2', text: 'So machen wir es: erst B, dann A.', titel: 'Zweite Aufgabe' }], 'A Speichern -> POST mit Projekt, Art, ID und Wortlaut (aussen getrimmt; P22-T171: Titel des Bezugs)');
   ok(!editorVon(s) && /Angepinnt an Task P1-T2\. Hinweis an rea4\./.test(text(s.bereich)), 'A nach Speichern: Editor zu, Meldung mit Empfaenger des Hinweises', text(s.bereich));
   ok(/User-Entscheidungen \(2\)/.test(text(s.bereich)) && text(s.bereich).indexOf('So machen wir es') < text(s.bereich).indexOf('USER-ENTSCHEIDUNG alt'), 'A Liste neu geladen, neueste zuerst');
   ok(s.bereich.props['data-user-entscheidung'] === 2, 'A Debug-Attribut zaehlt die Eintraege');
@@ -141,7 +143,7 @@ const textareaVon = (s) => alle(editorVon(s), (x) => x.type === 'textarea')[0];
   textareaVon(s).props.onChange({ target: { value: 'Plan bleibt hoch' } }); s = h.render();
   knopf(s.bereich, 'Speichern').props.onClick(); await flush(); s = h.render();
   ok(editorVon(s) && /ist aus \(chat_zitate\)/.test(text(editorVon(s))) && textareaVon(s).props.value === 'Plan bleibt hoch', 'A Fehler: Editor bleibt mit Text und Meldung offen');
-  gleich(h.aufrufe.pinne[0], { project: 'p', art: 'plan', id: 'P1', text: 'Plan bleibt hoch' }, 'A Plan: art plan im POST');
+  gleich(h.aufrufe.pinne[0], { project: 'p', art: 'plan', id: 'P1', text: 'Plan bleibt hoch', titel: 'Plan eins' }, 'A Plan: art plan im POST');
 }
 console.log('OK A Hook');
 
@@ -194,11 +196,12 @@ console.log('OK C Kontextmenue');
 
 // ---------------------------------------------------------------- D Einbau
 const lese = lies('packages/web-ui/src/components/Lesefenster.tsx');
-ok(/const entscheidung = useUserEntscheidung\(\{\n\s+project: fenster\.project, art: fenster\.art, id: fenster\.id, anzeigeId: inhalt\?\.id, titel: inhalt\?\.titel, anpinnen: fenster\.anpinnen,/.test(lese), 'D Lesefenster nutzt useUserEntscheidung je Fenster');
+// (angepasst P22-T171: id fuer andere Arten aus dem aufgeloesten Inhalt, Task/Plan wie bisher fenster.id)
+ok(/const entscheidung = useUserEntscheidung\(\{\n\s+project: fenster\.project, art: fenster\.art, id: fenster\.art === 'task' \|\| fenster\.art === 'plan' \? fenster\.id : inhalt\?\.id \?\? '',\n\s+anzeigeId: inhalt\?\.id, titel: inhalt\?\.titel, anpinnen: fenster\.anpinnen,/.test(lese), 'D Lesefenster nutzt useUserEntscheidung je Fenster');
 // P22-T170: zwischen 'Zitat anfügen' (Herkunft Chat/Channel) und dem Anpinn-Knopf steht der Knopf der Empfaengerauswahl (Herkunft ohne).
 ok(/Zitat anfügen<\/button>\}\n\s+\{inhalt && auswahl\.knopf\}\n\s+\{inhalt && entscheidung\.knopf\}\n\s+<button type="button" onClick=\{onSchliessen\}/.test(lese), 'D Knopf im Kopf des Lesefensters (unabhaengig vom Chat)');
 ok(/<\/dl>\n\s+\{entscheidung\.bereich\}/.test(lese), 'D Editor und angepinnte Entscheidungen unter den Metadaten');
-ok(/kannAnpinnen\(treffer\[0\]\.art\) \? \{ anpinnen: \(\) => fenster\.oeffne\(\{ project, art: treffer\[0\]\.art, id: treffer\[0\]\.id, anpinnen: true \}\) \}/.test(lese), 'D Verweis-Menue im Chat: anpinnen nur fuer Task/Plan');
+ok(/kannAnpinnen\(treffer\[0\]\.art\) \? \{ anpinnen: \(\) => fenster\.oeffne\(\{ project, art: treffer\[0\]\.art, id: treffer\[0\]\.id, anpinnen: true \}\) \}/.test(lese), 'D Verweis-Menue im Chat: anpinnen fuer jede Verweis-Art (kannAnpinnen, P22-T171)');
 ok(/anpinnen: \(f\?\.anpinnen \?\? 0\) \+ 1/.test(lese), 'D erneutes Anpinnen im offenen Fenster zaehlt hoch');
 const flaeche = lies('packages/web-ui/src/kios/AgentRenderingSurface.tsx');
 ok(!/anpinnen|UserEntscheidung/.test(flaeche), 'D Artefakt-Flaeche unveraendert (kein Anpinnen-Menue in Artefakten/Top-Artefakten)');

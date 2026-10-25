@@ -4,7 +4,8 @@
  * A reine Logik (Herkunft aus dem Entwurfs-Schluessel, Pin-Kaertchen, Empfaenger-Filter/Auswahl, Speicher behaelt pin);
  * B useZitatAnhaenge: Herkunft je Chat (agent/main/channel), pinAnfuegen legt das Kaertchen in DIESEN Entwurf, Senden enthaelt es;
  * C useUserEntscheidung: nachAnpinnen nur mit Herkunft, Meldung mit Zusatz;
- * D useZitatEmpfaengerAuswahl: Schalter, Knopf, Liste, Filter behaelt Auswahl, genau 3 sichtbar, Senden an 2 Empfaenger, Fehler;
+ * D useZitatEmpfaengerAuswahl: Schalter, Knopf, Liste, Filter behaelt Auswahl, genau 3 sichtbar, Senden an 2 Empfaenger, Fehler
+ *   (angepasst P22-T171: Eingabefeld mit Vorschlagsliste statt Checkboxen, hoechstens 3 sichtbar; Details in pin-empfaenger-p22-t171);
  * E Einbau (Lesefenster, Main-Dashboard und Channel-Projektflaeche ohne Herkunft, Channel-Fenster mit Zitaten, Artefakttafel unveraendert).
  */
 import assert from 'node:assert/strict';
@@ -71,14 +72,15 @@ const THOUGHT = 'abcdef12-0000-4000-8000-000000000001';
 {
   gleich(['main', 'agent:1234', 'channel:p:team', 'x'].map(ZL.herkunftAusChat), ['main', 'agent', 'channel', 'agent'], 'A Herkunft aus dem Entwurfs-Schluessel');
   const v = ZL.pinVorlage({ thoughtId: THOUGHT, projekt: 'p', kopf: 'Task P1-T2', titel: 'Zweite Aufgabe', text: 'x'.repeat(700) }, 600);
-  ok(v.art === 'thought' && v.id === THOUGHT && v.pin === true && v.projekt === 'p', 'A Pin = Zitat art thought mit thought-ID', v);
-  ok(v.titel === 'User-Entscheidung an Task P1-T2 · Zweite Aufgabe', 'A Pin-Titel nennt Task und Titel', v.titel);
+  // (angepasst P22-T171 Punkt 5: pin = Bezug, Titel = Titel des Bezugs; der Block nennt 'Angepinnte User-Entscheidung an <Bezug>')
+  ok(v.art === 'thought' && v.id === THOUGHT && v.pin === 'Task P1-T2' && v.projekt === 'p', 'A Pin = Zitat art thought mit thought-ID', v);
+  ok(v.titel === 'Zweite Aufgabe' && ZL.zitatKopf(v) === 'Angepinnte User-Entscheidung an Task P1-T2', 'A Pin-Kopf nennt Task, Titel des Bezugs', [v.titel, ZL.zitatKopf(v)]);
   ok(v.ausschnitt.length === 600 && v.ausschnitt.endsWith('…'), 'A Wortlaut als Ausschnitt, auf ausschnitt_max gekuerzt');
   const r = ZL.fuegeZitatHinzu([], v, '', 10, 'k1', '2026-10-25T21:00:00Z');
-  gleich(ZL.zuSendeZitaten(r.liste), [{ art: 'thought', id: THOUGHT, projekt: 'p', titel: v.titel, ausschnitt: v.ausschnitt, anmerkung: '' }], 'A Pin geht beim Senden wie jedes Zitat (ohne pin-Feld)');
+  gleich(ZL.zuSendeZitaten(r.liste), [{ art: 'thought', id: THOUGHT, projekt: 'p', titel: v.titel, ausschnitt: v.ausschnitt, anmerkung: '', pin: 'Task P1-T2' }], 'A Pin geht beim Senden wie jedes Zitat (P22-T171: mit pin-Feld)');
   const a = ablage();
   ZL.merkeZitatEntwurf(a, 'channel:p:team', r.liste);
-  ok(ZL.leseZitatEntwurf(a, 'channel:p:team')[0]?.pin === true, 'A Entwurf im Speicher behaelt das Pin-Kennzeichen (F5)');
+  ok(ZL.leseZitatEntwurf(a, 'channel:p:team')[0]?.pin === 'Task P1-T2', 'A Entwurf im Speicher behaelt das Pin-Kennzeichen (F5)');
   ok(a.m.has(ZL.ZITAT_ENTWURF_PRAEFIX + 'channel:p:team'), 'A Channel-Entwurf unter dem gemeinsamen Praefix (Logout verwirft ihn mit)');
   const liste = [
     { identity_id: 'm', agent_id: 'main', name: 'main', rolle: 'main', project: 'synapse-hauptagent' },
@@ -202,7 +204,11 @@ function auswahlProbe({ aktiv = true, senden } = {}) {
 }
 const auswahlVon = (s) => alle(s.bereich, (x) => x.props?.['data-zitat-empfaenger-auswahl'] !== undefined)[0];
 const zeilen = (s) => alle(auswahlVon(s), (x) => x.type === 'li' && x.props['data-empfaenger']);
-const box = (s, agent) => alle(zeilen(s).find((z) => z.props['data-empfaenger'] === agent), (x) => x.type === 'input')[0];
+// (angepasst P22-T171: Eingabefeld statt Checkboxen - 'box' ist der Vorschlag selbst: Klick = an/aus, aria-selected = gewaehlt;
+// die Vorschlaege erscheinen erst nach Klick ins Feld)
+const box = (s, agent) => { const z = zeilen(s).find((x) => x.props['data-empfaenger'] === agent); return z && { props: { onChange: () => z.props.onClick(), checked: z.props['aria-selected'] } }; };
+const feldAuf = (s) => alle(auswahlVon(s), (x) => x.props?.className === 'zitat-empfaenger-eingabe')[0].props.onClick();
+const filterVon = (s) => alle(auswahlVon(s), (x) => x.type === 'input' && x.props.role === 'combobox')[0];
 {
   const h = auswahlProbe({ aktiv: false });
   let s = h.render(); await flush(); s = h.render();
@@ -217,17 +223,16 @@ const box = (s, agent) => alle(zeilen(s).find((z) => z.props['data-empfaenger'] 
   const h = auswahlProbe();
   let s = h.render(); await flush(); s = h.render();
   ok(s.knopf && text(s.knopf) === 'Zitat anfügen' && s.knopf.props['data-zitat-ohne-herkunft'] === '' && s.bereich === null, 'D ohne Herkunft: Knopf Zitat anfügen, Bereich zu');
-  s.knopf.props.onClick(); s = h.render(); await flush(); s = h.render();
+  s.knopf.props.onClick(); s = h.render(); feldAuf(s); s = h.render(); await flush(); s = h.render();
   ok(h.aufrufe.liste[0] === 'p' && zeilen(s).length === 4, 'D Liste der Agenten des Projekts geladen (inkl. Main und Koordinator)', zeilen(s).map((z) => z.props['data-empfaenger']));
   ok(auswahlVon(s).props['data-zitat-empfaenger-sichtbar'] === 3, 'D Debug: 3 sichtbare Zeilen');
   ok(/Hauptagent/.test(text(auswahlVon(s))) && /koordinator/.test(text(auswahlVon(s))), 'D Main als Hauptagent, Koordinator in der Liste');
   ok(knopf(auswahlVon(s), 'Senden').props.disabled === true, 'D Senden ohne Auswahl gesperrt');
   box(s, 'rea4').props.onChange(); s = h.render();
-  const filter = alle(auswahlVon(s), (x) => x.type === 'input' && x.props.type === 'search')[0];
-  filter.props.onChange({ target: { value: 'koord' } }); s = h.render();
+  filterVon(s).props.onChange({ target: { value: 'koord' } }); s = h.render();
   ok(zeilen(s).length === 1 && zeilen(s)[0].props['data-empfaenger'] === 'koordinator', 'D Filter zeigt nur Treffer');
   box(s, 'koordinator').props.onChange(); s = h.render();
-  alle(auswahlVon(s), (x) => x.type === 'input' && x.props.type === 'search')[0].props.onChange({ target: { value: '' } }); s = h.render();
+  filterVon(s).props.onChange({ target: { value: '' } }); s = h.render();
   ok(box(s, 'rea4').props.checked === true && box(s, 'koordinator').props.checked === true && box(s, 'main').props.checked === false, 'D Auswahl bleibt beim Filtern erhalten');
   ok(auswahlVon(s).props['data-zitat-empfaenger-auswahl'] === 2 && /2 gewählt: rea4, koordinator/.test(text(auswahlVon(s))), 'D Fusszeile nennt die Gewaehlten', text(auswahlVon(s)));
   alle(auswahlVon(s), (x) => x.type === 'textarea')[0].props.onChange({ target: { value: ' Bitte lesen. ' } }); s = h.render();
@@ -238,14 +243,15 @@ const box = (s, agent) => alle(zeilen(s).find((z) => z.props['data-empfaenger'] 
 {
   const h = auswahlProbe({ senden: () => ({ ok: false, code: 'funktion_aus', message: 'Zitat-Anhänge sind aus (chat_zitate)' }) });
   let s = h.render(); await flush(); s = h.render();
-  s.knopf.props.onClick(); s = h.render(); await flush(); s = h.render();
+  s.knopf.props.onClick(); s = h.render(); feldAuf(s); s = h.render(); await flush(); s = h.render();
   box(s, 'main').props.onChange(); s = h.render();
   knopf(auswahlVon(s), 'Senden').props.onClick(); await flush(); s = h.render();
   ok(auswahlVon(s) && /Zitat-Anhänge sind aus/.test(text(auswahlVon(s))) && box(s, 'main').props.checked === true, 'D Fehler bleibt sichtbar, Auswahl bleibt', text(auswahlVon(s)));
 }
 {
   const css = lies('packages/web-ui/src/chat-zitate.css');
-  ok(/\.zitat-empfaenger-liste\{[^}]*height:calc\(var\(--zitat-zeile\) \* 3 \+ 2px\);overflow-y:auto/.test(css) && /\.zitat-empfaenger-liste li\{height:var\(--zitat-zeile\);box-sizing:border-box/.test(css), 'D CSS: feste Hoehe fuer genau 3 Zeilen, Rest scrollt');
+  // (angepasst P22-T171: 'bis zu 3 Optionen' -> max-height statt fester Hoehe)
+  ok(/\.zitat-empfaenger-liste\{[^}]*max-height:calc\(var\(--zitat-zeile\) \* 3 \+ 2px\);overflow-y:auto/.test(css) && /\.zitat-empfaenger-liste li\{height:var\(--zitat-zeile\);box-sizing:border-box/.test(css), 'D CSS: hoechstens 3 Zeilen sichtbar, Rest scrollt');
 }
 
 // ---------------------------------------------------------------- E Einbau

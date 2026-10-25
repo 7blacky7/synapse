@@ -756,7 +756,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   // P22-T168 Punkte 8/9: User-Entscheidung an eine Task bzw. einen Plan anpinnen (nur der User, Guard oben). Speichert SOFORT einen
   // thought (source user, Tag user-entscheidung + Kurz-ID, task_id bei Tasks) und gibt dem Bearbeiter der Task einen kurzen
   // Inbox-Hinweis (identitaetsadressiert wie agent-chat). Schalter chat_zitate im Projekt des Verweises; Debug: schalter, hinweis.
-  fastify.post<{ Body: { project?: unknown; art?: unknown; id?: unknown; text?: unknown } }>('/api/agent-runtimes/user-entscheidung', async (request, reply) => {
+  // P22-T171 Punkt 4: art = jede Verweis-Art des Lesefensters (Tag '<art>:<id>' ausser Task/Plan), titel optional.
+  fastify.post<{ Body: { project?: unknown; art?: unknown; id?: unknown; text?: unknown; titel?: unknown } }>('/api/agent-runtimes/user-entscheidung', async (request, reply) => {
     try {
       const bezug = await leseAgentBezugModus();
       const sende = (ziel: UserEntscheidungZiel, text: string) => (bezug.modus === 'alt' || ziel.art === 'legacy'

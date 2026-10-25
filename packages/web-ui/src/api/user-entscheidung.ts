@@ -1,13 +1,15 @@
 import { apiFetch } from './auth';
+import type { VerweisArt } from './verweise';
 
 /**
  * P22-T168 Punkte 8/9: User-Entscheidung an eine Task bzw. einen Plan anpinnen (POST /api/agent-runtimes/user-entscheidung) und die
  * angepinnten Entscheidungen lesen (GET /api/agent-runtimes/user-entscheidungen). Server-Weg = thought(add) als User mit task_id bzw.
  * Plan-Tag. Schalter chat_zitate im Projekt des Verweises (AUS: Liste leer, Anpinnen 409 funktion_aus).
+ * P22-T171 Punkt 4: jede Verweis-Art (Server-Tag '<art>:<id>' ausser Task/Plan); titel = Titel des Bezugs (optional).
  */
 export interface UserEntscheidungEintrag { id: string; source: string; content: string; tags: string[]; timestamp: string; task_id: string | null }
 
-export async function leseUserEntscheidungen(project: string, art: 'task' | 'plan', id: string): Promise<{ aktiv: boolean; eintraege: UserEntscheidungEintrag[]; fehler: string | null }> {
+export async function leseUserEntscheidungen(project: string, art: VerweisArt, id: string): Promise<{ aktiv: boolean; eintraege: UserEntscheidungEintrag[]; fehler: string | null }> {
   try {
     const response = await apiFetch('/api/agent-runtimes/user-entscheidungen?project=' + encodeURIComponent(project) + '&art=' + art + '&id=' + encodeURIComponent(id));
     const data = await response.json().catch(() => ({})) as { success?: boolean; aktiv?: boolean; eintraege?: UserEntscheidungEintrag[]; error?: { code?: string } };
@@ -22,7 +24,7 @@ export type UserEntscheidungErgebnis =
   | { ok: true; thought_id: string; task_id: string | null; empfaenger: string[] }
   | { ok: false; code: string; message: string };
 
-export async function pinneUserEntscheidung(eingabe: { project: string; art: 'task' | 'plan'; id: string; text: string }): Promise<UserEntscheidungErgebnis> {
+export async function pinneUserEntscheidung(eingabe: { project: string; art: VerweisArt; id: string; text: string; titel?: string }): Promise<UserEntscheidungErgebnis> {
   try {
     const response = await apiFetch('/api/agent-runtimes/user-entscheidung', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(eingabe),

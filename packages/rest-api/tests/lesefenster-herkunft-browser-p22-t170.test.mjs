@@ -153,7 +153,7 @@ try{
  await wait(async()=>(await inbox())===vorInbox+1,'genau eine Inbox-Zeile an koordinator');
  let zeile=(await pool.query("SELECT to_agent,to_identity_id::text tid,content FROM specialist_inbox WHERE from_agent='user' ORDER BY id DESC LIMIT 1")).rows[0];
  ok(zeile.to_agent==='koordinator'&&(zeile.tid===null||zeile.tid===A),'1 Empfaenger genau der Agent dieses Chats',zeile);
- ok(zeile.content.startsWith('Bitte beides ansehen\n\n[Synapse-Zitate: 2]')&&zeile.content.includes('Thought '+p2[0].id)&&zeile.content.includes('Titel: User-Entscheidung an Task P1-T2')&&zeile.content.includes('Task P1-T2')&&zeile.content.includes('Anmerkung: Agent: bitte lesen.'),'1 Pin und Zitat gemeinsam im Block (gleicher Weg)',zeile.content);
+ ok(zeile.content.startsWith('Bitte beides ansehen\n\n[Synapse-Zitate: 2]')&&zeile.content.includes('Angepinnte User-Entscheidung an Task P1-T2\n   Thought: '+p2[0].id)&&zeile.content.includes('Task P1-T2')&&zeile.content.includes('Anmerkung: Agent: bitte lesen.'),'1 Pin und Zitat gemeinsam im Block (gleicher Weg)',zeile.content);
  ok((await posts())===vorPosts,'1 kein Channel-Post');
  await wait(async()=>(await karten('[data-fenster="a"]')).length===0,'Entwurf nach dem Senden leer');
  await shot('dunkel-agent-gesendet');
@@ -195,7 +195,7 @@ try{
  await evaluate("document.querySelector('[data-fenster=\"c\"] .channel-composer').requestSubmit()");
  await wait(async()=>(await posts())===vorPosts+1,'genau ein neuer Channel-Post');
  const post=(await pool.query("SELECT sender,content FROM specialist_channel_messages WHERE channel_id=$1 ORDER BY id DESC LIMIT 1",[kanal])).rows[0];
- ok(post.sender==='user'&&post.content.startsWith('An alle\n\n[Synapse-Zitate: 2]')&&post.content.includes('Thought '+chPin.id)&&post.content.includes('Anmerkung: Channel: bitte lesen.'),'3 Post an den ganzen Channel mit Pin + Zitat als Block',post.content);
+ ok(post.sender==='user'&&post.content.startsWith('An alle\n\n[Synapse-Zitate: 2]')&&post.content.includes('Thought: '+chPin.id)&&post.content.includes('Anmerkung: Channel: bitte lesen.'),'3 Post an den ganzen Channel mit Pin + Zitat als Block',post.content);
  ok((await inbox())===vorInbox,'3 keine Inbox-Zeile');
  await wait(async()=>(await karten('[data-fenster="c"] .channel-composer')).length===0,'Channel-Entwurf nach dem Senden leer');
  await wait(async()=>!!(await evaluate("!!document.querySelector('[data-fenster=\"c\"] .channel-messages .zitat-karten-nachricht')")),'Zitate im Channel-Feed als Kaertchen');
@@ -227,6 +227,9 @@ try{
  ok((await fensterAttr('/Beschreibung P1-T2/','data-lesefenster-herkunft'))==='ohne','4 Artefakte-Seite: Herkunft ohne');
  await wait(async()=>!!(await evaluate('!!'+imFenster('/Beschreibung P1-T2/','.verweis-zitat[data-zitat-ohne-herkunft]'))),'Knopf Zitat anfügen (ohne Herkunft)');
  await klick(imFenster('/Beschreibung P1-T2/','.verweis-zitat[data-zitat-ohne-herkunft]'));
+ // (angepasst P22-T171: Eingabefeld - die Vorschlaege erscheinen erst nach Klick ins Feld; Auswahl per Klick auf den Vorschlag)
+ await wait(async()=>!!(await evaluate("!!document.querySelector('.zitat-empfaenger .zitat-empfaenger-eingabe')")),'Eingabefeld der Empfaengerauswahl');
+ await klick("document.querySelector('.zitat-empfaenger .zitat-empfaenger-eingabe')");
  await wait(async()=>(await evaluate("document.querySelectorAll('.zitat-empfaenger li[data-empfaenger]').length"))===5,'Empfaengerliste geladen');
  const liste=await json("JSON.stringify([...document.querySelectorAll('.zitat-empfaenger li[data-empfaenger]')].map(l=>l.getAttribute('data-empfaenger')))");
  ok(liste.join()==='main,koordinator,claude-t50,deploy-t200,rea4','4 Agenten des Projekts inkl. Main und Koordinator',liste);
@@ -237,16 +240,16 @@ try{
  await setze('.zitat-empfaenger-filter','rea');
  await wait(async()=>(await evaluate("document.querySelectorAll('.zitat-empfaenger li[data-empfaenger]').length"))===1,'Filter rea');
  s=await sicht();
- ok(s.sichtbar===3&&s.zeilen===1,'4 gefiltert: Hoehe bleibt 3 Zeilen, ein Treffer',s);
- await klick("document.querySelector('.zitat-empfaenger li[data-empfaenger=\"rea4\"] input')");
+ ok(s.sichtbar===1&&s.zeilen===1,'4 gefiltert: ein Treffer (P22-T171: hoechstens 3 sichtbar statt fester Hoehe)',s);
+ await klick("document.querySelector('.zitat-empfaenger li[data-empfaenger=\"rea4\"]')");
  await setze('.zitat-empfaenger-filter','');
  await wait(async()=>(await evaluate("document.querySelectorAll('.zitat-empfaenger li[data-empfaenger]').length"))===5,'Filter leer');
- await klick("document.querySelector('.zitat-empfaenger li[data-empfaenger=\"koordinator\"] input')");
+ await klick("document.querySelector('.zitat-empfaenger li[data-empfaenger=\"koordinator\"]')");
  await setze('.zitat-empfaenger-filter','koord');
  await wait(async()=>(await evaluate("document.querySelectorAll('.zitat-empfaenger li[data-empfaenger]').length"))===1,'Filter koord');
  await setze('.zitat-empfaenger-filter','');
  await wait(async()=>(await evaluate("document.querySelectorAll('.zitat-empfaenger li[data-empfaenger]').length"))===5,'Filter wieder leer');
- const gewaehlt=await json("JSON.stringify([...document.querySelectorAll('.zitat-empfaenger li[data-empfaenger] input')].filter(i=>i.checked).map(i=>i.closest('li').getAttribute('data-empfaenger')))");
+ const gewaehlt=await json("JSON.stringify([...document.querySelectorAll('.zitat-empfaenger li[data-empfaenger][aria-selected=\"true\"]')].map(l=>l.getAttribute('data-empfaenger')))");
  ok(gewaehlt.sort().join()==='koordinator,rea4'&&String(await evaluate("document.querySelector('.zitat-empfaenger').getAttribute('data-zitat-empfaenger-auswahl')"))==='2','4 Auswahl bleibt beim Filtern erhalten (2 gewaehlt)',gewaehlt);
  await setze('.zitat-empfaenger textarea','Ohne Chat: bitte lesen.');
  await shot('dunkel-ohne-auswahl-2');
@@ -266,8 +269,10 @@ try{
  await klickeLink('[data-bereich="artefakte"]','P1-T2');await ladeFenster('/Beschreibung P1-T2/','hell: Lesefenster');
  await wait(async()=>!!(await evaluate('!!'+imFenster('/Beschreibung P1-T2/','.verweis-zitat[data-zitat-ohne-herkunft]'))),'hell: Knopf');
  await klick(imFenster('/Beschreibung P1-T2/','.verweis-zitat[data-zitat-ohne-herkunft]'));
+ await wait(async()=>!!(await evaluate("!!document.querySelector('.zitat-empfaenger .zitat-empfaenger-eingabe')")),'hell: Eingabefeld');
+ await klick("document.querySelector('.zitat-empfaenger .zitat-empfaenger-eingabe')");
  await wait(async()=>(await evaluate("document.querySelectorAll('.zitat-empfaenger li[data-empfaenger]').length"))===5,'hell: Liste');
- await klick("document.querySelector('.zitat-empfaenger li[data-empfaenger=\"main\"] input')");
+ await klick("document.querySelector('.zitat-empfaenger li[data-empfaenger=\"main\"]')");
  await shot('hell-ohne-empfaengerauswahl');
  await oeffne('channel','light');
  await linkGeladen('[data-fenster="c"] .channel-messages','P1-T2','hell: Channel');

@@ -6,6 +6,9 @@
  *         Lesefenster.
  *   Plan: Plaene haben keine task_id -> tags ['user-entscheidung', <Plan-Kurz-ID>], task_id leer. Die Liste eines Plans liest genau
  *         diese Kombination.
+ *   P22-T171 Punkt 4 (User 83b5014f): JEDE andere Verweis-Art, die das Lesefenster oeffnet (thought, memory, doc, event, nachricht,
+ *         chat, asset) -> tags ['user-entscheidung', '<art>:<id>'], task_id leer; keine Existenzpruefung (das Lesefenster hat den
+ *         Verweis schon aufgeloest), nur Format/Laenge; titel optional vom Client (einzeilig, gekuerzt). Liste = genau dieser Tag.
  * HINWEIS AN DEN BEARBEITER (Punkt 9, nur Tasks): vorhandener Weg Inbox (Absender 'user'), identitaetsadressiert wie der Agenten-Chat.
  *   Empfaenger = Beteiligte der Task (plan uebernehmen) und Identitaeten der Task-Bindung (plan_task_bindungen). Die Zustellung je
  *   Agentenart bleibt unveraendert; die REST-Route reicht den Sendeweg herein (sende). Ein Fehler beim Hinweis macht das Anpinnen
@@ -23,7 +26,12 @@ import { taskBeteiligte } from './plan-beteiligung.js';
 import type { ProjectPlan, ProjectTask } from '../types/index.js';
 
 export const USER_ENTSCHEIDUNG_TAG = 'user-entscheidung' as const;
-export type UserEntscheidungArt = 'task' | 'plan';
+/** P22-T171: alle Verweis-Arten des Lesefensters (web-ui api/verweise.ts VerweisArt). */
+export const USER_ENTSCHEIDUNG_ARTEN = ['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset'] as const;
+export type UserEntscheidungArt = typeof USER_ENTSCHEIDUNG_ARTEN[number];
+const REF_MAX = 300, TITEL_MAX = 160;
+/** P22-T171: Bezug-Tag einer Verweis-Art ohne eigene Kurz-ID ('memory:regel-x'). Task/Plan behalten ihre Kurz-ID als Tag. Rein. */
+export const userEntscheidungBezugTag = (art: UserEntscheidungArt, ref: string): string => art + ':' + ref;
 
 export type UserEntscheidungZiel =
   | { art: 'identity'; identity_id: string; agent_id: string; project: string }
@@ -34,12 +42,13 @@ export interface UserEntscheidungBezug { art: UserEntscheidungArt; id: string; k
 export interface UserEntscheidungEintrag { id: string; source: string; content: string; tags: string[]; timestamp: string; task_id: string | null }
 export type UserEntscheidungFehler = { ok: false; status: number; code: string; message: string; schalter?: ChatZitateSchalter };
 
-const istArt = (v: unknown): v is UserEntscheidungArt => v === 'task' || v === 'plan';
+const istArt = (v: unknown): v is UserEntscheidungArt => typeof v === 'string' && (USER_ENTSCHEIDUNG_ARTEN as readonly string[]).includes(v);
 const einzeilig = (v: string): string => v.replace(/\s+/g, ' ').trim();
 const iso = (d: unknown): string => d instanceof Date ? d.toISOString() : String(d);
 
-/** Task oder Plan im Projekt (UUID, Kurz-ID, Alias). null = nicht gefunden. */
-async function findeBezug(project: string, art: UserEntscheidungArt, ref: string): Promise<{ bezug: UserEntscheidungBezug; task?: ProjectTask } | null> {
+/** Task oder Plan im Projekt (UUID, Kurz-ID, Alias). null = nicht gefunden. P22-T171: andere Arten ohne Lesen (Bezug = '<art>:<id>'). */
+async function findeBezug(project: string, art: UserEntscheidungArt, ref: string, titel = ''): Promise<{ bezug: UserEntscheidungBezug; task?: ProjectTask } | null> {
+  if (art !== 'task' && art !== 'plan') return { bezug: { art, id: ref, kurz_id: userEntscheidungBezugTag(art, ref), titel, project } };
   const plaene = await getAllePlaene(project);
   if (art === 'plan') {
     const r = ref.toUpperCase();
@@ -56,8 +65,8 @@ async function pruefeEingang(project: unknown, art: unknown, id: unknown): Promi
   const p = typeof project === 'string' ? project.trim() : '';
   const ref = typeof id === 'string' ? id.trim() : '';
   if (!p || p.length > 120) return { ok: false, status: 400, code: 'project_fehlt', message: 'project angeben' };
-  if (!istArt(art)) return { ok: false, status: 400, code: 'art_ungueltig', message: 'art ist task oder plan' };
-  if (!ref || ref.length > 120) return { ok: false, status: 400, code: 'id_fehlt', message: 'id (Kurz-ID oder UUID) angeben' };
+  if (!istArt(art)) return { ok: false, status: 400, code: 'art_ungueltig', message: 'art ist eine Verweis-Art (' + USER_ENTSCHEIDUNG_ARTEN.join(', ') + ')' };
+  if (!ref || ref.length > REF_MAX || /[\r\n]/.test(ref)) return { ok: false, status: 400, code: 'id_fehlt', message: 'id (Kurz-ID, UUID bzw. Name; einzeilig) angeben' };
   const schalter = await leseChatZitateSchalter(p);
   return { ok: true, project: p, art, ref, schalter };
 }
@@ -96,7 +105,7 @@ export function userEntscheidungHinweis(kurzId: string, thoughtId: string, text:
  * sende = Inbox-Weg der REST-Route; ohne sende kein Hinweis (debug hinweis.uebersprungen).
  */
 export async function pinneUserEntscheidung(
-  eingabe: { project?: unknown; art?: unknown; id?: unknown; text?: unknown },
+  eingabe: { project?: unknown; art?: unknown; id?: unknown; text?: unknown; titel?: unknown },
   sende?: UserEntscheidungSende,
 ): Promise<{ ok: true; thought_id: string; task_id: string | null; tags: string[]; bezug: UserEntscheidungBezug; schalter: ChatZitateSchalter;
   hinweis: { empfaenger: Array<{ agent_id: string; identity_id: string | null; inbox_id: number | null; fehler: string | null }>; uebersprungen?: string } } | UserEntscheidungFehler> {
@@ -107,14 +116,15 @@ export async function pinneUserEntscheidung(
   if (!text) return { ok: false, status: 400, code: 'text_fehlt', message: 'Entscheidung ist leer', schalter: e.schalter };
   const max = (await leseChatZitateEinstellungen()).werte.anmerkung_max;
   if (text.length > max) return { ok: false, status: 400, code: 'text_zu_lang', message: 'Höchstens ' + max + ' Zeichen', schalter: e.schalter };
-  const fund = await findeBezug(e.project, e.art, e.ref);
+  const titel = typeof eingabe.titel === 'string' ? einzeilig(eingabe.titel).slice(0, TITEL_MAX) : '';
+  const fund = await findeBezug(e.project, e.art, e.ref, titel);
   if (!fund) return { ok: false, status: 404, code: e.art + '_unbekannt', message: (e.art === 'task' ? 'Task ' : 'Plan ') + e.ref + ' nicht gefunden', schalter: e.schalter };
   const { bezug, task } = fund;
   const tags = [USER_ENTSCHEIDUNG_TAG, bezug.kurz_id];
   const taskId = e.art === 'task' ? bezug.kurz_id : null;
   const t = await addThought(e.project, 'user', text, tags, taskId ?? undefined);
   const hinweis: { empfaenger: Array<{ agent_id: string; identity_id: string | null; inbox_id: number | null; fehler: string | null }>; uebersprungen?: string } = { empfaenger: [] };
-  if (!task) hinweis.uebersprungen = 'plan';
+  if (!task) hinweis.uebersprungen = e.art;
   else if (!sende) hinweis.uebersprungen = 'kein_sendeweg';
   else {
     let ziele: UserEntscheidungZiel[] = [];
@@ -131,7 +141,7 @@ export async function pinneUserEntscheidung(
   return { ok: true, thought_id: t.id, task_id: taskId, tags, bezug, schalter: e.schalter, hinweis };
 }
 
-/** Angepinnte User-Entscheidungen einer Task bzw. eines Plans (juengste zuerst, hoechstens 50) mit Schalterstand. */
+/** Angepinnte User-Entscheidungen einer Task, eines Plans bzw. (P22-T171) jedes anderen Verweises (juengste zuerst, hoechstens 50). */
 export async function listeUserEntscheidungen(project: unknown, art: unknown, id: unknown): Promise<{ ok: true; aktiv: boolean; schalter: ChatZitateSchalter; bezug: UserEntscheidungBezug | null; eintraege: UserEntscheidungEintrag[] } | UserEntscheidungFehler> {
   const e = await pruefeEingang(project, art, id);
   if (!e.ok) return e;
