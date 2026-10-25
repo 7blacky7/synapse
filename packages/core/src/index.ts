@@ -801,6 +801,9 @@ export {
 export type {
   UserEntscheidungArt, UserEntscheidungZiel, UserEntscheidungSende, UserEntscheidungBezug, UserEntscheidungEintrag, UserEntscheidungFehler,
 } from './services/user-entscheidung.js';
+// P22-T170: Zitat aus einem Lesefenster ohne Chat-/Channel-Herkunft an gewaehlte Agenten (Checkbox-Auswahl, je Empfaenger eine Inbox-Zeile).
+export { ZITAT_EMPFAENGER_MAX, listeZitatEmpfaenger, sendeZitatAnEmpfaenger } from './services/zitat-empfaenger.js';
+export type { ZitatEmpfaenger, ZitatEmpfaengerFehler, ZitatEmpfaengerSende } from './services/zitat-empfaenger.js';
 export {
   VERLAUF_EINBETTEN_FUNKTION, VERLAUF_SUCHE_FUNKTION, VERLAUF_COLLECTION, VERLAUF_ZERLEGER_VERSION, VERLAUF_SUCHE_PROPERTIES,
   verlaufZeileText, istGruppenStart, zerlegeVerlauf, teileVerlaufText, schwaerzeVerlaufText, verlaufStueckeAus, verlaufStueckId,

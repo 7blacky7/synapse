@@ -421,14 +421,16 @@ export async function postChannelMessage(
   project: string,
   channel: string,
   content: string,
-  _sender?: string
+  _sender?: string,
+  /** P22-T170: Zitate/Pins des Channel-Entwurfs (Block im Post an den ganzen Channel); ohne = wie bisher. */
+  zitate?: readonly unknown[]
 ): Promise<any> {
   const response = await apiFetch(
     `${API_BASE}/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/user-post`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify(zitate?.length ? { content, zitate } : { content }),
     }
   );
   if (!response.ok) {

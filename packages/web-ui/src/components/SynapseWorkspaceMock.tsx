@@ -9,9 +9,9 @@ import { KnowledgeView } from './KnowledgeView';
 import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ChannelRailListe } from './ChannelRailListe';
 import { ChatEingabefeld } from './ChatEingabefeld';
-import { KlartextText, VerweisFensterProvider, VerweisText } from './Lesefenster';
+import { KlartextText, LesefensterOhneHerkunft, VerweisFensterProvider, VerweisText } from './Lesefenster';
 import { ZitatKarten, useZitatAnhaenge } from './ZitatAnhaenge';
-import { anzeigeAusAnhaengen, zerlegeZitatBlock, type AnzeigeZitat } from './zitat-logik';
+import { anzeigeAusAnhaengen, zerlegeZitatBlock, type AnzeigeZitat, type SendeZitat } from './zitat-logik';
 import { NachrichtBilder } from './ToolBild';
 import { ArtefaktBewertung, useArtefaktBewertungen } from './ArtefaktBewertung';
 import { fensterAusschnitt } from './chat-fenster-logik';
@@ -954,7 +954,8 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
   return (
     <VerweisFensterProvider zitat={zitat.anbieter}>
     <div className={'agent-stage ' + (showDashboard ? 'is-dashboard' : 'is-overlay')}>
-      {showDashboard && <MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} artifacts={messages.filter((message) => message.kind === 'artifact').map((message) => ({ id: String(message.id), title: message.title || 'HTML-Antwort', blocks: message.blocks?.length ?? 0, saved: message.saved === true, blockIds: (message.blocks ?? []).map((block) => String(block.id)) }))} />}
+      {/* P22-T170: Dashboard/Top-Artefakte sind kein Chat - Lesefenster von dort haben Herkunft 'ohne' (Pin nur speichern). */}
+      {showDashboard && <LesefensterOhneHerkunft><MainAgentDashboard project={project} toolCalls={toolCalls} agentBusy={thinking} savedArtifacts={savedArtifacts} artifacts={messages.filter((message) => message.kind === 'artifact').map((message) => ({ id: String(message.id), title: message.title || 'HTML-Antwort', blocks: message.blocks?.length ?? 0, saved: message.saved === true, blockIds: (message.blocks ?? []).map((block) => String(block.id)) }))} /></LesefensterOhneHerkunft>}
       <section className={shellClass + ' floating-agent-window'} {...zitat.debug} tabIndex={-1} style={chatStyle} onPointerDown={(event) => { if (!(event.target as HTMLElement).closest('button,input,textarea,select,a')) event.currentTarget.focus({ preventScroll: true }); if (chatPeeking) openChat(); else registerInteraction(); }}>
         {chatCollapsed && !chatPeeking && <button type="button" className="agent-side-launcher" onClick={openChat}><span>HA</span><strong>Hauptagent</strong>{chatHasUnread && <i />}</button>}
         <div className="conversation-head" onPointerDown={startMainWindowDrag} onPointerMove={moveMainWindow} onPointerUp={stopMainWindowDrag} onPointerCancel={stopMainWindowDrag}>
@@ -1180,7 +1181,9 @@ function splitChannelMessageContent(content: string) {
 function ChannelMessageContent({ message, project }: { message: ChannelMessageViewModel; project: string }) {
   const [expanded, setExpanded] = useState(false);
   const [openImage, setOpenImage] = useState('');
-  const parsed = splitChannelMessageContent(message.content);
+  // P22-T170: Zitat-/Pin-Block eines Channel-Posts als Kaertchen (wie im Agenten-Chat), der Text ohne Block.
+  const zitatTeil = zerlegeZitatBlock(message.content);
+  const parsed = splitChannelMessageContent(zitatTeil.text);
   const isLong = parsed.text.length > 900 || parsed.text.split('\n').length > 12;
 
   return (
@@ -1195,6 +1198,7 @@ function ChannelMessageContent({ message, project }: { message: ChannelMessageVi
           )}
         </div>
       )}
+      <ZitatKarten zitate={zitatTeil.zitate} project={project} />
       {parsed.text && <NachrichtBilder project={project} text={parsed.text} />}
       {!!parsed.filePaths.length && <div className="channel-file-grid">{parsed.filePaths.map((path) => <div key={path}><i>FILE</i><span><strong>{path.split('/').pop()}</strong><small>{path}</small></span></div>)}</div>}
       {!!parsed.imagePaths.length && (
@@ -1226,7 +1230,8 @@ function ChannelMessageContent({ message, project }: { message: ChannelMessageVi
   );
 }
 
-function ChannelsView({
+// P22-T170: exportiert fuer die Browserabnahme (tests/lesefenster-herkunft-fixture.tsx), sonst unveraendert intern genutzt.
+export function ChannelsView({
   project,
   channels,
   selectedChannel,
@@ -1250,7 +1255,7 @@ function ChannelsView({
   error: string;
   onSelectChannel: (channel: string) => void;
   onReload: () => void;
-  onSend: (content: string) => Promise<void>;
+  onSend: (content: string, zitate?: SendeZitat[]) => Promise<void>;
   onOpen: (area: Area) => void;
 }) {
   const [content, setContent] = useState('');
@@ -1263,6 +1268,9 @@ function ChannelsView({
   const [openAgentWindows, setOpenAgentWindows] = useState<ChannelAgentWindowState[]>([]);
   const messageListRef = useRef<HTMLDivElement>(null);
   const channel = channels.find((item) => item.name === selectedChannel);
+  // P22-T170: das Channel-Fenster ist Herkunft seiner Lesefenster - Zitate und Pins landen als Kaertchen im Entwurf DIESES Channels
+  // (je Projekt/Channel) und gehen als Block im Post an den ganzen Channel. Schalter chat_zitate im Projekt.
+  const channelZitat = useZitatAnhaenge({ chat: 'channel:' + project + ':' + selectedChannel, empfaenger: '#' + (selectedChannel || 'channel'), project: project || null });
 
   useEffect(() => {
     const list = messageListRef.current;
@@ -1313,13 +1321,15 @@ function ChannelsView({
     const parts = [content.trim()];
     channelFiles.forEach((attachment) => parts.push('[' + (attachment.kind === 'image' ? 'Bild' : 'Datei') + ': ' + attachment.path + ']'));
     const message = parts.filter(Boolean).join('\n\n');
-    if (!message || !selectedChannel || sending) return;
+    const zitate = channelZitat.sendeZitate;
+    if ((!message && !zitate.length) || !selectedChannel || sending) return;
     setSending(true);
     setSendState('');
     try {
-      await onSend(message);
+      await onSend(message, zitate.length ? zitate : undefined);
       setContent('');
       setChannelFiles([]);
+      if (zitate.length) channelZitat.leeren();
       setSendState('Gesendet');
     } catch (sendError) {
       setSendState(sendError instanceof Error ? sendError.message : String(sendError));
@@ -1329,8 +1339,8 @@ function ChannelsView({
   };
 
   return (
-    <VerweisFensterProvider>
-    <div className="standard-page channel-page">
+    <VerweisFensterProvider zitat={channelZitat.anbieter}>
+    <div className="standard-page channel-page" {...channelZitat.debug}>
       <PageHeader
         eyebrow="GoTray-Funktion · echte API"
         title="Channels"
@@ -1344,7 +1354,7 @@ function ChannelsView({
           {!channels.length && <p className="empty-state">Keine Channels für dieses Projekt.</p>}
         </aside>
         <div className="channel-project-stage">
-          <ChannelProjectSurface project={project} channels={channels} onOpen={onOpen} />
+          <LesefensterOhneHerkunft><ChannelProjectSurface project={project} channels={channels} onOpen={onOpen} /></LesefensterOhneHerkunft>
           <section className={'channel-thread channel-drawer' + (channelCollapsed ? ' is-collapsed' : '')} style={{ '--channel-height': channelHeight + '%' } as CSSProperties}>
           <header>
             <div><span>#</span><div><h2>{channel?.name || 'Channel auswählen'}</h2><p>{channel?.description}</p></div></div>
@@ -1365,7 +1375,7 @@ function ChannelsView({
               return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} title={agent.name + ' · ' + agent.role + ' · ' + herkunftText(agent.herkunft)} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><strong>{agent.name}</strong>{agent.identityId && <span role="link" tabIndex={0} className="channel-agent-ausweis" title="Ausweis und Profil verwalten" onClick={(event) => { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); } }}>Ausweis</span>}</button>;
             })}
           </div>
-          <RuntimeAgentenPanel key={project} project={project} ort="channel" />
+          <LesefensterOhneHerkunft><RuntimeAgentenPanel key={project} project={project} ort="channel" /></LesefensterOhneHerkunft>
           {openAgentWindows.map((agentWindow, index) => (
             <ChannelAgentFensterWeiche
               key={agentWindow.key}
@@ -1386,7 +1396,7 @@ function ChannelsView({
           {error && <div className="inline-error">{error}</div>}
           <div className="channel-messages" ref={messageListRef}>
             {messages.map((message) => (
-              <article key={message.id}>
+              <article key={message.id} onContextMenu={(event) => channelZitat.beiKontextmenue(event, 'channel:' + message.id, project)}>
                 <div className="message-avatar">{message.sender.slice(0, 2).toUpperCase()}</div>
                 <div>
                   <header><strong>{message.senderAnzeige ?? message.sender}</strong><time>{message.createdAt ? new Date(message.createdAt).toLocaleString('de-DE') : ''}</time></header>
@@ -1398,13 +1408,14 @@ function ChannelsView({
           </div>
           <form className={'channel-composer' + (channelDropActive ? ' chat-drop-active' : '')} onSubmit={submit} onDragEnter={(event) => { event.preventDefault(); setChannelDropActive(true); }} onDragOver={(event) => { event.preventDefault(); setChannelDropActive(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setChannelDropActive(false); }} onDrop={(event) => { setChannelDropActive(false); handleAttachmentDrop(event, (files) => void queueChannelFiles(files)); }}>
             <AttachmentDrafts attachments={channelFiles} onRemove={(id) => setChannelFiles((current) => current.filter((item) => item.id !== id))} />
+            {channelZitat.karten}
             <ChatEingabefeld
               value={content}
               onChange={(text) => { setContent(text); setSendState(''); }}
               onPaste={(event) => { if (event.clipboardData.files.length) void queueChannelFiles(event.clipboardData.files); }}
               onFiles={(files) => void queueChannelFiles(files)}
               placeholder={'Nachricht an #' + (selectedChannel || 'channel') + ' …'}
-              sendeGesperrt={!selectedChannel || (!content.trim() && !channelFiles.length) || sending}
+              sendeGesperrt={!selectedChannel || (!content.trim() && !channelFiles.length && !channelZitat.sendeZitate.length) || sending}
             />
             <footer className="composer-foot">
               <span className={'composer-hint' + (sendState === 'Gesendet' ? ' success' : '')}>
@@ -1412,6 +1423,7 @@ function ChannelsView({
               </span>
             </footer>
           </form>
+          {channelZitat.oberflaeche}
           </section>
         </div>
       </section>
@@ -1770,10 +1782,10 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
     return () => window.clearInterval(timer);
   }, [selectedProject, selectedChannel]);
 
-  const postMessage = async (content: string) => {
+  const postMessage = async (content: string, zitate?: SendeZitat[]) => {
     if (!selectedProject || !selectedChannel) return;
     try {
-      await sendChannelMessage(selectedProject, selectedChannel, content);
+      await sendChannelMessage(selectedProject, selectedChannel, content, undefined, zitate);
       await reloadMessages();
       setChannelError('');
     } catch (error) {

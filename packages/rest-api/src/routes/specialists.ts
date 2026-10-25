@@ -24,6 +24,8 @@ import {
 import { agentennetzwerkRoutes } from './agentennetzwerk.js';
 import { leseNetzwerkKonfiguration, hauptagentIdentitaetsId } from '@synapse/core';
 import { validateToken } from '../services/auth.js';
+// P22-T170: Channel-Fenster als Herkunft des Lesefensters - Zitate/Pins gehen als Block im Channel-Post an den ganzen Channel.
+import { pruefeChatZitateAnfrage, textMitZitaten } from '@synapse/core';
 import { ladeAgentenTeam } from '../services/agenten-team.js';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
@@ -433,7 +435,9 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
 
   // P10-T41: Herkunft aus bestehender Web-UI-Sitzung bzw. Tray-/Daemon-Verbindung.
   // Tray und Daemon teilen bewusst den Service-Token; nur der Tray ruft user-post auf.
-  fastify.post<{ Params: { name: string; channel: string }; Body: { content?: string } }>(
+  // P22-T170 (additiv): zitate wie agent-chat (Schalter chat_zitate im Projekt des Channels, AUS -> 409); content = Text + Block.
+  // Ohne zitate unveraendert; nur Zitate ohne Text ist erlaubt. Debug: zitate {anzahl, block_zeichen, schalter_quelle, channel}.
+  fastify.post<{ Params: { name: string; channel: string }; Body: { content?: string; zitate?: unknown } }>(
     '/api/projects/:name/channels/:channel/user-post', async (request, reply) => {
       const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? '')?.[1];
       const principal = bearer ? await validateToken(bearer) : null;
@@ -442,11 +446,16 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
         : principal?.kind === 'service' && (principal.scope === 'daemon' || principal.scope?.startsWith('daemon:'))
           ? 'tray' : null;
       if (!kanal) return reply.code(403).send({ success: false, error: { message: 'User-Nachrichten benötigen den angemeldeten Tray- oder Web-UI-Zugang; sender/agent_id ersetzen ihn nicht.' } });
-      const content = typeof request.body?.content === 'string' ? request.body.content.trim() : '';
+      const text = typeof request.body?.content === 'string' ? request.body.content.trim() : '';
+      const z = await pruefeChatZitateAnfrage(request.body?.zitate, request.params.name);
+      if (!z.ok) return reply.code(z.status).send({ success: false, error: { code: z.code, message: z.message, ...(z.details ? { details: z.details } : {}) } });
+      const content = textMitZitaten(text, z.zitate);
       if (!content) return reply.code(400).send({ success: false, error: { message: 'content ist erforderlich' } });
+      if (z.zitate.length && content.length > 20_000) return reply.code(400).send({ success: false, error: { code: 'text_zu_lang', message: 'Nachricht mit Zitaten laenger als 20000 Zeichen' } });
       const result = await mitUserHerkunft(kanal, () => postChannelMessage(request.params.name, request.params.channel, 'user', content));
       if (!result) return reply.code(404).send({ success: false, error: { message: 'Kanal nicht gefunden' } });
-      return { success: true, messageId: result.id, createdAt: result.createdAt };
+      return { success: true, messageId: result.id, createdAt: result.createdAt,
+        ...(z.debug ? { zitate: { ...z.debug, block_zeichen: content.length - text.length, channel: request.params.channel } } : {}) };
     },
   );
 

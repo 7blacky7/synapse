@@ -195,7 +195,8 @@ console.log('OK C Kontextmenue');
 // ---------------------------------------------------------------- D Einbau
 const lese = lies('packages/web-ui/src/components/Lesefenster.tsx');
 ok(/const entscheidung = useUserEntscheidung\(\{\n\s+project: fenster\.project, art: fenster\.art, id: fenster\.id, anzeigeId: inhalt\?\.id, titel: inhalt\?\.titel, anpinnen: fenster\.anpinnen,/.test(lese), 'D Lesefenster nutzt useUserEntscheidung je Fenster');
-ok(/Zitat anfügen<\/button>\}\n\s+\{inhalt && entscheidung\.knopf\}\n\s+<button type="button" onClick=\{onSchliessen\}/.test(lese), 'D Knopf im Kopf des Lesefensters (unabhaengig vom Chat)');
+// P22-T170: zwischen 'Zitat anfügen' (Herkunft Chat/Channel) und dem Anpinn-Knopf steht der Knopf der Empfaengerauswahl (Herkunft ohne).
+ok(/Zitat anfügen<\/button>\}\n\s+\{inhalt && auswahl\.knopf\}\n\s+\{inhalt && entscheidung\.knopf\}\n\s+<button type="button" onClick=\{onSchliessen\}/.test(lese), 'D Knopf im Kopf des Lesefensters (unabhaengig vom Chat)');
 ok(/<\/dl>\n\s+\{entscheidung\.bereich\}/.test(lese), 'D Editor und angepinnte Entscheidungen unter den Metadaten');
 ok(/kannAnpinnen\(treffer\[0\]\.art\) \? \{ anpinnen: \(\) => fenster\.oeffne\(\{ project, art: treffer\[0\]\.art, id: treffer\[0\]\.id, anpinnen: true \}\) \}/.test(lese), 'D Verweis-Menue im Chat: anpinnen nur fuer Task/Plan');
 ok(/anpinnen: \(f\?\.anpinnen \?\? 0\) \+ 1/.test(lese), 'D erneutes Anpinnen im offenen Fenster zaehlt hoch');

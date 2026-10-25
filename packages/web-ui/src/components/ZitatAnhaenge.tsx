@@ -5,8 +5,8 @@ import { bekannteTreffer } from '../api/verweise';
 import { findeKandidaten, useVerweisFenster, type ZitatAnbieter } from './Lesefenster';
 import {
   ZITAT_GRENZEN_STANDARD, anzeigeAusEntwurf, entferneZitat, ersetzeZitatAnmerkung, fuegeZitatHinzu, kuerzeZitatText, leseZitatEntwurf,
-  merkeZitatEntwurf, zitatKarte, zitatKopf, zuSendeZitaten,
-  type AnzeigeZitat, type SendeZitat, type ZitatAblage, type ZitatAnhang, type ZitatGrenzen, type ZitatVorlage,
+  merkeZitatEntwurf, zitatKarte, zitatKopf, zuSendeZitaten, herkunftAusChat, pinVorlage,
+  type AnzeigeZitat, type PinEingabe, type SendeZitat, type ZitatAblage, type ZitatAnhang, type ZitatGrenzen, type ZitatVorlage,
 } from './zitat-logik';
 import '../chat-zitate.css';
 
@@ -20,8 +20,11 @@ import '../chat-zitate.css';
  * - oberflaeche: Kontextmenue + Editor (Anmerkung, Speichern/Abbrechen) als Portal; karten: Kaertchen ueber dem Eingabefeld
  *   (Klick = bearbeiten, x = loeschen). Entwurf je Chat in localStorage (F7).
  * - ZitatKarten: Zitate einer Nachricht (aus dem Block bzw. den Verlauf-Anhaengen), Klick oeffnet das Lesefenster.
+ * - P22-T170: herkunft (aus dem Schluessel: 'main', 'agent:<id>', 'channel:<projekt>:<name>') fuer das Lesefenster; pinAnfuegen legt
+ *   eine gerade angepinnte User-Entscheidung als Kaertchen (Zitat art 'thought') in DIESEN Entwurf - sie geht beim Senden im selben
+ *   Block mit. Channel: der Post geht an den ganzen Channel.
  * SCHALTER chat_zitate (api/chat-zitate.ts; AUS = kein Menue, keine Kaertchen, nichts wird mitgeschickt). DEBUG: debug-Attribute
- * data-zitat-schalter / data-zitate-entwurf fuer die Wurzel des Fensters; console.debug('[chat-zitat]', ...).
+ * data-zitat-schalter / data-zitate-entwurf / data-zitat-herkunft fuer die Wurzel des Fensters; console.debug('[chat-zitat]', ...).
  */
 
 type Pos = { x: number; y: number };
@@ -88,6 +91,10 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
   const chatRef = useRef(chat);
   const menueRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const herkunft = herkunftAusChat(chat);
+  // P22-T170: pinAnfuegen kann direkt nach dem Speichern eines Pins laufen (vor dem naechsten Rendern).
+  const entwuerfeRef = useRef(entwuerfe);
+  entwuerfeRef.current = entwuerfe;
 
   useEffect(() => {
     let gueltig = true;
@@ -121,6 +128,15 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
     zitatDebug('editor', { chat: chatRef.current, art: vorlage.art, id: vorlage.id });
   }, []);
 
+  const pinAnfuegen = useCallback((pin: PinEingabe) => {
+    const r = fuegeZitatHinzu(entwuerfeRef.current, pinVorlage(pin, grenzen.ausschnitt_max), '', grenzen.max_anzahl);
+    if (r.voll) { zitatDebug('pin_voll', { chat: chatRef.current, herkunft, thought: pin.thoughtId }); return false; }
+    entwuerfeRef.current = r.liste;
+    setze(r.liste);
+    zitatDebug('pin_angefuegt', { chat: chatRef.current, herkunft, thought: pin.thoughtId, anzahl: r.liste.length });
+    return true;
+  }, [grenzen.ausschnitt_max, grenzen.max_anzahl, herkunft, setze]);
+
   const anbieter = useMemo<ZitatAnbieter | null>(() => (aktiv ? {
     empfaenger,
     menue: (pos, vorlagen, extra) => {
@@ -131,7 +147,9 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
       zitatDebug('menue', { chat: chatRef.current, vorlagen: vorlagen.map((v) => zitatKopf(v)) });
     },
     anfuegen,
-  } : null), [aktiv, empfaenger, anfuegen]);
+    herkunft,
+    pinAnfuegen,
+  } : null), [aktiv, empfaenger, anfuegen, herkunft, pinAnfuegen]);
 
   useEffect(() => {
     if (!menue) return undefined;
@@ -229,10 +247,12 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
   const karten = aktiv && entwuerfe.length ? <div className="zitat-entwuerfe" data-zitate-entwurf={entwuerfe.length}>
     {entwuerfe.map((z) => {
       const k = zitatKarte(z);
-      return <article key={z.schluessel} className="zitat-karte" data-zitat={z.schluessel}>
+      return <article key={z.schluessel} className={'zitat-karte' + (z.pin ? ' ist-pin' : '')} data-zitat={z.schluessel} {...(z.pin ? { 'data-zitat-pin': z.id ?? '' } : {})}>
         <button type="button" className="zitat-karte-inhalt" title="Anmerkung bearbeiten"
           onClick={(event) => { setMenue(null); setEditor({ pos: { x: event.clientX, y: Math.max(8, event.clientY - 300) }, vorlage: z, schluessel: z.schluessel, anmerkung: z.anmerkung, hinweis: '' }); }}>
-          <b>{k.kopf}</b>{k.titel && <span>{k.titel}</span>}{k.anmerkung && <small>{k.anmerkung}</small>}
+          {z.pin
+            ? <><b>User-Entscheidung</b><span>{k.titel.replace(/^User-Entscheidung /, '')}</span>{k.anmerkung && <small>{k.anmerkung}</small>}</>
+            : <><b>{k.kopf}</b>{k.titel && <span>{k.titel}</span>}{k.anmerkung && <small>{k.anmerkung}</small>}</>}
         </button>
         <button type="button" className="zitat-karte-weg" aria-label="Zitat entfernen" title="Zitat entfernen"
           onClick={() => { setze(entferneZitat(entwuerfe, z.schluessel)); zitatDebug('entfernt', { chat: chatRef.current, schluessel: z.schluessel }); }}>×</button>
@@ -250,7 +270,7 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
     beiKontextmenue,
     oberflaeche,
     karten,
-    debug: { 'data-zitat-schalter': geprueft ? (aktiv ? 'ein' : 'aus') : '?', 'data-zitate-entwurf': aktiv ? entwuerfe.length : 0 },
+    debug: { 'data-zitat-schalter': geprueft ? (aktiv ? 'ein' : 'aus') : '?', 'data-zitate-entwurf': aktiv ? entwuerfe.length : 0, 'data-zitat-herkunft': herkunft },
   };
 }
 

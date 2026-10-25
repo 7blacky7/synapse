@@ -631,8 +631,10 @@ export async function sendChannelMessage(
   channel: string,
   content: string,
   sender = 'synapse-web-ui',
+  /** P22-T170: Zitate/Pins des Channel-Entwurfs (Block im Post). */
+  zitate?: readonly unknown[],
 ): Promise<void> {
-  await postChannelMessage(project, channel, content, sender);
+  await postChannelMessage(project, channel, content, sender, zitate);
 }
 
 interface ToolCallResponseRow {

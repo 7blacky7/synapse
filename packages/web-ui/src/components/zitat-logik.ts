@@ -30,6 +30,8 @@ export interface ZitatVorlage {
   ausschnitt?: string;
   /** Schluessel der Nachricht, aus der der Ausschnitt stammt ('verlauf:<id>' bzw. 'inbox:<id>'). */
   quelle?: string;
+  /** P22-T170: Kaertchen einer gerade angepinnten User-Entscheidung (nur Anzeige; gesendet wird es wie jedes Zitat, art 'thought'). */
+  pin?: boolean;
 }
 export interface ZitatAnhang extends ZitatVorlage { schluessel: string; anmerkung: string; erstellt_am: string }
 export interface SendeZitat { art: ZitatArt; id?: string; projekt: string; titel: string; ausschnitt?: string; quelle?: { nachricht: string }; anmerkung: string }
@@ -102,6 +104,7 @@ function gueltigerEntwurf(v: unknown): ZitatAnhang | null {
     anmerkung: typeof o.anmerkung === 'string' ? o.anmerkung : '', erstellt_am: typeof o.erstellt_am === 'string' ? o.erstellt_am : '',
     ...(typeof o.ausschnitt === 'string' && o.ausschnitt ? { ausschnitt: o.ausschnitt } : {}),
     ...(typeof o.quelle === 'string' && o.quelle ? { quelle: o.quelle } : {}),
+    ...(o.pin === true ? { pin: true } : {}),
   };
 }
 
@@ -120,6 +123,49 @@ export function merkeZitatEntwurf(ablage: ZitatAblage | null, chat: string, list
     if (liste.length) ablage.setItem(ZITAT_ENTWURF_PRAEFIX + chat, JSON.stringify(liste));
     else ablage.removeItem(ZITAT_ENTWURF_PRAEFIX + chat);
   } catch { /* Entwurf ist Komfort */ }
+}
+
+// ───────────────────────── P22-T170: Herkunft des Lesefensters ─────────────────────────
+
+/**
+ * Herkunft eines Lesefensters: Agenten-Chat (Koordinator-Fenster, einheitliches Agentenfenster), Main-Chat, Channel-Fenster oder
+ * 'ohne' (Artefakte, Top-Artefakte, Dashboard, sonst wo). Mit Herkunft landen Zitate UND Pins als Kaertchen im Entwurf genau dieses
+ * Chats/Channels; ohne Herkunft wird der Pin nur gespeichert und das Zitat geht ueber die Empfaengerauswahl in die Inbox.
+ */
+export type ZitatHerkunft = 'agent' | 'main' | 'channel';
+export type LesefensterHerkunft = ZitatHerkunft | 'ohne';
+
+/** Herkunft aus dem Entwurfs-Schluessel eines Chatfensters ('main', 'agent:<id>', 'channel:<projekt>:<name>'). */
+export function herkunftAusChat(chat: string): ZitatHerkunft {
+  return chat === 'main' ? 'main' : chat.startsWith('channel:') ? 'channel' : 'agent';
+}
+
+export interface PinEingabe { thoughtId: string; projekt: string; kopf: string; titel?: string; text: string }
+
+/** Kaertchen fuer eine gerade angepinnte User-Entscheidung: Zitat art 'thought' (ID = thought), Wortlaut als Ausschnitt (gekuerzt). */
+export function pinVorlage(pin: PinEingabe, ausschnittMax: number): ZitatVorlage {
+  return {
+    art: 'thought', id: pin.thoughtId, projekt: pin.projekt, titel: 'User-Entscheidung an ' + pin.kopf + (pin.titel ? ' · ' + pin.titel : ''),
+    ausschnitt: kuerzeZitatText(pin.text, ausschnittMax).text, pin: true,
+  };
+}
+
+/** Empfaengerauswahl (Herkunft 'ohne'): immer genau so viele Zeilen sichtbar, der Rest scrollt (User 82b61246). */
+export const EMPFAENGER_SICHTBAR = 3;
+export interface ZitatEmpfaengerEintrag { identity_id: string; agent_id: string; name: string; rolle: string; project: string }
+
+/** Filter nach Name (auch agent_id/Rolle), Gross/klein egal; die Auswahl bleibt davon unberuehrt. */
+export function filtereZitatEmpfaenger(liste: readonly ZitatEmpfaengerEintrag[], filter: string): ZitatEmpfaengerEintrag[] {
+  const f = filter.trim().toLowerCase();
+  return f ? liste.filter((e) => (e.name + ' ' + e.agent_id + ' ' + e.rolle).toLowerCase().includes(f)) : [...liste];
+}
+
+export function schalteZitatEmpfaenger(auswahl: readonly string[], identityId: string): string[] {
+  return auswahl.includes(identityId) ? auswahl.filter((x) => x !== identityId) : [...auswahl, identityId];
+}
+
+export function zitatEmpfaengerName(e: ZitatEmpfaengerEintrag): string {
+  return e.rolle === 'main' ? 'Hauptagent' + (e.name && e.name !== 'main' ? ' · ' + e.name : '') : e.name || e.agent_id;
 }
 
 // ───────────────────────── Block (Anzeige) ─────────────────────────

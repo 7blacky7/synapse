@@ -13,6 +13,8 @@ import { BILD_MUSTER } from './bild-logik';
 import { zerlegeInline, zerlegeKlartext, type InlineTeil } from './klartext-logik';
 import type { ZitatVorlage } from './zitat-logik';
 import { kannAnpinnen, useUserEntscheidung } from './UserEntscheidung';
+import { useZitatEmpfaengerAuswahl } from './ZitatEmpfaenger';
+import type { LesefensterHerkunft, PinEingabe, ZitatHerkunft } from './zitat-logik';
 // P22-T150: Bildleiste unter Nachrichten, hier mit angeboten (gleicher Bezug wie KlartextText).
 export { NachrichtBilder } from './ToolBild';
 import '../verweise.css';
@@ -31,6 +33,8 @@ export interface VerweisZiel {
   id: string;
   /** P22-T168 Punkt 8: aus dem Kontextmenue 'User-Entscheidung anpinnen' - Fenster oeffnen und den Editor zeigen. */
   anpinnen?: boolean;
+  /** P22-T170: von einer Stelle ohne Chat-/Channel-Bezug geoeffnet (LesefensterOhneHerkunft) - Herkunft 'ohne'. */
+  ohneHerkunft?: boolean;
 }
 
 interface FensterZustand extends Omit<VerweisZiel, 'anpinnen'> {
@@ -51,6 +55,10 @@ export interface ZitatAnbieter {
   empfaenger: string;
   menue(pos: { x: number; y: number }, vorlagen: ZitatVorlage[], extra?: { oeffnen?: () => void; kopieren?: string; anpinnen?: () => void }): void;
   anfuegen(vorlage: ZitatVorlage, pos?: { x: number; y: number }): void;
+  /** P22-T170: Herkunft des Lesefensters (Agenten-Chat, Main-Chat, Channel-Fenster); fehlt = Agenten-Chat. */
+  herkunft?: ZitatHerkunft;
+  /** P22-T170: gerade angepinnte User-Entscheidung als Kaertchen in den Entwurf DIESES Chats/Channels; false = Entwurf voll. */
+  pinAnfuegen?(pin: PinEingabe): boolean;
 }
 
 interface FensterKontext {
@@ -90,6 +98,17 @@ const Kontext = createContext<FensterKontext | null>(null);
 
 export function useVerweisFenster(): FensterKontext | null {
   return useContext(Kontext);
+}
+
+/**
+ * P22-T170: Bereich OHNE Chat-/Channel-Herkunft innerhalb eines Chat-Providers (Dashboard/Top-Artefakte des Main, Projektflaeche im
+ * Channel). Lesefenster von hier (und Verweise in ihnen) haben Herkunft 'ohne': Pin nur speichern, Zitat per Empfaengerauswahl.
+ * Die Fenster selbst bleiben beim umgebenden Provider (eine Fensterliste, gleiche Stapelung).
+ */
+export function LesefensterOhneHerkunft({ children }: { children: ReactNode }) {
+  const oben = useContext(Kontext);
+  const wert = useMemo<FensterKontext | null>(() => (oben ? { oeffne: (ziel) => oben.oeffne({ ...ziel, ohneHerkunft: true }), zitat: null } : null), [oben]);
+  return <Kontext.Provider value={wert}>{children}</Kontext.Provider>;
 }
 
 // ───────────────────────── Erkennung ─────────────────────────
@@ -279,12 +298,29 @@ function LesefensterEinzel({
   const [fehler, setFehler] = useState('');
   const [position, setPosition] = useState({ x: fenster.x, y: fenster.y });
   const drag = useRef<{ id: number; sx: number; sy: number; ox: number; oy: number } | null>(null);
-  // P22-T168: Knopf 'Zitat anfügen' haengt an das Chatfenster an, aus dem dieses Lesefenster geoeffnet wurde (sein Provider).
-  const zitat = useVerweisFenster()?.zitat ?? null;
-  // P22-T168 Punkte 8/9: 'User-Entscheidung anpinnen' (Task/Plan) - ueberall gleich, ohne Chat; darunter die angepinnten Entscheidungen.
+  // P22-T168/T170: HERKUNFT des Lesefensters = Chat bzw. Channel seines Providers (zitat), ausser es wurde von einer Stelle ohne
+  // Chat-Bezug geoeffnet (LesefensterOhneHerkunft). Mit Herkunft haengt 'Zitat anfügen' an genau diesen Chat/Channel an.
+  const anbieter = useVerweisFenster()?.zitat ?? null;
+  const zitat = fenster.ohneHerkunft ? null : anbieter;
+  const herkunft: LesefensterHerkunft = zitat ? zitat.herkunft ?? 'agent' : 'ohne';
+  // P22-T168 Punkte 8/9: 'User-Entscheidung anpinnen' (Task/Plan) speichert immer; darunter die angepinnten Entscheidungen.
+  // P22-T170: mit Chat-/Channel-Herkunft kommt der Pin zusaetzlich als Kaertchen in DESSEN Entwurf (geht beim Senden mit).
   const entscheidung = useUserEntscheidung({
     project: fenster.project, art: fenster.art, id: fenster.id, anzeigeId: inhalt?.id, titel: inhalt?.titel, anpinnen: fenster.anpinnen,
+    ...(zitat?.pinAnfuegen ? {
+      nachAnpinnen: (pin: PinEingabe) => (zitat.pinAnfuegen!(pin)
+        ? 'Als Kärtchen im Entwurf an ' + zitat.empfaenger + '.'
+        : 'Entwurf an ' + zitat.empfaenger + ' ist voll – nur gespeichert.'),
+    } : {}),
   });
+  // P22-T170: ohne Herkunft 'Zitat anfügen' = Empfaengerauswahl (Agenten des Projekts, Checkboxen) -> Inbox je Empfaenger.
+  const auswahl = useZitatEmpfaengerAuswahl({
+    project: fenster.project, aktiv: !zitat,
+    vorlage: inhalt && fenster.art !== 'asset' ? { art: fenster.art, id: inhalt.id || fenster.id, projekt: fenster.project, titel: inhalt.titel } : null,
+  });
+  useEffect(() => {
+    console.debug('[lesefenster]', { art: fenster.art, id: fenster.id, herkunft, ziel: zitat?.empfaenger ?? null });
+  }, [fenster.art, fenster.id, herkunft, zitat?.empfaenger]);
 
   useEffect(() => {
     let aktiv = true;
@@ -313,9 +349,32 @@ function LesefensterEinzel({
   const ende = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (drag.current?.id === event.pointerId) drag.current = null;
   };
+  // P22-T170: Verweise in einem Fenster ohne Herkunft oeffnen ihrerseits ohne Herkunft (LesefensterOhneHerkunft um den Inhalt).
+  const koerper = (
+    <>
+      {!inhalt && !fehler && <p className="klartext-leer">Lädt …</p>}
+      {fehler && <p className="verweis-fehler">{fehler}</p>}
+      {inhalt && (
+        <>
+          <dl className="verweis-meta">
+            <div><dt>ID</dt><dd>{inhalt.id}</dd></div>
+            {inhalt.meta.map((m) => (
+              <div key={m.label}><dt>{m.label}</dt><dd>{/^\d{4}-\d{2}-\d{2}T/.test(m.wert) ? zeitLokal(m.wert) : m.wert}</dd></div>
+            ))}
+          </dl>
+          {entscheidung.bereich}
+          {auswahl.bereich}
+          {inhalt.art === 'asset'
+            ? <ToolBilder bilder={[{ mime_type: 'image/*', bytes: 0, project: fenster.project, file_path: inhalt.id }]} />
+            : <KlartextText text={inhalt.text} project={fenster.project} />}
+        </>
+      )}
+    </>
+  );
 
   return (
-    <aside className="verweis-fenster" style={{ transform: 'translate(' + position.x + 'px,' + position.y + 'px)', zIndex: fenster.z }} onPointerDown={onAktiv}>
+    <aside className="verweis-fenster" style={{ transform: 'translate(' + position.x + 'px,' + position.y + 'px)', zIndex: fenster.z }} onPointerDown={onAktiv}
+      data-lesefenster-herkunft={herkunft} data-lesefenster-ziel={zitat?.empfaenger ?? ''}>
       <div className="verweis-titel" onPointerDown={start} onPointerMove={bewege} onPointerUp={ende} onPointerCancel={ende}>
         <div>
           <small>{ART_LABEL[fenster.art]}</small>
@@ -323,26 +382,12 @@ function LesefensterEinzel({
         </div>
         {zitat && inhalt && <button type="button" className="verweis-zitat" title={'Als Zitat an die Nachricht an ' + zitat.empfaenger + ' anhängen'}
           onClick={(event) => zitat.anfuegen({ art: fenster.art, id: inhalt.id || fenster.id, projekt: fenster.project, titel: inhalt.titel }, { x: event.clientX - 200, y: event.clientY + 16 })}>Zitat anfügen</button>}
+        {inhalt && auswahl.knopf}
         {inhalt && entscheidung.knopf}
         <button type="button" onClick={onSchliessen} aria-label="Fenster schließen">×</button>
       </div>
       <div className="verweis-inhalt">
-        {!inhalt && !fehler && <p className="klartext-leer">Lädt …</p>}
-        {fehler && <p className="verweis-fehler">{fehler}</p>}
-        {inhalt && (
-          <>
-            <dl className="verweis-meta">
-              <div><dt>ID</dt><dd>{inhalt.id}</dd></div>
-              {inhalt.meta.map((m) => (
-                <div key={m.label}><dt>{m.label}</dt><dd>{/^\d{4}-\d{2}-\d{2}T/.test(m.wert) ? zeitLokal(m.wert) : m.wert}</dd></div>
-              ))}
-            </dl>
-            {entscheidung.bereich}
-            {inhalt.art === 'asset'
-              ? <ToolBilder bilder={[{ mime_type: 'image/*', bytes: 0, project: fenster.project, file_path: inhalt.id }]} />
-              : <KlartextText text={inhalt.text} project={fenster.project} />}
-          </>
-        )}
+        {fenster.ohneHerkunft ? <LesefensterOhneHerkunft>{koerper}</LesefensterOhneHerkunft> : koerper}
       </div>
     </aside>
   );
@@ -368,7 +413,8 @@ export function VerweisFensterProvider({ children, zitat = null }: { children: R
         const vorhanden = aktuell.find((f) => f.project === ziel.project && f.art === ziel.art && f.id === ziel.id);
         // P22-T168: anpinnen als Zaehler, damit ein zweites 'User-Entscheidung anpinnen' den Editor im offenen Fenster wieder zeigt.
         const anpinnen = (f?: FensterZustand) => (ziel.anpinnen ? { anpinnen: (f?.anpinnen ?? 0) + 1 } : {});
-        if (vorhanden) return aktuell.map((f) => (f === vorhanden ? { ...f, z, ...anpinnen(f) } : f));
+        // P22-T170: die Herkunft gilt fuer das letzte Oeffnen (Chat bzw. Stelle ohne Chat-Bezug).
+        if (vorhanden) return aktuell.map((f) => (f === vorhanden ? { ...f, z, ohneHerkunft: !!ziel.ohneHerkunft, ...anpinnen(f) } : f));
         const versatz = (aktuell.length % 6) * 28;
         const x = Math.max(8, Math.round(window.innerWidth / 2 - 280) + versatz);
         const y = 80 + versatz;

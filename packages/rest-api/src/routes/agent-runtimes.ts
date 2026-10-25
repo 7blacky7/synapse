@@ -35,6 +35,8 @@ import {
 } from '@synapse/core';
 // P22-T168 Punkte 8/9: User-Entscheidung anpinnen (derselbe Server-Weg wie thought(add) mit task_id, source user).
 import { pinneUserEntscheidung, listeUserEntscheidungen, type UserEntscheidungZiel } from '@synapse/core';
+// P22-T170: Zitat aus einem Lesefenster ohne Chat-/Channel-Herkunft an die per Checkbox gewaehlten Agenten.
+import { listeZitatEmpfaenger, sendeZitatAnEmpfaenger } from '@synapse/core';
 import { leseVerweis } from '../services/verweise.js';
 import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
@@ -770,6 +772,31 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     try {
       const r = await listeUserEntscheidungen(request.query?.project, request.query?.art, request.query?.id);
       if (!r.ok) return reply.code(r.status).send({ success: false, error: { code: r.code, message: r.message }, ...(r.schalter ? { schalter: r.schalter } : {}) });
+      const { ok: _ok, ...rest } = r;
+      return { success: true, ...rest };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T170: Lesefenster OHNE Chat-/Channel-Herkunft (Artefakte, Top-Artefakte, sonst wo): 'Zitat anfügen' zeigt die Agenten des
+  // Projekts (inkl. Koordinator und Main) als Checkbox-Auswahl; 'Senden' legt je gewaehltem Agenten EINE Inbox-Zeile an (gleicher
+  // Block [Synapse-Zitate], identitaetsadressiert wie agent-chat). Nur der User (Guard oben). Schalter chat_zitate; Debug: empfaenger.
+  fastify.get<{ Querystring: { project?: string } }>('/api/agent-runtimes/zitat-empfaenger', async (request, reply) => {
+    try {
+      const r = await listeZitatEmpfaenger(request.query?.project);
+      if (!r.ok) return reply.code(r.status).send({ success: false, error: { code: r.code, message: r.message } });
+      const { ok: _ok, ...rest } = r;
+      return { success: true, ...rest };
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.post<{ Body: { project?: unknown; empfaenger?: unknown; text?: unknown; zitate?: unknown } }>('/api/agent-runtimes/zitat-inbox', async (request, reply) => {
+    try {
+      const bezug = await leseAgentBezugModus();
+      const sende = (ziel: UserEntscheidungZiel, text: string) => (bezug.modus === 'alt' || ziel.art === 'legacy'
+        ? postToInbox('user', ziel.agent_id, text, ziel.project)
+        : mitAgentAufrufKontext({ principal: null, bezug }, () => postToInbox('user', ziel, text, ziel.project)));
+      const r = await sendeZitatAnEmpfaenger(request.body ?? {}, sende);
+      if (!r.ok) {
+        return reply.code(r.status).send({ success: false, error: { code: r.code, message: r.message, ...(r.details ? { details: r.details } : {}) }, ...(r.schalter ? { schalter: r.schalter } : {}) });
+      }
       const { ok: _ok, ...rest } = r;
       return { success: true, ...rest };
     } catch (error) { return sendFachFehler(reply, error); }

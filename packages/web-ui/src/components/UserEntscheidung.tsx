@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { leseChatZitateStand } from '../api/chat-zitate';
 import { leseUserEntscheidungen, pinneUserEntscheidung, type UserEntscheidungEintrag } from '../api/user-entscheidung';
 import { ART_LABEL, type VerweisArt } from '../api/verweise';
+import type { PinEingabe } from './zitat-logik';
 import '../chat-zitate.css';
 
 /**
@@ -26,8 +27,10 @@ function zeitLokal(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('de-DE');
 }
 
-export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinnen = 0 }: {
+export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinnen = 0, nachAnpinnen }: {
   project: string; art: VerweisArt; id: string; anzeigeId?: string; titel?: string; anpinnen?: number;
+  /** P22-T170: Lesefenster mit Chat-/Channel-Herkunft - Pin zusaetzlich als Kaertchen in dessen Entwurf; Rueckgabe = Zusatz der Meldung. */
+  nachAnpinnen?: (pin: PinEingabe) => string | null;
 }): { aktiv: boolean; knopf: ReactNode; bereich: ReactNode } {
   const moeglich = kannAnpinnen(art) && !!id;
   const [aktiv, setAktiv] = useState(false);
@@ -72,7 +75,8 @@ export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinn
     console.debug('[user-entscheidung]', 'anpinnen', { project, art, id, ergebnis: r });
     if (!r.ok) { setEditor((e) => e && { ...e, laeuft: false, hinweis: r.message }); return; }
     setEditor(null);
-    setMeldung('Angepinnt an ' + kopf + '.' + (r.empfaenger.length ? ' Hinweis an ' + r.empfaenger.join(', ') + '.' : ''));
+    const zusatz = nachAnpinnen?.({ thoughtId: r.thought_id, projekt: project, kopf, ...(titel ? { titel } : {}), text }) ?? null;
+    setMeldung('Angepinnt an ' + kopf + '.' + (r.empfaenger.length ? ' Hinweis an ' + r.empfaenger.join(', ') + '.' : '') + (zusatz ? ' ' + zusatz : ''));
     const liste = await leseUserEntscheidungen(project, zielArt, id);
     setEintraege(liste.eintraege);
   };
@@ -82,7 +86,7 @@ export function useUserEntscheidung({ project, art, id, anzeigeId, titel, anpinn
   };
 
   const knopf = (
-    <button type="button" className="verweis-entscheidung" title={'Entscheidung als User an ' + kopf + ' anpinnen (ohne Chat-Nachricht)'}
+    <button type="button" className="verweis-entscheidung" title={'Entscheidung als User an ' + kopf + ' anpinnen' + (nachAnpinnen ? ' (zusätzlich als Kärtchen in den Entwurf dieses Chats)' : ' (nur speichern)')}
       onClick={() => { setMeldung(''); setEditor((e) => e ?? LEER); }}>User-Entscheidung anpinnen</button>
   );
   const bereich = (
