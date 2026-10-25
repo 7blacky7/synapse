@@ -82,6 +82,8 @@ const W1B_AKTIONEN=[
  'ausweis_visa','arbeitsfreigabe_erteilen','arbeitsfreigabe_entziehen',
  // P22-T68: additive Aktionen der Web-UI-Ausweisverwaltung
  'profil_lesen','identitaet_deaktivieren','identitaet_reaktivieren',
+ // P22-T173: Identitaet umbenennen (Kernaktion direkt nach P22-T68)
+ 'identitaet_umbenennen',
  // P22-T36: additive Hauptagent-Aktionen
  'hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen',
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Aktionen
@@ -96,6 +98,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'typ_revision','profil_scope','persona_name','persona_inhalt','persona_vorlage_id','persona_version','user_auftrag','user_zustimmung','anlass','agent_name','rolle','startart','bindung_task_id','bindung_art','bindung_identity_ids',
  // P22-T45: Ausweis-Fristen-Parameter (im Schema vor den Hauptagent-Parametern)
  'schatten_stunden','erstnutzung_minuten','visum_minuten','arbeitsfreigabe_stunden','anmeldung_plaene_minuten','files_plan_stunden','shell_hinweis_minuten','files_plan_ablauf_aktiv','frist_namen',
+ // P22-T173: identitaet_umbenennen (direkt nach den Fristen)
+ 'neuer_name',
  // P22-T93: additive Netzwerkparameter zwischen Fristen und Hex.
  'netzwerk_modus','netzwerk_werte',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)

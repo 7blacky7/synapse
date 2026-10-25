@@ -12,6 +12,7 @@ import {
   rollbackProfil,
   rufeAusweisAb,
   setzeIdentitaetStatus,
+  benenneIdentitaetUm,
   speichereProfil,
   stelleAus,
   type HinweisKatalogZeile,
@@ -105,7 +106,7 @@ function patchAus(basis: ProfilWerte, e: Entwurf, startrezept: Record<string, un
 const umschalten = (liste: string[], wert: string): string[] => (liste.includes(wert) ? liste.filter((x) => x !== wert) : [...liste, wert]);
 
 type Ausweisansicht = { phase: 'zu' } | { phase: 'frage' } | { phase: 'offen'; wert: string; rest: number };
-type Rueckfrage = null | 'loeschen' | 'neu' | 'deaktivieren' | 'reaktivieren';
+type Rueckfrage = null | 'loeschen' | 'neu' | 'deaktivieren' | 'reaktivieren' | 'umbenennen';
 
 export function AusweisIdentitaetenPanel({ project: aktuellesProjekt, ziel }: { project: string; ziel?: AusweisZiel | null }) {
   const [hauptagentBereich, setHauptagentBereich] = React.useState(ziel?.project === PERSOENLICHES_PROJEKT);
@@ -129,6 +130,7 @@ export function AusweisIdentitaetenPanel({ project: aktuellesProjekt, ziel }: { 
   const [frage, setFrage] = React.useState<Rueckfrage>(null);
   const [bestaetigung, setBestaetigung] = React.useState('');
   const [neuerName, setNeuerName] = React.useState('');
+  const [umbenennenName, setUmbenennenName] = React.useState('');
   const [neueRolle, setNeueRolle] = React.useState('subagent');
   const [filter, setFilter] = React.useState('');
   const [rollbackZiel, setRollbackZiel] = React.useState<number | null>(null);
@@ -284,6 +286,17 @@ export function AusweisIdentitaetenPanel({ project: aktuellesProjekt, ziel }: { 
     return aktiv ? 'Identitaet reaktiviert. Es gibt noch keinen neuen Ausweis: "Neuen Ausweis ausstellen".' : 'Identitaet deaktiviert.';
   });
 
+  // P22-T173: Name aendern, Ausweis bleibt; der alte Name bleibt als Alias auffindbar.
+  const umbenennen = () => ausfuehren(async () => {
+    if (!detail) return;
+    const alt = detail.agentId;
+    const wunsch = umbenennenName.trim();
+    const neu = await benenneIdentitaetUm(project, detail.identityId, wunsch, grund);
+    setFrage(null);
+    setUmbenennenName('');
+    return 'Umbenannt: ' + alt + ' -> ' + (neu || wunsch) + '. Ausweis, Verlauf und Task-Bindungen bleiben; der alte Name bleibt als Alias auffindbar.';
+  });
+
   const patch = detail && entwurf ? patchAus(detail.werte, entwurf, detail.startrezept, detail.rolle === 'main', detail.zuschnitt, detail.hinweise) : {};
   const typGeaendert = !!detail && !!entwurf && entwurf.typId !== detail.typId;
   const aenderungen = Object.keys(patch).length + (typGeaendert ? 1 : 0);
@@ -370,6 +383,7 @@ export function AusweisIdentitaetenPanel({ project: aktuellesProjekt, ziel }: { 
             <div><dt>Erstellt</dt><dd>{detail.erstelltAm} von {detail.erstelltVon}</dd></div>
             <div><dt>Zuletzt aktiv</dt><dd>{detail.zuletztAktiv || '–'}</dd></div>
             <div><dt>Persona</dt><dd>{detail.persona || 'keine'}</dd></div>
+            <div><dt>Fruehere Namen</dt><dd>{detail.aliase.length ? detail.aliase.map((x) => x.alterName + ' (bis ' + x.umbenanntAm + ')').join(', ') : '–'}</dd></div>
           </dl>
 
           <h5>Ausweis</h5>
@@ -381,9 +395,10 @@ export function AusweisIdentitaetenPanel({ project: aktuellesProjekt, ziel }: { 
             {detail.status === 'aktiv'
               ? <button type="button" disabled={arbeit || !grundOk} onClick={() => setFrage('deaktivieren')}>Deaktivieren</button>
               : <button type="button" disabled={arbeit || !grundOk} onClick={() => setFrage('reaktivieren')}>Reaktivieren</button>}
+            <button type="button" disabled={arbeit || !grundOk || hauptagent} onClick={() => { setUmbenennenName(detail.agentId); setFrage('umbenennen'); }}>Umbenennen …</button>
             <button type="button" className="gefahr" disabled={arbeit || !grundOk} onClick={() => { setBestaetigung(''); setFrage('loeschen'); }}>Loeschen …</button>
           </div>
-          {!grundOk && <p className="av-leer">Fuer Neu ausstellen, Deaktivieren, Reaktivieren und Loeschen oben einen Grund eintragen.</p>}
+          {!grundOk && <p className="av-leer">Fuer Neu ausstellen, Deaktivieren, Reaktivieren, Umbenennen und Loeschen oben einen Grund eintragen.</p>}
 
           {ausweis.phase === 'frage' && <div className="av-frage"><b>Ausweis wirklich anzeigen?</b><span>Der Ausweis wird nur hier und nur {ANZEIGE_SEKUNDEN} Sekunden lang gezeigt, der Abruf wird im Backend protokolliert (ohne Wert). Nie in Channel, Thought oder Log ablegen.</span>
             <div><button type="button" disabled={arbeit} onClick={() => void zeigeAusweis()}>Ja, anzeigen</button><button type="button" onClick={ausweisVerwerfen}>Abbrechen</button></div></div>}
@@ -396,6 +411,9 @@ export function AusweisIdentitaetenPanel({ project: aktuellesProjekt, ziel }: { 
             <div><button type="button" disabled={arbeit} onClick={() => void aendereStatus(false)}>Ja, deaktivieren</button><button type="button" onClick={() => setFrage(null)}>Abbrechen</button></div></div>}
           {frage === 'reaktivieren' && <div className="av-frage"><b>Identitaet reaktivieren?</b><span>Es entsteht weder ein Lauf noch ein Ausweis. Danach "Neu ausstellen" benutzen.</span>
             <div><button type="button" disabled={arbeit} onClick={() => void aendereStatus(true)}>Ja, reaktivieren</button><button type="button" onClick={() => setFrage(null)}>Abbrechen</button></div></div>}
+          {frage === 'umbenennen' && <div className="av-frage"><b>Identitaet umbenennen?</b><span>Ausweis, Verlauf, Pins und Task-Bindungen bleiben. Bisherige Inhalte stehen weiter unter "{detail.agentId}" und bleiben ueber den alten und den neuen Namen auffindbar; der alte Name bleibt fuer diese Identitaet reserviert. Der Agent sieht den neuen Namen beim naechsten Aufruf.</span>
+            <input value={umbenennenName} onChange={(e) => setUmbenennenName(e.target.value)} placeholder="neuer Name, z. B. claude-p22-t169" />
+            <div><button type="button" disabled={arbeit || !grundOk || !umbenennenName.trim() || umbenennenName.trim() === detail.agentId} onClick={() => void umbenennen()}>Ja, umbenennen</button><button type="button" onClick={() => setFrage(null)}>Abbrechen</button></div></div>}
           {frage === 'loeschen' && <div className="av-frage av-gefahr"><b>Ausweis loeschen und Identitaet deaktivieren (zweite Rueckfrage)</b><span>Der Ausweis wird unwiderruflich geloescht und die Identitaet deaktiviert. Historie, Verlauf und Verbrauch bleiben, eine Reaktivierung braucht einen neuen Ausweis. Zur Bestaetigung den Namen <code>{detail.agentId}</code> eintippen.</span>
             <input value={bestaetigung} onChange={(e) => setBestaetigung(e.target.value)} placeholder={detail.agentId} />
             <div><button type="button" className="gefahr" disabled={arbeit || bestaetigung !== detail.agentId} onClick={() => void loeschenUndDeaktivieren()}>Endgueltig loeschen</button><button type="button" onClick={() => setFrage(null)}>Abbrechen</button></div></div>}

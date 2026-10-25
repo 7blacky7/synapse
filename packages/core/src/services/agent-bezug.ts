@@ -6,6 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { getPool } from '../db/client.js';
 import { internToolAktiv } from './intern-tool-aktiv.js';
 import type { AgentTokenAnmeldung } from './agent-identitaet.js';
+import { aliaseFuerNamen } from './agent-namens-alias.js';
 
 export const AGENT_BEZUG_MODI = ['alt', 'beide', 'neu'] as const;
 export type AgentBezugModus = typeof AGENT_BEZUG_MODI[number];
@@ -126,6 +127,10 @@ export async function loeseAgentFilter(project: string | null | undefined, werte
       for (const z of r.rows) ids.add(z.id);
     } catch { /* ohne Identitaetstabellen: nur Legacy-Namen */ }
   }
+  // P22-T173: fruehere Namen umbenannter Identitaeten. Alter Name -> die Identitaet; Name (auch der eigene) einer umbenannten Identitaet ->
+  // zusaetzlich ihre frueheren Namen fuer Zeilen ohne identity_id (der Altmodus schrieb nur den Namen). Ohne Aliase keine Abfrage.
+  const aliase = await aliaseFuerNamen(project ?? null, eigen && roh.includes(eigen.agent_id) ? [...namen, eigen.agent_id] : namen);
+  for (const a of aliase) { ids.add(a.identity_id); if (!namen.includes(a.alter_name)) namen.push(a.alter_name); }
   return { identity_ids: [...ids], namen };
 }
 

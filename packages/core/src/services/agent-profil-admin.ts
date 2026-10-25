@@ -39,6 +39,8 @@ import { leseFilesPlanAblaufSchalter, setzeFilesPlanAblaufSchalter } from './fil
 import { listeAusweisVisa, erteileArbeitsfreigabe, entzieheArbeitsfreigabe } from './agent-ausweis-projekte.js';
 import { aktuellerAgentAufruf } from './agent-bezug.js';
 import { deaktiviereAgentIdentitaet, reaktiviereAgentIdentitaet } from './agent-identitaet.js';
+import { benenneIdentitaetUm } from './agent-umbenennung.js';
+import { aliaseDerIdentitaet } from './agent-namens-alias.js';
 import { HINWEIS_KATALOG } from './hinweis-katalog.js';
 
 const W1B_KERN_AKTIONEN = [
@@ -55,6 +57,8 @@ const W1B_KERN_AKTIONEN = [
   'ausweis_visa', 'arbeitsfreigabe_erteilen', 'arbeitsfreigabe_entziehen',
   // P22-T68: Web-UI-Ausweisverwaltung - Detail lesen, Identitaet deaktivieren/reaktivieren.
   'profil_lesen', 'identitaet_deaktivieren', 'identitaet_reaktivieren',
+  // P22-T173: Identitaet umbenennen (Name aendern, Ausweis bleibt; alter Name wird Alias).
+  'identitaet_umbenennen',
 ] as const;
 /** P22-T36: hauptagent_* additiv im selben admin-Weg; eigene Rechtepruefung (User + Main selbst) in hauptagent-dienst.ts. */
 export const W1B_ADMIN_ACTIONS = ['agentennetzwerk', ...HEX_ADMIN_ACTIONS, ...REVERSE_ADMIN_ACTIONS, ...W1B_KERN_AKTIONEN, ...HAUPTAGENT_ADMIN_ACTIONS, ...API_AGENT_ADMIN_ACTIONS, ...RUNTIME_UEBERWACHUNG_ADMIN_ACTIONS, ...AGENT_ENTFERNUNG_ADMIN_ACTIONS, ...CONTAINER_ADMIN_ACTIONS, ...AGENT_ANMELDUNGEN_ADMIN_ACTIONS, ...KOORDINATOR_HEARTBEAT_ADMIN_ACTIONS] as const;
@@ -97,6 +101,7 @@ export const W1B_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   shell_hinweis_minuten: { type: 'number', description: 'ausweis_fristen setzen: beendete Shell-Jobs aller Agenten erscheinen so viele Minuten nach Abschluss in shell_activity (1..1440, Standard 60; P23-T3)' },
   files_plan_ablauf_aktiv: { type: 'boolean', description: 'ausweis_fristen: Produkt-Schalter Fristablauf offener files-Plaene (Standard EIN; P6-T49). modus setzen: true|false auf ebene; modus entfernen + Parameter vorhanden: Wert dieser ebene entfernen' },
   frist_namen: { type: 'array', items: { type: 'string', enum: [...AUSWEIS_FRIST_NAMEN] }, description: 'ausweis_fristen modus entfernen: Werte dieser ebene entfernen (Rueckfall global bzw. Standard)' },
+  neuer_name: { type: 'string', description: 'identitaet_umbenennen: neuer Name der Identitaet ziel_identity_id (Ausweis bleibt, alter Name wird Alias)' },
   ...NETZWERK_ADMIN_PARAMETER,
   ...HEX_ADMIN_PARAMETER,
   ...REVERSE_ADMIN_PARAMETER,
@@ -128,6 +133,8 @@ const GRUPPE: Record<W1bAdminAction, ProfilProduktFunktion | null> = {
   ausweis_visa: null, arbeitsfreigabe_erteilen: null, arbeitsfreigabe_entziehen: null,
   // P22-T68: Lesen haengt an profilverwaltung; (De-)Aktivieren wie die Ausweis-Aktionen am Ausweis-Kern (freigabe() im Dienst).
   profil_lesen: 'profilverwaltung', identitaet_deaktivieren: null, identitaet_reaktivieren: null,
+  // P22-T173: eigener Produkt-Schalter agent_umbenennung (Standard AUS, nur ausdruecklich).
+  identitaet_umbenennen: 'agent_umbenennung',
 };
 
 type Args = Record<string, unknown>;
@@ -216,7 +223,7 @@ async function leseIdentitaetDetail(project: string, ziel: string, akteur: W1bAk
        FROM agent_identitaeten WHERE id=$1 AND project=$2`, [ziel, project]);
   const zeile = ident.rows[0];
   if (!zeile) throw new ProfilVerwaltungFehler('identitaet_unbekannt');
-  const [lauf, tokens, auditZeilen, persona, bindungen] = await Promise.all([
+  const [lauf, tokens, auditZeilen, persona, bindungen, aliase] = await Promise.all([
     db.query('SELECT id, context_epoch, erstellt_am FROM agent_identitaet_laeufe WHERE identity_id=$1 AND status=$2 ORDER BY erstellt_am DESC LIMIT 1', [ziel, 'aktiv']),
     db.query(`SELECT id, token_praefix, start_art, gueltig_bis, erstellt_am, zuletzt_benutzt, widerrufen_am, widerrufen_grund, (token_offen IS NOT NULL) AS abrufbar
                 FROM agent_identitaet_tokens WHERE identity_id=$1 ORDER BY erstellt_am DESC LIMIT 10`, [ziel]),
@@ -225,6 +232,8 @@ async function leseIdentitaetDetail(project: string, ziel: string, akteur: W1bAk
     // P22-T139: dieselbe Abfrage wie die Anmeldung (gebundeneTasks), offene und erledigte Tasks getrennt.
     import('./agent-profil-update.js').then((m) => m.gebundeneTasksGetrennt(project, ziel))
       .catch((): { offen: GebundeneTask[]; erledigt: GebundeneTask[] } => ({ offen: [], erledigt: [] })),
+    // P22-T173: fruehere Namen (Aliase) der Identitaet; ohne Schema 159 leer.
+    aliaseDerIdentitaet(ziel),
   ]);
   let wirksam: unknown = null;
   try {
@@ -239,6 +248,7 @@ async function leseIdentitaetDetail(project: string, ziel: string, akteur: W1bAk
     tokens: tokens.rows,
     audit: auditZeilen.rows,
     persona: persona.rows[0] ?? null,
+    aliase: aliase.map((x) => ({ alter_name: x.alter_name, neuer_name: x.neuer_name, umbenannt_am: x.umbenannt_am, umbenannt_von: x.umbenannt_von, grund: x.grund })),
     gebundene_tasks: bindungen.offen.slice(0, 50),
     erledigte_gebundene_tasks: {
       anzahl: bindungen.erledigt.length,
@@ -498,6 +508,12 @@ async function ausfuehren(action: Exclude<W1bAdminAction, AusweisAktion>, projec
       const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
       await reaktiviereAgentIdentitaet(project, ziel, identitaetsPrincipal(akteurRoh), pflichtText(a.grund, 'grund_fehlt'));
       return { project, ziel_identity_id: ziel, status: 'aktiv', hinweis: 'Kein neuer Ausweis: bei Bedarf agent_vorbereiten mit ziel_identity_id.' };
+    }
+    case 'identitaet_umbenennen': {
+      // P22-T173: Verwalter laut pruefeProfilVerwalter im Dispatcher, Schalter agent_umbenennung (GRUPPE); der Dienst prueft das Recht erneut.
+      const ziel = await zielIdentitaet(project, s(a, 'ziel_identity_id'));
+      return { project, ...(await benenneIdentitaetUm({ project, identity_id: ziel, neuer_name: a.neuer_name, grund: pflichtText(a.grund, 'grund_fehlt'),
+        user_auftrag: s(a, 'user_auftrag') ?? null }, akteurRoh)) };
     }
     case 'web_ui_koordinator_token': {
       const t = await rufeWebUiKoordinatorTokenAb(project, akteur, s(a, 'ziel_identity_id'));

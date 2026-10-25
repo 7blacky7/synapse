@@ -27,6 +27,7 @@ import { ProfilVerwaltungFehler, pflichtText, pruefeProfilVerwalter } from './ag
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 import { MAIN_ROLLE } from './agent-profil-vertrag.js';
 import { hauptagentIdentitaetsId } from './hauptagent-dienst.js';
+import { aliaseFuerNamen, type NamensAlias } from './agent-namens-alias.js';
 
 export const AGENT_ENTFERNUNG_FUNKTION = 'agenten_entfernung' as const;
 export const AGENT_ENTFERNUNG_STANDARD_TAGE = 30;
@@ -455,8 +456,9 @@ export async function fuehreEntfernungAus(e: { tage?: number; project?: string |
  * Identitaet = agent_id/name/status, Identitaets-Channel-Mitgliedschaften, verknuepfte Sitzungszeile. Inhalte (Thoughts, Memories, Channel-
  * Nachrichten, Tool-Calls, Verlauf, Plaene, Dateiversionen, Wissen, Event-Quittungen) bleiben unter dem alten Namen. Zeilen, deren Ziel-Schluessel
  * schon belegt ist (z. B. beim Rueckbenennen), bleiben am bisherigen Namen.
+ * P22-T173: auch fuer die freie Umbenennung einer Identitaet (agent-umbenennung.ts) - dort mit Alias statt Archivmarkierung.
  */
-async function benenneEintragUm(c: Db, u: { art: EntfernungArt; project: string; identity_id: string | null; von: string; nach: string; name: string | null; status: string | null }): Promise<void> {
+export async function benenneEintragUm(c: Db, u: { art: EntfernungArt; project: string; identity_id: string | null; von: string; nach: string; name: string | null; status: string | null }): Promise<void> {
   if (u.art === 'identitaet' && u.identity_id) {
     await c.query(q('UPDATE agent_identitaeten SET agent_id = $2, name = COALESCE($3, name), status = COALESCE($4, status) WHERE id = $1', [u.identity_id, u.nach, u.name, u.status]));
     await c.query(q('UPDATE agent_identitaet_channel_mitglieder SET agent_name = $2 WHERE identity_id = $1', [u.identity_id, u.nach]));
@@ -558,18 +560,27 @@ export async function archivVerweise<T>(project: string, zeilen: readonly T[],
     marken = (await getPool().query<ArchivMarke>(q(
       `SELECT frueherer_name, neuer_name, identity_id, entfernt_am AS am FROM agent_entfernungen
         WHERE project = $1 AND wiederhergestellt_am IS NULL AND neuer_name IS NOT NULL AND frueherer_name = ANY($2::text[])`, [project, namen]))).rows;
-  } catch { return zeilen.map(() => null); }
-  if (!marken.length) return zeilen.map(() => null);
+  } catch { marken = []; }
+  // P22-T173: Zeilen unter dem frueheren Namen einer umbenannten Identitaet verweisen auf ihren aktuellen Namen.
+  const aliase = (await aliaseFuerNamen(project, namen)).filter((a) => namen.includes(a.alter_name) && a.aktueller_name !== a.alter_name);
+  if (!marken.length && !aliase.length) return zeilen.map(() => null);
+  const aliasVerweis = (k: { name: string | null | undefined; identity?: string | null; zeit?: Date | string | null }): ArchivVerweis | null => {
+    const zeit = k.zeit ? new Date(k.zeit) : null;
+    const a = aliase.find((x: NamensAlias) => x.alter_name === k.name
+      && (k.identity ? k.identity === x.identity_id : (!zeit || Number.isNaN(zeit.getTime()) || zeit <= x.umbenannt_am)));
+    return a ? { archiv_name: a.aktueller_name, anzeige: `${a.alter_name} (jetzt ${a.aktueller_name})` } : null;
+  };
+  if (!marken.length) return zeilen.map((z) => aliasVerweis(lese(z)));
   const nachName = new Map<string, ArchivMarke[]>();
   for (const m of marken) (nachName.get(m.frueherer_name) ?? nachName.set(m.frueherer_name, []).get(m.frueherer_name) as ArchivMarke[]).push(m);
   return zeilen.map((z) => {
     const k = lese(z);
     const liste = k.name ? nachName.get(k.name) : undefined;
-    if (!liste) return null;
+    if (!liste) return aliasVerweis(k);
     const zeit = k.zeit ? new Date(k.zeit) : null;
     const vorher = (m: ArchivMarke) => !zeit || Number.isNaN(zeit.getTime()) || zeit <= m.am;
-    const m = liste.find((x) => (x.identity_id ? (k.identity ? k.identity === x.identity_id : vorher(x)) : !k.identity && vorher(x)));
-    return m ? { archiv_name: m.neuer_name, anzeige: `${m.frueherer_name} (archiviert)` } : null;
+    const m = liste?.find((x) => (x.identity_id ? (k.identity ? k.identity === x.identity_id : vorher(x)) : !k.identity && vorher(x)));
+    return m ? { archiv_name: m.neuer_name, anzeige: `${m.frueherer_name} (archiviert)` } : aliasVerweis(k);
   });
 }
 
@@ -591,7 +602,11 @@ export async function archivUrsprung(project: string, archivName: string): Promi
  * Sicht eines Lesenden auf Zeilen unter Namen: verdeckt_bis = er traegt einen frueheren Namen, Zeilen bis dahin gehoeren dem Archiv (fuer ihn
  * unsichtbar); archiv = er IST ein Archiv-Eintrag und liest zusaetzlich die Zeilen unter dem frueheren Namen bis zur Umbenennung.
  */
-export interface ArchivSicht { verdeckt_bis: Date | null; archiv: { frueherer_name: string; bis: Date } | null }
+export interface ArchivSicht {
+  verdeckt_bis: Date | null; archiv: { frueherer_name: string; bis: Date } | null;
+  /** P22-T173: der Lesende ist eine umbenannte Identitaet und liest zusaetzlich die Zeilen unter jedem frueheren Namen bis zur Umbenennung. */
+  aliase?: Array<{ frueherer_name: string; bis: Date }>;
+}
 const KEINE_SICHT: ArchivSicht = { verdeckt_bis: null, archiv: null };
 const sichtCache = new Map<string, { bis: number; sicht: ArchivSicht }>();
 
@@ -614,6 +629,15 @@ export async function archivSichtFuer(project: string, name: string): Promise<Ar
       sicht = { verdeckt_bis: z.verdeckt_bis ?? null, archiv: z.frueherer_name && z.bis ? { frueherer_name: z.frueherer_name, bis: z.bis } : null };
     }
   } catch { sicht = KEINE_SICHT; }
+  // P22-T173: Aliase (eigene Abfrage; ohne Schema 159 bleibt die Archiv-Sicht unveraendert). Fruehere Namen DES Lesenden -> aliase;
+  // traegt der Lesende den frueheren Namen einer anderen Identitaet (nur Altbestand, Aliase sind reserviert) -> verdeckt bis dahin.
+  const al = await aliaseFuerNamen(project, [name]);
+  if (al.length) {
+    const eigene = al.filter((a) => a.aktueller_name === name && a.alter_name !== name).map((a) => ({ frueherer_name: a.alter_name, bis: a.umbenannt_am }));
+    const fremd = al.filter((a) => a.alter_name === name && a.aktueller_name !== name).map((a) => a.umbenannt_am);
+    const verdeckt = [sicht.verdeckt_bis, ...fremd].reduce<Date | null>((m, d) => (d && (!m || d > m) ? d : m), null);
+    if (eigene.length || verdeckt) sicht = { ...sicht, verdeckt_bis: verdeckt, ...(eigene.length ? { aliase: eigene } : {}) };
+  }
   sichtCache.set(k, { bis: Date.now() + 5000, sicht });
   return sicht;
 }
@@ -621,9 +645,13 @@ export async function archivSichtFuer(project: string, name: string): Promise<Ar
 /** SQL-Bedingung statt '<spalte> = <leser>' fuer Namensspalte + Zeitspalte (feste Bezeichner); Werte ueber bind. */
 export function archivNamensBedingung(spalte: string, zeit: string, leser: string, sicht: ArchivSicht | null, bind: (v: unknown) => string): string {
   if (!/^[a-z_][a-z0-9_.]*$/i.test(spalte) || !/^[a-z_][a-z0-9_.]*$/i.test(zeit)) throw new Error('ungueltige Spalte');
-  if (!sicht || (!sicht.verdeckt_bis && !sicht.archiv)) return `${spalte} = ${leser}`;
+  const aliase = sicht?.aliase ?? [];
+  if (!sicht || (!sicht.verdeckt_bis && !sicht.archiv && !aliase.length)) return `${spalte} = ${leser}`;
   const eigen = sicht.verdeckt_bis ? `(${spalte} = ${leser} AND ${zeit} > ${bind(sicht.verdeckt_bis)})` : `${spalte} = ${leser}`;
-  return sicht.archiv ? `(${eigen} OR (${spalte} = ${bind(sicht.archiv.frueherer_name)} AND ${zeit} <= ${bind(sicht.archiv.bis)}))` : eigen;
+  const teile = [eigen];
+  if (sicht.archiv) teile.push(`(${spalte} = ${bind(sicht.archiv.frueherer_name)} AND ${zeit} <= ${bind(sicht.archiv.bis)})`);
+  for (const a of aliase) teile.push(`(${spalte} = ${bind(a.frueherer_name)} AND ${zeit} <= ${bind(a.bis)})`);
+  return teile.length > 1 ? `(${teile.join(' OR ')})` : eigen;
 }
 
 /**

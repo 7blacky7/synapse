@@ -22,6 +22,7 @@
  *   GET  /profile/:identity_id/historie
  *   GET  /identitaeten/:identity_id         profil_lesen (P22-T68, tokenfreies Detail)
  *   POST /identitaeten/:identity_id/deaktivieren | /reaktivieren   {grund} (P22-T68)
+ *   POST /identitaeten/:identity_id/umbenennen    {neuer_name, grund, user_auftrag?} (P22-T173)
  *   POST /profile/:identity_id/aendern      {erwartete_revision, profil_patch, typ_id?, grund, user_auftrag?}
  *   POST /profile/:identity_id/rollback     {ziel_revision, erwartete_revision, grund}
  *   GET  /persona?ziel_identity_id=         persona_liste (+ aktuelle Zuweisung)
@@ -85,6 +86,8 @@ const ROUTEN: RouteDef[] = [
   { methode: 'GET', pfad: '/identitaeten/:identity_id', action: 'profil_lesen', quelle: req => ({ ziel_identity_id: params(req).identity_id }) },
   { methode: 'POST', pfad: '/identitaeten/:identity_id/deaktivieren', action: 'identitaet_deaktivieren', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'POST', pfad: '/identitaeten/:identity_id/reaktivieren', action: 'identitaet_reaktivieren', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
+  // P22-T173: Identitaet umbenennen (Ausweis bleibt, alter Name wird Alias).
+  { methode: 'POST', pfad: '/identitaeten/:identity_id/umbenennen', action: 'identitaet_umbenennen', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'POST', pfad: '/profile/:identity_id/aendern', action: 'profil_aendern', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'POST', pfad: '/profile/:identity_id/rollback', action: 'profil_rollback', quelle: req => ({ ...body(req), ziel_identity_id: params(req).identity_id }) },
   { methode: 'GET', pfad: '/persona', action: 'persona_liste', quelle: req => ({ ziel_identity_id: query(req).ziel_identity_id }) },

@@ -18,6 +18,7 @@ import { getPool } from '../db/client.js';
 import { aktuellerAgentPrincipal, type IdentitaetsAgentPrincipal } from './agent-bezug.js';
 import type { AusloeserHinweis, HinweisKontext, HinweisQuelle } from './ausloeser-hinweise.js';
 import { leseAusweisKern } from './agent-profil-schalter.js';
+import { aliaseZwischenRevisionen } from './agent-namens-alias.js';
 import {
   W12_DIENSTE, W12NichtUmgesetzt, formatiereProfilUpdate,
   type FortsetzungsInfo, type GebundeneTask, type ProfilBlock, type ProfilDiff, type ProfilDiffArt, type ProfilDiffEintrag,
@@ -202,6 +203,10 @@ export async function berechneDiff(identity_id: string, von_revision: number | n
     eintraege.push({ bereich: 'typ', art: 'geaendert', schluessel: tb?.schluessel ?? ta?.schluessel ?? 'typ', text });
   }
   if (ra.persona !== rb.persona) eintraege.push({ bereich: 'sonstiges', art: 'geaendert', schluessel: 'persona', text: 'Persona geaendert' });
+  // P22-T173: Umbenennung (eigene Profil-Revision mit gleichem Inhalt) als Eintrag 'Name alt -> neu'.
+  for (const a of await aliaseZwischenRevisionen(identity_id, von_revision ?? 0, nach_revision)) {
+    eintraege.push({ bereich: 'sonstiges', art: 'geaendert', schluessel: 'name', text: `Name ${a.alter_name} -> ${a.neuer_name}` });
+  }
   const p = await getPool().query<{ project: string }>('SELECT project FROM agent_identitaeten WHERE id=$1', [identity_id]);
   const project = p.rows[0]?.project ?? '';
   if (project) {

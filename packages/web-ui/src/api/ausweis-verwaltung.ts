@@ -23,6 +23,14 @@ const FEHLERTEXT: Record<string, string> = {
   ausweis_fehlt: 'Es gibt keinen Ausweis zum Abrufen oder Loeschen.',
   identitaet_nicht_aktiv: 'Die Identitaet ist deaktiviert. Erst reaktivieren.',
   ausweis_kern_aus: 'Der Ausweis-Kern ist ausgeschaltet.',
+  // P22-T173: Umbenennen
+  name_belegt: 'Der Name ist schon vergeben (Agent, Sitzung, Archiv oder frueherer Name eines anderen Agenten).',
+  name_ungueltig: 'Ungueltiger Name: 2 bis 64 Zeichen aus Buchstaben, Ziffern, Punkt, Minus, Unterstrich; nicht archiv-..., user, koordinator, main.',
+  neuer_name_fehlt: 'Bitte einen neuen Namen eintragen.',
+  name_unveraendert: 'Der Name ist unveraendert.',
+  main_nicht_umbenennbar: 'Der Hauptagent kann nicht umbenannt werden.',
+  identitaet_archiviert: 'Die Identitaet ist archiviert. Erst wiederherstellen.',
+  name_ist_alias: 'Der Name ist der fruehere Name eines umbenannten Agenten und bleibt ihm vorbehalten.',
   nur_user_oder_koordinator: 'Dazu braucht es eine Web-UI-Sitzung des Users oder den Ausweis eines Koordinators.',
   unauthorized: 'Nicht angemeldet.',
 };
@@ -140,6 +148,8 @@ export interface IdentitaetDetail {
   /** Eigene Hinweis-Einstellungen des Profils (Override) und der Hinweiskatalog. */
   hinweise: Record<string, boolean>;
   hinweisKatalog: HinweisKatalogZeile[];
+  /** P22-T173: fruehere Namen (Aliase), neueste zuerst. */
+  aliase: Array<{ alterName: string; neuerName: string; umbenanntAm: string; von: string; grund: string }>;
 }
 
 export interface HinweisKatalogZeile { schluessel: string; klasse: string; zweck: string; standard: boolean }
@@ -191,6 +201,7 @@ export async function ladeDetail(project: string, identityId: string): Promise<I
     tasks: liste(d.gebundene_tasks).map((t) => ({ taskId: str(t.task_id), art: str(t.art) })),
     hinweise: Object.fromEntries(Object.entries(obj(obj(i.profil).hinweise)).filter(([, v]) => typeof v === 'boolean')) as Record<string, boolean>,
     hinweisKatalog: liste(d.hinweis_katalog).map((h) => ({ schluessel: str(h.schluessel), klasse: str(h.klasse), zweck: str(h.zweck), standard: h.standard === true })),
+    aliase: liste(d.aliase).map((a) => ({ alterName: str(a.alter_name), neuerName: str(a.neuer_name), umbenanntAm: zeit(a.umbenannt_am), von: str(a.umbenannt_von), grund: str(a.grund) })),
   };
 }
 
@@ -321,6 +332,12 @@ export async function loescheAusweis(project: string, identityId: string, grund:
 
 export async function setzeIdentitaetStatus(project: string, identityId: string, aktiv: boolean, grund: string): Promise<void> {
   await anfrage(project, '/identitaeten/' + encodeURIComponent(identityId) + (aktiv ? '/reaktivieren' : '/deaktivieren'), 'POST', { grund });
+}
+
+/** P22-T173: Identitaet umbenennen (Ausweis bleibt, alter Name wird Alias). Gibt den neuen Namen zurueck. */
+export async function benenneIdentitaetUm(project: string, identityId: string, neuerName: string, grund: string): Promise<string> {
+  const d = await anfrage(project, '/identitaeten/' + encodeURIComponent(identityId) + '/umbenennen', 'POST', { neuer_name: neuerName, grund });
+  return str(obj(d.neu).agent_id);
 }
 
 export interface SchalterZeile { funktion: string; aktiv: boolean }

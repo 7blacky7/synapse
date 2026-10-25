@@ -196,6 +196,15 @@ export async function leseThoughtsNachSourceAusPg(project: string, source: strin
       [project, archiv.frueherer_name, grenze(limit), archiv.bis])
     return r.rows.map(zeileZuThought)
   }
+  // P22-T173: Suche ueber einen frueheren oder den aktuellen Namen einer umbenannten Identitaet: ihre Thoughts (identity_id) plus Zeilen
+  // ohne identity_id unter allen ihren Namen (der Altmodus schrieb nur den Namen).
+  const alias = !deps.query && !source.startsWith('identity:') ? await (await import('./agent-namens-alias.js')).aliasAufloesung(project, source) : null
+  if (alias) {
+    const r = await query(
+      `SELECT ${SPALTEN} FROM thoughts WHERE project = $1 AND (source_identity_id = $2 OR (source_identity_id IS NULL AND source = ANY($3::text[]))) ORDER BY timestamp DESC LIMIT $4`,
+      [project, alias.identity_id, alias.namen, grenze(limit)])
+    return r.rows.map(zeileZuThought)
+  }
   const erweitert = aktuellerAgentAufruf()?.bezug.modus !== undefined && aktuellerAgentAufruf()?.bezug.modus !== 'alt'
   if(source.startsWith('identity:') && !erweitert) throw new Error('thought_identity_im_altmodus')
   const z = source.startsWith('identity:') ? await loeseAgentZiel(project,{identity_id:source.slice(9)}) : agentBezugFuer(project, source)

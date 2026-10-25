@@ -127,6 +127,8 @@ try{
   profil_lesen:()=>({ziel_identity_id:'t34-z'}),
   identitaet_deaktivieren:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
   identitaet_reaktivieren:()=>({ziel_identity_id:'t34-z',grund:'Test T34 Matrix'}),
+  // P22-T173: Umbenennen (Verwalter wie oben; Schalter agent_umbenennung hier AUS bzw. ungueltiger Name -> Fachfehler, nichts umbenannt).
+  identitaet_umbenennen:()=>({ziel_identity_id:'t34-z',neuer_name:'archiv-t34',grund:'Test T34 Matrix'}),
   // P22-T8: kostenpflichtiger API-Agent - Setzen nur User, Lesen User + Hauptagent selbst; Koordinatoren nie (Tabellen 120 hier
   // nicht angelegt -> User bekommt Fachfehler, kein recht_fehlt).
   api_status:()=>({}),

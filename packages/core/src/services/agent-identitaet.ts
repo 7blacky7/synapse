@@ -246,6 +246,8 @@ export async function stelleAgentTokenAus(e: AgentTokenAusstellen, principal?: A
   if (name.trim().toLowerCase() === 'user') throw new AgentIdentitaetFehler('identitaet_parameter_ungueltig');
   // P22-T80 Nachbesserung: Sperrriegel - kein Ausweis unter dem Namen eines archivierten Eintrags (dynamisch: kein Importzyklus).
   if (await (await import('./agent-entfernung.js')).istGesperrterArchivName(name.trim())) throw new AgentIdentitaetFehler('archivname_gesperrt');
+  // P22-T173: der fruehere Name einer umbenannten Identitaet bleibt ihr Alias (Suche/Verweise eindeutig) - kein neuer Ausweis darauf.
+  if (!e.identity_id && await (await import('./agent-namens-alias.js')).aliasReserviertFuer(e.project, name.trim())) throw new AgentIdentitaetFehler('name_ist_alias');
   return transaktion(async (c) => {
     const recht = await berechtigung(c, e.project, principal);
     const privilegiert = recht.verwaltung || recht.daemon;

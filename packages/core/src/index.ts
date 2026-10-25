@@ -986,6 +986,12 @@ export {
 } from './services/agent-entfernung.js';
 export type { EntfernungKandidat, EntfernungAusnahme, EntfernungErmittlung, EntfernungSchalter, EntfernungSchwelle, ArchivVerweis } from './services/agent-entfernung.js';
 export { AGENT_ENTFERNUNG_SCHEMA_SQL, AGENT_UMBENENNUNG_SCHEMA_SQL } from './db/agent-entfernung-schema.js';
+// P22-T173: Identitaet umbenennen (Ausweis bleibt), fruehere Namen als Aliase.
+export { AGENT_UMBENENNUNG_FUNKTION, AGENT_NAME_MUSTER, pruefeNeuenAgentNamen, benenneIdentitaetUm } from './services/agent-umbenennung.js';
+export type { UmbenennungErgebnis } from './services/agent-umbenennung.js';
+export { aliaseFuerNamen, aliaseDerIdentitaet, aliasAufloesung, aliasReserviertFuer, leereAliasCache } from './services/agent-namens-alias.js';
+export type { NamensAlias } from './services/agent-namens-alias.js';
+export { AGENT_NAMENS_ALIAS_SCHEMA_SQL } from './db/agent-namens-alias-schema.js';
 // P22-T87 S1: Anmelde-Uebersicht je Agent (admin anmeldungen, Schalter agent_anmeldungen).
 export {
   AGENT_ANMELDUNGEN_FUNKTION, AGENT_ANMELDUNGEN_ADMIN_ACTIONS, AGENT_ANMELDUNGEN_ADMIN_PARAMETER, ANMELDUNG_WEGE,
