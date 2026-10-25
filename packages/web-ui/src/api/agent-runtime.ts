@@ -401,7 +401,8 @@ export interface MainAgentVerlaufEintrag {
   rolle: 'user' | 'agent' | 'nachricht' | 'ausgabe' | 'system';
   richtung: 'ein' | 'aus' | 'intern';
   weg: 'webui' | 'inbox' | 'chat' | 'channel' | 'event' | 'heartbeat' | 'werkzeug' | 'lauf' | 'wechsel';
-  absender: { agent_id?: string; identity_id?: string | null; rolle?: string | null; project?: string | null; channel?: string | null } | null;
+  /** herkunft (P22-T135): Eingabe einer lokalen CLI-Sitzung - cli = User an der CLI, mod_inbox / cc_send = zugestellte Nachricht. */
+  absender: { agent_id?: string; identity_id?: string | null; rolle?: string | null; project?: string | null; channel?: string | null; herkunft?: 'cli' | 'mod_inbox' | 'cc_send' | null } | null;
   /** jsonl:<ref> = Sitzungs-Eintrag des Wrappers (Zaehl-/Uebergabebasis, nicht als Chatnachricht gezeigt). */
   quelle_ref: string | null;
   zaehlt: boolean;

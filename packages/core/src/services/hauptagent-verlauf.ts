@@ -782,6 +782,20 @@ const SITZUNGS_ABBILD: Record<SitzungsEintragEingabe['art'], { rolle: VerlaufRol
 };
 
 /**
+ * P22-T135: Absender einer Eingabe aus einer lokalen CLI-Sitzung (CLI-Verlauf). Zugestellte Nachrichten tragen ihren Kopf im Text
+ * ('[Synapse-Nachricht] ... Von: X' der Mod-Inbox, '[cc-send von X]'); alles andere hat der User an der CLI eingegeben. Rein.
+ */
+export function cliEingabeAbsender(text: string): { agent_id: string; herkunft: 'cli' | 'mod_inbox' | 'cc_send' } {
+  if (/^\[Synapse-Nachricht\]$/m.test(text)) {
+    const von = /^Von: ([^,\n]+)/m.exec(text);
+    return { agent_id: von ? von[1].trim() : 'unbekannt', herkunft: 'mod_inbox' };
+  }
+  const cc = /^\[cc-send von ([^\]]+)\]/m.exec(text);
+  if (cc) return { agent_id: cc[1].trim(), herkunft: 'cc_send' };
+  return { agent_id: 'user', herkunft: 'cli' };
+}
+
+/**
  * Sitzungs-Eintraege des dauerhaften Main aufnehmen (quelle_ref jsonl:<ref>, idempotent), voller Inhalt, Lauf = aktuelle
  * Anmeldung. Das ist die vollstaendige Quelle fuer eigene Ausgaben (Channel-Posts/DMs sind Werkzeugaufrufe) und die Zaehlung
  * des dauerhaften Wegs; die Web-UI-/Zustell-Zeilen desselben Zugs sind dann Spiegel (zaehlt false). Main-Identitaet nur bei
@@ -789,7 +803,7 @@ const SITZUNGS_ABBILD: Record<SitzungsEintragEingabe['art'], { rolle: VerlaufRol
  * Spezialisten am PC und im Container) bei Schalter agent_verlauf_alle EIN (Standard); AUS bzw. ohne/inaktive Identitaet = Bestand
  * grund nicht_main (der Wrapper meldet dann nicht mehr).
  */
-export async function importiereSitzungsEintraege(identity_id: string | null, eintraege: unknown[], o: { runtime?: string | null } = {}):
+export async function importiereSitzungsEintraege(identity_id: string | null, eintraege: unknown[], o: { runtime?: string | null; herkunft?: 'cli' } = {}):
   Promise<{ aufgenommen: number; grund: string | null }> {
   const main = await hauptagentIdentitaetsId().catch(() => null);
   if (!identity_id) return { aufgenommen: 0, grund: 'nicht_main' };
@@ -823,7 +837,8 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
        VALUES ($1,$2,$3,$4,$5::jsonb,$6,'fertig',$7,$8::jsonb,$9::jsonb,$10,$11,$12,$13,$15,COALESCE($14::timestamptz, NOW()))
        ON CONFLICT (identity_id, quelle_ref) DO NOTHING`,
       [identity_id, abbild.rolle, abbild.richtung, abbild.weg,
-        e.art === 'werkzeug_ergebnis' ? JSON.stringify({ agent_id: 'werkzeug' }) : null, 'jsonl:' + e.ref, text,
+        e.art === 'werkzeug_ergebnis' ? JSON.stringify({ agent_id: 'werkzeug' })
+          : e.art === 'eingabe' && o.herkunft === 'cli' ? JSON.stringify(cliEingabeAbsender(text)) : null, 'jsonl:' + e.ref, text,
         JSON.stringify({ quelle: 'jsonl', art: e.art, ...(e.name ? { name: e.name } : {}), ...(e.werkzeug_id ? { werkzeug_id: e.werkzeug_id } : {}),
           ...(e.fehler ? { fehler: true } : {}), ...(bilder.length ? { bilder } : {}),
           ...(typeof e.inhalt === 'string' ? {} : { inhalt: e.inhalt ?? null }) }),

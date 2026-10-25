@@ -297,7 +297,8 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
     let identityId: string;
     try { identityId = (await pruefeAgentToken(body.ausweis)).identitaet.id; }
     catch { return reply.code(403).send({ success: false, error: 'ausweis_ungueltig' }); }
-    const r = await importiereSitzungsEintraege(identityId, eintraege, { runtime: istText(body.runtime, 32) ? body.runtime : 'claude' });
+    // P22-T135: herkunft cli -> Eingaben bekommen ihren Absender (User an der CLI bzw. Kopf der zugestellten Nachricht).
+    const r = await importiereSitzungsEintraege(identityId, eintraege, { runtime: istText(body.runtime, 32) ? body.runtime : 'claude', herkunft: 'cli' });
     return { success: true, ...r };
   });
 
