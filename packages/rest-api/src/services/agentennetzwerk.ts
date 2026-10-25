@@ -2,6 +2,24 @@
 import { getPool, hauptagentIdentitaetsId, HAUPTAGENT_AGENT_ID, leseNetzwerkKonfiguration, netzwerkEreignis, netzwerkText, type ToolCallRow } from '@synapse/core';
 import { ladeAgentenTeam, type TeamAgent } from './agenten-team.js';
 
+// P22-T149: Index-Groesse (indexierte Dateien, Chunks) fuer Projektstern, Trabanten und Nebel. Je Projekt kurz gecacht, damit
+// SSE-Buendel und Wiederabgleich keinen Abfragesturm ausloesen; ein Fehler liefert null (Web-UI faellt auf die feste Darstellung zurueck).
+const INDEX_CACHE_MS = 30_000;
+const indexCache = new Map<string, { zeit: number; wert: { dateien: number; chunks: number; stand: string } | null }>();
+export async function ladeIndexGroesse(project: string) {
+ const alt = indexCache.get(project);
+ if (alt && Date.now() - alt.zeit < INDEX_CACHE_MS) return alt.wert;
+ let wert: { dateien: number; chunks: number; stand: string } | null = null;
+ try {
+  const r = await getPool().query<{ dateien: number; chunks: number }>(`SELECT
+   (SELECT COUNT(*) FROM code_files WHERE project=$1 AND deleted_at IS NULL AND NOT ignored)::int AS dateien,
+   (SELECT COUNT(*) FROM code_chunks WHERE project=$1)::int AS chunks`, [project]);
+  wert = { dateien: Number(r.rows[0]?.dateien ?? 0), chunks: Number(r.rows[0]?.chunks ?? 0), stand: new Date().toISOString() };
+ } catch { wert = null; }
+ indexCache.set(project, { zeit: Date.now(), wert });
+ return wert;
+}
+
 export async function ladeAgentennetzwerk(project: string) {
  const konfiguration = await leseNetzwerkKonfiguration(project);
  const basis = { success: true, version: 1, project, stand: new Date().toISOString(), ...konfiguration };
@@ -120,11 +138,12 @@ export async function ladeAgentennetzwerk(project: string) {
    dateien_beispiele: (p.dateien ?? []).slice(0, 3).map(d => netzwerkText(d.split('/').pop() ?? d)),
    beitraege: [...new Set([besitzer, ...(p.beitraege ?? []).map(agentVon)].filter((x): x is string => !!x))] };
  });
- return { ...basis, plaene, plaene_ende, agenten: alle.map(a=>({...a,
+ const index = await ladeIndexGroesse(project);
+ return { ...basis, plaene, plaene_ende, index, agenten: alle.map(a=>({...a,
   aufrufe_im_fenster:frequenzen.get(a.id)?.anzahl??0,
   letzter_aufruf:frequenzen.get(a.id)??null,
   zuletzt_aktiv:frequenzen.get(a.id)?.zeit??a.zuletzt_aktiv,
   koordination:koordinierung.get(a.id)??kommunikation.get(a.id)??null})), ereignisse, channel_ereignisse,
   begrenzt: Math.max(0, Number(r.rows[0]?.gesamt ?? 0) - r.rows.length),
-  quellen: ['tool_calls','agenten-team','hauptagentIdentitaetsId','specialist_jobs.spawn','tool_calls.chat','file_batch_plans'], cursor: ereignisse.at(-1)?.id ?? null };
+  quellen: ['tool_calls','agenten-team','hauptagentIdentitaetsId','specialist_jobs.spawn','tool_calls.chat','file_batch_plans','code_files/code_chunks'], cursor: ereignisse.at(-1)?.id ?? null };
 }

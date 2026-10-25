@@ -4,6 +4,7 @@
  * Positionen haengen nur von IDs und Gruppengroessen ab, nie von Zufall; Zuordnung nur aus API-Belegen.
  */
 import {planFade,planFarbe,planZustand} from './plan-nachleuchten';
+import { indexEbenen } from './index-ebenen';
 import type { NetzAgent, NetzEreignis, NetzPlan, NetzSnapshot } from '../../api/agentennetzwerk';
 
 export type Rgb = [number, number, number];
@@ -44,6 +45,16 @@ export function agentFarbe(a: NetzAgent) {
  const typ = (a.typ || '') + ' ' + (a.modell || '');
  return /claude|anthropic/i.test(typ) ? '#ffb98a' : /codex|gpt|openai/i.test(typ) ? '#6ee7d0' : /spezialist|specialist/i.test(typ) ? '#b9adff' : '#a9bfd6';
 }
+/** P22-T148: 'user' und 'system' sind keine Agenten und werden nie zu Knoten. */
+const KEIN_AGENT = new Set(['user', 'system']);
+export const keinAgent = (id: string | null | undefined) => !!id && KEIN_AGENT.has(id.toLowerCase());
+/** P22-T148: Art aus der API; aeltere Snapshots ohne Feld erkennt sie am Empfaenger 'user' bzw. an artefakt(zeigen). */
+export function ereignisArt(e: NetzEreignis): 'an_user' | 'artefakt' | null {
+ if (e.art) return e.art;
+ const tool = werkzeugName(e.tool);
+ if (tool === 'artefakt' && e.action === 'zeigen') return 'artefakt';
+ return tool === 'chat' && e.interaktion === 'senden' && e.empfaenger.some(x => x.toLowerCase() === 'user') ? 'an_user' : null;
+}
 
 export interface Knoten {
  id: string; name: string; rolle: string; project: string; x: number; y: number; radius: number; winkel: number;
@@ -61,6 +72,8 @@ export interface Szene {
  zelle: number;
  /** P22-T95: Knoten-ID eines Agenten -> juengster offener Plan, an dem er beitraegt. */
  planVonAgent: Map<string, string>; plaene: number;
+ /** P22-T149: Groessenfaktor des Projektsterns (linear aus den Dateien; 1 = 60.000 Dateien bzw. Rueckfall). */
+ stern: number;
 }
 
 const PHI = 0.6180339887, TAU = Math.PI * 2;
@@ -86,6 +99,7 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  const fenster = s.werte.aktivitaet_sekunden * 1000, schwelle = s.werte.inaktiv_sekunden * 1000;
  const alleEreignisse = [...new Map([...s.ereignisse, ...(s.channel_ereignisse ?? [])].map(e => [e.id, e])).values()];
  for (const e of alleEreignisse) {
+  if (!e.identity_id && keinAgent(e.agent)) continue;
   const id = e.identity_id || namen.get(e.agent) || e.agent, zeit = Date.parse(e.zeit);
   aktiv.set(id, Math.max(aktiv.get(id) || 0, zeit));
   if (jetzt - zeit <= fenster) raten.set(id, (raten.get(id) || 0) + 1);
@@ -94,6 +108,7 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  }
  // Empfaenger echter DMs sind beteiligt, auch wenn sie selbst noch nichts aufgerufen haben.
  for (const e of s.ereignisse) if (e.ok && werkzeugName(e.tool) === 'chat' && e.interaktion === 'senden') for (const ziel of e.empfaenger) {
+  if (keinAgent(ziel)) continue;
   const id = namen.get(ziel) || ziel; aktiv.set(id, Math.max(aktiv.get(id) || 0, Date.parse(e.zeit)));
   if (!agenten.has(id)) agenten.set(id, { id, agent: ziel, name: ziel, rolle: 'arbeitsagent', project: e.project, identity_id: null, zuletzt_aktiv: e.zeit, kanaele: [] });
  }
@@ -112,7 +127,9 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
   avatar: agentAvatar(a.name), agent: a, letzterAufruf: letzterAufruf.get(a.id),
  }, [a.id, a.agent, a.name]);
  // P22-T95: das Projekt ist der Kern; der Hauptagent ist ein normaler Knoten auf dem inneren Ring.
- const kern = merke({ id: 'projekt:' + s.project, name: s.project, rolle: 'zentrum', project: s.project, x: 0, y: 0, radius: 34, winkel: 0, farbe: '#F97316', letzte: 0, aufrufe: 0, avatar: agentAvatar(s.project) }, ['projekt:' + s.project, 'workspace:' + s.project]);
+ // P22-T149: Sterngroesse linear aus den indexierten Dateien; die Klickflaeche bleibt mindestens 14 Weltpunkte.
+ const stern = indexEbenen(s).stern;
+ const kern = merke({ id: 'projekt:' + s.project, name: s.project, rolle: 'zentrum', project: s.project, x: 0, y: 0, radius: Math.max(14, 34 * stern), winkel: 0, farbe: '#F97316', letzte: 0, aufrufe: 0, avatar: agentAvatar(s.project) }, ['projekt:' + s.project, 'workspace:' + s.project]);
  knoten.push(kern);
 
  // Gruppen: je Koordinator eine, dazu die Projektgruppe fuer Agenten ohne Start-/Kommunikationsbeleg.
@@ -202,8 +219,8 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  }
  // P22-T95: offene files-Plaene (Schattenplaene) als Knoten zwischen Projekt und Agenten, ausgerichtet auf ihre Beitragenden.
  const planVonAgent = new Map<string, string>();
- // Auch zwischen Snapshots sofort committete Plaene bleiben als Metadaten-Knoten sichtbar.
- const plaene = (s.plaene ?? []).filter(p => planFade(p,jetzt,s)>0);
+ // P22-T149 (Fehlerfix zu P22-T102): beendete Plaene sind keine Knoten, sondern ein Abgang (Flug ins Projekt bzw. Explosion).
+ const plaene = (s.plaene ?? []).filter(p => p.status === 'open');
  const planItems = plaene.map((p, i) => {
   const teilnehmer = [...new Set(p.beitraege.map(id => alias.get(id)?.id).filter((id): id is string => !!id && id !== kern.id))];
   return { w: mittelwinkel(teilnehmer.map(id => alias.get(id)!), Math.PI / 2 + i * TAU / Math.max(1, plaene.length)), plan: p, teilnehmer };
@@ -224,7 +241,7 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  }
  const radius = Math.max(R0 + 60, aussen + 56);
  return { knoten, alias, kanten, projekte: mehrere ? konstellationen.map(k => ({ ...k, ...polar(radius - 18, k.winkel) })) : [], kern, radius, breite: radius * 2, hoehe: radius * 2,
-  verborgen, inaktiv: alle.length - (main ? 1 : 0) - koord.length - arbeiter.length, channels: kanalNamen.length, zelle: ZELLE, planVonAgent, plaene: planItems.length };
+  verborgen, inaktiv: alle.length - (main ? 1 : 0) - koord.length - arbeiter.length, channels: kanalNamen.length, zelle: ZELLE, planVonAgent, plaene: planItems.length, stern };
 }
 
 export interface Punkt { x: number; y: number }

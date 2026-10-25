@@ -9,6 +9,8 @@ export interface NetzEreignis {
  ergebnis_bytes?:number;
  /** P22-T97: erfolgreicher Aufruf mit leerem Ergebnis (0 Treffer). */
  ergebnis_leer?:boolean;
+ /** P22-T148: Artefakt bzw. Nachricht an den User, Urheber = agent/identity_id. */
+ art?:'an_user'|'artefakt';
 }
 /** P22-T95: offener (oder gerade committeter) files-Plan als Schattenplan-Knoten; nur Metadaten. */
 export interface NetzPlan { id:string; besitzer:string|null; besitzer_name:string|null; status:string; auto_commit?:boolean; coedit:boolean; erstellt:string; committed:string|null; ops:number; dateien:number; dateien_beispiele:string[]; beitraege:string[] }
@@ -17,6 +19,8 @@ export interface NetzSnapshot {
  version:number;stand:string;project:string;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};
  werte:Record<string,number>;einstellungen:Record<string,{wert:number;quelle:string;min:number;max:number}>;
  agenten:NetzAgent[];ereignisse:NetzEreignis[];plaene?:NetzPlan[];plaene_ende?:Array<{id:string;status:string}>;channel_ereignisse?:NetzEreignis[];begrenzt:number;letzter_fehler:string|null;
+ /** P22-T149: indexierte Dateien und Chunks des Projekts (PG), null wenn nicht lesbar. */
+ index?:{dateien:number;chunks:number;stand:string}|null;
 }
 async function json<T>(path:string, init?:RequestInit):Promise<T> {
  const r=await apiFetch(path,init), d=await r.json();

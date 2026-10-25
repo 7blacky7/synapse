@@ -16,6 +16,19 @@ export interface Licht {
 }
 const HINTERGRUND = [0.02, 0.027, 0.043] as const, HINTERGRUND_HELL = [0.945, 0.933, 0.91] as const, FLOATS = 12, MAX_SPRITES = 80000;
 
+/** P22-T149 'Tinte auf Papier' (helles Design): Farben behalten ihren Ton, werden aber dunkel und satt; grosse Schleier treten zurueck,
+ * kleine Koepfe, Funken und Teilchen werden deckender. Gilt zentral fuer jedes Sprite. Ergebnis in TINTE (keine Allokation je Sprite). */
+const TINTE = new Float32Array(4);
+export function tinte(r: number, g: number, b: number, a: number, groesse: number, tiefe = 1, form = 0): Float32Array {
+ const l = 0.3 * r + 0.59 * g + 0.11 * b, f = Math.min(1, 0.34 / Math.max(0.05, l));
+ TINTE[0] = Math.max(0, Math.min(1, (l + (r - l) * 1.5) * f));
+ TINTE[1] = Math.max(0, Math.min(1, (l + (g - l) * 1.5) * f));
+ TINTE[2] = Math.max(0, Math.min(1, (l + (b - l) * 1.5) * f));
+ // Nur weiche Glut-Schleier (Form 0) treten zurueck; Ringe (Projektreaktion, Wellen) bleiben als feine Linien sichtbar.
+ TINTE[3] = tiefe < 1 ? a * 0.6 : groesse > 60 && form === 0 ? a * 0.35 : Math.min(1, a * 1.25);
+ return TINTE;
+}
+
 const VS = `#version 300 es
 layout(location=0) in vec2 q;
 layout(location=1) in vec4 ps;
@@ -89,6 +102,7 @@ class WebGlLicht implements Licht {
  }
  sprite(x: number, y: number, g: number, r: number, gr: number, b: number, a: number, form: number, tiefe = 1, puls = 0, phase = 0, frequenz = 2.4) {
   if (a <= 0.004) return;
+  if (this.hell) { tinte(r, gr, b, a, g, tiefe, form); r = TINTE[0]; gr = TINTE[1]; b = TINTE[2]; a = TINTE[3]; }
   if ((this.n + 1) * FLOATS > this.daten.length) {
    if (this.n >= MAX_SPRITES) { this.verworfen++; return; }
    const neu = new Float32Array(this.daten.length * 2); neu.set(this.daten); this.daten = neu;
@@ -112,17 +126,18 @@ class WebGlLicht implements Licht {
 /** Ersatz ohne WebGL2: gleiche Szene, einfache additive Kreise, harte Obergrenze je Frame. */
 class CanvasLicht implements Licht {
  readonly art = 'canvas2d' as const; readonly info = 'canvas2d (ohne WebGL2)';
- private w = 0; private h = 0; private k: Kamera = { x: 0, y: 0, zoom: 1 }; private t = 0; private n = 0; private verworfen = 0;
+ private w = 0; private h = 0; private k: Kamera = { x: 0, y: 0, zoom: 1 }; private t = 0; private n = 0; private verworfen = 0; private hell = false;
  constructor(private ctx: CanvasRenderingContext2D) {}
  begin(w: number, h: number, dpr: number, k: Kamera, zeit: number, hell = false) {
   const c = this.ctx.canvas, bw = Math.round(w * dpr), bh = Math.round(h * dpr);
   if (c.width !== bw || c.height !== bh) { c.width = bw; c.height = bh; }
   this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); this.ctx.globalCompositeOperation = 'source-over';
   this.ctx.fillStyle = hell ? '#f1eee8' : '#05070b'; this.ctx.fillRect(0, 0, w, h); this.ctx.globalCompositeOperation = hell ? 'source-over' : 'lighter';
-  this.w = w; this.h = h; this.k = k; this.t = zeit; this.n = 0; this.verworfen = 0;
+  this.w = w; this.h = h; this.k = k; this.t = zeit; this.n = 0; this.verworfen = 0; this.hell = hell;
  }
  sprite(x: number, y: number, g: number, r: number, gr: number, b: number, a: number, form: number, tiefe = 1, puls = 0, phase = 0, frequenz = 2.4) {
   if (a <= 0.01) return;
+  if (this.hell) { tinte(r, gr, b, a, g, tiefe, form); r = TINTE[0]; gr = TINTE[1]; b = TINTE[2]; a = TINTE[3]; }
   if (this.n >= 7000) { this.verworfen++; return; }
   this.n++;
   const z = 1 + (this.k.zoom - 1) * tiefe, p = 1 + puls * Math.sin(this.t * frequenz + phase);

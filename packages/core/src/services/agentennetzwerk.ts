@@ -25,6 +25,10 @@ export const NETZWERK_EINSTELLUNGEN = {
  plan_nachleuchten_sekunden: { standard: 3, min: 1, max: 300 },
  plan_nachleuchten_auto_sekunden: { standard: 3, min: 1, max: 300 },
  plan_mindestanzeige_sekunden: { standard: 3, min: 1, max: 30 },
+ // P22-T149: Datei-Trabanten, Chunk-Nebel und Sterngroesse aus dem Index (1 an, 0 = Rueckfall auf die feste Darstellung).
+ orbit_nebel: { standard: 1, min: 0, max: 1 },
+ // P22-T148: Artefakte und Nachrichten an den User als eigene Animation am Urheber (1 an, 0 = nur Feed-Eintrag).
+ an_user_animation: { standard: 1, min: 0, max: 1 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;
@@ -112,7 +116,11 @@ export interface NetzwerkEreignis {
  id: string; zeit: string; project: string; agent: string; identity_id: string | null; lauf_id: string | null;
  tool: string; action: string; ok: boolean; empfaenger: string[]; channel: string | null;
  interaktion: 'senden' | 'lesen' | 'aufruf'; quelle: 'tool_calls'; routing: 'vorhanden' | 'nicht_erfasst';
+ /** P22-T148: Artefakt bzw. Nachricht an den User; Urheber = agent/identity_id. 'user'/'system' stehen nie in empfaenger. */
+ art?: 'an_user' | 'artefakt';
 }
+/** P22-T148: keine Agenten, werden nie zu Netzwerk-Knoten. */
+export const NETZWERK_KEIN_AGENT: readonly string[] = ['user', 'system'];
 export function netzwerkEreignis(row: ToolCallRow): NetzwerkEreignis {
  const args = netzwerkArgumente(row.args_preview);
  const tool = netzwerkText(row.tool_name.split('__').pop());
@@ -120,10 +128,13 @@ export function netzwerkEreignis(row: ToolCallRow): NetzwerkEreignis {
  const sendet = ['send','inbox_send','post'].includes(action);
  const liest = ['get','feed','inbox_check','mark_read'].includes(action);
  const roh = tool === 'chat' && sendet ? args.recipient_id ?? args.to_agent : undefined;
- const empfaenger = (Array.isArray(roh) ? roh : [roh]).filter((x): x is string => typeof x === 'string').map(netzwerkText);
+ const genannt = (Array.isArray(roh) ? roh : [roh]).filter((x): x is string => typeof x === 'string').map(netzwerkText);
+ // P22-T148: 'user' und 'system' sind keine Agenten; eine Nachricht an den User wird eine eigene Art am Urheber, nie ein Knoten.
+ const empfaenger = genannt.filter(x => !NETZWERK_KEIN_AGENT.includes(x.toLowerCase()));
+ const art = tool === 'artefakt' && action === 'zeigen' ? 'artefakt' as const : genannt.some(x => x.toLowerCase() === 'user') ? 'an_user' as const : null;
  const channel = tool === 'channel' ? netzwerkText(args.channel_name ?? args.name) || null : null;
  return { id: String(row.id), zeit: new Date(row.ts).toISOString(), project: netzwerkText(row.project), agent: netzwerkText(row.agent_id || row.source || 'unbekannt'),
   identity_id: row.identity_id ?? null, lauf_id: row.lauf_id ?? null, tool, action, ok: row.ok,
   empfaenger, channel, interaktion: sendet ? 'senden' : liest ? 'lesen' : 'aufruf', quelle: 'tool_calls',
-  routing: empfaenger.length || channel ? 'vorhanden' : 'nicht_erfasst' };
+  routing: empfaenger.length || channel || art ? 'vorhanden' : 'nicht_erfasst', ...(art ? { art } : {}) };
 }

@@ -91,63 +91,36 @@ try{
  messung.logik_wiederkehr={sichtbar:wieder.plaene.length>0};
  ok(wieder.plaene.length===0,'Logik: Wiederkehr im Snapshot startet die Frist nicht neu');
 
- // Teil B (Browser): offener, committeter und auto-committeter Plan; Dauer bis zum Verschwinden je Farbe.
+ // Teil B (Browser, umgestellt mit P22-T149, User-Entscheidung thought 79c0bd8b): committete und auto-committete Plaene verblassen nicht
+ // mehr als Knoten, sondern fliegen sofort ins Projekt (gruen bzw. blau); erneute Snapshots starten keinen zweiten Flug.
  const folder=join(repo,'ui-screenshots/p22-t104');await mkdir(folder,{recursive:true});
  const shot=async name=>{const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,praefix+name),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+join(folder,praefix+name));};
  tab=(await kb('/tabs/new',{url:ui+'/tests/agentennetzwerk.html'})).tab_id;
  await wait(()=>evaluate("!!document.querySelector('canvas.nw-gl')?.dataset.renderer"),'network canvas');
  const states=()=>evaluate("JSON.parse(document.querySelector('canvas.nw-gl')?.dataset.planZustaende||'[]')");
  const refresh=()=>evaluate("document.dispatchEvent(new Event('visibilitychange'));true");
+ const farben=()=>evaluate("JSON.parse(document.querySelector('canvas.nw-gl')?.dataset.commitFarben||'{}')");
  const offen=await plan('offen.txt',false,'codex-api'),normal=await plan('normal.txt');
  await refresh();await wait(async()=>(await states()).some(x=>x.id===normal.plan_id),'open plans visible');
+ const f0=await farben();
  await call({action:'commit',plan_id:normal.plan_id});
  const auto=await plan('auto.txt',true);
- const t0=Date.now();
- const ids={committet:normal.plan_id,'auto-committet':auto.plan_id};
- const db0=(await pool.query('SELECT id::text,committed_at FROM file_batch_plans WHERE id=ANY($1::bigint[])',[[normal.plan_id,auto.plan_id]])).rows;
- messung.committed_at=Object.fromEntries(db0.map(r=>[r.id,r.committed_at.toISOString()]));
  await refresh();
- // Viele Snapshots waehrend des Nachleuchtens (wie bei regem SSE-Verkehr): jede Sekunde neu laden.
- const verlauf={},letzte={},erste={},animation={};let zuletztRefresh=0,mitte=false,offenAnim=null;
- while(Date.now()-t0<Math.max(45000,fenster*2+10000)){
-  if(Date.now()-zuletztRefresh>=1000){zuletztRefresh=Date.now();await refresh();}
-  const s=await states(),t=Date.now()-t0;
-  for(const [art,id]of Object.entries(ids)){
-   // Bis zum naechsten Snapshot zeigt die Grafik den Plan noch offen; gemessen wird nur der committete Zustand.
-   const z=s.find(x=>x.id===id&&x.status!=='offen');if(!z)continue;
-   erste[art]??=t;letzte[art]=t;animation[art]??=z.animation??null;
-   (verlauf[art]??=[]).push([t,Number((z.fade??0).toFixed(3))]);
-  }
-  offenAnim??=s.find(x=>x.id===offen.plan_id)?.animation??null;
-  if(!mitte&&t>(nurMessen?12000:1200)){mitte=true;await shot('01-abklingen-mitte.png');}
-  if(Object.keys(ids).every(a=>letzte[a]!==undefined&&!s.some(x=>x.id===ids[a]))&&t>2000)break;
-  await sleep(150);
- }
- await sleep(400);await shot('02-nach-ablauf.png');
- const dauer=Object.fromEntries(Object.keys(ids).map(a=>[a,letzte[a]===undefined?null:Math.round(letzte[a])]));
- messung.anzeige_ms_ab_commit=dauer;messung.erste_sichtung_ms=erste;messung.animation={offen:offenAnim,...animation};
- messung.fade_verlauf=Object.fromEntries(Object.entries(verlauf).map(([a,v])=>[a,v.filter((_,i)=>i%6===0)]));
- console.log('MESSUNG '+JSON.stringify({dauer,erste,animation:messung.animation}));
- const neustart=Object.values(verlauf).some(v=>v.some(([,f],i)=>i>0&&f>v[i-1][1]+0.02));
- messung.fade_stieg_wieder=neustart;
- ok(!neustart,'Browser: Fade steigt bei erneuten Snapshots nie wieder an (keine Neustart-Frist)');
- for(const a of Object.keys(ids))ok(dauer[a]!==null&&dauer[a]<=soll[a]+1500&&dauer[a]>=soll[a]-1500,'Browser: '+a+' sichtbar ~'+soll[a]/1000+' s (gemessen '+dauer[a]+' ms)');
- ok(Math.abs((dauer.committet??0)-(dauer['auto-committet']??0))<=Math.abs(fenster-fensterAuto)+1500,'Browser: grün und blau entsprechend ihrer Einstellung');
- ok(offenAnim==='puls','Browser: offener Plan behält Puls');
- ok(animation.committet==='abklingen'&&animation['auto-committet']==='abklingen','Browser: committet und auto-committet klingen ruhig ab');
- ok((await states()).some(x=>x.id===offen.plan_id),'Browser: offener Plan bleibt sichtbar');
+ await wait(async()=>{const f=await farben();return (f.committet??0)>(f0.committet??0)&&(f.auto??0)>(f0.auto??0);},'gruener und blauer Flug');
+ await sleep(400);await shot('01-flug.png');
+ messung.farben=await farben();
+ for(let i=0;i<8;i++){await refresh();await sleep(300);}
+ const s=await states(),f1=await farben();
+ ok(!s.some(x=>[normal.plan_id,auto.plan_id].includes(x.id)),'Browser: committete Plaene sind keine Knoten mehr (Flug statt Nachleuchten)');
+ ok(f1.committet===messung.farben.committet&&f1.auto===messung.farben.auto,'Browser: erneute Snapshots starten keinen zweiten Flug');
+ ok(s.find(x=>x.id===offen.plan_id)?.animation==='puls','Browser: offener Plan behält Puls');
+ await shot('02-nach-flug.png');
 
- // Teil C: Wert bleibt Einstellung in PG; ein kuerzerer Wert wirkt ohne Codeaenderung.
+ // Teil C: Wert bleibt Einstellung in PG (wirkt nur noch auf die Logik von PlanNachleuchten, nicht mehr als Knotenanzeige).
  if(!nurMessen){
   const setting=await app.inject({method:'PUT',url:'/api/projects/'+P+'/agent-profile/agentennetzwerk',headers:{authorization:'Bearer p22-user'},
    payload:{netzwerk_werte:{plan_nachleuchten_auto_sekunden:2},grund:'T104 Einstellung wirkt'}});
   assert.equal(setting.statusCode,200,setting.body);ok(setting.json().einstellungen.plan_nachleuchten_auto_sekunden.quelle==='einstellung','Einstellung auto persistiert mit Quelle');
-  await refresh();await sleep(500);
-  const kurz=await plan('kurz.txt',true),t1=Date.now();let kz;
-  await refresh();await wait(async()=>(await states()).some(x=>x.id===kurz.plan_id),'kurz sichtbar');
-  while(Date.now()-t1<15000){await refresh();if(!(await states()).some(x=>x.id===kurz.plan_id)){kz=Date.now()-t1;break;}await sleep(200);}
-  messung.einstellung_auto_2s_ms=kz??null;console.log('EINSTELLUNG auto 2s gemessen '+kz+' ms');
-  ok(kz!==undefined&&kz<=3500&&kz>=1000,'Einstellung auto 2 s wirkt im Browser');
  }
  await writeFile(join(folder,praefix+'belege.json'),JSON.stringify({checks,...messung},null,2));
  console.log((nurMessen?'MESSUNG FERTIG':'PASS P22-T104 '+checks+' checks')+'; KI-Browser; private schema '+schema);

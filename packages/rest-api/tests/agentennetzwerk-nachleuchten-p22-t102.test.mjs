@@ -89,8 +89,9 @@ try{
  ok(keep.aktualisiere({...raw,plaene:[],plaene_ende:[{id:p.id,status:'committed'}]},n+94000).plaene.length===0,'expires exactly once');
  keep=new PlanNachleuchten();keep.aktualisiere({...raw,plaene:[p]},n);
  ok(keep.aktualisiere({...raw,plaene:[],plaene_ende:[{id:p.id,status:'cancelled'}]},n+100).plaene.length===0,'cancel cannot glow as commit');
- const many=netzwerkSzene({...raw,plaene:Array.from({length:20},(_,i)=>({...p,id:'many-'+i,committed:new Date(n).toISOString()}))},n);
- ok(many.plaene===20,'no old 16-plan cutoff loses just committed plans');
+ const many=netzwerkSzene({...raw,plaene:Array.from({length:20},(_,i)=>({...p,id:'many-'+i,status:'open',committed:null}))},n);
+ ok(many.plaene===20,'no old 16-plan cutoff for open plans');
+ ok(netzwerkSzene({...raw,plaene:[{...p,id:'done-1'}]},n).plaene===0,'P22-T149: committed plans are no nodes (they fly into the project)');
  const folder=join(repo,'ui-screenshots/p22-t102');await mkdir(folder,{recursive:true});
  const shot=async name=>{await sleep(300);const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);await writeFile(join(folder,name),Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+join(folder,name));};
  tab=(await kb('/tabs/new',{url:ui+'/tests/agentennetzwerk.html'})).tab_id;
@@ -110,19 +111,19 @@ try{
  ok(raw.plaene.some(p=>p.id===normal.plan_id&&p.auto_commit===false),'fast separate commit stays normal');
  ok(!JSON.stringify(raw.plaene).includes('T102 private test'),'plan response metadata has no file contents');
  await refresh();
- await wait(async()=>{const s=await states();return s.some(p=>p.id===autoId&&p.status==='auto-committet')&&s.some(p=>p.id===normal.plan_id&&p.status==='committet');},'instant auto and normal visible');
- const colors=await states();messung.farben=colors;
- ok(new Set(colors.map(p=>p.farbe)).size===3,'open / committed / auto have three distinct colors');
- ok(colors.filter(p=>[autoId,normal.plan_id].includes(p.id)).every(p=>p.beitraege===1),'afterglow nodes retain contributor links');
- const first=(await states()).find(p=>p.id===autoId).fade;await sleep(1150);
- ok((await states()).find(p=>p.id===autoId).fade<first,'actual canvas afterglow fades');
- await shot('01-offen-committet-auto.png');
- // Click/hover the real canvas node and read the visible status card.
+ // P22-T149 (User-Entscheidung thought 79c0bd8b): committet und auto-committet fliegen sofort ins Projekt (gruen bzw. blau), kein Nachleuchten als Knoten.
+ const commitFarben=()=>evaluate("JSON.parse(document.querySelector('canvas.nw-gl').dataset.commitFarben||'{}')");
+ await wait(async()=>{const f=await commitFarben();return (f.committet??0)>=1&&(f.auto??0)>=1;},'green and blue commit flights');
+ await sleep(100);await shot('01-flug-gruen-blau.png');
+ const colors=await states();messung.farben=await commitFarben();
+ ok(!colors.some(p=>[autoId,normal.plan_id].includes(p.id)),'committed and auto-committed plans are no afterglow nodes');
+ ok(colors.some(p=>p.id===cancel.plan_id&&p.farbe==='#fcd34d'),'open plan stays gold');
+ // Click/hover the real canvas node (open plan) and read the visible status card.
  raw=await snapshot();
- const point=await evaluate("(()=>{const g=window.p22szene("+JSON.stringify(raw)+",Date.now()),k=g.alias.get('plan:"+autoId+"'),c=document.querySelector('canvas.nw-gl'),r=c.getBoundingClientRect(),d=c.dataset;return{x:r.x+r.width/2+(k.x*Number(d.streckX)-Number(d.camX))*Number(d.zoom),y:r.y+r.height/2+(k.y*Number(d.streckY)-Number(d.camY))*Number(d.zoom)};})()");
+ const point=await evaluate("(()=>{const g=window.p22szene("+JSON.stringify(raw)+",Date.now()),k=g.alias.get('plan:"+cancel.plan_id+"'),c=document.querySelector('canvas.nw-gl'),r=c.getBoundingClientRect(),d=c.dataset;return{x:r.x+r.width/2+(k.x*Number(d.streckX)-Number(d.camX))*Number(d.zoom),y:r.y+r.height/2+(k.y*Number(d.streckY)-Number(d.camY))*Number(d.zoom)};})()");
  await evaluate("(()=>{const c=document.querySelector('canvas.nw-text');c.dispatchEvent(new PointerEvent('pointermove',{clientX:"+point.x+",clientY:"+point.y+",pointerType:'mouse',bubbles:true}));c.dispatchEvent(new MouseEvent('click',{clientX:"+point.x+",clientY:"+point.y+",bubbles:true}));return true})()");
- await wait(()=>evaluate("document.querySelector('.nw-card')?.innerText.includes('auto-committet')"),'auto status tooltip');
- messung.tooltip=await evaluate("document.querySelector('.nw-card').innerText");await sleep(250);await shot('02-auto-tooltip.png');
+ await wait(()=>evaluate("document.querySelector('.nw-card')?.innerText.includes('offen')"),'open status tooltip');
+ messung.tooltip=await evaluate("document.querySelector('.nw-card').innerText");await sleep(250);await shot('02-offen-tooltip.png');
  await evaluate("(()=>{document.querySelector('[aria-label=\"Knotenkarte schließen\"]')?.click();const e=document.querySelector('[aria-label=\"Erklärungen\"]');if(e.getAttribute('aria-checked')!=='true')e.click();return true})()");
  await wait(()=>evaluate("document.querySelector('[aria-label=\"Erklärungen\"]')?.getAttribute('aria-checked')==='true'"),'explanations ON');
  await evaluate("document.querySelector('[aria-label=\"Icon-Legende\"]').click();true");
@@ -138,15 +139,15 @@ try{
  await call({action:'cancel',plan_id:cancel.plan_id});await refresh();
  await wait(async()=>await evaluate("Number(document.querySelector('canvas.nw-gl').dataset.abgangExplosion)")>before,'discard explosion');
  ok(!(await states()).some(p=>p.id===cancel.plan_id),'cancelled plan removed, not committed afterglow');await shot('04-verworfen.png');
- // Near-window-end arrival: next API snapshot no longer contains it, local min duration does.
+ // P22-T149: ein Auto-Commit kurz vor Fensterende, nie als Raute gesehen, fliegt genau einmal blau ins Projekt (statt Mindestanzeige als Knoten).
+ const vorLate=(await commitFarben()).auto??0;
  const late=await plan('late.txt',true);
  await pool.query("UPDATE file_batch_plans SET committed_at=clock_timestamp()-INTERVAL '7.6 seconds' WHERE id=$1",[late.plan_id]);
- await refresh();await wait(async()=>(await states()).some(p=>p.id===late.plan_id),'late auto commit first seen');
- await sleep(650);await refresh();
- ok(!(await snapshot()).plaene.some(p=>p.id===late.plan_id),'late plan gone from API window');
- ok((await states()).some(p=>p.id===late.plan_id&&p.fade>0),'late plan still visible for local minimum');await shot('05-mindestanzeige.png');
- await wait(async()=>!(await states()).some(p=>p.id===late.plan_id),'minimum eventually expires',8000);
- ok(true,'local minimum ends without resurrection');
+ await refresh();
+ await wait(async()=>((await commitFarben()).auto??0)>vorLate,'late auto commit flies blue');
+ await shot('05-spaeter-auto-flug.png');
+ for(let i=0;i<4;i++){await refresh();await sleep(300);}
+ ok(((await commitFarben()).auto??0)===vorLate+1&&!(await states()).some(p=>p.id===late.plan_id),'late plan flies exactly once and is no node');
  await C.setzeProfilProduktSchalter({ebene:'projekt',project:P,funktion:'agentennetzwerk',aktiv:false,grund:'T102 switch OFF check'},{system:'user'});
  await refresh();await wait(()=>evaluate("!document.querySelector('canvas.nw-gl')"),'existing product switch OFF');
  ok(!(await snapshot()).plaene?.length,'product OFF returns no plan metadata');
