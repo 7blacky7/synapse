@@ -10,6 +10,7 @@ import { ChannelProjectSurface } from './ChannelProjectSurface';
 import { ChannelRailListe } from './ChannelRailListe';
 import { ChatEingabefeld } from './ChatEingabefeld';
 import { KlartextText, VerweisFensterProvider, VerweisText } from './Lesefenster';
+import { NachrichtBilder } from './ToolBild';
 import { ArtefaktBewertung, useArtefaktBewertungen } from './ArtefaktBewertung';
 import { fensterAusschnitt } from './chat-fenster-logik';
 import { ProjectCoordinatorDock } from './ProjectCoordinatorDock';
@@ -972,6 +973,8 @@ function MainAgentView({ project, showDashboard }: { theme: Theme; project: stri
               <header>{message.kopf ?? (message.role === 'user' ? 'Du' : 'Hauptagent')}{message.info && <small className="message-info">{message.info}</small>}</header>
               {/* P22-T137 Punkt 7: fertiger Fliesstext als Markdown (KlartextText wie das Koordinator-Fenster), laufende Antwort roh. */}
               {message.kind === 'text' && (message.laeuft ? message.text && <p>{message.text}</p> : message.text.trim() && <KlartextText project={project} text={message.text} />)}
+              {/* P22-T150: Bildleiste fuer Bildverweise im Text (gleicher Baustein wie das Koordinator-Fenster). */}
+              {message.kind === 'text' && !message.laeuft && !!message.text.trim() && <NachrichtBilder project={project} text={message.text} />}
               {message.laeuft && <div className="message-laeuft"><i /><i /><i /><span>Hauptagent antwortet …</span></div>}
               {message.hinweise?.map((hinweis) => <small key={hinweis} className="message-hinweis">{hinweis}</small>)}
               {message.zugInfo && <small className="message-zug">{message.zugInfo}</small>}
@@ -1161,6 +1164,7 @@ function ChannelMessageContent({ message, project }: { message: ChannelMessageVi
           )}
         </div>
       )}
+      {parsed.text && <NachrichtBilder project={project} text={parsed.text} />}
       {!!parsed.filePaths.length && <div className="channel-file-grid">{parsed.filePaths.map((path) => <div key={path}><i>FILE</i><span><strong>{path.split('/').pop()}</strong><small>{path}</small></span></div>)}</div>}
       {!!parsed.imagePaths.length && (
         <div className="channel-image-grid">

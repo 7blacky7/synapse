@@ -1,11 +1,31 @@
-/* P22-T67: Bilder aus Synapse-Tools unter der Tool-Zeile im Chatverlauf */
+/* P22-T67: Bilder aus Synapse-Tools unter der Tool-Zeile im Chatverlauf; P22-T150: auch Bildverweise aus Nachrichten (Bildleiste) */
 .tool-bilder { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 8px 18px; }
-.tool-bild { margin: 0; max-width: 360px; }
-.tool-bild-knopf { display: block; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: transparent; cursor: zoom-in; overflow: hidden; }
-.tool-bild-knopf img { display: block; max-width: 100%; max-height: 240px; object-fit: contain; }
-.tool-bild-platz { padding: 10px 12px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; }
+.message .tool-bilder, .channel-message-text + .tool-bilder, .agent-terminal-stream .tool-bilder { margin: 8px 0 2px; }
+/* P22-T150: feste Box, Inhalt erst bei Sichtbarkeit geladen; Unterschrift einzeilig, damit sich die Hoehe nie aendert. */
+.tool-bild { margin: 0; width: 240px; max-width: 100%; }
+.tool-bild-box { display: flex; width: 100%; height: 150px; }
+.tool-bild-knopf { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--soft, transparent); cursor: zoom-in; overflow: hidden; }
+.tool-bild-knopf:hover, .tool-bild-knopf:focus-visible { border-color: var(--accent); outline: none; }
+.tool-bild-knopf img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.tool-bild-platz { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); font-size: 12px; text-align: center; overflow: hidden; }
 .tool-bild-platz.fehler { color: var(--danger, #d9534f); }
-.tool-bild figcaption { margin-top: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
-.tool-bild-gross { position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; background: rgba(0, 0, 0, 0.78); cursor: zoom-out; }
-.tool-bild-gross img { max-width: 96vw; max-height: 88vh; object-fit: contain; background: #fff2; }
-.tool-bild-gross p { margin: 0; color: #ddd; font-size: 12px; }
+.tool-bild figcaption { display: flex; height: 15px; margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 15px; white-space: nowrap; overflow: hidden; }
+.tool-bild-pfad { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tool-bild-masse { flex: none; white-space: pre; }
+.tool-bild-mehr { width: 64px; height: 150px; border: 1px dashed var(--border); border-radius: 6px; background: transparent; color: var(--muted); font-size: 14px; cursor: zoom-in; }
+.tool-bild-mehr:hover, .tool-bild-mehr:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
+/* P22-T150: Grossansicht (Portal an .synapse-control: Hintergrund und Leiste folgen hell/dunkel, Akzent aus den Einstellungen) */
+.bild-gross { position: fixed; inset: 0; z-index: 2000; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg, #0f1012) 94%, transparent); color: var(--text, #f2efe9); }
+.bild-gross-buehne { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; user-select: none; cursor: grab; }
+.bild-gross-buehne:active { cursor: grabbing; }
+.bild-gross-buehne img { position: absolute; left: 50%; top: 50%; max-width: none; max-height: none; transform-origin: center; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35); background: repeating-conic-gradient(var(--soft, #131518) 0 25%, var(--strong, #1c1f23) 0 50%) 0 0 / 16px 16px; }
+.bild-gross-hinweis { position: absolute; inset: 0; height: fit-content; margin: auto; padding: 0 24px; color: var(--muted); font-size: 13px; text-align: center; pointer-events: none; }
+.bild-gross-hinweis.fehler { color: var(--danger, #d9534f); }
+.bild-gross-leiste { position: absolute; top: 12px; left: 50%; z-index: 1; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px; max-width: calc(100vw - 24px); padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3); transform: translateX(-50%); }
+.bild-gross-leiste button { min-width: 32px; height: 30px; padding: 0 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--strong); color: var(--text); font-size: 13px; cursor: pointer; }
+.bild-gross-leiste button:hover:not(:disabled), .bild-gross-leiste button:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
+.bild-gross-leiste button:disabled { opacity: 0.45; cursor: default; }
+.bild-gross-leiste span { min-width: 56px; color: var(--muted); font: 12px ui-monospace, monospace; text-align: center; }
+.bild-gross-leiste .bild-gross-zoom { color: var(--accent); }
+.bild-gross-zu { margin-left: 6px; }
+.bild-gross-unterschrift { margin: 0; padding: 8px 16px 12px; color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }

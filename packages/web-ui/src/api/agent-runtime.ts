@@ -604,16 +604,21 @@ export async function getMainAgentWarteschlangeSchalter(): Promise<{ aktiv: bool
   return (await jsonRequest<{ success: true; schalter: { aktiv: boolean; quelle: string } }>('/api/main-agent/warteschlange/schalter')).schalter;
 }
 
-export interface GeladenesToolBild { url: string; aktuell: boolean; revision: string | null }
+export interface GeladenesToolBild { url: string; aktuell: boolean; revision: string | null; breite: number | null; hoehe: number | null }
 
-/** P22-T67: Bild eines Werkzeugaufrufs ueber die Ansicht-Route laden (Blob-URL; Rechte der Web-UI-Sitzung). */
+/**
+ * P22-T67: Bild eines Werkzeugaufrufs ueber die Ansicht-Route laden (Blob-URL; Rechte der Web-UI-Sitzung).
+ * P22-T150: auch Bildverweise aus Nachrichten; breite/hoehe aus X-Bild-Breite/-Hoehe fuer die Unterschrift.
+ */
 export async function ladeToolBild(bild: Pick<AgentToolBild, 'project' | 'file_path' | 'revision'>): Promise<GeladenesToolBild> {
   const params = new URLSearchParams({ project: bild.project ?? '', file_path: bild.file_path ?? '' });
   if (bild.revision) params.set('revision', bild.revision);
   const response = await apiFetch('/api/main-agent/tool-bild?' + params.toString());
   if (!response.ok) throw new Error(await readError(response));
   const blob = await response.blob();
-  return { url: URL.createObjectURL(blob), aktuell: response.headers.get('X-Bild-Aktuell') === '1', revision: response.headers.get('X-Bild-Revision') };
+  const zahl = (name: string): number | null => { const n = Number(response.headers.get(name)); return Number.isFinite(n) && n > 0 ? n : null; };
+  return { url: URL.createObjectURL(blob), aktuell: response.headers.get('X-Bild-Aktuell') === '1', revision: response.headers.get('X-Bild-Revision'),
+    breite: zahl('X-Bild-Breite'), hoehe: zahl('X-Bild-Hoehe') };
 }
 
 /** P22-T63: Verlauf auf allen Geraeten ausblenden (nur nach Rueckfrage aufrufen); gespeichert bleibt alles. */

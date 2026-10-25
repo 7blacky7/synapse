@@ -50,10 +50,38 @@ export function bekannteTreffer(project: string, k: VerweisKandidat): VerweisTre
   return aufgeloest.get(cacheSchluessel(project, k));
 }
 
-/** Fragt nur unbekannte Kandidaten in EINEM Aufruf ab; Fehler lassen den Cache leer (kein falscher Link). */
+const laufend = new Map<string, Promise<void>>();
+
+/**
+ * Fragt nur unbekannte Kandidaten in EINEM Aufruf ab; Fehler lassen den Cache leer (kein falscher Link).
+ * P22-T150: Was gerade schon abgefragt wird (Pfad-Link und Bildleiste derselben Nachricht), wird abgewartet statt doppelt gefragt.
+ * true = es kam etwas in den Cache.
+ */
 export async function loeseVerweiseAuf(project: string, kandidaten: VerweisKandidat[]): Promise<boolean> {
-  const neu = kandidaten.filter((k) => !aufgeloest.has(cacheSchluessel(project, k)));
-  if (!neu.length) return false;
+  const neu: VerweisKandidat[] = [];
+  const schluessel = new Set<string>();
+  const warten = new Set<Promise<void>>();
+  for (const k of kandidaten) {
+    const s = cacheSchluessel(project, k);
+    if (aufgeloest.has(s) || schluessel.has(s)) continue;
+    const l = laufend.get(s);
+    if (l) { warten.add(l); continue; }
+    schluessel.add(s);
+    neu.push(k);
+  }
+  if (!neu.length && !warten.size) return false;
+  let anfrage: Promise<boolean> = Promise.resolve(false);
+  if (neu.length) {
+    anfrage = frageVerweise(project, neu);
+    const fertig = anfrage.then(() => undefined, () => undefined);
+    for (const s of schluessel) laufend.set(s, fertig);
+    void fertig.then(() => { for (const s of schluessel) if (laufend.get(s) === fertig) laufend.delete(s); });
+  }
+  const [geaendert] = await Promise.all([anfrage, ...warten]);
+  return geaendert || warten.size > 0;
+}
+
+async function frageVerweise(project: string, neu: VerweisKandidat[]): Promise<boolean> {
   const response = await apiFetch('/api/projects/' + encodeURIComponent(project) + '/verweise/aufloesen', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

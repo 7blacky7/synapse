@@ -8,7 +8,11 @@ import {
   type VerweisArt, type VerweisInhalt, type VerweisKandidat, type VerweisTreffer,
 } from '../api/verweise';
 import { ToolBilder } from './ToolBild';
+import { BildGrossansicht } from './BildGrossansicht';
+import { BILD_MUSTER } from './bild-logik';
 import { zerlegeInline, zerlegeKlartext, type InlineTeil } from './klartext-logik';
+// P22-T150: Bildleiste unter Nachrichten, hier mit angeboten (gleicher Bezug wie KlartextText).
+export { NachrichtBilder } from './ToolBild';
 import '../verweise.css';
 
 /**
@@ -51,8 +55,8 @@ interface Fund {
 }
 
 const MUSTER: Array<{ re: RegExp; gruppe: number; hinweis?: VerweisKandidat['hinweis']; hexPruefung?: boolean }> = [
-  // Bildpfade (z. B. ui-screenshots/...png): nur verlinkt, wenn der Server das Asset im Projekt kennt.
-  { re: /(?:^|[\s(`"'\[])((?:[\w.-]+\/)+[\w.-]+\.(?:png|jpe?g|gif|webp|avif))(?=$|[\s)`"'\].,;:])/gi, gruppe: 1, hinweis: 'asset' },
+  // Bildpfade (relativ oder absolut) und asset_id: nur verlinkt, wenn der Server das Bild im Projekt kennt (P22-T150: bild-logik).
+  ...BILD_MUSTER.map((m) => ({ ...m, hinweis: 'asset' as const })),
   { re: /\bEvent\s+#?(\d{1,9})\b/gi, gruppe: 1, hinweis: 'event' },
   { re: /\bChat(?:-Nachricht)?\s+#?(\d{1,9})\b/gi, gruppe: 1, hinweis: 'chat' },
   { re: /\b(?:Channel-)?(?:Nachricht|Message)\s+#?(\d{1,9})\b/gi, gruppe: 1, hinweis: 'nachricht' },
@@ -90,8 +94,19 @@ export function findeKandidaten(text: string): Fund[] {
 function VerweisLink({ project, wert, treffer }: { project: string; wert: string; treffer: VerweisTreffer[] }) {
   const fenster = useVerweisFenster();
   const [auswahl, setAuswahl] = useState(false);
+  const [gross, setGross] = useState(false);
   if (!fenster) return <>{wert}</>;
   const oeffne = (t: VerweisTreffer) => { setAuswahl(false); fenster.oeffne({ project, art: t.art, id: t.id }); };
+  if (treffer.length === 1 && treffer[0].art === 'asset') {
+    // P22-T150: ein Bildpfad oeffnet direkt die Grossansicht; andere Verweise weiter das Lesefenster.
+    const t = treffer[0];
+    return (
+      <>
+        <button type="button" className="verweis-link" title={'Bild: ' + t.titel + ' (groß anzeigen)'} onClick={() => setGross(true)}>{wert}</button>
+        {gross && <BildGrossansicht bilder={[{ mime_type: 'image/*', bytes: 0, project, file_path: t.id }]} onSchliessen={() => setGross(false)} />}
+      </>
+    );
+  }
   if (treffer.length === 1) {
     const t = treffer[0];
     return <button type="button" className="verweis-link" title={ART_LABEL[t.art] + ': ' + t.titel} onClick={() => oeffne(t)}>{wert}</button>;

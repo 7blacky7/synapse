@@ -6,7 +6,7 @@
  *         (Ausnahme tech_docs: projektuebergreifend). Nie rohes JSON: strukturierte Werte werden zu Feldzeilen.
  */
 
-import { getPool, getPlan, findeTaskInPlan } from '@synapse/core';
+import { getPool, getPlan, findeTaskInPlan, getProjectRegistryRows } from '@synapse/core';
 
 export type VerweisArt = 'thought' | 'memory' | 'task' | 'plan' | 'doc' | 'event' | 'nachricht' | 'chat' | 'asset';
 
@@ -64,6 +64,55 @@ async function frage(sql: string, params: unknown[]): Promise<Array<Record<strin
   return res.rows as Array<Record<string, unknown>>;
 }
 
+/**
+ * P22-T150: Asset-Pfad zu einem Bildverweis aus einem Chat. Relativ wie bisher ('./' faellt weg); absolut nur unterhalb einer
+ * registrierten Projektwurzel (der Rest ist der Asset-Pfad), sonst null; '..' nie.
+ */
+export function assetPfadAusVerweis(text: string, wurzeln: readonly string[]): string | null {
+  const t = text.trim();
+  if (!t || t.split(/[\\/]/).includes('..')) return null;
+  if (!t.startsWith('/')) return t.replace(/^(?:\.\/)+/, '') || null;
+  for (const w of [...wurzeln].sort((a, b) => b.length - a.length)) {
+    const wurzel = w.replace(/\/+$/, '') + '/';
+    if (wurzel !== '/' && t.startsWith(wurzel) && t.length > wurzel.length) return t.slice(wurzel.length);
+  }
+  return null;
+}
+
+/** Projektwurzeln aller Rechner (PC, Container) aus der Registry, ohne den virtuellen REST-Eintrag. */
+async function projektWurzeln(project: string): Promise<string[]> {
+  return (await getProjectRegistryRows(project)).map((r) => String(r.path ?? '')).filter((p) => p.startsWith('/') && !p.startsWith('/virtual/'));
+}
+
+export interface AssetVerweisDienste {
+  frage: (sql: string, params: unknown[]) => Promise<Array<Record<string, unknown>>>;
+  wurzeln: (project: string) => Promise<string[]>;
+}
+
+// Nur nicht geloeschte Bilder (MIME, Format oder Endung).
+const BILD_BEDINGUNG = "deleted_at IS NULL AND (mime_type LIKE 'image/%' OR lower(format) IN ('png','jpg','jpeg','gif','webp','avif')"
+  + " OR lower(file_path) ~ '\\.(png|jpe?g|gif|webp|avif)$')";
+
+/**
+ * P8-T31 Nachtrag: nur indexierte Assets des Projekts (kein Pfad ausserhalb, keine Vermutung).
+ * P22-T150: zusaetzlich absolute Pfade unter der Projektwurzel und asset_id (reine Zahl); nur Bilder, nicht geloescht.
+ * Kein Schalter: gleiche Route, gleiche Antwortform, es werden nur mehr Schreibweisen aufgeloest (reine Anzeige).
+ */
+export async function loeseAssetVerweis(project: string, text: string, dienste: Partial<AssetVerweisDienste> = {}): Promise<VerweisTreffer[]> {
+  const d: AssetVerweisDienste = { frage, wurzeln: projektWurzeln, ...dienste };
+  const t = text.trim();
+  let zeilen: Array<Record<string, unknown>>;
+  if (/^\d{1,12}$/.test(t)) {
+    zeilen = await d.frage('SELECT file_path, file_name FROM asset_files WHERE project = $1 AND id = $2::bigint AND ' + BILD_BEDINGUNG, [project, t]);
+  } else {
+    const pfad = assetPfadAusVerweis(t, t.startsWith('/') ? await d.wurzeln(project) : []);
+    if (!pfad) return [];
+    zeilen = await d.frage('SELECT file_path, file_name FROM asset_files WHERE project = $1 AND file_path = $2 AND ' + BILD_BEDINGUNG, [project, pfad]);
+  }
+  const a = zeilen[0];
+  return a ? [{ art: 'asset', id: String(a.file_path), titel: String(a.file_name) }] : [];
+}
+
 async function planOderNull(project: string, ref: string) {
   try {
     return await getPlan(project, ref);
@@ -74,17 +123,11 @@ async function planOderNull(project: string, ref: string) {
 
 async function loeseEin(project: string, k: VerweisKandidat): Promise<VerweisTreffer[]> {
   const text = String(k.text ?? '').trim();
-  if (!text || text.length > 128) return [];
+  // P22-T150: absolute Bildpfade sind laenger als IDs/Namen.
+  if (!text || text.length > (k.hinweis === 'asset' ? 1024 : 128)) return [];
   const treffer: VerweisTreffer[] = [];
 
-  if (k.hinweis === 'asset') {
-    // P8-T31 Nachtrag: nur indexierte Assets des Projekts (kein Pfad ausserhalb, keine Vermutung).
-    const pfad = text.replace(/^\.\//, '');
-    if (pfad.includes('..')) return [];
-    const a = await frage('SELECT file_path, file_name FROM asset_files WHERE project = $1 AND file_path = $2', [project, pfad]);
-    if (a[0]) treffer.push({ art: 'asset', id: String(a[0].file_path), titel: String(a[0].file_name) });
-    return treffer;
-  }
+  if (k.hinweis === 'asset') return loeseAssetVerweis(project, text);
   if (TASK_RE.test(text)) {
     const plan = await planOderNull(project, text.split('-')[0].toUpperCase());
     if (plan) {

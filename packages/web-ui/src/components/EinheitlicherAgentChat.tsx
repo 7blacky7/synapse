@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { abonniereToolKarten, getAgentChatInbox, getAgentVerlauf, sendePlattformAgentChat } from '../api/agent-runtime';
 import { ChatEingabefeld } from './ChatEingabefeld';
-import { KlartextText, VerweisFensterProvider } from './Lesefenster';
+import { KlartextText, NachrichtBilder, VerweisFensterProvider } from './Lesefenster';
 import { ToolActivity } from './agent-chat-teile';
 import { aktuellesModell, baueAgentChatNachrichten, istHtmlAntwort, mischeInboxNachrichten } from './agent-chat-logik';
 import {
@@ -349,6 +349,8 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                   </>
                   // Nachbesserung: Markdown (Absaetze, Listen, fett/kursiv, Code, Tabellen) mit anklickbaren Verweisen.
                   : <KlartextText project={project} text={m.text} />) : null}
+                {/* P22-T150: Bilder, auf die der Text verweist (Pfad, asset_id), als Leiste darunter; Klick = Grossansicht. */}
+                {!m.laeuft && !!m.text.trim() && <NachrichtBilder project={project} text={m.text} />}
                 {m.laeuft && <div className="message-laeuft"><i /><i /><i /><span>{name} antwortet …</span></div>}
                 {m.hinweise.map((h) => <small key={h} className="message-hinweis">{h}</small>)}
                 {/* P22-T144: CLI-Hinweis unter Teammate-Nachrichten eingeklappt. */}
@@ -361,6 +363,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
             <article key={g.key} className="message user text">
               <header>Du<small className="message-info">{g.fehler ? 'nicht gesendet: ' + g.fehler : 'zugestellt per Inbox #' + g.inboxId + ', wartet auf Antwort'}</small></header>
               <KlartextText project={project} text={g.text} />
+              <NachrichtBilder project={project} text={g.text} />
             </article>
           ))}
           {hinweis && nachrichten.length > 0 && <div className="verlauf-leiste verlauf-aus"><span>{hinweis}</span></div>}

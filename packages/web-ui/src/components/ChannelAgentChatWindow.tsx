@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { ChannelMessageViewModel } from '../control-plane/view-model';
 import { AttachmentPicker, handleAttachmentDrop, istSendeTaste } from './ChatAttachments';
-import { VerweisText } from './Lesefenster';
+import { NachrichtBilder, VerweisText } from './Lesefenster';
 
 export interface ChannelAgentWindowState {
   key: string;
@@ -148,6 +148,7 @@ export function ChannelAgentChatWindow({
                 <strong>{message.senderAnzeige ?? message.sender}</strong>
               </header>
               <pre><VerweisText project={project} text={message.content} /></pre>
+              <NachrichtBilder project={project} text={message.content} />
             </article>
           ))}
           {!messages.length && <p>Keine Beiträge von oder an {windowState.agentName} in #{windowState.channelName}.</p>}
