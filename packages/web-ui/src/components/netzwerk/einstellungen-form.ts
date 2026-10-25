@@ -16,7 +16,8 @@ export const NETZWERK_LABELS: Record<string, string> = {
  plan_mindestanzeige_sekunden: 'Pläne mindestens anzeigen (Sekunden)', orbit_nebel: 'Trabanten, Nebel und Sterngröße (1 an, 0 aus)',
  an_user_animation: 'Artefakt-/User-Animation (1 an, 0 aus)',
  // P22-T153
- stern_voll_dateien: 'Stern voll ab Dateien', stern_min_promille: 'Mindestgröße des Sterns (Promille)', dateien_je_trabant: 'Dateien je Trabant',
+ stern_voll_dateien: 'Stern voll ab Dateien', stern_min_promille: 'Mindestgröße des Sterns (Promille)',
+ stern_max_promille: 'Projektsonne maximal (Promille, 1000 = bisher, bis 2000 = 200 % bei „Stern voll ab Dateien“)', dateien_je_trabant: 'Dateien je Trabant',
  trabanten_einzeln: 'Trabanten einzeln höchstens', chunks_je_nebelpunkt: 'Chunks je Nebelpunkt', nebel_max: 'Nebelpunkte höchstens',
  nebel_treiben_x_promille: 'Nebel treibt waagerecht (Promille des Radius)', nebel_treiben_y_promille: 'Nebel treibt senkrecht (Promille des Radius)',
  nebel_treiben_x_mrad_s: 'Tempo waagerecht (mrad/s)', nebel_treiben_y_mrad_s: 'Tempo senkrecht (mrad/s)',
@@ -37,7 +38,7 @@ export const NETZWERK_GRUPPEN: ReadonlyArray<{ titel: string; namen: readonly st
  { titel: 'Anzeige und Fenster', namen: ['aktivitaet_sekunden', 'inaktiv_sekunden', 'sichtbare_agenten', 'sichtbare_channels', 'ereignis_limit', 'animation_limit',
   'animation_ms', 'bilder_pro_sekunde', 'frame_budget_ms', 'buendel_ms', 'abgleich_sekunden', 'orbit_nebel', 'an_user_animation'] },
  { titel: 'Pläne', namen: ['plan_nachleuchten_sekunden', 'plan_nachleuchten_auto_sekunden', 'plan_mindestanzeige_sekunden'] },
- { titel: 'Stern, Trabanten, Nebel', namen: ['stern_voll_dateien', 'stern_min_promille', 'dateien_je_trabant', 'trabanten_einzeln', 'trabanten_bahnen_max',
+ { titel: 'Stern, Trabanten, Nebel', namen: ['stern_voll_dateien', 'stern_min_promille', 'stern_max_promille', 'dateien_je_trabant', 'trabanten_einzeln', 'trabanten_bahnen_max',
   'chunks_je_nebelpunkt', 'nebel_max', 'deko_sterne'] },
  { titel: 'Nebel-Bewegung', namen: ['nebel_treiben_x_promille', 'nebel_treiben_y_promille', 'nebel_treiben_x_mrad_s', 'nebel_treiben_y_mrad_s', 'nebel_drehung_mrad',
   'nebel_drehung_mrad_s', 'nebel_puls_promille', 'nebel_puls_mrad_s', 'nebel_schimmer_mrad_s'] },

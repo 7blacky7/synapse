@@ -244,7 +244,8 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
   const k: Knoten = { id: 'channels', name: 'Weitere aktive Channels', rolle: 'channel-cluster', project: s.project, x: 0, y: RC * 0.45, radius: 14, winkel: Math.PI / 2, letzte: jetzt, avatar: '+' + (kanalNamen.length - sichtbar.length), farbe: '#a78bfa', aufrufe: 0, count: kanalNamen.length - sichtbar.length };
   knoten.push(k); for (const name of kanalNamen.slice(sichtbar.length)) alias.set('channel:' + name, k);
  }
- const radius = Math.max(R0 + 60, aussen + 56);
+ // P22-T162: eine bis 200 % grosse Projektsonne bleibt beim Einpassen im Bild (sichtbarer Kernring ca. 168 * stern Weltpunkte).
+ const radius = Math.max(R0 + 60, aussen + 56, 180 * stern);
  return { knoten, alias, kanten, projekte: mehrere ? konstellationen.map(k => ({ ...k, ...polar(radius - 18, k.winkel) })) : [], kern, radius, breite: radius * 2, hoehe: radius * 2,
   verborgen, inaktiv: alle.length - (main ? 1 : 0) - koord.length - arbeiter.length, channels: kanalNamen.length, zelle: ZELLE, planVonAgent, plaene: planItems.length, stern };
 }

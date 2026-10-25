@@ -8,19 +8,22 @@
 import type { NetzSnapshot } from '../../api/agentennetzwerk';
 
 export const STERN_VOLL_DATEIEN = 10000, STERN_MIN = 0.08, DATEIEN_JE_TRABANT = 100, TRABANTEN_EINZELN = 300;
+/** P22-T162: Groesse der Projektsonne bei stern_voll_dateien (Standard 1 = bisher; Katalog stern_max_promille 1000..2000). */
+export const STERN_MAX = 1, STERN_MAX_HART = 2;
 export const CHUNKS_JE_NEBELPUNKT = 100, NEBEL_MAX = 10000;
 /** P22-T153: harte Obergrenze der Nebelpunkte (= Katalog-Maximum von nebel_max). */
 export const NEBEL_HART = 20000;
 
-export interface IndexParameter { sternVoll: number; sternMin: number; jeTrabant: number; einzeln: number; jeNebel: number; nebelMax: number }
-export const INDEX_STANDARD: IndexParameter = { sternVoll: STERN_VOLL_DATEIEN, sternMin: STERN_MIN, jeTrabant: DATEIEN_JE_TRABANT, einzeln: TRABANTEN_EINZELN, jeNebel: CHUNKS_JE_NEBELPUNKT, nebelMax: NEBEL_MAX };
+export interface IndexParameter { sternVoll: number; sternMin: number; sternMax: number; jeTrabant: number; einzeln: number; jeNebel: number; nebelMax: number }
+export const INDEX_STANDARD: IndexParameter = { sternVoll: STERN_VOLL_DATEIEN, sternMin: STERN_MIN, sternMax: STERN_MAX, jeTrabant: DATEIEN_JE_TRABANT, einzeln: TRABANTEN_EINZELN, jeNebel: CHUNKS_JE_NEBELPUNKT, nebelMax: NEBEL_MAX };
 const wert = (w: Record<string, number> | undefined, name: string): number | undefined => { const v = w?.[name]; return typeof v === 'number' && Number.isFinite(v) ? v : undefined; };
 /** P22-T153: Index-Parameter aus snapshot.werte; fehlende bzw. ungueltige Werte fallen auf den Standard zurueck. */
 export function indexParameter(w?: Record<string, number>): IndexParameter {
- const sm = wert(w, 'stern_min_promille');
+ const sm = wert(w, 'stern_min_promille'), sx = wert(w, 'stern_max_promille');
  return {
   sternVoll: Math.max(1, wert(w, 'stern_voll_dateien') ?? STERN_VOLL_DATEIEN),
   sternMin: sm === undefined ? STERN_MIN : Math.min(1, Math.max(0, sm / 1000)),
+  sternMax: sx === undefined ? STERN_MAX : Math.min(STERN_MAX_HART, Math.max(1, sx / 1000)),
   jeTrabant: Math.max(1, wert(w, 'dateien_je_trabant') ?? DATEIEN_JE_TRABANT),
   einzeln: Math.max(0, wert(w, 'trabanten_einzeln') ?? TRABANTEN_EINZELN),
   jeNebel: Math.max(1, wert(w, 'chunks_je_nebelpunkt') ?? CHUNKS_JE_NEBELPUNKT),
@@ -33,10 +36,10 @@ export interface IndexEbenen { aktiv: boolean; dateien: number; chunks: number; 
 /** Rueckfall (Schalter orbit_nebel = 0 oder keine Index-Zahlen): heutige Sterngroesse und 42 feste Kernteilchen, kein Nebel. */
 export const RUECKFALL: IndexEbenen = { aktiv: false, dateien: 0, chunks: 0, stern: 1, trabanten: 42, einzeln: 42, dichte: 0, nebel: 0, je_trabant: DATEIEN_JE_TRABANT, einzeln_max: TRABANTEN_EINZELN, je_nebel: CHUNKS_JE_NEBELPUNKT, nebel_max: NEBEL_MAX };
 
-/** 0 Dateien = kleiner sichtbarer Punkt (sternMin), dann linear bis 1 bei sternVoll Dateien (Deckel; Standard 10.000). */
-export function sternFaktor(dateien: number, p: Pick<IndexParameter, 'sternVoll' | 'sternMin'> = INDEX_STANDARD) {
- const d = Math.max(0, Number(dateien) || 0);
- return p.sternMin + (1 - p.sternMin) * Math.min(1, d / p.sternVoll);
+/** 0 Dateien = kleiner sichtbarer Punkt (sternMin), dann linear bis sternMax (Standard 1, P22-T162 bis 2) bei sternVoll Dateien (Deckel). */
+export function sternFaktor(dateien: number, p: Pick<IndexParameter, 'sternVoll' | 'sternMin'> & { sternMax?: number } = INDEX_STANDARD) {
+ const d = Math.max(0, Number(dateien) || 0), max = Math.max(p.sternMin, p.sternMax ?? STERN_MAX);
+ return p.sternMin + (max - p.sternMin) * Math.min(1, d / p.sternVoll);
 }
 export const trabantenZahl = (dateien: number, je = DATEIEN_JE_TRABANT) => Math.max(0, Math.floor((Number(dateien) || 0) / Math.max(1, je)));
 /** Ueber der Zeichengrenze nicht mehr Objekte, sondern dichter und heller: 0 bis zur Grenze, 1 ab dem Zehnfachen. */
