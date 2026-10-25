@@ -32,7 +32,7 @@ import {
   getSetupPhase,
   writeMemory,
 } from '@synapse/core';
-import { SERVER_INSTANCE_ID } from '../server.js';
+import { SERVER_INSTANCE_ID } from '../server-instanz.js';
 
 /** Regel-Memory fuer Onboarding-Response */
 export interface OnboardingRule {

@@ -4,7 +4,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { getPool } from '../db/client.js';
-import { internToolAktiv } from './intern-tool.js';
+import { internToolAktiv } from './intern-tool-aktiv.js';
 import type { AgentTokenAnmeldung } from './agent-identitaet.js';
 
 export const AGENT_BEZUG_MODI = ['alt', 'beide', 'neu'] as const;

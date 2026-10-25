@@ -32,7 +32,7 @@
 import { randomUUID } from 'node:crypto';
 import type { QueryConfig } from 'pg';
 import { getPool } from '../db/client.js';
-import { internToolAktiv } from './intern-tool.js';
+import { internToolAktiv } from './intern-tool-aktiv.js';
 import { registerVirtualProject } from './project-registry.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 import { agentVorbereiten, ausweisFuerStart } from './agent-ausweis-dienst.js';

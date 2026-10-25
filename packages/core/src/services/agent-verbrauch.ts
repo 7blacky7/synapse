@@ -13,7 +13,7 @@
  */
 import type { PoolClient, QueryConfig } from 'pg';
 import { getPool } from '../db/client.js';
-import { internToolAktiv } from './intern-tool.js';
+import { internToolAktiv } from './intern-tool-aktiv.js';
 import { ProfilVerwaltungFehler, pflichtText, pruefeProfilVerwalter } from './agent-profil-verwalter.js';
 import { leseProfilProduktSchalter, setzeProfilProduktSchalter } from './agent-profil-schalter.js';
 import type { AusweisAkteur } from './agent-profil-vertrag.js';

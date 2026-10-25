@@ -15,7 +15,7 @@ import { AUSWEIS_FORMAT, ausweisPraefix, erzeugeAusweis } from './agent-ausweis-
 export { erzeugeAusweis as erzeugeAgentAusweis } from './agent-ausweis-format.js';
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
-import { internToolAktiv } from './intern-tool.js';
+import { internToolAktiv } from './intern-tool-aktiv.js';
 import { ausweisTokenAktiv } from './agent-profil-schalter.js';
 // P22-T45: Erstnutzungsfrist aus der EINEN Lesestelle (Einstellung erstnutzung_minuten); kein Importzyklus mehr.
 import { erstnutzungFristMs } from './agent-ausweis-fristen.js';

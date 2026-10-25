@@ -5,7 +5,7 @@
  *        beides nur ein (Muster: asset-intel-tool.ts).
  *
  * SICHTBARKEIT: Das Tool existiert nur, wenn der Prozess mit SYNAPSE_INTERN_TOOL=1 gestartet wurde
- *   (beim Laden dieses Moduls festgehalten, internToolAktiv()). Sonst steht es nicht in tools/list,
+ *   (beim Laden von intern-tool-aktiv.ts festgehalten, internToolAktiv()). Sonst steht es nicht in tools/list,
  *   und jeder Aufruf wird mit INTERN_TOOL_AUS abgelehnt.
  * GRENZEN: Keine Aktion beendet Prozesse oder Sitzungen, keine loescht PG-Daten. Einzige Ausnahme beim
  *   Qdrant-Index: neu_einbetten (nur mit ausfuehren:true) leert veraltete Collections — sie sind aus PG
@@ -67,12 +67,9 @@ import {
 // P22-T98: Produktionsdatenbank nur lesend (intern-db-lesen.ts).
 import { DB_LESEN_ACTIONS, DB_LESEN_BESCHREIBUNG, DB_LESEN_PARAMETER, fuehreDbLesenAus, istDbLesenAction } from './intern-db-lesen.js';
 
-const INTERN_TOOL_BEIM_START = process.env.SYNAPSE_INTERN_TOOL === '1';
-
-/** true, wenn der Prozess mit SYNAPSE_INTERN_TOOL=1 gestartet wurde. */
-export function internToolAktiv(): boolean {
-  return INTERN_TOOL_BEIM_START;
-}
+// P25-T9: internToolAktiv lebt in intern-tool-aktiv.ts (ohne Importe), hier nur re-exportiert (Importzyklus ueber agent-bezug).
+import { internToolAktiv } from './intern-tool-aktiv.js';
+export { internToolAktiv };
 
 export const INTERN_TOOL_AUS = {
   success: false,

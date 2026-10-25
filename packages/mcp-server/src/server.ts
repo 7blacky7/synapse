@@ -3,7 +3,7 @@
  * MCP Server Implementation mit 13 konsolidierten Tools
  */
 
-import { randomUUID } from 'crypto';
+import { SERVER_INSTANCE_ID } from './server-instanz.js';
 import { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, gateToolListe } from '@synapse/core';
 // P22-T56: tools/list je Verbindung (stdio: Ausweis in SYNAPSE_AGENT_TOKEN oder gemeinsame CLI-Verbindung).
 import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
@@ -81,7 +81,7 @@ import { rufeAnsichtApi } from './tools/consolidated/ansicht-api.js';
 
 /** Eindeutige ID dieser Server-Instanz — bei Neustart neu generiert.
  *  Wird fuer Session-basiertes Onboarding verwendet: neue Instance = neues Onboarding. */
-export const SERVER_INSTANCE_ID = randomUUID();
+export { SERVER_INSTANCE_ID }; // P25-T9: Wert aus server-instanz.ts (Importzyklus onboarding -> server)
 
 /** Tracking: Welche (Session, Tool)-Kombination wurde bereits mit Guide-Hint versehen?
  *  Schluessel: `${sessionKey}:${toolName}`. sessionKey = agent_id (wenn gesetzt) oder

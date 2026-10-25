@@ -23,7 +23,7 @@
  */
 import type { PoolClient } from 'pg';
 import { getPool } from '../db/client.js';
-import { internToolAktiv } from './intern-tool.js';
+import { internToolAktiv } from './intern-tool-aktiv.js';
 import { leseAusweisKern, leseProfilProduktSchalter, kernTtlMs, registriereSchalterGeschrieben } from './agent-profil-schalter.js';
 import { leseAusweisFristen } from './agent-ausweis-fristen.js';
 import { aktionRegel, type ToolZuschnitt } from './tool-gate.js';

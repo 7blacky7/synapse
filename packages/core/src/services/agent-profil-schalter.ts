@@ -15,7 +15,7 @@
  * AUS = t109-Verhalten. Bedeutung 'freigegeben' (aktiv=true heisst Funktion EIN, keine Pause).
  */
 import { getPool } from '../db/client.js';
-import { internToolAktiv } from './intern-tool.js';
+import { internToolAktiv } from './intern-tool-aktiv.js';
 import { AUSWEIS_FORMAT } from './agent-ausweis-format.js';
 
 export type W1bSchalterArt = 'durchsetzung' | 'antwortanpassung' | 'anmeldung';

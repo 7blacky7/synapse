@@ -2,7 +2,7 @@
 import {createHash} from 'node:crypto';
 import {getPool} from '../db/client.js';
 import {leseProfilProduktSchalter,type ProfilProduktFunktion} from './agent-profil-schalter.js';
-import {internToolAktiv} from './intern-tool.js';
+import {internToolAktiv} from './intern-tool-aktiv.js';
 import {REVERSE_EINSTELLKATALOG,reverseEinstellDefinition,reverseEinstellWert,reverseSichereZahl,reverseBudgetZahl,pruefeReverseEinstellKonsistenz,
  type ReverseEinstellSchluessel,type ReverseEbene} from './reverse-einstellkatalog.js';
 export interface ReverseEinstellKontext {project?:string|null;eintrag_id?:string|null}
