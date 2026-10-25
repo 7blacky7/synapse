@@ -1,0 +1,29 @@
+/* P22-T141: Bewertungsleiste unter HTML-Bloecken (Main-Chat, Koordinator-Fenster). Eigene Linien-Symbole; KEINE festen Farben:
+   --accent setzt die Darstellungs-Einstellung (Akzentfarbe, SynapseWorkspaceMock style am Wurzelelement), --danger ist die
+   Status-Farbe je Thema; dazu --border, --muted, --text. So passen hell und dunkel und jede gewaehlte Akzentfarbe. */
+.artefakt-bewertung{margin:6px 0 2px;font:10px "IBM Plex Mono",ui-monospace,monospace;color:var(--muted)}
+.bewertung-leiste{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.bewertung-frage,.bewertung-beschriftung{font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint,var(--muted))}
+.bewertung-knopf{display:inline-grid;place-items:center;width:26px;height:24px;padding:0;border:1px solid var(--border);border-radius:4px;background:transparent;color:var(--muted);cursor:pointer;transition:color .15s ease,border-color .15s ease,background .15s ease}
+.bewertung-knopf:hover:not(:disabled){color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.bewertung-knopf:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+.bewertung-knopf.gewaehlt{color:var(--accent);border-color:var(--accent)}
+.bewertung-knopf.gewaehlt .bewertung-rahmen{fill:color-mix(in srgb,var(--accent) 18%,transparent)}
+.bewertung-knopf.verbannt.gewaehlt{color:var(--danger);border-color:var(--danger)}
+.bewertung-knopf.verbannt.gewaehlt .bewertung-rahmen{fill:color-mix(in srgb,var(--danger) 16%,transparent)}
+.bewertung-knopf:disabled{opacity:.5;cursor:default}
+.bewertung-symbol{display:block}
+.bewertung-chip{padding:2px 7px;border:1px solid var(--border);border-radius:9px;font-size:9px;letter-spacing:.05em;text-transform:uppercase}
+.bewertung-chip.vorbild{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 60%,var(--border))}
+.bewertung-chip.ueberarbeiten{color:var(--text)}
+.bewertung-chip.verbannt{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 55%,var(--border))}
+.bewertung-chip.versuch_gezeigt{opacity:.75}
+.bewertung-form{display:grid;gap:5px;margin-top:6px}
+.bewertung-form textarea{width:100%;box-sizing:border-box;min-height:38px;resize:vertical;border:1px solid var(--border);background:var(--strong,transparent);color:var(--text);padding:6px 8px;font:11px/1.4 inherit}
+.bewertung-form textarea:focus{outline:none;border-color:var(--accent)}
+.bewertung-form>div{display:flex;align-items:center;gap:6px}
+.bewertung-form small{margin-right:auto}
+.bewertung-form button{min-height:24px;padding:0 10px;border:1px solid var(--border);background:transparent;color:var(--text);font:inherit;cursor:pointer}
+.bewertung-form button[type=submit]{border-color:var(--accent);color:var(--accent)}
+.bewertung-form button:disabled{opacity:.5;cursor:default}
+.bewertung-fehler{display:block;margin-top:4px;color:var(--danger)}

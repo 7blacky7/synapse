@@ -577,6 +577,24 @@ export async function getAgentChatInbox(identityId: string, o: { limit?: number 
   return { aktiv: r.aktiv === true, nachrichten: Array.isArray(r.nachrichten) ? r.nachrichten : [] };
 }
 
+/** P22-T141: Stand einer Artefakt-Bewertung (Design, global). zustand: vorbild | ueberarbeiten | verbannt | versuch_gezeigt. */
+export interface ArtefaktBewertungStand {
+  id: string; quelle_art: 'artefakt' | 'inbox' | 'verlauf'; quelle_ref: string; urteil: 'hoch' | 'runter'; kommentar: string | null;
+  zustand: 'vorbild' | 'ueberarbeiten' | 'verbannt' | 'versuch_gezeigt'; titel?: string | null; nachfolger?: { art: string; ref: string } | null;
+}
+
+/** P22-T141: Stand je Block ('artefakt:<id>,inbox:<n>,verlauf:<id>'); Schalter artefakt_bewertung AUS = aktiv false. */
+export async function getArtefaktBewertungen(quellen: string): Promise<{ aktiv: boolean; bewertungen: ArtefaktBewertungStand[] }> {
+  const r = await jsonRequest<{ success: true; aktiv?: boolean; bewertungen?: ArtefaktBewertungStand[] }>('/api/agent-runtimes/artefakt-bewertung?quellen=' + encodeURIComponent(quellen));
+  return { aktiv: r.aktiv === true, bewertungen: Array.isArray(r.bewertungen) ? r.bewertungen : [] };
+}
+
+/** P22-T141: Bewertung des Users senden (nur Design/Aufmachung). Der Server liest den Schnappschuss selbst aus der Quelle. */
+export async function sendeArtefaktBewertung(body: { quelle_art: string; quelle_ref: string; identity_id?: string; urteil: 'hoch' | 'runter'; kommentar?: string }):
+  Promise<{ bewertung: ArtefaktBewertungStand }> {
+  return jsonRequest<{ success: true; bewertung: ArtefaktBewertungStand }>('/api/agent-runtimes/artefakt-bewertung', { method: 'POST', body: JSON.stringify(body) });
+}
+
 /** P22-T73: Schalter der Warteschlange des Main-Chats (Standard AUS); EIN = Nachrichten warten statt Fehler. */
 export async function getMainAgentWarteschlangeSchalter(): Promise<{ aktiv: boolean; quelle: string }> {
   return (await jsonRequest<{ success: true; schalter: { aktiv: boolean; quelle: string } }>('/api/main-agent/warteschlange/schalter')).schalter;

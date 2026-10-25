@@ -5,6 +5,8 @@ import { KlartextText, VerweisFensterProvider } from './Lesefenster';
 import { ToolActivity } from './agent-chat-teile';
 import { aktuellesModell, baueAgentChatNachrichten, istHtmlAntwort, mischeInboxNachrichten } from './agent-chat-logik';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
+import { ArtefaktBewertung, useArtefaktBewertungen } from './ArtefaktBewertung';
+import { quelleFuerChatNachricht, quellSchluessel, type ArtefaktQuelle } from './artefakt-bewertung-logik';
 import '../workspace-mock.css';
 import '../hauptagent-verlauf.css';
 import './project-coordinator-dock.css';
@@ -94,6 +96,13 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   useEffect(() => (karten ? abonniereToolKarten(identityId, () => void laden()) : undefined), [karten, identityId, laden]);
 
   const nachrichten = mischeInboxNachrichten(baueAgentChatNachrichten(eintraege, name, karten), inbox, name);
+  // P22-T141: reine HTML-Antworten (Inbox bzw. Verlauf dieser Identitaet) sind bewertbar; Schalter artefakt_bewertung AUS -> keine Leiste.
+  const htmlQuellen = new Map<string, ArtefaktQuelle>();
+  for (const m of nachrichten) {
+    const q = !m.laeuft && m.role === 'agent' && istHtmlAntwort(m.text) ? quelleFuerChatNachricht(m, identityId) : null;
+    if (q) htmlQuellen.set(m.id, q);
+  }
+  const bewertung = useArtefaktBewertungen([...htmlQuellen.values()]);
   const modell = aktuellesModell(eintraege);
   useEffect(() => { const f = feedRef.current; if (f) f.scrollTop = f.scrollHeight; }, [nachrichten.length, gesendet.length]);
 
@@ -136,7 +145,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
   return (
     <VerweisFensterProvider>
       <section className="conversation agent-chat-shell einheitlicher-agent-chat agent-chat-shell--embedded" aria-label={'Chat mit ' + name}
-        data-identity={identityId} data-karten={karten ? 'ein' : 'aus'} data-eintraege={eintraege.length} data-inbox={inbox.length}>
+        data-identity={identityId} data-karten={karten ? 'ein' : 'aus'} data-eintraege={eintraege.length} data-inbox={inbox.length} data-bewertungen={bewertung.aktiv ? Object.keys(bewertung.je).length : 'aus'}>
         <div className="conversation-head">
           <div className="agent-identity"><span>{name.slice(0, 2).toUpperCase()}</span><div><strong>{name}</strong><small>{modell ?? 'Modell unbekannt'}{project ? ' · ' + project : ''}</small></div></div>
         </div>
@@ -150,7 +159,11 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                 <header>{m.kopf}{m.info && <small className="message-info">{m.info}</small>}</header>
                 {m.laeuft ? (m.text && <p>{m.text}</p>) : m.text.trim() ? (m.role === 'agent' && istHtmlAntwort(m.text)
                   // P22-T137: reine HTML-Antworten wie beim Main bereinigt im Shadow-DOM (AgentRenderingSurface), nie als rohes innerHTML.
-                  ? <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" />
+                  ? <>
+                    <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" />
+                    {bewertung.aktiv && htmlQuellen.has(m.id) && <ArtefaktBewertung quelle={htmlQuellen.get(m.id)!}
+                      stand={bewertung.je[quellSchluessel(htmlQuellen.get(m.id)!)]} onGespeichert={bewertung.setze} />}
+                  </>
                   // Nachbesserung: Markdown (Absaetze, Listen, fett/kursiv, Code, Tabellen) mit anklickbaren Verweisen.
                   : <KlartextText project={project} text={m.text} />) : null}
                 {m.laeuft && <div className="message-laeuft"><i /><i /><i /><span>{name} antwortet …</span></div>}

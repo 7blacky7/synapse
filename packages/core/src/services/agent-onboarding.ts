@@ -383,6 +383,8 @@ export async function holeAgentOnboarding(e: {
   }
   // P22-T53 (3): per Name im Profil verwiesene Memories/Tasks als EINE Zeile (ohne Volltext).
   const kontextVerweise = w12 ? await kontextVerweiseFuer(w12.identity_id, project).catch(() => null) : null;
+  // P22-T141: eine Zeile zu den Design-Vorlieben des Users (Schalter artefakt_bewertung, nur mit Eintraegen; sonst nichts).
+  const design = await import('./artefakt-bewertung.js').then((m) => m.designVorliebenZeile()).catch(() => null);
   // P22-T49: Koordinator mit Ausweis bei chat(anmelden) -> kurze Ausgabe (Handoff, aktiver Plan, Top 3, Regelnamen).
   if (e.koordinatorKurz && e.explizit && w12 && rolle === 'koordinator') {
     const kurz = await baueKoordinatorKurz(project, agentId, w12.identity_id, regelwerk, regelDiagnose.regeln_quelle === 'typ').catch(() => null);
@@ -402,6 +404,7 @@ export async function holeAgentOnboarding(e: {
         ...profilErg.teil,
         ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
         ...(kurz.skills_andere.length ? { skills_andere: kurz.skills_andere } : {}),
+        ...(design ? { design_vorlieben: design } : {}),
         statistik_abruf: 'Statistiken, Jev, Erklaerungsfaelle, Entscheidungs-Durchsicht: admin(action:"index_stats", onboarding:true)',
         neuinstanz_hinweis: neuinstanzText,
         zustellung: { ...zustellAnzeige(w12.umfang), profilblock: profilErg.zugestellt, lauf_id: w12.lauf_id, ...regelDiagnose, koordinator_kurz: true },
@@ -435,6 +438,7 @@ export async function holeAgentOnboarding(e: {
         ...(kurz.eigene_tasks.length ? { eigene_tasks: kurz.eigene_tasks } : {}),
         ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),
         ...(faelle ? { erklaerung_faelle: faelle } : {}),
+        ...(design ? { design_vorlieben: design } : {}),
         neuinstanz_hinweis: neuinstanzText,
       };
       const geliefert = await registerAgent(project, agentId, e.serverInstanceId, rolle, quelle, e.explizit);
@@ -475,6 +479,7 @@ export async function holeAgentOnboarding(e: {
     ...(faelle ? { erklaerung_faelle: faelle } : {}),
     ...(durchsicht ? { entscheidungen_durchsicht: durchsicht } : {}),
     ...(plaene.length ? { plaene } : {}),
+    ...(design ? { design_vorlieben: design } : {}),
     // W12-B: nur fuer Token-Agenten mit Lauf bei Kern EIN (sonst Bestandsform unveraendert).
     ...profilErg.teil,
     ...(skills ? { skills } : {}), ...(kontextVerweise ? { kontext_verweise: kontextVerweise } : {}),

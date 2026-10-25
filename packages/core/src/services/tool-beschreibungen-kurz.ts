@@ -789,10 +789,15 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
     },
   },
   artefakt: {
-    b: 'Nur Hauptagent: HTML-Block als Artefakt in die Web-UI zustellen.',
+    b: 'zeigen (nur Hauptagent): HTML-Block in die Web-UI. vorlieben/vorbild/versuch (jeder Agent): Design-Vorlieben des Users vor HTML-Antworten.',
     p: {
-      action: 'zeigen.',
-      html: 'HTML-Inhalt (max. 2 MB).',
+      action: 'zeigen | vorlieben | vorbild | versuch.',
+      html: 'zeigen: HTML-Inhalt (max. 2 MB).',
+      ueberarbeitet_aus: 'zeigen: bewertung_id, dessen neuer Versuch dieser Block ist.',
+      bewertung_id: 'vorbild/versuch: ID aus vorlieben.',
+      quelle_art: 'versuch: artefakt | inbox | verlauf.',
+      quelle_ref: 'versuch: ID des neuen Versuchs.',
+      limit: 'vorlieben: Eintraege je Gruppe.',
       titel: 'Titel.',
       artefakt_id: 'Bestehenden Block ersetzen.',
       column: 'Raster-Spalte.',

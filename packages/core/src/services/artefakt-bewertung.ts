@@ -1,0 +1,399 @@
+/**
+ * P22-T141 (User 25.10.2026, inbox:1046/1048): Artefakt-Bewertung als globales Design-Gedaechtnis aller Agenten.
+ * Bewertet wird nur Design und Aufmachung, nicht der Inhalt. Quellen: Hauptagent-Artefakt (agent_artifacts), HTML-Antwort eines
+ * Agenten an den User per Inbox (specialist_inbox) und HTML aus dem Verlauf einer Identitaet (hauptagent_verlauf).
+ * ZUSTAND: hoch -> vorbild; runter + Kommentar -> ueberarbeiten; runter ohne Kommentar -> verbannt (bleibt, bis der User neu
+ *   bewertet). Zu 'ueberarbeiten' verknuepft der Agent den naechsten Versuch (artefakt zeigen mit ueberarbeitet_aus bzw.
+ *   artefakt(action:'versuch')) -> versuch_gezeigt: das Original verlaesst die Liste, der Versuch ist normal bewertbar. Kein
+ *   Zeitablauf. Eine Neubewertung ersetzt den Stand (auch die Verknuepfung); jede Aenderung steht in artefakt_bewertungen_historie.
+ * SCHNAPPSCHUSS: HTML, Titel und Urheber liest der Server aus der Quelle, nie aus dem Client. Inbox nur Agent -> 'user' der
+ *   genannten Identitaet, Verlauf nur Ausgaben dieser Identitaet; alles andere ist quelle_unbekannt.
+ * AGENTEN (artefakt-Tool, rest-api artefakt-tool.ts): leseDesignVorlieben (kompakt, ohne HTML), ladeBewertungHtml (Abruf eines
+ *   Beispiels, gekappt), verknuepfeVersuch; designVorliebenZeile/-Zahlen fuer Anmeldung und artefakt(zeigen).
+ * SCHALTER: Produkt-Schalter artefakt_bewertung (global, Standard AUS, nur ausdruecklich): AUS = nichts schreiben
+ *   (funktion_aus), Lesen leer (aktiv false), keine Hinweise. artefakt_bewertung_melden (Standard AUS): jede Bewertung als
+ *   Inbox-Nachricht (Zustand + Kommentar) an den Urheber.
+ * DEBUG: leseDesignVorlieben.debug {anzahl je zustand, gekappt, quelle, schalter_quelle}; leseBewertungen.schalter_quelle.
+ */
+import type { PoolClient } from 'pg';
+import { getPool } from '../db/client.js';
+import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
+import { ARTEFAKT_HTML_MAX } from './artefakt.js';
+
+export const ARTEFAKT_BEWERTUNG_FUNKTION = 'artefakt_bewertung' as const;
+export const ARTEFAKT_BEWERTUNG_MELDEN_FUNKTION = 'artefakt_bewertung_melden' as const;
+export const BEWERTUNGS_QUELLEN = ['artefakt', 'inbox', 'verlauf'] as const;
+export type BewertungsQuelle = typeof BEWERTUNGS_QUELLEN[number];
+export type Urteil = 'hoch' | 'runter';
+export type BewertungsZustand = 'vorbild' | 'ueberarbeiten' | 'verbannt' | 'versuch_gezeigt';
+/** Standard-Kappung der Vorlieben je Gruppe; der Abruf kann limit setzen (hoechstens VORLIEBEN_MAX). */
+export const VORLIEBEN_STANDARD = { vorbild: 5, ueberarbeiten: 5, verbannt: 10 } as const;
+const VORLIEBEN_MAX = 50;
+const KOMMENTAR_MAX = 4000;
+const QUELLEN_MAX = 100;
+/** Abruf eines Beispiels (artefakt vorbild): HTML hoechstens so viele Zeichen (Kontextbudget). */
+export const VORBILD_HTML_MAX = 60_000;
+
+export class BewertungsFehler extends Error {
+  constructor(public readonly code: string, message: string, public readonly status = 400) { super(message); }
+}
+
+const ZUSTAND_TEXT: Record<BewertungsZustand, string> = {
+  vorbild: 'Vorbild', ueberarbeiten: 'wird ueberarbeitet', verbannt: 'verbannt (nie wieder verwenden)', versuch_gezeigt: 'neuer Versuch gezeigt',
+};
+
+/** Zustand aus dem Urteil: hoch -> vorbild; runter + Kommentar -> ueberarbeiten; runter ohne Kommentar -> verbannt. Rein. */
+export function zustandAus(urteil: Urteil, kommentar?: string | null): BewertungsZustand {
+  if (urteil === 'hoch') return 'vorbild';
+  return kommentar && kommentar.trim() ? 'ueberarbeiten' : 'verbannt';
+}
+
+export interface DesignMerkmale {
+  farben: string[]; schriften: string[]; layout: string[]; rundung: boolean; schatten: boolean; rahmen: boolean;
+  grundton: 'hell' | 'dunkel' | 'unbekannt'; zeichen: number;
+}
+
+function haeufigste(werte: string[], n: number): string[] {
+  const zahl = new Map<string, number>();
+  for (const w of werte) zahl.set(w, (zahl.get(w) ?? 0) + 1);
+  return [...zahl.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, n).map(([w]) => w);
+}
+
+function hexHelligkeit(hex: string): number | null {
+  let h = hex.replace('#', '');
+  if (h.length === 3 || h.length === 4) h = h.slice(0, 3).split('').map((c) => c + c).join('');
+  if (h.length !== 6 && h.length !== 8) return null;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/** Kompakte Design-Merkmale aus dem HTML (Farben, Schriften, Aufbau, Rundung/Schatten/Rahmen, Grundton). Rein, ohne DOM. */
+export function designMerkmale(html: string): DesignMerkmale {
+  const t = html.toLowerCase();
+  const farben = haeufigste((t.match(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/g) ?? []).map((f) => f.replace(/\s+/g, '')), 5);
+  const schriften = haeufigste([...t.matchAll(/font-family\s*:\s*([^;"}]+)/g)]
+    .map((m) => m[1].replace(/&quot;/g, '').split(',')[0].trim().replace(/^['"]|['"]$/g, '')).filter(Boolean), 3);
+  const layout = [
+    /display\s*:\s*(?:inline-)?grid/.test(t) ? 'grid' : '', /display\s*:\s*(?:inline-)?flex/.test(t) ? 'flex' : '',
+    /<table\b/.test(t) ? 'tabelle' : '', /<(?:ul|ol)\b/.test(t) ? 'liste' : '', /<(?:h1|h2|h3)\b/.test(t) ? 'ueberschriften' : '',
+    /<svg\b/.test(t) ? 'svg' : '', /<img\b/.test(t) ? 'bild' : '',
+  ].filter(Boolean);
+  const hintergrund = /background(?:-color)?\s*:\s*(#[0-9a-f]{3,8})\b/.exec(t);
+  const hell = hintergrund ? hexHelligkeit(hintergrund[1]) : null;
+  return {
+    farben, schriften, layout,
+    rundung: /border-radius\s*:\s*(?!0(?:px)?\s*[;"'}])[^;"'}]+/.test(t),
+    schatten: /box-shadow\s*:\s*(?!none)[^;"'}]+/.test(t),
+    rahmen: /border(?:-(?:top|right|bottom|left))?\s*:\s*[^;"'}]*\b(?:solid|dashed|dotted|double)\b/.test(t),
+    grundton: hell === null ? 'unbekannt' : hell < 0.45 ? 'dunkel' : 'hell',
+    zeichen: html.length,
+  };
+}
+
+/** Merkmale als kurze Zeile fuer Agenten (Kontextbudget). Rein. */
+export function merkmalText(m: Partial<DesignMerkmale> | null | undefined): string {
+  if (!m) return '';
+  return [
+    m.farben?.length ? 'Farben ' + m.farben.join(' ') : '',
+    m.schriften?.length ? 'Schrift ' + m.schriften.join(', ') : '',
+    m.layout?.length ? 'Aufbau ' + m.layout.join(', ') : '',
+    [m.rundung ? 'gerundet' : '', m.schatten ? 'Schatten' : '', m.rahmen ? 'Rahmen' : ''].filter(Boolean).join(', '),
+    m.grundton && m.grundton !== 'unbekannt' ? m.grundton : '',
+  ].filter(Boolean).join('; ');
+}
+
+/** Titel aus dem HTML (title/h1-h3), sonst null. Rein. */
+function titelAus(html: string): string | null {
+  const m = /<(title|h1|h2|h3)\b[^>]*>([\s\S]*?)<\/\1>/i.exec(html);
+  const t = m ? m[2].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim() : '';
+  return t ? t.slice(0, 120) : null;
+}
+
+/** 'artefakt:<id>,inbox:12,verlauf:34' -> Liste (Unbekanntes faellt weg, hoechstens 100). Rein. */
+export function zerlegeQuellenListe(roh: unknown): Array<{ art: BewertungsQuelle; ref: string }> {
+  if (typeof roh !== 'string') return [];
+  const aus: Array<{ art: BewertungsQuelle; ref: string }> = [];
+  for (const teil of roh.split(',')) {
+    const i = teil.indexOf(':');
+    if (i < 1) continue;
+    const art = teil.slice(0, i).trim();
+    const ref = gueltigeRef(art, teil.slice(i + 1).trim());
+    if (istQuelle(art) && ref) aus.push({ art, ref });
+    if (aus.length >= QUELLEN_MAX) break;
+  }
+  return aus;
+}
+
+const istQuelle = (v: unknown): v is BewertungsQuelle => typeof v === 'string' && (BEWERTUNGS_QUELLEN as readonly string[]).includes(v);
+
+function gueltigeRef(art: string, ref: unknown): string | null {
+  const s = typeof ref === 'number' && Number.isInteger(ref) ? String(ref) : typeof ref === 'string' ? ref.trim() : '';
+  return (art === 'artefakt' ? /^[A-Za-z0-9-]{1,100}$/ : /^\d{1,18}$/).test(s) ? s : null;
+}
+
+function quelleRef(art: BewertungsQuelle, ref: unknown): string {
+  const s = gueltigeRef(art, ref);
+  if (!s) throw new BewertungsFehler('quelle_ref_ungueltig', 'quelle_ref fehlt oder passt nicht zu quelle_art ' + art + ' (artefakt: Artefakt-ID, inbox/verlauf: Zahl)');
+  return s;
+}
+
+function bewertungsId(v: unknown): string {
+  const s = typeof v === 'number' && Number.isInteger(v) ? String(v) : typeof v === 'string' ? v.trim() : '';
+  if (!/^\d{1,18}$/.test(s)) throw new BewertungsFehler('bewertung_id_fehlt', 'bewertung_id (Zahl aus artefakt(action:"vorlieben")) angeben');
+  return s;
+}
+
+const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
+const meldung = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+async function schalter(funktion: typeof ARTEFAKT_BEWERTUNG_FUNKTION | typeof ARTEFAKT_BEWERTUNG_MELDEN_FUNKTION) {
+  const s = await leseProfilProduktSchalter(funktion, null);
+  return { aktiv: s.aktiv && !s.letzter_fehler, quelle: s.quelle, letzter_fehler: s.letzter_fehler };
+}
+/** Wirksamer Stand des Produkt-Schalters artefakt_bewertung (global; Lesefehler = AUS mit letzter_fehler). */
+export function artefaktBewertungSchalter() { return schalter(ARTEFAKT_BEWERTUNG_FUNKTION); }
+
+async function brauchtSchalter(): Promise<void> {
+  if (!(await artefaktBewertungSchalter()).aktiv) throw new BewertungsFehler('funktion_aus', 'Artefakt-Bewertung ist aus (Produkt-Schalter artefakt_bewertung)', 409);
+}
+
+interface QuelleDaten { html: string; titel: string | null; project: string | null; urheber_agent: string | null; urheber_identity_id: string | null; revision: number | null }
+
+/** Schnappschuss aus der Quelle (nie aus dem Client). Inbox/Verlauf nur fuer die genannte Identitaet. */
+async function ladeQuelle(db: PoolClient, art: BewertungsQuelle, ref: string, identityId: string | null): Promise<QuelleDaten> {
+  let z: Record<string, unknown> | undefined;
+  if (art === 'artefakt') {
+    z = (await db.query(`SELECT a.html, a.title AS titel, a.revision, a.created_by AS urheber_agent, a.created_by_identity_id AS urheber_identity_id, i.project
+        FROM agent_artifacts a LEFT JOIN agent_identitaeten i ON i.id = a.created_by_identity_id WHERE a.id = $1`, [ref])).rows[0];
+  } else {
+    if (!identityId || !/^[a-f0-9-]{36}$/.test(identityId)) throw new BewertungsFehler('identity_id_fehlt', 'Fuer quelle_art ' + art + ' die identity_id des Agenten angeben');
+    z = (await db.query(art === 'inbox'
+      ? `SELECT s.content AS html, NULL::int AS revision, s.from_agent AS urheber_agent, i.id AS urheber_identity_id, i.project
+           FROM specialist_inbox s JOIN agent_identitaeten i ON i.id = $2
+          WHERE s.id = $1::bigint AND s.project = i.project AND s.to_agent = 'user' AND s.from_agent <> 'user'
+            AND (s.from_identity_id = i.id OR (s.from_identity_id IS NULL AND s.from_agent = i.agent_id))`
+      : `SELECT v.text AS html, NULL::int AS revision, i.agent_id AS urheber_agent, i.id AS urheber_identity_id, i.project
+           FROM hauptagent_verlauf v JOIN agent_identitaeten i ON i.id = v.identity_id
+          WHERE v.id = $1::bigint AND v.identity_id = $2 AND (v.rolle IN ('agent', 'ausgabe') OR v.richtung = 'aus')`, [ref, identityId])).rows[0];
+  }
+  if (!z) throw new BewertungsFehler('quelle_unbekannt', 'Quelle ' + art + ':' + ref + ' nicht gefunden (oder nicht von diesem Agenten an den User)', 404);
+  const html = typeof z.html === 'string' ? z.html : '';
+  if (!/<[a-z][\s\S]*>/i.test(html)) throw new BewertungsFehler('keine_html_quelle', 'Die Quelle enthaelt kein HTML; bewertet werden nur HTML-Bloecke');
+  if (html.length > ARTEFAKT_HTML_MAX) throw new BewertungsFehler('html_zu_gross', 'HTML der Quelle ist groesser als ' + ARTEFAKT_HTML_MAX + ' Zeichen');
+  return { html, titel: text(z.titel) ?? titelAus(html), project: text(z.project), urheber_agent: text(z.urheber_agent),
+    urheber_identity_id: text(z.urheber_identity_id), revision: z.revision === null || z.revision === undefined ? null : Number(z.revision) };
+}
+
+export interface BewertungsStand {
+  id: string; quelle_art: BewertungsQuelle; quelle_ref: string; urteil: Urteil; kommentar: string | null; zustand: BewertungsZustand;
+  titel: string | null; bewertet_am: string; anzahl_bewertungen: number; nachfolger: { art: string; ref: string } | null;
+}
+
+function stand(z: Record<string, unknown>): BewertungsStand {
+  return {
+    id: String(z.id), quelle_art: z.quelle_art as BewertungsQuelle, quelle_ref: String(z.quelle_ref), urteil: z.urteil as Urteil,
+    kommentar: text(z.kommentar), zustand: z.zustand as BewertungsZustand, titel: text(z.titel),
+    bewertet_am: new Date(z.bewertet_am as string | Date).toISOString(), anzahl_bewertungen: Number(z.anzahl_bewertungen),
+    nachfolger: z.nachfolger_art ? { art: String(z.nachfolger_art), ref: String(z.nachfolger_ref) } : null,
+  };
+}
+
+export interface BewertungsEingabe { quelle_art: unknown; quelle_ref: unknown; identity_id?: unknown; urteil: unknown; kommentar?: unknown }
+export interface MeldeErgebnis { gemeldet: boolean; grund?: string; inbox_id?: number }
+
+/**
+ * Bewertung des Users (Aufrufer: REST-Route mit interaktiver User-Session). Schnappschuss aus der Quelle, Upsert je Quelle plus
+ * Historie in einer Transaktion. Danach (Schalter artefakt_bewertung_melden) Nachricht an den Urheber; ein Fehler dabei kippt die
+ * Bewertung nicht, er steht in gemeldet.
+ */
+export async function bewerteArtefakt(e: BewertungsEingabe): Promise<{ bewertung: BewertungsStand; gemeldet: MeldeErgebnis | null }> {
+  await brauchtSchalter();
+  if (!istQuelle(e.quelle_art)) throw new BewertungsFehler('quelle_art_ungueltig', 'quelle_art: artefakt | inbox | verlauf');
+  const art = e.quelle_art;
+  const ref = quelleRef(art, e.quelle_ref);
+  if (e.urteil !== 'hoch' && e.urteil !== 'runter') throw new BewertungsFehler('urteil_ungueltig', 'urteil: hoch | runter');
+  if (e.kommentar !== undefined && e.kommentar !== null && typeof e.kommentar !== 'string') throw new BewertungsFehler('kommentar_ungueltig', 'kommentar muss Text sein');
+  const kommentar = typeof e.kommentar === 'string' && e.kommentar.trim() ? e.kommentar.trim() : null;
+  if (kommentar && kommentar.length > KOMMENTAR_MAX) throw new BewertungsFehler('kommentar_zu_lang', 'kommentar laenger als ' + KOMMENTAR_MAX + ' Zeichen');
+  const urteil: Urteil = e.urteil;
+  const zustand = zustandAus(urteil, kommentar);
+  const identityId = typeof e.identity_id === 'string' && e.identity_id.trim() ? e.identity_id.trim() : null;
+  const client = await getPool().connect();
+  let zeile: Record<string, unknown>;
+  try {
+    await client.query('BEGIN');
+    const q = await ladeQuelle(client, art, ref, identityId);
+    zeile = (await client.query(
+      `INSERT INTO artefakt_bewertungen (quelle_art, quelle_ref, quelle_revision, project, urheber_agent, urheber_identity_id, titel, html,
+         merkmale, urteil, kommentar, zustand, bewertet_von)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,'user')
+       ON CONFLICT (quelle_art, quelle_ref) DO UPDATE SET quelle_revision = EXCLUDED.quelle_revision, project = EXCLUDED.project,
+         urheber_agent = EXCLUDED.urheber_agent, urheber_identity_id = EXCLUDED.urheber_identity_id, titel = EXCLUDED.titel,
+         html = EXCLUDED.html, merkmale = EXCLUDED.merkmale, urteil = EXCLUDED.urteil, kommentar = EXCLUDED.kommentar,
+         zustand = EXCLUDED.zustand, nachfolger_art = NULL, nachfolger_ref = NULL, versuch_von = NULL, versuch_am = NULL,
+         bewertet_von = EXCLUDED.bewertet_von, bewertet_am = NOW(), anzahl_bewertungen = artefakt_bewertungen.anzahl_bewertungen + 1
+       RETURNING *`,
+      [art, ref, q.revision, q.project, q.urheber_agent, q.urheber_identity_id, q.titel, q.html, JSON.stringify(designMerkmale(q.html)),
+        urteil, kommentar, zustand])).rows[0] as Record<string, unknown>;
+    await client.query(`INSERT INTO artefakt_bewertungen_historie (bewertung_id, urteil, kommentar, zustand, von) VALUES ($1, $2, $3, $4, 'user')`,
+      [zeile.id, urteil, kommentar, zustand]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  const gemeldet = await meldeBewertung(zeile).catch((error): MeldeErgebnis => ({ gemeldet: false, grund: meldung(error) }));
+  return { bewertung: stand(zeile), gemeldet };
+}
+
+/** Schalter artefakt_bewertung_melden: Zustand + Kommentar als Inbox-Nachricht vom user an den Urheber (Identitaet, sonst Name). */
+async function meldeBewertung(z: Record<string, unknown>): Promise<MeldeErgebnis | null> {
+  if (!(await schalter(ARTEFAKT_BEWERTUNG_MELDEN_FUNKTION)).aktiv) return null;
+  const project = text(z.project);
+  const agent = text(z.urheber_agent);
+  const identity = text(z.urheber_identity_id);
+  if (!project || !agent) return { gemeldet: false, grund: 'urheber_unbekannt' };
+  const s = stand(z);
+  const nachricht = '[Design-Bewertung] ' + (s.titel ?? s.quelle_art + ':' + s.quelle_ref) + ': ' + ZUSTAND_TEXT[s.zustand]
+    + (s.kommentar ? ' - Kommentar des Users: ' + s.kommentar : '') + '. Bewertet wird nur Design/Aufmachung, nicht der Inhalt. '
+    + 'Beispiel abrufen: artefakt(action:"vorbild", bewertung_id:' + s.id + ')'
+    + (s.zustand === 'ueberarbeiten' ? '; beim naechsten Design umsetzen und den Versuch verknuepfen (artefakt zeigen mit ueberarbeitet_aus:' + s.id
+      + ' bzw. artefakt(action:"versuch", bewertung_id:' + s.id + ', quelle_art, quelle_ref)).' : '.');
+  const { postToInbox } = await import('./inbox.js');
+  const { leseAgentBezugModus, mitAgentAufrufKontext } = await import('./agent-bezug.js');
+  const bezug = await leseAgentBezugModus();
+  const r = identity && bezug.modus !== 'alt'
+    ? await mitAgentAufrufKontext({ principal: null, bezug }, () =>
+      postToInbox('user', { art: 'identity', project, agent_id: agent, identity_id: identity }, nachricht, project))
+    : await postToInbox('user', agent, nachricht, project);
+  return { gemeldet: true, inbox_id: r.id };
+}
+
+/** Stand je angezeigtem Block (Web-UI). Schalter AUS -> aktiv false, leer. */
+export async function leseBewertungen(quellen: Array<{ art: unknown; ref: unknown }>):
+  Promise<{ aktiv: boolean; bewertungen: BewertungsStand[]; schalter_quelle: string }> {
+  const s = await artefaktBewertungSchalter();
+  if (!s.aktiv) return { aktiv: false, bewertungen: [], schalter_quelle: s.quelle };
+  const arten: string[] = [];
+  const refs: string[] = [];
+  for (const q of quellen.slice(0, QUELLEN_MAX)) {
+    const ref = istQuelle(q.art) ? gueltigeRef(q.art, q.ref) : null;
+    if (ref) { arten.push(q.art as string); refs.push(ref); }
+  }
+  if (!arten.length) return { aktiv: true, bewertungen: [], schalter_quelle: s.quelle };
+  const r = await getPool().query(
+    `SELECT id, quelle_art, quelle_ref, urteil, kommentar, zustand, titel, bewertet_am, anzahl_bewertungen, nachfolger_art, nachfolger_ref
+       FROM artefakt_bewertungen WHERE (quelle_art, quelle_ref) IN (SELECT * FROM unnest($1::text[], $2::text[]))`, [arten, refs]);
+  return { aktiv: true, bewertungen: r.rows.map((z: Record<string, unknown>) => stand(z)), schalter_quelle: s.quelle };
+}
+
+const VORLIEBEN_HINWEIS = 'Nur Design und Aufmachung, nicht der Inhalt. vorbilder: diesen Stil gern wieder verwenden. ueberarbeiten: den '
+  + 'Kommentar beim naechsten Design umsetzen und den Versuch verknuepfen (artefakt zeigen mit ueberarbeitet_aus:<id> bzw. '
+  + 'artefakt(action:"versuch", bewertung_id, quelle_art, quelle_ref) fuer HTML per Inbox/Channel). verbannt: diese Merkmale nie wieder '
+  + 'verwenden. HTML eines Eintrags: artefakt(action:"vorbild", bewertung_id).';
+
+/** Kompakte Vorlieben fuer Agenten (ohne HTML), juengste zuerst; Schalter AUS -> aktiv false, leer. */
+export async function leseDesignVorlieben(o: { limit?: unknown } = {}) {
+  const s = await artefaktBewertungSchalter();
+  const anzahl: Record<BewertungsZustand, number> = { vorbild: 0, ueberarbeiten: 0, verbannt: 0, versuch_gezeigt: 0 };
+  const debug = { anzahl, gekappt: false, quelle: 'pg', schalter_quelle: s.quelle, ...(s.letzter_fehler ? { letzter_fehler: s.letzter_fehler } : {}) };
+  if (!s.aktiv) {
+    return { aktiv: false, vorbilder: [], ueberarbeiten: [], verbannt: [], hinweis: 'Artefakt-Bewertung ist aus (Produkt-Schalter artefakt_bewertung).', debug };
+  }
+  const n = Number(o.limit);
+  const grenze = (standard: number) => (Number.isFinite(n) && n > 0 ? Math.min(VORLIEBEN_MAX, Math.trunc(n)) : standard);
+  for (const z of (await getPool().query('SELECT zustand, count(*)::int AS n FROM artefakt_bewertungen GROUP BY zustand')).rows as Array<{ zustand: BewertungsZustand; n: number }>) {
+    if (z.zustand in anzahl) anzahl[z.zustand] = z.n;
+  }
+  const liste = async (zustand: BewertungsZustand, limit: number) => (await getPool().query(
+    `SELECT id, titel, merkmale, urheber_agent, kommentar FROM artefakt_bewertungen WHERE zustand = $1 ORDER BY bewertet_am DESC, id DESC LIMIT $2`,
+    [zustand, limit])).rows as Array<Record<string, unknown>>;
+  const eintrag = (z: Record<string, unknown>, mitKommentar: boolean) => ({
+    id: String(z.id), ...(text(z.titel) ? { titel: z.titel } : {}), ...(merkmalText(z.merkmale as DesignMerkmale) ? { merkmale: merkmalText(z.merkmale as DesignMerkmale) } : {}),
+    ...(mitKommentar && text(z.kommentar) ? { kommentar: z.kommentar } : {}), ...(text(z.urheber_agent) ? { urheber: z.urheber_agent } : {}),
+  });
+  const vorbilder = (await liste('vorbild', grenze(VORLIEBEN_STANDARD.vorbild))).map((z) => eintrag(z, false));
+  const ueberarbeiten = (await liste('ueberarbeiten', grenze(VORLIEBEN_STANDARD.ueberarbeiten))).map((z) => eintrag(z, true));
+  const verbannt = (await liste('verbannt', grenze(VORLIEBEN_STANDARD.verbannt))).map((z) => eintrag(z, false));
+  debug.gekappt = vorbilder.length < anzahl.vorbild || ueberarbeiten.length < anzahl.ueberarbeiten || verbannt.length < anzahl.verbannt;
+  return { aktiv: true, vorbilder, ueberarbeiten, verbannt, hinweis: VORLIEBEN_HINWEIS, debug };
+}
+
+/** HTML eines bewerteten Designs (Beispiel fuer Agenten), gekappt auf VORBILD_HTML_MAX. */
+export async function ladeBewertungHtml(idRoh: unknown) {
+  await brauchtSchalter();
+  const id = bewertungsId(idRoh);
+  const z = (await getPool().query('SELECT id, titel, zustand, kommentar, html, merkmale, quelle_art, quelle_ref FROM artefakt_bewertungen WHERE id = $1::bigint', [id])).rows[0] as Record<string, unknown> | undefined;
+  if (!z) throw new BewertungsFehler('bewertung_unbekannt', 'Bewertung ' + id + ' nicht gefunden', 404);
+  const html = String(z.html);
+  const gekappt = html.length > VORBILD_HTML_MAX;
+  return {
+    id: String(z.id), titel: text(z.titel), zustand: z.zustand as BewertungsZustand, kommentar: text(z.kommentar),
+    merkmale: merkmalText(z.merkmale as DesignMerkmale), quelle: z.quelle_art + ':' + z.quelle_ref,
+    html: gekappt ? html.slice(0, VORBILD_HTML_MAX) : html, ...(gekappt ? { gekappt: true, html_zeichen: html.length } : {}),
+  };
+}
+
+/**
+ * Agent verknuepft den naechsten Versuch zu einem 'ueberarbeiten'. Der Versuch muss existieren; dieselbe Quelle wie das Original
+ * gilt nur fuer ein Artefakt mit neuerer Revision (Block ersetzt). Danach: versuch_gezeigt + Nachfolger, Historie.
+ */
+export async function verknuepfeVersuch(e: { bewertung_id: unknown; quelle_art: unknown; quelle_ref: unknown; von?: string | null }):
+  Promise<{ bewertung: BewertungsStand; hinweis: string }> {
+  await brauchtSchalter();
+  const id = bewertungsId(e.bewertung_id);
+  if (!istQuelle(e.quelle_art)) throw new BewertungsFehler('quelle_art_ungueltig', 'quelle_art des Versuchs: artefakt | inbox | verlauf');
+  const art = e.quelle_art;
+  const ref = quelleRef(art, e.quelle_ref);
+  const von = 'agent:' + (e.von && e.von.trim() ? e.von.trim() : 'unbekannt');
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const nachfolger = (await client.query(art === 'artefakt' ? 'SELECT revision FROM agent_artifacts WHERE id = $1'
+      : art === 'inbox' ? 'SELECT NULL::int AS revision FROM specialist_inbox WHERE id = $1::bigint' : 'SELECT NULL::int AS revision FROM hauptagent_verlauf WHERE id = $1::bigint', [ref])).rows[0] as { revision: number | null } | undefined;
+    if (!nachfolger) throw new BewertungsFehler('nachfolger_unbekannt', 'Versuch ' + art + ':' + ref + ' nicht gefunden', 404);
+    const z = (await client.query('SELECT * FROM artefakt_bewertungen WHERE id = $1::bigint FOR UPDATE', [id])).rows[0] as Record<string, unknown> | undefined;
+    if (!z) throw new BewertungsFehler('bewertung_unbekannt', 'Bewertung ' + id + ' nicht gefunden', 404);
+    if (z.zustand !== 'ueberarbeiten') {
+      throw new BewertungsFehler(z.zustand === 'versuch_gezeigt' ? 'versuch_schon_gezeigt' : 'nicht_ueberarbeiten',
+        z.zustand === 'versuch_gezeigt' ? 'Zu dieser Bewertung ist schon ein Versuch verknuepft (' + z.nachfolger_art + ':' + z.nachfolger_ref + ')'
+          : 'Nur Designs im Zustand ueberarbeiten bekommen einen Versuch (Zustand: ' + z.zustand + ')', 409);
+    }
+    if (z.quelle_art === art && String(z.quelle_ref) === ref
+      && !(art === 'artefakt' && nachfolger.revision !== null && z.quelle_revision !== null && Number(nachfolger.revision) > Number(z.quelle_revision))) {
+      throw new BewertungsFehler('nachfolger_gleich_original', 'Der Versuch ist das bewertete Original selbst (ohne neue Revision)');
+    }
+    const neu = (await client.query(
+      `UPDATE artefakt_bewertungen SET zustand = 'versuch_gezeigt', nachfolger_art = $2, nachfolger_ref = $3, versuch_von = $4, versuch_am = NOW()
+        WHERE id = $1::bigint RETURNING *`, [id, art, ref, von])).rows[0] as Record<string, unknown>;
+    await client.query(`INSERT INTO artefakt_bewertungen_historie (bewertung_id, urteil, kommentar, zustand, nachfolger_art, nachfolger_ref, von)
+      VALUES ($1, $2, $3, 'versuch_gezeigt', $4, $5, $6)`, [id, neu.urteil, neu.kommentar, art, ref, von]);
+    await client.query('COMMIT');
+    return { bewertung: stand(neu), hinweis: 'Original aus "ueberarbeiten" genommen; der neue Versuch ist normal bewertbar.' };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Zahlen je Gruppe fuer Hinweise (Anmeldung, artefakt zeigen); Schalter AUS -> null. */
+export async function designVorliebenZahlen(): Promise<{ vorbilder: number; ueberarbeiten: number; verbannt: number } | null> {
+  if (!(await artefaktBewertungSchalter()).aktiv) return null;
+  const z = { vorbilder: 0, ueberarbeiten: 0, verbannt: 0 };
+  for (const r of (await getPool().query("SELECT zustand, count(*)::int AS n FROM artefakt_bewertungen WHERE zustand IN ('vorbild','ueberarbeiten','verbannt') GROUP BY zustand")).rows as Array<{ zustand: string; n: number }>) {
+    if (r.zustand === 'vorbild') z.vorbilder = r.n; else if (r.zustand === 'ueberarbeiten') z.ueberarbeiten = r.n; else z.verbannt = r.n;
+  }
+  return z;
+}
+
+/** Eine Zeile fuer die Anmeldung; null bei Schalter AUS oder ohne Eintraege. */
+export async function designVorliebenZeile(): Promise<string | null> {
+  const z = await designVorliebenZahlen();
+  if (!z || z.vorbilder + z.ueberarbeiten + z.verbannt === 0) return null;
+  return 'Design-Vorlieben des Users (global, nur Design/Aufmachung): ' + z.vorbilder + ' Vorbild(er), ' + z.ueberarbeiten + ' zu ueberarbeiten, '
+    + z.verbannt + ' verbannt. Vor jeder HTML-Antwort lesen: artefakt(action:"vorlieben").';
+}

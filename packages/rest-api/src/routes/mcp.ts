@@ -19,7 +19,7 @@ import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 // P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
 import { haengeFallSkillHinweisAn, type FallSkillOptionen } from '@synapse/core';
-import { zeigeArtefakt } from '../services/agent-runtime/artefakt-tool.js';
+import { fuehreArtefaktAus } from '../services/agent-runtime/artefakt-tool.js';
 import { mainToolAccess, mainToolListeMitProfil, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
 import { leseW1bSchalter } from '@synapse/core';
 import { initialisiereW1bAnmeldungHinweise, herkunftsortAusKopf } from '@synapse/core';
@@ -1467,11 +1467,11 @@ export const MCP_TOOLS = [
   // 22. artefakt — Hauptagenten-Werkzeug: HTML-Block als Artefakt in die Web-UI
   {
     name: 'artefakt',
-    description: 'Werkzeug des HAUPTAGENTEN: legt einen HTML-Block als Artefakt ab und stellt ihn in den laufenden Antwort-Strom der Web-UI zu (SSE-Event "artifact", AgentHtmlBlock-kompatibel). Die PG-Zeile (agent_artifacts) ist die Wahrheit; HTML-Datei und PNG-Livebild im Runtime-Container (/attachments/artefakte, spaeter eigener Share) sind Abbilder. Erster Schritt: EIN Block je Aufruf (action "zeigen"); mit artefakt_id wird ein bestehender Block derselben Session ersetzt (revision steigt). KEIN Broadcast beim Ablegen. Nur aus einer Hauptagenten-Session aufrufbar — die Session-Bindung setzt der SERVER aus dem Header X-Synapse-Hauptagent-Session, andere Aufrufer erhalten eine klare Ablehnung.',
+    description: 'P22-T141 Design-Gedaechtnis fuer ALLE Agenten (Schalter artefakt_bewertung): vorlieben = Design-Vorlieben des Users kompakt (vorbilder/ueberarbeiten/verbannt, ohne HTML; vor jeder HTML-Antwort lesen), vorbild = HTML eines bewerteten Designs (bewertung_id), versuch = neuen Versuch zu einem ueberarbeiten verknuepfen (bewertung_id, quelle_art, quelle_ref; bei zeigen stattdessen ueberarbeitet_aus). zeigen ist das Werkzeug des HAUPTAGENTEN: legt einen HTML-Block als Artefakt ab und stellt ihn in den laufenden Antwort-Strom der Web-UI zu (SSE-Event "artifact", AgentHtmlBlock-kompatibel). Die PG-Zeile (agent_artifacts) ist die Wahrheit; HTML-Datei und PNG-Livebild im Runtime-Container (/attachments/artefakte, spaeter eigener Share) sind Abbilder. Erster Schritt: EIN Block je Aufruf (action "zeigen"); mit artefakt_id wird ein bestehender Block derselben Session ersetzt (revision steigt). KEIN Broadcast beim Ablegen. Nur aus einer Hauptagenten-Session aufrufbar — die Session-Bindung setzt der SERVER aus dem Header X-Synapse-Hauptagent-Session, andere Aufrufer erhalten eine klare Ablehnung.',
     inputSchema: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['zeigen'], description: 'zeigen = Block ablegen und in den offenen Strom zustellen' },
+        action: { type: 'string', enum: ['zeigen', 'vorlieben', 'vorbild', 'versuch'], description: 'zeigen = Block ablegen und in den offenen Strom zustellen (nur Hauptagent); vorlieben/vorbild/versuch = Design-Gedaechtnis (P22-T141, jeder Agent)' },
         html: { type: 'string', description: 'HTML-Inhalt des Blocks (Pflicht, max 2 MB). Wird empfangsseitig sanitisiert und im Shadow DOM gerendert.' },
         titel: { type: 'string', description: 'Optionaler Titel des Blocks' },
         artefakt_id: { type: 'string', description: 'Optional: ID eines bestehenden Artefakts derselben Session — ersetzt dessen Inhalt (revision + 1) statt einen neuen Block anzulegen' },
@@ -1481,9 +1481,14 @@ export const MCP_TOOLS = [
         rowSpan: { type: 'number', description: 'Optional: Zeilenhoehe' },
         minHeight: { type: 'number', description: 'Optional: Mindesthoehe in px' },
         session_id: { type: 'string', description: 'Wird serverseitig aus dem Hauptagenten-Header gesetzt — NICHT manuell mitschicken' },
+        ueberarbeitet_aus: { type: 'number', description: 'zeigen (P22-T141): bewertung_id eines Designs im Zustand ueberarbeiten - dieser Block ist der neue Versuch (das Original verlaesst die Liste ueberarbeiten)' },
+        bewertung_id: { type: 'number', description: 'vorbild/versuch (P22-T141): ID aus artefakt(action:"vorlieben")' },
+        quelle_art: { type: 'string', enum: ['artefakt', 'inbox', 'verlauf'], description: 'versuch: Art des neuen Versuchs (artefakt; inbox = HTML per chat inbox_send an user; verlauf = HTML-Antwort im eigenen Verlauf)' },
+        quelle_ref: { type: 'string', description: 'versuch: ID des neuen Versuchs (artefakt_id, inbox-ID bzw. Verlaufs-ID)' },
+        limit: { type: 'number', description: 'vorlieben: Eintraege je Gruppe (Standard 5/5/10, hoechstens 50)' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution' },
       },
-      required: ['action', 'html'],
+      required: ['action'],
     },
   },
   // 23. intern — Debugging/Steuerung interner Ablaeufe (P14). NUR bei SYNAPSE_INTERN_TOOL=1 beim
@@ -5971,7 +5976,8 @@ async function handleToolCallKern(
     // ARTEFAKT (Hauptagent) — Orchestrierung in services/agent-runtime/artefakt-tool.ts
     // =================================================================
     case 'artefakt': {
-      return zeigeArtefakt(args, effectiveAgentId);
+      // P22-T141: zeigen (Main-Session) plus vorlieben/vorbild/versuch (Design-Gedaechtnis, jede Identitaet).
+      return fuehreArtefaktAus(args, effectiveAgentId);
     }
 
     case 'guide': {

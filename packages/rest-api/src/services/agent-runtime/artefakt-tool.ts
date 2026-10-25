@@ -22,6 +22,11 @@ import {
   speichereArtefakt,
   aktualisiereArtefaktPfade,
   type ArtefaktZeile,
+  leseDesignVorlieben,
+  ladeBewertungHtml,
+  verknuepfeVersuch,
+  designVorliebenZahlen,
+  BewertungsFehler,
 } from '@synapse/core';
 import { emitArtifact, identitaetAusSessionId, aktiveMainTurnSession } from './artifact-stream.js';
 
@@ -186,6 +191,46 @@ async function renderLivebild(html: string): Promise<Buffer> {
       signal: AbortSignal.timeout(5_000),
     }).catch(() => undefined);
   }
+}
+
+function bewertungsFehlerAntwort(error: unknown): Record<string, unknown> {
+  return error instanceof BewertungsFehler
+    ? { success: false, error: error.code, message: error.message }
+    : { success: false, error: 'artefakt_bewertung_fehler', message: meldung(error) };
+}
+
+/**
+ * P22-T141: Aktionen des artefakt-Tools. zeigen bleibt an die Hauptagenten-Session gebunden (zeigeArtefakt); vorlieben, vorbild und
+ * versuch (Design-Gedaechtnis, core artefakt-bewertung.ts) brauchen keine Session und stehen jeder Identitaet offen, die artefakt
+ * sieht. zeigen mit ueberarbeitet_aus verknuepft den neuen Block als Versuch (Fehler dabei: versuch_fehler, das Artefakt bleibt)
+ * und traegt bei Schalter artefakt_bewertung EIN die Zahlen der Vorlieben als design_vorlieben mit.
+ */
+export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
+  const action = typeof args.action === 'string' ? args.action : '';
+  try {
+    if (action === 'vorlieben') return { success: true, ...(await leseDesignVorlieben({ limit: args.limit })) };
+    if (action === 'vorbild') return { success: true, ...(await ladeBewertungHtml(args.bewertung_id)) };
+    if (action === 'versuch') {
+      return { success: true, ...(await verknuepfeVersuch({ bewertung_id: args.bewertung_id, quelle_art: args.quelle_art, quelle_ref: args.quelle_ref, von: agentId ?? null })) };
+    }
+  } catch (error) {
+    return bewertungsFehlerAntwort(error);
+  }
+  const ergebnis = await zeigeArtefakt(args, agentId);
+  if (action !== 'zeigen' || !ergebnis || typeof ergebnis !== 'object' || (ergebnis as { success?: unknown }).success !== true) return ergebnis;
+  const r = ergebnis as Record<string, unknown>;
+  const extra: Record<string, unknown> = {};
+  if (args.ueberarbeitet_aus !== undefined && args.ueberarbeitet_aus !== null && args.ueberarbeitet_aus !== '') {
+    try {
+      extra.versuch = (await verknuepfeVersuch({ bewertung_id: args.ueberarbeitet_aus, quelle_art: 'artefakt', quelle_ref: r.artefakt_id, von: agentId ?? null })).bewertung;
+    } catch (error) {
+      const f = bewertungsFehlerAntwort(error);
+      extra.versuch_fehler = { code: f.error, message: f.message };
+    }
+  }
+  const zahlen = await designVorliebenZahlen().catch(() => null);
+  if (zahlen && zahlen.vorbilder + zahlen.ueberarbeiten + zahlen.verbannt > 0) extra.design_vorlieben = { ...zahlen, abruf: 'artefakt(action:"vorlieben")' };
+  return { ...r, ...extra };
 }
 
 export async function zeigeArtefakt(args: Record<string, unknown>, agentId?: string): Promise<unknown> {

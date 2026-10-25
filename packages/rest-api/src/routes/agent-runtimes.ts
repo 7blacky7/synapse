@@ -20,6 +20,7 @@ import {
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
 import { leseRuntimeUebersicht, leseRuntimeAgentLog, leseRuntimeProzesse, steuereRuntimeAgent, frageProzessAenderungAn, bestaetigeProzessAenderung, wechslePlattformAgentModell } from '@synapse/core';
+import { bewerteArtefakt, leseBewertungen, leseDesignVorlieben, zerlegeQuellenListe, BewertungsFehler } from '@synapse/core';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
 import { gleicheCliListeMitRegistry } from '../services/agent-runtime/registry-abgleich.js';
 import type { CliModellListe } from '../services/agent-runtime/cli-modelle.js';
@@ -561,6 +562,27 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return { success: true, aktiv: true, identity_id: id, agent_id: ziel.agent_id, project: ziel.project, nachrichten,
         debug: { anzahl: nachrichten.length, limit, schalter_quelle: schalter.quelle } };
     } catch (error) { return sendFachFehler(reply, error); }
+  });
+  // P22-T141: Artefakt-Bewertung (Design-Gedaechtnis, core artefakt-bewertung.ts). Unter /api/agent-runtimes, also nur die interaktive
+  // User-Session (Guard oben): bewertet_von ist immer 'user'. Schalter artefakt_bewertung (global, Std AUS): POST 409 funktion_aus,
+  // GET aktiv false und leer. Schnappschuss liest der Server aus der Quelle. DEBUG: vorlieben.debug, schalter_quelle.
+  const bewertungsFehler = (reply: FastifyReply, error: unknown) => error instanceof BewertungsFehler
+    ? reply.code(error.status).send({ success: false, error: { code: error.code, message: error.message } })
+    : sendFachFehler(reply, error);
+  fastify.post<{ Body: { quelle_art?: unknown; quelle_ref?: unknown; identity_id?: unknown; urteil?: unknown; kommentar?: unknown } }>(
+    '/api/agent-runtimes/artefakt-bewertung', async (request, reply) => {
+      try {
+        const b = request.body ?? {};
+        return { success: true, ...(await bewerteArtefakt({ quelle_art: b.quelle_art, quelle_ref: b.quelle_ref, identity_id: b.identity_id, urteil: b.urteil, kommentar: b.kommentar })) };
+      } catch (error) { return bewertungsFehler(reply, error); }
+    });
+  fastify.get<{ Querystring: { quellen?: string } }>('/api/agent-runtimes/artefakt-bewertung', async (request, reply) => {
+    try { return { success: true, ...(await leseBewertungen(zerlegeQuellenListe(request.query.quellen))) }; }
+    catch (error) { return bewertungsFehler(reply, error); }
+  });
+  fastify.get<{ Querystring: { limit?: string } }>('/api/agent-runtimes/artefakt-bewertung/vorlieben', async (request, reply) => {
+    try { return { success: true, ...(await leseDesignVorlieben({ limit: request.query.limit })) }; }
+    catch (error) { return bewertungsFehler(reply, error); }
   });
   // P8-T25: HTML-Artefakte des Hauptagenten (agent_artifacts) fuer "Persoenliche Artefakte" – nur lesend.
   fastify.get<{ Querystring: { limit?: string } }>('/api/main-agent/artefakte', async (request, reply) => {

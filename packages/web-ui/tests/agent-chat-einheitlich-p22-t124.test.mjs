@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const L = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/agent-chat-logik.ts')).href);
 const S = await import(pathToFileURL(join(repo, 'packages/core/dist/services/agent-profil-schalter.js')).href);
+const B = await import(pathToFileURL(join(repo, 'packages/web-ui/src/components/artefakt-bewertung-logik.ts')).href);
 
 assert.ok(S.PROFIL_PRODUKT_FUNKTIONEN.includes('agent_chat_einheitlich'));
 assert.ok(S.NUR_AUSDRUECKLICH.includes('agent_chat_einheitlich'), 'nur ausdruecklich (Std AUS)');
@@ -102,6 +103,9 @@ function chatProbe() {
     './ChatEingabefeld': { ChatEingabefeld: 'ChatEingabefeld' },
     './Lesefenster': { VerweisFensterProvider: 'Provider', KlartextText: 'KlartextText' },
     '../kios/AgentRenderingSurface': { default: 'AgentRenderingSurface' },
+    // P22-T141: Bewertungsleiste als Attrappe (Schalter aus, keine Hooks), Quellen-Logik echt.
+    './ArtefaktBewertung': { ArtefaktBewertung: 'ArtefaktBewertung', useArtefaktBewertungen: () => ({ aktiv: false, je: {}, setze() {} }) },
+    './artefakt-bewertung-logik': B,
     './agent-chat-teile': { ToolActivity: 'ToolActivity' }, './agent-chat-logik': L,
   };
   const window = {

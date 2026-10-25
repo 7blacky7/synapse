@@ -762,6 +762,14 @@ export { AGENT_CONTAINER_SCHEMA_SQL } from './db/agent-container-schema.js';
 export { AGENT_START_ORT_SCHEMA_SQL } from './db/agent-start-ort-schema.js';
 // P22-T118: Wrapper-Ende belegbar (Schema 150, rein additive Diagnose).
 export { WRAPPER_ENDE_SCHEMA_SQL } from './db/wrapper-ende-schema.js';
+// P22-T141: Artefakt-Bewertung (Schema 151, Design-Gedaechtnis global).
+export { ARTEFAKT_BEWERTUNG_SCHEMA_SQL } from './db/artefakt-bewertung-schema.js';
+export {
+  ARTEFAKT_BEWERTUNG_FUNKTION, ARTEFAKT_BEWERTUNG_MELDEN_FUNKTION, BEWERTUNGS_QUELLEN, VORLIEBEN_STANDARD, VORBILD_HTML_MAX, BewertungsFehler,
+  zustandAus, designMerkmale, merkmalText, zerlegeQuellenListe, artefaktBewertungSchalter, bewerteArtefakt, leseBewertungen,
+  leseDesignVorlieben, ladeBewertungHtml, verknuepfeVersuch, designVorliebenZahlen, designVorliebenZeile,
+} from './services/artefakt-bewertung.js';
+export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, BewertungsStand, BewertungsEingabe } from './services/artefakt-bewertung.js';
 export { CONTAINER_ENDE_ARTEN, CONTAINER_HINWEIS_ARTEN, WRAPPER_ENDE_STANDARD, WRAPPER_ENDE_FENSTER_MS, leseWrapperEndeGrenzen, zielBetroffen, bewerteWrapperEnde, vermerkeWrapperEnde, betroffeneWrapper } from './services/wrapper-ende.js';
 export type { WrapperEndeBefund, UeberwachungsEreignisKurz, BetroffenerWrapper, WrapperEndeZiel } from './services/wrapper-ende.js';
 export { AGENT_START_ORT_FUNKTION, START_ORTE, START_ORT_ARTEN, merkeStartOrt, merkeStartOrtAusJob, leseStartOrt, zustellWegFuer, startOrtSchalterAktiv, startOrtAnzeige } from './services/agent-start-ort.js';
