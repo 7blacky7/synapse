@@ -41,6 +41,8 @@ import {
   workerPausiert,
   meldeWorkerArbeit,
   stosseContext7An,
+  verlaufNachzugSchritt,
+  verlaufEinbettStatus,
 } from '@synapse/core';
 import { listEmbeddingNodes } from './embedding-nodes.js';
 import {ServerExecutor} from './server-executor.js';
@@ -153,6 +155,13 @@ export class ParserWorker {
       beschreibung: `Wissens-Embeddings nachholen (memories, thoughts, ...), je Parser-Tick bis ${BACKLOG_JE_TICK}`,
       durchlauf: () => this.wissenSchritt(),
     });
+    // P22-T157: Sitzungsverlaeufe je Ausweis, ganz hinten (nur wenn Wissen, Code und Queue frei sind; Schalter verlauf_einbetten).
+    registriereWorker({
+      name: 'verlauf_nachzug',
+      beschreibung: 'Sitzungsverlaeufe je Ausweis zerlegen und mit niedrigster Prioritaet einbetten (nach dem Wissens-Nachzug, Schalter verlauf_einbetten)',
+      durchlauf: () => verlaufNachzugSchritt({ erzwingen: true }) as unknown as Promise<Record<string, unknown>>,
+    });
+    registriereInternQuelle('verlauf_einbetten', () => verlaufEinbettStatus());
     registriereWorker({
       name: 'context7',
       beschreibung: 'Context7-Automatik (Tech-Doku), je Parser-Tick, eigener Takt',
@@ -307,7 +316,8 @@ export class ParserWorker {
 
   private async tick(): Promise<void> {
     this.ticksDone++;
-    await this.wissenSchritt();
+    const wissen = await this.wissenSchritt();
+    await this.verlaufSchritt(wissen);
     this.context7Schritt();
     await this.parserSchritt();
   }
@@ -336,6 +346,25 @@ export class ParserWorker {
     } catch (err) {
       console.error(`[parser-worker] Embedding-Backlog fehlgeschlagen: ${(err as Error).message}`);
       return { fehler: (err as Error).message };
+    }
+  }
+
+  /**
+   * P22-T157: Verlauf-Nachzug NACH dem Wissens-Nachzug. Fand dieser noch Rueckstand (oder war er pausiert/fehlerhaft), wartet der
+   * Verlauf (Wissen geht immer vor); Code-Rueckstand und belegte Queue prueft verlaufNachzugSchritt selbst.
+   */
+  private async verlaufSchritt(wissen: Record<string, unknown>): Promise<void> {
+    if (workerPausiert('verlauf_nachzug')) return;
+    const geprueft = typeof wissen.geprueft === 'number' ? wissen.geprueft : 0;
+    const wissenRest = wissen.pausiert || wissen.fehler || wissen.angehalten ? 1 : geprueft;
+    try {
+      const r = await verlaufNachzugSchritt({ wissenRest });
+      if (r.eingebettet > 0 || r.neue_stuecke > 0) {
+        meldeWorkerArbeit('verlauf_nachzug');
+        console.error(`[parser-worker] Verlauf-Nachzug: ${r.neue_stuecke} neue Stuecke, ${r.eingebettet} eingebettet`);
+      }
+    } catch (err) {
+      console.error(`[parser-worker] Verlauf-Nachzug fehlgeschlagen: ${(err as Error).message}`);
     }
   }
 

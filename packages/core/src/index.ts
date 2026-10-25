@@ -778,6 +778,15 @@ export {
 export type { BewertungsQuelle, Urteil, BewertungsZustand, DesignMerkmale, BewertungsStand, BewertungsEingabe, BewertungsHinweis } from './services/artefakt-bewertung.js';
 // P22-T154: Artefakte als Datenvorlagen (Schema 152, Vorlagensprache, Quellen, Rendern je Projekt).
 export { ARTEFAKT_VORLAGEN_SCHEMA_SQL } from './db/artefakt-vorlagen-schema.js';
+// P22-T157: Sitzungsverlaeufe semantisch durchsuchbar (Schema 153, Collection agent_verlauf, Worker verlauf_nachzug, search action verlauf).
+export { VERLAUF_STUECKE_SCHEMA_SQL } from './db/verlauf-stuecke-schema.js';
+export {
+  VERLAUF_EINBETTEN_FUNKTION, VERLAUF_SUCHE_FUNKTION, VERLAUF_COLLECTION, VERLAUF_ZERLEGER_VERSION, VERLAUF_SUCHE_PROPERTIES,
+  verlaufZeileText, istGruppenStart, zerlegeVerlauf, teileVerlaufText, schwaerzeVerlaufText, verlaufStueckeAus, verlaufStueckId,
+  verlaufStueckNachzug, leseVerlaufEinbettSchalter, zerlegeVerlaufVon, verlaufVorrangGrund, verlaufNachzugSchritt, verlaufEinbettStatus,
+  sucheVerlauf, sucheVerlaufTool, setzeVerlaufAbhaengigkeitenFuerTests, verlaufEinbettenAlterMs,
+} from './services/verlauf-einbetten.js';
+export type { VerlaufZeileRoh, VerlaufGruppe, VerlaufNachzugErgebnis, VerlaufSucher, VerlaufAbhaengigkeiten } from './services/verlauf-einbetten.js';
 export { renderVorlage, pruefeVorlage, escapeHtml, VORLAGE_GRENZEN, VORLAGE_FILTER } from './services/artefakt-vorlage.js';
 export type { VorlageOptionen, VorlageErgebnis } from './services/artefakt-vorlage.js';
 export {

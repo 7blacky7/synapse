@@ -53,8 +53,16 @@
       "skill_name": "fall-search",
       "weg": "beide",
       "sections": [
-        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer search (semantische Lesesuche: code, path, code_with_path, memory, thoughts, proposals, tech_docs, media, tasks, plans)." },
-        { "section": "faelle", "content": "- fall-search-bereich-waehlen: welches Werkzeug fuer welche Suche." }
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer search (semantische Lesesuche: code, path, code_with_path, memory, thoughts, proposals, tech_docs, media, tasks, plans, verlauf)." },
+        { "section": "faelle", "content": "- fall-search-bereich-waehlen: welches Werkzeug fuer welche Suche.\n- fall-search-verlauf: im eigenen Sitzungsverlauf suchen (Ausweis, seit/bis, Nachlesen)." }
+      ]
+    },
+    {
+      "skill_name": "fall-search-verlauf",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: search(action:\"verlauf\") bzw. Fehler verlauf_ausweis_noetig, verlauf_id_unbekannt, zeit_ungueltig, query_fehlt." },
+        { "section": "regeln", "content": "1. Sucht NUR im eigenen Sitzungsverlauf (alle eigenen Laeufe); die Identitaet kommt aus dem Ausweis (agent_kennung), es gibt keinen identity-Parameter. Ohne Ausweis: verlauf_ausweis_noetig. Fremde Verlaeufe nur der User in der Web-UI.\n2. search(action:\"verlauf\", query, seit?, bis?, lauf_id?, limit?): seit/bis als ISO-Zeitpunkt; ohne Angabe die letzten 7 Tage bis jetzt.\n3. Treffer: score, zeit_von/zeit_bis, lauf_id, auszug (geschwaerzt), verlauf_ids. Nachlesen: search(action:\"verlauf\", verlauf_id:<erste Zahl aus verlauf_ids>, umfeld:5) - Zeilen davor/danach, geschwaerzt.\n4. ergebnis kein_verlauf = fuer diesen Ausweis ist kein Verlauf gespeichert (z. B. Subagenten vor P22-T158). rueckstand zeigt, was noch nicht eingebettet ist: eingebettet wird mit niedrigster Prioritaet nach jeder Neuanmeldung bzw. nach 6 h im aktiven Lauf.\n5. funktion_aus = Produkt-Schalter verlauf_suche (bzw. verlauf_einbetten) ist AUS." }
       ]
     },
     {

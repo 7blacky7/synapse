@@ -94,6 +94,11 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       alle: 'Auch zurueckgestellte.',
       mit_verknuepfungen: 'Juengste verknuepfte IDs mitliefern.',
       task_id: 'thoughts: Task-Filter.',
+      seit: 'verlauf: ab (ISO), Standard 7 Tage (fall-search-verlauf).',
+      bis: 'verlauf: bis (ISO), Standard jetzt.',
+      lauf_id: 'verlauf: nur dieser Lauf.',
+      verlauf_id: 'verlauf: Zeile nachlesen statt query.',
+      umfeld: 'verlauf_id: Zeilen davor/danach.',
     },
   },
   memory: {

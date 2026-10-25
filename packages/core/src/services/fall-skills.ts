@@ -130,6 +130,8 @@ export const FALL_SKILL_TABELLE: readonly FallSkillEintrag[] = [
   { codes: ['shell_gesperrt', 'befehl_gesperrt'], tools: ['shell'], skill: 'fall-shell-projektdateien' },
   // code_intel
   { codes: ['ausgabe_gekappt'], tools: ['code_intel'], skill: 'fall-ci-ausgabe-gross' },
+  // search action verlauf (P22-T157)
+  { codes: ['verlauf_ausweis_noetig', 'verlauf_id_unbekannt', 'verlauf_id_ungueltig', 'zeit_ungueltig', 'query_fehlt', 'verlauf_suche_fehlgeschlagen'], tools: ['search'], skill: 'fall-search-verlauf' },
   // jev / code_check / specialist / project
   { codes: ['kategorie_verboten', 'optionen_ungueltig', 'erste_id_fehlt', 'runde_ungueltig'], tools: ['jev'], skill: 'fall-jev-entscheiden' },
   { codes: ['selbsttest_fehlgeschlagen', 'dublette', 'erkennung_ungueltig'], tools: ['code_check'], skill: 'fall-cc-muster-anlegen' },

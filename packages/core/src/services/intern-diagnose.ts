@@ -161,6 +161,8 @@ const QUELLEN: Record<string, { tabelle: string; wo: string; projekt: boolean; i
   tech_docs_cache: { tabelle: 'tech_docs', wo: 'project IS NULL', projekt: false, id: 'id' },
   error_patterns: { tabelle: 'error_patterns', wo: 'TRUE', projekt: false, id: 'id' },
   skills: { tabelle: '(SELECT embedded_at FROM skill_sections UNION ALL SELECT embedded_at FROM agent_identitaet_skill_sections) skill_gesamt', wo: 'TRUE', projekt: false, id: null },
+  // P22-T157: Sitzungsverlaeufe (eine Collection agent_verlauf, Pflichtfilter identity_id); global, ohne ID-Diff.
+  verlauf: { tabelle: 'verlauf_stuecke', wo: 'TRUE', projekt: false, id: null },
 };
 
 function collectionFuer(art: string, project: string | null): string {
@@ -175,6 +177,7 @@ function collectionFuer(art: string, project: string | null): string {
     case 'docs': return COLLECTIONS.projectDocs(p);
     case 'tech_docs_cache': return COLLECTIONS.techDocs;
     case 'error_patterns': return COLLECTIONS.globalErrorPatterns;
+    case 'verlauf': return 'agent_verlauf';
     default: return SKILL_COLLECTION;
   }
 }

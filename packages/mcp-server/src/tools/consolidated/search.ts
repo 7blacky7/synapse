@@ -37,7 +37,7 @@ import {
 } from '../tech-docs.js';
 
 import { ConsolidatedTool, str, reqStr, num, bool } from './types.js';
-import { suchePlanTool, PLAN_SEARCH_PROPERTIES } from '@synapse/core';
+import { suchePlanTool, PLAN_SEARCH_PROPERTIES, sucheVerlaufTool, VERLAUF_SUCHE_PROPERTIES } from '@synapse/core';
 
 type SearchAction =
   | 'code'
@@ -49,7 +49,8 @@ type SearchAction =
   | 'tech_docs'
   | 'media'
   | 'tasks'
-  | 'plans';
+  | 'plans'
+  | 'verlauf';
 
 export const searchTool: ConsolidatedTool = {
   definition: {
@@ -69,14 +70,15 @@ export const searchTool: ConsolidatedTool = {
             'thoughts',
             'proposals',
             'tech_docs',
-            'media', 'tasks', 'plans',
+            'media', 'tasks', 'plans', 'verlauf',
           ],
           description:
-            'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media|tasks|plans',
+            'Such-Aktion: code|path|code_with_path|memory|thoughts|proposals|tech_docs|media|tasks|plans|verlauf (eigener Sitzungsverlauf, nur mit Ausweis)',
         },
 
         ...PLAN_SEARCH_PROPERTIES,
         task_id: { type: 'string', description: 'Thoughts: Task-UUID, Kurz-ID oder Alias als Filter.' },
+        ...VERLAUF_SUCHE_PROPERTIES,
         // Gemeinsame Parameter
         query: {
           type: 'string',
@@ -151,6 +153,9 @@ export const searchTool: ConsolidatedTool = {
         case 'tasks':
         case 'plans':
           return { content: [{ type: 'text', text: JSON.stringify(await suchePlanTool(args, action)) }] };
+        case 'verlauf':
+          // P22-T157: Identitaet nur aus dem Ausweis-Principal, nie aus Argumenten.
+          return { content: [{ type: 'text', text: JSON.stringify(await sucheVerlaufTool(args)) }] };
         case 'code': {
           const query = reqStr(args, 'query');
           const project = reqStr(args, 'project');

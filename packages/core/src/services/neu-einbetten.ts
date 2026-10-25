@@ -27,9 +27,13 @@ import { getEmbeddingDimension } from '../embeddings/index.js';
 import { embeddingModellKennung, sichereModellprofil } from '../embeddings/modell-profil.js';
 import { COLLECTIONS } from '../types/index.js';
 import { resetProjectEmbeddings } from './code.js';
+/** P22-T157: Name wie VERLAUF_COLLECTION in verlauf-einbetten.ts (dort exportiert); hier ohne Import, sonst Importzyklus ueber intern-tool. */
+const VERLAUF_COLLECTION = 'agent_verlauf';
 
 export const NEU_EINBETTEN_ARTEN = [
   'code', 'memories', 'thoughts', 'proposals', 'plans', 'tasks', 'docs', 'tech_docs_cache', 'error_patterns', 'skills',
+  // P22-T157: Sitzungsverlaeufe (verlauf_stuecke -> agent_verlauf); Zuruecksetzen bettet dieselben Stuecke mit denselben IDs neu ein.
+  'verlauf',
 ] as const;
 export type NeuEinbettenArt = (typeof NEU_EINBETTEN_ARTEN)[number];
 
@@ -47,6 +51,7 @@ export function ordneCollectionEin(name: string): Einordnung {
   if (name === COLLECTIONS.techDocs) return { art: 'tech_docs_cache', project: null };
   if (name === COLLECTIONS.globalErrorPatterns) return { art: 'error_patterns', project: null };
   if (name === SKILL_COLLECTION) return { art: 'skills', project: null };
+  if (name === VERLAUF_COLLECTION) return { art: 'verlauf', project: null };
   const m = /^project_(.+)_(code|media|memories|thoughts|plans|tasks|proposals|docs)$/.exec(name);
   if (!m) return { art: 'unbekannt', project: null };
   return { art: m[2] as Einordnung['art'], project: m[1] };
@@ -63,6 +68,7 @@ const PG_QUELLE: Record<Exclude<NeuEinbettenArt, 'code'>, { tabelle: string; wo:
   tech_docs_cache: { tabelle: 'tech_docs', wo: 'project IS NULL', mitProjekt: false },
   error_patterns: { tabelle: 'error_patterns', wo: 'TRUE', mitProjekt: false },
   skills: { tabelle: 'skill_sections', wo: 'TRUE', mitProjekt: false },
+  verlauf: { tabelle: 'verlauf_stuecke', wo: 'TRUE', mitProjekt: false },
 };
 
 function zielCollection(art: NeuEinbettenArt, project: string | null): string {
@@ -78,6 +84,7 @@ function zielCollection(art: NeuEinbettenArt, project: string | null): string {
     case 'tech_docs_cache': return COLLECTIONS.techDocs;
     case 'error_patterns': return COLLECTIONS.globalErrorPatterns;
     case 'skills': return SKILL_COLLECTION;
+    case 'verlauf': return VERLAUF_COLLECTION;
   }
 }
 
@@ -161,7 +168,7 @@ async function fehlendeZiele(vorhanden: Set<string>, filter: Set<string> | null)
       if (!vorhanden.has(collection)) ergebnis.push({ collection, art, project: r.project });
     }
   }
-  for (const art of ['tech_docs_cache', 'error_patterns', 'skills'] as const) {
+  for (const art of ['tech_docs_cache', 'error_patterns', 'skills', 'verlauf'] as const) {
     if (filter && !filter.has(art)) continue;
     const collection = zielCollection(art, null);
     if (vorhanden.has(collection) || (art === 'skills' && SKILLS_GETRENNT)) continue;
