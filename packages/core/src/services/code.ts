@@ -39,6 +39,7 @@
 
 import * as fs from 'fs';
 import {indexBloecke} from './index-bloecke.js';
+import { verweiseJeSymbol } from './verweis-zuordnung.js';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
@@ -822,6 +823,17 @@ async function parseAndEmbedLauf(
       // wird in Phase 2 via Batch-UPDATE (unnest) nachgetragen. Entscheidend bei Remote-DB.
       const symbolTuples: unknown[][] = [];
       const refTuples: unknown[][] = [];
+      // P4-T80: Verweise vorab je Symbol zuordnen und deckeln (verweis-zuordnung.ts). Vorher ein
+      // filter() je Symbol - bei einem Minify-Bundle wurden daraus 21 Mio. Zeilen und ein API-OOM.
+      const verweisZuordnung = verweiseJeSymbol(parseResult.symbols, parseResult.references);
+      if (verweisZuordnung.gekappt) {
+        const g = verweisZuordnung.gekappt;
+        console.error(
+          `[Synapse] VERWEISE GEKAPPT ${project}/${filePath}: ${g.zeilenOhneDeckel} Verweiszeilen ohne Deckel, ` +
+            (g.alleVerworfen ? 'keine Verweise gespeichert' : `${g.uebergangeneNamen} mehrdeutige Namen unverknuepft, ${verweisZuordnung.zeilen} gespeichert`)
+        );
+      }
+      let symIndex = 0;
       for (const sym of parseResult.symbols) {
         const symId = uuidv4();
         insertedSymbols.push({ symId, sym });
@@ -853,21 +865,10 @@ async function parseAndEmbedLauf(
           sym.is_exported,
         ]);
 
-        // Referenzen fuer dieses Symbol sammeln
-        if (parseResult.references.length > 0 && sym.name) {
-          // Bei Imports: params enthaelt die einzelnen Namen, name ist komma-separiert
-          const nameSet = sym.symbol_type === 'import' && sym.params
-            ? new Set(sym.params)
-            : new Set([sym.name]);
-          // Feld-Referenzen (nur_feld) gehoeren NUR zu field-Symbolen, alle anderen
-          // NIE zu field-Symbolen — sonst aendern sich die Referenzen gleichnamiger
-          // Bestandssymbole (gemessen synapse: 1.688 Zeilen waeren dazugekommen).
-          const istFeld = sym.symbol_type === 'field';
-          const symRefs = parseResult.references.filter(r =>
-            nameSet.has(r.symbol_name) && (r.nur_feld === true) === istFeld);
-          for (const ref of symRefs) {
-            refTuples.push([uuidv4(), project, symId, filePath, ref.line_number, ref.context ?? null]);
-          }
+        // Referenzen fuer dieses Symbol: vorab zugeordnet (Namenswahl, Import-Mehrfachnamen und
+        // nur_feld-Trennung wie bisher, siehe verweis-zuordnung.ts).
+        for (const ref of verweisZuordnung.jeSymbol[symIndex++]) {
+          refTuples.push([uuidv4(), project, symId, filePath, ref.line_number, ref.context ?? null]);
         }
       }
 
