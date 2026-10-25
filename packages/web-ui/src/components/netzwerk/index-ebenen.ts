@@ -1,18 +1,18 @@
 /**
  * P22-T149 (User-Entscheidung 25.10.2026, thought 79c0bd8b): Index-Groesse im Agentennetzwerk.
- * Projektstern waechst linear mit den indexierten Dateien (100 % bei 25.000, User 25.10.2026 ~15:16), je 100 Dateien ein Trabant (einzeln hoechstens 300,
+ * Projektstern waechst linear mit den indexierten Dateien (100 % bei 10.000, User 25.10.2026 ~15:58), je 100 Dateien ein Trabant (einzeln hoechstens 300,
  * darueber dichter/heller), je 100 Chunks ein Nebelpunkt (hoechstens 10.000, als vorgezeichnete Ebene). Reine Logik ohne DOM.
  */
 import type { NetzSnapshot } from '../../api/agentennetzwerk';
 
-export const STERN_VOLL_DATEIEN = 25000, STERN_MIN = 0.08, DATEIEN_JE_TRABANT = 100, TRABANTEN_EINZELN = 300;
+export const STERN_VOLL_DATEIEN = 10000, STERN_MIN = 0.08, DATEIEN_JE_TRABANT = 100, TRABANTEN_EINZELN = 300;
 export const CHUNKS_JE_NEBELPUNKT = 100, NEBEL_MAX = 10000;
 
 export interface IndexEbenen { aktiv: boolean; dateien: number; chunks: number; stern: number; trabanten: number; einzeln: number; dichte: number; nebel: number }
 /** Rueckfall (Schalter orbit_nebel = 0 oder keine Index-Zahlen): heutige Sterngroesse und 42 feste Kernteilchen, kein Nebel. */
 export const RUECKFALL: IndexEbenen = { aktiv: false, dateien: 0, chunks: 0, stern: 1, trabanten: 42, einzeln: 42, dichte: 0, nebel: 0 };
 
-/** 0 Dateien = kleiner sichtbarer Punkt (STERN_MIN), dann linear bis 1 bei 25.000 Dateien (Deckel). */
+/** 0 Dateien = kleiner sichtbarer Punkt (STERN_MIN), dann linear bis 1 bei 10.000 Dateien (Deckel). */
 export function sternFaktor(dateien: number) {
  const d = Math.max(0, Number(dateien) || 0);
  return STERN_MIN + (1 - STERN_MIN) * Math.min(1, d / STERN_VOLL_DATEIEN);

@@ -6,7 +6,7 @@
  *   Koordinator<->Arbeitsagent unveraendert. Einstellungen orbit_nebel/an_user_animation (Standard 1, 0..1).
  * B nerven-szene: kein Knoten fuer 'user'/'system' (neues und altes Snapshot-Format), ereignisArt-Rueckfall, beendete Plaene sind keine Knoten,
  *   Projektstern linear aus den Dateien.
- * C index-ebenen: Stern 0 -> Mindestgroesse, 25.000 -> 1 (Deckel), je 100 Dateien ein Trabant (auch ueber dem Deckel), Zeichengrenze 300,
+ * C index-ebenen: Stern 0 -> Mindestgroesse, 10.000 -> 1 (Deckel), je 100 Dateien ein Trabant (auch ueber dem Deckel), Zeichengrenze 300,
  *   Nebel je 100 Chunks mit Deckel 10.000, Nebelpunkte deterministisch und innerhalb des Radius, Rueckfall bei orbit_nebel=0.
  * D Renderer 'Tinte auf Papier': helle Farben werden dunkel, Farbton bleibt, grosse Schleier treten zurueck.
  * E Komponente (statisch): Commit-Flug ohne Abklingen-Sperre, Farbe je Art, Flug beim Erstauftritt als committed, an_user-Animation endet am
@@ -79,7 +79,7 @@ try {
  const g0 = S.netzwerkSzene(snap({ index: { dateien: 0, chunks: 0, stand: iso() } }), jetzt), g60 = S.netzwerkSzene(snap({ index: { dateien: 90000, chunks: 1, stand: iso() } }), jetzt), gr = S.netzwerkSzene(snap(), jetzt);
  ok(g0.stern === I.STERN_MIN && g60.stern === 1 && gr.stern === 1 && g0.kern.radius >= 14, 'B Projektstern: 0 Dateien Mindestgroesse (Klickflaeche >= 14), Deckel 1, ohne Index Rueckfall 1');
 
- ok(Math.abs(I.sternFaktor(12500) - (I.STERN_MIN + (1 - I.STERN_MIN) * 0.5)) < 1e-9 && I.sternFaktor(1500) < I.sternFaktor(3000), 'C Stern linear (12.500 = Mitte, 1.500 < 3.000)');
+ ok(Math.abs(I.sternFaktor(5000) - (I.STERN_MIN + (1 - I.STERN_MIN) * 0.5)) < 1e-9 && I.sternFaktor(1500) < I.sternFaktor(3000), 'C Stern linear (5.000 = Mitte, 1.500 < 3.000)');
  ok(I.trabantenZahl(99) === 0 && I.trabantenZahl(700) === 7 && I.trabantenZahl(2000) === 20 && I.trabantenZahl(58165) === 581 && I.trabantenZahl(120000) === 1200, 'C je 100 Dateien ein Trabant, auch ueber dem Deckel (datcom 7, synapse 20, parser-testkorpus 581)');
  const gross = I.indexEbenen({ werte, index: { dateien: 58165, chunks: 451100, stand: '' } });
  ok(gross.einzeln === I.TRABANTEN_EINZELN && gross.trabanten === 581 && gross.dichte > 0 && gross.dichte < 1, 'C Zeichengrenze 300 einzeln, darueber dichter (Dichte ' + gross.dichte.toFixed(2) + ')');
