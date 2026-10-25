@@ -68,6 +68,22 @@ export interface AgentChatNachricht {
 
 const SICHTBAR = new Set(['user', 'agent', 'nachricht', 'ausgabe', 'system']);
 
+/** P22-T137: Antwort ist reines HTML (beginnt mit einem Tag, endet mit '>' und enthaelt ein schliessendes Tag). Rein. */
+export function istHtmlAntwort(text: string): boolean {
+  const t = text.trim();
+  return t.length > 6 && t.startsWith('<') && t.endsWith('>') && /<\/[a-z][a-z0-9-]*\s*>/i.test(t);
+}
+
+/** P22-T135: Kopf einer Eingabe mit bekannter Herkunft (CLI-Verlauf setzt absender.herkunft). null = unbekannt. Rein. */
+export function herkunftKopf(a: MainAgentVerlaufEintrag['absender']): string | null {
+  if (!a?.herkunft) return null;
+  if (a.herkunft === 'cli') return 'Du · Eingabe über CLI';
+  const wer = !a.agent_id || a.agent_id === 'user' ? 'Du' : a.agent_id;
+  if (a.herkunft === 'mod_inbox') return wer + ' · ' + (wer === 'Du' ? 'Web-UI' : 'Nachricht');
+  if (a.herkunft === 'cc_send') return wer + ' · cc-send';
+  return null;
+}
+
 /**
  * Verlaufseintraege einer Identitaet -> Chat-Nachrichten in der Form des Main-Chats. karten = Schalter verlauf_tool_karten:
  * Werkzeug-Rohzeilen (weg 'werkzeug') entfallen dann, die Karten haengen an der Antwort. Rein.
@@ -81,7 +97,7 @@ export function baueAgentChatNachrichten(eintraege: MainAgentVerlaufEintrag[], n
     const vomAgent = e.rolle === 'agent' || e.rolle === 'ausgabe' || e.rolle === 'system' || e.richtung === 'aus';
     const kopf = e.rolle === 'system' ? 'System · ' + e.weg
       : vomAgent ? name + (e.rolle === 'ausgabe' ? ' · ' + e.weg : '')
-        : e.rolle === 'nachricht' ? (e.absender?.agent_id || 'unbekannt') + ' · ' + e.weg + (e.absender?.channel ? ' #' + e.absender.channel : '') : 'Du';
+        : e.rolle === 'nachricht' ? herkunftKopf(e.absender) ?? (e.absender?.agent_id || 'unbekannt') + ' · ' + e.weg + (e.absender?.channel ? ' #' + e.absender.channel : '') : 'Du';
     aus.push({ id: e.id, role: vomAgent ? 'agent' : 'user', text: e.text, kopf, info: verlaufInfo(e), toolRun, laeuft: e.status === 'laeuft',
       hinweise: e.hinweise?.length ? e.hinweise : [], zugInfo: vomAgent ? verlaufZugInfo(e) : undefined });
   }

@@ -1,6 +1,11 @@
 .coordinator-dock-rail{position:absolute;z-index:55;right:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px;pointer-events:none;transform:translateY(-8%)}.coordinator-dock-rail>*{pointer-events:auto}.coordinator-rail-handle{width:44px;height:24px;border:1px solid var(--border);border-right:0;background:var(--panel);color:var(--muted);cursor:ns-resize;touch-action:none}.coordinator-dock-tab{width:44px;height:42px;display:grid;grid-template-columns:28px minmax(0,1fr) 7px;align-items:center;gap:8px;border:1px solid var(--border);border-right:0;background:var(--strong);color:var(--text);padding:6px 8px;overflow:hidden;cursor:pointer;transition:width .18s ease,border-color .18s ease}.coordinator-dock-tab:hover,.coordinator-dock-tab:focus-visible{width:245px;border-color:var(--accent)}.coordinator-dock-tab>span{display:grid;place-items:center;width:27px;height:27px;border:1px solid var(--accent);color:var(--accent);font:800 8px "IBM Plex Mono",monospace}.coordinator-dock-tab>div{min-width:165px;text-align:left}.coordinator-dock-tab strong,.coordinator-dock-tab small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.coordinator-dock-tab strong{font-size:9px}.coordinator-dock-tab small{margin-top:2px;color:var(--muted);font-size:7px}.coordinator-dock-tab>i{width:6px;height:6px;border-radius:50%;background:var(--success)}.coordinator-dock-tab.is-open{background:var(--panel)}
 .dock-empty{max-width:150px;margin:0;border:1px solid var(--border);border-right:0;background:var(--strong);color:var(--muted);padding:6px 8px;font:700 7px "IBM Plex Mono",monospace;text-align:right}
 .coordinator-info-window{height:auto;min-height:0;resize:none}
+/* P22-T137: am Kopf verschiebbar, Kopfzeile einzeilig; HTML-Antworten im Chat */
+.coordinator-info-window>header.coordinator-info-kopf{cursor:move;touch-action:none;user-select:none}
+.coordinator-info-window>header.coordinator-info-kopf span{min-width:0}
+.coordinator-info-window>header.coordinator-info-kopf small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-chat-html{display:block;margin:4px 0}
 @media(max-width:760px){.coordinator-dock-tab:hover,.coordinator-dock-tab:focus-visible{width:190px}}
 
 /* P22-T112: Chat mit Plattform-Agenten im Fenster */

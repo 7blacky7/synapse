@@ -2,6 +2,7 @@ import {
   createContext, useContext, useEffect, useMemo, useRef, useState,
   type PointerEvent as ReactPointerEvent, type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ART_LABEL, bekannteTreffer, ladeVerweis, loeseVerweiseAuf,
   type VerweisArt, type VerweisInhalt, type VerweisKandidat, type VerweisTreffer,
@@ -272,6 +273,15 @@ function LesefensterEinzel({
   );
 }
 
+/**
+ * P22-T137: Lesefenster an der Wurzel zeichnen. Sie sind position:fixed; unter einem Chatfenster mit transform (Koordinator-Fenster
+ * in der Seitenleiste) waeren sie sonst relativ zu diesem Fenster positioniert und abgeschnitten - ein Klick auf einen Plan-/
+ * Task-Verweis zeigte dann nichts.
+ */
+function fensterZiel(): Element {
+  return document.querySelector('.synapse-control') ?? document.body;
+}
+
 export function VerweisFensterProvider({ children }: { children: ReactNode }) {
   const [fenster, setFenster] = useState<FensterZustand[]>([]);
   const zaehler = useRef(1);
@@ -293,14 +303,14 @@ export function VerweisFensterProvider({ children }: { children: ReactNode }) {
   return (
     <Kontext.Provider value={kontext}>
       {children}
-      {fenster.map((f) => (
+      {fenster.length > 0 && createPortal(fenster.map((f) => (
         <LesefensterEinzel
           key={f.key}
           fenster={f}
           onAktiv={() => setFenster((aktuell) => aktuell.map((x) => (x.key === f.key ? { ...x, z: 1300 + zaehler.current++ } : x)))}
           onSchliessen={() => setFenster((aktuell) => aktuell.filter((x) => x.key !== f.key))}
         />
-      ))}
+      )), fensterZiel())}
     </Kontext.Provider>
   );
 }

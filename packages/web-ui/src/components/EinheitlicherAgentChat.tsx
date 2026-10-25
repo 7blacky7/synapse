@@ -3,7 +3,8 @@ import { abonniereToolKarten, getAgentVerlauf, sendePlattformAgentChat, type Mai
 import { ChatEingabefeld } from './ChatEingabefeld';
 import { VerweisFensterProvider, VerweisText } from './Lesefenster';
 import { ToolActivity } from './agent-chat-teile';
-import { aktuellesModell, baueAgentChatNachrichten } from './agent-chat-logik';
+import { aktuellesModell, baueAgentChatNachrichten, istHtmlAntwort } from './agent-chat-logik';
+import AgentRenderingSurface from '../kios/AgentRenderingSurface';
 import '../workspace-mock.css';
 import '../hauptagent-verlauf.css';
 import './project-coordinator-dock.css';
@@ -100,7 +101,15 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
     }
   };
 
-  const offen = gesendet.filter((g) => g.fehler || !eintraege.some((e) => e.rolle !== 'agent' && e.text.includes(g.text)));
+  // P22-T137 (Befund User): eine einmal im Verlauf gefundene Nachricht endgueltig aus 'gesendet' nehmen. Sonst rutscht sie wieder
+  // als 'wartet auf Antwort' nach unten, sobald sie aus dem geladenen Fenster (limit 60) faellt - z. B. nach einem langen Zug.
+  useEffect(() => {
+    setGesendet((alt) => {
+      const rest = alt.filter((g) => g.fehler || !eintraege.some((e) => e.rolle !== 'agent' && e.text.includes(g.text)));
+      return rest.length === alt.length ? alt : rest;
+    });
+  }, [eintraege]);
+  const offen = gesendet;
 
   return (
     <VerweisFensterProvider>
@@ -117,7 +126,10 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
                 summary={m.toolRun.calls.some((c) => c.status === 'running') ? name + ' arbeitet mit Werkzeugen …' : 'Werkzeuge dieser Antwort'} phases={m.toolRun.phases} leerText="Keine Werkzeuge in dieser Antwort." />}
               <article className={'message ' + m.role + ' text'}>
                 <header>{m.kopf}{m.info && <small className="message-info">{m.info}</small>}</header>
-                {(m.text || !m.laeuft) && <p>{m.laeuft ? m.text : <VerweisText project={project} text={m.text} />}</p>}
+                {(m.text || !m.laeuft) && (!m.laeuft && m.role === 'agent' && istHtmlAntwort(m.text)
+                  // P22-T137: reine HTML-Antworten wie beim Main bereinigt im Shadow-DOM (AgentRenderingSurface), nie als rohes innerHTML.
+                  ? <AgentRenderingSurface html={m.text} revision={m.id} className="native-html-block agent-chat-html" />
+                  : <p>{m.laeuft ? m.text : <VerweisText project={project} text={m.text} />}</p>)}
                 {m.laeuft && <div className="message-laeuft"><i /><i /><i /><span>{name} antwortet …</span></div>}
                 {m.hinweise.map((h) => <small key={h} className="message-hinweis">{h}</small>)}
                 {m.zugInfo && <small className="message-zug">{m.zugInfo}</small>}

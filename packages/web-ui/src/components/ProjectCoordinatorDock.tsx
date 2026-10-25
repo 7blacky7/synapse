@@ -25,6 +25,9 @@ export function ProjectCoordinatorDock() {
     return () => { active = false; };
   }, [openId]);
   const railDragRef = useRef<{ pointerId: number; startY: number; originTop: number } | null>(null);
+  // P22-T137: Fensterposition, am Kopf verschiebbar (wie die Lesefenster).
+  const [fensterPos, setFensterPos] = useState({ x: 120, y: 70 });
+  const fensterDragRef = useRef<{ id: number; x: number; y: number; ox: number; oy: number } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -54,7 +57,28 @@ export function ProjectCoordinatorDock() {
     if (railDragRef.current?.pointerId === event.pointerId) railDragRef.current = null;
   };
 
+  const startFensterDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest('button')) return;
+    fensterDragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, ox: fensterPos.x, oy: fensterPos.y };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveFenster = (event: ReactPointerEvent<HTMLElement>) => {
+    const d = fensterDragRef.current;
+    if (!d || d.id !== event.pointerId) return;
+    setFensterPos({
+      x: Math.min(Math.max(0, window.innerWidth - 160), Math.max(0, d.ox + event.clientX - d.x)),
+      y: Math.min(Math.max(0, window.innerHeight - 80), Math.max(0, d.oy + event.clientY - d.y)),
+    });
+  };
+  const stopFensterDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (fensterDragRef.current?.id === event.pointerId) fensterDragRef.current = null;
+  };
+
   const open = coordinators.find((item) => item.id === openId);
+  // P22-T137: alles in EINE Kopfzeile - Projekt, Laufort (z. B. CLI (Claude Code)) und letztes Lebenszeichen.
+  const kopfzeile = open
+    ? ['Projektkoordinator', open.project, herkunftText(open.herkunft), open.lastActivity ? 'Lebenszeichen ' + open.lastActivity : 'kein Lebenszeichen'].join(' · ')
+    : '';
 
   return (
     <>
@@ -68,14 +92,11 @@ export function ProjectCoordinatorDock() {
         {!coordinators.length && <p className="dock-empty" title={error || undefined}>{error ? 'Koordinatoren nicht abrufbar' : 'Kein Koordinator online'}</p>}
       </aside>
       {open && (
-        <aside className={'main-assistant-window coordinator-info-window floating-agent-window' + (chatAktiv ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(120px,70px)', zIndex: 52 }}>
-          <header>
-            <div><i /><span><strong>{open.name}</strong><small>Projektkoordinator · {open.project}</small></span></div>
+        <aside className={'main-assistant-window coordinator-info-window floating-agent-window' + (chatAktiv ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(' + fensterPos.x + 'px,' + fensterPos.y + 'px)', zIndex: 52 }}>
+          <header className="coordinator-info-kopf" onPointerDown={startFensterDrag} onPointerMove={moveFenster} onPointerUp={stopFensterDrag} onPointerCancel={stopFensterDrag}>
+            <div><i /><span><strong>{open.name}</strong><small title={kopfzeile}>{kopfzeile}</small></span></div>
             <button type="button" onClick={() => setOpenId('')}>An Seite</button>
           </header>
-          <section className="main-assistant-context"><span>PROJEKT</span><strong>{open.project}</strong><small>Erreichbar über die Channels dieses Projekts.</small></section>
-          <section className="main-assistant-context"><span>LÄUFT AUF</span><strong>{herkunftText(open.herkunft)}</strong></section>
-          <section className="main-assistant-context"><span>LETZTES LEBENSZEICHEN</span><strong>{open.lastActivity || '–'}</strong></section>
           {chatAktiv && <PlattformAgentChat identityId={open.id} name={open.name} project={open.project} />}
           <footer><span>agent_identitaeten · aktiver Lauf</span><b>online</b></footer>
         </aside>
