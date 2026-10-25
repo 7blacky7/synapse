@@ -29,12 +29,63 @@ export const NETZWERK_EINSTELLUNGEN = {
  orbit_nebel: { standard: 1, min: 0, max: 1 },
  // P22-T148: Artefakte und Nachrichten an den User als eigene Animation am Urheber (1 an, 0 = nur Feed-Eintrag).
  an_user_animation: { standard: 1, min: 0, max: 1 },
+ // P22-T153 (User 25.10.2026): bisher fest codierte Darstellungszahlen, live ohne Deploy. Standard = Code-Stand vom 25.10.2026.
+ // Nur Ganzzahlen: Kommawerte in Milli-Einheiten, die Einheit steht im Namen (_promille, _mrad, _mrad_s = Kreisfrequenz in
+ // Milliradiant je Sekunde, Periode = 6283 / Wert Sekunden). Wirkung beim naechsten Snapshot bzw. Abgleich.
+ // Index-Ebenen (Web-UI netzwerk/index-ebenen.ts): Stern 100 % ab stern_voll_dateien, je Trabant/Nebelpunkt so viele Dateien/Chunks.
+ stern_voll_dateien: { standard: 10000, min: 100, max: 1000000 },
+ stern_min_promille: { standard: 80, min: 10, max: 1000 },
+ dateien_je_trabant: { standard: 100, min: 1, max: 100000 },
+ trabanten_einzeln: { standard: 300, min: 0, max: 2000 },
+ chunks_je_nebelpunkt: { standard: 100, min: 1, max: 100000 },
+ nebel_max: { standard: 10000, min: 0, max: 20000 },
+ // Nebel-Treiben, -Drehen und -Pulsieren (Amplitude in Promille des Nebelradius bzw. mrad, Tempo in mrad/s).
+ nebel_treiben_x_promille: { standard: 25, min: 0, max: 200 },
+ nebel_treiben_y_promille: { standard: 20, min: 0, max: 200 },
+ nebel_treiben_x_mrad_s: { standard: 45, min: 0, max: 2000 },
+ nebel_treiben_y_mrad_s: { standard: 37, min: 0, max: 2000 },
+ nebel_drehung_mrad: { standard: 50, min: 0, max: 1000 },
+ nebel_drehung_mrad_s: { standard: 21, min: 0, max: 2000 },
+ nebel_puls_promille: { standard: 120, min: 0, max: 500 },
+ nebel_puls_mrad_s: { standard: 500, min: 0, max: 5000 },
+ nebel_schimmer_mrad_s: { standard: 800, min: 0, max: 5000 },
+ // Index-Reaktion (P22-T152): Glanz neuer Punkte, Verglimmen, Impulsring, Buendelungsfenster, Kappen.
+ glanz_ms: { standard: 4300, min: 500, max: 30000 },
+ glanz_anstieg_ms: { standard: 300, min: 0, max: 5000 },
+ glanz_abkling_ms: { standard: 1300, min: 100, max: 20000 },
+ verglimmen_ms: { standard: 1500, min: 100, max: 20000 },
+ impuls_ms: { standard: 2200, min: 300, max: 20000 },
+ impuls_abstand_ms: { standard: 1200, min: 0, max: 20000 },
+ impulse_max: { standard: 2, min: 1, max: 8 },
+ glanz_max: { standard: 400, min: 0, max: 2000 },
+ trabanten_impuls_reichweite: { standard: 40, min: 0, max: 400 },
+ // Ablaeufe: Commit-Flug, Explosion, Kernwelle, Aufflackern der Trabanten, Bahnen, Sternenstaub.
+ commit_flug_ms: { standard: 1600, min: 300, max: 10000 },
+ explosion_ms: { standard: 1900, min: 300, max: 10000 },
+ kernwelle_ms: { standard: 1700, min: 300, max: 10000 },
+ orbit_flare_ms: { standard: 800, min: 100, max: 5000 },
+ trabanten_bahnen_max: { standard: 8, min: 1, max: 16 },
+ deko_sterne: { standard: 420, min: 0, max: 2000 },
+ // Server: Index-Cache je Projekt (P22-T152 adaptiv: Zaehlung unter index_billig_ms -> index_cache_schnell_ms, sonst index_cache_ms).
+ index_cache_ms: { standard: 30000, min: 1000, max: 600000 },
+ index_cache_schnell_ms: { standard: 10000, min: 1000, max: 600000 },
+ index_billig_ms: { standard: 100, min: 1, max: 10000 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;
+/** P22-T153: Einheit aus dem Namen (fuer status und das Formular der Web-UI); leer = Anzahl bzw. Schalter. */
+export function netzwerkEinheit(name: string): string {
+ if (name.endsWith('_mrad_s')) return 'mrad/s (Periode = 6283 / Wert s)';
+ if (name.endsWith('_mrad')) return 'mrad';
+ if (name.endsWith('_promille')) return 'Promille';
+ if (name.endsWith('_ms')) return 'ms';
+ if (name.endsWith('_sekunden')) return 's';
+ return '';
+}
 export const NETZWERK_ADMIN_PARAMETER = {
  netzwerk_modus: { type: 'string', enum: ['status','einstellen'], description: 'agentennetzwerk: Diagnose oder persistente globale Einstellungen (User/Koordinator)' },
- netzwerk_werte: { type: 'object', additionalProperties: { type: 'number' }, description: 'agentennetzwerk einstellen: aktivitaet_sekunden, inaktiv_sekunden, sichtbare_agenten, sichtbare_channels, ereignis_limit, animation_limit, animation_ms, bilder_pro_sekunde, frame_budget_ms, buendel_ms, abgleich_sekunden, plan_nachleuchten_sekunden, plan_nachleuchten_auto_sekunden, plan_mindestanzeige_sekunden' },
+ // P22-T153: keine Namensliste mehr (ueber 40 Namen); status nennt Namen, Grenzen, Einheit und Quelle, Gruppen im Fall-Skill.
+ netzwerk_werte: { type: 'object', additionalProperties: { type: 'number' }, description: 'agentennetzwerk einstellen: {name: Ganzzahl}; Namen, min/max, Einheit und Quelle liefert netzwerk_modus status (Fall-Skill fall-admin-agentennetzwerk)' },
 };
 export async function leseNetzwerkKonfiguration(project: string) {
  const produkt = await leseProfilProduktSchalter(NETZWERK_FUNKTION, project);
@@ -47,10 +98,11 @@ export async function leseNetzwerkKonfiguration(project: string) {
   } catch { schalter = { ...schalter, aktiv: false, letzter_fehler: 'intern_nicht_lesbar' }; }
  }
  const werte = {} as NetzwerkWerte;
- const einstellungen: Record<string, { wert: number; quelle: string; min: number; max: number }> = {};
+ const einstellungen: Record<string, { wert: number; quelle: string; min: number; max: number; einheit?: string }> = {};
+ const einheit = (name: string) => { const e = netzwerkEinheit(name); return e ? { einheit: e } : {}; };
  for (const [name, d] of Object.entries(NETZWERK_EINSTELLUNGEN)) {
   werte[name as NetzwerkEinstellung] = d.standard;
-  einstellungen[name] = { wert: d.standard, quelle: 'standard', min: d.min, max: d.max };
+  einstellungen[name] = { wert: d.standard, quelle: 'standard', min: d.min, max: d.max, ...einheit(name) };
  }
  let letzter_fehler: string | null = null;
  try {
@@ -59,7 +111,7 @@ export async function leseNetzwerkKonfiguration(project: string) {
    const d = NETZWERK_EINSTELLUNGEN[z.name as NetzwerkEinstellung];
    if (d && Number.isInteger(z.wert) && z.wert >= d.min && z.wert <= d.max) {
     werte[z.name as NetzwerkEinstellung] = z.wert;
-    einstellungen[z.name] = { wert: z.wert, quelle: 'einstellung', min: d.min, max: d.max };
+    einstellungen[z.name] = { wert: z.wert, quelle: 'einstellung', min: d.min, max: d.max, ...einheit(z.name) };
    }
   }
  } catch { letzter_fehler = 'einstellungen_nicht_lesbar'; }

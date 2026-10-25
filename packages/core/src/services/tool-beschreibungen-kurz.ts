@@ -406,6 +406,9 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       ueberwachung_modus: 'runtime_ueberwachung: status|setzen|entfernen|takt_trocken|takt_jetzt|cli_update_jetzt.',
       ueberwachung_werte: 'runtime_ueberwachung setzen: Werte.',
       ueberwachung_namen: 'runtime_ueberwachung entfernen: Namen.',
+      // P22-T153: Agentennetzwerk (Namen und Grenzen liefert status).
+      netzwerk_modus: 'agentennetzwerk: status|einstellen (fall-admin-agentennetzwerk).',
+      netzwerk_werte: 'agentennetzwerk einstellen: {name: Ganzzahl}.',
     },
   },
   code_intel: {

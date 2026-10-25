@@ -17,6 +17,21 @@ export interface Effekte {
 /** Hoechstens so viele Leuchtpunkte gleichzeitig (bei grossen Spruengen die letzten neuen). */
 export const GLANZ_MAX = 400;
 export const GLANZ_ANSTIEG_MS = 300, GLANZ_MS = 4300, VERGLIMMEN_MS = 1500, IMPULS_MS = 2200, IMPULS_ABSTAND_MS = 1200, IMPULSE_MAX = 2;
+/** Zeitkonstante des Abklingens nach der Spitze (vor P22-T153 fest in glanzStaerke). */
+export const GLANZ_ABKLING_MS = 1300;
+
+/** P22-T153: Zeiten und Kappen sind Netzwerk-Einstellungen (snapshot.werte); die Konstanten bleiben Standard und Rueckfall. */
+export interface ReaktionsWerte { glanzMs: number; anstiegMs: number; abklingMs: number; verglimmenMs: number; impulsMs: number; abstandMs: number; impulseMax: number; glanzMax: number }
+export const REAKTION_STANDARD: ReaktionsWerte = { glanzMs: GLANZ_MS, anstiegMs: GLANZ_ANSTIEG_MS, abklingMs: GLANZ_ABKLING_MS, verglimmenMs: VERGLIMMEN_MS,
+  impulsMs: IMPULS_MS, abstandMs: IMPULS_ABSTAND_MS, impulseMax: IMPULSE_MAX, glanzMax: GLANZ_MAX };
+export function reaktionsWerte(w?: Record<string, number>): ReaktionsWerte {
+  const z = (name: string, std: number, min: number) => { const v = w?.[name]; return typeof v === 'number' && Number.isFinite(v) ? Math.max(min, v) : std; };
+  return { glanzMs: z('glanz_ms', GLANZ_MS, 1), anstiegMs: z('glanz_anstieg_ms', GLANZ_ANSTIEG_MS, 0), abklingMs: z('glanz_abkling_ms', GLANZ_ABKLING_MS, 1),
+    verglimmenMs: z('verglimmen_ms', VERGLIMMEN_MS, 1), impulsMs: z('impuls_ms', IMPULS_MS, 1), abstandMs: z('impuls_abstand_ms', IMPULS_ABSTAND_MS, 0),
+    impulseMax: z('impulse_max', IMPULSE_MAX, 1), glanzMax: z('glanz_max', GLANZ_MAX, 0) };
+}
+/** Die letzten n Eintraege (n <= 0 = keine; slice(-0) waere die ganze Liste). */
+function letzte<T>(liste: T[], n: number): T[] { return n > 0 ? liste.slice(-n) : []; }
 
 /**
  * alt/neu = Rohzahl (Chunks bzw. Dateien), je = Rohzahl je Punkt, deckel = hoechste einzeln gezeichnete Punktzahl.
@@ -34,43 +49,43 @@ export function indexReaktion(alt: number | null, neu: number, je: number, decke
 export const leereEffekte = (): Effekte => ({ glanz: [], impulse: [], zaehler: { neu: 0, weg: 0, impuls: 0, gebuendelt: 0 }, letzte: 'ruhe' });
 
 /** Nimmt eine Reaktion auf; Ruhe laesst den Stand unveraendert (dasselbe Objekt). */
-export function nimmAuf(e: Effekte, r: Reaktion, zeit: number): Effekte {
+export function nimmAuf(e: Effekte, r: Reaktion, zeit: number, p: ReaktionsWerte = REAKTION_STANDARD): Effekte {
   if (r.art === 'ruhe') return e;
   const zaehler = { ...e.zaehler };
   if (r.art === 'impuls') {
     const letzter = e.impulse.at(-1);
-    if (letzter !== undefined && zeit - letzter < IMPULS_ABSTAND_MS) { zaehler.gebuendelt++; return { ...e, zaehler, letzte: 'impuls' }; }
+    if (letzter !== undefined && zeit - letzter < p.abstandMs) { zaehler.gebuendelt++; return { ...e, zaehler, letzte: 'impuls' }; }
     zaehler.impuls++;
-    return { ...e, impulse: [...e.impulse, zeit].slice(-IMPULSE_MAX), zaehler, letzte: 'impuls' };
+    return { ...e, impulse: letzte([...e.impulse, zeit], p.impulseMax), zaehler, letzte: 'impuls' };
   }
-  const von = Math.max(r.von, r.bis - GLANZ_MAX), neu: Glanz[] = [];
+  const von = Math.max(r.von, r.bis - p.glanzMax), neu: Glanz[] = [];
   for (let i = von; i < r.bis; i++) neu.push({ i, start: zeit, art: r.art });
   const betroffen = new Set(neu.map((g) => g.i));
   // Derselbe Punkt nur einmal: eine neue Reaktion startet seinen Glanz neu (auch Wechsel weg <-> neu).
-  const glanz = [...e.glanz.filter((g) => !betroffen.has(g.i)), ...neu].slice(-GLANZ_MAX);
+  const glanz = letzte([...e.glanz.filter((g) => !betroffen.has(g.i)), ...neu], p.glanzMax);
   zaehler[r.art] += r.bis - r.von;
   return { ...e, glanz, zaehler, letzte: r.art };
 }
 
 /** Abgelaufene Effekte entfernen; ohne Aenderung dasselbe Objekt. */
-export function raeume(e: Effekte, zeit: number): Effekte {
-  const glanz = e.glanz.filter((g) => zeit - g.start < (g.art === 'neu' ? GLANZ_MS : VERGLIMMEN_MS));
-  const impulse = e.impulse.filter((t) => zeit - t < IMPULS_MS);
+export function raeume(e: Effekte, zeit: number, p: ReaktionsWerte = REAKTION_STANDARD): Effekte {
+  const glanz = e.glanz.filter((g) => zeit - g.start < (g.art === 'neu' ? p.glanzMs : p.verglimmenMs));
+  const impulse = e.impulse.filter((t) => zeit - t < p.impulsMs);
   return glanz.length === e.glanz.length && impulse.length === e.impulse.length ? e : { ...e, glanz, impulse };
 }
 
 /** 0..1: neu = kurzer Anstieg, dann Abklingen auf die normale Helligkeit; weg = Verglimmen. */
-export function glanzStaerke(g: Glanz, zeit: number): number {
+export function glanzStaerke(g: Glanz, zeit: number, p: ReaktionsWerte = REAKTION_STANDARD): number {
   const t = zeit - g.start;
   if (t < 0) return 0;
-  if (g.art === 'weg') return t >= VERGLIMMEN_MS ? 0 : (1 - t / VERGLIMMEN_MS) ** 2;
-  if (t >= GLANZ_MS) return 0;
-  if (t < GLANZ_ANSTIEG_MS) return t / GLANZ_ANSTIEG_MS;
-  return Math.exp(-(t - GLANZ_ANSTIEG_MS) / 1300);
+  if (g.art === 'weg') return t >= p.verglimmenMs ? 0 : (1 - t / p.verglimmenMs) ** 2;
+  if (t >= p.glanzMs) return 0;
+  if (t < p.anstiegMs) return t / p.anstiegMs;
+  return Math.exp(-(t - p.anstiegMs) / p.abklingMs);
 }
 
 /** Impuls: Fortschritt 0..1 (weich) und Staerke 1..0. */
-export function impulsLage(start: number, zeit: number): { u: number; staerke: number } {
-  const t = Math.min(1, Math.max(0, (zeit - start) / IMPULS_MS));
+export function impulsLage(start: number, zeit: number, p: Pick<ReaktionsWerte, 'impulsMs'> = REAKTION_STANDARD): { u: number; staerke: number } {
+  const t = Math.min(1, Math.max(0, (zeit - start) / p.impulsMs));
   return { u: t * t * (3 - 2 * t), staerke: (1 - t) ** 1.2 };
 }

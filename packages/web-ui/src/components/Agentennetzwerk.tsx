@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ladeNetzwerk, schalteNetzwerk, stelleNetzwerkEin, type NetzSnapshot, type NetzEreignis } from '../api/agentennetzwerk';
 import { netzwerkSzene, STILE, stil, rgb, kurve, gleichmaessig, werkzeugName, ereignisArt, type Knoten, type Szene, type Rgb, type Punkt } from './netzwerk/nerven-szene';
-import { indexEbenen, nebelPunkte, RUECKFALL, CHUNKS_JE_NEBELPUNKT, DATEIEN_JE_TRABANT, NEBEL_MAX, TRABANTEN_EINZELN, type IndexEbenen } from './netzwerk/index-ebenen';
-import { indexReaktion, nimmAuf, raeume, glanzStaerke, impulsLage, leereEffekte } from './netzwerk/index-reaktion';
+import { indexEbenen, nebelPunkte, RUECKFALL, NEBEL_HART, type IndexEbenen } from './netzwerk/index-ebenen';
+import { indexReaktion, nimmAuf, raeume, glanzStaerke, impulsLage, leereEffekte, reaktionsWerte, REAKTION_STANDARD, type ReaktionsWerte } from './netzwerk/index-reaktion';
+import { NETZWERK_LABELS, gruppiereEinstellungen, einstellungHilfe, geaenderteNetzwerkWerte } from './netzwerk/einstellungen-form';
 import {PlanNachleuchten,planZustand,planAnimation,planAbklingen,PLAN_FARBEN} from './netzwerk/plan-nachleuchten';
 import { erstelleLicht, type Licht, type Kamera } from './netzwerk/nerven-renderer';
 import '../agentennetzwerk.css';
@@ -37,17 +38,19 @@ const hash = (text: string) => { let h = 2166136261; for (let i = 0; i < text.le
 const zitter = (seed: number, k: number, takt: number) => (hash(seed + ':' + k + ':' + takt) % 1000) / 500 - 1;
 const mische = (a: Rgb, b: Rgb, t: number): Rgb => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const glatt = (t: number) => t * t * (3 - 2 * t);
+/** P22-T153: Darstellungszahl aus snapshot.werte, Rueckfall auf den Code-Standard (Snapshots ohne den Namen). */
+const nwWert = (w: Record<string, number>, name: string, std: number) => { const v = w[name]; return typeof v === 'number' && Number.isFinite(v) ? v : std; };
 /** Beschriftungsreihenfolge: wichtige Knoten zuerst, Rest nur dort, wo Platz frei ist. */
 /** P22-T111: helle Schriftfarben der Textebene im hellen Design auf lesbare dunkle Gegenstuecke abbilden. */
 const TEXT_HELL: Record<string, string> = { '#cbd5e1': '#334155', '#fde3c8': '#9a3412', '#fed7aa': '#9a3412', '#ffedd5': '#7c2d12', '#fdba74': '#c2410c', '#d8ccff': '#5b21b6', '#94a3b8': '#475569', '#fde68a': '#a16207', '#fca5a5': '#b91c1c' };
 const RANG: Record<string, number> = { zentrum: 0, main: 1, koordinator: 1, plan: 2, channel: 2, 'channel-cluster': 2, cluster: 2, arbeitsagent: 3 };
 
 /** Festes Dekor (konstanter Startwert): Sternenstaub auf drei Parallaxe-Ebenen und Nebelwolken. */
-function dekor(radius: number) {
+function dekor(radius: number, anzahl = 420) {
  let s = 0x5f3759df;
  const z = () => { s = Math.imul(s ^ s >>> 15, 0x2c1b3c6d) + 0x9e3779b9 | 0; return ((s >>> 0) % 100000) / 100000; };
  const sterne: number[] = [];
- for (let i = 0; i < 420; i++) { const tiefe = [0.18, 0.32, 0.5][i % 3]; sterne.push((z() - 0.5) * radius * 5, (z() - 0.5) * radius * 5, 1.4 + z() * (i % 3 + 1) * 1.6, tiefe, 0.25 + z() * 0.55, z() * 6.28); }
+ for (let i = 0; i < anzahl; i++) { const tiefe = [0.18, 0.32, 0.5][i % 3]; sterne.push((z() - 0.5) * radius * 5, (z() - 0.5) * radius * 5, 1.4 + z() * (i % 3 + 1) * 1.6, tiefe, 0.25 + z() * 0.55, z() * 6.28); }
  const nebel = [[0, 0, 3.4, '#F97316', 0.09, 0.62], [-1.1, -0.7, 2.6, '#7c3aed', 0.07, 0.4], [1.2, 0.8, 2.8, '#0e7490', 0.06, 0.38], [0.9, -1.0, 2.0, '#be185d', 0.04, 0.3], [-0.9, 1.1, 2.2, '#1d4ed8', 0.05, 0.34]] as const;
  return { sterne, nebel: nebel.map(([x, y, g, f, a, t]) => ({ x: x * radius, y: y * radius, g: g * radius, f: rgb(f), a, t })) };
 }
@@ -102,7 +105,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      if (partikel.current.length > s.werte.animation_limit) { abgewiesen.current += partikel.current.length - s.werte.animation_limit; partikel.current = partikel.current.slice(-s.werte.animation_limit); }
     }
     setSnapshot(s); setFehler('');
-    if (!vorher) setWerte(s.werte);
+    // P22-T153: kein Vorbelegen des Formulars mehr; unberuehrte Felder zeigen immer den aktuellen Snapshot-Wert.
     window.clearTimeout(abgleich);
     abgleich = window.setTimeout(() => void laden(), s.werte.abgleich_sekunden * 1000);
     if (s.schalter.aktiv) stream(); else { source?.close(); source = null; setStatus('aus'); partikel.current = []; }
@@ -123,7 +126,9 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
   let raf = 0, letztes = 0, vorherZeit = 0, layoutAm = 0, statAm = performance.now(), frames = 0, summe = 0, gezeichnet = 0, sprites = 0, uhr = 0;
   // Qualitaetsstufe: 0 voll, 1 ohne Nebel/Wellen, 2 nur aktive Bahnen und weniger Aufloesung, 3 minimal (z. B. Software-Rendering ohne GPU).
   let stufe = 0, gut = 0;
-  let graph: Szene | null = null, stand: NetzSnapshot | null = null, deko = dekor(400), dekoRadius = 400, kernPuls = 0;
+  let graph: Szene | null = null, stand: NetzSnapshot | null = null, deko = dekor(400), dekoRadius = 400, dekoSterne = 420, kernPuls = 0;
+  // P22-T153: Zeiten und Kappen der Index-Reaktion aus snapshot.werte (je neuem Snapshot).
+  let rw: ReaktionsWerte = REAKTION_STANDARD;
   // Jede echte Ankunft am Kern sendet eine Welle nach aussen (hoechstens 4 gleichzeitig).
   const wellen: Array<{ t: number; f: Rgb }> = [];
   const welle = (t: number, f: Rgb) => { if (wellen.length < 4 && (!wellen.length || t - wellen[wellen.length - 1].t > 320)) wellen.push({ t, f }); };
@@ -139,6 +144,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    zaehler[art]++; geflogen.add(pid); if (art === 'commit') commitFarben[auto ? 'auto' : 'committet']++;
    if (abgaenge.length > Math.min(24, daten.current?.werte.animation_limit ?? 24)) abgaenge.shift();
   };
+  // P22-T153: Dauer von Commit-Flug bzw. Explosion aus den Netzwerk-Werten.
+  const abDauer = (art: 'commit' | 'explosion') => { const w = daten.current?.werte ?? {}; return art === 'commit' ? nwWert(w, 'commit_flug_ms', 1600) : nwWert(w, 'explosion_ms', 1900); };
   // P22-T149: Index-Ebenen (Stern, Trabanten, Nebel), Akzentfarbe (--accent) und Reaktion der Trabanten auf Commits.
   let ebenen: IndexEbenen = RUECKFALL, akzent: Rgb = KERN, akzentAm = -1e9, orbitPhase = 0, anUserZahl = 0;
   let orbitFlare: { t: number; f: Rgb } | null = null;
@@ -151,14 +158,14 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    const ix = sn.index;
    if (!ebenen.aktiv || !ix) { letzterIndex = null; return; }
    if (letzterIndex) {
-    nebelEff = nimmAuf(nebelEff, indexReaktion(letzterIndex.chunks, ix.chunks, CHUNKS_JE_NEBELPUNKT, NEBEL_MAX), zeit);
-    trabEff = nimmAuf(trabEff, indexReaktion(letzterIndex.dateien, ix.dateien, DATEIEN_JE_TRABANT, TRABANTEN_EINZELN), zeit);
+    nebelEff = nimmAuf(nebelEff, indexReaktion(letzterIndex.chunks, ix.chunks, ebenen.je_nebel, ebenen.nebel_max), zeit, rw);
+    trabEff = nimmAuf(trabEff, indexReaktion(letzterIndex.dateien, ix.dateien, ebenen.je_trabant, ebenen.einzeln_max), zeit, rw);
    }
    letzterIndex = { dateien: ix.dateien, chunks: ix.chunks };
   };
   // Positionen auch wegfallender Punkte (nebelPunkte ist praefixstabil); neu berechnet nur bei anderer Anzahl bzw. anderem Radius.
   let glanzPunkte: { p: Float32Array; schluessel: string } | null = null;
-  const punkteBis = (n: number, r: number) => { const schluessel = n + ':' + r; if (glanzPunkte?.schluessel !== schluessel) glanzPunkte = { p: nebelPunkte(n, r), schluessel }; return glanzPunkte.p; };
+  const punkteBis = (n: number, r: number) => { const schluessel = n + ':' + r; if (glanzPunkte?.schluessel !== schluessel) glanzPunkte = { p: nebelPunkte(n, r, NEBEL_HART), schluessel }; return glanzPunkte.p; };
   // Weicher Lichtpunkt als Vorlage je Farbe: viele Glanzpunkte je Frame bleiben billig (drawImage statt Verlauf je Punkt).
   const glanzVorlagen = new Map<string, HTMLCanvasElement>();
   const glanzBild = (farbe: string) => {
@@ -177,7 +184,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    bild.width = seite; bild.height = seite;
    const c = bild.getContext('2d'); if (!c) return null;
    // Je dichter, desto zarter der einzelne Punkt: der Nebel waechst in Dichte, nicht in Schwere.
-   const p = nebelPunkte(n, rr), farbe = hell ? '100,116,139,' : '199,210,254,', zart = 0.35 + 0.65 / Math.sqrt(Math.max(1, n / 500));
+   const p = nebelPunkte(n, rr, NEBEL_HART), farbe = hell ? '100,116,139,' : '199,210,254,', zart = 0.35 + 0.65 / Math.sqrt(Math.max(1, n / 500));
    for (let i = 0; i < n; i++) { const rad = Math.max(0.6, p[i * 4 + 2] * f / 2); c.fillStyle = 'rgba(' + farbe + (p[i * 4 + 3] * zart).toFixed(2) + ')'; c.beginPath(); c.arc(seite / 2 + p[i * 4] * f, seite / 2 + p[i * 4 + 1] * f, rad, 0, Math.PI * 2); c.fill(); }
    nebelBild = { bild, schluessel, r: rr, f }; return nebelBild;
   };
@@ -244,12 +251,13 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    if (!w || !h) return;
    const dt = Math.min(0.1, vorherZeit ? (zeit - vorherZeit) / 1000 : 0.016); vorherZeit = zeit;
    const still = pause || reduz.matches; if (!still) uhr += dt;
-   const flare = orbitFlare ? Math.max(0, 1 - (zeit - orbitFlare.t) / 800) : 0; if (!still) orbitPhase += dt * (1 + flare * 2.5);
+   const flare = orbitFlare ? Math.max(0, 1 - (zeit - orbitFlare.t) / nwWert(s.werte, 'orbit_flare_ms', 800)) : 0; if (!still) orbitPhase += dt * (1 + flare * 2.5);
    const jetzt = Date.now();
-   if (!graph || s !== stand || zeit - layoutAm >= Math.max(1000, s.werte.buendel_ms)) { graph = netzwerkSzene(s, jetzt); szene.current = graph; layoutAm = zeit; stand = s; ebenen = indexEbenen(s); merkeIndex(s, zeit); }
-   nebelEff = raeume(nebelEff, zeit); trabEff = raeume(trabEff, zeit);
+   if (!graph || s !== stand || zeit - layoutAm >= Math.max(1000, s.werte.buendel_ms)) { graph = netzwerkSzene(s, jetzt); szene.current = graph; layoutAm = zeit; stand = s; rw = reaktionsWerte(s.werte); ebenen = indexEbenen(s); merkeIndex(s, zeit); }
+   nebelEff = raeume(nebelEff, zeit, rw); trabEff = raeume(trabEff, zeit, rw);
    const g = graph;
-   if (Math.abs(g.radius - dekoRadius) > 60) { deko = dekor(g.radius); dekoRadius = g.radius; }
+   const ds = nwWert(s.werte, 'deko_sterne', 420);
+   if (Math.abs(g.radius - dekoRadius) > 60 || ds !== dekoSterne) { deko = dekor(g.radius, ds); dekoRadius = g.radius; dekoSterne = ds; }
    // Breite Buehnen dehnen das Nervensystem waagerecht, hohe (Mobil) senkrecht, damit es die Flaeche fuellt.
    const streckX = Math.min(1.55, Math.max(1, w / h)), streckY = Math.min(1.3, Math.max(1, h / w));
    // Knoten gleiten an neue Plaetze; neue Zellen wachsen aus ihrem Elternknoten heraus.
@@ -326,7 +334,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    }
    // Kernwellen laufen ueber das ganze Netz hinaus und lassen den Raum kurz mitschwingen.
    for (let i = wellen.length - 1; i >= 0; i--) {
-    const u = (zeit - wellen[i].t) / 1700; if (u >= 1 || still || stufe) { wellen.splice(i, 1); continue; }
+    const u = (zeit - wellen[i].t) / nwWert(s.werte, 'kernwelle_ms', 1700); if (u >= 1 || still || stufe) { wellen.splice(i, 1); continue; }
     const f = wellen[i].f, r = 90 * Math.max(0.45, g.stern) + glatt(u) * g.radius * 2.1;
     licht.sprite(0, 0, r, f[0], f[1], f[2], (1 - u) * (1 - u) * 0.16, 1);
    }
@@ -437,8 +445,8 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      // Trabanten: je 100 Dateien ein Punkt auf gekippten Bahnen; ueber der Zeichengrenze dichter und heller statt mehr Objekte. Commits lassen sie aufflackern.
      const tf = flare > 0 && orbitFlare ? mische(KERN_HEISS, orbitFlare.f, flare) : KERN_HEISS, einzeln = stufe >= 3 ? Math.min(24, ebenen.einzeln) : stufe ? Math.ceil(ebenen.einzeln / 2) : ebenen.einzeln;
      // P22-T152: ein Impuls (Dateizahl geaendert, kein neuer Trabant) laesst die Trabanten kurz aufflackern.
-     let tImpuls = 0; for (const t0 of trabEff.impulse) tImpuls = Math.max(tImpuls, impulsLage(t0, zeit).staerke);
-     const bahnen = Math.min(8, 3 + Math.floor(einzeln / 60)), innen = 14 + 38 * sg, abstand = 8 + 7 * sg, hellig = 0.5 + ebenen.dichte * 0.35 + kernPuls * 0.3 + flare * 0.4 + tImpuls * 0.3;
+     let tImpuls = 0; for (const t0 of trabEff.impulse) tImpuls = Math.max(tImpuls, impulsLage(t0, zeit, rw).staerke);
+     const bahnen = Math.max(1, Math.min(nwWert(s.werte, 'trabanten_bahnen_max', 8), 3 + Math.floor(einzeln / 60))), innen = 14 + 38 * sg, abstand = 8 + 7 * sg, hellig = 0.5 + ebenen.dichte * 0.35 + kernPuls * 0.3 + flare * 0.4 + tImpuls * 0.3;
      const trabant = (i: number) => {
       const bahn = i % bahnen, wkl = i * 2.399 + orbitPhase * (0.22 + (bahn % 3) * 0.09) * (bahn % 2 ? -1 : 1), rr = innen + bahn * abstand + Math.sin(uhr * 0.7 + i) * 2;
       return { x: l.x + Math.cos(wkl) * rr, y: l.y + Math.sin(wkl) * rr * 0.92 };
@@ -446,11 +454,11 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
      for (let i = 0; i < einzeln; i++) { const p = trabant(i); licht.sprite(p.x, p.y, (ebenen.aktiv ? 4.6 : 3.2) + (i % 4) * 0.5, tf[0], tf[1], tf[2], hellig, 0); }
      // P22-T152: neue Trabanten leuchten an ihrer Bahnposition in der Akzentfarbe auf, wegfallende verglimmen; der Impuls laeuft als Ring ueber die Bahnen.
      if (stufe < 3) for (const gz of trabEff.glanz) {
-      const st2 = glanzStaerke(gz, zeit); if (st2 < 0.02 || (gz.art === 'neu' && gz.i >= einzeln)) continue;
+      const st2 = glanzStaerke(gz, zeit, rw); if (st2 < 0.02 || (gz.art === 'neu' && gz.i >= einzeln)) continue;
       const p = trabant(gz.i), fg = gz.art === 'neu' ? akzent : GLUT_ROT;
       licht.sprite(p.x, p.y, 10 + 26 * st2, fg[0], fg[1], fg[2], 0.75 * st2, 0); licht.sprite(p.x, p.y, 5 + 3 * st2, fg[0], fg[1], fg[2], st2, 0);
      }
-     if (stufe < 2 && !reduz.matches) for (const t0 of trabEff.impulse) { const { u, staerke } = impulsLage(t0, zeit), rr = innen * 0.6 + u * (bahnen * abstand + 40); licht.sprite(l.x, l.y, rr / 0.35, akzent[0], akzent[1], akzent[2], 0.45 * staerke, 1); }
+     if (stufe < 2 && !reduz.matches) for (const t0 of trabEff.impulse) { const { u, staerke } = impulsLage(t0, zeit, rw), rr = innen * 0.6 + u * (bahnen * abstand + nwWert(s.werte, 'trabanten_impuls_reichweite', 40)); licht.sprite(l.x, l.y, rr / 0.35, akzent[0], akzent[1], akzent[2], 0.45 * staerke, 1); }
      if (ebenen.dichte > 0 && stufe < 2) for (let b2 = 0; b2 < bahnen; b2++) licht.sprite(l.x, l.y, (innen + b2 * abstand) / 0.35, tf[0], tf[1], tf[2], 0.04 + 0.1 * ebenen.dichte, 1);
      if (sel) knotenLicht(l.x, l.y, 200 * Math.max(0.3, sg), 1, 1, 1, 0.3, 1);
      continue;
@@ -533,7 +541,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    // P22-T95: Plan-Abgaenge. Commit fliesst auf einer Bahn ins Projekt und geht darin auf; Verwerfen explodiert mit Schockwelle.
    const kz = lage.current.get(g.kern.id) ?? g.kern;
    for (let i = abgaenge.length - 1; i >= 0; i--) {
-    const ab = abgaenge[i], t = (zeit - ab.start) / (ab.art === 'commit' ? 1600 : 1900);
+    const ab = abgaenge[i], t = (zeit - ab.start) / abDauer(ab.art);
     if (t >= 1) { abgaenge.splice(i, 1); continue; }
     if (reduz.matches || pause) { const fp = ab.art === 'commit' ? ab.farbe : GOLD; licht.sprite(ab.x, ab.y, 34, fp[0], fp[1], fp[2], (1 - t) * 0.6, ab.art === 'commit' ? 2 : 1); continue; }
     if (ab.art === 'commit') {
@@ -574,10 +582,13 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     const nb = nebelEbene(ebenen.nebel, g.radius * 1.05, hell);
     if (nb) {
      const dichte = Math.min(1, ebenen.nebel / 3000), tr = reduz.matches ? 0 : uhr, basis = (hell ? 0.55 : 0.6) + 0.3 * dichte;
-     const dx = Math.sin(tr * 0.045) * nb.r * 0.025, dy = Math.cos(tr * 0.037) * nb.r * 0.02, rot = Math.sin(tr * 0.021) * 0.05;
+     // P22-T153: Treiben, Drehen und Pulsieren aus den Netzwerk-Werten (Milli-Einheiten; Standard = bisherige Faktoren 0.045, 0.025 usw.).
+     const milli = (name: string, std: number) => nwWert(s.werte, name, std) / 1000, puls = milli('nebel_puls_promille', 120);
+     const dx = Math.sin(tr * milli('nebel_treiben_x_mrad_s', 45)) * nb.r * milli('nebel_treiben_x_promille', 25), dy = Math.cos(tr * milli('nebel_treiben_y_mrad_s', 37)) * nb.r * milli('nebel_treiben_y_promille', 20);
+     const rot = Math.sin(tr * milli('nebel_drehung_mrad_s', 21)) * milli('nebel_drehung_mrad', 50);
      const ebene = (skala: number, alpha: number) => { ctx.save(); ctx.globalAlpha = Math.max(0, Math.min(1, alpha)); ctx.translate(sx(dx), sy(dy)); ctx.rotate(rot); ctx.scale(k.zoom * streckX * skala / nb.f, k.zoom * streckY * skala / nb.f); ctx.drawImage(nb.bild, -nb.bild.width / 2, -nb.bild.height / 2); ctx.restore(); };
-     ebene(1, basis * (0.88 + 0.12 * Math.sin(tr * 0.5)));
-     if (!stufe) ebene(1.015, (0.1 + 0.18 * dichte) * (0.5 + 0.5 * Math.sin(tr * 0.8)));
+     ebene(1, basis * (1 - puls + puls * Math.sin(tr * milli('nebel_puls_mrad_s', 500))));
+     if (!stufe) ebene(1.015, (0.1 + 0.18 * dichte) * (0.5 + 0.5 * Math.sin(tr * milli('nebel_schimmer_mrad_s', 800))));
      // P22-T152: neue Nebelpunkte leuchten in der Akzentfarbe auf, wegfallende verglimmen; eine Aenderung ohne neuen Punkt laeuft als
      // Lichtwelle vom Stern nach aussen durch den Nebel (Ebene im wandernden Ring heller). Alles in der Transformation der Ebene, folgt also
      // ihrem Treiben. Hell: Tinte (normal gemischt), dunkel: additiv. prefers-reduced-motion bzw. Stufe >= 2: statt Welle nur sanftes Aufhellen.
@@ -591,13 +602,13 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
        let n = ebenen.nebel; for (const gz of nebelEff.glanz) n = Math.max(n, gz.i + 1);
        const p = punkteBis(n, nb.r);
        for (const gz of nebelEff.glanz) {
-        const st2 = glanzStaerke(gz, zeit); if (st2 < 0.02) continue;
+        const st2 = glanzStaerke(gz, zeit, rw); if (st2 < 0.02) continue;
         const x = p[gz.i * 4] * nb.f, y = p[gz.i * 4 + 1] * nb.f, r = (gz.art === 'neu' ? 16 : 10) / sc;
         c.globalAlpha = Math.min(1, st2 * (hell ? 0.85 : 1)); c.drawImage(glanzBild(gz.art === 'neu' ? farbe : glut), x - r, y - r, 2 * r, 2 * r);
        }
       });
       for (const t0 of nebelEff.impulse) {
-       const { u, staerke } = impulsLage(t0, zeit);
+       const { u, staerke } = impulsLage(t0, zeit, rw);
        if (reduz.matches || stufe >= 2) { ebene(1, staerke * 0.35); continue; }
        imNebel(c => {
         const R = u * nb.r * nb.f * 1.04, band = nb.r * nb.f * 0.16;
@@ -641,7 +652,7 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
     schreibe(kp.i.icon, x + 11, y - 12, 'rgb(' + kp.i.farbe.map(c => c * 255 | 0).join(',') + ')', '700 11px "IBM Plex Mono", monospace', 0.95);
     if (erklaerungen) schreibe(werkzeugName(kp.e.tool) + '.' + kp.e.action, x + 12, y + 12, '#94a3b8', '9px "IBM Plex Mono", monospace', 0.85);
    }
-   for (const ab of abgaenge) { const t = (zeit - ab.start) / (ab.art === 'commit' ? 1600 : 1900); if (t < 1) schreibe(ab.name + (ab.art === 'commit' ? (ab.auto ? ' · auto-committet' : ' · committet') : ' · verworfen'), sx(ab.x), sy(ab.y) - 28, ab.art === 'commit' ? '#fde68a' : '#fca5a5', '600 10px "IBM Plex Mono", monospace', Math.max(0, 1 - t * 1.2)); }
+   for (const ab of abgaenge) { const t = (zeit - ab.start) / abDauer(ab.art); if (t < 1) schreibe(ab.name + (ab.art === 'commit' ? (ab.auto ? ' · auto-committet' : ' · committet') : ' · verworfen'), sx(ab.x), sy(ab.y) - 28, ab.art === 'commit' ? '#fde68a' : '#fca5a5', '600 10px "IBM Plex Mono", monospace', Math.max(0, 1 - t * 1.2)); }
    ctx.globalAlpha = 1;
    const kp = lage.current.get(g.kern.id) ?? g.kern;
    el.dataset.mainX = String(sx(kp.x)); el.dataset.mainY = String(sy(kp.y)); el.dataset.camX = String(k.x); el.dataset.camY = String(k.y); el.dataset.zoom = String(k.zoom);
@@ -708,10 +719,11 @@ export default function Agentennetzwerk({ project, fallback }: { project: string
    <button disabled={busy || !snapshot} onClick={() => void aktion(() => schalteNetzwerk(project, !an))}>{an ? 'Ausschalten' : 'Einschalten'}</button>
   </div></header>
   {fehler && <p className="nw-error" role="alert">{fehler} <button onClick={() => void refresh.current()}>Erneut laden</button></p>}
-  {einstellungen && snapshot && <form className="nw-settings" onSubmit={e => { e.preventDefault(); void aktion(() => stelleNetzwerkEin(project, werte)); }}>
-   <p>Freigabe: {snapshot.schalter.quelle}{snapshot.schalter.bis ? ' · bis ' + new Date(snapshot.schalter.bis).toLocaleTimeString('de-DE') : ''}. Einstellungen gelten global.</p>
-   {Object.entries(snapshot.einstellungen).map(([name, e]) => <label key={name}>{({ aktivitaet_sekunden: 'Aktivitätsfenster (Sekunden)', inaktiv_sekunden: 'Inaktiv nach (Sekunden)', sichtbare_agenten: 'Sichtbare Agenten', sichtbare_channels: 'Sichtbare Channels', ereignis_limit: 'Ereignisse im Fenster', animation_limit: 'Gleichzeitige Animationen', animation_ms: 'Animationsdauer (ms)', bilder_pro_sekunde: 'Bilder pro Sekunde', frame_budget_ms: 'Animationsbudget (ms)', buendel_ms: 'Ereignisse bündeln (ms)', abgleich_sekunden: 'Wiederabgleich (Sekunden)', plan_nachleuchten_sekunden: 'Committete Pläne sichtbar (Sekunden)', plan_nachleuchten_auto_sekunden: 'Auto-committete Pläne sichtbar (Sekunden)', plan_mindestanzeige_sekunden: 'Pläne mindestens anzeigen (Sekunden)', orbit_nebel: 'Trabanten, Nebel und Sterngröße (1 an, 0 aus)', an_user_animation: 'Artefakt-/User-Animation (1 an, 0 aus)' } as Record<string, string>)[name] || name}<input type="number" required min={e.min} max={e.max} value={werte[name] ?? e.wert} onChange={ev => setWerte(w => ({ ...w, [name]: Number(ev.target.value) }))} /><small>{e.quelle}</small></label>)}
-   <button disabled={busy}>Speichern</button>
+  {einstellungen && snapshot && <form className="nw-settings" onSubmit={e => { e.preventDefault(); const diff = geaenderteNetzwerkWerte(werte, snapshot.einstellungen); if (Object.keys(diff).length) void aktion(async () => { await stelleNetzwerkEin(project, diff); setWerte({}); }); }}>
+   <p>Freigabe: {snapshot.schalter.quelle}{snapshot.schalter.bis ? ' · bis ' + new Date(snapshot.schalter.bis).toLocaleTimeString('de-DE') : ''}. Einstellungen gelten global; gespeichert werden nur geänderte Felder.</p>
+   {/* P22-T153: Felder in Gruppen (netzwerk/einstellungen-form.ts), Hilfetext mit Einheit bzw. Periode; unberuehrte Felder folgen dem Snapshot. */}
+   {gruppiereEinstellungen(snapshot.einstellungen).map(gr => <fieldset key={gr.titel}><legend>{gr.titel}</legend>{gr.eintraege.map(([name, e]) => { const hilfe = einstellungHilfe(name, e, werte[name] ?? e.wert); return <label key={name}>{NETZWERK_LABELS[name] || name}<input type="number" required min={e.min} max={e.max} step={1} value={werte[name] ?? e.wert} onChange={ev => setWerte(w => ({ ...w, [name]: Number(ev.target.value) }))} /><small>{e.quelle}{hilfe ? ' · ' + hilfe : ''}</small></label>; })}</fieldset>)}
+   <button disabled={busy || !Object.keys(geaenderteNetzwerkWerte(werte, snapshot.einstellungen)).length}>Speichern</button>
   </form>}
   {!an ? <>{fallback}<p className="nw-off">{snapshot ? 'Netzwerk ausgeschaltet · bestehende Hauptagent-Ansicht' : 'Netzwerk wird geladen …'}</p></> : <>
    {erklaerungen && <div className="nw-stats"><span><b>{(g?.knoten.filter(k => ['main', 'koordinator', 'arbeitsagent'].includes(k.rolle)).length) || 0}</b> sichtbar</span><span><b>{g?.verborgen || 0}</b> im Cluster</span><span><b>{g?.inaktiv || 0}</b> inaktiv ausgeblendet</span><span><b>{snapshot.ereignisse.length}</b> echte Aufrufe</span><span className="nw-provenance">SYNAPSE · LIVE METADATEN</span></div>}

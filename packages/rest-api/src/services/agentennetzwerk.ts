@@ -7,13 +7,21 @@ import { ladeAgentenTeam, type TeamAgent } from './agenten-team.js';
 // P22-T152: Cache-Dauer je Projekt aus der eigenen Zaehldauer: unter 100 ms 10 s (Aenderungen erreichen Nebel/Trabanten schneller), sonst
 // 30 s. Messung 25.10.2026 (Live, EXPLAIN ANALYZE): synapse 41 ms; parser-testkorpus (75k Dateien, 451k Chunks) warm 200 ms, kalt 3,9 s.
 // Laufende Zaehlungen werden geteilt: gleichzeitige Betrachter loesen hoechstens eine Abfrage je Projekt aus.
+// P22-T153: die drei Zahlen sind Netzwerk-Einstellungen (index_cache_ms, index_cache_schnell_ms, index_billig_ms); die Konstanten bleiben
+// Rueckfall. Der Cache merkt sich die gemessene Zaehldauer, die Dauer wird beim Lesen aus den aktuellen Werten berechnet (wirkt sofort).
 const INDEX_CACHE_MS = 30_000, INDEX_CACHE_SCHNELL_MS = 10_000, INDEX_BILLIG_MS = 100;
 type IndexGroesse = { dateien: number; chunks: number; stand: string } | null;
-const indexCache = new Map<string, { zeit: number; ttl: number; wert: IndexGroesse }>();
+export type IndexCacheWerte = { index_cache_ms?: number; index_cache_schnell_ms?: number; index_billig_ms?: number };
+const indexCache = new Map<string, { zeit: number; dauer: number; wert: IndexGroesse }>();
 const indexLaufend = new Map<string, Promise<IndexGroesse>>();
-export async function ladeIndexGroesse(project: string): Promise<IndexGroesse> {
+const cacheZahl = (v: number | undefined, std: number) => typeof v === 'number' && Number.isFinite(v) ? v : std;
+/** P22-T153: wirksame Cache-Dauer eines Eintrags aus der gemessenen Zaehldauer und den aktuellen Einstellungen. */
+export function indexCacheTtl(e: { dauer: number; wert: IndexGroesse }, w: IndexCacheWerte = {}): number {
+ return e.wert && e.dauer < cacheZahl(w.index_billig_ms, INDEX_BILLIG_MS) ? cacheZahl(w.index_cache_schnell_ms, INDEX_CACHE_SCHNELL_MS) : cacheZahl(w.index_cache_ms, INDEX_CACHE_MS);
+}
+export async function ladeIndexGroesse(project: string, w: IndexCacheWerte = {}): Promise<IndexGroesse> {
  const alt = indexCache.get(project);
- if (alt && Date.now() - alt.zeit < alt.ttl) return alt.wert;
+ if (alt && Date.now() - alt.zeit < indexCacheTtl(alt, w)) return alt.wert;
  const laufend = indexLaufend.get(project);
  if (laufend) return laufend;
  const zaehlung = zaehleIndex(project);
@@ -22,8 +30,8 @@ export async function ladeIndexGroesse(project: string): Promise<IndexGroesse> {
 }
 /** P22-T152: Cache vergessen (Tests, z. B. nach einer Index-Aenderung im privaten Schema); ohne Projekt alle. */
 export function vergissIndexGroesse(project?: string) { if (project) indexCache.delete(project); else indexCache.clear(); }
-/** P22-T152: wirksame Cache-Dauer eines Projekts in ms (null = noch nicht gezaehlt). */
-export function indexCacheDauer(project: string): number | null { return indexCache.get(project)?.ttl ?? null; }
+/** P22-T152: wirksame Cache-Dauer eines Projekts in ms (null = noch nicht gezaehlt); P22-T153: mit den aktuellen Einstellungen. */
+export function indexCacheDauer(project: string, w: IndexCacheWerte = {}): number | null { const e = indexCache.get(project); return e ? indexCacheTtl(e, w) : null; }
 async function zaehleIndex(project: string): Promise<IndexGroesse> {
  const t0 = Date.now();
  let wert: IndexGroesse = null;
@@ -33,8 +41,7 @@ async function zaehleIndex(project: string): Promise<IndexGroesse> {
    (SELECT COUNT(*) FROM code_chunks WHERE project=$1)::int AS chunks`, [project]);
   wert = { dateien: Number(r.rows[0]?.dateien ?? 0), chunks: Number(r.rows[0]?.chunks ?? 0), stand: new Date().toISOString() };
  } catch { wert = null; }
- const dauer = Date.now() - t0;
- indexCache.set(project, { zeit: Date.now(), ttl: wert && dauer < INDEX_BILLIG_MS ? INDEX_CACHE_SCHNELL_MS : INDEX_CACHE_MS, wert });
+ indexCache.set(project, { zeit: Date.now(), dauer: Date.now() - t0, wert });
  return wert;
 }
 
@@ -156,7 +163,7 @@ export async function ladeAgentennetzwerk(project: string) {
    dateien_beispiele: (p.dateien ?? []).slice(0, 3).map(d => netzwerkText(d.split('/').pop() ?? d)),
    beitraege: [...new Set([besitzer, ...(p.beitraege ?? []).map(agentVon)].filter((x): x is string => !!x))] };
  });
- const index = await ladeIndexGroesse(project);
+ const index = await ladeIndexGroesse(project, konfiguration.werte);
  return { ...basis, plaene, plaene_ende, index, agenten: alle.map(a=>({...a,
   aufrufe_im_fenster:frequenzen.get(a.id)?.anzahl??0,
   letzter_aufruf:frequenzen.get(a.id)??null,

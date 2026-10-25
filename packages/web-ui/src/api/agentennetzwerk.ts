@@ -17,7 +17,7 @@ export interface NetzPlan { id:string; besitzer:string|null; besitzer_name:strin
 export interface NetzAgent { id:string;agent:string;name:string;rolle:string;project:string;identity_id:string|null;zuletzt_aktiv:string|null;kanaele:string[];aufrufe_im_fenster?:number;letzter_aufruf?:{zeit:string;tool:string;action:string}|null;typ?:string|null;modell?:string|null;ort?:string|null;ort_quelle?:string|null;letzte_anmeldung?:string|null;metadaten_quelle?:string;koordination?:{koordinator_id:string;quelle:string;beleg_id:string}|null }
 export interface NetzSnapshot {
  version:number;stand:string;project:string;schalter:{aktiv:boolean;quelle:string;bis:string|null;letzter_fehler:string|null};
- werte:Record<string,number>;einstellungen:Record<string,{wert:number;quelle:string;min:number;max:number}>;
+ werte:Record<string,number>;einstellungen:Record<string,{wert:number;quelle:string;min:number;max:number;einheit?:string}>;
  agenten:NetzAgent[];ereignisse:NetzEreignis[];plaene?:NetzPlan[];plaene_ende?:Array<{id:string;status:string}>;channel_ereignisse?:NetzEreignis[];begrenzt:number;letzter_fehler:string|null;
  /** P22-T149: indexierte Dateien und Chunks des Projekts (PG), null wenn nicht lesbar. */
  index?:{dateien:number;chunks:number;stand:string}|null;

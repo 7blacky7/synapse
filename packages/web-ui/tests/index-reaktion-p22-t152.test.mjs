@@ -84,8 +84,9 @@ console.log('OK E Praefixstabil');
 // F Einbau
 const nw = lies('packages/web-ui/src/components/Agentennetzwerk.tsx');
 assert.match(nw, /ebenen = indexEbenen\(s\); merkeIndex\(s, zeit\); \}/, 'Vergleich bei jedem neuen Snapshot');
-assert.match(nw, /indexReaktion\(letzterIndex\.chunks, ix\.chunks, CHUNKS_JE_NEBELPUNKT, NEBEL_MAX\)/);
-assert.match(nw, /indexReaktion\(letzterIndex\.dateien, ix\.dateien, DATEIEN_JE_TRABANT, TRABANTEN_EINZELN\)/);
+// P22-T153: je Punkt und Deckel kommen aus den Netzwerk-Werten (ebenen), Zeiten/Kappen aus rw.
+assert.match(nw, /indexReaktion\(letzterIndex\.chunks, ix\.chunks, ebenen\.je_nebel, ebenen\.nebel_max\), zeit, rw\)/);
+assert.match(nw, /indexReaktion\(letzterIndex\.dateien, ix\.dateien, ebenen\.je_trabant, ebenen\.einzeln_max\), zeit, rw\)/);
 assert.match(nw, /if \(!ebenen\.aktiv \|\| !ix\) \{ letzterIndex = null; return; \}/, 'orbit_nebel aus: keine Reaktion');
 assert.match(nw, /if \(reduz\.matches \|\| stufe >= 2\) \{ ebene\(1, staerke \* 0\.35\); continue; \}/, 'reduced motion: keine Welle');
 assert.match(nw, /if \(stufe < 2 && !reduz\.matches\) for \(const t0 of trabEff\.impulse\)/, 'Trabanten-Ring nur ohne reduced motion');

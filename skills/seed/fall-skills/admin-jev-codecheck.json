@@ -6,7 +6,7 @@
       "weg": "beide",
       "sections": [
         { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer admin (Verwaltung der eigenen Synapse-Instanz). Viele Aktionen sind Koordinator/User vorbehalten (recht_fehlt -> fall-querschnitt-recht-fehlt)." },
-        { "section": "faelle", "content": "- fall-admin-onboarding: index_stats mit sitzung neu/fortsetzung (Agenten ohne Ausweis).\n- fall-admin-jev-steuerung: jev_status, jev_schalten, jev_kosten, jev_budget, jev_optionen, Toepfe.\n- fall-admin-produkt-schalter: profil_schalter_status/setzen (u. a. fall_skill_hinweis, fall_skill_faelle, tool_beschreibungen_kurz).\n- fall-admin-profil-ausweis: Profile, Typen, Schattenprofile, Persona, agent_vorbereiten, token_abrufen, Fristen, Task-Bindung.\n- fall-admin-kontextprofil: Hinweisarten und Budget je Agent.\n- fall-admin-hauptagent: hauptagent_auftrag.\n- fall-admin-wartung: migrate, restore, save_idea, confirm_idea, index_media, detailed_stats." }
+        { "section": "faelle", "content": "- fall-admin-onboarding: index_stats mit sitzung neu/fortsetzung (Agenten ohne Ausweis).\n- fall-admin-jev-steuerung: jev_status, jev_schalten, jev_kosten, jev_budget, jev_optionen, Toepfe.\n- fall-admin-produkt-schalter: profil_schalter_status/setzen (u. a. fall_skill_hinweis, fall_skill_faelle, tool_beschreibungen_kurz).\n- fall-admin-profil-ausweis: Profile, Typen, Schattenprofile, Persona, agent_vorbereiten, token_abrufen, Fristen, Task-Bindung.\n- fall-admin-kontextprofil: Hinweisarten und Budget je Agent.\n- fall-admin-hauptagent: hauptagent_auftrag.\n- fall-admin-wartung: migrate, restore, save_idea, confirm_idea, index_media, detailed_stats.\n- fall-admin-agentennetzwerk: agentennetzwerk status/einstellen (Darstellungswerte der Web-UI, live ohne Deploy)." }
       ]
     },
     {
@@ -63,6 +63,14 @@
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: Wartungsaktionen der Instanz." },
         { "section": "regeln", "content": "1. migrate(collections?, dry_run?), restore(backup_type) - nur in der eigenen DB, vorher Koordinator fragen.\n2. save_idea(title, description, tags) / confirm_idea(idea_id, custom_name).\n3. index_media(path absolut, recursive) indexiert Mediendateien.\n4. detailed_stats: Statistiken inkl. Hinweis-Metriken." }
+      ]
+    },
+    {
+      "skill_name": "fall-admin-agentennetzwerk",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: Darstellung des Agentennetzwerks (Web-UI) pruefen oder live einstellen; einstellung_ungueltig bei admin(agentennetzwerk)." },
+        { "section": "regeln", "content": "1. Lesen: admin(action:\"agentennetzwerk\", project), netzwerk_modus status: je Name wert, quelle (standard|einstellung), min, max, einheit. Einstellen (User/Koordinator): netzwerk_modus einstellen, netzwerk_werte {name: Ganzzahl}, grund. Gilt global und dauerhaft, ohne Deploy; die Web-UI zeigt es beim naechsten Snapshot bzw. Abgleich.\n2. Nur Ganzzahlen in min..max, sonst einstellung_ungueltig (name). Kommawerte als Milli-Einheit im Namen: _promille, _mrad, _mrad_s (Tempo; Periode = 6283 / Wert s); dazu _ms, _sekunden.\n3. Anzeige: aktivitaet_sekunden, inaktiv_sekunden, sichtbare_agenten, sichtbare_channels, ereignis_limit, animation_limit, animation_ms, bilder_pro_sekunde, frame_budget_ms, buendel_ms, abgleich_sekunden, orbit_nebel, an_user_animation. Plaene: plan_nachleuchten_sekunden, plan_nachleuchten_auto_sekunden, plan_mindestanzeige_sekunden.\n4. Stern/Trabanten/Nebel: stern_voll_dateien, stern_min_promille, dateien_je_trabant, trabanten_einzeln, trabanten_bahnen_max, chunks_je_nebelpunkt, nebel_max, deko_sterne. Nebel-Bewegung: nebel_treiben_x_promille, nebel_treiben_y_promille, nebel_treiben_x_mrad_s, nebel_treiben_y_mrad_s, nebel_drehung_mrad, nebel_drehung_mrad_s, nebel_puls_promille, nebel_puls_mrad_s, nebel_schimmer_mrad_s.\n5. Index-Reaktion: glanz_ms, glanz_anstieg_ms, glanz_abkling_ms, verglimmen_ms, impuls_ms, impuls_abstand_ms, impulse_max, glanz_max, trabanten_impuls_reichweite. Ablaeufe: commit_flug_ms, explosion_ms, kernwelle_ms, orbit_flare_ms. Server: index_cache_ms, index_cache_schnell_ms, index_billig_ms.\n6. Sichtbar ist das Netzwerk nur mit Produkt-Schalter agentennetzwerk (fall-admin-produkt-schalter)." }
       ]
     },
     {
