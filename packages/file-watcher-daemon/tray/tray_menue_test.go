@@ -37,7 +37,7 @@ func TestHauptmenueGlobaleObenInaktiveImUntermenue(t *testing.T) {
 	l := hauptmenueLayout(true, projs)
 
 	wantStart := []menueArt{menueStatus, menueTrenner, menueVerbinden, menueAssetSync, menueReverse, menueImages,
-		menueGPU, menueWorkspaces, menueTrenner, menueNeuLaden, menueDeaktivieren, menueBeenden, menueTrenner}
+		menueGPU, menueCliVerlauf, menueWorkspaces, menueTrenner, menueNeuLaden, menueDeaktivieren, menueBeenden, menueTrenner}
 	for i, art := range wantStart {
 		if l[i].Art != art {
 			t.Fatalf("Eintrag %d: Art %d, erwartet %d", i, l[i].Art, art)

@@ -725,6 +725,14 @@ func rebuildMenu(projs []Project) {
 					fyne.Do(zeigeGPUFenster)
 				}
 			}()
+		case menueCliVerlauf:
+			// P22-T133: lokale Claude-Code-Sitzungen mit Ausweis im Agenten-Chat der Web-UI zeigen (cli_verlauf.aktiv).
+			mCli := systray.AddMenuItem(cliVerlaufLabel(cliVerlaufAktiv()), "Lokale Claude-Code-Sitzungen mit Synapse-Ausweis im Agenten-Chat der Web-UI zeigen")
+			go func() {
+				for range mCli.ClickedCh {
+					cliVerlaufUmschalten(mCli)
+				}
+			}()
 		case menueWorkspaces:
 			signale += baueWorkspacesMenue()
 		case menueNeuLaden:

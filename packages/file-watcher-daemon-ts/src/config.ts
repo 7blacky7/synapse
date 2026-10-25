@@ -74,9 +74,16 @@ export interface ReverseBibliothekConfig {
   [fremdesFeld: string]: unknown;
 }
 
+/** P22-T133: Tray-Haken "CLI-Verlauf an Synapse" (cli-verlauf.ts). Gehoert dem Tray, siehe saveConfig. */
+export interface CliVerlaufConfig {
+  aktiv?: boolean;
+  [fremdesFeld: string]: unknown;
+}
+
 export interface DaemonConfig {
   asset_sync?: DaemonAssetSyncConfig;
   reverse_bibliothek?: ReverseBibliothekConfig;
+  cli_verlauf?: CliVerlaufConfig;
   port: number;
   synapse_api_url: string;
   /** Optionaler gemeinsamer API-Rueckfall; Quelle ist config.json. */
@@ -203,6 +210,12 @@ export function saveConfig(cfg: DaemonConfig, o: { reverseBibliothekEigen?: bool
       else cfg.reverse_bibliothek = platte.wert;
     }
   }
+  // P22-T133: cli_verlauf setzt nur der Tray; jeder Speicherweg uebernimmt den Stand von der Platte.
+  const cli = feldVonPlatte(p, 'cli_verlauf');
+  if (cli.gelesen) {
+    if (cli.wert === undefined) delete cfg.cli_verlauf;
+    else cfg.cli_verlauf = cli.wert as CliVerlaufConfig;
+  }
   const tmp = p + '.tmp';
   const json = JSON.stringify(cfg, null, 2);
   fs.writeFileSync(tmp, json, 'utf-8');
@@ -291,6 +304,18 @@ function reverseVonPlatte(p: string): { gelesen: boolean; wert?: ReverseBiblioth
     const j = JSON.parse(fs.readFileSync(p, 'utf-8'));
     if (!j || typeof j !== 'object' || Array.isArray(j)) return { gelesen: false };
     return { gelesen: true, wert: j.reverse_bibliothek === undefined ? undefined : leseReverseBibliothek(j.reverse_bibliothek) };
+  } catch {
+    return { gelesen: false };
+  }
+}
+
+/** P22-T133: ein Feld frisch von der Platte (gelesen:false = Datei fehlt oder ist unlesbar, dann nichts aendern). */
+function feldVonPlatte(p: string, feld: string): { gelesen: boolean; wert?: unknown } {
+  try {
+    if (!fs.existsSync(p)) return { gelesen: false };
+    const j = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return { gelesen: false };
+    return { gelesen: true, wert: (j as Record<string, unknown>)[feld] };
   } catch {
     return { gelesen: false };
   }

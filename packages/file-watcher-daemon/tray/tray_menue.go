@@ -36,6 +36,7 @@ const (
 	menueReverse
 	menueImages // P18-T65: ISO-Image einbinden (nur wo isoUnterstuetzt)
 	menueGPU
+	menueCliVerlauf // P22-T133: Haken "CLI-Verlauf an Synapse"
 	menueWorkspaces
 	menueNeuLaden
 	menueDeaktivieren
@@ -104,6 +105,7 @@ func hauptmenueLayout(verbunden bool, projs []Project) []menueEintrag {
 	}
 	l = append(l,
 		menueEintrag{Art: menueGPU},
+		menueEintrag{Art: menueCliVerlauf},
 		menueEintrag{Art: menueWorkspaces},
 		menueEintrag{Art: menueTrenner},
 		menueEintrag{Art: menueNeuLaden},

@@ -23,6 +23,7 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
+  pruefeAgentToken, importiereSitzungsEintraege,
   projekteDesHosts,
   loeseAgentZiel, leseAgentBezugModus, mitAgentAufrufKontext, type AgentZiel,
   istSyncPfad,
@@ -280,6 +281,24 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
       default:
         return reply.code(400).send({ success: false, error: 'aktion_unbekannt', erlaubt: ['claim', 'abschluss', 'expire', 'registrieren'] });
     }
+  });
+
+  // ── P22-T133: lokale CLI-Sitzung -> Agenten-Verlauf ──
+  // Body { host, daemon_id, ausweis, runtime?, eintraege[1..500] } (cli-verlauf.ts im Daemon). Die Identitaet kommt
+  // aus dem Ausweis, nie aus dem Body; gespeichert wie der Wrapper-Spiegel (importiereSitzungsEintraege, ref einmalig).
+  fastify.post<{ Body: Body }>('/api/daemon/cli-verlauf', async (request, reply) => {
+    const body = (request.body ?? {}) as Body & { ausweis?: unknown; runtime?: unknown; eintraege?: unknown };
+    const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+    if (!d) return reply;
+    const eintraege = Array.isArray(body.eintraege) ? body.eintraege : null;
+    if (!istText(body.ausweis, 200) || !eintraege || eintraege.length === 0 || eintraege.length > 500) {
+      return reply.code(400).send({ success: false, error: 'cli_verlauf_ungueltig' });
+    }
+    let identityId: string;
+    try { identityId = (await pruefeAgentToken(body.ausweis)).identitaet.id; }
+    catch { return reply.code(403).send({ success: false, error: 'ausweis_ungueltig' }); }
+    const r = await importiereSitzungsEintraege(identityId, eintraege, { runtime: istText(body.runtime, 32) ? body.runtime : 'claude' });
+    return { success: true, ...r };
   });
 
   // ── Tray (lokale Daemon-API, api.ts) ───────────────────────────────────────────────────────

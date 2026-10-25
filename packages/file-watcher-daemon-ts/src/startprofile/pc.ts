@@ -29,6 +29,7 @@ import { installiereIgnoreApiQuelle, leereEreignisPuffer } from '../daemon-sync-
 import { startLogpflege } from '../logpflege.js';
 import { ApiWeiterleitung, weiterleitungsPortAusConfig } from '../api-weiterleitung.js';
 import { DaemonKern } from '../daemon-kern.js';
+import { startCliVerlauf } from '../cli-verlauf.js';
 
 export async function startePcProfil(): Promise<DaemonKern> {
   setzeDbProzess('daemon');
@@ -113,6 +114,11 @@ export async function startePcProfil(): Promise<DaemonKern> {
     ? await kern.starte('intern-Bruecke', () => startInternBruecke())
     : (kern.markiereAus('intern-Bruecke', 'DAEMON_INTERN_BRUECKE_DISABLED=1'), null);
 
+  // P22-T133: lokale CLI-Sitzungen in den Agenten-Verlauf (nur bei Tray-Haken cli_verlauf.aktiv, API-Weg).
+  const cliVerlauf = apiWeg && process.env.CLI_VERLAUF_DISABLED !== '1'
+    ? await kern.starte('CLI-Verlauf', () => startCliVerlauf())
+    : (kern.markiereAus('CLI-Verlauf', apiWeg ? 'CLI_VERLAUF_DISABLED=1' : 'nur im API-Weg'), null);
+
   // P9-T28: lokale API-Weiterleitung (LAN zuerst, Tunnel als Rueckfall) fuer Claude Code/Codex/MCP.
   // Eigener Port (Standard 7879, SYNAPSE_API_WEITERLEITUNG_PORT bzw. config api_weiterleitung_port, 0 = aus).
   let weiterleitung: ApiWeiterleitung | null = null;
@@ -159,6 +165,7 @@ export async function startePcProfil(): Promise<DaemonKern> {
   if (heartbeat) kern.beimStopp('Heartbeat', () => heartbeat.stop());
   if (enabledSync) kern.beimStopp('Enabled-Sync', () => enabledSync.stop());
   if (internBruecke) kern.beimStopp('intern-Bruecke', () => internBruecke.stop());
+  if (cliVerlauf) kern.beimStopp('CLI-Verlauf', () => cliVerlauf.stop());
   if (logpflege) kern.beimStopp('Logpflege', () => logpflege.stop());
   if (weiterleitung) {
     const w = weiterleitung;
