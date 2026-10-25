@@ -384,7 +384,13 @@ async function dispatchSpecialistActionGebunden(
       const { baueZustellText } = await import('./zustell-text.js')
       const { heartbeatController } = await import('@synapse/agents')
       const name = String(args.name)
-      if (!heartbeatController.isConnected(name)) return { success: true, zugestellt: false, grund: 'nicht_verbunden' }
+      if (!heartbeatController.isConnected(name)) {
+        // P22-T134: interaktive Sitzung ohne Wrapper (Koordinator-CLI, Subagent mit Ausweis) ueber die Mod-Inbox, sonst wie bisher.
+        const { zustelleAnMod } = await import('./mod-inbox.js')
+        const z = args.zustellung as Parameters<typeof baueZustellText>[0]
+        const r = await zustelleAnMod(String(args.identity_id ?? ''), `${z.weg}:${z.message_id}`, baueZustellText(z))
+        return r ?? { success: true, zugestellt: false, grund: 'nicht_verbunden' }
+      }
       try {
         const r = await heartbeatController.sendWake(name, baueZustellText(args.zustellung as Parameters<typeof baueZustellText>[0]))
         // P22-T63: Antwort des Main mitgeben, damit der Verlauf auch Zustell-Zuege vollstaendig fuehrt.

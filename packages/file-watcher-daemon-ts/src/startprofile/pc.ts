@@ -30,6 +30,7 @@ import { startLogpflege } from '../logpflege.js';
 import { ApiWeiterleitung, weiterleitungsPortAusConfig } from '../api-weiterleitung.js';
 import { DaemonKern } from '../daemon-kern.js';
 import { startCliVerlauf } from '../cli-verlauf.js';
+import { startModInbox } from '../mod-inbox.js';
 
 export async function startePcProfil(): Promise<DaemonKern> {
   setzeDbProzess('daemon');
@@ -119,6 +120,11 @@ export async function startePcProfil(): Promise<DaemonKern> {
     ? await kern.starte('CLI-Verlauf', () => startCliVerlauf())
     : (kern.markiereAus('CLI-Verlauf', apiWeg ? 'CLI_VERLAUF_DISABLED=1' : 'nur im API-Weg'), null);
 
+  // P22-T134: Mod-Inbox - Sitzungen mit wartender Claude-Code-Mod der API melden (Schalter mod_inbox auf der API, API-Weg).
+  const modInbox = apiWeg && process.env.MOD_INBOX_DISABLED !== '1'
+    ? await kern.starte('Mod-Inbox', () => startModInbox())
+    : (kern.markiereAus('Mod-Inbox', apiWeg ? 'MOD_INBOX_DISABLED=1' : 'nur im API-Weg'), null);
+
   // P9-T28: lokale API-Weiterleitung (LAN zuerst, Tunnel als Rueckfall) fuer Claude Code/Codex/MCP.
   // Eigener Port (Standard 7879, SYNAPSE_API_WEITERLEITUNG_PORT bzw. config api_weiterleitung_port, 0 = aus).
   let weiterleitung: ApiWeiterleitung | null = null;
@@ -166,6 +172,7 @@ export async function startePcProfil(): Promise<DaemonKern> {
   if (enabledSync) kern.beimStopp('Enabled-Sync', () => enabledSync.stop());
   if (internBruecke) kern.beimStopp('intern-Bruecke', () => internBruecke.stop());
   if (cliVerlauf) kern.beimStopp('CLI-Verlauf', () => cliVerlauf.stop());
+  if (modInbox) kern.beimStopp('Mod-Inbox', () => modInbox.stop());
   if (logpflege) kern.beimStopp('Logpflege', () => logpflege.stop());
   if (weiterleitung) {
     const w = weiterleitung;

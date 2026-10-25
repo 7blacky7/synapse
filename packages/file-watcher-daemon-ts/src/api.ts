@@ -31,6 +31,7 @@ import type { WrapperStatusRow } from '@synapse/core';
 import { readStatus, removeSpecialist } from '@synapse/agents';
 import type { WatcherManager } from './manager.js';
 import { registriereSkillsProxy,istLoopback } from './skills-proxy.js';
+import { registriereModInbox } from './mod-inbox.js';
 import type { ApiWeiterleitung } from './api-weiterleitung.js';
 // P9-T27 letzter Schritt: im API-Weg (Daemon ohne DATABASE_URL) holen die Tray-Endpunkte alles ueber die API.
 import { daemonJobsWeg } from './daemon-jobs-api.js';
@@ -679,6 +680,10 @@ export function buildApi(opts: BuildApiOptions): FastifyInstance {
   // ---- POST /skills/:aktion ----------------------------------------------
   // Skill-DB fuer lokale Werkzeuge (skill-db.mjs, Hooks) mit dem Daemon-Token (P12-T19).
   registriereSkillsProxy(app);
+
+  // ---- P22-T134: Mod-Inbox (nur lokal) ------------------------------------
+  // Claude-Code-Mods interaktiver Sitzungen holen hier Nachrichten ab und quittieren den Turnstart (mod-inbox.ts).
+  registriereModInbox(app);
 
   // ---- 404-Fallback -------------------------------------------------------
   app.setNotFoundHandler((_req, reply) => {

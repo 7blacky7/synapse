@@ -23,7 +23,7 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
-  pruefeAgentToken, importiereSitzungsEintraege,
+  pruefeAgentToken, importiereSitzungsEintraege, meldeModSitzung,
   projekteDesHosts,
   loeseAgentZiel, leseAgentBezugModus, mitAgentAufrufKontext, type AgentZiel,
   istSyncPfad,
@@ -299,6 +299,30 @@ export async function daemonSyncRoutes(fastify: FastifyInstance, pruefeDaemon: D
     catch { return reply.code(403).send({ success: false, error: 'ausweis_ungueltig' }); }
     const r = await importiereSitzungsEintraege(identityId, eintraege, { runtime: istText(body.runtime, 32) ? body.runtime : 'claude' });
     return { success: true, ...r };
+  });
+
+  // ── P22-T134: Mod-Inbox – Sitzungen mit wartender Claude-Code-Mod melden ──
+  // Body { host, daemon_id, sitzungen[1..50]: { sitzung, ausweis } } (mod-inbox.ts im Daemon). Die Identitaet kommt aus dem
+  // Ausweis, nie aus dem Body; die API merkt sich Identitaet -> Host fuer die Zustellung (core mod-inbox.ts, Schalter mod_inbox).
+  fastify.post<{ Body: Body }>('/api/daemon/mod-inbox', async (request, reply) => {
+    const body = (request.body ?? {}) as Body & { sitzungen?: unknown };
+    const d = await pruefeDaemon(request, reply, body.host, body.daemon_id);
+    if (!d) return reply;
+    const liste = Array.isArray(body.sitzungen) ? body.sitzungen as Array<{ sitzung?: unknown; ausweis?: unknown } | null> : null;
+    if (!liste || liste.length === 0 || liste.length > 50) {
+      return reply.code(400).send({ success: false, error: 'mod_inbox_ungueltig' });
+    }
+    const sitzungen: Array<Record<string, unknown>> = [];
+    for (const roh of liste) {
+      const sitzung = roh?.sitzung;
+      const ausweis = roh?.ausweis;
+      if (!istText(sitzung, 64) || !istText(ausweis, 200)) continue;
+      let identityId: string;
+      try { identityId = (await pruefeAgentToken(ausweis)).identitaet.id; }
+      catch { sitzungen.push({ sitzung, aktiv: false, identity_id: null, grund: 'ausweis_ungueltig' }); continue; }
+      sitzungen.push({ sitzung, ...(await meldeModSitzung({ host: d.host, sitzung, identity_id: identityId })) });
+    }
+    return { success: true, sitzungen };
   });
 
   // ── Tray (lokale Daemon-API, api.ts) ───────────────────────────────────────────────────────

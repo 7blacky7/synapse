@@ -6,7 +6,7 @@ import { TerminalSessionRegistry } from './terminal-sessions.js';
 import type { AgentRuntimeDriver, MainAgentSession, RuntimeName, RuntimeStatus } from './types.js';
 import { leseHauptagentSchalter, stelleMainIdentitaetSicher, fuehreRuntimeWechselAus, fuehreZustellungAus, hauptagentIdentitaetsId, istMainLaufRuntime } from '@synapse/core';
 import { fuehreMainWarteschlangeAus, warteschlangeAktiv } from '@synapse/core';
-import { fuehreStartOrtZustellungenAus } from '@synapse/core';
+import { fuehreStartOrtZustellungenAus, fuehreModInboxZustellungenAus } from '@synapse/core';
 import { registriereCliModellKatalog, standardModellFuerRuntime, type CliModellRuntime, type StandardModellWahl } from '@synapse/core';
 import {
   fuehreUeberwachungsTaktAus, leseRuntimeUeberwachungWerte, registriereUeberwachungsDienste, fuehreCliUpdatesAus, type UeberwachungsDienste, type UeberwachungTaktBericht,
@@ -139,6 +139,8 @@ export class AgentRuntimeManager {
     // P22-T113 Stufe 2: alle uebrigen Agenten ueber den Daemon ihres Startorts (Schalter agent_start_ort, eigene Drossel,
     // je Identitaet nie parallel). Ohne await: lange Modell-Zuege halten die Main-Zustellung nicht auf. Wirft nie.
     void fuehreStartOrtZustellungenAus();
+    // P22-T134: interaktive Sitzungen ohne Wrapper ueber die Mod-Inbox ihres PC-Daemons (Schalter mod_inbox). Wirft nie.
+    void fuehreModInboxZustellungenAus();
     if (this.zustellLaeuft) return;
     this.zustellLaeuft = true;
     try {
