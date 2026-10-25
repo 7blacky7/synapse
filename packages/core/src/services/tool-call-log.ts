@@ -94,6 +94,11 @@ export interface ToolCallLogEntry {
   durationMs?: number | null;
   /** Volles Ergebnis als String — wird hier auf RESULT_CAP gekappt. */
   result?: string | null;
+  /**
+   * P22-T155: Absender eines ABGEWIESENEN Aufrufs (nur lesend aus dem Ausweis aufgeloest, absenderAusAusweis). Gilt nur, wenn
+   * der gepruefte ALS-Kontext keine Identitaet liefert; verleiht keine Rechte.
+   */
+  absender?: { identity_id: string; lauf_id: string | null; context_epoch: number | null } | null;
 }
 
 /**
@@ -102,8 +107,11 @@ export interface ToolCallLogEntry {
  * Aufrufer sollten zusaetzlich nicht awaiten bzw. .catch() anhaengen.
  */
 export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
-  const identityId = entry.project ? aktuelleAgentIdentityId(entry.project, entry.agentId) : null;
-  const principal = identityId ? aktuellerAgentPrincipal() : null;
+  const alsIdentityId = entry.project ? aktuelleAgentIdentityId(entry.project, entry.agentId) : null;
+  const principal = alsIdentityId ? aktuellerAgentPrincipal() : null;
+  // P22-T155: ohne geprueften Kontext (Abweisung vor der Ausweispruefung) der lesend aufgeloeste Absender.
+  const absender = alsIdentityId ? null : entry.absender ?? null;
+  const identityId = alsIdentityId ?? absender?.identity_id ?? null;
   const akteurIdentityId = belegteAkteurIdentitaet(entry.project, entry.agentId, identityId);
   try {
     if(entry.tool==='shell')entry=await maskiereShellVorSpeichern(entry.project??undefined,entry);
@@ -148,8 +156,8 @@ export async function logToolCall(entry: ToolCallLogEntry): Promise<void> {
         resultBytes,
         truncated,
         isMutationAction(entry.action),
-        identityId, principal?.art === 'identity' ? principal.lauf_id : null,
-        principal?.art === 'identity' ? principal.context_epoch : null,
+        identityId, principal?.art === 'identity' ? principal.lauf_id : absender?.lauf_id ?? null,
+        principal?.art === 'identity' ? principal.context_epoch : absender?.context_epoch ?? null,
     ];
     const spalten = `project, agent_id, source, tool_name, action, args_preview, ok,
           error, duration_ms, result, result_bytes, result_truncated, is_mutation, identity_id, lauf_id, context_epoch`;

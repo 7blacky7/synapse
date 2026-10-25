@@ -624,7 +624,7 @@ export type { RespawnDecision } from './services/specialist-respawn.js';
 // Agent-ID Resolver (zentrale Fallback-Logik fuer audit-relevante Schreib-Ops)
 export { resolveAgentId } from './services/agent-id-resolver.js';
 
-export { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, AGENT_TOKEN_PARAMETER } from './services/agent-token-tools.js';
+export { mitAgentToolAufruf, bereiteAgentToolAufrufVor, ergaenzeAgentTokenParameter, beworbeneAgentTools, AGENT_TOKEN_PARAMETER, absenderFuerAbweisung } from './services/agent-token-tools.js';
 export type { AgentToolKontext, AgentToolAufrufOptionen, BestaetigterAufrufKontext } from './services/agent-token-tools.js';
 // P22-T13 Phase V: W1b-Vertrag, Gate-Kern, Selbstfelder, Schalter, Tokentresor, Schema 113.
 export { gateToolListe, bestaetigterAufrufKontext } from './services/agent-token-tools.js';

@@ -21,6 +21,8 @@ export interface NetzSnapshot {
  agenten:NetzAgent[];ereignisse:NetzEreignis[];plaene?:NetzPlan[];plaene_ende?:Array<{id:string;status:string}>;channel_ereignisse?:NetzEreignis[];begrenzt:number;letzter_fehler:string|null;
  /** P22-T149: indexierte Dateien und Chunks des Projekts (PG), null wenn nicht lesbar. */
  index?:{dateien:number;chunks:number;stand:string}|null;
+ /** P22-T155: Aufrufe im Fenster ohne agent_id und identity_id (kein Knoten, nur Zaehler). */
+ ohne_absender?:number;
 }
 async function json<T>(path:string, init?:RequestInit):Promise<T> {
  const r=await apiFetch(path,init), d=await r.json();

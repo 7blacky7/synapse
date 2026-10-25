@@ -416,6 +416,27 @@ export async function meldeAgentMitTokenAn(token: string, project?: string, bezu
 export async function pruefeAgentToken(token: string, project?: string, bezug?: AgentBezugStand, selbst?: Selbstangaben): Promise<AgentTokenAnmeldung> {
   return tokenIdentitaet(token, project, false, bezug, selbst);
 }
+/** P22-T155: Absender eines abgewiesenen Aufrufs fuer das Audit (tool_calls). */
+export interface AusweisAbsender { identity_id: string; agent_id: string; project: string; lauf_id: string | null; context_epoch: number | null }
+/**
+ * P22-T155: Absender eines ABGEWIESENEN Aufrufs nur fuer das Audit (tool_calls), z. B. unbekannter_parameter vor der
+ * Ausweispruefung. NUR LESEND: keine Anmeldung, kein Lauf, keine Epoch, kein zuletzt_benutzt/Bestaetigen, keine Rechte und kein
+ * ALS-Principal. Widerrufene/abgelaufene Ausweise und nicht aktive Identitaeten -> null; Lesefehler -> null.
+ */
+export async function absenderAusAusweis(token: string | undefined | null): Promise<AusweisAbsender | null> {
+  if (typeof token !== 'string' || !token) return null;
+  try {
+    const r = await getPool().query<{ identity_id: string; agent_id: string; project: string; context_epoch: number | null; lauf_id: string | null }>(
+      `SELECT i.id AS identity_id, i.agent_id, i.project, i.context_epoch,
+         (SELECT l.id FROM agent_identitaet_laeufe l WHERE l.identity_id=i.id AND l.status='aktiv' LIMIT 1) AS lauf_id
+        FROM agent_identitaet_tokens t JOIN agent_identitaeten i ON i.id=t.identity_id
+       WHERE t.token_offen=$1 AND t.widerrufen_am IS NULL AND (t.gueltig_bis IS NULL OR t.gueltig_bis>NOW()) AND i.status='aktiv'
+       LIMIT 1`, [token]);
+    const z = r.rows[0];
+    return z ? { identity_id: z.identity_id, agent_id: z.agent_id, project: z.project, lauf_id: z.lauf_id ?? null,
+      context_epoch: typeof z.context_epoch === 'number' ? z.context_epoch : null } : null;
+  } catch { return null; }
+}
 export async function widerrufeAgentToken(project: string, tokenId: string, principal: AgentIdentitaetPrincipal, grund: string): Promise<void> {
   await freigabe(project);
   if (!text(grund)) throw new AgentIdentitaetFehler('grund_fehlt');

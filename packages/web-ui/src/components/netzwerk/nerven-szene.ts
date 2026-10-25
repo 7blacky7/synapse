@@ -100,6 +100,8 @@ export function netzwerkSzene(s: NetzSnapshot, jetzt: number): Szene {
  const alleEreignisse = [...new Map([...s.ereignisse, ...(s.channel_ereignisse ?? [])].map(e => [e.id, e])).values()];
  for (const e of alleEreignisse) {
   if (!e.identity_id && keinAgent(e.agent)) continue;
+  // P22-T155: ohne Absender (kein Ausweis, kein Name) nie ein Knoten - auch bei aelteren Snapshots mit agent 'cloud'/'stdio'.
+  if (!e.identity_id && (!e.agent || e.agent === 'cloud' || e.agent === 'stdio' || e.agent === 'unbekannt')) continue;
   const id = e.identity_id || namen.get(e.agent) || e.agent, zeit = Date.parse(e.zeit);
   aktiv.set(id, Math.max(aktiv.get(id) || 0, zeit));
   if (jetzt - zeit <= fenster) raten.set(id, (raten.get(id) || 0) + 1);

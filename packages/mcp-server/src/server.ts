@@ -187,12 +187,15 @@ export function createServer(): Server {
       args: kontext.args,
     };
     if (kontext.antwort?.success === false) {
+      // P22-T155: wie REST - Absender aus geprueftem ALS bzw. bei frueher Abweisung lesend aus dem Ausweis (kontext.absender,
+      // nur im Heimatprojekt); args_preview geschwaerzt (token ist aus kontext.args entfernt, logToolCall schwaerzt).
+      const projekt = kontext.principal?.project ?? (typeof kontext.args.project === 'string' && kontext.args.project ? kontext.args.project : null)
+        ?? kontext.absender?.project ?? null;
       void logToolCall({
-      // Behaupteter Text fuer die Diagnose; identity_id stammt ausschliesslich aus geprueftem ALS.
-      agentId: kontext.principal?.agent_id ?? (typeof kontext.args.agent_id === 'string' ? kontext.args.agent_id : null),
-      project: kontext.principal?.project ?? (typeof kontext.args.project === 'string' ? kontext.args.project : null),
-        source: 'stdio', tool: name, action: String(kontext.args.action ?? ''), ok: false,
-        error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort) });
+        agentId: kontext.principal?.agent_id ?? kontext.absender?.agent_id ?? (typeof kontext.args.agent_id === 'string' ? kontext.args.agent_id : null),
+        project: projekt, source: 'stdio', tool: name, action: String(kontext.args.action ?? ''), ok: false,
+        argsPreview: toolArgsVorschau(kontext.args), error: String(kontext.antwort.error), result: JSON.stringify(kontext.antwort),
+        absender: kontext.absender && kontext.absender.project === projekt ? kontext.absender : null });
       return kompaktiereTextErgebnis({ content: [{ type: 'text', text: JSON.stringify(await haengeFallSkillHinweisAn(kontext.antwort, name, fallOpt)) }], isError: true }, name);
     }
     const args = kontext.args;

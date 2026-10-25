@@ -16,7 +16,7 @@
  */
 import {
   leseTokenIdentitaetSchalter, stelleAgentTokenAus, meldeAgentMitTokenAn,
-  pruefeAgentToken, AgentIdentitaetFehler, type AgentTokenAnmeldung,
+  pruefeAgentToken, AgentIdentitaetFehler, type AgentTokenAnmeldung, absenderAusAusweis, type AusweisAbsender,
 } from './agent-identitaet.js';
 import { registerAgent } from './chat.js';
 import { getPool } from '../db/client.js';
@@ -362,6 +362,21 @@ export interface AgentToolKontext {
   angabe_hinweis?: string;
   /** P22-T79: Lenkhinweis des Main im internen Bereich (Feld main_hinweis). */
   main_hinweis?: string;
+  /**
+   * P22-T155: nur bei Abweisung ohne geprueften Principal (z. B. unbekannter_parameter vor der Ausweispruefung): Absender
+   * lesend aus dem mitgegebenen Ausweis, ausschliesslich fuer das Audit (logToolCall absender). Keine Rechte, kein Lauf.
+   */
+  absender?: AusweisAbsender;
+}
+/**
+ * P22-T155: Absender fuer das Audit einer Abweisung aus agent_kennung/token bzw. Transportausweis, nur lesend. Widerspruechliche
+ * Angaben (agent_kennung != token) -> null (kein Absender geraten). Zaehlt nicht in agentKennungDiagnose.
+ */
+export async function absenderFuerAbweisung(eingabe: Record<string, unknown>, transportToken?: string): Promise<AusweisAbsender | null> {
+  const hatKennung = Object.hasOwn(eingabe, AGENT_KENNUNG_FELD), hatToken = Object.hasOwn(eingabe, 'token');
+  if (hatKennung && hatToken && eingabe[AGENT_KENNUNG_FELD] !== eingabe.token) return null;
+  const roh = hatKennung ? eingabe[AGENT_KENNUNG_FELD] : hatToken ? eingabe.token : transportToken;
+  return absenderAusAusweis(typeof roh === 'string' ? roh : null);
 }
 /** P22-T55: je Lauf (und je Satz abweichender Felder) einmal gezeigt; Prozessspeicher, begrenzt. */
 const ANGABE_HINWEIS_GEZEIGT = new Set<string>();
@@ -451,8 +466,23 @@ async function wirksamerAusweisSchalter(project: string | null, token?: string):
   };
 }
 
-/** Fehlermeldungen enthalten ausschliesslich feste Codes, niemals Zugangswerte/DB-Fehler. */
+/**
+ * P22-T155: Abweisungen ohne geprueften Principal (unbekannter_parameter, token_identitaet_aus, agent_token_fremdes_projekt ...)
+ * bekommen fuer das Audit den Absender aus dem Ausweis (nur lesend). Die Pruefreihenfolge des Kerns bleibt unveraendert.
+ */
 export async function bereiteAgentToolAufrufVor(
+  tool: string, eingabe: Record<string, unknown>, serverInstanceId: string, transportToken?: string, erlaubteParameter?: Set<string>,
+  optionen?: AgentToolAufrufOptionen,
+): Promise<AgentToolKontext> {
+  const k = await bereiteAgentToolAufrufVorKern(tool, eingabe, serverInstanceId, transportToken, erlaubteParameter, optionen);
+  if (k.antwort?.success === false && !k.principal && !k.absender) {
+    const a = await absenderFuerAbweisung(eingabe, transportToken);
+    if (a) k.absender = a;
+  }
+  return k;
+}
+/** Fehlermeldungen enthalten ausschliesslich feste Codes, niemals Zugangswerte/DB-Fehler. */
+async function bereiteAgentToolAufrufVorKern(
   tool: string, eingabe: Record<string, unknown>, serverInstanceId: string, transportToken?: string, erlaubteParameter?: Set<string>,
   optionen?: AgentToolAufrufOptionen,
 ): Promise<AgentToolKontext> {
