@@ -893,8 +893,8 @@ export type { ErsterKoordinatorAusgabe, LegacyAnmeldung } from './services/agent
 // PA-1: unbekannte Tool-Parameter melden statt still verwerfen.
 // Liegt in core, weil BEIDE Strecken (stdio-MCP und REST) dieselbe Pruefung brauchen —
 // zwei Kopien waeren genau die Doppelpflege, gegen die der Fix gebaut wurde.
-export { pruefeUnbekannteParameter, baueErlaubteParameter } from './services/unbekannte-parameter.js';
-export type { ParameterBefund } from './services/unbekannte-parameter.js';
+export { pruefeUnbekannteParameter, baueErlaubteParameter, baueJsonParameterTypen, koerziereJsonParameter } from './services/unbekannte-parameter.js';
+export type { ParameterBefund, JsonParameterTyp } from './services/unbekannte-parameter.js';
 
 // Tool-Call Activity-Log (zentraler Audit-Store fuer shell(action:"activity"))
 export { logToolCall, isMutationAction, queryToolCalls, expireOldToolCalls } from './services/tool-call-log.js';

@@ -202,9 +202,27 @@ registriereArtefaktQuelle({
   args: {}, kanaele: [], geplant: true,
 });
 
+const QUELLEN_TEXT_HINWEIS = ' Kommt quellen als Text an, kennt dein MCP-Client das aktuelle Tool-Schema noch nicht (zwischengespeichert'
+  + ' vom Sitzungsstart): MCP neu verbinden bzw. Sitzung neu starten, dann geht die Liste als Liste durch.';
+
+/** P22-T160: quellen als JSON-Text -> Liste; kaputter Text oder keine Liste -> quellen_ungueltig mit Hinweis. */
+function quellenAusText(text: string): unknown[] {
+  let wert: unknown;
+  try {
+    wert = JSON.parse(text.trim());
+  } catch (error) {
+    return fehler('quellen_ungueltig', 'quellen kam als Text an und ist kein gueltiges JSON (' + (error instanceof Error ? error.message : String(error))
+      + '). Erwartet: Liste [{name, vertrag, args?}].' + QUELLEN_TEXT_HINWEIS);
+  }
+  if (!Array.isArray(wert)) fehler('quellen_ungueltig', 'quellen kam als Text an, der JSON-Text ist aber keine Liste [{name, vertrag, args?}].' + QUELLEN_TEXT_HINWEIS);
+  return wert as unknown[];
+}
+
 /** Prueft und normalisiert die Quellenliste eines Artefakts. Wirft ArtefaktVorlagenFehler. */
 export function pruefeQuellen(roh: unknown, maxQuellen: number = ARTEFAKT_VORLAGEN_EINSTELLUNGEN.max_quellen.standard): ArtefaktQuelle[] {
   if (roh === undefined || roh === null) return [];
+  // P22-T160: als JSON-Text gleichwertig zur Liste (MCP-Client mit Tool-Schema von vor dem Deploy reicht quellen als String).
+  if (typeof roh === 'string') roh = quellenAusText(roh);
   if (!Array.isArray(roh)) fehler('quellen_ungueltig', 'quellen muss eine Liste [{name, vertrag, args?}] sein');
   const liste = roh as unknown[];
   if (liste.length > maxQuellen) fehler('quellen_zu_viele', 'hoechstens ' + maxQuellen + ' Quellen je Artefakt');

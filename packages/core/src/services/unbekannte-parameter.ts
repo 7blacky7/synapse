@@ -136,3 +136,66 @@ export function baueErlaubteParameter(
   }
   return tabelle;
 }
+
+/**
+ * P22-T160 (25.10.2026): Objekt-/Listen-Parameter, die als JSON-TEXT ankommen, laut Server-Schema zurueckwandeln.
+ *
+ * ANLASS: artefakt(zeigen, vorlage, quellen:[{name:'plaene', vertrag:'plan.list'}]) lieferte quellen_ungueltig. Der
+ * MCP-Client (Claude Code) hatte das Tool-Schema vom Sitzungsstart zwischengespeichert, VOR dem Deploy, der quellen
+ * einfuehrte. Parameter, die er nicht kennt, reicht er als String weiter - die Liste kam als '[{"name":...}]' an. Das
+ * trifft jeden Agenten, der schon vor einem Deploy lief, und jedes Tool mit neuen Objekt-/Listen-Parametern.
+ *
+ * GLEICHE STELLE WIE PA-1 (beide Strecken, vor dem Handler), GLEICHE QUELLE (die ausgelieferten Definitionen).
+ * Bewusst eng:
+ *   - nur Parameter mit genau type 'array' bzw. 'object'; oneOf/anyOf/Typlisten mit string bleiben aussen vor (dort ist
+ *     ein Text ein gueltiger Wert, z. B. task_id, file_path, to_agent);
+ *   - nur Text, der mit '[' bzw. '{' beginnt UND als JSON genau den deklarierten Typ ergibt. Alles andere bleibt
+ *     unveraendert - die Handler behalten ihre eigenen Regeln (strArray: einzelner Text -> [Text]; kaputtes JSON meldet
+ *     der Fachdienst selbst, z. B. pruefeQuellen mit Hinweis 'MCP neu verbinden').
+ * Kein Schalter: reine Fehlerkorrektur (gueltige Aufrufe aendern sich nicht; vorher scheiterten diese Aufrufe oder die
+ * Handler-Helfer objArray/strArray wandelten denselben Text ohnehin um).
+ */
+export type JsonParameterTyp = 'array' | 'object';
+
+/** Je Tool die Parameter mit genau type 'array'/'object' - aus denselben Definitionen wie baueErlaubteParameter. */
+export function baueJsonParameterTypen(
+  definitionen: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
+): Map<string, Map<string, JsonParameterTyp>> {
+  const tabelle = new Map<string, Map<string, JsonParameterTyp>>();
+  for (const def of definitionen) {
+    const props = def?.inputSchema?.properties;
+    if (!def?.name || !props) continue;
+    const typen = new Map<string, JsonParameterTyp>();
+    for (const [name, schema] of Object.entries(props)) {
+      const typ = (schema as { type?: unknown } | null)?.type;
+      if (typ === 'array' || typ === 'object') typen.set(name, typ);
+    }
+    if (typen.size) tabelle.set(def.name, typen);
+  }
+  return tabelle;
+}
+
+/**
+ * Wandelt in args (der Kopie des Aufrufs, wird veraendert) JSON-Text in Objekt/Liste um, wo das Schema es verlangt.
+ * @returns die umgewandelten Parameternamen (leer = nichts geaendert).
+ */
+export function koerziereJsonParameter(
+  typen: Map<string, JsonParameterTyp> | undefined,
+  args: Record<string, unknown> | undefined,
+): string[] {
+  if (!typen || !args || typeof args !== 'object' || Array.isArray(args)) return [];
+  const umgewandelt: string[] = [];
+  for (const [name, typ] of typen) {
+    const roh = args[name];
+    if (typeof roh !== 'string') continue;
+    const text = roh.trim();
+    if (!text.startsWith(typ === 'array' ? '[' : '{')) continue;
+    let wert: unknown;
+    try { wert = JSON.parse(text); } catch { continue; }
+    const passt = typ === 'array' ? Array.isArray(wert) : !!wert && typeof wert === 'object' && !Array.isArray(wert);
+    if (!passt) continue;
+    args[name] = wert;
+    umgewandelt.push(name);
+  }
+  return umgewandelt;
+}

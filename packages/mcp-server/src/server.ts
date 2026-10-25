@@ -74,7 +74,7 @@ import {
 } from './tools/consolidated/index.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen. Aus core — dieselbe Funktion
 // benutzt die REST-Strecke, damit die beiden Wege nicht auseinanderlaufen.
-import { pruefeUnbekannteParameter, baueErlaubteParameter } from '@synapse/core';
+import { pruefeUnbekannteParameter, baueErlaubteParameter, baueJsonParameterTypen, koerziereJsonParameter } from '@synapse/core';
 // P13-T34/A16: ansicht (Bild inline/Link) nur ueber die API, Antwort unveraendert durchreichen.
 import { hatAnsichtParameter } from '@synapse/core';
 import { rufeAnsichtApi } from './tools/consolidated/ansicht-api.js';
@@ -158,6 +158,10 @@ export function createServer(): Server {
   // unten an ListTools gehen. Eine zweite, von Hand gepflegte Liste liefe sofort auseinander.
   ergaenzeAgentTokenParameter(ALLE_DEFINITIONEN);
   const ERLAUBTE_PARAMETER = baueErlaubteParameter(
+    ALLE_DEFINITIONEN as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
+  );
+  // P22-T160: Objekt-/Listen-Parameter je Tool (JSON-Text eines Clients mit altem Schema wird zurueckgewandelt).
+  const JSON_PARAMETER_TYPEN = baueJsonParameterTypen(
     ALLE_DEFINITIONEN as Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }>,
   );
 
@@ -460,6 +464,8 @@ export function createServer(): Server {
     // Die Pruefung steht VOR dem switch und vor jedem Seiteneffekt. Sie soll den Aufruf
     // verhindern, nicht ihn hinterher kommentieren.
     // ═══════════════════════════════════════════════════════════════════════════════════
+    // P22-T160: wie REST - Objekt-/Listen-Parameter als JSON-Text laut Schema zurueckwandeln (vor PA-1 und jedem Handler).
+    koerziereJsonParameter(JSON_PARAMETER_TYPEN.get(name), args as Record<string, unknown> | undefined);
     const parameterBefund = pruefeUnbekannteParameter(
       name,
       ERLAUBTE_PARAMETER.get(name) ?? new Set<string>(),
