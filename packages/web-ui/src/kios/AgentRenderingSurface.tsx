@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { sanitizeAgentHtml } from './sanitize';
 import { streamAgentHtml, type HtmlStreamHandle } from './fakeStream';
+import { useVerweisFenster } from '../components/Lesefenster';
+import { ART_LABEL, bekannteTreffer, loeseVerweiseAuf, type VerweisTreffer } from '../api/verweise';
+import { leseArtefaktVerweiseAktiv } from '../api/artefakt-verweise';
+import { leseArtefaktSkripteAktiv } from '../api/artefakt-skripte';
+import { enthaeltSkript } from './skript-rahmen-logik';
+import {
+  merkeZustand, stelleZustandHer, verweisProjektVon, verweisWertVon, zerlegeVerweisWert, VERWEIS_SELEKTOR, type ArtefaktZustand,
+} from './verweis-klick-logik';
 import './kios-integration.css';
 
 interface AgentRenderingSurfaceProps {
@@ -10,6 +19,12 @@ interface AgentRenderingSurfaceProps {
   style?: CSSProperties;
   interactive?: boolean;
   onAction?: (action: string, value?: string) => void;
+  /** P22-T165: Projekt fuer Verweise ohne data-synapse-projekt (Render-Projekt bzw. Projekt des Anzeigeorts). */
+  verweisProjekt?: string | null;
+  /** P22-T165: neue Revision (Vorlagen-Update) ohne Aufbau-Animation sofort tauschen; die Animation nur beim ersten Anzeigen. */
+  updateOhneAnimation?: boolean;
+  /** P22-T166 (F9): Hinweis 'Skript entfernt' zeigen, wenn das HTML ein Skript hatte (Standard ja; die Vorschau im Skript-Rahmen nein). */
+  skriptHinweis?: boolean;
 }
 
 const SHADOW_BASE = `
@@ -24,7 +39,20 @@ const SHADOW_BASE = `
     display: flow-root;
     width: 100%;
   }
+  /* P22-T165: Verweise sind anklickbar (Schalter artefakt_verweise). */
+  [data-synapse-verweis], a[href^="#verweis:"] { cursor: pointer; }
 `;
+
+interface VerweisAuswahl { x: number; y: number; project: string; treffer: VerweisTreffer[] }
+
+/** P22-T137: wie die Lesefenster an der Wurzel zeichnen (position:fixed unter transform waere abgeschnitten). */
+function auswahlZiel(): Element {
+  return document.querySelector('.synapse-control') ?? document.body;
+}
+
+function verweisDebug(ergebnis: string, info: Record<string, unknown>): void {
+  console.debug('[artefakt-verweis]', { ergebnis, ...info });
+}
 
 export default function AgentRenderingSurface({
   html,
@@ -33,6 +61,9 @@ export default function AgentRenderingSurface({
   style,
   interactive = false,
   onAction,
+  verweisProjekt,
+  updateOhneAnimation = false,
+  skriptHinweis = true,
 }: AgentRenderingSurfaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -45,6 +76,67 @@ export default function AgentRenderingSurface({
   const [streaming, setStreaming] = useState(true);
   const [updated, setUpdated] = useState(false);
   actionRef.current = onAction;
+
+  // P22-T165: Schalter artefakt_verweise (gecacht, geteilt). null = noch unbekannt -> wie AUS (Bestand).
+  const fenster = useVerweisFenster();
+  const aktivRef = useRef<boolean | null>(null);
+  const verweisProjektRef = useRef(verweisProjekt);
+  verweisProjektRef.current = verweisProjekt;
+  const ohneAnimationRef = useRef(updateOhneAnimation);
+  ohneAnimationRef.current = updateOhneAnimation;
+  const [auswahl, setAuswahl] = useState<VerweisAuswahl | null>(null);
+  const auswahlRef = useRef<HTMLDivElement | null>(null);
+  const verweisRef = useRef<(el: Element, event: MouseEvent) => void>(() => undefined);
+
+  // P22-T166 (F9): Das Skript wird hier weiter entfernt (sanitize.ts); mit Schalter artefakt_skripte (gecacht) ein kleiner Hinweis.
+  const hatSkript = skriptHinweis && enthaeltSkript(html);
+  const [skripteAktiv, setSkripteAktiv] = useState(false);
+  useEffect(() => {
+    if (!hatSkript) return undefined;
+    let aktiv = true;
+    void leseArtefaktSkripteAktiv().then((wert) => { if (aktiv) setSkripteAktiv(wert); });
+    return () => { aktiv = false; };
+  }, [hatSkript]);
+
+  useEffect(() => {
+    let aktiv = true;
+    void leseArtefaktVerweiseAktiv().then((wert) => { if (aktiv) aktivRef.current = wert; });
+    return () => { aktiv = false; };
+  }, []);
+
+  verweisRef.current = (el, event) => {
+    const wert = verweisWertVon(el);
+    if (!wert || aktivRef.current !== true) return;
+    event.preventDefault();
+    const ziel = zerlegeVerweisWert(wert);
+    const project = verweisProjektVon(el, verweisProjektRef.current);
+    const info = { wert, ziel, project };
+    if (!ziel) return verweisDebug('ungueltig', info);
+    if (!fenster) return verweisDebug('kein_lesefenster', info);
+    if (!project) return verweisDebug('projekt_fehlt', info);
+    if (ziel.art) {
+      fenster.oeffne({ project, art: ziel.art, id: ziel.id });
+      return verweisDebug('geoeffnet', info);
+    }
+    const kandidat = { text: ziel.text };
+    const x = event.clientX, y = event.clientY;
+    void loeseVerweiseAuf(project, [kandidat]).then(() => {
+      const treffer = bekannteTreffer(project, kandidat) ?? [];
+      if (treffer.length === 1) { fenster.oeffne({ project, art: treffer[0].art, id: treffer[0].id }); verweisDebug('geoeffnet', { ...info, treffer }); }
+      else if (treffer.length > 1) { setAuswahl({ x, y, project, treffer }); verweisDebug('auswahl', { ...info, treffer }); }
+      else verweisDebug('nicht_gefunden', info);
+    }).catch((error) => verweisDebug('fehler', { ...info, fehler: error instanceof Error ? error.message : String(error) }));
+  };
+
+  useEffect(() => {
+    if (!auswahl) return undefined;
+    const weg = (event: Event) => {
+      if (event instanceof KeyboardEvent ? event.key === 'Escape' : !auswahlRef.current?.contains(event.target as Node)) setAuswahl(null);
+    };
+    document.addEventListener('pointerdown', weg, true);
+    document.addEventListener('keydown', weg);
+    return () => { document.removeEventListener('pointerdown', weg, true); document.removeEventListener('keydown', weg); };
+  }, [auswahl]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -79,6 +171,9 @@ export default function AgentRenderingSurface({
 
     content.addEventListener('click', (event) => {
       const target = event.target as Element | null;
+      // P22-T165: Verweis (data-synapse-verweis / href="#verweis:") -> Lesefenster; nur mit Schalter artefakt_verweise.
+      const verweisElement = target?.closest?.(VERWEIS_SELEKTOR);
+      if (verweisElement) verweisRef.current(verweisElement, event);
       const actionElement = target?.closest?.('[data-synapse-action],[data-kios-action]');
       if (!actionElement) return;
       const input = content.querySelector('[data-synapse-input],[data-kios-input]') as HTMLInputElement | null;
@@ -101,11 +196,22 @@ export default function AgentRenderingSurface({
     const isUpdate = previousRevisionRef.current !== null && previousRevisionRef.current !== revision;
     previousRevisionRef.current = revision;
     streamRef.current?.cancel();
+    // P22-T165 (Schalter artefakt_verweise): Auswahl/offene details ueber die neue Revision retten; Vorlagen-Updates sofort tauschen.
+    const interaktion = isUpdate && aktivRef.current === true;
+    const zustand: ArtefaktZustand | null = interaktion ? merkeZustand(content) : null;
+    const sofort = interaktion && ohneAnimationRef.current;
     setUpdated(isUpdate);
-    setStreaming(true);
+    setStreaming(!sofort);
     streamRef.current = streamAgentHtml(content, sanitizeAgentHtml(html), {
       speedFactor: isUpdate ? 0.45 : 1,
-      onDone: () => setStreaming(false),
+      sofort,
+      onDone: () => {
+        if (zustand) {
+          const wiederhergestellt = stelleZustandHer(content, zustand);
+          console.debug('[artefakt-verweis] zustand', { revision, wiederhergestellt, sofort });
+        }
+        setStreaming(false);
+      },
     });
 
     return () => streamRef.current?.cancel();
@@ -131,7 +237,18 @@ export default function AgentRenderingSurface({
         {streaming && <span className="is-live">HTML wird aufgebaut <i>▍</i></span>}
         {!streaming && updated && <span>aktualisiert</span>}
         {!streaming && interactive && <span>interaktiv</span>}
+        {hatSkript && skripteAktiv && <span className="skript-entfernt" data-skript-entfernt="">Skript entfernt · läuft nur in den Top-Artefakten</span>}
       </div>
+      {auswahl && createPortal(
+        <div ref={auswahlRef} className="verweis-auswahl artefakt-verweis-auswahl" role="menu" data-artefakt-verweis-auswahl=""
+          style={{ position: 'fixed', left: Math.max(8, Math.min(auswahl.x, window.innerWidth - 300)), top: Math.min(auswahl.y + 10, window.innerHeight - 160), zIndex: 1290 }}>
+          {auswahl.treffer.map((t) => (
+            <button type="button" key={t.art + t.id} role="menuitem"
+              onClick={() => { setAuswahl(null); fenster?.oeffne({ project: auswahl.project, art: t.art, id: t.id }); }}>
+              <b>{ART_LABEL[t.art]}</b> {t.id.slice(0, 13)} <small>{t.titel}</small>
+            </button>
+          ))}
+        </div>, auswahlZiel())}
     </div>
   );
 }
