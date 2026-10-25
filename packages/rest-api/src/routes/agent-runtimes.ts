@@ -10,7 +10,7 @@ import {
   leseHauptagentHeartbeat, setzeHauptagentHeartbeat, hauptagentIdentitaetsId, leseVerbrauchSchalter, setzeVerbrauchSchalter, leseAgentVerbrauch,
   bucheAgentVerbrauch, HAUPTAGENT_PROJEKT, HAUPTAGENT_AGENT_ID,
   leseRuntimeUeberwachung, setzeRuntimeUeberwachungSchalter, setzeRuntimeUeberwachungEinstellungen, markiereRuntimeAngehalten,
-  listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox,
+  listeArtefakte, ladeArtefakt, onlineKoordinatoren, queryToolCalls, postToInbox, mitAgentAufrufKontext, leseAgentBezugModus,
   leseCliModelleSchalter, pruefeModellFuerRuntime, leseUserModellWahl, synapseModellId, CLI_MODELL_RUNTIMES, type CliModellRuntime,
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
@@ -526,8 +526,13 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       schalter = await plattformAgentChatSchalter(ziel.project);
       if (!schalter.aktiv) return fehler(409, 'funktion_aus', 'Chat mit Plattform-Agenten ist aus (plattform_agent_chat)');
       // P22-T134: an die Identitaet adressieren (to_identity_id), sonst findet die Zustellung je Identitaet (Mod-Inbox,
-      // Startort P22-T113) die Nachricht nie; to_agent bleibt fuer die Namens-Leser gesetzt.
-      const gesendet = await postToInbox('user', { art: 'identity', project: ziel.project, agent_id: ziel.agent_id, identity_id: identityId }, text, ziel.project);
+      // Startort P22-T113) die Nachricht nie; to_agent bleibt fuer die Namens-Leser gesetzt. Ein Identitaetsziel braucht den
+      // Agent-Bezug-Kontext (wie daemon-sync/daemon-jobs); im Modus 'alt' bleibt es beim Namen.
+      const bezug = await leseAgentBezugModus();
+      const gesendet = bezug.modus === 'alt'
+        ? await postToInbox('user', ziel.agent_id, text, ziel.project)
+        : await mitAgentAufrufKontext({ principal: null, bezug }, () =>
+          postToInbox('user', { art: 'identity', project: ziel.project, agent_id: ziel.agent_id, identity_id: identityId }, text, ziel.project));
       return { success: true, weg: 'inbox', inbox_id: gesendet.id, gesendet_am: gesendet.createdAt, agent_id: ziel.agent_id, project: ziel.project, identity_id: identityId };
     } catch (error) { return sendFachFehler(reply, error); }
   });
