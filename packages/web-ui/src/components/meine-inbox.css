@@ -1,0 +1,45 @@
+/* P22-T192: globales Inbox-Fenster; vorhandene Lesefenster liegen darueber (z>=1300). */
+.meine-inbox-knopf b { margin-left:auto; color:var(--accent); }
+.meine-inbox-fenster { position:fixed; z-index:1200; inset:4vh 3vw auto auto; width:min(900px,94vw); height:90vh; height:90dvh; display:flex; flex-direction:column; overflow:hidden; color:var(--text); background:var(--bg,#171e28); border:1px solid var(--border); border-radius:14px; box-shadow:0 22px 80px #0007; outline:none; }
+.meine-inbox-fenster > header { display:flex; justify-content:space-between; gap:16px; padding:20px 24px 14px; border-bottom:1px solid var(--border); }
+.meine-inbox-fenster h2 { margin:2px 0 6px; font-size:24px; }
+.meine-inbox-fenster p { margin:6px 0; }
+.meine-inbox-fenster small,.meine-inbox-fenster time { color:var(--muted); font-size:12px; }
+.meine-inbox-fenster button,.meine-inbox-fenster input,.meine-inbox-fenster select,.meine-inbox-fenster textarea { font:inherit; color:inherit; }
+.meine-inbox-fenster button { padding:6px 12px; min-height:32px; border:1px solid var(--border); background:var(--panel,var(--bg)); border-radius:6px; cursor:pointer; }
+.meine-inbox-fenster button:hover { border-color:var(--accent); }
+.meine-inbox-fenster button:disabled { opacity:.5; cursor:default; }
+.meine-inbox-fenster > header button { align-self:flex-start; font-size:22px; line-height:1; }
+.meine-inbox-werkzeuge { display:flex; flex-wrap:wrap; align-items:end; gap:12px; padding:14px 24px; }
+.meine-inbox-werkzeuge label { display:grid; gap:4px; font-size:12px; }
+.meine-inbox-werkzeuge select { max-width:260px; min-height:34px; padding:4px 8px; background:var(--bg); border:1px solid var(--border); border-radius:6px; }
+.meine-inbox-fenster .meine-inbox-check { display:flex; align-items:center; gap:8px; }
+.meine-inbox-liste { flex:1; min-height:0; overflow:auto; padding:4px 24px 20px; overscroll-behavior:contain; }
+.meine-inbox-nachricht { padding:16px; margin-bottom:12px; border:1px solid var(--border); border-radius:10px; background:var(--panel,var(--bg)); overflow-wrap:anywhere; }
+.meine-inbox-nachricht.ungelesen { border-left:3px solid var(--accent); }
+.meine-inbox-nachricht > header { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+.meine-inbox-nachricht > header > div { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; }
+.meine-inbox-nachricht > header span { color:var(--muted); font-size:12px; padding:2px 6px; border:1px solid var(--border); border-radius:4px; }
+.meine-inbox-text { font-size:14px; line-height:1.55; white-space:pre-wrap; }
+.meine-inbox-aktionen { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:14px; }
+.meine-inbox-aktionen > span { font-size:12px; color:var(--muted); margin-right:auto; }
+.meine-inbox-nachricht form { display:grid; gap:8px; margin-top:12px; }
+.meine-inbox-nachricht form label { display:grid; gap:6px; font-size:13px; }
+.meine-inbox-nachricht textarea { width:100%; box-sizing:border-box; min-height:110px; resize:vertical; border:1px solid var(--border); border-radius:6px; padding:10px; background:var(--bg); }
+.meine-inbox-nachricht form > div { display:flex; gap:8px; }
+.meine-inbox-fenster > footer { padding:12px 24px; border-top:1px solid var(--border); font-size:12px; }
+.meine-inbox-fenster details { margin-top:8px; }
+.meine-inbox-fenster summary { cursor:pointer; color:var(--muted); }
+.meine-inbox-fenster pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:120px; overflow:auto; font-size:11px; }
+.meine-inbox-fehler { color:var(--danger,#ef8a80); padding:6px 24px; }
+.meine-inbox-hinweis,.meine-inbox-leer { color:var(--muted); padding:12px 24px; }
+.meine-inbox-mehr { width:100%; }
+@media(max-width:640px) {
+  .meine-inbox-fenster { inset:8px; width:auto; height:calc(100dvh - 16px); border-radius:10px; }
+  .meine-inbox-fenster > header,.meine-inbox-werkzeuge,.meine-inbox-liste,.meine-inbox-fenster > footer { padding-left:12px; padding-right:12px; }
+  .meine-inbox-werkzeuge select { max-width:42vw; }
+}
+
+.meine-inbox-einstellungen form { display:flex; flex-wrap:wrap; gap:10px; align-items:end; margin-top:10px; }
+.meine-inbox-einstellungen label { display:grid; gap:4px; }
+.meine-inbox-einstellungen input { width:140px; padding:6px; background:var(--bg); border:1px solid var(--border); border-radius:4px; }

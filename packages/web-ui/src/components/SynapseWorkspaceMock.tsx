@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import GraphView from './GraphView';
+import { MeineInbox } from './MeineInbox';
 import MainAgentDashboard from './MainAgentDashboard';
 import AgentRenderingSurface from '../kios/AgentRenderingSurface';
 import { InfrastructureView } from './InfrastructureView';
@@ -1914,6 +1915,7 @@ function SynapseWorkspaceMock({ project: initialProject, onLogout }: Props) {
         </nav>
 
         <footer>
+          <MeineInbox eingeklappt={eingeklappt} />
           <button type="button" className={area === 'settings' ? 'active' : ''} title={eingeklappt ? 'Einstellungen' : undefined} onClick={() => setArea('settings')}><span>⚙</span>Einstellungen</button>
           <div className="theme-row">
             <div><strong>Darstellung</strong><small>{theme === 'dark' ? 'Dunkel' : 'Hell'} · {settings.accentColor.toUpperCase()}</small></div>

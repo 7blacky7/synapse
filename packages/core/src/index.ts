@@ -5,6 +5,8 @@ export * from './services/artefakt-dateien.js';
 export * from './services/artefakt-ueberlauf.js';
 export { ARTEFAKT_DEFINITION } from './services/artefakt-definition.js';
 export { ARTEFAKT_DATEIEN_SCHEMA_SQL } from './db/artefakt-dateien-schema.js';
+// P22-T192: User-Inbox (kein Agenten-Postfach, keine neue Ablage).
+export * from './services/user-inbox.js';
 
 export {
   AGENT_AKTUELLE_TASK_FUNKTION, AKTUELLE_TASK_REIHENFOLGE, AKTUELLE_TASK_CACHE_MS, AKTUELLE_TASK_EINSTELLUNGEN, leseAktuelleTaskEinstellungen,

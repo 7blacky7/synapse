@@ -134,6 +134,10 @@ type EinstellungDef =
 
 /** Container-Werte = U4-Spezifikation (thought 791212a9 Schritt 2c). */
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
+  // P22-T192: User-Inbox; PG-Werte ueber bestehendes admin runtime_ueberwachung und Web-UI lesbar/setzbar.
+  user_inbox_seite: { art: 'zahl', standard: 40, min: 1, max: 200 },
+  user_inbox_abgleich_sekunden: { art: 'zahl', standard: 15, min: 5, max: 300 },
+  user_inbox_text_max: { art: 'zahl', standard: 20000, min: 100, max: 100000 },
   takt_sekunden: { art: 'zahl', standard: 15, min: 5, max: 300 },
   // P22-T113 (Abnahme R6): Takt und Menge der Zustellung ueber den Startort-Daemon (agent-startort-zustellung.ts).
   startort_zustell_takt_sekunden: { art: 'zahl', standard: 5, min: 1, max: 300 },
