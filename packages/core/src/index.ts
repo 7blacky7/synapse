@@ -13,6 +13,10 @@ export {
 } from './services/speicher-aehnlichkeit.js';
 export type { AehnlicherEintrag, SpeicherAehnlichkeitSchalter, SpeicherAehnlichkeitEinstellungenStand } from './services/speicher-aehnlichkeit.js';
 export { SPEICHER_AEHNLICHKEIT_SCHEMA_SQL } from './db/speicher-aehnlichkeit-schema.js';
+// P10-T88 N1: Pins in plan(get, task_id) und gebundenen Tasks (Schalter task_pins).
+export { TASK_PINS_FUNKTION, leseTaskPinsSchalter, ergaenzeTaskPins } from './services/task-pins.js';
+export type { TaskPinsSchalter } from './services/task-pins.js';
+export { pinsFuerTasks } from './services/plan-suche.js';
 export { NETZWERK_FUNKTION, NETZWERK_EINSTELLUNGEN, NETZWERK_ADMIN_PARAMETER, leseNetzwerkKonfiguration, fuehreNetzwerkAdminAus, netzwerkEreignis, netzwerkArgumente, netzwerkText, netzwerkEinheit } from './services/agentennetzwerk.js';
 export type { NetzwerkEinstellung, NetzwerkWerte, NetzwerkEreignis } from './services/agentennetzwerk.js';
 // P22-T156: Ergebnisart je Aufruf (nur normalisierte Codes).

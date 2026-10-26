@@ -378,7 +378,10 @@ export async function baueFortsetzungsErgaenzung(p: IdentitaetsAgentPrincipal, o
   } catch { /* Profilblock ist Zugabe */ }
   try {
     const t = await gebundeneTasks(p.project, p.identity_id);
-    if (t.length) out.gebundene_tasks = t;
+    // P10-T88 N1: mit Schalter task_pins vorhandene Arbeit frueherer Agenten (Pins) an jeder gebundenen Task; AUS = unveraendert.
+    const { ergaenzeTaskPins } = await import('./task-pins.js');
+    const mitPins = await ergaenzeTaskPins(p.project, t as unknown as Array<Record<string, unknown>>, 'task_id');
+    if (t.length) out.gebundene_tasks = (mitPins?.tasks ?? t) as unknown as typeof t;
   } catch { /* Zugabe */ }
   // Profil-Channels gehoeren zum Profilblock: im selben Lauf nicht erneut (Beitritt ist idempotent und wurde schon gemeldet).
   if (abgleich) {

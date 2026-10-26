@@ -223,10 +223,15 @@ export const planTool: ConsolidatedTool = {
         const tasks = compact
           ? limited.map((t) => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, beteiligte: t.beteiligte, ...(typeof t.zugewiesen_an === 'string' ? { zugewiesen_an: t.zugewiesen_an } : {}), ...(typeof t.git_branch === 'string' && t.git_branch ? { git_branch: t.git_branch } : {}) }))
           : limited;
+        // P10-T88 N1: mit task_id und Schalter task_pins je Task die Pins frueherer Agenten (sonst unveraendert).
+        const { ergaenzeTaskPins } = await import('@synapse/core');
+        const pinsZugabe = nachId.gefiltert ? await ergaenzeTaskPins(project, tasks) : null;
+        const mitPins = pinsZugabe?.tasks ?? tasks;
         return {
           ...p,
-          ...(p.plan ? { plan: { ...p.plan, tasks } } : {}),
-          tasks,
+          ...(p.plan ? { plan: { ...p.plan, tasks: mitPins } } : {}),
+          tasks: mitPins,
+          ...(pinsZugabe ? { pins_debug: pinsZugabe.debug } : {}),
           tasks_total: allTasks.length,
           tasks_returned: tasks.length,
           ...(wv.ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: wv.ausgeblendet, zurueckgestellt_hinweis: 'plan(get, alle: true) oder task_id zeigt zurueckgestellte Tasks.' } : {}),

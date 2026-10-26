@@ -1254,6 +1254,8 @@ export interface GebundeneTask {
   titel: string | null;
   status: string | null;
   art: 'identitaet' | 'team';
+  /** P10-T88 N1: nur mit Schalter task_pins - Thoughts/Dateiversionen frueherer Agenten an der Task (juengste IDs). */
+  pins?: { thoughts: number; dateiversionen: number; thought_ids?: string[]; dateiversion_ids?: string[] };
 }
 
 export interface ProfilUpdateDienst {

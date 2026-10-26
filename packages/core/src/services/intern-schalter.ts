@@ -105,6 +105,8 @@ export const INTERN_SCHALTER = {
   // P10-T88: befristete Test-Freigabe der Aehnlichkeitspruefung beim Speichern (Produkt-Standard AUS); aktiv=true = freigegeben.
   speicher_aehnlichkeit: ['freigegeben'],
   speicher_aehnlichkeit_pruefen: ['freigegeben'],
+  // P10-T88 N1: befristete Test-Freigabe der Pins in plan(get, task_id)/chat(anmelden) (Produkt-Standard AUS).
+  task_pins: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 

@@ -242,6 +242,13 @@ export async function thoughtTaskFilter(project: string, ref: string): Promise<s
   return await resolveProjectTaskId(project, ref);
 }
 
+/** P10-T88 N1: Pins je Task-ID (UUID) mit juengsten IDs wie plan(search, mit_verknuepfungen:true); Aliase/Kurz-IDs zaehlen mit. */
+export async function pinsFuerTasks(project: string, taskIds: string[]): Promise<Map<string, TaskPins>> {
+  if (!taskIds.length) return new Map();
+  const alle = new Map((await getAllePlaene(project)).flatMap(p => p.tasks).map(t => [t.id, t] as const));
+  return pins(project, taskIds.map(id => ({ hit: { id }, taskIds: alle.has(id) ? taskRefs(alle.get(id)!) : [id] })), true);
+}
+
 /** P8-T30: Verknüpfungen einer Task für die Web-UI (nur lesen); jüngste zuerst, je Art höchstens limit. */
 export interface TaskVerknuepfungen {
   thoughts: { gesamt: number; eintraege: Array<{ id: string; source: string | null; vorschau: string; timestamp: string }> };
