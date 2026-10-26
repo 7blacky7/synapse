@@ -133,6 +133,9 @@ function pruefe(label, ist, soll) {
   pruefe('P25-T1 schema.mjs erkenneSchemaFehler: englisch/deutsch, Schema-Praefix weg, ohne Doppel', gefunden.map((o) => `${o.art}:${objektName(o)}`),
     ['spalte:agent_zustellungen.quittung_seit', 'tabelle:chat_zitate_einstellungen', 'spalte:git_branch']);
   pruefe('P25-T1 schema.mjs erkenneSchemaFehler: andere Fehler -> nichts', erkenneSchemaFehler('TypeError: x is not a function'), []);
+  pruefe('P25-T14 schema.mjs erkenneSchemaFehler: JSON-escapte Tool-Antwort (intern-schalter)',
+    erkenneSchemaFehler('{"error":"interner_fehler","message":"column \\"setter_identity_id\\" of relation \\"intern_schalter\\" does not exist"}').map(objektName),
+    ['intern_schalter.setter_identity_id']);
   const quellen = [{ datei: 'packages/core/src/db/schema.ts', zeilen: [
     '// P22-T168 Schema 157: Zitat-Einstellungen',
     'CREATE TABLE IF NOT EXISTS chat_zitate_einstellungen (',

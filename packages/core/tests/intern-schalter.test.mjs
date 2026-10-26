@@ -8,7 +8,8 @@
  *   S4 falscher Modus / unbekannter Schalter / fehlende Pflichtangaben -> klare Fehlercodes
  *   S5 Ablauf: abgelaufener Schalter gilt als aus (abgelaufen:true), auch aus dem Cache
  *   S6 Cache: leseSchalter fragt PG erst nach SYNAPSE_INTERN_CACHE_MS erneut; setzeSchalter leert ihn
- *   S7 schalter_liste nennt alle fuenf Schalter (einschliesslich Tray-Token- und main_synapse-Freigabe)
+ *   S7 schalter_liste nennt alle Schalter aus INTERN_SCHALTER (P25-T14: die Liste ist seit P14 gewachsen, z. B. reverse_*,
+ *      hex_*, agent_bezug_modus; die fuenf Kern-Schalter einschliesslich Tray-Token- und main_synapse-Freigabe sind Pflicht)
  *   R1 REST ohne SYNAPSE_INTERN_TOOL: 'intern' fehlt in BEIDEN tools/list-Stellen (/mcp/messages und POST /),
  *      Aufruf -> intern_tool_aus. ANKER: dieselbe Liste enthaelt 'artefakt' und 'code_intel' — sonst waere
  *      "fehlt" bei einer leeren Liste automatisch erfuellt (regel-nullzusagen-brauchen-anker).
@@ -18,6 +19,9 @@
  * zeigt die wirksame Konfiguration woanders hin (z. B. 192.168.50.65), Abbruch mit Exit 2.
  * Die Tabelle intern_schalter wird mit der DDL aus dem gebauten SCHEMA_SQL angelegt (dist/db/schema.js),
  * nicht mit einer Kopie — so prueft der Test die echte Anweisung.
+ * P25-T14 (26.10.2026): Spaeter per ALTER hinzugekommene Spalten (setter_identity_id aus agent-bezug-schema, P22) stehen
+ * nicht in dieser DDL; sie werden mit zieheSpaltenNach (_helfer/privatschema-spalten.mjs, P25-T10) aus public nachgezogen.
+ * Ohne das scheiterte S1 seit P22 an 'column setter_identity_id of relation intern_schalter does not exist'.
  *
  * AUFRUF (NUR gegen die Test-DB):
  *   (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/intern-schalter.test.mjs
@@ -107,6 +111,10 @@ if (!ddl) {
 await pool.query("SET lock_timeout = '5s'");
 await pool.query('CREATE SCHEMA IF NOT EXISTS ' + testSchema);
 await pool.query(ddl);
+// P25-T14: spaetere Spalten (z. B. setter_identity_id, agent-bezug-schema) aus public, sonst interner_fehler in S1
+const { zieheSpaltenNach } = await import('./_helfer/privatschema-spalten.mjs');
+const nachgezogen = await zieheSpaltenNach(pool, testSchema, { tabellen: ['intern_schalter'] });
+console.log('INFO    P25-T14 intern-schalter.test.mjs: aus public nachgezogen: ' + (nachgezogen.join(', ') || '-'));
 await pool.query('DELETE FROM intern_schalter');
 
 process.env.SYNAPSE_INTERN_TOOL = '1';
@@ -213,11 +221,15 @@ try {
     && /gekappt/.test(r.schalter.hinweis??''),
     'P22 AUS-Override ebenfalls auf12h begrenzt und fuer REST sichtbar',r);
 
-  // S7
+  // S7 (P25-T14: Soll = alle Schluessel von INTERN_SCHALTER statt fester Fuenferliste; alleSchalter in intern-schalter.ts)
+  const KERN = ['context7', 'embedding', 'main_synapse', 'parser', 'tray_token_weiterleitung'];
+  const ALLE_SCHALTER = Object.keys(S.INTERN_SCHALTER).sort();
+  const kernDa = (liste) => KERN.every((n) => liste.includes(n));
   r = await T.fuehreInternAus({ action: 'schalter_liste' });
   const namen = (r.schalter ?? []).map((s) => s.name).sort();
-  pruefe(r.success && JSON.stringify(namen) === JSON.stringify(['context7', 'embedding', 'main_synapse', 'parser', 'tray_token_weiterleitung']) && r.hoechstdauer_stunden === 12,
-    'S7 schalter_liste: fuenf Schalter (einschliesslich main_synapse), Hoechstdauer 12', r);
+  pruefe(r.success && JSON.stringify(namen) === JSON.stringify(ALLE_SCHALTER) && kernDa(namen) && r.hoechstdauer_stunden === 12,
+    'P25-T14 intern-schalter.test.mjs S7 schalter_liste: alle INTERN_SCHALTER-Schluessel (' + ALLE_SCHALTER.length + ') inkl. fuenf Kern-Schalter, Hoechstdauer 12',
+    { erwartet: ALLE_SCHALTER, tatsaechlich: namen });
 
   // R1/R2 REST-Strecke in eigenen Prozessen (die Freischaltung wird beim Laden festgehalten)
   for (const modus of ['rest-aus', 'rest-an']) {
@@ -244,8 +256,8 @@ try {
         pruefe(anker && e.namen.includes('intern') && e.outputSchema, `R2 ${url}: intern in tools/list mit outputSchema`, e.namen);
         const restSchalter = e.antwort?.schalter ?? [];
         const restNamen = restSchalter.map((s) => s.name).sort();
-        pruefe(e.antwort?.success === true && JSON.stringify(restNamen) === JSON.stringify(['context7', 'embedding', 'main_synapse', 'parser', 'tray_token_weiterleitung']),
-          `R2 ${url}: schalter_liste ueber REST mit fuenf benannten Schaltern`, e.antwort);
+        pruefe(e.antwort?.success === true && JSON.stringify(restNamen) === JSON.stringify(ALLE_SCHALTER) && kernDa(restNamen),
+          `P25-T14 intern-schalter.test.mjs R2 ${url}: schalter_liste ueber REST mit allen INTERN_SCHALTER-Schluesseln inkl. Kern`, { erwartet: ALLE_SCHALTER, tatsaechlich: restNamen });
         const mainStand = restSchalter.find((s) => s.name === 'main_synapse');
         pruefe(mainStand?.modus === 'freigegeben' && mainStand.aktiv === false && mainStand.gesetzt === false
           && mainStand.abgelaufen === false && ungefaehr(mainStand.bis,12*H,120000),

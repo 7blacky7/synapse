@@ -24,8 +24,10 @@ const FEHLER_MUSTER = [
 /** Fehlende Tabellen/Spalten aus einer Testausgabe: [{art, name, tabelle?}], hoechstens 5, ohne Doppel. */
 export function erkenneSchemaFehler(text) {
   const gefunden = new Map();
+  // P25-T14: Tests geben Tool-Antworten oft als JSON aus ('column \"x\" of relation \"y\" ...'); \" wie " behandeln
+  const ausgabe = String(text ?? '').replace(/\\"/g, '"');
   for (const { art, r, f } of FEHLER_MUSTER) {
-    for (const m of String(text ?? '').matchAll(r)) {
+    for (const m of ausgabe.matchAll(r)) {
       const o = { art, ...f(m) };
       const schluessel = `${art}:${o.tabelle ?? ''}.${o.name}`;
       // eine Spalte ohne Tabelle nicht doppelt melden, wenn sie mit Tabelle schon da ist
