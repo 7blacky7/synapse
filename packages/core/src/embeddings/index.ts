@@ -402,7 +402,8 @@ function acquireEmbedSlot(options: EmbedOptions = {}, neuversuch = false): Promi
   // P5-T15: ein interaktiver Auftrag verdraengt laufende Hintergrund-Aufrufe; ein
   // Hintergrundauftrag nimmt keinen freien Slot, solange Interaktives laeuft oder wartet.
   const klasse = embeddingKlasse(options.admissionSource, priority, options.art);
-  if (klasse === 'interaktiv' && !computeAdmissionAktiv()) brichHintergrundAb();
+  // P22-T204: ein Neuversuch nach Verdraengung verdraengt seinerseits niemanden.
+  if (klasse === 'interaktiv' && !neuversuch && !computeAdmissionAktiv()) brichHintergrundAb();
   if (activeEmbedCalls < MAX_CONCURRENT_EMBED && interactiveQueue.length + backgroundQueue.length === 0
       && (klasse === 'interaktiv' || activeQueries === 0)) {
     return Promise.resolve(startLease(priority, now, klasse));
@@ -458,7 +459,9 @@ async function runQueued<T>(
     let lease:EmbedLease|null = await acquireEmbedSlot(options, neuversuch);
     const priority=lease.priority;
     // Nur Hintergrund-Aufrufe sind verdraengbar.
-    const abbruch = priority === 'background' && lease.klasse !== 'verlauf' && !computeAdmissionAktiv() ? new AbortController() : null;
+    // P22-T204 (Livelock 26.10.): eine Suchanfrage ist nie verdraengbar, auch mit Hintergrund-Prioritaet -
+    // sonst verdraengen sich zwei solche Anfragen endlos gegenseitig und blockieren alle anderen.
+    const abbruch = priority === 'background' && lease.klasse !== 'verlauf' && lease.klasse !== 'interaktiv' && !computeAdmissionAktiv() ? new AbortController() : null;
     if (abbruch) laufendeHintergrund.add(abbruch);
     try {
       const gap = Date.now() - lastEmbedFinishMs;
