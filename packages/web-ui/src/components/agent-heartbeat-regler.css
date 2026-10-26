@@ -1,0 +1,15 @@
+/* P22-T188: eigener Kopfbereich; geoeffnet bleibt der Regler im Fensterfluss. */
+.agent-heartbeat-regler { flex: 0 0 auto; width: 100%; min-width: 0; font-size: 11px; cursor: auto; user-select: text; touch-action: auto; }
+.agent-heartbeat-regler > summary { cursor: pointer; padding: 4px 0; white-space: normal; color: var(--text); }
+.agent-heartbeat-regler > summary span { color: var(--muted); }
+.agent-heartbeat-inhalt { display: grid; gap: 6px; padding: 8px; max-height: min(52vh, 400px); overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--bg, #161a1d); color: var(--text); }
+.agent-heartbeat-inhalt p { margin: 0; font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
+.agent-heartbeat-inhalt label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.agent-heartbeat-inhalt input[type=number] { width: 100px; min-width: 0; font: inherit; }
+.agent-heartbeat-inhalt pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; margin: 4px 0; }
+.agent-heartbeat-inhalt .agent-heartbeat-aktionen { display: flex; gap: 6px; }
+.agent-heartbeat-regler .agent-heartbeat-inhalt button { width: auto; height: auto; min-height: 28px; padding: 4px 8px; font: inherit; }
+.agent-heartbeat-regler .agent-heartbeat-inhalt button:disabled { opacity: .5; cursor: default; }
+.agent-heartbeat-inhalt [role=alert] { color: var(--danger, #f28b82); }
+.main-assistant-window.coordinator-info-window > header:has(> .agent-heartbeat-regler),
+.channel-agent-window > .agent-window-titlebar:has(> .agent-heartbeat-regler) { height: auto; flex-basis: auto; flex-wrap: wrap; gap: 4px 8px; padding-bottom: 6px; }

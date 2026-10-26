@@ -5,6 +5,7 @@ import { PlattformAgentChat } from './PlattformAgentChat';
 // P22-T172: Name + aktuelle Task im Fensterkopf des Direktchats.
 import { AgentTaskMarke } from './AgentTaskMarke';
 import { LaufHerkunftMarke } from './LaufHerkunftMarke';
+import { AgentHeartbeatRegler } from './AgentHeartbeatRegler';
 
 /**
  * P22-T116 (e, Befund rea1 85ecb878): Klick auf einen Plattform-Agenten (mit Identitaet) im Channel oeffnet bei Schalter
@@ -30,6 +31,7 @@ export function ChannelAgentFensterWeiche(props: ComponentProps<typeof ChannelAg
       <header>
         <div><i /><span><strong>{props.windowState.agentName}<AgentTaskMarke project={props.project} identityId={id} name={props.windowState.agentName} /><LaufHerkunftMarke project={props.project} identityId={id} name={props.windowState.agentName} /></strong><small>Direktchat · {props.windowState.role} · {props.project}</small></span></div>
         <button type="button" onClick={props.onClose}>×</button>
+        <AgentHeartbeatRegler key={id} identityId={id} />
       </header>
       <PlattformAgentChat identityId={id} name={props.windowState.agentName} project={props.project} />
       <footer><span>plattform_agent_chat · Inbox</span><b>direkt</b></footer>

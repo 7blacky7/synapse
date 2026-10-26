@@ -5,6 +5,7 @@ import { NachrichtBilder, VerweisText } from './Lesefenster';
 // P22-T172: Name + aktuelle Task im Fensterkopf.
 import { AgentTaskMarke } from './AgentTaskMarke';
 import { LaufHerkunftMarke } from './LaufHerkunftMarke';
+import { AgentHeartbeatRegler } from './AgentHeartbeatRegler';
 
 export interface ChannelAgentWindowState {
   key: string;
@@ -67,7 +68,7 @@ export function ChannelAgentChatWindow({
   };
 
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest('button')) return;
+    if ((event.target as HTMLElement).closest('button, [data-heartbeat-identity]')) return;
     onActivate();
     dragRef.current = {
       pointerId: event.pointerId,
@@ -141,6 +142,7 @@ export function ChannelAgentChatWindow({
           <button type="button" onClick={() => setMinimized((value) => !value)}>{minimized ? '□' : '—'}</button>
           <button type="button" onClick={onClose}>×</button>
         </span>
+        {!minimized && windowState.identityId && <AgentHeartbeatRegler key={windowState.identityId} identityId={windowState.identityId} />}
       </div>
       {!minimized && <>
         <div className="agent-terminal-stream" ref={streamRef}>
