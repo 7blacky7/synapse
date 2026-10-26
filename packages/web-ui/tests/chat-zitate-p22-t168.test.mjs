@@ -380,8 +380,8 @@ ok(/\}, controller\.signal, zitate\.length \? zitate : undefined\);/.test(main) 
 const api = lies('packages/web-ui/src/api/agent-runtime.ts');
 ok(/body: JSON\.stringify\(\{ message, \.\.\.\(zitate\?\.length \? \{ zitate \} : \{\}\) \}\)/.test(api) && /body: JSON\.stringify\(\{ identity_id: identityId, text, \.\.\.\(zitate\?\.length \? \{ zitate \} : \{\}\) \}\)/.test(api), 'H API: zitate nur bei Bedarf im Body');
 // F2: Koordinator-Fenster (Dock) und Agenten-/Spezialisten-Fenster (Channel-Weiche) laufen ueber PlattformAgentChat -> EinheitlicherAgentChat.
-ok(/<PlattformAgentChat identityId=\{open\.id\}/.test(lies('packages/web-ui/src/components/ProjectCoordinatorDock.tsx')), 'H F2 Koordinator-Dock -> PlattformAgentChat');
-ok(/<PlattformAgentChat identityId=\{id\}/.test(lies('packages/web-ui/src/components/ChannelAgentFensterWeiche.tsx')), 'H F2 Agenten-/Spezialisten-Fenster (Weiche) -> PlattformAgentChat');
+ok(/<PlattformAgentChat\b[^>]*identityId=\{open\.id\}/.test(lies('packages/web-ui/src/components/ProjectCoordinatorDock.tsx')), 'H F2 Koordinator-Dock -> PlattformAgentChat');
+ok(/<PlattformAgentChat\b[^>]*identityId=\{id\}/.test(lies('packages/web-ui/src/components/ChannelAgentFensterWeiche.tsx')), 'H F2 Agenten-/Spezialisten-Fenster (Weiche) -> PlattformAgentChat');
 const pac = lies('packages/web-ui/src/components/PlattformAgentChat.tsx');
 ok(/einheitlich\.aktiv\) return <EinheitlicherAgentChat /.test(pac) && !/zitat/i.test(pac), 'H F2 PlattformAgentChat -> EinheitlicherAgentChat (Altansicht ohne Zitate, Stufe 1)');
 ok(!/zitat/i.test(lies('packages/web-ui/src/components/ChannelAgentChatWindow.tsx')), 'H F2 Channel-Fenster ohne Zitate (Stufe 1, Channel hat mehrere Leser)');

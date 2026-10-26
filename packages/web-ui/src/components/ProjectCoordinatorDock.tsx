@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { herkunftText, loadOnlineCoordinators } from '../api/control-plane-adapter';
 import type { OnlineCoordinatorViewModel } from '../control-plane/view-model';
-import { getPlattformAgentChatSchalter } from '../api/agent-runtime';
+import { getPlattformAgentChatSchalter, type PlattformAgentChatSchalter } from '../api/agent-runtime';
 import { PlattformAgentChat } from './PlattformAgentChat';
 // P22-T172: Name + aktuelle Task in Leiste und Fensterkopf.
 import { AgentTaskMarke } from './AgentTaskMarke';
 import { LaufHerkunftMarke } from './LaufHerkunftMarke';
+import { AgentHeartbeatRegler } from './AgentHeartbeatRegler';
 import './project-coordinator-dock.css';
 
 /**
@@ -16,21 +17,67 @@ import './project-coordinator-dock.css';
 export function ProjectCoordinatorDock() {
   const [coordinators, setCoordinators] = useState<OnlineCoordinatorViewModel[]>([]);
   const [error, setError] = useState('');
-  const [openId, setOpenId] = useState('');
+  // P22-T189: stabile Identitaets-Keys halten Chat, Entwurf, Position und Stapelung auseinander.
+  const [fenster, setFenster] = useState<Array<{ coordinator: OnlineCoordinatorViewModel; x: number; y: number; z: number; mehrfenster: boolean }>>([]);
+  const zRef = useRef(52);
+  const [statusVersion, setStatusVersion] = useState(0);
   const [railTop, setRailTop] = useState(11);
-  // P22-T112: PG-Freigabe gilt im Projekt der gewaehlten Identitaet; keine Freigabe von A fuer B uebernehmen.
-  const [chatStand, setChatStand] = useState<{ identityId: string; aktiv: boolean }>({ identityId: '', aktiv: false });
-  const chatAktiv = chatStand.identityId === openId && chatStand.aktiv;
+  // P22-T112/T187: jeder Status gehoert nur zur Zielidentitaet; bei Fehler geschlossen bleiben.
+  const [chatStand, setChatStand] = useState<Record<string, PlattformAgentChatSchalter & { chatGeladen?: boolean }>>({});
+  const offeneIds = fenster.map((f) => f.coordinator.id).join(',');
   useEffect(() => {
-    if (!openId) return;
+    if (!offeneIds) return;
     let active = true;
-    getPlattformAgentChatSchalter(openId).then((s) => { if (active) setChatStand({ identityId: openId, aktiv: s.aktiv }); }).catch(() => { if (active) setChatStand({ identityId: openId, aktiv: false }); });
-    return () => { active = false; };
-  }, [openId]);
+    let abfrage = 0;
+    const laden = () => {
+      const lauf = ++abfrage;
+      for (const id of offeneIds.split(',')) {
+        void getPlattformAgentChatSchalter(id).then((s) => {
+          if (active && lauf === abfrage) setChatStand((alt) => ({ ...alt, [id]: { ...s, chatGeladen: alt[id]?.chatGeladen || (s.aktiv && !s.letzter_fehler) } }));
+        }).catch((error: unknown) => {
+          if (active && lauf === abfrage) setChatStand((alt) => ({ ...alt, [id]: {
+            ...alt[id], aktiv: false, name: 'plattform_agent_chat', quelle: 'fehler', wert: null, project: null,
+            letzter_fehler: error instanceof Error ? error.message : String(error),
+          } }));
+        });
+      }
+    };
+    laden();
+    window.addEventListener('focus', laden);
+    const sichtbar = () => { if (document.visibilityState === 'visible') laden(); };
+    document.addEventListener('visibilitychange', sichtbar);
+    return () => { active = false; window.removeEventListener('focus', laden); document.removeEventListener('visibilitychange', sichtbar); };
+    // Die bestehende Koordinator-Aktualisierung zieht auch Schalter nach, ohne zweiten Poll-Takt.
+  }, [offeneIds, coordinators, statusVersion]);
   const railDragRef = useRef<{ pointerId: number; startY: number; originTop: number } | null>(null);
-  // P22-T137: Fensterposition, am Kopf verschiebbar (wie die Lesefenster).
-  const [fensterPos, setFensterPos] = useState({ x: 120, y: 70 });
-  const fensterDragRef = useRef<{ id: number; x: number; y: number; ox: number; oy: number } | null>(null);
+  const fensterDragRef = useRef<{ identityId: string; id: number; x: number; y: number; ox: number; oy: number } | null>(null);
+
+  const aktiviere = (id: string) => {
+    const z = ++zRef.current;
+    setFenster((alt) => alt.map((f) => f.coordinator.id === id ? { ...f, z } : f));
+  };
+  const oeffne = async (coordinator: OnlineCoordinatorViewModel) => {
+    const stand = await getPlattformAgentChatSchalter(coordinator.id).catch((error: unknown) => {
+      setChatStand((alt) => ({ ...alt, [coordinator.id]: { ...alt[coordinator.id], aktiv: false,
+        name: 'plattform_agent_chat', quelle: 'fehler', wert: null, project: coordinator.project,
+        letzter_fehler: error instanceof Error ? error.message : String(error) } }));
+      return null;
+    });
+    // Unbekannt ist keine AUS-Freigabe: bestehende Fenster/Entwuerfe niemals durch einen Lesefehler schliessen.
+    const mehrfach = !stand || stand.mehrfenster?.letzter_fehler ? null : stand.mehrfenster?.aktiv === true;
+    if (stand) setChatStand((alt) => ({ ...alt, [coordinator.id]: { ...stand, chatGeladen: alt[coordinator.id]?.chatGeladen || (stand.aktiv && !stand.letzter_fehler) } }));
+    const z = ++zRef.current;
+    setFenster((alt) => {
+      if (alt.some((f) => f.coordinator.id === coordinator.id)) return mehrfach !== false
+        ? alt.map((f) => f.coordinator.id === coordinator.id ? { ...f, z } : f)
+        : alt.filter((f) => f.coordinator.id !== coordinator.id);
+      const mehrere = mehrfach !== false;
+      const index = mehrere ? alt.length : 0;
+      const neu = { coordinator, x: Math.min(120 + index * 40, Math.max(0, window.innerWidth - 160)),
+        y: Math.min(70 + index * 40, Math.max(0, window.innerHeight - 80)), z, mehrfenster: mehrere };
+      return mehrere ? [...alt, neu] : [neu];
+    });
+  };
 
   useEffect(() => {
     let active = true;
@@ -60,50 +107,67 @@ export function ProjectCoordinatorDock() {
     if (railDragRef.current?.pointerId === event.pointerId) railDragRef.current = null;
   };
 
-  const startFensterDrag = (event: ReactPointerEvent<HTMLElement>) => {
-    if ((event.target as HTMLElement).closest('button')) return;
-    fensterDragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, ox: fensterPos.x, oy: fensterPos.y };
+  const startFensterDrag = (event: ReactPointerEvent<HTMLElement>, identityId: string) => {
+    if ((event.target as HTMLElement).closest('button, [data-heartbeat-identity]')) return;
+    const position = fenster.find((f) => f.coordinator.id === identityId);
+    if (!position) return;
+    fensterDragRef.current = { identityId, id: event.pointerId, x: event.clientX, y: event.clientY, ox: position.x, oy: position.y };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const moveFenster = (event: ReactPointerEvent<HTMLElement>) => {
     const d = fensterDragRef.current;
     if (!d || d.id !== event.pointerId) return;
-    setFensterPos({
+    setFenster((alt) => alt.map((f) => f.coordinator.id === d.identityId ? { ...f,
       x: Math.min(Math.max(0, window.innerWidth - 160), Math.max(0, d.ox + event.clientX - d.x)),
       y: Math.min(Math.max(0, window.innerHeight - 80), Math.max(0, d.oy + event.clientY - d.y)),
-    });
+    } : f));
   };
   const stopFensterDrag = (event: ReactPointerEvent<HTMLElement>) => {
     if (fensterDragRef.current?.id === event.pointerId) fensterDragRef.current = null;
   };
-
-  const open = coordinators.find((item) => item.id === openId);
-  // P22-T137: alles in EINE Kopfzeile - Projekt, Laufort (z. B. CLI (Claude Code)) und letztes Lebenszeichen.
-  const kopfzeile = open
-    ? ['Projektkoordinator', open.project, herkunftText(open.herkunft), open.lastActivity ? 'Lebenszeichen ' + open.lastActivity : 'kein Lebenszeichen'].join(' · ')
-    : '';
 
   return (
     <>
       <aside className="coordinator-dock-rail" style={{ top: railTop + '%' }} aria-label="Koordinatoren online">
         <button type="button" className="coordinator-rail-handle" title="Koordinatorenleiste nach oben oder unten verschieben" onPointerDown={startRailDrag} onPointerMove={moveRail} onPointerUp={stopRailDrag} onPointerCancel={stopRailDrag}>↕</button>
         {coordinators.map((coordinator) => (
-          <button type="button" className={'coordinator-dock-tab working' + (openId === coordinator.id ? ' is-open' : '')} key={coordinator.id} onClick={() => setOpenId((current) => current === coordinator.id ? '' : coordinator.id)} title={coordinator.name + ' · ' + coordinator.project}>
+          <button type="button" className={'coordinator-dock-tab working' + (fenster.some((f) => f.coordinator.id === coordinator.id) ? ' is-open' : '')} key={coordinator.id} onClick={() => void oeffne(coordinator)} title={coordinator.name + ' · ' + coordinator.project}>
             <span>PK</span><div><strong>{coordinator.name}<AgentTaskMarke project={coordinator.project} identityId={coordinator.id} name={coordinator.name} /><LaufHerkunftMarke project={coordinator.project} identityId={coordinator.id} name={coordinator.name} /></strong><small>{coordinator.project} · {herkunftText(coordinator.herkunft)}</small></div><i />
           </button>
         ))}
         {!coordinators.length && <p className="dock-empty" title={error || undefined}>{error ? 'Koordinatoren nicht abrufbar' : 'Kein Koordinator online'}</p>}
       </aside>
-      {open && (
-        <aside className={'main-assistant-window coordinator-info-window koordinator-dock-fenster floating-agent-window' + (chatAktiv ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(' + fensterPos.x + 'px,' + fensterPos.y + 'px)', zIndex: 52 }}>
-          <header className="coordinator-info-kopf" onPointerDown={startFensterDrag} onPointerMove={moveFenster} onPointerUp={stopFensterDrag} onPointerCancel={stopFensterDrag}>
+      {fenster.map((f) => {
+        const open = coordinators.find((c) => c.id === f.coordinator.id) ?? f.coordinator;
+        const stand = chatStand[open.id];
+        const chatAktiv = stand?.aktiv === true && !stand.letzter_fehler;
+        const chatGeladen = stand?.chatGeladen === true;
+        const kopfzeile = ['Projektkoordinator', open.project, herkunftText(open.herkunft),
+          open.lastActivity ? 'Lebenszeichen ' + open.lastActivity : 'kein Lebenszeichen'].join(' · ');
+        return (
+        <aside key={open.id} data-coordinator-window={open.id} data-mehrfenster={String(f.mehrfenster)}
+          data-chat-aktiv={String(chatAktiv)} data-chat-quelle={stand?.quelle ?? 'laden'}
+          onPointerDown={() => aktiviere(open.id)} className={'main-assistant-window coordinator-info-window koordinator-dock-fenster floating-agent-window' + (chatGeladen ? ' mit-chat' : '')} tabIndex={-1} style={{ transform: 'translate(' + f.x + 'px,' + f.y + 'px)', zIndex: f.z }}>
+          <header className="coordinator-info-kopf" onPointerDown={(event) => startFensterDrag(event, open.id)} onPointerMove={moveFenster} onPointerUp={stopFensterDrag} onPointerCancel={stopFensterDrag}>
             <div><i /><span><strong>{open.name}<AgentTaskMarke project={open.project} identityId={open.id} name={open.name} /><LaufHerkunftMarke project={open.project} identityId={open.id} name={open.name} /></strong><small title={kopfzeile}>{kopfzeile}</small></span></div>
-            <button type="button" onClick={() => setOpenId('')}>An Seite</button>
+            <button type="button" onClick={() => setFenster((alt) => alt.filter((f) => f.coordinator.id !== open.id))}>An Seite</button>
+            <AgentHeartbeatRegler key={open.id} identityId={open.id} />
           </header>
-          {chatAktiv && <PlattformAgentChat identityId={open.id} name={open.name} project={open.project} />}
+          {!chatAktiv && <div role="status" className="coordinator-chat-hinweis" style={{ padding: 12 }}>
+            {!stand ? 'Chatstatus wird geladen …' : stand.letzter_fehler
+              ? 'Chatstatus nicht abrufbar: ' + stand.letzter_fehler
+              : 'Chat ist ausgeschaltet: ' + stand.name + ' (Projekt ' + (stand.project ?? open.project) + ').'}
+            <button type="button" onClick={() => setStatusVersion((v) => v + 1)}>Status neu abfragen</button>
+          </div>}
+          <details className="coordinator-chat-debug" style={{ padding: '0 12px' }}><summary>Chat-Debug</summary>
+            <pre>{JSON.stringify({ identity_id: open.id, schalter: stand ?? null, mehrfenster: stand?.mehrfenster ?? { aktiv: false, quelle: 'standard' },
+              fenster: { x: f.x, y: f.y, z: f.z } }, null, 2)}</pre>
+          </details>
+          {/* P22-T189/ac1f8247: Freigabe sperrt nur Senden, nicht den gemounteten Entwurf. */}
+          {chatGeladen && <PlattformAgentChat key={open.id} identityId={open.id} name={open.name} project={open.project} sendeGesperrt={!chatAktiv} />}
           <footer><span>agent_identitaeten · aktiver Lauf</span><b>online</b></footer>
         </aside>
-      )}
+      ); })}
     </>
   );
 }
