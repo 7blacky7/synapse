@@ -253,7 +253,8 @@ try {
   const iParser = pw.indexOf("schalterHaeltAn('parser', 'parser-worker')");
   const iBacklog = pw.indexOf('projekteMitBacklog(this.cfg.maxPerTick)');
   const iEmb = pw.indexOf("schalterHaeltAn('embedding', 'parser-worker/embedding-claims')");
-  const iClaim = pw.indexOf("claimEmbeddingChunks('unraid-local'");
+  // (angepasst P22-T103) Der Claim-Eigentuemer ist kein fester String 'unraid-local' mehr (claimOwner); geprueft wird der Aufruf selbst.
+  const iClaim = pw.indexOf('await claimEmbeddingChunks(');
   pruefe(iParser > 0 && iBacklog > iParser && iEmb > 0 && iClaim > iEmb, 'P1 Parser-Worker: Pruefungen vor projekteMitBacklog bzw. claimEmbeddingChunks', { iParser, iBacklog, iEmb, iClaim });
 
   pruefe(gesperrt.length === 0, 'Netzsperre: kein Aufruf ausserhalb 127.0.0.1', gesperrt);
