@@ -5,8 +5,10 @@ import {createHash,randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createRequire} from 'node:module';
+import {createRequire,syncBuiltinESMExports} from 'node:module';
+import fs from 'node:fs/promises';
 import {setTimeout as pause} from 'node:timers/promises';
+import {zieheSpaltenNach} from '../../core/tests/_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL??'http://invalid');
 assert.equal(url.port,'5433','nur Test-Port');assert.equal(url.pathname,'/synapse_test','nur Testdatenbank');
 delete process.env.SYNAPSE_DATABASE_URL;delete process.env.SYNAPSE_COMPUTE_POLICY_ENABLED;delete process.env.SYNAPSE_COMPUTE_ADMISSION;
@@ -22,8 +24,15 @@ const {ASSET_UPLOAD_SCHEMA_SQL}=await import('../../core/dist/db/asset-upload-sc
 const {ladeAssetKonfiguration}=await import('../../core/dist/config/asset-konfig.js');
 const {createWorkJobService}=await import('../../core/dist/services/work-jobs.js');
 const {uebernehmeEErgebnis,ReverseEUebernahmeFehler}=await import('../../core/dist/services/reverse-e-uebernahme.js');
+const {bereiteReversePolicyPin}=await import('../../core/dist/services/reverse-analyse-policy.js');
+const {belegeReverseAdmission}=await import('../../core/dist/services/reverse-pipeline-halt.js');
 const {ToolLifecycle}=await import('../dist/services/tool-lifecycle.js');
 const {buildToolContainerOptions}=await import('../dist/services/tool-container-docker.js');
+// (angepasst P25-T10, P18-T66: der Executor setzt Eingaberechte root:65532 per chown; ohne root -> keine_berechtigung:eingabe_rechte.
+// Fake-Container ohne uid 65532: nur die Eigentuemer-Grenze wird ersetzt (wie reverse-frist-storno-p18-t87), nie die Executor-Pruefung selbst.)
+const testWurzel=join(tmpdir(),'p18-t59-');
+fs.chown=async p=>{assert(String(p).startsWith(testWurzel),'chown-Ersatz nur im Testordner');};
+syncBuiltinESMExports();
 const ex=await import('../dist/services/reverse-executor.js');
 const sha=b=>createHash('sha256').update(b).digest('hex');
 
@@ -43,6 +52,8 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   await db.query('CREATE TABLE projects(name text,enabled boolean)');
   await db.query("CREATE TABLE embedding_knoten(node_id text PRIMARY KEY,boot_id text NOT NULL,service_token_hash text NOT NULL,status text NOT NULL DEFAULT 'ready',gesperrt_vom_user boolean NOT NULL DEFAULT false,letzter_kontakt timestamptz NOT NULL DEFAULT now(),node_kind text DEFAULT 'cpu')");
   for(const sql of [WORK_JOBS_SCHEMA_SQL,ASSET_UPLOAD_SCHEMA_SQL,REVERSE_SCHEMA_SQL,REVERSE_PIPELINE_SCHEMA_SQL,TOOL_AKTIVITAET_SCHEMA_SQL,TOOL_CONTAINER_SCHEMA_SQL])await db.query(sql);
+  // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. tool_activation.updater_identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+  await zieheSpaltenNach(pool,schema);
 
   process.env.SYNAPSE_REVERSE_IMAGE='synapse-reverse@sha256:'+'a'.repeat(64);
   const konfig=ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:process.env.SYNAPSE_REVERSE_IMAGE,
@@ -68,7 +79,9 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
    async stop(){},async cleanup(){},
    async command(id,req,_t,_m,onTerminal){
     assert.equal(req.kommando,'extrahieren');assert.match(req.eingabe,/^\/bib\/rev-t59-/);assert.equal(req.ausgabe,'/arbeit/'+req.auftrag_id);
-    assert.deepEqual(req.optionen,{wav_pregap:true},'WAV-Pregap-Option wird an den Runner weitergereicht');
+    // (angepasst P25-T13, P18-T76: optionen traegt zusaetzlich pe_ressourcen/pe_ressourcen_stand; geprueft wird nur die WAV-Pregap-Option.
+    // Vorher warf der deepEqual im Fake -> 'Ausfuehrung ohne sicheres Ende', Job blieb leased.)
+    assert.equal(req.optionen?.wav_pregap,true,'WAV-Pregap-Option wird an den Runner weitergereicht');
     const out=join(container.get(id),req.auftrag_id);
     assert.deepEqual(await (await import('node:fs/promises')).readdir(out),[],'Ausgabeordner leer vorab angelegt');
     if(verzoegerung)await pause(verzoegerung);
@@ -90,10 +103,18 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
    await db.query("INSERT INTO reverse_eintraege(id,titel,status) VALUES($1,'T59','bestaetigt')",[rid]);
    const m=(await db.query("INSERT INTO reverse_medien(eintrag_id,position,bezeichnung,art,satz_sha256,status) VALUES($1,0,'CD1','iso',$2,'vollstaendig') RETURNING id::text",[rid,satz])).rows[0].id;
    await db.query("INSERT INTO reverse_medien_dateien(medium_id,rolle,original_name,sha256,groesse,storage_key) VALUES($1,'haupt','disc.iso',$2,4,$3)",[m,satz,rid+'/original/dateien/disc.iso']);
+   // (angepasst P25-T10: der Executor prueft die Eingabedatei vor dem Lauf (Eingaberechte, reverse-executor.ts), sonst nicht_gefunden;
+   // Fixture legt das Original wie reverse-ein-container-p18-t64 an)
+   await mkdir(join(reverseRoot,rid,'original','dateien'),{recursive:true});await writeFile(join(reverseRoot,rid,'original','dateien','disc.iso'),'iso!');
    const job=await jobs.enqueue({kind,capability:ex.REVERSE_CAPABILITY,project:ex.REVERSE_PROJEKT,scope:'reverse',
     inputRef:{scope:'reverse',id:rid,revision:m,sha256:satz},resourceNeed:{cpu:1,ram:512,vram:0,gpu:false},priority:'hintergrund',idempotencyKey:'t59:'+rid});
    const a=(await db.query("INSERT INTO reverse_auftraege(eintrag_id,medium_id,schicht,status,p20_auftrag_id,ausfuehrung,fingerabdruck) VALUES($1,$2,'E','wartet',$3,'container',$4) RETURNING id",[rid,m,job.id,sha('fp'+rid)])).rows[0].id;
    await db.query("INSERT INTO reverse_schichten(medium_id,schicht,fingerabdruck,status,auftrag_id) VALUES($1,'E',$2,'wartet',$3)",[m,sha('fp'+rid),a]);
+   // (angepasst P25-T10, P18-T104 Policy-Pin + P18-T97 Admission-Cut: der Executor nimmt nur Auftraege mit Pin und Zulassungsbeleg
+   // an, sonst reverse_admission_nicht_belegt; Fixture wie reverse-ein-container-p18-t64)
+   const pin=await bereiteReversePolicyPin(db,{id:String(a),reverseId:rid,dateiId:null,mediumId:m,angefragt:'E'});
+   await db.query('UPDATE reverse_auftraege SET policy_pin=$2::jsonb WHERE id=$1',[a,JSON.stringify(pin)]);
+   await belegeReverseAdmission(db,job.id,String(a));
    return {rid,m,job};
   };
   const zustand=async id=>(await db.query('SELECT state,error_code FROM work_jobs WHERE id=$1',[id])).rows[0];
@@ -102,12 +123,14 @@ test('P18-T59 Reverse-Executor: Auftrag, später Abschluss, fremde Identität',a
   const a1=await neuerAuftrag(1);
   const r1=await executor.durchlauf();await executor.leerlauf();
   assert.equal(r1.gestartet,1,JSON.stringify(r1));
-  assert.equal((await zustand(a1.job.id)).state,'completed');
+  const z1=await zustand(a1.job.id);assert.equal(z1.state,'completed',JSON.stringify(z1));
   const zeilen=(await db.query('SELECT pfad,storage_key FROM reverse_dateien WHERE eintrag_id=$1 ORDER BY pfad',[a1.rid])).rows;
   assert.deepEqual(zeilen.map(z=>z.pfad).sort(),['CD1/DATEN/a.txt','CD1/b.bin']);
   assert.equal(await readFile(join(reverseRoot,a1.rid,'entpackt','m'+a1.m,'DATEN','a.txt'),'utf8'),'hallo');
   assert.equal((await db.query("SELECT status FROM reverse_schichten WHERE medium_id=$1 AND schicht='E' AND aktuell",[a1.m])).rows[0].status,'fertig');
-  await assert.rejects(()=>stat(join(konfig.arbeitRoot,a1.job.id)),'Arbeitsordner nach Abschluss entfernt');
+  // (angepasst P25-T13, P18-T93 Teil C: der Executor loescht Arbeitsreste nie selbst ('Arbeitsreste werden hier niemals geloescht',
+  // reverse-executor.ts); das Aufraeumen liegt beim zentralen E-Guard. Vorher: Arbeitsordner nach Abschluss entfernt.)
+  assert.ok((await stat(join(konfig.arbeitRoot,a1.job.id))).isDirectory(),'Arbeitsordner bleibt nach Abschluss (kein Loeschen im Executor)');
   const o=starts[0];
   assert.equal(o.HostConfig.NetworkMode,'none');assert.equal(o.HostConfig.ReadonlyRootfs,true);assert.ok(o.HostConfig.Tmpfs['/tmp'].startsWith('size=512m'));
   // P18-T64: ein globaler Container – /arbeit ist der ganze Arbeitsbereich, je Auftrag ein Unterordner.

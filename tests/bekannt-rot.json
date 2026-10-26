@@ -1,8 +1,92 @@
 {
   "_zweck": "P25-T1 Gesamt-Testlaeufer (scripts/test-alle.mjs): bekannt rote Tests und zentrale Einstellungen. Rot mit gleicher oder kleinerer Fehlzahl, ohne neue FAIL-Zeile und (falls gesetzt) passendem muster = BEKANNT_ROT, sonst NEU_ROT. Eintrag ohne Datei = FEHLT. fail_zeilen: exakt oder mit * am Ende als Praefix. Pflege nur ueber files (Entwurf 49df5e9e Abschnitt 5).",
-  "_einstellungen": "einstellungen[]: {datei, art: pool|browser|seriell, zeitlimit: <s>, braucht: [\"docker\"], golden: true, args: [...], env: {K: V}, aus: <grund>, grund, seit, task} ueberschreibt die // @testlauf-Marker der Testdatei, ohne sie anzufassen (z. B. nach der Inventur).",
+  "_einstellungen": "einstellungen[]: {datei, art: pool|browser|seriell, zeitlimit: <s>, braucht: [\"docker\"], golden: true, args: [...], env: {K: V}, aus: <grund>, grund, seit, task} ueberschreibt die // @testlauf-Marker der Testdatei, ohne sie anzufassen (z. B. nach der Inventur). env-Werte duerfen ${NAME} aus der Laeufer-Umgebung nutzen, z. B. {\"SYNAPSE_DATABASE_URL\": \"${DATABASE_URL}\"} (P25-T8, kein Zugang in dieser Datei).",
   "version": 1,
   "bekannt_rot": [
+    {
+      "datei": "packages/core/tests/asset-intel-abfragen.test.mjs",
+      "erwartet": {
+        "fail": 1,
+        "fail_zeilen": [
+          "✖ Q0a Definition: Name, 13 Actions, Budget <= 4.800 Zeichen JSON"
+        ],
+        "muster": null
+      },
+      "grund": "Testanker veraltet: erwartet 13 Actions, der Code ist gewachsen, Test seit 02.10. unveraendert (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
+      "task": null,
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
+    },
+    {
+      "datei": "packages/core/tests/asset-intel-standard.test.mjs",
+      "erwartet": {
+        "fail": 1,
+        "fail_zeilen": [
+          "✖ REGISTRY: Standard-Registry enthaelt generic-binary und alle 31 Inspektoren der sieben Gruppen"
+        ],
+        "muster": null
+      },
+      "grund": "Testanker veraltet: erwartet 31 Inspektoren, Test seit 02.10. unveraendert (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
+      "task": null,
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
+    },
+    {
+      "datei": "packages/core/tests/asset-intel-textur.test.mjs",
+      "erwartet": {
+        "fail": 1,
+        "fail_zeilen": [
+          "✖ Erkennung und Registry",
+          "✖ acht Inspektoren, eindeutige ids, Format-Namen vollstaendig"
+        ],
+        "muster": null
+      },
+      "grund": "Testanker veraltet: erwartet acht Inspektoren, Test seit 02.10. unveraendert (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
+      "task": null,
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
+    },
+    {
+      "datei": "packages/core/tests/asset-transport-p13-a2.test.mjs",
+      "erwartet": {
+        "fail": null,
+        "fail_zeilen": null,
+        "muster": "Expected values to be strictly deep-equal:[\\s\\S]*when_to_use: 'Projektstruktur verstehen: tree\\. Typfehler jederzeit aus PG"
+      },
+      "grund": "Testanker veraltet: deep-equal auf den alten when_to_use-Text von code_intel (Text um typen:true erweitert), Test seit 13.10. unveraendert; bricht an der ersten Abweichung ab (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
+      "task": "P13-A2",
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), muster von Hand (Generator lehnt den nackten Assert-Kopf ab)"
+    },
+    {
+      "datei": "packages/core/tests/entscheidung-durchsicht-zeile.test.mjs",
+      "erwartet": {
+        "fail": 1,
+        "fail_zeilen": [
+          "FEHLER  R REST und stdio liefern entscheidungen_durchsicht"
+        ],
+        "muster": null
+      },
+      "grund": "Testanker veraltet: 7 OK, 1 FEHLER (R REST/stdio entscheidungen_durchsicht), Inventur 2f2f6776 Z1",
+      "seit": "2026-10-26",
+      "task": null,
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
+    },
+    {
+      "datei": "packages/core/tests/erklaerungstopf-seed-v2.test.mjs",
+      "erwartet": {
+        "fail": 2,
+        "fail_zeilen": [
+          "FEHLER  L 1. Lauf: alle v2-Eintraege in PG, Status und Familie laut Seed",
+          "FEHLER  N jede Seed-Familie ist ein angemeldeter Syntaxpruefer"
+        ],
+        "muster": null
+      },
+      "grund": "Testanker veraltet: Seed-Familien/Syntaxpruefer seit 14.10. gewachsen (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
+      "task": null,
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
+    },
     {
       "datei": "packages/core/tests/fall-skills-p23-t5.test.mjs",
       "erwartet": {
@@ -19,16 +103,60 @@
       "quelle": "D2 t207 core-fall-skills-p23-t5.log (FAIL-Liste identisch zu t206)"
     },
     {
-      "datei": "packages/core/tests/intern-schalter.test.mjs",
+      "datei": "packages/core/tests/intern-einblick.test.mjs",
+      "erwartet": {
+        "fail": 2,
+        "fail_zeilen": [
+          "FEHLER  S1 drei Schalter + Modell-Kennung",
+          "FEHLER  S1 offene Embeddings je Tabelle"
+        ],
+        "muster": null
+      },
+      "grund": "Testanker veraltet: S1 Schalter/Modell-Kennung und Embedding-Tabellen seit 14.10. gewachsen (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
+      "task": null,
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
+    },
+    {
+      "datei": "packages/core/tests/jev-schalter.test.mjs",
+      "erwartet": {
+        "fail": 4,
+        "fail_zeilen": [
+          "FEHLER  M JEV_FUNKTIONEN = 6 Funktionen (P15 E1: + entscheidungstopf)",
+          "FEHLER  M Projekt P aus: P alles aus, Q alles an",
+          "FEHLER  M nach Wiedereinschalten alles an",
+          "FEHLER  M ohne Zeile: alles an"
+        ],
+        "muster": null
+      },
+      "grund": "Testanker veraltet: JEV_FUNKTIONEN = 6 (Liste seit 14.10. gewachsen), Folgepruefungen M; nur seriell stabil (einstellungen art seriell), Inventur 2f2f6776 Z1",
+      "seit": "2026-10-26",
+      "task": null,
+      "quelle": "testlauf tl-20261026-013151-8e3d (P25-T8, seriell), gleich wie tl-20261025-232030-a99b"
+    },
+    {
+      "datei": "packages/core/tests/masken-katalog-p18-rv1.test.mjs",
       "erwartet": {
         "fail": null,
         "fail_zeilen": null,
-        "muster": "INTERN_SCHALTER.*before initialization"
+        "muster": "AssertionError \\[ERR_ASSERTION\\]: Bytegleiche Altstand-Ausgaben einschließlich Zähler und Provenienz"
       },
-      "grund": "Absturz beim Laden: Importzyklus (ReferenceError INTERN_SCHALTER before initialization)",
-      "seit": "t205",
+      "grund": "Testanker veraltet: bytegleiche Altstand-Hashes der Masken (z. B. text/assignment) passen nicht mehr (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
+      "task": "P18-RV1",
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
+    },
+    {
+      "datei": "packages/core/tests/onboarding-rollen.test.mjs",
+      "erwartet": {
+        "fail": null,
+        "fail_zeilen": null,
+        "muster": "TypeError: principalJetzt is not a function"
+      },
+      "grund": "Testanker veraltet: Test-Adapter (eval) kennt principalJetzt nicht, Test seit 12.10. unveraendert (Inventur 2f2f6776 Z1)",
+      "seit": "2026-10-26",
       "task": null,
-      "quelle": "D2 t207 rest-intern-schalter.log"
+      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
     },
     {
       "datei": "packages/core/tests/tool-liste-verbindung-p22-t56.test.mjs",
@@ -68,6 +196,18 @@
       "quelle": "D2 t207 golden-soll-zuschnitt-paket-c-p22-t13.fail"
     },
     {
+      "datei": "packages/rest-api/tests/reverse-e-blockweg-p18-t88.test.mjs",
+      "erwartet": {
+        "fail": null,
+        "fail_zeilen": null,
+        "muster": "AssertionError \\[ERR_ASSERTION\\]: B1: Runner ohne sicheres Ende zaehlt vorab, Lease bleibt bis zum Ablauf"
+      },
+      "grund": "Produktabweichung seit Version 186587 (P18-T93): Runner ohne sicheres Ende gibt den Job sofort frei (pending) statt die Lease zu halten (Review-Auflage B1, fd28ce7f). Fix in P18-T115, danach Eintrag entfernen (thought b2ffdafa)",
+      "seit": "2026-10-26",
+      "task": "P18-T115",
+      "quelle": "testlauf tl-20261026-014614-20da (P25-T13), Szenarien davor gruen"
+    },
+    {
       "datei": "packages/rest-api/tests/web-ui-welle0-p8-t24.test.mjs",
       "erwartet": {
         "fail": 3,
@@ -84,5 +224,226 @@
       "quelle": "D2 t207 rest-web-ui-welle0-p8-t24.log"
     }
   ],
-  "einstellungen": []
+  "einstellungen": [
+    {
+      "datei": "packages/core/tests/agent-kennung-p22-t131.test.mjs",
+      "art": "seriell",
+      "grund": "globaler Schalter agent_bezug_modus in public (Inventur 2f2f6776 Z3)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/ausweis-zaehler-p22-t35.test.mjs",
+      "art": "seriell",
+      "grund": "einzeln gruen, im Pool 260 s und Probe 1/96 (Analyse 32c4a579 Nr. 12)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/code-intel-schatten-performance-p6-t27.test.mjs",
+      "art": "seriell",
+      "zeitlimit": 600,
+      "grund": "Messtest, im Pool Zeitlimit 300 s (Inventur 2f2f6776 F)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-commit-auth-p6-t35.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-commit-rebase-p6-t37.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-diff.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-fix-693bbf48.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-fix-875d6a8c.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-fix-acc82f49.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-grenzen.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-grundidee.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-inactive-waits-p6-t39.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-nichts-geschrieben.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-plaene-ohne-ablauf.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-reservierung-ablauf.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-runde3.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-wait-isolation-p6-t38.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/file-batch-wait-ohne-ziel-p6-t31.test.mjs",
+      "art": "seriell",
+      "grund": "file-batch-Gruppe mit globalem Zustand in public (Inventur 2f2f6776 H)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/jev-schalter.test.mjs",
+      "art": "seriell",
+      "grund": "schaltet jev global aus/an; Fehlzahl im Pool schwankt (Inventur 4, P25-T8-Lauf 9)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/erklaerungen-topf.test.mjs",
+      "art": "seriell",
+      "grund": "Fehlzahl im Pool schwankt (Inventur 35, P25-T8-Lauf 7), globale Jev-/Budget-Schalter",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/onboarding-sitzung-p7-t40.test.mjs",
+      "art": "seriell",
+      "grund": "Parallel-/Globalzustand (Inventur 2f2f6776 Z3)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/plan-search-p3-t15.test.mjs",
+      "art": "seriell",
+      "grund": "stdio-Start + Fake-Dienste, Parallelstoerung (Inventur 2f2f6776 Z3)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/shell-ergebnis-p10-t46.test.mjs",
+      "art": "seriell",
+      "grund": "einzeln gruen, im Gesamtlauf rot (Analyse 32c4a579 Nr. 11)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/shell-rueckfrage-p10-t73.test.mjs",
+      "art": "seriell",
+      "grund": "bestaetigung_veraltet durch Lage-Drift anderer Tests (Inventur 2f2f6776 Z3)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/shell-sicherung-e3-stdio.test.mjs",
+      "art": "seriell",
+      "grund": "Parallel-/Globalzustand (Inventur 2f2f6776 Z3)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/file-watcher-daemon-ts/tests/reverse-bibliothek-p18-rv6.test.mjs",
+      "art": "seriell",
+      "grund": "einzeln gruen, im Gesamtlauf Upload-Fortsetzung Timeout (Analyse 32c4a579 Nr. 10)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/zuschnitt-paket-c-p22-t13.test.mjs",
+      "art": "seriell",
+      "grund": "'FAIL nur ausloeser aus' kommt und geht je nach Parallellauf (Inventur fail=1, P25-T8-Lauf fail=2)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/rest-api/tests/plattform-agent-chat-p22-t112.test.mjs",
+      "env": {
+        "SYNAPSE_DATABASE_URL": "${DATABASE_URL}"
+      },
+      "grund": "liest nur SYNAPSE_DATABASE_URL (Abbruch sonst); der Laeufer setzt sie nicht mehr pauschal (P25-T8 b)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    },
+    {
+      "datei": "packages/core/tests/projekt-loeschen-erweitert-p9-t31.test.mjs",
+      "art": "seriell",
+      "grund": "legt kurzzeitig Tabellen in synapse_test.public an (t31x_*), stoert -parallel; im Pool rot (Host-Sperre/Replay), seriell gruen (P25-T12, thought 49276450)",
+      "seit": "2026-10-26",
+      "task": "P25-T12"
+    },
+    {
+      "datei": "packages/core/tests/projekt-loeschen-parallel-p9-t31.test.mjs",
+      "art": "seriell",
+      "grund": "legt kurzzeitig Tabellen in synapse_test.public an (t31p_*), stoert -erweitert; im Pool rot (Replay parallel), seriell gruen (P25-T12, thought 49276450)",
+      "seit": "2026-10-26",
+      "task": "P25-T12"
+    },
+    {
+      "datei": "packages/rest-api/tests/reverse-s3-p18-t69.test.mjs",
+      "art": "seriell",
+      "grund": "globaler Schalter reverse_s3 (Inventur 2f2f6776 Z3)",
+      "seit": "2026-10-26",
+      "task": "P25-T8"
+    }
+  ]
 }

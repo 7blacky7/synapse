@@ -11,6 +11,7 @@ import {join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createRequire,syncBuiltinESMExports} from 'node:module';
 import fs from 'node:fs/promises';
+import {zieheSpaltenNach} from '../../core/tests/_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL??'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
@@ -52,6 +53,8 @@ try{
  for(const [table,column]of [['reverse_eintraege','creator_identity_id'],['reverse_auftraege','trigger_identity_id'],['tool_activation','updater_identity_id']])await db.query('ALTER TABLE '+table+' ADD COLUMN IF NOT EXISTS '+column+' TEXT');
  // P18-T88 (Migration 139): Checkpoint der Blockuebernahme; der Executor fragt ihn je Auftrag ab.
  await db.query('ALTER TABLE reverse_auftraege ADD COLUMN IF NOT EXISTS uebernahme JSONB');
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.policy_pin P18-T104): Spalten aus public nachziehen.
+ await zieheSpaltenNach(raw,schema);
  const cfg=core.ladeAssetKonfiguration({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:root});
  const konfig=ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:'synapse-reverse:fixture@sha256:'+'c'.repeat(64),
   SYNAPSE_REVERSE_RESOURCE_NEED:process.env.SYNAPSE_REVERSE_RESOURCE_NEED,SYNAPSE_REVERSE_EXECUTOR_LEASE_SECONDS:'30',
@@ -103,7 +106,10 @@ try{
  const auftrag=async id=>(await db.query('SELECT id::text,status,fehlercode,p20_auftrag_id::text FROM reverse_auftraege WHERE id=$1',[id])).rows[0];
  const work=async id=>(await db.query('SELECT state,error_code FROM work_jobs WHERE id=$1',[id])).rows[0];
  const jobsVon=async rid=>Number((await db.query("SELECT count(*)::int n FROM work_jobs WHERE input_ref->>'id'=$1",[rid])).rows[0].n);
- const beendet=async(id,grund)=>(await db.query("SELECT detail FROM work_job_audit WHERE job_id=$1 AND event='reverse_lauf_beendet'",[id])).rows.map(r=>r.detail.grund).includes(grund);
+ // (angepasst P25-T13, P18-T93: ein E-Lauf endet nach Eingriff ueber eHalten (Rueckhalt vor failed/cancelled). Das Audit ist dann
+ // 'failed'/'cancelled' mit detail.grund/fehlercode; 'reverse_lauf_beendet' schreibt nur noch der S3-Pfad (eingriffBeenden).)
+ const beendet=async(id,grund)=>(await db.query("SELECT event,detail FROM work_job_audit WHERE job_id=$1 AND event IN ('reverse_lauf_beendet','failed','cancelled')",[id])).rows
+  .some(r=>r.event==='reverse_lauf_beendet'?r.detail.grund===grund:r.detail.grund===grund||r.detail.fehlercode===grund);
  const drain=()=>inDb(async()=>{await executor.durchlauf();await executor.leerlauf();});
  const bisAufruf=async rid=>{for(let i=0;i<100&&!calls.some(c=>String(c.eingabe).includes('/'+rid+'/'));i++)await pause(50);};
 
@@ -120,7 +126,7 @@ try{
  ok(dauerA>=3500&&dauerA<15000,'harte Frist greift nach ~4 s: '+dauerA+' ms');
  eq(await work(ra.p20_auftrag_id),{state:'failed',error_code:'zeitlimit'});
  eq(await auftrag(qa.auftrag_id).then(r=>[r.status,r.fehlercode]),['fehler','zeitlimit'],'endgueltig, kein stiller Neuversuch');
- ok(await beendet(ra.p20_auftrag_id,'zeitlimit'),'Audit reverse_lauf_beendet/zeitlimit');
+ ok(await beendet(ra.p20_auftrag_id,'zeitlimit'),'Audit Laufende/zeitlimit');
  let n=await jobsVon(a.rid);await inDb(()=>pipeline.entdecke());await inDb(()=>pipeline.entdecke());
  eq(await jobsVon(a.rid),n,'nach zeitlimit kein automatischer Neuversuch (sonst dreimal je Zeitlimit)');
 
@@ -150,14 +156,18 @@ try{
  await db.query("UPDATE work_jobs SET state='cancelled' WHERE input_ref->>'id'=$1 AND state='pending'",[b.rid]); // nicht weiter ausfuehren
 
  // C) Runner endet teilweise/zu_gross: das bis dahin Entpackte wird uebernommen, Status und Code bleiben sichtbar.
+ // (angepasst P25-T13, P18-T93 Fallmatrix J: ein Teilergebnis ist kein bestaetigter Vollabschluss. Rueckhalt zuerst, Fachauftrag
+ // gehalten (fehler) mit dem spezifischen Code, kein stage/complete; bereits uebernommene Dateien bleiben. Vorher: teilweise + completed.)
  const c=await medium('c','teilweise'),qc=await request(c),rc=await auftrag(qc.auftrag_id);
  await drain();
- eq(await auftrag(qc.auftrag_id).then(r=>[r.status,r.fehlercode]),['teilweise','zu_gross']);
- eq((await db.query("SELECT status,fehlercode FROM reverse_schichten WHERE medium_id=$1 AND schicht='E' AND aktuell",[c.mid])).rows[0],{status:'teilweise',fehlercode:'zu_gross'});
- eq(Number((await db.query('SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1',[c.rid])).rows[0].n),2,'Teilergebnis uebernommen');
- eq((await work(rc.p20_auftrag_id)).state,'completed');
+ const standC={fach:await auftrag(qc.auftrag_id).then(r=>[r.status,r.fehlercode]),
+  schicht:(await db.query("SELECT status,fehlercode FROM reverse_schichten WHERE medium_id=$1 AND schicht='E' AND aktuell",[c.mid])).rows[0],
+  dateien:Number((await db.query('SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1',[c.rid])).rows[0].n),work:await work(rc.p20_auftrag_id)};
+ eq(standC.fach,['fehler','zu_gross'],'Fachauftrag gehalten mit Code: '+JSON.stringify(standC));
+ eq(standC.dateien,2,'Teilergebnis uebernommen');
+ ok(standC.work.state!=='completed','kein completed ohne Vollabschluss: '+JSON.stringify(standC));
  n=await jobsVon(c.rid);await inDb(()=>pipeline.entdecke());
- eq(await jobsVon(c.rid),n,'teilweise gilt als erledigt, kein Neuversuch');
+ eq(await jobsVon(c.rid),n,'zu_gross ist deterministisch, kein automatischer Neuversuch');
  console.log('P18-T87 BEISPIEL diagnose',JSON.stringify({ursache:dA.ursache,frist_s:dA.frist_s,lauf_s:dA.lauf_s,ursache_text:dA.ursache_text}));
  console.log('P18-T87 PASS '+checks+' checks: harte Frist '+dauerA+' ms, Storno '+dauerB+' ms, Teilergebnis zu_gross, kein Neueinreihen/Neuversuch');
 }finally{
