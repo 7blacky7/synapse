@@ -46,7 +46,7 @@ function merkeAnfrage(el: HTMLElement | null, art: string, treffer: number): voi
   el?.setAttribute('data-letzte-inkrement', art + ' · ' + treffer + ' · ' + new Date().toISOString());
 }
 
-export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs = EINHEITLICHER_CHAT_POLL_MS }: { identityId: string; name: string; project?: string; pollMs?: number }) {
+export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs = EINHEITLICHER_CHAT_POLL_MS, sendeGesperrt = false }: { identityId: string; name: string; project?: string; pollMs?: number; sendeGesperrt?: boolean }) {
   // P22-T146: Stand aus dem Sitzungsspeicher (Fenster zu/auf, Ansichtswechsel laden nichts neu); leer -> Erstladen.
   const [stand, setStand] = useState<ChatFensterStand>(() => leseChatFensterStand(identityId) ?? leererStand());
   const [hinweis, setHinweis] = useState('');
@@ -298,7 +298,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
     // P22-T168 (F3): auch nur mit Zitaten; sie gehen nur an diese identity_id.
     const zitate = zitat.sendeZitate;
     const anzeige = zitat.anzeige;
-    if ((!nachricht && !zitate.length) || busy || sendend.current || !aktiv.current) return;
+    if (sendeGesperrt || (!nachricht && !zitate.length) || busy || sendend.current || !aktiv.current) return;
     const lauf = generation.current;
     const id = ++sendeAnfrage.current;
     const gueltig = () => aktiv.current && generation.current === lauf && sendeAnfrage.current === id;
@@ -397,7 +397,7 @@ export function EinheitlicherAgentChat({ identityId, name, project = '', pollMs 
         <form className="agent-composer" onSubmit={submit}>
           {zitat.karten}
           <ChatEingabefeld rows={2} value={text} onChange={setText} onFiles={() => setHinweis('Dateien gehen in diesem Chat noch nicht (nur Text).')}
-            sendeGesperrt={busy || (!text.trim() && !zitat.sendeZitate.length)} placeholder={'Nachricht an ' + name + ' …'} />
+            sendeGesperrt={sendeGesperrt || busy || (!text.trim() && !zitat.sendeZitate.length)} placeholder={'Nachricht an ' + name + ' …'} />
           <footer className="composer-foot"><span className="composer-hint">Enter sendet · Shift+Enter neue Zeile · Zustellung per Inbox{zitat.aktiv ? ' · Rechtsklick auf Verweis oder Markierung: Zitat anfügen' : ''}</span></footer>
         </form>
         {zitat.oberflaeche}

@@ -15,7 +15,7 @@ import {
   pruefeEffortFuerModell, leseEffortWahl, listModels, setzeCliKontextQuelle,
   leseVerlaufSchalter, setzeVerlaufSchalter, legeVerlaufTurnAn, starteVerlaufAntwort, leseVerlauf, leereVerlauf, verlaufStatus, geraetAusUserAgent, rendereToolBild,
   leseVerlaufFuer, AGENT_VERLAUF_ALLE_FUNKTION, leseProfilProduktSchalter, getPool, leseToolKartenSchalter, toolKarteFuerStrom,
-  leseToolKartenEinstellungen, setzeToolKartenEinstellungen,
+  leseToolKartenEinstellungen, setzeToolKartenEinstellungen, internToolAktiv,
   warteschlangeAktiv, mainWechselOffen, stelleInWarteschlange, NICHT_ERREICHT_CODES, warteschlangeStatus, leseWarteschlangeSchalter, setzeWarteschlangeSchalter,
 } from '@synapse/core';
 import { leseRuntimeDaemonZugang, stelleRuntimeDaemonZugangAus, widerrufeRuntimeDaemonZugangKomplett } from '../services/agent-runtime/daemon-zugang.js';
@@ -41,6 +41,8 @@ import { leseSpeicherAehnlichkeitStand, setzeSpeicherAehnlichkeitEinstellungen }
 import { pinneUserEntscheidung, listeUserEntscheidungen, type UserEntscheidungZiel } from '@synapse/core';
 // P22-T170: Zitat aus einem Lesefenster ohne Chat-/Channel-Herkunft an die per Checkbox gewaehlten Agenten.
 import { listeZitatEmpfaenger, sendeZitatAnEmpfaenger } from '@synapse/core';
+// P22-T188: Heartbeat im Chatfenster (Stand + setzen, nur User).
+import { leseAgentHeartbeatFenster, setzeAgentHeartbeatFenster } from '@synapse/core';
 import { leseVerweis } from '../services/verweise.js';
 import { abonniereArtefaktLive, artefaktLiveStatus } from '../services/artefakt-live.js';
 import { letzterMainWegFehler } from '../services/agent-runtime/dauerhafter-main.js';
@@ -109,6 +111,23 @@ export async function plattformAgentChatSchalter(project: string) {
   const stand = await leseProfilProduktSchalter('plattform_agent_chat', project);
   const aktiv = stand.aktiv && !stand.letzter_fehler;
   return { ...stand, aktiv, name: 'plattform_agent_chat', wert: aktiv ? 'ein' : 'aus', standard: false as const };
+}
+
+/** P22-T189: Produktwert bleibt in Produktion unabhaengig vom intern-Tool; Override nur mit Ablauf. */
+export async function koordinatorMehrfensterSchalter(project: string) {
+  const s = await leseProfilProduktSchalter('koordinator_mehrfenster', project).catch(() => null);
+  const basis = { name: 'koordinator_mehrfenster', aktiv: !!s && s.aktiv && !s.letzter_fehler,
+    quelle: s?.quelle ?? 'fehler', letzter_fehler: s ? s.letzter_fehler : 'nicht_lesbar', bis: null as string | null,
+    intern_fehler: null as string | null };
+  if (!internToolAktiv()) return basis;
+  try {
+    const r = await getPool().query<{ aktiv: boolean; bis: Date }>({
+      text: "SELECT aktiv, bis FROM intern_schalter WHERE name=$1 AND modus='freigegeben' AND bis IS NOT NULL AND bis>NOW()",
+      values: ['koordinator_mehrfenster'], query_timeout: 2000,
+    } as import('pg').QueryConfig & { query_timeout: number });
+    const z = r.rows[0];
+    return z ? { ...basis, aktiv: z.aktiv, quelle: 'intern', letzter_fehler: null, bis: z.bis.toISOString() } : basis;
+  } catch { return { ...basis, intern_fehler: 'intern_schalter_nicht_lesbar' }; }
 }
 
 type EingangsFehler = { ok: false; status: number; code: string; message: string; details?: Record<string, unknown> };
@@ -549,6 +568,18 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       return await wechslePlattformAgentModell({ identity_id: b.identity_id, runtime: b.runtime, modell: b.modell, effort: b.effort, grund: b.grund }, await userAkteur(request));
     } catch (error) { return sendFachFehler(reply, error); }
   });
+  // P22-T188: Heartbeat im Chatfenster eines Plattform-Agenten. Unter /api/agent-runtimes (Guard: nur interaktive User-Session).
+  // Schalter koordinator_heartbeat (Koordinator) bzw. runtime_agenten_steuerung (Unteragent); AUS -> GET mit hinweis, PUT funktion_aus.
+  fastify.get<{ Querystring: { identity_id?: string } }>('/api/agent-runtimes/agent-heartbeat', async (request, reply) => {
+    try { return await leseAgentHeartbeatFenster(request.query.identity_id); }
+    catch (error) { return sendFachFehler(reply, error); }
+  });
+  fastify.put<{ Body: { identity_id?: unknown; aktiv?: unknown; intervall_ms?: unknown; grund?: unknown } }>('/api/agent-runtimes/agent-heartbeat', async (request, reply) => {
+    try {
+      const b = request.body ?? {};
+      return await setzeAgentHeartbeatFenster({ identity_id: b.identity_id, aktiv: b.aktiv, intervall_ms: b.intervall_ms, grund: b.grund }, await userAkteur(request));
+    } catch (error) { return sendFachFehler(reply, error); }
+  });
   // P22-T112: Chat mit Plattform-Agenten (Schalter siehe plattformAgentChatSchalter). Verlauf liest die Web-UI ueber agent-verlauf.
   fastify.get<{ Querystring: { identity_id?: string } }>('/api/agent-runtimes/agent-chat/status', async (request, reply) => {
     try {
@@ -559,7 +590,8 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
       // P22-T124: einheitliches Chatfenster (Schalter agent_chat_einheitlich, Std AUS); Debug: Quelle und Fehler mitliefern.
       const e = await leseProfilProduktSchalter('agent_chat_einheitlich', ziel.project).catch(() => null);
       const einheitlich = { name: 'agent_chat_einheitlich', aktiv: !!e && e.aktiv && !e.letzter_fehler, quelle: e?.quelle ?? 'fehler', letzter_fehler: e ? e.letzter_fehler : 'nicht_lesbar' };
-      return { success: true, schalter: await plattformAgentChatSchalter(ziel.project), einheitlich };
+      const mehrfenster = await koordinatorMehrfensterSchalter(ziel.project);
+      return { success: true, schalter: { ...await plattformAgentChatSchalter(ziel.project), mehrfenster }, einheitlich };
     } catch (error) { return sendFachFehler(reply, error); }
   });
   fastify.post<{ Body: { identity_id?: unknown; text?: unknown; zitate?: unknown } }>('/api/agent-runtimes/agent-chat', async (request, reply) => {

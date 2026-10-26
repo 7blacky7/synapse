@@ -557,7 +557,10 @@ export async function steuereRuntimeAgentUi(identityId: string, aktion: 'stop' |
 }
 
 /** P22-T112: PG-Produkt-Schalter im Projekt der Zielidentitaet, Standard AUS. */
-export interface PlattformAgentChatSchalter { aktiv: boolean; quelle: string; name: string; wert: string | null; project: string | null; letzter_fehler: string | null }
+export interface PlattformAgentChatSchalter { aktiv: boolean; quelle: string; name: string; wert: string | null; project: string | null; letzter_fehler: string | null;
+  /** P22-T189: fehlt bei alter API = AUS. */
+  mehrfenster?: { name: string; aktiv: boolean; quelle: string; letzter_fehler: string | null };
+}
 export async function getPlattformAgentChatSchalter(identityId: string): Promise<PlattformAgentChatSchalter> {
   return (await jsonRequest<{ success: true; schalter: PlattformAgentChatSchalter }>('/api/agent-runtimes/agent-chat/status?identity_id=' + encodeURIComponent(identityId))).schalter;
 }

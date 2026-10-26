@@ -13,7 +13,7 @@ const SICHTBAR = new Set(['user', 'agent', 'nachricht', 'ausgabe']);
 
 interface Gesendet { key: string; text: string; inboxId: number | null; fehler: string }
 
-export function PlattformAgentChat({ identityId, name, pollMs = PLATTFORM_AGENT_CHAT_POLL_MS, project }: { identityId: string; name: string; pollMs?: number; project?: string }) {
+export function PlattformAgentChat({ identityId, name, pollMs = PLATTFORM_AGENT_CHAT_POLL_MS, project, sendeGesperrt = false }: { identityId: string; name: string; pollMs?: number; project?: string; sendeGesperrt?: boolean }) {
   const intervall = Number.isFinite(pollMs) && pollMs > 0 ? pollMs : PLATTFORM_AGENT_CHAT_POLL_MS;
   // P22-T124: Schalter agent_chat_einheitlich (im Projekt der Zielidentitaet, Std AUS) -> Chatfenster wie der Main-Chat.
   // An die Identitaet gebunden (wie T112/T116 R6); Lesefehler = AUS (Altansicht).
@@ -23,11 +23,11 @@ export function PlattformAgentChat({ identityId, name, pollMs = PLATTFORM_AGENT_
     getAgentChatEinheitlich(identityId).then((a) => { if (gueltig) setEinheitlich({ identityId, aktiv: a }); }).catch(() => { if (gueltig) setEinheitlich({ identityId, aktiv: false }); });
     return () => { gueltig = false; };
   }, [identityId]);
-  if (einheitlich.identityId === identityId && einheitlich.aktiv) return <EinheitlicherAgentChat key={identityId} identityId={identityId} name={name} project={project} pollMs={intervall} />;
-  return <PlattformAgentChatIdentitaet key={identityId} identityId={identityId} name={name} pollMs={intervall} />;
+  if (einheitlich.identityId === identityId && einheitlich.aktiv) return <EinheitlicherAgentChat key={identityId} identityId={identityId} name={name} project={project} pollMs={intervall} sendeGesperrt={sendeGesperrt} />;
+  return <PlattformAgentChatIdentitaet key={identityId} identityId={identityId} name={name} pollMs={intervall} sendeGesperrt={sendeGesperrt} />;
 }
 
-function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId: string; name: string; pollMs: number }) {
+function PlattformAgentChatIdentitaet({ identityId, name, pollMs, sendeGesperrt }: { identityId: string; name: string; pollMs: number; sendeGesperrt: boolean }) {
   const [eintraege, setEintraege] = useState<MainAgentVerlaufEintrag[]>([]);
   /** P22-T123: Server meldet Schalter verlauf_tool_karten EIN (Antwortfeld tool_karten.aktiv). */
   const [toolKartenAn, setToolKartenAn] = useState(false);
@@ -86,7 +86,7 @@ function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId
 
   const senden = async () => {
     const nachricht = text.trim();
-    if (!nachricht || busy || sendend.current || !aktiv.current) return;
+    if (sendeGesperrt || !nachricht || busy || sendend.current || !aktiv.current) return;
     const lauf = generation.current;
     const id = ++sendeAnfrage.current;
     const gueltig = () => aktiv.current && generation.current === lauf && sendeAnfrage.current === id;
@@ -132,7 +132,7 @@ function PlattformAgentChatIdentitaet({ identityId, name, pollMs }: { identityId
       <form className="plattform-agent-chat-eingabe" onSubmit={(event) => { event.preventDefault(); void senden(); }}>
         <textarea value={text} rows={2} placeholder={'Nachricht an ' + name} onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void senden(); } }} />
-        <button type="submit" disabled={busy || !text.trim()}>{busy ? '…' : 'Senden'}</button>
+        <button type="submit" disabled={sendeGesperrt || busy || !text.trim()}>{busy ? '…' : 'Senden'}</button>
       </form>
     </section>
   );
