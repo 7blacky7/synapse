@@ -211,8 +211,21 @@ try{
   check(antwort.stdio===true,'BEFUND Eskalation: event_warning (Pflichtanteil) bei dringendem Event trotz pending_events aus stdio');
  });
 
- const logs=JSON.stringify((await pool.query('SELECT * FROM tool_calls')).rows);
- check(secrets.every(s=>!logs.includes(s)),'kein Ausweis im Audit');
+ const auditZeilen=(await pool.query('SELECT * FROM tool_calls')).rows;
+ const logs=JSON.stringify(auditZeilen);
+ // P25-T16 (Befund P25-T8 2f07fbc0): Ausweise (sai_...) sind nach User-Entscheidung P22-T55 (19.10., bestaetigt 24.10.: P22-T130 verworfen,
+ // thoughts 4cb6e3d2/fc3da39d) KEIN Geheimnis und duerfen im Tool-Log stehen (chat.register liefert den Ausweis im result).
+ // Geheim bleibt der Bearer des Zugangs: nur er darf nie im Audit stehen.
+ check(!logs.includes(bearer),'P25-T16 w1b-pflichtanteil: kein Bearer im Audit (Ausweise sind kein Geheimnis, P22-T55)');
+ // Bei Fehlschlag die betroffenen Zeilen/Spalten nennen (nie den Wert), damit die Ursache ohne Nachbau sichtbar ist.
+ for(const z of auditZeilen)for(const [spalte,wert] of Object.entries(z)){
+  const text=typeof wert==='string'?wert:JSON.stringify(wert??'');
+  const i=text.includes(bearer)?0:-1;
+  if(i<0)continue;
+  const s=secrets[i],pos=text.indexOf(s),davor=text.slice(Math.max(0,pos-24),pos).replace(/[^\w":{,\[ -]/g,'?');
+  console.error('DEBUG kein Bearer im Audit | tool_calls id='+z.id+' tool='+z.tool_name+' action='+z.action+' source='+z.source+' spalte='+spalte
+   +' geheimnis='+(i===0?'bearer':'agent_token#'+i)+' format='+s.slice(0,4)+'…('+s.length+' Zeichen) davor='+JSON.stringify(davor));
+ }
  check(network===0,'keine Netzwerk-/Modellaufrufe');
  console.log('P22-T19 Pflichtanteil: '+checks+' Pruefungen, '+failures.length+' Fehler');
  if(failures.length){console.error(failures.join('\n'));process.exitCode=1;}

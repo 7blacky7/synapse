@@ -52,8 +52,13 @@ fixtureProjects.push(project);cleanup.trackProject(project);await fixtureCleanup
  const js="const{execFileSync}=require('child_process');const run=(a,input)=>execFileSync('git',a,{input,encoding:'utf8'}).trim();for(const f of ['owned.txt']){if(run(['hash-object',f])!==run(['hash-object','--stdin'],'owned fixture'))throw Error('blob');}console.log(run(['status','--short']));";
  const command='node -e '+ "'"+js.replace(/'/g,"'\\''")+"'";
  let started=false;const r=await execShellInProject({project,command,agent_id:'sol-2',onStarted:()=>started=true});
- assert.equal(started,true,JSON.stringify(r));assert.equal(r.exit_code,0,JSON.stringify(r));assert.equal(git(['status','--porcelain']).trim(),'');
- console.log('t76-B echter Start im eigenen Testprojekt, Wrapper/Encoding/stdin und unverändertes Git grün.');
+ // P25-T16 (Befund P25-T8 2f07fbc0): seit P10-T73 (7c83bf3c) ist ein Einzeiler mit Prozess-API (execFileSync) auch im echten Start
+ // eine Rueckfrage - wie der statische Teil oben. Erwartung nachgezogen: nichts startet, Git bleibt unveraendert.
+ assert.equal(started,false,'P25-T16 shell-t76-b native: Einzeiler mit execFileSync startet ohne Bestaetigung nicht | '+JSON.stringify(r).slice(0,300));
+ assert.equal(r.ausgefuehrt,false,'P25-T16 shell-t76-b native: ausgefuehrt=false | '+JSON.stringify(r).slice(0,300));
+ assert.equal(r.stufe,'rueckfrage','P25-T16 shell-t76-b native: Stufe rueckfrage (P10-T73) | '+JSON.stringify(r).slice(0,300));
+ assert.equal(git(['status','--porcelain']).trim(),'','P25-T16 shell-t76-b native: Git unveraendert');
+ console.log('t76-B echter Start im eigenen Testprojekt: Rueckfrage statt Ausfuehrung (P10-T73), Git unveraendert, grün.');
 }finally{
  globalThis.fetch=oldFetch;
  try{

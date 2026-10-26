@@ -72,7 +72,10 @@ try {
  }});
  const data=r=>r.structuredContent??JSON.parse(r.content.find(b=>b.type==='text').text);
  const definitions=(await rpc('tools/list')).tools;const reverse=definitions.find(d=>d.name==='reverse');
- assert.deepEqual(reverse,core.REVERSE_DEFINITION);assert(reverse.inputSchema.properties.action.enum.includes('assets_tree'));assert(reverse.inputSchema.properties.action.enum.includes('inspect'));
+ // P25-T16 (Befund P25-T8 2f07fbc0): tools/list bewirbt den Ausweis-Parameter (token bzw. agent_kennung) je Verbindung nur bei
+ // wirksamem Ausweis-Kern (P22-T55/T56/T131); hier ohne Ausweis fehlt er. Der Vertrag gilt deshalb ohne diesen Parameter.
+ const ohneAusweis=d=>{const k=structuredClone(d);for(const p of ['token','agent_kennung'])delete k.inputSchema?.properties?.[p];return k;};
+ assert.deepEqual(ohneAusweis(reverse),ohneAusweis(core.REVERSE_DEFINITION),'P25-T16 rv16 tools/list: reverse = core REVERSE_DEFINITION (ohne Ausweis-Parameter)');assert(reverse.inputSchema.properties.action.enum.includes('assets_tree'));assert(reverse.inputSchema.properties.action.enum.includes('inspect'));
  for(const [name,call] of [['REST',direct],['stdio',forwarded]]){
    const args={project,agent_id:agent,reverse_id:rid};
    assert.equal(data(await call({...args,action:'loesen'})).success,true);

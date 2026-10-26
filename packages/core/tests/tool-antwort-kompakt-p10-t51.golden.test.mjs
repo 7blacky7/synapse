@@ -101,6 +101,16 @@ function approvedChange(value, label, mode, inner = false) {
     }
   }
   if(label==='code-search-one')for(const hit of result.results??[])for(const match of hit.matches??[])delete match.words;
+  // P25-T16 (Befund P25-T8 2f07fbc0): plan get liefert seither additiv git_branch_hinweis (Plan ohne git_branch) und je Task
+  // beteiligte (Liste, hier leer). Beides ist eine freigegebene, rein additive Aenderung; alles andere bleibt Golden.
+  // REST liefert den Plan auf oberster Ebene, stdio als {success, message, plan:{...}}.
+  const planObjekt=label==='plan-get'&&result&&!Array.isArray(result)?(result.plan&&Array.isArray(result.plan.tasks)?result.plan:Array.isArray(result.tasks)?result:null):null;
+  if(planObjekt){
+    if(!planObjekt.git_branch&&!Object.hasOwn(planObjekt,'git_branch_hinweis'))planObjekt.git_branch_hinweis='Kein git_branch gesetzt; verwendet wird der aktuelle Arbeitsbranch.';
+    // stdio fuehrt die Tasks zusaetzlich auf oberster Ebene (tasks neben plan.tasks).
+    for(const liste of [planObjekt.tasks,result.tasks])for(const task of Array.isArray(liste)?liste:[])
+      if(task&&typeof task==='object'&&!Object.hasOwn(task,'beteiligte'))task.beteiligte=[];
+  }
   result=withoutNull(result);
   // REST dachte bei thought.search an ein Array; nur structuredContent hat dort die result-Hülle.
   if(!Array.isArray(result) && !Object.hasOwn(result,'success') && !(mode==='rest'&&label==='thought-search')) result={success:true,...result};
@@ -267,10 +277,16 @@ try {
       await pool.query('INSERT INTO code_files(id,project,file_path,file_name,file_type,content,content_hash,file_size,chunk_count) VALUES($1,$2,$3,$4,$5,$6,$7,$8,0)',[randomUUID(),project,'src/wait.ts','wait.ts','ts',waitCode,createHash('sha256').update(waitCode).digest('hex'),Buffer.byteLength(waitCode)]);
       const reservations=await import('../dist/services/file-reservations.js');
       await reservations.addFileReservations({project,agentId:agent+'-owner',filePaths:['src/wait.ts']});
-      const carrier=await batch.planBatch({project,agent_id:agent,ops:[{action:'search_replace',file_path:'src/wait.ts',search:'1',replace:'2'}]});
+      // P25-T16: Seit P6-T48 (Koordinator-Entscheidung 13.10.2026) erzeugt files(plan) auf eine nur RESERVIERTE Datei (Owner ohne
+      // offenen Plan) keinen Wait mehr, sondern einen Plan mit reservation_hint. Den zielosen Wait (Altfall, den plan_status weiter
+      // ausliefert) legt deshalb _helfer/altfall-wait.mjs an, wie in P25-T15 fuer Gruppe H.
+      const direkt=await batch.planBatch({project,agent_id:agent,ops:[{action:'search_replace',file_path:'src/wait.ts',search:'1',replace:'2'}]});
+      assert(!direkt.coedit_waits?.length&&direkt.reservation_hint,'P25-T16 tool-antwort-kompakt golden: planlose Fremdreservierung ergibt reservation_hint statt Wait (P6-T48) | '+JSON.stringify(direkt).slice(0,300));
+      await batch.cancelBatch(String(direkt.plan_id),agent,'P25-T16 Probe P6-T48').catch(()=>{});
+      const {legeAltfallWaitAn}=await import(new URL('./_helfer/altfall-wait.mjs',import.meta.url));
+      const carrier=await legeAltfallWaitAn(pool,{project,waitingAgent:agent,primaryAgent:agent+'-owner',ops:[{action:'search_replace',file_path:'src/wait.ts',search:'1',replace:'2'}]});
       const wait=carrier.coedit_waits?.[0];
       assert(wait&&!wait.target_plan_id,'Eigener Co-Edit-Wait ohne Ziel');
-      assert.match(wait.handlungsanweisung,/Kein Zielplan vorhanden/);
       aliases.set(String(carrier.plan_id),'<CARRIER_ID>');
       aliases.set(wait.wait_token,'<WAIT_TOKEN>');
       await both('wait-no-target','files',{action:'plan_status',plan_id:carrier.plan_id});

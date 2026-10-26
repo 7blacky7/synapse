@@ -104,10 +104,16 @@ try{
  const sichtbar=(sel)=>evaluate('(()=>{const s='+SR+';const e=s&&s.querySelector('+JSON.stringify(sel)+');return !!e&&getComputedStyle(e).display!=="none"})()');
  const lauf=async(theme)=>{
   const T=theme==='dark'?'dunkel':'hell';
+  // P25-T16: Seit P22-T169 (User 25.10.2026, thought 403c12bd) merkt die Vorlage die Plan-Auswahl je Artefakt und Betrachter im
+  // localStorage (synapse-artefakt-zustand:artefakt:<id>). Der dunkle Durchgang waehlt P2; ohne Aufraeumen startete der helle
+  // Durchgang (gleicher Vite-Origin) mit P2. Jeder Durchgang leert deshalb im ersten Tab (Schalter AUS: nichts wird gemerkt oder
+  // eingesetzt) die gemerkten Zustaende, bevor der Tab mit Schalter EIN oeffnet.
   // Schalter AUS: Klick bleibt wirkungslos (Bestand)
   await schalter('artefakt_verweise',false);
   await oeffne(theme,'koordinator');
   await wait(()=>evaluate('!!('+SR+')?.querySelector("[data-synapse-verweis=\'P1-T4\']")'),T+': Vorlage mit plan.alle gerendert');
+  const geleert=await evaluate("(()=>{const k=Object.keys(localStorage).filter(x=>x.startsWith('synapse-artefakt-zustand:'));k.forEach(x=>localStorage.removeItem(x));return k.length})()");
+  console.log('P25-T16 '+T+': gemerkte Artefakt-Zustaende geleert: '+JSON.stringify(geleert));
   await sleep(700);
   ok(await klickIn(SR,'[data-synapse-verweis="P1-T4"]'),T+': Klick bei Schalter AUS');await sleep(800);
   ok((await fenster()).length===0,T+': Schalter AUS -> kein Lesefenster (Bestand)');
@@ -116,7 +122,9 @@ try{
   await oeffne(theme,'koordinator');
   await wait(()=>evaluate('!!('+SR+')?.querySelector("[data-synapse-verweis=\'P1-T4\']")'),T+': Vorlage geladen');
   await sleep(900);
-  ok(await sichtbar('.v-P1')&&!(await sichtbar('.v-P2')),T+': Start: Plan P1 sichtbar, P2 verborgen');
+  const startOk=await sichtbar('.v-P1')&&!(await sichtbar('.v-P2'));
+  if(!startOk)console.error('DEBUG '+T+' Start | '+JSON.stringify(await evaluate("(()=>{const s="+SR+";const v=c=>{const e=s&&s.querySelector(c);return e?getComputedStyle(e).display:'fehlt'};return JSON.stringify({p1:v('.v-P1'),p2:v('.v-P2'),radios:s?[...s.querySelectorAll('input[type=radio]')].map(r=>r.id+'='+r.checked):null,gemerkt:Object.keys(localStorage).filter(x=>x.startsWith('synapse-artefakt-zustand:')).map(x=>x+'='+localStorage.getItem(x).slice(0,160)),theme:document.documentElement.dataset.theme||document.documentElement.className})})()")));
+  ok(startOk,T+': Start: Plan P1 sichtbar, P2 verborgen');
   await shot(T+'-koordinator-p1');
   ok(await klickIn(SR,'label[for="r-P2"]'),T+': Plan P2 anklicken (Radio-Label)');
   await wait(()=>sichtbar('.v-P2'),T+': Plan P2 sichtbar');ok(!(await sichtbar('.v-P1')),T+': Plan P1 verborgen (CSS-Navigation ohne Skript)');
