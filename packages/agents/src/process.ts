@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { agentLaufSchluessel } from './agent-lauf.js'
+import { starteClaudeMitPromptdatei } from './claude-prompt-start.js'
 import { createInterface, type Interface } from 'node:readline'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
@@ -125,7 +126,6 @@ class ProcessManager extends EventEmitter {
         '--output-format', 'stream-json',
         '--input-format', 'stream-json',
         '--model', cliModelArgFuer(model, modelEntry),
-        '--system-prompt', systemPrompt,
         '--session-id', sessionId,
         // P22-T66: im Runtime-Container laufen die Agenten als root, dort bricht die CLI bei bypassPermissions sofort ab
         // ("--dangerously-skip-permissions cannot be used with root/sudo privileges"). Dort dieselbe Rechte-Einstellung wie
@@ -166,15 +166,12 @@ class ProcessManager extends EventEmitter {
         if (process.env.SYNAPSE_MCP_STRICT === '1') args.push('--strict-mcp-config')
       }
 
-      proc = spawn(
-        'claude',
-        args,
-        {
-          env: { ...process.env, ...toolAusgabe.env },
-          stdio: ['pipe', 'pipe', 'pipe'],
-          cwd: opts?.cwd ?? process.cwd(),
-        },
-      )
+      proc = await starteClaudeMitPromptdatei({
+        agentName, sessionId, systemPrompt, args,
+        env: { ...process.env, ...toolAusgabe.env },
+        cwd: opts?.cwd ?? process.cwd(),
+        projectPath: opts?.projectPath ?? opts?.cwd ?? process.cwd(),
+      })
     }
 
     const stdout = createInterface({ input: proc.stdout! })
