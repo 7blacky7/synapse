@@ -120,6 +120,9 @@ export function mainScopePasst(
   }
   // P22-T82: Spezialisten-Bearer im Container nur fuer den MCP-Weg mit Ausweis (Identitaet prueft agentScopeAusweisPasst).
   if (scope?.startsWith(AGENT_IDENTITAET_SCOPE)) {
+    // P22-T179: derselbe Bearer darf den API-Transport nutzen (Ausweis Pflicht; Freigabe und Identitaet prueft die Route).
+    if (((method === 'POST' && pathname === '/api/agent-api/messages') || (method === 'GET' && pathname === '/api/agent-api/rahmen'))
+      && typeof headers['x-synapse-agent-token'] === 'string') return true;
     return method === 'POST' && (pathname === '/' || pathname === '/mcp/messages') && typeof headers['x-synapse-agent-token'] === 'string';
   }
   if (!scope?.startsWith(MAIN_SYNAPSE_SCOPE)) return true;

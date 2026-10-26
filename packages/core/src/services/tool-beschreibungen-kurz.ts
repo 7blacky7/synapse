@@ -400,6 +400,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       auftrag_art: 'hauptagent_auftrag: Art.',
       api_zeitraum: 'api_budget setzen: tag|woche|monat.',
       erlaubte_modelle: 'api_budget setzen: erlaubte API-Modelle.',
+      api_heartbeat: 'api_freigabe setzen: Heartbeat des API-Agenten (Standard aus).',
       api_einstellungen: 'api_einstellungen setzen: Werte.',
       einstellung_namen: 'api_einstellungen entfernen: Namen.',
       auftrag_id: 'hauptagent_auftrag_abbrechen: Auftrag.',

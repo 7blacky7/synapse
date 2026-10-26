@@ -522,6 +522,9 @@ export async function fuehreRuntimeWechselAus(d: RuntimeWechselDienste): Promise
  */
 export async function heartbeatBeimSpawnFuerZiel(project: string, ziel: Extract<AgentZiel, { art: 'identity' }>): Promise<void> {
   if (project !== HAUPTAGENT_PROJEKT) {
+    // P22-T179: API-Agent (aktive Freigabe, Schalter api_agenten EIN) -> Heartbeat der Freigabe, Standard AUS (jeder Weckruf kostet).
+    const api = await (await import('./api-agent-freigabe.js')).apiFreigabeHeartbeat(project, ziel.identity_id);
+    if (api) { await setzeHeartbeatKonfiguration(project, [ziel], api); return; }
     // P22-T107: Koordinator mit eigener Einstellung (Schalter koordinator_heartbeat EIN) -> diese, sonst Standard (an, adaptiv).
     const k = await (await import('./koordinator-heartbeat.js')).koordinatorHeartbeatBeimSpawn(project, ziel.identity_id);
     await setzeHeartbeatKonfiguration(project, [ziel], k ?? { enabled: true, intervalMs: null });

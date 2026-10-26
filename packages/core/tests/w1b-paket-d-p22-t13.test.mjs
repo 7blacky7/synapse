@@ -88,6 +88,8 @@ const W1B_AKTIONEN=[
  'hauptagent_status','hauptagent_auftrag','hauptagent_auftraege','hauptagent_auftrag_abbrechen',
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Aktionen
  'hauptagent_heartbeat','agent_verbrauch','api_status','api_schalter','api_budget','api_einstellungen','api_kosten',
+ // P22-T179: API-Freigabe je Arbeitsagent/Koordinator (direkt nach api_kosten)
+ 'api_freigabe',
  // P22-T58: additive Aktion der Runtime-Ueberwachung
  'runtime_ueberwachung',
  // P22-T80: alte Agenten archivieren; P22-T82: Kontingent Spezialisten im Container; P22-T87: Anmelde-Uebersicht
@@ -108,7 +110,10 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'reverse_id','reverse_ebene','reverse_werte','reverse_namen',
  'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel',
  // Welle P22-T5..T8: additive Hauptagent-/API-Agent-Parameter
- 'intervall_ms','monat','api_zeitraum','erlaubte_modelle','api_einstellungen','einstellung_namen',
+ 'intervall_ms','monat','api_zeitraum','erlaubte_modelle',
+ // P22-T179: api_freigabe (Heartbeat des API-Agenten, direkt nach erlaubte_modelle)
+ 'api_heartbeat',
+ 'api_einstellungen','einstellung_namen',
  // P22-T58: additive Parameter der Runtime-Ueberwachung
  'ueberwachung_modus','ueberwachung_werte','ueberwachung_namen',
  // P22-T80: agenten_aufraeumen (+ mit_entfernten fuer profil_uebersicht)

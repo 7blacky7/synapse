@@ -20,6 +20,8 @@
  * RECHTE: Setzen (Schalter, Budget, Einstellwerte) nur der User. Lesen: User und der Hauptagent selbst (Rolle main im
  *   reservierten Bereich, in PG gegengeprueft). Der Transport (Ausweis) liest nur seinen eigenen Rahmen.
  * Der API-Key steht NIE hier: er liegt als Infrastruktur-Geheimnis beim Transport (rest-api, Env SYNAPSE_ANTHROPIC_API_KEY).
+ * P22-T179: zugang 'agent' (Arbeitsagent/Koordinator) - statt hauptagent gilt die Funktion api plus Schalter api_agenten im Projekt
+ *   und die Freigabe JE IDENTITAET (api-agent-freigabe.ts, Gate pruefeAgentFreigabeTx unter derselben Budgetsperre). admin api_freigabe.
  */
 import { randomUUID } from 'node:crypto';
 import type { PoolClient, QueryConfig } from 'pg';
@@ -30,6 +32,10 @@ import { leseHauptagentSchalter } from './hauptagent-dienst.js';
 import { HAUPTAGENT_PROJEKT } from './virtuelle-projekte.js';
 import { ProfilVerwaltungFehler, aktuellerW1bAkteur, pflichtText } from './agent-profil-verwalter.js';
 import { bucheAgentVerbrauch } from './agent-verbrauch.js';
+import { leseApiKeyStand } from './api-schluessel-dienst.js';
+import {
+  pruefeApiAgentenSchalter, pruefeAgentFreigabeTx, apiAgentenStand, setzeApiFreigabe, entferneApiFreigabe, pruefeApiFreigabeLeser,
+} from './api-agent-freigabe.js';
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
 
 export const HAUPTAGENT_API_FUNKTION = 'hauptagent_api' as const;
@@ -337,6 +343,8 @@ export interface ApiReservierungEingabe {
   /** Zeichen der gesamten Eingabe (system + messages + tools), fuer die konservative Schaetzung */
   eingabe_zeichen: number;
   max_tokens: number;
+  /** P22-T179: 'main' (Standard, Bestand P22-T8) oder 'agent' (Arbeitsagent/Koordinator mit Freigabe je Identitaet). */
+  zugang?: 'main' | 'agent';
 }
 export interface ApiReservierung {
   reservierung_id: string;
@@ -355,7 +363,11 @@ export interface ApiReservierung {
  */
 export async function reserviereApiAufruf(e: ApiReservierungEingabe): Promise<ApiReservierung> {
   const schalter = await leseApiSchalter();
-  if (!schalter.aktiv) fehler('funktion_aus', { funktion: 'hauptagent_api', hauptagent: schalter.hauptagent.aktiv, api: schalter.api.aktiv });
+  if (e.zugang === 'agent') {
+    // P22-T179: fuer Nicht-Main gilt der globale Hauptschalter 'Funktion api' (nicht hauptagent) und api_agenten im Projekt.
+    if (!schalter.api.aktiv) fehler('funktion_aus', { funktion: 'hauptagent_api', api: false });
+    await pruefeApiAgentenSchalter(e.project);
+  } else if (!schalter.aktiv) fehler('funktion_aus', { funktion: 'hauptagent_api', hauptagent: schalter.hauptagent.aktiv, api: schalter.api.aktiv });
   if (!Number.isInteger(e.max_tokens) || e.max_tokens < 1) fehler('max_tokens_ungueltig');
   const modelle = await leseApiModelle();
   const m = modelle.find(x => x.alias === e.modell);
@@ -374,6 +386,8 @@ export async function reserviereApiAufruf(e: ApiReservierungEingabe): Promise<Ap
     const reserve = rund((eingabeTokens * m.eingabe * einst.cache_schreib_faktor.wert + maxTokens * m.ausgabe) / 1e6);
     await verfalleAbgelaufene(c);
     const beginn = apiZeitraumBeginn(b.zeitraum, b.reset_tag);
+    // P22-T179: Freigabe dieses Agenten (Modell, eigene Grenze) unter derselben Sperre wie das globale Budget.
+    if (e.zugang === 'agent') await pruefeAgentFreigabeTx(c, { identity_id: e.identity_id, modell: e.modell, reserve_usd: reserve, beginn });
     const v = await verbrauchImZeitraum(c, beginn);
     const grenze = Number(b.grenze_usd);
     const verbraucht = rund(v.gebucht + v.offen + v.verfallen);
@@ -516,11 +530,13 @@ export async function apiRahmenFuerAgent(): Promise<Record<string, unknown>> {
 }
 
 export async function apiAgentStatus(): Promise<Record<string, unknown>> {
-  const [schalter, budget, einstellungen, modelle] = await Promise.all([leseApiSchalter(), leseApiBudget(), leseApiEinstellungen(), leseApiModelle()]);
+  const [schalter, budget, einstellungen, modelle, api_key, agenten] = await Promise.all([leseApiSchalter(), leseApiBudget(), leseApiEinstellungen(), leseApiModelle(),
+    leseApiKeyStand(), apiAgentenStand().catch((e: unknown) => ({ fehler: (e as { code?: string })?.code ?? 'nicht_lesbar' }))]);
   return {
-    schalter, budget, einstellungen, modelle,
-    // Nur ja/nein: der Key selbst verlaesst den Transport nie.
-    api_key_vorhanden: !!process.env.SYNAPSE_ANTHROPIC_API_KEY?.trim(),
+    // P22-T179: agenten = Schalter api_agenten + Freigaben je Arbeitsagent/Koordinator mit Verbrauch im Zeitraum.
+    schalter, budget, einstellungen, modelle, agenten,
+    // Nur ja/nein (P22-T176: wirksamer Key, Web-UI vor Env) und der Stand ohne Wert: der Key selbst verlaesst den Transport nie.
+    api_key_vorhanden: api_key.vorhanden, api_key,
   };
 }
 
@@ -540,12 +556,14 @@ async function pruefeLeser(akteur: AusweisAkteur | null): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // admin-Aktionen (MCP admin, stdio und REST) - Akteur nur aus Transport/Tokenpruefung
 // ---------------------------------------------------------------------------------------------
-export const API_AGENT_ADMIN_ACTIONS = ['api_status', 'api_schalter', 'api_budget', 'api_einstellungen', 'api_kosten'] as const;
+// P22-T179: api_freigabe (Freigabe je Arbeitsagent/Koordinator; setzen/entfernen nur User oder Main mit user_auftrag).
+export const API_AGENT_ADMIN_ACTIONS = ['api_status', 'api_schalter', 'api_budget', 'api_einstellungen', 'api_kosten', 'api_freigabe'] as const;
 export type ApiAgentAdminAction = typeof API_AGENT_ADMIN_ACTIONS[number];
 /** Nur NEUE Parameternamen; aktiv, grund, modus, grenze_usd, reset_tag, seit, bis bestehen schon am admin-Tool. */
 export const API_AGENT_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
   api_zeitraum: { type: 'string', enum: [...API_ZEITRAEUME], description: 'api_budget setzen: Zeitraum der Grenze tag|woche|monat (Standard monat, ab reset_tag)' },
-  erlaubte_modelle: { type: 'array', items: { type: 'string' }, description: 'api_budget setzen: erlaubte API-Modelle (Aliase aus model_registry, provider anthropic-api)' },
+  erlaubte_modelle: { type: 'array', items: { type: 'string' }, description: 'api_budget setzen: erlaubte API-Modelle (Aliase aus model_registry, provider anthropic-api); api_freigabe setzen: API-Modelle dieses Agenten' },
+  api_heartbeat: { type: 'boolean', description: 'api_freigabe setzen: Heartbeat des API-Agenten (Standard false - jeder Weckruf kostet)' },
   api_einstellungen: { type: 'object', additionalProperties: true, description: 'api_einstellungen setzen: {max_tokens_obergrenze, reservierung_minuten, toolrunden_max, laufzeit_minuten, cache_schreib_faktor}' },
   einstellung_namen: { type: 'array', items: { type: 'string', enum: [...API_EINSTELLUNG_NAMEN] }, description: 'api_einstellungen entfernen: Namen (Rueckfall Code-Standard)' },
 };
@@ -586,6 +604,21 @@ export async function fuehreApiAgentAdminAus(
       case 'api_kosten':
         await pruefeLeser(akteur);
         return { success: true, action, ...(await apiKostenUebersicht({ seit: args.seit, bis: args.bis })) };
+      case 'api_freigabe': {
+        // P22-T179: ziel_identity_id, erlaubte_modelle, grenze_usd, api_heartbeat, aktiv, grund, user_auftrag (Main: Pflicht).
+        if (modus === 'status') {
+          await pruefeApiFreigabeLeser(akteur);
+          return { success: true, action, ...(await apiAgentenStand(typeof args.project === 'string' && args.project.trim() ? args.project.trim() : null)) };
+        }
+        if (modus === 'setzen') {
+          return { success: true, action, freigabe: await setzeApiFreigabe(akteur, { identity_id: args.ziel_identity_id, aktiv: args.aktiv,
+            modelle: args.erlaubte_modelle, grenze_usd: args.grenze_usd, heartbeat: args.api_heartbeat, grund: args.grund, user_auftrag: args.user_auftrag }) };
+        }
+        if (modus === 'entfernen') {
+          return { success: true, action, ...(await entferneApiFreigabe(akteur, { identity_id: args.ziel_identity_id, grund: args.grund, user_auftrag: args.user_auftrag })) };
+        }
+        return fehler('modus_ungueltig', { erlaubt: ['status', 'setzen', 'entfernen'] });
+      }
     }
   } catch (e) {
     const code = (e as { code?: unknown })?.code;

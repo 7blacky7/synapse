@@ -696,6 +696,13 @@ export type {
   ApiReservierung, ApiUsage, ApiAbschlussEingabe, ApiAbschluss, ApiAgentAdminAction,
 } from './services/api-agent-dienst.js';
 export { AGENT_API_BUDGET_SCHEMA_SQL } from './db/agent-api-budget-schema.js';
+// P22-T179: API-Agent als Arbeitsagent/Koordinator - Freigabe je Identitaet, Schalter api_agenten, Schema 161.
+export {
+  API_AGENTEN_FUNKTION, API_AGENT_ROLLEN, leseApiFreigabe, leseApiAgentenSchalter, pruefeApiAgentenSchalter, setzeApiFreigabe, entferneApiFreigabe,
+  pruefeApiFreigabeLeser, pruefeAgentFreigabeTx, apiFreigabeHeartbeat, apiAgentenStand, apiRahmenFuerIdentitaet,
+} from './services/api-agent-freigabe.js';
+export type { ApiFreigabe } from './services/api-agent-freigabe.js';
+export { API_AGENT_FREIGABEN_SCHEMA_SQL } from './db/api-agent-freigaben-schema.js';
 // P22-T176: Anthropic-API-Key aus der Web-UI (verschluesselt im Server-Tresor, Schalter hauptagent_api_key_webui), Schema 160.
 export {
   API_KEY_WEBUI_FUNKTION, API_KEY_ENV, API_KEY_FORM, leseApiKeySchalter, setzeApiKeySchalter, aktuellerApiKey, leseApiKeyStand, setzeApiKey, entferneApiKey,
