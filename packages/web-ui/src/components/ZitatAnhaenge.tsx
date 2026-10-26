@@ -4,8 +4,8 @@ import { leseChatZitateStand } from '../api/chat-zitate';
 import { bekannteTreffer } from '../api/verweise';
 import { findeKandidaten, useVerweisFenster, type ZitatAnbieter } from './Lesefenster';
 import {
-  ZITAT_GRENZEN_STANDARD, anzeigeAusEntwurf, entferneZitat, ersetzeZitatAnmerkung, fuegeZitatHinzu, kuerzeZitatText, leseZitatEntwurf,
-  merkeZitatEntwurf, zitatKarte, zitatKopf, zuSendeZitaten, herkunftAusChat, pinVorlage,
+  ZITAT_GRENZEN_STANDARD, anzeigeAusEntwurf, entferneZitat, fuegeZitatHinzu, kuerzeZitatText, leseZitatEntwurf,
+  merkeZitatEntwurf, zitatKarte, zitatKopf, zuSendeZitaten, herkunftAusChat, pinVorlage, uebernimmZitatEditor, zitatEditorHinweis,
   type AnzeigeZitat, type PinEingabe, type SendeZitat, type ZitatAblage, type ZitatAnhang, type ZitatGrenzen, type ZitatVorlage,
 } from './zitat-logik';
 import '../chat-zitate.css';
@@ -23,8 +23,14 @@ import '../chat-zitate.css';
  * - P22-T170: herkunft (aus dem Schluessel: 'main', 'agent:<id>', 'channel:<projekt>:<name>') fuer das Lesefenster; pinAnfuegen legt
  *   eine gerade angepinnte User-Entscheidung als Kaertchen (Zitat art 'thought') in DIESEN Entwurf - sie geht beim Senden im selben
  *   Block mit. Channel: der Post geht an den ganzen Channel.
+ * - P22-T174 (User inbox 1275): ein weiteres Zitat (Menue, Knopf im Lesefenster, Markierung, anderes Kaertchen) uebernimmt den offenen
+ *   Editor wie Speichern, statt ihn zu verwerfen; so sammeln sich mehrere Zitate als Kaertchen. Nur Abbrechen/Escape verwirft.
+ *   Senden nimmt den offenen Editor ebenfalls mit (sendeZitate/anzeige; leeren schliesst ihn). DEBUG data-zitate-versand.
+ *   Der Editor steht im Eingabebereich (Portal in den Platz in karten, ueber den Kaertchen) statt schwebend an der Klickstelle - er
+ *   verdeckte dort die Nachrichtenzeile und ihre Verweise. Ohne Platz (Aufrufer ohne karten) wie bisher schwebend.
  * SCHALTER chat_zitate (api/chat-zitate.ts; AUS = kein Menue, keine Kaertchen, nichts wird mitgeschickt). DEBUG: debug-Attribute
- * data-zitat-schalter / data-zitate-entwurf / data-zitat-herkunft fuer die Wurzel des Fensters; console.debug('[chat-zitat]', ...).
+ * data-zitat-schalter / data-zitate-entwurf / data-zitat-herkunft / data-zitat-editor (zu|neu|bearbeiten, P22-T174) fuer die Wurzel des
+ * Fensters; console.debug('[chat-zitat]', ...) (P22-T174: angefuegt/bearbeitet mit anlass, editor_haelt bei verletzter Grenze).
  */
 
 type Pos = { x: number; y: number };
@@ -71,7 +77,7 @@ export interface ZitatAnhaengeStand {
   aktiv: boolean;
   anbieter: ZitatAnbieter | null;
   entwuerfe: ZitatAnhang[];
-  /** Body-Feld 'zitate' der Senderoute (leer bei Schalter AUS). */
+  /** Body-Feld 'zitate' der Senderoute (leer bei Schalter AUS). P22-T174: inkl. eines offenen Editors (wie Speichern). */
   sendeZitate: SendeZitat[];
   anzeige: AnzeigeZitat[];
   leeren: () => void;
@@ -88,6 +94,10 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
   const [entwuerfe, setEntwuerfe] = useState<ZitatAnhang[]>(() => leseZitatEntwurf(ablage(), chat));
   const [menue, setMenue] = useState<Menue | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
+  // P22-T174: Platz des Editors im Eingabebereich (Teil von karten); null = schwebend wie bisher.
+  const [editorPlatz, setEditorPlatz] = useState<HTMLDivElement | null>(null);
+  // P22-T174: offener Editor auch vor dem naechsten Rendern lesbar (ein weiteres Zitat uebernimmt ihn, statt ihn zu verwerfen).
+  const offenerEditor = useRef<Editor | null>(editor);
   const chatRef = useRef(chat);
   const menueRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -95,6 +105,7 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
   // P22-T170: pinAnfuegen kann direkt nach dem Speichern eines Pins laufen (vor dem naechsten Rendern).
   const entwuerfeRef = useRef(entwuerfe);
   entwuerfeRef.current = entwuerfe;
+  const zeigeEditor = useCallback((neu: Editor | null) => { offenerEditor.current = neu; setEditor(neu); }, []);
 
   useEffect(() => {
     let gueltig = true;
@@ -114,19 +125,40 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
     chatRef.current = chat;
     setEntwuerfe(leseZitatEntwurf(ablage(), chat));
     setMenue(null);
-    setEditor(null);
+    zeigeEditor(null);
   }, [chat]);
 
   const setze = useCallback((liste: ZitatAnhang[]) => {
     merkeZitatEntwurf(ablage(), chatRef.current, liste);
+    entwuerfeRef.current = liste;
     setEntwuerfe(liste);
   }, []);
 
+  // P22-T174: offenen Editor in den Entwurf uebernehmen (Speichern bzw. bevor ein weiteres Zitat ihn ersetzen wuerde). Vorher
+  // ersetzte das weitere Zitat den Editor und ein noch nicht gespeichertes Zitat ging verloren. false = Grenze verletzt: der Editor
+  // bleibt mit Hinweis offen, das weitere Zitat wartet.
+  const uebernimmEditor = useCallback((anlass: string): boolean => {
+    const offen = offenerEditor.current;
+    if (!offen) return true;
+    const r = uebernimmZitatEditor(entwuerfeRef.current, offen, grenzen);
+    if (r.fehler) {
+      zeigeEditor({ ...offen, hinweis: zitatEditorHinweis(r.fehler, grenzen) });
+      zitatDebug('editor_haelt', { chat: chatRef.current, anlass, fehler: r.fehler, anzahl: entwuerfeRef.current.length });
+      return false;
+    }
+    setze(r.liste);
+    zeigeEditor(null);
+    zitatDebug(offen.schluessel ? 'bearbeitet' : 'angefuegt', { chat: chatRef.current, anlass, schluessel: offen.schluessel, art: offen.vorlage.art,
+      id: offen.vorlage.id, anzahl: r.liste.length });
+    return true;
+  }, [grenzen, setze, zeigeEditor]);
+
   const anfuegen = useCallback((vorlage: ZitatVorlage, pos?: Pos) => {
     setMenue(null);
-    setEditor({ pos: pos ?? { x: window.innerWidth / 2 - 180, y: 120 }, vorlage, schluessel: null, anmerkung: '', hinweis: '' });
+    if (!uebernimmEditor('anfuegen')) return;
+    zeigeEditor({ pos: pos ?? { x: window.innerWidth / 2 - 180, y: 120 }, vorlage, schluessel: null, anmerkung: '', hinweis: '' });
     zitatDebug('editor', { chat: chatRef.current, art: vorlage.art, id: vorlage.id });
-  }, []);
+  }, [uebernimmEditor, zeigeEditor]);
 
   const pinAnfuegen = useCallback((pin: PinEingabe) => {
     const r = fuegeZitatHinzu(entwuerfeRef.current, pinVorlage(pin, grenzen.ausschnitt_max), '', grenzen.max_anzahl);
@@ -141,7 +173,7 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
     empfaenger,
     menue: (pos, vorlagen, extra) => {
       if (!vorlagen.length) return;
-      setEditor(null);
+      if (!uebernimmEditor('menue')) return;
       setMenue({ pos, vorlagen, ...(extra?.oeffnen ? { oeffnen: extra.oeffnen } : {}), ...(extra?.kopieren ? { kopieren: extra.kopieren } : {}),
         ...(extra?.anpinnen ? { anpinnen: extra.anpinnen } : {}) });
       zitatDebug('menue', { chat: chatRef.current, vorlagen: vorlagen.map((v) => zitatKopf(v)) });
@@ -149,7 +181,7 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
     anfuegen,
     herkunft,
     pinAnfuegen,
-  } : null), [aktiv, empfaenger, anfuegen, herkunft, pinAnfuegen]);
+  } : null), [aktiv, empfaenger, anfuegen, herkunft, pinAnfuegen, uebernimmEditor]);
 
   useEffect(() => {
     if (!menue) return undefined;
@@ -178,35 +210,30 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
     const vorlage: ZitatVorlage = bezug
       ? { art: bezug.art, id: bezug.id, projekt: verweisProjekt, titel: bezug.titel, ausschnitt, quelle: nachricht }
       : { art: 'ausschnitt', id: null, projekt: verweisProjekt || project || 'synapse', titel: '', ausschnitt, quelle: nachricht };
-    setEditor(null);
+    if (!uebernimmEditor('markierung')) return;
     setMenue({ pos: { x: event.clientX, y: event.clientY }, vorlagen: [vorlage], kopieren: roh });
     zitatDebug('menue_markierung', { chat: chatRef.current, nachricht, zeichen: ausschnitt.length, gekuerzt, bezug: bezug ? bezug.id : null });
-  }, [anbieter, grenzen.ausschnitt_max, project]);
+  }, [anbieter, grenzen.ausschnitt_max, project, uebernimmEditor]);
 
-  const speichern = () => {
-    if (!editor) return;
-    const anmerkung = editor.anmerkung;
-    if (anmerkung.trim().length > grenzen.anmerkung_max) { setEditor({ ...editor, hinweis: 'Höchstens ' + grenzen.anmerkung_max + ' Zeichen.' }); return; }
-    if (editor.schluessel) {
-      setze(ersetzeZitatAnmerkung(entwuerfe, editor.schluessel, anmerkung));
-      zitatDebug('bearbeitet', { chat: chatRef.current, schluessel: editor.schluessel });
-    } else {
-      const r = fuegeZitatHinzu(entwuerfe, editor.vorlage, anmerkung, grenzen.max_anzahl);
-      if (r.voll) { setEditor({ ...editor, hinweis: 'Höchstens ' + grenzen.max_anzahl + ' Zitate je Nachricht.' }); return; }
-      setze(r.liste);
-      zitatDebug('angefuegt', { chat: chatRef.current, art: editor.vorlage.art, id: editor.vorlage.id, anzahl: r.liste.length });
-    }
-    setEditor(null);
-  };
+  // P22-T174: Speichern und Uebernehmen sind derselbe Weg (Grenzen, Hinweistexte wie bisher).
+  const speichern = () => { uebernimmEditor('speichern'); };
   const beiTaste = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Escape') { event.preventDefault(); setEditor(null); }
+    if (event.key === 'Escape') { event.preventDefault(); zeigeEditor(null); }
     else if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); speichern(); }
   };
 
-  const leeren = useCallback(() => { setze([]); }, [setze]);
+  // P22-T174: nach dem Senden auch den Editor schliessen - sein Zitat ging mit (sendeZitate).
+  const leeren = useCallback(() => { zeigeEditor(null); setze([]); }, [setze, zeigeEditor]);
 
-  const oberflaeche = aktiv && (menue || editor) ? createPortal(<>
-    {menue && (() => {
+  // P22-T174 (Koordinator 26.10.2026: 'Der User erwartet, dass alles mitgeht, was er sieht'): Senden nimmt einen offenen Editor mit
+  // wie Speichern - neues Zitat ans Ende (leere Anmerkung = ohne Anmerkung), Bearbeitung mit der geaenderten Anmerkung. Verletzt er
+  // eine Grenze (Anmerkung zu lang, Entwurf voll), geht er nicht mit und bleibt offen. Die Aufrufer (EinheitlicherAgentChat, Main,
+  // Channel) senden unveraendert sendeZitate/anzeige und rufen danach leeren.
+  const mitEditor = editor ? uebernimmZitatEditor(entwuerfe, editor, grenzen, 'offen') : null;
+  const versand = mitEditor && !mitEditor.fehler ? mitEditor.liste : entwuerfe;
+
+  const oberflaeche = aktiv && (menue || editor) ? <>
+    {menue && createPortal((() => {
       const p = imFenster(menue.pos, 260, 40 + 36 * (menue.vorlagen.length + 2));
       return <div ref={menueRef} className="zitat-menue" role="menu" data-zitat-menue="" style={{ left: p.x, top: p.y }}>
         {menue.vorlagen.map((v, i) => (
@@ -223,10 +250,11 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
           void navigator.clipboard?.writeText(t).catch(() => undefined);
         }}>Kopieren</button>}
       </div>;
-    })()}
-    {editor && (() => {
+    })(), portalZiel())}
+    {editor && createPortal((() => {
       const p = imFenster(editor.pos, 380, 300);
-      return <div className="zitat-editor" role="dialog" aria-label={'Zitat für ' + empfaenger} data-zitat-editor="" style={{ left: p.x, top: p.y }}>
+      return <div className="zitat-editor" role="dialog" aria-label={'Zitat für ' + empfaenger} data-zitat-editor="" data-zitat-editor-ort={editorPlatz ? 'eingabe' : 'schwebend'}
+        style={editorPlatz ? undefined : { left: p.x, top: p.y }}>
         <header>
           <small>Zitat an {empfaenger}</small>
           <strong>{zitatKopf(editor.vorlage)}</strong>
@@ -234,43 +262,59 @@ export function useZitatAnhaenge({ chat, empfaenger, project }: { chat: string; 
         </header>
         {editor.vorlage.ausschnitt && <blockquote>{editor.vorlage.ausschnitt}</blockquote>}
         <textarea ref={editorRef} rows={4} value={editor.anmerkung} placeholder="Deine Anmerkung zu diesem Zitat …"
-          onChange={(event) => setEditor({ ...editor, anmerkung: event.target.value, hinweis: '' })} onKeyDown={beiTaste} />
+          onChange={(event) => zeigeEditor({ ...editor, anmerkung: event.target.value, hinweis: '' })} onKeyDown={beiTaste} />
         <footer>
           <span className={editor.hinweis ? 'zitat-hinweis' : ''}>{editor.hinweis || editor.anmerkung.trim().length + ' / ' + grenzen.anmerkung_max + ' · Strg+Enter speichert'}</span>
-          <button type="button" onClick={() => setEditor(null)}>Abbrechen</button>
+          <button type="button" onClick={() => zeigeEditor(null)}>Abbrechen</button>
           <button type="button" className="zitat-speichern" onClick={speichern}>Speichern</button>
         </footer>
       </div>;
-    })()}
-  </>, portalZiel()) : null;
+    })(), editorPlatz ?? portalZiel())}
+  </> : null;
 
-  const karten = aktiv && entwuerfe.length ? <div className="zitat-entwuerfe" data-zitate-entwurf={entwuerfe.length}>
+  // P22-T174: Platz fuer den Editor ueber den Kaertchen (immer da, solange der Schalter EIN ist, damit das Portalziel beim Oeffnen
+  // schon steht und der Editor nicht umzieht).
+  const karten = aktiv ? <div className="zitat-anhaenge">
+    <div className="zitat-editor-platz" ref={setEditorPlatz} />
+    {entwuerfe.length > 0 && <div className="zitat-entwuerfe" data-zitate-entwurf={entwuerfe.length}>
     {entwuerfe.map((z) => {
       const k = zitatKarte(z);
       return <article key={z.schluessel} className={'zitat-karte' + (z.pin ? ' ist-pin' : '')} data-zitat={z.schluessel} {...(z.pin ? { 'data-zitat-pin': z.id ?? '' } : {})}>
         <button type="button" className="zitat-karte-inhalt" title="Anmerkung bearbeiten"
-          onClick={(event) => { setMenue(null); setEditor({ pos: { x: event.clientX, y: Math.max(8, event.clientY - 300) }, vorlage: z, schluessel: z.schluessel, anmerkung: z.anmerkung, hinweis: '' }); }}>
+          onClick={(event) => {
+            setMenue(null);
+            // P22-T174: ein offener Editor (neues Zitat oder anderes Kaertchen) wird vorher uebernommen; danach der frische Stand.
+            if (!uebernimmEditor('karte')) return;
+            const frisch = entwuerfeRef.current.find((x) => x.schluessel === z.schluessel);
+            if (frisch) zeigeEditor({ pos: { x: event.clientX, y: Math.max(8, event.clientY - 300) }, vorlage: frisch, schluessel: frisch.schluessel, anmerkung: frisch.anmerkung, hinweis: '' });
+          }}>
           {z.pin
             ? <><b>Angepinnte User-Entscheidung</b><span>{'an ' + z.pin + (k.titel ? ' · ' + k.titel : '')}</span>{k.anmerkung && <small>{k.anmerkung}</small>}</>
             : <><b>{k.kopf}</b>{k.titel && <span>{k.titel}</span>}{k.anmerkung && <small>{k.anmerkung}</small>}</>}
         </button>
         <button type="button" className="zitat-karte-weg" aria-label="Zitat entfernen" title="Zitat entfernen"
-          onClick={() => { setze(entferneZitat(entwuerfe, z.schluessel)); zitatDebug('entfernt', { chat: chatRef.current, schluessel: z.schluessel }); }}>×</button>
+          onClick={() => {
+            if (offenerEditor.current?.schluessel === z.schluessel) zeigeEditor(null);
+            setze(entferneZitat(entwuerfeRef.current, z.schluessel));
+            zitatDebug('entfernt', { chat: chatRef.current, schluessel: z.schluessel, anzahl: entwuerfeRef.current.length });
+          }}>×</button>
       </article>;
     })}
+  </div>}
   </div> : null;
 
   return {
     aktiv,
     anbieter,
     entwuerfe,
-    sendeZitate: aktiv ? zuSendeZitaten(entwuerfe) : [],
-    anzeige: aktiv ? anzeigeAusEntwurf(entwuerfe) : [],
+    sendeZitate: aktiv ? zuSendeZitaten(versand) : [],
+    anzeige: aktiv ? anzeigeAusEntwurf(versand) : [],
     leeren,
     beiKontextmenue,
     oberflaeche,
     karten,
-    debug: { 'data-zitat-schalter': geprueft ? (aktiv ? 'ein' : 'aus') : '?', 'data-zitate-entwurf': aktiv ? entwuerfe.length : 0, 'data-zitat-herkunft': herkunft },
+    debug: { 'data-zitat-schalter': geprueft ? (aktiv ? 'ein' : 'aus') : '?', 'data-zitate-entwurf': aktiv ? entwuerfe.length : 0, 'data-zitat-herkunft': herkunft,
+      'data-zitat-editor': editor ? (editor.schluessel ? 'bearbeiten' : 'neu') : 'zu', 'data-zitate-versand': aktiv ? versand.length : 0 },
   };
 }
 

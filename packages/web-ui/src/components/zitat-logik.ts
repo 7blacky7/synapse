@@ -74,6 +74,28 @@ export function entferneZitat(liste: readonly ZitatAnhang[], schluessel: string)
   return liste.filter((z) => z.schluessel !== schluessel);
 }
 
+/** P22-T174: Stand des Anmerkungs-Editors (neues Zitat: schluessel null; Bearbeiten: schluessel des Kaertchens). */
+export interface ZitatEditorEingabe { vorlage: ZitatVorlage; schluessel: string | null; anmerkung: string }
+export type ZitatEditorFehler = 'anmerkung_zu_lang' | 'voll';
+
+/**
+ * P22-T174 (User inbox 1275, 26.10.2026: 'wenn ich zitate hinzufüge wird das vorige verworfen'): Ergebnis des Editors in den Entwurf,
+ * beim Speichern UND bevor ein weiteres Zitat (Menue, Knopf im Lesefenster, Markierung, anderes Kaertchen) den Editor ersetzt. Neues
+ * Zitat ans Ende, Bearbeiten ersetzt nur die Anmerkung. fehler = Grenze verletzt, Liste unveraendert. Rein.
+ */
+export function uebernimmZitatEditor(liste: readonly ZitatAnhang[], editor: ZitatEditorEingabe, grenzen: Pick<ZitatGrenzen, 'max_anzahl' | 'anmerkung_max'>,
+  schluessel?: string, jetzt?: string): { liste: ZitatAnhang[]; fehler: ZitatEditorFehler | null; zitat?: ZitatAnhang } {
+  if (editor.anmerkung.trim().length > grenzen.anmerkung_max) return { liste: [...liste], fehler: 'anmerkung_zu_lang' };
+  if (editor.schluessel) return { liste: ersetzeZitatAnmerkung(liste, editor.schluessel, editor.anmerkung), fehler: null };
+  const r = fuegeZitatHinzu(liste, editor.vorlage, editor.anmerkung, grenzen.max_anzahl, schluessel, jetzt);
+  return r.voll ? { liste: r.liste, fehler: 'voll' } : { liste: r.liste, fehler: null, zitat: r.zitat };
+}
+
+/** P22-T174: Hinweis im Editor, wenn er nicht uebernommen werden kann (Texte wie bisher beim Speichern). */
+export function zitatEditorHinweis(fehler: ZitatEditorFehler, grenzen: Pick<ZitatGrenzen, 'max_anzahl' | 'anmerkung_max'>): string {
+  return fehler === 'voll' ? 'Höchstens ' + grenzen.max_anzahl + ' Zitate je Nachricht.' : 'Höchstens ' + grenzen.anmerkung_max + ' Zeichen.';
+}
+
 /** Kopf eines Zitats: 'Task P22-T158' bzw. 'Ausschnitt'; P22-T171: Pin = 'Angepinnte User-Entscheidung an Task P22-T171'. */
 export function zitatKopf(z: { art: ZitatArt; id: string | null; pin?: string }): string {
   return z.pin ? PIN_EINTRAG + z.pin : ZITAT_ART_LABEL[z.art] + (z.id ? ' ' + z.id : '');
