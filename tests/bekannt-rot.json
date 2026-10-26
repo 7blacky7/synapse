@@ -73,21 +73,6 @@
       "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
     },
     {
-      "datei": "packages/core/tests/erklaerungstopf-seed-v2.test.mjs",
-      "erwartet": {
-        "fail": 2,
-        "fail_zeilen": [
-          "FEHLER  L 1. Lauf: alle v2-Eintraege in PG, Status und Familie laut Seed",
-          "FEHLER  N jede Seed-Familie ist ein angemeldeter Syntaxpruefer"
-        ],
-        "muster": null
-      },
-      "grund": "Testanker veraltet: Seed-Familien/Syntaxpruefer seit 14.10. gewachsen (Inventur 2f2f6776 Z1)",
-      "seit": "2026-10-26",
-      "task": null,
-      "quelle": "testlauf tl-20261026-012537-e170 (P25-T8), gleich wie tl-20261025-232030-a99b"
-    },
-    {
       "datei": "packages/core/tests/fall-skills-p23-t5.test.mjs",
       "erwartet": {
         "fail": 2,
@@ -360,13 +345,6 @@
       "grund": "schaltet jev global aus/an; Fehlzahl im Pool schwankt (Inventur 4, P25-T8-Lauf 9)",
       "seit": "2026-10-26",
       "task": "P25-T8"
-    },
-    {
-      "datei": "packages/core/tests/erklaerungen-topf.test.mjs",
-      "art": "seriell",
-      "grund": "setzt globale Jev-/Budget-Schalter und parkt fremde typescript-Erklaerungen fuer die Laufzeit (P25-T17); Schwanken 35/7/31 kam von Seed-Resten im geteilten Topf, behoben",
-      "seit": "2026-10-26",
-      "task": "P25-T17"
     },
     {
       "datei": "packages/core/tests/onboarding-sitzung-p7-t40.test.mjs",

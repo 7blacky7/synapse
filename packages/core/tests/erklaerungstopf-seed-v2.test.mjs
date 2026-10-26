@@ -5,18 +5,24 @@
  * ZUSAGEN:
  *   F  Eintraege mit v2:true fuer python, shell, go, rust, php, ruby, kotlin, java, csharp, yaml, toml, dockerfile,
  *      cmake - je Familie 2 bis 4.
- *   N  Jede v2-Familie ist der Name eines angemeldeten Syntaxpruefers (Container-Sprache der API oder core-Katalog),
+ *   N  Jede Syntax-Familie des Seeds ist der Name eines angemeldeten Syntaxpruefers (Container-Sprache der API oder core-Katalog),
  *      sonst bekaeme der Pruefer-Befund (familieVon) die Erklaerungen nie. ANKER: ein falscher Name faellt auf.
+ *      (angepasst P25-T18) Familien mit Doppelpunkt (shell-ergebnis:*, fileplan:*) sind Werkzeug-/Ergebnis-Faelle, keine Syntaxpruefer.
  *   G  Jeder Eintrag besteht pruefeSeedEintrag (de+en, Laenge, Generik). ANKER: Pfad + Zeilenangabe werden erkannt.
  *   S  verifiziert nur mit Messbeleg "richtig 3/3" (echter Pruefer + Jev), sonst vorgeschlagen.
- *   L  Laden idempotent: 1. Lauf legt alle v2-Eintraege an (Status laut Seed), 2. Lauf 0 neu.
+ *   L  Laden idempotent: 1. Lauf legt im leeren Topf alle Eintraege an (v2 mit Familie und Status laut Seed), 2. Lauf 0 neu.
  *
- * Nur synapse_test (sonst Exit 2). Angelegte Zeilen werden danach geloescht (nur die, die vorher nicht da waren).
+ * Nur synapse_test (sonst Exit 2). (angepasst P25-T18) L laeuft in einem eigenen privaten Schema mit leerer Kopie von erklaerungen,
+ * das am Ende geloescht wird: keine Reste im geteilten synapse_test.public. Vorher blieben Zeilen stehen, weil das Aufraeumen ueber
+ * kennung lief, der Loader seit P10-T63 aber eine stabile Inhalts-UUID schreibt (kennung bleibt NULL); die Reste trafen
+ * erklaerungen-topf als fremde Kandidaten (P25-T17). Abgleich deshalb ueber Familie + Lage.
  * SEED_DATEI=<pfad> (optional) prueft eine andere Seed-Datei, z. B. den alten Stand fuer die Positivkontrolle.
  * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/erklaerungstopf-seed-v2.test.mjs   (core + rest-api vorher bauen)
  * Exit 0 = alle Zusagen erfuellt, 1 = mindestens eine verletzt, 2 = falsche DB.
  */
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -27,6 +33,25 @@ Object.assign(process.env, { QDRANT_URL: 'http://127.0.0.1:9', OLLAMA_URL: 'http
 
 const hier = dirname(fileURLToPath(import.meta.url));
 const dist = join(hier, '..', 'dist');
+
+// P25-T18: privates Schema vor dem ersten Pool-Zugriff; search_path privat vor public (gelesen wird z. B. jev_optionen aus public).
+const { Pool } = createRequire(join(hier, '..', 'package.json'))('pg');
+const admin = new Pool({ connectionString: DB_URL });
+const schema = 'p25_t18s_' + process.pid + '_' + randomUUID().slice(0, 8);
+try {
+  await admin.query('CREATE SCHEMA ' + schema);
+  await admin.query('CREATE TABLE ' + schema + '.erklaerungen (LIKE public.erklaerungen INCLUDING ALL)');
+} catch (err) {
+  await admin.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE').catch(() => {});
+  await admin.end().catch(() => {});
+  console.error('ABBRUCH privates Schema: ' + (err instanceof Error ? err.message : String(err)));
+  process.exit(1);
+}
+const privat = new URL(DB_URL);
+privat.searchParams.set('options', '-c search_path=' + schema + ',public');
+process.env.DATABASE_URL = privat.href;
+delete process.env.SYNAPSE_DATABASE_URL;
+
 const lade = (...p) => import(pathToFileURL(join(dist, ...p)).href);
 const E = await lade('services', 'erklaerungen.js');
 const K = await lade('services', 'syntax-pruefer', 'katalog.js');
@@ -54,8 +79,12 @@ pruefe(v2.every((e) => FAMILIEN.includes(e.familie)), 'F keine v2-Erklaerung aus
 const containerNamen = new Set(CONTAINER_SPRACHEN.map((s) => s.sprache));
 const angemeldet = (f) => containerNamen.has(f) || !!K.prueferNachName(f);
 pruefe(!angemeldet('pyton') && angemeldet('python') && angemeldet('yaml'), 'N ANKER: falscher Familienname faellt auf, echte (Container/core) werden gefunden');
-const unbekannt = [...new Set(seed.eintraege.map((e) => e.familie))].filter((f) => !angemeldet(f));
-pruefe(unbekannt.length === 0, 'N jede Seed-Familie ist ein angemeldeter Syntaxpruefer', unbekannt);
+const seedFamilien = [...new Set(seed.eintraege.map((e) => e.familie))];
+// (angepasst P25-T18) Werkzeug-/Ergebnis-Familien (art:code, z. B. shell-ergebnis:test_rot, fileplan:anchor_mismatch) sind keine Syntaxpruefer.
+const werkzeug = seedFamilien.filter((f) => f.includes(':'));
+const unbekannt = seedFamilien.filter((f) => !f.includes(':') && !angemeldet(f));
+pruefe(unbekannt.length === 0, 'N jede Syntax-Familie des Seeds ist ein angemeldeter Syntaxpruefer', unbekannt);
+pruefe(werkzeug.every((f) => /^[a-z-]+:[a-z_]+$/.test(f)), 'N Werkzeug-Familien haben die Form art:code (kein Tippfehler-Schlupfloch)', werkzeug);
 
 // ── G Generik + Sprachen ──
 const probleme = seed.eintraege.map((e) => [e.kennung, E.pruefeSeedEintrag(e, ['de', 'en'])]).filter(([, p]) => p.length);
@@ -70,23 +99,23 @@ const falsch = v2.filter((e) => (e.status === 'verifiziert') !== /richtig 3\/3/.
 pruefe(falsch.length === 0, 'S verifiziert genau dann, wenn der Messbeleg 3/3 lautet', falsch.map((e) => e.kennung));
 pruefe(v2.some((e) => e.status === 'vorgeschlagen') && v2.some((e) => e.status === 'verifiziert'), 'S ANKER: beide Status kommen vor (Pruefung nicht leer erfuellt)');
 
-// ── L Laden idempotent ──
+// ── L Laden idempotent (privates Schema, leerer Topf) ──
 const pool = getPool();
-const kennungen = seed.eintraege.map((e) => e.kennung);
-const vorher = new Set((await pool.query('SELECT kennung FROM erklaerungen WHERE kennung = ANY($1)', [kennungen])).rows.map((r) => r.kennung));
+const lage = (e) => String(e.de?.lage ?? '').trim().toLowerCase();
 try {
-  await pool.query('DELETE FROM erklaerungen WHERE kennung = ANY($1) AND NOT (kennung = ANY($2))', [v2.map((e) => e.kennung), [...vorher]]);
+  const vorher = (await pool.query('SELECT count(*)::int AS n FROM erklaerungen')).rows[0].n;
+  pruefe(vorher === 0, 'L ANKER: privater Topf vor dem Laden leer (Schema ' + schema + ')', vorher);
   const r1 = await E.ladeErklaerungstopfSeed({ datei: seedDatei, agent: 'seed-v2-test' });
   const r2 = await E.ladeErklaerungstopfSeed({ datei: seedDatei, agent: 'seed-v2-test' });
-  const { rows } = await pool.query('SELECT kennung, familie, status FROM erklaerungen WHERE kennung = ANY($1)', [v2.map((e) => e.kennung)]);
-  const soll = Object.fromEntries(v2.map((e) => [e.kennung, e]));
-  pruefe(r1.success === true && r1.abgelehnt === 0 && rows.length === v2.length && rows.length > 0
-    && rows.every((r) => r.status === soll[r.kennung].status && r.familie === soll[r.kennung].familie),
-  'L 1. Lauf: alle v2-Eintraege in PG, Status und Familie laut Seed', { r1, in_pg: rows.length, v2: v2.length });
+  const { rows } = await pool.query('SELECT familie, status, lower(lage_de) AS lage FROM erklaerungen');
+  const fehlt = v2.filter((e) => !rows.some((r) => r.familie === e.familie && r.lage === lage(e) && r.status === e.status)).map((e) => e.kennung);
+  pruefe(r1.success === true && r1.abgelehnt === 0 && r1.neu === seed.eintraege.length && rows.length === seed.eintraege.length && fehlt.length === 0,
+    'L 1. Lauf: alle Eintraege neu im leeren Topf, v2 mit Familie und Status laut Seed', { r1, in_pg: rows.length, fehlt: fehlt.slice(0, 5) });
   pruefe(r2.success === true && r2.neu === 0 && r2.vorhanden === seed.eintraege.length, 'L 2. Lauf: 0 neu (idempotent)', r2);
 } finally {
-  await pool.query('DELETE FROM erklaerungen WHERE kennung = ANY($1) AND NOT (kennung = ANY($2))', [kennungen, [...vorher]]).catch(() => {});
   await pool.end().catch(() => {});
+  await admin.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE').catch((err) => console.error('Schema entfernen: ' + err.message));
+  await admin.end().catch(() => {});
 }
 
 console.log(`${ok} OK, ${fehler} FEHLER`);

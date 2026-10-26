@@ -21,12 +21,14 @@
  *   R  Plan-Ausloeser: Syntaxbefund an einer Plan-Op -> Fall mit bezug.weg plan und op_index.
  *   B  erklaerungen (Liste) und erklaerung_bewerten (passt_nicht, stilllegen nur Koordinator mit grund).
  *
- * ABSICHERUNG: nur Test-DB (...:5433/synapse_test, sonst Exit 2). Qdrant/Ollama 127.0.0.1:9. Jeder Jev-Aufruf ist
+ * ABSICHERUNG: nur Test-DB (...:5433/synapse_test, sonst Exit 2). (P25-T18) Eigenes privates Schema mit leeren Kopien aller public-Tabellen,
+ * DROP am Ende: leerer Erklaerungs-Topf, die globalen jev_*-Tabellen in synapse_test.public bleiben unberuehrt. Qdrant/Ollama 127.0.0.1:9. Jeder Jev-Aufruf ist
  * ein Fake-fetch (kein echter Aufruf). Tabellen mit der DDL aus dem gebauten SCHEMA_SQL.
  * AUFRUF: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/erklaerungen-topf.test.mjs   (core vorher bauen)
  * Exit 0 = alle Zusagen erfuellt, 1 = mindestens eine verletzt, 2 = falsche DB.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -55,6 +57,27 @@ function pruefe(b, text, detail) {
 async function versuche(text, fn) {
   try { await fn(); } catch (err) { fehler++; console.error('FEHLER  ' + text + ': ' + (err instanceof Error ? err.stack ?? err.message : String(err))); }
 }
+
+// P25-T18 (ersetzt das Parken aus P25-T17): privates Schema vor dem ersten Pool-Zugriff. Fremde Erklaerungen (Startbestand, Reste anderer
+// Tests) sind so nie Kandidaten, und aufraeumen() loescht jev_schalter/jev_budget_stand/jev_optionen nur in der eigenen Kopie.
+const { Pool } = createRequire(join(hier, '..', 'package.json'))('pg');
+const admin = new Pool({ connectionString: DB_URL });
+const SCHEMA = 'p25_t18e_' + process.pid + '_' + randomUUID().slice(0, 8);
+const qi = (s) => '"' + s.replaceAll('"', '""') + '"';
+await admin.query('CREATE SCHEMA ' + SCHEMA);
+for (const { tablename } of (await admin.query("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename")).rows) {
+  await admin.query('CREATE TABLE ' + SCHEMA + '.' + qi(tablename) + ' (LIKE public.' + qi(tablename) + ' INCLUDING ALL)');
+}
+const serien = (await admin.query("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = $1 AND column_default LIKE 'nextval(%'", [SCHEMA])).rows;
+for (const [i, r] of serien.entries()) {
+  const name = SCHEMA + '.serie_' + i;
+  await admin.query('CREATE SEQUENCE ' + name);
+  await admin.query('ALTER TABLE ' + SCHEMA + '.' + qi(r.table_name) + ' ALTER COLUMN ' + qi(r.column_name) + " SET DEFAULT nextval('" + name + "'::regclass)");
+}
+const privat = new URL(DB_URL);
+privat.searchParams.set('options', '-c search_path=' + SCHEMA + ',public');
+process.env.DATABASE_URL = privat.href;
+delete process.env.SYNAPSE_DATABASE_URL;
 
 const db = await lade(dist, 'db', 'client.js');
 const pool = db.getPool();
@@ -92,14 +115,8 @@ const aufraeumen = async () => {
   }
 };
 await aufraeumen();
-// P25-T17: Der Topf in synapse_test ist geteilt. Fremde Erklaerungen der Familie typescript (Startbestand aus dem API-Start
-// oder Reste von erklaerungstopf-seed-v2) waeren Kandidaten fuer Q/K/T und machten die Fehlerzahl vom Vorlauf abhaengig
-// (35/7/31). Fuer die Laufzeit unter eigener Familie parken; das finally gibt sie zurueck, auch Reste eines abgebrochenen Laufs.
-const GEPARKT = 'zzt-geparkt|';
-const zurueckgeben = () => pool.query('UPDATE erklaerungen SET familie = substr(familie, $2) WHERE left(familie, $3) = $1', [GEPARKT, GEPARKT.length + 1, GEPARKT.length]);
-const geparkt = (await pool.query("UPDATE erklaerungen SET familie = $1 || familie WHERE familie = 'typescript'", [GEPARKT])).rowCount;
-pruefe((await pool.query("SELECT count(*)::int AS n FROM erklaerungen WHERE familie = 'typescript'")).rows[0].n === 0,
-  `P25-T17 ANKER: Topf typescript ohne fremde Kandidaten (${geparkt} geparkt)`);
+// P25-T17/T18: ohne fremde Kandidaten hinge die Fehlerzahl vom Vorlauf ab (35/7/31); im privaten Schema ist der Topf leer.
+pruefe((await pool.query('SELECT count(*)::int AS n FROM erklaerungen')).rows[0].n === 0, 'P25-T18 ANKER: privater Topf ohne fremde Kandidaten (Schema ' + SCHEMA + ')');
 
 const SP = await lade(dist, 'services', 'syntax-pruefer', 'index.js');
 const FP = await lade(dist, 'services', 'fehlermuster-pruefung.js');
@@ -429,8 +446,9 @@ try {
 } finally {
   E._setzeErklaerungDeps?.({});
   await aufraeumen().catch((err) => console.error('Aufraeumen:', err.message));
-  await zurueckgeben().catch((err) => console.error('Zurueckgeben:', err.message));
   console.log(`\n${ok} OK, ${fehler} FEHLER`);
   await pool.end().catch(() => {});
+  await admin.query('DROP SCHEMA IF EXISTS ' + SCHEMA + ' CASCADE').catch((err) => console.error('Schema entfernen:', err.message));
+  await admin.end().catch(() => {});
   process.exit(fehler ? 1 : 0);
 }
