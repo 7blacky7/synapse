@@ -92,6 +92,14 @@ const aufraeumen = async () => {
   }
 };
 await aufraeumen();
+// P25-T17: Der Topf in synapse_test ist geteilt. Fremde Erklaerungen der Familie typescript (Startbestand aus dem API-Start
+// oder Reste von erklaerungstopf-seed-v2) waeren Kandidaten fuer Q/K/T und machten die Fehlerzahl vom Vorlauf abhaengig
+// (35/7/31). Fuer die Laufzeit unter eigener Familie parken; das finally gibt sie zurueck, auch Reste eines abgebrochenen Laufs.
+const GEPARKT = 'zzt-geparkt|';
+const zurueckgeben = () => pool.query('UPDATE erklaerungen SET familie = substr(familie, $2) WHERE left(familie, $3) = $1', [GEPARKT, GEPARKT.length + 1, GEPARKT.length]);
+const geparkt = (await pool.query("UPDATE erklaerungen SET familie = $1 || familie WHERE familie = 'typescript'", [GEPARKT])).rowCount;
+pruefe((await pool.query("SELECT count(*)::int AS n FROM erklaerungen WHERE familie = 'typescript'")).rows[0].n === 0,
+  `P25-T17 ANKER: Topf typescript ohne fremde Kandidaten (${geparkt} geparkt)`);
 
 const SP = await lade(dist, 'services', 'syntax-pruefer', 'index.js');
 const FP = await lade(dist, 'services', 'fehlermuster-pruefung.js');
@@ -421,6 +429,7 @@ try {
 } finally {
   E._setzeErklaerungDeps?.({});
   await aufraeumen().catch((err) => console.error('Aufraeumen:', err.message));
+  await zurueckgeben().catch((err) => console.error('Zurueckgeben:', err.message));
   console.log(`\n${ok} OK, ${fehler} FEHLER`);
   await pool.end().catch(() => {});
   process.exit(fehler ? 1 : 0);

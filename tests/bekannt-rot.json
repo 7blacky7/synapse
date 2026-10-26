@@ -364,9 +364,9 @@
     {
       "datei": "packages/core/tests/erklaerungen-topf.test.mjs",
       "art": "seriell",
-      "grund": "Fehlzahl im Pool schwankt (Inventur 35, P25-T8-Lauf 7), globale Jev-/Budget-Schalter",
+      "grund": "setzt globale Jev-/Budget-Schalter und parkt fremde typescript-Erklaerungen fuer die Laufzeit (P25-T17); Schwanken 35/7/31 kam von Seed-Resten im geteilten Topf, behoben",
       "seit": "2026-10-26",
-      "task": "P25-T8"
+      "task": "P25-T17"
     },
     {
       "datei": "packages/core/tests/onboarding-sitzung-p7-t40.test.mjs",
