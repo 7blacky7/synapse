@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const dsn=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(dsn.port,'5433');assert.equal(dsn.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
 process.env.SYNAPSE_SKIP_EMBEDDINGS='1';process.env.QDRANT_URL='http://127.0.0.1:1';
@@ -41,6 +42,8 @@ try{
  for(const file of ['work-jobs-schema','reverse-schema','hex-formate-schema','reverse-erkenntnisse-schema','reverse-pipeline-schema','reverse-verknuepfungen-schema','reverse-einstellwerte-schema'])
   await pool.query(Object.values(await import('../dist/db/'+file+'.js')).find(x=>typeof x==='string'));
  for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.policy_pin P18-T104): Spalten aus public nachziehen.
+ await zieheSpaltenNach(raw,schema);
  await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert,grund,gesetzt_von) VALUES('global','s1_materialisierung_block_zeilen',300,'T88 fixture','fixture'),('global','lese_block_bytes',4096,'T88 fixture','fixture')");
  await pool.query("INSERT INTO reverse_eintraege(id,titel,status,analyse_policy) VALUES($1,'T88 Pipeline','bestaetigt','{\"automatisch\":true,\"bis_schicht\":\"S1\"}'::jsonb)",[RID]);
  await pool.query("INSERT INTO reverse_medien(id,eintrag_id,position,art,status,satz_sha256) VALUES(1,$1,0,'ordner','vollstaendig',$2)",[RID,sha(Buffer.from(RID))]);

@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
@@ -34,6 +35,12 @@ try{
  await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
  await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);await pool.query(REVERSE_PIPELINE_SCHEMA_SQL);
  for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.policy_pin P18-T104): Spalten aus public nachziehen.
+ await zieheSpaltenNach(raw,schema);
+ // (angepasst P25-T10, P18-T86: die Schichtgrenze ist ein Einstellwert, SYNAPSE_REVERSE_BIS_SCHICHT wirkt nicht mehr; Standard S1 -> policy_grenze.
+ // Eigene Tabelle im privaten Schema, damit der globale Wert nicht in public.reverse_einstellungen landet.)
+ await pool.query('CREATE TABLE reverse_einstellungen (LIKE public.reverse_einstellungen INCLUDING DEFAULTS)');
+ await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert_text,grund,gesetzt_von) VALUES('global','analyse_bis_schicht','S3','REA1 fixture','fixture')");
  await pool.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_rea1',true)",[project]);
  await pool.query("INSERT INTO agent_sessions(id,project,status) VALUES($1,$2,'active')",[agent,project]);
  await pool.query("INSERT INTO reverse_eintraege(id,titel,status) VALUES($1,'REA fixture','bestaetigt')",[rid]);
@@ -45,6 +52,9 @@ try{
   const did=(await pool.query("INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,sha256,groesse,art,status,format,arch,bits) VALUES($1,$2,$3,$4,1,'binaer','fertig','pe','x86',32) RETURNING id::text id",[rid,mid,name,sha(name)])).rows[0].id;
   const job=randomUUID(),fp=sha(name+job),work=join(root,'_arbeit',job);
   await pool.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,prioritaet,status,ausloeser,ausfuehrung,fingerabdruck,ziel_schicht,projekt,werkzeug,werkzeug_version,profil_version) VALUES($1,$2,$3,'S3','interaktiv','wartet','fixture','container',$4,'S3',$5,'reverse-S3','fixture','fixture')",[job,rid,did,fp,project]);
+  // (angepasst P25-T10, P18-T104: uebernehmeS3Ergebnis prueft den Policy-Pin des Fachauftrags; echter Pin ueber den Produktweg wie P18-T109)
+  await mitLesePool(pool,()=>tx(async db=>{const pin=await core.bereiteReversePolicyPin(db,{reverseId:rid,dateiId:did,mediumId:null,project,id:job,angefragt:'S3',manuell:true});
+   await db.query('UPDATE reverse_auftraege SET policy_pin=$2::jsonb WHERE id=$1',[job,JSON.stringify(pin)]);}));
   await mkdir(work);await writeFile(join(work,'functions.jsonl'),text);
   const e={jobId:job,reverseId:rid,dateiId:did,arbeitsWurzel:work,manifest:[{pfad:'functions.jsonl',sha256:sha(text),groesse:Buffer.byteLength(text)}]};
   if(sidecars){
@@ -90,7 +100,8 @@ try{
  await mitLesePool(pool,()=>tx(db=>core.uebernehmeS3Ergebnis(db,f.e)));
  eq((await call('calls',{file_path:'fixture.exe@S3'})).total,4,'idempotent edges');
  eq((await pool.query("SELECT count(*)::int n FROM reverse_code_verweise WHERE datei_id=$1",[f.did])).rows[0].n,4,'idempotent refs');
- const bad={...f.e,jobId:randomUUID()};await assert.rejects(()=>tx(db=>core.uebernehmeS3Ergebnis(db,bad)),x=>x.code==='nicht_gefunden');checks++;
+ // (angepasst P25-T10, P18-T104: uebernehmeS3Ergebnis prueft zuerst den Policy-Pin; ein unbekannter Auftrag scheitert dort mit policy_pin_fehlt)
+ const bad={...f.e,jobId:randomUUID()};await assert.rejects(()=>tx(db=>core.uebernehmeS3Ergebnis(db,bad)),x=>x.code==='policy_pin_fehlt');checks++;
  const b=await prepare('budget.exe',JSON.stringify(rows[0])+'\n',1);eq(b.result.status,'teilweise','budget partial');eq(b.result.gespeichert,0,'no graph orphan when over budget');
  eq((await pool.query("SELECT count(*)::int n FROM reverse_code_kanten WHERE datei_id=$1",[b.did])).rows[0].n,0,'budget applies to graph too');
  const {normalisiereRzBin}=await import('../dist/services/reverse-normalisierer/rz-bin.js');

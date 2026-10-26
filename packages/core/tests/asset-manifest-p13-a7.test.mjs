@@ -10,6 +10,7 @@ import {AssetManifestKern} from '../dist/services/asset-manifest.js';
 import {AssetUploadKern} from '../dist/services/asset-upload.js';
 import {AssetSpeicher} from '../dist/services/asset-speicher.js';
 import {ladeAssetKonfiguration} from '../dist/config/asset-konfig.js';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const pg=createRequire(new URL('../package.json',import.meta.url))('pg');
 const schema='p13_a7_'+randomUUID().replaceAll('-','');
 const ctx={bereich:'projekt',ziel_ref:'p13_a7',host_id:'daemon_test'};
@@ -24,10 +25,13 @@ async function connection(){
 }
 before(async()=>{
  admin=await connection();await admin.query('CREATE SCHEMA '+schema);await admin.query('SET search_path TO '+schema+',public');
- for(const file of ['95_asset_intel.sql','96_asset_transport.sql','98_asset_upload.sql','99_asset_manifest.sql']){
+ // (angepasst P25-T10, P13-T29: ziel_belegt legt einen Konflikteingang an; ohne 100 landete er in public.asset_konflikt_eingaenge -> FK-Fehler)
+ for(const file of ['95_asset_intel.sql','96_asset_transport.sql','98_asset_upload.sql','99_asset_manifest.sql','100_asset_konflikte.sql']){
   const sql=await fs.readFile(new URL('../src/db/schema-sql/'+file,import.meta.url),'utf8');await admin.query(sql);
   await admin.query(sql); // idempotent mirror DDL
  }
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. asset_revisionen.restore_until aus P13-T29): Spalten aus public nachziehen.
+ await zieheSpaltenNach(admin,schema);
  root=await fs.mkdtemp(join(tmpdir(),'p13-a7-'));
  cfg=ladeAssetKonfiguration({SYNAPSE_ASSET_ENABLED:'1',SYNAPSE_PROJEKTE_ROOT:root});
  db={connect:connection,async query(s,v){const c=await connection();try{return await c.query(s,v);}finally{await c.release();}}};

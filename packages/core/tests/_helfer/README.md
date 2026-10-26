@@ -12,6 +12,7 @@ Dieser Ordner bündelt Hilfen für isolierte Test-Fixtures. Die Module beschrän
 |---|---|
 | [`fixture-cleanup-checkpoint.mjs`](fixture-cleanup-checkpoint.mjs) | Erzeugt gezielte Fehler- und Signalzustände für Bereinigungstests. |
 | [`fixture-test-home.mjs`](fixture-test-home.mjs) | Lenkt das Test-Home bei gesetzter Testumgebung in einen Fixture-Bereich unter `coedit-test` um. |
+| [`privatschema-spalten.mjs`](privatschema-spalten.mjs) | `zieheSpaltenNach(db, schema)` ergänzt Tabellen eines privaten Testschemas um Spalten, die nur `public` hat (P25-T10). |
 | [`test-fixture-cleanup.mjs`](test-fixture-cleanup.mjs) | Stellt `createTestFixtureCleanup` und `trackShellStreams` für das Verfolgen und Entfernen eigener temporärer Wurzeln und Streamdateien bereit. |
 
 ## Schnittstellen nach außen

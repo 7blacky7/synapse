@@ -15,6 +15,8 @@ async function assertHook5Schema() {
     `SELECT COUNT(*)::int AS count
        FROM information_schema.columns
       WHERE table_name = 'specialist_channel_members'
+        -- (angepasst P25-T10): nur das eigene Schema; Privatschema-Kopien paralleler Tests zaehlten sonst mit (12 statt 3).
+        AND table_schema = current_schema()
         AND column_name = ANY($1::text[])`,
     [['last_read_message_id', 'last_notified_message_id', 'read_initialized_at']],
   )

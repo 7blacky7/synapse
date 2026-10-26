@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 
 const core=await import('../dist/index.js');
 const {AnsichtLinkDienst,ReverseAnsichtRetention,pruefeReverseAnsichtBindung,REVERSE_ANSICHT_SCHEMA_SQL,ladeAssetKonfiguration}=core;
@@ -52,6 +53,8 @@ before(async()=>{
   admin=await connection();await admin.query('CREATE SCHEMA '+schema);await admin.query('SET search_path TO '+schema+',public');
   for(const f of ['95_asset_intel.sql','96_asset_transport.sql','97_reverse.sql','102_asset_ansicht_links.sql','104_reverse_ansicht.sql'])
     await admin.query(await fs.readFile(new URL('../src/db/schema-sql/'+f,import.meta.url),'utf8'));
+  // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. ansicht_tokens.creator_identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+  await zieheSpaltenNach(admin,schema);
   db={connect:connection,async query(s,v){const c=await connection();try{return await c.query(s,v);}finally{await c.release();}}};
   cfg=ladeAssetKonfiguration({SYNAPSE_ASSET_PREVIEW_OPEN_SECONDS:'300',SYNAPSE_ASSET_PREVIEW_MAX_OPEN_SECONDS:'3600'});
   retention=new ReverseAnsichtRetention({db});

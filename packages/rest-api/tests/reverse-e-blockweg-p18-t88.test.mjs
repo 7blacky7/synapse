@@ -9,6 +9,7 @@ import {join,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createRequire,syncBuiltinESMExports} from 'node:module';
 import fs from 'node:fs/promises';
+import {zieheSpaltenNach} from '../../core/tests/_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL??'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
@@ -55,6 +56,8 @@ try{
  await db.query('ALTER TABLE reverse_auftraege ADD COLUMN IF NOT EXISTS uebernahme JSONB');
  await db.query('CREATE TABLE reverse_einstellungen(ebene text NOT NULL,project text,eintrag_id text,name text NOT NULL,wert numeric,wert_text text,grund text,gesetzt_von text,gesetzt_am timestamptz DEFAULT now())');
  await db.query("INSERT INTO reverse_einstellungen(ebene,name,wert,grund,gesetzt_von) VALUES('global','e_uebernahme_block_zeilen',1000,'T88 Fixture','fixture')");
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.policy_pin P18-T104): Spalten aus public nachziehen.
+ await zieheSpaltenNach(raw,schema);
  await db.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('global',NULL,'reverse_blockuebernahme',true,'T88 Fixture','fixture')");
  const cfg=core.ladeAssetKonfiguration({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:root});
  const konfig=ex.ladeReverseExecutorKonfig({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_IMAGE:'synapse-reverse:fixture@sha256:'+'c'.repeat(64),

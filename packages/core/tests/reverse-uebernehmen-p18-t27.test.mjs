@@ -8,6 +8,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID,createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const {Pool}=createRequire(import.meta.url)('pg');
 test('RV17: Revision, Herkunft, Manifest, Fake-Daemon und verweigerte Übernahmen',async()=>{
  const url=new URL(process.env.DATABASE_URL);assert.equal(url.pathname,'/synapse_test');assert.equal(url.port,'5433');
@@ -26,6 +27,8 @@ test('RV17: Revision, Herkunft, Manifest, Fake-Daemon und verweigerte Übernahme
   await db.query(REVERSE_SCHEMA_SQL);
   // Retention table only; links are unrelated to the transfer.
   await db.query("CREATE TABLE reverse_ansicht_retention(ref_key text PRIMARY KEY,eintrag_id text,sha256 text,expires_at timestamptz,released_at timestamptz,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now())");
+  // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_bindungen.binder_identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+  await zieheSpaltenNach(raw,schema);
   await db.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_rv17',true)",[project]);
   await db.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES($1,$2,'active',now())",[agent,project]);
   await db.query("INSERT INTO reverse_eintraege(id,titel,status) VALUES($1,'RV17','bestaetigt')",[rid]);

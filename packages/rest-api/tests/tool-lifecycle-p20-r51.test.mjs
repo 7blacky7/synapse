@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as pause} from 'node:timers/promises';
+import {zieheSpaltenNach} from '../../core/tests/_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL||'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 import {oeffneGeschuetzteShellTestDb} from '../../../scripts/lib/test-db-schutz.mjs';
@@ -25,6 +26,8 @@ try {
  await db.query(WORK_JOBS_SCHEMA_SQL);await db.query(TOOL_AKTIVITAET_SCHEMA_SQL);
  await db.query(TOOL_CONTAINER_SCHEMA_SQL);await db.query(TOOL_CONTAINER_SCHEMA_SQL);
  await db.query('CREATE TABLE projects(name text,enabled boolean)');
+ // (angepasst P25-T10, privates Schema ohne spaetere Spalten, z. B. tool_activation.updater_identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+ await zieheSpaltenNach(db,S);
  await db.query('INSERT INTO projects VALUES($1,true)',[P]);
  const d=validateToolDescriptor({tool_id:'fixture',tool:'reverse',capability:'fixture.reverse',image:'fixture:1',digest:'sha256:'+'a'.repeat(64),
   mounts:[],resources:{cpu:1,ram:64,vram:0,gpu:false,pids:32,tmpfs:8,concurrency:2},

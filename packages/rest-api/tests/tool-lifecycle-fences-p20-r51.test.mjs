@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as pause} from 'node:timers/promises';
 import {oeffneGeschuetzteShellTestDb} from '../../../scripts/lib/test-db-schutz.mjs';
+import {zieheSpaltenNach} from '../../core/tests/_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL||'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 const db=await oeffneGeschuetzteShellTestDb(),runtimeDb=await oeffneGeschuetzteShellTestDb();
@@ -23,6 +24,8 @@ try {
  await db.query('CREATE TABLE projects(name text,enabled boolean)');
  await db.query('INSERT INTO projects VALUES($1,true)',[P]);
  await db.query('CREATE TABLE embedding_knoten(node_id text,boot_id text,service_token_hash text)');
+ // (angepasst P25-T10, privates Schema ohne spaetere Spalten, z. B. tool_activation.updater_identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+ await zieheSpaltenNach(db,S);
  const d=validateToolDescriptor({tool_id:'fences',tool:'reverse',capability:'fixture.fences',image:'fixture:1',digest:'sha256:'+'a'.repeat(64),mounts:[],
   resources:{cpu:1,ram:64,vram:0,gpu:false,pids:32,tmpfs:8,concurrency:1},limits:{time_ms:30,output_bytes:4096,input_bytes:4096},
   lifecycle:{idle_ms:1,activity_lookback_seconds:1,cpu_idle_percent:1,gpu_idle_percent:1,measurement_max_age_ms:1000,start_timeout_ms:30,max_starts:100,start_window_ms:60000,pause_ms:60000}});

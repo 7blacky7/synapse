@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 import {execFileSync} from 'node:child_process';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -58,6 +59,10 @@ try{
  await pool.query((await import('../dist/db/hex-formate-schema.js')).HEX_FORMATE_SCHEMA_SQL);
  await pool.query((await import('../dist/db/reverse-erkenntnisse-schema.js')).REVERSE_ERKENNTNISSE_SCHEMA_SQL);await pool.query(REVERSE_PIPELINE_SCHEMA_SQL);
  for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_bindungen','binder_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.policy_pin P18-T104): Spalten aus public nachziehen.
+ await zieheSpaltenNach(raw,schema);
+ // (angepasst P25-T10, P18-T86: die Schichtgrenze ist ein Einstellwert, SYNAPSE_REVERSE_BIS_SCHICHT wirkt nicht mehr; Standard S1 -> policy_grenze)
+ await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert_text,grund,gesetzt_von) VALUES('global','analyse_bis_schicht','S3','RV30 fixture','fixture')");
  await pool.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_rv30',true)",[project]);
  await pool.query("INSERT INTO agent_sessions(id,project,status) VALUES($1,$2,'active')",[agent,project]);
  await pool.query("INSERT INTO reverse_eintraege(id,titel,status) VALUES($1,'REA fixture','bestaetigt')",[rid]);
@@ -69,6 +74,9 @@ try{
   const did=(await pool.query("INSERT INTO reverse_dateien(eintrag_id,medium_id,pfad,sha256,groesse,art,status,format,arch,bits) VALUES($1,$2,$3,$4,1,'binaer','fertig','pe','x86',32) RETURNING id::text id",[rid,mid,name,sha(name)])).rows[0].id;
   const job=randomUUID(),fp=sha(name+job),work=join(root,'_arbeit',job);
   await pool.query("INSERT INTO reverse_auftraege(id,eintrag_id,datei_id,schicht,prioritaet,status,ausloeser,ausfuehrung,fingerabdruck,ziel_schicht,projekt,werkzeug,werkzeug_version,profil_version) VALUES($1,$2,$3,'S3','interaktiv','wartet','fixture','container',$4,'S3',$5,'reverse-S3','fixture','fixture')",[job,rid,did,fp,project]);
+  // (angepasst P25-T10, P18-T104: uebernehmeS3Ergebnis prueft den Policy-Pin des Fachauftrags; echter Pin ueber den Produktweg wie P18-T109)
+  await inDb(()=>tx(async db=>{const pin=await core.bereiteReversePolicyPin(db,{reverseId:rid,dateiId:did,mediumId:null,project,id:job,angefragt:'S3',manuell:true});
+   await db.query('UPDATE reverse_auftraege SET policy_pin=$2::jsonb WHERE id=$1',[job,JSON.stringify(pin)]);}));
   await mkdir(work);await writeFile(join(work,'functions.jsonl'),text);
   const e={jobId:job,reverseId:rid,dateiId:did,arbeitsWurzel:work,manifest:[{pfad:'functions.jsonl',sha256:sha(text),groesse:Buffer.byteLength(text)}]};
   if(sidecars){

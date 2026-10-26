@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const dsn=new URL(process.env.DATABASE_URL||'http://invalid');assert.equal(dsn.port,'5433');assert.equal(dsn.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
 process.env.SYNAPSE_SKIP_EMBEDDINGS='1';process.env.QDRANT_URL='http://127.0.0.1:1';
@@ -82,6 +83,8 @@ try{
  // P18-T61/E4: Standard-Obergrenze ist S1; dieser Test prueft die S2/S3-Folge und hebt sie ausdruecklich an (global, privat).
  await pool.query('CREATE TABLE reverse_einstellungen(ebene text NOT NULL,project text,eintrag_id text,name text NOT NULL,wert numeric,wert_text text,grund text,gesetzt_von text,gesetzt_am timestamptz DEFAULT now())');
  await pool.query("INSERT INTO reverse_einstellungen(ebene,name,wert,wert_text,grund,gesetzt_von) VALUES('global','pipeline_parallel',1,NULL,'RV8','fixture'),('global','retry_max',2,NULL,'RV8','fixture'),('global','analyse_bis_schicht',NULL,'S3','RV8','fixture')");
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.policy_pin P18-T104): Spalten aus public nachziehen; aendert nur Tabellen im privaten Schema.
+ await zieheSpaltenNach(raw,schema);
  const elfPath=join(root,'elf-fixture');
  execFileSync('gcc',['-x','c','-o',elfPath,'-'],{input:'const char *fixture = "password = \\"'+secret+'\\""; int main(void){return fixture[0] == 0;}',stdio:['pipe','pipe','pipe']});
  const elf=await readFile(elfPath);
@@ -110,7 +113,9 @@ try{
  await pool.query("INSERT INTO agent_profil_schalter(ebene,project,funktion,aktiv,grund,gesetzt_von) VALUES('global',NULL,'reverse_s3',true,'RV8 fixture','fixture')");
  for(let i=0;i<8;i++)await durchlauf();
  const dupeJobs=(await pool.query("SELECT j.p20_auftrag_id FROM reverse_auftraege j WHERE j.datei_id=ANY($1::bigint[]) AND j.schicht='S3'",[[ids.elf,ids.duplicate]])).rows;
- assert.equal(dupeJobs.length,2);assert(dupeJobs[0].p20_auftrag_id);assert.equal(dupeJobs[0].p20_auftrag_id,dupeJobs[1].p20_auftrag_id,'one container job across entries');
+ // (angepasst P25-T10, P18-T97 Admission-Cut: ein Container-Job gehoert genau einem Fachauftrag mit Zulassungsbeleg
+ // (belegeReverseAdmission, containerAuftrag); das fruehere eintragsuebergreifende Teilen entfaellt gewollt.)
+ assert.equal(dupeJobs.length,2);assert(dupeJobs[0].p20_auftrag_id&&dupeJobs[1].p20_auftrag_id);assert.notEqual(dupeJobs[0].p20_auftrag_id,dupeJobs[1].p20_auftrag_id,'one container job per Fachauftrag (admission)');
  assert.equal((await pool.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE schicht='S2'")).rows[0].n,0,'S2 list and S3 decompilation use one Ghidra job (T69)');
  assert((await pool.query("SELECT count(*)::int AS n FROM reverse_auftraege WHERE schicht='S1' AND ausfuehrung='container'")).rows[0].n>=7,'S1 tools remain durable waiting work');
  assert.equal((await core.createWorkJobService({pool}).claim({nodeId:'fixture',bootGeneration:randomUUID(),authHash:'fixture'})).length,0,'no executable leases without authority hooks');

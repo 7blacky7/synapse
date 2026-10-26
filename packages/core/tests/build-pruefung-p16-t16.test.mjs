@@ -144,7 +144,8 @@ try {
     await pool.query(schemaMod.BUILD_PRUEFUNG_SCHEMA_SQL);
     await pool.query(schemaMod.BUILD_PRUEFUNG_SCHEMA_SQL);
     const sp = (await pool.query(`SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
-      WHERE table_name='build_pruefung_einstellungen' ORDER BY ordinal_position`)).rows;
+      WHERE table_name='build_pruefung_einstellungen' AND table_schema=current_schema() ORDER BY ordinal_position`)).rows;
+    // (angepasst P25-T10): table_schema-Filter, sonst doppelte Zeilen aus Privatschema-Kopien paralleler Tests.
     assert.deepEqual(sp.map((c) => [c.column_name, c.data_type, c.is_nullable]), [
       ['bereich', 'text', 'NO'], ['werte', 'jsonb', 'NO'], ['gesetzt_von', 'text', 'YES'], ['grund', 'text', 'YES'], ['gesetzt_am', 'timestamp with time zone', 'NO'],
       // P22 (Agenten-Ausweis): wer gesetzt hat, als Identitaet (zeileSchreiben in build-pruefung.ts).

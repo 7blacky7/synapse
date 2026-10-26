@@ -1,6 +1,7 @@
 /** R5.2: nur synapse_test, eigener Bereich p20_r52. Golden vor Produktion erfasst. */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL||'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 // Baseline consumes the identical immutable golden expectations, never writes its worktree.
@@ -28,6 +29,8 @@ try {
    await c.query('CREATE SCHEMA '+S);
    await c.query('SET search_path TO '+S);
    await c.query(TOOL_AKTIVITAET_SCHEMA_SQL);await c.query(TOOL_AKTIVITAET_SCHEMA_SQL);
+   // (angepasst P25-T10, privates Schema ohne spaetere Spalten, z. B. tool_aktivitaet.identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+   await zieheSpaltenNach(c,S);
    const descriptor={toolId:'reverse-fixture',tool:'reverse',aktivitaetsAktionen:['inspect','status','heartbeat']};
    const ctx={descriptor,gebundenesProjekt:P,berechtigt:true};
    const entry={project:P,tool:'reverse',aktion:'inspect',agentId:'sol-7-test',containerId:'container-fixture',jobId:'job-fixture',akzeptiert:true,zaehltAlsAktivitaet:true};

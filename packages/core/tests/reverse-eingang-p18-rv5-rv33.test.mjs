@@ -6,6 +6,7 @@ import {mkdtemp,mkdir,writeFile,readFile,stat,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL??'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
@@ -20,6 +21,7 @@ const {ShareScanner}=await import('../dist/services/share-scanner.js');
 const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
 const {ASSET_UPLOAD_SCHEMA_SQL}=await import('../dist/db/asset-upload-schema.js');
 const {createReverseToolService}=await import('../dist/services/reverse-tool.js');
+const {reverseEinstellSnapshot}=await import('../dist/services/reverse-einstellwerte.js');
 const {API_CONTRACT_HEADER}=await import('../dist/index.js');
 const {createReverseEingangRoutes}=await import('../../rest-api/dist/routes/reverse-eingang.js');
 const apiRequire=createRequire(new URL('../../rest-api/package.json',import.meta.url));
@@ -40,6 +42,8 @@ test('RV5/RV33 real DB, storage and HTTP contract',async t=>{
   await db.query('CREATE TABLE asset_files (LIKE public.asset_files INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES)');
   await db.query('CREATE TABLE work_jobs(id uuid PRIMARY KEY)');
   await db.query(ASSET_UPLOAD_SCHEMA_SQL);await db.query(REVERSE_SCHEMA_SQL);await db.query(REVERSE_SCHEMA_SQL);
+  // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_eintraege.confirmer_identity_id P22, ursprung P18-T84): Spalten aus public nachziehen.
+  await zieheSpaltenNach(pool,schema);
   const cfg=ladeAssetKonfiguration({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:root});
   const eingang=new ReverseEingang({db,konfiguration:cfg});
   const ctx=r=>({bereich:'reverse',ziel_ref:r.ziel_ref,host_id:'fake-daemon'});
@@ -67,7 +71,9 @@ test('RV5/RV33 real DB, storage and HTTP contract',async t=>{
   await t.test('path, host, quota and duplicate rejection before acceptance',async()=>{
    for(const p of ['../outside','/absolute','C:\\outside','//server/share'])await assert.rejects(announce(p,Buffer.from('x')));
    await assert.rejects(eingang.fundstellen('fake-daemon',[{...file('bad',Buffer.from('x')),host:'other'}]),e=>e.code==='host_ungueltig');
-   const small=new ReverseEingang({db,konfiguration:{...cfg,reverse:{...cfg.reverse,maxProjektBytes:1}}});
+   // (angepasst P25-T10, P18-T93: die Eintragsquote kommt aus den Einstellwerten (eintrag_bytes), cfg.reverse.maxProjektBytes wirkt
+   // nicht mehr; Grenze ueber den Einstellwert-Snapshot des Dienstes statt global in reverse_einstellungen)
+   const small=new ReverseEingang({db,konfiguration:cfg,einstellwerte:async()=>reverseEinstellSnapshot([{ebene:'global',name:'eintrag_bytes',wert:'1'}])});
    await assert.rejects(small.fundstellen('fake-daemon',[file('Quota/a',Buffer.from('xx'))]),e=>e.code==='quote');
    assert.equal((await db.query("SELECT count(*)::int n FROM reverse_eintraege WHERE titel='Quota'")).rows[0].n,0);
   });

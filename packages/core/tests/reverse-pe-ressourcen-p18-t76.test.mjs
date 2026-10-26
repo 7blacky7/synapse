@@ -8,6 +8,7 @@ import {mkdtemp,rm,readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL||'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
@@ -33,6 +34,8 @@ try{
  await db.query("CREATE TABLE agent_profil_schalter(ebene text,project text,funktion text,aktiv boolean,grund text,gesetzt_von text,setter_identity_id uuid,gesetzt_am timestamptz DEFAULT now())");
  await db.query("CREATE UNIQUE INDEX ON agent_profil_schalter(ebene,(COALESCE(project,'')),funktion)");
  await db.query("CREATE TABLE intern_schalter(name text PRIMARY KEY,modus text,aktiv boolean,bis timestamptz)");
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.uebernahme P18-T86, policy_pin P18-T104): Spalten aus public nachziehen.
+ await zieheSpaltenNach(db,schema);
  await db.query("INSERT INTO projects(name,hostname,path,enabled) VALUES($1,'fixture','/synthetic/p18_t76',true)",[project]);
  await db.query("INSERT INTO agent_sessions(id,project,status) VALUES($1,$2,'active')",[agent,project]);
  await db.query("INSERT INTO reverse_eintraege(id,titel,status) VALUES($1,'PE fixture','bestaetigt')",[rid]);

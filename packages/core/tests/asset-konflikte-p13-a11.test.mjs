@@ -7,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {pathToFileURL} from 'node:url';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const base=process.env.SYNAPSE_A11_BASIS?pathToFileURL(process.env.SYNAPSE_A11_BASIS+'/packages/core/'):new URL('../',import.meta.url);
 const load=p=>import(new URL('dist/'+p,base));
 const U=await load('services/asset-upload.js'),S=await load('services/asset-speicher.js'),C=await load('config/asset-konfig.js'),D=await load('db/client.js');
@@ -30,6 +31,8 @@ before(async()=>{
   const sql=await readFile(new URL('../src/db/schema-sql/'+file,import.meta.url),'utf8');await admin.query(sql);await admin.query(sql);
  }
  await admin.query("CREATE TABLE agent_sessions(id TEXT PRIMARY KEY,project TEXT,sitzung_seit TIMESTAMPTZ,registered_at TIMESTAMPTZ DEFAULT NOW()); CREATE TABLE hinweis_optionen(project TEXT PRIMARY KEY,aktiv BOOLEAN);CREATE TABLE projects(name TEXT,enabled BOOLEAN)");
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. asset_konflikte.resolver_identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+ await zieheSpaltenNach(admin,schema);
  await admin.query('INSERT INTO projects VALUES($1,true)',[project]);
  root=await mkdtemp(join(tmpdir(),'synapse-p13-a11-'));assert.equal(await realpath(root),root);
  cfg=C.ladeAssetKonfiguration({SYNAPSE_ASSET_ENABLED:'1',SYNAPSE_PROJEKTE_ROOT:root});

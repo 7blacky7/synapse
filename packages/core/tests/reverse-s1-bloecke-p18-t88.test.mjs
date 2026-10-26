@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -41,7 +42,11 @@ const quelle=(abbrechenNach=Infinity)=>{let n=0;return {q:{size:bytes.length,rea
 const werteListe=async(did,fp)=>(await pool.query("SELECT value FROM reverse_code_symbole WHERE datei_id=$1 AND fingerabdruck=$2 AND symbol_type='string' ORDER BY COALESCE(substring(file_path from '/strings-([0-9]+)[.]txt$')::int,1),line_start",[did,fp])).rows.map(r=>r.value);
 async function auftrag(did,fp,token=randomUUID()){
  await pool.query("INSERT INTO reverse_schichten(datei_id,schicht,fingerabdruck,status,aktuell) VALUES($1,'S1',$2,'wartet',false)",[did,fp]);
- return (await pool.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,schicht,ausfuehrung,status,fingerabdruck,lease_token,lease_bis,versuch) VALUES($1,$2,'S1','api','laeuft',$3,$4,clock_timestamp()+interval '1 hour',1) RETURNING id::text",[R,did,fp,token])).rows[0].id;
+ const id=(await pool.query("INSERT INTO reverse_auftraege(eintrag_id,datei_id,schicht,ausfuehrung,status,fingerabdruck,lease_token,lease_bis,versuch) VALUES($1,$2,'S1','api','laeuft',$3,$4,clock_timestamp()+interval '1 hour',1) RETURNING id::text",[R,did,fp,token])).rows[0].id;
+ // (angepasst P25-T10, P18-T104: materialisiereS1InBloecken prueft den Policy-Pin des Fachauftrags; echter Pin ueber den Produktweg wie P18-T109)
+ await tx(async db=>{const pin=await core.bereiteReversePolicyPin(db,{reverseId:R,dateiId:String(did),mediumId:null,id,angefragt:'S1',manuell:true});
+  await db.query('UPDATE reverse_auftraege SET policy_pin=$2::jsonb WHERE id=$1',[id,JSON.stringify(pin)]);});
+ return id;
 }
 try{
  await raw.query('CREATE SCHEMA '+schema);
@@ -51,6 +56,8 @@ try{
   await pool.query(sql);
  }
  for(const [t,c]of [['reverse_eintraege','creator_identity_id'],['reverse_eintraege','confirmer_identity_id'],['reverse_auftraege','trigger_identity_id']])await pool.query('ALTER TABLE '+t+' ADD COLUMN IF NOT EXISTS '+c+' TEXT');
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.policy_pin P18-T104): Spalten aus public nachziehen.
+ await zieheSpaltenNach(raw,schema);
  await pool.query("INSERT INTO reverse_eintraege(id,titel,status,analyse_policy) VALUES($1,'T88 fixture','bestaetigt','{\"automatisch\":false}')",[R]);
  const mid=(await pool.query("INSERT INTO reverse_medien(eintrag_id,position,art,status) VALUES($1,0,'ordner','vollstaendig') RETURNING id::text",[R])).rows[0].id;
  const jobId=randomUUID(),arbeitsWurzel=join(root,'_arbeit',jobId);await mkdir(arbeitsWurzel);await writeFile(join(arbeitsWurzel,'gross.bin'),bytes);

@@ -14,6 +14,7 @@ import {createRequire} from 'node:module';
 import {AnsichtLinkDienst,AssetAnsichtFehler,ladeAssetKonfiguration,ladeAnsichtLinkKonfiguration,maskiereAnsichtLinks,istOeffentlicherAnsichtPfad} from '@synapse/core';
 import {createAnsichtLinkRoutes} from '../dist/routes/asset-ansicht-links.js';
 import {registerAuthHook} from '../dist/middleware/auth-hook.js';
+import {zieheSpaltenNach} from '../../core/tests/_helfer/privatschema-spalten.mjs';
 
 const require=createRequire(import.meta.url),Fastify=require('fastify'),pg=createRequire(new URL('../../core/package.json',import.meta.url))('pg');
 const {schwaerzeToolLogText}=await import(new URL('../../core/dist/services/tool-args-schwaerzen.js',import.meta.url).href);
@@ -61,6 +62,8 @@ before(async()=>{
   await admin.query('CREATE TABLE reverse_bindungen(id UUID PRIMARY KEY DEFAULT gen_random_uuid(),project TEXT NOT NULL,eintrag_id TEXT NOT NULL,geloest_at TIMESTAMPTZ)');
   for(const f of ['95_asset_intel.sql','96_asset_transport.sql','102_asset_ansicht_links.sql','104_reverse_ansicht.sql'])
     await admin.query(await fs.readFile(new URL('../../core/src/db/schema-sql/'+f,import.meta.url),'utf8'));
+  // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. ansicht_tokens.creator_identity_id aus agent-bezug-schema P22): Spalten aus public nachziehen.
+  await zieheSpaltenNach(admin,schema);
   db={connect:connection,async query(s,v){const c=await connection();try{return await c.query(s,v);}finally{await c.release();}}};
   cfg=ladeAssetKonfiguration({SYNAPSE_ASSET_PREVIEW_OPEN_SECONDS:'300',SYNAPSE_ASSET_PREVIEW_MAX_OPEN_SECONDS:'3600'});
 });

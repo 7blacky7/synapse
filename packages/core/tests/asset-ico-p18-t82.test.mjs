@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {inflateSync} from 'node:zlib';
 import {createRequire} from 'node:module';
+import {zieheSpaltenNach} from './_helfer/privatschema-spalten.mjs';
 const url=new URL(process.env.DATABASE_URL??'http://invalid');
 assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;process.env.SYNAPSE_SKIP_EMBEDDINGS='1';
@@ -57,6 +58,8 @@ try{
  for(const name of ['95_asset_intel.sql','96_asset_transport.sql','97_reverse.sql','98_asset_upload.sql','99_asset_manifest.sql','100_asset_konflikte.sql','102_asset_ansicht_links.sql','104_reverse_ansicht.sql'])await db.query(await readFile(new URL('../src/db/schema-sql/'+name,import.meta.url),'utf8'));
  const {WORK_JOBS_SCHEMA_SQL}=await import('../dist/db/work-jobs-schema.js');
  await db.query(WORK_JOBS_SCHEMA_SQL);await db.query(core.REVERSE_PIPELINE_SCHEMA_SQL);
+ // (angepasst P25-T10, Handliste ohne spaetere Spalten, z. B. reverse_auftraege.uebernahme aus P18-T86): Spalten aus public nachziehen.
+ await zieheSpaltenNach(raw,schema);
  await db.query("INSERT INTO reverse_eintraege(id,titel,status) VALUES($1,'ICO fixture','bestaetigt')",[rid]);
  await db.query("INSERT INTO reverse_medien(id,eintrag_id,position,bezeichnung,art) VALUES(1,$1,0,'CD1','ordner')",[rid]);
  await db.query("INSERT INTO reverse_bindungen(project,eintrag_id,gebunden_von) VALUES($1,$2,'fixture')",[project,rid]);
