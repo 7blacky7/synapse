@@ -150,7 +150,11 @@ try {
   const vor = (await pool.query('SELECT expires_at FROM file_reservations WHERE project = $1 AND agent_id = $2 AND released_at IS NULL', [PROJECT, H])).rows[0]?.expires_at;
   const pk = await batch.planBatch({ project: PROJECT, agent_id: K, ops: [rl('src/delta.ts', 2, 'd2', 'D2-K')] });
   const nach = (await pool.query('SELECT expires_at FROM file_reservations WHERE project = $1 AND agent_id = $2 AND released_at IS NULL', [PROJECT, H])).rows[0]?.expires_at;
-  pruefe((pk.coedit_waits ?? []).length === 1 && String(vor) === String(nach), '(d): der plan-Aufruf des Wartenden verlaengert die Reservierung des Owners nicht', { vor, nach });
+  // P25-T15: seit P6-T48 wartet K an Hs planloser Reservierung nicht mehr, sondern plant sofort mit reservation_hint.
+  // Die Zusage (d) bleibt: der fremde plan-Aufruf verlaengert Hs Reservierung nicht.
+  pruefe(pk.total_ops === 1 && pk.reservation_hint?.files?.[0]?.reserviert_von === H && String(vor) === String(nach),
+    'P25-T15 file-batch-fix-693bbf48.test.mjs (d): der plan-Aufruf eines anderen Agenten verlaengert die Reservierung des Owners nicht',
+    { vor, nach, total_ops: pk.total_ops, hint: pk.reservation_hint });
 
   // ===== Szenario 4: (e) =====
   let entwurf = null;

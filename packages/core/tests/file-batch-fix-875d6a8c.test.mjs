@@ -22,6 +22,10 @@
  *  S12 (83e62b61 + b) open_plans: neueste zuerst, Plaene ohne Aktivitaet > 7 Tage nur
  *      gezaehlt; offene leere Traeger werden gezaehlt statt unsichtbar.
  *
+ * P25-T15 (26.10.2026): Seit P6-T48 entsteht ein Wait auf einen Primaer OHNE Plan nicht mehr ueber files(plan)
+ * (planlose Reservierung = Hinweis, sofort geschrieben). S2 und der shared_plan_status-Teil von S9 legen ihn deshalb
+ * als Altfall an (_helfer/altfall-wait.mjs); Bindung an den spaeteren Plan und Long-Poll gelten unveraendert.
+ *
  * AUFRUF: node packages/core/tests/file-batch-fix-875d6a8c.test.mjs
  */
 import { fileURLToPath } from 'node:url';
@@ -36,6 +40,7 @@ const res = await import(join(dist, 'services', 'file-reservations.js'));
 const hints = await import(join(dist, 'services', 'plan-hints.js'));
 const { getPool } = await import(join(dist, 'db', 'client.js'));
 const pool = getPool();
+const { legeAltfallWaitAn } = await import(join(hier, '_helfer', 'altfall-wait.mjs'));
 
 let fehler = 0;
 function pruefe(bedingung, text, detail) {
@@ -49,6 +54,11 @@ async function aufraeumen() {
   zaehler.acks = (await pool.query(`DELETE FROM agent_event_acks WHERE event_id IN (SELECT id FROM agent_events WHERE project = $1)`, [PROJECT])).rowCount;
   for (const tabelle of ['file_batch_waits', 'file_batch_plans', 'file_reservations', 'file_versions', 'code_files', 'agent_events']) {
     zaehler[tabelle] = (await pool.query(`DELETE FROM ${tabelle} WHERE project = $1`, [PROJECT])).rowCount;
+  }
+  // P25-T15: die Hinweis-Drossel (P10-T40/T43) merkt sich Auslieferungen persistent je Projekt/Agent/Art; ohne
+  // Aufraeumen liefert claimOpenPlanHints (S12) ab dem zweiten Lauf null. Nicht im REST-Zaehler unten.
+  for (const tabelle of ['hinweis_gesehen', 'agent_identitaet_hinweis_gesehen']) {
+    await pool.query(`DELETE FROM ${tabelle} WHERE project = $1`, [PROJECT]).catch(() => null);
   }
   return zaehler;
 }
@@ -119,7 +129,7 @@ try {
   const O3 = 'f8-o3', W = 'f8-w';
   await res.addFileReservations({ project: PROJECT, agentId: O3, filePaths: ['src/m3.ts'] });
   const wOp = rl('src/m3.ts', 4, 'm3-4', 'W4');
-  const pw = await batch.planBatch({ project: PROJECT, agent_id: W, ops: [wOp] });
+  const pw = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: W, primaryAgent: O3, expiresSek: 300, ops: [wOp] });
   pruefe(pw.coedit_waits?.length === 1 && !pw.coedit_waits[0].target_plan_id, 'S2: Wait auf Primaer ohne Plan (noch kein Ziel)', pw.coedit_waits);
   const p3 = await batch.planBatch({ project: PROJECT, agent_id: O3, ops: [rl('src/m3.ts', 1, 'm3-1', 'O3')] });
   const wRow = (await pool.query('SELECT primary_plan_id::text AS p FROM file_batch_waits WHERE wait_token = $1::uuid', [pw.coedit_waits[0].wait_token])).rows[0];
@@ -155,7 +165,7 @@ try {
   pruefe(lp1 && lp1.changed === true && lp1.status === 'committed' && Date.now() - t0 < 8000, 'S9: plan_status kehrt bei Aenderung frueh zurueck', { changed: lp1?.changed, status: lp1?.status, ms: Date.now() - t0 });
   const O5 = 'f8-o5', U = 'f8-u';
   await res.addFileReservations({ project: PROJECT, agentId: O5, filePaths: ['src/m6.ts'] });
-  const pu = await batch.planBatch({ project: PROJECT, agent_id: U, ops: [rl('src/m6.ts', 2, 'm6-2', 'U2')] });
+  const pu = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: U, primaryAgent: O5, expiresSek: 300, ops: [rl('src/m6.ts', 2, 'm6-2', 'U2')] });
   t0 = Date.now();
   const spPromise = batch.getSharedPlanStatus({ project: PROJECT, wait_token: pu.coedit_waits[0].wait_token, agent_id: U, wait_seconds: 10 });
   setTimeout(() => { batch.planBatch({ project: PROJECT, agent_id: O5, ops: [rl('src/m6.ts', 1, 'm6-1', 'O5')] }).catch(() => null); }, 1000);

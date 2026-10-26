@@ -27,6 +27,8 @@ const res = await import(join(dist, 'services', 'file-reservations.js'));
 const events = await import(join(dist, 'services', 'events.js'));
 const { getPool } = await import(join(dist, 'db', 'client.js'));
 const pool = getPool();
+// P25-T15: seit P6-T48 entsteht der zielose Wait (Planung vor dem Owner) nicht mehr ueber planBatch -> Altfall synthetisch
+const { legeAltfallWaitAn } = await import(join(hier, '_helfer', 'altfall-wait.mjs'));
 
 let fehler = 0;
 function pruefe(b, text, detail) {
@@ -141,7 +143,7 @@ try {
   await anlegen('src/r6c.ts', zehn('c-'));
   await anlegen('src/r6frei.ts', zehn('f-'));
   await res.addFileReservations({ project: PROJECT, agentId: 'r3-o6', filePaths: ['src/r6.ts', 'src/r6c.ts'] });
-  const w6 = await batch.planBatch({ project: PROJECT, agent_id: 'r3-w6', ops: [rl('src/r6.ts', 9, 'r6-9', 'W6')] });
+  const w6 = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: 'r3-w6', primaryAgent: 'r3-o6', expiresSek: 300, ops: [rl('src/r6.ts', 9, 'r6-9', 'W6')] });
   pruefe(w6.coedit_waits?.length === 1 && !w6.coedit_waits[0].target_plan_id, 'R6 Vorbereitung: W6 plant vor dem Owner (noch kein Ziel)', w6);
   const o6 = await batch.planBatch({ project: PROJECT, agent_id: 'r3-o6', ops: [rl('src/r6.ts', 1, 'r6-1', 'O6'), rl('src/r6c.ts', 1, 'c-1', 'O6C')] });
   const tr6 = batch.buildPlanStatusResponse(await batch.getBatchPlan(w6.plan_id));

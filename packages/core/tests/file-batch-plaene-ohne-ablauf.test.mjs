@@ -89,6 +89,12 @@ async function aufraeumen() {
   }
   const ev = await pool.query(`DELETE FROM agent_events WHERE project = $1`, [PROJECT]).catch(() => ({ rowCount: 'n/a' }));
   zaehler.agent_events = ev.rowCount;
+  // P25-T15: die Hinweis-Drossel (P10-T40/T43) merkt sich Auslieferungen persistent je Projekt/Agent/Art; ohne Aufraeumen
+  // liefert open_plans ab dem zweiten Lauf nie mehr einen Ersthinweis.
+  for (const tabelle of ['hinweis_gesehen', 'agent_identitaet_hinweis_gesehen']) {
+    const h = await pool.query(`DELETE FROM ${tabelle} WHERE project = $1`, [PROJECT]).catch(() => ({ rowCount: 'n/a' }));
+    zaehler[tabelle] = h.rowCount;
+  }
   return zaehler;
 }
 
@@ -181,18 +187,20 @@ try {
   pruefe(await inhalt('a.md') === 'alpha\nbeta\n', '3: commit-Versuch hat nichts geschrieben', await inhalt('a.md'));
 
   // ===== 6. open_plans =====
+  // P25-T15: seit P10-T43 meldet nur EIGENER geaenderter Bestand sofort, sonst erinnert der Hinweis alle 30 min und nur bei
+  // files/plan-Nutzung (plan-hints.ts). Beobachter ist deshalb der Owner O der beiden Fehlschlag-Plaene.
   const t0 = Date.now();
-  const h1 = hints ? await hints.claimOpenPlanHints(PROJECT, 'pt-beobachter', t0) : null;
+  const h1 = hints ? await hints.claimOpenPlanHints(PROJECT, O, t0) : null;
   const ids1 = (h1?.plaene ?? []).map((p) => p.plan_id);
   pruefe(h1 !== null && ids1.includes(f1Id) && ids1.includes(f2Id), '6: open_plans zeigt beide neuen Plaene', h1);
   const h1Eigene = (h1?.plaene ?? []).filter((p) => p.plan_id === f1Id || p.plan_id === f2Id);
   pruefe(h1Eigene.length === 2 && h1Eigene.every((p) => p.fehler_ops === 1 && p.owner === O),
     '6: Eintraege tragen owner und fehler_ops', h1?.plaene);
   pruefe(typeof h1?.gesamt === 'number' && /cancel/.test(h1?.hinweis ?? ''), '6: Gesamtzahl + Hinweis zum Verwerfen', h1);
-  const h2 = hints ? await hints.claimOpenPlanHints(PROJECT, 'pt-beobachter', t0 + 1000) : 'x';
+  const h2 = hints ? await hints.claimOpenPlanHints(PROJECT, O, t0 + 1000) : 'x';
   pruefe(h2 === null, '6: unveraenderter Bestand wird sofort danach NICHT wiederholt', h2);
-  const h3 = hints ? await hints.claimOpenPlanHints(PROJECT, 'pt-beobachter', t0 + 16 * 60000) : null;
-  pruefe(h3 !== null, '6: nach 15 Minuten wird erinnert', h3);
+  const h3 = hints ? await hints.claimOpenPlanHints(PROJECT, O, t0 + 31 * 60000, false, 'files') : null;
+  pruefe(h3 !== null, 'P25-T15 file-batch-plaene-ohne-ablauf.test.mjs 6: nach 30 Minuten wird bei files-Nutzung erinnert (P10-T43)', h3);
 
   // ===== 4. plan_update korrigiert =====
   let r = null;
@@ -208,8 +216,8 @@ try {
   pruefe((r?.previews ?? []).length === 2 && r.previews.every((p) => p.ok), '4: Folgeplan: alle Ops ok', r?.previews);
   pruefe((await planZeile(f2Id))?.status === 'cancelled', '4: Vorgaenger ist cancelled', (await planZeile(f2Id))?.status);
   pruefe(f1Zeile !== null && JSON.stringify(await planZeile(f1Id)) === f1Snapshot, '4: Fehlschlag-Plan F1 weiter unveraendert');
-  const h4 = hints ? await hints.claimOpenPlanHints(PROJECT, 'pt-beobachter', t0 + 16 * 60000 + 1000) : null;
-  pruefe(h4 !== null && h4.plaene.some((p) => p.plan_id === r?.plan_id), '6: geaenderter Bestand wird sofort gemeldet (neuer Plan erscheint)', h4);
+  const h4 = hints ? await hints.claimOpenPlanHints(PROJECT, O, t0 + 31 * 60000 + 1000) : null;
+  pruefe(h4 !== null && h4.plaene.some((p) => p.plan_id === r?.plan_id), '6: geaenderter eigener Bestand wird sofort gemeldet (neuer Plan erscheint)', h4);
   const cr = r ? await batch.commitBatch({ plan_id: r.plan_id, agent_id: O }) : null;
   pruefe(cr?.success === true, '4: Folgeplan committed', cr);
   pruefe(await inhalt('a.md') === 'ALPHA\nBETA\n', '4: Datei hat beide Aenderungen', await inhalt('a.md'));

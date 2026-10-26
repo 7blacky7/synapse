@@ -19,6 +19,13 @@
  *  C1 Aufraeumen (Ziel 3): releaseStaleFileReservations gibt abgelaufene Reservierungen nach der
  *     Grace-Frist und die abgemeldeter Agenten frei; innerhalb der Grace und lebende bleiben.
  *
+ * P25-T15 (26.10.2026): Seit P6-T48 erzeugt plan auf eine nur RESERVIERTE Datei keinen Wait mehr (reservation_hint, sofort
+ * geschrieben). B1/B4 legen den zielosen Wait deshalb als Altfall an (_helfer/altfall-wait.mjs). B2: ein erneuter plan schreibt
+ * sofort in EINEN neuen Plan (kein weiterer leerer Traeger), der Altfall-Wait bleibt unveraendert. B3/B4 wie bisher. B5: nach
+ * Ablauf meldet der Altfall-Traeger nothing_written mit ops_zum_neu_planen, der neue Plan schreibt die Op genau einmal.
+ * C1: planlose Reservierungen werden sofort bei Ablauf frei (file-reservations.ts releaseStaleFileReservations), die
+ * Grace-Frist gilt nur fuer planbehaftete; 'ab-c-grace' haelt deshalb eine Reservierung mit Plan.
+ *
  * AUFRUF (Test-DB!): (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/file-batch-reservierung-ablauf.test.mjs
  * Gegenprobe alter Stand: PLAENE_TEST_DIST=<altes dist> node ...
  */
@@ -37,6 +44,7 @@ const batch = await import(join(dist, 'services', 'file-batch.js'));
 const res = await import(join(dist, 'services', 'file-reservations.js'));
 const { getPool } = await import(join(dist, 'db', 'client.js'));
 const pool = getPool();
+const { legeAltfallWaitAn } = await import(join(hier, '_helfer', 'altfall-wait.mjs'));
 
 let fehler = 0;
 function pruefe(b, text, detail) {
@@ -49,7 +57,7 @@ async function aufraeumen() {
   for (const t of ['file_batch_waits', 'file_batch_plans', 'file_reservations', 'file_versions', 'code_files', 'agent_events', 'tool_calls']) {
     await pool.query(`DELETE FROM ${t} WHERE project = $1`, [PROJECT]);
   }
-  await pool.query(`DELETE FROM agent_sessions WHERE id = ANY($1::text[])`, [[F, W, WEG, 'ab-c-alt', 'ab-c-grace', 'ab-c-lebt']]);
+  await pool.query(`DELETE FROM agent_sessions WHERE id = ANY($1::text[])`, [[F, W, WEG, 'ab-c-alt', 'ab-c-grace', 'ab-c-lebt', 'ab-c-planlos']]);
 }
 const inhalt = async (p) => (await pool.query('SELECT content FROM code_files WHERE project=$1 AND file_path=$2 AND deleted_at IS NULL', [PROJECT, p])).rows[0]?.content ?? null;
 async function anlegen(p, t) {
@@ -111,24 +119,27 @@ try {
   await anlegen('src/b.ts', 'b-alt\n');
   await res.addFileReservations({ project: PROJECT, agentId: F, filePaths: ['src/b.ts'] });
   const opB = sr('src/b.ts', 'b-alt', 'b-NEU');
-  const b1 = await batch.planBatch({ project: PROJECT, agent_id: W, ops: [opB] });
+  // P25-T15: P6-T48 -> lebende planlose Reservierung ist nur Hinweis; der leere Traeger mit Wait ist ein Altfall
+  const b1 = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: W, primaryAgent: F, expiresSek: 300, ops: [opB] });
   const traeger = b1.plan_id;
   const wait = b1.coedit_waits?.[0];
-  pruefe(b1.total_ops === 0 && b1.coedit_waits?.length === 1 && wait?.primary_agent === F && wait?.retry_after_seconds > 1,
-    'B1: lebende fremde Reservierung -> leerer Traeger mit einem Wait (Kontrollfall)', b1);
+  pruefe(b1.total_ops === 0 && b1.coedit_waits?.length === 1 && wait?.primary_agent === F,
+    'P25-T15 file-batch-reservierung-ablauf.test.mjs B1: Altfall leerer Traeger mit einem Wait auf lebende fremde Reservierung', b1);
 
-  // ===== B2 Wiederholung, solange der Wait lebt =====
+  // ===== B2 Wiederholung, solange der Altfall-Wait lebt (P25-T15 / P6-T48) =====
   const zahlVorB2 = await planZahl();
   const b2 = await batch.planBatch({ project: PROJECT, agent_id: W, ops: [opB] });
+  pruefe(b2.plan_id !== traeger && b2.total_ops === 1 && (b2.coedit_waits ?? []).length === 0
+    && b2.reservation_hint?.files?.[0]?.reserviert_von === F && (await planZahl()) === zahlVorB2 + 1,
+    'P25-T15 file-batch-reservierung-ablauf.test.mjs B2: erneuter plan schreibt sofort in EINEN neuen Plan mit Hinweis, kein weiterer leerer Traeger',
+    { traeger, b2: b2.plan_id, total_ops: b2.total_ops, waits: b2.coedit_waits, hint: b2.reservation_hint, neu: (await planZahl()) - zahlVorB2 });
   const waitsB2 = (await pool.query(
     `SELECT wait_token::text AS t, jsonb_array_length(deferred_ops)::int AS n, deferred_op_indexes AS idx FROM file_batch_waits
       WHERE project = $1 AND waiting_agent = $2 AND status <> 'closed' AND $3 = ANY(shared_files)`,
     [PROJECT, W, 'src/b.ts'],
   )).rows;
-  pruefe(b2.plan_id === traeger && (await planZahl()) === zahlVorB2,
-    'B2: zweiter plan derselben Ops nutzt denselben Traeger, kein neuer Plan', { traeger, b2: b2.plan_id, reused: b2.reused_carrier });
   pruefe(waitsB2.length === 1 && waitsB2[0].n === 1 && waitsB2[0].idx.length === 1,
-    'B2: der Wait enthaelt die Op genau einmal (keine Dublette)', waitsB2);
+    'B2: der Altfall-Wait bleibt unveraendert, enthaelt die Op genau einmal (keine Dublette)', waitsB2);
 
   // ===== B3 plan_status-Long-Poll wacht beim Ablauf auf =====
   const b3vorher = batch.buildPlanStatusResponse(await batch.getBatchPlan(traeger));
@@ -146,7 +157,7 @@ try {
   // Neue lebende Reservierung + neuer Wait auf eigener Datei, damit B4 unabhaengig von B3 ist.
   await anlegen('src/b4.ts', 'b4-alt\n');
   await res.addFileReservations({ project: PROJECT, agentId: F, filePaths: ['src/b4.ts'] });
-  const b4p = await batch.planBatch({ project: PROJECT, agent_id: 'ab-warte4', ops: [sr('src/b4.ts', 'b4-alt', 'b4-NEU')] });
+  const b4p = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: 'ab-warte4', primaryAgent: F, expiresSek: 300, ops: [sr('src/b4.ts', 'b4-alt', 'b4-NEU')] });
   const b4token = b4p.coedit_waits?.[0]?.wait_token;
   await reservierungAblaufen(F, 'src/b4.ts', 3);
   const t4 = Date.now();
@@ -156,26 +167,29 @@ try {
     'B4: shared_plan_status mit wait_seconds wacht beim Ablauf auf, status expired', { changed: b4.changed, dauer4, status: b4.status, err: b4.error });
   await versuch(() => batch.cancelBatch(b4p.plan_id, 'ab-warte4', 'Testende B4'));
 
-  // ===== B5 erneuter plan nach Ablauf: Traeger wird zum Plan =====
-  const zahlVorB5 = await planZahl();
-  const b5 = await versuch(() => batch.planBatch({ project: PROJECT, agent_id: W, ops: [opB] }));
-  const alterWait = (await pool.query(`SELECT status::text AS s FROM file_batch_waits WHERE wait_token = $1::uuid`, [wait?.wait_token])).rows[0]?.s;
-  pruefe(b5.plan_id === traeger && b5.total_ops === 1 && (b5.coedit_waits ?? []).length === 0 && (await planZahl()) === zahlVorB5,
-    'B5: nach Ablauf wird der vorhandene Traeger zum Plan — gleiche plan_id, kein Wait, kein neuer Plan',
-    { traeger, plan_id: b5.plan_id, total_ops: b5.total_ops, waits: b5.coedit_waits, neu: (await planZahl()) - zahlVorB5, err: b5.error });
-  pruefe(alterWait === 'closed', 'B5: der tote Wait ist geschlossen', alterWait);
-  pruefe(typeof b5.reused_carrier?.hinweis === 'string', 'B5: Antwort sagt, dass der Traeger wiederverwendet wurde', b5.reused_carrier);
-  const b5c = await versuch(() => batch.commitBatch({ plan_id: traeger, agent_id: W }));
+  // ===== B5 nach Ablauf (P25-T15 / P6-T48): Altfall-Traeger meldet nothing_written, der neue Plan schreibt genau einmal =====
+  const b5t = await versuch(() => batch.commitBatch({ plan_id: traeger, agent_id: W }));
+  pruefe(b5t.success === false && b5t.error === 'nothing_written' && b5t.grund === 'abgelaufen' && b5t.ops_zum_neu_planen?.[0]?.replace === 'b-NEU',
+    'P25-T15 file-batch-reservierung-ablauf.test.mjs B5: abgelaufener Altfall-Traeger meldet nothing_written mit ops_zum_neu_planen', b5t);
+  const b5c = await versuch(() => batch.commitBatch({ plan_id: b2.plan_id, agent_id: W }));
   const b = await inhalt('src/b.ts');
   pruefe(b5c.success === true && vorkommen(b, 'b-NEU') === 1 && vorkommen(b, 'b-alt') === 0,
-    'B5: commit des Traegers schreibt die Op genau einmal', { b5c, b });
+    'B5: commit des neuen Plans schreibt die Op genau einmal', { b5c, b });
 
   // ===== C1 Aufraeumen =====
   await anlegen('src/c.ts', 'c\n');
   await pool.query(`INSERT INTO agent_sessions (id, project, status, registered_at) VALUES ('ab-c-lebt', $1, 'active', NOW())`, [PROJECT]);
-  for (const agent of ['ab-c-alt', 'ab-c-grace', 'ab-c-lebt', WEG]) {
+  // P25-T15: Grace gilt nur fuer planbehaftete Reservierungen -> 'ab-c-grace' reserviert mit offenem Plan,
+  // 'ab-c-planlos' ist planlos und innerhalb der alten Grace abgelaufen (wird sofort frei).
+  const graceplan = (await pool.query(
+    `INSERT INTO file_batch_plans(project,owner_agent_id,ops,expected_hashes,previews) VALUES($1,'ab-c-grace','[]','{}','[]') RETURNING id::text AS id`,
+    [PROJECT],
+  )).rows[0].id;
+  for (const agent of ['ab-c-alt', 'ab-c-planlos', 'ab-c-lebt', WEG]) {
     await res.addFileReservations({ project: PROJECT, agentId: agent, filePaths: ['src/c.ts'] });
   }
+  await res.addFileReservations({ project: PROJECT, agentId: 'ab-c-grace', filePaths: ['src/c.ts'], planId: graceplan });
+  await reservierungAblaufen('ab-c-planlos', 'src/c.ts', -60);
   await reservierungAblaufen('ab-c-alt', 'src/c.ts', -3600);
   await reservierungAblaufen('ab-c-grace', 'src/c.ts', -60);
   const aufr = typeof res.releaseStaleFileReservations === 'function'
@@ -186,7 +200,7 @@ try {
     [PROJECT],
   )).rows.map((r) => r.agent_id);
   pruefe(JSON.stringify(offen) === JSON.stringify(['ab-c-grace', 'ab-c-lebt']),
-    'C1: abgelaufen nach Grace und abgemeldet freigegeben; innerhalb der Grace und lebend bleiben', { aufr, offen });
+    'P25-T15 file-batch-reservierung-ablauf.test.mjs C1: abgelaufen (planlos sofort, mit Plan nach Grace) und abgemeldet frei; planbehaftet in der Grace und lebend bleiben', { aufr, offen });
   pruefe(aufr.abgelaufen >= 1 && aufr.abgemeldet >= 1, 'C1: Zaehler nennt beide Gruende', aufr);
 } catch (err) {
   fehler++;

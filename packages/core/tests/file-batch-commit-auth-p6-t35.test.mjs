@@ -25,8 +25,9 @@ const stableOwnerReply = (result) => ({
   auf_platte: result.files?.[0]?.auf_platte,
   sync_hinweis: result.sync_hinweis,
 });
+// P25-T15: P6-T44 (13.10.2026, 'fs_pruefung nach commit ehrlich') ergaenzt die commit-Antwort gewollt um fs_pruefung.
 const ownerGolden = {
-  keys: ['batch_id', 'committed', 'committed_ops', 'files', 'plan_id', 'success', 'sync_hinweis'],
+  keys: ['batch_id', 'committed', 'committed_ops', 'files', 'fs_pruefung', 'plan_id', 'success', 'sync_hinweis'],
   file_keys: [['auf_platte', 'created', 'file_path', 'hash', 'size']],
   success: true,
   committed: 1,

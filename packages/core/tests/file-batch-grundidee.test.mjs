@@ -198,7 +198,12 @@ try {
   pruefe(/commit/.test(props.wait_seconds?.description ?? '') && /waiting_for_contributors/.test(props.wait_seconds?.description ?? ''), 'Schema: MCP-stdio wait_seconds gilt auch fuer commit', { d: props.wait_seconds?.description, fehler: mcpFiles.fehler });
   const { readFileSync } = await import('node:fs');
   const rest = readFileSync(join(hier, '..', '..', 'rest-api', 'dist', 'routes', 'mcp.js'), 'utf8');
-  pruefe((rest.match(/waiting_for_contributors/g) ?? []).length >= 2 && /wait_seconds: num\(args, 'wait_seconds'\),?(?:\s*befunde_quittieren: [^\n]+)?\s*\}\);\s*if \(result\.success\)/.test(rest), 'Schema: REST files + files_batch nennen commit-wait_seconds, commit reicht es durch', null);
+  // P25-T15: nach wait_seconds duerfen weitere commit-Argumente folgen (z. B. wait_sync, befunde_quittieren); Absicht bleibt:
+  // der REST-commit reicht wait_seconds im selben Aufruf durch und wertet danach result.success aus.
+  const restCommit = /wait_seconds: num\(args, 'wait_seconds'\)[^;]*?\}\);\s*if \(result\.success\)/.exec(rest)?.[0] ?? null;
+  pruefe((rest.match(/waiting_for_contributors/g) ?? []).length >= 2 && restCommit !== null,
+    'P25-T15 file-batch-grundidee.test.mjs Schema: REST files + files_batch nennen commit-wait_seconds, commit reicht es durch',
+    { waiting_for_contributors: (rest.match(/waiting_for_contributors/g) ?? []).length, restCommit });
   const { toolGuides } = await import(join(dist, 'guide', 'content.js')).catch(() => ({}));
   const guideText = JSON.stringify(toolGuides ?? (await import(join(dist, 'guide', 'content.js'))));
   pruefe(/waiting_for_contributors/.test(guideText) && /PLAN_COMMITTED/.test(guideText) && /late_line_ops_unmappable/.test(guideText) && /refused/.test(guideText) && /merged_into/.test(guideText), 'Guide nennt E1, V1, V2, V3, V4', null);

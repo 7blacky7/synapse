@@ -1,5 +1,9 @@
 /**
  * P6-T31: Reservierung ohne Plan erzeugt einen handlungsleitenden Wait.
+ * P25-T15 (26.10.2026): Seit P6-T48 (Koordinator-Entscheidung 13.10.2026) ist eine planlose fremde Reservierung nur ein
+ * Hinweis: files(plan) schreibt sofort (reservation_hint), es entsteht kein Wait und keine PLAN_WAITING-Einladung mehr.
+ * Teil 1 prueft deshalb den neuen Vertrag; Bindung an einen spaeteren Plan und die automatische Nachplanung gibt es nur
+ * noch fuer bestehende zielose Waits (Altfall) und werden mit _helfer/altfall-wait.mjs geprueft.
  * Test-DB only; separates Projekt, fremde aktive Projektdateien werden nicht beruehrt.
  * Aufruf: (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/file-batch-wait-ohne-ziel-p6-t31.test.mjs
  */
@@ -17,6 +21,7 @@ const codeWrite = await import(join(dist, 'services', 'code-write.js'));
 const reservations = await import(join(dist, 'services', 'file-reservations.js'));
 const events = await import(join(dist, 'services', 'events.js'));
 const { getPool } = await import(join(dist, 'db', 'client.js'));
+const { legeAltfallWaitAn } = await import(join(here, '_helfer', 'altfall-wait.mjs'));
 const pool = getPool();
 const PROJECT = 'p6t31-wait-handoff';
 const A = 'p6t31-agent-a';
@@ -48,30 +53,21 @@ try {
   // A reserviert ohne Plan; B soll seinen eigenen Write nicht verlieren, aber A muss die Bitte sehen.
   await createFile('src/shared.ts','one\ntwo\n');
   await reservations.addFileReservations({project:PROJECT,agentId:A,filePaths:['src/shared.ts']});
-  const started = Date.now();
+  // P25-T15 / P6-T48: B plant auf As planlos reservierte Datei -> sofort eigener Plan mit Hinweis, kein Wait, keine Einladung.
   const bOp = {file_path:'src/shared.ts',action:'search_replace',search:'two',replace:'TWO'};
   const b = await batch.planBatch({project:PROJECT,agent_id:B,ops:[bOp]});
-  const wait = b.coedit_waits?.[0];
-  check(b.total_ops === 0 && b.deferred_ops === 1, 'B bleibt Wait statt A-Vorrang zu ueberschreiben', b);
-  check(wait && !wait.target_plan_id, 'Start-Wait hat noch keinen Zielplan');
-  check(wait.expires_at && new Date(wait.expires_at).getTime() - started >= 280000, 'Wait-Deadline folgt der planlosen Fuenf-Minuten-TTL', wait);
-  check(typeof wait.handlungsanweisung === 'string', 'B-Antwort enthaelt konkrete Handlungsanweisung');
-  check(wait.handlungsanweisung.includes('reservation_release'), 'B sieht Freigabeweg');
-  check(wait.handlungsanweisung.includes('60 Sekunden'), 'B sieht den 60-s-Statusrhythmus');
-  check(wait.handlungsanweisung.includes('dieselben Ops erneut'), 'B sieht Retry nach Ablauf');
-
+  check(b.total_ops === 1 && !b.coedit_waits?.length && b.reservation_hint?.files?.[0]?.reserviert_von === A,
+    'P25-T15 file-batch-wait-ohne-ziel-p6-t31.test.mjs: planlose Reservierung von A ist fuer B nur Hinweis (P6-T48), B-Plan schreibt sofort', b);
   const pending = await events.getPendingEvents(PROJECT,A);
-  const invitation = pending.find(event => event.eventType === 'PLAN_WAITING' && event.sourceId === B);
-  check(Boolean(invitation), 'A erhaelt ein persistentes PLAN_WAITING-Event', pending.map(e => e.eventType));
-  const payload = JSON.parse(invitation.payload);
-  check(payload.wait_token === wait.wait_token && payload.waiting_agent === B, 'Event bindet genau diesen Wait an B');
-  check(payload.shared_files.includes('src/shared.ts') && payload.expires_at === wait.expires_at, 'Event nennt Datei und Deadline');
-  check(payload.actions?.plan?.action === 'plan' && payload.actions.plan.agent_id === A
-    && payload.actions.plan.file_paths?.includes('src/shared.ts') && payload.actions.plan.ops_hint, 'Event beschreibt As Planweg mit benoetigten eigenen Ops');
-  check(payload.actions?.release?.action === 'reservation_release'
-    && payload.actions.release.agent_id === A && payload.actions.release.file_path === 'src/shared.ts', 'Event enthaelt fertigen Freigabeaufruf');
-  check(invitation.requiresAck === true, 'Einladung bleibt bis Ack persistent');
+  check(!pending.some(event => event.eventType === 'PLAN_WAITING' && event.sourceId === B),
+    'P25-T15 file-batch-wait-ohne-ziel-p6-t31.test.mjs: ohne Wait keine PLAN_WAITING-Einladung an A', pending.map(e => e.eventType));
+  // B-Plan wieder verwerfen (nicht committed), damit die Datei fuer den Altfall unveraendert bleibt
+  await pool.query("UPDATE file_batch_plans SET status='cancelled' WHERE id=$1::bigint",[b.plan_id]);
 
+  // Altfall: ein schon bestehender zieloser Wait von B auf As Reservierung wird an As spaeteren Plan gebunden.
+  const bAlt = await legeAltfallWaitAn(pool,{project:PROJECT,waitingAgent:B,primaryAgent:A,ops:[bOp]});
+  const wait = bAlt.coedit_waits[0];
+  check(!(await waitRow(wait.wait_token)).target_plan_id, 'P25-T15 Altfall-Wait hat noch keinen Zielplan');
   // B bekommt nach A's Plan ein Ziel und kann ueber den Wait beitragen.
   const a = await batch.planBatch({project:PROJECT,agent_id:A,ops:[{file_path:'src/shared.ts',action:'search_replace',search:'one',replace:'ONE'}]});
   const linked = await waitRow(wait.wait_token);
@@ -102,9 +98,13 @@ try {
   const ttlSeconds = (new Date(liveReservation.expires_at).getTime()-Date.now())/1000;
   check(ttlSeconds >= 280 && ttlSeconds <= 305 && liveReservation.plan_id === null,
     'Planlose Reservierung hat feste Fuenf-Minuten-TTL trotz mehrerer Beteiligter', {ttlSeconds,liveReservation,scaled});
-  const liveB = await batch.planBatch({project:PROJECT,agent_id:B,ops:[{file_path:'src/index.ts',action:'search_replace',search:'live = 1',replace:'live = 2'}]});
-  check(liveB.deferred_ops === 1 && liveB.coedit_waits?.[0]?.primary_agent === C,
-    'B wartet vor As Commit mit gespeicherter Deferred-Op', liveB);
+  // P25-T15: seit P6-T48 entsteht der zielose Wait nicht mehr ueber planBatch -> Altfall direkt anlegen (Nachplanung bleibt Vertrag).
+  // Automatisch nachgeplant wird nur fuer eine aktive Sitzung (P6-T39); B bekommt deshalb eine.
+  await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES($1,$2,'active',NOW()) ON CONFLICT DO NOTHING",[B,PROJECT]);
+  const liveB = await legeAltfallWaitAn(pool,{project:PROJECT,waitingAgent:B,primaryAgent:C,expiresSek:300,
+    ops:[{file_path:'src/index.ts',action:'search_replace',search:'live = 1',replace:'live = 2'}]});
+  check(liveB.coedit_waits?.[0]?.primary_agent === C,
+    'B wartet vor As Commit mit gespeicherter Deferred-Op (Altfall-Wait)', liveB);
   await createFile('src/planned.ts','export const planned = 1;\n');
   const protectedPlan = await batch.planBatch({project:PROJECT,agent_id:A,ops:[{file_path:'src/planned.ts',action:'search_replace',search:'planned = 1',replace:'planned = 2'}]});
   await reservations.addFileReservations({project:PROJECT,agentId:A,filePaths:['src/planned.ts'],planId:protectedPlan.plan_id});

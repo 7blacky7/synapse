@@ -21,9 +21,12 @@ async function scenario(mode, broken = false) {
   const create = await batch.planBatch({ project, agent_id: owner,
     ops: ['old.txt','good.txt','bad.txt','own.txt'].map(file_path => ({ action:'create', file_path, content:'BASE\n' })) });
   assert.equal((await batch.commitBatch({plan_id:create.plan_id,agent_id:owner})).success,true);
+  // P25-T15: seit P6-T48 erzeugt planBatch auf eine nur reservierte Datei keinen Wait mehr -> Altfall-Wait synthetisch
+  // (_helfer/altfall-wait.mjs); Wecken, Isolation und Folgefehler gelten fuer solche Waits unveraendert.
+  const { legeAltfallWaitAn } = await import('./_helfer/altfall-wait.mjs');
   const waiting = async (agent, holder, file) => {
     await reservations.addFileReservations({project,agentId:holder,filePaths:[file]});
-    const p = await batch.planBatch({project,agent_id:agent,
+    const p = await legeAltfallWaitAn(pool,{project,waitingAgent:agent,primaryAgent:holder,expiresSek:300,
       ops:[{action:'search_replace',file_path:file,search:'BASE',replace:'CHANGED'}]});
     assert.equal(p.total_ops,0);
     assert.ok(p.coedit_waits?.[0]?.wait_token);

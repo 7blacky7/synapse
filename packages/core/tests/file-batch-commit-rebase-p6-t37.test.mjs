@@ -61,7 +61,8 @@ try {
   assert.match(payload.hinweis, /anchor_text\/expected_hashes sind ungueltig/);
   assert.match(payload.hinweis, /reservation_release/);
 
-  // C wartet an der rebasierten Autorenreservierung; Freigabe macht C unmittelbar planbar.
+  // P25-T15: Die rebasierte Autorenreservierung ist planlos. Seit P6-T48 (13.10.2026) wartet C daran nicht mehr,
+  // sondern plant sofort mit reservation_hint (vorher: Wait, erst die Freigabe machte C planbar).
   const waiter = 'p6t37-waiter';
   const waiting = await plan(waiter, 'outsider.txt', 'waiter content\n', {}, 'committed by coordinator');
   const activeWait = await pool.query(
@@ -70,7 +71,9 @@ try {
         AND status IN ('waiting','linked') AND shared_files @> ARRAY['outsider.txt']::text[]`,
     [project, waiter, author],
   );
-  assert.ok(activeWait.rows.length > 0, 'C wartet auf die Autorenreservierung');
+  assert.ok(activeWait.rows.length === 0 && waiting.total_ops === 1 && waiting.reservation_hint?.files?.[0]?.reserviert_von === author,
+    'P25-T15 file-batch-commit-rebase-p6-t37.test.mjs: C plant trotz planloser Autorenreservierung sofort mit Hinweis (P6-T48): '
+    + JSON.stringify({ waits: activeWait.rows.length, total_ops: waiting.total_ops, hint: waiting.reservation_hint }));
   await reservations.releaseFileReservations({ project, agentId: author, filePaths: ['outsider.txt'] });
   const cPlan = await pool.query(
     `SELECT id::text AS id FROM file_batch_plans
@@ -78,7 +81,7 @@ try {
       ORDER BY id DESC LIMIT 1`,
     [project, waiter],
   );
-  assert.ok(cPlan.rows.length > 0, 'C wird nach Freigabe automatisch planbar');
+  assert.ok(cPlan.rows.length > 0, 'C hat nach der Freigabe einen offenen Plan auf outsider.txt');
 
   // Co-Edit: B committet den gemeinsamen Plan, bevor A ready ist; A behaelt seine Reservierung.
   const coauthorA = 'p6t37-coauthor-a';

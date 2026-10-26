@@ -18,6 +18,10 @@
  *  W4 Sicherung laesst sich wieder einspielen: Ops aus dem thought -> planBatch + commit schreibt.
  *  W5 ueber fuehreInternAus erreichbar (Action registriert).
  *
+ * P25-T15 (26.10.2026): Seit P6-T48 erzeugt files(plan) auf eine nur RESERVIERTE Datei keinen Wait mehr (reservation_hint,
+ * sofort geschrieben). Die leeren Traeger mit zielosem Wait (N1/N2/N4, W1-W4) sind deshalb Altfaelle und werden mit
+ * _helfer/altfall-wait.mjs angelegt; nothing_written, Ablauf und waits_tot gelten fuer sie unveraendert.
+ *
  * AUFRUF (Test-DB!): (DATABASE_URL = Projekt-DB aus dem Synapse-shell-Job) node packages/core/tests/file-batch-nichts-geschrieben.test.mjs
  * Gegenprobe alter Stand: PLAENE_TEST_DIST=<altes dist> node ...
  */
@@ -39,6 +43,7 @@ const { getPool } = await import(join(dist, 'db', 'client.js'));
 const waitsMod = await import(join(dist, 'services', 'intern-waits.js')).catch(() => null);
 const internMod = await import(join(dist, 'services', 'intern-tool.js')).catch(() => null);
 const pool = getPool();
+const { legeAltfallWaitAn } = await import(join(hier, '_helfer', 'altfall-wait.mjs'));
 
 let fehler = 0;
 function pruefe(b, text, detail) {
@@ -85,7 +90,8 @@ try {
   // ===== N1 leerer Traeger, Wait lebt =====
   await anlegen('src/n1.ts', 'n1-alt\n');
   await res.addFileReservations({ project: PROJECT, agentId: F, filePaths: ['src/n1.ts'] });
-  const n1p = await batch.planBatch({ project: PROJECT, agent_id: W, ops: [sr('src/n1.ts', 'n1-alt', 'n1-NEU')] });
+  // P25-T15: Altfall-Wait statt planBatch (P6-T48), Ablauf wie die planlose Reservierung (5 min)
+  const n1p = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: W, primaryAgent: F, expiresSek: 300, ops: [sr('src/n1.ts', 'n1-alt', 'n1-NEU')] });
   const traeger1 = n1p.plan_id;
   const token1 = n1p.coedit_waits?.[0]?.wait_token;
   pruefe(n1p.total_ops === 0 && typeof token1 === 'string', 'N1: Vorbedingung leerer Traeger mit Wait', n1p);
@@ -122,7 +128,7 @@ try {
   await res.addFileReservations({ project: PROJECT, agentId: F, filePaths: ['src/n4.ts'] });
   // Eigener Agent: plant W selbst, haengt planBatch die Op an Ws offenen Wait (shared_files n1+n4),
   // und der waere durch die lebende Reservierung auf n4 nicht mehr tot.
-  const n4p = await batch.planBatch({ project: PROJECT, agent_id: 'ng-warte4', ops: [sr('src/n4.ts', 'n4-alt', 'n4-NEU')] });
+  const n4p = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: 'ng-warte4', primaryAgent: F, expiresSek: 300, ops: [sr('src/n4.ts', 'n4-alt', 'n4-NEU')] });
   const n4 = typeof batch.nichtsGeschriebenBefund === 'function'
     ? await batch.nichtsGeschriebenBefund([n4p.plan_id, traeger1], 'auto_commit')
     : { fehlt: true };

@@ -103,6 +103,20 @@
       "quelle": "D2 t207 core-fall-skills-p23-t5.log (FAIL-Liste identisch zu t206)"
     },
     {
+      "datei": "packages/core/tests/file-batch-diff.test.mjs",
+      "erwartet": {
+        "fail": 1,
+        "fail_zeilen": [
+          "FEHLER  D7: files(plan) +<= 10 ms p95 durch den Diff (~130 KB, 2 Ops)*"
+        ],
+        "muster": null
+      },
+      "grund": "Messbudget unter Mehragenten-Last: D7 p95-Delta schwankt mit der Maschinenlast (seriell 18,8 ms rot / 3,4 ms gruen bei load 11, Inventur 19,7 ms); Koordinator-Entscheidung 26.10. (Channel 28852)",
+      "seit": "2026-10-26",
+      "task": "P25-T15",
+      "quelle": "zwei serielle Messungen Job 14a05ae1 (P25-T15)"
+    },
+    {
       "datei": "packages/core/tests/intern-einblick.test.mjs",
       "erwartet": {
         "fail": 2,

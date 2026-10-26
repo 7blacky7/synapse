@@ -5,13 +5,15 @@ const u=new URL(process.env.DATABASE_URL);assert.equal(u.port,'5433');assert.equ
 const {getPool}=await import('../dist/db/client.js');
 const batch=await import('../dist/services/file-batch.js');
 const reservations=await import('../dist/services/file-reservations.js');
+// P25-T15: seit P6-T48 erzeugt planBatch auf eine nur reservierte Datei keinen Wait mehr -> Altfall-Wait synthetisch
+const {legeAltfallWaitAn}=await import('./_helfer/altfall-wait.mjs');
 const pool=getPool(),projects=[],checks=[];
 async function scenario(status,shared=false){
  const project='sol3-t39-'+randomUUID();projects.push(project);
  const agent=project+'-agent',holder=project+'-holder';
  if(status!=='missing')await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES($1,$2,$3,NOW())",[agent,project,status]);
  await reservations.addFileReservations({project,agentId:holder,filePaths:['one.txt']});
- const p=await batch.planBatch({project,agent_id:agent,ops:[{action:'create',file_path:'one.txt',content:'ONE'}]});
+ const p=await legeAltfallWaitAn(pool,{project,waitingAgent:agent,primaryAgent:holder,ops:[{action:'create',file_path:'one.txt',content:'ONE'}]});
  const id=p.coedit_waits[0].wait_token;
  const before=(await pool.query('SELECT * FROM file_batch_waits WHERE wait_token=$1',[id])).rows[0];
  let other;
