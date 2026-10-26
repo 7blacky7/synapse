@@ -1,0 +1,12 @@
+/* P22-T195: gemeinsame Komponenten innerhalb .synapse-control, Lesefenster bleiben bedienbar. */
+.anmerkung-korb-knopf{padding:8px 12px;width:100%;text-align:left;background:transparent;color:var(--text);border:0;cursor:pointer}
+.anmerkung-korb{position:fixed;right:20px;bottom:20px;width:min(620px,calc(100vw - 32px));max-height:88dvh;overflow:auto;z-index:8000;background:var(--panel,#17191c);color:var(--text,#eee);border:1px solid var(--border,#38404a);border-radius:10px;padding:18px;box-shadow:0 12px 44px #0008}
+.anmerkung-korb header{display:flex;justify-content:space-between;align-items:center}.anmerkung-korb h2{font-size:18px}
+.anmerkung-korb article,.quellen-anmerkungen-liste article{border-top:1px solid var(--border,#38404a);padding:12px 0}
+.anmerkung-korb textarea,.anmerkung-editor textarea{display:block;width:100%;min-height:80px;box-sizing:border-box;background:var(--bg,#101214);color:inherit;border:1px solid var(--border,#38404a);padding:8px}
+.anmerkung-korb button,.anmerkung-editor button,.quellen-anmerkungen button{padding:6px 10px;margin:4px;border:1px solid var(--border,#38404a);border-radius:4px;background:var(--bg,#101214);color:inherit;cursor:pointer}
+.anmerkung-korb button:disabled{opacity:.5}.anmerkung-korb blockquote,.anmerkung-editor blockquote,.quellen-anmerkungen blockquote{white-space:pre-wrap;margin:8px 0;padding-left:10px;border-left:2px solid var(--accent,#5ed3be)}
+.anmerkung-korb label{display:block;margin:10px 0}.anmerkung-korb select{max-width:100%}
+.anmerkung-editor{position:fixed;z-index:9000;width:min(360px,calc(100vw - 32px));padding:12px;border:1px solid var(--border,#38404a);border-radius:8px;background:var(--panel,#17191c);color:var(--text,#eee);box-shadow:0 8px 35px #0008}
+.quellen-anmerkungen-liste{margin-top:18px;padding-top:8px;border-top:1px solid var(--border,#38404a);font-size:12px}
+.anmerkung-vergleich pre{white-space:pre-wrap;max-height:230px;overflow:auto;border:1px solid var(--border,#38404a);padding:8px}

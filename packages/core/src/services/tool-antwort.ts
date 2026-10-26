@@ -21,6 +21,7 @@
 
 
 import { getPool } from '../db/client.js';
+import { haengeUserAnmerkungenAn } from './quellenanmerkungen.js';
 import { REVERSE_NULL_FELDER } from './reverse-tool.js';
 import { getUnreadChatHint } from './chat-unread.js';
 import { claimUnreadChannelHints } from './channel-unread.js';
@@ -41,6 +42,8 @@ export async function ergaenzeToolHinweise(
   args: Record<string, unknown>,
   agentId?: string | null,
 ): Promise<unknown> {
+  // P22-T195: fachliche Quellenbeilage gilt auch ohne Hinweis-/Onboarding-Identitaet.
+  result = await haengeUserAnmerkungenAn(toolName, args, result);
   if (!agentId || (!istSchlichtesObjekt(result) && !Array.isArray(result))) return result;
   const extras: Record<string, unknown> = {};
   let project = typeof args.project === 'string' ? args.project : '';

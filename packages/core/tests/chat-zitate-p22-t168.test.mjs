@@ -1,4 +1,5 @@
 /**
+ * P22-T195 Nachzug (Version 192864): ZITAT_ARTEN mit artefakt, 11 Arten, vollstaendiger Soll-Katalog und Artefakt-Validierung.
  * P22-T168: Zitat-Anhaenge im Chat (core chat-zitate.ts). Nur synapse_test:5433, eigenes privates Schema, kein Netz.
  *   pnpm -C packages/core build && DATABASE_URL=postgresql://...@<host>:5433/synapse_test node packages/core/tests/chat-zitate-p22-t168.test.mjs
  * A Katalog (Produkt-Schalter nur ausdruecklich); B Pruefung (Format/Laenge, F6/F8); C Block, Entschaerfung, nur Zitate (F3), ohne Zitate
@@ -47,7 +48,14 @@ try{
 
  await section('A Katalog',async()=>{
   check(C.PROFIL_PRODUKT_FUNKTIONEN.includes('chat_zitate')&&C.NUR_AUSDRUECKLICH.includes('chat_zitate'),'A chat_zitate im Katalog, nur ausdruecklich (Standard AUS)');
-  check(C.CHAT_ZITATE_FUNKTION==='chat_zitate'&&C.ZITAT_ARTEN.length===10&&C.ZITAT_ART_LABEL.task==='Task','A Arten und Namen');
+  // P22-T195 / Version 192864: artefakt ist eine weitere Art; keine der bisherigen zehn darf entfallen.
+  const arten=['thought','memory','task','plan','doc','event','nachricht','chat','asset','artefakt','ausschnitt'];
+  check(C.CHAT_ZITATE_FUNKTION==='chat_zitate'&&C.ZITAT_ARTEN.length===11&&C.ZITAT_ART_LABEL.task==='Task'&&C.ZITAT_ART_LABEL.artefakt==='Artefakt',
+   'P22-T195 chat-zitate.ts ZITAT_ARTEN: 11 Arten und Namen',{erwartet:{anzahl:11,artefakt:'Artefakt'},ist:{anzahl:C.ZITAT_ARTEN.length,artefakt:C.ZITAT_ART_LABEL.artefakt}});
+  check(JSON.stringify(C.ZITAT_ARTEN)===JSON.stringify(arten),'P22-T195 chat-zitate.ts ZITAT_ARTEN: exakte vollstaendige Liste',{erwartet:arten,ist:C.ZITAT_ARTEN});
+  const artefakt=C.pruefeZitate([{art:'artefakt',id:'artefakt-195',projekt:P,titel:'Vorversion',anmerkung:'Bitte pruefen'}],G);
+  check(artefakt.ok&&artefakt.zitate[0].art==='artefakt'&&artefakt.zitate[0].id==='artefakt-195',
+   'P22-T195 chat-zitate.ts pruefeZitate: artefakt wird mit Quellen-ID angenommen',{erwartet:'artefakt/artefakt-195',ist:artefakt});
  });
 
  await section('B Pruefung',async()=>{

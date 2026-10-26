@@ -31,7 +31,10 @@ async function identitaetProjektfrei(z: AgentZiel, project: string): Promise<boo
 }
 
 /** opts.fromIdentityId: P22-T120 R2 - serverseitig bestimmte Rueckadresse (wakeRueckadresseVorab), atomar im INSERT. Nie aus Toolargs. */
-export async function postToInbox(fromAgent: string | AgentZiel, toAgent: string | AgentZiel, content: string, project: string, opts?: { fromIdentityId?: string | null }): Promise<{ id: number; createdAt: Date }> {
+export async function postToInbox(fromAgent: string | AgentZiel, toAgent: string | AgentZiel, content: string, project: string, opts?: { fromIdentityId?: string | null; transaktion?: Pick<import('pg').PoolClient,'query'>; nachCommit?: Array<()=>void> }): Promise<{ id: number; createdAt: Date }> {
+  // P22-T195: derselbe Inbox-Weg, optional atomar mit Quellenanmerkungen; Wake erst nach COMMIT.
+  const db = opts?.transaktion ?? getPool()
+  const melden = (ziel: unknown) => { const f = () => apiLaufZustellung(project,ziel,content,sender.agent_id); if(opts?.nachCommit)opts.nachCommit.push(f);else f() }
   const sender = kommunikationsAgent(project, fromAgent)
   let ziel = await aufgeloestesSendeZiel(project, toAgent)
   // P22-T120 (Schalter wake_antwort_identitaet): Antwort an den Wecker aus anderem Projekt -> dessen Identitaet (Rueckadresse).
@@ -41,22 +44,22 @@ export async function postToInbox(fromAgent: string | AgentZiel, toAgent: string
     if (r) ziel = { art: 'identity', project, identity_id: r.identity_id, agent_id: r.agent_id } as AgentZiel
   }
   if (agentBezugAktiv()) {
-    const { rows } = await getPool().query(
+    const { rows } = await db.query(
       `INSERT INTO specialist_inbox(from_agent,to_agent,content,project,from_identity_id,to_identity_id)
        VALUES($1,$2,$3,$4,$5,$6) RETURNING id,created_at`,
       [sender.agent_id,ziel.agent_id,content,project,sender.art === 'identity' ? sender.identity_id : (opts?.fromIdentityId ?? null),ziel.art === 'identity' ? ziel.identity_id : null])
-    apiLaufZustellung(project, ziel, content, sender.agent_id)
+    melden(ziel)
     return { id: rows[0].id, createdAt: rows[0].created_at }
   }
   toAgent = ziel.agent_id
-  const result = await getPool().query(
+  const result = await db.query(
     opts?.fromIdentityId
       ? `INSERT INTO specialist_inbox (from_agent, to_agent, content, project, from_identity_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`
       : `INSERT INTO specialist_inbox (from_agent, to_agent, content, project) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
     opts?.fromIdentityId ? [sender.agent_id, toAgent, content, project, opts.fromIdentityId] : [sender.agent_id, toAgent, content, project],
   )
   const row = result.rows[0]
-  apiLaufZustellung(project, toAgent, content, sender.agent_id)
+  melden(toAgent)
   return { id: row.id as number, createdAt: row.created_at as Date }
 }
 

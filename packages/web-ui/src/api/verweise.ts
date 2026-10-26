@@ -1,7 +1,8 @@
 import { apiFetch } from './auth';
+import { leseAnmerkungQuelle } from './quellenanmerkungen';
 
 /** P8-T31: Verweise in Texten aufloesen (gebuendelt, gecacht) und als Klartext lesen. */
-export type VerweisArt = 'thought' | 'memory' | 'task' | 'plan' | 'doc' | 'event' | 'nachricht' | 'chat' | 'asset';
+export type VerweisArt = 'thought' | 'memory' | 'task' | 'plan' | 'doc' | 'event' | 'nachricht' | 'chat' | 'asset' | 'artefakt';
 
 export interface VerweisTreffer {
   art: VerweisArt;
@@ -32,6 +33,7 @@ export const ART_LABEL: Record<VerweisArt, string> = {
   nachricht: 'Channel-Nachricht',
   chat: 'Chat-Nachricht',
   asset: 'Bild',
+  artefakt: 'Artefakt',
 };
 
 export function kandidatSchluessel(k: VerweisKandidat): string {
@@ -98,6 +100,8 @@ async function frageVerweise(project: string, neu: VerweisKandidat[]): Promise<b
 }
 
 export async function ladeVerweis(project: string, art: VerweisArt, id: string): Promise<VerweisInhalt> {
+  // P22-T195: Artefakt-Lesefenster verwendet den authentifizierten User-Weg mit den bestehenden Artefakt-Rechten.
+  if (art === 'artefakt') { const r = await leseAnmerkungQuelle(project, 'artefakt', id); return {art,id:r.quelle.id,titel:r.quelle.titel,meta:[],text:r.quelle.text}; }
   const schluessel = project + '|' + art + '|' + id;
   const bekannt = inhalte.get(schluessel);
   if (bekannt) return bekannt;

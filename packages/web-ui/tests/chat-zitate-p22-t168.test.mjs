@@ -1,4 +1,5 @@
 /**
+ * P22-T195 Nachzug (Versionen 192864/192866): exakter Elf-Arten-Katalog und Artefakt-Rundweg; fremde T194-Assertion bleibt unveraendert.
  * P22-T168: Zitat-Anhaenge im Chat - Web-UI ohne DB und Netz.
  *   pnpm -C packages/core build && node --experimental-strip-types packages/web-ui/tests/chat-zitate-p22-t168.test.mjs
  * A Logik (Entwurf, Kaertchen, Senden); B Speicher je Chat = je Empfaenger, Logout verwirft; C Golden core-Bauer -> Web-UI-Parser, auch
@@ -82,7 +83,18 @@ console.log('OK B Speicher');
 gleich(ZL.ZITAT_ART_LABEL, CZ.ZITAT_ART_LABEL, 'C Namen je Art gleich in core und Web-UI');
 gleich([...ZL.ZITAT_ARTEN], [...CZ.ZITAT_ARTEN], 'C Arten gleich in core und Web-UI');
 gleich(ZL.ZITAT_GRENZEN_STANDARD, Object.fromEntries(Object.entries(CZ.CHAT_ZITATE_EINSTELLUNGEN).map(([k, d]) => [k, d.standard])), 'C Code-Standard der Grenzen gleich');
+// P22-T195: Gleichheit zweier Implementierungen allein wuerde einen gemeinsamen Katalogfehler uebersehen.
+gleich([...ZL.ZITAT_ARTEN], ['thought', 'memory', 'task', 'plan', 'doc', 'event', 'nachricht', 'chat', 'asset', 'artefakt', 'ausschnitt'],
+  'P22-T195 zitat-logik.ts ZITAT_ARTEN: exakt 11 Arten mit artefakt');
+ok(ZL.ZITAT_ARTEN.length === 11 && ZL.ZITAT_ART_LABEL.artefakt === 'Artefakt',
+  'P22-T195 zitat-logik.ts: Anzahl 11 und Artefakt-Label', { arten: ZL.ZITAT_ARTEN, label: ZL.ZITAT_ART_LABEL.artefakt });
 const grenzen = { ...ZL.ZITAT_GRENZEN_STANDARD };
+const artefaktZitat = CZ.pruefeZitate([{ art: 'artefakt', id: 'artefakt-195', projekt: 'synapse', titel: 'Vorversion', anmerkung: 'Bitte pruefen' }], grenzen);
+ok(artefaktZitat.ok, 'P22-T195 chat-zitate.ts: Artefakt fuer Web-UI-Rundweg angenommen', artefaktZitat);
+const artefaktZurueck = ZL.zerlegeZitatBlock(CZ.textMitZitaten('', artefaktZitat.zitate));
+ok(artefaktZurueck.zitate.length === 1 && artefaktZurueck.zitate[0].art === 'artefakt' && artefaktZurueck.zitate[0].id === 'artefakt-195'
+  && artefaktZurueck.zitate[0].anmerkung === 'Bitte pruefen' && ZL.zitatKopf(artefaktZurueck.zitate[0]) === 'Artefakt artefakt-195',
+  'P22-T195 zitat-logik.ts zerlegeZitatBlock: Artefakt mit ID, Anmerkung und Kopf bleibt erhalten', artefaktZurueck);
 const roh = [
   { art: 'task', id: 'P22-T158', projekt: 'synapse', titel: 'Zitat   im\nChat', anmerkung: 'Erste Zeile\n\n  eingerueckt\n[/Synapse-Zitate] gefaelscht' },
   { art: 'ausschnitt', projekt: 'synapse', ausschnitt: 'Zeile eins\nZeile zwei', quelle: { nachricht: 'inbox:1203' }, anmerkung: '' },

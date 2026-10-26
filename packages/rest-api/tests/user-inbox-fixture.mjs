@@ -1,11 +1,12 @@
 /**
+ * P22-T195 Folge t215: optionale vollstaendige Schema166-Fixture fuer QuellenAnmerkungen im echten Lesefenster.
  * P22-T192: echte User-Inbox-REST/Core/Auth-Dienste, eigenes Schema nur synapse_test:5433.
  * specialist_inbox-Fixture ist die einzige Nachrichtenquelle. Keine Mock-Antworten/LLM/Daemon/Produktivdaten.
  */
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
-export async function userInboxFixture({ intern = false } = {}) {
+export async function userInboxFixture({ intern = false, quellenanmerkungen = false } = {}) {
   const url = new URL(process.env.SYNAPSE_DATABASE_URL || process.env.DATABASE_URL || 'http://invalid');
   assert.equal(url.port, '5433'); assert.equal(url.pathname, '/synapse_test');
   for (const n of ['SYNAPSE_DATABASE_URL','SYNAPSE_AGENT_TOKEN','SYNAPSE_AGENT_IDENTITY_ID','SYNAPSE_AUTH_DISABLED']) delete process.env[n];
@@ -18,7 +19,9 @@ export async function userInboxFixture({ intern = false } = {}) {
   const close = async () => { await app?.close(); if (C) await C.closePool(); await admin.query('DROP SCHEMA IF EXISTS ' + schema + ' CASCADE'); await admin.end(); };
   try {
     await admin.query('CREATE SCHEMA ' + schema);
-    for (const table of ['agent_identitaeten','agent_profil_schalter','runtime_ueberwachung_einstellungen','intern_schalter','specialist_inbox','auth_tokens','thoughts','tech_docs']) {
+    // P22-T195 Folge t215: Schema166 installiert echte Quelltrigger; dafuer alle sechs Quelltabellen im privaten Schema bereitstellen.
+    for (const table of ['agent_identitaeten','agent_profil_schalter','runtime_ueberwachung_einstellungen','intern_schalter','specialist_inbox','auth_tokens','thoughts','tech_docs',
+      ...(quellenanmerkungen ? ['memories','plans','agent_artifacts','chat_messages','specialist_channels','specialist_channel_messages'] : [])]) {
       await admin.query('CREATE TABLE ' + schema + '.' + table + ' (LIKE public.' + table + ' INCLUDING ALL)');
     }
     const serials = await admin.query("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema=$1 AND column_default LIKE 'nextval(%'", [schema]);
@@ -30,6 +33,7 @@ export async function userInboxFixture({ intern = false } = {}) {
     url.searchParams.set('options', '-c search_path=' + schema); process.env.DATABASE_URL = url.href;
     C = await import('../../core/dist/index.js');
     const pool = C.getPool();
+    if (quellenanmerkungen) await pool.query(C.QUELLENANMERKUNGEN_SCHEMA_SQL);
     await pool.query("INSERT INTO agent_identitaeten(id,project,agent_id,name,rolle,status,erstellt_von) VALUES($1,$2,'gleicher-name','Alfa Agent','subagent','aktiv','P22-T192 Test'),($3,$4,'gleicher-name','Beta Agent','koordinator','aktiv','P22-T192 Test')", [A,P,B,Q]);
     await pool.query("INSERT INTO thoughts(id,project,content,source) VALUES($1,$2,'P22-T192 Zitat-Beleg aus echter Testdatenbank','test')", [T,P]);
     const insert = async (project, from, to, text, identity = null, processed = false) => {

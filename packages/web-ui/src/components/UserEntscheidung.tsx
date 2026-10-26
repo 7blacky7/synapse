@@ -20,7 +20,7 @@ import '../chat-zitate.css';
  * data-user-entscheidung-art, console.debug('[user-entscheidung]', ...).
  */
 export type UserEntscheidungArt = VerweisArt;
-const PIN_ARTEN: readonly string[] = ['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset'];
+const PIN_ARTEN: readonly string[] = ['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset', 'artefakt'];
 export const kannAnpinnen = (art: string): art is UserEntscheidungArt => PIN_ARTEN.includes(art);
 
 const MAX_STANDARD = 2000;

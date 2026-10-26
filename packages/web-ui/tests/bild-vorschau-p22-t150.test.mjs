@@ -1,4 +1,5 @@
 /**
+ * P22-T195 Nachzug (Version 192911): api/verweise.ts hat zusaetzlich den Quellen-Leseweg fuer Artefakte; Cache bleibt unveraendert.
  * P22-T150: Bilder in allen Chats - Erkennung (bild-logik), Grossansicht-Logik, Baustein (NachrichtBilder, BildLeiste, BildKachel,
  * BildGrossansicht) als Probe mit Hook-/API-Attrappen, Verweis-Cache ohne Doppelabfrage und Einbau in die Fenster. Keine DB, kein Netz.
  *   node --experimental-strip-types packages/web-ui/tests/bild-vorschau-p22-t150.test.mjs
@@ -287,12 +288,16 @@ assert.equal(alleKnoten(g, (n) => n.type === 'img').length, 0, 'kein kaputtes Bi
 console.log('OK E Grossansicht');
 
 // F Verweis-Cache: gleiche Kandidaten gleichzeitig -> ein Abruf
+// P22-T195 / Version 192911: neuer authentifizierter Artefakt-Leseweg. Beide Module exakt erlauben, sonst weiter ablehnen.
+const anmerkungsAbrufe = [];
+const artefaktQuelle = { id: 'artefakt-195', titel: 'Vorversion', text: 'Quelltext aus dem User-Leseweg' };
 const abrufe = [];
 const VJ = ts.transpileModule(lies('packages/web-ui/src/api/verweise.ts'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const vm = { exports: {} };
 const antwort = defer();
 new Function('require', 'module', 'exports', VJ)((q) => {
-  assert.equal(q, './auth');
+  if (q === './quellenanmerkungen') return { leseAnmerkungQuelle: async (...args) => { anmerkungsAbrufe.push(args); return { quelle: artefaktQuelle }; } };
+  assert.equal(q, './auth', 'P22-T195 api/verweise.ts: unbekannte Abhaengigkeit bleibt ein Fehler, erwartet ./auth oder ./quellenanmerkungen');
   return { apiFetch: (url, init) => { abrufe.push(JSON.parse(init.body)); return antwort.promise; } };
 }, vm, vm.exports);
 const V = vm.exports;
@@ -306,7 +311,13 @@ assert.deepEqual(await Promise.all([e1, e2]), [true, true], 'beide zeichnen neu'
 assert.deepEqual(V.bekannteTreffer('synthetisch', k1), [{ art: 'asset', id: k1.text, titel: 'a.png' }]);
 assert.equal(await V.loeseVerweiseAuf('synthetisch', [k1]), false, 'bekannt -> kein Abruf');
 assert.equal(abrufe.length, 1);
-console.log('OK F Verweis-Cache');
+assert.deepEqual(await V.ladeVerweis('synthetisch', 'artefakt', 'angeforderte-id'),
+  { art: 'artefakt', id: 'artefakt-195', titel: 'Vorversion', meta: [], text: artefaktQuelle.text },
+  'P22-T195 api/verweise.ts ladeVerweis: Artefakt verwendet den authentifizierten Quellen-Leseweg');
+assert.deepEqual(anmerkungsAbrufe, [['synthetisch', 'artefakt', 'angeforderte-id']],
+  'P22-T195 api/verweise.ts ladeVerweis: Projekt, Art und angeforderte ID exakt weitergegeben');
+assert.equal(abrufe.length, 1, 'P22-T195 api/verweise.ts: Artefakt nutzt keinen alten Verweis-Abruf; Cache-Pruefungen bleiben gueltig');
+console.log('OK F Verweis-Cache und P22-T195 Artefakt-Leseweg');
 
 // G Einbau
 const lese = lies('packages/web-ui/src/components/Lesefenster.tsx');

@@ -1,4 +1,5 @@
 /** P22-T171: REST-Wege fuer Pin an jede Verweis-Art und Pin an gewaehlte Agenten (privates synapse_test-Schema, fastify inject).
+ * P22-T195 Nachzug (Version 192868): Artefakt-Pin mit Tag artefakt:42 und task_id null, wie andere Nicht-Tasks.
  *   pnpm -C packages/core build && pnpm -C packages/rest-api build
  *   DATABASE_URL=postgresql://...@<host>:5433/synapse_test node packages/rest-api/tests/pin-empfaenger-p22-t171.test.mjs
  * Sichert ab (Task P22-T171; User inbox 1258, Entscheidung 83b5014f Punkte 4/5):
@@ -83,9 +84,10 @@ try{
  const ASSET='ui-screenshots/p22-t171/01-bild.png';
  r=await post('/api/agent-runtimes/user-entscheidung',{project:P,art:'asset',id:ASSET,text:'Bild passt.'});j=r.json();
  ok(r.statusCode===200&&j.tags[1]==='asset:'+ASSET&&(await liste('asset',ASSET)).eintraege[0]?.content==='Bild passt.',H+': asset (Pfad als ID) -> Tag asset:<pfad>',j);
- for(const art of ['doc','event','nachricht','chat']){
+ // P22-T195 / Version 192868: zusaetzlich artefakt anpinnen, weiterhin derselbe Tag-/task_id-Vertrag.
+ for(const art of ['doc','event','nachricht','chat','artefakt']){
   r=await post('/api/agent-runtimes/user-entscheidung',{project:P,art,id:'42',text:'Zu '+art});
-  ok(r.statusCode===200&&r.json().tags[1]===art+':42'&&r.json().task_id===null,H+': '+art+' -> Tag '+art+':42',r.json());
+  ok(r.statusCode===200&&r.json().tags[1]===art+':42'&&r.json().task_id===null,H+' (P22-T195 Nachzug): '+art+' -> Tag '+art+':42',r.json());
  }
  // Task und Plan wie T168 (Bestand): Kurz-ID als Tag, task_id nur bei Tasks.
  r=await post('/api/agent-runtimes/user-entscheidung',{project:P,art:'task',id:'P1-T2',text:'Task: erst pruefen.'});j=r.json();

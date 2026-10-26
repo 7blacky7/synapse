@@ -1,4 +1,5 @@
 /**
+ * P22-T195 Folge t215: Schema166 real anwenden; Quellen-GET und fertig geladenes Lesefenster ohne Anmerkungs-Alert pruefen.
  * P22-T192: echte MeineInbox im KI-Browser gegen echte REST/Auth/PG-Fixture (synapse_test:5433).
  * Geprueft: Standard AUS, globaler Badge/Projektwechsel, Filter/Lesestatus/Antwortziel, Zitat/Verweis klickbar, Fehler sichtbar.
  * Inbox-Inhalte werden NICHT gemockt. Screenshots ui-screenshots/p22-t192. Nicht waehrend Browser-Sperre starten.
@@ -23,7 +24,15 @@ const panel="document.querySelector('.meine-inbox-fenster')";
 const byText=(selector,text)=>"Array.from("+selector+").find(e=>e.textContent.includes("+JSON.stringify(text)+"))";
 const input=async(selector,value)=>ev("(()=>{const e="+selector+";Object.getOwnPropertyDescriptor("+(selector.includes('textarea')?'HTMLTextAreaElement':'HTMLInputElement')+".prototype,'value').set.call(e,"+JSON.stringify(value)+");e.dispatchEvent(new Event('input',{bubbles:true}));})()");
 try {
-  f=await userInboxFixture();
+  f=await userInboxFixture({quellenanmerkungen:true});
+  // P22-T195 Folge t215: Migration166 ist live vorhanden; der Test muss denselben Speicher liefern, keine Antwort-Attrappe.
+  const quellAntwort=await f.app.inject({method:'GET',url:'/api/agent-runtimes/anmerkungen/'+encodeURIComponent(f.P)+'/quelle/thought/'+f.T,
+    headers:{authorization:'Bearer '+f.tokens.session}});
+  const quellStand=quellAntwort.json();
+  assert.equal(quellAntwort.statusCode,200,'P22-T195 Folge t215 quellenanmerkungen.ts/Schema166: Quellen-GET erwartet=200 ist='+quellAntwort.statusCode+' body='+quellAntwort.body);
+  assert.equal(quellStand.quelle?.text,'P22-T192 Zitat-Beleg aus echter Testdatenbank','P22-T195 Folge t215: Quellen-GET liefert echten PG-Wortlaut');
+  assert.deepEqual(quellStand.eintraege,[],'P22-T195 Folge t215: neue Quelle hat null Anmerkungen, keinen Ladefehler');
+  console.log('P22_T195_SCHEMA166_BELEG '+JSON.stringify({status:quellAntwort.statusCode,project:f.P,art:'thought',id:f.T,text:quellStand.quelle.text,anmerkungen:quellStand.eintraege.length}));
   vite=await createServer({root:join(repo,'packages/web-ui'),configFile:false,logLevel:'error',esbuild:{jsx:'automatic'},
     optimizeDeps:{entries:['tests/user-inbox.html']},server:{host:'0.0.0.0',port:0,proxy:{'/api':{target:f.url,headers:{authorization:'Bearer '+f.tokens.session}}}}});
   await vite.listen();
@@ -64,6 +73,10 @@ try {
   await wait("document.querySelector('.verweis-fenster')?.innerText.includes('Zitat-Beleg aus echter Testdatenbank')",'Zitat oeffnet echten PG-Beleg');
   ok(await ev("document.querySelector('.verweis-fenster').getBoundingClientRect().width>200"),'Lesefenster sichtbar ueber Inbox');
   await wait("document.querySelector('.verweis-inhalt')?.innerText.includes('P22-T192 Zitat-Beleg aus echter Testdatenbank') && !document.querySelector('.verweis-inhalt')?.innerText.includes('Lädt')",'Zitatinhalt fertig');
+  // P22-T195 Folge t215: alter Test sah nur den Quelltext und uebersah den Fehler des nachgeladenen Anmerkungsbereichs.
+  await wait("document.querySelector('.verweis-inhalt .quellen-anmerkungen-liste') && !document.querySelector('.verweis-inhalt [role=alert]')",'P22-T195 Folge t215 QuellenAnmerkungen mit Schema166 fertig, ohne Alert');
+  ok(await ev("document.querySelector('.verweis-inhalt .quellen-anmerkungen-liste summary').textContent.includes('0 offene Anmerkungen') && !document.querySelector('.verweis-inhalt').innerText.includes('Anmerkungen konnten nicht geladen werden')"),
+    'P22-T195 Folge t215 Lesefenster/QuellenAnmerkungen: echte leere PG-Liste sichtbar, kein Anmerkungsfehler',await ev("document.querySelector('.verweis-inhalt').innerText"));
   console.log('VERWEIS_WORTLAUT '+await ev("document.querySelector('.verweis-inhalt').innerText"));
   await new Promise(resolve=>setTimeout(resolve,400)); // DOM und Screenshot muessen denselben fertig gezeichneten Inhalt zeigen.
   await shot('03-antwort-und-zitat');

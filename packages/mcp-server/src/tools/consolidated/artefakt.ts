@@ -6,7 +6,7 @@ import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {ARTEFAKT_DEFINITION,baueToolErgebnis} from '@synapse/core';
 import type {ConsolidatedTool} from './types.js';
-export interface ArtefaktApiOptionen {url?:string;token?:string;fetchImpl?:typeof fetch;timeoutMs?:number}
+export interface ArtefaktApiOptionen {werkzeug?:string;url?:string;token?:string;fetchImpl?:typeof fetch;timeoutMs?:number}
 export async function rufeArtefaktApi(args:Record<string,unknown>,o:ArtefaktApiOptionen={}):Promise<Record<string,unknown>>{
  try{
   let cfg:Record<string,unknown>={};
@@ -20,14 +20,14 @@ export async function rufeArtefaktApi(args:Record<string,unknown>,o:ArtefaktApiO
   const timeout=o.timeoutMs??60000;if(!Number.isSafeInteger(timeout)||timeout<1)throw Error('timeout');
   const r=await(o.fetchImpl??fetch)(url.toString(),{method:'POST',redirect:'error',
    headers:{'content-type':'application/json',accept:'application/json',authorization:'Bearer '+secret},
-   body:JSON.stringify({jsonrpc:'2.0',id:randomUUID(),method:'tools/call',params:{name:'artefakt',arguments:args}}),signal:AbortSignal.timeout(timeout)});
+   body:JSON.stringify({jsonrpc:'2.0',id:randomUUID(),method:'tools/call',params:{name:o.werkzeug??'artefakt',arguments:args}}),signal:AbortSignal.timeout(timeout)});
   if(!r.ok)throw Error('api');
   const rpc=await r.json() as {result?:Record<string,unknown>;error?:unknown};
   if(rpc.error||!rpc.result||!Array.isArray(rpc.result.content))throw Error('response');
   return rpc.result;
  }catch{
-  return baueToolErgebnis({success:false,action:args.action??null,project:args.project??null,beantwortet_von:'artefakt',fehler:'api_nicht_erreichbar',
-   hinweis:'Artefakt-API-Zugang pruefen; es gibt keinen lokalen Datei-Fallback.'},{tool:'artefakt',strukturiert:true}) as unknown as Record<string,unknown>;
+  return baueToolErgebnis({success:false,action:args.action??null,project:args.project??null,beantwortet_von:o.werkzeug??'artefakt',fehler:'api_nicht_erreichbar',
+   hinweis:o.werkzeug==='anmerkungen'?'Anmerkungen sind nicht erreichbar. Zugang zur Synapse-API pruefen.':'Artefakt-API-Zugang pruefen; es gibt keinen lokalen Datei-Fallback.'},{tool:o.werkzeug??'artefakt',strukturiert:true}) as unknown as Record<string,unknown>;
  }
 }
 /** stdio nutzt denselben API-Ueberlaufvertrag. */

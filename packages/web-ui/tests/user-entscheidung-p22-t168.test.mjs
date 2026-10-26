@@ -1,4 +1,5 @@
 /**
+ * P22-T195 Nachzug (Version 192887): kannAnpinnen akzeptiert auch artefakt; ausschnitt bleibt ungueltig.
  * P22-T168 Punkte 8/9: 'User-Entscheidung anpinnen' - Web-UI ohne DB und Netz.
  *   node --experimental-strip-types packages/web-ui/tests/user-entscheidung-p22-t168.test.mjs
  * A Hook useUserEntscheidung mit Attrappen (Schalter, Knopf, Editor, Pruefung, Speichern, Liste, Kontextmenue-Zaehler, Fehler,
@@ -98,8 +99,8 @@ const textareaVon = (s) => alle(editorVon(s), (x) => x.type === 'textarea')[0];
   const h = hookProbe({ liste: [] });
   let s = h.render({ art: 'ausschnitt', id: 'abc12345' }); await flush(); s = h.render();
   ok(s.knopf === null && h.aufrufe.stand.length === 0 && h.aufrufe.liste.length === 0, 'A keine Verweis-Art (ausschnitt): ohne Knopf und ohne Abfrage');
-  ok(h.UE.kannAnpinnen('task') && h.UE.kannAnpinnen('plan') && h.UE.kannAnpinnen('memory') && h.UE.kannAnpinnen('asset') && h.UE.kannAnpinnen('thought') && !h.UE.kannAnpinnen('ausschnitt'),
-    'A kannAnpinnen jede Verweis-Art (P22-T171)');
+  ok(h.UE.kannAnpinnen('task') && h.UE.kannAnpinnen('plan') && h.UE.kannAnpinnen('memory') && h.UE.kannAnpinnen('asset') && h.UE.kannAnpinnen('thought') && h.UE.kannAnpinnen('artefakt') && !h.UE.kannAnpinnen('ausschnitt'),
+    'P22-T195 UserEntscheidung.tsx kannAnpinnen: jede Verweis-Art mit artefakt (Version 192887; Bestand P22-T171)');
 }
 {
   const alt = { id: 'aaaaaaaa-0000-4000-8000-000000000000', source: 'koordinator', content: 'USER-ENTSCHEIDUNG alt', tags: ['user-entscheidung'], timestamp: '2026-10-25T19:00:00Z', task_id: 'P1-T2' };

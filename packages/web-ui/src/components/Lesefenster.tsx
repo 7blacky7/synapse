@@ -8,6 +8,7 @@ import {
   type VerweisArt, type VerweisInhalt, type VerweisKandidat, type VerweisTreffer,
 } from '../api/verweise';
 import { ToolBilder } from './ToolBild';
+import { QuellenAnmerkungen } from './QuellenAnmerkungen';
 import { BildGrossansicht } from './BildGrossansicht';
 import { BILD_MUSTER } from './bild-logik';
 import { zerlegeInline, zerlegeKlartext, type InlineTeil } from './klartext-logik';
@@ -371,7 +372,8 @@ function LesefensterEinzel({
           {auswahl.bereich}
           {inhalt.art === 'asset'
             ? <ToolBilder bilder={[{ mime_type: 'image/*', bytes: 0, project: fenster.project, file_path: inhalt.id }]} />
-            : <KlartextText text={inhalt.text} project={fenster.project} />}
+            : <QuellenAnmerkungen project={fenster.project} art={fenster.art} id={inhalt.id || fenster.id} text={inhalt.text}
+                render={(text) => <KlartextText text={text} project={fenster.project} />} />}
         </>
       )}
     </>

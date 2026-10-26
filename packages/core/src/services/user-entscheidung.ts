@@ -27,7 +27,7 @@ import type { ProjectPlan, ProjectTask } from '../types/index.js';
 
 export const USER_ENTSCHEIDUNG_TAG = 'user-entscheidung' as const;
 /** P22-T171: alle Verweis-Arten des Lesefensters (web-ui api/verweise.ts VerweisArt). */
-export const USER_ENTSCHEIDUNG_ARTEN = ['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset'] as const;
+export const USER_ENTSCHEIDUNG_ARTEN = ['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset', 'artefakt'] as const;
 export type UserEntscheidungArt = typeof USER_ENTSCHEIDUNG_ARTEN[number];
 const REF_MAX = 300, TITEL_MAX = 160;
 /** P22-T171: Bezug-Tag einer Verweis-Art ohne eigene Kurz-ID ('memory:regel-x'). Task/Plan behalten ihre Kurz-ID als Tag. Rein. */
@@ -107,6 +107,7 @@ export function userEntscheidungHinweis(kurzId: string, thoughtId: string, text:
 export async function pinneUserEntscheidung(
   eingabe: { project?: unknown; art?: unknown; id?: unknown; text?: unknown; titel?: unknown },
   sende?: UserEntscheidungSende,
+  speichere?: (e: { project: string; content: string; tags: string[]; task_id: string | null }) => Promise<{id:string}>,
 ): Promise<{ ok: true; thought_id: string; task_id: string | null; tags: string[]; bezug: UserEntscheidungBezug; schalter: ChatZitateSchalter;
   hinweis: { empfaenger: Array<{ agent_id: string; identity_id: string | null; inbox_id: number | null; fehler: string | null }>; uebersprungen?: string } } | UserEntscheidungFehler> {
   const e = await pruefeEingang(eingabe.project, eingabe.art, eingabe.id);
@@ -122,7 +123,7 @@ export async function pinneUserEntscheidung(
   const { bezug, task } = fund;
   const tags = [USER_ENTSCHEIDUNG_TAG, bezug.kurz_id];
   const taskId = e.art === 'task' ? bezug.kurz_id : null;
-  const t = await addThought(e.project, 'user', text, tags, taskId ?? undefined);
+  const t = speichere ? await speichere({project:e.project,content:text,tags,task_id:taskId}) : await addThought(e.project, 'user', text, tags, taskId ?? undefined);
   const hinweis: { empfaenger: Array<{ agent_id: string; identity_id: string | null; inbox_id: number | null; fehler: string | null }>; uebersprungen?: string } = { empfaenger: [] };
   if (!task) hinweis.uebersprungen = e.art;
   else if (!sende) hinweis.uebersprungen = 'kein_sendeweg';

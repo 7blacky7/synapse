@@ -12,6 +12,7 @@
  *   D ZitatEmpfaenger.tsx usePinEmpfaenger + UserEntscheidung.tsx (Punkt 1): ohne Auswahl nur speichern (0 Sendungen), mit 2 Gewaehlten
  *     speichern + 1 Sendung an genau diese 2 mit Pin-Zitat, Fehler beim Senden laesst den Pin bestehen, Abbrechen leert die Auswahl.
  *   E UserEntscheidung.tsx (Punkt 4): Anpinnen fuer jede Verweis-Art (memory), Liste/Speichern mit art und Titel.
+ *   P22-T195 Nachzug (Version 192887): feste Pin-Artenliste enthaelt jetzt auch artefakt; ungueltige Arten bleiben abgelehnt.
  *   F ZitatAnhaenge.tsx: Pin-Kaertchen mit Herkunft heisst 'Angepinnte User-Entscheidung', Sendefeld traegt pin.
  *   G Einbau Lesefenster.tsx; Artefakttafel/Top-Artefakte unveraendert.
  * Bei Fehlschlag: Zeile 'DEBUG <Herkunft> | erwartet ... | tatsaechlich ...' auf stderr.
@@ -335,8 +336,8 @@ const tippePin = (s, wert) => alle(editorVon(s), (x) => x.type === 'textarea')[0
 {
   const H = 'P22-T171 UserEntscheidung.tsx kannAnpinnen/useUserEntscheidung';
   const h = pinProbe({ mitAuswahl: false, art: 'memory', id: 'regel-x', anzeigeId: 'regel-x', titel: 'Regel X' });
-  ok(['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset'].every((a) => h.UE.kannAnpinnen(a)) && !h.UE.kannAnpinnen('ausschnitt') && !h.UE.kannAnpinnen('quatsch'),
-    H + ': jede Verweis-Art des Lesefensters (User 83b5014f Punkt 4)');
+  ok(['task', 'plan', 'thought', 'memory', 'doc', 'event', 'nachricht', 'chat', 'asset', 'artefakt'].every((a) => h.UE.kannAnpinnen(a)) && !h.UE.kannAnpinnen('ausschnitt') && !h.UE.kannAnpinnen('quatsch'),
+    H + ': jede Verweis-Art des Lesefensters einschliesslich artefakt (P22-T195, Version 192887; User 83b5014f Punkt 4)');
   let s = h.render(); await flush(); s = h.render();
   ok(s.aktiv && s.knopf && h.aufrufe.lese[0]?.join() === 'p,memory,regel-x' && s.bereich.props['data-user-entscheidung-art'] === 'memory', H + ': Memory: Knopf und Liste der Pins', h.aufrufe.lese);
   s.knopf.props.onClick(); s = h.render();

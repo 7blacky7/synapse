@@ -6,6 +6,7 @@
  * Sitzung, Login-Ansicht).
  */
 import type { ChatFensterStand } from './chat-fenster-logik';
+import { leereAnmerkungKorb } from './anmerkung-korb-speicher.ts';
 
 export interface ChatFensterTiefe { verlaufAelteste: string | null; inboxAelteste: number | null; anzeigeAb: string | null }
 
@@ -53,6 +54,7 @@ function verwirfZitatEntwuerfe(): void {
 export function verwirfChatFensterSitzung(): void {
   staende.clear();
   verwirfZitatEntwuerfe();
+  leereAnmerkungKorb();
   try {
     const s = ablage();
     if (!s) return;

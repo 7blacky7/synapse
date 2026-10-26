@@ -6,6 +6,9 @@
  */
 
 export type { ConsolidatedTool } from './types.js';
+import { anmerkungenTool } from './anmerkungen.js';
+export { anmerkungenTool };
+ergaenzeAgentTokenParameter([anmerkungenTool.definition]);
 export { artefaktTool, begrenzeStdioArtefaktAntwort } from './artefakt.js';
 
 

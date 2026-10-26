@@ -8,12 +8,12 @@
  *   vom Text; anzeigeAusAnhaengen liest die Zitate einer Main-Verlaufszeile (anhaenge art 'zitat').
  */
 
-export const ZITAT_ARTEN = ['thought', 'memory', 'task', 'plan', 'doc', 'event', 'nachricht', 'chat', 'asset', 'ausschnitt'] as const;
+export const ZITAT_ARTEN = ['thought', 'memory', 'task', 'plan', 'doc', 'event', 'nachricht', 'chat', 'asset', 'artefakt', 'ausschnitt'] as const;
 export type ZitatArt = typeof ZITAT_ARTEN[number];
 /** Wie core ZITAT_ART_LABEL (Golden-Test). */
 export const ZITAT_ART_LABEL: Record<ZitatArt, string> = {
   thought: 'Thought', memory: 'Memory', task: 'Task', plan: 'Plan', doc: 'Doku', event: 'Event', nachricht: 'Channel-Nachricht',
-  chat: 'Chat-Nachricht', asset: 'Bild', ausschnitt: 'Ausschnitt',
+  chat: 'Chat-Nachricht', asset: 'Bild', artefakt: 'Artefakt', ausschnitt: 'Ausschnitt',
 };
 export const ZITAT_ENTWURF_PRAEFIX = 'synapse:zitat-entwurf:';
 

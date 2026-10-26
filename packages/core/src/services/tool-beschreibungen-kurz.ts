@@ -57,6 +57,10 @@ const ALLGEMEIN: Record<string, string> = {
 };
 
 export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
+  anmerkungen: {
+    b: 'User-Anmerkungen an Quellen lesen und mit Versionsbeleg oder Ablehnungsgrund abarbeiten.',
+    p: {"action":"Offene Quellenanmerkungen lesen; Status mit Grund und Versionsbeleg setzen.","project":"Projekt der Quelle.","art":"Quellenart fuer liste.","quelle_id":"liste: stabile Quellen-ID, Memory-Name oder Plan-/Task-Kurz-ID.","id":"get/status: Anmerkungs-ID.","status":"liste: Filter; status: eingearbeitet oder abgelehnt.","grund":"status: Begruendung, bei Ablehnung zwingend.","beleg_version_id":"eingearbeitet: aktuelle geaenderte Version aus get.aktuelle_version.id.","offset":"liste: Cursor aus naechster_offset."},
+  },
   project: {
     b: 'Projekt-Lebenszyklus: init, Status, Projekt-DB, Hosts, Loeschen.' + FALL_SKILL_ZUSATZ('project'),
     p: {

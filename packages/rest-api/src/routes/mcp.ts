@@ -24,7 +24,7 @@ import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisp
 // P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
 import { haengeFallSkillHinweisAn, type FallSkillOptionen } from '@synapse/core';
 import { fuehreArtefaktAus, fuehreArtefaktDateiAufrufAus, begrenzeArtefaktWerkzeugAntwort } from '../services/agent-runtime/artefakt-tool.js';
-import { ARTEFAKT_DEFINITION } from '@synapse/core';
+import { ARTEFAKT_DEFINITION, ANMERKUNGEN_DEFINITION, fuehreAnmerkungenAus } from '@synapse/core';
 import { mainToolAccess, mainToolListeMitProfil, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
 import { leseW1bSchalter } from '@synapse/core';
 import { initialisiereW1bAnmeldungHinweise, herkunftsortAusKopf } from '@synapse/core';
@@ -1493,6 +1493,7 @@ export const MCP_TOOLS = [
   },
   // 22. artefakt — Hauptagenten-Werkzeug: HTML-Block als Artefakt in die Web-UI
   { ...ARTEFAKT_DEFINITION },
+  { ...ANMERKUNGEN_DEFINITION },
   // 23. intern — Debugging/Steuerung interner Ablaeufe (P14). NUR bei SYNAPSE_INTERN_TOOL=1 beim
   // Prozessstart in der Liste (beide tools/list-Stellen lesen MCP_TOOLS, PA-1 ebenso).
   // Flache Kopie wie asset_intel: die OUTPUT_EXTRAS-Schleife setzt Felder am Objekt.
@@ -2995,6 +2996,7 @@ async function handleToolCallKern(
     // =================================================================
     // 4. THOUGHT
     // =================================================================
+    case 'anmerkungen': return fuehreAnmerkungenAus(args);
     case 'thought': {
       switch (action) {
         case 'add': {

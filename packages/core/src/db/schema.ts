@@ -60,6 +60,7 @@ import { AGENT_START_ORT_SCHEMA_SQL } from './agent-start-ort-schema.js';
 import { WRAPPER_ENDE_SCHEMA_SQL } from './wrapper-ende-schema.js'; import { ARTEFAKT_BEWERTUNG_SCHEMA_SQL, ARTEFAKT_BEWERTUNG_NOTIFY_SCHEMA_SQL } from './artefakt-bewertung-schema.js';
 import { ARTEFAKT_VORLAGEN_SCHEMA_SQL } from './artefakt-vorlagen-schema.js';
 import { ARTEFAKT_DATEIEN_SCHEMA_SQL } from './artefakt-dateien-schema.js';
+import { QUELLENANMERKUNGEN_SCHEMA_SQL } from './quellenanmerkungen-schema.js';
 import { VERLAUF_STUECKE_SCHEMA_SQL } from './verlauf-stuecke-schema.js';
 import { CHAT_ZITATE_SCHEMA_SQL } from './chat-zitate-schema.js';
 import { AGENT_AKTUELLE_TASK_SCHEMA_SQL } from './agent-aktuelle-task-schema.js';
@@ -3238,6 +3239,7 @@ ${WRAPPER_ENDE_SCHEMA_SQL}${ARTEFAKT_BEWERTUNG_SCHEMA_SQL}
 ${ARTEFAKT_BEWERTUNG_NOTIFY_SCHEMA_SQL}
 ${ARTEFAKT_VORLAGEN_SCHEMA_SQL}
 ${ARTEFAKT_DATEIEN_SCHEMA_SQL}
+${QUELLENANMERKUNGEN_SCHEMA_SQL}
 ${VERLAUF_STUECKE_SCHEMA_SQL}
 ${CHAT_ZITATE_SCHEMA_SQL}
 ${AGENT_AKTUELLE_TASK_SCHEMA_SQL}

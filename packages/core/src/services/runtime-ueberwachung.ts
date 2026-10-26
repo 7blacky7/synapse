@@ -134,6 +134,9 @@ type EinstellungDef =
 
 /** Container-Werte = U4-Spezifikation (thought 791212a9 Schritt 2c). */
 export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
+  // P22-T195: Quellenanmerkungen; dieselben admin/intern-Einstellwege.
+  anmerkungen_seite: { art: 'zahl', standard: 50, min: 1, max: 200 },
+  anmerkungen_snapshot_bytes: { art: 'zahl', standard: 2000000, min: 10000, max: 20000000 },
   // P22-T192: User-Inbox; PG-Werte ueber bestehendes admin runtime_ueberwachung und Web-UI lesbar/setzbar.
   user_inbox_seite: { art: 'zahl', standard: 40, min: 1, max: 200 },
   user_inbox_abgleich_sekunden: { art: 'zahl', standard: 15, min: 5, max: 300 },

@@ -5,6 +5,7 @@ import type { MainAgentSession, RuntimeName, RuntimeStreamEvent } from '../servi
 import { countArtifacts, registerArtifactStream, unregisterArtifactStream } from '../services/agent-runtime/artifact-stream.js';
 import { agentApiRoutes } from './agent-api.js';
 import { userInboxRoutes } from './user-inbox.js';
+import { quellenanmerkungenRoutes } from './quellenanmerkungen.js';
 import {
   leseHauptagentSchalter, setzeHauptagentSchalter, hauptagentStatus, listeRuntimeAuftraege, legeRuntimeAuftragAn, brecheRuntimeAuftragAb, w1bFehlerStatus,
   listeRuntimeProjekte,
@@ -215,6 +216,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   await agentApiRoutes(fastify);
   // P22-T192: ausdruecklich nur interaktive User-Session, Guard oben gilt fuer alle Inbox-Routen.
   await userInboxRoutes(fastify);
+  await quellenanmerkungenRoutes(fastify);
 
   fastify.get('/api/agent-runtimes', async (_request, reply) => {
     try {

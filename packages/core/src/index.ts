@@ -5,6 +5,9 @@ export * from './services/artefakt-dateien.js';
 export * from './services/artefakt-ueberlauf.js';
 export { ARTEFAKT_DEFINITION } from './services/artefakt-definition.js';
 export { ARTEFAKT_DATEIEN_SCHEMA_SQL } from './db/artefakt-dateien-schema.js';
+export { QUELLENANMERKUNGEN_SCHEMA_SQL } from './db/quellenanmerkungen-schema.js';
+export * from './services/quellenanmerkungen.js';
+export { ANMERKUNGEN_DEFINITION } from './services/anmerkungen-definition.js';
 // P22-T192: User-Inbox (kein Agenten-Postfach, keine neue Ablage).
 export * from './services/user-inbox.js';
 

@@ -37,12 +37,12 @@ import { ProfilVerwaltungFehler } from './agent-profil-verwalter.js';
 type Q = import('pg').QueryConfig & { query_timeout: number };
 
 export const CHAT_ZITATE_FUNKTION = 'chat_zitate' as const;
-export const ZITAT_ARTEN = ['thought', 'memory', 'task', 'plan', 'doc', 'event', 'nachricht', 'chat', 'asset', 'ausschnitt'] as const;
+export const ZITAT_ARTEN = ['thought', 'memory', 'task', 'plan', 'doc', 'event', 'nachricht', 'chat', 'asset', 'artefakt', 'ausschnitt'] as const;
 export type ZitatArt = typeof ZITAT_ARTEN[number];
 /** Name je Art im Block (ohne Leerzeichen); die Web-UI (zitat-logik.ts) kennt dieselbe Tabelle. */
 export const ZITAT_ART_LABEL: Record<ZitatArt, string> = {
   thought: 'Thought', memory: 'Memory', task: 'Task', plan: 'Plan', doc: 'Doku', event: 'Event', nachricht: 'Channel-Nachricht',
-  chat: 'Chat-Nachricht', asset: 'Bild', ausschnitt: 'Ausschnitt',
+  chat: 'Chat-Nachricht', asset: 'Bild', artefakt: 'Artefakt', ausschnitt: 'Ausschnitt',
 };
 export const ZITAT_BLOCK_HINWEIS = 'Inhalte bei Bedarf über die IDs lesen (plan get, thought get, memory read …).';
 

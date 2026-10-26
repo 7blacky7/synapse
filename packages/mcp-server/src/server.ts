@@ -72,7 +72,7 @@ import {
   jevTool,
   filesTool,
   shellTool,
-  guideTool, artefaktTool, begrenzeStdioArtefaktAntwort,
+  guideTool, artefaktTool, anmerkungenTool, begrenzeStdioArtefaktAntwort,
 } from './tools/consolidated/index.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen. Aus core — dieselbe Funktion
 // benutzt die REST-Strecke, damit die beiden Wege nicht auseinanderlaufen.
@@ -155,6 +155,7 @@ export function createServer(): Server {
     shellTool.definition,
     guideTool.definition,
     artefaktTool.definition,
+    anmerkungenTool.definition,
   ];
 
   // PA-1: Nachschlagetabelle fuer die Parameter-Pruefung — aus DENSELBEN Definitionen, die
@@ -214,6 +215,10 @@ export function createServer(): Server {
       ...args,...(name==='code_intel'?{action:'code_intel',intel_action:args.action}:{}),
       agent_kennung:request.params.arguments?.agent_kennung??request.params.arguments?.token??process.env.SYNAPSE_AGENT_TOKEN,
     }) as {content:Array<{type:'text';text:string}>;structuredContent?:Record<string,unknown>;isError?:boolean};
+    // P22-T195: Quellenanmerkungen werden nur von der API geschrieben.
+    if (name === 'anmerkungen' && !kontext.antwort) return await anmerkungenTool.handler({...args,
+      agent_kennung: request.params.arguments?.agent_kennung ?? request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN,
+    }) as { content:Array<{type:'text';text:string}>;structuredContent?:Record<string,unknown>;isError?:boolean };
     // P22-T191: Artefakte haben denselben API-Dispatcher und dieselben Rechte auf beiden Strecken.
     if (name === 'artefakt' && !kontext.antwort) return await artefaktTool.handler({
       ...args, ...(kontext.aktiv ? { agent_kennung: request.params.arguments?.agent_kennung ?? request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : {}),

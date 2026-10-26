@@ -6,9 +6,9 @@
  *         (Ausnahme tech_docs: projektuebergreifend). Nie rohes JSON: strukturierte Werte werden zu Feldzeilen.
  */
 
-import { getPool, getPlan, findeTaskInPlan, getProjectRegistryRows } from '@synapse/core';
+import { getPool, getPlan, findeTaskInPlan, getProjectRegistryRows, ladeAnmerkungQuelle } from '@synapse/core';
 
-export type VerweisArt = 'thought' | 'memory' | 'task' | 'plan' | 'doc' | 'event' | 'nachricht' | 'chat' | 'asset';
+export type VerweisArt = 'thought' | 'memory' | 'task' | 'plan' | 'doc' | 'event' | 'nachricht' | 'chat' | 'asset' | 'artefakt';
 
 export interface VerweisTreffer {
   art: VerweisArt;
@@ -36,7 +36,7 @@ export interface VerweisInhalt {
 }
 
 export const KANDIDATEN_MAX = 60;
-const ARTEN: VerweisArt[] = ['thought', 'memory', 'task', 'plan', 'doc', 'event', 'nachricht', 'chat', 'asset'];
+const ARTEN: VerweisArt[] = ['thought', 'memory', 'task', 'plan', 'doc', 'event', 'nachricht', 'chat', 'asset', 'artefakt'];
 
 const TASK_RE = /^P\d+-T\d+$/i;
 const PLAN_RE = /^P\d+$/i;
@@ -239,6 +239,10 @@ const STATUS_TEXT: Record<string, string> = { todo: 'offen', in_progress: 'in Ar
 /** Liest einen Verweis; null, wenn es ihn im Projekt nicht gibt. */
 export async function leseVerweis(project: string, art: VerweisArt, id: string): Promise<VerweisInhalt | null> {
   switch (art) {
+    case 'artefakt': {
+      const q = await ladeAnmerkungQuelle(project, art, id);
+      return {art,id:q.id,titel:q.titel,meta:[],text:q.text};
+    }
     case 'thought': {
       const r = await frage('SELECT id, source, content, tags, timestamp, task_id FROM thoughts WHERE project = $1 AND id = $2', [project, id]);
       if (!r[0]) return null;
