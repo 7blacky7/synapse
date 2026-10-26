@@ -63,6 +63,7 @@ import { VERLAUF_STUECKE_SCHEMA_SQL } from './verlauf-stuecke-schema.js';
 import { CHAT_ZITATE_SCHEMA_SQL } from './chat-zitate-schema.js';
 import { AGENT_AKTUELLE_TASK_SCHEMA_SQL } from './agent-aktuelle-task-schema.js';
 import { AGENT_NAMENS_ALIAS_SCHEMA_SQL } from './agent-namens-alias-schema.js';
+import { API_AGENT_SCHLUESSEL_SCHEMA_SQL } from './api-agent-schluessel-schema.js';
 import { HEX_SCHEMA_SQL } from './hex-schema.js';
 import {HEX_ANALYSEN_SCHEMA_SQL} from './hex-analysen-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
@@ -3233,6 +3234,7 @@ ${VERLAUF_STUECKE_SCHEMA_SQL}
 ${CHAT_ZITATE_SCHEMA_SQL}
 ${AGENT_AKTUELLE_TASK_SCHEMA_SQL}
 ${AGENT_NAMENS_ALIAS_SCHEMA_SQL}
+${API_AGENT_SCHLUESSEL_SCHEMA_SQL}
 ${HEX_SCHEMA_SQL}
 ${HEX_ANALYSEN_SCHEMA_SQL}
 ${HEX_FORMATE_SCHEMA_SQL}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../api/auth';
-import { apiKeyAnzeige, budgetFormular, budgetZeile, usd, API_BUDGET_VORSCHLAG, type ApiBudgetStand } from './api-budget-logik';
+import { apiKeyAnzeige, apiKeyStandZeile, budgetFormular, budgetZeile, usd, API_BUDGET_VORSCHLAG, type ApiBudgetStand, type ApiKeyStand } from './api-budget-logik';
+import { ApiKeyFeld } from './ApiKeyFeld';
 
 /**
  * P22-T8 (W2-API): API-Zugang des Hauptagenten (Claude per API-Key, kostenpflichtig). Nur der User setzt Werte.
@@ -12,12 +13,14 @@ import { apiKeyAnzeige, budgetFormular, budgetZeile, usd, API_BUDGET_VORSCHLAG, 
  * P22-T175: eigener Bereich Einstellungen > API-Agenten (ControlPlaneSettingsView.tsx). 'API-Key vorhanden: ja/nein' mit dem Ort zum
  *   Hinterlegen (nie der Wert), Budgetzeile gebucht/offen/verfallen/Rest; ohne Budget ist das Formular mit dem Vorschlag des Users
  *   vorbelegt (25 USD je Tag, Haiku + Sonnet), wirksam erst mit 'Budget setzen'. Logik: api-budget-logik.ts.
+ * P22-T176: Key in der Web-UI hinterlegen/ersetzen/entfernen/testen (ApiKeyFeld.tsx, Stand api_key ohne Wert); Grund steht oben,
+ *   weil jede Aenderung ihn braucht.
  */
 interface Modell { alias: string; anbieter_modell: string; eingabe: number | null; ausgabe: number | null; cache_lesen: number | null }
 type Einstellungen = Record<string, { wert: number; quelle: string }>;
 interface Status {
   schalter: { aktiv: boolean; hauptagent: { aktiv: boolean; quelle: string }; api: { aktiv: boolean; quelle: string; letzter_fehler: string | null } };
-  budget: ApiBudgetStand; einstellungen: Einstellungen; modelle: Modell[]; api_key_vorhanden: boolean;
+  budget: ApiBudgetStand; einstellungen: Einstellungen; modelle: Modell[]; api_key_vorhanden: boolean; api_key?: ApiKeyStand;
 }
 interface KostenZeile { aufrufe: number; usd: number; monat?: string; agent_id?: string | null; modell?: string }
 interface Kosten { gesamt: KostenZeile; je_monat: KostenZeile[]; je_agent: KostenZeile[]; je_modell: KostenZeile[] }
@@ -74,7 +77,7 @@ export function ApiBudgetPanel() {
 
   useEffect(() => { void laden(); }, [laden]);
 
-  const senden = async (pfad: string, methode: string, koerper: Record<string, unknown>, erfolg: string) => {
+  const senden = async (pfad: string, methode: string, koerper: Record<string, unknown>, erfolg: string): Promise<boolean> => {
     setBusy(true);
     setError('');
     setNotice('');
@@ -84,8 +87,10 @@ export function ApiBudgetPanel() {
       if (!r.ok) throw new Error(fehlerText(d, r.status));
       setNotice(erfolg);
       await laden();
+      return true;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -93,13 +98,17 @@ export function ApiBudgetPanel() {
 
   const grundOk = grund.trim().length >= 5;
   const s = status;
-  const key = s ? apiKeyAnzeige(s.api_key_vorhanden) : null;
+  const key = s ? (s.api_key ? apiKeyStandZeile(s.api_key) : apiKeyAnzeige(s.api_key_vorhanden)) : null;
   const geaenderteWerte = s ? Object.fromEntries(Object.entries(werte).filter(([n, v]) => Number(v) !== s.einstellungen[n]?.wert).map(([n, v]) => [n, Number(v)])) : {};
   return <section aria-label="API-Zugang des Hauptagenten">
     <h3>API-Zugang (Claude per API-Key) · kostenpflichtig</h3>
     <p>Getrennt vom CLI-Abo. Ohne gesetztes Budget gibt es keine kostenpflichtigen Aufrufe und keinen bezahlten Ersatz. Werte setzt nur der User.</p>
     <div className="cp-fields">
+      <div className="cp-setting-field wide"><span><b>Grund</b><small>Pflicht fuer jede Aenderung, mindestens 5 Zeichen.</small></span>
+        <input value={grund} onChange={(event) => setGrund(event.target.value)} placeholder="z. B. Tageslimit 25 USD für den API-Hauptagenten" />
+      </div>
       <div className="scope-warning wide" data-api-key-vorhanden={key?.wert ?? ''}><b>API-Key vorhanden: {key?.wert ?? '…'}</b><span>{key?.text ?? ''}</span></div>
+      {s?.api_key && <ApiKeyFeld stand={s.api_key} grundOk={grundOk} busy={busy} senden={senden} />}
       <div className="cp-setting-field wide">
         <span>
           <b>Funktion api: {s ? (s.schalter.api.aktiv ? 'EIN' : 'AUS') : '…'} · wirksam: {s ? (s.schalter.aktiv ? 'ja' : 'nein') : '…'}</b>
@@ -128,9 +137,6 @@ export function ApiBudgetPanel() {
       {s && Object.entries(s.einstellungen).map(([name, v]) => <label key={name} className="cp-setting-field"><span><b>{EINSTELLUNG_TEXT[name] ?? name}</b><small>{name} · Quelle {v.quelle}</small></span>
         <input type="number" value={werte[name] ?? ''} onChange={(event) => setWerte({ ...werte, [name]: event.target.value })} /></label>)}
       <div className="wide"><button type="button" disabled={busy || !grundOk || !Object.keys(geaenderteWerte).length} onClick={() => void senden('/api/main-agent/api/einstellungen', 'PUT', { werte: geaenderteWerte }, 'Einstellwerte gespeichert.')}>Einstellwerte speichern</button></div>
-      <div className="cp-setting-field wide"><span><b>Grund</b><small>Pflicht fuer jede Aenderung, mindestens 5 Zeichen.</small></span>
-        <input value={grund} onChange={(event) => setGrund(event.target.value)} placeholder="z. B. Tageslimit 25 USD für den API-Hauptagenten" />
-      </div>
       <div className="scope-warning wide"><b>Kosten</b><span>{kosten
         ? 'Gesamt ' + usd(kosten.gesamt.usd) + ' in ' + kosten.gesamt.aufrufe + ' Aufrufen · je Monat: ' + (kosten.je_monat.map(z => z.monat + ' ' + usd(z.usd)).join(', ') || '–')
           + ' · je Agent: ' + (kosten.je_agent.map(z => (z.agent_id ?? '?') + ' ' + usd(z.usd)).join(', ') || '–')

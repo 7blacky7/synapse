@@ -696,6 +696,12 @@ export type {
   ApiReservierung, ApiUsage, ApiAbschlussEingabe, ApiAbschluss, ApiAgentAdminAction,
 } from './services/api-agent-dienst.js';
 export { AGENT_API_BUDGET_SCHEMA_SQL } from './db/agent-api-budget-schema.js';
+// P22-T176: Anthropic-API-Key aus der Web-UI (verschluesselt im Server-Tresor, Schalter hauptagent_api_key_webui), Schema 160.
+export {
+  API_KEY_WEBUI_FUNKTION, API_KEY_ENV, API_KEY_FORM, leseApiKeySchalter, setzeApiKeySchalter, aktuellerApiKey, leseApiKeyStand, setzeApiKey, entferneApiKey,
+} from './services/api-schluessel-dienst.js';
+export type { ApiKeySchalterStand, ApiKeyAufloesung, ApiKeyStand } from './services/api-schluessel-dienst.js';
+export { API_AGENT_SCHLUESSEL_SCHEMA_SQL } from './db/api-agent-schluessel-schema.js';
 // P22-T58 (W2e): Ueberwachung/Neustart der Runtime-Container durch die API (Schalter runtime_ueberwachung), Schema 122.
 export {
   RUNTIME_UEBERWACHUNG_FUNKTION, UEBERWACHTE_RUNTIMES, RUNTIME_UEBERWACHUNG_EINSTELLUNGEN, RUNTIME_UEBERWACHUNG_EINSTELLUNG_NAMEN,

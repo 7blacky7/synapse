@@ -56,7 +56,8 @@ ok(/from '\.\/api-budget-logik'/.test(panel) && /budgetFormular\(s\.budget, s\.m
   'P22-T175 ApiBudgetPanel.tsx: Formular und Budgetzeile aus api-budget-logik.ts');
 ok(/data-api-key-vorhanden=\{key\?\.wert \?\? ''\}><b>API-Key vorhanden: \{key\?\.wert \?\? '…'\}<\/b>/.test(panel) && /apiKeyAnzeige\(s\.api_key_vorhanden\)/.test(panel),
   'P22-T175 ApiBudgetPanel.tsx: Anzeige API-Key vorhanden ja/nein aus api_key_vorhanden');
-ok(!/process\.env/.test(panel) && !/api_key[^_]/.test(panel.replace(/api_key_vorhanden/g, '')), 'P22-T175 ApiBudgetPanel.tsx: kein Key-Wert, kein Umgebungszugriff in der Web-UI');
+// P22-T176: das Panel liest jetzt auch den Stand api_key (ohne Wert); geprueft wird weiter: kein Umgebungszugriff, kein Browser-Speicher.
+ok(!/process\.env/.test(panel) && !/localStorage|sessionStorage/.test(panel), 'P22-T175 ApiBudgetPanel.tsx: kein Umgebungszugriff, kein Browser-Speicher in der Web-UI');
 ok(/disabled=\{zeitraum !== 'monat'\}/.test(panel), 'P22-T175 ApiBudgetPanel.tsx: Reset-Tag nur bei Zeitraum monat');
 ok(/\{vorschlag && <div className="scope-warning wide" data-api-budget-vorschlag="">/.test(panel), 'P22-T175 ApiBudgetPanel.tsx: Vorschlag sichtbar, solange kein Budget gesetzt ist');
 const pfade = [...panel.matchAll(/'(\/api\/[^']+)'/g)].map((m) => m[1]);
