@@ -30,7 +30,7 @@ export const planTool: ConsolidatedTool = {
       properties: {
         action: {
           type: 'string',
-          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'abmelden', 'verschieben', 'zurueckstellen', 'einordnen'],
+          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'abmelden', 'verschieben', 'zurueckstellen', 'einordnen', 'durchlauf_abschliessen', 'standard_plaene'],
           description:
             'Aktion: "einordnen" (plan_id = Quellplan + task_id String/Array, max 200; optional ziele, verschieben, confidence_tor) laesst Jev je Task den passenden Plan waehlen — Standard nur Vorschlag, verschieben:true verschiebt die sicheren (confidence >= Tor, anderer Plan), "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) zeigt offene/laufende Tasks inkl. Beteiligter und unverbindlichem Profilhinweis; jeder Agent darf sich anmelden, "uebernehmen" (plan_id + task_id + agent_id Pflicht) meldet atomar und idempotent zur gemeinsamen Beteiligung an; bestehende Beteiligte blockieren nie, "abmelden" (task_id + agent_id Pflicht, plan_id optional) entfernt die eigene Beteiligung, letzter Beteiligter setzt nicht erledigte Tasks auf todo, "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern (status/priority/title/description), "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
@@ -57,6 +57,12 @@ export const planTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Nur fuer create: neuen Plan gleich aktiv schalten (Standard false; der erste Plan eines Projekts ist immer aktiv).',
         },
+        // P3-T16: wiederkehrende Plaene (Skill taktik-wiederkehr-plaene, Schalter wiederkehr_plaene)
+        wiederkehrend: { type: 'boolean', description: 'Nur fuer create/update: Plan als wiederkehrenden Ablauf markieren (true) bzw. aufheben (false). Mit Produkt-Schalter wiederkehr_plaene EIN gehen die wiederkehrenden Tasks nach einem Durchlauf automatisch zurueck auf todo (Debugzeile wiederkehr in der Antwort). Rueckfall: action durchlauf_abschliessen (plan_id). Fuenf Standardplaene: action standard_plaene.' },
+        einmalig: { type: 'boolean', description: 'Nur fuer add_task/update_task (und je Item in tasks): Aufbau-Task eines wiederkehrenden Plans, bleibt nach done erledigt.' },
+        abschluss: { type: 'boolean', description: 'Nur fuer add_task/update_task (und je Item in tasks): Abschluss-Task eines wiederkehrenden Plans; ihr done beendet den Durchlauf.' },
+        vorschau: { type: 'boolean', description: 'Nur fuer standard_plaene: true (Standard) zeigt, welche der fuenf Standardplaene angelegt wuerden; false legt sie an (Schalter wiederkehr_plaene EIN). Vorhandene Plaene gleichen Namensstamms werden nicht doppelt angelegt.' },
+        vorlagen: { type: 'array', items: { type: 'string', enum: ['deploy', 'testlauf', 'befunde', 'agenten', 'doku'] }, description: 'Nur fuer standard_plaene: Auswahl (Standard alle fuenf).' },
         ...PLAN_SEARCH_PROPERTIES,
         // fuer "update"
         name: {
@@ -139,6 +145,8 @@ export const planTool: ConsolidatedTool = {
               title: { type: 'string' },
               description: { type: 'string' },
               priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+              einmalig: { type: 'boolean' },
+              abschluss: { type: 'boolean' },
             },
             required: ['title', 'description'],
           },
@@ -236,6 +244,7 @@ export const planTool: ConsolidatedTool = {
           architecture: str(args, 'architecture'),
           prioritaet: str(args, 'plan_prioritaet'),
           git_branch: str(args, 'git_branch'),
+          wiederkehrend: bool(args, 'wiederkehrend'),
         }, str(args, 'plan_id'));
         return result;
       }
@@ -248,12 +257,13 @@ export const planTool: ConsolidatedTool = {
           | 'medium'
           | 'high';
 
-        const result = await addPlanTask(project, title, description, priority, str(args, 'plan_id'), str(args, 'git_branch'));
+        const result = await addPlanTask(project, title, description, priority, str(args, 'plan_id'), str(args, 'git_branch'),
+          { einmalig: args.einmalig, abschluss: args.abschluss });
         return result;
       }
 
       case 'add_tasks_batch': {
-        const tasks = objArray<{ title: string; description: string; priority?: string }>(args, 'tasks');
+        const tasks = objArray<{ title: string; description: string; priority?: string; einmalig?: unknown; abschluss?: unknown }>(args, 'tasks');
         if (!tasks || tasks.length === 0) {
           return { success: false, count: 0, tasks: [], message: 'tasks (Array) ist erforderlich' };
         }
@@ -261,6 +271,9 @@ export const planTool: ConsolidatedTool = {
           title: String(t.title ?? ''),
           description: String(t.description ?? ''),
           priority: (t.priority as 'low' | 'medium' | 'high' | undefined) ?? undefined,
+          // P3-T16: Markierungen nur, wenn gesetzt
+          ...(t.einmalig !== undefined ? { einmalig: t.einmalig } : {}),
+          ...(t.abschluss !== undefined ? { abschluss: t.abschluss } : {}),
         }));
         const result = await addPlanTasksBatch(project, normalized, str(args, 'plan_id'));
         return result;
@@ -268,7 +281,10 @@ export const planTool: ConsolidatedTool = {
 
       case 'update_task': {
         const taskId = reqStr(args, 'task_id');
-        const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high'; git_branch?: string } = {};
+        const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high'; git_branch?: string; einmalig?: boolean; abschluss?: boolean } = {};
+        // P3-T16: Markierungen roh weitergeben, core prueft den Typ (taskMarken)
+        if (args.einmalig !== undefined) updates.einmalig = args.einmalig as boolean;
+        if (args.abschluss !== undefined) updates.abschluss = args.abschluss as boolean;
         const t = str(args, 'title'); if (t !== undefined) updates.title = t;
         const d = str(args, 'description'); if (d !== undefined) updates.description = d;
         const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
@@ -334,7 +350,21 @@ export const planTool: ConsolidatedTool = {
           aktiv: args.aktiv === true,
           prioritaet: str(args, 'plan_prioritaet'),
           git_branch: str(args, 'git_branch'),
+          wiederkehrend: bool(args, 'wiederkehrend'),
         });
+      }
+
+      case 'durchlauf_abschliessen': {
+        // P3-T16: Rueckfall zur automatischen Rueckstellung (Schalter wiederkehr_plaene, Entscheidung Koordinator 28878)
+        const { schliesseDurchlaufAb } = await import('@synapse/core');
+        return await schliesseDurchlaufAb(project, str(args, 'plan_id')) as unknown as Record<string, unknown>;
+      }
+
+      case 'standard_plaene': {
+        // P3-T16: die fuenf Standardplaene anlegen bzw. nachruesten (Standard Vorschau)
+        if (args.vorschau !== undefined && typeof args.vorschau !== 'boolean') throw new Error('vorschau muss boolean sein');
+        const { legeStandardPlaeneAn } = await import('@synapse/core');
+        return await legeStandardPlaeneAn(project, { vorschau: args.vorschau !== false, auswahl: strArray(args, 'vorlagen') }) as unknown as Record<string, unknown>;
       }
 
       case 'aktivieren': {

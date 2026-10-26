@@ -55,6 +55,9 @@ import { leseGeschuetztenHauptbranch } from './hinweis-drossel.js';
 import { pruefeGitBranch } from './git-branch.js';
 export { pruefeGitBranch } from './git-branch.js';
 import {
+  leseWiederkehrSchalter, wiederkehrDebug, pruefeDurchlaufEnde, setzeDurchlaufZurueck, taskMarken, type WiederkehrDebug,
+} from './plan-wiederkehr.js';
+import {
   planNummer, taskNummer, planKurzId, taskKurzId, waehleAktiven, ergaenzeTaskKurzIds,
 } from './plan-kurz-ids.js';
 
@@ -83,6 +86,10 @@ interface PlanZeile {
   git_branch?: string | null;
   /** Wiedervorlage (P3-T3): bis dahin aus list/Onboarding ausgeblendet; fehlt/null = nicht zurueckgestellt */
   zurueckgestellt_bis?: string | Date | null;
+  /** P3-T16: wiederkehrender Plan + Durchlauf-Zaehler (Schema 163); fehlt/null = normaler Plan */
+  wiederkehrend?: boolean | null;
+  durchlauf?: number | null;
+  letzter_durchlauf_am?: string | Date | null;
 }
 
 /** Plan-Prioritaet (P3-T2): Reihenfolge fuer die Sortierung, kleiner = wichtiger */
@@ -134,6 +141,9 @@ export interface PlanListenEintrag {
   zurueckgestellt_bis?: string;
   /** Wiedervorlage abgelaufen: Datum, an dem der Plan wieder vorgelegt wurde */
   wieder_vorgelegt_seit?: string;
+  /** P3-T16: nur bei wiederkehrenden Plaenen, sonst fehlt das Feld */
+  wiederkehrend?: boolean;
+  durchlauf?: number;
 }
 
 /**
@@ -254,7 +264,8 @@ const iso = (x: string | Date | null | undefined): string =>
 async function lesePlaene(project: string): Promise<PlanZeile[]> {
   const { rows } = await getPool().query<PlanZeile>(
     `SELECT id, project, name, description, goals, architecture, tasks, created_at, updated_at,
-            kurz_id, aktiv, naechste_task_nr, prioritaet, zurueckgestellt_bis, git_branch
+            kurz_id, aktiv, naechste_task_nr, prioritaet, zurueckgestellt_bis, git_branch,
+            wiederkehrend, durchlauf, letzter_durchlauf_am
      FROM plans WHERE project = $1 ORDER BY created_at, id`,
     [project],
   );
@@ -286,6 +297,9 @@ function zuPlan(z: PlanZeile, alle: PlanZeile[]): ProjectPlan {
     plaene_im_projekt: alle.length,
     prioritaet: prioritaetVon(z.prioritaet),
     ...(z.zurueckgestellt_bis ? { zurueckgestellt_bis: iso(z.zurueckgestellt_bis) } : {}),
+    // P3-T16: nur bei wiederkehrenden Plaenen, sonst bleibt die Antwortform wie bisher
+    ...(z.wiederkehrend === true ? { wiederkehrend: true, durchlauf: z.durchlauf ?? 0,
+      ...(z.letzter_durchlauf_am ? { letzter_durchlauf_am: iso(z.letzter_durchlauf_am) } : {}) } : {}),
   };
 }
 
@@ -425,6 +439,7 @@ export async function listPlansDetail(
       updated_at: iso(z.updated_at),
       ...(schlaeft && bis ? { zurueckgestellt: true, zurueckgestellt_bis: bis.toISOString() } : {}),
       ...(!schlaeft && bis ? { wieder_vorgelegt_seit: bis.toISOString() } : {}),
+      ...(z.wiederkehrend === true ? { wiederkehrend: true, durchlauf: z.durchlauf ?? 0 } : {}),
     });
   }
   return { plaene, ausgeblendet };
@@ -832,9 +847,25 @@ function pruefeTaskPrioritaet(priority: unknown): void {
   if (!['low', 'medium', 'high'].includes(String(priority))) throw new Error('Ungültige Task-Priorität: low | medium | high verwenden.');
 }
 
-function neueTask(title: string, description: string, priority: ProjectTask['priority'], jetzt: string): ProjectTask {
+function neueTask(
+  title: string, description: string, priority: ProjectTask['priority'], jetzt: string,
+  marken: { einmalig?: boolean; abschluss?: boolean } = {},
+): ProjectTask {
   pruefeTaskPrioritaet(priority);
-  return { id: uuidv4(), title, description, status: 'todo', priority, createdAt: jetzt, updatedAt: jetzt };
+  // P3-T16: Markierungen nur, wenn gesetzt (sonst unveraenderte Task-Form)
+  return { id: uuidv4(), title, description, status: 'todo', priority, createdAt: jetzt, updatedAt: jetzt, ...marken };
+}
+
+/** P3-T16: Durchlauf-Zaehler erhoehen; Fehler nur protokollieren (die Rueckstellung selbst ist schon geschrieben). */
+async function zaehleDurchlauf(planId: string): Promise<number | undefined> {
+  try {
+    const r = await getPool().query<{ durchlauf: number }>(
+      'UPDATE plans SET durchlauf = COALESCE(durchlauf, 0) + 1, letzter_durchlauf_am = NOW() WHERE id = $1 RETURNING durchlauf', [planId]);
+    return r.rows[0]?.durchlauf;
+  } catch (fehler) {
+    console.error('[Synapse] Durchlauf zaehlen fehlgeschlagen:', fehler);
+    return undefined;
+  }
 }
 
 /**
@@ -848,7 +879,7 @@ export async function createPlan(
   name: string,
   description: string,
   goals: string[] = [],
-  optionen: { aktiv?: boolean; architecture?: string; prioritaet?: string; git_branch?: string } = {},
+  optionen: { aktiv?: boolean; architecture?: string; prioritaet?: string; git_branch?: string; wiederkehrend?: boolean } = {},
 ): Promise<ProjectPlan> {
   const prioritaet = pruefePrioritaet(optionen.prioritaet) ?? 'mittel'; // ungueltig -> Error, nichts geschrieben
   const gitBranch = optionen.git_branch === undefined ? undefined : pruefeGitBranch(optionen.git_branch, await leseGeschuetztenHauptbranch(project));
@@ -877,6 +908,10 @@ export async function createPlan(
   );
   if (aktiv && alle.length > 0) {
     await setzeAktivenPlan(project, id);
+  }
+  // P3-T16: Markierung nur, wenn gesetzt (sonst bleibt die Spalte NULL = Altverhalten)
+  if (optionen.wiederkehrend === true) {
+    await pool.query('UPDATE plans SET wiederkehrend = true, durchlauf = COALESCE(durchlauf, 0) WHERE id = $1', [id]);
   }
 
   const plan = (await getPlan(project, id))!;
@@ -924,7 +959,7 @@ export async function aktivierePlan(project: string, planRef: string): Promise<P
  */
 export async function updatePlan(
   project: string,
-  updates: Partial<Pick<ProjectPlan, 'name' | 'description' | 'goals' | 'architecture' | 'git_branch'>> & { prioritaet?: string },
+  updates: Partial<Pick<ProjectPlan, 'name' | 'description' | 'goals' | 'architecture' | 'git_branch'>> & { prioritaet?: string; wiederkehrend?: boolean },
   planRef?: string | null,
 ): Promise<ProjectPlan | null> {
   const prioritaet = pruefePrioritaet(updates.prioritaet); // ungueltig -> Error, nichts geschrieben
@@ -957,8 +992,14 @@ export async function updatePlan(
     };
   }, prioritaet, gitBranch);
   if (!r) return null;
-  console.error(`[Synapse] Plan aktualisiert: "${r.plan.name}"`);
-  return { ...r.plan, ...(r.warning ? { warning: r.warning } : {}) };
+  let plan = r.plan;
+  // P3-T16: Markierung wiederkehrend (true setzt, false hebt auf); der Durchlauf-Zaehler bleibt erhalten.
+  if (updates.wiederkehrend !== undefined) {
+    await getPool().query('UPDATE plans SET wiederkehrend = $2, durchlauf = COALESCE(durchlauf, 0) WHERE id = $1', [ziel.id, updates.wiederkehrend]);
+    plan = (await getPlan(project, ziel.id)) ?? plan;
+  }
+  console.error(`[Synapse] Plan aktualisiert: "${plan.name}"`);
+  return { ...plan, ...(r.warning ? { warning: r.warning } : {}) };
 }
 
 /** Fuegt eine Task hinzu — ohne planRef zum aktiven Plan. null, wenn das Projekt keinen Plan hat. */
@@ -969,8 +1010,10 @@ export async function addTask(
   priority: ProjectTask['priority'] = 'medium',
   planRef?: string | null,
   gitBranch?: string,
+  marken: { einmalig?: unknown; abschluss?: unknown } = {},
 ): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
   if (gitBranch !== undefined) pruefeGitBranch(gitBranch, await leseGeschuetztenHauptbranch(project));
+  const taskMarke = taskMarken(marken); // P3-T16: ungueltig -> Error, nichts geschrieben
   const alle = await lesePlaene(project);
   const ziel = findePlan(project, alle, planRef);
   if (!ziel) {
@@ -978,7 +1021,7 @@ export async function addTask(
     return null;
   }
   const aehnlich = await taskDublettenHinweis(project, title, description);
-  const task = { ...neueTask(title, description, priority, new Date().toISOString()), ...(gitBranch !== undefined ? { git_branch: gitBranch } : {}) };
+  const task = { ...neueTask(title, description, priority, new Date().toISOString(), taskMarke), ...(gitBranch !== undefined ? { git_branch: gitBranch } : {}) };
   const r = await schreibePlan(project, ziel.id, (stand) => ({ stand: { ...stand, tasks: [...stand.tasks, task] }, ergebnis: task.id }));
   if (!r) return null;
   const gespeichert = r.plan.tasks.find((t) => t.id === task.id)!;
@@ -989,7 +1032,7 @@ export async function addTask(
 /** Fuegt mehrere Tasks atomar hinzu (ein Schreibvorgang) — ohne planRef zum aktiven Plan. */
 export async function addTasksBatch(
   project: string,
-  tasksInput: Array<{ title: string; description: string; priority?: ProjectTask['priority'] }>,
+  tasksInput: Array<{ title: string; description: string; priority?: ProjectTask['priority']; einmalig?: unknown; abschluss?: unknown }>,
   planRef?: string | null,
 ): Promise<{ tasks: ProjectTask[]; aehnlich?: Array<{ task: string; treffer: unknown[] }>; aehnlich_hinweis?: string; warning?: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
   if (tasksInput.length === 0) return { tasks: [] };
@@ -1000,7 +1043,7 @@ export async function addTasksBatch(
     return { tasks: [] };
   }
   const jetzt = new Date().toISOString();
-  const neu = tasksInput.map((t) => neueTask(t.title, t.description, t.priority ?? 'medium', jetzt));
+  const neu = tasksInput.map((t) => neueTask(t.title, t.description, t.priority ?? 'medium', jetzt, taskMarken(t)));
   const r = await schreibePlan(project, ziel.id, (stand) => ({ stand: { ...stand, tasks: [...stand.tasks, ...neu] }, ergebnis: null }));
   if (!r) return { tasks: [] };
   const aehnlich = await Promise.all(neu.map(t => taskDublettenHinweis(project, t.title, t.description, [t.id])));
@@ -1057,11 +1100,16 @@ function findeTask(project: string, alle: PlanZeile[], taskRef: string, planRef?
 export async function updateTask(
   project: string,
   taskId: string,
-  updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority' | 'git_branch'>>,
+  updates: Partial<Pick<ProjectTask, 'title' | 'description' | 'status' | 'priority' | 'git_branch' | 'einmalig' | 'abschluss'>>,
   planRef?: string | null,
   bearbeiter?: TaskBearbeiter,
-): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string }) | null> {
+): Promise<(ProjectTask & { plan_ref?: PlanRef; hinweis_plaene?: string; wiederkehr?: WiederkehrDebug }) | null> {
   if (updates.priority !== undefined) pruefeTaskPrioritaet(updates.priority);
+  // P3-T16: Markierungen pruefen; einmalig und abschluss schliessen sich aus (das neu gesetzte gewinnt)
+  const marke = taskMarken(updates);
+  if (marke.einmalig === true) marke.abschluss = false;
+  if (marke.abschluss === true) marke.einmalig = false;
+  updates = { ...updates, ...marke };
   if (updates.git_branch !== undefined) pruefeGitBranch(updates.git_branch, await leseGeschuetztenHauptbranch(project));
   const alle = await lesePlaene(project);
   const fund = findeTask(project, alle, taskId, planRef);
@@ -1073,14 +1121,39 @@ export async function updateTask(
   // P22-T28 (H3): Legacy-Audit erst NACH dem erfolgreichen Update (nachErfolg), nicht mehr im Gate.
   const bindung = await vormerkenTaskBindungBearbeiten(project, zielId, fund.task.kurz_id ?? zielId, bearbeiter);
   if (bindung.sperre) throw new Error(bindung.sperre);
+  // P3-T16: wiederkehrender Plan - den Schalter nur hier lesen (Verwaltungspfad) und nur beim Wechsel auf done.
+  const wkSchalter = fund.plan.wiederkehrend === true && updates.status === 'done' && fund.task.status !== 'done'
+    ? await leseWiederkehrSchalter(project) : null;
+  const wk: { erg: ReturnType<typeof setzeDurchlaufZurueck> | null } = { erg: null };
   const r = await schreibePlan(project, fund.plan.id, (stand) => {
     const i = stand.tasks.findIndex((t) => t.id === zielId);
     if (i === -1) return null;
     const tasks = [...stand.tasks];
     tasks[i] = { ...(updates.status === 'todo' ? mitTaskBeteiligten(tasks[i], []) : tasks[i]), ...updates, updatedAt: new Date().toISOString() };
+    wk.erg = null;
+    if (wkSchalter?.aktiv && pruefeDurchlaufEnde(tasks, zielId)) {
+      // Letzte Task des Durchlaufs: alle wiederkehrenden Tasks im SELBEN Schreibvorgang zurueck auf todo.
+      const z = setzeDurchlaufZurueck(tasks, new Date().toISOString());
+      wk.erg = z;
+      return { stand: { ...stand, tasks: z.tasks }, ergebnis: null };
+    }
     return { stand: { ...stand, tasks }, ergebnis: null };
   });
   if (!r) return null;
+  let wiederkehr: WiederkehrDebug | undefined;
+  if (wkSchalter) {
+    const erg = wk.erg;
+    const durchlauf = erg ? await zaehleDurchlauf(fund.plan.id) : undefined;
+    wiederkehr = wiederkehrDebug(wkSchalter, {
+      plan: fund.plan.kurz_id ?? fund.plan.id, wiederkehrend: true, durchlauf_beendet: !!erg,
+      ...(erg
+        ? { durchlauf, zurueckgesetzt: erg.zurueckgesetzt, ...(erg.waren_offen.length > 0 ? { waren_offen: erg.waren_offen } : {}),
+          hinweis: 'Durchlauf abgeschlossen: die wiederkehrenden Tasks stehen wieder auf todo.' }
+        : { hinweis: wkSchalter.aktiv
+          ? 'Durchlauf laeuft noch (Abschluss-Task bzw. weitere wiederkehrende Tasks offen).'
+          : 'Schalter wiederkehr_plaene AUS: keine automatische Rueckstellung, die Abschluss-Task setzt von Hand zurueck.' }),
+    });
+  }
   if (bindung.nachErfolg) {
     try { await bindung.nachErfolg(); } catch (fehler) { console.error('[Synapse] Task-Bindungs-Audit (update_task ohne Token) fehlgeschlagen:', fehler); }
   }
@@ -1089,8 +1162,49 @@ export async function updateTask(
     try { await loeseBindungBeiErledigt(project, [zielId, fund.task.kurz_id]); } catch (fehler) { console.error('[Synapse] Task-Bindung bei done loesen fehlgeschlagen:', fehler); }
   }
   const gespeichert = r.plan.tasks.find((t) => t.id === zielId)!;
-  console.error(`[Synapse] Task aktualisiert: "${gespeichert.title}"`);
-  return { ...gespeichert, ...planKontext(r.plan), ...(r.warning ? { warning: r.warning } : {}) };
+  console.error(`[Synapse] Task aktualisiert: "${gespeichert.title}"${wiederkehr?.durchlauf_beendet ? ' (Durchlauf abgeschlossen, wiederkehrende Tasks auf todo)' : ''}`);
+  return { ...gespeichert, ...planKontext(r.plan), ...(r.warning ? { warning: r.warning } : {}), ...(wiederkehr ? { wiederkehr } : {}) };
+}
+
+/**
+ * P3-T16: plan(durchlauf_abschliessen) - Rueckfall zur automatischen Rueckstellung (Entscheidung Koordinator 28878).
+ * Nur bei Schalter wiederkehr_plaene EIN und wiederkehrendem Plan: setzt ALLE wiederkehrenden Tasks auf todo (auch offene,
+ * sie stehen in waren_offen), einmalige bleiben, und zaehlt den Durchlauf. Ohne planRef der aktive Plan.
+ */
+export async function schliesseDurchlaufAb(project: string, planRef?: string | null): Promise<{
+  success: boolean; message: string; wiederkehr: WiederkehrDebug; plan_ref?: PlanRef; hinweis_plaene?: string;
+}> {
+  const schalter = await leseWiederkehrSchalter(project);
+  const alle = await lesePlaene(project);
+  const ziel = findePlan(project, alle, planRef);
+  if (!ziel) return { success: false, message: `Projekt ${project} hat keinen Plan.`, wiederkehr: wiederkehrDebug(schalter) };
+  const name = ziel.kurz_id ?? ziel.id;
+  const basis = { plan: name, wiederkehrend: ziel.wiederkehrend === true };
+  if (!schalter.aktiv) {
+    return { success: false, wiederkehr: wiederkehrDebug(schalter, basis),
+      message: `Schalter wiederkehr_plaene ist AUS (Standard). Einschalten: admin(action:"profil_schalter_setzen", profil_funktion:"wiederkehr_plaene", aktiv:true, ebene:"projekt"). Bis dahin die Tasks von Hand per update_task zuruecksetzen.` };
+  }
+  if (ziel.wiederkehrend !== true) {
+    return { success: false, wiederkehr: wiederkehrDebug(schalter, basis),
+      message: `Plan ${name} "${ziel.name}" ist nicht wiederkehrend. Markieren: plan(action:"update", plan_id:"${name}", wiederkehrend:true).` };
+  }
+  const halter: { erg: ReturnType<typeof setzeDurchlaufZurueck> | null } = { erg: null };
+  const r = await schreibePlan(project, ziel.id, (stand) => {
+    const z = setzeDurchlaufZurueck(stand.tasks, new Date().toISOString());
+    halter.erg = z;
+    return { stand: { ...stand, tasks: z.tasks }, ergebnis: null };
+  });
+  const erg = halter.erg;
+  if (!r || !erg) return { success: false, message: `Plan ${name} nicht gefunden.`, wiederkehr: wiederkehrDebug(schalter, basis) };
+  const durchlauf = await zaehleDurchlauf(ziel.id);
+  console.error(`[Synapse] Durchlauf ${durchlauf ?? '?'} von Plan ${name} abgeschlossen (${erg.zurueckgesetzt.length} Tasks auf todo)`);
+  return {
+    success: true,
+    message: `Durchlauf ${durchlauf ?? '?'} von Plan ${name} abgeschlossen: ${erg.zurueckgesetzt.length} wiederkehrende Tasks stehen wieder auf todo.`,
+    wiederkehr: wiederkehrDebug(schalter, { ...basis, durchlauf_beendet: true, durchlauf, zurueckgesetzt: erg.zurueckgesetzt,
+      ...(erg.waren_offen.length > 0 ? { waren_offen: erg.waren_offen } : {}) }),
+    ...planKontext(r.plan),
+  };
 }
 
 /** Loescht Tasks (UUID oder P<n>-T<m>), auch ueber mehrere Plaene; je Plan ein Schreibvorgang. */

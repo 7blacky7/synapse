@@ -69,6 +69,8 @@ export async function updateProjectPlan(
     architecture?: string;
     prioritaet?: string;
     git_branch?: string;
+    /** P3-T16: wiederkehrender Plan */
+    wiederkehrend?: boolean;
   },
   planRef?: string,
 ): Promise<{
@@ -114,6 +116,7 @@ export async function addPlanTask(
   priority: 'low' | 'medium' | 'high' = 'medium',
   planRef?: string,
   gitBranch?: string,
+  marken: { einmalig?: unknown; abschluss?: unknown } = {},
 ): Promise<{
   success: boolean;
   task: ProjectTask | null;
@@ -124,7 +127,7 @@ export async function addPlanTask(
   hinweis_plaene?: string;
 }> {
   try {
-    const task = await addTask(project, title, description, priority, planRef, gitBranch);
+    const task = await addTask(project, title, description, priority, planRef, gitBranch, marken);
 
     if (!task) {
       return {
@@ -159,7 +162,7 @@ export async function addPlanTask(
  */
 export async function addPlanTasksBatch(
   project: string,
-  tasksInput: Array<{ title: string; description: string; priority?: 'low' | 'medium' | 'high' }>,
+  tasksInput: Array<{ title: string; description: string; priority?: 'low' | 'medium' | 'high'; einmalig?: unknown; abschluss?: unknown }>,
   planRef?: string,
 ): Promise<{
   success: boolean;
@@ -218,6 +221,9 @@ export async function updatePlanTask(
     status?: 'todo' | 'in_progress' | 'done' | 'blocked';
     priority?: 'low' | 'medium' | 'high';
     git_branch?: string;
+    /** P3-T16: Markierungen in wiederkehrenden Plaenen */
+    einmalig?: boolean;
+    abschluss?: boolean;
   },
   planRef?: string,
   bearbeiter?: { agent_id?: string | null; grund?: string | null },
@@ -227,6 +233,8 @@ export async function updatePlanTask(
   message: string;
   plan_ref?: PlanRef;
   hinweis_plaene?: string;
+  /** P3-T16: Debugzeile bei wiederkehrenden Plaenen */
+  wiederkehr?: unknown;
 }> {
   try {
     const task = await updateTask(project, taskId, updates, planRef, bearbeiter);
@@ -242,7 +250,8 @@ export async function updatePlanTask(
     return {
       success: true,
       task,
-      message: `Task aktualisiert`,
+      message: task.wiederkehr?.durchlauf_beendet ? 'Task aktualisiert; Durchlauf abgeschlossen, wiederkehrende Tasks wieder auf todo' : `Task aktualisiert`,
+      ...(task.wiederkehr ? { wiederkehr: task.wiederkehr } : {}),
       ...(task.plan_ref ? { plan_ref: task.plan_ref } : {}),
       ...(task.hinweis_plaene ? { hinweis_plaene: task.hinweis_plaene } : {}),
     };
@@ -332,7 +341,7 @@ export async function listProjectPlans(project: string, alle?: boolean): Promise
  */
 export async function createProjectPlan(
   project: string,
-  eingabe: { name: string; description?: string; goals?: string[]; architecture?: string; aktiv?: boolean; prioritaet?: string; git_branch?: string },
+  eingabe: { name: string; description?: string; goals?: string[]; architecture?: string; aktiv?: boolean; prioritaet?: string; git_branch?: string; wiederkehrend?: boolean },
 ): Promise<{ success: boolean; plan: ProjectPlan | null; message: string; plan_ref?: PlanRef; hinweis_plaene?: string }> {
   try {
     const plan = await createPlan(project, eingabe.name, eingabe.description ?? '', eingabe.goals ?? [], {
@@ -340,6 +349,7 @@ export async function createProjectPlan(
       architecture: eingabe.architecture,
       ...(eingabe.prioritaet !== undefined ? { prioritaet: eingabe.prioritaet } : {}),
       ...(eingabe.git_branch !== undefined ? { git_branch: eingabe.git_branch } : {}),
+      ...(eingabe.wiederkehrend !== undefined ? { wiederkehrend: eingabe.wiederkehrend } : {}),
     });
     return {
       success: true,

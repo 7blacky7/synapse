@@ -126,6 +126,11 @@ export interface ProjectPlan {
   /** Ziel-Branch für den GIT-Commit, nicht Synapse files commit; fehlt er, gilt der aktuelle Arbeitsbranch. */
   git_branch?: string | null;
   git_branch_hinweis?: string;
+  /** P3-T16: wiederkehrender Plan (Ablauf); fehlt = normaler Plan */
+  wiederkehrend?: boolean;
+  /** P3-T16: Zahl abgeschlossener Durchlaeufe und Zeitpunkt des letzten (nur bei wiederkehrend) */
+  durchlauf?: number;
+  letzter_durchlauf_am?: string;
 }
 
 export interface ProjectTask {
@@ -142,6 +147,10 @@ export interface ProjectTask {
   /** Ziel-Branch für den GIT-Commit; sonst vom Plan geerbt. */
   git_branch?: string | null;
   git_branch_hinweis?: string;
+  /** P3-T16: in wiederkehrenden Plaenen Aufbau-Task, bleibt nach done erledigt */
+  einmalig?: boolean;
+  /** P3-T16: in wiederkehrenden Plaenen Abschluss-Task; ihr done beendet den Durchlauf */
+  abschluss?: boolean;
   /** Weitere Felder (z. B. empfehlung) bleiben beim Schreiben erhalten */
   [key: string]: unknown;
 }

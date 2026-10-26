@@ -54,6 +54,10 @@ const projectTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Framework-Dokumentation vorladen (Standard: true, für init)',
         },
+        standard_plaene: {
+          type: 'boolean',
+          description: 'Nur init: true legt nach erfolgreichem Anlegen die fuenf wiederkehrenden Standardplaene an (Schalter wiederkehr_plaene EIN; Skill taktik-wiederkehr-plaene). Spaeter nachruesten: plan(action:"standard_plaene").',
+        },
         erstellen: {
           type: 'boolean',
           description: 'Nur projekt_db: true legt die Projekt-DB an, falls keine existiert (sonst nur anzeigen).',
@@ -169,7 +173,9 @@ const projectTool: ConsolidatedTool = {
             }
             if (job.status === 'done' && job.resolved_path) {
               const result = await initProjekt(job.resolved_path, job.name, indexDocs, agentId);
-              return { ...result, job_id: job.id, projekt_db: await projektDbFeld(job.name), message: job.message ?? (result as { message?: string }).message };
+              // P3-T16: optional die fuenf Standardplaene (ohne standard_plaene:true kein Feld = Altverhalten)
+              const { standardPlaeneBeiInit } = await import('@synapse/core');
+              return { ...result, job_id: job.id, projekt_db: await projektDbFeld(job.name), ...(await standardPlaeneBeiInit(args.standard_plaene, job.name)), message: job.message ?? (result as { message?: string }).message };
             }
             // Wait gelaufen aber Job noch pending/running = Daemon hat nicht abgeholt.
             if (job.status === 'pending' || job.status === 'running') {
@@ -191,6 +197,13 @@ const projectTool: ConsolidatedTool = {
           }
 
           const result = await initProjekt(explicitPath, requestedName, indexDocs, agentId);
+          // P3-T16: optional die fuenf Standardplaene (nur nach erfolgreichem Init, ohne Wunsch Altverhalten)
+          const initErgebnis = result as Record<string, unknown>;
+          if (args.standard_plaene === true && initErgebnis.success !== false) {
+            const { standardPlaeneBeiInit } = await import('@synapse/core');
+            const projektName = typeof initErgebnis.project === 'string' ? initErgebnis.project : requestedName;
+            return { ...initErgebnis, ...(await standardPlaeneBeiInit(true, projektName)) };
+          }
           return result;
         }
 

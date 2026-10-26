@@ -5,8 +5,8 @@
       "skill_name": "fall-plan",
       "weg": "beide",
       "sections": [
-        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer plan (Projektplaene und Tasks). Ein Projekt hat mehrere Plaene (Kurz-ID P<n>), genau einer ist aktiv; Tasks haben Kurz-IDs P<n>-T<m>. Aktionen: list, create, aktivieren, get, update, search, add_task, add_tasks_batch, update_task, delete_task, passende_tasks, uebernehmen, abmelden, verschieben, einordnen, zurueckstellen, empfehlen." },
-        { "section": "faelle", "content": "- fall-plan-mehrere-plaene: plan_id, Kurz-IDs, aktiver Plan, Prioritaet.\n- fall-plan-task-status: Status setzen, einzeln vs. Array.\n- fall-plan-grund-legacy: grund_noetig bei gebundenen Tasks.\n- fall-plan-beteiligung: passende_tasks, uebernehmen, abmelden.\n- fall-plan-zurueckstellen: Wiedervorlage.\n- fall-plan-verschieben-einordnen: Tasks zwischen Plaenen.\n- fall-plan-empfehlen: Modell-/Effort-Empfehlung per Jev.\n- fall-plan-neue-tasks: wer Tasks anlegt, vorher suchen." }
+        { "section": "uebersicht", "content": "Uebersicht der Fall-Skills fuer plan (Projektplaene und Tasks). Ein Projekt hat mehrere Plaene (Kurz-ID P<n>), genau einer ist aktiv; Tasks haben Kurz-IDs P<n>-T<m>. Aktionen: list, create, aktivieren, get, update, search, add_task, add_tasks_batch, update_task, delete_task, passende_tasks, uebernehmen, abmelden, verschieben, einordnen, zurueckstellen, empfehlen, durchlauf_abschliessen, standard_plaene." },
+        { "section": "faelle", "content": "- fall-plan-mehrere-plaene: plan_id, Kurz-IDs, aktiver Plan, Prioritaet.\n- fall-plan-task-status: Status setzen, einzeln vs. Array.\n- fall-plan-grund-legacy: grund_noetig bei gebundenen Tasks.\n- fall-plan-beteiligung: passende_tasks, uebernehmen, abmelden.\n- fall-plan-zurueckstellen: Wiedervorlage.\n- fall-plan-verschieben-einordnen: Tasks zwischen Plaenen.\n- fall-plan-empfehlen: Modell-/Effort-Empfehlung per Jev.\n- fall-plan-neue-tasks: wer Tasks anlegt, vorher suchen.\n- fall-plan-wiederkehrend: wiederkehrende Plaene, Durchlauf abschliessen, Standardplaene." }
       ]
     },
     {
@@ -71,6 +71,14 @@
       "sections": [
         { "section": "uebersicht", "content": "Ausloeser: add_task/add_tasks_batch." },
         { "section": "regeln", "content": "1. Neue Tasks legt nur der Koordinator an (Regel). Subagenten melden Vorschlaege im Channel bzw. als thought.\n2. Vorher plan(search, query) bzw. search(tasks) - Dubletten vermeiden.\n3. add_tasks_batch: 1..50 Tasks {title, description, priority?} atomar." }
+      ]
+    },
+    {
+      "skill_name": "fall-plan-wiederkehrend",
+      "weg": "beide",
+      "sections": [
+        { "section": "uebersicht", "content": "Ausloeser: wiederkehrende Ablaeufe (Deploy, Gesamttest, Befunde, Uebergaben, Doku) als Plan fuehren, einen Durchlauf abschliessen, die fuenf Standardplaene anlegen oder nachruesten (P3-T16, Skill taktik-wiederkehr-plaene)." },
+        { "section": "regeln", "content": "1. Plan markieren: plan(create|update, wiederkehrend:true). Tasks: einmalig:true = Aufbau-Task (bleibt done), abschluss:true = letzte Task des Durchlaufs; alle anderen sind wiederkehrend. Auch je Item in add_tasks_batch.\n2. Produkt-Schalter wiederkehr_plaene (Standard AUS, je Projekt): AUS = nichts automatisch, die Abschluss-Task setzt die Tasks von Hand per update_task zurueck. EIN = beim done der Abschluss-Task (ohne Abschluss-Task: der letzten wiederkehrenden Task) gehen alle wiederkehrenden Tasks im selben Schreibvorgang auf todo und der Durchlauf zaehlt hoch.\n3. Debugzeile wiederkehr in der Antwort von update_task: schalter, quelle, durchlauf_beendet, durchlauf, zurueckgesetzt, waren_offen, hinweis.\n4. Rueckfall: plan(durchlauf_abschliessen, plan_id) setzt sofort alle wiederkehrenden Tasks zurueck (nur Schalter EIN und wiederkehrender Plan).\n5. Standardplaene: plan(standard_plaene) zeigt nur eine Vorschau; vorschau:false legt an (nur Schalter EIN); vorlagen:[deploy|testlauf|befunde|agenten|doku]. Plaene mit gleichem Namensstamm (Text vor '(') werden uebersprungen. Beim Projekt-Init: project(init, standard_plaene:true).\n6. Plaene und Tasks anlegen bleibt Sache des Koordinators." }
       ]
     }
   ]
