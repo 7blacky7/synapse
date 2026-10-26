@@ -1,5 +1,7 @@
 /**
  * Golden-Regressionsvertrag fuer plan_status/shared_plan_status ueber REST und stdio.
+ * P22-T198 (Plan29301, Version192934): shared-status ergaenzt ausserhalb_zielplan; voller neuer Hash plus ALT-Projektion sichern den einzigen freigegebenen Unterschied.
+ * Nur synapse_test:5433; kein Browser/LLM. Bei Fehler: Herkunft/erwartet/ist im Assert und normalisierte Antwort als DEBUG.
  * Vor Feature-Aenderung: STATUS_VIEWS_CAPTURE=1 erzeugt die normalisierten SHA-256-Baselines.
  * Danach bleiben Aufrufe ohne ansicht byte-identisch; bei jedem Szenario muessen beide Transporte
  * eigene ALT-Baseline gehasht. Nur Testprojekt status-views-golden.
@@ -57,7 +59,8 @@ const GOLDEN = {
   'plan-coedit-rest': '665ebb83ea73bd7705453866778314c3e99a39983fb8c81f0f34536edfd40c1b',
   'plan-coedit-stdio': '59d25232cfdb716c50b41a8f56b524d81da04fa51771bd0e547c51aebd7053d4',
   'shared-status-rest': '13b43ceb05f440c16ee1f5a02c92e4661b94015db9cefe8567e3718d1d5089b5',
-  'shared-status-stdio': 'b06c099b46eb707e8be92ffdfbb77050e548432912096ef0035ba928a79d9ab8',
+  // P22-T198 Plan29301 / Version192934: Zielplan-Scope sichtbar; zusaetzlich ausserhalb_zielplan:[] im unveraenderten Ein-Ziel-Fall.
+  'shared-status-stdio': 'a11149612ab369e0c6eb06411656db3814004ce37759299292e6786730bff7c5',
 };
 
 function pruefe(bedingung, text, detail) {
@@ -108,12 +111,22 @@ async function beide(args, key, planId) {
   const stdioNormalisiert = normalisiere(stdio);
   const stdioSha = createHash('sha256').update(stdioNormalisiert).digest('hex');
   console.log(`GOLDEN ${key} STDIO ${stdioSha}`);
+  if (key === 'shared-status' && process.env.STATUS_VIEWS_BASELINE !== '1') {
+    // P22-T198: genehmigtes Delta exakt begrenzen; weder unbekannte neue Felder noch veraenderte Altwerte verstecken.
+    assert.deepEqual(stdio.ausserhalb_zielplan, [], 'P22-T198 shared_plan_status: Ein-Ziel-Fixture erwartet ausserhalb_zielplan=[]');
+    const { ausserhalb_zielplan, ...altStand } = stdio;
+    const altSha = createHash('sha256').update(normalisiere(altStand)).digest('hex');
+    assert.equal(altSha, 'b06c099b46eb707e8be92ffdfbb77050e548432912096ef0035ba928a79d9ab8',
+      'P22-T198 shared_plan_status: alle alten Felder bleiben byte-identisch; nur ausserhalb_zielplan kommt hinzu');
+  }
   // REST ohne Wrapper-Anhaenge liefert dieselbe plan_status-Antwort wie stdio.
   const stdioAlsHuelle = normalisiere(kompaktAus ? stdio : ohneNullFelder(stdio));
   assert.equal(restNormalisiert, stdioAlsHuelle, `${key}: REST-Kern gleich stdio (ueber die gemeinsame Huelle)`);
-  // stdio-Hashes wurden am Stand VOR P6-T22 (28cee10) erfasst und sind dort wie hier gleich.
+  // P6-T22: unveraenderte Standardansichten bleiben am ALT-Hash (28cee10).
+  // Ausnahme P22-T198 shared-status oben dokumentiert: voller neuer Hash UND alter Hash ohne genau das Zusatzfeld.
   if (process.env.STATUS_VIEWS_CAPTURE !== '1' && Object.hasOwn(GOLDEN, `${key}-stdio`)) {
-    assert.equal(stdioSha, GOLDEN[`${key}-stdio`], `${key}: stdio-Ausgabe unveraendert`);
+    if (stdioSha !== GOLDEN[`${key}-stdio`]) console.error('DEBUG P22-T198 file-batch-status-views.golden '+key+' erwartet='+GOLDEN[`${key}-stdio`]+' ist='+stdioSha+' normalisiert='+stdioNormalisiert);
+    assert.equal(stdioSha, GOLDEN[`${key}-stdio`], `${key}: stdio-Ausgabe gemaess dokumentiertem Golden-Vertrag (P22-T198)`);
   }
   return rest;
 }

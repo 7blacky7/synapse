@@ -18,6 +18,7 @@
  */
 
 import type { PoolClient } from 'pg';
+import { CoeditRegionSpur } from './file-coedit-regionen.js';
 import {pruefeFsDrift,FsDriftFehler,fsDriftAntwort,fsPruefungNachCommit,type FsPruefung} from './file-fs-drift.js';
 import { EventEmitter } from 'node:events';
 import { getPool } from '../db/client.js';
@@ -365,6 +366,8 @@ export interface OpPreview {
   /** Erste 200 Zeichen des Diff-Kontexts (best effort) */
   context?: string;
   error?: string;
+  /** P22-T198: Vorschau nennt die Op, die einen Ganzdateibereich erzeugt. */
+  coedit_ganzdatei?: { op_index: number; file_path: string; grund: string };
   /** Nur im Rueckzugsprotokoll: der Plan, aus dem diese Op zurueckgezogen wurde. */
   withdrawn_from?: string;
   /** Nur an committeten Plaenen (V2 ohne Grenze): was diese Op auf ihrer Datei ersetzt hat. */
@@ -448,6 +451,8 @@ export interface FileBatchPlanRow {
     contributed_files: string[];
     no_change_files: string[];
     coedit_source_op_indexes: number[];
+    ausserhalb_zielplan?: string[];
+    deferred_op_zuordnung?: Array<{ deferred_op_index: number; task_id: string | null; file_path: string; action: string }>;
   }>;
 }
 
@@ -668,6 +673,8 @@ export interface CoeditConflictDetail {
   right_identity_id?:string;
   reason: 'same_anchor' | 'overlapping_range' | 'file_level_overlap' | 'composite_reapply_failed';
   message: string;
+  /** P22-T198: konkrete Ganzdatei-Verursacher; auch bei konservativem Fallback sichtbar. */
+  ganzdatei_ops?: Array<{ op_index: number; agent_id: string; file_path: string; grund: string }>;
   /** Plan, in dem die beiden Ops liegen (gesetzt, wo der Plan bekannt ist). */
   plan_id?: string;
   /** Fertige Aufrufe, die beide Ops VOLLSTAENDIG liefern (op_index-Abruf von plan_status). */
@@ -1243,6 +1250,8 @@ function wendeOpsAn(
     /** Spleiss auch in previews[].zeilen (gemeinsamer commit). */
     zeilenInPreview?: boolean;
     weiterBeiFehler: boolean;
+    /** P22-T198: Metadaten-Beobachter nur fuer die Co-Edit-Bereichsprojektion. */
+    beobachte?: (op: FileBatchOp, index: number, vorher: string, nachher: string) => void;
   },
   applyPlan: Array<{ op: FileBatchOp; originalIndex: number }> = prepareOpsForApply(ops),
 ): Angewendet {
@@ -1264,9 +1273,14 @@ function wendeOpsAn(
     try {
       const vorherText = istAutoZeilenOp(op) ? textSpleisse.get(op.file_path) : undefined;
       const wirkOp = vorherText && vorherText.length > 0 ? zeilenOpUmrechnen(op, vorherText) : op;
+      const vorherInhalt = opts.beobachte ? buffers.get(op.file_path)?.finalContent ?? '' : '';
       const r: { context: string; sizeBefore: number; sizeAfter: number; zeilen?: ZeilenSplice; bereiche?: Bereich[] } = mitZeilen || spleissMerken
         ? applyOpMitZeilen(buffers, wirkOp, first, seq++, mitZeilen && opts.fein === true)
         : applyOpInMemory(buffers, wirkOp, first);
+      if (opts.beobachte) {
+        const datei = buffers.get(op.file_path);
+        opts.beobachte(wirkOp, originalIndex, vorherInhalt, datei?.deleted ? '' : datei?.finalContent ?? '');
+      }
       if (spleissMerken && r.zeilen) {
         const liste = textSpleisse.get(op.file_path) ?? [];
         liste.push({ splice: r.zeilen, index: originalIndex, action: op.action });
@@ -1282,6 +1296,9 @@ function wendeOpsAn(
         size_after: r.sizeAfter,
         context: r.context.slice(0, 200),
         ...(r.zeilen && opts.zeilenInPreview ? { zeilen: r.zeilen } : {}),
+        ...(['create', 'update', 'delete', 'move', 'copy'].includes(op.action) ? {
+          coedit_ganzdatei: { op_index: originalIndex, file_path: op.file_path, grund: op.action + ': ganze Datei/Quell- oder Zielpfad' },
+        } : {}),
       };
       if (r.zeilen) zeilen.set(originalIndex, r.zeilen);
       if (r.bereiche) bereiche.set(originalIndex, r.bereiche);
@@ -1539,10 +1556,44 @@ function regionsForCoeditOp(
   return [fullFileRegion(filePath, `${op.action}:unresolvable`)];
 }
 
+
+/** P22-T198: nur Batch/absolute brauchen die zusaetzliche Herkunftsspur.
+ * Reihenfolge und tatsaechlicher Zwischenstand kommen aus wendeOpsAn, nicht aus
+ * einer zweiten Anwende-Implementierung. Alte Baseline-Spans bleiben fuer die
+ * uebrigen Op-Arten und die bestehenden Einfuegungs-Hinweise unveraendert. */
+function projizierteCoeditRegionen(ops: FileBatchOp[], baselines: Map<string, string>): CoeditRegion[][] {
+  const lineCache: LineIndexCache = new Map();
+  const regions = ops.map(op => regionsForCoeditOp(op, baselines, lineCache));
+  if (!ops.some(op => op.action === 'search_replace_batch' || op.shift_mode === 'absolute')) return regions;
+  const buffers = new Map<string, PreparedFile>();
+  for (const pfad of uniqueStrings(ops.flatMap(touchedPaths))) {
+    const text = baselines.get(pfad) ?? '';
+    buffers.set(pfad, new PreparedFile(text));
+  }
+  const spur = new CoeditRegionSpur(baselines);
+  try {
+    wendeOpsAn(buffers, ops, { zeilen: false, weiterBeiFehler: true,
+      beobachte: (op, index, vorher, nachher) => spur.observe(op, index, vorher, nachher) });
+    ops.forEach((op, index) => {
+      if (op.action === 'search_replace_batch' || op.shift_mode === 'absolute')
+        regions[index] = spur.regionen.get(index) ?? [fullFileRegion(op.file_path, op.action + ':Anwendepruefung_gescheitert')];
+    });
+  } catch {
+    // Der normale Trockenlauf meldet den Anwende-/Reihenfolgefehler. Kein Bereich wird geraten.
+  }
+  return regions;
+}
+
 function coeditRegionsOverlap(left: CoeditRegion, right: CoeditRegion): boolean {
   if (left.kind === 'file' || right.kind === 'file') return true;
   const leftPoint = left.start === left.end;
   const rightPoint = right.start === right.end;
+  // P22-T198: erzeugter Text erbt den kanonischen Einfuegepunkt. Bei einer
+  // Ersetzung (ohne insertAt) muss er auch die dortige Einfuegung treffen,
+  // deren alter Suchanker vor dem Punkt enden kann. Zwei reine Einfuegungen
+  // werden bereits vorher als gleicherPunkt freigestellt.
+  if (rightPoint && left.insertAt === right.start) return true;
+  if (leftPoint && right.insertAt === left.start) return true;
   if (leftPoint && rightPoint) return left.start === right.start;
   if (leftPoint) return left.start >= right.start && left.start <= right.end;
   if (rightPoint) return right.start >= left.start && right.start <= left.end;
@@ -1555,8 +1606,7 @@ function detectCrossAgentConflicts(
   /** Runde 3: sammelt Einfuege-Hinweise (gleiche Einfuegestelle / setzt auf fremden Text auf) — kein Konflikt. */
   hinweise?: CoeditInsertNote[],
 ): CoeditConflictDetail[] {
-  const lineCache: LineIndexCache = new Map();
-  const regions = ops.map((op) => regionsForCoeditOp(op, baselines, lineCache));
+  const regions = projizierteCoeditRegionen(ops, baselines);
   // Runde 3 (Nachtrag dc2d7eac b): eine reine Einfuegung, deren Anker es in der Basis noch nicht gibt,
   // weil erst eine andere Op ihn einfuegt, liegt an deren Einfuegestelle — statt als Datei-Konflikt mit
   // allen Ops der Datei zu gelten. Wer auf fremden Text aufsetzt, laesst ihn unveraendert (reine Einfuegung).
@@ -1634,7 +1684,13 @@ function detectCrossAgentConflicts(
                 : left.kind === 'file' || right.kind === 'file'
                   ? 'file_level_overlap'
                   : 'overlapping_range',
-            message: `Cross-Agent-Konflikt auf ${left.file_path}: Op ${leftIndex} (${leftAgent}) und Op ${rightIndex} (${rightAgent}).`,
+            ...((left.kind === 'file' || right.kind === 'file') ? { ganzdatei_ops: [
+              ...(left.kind === 'file' ? [{ op_index: leftIndex, agent_id: leftAgent, file_path: left.file_path, grund: left.anchor }] : []),
+              ...(right.kind === 'file' ? [{ op_index: rightIndex, agent_id: rightAgent, file_path: right.file_path, grund: right.anchor }] : []),
+            ] } : {}),
+            message: `Cross-Agent-Konflikt auf ${left.file_path}: Op ${leftIndex} (${leftAgent}) und Op ${rightIndex} (${rightAgent}).`
+              + (left.kind === 'file' ? ` Ganzdatei-Region von Op ${leftIndex}: ${left.anchor}.` : '')
+              + (right.kind === 'file' ? ` Ganzdatei-Region von Op ${rightIndex}: ${right.anchor}.` : ''),
           });
         }
       }
@@ -1745,7 +1801,7 @@ function gesamtWaitStatus(stati: string[]): string {
  */
 async function readyGateBlockers(
   queryable: { query: PoolClient['query'] },
-  plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null },
+  plan: { id: string; project: string; owner_agent_id: string | null; owner_identity_id?: string | null; expected_hashes: Record<string, string> },
   caller: string | null,
 ): Promise<CommitWaitingFor[]> {
   const offen = await queryable.query<{
@@ -1754,12 +1810,15 @@ async function readyGateBlockers(
     `SELECT waiting_agent, waiting_identity_id, status::text AS status, shared_files, contributed_files, no_change_files
        FROM file_batch_waits
       WHERE primary_plan_id = $1::bigint AND waiting_agent IS NOT NULL
-        AND status NOT IN ('ready', 'no_changes', 'closed')
+        AND status <> 'closed'
         AND NOT (${fileAgentSql('waiting_agent','waiting_identity_id','$2',plan.owner_identity_id)}) AND NOT (${caller ? fileCallerSql('waiting_agent','waiting_identity_id','$3') : '$3::text IS NOT NULL'})
       ORDER BY waiting_agent`,
     [plan.id, plan.owner_agent_id, caller],
   );
-  if (offen.rows.length === 0) return [];
+  const relevant = offen.rows.map(wait => waitImZiel(wait, plan.expected_hashes)).filter(wait =>
+    wait.shared_files.length > 0 && (!['ready', 'no_changes'].includes(wait.status)
+      || wait.shared_files.some(pfad => !wait.contributed_files.includes(pfad) && !wait.no_change_files.includes(pfad))));
+  if (relevant.length === 0) return [];
   const minuten = coeditAktivMinuten();
   const aktiv = await queryable.query<{ agent_id: string; ts: Date | string }>(
     `SELECT CASE WHEN identity_id IS NOT NULL THEN 'identity:'||identity_id ELSE 'legacy:'||to_json(agent_id)::text END AS agent_id, MAX(ts) AS ts
@@ -1767,11 +1826,11 @@ async function readyGateBlockers(
       WHERE (CASE WHEN identity_id IS NOT NULL THEN 'identity:'||identity_id ELSE 'legacy:'||to_json(agent_id)::text END) = ANY($1::text[]) AND (project = $2 OR project IS NULL)
         AND ts > NOW() - make_interval(secs => $3::double precision)
       GROUP BY 1`,
-    [uniqueStrings(offen.rows.map(waitAgentKey)), plan.project, minuten * 60],
+    [uniqueStrings(relevant.map(waitAgentKey)), plan.project, minuten * 60],
   );
   const letzte = new Map(aktiv.rows.map((row) => [row.agent_id, new Date(row.ts)] as const));
   const proAgent = new Map<string, CommitWaitingFor>();
-  for (const wait of offen.rows) {
+  for (const wait of relevant) {
     const ts = letzte.get(waitAgentKey(wait));
     if (!ts) continue;
     const erledigt = new Set([...wait.contributed_files, ...wait.no_change_files]);
@@ -1957,7 +2016,7 @@ async function notifyPlanCommitted(
   const fehlt = new Map<string, string[]>(autoren.map((agent) => [agent, []] as const));
   for (const wait of waits) {
     const agent = eventAgent(wait.waiting_agent,wait.waiting_identity_id);
-    const offen = wait.status === 'ready' || wait.status === 'no_changes' ? [] : remainingWaitFiles(wait);
+    const offen = remainingWaitFiles(wait); // P22-T198: ausserhalb des fertigen Ziel-Scope bleibt der Beitrag offen.
     fehlt.set(agent, uniqueStrings([...(fehlt.get(agent) ?? []), ...offen]));
   }
   const dateien = Object.keys(plan.expected_hashes ?? {});
@@ -2092,6 +2151,7 @@ async function commitCoeditBatch(args: {
     }
     const unfinishedWaits = linkedWaits.rows.filter(
       (wait) => wait.status !== 'ready' && wait.status !== 'no_changes' && wait.status !== 'closed'
+        && waitImZiel(wait, plan.expected_hashes).shared_files.length > 0
         && waitAgentKey(wait) !== ownerAgentKey(plan),
     ).length;
 
@@ -2876,10 +2936,11 @@ async function planBatchKern(args: {
         );
       } catch (error) {
         if ((error as { code?: string }).code !== '55P03') throw error;
-        return nochmalPlanen(zielId);
+        // P22-T198: finally darf den Client nicht vor dem asynchronen Retry-ROLLBACK freigeben.
+        return await nochmalPlanen(zielId);
       }
       const ziel = gesperrt.rows[0];
-      if (!ziel || ziel.status !== 'open') return nochmalPlanen(zielId);
+      if (!ziel || ziel.status !== 'open') return await nochmalPlanen(zielId);
       const neueOps = zielOps.map((op) => ({ ...withoutCoeditMetadata(op), ...(ownerAgentId ? { agent_id: ownerAgentId, ...(aktuelleAgentIdentityId(args.project,ownerAgentId) ? {author_identity_id:aktuelleAgentIdentityId(args.project,ownerAgentId)!} : {}) } : {}) }));
       const zielHashes = { ...ziel.expected_hashes };
       const pruefDateien = verbundeneDateien(neueOps.flatMap(touchedPaths), [...ziel.ops, ...neueOps]);
@@ -3365,6 +3426,17 @@ function describeOpMismatch(wanted: FileBatchOp, open: FileBatchOp[]): string {
   return ` Naechster geplanter Op weicht ab in: ${ranked.fields.map((key) => `${key} (geplant ${show(ranked.c[key])}, gesendet ${show(w[key])})`).join('; ')}.`;
 }
 
+/** P22-T198 / Fall 26299: ein Wait darf mehrere Ziele beruehren. Nur der
+ * tatsaechliche Zielplan-Scope bestimmt dessen Ready/Gate/Rest; rohe deferred Ops
+ * und ausserhalb liegende Dateien bleiben fuer andere Ziele/Folgeplaene erhalten. */
+function waitImZiel<T extends Pick<CoeditWaitRow, 'shared_files' | 'contributed_files' | 'no_change_files'>>(
+  wait: T, expected: Record<string, string>,
+): T {
+  const imPlan = (pfad: string) => Object.hasOwn(expected, pfad);
+  return { ...wait, shared_files: wait.shared_files.filter(imPlan),
+    contributed_files: wait.contributed_files.filter(imPlan), no_change_files: wait.no_change_files.filter(imPlan) };
+}
+
 function completedWaitFiles(wait: CoeditWaitRow): string[] {
   const completed = new Set([...wait.contributed_files, ...wait.no_change_files]);
   return wait.shared_files.filter((filePath) => completed.has(filePath));
@@ -3740,7 +3812,7 @@ async function notifyFollowUp(project: string, committedPlanId: string, caller: 
     const waits = await client.query<CoeditWaitRow>(
       `${COEDIT_WAIT_SELECT}
         WHERE project = $1 AND primary_plan_id = $2::bigint AND waiting_agent IS NOT NULL
-          AND NOT (${caller ? fileCallerSql('waiting_agent','waiting_identity_id','$3') : '$3::text IS NOT NULL'}) AND status IN ('waiting', 'linked')
+          AND NOT (${caller ? fileCallerSql('waiting_agent','waiting_identity_id','$3') : '$3::text IS NOT NULL'}) AND status IN ('waiting', 'linked', 'ready', 'no_changes')
         ORDER BY waiting_agent, wait_token`,
       [project, committedPlanId, caller],
     );
@@ -3997,7 +4069,9 @@ async function addCoeditContributionKern(args: {
       [args.project, caller, plan.owner_agent_id, args.plan_id, args.wait_token ?? null],
     );
     if (directWaits.rows.length === 0) {
-      throw new Error(`Kein aktiver Wait von ${caller} fuer Primaeragent ${plan.owner_agent_id}`);
+      throw new Error(fileCallerKey(plan.project, caller) === ownerAgentKey(plan)
+        ? `Du bist Owner von Plan ${args.plan_id}: eigene Ops per plan_update aendern, kein coedit_add/coedit_ready noetig. plan_update nutzt den Plan-Op-Index aus plan_status.`
+        : `Kein aktiver Wait von ${caller} fuer Primaeragent ${plan.owner_agent_id}. Erst files(plan) mit den Ops; dann coedit_waits[].target_plan_id und wait_token der Rueckgabe verwenden.`);
     }
 
     const sourcePlanIds = uniqueStrings(directWaits.rows.map((wait) => wait.source_plan_id));
@@ -4082,7 +4156,8 @@ async function addCoeditContributionKern(args: {
         }
         throw new Error(
           `coedit_add Op ${cleanOp.action} auf ${cleanOp.file_path} gehoert zu keinem offenen deferred source-op.`
-          + describeOpMismatch(cleanOp, allSources.filter((entry) => !entry.consumed && !selected.has(entry.key)).map((entry) => entry.op)),
+          + describeOpMismatch(cleanOp, allSources.filter((entry) => !entry.consumed && !selected.has(entry.key)).map((entry) => entry.op))
+          + ' task_id gehoert zur geplanten Op (normalisierte Task-UUID unveraendert mitgeben). Zum Korrigieren: coedit_add mit genau einer Op, wait_token und op_index = deferred_op_index/coedit_source_op_index aus dem Traeger; NICHT der Zielplan-Op-Index.',
         );
       }
       const elsewhere = source.waits.find((wait) => wait.primary_plan_id && wait.primary_plan_id !== args.plan_id);
@@ -4290,7 +4365,8 @@ async function addCoeditContributionKern(args: {
               ...conflict,
               left_op_index: left,
               right_op_index: right,
-              message: `Cross-Agent-Konflikt auf ${conflict.file_path}: Op ${left} (${conflict.left_agent_id}) und Op ${right} (${conflict.right_agent_id}).`,
+              ...(conflict.ganzdatei_ops ? { ganzdatei_ops: conflict.ganzdatei_ops.map(op => ({ ...op, op_index: vollIndex(op.op_index) })) } : {}),
+              message: conflict.message.replace(/Op (\d+)/g, (_match, index: string) => 'Op ' + vollIndex(Number(index))),
             };
           });
         // Runde 3 (Nachtrag dc2d7eac a): gleiche Einfuegestelle -> INFO an den Beitragenden (der andere sieht
@@ -4315,7 +4391,7 @@ async function addCoeditContributionKern(args: {
       ...(overlapWarnings.length > 0 ? { overlap_warnings: mitVerweis(overlapWarnings, args.plan_id) } : {}),
       ...(insertNotes.length > 0 ? { insert_notes: mitVerweis(insertNotes, args.plan_id) } : {}),
       message: (overlapWarnings.length > 0
-        ? `${additions.length} Co-Edit-Op(s) an Plan ${args.plan_id} angehaengt. ACHTUNG: ${overlapWarnings.length} Ueberlappung(en) mit Ops eines anderen Agenten (overlap_warnings) — commit endet voraussichtlich in coedit_conflict. Jetzt abstimmen oder nach dem Konflikt cancel + replan.`
+        ? `${additions.length} Co-Edit-Op(s) an Plan ${args.plan_id} angehaengt. ACHTUNG: ${overlapWarnings.length} Ueberlappung(en) mit Ops eines anderen Agenten (overlap_warnings) — commit endet voraussichtlich in coedit_conflict. Schatten und betroffene Ops ansehen; den eigenen Beitrag mit plan_update im Zielplan gezielt korrigieren. Nicht pauschal cancel + replan; den gemeinsamen Plan und fremde Beitraege erhalten.`
         : `${additions.length} Co-Edit-Op(s) genau einmal an Plan ${args.plan_id} angehaengt.`)
         + (insertNotes.length > 0 ? ` INFO: ${insertNotes.length} Einfuegung(en) an derselben Stelle wie die eines anderen Agenten (insert_notes) — kein Konflikt, beide bleiben, Reihenfolge = Beitragsreihenfolge.` : ""),
     };
@@ -4393,7 +4469,7 @@ export async function markCoeditNoChanges(args: {
       if (rowFiles.length === 0) continue;
       const nextNoChanges = uniqueStrings([...wait.no_change_files, ...rowFiles]);
       const completed = new Set([...wait.contributed_files, ...nextNoChanges]);
-      const allComplete = wait.shared_files.every((filePath) => completed.has(filePath));
+      const allComplete = waitImZiel(wait, plan.expected_hashes).shared_files.every((filePath) => completed.has(filePath));
       const nextStatus = allComplete && wait.contributed_files.length === 0 ? "no_changes" : "linked";
       await client.query(
         `UPDATE file_batch_waits
@@ -4408,12 +4484,16 @@ export async function markCoeditNoChanges(args: {
     }
 
     await client.query("COMMIT"); notifyPlanChange();
-    const completedFiles = uniqueStrings(waitsRes.rows.flatMap(completedWaitFiles));
-    const remainingFiles = uniqueStrings(waitsRes.rows.flatMap(remainingWaitFiles));
+    const zielWaits = waitsRes.rows.map(wait => waitImZiel(wait, plan.expected_hashes));
+    const completedFiles = uniqueStrings(zielWaits.flatMap(completedWaitFiles));
+    const remainingFiles = uniqueStrings(zielWaits.flatMap(remainingWaitFiles));
     return {
-      success: true, plan_id: args.plan_id, status: remainingFiles.length === 0 ? "no_changes" : "linked",
+      success: true, plan_id: args.plan_id, status: remainingFiles.length > 0 || zielWaits.some(wait => wait.shared_files.length > 0 && wait.status !== 'ready' && wait.status !== 'no_changes')
+        ? 'linked' : zielWaits.some(wait => wait.shared_files.length > 0 && wait.status === 'ready') ? 'ready' : 'no_changes',
       completed_files: completedFiles, remaining_files: remainingFiles, no_change_files: requestedFiles,
-      message: `${requestedFiles.length} Datei(en) ohne eigenen Beitrag abgeschlossen.`,
+      message: `${requestedFiles.length} Datei(en) ohne eigenen Beitrag abgeschlossen.`
+        + (remainingFiles.length === 0 && zielWaits.some(wait => wait.shared_files.length > 0 && wait.status === 'linked')
+          ? ' Alle Ziel-Dateien sind behandelt; gemischten eigenen Beitrag jetzt mit coedit_ready ausdruecklich abschliessen.' : ''),
     };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -4434,6 +4514,12 @@ export async function markCoeditReady(args: {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    // P22-T198: gleiche Sperrreihenfolge wie commit; Scope darf waehrend Ready nicht wachsen.
+    const ziel = (await client.query<{ expected_hashes: Record<string, string>; status: string }>(
+      'SELECT expected_hashes, status::text AS status FROM file_batch_plans WHERE id=$1::bigint AND project=$2 FOR UPDATE',
+      [args.plan_id, args.project],
+    )).rows[0];
+    if (!ziel || ziel.status !== 'open') throw new Error(`Plan ${args.plan_id} ist nicht offen`);
     const waitsRes = await client.query<CoeditWaitRow>(
       `${COEDIT_WAIT_SELECT}
         WHERE project = $1 AND ${fileCallerSql('waiting_agent','waiting_identity_id','$2')} AND primary_plan_id = $3::bigint
@@ -4445,19 +4531,21 @@ export async function markCoeditReady(args: {
       [args.project, caller, args.plan_id],
     );
     if (waitsRes.rows.length === 0) throw new Error(`Kein verbundener aktiver Wait von ${caller} fuer Plan ${args.plan_id}`);
-    const remainingFiles = uniqueStrings(waitsRes.rows.flatMap(remainingWaitFiles));
+    const zielWaits = waitsRes.rows.map(wait => waitImZiel(wait, ziel.expected_hashes));
+    const ausserhalb = uniqueStrings(waitsRes.rows.flatMap(wait => wait.shared_files.filter(pfad => !Object.hasOwn(ziel.expected_hashes, pfad))));
+    const remainingFiles = uniqueStrings(zielWaits.flatMap(remainingWaitFiles));
     if (remainingFiles.length > 0) {
       await client.query("ROLLBACK");
       return {
         success: false, plan_id: args.plan_id, status: "linked",
-        completed_files: uniqueStrings(waitsRes.rows.flatMap(completedWaitFiles)),
+        completed_files: uniqueStrings(zielWaits.flatMap(completedWaitFiles)),
         remaining_files: remainingFiles,
         error: "coedit_incomplete",
         message: `Noch nicht aufgeloeste Shared-Dateien: ${remainingFiles.join(", ")}`,
       };
     }
     for (const wait of waitsRes.rows) {
-      const status: CoeditWaitStatus = wait.contributed_files.length === 0 ? "no_changes" : "ready";
+      const status: CoeditWaitStatus = waitImZiel(wait, ziel.expected_hashes).contributed_files.length === 0 ? "no_changes" : "ready";
       await client.query(
         `UPDATE file_batch_waits SET status = $2, ready_at = NOW(), updated_at = NOW()
           WHERE wait_token = $1::uuid`,
@@ -4468,8 +4556,10 @@ export async function markCoeditReady(args: {
     await client.query("COMMIT"); notifyPlanChange();
     return {
       success: true, plan_id: args.plan_id, status: "ready",
-      completed_files: uniqueStrings(waitsRes.rows.flatMap(completedWaitFiles)), remaining_files: [],
-      message: `Co-Edit-Beitrag von ${caller} fuer Plan ${args.plan_id} ist fertig.`,
+      completed_files: uniqueStrings(zielWaits.flatMap(completedWaitFiles)), remaining_files: [],
+      ausserhalb_zielplan: ausserhalb,
+      message: `Co-Edit-Beitrag von ${caller} fuer Zielplan ${args.plan_id} ist fertig.`
+        + (ausserhalb.length ? ` Andere Ziel-Dateien bleiben als deferred Ops erhalten: ${ausserhalb.join(', ')}.` : ''),
     };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -4824,16 +4914,21 @@ async function sharedPlanStatusOnce(args: {
     `SELECT ${totWaitSql('w')} AS tot FROM file_batch_waits w WHERE w.wait_token = $1::uuid`, [wait.wait_token],
   )).rows[0]?.tot === true;
   const expired = tot || new Date(wait.expires_at).getTime() <= Date.now();
-  const completedFiles = completedWaitFiles(wait);
+  const ziel = targetPlanId ? (await pool.query<{ expected_hashes: Record<string, string> }>(
+    'SELECT expected_hashes FROM file_batch_plans WHERE id=$1::bigint AND project=$2', [targetPlanId, args.project],
+  )).rows[0] : null;
+  const imZiel = ziel ? waitImZiel(wait, ziel.expected_hashes) : wait;
+  const completedFiles = completedWaitFiles(imZiel);
   return {
     success: true, wait_token: wait.wait_token, source_plan_id: wait.source_plan_id,
     primary_plan_id: wait.primary_plan_id, waiting_agent: wait.waiting_agent,
     ...(wait.waiting_identity_id ? {waiting_identity_id:wait.waiting_identity_id} : {}),
     ...(wait.primary_identity_id ? {primary_identity_id:wait.primary_identity_id} : {}),
     primary_agent: wait.primary_agent, status: expired && wait.status === "waiting" && !wait.primary_plan_id ? "expired" : wait.status,
-    shared_files: wait.shared_files, completed_files: completedFiles,
-    remaining_files: wait.shared_files.filter((filePath) => !completedFiles.includes(filePath)),
-    contributed_files: wait.contributed_files, no_change_files: wait.no_change_files,
+    shared_files: imZiel.shared_files, completed_files: completedFiles,
+    remaining_files: remainingWaitFiles(imZiel),
+    ausserhalb_zielplan: wait.shared_files.filter(pfad => !imZiel.shared_files.includes(pfad)),
+    contributed_files: imZiel.contributed_files, no_change_files: imZiel.no_change_files,
     contributions, expires_at: asIso(wait.expires_at), ready_at: wait.ready_at ? asIso(wait.ready_at) : null,
     target_plan_id: targetPlanId,
     target_plan_status: targetPlanId
@@ -4920,12 +5015,12 @@ export async function commitBatch(args: {
       }
       const bisInaktiv = Math.min(...blockers.map((b) => new Date(b.inaktiv_ab).getTime() - Date.now()));
       await sleepOrWake(Math.max(100, Math.min(LONG_POLL_INTERVAL_MS, rest, bisInaktiv + 50)));
-      const plan = (await getPool().query<{ project: string; owner_agent_id: string | null; owner_identity_id?:string|null; status: string }>(
-        `SELECT project, owner_agent_id, owner_identity_id, status::text AS status FROM file_batch_plans WHERE id = $1::bigint`,
+      const plan = (await getPool().query<{ project: string; owner_agent_id: string | null; owner_identity_id?:string|null; status: string; expected_hashes: Record<string, string> }>(
+        `SELECT project, owner_agent_id, owner_identity_id, status::text AS status, expected_hashes FROM file_batch_plans WHERE id = $1::bigint`,
         [args.plan_id],
       )).rows[0];
       if (!plan || plan.status !== 'open') break;
-      blockers = await readyGateBlockers(getPool(), { id: args.plan_id, project: plan.project, owner_agent_id: plan.owner_agent_id, owner_identity_id: plan.owner_identity_id }, caller);
+      blockers = await readyGateBlockers(getPool(), { id: args.plan_id, project: plan.project, owner_agent_id: plan.owner_agent_id, owner_identity_id: plan.owner_identity_id, expected_hashes: plan.expected_hashes }, caller);
       if (blockers.length === 0) break;
     }
   }
@@ -5999,7 +6094,7 @@ async function replanBatchKern(args: {
   op_index?: number;
   open_for_coedit?: boolean;
   reason?: string;
-}): Promise<PlanBatchResult & { superseded_plan_id?: string; in_place?: boolean }> {
+}): Promise<PlanBatchResult & { superseded_plan_id?: string; in_place?: boolean; message?: string }> {
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error('ops[] darf nicht leer sein');
   args = { ...args, ops: await Promise.all(args.ops.map(async (op) => op.task_id !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, op.task_id) } : op)) };
   const plan = await getBatchPlan(args.plan_id);
@@ -6054,7 +6149,9 @@ async function replanBatchKern(args: {
       reason: args.reason ?? plan.reason ?? undefined,
     });
     await supersede(result.plan_id);
-    return { ...result, superseded_plan_id: args.plan_id };
+    return { ...result, superseded_plan_id: args.plan_id,
+      message: `NEUE plan_id ${result.plan_id} — ab jetzt ausschliesslich diese ID verwenden; Plan ${args.plan_id} wurde ersetzt. Nichts davon ist durch plan_update schon committed.`,
+    };
   } catch (error) {
     if (error instanceof PlanBatchOpsFailedError) {
       await supersede(error.plan_id);
@@ -6151,15 +6248,22 @@ export async function getBatchPlan(plan_id: string): Promise<FileBatchPlanRow | 
     `SELECT wait_token::text AS wait_token, primary_agent, primary_identity_id, primary_plan_id::text AS target_plan_id,
             -- P15-T27: toter Wait (kein Ziel, keine lebende Reservierung des Primaeragenten) -> expired
             CASE WHEN ${totWaitSql('w')} THEN 'expired' ELSE w.status::text END AS wait_status,
-            shared_files, contributed_files, no_change_files, deferred_op_indexes AS coedit_source_op_indexes
-       FROM file_batch_waits w
-      WHERE source_plan_id = $1::bigint AND status <> 'closed'
-      ORDER BY wait_token`,
+            ARRAY(SELECT pfad FROM unnest(w.shared_files) pfad
+              WHERE t.id IS NULL OR t.expected_hashes ? pfad) AS shared_files,
+            ARRAY(SELECT pfad FROM unnest(w.shared_files) pfad
+              WHERE t.id IS NOT NULL AND NOT (t.expected_hashes ? pfad)) AS ausserhalb_zielplan,
+            contributed_files, no_change_files, deferred_op_indexes AS coedit_source_op_indexes,
+            (SELECT jsonb_agg(jsonb_build_object('deferred_op_index',w.deferred_op_indexes[o.nr::int],
+              'task_id',o.op->>'task_id','file_path',o.op->>'file_path','action',o.op->>'action') ORDER BY o.nr)
+              FROM jsonb_array_elements(w.deferred_ops) WITH ORDINALITY o(op,nr)) AS deferred_op_zuordnung
+       FROM file_batch_waits w LEFT JOIN file_batch_plans t ON t.id=w.primary_plan_id AND t.project=w.project
+      WHERE w.source_plan_id = $1::bigint AND w.status <> 'closed'
+      ORDER BY w.wait_token`,
     [plan_id],
   );
   // E1: auf wen ein commit gerade warten wuerde (aktive, noch nicht bereite Beitragende).
   const commitWartetAuf = row.status === 'open' && waitRows.rows.length > 0
-    ? await readyGateBlockers(pool, { id: String(plan_id), project: row.project, owner_agent_id: row.owner_agent_id, owner_identity_id: row.owner_identity_id }, null)
+    ? await readyGateBlockers(pool, { id: String(plan_id), project: row.project, owner_agent_id: row.owner_agent_id, owner_identity_id: row.owner_identity_id, expected_hashes: row.expected_hashes }, null)
     : [];
   let overlapWarnings: CoeditConflictDetail[] = [];
   let insertNotes: CoeditInsertNote[] = [];
@@ -7148,6 +7252,8 @@ export function befundeQuittierenLesen(wert: unknown): Array<{ id: string; grund
  * Beitragenden (agent_id der Op); ein Kombinationsfehler an der spaeteren Op mit beteiligt.
  */
 export async function addCoeditContribution(args: Parameters<typeof addCoeditContributionKern>[0]): Promise<CoeditAddResult> {
+  // P22-T198: auch direkte Core-Aufrufer erhalten den Vertrag statt TypeError vor der Kernvalidierung.
+  if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error(`coedit_add fuer Plan ${args.plan_id} braucht ein nicht-leeres ops[] mit dem geplanten Beitrag (files plan, dann coedit_add).`);
   const ops=await normalisiereOps(args.project,args.ops.map(withoutCoeditMetadata));
   let fs_pruefung:FsPruefung;
   try {fs_pruefung=await pruefeFsDrift(args.project,ops.flatMap(touchedPaths));}

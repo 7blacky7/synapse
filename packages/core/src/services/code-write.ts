@@ -380,20 +380,23 @@ function searchReplaceRoh(
  * Startpositionen aller Vorkommen eines Suchstrings (gleiche Logik wie searchReplace: exakt zuerst,
  * Whitespace-tolerant nur ohne exakten Treffer — P15-T34).
  */
-function trefferPositionen(content: string, search: string): number[] {
+/** P22-T198: dieselben exakten/toleranten Treffer inkl. ENDE fuer die Co-Edit-Projektion. */
+export function findeSuchBereiche(content: string, search: string): Array<{ start: number; end: number }> {
   if (!search) return [];
-  const exakt: number[] = [];
-  for (let i = content.indexOf(search); i !== -1; i = content.indexOf(search, i + search.length)) exakt.push(i);
+  const exakt: Array<{ start: number; end: number }> = [];
+  for (let i = content.indexOf(search); i !== -1; i = content.indexOf(search, i + search.length))
+    exakt.push({ start: i, end: i + search.length });
   if (exakt.length > 0) return exakt;
   const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const flexibleSearch = escapedSearch.replace(/[ \t]+/g, '[ \\t]+');
   try {
-    const positionen = Array.from(content.matchAll(new RegExp(flexibleSearch, 'g')), (m) => m.index ?? 0);
-    if (positionen.length > 0) return positionen;
-  } catch {
-    // Ungültiger Regex — kein toleranter Treffer
-  }
-  return [];
+    return Array.from(content.matchAll(new RegExp(flexibleSearch, 'g')), m => ({
+      start: m.index ?? 0, end: (m.index ?? 0) + m[0].length,
+    }));
+  } catch { return []; }
+}
+function trefferPositionen(content: string, search: string): number[] {
+  return findeSuchBereiche(content, search).map(treffer => treffer.start);
 }
 
 /** 1-basierte Zeilennummern zu aufsteigenden Zeichenpositionen. */
