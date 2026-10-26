@@ -223,22 +223,42 @@ export async function apiFreigabeHeartbeat(project: string, identity_id: string)
   }
 }
 
-/** Sicht fuer User/Main: Schalter (global bzw. Projekt) und alle Freigaben mit Verbrauch im Zeitraum des globalen Budgets. */
-export async function apiAgentenStand(project?: string | null): Promise<Record<string, unknown>> {
+/** Hoechstens so viele Kandidaten (aktive Arbeitsagenten/Koordinatoren) liefert apiAgentenStand fuer die Auswahl der Web-UI. */
+const KANDIDATEN_MAX = 500;
+
+/**
+ * Sicht fuer User/Main: Schalter (global bzw. Projekt) und alle Freigaben mit Verbrauch im Zeitraum des globalen Budgets.
+ * P22-T180 (Web-UI Freigaben je Agent): schalter_je_projekt (api_agenten je Projekt der Freigaben/Kandidaten), je Freigabe
+ *   api_agenten_aktiv; mit opt.kandidaten zusaetzlich die waehlbaren Identitaeten (aktiv, subagent|koordinator, nicht der Main-Bereich).
+ */
+export async function apiAgentenStand(project?: string | null, opt: { kandidaten?: boolean } = {}): Promise<Record<string, unknown>> {
   const { leseApiBudget } = await import('./api-agent-dienst.js');
-  const [schalter, budget, zeilen] = await Promise.all([
+  const [schalter, budget, zeilen, kandidaten] = await Promise.all([
     leseApiAgentenSchalter(project ?? null), leseApiBudget(),
     getPool().query<FreigabeZeile>(`SELECT ${SPALTEN} FROM api_agent_freigaben f JOIN agent_identitaeten i ON i.id = f.identity_id
       WHERE ($1::text IS NULL OR f.project = $1) ORDER BY f.project, i.agent_id`, [project ?? null]),
+    opt.kandidaten
+      ? getPool().query<{ id: string; project: string; agent_id: string; rolle: string }>(
+        `SELECT id, project, agent_id, rolle FROM agent_identitaeten
+          WHERE status = 'aktiv' AND rolle = ANY($1::text[]) AND project <> $2 AND ($3::text IS NULL OR project = $3)
+          ORDER BY project, agent_id LIMIT ${KANDIDATEN_MAX}`, [[...API_AGENT_ROLLEN], HAUPTAGENT_PROJEKT, project ?? null]).then(r => r.rows)
+      : Promise.resolve([]),
   ]);
   const verbrauch = budget.beginn ? await verbrauchJeIdentitaet(getPool(), budget.beginn) : new Map<string, number>();
+  const projekte = [...new Set([...zeilen.rows.map(z => z.project), ...kandidaten.map(k => k.project)])];
+  const schalterJe: Record<string, { aktiv: boolean; quelle: string; letzter_fehler: string | null }> = Object.fromEntries(
+    await Promise.all(projekte.map(async p => [p, await leseApiAgentenSchalter(p)] as const)));
+  const mitFreigabe = new Set(zeilen.rows.map(z => z.identity_id));
   return {
-    funktion: API_AGENTEN_FUNKTION, project: project ?? null, schalter, budget_beginn: budget.beginn,
+    funktion: API_AGENTEN_FUNKTION, project: project ?? null, schalter, budget_beginn: budget.beginn, schalter_je_projekt: schalterJe,
     freigaben: zeilen.rows.map(z => {
       const f = alsFreigabe(z);
       const v = verbrauch.get(f.identity_id) ?? 0;
-      return { ...f, verbraucht_usd: v, rest_usd: f.grenze_usd === null ? null : Math.max(0, rund(f.grenze_usd - v)) };
+      return { ...f, verbraucht_usd: v, rest_usd: f.grenze_usd === null ? null : Math.max(0, rund(f.grenze_usd - v)),
+        api_agenten_aktiv: schalterJe[f.project]?.aktiv ?? false };
     }),
+    ...(opt.kandidaten ? { kandidaten: kandidaten.map(k => ({ identity_id: k.id, project: k.project, agent_id: k.agent_id, rolle: k.rolle,
+      freigabe: mitFreigabe.has(k.id), api_agenten_aktiv: schalterJe[k.project]?.aktiv ?? false })) } : {}),
     hinweis: 'Kostenpflichtig fuer Arbeitsagenten/Koordinatoren nur mit Funktion api EIN, Schalter api_agenten EIN im Projekt, aktiver Freigabe '
       + '(nur User oder Main mit user_auftrag) und globalem Budget. Heartbeat eines API-Agenten folgt der Freigabe (Standard AUS).',
   };

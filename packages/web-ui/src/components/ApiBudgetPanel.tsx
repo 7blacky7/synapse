@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../api/auth';
 import { apiKeyAnzeige, apiKeyStandZeile, budgetFormular, budgetZeile, usd, API_BUDGET_VORSCHLAG, type ApiBudgetStand, type ApiKeyStand } from './api-budget-logik';
 import { ApiKeyFeld } from './ApiKeyFeld';
+import { ApiFreigabenFeld } from './ApiFreigabenFeld';
 
 /**
  * P22-T8 (W2-API): API-Zugang des Hauptagenten (Claude per API-Key, kostenpflichtig). Nur der User setzt Werte.
@@ -15,6 +16,8 @@ import { ApiKeyFeld } from './ApiKeyFeld';
  *   vorbelegt (25 USD je Tag, Haiku + Sonnet), wirksam erst mit 'Budget setzen'. Logik: api-budget-logik.ts.
  * P22-T176: Key in der Web-UI hinterlegen/ersetzen/entfernen/testen (ApiKeyFeld.tsx, Stand api_key ohne Wert); Grund steht oben,
  *   weil jede Aenderung ihn braucht.
+ * P22-T180: Freigaben je Agent (ApiFreigabenFeld.tsx): Arbeitsagenten/Koordinatoren kostenpflichtig nur mit Freigabe des Users (Grund
+ *   oben), Verbrauch/Rest je Agent, Schalter api_agenten je Projekt; nur Modelle mit Preis waehlbar.
  */
 interface Modell { alias: string; anbieter_modell: string; eingabe: number | null; ausgabe: number | null; cache_lesen: number | null }
 type Einstellungen = Record<string, { wert: number; quelle: string }>;
@@ -137,6 +140,7 @@ export function ApiBudgetPanel() {
       {s && Object.entries(s.einstellungen).map(([name, v]) => <label key={name} className="cp-setting-field"><span><b>{EINSTELLUNG_TEXT[name] ?? name}</b><small>{name} · Quelle {v.quelle}</small></span>
         <input type="number" value={werte[name] ?? ''} onChange={(event) => setWerte({ ...werte, [name]: event.target.value })} /></label>)}
       <div className="wide"><button type="button" disabled={busy || !grundOk || !Object.keys(geaenderteWerte).length} onClick={() => void senden('/api/main-agent/api/einstellungen', 'PUT', { werte: geaenderteWerte }, 'Einstellwerte gespeichert.')}>Einstellwerte speichern</button></div>
+      {s && <ApiFreigabenFeld modelle={s.modelle.filter(m => (m.eingabe ?? 0) > 0 && (m.ausgabe ?? 0) > 0).map(m => m.alias)} grundOk={grundOk} busy={busy} senden={senden} />}
       <div className="scope-warning wide"><b>Kosten</b><span>{kosten
         ? 'Gesamt ' + usd(kosten.gesamt.usd) + ' in ' + kosten.gesamt.aufrufe + ' Aufrufen · je Monat: ' + (kosten.je_monat.map(z => z.monat + ' ' + usd(z.usd)).join(', ') || '–')
           + ' · je Agent: ' + (kosten.je_agent.map(z => (z.agent_id ?? '?') + ' ' + usd(z.usd)).join(', ') || '–')
