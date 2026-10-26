@@ -19,7 +19,7 @@ import '../control-plane-settings.css';
 type Theme = 'dark' | 'light';
 // P8-T25: Nur Bereiche mit echter Wirkung. Hosts, Testsysteme, Workspace-Defaults
 // und Ressourcenlimits hatten keinen Speicherort und sind entfernt.
-type SettingsCategory = 'reverse' | 'hex' | 'main' | 'heartbeat' | 'ausweis' | 'container' | 'all-agents' | 'all-workspaces' | 'runtimes' | 'model-pool' | 'auth' | 'appearance';
+type SettingsCategory = 'reverse' | 'hex' | 'main' | 'api' | 'heartbeat' | 'ausweis' | 'container' | 'all-agents' | 'all-workspaces' | 'runtimes' | 'model-pool' | 'auth' | 'appearance';
 
 const ACCENT_PRESETS = [
   { name: 'Orange', color: '#f97316' },
@@ -95,7 +95,9 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
   }, []);
   const [settingsQuery, setSettingsQuery] = useState('');
   const categories: Array<{ id: SettingsCategory; label: string; detail: string; group: string }> = [
-    { id: 'main', label: 'Main-Agent', detail: 'Runtime einrichten, zuweisen, API-Budget', group: 'Agentensteuerung' },
+    { id: 'main', label: 'Main-Agent', detail: 'Runtime einrichten und zuweisen', group: 'Agentensteuerung' },
+    // P22-T175: API-Budget (nur User), erlaubte Modelle, Kosten und 'API-Key vorhanden ja/nein' als eigener Bereich.
+    { id: 'api', label: 'API-Agenten', detail: 'API-Budget, erlaubte Modelle, Kosten, API-Key vorhanden', group: 'Agentensteuerung' },
     { id: 'heartbeat', label: 'Heartbeat & Steuerung', detail: 'Heartbeat, Schalter, Wechsel, Verbrauch', group: 'Agentensteuerung' },
     { id: 'ausweis', label: 'Agenten-Ausweis', detail: 'Ausweise und Profile verwalten, Fristen, Visa und Arbeitsfreigaben', group: 'Agentensteuerung' },
     { id: 'container', label: 'Container-Agenten', detail: 'Kontingent der Spezialisten im Runtime-Container je Projekt', group: 'Agentensteuerung' },
@@ -133,8 +135,13 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
               <div className="runtime-settings-list"><AgentRuntimeControl runtime="claude" compact /><AgentRuntimeControl runtime="codex" compact /></div>
               <button type="button" onClick={() => setCategory('runtimes')}>Alle Runtime-Einstellungen öffnen</button>
             </section>
-            <ApiBudgetPanel />
+            <section aria-label="API-Agenten">
+              <h3>API-Agenten</h3>
+              <p>Budget, erlaubte Modelle, Kosten und ob der API-Key vorhanden ist, stehen im eigenen Bereich.</p>
+              <button type="button" onClick={() => setCategory('api')}>API-Agenten öffnen</button>
+            </section>
           </>}
+          {category === 'api' && <ApiBudgetPanel />}
           {category === 'heartbeat' && <HauptagentSteuerung />}
           {(category === 'runtimes' || category === 'auth') && <section key={category} className="runtime-settings-section" aria-label={category === 'auth' ? 'Runtime-Anmeldungen' : 'Runtime-Verwaltung'}>
             <header className="runtime-settings-intro">

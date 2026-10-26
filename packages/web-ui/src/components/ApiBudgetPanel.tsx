@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../api/auth';
+import { apiKeyAnzeige, budgetFormular, budgetZeile, usd, API_BUDGET_VORSCHLAG, type ApiBudgetStand } from './api-budget-logik';
 
 /**
  * P22-T8 (W2-API): API-Zugang des Hauptagenten (Claude per API-Key, kostenpflichtig). Nur der User setzt Werte.
@@ -8,16 +9,15 @@ import { apiFetch } from '../api/auth';
  * Echt angeschlossen (core api-agent-dienst.ts, derselbe Dienst wie admin api_*):
  *   GET /api/main-agent/api, PUT /api/main-agent/api/schalter, PUT|DELETE /api/main-agent/api/budget,
  *   PUT /api/main-agent/api/einstellungen, GET /api/main-agent/api/kosten
+ * P22-T175: eigener Bereich Einstellungen > API-Agenten (ControlPlaneSettingsView.tsx). 'API-Key vorhanden: ja/nein' mit dem Ort zum
+ *   Hinterlegen (nie der Wert), Budgetzeile gebucht/offen/verfallen/Rest; ohne Budget ist das Formular mit dem Vorschlag des Users
+ *   vorbelegt (25 USD je Tag, Haiku + Sonnet), wirksam erst mit 'Budget setzen'. Logik: api-budget-logik.ts.
  */
 interface Modell { alias: string; anbieter_modell: string; eingabe: number | null; ausgabe: number | null; cache_lesen: number | null }
-interface Budget {
-  gesetzt: boolean; grenze_usd: number | null; zeitraum: string | null; reset_tag: number | null; erlaubte_modelle: string[]; beginn: string | null;
-  verbraucht_usd: number; offen_usd: number; rest_usd: number | null; erschoepft: boolean; hinweis?: string;
-}
 type Einstellungen = Record<string, { wert: number; quelle: string }>;
 interface Status {
   schalter: { aktiv: boolean; hauptagent: { aktiv: boolean; quelle: string }; api: { aktiv: boolean; quelle: string; letzter_fehler: string | null } };
-  budget: Budget; einstellungen: Einstellungen; modelle: Modell[]; api_key_vorhanden: boolean;
+  budget: ApiBudgetStand; einstellungen: Einstellungen; modelle: Modell[]; api_key_vorhanden: boolean;
 }
 interface KostenZeile { aufrufe: number; usd: number; monat?: string; agent_id?: string | null; modell?: string }
 interface Kosten { gesamt: KostenZeile; je_monat: KostenZeile[]; je_agent: KostenZeile[]; je_modell: KostenZeile[] }
@@ -36,8 +36,6 @@ function fehlerText(daten: unknown, status: number): string {
   return (code ?? 'fehler') + ' (HTTP ' + status + ')';
 }
 
-const usd = (x: number | null | undefined): string => (typeof x === 'number' ? x.toFixed(4) + ' USD' : '–');
-
 export function ApiBudgetPanel() {
   const [status, setStatus] = useState<Status | null>(null);
   const [kosten, setKosten] = useState<Kosten | null>(null);
@@ -46,6 +44,7 @@ export function ApiBudgetPanel() {
   const [zeitraum, setZeitraum] = useState('monat');
   const [resetTag, setResetTag] = useState('1');
   const [modelle, setModelle] = useState<string[]>([]);
+  const [vorschlag, setVorschlag] = useState(false);
   const [werte, setWerte] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -58,12 +57,12 @@ export function ApiBudgetPanel() {
       if (!r.ok) throw new Error(fehlerText(d, r.status));
       const s = d as Status;
       setStatus(s);
-      if (s.budget.gesetzt) {
-        setGrenze(String(s.budget.grenze_usd ?? ''));
-        setZeitraum(s.budget.zeitraum ?? 'monat');
-        setResetTag(String(s.budget.reset_tag ?? 1));
-        setModelle(s.budget.erlaubte_modelle);
-      }
+      const f = budgetFormular(s.budget, s.modelle.map(m => m.alias));
+      setGrenze(f.grenze);
+      setZeitraum(f.zeitraum);
+      setResetTag(f.resetTag);
+      setModelle(f.modelle);
+      setVorschlag(f.vorschlag);
       setWerte(Object.fromEntries(Object.entries(s.einstellungen).map(([n, v]) => [n, String(v.wert)])));
       const kd = await k.json().catch(() => null);
       setKosten(k.ok ? (kd as Kosten) : null);
@@ -94,26 +93,27 @@ export function ApiBudgetPanel() {
 
   const grundOk = grund.trim().length >= 5;
   const s = status;
+  const key = s ? apiKeyAnzeige(s.api_key_vorhanden) : null;
   const geaenderteWerte = s ? Object.fromEntries(Object.entries(werte).filter(([n, v]) => Number(v) !== s.einstellungen[n]?.wert).map(([n, v]) => [n, Number(v)])) : {};
   return <section aria-label="API-Zugang des Hauptagenten">
     <h3>API-Zugang (Claude per API-Key) · kostenpflichtig</h3>
-    <p>Getrennt vom CLI-Abo. Ohne gesetztes Budget gibt es keine kostenpflichtigen Aufrufe und keinen bezahlten Ersatz. Der Key liegt nur auf dem Server (SYNAPSE_ANTHROPIC_API_KEY).</p>
+    <p>Getrennt vom CLI-Abo. Ohne gesetztes Budget gibt es keine kostenpflichtigen Aufrufe und keinen bezahlten Ersatz. Werte setzt nur der User.</p>
     <div className="cp-fields">
+      <div className="scope-warning wide" data-api-key-vorhanden={key?.wert ?? ''}><b>API-Key vorhanden: {key?.wert ?? '…'}</b><span>{key?.text ?? ''}</span></div>
       <div className="cp-setting-field wide">
         <span>
           <b>Funktion api: {s ? (s.schalter.api.aktiv ? 'EIN' : 'AUS') : '…'} · wirksam: {s ? (s.schalter.aktiv ? 'ja' : 'nein') : '…'}</b>
           <small>{s ? 'Hauptagent ' + (s.schalter.hauptagent.aktiv ? 'EIN' : 'AUS') + ' (' + s.schalter.hauptagent.quelle + ') · Funktion api Quelle ' + s.schalter.api.quelle
-            + ' · Key ' + (s.api_key_vorhanden ? 'vorhanden' : 'FEHLT') + (s.schalter.api.letzter_fehler ? ' · Fehler: ' + s.schalter.api.letzter_fehler : '') : ''}</small>
+            + (s.schalter.api.letzter_fehler ? ' · Fehler: ' + s.schalter.api.letzter_fehler : '') : ''}</small>
         </span>
         <button type="button" disabled={busy || !grundOk || !s} onClick={() => void senden('/api/main-agent/api/schalter', 'PUT', { aktiv: !s?.schalter.api.aktiv }, 'Funktion api ' + (s?.schalter.api.aktiv ? 'AUS' : 'EIN') + '.')}>{s?.schalter.api.aktiv ? 'Ausschalten' : 'Einschalten'}</button>
       </div>
-      <div className="scope-warning wide"><b>Budget</b><span>{s ? (s.budget.gesetzt
-        ? 'Grenze ' + usd(s.budget.grenze_usd) + ' je ' + s.budget.zeitraum + ' (seit ' + s.budget.beginn + ') · verbraucht ' + usd(s.budget.verbraucht_usd) + ' (davon offen ' + usd(s.budget.offen_usd) + ') · Rest ' + usd(s.budget.rest_usd) + (s.budget.erschoepft ? ' · ERSCHÖPFT' : '')
-        : (s.budget.hinweis ?? 'Kein Budget gesetzt.')) : '…'}</span></div>
+      <div className="scope-warning wide" data-api-budget={s ? (s.budget.gesetzt ? 'gesetzt' : 'fehlt') : ''}><b>Budget</b><span data-budget-zeile="">{s ? budgetZeile(s.budget) : '…'}</span></div>
+      {vorschlag && <div className="scope-warning wide" data-api-budget-vorschlag=""><b>Vorschlag</b><span>{API_BUDGET_VORSCHLAG.grenze_usd} USD je Tag (bleibt unter 25 €), Modelle Haiku + Sonnet. Wirksam erst mit „Budget setzen“.</span></div>}
       <label className="cp-setting-field"><span><b>Grenze (USD)</b><small>je Zeitraum, &gt; 0</small></span><input type="number" min="0" step="0.01" value={grenze} onChange={(event) => setGrenze(event.target.value)} /></label>
       <label className="cp-setting-field"><span><b>Zeitraum</b><small>monat ab Reset-Tag</small></span>
         <select value={zeitraum} onChange={(event) => setZeitraum(event.target.value)}><option value="tag">tag</option><option value="woche">woche</option><option value="monat">monat</option></select></label>
-      <label className="cp-setting-field"><span><b>Reset-Tag</b><small>1..28 (nur monat)</small></span><input type="number" min="1" max="28" value={resetTag} onChange={(event) => setResetTag(event.target.value)} /></label>
+      <label className="cp-setting-field"><span><b>Reset-Tag</b><small>1..28 (nur monat)</small></span><input type="number" min="1" max="28" value={resetTag} disabled={zeitraum !== 'monat'} onChange={(event) => setResetTag(event.target.value)} /></label>
       <div className="cp-setting-field wide"><span><b>Erlaubte Modelle</b><small>Preis je 1 Mio. Tokens (Eingabe / Ausgabe / Cache-Lesen) aus der Modell-Registry</small></span>
         <div>{(s?.modelle ?? []).map(m => <label key={m.alias} style={{ display: 'block' }}>
           <input type="checkbox" checked={modelle.includes(m.alias)} onChange={(event) => setModelle(event.target.checked ? [...modelle, m.alias] : modelle.filter(x => x !== m.alias))} />
@@ -129,7 +129,7 @@ export function ApiBudgetPanel() {
         <input type="number" value={werte[name] ?? ''} onChange={(event) => setWerte({ ...werte, [name]: event.target.value })} /></label>)}
       <div className="wide"><button type="button" disabled={busy || !grundOk || !Object.keys(geaenderteWerte).length} onClick={() => void senden('/api/main-agent/api/einstellungen', 'PUT', { werte: geaenderteWerte }, 'Einstellwerte gespeichert.')}>Einstellwerte speichern</button></div>
       <div className="cp-setting-field wide"><span><b>Grund</b><small>Pflicht fuer jede Aenderung, mindestens 5 Zeichen.</small></span>
-        <input value={grund} onChange={(event) => setGrund(event.target.value)} placeholder="z. B. Freigabe API-Hauptagent Oktober" />
+        <input value={grund} onChange={(event) => setGrund(event.target.value)} placeholder="z. B. Tageslimit 25 USD für den API-Hauptagenten" />
       </div>
       <div className="scope-warning wide"><b>Kosten</b><span>{kosten
         ? 'Gesamt ' + usd(kosten.gesamt.usd) + ' in ' + kosten.gesamt.aufrufe + ' Aufrufen · je Monat: ' + (kosten.je_monat.map(z => z.monat + ' ' + usd(z.usd)).join(', ') || '–')
