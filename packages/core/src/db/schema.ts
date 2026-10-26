@@ -66,6 +66,7 @@ import { AGENT_NAMENS_ALIAS_SCHEMA_SQL } from './agent-namens-alias-schema.js';
 import { API_AGENT_SCHLUESSEL_SCHEMA_SQL } from './api-agent-schluessel-schema.js';
 // P22-T179: Freigabe kostenpflichtiger API-Agenten je Identitaet (Schema 161).
 import { API_AGENT_FREIGABEN_SCHEMA_SQL } from './api-agent-freigaben-schema.js';
+import { SPEICHER_AEHNLICHKEIT_SCHEMA_SQL } from './speicher-aehnlichkeit-schema.js';
 // P3-T16: wiederkehrende Plaene (Schema 163).
 import { PLAN_WIEDERKEHR_SCHEMA_SQL } from './plan-wiederkehr-schema.js';
 import { HEX_SCHEMA_SQL } from './hex-schema.js';
@@ -3240,6 +3241,7 @@ ${AGENT_AKTUELLE_TASK_SCHEMA_SQL}
 ${AGENT_NAMENS_ALIAS_SCHEMA_SQL}
 ${API_AGENT_SCHLUESSEL_SCHEMA_SQL}
 ${API_AGENT_FREIGABEN_SCHEMA_SQL}
+${SPEICHER_AEHNLICHKEIT_SCHEMA_SQL}
 ${PLAN_WIEDERKEHR_SCHEMA_SQL}
 ${HEX_SCHEMA_SQL}
 ${HEX_ANALYSEN_SCHEMA_SQL}

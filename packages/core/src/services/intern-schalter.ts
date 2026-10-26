@@ -102,6 +102,9 @@ export const INTERN_SCHALTER = {
   reverse_fehlerlog: ['freigegeben'],
   // P22-T105: befristete Test-Freigabe der Ausweis-Channels (Produkt-Standard AUS, ausweis-channels.ts); aktiv=true = freigegeben.
   ausweis_channels: ['freigegeben'],
+  // P10-T88: befristete Test-Freigabe der Aehnlichkeitspruefung beim Speichern (Produkt-Standard AUS); aktiv=true = freigegeben.
+  speicher_aehnlichkeit: ['freigegeben'],
+  speicher_aehnlichkeit_pruefen: ['freigegeben'],
 } as const;
 export type InternSchalterName = keyof typeof INTERN_SCHALTER;
 

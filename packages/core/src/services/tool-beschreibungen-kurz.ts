@@ -111,6 +111,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       names_only: 'list: nur Namen.',
       codeLimit: 'read_with_code: max. Code-Stuecke.',
       includeSemanticMatches: 'read_with_code: semantische Treffer.',
+      bestaetigt: 'write: trotz aehnlicher Eintraege anlegen.',
     },
   },
   thought: {
@@ -123,6 +124,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       grund: 'Grund zum task_status.',
       trigger_respawn: 'Nur Spezialisten: Auto-Handoff.',
       volltext: 'search: voller Inhalt.',
+      bestaetigt: 'add: trotz aehnlicher Eintraege anlegen.',
     },
   },
   plan: {
@@ -167,6 +169,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       suggested_content: 'Vorgeschlagener Inhalt.',
       file_path: 'Betroffene Datei.',
       author: 'Autor.',
+      bestaetigt: 'create: trotz aehnlicher Eintraege anlegen.',
     },
   },
   chat: {

@@ -87,6 +87,10 @@ export const proposalTool: ConsolidatedTool = {
           items: { type: 'string' },
           description: 'Optionale Tags (fuer create).',
         },
+        bestaetigt: {
+          type: 'boolean',
+          description: 'Nur fuer create: im Modus pruefen_vor_anlegen (Produkt-Schalter speicher_aehnlichkeit_pruefen) eine User-Idee trotz aehnlicher Eintraege anlegen. Sonst wirkungslos.',
+        },
         items: {
           type: 'array',
           description: 'Bulk-Mode fuer create: 1..50 Proposals in einem Call. Jedes Item: { file_path, suggested_content, description, author, tags? }. project gilt fuer alle. Best-effort.',

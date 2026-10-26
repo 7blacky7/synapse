@@ -59,6 +59,7 @@ export const SCORE_ZWECKE = {
   global_search: 'Globale Suche ueber alle Projekte (global-search.ts, /api/search/global)',
   tech_docs_gut: 'Ab diesem Score gilt ein Tech-Doc-Treffer als gut, sonst Context7-Nachladen (tech-docs.ts)',
   code_semantic_fallback: 'code_intel search: semantischer Rueckfall bei 0 Volltext-Treffern (mcp-server)',
+  speicher_aehnlich: 'Aehnliche Eintraege beim Speichern von thought/memory/proposal/task (speicher-aehnlichkeit.ts; ohne Wert gilt tasks)',
 } as const;
 export type ScoreZweck = keyof typeof SCORE_ZWECKE;
 

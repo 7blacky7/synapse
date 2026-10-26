@@ -83,6 +83,10 @@ const memoryTool: ConsolidatedTool = {
           type: 'boolean',
           description: 'Nur fuer list: ausschliesslich Memory-Namen liefern',
         },
+        bestaetigt: {
+          type: 'boolean',
+          description: 'Nur fuer write: im Modus pruefen_vor_anlegen (Produkt-Schalter speicher_aehnlichkeit_pruefen) eine User-Idee trotz aehnlicher Eintraege anlegen. Sonst wirkungslos.',
+        },
         codeLimit: {
           type: 'number',
           description: 'Max. Code-Chunks (optional, Standard: 10 für read_with_code)',

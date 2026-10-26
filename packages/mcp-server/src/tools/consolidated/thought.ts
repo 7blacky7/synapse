@@ -59,6 +59,10 @@ export const thoughtTool: ConsolidatedTool = {
           ],
           description: 'ID des Gedankens - fuer action "get" (einzeln oder Array), "delete" oder "update". Volle UUID oder eindeutiger Praefix (mind. 8 Zeichen, z. B. "04e14f2a"); mehrdeutig/unbekannt -> Fehler mit Kandidaten, nichts wird geaendert.',
         },
+        bestaetigt: {
+          type: 'boolean',
+          description: 'Nur fuer add/add_batch: im Modus pruefen_vor_anlegen (Produkt-Schalter speicher_aehnlichkeit_pruefen) eine User-Idee trotz aehnlicher Eintraege anlegen. Sonst wirkungslos.',
+        },
         query: {
           type: 'string',
           description: 'Suchanfrage - fuer action "search"',

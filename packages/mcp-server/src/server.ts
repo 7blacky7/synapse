@@ -12,6 +12,8 @@ import { haengeAusloeserTextHinweiseAn, initialisiereAssetKonfliktHinweise, init
 import { haengeFallSkillHinweisAn, haengeFallSkillTextHinweisAn, type FallSkillOptionen } from '@synapse/core';
 // P22-T13 Paket C: Hinweisentscheidung vor First-Use-Marke und gemeinsame Agentenprojektion (wie REST).
 import { hinweisAktiv, projiziereTextAntwort } from '@synapse/core';
+// P10-T88: Aehnlichkeitspruefung beim Speichern (Schalter speicher_aehnlichkeit, Standard AUS); gleicher Wrapper wie REST.
+import { mitSpeicherAehnlichkeit } from '@synapse/core';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -519,16 +521,16 @@ export function createServer(): Server {
           return withOnboarding(await searchTool.handler(args as Record<string, unknown>));
 
         case 'memory':
-          return withOnboarding(await memoryTool.handler(args as Record<string, unknown>));
+          return withOnboarding(await mitSpeicherAehnlichkeit('memory', args as Record<string, unknown>, () => memoryTool.handler(args as Record<string, unknown>)));
 
         case 'thought':
-          return withOnboarding(await thoughtTool.handler(args as Record<string, unknown>));
+          return withOnboarding(await mitSpeicherAehnlichkeit('thought', args as Record<string, unknown>, () => thoughtTool.handler(args as Record<string, unknown>)));
 
         case 'proposal':
-          return withOnboarding(await proposalTool.handler(args as Record<string, unknown>));
+          return withOnboarding(await mitSpeicherAehnlichkeit('proposal', args as Record<string, unknown>, () => proposalTool.handler(args as Record<string, unknown>)));
 
         case 'plan':
-          return withOnboarding(await planTool.handler(args as Record<string, unknown>));
+          return withOnboarding(await mitSpeicherAehnlichkeit('plan', args as Record<string, unknown>, () => planTool.handler(args as Record<string, unknown>)));
 
         case 'chat': {
           const chatAction = (args as Record<string, unknown>)?.action as string;
