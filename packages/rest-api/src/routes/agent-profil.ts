@@ -108,6 +108,8 @@ const ROUTEN: RouteDef[] = [
   // P22-T45: Ausweis-Fristen (Einstellung, EINE Lesestelle im Core).
   { methode: 'GET', pfad: '/reverse-einstellungen', action: 'reverse_einstellungen', quelle: req => ({ modus: 'status', reverse_id: query(req).reverse_id }) },
   { methode: 'PUT', pfad: '/reverse-einstellungen', action: 'reverse_einstellungen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
+  { methode: 'GET', pfad: '/artefakt-einstellungen', action: 'artefakt_einstellungen', quelle: () => ({ modus: 'status' }) },
+  { methode: 'PUT', pfad: '/artefakt-einstellungen', action: 'artefakt_einstellungen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
   { methode: 'GET', pfad: '/hex-einstellungen', action: 'hex_einstellungen', quelle: () => ({ modus: 'status' }) },
   { methode: 'PUT', pfad: '/hex-einstellungen', action: 'hex_einstellungen', quelle: req => ({ modus: 'setzen', ...body(req) }) },
   { methode: 'GET', pfad: '/ausweis-fristen', action: 'ausweis_fristen', quelle: () => ({ modus: 'status' }) },

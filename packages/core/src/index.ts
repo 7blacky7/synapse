@@ -1,4 +1,11 @@
 // P22-T172: aktuelle Task je Agent (Schalter agent_aktuelle_task, Einstellwert fenster_stunden in agent_aktuelle_task_einstellungen).
+// P22-T191: gemeinsame Artefakt-Datei-/Katalogvertraege.
+export * from './services/artefakt-katalog.js';
+export * from './services/artefakt-dateien.js';
+export * from './services/artefakt-ueberlauf.js';
+export { ARTEFAKT_DEFINITION } from './services/artefakt-definition.js';
+export { ARTEFAKT_DATEIEN_SCHEMA_SQL } from './db/artefakt-dateien-schema.js';
+
 export {
   AGENT_AKTUELLE_TASK_FUNKTION, AKTUELLE_TASK_REIHENFOLGE, AKTUELLE_TASK_CACHE_MS, AKTUELLE_TASK_EINSTELLUNGEN, leseAktuelleTaskEinstellungen,
   setzeAktuelleTaskEinstellungen, leseAktuelleTaskSchalter, ermittleAktuelleTasks, aktuelleTaskFuer, leereAktuelleTaskCache,

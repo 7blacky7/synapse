@@ -152,6 +152,8 @@ try{
   // P22-T93 Netzwerk, P21 Hex, P18-T86 Reverse: Verwaltungsrechte (User, Koordinator inkl. Legacy).
   agentennetzwerk:()=>({netzwerk_modus:'status'}),
   hex_einstellungen:()=>({modus:'status'}),
+  // P22-T191: gleicher Verwalterpfad; User/Koordinator/Legacy lesen, Subagent nicht.
+  artefakt_einstellungen:()=>({modus:'status'}),
   reverse_einstellungen:()=>({modus:'status'}),
   // P22-T80 Aufraeumen, P22-T82 Container-Kontingent (status), P22-T87 Anmeldungen, P22-T107 Koordinator-Heartbeat (status).
   agenten_aufraeumen:()=>({aufraeumen_modus:'status'}),

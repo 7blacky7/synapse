@@ -37,7 +37,17 @@ Object.assign(process.env,{SYNAPSE_SHELL_JOB:'1',SYNAPSE_SKIP_EMBEDDINGS:'1',PAR
  QDRANT_URL:'http://127.0.0.1:1',OLLAMA_URL:'http://127.0.0.1:1',EMBEDDING_BASE_URL:'http://127.0.0.1:1'});
 const TEST_SCHLUESSEL='cd'.repeat(32);
 let network=0;
-globalThis.fetch=async()=>{network++;throw Error('Testnetz gesperrt');};
+globalThis.fetch=async(_url,init)=>{
+ // P22-T191: nur die neue, nutzdatenfreie stdio-Statusabfrage als lokale API-Attrappe.
+ // Jeder Nutzdaten-/Modell-/sonstige Netzwerkversuch bleibt rot (network===0).
+ let rpc;try{rpc=JSON.parse(init?.body??'{}');}catch{rpc=null; /* Kein JSON-RPC: unten als unerlaubter Netzwerkversuch gezaehlt. */}
+ if(rpc?.method==='tools/call'&&rpc.params?.name==='artefakt'&&rpc.params?.arguments?.action==='status'
+    &&!('antwort' in rpc.params.arguments)&&!('html' in rpc.params.arguments)){
+  const d={success:true,antwort_ueberlauf:{aktiv:false}};
+  return {ok:true,json:async()=>({result:{content:[{type:'text',text:JSON.stringify(d)}],structuredContent:d}})};
+ }
+ network++;throw Error('Testnetz gesperrt');
+};
 const {Pool}=require('pg'),admin=new Pool({connectionString:url.href});
 const schema='p22_t13_d_'+process.pid+'_'+randomUUID().slice(0,8);
 const P='p22-t13-d',Q='p22-t13-d-fremd',legacy='legacy-client',thoughtId='00000000-0000-4000-8000-000000000114';
@@ -67,6 +77,8 @@ function norm(v){
 // P21-T13: Nur das neue Tool hex aus der Altlisten-Projektion entfernen; bestehende Definitionen bleiben vollstaendig verglichen.
 // Neue admin-Aktionen/-Parameter sind ADDITIV; die Golden-Projektion entfernt genau diese Namen (Muster wie admin-kontextprofil-p7-t42).
 const W1B_AKTIONEN=[
+ // P22-T191: Artefakt-Grenzen, kompletter Vertrag zusaetzlich im RV9 und T191-PG-Test.
+ 'artefakt_einstellungen',
  // P22-T93: parallele additive Netzwerk-Verwaltung; voller Vertrag separat ueber RV9-Hashkette.
  'agentennetzwerk',
  // P21-T3/T13: Hex-Einstellungen stehen im Schema VOR den Kernaktionen
@@ -108,6 +120,8 @@ const W1B_PARAMETER=['profil_funktion','ziel_identity_id','schattenprofil_id','z
  'netzwerk_modus','netzwerk_werte',
  // P21-T3/T13: Hex-Einstellungen (im Schema vor den Hauptagent-Parametern)
  'hex_werte','hex_namen',
+ // P22-T191: nach den Hex-Parametern in W1B_ADMIN_PARAMETER.
+ 'artefakt_werte',
  // P18-T86: Reverse-Einstellungs-Parameter nach Hex (P22-T139: nachgetragen)
  'reverse_id','reverse_ebene','reverse_werte','reverse_namen',
  'auftrag_art','auftrag_id','gewuenscht','hands_off','idempotenz_schluessel',

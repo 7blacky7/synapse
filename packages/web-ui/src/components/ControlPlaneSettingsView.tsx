@@ -5,6 +5,7 @@ import { AgentRuntimeControl } from './CodexRuntimeControl';
 import { ModelPoolTable } from './ModelPoolTable';
 import { AusweisFristenPanel } from './AusweisFristenPanel';
 import { ContainerKontingentPanel } from './ContainerKontingentPanel';
+import { ArtefaktDateienPanel } from './ArtefaktDateienPanel';
 import { HexEinstellungenPanel } from './HexEinstellungenPanel';
 import { ReverseEinstellungenPanel } from './ReverseEinstellungenPanel';
 import { AusweisVisaPanel } from './AusweisVisaPanel';
@@ -19,7 +20,7 @@ import '../control-plane-settings.css';
 type Theme = 'dark' | 'light';
 // P8-T25: Nur Bereiche mit echter Wirkung. Hosts, Testsysteme, Workspace-Defaults
 // und Ressourcenlimits hatten keinen Speicherort und sind entfernt.
-type SettingsCategory = 'reverse' | 'hex' | 'main' | 'api' | 'heartbeat' | 'ausweis' | 'container' | 'all-agents' | 'all-workspaces' | 'runtimes' | 'model-pool' | 'auth' | 'appearance';
+type SettingsCategory = 'artefakte' | 'reverse' | 'hex' | 'main' | 'api' | 'heartbeat' | 'ausweis' | 'container' | 'all-agents' | 'all-workspaces' | 'runtimes' | 'model-pool' | 'auth' | 'appearance';
 
 const ACCENT_PRESETS = [
   { name: 'Orange', color: '#f97316' },
@@ -106,6 +107,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
     { id: 'runtimes', label: 'Runtimes', detail: 'Claude Code und Codex steuern', group: 'Infrastruktur' },
     { id: 'model-pool', label: 'Modell-Pool', detail: 'Verfügbare Modelle und Freigaben', group: 'Infrastruktur' },
     { id: 'reverse', label: 'Reverse-Bibliothek', detail: 'Globale Freigabe für einzelne PE-Ressourcen', group: 'Zugänge & Grenzen' },
+    { id: 'artefakte', label: 'Artefakte & Antworten', detail: 'Dateizugriff, große Antworten, Leseseiten und Aufbewahrung', group: 'Zugänge & Grenzen' },
     { id: 'hex', label: 'Hex-Werkzeug', detail: 'Freigabe und Budgets für die Byteanalyse der Agenten', group: 'Zugänge & Grenzen' },
     { id: 'auth', label: 'Authentifizierung', detail: 'Anmeldung der Runtimes', group: 'Zugänge & Grenzen' },
     { id: 'appearance', label: 'Darstellung', detail: 'Theme, Akzent und Dichte', group: 'Oberfläche' },
@@ -121,6 +123,7 @@ export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, p
       <main>
         <header><div><span>GLOBAL</span><h2>{categories.find((item) => item.id === category)?.label}</h2></div><div className="settings-head-status"><StatusChip stand="live" /></div></header>
         <div className="cp-settings-content">
+          {category === 'artefakte' && <ArtefaktDateienPanel project={project} />}
           {category === 'hex' && <HexEinstellungenPanel project={project} />}
           {category === 'container' && <ContainerKontingentPanel project={project} />}
           {category === 'reverse' && <ReverseEinstellungenPanel project={project} />}

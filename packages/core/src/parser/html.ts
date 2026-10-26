@@ -114,7 +114,8 @@ class HtmlParser implements LanguageParser {
   //    comment-Symbol statt verschmolzener Bloecke — Reparse noetig.
   // 6: Der TypeScript-Parser (fuer <script>) liefert zusaetzlich field-Symbole
   //    mit Feld-Referenzen und String-Literale ueber 64 Zeichen — Reparse noetig.
-  version = 6;
+  // 7: Artefakt-Inhalte bekommen Ueberschriften wie der vorhandene Markdown-Parser.
+  version = 7;
 
   parse(content: string, filePath: string): ParseResult {
     const symbols: ParsedSymbol[] = [];
@@ -210,6 +211,19 @@ class HtmlParser implements LanguageParser {
     // 2. Text-Content zwischen Inline-Tags als String-Symbole
     //    Nur wenn der Inhalt identifier-artig ist (kein Whitespace, 2-64 Zeichen)
     // ══════════════════════════════════════════════
+    // P22-T191: nur virtuelle Artefaktinhalte; dieselbe Index-Konvention wie markdown.ts.
+    if (filePath.startsWith('artefakte/') && filePath.endsWith('/inhalt.html')) {
+      const headingRe = /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1\s*>/gi;
+      while ((m = headingRe.exec(markup)) !== null) {
+        const title = m[2].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+        if (!title) continue;
+        const level = Number(m[1]);
+        symbols.push({symbol_type:'function',name:title,value:'h'+level,
+          line_start:zeileFuerPosition(zeilenIndex,m.index),
+          line_end:zeileFuerPosition(zeilenIndex,m.index+m[0].length-1),
+          params:['level:'+level,'artefakt:gliederung'],is_exported:level<=2});
+      }
+    }
     const tagRe = /<(?:span|code|kbd|var|samp|em|strong|b|i|u|mark|a|td|th|h[1-6]|p|li|dt|dd|caption|title|label|option|pre)(?:\s[^>]*)?>([^<]{2,64})</gi;
     const textSeen = new Set<string>();
     while ((m = tagRe.exec(markup)) !== null) {

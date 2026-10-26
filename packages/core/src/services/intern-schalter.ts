@@ -26,6 +26,9 @@ import { getPool } from '../db/client.js';
 
 /** Bekannte Schalter und ihre Modi; der erste Modus ist der Standard. */
 export const INTERN_SCHALTER = {
+  // P22-T191: befristeter EIN/AUS-Override, Produktstandard AUS.
+  artefakt_dateien: ['freigegeben'],
+  tool_antwort_ueberlauf: ['freigegeben'],
   // P18-T76: temporary opt-in to PE resource extraction; production uses product switch.
   reverse_pe_ressourcen: ['freigegeben'],
   reverse_siedler3: ['freigegeben'],

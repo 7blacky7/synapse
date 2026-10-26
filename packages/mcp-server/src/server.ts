@@ -72,7 +72,7 @@ import {
   jevTool,
   filesTool,
   shellTool,
-  guideTool,
+  guideTool, artefaktTool, begrenzeStdioArtefaktAntwort,
 } from './tools/consolidated/index.js';
 // PA-1: unbekannte Parameter melden statt still verwerfen. Aus core — dieselbe Funktion
 // benutzt die REST-Strecke, damit die beiden Wege nicht auseinanderlaufen.
@@ -154,6 +154,7 @@ export function createServer(): Server {
     filesTool.definition,
     shellTool.definition,
     guideTool.definition,
+    artefaktTool.definition,
   ];
 
   // PA-1: Nachschlagetabelle fuer die Parameter-Pruefung — aus DENSELBEN Definitionen, die
@@ -209,6 +210,14 @@ export function createServer(): Server {
     if (name === 'hex' && !kontext.antwort) return await hexTool.handler(kontext.aktiv ? { ...args, token: request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : args) as { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
     // RV9: API verantwortet DB, Audit und Antwort-Hooks; stdio reicht die fertige Antwort weiter.
     if (name === 'reverse' && !kontext.antwort) return await reverseTool.handler(kontext.aktiv ? { ...args, project: args.project, agent_id: args.agent_id, token: request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : args) as { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
+    if ((name==='files'||name==='code_intel') && typeof args.artefakt_id==='string' && !kontext.antwort) return await artefaktTool.handler({
+      ...args,...(name==='code_intel'?{action:'code_intel',intel_action:args.action}:{}),
+      agent_kennung:request.params.arguments?.agent_kennung??request.params.arguments?.token??process.env.SYNAPSE_AGENT_TOKEN,
+    }) as {content:Array<{type:'text';text:string}>;structuredContent?:Record<string,unknown>;isError?:boolean};
+    // P22-T191: Artefakte haben denselben API-Dispatcher und dieselben Rechte auf beiden Strecken.
+    if (name === 'artefakt' && !kontext.antwort) return await artefaktTool.handler({
+      ...args, ...(kontext.aktiv ? { agent_kennung: request.params.arguments?.agent_kennung ?? request.params.arguments?.token ?? process.env.SYNAPSE_AGENT_TOKEN } : {}),
+    }) as { content: Array<{type:'text';text:string}>; structuredContent?: Record<string,unknown>; isError?:boolean };
     const _t0 = Date.now();
 
     // Globale Parameter fuer Agent-Onboarding extrahieren
@@ -850,13 +859,14 @@ export function createServer(): Server {
     // Einrueckung, success ergaenzt) — derselbe Helfer wie auf dem REST-Weg.
     // P22-T13 Paket C (K16.4/K16.7): Audit (logToolCall oben) bleibt vollstaendig; nur die Agentenauslieferung
     // wird projiziert. Ohne Snapshot/Schalter antwortanpassung unveraendert (t109).
-    return kompaktiereTextErgebnis(
+    const endAntwort = kompaktiereTextErgebnis(
       projiziereTextAntwort(await attachResponseHooks(
         baseResp as { content: Array<{ type: string; text: string }>; isError?: boolean },
       ), name, typeof args?.action === 'string' ? args.action : undefined),
       name,
       typeof args?.action === 'string' ? args.action : undefined,
     );
+    return begrenzeStdioArtefaktAntwort(endAntwort,{...args,agent_kennung:request.params.arguments?.agent_kennung??request.params.arguments?.token??process.env.SYNAPSE_AGENT_TOKEN},name);
     }, process.env.SYNAPSE_AGENT_TOKEN, ERLAUBTE_PARAMETER.get(name));
   });
 

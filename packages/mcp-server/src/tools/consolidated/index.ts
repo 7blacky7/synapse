@@ -6,6 +6,8 @@
  */
 
 export type { ConsolidatedTool } from './types.js';
+export { artefaktTool, begrenzeStdioArtefaktAntwort } from './artefakt.js';
+
 
 import { projectTool } from './project.js';
 export { projectTool };

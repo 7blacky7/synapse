@@ -69,6 +69,8 @@ export const codeIntelTool: ConsolidatedTool = {
         stand_nach_op: { type: 'integer', minimum: 0, description: 'Optionaler Zwischenstand nach diesem 0-basierten Op-Index.' },
         show_ghosts: { type: 'boolean', description: 'tree: Ghost-Dateien [g]/[g~] und neue Ordner [g] mit plan_id. Standard false, bisherige Index-Zählwerte unverändert.' },
 
+        artefakt_id: {type:'string',description:'P22-T191: UUID oder eindeutiger Artefaktname statt Projektdatei.'},
+        regex: {type:'boolean',description:'Artefakt-search: regulaerer Ausdruck.'},
         // --- tree ---
         path: {
           type: 'string',

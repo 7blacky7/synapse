@@ -23,7 +23,8 @@ import { entscheideToolListeVerbindung, toolListeMeta } from '@synapse/core';
 import { haengeAusloeserHinweiseAn, holeAusloeserHinweisMetriken, fuehreHinweisprofilAdminAus, initialisiereAssetKonfliktHinweise } from '@synapse/core';
 // P23-T5: Fall-Skill-Hinweis bei Fehlbedienung (Tabelle Fehlercode -> Fall-Skill, je Weg Ausweis/Legacy).
 import { haengeFallSkillHinweisAn, type FallSkillOptionen } from '@synapse/core';
-import { fuehreArtefaktAus } from '../services/agent-runtime/artefakt-tool.js';
+import { fuehreArtefaktAus, fuehreArtefaktDateiAufrufAus, begrenzeArtefaktWerkzeugAntwort } from '../services/agent-runtime/artefakt-tool.js';
+import { ARTEFAKT_DEFINITION } from '@synapse/core';
 import { mainToolAccess, mainToolListeMitProfil, mainToolAblehnung, type MainToolAccess } from '../services/agent-runtime/main-tool-profile.js';
 import { leseW1bSchalter } from '@synapse/core';
 import { initialisiereW1bAnmeldungHinweise, herkunftsortAusKopf } from '@synapse/core';
@@ -1050,6 +1051,8 @@ export const MCP_TOOLS = [
           enum: ['tree', 'functions', 'variables', 'symbols', 'references', 'rename_preview', 'search', 'search_batch', 'file', 'statements', 'calls', 'flow', 'entrypoints', 'health'],
           description: 'Aktion: tree|functions|variables|symbols|references|rename_preview|search|search_batch|file|statements|calls|flow|entrypoints|health. rename_preview plant ein Umbenennen auf Basis der aufgeloesten Referenzen und schreibt NICHTS — es liefert ops fuer files(action:"plan").',
         },
+        artefakt_id: {type:'string',description:'P22-T191: UUID oder eindeutiger Artefaktname statt Projektdatei.'},
+        regex: {type:'boolean',description:'Artefakt-search: regulaerer Ausdruck.'},
         project: { type: 'string', description: 'Projekt-Name (erforderlich)' },
         agent_id: { type: 'string', description: 'Agent-ID fuer Onboarding' },
         path: { type: 'string', description: 'Verzeichnis-Pfad-Prefix zum Filtern (fuer tree und file)' },
@@ -1124,6 +1127,9 @@ export const MCP_TOOLS = [
           description: 'Datei-Aktion. versions/get_version/restore/restore_batch arbeiten auf der Versionshistorie. plan/commit/cancel/plan_status/plan_update implementieren atomare Multi-File-Edits ueber mehrere Dateien. history listet Aenderungen mit Begruendung (Crash-Recovery) — agent_id wirkt dort als EXAKTER Filter, fuer die volle Projekt-History weglassen.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
+        artefakt_id: {type:'string',description:'P22-T191: UUID oder eindeutiger Artefaktname statt file_path.'},
+        from_column: {type:'number',description:'Artefakt-read: Spaltencursor.'},
+        expected_revision: {type:'number',description:'Artefakt-Schreiben: erwartete Revision.'},
         ohne_task: { type: 'boolean', description: 'history/versions: nur Versionen ohne task_id; since/seit begrenzt Altbestand. Kein Backfill.' },
         seit: { type: 'string', description: 'history/versions: Alias fuer since (ISO-Zeitpunkt/Datum).' },
         version_ids: { type: 'array', items: { type: 'string' }, description: 'task_zuordnen: Versions-IDs, alternativ batch_id oder plan_id.' },
@@ -1248,6 +1254,9 @@ export const MCP_TOOLS = [
           description: 'plan: Trockenlauf, gibt plan_id zurueck; scheitert eine Op, entsteht trotzdem ein neuer offener Plan (plan_id + failed_ops), korrigierbar per plan_update (ersetzt op_index bzw. alle Ops, neue plan_id, alter Plan verworfen). Offene Plaene laufen nach files_plan_stunden (Standard 48 h) ohne Aktivitaet ab (expired). commit: Legacy-Plan unveraendert; Co-Edit-Plan atomar gaten, validieren und gemeinsam committen oder terminal conflict. cancel: open/conflict verwerfen. plan_status: Plan-Details. history: Aenderungs-Log. restore/restore_batch: Versionierungs-Rollback.',
         },
         project: { type: 'string', description: 'Projekt-Name' },
+        artefakt_id: {type:'string',description:'P22-T191: UUID oder eindeutiger Artefaktname statt file_path.'},
+        from_column: {type:'number',description:'Artefakt-read: Spaltencursor.'},
+        expected_revision: {type:'number',description:'Artefakt-Schreiben: erwartete Revision.'},
         ohne_task: { type: 'boolean', description: 'history/versions: nur Versionen ohne task_id; since/seit begrenzt Altbestand. Kein Backfill.' },
         seit: { type: 'string', description: 'history/versions: Alias fuer since (ISO-Zeitpunkt/Datum).' },
         version_ids: { type: 'array', items: { type: 'string' }, description: 'task_zuordnen: Versions-IDs, alternativ batch_id oder plan_id.' },
@@ -1483,36 +1492,7 @@ export const MCP_TOOLS = [
     },
   },
   // 22. artefakt — Hauptagenten-Werkzeug: HTML-Block als Artefakt in die Web-UI
-  {
-    name: 'artefakt',
-    description: 'P22-T141 Design-Gedaechtnis fuer ALLE Agenten (Schalter artefakt_bewertung): vorlieben = Design-Vorlieben des Users kompakt (vorbilder/ueberarbeiten/verbannt, ohne HTML; vor jeder HTML-Antwort lesen), vorbild = HTML eines bewerteten Designs (bewertung_id), versuch = neuen Versuch zu einem ueberarbeiten verknuepfen (bewertung_id, quelle_art, quelle_ref; bei zeigen stattdessen ueberarbeitet_aus). zeigen ist das Werkzeug des HAUPTAGENTEN: legt einen HTML-Block als Artefakt ab und stellt ihn in den laufenden Antwort-Strom der Web-UI zu (SSE-Event "artifact", AgentHtmlBlock-kompatibel). Die PG-Zeile (agent_artifacts) ist die Wahrheit; HTML-Datei und PNG-Livebild im Runtime-Container (/attachments/artefakte, spaeter eigener Share) sind Abbilder. Erster Schritt: EIN Block je Aufruf (action "zeigen"); mit artefakt_id wird ein bestehender Block derselben Session ersetzt (revision steigt). KEIN Broadcast beim Ablegen. Nur aus einer Hauptagenten-Session aufrufbar — die Session-Bindung setzt der SERVER aus dem Header X-Synapse-Hauptagent-Session, andere Aufrufer erhalten eine klare Ablehnung. P22-T154 (Schalter artefakt_vorlagen / artefakt_ausweis_zeigen / artefakt_vorlagen_live, Std AUS): zeigen mit vorlage + quellen statt html = Datenvorlage, der Server rendert sie je Projekt aus festen Lesevertraegen (quellen = Katalog); modus stand (Momentaufnahme, neu_zeichnen) oder live (zeichnet bei Aenderung neu, solange jemand zusieht). Mit Ausweis ohne Main-Session landet der Block im eigenen Chatfenster (Verlauf) und in Persoenliche Artefakte. Ersetzen (artefakt_id) nur Urheber bzw. Main-Session; neu_zeichnen (artefakt_id, project?) jeder mit Leserecht.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: { type: 'string', enum: ['zeigen', 'neu_zeichnen', 'quellen', 'vorlieben', 'vorbild', 'versuch'], description: 'zeigen = Block ablegen und zustellen (Main-Session; per Ausweis mit Schalter artefakt_ausweis_zeigen); neu_zeichnen = Vorlage mit aktuellen Daten neu rendern (P22-T154); quellen = Katalog der Datenquellen; vorlieben/vorbild/versuch = Design-Gedaechtnis (P22-T141, jeder Agent)' },
-        vorlage: { type: 'string', description: 'zeigen (P22-T154): HTML-Vorlage statt html - {{wert | filter:arg}}, {{#each liste as x}}..{{else}}..{{/each}}, {{#if a == b}}..{{else if}}..{{else}}..{{/if}}; Ausgabe immer escaped. Filter: anzahl, summe, wo, wo_nicht, sortiert, erste, letzte, feld, verbinde, prozent, zahl, runden, datum, relativ, kuerzen, gross, klein, json, standard, min, max. _meta.project/_meta.gerendert_am stehen immer bereit.' },
-        quellen: { type: 'array', items: { type: 'object' }, description: 'zeigen mit vorlage: [{name, vertrag, args?}] aus dem Katalog (artefakt(action:"quellen")), z. B. {name:"plaene", vertrag:"plan.list"}. project NIE in args - es wird beim Rendern eingesetzt.' },
-        modus: { type: 'string', enum: ['fest', 'stand', 'live'], description: 'fest = fertiges html; stand = Momentaufnahme (Standard bei vorlage); live = gedrosselt neu zeichnen, solange jemand zusieht' },
-        project: { type: 'string', description: 'zeigen mit vorlage / neu_zeichnen: Projekt, fuer das gerendert wird (Ausweis: nur das eigene; Main: Pflicht bei neuer Vorlage)' },
-        html: { type: 'string', description: 'HTML-Inhalt des Blocks (Pflicht, max 2 MB). Wird empfangsseitig sanitisiert und im Shadow DOM gerendert.' },
-        titel: { type: 'string', description: 'Optionaler Titel des Blocks' },
-        artefakt_id: { type: 'string', description: 'Optional: ID eines bestehenden Artefakts derselben Session — ersetzt dessen Inhalt (revision + 1) statt einen neuen Block anzulegen' },
-        column: { type: 'number', description: 'Optional: Raster-Spalte (Vorgaben setzt die Empfangsseite)' },
-        columnSpan: { type: 'number', description: 'Optional: Spaltenbreite' },
-        row: { type: 'number', description: 'Optional: Raster-Zeile' },
-        rowSpan: { type: 'number', description: 'Optional: Zeilenhoehe' },
-        minHeight: { type: 'number', description: 'Optional: Mindesthoehe in px' },
-        session_id: { type: 'string', description: 'Wird serverseitig aus dem Hauptagenten-Header gesetzt — NICHT manuell mitschicken' },
-        ueberarbeitet_aus: { type: 'number', description: 'zeigen (P22-T141): bewertung_id eines Designs im Zustand ueberarbeiten - dieser Block ist der neue Versuch (das Original verlaesst die Liste ueberarbeiten)' },
-        bewertung_id: { type: 'number', description: 'vorbild/versuch (P22-T141): ID aus artefakt(action:"vorlieben")' },
-        quelle_art: { type: 'string', enum: ['artefakt', 'inbox', 'verlauf'], description: 'versuch: Art des neuen Versuchs (artefakt; inbox = HTML per chat inbox_send an user; verlauf = HTML-Antwort im eigenen Verlauf)' },
-        quelle_ref: { type: 'string', description: 'versuch: ID des neuen Versuchs (artefakt_id, inbox-ID bzw. Verlaufs-ID)' },
-        limit: { type: 'number', description: 'vorlieben: Eintraege je Gruppe (Standard 5/5/10, hoechstens 50)' },
-        agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Attribution' },
-      },
-      required: ['action'],
-    },
-  },
+  { ...ARTEFAKT_DEFINITION },
   // 23. intern — Debugging/Steuerung interner Ablaeufe (P14). NUR bei SYNAPSE_INTERN_TOOL=1 beim
   // Prozessstart in der Liste (beide tools/list-Stellen lesen MCP_TOOLS, PA-1 ebenso).
   // Flache Kopie wie asset_intel: die OUTPUT_EXTRAS-Schleife setzt Felder am Objekt.
@@ -4776,7 +4756,7 @@ async function handleToolCallKern(
     // ohne Asset-Eintraege im Projekt bleibt jede Antwort byte-gleich. Spiegel: mcp-server consolidated/code-intel.ts.
     // P13-T34/A16: mitCodeIntelAnsicht liefert ohne ansicht-Parameter unveraendert den Bestand.
     // P18-T109: project="rev-…" -> Reverse-Eintrag (Schalter reverse_intel_abruf); null = Bestand. Spiegel: mcp-server code-intel.ts.
-    case 'code_intel': return (await leiteReverseIntelUm('code_intel', args, effectiveAgentId)) ?? mitCodeIntelAnsicht(action, args, effectiveAgentId, () => mitCodeIntelSchatten(action!, args, async () => ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
+    case 'code_intel': return (str(args,'artefakt_id') ? await fuehreArtefaktDateiAufrufAus({...args,action:'code_intel',intel_action:action},effectiveAgentId) : null) ?? (await leiteReverseIntelUm('code_intel', args, effectiveAgentId)) ?? mitCodeIntelAnsicht(action, args, effectiveAgentId, () => mitCodeIntelSchatten(action!, args, async () => ergaenzeCodeIntelAntwort(action, args, await (async (): Promise<Record<string, unknown>> => {
       const project = reqStr(args, 'project');
       switch (action) {
         case 'tree': {
@@ -4927,6 +4907,7 @@ async function handleToolCallKern(
     // =================================================================
     case 'files_batch':
     case 'files': {
+      if(str(args,'artefakt_id'))return fuehreArtefaktDateiAufrufAus(args,effectiveAgentId);
       const project = reqStr(args, 'project');
       const agentId = resolveAgentId(str(args, 'agent_id')) ?? undefined;
       if (action === 'task_zuordnen') return ordneFileTasksZu({ project, agent_id: agentId, task_id: reqStr(args, 'task_id'),
@@ -6567,7 +6548,7 @@ async function fuehreToolsCallAus(
     // projiziert (neues Objekt; ohne Snapshot/Schalter antwortanpassung identisch = t109).
     const agentErgebnis = projiziereToolAntwort(await haengeFallSkillHinweisAn(toolResult, toolName, fallOpt), toolName, typeof toolArgs.action === 'string' ? toolArgs.action : undefined);
     // OpenAI-Empfehlung: strukturierte Ausgabe zusaetzlich zum Text (muss zum outputSchema passen).
-    result = haengeMcpBilderAn(baueToolErgebnis(agentErgebnis, { tool: toolName, strukturiert: true }), bilder);
+    result = haengeMcpBilderAn(baueToolErgebnis(await begrenzeArtefaktWerkzeugAntwort(agentErgebnis,toolArgs,toolName,typeof toolArgs.action==='string'?toolArgs.action:undefined), { tool: toolName, strukturiert: true }), bilder);
   } catch (toolErr) {
     // Tool-Fehler (z.B. fehlender Pflicht-Parameter wie file_path) als
     // MCP tool-result mit isError zurueckgeben — NICHT als HTTP 500.

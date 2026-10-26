@@ -19,6 +19,9 @@ import Docker from 'dockerode';
 import { PassThrough } from 'node:stream';
 import {
   getPool,
+  begrenzeArtefaktAntwort, artefaktDateiSchalter,
+  fuehreArtefaktDateiAus, leseArtefaktDateiEinstellungen, setzeArtefaktDateiEinstellungen,
+  pruefeArtefaktDateiFreigabe, listeArtefaktKatalog, loeseArtefaktName, setzeArtefaktMetadaten, ArtefaktDateiFehler,
   speichereArtefakt,
   aktualisiereArtefaktPfade,
   type ArtefaktZeile,
@@ -230,6 +233,29 @@ function bewertungsFehlerAntwort(error: unknown): Record<string, unknown> {
  */
 export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?: string): Promise<unknown> {
   const action = typeof args.action === 'string' ? args.action : '';
+  if(action==='tool_antwort')return {success:true,antwort:await begrenzeArtefaktWerkzeugAntwort(args.antwort,args,str(args,'tool_name')??'stdio',str(args,'tool_action')??undefined)};
+  if (['read','search_replace','replace_lines','insert_after','versions','restore','code_intel','einstellungen','status'].includes(action) || (action==='search' && !!str(args,'artefakt_id'))) return fuehreArtefaktDateiAufrufAus(args,agentId);
+  // P22-T191 b: zuerst Katalog/Name; keine unautorisierte Identitaetsbehauptung durch session_id.
+  if(action==='zeigen'&&(args.name!==undefined||args.beschreibung!==undefined||args.bereich!==undefined)){
+    try{const b=await betrachterAusAufruf(args,!!str(args,'session_id'));await pruefeArtefaktDateiFreigabe(b.art==='agent'?b.project:null);}
+    catch(error){return {success:false,error:error instanceof ArtefaktDateiFehler?error.code:'artefakt_katalog_fehler',message:meldung(error)};}
+  }
+  const katalogAktion = ['list', 'search', 'metadaten'].includes(action);
+  const namensReferenz = str(args, 'artefakt_id');
+  if (katalogAktion || (namensReferenz && !/^[0-9a-f-]{36}$/i.test(namensReferenz))
+      || (action !== 'zeigen' && !!str(args, 'name'))) {
+    try {
+      const b = { ...await betrachterAusAufruf(args, !!str(args, 'session_id')), session_id: str(args, 'session_id') };
+      const schalter = await pruefeArtefaktDateiFreigabe(b.art==='agent' ? b.project : null);
+      if (action==='list' || action==='search') return { ...await listeArtefaktKatalog(args,b), schalter };
+      const z = await loeseArtefaktName(namensReferenz ?? str(args,'name') ?? '',b);
+      if (action==='metadaten') return { success:true, artefakt:await setzeArtefaktMetadaten(z.artefakt_id,args,b), schalter };
+      args = { ...args, artefakt_id:z.artefakt_id };
+    } catch(error) {
+      if (error instanceof ArtefaktDateiFehler) return { success:false,error:error.code,message:error.message,...(error.treffer?{treffer:error.treffer}:{}) };
+      return {success:false,error:'artefakt_katalog_fehler',message:meldung(error)};
+    }
+  }
   // P22-T154: neu zeichnen (jeder mit Leserecht auf das Projekt) und Quellenkatalog.
   if (action === 'neu_zeichnen') return neuZeichnen(args, agentId);
   if (action === 'quellen') {
@@ -264,6 +290,15 @@ export async function fuehreArtefaktAus(args: Record<string, unknown>, agentId?:
   if (action !== 'zeigen' || !ergebnis || typeof ergebnis !== 'object' || (ergebnis as { success?: unknown }).success !== true) return ergebnis;
   const r = ergebnis as Record<string, unknown>;
   const extra: Record<string, unknown> = {};
+  if (args.name!==undefined || args.beschreibung!==undefined || args.bereich!==undefined) {
+    try {
+      const b = { ...await betrachterAusAufruf(args, !!str(args,'session_id')),session_id:str(args,'session_id') };
+      await pruefeArtefaktDateiFreigabe(b.art==='agent'?b.project:null);
+      extra.katalog = await setzeArtefaktMetadaten(String(r.artefakt_id),args,b);
+    } catch(error) {
+      extra.katalog_fehler = error instanceof ArtefaktDateiFehler ? {code:error.code,message:error.message} : {code:'katalog_nachtrag_fehler',message:meldung(error)};
+    }
+  }
   if (args.ueberarbeitet_aus !== undefined && args.ueberarbeitet_aus !== null && args.ueberarbeitet_aus !== '') {
     try {
       extra.versuch = (await verknuepfeVersuch({ bewertung_id: args.ueberarbeitet_aus, quelle_art: 'artefakt', quelle_ref: r.artefakt_id, von: agentId ?? null })).bewertung;
@@ -312,6 +347,30 @@ function renderTeil(r: ArtefaktRenderErgebnis): Record<string, unknown> {
  * P22-T154: Betrachter aus dem bezeugten Aufruf (Ausweis-Principal), nie aus Tool-Argumenten. Main = Main-Session oder die
  * Main-Identitaet. Ohne Ausweis (Legacy) gilt das angegebene Projekt wie bei den uebrigen Legacy-Werkzeugen.
  */
+/** Gemeinsamer, vertrauenswuerdiger Zugang fuer artefakt/files/code_intel. session_id setzt nur der MCP-Transport. */
+export async function begrenzeArtefaktWerkzeugAntwort(wert:unknown,args:Record<string,unknown>,tool:string,action?:string):Promise<unknown>{
+ if((tool==='artefakt'&&['read','tool_antwort','status','einstellungen'].includes(action??''))||(tool==='files'&&args.artefakt_id&&action==='read'))return wert;
+ try{
+  const b={...await betrachterAusAufruf(args,!!str(args,'session_id')),session_id:str(args,'session_id')};
+  return await begrenzeArtefaktAntwort(wert,b,tool,action);
+ }catch(error){return wert&&typeof wert==='object'?{...wert,ueberlauf_debug:{fehler:meldung(error)}}:wert;}
+}
+export async function fuehreArtefaktDateiAufrufAus(args:Record<string,unknown>,agentId?:string):Promise<Record<string,unknown>>{
+ try{
+  const b={...await betrachterAusAufruf(args,!!str(args,'session_id')),session_id:str(args,'session_id')};
+  const schalter=await pruefeArtefaktDateiFreigabe(b.art==='agent'?b.project:null);
+  if(args.action==='status')return {success:true,schalter,antwort_ueberlauf:await artefaktDateiSchalter('tool_antwort_ueberlauf',b.art==='agent'?b.project:null),...await leseArtefaktDateiEinstellungen()};
+  if(args.action==='einstellungen'){
+   const p=aktuellerAgentPrincipal();
+   if(args.werte!==undefined && b.art!=='user' && !b.main && !(p?.art==='identity'&&p.rolle==='koordinator'))return {success:false,error:'recht_fehlt',message:'Einstellungen setzen: User/Main/Koordinator'};
+   return {success:true,schalter,...await (args.werte!==undefined?setzeArtefaktDateiEinstellungen(args,agentId??'main'):leseArtefaktDateiEinstellungen())};
+  }
+  const r=await fuehreArtefaktDateiAus(args,b);
+  return {...r,schalter};
+ }catch(error){
+  return error instanceof ArtefaktDateiFehler?{success:false,error:error.code,message:error.message,...(error.treffer?{treffer:error.treffer}:{})}:{success:false,error:'artefakt_datei_fehler',message:meldung(error)};
+ }
+}
 async function betrachterAusAufruf(args: Record<string, unknown>, mainSession: boolean): Promise<ArtefaktBetrachter> {
   const p = aktuellerAgentPrincipal();
   if (p && p.art === 'identity') {
