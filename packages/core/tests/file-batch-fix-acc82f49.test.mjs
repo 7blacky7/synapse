@@ -26,6 +26,9 @@ const res = await import(join(dist, 'services', 'file-reservations.js'));
 const hints = await import(join(dist, 'services', 'plan-hints.js'));
 const { getPool } = await import(join(dist, 'db', 'client.js'));
 const pool = getPool();
+// P6-T50/P25-T15: ein Wait VOR dem ersten Owner-Plan (Owner ohne offenen Plan) entsteht seit P6-T48 Punkt 1 nicht mehr
+// ueber planBatch (reiner Hinweis, sofort geschrieben) -> fuer T12(b) als Altfall anlegen.
+const { legeAltfallWaitAn } = await import(join(hier, '_helfer', 'altfall-wait.mjs'));
 
 let fehler = 0;
 function pruefe(b, text, detail) {
@@ -106,7 +109,9 @@ try {
 
   // ===== T4 withdraw + Neu-Beitrag =====
   await res.addFileReservations({ project: PROJECT, agentId: 'fa-o4', filePaths: ['src/g.ts', 'src/h.ts'] });
-  const p4 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-o4', ops: [rl('src/g.ts', 1, 'g1', 'G1')] });
+  // P25-T15: seit P6-T48 erzeugt die planlose Reservierung auf h.ts allein keinen Wait mehr (Qs h.ts-Op waere sofort in
+  // Qs eigenem Plan). Damit T4 weiter withdraw + Neu-Beitrag ueber ZWEI Dateien prueft, plant der Owner auch h.ts.
+  const p4 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-o4', ops: [rl('src/g.ts', 1, 'g1', 'G1'), rl('src/h.ts', 1, 'h1', 'H1')] });
   const qOps = [rl('src/g.ts', 3, 'g3', 'GQ'), rl('src/h.ts', 3, 'h3', 'HQ')];
   await batch.planBatch({ project: PROJECT, agent_id: 'fa-q', ops: qOps });
   await batch.addCoeditContribution({ project: PROJECT, plan_id: p4.plan_id, agent_id: 'fa-q', ops: qOps });
@@ -238,23 +243,33 @@ try {
   // (b) Wie s2: Wait entsteht, bevor der Owner plant; ein Dritter deckt u2 im Owner-Plan ab; der Owner
   //     committet, ohne dass der Wartende je ein Ziel sah. Danach muss shared_plan_status den
   //     committeten Plan nennen, damit coedit_add in einen Folgeplan fuehrt — sonst ist die Op verloren.
+  // P6-T50 (26.10.2026): Der Wait vor dem ersten Owner-Plan ist seit P6-T48 ein Altfall. Nach dem commit gibt der Owner
+  //     u2 frei; seit P6-T38/T39 plant replanUnblockedReservationWaits die Op eines AKTIVEN Wartenden automatisch nach
+  //     (inaktive/fehlende Sitzung: Wait mit Vermerk zu, P6-T39). Zusage bleibt: die spaete Op geht nicht verloren.
+  await pool.query("INSERT INTO agent_sessions(id,project,status,sitzung_seit) VALUES('fa-w13',$1,'active',NOW()) ON CONFLICT DO NOTHING", [PROJECT]);
   await anlegen('src/u1.ts', sechs('u1-'));
   await anlegen('src/u2.ts', sechs('u2-'));
   await res.addFileReservations({ project: PROJECT, agentId: 'fa-o13', filePaths: ['src/u1.ts', 'src/u2.ts'] });
   const u2op = rl('src/u2.ts', 3, 'u2-3', 'U2-SPAET');
-  const w13 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-w13', ops: [u2op] });
+  const w13 = await legeAltfallWaitAn(pool, { project: PROJECT, waitingAgent: 'fa-w13', primaryAgent: 'fa-o13', expiresSek: 300, ops: [u2op] });
   const p13 = await batch.planBatch({ project: PROJECT, agent_id: 'fa-o13', ops: [rl('src/u1.ts', 1, 'u1-1', 'U1')] });
   const x13ops = [rl('src/u1.ts', 5, 'u1-5', 'U1-X'), rl('src/u2.ts', 5, 'u2-5', 'U2-X')];
   await batch.planBatch({ project: PROJECT, agent_id: 'fa-x13', ops: x13ops });
   await batch.addCoeditContribution({ project: PROJECT, plan_id: p13.plan_id, agent_id: 'fa-x13', ops: x13ops });
   await batch.commitBatch({ plan_id: p13.plan_id, agent_id: 'fa-o13' });
-  const sp13 = await versuch(() => batch.getSharedPlanStatus({ project: PROJECT, wait_token: w13.coedit_waits?.[0]?.wait_token, agent_id: 'fa-w13', wait_seconds: 5 }));
-  pruefe(sp13.target_plan_id === p13.plan_id && sp13.target_plan_status === 'committed',
-    'T12: nach commit ohne Beitrag nennt shared_plan_status den committeten Owner-Plan (Weg in den Folgeplan)', { target: sp13.target_plan_id, status: sp13.target_plan_status, soll: p13.plan_id, err: sp13.error });
-  const f13 = await versuch(() => batch.addCoeditContribution({ project: PROJECT, plan_id: sp13.target_plan_id ?? p13.plan_id, agent_id: 'fa-w13', ops: [u2op] }));
-  const fc13 = f13.follow_up && f13.plan_id ? await batch.commitBatch({ plan_id: f13.plan_id, agent_id: 'fa-w13' }) : null;
-  pruefe(fc13?.success === true && await inhalt('src/u2.ts') === 'u2-1\nu2-2\nU2-SPAET\nu2-4\nU2-X\nu2-6\n' && (await zeile(w13.plan_id))?.status === 'cancelled',
-    'T12: der spaete Beitrag landet per Folgeplan in der Datei, der leere Traeger schliesst', { f13: f13.follow_up, fc13: fc13?.success, u2: await inhalt('src/u2.ts'), traeger: await zeile(w13.plan_id) });
+  const sp13 = await versuch(() => batch.getSharedPlanStatus({ project: PROJECT, wait_token: w13.coedit_waits?.[0]?.wait_token, agent_id: 'fa-w13' }));
+  const nach13 = (await pool.query(
+    `SELECT id::text AS id FROM file_batch_plans WHERE project = $1 AND owner_agent_id = 'fa-w13' AND status = 'open'
+        AND jsonb_array_length(ops) = 1 AND expected_hashes ? 'src/u2.ts' ORDER BY id DESC LIMIT 1`, [PROJECT])).rows[0]?.id ?? null;
+  pruefe(sp13.status === 'closed' && nach13 !== null,
+    'P6-T50 file-batch-fix-acc82f49.test.mjs T12: nach commit + Freigabe ist der Altfall-Wait zu und die Op automatisch nachgeplant', { status: sp13.status, nachgeplant: nach13, err: sp13.error });
+  const fc13 = nach13 ? await batch.commitBatch({ plan_id: nach13, agent_id: 'fa-w13' }) : null;
+  // Die Nachplanung macht den leeren Traeger selbst zum Plan (P15-T27 Ziel 2) oder schliesst ihn; offen bleibt nichts.
+  const offen13 = (await pool.query(`SELECT COUNT(*)::int AS n FROM file_batch_plans WHERE project = $1 AND owner_agent_id = 'fa-w13' AND status = 'open'`, [PROJECT])).rows[0].n;
+  pruefe(fc13?.success === true && await inhalt('src/u2.ts') === 'u2-1\nu2-2\nU2-SPAET\nu2-4\nU2-X\nu2-6\n' && offen13 === 0
+    && ['committed', 'cancelled'].includes((await zeile(w13.plan_id))?.status),
+    'T12: der spaete Beitrag landet per nachgeplantem Plan in der Datei, vom Traeger bleibt nichts offen', { fc13: fc13?.success, u2: await inhalt('src/u2.ts'), offen13, traeger: await zeile(w13.plan_id) });
+  await pool.query("DELETE FROM agent_sessions WHERE id = 'fa-w13' AND project = $1", [PROJECT]);
 
   // ===== T5 Schemas =====
   const mcpFiles = await import(join(hier, '..', '..', 'mcp-server', 'dist', 'tools', 'consolidated', 'files.js')).catch((e) => ({ fehler: e.message }));

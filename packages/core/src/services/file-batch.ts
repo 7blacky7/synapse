@@ -2425,6 +2425,37 @@ async function findJoinableSharedPlans(
   return rows;
 }
 
+/**
+ * P6-T50 (P6-T48 Punkt 2, Fix acc82f49 T9/T12a): Fremdreservierungen, deren Reservierender im Projekt einen offenen,
+ * co-edit-offenen Plan ohne gescheiterte Op hat (dieselbe Bedingung wie emitPlanReadyForExactlyOneExistingPlan), bleiben
+ * Co-Edit: der Aufrufer bekommt einen Wait auf diesen Plan, coedit_add erweitert ihn um die reservierte Datei. Nur
+ * Reservierungen OHNE offenen Plan des Reservierenden sind seit P6-T48 reine Hinweise (Planung schreibt sofort).
+ * Zum Plan gehoert eine Reservierung nur, wenn sie schon bestand, als der Plan angelegt wurde ("reservieren, dann planen",
+ * acc82f49 T9/T11/T12a). Eine erst NACH dem Plan angelegte planlose Reservierung ist eine neue, eigene Absicht und bleibt
+ * Hinweis (P6-T48 Punkt 1, file-reservation-planless-p6-t48: Owner mit offenem Plan reserviert danach weitere Dateien).
+ * Regression seit P6-T48: dort wurden ALLE Reservierungen ohne Plan auf der Datei zum Hinweis (Befund P25-T15, cf2fd83f).
+ */
+async function reservierungenMitOffenemPlan(
+  client: PoolClient,
+  project: string,
+  rows: ForeignActiveReservationPrimary[],
+): Promise<ForeignActiveReservationPrimary[]> {
+  const ergebnis: ForeignActiveReservationPrimary[] = [];
+  for (const row of rows) {
+    const offen = await client.query(
+      `SELECT 1 FROM file_batch_plans
+        WHERE project = $1 AND ${fileAgentSql('owner_agent_id', 'owner_identity_id', '$2', row.reserved_identity_id)}
+          AND status = 'open' AND open_for_coedit = true AND jsonb_array_length(ops) > 0
+          AND NOT (previews @> '[{"ok": false}]'::jsonb)
+          AND created_at >= $3::timestamptz
+        LIMIT 1`,
+      [project, row.reserved_by, row.reserved_since],
+    );
+    if ((offen.rowCount ?? 0) > 0) ergebnis.push(row);
+  }
+  return ergebnis;
+}
+
 function groupSharedPlans(rows: JoinableSharedPlanRow[]): SharedPlanRef[] {
   const byPlan = new Map<string, SharedPlanRef>();
   for (const row of rows) {
@@ -2749,12 +2780,16 @@ async function planBatchKern(args: {
     }));
     // P6-T48: nur ein existierender offener Plan erzeugt deferred Ops/Waits.
     // Reservierungen ohne Plan bleiben sichtbar, blockieren aber keine Planung.
-    const planloseHinweise = reservationRows.length
-      ? (await lesePlanloseReservierungen(args.project, reservationRows.map(row => row.file_path), client))
-          .filter(row => reservationRows.some(primary => primary.file_path === row.file_path && primary.reserved_by === row.reserviert_von && (primary.reserved_identity_id??null)===(row.reserviert_identity_id??null)))
+    // P6-T50 (P6-T48 Punkt 2): hat der Reservierende selbst einen offenen co-edit-Plan, bleibt es Co-Edit (Wait auf
+    // diesen Plan, wie vor P6-T48); nur Reservierungen ohne offenen Plan des Reservierenden sind reine Hinweise.
+    const coeditReservationRows = reservationRows.length ? await reservierungenMitOffenemPlan(client, args.project, reservationRows) : [];
+    const hinweisReservationRows = reservationRows.filter((row) => !coeditReservationRows.includes(row));
+    const planloseHinweise = hinweisReservationRows.length
+      ? (await lesePlanloseReservierungen(args.project, hinweisReservationRows.map(row => row.file_path), client))
+          .filter(row => hinweisReservationRows.some(primary => primary.file_path === row.file_path && primary.reserved_by === row.reserviert_von && (primary.reserved_identity_id??null)===(row.reserviert_identity_id??null)))
       : [];
     const primaryByPath = new Map(
-      planPrimaryRows.map((row) => [row.file_path, row] as const),
+      [...coeditReservationRows, ...planPrimaryRows].map((row) => [row.file_path, row] as const),
     );
     const sharedPaths = new Set(primaryByPath.keys());
     // Runde 3: eine nur gegen den Zielplan gepruefte Op muss auch wirklich dorthin gehen. Ist das Ziel
