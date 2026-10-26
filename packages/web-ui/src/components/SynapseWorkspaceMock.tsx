@@ -12,6 +12,8 @@ import { ChatEingabefeld } from './ChatEingabefeld';
 import { KlartextText, LesefensterOhneHerkunft, VerweisFensterProvider, VerweisText } from './Lesefenster';
 // P22-T172: Name + aktuelle Task an jeder Agenten-Stelle ('claude-t50 · P22-T171').
 import { AgentTaskMarke, AktuelleTaskAbsatz } from './AgentTaskMarke';
+// P22-T178: Lauf-Herkunft ('api · haiku') hinter der Task-Marke.
+import { LaufHerkunftMarke } from './LaufHerkunftMarke';
 import { ZitatKarten, useZitatAnhaenge } from './ZitatAnhaenge';
 import { anzeigeAusAnhaengen, zerlegeZitatBlock, type AnzeigeZitat, type SendeZitat } from './zitat-logik';
 import { NachrichtBilder } from './ToolBild';
@@ -1374,7 +1376,7 @@ export function ChannelsView({
               const windowKey = project + '::' + selectedChannel + '::' + (agent.identityId ? 'identity:' + agent.identityId : 'legacy:' + agent.name);
               const isOpen = openAgentWindows.some((item) => item.key === windowKey);
               const isActive = openAgentWindows[openAgentWindows.length - 1]?.key === windowKey;
-              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} title={agent.name + ' · ' + agent.role + ' · ' + herkunftText(agent.herkunft)} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><strong>{agent.name}</strong><AgentTaskMarke project={project} identityId={agent.identityId} name={agent.name} />{agent.identityId && <span role="link" tabIndex={0} className="channel-agent-ausweis" title="Ausweis und Profil verwalten" onClick={(event) => { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); } }}>Ausweis</span>}</button>;
+              return <button type="button" key={windowKey} className={'channel-agent-card' + (isOpen ? ' is-open' : '') + (isActive ? ' active' : '')} title={agent.name + ' · ' + agent.role + ' · ' + herkunftText(agent.herkunft)} onClick={() => openChannelAgent(agent)}><i className={agent.status} /><strong>{agent.name}</strong><AgentTaskMarke project={project} identityId={agent.identityId} name={agent.name} /><LaufHerkunftMarke project={project} identityId={agent.identityId} name={agent.name} />{agent.identityId && <span role="link" tabIndex={0} className="channel-agent-ausweis" title="Ausweis und Profil verwalten" onClick={(event) => { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); }} onKeyDown={(event) => { if (event.key === 'Enter') { event.stopPropagation(); oeffneAusweisVerwaltung({ project, agentId: agent.name }); } }}>Ausweis</span>}</button>;
             })}
           </div>
           <LesefensterOhneHerkunft><RuntimeAgentenPanel key={project} project={project} ort="channel" /></LesefensterOhneHerkunft>
@@ -1401,7 +1403,7 @@ export function ChannelsView({
               <article key={message.id} onContextMenu={(event) => channelZitat.beiKontextmenue(event, 'channel:' + message.id, project)}>
                 <div className="message-avatar">{message.sender.slice(0, 2).toUpperCase()}</div>
                 <div>
-                  <header><strong>{message.senderAnzeige ?? message.sender}</strong><AgentTaskMarke project={project} name={message.sender} /><time>{message.createdAt ? new Date(message.createdAt).toLocaleString('de-DE') : ''}</time></header>
+                  <header><strong>{message.senderAnzeige ?? message.sender}</strong><AgentTaskMarke project={project} name={message.sender} /><LaufHerkunftMarke project={project} name={message.sender} /><time>{message.createdAt ? new Date(message.createdAt).toLocaleString('de-DE') : ''}</time></header>
                   <ChannelMessageContent message={message} project={project} />
                 </div>
               </article>
@@ -1495,12 +1497,12 @@ function ProjectAgentTeamView({ project }: { project: string }) {
     <section className="split-surface project-agent-team">
       <div className="entity-list">
         <header><h2>Projekt-Agenten</h2><span>{agents.length}</span></header>
-        {agents.map((agent) => <button type="button" className={current && teamSchluessel(current) === teamSchluessel(agent) ? 'entity-row active' : 'entity-row'} key={teamSchluessel(agent)} onClick={() => setSelected(teamSchluessel(agent))}><i className={agentTon(agent)} /><div><strong>{agent.name}<AgentTaskMarke project={project} identityId={agent.identityId} name={agent.agentId || agent.name} /></strong><small>{[agent.rolle, agent.status + (agent.busy ? ' · arbeitet' : '')].filter(Boolean).join(' · ')}</small></div><span>{teamKontextText(agent)}</span></button>)}
+        {agents.map((agent) => <button type="button" className={current && teamSchluessel(current) === teamSchluessel(agent) ? 'entity-row active' : 'entity-row'} key={teamSchluessel(agent)} onClick={() => setSelected(teamSchluessel(agent))}><i className={agentTon(agent)} /><div><strong>{agent.name}<AgentTaskMarke project={project} identityId={agent.identityId} name={agent.agentId || agent.name} /><LaufHerkunftMarke project={project} identityId={agent.identityId} name={agent.agentId || agent.name} /></strong><small>{[agent.rolle, agent.status + (agent.busy ? ' · arbeitet' : '')].filter(Boolean).join(' · ')}</small></div><span>{teamKontextText(agent)}</span></button>)}
         {!agents.length && <p className="empty-state">{loading ? 'lädt …' : error || 'Für dieses Projekt sind keine Agenten registriert.'}</p>}
       </div>
       {current && <div className="entity-detail">
         <div className="detail-status"><i className={agentTon(current)} /><span>{current.status}</span><b>{current.art === 'wrapper' ? 'WRAPPER' : 'AUSWEIS'}</b></div>
-        <h2>{current.name}<AgentTaskMarke project={project} identityId={current.identityId} name={current.agentId || current.name} /></h2>
+        <h2>{current.name}<AgentTaskMarke project={project} identityId={current.identityId} name={current.agentId || current.name} /><LaufHerkunftMarke project={project} identityId={current.identityId} name={current.agentId || current.name} /></h2>
         {current.art !== 'wrapper' && <p><button type="button" onClick={() => oeffneAusweisVerwaltung({ project, agentId: current.agentId || current.name })}>Ausweis und Profil verwalten</button></p>}
         <AktuelleTaskAbsatz project={project} identityId={current.identityId} name={current.agentId || current.name} rueckfall={current.currentTask} />
         <dl>

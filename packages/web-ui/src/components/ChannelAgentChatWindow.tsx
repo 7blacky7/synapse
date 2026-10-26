@@ -4,6 +4,7 @@ import { AttachmentPicker, handleAttachmentDrop, istSendeTaste } from './ChatAtt
 import { NachrichtBilder, VerweisText } from './Lesefenster';
 // P22-T172: Name + aktuelle Task im Fensterkopf.
 import { AgentTaskMarke } from './AgentTaskMarke';
+import { LaufHerkunftMarke } from './LaufHerkunftMarke';
 
 export interface ChannelAgentWindowState {
   key: string;
@@ -133,7 +134,7 @@ export function ChannelAgentChatWindow({
       >
         <div>
           <i className={windowState.status} />
-          <strong>{windowState.agentName}<AgentTaskMarke project={project} identityId={windowState.identityId} name={windowState.agentName} /></strong>
+          <strong>{windowState.agentName}<AgentTaskMarke project={project} identityId={windowState.identityId} name={windowState.agentName} /><LaufHerkunftMarke project={project} identityId={windowState.identityId} name={windowState.agentName} /></strong>
           <small>#{windowState.channelName} · {windowState.role} · Beiträge und Erwähnungen</small>
         </div>
         <span>

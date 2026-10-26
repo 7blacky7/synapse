@@ -29,6 +29,8 @@ import { pruefeChatZitateAnfrage, textMitZitaten } from '@synapse/core';
 import { ladeAgentenTeam } from '../services/agenten-team.js';
 // P22-T172: aktuelle Task je Agent (eine Stelle in core, Schalter agent_aktuelle_task).
 import { ermittleAktuelleTasks } from '@synapse/core';
+// P22-T178: Lauf-Herkunft je Agent (api/cli/codex + Modell, Schalter agent_lauf_herkunft).
+import { ermittleLaufHerkunft } from '@synapse/core';
 
 export async function specialistRoutes(fastify: FastifyInstance): Promise<void> {
   await agentennetzwerkRoutes(fastify);
@@ -119,6 +121,17 @@ export async function specialistRoutes(fastify: FastifyInstance): Promise<void> 
     Querystring: { neu?: string };
   }>('/api/projects/:name/agenten-aktuelle-task', async (request) => {
     return ermittleAktuelleTasks(request.params.name, { neu: request.query?.neu === '1' });
+  });
+
+  /**
+   * GET /api/projects/:name/agenten-lauf-herkunft
+   * P22-T178: Lauf-Herkunft je Agent (core agent-lauf-herkunft.ts) fuer die Web-UI ('api · haiku', 'cli · opus', 'codex · gpt-5').
+   * Quelle: Wrapper-Status (provider, model). Debug: schalter.quelle, quelle je Zeile, je_art, dauer_ms. Schalter AUS -> aktiv false.
+   */
+  fastify.get<{
+    Params: { name: string };
+  }>('/api/projects/:name/agenten-lauf-herkunft', async (request) => {
+    return ermittleLaufHerkunft(request.params.name);
   });
 
   /**

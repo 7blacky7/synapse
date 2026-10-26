@@ -1,0 +1,5 @@
+/* P22-T178: Lauf-Herkunft neben dem Agentennamen (LaufHerkunftMarke.tsx). Nutzt die Design-Tokens der .synapse-control (hell/dunkel). */
+.lauf-herkunft-marke{display:inline;font-weight:400;white-space:nowrap;color:var(--muted)}
+.lauf-herkunft-marke .lauf-herkunft-trenner{color:var(--muted)}
+.lauf-herkunft-marke .lauf-herkunft-text{font-family:"IBM Plex Mono",monospace;font-size:.85em;padding:0 5px;border:1px solid var(--border, currentColor);border-radius:999px}
+.lauf-herkunft-marke.art-api .lauf-herkunft-text{color:var(--accent);border-color:var(--accent)}

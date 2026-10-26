@@ -696,6 +696,9 @@ export type {
   ApiReservierung, ApiUsage, ApiAbschlussEingabe, ApiAbschluss, ApiAgentAdminAction,
 } from './services/api-agent-dienst.js';
 export { AGENT_API_BUDGET_SCHEMA_SQL } from './db/agent-api-budget-schema.js';
+// P22-T178: Lauf-Herkunft je Agent (api/cli/codex + Modell) aus dem Wrapper-Status, Schalter agent_lauf_herkunft.
+export { AGENT_LAUF_HERKUNFT_FUNKTION, LAUF_ARTEN, kurzModell, laufHerkunftAus, ermittleLaufHerkunft } from './services/agent-lauf-herkunft.js';
+export type { LaufArt, LaufHerkunft, LaufHerkunftEintrag, LaufHerkunftStand } from './services/agent-lauf-herkunft.js';
 // P22-T179: API-Agent als Arbeitsagent/Koordinator - Freigabe je Identitaet, Schalter api_agenten, Schema 161.
 export {
   API_AGENTEN_FUNKTION, API_AGENT_ROLLEN, leseApiFreigabe, leseApiAgentenSchalter, pruefeApiAgentenSchalter, setzeApiFreigabe, entferneApiFreigabe,
