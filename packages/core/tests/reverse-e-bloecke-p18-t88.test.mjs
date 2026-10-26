@@ -53,25 +53,31 @@ try{
  await reject(()=>uebernehmeEInBloecken(pool,auftrag(async()=>++n<=4)),'reverse_e_lease_verloren');
  const cp=(await pool.query("SELECT uebernahme FROM reverse_auftraege WHERE p20_auftrag_id=$1",[jobId])).rows[0].uebernahme;
  ok(Number(cp.position)>0&&Number(cp.position)<N&&!cp.fertig,'Checkpoint nach Abbruch: '+JSON.stringify(cp));
- eq((await pool.query('SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1',[R])).rows[0].n,Number(cp.dateien),'PG-Zeilen = bestätigter Zähler');
+ // (angepasst P25-T12, P18-T93: uebernehmeEInBloecken schreibt Metadaten und Cursor in getrennten TXs, Wiederholung derselben
+ // Segmentposition ist idempotent. Geht die Lease dazwischen verloren, eilen die PG-Zeilen dem Cursor um hoechstens einen Block voraus;
+ // genau diese tragen e_position > cp.position. Gleichheit gilt nach der Fortsetzung, siehe 3).)
+ const stand=(await pool.query("SELECT count(*)::int n,count(*) FILTER (WHERE (metadaten->>'e_position')::bigint>$2::bigint)::int vor FROM reverse_dateien WHERE eintrag_id=$1",[R,cp.position])).rows[0];
+ ok(stand.n>=Number(cp.dateien)&&stand.n<=Number(cp.dateien)+4000,'PG-Zeilen = bestätigter Zähler, höchstens ein Block voraus: '+JSON.stringify({...stand,dateien:cp.dateien}));
+ eq(stand.n-stand.vor,Number(cp.dateien),'nur Zeilen hinter dem Cursor eilen voraus');
 
  // 2) Anderes Manifest am selben Auftrag wird abgewiesen.
  await reject(()=>uebernehmeEInBloecken(pool,auftrag(async()=>true,'f'.repeat(64))),'reverse_e_manifest_geaendert');
 
- // 3) Fortsetzung bis zum Ende: alle Dateien, kein Gesamtschnitt; die defekte Zeile ist verworfen.
- const r=await uebernehmeEInBloecken(pool,auftrag(async()=>true));
- eq(r,{dateien:N,verworfen:1},'alle Dateien übernommen');
- eq((await pool.query('SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1',[R])).rows[0].n,N,'> 20000 Zeilen in PG, keine Bytes');
+ // 3) Fortsetzung: kein Gesamtschnitt. (angepasst P25-T12, P18-T93: eine nicht ablegbare Manifestzeile wird nicht mehr still
+ // verworfen; der Lauf haelt mit reverse_e_datei_offen:<pfad> an, der Block mit der offenen Zeile wird nicht bestaetigt, kein
+ // Abschluss ohne Vollstaendigkeit. Alle Bloecke davor sind bestaetigt.)
+ await reject(()=>uebernehmeEInBloecken(pool,auftrag(async()=>true)),'reverse_e_datei_offen:d0/kaputt.bin');
+ const offen=(await pool.query("SELECT uebernahme,status FROM reverse_auftraege WHERE p20_auftrag_id=$1",[jobId])).rows[0];
+ const zeilen=(await pool.query('SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1',[R])).rows[0].n;
+ ok(!offen.uebernahme.fertig&&zeilen===Number(offen.uebernahme.dateien),'Halt vor der offenen Zeile, Zeilen = Zähler: '+JSON.stringify({zeilen,dateien:offen.uebernahme.dateien,position:offen.uebernahme.position}));
+ ok(zeilen>20000&&zeilen<=N,'> 20000 Zeilen in PG, keine Bytes, kein Gesamtschnitt: '+zeilen);
  eq((await pool.query("SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1 AND storage_key IS NULL",[R])).rows[0].n,0,'jede Zeile mit storage_key');
- const probe=(await pool.query("SELECT storage_key,groesse::int g FROM reverse_dateien WHERE eintrag_id=$1 AND pfad LIKE '%/f24999.bin'",[R])).rows[0];
+ const probe=(await pool.query("SELECT storage_key,groesse::int g FROM reverse_dateien WHERE eintrag_id=$1 AND pfad LIKE '%/f19999.bin'",[R])).rows[0];
  eq((await stat(join(root,probe.storage_key))).size,probe.g,'Bytes liegen auf dem Speicher (Unraid-Pfad)');
- const fertig=(await pool.query("SELECT uebernahme,status FROM reverse_auftraege WHERE p20_auftrag_id=$1",[jobId])).rows[0];
- ok(fertig.uebernahme.fertig&&fertig.uebernahme.position===String(N+1),'Checkpoint fertig am Manifestende');
- eq(fertig.status,'teilweise','eine verworfene Zeile: teilweise, nicht fertig');
 
- // 4) Wiederholung nach Abschluss ist idempotent.
- eq(await uebernehmeEInBloecken(pool,auftrag(async()=>true)),{dateien:N,verworfen:1},'Wiederholung liefert den bestätigten Stand');
- eq((await pool.query('SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1',[R])).rows[0].n,N,'keine Dubletten');
+ // 4) Wiederholung haelt an derselben Zeile; nichts doppelt.
+ await reject(()=>uebernehmeEInBloecken(pool,auftrag(async()=>true)),'reverse_e_datei_offen:d0/kaputt.bin');
+ eq((await pool.query('SELECT count(*)::int n FROM reverse_dateien WHERE eintrag_id=$1',[R])).rows[0].n,zeilen,'keine Dubletten');
  console.log('P18-T88 E-Bloecke: '+checks+' Pruefungen gruen');
 }finally{
  await raw.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE').catch(()=>undefined);

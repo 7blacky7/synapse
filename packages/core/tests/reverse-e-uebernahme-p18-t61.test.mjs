@@ -102,7 +102,9 @@ try{
  const service=core.createReverseToolService({pool});
  const call=(action,extra={})=>service.ausfuehren({action,agent_id:agent,project,reverse_id:rid,...extra});
  {const b=await call('bestaetigen',{},agent);assert.equal(b.success,true,JSON.stringify(b).slice(0,600));}
- assert.equal((await pool.query('SELECT analyse_policy FROM reverse_eintraege WHERE id=$1',[rid])).rows[0].analyse_policy.bis_schicht,'S1','confirm schreibt die Obergrenze');
+ // (angepasst P25-T12, P18-T104: die Bestaetigung entfernt bis_schicht aus analyse_policy (kein JSON-Schatten der Grenze, wie
+ // reverse-tool-p18-rv9); die Obergrenze S1 kommt aus dem Einstellwert analyse_bis_schicht und ist oben mit reverseBisSchichtGrenze geprueft.)
+ assert.equal(Object.hasOwn((await pool.query('SELECT analyse_policy FROM reverse_eintraege WHERE id=$1',[rid])).rows[0].analyse_policy,'bis_schicht'),false,'confirm entfernt den bis_schicht-Schatten');
  // 6) Tool dateien: Bindung Pflicht, Seiten, Präfix, Maskierung, keine storage_key.
  assert.equal((await call('dateien')).fehlercode,'nicht_gebunden');
  assert.equal((await call('binden')).success,true);

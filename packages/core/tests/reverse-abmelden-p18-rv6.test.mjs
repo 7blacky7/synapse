@@ -11,14 +11,16 @@ assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
 delete process.env.SYNAPSE_DATABASE_URL;
 process.env.SYNAPSE_SKIP_EMBEDDINGS='1';
 process.env.SYNAPSE_API_FEATURES='reverse_bibliothek';
-process.env.SYNAPSE_REVERSE_STABIL_MS='1500';
-process.env.SYNAPSE_REVERSE_BATCH_MAX='50';
 const require=createRequire(new URL('../package.json',import.meta.url));
 const {Pool}=require('pg');
 const {ReverseEingang}=await import('../dist/services/reverse-eingang.js');
 const {ladeAssetKonfiguration}=await import('../dist/config/asset-konfig.js');
 const {REVERSE_SCHEMA_SQL}=await import('../dist/db/reverse-schema.js');
 const {ASSET_UPLOAD_SCHEMA_SQL}=await import('../dist/db/asset-upload-schema.js');
+const {reverseEinstellSnapshot,reverseBudget,reverseZahl}=await import('../dist/services/reverse-einstellwerte.js');
+// (angepasst P25-T12, P18-T86: stabilMs/maxBatch kommen aus den Einstellwerten eingang_stabil_ms/eingang_block_dateien;
+// SYNAPSE_REVERSE_STABIL_MS/_BATCH_MAX wirken nicht mehr. Werte ueber die einstellwerte-Injektion des Dienstes.)
+const einst=reverseEinstellSnapshot([{ebene:'global',name:'eingang_stabil_ms',wert:'1500'},{ebene:'global',name:'eingang_block_dateien',wert:'50'}]);
 const {API_CONTRACT_HEADER}=await import('../dist/index.js');
 const {createReverseEingangRoutes}=await import('../../rest-api/dist/routes/reverse-eingang.js');
 const Fastify=createRequire(new URL('../../rest-api/package.json',import.meta.url))('fastify');
@@ -40,7 +42,7 @@ test('RV6 abmelden/hinweis/original/lokal und Routen-Gate (p18_rv6)',async t=>{
   await db.query('CREATE TABLE work_jobs(id uuid PRIMARY KEY)');
   await db.query(ASSET_UPLOAD_SCHEMA_SQL);await db.query(REVERSE_SCHEMA_SQL);await db.query(REVERSE_SCHEMA_SQL);
   const cfg=ladeAssetKonfiguration({SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_REVERSE_ROOT:root});
-  const eingang=new ReverseEingang({db,konfiguration:cfg});
+  const eingang=new ReverseEingang({db,konfiguration:cfg,einstellwerte:async()=>einst});
   const H='rv6-host';
   const ctx=r=>({bereich:'reverse',ziel_ref:r.ziel_ref,host_id:H});
   const upload=async(p,b)=>{const r=(await eingang.fundstellen(H,[file(p,b)])).dateien[0];
@@ -51,10 +53,11 @@ test('RV6 abmelden/hinweis/original/lokal und Routen-Gate (p18_rv6)',async t=>{
    const r=(await db.query("SELECT data_type,is_nullable FROM information_schema.columns WHERE table_schema=$1 AND table_name='reverse_fundstellen' AND column_name='hinweis_ausgeblendet_at'",[schema])).rows[0];
    assert.equal(r.data_type,'timestamp with time zone');assert.equal(r.is_nullable,'YES');
   });
-  await t.test('syncOptionen: Budgets, Katalog, Standard behalten, keine Serverpfade',()=>{
-   const p=eingang.syncOptionen(H);
+  // (angepasst P25-T12, P18-T86: syncOptionen ist async (liest die Grenzen je Aufruf); Budgets kommen aus den Einstellwerten)
+  await t.test('syncOptionen: Budgets, Katalog, Standard behalten, keine Serverpfade',async()=>{
+   const p=await eingang.syncOptionen(H);
    assert.equal(p.host,H);assert.equal(p.stabilMs,1500);assert.equal(p.maxBatch,50);assert.equal(p.loesch_verhalten,'behalten');assert.equal(p.erlaubt_alle_dateien,true);
-   assert.equal(p.maxDateiBytes,cfg.reverse.maxDateiBytes);assert.equal(p.chunkBytes,cfg.speicher.chunkBytes);assert.ok(p.endungen.images.includes('iso'));assert.ok(p.endungen.companions.length);
+   assert.equal(p.maxDateiBytes,reverseBudget(einst,'max_datei_bytes'));assert.equal(p.chunkBytes,reverseZahl(einst,'speicher_chunk_bytes'));assert.ok(p.endungen.images.includes('iso'));assert.ok(p.endungen.companions.length);
    assert.ok(!JSON.stringify(p).includes(root));
   });
   await t.test('lokal: gesehen -> geloescht_lokal -> Hinweis aus/ein -> Wiedersehen setzt zurueck',async()=>{

@@ -200,9 +200,14 @@ try{
   check(g.status==='gebucht'&&g.usd_quelle==='reservierung'&&nah(g.usd,r3.reserviert_usd),'ohne usage: volle Reservierung gebucht (nie kostenlos)');
   // Atomaritaet: scheitert die Verbrauchsbuchung, bleibt die Reservierung offen
   const r4=await C.reserviereApiAufruf({identity_id:MAIN,project:HP,agent_id:'hauptagent',modell:'api-opus',eingabe_zeichen:30,max_tokens:100});
-  await pool.query('ALTER TABLE agent_verbrauch RENAME TO agent_verbrauch_weg');
+  // (angepasst P25-T12, Testisolation: search_path ist <privat>,public und agent_verbrauch gibt es seit P22-T7 (Schema 119) auch in
+  // synapse_test.public; nach dem frueheren RENAME landete der INSERT dort (kein Fehler, Testmuell). Der Buchungsfehler wird jetzt
+  // per Trigger auf der privaten Tabelle erzwungen; public bleibt unberuehrt.)
+  await pool.query(`CREATE FUNCTION ${schema}.p22_t8_buchung_scheitert() RETURNS trigger LANGUAGE plpgsql AS $f$BEGIN RAISE EXCEPTION 'p22_t8_buchung_scheitert'; END$f$`);
+  await pool.query(`CREATE TRIGGER p22_t8_buchung_scheitert BEFORE INSERT ON ${schema}.agent_verbrauch FOR EACH ROW EXECUTE FUNCTION ${schema}.p22_t8_buchung_scheitert()`);
   const fehl=await err(()=>C.schliesseApiAufrufAb({reservierung_id:r4.reservierung_id,agent_id:'hauptagent',usage:{input_tokens:1,output_tokens:1}}));
-  await pool.query('ALTER TABLE agent_verbrauch_weg RENAME TO agent_verbrauch');
+  await pool.query(`DROP TRIGGER p22_t8_buchung_scheitert ON ${schema}.agent_verbrauch`);
+  check((await pool.query('SELECT count(*)::int n FROM public.agent_verbrauch WHERE referenz=$1',['api-reservierung:'+r4.reservierung_id])).rows[0].n===0,'Buchungsfehler schreibt nichts nach public.agent_verbrauch');
   const st=(await pool.query('SELECT status FROM api_agent_reservierungen WHERE id=$1',[r4.reservierung_id])).rows[0].status;
   check(fehl!=='kein_fehler'&&st==='offen','Buchung scheitert -> Rollback, Reservierung bleibt offen');
   await C.schliesseApiAufrufAb({reservierung_id:r4.reservierung_id,agent_id:'hauptagent',usage:{input_tokens:1,output_tokens:1}});

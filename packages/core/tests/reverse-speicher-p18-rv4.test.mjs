@@ -1,4 +1,7 @@
-/** P18-T14: synthetische eigene Testwurzel, keine DB/Live-Datasets. */
+/** P18-T14: synthetische eigene Testwurzel, keine Live-Datasets.
+ * (angepasst P25-T12, P18-T93: die Reverse-Grenzen kommen aus reverse_einstellungen (pfad_tiefe_max, max_datei_bytes, eintrag_bytes,
+ * e_uebernahme_block_zeilen); cfg.inspektion.maxDepth/cfg.reverse.* wirken fuer publishReverseManifest nicht mehr. Der Test liest sie
+ * aus einer eigenen reverse_einstellungen im privaten Schema p18_rv4_<uuid> in synapse_test:5433.) */
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
@@ -6,12 +9,27 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import * as api from '../dist/services/asset-speicher.js';
-import {ladeAssetKonfiguration} from '../dist/config/asset-konfig.js';
+import {createRequire} from 'node:module';
+const url=new URL(process.env.DATABASE_URL??'http://invalid');
+assert.equal(url.port,'5433');assert.equal(url.pathname,'/synapse_test');
+const schema='p18_rv4_'+randomUUID().replaceAll('-','');
+const {Pool}=createRequire(new URL('../package.json',import.meta.url))('pg');
+const raw=new Pool({connectionString:url.href,max:2});
+const scoped=new URL(url);scoped.searchParams.set('options','-c search_path='+schema+',public');
+delete process.env.SYNAPSE_DATABASE_URL;process.env.DATABASE_URL=scoped.href;
+const api=await import('../dist/services/asset-speicher.js');
+const {ladeAssetKonfiguration}=await import('../dist/config/asset-konfig.js');
+const {closePool}=await import('../dist/db/client.js');
+/** Ersetzt alle Einstellwerte im privaten Schema (global); leer = Katalogstandard. */
+async function grenzen(werte={}){
+ await raw.query('DELETE FROM '+schema+'.reverse_einstellungen');
+ for(const [name,wert]of Object.entries(werte))await raw.query('INSERT INTO '+schema+".reverse_einstellungen(ebene,name,wert,grund,gesetzt_von) VALUES('global',$1,$2,'RV4 fixture','fixture')",[name,wert]);
+}
 const sha=b=>createHash('sha256').update(b).digest('hex');
 let root,cfg;
-before(async()=>{root=await fs.mkdtemp(join(tmpdir(),'p18-rv4-'));cfg=ladeAssetKonfiguration({SYNAPSE_ASSET_ENABLED:'1',SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_PROJEKTE_ROOT:join(root,'projekt'),SYNAPSE_REVERSE_ROOT:join(root,'reverse')});});
-after(async()=>{await fs.rm(root,{recursive:true,force:true});});
+before(async()=>{await raw.query('CREATE SCHEMA '+schema);await raw.query('CREATE TABLE '+schema+'.reverse_einstellungen (LIKE public.reverse_einstellungen INCLUDING DEFAULTS)');
+ root=await fs.mkdtemp(join(tmpdir(),'p18-rv4-'));cfg=ladeAssetKonfiguration({SYNAPSE_ASSET_ENABLED:'1',SYNAPSE_REVERSE_ENABLED:'1',SYNAPSE_PROJEKTE_ROOT:join(root,'projekt'),SYNAPSE_REVERSE_ROOT:join(root,'reverse')});});
+after(async()=>{await fs.rm(root,{recursive:true,force:true});await closePool().catch(()=>undefined);await raw.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await raw.end();});
 const rid='rev-fixture-a1b2c3';
 const newInput=()=>({reverseId:rid,auftragId:randomUUID(),art:'code',gruppe:randomUUID(),dateien:[{pfad:'src/main.txt',groesse:3,sha256:sha('abc')}]});
 async function work(s,input){await s.reverseArbeitsbereich(input.auftragId);const dir=join(cfg.speicher.reverseRoot,'_arbeit',input.auftragId);await fs.mkdir(join(dir,'src'),{recursive:true});await fs.writeFile(join(dir,'src/main.txt'),'abc');return dir;}
@@ -64,13 +82,18 @@ test('Symlink, Hardlink, FIFO und nicht gelistete Datei abgelehnt',async()=>{
  }
 });
 test('Hash, Größe, Anzahl, Tiefe und Disk-full verhindern Publish',async()=>{
- for(const art of ['hash','size','count','depth','disk']){
-  const conf=structuredClone(cfg);if(art==='count')conf.reverse.maxProjektDateien=1;if(art==='depth')conf.inspektion.maxDepth=0;
-  const s=new api.AssetSpeicher({konfiguration:conf,...(art==='disk'?{schreiben:async()=>{throw Object.assign(new Error('disk'),{code:'ENOSPC'});}}:{})}),i=newInput();
-  await work(s,i);if(art==='hash')i.dateien[0].sha256='0'.repeat(64);if(art==='size')i.dateien[0].groesse=2;if(art==='count')i.dateien.push({pfad:'b',groesse:0,sha256:sha('')});
-  await assert.rejects(s.publishReverseManifest(i,options));
-  await assert.rejects(fs.stat(join(cfg.speicher.reverseRoot,rid,i.art,i.gruppe)),e=>e.code==='ENOENT');
- }
+ // (angepasst P25-T12, P18-T93: Anzahl = e_uebernahme_block_zeilen, Tiefe = pfad_tiefe_max (Minimum 1, deshalb ein Pfad der Tiefe 2))
+ const erwartet={hash:'hash_falsch',size:'groesse_falsch',count:'blockuebernahme_erforderlich',depth:'quote',disk:'ENOSPC'};
+ try{
+  for(const art of ['hash','size','count','depth','disk']){
+   await grenzen(art==='count'?{e_uebernahme_block_zeilen:1}:art==='depth'?{pfad_tiefe_max:1}:{});
+   const s=new api.AssetSpeicher({konfiguration:cfg,...(art==='disk'?{schreiben:async()=>{throw Object.assign(new Error('disk'),{code:'ENOSPC'});}}:{})}),i=newInput();
+   await work(s,i);if(art==='hash')i.dateien[0].sha256='0'.repeat(64);if(art==='size')i.dateien[0].groesse=2;if(art==='count')i.dateien.push({pfad:'b',groesse:0,sha256:sha('')});
+   if(art==='depth')i.dateien.push({pfad:'a/b/c.txt',groesse:3,sha256:sha('abc')});
+   await assert.rejects(s.publishReverseManifest(i,options),e=>e.code===erwartet[art],art);
+   await assert.rejects(fs.stat(join(cfg.speicher.reverseRoot,rid,i.art,i.gruppe)),e=>e.code==='ENOENT');
+  }
+ }finally{await grenzen();}
 });
 
 test('Crash nach Rename vor PG-Commit und bestätigte Recovery',async()=>{
@@ -122,11 +145,16 @@ test('Vor RV4 begonnenes Reverse-Staging bleibt publizierbar',async()=>{
  assert.equal((await s.readRange(a,0,3)).toString(),'abc');
 });
 test('Reverse-Bytegrenzen gelten auch für Manifest-Snapshots',async()=>{
- const small=structuredClone(cfg);small.reverse.maxDateiBytes=2;
- const s=new api.AssetSpeicher({konfiguration:small}),i=newInput();
- await assert.rejects(s.publishReverseManifest(i,options),e=>e.code==='quote');
- const total=structuredClone(cfg);total.reverse.maxProjektBytes=2;
- await assert.rejects(new api.AssetSpeicher({konfiguration:total}).publishReverseManifest(i,options),e=>e.code==='quote');
+ // (angepasst P25-T12, P18-T93: Grenzen ueber max_datei_bytes und eintrag_bytes statt cfg.reverse.maxDateiBytes/maxProjektBytes)
+ try{
+  const s=new api.AssetSpeicher({konfiguration:cfg}),i=newInput();await work(s,i);
+  await grenzen({max_datei_bytes:2});
+  await assert.rejects(s.publishReverseManifest(i,options),e=>e.code==='quote');
+  // Querbedingung max_datei_bytes <= eintrag_bytes (REVERSE_EINSTELL_REGELN): zwei Dateien je 3 Bytes, je Datei erlaubt, zusammen zu viel.
+  await grenzen({eintrag_bytes:5,max_datei_bytes:4});
+  const zwei={...i,dateien:[...i.dateien,{pfad:'src/b.txt',groesse:3,sha256:sha('abc')}]};
+  await assert.rejects(new api.AssetSpeicher({konfiguration:cfg}).publishReverseManifest(zwei,options),e=>e.code==='quote');
+ }finally{await grenzen();}
 });
 
 test('Recovery benötigt verwaist UND abgeschlossene Recovery; Ghidra bleibt',async()=>{

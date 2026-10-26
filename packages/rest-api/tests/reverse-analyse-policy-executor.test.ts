@@ -44,7 +44,10 @@ test('held client stays connected; stale policy rejects importer, dispatch and S
  try{
   const j=await jobs.enqueue({kind:'reverse-E',capability:'reverse_bibliothek',project:'reverse-bibliothek',scope:'reverse',
    inputRef:{scope:'reverse',id:f.rid,revision:f.mid,sha256:f.hash},resourceNeed:{cpu:1,ram:1,vram:0,gpu:false},idempotencyKey:randomUUID()});
-  await f.pin({manual:true,file:null,stage:'E',target:'S3',work:j.id});
+  const a=await f.pin({manual:true,file:null,stage:'E',target:'S3',work:j.id});
+  // (angepasst P25-T12, P18-T97 Admission-Cut: fuehreAus prueft zuerst die Fachbindung; ohne Zulassungsbeleg endet der Lauf mit
+  // reverse_admission_nicht_belegt, bevor die Policy geprueft wird. Beleg wie in reverse-ein-container-p18-t64.)
+  await (await import('../../core/dist/services/reverse-pipeline-halt.js')).belegeReverseAdmission(f.pool,j.id,String(a.id));
   await f.tx(async c=>{c.connect=()=>{throw Error('HELD_CLIENT_RECONNECTED');};await executor.policyPruefen(j,c);});
   await f.setting('E');
   await assert.rejects(executor.uebernimmUnterFence(j,who,{jobId:j.id,reverseId:f.rid,mediumId:f.mid,arbeitsWurzel:'/unused',manifest:[]}),/policy_geaendert/);

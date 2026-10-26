@@ -196,18 +196,29 @@ test('unbekannte Tabelle mit Projektdaten blockiert die Vorschau; unbekannte CAS
     await pool.query('DROP TABLE IF EXISTS t31x_probe');
   }
   // t31x-k ist nur auf E gebunden; u auch -> erst u's Bindung loesen ist nicht noetig, eigene Projekte.
+  // (angepasst P25-T12, P9-T32: die FK-Katalogpruefung laeuft schon in der Vorschau und geht in den Umfang-Hash ein. Eine vor der
+  // Vorschau angelegte unbekannte CASCADE blockiert die Vorschau; eine danach angelegte bricht die Ausfuehrung als umfang_geaendert ab
+  // (Auftrag verfaellt ohne Code-Verbrauch, nichts geloescht) statt erst beim Loeschen mit unbekannte_kaskade.)
   const vorher = await zaehle(PR.k);
+  try {
+    await pool.query('CREATE TABLE t31x_kaskade (id serial PRIMARY KEY, mem_id text REFERENCES memories(id) ON DELETE CASCADE)');
+    const vb = await vorschau({ project: PR.k, hostname: H.e });
+    assert.equal(vb.status, 'blockiert');
+    assert.ok(vb.blockiert.some((b) => b.grund === 'unbekannte_kaskade' && b.detail.includes('t31x_kaskade')), JSON.stringify(vb.blockiert));
+  } finally {
+    await pool.query('DROP TABLE IF EXISTS t31x_kaskade');
+  }
   const v = await vorschau({ project: PR.k, hostname: H.e });
   assert.equal(v.status, 'vorschau', JSON.stringify(v.blockiert));
   try {
     await pool.query('CREATE TABLE t31x_kaskade (id serial PRIMARY KEY, mem_id text REFERENCES memories(id) ON DELETE CASCADE)');
     await assert.rejects(ausfuehren({ loesch_auftrag_id: v.loesch_auftrag_id, loesch_code: codeFuer(H.e) }),
-      (e) => e.code === 'unbekannte_kaskade' && e.message.includes('t31x_kaskade'));
+      (e) => e.code === 'umfang_geaendert');
   } finally {
     await pool.query('DROP TABLE IF EXISTS t31x_kaskade');
   }
   assert.deepEqual(await zaehle(PR.k), vorher, 'nichts geloescht');
-  assert.equal((await auftragStatus(v.loesch_auftrag_id)).status, 'fehlgeschlagen');
+  assert.equal((await auftragStatus(v.loesch_auftrag_id)).status, 'verfallen');
 });
 
 test('Host-Sperre: 5 Fehlversuche je Rechner in 15 Min -> 429, auch mit richtigem Code; nurHost fremd -> 403 ohne Fehlversuch', { skip }, async () => {
@@ -296,9 +307,12 @@ test('Projekt-DB: Rueckbau nur fuer eigene Synapse-DB (Fake-psql), nicht bei gle
 
   // a2) psql-Fehler: zentrale Projektdaten sind gelöscht, DB-Registrierung bleibt für einen späteren Rückbau.
   await seed(PR.db, [H.f]);
-  await reg(PR.db, 't31x_db_fail');
+  // (angepasst P25-T12, P9-T32: 't31x_db_fail' folgt nicht dem Namensschema (leiteDbNamenAb) -> wird_geloescht=false, psql lief nie.
+  // a) hat die Registrierung von t31x_db entfernt; deshalb hier wieder t31x_db, und vorher pruefen, dass der Rueckbau wirklich ansteht.)
+  await reg(PR.db, 't31x_db');
   const vf = await vorschau({ project: PR.db, hostname: H.f, konfig: DB_KONFIG });
   assert.equal(vf.status, 'vorschau', JSON.stringify(vf.blockiert));
+  assert.equal(vf.zentral.projekt_db.wird_geloescht, true, JSON.stringify(vf.zentral.projekt_db));
   const rf = await ausfuehren({ loesch_auftrag_id: vf.loesch_auftrag_id, loesch_code: codeFuer(H.f), konfig: DB_KONFIG, psql: async () => { throw new Error('synthetischer psql-Fehler'); } });
   assert.equal(rf.status, 'teilweise_geloescht');
   assert.equal((await zaehle(PR.db)).projekt_db, 1, 'Registrierung bleibt bei fehlgeschlagenem psql');

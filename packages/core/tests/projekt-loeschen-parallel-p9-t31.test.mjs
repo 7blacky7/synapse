@@ -175,11 +175,11 @@ test('MITTEL 2: zweistufige Probe-Kaskade unter einem Kaskaden-Kind (CASCADE und
     // Ebene 1: specialist_channels (geloescht) -> Ebene 2: specialist_channel_messages (erfasstes Kaskaden-Kind) -> Ebene 3: Probe.
     await pool.query('CREATE TABLE t31p_kaskade2 (id serial PRIMARY KEY, msg_id integer REFERENCES specialist_channel_messages(id) ON DELETE CASCADE)');
     await pool.query('INSERT INTO t31p_kaskade2(msg_id) VALUES($1)', [msg]);
+    // (angepasst P25-T12, P9-T32: die FK-Katalogpruefung inkl. Kaskaden-Kinder laeuft schon in der Vorschau. Die Probe-Kaskade
+    // blockiert deshalb die Vorschau (strenger als vorher), es entsteht kein Auftrag und kein Code wird verbraucht.)
     const v = await vorschau({ project: PR.k, hostname: H.k });
-    assert.equal(v.status, 'vorschau', JSON.stringify(v.blockiert));
-    // Der Code wird vor der Transaktion verbraucht (bekannt, Abnahme MITTEL 3) -> spaeter Schritt +1 auf H.k.
-    await assert.rejects(ausfuehren({ loesch_auftrag_id: v.loesch_auftrag_id, loesch_code: codeFuer(H.k) }),
-      (e) => e.code === 'unbekannte_kaskade' && e.message.includes('t31p_kaskade2') && e.message.includes('specialist_channel_messages'));
+    assert.equal(v.status, 'blockiert');
+    assert.ok(v.blockiert.some((b) => b.grund === 'unbekannte_kaskade' && b.detail.includes('t31p_kaskade2') && b.detail.includes('specialist_channel_messages')), JSON.stringify(v.blockiert));
     assert.equal(await memories(PR.k), 2, 'nichts geloescht');
     assert.equal((await pool.query('SELECT count(*) n FROM t31p_kaskade2')).rows[0].n, '1', 'Probe-Zeile unberuehrt');
     await pool.query('DROP TABLE t31p_kaskade2');
@@ -190,9 +190,8 @@ test('MITTEL 2: zweistufige Probe-Kaskade unter einem Kaskaden-Kind (CASCADE und
     await pool.query("INSERT INTO agent_event_acks(event_id,agent_id) VALUES($1,'test-t31p')", [ev]);
     await pool.query('CREATE TABLE t31p_setnull2 (id serial PRIMARY KEY, ev bigint, ag text, FOREIGN KEY (ev, ag) REFERENCES agent_event_acks(event_id, agent_id) ON DELETE SET NULL)');
     const v2 = await vorschau({ project: PR.k2, hostname: H.k2 });
-    assert.equal(v2.status, 'vorschau', JSON.stringify(v2.blockiert));
-    await assert.rejects(ausfuehren({ loesch_auftrag_id: v2.loesch_auftrag_id, loesch_code: codeFuer(H.k2) }),
-      (e) => e.code === 'unbekannte_kaskade' && e.message.includes('t31p_setnull2'));
+    assert.equal(v2.status, 'blockiert');
+    assert.ok(v2.blockiert.some((b) => b.grund === 'unbekannte_kaskade' && b.detail.includes('t31p_setnull2')), JSON.stringify(v2.blockiert));
     assert.equal(await memories(PR.k2), 2, 'nichts geloescht');
     assert.equal((await pool.query('SELECT count(*) n FROM agent_event_acks WHERE event_id=$1', [ev])).rows[0].n, '1');
   } finally {
