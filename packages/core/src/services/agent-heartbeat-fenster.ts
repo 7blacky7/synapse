@@ -91,7 +91,7 @@ export async function setzeAgentHeartbeatFenster(
     const r = await fuehreKoordinatorHeartbeatAdminAus('koordinator_heartbeat',
       { project: z.project, ziel_identity_id: z.id, aktiv: args.aktiv, intervall_ms: takt, grund }, akteur);
     if (r.success !== true) fehler(typeof r.error === 'string' ? r.error : 'koordinator_heartbeat_fehler', r.details as Record<string, unknown> | undefined);
-    return { success: true, modus: 'setzen', wrapper_nachgezogen: r.wrapper_nachgezogen === true, ...(await stand(z)) };
+    return { success: true, modus: 'setzen', wrapper_nachgezogen: r.wrapper_nachgezogen === true, ...(await stand(await ladeZiel(z.id))) };
   }
   const vorher = (await getPool().query<{ heartbeat_enabled: boolean | null; heartbeat_interval_ms: string | number | null }>(
     'SELECT heartbeat_enabled, heartbeat_interval_ms FROM agent_identitaet_wrapper_status WHERE identity_id=$1 AND project=$2', [z.id, z.project])).rows[0];
