@@ -210,18 +210,6 @@
       "quelle": "D2 t207 golden-soll-zuschnitt-paket-c-p22-t13.fail"
     },
     {
-      "datei": "packages/rest-api/tests/reverse-e-blockweg-p18-t88.test.mjs",
-      "erwartet": {
-        "fail": null,
-        "fail_zeilen": null,
-        "muster": "AssertionError \\[ERR_ASSERTION\\]: B1: Runner ohne sicheres Ende zaehlt vorab, Lease bleibt bis zum Ablauf"
-      },
-      "grund": "Produktabweichung seit Version 186587 (P18-T93): Runner ohne sicheres Ende gibt den Job sofort frei (pending) statt die Lease zu halten (Review-Auflage B1, fd28ce7f). Fix in P18-T115, danach Eintrag entfernen (thought b2ffdafa)",
-      "seit": "2026-10-26",
-      "task": "P18-T115",
-      "quelle": "testlauf tl-20261026-014614-20da (P25-T13), Szenarien davor gruen"
-    },
-    {
       "datei": "packages/rest-api/tests/web-ui-welle0-p8-t24.test.mjs",
       "erwartet": {
         "fail": 3,

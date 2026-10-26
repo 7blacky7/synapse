@@ -726,6 +726,10 @@ export class ReverseExecutor {
    [f.id,fachstatus,code,e.reverseId]);
   await eMutation(this.pool as Pool,e,"UPDATE reverse_schichten SET status=$2,fehlercode=$3 WHERE auftrag_id=$1 AND medium_id=$4 AND datei_id IS NULL AND schicht='E' AND aktuell",
    [f.id,wiederholbar?'wartet':'fehler',code,e.mediumId]);
+  // P18-T115 (Review 028940c6/B1, T86-Vertrag): endgueltiges Ende (Versuchsgrenze oder fachlicher Fehler) setzt wie scheitern(endgueltig)
+  // auch den Analyse-Cache auf fehler (kein Neueinreihen); gehaltene Arbeit mit Restbudget bleibt wie in T93.
+  if(fachstatus==='fehler'&&(erschoepft||reverseFehlerDeterministisch(code)))
+   await eMutation(this.pool as Pool,e,"UPDATE reverse_analyse_cache SET status='fehler',fehlercode=$2 WHERE p20_auftrag_id=$1",[job.id,code]);
   const event=grund==='storno'?'cancelled':'failed';
   await eMutation(this.pool as Pool,e,"INSERT INTO work_job_audit(id,job_id,event,detail) SELECT gen_random_uuid(),$1,$2,$3::jsonb WHERE NOT EXISTS(SELECT 1 FROM work_job_audit WHERE job_id=$1 AND event=$2 AND detail->>'versuch'=$4)",
    [job.id,event,JSON.stringify({grund:ursache,fehlercode:code,executor:'reverse',retention:true,versuch:String(job.attempt)}),String(job.attempt)]);
@@ -763,7 +767,9 @@ export class ReverseExecutor {
     const aufs=await leseReverseAufsicht();
     aufsicht=this.aufsicht(lc,job,reverseHarteFrist(this.k,job.kind,aufs.hart_puffer_s.wert));
     const [pe,live]=await Promise.all([leseReversePeRessourcenSchalter(),this.liveFortschritt(job,token)]);
-    const ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.fordereFachbindung(job);await this.policyPruefen(job);return ({
+    let ergebnis:Record<string,unknown>;
+    try{
+    ergebnis=await lc.execute(REVERSE_TOOL_ID,REVERSE_PROJEKT,job.id,wer,token,async()=>{await this.fordereFachbindung(job);await this.policyPruefen(job);return ({
      kommando:'extrahieren',schicht:'E',blockuebernahme:true,einstellungen:einst,
      fortsetzung:{bindung:{job_id:job.id,eintrag_id:quelle.reverseId,medium_id:quelle.mediumId,quellhash:job.inputRef.sha256,
       werkzeug:f.werkzeug,werkzeug_version:f.werkzeug_version,profil_version:f.profil_version},
@@ -774,6 +780,17 @@ export class ReverseExecutor {
      begleitdateien:quelle.dateien.slice(1).map(d=>({pfad:'/bib/'+d.storageKey,name:d.name})),
      optionen:{wav_pregap:this.k.wavPregap,pe_ressourcen:pe.aktiv,pe_ressourcen_stand:pe},
     });},live?.melde);
+    }catch(err){
+     // P18-T115 (Review 028940c6/B1, P18-T86): Runner ohne sicheres Ende. Der Fehlversuch ist oben vorab gezaehlt; die Lease bleibt bis
+     // zum Ablauf stehen (kein release), solange der Container womoeglich noch laeuft. Erst Entstoerer/Lease-Ablauf gibt frei.
+     // Zulassung, Policy, nachweislich nicht gesendet (P18-T105), Frist/Eingriff und nicht abgesetzt laufen weiter ueber den aeusseren catch.
+     const m=(err as Error)?.message;
+     if(err instanceof ReverseAdmissionFehler||istReversePolicyFehler(err)||reverseNichtGesendet(err)||aufsicht.grund()
+      ||m==='tool_runner_timeout'||m==='tool_not_ready'||m==='tool_runner_capacity')throw err;
+     if(!alt)await sperreArbeitsOrdner(arbeit);
+     console.error('[reverse-executor] Ausführung ohne sicheres Ende:',job.id,m);
+     return;
+    }
     if(!alt)await sperreArbeitsOrdner(arbeit);
     aufsicht.ende();
     if(!lebt)return;
