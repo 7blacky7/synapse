@@ -3,6 +3,8 @@
 // 'relation/column ... does not exist' (bzw. 'Relation/Spalte »…« existiert nicht') und legt der AKTUELLE Code das
 // Objekt an, ist das SCHEMA_FEHLT_LIVE (erwartet bis zum naechsten Deploy) statt NEU_ROT, mit Herkunft
 // (Schema-Datei, Zeile, Task). Legt der Code das Objekt nicht an, bleibt es NEU_ROT (echter Fehler).
+// P25-T8: Zusaetzlich muss das Objekt in public von synapse_test FEHLEN (objektImBestand); hat public es, baut der Test ein
+// veraltetes privates Schema (search_path=<privat>,public) -> NEU_ROT grund=privates_schema_veraltet, kein Nachzug hilft.
 // Reine Funktionen bis auf ladeSchemaQuellen (liest nur packages/*/src, schreibt nichts).
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -36,6 +38,23 @@ export function erkenneSchemaFehler(text) {
 
 /** Anzeigename eines Objekts: tabelle 'x', spalte 'x.y' bzw. 'y'. */
 export function objektName(o) { return o.art === 'spalte' && o.tabelle ? `${o.tabelle}.${o.name}` : o.name; }
+
+/** P25-T8: Bestand von public aus schema-nachzug.mjs (pruefen <datei>) -> { tabelle: Set, spalte: Set('tabelle.spalte'), index: Set }. */
+export function leseBestand(json) {
+  return { tabelle: new Set(json?.tabelle ?? []), spalte: new Set(json?.spalte ?? []), index: new Set(json?.index ?? []) };
+}
+
+/**
+ * P25-T8 (Inventur 2f2f6776 Punkt 1): Hat public von synapse_test das Objekt? Nur wenn NICHT, ist Rot SCHEMA_FEHLT_LIVE; sonst baut
+ * der Test ein veraltetes privates Schema. o: {art, name, tabelle?} aus erkenneSchemaFehler oder {art, name: 'tabelle.spalte'|'spalte'}
+ * aus schema-objekte.json. Spalte ohne Tabelle (Alias im Fehlertext): vorhanden, wenn irgendeine Tabelle sie hat.
+ */
+export function objektImBestand(bestand, o) {
+  if (o.art !== 'spalte') return !!bestand[o.art]?.has(o.name);
+  const voll = o.tabelle ? `${o.tabelle}.${o.name}` : o.name;
+  if (voll.includes('.')) return bestand.spalte.has(voll);
+  return [...bestand.spalte].some((n) => n.endsWith('.' + voll));
+}
 
 /** Quelltexte, in denen Schema-SQL steht (packages/core/src, packages/rest-api/src): [{datei, zeilen}]. */
 export function ladeSchemaQuellen(repo, pakete = ['core', 'rest-api']) {

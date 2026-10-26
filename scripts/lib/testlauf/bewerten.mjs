@@ -3,6 +3,9 @@
 // Herkunft nach regel-tests-mit-herkunft-kommentieren (thought 86b6877b): die erste rote Debugzeile mit
 // Task-ID (z. B. 'FAIL P22-T170 lesefenster.ts ...: erwartet 2, tatsaechlich 1') wird bei NEU_ROT uebernommen.
 // Reine Funktionen, keine Datei- oder Prozesszugriffe.
+// P25-T8 (Inventur 2f2f6776 Punkte 2e/3): 'FEHLER  <Pruefung>'-Zeilen (OK/FEHLER-Spalten) zaehlen wie '^FAIL'; ein bekannt_rot-Eintrag
+// ohne fail/fail_zeilen/muster ist kein Freibrief (NEU_ROT eintrag_ohne_erwartung); der Vorschlag-Generator schlaegt keine leeren
+// oder Allerwelts-Muster vor und keine Eintraege fuer Zeitlimit, Import-/Ladefehler, Laeufer-Umgebung oder veraltete Privatschemata.
 
 export const STATUS = ['GRUEN', 'BEKANNT_ROT', 'SCHEMA_FEHLT_LIVE', 'NEU_ROT', 'FEHLT', 'UEBERSPRUNGEN', 'NICHT_GESTARTET'];
 
@@ -12,6 +15,8 @@ const HERKUNFT_SIGNAL = /(?:\b(?:DEBUG|HERKUNFT|FAIL|FEHLER|Error|erwartet|tatsa
 const GRUENE_ZEILE = /^(?:OK|ok|PASS|✔)\b/;
 const FEHLER_ZEILE = /^(?:FAIL\b|✖ (?!failing tests)|not ok\b|ABBRUCH\b|FEHLER\b|DEBUG\b|HERKUNFT\b|TESTLAUF-STARTFEHLER\b|(?:Uncaught )?[A-Z][A-Za-z]*Error\b|Error\b)/;
 const SELBST_UEBERSPRUNGEN = /: uebersprungen — .*Braucht eine Wegwerf-DB/; // Format aus scripts/lib/test-db-schutz.mjs testDbOderSkip
+// P25-T8: 'FEHLER  M JEV_FUNKTIONEN = 6 ...' (Spaltenformat 'OK      x' / 'FEHLER  x', z. B. jev-schalter, erklaerungen-topf) = Fehlschlag
+const FEHLER_LABEL = /^FEHLER {2,}\S/;
 
 /** Kuerzt eine Zeile fuers Log: eine Zeile, Steuerzeichen raus, Zugangsdaten maskiert. */
 export function zeileFuerLog(text, max = 200) {
@@ -26,9 +31,9 @@ export function zeileFuerLog(text, max = 200) {
 
 /**
  * Wertet die Ausgabe eines Tests aus.
- * fail: node:test-Summe ('ℹ fail N' / '# fail N'), sonst Anzahl verschiedener ^FAIL-Zeilen (Golden), sonst
- * 'N Fehler' / 'N FAIL' / 'fail=N', sonst null.
- * fail_zeilen: sortierte Menge der ^FAIL-Zeilen und der node:test-Fehlschlaege ('✖ <name>' ohne Dauer).
+ * fail: node:test-Summe ('ℹ fail N' / '# fail N'), sonst Anzahl verschiedener ^FAIL- bzw. 'FEHLER  '-Zeilen (Golden), sonst
+ * 'N Fehler' / 'N FEHLER' / 'N FAIL' / 'fail=N', sonst null.
+ * fail_zeilen: sortierte Menge der ^FAIL-/'FEHLER  '-Zeilen und der node:test-Fehlschlaege ('✖ <name>' ohne Dauer).
  */
 export function werteAusgabeAus(text) {
   let nodeTestFail = null;
@@ -43,10 +48,10 @@ export function werteAusgabeAus(text) {
     if (!t) continue;
     let m;
     if ((m = /^(?:ℹ|#) fail (\d+)$/.exec(t))) nodeTestFail = Number(m[1]);
-    if (/^FAIL\b/.test(z)) { failPraefix.add(z); failZeilen.add(z); }
+    if (/^FAIL\b/.test(z) || FEHLER_LABEL.test(z)) { failPraefix.add(z); failZeilen.add(z); }
     else if (t.startsWith('✖ ') && !/^✖ failing tests:?$/.test(t)) failZeilen.add(t.replace(SPEC_DAUER, ''));
     else if ((m = /^not ok \d+ - (.*)$/.exec(t))) failZeilen.add('✖ ' + m[1].replace(/\s+#.*$/, ''));
-    if ((m = /\b(\d+)\s+(?:FAIL|Fehler|failed|fehlgeschlagen)\b/.exec(z))) zahlText = Number(m[1]);
+    if ((m = /\b(\d+)\s+(?:FAIL|FEHLER|Fehler|failed|fehlgeschlagen)\b/.exec(z))) zahlText = Number(m[1]);
     else if ((m = /\bfail(?:ed|s)?\s*[=:]\s*(\d+)\b/i.exec(z))) zahlText = Number(m[1]);
     if (GRUENE_ZEILE.test(t)) continue;
     if (FEHLER_ZEILE.test(t) && !/^✖ failing tests/.test(t) && fehlerZeilen.length < 20) fehlerZeilen.push(t.startsWith('✖ ') ? t.replace(SPEC_DAUER, '') : t);
@@ -86,6 +91,12 @@ export function bewerte(lauf, eintrag) {
   if (!eintrag) return { status: 'NEU_ROT', grund: lauf.zeitlimit ? 'zeitlimit' : 'unbekannt', neue_zeilen: lauf.fail_zeilen ?? [], hinweise };
   const e = eintrag.erwartet ?? {};
   if (lauf.zeitlimit && !e.zeitlimit) return { status: 'NEU_ROT', grund: 'zeitlimit', neue_zeilen: [], hinweise };
+  // P25-T8: ohne fail, fail_zeilen und muster wuerde der Eintrag JEDEN Fehler erlauben (Inventur: 11 solche Vorschlaege);
+  // nur 'zeitlimit: true' allein deckt genau ein Zeitlimit.
+  if (ohneErwartung(e) && !(e.zeitlimit && lauf.zeitlimit)) {
+    hinweise.push({ code: 'BEKANNT_ROT_OHNE_ERWARTUNG', text: 'Eintrag ohne fail/fail_zeilen/muster erlaubt jeden Fehler, per files nachziehen' });
+    return { status: 'NEU_ROT', grund: 'eintrag_ohne_erwartung', neue_zeilen: lauf.fail_zeilen ?? [], hinweise };
+  }
   if (e.muster) {
     let trifft = false;
     try { trifft = new RegExp(e.muster).test(lauf.ausgabe ?? ''); } catch { hinweise.push({ code: 'MUSTER_UNGUELTIG', text: zeileFuerLog(e.muster, 80) }); }
@@ -141,9 +152,17 @@ export function summiere(ergebnisListe, fehltAnzahl = 0) {
   return s;
 }
 
-/** ergebnis=ROT genau dann, wenn neu_rot + fehlt + nicht_gestartet > 0 oder der Schema-Nachzug gescheitert ist. */
-export function istRot(summe, nachzug) {
-  return summe.neu_rot + summe.fehlt + summe.nicht_gestartet > 0 || nachzug === 'fehler';
+/**
+ * ergebnis=ROT genau dann, wenn neu_rot + fehlt + nicht_gestartet > 0, der Schema-Nachzug gescheitert ist oder (P25-T8) sich
+ * Code/dist/Tests bzw. das Schema von synapse_test waehrend des Laufs geaendert haben (sauber === false, Mischstand).
+ */
+export function istRot(summe, nachzug, sauber = true) {
+  return summe.neu_rot + summe.fehlt + summe.nicht_gestartet > 0 || nachzug === 'fehler' || sauber === false;
+}
+
+/** P25-T8: Erwartung ohne fail, ohne nicht-leere fail_zeilen und ohne muster. */
+function ohneErwartung(e) {
+  return e?.fail == null && !(Array.isArray(e?.fail_zeilen) && e.fail_zeilen.length) && !e?.muster;
 }
 
 function neueZeilen(ist, erwartet) {
@@ -166,13 +185,47 @@ export function testfehlerZeilen(aus, bewertung, max = 3) {
 
 function escapeRegex(text) { return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+// P25-T8 (Inventur 2f2f6776 Punkt 3): Zeilen, die auf praktisch jeden Fehler passen, taugen nicht als muster
+// (z. B. 'Error\.captureStackTrace\(err\)' aus jedem pg-Stack, der nackte Assert-Kopf ohne eigenen Text).
+const ALLERWELTS = [
+  /^Error\.captureStackTrace\b/,
+  /^(?:Uncaught )?[A-Za-z]*Error(?: \[[A-Z_]+\])?:?$/,
+  /^AssertionError \[ERR_ASSERTION\]: (?:Expected values to be (?:strictly |loosely )?(?:deep-)?equal|The expression evaluated to a falsy value)/,
+];
+
+/** Muster-Kandidat aus einer Fehlerzeile (Stack-/URL-Rest abgeschnitten) oder null, wenn die Zeile zu allgemein ist. */
+export function musterKandidat(zeile) {
+  const text = String(zeile ?? '').split(/\s+at\s+|file:\/\//)[0].trim().slice(0, 120);
+  if (text.replace(/[^A-Za-z0-9]/g, '').length < 12) return null;
+  return ALLERWELTS.some((r) => r.test(text)) ? null : text;
+}
+
+const IMPORT_FEHLER = /does not provide an export named|ERR_MODULE_NOT_FOUND|Cannot find (?:module|package)\b|Cannot access '[^']+' before initialization/;
+const NICHT_VORSCHLAGEN = new Set(['zeitlimit', 'privates_schema_veraltet', 'schema_bestand_unbekannt', 'schema_nach_nachzug_fehlt', 'eintrag_ohne_erwartung']);
+
+/**
+ * P25-T8: Grund, warum fuer einen NEU_ROT-Test KEIN bekannt_rot-Vorschlag entsteht, sonst null. Ausgeschlossen: Zeitlimit,
+ * Import-/Ladefehler (Build- oder Zyklusproblem, gehoert in einen Fix-Task), Laeufer-Umgebung (test_db_ist_produktion),
+ * veraltete Privatschemata/Schemafehler und Eintraege ohne verwertbare Erwartung (wuerden jeden Fehler erlauben).
+ * eintrag = Ergebnis von vorschlagEintrag, lauf = { zeitlimit, ausgabe }, grund = Bewertungsgrund des Laeufers.
+ */
+export function vorschlagAblehnung({ eintrag, lauf, grund }) {
+  if (lauf?.zeitlimit || grund === 'zeitlimit') return 'zeitlimit';
+  if (NICHT_VORSCHLAGEN.has(grund)) return grund;
+  const ausgabe = String(lauf?.ausgabe ?? '');
+  if (IMPORT_FEHLER.test(ausgabe)) return 'importfehler';
+  if (/\btest_db_ist_produktion\b/.test(ausgabe)) return 'laeufer_umgebung';
+  if (ohneErwartung(eintrag?.erwartet)) return 'ohne_erwartung';
+  return null;
+}
+
 /** Vorschlag fuer einen bekannt_rot-Eintrag (Inventur, --vorschlag). Lange Zeilen werden zu Praefix-Mustern. */
 export function vorschlagEintrag({ test, lauf, aus, laufId, datum }) {
   const failZeilen = (aus.fail_zeilen ?? []).map((z) => (z.length > 160 ? z.slice(0, 160) + '*' : z));
   let muster = null;
   if (aus.fail == null && failZeilen.length === 0) {
-    const erste = (aus.fehler_zeilen ?? [])[0];
-    if (erste) muster = escapeRegex(erste.split(/\s+at\s+|file:\/\//)[0].trim().slice(0, 120));
+    const erste = (aus.fehler_zeilen ?? []).map(musterKandidat).find(Boolean);
+    if (erste) muster = escapeRegex(erste);
   }
   const erwartet = { fail: aus.fail ?? null, fail_zeilen: failZeilen.length ? failZeilen : null, muster };
   if (lauf.zeitlimit) erwartet.zeitlimit = true;

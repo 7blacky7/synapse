@@ -7,6 +7,8 @@
 // Kopf-Marker (Kommentar in den ersten 30 Zeilen, alle optional, mehrere Zeilen erlaubt):
 //   // @testlauf browser | pool | seriell | golden | zeitlimit=<s> | braucht=docker | env=K=V | args=<rest> | aus=<grund>
 // args= und aus= nehmen den Rest der Zeile (aus= deshalb zuletzt schreiben).
+// env-Werte (Marker und einstellungen[].env) duerfen ${NAME} aus der Laeufer-Umgebung nutzen (setzeEnvEin, P25-T8), z. B.
+// SYNAPSE_DATABASE_URL=${DATABASE_URL} fuer Tests, die nur SYNAPSE_DATABASE_URL lesen; so steht kein Zugang in einer Datei.
 // Ohne Marker: art=browser, wenn der Name '-browser-' enthaelt oder der Inhalt ':9222' bzw. kiBrowser nennt
 // (faengt die Browsertests ohne Namen, z. B. agentennetzwerk-darstellung-p22-t93); braucht=docker, wenn der
 // Test docker selbst startet. 'pool' erzwingt die normale Spur, falls die Inhaltserkennung falsch greift.
@@ -131,6 +133,16 @@ export function wendeEinstellungAn(test, einstellung) {
   if (Array.isArray(einstellung.args)) t.args = einstellung.args.map(String);
   if (einstellung.aus) t.aus = String(einstellung.aus);
   return t;
+}
+
+/**
+ * P25-T8 (b): ${NAME} in env-Werten aus der Laeufer-Umgebung einsetzen (fehlt NAME -> leer). Der Laeufer gibt SYNAPSE_DATABASE_URL
+ * nicht mehr pauschal weiter (test_db_ist_produktion); Tests, die nur sie lesen, bekommen sie so gezielt. Reine Funktion.
+ */
+export function setzeEnvEin(env, quelle) {
+  const aus = {};
+  for (const [k, v] of Object.entries(env ?? {})) aus[k] = String(v).replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, n) => quelle?.[n] ?? '');
+  return aus;
 }
 
 /** --nur: Pfad, Dateiname, Name mit/ohne Paket oder Glob mit * (auf Pfad und Name). */

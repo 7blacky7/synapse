@@ -4,18 +4,21 @@
 // Weg wie P17-T6 (D2 testdb-nachziehen): packages/core/dist/db/schema.js ensureSchema() gegen DATABASE_URL.
 // NUR synapse_test:5433 (bewerteTestDbUrl, sonst Exit 2), nie Produktion.
 // Aufruf (vom Laeufer als Kindprozess, cwd = Repo bzw. D2-Worktree):
-//   node scripts/lib/testlauf/schema-nachzug.mjs pruefen              -> nur lesen (pruefeSchema)
+//   node scripts/lib/testlauf/schema-nachzug.mjs pruefen [best.json]  -> nur lesen (pruefeSchema); mit Datei zusaetzlich der Bestand
+//                                                                       von public (Tabellen/Spalten) fuer SCHEMA_FEHLT_LIVE (P25-T8)
 //   node scripts/lib/testlauf/schema-nachzug.mjs nachziehen [obj.json] -> ensureSchema + Vorher/Nachher-Vergleich
-// Zeilen: SCHEMA_STAND stand=... | SCHEMA_NEU tabelle|spalte|index <name> | SCHEMA_OBJEKT <art> <name> vorhanden=0|1
+// Zeilen: SCHEMA_STAND stand=... | SCHEMA_BESTAND tabellen=<n> spalten=<n> | SCHEMA_NEU tabelle|spalte|index <name>
+//         | SCHEMA_OBJEKT <art> <name> vorher=0|1 vorhanden=0|1
 //         | SCHEMA_NACHZUG ok=1|0 ...
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bewerteTestDbUrl } from '../test-db-schutz.mjs';
+import { objektImBestand } from './schema.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const [modus, objektDatei] = process.argv.slice(2);
+const [modus, datei] = process.argv.slice(2);
 const kurz = (h) => (typeof h === 'string' ? h.slice(0, 12) : '-');
 const einzeilig = (s, max = 200) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
@@ -37,10 +40,6 @@ async function bestand(pool) {
   return { tabelle: menge(t), spalte: menge(c), index: menge(i) };
 }
 
-const vorhanden = (b, o) => (o.art === 'spalte' && !o.name.includes('.')
-  ? [...b.spalte].some((n) => n.endsWith('.' + o.name))
-  : !!b[o.art]?.has(o.name));
-
 let schema;
 let client;
 let code = 0;
@@ -52,6 +51,12 @@ try {
   if (ziel !== 'synapse_test') throw new Error(`verbunden mit ${ziel}, nicht synapse_test`);
   const vorher = await schema.pruefeSchema();
   console.log(`SCHEMA_STAND stand=${vorher.stand} vorhanden=${kurz(vorher.vorhanden)} erwartet=${kurz(vorher.erwartet)}${vorher.grund ? ' grund=' + einzeilig(vorher.grund, 120) : ''}`);
+  if (modus === 'pruefen' && datei) {
+    // P25-T8: Bestand von public, damit der Laeufer SCHEMA_FEHLT_LIVE nur vergibt, wenn das Objekt hier wirklich fehlt
+    const b = await bestand(pool);
+    writeFileSync(datei, JSON.stringify({ tabelle: [...b.tabelle].sort(), spalte: [...b.spalte].sort() }) + '\n');
+    console.log(`SCHEMA_BESTAND tabellen=${b.tabelle.size} spalten=${b.spalte.size}`);
+  }
   if (modus === 'nachziehen') {
     const alt = await bestand(pool);
     const r = await schema.ensureSchema();
@@ -62,9 +67,9 @@ try {
       zahl[art] = liste.length;
       for (const n of liste.slice(0, 200)) console.log(`SCHEMA_NEU ${art} ${n}`);
     }
-    if (objektDatei) {
-      for (const o of JSON.parse(readFileSync(objektDatei, 'utf8'))) {
-        console.log(`SCHEMA_OBJEKT ${o.art} ${o.name} vorher=${vorhanden(alt, o) ? 1 : 0} vorhanden=${vorhanden(neu, o) ? 1 : 0}`);
+    if (datei) {
+      for (const o of JSON.parse(readFileSync(datei, 'utf8'))) {
+        console.log(`SCHEMA_OBJEKT ${o.art} ${o.name} vorher=${objektImBestand(alt, o) ? 1 : 0} vorhanden=${objektImBestand(neu, o) ? 1 : 0}`);
       }
     }
     const nach = await schema.pruefeSchema();

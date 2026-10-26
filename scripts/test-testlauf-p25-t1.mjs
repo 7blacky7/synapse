@@ -4,10 +4,12 @@
 // bewerten.mjs (werteAusgabeAus, bewerte, passtZeile, testfehlerZeilen, vorschlagEintrag, zeileFuerLog),
 // betroffene.mjs (abnehmerHuelle, waehleBetroffene). Grundlage: Entwurf thought 49df5e9e, User-Go b3a3a812,
 // Herkunft-Regel 86b6877b. Aufruf: node scripts/test-testlauf-p25-t1.mjs (Exit 1 bei Fehler).
-import { leseMarker, taskAusName, referenziertePakete, passtNur, wendeEinstellungAn } from './lib/testlauf/finden.mjs';
-import { werteAusgabeAus, bewerte, passtZeile, testfehlerZeilen, vorschlagEintrag, zeileFuerLog, waehleNachlauf, bewerteNachlauf, summiere, istRot } from './lib/testlauf/bewerten.mjs';
+// Block K (P25-T8, Inventur 2f2f6776): FEHLER-Format, Eintrag ohne Erwartung, Vorschlag-Filter, public-Bestand, Laufschutz (stand.mjs).
+import { leseMarker, taskAusName, referenziertePakete, passtNur, wendeEinstellungAn, setzeEnvEin } from './lib/testlauf/finden.mjs';
+import { werteAusgabeAus, bewerte, passtZeile, testfehlerZeilen, vorschlagEintrag, zeileFuerLog, waehleNachlauf, bewerteNachlauf, summiere, istRot, musterKandidat, vorschlagAblehnung } from './lib/testlauf/bewerten.mjs';
 import { abnehmerHuelle, waehleBetroffene } from './lib/testlauf/betroffene.mjs';
-import { erkenneSchemaFehler, objektName, sucheSchemaObjekt } from './lib/testlauf/schema.mjs';
+import { erkenneSchemaFehler, objektName, sucheSchemaObjekt, leseBestand, objektImBestand } from './lib/testlauf/schema.mjs';
+import { erfasseStand, leseSchemaStand, mtimeIso, standKennung, vergleicheStand } from './lib/testlauf/stand.mjs';
 // P25-T7: scripts/lib/ui-screenshots.mjs (laufIdFuerScreenshots, screenshotOrdner, screenshotAblage, raeumeScreenshotLaeufeAuf)
 import { laufIdFuerScreenshots, screenshotOrdner, screenshotAblage, raeumeScreenshotLaeufeAuf } from './lib/ui-screenshots.mjs';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -223,6 +225,88 @@ function pruefe(label, ist, soll) {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+// K P25-T8 Laeufer-Nachbesserung (Inventur 2f2f6776 Punkte 1, 2a-2e, 3)
+{
+  // OK/FEHLER-Spaltenformat (jev-schalter, erklaerungen-topf): FEHLER-Zeilen zaehlen wie ^FAIL
+  const f = werteAusgabeAus('OK      M a\nFEHLER  M JEV_FUNKTIONEN = 6\nFEHLER  M ohne Zeile: alles an\nFEHLER  M ohne Zeile: alles an\n2 FEHLER');
+  pruefe('P25-T8 bewerten.mjs werteAusgabeAus: FEHLER-Spalten = fail_zeilen, eindeutig gezaehlt', [f.fail, f.fail_zeilen], [2, ['FEHLER  M JEV_FUNKTIONEN = 6', 'FEHLER  M ohne Zeile: alles an']]);
+  pruefe('P25-T8 bewerten.mjs werteAusgabeAus: "25 OK, 35 FEHLER" ohne Spaltenzeilen -> 35', werteAusgabeAus('25 OK, 35 FEHLER').fail, 35);
+  pruefe('P25-T8 bewerten.mjs werteAusgabeAus: "FEHLER: x" ist keine Pruefzeile', [werteAusgabeAus('FEHLER: kaputt').fail, werteAusgabeAus('FEHLER: kaputt').fail_zeilen], [null, []]);
+
+  // Eintrag ohne Erwartung ist kein Freibrief (Inventur: 11 Vorschlaege mit fail/fail_zeilen/muster null)
+  const rot = { exit: 1, zeitlimit: false, ausgabe: 'TypeError: irgendwas', fail: null, fail_zeilen: [] };
+  const leer = bewerte(rot, { erwartet: { fail: null, fail_zeilen: null, muster: null } });
+  pruefe('P25-T8 bewerten.mjs bewerte: Eintrag ohne Erwartung -> NEU_ROT eintrag_ohne_erwartung + Hinweis', [leer.status, leer.grund, leer.hinweise.map((h) => h.code)],
+    ['NEU_ROT', 'eintrag_ohne_erwartung', ['BEKANNT_ROT_OHNE_ERWARTUNG']]);
+  pruefe('P25-T8 bewerten.mjs bewerte: fail_zeilen [] zaehlt nicht als Erwartung', bewerte(rot, { erwartet: { fail: null, fail_zeilen: [] } }).grund, 'eintrag_ohne_erwartung');
+  pruefe('P25-T8 bewerten.mjs bewerte: nur zeitlimit:true deckt genau ein Zeitlimit', [bewerte({ ...rot, zeitlimit: true }, { erwartet: { zeitlimit: true } }).status,
+    bewerte(rot, { erwartet: { zeitlimit: true } }).grund], ['BEKANNT_ROT', 'eintrag_ohne_erwartung']);
+
+  // Vorschlag-Generator: keine Allerwelts-Muster, keine Eintraege fuer Zeitlimit/Import/Umgebung/Privatschema/leer
+  pruefe('P25-T8 bewerten.mjs musterKandidat: Error.captureStackTrace(err) -> null', musterKandidat('Error.captureStackTrace(err);'), null);
+  pruefe('P25-T8 bewerten.mjs musterKandidat: nackter Assert-Kopf -> null', musterKandidat('AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:'), null);
+  pruefe('P25-T8 bewerten.mjs musterKandidat: nackter Fehlertyp -> null', musterKandidat('TypeError'), null);
+  pruefe('P25-T8 bewerten.mjs musterKandidat: eigener Text bleibt, Stack ab', musterKandidat('TypeError: principalJetzt is not a function at x (file:///a.mjs:1)'), 'TypeError: principalJetzt is not a function');
+  const pg = vorschlagEintrag({ test: { datei: 'packages/core/tests/x.test.mjs', task: null, golden: false }, lauf: { zeitlimit: false },
+    aus: werteAusgabeAus('Error.captureStackTrace(err);\nerror: column "x" does not exist'), laufId: 'tl-1', datum: '2026-10-26' });
+  pruefe('P25-T8 bewerten.mjs vorschlagEintrag: nur Allerwelts-Zeile -> kein muster', pg.erwartet.muster, null);
+  const mitAssert = vorschlagEintrag({ test: { datei: 'packages/core/tests/x.test.mjs', task: null, golden: false }, lauf: { zeitlimit: false },
+    aus: werteAusgabeAus('Error.captureStackTrace(err);\nAssertionError [ERR_ASSERTION]: Bytegleiche Altstand-Ausgaben'), laufId: 'tl-1', datum: '2026-10-26' });
+  pruefe('P25-T8 bewerten.mjs vorschlagEintrag: erste aussagekraeftige Zeile als muster', mitAssert.erwartet.muster, 'AssertionError \\[ERR_ASSERTION\\]: Bytegleiche Altstand-Ausgaben');
+  const ok = { erwartet: { fail: 1, fail_zeilen: ['FAIL a'], muster: null } };
+  pruefe('P25-T8 bewerten.mjs vorschlagAblehnung: Zeitlimit / Importfehler / Umgebung / Privatschema / leer / ok', [
+    vorschlagAblehnung({ eintrag: ok, lauf: { zeitlimit: true, ausgabe: '' }, grund: 'zeitlimit' }),
+    vorschlagAblehnung({ eintrag: ok, lauf: { ausgabe: "SyntaxError: The requested module '@synapse/core' does not provide an export named 'aktuelleTaskFuer'" }, grund: 'unbekannt' }),
+    vorschlagAblehnung({ eintrag: ok, lauf: { ausgabe: "ReferenceError: Cannot access 'INTERN_SCHALTER' before initialization" }, grund: 'unbekannt' }),
+    vorschlagAblehnung({ eintrag: ok, lauf: { ausgabe: 'Error: test_db_ist_produktion' }, grund: 'unbekannt' }),
+    vorschlagAblehnung({ eintrag: ok, lauf: { ausgabe: '' }, grund: 'privates_schema_veraltet' }),
+    vorschlagAblehnung({ eintrag: pg, lauf: { ausgabe: '' }, grund: 'unbekannt' }),
+    vorschlagAblehnung({ eintrag: ok, lauf: { ausgabe: 'FAIL a' }, grund: 'unbekannt' }),
+  ], ['zeitlimit', 'importfehler', 'importfehler', 'laeufer_umgebung', 'privates_schema_veraltet', 'ohne_erwartung', null]);
+
+  // SCHEMA_FEHLT_LIVE nur, wenn public das Objekt NICHT hat (Inventur Punkt 1: policy_pin u. a. vorher=1)
+  const bestand = leseBestand({ tabelle: ['reverse_auftraege', 'tool_aktivitaet'], spalte: ['reverse_auftraege.policy_pin', 'tool_aktivitaet.identity_id', 'reverse_einstellungen.uebernahme'] });
+  pruefe('P25-T8 schema.mjs objektImBestand: Tabelle / Spalte mit Tabelle / Alias-Spalte / Name aus schema-objekte.json / fehlt', [
+    objektImBestand(bestand, { art: 'tabelle', name: 'tool_aktivitaet' }),
+    objektImBestand(bestand, { art: 'spalte', name: 'policy_pin', tabelle: 'reverse_auftraege' }),
+    objektImBestand(bestand, { art: 'spalte', name: 'uebernahme' }),
+    objektImBestand(bestand, { art: 'spalte', name: 'tool_aktivitaet.identity_id' }),
+    objektImBestand(bestand, { art: 'spalte', name: 'policy_pin', tabelle: 'andere' }),
+    objektImBestand(bestand, { art: 'tabelle', name: 'agent_aktuelle_task_einstellungen' }),
+  ], [true, true, true, true, false, false]);
+
+  // Laufschutz: Stand am Anfang/Ende (P22-T172 baute dist waehrend des Inventurlaufs neu)
+  const a = { commit: 'abc', dateien: new Map([['packages/core/dist/index.js', '10:1000'], ['scripts/x.mjs', '5:1000']]) };
+  pruefe('P25-T8 stand.mjs vergleicheStand: gleich', vergleicheStand(a, { commit: 'abc', dateien: new Map(a.dateien) }).gleich, true);
+  const b = { commit: 'abc', dateien: new Map([['packages/core/dist/index.js', '12:2000'], ['packages/rest-api/dist/neu.js', '1:2000']]) };
+  const d = vergleicheStand(a, b);
+  pruefe('P25-T8 stand.mjs vergleicheStand: geaendert/neu/weg', [d.gleich, d.geaendert, d.neu, d.weg], [false, ['packages/core/dist/index.js'], ['packages/rest-api/dist/neu.js'], ['scripts/x.mjs']]);
+  pruefe('P25-T8 stand.mjs vergleicheStand: nur Commit anders -> ungleich', vergleicheStand(a, { ...a, commit: 'def' }), { gleich: false, commit_geaendert: true, geaendert: [], neu: [], weg: [] });
+  pruefe('P25-T8 stand.mjs standKennung: stabil, aendert sich mit dem Stand', [standKennung(a) === standKennung({ commit: 'abc', dateien: new Map([...a.dateien].reverse()) }), standKennung(a) === standKennung(b), standKennung(a).length], [true, false, 12]);
+  pruefe('P25-T8 stand.mjs mtimeIso', [mtimeIso('12:1761436800000'), mtimeIso('kaputt')], ['2025-10-26T00:00:00.000Z', '-']);
+  pruefe('P25-T8 stand.mjs leseSchemaStand', [leseSchemaStand(['SCHEMA_BESTAND tabellen=1', 'SCHEMA_STAND stand=aktuell vorhanden=d160d8d2e0c6 erwartet=6a2aed697f08']), leseSchemaStand([])],
+    [{ stand: 'aktuell', vorhanden: 'd160d8d2e0c6', erwartet: '6a2aed697f08' }, { stand: '-', vorhanden: '-', erwartet: '-' }]);
+  const tmp = mkdtempSync(join(tmpdir(), 'p25-t8-stand-'));
+  try {
+    for (const [rel, inhalt] of [['packages/x/src/a.ts', 'a'], ['packages/x/dist/a.js', 'a'], ['packages/x/tests/t.test.mjs', 't'], ['packages/x/package.json', '{}'],
+      ['packages/x/README.md', 'r'], ['packages/x/node_modules/y/i.js', 'y'], ['packages/x/dist/.cache/z.js', 'z'], ['scripts/lib/s.mjs', 's'], ['ui-screenshots/p/1.png', 'p']]) {
+      mkdirSync(join(tmp, rel, '..'), { recursive: true });
+      writeFileSync(join(tmp, rel), inhalt);
+    }
+    const s = erfasseStand(tmp, { commit: 'c1' });
+    pruefe('P25-T8 stand.mjs erfasseStand: src/dist/tests/package.json/scripts, ohne node_modules, Punkt-Ordner, .md, ui-screenshots',
+      [...s.dateien.keys()].sort(), ['packages/x/dist/a.js', 'packages/x/package.json', 'packages/x/src/a.ts', 'packages/x/tests/t.test.mjs', 'scripts/lib/s.mjs']);
+    writeFileSync(join(tmp, 'packages/x/dist/a.js'), 'neu gebaut');
+    pruefe('P25-T8 stand.mjs erfasseStand + vergleicheStand: neu gebautes dist erkannt', vergleicheStand(s, erfasseStand(tmp, { commit: 'c1' })).geaendert, ['packages/x/dist/a.js']);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  pruefe('P25-T8 finden.mjs setzeEnvEin: ${DATABASE_URL} aus der Laeufer-Umgebung, fehlend -> leer, Rest bleibt',
+    setzeEnvEin({ SYNAPSE_DATABASE_URL: '${DATABASE_URL}', X: 'a-${FEHLT}-b', Y: '$DATABASE_URL' }, { DATABASE_URL: 'postgresql://t@h:5433/synapse_test' }),
+    { SYNAPSE_DATABASE_URL: 'postgresql://t@h:5433/synapse_test', X: 'a--b', Y: '$DATABASE_URL' });
+  pruefe('P25-T8 bewerten.mjs istRot: LAUF_UNSAUBER -> ROT, sonst unveraendert', [istRot(summiere([{ status: 'GRUEN' }]), 'ok', false), istRot(summiere([{ status: 'GRUEN' }]), 'ok', true), istRot(summiere([{ status: 'GRUEN' }]), 'uebersprungen')], [true, false, false]);
 }
 
 console.log(`P25-T1 testlauf-Selbsttest: ${pruefungen} Pruefungen, ${fehler} Fehler`);

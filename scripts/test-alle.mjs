@@ -25,12 +25,24 @@
 // mit Fundstelle/Task). DANACH Nachzug wie P17-T6 (ensureSchema, nur synapse_test): Zeilen SCHEMA_NEU / SCHEMA_OBJEKT / SCHEMA_NACHZUG.
 // Nachlauf: Nach erfolgreichem Nachzug laufen genau die SCHEMA_FEHLT_LIVE-Tests noch EINMAL (sie konnten vorher nicht laufen);
 // ihr Ergebnis zaehlt normal (GRUEN/BEKANNT_ROT/NEU_ROT), Zeile mit nachlauf=1, Abschluss schema_fehlt_live=<n> nachlauf_gruen=<n>.
+// P25-T8 (Inventur 2f2f6776, Analyse 32c4a579):
+//   (a) SCHEMA_FEHLT_LIVE nur, wenn das Objekt in public von synapse_test wirklich fehlt (Bestand aus 'pruefen', schema-bestand.json);
+//       hat public es, baut der Test ein veraltetes privates Schema -> NEU_ROT grund=privates_schema_veraltet (HINWEIS PRIVATES_SCHEMA_VERALTET).
+//   (b) Kinder bekommen die Test-DB wie im Synapse-shell-Job nur als DATABASE_URL; SYNAPSE_DATABASE_URL wird nicht gesetzt (sonst
+//       test_db_ist_produktion), eine geerbte wird entfernt. Tests, die NUR SYNAPSE_DATABASE_URL lesen, bekommen sie gezielt ueber
+//       einstellungen[].env {"SYNAPSE_DATABASE_URL": "${DATABASE_URL}"} (setzeEnvEin, kein Zugang in der Datei).
+//   (c) Laufschutz: Stand (Commit + Dateien packages/*/{src,dist,tests}, scripts + SCHEMA_STAND von synapse_test) am Anfang und Ende.
+//       Abweichung -> STAND_GEAENDERT-Zeilen, HINWEIS LAUF_UNSAUBER, ergebnis=ROT stand=unsauber, KEIN Schema-Nachzug/Nachlauf.
+//   (d) seriell: Marker '// @testlauf seriell' bzw. einstellungen[].art='seriell' in tests/bekannt-rot.json (laufen nach dem Pool allein);
+//       HINWEIS SERIELL_VERDACHT bei EADDRINUSE oder Zeitlimit im parallelen Pool.
+//   (e) --vorschlag: keine leeren/Allerwelts-Erwartungen, nichts fuer Zeitlimit, Importfehler, Laeufer-Umgebung, Privatschema
+//       (Zeilen VORSCHLAG_ABGELEHNT <name> grund=..., ergebnis.json vorschlag_abgelehnt).
 // Ausgabe (feste Tokens, je Test genau eine Zeile, erst wenn der Test fertig ist):
 //   TESTLAUF START id=... modus=... tests=... | TEST <paket>/<name> <STATUS> <ms>ms exit= fail= art= neu= geaendert= grund= herkunft= log=
 //   TESTFEHLER <paket>/<name> <text> (bis zu 3, nur bei NEU_ROT, zuerst 'HERKUNFT <debugzeile>') | HINWEIS <CODE> <name> <text>
-//   TESTLAUF ENDE id=... ergebnis=GRUEN|ROT ... json=<pfad>
+//   TESTLAUF ENDE id=... ergebnis=GRUEN|ROT ... stand=sauber|unsauber json=<pfad>
 // Auswertung ohne Warten: shell(log, id, query:'NEU_ROT|FEHLT|NICHT_GESTARTET|TESTFEHLER|TESTLAUF ENDE', regex:true).
-// Exit 0 = GRUEN, 1 = ROT (neu_rot+fehlt+nicht_gestartet > 0 oder Schema-Nachzug gescheitert), 2 = Abbruch (Zeile TESTLAUF ABBRUCH <grund>).
+// Exit 0 = GRUEN, 1 = ROT (neu_rot+fehlt+nicht_gestartet > 0, Schema-Nachzug gescheitert oder LAUF_UNSAUBER), 2 = Abbruch (Zeile TESTLAUF ABBRUCH <grund>).
 // Screenshots (P25-T7, User-Go 25.10.2026): Browser-Tests legen ueber scripts/lib/ui-screenshots.mjs unter ui-screenshots/<anlass>/<TESTLAUF_ID>/
 // ab (Nachlauf: TESTLAUF_NACHLAUF=1 -> .../nachlauf/), nie ueberschreibend. Am Ende loescht der Laeufer je Anlass aeltere Lauf-Ordner:
 //   SCREENSHOTS_GELOESCHT <pfad> dateien=<n> | SCREENSHOTS_AUFRAEUMEN behalten=<n> anlaesse=<n> laeufe_geloescht=<n> dateien=<n> fehler=<n>
@@ -45,11 +57,12 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { bewerteTestDbUrl, kindEnv } from './lib/test-db-schutz.mjs';
-import { findeTests, passtNur, wendeEinstellungAn } from './lib/testlauf/finden.mjs';
+import { findeTests, passtNur, setzeEnvEin, wendeEinstellungAn } from './lib/testlauf/finden.mjs';
 import { beendeAlle, fuehreTestAus } from './lib/testlauf/ausfuehren.mjs';
-import { bewerte, bewerteNachlauf, istRot, summiere, testfehlerZeilen, vorschlagEintrag, waehleNachlauf, werteAusgabeAus, zeileFuerLog } from './lib/testlauf/bewerten.mjs';
+import { bewerte, bewerteNachlauf, istRot, summiere, testfehlerZeilen, vorschlagAblehnung, vorschlagEintrag, waehleNachlauf, werteAusgabeAus, zeileFuerLog } from './lib/testlauf/bewerten.mjs';
 import { geaenderteDateien, paketAbhaengigkeiten, waehleBetroffene, abnehmerHuelle } from './lib/testlauf/betroffene.mjs';
-import { erkenneSchemaFehler, ladeSchemaQuellen, objektName, sucheSchemaObjekt } from './lib/testlauf/schema.mjs';
+import { erkenneSchemaFehler, ladeSchemaQuellen, leseBestand, objektImBestand, objektName, sucheSchemaObjekt } from './lib/testlauf/schema.mjs';
+import { erfasseStand, leseSchemaStand, mtimeIso, standKennung, vergleicheStand } from './lib/testlauf/stand.mjs';
 import { raeumeScreenshotLaeufeAuf, STANDARD_BEHALTEN as SCREENSHOTS_BEHALTEN } from './lib/ui-screenshots.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -157,7 +170,12 @@ function pruefeDist(pakete, hinweis) {
 function raeumeAlteLaeufeAuf() {
   let namen;
   try { namen = readdirSync(ABLAGE).filter((n) => LAUF_ORDNER.test(n)).sort(); } catch { return; }
+  // P25-T8: der letzte volle Lauf (Zeiger, Basis fuer neu/geaendert und Inventur) bleibt, auch nach mehr als 20 --nur-Laeufen
+  // (so ging am 26.10. die Inventur-Ablage tl-20261025-232030-a99b verloren).
+  let geschuetzt = null;
+  try { geschuetzt = basename(dirname(readFileSync(ZEIGER_VOLLER_LAUF, 'utf8').trim())); } catch { /* kein Zeiger */ }
   for (const n of namen.slice(0, Math.max(0, namen.length - AUFBEWAHREN))) {
+    if (n === geschuetzt) continue;
     try { rmSync(join(ABLAGE, n), { recursive: true, force: true }); } catch { /* naechstes Mal */ }
   }
 }
@@ -236,25 +254,39 @@ async function main() {
 
   const logDir = opt.logDir ?? join(ABLAGE, id);
   mkdirSync(logDir, { recursive: true });
+  // P25-T8 (b, Inventur Gruppe D): SYNAPSE_DATABASE_URL NICHT auf die Test-DB setzen. istSynapseProdDb (core test-db-laufzeit-schutz.ts)
+  // haelt dasselbe Port+DB-Ziel wie SYNAPSE_DATABASE_URL fuer Prod -> test_db_ist_produktion (9 Tests). Wie im Synapse-shell-Job
+  // (dort ist SYNAPSE_DATABASE_URL nicht gesetzt) kommt die Test-DB nur ueber DATABASE_URL; eine geerbte wird entfernt.
   const kindBasis = { ...kindEnv(process.env), SYNAPSE_SKIP_EMBEDDINGS: '1', QDRANT_URL: 'http://127.0.0.1:1', PARSER_LOOP_DISABLED: '1',
-    SYNAPSE_DATABASE_URL: process.env.DATABASE_URL, TESTLAUF_ID: id, NO_COLOR: '1' };
+    TESTLAUF_ID: id, NO_COLOR: '1' };
   delete kindBasis.FORCE_COLOR;
+  if (kindBasis.SYNAPSE_DATABASE_URL !== undefined) {
+    delete kindBasis.SYNAPSE_DATABASE_URL;
+    hinweis('SYNAPSE_DATABASE_URL_ENTFERNT', '-', 'geerbte SYNAPSE_DATABASE_URL nicht an die Tests weitergegeben, sie nehmen DATABASE_URL');
+  }
 
   const commit = git('rev-parse', '--short=12', 'HEAD');
-  console.log(`TESTLAUF START id=${id} modus=${modus} basis=${basis} commit=${commit} tests=${tests.length} neu=${tests.filter((t) => t.neu).length} geaendert=${tests.filter((t) => t.geaendert).length} parallel=${opt.parallel} db=${db.ziel.split('@').pop()} node=${process.version} docker=${opt.mitDocker ? 1 : 0} browser=${opt.ohneBrowser ? 0 : 1} screenshots_behalten=${opt.screenshotsBehalten} log=${logDir}`);
+  // Laufschutz (P25-T8 c): Stand am Anfang festhalten, am Ende vergleichen
+  const standStart = erfasseStand(REPO, { commit });
+  console.log(`TESTLAUF START id=${id} modus=${modus} basis=${basis} commit=${commit} stand=${standKennung(standStart)} tests=${tests.length} neu=${tests.filter((t) => t.neu).length} geaendert=${tests.filter((t) => t.geaendert).length} parallel=${opt.parallel} db=${db.ziel.split('@').pop()} node=${process.version} docker=${opt.mitDocker ? 1 : 0} browser=${opt.ohneBrowser ? 0 : 1} screenshots_behalten=${opt.screenshotsBehalten} log=${logDir}`);
 
   // Schemastand vor dem Lauf (nur lesen, 3f202323): getestet wird gegen den Stand, den synapse_test gerade hat
   const SCHEMA_SKRIPT = 'scripts/lib/testlauf/schema-nachzug.mjs';
-  const schemaSchritt = async (schritt, extra = []) => {
-    const logPfad = join(logDir, `schema-${schritt}.log`);
+  const schemaSchritt = async (schritt, extra = [], logName = schritt) => {
+    const logPfad = join(logDir, `schema-${logName}.log`);
     const r = await fuehreTestAus({ cwd: REPO, datei: SCHEMA_SKRIPT, skriptArgs: [schritt, ...extra], env: kindBasis, logPfad, zeitlimitS: 300 });
     return { exit: r.exit, zeilen: r.ausgabe.split('\n').filter((z) => /^SCHEMA_[A-Z]+ /.test(z)), log: logPfad };
   };
-  const schemaVorher = await schemaSchritt('pruefen');
+  const bestandDatei = join(logDir, 'schema-bestand.json');
+  const schemaVorher = await schemaSchritt('pruefen', [bestandDatei]);
   for (const z of schemaVorher.zeilen) console.log(z);
   const standVorher = /stand=(\w+)/.exec(schemaVorher.zeilen.find((z) => z.startsWith('SCHEMA_STAND')) ?? '')?.[1] ?? 'unbekannt';
   if (schemaVorher.exit !== 0) hinweis('SCHEMA_STAND_UNBEKANNT', '-', `Schemastand nicht lesbar, siehe ${schemaVorher.log}`);
   else if (standVorher === 'aktuell') hinweis('SCHEMA_SCHON_AKTUELL', '-', 'synapse_test entspricht schon dem Schema dieses Codes; lag seit dem Deploy ein Nachzug dazwischen, ist fehlendes Live-Schema hier nicht erkennbar');
+  // P25-T8 (a): Bestand von public in synapse_test; ohne ihn gibt es kein SCHEMA_FEHLT_LIVE (fail-closed: NEU_ROT)
+  let schemaBestand = null;
+  try { schemaBestand = leseBestand(JSON.parse(readFileSync(bestandDatei, 'utf8'))); }
+  catch { hinweis('SCHEMA_BESTAND_UNBEKANNT', '-', `Bestand von public nicht lesbar (${bestandDatei}), Schemafehler zaehlen als NEU_ROT`); }
   let schemaQuellen = null;
 
   const ergebnisse = new Map();
@@ -287,7 +319,7 @@ async function main() {
     }
     if (!existsSync(join(opt.goldenBasis, t.datei))) { hinweis('GOLDEN_BASIS_OHNE_TEST', t.name, 'Datei fehlt im Basis-Worktree, es gilt bekannt-rot.json'); return eintragFuer.get(t.datei) ?? null; }
     const basisLog = logPfad.replace(/\.log$/, '.basis.log');
-    const b = await fuehreTestAus({ cwd: opt.goldenBasis, datei: t.datei, args: t.args, env: { ...kindBasis, ...t.env }, logPfad: basisLog, zeitlimitS: t.zeitlimit_s });
+    const b = await fuehreTestAus({ cwd: opt.goldenBasis, datei: t.datei, args: t.args, env: { ...kindBasis, ...setzeEnvEin(t.env, process.env) }, logPfad: basisLog, zeitlimitS: t.zeitlimit_s });
     if (b.exit === 0) { hinweis('GOLDEN_BASIS_GRUEN', t.name, 'in der Basis gruen'); return null; }
     const ba = werteAusgabeAus(b.ausgabe);
     return { datei: t.datei, golden: true, erwartet: { fail: ba.fail, fail_zeilen: ba.fail_zeilen }, quelle: `golden-basis ${basisLog}` };
@@ -297,7 +329,7 @@ async function main() {
     const vorher = nachlauf ? ergebnisse.get(t.datei) : null;
     // P25-T7: im Nachlauf TESTLAUF_NACHLAUF=1 -> Screenshots in ui-screenshots/<anlass>/<lauf-id>/nachlauf/ (erster Lauf bleibt unveraendert)
     const logPfad = join(logDir, `${t.paket}__${basename(t.datei).replace(/\.test\.(?:mjs|ts)$/, '')}${nachlauf ? '.nachlauf' : ''}.log`);
-    const lauf = await fuehreTestAus({ cwd: REPO, datei: t.datei, args: t.args, env: { ...kindBasis, ...t.env, ...(nachlauf ? { TESTLAUF_NACHLAUF: '1' } : {}) }, logPfad, zeitlimitS: t.zeitlimit_s });
+    const lauf = await fuehreTestAus({ cwd: REPO, datei: t.datei, args: t.args, env: { ...kindBasis, ...setzeEnvEin(t.env, process.env), ...(nachlauf ? { TESTLAUF_NACHLAUF: '1' } : {}) }, logPfad, zeitlimitS: t.zeitlimit_s });
     const aus = werteAusgabeAus(lauf.ausgabe);
     let eintrag = eintragFuer.get(t.datei) ?? null;
     if (opt.goldenBasis && t.golden && lauf.exit !== 0) eintrag = await goldenEintrag(t, logPfad);
@@ -310,12 +342,23 @@ async function main() {
       if (fehlend.length) {
         schemaQuellen ??= ladeSchemaQuellen(REPO);
         const mitFund = fehlend.map((o) => ({ ...o, objekt: objektName(o), fund: sucheSchemaObjekt(schemaQuellen, o) }));
-        if (mitFund.every((o) => o.fund)) { b.status = 'SCHEMA_FEHLT_LIVE'; b.grund = 'schema_fehlt'; schemaObjekte = mitFund; }
-        else hinweis('SCHEMA_OBJEKT_UNBEKANNT', t.name, `${mitFund.filter((o) => !o.fund).map((o) => `${o.art}:${o.objekt}`).join(' ')} fehlt, der Code legt es nicht an`);
+        if (!mitFund.every((o) => o.fund)) hinweis('SCHEMA_OBJEKT_UNBEKANNT', t.name, `${mitFund.filter((o) => !o.fund).map((o) => `${o.art}:${o.objekt}`).join(' ')} fehlt, der Code legt es nicht an`);
+        else if (!schemaBestand) b.grund = 'schema_bestand_unbekannt';
+        else {
+          // P25-T8 (a, Inventur Punkt 1): fehlt nur, wenn public es nicht hat; sonst ist das private Testschema veraltet (Nachzug hilft nicht)
+          const imPublic = mitFund.filter((o) => objektImBestand(schemaBestand, o));
+          if (!imPublic.length) { b.status = 'SCHEMA_FEHLT_LIVE'; b.grund = 'schema_fehlt'; schemaObjekte = mitFund; }
+          else {
+            b.grund = 'privates_schema_veraltet';
+            hinweis('PRIVATES_SCHEMA_VERALTET', t.name, `${imPublic.map((o) => `${o.art}:${o.objekt}`).join(' ')} ist in public von synapse_test vorhanden, das private Testschema des Tests fehlt es`);
+          }
+        }
       }
     }
     const schemaZeilen = schemaObjekte.map((o) => `SCHEMA ${o.art} ${o.objekt} fehlt live, angelegt in ${o.fund.datei}:${o.fund.zeile}${o.fund.task ? ` (${o.fund.task})` : ''}`);
     if (b.status === 'NEU_ROT' && aus.eaddrinuse) hinweis('SERIELL_VERDACHT', t.name, 'EADDRINUSE in der Ausgabe, evtl. Marker seriell setzen');
+    // P25-T8 (d): Zeitlimit im parallelen Pool (Inventur: 5 file-batch-Tests, ausweis-zaehler 260 s) -> seriell nachpruefen
+    if (b.status === 'NEU_ROT' && lauf.zeitlimit && t.art === 'pool' && opt.parallel > 1) hinweis('SERIELL_VERDACHT', t.name, `Zeitlimit ${t.zeitlimit_s}s im parallelen Pool, seriell nachpruefen (einstellungen art seriell)`);
     const r = { status: b.status, ms: lauf.ms, exit: lauf.exit, fail: aus.fail, fail_zeilen: aus.fail_zeilen, neue_zeilen: b.neue_zeilen,
       grund: b.grund, herkunft: schemaObjekte[0]?.fund.task ?? aus.herkunft_id ?? vorher?.herkunft ?? null,
       schema_objekte: nachlauf ? (vorher?.schema_objekte ?? []) : schemaObjekte.map((o) => ({ art: o.art, name: o.objekt, datei: o.fund.datei, zeile: o.fund.zeile, task: o.fund.task })),
@@ -345,10 +388,37 @@ async function main() {
     if (!ergebnisse.has(t.datei)) melde(t, { status: 'NICHT_GESTARTET', ms: 0, exit: null, fail: null, grund: abgebrochen ? 'abgebrochen' : 'max_minuten', herkunft: null, log: null });
   }
 
+  // Laufschutz (P25-T8 c, Inventur 2f2f6776): Code/dist/Tests oder Schema von synapse_test waehrend des Laufs geaendert -> Mischstand.
+  // Dann LAUF_UNSAUBER, ergebnis=ROT und KEIN Nachzug/Nachlauf (sonst landet der Stand eines laufenden Umbaus in synapse_test).
+  let stand = { sauber: true, start: standKennung(standStart), ende: null };
+  if (!abgebrochen) {
+    const standEnde = erfasseStand(REPO, { commit: git('rev-parse', '--short=12', 'HEAD') });
+    const d = vergleicheStand(standStart, standEnde);
+    const schemaEnde = await schemaSchritt('pruefen', [], 'pruefen-ende');
+    const sv = leseSchemaStand(schemaVorher.zeilen);
+    const se = leseSchemaStand(schemaEnde.zeilen);
+    const schemaGleich = sv.vorhanden === se.vorhanden && sv.erwartet === se.erwartet;
+    const dateiAenderungen = [...d.geaendert, ...d.neu, ...d.weg];
+    stand = { sauber: d.gleich && schemaGleich, start: stand.start, ende: standKennung(standEnde), commit_start: commit, commit_ende: standEnde.commit,
+      dateien: standEnde.dateien.size, geaendert: d.geaendert.slice(0, 50), neu: d.neu.slice(0, 50), weg: d.weg.slice(0, 50), schema_start: sv, schema_ende: se };
+    for (const rel of dateiAenderungen.slice(0, 20)) console.log(`STAND_GEAENDERT ${rel} mtime=${mtimeIso(standEnde.dateien.get(rel))}${d.weg.includes(rel) ? ' weg=1' : ''}`);
+    console.log(`STAND sauber=${stand.sauber ? 1 : 0} start=${stand.start} ende=${stand.ende} commit=${commit}->${standEnde.commit} dateien=${standEnde.dateien.size} geaendert=${d.geaendert.length} neu=${d.neu.length} weg=${d.weg.length} schema_vorhanden=${sv.vorhanden}->${se.vorhanden} schema_erwartet=${sv.erwartet}->${se.erwartet}`);
+    if (!stand.sauber) {
+      const teile = [];
+      if (d.commit_geaendert) teile.push(`commit ${commit}->${standEnde.commit}`);
+      if (dateiAenderungen.length) teile.push(`${dateiAenderungen.length} Dateien geaendert (STAND_GEAENDERT)`);
+      if (!schemaGleich) teile.push(`Schema ${sv.vorhanden}/${sv.erwartet} -> ${se.vorhanden}/${se.erwartet}`);
+      hinweis('LAUF_UNSAUBER', '-', `${teile.join(', ')}: Mischstand, kein Schema-Nachzug, auf festem Stand wiederholen`);
+    }
+  }
+
   // Nachzug (3f202323): erst NACH den Tests synapse_test auf den Schemastand des Codes ziehen, Neues ins Log
   let schemaNachzug = 'aus';
   const schemaNachzugZeilen = [];
-  if (!opt.ohneSchemaNachzug && !abgebrochen) {
+  if (!opt.ohneSchemaNachzug && !abgebrochen && !stand.sauber) {
+    schemaNachzug = 'uebersprungen';
+    console.log('SCHEMA_NACHZUG uebersprungen grund=lauf_unsauber (kein Zwischenstand nach synapse_test)');
+  } else if (!opt.ohneSchemaNachzug && !abgebrochen) {
     const objekte = [];
     for (const r of ergebnisse.values()) for (const o of r.schema_objekte ?? []) if (!objekte.some((x) => x.art === o.art && x.name === o.name)) objekte.push({ art: o.art, name: o.name });
     const objektDatei = join(logDir, 'schema-objekte.json');
@@ -398,20 +468,26 @@ async function main() {
 
   // Zusammenfassung + ergebnis.json
   const summe = summiere([...ergebnisse.values()], fehlt.length);
-  const rot = istRot(summe, schemaNachzug);
+  const rot = istRot(summe, schemaNachzug, stand.sauber);
   const datum = datumHeute(start);
   const vorschlaege = [];
+  const vorschlaegeAbgelehnt = [];
   if (opt.vorschlag) {
     for (const t of tests) {
       const r = ergebnisse.get(t.datei);
       if (r?.status !== 'NEU_ROT') continue;
-      vorschlaege.push({ ...vorschlagEintrag({ test: t, lauf: r._lauf, aus: r._aus, laufId: id, datum }), ...(eintragFuer.has(t.datei) ? { ersetzt: true } : {}) });
+      const v = vorschlagEintrag({ test: t, lauf: r._lauf, aus: r._aus, laufId: id, datum });
+      // P25-T8 (e): keine leeren/Allerwelts-Erwartungen, nichts fuer Zeitlimit, Importfehler, Laeufer-Umgebung, Privatschema
+      const ablehnung = vorschlagAblehnung({ eintrag: v, lauf: r._lauf, grund: r.grund });
+      if (ablehnung) vorschlaegeAbgelehnt.push({ datei: t.datei, name: t.name, grund: ablehnung });
+      else vorschlaege.push({ ...v, ...(eintragFuer.has(t.datei) ? { ersetzt: true } : {}) });
     }
   }
   const json = {
     id, start: start.toISOString(), ende: new Date().toISOString(), commit, basis, modus, node: process.version, parallel: opt.parallel,
     repo: REPO, bekannt_rot_datei: bekanntPfad, vorlauf: vorlauf?.pfad ?? null, optionen: { ...opt }, summe,
     schema: { stand_vorher: standVorher, vorher: schemaVorher.zeilen, nachzug: schemaNachzug, zeilen: schemaNachzugZeilen },
+    stand,
     tests: tests.map((t) => {
       const r = ergebnisse.get(t.datei) ?? {};
       return { datei: t.datei, paket: t.paket, name: t.name, art: t.art, status: r.status, exit: r.exit ?? null, fail: r.fail ?? null,
@@ -422,7 +498,7 @@ async function main() {
     }).concat(fehlt.map((f) => ({ datei: f.datei, name: f.name, status: 'FEHLT', grund: 'datei_fehlt' }))),
     screenshots: { lauf_id: id, ...screenshots },
     hinweise,
-    ...(opt.vorschlag ? { vorschlag_bekannt_rot: vorschlaege } : {}),
+    ...(opt.vorschlag ? { vorschlag_bekannt_rot: vorschlaege, vorschlag_abgelehnt: vorschlaegeAbgelehnt } : {}),
   };
   const jsonPfad = join(logDir, 'ergebnis.json');
   writeFileSync(jsonPfad, JSON.stringify(json, null, 2) + '\n');
@@ -431,7 +507,9 @@ async function main() {
     const neueListe = { ...liste, bekannt_rot: [...liste.bekannt_rot.filter((e) => !ersetzt.has(e.datei)), ...vorschlaege.map(({ ersetzt: _x, ...v }) => v)]
       .sort((a, b) => String(a.datei).localeCompare(String(b.datei))) };
     writeFileSync(join(logDir, 'bekannt-rot.vorschlag.json'), JSON.stringify(neueListe, null, 2) + '\n');
-    console.log(`HINWEIS VORSCHLAG - ${vorschlaege.length} Eintraege in ${join(logDir, 'bekannt-rot.vorschlag.json')} (sichten, dann per files nach tests/bekannt-rot.json)`);
+    for (const a of vorschlaegeAbgelehnt) console.log(`VORSCHLAG_ABGELEHNT ${a.name} grund=${a.grund}`);
+    const jeGrund = Object.entries(vorschlaegeAbgelehnt.reduce((s, a) => ({ ...s, [a.grund]: (s[a.grund] ?? 0) + 1 }), {})).map(([g, n]) => `${g}=${n}`).join(' ');
+    console.log(`HINWEIS VORSCHLAG - ${vorschlaege.length} Eintraege in ${join(logDir, 'bekannt-rot.vorschlag.json')} (sichten, dann per files nach tests/bekannt-rot.json), ${vorschlaegeAbgelehnt.length} nicht vorgeschlagen${jeGrund ? ` (${jeGrund})` : ''}`);
   }
   if (modus === 'alle' && !abgebrochen) {
     try { mkdirSync(ABLAGE, { recursive: true }); writeFileSync(ZEIGER_VOLLER_LAUF, jsonPfad + '\n'); } catch { /* Zeiger optional */ }
@@ -439,7 +517,7 @@ async function main() {
   if ((logDir + sep).startsWith(ABLAGE + sep)) raeumeAlteLaeufeAuf();
 
   const dauer = Math.round((Date.now() - start.getTime()) / 1000);
-  console.log(`TESTLAUF ENDE id=${id} ergebnis=${rot ? 'ROT' : 'GRUEN'} gesamt=${summe.gesamt} gruen=${summe.gruen} bekannt_rot=${summe.bekannt_rot} schema_fehlt_live=${summe.schema_fehlt_live} nachlauf_gruen=${summe.nachlauf_gruen} neu_rot=${summe.neu_rot} fehlt=${summe.fehlt} uebersprungen=${summe.uebersprungen} nicht_gestartet=${summe.nicht_gestartet} schema_nachzug=${schemaNachzug} dauer=${dauer}s json=${jsonPfad}`);
+  console.log(`TESTLAUF ENDE id=${id} ergebnis=${rot ? 'ROT' : 'GRUEN'} gesamt=${summe.gesamt} gruen=${summe.gruen} bekannt_rot=${summe.bekannt_rot} schema_fehlt_live=${summe.schema_fehlt_live} nachlauf_gruen=${summe.nachlauf_gruen} neu_rot=${summe.neu_rot} fehlt=${summe.fehlt} uebersprungen=${summe.uebersprungen} nicht_gestartet=${summe.nicht_gestartet} schema_nachzug=${schemaNachzug} stand=${stand.sauber ? 'sauber' : 'unsauber'} dauer=${dauer}s json=${jsonPfad}`);
   if (abgebrochen) { console.log(`TESTLAUF ABBRUCH signal=${abgebrochen}`); return 2; }
   return rot ? 1 : 0;
 }
