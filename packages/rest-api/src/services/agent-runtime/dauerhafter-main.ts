@@ -8,6 +8,7 @@
 import {
   leseHauptagentSchalter, hauptagentIdentitaetsId, leseMainLaufOptionen, runtimeDaemonAngemeldet, stelleMainLaufSicher,
   sendeMainTurn, MainLaufFehler, leseMainLauf, standardModellFuerRuntime, warteschlangeAktiv, type SpecialistZielRuntime,
+  getPool, HAUPTAGENT_PROJEKT, apiProviderFuerModell, leseApiLaufSchalter, legeApiLaufAn, legeApiEingangAn,
 } from '@synapse/core';
 import type { MainAgentSession, RuntimeMessageResult, RuntimeStreamEvent } from './types.js';
 import { merkeMainTurnSession, vergissMainTurnSession } from './artifact-stream.js';
@@ -17,6 +18,51 @@ export interface MainWegFehler { zeit: string; runtime: string; code: string; me
 let letzterFehler: MainWegFehler | null = null;
 export function letzterMainWegFehler(): MainWegFehler | null {
   return letzterFehler;
+}
+
+/** Wartezeit des Web-UI-Chats auf einen API-Turn des Main; danach steht die Antwort im Verlauf, sobald der Turn endet. */
+const API_MAIN_WARTE_MS = 10 * 60_000;
+
+async function apiLaufMainTurn(
+  session: MainAgentSession, message: string, modell: string, emit: (event: RuntimeStreamEvent) => void,
+): Promise<RuntimeMessageResult | null> {
+  const identityId = session.identityId;
+  if (!identityId) return null;
+  const anbieter = await apiProviderFuerModell(modell).catch(() => null);
+  if (!anbieter || !(await leseApiLaufSchalter(HAUPTAGENT_PROJEKT)).aktiv) return null;
+  const { apiAgentLauf } = await import('../api-agent-lauf.js');
+  const verwaltung = apiAgentLauf();
+  if (!verwaltung) {
+    throw Object.assign(new Error('Hauptagent per API-Lauf nicht moeglich (api_lauf_aus): Lauf-Verwaltung laeuft nicht (SYNAPSE_API_AGENTEN_LAUF_DISABLED)'),
+      { code: 'api_lauf_aus', meldung: null });
+  }
+  // Rueckfall auf Container (Tageslimit erschoepft, User-Korrektur 26.10.): kein automatischer Rueckwechsel -> Bestand.
+  const vorher = await getPool().query<{ status: string; letzter_fehler: string | null }>(
+    'SELECT status, letzter_fehler FROM api_agent_laeufe WHERE identity_id = $1', [identityId]).catch(() => null);
+  const z = vorher?.rows[0];
+  if (z && z.status === 'gestoppt' && (z.letzter_fehler ?? '').startsWith('rueckfall_container:')) return null;
+  const i = await getPool().query<{ agent_id: string }>('SELECT agent_id FROM agent_identitaeten WHERE id = $1', [identityId]);
+  await legeApiLaufAn({ identity_id: identityId, project: HAUPTAGENT_PROJEKT, agent_id: i.rows[0]?.agent_id ?? 'hauptagent', rolle: 'main', modell, anbieter,
+    gestartet_von: 'user' });
+  emit({ event: 'runtime', data: { hauptagent: { weg: 'api_lauf', identity_id: identityId, modell, anbieter, schritt: 'arbeitet' } } });
+  const eingang = await legeApiEingangAn({ identity_id: identityId, text: message, quelle: 'main_chat', absender: 'user' });
+  const r = await verwaltung.warteAufEingang(eingang.id, API_MAIN_WARTE_MS);
+  if (r.art === 'nicht_begonnen' && r.code === 'rueckfall_container') {
+    // Tageslimit gerade erschoepft: Rueckfall, diese Nachricht geht ueber den Container-Main (Bestand) des Aufrufers.
+    emit({ event: 'runtime', data: { hauptagent: { weg: 'ruckfall_container', identity_id: identityId, grund: 'budget_erschoepft' } } });
+    return null;
+  }
+  if (r.art === 'nicht_begonnen') {
+    letzterFehler = { zeit: new Date().toISOString(), runtime: 'api-lauf', code: r.code, meldung: null };
+    throw Object.assign(new Error('Hauptagent per API-Lauf nicht moeglich (' + r.code + ')'), { code: r.code, meldung: null });
+  }
+  if (r.art === 'zeit') {
+    emit({ event: 'delta', data: { content: 'Der Hauptagent arbeitet noch (API-Lauf); die Antwort folgt, sobald der Turn endet.' } });
+  } else {
+    if (r.text) emit({ event: 'delta', data: { content: r.text } });
+    emit({ event: 'usage', data: { input_tokens: r.input_tokens, output_tokens: r.output_tokens, kosten_usd: r.kosten_usd, ende: r.ende } });
+  }
+  return { runtimeSessionId: session.runtimeSessionId, context: { ...(session.context ?? {}), hauptagent_weg: 'api_lauf' } };
 }
 
 export async function dauerhafterMainTurn(
@@ -30,6 +76,9 @@ export async function dauerhafterMainTurn(
   } catch {
     return null;
   }
+  // P22-T183 B7b: API-Modell + Schalter api_agenten_lauf_intern EIN -> Turn IM API-Prozess statt Container-Job; sonst Bestand.
+  const apiTurn = await apiLaufMainTurn(session, message, modell, emit);
+  if (apiTurn) return apiTurn;
   const optionen = leseMainLaufOptionen();
   if (!(await runtimeDaemonAngemeldet(runtime))) {
     if (optionen.ohne_daemon === 'fehler') throw new Error('Runtime-Daemon im Container ist nicht angemeldet (runtime_daemon_fehlt)');

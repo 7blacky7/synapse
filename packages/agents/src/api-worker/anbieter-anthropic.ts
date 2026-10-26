@@ -8,55 +8,15 @@
  *   stop_reason end_turn | tool_use | pause_turn | max_tokens | refusal | stop_sequence | model_context_window_exceeded.
  * Nicht als OpenAI-kompatibler Endpunkt behandelt (Konzept 8a).
  */
-import type { AnbieterAdapter, AnbieterAnfrage, AnbieterAntwort, Block, Nachricht, StopGrund } from './toolschleife.js'
+import type { AnbieterAdapter, AnbieterAnfrage, AnbieterAntwort } from './toolschleife.js'
 import { AnbieterFehler } from './toolschleife.js'
 import type { SynapseZugang } from './mcp-http-client.js'
+import { nachAnthropic, vonAnthropic, stopAusAnthropic } from '@synapse/core'
+
+// P22-T183 B1: Formathelfer liegen in @synapse/core (api-agent-schleife.ts); hier unter den bisherigen Namen weitergereicht.
+export { nachAnthropic, vonAnthropic, stopAusAnthropic }
 
 const ZEITLIMIT_MS = 30 * 60_000
-
-type AnthropicBlock = Record<string, unknown> & { type: string }
-
-function inhaltNachAnthropic(b: Block): AnthropicBlock {
-  switch (b.typ) {
-    case 'text': return { type: 'text', text: b.text }
-    case 'bild': return { type: 'image', source: { type: 'base64', media_type: b.media_type, data: b.daten } }
-    case 'werkzeug_aufruf': return { type: 'tool_use', id: b.id, name: b.name, input: b.eingabe }
-    case 'werkzeug_ergebnis': return {
-      type: 'tool_result', tool_use_id: b.aufruf_id, is_error: b.fehler,
-      content: b.inhalt.map(x => x.typ === 'text' ? { type: 'text', text: x.text } : { type: 'image', source: { type: 'base64', media_type: x.media_type, data: x.daten } }),
-    }
-    case 'roh': return b.block as AnthropicBlock
-  }
-}
-
-export function nachAnthropic(verlauf: Nachricht[]): Array<{ role: 'user' | 'assistant'; content: AnthropicBlock[] }> {
-  return verlauf
-    .map(n => ({ role: n.rolle, content: n.inhalt.filter(b => b.typ !== 'roh' || b.anbieter === 'anthropic').map(inhaltNachAnthropic) }))
-    .filter(n => n.content.length > 0)
-}
-
-export function vonAnthropic(content: unknown): Block[] {
-  const aus: Block[] = []
-  for (const c of (Array.isArray(content) ? content : []) as AnthropicBlock[]) {
-    if (c.type === 'text' && typeof c.text === 'string') aus.push({ typ: 'text', text: c.text })
-    else if (c.type === 'tool_use' && typeof c.id === 'string' && typeof c.name === 'string') {
-      aus.push({ typ: 'werkzeug_aufruf', id: c.id, name: c.name, eingabe: c.input && typeof c.input === 'object' ? c.input as Record<string, unknown> : {} })
-    } else aus.push({ typ: 'roh', anbieter: 'anthropic', block: c })
-  }
-  return aus
-}
-
-export function stopAusAnthropic(s: unknown): StopGrund {
-  switch (s) {
-    case 'end_turn': case 'stop_sequence': return 'ende'
-    case 'tool_use': return 'werkzeug'
-    case 'pause_turn': return 'pause'
-    case 'max_tokens': return 'max_tokens'
-    case 'refusal': return 'abgelehnt'
-    case 'model_context_window_exceeded': return 'kontext_voll'
-    default: return 'sonstig'
-  }
-}
 
 export class AnthropicUeberSynapse implements AnbieterAdapter {
   readonly name = 'anthropic-api'

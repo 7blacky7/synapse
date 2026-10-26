@@ -110,14 +110,36 @@ export interface ContainerSpawnEingabe {
  * uebrigen specialist-Antworten), nie als Wurf. keep_alive Standard true (Container-Agenten sollen weiterleben).
  */
 export async function spawneImContainer(e: ContainerSpawnEingabe): Promise<Record<string, unknown>> {
+  return spawneImContainerMit(e, null);
+}
+
+/**
+ * P22-T183 (User-Korrektur 26.10.): Rueckfall eines API-Laufs bei erschoepftem Tageslimit auf einen Container-Agenten. NUR serverintern
+ * (rest-api api-agent-lauf.ts), nie aus Tool-Argumenten: ohne Akteur-Pruefung, die Identitaet MUSS existieren (derselbe Ausweis, keine
+ * neue Identitaet). Schalter spezialisten_container, Kontingent und Runtime-Daemon gelten wie beim Bestand.
+ */
+export async function spawneRueckfallImContainer(e: ContainerSpawnEingabe): Promise<Record<string, unknown>> {
+  return spawneImContainerMit(e, 'system');
+}
+
+async function vorhandeneIdentitaet(project: string, name: string): Promise<{ identity_id: string; neu: boolean }> {
+  const r = await getPool().query<{ id: string; status: string }>('SELECT id, status FROM agent_identitaeten WHERE project = $1 AND agent_id = $2', [project, name]);
+  if (!r.rows[0]) fehler('identitaet_unbekannt', { name });
+  if (r.rows[0].status !== 'aktiv') fehler('identitaet_nicht_aktiv', { name });
+  return { identity_id: r.rows[0].id, neu: false };
+}
+
+async function spawneImContainerMit(e: ContainerSpawnEingabe, system: 'system' | null): Promise<Record<string, unknown>> {
   try {
     const project = pflichtText(e.project, 'project_fehlt', 1, 128);
     if (istVirtuellesProjekt(project)) fehler('projekt_virtuell');
     const schalter = await leseProfilProduktSchalter(SPEZIALISTEN_CONTAINER_FUNKTION, project);
     if (!schalter.aktiv) fehler('spezialisten_container_aus', { project, hinweis: 'Produkt-Schalter spezialisten_container ist im Projekt AUS; ort weglassen startet am PC.' });
-    const akteur = akteurAus(e as unknown as Record<string, unknown>);
-    if (!akteur) fehler('recht_fehlt', { grund: 'Container-Spawn nur durch den User oder einen Koordinator des Projekts' });
-    await pruefeProfilVerwalter(akteur, project);
+    const akteur = system ? null : akteurAus(e as unknown as Record<string, unknown>);
+    if (!system) {
+      if (!akteur) fehler('recht_fehlt', { grund: 'Container-Spawn nur durch den User oder einen Koordinator des Projekts' });
+      await pruefeProfilVerwalter(akteur, project);
+    }
     const gebaut = baueSpawnJobArgs('spawn', e as unknown as Record<string, unknown>, { project, projectPath: runtimeProjektPfad(project), keepAliveStandard: true });
     if (!gebaut.ok) fehler('invalid_spawn_args', { grund: gebaut.fehler });
     // Ein cwd des Aufrufers ist ein PC-Pfad; im Container arbeitet die CLI immer im Projektordner /projects/<p>.
@@ -138,7 +160,7 @@ export async function spawneImContainer(e: ContainerSpawnEingabe): Promise<Recor
     }
     const { runtimeDaemonAngemeldet } = await import('./hauptagent-lauf.js');
     if (!(await runtimeDaemonAngemeldet(runtime))) fehler('runtime_daemon_nicht_angemeldet', { runtime });
-    const ident = await identitaetFuer(project, name, model, akteur);
+    const ident = akteur ? await identitaetFuer(project, name, model, akteur) : await vorhandeneIdentitaet(project, name);
     const job = await enqueueSpecialistJob({ project, action: 'spawn',
       args: { ...args, identity_id: ident.identity_id, target_runtime: runtime } });
     const r = await waitForSpecialistJob(job.id, CONTAINER_SPAWN_WARTE_MS);

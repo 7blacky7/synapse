@@ -45,6 +45,7 @@ export async function postToInbox(fromAgent: string | AgentZiel, toAgent: string
       `INSERT INTO specialist_inbox(from_agent,to_agent,content,project,from_identity_id,to_identity_id)
        VALUES($1,$2,$3,$4,$5,$6) RETURNING id,created_at`,
       [sender.agent_id,ziel.agent_id,content,project,sender.art === 'identity' ? sender.identity_id : (opts?.fromIdentityId ?? null),ziel.art === 'identity' ? ziel.identity_id : null])
+    apiLaufZustellung(project, ziel, content, sender.agent_id)
     return { id: rows[0].id, createdAt: rows[0].created_at }
   }
   toAgent = ziel.agent_id
@@ -55,7 +56,13 @@ export async function postToInbox(fromAgent: string | AgentZiel, toAgent: string
     opts?.fromIdentityId ? [sender.agent_id, toAgent, content, project, opts.fromIdentityId] : [sender.agent_id, toAgent, content, project],
   )
   const row = result.rows[0]
+  apiLaufZustellung(project, toAgent, content, sender.agent_id)
   return { id: row.id as number, createdAt: row.created_at as Date }
+}
+
+/** P22-T183 B7c: Inbox an einen API-Agenten mit Lauf in der synapse-api -> Eingang (Schalter api_agenten_lauf_intern); wirft nie, wartet nicht. */
+function apiLaufZustellung(project: string, ziel: unknown, content: string, absender: string): void {
+  void import('./api-agent-einstieg.js').then(m => m.stelleApiLaufZu(project, ziel, content, 'inbox', absender)).catch(() => undefined)
 }
 
 export async function checkInbox(agentName: string | AgentZiel, project: string): Promise<InboxMessage[]> {

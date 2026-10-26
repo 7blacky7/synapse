@@ -443,6 +443,12 @@ export async function listActiveAgents(project: string): Promise<AgentSession[]>
   }));
 }
 
+/** P22-T183 B7c: Chat-DM an einen API-Agenten mit Lauf in der synapse-api -> Eingang (Schalter api_agenten_lauf_intern); wirft nie. */
+function apiLaufChatZustellung(project: string, ziel: unknown, content: string, absender: string): void {
+  if (!ziel) return;
+  void import('./api-agent-einstieg.js').then(m => m.stelleApiLaufZu(project, ziel, content, 'chat', absender)).catch(() => undefined);
+}
+
 /**
  * Sendet eine Nachricht (Broadcast oder DM)
  * recipientId = null → Broadcast an alle im Projekt
@@ -454,7 +460,11 @@ export async function sendMessage(
   content: string,
   recipientId?: string | AgentZiel
 ): Promise<ChatMessage> {
-  if (agentBezugAktiv()) return sendeIdentitaetsChat(project, senderId, content, recipientId);
+  if (agentBezugAktiv()) {
+    const m = await sendeIdentitaetsChat(project, senderId, content, recipientId);
+    apiLaufChatZustellung(project, recipientId, content, senderId);
+    return m;
+  }
   if (typeof recipientId === 'object' || recipientId?.startsWith('identity:')) throw new Error('agent_bezug_nicht_freigegeben');
   const pool = getPool();
   const result = await pool.query(
@@ -476,6 +486,7 @@ export async function sendMessage(
 
   const target = recipientId ? `DM an ${recipientId}` : 'Broadcast';
   console.error(`[Synapse Chat] ${senderId} → ${target}: ${content.substring(0, 80)}...`);
+  apiLaufChatZustellung(project, recipientId, content, senderId);
   return msg;
 }
 

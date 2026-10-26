@@ -38,23 +38,18 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   HAUPTAGENT_PROJEKT, agentPrincipalAusAnmeldung, leseAgentBezugModus, pruefeAgentToken, w1bFehlerStatus,
-  reserviereApiAufruf, schliesseApiAufrufAb, apiRahmenFuerAgent, apiAgentStatus, setzeApiSchalter, setzeApiBudget, entferneApiBudget,
+  apiRahmenFuerAgent, apiAgentStatus, setzeApiSchalter, setzeApiBudget, entferneApiBudget,
   setzeApiEinstellungen, apiKostenUebersicht, aktuellerApiKey, leseApiKeyStand, setzeApiKey, entferneApiKey, setzeApiKeySchalter,
   API_AGENT_ROLLEN, leseApiAgentenSchalter, apiAgentenStand, setzeApiFreigabe, entferneApiFreigabe, apiRahmenFuerIdentitaet,
-  anthropicKopfzeilen, istWorkspaceFehlt, API_WORKSPACE_HINWEIS,
+  anthropicKopfzeilen, istWorkspaceFehlt, apiLaeufeStand, steuereApiLauf, setzeApiLaufEinstellungen, aktualisiereOpenRouterPreise,
 } from '@synapse/core';
 import { validateToken } from '../services/auth.js';
+// P22-T183 B3: Transport (Reservierung, Anbieteraufruf, Buchung, Fehlermapping) als Funktion, auch fuer den Lauf in der API.
+import { rufeApiTransport, TransportFehler, eingabeZeichen } from '../services/api-agent-transport.js';
+export { eingabeZeichen };
 import { HAUPTAGENT_IDENTITAET_SCOPE, AGENT_IDENTITAET_SCOPE } from '../services/agent-runtime/main-tool-profile.js';
 
 const CODE = /^[a-z][a-z0-9_]{2,80}$/;
-/** Ein Bild zaehlt fuer die Reservierung pauschal so viele Zeichen (statt seiner Base64-Laenge). */
-const BILD_ZEICHEN = 5_000;
-
-class TransportFehler extends Error {
-  constructor(readonly code: string, readonly status: number, message?: string, readonly details?: unknown, readonly retryAfter?: number | null) {
-    super(message ?? code);
-  }
-}
 
 function sendeFehler(reply: FastifyReply, error: unknown): FastifyReply {
   if (error instanceof TransportFehler) {
@@ -110,16 +105,6 @@ async function agentAus(request: FastifyRequest, project: unknown): Promise<Agen
   return { identity_id: principal.identity_id, agent_id: principal.agent_id, project: principal.project, zugang: main ? 'main' : 'agent' };
 }
 
-/** Zeichen fuer die konservative Kostenschaetzung; Bilder pauschal statt Base64-Laenge. */
-export function eingabeZeichen(teile: unknown): number {
-  let bilder = 0;
-  const text = JSON.stringify(teile, (k, v) => {
-    if (k === 'data' && typeof v === 'string' && v.length > 1_000) { bilder += 1; return ''; }
-    return v;
-  }) ?? '';
-  return text.length + bilder * BILD_ZEICHEN;
-}
-
 function pruefeAnfrage(b: Record<string, unknown>): { modell: string; system: string | undefined; messages: unknown[]; tools: unknown[]; max_tokens: number } {
   if (typeof b.modell !== 'string' || !b.modell.trim()) throw new TransportFehler('modell_fehlt', 400);
   if (!Array.isArray(b.messages) || b.messages.length === 0) throw new TransportFehler('messages_fehlen', 400);
@@ -137,81 +122,28 @@ function pruefeAnfrage(b: Record<string, unknown>): { modell: string; system: st
   return { modell: b.modell.trim(), system: b.system as string | undefined, messages: b.messages, tools, max_tokens: max };
 }
 
-function retryAfter(headers: unknown): number | null {
-  const h = headers as { get?: (n: string) => string | null } | Record<string, string> | undefined;
-  const roh = typeof (h as { get?: unknown })?.get === 'function' ? (h as { get: (n: string) => string | null }).get('retry-after') : (h as Record<string, string> | undefined)?.['retry-after'];
-  const n = roh ? Number(roh) : NaN;
-  return Number.isFinite(n) ? n : null;
-}
-
 export async function agentApiRoutes(fastify: FastifyInstance): Promise<void> {
   // ---- Transport ------------------------------------------------------------------------------
   fastify.post<{ Body: Record<string, unknown> }>('/api/agent-api/messages', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
-    let reservierung: Awaited<ReturnType<typeof reserviereApiAufruf>> | null = null;
-    let agent: AgentKontext | null = null;
     try {
       const body = request.body && typeof request.body === 'object' ? request.body : {};
-      agent = await agentAus(request, body.project);
+      const agent = await agentAus(request, body.project);
       const a = pruefeAnfrage(body);
-      const key = (await aktuellerApiKey()).key;
-      if (!key) throw new TransportFehler('api_zugang_fehlt', 503, 'Kein Anthropic-API-Key: weder in der Web-UI hinterlegt noch in der Umgebung der synapse-api (SYNAPSE_ANTHROPIC_API_KEY)');
-      reservierung = await reserviereApiAufruf({
-        identity_id: agent.identity_id, project: agent.project, agent_id: agent.agent_id, modell: a.modell,
-        eingabe_zeichen: eingabeZeichen({ system: a.system, messages: a.messages, tools: a.tools }), max_tokens: a.max_tokens,
-        zugang: agent.zugang,
-      });
       const abbruch = new AbortController();
       // Abbruch nur, wenn der Worker die Verbindung schliesst, bevor die Antwort fertig ist (request 'close' feuert schon nach dem Body).
       const beiSchluss = (): void => { if (!reply.raw.writableFinished) abbruch.abort(); };
       reply.raw.once('close', beiSchluss);
-      let nachricht: Awaited<ReturnType<ReturnType<Anthropic['messages']['stream']>['finalMessage']>>;
+      let e: Awaited<ReturnType<typeof rufeApiTransport>>;
       try {
-        const client = new Anthropic({ apiKey: key, defaultHeaders: anthropicKopfzeilen() });
-        const params = {
-          model: reservierung.anbieter_modell, max_tokens: reservierung.max_tokens, messages: a.messages,
-          ...(a.system ? { system: a.system } : {}), ...(a.tools.length ? { tools: a.tools } : {}),
-        } as unknown as Parameters<Anthropic['messages']['stream']>[0];
-        nachricht = await client.messages.stream(params, { signal: abbruch.signal }).finalMessage();
-      } catch (err) {
-        // HTTP-Fehler der API (Status vorhanden) = nichts berechnet; Abbruch/Verbindung = unbekannt -> volle Reservierung.
-        const status = err instanceof Anthropic.APIError && typeof err.status === 'number' ? err.status : null;
-        const text = err instanceof Error ? err.message.split(key).join('***').slice(0, 400) : 'unbekannt';
-        await schliesseApiAufrufAb({ reservierung_id: reservierung.reservierung_id, agent_id: agent.agent_id, usage: null,
-          nichts_berechnet: status !== null, fehler: status !== null ? `HTTP ${status}: ${text}` : `ohne Antwort: ${text}` }).catch(() => undefined);
-        reservierung = null;
-        if (status === 401 || status === 403) throw new TransportFehler('api_zugang_ungueltig', 502, 'Der Anthropic-API-Key wurde abgelehnt');
-        // P22-T179 Nachtrag: Key ohne Workspace und keine (passende) Workspace-ID -> klarer Code statt anfrage_abgelehnt.
-        if (status === 400 && istWorkspaceFehlt(text)) throw new TransportFehler('api_workspace_fehlt', 503, API_WORKSPACE_HINWEIS);
-        if (status === 429 || status === 529 || (status !== null && status >= 500)) {
-          throw new TransportFehler('ueberlastet', 503, `Anthropic HTTP ${status}`, undefined, retryAfter((err as { headers?: unknown }).headers));
-        }
-        if (status !== null) throw new TransportFehler('anfrage_abgelehnt', 400, text);
-        throw new TransportFehler('anbieter_nicht_erreichbar', 502, text);
+        // P22-T183 B3: Reservierung, Anthropic-Aufruf, Buchung und Fehlermapping im Transport; OpenRouter-Modelle lehnt er hier ab.
+        e = await rufeApiTransport({ kontext: agent, modell: a.modell, system: a.system, max_tokens: a.max_tokens,
+          anthropic: { messages: a.messages, tools: a.tools }, signal: abbruch.signal });
       } finally {
         reply.raw.off('close', beiSchluss);
       }
-      const abschluss = await schliesseApiAufrufAb({
-        reservierung_id: reservierung.reservierung_id, agent_id: agent.agent_id,
-        usage: (nachricht.usage ?? null) as unknown as Parameters<typeof schliesseApiAufrufAb>[0]['usage'],
-        stop_reason: nachricht.stop_reason ?? null,
-      });
-      const rest = Math.max(0, Math.round((reservierung.rest_usd_vorher - abschluss.usd) * 1e8) / 1e8);
-      reservierung = null;
-      return {
-        success: true,
-        message: {
-          id: nachricht.id, model: nachricht.model, content: nachricht.content, stop_reason: nachricht.stop_reason,
-          stop_details: (nachricht as unknown as { stop_details?: unknown }).stop_details ?? null, usage: nachricht.usage,
-        },
-        kosten: { usd: abschluss.usd, usd_quelle: abschluss.usd_quelle },
-        rest_usd: rest,
-      };
+      return { success: true, message: e.anthropic_nachricht, kosten: e.kosten, rest_usd: e.rest_usd };
     } catch (error) {
-      if (reservierung && agent) {
-        // Fehler nach der Reservierung, aber vor bzw. nach dem Anbieter: konservativ volle Reservierung.
-        await schliesseApiAufrufAb({ reservierung_id: reservierung.reservierung_id, agent_id: agent.agent_id, usage: null, fehler: 'Abschluss im Transport fehlgeschlagen' }).catch(() => undefined);
-      }
       return sendeFehler(reply, error);
     }
   });
@@ -252,8 +184,11 @@ export async function agentApiRoutes(fastify: FastifyInstance): Promise<void> {
     try { return { success: true, ...(await apiKostenUebersicht({ seit: request.query?.seit, bis: request.query?.bis })) }; } catch (error) { return sendeFehler(reply, error); }
   });
   // P22-T179: Freigaben je Arbeitsagent/Koordinator (nur User-Sitzung; Kosten je Agent: /api/main-agent/api/kosten je_agent).
-  fastify.get<{ Querystring: { project?: string } }>('/api/main-agent/api/freigaben', async (request, reply) => {
-    try { return { success: true, ...(await apiAgentenStand(request.query?.project?.trim() || null)) }; } catch (error) { return sendeFehler(reply, error); }
+  // P22-T180: kandidaten=1 liefert zusaetzlich die waehlbaren Agenten (Auswahl in der Web-UI).
+  fastify.get<{ Querystring: { project?: string; kandidaten?: string } }>('/api/main-agent/api/freigaben', async (request, reply) => {
+    try {
+      return { success: true, ...(await apiAgentenStand(request.query?.project?.trim() || null, { kandidaten: request.query?.kandidaten === '1' })) };
+    } catch (error) { return sendeFehler(reply, error); }
   });
   fastify.put<{ Body: { identity_id?: unknown; aktiv?: unknown; modelle?: unknown; grenze_usd?: unknown; heartbeat?: unknown; grund?: unknown } }>(
     '/api/main-agent/api/freigaben', async (request, reply) => {
@@ -265,6 +200,22 @@ export async function agentApiRoutes(fastify: FastifyInstance): Promise<void> {
     });
   fastify.delete<{ Body: { identity_id?: unknown; grund?: unknown } }>('/api/main-agent/api/freigaben', async (request, reply) => {
     try { return { success: true, ...(await entferneApiFreigabe(USER, { identity_id: request.body?.identity_id, grund: request.body?.grund })) }; } catch (error) { return sendeFehler(reply, error); }
+  });
+
+  // ---- P22-T183 B6: Laeufe IM API-Prozess (Verwaltung: Kontext, Verbrauch, Status, Stop/Pause/Neustart) ----------------
+  fastify.get<{ Querystring: { project?: string } }>('/api/main-agent/api/laeufe', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    try { return { success: true, ...(await apiLaeufeStand(USER, request.query?.project?.trim() || null)) }; } catch (error) { return sendeFehler(reply, error); }
+  });
+  fastify.post<{ Body: { identity_id?: unknown; aktion?: unknown; grund?: unknown } }>('/api/main-agent/api/laeufe/steuern', async (request, reply) => {
+    const b = request.body ?? {};
+    try { return { success: true, ...(await steuereApiLauf(USER, { identity_id: b.identity_id, aktion: b.aktion, grund: b.grund })) }; } catch (error) { return sendeFehler(reply, error); }
+  });
+  fastify.put<{ Body: { werte?: unknown; grund?: unknown } }>('/api/main-agent/api/laeufe/einstellungen', async (request, reply) => {
+    try { return { success: true, einstellungen: await setzeApiLaufEinstellungen(USER, { werte: request.body?.werte, grund: request.body?.grund }) }; } catch (error) { return sendeFehler(reply, error); }
+  });
+  fastify.post('/api/main-agent/api/laeufe/preise', async (_request, reply) => {
+    try { return { success: true, preise: await aktualisiereOpenRouterPreise() }; } catch (error) { return sendeFehler(reply, error); }
   });
 
   // ---- P22-T176: API-Key aus der Web-UI (Antworten nur Stand, nie der Wert) ---------------------

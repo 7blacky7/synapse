@@ -197,6 +197,16 @@ export const specialistTool: ConsolidatedTool = {
     const identityResult = await fuehreSpecialistIdentitaetsAktion(args);
     if (identityResult) return identityResult;
 
+    // P22-T183 B7a/d: API-Modell bzw. Agent mit API-Lauf + Schalter api_agenten_lauf_intern EIN -> Lauf IM API-Prozess (derselbe Weg
+    // wie REST); sonst Bestand.
+    if ((action === 'spawn' || action === 'stop') && typeof args.project === 'string' && args.project.trim()) {
+      const { spawneAlsApiLauf, stoppeAlsApiLauf } = await import('@synapse/core');
+      const r = action === 'spawn'
+        ? await spawneAlsApiLauf({ ...args, project: args.project.trim() } as Parameters<typeof spawneAlsApiLauf>[0])
+        : await stoppeAlsApiLauf(args.project.trim(), args.name, args.agent_id);
+      if (r) return r;
+    }
+
     // P22-T82: ort 'container' -> Spawn im Runtime-Container ueber core (derselbe Weg wie REST); ohne ort bzw. 'pc' unveraendert.
     if (action === 'spawn' || action === 'spawn_batch') {
       const { leseSpawnOrt, spawneImContainer, spawneBatchImContainer } = await import('@synapse/core');

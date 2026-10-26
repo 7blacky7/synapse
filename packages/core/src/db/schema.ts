@@ -69,6 +69,7 @@ import { API_AGENT_FREIGABEN_SCHEMA_SQL } from './api-agent-freigaben-schema.js'
 import { SPEICHER_AEHNLICHKEIT_SCHEMA_SQL } from './speicher-aehnlichkeit-schema.js';
 // P3-T16: wiederkehrende Plaene (Schema 163).
 import { PLAN_WIEDERKEHR_SCHEMA_SQL } from './plan-wiederkehr-schema.js';
+import { API_AGENT_LAUF_SCHEMA_SQL } from './api-agent-lauf-schema.js';
 import { HEX_SCHEMA_SQL } from './hex-schema.js';
 import {HEX_ANALYSEN_SCHEMA_SQL} from './hex-analysen-schema.js';
 import { MAIN_WARTESCHLANGE_SCHEMA_SQL } from './main-warteschlange-schema.js';
@@ -3243,6 +3244,7 @@ ${API_AGENT_SCHLUESSEL_SCHEMA_SQL}
 ${API_AGENT_FREIGABEN_SCHEMA_SQL}
 ${SPEICHER_AEHNLICHKEIT_SCHEMA_SQL}
 ${PLAN_WIEDERKEHR_SCHEMA_SQL}
+${API_AGENT_LAUF_SCHEMA_SQL}
 ${HEX_SCHEMA_SQL}
 ${HEX_ANALYSEN_SCHEMA_SQL}
 ${HEX_FORMATE_SCHEMA_SQL}

@@ -412,6 +412,7 @@ export const KURZ_BESCHREIBUNGEN: Record<string, KurzBeschreibung> = {
       api_heartbeat: 'api_freigabe setzen: Heartbeat des API-Agenten (Standard aus).',
       api_einstellungen: 'api_einstellungen setzen: Werte.',
       einstellung_namen: 'api_einstellungen entfernen: Namen.',
+      api_lauf_werte: 'api_lauf einstellungen: Werte (nur User).',
       auftrag_id: 'hauptagent_auftrag_abbrechen: Auftrag.',
       gewuenscht: 'hauptagent_auftrag: gewuenschter Stand.',
       hands_off: 'hauptagent_auftrag: Uebergabe.',

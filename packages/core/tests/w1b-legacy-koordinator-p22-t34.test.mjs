@@ -139,6 +139,9 @@ try{
   // P22-T179: Freigabe je Arbeitsagent/Koordinator - Lesen/Setzen User (+ Main mit user_auftrag), Koordinatoren nie (Tabelle 161 hier
   // nicht angelegt -> User bekommt Fachfehler, kein recht_fehlt).
   api_freigabe:()=>({modus:'status'}),
+  // P22-T183: Laeufe der API-Agenten im API-Prozess - Stand/Steuerung User, Main, Koordinator des Projekts inkl. Legacy (Tabellen 164 hier
+  // nicht angelegt -> Fachfehler, kein recht_fehlt); Subagent nie.
+  api_lauf:()=>({modus:'status'}),
   // P22-T7: Heartbeat lesen (User, Koordinator, Legacy-Koordinator; Main selbst), Setzen braucht ausserdem user_auftrag;
   // Verbrauch lesen (User alle, Koordinator eigenes Projekt). Subagent nie.
   hauptagent_heartbeat:()=>({aktiv:false,grund:'Test T34 Matrix',user_auftrag:'User: Test T34 Heartbeat aus'}),

@@ -25,6 +25,8 @@ const w1bAktionen = ['profil_schalter_status', 'profil_schalter_setzen', 'profil
   'api_status', 'api_schalter', 'api_budget', 'api_einstellungen', 'api_kosten',
   // P22-T179: additive Aktion API-Freigabe je Arbeitsagent/Koordinator.
   'api_freigabe',
+  // P22-T183: additive Aktion API-Laeufe im API-Prozess (Stand, Steuerung, Einstellwerte, Preisabgleich).
+  'api_lauf',
   // P22-T58: additive Aktion der Runtime-Ueberwachung.
   'runtime_ueberwachung',
   // P22-T139 (Nachtrag, Basis 194b92de war ohne sie rot): P22-T93 Netzwerk, P21 Hex, P18-T86 Reverse, P22-T80 Aufraeumen,
@@ -56,6 +58,8 @@ const w1bParameter = ['profil_funktion', 'ziel_identity_id', 'schattenprofil_id'
   'api_zeitraum', 'erlaubte_modelle', 'api_einstellungen', 'einstellung_namen',
   // P22-T179: additiver Parameter (api_freigabe: Heartbeat des API-Agenten).
   'api_heartbeat',
+  // P22-T183: additiver Parameter (api_lauf einstellungen).
+  'api_lauf_werte',
   // P22-T58: additive Parameter der Runtime-Ueberwachung.
   'ueberwachung_modus', 'ueberwachung_werte', 'ueberwachung_namen',
   // P22-T139 (Nachtrag): Parameter der oben nachgetragenen Aktionen (P22-T93, P21, P18-T86, P22-T80, P22-T82, P22-T87).

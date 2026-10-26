@@ -698,16 +698,42 @@ export type { VerbrauchSchalterStand, VerbrauchBuchung, VerbrauchBuchungsErgebni
 export { AGENT_VERBRAUCH_SCHEMA_SQL } from './db/agent-verbrauch-schema.js';
 // P22-T8: kostenpflichtiger API-Agent (Schalter hauptagent Funktion api, globales Budget, Reservierung, Kosten), Schema 120.
 export {
-  HAUPTAGENT_API_FUNKTION, API_ANBIETER, API_ZEITRAEUME, API_EINSTELLUNG_NAMEN, API_EINSTELLUNG_STANDARD, API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER,
+  HAUPTAGENT_API_FUNKTION, API_ANBIETER, API_ANBIETER_OPENROUTER, API_ANBIETER_ALLE, API_ZEITRAEUME, API_EINSTELLUNG_NAMEN, API_EINSTELLUNG_STANDARD, API_AGENT_ADMIN_ACTIONS, API_AGENT_ADMIN_PARAMETER,
   leseApiFunktion, leseApiSchalter, setzeApiSchalter, leseApiEinstellungen, setzeApiEinstellungen, leseApiModelle, leseApiBudget, setzeApiBudget,
   entferneApiBudget, apiZeitraumBeginn, reserviereApiAufruf, schliesseApiAufrufAb, apiKostenAusUsage, apiKostenUebersicht, apiRahmenFuerAgent,
   apiAgentStatus, istApiAgentAdminAction, fuehreApiAgentAdminAus,
 } from './services/api-agent-dienst.js';
 export type {
   ApiZeitraum, ApiFunktionStand, ApiSchalterStand, ApiEinstellungName, ApiEinstellungen, ApiModellPreis, ApiBudgetStand, ApiReservierungEingabe,
-  ApiReservierung, ApiUsage, ApiAbschlussEingabe, ApiAbschluss, ApiAgentAdminAction,
+  ApiReservierung, ApiUsage, ApiAbschlussEingabe, ApiAbschluss, ApiAgentAdminAction, ApiAnbieter,
 } from './services/api-agent-dienst.js';
+// P22-T183 B2: OpenRouter-Preise aus dem Free-Pool-Katalog (Entscheid O2), Stand in api_modell_preisstand.
+export { aktualisiereOpenRouterPreise, leseOpenRouterPreisstand, ladeOpenRouterKatalog, OPENROUTER_KATALOG_URL } from './services/api-anbieter-preise.js';
+export type { PreisAbgleich, PreisAbgleichZeile, PreisKatalogEintrag } from './services/api-anbieter-preise.js';
 export { AGENT_API_BUDGET_SCHEMA_SQL } from './db/agent-api-budget-schema.js';
+// P22-T183 B6: Lauf-Verwaltung der API-Agenten im API-Prozess (Schalter api_agenten_lauf_intern, Einstellwerte, Eingang, Stand, Steuerung).
+export {
+  API_AGENTEN_LAUF_FUNKTION, API_LAUF_EINSTELLUNG_NAMEN, API_LAUF_EINSTELLUNG_STANDARD, API_EINGANG_QUELLEN, API_LAUF_STEUERUNG,
+  leseApiLaufSchalter, leseApiLaufEinstellungen, setzeApiLaufEinstellungen, legeApiLaufAn, legeApiEingangAn, apiLaeufeStand, steuereApiLauf,
+} from './services/api-agent-lauf-dienst.js';
+// P22-T183 B7: Einstiege (spawn mit API-Modell, Zustellung inbox/chat, stop) in den API-Lauf.
+export { apiProviderFuerModell, spawneAlsApiLauf, stoppeAlsApiLauf, stelleApiLaufZu, apiLaufZustellungStand } from './services/api-agent-einstieg.js';
+export type { ApiSpawnEingabe } from './services/api-agent-einstieg.js';
+export type {
+  ApiLaufSchalter, ApiLaufEinstellungName, ApiLaufEinstellungen, ApiLaufAnlage, ApiEingangQuelle, ApiLaufSteuerung,
+} from './services/api-agent-lauf-dienst.js';
+// P22-T183 B1: Toolschleife + Formathelfer (Anthropic, OpenAI/OpenRouter) der API-Agenten; Namen mit Api-Praefix gegen Kollisionen.
+export {
+  fuehreNachrichtAus as fuehreApiNachrichtAus, AnbieterFehler as ApiAnbieterFehler,
+  nachAnthropic, vonAnthropic, stopAusAnthropic, nachOpenAi, vonOpenAi, stopAusOpenAi, werkzeugeNachOpenAi, nutzungAusOpenAi, antwortAusOpenAi,
+} from './services/api-agent-schleife.js';
+export type {
+  TextBlock as ApiTextBlock, BildBlock as ApiBildBlock, WerkzeugAufruf as ApiWerkzeugAufruf, WerkzeugErgebnis as ApiWerkzeugErgebnis,
+  RohBlock as ApiRohBlock, Block as ApiBlock, Nachricht as ApiNachricht, WerkzeugDef as ApiWerkzeugDef, StopGrund as ApiStopGrund,
+  Nutzung as ApiNutzung, AnbieterAntwort as ApiAnbieterAntwort, AnbieterAnfrage as ApiAnbieterAnfrage, AnbieterAdapter as ApiAnbieterAdapter,
+  WerkzeugAusfuehrer as ApiWerkzeugAusfuehrer, VerlaufSpeicher as ApiVerlaufSpeicher, Grenzen as ApiGrenzen, NachrichtEnde as ApiNachrichtEnde,
+  NachrichtErgebnis as ApiNachrichtErgebnis, SchleifenOptionen as ApiSchleifenOptionen, AnthropicBlock, OpenAiTeil, OpenAiWerkzeugAufruf, OpenAiNachricht,
+} from './services/api-agent-schleife.js';
 // P22-T178: Lauf-Herkunft je Agent (api/cli/codex + Modell) aus dem Wrapper-Status, Schalter agent_lauf_herkunft.
 export { AGENT_LAUF_HERKUNFT_FUNKTION, LAUF_ARTEN, kurzModell, laufHerkunftAus, ermittleLaufHerkunft } from './services/agent-lauf-herkunft.js';
 export type { LaufArt, LaufHerkunft, LaufHerkunftEintrag, LaufHerkunftStand } from './services/agent-lauf-herkunft.js';
@@ -723,6 +749,8 @@ export {
 } from './services/api-agent-freigabe.js';
 export type { ApiFreigabe } from './services/api-agent-freigabe.js';
 export { API_AGENT_FREIGABEN_SCHEMA_SQL } from './db/api-agent-freigaben-schema.js';
+// P22-T183: API-Agenten-Lauf im API-Prozess (Laeufe, PG-Verlauf, Eingang, Turns, Lauf-Einstellwerte, Preisstand), Schema 164.
+export { API_AGENT_LAUF_SCHEMA_SQL } from './db/api-agent-lauf-schema.js';
 // P22-T176: Anthropic-API-Key aus der Web-UI (verschluesselt im Server-Tresor, Schalter hauptagent_api_key_webui), Schema 160.
 export {
   API_KEY_WEBUI_FUNKTION, API_KEY_ENV, API_KEY_FORM,
@@ -799,7 +827,7 @@ export {
 // P22-T82: Spezialisten im Runtime-Container (ort container, Kontingent je Projekt, Schema 127).
 export {
   SPEZIALISTEN_CONTAINER_FUNKTION, SPAWN_ORTE, leseSpawnOrt, runtimeFuerModell, leseContainerKontingent, belegteContainerAgenten,
-  spawneImContainer, spawneBatchImContainer, containerStatus, CONTAINER_ADMIN_ACTIONS, CONTAINER_ADMIN_PARAMETER, istContainerAdminAction,
+  spawneImContainer, spawneRueckfallImContainer, spawneBatchImContainer, containerStatus, CONTAINER_ADMIN_ACTIONS, CONTAINER_ADMIN_PARAMETER, istContainerAdminAction,
   fuehreContainerAdminAus,
 } from './services/agent-container.js';
 export type { SpawnOrt, ContainerKontingent, ContainerSpawnEingabe } from './services/agent-container.js';

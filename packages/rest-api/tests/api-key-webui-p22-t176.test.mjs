@@ -158,7 +158,9 @@ try{
  s=await stand();
  ok(s.vorhanden===false&&s.quelle===null&&/quelle=keine/.test(s.debug),HD+' ohne Web-UI-Key und ohne Env: vorhanden=false',s);
  const quelle=readFileSync(join(repo,'packages/rest-api/src/routes/agent-api.ts'),'utf8');
- ok(/const key = \(await aktuellerApiKey\(\)\)\.key;/.test(quelle)&&!/process\.env\.SYNAPSE_ANTHROPIC_API_KEY/.test(quelle),'P22-T176 agent-api.ts Transport: wirksamer Key ueber aktuellerApiKey, kein direkter Env-Zugriff mehr');
+ // P22-T183 B3: der Anthropic-Transport zog aus der Route nach services/api-agent-transport.ts (rufeApiTransport); Key-Pruefung dort, Route weiter ohne Env-Zugriff.
+ const transportQuelle=readFileSync(join(repo,'packages/rest-api/src/services/api-agent-transport.ts'),'utf8');
+ ok(/const key = \(await aktuellerApiKey\(\)\)\.key;/.test(transportQuelle)&&!/process\.env\.SYNAPSE_ANTHROPIC_API_KEY/.test(transportQuelle)&&!/process\.env\.SYNAPSE_ANTHROPIC_API_KEY/.test(quelle),'P22-T176 api-agent-transport.ts Transport (seit P22-T183): wirksamer Key ueber aktuellerApiKey, kein direkter Env-Zugriff mehr');
  ok(/models\.list\(\{ limit: 1 \}\)/.test(quelle),'P22-T176 agent-api.ts Key testen: GET /v1/models (limit 1), kein messages-Aufruf');
  console.log('PASS P22-T176 core+REST '+checks+' checks; private schema '+schema);
 }catch(e){failure=e;console.error(ohneKey(e?.stack??e)?e:'Fehler (Text enthielt Key, unterdrueckt)');}finally{

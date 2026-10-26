@@ -37,10 +37,17 @@ import {
   pruefeApiAgentenSchalter, pruefeAgentFreigabeTx, apiAgentenStand, setzeApiFreigabe, entferneApiFreigabe, pruefeApiFreigabeLeser,
 } from './api-agent-freigabe.js';
 import type { AusweisAkteur, W1bAkteur } from './agent-profil-vertrag.js';
+import { apiLaeufeStand, steuereApiLauf, setzeApiLaufEinstellungen, API_LAUF_EINSTELLUNG_NAMEN, API_LAUF_STEUERUNG } from './api-agent-lauf-dienst.js';
+import { rolleFuerAgent } from './agent-rollen.js';
 
 export const HAUPTAGENT_API_FUNKTION = 'hauptagent_api' as const;
 /** Provider der API-Modelle in model_registry (getrennt von den Abo-CLIs 'anthropic', User 88f80455 Punkt 2). */
 export const API_ANBIETER = 'anthropic-api' as const;
+/** P22-T183: OpenRouter (OpenAI-Format, z. B. DeepSeek). Budget/Buchung wie Anthropic hier, strikt getrennt von der Jev-Bremse. */
+export const API_ANBIETER_OPENROUTER = 'openrouter-api' as const;
+/** P22-T183: alle Provider mit Budget, Freigabe und Reservierung (model_registry.provider). */
+export const API_ANBIETER_ALLE = [API_ANBIETER, API_ANBIETER_OPENROUTER] as const;
+export type ApiAnbieter = typeof API_ANBIETER_ALLE[number];
 export const API_ZEITRAEUME = ['tag', 'woche', 'monat'] as const;
 export type ApiZeitraum = typeof API_ZEITRAEUME[number];
 
@@ -185,6 +192,8 @@ export async function setzeApiEinstellungen(
 // ---------------------------------------------------------------------------------------------
 export interface ApiModellPreis {
   alias: string;
+  /** P22-T183: Provider der Zeile (anthropic-api | openrouter-api); bestimmt Format und Transport. */
+  anbieter: ApiAnbieter;
   anbieter_modell: string;
   context_window: number;
   output_limit: number | null;
@@ -196,12 +205,12 @@ export interface ApiModellPreis {
 
 /** Frisch aus PG (kein Prozess-Cache): ein geaenderter Preis wirkt sofort. */
 export async function leseApiModelle(): Promise<ApiModellPreis[]> {
-  const r = await getPool().query<{ alias: string; full_id: string; context_window: number; output_limit: number | null;
+  const r = await getPool().query<{ alias: string; provider: ApiAnbieter; full_id: string; context_window: number; output_limit: number | null;
     pi: string | null; po: string | null; pc: string | null }>(
-    `SELECT alias, full_id, context_window, output_limit, pricing_input_usd_per_mtok AS pi, pricing_output_usd_per_mtok AS po,
+    `SELECT alias, provider, full_id, context_window, output_limit, pricing_input_usd_per_mtok AS pi, pricing_output_usd_per_mtok AS po,
             pricing_cache_usd_per_mtok AS pc
-       FROM model_registry WHERE enabled = true AND provider = $1 ORDER BY alias`, [API_ANBIETER]);
-  return r.rows.map(z => ({ alias: z.alias, anbieter_modell: z.full_id, context_window: z.context_window, output_limit: z.output_limit,
+       FROM model_registry WHERE enabled = true AND provider = ANY($1::text[]) ORDER BY alias`, [[...API_ANBIETER_ALLE]]);
+  return r.rows.map(z => ({ alias: z.alias, anbieter: z.provider, anbieter_modell: z.full_id, context_window: z.context_window, output_limit: z.output_limit,
     eingabe: z.pi === null ? null : Number(z.pi), ausgabe: z.po === null ? null : Number(z.po), cache_lesen: z.pc === null ? null : Number(z.pc) }));
 }
 
@@ -349,6 +358,8 @@ export interface ApiReservierungEingabe {
 export interface ApiReservierung {
   reservierung_id: string;
   modell: string;
+  /** P22-T183: Provider des Modells; der Transport waehlt danach Anthropic oder OpenRouter. */
+  anbieter: ApiAnbieter;
   anbieter_modell: string;
   reserviert_usd: number;
   /** max_tokens nach Kappung an max_tokens_obergrenze */
@@ -400,7 +411,7 @@ export async function reserviereApiAufruf(e: ApiReservierungEingabe): Promise<Ap
        VALUES ($1,$2,$3,$4,$5,$6,'offen', NOW() + make_interval(mins => $7::int)) RETURNING frist_bis`,
       [id, e.identity_id, e.project, e.modell, m.anbieter_modell, reserve, einst.reservierung_minuten.wert]);
     await c.query('COMMIT');
-    return { reservierung_id: id, modell: e.modell, anbieter_modell: m.anbieter_modell, reserviert_usd: reserve, max_tokens: maxTokens,
+    return { reservierung_id: id, modell: e.modell, anbieter: m.anbieter, anbieter_modell: m.anbieter_modell, reserviert_usd: reserve, max_tokens: maxTokens,
       rest_usd_vorher: Math.max(0, rund(grenze - verbraucht)), frist_bis: frist.rows[0].frist_bis.toISOString() };
   } catch (err) {
     await c.query('ROLLBACK').catch(() => undefined);
@@ -415,6 +426,8 @@ export interface ApiUsage {
   output_tokens?: number | null;
   cache_creation_input_tokens?: number | null;
   cache_read_input_tokens?: number | null;
+  /** P22-T183: vom Anbieter gemeldete Kosten in USD (OpenRouter usage.cost). Vorrang vor der Rechnung aus Registry-Preisen. */
+  kosten_usd?: number | null;
 }
 export interface ApiAbschlussEingabe {
   reservierung_id: string;
@@ -458,7 +471,12 @@ export async function schliesseApiAufrufAb(e: ApiAbschlussEingabe): Promise<ApiA
     const einst = await leseApiEinstellungen(c);
     let usd: number;
     let quelle: 'antwort' | 'reservierung';
-    if (e.usage && preisBekannt(modell)) {
+    const gemeldet = e.usage?.kosten_usd;
+    if (e.usage && typeof gemeldet === 'number' && Number.isFinite(gemeldet) && gemeldet >= 0) {
+      // P22-T183: Kosten laut Anbieter (OpenRouter usage.cost) - Quelle 'antwort' wie bei Jev (CHECK der Tabellen unveraendert).
+      usd = rund(gemeldet);
+      quelle = 'antwort';
+    } else if (e.usage && preisBekannt(modell)) {
       usd = apiKostenAusUsage(e.usage, modell, einst.cache_schreib_faktor.wert);
       quelle = 'antwort';
     } else {
@@ -472,7 +490,8 @@ export async function schliesseApiAufrufAb(e: ApiAbschlussEingabe): Promise<ApiA
       [r.id, usd, quelle, tok(u.input_tokens), tok(u.output_tokens), tok(u.cache_creation_input_tokens), tok(u.cache_read_input_tokens),
         e.stop_reason ? String(e.stop_reason).slice(0, 64) : null, e.fehler ? e.fehler.slice(0, 500) : null]);
     await bucheAgentVerbrauch({
-      project: r.project ?? HAUPTAGENT_PROJEKT, identity_id: r.identity_id, agent_id: e.agent_id, runtime: 'claude-api', zugang: 'api',
+      project: r.project ?? HAUPTAGENT_PROJEKT, identity_id: r.identity_id, agent_id: e.agent_id,
+      runtime: modell?.anbieter === API_ANBIETER_OPENROUTER ? 'openrouter-api' : 'claude-api', zugang: 'api',
       modell: r.anbieter_modell, input_tokens: tok(u.input_tokens), output_tokens: tok(u.output_tokens),
       cache_read_tokens: tok(u.cache_read_input_tokens), cache_creation_tokens: tok(u.cache_creation_input_tokens),
       usd, usd_quelle: quelle, quelle: 'api_worker', referenz: 'api-reservierung:' + r.id,
@@ -557,7 +576,8 @@ async function pruefeLeser(akteur: AusweisAkteur | null): Promise<void> {
 // admin-Aktionen (MCP admin, stdio und REST) - Akteur nur aus Transport/Tokenpruefung
 // ---------------------------------------------------------------------------------------------
 // P22-T179: api_freigabe (Freigabe je Arbeitsagent/Koordinator; setzen/entfernen nur User oder Main mit user_auftrag).
-export const API_AGENT_ADMIN_ACTIONS = ['api_status', 'api_schalter', 'api_budget', 'api_einstellungen', 'api_kosten', 'api_freigabe'] as const;
+// P22-T183 B6: api_lauf (Laeufe IM API-Prozess: Stand, Steuerung, Einstellwerte, OpenRouter-Preisabgleich).
+export const API_AGENT_ADMIN_ACTIONS = ['api_status', 'api_schalter', 'api_budget', 'api_einstellungen', 'api_kosten', 'api_freigabe', 'api_lauf'] as const;
 export type ApiAgentAdminAction = typeof API_AGENT_ADMIN_ACTIONS[number];
 /** Nur NEUE Parameternamen; aktiv, grund, modus, grenze_usd, reset_tag, seit, bis bestehen schon am admin-Tool. */
 export const API_AGENT_ADMIN_PARAMETER: Record<string, Record<string, unknown>> = {
@@ -566,6 +586,7 @@ export const API_AGENT_ADMIN_PARAMETER: Record<string, Record<string, unknown>> 
   api_heartbeat: { type: 'boolean', description: 'api_freigabe setzen: Heartbeat des API-Agenten (Standard false - jeder Weckruf kostet)' },
   api_einstellungen: { type: 'object', additionalProperties: true, description: 'api_einstellungen setzen: {max_tokens_obergrenze, reservierung_minuten, toolrunden_max, laufzeit_minuten, cache_schreib_faktor}' },
   einstellung_namen: { type: 'array', items: { type: 'string', enum: [...API_EINSTELLUNG_NAMEN] }, description: 'api_einstellungen entfernen: Namen (Rueckfall Code-Standard)' },
+  api_lauf_werte: { type: 'object', additionalProperties: true, description: `api_lauf einstellungen (nur User): {${API_LAUF_EINSTELLUNG_NAMEN.join(', ')}}` },
 };
 
 export function istApiAgentAdminAction(action: unknown): action is ApiAgentAdminAction {
@@ -618,6 +639,26 @@ export async function fuehreApiAgentAdminAus(
           return { success: true, action, ...(await entferneApiFreigabe(akteur, { identity_id: args.ziel_identity_id, grund: args.grund, user_auftrag: args.user_auftrag })) };
         }
         return fehler('modus_ungueltig', { erlaubt: ['status', 'setzen', 'entfernen'] });
+      }
+      case 'api_lauf': {
+        // P22-T183 B6: modus status | pausieren | fortsetzen | stoppen | neustart (ziel_identity_id, grund) | einstellungen (api_lauf_werte,
+        // grund; nur User) | preise (OpenRouter-Preisabgleich aus dem Katalog, nur User).
+        const project = typeof args.project === 'string' && args.project.trim() ? args.project.trim() : null;
+        // Ohne Ausweis: Legacy-Koordinator wie bei den Verwaltungsaktionen (Rolle aus dem Namen, pruefeProfilVerwalter im Projekt).
+        const legacy = !akteur && typeof args.agent_id === 'string' && rolleFuerAgent(args.agent_id.trim()).rolle === 'koordinator'
+          ? { art: 'legacy_koordinator' as const, agent_id: args.agent_id.trim() } : null;
+        const laufAkteur: AusweisAkteur | null = akteur ?? legacy;
+        if (modus === 'status') return { success: true, action, ...(await apiLaeufeStand(laufAkteur, project)) };
+        if ((API_LAUF_STEUERUNG as readonly string[]).includes(modus)) {
+          return { success: true, action, ...(await steuereApiLauf(laufAkteur, { identity_id: args.ziel_identity_id, aktion: modus, grund: args.grund })) };
+        }
+        if (modus === 'einstellungen') return { success: true, action, einstellungen: await setzeApiLaufEinstellungen(akteur, { werte: args.api_lauf_werte, grund: args.grund }) };
+        if (modus === 'preise') {
+          if (akteur?.art !== 'user') fehler('recht_fehlt', { grund: 'Preisabgleich loest nur der User aus' });
+          const { aktualisiereOpenRouterPreise } = await import('./api-anbieter-preise.js');
+          return { success: true, action, preise: await aktualisiereOpenRouterPreise() };
+        }
+        return fehler('modus_ungueltig', { erlaubt: ['status', ...API_LAUF_STEUERUNG, 'einstellungen', 'preise'] });
       }
     }
   } catch (e) {

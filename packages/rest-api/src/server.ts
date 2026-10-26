@@ -614,6 +614,20 @@ export async function startServer(): Promise<void> {
   const {initToolLifecycle,closeToolLifecycle} = await import('./services/tool-lifecycle-runtime.js');
   initToolLifecycle();
   server.addHook('onClose',async()=>{closeToolLifecycle();});
+  // P22-T183 B6: API-Agenten laufen IM API-Prozess (Lauf-Verwaltung, Schalter api_agenten_lauf_intern je Projekt, Standard AUS).
+  //   SYNAPSE_API_AGENTEN_LAUF_DISABLED=1 - Notbremse: Worker startet nicht (zusaetzlich pausierbar ueber intern(worker_*)).
+  if (process.env.SYNAPSE_API_AGENTEN_LAUF_DISABLED !== '1') {
+    const { starteApiAgentLauf } = await import('./services/api-agent-lauf.js');
+    const { registriereWorker, workerPausiert, registriereInternQuelle, aktualisiereOpenRouterPreise } = await import('@synapse/core');
+    const apiLauf = starteApiAgentLauf({ pausiert: () => workerPausiert('api_agenten_lauf') !== null });
+    registriereWorker({ name: 'api_agenten_lauf', beschreibung: 'P22-T183 API-Agenten-Turns im API-Prozess (Takt 2 s, nur Schalter api_agenten_lauf_intern EIN)', durchlauf: () => apiLauf.takt() });
+    registriereInternQuelle('api_agenten_lauf', () => apiLauf.zustand());
+    // OpenRouter-Preise aus dem Katalog (Entscheid O2); ein Fehler aendert nichts, Ergebnis im Debug.
+    void aktualisiereOpenRouterPreise()
+      .then((p) => apiLauf.merkePreisabgleich({ zeitpunkt: p.zeitpunkt, zeilen: p.zeilen.map((z) => ({ alias: z.alias, status: z.status, fehler: z.fehler ?? null })) }))
+      .catch((err: unknown) => apiLauf.merkePreisabgleich({ fehler: err instanceof Error ? err.message : String(err) }));
+    server.addHook('onClose', async () => { await apiLauf.beende(); });
+  }
 
   try {
     await server.listen({

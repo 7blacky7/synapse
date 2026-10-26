@@ -28,7 +28,7 @@ export interface LaufHerkunft {
   quelle: string;
 }
 
-const API_ANBIETER = new Set(['anthropic-api', 'google']);
+const API_ANBIETER = new Set(['anthropic-api', 'openrouter-api', 'google']);
 const CLI_ANBIETER = new Set(['anthropic', 'antigravity']);
 
 /** Rein: Kurzname fuer die Anzeige. */

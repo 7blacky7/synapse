@@ -10,6 +10,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import {mitShellAufrufPerId,mitShellAusgabe,SHELL_SICHERUNGS_PARAMETER,shellSicherungsParameter,shellSicherungsAntwortAus} from '@synapse/core';
 // P23-T3: schlanke Tool-Antworten (Schalter tool_antworten_schlank, Standard AUS).
 import { schlankeShellRueckfrageWennAktiv, fremderLaufFeld } from '@synapse/core';
+// P22-T183 B4: Hauptagenten-Kennung fuer den Identitaetsweg des API-Laufs (apiLaufZugang).
+import { HAUPTAGENT_AGENT_ID as API_LAUF_MAIN_AGENT_ID } from '@synapse/core';
 import {refVergleich,REF_VERGLEICH_PARAMETER} from '@synapse/core';
 // P22-T116: specialist runtime_* - gemeinsamer Vertrag mit stdio (Schema + Handler aus core).
 import { fuehreRuntimeAgentenAktion, RUNTIME_TOOL_AKTIONEN, RUNTIME_TOOL_PROPERTIES, findeWrapperStatusPerName, leseRuntimeUebersicht } from '@synapse/core';
@@ -135,6 +137,7 @@ import {
   createFileInPg,
   updateFileInPg,
   mitFileTaskWarnung,
+  mitSpeicherAehnlichkeit,
   ordneFileTasksZu,
   resolveProjectTaskId,
   softDeleteFile,
@@ -338,6 +341,7 @@ export const MCP_TOOLS = [
         vorschau: { type: 'boolean', description: 'projekt_db mit uebernehmen und host_loesen: true (Standard) = nur pruefen/zeigen; false = ausfuehren.' },
         name: { type: 'string', description: 'Projekt-Name. Pflicht fuer init wenn kein path gegeben. Erlaubt: 2-64 Zeichen [a-zA-Z0-9_-], beginnt mit Buchstabe/Ziffer.' },
         index_docs: { type: 'boolean', description: 'Framework-Dokumentation vorladen (Standard: true, fuer init)' },
+        standard_plaene: { type: 'boolean', description: 'Nur init: true legt nach erfolgreichem Anlegen die fuenf wiederkehrenden Standardplaene an (Schalter wiederkehr_plaene EIN; Skill taktik-wiederkehr-plaene). Spaeter nachruesten: plan(action:"standard_plaene").' },
         project: { type: 'string', description: 'Projekt-Name (fuer complete_setup, stop, list nutzt dies)' },
         phase: { type: 'string', enum: ['initial', 'post-indexing'], description: 'Setup-Phase (fuer complete_setup)' },
         agent_id: { type: 'string', description: 'Optionale Agent-ID fuer Onboarding (fuer init)' },
@@ -423,6 +427,7 @@ export const MCP_TOOLS = [
         },
         limit: { type: 'number', description: 'Max. Ergebnisse (optional, Standard: 10 fuer find_for_file; list: Standard 100)' },
         names_only: { type: 'boolean', description: 'Nur fuer list: ausschliesslich Memory-Namen liefern (minimaler Context)' },
+        bestaetigt: { type: 'boolean', description: 'Nur fuer write: im Modus pruefen_vor_anlegen (Produkt-Schalter speicher_aehnlichkeit_pruefen) eine User-Idee trotz aehnlicher Eintraege anlegen. Sonst wirkungslos.' },
         codeLimit: { type: 'number', description: 'Max. Code-Chunks (optional, Standard: 10 fuer read_with_code)' },
         includeSemanticMatches: { type: 'boolean', description: 'Semantische Matches einbeziehen (optional, Standard: true fuer read_with_code)' },
         dry_run: { type: 'boolean', description: 'Preview-Modus — NUR aktiv wenn name/id ein Array ist (Batch-Delete). Bei Single-String wird sofort geloescht, dry_run wird ignoriert. Wenn die UI eine Bestaetigung erzwingen soll, ruf erst mit Array + dry_run:true auf, dann mit Array ohne dry_run.' },
@@ -482,6 +487,7 @@ export const MCP_TOOLS = [
         task_id: { type: 'string', description: 'Optional fuer add: Verknuepft den Thought mit einer Plan-Task (Spalte task_id). Suche und Plan-Lookups koennen darauf filtern.' },
         task_status: { type: 'string', enum: ['todo', 'in_progress', 'done', 'blocked'], description: 'Optional fuer add/add_batch: setzt zugleich den Status der via task_id verlinkten Task. Spart einen separaten plan(update_task)-Call.' },
         grund: { type: 'string', description: 'Optional fuer add/add_batch mit task_status: Grund. Pflicht fuer Agenten OHNE Token auf einer gebundenen Task, wenn der Produkt-Schalter task_bindung EIN ist (ohne Grund bleibt der Task-Status ungesetzt, Warnung grund_noetig; mit Grund erlaubt und in der Bindungs-Historie protokolliert).' },
+        bestaetigt: { type: 'boolean', description: 'Nur fuer add/add_batch: im Modus pruefen_vor_anlegen (Produkt-Schalter speicher_aehnlichkeit_pruefen) eine User-Idee trotz aehnlicher Eintraege anlegen. Sonst wirkungslos.' },
         trigger_respawn: { type: 'boolean', description: 'Optional fuer add: Spezialist signalisiert sein Auto-Handoff. Server prueft Context-Stand gegen Korridor und triggert sofortigen Respawn (ohne auf 95% zu warten). Nur wirksam wenn source einem aktiven Spezialisten entspricht. Fuer Subagenten/Koordinator wirkungslos.' },
         id: {
           oneOf: [
@@ -508,7 +514,7 @@ export const MCP_TOOLS = [
       properties: {
         action: {
           type: 'string',
-          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'abmelden', 'verschieben', 'zurueckstellen', 'einordnen'],
+          enum: ['search', 'get', 'update', 'add_task', 'add_tasks_batch', 'update_task', 'delete_task', 'empfehlen', 'list', 'create', 'aktivieren', 'passende_tasks', 'uebernehmen', 'abmelden', 'verschieben', 'zurueckstellen', 'einordnen', 'durchlauf_abschliessen', 'standard_plaene'],
           description: 'Aktion: "einordnen" (plan_id = Quellplan + task_id String/Array, max 200; optional ziele, verschieben, confidence_tor) laesst Jev je Task den passenden Plan waehlen — Standard nur Vorschlag, verschieben:true verschiebt die sicheren (confidence >= Tor, anderer Plan), "verschieben" (task_id String oder Array + ziel = Plan-UUID oder Kurz-ID) verschiebt Tasks atomar in einen anderen Plan; UUID und Felder bleiben, im Zielplan gibt es eine neue Kurz-ID, die alte bleibt als Alias gueltig, "passende_tasks" (agent_id Pflicht, plan_id optional) zeigt offene/laufende Tasks inkl. Beteiligter und unverbindlichem Profilhinweis; jeder Agent darf sich anmelden, "uebernehmen" (plan_id + task_id + agent_id Pflicht) meldet atomar und idempotent zur gemeinsamen Beteiligung an; bestehende Beteiligte blockieren nie, "abmelden" (task_id + agent_id Pflicht, plan_id optional) entfernt die eigene Beteiligung, letzter Beteiligter setzt nicht erledigte Tasks auf todo, "list" alle Plaene des Projekts (Kurz-ID, Name, Ziel, aktiv, offen/erledigt), "create" neuer Plan (name, description, goals, architecture, aktiv?), "aktivieren" plan_id zum aktiven Plan machen, "get" zum Abrufen, "update" zum Aktualisieren, "add_task" um eine Task hinzuzufuegen, "add_tasks_batch" um mehrere Tasks atomar hinzuzufuegen, "update_task" um eine Task zu aendern, "delete_task" um eine oder mehrere Tasks zu loeschen (id als String oder Array), "empfehlen" (EXPERIMENTELL) bewertet die per plan_id + task_id (beide PFLICHT, UUID oder Kurz-ID) genannten Tasks in EINEM Jev-Aufruf und schreibt je Task das Feld empfehlung {modell, effort, kontext 200k|1m, confidence, ...} — nur Empfehlung, kein Muss; unter dem Confidence-Tor unsicher statt Empfehlung',
         },
         project: { type: 'string', description: 'Projekt-Name' },
@@ -522,6 +528,12 @@ export const MCP_TOOLS = [
         bis: { type: 'string', description: 'Nur fuer zurueckstellen: Wiedervorlage-Datum (2026-10-15 oder ISO-Zeitpunkt, in der Zukunft).' },
         alle: { type: 'boolean', description: 'Nur fuer list und get: true zeigt auch zurueckgestellte Plaene bzw. Tasks (mit Vermerk).' },
         aktiv: { type: 'boolean', description: 'Nur fuer create: neuen Plan gleich aktiv schalten (Standard false; der erste Plan eines Projekts ist immer aktiv).' },
+        // P3-T16: wiederkehrende Plaene (Skill taktik-wiederkehr-plaene, Schalter wiederkehr_plaene)
+        wiederkehrend: { type: 'boolean', description: 'Nur fuer create/update: Plan als wiederkehrenden Ablauf markieren (true) bzw. aufheben (false). Mit Produkt-Schalter wiederkehr_plaene EIN gehen die wiederkehrenden Tasks nach einem Durchlauf automatisch zurueck auf todo (Debugzeile wiederkehr in der Antwort). Rueckfall: action durchlauf_abschliessen (plan_id). Fuenf Standardplaene: action standard_plaene.' },
+        einmalig: { type: 'boolean', description: 'Nur fuer add_task/update_task (und je Item in tasks): Aufbau-Task eines wiederkehrenden Plans, bleibt nach done erledigt.' },
+        abschluss: { type: 'boolean', description: 'Nur fuer add_task/update_task (und je Item in tasks): Abschluss-Task eines wiederkehrenden Plans; ihr done beendet den Durchlauf.' },
+        vorschau: { type: 'boolean', description: 'Nur fuer standard_plaene: true (Standard) zeigt, welche der fuenf Standardplaene angelegt wuerden; false legt sie an (Schalter wiederkehr_plaene EIN). Vorhandene Plaene gleichen Namensstamms werden nicht doppelt angelegt.' },
+        vorlagen: { type: 'array', items: { type: 'string', enum: ['deploy', 'testlauf', 'befunde', 'agenten', 'doku'] }, description: 'Nur fuer standard_plaene: Auswahl (Standard alle fuenf).' },
         name: { type: 'string', description: 'Neuer Plan-Name' },
         description: { type: 'string', description: 'Neue Beschreibung' },
         goals: { type: 'array', items: { type: 'string' }, description: 'Neue Ziele' },
@@ -538,6 +550,8 @@ export const MCP_TOOLS = [
               title: { type: 'string' },
               description: { type: 'string' },
               priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+              einmalig: { type: 'boolean' },
+              abschluss: { type: 'boolean' },
             },
             required: ['title', 'description'],
           },
@@ -621,6 +635,7 @@ export const MCP_TOOLS = [
         author: { type: 'string', description: 'Autor des Proposals (fuer create).' },
         description: { type: 'string', description: 'Kurzbeschreibung des Vorschlags (fuer create).' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optionale Tags (fuer create).' },
+        bestaetigt: { type: 'boolean', description: 'Nur fuer create: im Modus pruefen_vor_anlegen (Produkt-Schalter speicher_aehnlichkeit_pruefen) eine User-Idee trotz aehnlicher Eintraege anlegen. Sonst wirkungslos.' },
         items: {
           type: 'array',
           description: 'Bulk-Mode fuer create: 1..50 Proposals in einem Call. Jedes Item: { file_path, suggested_content, description, author, tags? }. project gilt fuer alle. Best-effort.',
@@ -2310,7 +2325,8 @@ async function handleAuthentifiziertenToolCall(
   if(name==='shell')return mitShellAufrufPerId(args,a=>mitShellAusgabe({...a,agent_id:effectiveAgentId??a.agent_id},()=>handleToolCallKern(name,a,effectiveAgentId)),undefined,effectiveAgentId);
   const antwort = name === 'files' || name === 'files_batch'
     ? await mitFileTaskWarnung(args, () => handleToolCallKern(name, args, effectiveAgentId))
-    : await handleToolCallKern(name, args, effectiveAgentId);
+    // P10-T88: Aehnlichkeitspruefung beim Speichern (thought/memory/proposal/plan; Schalter speicher_aehnlichkeit, Standard AUS).
+    : await mitSpeicherAehnlichkeit(name, args, () => handleToolCallKern(name, args, effectiveAgentId));
   if (!ENV_NETZ_TOOLS.has(name)) return antwort;
   const ops = Array.isArray(args.ops) ? (args.ops as Array<Record<string, unknown> | null>) : [];
   const pfade = [args.file_path, args.new_path, ...ops.flatMap((op) => [op?.file_path, op?.new_path])]
@@ -2436,6 +2452,8 @@ async function handleToolCallKern(
                 docs_automatik: indexDocs ? 'angestossen (Context7 im Hintergrund, gedrosselt)' : 'aus',
                 job_id: job.id,
                 projekt_db: await projektDbBeiInit(job.name, job.resolved_path),
+                // P3-T16: optional die fuenf Standardplaene (ohne standard_plaene:true kein Feld = Altverhalten)
+                ...(await (await import('@synapse/core')).standardPlaeneBeiInit(args.standard_plaene, job.name)),
                 message: job.message ?? `Projekt "${job.name}" angelegt unter ${job.resolved_path}.`,
               };
             }
@@ -3204,9 +3222,13 @@ async function handleToolCallKern(
           const tasks = compact
             ? limited.map(t => ({ id: t.id, kurz_id: t.kurz_id, title: t.title, status: t.status, priority: t.priority, beteiligte: t.beteiligte, ...(typeof t.zugewiesen_an === 'string' ? { zugewiesen_an: t.zugewiesen_an } : {}), ...(typeof t.git_branch === 'string' && t.git_branch ? { git_branch: t.git_branch } : {}) }))
             : limited;
+          // P10-T88 N1: mit task_id und Schalter task_pins je Task die Pins frueherer Agenten (sonst unveraendert).
+          const { ergaenzeTaskPins } = await import('@synapse/core');
+          const pinsZugabe = nachId.gefiltert ? await ergaenzeTaskPins(project, tasks) : null;
           return {
             ...p,
-            tasks,
+            tasks: pinsZugabe?.tasks ?? tasks,
+            ...(pinsZugabe ? { pins_debug: pinsZugabe.debug } : {}),
             tasks_total: allTasks.length,
             tasks_returned: tasks.length,
             ...(wv.ausgeblendet > 0 ? { zurueckgestellt_ausgeblendet: wv.ausgeblendet, zurueckgestellt_hinweis: 'plan(get, alle: true) oder task_id zeigt zurueckgestellte Tasks.' } : {}),
@@ -3230,6 +3252,7 @@ async function handleToolCallKern(
               architecture: str(args, 'architecture'),
               prioritaet: str(args, 'plan_prioritaet'),
               git_branch: str(args, 'git_branch'),
+              wiederkehrend: bool(args, 'wiederkehrend'),
             }, str(args, 'plan_id'));
           } catch (e) {
             // Ungueltige plan_prioritaet -> klare Meldung wie im MCP-Tool
@@ -3243,11 +3266,15 @@ async function handleToolCallKern(
             project, reqStr(args, 'title'), reqStr(args, 'description'),
             (str(args, 'priority') || 'medium') as 'low' | 'medium' | 'high',
             str(args, 'plan_id'), str(args, 'git_branch'),
+            { einmalig: args.einmalig, abschluss: args.abschluss }, // P3-T16
           );
         case 'update_task': {
           const taskId = reqStr(args, 'task_id');
           const { updateTask } = await import('@synapse/core');
-          const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high'; git_branch?: string } = {};
+          const updates: { title?: string; description?: string; status?: 'todo' | 'in_progress' | 'done' | 'blocked'; priority?: 'low' | 'medium' | 'high'; git_branch?: string; einmalig?: boolean; abschluss?: boolean } = {};
+          // P3-T16: Markierungen roh weitergeben, core prueft den Typ (taskMarken)
+          if (args.einmalig !== undefined) updates.einmalig = args.einmalig as boolean;
+          if (args.abschluss !== undefined) updates.abschluss = args.abschluss as boolean;
           const t = str(args, 'title'); if (t !== undefined) updates.title = t;
           const d = str(args, 'description'); if (d !== undefined) updates.description = d;
           const s = str(args, 'status'); if (s !== undefined) updates.status = s as 'todo' | 'in_progress' | 'done' | 'blocked';
@@ -3255,7 +3282,9 @@ async function handleToolCallKern(
           const b = str(args, 'git_branch'); if (b !== undefined) updates.git_branch = b;
           const task = await updateTask(project, taskId, updates, str(args, 'plan_id'), bearbeiterAusAufruf(args, effectiveAgentId));
           if (!task) return { success: false, task: null, message: `Task nicht gefunden: ${taskId}` };
-          return { success: true, task, message: 'Task aktualisiert' };
+          // P3-T16: Debugzeile wiederkehr nur bei wiederkehrenden Plaenen (sonst Antwort wie bisher)
+          return { success: true, task, message: task.wiederkehr?.durchlauf_beendet ? 'Task aktualisiert; Durchlauf abgeschlossen, wiederkehrende Tasks wieder auf todo' : 'Task aktualisiert',
+            ...(task.wiederkehr ? { wiederkehr: task.wiederkehr } : {}) };
         }
         case 'delete_task': {
           const ids = strArray(args, 'task_id');
@@ -3273,7 +3302,7 @@ async function handleToolCallKern(
           return { success: true, deleted: result.deleted, warning: result.warning, message: `${result.deleted} Tasks geloescht`, ...(result.plan_refs ? { plan_refs: result.plan_refs } : {}) };
         }
         case 'add_tasks_batch': {
-          const tasks = objArray<{ title: string; description: string; priority?: string }>(args, 'tasks');
+          const tasks = objArray<{ title: string; description: string; priority?: string; einmalig?: unknown; abschluss?: unknown }>(args, 'tasks');
           if (!tasks || tasks.length === 0) {
             return { success: false, count: 0, tasks: [], message: 'tasks (Array) ist erforderlich' };
           }
@@ -3285,6 +3314,9 @@ async function handleToolCallKern(
               title: String(t.title ?? ''),
               description: String(t.description ?? ''),
               priority: (t.priority as 'low' | 'medium' | 'high' | undefined) ?? undefined,
+              // P3-T16: Markierungen nur, wenn gesetzt
+              ...(t.einmalig !== undefined ? { einmalig: t.einmalig } : {}),
+              ...(t.abschluss !== undefined ? { abschluss: t.abschluss } : {}),
             }))
             .filter(t => t.title.length > 0 && t.description.length > 0);
           if (normalized.length === 0) {
@@ -3364,6 +3396,7 @@ async function handleToolCallKern(
               architecture: str(args, 'architecture'),
               prioritaet: str(args, 'plan_prioritaet'),
               git_branch: str(args, 'git_branch'),
+              wiederkehrend: bool(args, 'wiederkehrend'),
             });
           } catch (e) {
             if (/Prioritaet|git_branch/i.test(String((e as Error)?.message))) return { success: false, message: (e as Error).message };
@@ -3375,6 +3408,17 @@ async function handleToolCallKern(
             message: `Plan ${neu.kurz_id ?? neu.id} "${neu.name}" angelegt${neu.aktiv ? ' und aktiv' : ' (nicht aktiv — plan(aktivieren) schaltet um)'}`,
             ...planKontext(neu),
           };
+        }
+        case 'durchlauf_abschliessen': {
+          // P3-T16: Rueckfall zur automatischen Rueckstellung (Schalter wiederkehr_plaene, Entscheidung Koordinator 28878)
+          const { schliesseDurchlaufAb } = await import('@synapse/core');
+          return await schliesseDurchlaufAb(project, str(args, 'plan_id')) as unknown as Record<string, unknown>;
+        }
+        case 'standard_plaene': {
+          // P3-T16: die fuenf Standardplaene anlegen bzw. nachruesten (Standard Vorschau)
+          if (args.vorschau !== undefined && typeof args.vorschau !== 'boolean') return { success: false, message: 'vorschau muss boolean sein' };
+          const { legeStandardPlaeneAn } = await import('@synapse/core');
+          return await legeStandardPlaeneAn(project, { vorschau: args.vorschau !== false, auswahl: strArray(args, 'vorlagen') }) as unknown as Record<string, unknown>;
         }
         case 'aktivieren': {
           const { aktivierePlan, planKontext } = await import('@synapse/core');
@@ -4309,6 +4353,20 @@ async function handleToolCallKern(
       const queueableActions = ['spawn', 'spawn_batch', 'stop', 'purge', 'update_skill'];
 
       // P22-T82: ort 'container' -> Spawn im Runtime-Container ueber core (dieselbe Stelle wie stdio); ohne ort bzw. 'pc' unveraendert.
+      // P22-T183 B7a: API-Modell + Schalter api_agenten_lauf_intern EIN -> Lauf IM API-Prozess (core, derselbe Weg wie stdio); sonst Bestand.
+      if (actionStr === 'spawn') {
+        const { spawneAlsApiLauf } = await import('@synapse/core');
+        const a = args as Record<string, unknown>;
+        const apiLauf = await spawneAlsApiLauf({ ...a, project, agent_id: effectiveAgentId ?? a.agent_id } as Parameters<typeof spawneAlsApiLauf>[0]);
+        if (apiLauf) return apiLauf;
+      }
+      // P22-T183 B7d: stop fuer einen Agenten mit API-Lauf -> Status gestoppt; ohne Lauf Bestand (Daemon).
+      if (actionStr === 'stop') {
+        const { stoppeAlsApiLauf } = await import('@synapse/core');
+        const a = args as Record<string, unknown>;
+        const apiStop = await stoppeAlsApiLauf(project, a.name, effectiveAgentId ?? a.agent_id);
+        if (apiStop) return apiStop;
+      }
       if (actionStr === 'spawn' || actionStr === 'spawn_batch') {
         const { leseSpawnOrt, spawneImContainer, spawneBatchImContainer } = await import('@synapse/core');
         let ort: string | null;
@@ -6551,6 +6609,27 @@ async function fuehreToolsCallAus(
   });
   return result;
   }, agentTransportToken, ERLAUBTE_PARAMETER.get(toolName), { originalArgs: explizitArgs, vorbelegt, herkunft, plattformLauf });
+}
+
+/**
+ * P22-T183 B4: Werkzeuge des API-Laufs IM API-Prozess (kein HTTP, keine MCP-Bruecke). Dieselben Wege wie POST / mit Ausweis:
+ * tools/list = toolsListeErgebnis (Gate-Liste des Profils), tools/call = fuehreToolsCallAus (Profil, Gate, Audit). Keine neuen
+ * Rechte (Entscheid F3): main = Identitaetsweg des Hauptagenten wie mainToolAccess mit Identitaets-Bearer (die Identitaet hat der
+ * Lauf selbst geprueft), sonst der Ausweis-Weg eines Arbeitsagenten/Koordinators wie mit Bearer agent:identitaet + Ausweis.
+ */
+export function apiLaufZugang(identityId: string, main: boolean): MainToolAccess {
+  return main ? { profile: 'main-synapse', sessionId: 'identitaet-' + identityId, agentId: API_LAUF_MAIN_AGENT_ID, identityId }
+    : { profile: 'artefakt-only', sessionId: null, agentId: null };
+}
+const API_LAUF_KOPF = { 'user-agent': 'synapse-api-lauf', 'x-synapse-client': 'API-Lauf (synapse-api)' } as const;
+
+export async function apiLaufWerkzeugListe(ausweis: string, access: MainToolAccess): Promise<Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>> {
+  const r = await toolsListeErgebnis({ ...API_LAUF_KOPF, 'x-synapse-agent-token': ausweis }, access);
+  return Array.isArray(r.tools) ? r.tools as Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> : [];
+}
+
+export async function apiLaufWerkzeugAufruf(name: string, args: Record<string, unknown>, ausweis: string, access: MainToolAccess): Promise<unknown> {
+  return fuehreToolsCallAus(name, { ...args }, undefined, null, access, ausweis, herkunftsortAusKopf(API_LAUF_KOPF));
 }
 
 export async function mcpRoutes(fastify: FastifyInstance): Promise<void> {
