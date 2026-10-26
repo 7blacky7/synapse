@@ -88,6 +88,8 @@ export function bildeMcpAufCodexAb(config: unknown): CodexMcpAbbildung {
 
 export interface CodexBefehl { args: string[] }
 
+import { codexToolAusgabe } from '@synapse/core';
+
 export const CODEX_APPROVAL_WERTE = ['untrusted', 'on-failure', 'on-request', 'granular', 'never'] as const;
 export const CODEX_SANDBOX_WERTE = ['read-only', 'workspace-write', 'danger-full-access'] as const;
 export interface CodexAutonomie { approval: string; sandbox: string; anstossMax: number }
@@ -128,12 +130,14 @@ export function baueCodexArgs(o: {
   effort?: string | null;
   /** P22-T72/T82: Genehmigungsregel und Sandbox (codexAutonomie); Standard never / read-only. */
   approval?: string | null; sandbox?: string | null;
+  toolOutputTokens?: number | null;
 }): string[] {
   const sandbox = o.sandbox && (CODEX_SANDBOX_WERTE as readonly string[]).includes(o.sandbox) ? o.sandbox : 'read-only';
   const approval = o.approval && (CODEX_APPROVAL_WERTE as readonly string[]).includes(o.approval) ? o.approval : 'never';
   const args = ['exec', '--json', '--skip-git-repo-check', '--ignore-user-config', '--sandbox', sandbox, '-C', o.cwd,
     '-c', `approval_policy=${tomlString(approval)}`];
   if (o.modell) args.push('-m', o.modell);
+  if (o.toolOutputTokens && Number.isSafeInteger(o.toolOutputTokens) && o.toolOutputTokens > 0) args.push('-c', 'tool_output_token_limit=' + o.toolOutputTokens);
   if (o.effort && /^[a-z]{2,16}$/.test(o.effort)) args.push('-c', `model_reasoning_effort=${tomlString(o.effort)}`);
   for (const f of o.deaktiviert) args.push('--disable', f);
   for (const c of o.mcpOverrides) args.push('-c', c);
@@ -242,6 +246,8 @@ async function main(): Promise<void> {
   // P22-T65: Stufe vom Spawn (spawnSpecialistTool -> Wrapper-Env SYNAPSE_AGENT_EFFORT); leer = Standard der CLI.
   const effort = process.env.SYNAPSE_AGENT_EFFORT?.trim() || null;
   const autonomie = codexAutonomie();
+  const toolAusgabe = codexToolAusgabe(process.env.SYNAPSE_CLI_RECHTE === 'container' ? process.env : {}, eintrag?.contextWindow);
+  console.error('[tool-ausgabe:codex] ' + JSON.stringify(toolAusgabe.debug));
   console.error(`[codex-runtime:${agentName}] Autonomie: approval_policy=${autonomie.approval}, sandbox=${autonomie.sandbox}, anstoss_max=${autonomie.anstossMax}`);
   const deaktiviert = (process.env.SYNAPSE_CODEX_DEAKTIVIERT ?? STANDARD_DEAKTIVIERT.join(','))
     .split(',').map(s => s.trim()).filter(s => /^[a-z0-9_]+$/.test(s));
@@ -270,7 +276,7 @@ async function main(): Promise<void> {
     const nachricht = nachrichtAus(line);
     const prompt = !threadId && systemPrompt.trim() ? `${systemPrompt}\n\n---\n\n${nachricht}` : nachricht;
     const args = baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides, effort,
-      approval: autonomie.approval, sandbox: autonomie.sandbox });
+      approval: autonomie.approval, sandbox: autonomie.sandbox, toolOutputTokens: toolAusgabe.tokens });
     const r = await fuehreTurnAus(args, prompt, { ...process.env, ...mcp.env });
     if (r.threadId) threadId = r.threadId;
     // P22-T72/T82: wartet die Antwort auf den User, denselben Thread im selben Zug anstossen (hoechstens anstossMax).
@@ -278,7 +284,7 @@ async function main(): Promise<void> {
     while (threadId && !r.fehler && anstoesse.length < autonomie.anstossMax && wartetAufUser(r.texte[r.texte.length - 1] ?? '')) {
       console.error(`[codex-runtime:${agentName}] Anstoss ${anstoesse.length + 1}/${autonomie.anstossMax}: Antwort wartet auf den User`);
       const a = await fuehreTurnAus(baueCodexArgs({ threadId, cwd: projectPath, modell, deaktiviert, mcpOverrides: mcp.overrides, effort,
-        approval: autonomie.approval, sandbox: autonomie.sandbox }), ANSTOSS_TEXT, { ...process.env, ...mcp.env });
+        approval: autonomie.approval, sandbox: autonomie.sandbox, toolOutputTokens: toolAusgabe.tokens }), ANSTOSS_TEXT, { ...process.env, ...mcp.env });
       anstoesse.push({ prompt: ANSTOSS_TEXT, ab: r.schritte.length });
       r.texte.push(...a.texte);
       r.schritte.push(...a.schritte);

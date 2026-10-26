@@ -606,7 +606,9 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
           const ausweis = await W12_DIENSTE.ausweis.ausweisFuerStart(project, i.id, { art: 'daemon' });
           // Klartext nur in dieser TLS-/LAN-Antwort an den geprüften Daemon,
           // nie im Queue-Job, Completion, Wrapperstatus oder Projektordner.
-          return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter,
+          const { leseRuntimeToolAusgabe, toolAusgabeUmgebung } = await import('@synapse/core');
+          const tool_ausgabe_env = d.runtime ? toolAusgabeUmgebung(await leseRuntimeToolAusgabe(project)) : { SYNAPSE_TOOL_AUSGABE_AKTIV: '0' };
+          return { success: true, aktion, freigegeben: true, token: ausweis.token, schalter, tool_ausgabe_env,
             ...(bezug.modus !== 'alt' ? { identity_id: i.id, agent_bezug_modus: bezug.modus } : {}) };
         } catch (err) {
           return reply.code(409).send({ success: false,

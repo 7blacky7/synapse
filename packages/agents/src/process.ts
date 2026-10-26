@@ -9,8 +9,10 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { loeseRuntimePfad } from './runtime-pfad.js'
+import { detectClaudeCli } from './detect.js'
 import type { StreamEvent, SendMessageResult } from './types.js'
 import { resolveModel, cliModelArgFuer, effortFuerCli } from './models.js'
+import { claudeToolAusgabe, pruefeToolAusgabeClaudeVersion } from '@synapse/core'
 
 interface AgentProcess {
   agentName: string
@@ -114,6 +116,9 @@ class ProcessManager extends EventEmitter {
       // versionierte Registry-Aliase (opus-4.7[1m]) als volle ID, sonst waeren
       // aeltere Versionen nicht waehlbar. Unbekanntes Modell: wie uebergeben.
       const rechteContainer = process.env.SYNAPSE_CLI_RECHTE === 'container'
+      const toolAusgabe = claudeToolAusgabe(process.env, rechteContainer)
+      if (toolAusgabe.aktiv) pruefeToolAusgabeClaudeVersion(detectClaudeCli().version)
+      if (rechteContainer) console.error('[tool-ausgabe:claude] ' + JSON.stringify(toolAusgabe.debug))
       const args = [
         '--print',
         '--verbose',
@@ -126,7 +131,7 @@ class ProcessManager extends EventEmitter {
         // ("--dangerously-skip-permissions cannot be used with root/sudo privileges"). Dort dieselbe Rechte-Einstellung wie
         // der Altweg (rest-api claude-driver buildClaudeCommand): keine eingebauten Werkzeuge, dontAsk, freigeschaltet nur
         // mcp__synapse__* (unten). Gesetzt von der Agentensteuerung des Containers; ohne die Variable bleibt der Befehl gleich.
-        ...(rechteContainer ? ['--tools', '', '--permission-mode', 'dontAsk'] : ['--permission-mode', 'bypassPermissions']),
+        ...(rechteContainer ? toolAusgabe.flags : ['--permission-mode', 'bypassPermissions']),
       ]
 
       // --effort: feste Stufe statt still effortLevel aus ~/.claude/settings.json des
@@ -138,7 +143,7 @@ class ProcessManager extends EventEmitter {
 
       // P22-T6 (User): im Runtime-Container keine Claude-Code-Hooks (Nachrichten stellt der Daemon zu). Gesetzt von der
       // Agentensteuerung des Containers; ohne die Variable bleibt der Befehl unveraendert.
-      if (process.env.SYNAPSE_KEINE_HOOKS === '1') args.push('--settings', JSON.stringify({ disableAllHooks: true }))
+      if (process.env.SYNAPSE_KEINE_HOOKS === '1' && !toolAusgabe.aktiv) args.push('--settings', JSON.stringify({ disableAllHooks: true }))
 
       if (opts?.allowedTools?.length) {
         for (const tool of opts.allowedTools) {
@@ -165,7 +170,7 @@ class ProcessManager extends EventEmitter {
         'claude',
         args,
         {
-          env: { ...process.env },
+          env: { ...process.env, ...toolAusgabe.env },
           stdio: ['pipe', 'pipe', 'pipe'],
           cwd: opts?.cwd ?? process.cwd(),
         },

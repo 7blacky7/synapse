@@ -14,7 +14,7 @@ import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
 import { StatusStabilisierer } from './status-stabil.js';
-import { effortFuerStart } from '@synapse/core';
+import { effortFuerStart, leseRuntimeToolAusgabe, toolAusgabeUmgebung, claudeToolAusgabe, pruefeToolAusgabeClaudeVersion } from '@synapse/core';
 import type { ContainerBeobachtung } from '@synapse/core';
 import {
   persistentRuntimeBinds,
@@ -77,7 +77,7 @@ export const HAUPTAGENT_SYSTEMPROMPT = 'Du bist der Synapse-Hauptagent (Identita
   + 'Du siehst ALLE Projekte des Users lesend ein: gib dafuer project:"<name>" an. Du arbeitest nicht in Projekten; Auftraege gibst du an '
   + 'deren Koordinator. Im internen Bereich synapse-hauptagent liegen keine Projektdaten.';
 
-export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only', systemPrompt: string | null = null, effort: string | null = null): string[] {
+export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFAULT_MODEL, mcpConfig: string | null = null, profile: MainToolProfile = 'artefakt-only', systemPrompt: string | null = null, effort: string | null = null, toolEnv: NodeJS.ProcessEnv = {}): string[] {
   const validatedModel = validateClaudeModel(model);
   const command = [
     'claude',
@@ -95,10 +95,7 @@ export function buildClaudeCommand(runtimeSessionId: string | null, model = DEFA
   // der Agent beschreibt Werkzeugaufrufe nur noch als Text).
   if (!mcpConfig) command.push('--safe-mode');
   command.push(
-    '--tools',
-    '',
-    '--permission-mode',
-    'dontAsk',
+    ...claudeToolAusgabe(mcpConfig ? toolEnv : {}, true).flags,
     '--strict-mcp-config',
     '--mcp-config',
     mcpConfig ?? EMPTY_MCP_CONFIG,
@@ -564,13 +561,21 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       }
       mcpConfig = await this.hauptagentMcpConfig(session.id, emit, profile);
     }
+    const toolStand = await leseRuntimeToolAusgabe(HAUPTAGENT_PROJEKT);
+    const toolEnv = toolAusgabeUmgebung(toolStand);
+    const toolAusgabe = claudeToolAusgabe(mcpConfig ? toolEnv : {}, true);
+    if (toolAusgabe.aktiv) {
+      const version = await this.execCapture(container, ['claude', '--version'], toolStand.werte.tool_ausgabe_guard_sekunden * 1000);
+      pruefeToolAusgabeClaudeVersion(version.stdout.trim());
+    }
+    emit({ event: 'runtime', data: { tool_ausgabe: toolAusgabe.debug } });
     const command = [
       '/usr/bin/env',
       '-u',
       'ANTHROPIC_API_KEY',
       ...buildClaudeCommand(session.runtimeSessionId, config.model ?? DEFAULT_MODEL, mcpConfig, profile, haupt ? HAUPTAGENT_SYSTEMPROMPT : null,
         // P22-T65: gespeicherte Stufe bzw. standard_effort des Modells (Schalter AUS -> null).
-        (await effortFuerStart('claude', config.model ?? DEFAULT_MODEL).catch(() => null))?.effort ?? null),
+        (await effortFuerStart('claude', config.model ?? DEFAULT_MODEL).catch(() => null))?.effort ?? null, toolEnv),
     ];
     const runner = buildClaudeRunnerCommand();
     const exec = await container.exec({
@@ -581,7 +586,7 @@ export class ClaudeRuntimeDriver implements AgentRuntimeDriver {
       Tty: false,
       WorkingDir: '/projects',
       // P22-T36: Ausweis nur als Env fuer die Header-Referenz der MCP-Config (nie im Prompt/Befehl).
-      Env: [...this.runtimeEnv(), 'SYNAPSE_CLAUDE_PID_FILE=' + pidPath, ...(haupt ? ['SYNAPSE_AGENT_TOKEN=' + haupt.token] : [])],
+      Env: [...this.runtimeEnv(), ...Object.entries(toolAusgabe.env).map(([k, v]) => k + '=' + v), 'SYNAPSE_CLAUDE_PID_FILE=' + pidPath, ...(haupt ? ['SYNAPSE_AGENT_TOKEN=' + haupt.token] : [])],
     });
     const stream = await exec.start({ hijack: true, stdin: true }) as unknown as NodeJS.ReadWriteStream;
     const stdout = new PassThrough();

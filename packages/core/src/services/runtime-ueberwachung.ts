@@ -157,6 +157,11 @@ export const RUNTIME_UEBERWACHUNG_EINSTELLUNGEN = {
   container_pids_limit: { art: 'zahl', standard: 256, min: 64, max: 4096 },
   container_tmpfs_mb: { art: 'zahl', standard: 256, min: 64, max: 4096 },
   cli_behalten: { art: 'zahl', standard: 4, min: 0, max: 50 },
+  // P22-T190: wirksam nur bei expliziter runtime_tool_ausgabe-Freigabe, beim naechsten Wrapper-Start.
+  claude_mcp_output_tokens: { art: 'zahl', standard: 100000, min: 1000, max: 1000000 },
+  codex_tool_output_tokens: { art: 'zahl', standard: 100000, min: 1000, max: 1000000 },
+  tool_ausgabe_kontext_prozent: { art: 'zahl', standard: 25, min: 1, max: 50 },
+  tool_ausgabe_guard_sekunden: { art: 'zahl', standard: 10, min: 2, max: 60 },
   // F5: CLI-Update entscheidet die API (der Container-Daemon startet mit SYNAPSE_RUNTIME_CLI_AUTOUPDATE=0).
   // P22-T60: wirkt auch bei Schalter runtime_ueberwachung AUS (User 90b05805 'Auto-Update immer an').
   cli_update_automatisch: { art: 'bool', standard: true },
@@ -1154,7 +1159,8 @@ export async function leseRuntimeUeberwachung(o: { ereignisse?: number } = {}): 
     leseRuntimeUeberwachungSchalter(), leseRuntimeUeberwachungEinstellungen(), leseUeberwachungStaende(), leseUeberwachungEreignisse(o.ereignisse ?? 20),
     leseUmzuege(20),
   ]);
-  return { schalter, runtimes: Object.values(staende), ereignisse, umzuege, einstellungen, free_stufe: freeAusfuehrer ? 'registriert' : 'free_worker_fehlt (W6/T41)',
+  const tool_ausgabe = await (await import('./runtime-tool-ausgabe.js')).leseRuntimeToolAusgabe();
+  return { schalter, tool_ausgabe, runtimes: Object.values(staende), ereignisse, umzuege, einstellungen, free_stufe: freeAusfuehrer ? 'registriert' : 'free_worker_fehlt (W6/T41)',
     takt_in_diesem_prozess: dienste !== null, letzter_takt: letzterTakt };
 }
 

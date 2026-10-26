@@ -774,6 +774,9 @@ export type {
   UeberwachungZustand, Massnahme as UeberwachungMassnahme, UeberwachungStand, UeberwachungEreignis, ContainerBeobachtung, RuntimeBeobachtung, ProbeDiagnose, ProbeFehlerKlasse,
   Entscheidung as UeberwachungEntscheidung, UeberwachungsDienste, TaktBericht as UeberwachungTaktBericht, FreeAusfuehrer, KettenRuntime, KettenSchritt,
 } from './services/runtime-ueberwachung.js';
+export { leseRuntimeToolAusgabe, RUNTIME_TOOL_AUSGABE_FUNKTION } from './services/runtime-tool-ausgabe.js';
+export { toolAusgabeUmgebung, claudeToolAusgabe, codexToolAusgabe, toolResultsGuardQuelle, TOOL_RESULTS_READ_REGEL, pruefeToolAusgabeClaudeVersion } from './services/runtime-tool-ausgabe-regeln.js';
+export type { ToolAusgabeStand, ToolAusgabeWerte } from './services/runtime-tool-ausgabe-regeln.js';
 export { RUNTIME_UEBERWACHUNG_SCHEMA_SQL } from './db/runtime-ueberwachung-schema.js';
 export { AGENT_RUNTIME_AUFTRAEGE_SCHEMA_SQL } from './db/agent-runtime-auftraege-schema.js';
 // P22-T5 (W2b): Runtime-Daemon-Zugang (Service-Token je Runtime, Hostbindung wie Tray), Projekte des Container-Hosts.

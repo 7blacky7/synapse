@@ -78,7 +78,7 @@ export const INTERN_TOOL_AUS = {
 } as const;
 
 export const INTERN_ACTIONS = [
-  'schalter_setzen', 'schalter_liste',
+  'schalter_setzen', 'schalter_liste', 'runtime_tool_ausgabe',
   'ollama_status', 'ollama_entladen', 'ollama_laden',
   'status', 'db_sitzungen', 'langsam', 'nutzung',
   'nachzug_jetzt', 'embedding_messen', 'neu_einbetten', 'embed_prioritaet',
@@ -106,7 +106,9 @@ export const INTERN_DEFINITION = {
     'token_identitaet (modus freigegeben): aktiv:true = Token-Anmeldung EIN, aktiv:false = AUS, befristeter Testoverride. Produktionsbasis SYNAPSE_TOKEN_IDENTITAET=1 (Default AUS), ohne intern/nach Ablauf/bei Lesefehler gilt diese Basis. schalter_liste.token_identitaet zeigt wirksamen Wert, Quelle, Ablauf und letzten Lesefehler. ' +
     'agent_bezug_modus (alt | beide | neu): aktiv:true setzt den gewaehlten Testmodus, aktiv:false erzwingt alt; Ablauf/Lesefehler/ohne intern -> SYNAPSE_AGENT_BEZUG_MODUS (Default alt). schalter_liste.agent_bezug zeigt wirksamen Modus, Produktionsstandard, Quelle, Ablauf und letzten Fehler. ' +
     'Jeder Schalter laeuft ab (Default und Obergrenze 12 h), ohne Ablauf nur mit dauerhaft:true. ' +
-    'schalter_liste zeigt alle Schalter mit Ablauf. ' +
+    'schalter_liste zeigt alle Schalter mit Ablauf und runtime_tool_ausgabe samt Produktbasis, Werten, Quellen und Fehler. ' +
+    'runtime_tool_ausgabe: Read nur fuer tool-results und hoehere CLI-Ausgabelimits (Produktstandard AUS); schalter_setzen name runtime_tool_ausgabe aktiv true/false setzt ausschliesslich befristeten Testoverride (modus freigegeben). ' +
+    'runtime_tool_ausgabe ohne Werte liest den Debugstand; tool_ausgabe_werte setzt claude_mcp_output_tokens (Standard100000), codex_tool_output_tokens (100000), tool_ausgabe_kontext_prozent (25), tool_ausgabe_guard_sekunden (10) ueber denselben PG-Katalog und dieselben User/Main/Koordinator-Rechte wie admin runtime_ueberwachung; tool_ausgabe_entfernen setzt benannte Werte auf Standard, grund Pflicht. Wirkt ab naechstem CLI-Start, Messaging-Hooks bleiben aus. ' +
     'ollama_status: geladene Modelle (VRAM, CPU/GPU-Anteil, Kontext, Ablauf), Version, installierte Embedding-Modelle; ' +
     'ollama_entladen / ollama_laden (modell): Modell aus dem VRAM nehmen bzw. vorladen — nichts wird heruntergeladen oder geloescht. ' +
     'status: Embedding-Queue, DB-Pools, offene Embeddings, Parser-Worker, Context7-Kontingent, Modell, Schalter in einem Aufruf; ' +
@@ -147,7 +149,9 @@ export const INTERN_DEFINITION = {
       modus: { type: 'string', description: 'schalter_setzen: embedding hintergrund (Standard) | alle; parser/context7 pause; tray_token_weiterleitung freigegeben; agent_bezug_modus alt | beide | neu' },
       bis: { type: 'string', description: 'nutzung: Ende (ISO-Zeitpunkt; Standard jetzt); schalter_setzen / worker_pausieren: Ablauf als ISO-Zeitpunkt' },
       dauer_min: { type: 'number', description: 'schalter_setzen / worker_pausieren: Ablauf in Minuten ab jetzt' },
-      dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich)' },
+      dauerhaft: { type: 'boolean', description: 'schalter_setzen: ohne Ablauf (nur ausdruecklich); runtime_tool_ausgabe immer befristet' },
+      tool_ausgabe_werte: { type: 'object', additionalProperties: true, description: 'runtime_tool_ausgabe: PG-Werte claude_mcp_output_tokens, codex_tool_output_tokens, tool_ausgabe_kontext_prozent, tool_ausgabe_guard_sekunden; Grenzen aus admin runtime_ueberwachung, grund Pflicht' },
+      tool_ausgabe_entfernen: { type: 'array', items: { type: 'string' }, description: 'runtime_tool_ausgabe: benannte Ausgabelimit-Einstellungen auf Katalogstandard zuruecksetzen; grund Pflicht' },
       grund: { type: 'string', description: 'schalter_setzen / worker_pausieren: Grund (sichtbar in schalter_liste bzw. worker_status und im Log)' },
       worker: { type: ['string', 'array'], items: { type: 'string' }, description: 'worker_pausieren/worker_fortsetzen: Name, Liste oder "alle"; worker_durchlauf: ein Name. worker_status zeigt die Namen.' },
       prozess: { type: 'string', description: 'worker_*: "api" (Standard) | "daemon" (der einzige verbundene lokale Daemon) | "daemon:<host>"; gpu_helfer_*: "daemon" (Standard) | "daemon:<host>"' },
@@ -314,6 +318,8 @@ export async function fuehreInternAus(
         });
         const message = name === 'agent_bezug_modus'
           ? `Agenten-Bezug-Testoverride ${stand.aktiv ? stand.modus : 'alt'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne intern/nach Ablauf/bei Lesefehler gilt SYNAPSE_AGENT_BEZUG_MODUS (Standard alt).`
+          : name === 'runtime_tool_ausgabe'
+          ? `CLI-Tool-Ausgabe-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} bis ${stand.bis}; ohne intern/nach Ablauf gilt der PG-Produktwert (Standard AUS). Wirkt ab naechstem CLI-Start; Debug: intern runtime_tool_ausgabe.`
           : name === 'token_identitaet'
           ? `Token-Identitaet-Testoverride ${stand.aktiv ? 'EIN' : 'AUS'} (${stand.dauerhaft ? 'dauerhaft' : `bis ${stand.bis}`}). Ohne intern/nach Ablauf/bei Lesefehler gilt SYNAPSE_TOKEN_IDENTITAET (Standard AUS).`
           : name === 'tray_token_weiterleitung'
@@ -333,7 +339,25 @@ export async function fuehreInternAus(
           token_identitaet: await (await import('./agent-identitaet.js')).leseTokenIdentitaetSchalter(),
           ausweis_kern: await (await import('./agent-profil-schalter.js')).leseAusweisKern(),
           agent_bezug: await (await import('./agent-bezug.js')).leseAgentBezugModus(),
+          runtime_tool_ausgabe: await (await import('./runtime-tool-ausgabe.js')).leseRuntimeToolAusgabe(text(a, 'project') ?? null),
         };
+      case 'runtime_tool_ausgabe': {
+        const { leseRuntimeToolAusgabe } = await import('./runtime-tool-ausgabe.js');
+        const project = text(a, 'project') ?? null;
+        const stand = await leseRuntimeToolAusgabe(project);
+        const werte = a.tool_ausgabe_werte, entfernen = a.tool_ausgabe_entfernen;
+        if (werte !== undefined || entfernen !== undefined) {
+          if (werte !== undefined && (!werte || typeof werte !== 'object' || Array.isArray(werte)) || entfernen !== undefined && !Array.isArray(entfernen)) return fehler(action, 'einstellung_ungueltig', 'Werte als Objekt, entfernen als Namenliste.');
+          const namen = [...Object.keys((werte ?? {}) as object), ...((entfernen ?? []) as unknown[])];
+          if (namen.some(n => typeof n !== 'string' || !Object.hasOwn(stand.werte, n))) return fehler(action, 'einstellung_unbekannt', 'Nur die vier Tool-Ausgabe-Einstellungen sind hier erlaubt.');
+          if (werte !== undefined && entfernen !== undefined) return fehler(action, 'parameter_ungueltig', 'Setzen oder entfernen je Aufruf.');
+          // EINE Rechtepruefung: bestehender Admin-Dispatcher mit bezeugtem Akteur/Legacy-Vertrag.
+          const { fuehreW1bAdminAus } = await import('./agent-profil-admin.js');
+          const r = await fuehreW1bAdminAus('runtime_ueberwachung', { project, agent_id: agentId, grund: a.grund, ueberwachung_modus: werte !== undefined ? 'setzen' : 'entfernen', ueberwachung_werte: werte, ueberwachung_namen: entfernen });
+          if (!r.success) return { ...r, action };
+        }
+        return { success: true, action, tool_ausgabe: await leseRuntimeToolAusgabe(project), hinweis: 'Wirkt ab naechstem CLI-Start; Produktstandard AUS. Messaging-Hooks bleiben aus.' };
+      }
       case 'ollama_status':
         return { success: true, action, ...(await ollamaStatus()) };
       case 'ollama_entladen': {

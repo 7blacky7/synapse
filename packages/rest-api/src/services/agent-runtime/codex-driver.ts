@@ -10,7 +10,7 @@ import { istAgentRuntimeImage, leseRuntimeContainerGrenzen, runtimeContainerSpez
 import { beobachteRuntimeContainer, fuehreCliUpdateImContainerAus } from './runtime-beobachtung.js';
 import { leseCliModelleImContainer, type CliModellListe } from './cli-modelle.js';
 import { StatusStabilisierer } from './status-stabil.js';
-import { effortFuerStart, leseCliKatalog, synapseModellId } from '@synapse/core';
+import { effortFuerStart, leseCliKatalog, synapseModellId, leseRuntimeToolAusgabe, toolAusgabeUmgebung, codexToolAusgabe, getModel } from '@synapse/core';
 import type { ContainerBeobachtung } from '@synapse/core';
 import type {
   AgentRuntimeDriver,
@@ -165,8 +165,9 @@ export function parseCodexJsonLine(line: string): ParsedCodexEvent {
   return {};
 }
 
-export function buildCodexCommand(runtimeSessionId: string | null, effort: string | null = null): string[] {
+export function buildCodexCommand(runtimeSessionId: string | null, effort: string | null = null, toolOutputTokens: number | null = null): string[] {
   const common = ['codex', 'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', '-C', '/projects'];
+  if (toolOutputTokens && Number.isSafeInteger(toolOutputTokens) && toolOutputTokens > 0) common.push('-c', 'tool_output_token_limit=' + toolOutputTokens);
   // P22-T65: codex-cli 0.163 hat kein exec-Flag fuer die Stufe, nur den config-Schluessel; ohne Stufe byte-gleich.
   if (effort && /^[a-z]{2,16}$/.test(effort)) common.push('-c', 'model_reasoning_effort=' + JSON.stringify(effort));
   return runtimeSessionId
@@ -458,8 +459,12 @@ export class CodexRuntimeDriver implements AgentRuntimeDriver {
     await this.ensureRunning(container);
     await this.ensureTrustStore(container);
 
+    const toolEnv = toolAusgabeUmgebung(await leseRuntimeToolAusgabe('synapse-hauptagent'));
+    const kontext = (await getModel('codex').catch(() => null))?.contextWindow;
+    const toolAusgabe = codexToolAusgabe(toolEnv, kontext);
+    emit({ event: 'runtime', data: { tool_ausgabe: toolAusgabe.debug } });
     const exec = await container.exec({
-      Cmd: buildCodexCommand(session.runtimeSessionId, await this.altwegEffort()),
+      Cmd: buildCodexCommand(session.runtimeSessionId, await this.altwegEffort(), toolAusgabe.tokens),
       AttachStdin: true,
       AttachStdout: true,
       AttachStderr: true,

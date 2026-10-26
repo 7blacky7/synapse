@@ -29,7 +29,7 @@ export function agentStartFreigegeben(): boolean {
 export async function holeAgentStartApi(name: string, project: string): Promise<Record<string, string>> {
   if (!agentStartFreigegeben()) return {};
   // Server prüft Freigabe erneut sowie Daemon-Host und Projektzuordnung.
-  const a = await spezialistenDatenApi<{ freigegeben?: boolean; token?: string; neuanmeldung?: boolean; legacy_start?: boolean; identity_id?: string; agent_bezug_modus?: string }>('agent_start', { project, agent: name });
+  const a = await spezialistenDatenApi<{ freigegeben?: boolean; token?: string; neuanmeldung?: boolean; legacy_start?: boolean; identity_id?: string; agent_bezug_modus?: string; tool_ausgabe_env?: Record<string, string> }>('agent_start', { project, agent: name });
   if (a.freigegeben !== true) return {};
   if (a.token !== undefined && (typeof a.token !== 'string' || !/^sai_[a-z0-9]{1,64}$/.test(a.token))) {
     throw new Error('agent_start: ungültige API-Antwort');
@@ -38,12 +38,17 @@ export async function holeAgentStartApi(name: string, project: string): Promise<
     if (a.legacy_start === true || a.neuanmeldung === true) return { SYNAPSE_AGENT_TOKEN: '' };
     throw new Error('agent_start: Anmeldung nicht geklärt');
   }
+  // P22-T190: nur erlaubte, nicht geheime Startwerte; keine beliebigen Env-Namen aus einer Antwort uebernehmen.
+  const toolEnv: Record<string, string> = { SYNAPSE_TOOL_AUSGABE_AKTIV: '0' };
+  for (const k of ['SYNAPSE_TOOL_AUSGABE_AKTIV', 'SYNAPSE_TOOL_AUSGABE_QUELLE', 'SYNAPSE_CLAUDE_MCP_OUTPUT_TOKENS', 'SYNAPSE_CODEX_TOOL_OUTPUT_TOKENS', 'SYNAPSE_TOOL_AUSGABE_KONTEXT_PROZENT', 'SYNAPSE_TOOL_AUSGABE_GUARD_SEKUNDEN']) {
+    if (typeof a.tool_ausgabe_env?.[k] === 'string') toolEnv[k] = a.tool_ausgabe_env[k];
+  }
   // Leer überschreibt einen eventuell vom aufrufenden Agenten geerbten Ausweis.
   if (a.agent_bezug_modus === 'beide' || a.agent_bezug_modus === 'neu') {
     if (typeof a.identity_id !== 'string' || !/^[a-f0-9-]{36}$/.test(a.identity_id)) throw new Error('agent_start: Identitäts-ID fehlt');
-    return { SYNAPSE_AGENT_TOKEN: a.token, SYNAPSE_AGENT_IDENTITY_ID: a.identity_id, SYNAPSE_WRAPPER_TRANSPORT: 'api', SYNAPSE_WISSEN_QUELLE: 'api' };
+    return { ...toolEnv, SYNAPSE_AGENT_TOKEN: a.token, SYNAPSE_AGENT_IDENTITY_ID: a.identity_id, SYNAPSE_WRAPPER_TRANSPORT: 'api', SYNAPSE_WISSEN_QUELLE: 'api' };
   }
-  return { SYNAPSE_AGENT_TOKEN: a.token };
+  return { ...toolEnv, SYNAPSE_AGENT_TOKEN: a.token };
 }
 export async function installiereAgentStartQuelle(): Promise<void> {
   const tools = await import('@synapse/mcp-server/tools');
