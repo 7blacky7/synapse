@@ -562,6 +562,23 @@ export async function getPlattformAgentChatSchalter(identityId: string): Promise
   return (await jsonRequest<{ success: true; schalter: PlattformAgentChatSchalter }>('/api/agent-runtimes/agent-chat/status?identity_id=' + encodeURIComponent(identityId))).schalter;
 }
 
+/** P22-T188: Heartbeat im Chatfenster (Koordinator: koordinator_heartbeat, Unteragent: laufender Wrapper / runtime_agenten_steuerung). */
+export interface AgentHeartbeatStand {
+  identity_id: string; agent_id: string; project: string; rolle: string; weg: 'koordinator_heartbeat' | 'wrapper' | null; verstellbar: boolean;
+  schalter: { name: string; aktiv: boolean; quelle: string; letzter_fehler: string | null };
+  gewuenscht: { aktiv: boolean; intervall_ms: number | null; quelle?: string } | null;
+  tatsaechlich: { lauf: boolean; status?: string; aktiv?: boolean | null; intervall_ms?: number | null };
+  hinweis: string | null; wrapper_nachgezogen?: boolean;
+}
+export async function getAgentHeartbeat(identityId: string): Promise<AgentHeartbeatStand> {
+  return jsonRequest<{ success: true } & AgentHeartbeatStand>('/api/agent-runtimes/agent-heartbeat?identity_id=' + encodeURIComponent(identityId));
+}
+export async function setzeAgentHeartbeat(identityId: string, aktiv: boolean, intervallMs: number | null): Promise<AgentHeartbeatStand> {
+  return jsonRequest<{ success: true } & AgentHeartbeatStand>('/api/agent-runtimes/agent-heartbeat', {
+    method: 'PUT', body: JSON.stringify({ identity_id: identityId, aktiv, intervall_ms: intervallMs, grund: 'Web-UI Chatfenster (P22-T188)' }),
+  });
+}
+
 /** P22-T124: Schalter agent_chat_einheitlich (Produkt-Schalter im Projekt der Zielidentitaet, Std AUS); fehlt das Feld = AUS. */
 export async function getAgentChatEinheitlich(identityId: string): Promise<boolean> {
   const r = await jsonRequest<{ success: true; einheitlich?: { aktiv?: boolean } }>('/api/agent-runtimes/agent-chat/status?identity_id=' + encodeURIComponent(identityId));

@@ -1496,6 +1496,8 @@ export {
   removeWrapperStatus,
 } from './services/wrapper-status.js';
 export { setzeHeartbeatKonfiguration, setzeHeartbeatBeimSpawn, steuereHeartbeat } from './services/wrapper-status.js';
+// P22-T188: Heartbeat im Chatfenster (Koordinator ueber koordinator_heartbeat, Unteragent ueber den laufenden Wrapper; nur User).
+export { leseAgentHeartbeatFenster, setzeAgentHeartbeatFenster, UNTERAGENT_HEARTBEAT_FUNKTION } from './services/agent-heartbeat-fenster.js';
 // Thought-Kurz-IDs + PG als Quelle der Wahrheit (P10-T28)
 export { holeThoughtsMitProblemen, aendereThoughtPerId, loescheThoughtsPerId } from './services/thoughts.js';
 export type { ThoughtIdProblem, LoeschErgebnis } from './services/thoughts.js';
