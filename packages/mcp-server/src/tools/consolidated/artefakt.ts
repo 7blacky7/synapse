@@ -4,7 +4,8 @@ import {readFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {ARTEFAKT_DEFINITION,baueToolErgebnis} from '@synapse/core';
+import {ARTEFAKT_DEFINITION,baueToolErgebnis,begrenzeArtefaktSeite,istArtefaktSeitenAntwort,
+ ARTEFAKT_DATEI_STANDARD,leseArtefaktDateiEinstellungen,dbZugriffGesperrt} from '@synapse/core';
 import type {ConsolidatedTool} from './types.js';
 export interface ArtefaktApiOptionen {werkzeug?:string;url?:string;token?:string;fetchImpl?:typeof fetch;timeoutMs?:number}
 export async function rufeArtefaktApi(args:Record<string,unknown>,o:ArtefaktApiOptionen={}):Promise<Record<string,unknown>>{
@@ -32,9 +33,35 @@ export async function rufeArtefaktApi(args:Record<string,unknown>,o:ArtefaktApiO
 }
 /** stdio nutzt denselben API-Ueberlaufvertrag. */
 export async function begrenzeStdioArtefaktAntwort<T extends {content:Array<{type:string;text?:string}>;isError?:boolean}>(antwort:T,args:Record<string,unknown>,tool:string,o:ArtefaktApiOptionen={}):Promise<T>{
+ // API-Seiten tragen das serverseitige PG-Budget. Nach stdio-Hooks nochmals
+ // gemeinsam messen, auch fuer artefakt/read und den files-Alias; kein DB-Fallback.
+ const text=antwort.content.find(x=>x.type==='text'&&typeof x.text==='string')?.text;
+ let seite:unknown;try{if(text)seite=JSON.parse(text);}catch{/* Kein JSON. */}
+ if(istArtefaktSeitenAntwort(seite)&&Number.isSafeInteger(seite.seiten_budget_bytes)){
+  try{return baueToolErgebnis(begrenzeArtefaktSeite(seite,Number(seite.seiten_budget_bytes)),
+   {tool,strukturiert:true,isError:antwort.isError===true}) as unknown as T;}
+  catch{return baueToolErgebnis({success:false,error:'artefakt_seitenbudget_fehler'},
+   {tool,strukturiert:true,isError:true}) as unknown as T;}
+ }
  if(tool==='artefakt'||(args.artefakt_id&&args.action==='read'))return antwort;
  const block=antwort.content.find(x=>x.type==='text'&&typeof x.text==='string');
- if(!block?.text || Buffer.byteLength(block.text,'utf8')*2<1000)return antwort;
+ if(!block?.text)return antwort;
+ // P22-T191 D2: full actual MCP envelope, not the old 500-byte text heuristic.
+ // 2048 is the existing minimum permitted by setzeArtefaktDateiEinstellungen.
+ const bytes=Buffer.byteLength(JSON.stringify(antwort),'utf8');
+ if(bytes<=2048)return antwort;
+ let budget:number|null=null;
+ // Normal stdio already runs against core/PG. Read the SAME authoritative setting,
+ // never artefact data. API-only/DB-locked processes do not gain a PG fallback.
+ if(!dbZugriffGesperrt()){
+  try{budget=(await leseArtefaktDateiEinstellungen()).werte.antwort_max_bytes;}
+  catch(error){
+   // A schema before165 has no override table: the existing code default applies.
+   // Other failures do NOT justify assuming a larger budget than actually configured.
+   if((error as {code?:string})?.code==='42P01')budget=ARTEFAKT_DATEI_STANDARD.antwort_max_bytes;
+  }
+ }
+ if(budget!==null&&bytes<=budget)return antwort;
  // Ohne API-Freigabe gehen KEINE Tool-Nutzdaten an den Ueberlaufvertrag. Kein lokaler PG-Zugang.
  const status=await rufeArtefaktApi({action:'status',project:args.project,agent_kennung:args.agent_kennung??args.token??process.env.SYNAPSE_AGENT_TOKEN},o);
  let stand=status.structuredContent as Record<string,unknown>|undefined;

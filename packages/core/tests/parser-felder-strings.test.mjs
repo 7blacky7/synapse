@@ -59,7 +59,9 @@ function anker(zeile, enthaelt) {
 const ts = getParserForFile('sample-felder-strings.ts');
 const html = getParserForFile('seite.html');
 pruefe('typescript-Parser Version', ts.version, 5);
-pruefe('html-Parser Version (delegiert <script> an TS)', html.version, 6);
+// P22-T191 / Plan29246: Version7 erzwingt Reparse für Artefakt-Überschriften.
+// Die fachlichen <script>-Feld-/Referenzprüfungen mit Wirtszeilen bleiben unten bestehen.
+pruefe('P22-T191 html-Parser Version7 (Artefaktgliederung; delegiert <script> an TS)', html.version, 7);
 
 const erg = ts.parse(text, 'sample-felder-strings.ts');
 

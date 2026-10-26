@@ -1,11 +1,23 @@
 /**
  * P22-T191 Semantik-Vertrag: core artefakt-katalog/dateien delegieren an vorhandenes code.js searchCode.
  * Echte Rechte/Metadaten in privatem synapse_test:5433-Schema; Index-/Vektorgrenze als Attrappe, keine Modellguete-Behauptung.
- * Aufruf: mise exec node@25 -- node --experimental-test-module-mocks packages/rest-api/tests/artefakt-semantic-p22-t191.test.mjs
+ * Aufruf: mise exec node@25 -- node packages/rest-api/tests/artefakt-semantic-p22-t191.test.mjs (required mock flag is enabled automatically)
  */
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {mock} from 'node:test';
+// P22-T191: test-alle invokes plain node; enable the required Node capability
+// BEFORE any project import, DB access or temporary data. No skip, same assertions.
+if(typeof mock.module!=='function'){
+ const flag='--experimental-test-module-mocks';
+ if(process.execArgv.includes(flag))throw Error('P22-T191: mock.module unavailable despite '+flag+' (Node '+process.version+')');
+ const {spawnSync}=await import('node:child_process');
+ const {fileURLToPath}=await import('node:url');
+ const child=spawnSync(process.execPath,[...process.execArgv,flag,fileURLToPath(import.meta.url),...process.argv.slice(2)],{stdio:'inherit',env:process.env});
+ if(child.error)throw child.error;
+ process.exit(child.status??1);
+}
+
 const db=process.env.DATABASE_URL??process.env.SYNAPSE_DATABASE_URL,u=new URL(db);assert.equal(u.port,'5433');assert.equal(u.pathname,'/synapse_test');
 process.env.DATABASE_URL=db;process.env.SYNAPSE_SKIP_EMBEDDINGS='1';process.env.QDRANT_URL='http://127.0.0.1:1';
 const codeUrl=new URL('../../core/dist/services/code.js',import.meta.url),code=await import(codeUrl.href);

@@ -19,7 +19,7 @@ import Docker from 'dockerode';
 import { PassThrough } from 'node:stream';
 import {
   getPool,
-  begrenzeArtefaktAntwort, artefaktDateiSchalter,
+  begrenzeArtefaktAntwort, artefaktDateiSchalter, begrenzeArtefaktSeite, istArtefaktSeitenAntwort,
   fuehreArtefaktDateiAus, leseArtefaktDateiEinstellungen, setzeArtefaktDateiEinstellungen,
   pruefeArtefaktDateiFreigabe, listeArtefaktKatalog, loeseArtefaktName, setzeArtefaktMetadaten, ArtefaktDateiFehler,
   speichereArtefakt,
@@ -349,11 +349,13 @@ function renderTeil(r: ArtefaktRenderErgebnis): Record<string, unknown> {
  */
 /** Gemeinsamer, vertrauenswuerdiger Zugang fuer artefakt/files/code_intel. session_id setzt nur der MCP-Transport. */
 export async function begrenzeArtefaktWerkzeugAntwort(wert:unknown,args:Record<string,unknown>,tool:string,action?:string):Promise<unknown>{
- if((tool==='artefakt'&&['read','tool_antwort','status','einstellungen'].includes(action??''))||(tool==='files'&&args.artefakt_id&&action==='read'))return wert;
+ if(tool==='artefakt'&&['tool_antwort','status','einstellungen'].includes(action??''))return wert;
  try{
+  // Nach ALLEN REST-Anhaengen erneut dieselbe Seitenrechnung, ohne ein Folge-Artefakt anzulegen.
+  if(istArtefaktSeitenAntwort(wert))return begrenzeArtefaktSeite(wert,(await leseArtefaktDateiEinstellungen()).werte.antwort_max_bytes);
   const b={...await betrachterAusAufruf(args,!!str(args,'session_id')),session_id:str(args,'session_id')};
   return await begrenzeArtefaktAntwort(wert,b,tool,action);
- }catch(error){return wert&&typeof wert==='object'?{...wert,ueberlauf_debug:{fehler:meldung(error)}}:wert;}
+ }catch(error){if(istArtefaktSeitenAntwort(wert))return {success:false,error:'artefakt_seitenbudget_fehler',message:meldung(error).slice(0,200)};return wert&&typeof wert==='object'?{...wert,ueberlauf_debug:{fehler:meldung(error)}}:wert;}
 }
 export async function fuehreArtefaktDateiAufrufAus(args:Record<string,unknown>,agentId?:string):Promise<Record<string,unknown>>{
  try{

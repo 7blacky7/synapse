@@ -58,6 +58,60 @@ export function artefaktTextSeite(text:string,args:Record<string,unknown>,werte:
  return {content:ausgabe,total_lines:lines.length,returned_range:{from,to:Math.min(lines.length,line-(col===1?1:0)),from_column:column,eof},
    naechster_aufruf:eof?null:{action:'read',from_line:line,from_column:col}};
 }
+
+/** Volle MCP-Huelle: JSON-Text wird nochmals escaped, daneben steht structuredContent.
+ * Beide Darstellungen messen; isError mitzaehlen, auch wenn der Transport es spaeter weglässt.
+ */
+export function artefaktMcpAntwortBytes(wert:unknown):number {
+ const bytes=(pretty:boolean)=>Buffer.byteLength(JSON.stringify({
+  content:[{type:'text',text:pretty?JSON.stringify(wert,null,2):JSON.stringify(wert)}],
+  structuredContent:wert,isError:true,
+ }),'utf8');
+ return Math.max(bytes(true),bytes(false));
+}
+type ArtefaktSeite=Record<string,unknown>&{content:string;total_lines:number;
+ returned_range:{from:number;to:number;from_column:number;eof:boolean};
+ naechster_aufruf:Record<string,unknown>|null};
+export function istArtefaktSeitenAntwort(wert:unknown):wert is ArtefaktSeite {
+ if(!wert||typeof wert!=='object')return false;
+ const w=wert as Record<string,unknown>,r=w.returned_range as ArtefaktSeite['returned_range']|undefined;
+ return typeof w.content==='string'&&typeof w.artefakt_id==='string'&&Number.isSafeInteger(w.total_lines)
+  &&!!r&&Number.isSafeInteger(r.from)&&Number.isSafeInteger(r.from_column)&&typeof r.eof==='boolean';
+}
+/** Erst-/Folgeseite UND letzte Ausgabe nach Transport-Hooks verwenden dieselbe Rechnung.
+ * Nur ganze Unicode-Codepunkte ausliefern. Der Cursor zählt wie bisher UTF-16-Spalten.
+ */
+export function begrenzeArtefaktSeite(wert:Record<string,unknown>,budget:number):Record<string,unknown> {
+ if(!istArtefaktSeitenAntwort(wert))return wert;
+ ganz(budget,2048,1000000);
+ const punkte=Array.from(wert.content),start=wert.returned_range;
+ let basis:Record<string,unknown>={...wert,seiten_budget_bytes:budget};
+ const seite=(anzahl:number):Record<string,unknown>=>{
+  if(anzahl===punkte.length)return {...basis,content:wert.content};
+  const prefix=punkte.slice(0,anzahl).join(''),teile=prefix.split('\n');
+  const line=start.from+teile.length-1;
+  const col=teile.length===1?start.from_column+prefix.length:teile[teile.length-1].length+1;
+  return {...basis,content:prefix,returned_range:{from:start.from,to:line-(col===1?1:0),from_column:start.from_column,eof:false},
+   naechster_aufruf:{...(wert.naechster_aufruf??{}),tool:'artefakt',action:'read',artefakt_id:wert.artefakt_id,from_line:line,from_column:col}};
+ };
+ const passt=(n:number)=>artefaktMcpAntwortBytes(seite(n))<=budget;
+ if(passt(punkte.length))return seite(punkte.length);
+ if(!passt(Math.min(1,punkte.length))){
+  // Namen, Titel, Hook-Hinweise und Cleanup-Listen koennen schon allein zu gross sein.
+  // Seitennutzdaten/Cursor bleiben erhalten; Metadaten sind weiter separat abrufbar.
+  basis={success:wert.success??true,artefakt_id:wert.artefakt_id,total_lines:wert.total_lines,
+   returned_range:wert.returned_range,naechster_aufruf:wert.naechster_aufruf,
+   ...(wert.revision!==undefined?{revision:wert.revision}:{}),
+   ...(wert.ueberlauf?{ueberlauf:true,original_success:wert.original_success}:{}),
+   seiten_budget_bytes:budget,seiten_metadaten_gekuerzt:true};
+  if(passt(punkte.length))return seite(punkte.length);
+ }
+ if(!passt(Math.min(1,punkte.length)))throw new ArtefaktDateiFehler('antwortbudget_zu_klein','Seitenmetadaten passen nicht ins Antwortbudget');
+ let low=1,high=punkte.length;
+ while(low<high){const mid=Math.ceil((low+high)/2);if(passt(mid))low=mid;else high=mid-1;}
+ return seite(low);
+}
+
 export async function sucheArtefaktText(text:string,args:Record<string,unknown>){
  const query=artefaktText(args.query??args.search);
  if(!query)throw new ArtefaktDateiFehler('suchtext_fehlt','query angeben');
@@ -130,7 +184,7 @@ export async function fuehreArtefaktDateiAus(args:Record<string,unknown>,b:Artef
  const z=await loeseArtefaktName(artefaktText(args.artefakt_id)||artefaktText(args.name),b),s=await ladeArtefaktText(z);
  const basis={success:true,artefakt_id:z.artefakt_id,name:z.name,titel:z.titel,revision:s.revision,debug:{speicher:'postgresql',text:s.vorlage!==null?'vorlage':'html',ueberlauf:z.ueberlauf}};
  const action=String(args.action),e=await leseArtefaktDateiEinstellungen();
- if(action==='read') {const r=artefaktTextSeite(textVon(s),args,e.werte);return {...basis,...r,naechster_aufruf:r.naechster_aufruf?{...r.naechster_aufruf,artefakt_id:z.artefakt_id}:null};}
+ if(action==='read') {const r=artefaktTextSeite(textVon(s),args,e.werte);return begrenzeArtefaktSeite({...basis,...r,naechster_aufruf:r.naechster_aufruf?{...r.naechster_aufruf,artefakt_id:z.artefakt_id}:null},e.werte.antwort_max_bytes);}
  if(action==='code_intel')return artefaktCodeIntel(args,z,s);
  if(action==='search')return {...basis,...await sucheArtefaktText(textVon(s),args)};
  if(action==='versions'){

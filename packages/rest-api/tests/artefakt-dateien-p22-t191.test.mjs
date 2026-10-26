@@ -104,6 +104,16 @@ try{
  }};
  r=await ST.rufeArtefaktApi({action:'read',artefakt_id:'Projektbericht'},transport);
  ok(r.structuredContent?.content?.includes('Hallo')&&requests[0].name==='artefakt','H stdio/API read gleicher Dispatcher',r);
+ // P22-T191 D2: below the actual PG budget must mean ZERO status fetches,
+ // including sizes above the previous heuristic; a smaller custom budget must still apply.
+ const mittel=C.baueToolErgebnis({success:true,text:'m'.repeat(2600)},{tool:'probe',strukturiert:true});
+ await als(()=>C.setzeArtefaktDateiEinstellungen({werte:{antwort_max_bytes:24000},grund:'D2 lazy Budget Normalantwort'},'test'));
+ requests=[];const klein=await als(()=>ST.begrenzeStdioArtefaktAntwort(mittel,{project:P,action:'mittel'},'probe',transport));
+ ok(klein===mittel&&requests.length===0,'H2 ganze MCP-Huelle unter PG-Budget: null fetch',{bytes:Buffer.byteLength(JSON.stringify(mittel)),requests});
+ await als(()=>C.setzeArtefaktDateiEinstellungen({werte:{antwort_max_bytes:4096},grund:'D2 lazy Budget kleiner Override'},'test'));
+ await schalter('tool_antwort_ueberlauf',false);requests=[];
+ await als(()=>ST.begrenzeStdioArtefaktAntwort(mittel,{project:P,action:'mittel'},'probe',transport));
+ ok(requests.length===1&&requests[0].arguments.action==='status'&&!('antwort' in requests[0].arguments),'H2 gleiche Huelle ueber kleinerem PG-Budget: nur Status bei AUS',requests);
  const mcp=C.baueToolErgebnis(original,{tool:'probe',strukturiert:true});
  await schalter('tool_antwort_ueberlauf',false);requests=[];
  r=await ST.begrenzeStdioArtefaktAntwort(mcp,{project:P,action:'gross',agent_kennung:'synthetisch'},'probe',transport);
@@ -111,6 +121,46 @@ try{
  await schalter('tool_antwort_ueberlauf',true);
  r=await ST.begrenzeStdioArtefaktAntwort(mcp,{project:P,action:'gross',agent_kennung:'synthetisch'},'probe',transport);
  ok(r.structuredContent?.ueberlauf&&requests.at(-1).arguments.action==='tool_antwort','H stdio grosse Antwort ueber denselben PG-Vertrag',r);
+
+ // P22-T191 f56c0b6a: erlaubte Kombination4096/8000 und Standard24000/8000.
+ // JEDE komplette REST/stdio-Huelle messen, auch nach grossen Hook-Metadaten.
+ for(const budget of [4096,24000]){
+  await als(()=>C.setzeArtefaktDateiEinstellungen({werte:{antwort_max_bytes:budget,seite_max_bytes:8000,seite_zeilen:100},grund:'t214 f56c0b6a Folgehuellen'},'test'));
+  const voll={success:true,text:'\\'.repeat(8000)+'😀ä"\t'.repeat(1500)+'\nzweite\n'};
+  const first=await als(()=>C.begrenzeArtefaktAntwort(voll,zugang,'budget','escape'));
+  for(const weg of ['REST artefakt','REST files','stdio artefakt','stdio files']){
+   let page=first,gesamt='',n=0,maxBytes=0;
+   while(true){
+    const rpcTool=weg.endsWith('files')?'files':'artefakt';
+    // Nachgestellte Hooks duerfen die bereits geschnittene Seite nicht wieder sprengen.
+    const mitHook={...page,pending_events:[{summary:'t214-Hinweis '.repeat(600)}]};
+    page=await als(()=>AT.begrenzeArtefaktWerkzeugAntwort(mitHook,{action:'read',artefakt_id:first.artefakt_id,project:P},rpcTool,'read'));
+    const finalWert=weg.startsWith('stdio')?{...page,pending_events:[{summary:'stdio-Hook '.repeat(1200)}]}:page;
+    let huelle=C.baueToolErgebnis(finalWert,{tool:rpcTool,strukturiert:true});
+    if(weg.startsWith('stdio')){
+     huelle=await ST.begrenzeStdioArtefaktAntwort(huelle,{action:'read',artefakt_id:first.artefakt_id,project:P},rpcTool,transport);
+     page=huelle.structuredContent;
+    }
+    const bytes=Buffer.byteLength(JSON.stringify(huelle),'utf8');maxBytes=Math.max(maxBytes,bytes);
+    ok(page.success&&bytes<=budget,'F2 artefakt-dateien.ts '+weg+' JEDE Huelle unter '+budget,{bytes,n,cursor:page.naechster_aufruf,success:page.success,error:page.error,keys:Object.keys(page),content:page.content?.slice(0,300)});
+    ok(page.returned_range.eof||page.content.length>0,'F2 '+weg+' Cursor macht Fortschritt',{n,cursor:page.naechster_aufruf});
+    gesamt+=page.content;n++;assert(n<2000);
+    const next=page.naechster_aufruf;if(!next)break;
+    const {tool:_werkzeug,...folgeArgs}=next;const a={...folgeArgs,project:P};
+    if(weg.startsWith('stdio')){
+     const proxy={...transport,werkzeug:rpcTool,fetchImpl:async(_u,init)=>{
+      const x=JSON.parse(init.body),value=await als(()=>MCP.handleToolCall(x.params.name,x.params.arguments,'ko191'));
+      const limited=await als(()=>AT.begrenzeArtefaktWerkzeugAntwort(value,x.params.arguments,x.params.name,'read'));
+      return {ok:true,json:async()=>({jsonrpc:'2.0',id:x.id,result:C.baueToolErgebnis(limited,{tool:rpcTool,strukturiert:true})})};
+     }};
+     const proxied=await ST.rufeArtefaktApi(a,proxy);page=proxied.structuredContent;
+    }else page=await als(()=>MCP.handleToolCall(rpcTool,a,'ko191'));
+   }
+   console.log('MESSUNG P22-T191 '+JSON.stringify({weg,budget,maxBytes,pages:n,zeichen:gesamt.length}));
+   ok(gesamt===JSON.stringify(voll,null,2),'F2 '+weg+' Escape/Unicode vollständig ohne Verlust '+budget,{pages:n,soll:JSON.stringify(voll,null,2).length,ist:gesamt.length});
+  }
+ }
+
  const stub=await ST.rufeArtefaktApi({action:'read'}, {...transport,fetchImpl:async()=>{throw Error('aus');}});
  ok(stub.structuredContent?.fehler==='api_nicht_erreichbar','H API-Ausfall klar, kein lokaler Fallback',stub);
  await pool.query('UPDATE agent_artifacts SET ablauf_am=NOW()-interval \'1 second\' WHERE id=$1',[overflow]);
