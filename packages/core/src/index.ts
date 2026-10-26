@@ -708,7 +708,9 @@ export type { ApiFreigabe } from './services/api-agent-freigabe.js';
 export { API_AGENT_FREIGABEN_SCHEMA_SQL } from './db/api-agent-freigaben-schema.js';
 // P22-T176: Anthropic-API-Key aus der Web-UI (verschluesselt im Server-Tresor, Schalter hauptagent_api_key_webui), Schema 160.
 export {
-  API_KEY_WEBUI_FUNKTION, API_KEY_ENV, API_KEY_FORM, leseApiKeySchalter, setzeApiKeySchalter, aktuellerApiKey, leseApiKeyStand, setzeApiKey, entferneApiKey,
+  API_KEY_WEBUI_FUNKTION, API_KEY_ENV, API_KEY_FORM,
+  // P22-T179 Nachtrag: optionale Workspace-ID als Header anthropic-workspace-id.
+  API_WORKSPACE_ENV, API_WORKSPACE_HEADER, API_WORKSPACE_HINWEIS, anthropicWorkspaceId, anthropicKopfzeilen, istWorkspaceFehlt, leseApiKeySchalter, setzeApiKeySchalter, aktuellerApiKey, leseApiKeyStand, setzeApiKey, entferneApiKey,
 } from './services/api-schluessel-dienst.js';
 export type { ApiKeySchalterStand, ApiKeyAufloesung, ApiKeyStand } from './services/api-schluessel-dienst.js';
 export { API_AGENT_SCHLUESSEL_SCHEMA_SQL } from './db/api-agent-schluessel-schema.js';
