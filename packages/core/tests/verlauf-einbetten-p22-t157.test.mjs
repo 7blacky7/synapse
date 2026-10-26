@@ -1,7 +1,7 @@
 /**
  * P22-T157 (Entwurf e8d2f0dc Fassung 2, GO R1-R8): Sitzungsverlaeufe semantisch durchsuchbar.
  * Prueft: Schema 153 (Spiegel, idempotent, ensureSchema), Zerlegung + Schwaerzung (rein), Ausloeser ueber abgeloesten Lauf und
- * Altersregel, laufende Zeile stoppt den Schnitt, nur Identitaeten mit Ausweis, Prioritaet ganz hinten (Wissen/Code vor Verlauf),
+ * P22-T193 sofortige Verarbeitung ohne Altersregel, laufende Zeile stoppt den Schnitt, nur Identitaeten mit Ausweis, Prioritaet ganz hinten (Wissen/Code vor Verlauf),
  * Schalter AUS, Suche mit Spanne/Filtern/Pflichtfilter identity_id aus dem Principal, Nachlesen, Wiederaufbau mit gleichen IDs,
  * Fall-Skill. Nur synapse_test:5433, eigenes privates Schema; Embedding/Qdrant ueber setzeVerlaufAbhaengigkeitenFuerTests ersetzt.
  *   node packages/core/tests/verlauf-einbetten-p22-t157.test.mjs
@@ -88,15 +88,15 @@ try{
   let r=C.zerlegeVerlauf(zeilen,{aktiverLauf:'L2',jetztMs:Date.now(),alterMs:6*3600000,mehrVorhanden:false});
   check(r.gruppen.length===2&&r.bis_id==='13','zwei fertige Gruppen, Schnitt hinter der letzten',r);
   r=C.zerlegeVerlauf([...zeilen,z(14,'ausgabe','aus','lauf','laeuft noch',{status:'laeuft'})],{aktiverLauf:'L2',jetztMs:Date.now(),alterMs:6*3600000,mehrVorhanden:false});
-  check(r.gruppen.length===1&&r.bis_id==='11','laufende Zeile stoppt: angefangene Gruppe wartet',r.bis_id);
+  check(r.gruppen.length===2&&r.bis_id==='13','P22-T193 zerlegeVerlauf verlauf-einbetten.ts: fertiger Praefix vor laufender Zeile sofort',r.bis_id);
   r=C.zerlegeVerlauf(zeilen.map(x=>({...x,lauf_id:'L2',erstellt_am:new Date()})),{aktiverLauf:'L2',jetztMs:Date.now(),alterMs:6*3600000,mehrVorhanden:false});
-  check(r.gruppen.length===0&&r.bis_id===null,'aktiver Lauf, jung: nichts schnittreif');
+  check(r.gruppen.length===2&&r.bis_id==='13','P22-T193 zerlegeVerlauf verlauf-einbetten.ts: aktiver junger Lauf sofort schnittreif');
   r=C.zerlegeVerlauf(zeilen.map(x=>({...x,lauf_id:'L2',erstellt_am:new Date()})),{aktiverLauf:'L2',jetztMs:Date.now()+7*3600000,alterMs:6*3600000,mehrVorhanden:false});
   check(r.gruppen.length===2,'aktiver Lauf nach der Altersregel schnittreif');
   r=C.zerlegeVerlauf([z(20,'user','ein','webui','Riese'),z(21,'ausgabe','aus','lauf','a'),z(22,'ausgabe','aus','lauf','b')],{aktiverLauf:null,jetztMs:Date.now(),alterMs:1,mehrVorhanden:true});
   check(r.gruppen.length===1&&r.bis_id==='22','Riesengruppe ueber den ganzen Ausschnitt wird erzwungen');
   r=C.zerlegeVerlauf([z(30,'user','ein','webui','A'),z(31,'ausgabe','aus','lauf','a'),z(32,'user','ein','webui','B')],{aktiverLauf:null,jetztMs:Date.now(),alterMs:1,mehrVorhanden:true});
-  check(r.gruppen.length===1&&r.bis_id==='31','letzte Gruppe wartet, wenn weitere Zeilen nicht geladen sind');
+  check(r.gruppen.length===2&&r.bis_id==='32','P22-T193 zerlegeVerlauf verlauf-einbetten.ts: fertiger Ausschnitt ohne Gruppenwartezeit');
   // Stuecke
   const teile=C.teileVerlaufText('a'.repeat(4500));
   check(teile.length===3&&teile[0].length===2000&&teile[1].startsWith('a')&&teile.every(t=>t.length<=2000),'Stuecke 2000 Zeichen mit 200 Ueberlappung',teile.map(t=>t.length));
@@ -106,6 +106,18 @@ try{
  });
 
  const GEHEIM=['Geheim123xyz','SuperGeheim99','abcdefghijklmnopqrstuvwxyz123456','PwGeheim77'];
+ await section('P22-T193 PG-Rangfolge / embedding-rang.ts',async()=>{
+  const {EMBEDDING_ADMISSION_RANG_SQL}=await load('packages/core/dist/services/embedding-rang.js');
+  const r=await pool.query(`WITH compute_admission_requests AS (
+    SELECT 'verlauf' AS source, 'hintergrund' AS priority, now()-interval '100 days' AS queued_at
+    UNION ALL SELECT 'wissen:thoughts','interaktiv',now()-interval '1 day'
+    UNION ALL SELECT 'parser-worker','hintergrund',now())
+    SELECT source FROM compute_admission_requests WHERE $1::boolean
+    ORDER BY ${EMBEDDING_ADMISSION_RANG_SQL},queued_at`,[true,300000]);
+  check(r.rows.map(x=>x.source).join(',')==='parser-worker,wissen:thoughts,verlauf',
+    'P22-T193 compute-admission.ts: echter SQL-Rang Code > Wissen > Verlauf trotz Alter',r.rows);
+ });
+
  await section('Schwaerzung rein',async()=>{
   const s=C.schwaerzeVerlaufText('sshpass -p Geheim123xyz ssh root@host\nexport PGPASSWORD=SuperGeheim99\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz123456\npsql postgres://user:PwGeheim77@db:5432/x');
   for(const g of GEHEIM)check(!s.text.includes(g),'geschwaerzt: '+g.slice(0,6)+'…',s.text);
@@ -150,18 +162,18 @@ try{
 
  await section('Ausloeser: abgeloester Lauf wird zerlegt, aktiver erst nach der Altersregel',async()=>{
   const r=await C.zerlegeVerlaufVon(A);
-  check(r.neue_stuecke===2&&r.bis_verlauf_id===ids.g2ende,'zwei Gruppen des abgeloesten Laufs, Schnitt vor dem aktiven Lauf',r);
+  check(r.neue_stuecke===3&&r.bis_verlauf_id!==ids.g2ende,'P22-T193 zerlegeVerlaufVon verlauf-einbetten.ts: auch aktiver Lauf sofort zerlegt',r);
   const st=(await pool.query('SELECT text,lauf_id,context_epoch,rollen,schwaerz_treffer,zerleger_version,embedded_at FROM verlauf_stuecke WHERE identity_id=$1 ORDER BY von_verlauf_id',[A])).rows;
   const alles=st.map(x=>x.text).join('\n');
   for(const g of GEHEIM)check(!alles.includes(g),'kein Geheimnis in verlauf_stuecke: '+g.slice(0,6)+'…');
   check(!alles.includes(TOKEN_A),'kein Ausweis in verlauf_stuecke');
   check(!alles.includes('DENKPHASE-XYZ'),'Denkphase nicht eingebettet');
   check(alles.includes('User: Bitte den Deploy pruefen')&&alles.includes('User (CLI): Zweite Frage')&&alles.includes('→ SendMessage: '),'Zeilentexte in den Stuecken');
-  check(st.every(x=>x.lauf_id===L1&&x.context_epoch===1&&x.embedded_at===null&&x.zerleger_version===C.VERLAUF_ZERLEGER_VERSION),'Metadaten lauf_id/context_epoch, noch nicht eingebettet');
+  check(st.every(x=>[L1,L2].includes(x.lauf_id)&&[1,2].includes(x.context_epoch)&&x.embedded_at===null&&x.zerleger_version===C.VERLAUF_ZERLEGER_VERSION),'Metadaten lauf_id/context_epoch, noch nicht eingebettet');
   check(st.reduce((n,x)=>n+x.schwaerz_treffer,0)>=2,'Schwaerz-Treffer gezaehlt');
   check((await C.zerlegeVerlaufVon(A)).neue_stuecke===0,'erneuter Lauf: idempotent, nichts Neues');
   const r2=await C.zerlegeVerlaufVon(A,{jetztMs:Date.now()+7*3600000});
-  check(r2.neue_stuecke===1,'aktiver Lauf nach 6 h zerlegt',r2);
+  check(r2.neue_stuecke===0,'P22-T193 zerlegeVerlaufVon verlauf-einbetten.ts: Alterszeit erzeugt keine Doppelstuecke',r2);
   await zeile(A,{rolle:'ausgabe',richtung:'aus',weg:'lauf',text:'laeuft gerade',status:'laeuft',lauf:L2,zeit:Date.now()-40000});
   await zeile(A,{rolle:'user',richtung:'ein',weg:'webui',text:'naechste',lauf:L2,zeit:Date.now()-30000});
   check((await C.zerlegeVerlaufVon(A,{jetztMs:Date.now()+7*3600000})).neue_stuecke===0,'laufende Zeile stoppt den Schnitt');
@@ -179,16 +191,16 @@ try{
 
  await section('Prioritaet ganz hinten',async()=>{
   check(await C.verlaufVorrangGrund(0)===null,'alles frei -> Verlauf darf');
-  check(await C.verlaufVorrangGrund(3)==='wissen_rueckstand','Wissens-Rueckstand geht vor');
+  check(await C.verlaufVorrangGrund(3)===null,'P22-T193 verlaufVorrangGrund verlauf-einbetten.ts: Wissensbestand blockiert Queue nicht');
   await pool.query("INSERT INTO code_chunks(id,project,file_path,chunk_index,content,line_start,line_end) VALUES ('t157-chunk',$1,'a.ts',0,'x',1,1)",[P]);
-  check(await C.verlaufVorrangGrund(0)==='code_rueckstand','offener Code-Chunk (aktives Projekt) geht vor');
+  check(await C.verlaufVorrangGrund(0)===null,'P22-T193 verlaufVorrangGrund verlauf-einbetten.ts: offener Codebestand blockiert Queue nicht');
   let r=await C.verlaufNachzugSchritt({wissenRest:0});
-  check(r.status==='wartet'&&r.wartegrund==='code_rueckstand'&&einbett.length===0,'Nachzug wartet hinter Code',r);
+  check(r.status==='ok'&&r.eingebettet===4&&einbett.length===1,'P22-T193 verlaufNachzugSchritt verlauf-einbetten.ts: eingebettet trotz offener Code-Chunks',r);
   r=await C.verlaufNachzugSchritt({wissenRest:5});
-  check(r.status==='wartet'&&r.wartegrund==='wissen_rueckstand'&&einbett.length===0,'Nachzug wartet hinter Wissen',r);
+  check(r.status==='ok'&&r.eingebettet===0,'P22-T193 verlaufNachzugSchritt verlauf-einbetten.ts: Bestand wird nicht doppelt verarbeitet',r);
   await pool.query("DELETE FROM code_chunks WHERE id='t157-chunk'");
   r=await C.verlaufNachzugSchritt({wissenRest:0});
-  check(r.status==='ok'&&r.eingebettet===4&&einbett.length===1,'danach wird eingebettet (4 Stuecke A+B)',r);
+  check(r.status==='ok'&&r.eingebettet===0&&einbett.length===1,'P22-T193 verlaufNachzugSchritt verlauf-einbetten.ts: schon eingebettet, kein Leerlaufduplikat',r);
   const p=(letzteP??[]).find(x=>x.payload.identity_id===A);
   check(!!p&&p.collection===C.VERLAUF_COLLECTION&&typeof p.payload.zeit_von_ts==='number'&&typeof p.payload.zeit_bis_ts==='number'&&!('text' in p.payload),'Payload: identity_id, Zeitbereich, kein Text',p?.payload);
   check((await pool.query('SELECT count(*)::int AS n FROM verlauf_stuecke WHERE embedded_at IS NULL')).rows[0].n===0,'alle Stuecke eingebettet');
@@ -247,6 +259,56 @@ try{
   const a=st.je_identitaet?.find(x=>x.identity_id===A);
   check(st.schalter?.verlauf_einbetten?.aktiv===true&&!!a&&a.stuecke===3&&a.eingebettet===3&&a.offene_zeilen>=2,'Status: Schalter, Stuecke, offene Zeilen je Identitaet',a);
   check(st.letzter_lauf&&typeof st.letzter_lauf.dauer_ms==='number','Status: letzter Lauf mit Dauer');
+ });
+
+ await section('P22-T193 echter Schreibweg / hauptagent-verlauf.ts',async()=>{
+  await schalter('verlauf_token_zaehlung',false);
+  await schalter('agent_verlauf_alle',true);
+  await pool.query("INSERT INTO code_chunks(id,project,file_path,chunk_index,content,line_start,line_end) VALUES ('p193-live-code',$1,'p193.ts',0,'wartet',1,1)",[P]);
+  const marker='P193-sofort-'+randomUUID();
+  const write=await C.importiereSitzungsEintraege(CI,[{ref:marker,art:'eingabe',inhalt:marker,modell:'testmodell'}],{herkunft:'cli'});
+  check(write.aufgenommen===1,'P22-T193 importiereSitzungsEintraege hauptagent-verlauf.ts: Nachricht gespeichert',write);
+  let rows=[];
+  const ende=Date.now()+5000;
+  while(Date.now()<ende){
+    rows=(await pool.query('SELECT id::text AS id,embedded_at FROM verlauf_stuecke WHERE identity_id=$1',[CI])).rows;
+    if(rows.some(x=>x.embedded_at))break;
+    await new Promise(r=>setTimeout(r,10));
+  }
+  check(rows.some(x=>x.embedded_at),'P22-T193 Schreibweg verlauf-einbetten.ts: ohne Timer/Neuanmeldung trotz Codebestand eingebettet',rows);
+  sucheAntwort=rows.map(x=>({id:x.id,score:.95}));
+  const found=await C.sucheVerlauf({identity_id:CI,agent_id:'spez-c'},{query:marker});
+  check(found.treffer?.some(t=>t.auszug.includes(marker)),'P22-T193 sucheVerlauf verlauf-einbetten.ts: neue Nachricht auffindbar',found);
+  await pool.query('UPDATE verlauf_stuecke SET embedded_at=NULL WHERE identity_id=$1',[CI]);
+  const Q=await load('packages/core/dist/services/intern-warteschlangen.js');
+  const overview=await Q.fuehreWarteschlangeLokal('warteschlange_liste',{warteschlange:'verlauf',project:P});
+  check(overview.success&&overview.gesamt>=1,'P22-T193 intern-warteschlangen.ts: eigene Verlauf-Queue mit Anzahl',overview);
+  await pool.query("DELETE FROM code_chunks WHERE id='p193-live-code'");
+ });
+
+
+ // P22-T193 / 5cca231a P2.2: zweiter Import darf nicht auf den alten Embedding-Stapel warten.
+ await section('P22-T193 zweiter Schreibtrigger bei offenem Embedding / verlauf-einbetten.ts',async()=>{
+  let releaseFirst,firstStarted=false,done=0;
+  const offen=new Promise(resolve=>{releaseFirst=resolve;});
+  C.setzeVerlaufAbhaengigkeitenFuerTests({betteEin:async ids=>{
+   if(!firstStarted){firstStarted=true;await offen;}
+   await pool.query('UPDATE verlauf_stuecke SET embedded_at=NOW() WHERE id=ANY($1::uuid[])',[ids]);done++;
+   return ids.length;
+  }});
+  const wait=async(fn,label)=>{const end=Date.now()+5000;while(!(await fn())){if(Date.now()>end)throw Error('P22-T193 '+label+' erwartet=true ist=Zeitlimit');await new Promise(r=>setTimeout(r,10));}};
+  const marker1='P193-blockiert-'+randomUUID(),marker2='P193-zweiter-'+randomUUID();
+  try{
+   await C.importiereSitzungsEintraege(CI,[{ref:marker1,art:'eingabe',inhalt:marker1,modell:'testmodell'}],{herkunft:'cli'});
+   await wait(()=>firstStarted,'erster Einbettungsaufruf offen');
+   await C.importiereSitzungsEintraege(CI,[{ref:marker2,art:'eingabe',inhalt:marker2,modell:'testmodell'}],{herkunft:'cli'});
+   await wait(async()=>!!(await pool.query('SELECT 1 FROM verlauf_stuecke WHERE identity_id=$1 AND position($2 IN text)>0',[CI,marker2])).rows.length,'zweite Nachricht vor Freigabe zerlegt');
+   const rows=(await pool.query('SELECT text,embedded_at FROM verlauf_stuecke WHERE identity_id=$1 AND (position($2 IN text)>0 OR position($3 IN text)>0)',[CI,marker1,marker2])).rows;
+   check(rows.some(r=>r.text.includes(marker1)&&r.embedded_at===null)&&rows.some(r=>r.text.includes(marker2)),
+    'P22-T193 importiereSitzungsEintraege/verlauf-einbetten.ts: zweite Nachricht schon eingereiht waehrend erste offen',rows.map(r=>({erste:r.text.includes(marker1),zweite:r.text.includes(marker2),fertig:!!r.embedded_at})));
+  }finally{
+   releaseFirst();await wait(()=>done>=2,'beide getrennten Einbettungsaufrufe beendet');
+  }
  });
 
  await section('Fall-Skill',async()=>{

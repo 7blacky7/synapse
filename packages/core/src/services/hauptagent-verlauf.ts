@@ -212,6 +212,11 @@ let letzterSchreibfehler: { code: string; am: string } | null = null;
 const aktiveAntworten = new Set<string>();
 /** Schonfrist zwischen Anlegen der Antwortzeile und Start ihres Schreibers. */
 const VERWAIST_NACH_SEKUNDEN = 60;
+/** P22-T193: nur anstossen, niemals im Schreibpfad auf Ollama/Qdrant warten. */
+function verlaufGeschrieben(identityId: string): void {
+  void import('./verlauf-einbetten.js').then(m => m.stosseVerlaufEinbettungAn(identityId))
+    .catch(e => merkeFehler('einbettung_anstossen', e));
+}
 function merkeFehler(code: string, error: unknown): void {
   letzterSchreibfehler = { code: code + ': ' + (error instanceof Error ? error.message : String(error)).slice(0, 300), am: new Date().toISOString() };
 }
@@ -278,6 +283,7 @@ export async function legeVerlaufTurnAn(e: VerlaufTurnEingabe): Promise<VerlaufT
          VALUES ($1,'agent','aus','webui',$2::bigint,'laeuft',$3,$4,$5,$6) RETURNING id::text AS id`,
         [v.identity_id, u.rows[0].id, e.session_id ?? null, e.runtime ?? null, e.modell ?? null, e.lauf_id ?? null]);
       await client.query('COMMIT');
+      verlaufGeschrieben(v.identity_id);
       return { gespeichert: true, identity_id: v.identity_id, user_id: u.rows[0].id, antwort_id: a.rows[0].id };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -460,19 +466,20 @@ function zugAus(stand: VerlaufAntwortStand, start: number, laufkontext: unknown)
 
 async function schreibeAntwort(antwort_id: string, stand: VerlaufAntwortStand, status: VerlaufEintrag['status'],
   ende?: { zug: VerlaufZug; kontext: VerlaufKontext | null; lauf_id?: string | null; modell?: string | null }): Promise<void> {
-  await getPool().query({
+  const geschrieben = await getPool().query<{ identity_id: string }>({
     text: `UPDATE hauptagent_verlauf SET text = $2, werkzeuge = $3::jsonb, artefakte = $4::jsonb, hinweise = $5::jsonb, meta = $6::jsonb,
              status = $7, tokens = jsonb_set(jsonb_set(tokens, '{gemessen}', $8::jsonb), '{berechnet}', $13::jsonb), verbrauch_referenzen = $9::text[],
              zug = COALESCE($10::jsonb, zug), kontext = COALESCE($11::jsonb, kontext), hauptagent_weg = COALESCE($12, hauptagent_weg),
              lauf_id = COALESCE($14, lauf_id), zaehlt = NOT $15, modell = COALESCE($16, modell),
              rev = nextval('hauptagent_verlauf_rev'), aktualisiert_am = NOW()
-           WHERE id = $1::bigint AND rolle = 'agent'`,
+           WHERE id = $1::bigint AND rolle = 'agent' RETURNING identity_id`,
     values: [antwort_id, stand.text, JSON.stringify(stand.werkzeuge), JSON.stringify(stand.artefakte), JSON.stringify(stand.hinweise),
       JSON.stringify(stand.meta), status, JSON.stringify(stand.gemessen), stand.verbrauch_referenzen,
       ende ? JSON.stringify(ende.zug) : null, ende?.kontext ? JSON.stringify(ende.kontext) : null,
       typeof stand.meta.hauptagent_weg === 'string' ? stand.meta.hauptagent_weg : null, JSON.stringify(stand.berechnet), ende?.lauf_id ?? null, stand.spiegel === true, ende?.modell ?? null],
     query_timeout: 5000,
   } as Q);
+  if (status !== 'laeuft' && status !== 'wartet' && geschrieben.rows[0]) verlaufGeschrieben(geschrieben.rows[0].identity_id);
 }
 
 export interface VerlaufAntwortSchreiber {
@@ -852,6 +859,7 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
         typeof e.zeit === 'string' && !Number.isNaN(Date.parse(e.zeit)) ? e.zeit : null, istMain ? 'dauerhaft' : null]);
     aufgenommen += r.rowCount ?? 0;
   }
+  if (aufgenommen > 0) verlaufGeschrieben(identity_id);
   return { aufgenommen, grund: null };
 }
 
@@ -880,6 +888,7 @@ export async function schreibeZustellVerlauf(identity_id: string, ledger_id: str
         JSON.stringify({ message_id: z.message_id, gesendet_am: z.gesendet_am }), lauf, modell]);
     if (!n.rows[0]) return null;
     const nachricht_id = n.rows[0].id;
+    verlaufGeschrieben(identity_id);
     if (typeof ergebnis?.response !== 'string') return { nachricht_id, antwort_id: null };
     const a = await getPool().query<{ id: string }>(
       `INSERT INTO hauptagent_verlauf (identity_id, rolle, richtung, weg, antwort_auf, status, lauf_id, modell, hauptagent_weg)

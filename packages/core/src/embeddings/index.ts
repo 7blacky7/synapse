@@ -23,6 +23,7 @@
  */
 
 import { getConfig } from '../config.js';
+import { embeddingKlasse, EMBEDDING_RANG, type EmbeddingKlasse } from '../services/embedding-rang.js';
 import {computeAdmissionAktiv,mitComputeAdmissionKontext} from '../services/compute-admission.js';
 import { SynapseConfig } from '../types/index.js';
 import { EmbeddingProvider } from './types.js';
@@ -258,11 +259,13 @@ export interface EmbeddingQueueStats {
 }
 
 interface EmbedLease {
+  klasse: EmbeddingKlasse;
   priority: EmbedPriority;
   startedAt: number;
 }
 
 interface QueueEntry {
+  klasse: EmbeddingKlasse;
   priority: EmbedPriority;
   queuedAt: number;
   resolve: (lease: EmbedLease) => void;
@@ -273,6 +276,7 @@ interface QueueEntry {
 const zeroCounts = (): Record<EmbedPriority, number> => ({ interactive: 0, background: 0 });
 
 let activeEmbedCalls = 0;
+let activeQueries = 0;
 let lastEmbedFinishMs = 0;
 let averageCallMs = INITIAL_ESTIMATED_CALL_MS;
 const activeByPriority = zeroCounts();
@@ -365,27 +369,27 @@ function queueFullError(
   return new EmbeddingQueueFullError(priority, ahead, Math.round(estimateWaitMs(ahead)));
 }
 
-function startLease(priority: EmbedPriority, queuedAt: number): EmbedLease {
+function startLease(priority: EmbedPriority, queuedAt: number, klasse: EmbeddingKlasse): EmbedLease {
   const now = Date.now();
   const waitMs = now - queuedAt;
   activeEmbedCalls++;
+  if (klasse === 'interaktiv') activeQueries++;
   activeByPriority[priority]++;
   startedByPriority[priority]++;
   longestWaitByPriority[priority] = Math.max(longestWaitByPriority[priority], waitMs);
-  return { priority, startedAt: now };
+  return { priority, startedAt: now, klasse };
 }
 
 function dispatchNext(): void {
   while (activeEmbedCalls < MAX_CONCURRENT_EMBED) {
-    let entry = interactiveQueue.shift();
-    if (!entry) {
-      // P5-T15: Hintergrund erst, wenn kein interaktiver Auftrag mehr laeuft
-      if (activeByPriority.interactive > 0) return;
-      entry = backgroundQueue.shift();
-    }
-    if (!entry) return;
+    // P22-T193: nur tatsaechlich wartende Arbeit zaehlt, kein globaler PG-Rueckstandsblock.
+    const entry = [...interactiveQueue, ...backgroundQueue].sort((a, b) =>
+      EMBEDDING_RANG[a.klasse] - EMBEDDING_RANG[b.klasse] || a.queuedAt - b.queuedAt)[0];
+    if (!entry || (activeQueries > 0 && entry.klasse !== 'interaktiv')) return;
+    const queue = queueFor(entry.priority);
+    queue.splice(queue.indexOf(entry), 1);
     if (entry.timer) clearTimeout(entry.timer);
-    entry.resolve(startLease(entry.priority, entry.queuedAt));
+    entry.resolve(startLease(entry.priority, entry.queuedAt, entry.klasse));
   }
 }
 
@@ -397,9 +401,11 @@ function acquireEmbedSlot(options: EmbedOptions = {}, neuversuch = false): Promi
 
   // P5-T15: ein interaktiver Auftrag verdraengt laufende Hintergrund-Aufrufe; ein
   // Hintergrundauftrag nimmt keinen freien Slot, solange Interaktives laeuft oder wartet.
-  if (priority === 'interactive' && !computeAdmissionAktiv()) brichHintergrundAb();
-  if (activeEmbedCalls < MAX_CONCURRENT_EMBED && (priority === 'interactive' || !interaktivBeschaeftigt())) {
-    return Promise.resolve(startLease(priority, now));
+  const klasse = embeddingKlasse(options.admissionSource, priority, options.art);
+  if (klasse === 'interaktiv' && !computeAdmissionAktiv()) brichHintergrundAb();
+  if (activeEmbedCalls < MAX_CONCURRENT_EMBED && interactiveQueue.length + backgroundQueue.length === 0
+      && (klasse === 'interaktiv' || activeQueries === 0)) {
+    return Promise.resolve(startLease(priority, now, klasse));
   }
 
   const queue = queueFor(priority);
@@ -413,7 +419,7 @@ function acquireEmbedSlot(options: EmbedOptions = {}, neuversuch = false): Promi
   }
 
   return new Promise<EmbedLease>((resolve, reject) => {
-    const entry: QueueEntry = { priority, queuedAt: now, resolve, reject };
+    const entry: QueueEntry = { priority, klasse, queuedAt: now, resolve, reject };
     queue.push(entry);
 
     if (Number.isFinite(maxWaitMs)) {
@@ -427,6 +433,7 @@ function acquireEmbedSlot(options: EmbedOptions = {}, neuversuch = false): Promi
         reject(queueFullError(priority, ahead));
       }, maxWaitMs);
     }
+    dispatchNext();
   });
 }
 
@@ -436,6 +443,7 @@ function releaseEmbedSlot(lease: EmbedLease): void {
   completedByPriority[lease.priority]++;
   activeByPriority[lease.priority]--;
   activeEmbedCalls--;
+  if (lease.klasse === 'interaktiv') activeQueries--;
   lastEmbedFinishMs = Date.now();
   dispatchNext();
 }
@@ -450,7 +458,7 @@ async function runQueued<T>(
     let lease:EmbedLease|null = await acquireEmbedSlot(options, neuversuch);
     const priority=lease.priority;
     // Nur Hintergrund-Aufrufe sind verdraengbar.
-    const abbruch = priority === 'background' && !computeAdmissionAktiv() ? new AbortController() : null;
+    const abbruch = priority === 'background' && lease.klasse !== 'verlauf' && !computeAdmissionAktiv() ? new AbortController() : null;
     if (abbruch) laufendeHintergrund.add(abbruch);
     try {
       const gap = Date.now() - lastEmbedFinishMs;
@@ -463,7 +471,7 @@ async function runQueued<T>(
       }
       return await mitComputeAdmissionKontext({
         source:options.admissionSource??(priority==='interactive'?'core-interactive':'core-background'),
-        priority:priority==='interactive'?'interaktiv':'hintergrund',maxWaitMs:options.maxQueueWaitMs,claims:options.admissionClaims,
+        priority:lease.klasse==='interaktiv'?'interaktiv':'hintergrund',maxWaitMs:options.maxQueueWaitMs,claims:options.admissionClaims,
         releaseLocal:()=>{if(lease){releaseEmbedSlot(lease);lease=null;}},
         resumeLocal:async()=>{lease??=await acquireEmbedSlot(options,true);},
       },()=>operation(abbruch?.signal));
@@ -483,9 +491,10 @@ async function runQueued<T>(
  * P15-T12 E3: wartende Auftraege dieses Prozesses in Abarbeitungsreihenfolge (interaktiv vor
  * Hintergrund) - nur lesend, fuer intern(warteschlange_liste, embedding_queue).
  */
-export function embeddingWarteschlangeEintraege(): Array<{ prioritaet: EmbedPriority; position: number; wartet_ms: number }> {
+export function embeddingWarteschlangeEintraege(): Array<{ klasse: EmbeddingKlasse; prioritaet: EmbedPriority; position: number; wartet_ms: number }> {
   const jetzt = Date.now();
-  return [...interactiveQueue, ...backgroundQueue].map((e, i) => ({
+  return [...interactiveQueue, ...backgroundQueue].sort((a, b) => EMBEDDING_RANG[a.klasse] - EMBEDDING_RANG[b.klasse] || a.queuedAt - b.queuedAt).map((e, i) => ({
+    klasse: e.klasse,
     prioritaet: e.priority,
     position: i + 1,
     wartet_ms: jetzt - e.queuedAt,
@@ -546,6 +555,12 @@ export async function embedBatch(
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
   await sichereModellprofil();
+  // Verlauf je Datensatz: neue Code-/Wissensarbeit geht vor dem naechsten Stueck vor, ohne Abbruch.
+  if (options.admissionSource === 'verlauf') {
+    const result: number[][] = [];
+    for (const text of texts) result.push(await embed(text, options));
+    return result;
+  }
   if (getConfig().embeddings.provider === 'ollama') {
     // Interaktiv: weiterhin je Text, damit eine Anfrage nach dem laufenden Text einspringen kann.
     if ((options.priority ?? 'interactive') === 'interactive') {

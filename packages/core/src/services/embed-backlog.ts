@@ -35,6 +35,7 @@ import { wissensNachzugWo } from './wissen-stuecke.js';
 import { schalterHaeltAn, embeddingNachtragAngehalten } from './intern-schalter.js';
 import { getEmbeddingQueueStats, embeddingModellKennung } from '../embeddings/index.js';
 import { sichereModellprofil } from '../embeddings/modell-profil.js';
+import { verlaufStueckNachzug, bereiteVerlaufBacklogVor, betteVerlaufStueckeEin, leseVerlaufEinbettSchalter } from './verlauf-einbetten.js';
 
 /**
  * Welche Tabellen der Nachzug bedient, und womit.
@@ -75,6 +76,7 @@ const TABELLEN = [
   { name: 'plan_tasks', sortSpalte: 'updated_at', idSpalte: 'key', mitProjekt: true, quelle: () => taskNachzug, nachtrag: embeddeTaskNach },
   { name: 'error_patterns', sortSpalte: 'created_at', idSpalte: 'id', mitProjekt: false, quelle: () => errorPatternNachzug, nachtrag: embeddeErrorPatternNach },
   { name: 'tech_docs', sortSpalte: 'indexed_at', idSpalte: 'id', mitProjekt: true, quelle: () => techDocNachzug, nachtrag: embeddeTechDocNach },
+  { name: 'verlauf_stuecke', sortSpalte: 'zeit_von', idSpalte: 'id', mitProjekt: true, quelle: () => verlaufStueckNachzug, nachtrag: async (_project: string | null, id: string) => { await betteVerlaufStueckeEin([id]); } },
 ] as const;
 
 /** Tabellen, die der Nachzug bedient (fuer Filter wie intern(nachzug_jetzt, tabelle)). */
@@ -150,12 +152,17 @@ export async function embeddeOffeneEintraege(
 
   // Das Limit gilt fuer den GESAMTEN Lauf, nicht je Tabelle: sonst wuerde ein grosser
   // Rueckstand in einer Tabelle die Drosselung der anderen mit aushebeln.
+  if (!nurTabelle || nurTabelle === 'verlauf_stuecke') await bereiteVerlaufBacklogVor(project);
   let uebrig = limit;
   const stapel = stapelGroesse();
 
   for (const tabelle of TABELLEN) {
-    if (uebrig <= 0) break;
+    const verlauf = tabelle.name === 'verlauf_stuecke';
     if (nurTabelle && tabelle.name !== nurTabelle) continue;
+    if (verlauf && !(await leseVerlaufEinbettSchalter('einbetten')).aktiv) continue;
+    if (!verlauf && uebrig <= 0) continue;
+    // Eine Verlaufseinheit darf auch bei Wissensrueckstand in die normale Queue.
+    const budget = verlauf ? Math.max(1, uebrig) : uebrig;
 
     // Aeltester Rueckstand zuerst — ein Eintrag, der beim Schreiben gescheitert ist, soll
     // nicht dauerhaft hinter neu hinzukommenden zurueckstehen. Sortierspalte je Tabelle,
@@ -167,19 +174,18 @@ export async function embeddeOffeneEintraege(
           AND ${projektBedingung(tabelle.mitProjekt)}
         ORDER BY ${tabelle.sortSpalte}
         LIMIT $2`,
-      [project ?? null, uebrig]
+      [project ?? null, budget]
     );
 
-    for (let i = 0; i < rows.length; i += stapel) {
-      const teil = rows.slice(i, i + stapel);
+    const groesse = verlauf ? 1 : stapel;
+    for (let i = 0; i < rows.length; i += groesse) {
+      const teil = rows.slice(i, i + groesse);
       ergebnis.geprueft += teil.length;
       uebrig -= teil.length;
       try {
-        ergebnis.nachgetragen += await betteStapelEin(
-          tabelle.quelle(),
-          teil.map((r) => r.id),
-          { priority: 'background' }
-        );
+        ergebnis.nachgetragen += verlauf
+          ? await betteVerlaufStueckeEin(teil.map(r => r.id))
+          : await betteStapelEin(tabelle.quelle(), teil.map(r => r.id), { priority: 'background' });
         continue;
       } catch (err) {
         // Schalter waehrend des Laufs gesetzt -> anhalten statt einzeln weiterzumachen.
@@ -229,7 +235,9 @@ export async function embeddeEintraegeJetzt(tabelle: string, ids: string[]): Pro
     [ids]
   );
   if (rows.length === 0) return { angefragt: ids.length, nachgetragen: 0 };
-  const nachgetragen = await betteStapelEin(t.quelle(), rows.map((r) => r.id), { priority: 'background' });
+  const nachgetragen = t.name === 'verlauf_stuecke'
+    ? await betteVerlaufStueckeEin(rows.map(r => r.id))
+    : await betteStapelEin(t.quelle(), rows.map(r => r.id), { priority: 'background' });
   return { angefragt: ids.length, nachgetragen };
 }
 

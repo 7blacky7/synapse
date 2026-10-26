@@ -535,7 +535,7 @@ export async function ergaenzeTopfEmbeddings(): Promise<{ berechnet: number; feh
     );
     let n = 0;
     for (const z of rows) {
-      const v = await embed(topfDokText(z), { art: 'dokument', priority: 'background' });
+      const v = await embed(topfDokText(z), { art: 'dokument', priority: 'background', admissionSource: 'wissen:entscheidungstopf' });
       await getPool().query(`UPDATE jev_entscheidungstopf SET embedding_en = $2::real[], embedding_modell = $3 WHERE id = $1`, [z.id, v, modell]);
       n++;
     }

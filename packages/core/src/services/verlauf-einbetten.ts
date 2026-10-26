@@ -1,29 +1,14 @@
 /**
- * P22-T157 (User 25.10.2026, Entwurf e8d2f0dc Fassung 2, GO mit R1-R8): Sitzungsverlaeufe semantisch durchsuchbar.
- *
- * QUELLE: hauptagent_verlauf (Schema 124; CLI-Transkript ueber cli-verlauf P22-T133, Wrapper, Zustellungen). PG bleibt die
- *   Wahrheit. Zerlegt und eingebettet werden NUR Identitaeten MIT Ausweis (aktiv, nicht widerrufener Ausweis); Legacy-Agenten
- *   bleiben aussen vor. Subagenten-Verlaeufe (P22-T158) kommen ohne Aenderung mit, sobald sie in hauptagent_verlauf stehen.
- * SPEICHER (Schema 153): verlauf_stuecke = geschwaerzte Stuecke (genau der eingebettete Text), verlauf_einbett_stand = Schnitt
- *   je Identitaet. Qdrant: EINE Collection 'agent_verlauf' mit Pflichtfilter identity_id (Payload-Index is_tenant). Den Filter
- *   setzt NUR sucheVerlauf, immer aus dem Ausweis-Principal, nie aus Tool-Parametern.
- * AUSLOESER (R6): chat(anmelden) setzt den alten Lauf auf 'abgeloest'; der naechste Nachzug-Tick zerlegt alle noch nicht
- *   zerlegten Zeilen bis zum Schnitt. Zeilen des AKTIVEN Laufs erst ab VERLAUF_EINBETTEN_ALTER (Standard 6 h). Schnitt nach
- *   hauptagent_verlauf.id; er bleibt vor der ersten Zeile mit status laeuft/wartet stehen, eine angefangene Turn-Gruppe wartet.
- *   Kein Eingriff in den Anmeldeweg (agent-identitaet.ts).
- * ZERLEGUNG: Turn-Gruppe = Eingabe (User, Nachricht, CLI-Eingabe) bis zur naechsten Eingabe. Eigene Ausgaben voll, Werkzeug-
- *   aufrufe verdichtet (300 Zeichen, Schreibwerkzeuge 1500), Werkzeugergebnisse 200 Zeichen (R7), keine Denkphasen. Stuecke
- *   2000 Zeichen mit 200 Ueberlappung plus Kopf. Schwaerzung VOR dem Speichern (wie logToolCall, Ausweise, Erklaerungs-Maske).
- * PRIORITAET GANZ HINTEN: eigener Worker 'verlauf_nachzug' im Parser-Tick nach dem Wissens-Nachzug; eingebettet wird nur, wenn
- *   kein Wissens-Rueckstand, kein offener Code-Chunk (aktive Projekte), die Embedding-Queue leer ist und der intern-Schalter
- *   embedding nicht anhaelt. Stapel klein (SYNAPSE_VERLAUF_STAPEL, Standard 32), priority background.
- * SCHALTER (Produkt-Schalter, Standard AUS, nur ausdruecklich): verlauf_einbetten (Zerlegen + Einbetten), verlauf_suche
- *   (search action verlauf). DEBUG: verlaufEinbettStatus() ueber intern(status) Quelle verlauf_einbetten.
+ * P22-T193 (korrigiert P22-T157): fertige Verlaufszeilen sofort zerlegen und ueber die bestehende
+ * Embedding-Queue einbetten. Dokumentrang Code > Wissen > Verlauf; keine 6h-/Neuanmeldesperre.
+ * Maskierung, Ausweisfilter, deterministische IDs, Inhaltsstand und Tenant-Suchfilter bleiben erhalten.
+ * Rueckstand ist embedded_at NULL und wird im gemeinsamen embed-backlog abgearbeitet.
+ * Produkt-Schalter verlauf_einbetten und verlauf_suche bleiben Standard AUS; intern(status) zeigt Stand.
  */
 import { v5 as uuidv5 } from 'uuid';
 import { createHash } from 'node:crypto';
-import { getPool } from '../db/client.js';
-import { embed, getEmbeddingQueueStats } from '../embeddings/index.js';
+import { getPool, imHintergrund } from '../db/client.js';
+import { embed } from '../embeddings/index.js';
 import { aktivesModellprofil } from '../embeddings/modell-profil.js';
 import { ensureCollection, collectionExists, searchVectors, getQdrantClient } from '../qdrant/index.js';
 import { betteStapelEin, type NachzugPunkt, type NachzugQuelle } from './embed-nachzug.js';
@@ -53,8 +38,8 @@ function envZahl(name: string, ersatz: number): number {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n > 0 ? n : ersatz;
 }
-/** Zeilen des aktiven Laufs werden erst ab diesem Alter zerlegt (lange laufende Koordinatoren). */
-export function verlaufEinbettenAlterMs(): number { return envZahl('SYNAPSE_VERLAUF_EINBETTEN_ALTER_MIN', 360) * 60_000; }
+/** Kompatibilitaetswert: P22-T193 entfernt die Alterswartezeit. */
+export function verlaufEinbettenAlterMs(): number { return 0; }
 function stapelGroesse(): number { return Math.floor(envZahl('SYNAPSE_VERLAUF_STAPEL', 32)); }
 const ZEILEN_JE_LAUF = 2000;
 const IDENTITAETEN_JE_TICK = 5;
@@ -132,11 +117,11 @@ export interface ZerlegeOptionen {
 
 /**
  * Zerlegt einen aufsteigenden Ausschnitt in fertige Turn-Gruppen (rein). bis_id = letzte Zeile der letzten FERTIGEN Gruppe
- * (null = noch nichts schnittreif). Reif ist eine Zeile, wenn sie nicht laeuft/wartet und ihr Lauf abgeloest bzw. sie alt genug ist.
+ * (null = noch nichts fertig). Fertige Zeilen sind sofort reif; laeuft/wartet bleibt vorerst offen.
  */
 export function zerlegeVerlauf(zeilen: readonly VerlaufZeileRoh[], o: ZerlegeOptionen): { gruppen: VerlaufGruppe[]; bis_id: string | null } {
-  const reif = (z: VerlaufZeileRoh) => z.status !== 'laeuft' && z.status !== 'wartet'
-    && (z.lauf_id === null || z.lauf_id !== o.aktiverLauf || o.jetztMs - zeitMs(z) >= o.alterMs);
+  // Fertige Zeilen sind sofort reif; laufende Antworten werden erst nach ihrem Abschluss verarbeitet.
+  const reif = (z: VerlaufZeileRoh) => z.status !== 'laeuft' && z.status !== 'wartet';
   let n = 0;
   while (n < zeilen.length && reif(zeilen[n])) n++;
   const praefix = zeilen.slice(0, n);
@@ -158,12 +143,7 @@ export function zerlegeVerlauf(zeilen: readonly VerlaufZeileRoh[], o: ZerlegeOpt
     const zeile = verlaufZeileText(z);
     if (zeile) akt.zeilen.push(zeile);
   }
-  if (gruppen.length) {
-    // Letzte Gruppe fertig? Folgt eine geladene Zeile, nur wenn sie eine neue Gruppe beginnt; fehlen geladene Zeilen
-    // (Ausschnitt voll), wartet sie - ausser sie ist die einzige (Riesengruppe ueber den ganzen Ausschnitt).
-    const fertig = naechste ? istGruppenStart(naechste) : !o.mehrVorhanden;
-    if (!fertig && !(gruppen.length === 1 && !naechste && o.mehrVorhanden)) gruppen.pop();
-  }
+  // Sofortiger Schnitt auch vor einer laufenden Antwort; diese wird spaeter eine eigene Gruppe.
   return { gruppen, bis_id: gruppen.length ? gruppen[gruppen.length - 1].bis_id : null };
 }
 
@@ -216,7 +196,7 @@ export interface VerlaufAbhaengigkeiten {
   betteEin(ids: string[]): Promise<number>;
 }
 let collectionBereit = false;
-async function sichereVerlaufCollection(): Promise<void> {
+export async function sichereVerlaufCollection(): Promise<void> {
   if (collectionBereit) return;
   await ensureCollection(VERLAUF_COLLECTION);
   const c = getQdrantClient();
@@ -295,16 +275,16 @@ function merkeFehler(code: string, e: unknown): void {
 }
 
 /** Faellige Identitaeten: aktiv, mit Ausweis, mit Verlaufszeilen hinter dem Schnitt. */
-async function faelligeIdentitaeten(limit: number): Promise<Array<{ identity_id: string; agent_id: string; project: string | null }>> {
+async function faelligeIdentitaeten(limit: number, project?: string): Promise<Array<{ identity_id: string; agent_id: string; project: string | null }>> {
   const { rows } = await getPool().query<{ identity_id: string; agent_id: string; project: string | null }>(
     `SELECT i.id AS identity_id, i.agent_id, i.project
        FROM agent_identitaeten i
        LEFT JOIN verlauf_einbett_stand s ON s.identity_id = i.id
-      WHERE i.status = 'aktiv'
+      WHERE i.status = 'aktiv' AND ($2::text IS NULL OR i.project = $2)
         AND EXISTS (SELECT 1 FROM agent_identitaet_tokens t WHERE t.identity_id = i.id AND t.widerrufen_am IS NULL)
         AND EXISTS (SELECT 1 FROM hauptagent_verlauf v WHERE v.identity_id = i.id AND v.id > COALESCE(s.bis_verlauf_id, 0))
       ORDER BY s.zuletzt_am NULLS FIRST, i.id
-      LIMIT $1`, [limit]);
+      LIMIT $1`, [limit, project ?? null]);
   return rows;
 }
 
@@ -312,24 +292,29 @@ async function faelligeIdentitaeten(limit: number): Promise<Array<{ identity_id:
 export async function zerlegeVerlaufVon(identity_id: string, o: { jetztMs?: number } = {}): Promise<{ neue_stuecke: number; bis_verlauf_id: string | null; zeilen: number }> {
   const t0 = Date.now();
   const pool = getPool();
-  const ident = (await pool.query<{ agent_id: string; project: string | null }>(
+  const client = await pool.connect();
+  let neu = 0, treffer = 0;
+  let bis_id: string | null = null;
+  let zeilen: VerlaufZeileRoh[] = [];
+  try {
+    await client.query('BEGIN');
+    // Liveweg/Backlog lesen Schnitt und Zeilen unter demselben Identitaetslock.
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['verlauf_einbetten:' + identity_id]);
+  const ident = (await client.query<{ agent_id: string; project: string | null }>(
     `SELECT i.agent_id, i.project FROM agent_identitaeten i WHERE i.id = $1 AND i.status = 'aktiv'
         AND EXISTS (SELECT 1 FROM agent_identitaet_tokens t WHERE t.identity_id = i.id AND t.widerrufen_am IS NULL)`, [identity_id])).rows[0];
-  if (!ident) return { neue_stuecke: 0, bis_verlauf_id: null, zeilen: 0 };
-  const stand = (await pool.query<{ bis: string }>('SELECT bis_verlauf_id::text AS bis FROM verlauf_einbett_stand WHERE identity_id = $1', [identity_id])).rows[0]?.bis ?? '0';
-  const lauf = (await pool.query<{ id: string }>("SELECT id FROM agent_identitaet_laeufe WHERE identity_id = $1 AND status = 'aktiv'", [identity_id])).rows[0]?.id ?? null;
-  const r = await pool.query<VerlaufZeileRoh>(
+  if (!ident) { await client.query('COMMIT'); return { neue_stuecke: 0, bis_verlauf_id: null, zeilen: 0 }; }
+  const stand = (await client.query<{ bis: string }>('SELECT bis_verlauf_id::text AS bis FROM verlauf_einbett_stand WHERE identity_id = $1', [identity_id])).rows[0]?.bis ?? '0';
+  const lauf = (await client.query<{ id: string }>("SELECT id FROM agent_identitaet_laeufe WHERE identity_id = $1 AND status = 'aktiv'", [identity_id])).rows[0]?.id ?? null;
+  const r = await client.query<VerlaufZeileRoh>(
     `SELECT v.id::text AS id, v.rolle, v.richtung, v.weg, v.status, v.text, v.meta, v.absender, v.lauf_id, v.erstellt_am, l.context_epoch
        FROM hauptagent_verlauf v LEFT JOIN agent_identitaet_laeufe l ON l.id = v.lauf_id
       WHERE v.identity_id = $1 AND v.id > $2::bigint ORDER BY v.id LIMIT $3`, [identity_id, stand, ZEILEN_JE_LAUF + 1]);
   const mehr = r.rows.length > ZEILEN_JE_LAUF;
-  const zeilen = r.rows.slice(0, ZEILEN_JE_LAUF);
-  const { gruppen, bis_id } = zerlegeVerlauf(zeilen, { aktiverLauf: lauf, jetztMs: o.jetztMs ?? Date.now(), alterMs: verlaufEinbettenAlterMs(), mehrVorhanden: mehr });
-  const client = await pool.connect();
-  let neu = 0, treffer = 0;
-  try {
-    await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['verlauf_einbetten:' + identity_id]);
+  zeilen = r.rows.slice(0, ZEILEN_JE_LAUF);
+  const zerlegt = zerlegeVerlauf(zeilen, { aktiverLauf: lauf, jetztMs: o.jetztMs ?? Date.now(), alterMs: verlaufEinbettenAlterMs(), mehrVorhanden: mehr });
+    const gruppen = zerlegt.gruppen;
+    bis_id = zerlegt.bis_id;
     // Ein Statement je Lauf (unnest); rollen als kommagetrennter Text, weil unnest keine Array-Spalten je Zeile kennt.
     const sp: { id: string[]; lauf: Array<string | null>; epoch: Array<number | null>; von: string[]; bis: string[]; zv: Date[]; zb: Date[];
       nr: number[]; rollen: string[]; text: string[]; stand: string[]; tr: number[] } =
@@ -381,16 +366,9 @@ export async function zerlegeVerlaufVon(identity_id: string, o: { jetztMs?: numb
 // Nachzug-Schritt (Worker verlauf_nachzug)
 // ---------------------------------------------------------------------------------------------
 /** Grund, warum der Verlauf gerade NICHT eingebettet wird (null = frei). Alles andere geht vor. */
-export async function verlaufVorrangGrund(wissenRest: number): Promise<string | null> {
-  if (await schalterHaeltAn('embedding', 'verlauf-nachzug')) return 'embedding_angehalten';
-  if (wissenRest > 0) return 'wissen_rueckstand';
-  const q = getEmbeddingQueueStats();
-  if (q.active.interactive + q.active.background + q.queued.interactive + q.queued.background > 0) return 'queue_belegt';
-  const c = await getPool().query<{ offen: boolean }>(
-    `SELECT EXISTS (SELECT 1 FROM code_chunks cc WHERE cc.embedded_at IS NULL
-        AND EXISTS (SELECT 1 FROM projects p WHERE p.name = cc.project AND p.enabled)) AS offen`);
-  if (c.rows[0]?.offen) return 'code_rueckstand';
-  return null;
+export async function verlaufVorrangGrund(_wissenRest: number): Promise<string | null> {
+  // Vorrang gehoert in die bestehende Queue, nicht in eine Vollbestandssperre.
+  return await schalterHaeltAn('embedding', 'verlauf') ? 'embedding_angehalten' : null;
 }
 
 export interface VerlaufNachzugErgebnis {
@@ -407,36 +385,78 @@ export interface VerlaufNachzugErgebnis {
  * kleinen Stapel offener Stuecke einbetten. wissenRest = was der Wissens-Nachzug in diesem Tick noch vorfand.
  * erzwingen (worker_durchlauf): Vorrang uebergehen, nur der Schalter embedding haelt an.
  */
-export async function verlaufNachzugSchritt(o: { wissenRest?: number; erzwingen?: boolean } = {}): Promise<VerlaufNachzugErgebnis> {
-  const t0 = Date.now();
-  const leer = { identitaeten: 0, neue_stuecke: 0, eingebettet: 0 };
+/** Nur PG-Zerlegung; der gemeinsame Backlog und der Schreibweg benutzen dieselbe Quelle. */
+export async function bereiteVerlaufBacklogVor(project?: string): Promise<number> {
+  if (!(await leseVerlaufEinbettSchalter('einbetten')).aktiv) return 0;
+  let neu = 0;
+  for (const i of await faelligeIdentitaeten(IDENTITAETEN_JE_TICK, project))
+    neu += (await zerlegeVerlaufVon(i.identity_id)).neue_stuecke;
+  return neu;
+}
+/** Gemeinsamer Einzel-/Stapelweg, einschliesslich Schalter und Collection-Index. */
+export async function betteVerlaufStueckeEin(ids: string[]): Promise<number> {
+  if (ids.length === 0 || !(await leseVerlaufEinbettSchalter('einbetten')).aktiv) return 0;
+  return abh.betteEin(ids);
+}
+/** Kompatibilitaets-Einstieg; kein eigener zeitgesteuerter Worker mehr. */
+export async function verlaufNachzugSchritt(_o: { wissenRest?: number; erzwingen?: boolean } = {}): Promise<VerlaufNachzugErgebnis> {
   const schalter = await leseVerlaufEinbettSchalter('einbetten');
-  if (!schalter.aktiv) { prozess.wartegrund = 'schalter_aus'; prozess.wartegrund_am = new Date().toISOString(); return { status: 'schalter_aus', ...leer }; }
-  let identitaeten = 0, neue = 0, eingebettet = 0;
+  if (!schalter.aktiv) return { status: 'schalter_aus', identitaeten: 0, neue_stuecke: 0, eingebettet: 0 };
   try {
-    for (const i of await faelligeIdentitaeten(IDENTITAETEN_JE_TICK)) {
-      identitaeten++;
-      try { neue += (await zerlegeVerlaufVon(i.identity_id)).neue_stuecke; } catch (e) { merkeFehler('zerlegen ' + i.agent_id, e); }
-    }
-    const grund = o.erzwingen ? ((await schalterHaeltAn('embedding', 'verlauf-nachzug')) ? 'embedding_angehalten' : null) : await verlaufVorrangGrund(o.wissenRest ?? 0);
-    prozess.wartegrund = grund; prozess.wartegrund_am = new Date().toISOString();
-    if (grund) return { status: 'wartet', identitaeten, neue_stuecke: neue, eingebettet: 0, wartegrund: grund };
+    const neue_stuecke = await bereiteVerlaufBacklogVor();
     const ids = (await getPool().query<{ id: string }>(
-      'SELECT id::text AS id FROM verlauf_stuecke WHERE embedded_at IS NULL ORDER BY zeit_von, id LIMIT $1', [stapelGroesse()])).rows.map((r) => r.id);
-    if (ids.length) eingebettet = await abh.betteEin(ids);
-    prozess.letzter_lauf = { am: new Date().toISOString(), dauer_ms: Date.now() - t0, identitaeten, neue_stuecke: neue, eingebettet };
-    return { status: 'ok', identitaeten, neue_stuecke: neue, eingebettet, wartegrund: null };
+      'SELECT id::text AS id FROM verlauf_stuecke WHERE embedded_at IS NULL ORDER BY zeit_von, id LIMIT $1', [stapelGroesse()])).rows.map(r => r.id);
+    const t0 = Date.now();
+    const eingebettet = await betteVerlaufStueckeEin(ids);
+    prozess.letzter_lauf = { am: new Date().toISOString(), dauer_ms: Date.now() - t0, identitaeten: 0, neue_stuecke, eingebettet };
+    return { status: 'ok', identitaeten: 0, neue_stuecke, eingebettet };
   } catch (e) {
-    merkeFehler('nachzug', e);
-    return { status: 'fehler', identitaeten, neue_stuecke: neue, eingebettet, fehler: e instanceof Error ? e.message : String(e) };
+    merkeFehler('verlauf_backlog', e);
+    return { status: 'fehler', identitaeten: 0, neue_stuecke: 0, eingebettet: 0, fehler: String(e) };
   }
+}
+// Dieser Lauf serialisiert nur die kurze PG-Zerlegung, niemals wartende Embeddings.
+const liveLaeufe = new Map<string, Promise<void>>();
+const liveOffen = new Set<string>();
+// Nur lokale Doppelstarts verhindern; embedded_at NULL bleibt die dauerhafte Queue.
+const liveStuecke = new Set<string>();
+/** Wie Gedanken/Memories: Schreibantwort wartet nicht auf Embedding; PG bleibt die dauerhafte Queue. */
+export function stosseVerlaufEinbettungAn(identityId: string): void {
+  liveOffen.add(identityId);
+  if (liveLaeufe.has(identityId)) return;
+  const job = imHintergrund(async () => {
+    while (liveOffen.delete(identityId)) {
+      if (!(await leseVerlaufEinbettSchalter('einbetten')).aktiv) continue;
+      const t0 = Date.now();
+      const z = await zerlegeVerlaufVon(identityId);
+      const ids = (await getPool().query<{ id: string }>(
+        'SELECT id::text AS id FROM verlauf_stuecke WHERE identity_id=$1 AND embedded_at IS NULL AND NOT (id=ANY($2::uuid[])) ORDER BY zeit_von DESC, id LIMIT $3',
+        [identityId, [...liveStuecke], stapelGroesse()])).rows.map(r => r.id);
+      if (!ids.length) continue;
+      for (const id of ids) liveStuecke.add(id);
+      // P22-T193/5cca231a: neue Zeilen sofort weiter zerlegen/einreihen, auch
+      // wenn dieser Stapel noch auf Code/Wissen oder einen HTTP-Aufruf wartet.
+      void imHintergrund(async () => {
+        const eingebettet = await betteVerlaufStueckeEin(ids);
+        prozess.wartegrund = null;
+        prozess.letzter_lauf = { am: new Date().toISOString(), dauer_ms: Date.now() - t0, identitaeten: 1,
+          neue_stuecke: z.neue_stuecke, eingebettet };
+      }).catch(e => merkeFehler('verlauf_schreibweg_einbetten', e)).finally(() => {
+        for (const id of ids) liveStuecke.delete(id);
+      });
+    }
+  }).catch(e => merkeFehler('verlauf_schreibweg', e)).finally(() => {
+    liveLaeufe.delete(identityId);
+    if (liveOffen.has(identityId)) stosseVerlaufEinbettungAn(identityId);
+  });
+  liveLaeufe.set(identityId, job);
 }
 
 /** Debug (intern status, Quelle verlauf_einbetten): Schalter, Rueckstand je Identitaet, letzter Lauf, Wartegrund, Fehler. */
 export async function verlaufEinbettStatus(): Promise<Record<string, unknown>> {
   const [einbetten, suche] = await Promise.all([leseVerlaufEinbettSchalter('einbetten'), leseVerlaufEinbettSchalter('suche')]);
   const basis = { schalter: { verlauf_einbetten: einbetten, verlauf_suche: suche }, collection: VERLAUF_COLLECTION,
-    zerleger_version: VERLAUF_ZERLEGER_VERSION, alter_aktiver_lauf_min: verlaufEinbettenAlterMs() / 60_000, stapel: stapelGroesse(), ...prozess };
+    zerleger_version: VERLAUF_ZERLEGER_VERSION, alter_aktiver_lauf_min: 0, rangfolge: ['code', 'wissen', 'verlauf'], warteschlange: 'verlauf', stapel: 1, ...prozess };
   try {
     const { rows } = await getPool().query(
       `SELECT i.agent_id, i.id AS identity_id, COALESCE(s.bis_verlauf_id, 0)::text AS bis_verlauf_id, s.letzter_lauf, s.zuletzt_am, s.letzte_dauer_ms,
@@ -596,7 +616,7 @@ export async function sucheVerlauf(wer: VerlaufSucher | null, args: Record<strin
   return {
     success: true, action: 'verlauf', agent: wer.agent_id, spanne, ...(lauf ? { lauf_id: lauf } : {}), score_grenze: grenze, treffer,
     rueckstand: { zeilen_nicht_zerlegt: st.zeilen_offen, stuecke_nicht_eingebettet: st.stuecke_offen },
-    ...(st.zeilen_offen + st.stuecke_offen > 0 ? { hinweis: 'Ein Teil der Spanne ist noch nicht eingebettet (Verlauf wird mit niedrigster Prioritaet nachgezogen, nach jeder Neuanmeldung bzw. nach 6 h im aktiven Lauf).' } : {}),
+    ...(st.zeilen_offen + st.stuecke_offen > 0 ? { hinweis: 'Ein Teil der Spanne ist noch nicht eingebettet (Verlauf wird sofort nach dem Schreiben eingereiht; wartende Code- und Wissensarbeit geht nach dem laufenden Datensatz vor).' } : {}),
   };
 }
 

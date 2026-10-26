@@ -154,7 +154,8 @@ export const planIndex = {
   async sync(plan: ProjectPlan, embedOptions: EmbedOptions = {}): Promise<void> {
     const punkt = planPunkt(plan, null);
     await ensureCollection(punkt.collection);
-    const vector = await embed(punkt.text, embedOptions);
+    // Plan-Dokumente bleiben Wissen, auch bei direktem Schreiben statt Backlog.
+    const vector = await embed(punkt.text, { ...embedOptions, art: 'dokument', priority: 'background', admissionSource: 'wissen:plans' });
     try {
       await deleteVector(punkt.collection, plan.id);
     } catch { /* Punkt fehlte — insert legt ihn an */ }
@@ -198,7 +199,7 @@ async function indexNachziehen(plan: ProjectPlan, geaendert: string[] = []): Pro
   const warnings: string[] = [];
   for (const [name, sync] of [
     ['Plan', () => planIndex.sync(plan)],
-    ['Task', () => taskIndex.sync(plan, {}, geaendert)],
+    ['Task', () => taskIndex.sync(plan, { art: 'dokument', priority: 'background', admissionSource: 'wissen:plans' }, geaendert)],
   ] as const) {
     try { await sync(); }
     catch (error) {

@@ -1,6 +1,7 @@
 /** P20-T15: kurze PG-Zulassung je physischem Gerät, keine Netzoperation unter Lock. */
 import {randomUUID,createHash} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {EMBEDDING_ADMISSION_RANG_SQL} from './embedding-rang.js';
 import {getPool} from '../db/client.js';
 import {embeddingComputePolicy,computePolicyAktiv} from './compute-policy.js';
 import {computeResourceBinding,computePhysicalDeviceKey,computeResourceSnapshot,type ComputeResources} from '../vertrag/compute-ressourcen.js';
@@ -183,7 +184,7 @@ export function createComputeAdmission(pool:AdmissionPool=getPool() as unknown a
    const required=resident.rows.length?0:d.config.modelMb[input.model];
    const first=(await db.query<{id:string}>(`SELECT id FROM compute_admission_requests WHERE resource_domain=$1 AND state='waiting' AND deadline_at>=clock_timestamp()
      AND (priority='interaktiv' OR $3::boolean)
-    ORDER BY GREATEST(0,(CASE priority WHEN 'interaktiv' THEN 0 WHEN 'hintergrund' THEN 1 ELSE 2 END)-FLOOR(EXTRACT(EPOCH FROM(clock_timestamp()-queued_at))*1000/$2)),queued_at,id LIMIT 1`,[d.key,d.config.agingMs,u.http+u.jobs<d.config.maxHttp-d.config.interactiveReserve])).rows[0];
+    ORDER BY ${EMBEDDING_ADMISSION_RANG_SQL},queued_at,id LIMIT 1`,[d.key,d.config.agingMs,u.http+u.jobs<d.config.maxHttp-d.config.interactiveReserve])).rows[0];
    const cap=d.config.maxHttp-(input.priority==='interaktiv'?0:d.config.interactiveReserve),budget=await physicalBudget(db,input.nodeId,d,{model:input.model,mb:required});
    if(own.alive&&first?.id===input.id&&!u.exclusive&&(input.source!=='intern-ollama'||u.http+u.jobs===0)&&u.http+u.jobs<cap&&budget!==null&&u.models+u.jobMb+required<=budget){
     await db.query(`INSERT INTO compute_admission_models(resource_domain,model,reserved_mb) VALUES($1,$2,$3)

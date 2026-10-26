@@ -52,7 +52,7 @@ export const WARTESCHLANGEN_BESCHREIBUNG =
   'WARTESCHLANGEN: warteschlange_liste (warteschlange, project, eintrag_status, eintrag_typ, limit, offset, prozess): ' +
   'ohne warteschlange Uebersicht aller Warteschlangen mit Anzahlen (API, PG, verbundene Daemons); mit Name Eintraege ' +
   '(id, projekt, typ, status, prioritaet, rang, alter_s) paginiert. Namen: code_chunks, parser, wissen_nachzug, shell_jobs, ' +
-  'specialist_jobs, project_init_jobs, embedding_queue; im Daemon (prozess "daemon") index, asset, embedding_queue. ' +
+  'specialist_jobs, project_init_jobs, verlauf, embedding_queue; im Daemon (prozess "daemon") index, asset, embedding_queue. ' +
   'warteschlange_verschieben (warteschlange, nach: vorne | hinten | zurueckstellen | einreihen, project ODER eintrag_id(s) ' +
   'bzw. project + file_path, dauer_min oder bis bei zurueckstellen): code_chunks/parser je Projekt ueber embed_prioritaet ' +
   '(vorne = Stufe 1, hinten = 4, zurueckstellen = ruht bis, einreihen = Eintrag weg), einzelne Chunks/Dateien vorne = vor allen, ' +
@@ -531,7 +531,34 @@ function jobWarteschlange(d: JobDef): PgWarteschlange {
   };
 }
 
+/** P22-T193: dauerhafte Verlaufsklasse derselben Embedding-Warteschlange. */
+const VERLAUF: PgWarteschlange = {
+  name: 'verlauf',
+  beschreibung: 'Fertige Verlaufsstuecke ohne Vektor; sofort eingereiht, Rueckstand im gemeinsamen Backlog.',
+  reihenfolge: 'Code > Wissen > Verlauf; je Datensatz, laufende Arbeit wird nicht abgebrochen.',
+  verschiebbar: 'Nein: Vorrang regelt die bestehende Embedding-Queue.',
+  async uebersicht(project) {
+    const r = await getPool().query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM verlauf_stuecke WHERE embedded_at IS NULL AND ($1::text IS NULL OR project=$1)', [project ?? null]);
+    return { anzahl: r.rows[0]?.n ?? 0, einheit: 'Stuecke' };
+  },
+  async liste(f) {
+    const where = 'embedded_at IS NULL AND ($1::text IS NULL OR project=$1)';
+    const [count, page] = await Promise.all([
+      getPool().query<{ n: number }>('SELECT count(*)::int AS n FROM verlauf_stuecke WHERE ' + where, [f.project ?? null]),
+      getPool().query<{ id: string; project: string | null; identity_id: string; zeit_von: Date }>(
+        'SELECT id::text AS id, project, identity_id, zeit_von FROM verlauf_stuecke WHERE ' + where + ' ORDER BY zeit_von,id LIMIT $2 OFFSET $3',
+        [f.project ?? null, f.limit, f.offset]),
+    ]);
+    return { gesamt: count.rows[0]?.n ?? 0, eintraege: page.rows.map((z, i) => ({
+      id: z.id, projekt: z.project, typ: 'verlauf', status: 'offen', prioritaet: 'verlauf', rang: f.offset + i + 1,
+      alter_s: alterS(z.zeit_von), details: { identity_id: z.identity_id },
+    })) };
+  },
+};
+
 const PG_WARTESCHLANGEN: PgWarteschlange[] = [
+  VERLAUF,
   CODE_CHUNKS,
   PARSER,
   WISSEN_NACHZUG,
@@ -564,7 +591,7 @@ function meldeKernWarteschlangenAn(): void {
   registriereWarteschlange({
     name: 'embedding_queue',
     beschreibung: 'Wartende Embedding-Auftraege dieses Prozesses (Slots EMBED_MAX_CONCURRENT).',
-    reihenfolge: 'interaktiv vor Hintergrund, je Prioritaet FIFO; Hintergrund startet erst, wenn nichts Interaktives laeuft.',
+    reihenfolge: 'Suchanfragen interaktiv; Dokumente Code > Wissen > Verlauf, je Klasse FIFO und Wechsel nach Datensatz.',
     verschiebbar: 'Nein: Auftraege leben Sekunden; interaktive verdraengen Hintergrund ohnehin.',
     uebersicht: () => {
       const s = getEmbeddingQueueStats();
@@ -572,7 +599,7 @@ function meldeKernWarteschlangenAn(): void {
     },
     liste: (f) => seiteAusListe(embeddingWarteschlangeEintraege().map((e) => ({
       id: String(e.position), projekt: null, typ: e.prioritaet, status: 'wartend', prioritaet: e.prioritaet,
-      rang: e.position, alter_s: Math.round(e.wartet_ms / 1000), details: { wartet_ms: e.wartet_ms },
+      rang: e.position, alter_s: Math.round(e.wartet_ms / 1000), details: { wartet_ms: e.wartet_ms, klasse: e.klasse },
     })), f),
   });
 }
