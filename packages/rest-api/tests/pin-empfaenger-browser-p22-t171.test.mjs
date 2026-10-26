@@ -18,6 +18,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -90,7 +91,7 @@ try{
  const url=(ansicht,theme='dark')=>ui+'/tests/lesefenster-herkunft.html?project='+P+'&a='+A+'&token='+encodeURIComponent(sitzung)+'&theme='+theme+'&ansicht='+ansicht+'&memory='+MEM;
  let zuletzt=null;
  const bereit=()=>wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');
- const oeffne=async(ansicht,theme)=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});zuletzt=url(ansicht,theme)+'&leeren=1';tab=(await kb('/tabs/new',{url:zuletzt})).tab_id;await bereit();};
+ const oeffne=async(ansicht,theme)=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});zuletzt=url(ansicht,theme)+'&leeren=1';tab=(await isolierterTab(kb,{url:zuletzt})).tab_id;await bereit();};
  const S_=JSON.stringify;
  const linkDa=(bereich,text)=>evaluate("!![...document.querySelectorAll("+S_(bereich+' .verweis-link')+")].find(b=>b.textContent.trim()==="+S_(text)+")");
  // Haengt die Seite (selten, KI-Browser), wird sie GENAU einmal neu geladen (wie T170).

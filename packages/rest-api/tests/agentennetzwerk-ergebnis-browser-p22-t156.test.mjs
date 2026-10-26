@@ -13,6 +13,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -92,7 +93,7 @@ try{
  const zahl=()=>evaluate("JSON.parse(document.querySelector('canvas.nw-gl')?.dataset.ergebnisEffekte||'{}')");
  const refresh=()=>evaluate("document.dispatchEvent(new Event('visibilitychange'));true");
  const hell=on=>evaluate("(()=>{const r=document.getElementById('root');r.className="+(on?"'synapse-control'":"''")+";if("+(on?'true':'false')+"){r.dataset.theme='light';document.documentElement.style.background='#f4f2ee'}else{delete r.dataset.theme;document.documentElement.style.background=''}return true})()");
- tab=(await kb('/tabs/new',{url:ui+'/tests/agentennetzwerk.html'})).tab_id;
+ tab=(await isolierterTab(kb,{url:ui+'/tests/agentennetzwerk.html'})).tab_id;
  await wait(()=>evaluate("!!document.querySelector('canvas.nw-gl')?.dataset.renderer"),'Netzwerk-Canvas');
  await sleep(1500);
  // Snapshot-Klassifikation je Art (API-Vertrag)

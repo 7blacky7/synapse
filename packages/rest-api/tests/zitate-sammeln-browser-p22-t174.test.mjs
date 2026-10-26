@@ -19,6 +19,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -86,7 +87,7 @@ try{
  const ablage=await screenshotAblage(repo,'p22-t174'),folder=ablage.ordner;
  let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);letzterShot=await ablage.speichere(f,Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+letzterShot);};
  const url=theme=>ui+'/tests/chat-zitate.html?project='+P+'&a='+A+'&b='+Bid+'&theme='+theme+'&ansicht=zwei';
- const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:url(theme)})).tab_id;};
+ const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await isolierterTab(kb,{url:url(theme)})).tab_id;};
  const link=(f,text)=>json('(()=>{const e=[...document.querySelectorAll(\'[data-fenster="'+f+'"] .message-feed .verweis-link\')].find(b=>b.textContent.trim()==='+JSON.stringify(text)+');'
   +'if(!e)return "null";e.scrollIntoView({block:"center"});const r=e.getBoundingClientRect();return JSON.stringify({x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)})})()');
  const rechts=async p=>kb('/click',{tab_id:tab,x:p.x,y:p.y,button:'right'});

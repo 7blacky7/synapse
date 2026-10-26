@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
 import { screenshotAblage } from '../../../scripts/lib/ui-screenshots.mjs';
+import { isolierterTab } from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const requireUi = createRequire(join(repo, 'packages/web-ui/package.json'));
 const { loeseAssetVerweis } = await import(pathToFileURL(join(repo, 'packages/rest-api/dist/services/verweise.js')).href);
@@ -90,7 +91,7 @@ try {
   await vite.listen();
   const ui = 'http://192.168.50.10:' + vite.httpServer.address().port;
   await mkdir(folder, { recursive: true });
-  tab = (await kb('/tabs/new', { url: ui + '/tests/bild-vorschau.html' })).tab_id;
+  tab = (await isolierterTab(kb, { url: ui + '/tests/bild-vorschau.html' })).tab_id;
   await wait(async () => (await wert("document.querySelectorAll('[data-fixture-nachricht=\"1\"] .tool-bild[data-bild=bereit]').length")) === 2, 'Bildleiste der ersten Nachricht geladen');
   await wait(async () => (await wert("document.querySelectorAll('[data-fixture-nachricht=\"2\"] .tool-bild[data-bild=bereit]').length")) === 1, 'asset_id-Bild geladen');
 

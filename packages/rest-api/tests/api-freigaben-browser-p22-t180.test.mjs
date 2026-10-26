@@ -16,6 +16,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -86,7 +87,7 @@ try{
  const ablage=await screenshotAblage(repo,'p22-t180'),folder=ablage.ordner;
  let nr=1;const shot=async name=>{await evaluate("document.querySelector('[data-api-freigaben]')?.scrollIntoView({block:'start'})");const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);letzterShot=await ablage.speichere(f,Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+letzterShot);};
  const url=(theme='dark')=>ui+'/tests/api-freigaben.html?token='+encodeURIComponent(sitzung)+'&theme='+theme;
- const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:url(theme)})).tab_id;
+ const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await isolierterTab(kb,{url:url(theme)})).tab_id;
   await wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');
   await wait(async()=>!!(await evaluate("!!document.querySelector('[data-api-freigabe-formular] select option[value]:not([value=\"\"])')")),'Freigaben und Kandidaten geladen',30000);};
  const S_=JSON.stringify;

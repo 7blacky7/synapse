@@ -17,6 +17,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -86,7 +87,7 @@ try{
  let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);letzterShot=await ablage.speichere(f,Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+letzterShot);};
  const url=(theme='dark')=>ui+'/tests/agent-task-marke.html?project='+P+'&a='+A+'&b='+B+'&token='+encodeURIComponent(sitzung)+'&theme='+theme;
  const bereit=()=>wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');
- const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:url(theme)})).tab_id;await bereit();
+ const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await isolierterTab(kb,{url:url(theme)})).tab_id;await bereit();
   await wait(async()=>(await evaluate("document.querySelectorAll('.channel-agent-card').length"))===2,'Channel-Agentenleiste gerendert',30000);};
  const S_=JSON.stringify;
  const marken=()=>json("JSON.stringify([...document.querySelectorAll('.agent-task-marke[data-aktuelle-task]')].map(m=>({ort:m.closest('[data-bereich],.channel-agent-card,.channel-messages,.aktuelle-task-absatz')?.className||m.closest('[data-bereich]')?.getAttribute('data-bereich')||'?',bereich:m.closest('[data-bereich]')?.getAttribute('data-bereich')??null,karte:m.closest('.channel-agent-card')?.querySelector('strong')?.textContent??null,absender:!!m.closest('.channel-messages'),task:m.getAttribute('data-aktuelle-task'),quelle:m.getAttribute('data-aktuelle-task-quelle'),text:m.textContent})))");

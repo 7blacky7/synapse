@@ -17,6 +17,7 @@ import {dirname,resolve,join,relative} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -161,7 +162,7 @@ try{
  const zeiger=(art,p)=>imRahmen("(()=>{const c=document.querySelector('canvas.nw-text'),o={bubbles:true,cancelable:true,composed:true,pointerId:1,pointerType:'mouse',isPrimary:true,clientX:"+(p?.x??0)+",clientY:"+(p?.y??0)+"};"+
   "if('"+art+"'==='click')c.dispatchEvent(new MouseEvent('click',o));else c.dispatchEvent(new PointerEvent('"+art+"','"+art+"'==='pointerout'?{...o,relatedTarget:document.body}:o));return true})()");
  const fehlerHolen=async()=>errors.push(...(await imRahmen('(()=>{const f=window.__t93Fehler||[];window.__t93Fehler=[];return f})()')||[]));
- tab=(await kb('/tabs/new',{url:ui+'/t93-rahmen.html'})).tab_id;
+ tab=(await isolierterTab(kb,{url:ui+'/t93-rahmen.html'})).tab_id;
  await wait(()=>da('data-renderer'),'Netzwerk-Canvas',30000);
  const renderer=await da('data-renderer');
  ok(renderer.startsWith('webgl2'),'WebGL2-Lichtrenderer aktiv: '+renderer);messung.renderer=renderer;

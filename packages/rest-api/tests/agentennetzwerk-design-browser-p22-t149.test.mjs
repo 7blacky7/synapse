@@ -12,6 +12,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile,mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -92,7 +93,9 @@ try{
  const fluessig=async(name)=>{const roh=await raf(),x=await ds();belege['bildrate_'+name]={roh,fps:x.fps,frameMs:x.frameMs,qualitaet:x.qualitaet,sprites:x.sprites,renderer:x.renderer};console.log('BILDRATE '+name+' '+JSON.stringify(belege['bildrate_'+name]));
   ok(x.fps>=Math.min(45,roh*0.85)&&x.frameMs<8&&x.qualitaet===0,'Bildrate '+name+': '+x.fps+' FPS bei roher Browserrate '+roh+', Zeichnen '+x.frameMs+' ms, volle Qualitaetsstufe');};
  const hell=on=>evaluate("(()=>{const r=document.getElementById('root');r.className=" + (on?"'synapse-control'":"''") + ";if(" + (on?'true':'false') + "){r.dataset.theme='light';document.documentElement.style.background='#f4f2ee'}else{delete r.dataset.theme;document.documentElement.style.background=''}return true})()");
- tab=(await kb('/tabs/new',{url:ui+'/tests/agentennetzwerk.html'})).tab_id;
+ // P25-T19: Kopf/Zaehlerzeile (.nw-stats, .nw-hud) rendern nur bei Erklaerungen EIN (localStorage erklaerungen.v1, Standard aus).
+ // Frueher stand '1' zufaellig aus einem anderen Test im geteilten KI-Browser; jetzt setzt der Test den Zustand selbst.
+ tab=(await isolierterTab(kb,{url:ui+'/tests/agentennetzwerk.html'},{storage:{'synapse.agentennetzwerk.erklaerungen.v1':'1'}})).tab_id;
  await wait(()=>evaluate("!!document.querySelector('canvas.nw-gl')?.dataset.renderer"),'Netzwerk-Canvas');
  await wait(async()=>(await ds()).trabanten===20,'Index im Canvas angekommen');
  let d=await ds();belege.start=d;

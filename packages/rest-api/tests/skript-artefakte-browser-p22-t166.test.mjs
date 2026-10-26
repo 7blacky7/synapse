@@ -13,6 +13,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -107,7 +108,7 @@ try{
  const ausklappen=async(b,label)=>{ok(await klick('[data-bewertung="'+b+'"] .top-kopf'),label);await wait(()=>evaluate("!!"+RAHMEN(b)),label+': Rahmen da');};
  const lauf=async(theme)=>{
   const erg={};
-  tab=(await kb('/tabs/new',{url:ui+'/tests/skript-artefakte.html?project='+P+'&theme='+theme})).tab_id;
+  tab=(await isolierterTab(kb,{url:ui+'/tests/skript-artefakte.html?project='+P+'&theme='+theme})).tab_id;
   await wait(()=>evaluate("!!document.querySelector('.dashboard-tabs')"),theme+': Arbeitsraum geladen');
   // Geheimnisse der Web-UI, die das Skript NICHT sehen darf
   await evaluate("(()=>{document.cookie='t166_geheim=1; path=/';localStorage.setItem('synapse_session_token','geheim-t166');document.title='Web-UI geheim';return true})()");

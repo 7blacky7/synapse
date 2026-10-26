@@ -13,6 +13,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -99,7 +100,7 @@ try{
  const klickText=(sel,text)=>evaluate("(()=>{const e=[...document.querySelectorAll("+JSON.stringify(sel)+")].find(x=>x.textContent.trim().startsWith("+JSON.stringify(text)+"));if(!e)return false;e.click();return true})()");
  const liste=async()=>{const v=await evaluate(LISTE);return typeof v==='string'?JSON.parse(v):(v??[]);}; // der KI-Browser liefert JSON-Text schon geparst
  const lauf=async(theme)=>{
-  tab=(await kb('/tabs/new',{url:ui+'/tests/top-artefakte.html?project='+P+'&theme='+theme+'&block='+A_FERTIG})).tab_id;
+  tab=(await isolierterTab(kb,{url:ui+'/tests/top-artefakte.html?project='+P+'&theme='+theme+'&block='+A_FERTIG})).tab_id;
   await wait(()=>evaluate("!!document.querySelector('.dashboard-tabs')"),theme+': Arbeitsraum geladen');
   ok(await klickText('.dashboard-tabs button','Top-Artefakte'),theme+': Reiter Top-Artefakte');
   await wait(async()=>(await liste()).length===3,theme+': drei Vorbilder');

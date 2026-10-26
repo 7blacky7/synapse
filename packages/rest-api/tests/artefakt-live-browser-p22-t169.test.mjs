@@ -15,6 +15,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -93,7 +94,8 @@ try{
  await vite.listen();const ui='http://192.168.50.10:'+vite.httpServer.address().port;
  const ablage=await screenshotAblage(repo,'p22-t169'),folder=ablage.ordner;
  let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(f,Buffer.from(await r.arrayBuffer())));};
- const oeffne=async(theme)=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:ui+'/tests/artefakt-live-p22-t169.html?project='+P+'&theme='+theme+'&koord='+KOORD})).tab_id;};
+ // P25-T19: isolierterTab leert den Storage; fuer die Neuladen-Probe (Abschnitt 3) bleibt er mit leeren:false stehen.
+ const oeffne=async(theme,{leeren=true}={})=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await isolierterTab(kb,{url:ui+'/tests/artefakt-live-p22-t169.html?project='+P+'&theme='+theme+'&koord='+KOORD},{leeren})).tab_id;};
  // Shadow-Roots: Einbettung im Chat bzw. ausgeklappte Vorlage in den Top-Artefakten.
  const CHAT="(()=>{const h=document.querySelector('[data-fixture=chat] .agent-chat-artefakt .agent-rendering-shadow');return h&&h.shadowRoot})()";
  const TOP="(()=>{const h=document.querySelector('[data-fixture=top] .top-ansicht .agent-rendering-shadow');return h&&h.shadowRoot})()";
@@ -134,7 +136,7 @@ try{
  // Der KI-Browser gibt JSON-Text schon geparst zurueck; beide Formen zulassen.
  const gemerkt=typeof gespeichert==='string'?JSON.parse(gespeichert):gespeichert;
  ok(gemerkt?.geprueft?.['#r-P2']===true,'P22-T169 AgentRenderingSurface: Auswahl im localStorage gemerkt',gespeichert);
- await oeffne('dark');
+ await oeffne('dark',{leeren:false});
  await wait(async()=>/P2-T2=/.test(await text(CHAT)),T+': nach Neuladen Chat-Einbettung da');
  await wait(()=>evaluate('('+CHAT+').querySelector("#r-P2")?.checked===true'),'P22-T169 AgentRenderingSurface: Plan P2 nach dem Neuladen wieder gewaehlt').catch(async e=>{throw Error(e.message+' '+JSON.stringify(await evaluate('[...('+CHAT+').querySelectorAll("input")].map(i=>i.id+":"+i.checked)')));});
  ok(true,'P22-T169 AgentRenderingSurface: Plan P2 nach dem Neuladen wieder gewaehlt');

@@ -12,6 +12,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {mkdir,writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -94,7 +95,7 @@ try{
  // P25-T7 scripts/lib/ui-screenshots.mjs: Ordner je Lauf ui-screenshots/p22-t165/<lauf-id>/ (TESTLAUF_ID vom Laeufer, sonst Zeitstempel), nie ueberschreiben.
  const ablage=await screenshotAblage(repo,'p22-t165'),folder=ablage.ordner;
  let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(B+'/screenshot?tab_id='+tab);assert(r.ok);console.log('SCREENSHOT '+await ablage.speichere(f,Buffer.from(await r.arrayBuffer())));};
- const oeffne=async(theme,ansicht)=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:ui+'/tests/artefakt-verweise.html?project='+P+'&theme='+theme+'&ansicht='+ansicht+'&artefakt='+A+'&th='+TH1})).tab_id;};
+ const oeffne=async(theme,ansicht)=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await isolierterTab(kb,{url:ui+'/tests/artefakt-verweise.html?project='+P+'&theme='+theme+'&ansicht='+ansicht+'&artefakt='+A+'&th='+TH1})).tab_id;};
  // Shadow-Roots: Vorlage (erste Flaeche mit .pf) und Main-Block.
  const SR="[...document.querySelectorAll('.agent-rendering-shadow')].map(h=>h.shadowRoot).find(s=>s&&s.querySelector('.pf'))";
  const SM="[...document.querySelectorAll('.agent-rendering-shadow')].map(h=>h.shadowRoot).find(s=>s&&s.querySelector('[data-fixture=main-block]'))";

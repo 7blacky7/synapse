@@ -15,6 +15,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -75,7 +76,7 @@ try{
  const ablage=await screenshotAblage(repo,'p22-t178'),folder=ablage.ordner;
  let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);letzterShot=await ablage.speichere(f,Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+letzterShot);};
  const url=(theme='dark')=>ui+'/tests/agent-task-marke.html?project='+P+'&a='+A+'&b='+B+'&token='+encodeURIComponent(sitzung)+'&theme='+theme;
- const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:url(theme)})).tab_id;
+ const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await isolierterTab(kb,{url:url(theme)})).tab_id;
   await wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');
   await wait(async()=>(await evaluate("document.querySelectorAll('.channel-agent-card').length"))===2,'Channel-Agentenleiste gerendert',30000);};
  const marken=()=>json("JSON.stringify([...document.querySelectorAll('.lauf-herkunft-marke')].map(m=>({karte:m.closest('.channel-agent-card')?.querySelector('strong')?.textContent??null,"
