@@ -17,6 +17,7 @@ import {dirname,resolve,join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {writeFile} from 'node:fs/promises';
 import {screenshotAblage} from '../../../scripts/lib/ui-screenshots.mjs';
+import {isolierterTab} from '../../../scripts/lib/ki-browser-isolation.mjs';
 const repo=resolve(dirname(fileURLToPath(import.meta.url)),'../../..');
 const load=(...p)=>import(pathToFileURL(join(repo,...p)).href);
 const require=createRequire(join(repo,'packages/core/package.json'));
@@ -75,7 +76,7 @@ try{
  const ablage=await screenshotAblage(repo,'p22-t175'),folder=ablage.ordner;
  let nr=1;const shot=async name=>{const f=String(nr++).padStart(2,'0')+'-'+name+'.png';const r=await fetch(KB+'/screenshot?tab_id='+tab);assert(r.ok);letzterShot=await ablage.speichere(f,Buffer.from(await r.arrayBuffer()));console.log('SCREENSHOT '+letzterShot);};
  const url=(theme='dark')=>ui+'/tests/api-budget.html?token='+encodeURIComponent(sitzung)+'&theme='+theme;
- const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await kb('/tabs/new',{url:url(theme)})).tab_id;
+ const oeffne=async theme=>{if(tab)await kb('/tabs/close',{tab_id:tab}).catch(()=>{});tab=(await isolierterTab(kb,{url:url(theme)})).tab_id;
   await wait(async()=>(await evaluate('document.readyState'))==='complete','Seite geladen');
   await wait(async()=>['ja','nein'].includes(await evaluate("document.querySelector('[data-api-key-vorhanden]')?.getAttribute('data-api-key-vorhanden')??''")),'Status geladen',30000);};
  const keyBlock=()=>json("(()=>{const k=document.querySelector('[data-api-key-vorhanden]');return JSON.stringify({wert:k.getAttribute('data-api-key-vorhanden'),text:k.innerText.replace(/\\s+/g,' ').trim()})})()");
@@ -90,7 +91,8 @@ try{
  const k1=await keyBlock();
  ok(k1.wert==='nein'&&/API-Key vorhanden: nein/.test(k1.text)&&k1.text.includes('SYNAPSE_ANTHROPIC_API_KEY=… in ~/.config/synapse/secrets.env'),HP+': ohne Key "nein" mit Ort zum Hinterlegen',k1);
  const form=await json("JSON.stringify({grenze:document.querySelector('input[type=number][step=\"0.01\"]').value,zeitraum:document.querySelector('select').value,"
-  +"reset:document.querySelector('input[min=\"1\"][max=\"28\"]').disabled,modelle:[...document.querySelectorAll('input[type=checkbox]')].filter(c=>c.checked).map(c=>c.parentElement.textContent.trim().split(' ')[0]),"
+  // (angepasst P22-T181) Seit P22-T180 haengt der Abschnitt Freigaben je Agent mit eigenen Checkboxen im Panel: nur die Budget-Modelle zaehlen.
+  +"reset:document.querySelector('input[min=\"1\"][max=\"28\"]').disabled,modelle:[...document.querySelectorAll('input[type=checkbox]')].filter(c=>c.checked&&!c.closest('[data-api-freigaben]')).map(c=>c.parentElement.textContent.trim().split(' ')[0]),"
   +"vorschlag:!!document.querySelector('[data-api-budget-vorschlag]'),budget:document.querySelector('[data-api-budget]')?.getAttribute('data-api-budget')})");
  ok(form.grenze==='25'&&form.zeitraum==='tag'&&form.reset===true&&form.modelle.join()==='api-haiku,api-sonnet'&&form.vorschlag&&form.budget==='fehlt',HP+': Vorschlag 25 / tag / Haiku + Sonnet vorbelegt, Reset-Tag gesperrt, Budget fehlt',form);
  await shot('dunkel-ohne-key-vorschlag');

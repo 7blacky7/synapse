@@ -127,7 +127,7 @@ export function ApiBudgetPanel() {
         <select value={zeitraum} onChange={(event) => setZeitraum(event.target.value)}><option value="tag">tag</option><option value="woche">woche</option><option value="monat">monat</option></select></label>
       <label className="cp-setting-field"><span><b>Reset-Tag</b><small>1..28 (nur monat)</small></span><input type="number" min="1" max="28" value={resetTag} disabled={zeitraum !== 'monat'} onChange={(event) => setResetTag(event.target.value)} /></label>
       <div className="cp-setting-field wide"><span><b>Erlaubte Modelle</b><small>Preis je 1 Mio. Tokens (Eingabe / Ausgabe / Cache-Lesen) aus der Modell-Registry</small></span>
-        <div>{(s?.modelle ?? []).map(m => <label key={m.alias} style={{ display: 'block' }}>
+        <div>{(s?.modelle ?? []).map(m => <label key={m.alias} className="cp-haken">
           <input type="checkbox" checked={modelle.includes(m.alias)} onChange={(event) => setModelle(event.target.checked ? [...modelle, m.alias] : modelle.filter(x => x !== m.alias))} />
           {' '}{m.alias} ({m.anbieter_modell}) · {m.eingabe ?? '?'} / {m.ausgabe ?? '?'} / {m.cache_lesen ?? '?'} USD
         </label>)}</div>
