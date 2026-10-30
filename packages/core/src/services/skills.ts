@@ -61,6 +61,13 @@ import { betteEinzelnEin, type NachzugQuelle } from './embed-nachzug.js';
 const SKILL_QDRANT_URL =
   process.env.SKILL_QDRANT_URL || process.env.QDRANT_URL || 'http://localhost:6333';
 const SKILL_COLLECTION = process.env.SKILL_COLLECTION || 'skills';
+// P22-T211: Qdrant mit Schluessel. Eigene Skill-Qdrant nutzt SKILL_QDRANT_API_KEY, sonst den gemeinsamen
+// QDRANT_API_KEY. Ohne Schluessel kein Header (Altverhalten).
+const SKILL_QDRANT_API_KEY = process.env.SKILL_QDRANT_URL
+  ? process.env.SKILL_QDRANT_API_KEY : process.env.QDRANT_API_KEY;
+const SKILL_QDRANT_HEADERS: Record<string, string> = SKILL_QDRANT_API_KEY
+  ? { 'Content-Type': 'application/json', 'api-key': SKILL_QDRANT_API_KEY }
+  : { 'Content-Type': 'application/json' };
 const configuredSearchTimeout = Number(process.env.SKILL_SEARCH_TIMEOUT_MS);
 const DEFAULT_SKILL_SEARCH_TIMEOUT_MS =
   Number.isFinite(configuredSearchTimeout) && configuredSearchTimeout > 0
@@ -155,7 +162,7 @@ async function qdrantScroll(filter?: Record<string, unknown>, limit = 1000): Pro
   if (filter) body.filter = filter;
   const res = await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points/scroll`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: SKILL_QDRANT_HEADERS,
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Skill-Qdrant scroll ${res.status}: ${await res.text()}`);
@@ -176,7 +183,7 @@ async function qdrantSearch(
   try {
     const res = await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points/search`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: SKILL_QDRANT_HEADERS,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -676,7 +683,7 @@ async function entferneSkillVektoren(punktIds: number[], skillNameFilter?: strin
   try {
     const res = await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points/delete?wait=true`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: SKILL_QDRANT_HEADERS,
       body: JSON.stringify(koerper),
     });
     if (!res.ok) throw new Error(`Skill-Qdrant delete ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -690,7 +697,7 @@ async function entferneSkillVektoren(punktIds: number[], skillNameFilter?: strin
 /** Projekt-Loeschung: ausschliesslich ID-Sections dieses Projekts, nie globale/andere Agentenpunkte. */
 export async function entferneProjektIdentitaetsSkillVektoren(project:string):Promise<void> {
   const res=await fetch(`${SKILL_QDRANT_URL}/collections/${SKILL_COLLECTION}/points/delete?wait=true`,{
-    method:'POST',headers:{'Content-Type':'application/json'},
+    method:'POST',headers:SKILL_QDRANT_HEADERS,
     body:JSON.stringify({filter:{must:[{key:'project',match:{value:project}},{key:'scope',match:{value:'agent'}}],must_not:[{is_empty:{key:'identity_id'}}]}}),
   });
   if(!res.ok && res.status!==404) throw new Error('Skill-Qdrant Projektbereinigung HTTP '+res.status);
@@ -879,7 +886,7 @@ function baueSkillSectionNachzug(tabelle:'skill_sections'|'agent_identitaet_skil
     const punkte = liste.map(({ punkt, vector }) => ({ id: Number(punkt.id), vector, payload: punkt.payload }));
     const upsert = () => fetch(`${SKILL_QDRANT_URL}/collections/${collection}/points?wait=true`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: SKILL_QDRANT_HEADERS,
       body: JSON.stringify({ points: punkte }),
     });
     let res = await upsert();
