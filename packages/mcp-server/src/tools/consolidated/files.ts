@@ -226,7 +226,15 @@ export const filesTool: ConsolidatedTool = {
         },
         op_index: {
           type: 'number',
-          description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.',
+          description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] (1..n) ersetzt genau diese. Ohne op_index haengt ops[] an (nichts wird entfernt); ersetzen_alle:true ersetzt alle eigenen Ops. Antwort: ops_vorher, ops_nachher, entfernt.',
+        },
+        anhaengen: {
+          type: 'boolean',
+          description: 'plan_update ohne op_index: anhaengen ist der Standard (nur zur Klarheit).',
+        },
+        ersetzen_alle: {
+          type: 'boolean',
+          description: 'plan_update ohne op_index: ausdruecklich ALLE eigenen Ops durch ops[] ersetzen.',
         },
         ops: {
           type: 'array',
@@ -575,6 +583,9 @@ export const filesTool: ConsolidatedTool = {
           agent_id: agentId,
           ops: (opsRaw as FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? str(args, 'task_id') })),
           op_index: num(args, 'op_index'),
+          // P6-T51: ohne op_index haengt plan_update an; ersetzen_alle ersetzt alle eigenen Ops.
+          anhaengen: args.anhaengen === true,
+          ersetzen_alle: args.ersetzen_alle === true,
           open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit : undefined,
           reason,
         });

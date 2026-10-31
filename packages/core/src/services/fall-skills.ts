@@ -123,6 +123,9 @@ export const FALL_SKILL_TABELLE: readonly FallSkillEintrag[] = [
   { codes: ['contribution_failed', 'coedit_conflict', 'waiting_for_contributors', 'coedit_wait'], tools: FILES, skill: 'fall-files-coedit' },
   { codes: ['late_line_ops_unmappable', 'stale', 'hash_konflikt', 'conflict'], tools: FILES, skill: 'fall-files-spaet' },
   { codes: ['plan_failed', 'plan_update_failed'], tools: FILES, skill: 'fall-files-plan-gescheitert' },
+  // P6-T51 (User 31.10.2026): kein Fehler - der ERSTE plan_update je Sitzung zeigt die Wege (anhaengen/op_index/ersetzen_alle).
+  // Steht nach plan_failed: scheitert der Aufruf, gewinnt der Fehler-Skill.
+  { codes: ['erste_nutzung_plan_update'], tools: FILES, skill: 'fall-files-plan-update' },
   { codes: ['expired', 'plan_abgelaufen'], tools: FILES, skill: 'fall-files-plan-ablauf' },
   { codes: ['history_leer_mit_agent_id'], tools: FILES, legacy: 'fall-files-history-filter-legacy' },
   // shell
@@ -163,6 +166,8 @@ export function sammleFehlercodes(tool: string, antwort: Record<string, unknown>
     if (antwort.applied === false && typeof antwort.message === 'string' && antwort.message.includes('existiert bereits')) codes.add('datei_existiert');
     const eintraege = Array.isArray(antwort.entries) ? antwort.entries : Array.isArray(antwort.history) ? antwort.history : null;
     if (args.action === 'history' && typeof args.agent_id === 'string' && args.agent_id && eintraege && eintraege.length === 0) codes.add('history_leer_mit_agent_id');
+    // P6-T51: Erstnutzungs-Ausloeser (kein Fehlercode; die Entprellung je Sitzung und Skill macht ihn zum einmaligen Hinweis).
+    if (args.action === 'plan_update') codes.add('erste_nutzung_plan_update');
   }
   return [...codes];
 }
@@ -331,7 +336,8 @@ export async function haengeFallSkillHinweisAn<T>(antwort: T, tool: string, opt:
       if (GEZEIGT.has(key)) {
         zaehler.entprellt++;
         // P23-T7: derselbe Fehlercode trotz Hinweis im selben Lauf erneut -> der Fall-Skill reichte nicht.
-        if (GEZEIGT_CODE.has(codeKey)) meldeToolFall(tool, treffer.ausloeser, treffer.name, 'wiederholt', antwort as Record<string, unknown>, opt);
+        // P6-T51: Erstnutzungs-Ausloeser wiederholen sich normal (jeder weitere plan_update) - das ist kein ungenuegender Hinweis.
+        if (GEZEIGT_CODE.has(codeKey) && !treffer.ausloeser.startsWith('erste_nutzung_')) meldeToolFall(tool, treffer.ausloeser, treffer.name, 'wiederholt', antwort as Record<string, unknown>, opt);
         else merke(GEZEIGT_CODE, codeKey);
         return antwort;
       }

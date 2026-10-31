@@ -5954,9 +5954,24 @@ export function buildCancelResponse(planId: string, result: CancelBatchResult): 
   };
 }
 
+/** P6-T51: was plan_update am Plan veraendert hat (steht in jeder Antwort, Debug). */
+export interface PlanUpdateBilanz { ops_vorher: number; ops_nachher: number; entfernt: Array<{ index: number; file_path: string; action: string }> }
+
+function planUpdateBilanz(vorher: number, nachher: number, entfernt: Array<{ op: FileBatchOp; index: number }>): PlanUpdateBilanz {
+  return { ops_vorher: vorher, ops_nachher: nachher, entfernt: entfernt.map(({ op, index }) => ({ index, file_path: op.file_path, action: op.action })) };
+}
+
+/**
+ * P6-T51 (User 31.10.2026, Befund thought 8952e3af, Entscheidung Variante B): plan_update ohne op_index entfernte still alle
+ * eigenen Ops, obwohl Agenten eine Op ERGAENZEN wollten (moo 29670: 4 Ops -> 1). Jetzt haengt plan_update ohne op_index an;
+ * ersetzen nur ausdruecklich mit ersetzen_alle:true. Die Bilanz zeigt jedes Mal, was sich geaendert hat.
+ */
+const ersetztAlle = (args: { op_index?: number | null; ersetzen_alle?: boolean }): boolean =>
+  (args.op_index === undefined || args.op_index === null) && args.ersetzen_alle === true;
+
 /**
  * plan_update IM SELBEN Plan (28.09.2026), fuer alle Agenten: ersetzt die Op an
- * op_index (bzw. ohne op_index alle EIGENEN Ops des Aufrufers) durch ops[].
+ * op_index (bzw. ohne op_index mit ersetzen_alle alle EIGENEN Ops des Aufrufers; sonst haengt es an, P6-T51) durch ops[].
  * Unveraenderte Ops behalten ihre agent_id; neue Ops tragen die des Aufrufers.
  * Co-Edit-Beitraege eines anderen Agenten darf nur ihr Autor ersetzen; Ops des Owners
  * (Basis des Plans) und eigene darf jeder Beteiligte ersetzen. Validiert wird gegen
@@ -5965,9 +5980,9 @@ export function buildCancelResponse(planId: string, result: CancelBatchResult): 
  * NICHTS geaendert. Waits und Beitraege bleiben an derselben plan_id.
  */
 async function updatePlanInPlace(
-  args: { project: string; plan_id: string; ops: FileBatchOp[]; op_index?: number },
+  args: { project: string; plan_id: string; ops: FileBatchOp[]; op_index?: number; anhaengen?: boolean; ersetzen_alle?: boolean },
   caller: string | null | undefined,
-): Promise<PlanBatchResult & { in_place: true }> {
+): Promise<PlanBatchResult & { in_place: true } & PlanUpdateBilanz> {
   if (!caller) throw new Error('agent_id ist fuer plan_update erforderlich');
   // P15-T36: plan_update im selben Plan laeuft nicht ueber planBatch -> hier dieselbe Pfadpruefung.
   args = { ...args, ops: await normalisiereOps(args.project, await Promise.all(args.ops.map(async (op) => op.task_id !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, op.task_id) } : op))) };
@@ -5995,7 +6010,16 @@ async function updatePlanInPlace(
     const replacement = args.ops.map((op) => ({ ...withoutCoeditMetadata(op), agent_id: caller, ...(aktuelleAgentIdentityId(args.project,caller) ? {author_identity_id:aktuelleAgentIdentityId(args.project,caller)!} : {}) }));
     let nextOps: FileBatchOp[];
     let replacedFrom: number;
-    if (args.op_index === undefined || args.op_index === null) {
+    // P6-T51: entfernte Ops (Bilanz); ohne op_index haengt es an, nur ersetzen_alle ersetzt alle eigenen.
+    let entfernt: Array<{ op: FileBatchOp; index: number }> = [];
+    const ohneIndex = args.op_index === undefined || args.op_index === null;
+    const anhaengen = ohneIndex && !ersetztAlle(args);
+    if (anhaengen) {
+      nextOps = [...plan.ops, ...replacement];
+      replacedFrom = plan.ops.length;
+    } else if (args.op_index === undefined || args.op_index === null) {
+      // Direkte Bedingung (nicht ohneIndex): sonst verliert TypeScript die Verengung von op_index im else-Zweig.
+      entfernt = plan.ops.map((op, index) => ({ op, index })).filter(({ op }) => opAgentKey(op,plan) === fileCallerKey(plan.project,caller));
       const others = plan.ops.filter((op) => opAgentKey(op,plan) !== fileCallerKey(plan.project,caller));
       nextOps = [...others, ...replacement];
       replacedFrom = others.length;
@@ -6010,6 +6034,7 @@ async function updatePlanInPlace(
         throw new Error(`Op ${args.op_index} ist ein Co-Edit-Beitrag von ${author} — nur der Autor darf ihn ersetzen`);
       }
       nextOps = [...plan.ops];
+      entfernt = [{ op: plan.ops[args.op_index], index: args.op_index }];
       nextOps.splice(args.op_index, 1, ...replacement);
       replacedFrom = args.op_index;
     }
@@ -6060,6 +6085,7 @@ async function updatePlanInPlace(
       expected_hashes: expected,
       previews: combined.previews,
       in_place: true,
+      ...planUpdateBilanz(plan.ops.length, nextOps.length, entfernt),
     };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -6072,7 +6098,8 @@ async function updatePlanInPlace(
 /**
  * plan_update (28.09.2026): korrigiert einen offenen Plan, ohne ihn zu ueberschreiben.
  * op_index gesetzt: ersetzt genau diese Op durch ops[] (1..n Ops, splice);
- * ohne op_index ersetzt ops[] alle Ops. Der neue Op-Satz laeuft komplett durch
+ * ohne op_index haengt ops[] an; ersetzen_alle:true ersetzt alle Ops (P6-T51).
+ * Der neue Op-Satz laeuft komplett durch
  * planBatch — Trockenlauf gegen den AKTUELLEN Stand, frische expected_hashes,
  * Co-Edit-Waits wie bei jedem plan — und bekommt eine EIGENE plan_id. Der alte
  * Plan wird erst danach cancelled, auch wenn der Folgeplan wieder eine
@@ -6092,9 +6119,13 @@ async function replanBatchKern(args: {
   agent_id?: string;
   ops: FileBatchOp[];
   op_index?: number;
+  /** P6-T51: ohne op_index ist Anhaengen der Standard; true nur zur Klarheit. */
+  anhaengen?: boolean;
+  /** P6-T51: ohne op_index ausdruecklich alle eigenen Ops ersetzen. */
+  ersetzen_alle?: boolean;
   open_for_coedit?: boolean;
   reason?: string;
-}): Promise<PlanBatchResult & { superseded_plan_id?: string; in_place?: boolean; message?: string }> {
+}): Promise<PlanBatchResult & { superseded_plan_id?: string; in_place?: boolean; message?: string } & Partial<PlanUpdateBilanz>> {
   if (!Array.isArray(args.ops) || args.ops.length === 0) throw new Error('ops[] darf nicht leer sein');
   args = { ...args, ops: await Promise.all(args.ops.map(async (op) => op.task_id !== undefined ? { ...op, task_id: await resolveProjectTaskId(args.project, op.task_id) } : op)) };
   const plan = await getBatchPlan(args.plan_id);
@@ -6124,13 +6155,19 @@ async function replanBatchKern(args: {
 
   const baseOps = plan.ops.map(withoutCoeditMetadata);
   let nextOps: FileBatchOp[];
-  if (args.op_index === undefined || args.op_index === null) {
+  let entfernt: Array<{ op: FileBatchOp; index: number }> = [];
+  if ((args.op_index === undefined || args.op_index === null) && !ersetztAlle(args)) {
+    nextOps = [...baseOps, ...args.ops.map(withoutCoeditMetadata)];
+  } else if (args.op_index === undefined || args.op_index === null) {
+    // Eigener Entwurf: alle Ops sind eigene; ersetzen nur ausdruecklich (P6-T51).
+    entfernt = baseOps.map((op, index) => ({ op, index }));
     nextOps = args.ops.map(withoutCoeditMetadata);
   } else {
     if (!Number.isInteger(args.op_index) || args.op_index < 0 || args.op_index >= baseOps.length) {
       throw new Error(`op_index ${args.op_index} ausserhalb 0..${baseOps.length - 1}`);
     }
     nextOps = [...baseOps];
+    entfernt = [{ op: baseOps[args.op_index], index: args.op_index }];
     nextOps.splice(args.op_index, 1, ...args.ops.map(withoutCoeditMetadata));
   }
 
@@ -6149,7 +6186,7 @@ async function replanBatchKern(args: {
       reason: args.reason ?? plan.reason ?? undefined,
     });
     await supersede(result.plan_id);
-    return { ...result, superseded_plan_id: args.plan_id,
+    return { ...result, superseded_plan_id: args.plan_id, ...planUpdateBilanz(baseOps.length, nextOps.length, entfernt),
       message: `NEUE plan_id ${result.plan_id} — ab jetzt ausschliesslich diese ID verwenden; Plan ${args.plan_id} wurde ersetzt. Nichts davon ist durch plan_update schon committed.`,
     };
   } catch (error) {

@@ -1179,7 +1179,9 @@ export const MCP_TOOLS = [
         plan_id: { type: 'string', description: 'Plan-ID (fuer commit, cancel, plan_status, plan_update). String wegen BIGSERIAL.' },
         ansicht: { type: 'string', enum: ['uebersicht', 'befunde'], description: 'Optional fuer plan_status/shared_plan_status: kompakte Op-Metadaten ohne Dateiinhalt oder Unified-Diff; befunde filtert auf Fehler und gespeicherte Befunde.' },
         op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans). from_line/to_line schneiden ein Fenster aus content.' },
-        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] ersetzt genau diese. Ohne op_index ersetzt ops[] alle Ops.' },
+        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] (1..n) ersetzt genau diese. Ohne op_index haengt ops[] an (nichts wird entfernt); ersetzen_alle:true ersetzt alle eigenen Ops. Antwort: ops_vorher, ops_nachher, entfernt.' },
+        anhaengen: { type: 'boolean', description: 'plan_update ohne op_index: anhaengen ist der Standard (nur zur Klarheit).' },
+        ersetzen_alle: { type: 'boolean', description: 'plan_update ohne op_index: ausdruecklich ALLE eigenen Ops durch ops[] ersetzen.' },
         agent_id: { type: 'string', description: 'Optional: Audit-Agent fuer file_versions. Bei Web-KI-Calls ohne Wrapper wird agent_id aus User-Agent/X-Openai-Session abgeleitet (z.B. "gpt-<8charsessionid>"). DARF weggelassen oder leer sein — Server ergaenzt automatisch. AUSNAHME action=history: dort wirkt agent_id als EXAKTER Read-Filter — fuer die volle Projekt-History weglassen!' },
         agent_filter: { type: 'string', description: 'Nur fuer history: expliziter exakter Agent-Filter (bevorzugt gegenueber agent_id-als-Filter)' },
         ops: {
@@ -1305,7 +1307,9 @@ export const MCP_TOOLS = [
         },
         plan_id: { type: 'string', description: 'Pflicht fuer commit, cancel, plan_status, plan_update' },
         op_indices: { type: 'array', items: { type: 'number' }, description: 'plan_status: mehrere Ops VOLLSTAENDIG liefern (auch als JSON-String "[0,1]" oder "0,1") (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans). from_line/to_line schneiden ein Fenster aus content.' },
-        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ohne op_index ersetzt ops[] alle Ops.' },
+        op_index: { type: 'number', description: 'coedit_add: coedit_source_op_index der zurueckgestellten Op, die ops[0] ersetzt und beitraegt (z. B. nach contribution_failed). plan_status: Index einer Op, die VOLLSTAENDIG geliefert wird (alle Felder ungekuerzt, agent_id, Status, Unified-Diff der Op im Gesamtbild des Plans, anwendbar:false wenn nicht anwendbar). plan_update: Index der zu ersetzenden Op (0-basiert); ops[] (1..n) ersetzt genau diese. Ohne op_index haengt ops[] an (nichts wird entfernt); ersetzen_alle:true ersetzt alle eigenen Ops. Antwort: ops_vorher, ops_nachher, entfernt.' },
+        anhaengen: { type: 'boolean', description: 'plan_update ohne op_index: anhaengen ist der Standard (nur zur Klarheit).' },
+        ersetzen_alle: { type: 'boolean', description: 'plan_update ohne op_index: ausdruecklich ALLE eigenen Ops durch ops[] ersetzen.' },
         from_line: { type: 'number', description: 'plan_status (mit op_index/op_indices): erste Zeile (1-basiert) des ungekuerzten content-Fensters. Ohne Angabe: ab Zeile 1.' },
         to_line: { type: 'number', description: 'plan_status (mit op_index/op_indices): letzte Zeile (inklusiv) des ungekuerzten content-Fensters. Ohne Angabe: bis zum Ende.' },
         version_id: { type: 'string', description: 'Pflicht fuer restore' },
@@ -5312,6 +5316,9 @@ async function handleToolCallKern(
             agent_id: agentId,
             ops: (opsRaw as import('@synapse/core').FileBatchOp[]).map((op) => ({ ...op, task_id: op.task_id ?? str(args, 'task_id') })),
             op_index: num(args, 'op_index'),
+            // P6-T51: ohne op_index haengt plan_update an; ersetzen_alle ersetzt alle eigenen Ops.
+            anhaengen: args.anhaengen === true,
+            ersetzen_alle: args.ersetzen_alle === true,
             open_for_coedit: typeof args.open_for_coedit === 'boolean' ? args.open_for_coedit as boolean : undefined,
             reason: str(args, 'reason'),
           });

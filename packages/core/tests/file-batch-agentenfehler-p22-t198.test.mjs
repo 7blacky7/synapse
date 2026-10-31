@@ -123,7 +123,8 @@ try{
   'neue ID zuerst; alte ID lesbar als ersetzt/geschlossen und nicht committbar',async()=>{
    const f='alte-id.txt',a=project+'alte';await seed(f,'ALT\n');
    const old=await attempt(()=>plan(a,[sr(f,'NICHT-DA','X')]));
-   const p=await B.replanBatch({project,plan_id:old.plan_id,agent_id:a,ops:[sr(f,'ALT','[NEUE-ID]')]});
+   // P6-T51: ganzen Entwurf ohne op_index ersetzen nur noch ausdruecklich (ersetzen_alle).
+   const p=await B.replanBatch({project,plan_id:old.plan_id,agent_id:a,ersetzen_alle:true,ops:[sr(f,'ALT','[NEUE-ID]')]});
    ok(p.plan_id!==old.plan_id&&p.message.startsWith('NEUE plan_id '+p.plan_id),'Folge-ID eindeutig',p);
    const oldRead=await B.getBatchPlan(old.plan_id),oldCommit=await attempt(()=>commit(old.plan_id,a));
    ok(oldRead.status!=='open'&&!oldCommit.success,'alte ID verweigert',{oldRead:oldRead.status,oldCommit});
