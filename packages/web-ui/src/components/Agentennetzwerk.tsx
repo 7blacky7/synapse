@@ -14,6 +14,8 @@ import { globaleSzene } from './netzwerk/globale-szene';
 // P22-T239: jede Projektsonne der Uebersicht mit allen Effekten des Kerns (Glut/Puls, Wellen, Trabanten, Nebel, Index-Reaktion, Commit).
 import { sonnenEffekteWerte, sonnenEbenen, sonnenStern, sonnenNebel, effektSonnen, neuerSonnenZustand, merkeSonnenIndex, klingeSonneAb, sonnenEffektDebug, OHNE_TRABANTEN, SONNE_NEBEL_RADIUS, type SonnenSnapshot, type SonnenZustand } from './netzwerk/sonnen-effekte';
 import { ladeGlobalesNetzwerk, type GlobalesNetz } from '../api/uebersicht-netzwerk';
+// P22-T244: Bewegung in der Uebersicht (Umlauf um die eigene Sonne, Stoss/Nachschwingen, Drift), nie zur leeren Mitte.
+import { bewegungsWerte, neueBewegung, schritt as bewegungsSchritt, stoss, bahnPunkt, drift, energie, DRIFT_SONNE, DRIFT_FREI, type BewegungsZustand } from './netzwerk/sonnen-bewegung';
 import '../agentennetzwerk.css';
 // P22-T172: Name + aktuelle Task an Agenten-Knoten (Etikett) und in der Knotenkarte (klickbar).
 import { AgentTaskMarke, useAktuelleTasks } from './AgentTaskMarke';
@@ -192,6 +194,9 @@ export default function Agentennetzwerk({ project, fallback, global }: {
   const sonnenZustand = new Map<string, SonnenZustand>();
   let sonnenVoll = new Set<string>(), sonnenEb = new Map<string, IndexEbenen>();
   const zustandVon = (p: string) => { let z = sonnenZustand.get(p); if (!z) { z = neuerSonnenZustand(); sonnenZustand.set(p, z); } return z; };
+  // P22-T244: Bewegungszustand je Knoten der Uebersicht (Gruppenwinkel, Ausschlag, Stoesse).
+  const bewegung = new Map<string, BewegungsZustand>();
+  const bewegungVon = (id: string) => { let z = bewegung.get(id); if (!z) { z = neueBewegung(hash(id)); bewegung.set(id, z); } return z; };
   // Chunk-Nebel als einmal vorgezeichnete Ebene; neu gezeichnet nur bei anderer Punktzahl, anderem Netzradius (40er-Raster) oder Designwechsel.
   type NebelBild = { bild: HTMLCanvasElement; schluessel: string; r: number; f: number };
   let nebelBild: NebelBild | null = null;
@@ -304,6 +309,9 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    // P22-T196 (Abnahme 35d1ce22): in der globalen Uebersicht laufen projektlose Aufrufe (ziel_projekt null, z. B. Hauptagent global, Jev)
    // zum Hauptagenten in der Mitte; ruft er selbst projektlos auf, pulsiert er an Ort und Stelle.
    if (zielK === q) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
+   // P22-T244: die unsichtbare Mitte der Uebersicht ist nie Ziel (kein Strich ins Leere): ein Ziel ohne Sonne bzw. ein projektloser
+   // Aufruf ohne Hauptagent pulsiert am Aufrufer selbst.
+   if (g.global && zielK === g.kern) return { ...basis, pfad: new Float32Array([0, 0, 0, 0]), laenge: 0, art: 'kern', von: q.id, nach: q.id, dauer: w.animation_ms * 0.8 };
    const punkte: number[] = [], segmente: number[] = [];
    for (let k: Knoten = q; ; ) {
     let ziel = k.eltern ?? g.kern;
@@ -428,13 +436,32 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    const streckX = Math.min(1.55, Math.max(1, w / h)), streckY = Math.min(1.3, Math.max(1, h / w));
    // Knoten gleiten an neue Plaetze; neue Zellen wachsen aus ihrem Elternknoten heraus.
    const ease = 1 - Math.exp(-dt * 3.2), ids = new Set<string>();
+   // P22-T244: in der Uebersicht kreist jede Gruppe um IHRE Sonne (Kinder drehen mit dem Gruppenwinkel der Sonne), Aufrufe stossen
+   // Knoten an und sie schwingen nach; Sonnen, Hauptagent und freie Agenten driften. Der unsichtbare Anker (g.kern) bleibt aussen vor.
+   const bw = g.global ? bewegungsWerte(s.werte) : null, bwAn = !!bw?.aktiv, bwDt = still ? 0 : dt;
+   const bewegtesZiel = (k: Knoten): Punkt | null => {
+    if (!bwAn || !bw || k === g.kern) return null;
+    const z = bewegungVon(k.id), ph = (hash(k.id) % 628) / 100;
+    bewegungsSchritt(z, bwDt, bw, Math.min(1, hitze.get(k.id) ?? 0));
+    const e = k.eltern && k.eltern !== g.kern ? k.eltern : g.mitte && k !== g.mitte && k.rolle !== 'sonne' ? g.mitte : null;
+    if (!e) { const d = drift(uhr, ph, k.rolle === 'sonne' ? DRIFT_SONNE : DRIFT_FREI); return { x: k.x * streckX + d.x, y: k.y * streckY + d.y }; }
+    const le = lage.current.get(e.id) ?? { x: e.x * streckX, y: e.y * streckY };
+    return bahnPunkt(le, (k.x - e.x) * streckX, (k.y - e.y) * streckY, bewegungVon(e.id).rot, z.dr);
+   };
+   const stosse = (id: string, staerke: number) => { if (!bwAn || !bw) return; const kn = g.alias.get(id); if (kn && kn !== g.kern) stoss(bewegungVon(kn.id), staerke, bw); };
+   // Ankunft an einer Sonne: ihre ganze Gruppe schwingt nach; sonst wird der Ziel-Knoten nach aussen gestossen.
+   const bewegeAnkunft = (id: string) => {
+    if (!bwAn || !bw) return; const kn = g.alias.get(id); if (!kn || kn === g.kern) return;
+    if (kn.rolle === 'sonne') { for (const c of g.knoten) if (c.eltern === kn) stoss(bewegungVon(c.id), 0.35, bw); } else stoss(bewegungVon(kn.id), 0.6, bw);
+   };
    for (const k of g.knoten) {
     ids.add(k.id);
     // P22-T229: fremde Sonne blendet je Frame fliessend aus (nicht im Layout-Takt).
     if (k.sonne) k.fade = sonnenFade(k.sonne, jetzt);
     let l = lage.current.get(k.id);
     if (!l) { const e = k.eltern ? lage.current.get(k.eltern.id) ?? { x: k.eltern.x * streckX, y: k.eltern.y * streckY } : { x: k.x * streckX, y: k.y * streckY }; l = { x: e.x, y: e.y, a: 0 }; lage.current.set(k.id, l); }
-    l.x += (k.x * streckX - l.x) * ease; l.y += (k.y * streckY - l.y) * ease; l.a += (1 - l.a) * ease; if (k.plan) { l.auto = k.plan.auto_commit === true; bekanntePlaene.add(k.plan.id); l.ziel = g.global ? 'projekt:' + k.project : undefined; }
+    const bz = bewegtesZiel(k), zx = bz ? bz.x : k.x * streckX, zy = bz ? bz.y : k.y * streckY;
+    l.x += (zx - l.x) * ease; l.y += (zy - l.y) * ease; l.a += (1 - l.a) * ease; if (k.plan) { l.auto = k.plan.auto_commit === true; bekanntePlaene.add(k.plan.id); l.ziel = g.global ? 'projekt:' + k.project : undefined; }
    }
    for (const [id, l] of lage.current) if (!ids.has(id)) {
     // P22-T149: auch ein gerade erst eingeblendeter Plan fliegt bzw. explodiert (Browserabnahme: schneller Commit/cancel blieb sonst still).
@@ -444,7 +471,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
      const pid = id.slice(5), zeile = s.plaene?.find(p => p.id === pid), st = s.plaene_ende?.find(p => p.id === pid)?.status ?? zeile?.status;
      if (st && st !== 'open' && !geflogen.has(pid)) startAbgang(st === 'committed' ? 'commit' : 'explosion', l.x, l.y, zeit, pid, zeile?.auto_commit ?? l.auto ?? false, l.ziel);
     }
-    lage.current.delete(id);
+    lage.current.delete(id); bewegung.delete(id);
    }
    // P22-T149: zwischen zwei Snapshots committete Plaene (meist auto_commit) waren nie als Raute zu sehen; ihr Flug startet am Besitzer.
    for (const p of s.plaene ?? []) {
@@ -493,6 +520,8 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    // Nervenbahnen: kaum sichtbar in Ruhe, aktive Bahnen schimmern zum Kern hin.
    const wolken = new Map<string, { x: number; y: number; n: number; f: Rgb; p: Punkt; act: number }>();
    for (const [p, c] of g.kanten) {
+    // P22-T244: keine Bahn vom unsichtbaren Anker der Uebersicht (kein Strich ins Leere, auch bei nur einem Projekt).
+    if (g.global && p === g.kern) continue;
     const a = pos(p), b = pos(c), lc = (lage.current.get(c.id)?.a ?? 1) * (c.fade ?? 1) * (p.fade ?? 1), act = Math.max(aktivitaet(c), c.rolle === 'koordinator' ? 0.25 : 0);
     if (p !== g.kern) { const wo = wolken.get(p.id) ?? { x: 0, y: 0, n: 0, f: rgb(p.farbe), p: a, act: 0 }; wo.x += b.x; wo.y += b.y; wo.n++; wo.act = Math.max(wo.act, act); wolken.set(p.id, wo); }
     if (stufe > 1 && act <= (stufe > 2 ? 0.3 : 0.1)) continue;
@@ -537,13 +566,18 @@ export default function Agentennetzwerk({ project, fallback, global }: {
     if (p.impuls === undefined) p.impuls = baue(p.e, g, s.werte);
     const i = p.impuls; if (!i) continue;
     const t = (zeit - p.start) / i.dauer; if (t < 0) continue;
-    if (!p.gestartet) { p.gestartet = true; hitze.set(i.von, Math.min(1.5, (hitze.get(i.von) ?? 0) + 0.6)); }
+    if (!p.gestartet) { p.gestartet = true; hitze.set(i.von, Math.min(1.5, (hitze.get(i.von) ?? 0) + 0.6)); stosse(i.von, -0.8); }
     const [r, gg, b] = i.farbe, heiss = mische(i.farbe, WEISS, 0.55);
     gezeichnet++;
     if (i.art === 'kern') {
-     const u = Math.min(1, t);
-     licht.sprite(0, 0, 80 + u * 320, r, gg, b, (1 - u) * 0.55, 1); licht.sprite(0, 0, 60 + u * 140, r, gg, b, (1 - u) * 0.3, 0);
-     if (!i.angekommen) { i.angekommen = true; kernPuls = Math.min(1.5, kernPuls + 0.35); welle(zeit, i.farbe); }
+     // P22-T244: Puls am Ort des Aufrufers (Kern bei 0,0; Uebersicht: Hauptagent bzw. der Agent selbst), nie an der leeren Mitte.
+     const u = Math.min(1, t), amKern = i.von === g.kern.id, o = amKern ? { x: 0, y: 0 } : lage.current.get(i.von) ?? { x: 0, y: 0 }, gr = amKern || g.alias.get(i.von)?.rolle === 'main' ? 1 : 0.45;
+     licht.sprite(o.x, o.y, (80 + u * 320) * gr, r, gg, b, (1 - u) * 0.55, 1); licht.sprite(o.x, o.y, (60 + u * 140) * gr, r, gg, b, (1 - u) * 0.3, 0);
+     if (!i.angekommen) {
+      i.angekommen = true;
+      if (amKern) { kernPuls = Math.min(1.5, kernPuls + 0.35); welle(zeit, i.farbe); }
+      else { hitze.set(i.von, Math.min(1.5, (hitze.get(i.von) ?? 0) + 0.5)); welle(zeit, i.farbe, { id: i.von, x: o.x, y: o.y, r0: 40 * gr, weit: 360 * gr }); bewegeAnkunft(i.von); }
+     }
      continue;
     }
     if (i.art === 'dm') {
@@ -561,7 +595,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
      const f = glatt(Math.min(1, t / 0.4)), x = a.x + dx * f, y = a.y + dy * f;
      if (t < 0.45) { licht.sprite(x, y, 20, heiss[0], heiss[1], heiss[2], 1, 4); koepfe.push({ x, y, i, e: p.e }); }
      licht.sprite(a.x, a.y, 46, r, gg, b, Math.max(0, 1 - t * 2) * 0.6, 0);
-     if (t > 0.3) { const u = Math.min(1, (t - 0.3) / 0.7); licht.sprite(z.x, z.y, 22 + u * 70, BLITZ[0], BLITZ[1], BLITZ[2], (1 - u) * 0.8, 1); licht.sprite(z.x, z.y, 60, r, gg, b, (1 - u) * 0.5, 0); if (!i.angekommen) { i.angekommen = true; hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + 0.7)); } }
+     if (t > 0.3) { const u = Math.min(1, (t - 0.3) / 0.7); licht.sprite(z.x, z.y, 22 + u * 70, BLITZ[0], BLITZ[1], BLITZ[2], (1 - u) * 0.8, 1); licht.sprite(z.x, z.y, 60, r, gg, b, (1 - u) * 0.5, 0); if (!i.angekommen) { i.angekommen = true; hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + 0.7)); bewegeAnkunft(i.nach); } }
      continue;
     }
     if (i.art === 'an_user' || i.art === 'artefakt') {
@@ -597,7 +631,7 @@ export default function Agentennetzwerk({ project, fallback, global }: {
     } else if (!fehlt) {
      const u = Math.min(1, (t - ankunft) / (1.3 - ankunft)), z = punkt(i.pfad, 1);
      if (!i.angekommen && i.nach !== g.kern.id && i.nach.startsWith('projekt:')) sonnenZiel[i.nach.slice(8)] = (sonnenZiel[i.nach.slice(8)] ?? 0) + 1;
-     if (!i.angekommen) { i.angekommen = true; if (i.art !== 'lesen') zurueck(i, 0, zeit, s.werte.animation_ms); if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else { hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); sonnenAnkunft(i.nach, i.farbe, zeit); } }
+     if (!i.angekommen) { i.angekommen = true; if (i.art !== 'lesen') zurueck(i, 0, zeit, s.werte.animation_ms); if (i.nach === g.kern.id) { kernPuls = Math.min(1.5, kernPuls + 0.16); welle(zeit, i.farbe); } else { hitze.set(i.nach, Math.min(1.5, (hitze.get(i.nach) ?? 0) + (i.art === 'aufruf' ? 0.4 : 0.8))); sonnenAnkunft(i.nach, i.farbe, zeit); bewegeAnkunft(i.nach); } }
      licht.sprite(z.x, z.y, 18 + u * (i.art === 'aufruf' ? 46 : 90), r, gg, b, (1 - u) * 0.75, 1);
      if (i.art === 'post' || i.art === 'plan') { licht.sprite(z.x, z.y, 10 + u * 150, r, gg, b, (1 - u) * 0.35, 1); schreibend++; }
      licht.sprite(z.x, z.y, 40, heiss[0], heiss[1], heiss[2], (1 - u) * 0.4, 0);
@@ -898,6 +932,11 @@ export default function Agentennetzwerk({ project, fallback, global }: {
    el.dataset.ergebnisEffekte = JSON.stringify(ergebnisZahl);
    // P22-T229: Debug/Abnahme der Visum-Sonnen (welche fremden Sonnen, warum, bis wann, Ausblendstand, Ankuenfte je Sonne).
    el.dataset.fremdSonnen = JSON.stringify(g.fremd.map(f => ({ projekt: f.projekt, agenten: f.agenten, grund: f.grund, zugang: f.zugang, ende: new Date(f.ende).toISOString(), fade: Number(sonnenFade(f, jetzt).toFixed(2)), heimat_aufrufe: f.heimatAufrufe, aufrufe: f.aufrufe })));
+   // P22-T244: Debug der Bewegung (an, Tempo, bewegte Knoten, Stoesse, Energie je Sonne inkl. ihrer Gruppe, Gruppenwinkel).
+   if (bw) { const jeSonne: Record<string, { energie: number; stoesse: number; rot: number }> = {}; let n = 0, st = 0;
+    for (const kn of g.knoten) { const z = bewegung.get(kn.id); if (!z) continue; n++; st += z.stoesse; const so = kn.rolle === 'sonne' ? kn : kn.eltern?.rolle === 'sonne' ? kn.eltern : null;
+     if (so) { const e = jeSonne[so.project] ??= { energie: 0, stoesse: 0, rot: Number((bewegung.get(so.id)?.rot ?? 0).toFixed(3)) }; e.energie = Number((e.energie + energie(z)).toFixed(2)); e.stoesse += z.stoesse; } }
+    el.dataset.bewegung = JSON.stringify({ aktiv: bwAn, omega: bw.omega, still, knoten: n, stoesse: st, je_sonne: jeSonne }); } else el.dataset.bewegung = '';
    el.dataset.sonnenZiel = JSON.stringify(sonnenZiel); el.dataset.global = g.global ? '1' : '0'; el.dataset.visumSonnen = s.visum_sonnen?.aktiv ? '1' : '0';
    // P22-T239: Debug je Projektsonne der Uebersicht (voll = Trabanten/Nebel, Stern, Index, Puls, Ankuenfte, Commits, Wellen, Reaktion).
    el.dataset.sonnenEffekte = se ? JSON.stringify({ aktiv: se.aktiv, max: se.max, sonnen: g.fremd.map(f => { const eb = sonnenEb.get(f.projekt) ?? OHNE_TRABANTEN; return sonnenEffektDebug(f.projekt, zustandVon(f.projekt), eb, sonnenVoll.has(f.projekt), sonnenNebel(eb), g.knoten.filter(k => k.plan && k.project === f.projekt).length); }) }) : '';

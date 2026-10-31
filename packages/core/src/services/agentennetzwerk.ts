@@ -87,6 +87,12 @@ export const NETZWERK_EINSTELLUNGEN = {
  // uebrigen behalten Glut, Puls, Wellen und Plaene. Sonst reduziert nur die Qualitaetsstufe der Web-UI (wie beim Projektkern).
  sonnen_effekte: { standard: 1, min: 0, max: 1 },
  sonnen_effekte_max: { standard: 0, min: 0, max: 500 },
+ // P22-T244 (User 31.10.2026 ~18:55): Bewegung in der Uebersicht - Gruppen kreisen um ihre Sonne, Aufrufe stossen an, Nachschwingen,
+ // Drift (1 an, 0 = starre Lage wie bis t223); Umlauftempo in mrad/s (70 = eine Runde in etwa 90 s, bei Aktivitaet bis 2,5-fach);
+ // Stoss je Aufruf in Weltpunkten je Sekunde (Ausschlag gedeckelt, Feder schwingt zurueck).
+ sonnen_bewegung: { standard: 1, min: 0, max: 1 },
+ sonnen_bewegung_mrad_s: { standard: 70, min: 0, max: 2000 },
+ sonnen_bewegung_stoss: { standard: 60, min: 0, max: 400 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;

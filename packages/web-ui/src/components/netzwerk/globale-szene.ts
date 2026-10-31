@@ -151,7 +151,8 @@ export function globaleSzene(s: NetzSnapshot, jetzt: number, gedaechtnis: Sonnen
  const freiZeigen = frei.slice(0, jeSonne);
  freiZeigen.forEach((a, j) => {
   const wj = -Math.PI / 2 + (j + 0.5) * TAU / freiZeigen.length, p = polar(92 + (j % 2) * 18, wj), k = ausAgent(a, p.x, p.y, 8, wj);
-  k.eltern = kern; k.zuordnung = 'ohne Projektsonne (Heimat unbekannt oder ohne Aktivität)'; knoten.push(k); kanten.push([kern, k]);
+  // P22-T244: Bahn zum Hauptagenten (sichtbar), nicht zum unsichtbaren Anker; ohne Hauptagent keine Bahn (Renderer zeichnet nichts vom Anker).
+  k.eltern = kern; k.zuordnung = 'ohne Projektsonne (Heimat unbekannt oder ohne Aktivität)'; knoten.push(k); kanten.push([mitte ?? kern, k]);
  });
  verborgen += frei.length - freiZeigen.length;
  const radius = Math.max(280, aussen);
