@@ -996,9 +996,11 @@ export class AssetSpeicher {
     try { op=await this.leseJournal(k,owner); }
     catch(e) { return {owner,seit,zustand:'unklar',grund:'Journal der Sperre fehlt oder ist ungueltig: '+(e as Error).message}; }
     const info={owner,seit,journal_status:op.status,logischer_pfad:op.adresse.logischer_pfad,besitzer:op.besitzer??null};
+    // P22-T206 (t224 #10): eine laufende Operation dieses Prozesses ist 'aktiv' in JEDEM Journalstatus (auch prepared/published,
+    // waehrend sie auf PG-Prepare/Commit wartet) - vorher meldete die Sperre dann faelschlich 'andere_recovery'.
+    if(this.aktive.has(op.id)) return {...info,zustand:'aktiv'};
     if('mutation_art' in op) return {...info,zustand:'unklar',grund:'Pfadoperation (A7) hat eine eigene Recovery.'};
     if(op.status!=='staged') return {...info,zustand:'andere_recovery',grund:'Journalstatus '+op.status+' gehoert zur bestehenden Recovery.'};
-    if(this.aktive.has(op.id)) return {...info,zustand:'aktiv'};
     const jetzt=o.jetzt??Date.now(),b=op.besitzer;
     if(b) {
       if(b.prozess!==ASSET_SPEICHER_PROZESS && !(Date.parse(b.lease_bis)<jetzt)) return {...info,zustand:'lease_laeuft'};
