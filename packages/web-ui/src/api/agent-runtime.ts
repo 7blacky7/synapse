@@ -43,6 +43,8 @@ export interface RuntimeStatusPruefung {
 }
 
 export interface MainAgentRuntimeState {
+  /** P22-T202: API ist ein eigener Ausfuehrungsweg, kein vorgetaeuschter laufender Container. */
+  api_lauf?: { identity_id: string; wahl: { modell: string; anbieter: string; phase: string; am: string } };
   runtime: AgentRuntimeName | null;
   status: AgentRuntimeStatus | null;
 }
@@ -328,7 +330,7 @@ export async function controlAgentRuntime(
 
 export async function getMainAgentRuntime(): Promise<MainAgentRuntimeState> {
   const payload = await jsonRequest<{ success: true } & MainAgentRuntimeState>('/api/main-agent/runtime');
-  return { runtime: payload.runtime, status: payload.status };
+  return { runtime: payload.runtime, status: payload.status, ...(payload.api_lauf ? {api_lauf:payload.api_lauf} : {}) };
 }
 
 export async function assignMainAgentRuntime(runtime: AgentRuntimeName | null): Promise<MainAgentRuntimeState> {

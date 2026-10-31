@@ -1,3 +1,4 @@
+import { leseApiLaufWahl, mitApiWahlSperre, type ApiLaufWahl } from '@synapse/core';
 import { AgentRuntimeRepository } from './repository.js';
 import { CodexRuntimeDriver } from './codex-driver.js';
 import { ClaudeRuntimeDriver } from './claude-driver.js';
@@ -225,13 +226,32 @@ export class AgentRuntimeManager {
     return this.mainAssignment();
   }
 
-  async mainAssignment(): Promise<{ runtime: RuntimeName | null; status: RuntimeStatus | null }> {
+  async mainApiWahl(): Promise<{ identity_id: string; wahl: ApiLaufWahl } | null> {
+    const id = await hauptagentIdentitaetsId();
+    const wahl = id ? await leseApiLaufWahl(id) : null;
+    return id && wahl ? {identity_id:id,wahl} : null;
+  }
+
+  async mainAssignment(): Promise<{ runtime: RuntimeName | null; status: RuntimeStatus | null; api_lauf?: { identity_id: string; wahl: ApiLaufWahl } }> {
+    const api = await this.mainApiWahl();
+    if (api) return {runtime:null,status:null,api_lauf:api};
     const config = await this.repository.getAssignedMain();
     if (!config) return { runtime: null, status: null };
     return { runtime: config.runtime, status: await this.driver(config.runtime).status() };
   }
 
   async createMainSession(runtime?: RuntimeName): Promise<MainAgentSession> {
+    const api = await this.mainApiWahl();
+    if (api) {
+      if (api.wahl.phase!=='aktiv') throw new Error('api_wechsel_nicht_bereit');
+      // Bestehende Session-Tabelle hat CLI-Runtime als Transport-Schluessel. Keine CLI-Readiness, kein Containerstart:
+      // context.laufart/api-Modell + Identitaetswahl steuern den separaten API-Ausfuehrungsweg.
+      const carrier = (await this.repository.getAssignedMain())?.runtime ?? 'claude';
+      if (!(await this.repository.get(carrier))) await this.repository.ensureClaude();
+      const session = await this.repository.createSession(carrier,api.identity_id);
+      await this.repository.updateSession(session.id,{runtimeSessionId:null,context:{laufart:'api',modell:api.wahl.modell}});
+      return {...session,runtimeSessionId:null,context:{laufart:'api',modell:api.wahl.modell}};
+    }
     const assigned = (await this.repository.getAssignedMain())?.runtime;
     if (!assigned) throw new Error('Dem Main-Agenten ist noch keine Runtime zugewiesen');
     if (runtime && runtime !== assigned) throw new Error('Nur die aktuell zugewiesene Main-Agent-Runtime darf Sessions starten');
@@ -285,9 +305,14 @@ export class AgentRuntimeManager {
   }
 
   async markSessionRunning(id: string): Promise<void> {
-    if (!await this.repository.claimSession(id)) {
-      throw new Error('Main-Agent-Sitzung verarbeitet bereits eine Nachricht');
-    }
+    const session = await this.getMainSession(id);
+    const claim = async () => {
+      const w = session.identityId ? await leseApiLaufWahl(session.identityId) : null;
+      if(w && w.phase!=='aktiv') throw new Error('api_wechsel_nicht_bereit');
+      if (!await this.repository.claimSession(id)) throw new Error('Main-Agent-Sitzung verarbeitet bereits eine Nachricht');
+    };
+    if(session.identityId) await mitApiWahlSperre([session.identityId],claim);
+    else await claim();
   }
 
   async completeSession(id: string, runtimeSessionId: string | null, context: Record<string, unknown> | null): Promise<void> {

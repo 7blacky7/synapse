@@ -35,6 +35,18 @@
  *   workspace", wird daraus der Fehlercode api_workspace_fehlt mit Hinweis, wo die ID hingehoert.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { apiAuswahlStand, starteApiAuswahl, beendeApiAuswahl } from '../services/api-agent-auswahl.js';
+import { ausweisProjekt, type SteuerAkteur } from '@synapse/core';
+/** P22-T202: authentifizierter Ausweis, Fachfunktion prueft Verwaltungsrecht. */
+export async function apiAuswahlAgentAkteur(request: FastifyRequest): Promise<SteuerAkteur | null> {
+  const token = request.headers['x-synapse-agent-token'];
+  if (typeof token !== 'string') return null;
+  const project = await ausweisProjekt(token);
+  if (!project) return null;
+  const a = await agentAus(request, project);
+  return { art:'identity',identity_id:a.identity_id };
+}
+
 import Anthropic from '@anthropic-ai/sdk';
 import {
   HAUPTAGENT_PROJEKT, agentPrincipalAusAnmeldung, leseAgentBezugModus, pruefeAgentToken, w1bFehlerStatus,
@@ -122,7 +134,7 @@ function pruefeAnfrage(b: Record<string, unknown>): { modell: string; system: st
   return { modell: b.modell.trim(), system: b.system as string | undefined, messages: b.messages, tools, max_tokens: max };
 }
 
-export async function agentApiRoutes(fastify: FastifyInstance): Promise<void> {
+export async function agentApiRoutes(fastify: FastifyInstance, verwaltungsAkteur: (request: FastifyRequest) => Promise<SteuerAkteur | null> = async () => null): Promise<void> {
   // ---- Transport ------------------------------------------------------------------------------
   fastify.post<{ Body: Record<string, unknown> }>('/api/agent-api/messages', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
@@ -156,6 +168,21 @@ export async function agentApiRoutes(fastify: FastifyInstance): Promise<void> {
       return { success: true, ...(await apiRahmenFuerAgent()),
         ...(agent.zugang === 'agent' ? await apiRahmenFuerIdentitaet(agent.identity_id, agent.project) : { zugang: 'main' }) };
     } catch (error) { return sendeFehler(reply, error); }
+  });
+
+  // P22-T202: reine Vorschau und expliziter Start. Budget/Freigabe sind getrennte User-Vertraege.
+  fastify.get<{ Querystring: { identity_id?: string } }>('/api/main-agent/api/laeufe/auswahl', async (request, reply) => {
+    reply.header('Cache-Control','no-store');
+    try { return { success:true,...await apiAuswahlStand(request.query?.identity_id ?? 'main',await verwaltungsAkteur(request)) }; }
+    catch(error) { return sendeFehler(reply,error); }
+  });
+  fastify.post<{ Body: Parameters<typeof starteApiAuswahl>[0] }>('/api/main-agent/api/laeufe/starten',async(request,reply)=>{
+    try { return { success:true,...await starteApiAuswahl(request.body ?? {},await verwaltungsAkteur(request)) }; }
+    catch(error) { return sendeFehler(reply,error); }
+  });
+  fastify.post<{ Body: { identity_id?: string; grund?: string } }>('/api/main-agent/api/laeufe/cli',async(request,reply)=>{
+    try { return { success:true,...await beendeApiAuswahl(request.body?.identity_id ?? 'main',request.body?.grund ?? '',await verwaltungsAkteur(request)) }; }
+    catch(error) { return sendeFehler(reply,error); }
   });
 
   // ---- User -----------------------------------------------------------------------------------

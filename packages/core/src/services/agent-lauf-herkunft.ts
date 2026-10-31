@@ -11,6 +11,7 @@
  * DEBUG: Antwort mit schalter.quelle, quelle je Agent ('provider:<p>' bzw. 'modell:<m>'), zeilen, dauer_ms, letzter_fehler.
  * Nur lesend, wirft nie.
  */
+import { getPool } from '../db/client.js';
 import { leseProfilProduktSchalter } from './agent-profil-schalter.js';
 import { listWrapperStatus, type WrapperStatusRow } from './wrapper-status.js';
 
@@ -87,14 +88,25 @@ export async function ermittleLaufHerkunft(project: string, rows?: WrapperStatus
   if (!schalter.aktiv) return leer(false, schalter.quelle, schalter.ebene, schalter.letzter_fehler);
   try {
     const zeilen = rows ?? await listWrapperStatus(project);
+    // P22-T202: ein im API-Prozess laufender Agent hat keinen Wrapper. Explizite PG-Wahl geht vor dem alten CLI-Status.
+    const api = rows ? [] : (await getPool().query<{identity_id:string;agent_id:string;modell:string;anbieter:string;status:string}>(
+      `SELECT l.identity_id,l.agent_id,l.modell,l.anbieter,l.status FROM api_agent_laeufe l JOIN agent_identitaeten i ON i.id=l.identity_id
+        WHERE l.project=$1 AND i.status='aktiv' AND i.startrezept->'api_lauf_wahl'->>'phase'='aktiv'`,[project])).rows;
+    const apiIds=new Set(api.map(a=>a.identity_id));
     const je_art: Record<string, number> = {};
-    const agenten = zeilen.map((r): LaufHerkunftEintrag => {
+    const agenten = zeilen.filter(r=>!r.identityId || !apiIds.has(r.identityId)).map((r): LaufHerkunftEintrag => {
       const h = laufHerkunftAus(r);
       je_art[h.art] = (je_art[h.art] ?? 0) + 1;
       return { identity_id: r.identityId ?? null, name: r.agentName, status: r.status, provider: r.provider ?? null, ...h };
     });
+    for(const a of api){
+      const h=laufHerkunftAus({provider:a.anbieter,model:a.modell});
+      je_art[h.art]=(je_art[h.art]??0)+1;
+      agenten.push({identity_id:a.identity_id,name:a.agent_id,status:a.status==='laeuft'?'running':a.status==='bereit'?'idle':'stopped',
+        provider:a.anbieter,...h,quelle:'api_lauf:'+a.anbieter});
+    }
     return { success: true, project, aktiv: true, schalter: { quelle: schalter.quelle, ebene: schalter.ebene }, agenten, stand: new Date().toISOString(),
-      letzter_fehler: null, debug: { funktion: AGENT_LAUF_HERKUNFT_FUNKTION, zeilen: zeilen.length, je_art, dauer_ms: Date.now() - start } };
+      letzter_fehler: null, debug: { funktion: AGENT_LAUF_HERKUNFT_FUNKTION, zeilen: agenten.length, je_art, dauer_ms: Date.now() - start } };
   } catch (err) {
     return leer(true, schalter.quelle, schalter.ebene, String((err as Error)?.message ?? err).slice(0, 200));
   }

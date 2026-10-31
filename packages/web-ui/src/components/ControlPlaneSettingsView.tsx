@@ -82,14 +82,14 @@ function AllWorkspacesPanel() {
 
 export function ControlPlaneSettingsView({ settings, onChange, theme, onTheme, project }: { settings: SettingsViewModel; onChange: (patch: Partial<SettingsViewModel>) => void; theme: Theme; onTheme: (theme: Theme) => void; project: string }) {
   const [ausweisZiel, setAusweisZiel] = useState<AusweisZiel | null>(() => nimmWartendesAusweisZiel());
-  const [category, setCategory] = useState<SettingsCategory>(() => (ausweisZiel ? 'ausweis' : 'main'));
+  const [category, setCategory] = useState<SettingsCategory>(() => (ausweisZiel?.bereich === 'api' ? 'api' : ausweisZiel ? 'ausweis' : 'main'));
   // P22-T68: Deep-Link aus Agententeam/Channel, auch wenn die Einstellungen schon offen sind.
   useEffect(() => {
     const oeffnen = () => {
       const ziel = nimmWartendesAusweisZiel();
       if (!ziel) return;
       setAusweisZiel(ziel);
-      setCategory('ausweis');
+      setCategory(ziel.bereich === 'api' ? 'api' : 'ausweis');
     };
     window.addEventListener(AUSWEIS_OEFFNEN_EVENT, oeffnen);
     return () => window.removeEventListener(AUSWEIS_OEFFNEN_EVENT, oeffnen);

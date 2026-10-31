@@ -1,0 +1,21 @@
+/* P22-T202: gemeinsame Laufwahl; Portal ausserhalb transformierter Chatfenster. */
+.api-agent-laufwahl { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:10px 0; font-size:13px; }
+.api-agent-laufwahl > p { flex-basis:100%; margin:2px 0; line-height:1.6; }
+.api-agent-laufwahl > details { flex-basis:100%; color:var(--muted,#9ca3af); font-size:11px; }
+.api-agent-laufwahl button,.api-laufwahl-dialog button { border:1px solid var(--line,#3b424c); border-radius:7px; padding:7px 11px; color:var(--text,#edf0f4); background:var(--panel,#1a1e24); cursor:pointer; font:inherit; }
+.api-agent-laufwahl button:hover,.api-laufwahl-dialog button:hover { border-color:var(--accent,#f97316); }
+.api-agent-laufwahl button:disabled,.api-laufwahl-dialog button:disabled { opacity:.45; cursor:default; }
+.api-agent-laufwahl.kompakt { margin:0; max-width:420px; font-size:11px; }
+.api-agent-laufwahl.kompakt > p { max-width:420px; }
+.api-laufwahl-overlay { position:fixed; inset:0; z-index:100000; display:grid; place-items:center; padding:24px; background:rgba(0,0,0,.72); box-sizing:border-box; }
+.api-laufwahl-dialog { width:min(640px,100%); max-height:calc(100dvh - 48px); overflow:auto; display:flex; flex-direction:column; gap:16px; padding:24px; box-sizing:border-box; border:1px solid var(--line,#3b424c); border-radius:14px; background:var(--panel,#171b21); color:var(--text,#edf0f4); box-shadow:0 24px 80px rgba(0,0,0,.5); font:14px/1.5 system-ui,sans-serif; }
+.api-laufwahl-dialog > strong { font-size:19px; }
+.api-laufwahl-dialog label { display:flex; flex-direction:column; gap:6px; }
+.api-laufwahl-dialog label:has(input[type=checkbox]) { flex-direction:row; align-items:flex-start; gap:10px; }
+.api-laufwahl-dialog input[type=checkbox] { flex:none; width:17px; height:17px; margin-top:3px; accent-color:var(--accent,#f97316); }
+.api-laufwahl-dialog input:not([type=checkbox]),.api-laufwahl-dialog select,.api-laufwahl-dialog textarea { width:100%; box-sizing:border-box; border:1px solid var(--line,#444b57); border-radius:7px; padding:9px 10px; background:var(--bg,#101318); color:var(--text,#edf0f4); font:inherit; }
+.api-laufwahl-dialog textarea { min-height:90px; resize:vertical; }
+.api-laufwahl-dialog p { margin:0; }
+.api-laufwahl-dialog [role=alert] { border-left:3px solid #f97316; padding-left:10px; }
+.api-laufwahl-dialog .rap-aktionen { display:flex; flex-wrap:wrap; gap:8px; padding-top:8px; }
+.api-laufwahl-dialog .rap-aktionen button:first-child:not(:disabled) { border-color:var(--accent,#f97316); }

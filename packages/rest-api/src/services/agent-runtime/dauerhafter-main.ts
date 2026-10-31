@@ -8,7 +8,7 @@
 import {
   leseHauptagentSchalter, hauptagentIdentitaetsId, leseMainLaufOptionen, runtimeDaemonAngemeldet, stelleMainLaufSicher,
   sendeMainTurn, MainLaufFehler, leseMainLauf, standardModellFuerRuntime, warteschlangeAktiv, type SpecialistZielRuntime,
-  getPool, HAUPTAGENT_PROJEKT, apiProviderFuerModell, leseApiLaufSchalter, legeApiLaufAn, legeApiEingangAn,
+  getPool, HAUPTAGENT_PROJEKT, apiProviderFuerModell, leseApiLaufSchalter, legeApiLaufAn, legeApiEingangAn, leseApiLaufWahl,
 } from '@synapse/core';
 import type { MainAgentSession, RuntimeMessageResult, RuntimeStreamEvent } from './types.js';
 import { merkeMainTurnSession, vergissMainTurnSession } from './artifact-stream.js';
@@ -23,13 +23,18 @@ export function letzterMainWegFehler(): MainWegFehler | null {
 /** Wartezeit des Web-UI-Chats auf einen API-Turn des Main; danach steht die Antwort im Verlauf, sobald der Turn endet. */
 const API_MAIN_WARTE_MS = 10 * 60_000;
 
-async function apiLaufMainTurn(
+export async function apiLaufMainTurn(
   session: MainAgentSession, message: string, modell: string, emit: (event: RuntimeStreamEvent) => void,
 ): Promise<RuntimeMessageResult | null> {
   const identityId = session.identityId;
   if (!identityId) return null;
   const anbieter = await apiProviderFuerModell(modell).catch(() => null);
-  if (!anbieter || !(await leseApiLaufSchalter(HAUPTAGENT_PROJEKT)).aktiv) return null;
+  const wahl = await leseApiLaufWahl(identityId);
+  if (!anbieter || !(await leseApiLaufSchalter(HAUPTAGENT_PROJEKT)).aktiv) {
+    if (wahl) throw Object.assign(new Error('api_lauf_aus'),{code:'api_lauf_aus'});
+    return null;
+  }
+  if (wahl && (wahl.phase!=='aktiv' || wahl.modell!==modell)) throw Object.assign(new Error('api_wechsel_nicht_bereit'),{code:'api_wechsel_nicht_bereit'});
   const { apiAgentLauf } = await import('../api-agent-lauf.js');
   const verwaltung = apiAgentLauf();
   if (!verwaltung) {
@@ -40,14 +45,16 @@ async function apiLaufMainTurn(
   const vorher = await getPool().query<{ status: string; letzter_fehler: string | null }>(
     'SELECT status, letzter_fehler FROM api_agent_laeufe WHERE identity_id = $1', [identityId]).catch(() => null);
   const z = vorher?.rows[0];
+  if (wahl && (!z || ['gestoppt','pausiert','fehler'].includes(z.status)))
+    throw Object.assign(new Error('api_lauf_nicht_bereit'),{code:'api_lauf_nicht_bereit'});
   if (z && z.status === 'gestoppt' && (z.letzter_fehler ?? '').startsWith('rueckfall_container:')) return null;
   const i = await getPool().query<{ agent_id: string }>('SELECT agent_id FROM agent_identitaeten WHERE id = $1', [identityId]);
-  await legeApiLaufAn({ identity_id: identityId, project: HAUPTAGENT_PROJEKT, agent_id: i.rows[0]?.agent_id ?? 'hauptagent', rolle: 'main', modell, anbieter,
+  if (!wahl) await legeApiLaufAn({ identity_id: identityId, project: HAUPTAGENT_PROJEKT, agent_id: i.rows[0]?.agent_id ?? 'hauptagent', rolle: 'main', modell, anbieter,
     gestartet_von: 'user' });
   emit({ event: 'runtime', data: { hauptagent: { weg: 'api_lauf', identity_id: identityId, modell, anbieter, schritt: 'arbeitet' } } });
   const eingang = await legeApiEingangAn({ identity_id: identityId, text: message, quelle: 'main_chat', absender: 'user' });
   const r = await verwaltung.warteAufEingang(eingang.id, API_MAIN_WARTE_MS);
-  if (r.art === 'nicht_begonnen' && r.code === 'rueckfall_container') {
+  if (!wahl && r.art === 'nicht_begonnen' && r.code === 'rueckfall_container') {
     // Tageslimit gerade erschoepft: Rueckfall, diese Nachricht geht ueber den Container-Main (Bestand) des Aufrufers.
     emit({ event: 'runtime', data: { hauptagent: { weg: 'ruckfall_container', identity_id: identityId, grund: 'budget_erschoepft' } } });
     return null;

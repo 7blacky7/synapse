@@ -30,6 +30,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   getPool, fuehreApiNachrichtAus, leseApiEinstellungen, leseApiModelle, ausweisFuerStart, leseApiLaufSchalter, leseApiLaufEinstellungen,
+  leseApiLaufWahl, mitApiWahlSperre, schreibeApiLaufWahl, importiereSitzungsEintraege,
   type ApiLaufEinstellungen, type ApiNachricht, type ApiVerlaufSpeicher, type ApiWerkzeugAufruf, type ApiWerkzeugErgebnis, type ApiWerkzeugDef,
   type ApiAnbieterAdapter, type ApiNachrichtErgebnis,
 } from '@synapse/core';
@@ -393,6 +394,19 @@ export class LaufVerwaltung {
       });
       thoughtId = /"id"\s*:\s*"([0-9a-f-]{36})"/.exec(text(r.inhalt))?.[1] ?? null;
     } catch { /* Uebergabe steht trotzdem im Auftrag des Container-Agenten */ }
+    // P22-T202: Anbieterturn ist beendet, Uebergabe vorbereitet. Erst die eigene Lease
+    // abgeben und die explizite API-Wahl loesen, dann darf der vorhandene CLI-Start greifen.
+    let uebergabeMarke: string | null = null;
+    if (await leseApiLaufWahl(l.identity_id)) {
+      uebergabeMarke = RUECKFALL_MARKE + ' gesicherte Uebergabe an CLI (P22-T202)';
+      await mitApiWahlSperre([l.identity_id], async db => {
+        const r = await db.query(
+          "UPDATE api_agent_laeufe SET status='gestoppt',lease_token=NULL,lease_bis=NULL,letzter_fehler=$3 WHERE identity_id=$1 AND lease_token=$2",
+          [l.identity_id, l.lease_token, uebergabeMarke]);
+        if (!r.rowCount) throw new Error('api_lauf_lease_verloren');
+        await schreibeApiLaufWahl(db, l.identity_id, null);
+      });
+    }
     const model = l.rolle === 'main' ? null : containerModellFuer(l.modell);
     let spawn: Record<string, unknown> | null = null;
     if (model) {
@@ -410,7 +424,7 @@ export class LaufVerwaltung {
       : `rueckfall_container_fehlgeschlagen: ${String(spawn?.error ?? 'unbekannt')} (Tageslimit erschoepft, ${code}). Eingaenge bleiben offen.`;
     await this.db.query(
       `UPDATE api_agent_laeufe SET status = $3, letzter_fehler = $4, lease_token = NULL, lease_bis = NULL, letzte_aktivitaet = NOW(), aktualisiert_am = NOW()
-        WHERE identity_id = $1 AND lease_token = $2`, [l.identity_id, l.lease_token, ok ? 'gestoppt' : 'fehler', hinweis]);
+        WHERE identity_id = $1 AND (lease_token = $2 OR ($5::text IS NOT NULL AND lease_token IS NULL AND letzter_fehler = $5))`, [l.identity_id, l.lease_token, ok ? 'gestoppt' : 'fehler', hinweis, uebergabeMarke]);
     this.sitzungen.delete(l.identity_id);
     const eintrag = { identity_id: l.identity_id, rolle: l.rolle, ok, code, thought: thoughtId, eingaenge: offen.length, model,
       spawn: spawn ? { success: spawn.success === true, error: spawn.error ?? null, runtime: spawn.runtime ?? null } : null, zeit: new Date().toISOString() };
@@ -470,6 +484,15 @@ export class LaufVerwaltung {
 
     await this.db.query('UPDATE api_agent_eingang SET erledigt_am = NOW() WHERE id = ANY($1::bigint[])', [ids]);
     await this.schliesseTurn(turnId, a);
+    // P22-T202: Antwort im bestehenden Identitaetschat sichtbar, keine zweite Kostenbuchung.
+    // Main-Chat hat bereits seinen SSE-Verlauf; Startauftrag und Plattform-Chat dagegen nicht.
+    if (!eing.rows.some(z=>z.quelle==='main_chat') && (await leseApiLaufWahl(l.identity_id))?.phase==='aktiv') {
+      const sichtbar=await importiereSitzungsEintraege(l.identity_id,[
+        {ref:'turn:'+turnId+':eingabe',art:'eingabe',inhalt:eingangText(eing.rows),modell:l.modell},
+        {ref:'turn:'+turnId+':antwort',art:'text',inhalt:a.ergebnis.text,modell:l.modell},
+      ],{runtime:l.anbieter,herkunft:'api'});
+      if(sichtbar.grund)this.merke({identity_id:l.identity_id,ende:'chat_verlauf_aus',grund:sichtbar.grund});
+    }
     if (a.ergebnis.ende === 'anbieter_fehler' && a.code !== null && RUECKFALL_CODES.has(a.code)) {
       // Tageslimit mitten im Turn erschoepft: Stand steht im Verlauf, Rueckfall auf den Container-Agenten.
       this.merke({ identity_id: l.identity_id, ende: a.ergebnis.ende, code: a.code, kosten_usd: a.ergebnis.kosten_usd, eingaenge: ids.length, ms: Date.now() - start });

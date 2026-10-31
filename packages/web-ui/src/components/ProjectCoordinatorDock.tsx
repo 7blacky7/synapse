@@ -1,3 +1,5 @@
+import { ApiAgentLaufwahl } from './ApiAgentLaufwahl';
+
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { herkunftText, loadOnlineCoordinators } from '../api/control-plane-adapter';
 import type { OnlineCoordinatorViewModel } from '../control-plane/view-model';
@@ -153,6 +155,7 @@ export function ProjectCoordinatorDock() {
             <button type="button" onClick={() => setFenster((alt) => alt.filter((f) => f.coordinator.id !== open.id))}>An Seite</button>
             <AgentHeartbeatRegler key={open.id} identityId={open.id} />
           </header>
+          <ApiAgentLaufwahl key={'laufwahl:' + open.id} identityId={open.id} project={open.project} name={open.name} />
           {!chatAktiv && <div role="status" className="coordinator-chat-hinweis" style={{ padding: 12 }}>
             {!stand ? 'Chatstatus wird geladen …' : stand.letzter_fehler
               ? 'Chatstatus nicht abrufbar: ' + stand.letzter_fehler

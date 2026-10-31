@@ -1,3 +1,5 @@
+import { ApiAgentLaeufe } from './ApiAgentLaufwahl';
+
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../api/auth';
 import { apiKeyAnzeige, apiKeyStandZeile, budgetFormular, budgetZeile, usd, API_BUDGET_VORSCHLAG, type ApiBudgetStand, type ApiKeyStand } from './api-budget-logik';
@@ -104,7 +106,8 @@ export function ApiBudgetPanel() {
   const key = s ? (s.api_key ? apiKeyStandZeile(s.api_key) : apiKeyAnzeige(s.api_key_vorhanden)) : null;
   const geaenderteWerte = s ? Object.fromEntries(Object.entries(werte).filter(([n, v]) => Number(v) !== s.einstellungen[n]?.wert).map(([n, v]) => [n, Number(v)])) : {};
   return <section aria-label="API-Zugang des Hauptagenten">
-    <h3>API-Zugang (Claude per API-Key) · kostenpflichtig</h3>
+    <h3>API-Agenten · Claude API und OpenRouter · kostenpflichtig</h3>
+    <ApiAgentLaeufe />
     <p>Getrennt vom CLI-Abo. Ohne gesetztes Budget gibt es keine kostenpflichtigen Aufrufe und keinen bezahlten Ersatz. Werte setzt nur der User.</p>
     <div className="cp-fields">
       <div className="cp-setting-field wide"><span><b>Grund</b><small>Pflicht fuer jede Aenderung, mindestens 5 Zeichen.</small></span>

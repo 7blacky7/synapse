@@ -1,3 +1,5 @@
+import { ApiAgentLaufwahl } from './ApiAgentLaufwahl';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../api/auth';
 import { getMainAgentModelle, type MainAgentModelle } from '../api/agent-runtime';
@@ -161,6 +163,7 @@ export function HauptagentModellChip({ kompakt = true, status: anzeige }: { komp
   };
 
   return <div className={'hauptagent-modell-chip' + (kompakt ? ' kompakt' : '')} ref={wurzel} onPointerDown={(event) => event.stopPropagation()}>
+    <ApiAgentLaufwahl identityId="main" name="Hauptagent" kompakt />
     {anzeige
       ? <div role="button" tabIndex={0} aria-haspopup="menu" aria-expanded={offen}
         className={'agent-live chip-status' + (anzeige.real ? ' real' : '') + (offen ? ' offen' : '') + (wechselOffen ? ' wechselt' : '')}

@@ -3,7 +3,9 @@ import { validateToken, type TokenKind } from '../services/auth.js';
 import { getAgentRuntimeManager, shutdownAgentRuntimeManager } from '../services/agent-runtime/manager.js';
 import type { MainAgentSession, RuntimeName, RuntimeStreamEvent } from '../services/agent-runtime/types.js';
 import { countArtifacts, registerArtifactStream, unregisterArtifactStream } from '../services/agent-runtime/artifact-stream.js';
-import { agentApiRoutes } from './agent-api.js';
+import { agentApiRoutes, apiAuswahlAgentAkteur } from './agent-api.js';
+import { leseApiLaufWahl } from '@synapse/core';
+import { apiLaufMainTurn } from '../services/agent-runtime/dauerhafter-main.js';
 import { userInboxRoutes } from './user-inbox.js';
 import { quellenanmerkungenRoutes } from './quellenanmerkungen.js';
 import {
@@ -202,6 +204,10 @@ async function guardInteractiveRuntimeRequest(request: FastifyRequest, reply: Fa
     await reply.code(401).send({ success: false, error: { code: 'unauthorized', message: 'Interaktive Benutzer-Session erforderlich' } });
     return;
   }
+  // P22-T202: nur diese neuen Verwaltungsrouten erlauben zusaetzlich den geprueften Agenten-Ausweis.
+  // Die Fachfunktion prueft User/Main/Projektkoordinator, bestehende Kostenfreigabe-Routen bleiben unveraendert.
+  if (/^\/api\/main-agent\/api\/laeufe\/(auswahl|starten|cli)$/.test(pathname)
+    && await apiAuswahlAgentAkteur(request)) return;
   if (!runtimeTokenAllowed(principal.kind)) {
     await reply.code(403).send({ success: false, error: { code: 'service_token_forbidden', message: 'Service-/Daemon-/Wrapper-Tokens duerfen Agent-Runtimes nicht bedienen' } });
   }
@@ -213,7 +219,7 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
   fastify.addHook('onRequest', guardInteractiveRuntimeRequest);
   fastify.addHook('onClose', async () => shutdownAgentRuntimeManager());
   // P22-T8: API-Agent - User-Routen unter /api/main-agent/api* (Guard oben), Transport /api/agent-api/* (Ausweis).
-  await agentApiRoutes(fastify);
+  await agentApiRoutes(fastify, async request => await userAkteur(request) ?? await apiAuswahlAgentAkteur(request));
   // P22-T192: ausdruecklich nur interaktive User-Session, Guard oben gilt fuer alle Inbox-Routen.
   await userInboxRoutes(fastify);
   await quellenanmerkungenRoutes(fastify);
@@ -1194,12 +1200,19 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
         if (zugewiesen === 'claude' || zugewiesen === 'codex') runtime = zugewiesen;
         warteschlange = await warteschlangeAktiv();
       }
+      const apiWahl = istMain && session.identityId ? await leseApiLaufWahl(session.identityId) : null;
+      if (apiWahl) {
+        if (apiWahl.phase!=='aktiv') throw new Error('api_wechsel_nicht_bereit');
+        modell = apiWahl.modell;
+        warteschlange = false;
+      } else {
       manager.driver(runtime);
       try {
         modell = (await manager.assertMainRuntimeReady(runtime)).model;
       } catch (error) {
         if (!warteschlange) throw error;
         nichtBereit = 'runtime_nicht_bereit';
+      }
       }
       if (warteschlange && !nichtBereit && session.identityId && await mainWechselOffen(session.identityId)) nichtBereit = 'wechsel_offen';
       await manager.markSessionRunning(session.id);
@@ -1259,22 +1272,22 @@ export async function agentRuntimeRoutes(fastify: FastifyInstance): Promise<void
     reply.raw.once('close', onClose);
     let letzteUsage: Record<string, unknown> | null = null;
     try {
-      const result = await manager.driver(runtime).sendMessage(
-        session,
-        eingang.modellText,
-        (item: RuntimeStreamEvent) => {
-          if (item.event === 'usage') letzteUsage = item.data;
-          verlauf?.ereignis(item.event, item.data);
-          sse(reply, item.event, item.data);
-        },
-        controller.signal,
-      );
+      const emit = (item: RuntimeStreamEvent) => {
+        if (item.event === 'usage') letzteUsage = item.data;
+        verlauf?.ereignis(item.event,item.data);
+        sse(reply,item.event,item.data);
+      };
+      const apiWahl = session.identityId ? await leseApiLaufWahl(session.identityId) : null;
+      const result = apiWahl
+        ? await apiLaufMainTurn(session,eingang.modellText,apiWahl.modell,emit)
+        : await manager.driver(runtime).sendMessage(session,eingang.modellText,emit,controller.signal);
+      if (!result) throw new Error('api_lauf_aus');
       // P22-T73: Main beschaeftigt -> Einwurf; die Antwort schreibt die Zustellung dieser Inbox-Nachricht in dieselbe Zeile.
       const einwurf = (result.context as { einwurf?: { inbox_id?: number | null } } | null)?.einwurf;
       if (einwurf && await einreihen('beschaeftigt', null, 'einwurf', einwurf.inbox_id ?? null)) return;
       await manager.completeSession(session.id, result.runtimeSessionId, result.context);
       // P22-T6: auf dem dauerhaften Container-Weg bucht der Wrapper selbst (T7 meldeVerbrauch); hier nur der Altweg.
-      if (result.context?.hauptagent_weg !== 'dauerhaft') {
+      if (result.context?.hauptagent_weg !== 'dauerhaft' && result.context?.hauptagent_weg !== 'api_lauf') {
         const referenz = verlauf && letzteUsage ? 'verlauf:' + verlauf.antwort_id : null;
         await bucheMainChatVerbrauch(session, modell, letzteUsage, referenz);
         if (referenz) verlauf?.verbrauchReferenz(referenz);

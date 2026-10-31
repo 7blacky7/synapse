@@ -5,7 +5,7 @@
  */
 export const AUSWEIS_OEFFNEN_EVENT = 'synapse:ausweis-oeffnen';
 
-export interface AusweisZiel { project: string; agentId: string }
+export interface AusweisZiel { project: string; agentId: string; /** P22-T202: bestehender Einstellungswechsel auch fuer API-Budget/Freigaben. */ bereich?: 'api' }
 
 let wartend: AusweisZiel | null = null;
 

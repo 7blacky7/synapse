@@ -816,7 +816,7 @@ export function cliEingabeAbsender(text: string): { agent_id: string; herkunft: 
  * Spezialisten am PC und im Container) bei Schalter agent_verlauf_alle EIN (Standard); AUS bzw. ohne/inaktive Identitaet = Bestand
  * grund nicht_main (der Wrapper meldet dann nicht mehr).
  */
-export async function importiereSitzungsEintraege(identity_id: string | null, eintraege: unknown[], o: { runtime?: string | null; herkunft?: 'cli' } = {}):
+export async function importiereSitzungsEintraege(identity_id: string | null, eintraege: unknown[], o: { runtime?: string | null; herkunft?: 'cli' | 'api' } = {}):
   Promise<{ aufgenommen: number; grund: string | null }> {
   const main = await hauptagentIdentitaetsId().catch(() => null);
   if (!identity_id) return { aufgenommen: 0, grund: 'nicht_main' };
@@ -825,7 +825,8 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
     if (!(await leseProfilProduktSchalter(AGENT_VERLAUF_ALLE_FUNKTION, null)).aktiv) return { aufgenommen: 0, grund: 'nicht_main' };
     const aktiv = await getPool().query("SELECT 1 FROM agent_identitaeten WHERE id = $1 AND status = 'aktiv'", [identity_id]);
     if (!aktiv.rows.length) return { aufgenommen: 0, grund: 'nicht_main' };
-  } else if (!(await leseVerlaufSchalter()).aktiv || !(await leseVerlaufStufe2Schalter('verlauf_alle_richtungen')).aktiv) {
+  } else if (!(await leseVerlaufSchalter()).aktiv || (o.herkunft !== 'api' && !(await leseVerlaufStufe2Schalter('verlauf_alle_richtungen')).aktiv)) {
+    // P22-T202: der erste API-Auftrag hat noch keinen SSE-Spiegel; normale Main-Verlauf-Freigabe reicht.
     return { aufgenommen: 0, grund: 'funktion_aus' };
   }
   const lauf = await aktuellerMainLauf(identity_id);
@@ -851,8 +852,8 @@ export async function importiereSitzungsEintraege(identity_id: string | null, ei
        ON CONFLICT (identity_id, quelle_ref) DO NOTHING`,
       [identity_id, abbild.rolle, abbild.richtung, abbild.weg,
         e.art === 'werkzeug_ergebnis' ? JSON.stringify({ agent_id: 'werkzeug' })
-          : e.art === 'eingabe' && o.herkunft === 'cli' ? JSON.stringify(cliEingabeAbsender(text)) : null, 'jsonl:' + e.ref, text,
-        JSON.stringify({ quelle: 'jsonl', art: e.art, ...(e.name ? { name: e.name } : {}), ...(e.werkzeug_id ? { werkzeug_id: e.werkzeug_id } : {}),
+          : e.art === 'eingabe' && o.herkunft === 'cli' ? JSON.stringify(cliEingabeAbsender(text)) : null, (o.herkunft === 'api' ? 'api:' : 'jsonl:') + e.ref, text,
+        JSON.stringify({ quelle: o.herkunft === 'api' ? 'api' : 'jsonl', art: e.art, ...(e.name ? { name: e.name } : {}), ...(e.werkzeug_id ? { werkzeug_id: e.werkzeug_id } : {}),
           ...(e.fehler ? { fehler: true } : {}), ...(bilder.length ? { bilder } : {}),
           ...(typeof e.inhalt === 'string' ? {} : { inhalt: e.inhalt ?? null }) }),
         JSON.stringify(berechnet ? { berechnet } : {}), abbild.zaehlt, lauf, o.runtime ?? null, modell,

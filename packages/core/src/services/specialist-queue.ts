@@ -92,7 +92,13 @@ function formatResult(row: SpecialistJobRow): SpecialistJobResult {
  * Reiht einen Specialist-Job ein. NOTIFY auf 'specialist_job_created' kommt
  * automatisch via Trigger.
  */
-export async function enqueueSpecialistJob(args: {
+// P22-T202: serialisiert gegen die explizite API-Wahl; Stop/Zustellung bleiben unveraendert.
+export async function enqueueSpecialistJob(args: { project: string; action: SpecialistAction; args: Record<string, unknown> }): Promise<{ id: string }> {
+  const { mitCliStartSperre } = await import('./api-agent-auswahl.js');
+  return mitCliStartSperre(args.project, args.action, args.args, () => reiheSpecialistJobEin(args));
+}
+
+async function reiheSpecialistJobEin(args: {
   project: string;
   action: SpecialistAction;
   args: Record<string, unknown>;
