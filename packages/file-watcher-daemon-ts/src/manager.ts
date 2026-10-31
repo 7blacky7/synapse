@@ -41,6 +41,7 @@ import {
   ProjektConfig,
   loadConfig,
   saveConfig,
+  aufraeumenVonPlatte,
   findProjekt,
   upsertProjekt,
   removeProjekt,
@@ -415,7 +416,9 @@ export class WatcherManager {
 
   constructor(config?: DaemonConfig) {
     this.config = config ?? loadConfig();
-    this.assetSync = new DaemonAssetSync(()=>this.config,undefined,()=>this.emitChange('asset_sync'),()=>saveConfig(this.config));
+    // P22-T248: Aufraeum-Einstellungen nur ohne injizierte Test-Config frisch von der Platte (Einschalten ohne Neustart).
+    const aufraeumVonPlatte = config ? undefined : () => { const d = aufraeumenVonPlatte(); return d.gelesen ? d.wert : this.config.asset_sync?.aufraeumen; };
+    this.assetSync = new DaemonAssetSync(()=>this.config,undefined,()=>this.emitChange('asset_sync'),()=>saveConfig(this.config),aufraeumVonPlatte);
     this.reverse = new DaemonReverseBibliothek(() => this.config, undefined, () => this.emitChange('reverse'));
   }
 

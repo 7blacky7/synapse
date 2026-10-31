@@ -225,10 +225,25 @@ export function saveConfig(cfg: DaemonConfig, o: { reverseBibliothekEigen?: bool
     if (cli.wert === undefined) delete cfg.cli_verlauf;
     else cfg.cli_verlauf = cli.wert as CliVerlaufConfig;
   }
+  // P22-T248: asset_sync.aufraeumen gehoert dem User/Tray (Einschalten per config.json); jeder Speicherweg uebernimmt den Stand
+  // von der Platte, sonst schriebe die naechste Verhandlung (alle scanMs) den alten Speicherstand zurueck.
+  const auf = aufraeumenVonPlatte(p);
+  if (auf.gelesen) {
+    if (auf.wert === undefined) { if (cfg.asset_sync) delete cfg.asset_sync.aufraeumen; }
+    else cfg.asset_sync = { ...(cfg.asset_sync ?? {}), aufraeumen: auf.wert };
+  }
   const tmp = p + '.tmp';
   const json = JSON.stringify(cfg, null, 2);
   fs.writeFileSync(tmp, json, 'utf-8');
   fs.renameSync(tmp, p);
+}
+
+/** P22-T248: asset_sync.aufraeumen frisch von der Platte (gelesen:false = Datei fehlt/unlesbar). Aenderung wirkt ohne Neustart. */
+export function aufraeumenVonPlatte(p: string = configFilePath()): { gelesen: boolean; wert?: DaemonAssetSyncConfig['aufraeumen'] } {
+  const r = feldVonPlatte(p, 'asset_sync');
+  if (!r.gelesen) return { gelesen: false };
+  const w = r.wert as DaemonAssetSyncConfig | undefined;
+  return { gelesen: true, wert: w && typeof w === 'object' && w.aufraeumen && typeof w.aufraeumen === 'object' ? w.aufraeumen : undefined };
 }
 
 /** Findet Projekt per Name. */

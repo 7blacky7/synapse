@@ -26,7 +26,10 @@ const AUFRAEUMEN_STANDARD={takt_ms:3_600_000,start_ms:300_000,limit:2000,frist_m
 export class DaemonAssetSync {
  private readonly bindings=new Map<string,Bindung>();private stopped=false;
  constructor(private readonly config:()=>DaemonConfig,readonly api=new AssetApiTransport(),
-  private readonly onStatus:()=>void=()=>{},private readonly verwaltet:(p:ProjektConfig)=>void=()=>{}){}
+  private readonly onStatus:()=>void=()=>{},private readonly verwaltet:(p:ProjektConfig)=>void=()=>{},
+  /** P22-T248: Quelle der Aufraeum-Einstellungen (Daemon: frisch von der Platte; ohne = config()). */
+  private readonly aufraeumQuelle?:()=>NonNullable<DaemonConfig['asset_sync']>['aufraeumen']){}
+ private aufraeumEinstellung(){return this.aufraeumQuelle?this.aufraeumQuelle():this.config().asset_sync?.aufraeumen;}
  /** P27-T6: Transfer-Zustand je gebundenem Projekt (Stau-Waechter, synchron). */
  transferZustaende():Array<{projekt:string;zustand:Record<string,unknown>|null}>{
   return [...this.bindings.values()].filter(b=>b.queue).map(b=>({projekt:b.p.name,zustand:b.queue!.transferZustand()}));
@@ -48,7 +51,7 @@ export class DaemonAssetSync {
   b.timer=setInterval(()=>{void this.tick(b).catch(e=>console.error('[asset-sync] '+p.name+': '+(e as Error).message));},period);b.timer.unref();
   this.planeAufraeumen(b,this.aufraeumKonfig().start_ms);
  }
- private aufraeumKonfig(){return {...AUFRAEUMEN_STANDARD,...Object.fromEntries(Object.entries(this.config().asset_sync?.aufraeumen??{}).filter(([,v])=>typeof v==='number'&&Number.isFinite(v)&&v>=0))} as typeof AUFRAEUMEN_STANDARD;}
+ private aufraeumKonfig(){return {...AUFRAEUMEN_STANDARD,...Object.fromEntries(Object.entries(this.aufraeumEinstellung()??{}).filter(([,v])=>typeof v==='number'&&Number.isFinite(v)&&v>=0))} as typeof AUFRAEUMEN_STANDARD;}
  /** P22-T248: Zustandsordner automatisch und gedrosselt aufraeumen (limit Dateien je Lauf, Abstand takt_ms, nie parallel zum
   * manuellen Lauf); danach Obergrenze pruefen und bei Ueberschreitung warnen (Log, status, Stau-Zustand, pc-stand). */
  private planeAufraeumen(b:Bindung,ms:number){
@@ -57,7 +60,7 @@ export class DaemonAssetSync {
  }
  private async aufraeumLauf(b:Bindung){
   // Standard AUS (Schalterregel, Koordinator 31862): nur mit ausdruecklichem asset_sync.aufraeumen.aktiv:true.
-  if(this.stopped||b.stopped||!b.queue||b.aufraeumtLaeuft||this.config().asset_sync?.aufraeumen?.aktiv!==true)return;
+  if(this.stopped||b.stopped||!b.queue||b.aufraeumtLaeuft||this.aufraeumEinstellung()?.aktiv!==true)return;
   const k=this.aufraeumKonfig();b.aufraeumtLaeuft=true;
   try{
    const r=await raeumeAssetSyncAuf({...(await b.queue.aufraeumDaten()),ausfuehren:true,bestaetigt:true,limit:k.limit,fristMs:k.frist_ms});
@@ -205,7 +208,7 @@ export class DaemonAssetSync {
  }
  async status(name:string){const b=this.bindings.get(name);return b?{modus:b.mode,...(b.queue?await b.queue.status():{}),...(b.letzteMeldung?{pc_stand_meldung:b.letzteMeldung}:{}),
   // P22-T248: Debug des automatischen Aufraeumens und der Obergrenze.
-  aufraeumen:{aktiv:this.config().asset_sync?.aufraeumen?.aktiv===true,laeuft:b.aufraeumtLaeuft===true,letzter:b.letztesAufraeumen??null,warnung:b.zustandsWarnung??null,konfig:this.aufraeumKonfig()}}:undefined;}
+  aufraeumen:{aktiv:this.aufraeumEinstellung()?.aktiv===true,laeuft:b.aufraeumtLaeuft===true,letzter:b.letztesAufraeumen??null,warnung:b.zustandsWarnung??null,konfig:this.aufraeumKonfig()}}:undefined;}
  async stop(name:string){
   const b=this.bindings.get(name);if(!b)return;
   b.stopped=true;b.abort.abort();b.negotiated=false;b.queue?.pause();if(b.aufraeumTimer)clearTimeout(b.aufraeumTimer);
