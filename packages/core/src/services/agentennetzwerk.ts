@@ -78,6 +78,9 @@ export const NETZWERK_EINSTELLUNGEN = {
  fehler_effekt_ms: { standard: 1400, min: 300, max: 6000 },
  // Haltezeit eines wartenden Aufrufs (Rueckfrage); die Bestaetigung ist aus tool_calls nicht zuordenbar (R5).
  wartet_halte_ms: { standard: 8000, min: 1000, max: 60000 },
+ // P22-T229 (User 31.10.2026): fremde Projekt-Sonne (Heimat eines Visum-Agenten) blendet nach Zugangsende so lange aus. Die Sichtdauer
+ // selbst kommt aus den Ausweis-Fristen (visum_bis inkl. Arbeitsfreigabe), ohne Zugangsende aus inaktiv_sekunden; kein eigenes Fenster.
+ fremd_sonne_ausblend_sekunden: { standard: 8, min: 1, max: 300 },
 } as const;
 export type NetzwerkEinstellung = keyof typeof NETZWERK_EINSTELLUNGEN;
 export type NetzwerkWerte = Record<NetzwerkEinstellung, number>;
@@ -123,7 +126,20 @@ export async function leseNetzwerkKonfiguration(project: string) {
    }
   }
  } catch { letzter_fehler = 'einstellungen_nicht_lesbar'; }
- return { schalter, werte, einstellungen, letzter_fehler };
+ const datenProdukt = await leseProfilProduktSchalter('netzwerk_datengrundlage', project);
+ let daten_schalter = { aktiv: datenProdukt.aktiv, quelle: datenProdukt.quelle as string, bis: null as string | null, letzter_fehler: datenProdukt.letzter_fehler };
+ if (internToolAktiv()) {
+  try {
+   const r = await getPool().query("SELECT aktiv,bis FROM intern_schalter WHERE name=$1 AND modus='freigegeben' AND bis>NOW()", ['netzwerk_datengrundlage']);
+   if (r.rows[0]) daten_schalter = { aktiv: r.rows[0].aktiv, quelle: 'intern', bis: r.rows[0].bis.toISOString(), letzter_fehler: null };
+  } catch { daten_schalter = { ...daten_schalter, letzter_fehler: 'intern_nicht_lesbar' }; }
+ }
+ // P22-T229: Produkt-Schalter netzwerk_visum_sonnen (Standard AUS, nur ausdruecklich) - Visum-Agenten bringen ihre Heimat-Sonne mit.
+ // Debug: wirkt nur mit den Daten aus P22-T232 (daten_schalter); fehlen sie, letzter_fehler 'datengrundlage_aus'.
+ const visumProdukt = await leseProfilProduktSchalter('netzwerk_visum_sonnen', project);
+ const visum_sonnen = { aktiv: visumProdukt.aktiv, quelle: visumProdukt.quelle as string,
+  letzter_fehler: visumProdukt.letzter_fehler ?? (visumProdukt.aktiv && !daten_schalter.aktiv ? 'datengrundlage_aus' : null) };
+ return { schalter, daten_schalter, visum_sonnen, werte, einstellungen, letzter_fehler };
 }
 export async function fuehreNetzwerkAdminAus(args: Record<string, unknown>, akteur: W1bAkteur | AusweisAkteur | null): Promise<Record<string, unknown>> {
  try {
