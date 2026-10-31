@@ -13,7 +13,14 @@ export interface AssetTransferScope {bereich:'projekt'|'reverse';ziel_ref:string
  zustandsDir?:string;}
 /** RV6: Routenadapter Reverse. Sitzungen entstehen über POST /api/reverse/fundstellen (nicht POST uploads); null = Bytes sind serverseitig bekannt. */
 export interface ReverseRoutenAdapter {sitzung(pfad:string,h:{sha256:string;groesse:number}):Promise<{upload_id:string;reverse_id:string}|null>;}
-export interface AssetTransferOptionen {richtung:AssetSyncRichtung;chunkBytes:number;retryMs:number;timeoutMs:number;maxDateiBytes:number;erlaubteTypen?:string[];parallelTransfers?:number;}
+/** generisch (P22-T238): Formate ohne Inspector uebertragen (API-Policy generischeFormate); erlaubteTypen undefined = keine Einschraenkung. */
+export interface AssetTransferOptionen {richtung:AssetSyncRichtung;chunkBytes:number;retryMs:number;timeoutMs:number;maxDateiBytes:number;erlaubteTypen?:string[];parallelTransfers?:number;generisch?:boolean;
+ /** P22-T240: nach so vielen Fehlversuchen wird ein Download-/Loeschauftrag geparkt (blockiert den Cursor nicht mehr, Retry nur
+  *  noch alle parkRetryMs). 0 = aus (Altverhalten, unbegrenzt). Standard ASSET_PARK_MAX_VERSUCHE / ASSET_PARK_RETRY_MS. */
+ maxVersuche?:number;parkRetryMs?:number;}
+/** P22-T240: Code-Standards (ueberschreibbar per Daemon-Config asset_sync.max_versuche / park_retry_ms). */
+export const ASSET_PARK_MAX_VERSUCHE=20;
+export const ASSET_PARK_RETRY_MS=3_600_000;
 export interface AssetSyncMeta {
  asset_id:string;pfad:string;revision:string|null;sha256:string|null;groesse:number;storage_kind:'assets'|'binaries'|null;
  storage_status?:string;deleted_at?:string|null;restore_until?:string|null;
@@ -24,6 +31,8 @@ interface Auftrag {
  /** RV6/K2: Statsignatur, zu der sha256 gehoert (Reverse); gleich der aktuellen = kein erneuter Hash vor dem Upload. */
  hash_signatur?:string;
  upload?:string;sha256?:string;groesse?:number;signatur?:string;beobachtet_ms?:number;basis?:string;versuche:number;naechster:number;fehler?:string;gesperrt?:boolean;
+ /** P22-T240: geparkt nach maxVersuche (Download/Loeschen): kein Cursor-Block, seltener Retry, sichtbar in status(). */
+ geparkt?:boolean;geparkt_seit?:string;
 }
 interface Zustand {
  version:1;scope:string;auftraege:Auftrag[];bekannt:Record<string,AssetSyncMeta>;marker:Record<string,{sha256:string;revision:string;phase:'installieren'|'fertig'}>;
@@ -33,6 +42,12 @@ function error(code:string,status:number,msg:string):never{throw new AssetApiFeh
 const missing=(e:unknown)=>(e as NodeJS.ErrnoException).code==='ENOENT';
 const signature=(s:{dev:bigint;ino:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint})=>[s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs].join(':');
 const HASH=/^[a-f0-9]{64}$/;
+const REVISION=/^[1-9][0-9]*$/;
+/** P22-T240: true, wenn neu eine AELTERE Revision derselben Asset-ID ist als alt (Deltas enthalten jede Zwischenrevision). */
+function aelter(neu:AssetSyncMeta|undefined,alt:AssetSyncMeta|undefined):boolean{
+ return Boolean(neu&&alt&&neu.asset_id===alt.asset_id&&neu.revision&&alt.revision&&REVISION.test(neu.revision)&&REVISION.test(alt.revision)
+  &&BigInt(neu.revision)<BigInt(alt.revision));
+}
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 /** A8/RV6: streamender Hash mit stat vor/nach; eine wachsende oder ersetzte Datei wird nie als stabil gemeldet. */
 export async function hasheStabil(target:string,o:{maxDateiBytes:number;chunkBytes:number;signal?:AbortSignal}){
@@ -75,6 +90,8 @@ function pruefeOptionen(o:AssetTransferOptionen){
  for(const key of ['chunkBytes','retryMs','timeoutMs','maxDateiBytes'] as const)
   if(!Number.isSafeInteger(o[key])||o[key]<1)throw new TypeError('Ungültige Transfergrenze '+key);
  if(o.parallelTransfers!==undefined&&(!Number.isSafeInteger(o.parallelTransfers)||o.parallelTransfers<1))throw new TypeError('Ungültige Transferparallelität.');
+ if(o.maxVersuche!==undefined&&(!Number.isSafeInteger(o.maxVersuche)||o.maxVersuche<0))throw new TypeError('Ungültige Versuchsgrenze maxVersuche.');
+ if(o.parkRetryMs!==undefined&&(!Number.isSafeInteger(o.parkRetryMs)||o.parkRetryMs<1))throw new TypeError('Ungültiges Park-Intervall parkRetryMs.');
 }
 export class AssetTransferQueue {
  readonly scope:AssetTransferScope;
@@ -82,6 +99,8 @@ export class AssetTransferQueue {
  private readonly ready:Promise<void>;private serial=Promise.resolve();private stopped=false;
  private readonly abort=new AbortController();
  private wake?:NodeJS.Timeout;private draining=false;private paused=true;private lauf?:Promise<void>;
+ /** P27-T6: fertige Auftraege (Fortschritt) und Fehlversuche seit Prozessstart; Bytes allein sind KEIN Fortschritt. */
+ private erledigt=0;private fehlschlaege=0;private letzterErfolgMs:number|null=null;private letzterFehler:string|null=null;
  constructor(scope:AssetTransferScope,private optionen:AssetTransferOptionen,readonly api=new AssetApiTransport(),
   private readonly geaendert:()=>void=()=>{},private readonly reverse?:ReverseRoutenAdapter){
   pruefeOptionen(optionen);
@@ -139,12 +158,44 @@ export class AssetTransferQueue {
   this.geaendert();
  }
  async status(){await this.ready;return {bereich:this.scope.bereich,ziel_ref:this.scope.ziel_ref,cursor:this.state.cursor,
-  stand:this.state.stand,auftraege:this.state.auftraege.map(j=>({...j})),bekannt:Object.keys(this.state.bekannt).length,konflikte:Object.values(this.state.konflikte??{}),laufend:this.draining};}
+  stand:this.state.stand,auftraege:this.state.auftraege.map(j=>({...j})),bekannt:Object.keys(this.state.bekannt).length,konflikte:Object.values(this.state.konflikte??{}),laufend:this.draining,
+  // P22-T240: Stau sichtbar (offene Auftraege je Art, geparkt, haeufigste Fehler).
+  stau:this.stau()};}
+ private stau(){
+  const z={upload:0,download:0,loeschen:0,geparkt:0,fehler:{} as Record<string,number>};
+  for(const j of this.state.auftraege){z[j.art]++;if(j.geparkt)z.geparkt++;if(j.fehler)z.fehler[j.fehler]=(z.fehler[j.fehler]??0)+1;}
+  const top=Object.entries(z.fehler).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([fehler,anzahl])=>({fehler,anzahl}));
+  return {upload:z.upload,download:z.download,loeschen:z.loeschen,geparkt:z.geparkt,haeufigste_fehler:top};
+ }
+ /** P22-T240: Eingaben fuer das Aufraeumwerkzeug (Zustandsordner, Projektwurzel, Vergleichspfade, offene Auftrags-IDs). */
+ async aufraeumDaten(){await this.ready;return {dir:this.dir,root:this.scope.root,
+  pfade:[...new Set([...Object.keys(this.state.bekannt),...this.state.auftraege.map(j=>j.pfad)])],aktiveJobIds:new Set(this.state.auftraege.map(j=>j.id))};}
+ /**
+  * P27-T6: Zustand fuer den Stau-Waechter (synchron, ohne Platte; null = Zustand noch nicht geladen). Wiederholte und gesperrte
+  * Auftraege bleiben faellige Arbeit (ein Retry ist kein Fortschritt, Vorfall 26./27.10. thought 4c11e135): Finalisierungsfehler
+  * ohne neue fertige Assets = Stau, auch wenn Bytes fliessen. Nur Erstauftraege mit Termin in der Zukunft sind zurueckgestellt.
+  */
+ transferZustand():Record<string,unknown>|null{
+  if(!this.state)return null;
+  const jetzt=Date.now();const a=this.state.auftraege;
+  const faellig=a.filter(j=>j.gesperrt||j.versuche>0||j.naechster<=jetzt);
+  const gesperrt=a.filter(j=>j.gesperrt).length;
+  return {wartend:faellig.length,aeltester_wartend_s:null,laufend:this.draining?1:0,aeltester_laufend_s:null,
+   fortschritt_zuletzt:this.letzterErfolgMs?new Date(this.letzterErfolgMs).toISOString():null,fortschritt_zaehler:this.erledigt,
+   fehler_zaehler:this.fehlschlaege,wiederholung_zaehler:a.reduce((m,j)=>Math.max(m,j.versuche),0),zurueckgestellt:a.length-faellig.length,
+   frist_ueberschritten:gesperrt,letzter_fehler:this.letzterFehler,aktivierung:this.stopped?'deaktiviert':this.paused?'pausiert':'aktiviert',
+   betriebsart:'periodisch',stau_text:'Asset-Transfer ohne fertiges Asset',
+   details:{auftraege:a.length,gesperrt,bytes_erledigt:a.reduce((s,j)=>s+(j.bytes_erledigt??0),0)}};
+ }
  async kandidat(pfad:string){await this.ready;return pruefeLokalesAsset(this.scope.root,this.scope.ziel_ref,pfad,this.optionen);}
  async bekannt(pfad:string){await this.ready;return this.state.bekannt[normalisiereSpeicherPfad(pfad)];}
  async fullscan(){await this.ready;await this.locked(async()=>{delete this.state.cursor;await this.save();});}
  async checkpoint(cursor:string,stand:string){
-  await this.ready;await this.locked(async()=>{if(this.state.auftraege.some(j=>j.art!=='upload'))error('checkpoint_offen',409,'Downloads noch nicht bestätigt.');
+  await this.ready;await this.locked(async()=>{
+   // P22-T240: geparkte Auftraege blockieren den Cursor nicht mehr (sie bleiben in der Queue und werden selten erneut versucht).
+   const offen=this.state.auftraege.filter(j=>j.art!=='upload'&&!j.geparkt);
+   if(offen.length){const d=offen.filter(j=>j.art==='download').length;
+    error('checkpoint_offen',409,'Cursor bleibt stehen: '+d+' Download(s) und '+(offen.length-d)+' Löschauftrag/-aufträge noch nicht bestätigt.');}
    this.state.cursor=cursor;this.state.stand=stand;await this.save();});
  }
  /** A10 seeds the already hash-verified installed snapshot before any watcher/queue starts. */
@@ -224,8 +275,12 @@ export class AssetTransferQueue {
   await this.locked(async()=>{
    const known=this.state.bekannt[pfad];
    if(known?.revision===meta.revision&&known.deleted_at===meta.deleted_at)return;
+   // P22-T240: Ein Delta liefert jede Zwischenrevision eines Assets. Nie auf eine aeltere Revision derselben Asset-ID
+   // zurueckgehen (vorher: Pendeln zwischen Revisionen bei blockiertem Cursor, je Runde neue pc-before-install-Sicherung).
+   if(aelter(meta,known))return;
    const prior=this.state.auftraege.find(j=>j.art==='download'&&j.pfad===pfad);
-   if(prior){prior.meta=meta;prior.gesperrt=false;prior.naechster=0;}
+   if(prior&&aelter(meta,prior.meta))return;
+   if(prior){prior.meta=meta;prior.gesperrt=false;prior.geparkt=false;delete prior.geparkt_seit;prior.versuche=0;prior.naechster=0;}
    else this.state.auftraege.push({id:randomUUID(),art:'download',pfad,meta,versuche:0,naechster:0});
    await this.save();
   });
@@ -307,6 +362,8 @@ export class AssetTransferQueue {
   const final=(await this.api.json<{upload:Sitzung}>(this.uploads(j)+'/'+encodeURIComponent(j.upload!)+'/finalisieren',{},'POST',this.abort.signal)).upload;
   if(!final.asset_id||!final.revision||final.status!=='finalisiert')error('revision_offen',409,'Finalisierung nicht bestätigt.');
   this.state.bekannt[j.pfad]={asset_id:final.asset_id,pfad:j.pfad,revision:final.revision,sha256:h.sha256,groesse:h.groesse,storage_kind:this.scope.bereich==='reverse'?'binaries':'assets',deleted_at:null};
+  // P22-T240: Downloads aelterer Revisionen desselben Assets sind durch die eigene neue Revision erledigt.
+  this.state.auftraege=this.state.auftraege.filter(x=>!(x!==j&&x.art==='download'&&x.pfad===j.pfad&&aelter(x.meta,this.state.bekannt[j.pfad])));
   if(final.konflikt){
    const share=final.konflikt.share;
    if(!share||!HASH.test(share.sha256)||!Number.isSafeInteger(share.groesse)||!/^[1-9][0-9]*$/.test(share.revision))error('konflikt_ungueltig',409,'Konfliktsicherung ohne kanonische Share-Metadaten.');
@@ -321,7 +378,10 @@ export class AssetTransferQueue {
  }
  private async download(j:Auftrag){
   if(this.optionen.richtung==='pc_to_share')return;
-  const m=j.meta!,old=this.state.bekannt[j.pfad],target=await this.local(j.pfad,true);
+  const m=j.meta!,old=this.state.bekannt[j.pfad];
+  // P22-T240: veralteter Auftrag (bekannte Revision ist neuer) -> erledigt, nichts installieren.
+  if(aelter(m,old))return;
+  const target=await this.local(j.pfad,true);
   let current:Awaited<ReturnType<AssetTransferQueue['hash']>>|undefined;
   try{current=await this.hash(j.pfad);}catch(e){if(!missing(e))throw e;}
   if(m.deleted_at){
@@ -340,6 +400,9 @@ export class AssetTransferQueue {
    await this.save(); // download-only policy retains the old inode locally before Share installation
   }
   const tmp=path.join(this.dir,'download-'+j.id),fd=await fs.open(tmp,constants.O_WRONLY|constants.O_CREAT|constants.O_TRUNC|constants.O_NOFOLLOW,0o600);
+  // P22-T240: bei jedem Fehler bis zur Installation die Temp-Datei entfernen (vorher blieben leere download-<uuid> liegen).
+  let installiert=false;
+  try{
   const hash=createHash('sha256');let size=0;j.groesse=m.groesse;j.bytes_erledigt=0;await this.save();
   try{
    const res=await this.api.request(this.base+'/bytes?asset_id='+encodeURIComponent(m.asset_id)+'&revision='+encodeURIComponent(m.revision!),{signal:this.abort.signal,timeoutMs:this.optionen.timeoutMs});
@@ -357,8 +420,9 @@ export class AssetTransferQueue {
   if((current?.signatur??null)!==(latest?.signatur??null))error('lokaler_konflikt',409,'Lokale Datei während Download geändert.');
   this.state.marker[j.pfad]={sha256:m.sha256!,revision:m.revision!,phase:'installieren'};await this.save();
   await this.local(j.pfad,true);
+  let retained:string|undefined;
   if(latest){
-   const retained=path.join(this.dir,'pc-before-install-'+j.id);
+   retained=path.join(this.dir,'pc-before-install-'+j.id);
    try{await fs.link(target,retained);}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
    const saved=await fs.lstat(retained,{bigint:true});
    // A hardlink legitimately changes ctime; inode, size and mtime must still match.
@@ -367,8 +431,21 @@ export class AssetTransferQueue {
   }
   if(latest)await fs.rename(tmp,target);
   else{await fs.link(tmp,target);await fs.unlink(tmp);} // exclusive absent-target install never overwrites a concurrently created file
+  installiert=true;
   const parent=await fs.open(path.dirname(target),'r');try{await parent.sync();}finally{await parent.close();}
+  // P22-T240: Sicherung der ersetzten PC-Fassung nur, wenn sie NICHT schon als Share-Revision existiert, und je Inhalt nur einmal
+  // (pc-before-install-<sha256>). Vorher blieb je Versuch eine neue pc-before-install-<auftrag> liegen (103 GB).
+  if(retained&&latest){
+   if(old?.sha256===latest.sha256)await fs.unlink(retained).catch(e=>{if(!missing(e))throw e;});
+   else{
+    const name='pc-before-install-'+latest.sha256,ziel=path.join(this.dir,name);
+    try{await fs.link(retained,ziel);}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIST')throw e;}
+    await fs.unlink(retained).catch(e=>{if(!missing(e))throw e;});
+    const k=this.state.konflikte?.[j.pfad] as {sicherung?:string}|undefined;if(k)k.sicherung=name;
+   }
+  }
   this.state.marker[j.pfad].phase='fertig';this.state.bekannt[j.pfad]=m;await this.save();
+  }finally{if(!installiert)await fs.unlink(tmp).catch(()=>undefined);}
  }
  private async loeschen(j:Auftrag){
   if(this.optionen.richtung==='share_to_pc')return;
@@ -392,10 +469,20 @@ export class AssetTransferQueue {
      if(this.paused||this.stopped)continue;
      if(job.art==='upload')await this.upload(job);else if(job.art==='download')await this.download(job);else await this.loeschen(job);
      this.state.auftraege=this.state.auftraege.filter(j=>j!==job);await this.save();
+     this.erledigt++;this.letzterErfolgMs=Date.now();
     }catch(e){
      const err=e as Error;job.fehler=err.message;job.versuche++;
+     this.fehlschlaege++;this.letzterFehler=String(err.message??err).slice(0,200);
      job.gesperrt=e instanceof AssetApiFehler&&!e.wiederholbar&&!['finalisierung_laeuft','transfer_laeuft','revision_offen'].includes(e.code);
      job.naechster=Date.now()+Math.min(this.optionen.retryMs*Math.pow(2,Math.min(job.versuche-1,6)),this.optionen.retryMs*64);
+     // P22-T240: Obergrenze statt Endlosschleife: Download/Loeschen nach maxVersuche parken (sichtbar, kein Cursor-Block),
+     // danach nur noch alle parkRetryMs ein Versuch. Ein neues Delta fuer den Pfad oder die eigene neue Revision hebt das Parken auf.
+     const max=this.optionen.maxVersuche??ASSET_PARK_MAX_VERSUCHE;
+     if(job.art!=='upload'&&max>0&&job.versuche>=max){
+      if(!job.geparkt){job.geparkt=true;job.geparkt_seit=new Date().toISOString();
+       console.error('[asset-transfer] '+this.scope.ziel_ref+': '+job.art+' '+job.pfad+' nach '+job.versuche+' Versuchen geparkt: '+err.message);}
+      job.naechster=Date.now()+(this.optionen.parkRetryMs??ASSET_PARK_RETRY_MS);
+     }
      await this.save();
     }finally{release();}
    }

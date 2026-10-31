@@ -22,7 +22,7 @@ import { startProjectInitWorker } from '../project-init-worker.js';
 import { startDaemonHeartbeat } from '../daemon-heartbeat.js';
 import { startEnabledSync } from '../enabled-sync.js';
 import { startInternBruecke } from '../intern-bruecke.js';
-import { registriereWorker, setzeDbProzess, sperreDbZugriff } from '@synapse/core';
+import { registriereWorker, setzeDbProzess, sperreDbZugriff, setzeWarteschlangenProzess, meldeKernWarteschlangenAn, meldeStauAdapterAn, registriereWarteschlange, seiteAusListe, type WarteschlangenZustand } from '@synapse/core';
 // P9-T27 letzter Schritt: Daemon ohne DATABASE_URL
 import { daemonJobsWeg, hatDatenbankUrl } from '../daemon-jobs-api.js';
 import { installiereIgnoreApiQuelle, leereEreignisPuffer } from '../daemon-sync-api.js';
@@ -34,6 +34,9 @@ import { startModInbox } from '../mod-inbox.js';
 
 export async function startePcProfil(): Promise<DaemonKern> {
   setzeDbProzess('daemon');
+  // P27-T1: Instanzkennung + Kern-Warteschlangen (embedding_queue) schon beim Start, nicht erst beim ersten intern-Aufruf.
+  setzeWarteschlangenProzess('daemon');
+  meldeKernWarteschlangenAn();
   ensureConfigDir();
 
   // P9-T27: API-Weg = dieser Prozess oeffnet KEINE PG-Verbindung mehr (Regel regel-pc-nur-ueber-api-kein-
@@ -67,6 +70,29 @@ export async function startePcProfil(): Promise<DaemonKern> {
 
   const manager = new WatcherManager();
   const { port, projekte } = manager.statusAll();
+
+  // P27-T6: Stau-Quellen des Daemons (gehen als Telemetrie v1 mit dem regulaeren Heartbeat an die API, daemon-heartbeat.ts).
+  // Persistente Asset-Transfers je Projekt (Vorfall 26./27.10.: Finalisierungsfehler ohne fertige Assets bei leerer Legacy-Queue).
+  registriereWarteschlange({
+    name: 'asset_transfer',
+    beschreibung: 'Persistente Asset-Transfers je Projekt (Upload/Download/Loeschen); Fortschritt = fertiger Auftrag, nicht Bytes.',
+    reihenfolge: 'Reihenfolge der Auftraege; Wiederholung mit Backoff.',
+    verschiebbar: 'Nein.',
+    uebersicht: () => ({ projekte: manager.assetSync.transferZustaende() }),
+    liste: (f) => seiteAusListe(manager.assetSync.transferZustaende().map((t) => ({
+      id: t.projekt, projekt: t.projekt, typ: 'transfer', status: t.zustand ? 'geladen' : 'unbekannt', prioritaet: null, alter_s: null,
+      details: t.zustand ?? {},
+    })), f),
+    teilinstanzen: () => manager.assetSync.transferZustaende().map((t) => ({
+      projekt: t.projekt,
+      zustand: (): WarteschlangenZustand => {
+        const z = manager.assetSync.transferZustaende().find((x) => x.projekt === t.projekt)?.zustand;
+        if (!z) throw new Error('transferzustand_nicht_geladen');
+        return z as unknown as WarteschlangenZustand;
+      },
+    })),
+  });
+  meldeStauAdapterAn('daemon');
 
   // P15-T12: Sync-Wege einzeln pausierbar (intern, prozess daemon). Nur ausdruecklich, nicht in 'alle'.
   registriereWorker({

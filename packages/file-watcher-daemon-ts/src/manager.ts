@@ -31,6 +31,7 @@ import {
   registriereWarteschlange,
   seiteAusListe,
   assetWarteschlange,
+  assetSyncZaehler,
   istVirtuellesProjekt,
   istVirtuellerRegistryPfad,
 } from '@synapse/core';
@@ -85,7 +86,7 @@ export interface ProjektStatus {
   running: boolean;
   file_count?: number;
   last_scan_ms?: number;
-  /** P13-T45: projekte[].asset_sync.aktiv (Standard aus) — fuer den Tray-Schalter. */
+  /** P13-T45/P22-T238: projekte[].asset_sync.aktiv (Standard EIN, nur ausdruecklich false = aus) — fuer den Tray-Schalter. */
   asset_sync_aktiv?: boolean;
 }
 
@@ -105,6 +106,9 @@ export interface AggregateStatus {
 // ist → Speicher hat eine feste Obergrenze statt mit Datei-Anzahl zu wachsen.
 const MAX_CONCURRENT_INDEX = Math.max(1, Number(process.env.INDEX_MAX_CONCURRENT ?? 3));
 let activeIndexOps = 0;
+// P27-T6: abgeschlossene Index-Ereignisse (Slot nach Verarbeitung zurueck) fuer den Stau-Waechter.
+let indexErledigt = 0;
+let indexErledigtMs: number | null = null;
 /** P15-T12 E3: ein wartendes Ereignis (billig: nur Pfad und Zeitpunkt) — einsehbar ueber intern. */
 interface IndexWartender {
   id: number;
@@ -226,6 +230,8 @@ function acquireIndexSlot(w: IndexWartender): Promise<void> {
 function releaseIndexSlot(): void {
   // Slot zurueck und sofort (synchron) weitergeben; ohne Steuerung bekommt ihn der Erste (FIFO).
   activeIndexOps--;
+  indexErledigt++;
+  indexErledigtMs = Date.now();
   vergebeFreieSlots();
 }
 
@@ -329,6 +335,19 @@ registriereWarteschlange({
     };
   },
   verschieben: (a) => verschiebeIndex(a),
+  // P27-T6: Zustand fuer den Stau-Waechter. Fortschritt = Ereignis abgeschlossen (Slot nach der Verarbeitung zurueck);
+  // Ereignisse vor dem Slot wegen Pause von sync_fs_pg = zurueckgestellt.
+  zustand: () => {
+    const jetzt = Date.now();
+    const aeltester = indexWaiters.reduce((m, w) => Math.min(m, w.seit), Infinity);
+    return {
+      wartend: indexWaiters.length, aeltester_wartend_s: Number.isFinite(aeltester) ? Math.round((jetzt - aeltester) / 1000) : null,
+      laufend: activeIndexOps, aeltester_laufend_s: null,
+      fortschritt_zuletzt: indexErledigtMs ? new Date(indexErledigtMs).toISOString() : null, fortschritt_zaehler: indexErledigt,
+      zurueckgestellt: pausiertWartend.size, betriebsart: 'ereignisgetrieben' as const,
+      details: { live_wartend: liveIndexWartend, slots_max: MAX_CONCURRENT_INDEX },
+    };
+  },
 });
 registriereWarteschlange({
   name: 'asset',
@@ -343,6 +362,18 @@ registriereWarteschlange({
     id: `${j.project}:${j.pfad}`, projekt: j.project, typ: j.typ, status: 'wartend', prioritaet: null, rang: i + 1,
     alter_s: Math.round(j.wartet_ms / 1000), details: { pfad: j.pfad },
   })), f),
+  // P27-T6: Fortschritt = Inspektion beendet (gespeichert, Quelle fehlt, abgebrochen); Fehler sind kein Fortschritt.
+  zustand: () => {
+    const a = assetWarteschlange();
+    if (a.abgeschaltet) return { wartend: 0, aeltester_wartend_s: null, laufend: 0, aeltester_laufend_s: null, fortschritt_zuletzt: null, nicht_zutreffend: 'asset_weg_abgeschaltet' };
+    const z = assetSyncZaehler();
+    const aeltester = a.wartend.reduce((m, j) => Math.max(m, j.wartet_ms), 0);
+    return {
+      wartend: a.wartend.length, aeltester_wartend_s: a.wartend.length ? Math.round(aeltester / 1000) : null, laufend: a.aktiv,
+      aeltester_laufend_s: null, fortschritt_zuletzt: null, fortschritt_zaehler: z.gespeichert + z.quelle_fehlt + z.abgebrochen,
+      fehler_zaehler: z.fehler, betriebsart: 'ereignisgetrieben' as const,
+    };
+  },
 });
 
 /**
@@ -628,7 +659,7 @@ export class WatcherManager {
         running: this.instances.has(p.name),
         file_count: p.file_count,
         last_scan_ms: p.last_scan_ms,
-        asset_sync_aktiv: p.asset_sync?.aktiv === true,
+        asset_sync_aktiv: p.asset_sync?.aktiv !== false,
       })),
     };
   }
@@ -742,6 +773,8 @@ export class WatcherManager {
       // nie, genau wie vor dem Umbau, als der Watcher sie verwarf.
       if (event.asset) {
         const managed=managedAsset||await this.assetSync.ereignis({...event,path:relPath});
+        // P22-T236: lokal geloeschte Assets ohne Share-Bytes (legacy_local) der API melden - auch bei Asset-Sync AUS.
+        if(this.apiWeg&&event.type==='unlink')void this.assetSync.meldeQuelleFehlt(event.project,[relPath]);
         if(!managed){
           if (this.apiWeg) meldeLegacyAssetImApiWeg(event.project);
           else void verarbeiteAssetEreignis({ ...event, path: relPath }, projectRoot);

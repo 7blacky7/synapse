@@ -46,6 +46,7 @@
  *   Alle anderen Daemon-Routen (shell, sync, Restore ...) lehnen ihn wie bisher mit daemon_token_erforderlich ab.
  */
 
+import { meldeAssetSyncImHeartbeat } from '@synapse/core';
 import { mitAgentAufrufKontext, leseAgentBezugModus, loeseAgentZiel, getWrapperStatus, setzeHeartbeatKonfiguration, beendeIdentitaetsSitzung, type AgentZiel } from '@synapse/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
@@ -97,6 +98,8 @@ import {
   entferneInboxImProjekt,
   upsertDaemonHeartbeat,
   clearDaemonHeartbeat,
+  meldeWarteschlangenTelemetrie,
+  vergissWarteschlangenTelemetrie,
   istVirtuellesProjekt,
   istVirtuellerRegistryPfad,
   // P22-T5: Runtime-Daemon-Principal
@@ -376,7 +379,7 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
   );
 
   // P9-T27 Welle 2: Daemon-Heartbeat (daemon_heartbeats) fuer die Projekte dieses Hosts
-  fastify.post<{ Body: { host?: string; daemon_id?: string; aktion?: string; projekte?: string[] | string; pid?: number } }>(
+  fastify.post<{ Body: { host?: string; daemon_id?: string; aktion?: string; projekte?: string[] | string; pid?: number; asset_sync_aktiv?: unknown; warteschlangen?: unknown } }>(
     '/api/daemon/heartbeat',
     async (request, reply) => {
       const body = request.body ?? {};
@@ -397,9 +400,28 @@ export async function daemonJobsRoutes(fastify: FastifyInstance, optionen: Daemo
         for (const p of projekte) {
           try { await upsertDaemonHeartbeat(p, d.host, pid); } catch (err) { fehler.push(`${p}: ${(err as Error).message}`); }
         }
-        return { success: fehler.length === 0, aktion: 'melden', projekte, ...(fehler.length ? { fehler } : {}) };
+        // P22-T237: Tray-Schalter Asset-Sync je Projekt mitschreiben (nur Auskunft fuer die Asset-Zustellung). Fehlt das Feld
+        // (aelterer Daemon), bleibt daemon_heartbeats.asset_sync_aktiv unveraendert; Fehler nur im Log, Antwort wie bisher.
+        if (Array.isArray(body.asset_sync_aktiv)) {
+          const an = new Set(body.asset_sync_aktiv.filter((x): x is string => typeof x === 'string'));
+          for (const p of projekte) {
+            try { await meldeAssetSyncImHeartbeat(p, d.host, an.has(p)); }
+            catch (err) { request.log.warn(`[heartbeat] asset_sync_aktiv ${p}: ${(err as Error).message}`); }
+          }
+        }
+        // P27-T6: Warteschlangen-Telemetrie v1 (Stau-Waechter) mit dem AUTHENTIFIZIERTEN Host (Host im Rumpf zaehlt nicht).
+        // Nur Speicher, keine PG-Schreibung; ein Fehler aendert die Heartbeat-Antwort nicht.
+        let telemetrie: Record<string, unknown> | undefined;
+        if (body.warteschlangen !== undefined) {
+          try { telemetrie = meldeWarteschlangenTelemetrie(d.host, body.warteschlangen); }
+          catch (err) { telemetrie = { fehler: (err as Error).message.slice(0, 200) }; }
+        }
+        return { success: fehler.length === 0, aktion: 'melden', projekte, ...(fehler.length ? { fehler } : {}),
+          ...(telemetrie ? { warteschlangen_telemetrie: telemetrie } : {}) };
       }
       if (body.aktion === 'loeschen') {
+        // P27-T6: bewusst gestoppter Daemon -> Telemetrie verwerfen (kein 'meldet nicht', kein 'behoben').
+        vergissWarteschlangenTelemetrie(d.host);
         for (const p of projekte) { try { await clearDaemonHeartbeat(p); } catch { /* wie im Daemon: ignorieren */ } }
         return { success: true, aktion: 'loeschen', projekte };
       }

@@ -250,10 +250,14 @@ export async function holeProjekteApi(): Promise<DaemonProjektZeile[]> {
 }
 
 /** Daemon-Heartbeat (daemon_heartbeats) melden oder loeschen. */
-export async function heartbeatApi(aktion: 'melden' | 'loeschen', projekte: string[]): Promise<void> {
-  if (projekte.length === 0) return;
+export async function heartbeatApi(aktion: 'melden' | 'loeschen', projekte: string[], assetSyncAktiv?: string[], warteschlangen?: unknown): Promise<void> {
+  // P27-T6: mit Telemetrie auch ohne aktive Projekte melden (Erreichbarkeit); loeschen immer (API verwirft die Telemetrie).
+  if (projekte.length === 0 && aktion === 'melden' && warteschlangen === undefined) return;
+  // P22-T237: asset_sync_aktiv = Projekte mit eingeschaltetem Tray-Schalter Asset-Sync (nur Auskunft fuer die Asset-Zustellung).
   await anfrage('/api/daemon/heartbeat',
-    { method: 'POST', body: { host: DAEMON_HOST, daemon_id: DAEMON_API_ID, aktion, projekte, pid: process.pid } }, 15_000);
+    { method: 'POST', body: { host: DAEMON_HOST, daemon_id: DAEMON_API_ID, aktion, projekte, pid: process.pid,
+      ...(assetSyncAktiv ? { asset_sync_aktiv: assetSyncAktiv } : {}),
+      ...(warteschlangen !== undefined ? { warteschlangen } : {}) } }, 15_000);
 }
 
 export const schlafe = (ms: number): Promise<void> => new Promise((r) => { const t = setTimeout(r, ms); t.unref?.(); });

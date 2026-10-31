@@ -35,6 +35,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ausweisAusZeile } from './cli-verlauf.js';
 import { anfrage, DAEMON_API_ID, DAEMON_HOST } from './daemon-jobs-api.js';
 import { istLoopback } from './skills-proxy.js';
+import { registriereWarteschlange, seiteAusListe, type WarteschlangenZustand } from '@synapse/core';
 
 const TAKT_MS = 15_000;
 /** So lange haelt ein Abruf der Mod hoechstens offen. */
@@ -78,6 +79,9 @@ export type ModZustellAntwort = { success: true; zugestellt: boolean; grund?: st
 
 const sitzungen = new Map<string, Sitzung>();
 const uebergaben = new Map<string, Uebergabe>();
+/** P27-T6: gestartete Uebergaben (Fortschritt) fuer den Stau-Waechter. */
+let modGestartet = 0;
+let modGestartetMs: number | null = null;
 let letzterFehler: string | null = null;
 let letzteMeldung: string | null = null;
 /** P22-T151: Jobs, die eine schon angenommene Nachricht trafen und sie NICHT erneut uebergeben haben (Debug). */
@@ -116,6 +120,7 @@ function markiere(id: string, stand: UebergabeStand, grund: string | null = null
   u.stand = stand;
   u.grund = grund;
   u.am = Date.now();
+  if (stand === 'gestartet') { modGestartet++; modGestartetMs = u.am; }
   if (stand === 'angenommen' || stand === 'gestartet' || stand === 'abgewiesen') for (const f of u.fertig.splice(0)) f();
 }
 
@@ -354,7 +359,37 @@ export async function pruefeErledigt(sitzung: string, ids: string[]): Promise<{ 
 
 export interface ModInboxHandle { stop(): void }
 
+/**
+ * P27-T6: Zustand fuer den Stau-Waechter (synchron). Nur aktive, lebende Mod-Sitzungen; Nachrichten, die die Mod bewusst bis
+ * zur freien Sitzung haelt, sind kein Stau. Frist = Uebergabe laenger als 3 x UEBERGABE_FRIST_MS ohne Start.
+ */
+export function modInboxStauZustand(jetzt = Date.now()): WarteschlangenZustand {
+  const lebende = [...sitzungen.values()].filter((s) => lebt(s, jetzt) && s.aktiv);
+  if (lebende.length === 0) {
+    return { wartend: 0, aeltester_wartend_s: null, laufend: 0, aeltester_laufend_s: null, fortschritt_zuletzt: null, nicht_zutreffend: 'keine_aktive_mod_sitzung' };
+  }
+  const offen = [...uebergaben.values()].filter((u) => u.stand === 'wartet' || u.stand === 'uebergeben');
+  return {
+    wartend: lebende.reduce((s, x) => s + x.schlange.length, 0), aeltester_wartend_s: null,
+    laufend: offen.length, aeltester_laufend_s: offen.length ? Math.round((jetzt - Math.min(...offen.map((u) => u.am))) / 1000) : null,
+    fortschritt_zuletzt: modGestartetMs ? new Date(modGestartetMs).toISOString() : null, fortschritt_zaehler: modGestartet,
+    frist_ueberschritten: offen.filter((u) => jetzt - u.am > 3 * UEBERGABE_FRIST_MS).length,
+    betriebsart: 'ereignisgetrieben', stau_text: 'Mod-Uebergabe ohne Start', details: { sitzungen: lebende.length },
+  };
+}
+
 export function startModInbox(): ModInboxHandle {
+  registriereWarteschlange({
+    name: 'mod_inbox',
+    beschreibung: 'Mod-Inbox: Uebergaben an interaktive Claude-Code-Sitzungen ohne Wrapper (P27-T6).',
+    reihenfolge: 'je Sitzung FIFO.',
+    verschiebbar: 'Nein.',
+    uebersicht: () => ({ sitzungen: sitzungen.size, uebergaben: uebergaben.size, gestartet: modGestartet }),
+    liste: (f) => seiteAusListe([...uebergaben.entries()].map(([id, u]) => ({
+      id, projekt: null, typ: 'uebergabe', status: u.stand, prioritaet: null, alter_s: Math.round((Date.now() - u.am) / 1000),
+    })), f),
+    zustand: () => modInboxStauZustand(),
+  });
   const timer = setInterval(() => { void takt(); }, TAKT_MS);
   timer.unref();
   return { stop: () => clearInterval(timer) };
