@@ -12,7 +12,8 @@
 .synapse-control .uebersicht-fehler{margin:0;color:var(--danger,#f87171);font:10px "IBM Plex Mono",monospace}
 .synapse-control .uebersicht-hinweis{margin:0;padding:14px 18px;color:var(--muted);font:11px "IBM Plex Mono",monospace}
 .synapse-control .uebersicht-netz .agent-network{flex:1 1 auto}
-.synapse-control .uebersicht-netz .nw-stage{height:max(420px,calc(100vh - 230px))}
+/* P22-T235 (B1): Hoehe aus dem freien Platz (OverviewView misst, --uebersicht-buehne); Rueckfall bis zur ersten Messung. */
+.synapse-control .uebersicht-netz .nw-stage{height:var(--uebersicht-buehne,max(360px,calc(100vh - 330px)))}
 /* Sonnenliste unter der Buehne: Tastatur-/Mobilzugang, Enter oeffnet das Projekt wie ein Klick auf die Sonne. */
 .nw-sonnen{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 18px;background:var(--nw-bg);border-top:1px solid var(--nw-linie)}
 .nw-sonnen button{display:inline-flex;align-items:baseline;gap:6px}.nw-sonnen b{font-weight:600;color:var(--nw-text)}.nw-sonnen small{color:var(--nw-muted);font:9px "IBM Plex Mono",monospace}

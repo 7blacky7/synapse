@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PageHeader } from '../../components/gemeinsam/PageHeader';
 import { ProjectSelector } from './ProjectSelector';
 import { StatusChip } from '../../components/StatusKennzeichnung';
 import Agentennetzwerk from '../../components/Agentennetzwerk';
 import { leseUebersichtSchalter, setzeUebersichtSchalter, type UebersichtSchalter } from '../../api/uebersicht-netzwerk';
 import type { Area, ChannelViewModel, ProjectViewModel } from '../../control-plane/view-model';
+import { buehnenHoehe } from './uebersicht-layout';
 import '../../uebersicht-netzwerk.css';
 
 /**
@@ -39,6 +40,32 @@ export function OverviewView({
       .catch((error: unknown) => { if (!ende) { setSchalter(null); setSchalterFehler(error instanceof Error ? error.message : String(error)); } });
     return () => { ende = true; };
   }, [schalterProjekt]);
+  // P22-T235 (B1): Buehne so hoch wie der freie Platz, damit die Sonnenliste sichtbar bleibt. Gemessen bei Groessenaenderung des
+  // Scrollbereichs und wenn sich der Inhalt aendert (Buehne erscheint erst mit dem Snapshot); je Bild hoechstens einmal.
+  const netzRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = netzRef.current, behaelter = el?.closest<HTMLElement>('.control-content');
+    if (!el || !behaelter) return;
+    let bild = 0;
+    const messen = () => {
+      bild = 0;
+      const buehne = el.querySelector<HTMLElement>('.nw-stage');
+      if (!buehne) return;
+      const hoehe = buehnenHoehe({
+        behaelterHoehe: behaelter.clientHeight,
+        buehneOben: buehne.getBoundingClientRect().top - behaelter.getBoundingClientRect().top + behaelter.scrollTop,
+        sonnenHoehe: el.querySelector<HTMLElement>('.nw-sonnen')?.offsetHeight,
+      }) + 'px';
+      if (el.style.getPropertyValue('--uebersicht-buehne') !== hoehe) { el.style.setProperty('--uebersicht-buehne', hoehe); el.dataset.buehnenHoehe = hoehe; }
+    };
+    const planen = () => { if (!bild) bild = window.requestAnimationFrame(messen); };
+    const groesse = new ResizeObserver(planen);
+    groesse.observe(behaelter);
+    const inhalt = new MutationObserver(planen);
+    inhalt.observe(el, { childList: true, subtree: true });
+    planen();
+    return () => { groesse.disconnect(); inhalt.disconnect(); if (bild) window.cancelAnimationFrame(bild); };
+  }, [schalter?.aktiv]);
   const umschalten = async (aktiv: boolean) => {
     setBusy(true);
     try {
@@ -69,7 +96,7 @@ export function OverviewView({
 
   if (schalter?.aktiv) {
     return (
-      <div className="standard-page uebersicht-netz" data-uebersicht-netzwerk="1" data-schalter-quelle={schalter.quelle}>
+      <div ref={netzRef} className="standard-page uebersicht-netz" data-uebersicht-netzwerk="1" data-schalter-quelle={schalter.quelle}>
         <section className="overview-strip uebersicht-leiste" aria-label="Kennzahlen">
           {kennzahlen}
           <button type="button" className="uebersicht-schalter" disabled={busy} title={debug} onClick={() => void umschalten(false)}>Bisherige Übersicht</button>
