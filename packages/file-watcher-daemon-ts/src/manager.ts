@@ -111,6 +111,8 @@ interface IndexWartender {
   project: string;
   path: string;
   typ: string;
+  /** P27-T9: Scan-Herkunft beim Eingang des Ereignisses. */
+  scan_phase: 'initial' | 'live';
   seit: number;
   weiter?: () => void;
   /** P15-T12 E4: 1 = vorgezogen, -1 = ans Ende (ueberstimmt die Projekt-Regel) */
@@ -119,6 +121,8 @@ interface IndexWartender {
   zurueckBis?: number;
 }
 const indexWaiters: IndexWartender[] = [];
+// P27-T9: schneller FIFO-Pfad, solange kein Live-Ereignis wartet.
+let liveIndexWartend = 0;
 /** P15-T12 E4: Steuerung je Projekt und markierte Ereignisse. Alles leer = reines FIFO wie vorher. */
 const projektVorrang = new Map<string, 1 | -1>();
 const projektZurueck = new Map<string, number>();
@@ -141,7 +145,7 @@ function klasse(w: IndexWartender, jetzt: number): 1 | 0 | -1 | null {
 function indexReihenfolge(jetzt = Date.now()): Array<{ w: IndexWartender; k: 1 | 0 | -1 | null }> {
   const mit = indexWaiters.map((w, i) => ({ w, k: klasse(w, jetzt), i }));
   const wert = (k: 1 | 0 | -1 | null): number => (k === null ? -2 : k);
-  return mit.sort((x, y) => wert(y.k) - wert(x.k) || x.i - y.i).map(({ w, k }) => ({ w, k }));
+  return mit.sort((x, y) => wert(y.k) - wert(x.k) || (indexVorrangAktiv() ? Number(y.w.scan_phase === 'live') - Number(x.w.scan_phase === 'live') : 0) || x.i - y.i).map(({ w, k }) => ({ w, k }));
 }
 
 /** Weckt die Vergabe, wenn die frueheste Zurueckstellung endet (sonst warteten die Ereignisse bis zum naechsten Release). */
@@ -158,20 +162,46 @@ function planeWecker(jetzt: number): void {
 }
 
 /** Gibt freie Slots an Wartende: ohne Steuerung FIFO (shift), sonst beste Klasse, darin FIFO. */
+// P27-T9: Produktwert kommt auch bei abgeschaltetem intern ueber die Daemon-Bruecke.
+let indexVorrangProdukt = true;
+let indexVorrangQuelle = 'standard';
+let indexVorrangFehler: string | null = null;
+let indexVorrangOverride: { aktiv: boolean; bis: number } | null = null;
+export function uebernehmeIndexVorrang(antwort: unknown): void {
+  indexVorrangOverride = null;
+  if (!antwort || typeof antwort !== 'object') { indexVorrangFehler = 'bruecke_nicht_erreichbar'; return; }
+  const s = (antwort as Record<string, unknown>).index_live_vorrang as Record<string, unknown> | undefined;
+  if (!s || typeof s.aktiv !== 'boolean') { indexVorrangFehler = 'schalter_fehlt'; return; }
+  indexVorrangProdukt = s.aktiv;
+  indexVorrangQuelle = typeof s.quelle === 'string' ? s.quelle : 'standard';
+  indexVorrangFehler = typeof s.letzter_fehler === 'string' ? s.letzter_fehler : null;
+  const o = s.override as Record<string, unknown> | undefined;
+  const bis = typeof o?.bis === 'string' ? Date.parse(o.bis) : NaN;
+  if (typeof o?.aktiv === 'boolean' && Number.isFinite(bis) && bis > Date.now()) indexVorrangOverride = { aktiv: o.aktiv, bis };
+  vergebeFreieSlots();
+}
+function indexVorrangAktiv(): boolean {
+  return indexVorrangOverride && indexVorrangOverride.bis > Date.now() ? indexVorrangOverride.aktiv : indexVorrangProdukt;
+}
 function vergebeFreieSlots(): void {
   const jetzt = Date.now();
   while (activeIndexOps < MAX_CONCURRENT_INDEX && indexWaiters.length > 0) {
-    let index = 0;
-    if (steuerungAktiv()) {
-      index = -1;
-      let beste = -2;
-      for (let i = 0; i < indexWaiters.length; i++) {
-        const k = klasse(indexWaiters[i], jetzt);
-        if (k !== null && k > beste) { beste = k; index = i; if (k === 1) break; }
+    let index = -1;
+    let beste = -2;
+    let bestePhase = -1;
+    const vorrang = indexVorrangAktiv();
+    if (!steuerungAktiv() && (!vorrang || liveIndexWartend === 0)) index = 0;
+    else for (let i = 0; i < indexWaiters.length; i++) {
+      const k = klasse(indexWaiters[i], jetzt);
+      const phase = vorrang && indexWaiters[i].scan_phase === 'live' ? 1 : 0;
+      if (k !== null && (k > beste || (k === beste && phase > bestePhase))) {
+        beste = k; bestePhase = phase; index = i;
+        if (k === 1 && (!vorrang || phase === 1)) break;
       }
-      if (index < 0) { planeWecker(jetzt); return; }
     }
+    if (index < 0) { planeWecker(jetzt); return; }
     const [w] = indexWaiters.splice(index, 1);
+    if (w.scan_phase === 'live') liveIndexWartend--;
     markierteEreignisse.delete(w.id);
     activeIndexOps++;
     w.weiter!();
@@ -189,6 +219,7 @@ function acquireIndexSlot(w: IndexWartender): Promise<void> {
   // P15-T12 E4: einreihen und sofort vergeben (synchron) — ohne Steuerung genau das alte FIFO.
   return new Promise<void>((resolve) => {
     indexWaiters.push({ ...w, weiter: resolve });
+    if (w.scan_phase === 'live') liveIndexWartend++;
     vergebeFreieSlots();
   });
 }
@@ -200,8 +231,8 @@ function releaseIndexSlot(): void {
 
 /** Nur fuer Tests (scripts/test-warteschlangen-index.mjs): Slot-Vergabe direkt treiben. */
 export const indexSlotsFuerTests = {
-  acquire: (project: string, pfad: string): Promise<void> =>
-    acquireIndexSlot({ id: naechsteWarteId++, project, path: pfad, typ: 'change', seit: Date.now() }),
+  acquire: (project: string, pfad: string, scan_phase: 'initial' | 'live' = 'live'): Promise<void> =>
+    acquireIndexSlot({ id: naechsteWarteId++, project, path: pfad, typ: 'change', scan_phase, seit: Date.now() }),
   release: releaseIndexSlot,
   belegt: (): number => activeIndexOps,
 };
@@ -256,7 +287,7 @@ function alsEintrag(w: IndexWartender, status: string, jetzt: number, k: 1 | 0 |
     status: k === null ? 'zurueckgestellt' : status,
     prioritaet: k === 1 ? 'vorne' : k === -1 ? 'hinten' : null,
     alter_s: Math.round((jetzt - w.seit) / 1000),
-    details: { pfad: w.path, ...(k === null && bis ? { zurueckgestellt_bis: new Date(bis).toISOString() } : {}) },
+    details: { pfad: w.path, scan_phase: w.scan_phase, ...(k === null && bis ? { zurueckgestellt_bis: new Date(bis).toISOString() } : {}) },
   };
 }
 
@@ -264,7 +295,7 @@ function alsEintrag(w: IndexWartender, status: string, jetzt: number, k: 1 | 0 |
 registriereWarteschlange({
   name: 'index',
   beschreibung: `Datei-Ereignisse vor der Indexierung (Slots INDEX_MAX_CONCURRENT=${MAX_CONCURRENT_INDEX}); status pausiert = wartet auf das Ende der Pause von sync_fs_pg.`,
-  reihenfolge: 'FIFO: wer zuerst auf einen Slot wartet, bekommt ihn zuerst. Mit Steuerung: vorne vor normal vor hinten, darin FIFO; zurueckgestellte warten.',
+  reihenfolge: 'Manuelle Steuerung vorne vor normal vor hinten; innerhalb der Klasse live vor initial, darin FIFO; zurueckgestellte warten.',
   verschiebbar: 'Projekt (project) oder Ereignis (eintrag_id): vorne, hinten, zurueckstellen (dauer_min|bis), einreihen. Nur im Speicher, ein Neustart hebt es auf.',
   uebersicht: () => {
     const je: Record<string, number> = {};
@@ -273,6 +304,8 @@ registriereWarteschlange({
     return {
       anzahl: indexWaiters.length + pausiertWartend.size, wartend: indexWaiters.length, pausiert: pausiertWartend.size,
       slots_belegt: activeIndexOps, slots_max: MAX_CONCURRENT_INDEX, je_projekt: je,
+      live_vorrang: { aktiv: indexVorrangAktiv(), quelle: indexVorrangOverride && indexVorrangOverride.bis > jetzt ? 'intern' : indexVorrangQuelle, letzter_fehler: indexVorrangFehler },
+      aelteste_live_wartezeit_s: (() => { let aelteste = Infinity; for (const w of [...indexWaiters, ...pausiertWartend.values()]) if (w.scan_phase === 'live') aelteste = Math.min(aelteste, w.seit); return Number.isFinite(aelteste) ? Math.round((jetzt - aelteste) / 1000) : null; })(),
       ...(steuerungAktiv() ? {
         steuerung: {
           projekt_vorrang: Object.fromEntries(projektVorrang),
@@ -284,10 +317,16 @@ registriereWarteschlange({
   },
   liste: (f) => {
     const jetzt = Date.now();
-    return seiteAusListe([
-      ...indexReihenfolge(jetzt).map(({ w, k }) => alsEintrag(w, 'wartend', jetzt, k)),
-      ...[...pausiertWartend.values()].map((w) => ({ ...alsEintrag(w, 'pausiert', jetzt), rang: null })),
-    ], f);
+    const live = [...indexWaiters, ...pausiertWartend.values()].filter(w => w.scan_phase === 'live' && (!f.project || w.project === f.project));
+    const aelteste = live.reduce((min, w) => Math.min(min, w.seit), Infinity);
+    return {
+      ...seiteAusListe([
+        ...indexReihenfolge(jetzt).map(({ w, k }) => alsEintrag(w, 'wartend', jetzt, k)),
+        ...[...pausiertWartend.values()].map((w) => ({ ...alsEintrag(w, 'pausiert', jetzt), rang: null })),
+      ], f),
+      aelteste_live_wartezeit_s: Number.isFinite(aelteste) ? Math.round((jetzt - aelteste) / 1000) : null,
+      live_vorrang: { aktiv: indexVorrangAktiv(), quelle: indexVorrangOverride && indexVorrangOverride.bis > jetzt ? 'intern' : indexVorrangQuelle, letzter_fehler: indexVorrangFehler },
+    };
   },
   verschieben: (a) => verschiebeIndex(a),
 });
@@ -674,7 +713,7 @@ export class WatcherManager {
     // billiges event-Objekt statt tausende indexFile()-Buffer parallel zu halten.
     // P15-T12: Worker sync_fs_pg pausiert (intern, prozess daemon) -> das Ereignis wartet hier als
     // billiges Objekt und wird nach der Pause normal verarbeitet; nichts geht verloren.
-    const wartender: IndexWartender = { id: naechsteWarteId++, project: event.project, path: event.path, typ: event.type, seit: Date.now() };
+    const wartender: IndexWartender = { id: naechsteWarteId++, project: event.project, path: event.path, typ: event.type, scan_phase: event.scan_phase ?? 'live', seit: Date.now() };
     if (workerPausiert('sync_fs_pg')) {
       pausiertWartend.set(wartender.id, wartender);
       try {

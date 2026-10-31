@@ -18,6 +18,8 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   alleSchalter,
+  getPool,
+  leseProfilProduktSchalter,
   leseTokenIdentitaetSchalter,
   holeDaemonBefehle,
   internToolAktiv,
@@ -39,6 +41,15 @@ async function istGpuKnotenToken(request: FastifyRequest): Promise<boolean> {
   return typeof row?.scope === 'string' && row.scope.startsWith('compute-node:');
 }
 
+async function indexLiveVorrangStand(): Promise<Record<string, unknown>> {
+  const produkt = await leseProfilProduktSchalter('index_live_vorrang');
+  if (!internToolAktiv()) return { ...produkt };
+  try {
+    const r = await getPool().query<{ aktiv: boolean; bis: Date }>("SELECT aktiv, bis FROM intern_schalter WHERE name = $1 AND modus = 'freigegeben' AND bis > NOW()", ['index_live_vorrang']);
+    return { ...produkt, ...(r.rows[0] ? { override: { aktiv: r.rows[0].aktiv, bis: r.rows[0].bis.toISOString() } } : {}) };
+  } catch (err) { return { ...produkt, letzter_fehler: `intern: ${err instanceof Error ? err.message : String(err)}` }; }
+}
+
 export async function internDaemonRoutes(fastify: FastifyInstance): Promise<void> {
   // Beim Schliessen (Deploy) wartende Long-Polls sofort beenden, statt bis zu 25 s zu halten.
   fastify.addHook('onClose', async () => { vergissDaemons(); });
@@ -49,6 +60,7 @@ export async function internDaemonRoutes(fastify: FastifyInstance): Promise<void
       if (!internToolAktiv()) return {
         success: true, debug: false, server_zeit: new Date().toISOString(),
         token_identitaet: await leseTokenIdentitaetSchalter(),
+        index_live_vorrang: await indexLiveVorrangStand(),
       };
       const host = request.query.host;
       if (!istGueltigerHost(host)) return reply.code(400).send({ success: false, error: 'host_ungueltig' });
@@ -66,7 +78,7 @@ export async function internDaemonRoutes(fastify: FastifyInstance): Promise<void
       let tray_token_weiterleitung: unknown = null;
       try { tray_token_weiterleitung = (await alleSchalter()).find((s) => s.name === 'tray_token_weiterleitung') ?? null; } catch { /* AUS */ }
       return { success: true, debug: true, befehle, server_zeit: new Date().toISOString(), tray_token_weiterleitung,
-        token_identitaet: await leseTokenIdentitaetSchalter() };
+        token_identitaet: await leseTokenIdentitaetSchalter(), index_live_vorrang: await indexLiveVorrangStand() };
     },
   );
 

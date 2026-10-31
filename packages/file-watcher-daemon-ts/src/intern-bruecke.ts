@@ -19,6 +19,7 @@
  */
 
 import { uebernehmeAgentStartFreigabe, verwerfeAgentStartFreigabe } from './agent-start-api.js';
+import { uebernehmeIndexVorrang } from './manager.js';
 import os from 'node:os';
 import { DAEMON_BEFEHLE, fuehreDiagnoseLokal, skillNutzungLokal, fuehreWorkerActionAus, fuehreWarteschlangeLokal, workerStatus } from '@synapse/core';
 import { findProjekt, loadConfig } from './config.js';
@@ -144,6 +145,7 @@ export function startInternBruecke(): InternBrueckeHandle {
         if (stopped) break;
         uebernehmeTrayTokenFreigabe(antwort);
         uebernehmeAgentStartFreigabe(antwort);
+        uebernehmeIndexVorrang(antwort);
         if (antwort === 'nicht_gefunden' || antwort.debug !== true) {
           if (debug !== false) {
             console.error(debug === true
@@ -163,7 +165,8 @@ export function startInternBruecke(): InternBrueckeHandle {
         for (const b of befehle) await fuehreAus(b);
       } catch (err) {
         verwerfeTrayTokenFreigabe();
-      verwerfeAgentStartFreigabe();
+        verwerfeAgentStartFreigabe();
+        uebernehmeIndexVorrang(null);
         if (stopped) break;
         fehlerZyklen = Math.min(fehlerZyklen + 1, 30);
         if (!fehlerGemeldet) {

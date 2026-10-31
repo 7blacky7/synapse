@@ -248,6 +248,8 @@ export interface FileEvent {
   type: 'add' | 'change' | 'unlink';
   path: string;
   project: string;
+  /** P27-T9: Herkunft beim Eingang des Watcher-Ereignisses, vor Debounce/ready. */
+  scan_phase?: 'initial' | 'live';
   /**
    * Asset-Art (P4-T67, Etappe D). Fehlt bei allen Nicht-Assets — dann ist das Ereignis
    * exakt wie vor dem Umbau. 'nur_asset': NUR der Asset-Weg (Binaerdatei), der Code-Weg

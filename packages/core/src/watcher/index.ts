@@ -139,7 +139,10 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   /**
    * Verarbeitet ein Datei-Event mit Debounce
    */
+  let initialScanFertig = false;
   function handleEvent(type: FileEvent['type'], filePath: string): void {
+    // Bei Eingang festhalten: der Debounce kann erst nach ready ablaufen.
+    const scanPhase: 'initial' | 'live' = type === 'add' && !initialScanFertig ? 'initial' : 'live';
     // Relativen Pfad berechnen
     const relativePath = path.relative(projectPath, filePath);
 
@@ -262,6 +265,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
         type,
         path: relativePath,
         project: projectName,
+        scan_phase: scanPhase,
       };
       if (asset) event.asset = asset;
 
@@ -386,6 +390,7 @@ export function startFileWatcher(options: FileWatcherOptions): FileWatcherInstan
   });
 
   watcher.on('ready', () => {
+    initialScanFertig = true;
     console.error(`[Synapse] FileWatcher bereit fuer "${projectName}"`);
     // Ab hier ist jedes 'add' ein Laufzeit-Ereignis und kein Erstscan mehr.
     // Dynamischer Import, weil services/code.ts seinerseits watcher/binary.js
