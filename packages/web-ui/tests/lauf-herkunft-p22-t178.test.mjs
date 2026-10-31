@@ -103,13 +103,14 @@ ok(takte.size === 0, 'P22-T178 lauf-herkunft.ts: letzter Hoerer weg -> Takt been
 // ---------------------------------------------------------------- D Einbau
 const quelle = (p) => lies('packages/web-ui/src/components/' + p);
 const nach = (src, task, lauf) => src.includes(task + lauf);
-const ws = quelle('SynapseWorkspaceMock.tsx');
+const ws = lies('packages/web-ui/src/views/channels/ChannelsView.tsx');
+const team = lies('packages/web-ui/src/views/projekt/ProjectAgentTeamView.tsx');
 ok(nach(ws, '<AgentTaskMarke project={project} identityId={agent.identityId} name={agent.name} />', '<LaufHerkunftMarke project={project} identityId={agent.identityId} name={agent.name} />'),
-  'P22-T178 SynapseWorkspaceMock.tsx: Channel-Agentenleiste');
-ok(nach(ws, '<AgentTaskMarke project={project} name={message.sender} />', '<LaufHerkunftMarke project={project} name={message.sender} />'), 'P22-T178 SynapseWorkspaceMock.tsx: Channel-Absender (Nachrichten)');
-ok(nach(ws, 'name={agent.agentId || agent.name} />', '<LaufHerkunftMarke project={project} identityId={agent.identityId} name={agent.agentId || agent.name} />')
-  && nach(ws, 'name={current.agentId || current.name} />', '<LaufHerkunftMarke project={project} identityId={current.identityId} name={current.agentId || current.name} />'),
-  'P22-T178 SynapseWorkspaceMock.tsx: Agententeam Liste und Kopf');
+  'P22-T178 ChannelsView.tsx: Channel-Agentenleiste');
+ok(nach(ws, '<AgentTaskMarke project={project} name={message.sender} />', '<LaufHerkunftMarke project={project} name={message.sender} />'), 'P22-T178 ChannelsView.tsx: Channel-Absender (Nachrichten)');
+ok(nach(team, 'name={agent.agentId || agent.name} />', '<LaufHerkunftMarke project={project} identityId={agent.identityId} name={agent.agentId || agent.name} />')
+  && nach(team, 'name={current.agentId || current.name} />', '<LaufHerkunftMarke project={project} identityId={current.identityId} name={current.agentId || current.name} />'),
+  'P22-T178 ProjectAgentTeamView.tsx: Agententeam Liste und Kopf');
 ok((quelle('RuntimeAgentenPanel.tsx').match(/<LaufHerkunftMarke project=\{project\} identityId=\{z\.identity_id\} name=\{z\.name\} \/>/g) ?? []).length === 2, 'P22-T178 RuntimeAgentenPanel.tsx: neue und alte Tabelle');
 ok((quelle('ProjectCoordinatorDock.tsx').match(/<LaufHerkunftMarke /g) ?? []).length === 2, 'P22-T178 ProjectCoordinatorDock.tsx: Leiste und Fensterkopf');
 ok(/<LaufHerkunftMarke project=\{project\} identityId=\{windowState\.identityId\}/.test(quelle('ChannelAgentChatWindow.tsx'))

@@ -9,7 +9,7 @@
 import { createRoot } from 'react-dom/client';
 import { setToken } from '../src/api/auth';
 import type { ChannelMemberViewModel, ChannelMessageViewModel, ChannelViewModel } from '../src/control-plane/view-model';
-import { ChannelsView } from '../src/components/SynapseWorkspaceMock';
+import { ChannelsView } from '../src/views/channels/ChannelsView';
 import { AgentTaskMarke, AktuelleTaskAbsatz } from '../src/components/AgentTaskMarke';
 import '../src/workspace-mock.css';
 import '../src/workspace-extensions.css';

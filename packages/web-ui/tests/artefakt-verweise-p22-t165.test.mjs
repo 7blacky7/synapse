@@ -52,7 +52,7 @@ check(/VERWEIS_SELEKTOR/.test(surface) && /useVerweisFenster\(\)/.test(surface) 
 check(/updateOhneAnimation=\{!!vorlage\}/.test(src('components/ArtefaktLiveBlock.tsx')) && /verweisProjekt=\{project\}/.test(src('components/EinheitlicherAgentChat.tsx'))
   && /verweisProjekt=\{e\.project \?\? e\.standard_project \?\? project\}/.test(src('components/TopArtefakte.tsx'))
   && /<VerweisFensterProvider><PersonalArtifacts \/><\/VerweisFensterProvider>/.test(src('components/KnowledgeView.tsx'))
-  && /<NativeHtmlMessage message=\{message\} project=\{project\}/.test(src('components/SynapseWorkspaceMock.tsx')), 'Koordinator-Fenster, Main-Chat, Persoenliche und Top-Artefakte verdrahtet');
+  && /<NativeHtmlMessage message=\{message\} project=\{project\}/.test(src('views/hauptagent/MainAgentView.tsx')), 'Koordinator-Fenster, Main-Chat, Persoenliche und Top-Artefakte verdrahtet');
 check(/sofort\?: boolean/.test(src('kios/fakeStream.ts')) && /reducedMotion \|\| options\.sofort/.test(src('kios/fakeStream.ts')), 'fakeStream: sofort ohne Animation');
 
 console.log(fails ? `FEHLER: ${fails}` : 'Alle Pruefungen gruen');

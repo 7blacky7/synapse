@@ -286,7 +286,7 @@ console.log('OK H3 F5 stellt Ladetiefe her, Logout leert');
 
 // I Einbau: App leert bei Login-Ansicht, Main nutzt denselben Fensterbaustein
 assert.match(lies('packages/web-ui/src/App.tsx'), /if \(authState === 'login'\) verwirfChatFensterSitzung\(\);/);
-const main = lies('packages/web-ui/src/components/SynapseWorkspaceMock.tsx');
+const main = lies('packages/web-ui/src/views/hauptagent/MainAgentView.tsx');
 assert.match(main, /fensterAusschnitt\(alleMessages, \(message\) => String\(message\.id\)/);
 assert.match(main, /\{verlauf\.mehr \|\| fenster\.versteckt > 0/);
 assert.match(main, /setFensterFest\(true\);\n\s+uebernehmeVerlauf\(r\.eintraege\);/);

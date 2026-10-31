@@ -263,13 +263,16 @@ const filterVon = (s) => alle(auswahlVon(s), (x) => x.type === 'input' && x.prop
   ok(/ohneHerkunft: !!ziel\.ohneHerkunft/.test(lese), 'E erneutes Oeffnen setzt die Herkunft neu');
   ok(/data-lesefenster-herkunft=\{herkunft\} data-lesefenster-ziel=/.test(lese), 'E Debug: Herkunft und Ziel am Lesefenster');
   ok(/zitat\?\.pinAnfuegen \? \{\s*nachAnpinnen/.test(lese) && /useZitatEmpfaengerAuswahl\(\{\s*project: fenster\.project, aktiv: !zitat,/.test(lese), 'E Pin-Kaertchen nur mit Herkunft, Empfaengerauswahl nur ohne');
-  const ws = lies('packages/web-ui/src/components/SynapseWorkspaceMock.tsx');
-  ok(/\{showDashboard && <LesefensterOhneHerkunft><MainAgentDashboard /.test(ws), 'E Main-Dashboard/Top-Artefakte: Herkunft ohne (Pin nur speichern)');
-  ok(/<VerweisFensterProvider zitat=\{zitat\.anbieter\}>/.test(ws), 'E Main-Chat bleibt Herkunft main (Provider mit Zitat-Anbieter)');
-  ok(/useZitatAnhaenge\(\{ chat: 'channel:' \+ project \+ ':' \+ selectedChannel, empfaenger: '#'/.test(ws) && /<VerweisFensterProvider zitat=\{channelZitat\.anbieter\}>/.test(ws), 'E Channel-Fenster ist Herkunft (eigener Entwurf je Projekt/Channel)');
-  ok(/await onSend\(message, zitate\.length \? zitate : undefined\)/.test(ws) && /sendChannelMessage\(selectedProject, selectedChannel, content, undefined, zitate\)/.test(ws), 'E Channel: Zitate/Pins gehen mit dem Post');
-  ok(/\{channelZitat\.karten\}/.test(ws) && /\{channelZitat\.oberflaeche\}/.test(ws) && /<ZitatKarten zitate=\{zitatTeil\.zitate\}/.test(ws), 'E Channel: Kaertchen im Entwurf und Zitate in Nachrichten');
-  ok(/<LesefensterOhneHerkunft><ChannelProjectSurface /.test(ws) && /<LesefensterOhneHerkunft><RuntimeAgentenPanel /.test(ws), 'E Projektflaeche/Runtime-Panel im Channel ohne Herkunft');
+  const main = lies('packages/web-ui/src/views/hauptagent/MainAgentView.tsx');
+  const channel = lies('packages/web-ui/src/views/channels/ChannelsView.tsx');
+  const nachricht = lies('packages/web-ui/src/views/channels/ChannelMessageContent.tsx');
+  const workspace = lies('packages/web-ui/src/components/workspace/SynapseWorkspace.tsx');
+  ok(/\{showDashboard && <LesefensterOhneHerkunft><MainAgentDashboard /.test(main), 'E Main-Dashboard/Top-Artefakte: Herkunft ohne (Pin nur speichern)');
+  ok(/<VerweisFensterProvider zitat=\{zitat\.anbieter\}>/.test(main), 'E Main-Chat bleibt Herkunft main (Provider mit Zitat-Anbieter)');
+  ok(/useZitatAnhaenge\(\{ chat: 'channel:' \+ project \+ ':' \+ selectedChannel, empfaenger: '#'/.test(channel) && /<VerweisFensterProvider zitat=\{channelZitat\.anbieter\}>/.test(channel), 'E Channel-Fenster ist Herkunft (eigener Entwurf je Projekt/Channel)');
+  ok(/await onSend\(message, zitate\.length \? zitate : undefined\)/.test(channel) && /sendChannelMessage\(selectedProject, selectedChannel, content, undefined, zitate\)/.test(workspace), 'E Channel: Zitate/Pins gehen mit dem Post');
+  ok(/\{channelZitat\.karten\}/.test(channel) && /\{channelZitat\.oberflaeche\}/.test(channel) && /<ZitatKarten zitate=\{zitatTeil\.zitate\}/.test(nachricht), 'E Channel: Kaertchen im Entwurf und Zitate in Nachrichten');
+  ok(/<LesefensterOhneHerkunft><ChannelProjectSurface /.test(channel) && /<LesefensterOhneHerkunft><RuntimeAgentenPanel /.test(channel), 'E Projektflaeche/Runtime-Panel im Channel ohne Herkunft');
   const client = lies('packages/web-ui/src/api/synapse-client.ts');
   ok(/JSON\.stringify\(zitate\?\.length \? \{ content, zitate \} : \{ content \}\)/.test(client), 'E user-post: zitate nur wenn vorhanden (sonst Bestand)');
   for (const p of ['packages/web-ui/src/kios/AgentRenderingSurface.tsx', 'packages/web-ui/src/components/TopArtefakte.tsx']) {

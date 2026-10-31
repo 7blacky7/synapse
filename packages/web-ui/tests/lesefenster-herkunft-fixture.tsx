@@ -18,7 +18,7 @@ import { loadChannelMessageViewModels, loadChannelViewModels, sendChannelMessage
 import type { ChannelMessageViewModel, ChannelViewModel } from '../src/control-plane/view-model';
 import { EinheitlicherAgentChat } from '../src/components/EinheitlicherAgentChat';
 import { LesefensterOhneHerkunft, VerweisFensterProvider, VerweisText } from '../src/components/Lesefenster';
-import { ChannelsView } from '../src/components/SynapseWorkspaceMock';
+import { ChannelsView } from '../src/views/channels/ChannelsView';
 import { useZitatAnhaenge } from '../src/components/ZitatAnhaenge';
 import type { SendeZitat } from '../src/components/zitat-logik';
 import '../src/workspace-mock.css';

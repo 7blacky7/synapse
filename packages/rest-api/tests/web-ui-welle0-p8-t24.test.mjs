@@ -203,7 +203,7 @@ test('Kompakte Runtime: Login bleibt opt-in, Zuweisung und Stop verwenden echten
 
 test('Produktiver Chat ohne Demo-Nachricht bietet Tooldetails und ehrlichen Projektscope', () => {
   const h = hooks({ 4: [{ id: 'call-p8-t24', tool: 'code_intel', status: 'done' }], 6: 'codex' });
-  const source = readFileSync(resolve(root, 'packages/web-ui/src/components/SynapseWorkspaceMock.tsx'), 'utf8');
+  const source = readFileSync(resolve(root, 'packages/web-ui/src/views/hauptagent/MainAgentView.tsx'), 'utf8');
   const ast = ts.createSourceFile('view.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const modules = { ...h.modules };
   for (const s of ast.statements) {
@@ -219,10 +219,13 @@ test('Produktiver Chat ohne Demo-Nachricht bietet Tooldetails und ehrlichen Proj
   }
   // P22-T168: Zitat-Anhaenge: Logik echt, Hook als Attrappe mit Schalter AUS (Bestand).
   modules['./zitat-logik'] = load(resolve(repo, 'packages/web-ui/src/components/zitat-logik.ts'), {});
-  modules['./ZitatAnhaenge'] = { __esModule: true, ZitatKarten: component, useZitatAnhaenge: () => ({ aktiv: false, anbieter: null, entwuerfe: [], sendeZitate: [],
+  modules['../../components/ZitatAnhaenge'] = { __esModule: true, ZitatKarten: component, useZitatAnhaenge: () => ({ aktiv: false, anbieter: null, entwuerfe: [], sendeZitate: [],
     anzeige: [], leeren() {}, beiKontextmenue() {}, oberflaeche: null, karten: null, debug: {} }) };
-  const { MainAgentView, ToolActivity } = load('packages/web-ui/src/components/SynapseWorkspaceMock.tsx', modules,
-    '\nexport { MainAgentView, ToolActivity };\n');
+  modules['../../components/chat-fenster-logik'] = load('packages/web-ui/src/components/chat-fenster-logik.ts', {});
+  const teile = load('packages/web-ui/src/components/agent-chat-teile.tsx', { ...h.modules, './ToolBild': { ToolBilder: component }, '../api/control-plane-adapter': { loadToolCallResult: missing('Toolergebnis') } });
+  modules['../../components/agent-chat-teile'] = teile;
+  const { ToolActivity } = teile;
+  const { MainAgentView } = load('packages/web-ui/src/views/hauptagent/MainAgentView.tsx', modules);
   const tree = MainAgentView({ theme: 'dark', project: 'p8-t24', showDashboard: true });
   const activity = nodes(tree).filter((n) => n.type === ToolActivity);
   assert.equal(activity.length, 1, 'Detail-Einstieg auch ohne message.id=4');
@@ -230,6 +233,6 @@ test('Produktiver Chat ohne Demo-Nachricht bietet Tooldetails und ehrlichen Proj
   assert.equal(activity[0].props.calls[0].id, 'call-p8-t24');
   assert.equal(activity[0].props.phases.length, 0, 'Keine erfundenen Denkphasen');
   const strand = ToolActivity(activity[0].props);
-  assert.equal(strand.props['aria-label'], 'Toolaktivität des Projekts');
+  assert.equal(strand.props['aria-label'], 'Tool-Aufrufe des Hauptagenten');
   assert.ok(nodes(strand).some((n) => n.props.call?.id === 'call-p8-t24'), 'ToolCallNode mit Detailhandler erreichbar');
 });

@@ -147,11 +147,12 @@ ok(API.abonniereAktuelleTasks('', () => undefined)() === undefined && takte.size
 
 // ---------------------------------------------------------------- D Einbau (wo die Web-UI einen Agenten nennt)
 const quelle = (p) => lies('packages/web-ui/src/components/' + p);
-const ws = quelle('SynapseWorkspaceMock.tsx');
-ok(/<strong>\{agent\.name\}<\/strong><AgentTaskMarke project=\{project\} identityId=\{agent\.identityId\} name=\{agent\.name\} \/>/.test(ws), 'P22-T172 SynapseWorkspaceMock.tsx: Channel-Agentenleiste');
-ok(/<strong>\{message\.senderAnzeige \?\? message\.sender\}<\/strong><AgentTaskMarke project=\{project\} name=\{message\.sender\} \/>/.test(ws), 'P22-T172 SynapseWorkspaceMock.tsx: Channel-Absender');
-ok(/<strong>\{agent\.name\}<AgentTaskMarke project=\{project\} identityId=\{agent\.identityId\}/.test(ws) && /<h2>\{current\.name\}<AgentTaskMarke/.test(ws)
-  && /<AktuelleTaskAbsatz project=\{project\} identityId=\{current\.identityId\}[^>]*rueckfall=\{current\.currentTask\} \/>/.test(ws), 'P22-T172 SynapseWorkspaceMock.tsx: Agententeam Liste, Kopf, Absatz mit Rueckfall');
+const ws = lies('packages/web-ui/src/views/channels/ChannelsView.tsx');
+const team = lies('packages/web-ui/src/views/projekt/ProjectAgentTeamView.tsx');
+ok(/<strong>\{agent\.name\}<\/strong><AgentTaskMarke project=\{project\} identityId=\{agent\.identityId\} name=\{agent\.name\} \/>/.test(ws), 'P22-T172 ChannelsView.tsx: Channel-Agentenleiste');
+ok(/<strong>\{message\.senderAnzeige \?\? message\.sender\}<\/strong><AgentTaskMarke project=\{project\} name=\{message\.sender\} \/>/.test(ws), 'P22-T172 ChannelsView.tsx: Channel-Absender');
+ok(/<strong>\{agent\.name\}<AgentTaskMarke project=\{project\} identityId=\{agent\.identityId\}/.test(team) && /<h2>\{current\.name\}<AgentTaskMarke/.test(team)
+  && /<AktuelleTaskAbsatz project=\{project\} identityId=\{current\.identityId\}[^>]*rueckfall=\{current\.currentTask\} \/>/.test(team), 'P22-T172 ProjectAgentTeamView.tsx: Agententeam Liste, Kopf, Absatz mit Rueckfall');
 const rap = quelle('RuntimeAgentenPanel.tsx');
 ok((rap.match(/\{z\.name\}<AgentTaskMarke project=\{project\} identityId=\{z\.identity_id\} name=\{z\.name\} \/>/g) ?? []).length === 2, 'P22-T172 RuntimeAgentenPanel.tsx: neue und alte Tabelle');
 ok((quelle('ProjectCoordinatorDock.tsx').match(/<AgentTaskMarke /g) ?? []).length === 2, 'P22-T172 ProjectCoordinatorDock.tsx: Leiste und Fensterkopf');

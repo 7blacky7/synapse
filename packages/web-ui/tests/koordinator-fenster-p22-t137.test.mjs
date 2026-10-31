@@ -105,9 +105,9 @@ assert.deepEqual(K.zerlegeKlartext('| kein | Trenner |\nText'), [{ typ: 'absatz'
 
 // G Punkt 7: Main-Chat stellt fertigen Fliesstext ueber denselben Renderer dar; Artefakt-/Anhang-Bloecke und Tool-Karten bleiben.
 const { readFileSync } = await import('node:fs');
-const main = readFileSync(join(repo, 'packages/web-ui/src/components/SynapseWorkspaceMock.tsx'), 'utf8');
+const main = readFileSync(join(repo, 'packages/web-ui/src/views/hauptagent/MainAgentView.tsx'), 'utf8');
 // P22-T170: der Import nimmt zusaetzlich LesefensterOhneHerkunft auf (Dashboard/Projektflaeche ohne Chat-Herkunft).
-assert.match(main, /import \{ KlartextText, (?:LesefensterOhneHerkunft, )?VerweisFensterProvider, VerweisText \} from '\.\/Lesefenster';/);
+assert.match(main, /import \{ KlartextText, LesefensterOhneHerkunft, VerweisFensterProvider \} from '\.\.\/\.\.\/components\/Lesefenster';/);
 assert.match(main, /message\.kind === 'text' && \(message\.laeuft \? message\.text && <p>\{message\.text\}<\/p> : message\.text\.trim\(\) && <KlartextText project=\{project\} text=\{message\.text\} \/>\)/,
   'Main-Text: laufend roh, fertig als Markdown');
 assert.ok(!/<p>\{message\.laeuft \? message\.text : <VerweisText/.test(main), 'alter Rohtext-Weg im Main-Chat entfernt');

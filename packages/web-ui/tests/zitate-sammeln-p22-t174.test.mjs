@@ -269,9 +269,9 @@ console.log('OK B Hook');
   ok(!/setEditor\(null\)/.test(q), 'P22-T174 ZitatAnhaenge.tsx: kein direktes setEditor(null) mehr (Schliessen nur ueber zeigeEditor/uebernimmEditor)');
   ok((q.match(/uebernimmEditor\('(menue|anfuegen|markierung|karte|speichern)'\)/g) ?? []).length === 5, 'P22-T174 ZitatAnhaenge.tsx: Menue, Knopf, Markierung, Kaertchen und Speichern uebernehmen den offenen Editor');
   // Senden: die drei Aufrufer schicken sendeZitate und rufen danach leeren (das den Editor schliesst) - kein eigener Weg je Fenster.
-  const e = lies('packages/web-ui/src/components/EinheitlicherAgentChat.tsx'), m = lies('packages/web-ui/src/components/SynapseWorkspaceMock.tsx');
+  const e = lies('packages/web-ui/src/components/EinheitlicherAgentChat.tsx'), m = lies('packages/web-ui/src/views/hauptagent/MainAgentView.tsx'), channel = lies('packages/web-ui/src/views/channels/ChannelsView.tsx');
   ok(/const zitate = zitat\.sendeZitate;/.test(e) && /zitat\.leeren\(\);/.test(e) && /const zitate = zitat\.sendeZitate;/.test(m) && /zitat\.leeren\(\);/.test(m)
-    && /const zitate = channelZitat\.sendeZitate;/.test(m) && /channelZitat\.leeren\(\);/.test(m), 'P22-T174 Aufrufer (EinheitlicherAgentChat, Main, Channel): senden sendeZitate und rufen leeren');
+    && /const zitate = channelZitat\.sendeZitate;/.test(channel) && /channelZitat\.leeren\(\);/.test(channel), 'P22-T174 Aufrufer (EinheitlicherAgentChat, Main, Channel): senden sendeZitate und rufen leeren');
   ok(/const leeren = useCallback\(\(\) => \{ zeigeEditor\(null\); setze\(\[\]\); \}/.test(q), 'P22-T174 ZitatAnhaenge.tsx leeren schliesst den Editor');
   // Koordinator 26.10.2026: das Anmerkungsfeld darf die Nachrichtenzeile und ihre Verweise nicht verdecken -> Editor als Portal in den
   // Platz im Eingabebereich (karten), nur ohne Platz schwebend; das Menue bleibt an der Klickstelle.

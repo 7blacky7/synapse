@@ -386,9 +386,10 @@ ok(/event\.pointerType !== 'touch'/.test(lese) && /LANG_DRUECKEN_MS = 550/.test(
 ok(/className="verweis-zitat"[\s\S]{0,300}zitat\.anfuegen\(\{ art: fenster\.art, id: inhalt\.id \|\| fenster\.id, projekt: fenster\.project, titel: inhalt\.titel \}/.test(lese), 'H Knopf Zitat anfügen im Lesefenster');
 const flaeche = lies('packages/web-ui/src/kios/AgentRenderingSurface.tsx');
 ok(/content\.addEventListener\('contextmenu'/.test(flaeche) && /const zitat = fenster\?\.zitat;/.test(flaeche), 'H Verweise im Artefakt (Shadow-DOM) zitierbar');
-const main = lies('packages/web-ui/src/components/SynapseWorkspaceMock.tsx');
+const main = lies('packages/web-ui/src/views/hauptagent/MainAgentView.tsx');
+const verlauf = lies('packages/web-ui/src/views/hauptagent/verlauf.ts');
 ok(/useZitatAnhaenge\(\{ chat: 'main', empfaenger: 'Hauptagent', project: null \}\)/.test(main) && /<VerweisFensterProvider zitat=\{zitat\.anbieter\}>/.test(main), 'H Main-Chat: Zitate nur an den Hauptagenten');
-ok(/\}, controller\.signal, zitate\.length \? zitate : undefined\);/.test(main) && /anzeigeAusAnhaengen\(eintrag\.anhaenge\)/.test(main), 'H Main sendet die Zitate mit und zeigt sie aus dem Verlauf');
+ok(/\}, controller\.signal, zitate\.length \? zitate : undefined\);/.test(main) && /anzeigeAusAnhaengen\(eintrag\.anhaenge\)/.test(verlauf), 'H Main sendet die Zitate mit und zeigt sie aus dem Verlauf');
 const api = lies('packages/web-ui/src/api/agent-runtime.ts');
 ok(/body: JSON\.stringify\(\{ message, \.\.\.\(zitate\?\.length \? \{ zitate \} : \{\}\) \}\)/.test(api) && /body: JSON\.stringify\(\{ identity_id: identityId, text, \.\.\.\(zitate\?\.length \? \{ zitate \} : \{\}\) \}\)/.test(api), 'H API: zitate nur bei Bedarf im Body');
 // F2: Koordinator-Fenster (Dock) und Agenten-/Spezialisten-Fenster (Channel-Weiche) laufen ueber PlattformAgentChat -> EinheitlicherAgentChat.

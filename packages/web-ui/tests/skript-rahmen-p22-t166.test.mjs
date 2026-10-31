@@ -107,7 +107,7 @@ check(/skript \? <SkriptRahmen/.test(src('components/ArtefaktLiveBlock.tsx')), '
 const surface = src('kios/AgentRenderingSurface.tsx');
 check(/sanitizeAgentHtml\(html\)/.test(surface) && /Skript entfernt · läuft nur in den Top-Artefakten/.test(surface) && /leseArtefaktSkripteAktiv/.test(surface),
   'Chatfenster: weiter bereinigt, Hinweis nur mit Schalter (F9)');
-for (const p of ['components/KnowledgeView.tsx', 'components/EinheitlicherAgentChat.tsx', 'components/SynapseWorkspaceMock.tsx']) {
+for (const p of ['components/KnowledgeView.tsx', 'components/EinheitlicherAgentChat.tsx', 'views/hauptagent/MainAgentView.tsx', 'components/gemeinsam/NativeHtmlMessage.tsx', 'components/gemeinsam/NativeHtmlBlock.tsx']) {
   if (/SkriptRahmen|skript=\{/.test(src(p))) check(false, 'kein Skript-Rahmen in ' + p);
 }
 check(true, 'Persoenliche Artefakte, Koordinator-Fenster, Main-Chat ohne Skript-Rahmen (F2)');
