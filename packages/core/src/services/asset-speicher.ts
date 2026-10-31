@@ -11,6 +11,7 @@ import type { FileHandle } from 'node:fs/promises';
 import type { ReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { getAssetKonfiguration } from '../config/asset-konfig.js';
 import type { AssetKonfiguration } from '../config/asset-konfig.js';
@@ -39,6 +40,23 @@ export interface AssetOperation extends AssetStaging {
   basis_sha256: string | null;
   status: 'uploading' | 'staged' | 'prepared' | 'published' | 'committed' | 'rolled_back' | 'failed';
   created_at: string;
+  /** P22-T206: Besitzer der Publikationssperre, VOR dem Lock-Erwerb crashfest im Journal (Prozess, Lease, fachlicher Auftrag). */
+  besitzer?: AssetPublishBesitzer;
+  /** P22-T206: Nachweis einer staged-Recovery (Zeit, Grund). */
+  recovery?: { am: string; grund: string };
+}
+/** P22-T206: Prozess-/Lease-Besitz einer Veroeffentlichung; auftrag = fachliche Zuordnung (z. B. Upload-Sitzung). */
+export interface AssetPublishBesitzer {
+  prozess: string; pid: number; host: string; seit: string; lease_bis: string;
+  auftrag?: { art: string; id: string };
+}
+/** P22-T206: eindeutige Kennung dieses Prozesses (neu je Start), Grundlage des Besitzernachweises. */
+export const ASSET_SPEICHER_PROZESS = randomUUID();
+/** P22-T206: Zustand der Projekt-Publikationssperre (publishSperre). */
+export interface AssetPublishSperreStand {
+  zustand: 'frei' | 'aktiv' | 'lease_laeuft' | 'verwaist_unbewiesen' | 'pg_unbestaetigt' | 'pg_aktiv' | 'loesbar' | 'geloest' | 'andere_recovery' | 'unklar';
+  owner?: string; seit?: string | null; journal_status?: string; logischer_pfad?: string;
+  besitzer?: AssetPublishBesitzer | null; grund?: string;
 }
 export interface AssetPfadOperation extends AssetOperation {
   mutation_art:'verschieben'|'loeschen';ziel_adresse:AssetAdresse|null;ziel_storage_key:string|null;entfernter_storage_key:string;
@@ -50,6 +68,8 @@ export interface AssetPublishOptionen {
   prepare: (op: Readonly<AssetOperation>) => Promise<void>;
   /** Kurzer PG-Commit: Revision erst jetzt ready, Bytes sind geprüft erreichbar. */
   commit: (op: Readonly<AssetOperation>) => Promise<void>;
+  /** P22-T206: fachlicher Auftrag (z. B. {art:'upload', id:<Sitzung>}) fuer den Verwaisungsnachweis der Sperre. */
+  besitzer?: { art: string; id: string };
 }
 export interface AssetRecoveryOptionen {
   /** Muss Auftrags-/Leasezustand prüfen; aktive oder unbekannte Arbeit bleibt unberührt. */
@@ -151,9 +171,11 @@ function reverseLayoutKey(a: AssetAdresse): string | undefined {
   return a.ziel_ref+'/'+art+'/'+identitaet(gruppe ?? '')+'/'+a.logischer_pfad;
 }
 
+/** P22-T206: laufende Operationen PROZESSWEIT (jeder Kern erzeugt eine eigene AssetSpeicher-Instanz; die Recovery muss sie alle sehen). */
+const AKTIVE_OPERATIONEN=new Set<string>();
 export class AssetSpeicher {
   private readonly cfg: AssetKonfiguration;
-  private readonly aktive=new Set<string>();
+  private readonly aktive=AKTIVE_OPERATIONEN;
   private readonly write: (h: FileHandle,b: Uint8Array)=>Promise<void>;
   private readonly layout?: AssetSpeicherLayout;
   constructor(o: {
@@ -318,7 +340,10 @@ export class AssetSpeicher {
     try {
       await this.mitEltern(k,key,true,async p=>{
         const h=await fs.open(p.pfad,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o600);
-        try { await h.writeFile(id); await h.sync(); } finally { await h.close(); }
+        // P22-T206: Teilfehler nach dem exklusiven Anlegen (write/fsync) darf keine leere oder halbe Sperre hinterlassen.
+        let geschrieben=false;
+        try { await h.writeFile(id); await h.sync(); geschrieben=true; }
+        finally { await h.close(); if(!geschrieben) await fs.unlink(p.pfad).catch(()=>undefined); }
         await p.handle.sync();
       });
     } catch(e) { if(istCode(e,'EEXIST')) return fail('konflikt','Eine andere Veröffentlichung hält die Bereichssperre.'); throw e; }
@@ -466,6 +491,12 @@ export class AssetSpeicher {
     }
     if(o.basisSha256!==null && !/^[0-9a-f]{64}$/.test(o.basisSha256)) return fail('hash_falsch','Ungültiger Basishash.');
     if(typeof o.prepare!=='function' || typeof o.commit!=='function') throw new TypeError('PG-Prepare und PG-Commit sind erforderlich.');
+    // P22-T206: Besitz crashfest VOR dem Lock-Erwerb ins Journal (Prozess, Lease, Auftrag): bricht der Prozess zwischen Sperre
+    // und Prepare ab, kann publishSperre die Verwaisung nachweisen, statt die Sperre fuer immer zu halten.
+    const jetzt=Date.now();
+    op.besitzer={prozess:ASSET_SPEICHER_PROZESS,pid:process.pid,host:os.hostname(),seit:new Date(jetzt).toISOString(),
+      lease_bis:new Date(jetzt+2*this.cfg.speicher.timeoutMs).toISOString(),...(o.besitzer?{auftrag:{art:String(o.besitzer.art),id:String(o.besitzer.id)}}:{})};
+    await this.journal(k,op);
     const release=await this.lock(k,'publish',op.id);
     let vorbereitet=false;
     this.aktive.add(op.id);
@@ -929,6 +960,61 @@ export class AssetSpeicher {
     const k=await this.kontext(adresse),key=normalisiereSpeicherPfad(storageKey);
     if(!key.startsWith(this.intern(k,'revisionen',''))) return fail('pfad_ungueltig','Version gehört zu anderer Identität.');
     return this.range(k,key,offset,length);
+  }
+  /**
+   * P22-T206: Staging einer gescheiterten Finalisierung (vor Prepare) verwerfen: Journal 'failed', Stagingbytes weg.
+   * Nur 'staged' ohne laufende Operation in diesem Prozess; alles andere bleibt unberuehrt (kein Fehler).
+   */
+  async verwerfeStaging(stage: AssetStaging,grund='finalisierung_vor_prepare_gescheitert'): Promise<boolean> {
+    const k=await this.kontext(stage.adresse);
+    let op: AssetOperation;
+    try { op=await this.leseJournal(k,stage.id); } catch(e) { if(istCode(e,'ENOENT')) return false; throw e; }
+    if(op.status!=='staged' || this.aktive.has(op.id) || op.sha256!==stage.sha256 || op.groesse!==stage.groesse) return false;
+    try { const h=await this.open(k,this.intern(k,'locks','publish')); try { if((await h.readFile('utf8')).trim()===op.id) return false; } finally { await h.close(); } }
+    catch(e) { if(!istCode(e,'ENOENT')) throw e; }
+    op.status='failed'; op.recovery={am:new Date().toISOString(),grund};
+    await this.journal(k,op); await this.entferne(k,op.staging_key);
+    return true;
+  }
+  /**
+   * P22-T206: Zustand der Projekt-Publikationssperre und Recovery einer im Status 'staged' verwaisten Sperre.
+   * Entsperrt NIE bloss nach Alter. Verlangt: (a) Journal 'staged' derselben Identitaet, (b) keine laufende Operation in diesem
+   * Prozess, (c) Besitzernachweis aus dem Journal (anderer Prozess + abgelaufene Lease, oder dieser Prozess ohne laufende
+   * Operation); Alt-Sperren ohne Besitzerangabe nur mit ohneBesitzerNachweis (USER-FREIGABE), (d) PG-Bestaetigung istVerwaist.
+   * vorschau:true entscheidet nur. Bei Erfolg: Journal 'failed' (+recovery), Staging entfernt, Sperre entfernt.
+   */
+  async publishSperre(adresse: AssetAdresse,o: {vorschau?: boolean;ohneBesitzerNachweis?: boolean;
+    istVerwaist?: (op: Readonly<AssetOperation>)=>Promise<boolean>;jetzt?: number} = {}): Promise<AssetPublishSperreStand> {
+    if(adresse.bereich!=='projekt') return fail('bereich_ungueltig','Sperren-Recovery nur fuer Projekt-Assets.');
+    const k=await this.kontext(adresse),lockKey=this.intern(k,'locks','publish');
+    let owner: string, seit: string|null=null;
+    try {
+      const h=await this.open(k,lockKey);
+      try { owner=(await h.readFile('utf8')).trim(); seit=(await h.stat()).mtime.toISOString(); } finally { await h.close(); }
+    } catch(e) { if(istCode(e,'ENOENT')) return {zustand:'frei'}; throw e; }
+    let op: AssetOperation;
+    try { op=await this.leseJournal(k,owner); }
+    catch(e) { return {owner,seit,zustand:'unklar',grund:'Journal der Sperre fehlt oder ist ungueltig: '+(e as Error).message}; }
+    const info={owner,seit,journal_status:op.status,logischer_pfad:op.adresse.logischer_pfad,besitzer:op.besitzer??null};
+    if('mutation_art' in op) return {...info,zustand:'unklar',grund:'Pfadoperation (A7) hat eine eigene Recovery.'};
+    if(op.status!=='staged') return {...info,zustand:'andere_recovery',grund:'Journalstatus '+op.status+' gehoert zur bestehenden Recovery.'};
+    if(this.aktive.has(op.id)) return {...info,zustand:'aktiv'};
+    const jetzt=o.jetzt??Date.now(),b=op.besitzer;
+    if(b) {
+      if(b.prozess!==ASSET_SPEICHER_PROZESS && !(Date.parse(b.lease_bis)<jetzt)) return {...info,zustand:'lease_laeuft'};
+    } else if(!o.ohneBesitzerNachweis) {
+      return {...info,zustand:'verwaist_unbewiesen',grund:'Alt-Sperre ohne Besitzerangabe: Loesen nur mit ausdruecklicher Freigabe.'};
+    }
+    if(!o.istVerwaist) return {...info,zustand:'pg_unbestaetigt'};
+    if(!(await o.istVerwaist(Object.freeze({...op})))) return {...info,zustand:'pg_aktiv'};
+    if(o.vorschau) return {...info,zustand:'loesbar'};
+    // Unmittelbar vor dem Entfernen erneut: Sperre gehoert weiter dieser Operation, nichts laeuft.
+    const h=await this.open(k,lockKey);
+    try { if((await h.readFile('utf8')).trim()!==op.id) return {...info,zustand:'unklar',grund:'Sperre wechselte den Besitzer.'}; } finally { await h.close(); }
+    if(this.aktive.has(op.id)) return {...info,zustand:'aktiv'};
+    op.status='failed'; op.recovery={am:new Date(jetzt).toISOString(),grund:b?'besitzer_verwaist':'freigabe_ohne_besitzernachweis'};
+    await this.journal(k,op); await this.entferne(k,op.staging_key); await this.entferne(k,lockKey);
+    return {...info,journal_status:'failed',zustand:'geloest'};
   }
   /**
    * Kein Alter/Mtime als PG-Wahrheit. Caller bestätigt verwaist + committed/rollback.

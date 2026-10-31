@@ -1,6 +1,8 @@
 /** P13-T24/A6: additive Assetfamilie, gleicher API-Zugang, Binärstream statt JSON-ReadAll. */
 import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
-import {AssetKonfliktKern,AssetUploadKern,AssetManifestKern,assetProjektNutztShare,setzeAssetInspektionsModus,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled,ladeAssetProjektoptionen,getAssetKonfiguration,loeseAssetProjektoptionen} from '@synapse/core';
+import {AssetKonfliktKern,AssetUploadKern,AssetManifestKern,assetProjektNutztShare,setzeAssetInspektionsModus,normalisiereSpeicherPfad,assetArt,AssetUploadFehler,AssetSpeicherFehler,API_CONTRACT_HEADER,apiCapabilitiesForClient,isProjectEnabled,ladeAssetProjektoptionen,leseAssetTransferGenerisch,meldeAssetQuellenFehlen,getAssetKonfiguration,loeseAssetProjektoptionen,
+  meldeAssetPcStand,assetPcZustellung,pcZustellungFuerAsset,leseAssetPcZustellungSchalter,pruefePublishSperre,leseAssetPublishRecoverySchalter,
+  inventarProjektIntern,raeumeReverseAltbestandAuf,leseAssetInternAufraeumenSchalter} from '@synapse/core';
 import type {AssetMutationEingang,AssetUploadSitzung,AssetUploadEingang,AssetUploadKontext,AssetDownloadRange} from '@synapse/core';
 import {validateToken} from '../services/auth.js';
 import type {AuthTokenRow} from '../services/auth.js';
@@ -11,6 +13,14 @@ export interface AssetRouteAbhaengigkeiten {
   konflikte?:AssetKonfliktKern;
   validateToken?:typeof validateToken;
   projektErlaubt?:(projekt:string,principal:AuthTokenRow)=>Promise<boolean>;
+  /** P22-T237: Kern fuer User-Uploads in den Share (quelle share); Standard new AssetUploadKern({quelle:'share'}). */
+  shareUpload?:AssetUploadKern;
+  /** P22-T237: Schalter asset_pc_zustellung und Zustellstand je Asset (Standard aus core; injizierbar fuer Tests). */
+  pcZustellungSchalter?:(projekt:string)=>Promise<{aktiv:boolean}>;
+  pcZustellung?:(projekt:string,asset_id:string)=>Promise<{status:string;hinweis:string}|null>;
+  /** P22-T206: Pruefen/Loesen der Publikationssperre und deren Schalter (Standard aus core; injizierbar fuer Tests). */
+  publishSperre?:typeof pruefePublishSperre;
+  publishRecoverySchalter?:(projekt:string)=>Promise<{aktiv:boolean}>;
 }
 export function assetSitzungAntwort(s:AssetUploadSitzung){
   return {id:s.id,bereich:s.bereich,ziel_ref:s.ziel_ref,logischer_pfad:s.logischer_pfad,groesse:s.groesse,sha256:s.sha256,
@@ -55,6 +65,20 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
   const manifest=()=>manifestKern??=new AssetManifestKern();
   const kern=()=>upload??=(new AssetUploadKern());
   const kontext=(request:FastifyRequest,projekt:string,schreiben=true)=>assetRequestKontext(request,projekt,schreiben,o);
+  // P22-T237: Upload durch den User (Web-UI/Tool, host user:<hash>) direkt in den Projekt-Share, nur mit Schalter asset_pc_zustellung.
+  // Quelle 'share' wie beim Share-Scanner (kein PC beteiligt); alle uebrigen Schreibwege bleiben Daemon-Pflicht. AUS = 403 wie bisher.
+  let shareKern=o.shareUpload;
+  const uploadKontext=async(request:FastifyRequest,projekt:string):Promise<AssetUploadKontext>=>{
+    try{return await kontext(request,projekt);}
+    catch(e){
+      if(!(e instanceof AssetUploadFehler)||e.code!=='token_nicht_erlaubt')throw e;
+      const c=await kontext(request,projekt,false);
+      if(!c.host_id.startsWith('user:')||!(await (o.pcZustellungSchalter??leseAssetPcZustellungSchalter)(projekt)).aktiv)throw e;
+      return c;
+    }
+  };
+  const userUpload=(c:AssetUploadKontext)=>c.host_id.startsWith('user:');
+  const uploadKern=(c:AssetUploadKontext)=>userUpload(c)?(shareKern??=new AssetUploadKern({quelle:'share'})):kern();
   async function run(reply:FastifyReply,fn:()=>Promise<unknown>){
     try{return await fn();}catch(e){
       if(e instanceof AssetUploadFehler)return reply.code(e.httpStatus).send({success:false,error:{code:e.code,message:e.message,...(e.details?{details:e.details}:{})}});
@@ -80,9 +104,20 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
     fastify.get<{Params:{projekt:string}}>(base+'/sync-optionen',async(req,reply)=>run(reply,async()=>{
       const c=await kontext(req,req.params.projekt,false),cfg=getAssetKonfiguration();
       const entry=await ladeAssetProjektoptionen(req.params.projekt),effective=entry?.wirksam??loeseAssetProjektoptionen(cfg,{});
+      const generisch=await leseAssetTransferGenerisch(req.params.projekt);
       return {success:true,contractVersion:1,host:c.host_id,richtung:effective.richtung,policyRevision:entry?.policyRevision??0,
         chunkBytes:cfg.speicher.chunkBytes,parallelTransfers:cfg.speicher.parallelTransfers,timeoutMs:cfg.speicher.timeoutMs,retryMs:cfg.sync.retryIntervallMs,
-        scanMs:cfg.sync.scanIntervallMs,maxDateiBytes:effective.maxDateiBytes,erlaubteTypen:effective.erlaubteTypen};
+        scanMs:cfg.sync.scanIntervallMs,maxDateiBytes:effective.maxDateiBytes,
+        // P22-T238: ohne Einschraenkung KEINE Liste (Daemon nimmt dann jedes erkannte Format); generischeFormate = Schalter
+        // asset_transfer_generisch (Formate ohne Inspector), generisch_debug zeigt Quelle/Ablauf/Lesefehler.
+        ...(effective.alleTypen?{}:{erlaubteTypen:effective.erlaubteTypen}),alleTypen:effective.alleTypen,
+        generischeFormate:generisch.aktiv,generisch_debug:{quelle:generisch.quelle,bis:generisch.bis,letzter_fehler:generisch.letzter_fehler}};
+    }));
+    // P22-T236: Daemon meldet lokal entfernte Assets ohne Share-Bytes (legacy_local), auch bei Asset-Sync AUS. Nur mit
+    // Produkt-Schalter asset_index_wirklichkeit (sonst success:false funktion_aus); Share-Assets loescht der Transferweg.
+    fastify.post<{Params:{projekt:string};Body:{pfade?:unknown}}>(base+'/quelle-fehlt',async(req,reply)=>run(reply,async()=>{
+      await kontext(req,req.params.projekt);
+      return meldeAssetQuellenFehlen(req.params.projekt,req.body?.pfade);
     }));
     // A8 setzt den Share-Writer vor dem ersten Upload, damit kein lokaler Inspector daneben schreibt.
     fastify.get<{Params:{projekt:string}}>(base+'/inspektionsmodus',async(req,reply)=>run(reply,async()=>{
@@ -111,26 +146,82 @@ export function createAssetsRoutes(o:AssetRouteAbhaengigkeiten={}):(f:FastifyIns
       }));
     }
 
-    fastify.post<{Params:{projekt:string};Body:AssetUploadEingang}>(base+'/uploads',async(req,reply)=>run(reply,async()=>{
+    // P22-T237: bestaetigter Share->PC-Stand nach jedem Daemon-Abgleich (nur Daemon; Schalter AUS = angenommen, nicht gespeichert).
+    fastify.post<{Params:{projekt:string};Body:Record<string,unknown>}>(base+'/pc-stand',async(req,reply)=>run(reply,async()=>{
       const c=await kontext(req,req.params.projekt);
+      const body=req.body&&typeof req.body==='object'&&!Array.isArray(req.body)?req.body:{};
+      return {success:true,...await meldeAssetPcStand(c,body)};
+    }));
+    // P22-T237: Status-/Debug-Route der Zustellung Share -> Projektordner (Projekt, mit ?asset_id= je Asset).
+    fastify.get<{Params:{projekt:string};Querystring:{asset_id?:string;limit?:string}}>(base+'/pc-zustellung',async(req,reply)=>run(reply,async()=>{
+      await kontext(req,req.params.projekt,false);
+      const z=await assetPcZustellung(req.params.projekt,{asset_id:req.query.asset_id,limit:req.query.limit===undefined?undefined:Number(req.query.limit)});
+      // P22-T206: Zustand der Publikationssperre mit anzeigen (eine haengende Sperre blockiert jede Finalisierung).
+      const sperre=z.aktiv?await (o.publishSperre??pruefePublishSperre)(req.params.projekt).catch(e=>({zustand:'unklar',grund:(e as Error).message})):undefined;
+      return {success:true,...z,...(sperre?{publish_sperre:sperre}:{})};
+    }));
+    // P22-T206: Publikationssperre pruefen (GET, nur lesen) bzw. loesen (POST). Loesen nur mit User-Token, Schalter
+    // asset_publish_recovery EIN, bestaetigt:true und grund (>= 10 Zeichen); eine Alt-Sperre ohne Besitzerangabe zusaetzlich nur
+    // mit ohne_besitzer_nachweis:true (USER-FREIGABE). Die PG-Pruefung (keine aktive Finalisierung) gilt immer.
+    // P22-T241: Inventar des Projekt-.intern (Ordner, Staging/Journal/Revisionen nach Herkunft, fremde Ordner). Nur lesen.
+    fastify.get<{Params:{projekt:string};Querystring:{journal_limit?:string}}>(base+'/intern-inventar',async(req,reply)=>run(reply,async()=>{
+      await kontext(req,req.params.projekt,false);
+      const limit=req.query.journal_limit===undefined?undefined:Number(req.query.journal_limit);
+      if(limit!==undefined&&(!Number.isSafeInteger(limit)||limit<0||limit>1_000_000))throw new AssetUploadFehler('limit_ungueltig',400,'journal_limit 0..1000000.');
+      return {success:true,inventar:await inventarProjektIntern(req.params.projekt,{journalLimit:limit})};
+    }));
+    // P22-T241: Reverse-Altbestand im Projekt-.intern (nur Herkunft reverse_uebernehmen, abgeschlossene Sitzungen). Vorschau immer;
+    // Ausfuehren nur User-Token + Schalter asset_intern_aufraeumen + bestaetigt:true + grund (USER-FREIGABE).
+    fastify.post<{Params:{projekt:string};Body:{ausfuehren?:unknown;bestaetigt?:unknown;grund?:unknown}}>(base+'/reverse-altbestand',async(req,reply)=>run(reply,async()=>{
+      const c=await kontext(req,req.params.projekt,false),b=req.body??{};
+      if(!c.host_id.startsWith('user:'))throw new AssetUploadFehler('token_nicht_erlaubt',403,'Nur der User darf den Reverse-Altbestand bearbeiten.');
+      const ausfuehren=b.ausfuehren===true;
+      if(ausfuehren){
+        if(b.bestaetigt!==true||typeof b.grund!=='string'||b.grund.trim().length<10)throw new AssetUploadFehler('bestaetigung_fehlt',400,'bestaetigt:true und grund (mind. 10 Zeichen) erforderlich.');
+        if(!(await leseAssetInternAufraeumenSchalter(req.params.projekt)).aktiv)throw new AssetUploadFehler('schalter_aus',409,'Produkt-Schalter asset_intern_aufraeumen ist fuer dieses Projekt AUS.');
+      }
+      const bericht=await raeumeReverseAltbestandAuf(req.params.projekt,{ausfuehren,bestaetigt:b.bestaetigt===true});
+      if(bericht.ausgefuehrt)console.warn('[asset-intern] '+req.params.projekt+': Reverse-Altbestand entfernt ('+bericht.staging.dateien+' Staging, '+bericht.journal.dateien+' Journal): '+String(b.grund).slice(0,200));
+      return {success:true,bericht};
+    }));
+    fastify.get<{Params:{projekt:string}}>(base+'/publish-sperre',async(req,reply)=>run(reply,async()=>{
+      await kontext(req,req.params.projekt,false);
+      return {success:true,sperre:await (o.publishSperre??pruefePublishSperre)(req.params.projekt)};
+    }));
+    fastify.post<{Params:{projekt:string};Body:{bestaetigt?:unknown;grund?:unknown;ohne_besitzer_nachweis?:unknown}}>(base+'/publish-sperre',async(req,reply)=>run(reply,async()=>{
+      const c=await kontext(req,req.params.projekt,false),b=req.body??{};
+      if(!c.host_id.startsWith('user:'))throw new AssetUploadFehler('token_nicht_erlaubt',403,'Nur der User darf die Publikationssperre loesen.');
+      if(b.bestaetigt!==true||typeof b.grund!=='string'||b.grund.trim().length<10)throw new AssetUploadFehler('bestaetigung_fehlt',400,'bestaetigt:true und grund (mind. 10 Zeichen) erforderlich.');
+      if(!(await (o.publishRecoverySchalter??leseAssetPublishRecoverySchalter)(req.params.projekt)).aktiv)
+        throw new AssetUploadFehler('schalter_aus',409,'Produkt-Schalter asset_publish_recovery ist fuer dieses Projekt AUS.');
+      const sperre=await (o.publishSperre??pruefePublishSperre)(req.params.projekt,{ausfuehren:true,ohneBesitzerNachweis:b.ohne_besitzer_nachweis===true});
+      console.warn('[asset-sperre] '+req.params.projekt+': manuelles Loesen ('+c.host_id.slice(0,12)+'...): '+sperre.zustand+' - '+String(b.grund).slice(0,200));
+      return {success:true,sperre,grund:String(b.grund)};
+    }));
+
+    fastify.post<{Params:{projekt:string};Body:AssetUploadEingang}>(base+'/uploads',async(req,reply)=>run(reply,async()=>{
+      const c=await uploadKontext(req,req.params.projekt);
       if(!req.body||typeof req.body!=='object'||Array.isArray(req.body))throw new AssetUploadFehler('eingang_ungueltig',400,'Uploadmetadaten fehlen.');
-      return {success:true,upload:assetSitzungAntwort(await kern().erstellen(c,req.body))};
+      return {success:true,upload:assetSitzungAntwort(await uploadKern(c).erstellen(c,req.body))};
     }));
     fastify.get<{Params:{projekt:string;id:string}}>(base+'/uploads/:id',async(req,reply)=>run(reply,async()=>{
-      const c=await kontext(req,req.params.projekt);return {success:true,upload:assetSitzungAntwort(await kern().status(c,req.params.id))};
+      const c=await uploadKontext(req,req.params.projekt);return {success:true,upload:assetSitzungAntwort(await uploadKern(c).status(c,req.params.id))};
     }));
     fastify.put<{Params:{projekt:string;id:string};Querystring:{offset?:string}}>(base+'/uploads/:id/chunk',async(req,reply)=>run(reply,async()=>{
-      const c=await kontext(req,req.params.projekt),raw=req.headers['content-length'];
+      const c=await uploadKontext(req,req.params.projekt),raw=req.headers['content-length'];
       if(req.headers['content-type']?.split(';')[0]!=='application/octet-stream'||typeof raw!=='string'||!/^\d+$/.test(raw))
         throw new AssetUploadFehler('stream_erforderlich',400,'Binärstream mit Content-Length erforderlich.');
       const offset=Number(req.query.offset??req.headers['x-synapse-upload-offset']),groesse=Number(raw);
       if(!Number.isSafeInteger(offset)||offset<0)throw new AssetUploadFehler('offset_konflikt',409,'Bestätigter Offset erforderlich.');
       const source=req.body as AsyncIterable<Uint8Array>;
       if(!source||typeof source[Symbol.asyncIterator]!=='function')throw new AssetUploadFehler('stream_erforderlich',400,'Binärstream fehlt.');
-      return {success:true,upload:assetSitzungAntwort(await kern().teil(c,req.params.id,offset,groesse,source))};
+      return {success:true,upload:assetSitzungAntwort(await uploadKern(c).teil(c,req.params.id,offset,groesse,source))};
     }));
     fastify.post<{Params:{projekt:string;id:string}}>(base+'/uploads/:id/finalisieren',async(req,reply)=>run(reply,async()=>{
-      const c=await kontext(req,req.params.projekt);return {success:true,upload:assetSitzungAntwort(await kern().finalisieren(c,req.params.id))};
+      const c=await uploadKontext(req,req.params.projekt),s=await uploadKern(c).finalisieren(c,req.params.id);
+      // P22-T237: nur beim User-Upload den Zustellstand mitgeben (Daemon-Uploads kommen vom PC selbst).
+      const pc=userUpload(c)&&s.ergebnis?.asset_id?await (o.pcZustellung??pcZustellungFuerAsset)(req.params.projekt,s.ergebnis.asset_id):null;
+      return {success:true,upload:assetSitzungAntwort(s),...(pc?{pc_zustellung:pc}:{})};
     }));
     fastify.get<{Params:{projekt:string};Querystring:{asset_id?:string;pfad?:string;revision:string}}>(base+'/bytes',async(req,reply)=>run(reply,async()=>{
       const c=await kontext(req,req.params.projekt,false),result=await kern().bytes(c,req.query,assetRange(typeof req.headers.range==='string'?req.headers.range:undefined));

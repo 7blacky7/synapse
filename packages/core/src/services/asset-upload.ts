@@ -2,7 +2,8 @@
 import {randomUUID,createHash} from 'node:crypto';
 import * as path from 'node:path';
 import {getPool} from '../db/client.js';
-import {getAssetKonfiguration,loeseAssetProjektoptionen} from '../config/asset-konfig.js';
+import {getAssetKonfiguration,loeseAssetProjektoptionen,assetFormatFreigegeben,gueltigerAssetFormatName,generischesTransferFormat} from '../config/asset-konfig.js';
+import {leseAssetTransferGenerisch} from './asset-transfer-generisch.js';
 import {standardRegistry} from '../asset-intel/registry.js';
 import type {AssetKonfiguration} from '../config/asset-konfig.js';
 import {AssetSpeicher,AssetSpeicherFehler,normalisiereSpeicherPfad} from './asset-speicher.js';
@@ -63,9 +64,12 @@ export class AssetUploadKern {
   private readonly finalisierer=new Map<string,AssetUploadFinalisierer>();
   private readonly quelle:'pc'|'share'|'reverse';
   private readonly nachProjektPublikation?: (db:AssetUploadDb,s:AssetUploadSitzung,ergebnis:AssetUploadErgebnis)=>Promise<void>;
+  /** P22-T238: Schalter asset_transfer_generisch je Projekt (Tests ersetzen ihn ohne PG-Schaltertabellen). */
+  private readonly transferGenerisch:(project:string)=>Promise<boolean>;
   /** quelle ist ausschließlich ein serverinterner Konstruktorparameter, kein HTTP-Eingang. */
-  constructor(o:{db?:AssetUploadDb;speicher?:AssetSpeicher;konfiguration?:AssetKonfiguration;quelle?:'pc'|'share'|'reverse';nachProjektPublikation?:(db:AssetUploadDb,s:AssetUploadSitzung,ergebnis:AssetUploadErgebnis)=>Promise<void>}={}){
+  constructor(o:{db?:AssetUploadDb;speicher?:AssetSpeicher;konfiguration?:AssetKonfiguration;quelle?:'pc'|'share'|'reverse';nachProjektPublikation?:(db:AssetUploadDb,s:AssetUploadSitzung,ergebnis:AssetUploadErgebnis)=>Promise<void>;transferGenerisch?:(project:string)=>Promise<boolean>}={}){
     this.quelle=o.quelle??'pc';
+    this.transferGenerisch=o.transferGenerisch??(async project=>(await leseAssetTransferGenerisch(project)).aktiv);
     this.nachProjektPublikation=o.nachProjektPublikation;
     this.db=o.db??getPool() as unknown as AssetUploadDb;
     this.cfg=o.konfiguration??getAssetKonfiguration();
@@ -137,8 +141,21 @@ export class AssetUploadKern {
     if(!eingang||typeof eingang!=='object'||Array.isArray(eingang)||typeof eingang.logischer_pfad!=='string'||typeof eingang.sha256!=='string'||typeof eingang.basis_revision!=='string'||eingang.format!==undefined&&typeof eingang.format!=='string'||eingang.mime_type!==undefined&&typeof eingang.mime_type!=='string')return fail('eingang_ungueltig',400,'Uploadmetadaten haben ungültige Typen.');
     const a=adresse(ctx,eingang);
     const limit=await this.grenzen(ctx),max=limit.maxDateiBytes;
-    const format=eingang.format?.toLowerCase()??standardRegistry.detect(a.logischer_pfad,new Uint8Array()).format;
-    if(!(this.finalisierer.get(ctx.bereich)?.formatErlaubt?.(eingang)??Boolean(format&&limit.erlaubteTypen.includes(format))))return fail('format_verboten',415,'Transferformat nicht in Betreiber-/Projektfreigabe.');
+    // P22-T238: Formate ohne Inspector nur mit Schalter asset_transfer_generisch (projekt > global, Standard AUS = Altverhalten).
+    const bereichsPolicy=this.finalisierer.get(ctx.bereich)?.formatErlaubt;
+    const generisch=ctx.bereich==='projekt'&&!bereichsPolicy?await this.transferGenerisch(ctx.ziel_ref):false;
+    const format=eingang.format?.toLowerCase()??standardRegistry.detect(a.logischer_pfad,new Uint8Array()).format??(generisch?generischesTransferFormat(a.logischer_pfad):null);
+    const bekannt=Boolean(format&&standardRegistry.formats().includes(format));
+    const zulaessig=Boolean(format&&(bekannt||generisch&&gueltigerAssetFormatName(format))&&assetFormatFreigegeben(limit,format));
+    if(!(bereichsPolicy?.(eingang)??zulaessig))return fail('format_verboten',415,'Transferformat '+(format??'unbekannt')+' nicht in Betreiber-/Projektfreigabe'
+      +(format&&!bekannt&&!generisch?' (kein Inspector; generischer Transfer aus: Produkt-Schalter asset_transfer_generisch)':'')+'.');
+    // P22-T236 / thought 5eae0647: Textformate (SVG, .txt, .lock, Code mit Parser) sind Code und nie ein Projekt-Asset;
+    // nur mit Schalter asset_index_wirklichkeit (AUS = Altverhalten).
+    if(ctx.bereich==='projekt'&&!bereichsPolicy){
+      const alt=await import('./asset-altbestand.js'),wirk=await import('./asset-transfer-generisch.js');
+      if(await alt.istTextFormatPfad(a.logischer_pfad)&&(await wirk.leseAssetIndexWirklichkeit(ctx.ziel_ref)).aktiv)
+        return fail('kein_asset',415,'Textdatei '+a.logischer_pfad+' gehoert in den Code-Index, nicht in den Asset-Share (P22-T236).');
+    }
     if(!Number.isSafeInteger(eingang.groesse)||eingang.groesse<0||eingang.groesse>max)return fail('quote',413,'Dateigröße überschreitet Betreibergrenze.');
     if(!/^[0-9a-f]{64}$/.test(eingang.sha256)||!REV.test(eingang.basis_revision))return fail('eingang_ungueltig',400,'Vollhash/Basisrevision fehlt.');
     if(typeof eingang.idempotency_key!=='string'||!eingang.idempotency_key||eingang.idempotency_key.length>200)return fail('eingang_ungueltig',400,'Idempotenzschlüssel fehlt.');
@@ -202,9 +219,9 @@ export class AssetUploadKern {
     const f=this.finalisierer.get(ctx.bereich)!;
     const a=adresse(ctx,s.auftrag),storage=this.speicher;
     async function* stream(){for(const p of parts){const part:AssetStaging={id:String(p.staging_id),adresse:a,sha256:String(p.sha256),groesse:Number(p.groesse)};for await(const bytes of await storage.readStagingStream(part))yield bytes;}}
-    let prepared=false;
+    let prepared=false;let full:AssetStaging|undefined;
     try{
-      const full=direkt??await this.transfer(ctx,()=>storage.stage(a,this.begrenzt(stream()),{groesse:s.groesse,sha256:s.sha256}));
+      full=direkt??await this.transfer(ctx,()=>storage.stage(a,this.begrenzt(stream()),{groesse:s.groesse,sha256:s.sha256}));
       if(ctx.bereich==='projekt'&&this.quelle==='pc'){
         const {AssetKonfliktKern}=await import('./asset-konflikte.js');
         const saved=await new AssetKonfliktKern({db:this.db,konfiguration:this.cfg,speicher:storage}).sichereUpload(ctx,s,full,token);
@@ -212,6 +229,8 @@ export class AssetUploadKern {
       }
       const basis=await f.basis(ctx,s);
       await storage.publish(full,{
+        // P22-T206: Sitzung als fachlicher Besitzer der Sperre (Verwaisungsnachweis bei Abbruch vor Prepare).
+        besitzer:{art:'upload',id},
         basisSha256:this.quelle==='share'?s.sha256:basis.sha256,
         prepare:async op=>{
           // FS-Journal existiert bereits: Entscheidungspfad bleibt auch bei anschließendem PG-Rollback auffindbar.
@@ -231,6 +250,9 @@ export class AssetUploadKern {
           await db.query("UPDATE asset_upload_sitzungen SET status='finalisiert',ergebnis=$2::jsonb,finalisiert_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1",[id,JSON.stringify(result)]);
         });},
       });
+      // P22-T241/T206: nach erfolgreicher Finalisierung die Chunk-Stagings dieser Sitzung entfernen. Bisher blieben sie fuer immer
+      // unter <projekt>/.intern/staging (auch Reverse-Inhalt aus reverse uebernehmen). Best effort, nie ein Fehler fuer den Upload.
+      if(!direkt)for(const p of parts)await storage.verwerfeStaging({id:String(p.staging_id),adresse:a,sha256:String(p.sha256),groesse:Number(p.groesse)},'teil_nach_finalisierung').catch(()=>false);
     }catch(e){
       if(!prepared){
         // A11: a concurrent Share writer must not make a verified PC upload terminal.
@@ -240,6 +262,9 @@ export class AssetUploadKern {
            e instanceof AssetSpeicherFehler&&e.code==='konflikt');
         if(retry)await this.db.query("UPDATE asset_upload_sitzungen SET status='laeuft',finalisierer_token=NULL,finalisierer_bis=NULL,lease_bis=clock_timestamp()+$3*interval '1 millisecond',updated_at=clock_timestamp() WHERE id=$1 AND finalisierer_token=$2 AND status='vollstaendig'",[id,token,this.cfg.speicher.timeoutMs]);
         else await this.db.query("UPDATE asset_upload_sitzungen SET status='fehler',updated_at=clock_timestamp() WHERE id=$1 AND finalisierer_token=$2 AND status='vollstaendig'",[id,token]);
+        // P22-T206: das zusammengesetzte Staging dieses Versuchs verwerfen (jeder Retry legt ein neues an; vorher wuchs
+        // .intern/staging + journal je Versuch). Die Teile in asset_upload_teile bleiben fuer den naechsten Versuch.
+        if(full&&!direkt)await storage.verwerfeStaging(full).catch(()=>false);
       }
       if(e instanceof AssetSpeicherFehler)throw new AssetUploadFehler(e.code,409,e.message);throw e;
     }
