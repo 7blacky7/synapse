@@ -1,3 +1,5 @@
+export * from './services/api-agent-auswahl.js';
+
 // P22-T172: aktuelle Task je Agent (Schalter agent_aktuelle_task, Einstellwert fenster_stunden in agent_aktuelle_task_einstellungen).
 // P22-T191: gemeinsame Artefakt-Datei-/Katalogvertraege.
 export * from './services/artefakt-katalog.js';
@@ -214,13 +216,37 @@ export {
   loeseAssetProjektoptionen,
   getAssetKonfiguration,
   resetAssetKonfiguration,
+  // P22-T238: Transferformat unabhaengig vom Inspector-Katalog.
+  gueltigerAssetFormatName,
+  generischesTransferFormat,
+  assetFormatFreigegeben,
+  ermittleTransferFormat,
+  GENERISCHES_ASSET_FORMAT,
 } from './config/asset-konfig.js';
 export type {
   AssetSyncRichtung,
   AssetKonfiguration,
   AssetProjektOptionen,
   WirksameAssetProjektoptionen,
+  TransferFormatErgebnis,
 } from './config/asset-konfig.js';
+export { leseAssetTransferGenerisch, leseAssetIndexWirklichkeit, ASSET_TRANSFER_GENERISCH, ASSET_INDEX_WIRKLICHKEIT } from './services/asset-transfer-generisch.js';
+export type { AssetTransferGenerischStand, AssetSchalterStand } from './services/asset-transfer-generisch.js';
+// P22-T236: Projekt-Assets 'Index = Wirklichkeit' (lokal entfernte Assets melden, Altbestand).
+export { meldeAssetQuellenFehlen, pruefeAssetAltbestand, ausgeblendeteAssetPfade } from './services/asset-altbestand.js';
+export { projektAssetSql, projektAssetLeser } from './services/intel-bereich.js';
+// P22-T237: Zustellung Share -> Projektordner (Schalter asset_pc_zustellung, Standard AUS), Schema 170.
+export { ASSET_PC_ZUSTELLUNG, leseAssetPcZustellungSchalter, bewertePcZustellung, meldeAssetPcStand, meldeAssetSyncImHeartbeat, assetPcZustellung, pcZustellungFuerAsset } from './services/asset-pc-zustellung.js';
+export type { AssetPcZustellungSchalter, PcZustellStatus, PcHostStand, PcHeartbeat, PcZustellungBewertung, PcZustellungEingabe, AssetPcZustellungOptionen } from './services/asset-pc-zustellung.js';
+export { ASSET_PC_ZUSTELLUNG_SCHEMA_SQL } from './db/asset-pc-zustellung-schema.js';
+// P22-T206: verwaiste staged-Publikationssperre (Schalter asset_publish_recovery, Standard AUS).
+export { ASSET_PUBLISH_RECOVERY, leseAssetPublishRecoverySchalter, publishOperationVerwaist, pruefePublishSperre, letztePublishSperrenPruefungen, starteAssetSperrenRecovery } from './services/asset-sperren-recovery.js';
+export type { AssetPublishRecoverySchalter, PublishSperrePruefung } from './services/asset-sperren-recovery.js';
+export { ASSET_SPEICHER_PROZESS } from './services/asset-speicher.js';
+export type { AssetPublishSperreStand, AssetPublishBesitzer } from './services/asset-speicher.js';
+// P22-T241: Inventar des Projekt-.intern und Reverse-Altbestand (Schalter asset_intern_aufraeumen, Standard AUS).
+export { ASSET_INTERN_AUFRAEUMEN, herkunftVonHost, inventarProjektIntern, raeumeReverseAltbestandAuf, leseAssetInternAufraeumenSchalter } from './services/asset-intern-inventar.js';
+export type { InternHerkunft, InternInventar, AltbestandBericht } from './services/asset-intern-inventar.js';
 
 // P13-T22/A4: nullable, revisionsgefuehrte Projekt-Assetoptionen.
 export { ladeAssetProjektoptionen, setzeAssetProjektoptionen } from './services/asset-projekt-optionen.js';
@@ -473,6 +499,24 @@ export {
   warteschlangenNamen,
   vergissAlleWarteschlangen,
   seiteAusListe,
+  // P27-T1: Zustandsvertrag (Stau-Hinweise)
+  WARTESCHLANGEN_ORTE,
+  WARTESCHLANGEN_BETRIEBSARTEN,
+  WARTESCHLANGEN_AKTIVIERUNGEN,
+  WARTESCHLANGEN_BEWERTUNGEN,
+  WARTESCHLANGEN_TELEMETRIE_VERSION,
+  WARTESCHLANGEN_TELEMETRIE_MAX,
+  setzeWarteschlangenProzess,
+  warteschlangenProzess,
+  lokaleInstanz,
+  instanzSchluessel,
+  lokaleZustandsQuellen,
+  normalisiereZustand,
+  erhebeZustand,
+  pruefeWarteschlangenTelemetrie,
+  meldeWarteschlangenTelemetrie,
+  warteschlangenTelemetrie,
+  baueWarteschlangenTelemetrie,
 } from './services/warteschlangen-register.js';
 export type {
   WarteschlangenDefinition,
@@ -481,6 +525,17 @@ export type {
   WarteschlangenListe,
   VerschiebeAuftrag,
   VerschiebeZiel,
+  WarteschlangenOrt,
+  WarteschlangenBetriebsart,
+  WarteschlangenAktivierung,
+  WarteschlangenBewertung,
+  WarteschlangenInstanz,
+  WarteschlangenZustand,
+  WarteschlangenBeobachtung,
+  WarteschlangenTelemetrie,
+  EmpfangeneTelemetrie,
+  ZustandsFunktion,
+  ZustandsQuelle,
 } from './services/warteschlangen-register.js';
 export {
   WARTESCHLANGEN_ACTIONS,
@@ -488,7 +543,62 @@ export {
   fuehreWarteschlangeAus,
   fuehreWarteschlangeLokal,
   istWarteschlangenAction,
+  meldeKernWarteschlangenAn,
+  pgZustandsQuellen,
+  registrierePgWarteschlange,
+  setzePgZustand,
 } from './services/intern-warteschlangen.js';
+export type { PgWarteschlange } from './services/intern-warteschlangen.js';
+// P27-T4/T5/T6: Stau-Adapter (Prozess, PG, Daemon-Erreichbarkeit)
+export {
+  meldeStauAdapterAn,
+  kohortenZustand,
+  kohortenWarteschlange,
+  dbPoolZustand,
+  workerTaktZustand,
+  daemonTelemetrieZustand,
+  STAU_KOHORTEN,
+  STAU_ABFRAGE_MS,
+} from './services/warteschlangen-adapter.js';
+export type { KohortenDef } from './services/warteschlangen-adapter.js';
+export { vergissWarteschlangenTelemetrie, TEILINSTANZEN_MAX } from './services/warteschlangen-register.js';
+export { embeddingFortschritt } from './embeddings/index.js';
+export { dbPoolZustaende } from './db/client.js';
+export { getParserFortschritt } from './parser/worker-pool.js';
+export { workerLebenszeichen } from './services/worker-steuerung.js';
+export { buildNachlaufZustand } from './services/build-pruefung.js';
+export { chunkEmbeddingFortschritt } from './services/embedding-claims.js';
+export { nachzugFortschritt } from './services/embed-backlog.js';
+// P27-T2: Stau-Waechter (Schalter warteschlangen_stau) + Schnappschuss (Blattmodul fuer den Hinweis T3)
+export {
+  WARTESCHLANGEN_STAU_FUNKTION,
+  STAU_WORKER_NAME,
+  STAU_EINSTELLUNG_NAMEN,
+  STAU_SCHWELLEN_STANDARD_S,
+  stauStandardEinstellungen,
+  leseStauEinstellungen,
+  leseWarteschlangenStauSchalter,
+  bewerteBeobachtung,
+  stauSchwelle,
+  markiereFolgestufen,
+  starteStauWaechter,
+} from './services/warteschlangen-waechter.js';
+export type {
+  StauEinstellungName,
+  StauWerte,
+  StauEinstellungen,
+  StauSchalter,
+  StauVerlauf,
+  StauKontext,
+  StauErgebnis,
+  StauWaechterOptionen,
+  StauWaechter,
+} from './services/warteschlangen-waechter.js';
+export { setzeStauSchnappschuss, stauSchnappschuss, stauSchnappschussAlterS, stauVerwaltungsStatus } from './services/warteschlangen-stau-stand.js';
+// P27-T3: Antworthinweis warteschlangen_stau (nur Schnappschuss)
+export { holeStauHinweise, vergissStauHinweise, stauHinweisStand, STAU_HINWEIS_AGENT_TTL_MS, STAU_HINWEIS_EPISODE_TTL_MS } from './services/warteschlangen-stau-hinweis.js';
+export type { StauHinweis } from './services/warteschlangen-stau-hinweis.js';
+export type { StauEintrag, StauSchnappschuss, StauBewertung } from './services/warteschlangen-stau-stand.js';
 export {
   WAITS_ACTIONS,
   fuehreWaitsAus,

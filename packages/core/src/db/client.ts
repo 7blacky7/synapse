@@ -106,6 +106,32 @@ export async function verbindeListenClient(): Promise<Client> {
 let _pool: Pool | null = null;
 let _hintergrundPool: Pool | null = null;
 
+// P27-T4: Checkout-/Release-Bewegung je Pool (Stau-Waechter: Dauer durchgehender Wartephase OHNE Checkout). Nur Zaehler,
+// keine Probeverbindung.
+const poolBewegung = new WeakMap<Pool, { acquire: number; release: number; letzte_ms: number | null }>();
+function beobachtePool(p: Pool): void {
+  const b = { acquire: 0, release: 0, letzte_ms: null as number | null };
+  poolBewegung.set(p, b);
+  p.on('acquire', () => { b.acquire++; b.letzte_ms = Date.now(); });
+  p.on('release', () => { b.release++; });
+}
+
+/** P27-T4: Zustand beider Pools dieses Prozesses (nur lesend, legt keinen Pool an). */
+export function dbPoolZustaende(): Array<{
+  name: 'haupt' | 'hintergrund'; angelegt: boolean; gesperrt: boolean; total: number; idle: number; waiting: number;
+  max: number | null; acquire: number; release: number; letzte_bewegung_ms: number | null;
+}> {
+  return ([['haupt', _pool], ['hintergrund', _hintergrundPool]] as const).map(([name, p]) => {
+    const b = p ? poolBewegung.get(p) : undefined;
+    const max = p ? (p as unknown as { options?: { max?: number } }).options?.max ?? null : null;
+    return {
+      name, angelegt: p !== null, gesperrt: dbSperre !== null,
+      total: p?.totalCount ?? 0, idle: p?.idleCount ?? 0, waiting: p?.waitingCount ?? 0, max,
+      acquire: b?.acquire ?? 0, release: b?.release ?? 0, letzte_bewegung_ms: b?.letzte_ms ?? null,
+    };
+  });
+}
+
 /** Markierung "dieser Ablauf ist Hintergrundarbeit" — vererbt sich auf alle Folge-Promises/Timer. */
 const hintergrundKontext = new AsyncLocalStorage<true>();
 
@@ -125,6 +151,7 @@ function hauptPool(): Pool {
       application_name: 'synapse-' + dbProzess,
     });
     _pool.on('error', err => console.error('[Synapse] Ruhende DB-Verbindung:', err.message));
+    beobachtePool(_pool);
   }
   return _pool;
 }
@@ -144,6 +171,7 @@ export function getHintergrundPool(): Pool {
     _hintergrundPool.on('error', (err) => {
       console.error('[Synapse] Hintergrund-Pool: Fehler eines ruhenden Clients:', err.message);
     });
+    beobachtePool(_hintergrundPool);
   }
   return _hintergrundPool;
 }

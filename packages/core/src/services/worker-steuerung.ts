@@ -25,6 +25,10 @@ export interface WorkerDefinition {
   inAlle?: boolean;
   /** Ein Durchlauf jetzt (optional). Ergebnis geht unveraendert in die Antwort. */
   durchlauf?: () => Promise<unknown>;
+  /** P27-T4: Betriebsart fuer den Stau-Waechter; nur 'periodisch' mit takt_s wird auf ausbleibenden Takt geprueft. */
+  betriebsart?: 'periodisch' | 'ereignisgetrieben' | 'dauerlauf';
+  /** P27-T4: erwarteter Takt in s (nur periodisch) */
+  takt_s?: number;
 }
 
 export interface WorkerPause {
@@ -276,6 +280,23 @@ function stand(e: Eintrag, jetzt = Date.now()): WorkerStand {
     durchlaeufe: e.durchlaeufe,
     letzter_durchlauf: e.letzterDurchlauf,
   };
+}
+
+/** P27-T4: Lebenszeichen je Worker fuer den Stau-Waechter (nur lesend, aendert keinen Zustand). */
+export function workerLebenszeichen(): Array<{
+  name: string; betriebsart: string | null; takt_s: number | null; pausiert: boolean; durchlauf_laeuft: boolean;
+  zuletzt_aktiv_ms: number | null; zuletzt_arbeit_ms: number | null;
+}> {
+  const jetzt = Date.now();
+  return [...register.values()].sort((x, y) => x.def.name.localeCompare(y.def.name)).map((e) => ({
+    name: e.def.name,
+    betriebsart: e.def.betriebsart ?? null,
+    takt_s: typeof e.def.takt_s === 'number' && e.def.takt_s > 0 ? e.def.takt_s : null,
+    pausiert: !!e.pause && e.pause.bis > jetzt,
+    durchlauf_laeuft: e.durchlaufLaeuft,
+    zuletzt_aktiv_ms: e.zuletztAktiv,
+    zuletzt_arbeit_ms: e.zuletztArbeit,
+  }));
 }
 
 /** Stand aller angemeldeten Worker dieses Prozesses. */

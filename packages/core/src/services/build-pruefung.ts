@@ -1569,6 +1569,9 @@ const nachlaufHinweise = new Map<string, BuildNachlaufHinweis[]>();
 const nachlaufAngestossen = new Set<string>();
 const nachlaufZaehler = { vorgemerkt: 0, angestossen: 0, laeufe: 0, gebuendelt: 0, hinweise_zugestellt: 0, fehler: 0 };
 let nachlaufLetzterFehler: { zeit: string; fehler: string } | null = null;
+/** P27-T4: beendete Nachlauf-Laeufe (Ergebnis ausgeliefert) fuer den Stau-Waechter. */
+let nachlaufBeendet = 0;
+let nachlaufBeendetMs: number | null = null;
 const NACHLAUF_HINWEISE_MAX = 20;
 
 /** Anstoesse eines Buendels zu einer Pruefdatei je Pfad: Basis vom ersten, Endstand vom letzten commit. */
@@ -1634,6 +1637,29 @@ function planeNachlauf(project: string, ms: number): void {
 /** P16-T23: geschriebene Plaene mit ihren Pruefdateien, bis build_pruefen sie anstoesst (nur im Speicher, begrenzt). */
 const nachlaufVorgemerkt = new Map<string, Omit<NachlaufAuftrag, 'angestossen_am'> & { vorgemerkt_am: string }>();
 const NACHLAUF_VORMERK_MAX = 200;
+
+/**
+ * P27-T4: Zustand des Build-Nachlaufs (nur Speicher). vorgemerkt = ABSICHTLICHES Warten auf build_pruefen (kein Stau);
+ * wartend/laufend erst nach dem Anstoss.
+ */
+export function buildNachlaufZustand(): {
+  vorgemerkt: number; wartend: number; aeltester_wartend_ms: number | null; laufend: number; aeltester_laufend_ms: number | null;
+  beendet: number; letzter_beendet_ms: number | null;
+} {
+  const jetzt = Date.now();
+  const wartende = [...nachlaufWartend.values()].flat();
+  const laufende = [...nachlaufLaeuft.values()];
+  const ms = (iso: string): number => Date.parse(iso);
+  return {
+    vorgemerkt: nachlaufVorgemerkt.size,
+    wartend: wartende.length,
+    aeltester_wartend_ms: wartende.length ? jetzt - Math.min(...wartende.map((a) => ms(a.angestossen_am))) : null,
+    laufend: laufende.length,
+    aeltester_laufend_ms: laufende.length ? jetzt - Math.min(...laufende.map((l) => ms(l.gestartet_am))) : null,
+    beendet: nachlaufBeendet,
+    letzter_beendet_ms: nachlaufBeendetMs,
+  };
+}
 
 /** Fertig ausgefuellter Aufruf der grossen Pruefung eines geschriebenen Plans (Hinweis in der commit-Antwort). */
 export function buildPruefenAufruf(project: string, planId: string): string {
@@ -1767,6 +1793,8 @@ async function fuehreNachlaufAus(project: string): Promise<void> {
     });
   } finally {
     nachlaufLaeuft.delete(project);
+    nachlaufBeendet++;
+    nachlaufBeendetMs = Date.now();
     const letzte = nachlaufLetzte.get(project) ?? [];
     letzte.unshift(lauf);
     nachlaufLetzte.set(project, letzte.slice(0, 10));

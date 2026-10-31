@@ -113,6 +113,27 @@ export const EMBED_PENDING_HINT =
   'In PostgreSQL gespeichert und sofort abrufbar. Die semantische Suche spiegelt den Eintrag ' +
   'noch nicht — das Embedding laeuft im Hintergrund nach. Kein Blocker: nicht extra danach suchen.';
 
+// P27-T5: Nachzug-Erfolge je Tabelle (semantischer Fortschritt des Rueckstands, nur dieser Prozess).
+const nachzugZaehler = new Map<string, { erfolg: number; fehler: number; letzter_ms: number | null }>();
+function zaehleNachzug(tabelle: string, erfolg: number, fehler: number): void {
+  const z = nachzugZaehler.get(tabelle) ?? { erfolg: 0, fehler: 0, letzter_ms: null };
+  z.erfolg += erfolg;
+  z.fehler += fehler;
+  if (erfolg > 0) z.letzter_ms = Date.now();
+  nachzugZaehler.set(tabelle, z);
+}
+/** P27-T5: Summe der Nachzug-Zaehler; nurVerlauf true = verlauf_stuecke, false = alle Wissens-Tabellen ausser Verlauf. */
+export function nachzugFortschritt(nurVerlauf: boolean): { erfolg: number; fehler: number; letzter_ms: number | null } {
+  const aus = { erfolg: 0, fehler: 0, letzter_ms: null as number | null };
+  for (const [t, z] of nachzugZaehler) {
+    if ((t === 'verlauf_stuecke') !== nurVerlauf) continue;
+    aus.erfolg += z.erfolg;
+    aus.fehler += z.fehler;
+    if (z.letzter_ms !== null && (aus.letzter_ms === null || z.letzter_ms > aus.letzter_ms)) aus.letzter_ms = z.letzter_ms;
+  }
+  return aus;
+}
+
 /** Was ein Backlog-Lauf getan hat. */
 export interface BacklogErgebnis {
   geprueft: number;
@@ -183,9 +204,11 @@ export async function embeddeOffeneEintraege(
       ergebnis.geprueft += teil.length;
       uebrig -= teil.length;
       try {
-        ergebnis.nachgetragen += verlauf
+        const n = verlauf
           ? await betteVerlaufStueckeEin(teil.map(r => r.id))
           : await betteStapelEin(tabelle.quelle(), teil.map(r => r.id), { priority: 'background' });
+        ergebnis.nachgetragen += n;
+        zaehleNachzug(tabelle.name, n, 0);
         continue;
       } catch (err) {
         // Schalter waehrend des Laufs gesetzt -> anhalten statt einzeln weiterzumachen.
@@ -200,9 +223,11 @@ export async function embeddeOffeneEintraege(
         try {
           await tabelle.nachtrag(row.project, row.id, { priority: 'background' });
           ergebnis.nachgetragen++;
+          zaehleNachzug(tabelle.name, 1, 0);
         } catch (err) {
           // embedded_at bleibt NULL, der naechste Lauf versucht es erneut.
           ergebnis.fehlgeschlagen++;
+          zaehleNachzug(tabelle.name, 0, 1);
           console.error(
             `[Synapse] Embedding-Nachtrag fehlgeschlagen (${tabelle.name}/${row.id}):`,
             (err as Error).message

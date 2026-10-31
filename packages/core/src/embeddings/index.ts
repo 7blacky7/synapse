@@ -291,6 +291,16 @@ const backgroundQueue: QueueEntry[] = [];
 const laufendeHintergrund = new Set<AbortController>();
 let verdraengtHintergrund = 0;
 
+// P27-T4 (Review 3345014e): getrennte Zaehler je fachlicher Klasse. completedByPriority zaehlt Slot-Freigaben (auch
+// releaseLocal, Fehler, Verdraengung) und ist KEIN Fortschritt. Erfolg = Operation lieferte ein Ergebnis.
+interface LaufenderEmbedAuftrag { klasse: EmbeddingKlasse; seit: number; phase: 'modellaufruf' | 'compute_zulassung' }
+const laufendeEmbedAuftraege = new Set<LaufenderEmbedAuftrag>();
+const klassenNull = (): Record<EmbeddingKlasse, number> => ({ interaktiv: 0, code: 0, wissen: 0, verlauf: 0 });
+const erfolgJeKlasse = klassenNull();
+const fehlerJeKlasse = klassenNull();
+const verdraengtJeKlasse = klassenNull();
+const letzterErfolgJeKlasse: Record<EmbeddingKlasse, number | null> = { interaktiv: null, code: null, wissen: null, verlauf: null };
+
 /** Laeuft oder wartet gerade ein interaktiver Auftrag? Dann startet kein Hintergrund. */
 function interaktivBeschaeftigt(): boolean {
   return activeByPriority.interactive > 0 || interactiveQueue.length > 0;
@@ -458,6 +468,9 @@ async function runQueued<T>(
     await pruefeEmbeddingSchalter(options.priority ?? 'interactive');
     let lease:EmbedLease|null = await acquireEmbedSlot(options, neuversuch);
     const priority=lease.priority;
+    // P27-T4: Auftrag bleibt sichtbar, auch wenn releaseLocal den lokalen Slot vor der Compute-Zulassung abgibt.
+    const auftrag: LaufenderEmbedAuftrag = { klasse: lease.klasse, seit: Date.now(), phase: 'modellaufruf' };
+    laufendeEmbedAuftraege.add(auftrag);
     // Nur Hintergrund-Aufrufe sind verdraengbar.
     // P22-T204 (Livelock 26.10.): eine Suchanfrage ist nie verdraengbar, auch mit Hintergrund-Prioritaet -
     // sonst verdraengen sich zwei solche Anfragen endlos gegenseitig und blockieren alle anderen.
@@ -470,20 +483,26 @@ async function runQueued<T>(
       if (lease.priority === 'background') await pruefeEmbeddingSchalter('background');
       if (abbruch?.signal.aborted) {
         verdraengtHintergrund++;
+        verdraengtJeKlasse[auftrag.klasse]++;
         continue; // noch vor dem Aufruf verdraengt -> hinten neu einreihen
       }
-      return await mitComputeAdmissionKontext({
+      const ergebnis = await mitComputeAdmissionKontext({
         source:options.admissionSource??(priority==='interactive'?'core-interactive':'core-background'),
         priority:lease.klasse==='interaktiv'?'interaktiv':'hintergrund',maxWaitMs:options.maxQueueWaitMs,claims:options.admissionClaims,
-        releaseLocal:()=>{if(lease){releaseEmbedSlot(lease);lease=null;}},
-        resumeLocal:async()=>{lease??=await acquireEmbedSlot(options,true);},
+        releaseLocal:()=>{auftrag.phase='compute_zulassung';if(lease){releaseEmbedSlot(lease);lease=null;}},
+        resumeLocal:async()=>{lease??=await acquireEmbedSlot(options,true);auftrag.phase='modellaufruf';},
       },()=>operation(abbruch?.signal));
+      erfolgJeKlasse[auftrag.klasse]++;
+      letzterErfolgJeKlasse[auftrag.klasse] = Date.now();
+      return ergebnis;
     } catch (error) {
-      if (!abbruch?.signal.aborted) throw error;
+      if (!abbruch?.signal.aborted) { fehlerJeKlasse[auftrag.klasse]++; throw error; }
       // P5-T15: ein interaktiver Auftrag hat diesen Hintergrund-Aufruf verdraengt -> Slot frei
       // (finally) und hinten neu einreihen; der Auftrag laeuft danach automatisch weiter.
       verdraengtHintergrund++;
+      verdraengtJeKlasse[auftrag.klasse]++;
     } finally {
+      laufendeEmbedAuftraege.delete(auftrag);
       if (abbruch) laufendeHintergrund.delete(abbruch);
       if(lease)releaseEmbedSlot(lease);
     }
@@ -502,6 +521,37 @@ export function embeddingWarteschlangeEintraege(): Array<{ klasse: EmbeddingKlas
     position: i + 1,
     wartet_ms: jetzt - e.queuedAt,
   }));
+}
+
+/**
+ * P27-T4: Fortschritt je fachlicher Klasse fuer den Stau-Waechter (nur lesend, synchron). erfolg = Ergebnis geliefert;
+ * fehler/verdraengt sind KEIN Fortschritt. laufend zaehlt Auftraege auch waehrend der Compute-Zulassung (Phase).
+ */
+export function embeddingFortschritt(): {
+  max_gleichzeitig: number;
+  je_klasse: Record<EmbeddingKlasse, {
+    wartend: number; aeltester_wartend_ms: number | null; laufend: number; aeltester_laufend_ms: number | null;
+    erfolg: number; fehler: number; verdraengt: number; letzter_erfolg_ms: number | null; phasen: Record<string, number>;
+  }>;
+} {
+  const jetzt = Date.now();
+  const klassen: EmbeddingKlasse[] = ['interaktiv', 'code', 'wissen', 'verlauf'];
+  const je = {} as ReturnType<typeof embeddingFortschritt>['je_klasse'];
+  for (const k of klassen) {
+    const wartende = [...interactiveQueue, ...backgroundQueue].filter((e) => e.klasse === k);
+    const laufende = [...laufendeEmbedAuftraege].filter((a) => a.klasse === k);
+    const phasen: Record<string, number> = {};
+    for (const a of laufende) phasen[a.phase] = (phasen[a.phase] ?? 0) + 1;
+    je[k] = {
+      wartend: wartende.length,
+      aeltester_wartend_ms: wartende.length ? jetzt - Math.min(...wartende.map((e) => e.queuedAt)) : null,
+      laufend: laufende.length,
+      aeltester_laufend_ms: laufende.length ? jetzt - Math.min(...laufende.map((a) => a.seit)) : null,
+      erfolg: erfolgJeKlasse[k], fehler: fehlerJeKlasse[k], verdraengt: verdraengtJeKlasse[k],
+      letzter_erfolg_ms: letzterErfolgJeKlasse[k], phasen,
+    };
+  }
+  return { max_gleichzeitig: MAX_CONCURRENT_EMBED, je_klasse: je };
 }
 
 /** Prozesslokale Scheduler-Metriken; Queue-Schutz ist ebenfalls pro Prozess. */

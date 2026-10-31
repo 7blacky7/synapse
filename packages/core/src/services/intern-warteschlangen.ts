@@ -18,15 +18,18 @@
  */
 
 import { getPool, imHintergrund } from '../db/client.js';
-import { embeddingWarteschlangeEintraege, getEmbeddingQueueStats } from '../embeddings/index.js';
+import { embeddingFortschritt, embeddingWarteschlangeEintraege, getEmbeddingQueueStats } from '../embeddings/index.js';
 import { BACKLOG_TABELLEN_INFO, embeddeEintraegeJetzt, embeddeOffeneEintraege, zaehleOffeneEmbeddings } from './embed-backlog.js';
 import { listeFaelligeDateien, projekteMitBacklog } from './code.js';
 import { DaemonBrueckeFehler, daemonUebersicht, sendeAnDaemon } from './daemon-bruecke.js';
 import {
   holeWarteschlange,
+  lokaleInstanz,
   registriereWarteschlange,
   seiteAusListe,
   warteschlangenNamen,
+  type ZustandsQuelle,
+  type WarteschlangenZustand,
   type VerschiebeAuftrag,
   type VerschiebeZiel,
   type WarteschlangenEintrag,
@@ -127,7 +130,7 @@ interface PgVerschiebeAuftrag extends VerschiebeAuftrag {
   limit?: number;
 }
 
-interface PgWarteschlange {
+export interface PgWarteschlange {
   name: string;
   beschreibung: string;
   reihenfolge: string;
@@ -135,6 +138,8 @@ interface PgWarteschlange {
   uebersicht: (project?: string) => Promise<Record<string, unknown>>;
   liste: (f: WarteschlangenFilter) => Promise<WarteschlangenListe>;
   verschieben?: (auftrag: PgVerschiebeAuftrag) => Promise<Record<string, unknown>>;
+  /** P27-T1: Zustandsvertrag (warteschlangen-register.ts WarteschlangenZustand); nur lesend, begrenzt, Indizes nutzen. */
+  zustand?: () => Promise<WarteschlangenZustand>;
 }
 
 /** Hoechstdauer einer Zurueckstellung (SYNAPSE_WARTESCHLANGE_ZURUECK_MAX_MIN, Standard 1440 = 24 h). */
@@ -580,12 +585,41 @@ function pgWarteschlange(name: string): PgWarteschlange | undefined {
   return PG_WARTESCHLANGEN.find((w) => w.name === name);
 }
 
+/** P27-T5: weitere PG-Warteschlange anmelden (warteschlange_liste + Stau-Waechter); gleicher Name ersetzt. */
+export function registrierePgWarteschlange(w: PgWarteschlange): void {
+  const i = PG_WARTESCHLANGEN.findIndex((x) => x.name === w.name);
+  if (i >= 0) PG_WARTESCHLANGEN[i] = w;
+  else PG_WARTESCHLANGEN.push(w);
+}
+
+/** P27-T5: zustand() an eine vorhandene PG-Warteschlange haengen (uebersicht/liste bleiben). false = unbekannt. */
+export function setzePgZustand(name: string, zustand: () => Promise<WarteschlangenZustand>): boolean {
+  const w = pgWarteschlange(name);
+  if (!w) return false;
+  w.zustand = zustand;
+  return true;
+}
+
+/**
+ * P27-T1: PG-Warteschlangen mit zustand() als Quellen fuer den Stau-Waechter (Ort pg, Instanz = dieser API-Prozess).
+ * Jede Abfrage laeuft im Hintergrund-Pool (imHintergrund), nie im Antwortweg eines Tools.
+ */
+export function pgZustandsQuellen(): ZustandsQuelle[] {
+  return PG_WARTESCHLANGEN.flatMap((w) => {
+    const f = w.zustand;
+    return f ? [{ instanz: lokaleInstanz(w.name, 'pg'), zustand: () => imHintergrund(() => f()) }] : [];
+  });
+}
+
 // ───── Speicher-Warteschlangen jedes Prozesses ─────────────────────────
 
 let kernAngemeldet = false;
 
-/** embedding_queue gibt es in jedem Prozess (API und Daemon). Idempotent. */
-function meldeKernWarteschlangenAn(): void {
+/**
+ * embedding_queue gibt es in jedem Prozess (API und Daemon). Idempotent. P27-T1: beim Prozessstart aufrufen (server.ts,
+ * startprofile/pc.ts), nicht erst beim ersten intern-Aufruf - sonst fehlt der Kernadapter dem Stau-Waechter.
+ */
+export function meldeKernWarteschlangenAn(): void {
   if (kernAngemeldet) return;
   kernAngemeldet = true;
   registriereWarteschlange({
@@ -601,6 +635,22 @@ function meldeKernWarteschlangenAn(): void {
       id: String(e.position), projekt: null, typ: e.prioritaet, status: 'wartend', prioritaet: e.prioritaet,
       rang: e.position, alter_s: Math.round(e.wartet_ms / 1000), details: { wartet_ms: e.wartet_ms, klasse: e.klasse },
     })), f),
+    // P27-T4: je fachlicher Klasse eine Instanz (Sucherfolge verdecken keinen haengenden Hintergrund). Fortschritt = Ergebnis
+    // geliefert, nicht Slot-Freigabe; laufend zaehlt auch Auftraege in der Compute-Zulassung; 'alle Slots haengen, niemand
+    // wartet' = laufend > 0 ohne Erfolg.
+    teilinstanzen: () => (['interaktiv', 'code', 'wissen', 'verlauf'] as const).map((k) => ({
+      klasse: k,
+      zustand: (): WarteschlangenZustand => {
+        const f = embeddingFortschritt().je_klasse[k];
+        const s = (ms: number | null): number | null => (ms === null ? null : Math.round(ms / 1000));
+        return {
+          wartend: f.wartend, aeltester_wartend_s: s(f.aeltester_wartend_ms), laufend: f.laufend, aeltester_laufend_s: s(f.aeltester_laufend_ms),
+          fortschritt_zuletzt: f.letzter_erfolg_ms ? new Date(f.letzter_erfolg_ms).toISOString() : null, fortschritt_zaehler: f.erfolg,
+          fehler_zaehler: f.fehler, wiederholung_zaehler: f.verdraengt, betriebsart: 'ereignisgetrieben',
+          pipeline: k === 'interaktiv' ? null : { name: 'embedding', stufe: 1 }, details: { phasen: f.phasen },
+        };
+      },
+    })),
   });
 }
 

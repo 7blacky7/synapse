@@ -364,6 +364,18 @@ export async function claimEmbeddingChunks(
   }
 }
 
+/** P27-T5: quittierte Chunk-Embeddings dieses Prozesses (Server-Loop UND GPU-Knoten quittieren ueber die API). */
+const chunkFortschritt = { erfolg: 0, letzter_ms: null as number | null };
+function zaehleChunkErfolg(n: number): void {
+  if (n <= 0) return;
+  chunkFortschritt.erfolg += n;
+  chunkFortschritt.letzter_ms = Date.now();
+}
+/** P27-T5: Zaehler fuer den Stau-Waechter (nur lesend). */
+export function chunkEmbeddingFortschritt(): { erfolg: number; letzter_ms: number | null } {
+  return { ...chunkFortschritt };
+}
+
 export async function completeEmbeddingClaim(
   input: CompleteEmbeddingClaimInput,
   dependencies: CompleteEmbeddingDependencies = {},
@@ -462,6 +474,7 @@ export async function completeEmbeddingClaim(
     if ((ack.rowCount ?? 0) !== 1) throw new Error('claim_ack_race');
 
     await client.query('COMMIT');
+    zaehleChunkErfolg(1);
     return { completed: true, alreadyCompleted: false, pointId };
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
@@ -588,6 +601,7 @@ export async function completeEmbeddingClaims(
       [kandidaten.map((k) => String(k.chunkId)), kandidaten.map((k) => k.claimToken), kandidaten.map((k) => k.contentHash), nodeId],
     );
     const quittiert = new Set(ack.rows.map((r) => String(r.id)));
+    zaehleChunkErfolg(quittiert.size);
     for (const k of kandidaten) {
       const id = String(k.chunkId);
       if (quittiert.has(id)) abgeschlossen.push(id);

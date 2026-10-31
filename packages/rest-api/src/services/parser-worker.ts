@@ -153,6 +153,9 @@ export class ParserWorker {
       name: 'wissen_nachzug',
       beschreibung: `Wissens-Embeddings nachholen (memories, thoughts, ...), je Parser-Tick bis ${BACKLOG_JE_TICK}`,
       durchlauf: () => this.wissenSchritt(),
+      // P27-T4: Takt fuer den Stau-Waechter (Adapter worker): laeuft je Parser-Tick.
+      betriebsart: 'periodisch',
+      takt_s: Math.max(1, Math.round(this.cfg.intervalMs / 1000)),
     });
     // P22-T193: Verlauf ist eine Klasse des gemeinsamen Backlogs.
     registriereInternQuelle('verlauf_einbetten', () => verlaufEinbettStatus());
@@ -165,6 +168,9 @@ export class ParserWorker {
       name: 'parser',
       beschreibung: `Parser-Backlog je Projekt (Tick ${this.cfg.intervalMs} ms, bis ${this.cfg.maxPerTick} Projekte)`,
       durchlauf: () => this.parserSchritt(),
+      // P27-T4: Takt fuer den Stau-Waechter (Adapter worker).
+      betriebsart: 'periodisch',
+      takt_s: Math.max(1, Math.round(this.cfg.intervalMs / 1000)),
     });
   }
 

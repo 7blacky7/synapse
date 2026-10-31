@@ -162,6 +162,15 @@ export class ParserWorkerPool {
   private beendend = new Set<Worker>();
   private beendetGesamt = 0;
   private timeoutsGesamt = 0;
+  /** P27-T4: semantischer Fortschritt (Parse mit Ergebnis) fuer den Stau-Waechter. */
+  private erfolgGesamt = 0;
+  private fehlerGesamt = 0;
+  private letzterErfolgMs: number | null = null;
+
+  /** P27-T4: Zaehler (nur lesend). */
+  fortschritt(): { erfolg: number; fehler: number; timeouts: number; letzter_erfolg_ms: number | null } {
+    return { erfolg: this.erfolgGesamt, fehler: this.fehlerGesamt, timeouts: this.timeoutsGesamt, letzter_erfolg_ms: this.letzterErfolgMs };
+  }
 
   /** terminate() mit Buchfuehrung; Fehler beim Beenden werden wie bisher ignoriert. */
   private beende(worker: Worker): void {
@@ -212,8 +221,8 @@ export class ParserWorkerPool {
       slot.laufendeDatei = null;
       slot.startedAt = null;
       if (resolver) {
-        if (msg.ok) resolver.resolve(msg.result);
-        else resolver.reject(new Error(msg.error));
+        if (msg.ok) { this.erfolgGesamt++; this.letzterErfolgMs = Date.now(); resolver.resolve(msg.result); }
+        else { this.fehlerGesamt++; resolver.reject(new Error(msg.error)); }
       }
       this.drainQueue();
     });
@@ -494,6 +503,14 @@ export function getParserActivity(): { laufend: ParserAktivitaet[]; wartend: num
 export function getParserPoolZustand(): Record<string, unknown> | null {
   if (!singleton || singletonDisabled) return null;
   return singleton.slotZustand();
+}
+
+/** P27-T4: Fortschritt des Pools dieses Prozesses; poolAktiv false = deaktiviert bzw. ungenutzt (nicht 'gesund'). */
+export function getParserFortschritt(): {
+  poolAktiv: boolean; laufend: ParserAktivitaet[]; wartend: number; erfolg: number; fehler: number; timeouts: number; letzter_erfolg_ms: number | null;
+} {
+  if (!singleton || singletonDisabled) return { poolAktiv: false, laufend: [], wartend: 0, erfolg: 0, fehler: 0, timeouts: 0, letzter_erfolg_ms: null };
+  return { poolAktiv: true, laufend: singleton.aktivitaet(), wartend: singleton.warteschlange(), ...singleton.fortschritt() };
 }
 
 /** Test-Hook: setzt Singleton zurueck (nur fuer Tests / Reload-Szenarien). */

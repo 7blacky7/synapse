@@ -315,6 +315,14 @@ export async function startServer(): Promise<void> {
   // wenn KEIN lokaler FileWatcher-Daemon laeuft — Files die via files-Tool / Web-KI
   // in code_files landen, werden hier nachgezogen + code_intel sieht sie.
   // ENV: PARSER_LOOP_DISABLED=1 (default an); PARSER_LOOP_INTERVAL_MS (default 30000).
+  // P27-T1: Kern-Warteschlangen (embedding_queue) beim Start anmelden, nicht erst beim ersten intern-Aufruf (Stau-Waechter).
+  {
+    const { setzeWarteschlangenProzess, meldeKernWarteschlangenAn, meldeStauAdapterAn } = await import('@synapse/core');
+    setzeWarteschlangenProzess('api');
+    meldeKernWarteschlangenAn();
+    // P27-T4/T5/T6: zustand()-Adapter (Prozess-Warteschlangen, PG-Warteschlangen, Daemon-Erreichbarkeit); nur lesend.
+    meldeStauAdapterAn('api');
+  }
   if (process.env.PARSER_LOOP_DISABLED !== '1') {
     const { initParserWorker } = await import('./services/parser-worker.js');
     const pwCfg: Record<string, unknown> = {};
@@ -597,7 +605,10 @@ export async function startServer(): Promise<void> {
     const shareLoop=starteShareScanner();
     const {starteAssetRetention}=await import('@synapse/core');
     const retentionLoop=shareCfg.aktiv?starteAssetRetention():null;
-    server.addHook('onClose',async()=>{await shareLoop.beende();await retentionLoop?.beende();stopProjektScanner();});
+    // P22-T206: verwaiste staged-Publikationssperren (nur mit Besitzernachweis, nur Projekte mit Schalter asset_publish_recovery).
+    const {starteAssetSperrenRecovery}=await import('@synapse/core');
+    const sperrenLoop=shareCfg.aktiv?starteAssetSperrenRecovery():null;
+    server.addHook('onClose',async()=>{await shareLoop.beende();await retentionLoop?.beende();await sperrenLoop?.beende();stopProjektScanner();});
   }
   // A12: leichte dauerhafte PG-Aufträge; ausschließlich bestätigte Share-Revisionen.
   const {starteAssetInspektion}=await import('@synapse/core');
@@ -614,6 +625,13 @@ export async function startServer(): Promise<void> {
   const {initToolLifecycle,closeToolLifecycle} = await import('./services/tool-lifecycle-runtime.js');
   initToolLifecycle();
   server.addHook('onClose',async()=>{closeToolLifecycle();});
+  // P27-T2: Stau-Waechter der Warteschlangen (Schalter warteschlangen_stau, Standard AUS = nur Schalter lesen, Altverhalten).
+  //   SYNAPSE_WARTESCHLANGEN_STAU_DISABLED=1 - Notbremse: Waechter startet nicht (zusaetzlich pausierbar ueber intern(worker_*)).
+  if (process.env.SYNAPSE_WARTESCHLANGEN_STAU_DISABLED !== '1') {
+    const { starteStauWaechter } = await import('@synapse/core');
+    const stauWaechter = starteStauWaechter();
+    server.addHook('onClose', async () => { await stauWaechter.beende(); });
+  }
   // P22-T183 B6: API-Agenten laufen IM API-Prozess (Lauf-Verwaltung, Schalter api_agenten_lauf_intern je Projekt, Standard AUS).
   //   SYNAPSE_API_AGENTEN_LAUF_DISABLED=1 - Notbremse: Worker startet nicht (zusaetzlich pausierbar ueber intern(worker_*)).
   if (process.env.SYNAPSE_API_AGENTEN_LAUF_DISABLED !== '1') {
